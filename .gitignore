@@ -7,3 +7,10 @@ generated/
 compile_commands.json
 .cache/
 mario_candidates.txt
+
+# transient logs / runtime junk
+fm*.log
+sb*.log
+ms*.log
+*.lock
+mario_candidates.txt

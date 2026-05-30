@@ -51,6 +51,7 @@
 #include "InputCommon/InputConfig.h"
 #include "InputCommon/ControllerEmu/ControllerEmu.h"
 #include "VideoCommon/VideoConfig.h"   // AspectMode
+#include "VideoCommon/Present.h"       // g_presenter (surface resize)
 #include "UICommon/DiscordPresence.h"
 #include "UICommon/UICommon.h"
 
@@ -152,6 +153,36 @@ namespace {
 constexpr u32 THP_STATE_ADDR = 0x803EC204;
 constexpr u8  THP_PLAYING = 2, THP_PAUSED = 4;
 }
+// ── 16:9 widescreen (SUNBRIGHT_WIDESCREEN) ──────────────────────────────────
+// Adapted from gamemasterplc's SMS 16:9 Gecko code. Rather than post-scaling the
+// projection (which left screen-space effects mismatched → ghosting), we patch
+// the game's own constants in .data. The core is the projection ASPECT constant
+// (0x80412408: 1.3333 → 1.7778); the rest are screen/HUD bound constants the same
+// code bumps. Because these are .data, the value the game loads at runtime changes
+// for BOTH recomp and JIT — so projection, culling, and projection-derived effects
+// all compute at 16:9 from the source, with nothing left to mismatch. Applied each
+// frame because the DOL load initialises .data during boot. The 4:3 EFB is then
+// displayed 16:9 (ForceWide) for correct proportions with a wider FOV.
+static void widescreen_patch_tick() {
+    static const char* w = getenv("SUNBRIGHT_WIDESCREEN");
+    static const bool on = !w || atoi(w) != 0;
+    if (!on) return;
+    struct Patch { u32 addr, val; };
+    static const Patch patches[] = {
+        {0x80412408, 0x3FE38E39},  // projection aspect 1.3333 → 1.7778 (16:9)  [core]
+        {0x80416758, 0x44480000},  // 600.0 → 800.0
+        {0x804123E8, 0x442F0000},  // 600.0 → 700.0
+        {0x80416620, 0x442F0000},  // 600.0 → 700.0
+        {0x80416B74, 0x3F9A7643},  // 0.913 → 1.207
+    };
+    auto& mem = Core::System::GetInstance().GetMemory();
+    for (const auto& p : patches) {
+        if (u8* q = mem.GetPointerForRange(p.addr, 4)) {   // store big-endian (GC RAM)
+            q[0] = p.val >> 24; q[1] = p.val >> 16; q[2] = p.val >> 8; q[3] = (u8)p.val;
+        }
+    }
+}
+
 static void movie_skip_tick(uint32_t pad_bits) {
     static const bool off = getenv("SUNBRIGHT_NO_MOVIESKIP") != nullptr;
     static const u8 end_state = (u8)(getenv("SUNBRIGHT_MOVIESKIP_STATE")
@@ -585,17 +616,19 @@ int main(int argc, char* argv[]) {
         Config::SetBase(Config::GFX_EFB_SCALE, scale);
         fprintf(stderr, "[sunbright] Internal resolution scale: %d×\n", scale);
     }
-    // Widescreen (SUNBRIGHT_WIDESCREEN, default on). SMS renders 4:3, so force the
-    // 16:9 aspect AND enable the widescreen hack, which widens the 3D projection
-    // so geometry isn't stretched (without it, ForceWide just stretches 4:3).
+    // Widescreen (SUNBRIGHT_WIDESCREEN, default on). We widen the game's OWN 3D
+    // perspective projection in the GXSetProjection override (runtime/overrides/
+    // sms_widescreen.cpp), then display the 4:3 EFB at 16:9 (ForceWide) — that
+    // restores correct proportions with a wider FOV. Dolphin's own widescreen hack
+    // is left OFF so it doesn't double-apply / mis-detect.
     {
         const char* w = getenv("SUNBRIGHT_WIDESCREEN");
         const bool wide = !w || atoi(w) != 0;
         Config::SetBase(Config::GFX_ASPECT_RATIO,
                         wide ? AspectMode::ForceWide : AspectMode::Auto);
-        Config::SetBase(Config::GFX_WIDESCREEN_HACK, wide);
+        Config::SetBase(Config::GFX_WIDESCREEN_HACK, false);
         fprintf(stderr, "[sunbright] Widescreen: %s\n",
-                wide ? "16:9 (ForceWide + hack)" : "off (4:3 auto)");
+                wide ? "16:9 (game projection + ForceWide)" : "off (4:3 auto)");
     }
 
     // Ensure a Standard Controller is on port 0 so the game polls pad input.
@@ -675,6 +708,12 @@ int main(int argc, char* argv[]) {
 
     // Main event loop — Dolphin runs its CPU/GPU on its own threads
     while (g_running) {
+        // Once the video backend's presenter exists, sync the swapchain to the
+        // current window size once — the window may have been sized by the WM after
+        // the swapchain was first created at boot (otherwise: black band).
+        static bool surf_synced = false;
+        if (!surf_synced && g_presenter) { g_presenter->ResizeSurface(); surf_synced = true; }
+
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) {
             switch (ev.type) {
@@ -686,9 +725,15 @@ int main(int argc, char* argv[]) {
                     g_focused = true;
                 else if (ev.window.event == SDL_WINDOWEVENT_FOCUS_LOST)
                     g_focused = false;
-                // Forward resize to Dolphin's renderer
-                else if (ev.window.event == SDL_WINDOWEVENT_RESIZED)
-                    Host_RequestRenderWindowSize(ev.window.data1, ev.window.data2);
+                // The window's pixel size changed (user/WM resize, fullscreen toggle,
+                // or the WM sizing it at map time). Tell Dolphin's presenter to
+                // recreate the swapchain at the new surface size — otherwise it keeps
+                // rendering at the old (smaller) size anchored top-left, leaving a
+                // black band. This is what DolphinQt's RenderWidget does on resize.
+                else if (ev.window.event == SDL_WINDOWEVENT_SIZE_CHANGED ||
+                         ev.window.event == SDL_WINDOWEVENT_RESIZED) {
+                    if (g_presenter) g_presenter->ResizeSurface();
+                }
                 break;
             case SDL_KEYDOWN:
                 if (ev.key.keysym.sym == SDLK_F11)
@@ -719,6 +764,9 @@ int main(int argc, char* argv[]) {
         // Start during a THP movie → skip it (see movie_skip_tick).
         movie_skip_tick(g_pad.load(std::memory_order_relaxed)
                         | g_repl_bits.load(std::memory_order_relaxed));
+
+        // 16:9 widescreen: keep the aspect constant patched (see widescreen_patch_tick).
+        widescreen_patch_tick();
 
         // SUNBRIGHT_AUTOSTART: with no physical keyboard (headless/CI), pulse
         // Start then A on a timer to drive through the title/file-select into

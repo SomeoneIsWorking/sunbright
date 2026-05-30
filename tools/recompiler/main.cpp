@@ -276,6 +276,7 @@ int main(int argc, char** argv) {
     std::string disc_path = argv[1];
     bool analyze_only = false;
     bool dump_dol     = false;
+    bool dump_funcs   = false;
     bool do_disasm    = false;
     u32  disasm_addr  = 0;
     int  disasm_count = 64;
@@ -284,6 +285,7 @@ int main(int argc, char** argv) {
     for (int i = 2; i < argc; i++) {
         if (strcmp(argv[i], "--analyze-only") == 0) analyze_only = true;
         if (strcmp(argv[i], "--dump-dol")     == 0) dump_dol = true;
+        if (strcmp(argv[i], "--dump-funcs")   == 0) dump_funcs = true;
         if (strcmp(argv[i], "--output") == 0 && i+1 < argc) out_dir = argv[++i];
         if (strcmp(argv[i], "--disasm") == 0 && i+1 < argc) {
             do_disasm = true;
@@ -330,6 +332,20 @@ int main(int argc, char** argv) {
         }
         std::cerr << "address not in any text section\n";
         return 1;
+    }
+
+    if (dump_funcs) {
+        // Emit every discovered function as "addr size" (size = gap to next start).
+        // Accurate boundaries (find_functions follows bl targets + prologues), for
+        // reliable JP→USA symbol porting by function-size-sequence fingerprinting.
+        for (const auto& [base, data] : dol.text_sections()) {
+            auto funcs = find_functions(data.data(), base, data.size());
+            for (size_t i = 0; i < funcs.size(); i++) {
+                u32 end = (i + 1 < funcs.size()) ? funcs[i + 1] : base + (u32)data.size();
+                std::printf("%08x %x\n", funcs[i], end - funcs[i]);
+            }
+        }
+        return 0;
     }
 
     if (analyze_only) {
