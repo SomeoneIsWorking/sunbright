@@ -47,6 +47,24 @@ The authoritative per-object transform each frame is therefore the **J3DMtxBuffe
 Note: decoding the raw gather-pipe byte stream is unsafe without a full GX-opcode
 parser (vertex data can contain a `0x10` byte). Prefer hooking the loader functions.
 
+### ⚠ Confirmed: SMS uses **indexed** matrices, not immediate loads
+A runtime tap on the gather pipe (`SUNBRIGHT_GXCAP=1`, see `memory_bridge.cpp`) shows
+only **~8 valid 12-word XF matrix loads per frame** (plus parser false-positives from
+vertex data). So model matrices do **not** flow through the FIFO as
+`GXLoadPosMtxImm` — J3D uses the **indexed-matrix** path: per-joint world matrices
+live in a RAM array (the `J3DMtxBuffer`), the GP fetches them by index, and only a
+small matrix **index** + the **array base/stride** (CP register loads) go through the
+FIFO. The few immediate loads we see are projection/special matrices.
+
+**Implication:** the interpolation capture point is the **`J3DMtxBuffer` in RAM**, not
+the gather pipe. Two ways to get at it:
+- **J3D draw hook (a):** wrap `J3DModel::draw/entry`; read `mMtxBuffer` directly. Gives
+  the object pointer (ID) + all joint matrices. *Preferred.*
+- **CP array-base capture:** the per-draw position-matrix **array base** is set via a
+  CP register write (cmd `0x08`, the matrix-array-base reg) — capturing it from the
+  FIFO yields the `J3DMtxBuffer` RAM pointer for that draw, which doubles as a stable
+  per-object key. Read the matrices straight from RAM at that address.
+
 ## 3. Stable model ID — yes, two capture levels
 
 Because objects live at fixed heap addresses, **the object pointer is the ID.**

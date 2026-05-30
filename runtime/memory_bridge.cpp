@@ -1,9 +1,65 @@
 #include "memory_bridge.h"
 #include "cpu_state.h"
 #include <cstring>
+#include <cstdio>
+#include <cstdlib>
 #include <stdexcept>
 
 bool g_recomp_touched_mmio = false;
+
+// ── GX matrix-load tap (SUNBRIGHT_GXCAP=1) ───────────────────────────────────
+// Every model's transform reaches the GPU as an XF matrix-load through the write-
+// gather pipe, which we own. GXLoadPosMtxImm/TexMtxImm emit the byte stream
+//   [0x10] [u32 token = ((count-1)<<16)|xfAddr] [count × u32]
+// A 12-word load (token>>16 == 0xB) to matrix memory (xfAddr < 0x100) is a 3x4
+// position/texture matrix. We watch the gather-pipe writes and reconstruct them —
+// no need for the exact GXLoadPosMtxImm address. This is the per-frame transform
+// stream the motion interpolator will consume (see docs/model_interpolation.md).
+namespace {
+bool        g_gxcap = getenv("SUNBRIGHT_GXCAP") != nullptr;
+int         g_gx_state = 0;     // 0 idle, 1 saw-0x10, 2 collecting words
+int         g_gx_idx = 0;
+u32         g_gx_addr = 0;
+u32         g_gx_words[12];
+unsigned long g_gx_total = 0;
+
+unsigned long g_gx_cmd_xf = 0, g_gx_cmd_cp = 0, g_gx_cmd_draw = 0;
+inline void gx_tap_cmd(u8 v) {       // a u8 written to the gather pipe
+    if (g_gx_state != 2) {           // not mid-collection: this is a command byte
+        if (v == 0x10) { g_gx_state = 1; ++g_gx_cmd_xf; }
+        else { if (v == 0x08) ++g_gx_cmd_cp; else if (v >= 0x80 && v <= 0xB8) ++g_gx_cmd_draw;
+               g_gx_state = 0; }
+        if (((g_gx_cmd_xf + g_gx_cmd_cp) % 5000) == 1)
+            std::fprintf(stderr, "[gxcap] cmds: XF-load=%lu CP-load=%lu draws=%lu  12word-mtx=%lu\n",
+                         g_gx_cmd_xf, g_gx_cmd_cp, g_gx_cmd_draw, g_gx_total);
+    }
+}
+inline void gx_tap_word(u32 v) {     // a u32 written to the gather pipe
+    if (g_gx_state == 1) {           // this u32 is the token
+        if ((v >> 16) == 0xB && (v & 0xFFFF) < 0x100) {
+            g_gx_state = 2; g_gx_idx = 0; g_gx_addr = v & 0xFFFF;
+        } else {
+            g_gx_state = 0;
+        }
+    } else if (g_gx_state == 2) {
+        g_gx_words[g_gx_idx++] = v;
+        if (g_gx_idx == 12) {
+            g_gx_state = 0;
+            ++g_gx_total;
+            if ((g_gx_total % 2000) == 1) {  // sample: row translations (m03,m13,m23)
+                f32 tx, ty, tz;
+                std::memcpy(&tx, &g_gx_words[3], 4);
+                std::memcpy(&ty, &g_gx_words[7], 4);
+                std::memcpy(&tz, &g_gx_words[11], 4);
+                std::fprintf(stderr, "[gxcap] mtx #%lu xfaddr=%u pos=(%.2f, %.2f, %.2f)\n",
+                             g_gx_total, g_gx_addr, tx, ty, tz);
+            }
+        }
+    } else {
+        g_gx_state = 0;
+    }
+}
+}  // namespace
 
 // Memory bridge: routes effective addresses to Dolphin's MemMap or our flat buffer.
 //
@@ -111,7 +167,10 @@ f64 mem_rf64(u32 ea) {
 void mem_w8(u32 ea, u8 v) {
     if (u8* p = ram_ptr(ea)) { *p = v; return; }
 #ifdef HAVE_DOLPHIN_MEMMAP
-    if (is_gather_pipe(ea)) { g_recomp_touched_mmio = true; GPF().Write8(v); return; }
+    if (is_gather_pipe(ea)) {
+        if (g_gxcap) gx_tap_cmd(v);
+        g_recomp_touched_mmio = true; GPF().Write8(v); return;
+    }
 #endif
     MMIO_W(8, ea, v);
 }
@@ -129,7 +188,10 @@ void mem_w32(u32 ea, u32 v) {
         p[0]=v>>24; p[1]=(v>>16)&0xFF; p[2]=(v>>8)&0xFF; p[3]=v&0xFF; return;
     }
 #ifdef HAVE_DOLPHIN_MEMMAP
-    if (is_gather_pipe(ea)) { g_recomp_touched_mmio = true; GPF().Write32(v); return; }
+    if (is_gather_pipe(ea)) {
+        if (g_gxcap) gx_tap_word(v);
+        g_recomp_touched_mmio = true; GPF().Write32(v); return;
+    }
 #endif
     MMIO_W(32, ea, v);
 }
