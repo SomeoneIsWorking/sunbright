@@ -3,6 +3,8 @@
 #include <cstring>
 #include <stdexcept>
 
+bool g_recomp_touched_mmio = false;
+
 // Memory bridge: routes effective addresses to Dolphin's MemMap or our flat buffer.
 //
 // GC memory map:
@@ -40,8 +42,8 @@ static inline u8* ram_ptr(u32 ea) {
     return nullptr;
 }
 
-#  define MMIO_R(bits, ea)     MEM().Read_U##bits(ea)
-#  define MMIO_W(bits, ea, v)  MEM().Write_U##bits((v), (ea))
+#  define MMIO_R(bits, ea)     (g_recomp_touched_mmio = true, MEM().Read_U##bits(ea))
+#  define MMIO_W(bits, ea, v)  (g_recomp_touched_mmio = true, MEM().Write_U##bits((v), (ea)))
 #else
 // Standalone mode: flat 24 MB RAM buffer, no MMIO.
 static u8 g_ram[24 * 1024 * 1024];
@@ -100,7 +102,7 @@ f64 mem_rf64(u32 ea) {
 void mem_w8(u32 ea, u8 v) {
     if (u8* p = ram_ptr(ea)) { *p = v; return; }
 #ifdef HAVE_DOLPHIN_MEMMAP
-    if (is_gather_pipe(ea)) { GPF().Write8(v); return; }
+    if (is_gather_pipe(ea)) { g_recomp_touched_mmio = true; GPF().Write8(v); return; }
 #endif
     MMIO_W(8, ea, v);
 }
@@ -108,7 +110,7 @@ void mem_w8(u32 ea, u8 v) {
 void mem_w16(u32 ea, u16 v) {
     if (u8* p = ram_ptr(ea)) { p[0] = v >> 8; p[1] = v & 0xFF; return; }
 #ifdef HAVE_DOLPHIN_MEMMAP
-    if (is_gather_pipe(ea)) { GPF().Write16(v); return; }
+    if (is_gather_pipe(ea)) { g_recomp_touched_mmio = true; GPF().Write16(v); return; }
 #endif
     MMIO_W(16, ea, v);
 }
@@ -118,7 +120,7 @@ void mem_w32(u32 ea, u32 v) {
         p[0]=v>>24; p[1]=(v>>16)&0xFF; p[2]=(v>>8)&0xFF; p[3]=v&0xFF; return;
     }
 #ifdef HAVE_DOLPHIN_MEMMAP
-    if (is_gather_pipe(ea)) { GPF().Write32(v); return; }
+    if (is_gather_pipe(ea)) { g_recomp_touched_mmio = true; GPF().Write32(v); return; }
 #endif
     MMIO_W(32, ea, v);
 }
@@ -129,7 +131,7 @@ void mem_w64(u32 ea, u64 v) {
         p[4]=(v>>24)&0xFF; p[5]=(v>>16)&0xFF; p[6]=(v>>8)&0xFF; p[7]=v&0xFF; return;
     }
 #ifdef HAVE_DOLPHIN_MEMMAP
-    if (is_gather_pipe(ea)) { GPF().Write64(v); return; }
+    if (is_gather_pipe(ea)) { g_recomp_touched_mmio = true; GPF().Write64(v); return; }
     // No Write_U64 in Dolphin's MMIO API — split into two 32-bit writes.
     MMIO_W(32, ea, (u32)(v >> 32));
     MMIO_W(32, ea + 4, (u32)v);

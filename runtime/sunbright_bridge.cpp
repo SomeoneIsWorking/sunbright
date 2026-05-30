@@ -2,6 +2,7 @@
 #include "cpu_state.h"
 #include "dolphin_hook.h"
 #include "overrides.h"
+#include "memory_bridge.h"
 #include <cstdio>
 #include <cstdlib>
 #include <unordered_map>
@@ -90,11 +91,17 @@ bool diff_run(uint32_t pc, RecompFunc fn) {
     std::memcpy(ram0.data(), ram, RAM_SIZE);
 
     // (1) recompiled version — exits via call_ppc which writes ppc + ppc.pc.
+    g_recomp_touched_mmio = false;
     CPUState cpu; dolphin_state_to_cpu(ppc, cpu); cpu.pc = pc;
     fn(cpu);
+    const bool mmio = g_recomp_touched_mmio;
     RegSnap rec; snap(ppc, rec);
     const u32 exit_pc = ppc.pc;
     std::memcpy(ramRec.data(), ram, RAM_SIZE);   // recomp's resulting RAM
+
+    // Hardware-register reads legitimately differ between two separate runs (the
+    // register changes with time). Don't compare such functions — commit recomp.
+    if (mmio) { restore(ppc, rec); std::memcpy(ram, ramRec.data(), RAM_SIZE); return true; }
 
     // (2) reference: interpreter from the same entry until it reaches recomp's exit.
     restore(ppc, s0);
