@@ -122,14 +122,23 @@ bool diff_run(uint32_t pc, RecompFunc fn) {
 
     RegSnap ref; snap(ppc, ref);   // committed state is the interpreter's = correct
 
-    // (3) compare — same exit reached, so any register difference is a real bug.
-    auto differ = [&]{
-        if (rec.lr != ref.lr || rec.ctr != ref.ctr || rec.cr != ref.cr || rec.ca != ref.ca)
-            return true;
-        for (int i = 0; i < 32; i++) if (rec.gpr[i] != ref.gpr[i]) return true;
-        return false;
-    };
-    if (differ()) {
+    // (3) compare — same exit reached, so any difference is a real bug.
+    bool regs_differ = (rec.lr != ref.lr || rec.ctr != ref.ctr ||
+                        rec.cr != ref.cr || rec.ca != ref.ca);
+    for (int i = 0; i < 32 && !regs_differ; i++)
+        if (rec.gpr[i] != ref.gpr[i]) regs_differ = true;
+
+    // RAM: recomp's result (ramRec) vs the interpreter's (now live in `ram`).
+    // Off by default — FP-heavy functions differ by a few ULPs (reciprocal
+    // estimates, rounding), which floods the log; a control-flow/hang bug shows
+    // up in registers. Enable with SUNBRIGHT_DIFF_RAM to hunt memory bugs.
+    static const bool check_ram = getenv("SUNBRIGHT_DIFF_RAM") != nullptr;
+    long ram_diff_off = -1;
+    if (check_ram && std::memcmp(ramRec.data(), ram, RAM_SIZE) != 0)
+        for (u32 i = 0; i < RAM_SIZE; i++)
+            if (ramRec[i] != ram[i]) { ram_diff_off = i; break; }
+
+    if (regs_differ || ram_diff_off >= 0) {
         fprintf(stderr, "\n[DIFF] func_%08x diverges (exit rec=%08x ref=%08x steps=%ld)\n",
                 pc, exit_pc, ref.pc, steps);
         for (int i = 0; i < 32; i++)
@@ -139,6 +148,9 @@ bool diff_run(uint32_t pc, RecompFunc fn) {
         if (rec.ctr != ref.ctr) fprintf(stderr, "  ctr rec=%08x ref=%08x\n", rec.ctr, ref.ctr);
         if (rec.cr  != ref.cr)  fprintf(stderr, "  cr  rec=%08x ref=%08x\n", rec.cr, ref.cr);
         if (rec.ca  != ref.ca)  fprintf(stderr, "  ca  rec=%u ref=%u\n", rec.ca, ref.ca);
+        if (ram_diff_off >= 0)
+            fprintf(stderr, "  RAM @ %08x: rec=%02x ref=%02x\n",
+                    RAM_BASE + (u32)ram_diff_off, ramRec[ram_diff_off], ram[ram_diff_off]);
         // Stop at the first (root-cause) divergence for a clean, fast answer.
         if (getenv("SUNBRIGHT_DIFF_STOP")) { fflush(stderr); _exit(42); }
     }
