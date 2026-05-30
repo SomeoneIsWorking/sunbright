@@ -100,23 +100,23 @@ Registered at startup in `runtime/overrides/sms_overrides.cpp`. Consulted by bot
 - Time base: `mftb`/`mftbu` read Dolphin's live TB (`SystemTimers::GetFakeTimeBase()`)
   so delay/timeout loops elapse. A frozen TB → infinite spin.
 
-## Current status (boot progress)
-Boots the full GC OS → loads `nintendo.szs` (Nintendo logo) → submits GX commands,
-then hangs at a post-logo wait loop (pure Dolphin, `SUNBRIGHT_DISABLE_RECOMP=1`,
-proceeds to load every asset).
+## Current status — RENDERING ✅
+Boots the full GC OS → loads all assets → DSP mailbox handshake → **renders the
+intro** (the Isle Delfino plane/sky scene) via GX→OGL. Confirmed by frame dump
+(`SUNBRIGHT_DUMP=1` → frames as PNG in the user Dump/Frames dir).
 
-What's been ruled out for the hang (don't re-chase these):
-- Not a per-function computation bug: `SUNBRIGHT_DIFF` (register-only) found **no**
-  divergence; the interpreter-committed diff run *also* hangs at the same loop. So
-  the bug is structural to the hybrid control-flow/timing, not a func's output.
-- FP precision was a red herring here (now fixed anyway: `std::fma`, no `-ffast-math`).
-- A blanket `CheckExternalExceptions()` after each recomp call in `jit_hook.cpp` is
-  **harmful** — it delivers IRQs at points the game isn't ready for and derails HW
-  init. Interrupt delivery for the hybrid needs a more careful approach.
-Leading theory: interrupt/timing starvation — recomp returns via JitAsm's
-`dispatcher_no_check`, so the downcount/exception path runs less; an interrupt-
-or hardware-poll-driven wait never completes. Next: instrument whether VI/decrementer
-IRQs reach the game in the hybrid vs pure-JIT; then DSP/audio MMIO and frame rendering.
+The big unblock was the **MMIO API bug**: we used `MemoryManager::Read_U*/Write_U*`
+(RAM-only) for hardware registers; they must go through `MMU::Read<T>/Write<T>`
+(`runtime/memory_bridge.cpp`). That fixed the DSP handshake and everything HW.
+
+Verification env vars: `SUNBRIGHT_DUMP=1` (dump presented frames as PNG — works under
+XWayland where window capture is black), `SUNBRIGHT_VLOG=1` (INFO video logs + title
+FPS). Debugging aids: `SUNBRIGHT_DIFF` (differential validator), `sunbright-recomp
+--disasm <addr>` (read JIT-only code), `SUNBRIGHT_DISABLE_RECOMP=1` (pure-Dolphin A/B).
+
+Caveat: a blanket `CheckExternalExceptions()` after each recomp call in `jit_hook.cpp`
+is **harmful** (derails HW init) — don't reintroduce it. Next: title screen / gameplay,
+audio, and tightening FP/edge-case accuracy.
 
 ## Skills (slash commands)
 | Command | What it does |

@@ -20,6 +20,7 @@
 #include "Common/WindowSystemInfo.h"
 #include "Core/Boot/Boot.h"
 #include "Core/BootManager.h"
+#include "Core/Config/GraphicsSettings.h"
 #include "Core/Config/MainSettings.h"
 #include "Core/Core.h"
 #include "Core/DolphinAnalytics.h"
@@ -67,6 +68,10 @@ void Host_JitCacheInvalidation()  {}
 void Host_JitProfileDataWiped()   {}
 void Host_UpdateTitle(const std::string& title) {
     if (g_window) SDL_SetWindowTitle(g_window, title.c_str());
+    // Dolphin's title carries the FPS/VPS counters; logging it confirms whether
+    // frames are actually being presented (VPS > 0 = the GPU pipeline is alive).
+    static bool log = getenv("SUNBRIGHT_VLOG") != nullptr;
+    if (log) fprintf(stderr, "[title] %s\n", title.c_str());
 }
 void Host_YieldToUI()    { SDL_PumpEvents(); }
 void Host_TitleChanged() {}
@@ -202,6 +207,15 @@ int main(int argc, char* argv[]) {
     if (backend_env) {
         Config::SetBase(Config::MAIN_GFX_BACKEND, std::string(backend_env));
         fprintf(stderr, "[sunbright] Using backend: %s\n", backend_env);
+    }
+
+    // SUNBRIGHT_DUMP=1: dump every presented frame as a PNG to the user Dump/Frames
+    // dir. Definitive proof of what's rendered, independent of window capture (which
+    // is unreliable under XWayland).
+    if (getenv("SUNBRIGHT_DUMP")) {
+        Config::SetBase(Config::MAIN_MOVIE_DUMP_FRAMES, true);
+        Config::SetBase(Config::GFX_DUMP_FRAMES_AS_IMAGES, true);
+        fprintf(stderr, "[sunbright] Frame dumping enabled\n");
     }
 
     fprintf(stderr, "[sunbright] UICommon::InitControllers...\n");
