@@ -101,10 +101,22 @@ Registered at startup in `runtime/overrides/sms_overrides.cpp`. Consulted by bot
   so delay/timeout loops elapse. A frozen TB → infinite spin.
 
 ## Current status (boot progress)
-Boots the full GC OS → loads `nintendo.szs` (Nintendo logo) → submits GX commands.
-Known hang: stuck at the Nintendo-logo wait under recomp (pure Dolphin proceeds to
-load all assets). Suspected a recomp divergence in the logo-wait path — investigate
-with `SUNBRIGHT_DIFF`. Next subsystems: DSP/audio MMIO handshake, frame rendering.
+Boots the full GC OS → loads `nintendo.szs` (Nintendo logo) → submits GX commands,
+then hangs at a post-logo wait loop (pure Dolphin, `SUNBRIGHT_DISABLE_RECOMP=1`,
+proceeds to load every asset).
+
+What's been ruled out for the hang (don't re-chase these):
+- Not a per-function computation bug: `SUNBRIGHT_DIFF` (register-only) found **no**
+  divergence; the interpreter-committed diff run *also* hangs at the same loop. So
+  the bug is structural to the hybrid control-flow/timing, not a func's output.
+- FP precision was a red herring here (now fixed anyway: `std::fma`, no `-ffast-math`).
+- A blanket `CheckExternalExceptions()` after each recomp call in `jit_hook.cpp` is
+  **harmful** — it delivers IRQs at points the game isn't ready for and derails HW
+  init. Interrupt delivery for the hybrid needs a more careful approach.
+Leading theory: interrupt/timing starvation — recomp returns via JitAsm's
+`dispatcher_no_check`, so the downcount/exception path runs less; an interrupt-
+or hardware-poll-driven wait never completes. Next: instrument whether VI/decrementer
+IRQs reach the game in the hybrid vs pure-JIT; then DSP/audio MMIO and frame rendering.
 
 ## Skills (slash commands)
 | Command | What it does |
