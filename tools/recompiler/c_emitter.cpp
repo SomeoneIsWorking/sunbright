@@ -565,14 +565,16 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
     case PPCOp::FSUBS: line("%s = (f32)(%s - %s);", fd.c_str(), fa.c_str(), fb.c_str()); break;
     case PPCOp::FMULS: line("%s = (f32)(%s * %s);", fd.c_str(), fa.c_str(), fc.c_str()); break;
     case PPCOp::FDIVS: line("%s = (f32)(%s / %s);", fd.c_str(), fa.c_str(), fb.c_str()); break;
-    case PPCOp::FMADD: line("%s = %s * %s + %s;", fd.c_str(), fa.c_str(), fc.c_str(), fb.c_str()); break;
-    case PPCOp::FMSUB: line("%s = %s * %s - %s;", fd.c_str(), fa.c_str(), fc.c_str(), fb.c_str()); break;
-    case PPCOp::FNMADD:line("%s = -(%s * %s + %s);", fd.c_str(), fa.c_str(), fc.c_str(), fb.c_str()); break;
-    case PPCOp::FNMSUB:line("%s = -(%s * %s - %s);", fd.c_str(), fa.c_str(), fc.c_str(), fb.c_str()); break;
-    case PPCOp::FMADDS:line("%s = (f32)(%s * %s + %s);", fd.c_str(), fa.c_str(), fc.c_str(), fb.c_str()); break;
-    case PPCOp::FMSUBS:line("%s = (f32)(%s * %s - %s);", fd.c_str(), fa.c_str(), fc.c_str(), fb.c_str()); break;
-    case PPCOp::FNMADDS:line("%s = (f32)-(%s*%s+%s);", fd.c_str(), fa.c_str(), fc.c_str(), fb.c_str()); break;
-    case PPCOp::FNMSUBS:line("%s = (f32)-(%s*%s-%s);", fd.c_str(), fa.c_str(), fc.c_str(), fb.c_str()); break;
+    // Gekko's madd family is a true fused multiply-add (single rounding), matching
+    // Dolphin's std::fma(). Emitting a*c+b would round twice and diverge.
+    case PPCOp::FMADD: line("%s = std::fma(%s, %s, %s);", fd.c_str(), fa.c_str(), fc.c_str(), fb.c_str()); break;
+    case PPCOp::FMSUB: line("%s = std::fma(%s, %s, -(%s));", fd.c_str(), fa.c_str(), fc.c_str(), fb.c_str()); break;
+    case PPCOp::FNMADD:line("%s = -std::fma(%s, %s, %s);", fd.c_str(), fa.c_str(), fc.c_str(), fb.c_str()); break;
+    case PPCOp::FNMSUB:line("%s = -std::fma(%s, %s, -(%s));", fd.c_str(), fa.c_str(), fc.c_str(), fb.c_str()); break;
+    case PPCOp::FMADDS:line("%s = (f32)std::fma(%s, %s, %s);", fd.c_str(), fa.c_str(), fc.c_str(), fb.c_str()); break;
+    case PPCOp::FMSUBS:line("%s = (f32)std::fma(%s, %s, -(%s));", fd.c_str(), fa.c_str(), fc.c_str(), fb.c_str()); break;
+    case PPCOp::FNMADDS:line("%s = (f32)(-std::fma(%s, %s, %s));", fd.c_str(), fa.c_str(), fc.c_str(), fb.c_str()); break;
+    case PPCOp::FNMSUBS:line("%s = (f32)(-std::fma(%s, %s, -(%s)));", fd.c_str(), fa.c_str(), fc.c_str(), fb.c_str()); break;
     case PPCOp::FABS:  line("%s = std::abs(%s);", fd.c_str(), fb.c_str()); break;
     case PPCOp::FNABS: line("%s = -std::abs(%s);", fd.c_str(), fb.c_str()); break;
     case PPCOp::FNEG:  line("%s = -%s;", fd.c_str(), fb.c_str()); break;

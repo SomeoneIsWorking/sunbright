@@ -86,9 +86,13 @@ file(GLOB SUNBRIGHT_GENERATED_SOURCES
     generated/jump_table.cpp
 )
 if(SUNBRIGHT_GENERATED_SOURCES)
-    # Generated code benefits from aggressive optimization; the rest doesn't need it.
+    # Generated code benefits from aggressive optimization, but NOT -ffast-math:
+    # that uses reciprocal approximations for divides and reassociates, diverging
+    # from the GameCube's IEEE FP. -ffp-contract=off stops the compiler fusing a
+    # separate fmul+fadd into an FMA (Gekko rounds those twice; only fmadd is fused,
+    # which the emitter handles explicitly via std::fma).
     set_source_files_properties(${SUNBRIGHT_GENERATED_SOURCES}
-        PROPERTIES COMPILE_OPTIONS "-O3;-ffast-math")
+        PROPERTIES COMPILE_OPTIONS "-O3;-ffp-contract=off")
 endif()
 
 add_executable(sunbright
