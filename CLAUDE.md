@@ -41,7 +41,8 @@ Or use `/build` skill.
 ./run.sh [rom.rvz]          # ← use this; sets the working video env
 ```
 `run.sh` pins `SDL_VIDEODRIVER=x11` and defaults to **Vulkan**, 3× internal
-resolution, 16:9 widescreen, fullscreen. Running `./build/sunbright` directly on a
+resolution, 16:9 widescreen. The window opens at the output aspect so the game fills
+it (F11 toggles fullscreen). Running `./build/sunbright` directly on a
 **native Wayland** session fails with "failed to initialize video backend" — Dolphin's
 GL/Vulkan can't make a surface on a native Wayland window; XWayland (x11 driver) works
 for **both OGL and Vulkan**. Default ROM: `$SUNBRIGHT_ROM`.
@@ -58,7 +59,6 @@ Useful env vars:
 - `SUNBRIGHT_BACKEND=OGL|Vulkan|Software` — GFX backend (both OGL & Vulkan work under XWayland; Vulkan is the default)
 - `SUNBRIGHT_RES_SCALE=N` — internal resolution multiplier (default 3 = 3× native EFB)
 - `SUNBRIGHT_WIDESCREEN=0` — disable 16:9 (default on: `GFX_ASPECT_RATIO=ForceWide` + `GFX_WIDESCREEN_HACK`; the hack widens the 3D projection so 4:3 SMS isn't stretched)
-- `SUNBRIGHT_WINDOWED=1` — start windowed instead of fullscreen (fullscreen letterboxes to keep aspect)
 - `SUNBRIGHT_DISABLE_RECOMP=1` — force everything through Dolphin's JIT (A/B control)
 - `SUNBRIGHT_TRACE=1` — log every recompiled function entry (very verbose)
 Graphics config is applied in `main_sdl.cpp` via `Config::SetBase` (GFX_EFB_SCALE,

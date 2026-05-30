@@ -517,24 +517,25 @@ int main(int argc, char* argv[]) {
         fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
         return 1;
     }
-    g_window = SDL_CreateWindow(
-        "Sunbright — Super Mario Sunshine",
-        SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 640, 480,
-        SDL_WINDOW_RESIZABLE | SDL_WINDOW_SHOWN);
+    // Size the window to the output aspect so the game fills it (no letterbox bars).
+    // 16:9 by default (matches the widescreen output), 4:3 if widescreen is off.
+    // Dolphin scales the image to the window while preserving aspect; F11 toggles
+    // fullscreen at runtime.
+    {
+        const char* w = getenv("SUNBRIGHT_WIDESCREEN");
+        const bool wide = !w || atoi(w) != 0;
+        const int win_w = wide ? 1280 : 960, win_h = 720;
+        g_window = SDL_CreateWindow(
+            "Sunbright — Super Mario Sunshine",
+            SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, win_w, win_h,
+            SDL_WINDOW_RESIZABLE | SDL_WINDOW_SHOWN);
+    }
     if (!g_window) {
         fprintf(stderr, "SDL_CreateWindow: %s\n", SDL_GetError());
         SDL_Quit();
         return 1;
     }
     g_focused = true;
-
-    // Cover the screen by default (fullscreen-desktop keeps the desktop resolution;
-    // Dolphin letterboxes to preserve the aspect ratio). SUNBRIGHT_WINDOWED=1 to
-    // stay windowed; F11 toggles at runtime either way.
-    if (!getenv("SUNBRIGHT_WINDOWED")) {
-        SDL_SetWindowFullscreen(g_window, SDL_WINDOW_FULLSCREEN_DESKTOP);
-        fprintf(stderr, "[sunbright] Starting fullscreen (SUNBRIGHT_WINDOWED=1 to disable)\n");
-    }
 
     // Load recompiled native functions into the JIT hook table
     if (!SunbrightBridge::Init(recomp_lib)) {

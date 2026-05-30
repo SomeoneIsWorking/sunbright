@@ -12,13 +12,12 @@
 #   SUNBRIGHT_BACKEND=OGL ./run.sh            # use OpenGL instead of Vulkan
 #   SUNBRIGHT_RES_SCALE=2 ./run.sh            # internal resolution (default 3× native)
 #   SUNBRIGHT_WIDESCREEN=0 ./run.sh           # 4:3 instead of 16:9 widescreen
-#   SUNBRIGHT_WINDOWED=1 ./run.sh             # windowed instead of fullscreen
 #   SUNBRIGHT_DUMP=1 ./run.sh                 # dump frames to <home>/.local/share/dolphin-emu/Dump/Frames
 #   SUNBRIGHT_AUTOSTART=1 ./run.sh            # auto-press Start/A (headless demo)
 #   (any SUNBRIGHT_* debug var set in your env is passed through)
 #
-# Defaults: Vulkan backend, 3× internal resolution, 16:9 widescreen, fullscreen
-# (aspect-ratio preserved — letterboxed on non-16:9 monitors). F11 toggles fullscreen.
+# Defaults: Vulkan backend, 3× internal resolution, 16:9 widescreen. The window
+# opens at the output aspect so the game fills it; F11 toggles fullscreen.
 #
 # Keyboard → GameCube pad (window must be focused):
 #   Enter=Start  Z=A(jump)  X=B  C=X  V=Y  Q=Z  A=L  S=R(spray)  arrows=control stick
