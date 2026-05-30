@@ -1,3 +1,4 @@
+#include <cstdio>
 #include "disc_loader.h"
 #include "dol_parser.h"
 #include "ppc_decoder.h"
@@ -275,12 +276,20 @@ int main(int argc, char** argv) {
     std::string disc_path = argv[1];
     bool analyze_only = false;
     bool dump_dol     = false;
+    bool do_disasm    = false;
+    u32  disasm_addr  = 0;
+    int  disasm_count = 64;
     std::string out_dir;
 
     for (int i = 2; i < argc; i++) {
         if (strcmp(argv[i], "--analyze-only") == 0) analyze_only = true;
         if (strcmp(argv[i], "--dump-dol")     == 0) dump_dol = true;
         if (strcmp(argv[i], "--output") == 0 && i+1 < argc) out_dir = argv[++i];
+        if (strcmp(argv[i], "--disasm") == 0 && i+1 < argc) {
+            do_disasm = true;
+            disasm_addr = (u32)strtoul(argv[++i], nullptr, 16);
+            if (i + 1 < argc && argv[i+1][0] != '-') disasm_count = atoi(argv[++i]);
+        }
     }
 
     std::cout << "Loading disc: " << disc_path << "\n";
@@ -304,6 +313,23 @@ int main(int argc, char** argv) {
         f.write((char*)dol_bytes.data(), dol_bytes.size());
         std::cout << "DOL written to " << out_dir << " (" << dol_bytes.size() << " bytes)\n";
         return 0;
+    }
+
+    if (do_disasm) {
+        for (const auto& [base, data] : dol.text_sections()) {
+            if (disasm_addr < base || disasm_addr >= base + data.size()) continue;
+            for (int k = 0; k < disasm_count; k++) {
+                u32 a = disasm_addr + k * 4, off = a - base;
+                if (off + 4 > data.size()) break;
+                u32 w_be; std::memcpy(&w_be, data.data() + off, 4);
+                u32 w = __builtin_bswap32(w_be);
+                PPCInstr ins = decode(w, a);
+                std::printf("%08x: %08x  %s\n", a, w, ins.mnemonic().c_str());
+            }
+            return 0;
+        }
+        std::cerr << "address not in any text section\n";
+        return 1;
     }
 
     if (analyze_only) {

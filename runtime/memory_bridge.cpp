@@ -17,10 +17,19 @@ bool g_recomp_touched_mmio = false;
 #ifdef HAVE_DOLPHIN_MEMMAP
 #  include "Core/HW/Memmap.h"
 #  include "Core/HW/GPFifo.h"
+#  include "Core/PowerPC/MMU.h"
 #  include "Core/System.h"
 
 static inline Memory::MemoryManager& MEM() {
     return Core::System::GetInstance().GetMemory();
+}
+
+// MMIO (hardware registers) must go through the MMU's Read<T>/Write<T>, which
+// dispatch to the VI/PE/DSP/SI/EXI handlers. MemoryManager::Read_U*/Write_U* only
+// touch RAM (CopyToEmu/FromEmu) and silently fail on MMIO ("Invalid range"/"Unknown
+// Pointer") — that broke e.g. the DSP mailbox handshake.
+static inline PowerPC::MMU& MMU_() {
+    return Core::System::GetInstance().GetMMU();
 }
 
 // The write-gather pipe (physical 0x0C008000) is how the CPU streams GX display-
@@ -42,8 +51,8 @@ static inline u8* ram_ptr(u32 ea) {
     return nullptr;
 }
 
-#  define MMIO_R(bits, ea)     (g_recomp_touched_mmio = true, MEM().Read_U##bits(ea))
-#  define MMIO_W(bits, ea, v)  (g_recomp_touched_mmio = true, MEM().Write_U##bits((v), (ea)))
+#  define MMIO_R(bits, ea)     (g_recomp_touched_mmio = true, MMU_().Read<u##bits>(ea))
+#  define MMIO_W(bits, ea, v)  (g_recomp_touched_mmio = true, MMU_().Write<u##bits>((v), (ea)))
 #else
 // Standalone mode: flat 24 MB RAM buffer, no MMIO.
 static u8 g_ram[24 * 1024 * 1024];
