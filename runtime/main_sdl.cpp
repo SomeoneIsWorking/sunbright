@@ -77,6 +77,10 @@ static std::atomic<uint32_t> g_pad{0};
 // REPL-driven pad bits, OR'd with the keyboard bits so scripted input and the
 // keyboard coexist (SUNBRIGHT_REPL).
 static std::atomic<uint32_t> g_repl_bits{0};
+// Real GC-pad Start as Dolphin sees it (from the input override's `base` value),
+// independent of our SDL event loop — physical input reaches the game through
+// Dolphin's own input path, not our SDL window. Used to arm the movie skip.
+static std::atomic<bool> g_phys_start{false};
 
 static uint32_t key_to_padbit(SDL_Keycode k) {
     switch (k) {
@@ -97,12 +101,17 @@ static uint32_t key_to_padbit(SDL_Keycode k) {
 }
 
 static std::optional<ControlState>
-pad_override(std::string_view group, std::string_view control, ControlState /*base*/) {
+pad_override(std::string_view group, std::string_view control, ControlState base) {
     const uint32_t p = g_pad.load(std::memory_order_relaxed)
                      | g_repl_bits.load(std::memory_order_relaxed);
     auto on = [&](PadBit b) { return (p & b) ? std::optional<ControlState>(1.0) : std::nullopt; };
     if (group == "Buttons") {
-        if (control == "Start") return on(P_START);
+        if (control == "Start") {
+            // Capture the REAL Start state (our injection OR Dolphin's own mapping
+            // in `base`) so the movie skip works regardless of input source.
+            g_phys_start.store((p & P_START) || base >= 0.5, std::memory_order_relaxed);
+            return on(P_START);
+        }
         if (control == "A")     return on(P_A);
         if (control == "B")     return on(P_B);
         if (control == "X")     return on(P_X);
@@ -149,13 +158,41 @@ static void movie_skip_tick(uint32_t pad_bits) {
     static const bool log = getenv("SUNBRIGHT_MOVIESKIP_LOG") != nullptr;
     u8* st = Core::System::GetInstance().GetMemory().GetPointerForRange(THP_STATE_ADDR, 1);
     if (!st) return;
-    // Log every state change so we can confirm the movie reaches PLAYING(2).
-    if (log) { static u8 last = 0xFF; if (*st != last) {
-        fprintf(stderr, "[movieskip] THP state @%08x -> %u\n", THP_STATE_ADDR, *st); last = *st; } }
-    if (off || !(pad_bits & P_START)) return;
-    if (*st == THP_PLAYING || *st == THP_PAUSED) {
-        if (log) fprintf(stderr, "[movieskip] Start during THP playback (state=%u) -> %u\n",
-                         *st, end_state);
+    const u8 s = *st;
+    if (log) { static u8 last = 0xFF; if (s != last) {
+        fprintf(stderr, "[movieskip] THP state @%08x -> %u\n", THP_STATE_ADDR, s); last = s; } }
+    if (off) return;
+
+    // The THP file streams from disc before it plays, so state bounces 0/1 for a
+    // second or two (loading) and only then reaches 2 (playing). Rather than
+    // require Start to be held at the exact frame it's playing, LATCH: pressing
+    // Start any time a movie session is active (state 1/2/4) arms a skip, and we
+    // force the end state as soon as it's playing. We disarm only after the
+    // player has been STOPPED (0) continuously for a while, so brief loading dips
+    // to 0 don't drop the latch — but a real movie end (or no movie) does.
+    static bool armed = false;
+    static uint32_t zero_since = 0;
+    const uint32_t now = SDL_GetTicks();
+    const bool movie_active = (s == 1 || s == THP_PLAYING || s == THP_PAUSED);
+
+    const bool start = g_phys_start.load(std::memory_order_relaxed)
+                     || (pad_bits & P_START);
+    if (log && movie_active) { static uint32_t lpb = 0; if (now - lpb > 1000) { lpb = now;
+        fprintf(stderr, "[movieskip] movie active (state=%u) START=%d (phys=%d)\n",
+                s, (int)start, (int)g_phys_start.load(std::memory_order_relaxed)); } }
+    if (start && movie_active && !armed) {
+        armed = true;
+        if (log) fprintf(stderr, "[movieskip] armed by Start (state=%u)\n", s);
+    }
+    if (s != 0) zero_since = 0;
+    else if (zero_since == 0) zero_since = now;
+    if (armed && zero_since && now - zero_since > 1500) {
+        armed = false;
+        if (log) fprintf(stderr, "[movieskip] disarmed (player stopped)\n");
+    }
+    if (armed && (s == THP_PLAYING || s == THP_PAUSED)) {
+        if (log) { static uint32_t lp = 0; if (now - lp > 500) { lp = now;
+            fprintf(stderr, "[movieskip] skipping (state=%u -> %u)\n", s, end_state); } }
         *st = end_state;
     }
 }
@@ -627,8 +664,12 @@ int main(int argc, char* argv[]) {
                         Host_RendererIsFullscreen() ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP);
                 else if (ev.key.keysym.sym == SDLK_F5 && getenv("SUNBRIGHT_FINDMARIO"))
                     findmario_step();   // cheat-search: snapshot on your cue
-                else if (uint32_t b = key_to_padbit(ev.key.keysym.sym))
+                else if (uint32_t b = key_to_padbit(ev.key.keysym.sym)) {
                     g_pad.fetch_or(b, std::memory_order_relaxed);
+                    static const bool ilog = getenv("SUNBRIGHT_MOVIESKIP_LOG") != nullptr;
+                    if (ilog) fprintf(stderr, "[input] keydown sym=0x%x -> padbit 0x%x (focused=%d)\n",
+                                      ev.key.keysym.sym, b, (int)g_focused.load());
+                }
                 break;
             case SDL_KEYUP:
                 if (uint32_t b = key_to_padbit(ev.key.keysym.sym))
