@@ -1,0 +1,8 @@
+build/
+generated/
+*.o
+*.so
+*.a
+*.d
+compile_commands.json
+.cache/
