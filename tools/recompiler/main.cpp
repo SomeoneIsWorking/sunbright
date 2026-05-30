@@ -134,12 +134,70 @@ static void analyze_mode(const DiscLoader& disc, const DOL& dol) {
 static int recompile_mode(const DiscLoader& disc, const DOL& dol, const std::string& out_dir) {
     fs::create_directories(out_dir);
 
+    // Clean stale generated sources first. The bucket filenames are keyed by the
+    // first function address in each chunk, so when the discovered function set
+    // changes the buckets shift and old files would linger → duplicate symbols.
+    for (const auto& e : fs::directory_iterator(out_dir)) {
+        const std::string n = e.path().filename().string();
+        if ((n.rfind("functions_", 0) == 0 && n.size() > 4 &&
+             n.substr(n.size() - 4) == ".cpp") ||
+            n == "functions.cpp" || n == "functions.h" || n == "jump_table.cpp")
+            fs::remove(e.path());
+    }
+
     std::vector<u32> all_funcs;
     std::unordered_map<u32, std::vector<PPCInstr>> func_instrs;
+
+    // Discover function entries referenced by POINTER (vtables / function-pointer
+    // tables), which bl/bc-target scanning misses — virtual methods are called via
+    // bctr through a vtable, so their entries only appear as 32-bit pointers in
+    // .data/.text. Without this they fall through to Dolphin's JIT entirely.
+    // A candidate is a 4-byte-aligned word that points into .text, where the slot
+    // looks like a real function start: it begins with a sane instruction and is
+    // immediately preceded by a function terminator (blr/bctr/b/rfi/padding) or a
+    // section boundary — so we don't split a real function mid-body.
+    auto text_word = [&](u32 addr, u32& out) -> bool {
+        for (const auto& s : dol.sections)
+            if (s.is_text && addr >= s.addr && addr + 4 <= s.addr + s.size) {
+                std::memcpy(&out, s.data.data() + (addr - s.addr), 4);
+                out = __builtin_bswap32(out);
+                return true;
+            }
+        return false;
+    };
+    auto is_term = [](u32 w) -> bool {
+        if (w == 0x4E800020 || w == 0x4E800420) return true;   // blr, bctr
+        if (w == 0) return true;                                // padding
+        u32 op = w >> 26;
+        if (op == 18 && !(w & 1)) return true;                  // b (no lk)
+        if (op == 19) { u32 xo = (w >> 1) & 0x3ff; if (xo == 16 || xo == 528) return true; } // bclr/bcctr
+        return false;
+    };
+    auto is_section_start = [&](u32 a) -> bool {
+        for (const auto& s : dol.sections) if (s.is_text && a == s.addr) return true;
+        return false;
+    };
+    std::unordered_set<u32> ptr_funcs;
+    for (const auto& s : dol.sections) {
+        for (u32 off = 0; off + 4 <= s.size; off += 4) {
+            u32 v; std::memcpy(&v, s.data.data() + off, 4); v = __builtin_bswap32(v);
+            if (v & 3) continue;
+            u32 w, prev;
+            if (!text_word(v, w)) continue;          // points into .text?
+            if (w == 0 || is_term(w)) continue;      // first insn must be real code
+            bool boundary = is_section_start(v) || (text_word(v - 4, prev) && is_term(prev));
+            if (boundary) ptr_funcs.insert(v);
+        }
+    }
+    std::printf("Pointer-referenced function candidates: %zu\n", ptr_funcs.size());
 
     // Collect all functions from text sections
     for (const auto& [base, data] : dol.text_sections()) {
         auto funcs = find_functions(data.data(), base, data.size());
+        for (u32 p : ptr_funcs)                       // merge in vtable/ptr entries
+            if (p >= base && p < base + data.size()) funcs.push_back(p);
+        std::sort(funcs.begin(), funcs.end());
+        funcs.erase(std::unique(funcs.begin(), funcs.end()), funcs.end());
         all_funcs.insert(all_funcs.end(), funcs.begin(), funcs.end());
 
         // For each function, collect instructions until next function or bl
