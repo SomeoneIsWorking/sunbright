@@ -6,3 +6,4 @@ generated/
 *.d
 compile_commands.json
 .cache/
+mario_candidates.txt

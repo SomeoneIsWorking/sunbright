@@ -116,50 +116,64 @@ static float be_f32(const u8* p) {  // GC RAM is big-endian
     u32 b = ((u32)p[0]<<24)|((u32)p[1]<<16)|((u32)p[2]<<8)|p[3];
     float f; std::memcpy(&f, &b, 4); return f;
 }
-// Keyboard-triggered (press F5): you drive Mario, I snapshot on your cue.
-//   F5 #1: at rest          → snapshot A
-//   F5 #2: after moving one way → snapshot B
-//   F5 #3: after moving back the other way → snapshot C + diff
-// A coordinate that moved one way then reversed = Mario's position. Timing-free.
+// Keyboard-triggered (press F5): you drive Mario, I snapshot on your cue. The two
+// "still" snapshots give a noise baseline — anything that changes while Mario stands
+// still is animation/timer noise and is discarded. 5-step sequence:
+//   F5 #1: standing still            → S1
+//   F5 #2: still standing still      → S2   (S1==S2 ⇒ that float is noise-free)
+//   F5 #3: after moving RIGHT        → S3
+//   F5 #4: standing still again      → S4   (S3==S4 ⇒ Mario stopped)
+//   F5 #5: after a TINY move LEFT    → S5 → diff
+// Survivors: stable when still (S1≈S2, S3≈S4) but changed with input and reversed
+// (S2→S3 one way, S4→S5 the other). Prompts go to stdout; candidates to a file so
+// they don't drown in Dolphin's logs.
 static void findmario_step() {
     constexpr u32 RAM_BASE = 0x80000000, RAM_SIZE = 0x1800000;
-    static std::vector<u8> A, B, C;
+    static std::vector<u8> S[5];
     static int phase = 0;
     auto snap = [&](std::vector<u8>& dst) {
         u8* ram = Core::System::GetInstance().GetMemory().GetPointerForRange(RAM_BASE, RAM_SIZE);
         if (ram) { dst.resize(RAM_SIZE); std::memcpy(dst.data(), ram, RAM_SIZE); }
     };
-    if (phase == 0) {
-        snap(A); phase = 1;
-        fprintf(stderr, "[mario] snapshot A (rest). Now MOVE Mario one way, then press F5.\n");
-    } else if (phase == 1) {
-        snap(B); phase = 2;
-        fprintf(stderr, "[mario] snapshot B. Now move Mario back the OTHER way, then press F5.\n");
-    } else {
-        snap(C); phase = 0;   // allow re-running
-        fprintf(stderr, "[mario] snapshot C; diffing...\n");
-        if (A.size() == RAM_SIZE && B.size() == RAM_SIZE && C.size() == RAM_SIZE) {
-            int found = 0;
-            for (u32 i = 0; i + 4 <= RAM_SIZE && found < 40; i += 4) {
-                float a = be_f32(&A[i]), b = be_f32(&B[i]), c = be_f32(&C[i]);
-                if (!std::isfinite(a) || !std::isfinite(b) || !std::isfinite(c)) continue;
-                if (std::abs(a) > 1e5f || std::abs(b) > 1e5f || std::abs(c) > 1e5f) continue;
-                float d1 = b - a, d2 = c - b;   // moved, then reversed
-                if (std::abs(d1) > 5.0f && std::abs(d2) > 5.0f && (d1 > 0) != (d2 > 0)) {
-                    fprintf(stderr, "[mario] cand %08x  A=%.2f B=%.2f C=%.2f\n",
-                            RAM_BASE + i, a, b, c);
-                    ++found;
-                    if (i >= 16) {
-                        fprintf(stderr, "        ctx:");
-                        for (int k = -4; k <= 8; k++)
-                            fprintf(stderr, " [%+d]%.2f", k*4, be_f32(&C[i + k*4]));
-                        fprintf(stderr, "\n");
-                    }
-                }
+    static const char* prompts[5] = {
+        "S1 captured (still). Press F5 again while STILL.",
+        "S2 captured (still). Now MOVE RIGHT, stop, press F5.",
+        "S3 captured (right). Stand STILL, press F5.",
+        "S4 captured (still). Move LEFT a tiny bit, stop, press F5 to finish.",
+        "S5 captured (left). Diffing → see mario_candidates.txt",
+    };
+    snap(S[phase]);
+    printf("[mario] %s\n", prompts[phase]); fflush(stdout);
+    if (++phase < 5) return;
+    phase = 0;  // re-runnable
+
+    FILE* f = fopen("mario_candidates.txt", "w");
+    if (!f) return;
+    int found = 0;
+    for (u32 i = 0; i + 4 <= RAM_SIZE && found < 60; i += 4) {
+        float s1 = be_f32(&S[0][i]), s2 = be_f32(&S[1][i]), s3 = be_f32(&S[2][i]),
+              s4 = be_f32(&S[3][i]), s5 = be_f32(&S[4][i]);
+        bool fin = std::isfinite(s1) && std::isfinite(s2) && std::isfinite(s3) &&
+                   std::isfinite(s4) && std::isfinite(s5);
+        if (!fin || std::abs(s1) > 1e5f) continue;
+        float dR = s3 - s2, dL = s5 - s4;        // moved right, moved left
+        bool stillStable = std::abs(s2 - s1) < 1.0f && std::abs(s4 - s3) < 1.0f;
+        bool movedRight  = std::abs(dR) > 2.0f;
+        bool reversed    = std::abs(dL) > 0.5f && (dR > 0) != (dL > 0);
+        if (stillStable && movedRight && reversed) {
+            fprintf(f, "cand %08x  still=%.2f right=%.2f left=%.2f\n",
+                    RAM_BASE + i, s2, s3, s5);
+            if (i >= 16) {
+                fprintf(f, "     ctx:");
+                for (int k = -4; k <= 8; k++) fprintf(f, " [%+d]%.2f", k*4, be_f32(&S[2][i + k*4]));
+                fprintf(f, "\n");
             }
-            fprintf(stderr, "[mario] %d candidate(s)\n", found);
+            ++found;
         }
     }
+    fprintf(f, "== %d candidate(s) ==\n", found);
+    fclose(f);
+    printf("[mario] %d candidate(s) written to mario_candidates.txt\n", found); fflush(stdout);
 }
 
 // ── Host interface ────────────────────────────────────────────────────────────
