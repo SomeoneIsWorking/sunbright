@@ -21,6 +21,8 @@
 using RecompFunc = void (*)(CPUState&);
 struct JumpEntry { uint32_t addr; RecompFunc fn; };
 
+extern f32 mem_rf32(u32 ea);  // from memory_bridge (for SUNBRIGHT_WATCH matrix dump)
+
 // The recompiled function table is now linked directly into the sunbright binary
 // (generated/jump_table.cpp), so there is no shared library to dlopen and no
 // dynamic-symbol resolution to get wrong.
@@ -177,6 +179,22 @@ bool Run(uint32_t pc) {
     CPUState cpu;
     dolphin_state_to_cpu(Core::System::GetInstance().GetPPCState(), cpu);
     cpu.pc = pc;
+
+    // SUNBRIGHT_WATCH=<hexaddr>: observe a function entered from the JIT (e.g. a GX
+    // matrix loader or J3DModel::viewCalc) and log its args / the 3x4 matrix at r3.
+    static const u32 watch = getenv("SUNBRIGHT_WATCH")
+                             ? (u32)strtoul(getenv("SUNBRIGHT_WATCH"), nullptr, 16) : 0;
+    if (pc == watch && watch) {
+        static unsigned long n = 0;
+        if ((n++ % 500) == 0) {
+            u32 m = cpu.gpr[3];
+            fprintf(stderr, "[watch] %08x call#%lu r3=%08x r4=%08x", pc, n, m, cpu.gpr[4]);
+            if (m >= 0x80000000u && m < 0x81800000u)
+                fprintf(stderr, "  pos=(%.2f, %.2f, %.2f)",
+                        mem_rf32(m + 12), mem_rf32(m + 28), mem_rf32(m + 44));
+            fprintf(stderr, "\n");
+        }
+    }
 
     // Call the native function.
     // Every exit path calls call_ppc(cpu, next_addr) which writes back state and sets

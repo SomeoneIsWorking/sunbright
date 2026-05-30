@@ -142,6 +142,33 @@ symbol map (name→address) covering JSystem/J3D/GX. Dropping it in lets us name
 turning the capture hook into a one-liner. Worth wiring symbol-map support into
 `sunbright-recomp` (emit named functions) + the override registry (override by name).
 
+## RE results (symbol-ported + working capture hook)
+
+The public SMS decompilation map (`reference/sms_gmsj01_symbols.txt`, 38k symbols) is
+for **GMSJ01 (Japan)** — addresses differ from our GMSE01 (USA) build, but the library
+code is byte-identical, so functions port by **size fingerprint** (sequence of
+consecutive function sizes). This is exact for small leaves; large funcs (whose recomp
+boundaries differ from the compiler's) port via their callers/callees instead.
+
+Ported so far (USA):
+| function | JP | USA | how |
+|---|---|---|---|
+| `GXLoadPosMtxImm`  | 0x800AD72C | **0x80362E0C** | size seq `34 34 24 3C 30 40` |
+| `GXLoadPosMtxIndx` | 0x800AD768 | **0x80362E48** | adjacent |
+| `GXLoadNrmMtxImm`  | 0x800AD798 | **0x80362E78** | adjacent |
+
+J3D capture targets (JP addrs, port next): `calc__8J3DModelFv` 0x800286F0,
+`entry__8J3DModelFv` 0x800288F4, **`viewCalc__8J3DModelFv` 0x800289E4** (per-joint view
+matrices — the prime hook), `gpMarioOriginal` .sbss 0x8040A378.
+
+**Working capture hook:** `SUNBRIGHT_WATCH=<hexaddr>` (in `sunbright_bridge.cpp`
+`Run()` + `dolphin_hook.cpp` `call_ppc`) observes any recompiled function without
+replacing it and logs args + the 3x4 matrix at r3. Verified on `GXLoadPosMtxImm`:
+captures live matrices, and the **r3 matrix pointer is a stable per-object key** (it
+repeats per UI element). This is exactly the interpolation capture primitive — point
+it at `viewCalc` (once its USA address is found via callers of `GXLoadPosMtxIndx`) to
+grab per-J3DModel joint transforms keyed by `this`.
+
 ## 6. Concrete next steps
 
 1. **Pin addresses** (via `sunbright-recomp --disasm` + the J3D/GX call patterns):

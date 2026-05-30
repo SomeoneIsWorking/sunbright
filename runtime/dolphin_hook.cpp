@@ -1,6 +1,7 @@
 #include "dolphin_hook.h"
 #include "overrides.h"
 #include <dlfcn.h>
+#include <cstdlib>
 #ifdef HAVE_DOLPHIN_CORE
 #  include "Core/HW/SystemTimers.h"
 #endif
@@ -68,7 +69,29 @@ RecompFunc recomp_lookup(u32 address) {
     return (it != g_recomp_map.end()) ? it->second : nullptr;
 }
 
+// Observe a recompiled function without replacing it: SUNBRIGHT_WATCH=<hexaddr>
+// logs args (and, for a matrix loader, the 3x4 matrix at r3) every time that
+// address is called. This is the capture primitive the motion interpolator will
+// use — point it at J3DModel::viewCalc / a draw fn to grab per-object transforms.
+extern f32 mem_rf32(u32 ea);   // from memory_bridge
+static u32 watch_addr() {
+    static const u32 a = getenv("SUNBRIGHT_WATCH")
+                         ? (u32)strtoul(getenv("SUNBRIGHT_WATCH"), nullptr, 16) : 0;
+    return a;
+}
+
 void call_ppc(CPUState& cpu, u32 address) {
+    if (address == watch_addr() && watch_addr() != 0) {
+        static unsigned long n = 0;
+        if ((n++ % 1000) == 0) {
+            u32 mtx = cpu.gpr[3];
+            fprintf(stderr, "[watch] %08x call#%lu r3=%08x r4=%08x", address, n, mtx, cpu.gpr[4]);
+            if (mtx >= 0x80000000u && mtx < 0x81800000u)
+                fprintf(stderr, "  pos=(%.2f, %.2f, %.2f)",
+                        mem_rf32(mtx + 12), mem_rf32(mtx + 28), mem_rf32(mtx + 44));
+            fprintf(stderr, "\n");
+        }
+    }
     RecompFunc fn = recomp_lookup(address);
     if (fn) {
         fn(cpu);
