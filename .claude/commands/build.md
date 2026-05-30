@@ -1,9 +1,16 @@
 # Build the project
 
+## First-time setup (run once)
+
+```bash
+git submodule update --init --recursive externals/dolphin
+```
+This initializes Dolphin's nested submodules (fmt, pugixml, zstd, etc.). ~500 MB download.
+
 ## Full build
 
 ```bash
-cmake -B build -DCMAKE_BUILD_TYPE=Release -G Ninja
+cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j$(nproc)
 ```
 

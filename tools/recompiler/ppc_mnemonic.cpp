@@ -69,7 +69,6 @@ std::string PPCInstr::mnemonic() const {
     case PPCOp::MTSPR:  return "mtspr";
     case PPCOp::MFCR:   return "mfcr";
     case PPCOp::MTCRF:  return "mtcrf";
-    case PPCOp::MFMSR:  return "mfmsr";
     case PPCOp::MTMSR:  return "mtmsr";
     case PPCOp::MFTB:   return "mftb";
     case PPCOp::LWZ:    return "lwz";
@@ -191,7 +190,10 @@ std::string PPCInstr::mnemonic() const {
     case PPCOp::ICBI:      return "icbi";
     case PPCOp::TW:        return "tw";
     case PPCOp::TWI:       return "twi";
-    case PPCOp::MFMSR:     return "mfmsr";
+    case PPCOp::LWARX:     return "lwarx";
+    case PPCOp::STWCX:     return "stwcx.";
+    case PPCOp::DCBST:     return "dcbst";
+    case PPCOp::MCRFS:     return "mcrfs";
     default:               return "unknown";
     }
 }

@@ -6,9 +6,12 @@
 #include <iostream>
 #include <fstream>
 #include <filesystem>
+#include <iomanip>
 #include <cstring>
 #include <map>
+#include <set>
 #include <algorithm>
+#include <unordered_map>
 
 namespace fs = std::filesystem;
 
@@ -158,9 +161,9 @@ static int recompile_mode(const DiscLoader& disc, const DOL& dol, const std::str
         if (emitter.unhandled_count() > 0) {
             std::cerr << "WARNING: " << emitter.unhandled_count()
                       << " unhandled instructions\n";
-            std::set<std::string> unique(emitter.unhandled_mnemonics().begin(),
-                                         emitter.unhandled_mnemonics().end());
-            for (const auto& mn : unique)
+            std::set<std::string> uniq_ops(emitter.unhandled_mnemonics().begin(),
+                                           emitter.unhandled_mnemonics().end());
+            for (const auto& mn : uniq_ops)
                 std::cerr << "  UNHANDLED: " << mn << "\n";
             std::cerr << "Add these to ppc_decoder.cpp + c_emitter.cpp\n";
         }

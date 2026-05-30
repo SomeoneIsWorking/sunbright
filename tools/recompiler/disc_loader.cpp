@@ -136,7 +136,7 @@ DiscLoader::DiscLoader(const std::string& path) : impl_(std::make_unique<Impl>()
 #ifdef HAVE_DOLPHIN_DISCIO
     auto blob = DiscIO::CreateBlobReader(path);
     if (blob) {
-        impl_->volume = DiscIO::CreateVolumeFromFilename(path);
+        impl_->volume = DiscIO::CreateVolume(path);
         if (impl_->volume) {
             impl_->di.game_id = impl_->volume->GetGameID();
             auto title = impl_->volume->GetLongNames();

@@ -58,7 +58,12 @@ Update this table as ppc_decoder.cpp gains coverage:
 | SPR (mtspr, mfspr, mflr, etc.) | ✅ | |
 | Paired singles (ps_*, psq_l/st) | 🔄 | GC-specific, critical for SMS |
 | System calls (sc) | ✅ | HLE via Dolphin |
-| Cache ops (dcbt, icbi, etc.) | 🔄 | NOP in recomp is fine |
+| Cache ops (dcbt, icbi, etc.) | ✅ | NOP in recomp is fine |
+| lmw / stmw (multi-word load/store) | ❌ | 6398 instances in SMS — implement next |
+| mftb (time base read) | ❌ | Return fake counter |
+| mffs / mtfsf / mtfsb1 (FPSCR) | ❌ | Low priority |
+| psq_lx / ps_cmpo0 (indexed PS) | ❌ | Add to opcode 4 decoder |
+| fcmpo | ❌ | Ordered FP compare — trivial |
 
 ## Known SMS-specific patterns
 - Heavy psq_l/psq_st usage for position/velocity data — do not NOP these

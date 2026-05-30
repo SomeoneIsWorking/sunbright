@@ -51,6 +51,7 @@ enum class PPCOp {
     LWZ, LWZU, LWZX, LWZUX,
     LMW,
     LSWI, LSWX,
+    LWARX,  // load word and reserve (atomic)
     // Store integer
     STB, STBU, STBX, STBUX,
     STH, STHU, STHX, STHUX,
@@ -58,6 +59,8 @@ enum class PPCOp {
     STMW,
     STSWI, STSWX,
     STWBRX, STHBRX, LWBRX,
+    STWCX,  // store word conditional (atomic)
+    DCBST,  // data cache block store
     // Load/store FP
     LFS, LFSU, LFSX, LFSUX,
     LFD, LFDU, LFDX, LFDUX,
@@ -72,6 +75,7 @@ enum class PPCOp {
     FCMPU, FCMPO,
     FRES, FRSQRTE,
     MFFS, MTFSB0, MTFSB1, MTFSF, MTFSFI,
+    MCRFS,  // move to CR from FPSCR
     FSEL,
     // FP single ops (opcode 59)
     FADDS, FSUBS, FMULS, FDIVS,

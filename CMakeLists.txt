@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 project(sunbright CXX)
 
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
@@ -23,12 +23,24 @@ endif()
 set(DOLPHIN_BUILD_TESTS      OFF CACHE BOOL "" FORCE)
 set(ENABLE_QT                OFF CACHE BOOL "" FORCE)
 set(ENABLE_WXWIDGETS         OFF CACHE BOOL "" FORCE)
-set(ENABLE_SDL               ON  CACHE BOOL "" FORCE)
-set(ENABLE_EVDEV             ON  CACHE BOOL "" FORCE)
+set(ENABLE_SDL               OFF CACHE BOOL "" FORCE)
+set(ENABLE_EVDEV             OFF CACHE BOOL "" FORCE)
+set(ENABLE_BLUEZ             OFF CACHE BOOL "" FORCE)
+set(ENABLE_PULSEAUDIO        OFF CACHE BOOL "" FORCE)
+set(ENABLE_ALSA              OFF CACHE BOOL "" FORCE)
 set(USE_UPNP                 OFF CACHE BOOL "" FORCE)
+set(USE_MGBA                 OFF CACHE BOOL "" FORCE)
 set(USE_DISCORD_PRESENCE     OFF CACHE BOOL "" FORCE)
 set(ENABLE_AUTOUPDATE        OFF CACHE BOOL "" FORCE)
+set(ENABLE_TESTS             OFF CACHE BOOL "" FORCE)
 set(BUILD_SHARED_LIBS        OFF CACHE BOOL "" FORCE)
+
+# When Dolphin is a subdirectory, ${CMAKE_SOURCE_DIR} in its Vulkan backend
+# resolves to our root, not Dolphin's. Add the correct VMA path globally.
+include_directories(BEFORE
+    "${DOLPHIN_DIR}/Externals/VulkanMemoryAllocator/include"
+    "${DOLPHIN_DIR}/Externals/Vulkan-Headers/include"
+)
 
 add_subdirectory("${DOLPHIN_DIR}" dolphin EXCLUDE_FROM_ALL)
 

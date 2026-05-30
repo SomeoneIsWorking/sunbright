@@ -2,6 +2,9 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cassert>
+#include <cstring>
+#include <algorithm>
+#include <unordered_set>
 
 void CEmitter::line(const char* fmt, ...) {
     char buf[512];
