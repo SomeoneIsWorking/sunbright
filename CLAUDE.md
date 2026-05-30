@@ -87,6 +87,25 @@ Runtime escape hatches that take precedence over generated code (no regen needed
 Registered at startup in `runtime/overrides/sms_overrides.cpp`. Consulted by both
 `recomp_lookup()` and `SunbrightBridge`, so they apply to JIT-entry, `bl`, and indirect branches.
 
+## Debugging recomp correctness
+- `SUNBRIGHT_DISABLE_RECOMP=1` — run pure Dolphin JIT (same binary). The A/B baseline:
+  if a hang reproduces here too it's not our recomp.
+- `SUNBRIGHT_TRACE=1` — log every recompiled function entry (find spin loops by the
+  function that repeats; identify the loop's non-recomp caller via `[call_ppc]` exits).
+- `SUNBRIGHT_DIFF=1` (+`SUNBRIGHT_DIFF_STOP=1`) — differential validator: per recomp
+  function, runs our recomp vs Dolphin's interpreter from the same state and reports
+  the first function whose registers diverge at a matching exit PC. Skips MMIO-reading
+  and long-loop functions (false positives). Slow but pinpoints the root-cause function.
+  See `diff_run()` in `runtime/sunbright_bridge.cpp`.
+- Time base: `mftb`/`mftbu` read Dolphin's live TB (`SystemTimers::GetFakeTimeBase()`)
+  so delay/timeout loops elapse. A frozen TB → infinite spin.
+
+## Current status (boot progress)
+Boots the full GC OS → loads `nintendo.szs` (Nintendo logo) → submits GX commands.
+Known hang: stuck at the Nintendo-logo wait under recomp (pure Dolphin proceeds to
+load all assets). Suspected a recomp divergence in the logo-wait path — investigate
+with `SUNBRIGHT_DIFF`. Next subsystems: DSP/audio MMIO handshake, frame rendering.
+
 ## Skills (slash commands)
 | Command | What it does |
 |---|---|
