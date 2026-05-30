@@ -67,49 +67,29 @@ target_compile_options(sunbright-recomp PRIVATE
     -Wall -Wextra -Wno-unused-parameter
 )
 
-# ── Runtime shared library ────────────────────────────────────────────────────
-# The runtime is a shared lib so it can be loaded into Dolphin or run standalone.
-file(GLOB RUNTIME_SOURCES
-    runtime/memory_bridge.cpp
-    runtime/dolphin_hook.cpp
-    runtime/os_hle.cpp
-)
-
-add_library(sunbright-runtime SHARED ${RUNTIME_SOURCES})
-
-target_include_directories(sunbright-runtime PRIVATE
-    runtime
-    "${DOLPHIN_DIR}/Source/Core"
-    "${CMAKE_BINARY_DIR}/dolphin/Source/Core"
-)
-
-target_compile_definitions(sunbright-runtime PRIVATE
-    $<$<BOOL:${SUNBRIGHT_USE_DOLPHIN_CORE}>:HAVE_DOLPHIN_CORE=1>
-    $<$<BOOL:${SUNBRIGHT_USE_DOLPHIN_DISCIO}>:HAVE_DOLPHIN_MEMMAP=1>
-)
-
-if(SUNBRIGHT_USE_DOLPHIN_CORE)
-    target_link_libraries(sunbright-runtime PRIVATE core discio)
-endif()
-target_link_libraries(sunbright-runtime PRIVATE dl)
-
-# ── Generated code library ────────────────────────────────────────────────────
-# Built separately after /recompile generates the source files.
-# Usage: cmake --build build --target sunbright-generated
-if(EXISTS "${CMAKE_SOURCE_DIR}/generated/functions.cpp")
-    add_library(sunbright-generated SHARED
-        generated/functions.cpp
-        generated/jump_table.cpp
-    )
-    target_include_directories(sunbright-generated PRIVATE runtime)
-    target_compile_options(sunbright-generated PRIVATE
-        -O3 -ffast-math  # generated code benefits from aggressive optimization
-    )
-    target_link_libraries(sunbright-generated PRIVATE sunbright-runtime)
-endif()
-
 # ── Launcher executable (SDL2 window + Dolphin Core) ─────────────────────────
+# Everything — launcher, runtime bridge, hand-written overrides, and the
+# statically-recompiled game code — is compiled into one self-contained binary.
+# No shared libraries, no dlopen, no dynamic-symbol resolution to get wrong.
 find_package(SDL2 REQUIRED)
+
+# Hand-written native overrides for functions the recompiler can't reproduce.
+file(GLOB SUNBRIGHT_OVERRIDE_SOURCES runtime/overrides/*.cpp)
+
+# Generated game code (present after /recompile). The recompiler splits function
+# bodies across many address-bucketed generated/functions_*.cpp files (plus a
+# shared functions.h and jump_table.cpp) so they compile in parallel. The weak
+# fallback table lets the binary link even before generation; the generated
+# strong symbols win.
+file(GLOB SUNBRIGHT_GENERATED_SOURCES
+    generated/functions_*.cpp
+    generated/jump_table.cpp
+)
+if(SUNBRIGHT_GENERATED_SOURCES)
+    # Generated code benefits from aggressive optimization; the rest doesn't need it.
+    set_source_files_properties(${SUNBRIGHT_GENERATED_SOURCES}
+        PROPERTIES COMPILE_OPTIONS "-O3;-ffast-math")
+endif()
 
 add_executable(sunbright
     runtime/main_sdl.cpp
@@ -118,34 +98,41 @@ add_executable(sunbright
     runtime/dolphin_hook.cpp
     runtime/memory_bridge.cpp
     runtime/os_hle.cpp
+    runtime/overrides.cpp
+    runtime/recomp_table_weak.cpp
+    ${SUNBRIGHT_OVERRIDE_SOURCES}
+    ${SUNBRIGHT_GENERATED_SOURCES}
 )
 
 target_include_directories(sunbright PRIVATE
     runtime
     "${DOLPHIN_DIR}/Source/Core"
     "${CMAKE_BINARY_DIR}/dolphin/Source/Core"
+    "${DOLPHIN_DIR}/Externals/fmt/fmt/include"
 )
 
 target_compile_definitions(sunbright PRIVATE
     HAVE_DOLPHIN_CORE=1
     HAVE_DOLPHIN_DISCIO=1
-    _M_X86_64=1          # Dolphin sets this via add_definitions; mirror it for our target
+    HAVE_DOLPHIN_MEMMAP=1  # memory_bridge routes through Dolphin's real MemMap
+    _M_X86_64=1            # Dolphin sets this via add_definitions; mirror it for our target
 )
 
 target_link_libraries(sunbright PRIVATE
     core discio uicommon
     SDL2::SDL2
-    dl pthread
+    pthread
 )
 
 # Intercept JitTrampoline at link time — no Dolphin source changes needed.
 # Use the mangled C++ name (verified via nm libcore.a | grep JitTrampoline).
-target_link_options(sunbright PRIVATE "-Wl,--wrap=_Z13JitTrampolineR7JitBasej")
+target_link_options(sunbright PRIVATE
+    "-Wl,--wrap=_Z13JitTrampolineR7JitBasej"
+)
 
 # ── Install ───────────────────────────────────────────────────────────────────
 install(TARGETS sunbright DESTINATION bin)
 install(TARGETS sunbright-recomp DESTINATION bin)
-install(TARGETS sunbright-runtime DESTINATION lib)
 
 message(STATUS "Sunbright build configured")
 message(STATUS "  Dolphin DiscIO: ${SUNBRIGHT_USE_DOLPHIN_DISCIO}")

@@ -1,4 +1,5 @@
 #include "dolphin_hook.h"
+#include "overrides.h"
 #include <dlfcn.h>
 #include <cstdio>
 #include <cstring>
@@ -56,6 +57,10 @@ void dolphin_hook_uninstall() {
 }
 
 RecompFunc recomp_lookup(u32 address) {
+    // Addresses we deliberately leave to Dolphin's JIT resolve as "not recompiled".
+    if (is_jit_forced(address)) return nullptr;
+    // Hand-written native overrides win over the generated function.
+    if (RecompFunc ov = override_lookup(address)) return ov;
     auto it = g_recomp_map.find(address);
     return (it != g_recomp_map.end()) ? it->second : nullptr;
 }
@@ -69,6 +74,11 @@ void call_ppc(CPUState& cpu, u32 address) {
 #ifdef HAVE_DOLPHIN_CORE
     // Non-recompiled call: sync back to Dolphin state and let the JIT handle it.
     // Dolphin's JIT will pick up the PC from PowerPCState.pc via the dispatcher.
+    static u32 last_non_recomp = 0;
+    if (address != last_non_recomp) {
+        fprintf(stderr, "[call_ppc] non-recomp exit to 0x%08x\n", address);
+        last_non_recomp = address;
+    }
     auto& ppc = Core::System::GetInstance().GetPPCState();
     cpu_to_dolphin_state(cpu, ppc);
     ppc.pc = address;
@@ -77,6 +87,34 @@ void call_ppc(CPUState& cpu, u32 address) {
     fprintf(stderr, "[sunbright] call_ppc 0x%08x: not recompiled and no JIT available\n", address);
 #endif
 }
+
+// SPRs not modeled in CPUState pass straight through to Dolphin's live state so
+// the recomp and the JIT agree on HID0/HID2/BATs/etc. Standalone builds use a
+// flat array (no HW side effects, but keeps reads/writes self-consistent).
+#ifdef HAVE_DOLPHIN_CORE
+u32 spr_get(u32 n) {
+    return Core::System::GetInstance().GetPPCState().spr[n & 1023];
+}
+void spr_set(u32 n, u32 v) {
+    Core::System::GetInstance().GetPPCState().spr[n & 1023] = v;
+}
+u32 msr_get() {
+    return Core::System::GetInstance().GetPPCState().msr.Hex;
+}
+void msr_set(u32 v) {
+    auto& sys = Core::System::GetInstance();
+    sys.GetPPCState().msr.Hex = v;
+    sys.GetPowerPC().MSRUpdated();
+    sys.GetPowerPC().CheckExceptions();
+}
+#else
+static u32 g_spr[1024];
+static u32 g_msr;
+u32  spr_get(u32 n)        { return g_spr[n & 1023]; }
+void spr_set(u32 n, u32 v) { g_spr[n & 1023] = v; }
+u32  msr_get()            { return g_msr; }
+void msr_set(u32 v)       { g_msr = v; }
+#endif
 
 #ifdef HAVE_DOLPHIN_CORE
 void dolphin_state_to_cpu(const PowerPC::PowerPCState& src, CPUState& dst) {

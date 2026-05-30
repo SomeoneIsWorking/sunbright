@@ -93,3 +93,17 @@ extern RecompFunc recomp_lookup(u32 address);
 
 // Call a PPC address — dispatches to recompiled or JIT
 extern void call_ppc(CPUState& cpu, u32 address);
+
+// Special-purpose registers we don't model in CPUState (HID0/HID2, BATs, DSISR,
+// SRRn, etc.) pass straight through to Dolphin's live PowerPCState.spr[]. This
+// keeps OS/HW-init code (e.g. mtspr HID2 to enable paired singles) coherent with
+// the JIT that runs alongside us. Standalone builds back these with a flat array.
+extern u32  spr_get(u32 n);
+extern void spr_set(u32 n, u32 v);
+
+// MSR is not modeled in CPUState either. mfmsr reads Dolphin's live MSR; msr_set
+// applies the proper Dolphin side effects (feature-flag recompute, exception
+// delivery). Functions that *write* MSR (mtmsr/rfi) are routed to Dolphin's JIT
+// by the recompiler, since those can redirect control flow mid-instruction.
+extern u32  msr_get();
+extern void msr_set(u32 v);

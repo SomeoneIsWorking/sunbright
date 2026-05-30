@@ -418,20 +418,25 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
 
     case PPCOp::BCLR:
         if (i.bo == 0x14) {  // always blr
-            if (i.lk) line("cpu.lr = 0x%xu;", i.pc + 4);
-            line("return;");
+            if (i.lk) {
+                // blrl: save return addr in LR, then jump to old LR
+                line("{ u32 _tgt = cpu.lr; cpu.lr = 0x%xu; call_ppc(cpu, _tgt); return; }", i.pc + 4);
+            } else {
+                // blr: call_ppc with LR so the JIT dispatcher picks up the right next PC
+                line("call_ppc(cpu, cpu.lr); return;");
+            }
         } else {
             // Conditional blr — complex BO decode
             if (!(i.bo & 4)) line("cpu.ctr--;");
-            std::string cond = "true";  // simplified; full decode needed
+            std::string cond = "true";
             if (!(i.bo & 0x10)) {
                 cond = cr_bit(i.bi);
                 if (!(i.bo & 0x08)) cond = "!" + cond;
             }
             if (i.lk)
-                line("if (%s) { cpu.lr = 0x%xu; return; }", cond.c_str(), i.pc + 4);
+                line("if (%s) { u32 _tgt = cpu.lr; cpu.lr = 0x%xu; call_ppc(cpu, _tgt); return; }", cond.c_str(), i.pc + 4);
             else
-                line("if (%s) return;", cond.c_str());
+                line("if (%s) { call_ppc(cpu, cpu.lr); return; }", cond.c_str());
         }
         break;
 
@@ -451,8 +456,8 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
         case SPR_GQR0+4: case SPR_GQR0+5: case SPR_GQR0+6: case SPR_GQR0+7:
             line("%s = cpu.gqr[%d];", d.c_str(), spr - SPR_GQR0); break;
         default:
-            line("// MFSPR spr=%d (unimplemented, returning 0)", spr);
-            line("%s = 0;", d.c_str()); break;
+            // Not modeled in CPUState — read Dolphin's live SPR (HID0/HID2/BAT/...)
+            line("%s = spr_get(%d);", d.c_str(), spr); break;
         }
         break;
     }
@@ -469,7 +474,8 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
         case SPR_GQR0+4: case SPR_GQR0+5: case SPR_GQR0+6: case SPR_GQR0+7:
             line("cpu.gqr[%d] = %s;", spr - SPR_GQR0, s.c_str()); break;
         default:
-            line("// MTSPR spr=%d (ignored)", spr); break;
+            // Not modeled in CPUState — write Dolphin's live SPR (HID0/HID2/BAT/...)
+            line("spr_set(%d, %s);", spr, s.c_str()); break;
         }
         break;
     }
@@ -751,11 +757,14 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
         line("// %s — no-op in recomp", i.mnemonic().c_str());
         break;
 
-    case PPCOp::MFMSR: line("%s = 0x8030; // MSR constant for user mode", d.c_str()); break;
+    case PPCOp::MFMSR: line("%s = msr_get(); // live MSR from Dolphin", d.c_str()); break;
     case PPCOp::MFSR:  line("%s = 0; // MFSR: segment registers not emulated", d.c_str()); break;
     case PPCOp::MFSRIN:line("%s = 0; // MFSRIN: segment registers not emulated", d.c_str()); break;
-    case PPCOp::MTMSR: line("// MTMSR ignored in recomp"); break;
-    case PPCOp::RFI:   line("return; // RFI — return from interrupt, treated as return"); break;
+    // MTMSR/RFI/segment/TLB writes redirect control flow or have HW side effects we
+    // can't reproduce inline — function_needs_jit() keeps these functions out of the
+    // recomp table so Dolphin's JIT runs them. These cases are belt-and-suspenders.
+    case PPCOp::MTMSR: line("msr_set(%s); return; // should be JIT-routed", s.c_str()); break;
+    case PPCOp::RFI:   line("return; // RFI — should be JIT-routed"); break;
 
     // ── lmw / stmw ────────────────────────────────────────────────────────────
     // Load/store multiple: rD..r31 from consecutive words starting at EA

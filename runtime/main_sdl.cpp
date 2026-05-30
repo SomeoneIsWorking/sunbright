@@ -7,17 +7,31 @@
 #include <atomic>
 #include <csignal>
 #include <cstdio>
+#include <execinfo.h>
 #include <functional>
 #include <memory>
 #include <string>
 #include <vector>
 
+#include "Common/Config/Config.h"
+#include "Common/Logging/Log.h"
+#include "Common/Logging/LogManager.h"
+#include "Common/MsgHandler.h"
 #include "Common/WindowSystemInfo.h"
 #include "Core/Boot/Boot.h"
 #include "Core/BootManager.h"
+#include "Core/Config/MainSettings.h"
 #include "Core/Core.h"
 #include "Core/DolphinAnalytics.h"
 #include "Core/Host.h"
+// X11 headers (pulled in by SDL_syswm.h) define these as macros, which collide
+// with enum members inside Dolphin's PowerPC headers. Undef before including.
+#undef None
+#undef Bool
+#undef Status
+#undef Success
+#undef Always
+#include "Core/PowerPC/PowerPC.h"
 #include "Core/System.h"
 #include "UICommon/DiscordPresence.h"
 #include "UICommon/UICommon.h"
@@ -121,12 +135,21 @@ static void on_signal(int) { g_running = false; }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 int main(int argc, char* argv[]) {
+    // Auto-ignore Dolphin panic alerts (headless — no Qt dialog available).
+    // The apploader boot sequence triggers a benign ISI alert on return-to-LR=0;
+    // we log it and continue so the game can keep running.
+    Common::RegisterMsgAlertHandler([](const char* caption, const char* text,
+                                       bool /*yes_no*/, Common::MsgType style) -> bool {
+        fprintf(stderr, "[dolphin/%s] %s: %s\n",
+                style == Common::MsgType::Warning ? "warn" : "err", caption, text);
+        return true;  // "yes" / ignore and continue
+    });
     const char* rom_path   = (argc > 1) ? argv[1]
                                         : "$SUNBRIGHT_ROM";
     const char* recomp_lib = (argc > 2) ? argv[2] : "build/libsms_recomp.so";
 
     // SDL
-    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) < 0) {
+    if (SDL_Init(SDL_INIT_VIDEO) < 0) {
         fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
         return 1;
     }
@@ -149,11 +172,34 @@ int main(int argc, char* argv[]) {
     }
 
     const WindowSystemInfo wsi = build_wsi();
+    fprintf(stderr, "[sunbright] WSI type=%d render_window=%p display=%p\n",
+            static_cast<int>(wsi.type), wsi.render_window, wsi.display_connection);
 
     // Dolphin init
+    fprintf(stderr, "[sunbright] UICommon::SetUserDirectory...\n");
     UICommon::SetUserDirectory("");  // empty → default <home>/.dolphin-emu
+    fprintf(stderr, "[sunbright] UICommon::Init...\n");
     UICommon::Init();
+    fprintf(stderr, "[sunbright] UICommon::Init done\n");
+
+    // Enable only critical Dolphin logs to stderr (not file — too slow during BS2 boot)
+    {
+        auto* lm = Common::Log::LogManager::GetInstance();
+        lm->SetConfigLogLevel(Common::Log::LogLevel::LWARNING);
+        lm->SetEnable(Common::Log::LogType::VIDEO, true);
+        lm->SetEnable(Common::Log::LogType::CORE, true);
+    }
+
+    // Override backend via env (e.g. SUNBRIGHT_BACKEND=OGL, Vulkan, Software)
+    const char* backend_env = getenv("SUNBRIGHT_BACKEND");
+    if (backend_env) {
+        Config::SetBase(Config::MAIN_GFX_BACKEND, std::string(backend_env));
+        fprintf(stderr, "[sunbright] Using backend: %s\n", backend_env);
+    }
+
+    fprintf(stderr, "[sunbright] UICommon::InitControllers...\n");
     UICommon::InitControllers(wsi);
+    fprintf(stderr, "[sunbright] UICommon::InitControllers done\n");
 
     struct sigaction sa{};
     sa.sa_handler = on_signal;
@@ -162,23 +208,39 @@ int main(int argc, char* argv[]) {
     sigaction(SIGINT,  &sa, nullptr);
     sigaction(SIGTERM, &sa, nullptr);
 
-    // Stop the event loop when Dolphin's core exits
+    // Log core state changes
     auto state_hook = Core::AddOnStateChangedCallback([](Core::State s) {
+        const char* names[] = {"Uninitialized", "Starting", "Running", "Paused", "Stopping"};
+        auto& ppc = Core::System::GetInstance().GetPPCState();
+        fprintf(stderr, "[sunbright] Core state → %s  (pc=%08x lr=%08x)\n",
+                static_cast<int>(s) < 5 ? names[static_cast<int>(s)] : "?",
+                ppc.pc, ppc.spr[8]);
+        if (s == Core::State::Paused) {
+            void* bt[32];
+            int n = backtrace(bt, 32);
+            char** syms = backtrace_symbols(bt, n);
+            for (int i = 0; i < n; i++) fprintf(stderr, "  [bt] %s\n", syms[i]);
+            free(syms);
+        }
         if (s == Core::State::Uninitialized) g_running = false;
     });
 
+    fprintf(stderr, "[sunbright] GenerateFromFile...\n");
     auto boot = BootParameters::GenerateFromFile(rom_path);
     if (!boot) {
         fprintf(stderr, "[sunbright] Could not create boot parameters for: %s\n", rom_path);
         return 1;
     }
+    fprintf(stderr, "[sunbright] GenerateFromFile done\n");
 
     DolphinAnalytics::Instance().ReportDolphinStart("sunbright");
 
+    fprintf(stderr, "[sunbright] BootCore...\n");
     if (!BootManager::BootCore(Core::System::GetInstance(), std::move(boot), wsi)) {
         fprintf(stderr, "[sunbright] BootCore failed\n");
         return 1;
     }
+    fprintf(stderr, "[sunbright] BootCore returned — game running\n");
 
     // Main event loop — Dolphin runs its CPU/GPU on its own threads
     while (g_running) {

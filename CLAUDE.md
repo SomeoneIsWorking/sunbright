@@ -12,7 +12,10 @@ Runtime: Dolphin subsystems (GFX/DSP/Memory/Input) drive the native code via hoo
 ```
 tools/recompiler/    Offline tool: ROM → generated/functions.cpp + jump_table.cpp
 runtime/             Dolphin integration layer (JIT hook, memory bridge, OS HLE)
-generated/           Output of recompiler — gitignored, regenerate with /recompile
+runtime/overrides/   Hand-written native overrides + manual JIT routing
+generated/           Recompiler output — gitignored, regenerate with /recompile
+                     functions.h (decls) + functions_<addr>.cpp ×N (bucketed by
+                     address, compiled in parallel) + jump_table.cpp
 externals/dolphin/   Dolphin git submodule — do NOT modify
 docs/                Living docs — update whenever architecture changes
 ```
@@ -35,22 +38,54 @@ Or use `/build` skill.
 ## Running the game
 
 ```bash
-cmake --build build --target sunbright-generated  # build recompiled .so first
-./build/sunbright [rom.rvz] [libsms_recomp.so]
-# defaults: ROM=$SUNBRIGHT_ROM
-#           lib=build/libsms_recomp.so
+./build/sunbright [rom.rvz]
+# default ROM: $SUNBRIGHT_ROM
 ```
 
+`sunbright` is a **single self-contained binary** — launcher, runtime bridge,
+hand-written overrides, and the statically-recompiled game code are all linked in.
+No shared library, no dlopen. (An optional 2nd arg is accepted but ignored; the
+recomp table is linked directly via `generated/jump_table.cpp`.)
+
+Useful env vars:
+- `SUNBRIGHT_BACKEND=OGL|Vulkan|Software` — GFX backend (OGL works under XWayland)
+- `SUNBRIGHT_DISABLE_RECOMP=1` — force everything through Dolphin's JIT (A/B control)
+- `SUNBRIGHT_TRACE=1` — log every recompiled function entry (very verbose)
+
 F11 toggles fullscreen. X11 and Wayland both work (SDL2 auto-detects).
+Kill a stuck run with `timeout -s KILL N` — our clean-shutdown path can hang.
 
 ## JIT hook (no Dolphin patches required)
 
 `runtime/jit_hook.cpp` intercepts via linker `--wrap` on `_Z13JitTrampolineR7JitBasej`:
 ```
 JitAsm → __wrap_JitTrampoline (our hook)
-           ├─ IsRecompiled? → SunbrightBridge::Run() → native .so
+           ├─ IsRecompiled? → SunbrightBridge::Run() → recompiled func (in-binary)
            └─ else         → __real_JitTrampoline  → Dolphin JIT
 ```
+
+## Hybrid execution: what runs where
+The recompiler deliberately leaves some functions to Dolphin's JIT — `function_needs_jit()`
+in `tools/recompiler/main.cpp` drops any function that writes MSR (`mtmsr`/`rfi`),
+touches the MMU/segments/TLB, or does `mtspr`/`mfspr` to a **hardware SPR** (HID0/HID2,
+L2CR, WPAR, BATs…). Those carry side effects (cache flush, gather-pipe reset, the
+WPAR/L2CR status bits OS code polls) that only Dolphin reproduces; running them in
+recomp causes boot to spin. `mfmsr` is OK in recomp — it reads the live MSR via
+`msr_get()`. SPRs we *do* model (LR/CTR/XER/GQR) stay in recomp.
+
+## Memory bridge (`runtime/memory_bridge.cpp`)
+- Main RAM (0x8xxxxxxx / 0xCxxxxxxx mirrors, low 24 MB): fast raw pointer + byteswap.
+- Everything else (MMIO: VI/PE/DSP/SI/CP/EXI): routed through Dolphin's
+  `Read_U*`/`Write_U*` so hardware register handlers run.
+- Write-gather pipe (0xCC008000): routed to `GPFifo::Write*` — this is how GX
+  display-list commands reach the GPU FIFO. Must NOT go through generic Write_U32.
+
+## Overrides & manual JIT routing (`runtime/overrides/`)
+Runtime escape hatches that take precedence over generated code (no regen needed):
+- `SUNBRIGHT_OVERRIDE(name, addr) { ... }` — hand-written native replacement for a func.
+- `force_jit(addr)` / `force_jit_range(lo, hi)` — route a stubborn function to Dolphin's JIT.
+Registered at startup in `runtime/overrides/sms_overrides.cpp`. Consulted by both
+`recomp_lookup()` and `SunbrightBridge`, so they apply to JIT-entry, `bl`, and indirect branches.
 
 ## Skills (slash commands)
 | Command | What it does |
@@ -75,13 +110,15 @@ Update this table as ppc_decoder.cpp gains coverage:
 | FP single (fadds, fsubs, fmuls, etc.) | ✅ | |
 | FP double (fadd, fsub, fmul, etc.) | ✅ | |
 | CR ops (crand, cror, etc.) | ✅ | |
-| SPR (mtspr, mfspr, mflr, etc.) | ✅ | |
+| SPR — modeled (LR/CTR/XER/GQR) | ✅ | in CPUState |
+| SPR — HW (HID/L2CR/WPAR/BAT…) | ✅ | function routed to Dolphin JIT (side effects) |
+| mfmsr / mtmsr | ✅ | mfmsr→live `msr_get()`; mtmsr→func routed to JIT |
 | Paired singles (ps_*, psq_l/st) | 🔄 | GC-specific, critical for SMS |
 | System calls (sc) | ✅ | HLE via Dolphin |
 | Cache ops (dcbt, icbi, etc.) | ✅ | NOP in recomp is fine |
-| lmw / stmw (multi-word load/store) | ❌ | 6398 instances in SMS — implement next |
-| mftb (time base read) | ❌ | Return fake counter |
-| mffs / mtfsf / mtfsb1 (FPSCR) | ❌ | Low priority |
+| lmw / stmw (multi-word load/store) | ✅ | expanded to per-reg loads/stores |
+| mftb (time base read) | ✅ | monotonic fake counter |
+| mffs / mtfsf / mtfsb0/1 | ✅ | FPSCR modeled in CPUState |
 | psq_lx / ps_cmpo0 (indexed PS) | ❌ | Add to opcode 4 decoder |
 | fcmpo | ❌ | Ordered FP compare — trivial |
 

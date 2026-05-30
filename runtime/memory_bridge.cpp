@@ -14,11 +14,36 @@
 
 #ifdef HAVE_DOLPHIN_MEMMAP
 #  include "Core/HW/Memmap.h"
-   static inline u8* phys_ptr(u32 ea) {
-       return Memory::GetPointer(ea);
-   }
+#  include "Core/HW/GPFifo.h"
+#  include "Core/System.h"
+
+static inline Memory::MemoryManager& MEM() {
+    return Core::System::GetInstance().GetMemory();
+}
+
+// The write-gather pipe (physical 0x0C008000) is how the CPU streams GX display-
+// list commands to the GP FIFO. It isn't normal MMIO — writes must accumulate in
+// GPFifoManager and burst to the FIFO. Generic Write_U32 would just warn "Unknown
+// Pointer" and the commands would never reach the GPU.
+static inline bool is_gather_pipe(u32 ea) { return (ea & 0x0FFFFFFF) == 0x0C008000; }
+static inline GPFifo::GPFifoManager& GPF() { return Core::System::GetInstance().GetGPFifo(); }
+
+// Fast path: main RAM only (cached 0x8xxxxxxx / uncached 0xCxxxxxxx mirrors of the
+// low 24 MB). Returns nullptr for everything else — MMIO, locked cache, etc. —
+// which must go through Dolphin's Read_U*/Write_U* so hardware register handlers
+// (VI/PE/DSP/SI/EXI…) actually run. Reading those via a raw pointer returns
+// garbage and breaks any code that polls a hardware status bit.
+static inline u8* ram_ptr(u32 ea) {
+    const u32 top = ea >> 28;
+    if ((top == 0x8 || top == 0xC) && (ea & 0x0FFFFFFF) < 0x01800000)
+        return MEM().GetPointerForRange(ea, 1);
+    return nullptr;
+}
+
+#  define MMIO_R(bits, ea)     MEM().Read_U##bits(ea)
+#  define MMIO_W(bits, ea, v)  MEM().Write_U##bits((v), (ea))
 #else
-// Standalone mode: flat 24 MB RAM buffer
+// Standalone mode: flat 24 MB RAM buffer, no MMIO.
 static u8 g_ram[24 * 1024 * 1024];
 static bool g_ram_init = false;
 
@@ -28,35 +53,38 @@ void memory_bridge_init(const u8* initial, u32 size) {
     g_ram_init = true;
 }
 
-static u8* phys_ptr(u32 ea) {
+static inline u8* ram_ptr(u32 ea) {
     u32 phys = ea & 0x1FFFFFFF;
     if (phys >= sizeof(g_ram)) return nullptr;
     return g_ram + phys;
 }
+
+#  define MMIO_R(bits, ea)     0
+#  define MMIO_W(bits, ea, v)  ((void)0)
 #endif
 
 // ── Byte-swapped reads/writes (GC = big-endian, host = little-endian) ───────
 
 u8 mem_r8(u32 ea) {
-    u8* p = phys_ptr(ea);
-    if (!p) return 0;
-    return *p;
+    if (u8* p = ram_ptr(ea)) return *p;
+    return MMIO_R(8, ea);
 }
 
 u16 mem_r16(u32 ea) {
-    u8* p = phys_ptr(ea);
-    if (!p) return 0;
-    return ((u16)p[0] << 8) | p[1];
+    if (u8* p = ram_ptr(ea)) return ((u16)p[0] << 8) | p[1];
+    return MMIO_R(16, ea);
 }
 
 u32 mem_r32(u32 ea) {
-    u8* p = phys_ptr(ea);
-    if (!p) return 0;
-    return ((u32)p[0]<<24)|((u32)p[1]<<16)|((u32)p[2]<<8)|p[3];
+    if (u8* p = ram_ptr(ea)) return ((u32)p[0]<<24)|((u32)p[1]<<16)|((u32)p[2]<<8)|p[3];
+    return MMIO_R(32, ea);
 }
 
 u64 mem_r64(u32 ea) {
-    return ((u64)mem_r32(ea) << 32) | mem_r32(ea + 4);
+    if (u8* p = ram_ptr(ea))
+        return ((u64)p[0]<<56)|((u64)p[1]<<48)|((u64)p[2]<<40)|((u64)p[3]<<32)
+             | ((u64)p[4]<<24)|((u64)p[5]<<16)|((u64)p[6]<<8)|p[7];
+    return MMIO_R(64, ea);
 }
 
 f32 mem_rf32(u32 ea) {
@@ -70,25 +98,45 @@ f64 mem_rf64(u32 ea) {
 }
 
 void mem_w8(u32 ea, u8 v) {
-    u8* p = phys_ptr(ea);
-    if (p) *p = v;
+    if (u8* p = ram_ptr(ea)) { *p = v; return; }
+#ifdef HAVE_DOLPHIN_MEMMAP
+    if (is_gather_pipe(ea)) { GPF().Write8(v); return; }
+#endif
+    MMIO_W(8, ea, v);
 }
 
 void mem_w16(u32 ea, u16 v) {
-    u8* p = phys_ptr(ea);
-    if (!p) return;
-    p[0] = v >> 8; p[1] = v & 0xFF;
+    if (u8* p = ram_ptr(ea)) { p[0] = v >> 8; p[1] = v & 0xFF; return; }
+#ifdef HAVE_DOLPHIN_MEMMAP
+    if (is_gather_pipe(ea)) { GPF().Write16(v); return; }
+#endif
+    MMIO_W(16, ea, v);
 }
 
 void mem_w32(u32 ea, u32 v) {
-    u8* p = phys_ptr(ea);
-    if (!p) return;
-    p[0]=v>>24; p[1]=(v>>16)&0xFF; p[2]=(v>>8)&0xFF; p[3]=v&0xFF;
+    if (u8* p = ram_ptr(ea)) {
+        p[0]=v>>24; p[1]=(v>>16)&0xFF; p[2]=(v>>8)&0xFF; p[3]=v&0xFF; return;
+    }
+#ifdef HAVE_DOLPHIN_MEMMAP
+    if (is_gather_pipe(ea)) { GPF().Write32(v); return; }
+#endif
+    MMIO_W(32, ea, v);
 }
 
 void mem_w64(u32 ea, u64 v) {
-    mem_w32(ea, (u32)(v >> 32));
-    mem_w32(ea + 4, (u32)v);
+    if (u8* p = ram_ptr(ea)) {
+        p[0]=v>>56; p[1]=(v>>48)&0xFF; p[2]=(v>>40)&0xFF; p[3]=(v>>32)&0xFF;
+        p[4]=(v>>24)&0xFF; p[5]=(v>>16)&0xFF; p[6]=(v>>8)&0xFF; p[7]=v&0xFF; return;
+    }
+#ifdef HAVE_DOLPHIN_MEMMAP
+    if (is_gather_pipe(ea)) { GPF().Write64(v); return; }
+    // No Write_U64 in Dolphin's MMIO API — split into two 32-bit writes.
+    MMIO_W(32, ea, (u32)(v >> 32));
+    MMIO_W(32, ea + 4, (u32)v);
+#else
+    MMIO_W(32, ea, (u32)(v >> 32));
+    MMIO_W(32, ea + 4, (u32)v);
+#endif
 }
 
 void mem_wf32(u32 ea, f32 v) {
