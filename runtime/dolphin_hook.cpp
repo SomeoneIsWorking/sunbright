@@ -1,6 +1,9 @@
 #include "dolphin_hook.h"
 #include "overrides.h"
 #include <dlfcn.h>
+#ifdef HAVE_DOLPHIN_CORE
+#  include "Core/HW/SystemTimers.h"
+#endif
 #include <cstdio>
 #include <cstring>
 #include <unordered_map>
@@ -107,13 +110,21 @@ void msr_set(u32 v) {
     sys.GetPowerPC().MSRUpdated();
     sys.GetPowerPC().CheckExceptions();
 }
+u64 tb_get() {
+    // GetFakeTimeBase() derives the TB live from CoreTiming ticks. ReadFullTimeBaseValue()
+    // would return the *stored* spr[TL], which Dolphin only refreshes lazily — it stays
+    // frozen while we spin in recomp, so delay loops would never elapse.
+    return Core::System::GetInstance().GetSystemTimers().GetFakeTimeBase();
+}
 #else
 static u32 g_spr[1024];
 static u32 g_msr;
+static u64 g_tb;
 u32  spr_get(u32 n)        { return g_spr[n & 1023]; }
 void spr_set(u32 n, u32 v) { g_spr[n & 1023] = v; }
 u32  msr_get()            { return g_msr; }
 void msr_set(u32 v)       { g_msr = v; }
+u64  tb_get()             { return g_tb += 512; }
 #endif
 
 #ifdef HAVE_DOLPHIN_CORE

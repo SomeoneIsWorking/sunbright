@@ -107,3 +107,8 @@ extern void spr_set(u32 n, u32 v);
 // by the recompiler, since those can redirect control flow mid-instruction.
 extern u32  msr_get();
 extern void msr_set(u32 v);
+
+// 64-bit time base (mftb/mftbu). Reads Dolphin's live, monotonic time base so it
+// advances with CoreTiming — code that spins until the TB reaches a target (delay
+// loops, timeouts) actually makes progress. Standalone builds use a fake counter.
+extern u64  tb_get();

@@ -783,12 +783,14 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
 
     // ── mftb (time base) ──────────────────────────────────────────────────────
     case PPCOp::MFTB: {
-        // Return a monotonically increasing fake timer (no real HW counter here)
-        line("{ static uint64_t _tb=0; _tb+=512;");
-        if (i.tbr == 268)       // TBL
-            line("  %s = (u32)_tb; }", d.c_str());
-        else                     // TBU
-            line("  %s = (u32)(_tb>>32); }", d.c_str());
+        // The TBR number is split-encoded in the SPR field (268=TBL, 269=TBU),
+        // exactly like mfspr. Read Dolphin's live 64-bit time base so spin/delay
+        // loops that wait for the clock to advance actually terminate.
+        u16 tbr = decode_spr(i.spr);
+        if (tbr == 269)          // TBU (upper 32)
+            line("%s = (u32)(tb_get() >> 32);", d.c_str());
+        else                      // TBL (lower 32)
+            line("%s = (u32)tb_get();", d.c_str());
         break;
     }
 
