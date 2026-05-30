@@ -50,6 +50,7 @@
 #include "Core/System.h"
 #include "InputCommon/InputConfig.h"
 #include "InputCommon/ControllerEmu/ControllerEmu.h"
+#include "VideoCommon/VideoConfig.h"   // AspectMode
 #include "UICommon/DiscordPresence.h"
 #include "UICommon/UICommon.h"
 
@@ -527,6 +528,14 @@ int main(int argc, char* argv[]) {
     }
     g_focused = true;
 
+    // Cover the screen by default (fullscreen-desktop keeps the desktop resolution;
+    // Dolphin letterboxes to preserve the aspect ratio). SUNBRIGHT_WINDOWED=1 to
+    // stay windowed; F11 toggles at runtime either way.
+    if (!getenv("SUNBRIGHT_WINDOWED")) {
+        SDL_SetWindowFullscreen(g_window, SDL_WINDOW_FULLSCREEN_DESKTOP);
+        fprintf(stderr, "[sunbright] Starting fullscreen (SUNBRIGHT_WINDOWED=1 to disable)\n");
+    }
+
     // Load recompiled native functions into the JIT hook table
     if (!SunbrightBridge::Init(recomp_lib)) {
         fprintf(stderr,
@@ -564,6 +573,28 @@ int main(int argc, char* argv[]) {
     if (backend_env) {
         Config::SetBase(Config::MAIN_GFX_BACKEND, std::string(backend_env));
         fprintf(stderr, "[sunbright] Using backend: %s\n", backend_env);
+    }
+
+    // ── Graphics quality ────────────────────────────────────────────────────
+    // Internal resolution scale (SUNBRIGHT_RES_SCALE, default 3 = 3× native EFB).
+    {
+        const char* rs = getenv("SUNBRIGHT_RES_SCALE");
+        int scale = rs ? atoi(rs) : 3;
+        if (scale < 1) scale = 1;
+        Config::SetBase(Config::GFX_EFB_SCALE, scale);
+        fprintf(stderr, "[sunbright] Internal resolution scale: %d×\n", scale);
+    }
+    // Widescreen (SUNBRIGHT_WIDESCREEN, default on). SMS renders 4:3, so force the
+    // 16:9 aspect AND enable the widescreen hack, which widens the 3D projection
+    // so geometry isn't stretched (without it, ForceWide just stretches 4:3).
+    {
+        const char* w = getenv("SUNBRIGHT_WIDESCREEN");
+        const bool wide = !w || atoi(w) != 0;
+        Config::SetBase(Config::GFX_ASPECT_RATIO,
+                        wide ? AspectMode::ForceWide : AspectMode::Auto);
+        Config::SetBase(Config::GFX_WIDESCREEN_HACK, wide);
+        fprintf(stderr, "[sunbright] Widescreen: %s\n",
+                wide ? "16:9 (ForceWide + hack)" : "off (4:3 auto)");
     }
 
     // Ensure a Standard Controller is on port 0 so the game polls pad input.
