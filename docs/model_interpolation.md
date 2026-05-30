@@ -169,6 +169,23 @@ repeats per UI element). This is exactly the interpolation capture primitive —
 it at `viewCalc` (once its USA address is found via callers of `GXLoadPosMtxIndx`) to
 grab per-J3DModel joint transforms keyed by `this`.
 
+## ✅ Proven end-to-end (prototype)
+Symbol-free, no J3D function needed:
+1. **Input** — keyboard/auto → GCPad via the input override. The analog stick uses the
+   `X`/`Y` axis override (−1..+1), *not* direction buttons (that was the bug that made
+   the stick dead while buttons worked).
+2. **Find a transform** — `SUNBRIGHT_AUTOCAP` drives Mario still/still/right/still/left
+   and RAM-diffs; the two "still" snaps are a noise baseline. It surfaces real animated
+   3×4 world matrices (e.g. `0x804045DC`, which also has a duplicate at `0x80427420`).
+3. **Interpolate** — `SUNBRIGHT_WATCHMTX=<addr>` reads the 3×4 each frame and emits the
+   midpoint. Verified: translation moves smoothly frame-to-frame and `MID` is exactly
+   `lerp(prev,cur,0.5)`. That's the N64Recomp in-between frame on live game data.
+
+Remaining to ship real interpolation: slerp the 3×3 rotation (lerp is fine only for
+near-identity), pin the specific transform you want (Mario's model matrix vs camera),
+generate the in-between *frames* (re-present with interpolated matrices between VI
+swaps), and skip on spawns/cuts. The capture + math are demonstrated; this is plumbing.
+
 ## 6. Concrete next steps
 
 1. **Pin addresses** (via `sunbright-recomp --disasm` + the J3D/GX call patterns):

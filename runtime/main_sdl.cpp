@@ -487,6 +487,36 @@ int main(int argc, char* argv[]) {
             if (step < 5 && t >= when[step]) { findmario_step(); ++step; }
         }
 
+        // SUNBRIGHT_WATCHMTX=<hexaddr>: read the 3x4 matrix at <addr> each ~frame,
+        // keep prev/cur, and print the N64Recomp-style midpoint (lerp translation,
+        // average rotation) — the interpolation proof on a real game transform.
+        static const char* wm = getenv("SUNBRIGHT_WATCHMTX");
+        if (wm) {
+            static const u32 maddr = (u32)strtoul(wm, nullptr, 16);
+            static uint32_t lastlog = 0;
+            const uint32_t t = SDL_GetTicks();
+            if (t - lastlog > 250) {
+                lastlog = t;
+                u8* ram = Core::System::GetInstance().GetMemory().GetPointerForRange(maddr, 48);
+                if (ram) {
+                    static float prev[12]; static bool have = false;
+                    float cur[12];
+                    for (int i = 0; i < 12; i++) cur[i] = be_f32(ram + i*4);
+                    // translation = column 3 of each row (indices 3,7,11)
+                    if (have) {
+                        float dx = cur[3]-prev[3], dy = cur[7]-prev[7], dz = cur[11]-prev[11];
+                        if (std::abs(dx)+std::abs(dy)+std::abs(dz) > 0.3f) {
+                            float mx=(prev[3]+cur[3])*0.5f, my=(prev[7]+cur[7])*0.5f, mz=(prev[11]+cur[11])*0.5f;
+                            printf("[interp] prev=(%.1f,%.1f,%.1f) cur=(%.1f,%.1f,%.1f) MID=(%.1f,%.1f,%.1f)\n",
+                                   prev[3],prev[7],prev[11], cur[3],cur[7],cur[11], mx,my,mz);
+                            fflush(stdout);
+                        }
+                    }
+                    std::memcpy(prev, cur, sizeof cur); have = true;
+                }
+            }
+        }
+
         SDL_Delay(1);
     }
 
