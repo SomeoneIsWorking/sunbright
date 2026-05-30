@@ -376,8 +376,17 @@ int main(int argc, char* argv[]) {
         if (autostart) {
             const uint32_t t = SDL_GetTicks();
             uint32_t bits = g_pad.load(std::memory_order_relaxed) & ~(P_START | P_A);
-            if (t > 18000 && (t % 1500) < 200)             // 200ms pulse every 1.5s, after 18s
-                bits |= ((t / 1500) & 1) ? P_A : P_START;  // alternate A / Start
+            if (t < 45000) {
+                if (t > 8000 && (t % 1200) < 180) bits |= P_START;  // skip the intro
+            } else {
+                // File select: walk Mario onto a save block (held stick), and pulse
+                // A to confirm. Sweep the stick direction so we find a block blindly.
+                const uint32_t phase = (t / 4000) % 4;
+                bits &= ~(P_UP | P_DOWN | P_LEFT | P_RIGHT);
+                bits |= (phase == 0) ? P_UP : (phase == 1) ? P_LEFT
+                       : (phase == 2) ? P_RIGHT : P_UP;
+                if ((t % 1500) < 150) bits |= P_A;
+            }
             g_pad.store(bits, std::memory_order_relaxed);
         }
 
