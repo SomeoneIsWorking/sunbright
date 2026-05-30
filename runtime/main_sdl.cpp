@@ -95,10 +95,14 @@ pad_override(std::string_view group, std::string_view control, ControlState /*ba
         if (control == "Y")     return on(P_Y);
         if (control == "Z")     return on(P_Z);
     } else if (group == "Main Stick") {
-        if (control == "Up")    return on(P_UP);
-        if (control == "Down")  return on(P_DOWN);
-        if (control == "Left")  return on(P_LEFT);
-        if (control == "Right") return on(P_RIGHT);
+        // The analog stick queries "X"/"Y" axes (-1..+1), not direction buttons.
+        if (control == "X") {
+            if (p & P_RIGHT) return  1.0;
+            if (p & P_LEFT)  return -1.0;
+        } else if (control == "Y") {
+            if (p & P_UP)    return  1.0;
+            if (p & P_DOWN)  return -1.0;
+        }
     } else if (group == "Triggers") {
         if (control == "L" || control == "L-Analog") return on(P_L);
         if (control == "R" || control == "R-Analog") return on(P_R);
@@ -446,22 +450,41 @@ int main(int argc, char* argv[]) {
         // SUNBRIGHT_AUTOSTART: with no physical keyboard (headless/CI), pulse
         // Start then A on a timer to drive through the title/file-select into
         // gameplay — also exercises the input-override path end to end.
+        // SUNBRIGHT_AUTOSTART: input self-test. Spam Start for the first 15s, then
+        // alternate holding RIGHT / LEFT every 2s — watch whether Mario walks back
+        // and forth (confirms the keyboard→GCPad override actually drives the game).
         static const bool autostart = getenv("SUNBRIGHT_AUTOSTART") != nullptr;
         if (autostart) {
             const uint32_t t = SDL_GetTicks();
-            uint32_t bits = g_pad.load(std::memory_order_relaxed) & ~(P_START | P_A);
-            if (t < 45000) {
-                if (t > 8000 && (t % 1200) < 180) bits |= P_START;  // skip the intro
+            uint32_t bits = 0;
+            if (t < 15000) {
+                if ((t % 1000) < 200) bits = P_START;     // spam Start ~5x/sec
             } else {
-                // File select: walk Mario onto a save block (held stick), and pulse
-                // A to confirm. Sweep the stick direction so we find a block blindly.
-                const uint32_t phase = (t / 4000) % 4;
-                bits &= ~(P_UP | P_DOWN | P_LEFT | P_RIGHT);
-                bits |= (phase == 0) ? P_UP : (phase == 1) ? P_LEFT
-                       : (phase == 2) ? P_RIGHT : P_UP;
-                if ((t % 1500) < 150) bits |= P_A;
+                bits = ((t / 2000) & 1) ? P_RIGHT : P_LEFT;  // hold right 2s, left 2s, …
+                static uint32_t last = 0;
+                if (t - last > 2000) { last = t;
+                    fprintf(stdout, "[autotest] %s\n", (bits & P_RIGHT) ? "RIGHT" : "LEFT");
+                    fflush(stdout);
+                }
             }
             g_pad.store(bits, std::memory_order_relaxed);
+        }
+
+        // SUNBRIGHT_AUTOCAP: fully automated cheat-search (no F5). Skip intro, then
+        // still/still/right/still/left while snapshotting → mario_candidates.txt.
+        static const bool autocap = getenv("SUNBRIGHT_AUTOCAP") != nullptr;
+        if (autocap) {
+            const uint32_t t = SDL_GetTicks();
+            uint32_t bits = 0;
+            if (t < 15000)      { if ((t % 1000) < 200) bits = P_START; }  // skip intro
+            else if (t < 18000) {}                                         // settle (still)
+            else if (t < 22000) { bits = P_RIGHT; }                        // walk right
+            else if (t < 24000) {}                                         // still
+            else if (t < 28000) { bits = P_LEFT; }                         // walk left
+            g_pad.store(bits, std::memory_order_relaxed);
+            static int step = 0;
+            static const uint32_t when[5] = {16000, 17500, 21500, 23500, 27500};
+            if (step < 5 && t >= when[step]) { findmario_step(); ++step; }
         }
 
         SDL_Delay(1);
