@@ -126,6 +126,22 @@ Hardest parts: (i) re-issuing draws for inter-frames needs the captured primitiv
 stream *or* a second draw pass with overwritten `J3DMtxBuffer`; (ii) excluding things
 that must not interpolate (HUD/2D, some particles, camera cuts); (iii) present pacing.
 
+## Status of the RE (this pass)
+Verified empirically with `SUNBRIGHT_GXCAP`:
+- 3D model transforms do **not** flow through the gather pipe — confirmed three ways:
+  only ~8 immediate XF loads/frame, and those are all J2D's **constant 2D matrix**
+  (z=2 → XF slot 0); no RAM-pointer array bases appear in the FIFO; and `psq_st`
+  matrix copies (which lower to `mem_w32`) aren't present either.
+- The GX library is the leaf cluster `~0x8035D000–0x80363000`. The "12-FIFO-write"
+  leaves there are BP/draw loaders, not the matrix loader — so finding `J3DModel::draw`
+  by blind static heuristics is slow.
+
+**Recommended unlock: a symbol map.** The public SMS decompilation emits a `GMSE01`
+symbol map (name→address) covering JSystem/J3D/GX. Dropping it in lets us name
+`J3DModel::draw`, `GXLoadPosMtxImm`, `J3DMtxBuffer`, `TMario`, etc. immediately —
+turning the capture hook into a one-liner. Worth wiring symbol-map support into
+`sunbright-recomp` (emit named functions) + the override registry (override by name).
+
 ## 6. Concrete next steps
 
 1. **Pin addresses** (via `sunbright-recomp --disasm` + the J3D/GX call patterns):
