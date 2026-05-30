@@ -33,16 +33,76 @@
 #undef Success
 #undef Always
 #include "Core/PowerPC/PowerPC.h"
+#include "Core/HW/GCPad.h"
+#include "Core/HW/SI/SI_Device.h"
 #include "Core/System.h"
+#include "InputCommon/InputConfig.h"
+#include "InputCommon/ControllerEmu/ControllerEmu.h"
 #include "UICommon/DiscordPresence.h"
 #include "UICommon/UICommon.h"
 
 #include "sunbright_bridge.h"
 
+#include <optional>
+#include <string_view>
+
 // ── Globals ───────────────────────────────────────────────────────────────────
 static SDL_Window* g_window  = nullptr;
 static std::atomic<bool> g_focused{false};
 static std::atomic<bool> g_running{true};
+
+// ── Keyboard → GameCube pad ─────────────────────────────────────────────────
+// We inject controller state via Dolphin's per-controller input override (no
+// device mappings needed). SDL key events set bits here; the override (called on
+// the emulation thread when the SI device reads pad 0) turns them into button /
+// stick states. Default GC controller; arrows = stick, Enter = Start.
+enum PadBit : uint32_t {
+    P_START = 1u<<0, P_A = 1u<<1, P_B = 1u<<2, P_X = 1u<<3, P_Y = 1u<<4,
+    P_Z = 1u<<5, P_L = 1u<<6, P_R = 1u<<7,
+    P_UP = 1u<<8, P_DOWN = 1u<<9, P_LEFT = 1u<<10, P_RIGHT = 1u<<11,
+};
+static std::atomic<uint32_t> g_pad{0};
+
+static uint32_t key_to_padbit(SDL_Keycode k) {
+    switch (k) {
+    case SDLK_RETURN: return P_START;
+    case SDLK_z:      return P_A;       // jump
+    case SDLK_x:      return P_B;
+    case SDLK_c:      return P_X;
+    case SDLK_v:      return P_Y;
+    case SDLK_q:      return P_Z;       // FLUDD swap
+    case SDLK_a:      return P_L;
+    case SDLK_s:      return P_R;       // spray
+    case SDLK_UP:     return P_UP;
+    case SDLK_DOWN:   return P_DOWN;
+    case SDLK_LEFT:   return P_LEFT;
+    case SDLK_RIGHT:  return P_RIGHT;
+    default:          return 0;
+    }
+}
+
+static std::optional<ControlState>
+pad_override(std::string_view group, std::string_view control, ControlState /*base*/) {
+    const uint32_t p = g_pad.load(std::memory_order_relaxed);
+    auto on = [&](PadBit b) { return (p & b) ? std::optional<ControlState>(1.0) : std::nullopt; };
+    if (group == "Buttons") {
+        if (control == "Start") return on(P_START);
+        if (control == "A")     return on(P_A);
+        if (control == "B")     return on(P_B);
+        if (control == "X")     return on(P_X);
+        if (control == "Y")     return on(P_Y);
+        if (control == "Z")     return on(P_Z);
+    } else if (group == "Main Stick") {
+        if (control == "Up")    return on(P_UP);
+        if (control == "Down")  return on(P_DOWN);
+        if (control == "Left")  return on(P_LEFT);
+        if (control == "Right") return on(P_RIGHT);
+    } else if (group == "Triggers") {
+        if (control == "L" || control == "L-Analog") return on(P_L);
+        if (control == "R" || control == "R-Analog") return on(P_R);
+    }
+    return std::nullopt;
+}
 
 // ── Host interface ────────────────────────────────────────────────────────────
 std::vector<std::string> Host_GetPreferredLocales() { return {}; }
@@ -209,6 +269,9 @@ int main(int argc, char* argv[]) {
         fprintf(stderr, "[sunbright] Using backend: %s\n", backend_env);
     }
 
+    // Ensure a Standard Controller is on port 0 so the game polls pad input.
+    Config::SetBase(Config::GetInfoForSIDevice(0), SerialInterface::SIDEVICE_GC_CONTROLLER);
+
     // SUNBRIGHT_DUMP=1: dump every presented frame as a PNG to the user Dump/Frames
     // dir. Definitive proof of what's rendered, independent of window capture (which
     // is unreliable under XWayland).
@@ -263,6 +326,16 @@ int main(int argc, char* argv[]) {
     }
     fprintf(stderr, "[sunbright] BootCore returned — game running\n");
 
+    // Route keyboard → GameCube pad 0 via the input override (Pad is initialized
+    // by BootCore). No device mapping needed — the override supplies state directly.
+    if (InputConfig* pad_cfg = Pad::GetConfig(); pad_cfg && pad_cfg->GetControllerCount() > 0) {
+        pad_cfg->GetController(0)->SetInputOverrideFunction(pad_override);
+        fprintf(stderr, "[sunbright] Pad 0 input override installed "
+                        "(Enter=Start, Z=A, X=B, arrows=stick, S=R-spray, Q=Z)\n");
+    } else {
+        fprintf(stderr, "[sunbright] Warning: no GC pad config — input disabled\n");
+    }
+
     // Main event loop — Dolphin runs its CPU/GPU on its own threads
     while (g_running) {
         SDL_Event ev;
@@ -284,11 +357,30 @@ int main(int argc, char* argv[]) {
                 if (ev.key.keysym.sym == SDLK_F11)
                     SDL_SetWindowFullscreen(g_window,
                         Host_RendererIsFullscreen() ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP);
+                else if (uint32_t b = key_to_padbit(ev.key.keysym.sym))
+                    g_pad.fetch_or(b, std::memory_order_relaxed);
+                break;
+            case SDL_KEYUP:
+                if (uint32_t b = key_to_padbit(ev.key.keysym.sym))
+                    g_pad.fetch_and(~b, std::memory_order_relaxed);
                 break;
             default:
                 break;
             }
         }
+
+        // SUNBRIGHT_AUTOSTART: with no physical keyboard (headless/CI), pulse
+        // Start then A on a timer to drive through the title/file-select into
+        // gameplay — also exercises the input-override path end to end.
+        static const bool autostart = getenv("SUNBRIGHT_AUTOSTART") != nullptr;
+        if (autostart) {
+            const uint32_t t = SDL_GetTicks();
+            uint32_t bits = g_pad.load(std::memory_order_relaxed) & ~(P_START | P_A);
+            if (t > 18000 && (t % 1500) < 200)             // 200ms pulse every 1.5s, after 18s
+                bits |= ((t / 1500) & 1) ? P_A : P_START;  // alternate A / Start
+            g_pad.store(bits, std::memory_order_relaxed);
+        }
+
         SDL_Delay(1);
     }
 

@@ -115,8 +115,18 @@ FPS). Debugging aids: `SUNBRIGHT_DIFF` (differential validator), `sunbright-reco
 --disasm <addr>` (read JIT-only code), `SUNBRIGHT_DISABLE_RECOMP=1` (pure-Dolphin A/B).
 
 Caveat: a blanket `CheckExternalExceptions()` after each recomp call in `jit_hook.cpp`
-is **harmful** (derails HW init) — don't reintroduce it. Next: title screen / gameplay,
-audio, and tightening FP/edge-case accuracy.
+is **harmful** (derails HW init) — don't reintroduce it.
+
+## Input (keyboard → GameCube pad)
+Wired in `main_sdl.cpp` via Dolphin's per-controller input override
+(`EmulatedController::SetInputOverrideFunction`) — no device mapping needed, and it
+bypasses the focus gate. SDL key events set a bitmask; the override (called on the
+emu thread) maps it to pad 0. Keys: Enter=Start, Z=A, X=B, C=X, V=Y, Q=Z, A=L, S=R,
+arrows=Main Stick. SI port 0 is forced to a Standard Controller. `SUNBRIGHT_AUTOSTART=1`
+pulses Start/A on a timer (headless testing — drives the intro → file-select).
+
+Reaches the interactive **file-select screen** (and 3D cutscenes) under recomp.
+Next: gameplay/Delfino, audio output, FP/edge-case accuracy via `SUNBRIGHT_DIFF_RAM`.
 
 ## Skills (slash commands)
 | Command | What it does |
