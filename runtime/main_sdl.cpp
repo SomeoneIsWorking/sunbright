@@ -116,7 +116,12 @@ static float be_f32(const u8* p) {  // GC RAM is big-endian
     u32 b = ((u32)p[0]<<24)|((u32)p[1]<<16)|((u32)p[2]<<8)|p[3];
     float f; std::memcpy(&f, &b, 4); return f;
 }
-static void findmario_tick(uint32_t t) {
+// Keyboard-triggered (press F5): you drive Mario, I snapshot on your cue.
+//   F5 #1: at rest          → snapshot A
+//   F5 #2: after moving one way → snapshot B
+//   F5 #3: after moving back the other way → snapshot C + diff
+// A coordinate that moved one way then reversed = Mario's position. Timing-free.
+static void findmario_step() {
     constexpr u32 RAM_BASE = 0x80000000, RAM_SIZE = 0x1800000;
     static std::vector<u8> A, B, C;
     static int phase = 0;
@@ -124,36 +129,30 @@ static void findmario_tick(uint32_t t) {
         u8* ram = Core::System::GetInstance().GetMemory().GetPointerForRange(RAM_BASE, RAM_SIZE);
         if (ram) { dst.resize(RAM_SIZE); std::memcpy(dst.data(), ram, RAM_SIZE); }
     };
-    // Drive: <26s skip intro (Start); then rest → right → left, snapping between.
-    uint32_t bits = 0;
-    if (t < 26000) { if ((t % 1200) < 180) bits = P_START; }
-    else if (t < 30000) { /* settle at file-select, at rest */ }
-    else if (t < 34000) { bits = P_RIGHT; }
-    else if (t < 38000) { bits = P_LEFT; }
-    g_pad.store(bits, std::memory_order_relaxed);
-
-    if (phase == 0 && t >= 30000) { snap(A); phase = 1; fprintf(stderr, "[mario] snapshot A (rest)\n"); }
-    else if (phase == 1 && t >= 34000) { snap(B); phase = 2; fprintf(stderr, "[mario] snapshot B (moved right)\n"); }
-    else if (phase == 2 && t >= 38000) {
-        snap(C); phase = 3;
-        fprintf(stderr, "[mario] snapshot C (moved left); diffing...\n");
+    if (phase == 0) {
+        snap(A); phase = 1;
+        fprintf(stderr, "[mario] snapshot A (rest). Now MOVE Mario one way, then press F5.\n");
+    } else if (phase == 1) {
+        snap(B); phase = 2;
+        fprintf(stderr, "[mario] snapshot B. Now move Mario back the OTHER way, then press F5.\n");
+    } else {
+        snap(C); phase = 0;   // allow re-running
+        fprintf(stderr, "[mario] snapshot C; diffing...\n");
         if (A.size() == RAM_SIZE && B.size() == RAM_SIZE && C.size() == RAM_SIZE) {
             int found = 0;
             for (u32 i = 0; i + 4 <= RAM_SIZE && found < 40; i += 4) {
                 float a = be_f32(&A[i]), b = be_f32(&B[i]), c = be_f32(&C[i]);
                 if (!std::isfinite(a) || !std::isfinite(b) || !std::isfinite(c)) continue;
-                if (std::abs(a) > 1e6f || std::abs(b) > 1e6f) continue;
-                // Moved right (b>a) then left (c<b), both meaningfully — a controlled coord.
-                if (b - a > 2.0f && b - c > 2.0f) {
-                    fprintf(stderr, "[mario] cand %08x  rest=%.2f right=%.2f left=%.2f\n",
+                if (std::abs(a) > 1e5f || std::abs(b) > 1e5f || std::abs(c) > 1e5f) continue;
+                float d1 = b - a, d2 = c - b;   // moved, then reversed
+                if (std::abs(d1) > 5.0f && std::abs(d2) > 5.0f && (d1 > 0) != (d2 > 0)) {
+                    fprintf(stderr, "[mario] cand %08x  A=%.2f B=%.2f C=%.2f\n",
                             RAM_BASE + i, a, b, c);
                     ++found;
-                    // For clean heap candidates, dump a context window (B=moved-right
-                    // state) so we can see if it's a Vec3f or a 3x4 matrix.
-                    if (RAM_BASE + i >= 0x80426000u && RAM_BASE + i < 0x80428000u && i >= 16) {
+                    if (i >= 16) {
                         fprintf(stderr, "        ctx:");
                         for (int k = -4; k <= 8; k++)
-                            fprintf(stderr, " [%+d]%.2f", k*4, be_f32(&B[i + k*4]));
+                            fprintf(stderr, " [%+d]%.2f", k*4, be_f32(&C[i + k*4]));
                         fprintf(stderr, "\n");
                     }
                 }
@@ -416,6 +415,8 @@ int main(int argc, char* argv[]) {
                 if (ev.key.keysym.sym == SDLK_F11)
                     SDL_SetWindowFullscreen(g_window,
                         Host_RendererIsFullscreen() ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP);
+                else if (ev.key.keysym.sym == SDLK_F5 && getenv("SUNBRIGHT_FINDMARIO"))
+                    findmario_step();   // cheat-search: snapshot on your cue
                 else if (uint32_t b = key_to_padbit(ev.key.keysym.sym))
                     g_pad.fetch_or(b, std::memory_order_relaxed);
                 break;
@@ -448,9 +449,6 @@ int main(int argc, char* argv[]) {
             }
             g_pad.store(bits, std::memory_order_relaxed);
         }
-
-        static const bool findmario = getenv("SUNBRIGHT_FINDMARIO") != nullptr;
-        if (findmario) findmario_tick(SDL_GetTicks());
 
         SDL_Delay(1);
     }
