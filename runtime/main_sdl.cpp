@@ -5,13 +5,23 @@
 #include <SDL2/SDL_syswm.h>
 
 #include <atomic>
+#include <cerrno>
+#include <chrono>
 #include <cmath>
 #include <csignal>
 #include <cstdio>
+#include <cstring>
+#include <deque>
+#include <sys/stat.h>
 #include <execinfo.h>
+#include <fcntl.h>
 #include <functional>
 #include <memory>
+#include <mutex>
+#include <sstream>
 #include <string>
+#include <thread>
+#include <unistd.h>
 #include <vector>
 
 #include "Common/Config/Config.h"
@@ -64,6 +74,9 @@ enum PadBit : uint32_t {
     P_UP = 1u<<8, P_DOWN = 1u<<9, P_LEFT = 1u<<10, P_RIGHT = 1u<<11,
 };
 static std::atomic<uint32_t> g_pad{0};
+// REPL-driven pad bits, OR'd with the keyboard bits so scripted input and the
+// keyboard coexist (SUNBRIGHT_REPL).
+static std::atomic<uint32_t> g_repl_bits{0};
 
 static uint32_t key_to_padbit(SDL_Keycode k) {
     switch (k) {
@@ -85,7 +98,8 @@ static uint32_t key_to_padbit(SDL_Keycode k) {
 
 static std::optional<ControlState>
 pad_override(std::string_view group, std::string_view control, ControlState /*base*/) {
-    const uint32_t p = g_pad.load(std::memory_order_relaxed);
+    const uint32_t p = g_pad.load(std::memory_order_relaxed)
+                     | g_repl_bits.load(std::memory_order_relaxed);
     auto on = [&](PadBit b) { return (p & b) ? std::optional<ControlState>(1.0) : std::nullopt; };
     if (group == "Buttons") {
         if (control == "Start") return on(P_START);
@@ -108,6 +122,42 @@ pad_override(std::string_view group, std::string_view control, ControlState /*ba
         if (control == "R" || control == "R-Analog") return on(P_R);
     }
     return std::nullopt;
+}
+
+// ── Movie skip (intro THP movie → Start) ────────────────────────────────────
+// Starting a new file plays the branded intro as a THP video driven by
+// TMovieDirector::direct (USA 0x802b5b30), which runs under Dolphin's JIT. In its
+// "playing" mode it polls THPPlayerGetState() and advances ONLY when that returns
+// an end state (3 or 5); it never checks the pad, so the movie can't be skipped.
+//
+// THPPlayerGetState (0x8001e994) just reads one byte — the THP player's `state`
+// field — at 0x803EC204 (0=stop 1=ready 2=playing 4=paused; 3/5=end). A recomp
+// override there is bypassed because the JIT'd director links the call directly,
+// but BOTH the JIT and our recomp read the same RAM byte. So: while a movie is
+// playing/paused and Start is held, poke the state byte to an end value. The
+// director then runs its OWN teardown (decideNextMode + THPPlayerStop) on the
+// next frame — a clean skip with no forced sequence state. Transparent otherwise
+// (we only write when a movie is actually active).
+namespace {
+constexpr u32 THP_STATE_ADDR = 0x803EC204;
+constexpr u8  THP_PLAYING = 2, THP_PAUSED = 4;
+}
+static void movie_skip_tick(uint32_t pad_bits) {
+    static const bool off = getenv("SUNBRIGHT_NO_MOVIESKIP") != nullptr;
+    static const u8 end_state = (u8)(getenv("SUNBRIGHT_MOVIESKIP_STATE")
+        ? strtoul(getenv("SUNBRIGHT_MOVIESKIP_STATE"), nullptr, 0) : 3);
+    static const bool log = getenv("SUNBRIGHT_MOVIESKIP_LOG") != nullptr;
+    u8* st = Core::System::GetInstance().GetMemory().GetPointerForRange(THP_STATE_ADDR, 1);
+    if (!st) return;
+    // Log every state change so we can confirm the movie reaches PLAYING(2).
+    if (log) { static u8 last = 0xFF; if (*st != last) {
+        fprintf(stderr, "[movieskip] THP state @%08x -> %u\n", THP_STATE_ADDR, *st); last = *st; } }
+    if (off || !(pad_bits & P_START)) return;
+    if (*st == THP_PLAYING || *st == THP_PAUSED) {
+        if (log) fprintf(stderr, "[movieskip] Start during THP playback (state=%u) -> %u\n",
+                         *st, end_state);
+        *st = end_state;
+    }
 }
 
 // ── Runtime "find Mario" (SUNBRIGHT_FINDMARIO=1) ─────────────────────────────
@@ -178,6 +228,140 @@ static void findmario_step() {
     fprintf(f, "== %d candidate(s) ==\n", found);
     fclose(f);
     printf("[mario] %d candidate(s) written to mario_candidates.txt\n", found); fflush(stdout);
+}
+
+// ── REPL: live input control channel (SUNBRIGHT_REPL) ───────────────────────
+// Drive the GC pad with timed commands from a FIFO (or stdin) instead of
+// recompiling hardcoded timelines. A reader thread parses lines into a queue of
+// timed actions; the main loop runs one action at a time, holding pad bits for
+// the requested duration. Lets us script "get into the game" interactively.
+//
+// Command grammar (one per line):
+//   <combo> [ms]   hold button combo for ms (default 150).  combo = a|b|x|y|z|
+//                  start|l|r|up|down|left|right joined by '+', e.g. left+a 80
+//   jump [ms]      alias for 'a'
+//   wait <ms>      idle (no buttons) for ms;  also: w <ms>
+//   snap           run the find-Mario cheat-search snapshot step
+//   mtx <hexaddr>  print the 3x4 transform's translation at <addr> once
+//   say <text>     echo text to stdout (progress markers in scripts)
+//   quit           stop the game
+enum ReplOp { OP_HOLD, OP_SNAP, OP_MTX, OP_QUIT, OP_SAY };
+struct ReplAct { ReplOp op; uint32_t bits; uint32_t ms; std::string text; };
+static std::deque<ReplAct> g_repl_q;
+static std::mutex g_repl_mtx;
+
+static uint32_t repl_combo_bits(const std::string& combo) {
+    uint32_t bits = 0;
+    std::stringstream ss(combo);
+    std::string tok;
+    while (std::getline(ss, tok, '+')) {
+        if      (tok == "start") bits |= P_START;
+        else if (tok == "a" || tok == "jump") bits |= P_A;
+        else if (tok == "b")     bits |= P_B;
+        else if (tok == "x")     bits |= P_X;
+        else if (tok == "y")     bits |= P_Y;
+        else if (tok == "z")     bits |= P_Z;
+        else if (tok == "l")     bits |= P_L;
+        else if (tok == "r")     bits |= P_R;
+        else if (tok == "up")    bits |= P_UP;
+        else if (tok == "down")  bits |= P_DOWN;
+        else if (tok == "left")  bits |= P_LEFT;
+        else if (tok == "right") bits |= P_RIGHT;
+    }
+    return bits;
+}
+
+static void repl_parse_line(const std::string& raw) {
+    std::string line = raw;
+    if (auto h = line.find('#'); h != std::string::npos) line.erase(h);  // comments
+    std::stringstream ss(line);
+    std::string cmd;
+    if (!(ss >> cmd)) return;                       // blank
+    ReplAct a{};
+    if (cmd == "quit" || cmd == "exit" || cmd == "q") {
+        a.op = OP_QUIT;
+    } else if (cmd == "snap") {
+        a.op = OP_SNAP;
+    } else if (cmd == "wait" || cmd == "w") {
+        a.op = OP_HOLD; a.bits = 0; ss >> a.ms; if (!a.ms) a.ms = 150;
+    } else if (cmd == "mtx") {
+        std::string h; ss >> h; a.op = OP_MTX; a.bits = (uint32_t)strtoul(h.c_str(), nullptr, 16);
+    } else if (cmd == "say") {
+        a.op = OP_SAY; std::getline(ss, a.text);
+    } else {
+        a.op = OP_HOLD; a.bits = repl_combo_bits(cmd);
+        if (!(ss >> a.ms)) a.ms = 150;
+        if (!a.bits) { printf("[repl] unknown: %s\n", raw.c_str()); fflush(stdout); return; }
+    }
+    std::lock_guard<std::mutex> lk(g_repl_mtx);
+    g_repl_q.push_back(std::move(a));
+}
+
+// Reader thread: pull lines from the control source. A FIFO path is reopened on
+// EOF so repeated `echo cmd > fifo` writers work (classic named-pipe pattern).
+static void repl_reader(std::string src) {
+    const bool is_fifo = (src != "-" && src != "1" && src != "stdin");
+    if (is_fifo) {
+        unlink(src.c_str());
+        if (mkfifo(src.c_str(), 0666) != 0 && errno != EEXIST)
+            fprintf(stderr, "[repl] mkfifo %s failed: %s\n", src.c_str(), strerror(errno));
+        fprintf(stderr, "[repl] listening on FIFO %s\n", src.c_str());
+    } else {
+        fprintf(stderr, "[repl] listening on stdin\n");
+    }
+    while (g_running.load()) {
+        FILE* in = is_fifo ? fopen(src.c_str(), "r") : stdin;
+        if (!in) { std::this_thread::sleep_for(std::chrono::milliseconds(100)); continue; }
+        char buf[512];
+        while (g_running.load() && fgets(buf, sizeof buf, in)) {
+            std::string s(buf);
+            while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) s.pop_back();
+            repl_parse_line(s);
+        }
+        if (is_fifo) fclose(in); else break;   // stdin EOF → stop reading
+    }
+}
+
+// Called each main-loop iteration when REPL is active. Returns the pad bits to
+// drive this frame (0 when idle). Runs one timed action at a time.
+static uint32_t repl_tick() {
+    static bool have_cur = false;
+    static ReplAct cur{};
+    static uint32_t end_ms = 0;
+    const uint32_t now = SDL_GetTicks();
+
+    if (have_cur) {
+        if (cur.op == OP_HOLD) {
+            if (now < end_ms) return cur.bits;     // still holding
+        }
+        have_cur = false;                          // action done
+    }
+    // Pop the next action.
+    {
+        std::lock_guard<std::mutex> lk(g_repl_mtx);
+        if (g_repl_q.empty()) return 0;
+        cur = std::move(g_repl_q.front());
+        g_repl_q.pop_front();
+    }
+    switch (cur.op) {
+    case OP_HOLD:
+        have_cur = true; end_ms = now + cur.ms;
+        return cur.bits;
+    case OP_SNAP: findmario_step(); return 0;
+    case OP_QUIT: g_running = false; return 0;
+    case OP_SAY:  printf("[repl]%s\n", cur.text.c_str()); fflush(stdout); return 0;
+    case OP_MTX: {
+        u8* ram = Core::System::GetInstance().GetMemory().GetPointerForRange(cur.bits, 48);
+        if (ram)
+            printf("[repl] mtx %08x  pos=(%.2f, %.2f, %.2f)\n", cur.bits,
+                   be_f32(ram + 12), be_f32(ram + 28), be_f32(ram + 44));
+        else
+            printf("[repl] mtx %08x  (unmapped)\n", cur.bits);
+        fflush(stdout);
+        return 0;
+    }
+    }
+    return 0;
 }
 
 // ── Host interface ────────────────────────────────────────────────────────────
@@ -412,6 +596,14 @@ int main(int argc, char* argv[]) {
         fprintf(stderr, "[sunbright] Warning: no GC pad config — input disabled\n");
     }
 
+    // SUNBRIGHT_REPL: start the live control-channel reader (FIFO path, or "-"/stdin).
+    static const char* repl_src = getenv("SUNBRIGHT_REPL");
+    std::thread repl_thread;
+    if (repl_src && *repl_src) {
+        repl_thread = std::thread(repl_reader, std::string(repl_src));
+        repl_thread.detach();
+    }
+
     // Main event loop — Dolphin runs its CPU/GPU on its own threads
     while (g_running) {
         SDL_Event ev;
@@ -446,6 +638,14 @@ int main(int argc, char* argv[]) {
                 break;
             }
         }
+
+        // SUNBRIGHT_REPL: apply the current scripted action's pad bits this frame.
+        if (repl_src && *repl_src)
+            g_repl_bits.store(repl_tick(), std::memory_order_relaxed);
+
+        // Start during a THP movie → skip it (see movie_skip_tick).
+        movie_skip_tick(g_pad.load(std::memory_order_relaxed)
+                        | g_repl_bits.load(std::memory_order_relaxed));
 
         // SUNBRIGHT_AUTOSTART: with no physical keyboard (headless/CI), pulse
         // Start then A on a timer to drive through the title/file-select into
