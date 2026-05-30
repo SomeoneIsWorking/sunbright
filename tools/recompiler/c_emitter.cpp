@@ -6,6 +6,21 @@
 #include <algorithm>
 #include <unordered_set>
 
+// PPC rotate-word mask MASK(mb, me): set bits mb..me inclusive in big-endian bit
+// numbering (MSB = bit 0 = C bit 31), WRAPPING when mb > me (bits mb..31 and
+// 0..me). Iterating with wraparound is correct for both cases — the old
+// "build [31-me,31-mb] then complement when mb>me" trick only worked when the
+// gap was empty (mb==me+1) and silently produced 0xFFFFFFFF for real wrap masks
+// like `rlwinm rX,rX,0,31,29` (clear one bit), which then cleared nothing.
+static u32 ppc_rotate_mask(u32 mb, u32 me) {
+    u32 m = 0;
+    for (u32 b = mb;; b = (b + 1) & 31) {
+        m |= (0x80000000u >> b);
+        if (b == me) break;
+    }
+    return m;
+}
+
 void CEmitter::line(const char* fmt, ...) {
     char buf[512];
     va_list ap;
@@ -327,27 +342,20 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
 
     // ── Rotate/shift ────────────────────────────────────────────────────────
     case PPCOp::RLWINM: {
-        u32 mask = 0;
-        for (int bit = 31 - i.me; bit <= 31 - i.mb; bit++) mask |= (1u << bit);
-        // Wrap when mb > me
-        if (i.mb > i.me) mask = ~mask;
+        u32 mask = ppc_rotate_mask(i.mb, i.me);
         line("%s = rotl32(%s, %d) & 0x%xu;", a.c_str(), s.c_str(), i.sh, mask);
         set_cr0(i, a);
         break;
     }
     case PPCOp::RLWIMI: {
-        u32 mask = 0;
-        for (int bit = 31 - i.me; bit <= 31 - i.mb; bit++) mask |= (1u << bit);
-        if (i.mb > i.me) mask = ~mask;
+        u32 mask = ppc_rotate_mask(i.mb, i.me);
         line("%s = (rotl32(%s, %d) & 0x%xu) | (%s & ~0x%xu);",
              a.c_str(), s.c_str(), i.sh, mask, a.c_str(), mask);
         set_cr0(i, a);
         break;
     }
     case PPCOp::RLWNM: {
-        u32 mask = 0;
-        for (int bit = 31 - i.me; bit <= 31 - i.mb; bit++) mask |= (1u << bit);
-        if (i.mb > i.me) mask = ~mask;
+        u32 mask = ppc_rotate_mask(i.mb, i.me);
         line("%s = rotl32(%s, %s & 0x1F) & 0x%xu;", a.c_str(), s.c_str(), b.c_str(), mask);
         set_cr0(i, a);
         break;
@@ -682,17 +690,20 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
         line("%s = frsqrte(%s);", psd0.c_str(), psb0.c_str());
         line("%s = frsqrte(%s);", psd1.c_str(), psb1.c_str());
         break;
+    // ps_mergeXY: fD.ps0 = fA.psX, fD.ps1 = fB.psY. Read both sources into temps
+    // first — rD may alias rA or rB, and the previous ps_merge00 also took ps1
+    // from fA instead of fB.
     case PPCOp::PS_MERGE00:
-        line("{ f64 _t=%s; %s=%s; %s=_t; }", psa0.c_str(), psd0.c_str(), psa0.c_str(), psd1.c_str());
+        line("{ f64 _a=%s,_b=%s; %s=_a; %s=_b; }", psa0.c_str(), psb0.c_str(), psd0.c_str(), psd1.c_str());
         break;
     case PPCOp::PS_MERGE01:
-        line("%s=%s; %s=%s;", psd0.c_str(), psa0.c_str(), psd1.c_str(), psb1.c_str());
+        line("{ f64 _a=%s,_b=%s; %s=_a; %s=_b; }", psa0.c_str(), psb1.c_str(), psd0.c_str(), psd1.c_str());
         break;
     case PPCOp::PS_MERGE10:
-        line("%s=%s; %s=%s;", psd0.c_str(), psa1.c_str(), psd1.c_str(), psb0.c_str());
+        line("{ f64 _a=%s,_b=%s; %s=_a; %s=_b; }", psa1.c_str(), psb0.c_str(), psd0.c_str(), psd1.c_str());
         break;
     case PPCOp::PS_MERGE11:
-        line("%s=%s; %s=%s;", psd0.c_str(), psa1.c_str(), psd1.c_str(), psb1.c_str());
+        line("{ f64 _a=%s,_b=%s; %s=_a; %s=_b; }", psa1.c_str(), psb1.c_str(), psd0.c_str(), psd1.c_str());
         break;
 
     // ── psq_l / psq_st ───────────────────────────────────────────────────────

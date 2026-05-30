@@ -38,8 +38,9 @@ inline u16 bswap16(u16 v) { return __builtin_bswap16(v); }
 inline u32 bswap32(u32 v) { return __builtin_bswap32(v); }
 inline u64 bswap64(u64 v) { return __builtin_bswap64(v); }
 
-// Rotate helpers
-inline u32 rotl32(u32 v, u32 n) { return (v << n) | (v >> (32 - n)); }
+// Rotate helpers. n==0 must return v unchanged; `v >> 32` is UB, so guard it
+// (very hot path — rlwinm with sh=0, e.g. the mask/clear-bit idioms).
+inline u32 rotl32(u32 v, u32 n) { n &= 31; return n ? ((v << n) | (v >> (32 - n))) : v; }
 
 // Sign extend
 template<int bits>
