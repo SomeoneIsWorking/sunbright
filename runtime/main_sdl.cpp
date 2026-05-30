@@ -5,6 +5,7 @@
 #include <SDL2/SDL_syswm.h>
 
 #include <atomic>
+#include <cmath>
 #include <csignal>
 #include <cstdio>
 #include <execinfo.h>
@@ -34,6 +35,7 @@
 #undef Always
 #include "Core/PowerPC/PowerPC.h"
 #include "Core/HW/GCPad.h"
+#include "Core/HW/Memmap.h"
 #include "Core/HW/SI/SI_Device.h"
 #include "Core/System.h"
 #include "InputCommon/InputConfig.h"
@@ -102,6 +104,63 @@ pad_override(std::string_view group, std::string_view control, ControlState /*ba
         if (control == "R" || control == "R-Analog") return on(P_R);
     }
     return std::nullopt;
+}
+
+// ── Runtime "find Mario" (SUNBRIGHT_FINDMARIO=1) ─────────────────────────────
+// Symbol-free cheat-search for a moving object. Skip the intro to the file-select,
+// then drive Mario right, then left, snapshotting RAM at each phase. A float that
+// goes up (moved right) then down (moved left) — i.e. an X coordinate under our
+// control — is almost certainly Mario's position. Reports candidate addresses; we
+// then read the surrounding 3x4 matrix and watch it across frames to interpolate.
+static float be_f32(const u8* p) {  // GC RAM is big-endian
+    u32 b = ((u32)p[0]<<24)|((u32)p[1]<<16)|((u32)p[2]<<8)|p[3];
+    float f; std::memcpy(&f, &b, 4); return f;
+}
+static void findmario_tick(uint32_t t) {
+    constexpr u32 RAM_BASE = 0x80000000, RAM_SIZE = 0x1800000;
+    static std::vector<u8> A, B, C;
+    static int phase = 0;
+    auto snap = [&](std::vector<u8>& dst) {
+        u8* ram = Core::System::GetInstance().GetMemory().GetPointerForRange(RAM_BASE, RAM_SIZE);
+        if (ram) { dst.resize(RAM_SIZE); std::memcpy(dst.data(), ram, RAM_SIZE); }
+    };
+    // Drive: <26s skip intro (Start); then rest → right → left, snapping between.
+    uint32_t bits = 0;
+    if (t < 26000) { if ((t % 1200) < 180) bits = P_START; }
+    else if (t < 30000) { /* settle at file-select, at rest */ }
+    else if (t < 34000) { bits = P_RIGHT; }
+    else if (t < 38000) { bits = P_LEFT; }
+    g_pad.store(bits, std::memory_order_relaxed);
+
+    if (phase == 0 && t >= 30000) { snap(A); phase = 1; fprintf(stderr, "[mario] snapshot A (rest)\n"); }
+    else if (phase == 1 && t >= 34000) { snap(B); phase = 2; fprintf(stderr, "[mario] snapshot B (moved right)\n"); }
+    else if (phase == 2 && t >= 38000) {
+        snap(C); phase = 3;
+        fprintf(stderr, "[mario] snapshot C (moved left); diffing...\n");
+        if (A.size() == RAM_SIZE && B.size() == RAM_SIZE && C.size() == RAM_SIZE) {
+            int found = 0;
+            for (u32 i = 0; i + 4 <= RAM_SIZE && found < 40; i += 4) {
+                float a = be_f32(&A[i]), b = be_f32(&B[i]), c = be_f32(&C[i]);
+                if (!std::isfinite(a) || !std::isfinite(b) || !std::isfinite(c)) continue;
+                if (std::abs(a) > 1e6f || std::abs(b) > 1e6f) continue;
+                // Moved right (b>a) then left (c<b), both meaningfully — a controlled coord.
+                if (b - a > 2.0f && b - c > 2.0f) {
+                    fprintf(stderr, "[mario] cand %08x  rest=%.2f right=%.2f left=%.2f\n",
+                            RAM_BASE + i, a, b, c);
+                    ++found;
+                    // For clean heap candidates, dump a context window (B=moved-right
+                    // state) so we can see if it's a Vec3f or a 3x4 matrix.
+                    if (RAM_BASE + i >= 0x80426000u && RAM_BASE + i < 0x80428000u && i >= 16) {
+                        fprintf(stderr, "        ctx:");
+                        for (int k = -4; k <= 8; k++)
+                            fprintf(stderr, " [%+d]%.2f", k*4, be_f32(&B[i + k*4]));
+                        fprintf(stderr, "\n");
+                    }
+                }
+            }
+            fprintf(stderr, "[mario] %d candidate(s)\n", found);
+        }
+    }
 }
 
 // ── Host interface ────────────────────────────────────────────────────────────
@@ -389,6 +448,9 @@ int main(int argc, char* argv[]) {
             }
             g_pad.store(bits, std::memory_order_relaxed);
         }
+
+        static const bool findmario = getenv("SUNBRIGHT_FINDMARIO") != nullptr;
+        if (findmario) findmario_tick(SDL_GetTicks());
 
         SDL_Delay(1);
     }

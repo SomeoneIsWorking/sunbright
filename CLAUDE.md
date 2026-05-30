@@ -38,9 +38,15 @@ Or use `/build` skill.
 ## Running the game
 
 ```bash
-./build/sunbright [rom.rvz]
-# default ROM: $SUNBRIGHT_ROM
+./run.sh [rom.rvz]          # ← use this; sets the working video env
 ```
+`run.sh` pins `SDL_VIDEODRIVER=x11` + `SUNBRIGHT_BACKEND=OGL`. Running `./build/sunbright`
+directly on a **Wayland** session fails with "failed to initialize video backend" —
+Dolphin's GL/Vulkan can't make a surface on a native Wayland window; XWayland + OGL works.
+Default ROM: `$SUNBRIGHT_ROM`.
+
+Keyboard → GC pad (window focused): Enter=Start, Z=A(jump), X=B, C=X, V=Y, Q=Z, A=L,
+S=R(spray), arrows=control stick, F11=fullscreen.
 
 `sunbright` is a **single self-contained binary** — launcher, runtime bridge,
 hand-written overrides, and the statically-recompiled game code are all linked in.
