@@ -28,6 +28,9 @@ bool is_jit_forced(u32 addr);
 void force_jit(u32 addr);                 // single address
 void force_jit_range(u32 lo, u32 hi);     // [lo, hi)
 
+bool overrides_registered();              // any override registered?
+bool jit_forced_registered();             // any forced-JIT range registered?
+
 // Self-registering native override. Place in any .cpp linked into the launcher:
 //
 //   SUNBRIGHT_OVERRIDE(ov_my_memcpy, 0x80003abc) {

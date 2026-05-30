@@ -35,3 +35,8 @@ bool is_jit_forced(u32 addr) {
         if (addr >= lo && addr < hi) return true;
     return false;
 }
+
+// Lets the hot dispatch path skip these lookups entirely when nothing is
+// registered (the common case).
+bool overrides_registered()  { return !override_table().empty(); }
+bool jit_forced_registered() { return !jit_ranges().empty(); }

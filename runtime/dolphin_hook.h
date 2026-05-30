@@ -16,6 +16,11 @@ bool dolphin_hook_install(const char* recomp_lib_path);
 // Uninstall hook (called on shutdown).
 void dolphin_hook_uninstall();
 
+// Build the direct-mapped dispatch table from the linked recomp table. Must be
+// called once at startup so call_ppc resolves intra-recomp bl/returns directly
+// (otherwise every call bounces to Dolphin's JIT with a full register-file copy).
+void recomp_build_dispatch();
+
 // Translate Dolphin's internal CPU state to our CPUState struct and back.
 // Used at every recompiled function call boundary.
 #ifdef HAVE_DOLPHIN_CORE

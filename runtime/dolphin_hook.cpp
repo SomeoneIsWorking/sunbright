@@ -7,6 +7,7 @@
 #endif
 #include <cstdio>
 #include <cstring>
+#include <algorithm>
 #include <unordered_map>
 #ifdef HAVE_DOLPHIN_CORE
 #  include "Core/System.h"
@@ -15,58 +16,55 @@
 using RecompFunc = void (*)(CPUState&);
 struct JumpEntry { uint32_t addr; RecompFunc fn; };
 
-static void*  g_recomp_lib  = nullptr;
-static JumpEntry* g_table   = nullptr;
-static size_t g_table_size  = 0;
-static std::unordered_map<uint32_t, RecompFunc> g_recomp_map;
+// The recompiled function table is linked directly into the binary (no dlopen).
+extern "C" const JumpEntry g_recomp_table[];
+extern "C" const size_t    g_recomp_table_size;
 
-bool dolphin_hook_install(const char* recomp_lib_path) {
-    g_recomp_lib = dlopen(recomp_lib_path, RTLD_NOW | RTLD_LOCAL);
-    if (!g_recomp_lib) {
-        fprintf(stderr, "[sunbright] dlopen failed: %s\n", dlerror());
-        return false;
+// Direct-mapped dispatch table: PPC instructions are 4-byte aligned, so we index
+// a flat array by (addr - base) >> 2. This is the hot path — call_ppc consults it
+// on EVERY bl and EVERY return — so it must be a single array load, not a hashmap.
+// Without this populated, recomp_lookup always missed, and every intra-recomp call
+// fell back to copying the whole register file into Dolphin and bouncing to the JIT
+// (then back in via the trampoline) — a full state copy per call/return.
+static RecompFunc* g_dispatch = nullptr;
+static u32 g_dispatch_lo = 0, g_dispatch_hi = 0;   // [lo, hi) PPC address range
+// Set only when overrides / forced-JIT ranges are actually registered, so the
+// common case skips those lookups entirely.
+static bool g_have_overrides  = false;
+static bool g_have_jit_forced = false;
+
+void recomp_build_dispatch() {
+    if (g_dispatch || g_recomp_table_size == 0) return;
+    u32 lo = 0xFFFFFFFFu, hi = 0;
+    for (size_t i = 0; i < g_recomp_table_size; i++) {
+        u32 a = g_recomp_table[i].addr;
+        lo = std::min(lo, a);
+        hi = std::max(hi, a + 4);
     }
+    g_dispatch_lo = lo; g_dispatch_hi = hi;
+    const size_t n = (hi - lo) >> 2;
+    g_dispatch = new RecompFunc[n]();              // zero-initialised
+    for (size_t i = 0; i < g_recomp_table_size; i++)
+        g_dispatch[(g_recomp_table[i].addr - lo) >> 2] = g_recomp_table[i].fn;
 
-    g_table = (JumpEntry*)dlsym(g_recomp_lib, "g_recomp_table");
-    size_t* table_sz = (size_t*)dlsym(g_recomp_lib, "g_recomp_table_size");
-
-    if (!g_table || !table_sz) {
-        fprintf(stderr, "[sunbright] recomp table not found in shared lib\n");
-        dlclose(g_recomp_lib);
-        g_recomp_lib = nullptr;
-        return false;
-    }
-
-    g_table_size = *table_sz;
-    for (size_t i = 0; i < g_table_size; i++)
-        g_recomp_map[g_table[i].addr] = g_table[i].fn;
-
-    fprintf(stderr, "[sunbright] Loaded %zu recompiled functions\n", g_table_size);
-
-#ifdef HAVE_DOLPHIN_CORE
-    // TODO: patch JitInterface::Compile to call recomp_lookup_and_call
-    // This requires either:
-    //  a) A Dolphin build with our hook point compiled in (preferred)
-    //  b) Runtime function patching (fragile, platform-specific)
-    // For now, Dolphin will call recomp_lookup_and_call via a compile-time hook.
-    fprintf(stderr, "[sunbright] JIT hook: compile-time integration required\n");
-#endif
-
-    return true;
+    g_have_overrides  = overrides_registered();
+    g_have_jit_forced = jit_forced_registered();
+    fprintf(stderr, "[sunbright] Dispatch table: %zu funcs over [%08x,%08x) (%zu slots)\n",
+            g_recomp_table_size, lo, hi, n);
 }
 
-void dolphin_hook_uninstall() {
-    g_recomp_map.clear();
-    if (g_recomp_lib) { dlclose(g_recomp_lib); g_recomp_lib = nullptr; }
-}
+bool dolphin_hook_install(const char*) { recomp_build_dispatch(); return true; }
+void dolphin_hook_uninstall() { delete[] g_dispatch; g_dispatch = nullptr; }
 
 RecompFunc recomp_lookup(u32 address) {
-    // Addresses we deliberately leave to Dolphin's JIT resolve as "not recompiled".
-    if (is_jit_forced(address)) return nullptr;
-    // Hand-written native overrides win over the generated function.
-    if (RecompFunc ov = override_lookup(address)) return ov;
-    auto it = g_recomp_map.find(address);
-    return (it != g_recomp_map.end()) ? it->second : nullptr;
+    // Forced-JIT and hand-written overrides are rare; skip both lookups entirely
+    // unless something was actually registered.
+    if (g_have_jit_forced && is_jit_forced(address)) return nullptr;
+    if (g_have_overrides) { if (RecompFunc ov = override_lookup(address)) return ov; }
+    // Hot path: single array load.
+    if (address >= g_dispatch_lo && address < g_dispatch_hi && !(address & 3))
+        return g_dispatch[(address - g_dispatch_lo) >> 2];
+    return nullptr;
 }
 
 // Observe a recompiled function without replacing it: SUNBRIGHT_WATCH=<hexaddr>
@@ -99,11 +97,16 @@ void call_ppc(CPUState& cpu, u32 address) {
     }
 #ifdef HAVE_DOLPHIN_CORE
     // Non-recompiled call: sync back to Dolphin state and let the JIT handle it.
-    // Dolphin's JIT will pick up the PC from PowerPCState.pc via the dispatcher.
-    static u32 last_non_recomp = 0;
-    if (address != last_non_recomp) {
-        fprintf(stderr, "[call_ppc] non-recomp exit to 0x%08x\n", address);
-        last_non_recomp = address;
+    // Dolphin's JIT picks up the PC from PowerPCState.pc via the dispatcher.
+    // This path is HOT (every recomp→JIT-only call), so the trace log must be
+    // gated — an fprintf here ran ~1M times/run and tanked the framerate.
+    static const bool trace = getenv("SUNBRIGHT_TRACE") != nullptr;
+    if (trace) {
+        static u32 last_non_recomp = 0;
+        if (address != last_non_recomp) {
+            fprintf(stderr, "[call_ppc] non-recomp exit to 0x%08x\n", address);
+            last_non_recomp = address;
+        }
     }
     auto& ppc = Core::System::GetInstance().GetPPCState();
     cpu_to_dolphin_state(cpu, ppc);

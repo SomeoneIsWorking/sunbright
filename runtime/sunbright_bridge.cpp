@@ -42,6 +42,12 @@ bool Init(const char* /*unused*/) {
         g_table[g_recomp_table[i].addr] = g_recomp_table[i].fn;
 
     fprintf(stderr, "[sunbright] Linked %zu recompiled functions\n", g_recomp_table_size);
+
+    // Build the dispatch table used by call_ppc (intra-recomp bl/returns). Without
+    // this, every call inside recomp missed and bounced to Dolphin's JIT with a
+    // full register-file copy — the per-call state-copy slowdown.
+    recomp_build_dispatch();
+
     g_inited = true;
     return true;
 }
