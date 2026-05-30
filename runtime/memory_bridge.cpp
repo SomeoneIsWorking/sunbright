@@ -39,12 +39,16 @@ inline void gx_tap_word(u32 v) {     // a u32 written to the gather pipe
         if (g_gx_idx == 12) {
             g_gx_state = 0;
             ++g_gx_total;
-            if ((g_gx_total % 2000) == 1) {  // sample: row translations (m03,m13,m23)
+            // Diagnostic only. Note (verified): the immediate XF matrices that
+            // reach the FIFO are all J2D's constant 2D/UI matrix — real 3D model
+            // transforms use indexed loads from the J3DMtxBuffer in RAM and never
+            // pass through here. Capture for interpolation must be CPU-side.
+            if ((g_gx_total % 5000) == 1) {
                 f32 tx, ty, tz;
                 std::memcpy(&tx, &g_gx_words[3], 4);
                 std::memcpy(&ty, &g_gx_words[7], 4);
                 std::memcpy(&tz, &g_gx_words[11], 4);
-                std::fprintf(stderr, "[gxcap] mtx #%lu xfaddr=%u pos=(%.2f, %.2f, %.2f)\n",
+                std::fprintf(stderr, "[gxcap] immediate XF mtx total=%lu xf=%u pos=(%.2f, %.2f, %.2f)\n",
                              g_gx_total, g_gx_addr, tx, ty, tz);
             }
         }
