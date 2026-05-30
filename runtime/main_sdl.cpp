@@ -144,6 +144,7 @@ int main(int argc, char* argv[]) {
                 style == Common::MsgType::Warning ? "warn" : "err", caption, text);
         return true;  // "yes" / ignore and continue
     });
+
     const char* rom_path   = (argc > 1) ? argv[1]
                                         : "$SUNBRIGHT_ROM";
     const char* recomp_lib = (argc > 2) ? argv[2] : "build/libsms_recomp.so";
@@ -185,9 +186,15 @@ int main(int argc, char* argv[]) {
     // Enable only critical Dolphin logs to stderr (not file — too slow during BS2 boot)
     {
         auto* lm = Common::Log::LogManager::GetInstance();
-        lm->SetConfigLogLevel(Common::Log::LogLevel::LWARNING);
+        const bool vbose = getenv("SUNBRIGHT_VLOG") != nullptr;
+        lm->SetConfigLogLevel(vbose ? Common::Log::LogLevel::LINFO
+                                    : Common::Log::LogLevel::LWARNING);
         lm->SetEnable(Common::Log::LogType::VIDEO, true);
         lm->SetEnable(Common::Log::LogType::CORE, true);
+        if (vbose) {
+            lm->SetEnable(Common::Log::LogType::VIDEO, true);
+            lm->SetEnable(Common::Log::LogType::HOST_GPU, true);
+        }
     }
 
     // Override backend via env (e.g. SUNBRIGHT_BACKEND=OGL, Vulkan, Software)
