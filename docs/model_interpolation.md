@@ -56,14 +56,20 @@ live in a RAM array (the `J3DMtxBuffer`), the GP fetches them by index, and only
 small matrix **index** + the **array base/stride** (CP register loads) go through the
 FIFO. The few immediate loads we see are projection/special matrices.
 
-**Implication:** the interpolation capture point is the **`J3DMtxBuffer` in RAM**, not
-the gather pipe. Two ways to get at it:
-- **J3D draw hook (a):** wrap `J3DModel::draw/entry`; read `mMtxBuffer` directly. Gives
-  the object pointer (ID) + all joint matrices. *Preferred.*
-- **CP array-base capture:** the per-draw position-matrix **array base** is set via a
-  CP register write (cmd `0x08`, the matrix-array-base reg) — capturing it from the
-  FIFO yields the `J3DMtxBuffer` RAM pointer for that draw, which doubles as a stable
-  per-object key. Read the matrices straight from RAM at that address.
+Follow-up: I also checked whether the position-matrix **array base** is set per draw
+through the FIFO (CP `0x08` reg load) — it is **not** (no RAM-pointer array bases pass
+through the gather pipe in-scene). So the base is configured once at init to a fixed
+matrix buffer; per object the game writes joint matrices into RAM and the GP fetches
+them by index. **The gather pipe therefore can't be the capture point for model
+transforms** — confirmed empirically. (`SUNBRIGHT_GXCAP` remains as a useful GX-stream
+diagnostic, and does capture the few immediate/projection matrices.)
+
+**Implication — capture must be CPU-side at the `J3DMtxBuffer`:**
+- **J3D draw hook (preferred):** find `J3DModel::draw` / `J3DModel::calcView` (or the
+  per-actor draw) and `SUNBRIGHT_OVERRIDE` it. `this` = the model ID; `mMtxBuffer`
+  holds all joint world matrices for the frame — read them directly from RAM.
+- **Per-object struct read:** for Mario specifically, find the `TMario*` global and
+  read his root transform from the struct each frame — the simplest first capture.
 
 ## 3. Stable model ID — yes, two capture levels
 

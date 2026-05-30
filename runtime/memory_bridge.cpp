@@ -23,16 +23,9 @@ u32         g_gx_addr = 0;
 u32         g_gx_words[12];
 unsigned long g_gx_total = 0;
 
-unsigned long g_gx_cmd_xf = 0, g_gx_cmd_cp = 0, g_gx_cmd_draw = 0;
 inline void gx_tap_cmd(u8 v) {       // a u8 written to the gather pipe
-    if (g_gx_state != 2) {           // not mid-collection: this is a command byte
-        if (v == 0x10) { g_gx_state = 1; ++g_gx_cmd_xf; }
-        else { if (v == 0x08) ++g_gx_cmd_cp; else if (v >= 0x80 && v <= 0xB8) ++g_gx_cmd_draw;
-               g_gx_state = 0; }
-        if (((g_gx_cmd_xf + g_gx_cmd_cp) % 5000) == 1)
-            std::fprintf(stderr, "[gxcap] cmds: XF-load=%lu CP-load=%lu draws=%lu  12word-mtx=%lu\n",
-                         g_gx_cmd_xf, g_gx_cmd_cp, g_gx_cmd_draw, g_gx_total);
-    }
+    if (v == 0x10) g_gx_state = 1;   // XF load command
+    else if (g_gx_state != 2) g_gx_state = 0;
 }
 inline void gx_tap_word(u32 v) {     // a u32 written to the gather pipe
     if (g_gx_state == 1) {           // this u32 is the token
