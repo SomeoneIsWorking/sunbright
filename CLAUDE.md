@@ -26,11 +26,31 @@ When you discover new constraints, add patterns, fix edge cases, or change archi
 ## Build
 
 ```bash
-cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DENABLE_VULKAN=ON
 cmake --build build -j$(nproc)
 ```
 
 Or use `/build` skill.
+
+## Running the game
+
+```bash
+cmake --build build --target sunbright-generated  # build recompiled .so first
+./build/sunbright [rom.rvz] [libsms_recomp.so]
+# defaults: ROM=$SUNBRIGHT_ROM
+#           lib=build/libsms_recomp.so
+```
+
+F11 toggles fullscreen. X11 and Wayland both work (SDL2 auto-detects).
+
+## JIT hook (no Dolphin patches required)
+
+`runtime/jit_hook.cpp` intercepts via linker `--wrap` on `_Z13JitTrampolineR7JitBasej`:
+```
+JitAsm → __wrap_JitTrampoline (our hook)
+           ├─ IsRecompiled? → SunbrightBridge::Run() → native .so
+           └─ else         → __real_JitTrampoline  → Dolphin JIT
+```
 
 ## Skills (slash commands)
 | Command | What it does |

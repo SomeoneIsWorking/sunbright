@@ -28,18 +28,20 @@ void CEmitter::emit_header() {
 }
 
 void CEmitter::emit_jump_table(const std::vector<u32>& func_addrs) {
-    out_ << "\n// Jump table: PPC address → native function pointer\n";
+    out_ << "// AUTO-GENERATED jump table — DO NOT EDIT\n";
+    out_ << "#include \"../runtime/cpu_state.h\"\n";
+    out_ << "#include <cstddef>\n\n";
     out_ << "using RecompFunc = void (*)(CPUState&);\n\n";
 
     for (u32 addr : func_addrs)
         out_ << "extern \"C\" void func_" << std::hex << addr << "(CPUState&);\n";
 
     out_ << "\nstruct JumpEntry { uint32_t addr; RecompFunc fn; };\n";
-    out_ << "const JumpEntry g_recomp_table[] = {\n";
+    out_ << "extern \"C\" const JumpEntry g_recomp_table[] = {\n";
     for (u32 addr : func_addrs)
         out_ << "    { 0x" << std::hex << addr << "u, func_" << addr << " },\n";
     out_ << "    { 0, nullptr }\n};\n";
-    out_ << "const size_t g_recomp_table_size = " << std::dec << func_addrs.size() << ";\n";
+    out_ << "extern \"C\" const size_t g_recomp_table_size = " << std::dec << func_addrs.size() << "u;\n";
 }
 
 std::string CEmitter::ea(const PPCInstr& i) {
@@ -91,13 +93,13 @@ void CEmitter::emit_function(const EmitContext& ctx) {
         // Emit a comment with the PC for debugging
         out_ << "    // " << std::hex << i.pc << "\n";
 
-        emit_instr(i);
+        emit_instr(i, ctx);
     }
 
     out_ << "}\n";
 }
 
-void CEmitter::emit_instr(const PPCInstr& i) {
+void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
     const std::string d = "cpu.gpr[" + std::to_string(i.rD) + "]";
     const std::string a = "cpu.gpr[" + std::to_string(i.rA) + "]";
     const std::string b = "cpu.gpr[" + std::to_string(i.rB) + "]";
@@ -370,43 +372,47 @@ void CEmitter::emit_instr(const PPCInstr& i) {
         break;
 
     // ── Branches ────────────────────────────────────────────────────────────
-    case PPCOp::B:
-        if (i.lk)
+    case PPCOp::B: {
+        bool intra = ctx.branch_targets.count(i.target) > 0;
+        if (i.lk) {
             line("cpu.lr = 0x%xu;", i.pc + 4);
-        // Direct branch to known address
-        if (i.target != 0)
-            line("goto lbl_%x;  // or call_ppc if cross-function", i.target);
-        else
-            line("call_ppc(cpu, 0x%xu);", i.target);
+            line("call_ppc(cpu, 0x%xu); return;", i.target);
+        } else if (intra) {
+            line("goto lbl_%x;", i.target);
+        } else if (i.target != 0) {
+            line("call_ppc(cpu, 0x%xu); return;", i.target);
+        } else {
+            line("return; // indirect unconditional branch");
+        }
         break;
+    }
 
     case PPCOp::BC: {
-        // Evaluate BO/BI condition
-        std::string cond = "";
-        bool ctr_decr = !(i.bo & 0x04);
-        bool ctr_zero = (i.bo & 0x02);
-        bool cond_true = (i.bo & 0x08);
+        bool ctr_decr   = !(i.bo & 0x04);
+        bool ctr_zero   = (i.bo & 0x02);
+        bool cond_true  = (i.bo & 0x08);
         bool cond_ignore = (i.bo & 0x10);
 
-        std::string parts = "";
+        std::string parts;
         if (ctr_decr) {
             line("cpu.ctr--;");
-            std::string ctr_cond = ctr_zero ? "(cpu.ctr == 0)" : "(cpu.ctr != 0)";
-            parts = ctr_cond;
+            parts = ctr_zero ? "(cpu.ctr == 0)" : "(cpu.ctr != 0)";
         }
         if (!cond_ignore) {
             std::string cc = cr_bit(i.bi);
             std::string cc_cond = cond_true ? cc : ("!" + cc);
             parts = parts.empty() ? cc_cond : (parts + " && " + cc_cond);
         }
+        if (parts.empty()) parts = "true";
 
-        if (i.lk)
-            line("if (%s) { cpu.lr = 0x%xu; call_ppc(cpu, 0x%xu); }",
-                 parts.empty() ? "true" : parts.c_str(), i.pc + 4, i.target);
-        else if (!parts.empty())
+        bool intra = ctx.branch_targets.count(i.target) > 0;
+        if (i.lk) {
+            line("if (%s) { cpu.lr = 0x%xu; call_ppc(cpu, 0x%xu); }", parts.c_str(), i.pc + 4, i.target);
+        } else if (intra) {
             line("if (%s) goto lbl_%x;", parts.c_str(), i.target);
-        else
-            line("goto lbl_%x;", i.target);
+        } else {
+            line("if (%s) { call_ppc(cpu, 0x%xu); return; }", parts.c_str(), i.target);
+        }
         break;
     }
 
@@ -486,8 +492,10 @@ void CEmitter::emit_instr(const PPCInstr& i) {
     case PPCOp::LHZ:  line("%s = MEM_R16(%s);", d.c_str(), ea(i).c_str()); break;
     case PPCOp::LHZU: line("%s = MEM_R16(%s); %s = %s;", d.c_str(), ea(i).c_str(), a.c_str(), ea(i).c_str()); break;
     case PPCOp::LHZX: line("%s = MEM_R16(%s);", d.c_str(), ea_x(i).c_str()); break;
-    case PPCOp::LHA:  line("%s = (u32)(s32)(s16)MEM_R16(%s);", d.c_str(), ea(i).c_str()); break;
-    case PPCOp::LHAX: line("%s = (u32)(s32)(s16)MEM_R16(%s);", d.c_str(), ea_x(i).c_str()); break;
+    case PPCOp::LHA:   line("%s = (u32)(s32)(s16)MEM_R16(%s);", d.c_str(), ea(i).c_str()); break;
+    case PPCOp::LHAU:  line("%s = (u32)(s32)(s16)MEM_R16(%s); %s = %s;", d.c_str(), ea(i).c_str(), a.c_str(), ea(i).c_str()); break;
+    case PPCOp::LHAX:  line("%s = (u32)(s32)(s16)MEM_R16(%s);", d.c_str(), ea_x(i).c_str()); break;
+    case PPCOp::LHAUX: line("%s = (u32)(s32)(s16)MEM_R16(%s); %s += %s;", d.c_str(), ea_x(i).c_str(), a.c_str(), b.c_str()); break;
 
     // ── Store integer ────────────────────────────────────────────────────────
     case PPCOp::STW:  line("MEM_W32(%s, %s);", ea(i).c_str(),   s.c_str()); break;
@@ -576,6 +584,10 @@ void CEmitter::emit_instr(const PPCInstr& i) {
         line("{ double _a=%s,_b=%s; cpu.cr[%d].lt=_a<_b; cpu.cr[%d].gt=_a>_b; cpu.cr[%d].eq=_a==_b; cpu.cr[%d].so=0; }",
              fa.c_str(), fb.c_str(), i.crfD, i.crfD, i.crfD, i.crfD);
         break;
+    case PPCOp::FCMPO:  // ordered compare — same result as FCMPU for our purposes
+        line("{ double _a=%s,_b=%s; cpu.cr[%d].lt=_a<_b; cpu.cr[%d].gt=_a>_b; cpu.cr[%d].eq=_a==_b; cpu.cr[%d].so=(std::isnan(_a)||std::isnan(_b)); }",
+             fa.c_str(), fb.c_str(), i.crfD, i.crfD, i.crfD, i.crfD);
+        break;
 
     // ── Paired singles ───────────────────────────────────────────────────────
     case PPCOp::PS_ADD:
@@ -633,6 +645,22 @@ void CEmitter::emit_instr(const PPCInstr& i) {
     case PPCOp::PS_SUM1:
         line("%s = %s;",      psd0.c_str(), psc0.c_str());
         line("%s = %s + %s;", psd1.c_str(), psa0.c_str(), psb0.c_str());
+        break;
+    case PPCOp::PS_MULS0:  // fD.ps0 = fA.ps0 * fC.ps0; fD.ps1 = fA.ps1 * fC.ps0
+        line("%s = %s * %s;", psd0.c_str(), psa0.c_str(), psc0.c_str());
+        line("%s = %s * %s;", psd1.c_str(), psa1.c_str(), psc0.c_str());
+        break;
+    case PPCOp::PS_MULS1:  // fD.ps0 = fA.ps0 * fC.ps1; fD.ps1 = fA.ps1 * fC.ps1
+        line("%s = %s * %s;", psd0.c_str(), psa0.c_str(), psc1.c_str());
+        line("%s = %s * %s;", psd1.c_str(), psa1.c_str(), psc1.c_str());
+        break;
+    case PPCOp::PS_MADDS0: // fD.ps0 = fA.ps0*fC.ps0 + fB.ps0; fD.ps1 = fA.ps1*fC.ps0 + fB.ps1
+        line("%s = %s*%s + %s;", psd0.c_str(), psa0.c_str(), psc0.c_str(), psb0.c_str());
+        line("%s = %s*%s + %s;", psd1.c_str(), psa1.c_str(), psc0.c_str(), psb1.c_str());
+        break;
+    case PPCOp::PS_MADDS1: // fD.ps0 = fA.ps0*fC.ps1 + fB.ps0; fD.ps1 = fA.ps1*fC.ps1 + fB.ps1
+        line("%s = %s*%s + %s;", psd0.c_str(), psa0.c_str(), psc1.c_str(), psb0.c_str());
+        line("%s = %s*%s + %s;", psd1.c_str(), psa1.c_str(), psc1.c_str(), psb1.c_str());
         break;
     case PPCOp::PS_SEL:
         line("%s = (%s >= 0.0) ? %s : %s;", psd0.c_str(), psa0.c_str(), psc0.c_str(), psb0.c_str());
@@ -719,12 +747,93 @@ void CEmitter::emit_instr(const PPCInstr& i) {
     case PPCOp::SYNC: case PPCOp::ISYNC: case PPCOp::EIEIO:
     case PPCOp::DCBT: case PPCOp::DCBTST: case PPCOp::DCBF:
     case PPCOp::DCBI: case PPCOp::ICBI: case PPCOp::DCBZ:
+    case PPCOp::DCBST: case PPCOp::TLBIE: case PPCOp::TLBSYNC:
         line("// %s — no-op in recomp", i.mnemonic().c_str());
         break;
 
     case PPCOp::MFMSR: line("%s = 0x8030; // MSR constant for user mode", d.c_str()); break;
+    case PPCOp::MFSR:  line("%s = 0; // MFSR: segment registers not emulated", d.c_str()); break;
+    case PPCOp::MFSRIN:line("%s = 0; // MFSRIN: segment registers not emulated", d.c_str()); break;
     case PPCOp::MTMSR: line("// MTMSR ignored in recomp"); break;
     case PPCOp::RFI:   line("return; // RFI — return from interrupt, treated as return"); break;
+
+    // ── lmw / stmw ────────────────────────────────────────────────────────────
+    // Load/store multiple: rD..r31 from consecutive words starting at EA
+    case PPCOp::LMW:
+        line("{ u32 _ea = %s;", ea(i).c_str());
+        for (int r = i.rD; r <= 31; r++)
+            line("  cpu.gpr[%d] = MEM_R32(_ea + %d);", r, (r - i.rD) * 4);
+        line("}");
+        break;
+    case PPCOp::STMW:
+        line("{ u32 _ea = %s;", ea(i).c_str());
+        for (int r = i.rS; r <= 31; r++)
+            line("  MEM_W32(_ea + %d, cpu.gpr[%d]);", (r - i.rS) * 4, r);
+        line("}");
+        break;
+
+    // ── mftb (time base) ──────────────────────────────────────────────────────
+    case PPCOp::MFTB: {
+        // Return a monotonically increasing fake timer (no real HW counter here)
+        line("{ static uint64_t _tb=0; _tb+=512;");
+        if (i.tbr == 268)       // TBL
+            line("  %s = (u32)_tb; }", d.c_str());
+        else                     // TBU
+            line("  %s = (u32)(_tb>>32); }", d.c_str());
+        break;
+    }
+
+    // ── FPSCR ops ─────────────────────────────────────────────────────────────
+    case PPCOp::MFFS:
+        line("%s = std::bit_cast<f64>((u64)cpu.fpscr);", fd.c_str());
+        if (i.rc) line("update_cr1(cpu);");
+        break;
+    case PPCOp::MTFSF:
+        line("{ u32 _v=(u32)(u64)std::bit_cast<u64>(%s); cpu.fpscr=(_v&0x%xu)|(cpu.fpscr&~0x%xu); }",
+             fd.c_str(), (u32)i.fm << 8, (u32)i.fm << 8);
+        break;
+    case PPCOp::MTFSB0:
+        line("cpu.fpscr &= ~(1u << (31 - %d));", i.rD);
+        break;
+    case PPCOp::MTFSB1:
+        line("cpu.fpscr |= (1u << (31 - %d));", i.rD);
+        break;
+    case PPCOp::MTFSFI:
+        line("cpu.fpscr = (cpu.fpscr & ~(0xFu << (28 - %d*4))) | (%uu << (28 - %d*4));",
+             i.crfD, i.wi, i.crfD);
+        break;
+
+    // ── PS compare ────────────────────────────────────────────────────────────
+    case PPCOp::PS_CMPU0:
+    case PPCOp::PS_CMPO0:
+        line("{ double _a=%s,_b=%s; cpu.cr[%d].lt=_a<_b; cpu.cr[%d].gt=_a>_b; cpu.cr[%d].eq=_a==_b; cpu.cr[%d].so=0; }",
+             psa0.c_str(), psb0.c_str(), i.crfD, i.crfD, i.crfD, i.crfD);
+        break;
+    case PPCOp::PS_CMPU1:
+    case PPCOp::PS_CMPO1:
+        line("{ double _a=%s,_b=%s; cpu.cr[%d].lt=_a<_b; cpu.cr[%d].gt=_a>_b; cpu.cr[%d].eq=_a==_b; cpu.cr[%d].so=0; }",
+             psa1.c_str(), psb1.c_str(), i.crfD, i.crfD, i.crfD, i.crfD);
+        break;
+
+    // ── psq_lx / psq_stx (indexed PS quantized) ──────────────────────────────
+    case PPCOp::PSQ_LX: {
+        line("{ u32 _gqr=cpu.gqr[%d]; u32 _t=gqr_ld_type(_gqr),_s=gqr_ld_scale(_gqr);", i.i_gqr);
+        line("  %s = psq_dequantize(MEM_R32(%s), _t, _s);", psd0.c_str(), ea_x(i).c_str());
+        if (i.w == 0)
+            line("  %s = psq_dequantize(MEM_R32((%s)+4), _t, _s); }", psd1.c_str(), ea_x(i).c_str());
+        else
+            line("  %s = 1.0; }", psd1.c_str());
+        break;
+    }
+    case PPCOp::PSQ_STX: {
+        line("{ u32 _gqr=cpu.gqr[%d]; u32 _t=gqr_st_type(_gqr),_s=gqr_st_scale(_gqr);", i.i_gqr);
+        line("  MEM_W32(%s, psq_quantize(%s, _t, _s));", ea_x(i).c_str(), psd0.c_str());
+        if (i.w == 0)
+            line("  MEM_W32((%s)+4, psq_quantize(%s, _t, _s)); }", ea_x(i).c_str(), psd1.c_str());
+        else
+            line("}");
+        break;
+    }
 
     // ── Unhandled ────────────────────────────────────────────────────────────
     default:

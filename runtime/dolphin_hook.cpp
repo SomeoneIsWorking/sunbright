@@ -3,6 +3,9 @@
 #include <cstdio>
 #include <cstring>
 #include <unordered_map>
+#ifdef HAVE_DOLPHIN_CORE
+#  include "Core/System.h"
+#endif
 
 using RecompFunc = void (*)(CPUState&);
 struct JumpEntry { uint32_t addr; RecompFunc fn; };
@@ -64,11 +67,12 @@ void call_ppc(CPUState& cpu, u32 address) {
         return;
     }
 #ifdef HAVE_DOLPHIN_CORE
-    // Fall back to Dolphin's JIT for this address.
-    // We need to sync our CPUState back into Dolphin's PowerPCState first.
-    cpu_to_dolphin_state(cpu, PowerPC::ppcState);
-    PowerPC::RunUntil(cpu.lr);  // run until LR (return address)
-    dolphin_state_to_cpu(PowerPC::ppcState, cpu);
+    // Non-recompiled call: sync back to Dolphin state and let the JIT handle it.
+    // Dolphin's JIT will pick up the PC from PowerPCState.pc via the dispatcher.
+    auto& ppc = Core::System::GetInstance().GetPPCState();
+    cpu_to_dolphin_state(cpu, ppc);
+    ppc.pc = address;
+    // The JIT dispatcher will continue execution from ppc.pc on return.
 #else
     fprintf(stderr, "[sunbright] call_ppc 0x%08x: not recompiled and no JIT available\n", address);
 #endif
@@ -84,9 +88,9 @@ void dolphin_state_to_cpu(const PowerPC::PowerPCState& src, CPUState& dst) {
     dst.lr   = src.spr[SPR_LR];
     dst.ctr  = src.spr[SPR_CTR];
     dst.pc   = src.pc;
-    // XER
-    dst.xer.so = (src.xer_stringbegin >> 31) & 1;
-    dst.xer.ov = (src.xer_stringbegin >> 30) & 1;
+    // XER — xer_so_ov format: bit1=SO, bit0=OV
+    dst.xer.so = src.GetXER_SO();
+    dst.xer.ov = src.GetXER_OV();
     dst.xer.ca = src.xer_ca;
     // CR
     u32_to_cr(dst, src.cr.Get());

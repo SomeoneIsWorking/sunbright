@@ -83,6 +83,8 @@ std::string PPCInstr::mnemonic() const {
     case PPCOp::LHZU:   return "lhzu";
     case PPCOp::LHZX:   return "lhzx";
     case PPCOp::LHA:    return "lha";
+    case PPCOp::LHAU:   return "lhau";
+    case PPCOp::LHAUX:  return "lhaux";
     case PPCOp::LHAX:   return "lhax";
     case PPCOp::LMW:    return "lmw";
     case PPCOp::STW:    return "stw";
@@ -158,6 +160,10 @@ std::string PPCInstr::mnemonic() const {
     case PPCOp::PS_MR:     return rc ? "ps_mr."     : "ps_mr";
     case PPCOp::PS_SUM0:   return "ps_sum0";
     case PPCOp::PS_SUM1:   return "ps_sum1";
+    case PPCOp::PS_MULS0:  return "ps_muls0";
+    case PPCOp::PS_MULS1:  return "ps_muls1";
+    case PPCOp::PS_MADDS0: return "ps_madds0";
+    case PPCOp::PS_MADDS1: return "ps_madds1";
     case PPCOp::PS_RES:    return "ps_res";
     case PPCOp::PS_RSQRTE: return "ps_rsqrte";
     case PPCOp::PS_SEL:    return "ps_sel";
@@ -190,6 +196,10 @@ std::string PPCInstr::mnemonic() const {
     case PPCOp::ICBI:      return "icbi";
     case PPCOp::TW:        return "tw";
     case PPCOp::TWI:       return "twi";
+    case PPCOp::MFSR:      return "mfsr";
+    case PPCOp::MFSRIN:    return "mfsrin";
+    case PPCOp::MTSR:      return "mtsr";
+    case PPCOp::MTSRIN:    return "mtsrin";
     case PPCOp::LWARX:     return "lwarx";
     case PPCOp::STWCX:     return "stwcx.";
     case PPCOp::DCBST:     return "dcbst";

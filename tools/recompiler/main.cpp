@@ -148,11 +148,18 @@ static int recompile_mode(const DiscLoader& disc, const DOL& dol, const std::str
             ctx.func_addr = addr;
             ctx.instrs    = func_instrs[addr];
 
-            // Find within-function branch targets
+            // Compute function address range
+            u32 func_end = addr + (u32)(ctx.instrs.size() * 4);
+
+            // Label any branch target that lands inside this function's range
             for (const auto& instr : ctx.instrs) {
                 u32 tgt = branch_target(instr);
-                if (tgt >= addr && tgt < addr + (u32)(ctx.instrs.size() * 4))
+                if (tgt != 0 && tgt >= addr && tgt < func_end)
                     ctx.branch_targets.insert(tgt);
+                // Also label BC targets in range
+                if ((instr.op == PPCOp::BC) && instr.target != 0
+                    && instr.target >= addr && instr.target < func_end)
+                    ctx.branch_targets.insert(instr.target);
             }
 
             emitter.emit_function(ctx);

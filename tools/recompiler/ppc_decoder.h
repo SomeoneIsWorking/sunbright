@@ -86,6 +86,8 @@ enum class PPCOp {
     PS_MADD, PS_MSUB, PS_NMADD, PS_NMSUB,
     PS_ABS, PS_NABS, PS_NEG, PS_MR,
     PS_SUM0, PS_SUM1,
+    PS_MULS0, PS_MULS1,       // multiply by ps0/ps1 of fC (Gekko-specific)
+    PS_MADDS0, PS_MADDS1,     // madd using ps0/ps1 of fC (Gekko-specific)
     PS_RES, PS_RSQRTE, PS_SEL,
     PS_CMPU0, PS_CMPU1, PS_CMPO0, PS_CMPO1,
     PS_MERGE00, PS_MERGE01, PS_MERGE10, PS_MERGE11,

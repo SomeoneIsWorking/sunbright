@@ -108,7 +108,42 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/generated/functions.cpp")
     target_link_libraries(sunbright-generated PRIVATE sunbright-runtime)
 endif()
 
+# ── Launcher executable (SDL2 window + Dolphin Core) ─────────────────────────
+find_package(SDL2 REQUIRED)
+
+add_executable(sunbright
+    runtime/main_sdl.cpp
+    runtime/jit_hook.cpp
+    runtime/sunbright_bridge.cpp
+    runtime/dolphin_hook.cpp
+    runtime/memory_bridge.cpp
+    runtime/os_hle.cpp
+)
+
+target_include_directories(sunbright PRIVATE
+    runtime
+    "${DOLPHIN_DIR}/Source/Core"
+    "${CMAKE_BINARY_DIR}/dolphin/Source/Core"
+)
+
+target_compile_definitions(sunbright PRIVATE
+    HAVE_DOLPHIN_CORE=1
+    HAVE_DOLPHIN_DISCIO=1
+    _M_X86_64=1          # Dolphin sets this via add_definitions; mirror it for our target
+)
+
+target_link_libraries(sunbright PRIVATE
+    core discio uicommon
+    SDL2::SDL2
+    dl pthread
+)
+
+# Intercept JitTrampoline at link time — no Dolphin source changes needed.
+# Use the mangled C++ name (verified via nm libcore.a | grep JitTrampoline).
+target_link_options(sunbright PRIVATE "-Wl,--wrap=_Z13JitTrampolineR7JitBasej")
+
 # ── Install ───────────────────────────────────────────────────────────────────
+install(TARGETS sunbright DESTINATION bin)
 install(TARGETS sunbright-recomp DESTINATION bin)
 install(TARGETS sunbright-runtime DESTINATION lib)
 

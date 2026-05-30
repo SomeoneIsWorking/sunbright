@@ -50,8 +50,16 @@ std::string FormatSize(u64 bytes, int decimals) {
 
 }  // namespace UICommon
 
-// ── Discord ───────────────────────────────────────────────────────────────────
+// ── Discord (full stubs — USE_DISCORD_PRESENCE is OFF) ───────────────────────
 namespace Discord {
+struct Handler;
+void Init() {}
+void InitNetPlayFunctionality(Handler&) {}
+void CallPendingCallbacks() {}
+void UpdateClientID(const std::string&) {}
+bool UpdateDiscordPresenceRaw(const std::string&, const std::string&,
+    const std::string&, const std::string&, const std::string&, const std::string&,
+    int64_t, int64_t, int, int) { return false; }
 void UpdateDiscordPresence(int, SecretType, const std::string&, const std::string&, bool) {}
 std::string CreateSecretFromIPAddress(const std::string&, int) { return {}; }
 void Shutdown() {}

@@ -42,7 +42,7 @@ private:
     int unhandled_ = 0;
     std::vector<std::string> unhandled_ops_;
 
-    void emit_instr(const PPCInstr& i);
+    void emit_instr(const PPCInstr& i, const EmitContext& ctx);
 
     // Helpers
     std::string ea(const PPCInstr& i);   // effective address: rA+d or rA+rB

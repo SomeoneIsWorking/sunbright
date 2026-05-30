@@ -16,8 +16,9 @@ PPCInstr decode(u32 word, u32 pc) {
     i.op  = PPCOp::UNKNOWN;
 
     u32 op6  = FIELD(word, 31, 26);
-    u32 xop  = FIELD(word, 10, 1);
-    u32 xop9 = FIELD(word, 10, 2);  // for A-form (FP with rC)
+    u32 xop  = FIELD(word, 10, 1);   // X-form / XO-form extended opcode (10 bits)
+    u32 axo  = FIELD(word, 5,  1);   // A-form XO (5 bits) — opcodes 4/59/63 FP/PS
+    u32 xop9 = FIELD(word, 10, 2);   // legacy; only used for opcode-4 indexed PS
 
     // Common field extraction
     i.rD  = FIELD(word, 25, 21);
@@ -71,7 +72,14 @@ PPCInstr decode(u32 word, u32 pc) {
         case 38:  i.op = PPCOp::PSQ_LUX; break;
         case 39:  i.op = PPCOp::PSQ_STUX; break;
         default:
-            switch (xop9) {
+            // PS A-form — XO is bits [5:1]
+            switch (axo) {
+            case 10:  i.op = PPCOp::PS_SUM0;   break;
+            case 11:  i.op = PPCOp::PS_SUM1;   break;
+            case 12:  i.op = PPCOp::PS_MULS0;  break;
+            case 13:  i.op = PPCOp::PS_MULS1;  break;
+            case 14:  i.op = PPCOp::PS_MADDS0; break;
+            case 15:  i.op = PPCOp::PS_MADDS1; break;
             case 18:  i.op = PPCOp::PS_DIV;    break;
             case 20:  i.op = PPCOp::PS_SUB;    break;
             case 21:  i.op = PPCOp::PS_ADD;    break;
@@ -114,8 +122,8 @@ PPCInstr decode(u32 word, u32 pc) {
     // ── Opcode 12: addic
     case 12: i.op = PPCOp::ADDC; break;  // addic = addi + carry
 
-    // ── Opcode 13: addic.
-    case 13: i.op = PPCOp::ADDI_DOT; break;
+    // ── Opcode 13: addic. (addic + CR0 update)
+    case 13: i.op = PPCOp::ADDC; i.rc = 1; break;
 
     // ── Opcode 14: addi (li when rA==0)
     case 14: i.op = PPCOp::ADDI; break;
@@ -366,9 +374,9 @@ PPCInstr decode(u32 word, u32 pc) {
         break;
     }
 
-    // ── Opcode 59: FP single arithmetic
+    // ── Opcode 59: FP single arithmetic (all A-form; XO = bits [5:1])
     case 59: {
-        switch (xop9) {
+        switch (axo) {
         case 18: i.op = PPCOp::FDIVS;   break;
         case 20: i.op = PPCOp::FSUBS;   break;
         case 21: i.op = PPCOp::FADDS;   break;
@@ -403,17 +411,18 @@ PPCInstr decode(u32 word, u32 pc) {
         case 814: i.op = PPCOp::FRES;    break;
         case 846: i.op = PPCOp::FRSQRTE; break;
         default:
-            switch (xop9) {
-            case 18: i.op = PPCOp::FDIV;   break;
-            case 20: i.op = PPCOp::FSUB;   break;
-            case 21: i.op = PPCOp::FADD;   break;
-            case 23: i.op = PPCOp::FSEL;   break;
-            case 25: i.op = PPCOp::FMUL;   break;
+            // A-form FP double — XO is bits [5:1]
+            switch (axo) {
+            case 18: i.op = PPCOp::FDIV;    break;
+            case 20: i.op = PPCOp::FSUB;    break;
+            case 21: i.op = PPCOp::FADD;    break;
+            case 23: i.op = PPCOp::FSEL;    break;
+            case 25: i.op = PPCOp::FMUL;    break;
             case 26: i.op = PPCOp::FRSQRTE; break;
-            case 28: i.op = PPCOp::FMSUB;  break;
-            case 29: i.op = PPCOp::FMADD;  break;
-            case 30: i.op = PPCOp::FNMSUB; break;
-            case 31: i.op = PPCOp::FNMADD; break;
+            case 28: i.op = PPCOp::FMSUB;   break;
+            case 29: i.op = PPCOp::FMADD;   break;
+            case 30: i.op = PPCOp::FNMSUB;  break;
+            case 31: i.op = PPCOp::FNMADD;  break;
             }
         }
         break;
