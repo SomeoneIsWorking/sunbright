@@ -215,15 +215,39 @@ static int recompile_mode(const DiscLoader& disc, const DOL& dol, const std::str
             fend = std::min(fend, base + (u32)data.size());
 
             auto& instrs = func_instrs[faddr];
-            for (u32 addr = faddr; addr < fend; addr += 4) {
-                u32 off = addr - base;
-                u32 w_be;
-                std::memcpy(&w_be, data.data() + off, 4);
-                u32 w = __builtin_bswap32(w_be);
-                instrs.push_back(decode(w, addr));
-                if (is_unconditional_branch(instrs.back())) {
-                    addr += 4;  // include the delay-slot (PPC has none, so just stop)
-                    break;
+            if (getenv("SUNBRIGHT_CFG")) {
+                // Full-CFG collection (opt-in): walk the function's whole control-flow
+                // graph so forward branches become in-recomp gotos rather than JIT
+                // bounces — required by the C-call model. Off by default (its
+                // newly-included blocks still need harness validation).
+                std::map<u32, PPCInstr> by_addr;
+                std::unordered_set<u32> seen;
+                std::vector<u32> work{faddr};
+                while (!work.empty()) {
+                    u32 a = work.back(); work.pop_back();
+                    while (a >= faddr && a < fend && !seen.count(a)) {
+                        seen.insert(a);
+                        u32 wb; std::memcpy(&wb, data.data() + (a - base), 4);
+                        PPCInstr ins = decode(__builtin_bswap32(wb), a);
+                        by_addr[a] = ins;
+                        if (!ins.lk) { u32 t = branch_target(ins); if (t >= faddr && t < fend) work.push_back(t); }
+                        if (is_unconditional_branch(ins)) break;
+                        a += 4;
+                    }
+                }
+                instrs.reserve(by_addr.size());
+                for (auto& kv : by_addr) instrs.push_back(kv.second);
+            } else {
+                for (u32 addr = faddr; addr < fend; addr += 4) {
+                    u32 off = addr - base;
+                    u32 w_be;
+                    std::memcpy(&w_be, data.data() + off, 4);
+                    u32 w = __builtin_bswap32(w_be);
+                    instrs.push_back(decode(w, addr));
+                    if (is_unconditional_branch(instrs.back())) {
+                        addr += 4;  // include the delay-slot (PPC has none, so just stop)
+                        break;
+                    }
                 }
             }
         }
@@ -296,7 +320,10 @@ static int recompile_mode(const DiscLoader& disc, const DOL& dol, const std::str
             ctx.func_addr = addr;
             ctx.instrs    = func_instrs[addr];
 
-            u32 func_end = addr + (u32)(ctx.instrs.size() * 4);
+            // Use the last (highest-address) instruction's PC: correct for both
+            // linear (contiguous) and CFG (gapped) collection, so every
+            // intra-function branch target falls inside and gets a goto label.
+            u32 func_end = ctx.instrs.empty() ? addr : ctx.instrs.back().pc + 4;
             for (const auto& instr : ctx.instrs) {
                 u32 tgt = branch_target(instr);
                 if (tgt != 0 && tgt >= addr && tgt < func_end)
