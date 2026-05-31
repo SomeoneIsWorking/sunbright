@@ -16,6 +16,9 @@
 #  include "Core/System.h"
 #  include <cstring>
 #  include <vector>
+#  include <map>
+#  include <fstream>
+#  include <algorithm>
 #endif
 
 using RecompFunc = void (*)(CPUState&);
@@ -88,6 +91,42 @@ void restore(PowerPC::PowerPCState& s, const RegSnap& r) {
     s.cr.Set(r.cr); s.xer_ca = r.ca; s.pc = r.pc;
 }
 
+// ── Correctness harness ──────────────────────────────────────────────────────
+// Aggregate every recomp function that diverges from Dolphin's interpreter across
+// a play session into a prioritized, named report (instead of stopping at the
+// first). Run with SUNBRIGHT_DIFF=1; the report is rewritten incrementally to
+// /tmp/sunbright_diff_report.txt so results survive a kill.
+struct DiffInfo { long count = 0; u32 exit_pc = 0; std::string detail; };
+static std::map<u32, DiffInfo> g_diffs;
+
+static const std::map<u32, std::string>& func_names() {
+    static const std::map<u32, std::string> names = [] {
+        std::map<u32, std::string> m;
+        std::ifstream f("reference/sms_gmse01_funcs.txt");
+        u32 a; std::string n;
+        while (f >> std::hex >> a >> n) m[a] = n;
+        return m;
+    }();
+    return names;
+}
+
+static void write_diff_report() {
+    std::ofstream f("/tmp/sunbright_diff_report.txt");
+    f << g_diffs.size() << " diverging recomp functions (most frequent first)\n\n";
+    std::vector<std::pair<u32, DiffInfo>> v(g_diffs.begin(), g_diffs.end());
+    std::sort(v.begin(), v.end(),
+              [](const auto& a, const auto& b) { return a.second.count > b.second.count; });
+    const auto& names = func_names();
+    char line[256];
+    for (const auto& [pc, info] : v) {
+        auto it = names.find(pc);
+        std::snprintf(line, sizeof(line), "func_%08x x%-6ld exit=%08x  %s\n      %s\n",
+                      pc, info.count, info.exit_pc,
+                      it != names.end() ? it->second.c_str() : "(unnamed)", info.detail.c_str());
+        f << line;
+    }
+}
+
 bool diff_run(uint32_t pc, RecompFunc fn) {
     auto& sys = Core::System::GetInstance();
     auto& ppc = sys.GetPPCState();
@@ -147,19 +186,27 @@ bool diff_run(uint32_t pc, RecompFunc fn) {
             if (ramRec[i] != ram[i]) { ram_diff_off = i; break; }
 
     if (regs_differ || ram_diff_off >= 0) {
-        fprintf(stderr, "\n[DIFF] func_%08x diverges (exit rec=%08x ref=%08x steps=%ld)\n",
-                pc, exit_pc, ref.pc, steps);
-        for (int i = 0; i < 32; i++)
-            if (rec.gpr[i] != ref.gpr[i])
-                fprintf(stderr, "  r%-2d rec=%08x ref=%08x\n", i, rec.gpr[i], ref.gpr[i]);
-        if (rec.lr  != ref.lr)  fprintf(stderr, "  lr  rec=%08x ref=%08x\n", rec.lr, ref.lr);
-        if (rec.ctr != ref.ctr) fprintf(stderr, "  ctr rec=%08x ref=%08x\n", rec.ctr, ref.ctr);
-        if (rec.cr  != ref.cr)  fprintf(stderr, "  cr  rec=%08x ref=%08x\n", rec.cr, ref.cr);
-        if (rec.ca  != ref.ca)  fprintf(stderr, "  ca  rec=%u ref=%u\n", rec.ca, ref.ca);
-        if (ram_diff_off >= 0)
-            fprintf(stderr, "  RAM @ %08x: rec=%02x ref=%02x\n",
-                    RAM_BASE + (u32)ram_diff_off, ramRec[ram_diff_off], ram[ram_diff_off]);
-        // Stop at the first (root-cause) divergence for a clean, fast answer.
+        auto it = g_diffs.find(pc);
+        const bool first = (it == g_diffs.end());
+        DiffInfo& info = g_diffs[pc];
+        info.count++;
+        if (first) {
+            // Build a compact one-line detail of what diverged (first occurrence).
+            char d[256]; int o = 0;
+            for (int i = 0; i < 32 && o < 200; i++)
+                if (rec.gpr[i] != ref.gpr[i])
+                    o += std::snprintf(d + o, sizeof(d) - o, "r%d:%08x/%08x ", i, rec.gpr[i], ref.gpr[i]);
+            if (rec.lr  != ref.lr)  o += std::snprintf(d+o, sizeof(d)-o, "lr:%08x/%08x ", rec.lr, ref.lr);
+            if (rec.ctr != ref.ctr) o += std::snprintf(d+o, sizeof(d)-o, "ctr:%08x/%08x ", rec.ctr, ref.ctr);
+            if (rec.cr  != ref.cr)  o += std::snprintf(d+o, sizeof(d)-o, "cr:%08x/%08x ", rec.cr, ref.cr);
+            if (rec.ca  != ref.ca)  o += std::snprintf(d+o, sizeof(d)-o, "ca:%u/%u ", rec.ca, ref.ca);
+            if (ram_diff_off >= 0)  o += std::snprintf(d+o, sizeof(d)-o, "RAM@%08x:%02x/%02x",
+                                        RAM_BASE+(u32)ram_diff_off, ramRec[ram_diff_off], ram[ram_diff_off]);
+            info.exit_pc = exit_pc;
+            info.detail  = d;
+            fprintf(stderr, "[DIFF] func_%08x diverges: %s\n", pc, d);
+            write_diff_report();   // incremental — survives a kill
+        }
         if (getenv("SUNBRIGHT_DIFF_STOP")) { fflush(stderr); _exit(42); }
     }
     return true;
