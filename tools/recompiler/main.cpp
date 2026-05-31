@@ -177,19 +177,27 @@ static int recompile_mode(const DiscLoader& disc, const DOL& dol, const std::str
         for (const auto& s : dol.sections) if (s.is_text && a == s.addr) return true;
         return false;
     };
+    // Pointer/vtable discovery is OPT-IN (SUNBRIGHT_DISCOVER_POINTERS): it roughly
+    // doubles recompiled coverage, but under the current dispatch call model every
+    // recomp→recomp return bounces to the JIT, so more recompiled code = more
+    // round-trips = slower — and the newly-pulled-in code still has recomp bugs.
+    // Default off keeps the validated, fast 6032-function baseline. Re-enable once
+    // the correctness harness validates the extra code and the C-call model lands.
     std::unordered_set<u32> ptr_funcs;
-    for (const auto& s : dol.sections) {
-        for (u32 off = 0; off + 4 <= s.size; off += 4) {
-            u32 v; std::memcpy(&v, s.data.data() + off, 4); v = __builtin_bswap32(v);
-            if (v & 3) continue;
-            u32 w, prev;
-            if (!text_word(v, w)) continue;          // points into .text?
-            if (w == 0 || is_term(w)) continue;      // first insn must be real code
-            bool boundary = is_section_start(v) || (text_word(v - 4, prev) && is_term(prev));
-            if (boundary) ptr_funcs.insert(v);
+    if (getenv("SUNBRIGHT_DISCOVER_POINTERS")) {
+        for (const auto& s : dol.sections) {
+            for (u32 off = 0; off + 4 <= s.size; off += 4) {
+                u32 v; std::memcpy(&v, s.data.data() + off, 4); v = __builtin_bswap32(v);
+                if (v & 3) continue;
+                u32 w, prev;
+                if (!text_word(v, w)) continue;          // points into .text?
+                if (w == 0 || is_term(w)) continue;      // first insn must be real code
+                bool boundary = is_section_start(v) || (text_word(v - 4, prev) && is_term(prev));
+                if (boundary) ptr_funcs.insert(v);
+            }
         }
+        std::printf("Pointer-referenced function candidates: %zu\n", ptr_funcs.size());
     }
-    std::printf("Pointer-referenced function candidates: %zu\n", ptr_funcs.size());
 
     // Collect all functions from text sections
     for (const auto& [base, data] : dol.text_sections()) {
