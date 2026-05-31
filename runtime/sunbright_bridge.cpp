@@ -20,6 +20,8 @@
 #  include <fstream>
 #  include <algorithm>
 #  include <unordered_set>
+#  include <csetjmp>
+#  include <csignal>
 #endif
 
 using RecompFunc = void (*)(CPUState&);
@@ -79,15 +81,19 @@ namespace {
 constexpr u32 RAM_BASE = 0x80000000, RAM_SIZE = 0x1800000;
 
 struct RegSnap {
-    u32 gpr[32], lr, ctr, cr, pc; u8 ca;
+    u32 gpr[32], lr, ctr, cr, pc; u8 ca, so_ov;
 };
 void snap(const PowerPC::PowerPCState& s, RegSnap& r) {
     for (int i = 0; i < 32; i++) r.gpr[i] = s.gpr[i];
     r.lr = s.spr[SPR_LR]; r.ctr = s.spr[SPR_CTR];
-    r.cr = s.cr.Get(); r.ca = s.xer_ca; r.pc = s.pc;
+    // XER must be captured/restored in full — SO/OV too, not just CA — or the
+    // interpreter run starts with a stale XER[SO] and every cmp (which copies
+    // XER[SO] into the CR) falsely "diverges".
+    r.cr = s.cr.Get(); r.ca = s.xer_ca; r.so_ov = s.xer_so_ov; r.pc = s.pc;
 }
 void restore(PowerPC::PowerPCState& s, const RegSnap& r) {
     for (int i = 0; i < 32; i++) s.gpr[i] = r.gpr[i];
+    s.xer_so_ov = r.so_ov;
     s.spr[SPR_LR] = r.lr; s.spr[SPR_CTR] = r.ctr;
     s.cr.Set(r.cr); s.xer_ca = r.ca; s.pc = r.pc;
 }
@@ -99,6 +105,27 @@ void restore(PowerPC::PowerPCState& s, const RegSnap& r) {
 // /tmp/sunbright_diff_report.txt so results survive a kill.
 struct DiffInfo { long count = 0; u32 exit_pc = 0; std::string detail; };
 static std::map<u32, DiffInfo> g_diffs;
+
+// A recompiled function can SEGFAULT (e.g. a bad pointer from a recomp bug), which
+// would kill the whole harness. Catch SIGSEGV that occurs while we're executing a
+// recomp function under the validator, longjmp back, and treat it as a (severe)
+// divergence — so validation continues across crashing functions.
+static sigjmp_buf g_diff_jmp;
+static volatile sig_atomic_t g_in_recomp = 0;
+static struct sigaction g_old_segv;
+static void diff_segv(int sig, siginfo_t* si, void* ctx) {
+    if (g_in_recomp) { g_in_recomp = 0; siglongjmp(g_diff_jmp, 1); }
+    if (g_old_segv.sa_flags & SA_SIGINFO) { if (g_old_segv.sa_sigaction) g_old_segv.sa_sigaction(sig, si, ctx); }
+    else if (g_old_segv.sa_handler) g_old_segv.sa_handler(sig);
+    else { signal(sig, SIG_DFL); raise(sig); }
+}
+static const bool g_segv_installed = [] {
+    struct sigaction sa{}; sa.sa_sigaction = diff_segv; sa.sa_flags = SA_SIGINFO;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGSEGV, &sa, &g_old_segv);
+    sigaction(SIGBUS,  &sa, nullptr);
+    return true;
+}();
 
 static const std::map<u32, std::string>& func_names() {
     static const std::map<u32, std::string> names = [] {
@@ -141,7 +168,26 @@ bool diff_run(uint32_t pc, RecompFunc fn) {
     // (1) recompiled version — exits via call_ppc which writes ppc + ppc.pc.
     g_recomp_touched_mmio = false;
     CPUState cpu; dolphin_state_to_cpu(ppc, cpu); cpu.pc = pc;
+    g_in_recomp = 1;
+    if (sigsetjmp(g_diff_jmp, 1) != 0) {
+        // The recompiled function segfaulted. Record it as a crash divergence and
+        // recover by committing the interpreter's correct result.
+        g_in_recomp = 0;
+        if (!g_diffs.count(pc)) {
+            DiffInfo& info = g_diffs[pc]; info.count = 1; info.exit_pc = 0;
+            info.detail = "*** SEGFAULT in recomp ***";
+            fprintf(stderr, "[DIFF] func_%08x CRASHED in recomp\n", pc);
+            write_diff_report();
+        } else g_diffs[pc].count++;
+        restore(ppc, s0); std::memcpy(ram, ram0.data(), RAM_SIZE);
+        ppc.pc = pc; ppc.npc = pc;
+        auto& interp = sys.GetInterpreter();
+        // Run the interpreter to the function's return so the game stays correct.
+        for (long st = 0; st < 3'000'000; st++) { interp.SingleStepInner(); if (ppc.pc == s0.lr) break; }
+        return true;
+    }
     fn(cpu);
+    g_in_recomp = 0;
     const bool mmio = g_recomp_touched_mmio;
     RegSnap rec; snap(ppc, rec);
     const u32 exit_pc = ppc.pc;
