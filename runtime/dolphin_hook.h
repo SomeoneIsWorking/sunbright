@@ -25,6 +25,11 @@ void recomp_build_dispatch();
 // Used at every recompiled function call boundary.
 #ifdef HAVE_DOLPHIN_CORE
 #  include "Core/PowerPC/PowerPC.h"
+#  include <csetjmp>
 void dolphin_state_to_cpu(const PowerPC::PowerPCState& src, CPUState& dst);
 void cpu_to_dolphin_state(const CPUState& src, PowerPC::PowerPCState& dst);
+
+// C-call model: install the longjmp target a tail-branch into non-recomp code uses
+// to unwind the recomp C stack. Returns the previous slot (restore it when done).
+sigjmp_buf* sunbright_set_tail_jmp(sigjmp_buf* j);
 #endif

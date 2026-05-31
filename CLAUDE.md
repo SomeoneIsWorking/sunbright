@@ -21,10 +21,8 @@ docs/                Living docs — update whenever architecture changes
 ```
 
 ## How to self-update this file
-When you discover new constraints, add patterns, fix edge cases, or change architecture:
-1. Update the relevant section below
-2. Update `docs/` accordingly
-3. Run `/update-docs` to sync
+Self-evolving workflow is global (`<home>/.claude/CLAUDE.md`). Here specifically: update the
+relevant section below + `docs/`, then run `/update-docs` to sync.
 
 ## Build
 
@@ -76,6 +74,53 @@ JitAsm → __wrap_JitTrampoline (our hook)
            └─ else         → __real_JitTrampoline  → Dolphin JIT
 ```
 
+## Call model (single path — recomp→recomp stays on the native C stack)
+There is **one** call model (the old flag-gated "classic" return-bounce model is gone).
+The emitter renders `bl`/`bctrl` as an inline C call that *continues* after the callee
+returns, `blr` as a C `return`, and `b`/`bctr` that leave a function as `tail_ppc`. So
+recomp→recomp calls and returns stay on the native C stack — no JIT dispatcher
+round-trip, no per-call register-file copy. Implemented in `runtime/dolphin_hook.cpp`:
+  - `call_ppc` (bl/bctrl): recomp target → nested C call; non-recomp target →
+    run it under the Dolphin **interpreter** (`SingleStep`, NOT `SingleStepInner`, so
+    CoreTiming advances and HW-wait/spin loops progress) until control returns to
+    `cpu.lr`, then continue the caller inline.
+  - `tail_ppc` (b/bctr that leave the function): recomp target → nested call then the
+    caller returns; non-recomp target → commit state and `siglongjmp` back to
+    `SunbrightBridge::Run`, unwinding the recomp C stack and letting the CPU loop take
+    over. This is what makes the **boot→main-loop handoff** (a never-returning tail
+    branch into OS/runtime code) work — running it synchronously under the interpreter
+    instead would try to run the whole game inside `SingleStep` and spin. `Run` installs
+    the longjmp target via `sunbright_set_tail_jmp`.
+  - `cpu_to_dolphin_state` writes back XER[SO]/OV too (needed for the C return).
+
+Status: boots reliably (0/16 runs crash) and renders correctly at **full coverage**
+(13460 funcs, CFG + pointer-discovery). The throughput win is in CPU-bound scenes (the
+title screen is vsync-capped). `/recompile` always emits this model.
+
+### Interrupt-delivery hazard (fixed) — do not regress
+Recomp runs on the native C stack and **never consults `ppc.pc` mid-tree**, so an async
+interrupt (exception redirect) can only be delivered cleanly at a recomp→JIT boundary
+(top-level `Run` return / `tail_ppc` handoff). Two boot crashes came from violating
+this; both were intermittent (~timing/race) at full coverage:
+  1. **OS interrupt primitives single-stepped.** `OSDisableInterrupts` (0x803458ac),
+     `OSEnableInterrupts` (0x803458c0), `OSRestoreInterrupts` (0x803458d4) are
+     `mtmsr`-based → JIT-only (`function_needs_jit`), so `call_ppc` ran them via
+     `run_jit_sync` = interpreter `SingleStep`, which checks/delivers external
+     exceptions **every step** → an interrupt could land *inside* `OSDisableInterrupts`
+     (after `mfmsr` reads EE=1, before `mtmsr` clears it), diverting to the exception
+     vector mid-critical-section → state corruption → wild fastmem fault. OS code wraps
+     every critical section in these (3441 calls each during boot). Fix: native
+     overrides in `runtime/overrides/sms_os_intr.cpp` that toggle `MSR[EE]` (0x8000) via
+     `msr_set_raw` (sets MSR + `MSRUpdated()`, **no** synchronous `CheckExceptions()` —
+     delivery deferred to the JIT boundary). Disable never delivers; enable/restore
+     defer. Lesson: any `mtmsr`/MSR-EE primitive must NOT be single-stepped under
+     `run_jit_sync`.
+  2. **main↔EmuThread guest-memory race.** `widescreen_patch_tick`/`movie_skip_tick`
+     poke guest RAM via `GetPointerForRange` every frame on the SDL/main thread; while
+     the EmuThread is in `MemoryManager::Init()` (`State::Starting`) the arena base is
+     being (re)built → torn/stale host pointer → wild write. Fix: gate all main-thread
+     guest-memory pokes on `g_core_running` (`State::Running`) in `main_sdl.cpp`.
+
 ## Hybrid execution: what runs where
 The recompiler deliberately leaves some functions to Dolphin's JIT — `function_needs_jit()`
 in `tools/recompiler/main.cpp` drops any function that writes MSR (`mtmsr`/`rfi`),
@@ -126,9 +171,9 @@ Registered at startup in `runtime/overrides/sms_overrides.cpp`. Consulted by bot
     (the XER[SO]/CR set by the parent's `cmpi` before the switch is missing). These are NOT
     real functions and must NOT be treated as C-call entry points (task #5).
 - Recompiler coverage: `SUNBRIGHT_DISCOVER_POINTERS=1` (recompiler env at `/recompile`
-  time) recompiles vtable/pointer-referenced functions too (6032→13464), but they must
-  be validated by the harness first — and the dispatch call model makes more recomp =
-  more JIT return-bounces = slower until the C-call model lands.
+  time) recompiles vtable/pointer-referenced functions too (6032→13464); more coverage
+  is now a net win because recomp→recomp calls stay on the native C stack (see "Call
+  model"). Discovered entries should still be validated by the harness.
 - Time base: `mftb`/`mftbu` read Dolphin's live TB (`SystemTimers::GetFakeTimeBase()`)
   so delay/timeout loops elapse. A frozen TB → infinite spin.
 

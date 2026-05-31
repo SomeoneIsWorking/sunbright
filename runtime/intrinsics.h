@@ -102,8 +102,15 @@ extern void os_hle_call(CPUState& cpu, u32 address);
 using RecompFunc = void (*)(CPUState&);
 extern RecompFunc recomp_lookup(u32 address);
 
-// Call a PPC address — dispatches to recompiled or JIT
+// Call a PPC address (bl/bctrl) — dispatches to recompiled or JIT. In the C-call
+// model the callee returns and execution continues inline in the caller.
 extern void call_ppc(CPUState& cpu, u32 address);
+
+// Tail-branch to a PPC address (b/bctr that leaves the function). In the C-call
+// model, a recomp target is a nested call (then the caller returns); a non-recomp
+// target unwinds the recomp C stack back to Run and hands control to the CPU loop
+// (the boot→main-loop handoff and other never-returning transitions land here).
+extern void tail_ppc(CPUState& cpu, u32 address);
 
 // Special-purpose registers we don't model in CPUState (HID0/HID2, BATs, DSISR,
 // SRRn, etc.) pass straight through to Dolphin's live PowerPCState.spr[]. This
@@ -118,6 +125,12 @@ extern void spr_set(u32 n, u32 v);
 // by the recompiler, since those can redirect control flow mid-instruction.
 extern u32  msr_get();
 extern void msr_set(u32 v);
+// Like msr_set but WITHOUT the synchronous exception check: updates MSR + Dolphin's
+// derived feature flags, but does not deliver pending interrupts. The C-call model
+// runs recomp on the native C stack and never consults ppc.pc mid-tree, so an
+// exception redirect there would be lost; async interrupts are instead delivered at
+// the recomp→JIT boundary. Used by the OSDisable/Enable/RestoreInterrupts overrides.
+extern void msr_set_raw(u32 v);
 
 // 64-bit time base (mftb/mftbu). Reads Dolphin's live, monotonic time base so it
 // advances with CoreTiming — code that spins until the TB reaches a target (delay

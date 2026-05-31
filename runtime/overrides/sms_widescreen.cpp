@@ -20,7 +20,7 @@
 // TShimmer::perform (USA 0x8019f83c): full-screen heat-distortion. Gecko
 // "0419f83c 4e800020" disables it by writing blr to its entry — we return
 // immediately. SUNBRIGHT_KEEP_SHIMMER=1 keeps it.
-static void ov_heatwave_skip(CPUState& cpu) { call_ppc(cpu, cpu.lr); }
+static void ov_heatwave_skip(CPUState&) { /* stub to blr: return immediately */ }
 static const bool s_heatwave_registered = [] {
     if (!getenv("SUNBRIGHT_KEEP_SHIMMER")) register_override(0x8019f83c, &ov_heatwave_skip);
     return true;

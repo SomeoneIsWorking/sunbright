@@ -64,6 +64,13 @@
 static SDL_Window* g_window  = nullptr;
 static std::atomic<bool> g_focused{false};
 static std::atomic<bool> g_running{true};
+// True only while the core is in State::Running. The main/SDL thread pokes guest
+// RAM each frame (widescreen patch, movie-skip, watchers) via GetPointerForRange;
+// during State::Starting the EmuThread is in HW::Init/MemoryManager::Init building
+// the memory arena, so a concurrent GetPointerForRange can hand back a torn/stale
+// base pointer → wild write. Gate every main-thread guest-memory poke on this.
+static std::atomic<bool> g_core_running{false};
+static inline bool guest_mem_ready() { return g_core_running.load(std::memory_order_acquire); }
 
 // ── Keyboard → GameCube pad ─────────────────────────────────────────────────
 // We inject controller state via Dolphin's per-controller input override (no
@@ -167,6 +174,7 @@ static void widescreen_patch_tick() {
     static const char* w = getenv("SUNBRIGHT_WIDESCREEN");
     static const bool on = !w || atoi(w) != 0;
     if (!on) return;
+    if (!guest_mem_ready()) return;   // arena may be mid-(re)init on the EmuThread
     struct Patch { u32 addr, val; };
     static const Patch patches[] = {
         {0x80412408, 0x3FE38E39},  // projection aspect 1.3333 → 1.7778 (16:9)  [core]
@@ -188,6 +196,7 @@ static void movie_skip_tick(uint32_t pad_bits) {
     static const u8 end_state = (u8)(getenv("SUNBRIGHT_MOVIESKIP_STATE")
         ? strtoul(getenv("SUNBRIGHT_MOVIESKIP_STATE"), nullptr, 0) : 3);
     static const bool log = getenv("SUNBRIGHT_MOVIESKIP_LOG") != nullptr;
+    if (!guest_mem_ready()) return;   // arena may be mid-(re)init on the EmuThread
     u8* st = Core::System::GetInstance().GetMemory().GetPointerForRange(THP_STATE_ADDR, 1);
     if (!st) return;
     const u8 s = *st;
@@ -668,6 +677,7 @@ int main(int argc, char* argv[]) {
             for (int i = 0; i < n; i++) fprintf(stderr, "  [bt] %s\n", syms[i]);
             free(syms);
         }
+        g_core_running.store(s == Core::State::Running, std::memory_order_release);
         if (s == Core::State::Uninitialized) g_running = false;
     });
 
@@ -812,7 +822,7 @@ int main(int argc, char* argv[]) {
         // keep prev/cur, and print the N64Recomp-style midpoint (lerp translation,
         // average rotation) — the interpolation proof on a real game transform.
         static const char* wm = getenv("SUNBRIGHT_WATCHMTX");
-        if (wm) {
+        if (wm && guest_mem_ready()) {
             static const u32 maddr = (u32)strtoul(wm, nullptr, 16);
             static uint32_t lastlog = 0;
             const uint32_t t = SDL_GetTicks();

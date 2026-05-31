@@ -195,8 +195,21 @@ bool diff_run(uint32_t pc, RecompFunc fn) {
         for (long st = 0; st < 3'000'000; st++) { interp.SingleStepInner(); if (ppc.pc == s0.lr) break; }
         return true;
     }
-    fn(cpu);
+    // fn runs the whole call tree on the C stack. It may end by a C `return`
+    // (top-level blr) OR by a tail-branch into non-recomp code that siglongjmps out.
+    // Give it a tail-jmp target so the latter lands here cleanly.
+    bool tailed = false;
+    {
+        sigjmp_buf tjb;
+        sigjmp_buf* prev = sunbright_set_tail_jmp(&tjb);
+        if (sigsetjmp(tjb, 0) == 0) fn(cpu);
+        else                        tailed = true;   // tail_ppc already committed ppc.pc
+        sunbright_set_tail_jmp(prev);
+    }
     g_in_recomp = 0;
+    // On a normal C return nothing set ppc.pc, so commit cpu→ppc and use the return
+    // address as the exit PC; on a tail-branch exit, tail_ppc already committed both.
+    if (!tailed) { cpu_to_dolphin_state(cpu, ppc); ppc.pc = cpu.lr; }
     const bool mmio = g_recomp_touched_mmio;
     RegSnap rec; snap(ppc, rec);
     const u32 exit_pc = ppc.pc;
@@ -316,12 +329,25 @@ bool Run(uint32_t pc) {
         }
     }
 
-    // Call the native function.
-    // Every exit path calls call_ppc(cpu, next_addr) which writes back state and sets
-    // ppc.pc to the correct continuation address before returning here.
+    // Call the native function. It runs the whole call tree on the native C stack and
+    // can exit two ways:
+    //  (a) the top-level function returns via a C `return` (its blr) — nothing set
+    //      ppc.pc, so commit our state and continue the JIT at cpu.lr;
+    //  (b) a tail-branch into non-recomp code siglongjmp'd back here having already
+    //      committed ppc.pc — just fall through to the JIT.
     static const bool trace = getenv("SUNBRIGHT_TRACE") != nullptr;
     if (trace) fprintf(stderr, "[recomp] running func_%08x\n", pc);
-    fn(cpu);
+    {
+        sigjmp_buf jb;
+        sigjmp_buf* prev = sunbright_set_tail_jmp(&jb);
+        if (sigsetjmp(jb, 0) == 0) {
+            fn(cpu);
+            auto& ppc = Core::System::GetInstance().GetPPCState();
+            cpu_to_dolphin_state(cpu, ppc);
+            ppc.pc = ppc.npc = cpu.lr;
+        }
+        sunbright_set_tail_jmp(prev);
+    }
     if (trace) fprintf(stderr, "[recomp] func_%08x returned\n", pc);
 #else
     fprintf(stderr, "[sunbright] Run() called without HAVE_DOLPHIN_CORE — no-op\n");

@@ -1,10 +1,17 @@
 #include "c_emitter.h"
 #include <cstdarg>
 #include <cstdio>
+#include <cstdlib>
 #include <cassert>
 #include <cstring>
 #include <algorithm>
 #include <unordered_set>
+
+// Call model: recomp→recomp calls and returns stay on the native C stack. `bl`/
+// `bctrl` emit an inline C call that *continues* after the callee returns; `blr`
+// emits a C `return`; `b`/`bctr` that leave the function emit `tail_ppc`. The
+// runtime (call_ppc/tail_ppc/SunbrightBridge::Run, runtime/dolphin_hook.cpp) bridges
+// to Dolphin for non-recompiled targets.
 
 // PPC rotate-word mask MASK(mb, me): set bits mb..me inclusive in big-endian bit
 // numbering (MSB = bit 0 = C bit 31), WRAPPING when mb > me (bits mb..31 and
@@ -389,11 +396,11 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
         bool intra = ctx.branch_targets.count(i.target) > 0;
         if (i.lk) {
             line("cpu.lr = 0x%xu;", i.pc + 4);
-            line("call_ppc(cpu, 0x%xu); return;", i.target);
+            line("call_ppc(cpu, 0x%xu);", i.target);          // call, continue inline
         } else if (intra) {
             line("goto lbl_%x;", i.target);
         } else if (i.target != 0) {
-            line("call_ppc(cpu, 0x%xu); return;", i.target);
+            line("tail_ppc(cpu, 0x%xu); return;", i.target);  // tail branch out of the function (`b target`)
         } else {
             line("return; // indirect unconditional branch");
         }
@@ -424,7 +431,8 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
         } else if (intra) {
             line("if (%s) goto lbl_%x;", parts.c_str(), i.target);
         } else {
-            line("if (%s) { call_ppc(cpu, 0x%xu); return; }", parts.c_str(), i.target);
+            // conditional tail branch out of the function
+            line("if (%s) { tail_ppc(cpu, 0x%xu); return; }", parts.c_str(), i.target);
         }
         break;
     }
@@ -432,11 +440,10 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
     case PPCOp::BCLR:
         if (i.bo == 0x14) {  // always blr
             if (i.lk) {
-                // blrl: save return addr in LR, then jump to old LR
-                line("{ u32 _tgt = cpu.lr; cpu.lr = 0x%xu; call_ppc(cpu, _tgt); return; }", i.pc + 4);
+                // blrl: save return addr in LR, then call old LR (continues inline)
+                line("{ u32 _tgt = cpu.lr; cpu.lr = 0x%xu; call_ppc(cpu, _tgt); }", i.pc + 4);
             } else {
-                // blr: call_ppc with LR so the JIT dispatcher picks up the right next PC
-                line("call_ppc(cpu, cpu.lr); return;");
+                line("return;");  // blr → C return
             }
         } else {
             // Conditional blr — complex BO decode
@@ -446,16 +453,21 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
                 cond = cr_bit(i.bi);
                 if (!(i.bo & 0x08)) cond = "!" + cond;
             }
-            if (i.lk)
-                line("if (%s) { u32 _tgt = cpu.lr; cpu.lr = 0x%xu; call_ppc(cpu, _tgt); return; }", cond.c_str(), i.pc + 4);
-            else
-                line("if (%s) { call_ppc(cpu, cpu.lr); return; }", cond.c_str());
+            if (i.lk) {
+                line("if (%s) { u32 _tgt = cpu.lr; cpu.lr = 0x%xu; call_ppc(cpu, _tgt); }", cond.c_str(), i.pc + 4);
+            } else {
+                line("if (%s) return;", cond.c_str());  // conditional blr → conditional C return
+            }
         }
         break;
 
     case PPCOp::BCCTR:
-        if (i.lk) line("cpu.lr = 0x%xu;", i.pc + 4);
-        line("call_ppc(cpu, cpu.ctr);");
+        if (i.lk) {                                     // bctrl — indirect call
+            line("cpu.lr = 0x%xu;", i.pc + 4);
+            line("call_ppc(cpu, cpu.ctr);");
+        } else {                                        // bctr — computed/tail branch
+            line("tail_ppc(cpu, cpu.ctr); return;");
+        }
         break;
 
     // ── SPR moves ───────────────────────────────────────────────────────────

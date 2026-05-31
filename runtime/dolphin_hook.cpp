@@ -4,9 +4,11 @@
 #include <cstdlib>
 #ifdef HAVE_DOLPHIN_CORE
 #  include "Core/HW/SystemTimers.h"
+#  include "Core/PowerPC/Interpreter/Interpreter.h"
 #endif
 #include <cstdio>
 #include <cstring>
+#include <csetjmp>
 #include <algorithm>
 #include <unordered_map>
 #ifdef HAVE_DOLPHIN_CORE
@@ -92,28 +94,69 @@ void call_ppc(CPUState& cpu, u32 address) {
     }
     RecompFunc fn = recomp_lookup(address);
     if (fn) {
+        // Recompiled target → nested native call. Control comes back here when the
+        // callee returns (its blr is a C return); the caller then continues inline.
         fn(cpu);
         return;
     }
 #ifdef HAVE_DOLPHIN_CORE
-    // Non-recompiled call: sync back to Dolphin state and let the JIT handle it.
-    // Dolphin's JIT picks up the PC from PowerPCState.pc via the dispatcher.
-    // This path is HOT (every recomp→JIT-only call), so the trace log must be
-    // gated — an fprintf here ran ~1M times/run and tanked the framerate.
     static const bool trace = getenv("SUNBRIGHT_TRACE") != nullptr;
     if (trace) {
         static u32 last_non_recomp = 0;
         if (address != last_non_recomp) {
-            fprintf(stderr, "[call_ppc] non-recomp exit to 0x%08x\n", address);
+            fprintf(stderr, "[call_ppc] non-recomp call to 0x%08x\n", address);
             last_non_recomp = address;
         }
     }
     auto& ppc = Core::System::GetInstance().GetPPCState();
+    // Non-recomp callee: run it to completion under the interpreter and return to the
+    // C caller. We stop when control returns to cpu.lr (the address the caller put in
+    // LR for a `bl`, or the caller's own return target for a tail branch) — that is
+    // precisely the callee's final blr. Running it synchronously keeps the rest of
+    // the caller on the native C stack.
+    const u32 ret = cpu.lr;
     cpu_to_dolphin_state(cpu, ppc);
-    ppc.pc = address;
-    // The JIT dispatcher will continue execution from ppc.pc on return.
+    ppc.pc = ppc.npc = address;
+    auto& interp = Core::System::GetInstance().GetInterpreter();
+    // SingleStep (not SingleStepInner) advances CoreTiming and checks exceptions each
+    // instruction, so HW-wait/spin loops inside the callee (EXI/DI/VI/DSP polling)
+    // make progress and their interrupts actually fire.
+    constexpr long MAX = 500'000'000;
+    long n = 0;
+    while (ppc.pc != ret && n++ < MAX) interp.SingleStep();
+    if (n >= MAX)
+        fprintf(stderr, "[sunbright] run_jit_sync(%08x→%08x) exceeded step budget\n", address, ret);
+    dolphin_state_to_cpu(ppc, cpu);
 #else
     fprintf(stderr, "[sunbright] call_ppc 0x%08x: not recompiled and no JIT available\n", address);
+#endif
+}
+
+// ── Tail-branch handoff ──────────────────────────────────────────────────────
+// Set by SunbrightBridge::Run for the duration of a top-level recomp entry so a
+// tail-branch into non-recomp code can siglongjmp back out, abandoning the recomp
+// C-call stack (which is exactly what the PPC tail branch does to its own stack).
+static thread_local sigjmp_buf* g_tail_jmp = nullptr;
+sigjmp_buf* sunbright_set_tail_jmp(sigjmp_buf* j) {
+    sigjmp_buf* prev = g_tail_jmp; g_tail_jmp = j; return prev;
+}
+
+void tail_ppc(CPUState& cpu, u32 address) {
+    RecompFunc fn = recomp_lookup(address);
+    if (fn) { fn(cpu); return; }   // tail to recomp → nested call; the caller then returns
+#ifdef HAVE_DOLPHIN_CORE
+    auto& ppc = Core::System::GetInstance().GetPPCState();
+    cpu_to_dolphin_state(cpu, ppc);
+    ppc.pc = ppc.npc = address;
+    if (g_tail_jmp) {
+        // Hand the committed state to the CPU loop and unwind every recomp C frame
+        // back to Run. Correct even when an intermediate caller was a non-tail `bl`:
+        // its continuation simply resumes under the JIT from the shared state instead
+        // of on the C stack.
+        siglongjmp(*g_tail_jmp, 1);
+    }
+#else
+    fprintf(stderr, "[sunbright] tail_ppc 0x%08x: no JIT available\n", address);
 #endif
 }
 
@@ -136,6 +179,13 @@ void msr_set(u32 v) {
     sys.GetPowerPC().MSRUpdated();
     sys.GetPowerPC().CheckExceptions();
 }
+void msr_set_raw(u32 v) {
+    // No CheckExceptions(): see intrinsics.h. Keeps Dolphin's derived MSR state
+    // coherent (MSRUpdated) but defers interrupt delivery to the JIT boundary.
+    auto& sys = Core::System::GetInstance();
+    sys.GetPPCState().msr.Hex = v;
+    sys.GetPowerPC().MSRUpdated();
+}
 u64 tb_get() {
     // GetFakeTimeBase() derives the TB live from CoreTiming ticks. ReadFullTimeBaseValue()
     // would return the *stored* spr[TL], which Dolphin only refreshes lazily — it stays
@@ -150,6 +200,7 @@ u32  spr_get(u32 n)        { return g_spr[n & 1023]; }
 void spr_set(u32 n, u32 v) { g_spr[n & 1023] = v; }
 u32  msr_get()            { return g_msr; }
 void msr_set(u32 v)       { g_msr = v; }
+void msr_set_raw(u32 v)   { g_msr = v; }
 u64  tb_get()             { return g_tb += 512; }
 #endif
 
@@ -184,6 +235,7 @@ void cpu_to_dolphin_state(const CPUState& src, PowerPC::PowerPCState& dst) {
     dst.pc = src.pc;
     dst.cr.Set(cr_to_u32(src));
     dst.xer_ca = src.xer.ca;
+    dst.xer_so_ov = (src.xer.so << 1) | src.xer.ov;   // bit1=SO, bit0=OV
     for (int i = 0; i < 8; i++) dst.spr[912 + i] = src.gqr[i];
 }
 #endif

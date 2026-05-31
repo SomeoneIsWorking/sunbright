@@ -14,3 +14,6 @@ sb*.log
 ms*.log
 *.lock
 mario_candidates.txt
+
+# Local scratch workspace (core dumps, logs, extracted DOL, frames)
+scratch/
