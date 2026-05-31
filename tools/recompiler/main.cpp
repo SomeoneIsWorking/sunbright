@@ -206,18 +206,37 @@ static int recompile_mode(const DiscLoader& disc, const DOL& dol, const std::str
             u32 fend  = (fi + 1 < funcs.size()) ? funcs[fi + 1] : (base + (u32)data.size());
             fend = std::min(fend, base + (u32)data.size());
 
-            auto& instrs = func_instrs[faddr];
-            for (u32 addr = faddr; addr < fend; addr += 4) {
-                u32 off = addr - base;
-                u32 w_be;
-                std::memcpy(&w_be, data.data() + off, 4);
-                u32 w = __builtin_bswap32(w_be);
-                instrs.push_back(decode(w, addr));
-                if (is_unconditional_branch(instrs.back())) {
-                    addr += 4;  // include the delay-slot (PPC has none, so just stop)
-                    break;
+            // Collect the function's FULL control-flow graph (not just the first
+            // basic block). Walk from the entry, following intra-function branch
+            // targets (b/bc, non-call) within [faddr, fend); a linear run ends at
+            // an unconditional branch or return, and other reachable blocks are
+            // picked up from the worklist. Previously collection stopped at the
+            // first unconditional branch, so everything after it bounced to the
+            // JIT — owning the whole CFG keeps it all in recomp.
+            auto fetch = [&](u32 a) {
+                u32 w_be; std::memcpy(&w_be, data.data() + (a - base), 4);
+                return decode(__builtin_bswap32(w_be), a);
+            };
+            std::map<u32, PPCInstr> by_addr;
+            std::unordered_set<u32> done;
+            std::vector<u32> work{faddr};
+            while (!work.empty()) {
+                u32 a = work.back(); work.pop_back();
+                while (a >= faddr && a < fend && !done.count(a)) {
+                    done.insert(a);
+                    PPCInstr ins = fetch(a);
+                    by_addr[a] = ins;
+                    if (!ins.lk) {                       // not a call: an intra-fn jump?
+                        u32 t = branch_target(ins);
+                        if (t >= faddr && t < fend) work.push_back(t);
+                    }
+                    if (is_unconditional_branch(ins)) break;   // b/blr/bctr/rfi end the run
+                    a += 4;                              // fall through to next instr
                 }
             }
+            auto& instrs = func_instrs[faddr];
+            instrs.reserve(by_addr.size());
+            for (auto& kv : by_addr) instrs.push_back(kv.second);   // sorted by address
         }
     }
 
@@ -288,7 +307,11 @@ static int recompile_mode(const DiscLoader& disc, const DOL& dol, const std::str
             ctx.func_addr = addr;
             ctx.instrs    = func_instrs[addr];
 
-            u32 func_end = addr + (u32)(ctx.instrs.size() * 4);
+            // CFG-collected instrs may have gaps, so size*4 underestimates the
+            // span; use the last (highest-address) instruction so every
+            // intra-function branch target falls inside and gets a goto label.
+            u32 func_end = ctx.instrs.empty() ? addr
+                         : ctx.instrs.back().pc + 4;
             for (const auto& instr : ctx.instrs) {
                 u32 tgt = branch_target(instr);
                 if (tgt != 0 && tgt >= addr && tgt < func_end)
