@@ -82,20 +82,29 @@ constexpr u32 RAM_BASE = 0x80000000, RAM_SIZE = 0x1800000;
 
 struct RegSnap {
     u32 gpr[32], lr, ctr, cr, pc; u8 ca, so_ov;
+    // FPRs (raw bits, both paired-single slots) + FPSCR. The recomp run clobbers
+    // these on ppc; without restoring them the interpreter reconstruction reads the
+    // recomp's float results as its *inputs*, so every FP-heavy function (sinf/powf/
+    // matan/GXSetFog/audio) falsely diverges on the downstream integer/CR/CA bits.
+    u64 ps0[32], ps1[32]; u32 fpscr;
 };
 void snap(const PowerPC::PowerPCState& s, RegSnap& r) {
     for (int i = 0; i < 32; i++) r.gpr[i] = s.gpr[i];
+    for (int i = 0; i < 32; i++) { r.ps0[i] = s.ps[i].PS0AsU64(); r.ps1[i] = s.ps[i].PS1AsU64(); }
     r.lr = s.spr[SPR_LR]; r.ctr = s.spr[SPR_CTR];
     // XER must be captured/restored in full — SO/OV too, not just CA — or the
     // interpreter run starts with a stale XER[SO] and every cmp (which copies
     // XER[SO] into the CR) falsely "diverges".
     r.cr = s.cr.Get(); r.ca = s.xer_ca; r.so_ov = s.xer_so_ov; r.pc = s.pc;
+    r.fpscr = s.fpscr.Hex;
 }
 void restore(PowerPC::PowerPCState& s, const RegSnap& r) {
     for (int i = 0; i < 32; i++) s.gpr[i] = r.gpr[i];
+    for (int i = 0; i < 32; i++) { s.ps[i].SetPS0(r.ps0[i]); s.ps[i].SetPS1(r.ps1[i]); }
     s.xer_so_ov = r.so_ov;
     s.spr[SPR_LR] = r.lr; s.spr[SPR_CTR] = r.ctr;
     s.cr.Set(r.cr); s.xer_ca = r.ca; s.pc = r.pc;
+    s.fpscr.Hex = r.fpscr;
 }
 
 // ── Correctness harness ──────────────────────────────────────────────────────
