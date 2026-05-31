@@ -78,11 +78,21 @@ u32 psq_quantize(f64 val, u32 type, u32 scale);
 // FP single rounding (frsp)
 inline f64 frsp(f64 v) { return (f32)v; }
 
-// FP reciprocal estimate (fres) — approximate
-inline f64 fres(f64 v) { return 1.0 / v; }
-
-// FP reciprocal sqrt estimate (frsqrte)
+// FP reciprocal estimate (fres) / reciprocal-sqrt estimate (frsqrte).
+// The Gekko/Broadway FPU computes these with a piecewise lookup-table approximation
+// (~12-bit accurate), NOT true 1.0/v. Software that refines the estimate with
+// Newton-Raphson (e.g. matan/the math runtime) is sensitive to the exact estimate
+// bits, so we call Dolphin's bit-accurate reproduction of the hardware table rather
+// than a full-precision divide (which lands on a different result after refinement +
+// fctiwz). Falls back to the precise form in a standalone (no-Dolphin) build.
+#ifdef HAVE_DOLPHIN_CORE
+namespace Common { double ApproximateReciprocal(double); double ApproximateReciprocalSquareRoot(double); }
+inline f64 fres(f64 v)    { return Common::ApproximateReciprocal(v); }
+inline f64 frsqrte(f64 v) { return Common::ApproximateReciprocalSquareRoot(v); }
+#else
+inline f64 fres(f64 v)    { return 1.0 / v; }
 inline f64 frsqrte(f64 v) { return 1.0 / std::sqrt(v); }
+#endif
 
 // OS HLE call — implemented in runtime/os_hle.cpp
 extern void os_hle_call(CPUState& cpu, u32 address);

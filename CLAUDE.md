@@ -114,7 +114,17 @@ Registered at startup in `runtime/overrides/sms_overrides.cpp`. Consulted by bot
   also compares RAM. Skips MMIO-reading and long-loop functions (false positives).
   Workflow: play through a scene → read the report → fix the named functions in the
   emitter/intrinsics → repeat. See `diff_run()` in `runtime/sunbright_bridge.cpp`.
-  (Found the `rlwinm` wrap-mask and `fcmpu` FU-bit bugs this way.)
+  (Found the `rlwinm` wrap-mask, `fcmpu` FU-bit, register-form `addc`, and full-precision
+  `fres`/`frsqrte` bugs this way.)
+  - **The harness `RegSnap` MUST snapshot/restore FPRs (both PS slots) + FPSCR**, not just
+    GPR/CR/XER. The recomp run clobbers `ppc.ps[]`; without restoring them, the interpreter
+    reconstruction reads the recomp's float *results* as its inputs → every FP-heavy
+    function (sinf/powf/matan/GXSetFog/audio) falsely diverges on downstream int/CR/CA bits.
+  - **Known false-positive class — pointer-discovered interior labels.** `SUNBRIGHT_DISCOVER_POINTERS`
+    registers jump-table case bodies (e.g. the `80364xxx` cluster sharing epilogue `80364ad4`)
+    as if they were function entries. Validated standalone they show benign CR0 divergences
+    (the XER[SO]/CR set by the parent's `cmpi` before the switch is missing). These are NOT
+    real functions and must NOT be treated as C-call entry points (task #5).
 - Recompiler coverage: `SUNBRIGHT_DISCOVER_POINTERS=1` (recompiler env at `/recompile`
   time) recompiles vtable/pointer-referenced functions too (6032→13464), but they must
   be validated by the harness first — and the dispatch call model makes more recomp =
@@ -172,6 +182,8 @@ Update this table as ppc_decoder.cpp gains coverage:
 | Rotate/Shift (rlwinm, slw, srw, etc.) | ✅ | |
 | FP single (fadds, fsubs, fmuls, etc.) | ✅ | |
 | FP double (fadd, fsub, fmul, etc.) | ✅ | |
+| fres / frsqrte (recip estimates) | ✅ | bit-accurate: call Dolphin `Common::ApproximateReciprocal[SquareRoot]` (Gekko ~12-bit table), NOT `1.0/v` — Newton-Raphson refiners (matan) need exact estimate bits |
+| addic vs addc | ✅ | distinct ops: `addic` (op12/13)=rA+SIMM, `addc` (op31/xo10)=rA+rB — were both conflated as ADDC w/ immediate emit, breaking register-form addc carry |
 | CR ops (crand, cror, etc.) | ✅ | |
 | SPR — modeled (LR/CTR/XER/GQR) | ✅ | in CPUState |
 | SPR — HW (HID/L2CR/WPAR/BAT…) | ✅ | function routed to Dolphin JIT (side effects) |
@@ -183,7 +195,7 @@ Update this table as ppc_decoder.cpp gains coverage:
 | mftb (time base read) | ✅ | monotonic fake counter |
 | mffs / mtfsf / mtfsb0/1 | ✅ | FPSCR modeled in CPUState |
 | psq_lx / ps_cmpo0 (indexed PS) | ❌ | Add to opcode 4 decoder |
-| fcmpo | ❌ | Ordered FP compare — trivial |
+| fcmpo | ✅ | Ordered FP compare — same as fcmpu for our purposes (no FP exceptions modeled) |
 
 ## Known SMS-specific patterns
 - Heavy psq_l/psq_st usage for position/velocity data — do not NOP these

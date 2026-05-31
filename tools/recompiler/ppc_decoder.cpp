@@ -119,11 +119,11 @@ PPCInstr decode(u32 word, u32 pc) {
     // ── Opcode 11: cmpi
     case 11: i.op = PPCOp::CMPI; break;
 
-    // ── Opcode 12: addic
-    case 12: i.op = PPCOp::ADDC; break;  // addic = addi + carry
+    // ── Opcode 12: addic (immediate, rA + SIMM)
+    case 12: i.op = PPCOp::ADDIC; break;
 
     // ── Opcode 13: addic. (addic + CR0 update)
-    case 13: i.op = PPCOp::ADDC; i.rc = 1; break;
+    case 13: i.op = PPCOp::ADDIC; i.rc = 1; break;
 
     // ── Opcode 14: addi (li when rA==0)
     case 14: i.op = PPCOp::ADDI; break;

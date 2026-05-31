@@ -161,9 +161,14 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
         set_cr0(i, d);
         break;
 
-    case PPCOp::ADDC:
+    case PPCOp::ADDIC:  // addic: rA + SIMM, set CA (immediate form)
         line("{ u32 _r = %s + %d; cpu.xer.ca = add_carry(%s,(u32)%d); %s=_r; }",
              a.c_str(), (int)i.simm, a.c_str(), (int)i.simm, d.c_str());
+        set_cr0(i, d);
+        break;
+    case PPCOp::ADDC:   // addc: rA + rB, set CA (register form)
+        line("{ u32 _r = %s + %s; cpu.xer.ca = add_carry(%s,%s); %s=_r; }",
+             a.c_str(), b.c_str(), a.c_str(), b.c_str(), d.c_str());
         set_cr0(i, d);
         break;
 
