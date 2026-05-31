@@ -104,11 +104,21 @@ Registered at startup in `runtime/overrides/sms_overrides.cpp`. Consulted by bot
   if a hang reproduces here too it's not our recomp.
 - `SUNBRIGHT_TRACE=1` — log every recompiled function entry (find spin loops by the
   function that repeats; identify the loop's non-recomp caller via `[call_ppc]` exits).
-- `SUNBRIGHT_DIFF=1` (+`SUNBRIGHT_DIFF_STOP=1`) — differential validator: per recomp
-  function, runs our recomp vs Dolphin's interpreter from the same state and reports
-  the first function whose registers diverge at a matching exit PC. Skips MMIO-reading
-  and long-loop functions (false positives). Slow but pinpoints the root-cause function.
-  See `diff_run()` in `runtime/sunbright_bridge.cpp`.
+- `SUNBRIGHT_DIFF=1` — recomp correctness **harness**: per recomp function, runs our
+  recomp vs Dolphin's interpreter from the same state and compares register/RAM at a
+  matching exit PC. Aggregates EVERY diverging function (deduped, counted, named from
+  `reference/sms_gmse01_funcs.txt`) into a frequency-sorted, incrementally-written
+  report at `/tmp/sunbright_diff_report.txt`. Each function is validated ONCE then runs
+  at normal speed (so you can play through scenes); `SUNBRIGHT_DIFF_ALL=1` re-diffs every
+  call; `SUNBRIGHT_DIFF_STOP=1` halts at the first divergence; `SUNBRIGHT_DIFF_RAM=1`
+  also compares RAM. Skips MMIO-reading and long-loop functions (false positives).
+  Workflow: play through a scene → read the report → fix the named functions in the
+  emitter/intrinsics → repeat. See `diff_run()` in `runtime/sunbright_bridge.cpp`.
+  (Found the `rlwinm` wrap-mask and `fcmpu` FU-bit bugs this way.)
+- Recompiler coverage: `SUNBRIGHT_DISCOVER_POINTERS=1` (recompiler env at `/recompile`
+  time) recompiles vtable/pointer-referenced functions too (6032→13464), but they must
+  be validated by the harness first — and the dispatch call model makes more recomp =
+  more JIT return-bounces = slower until the C-call model lands.
 - Time base: `mftb`/`mftbu` read Dolphin's live TB (`SystemTimers::GetFakeTimeBase()`)
   so delay/timeout loops elapse. A frozen TB → infinite spin.
 

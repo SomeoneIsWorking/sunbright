@@ -19,6 +19,7 @@
 #  include <map>
 #  include <fstream>
 #  include <algorithm>
+#  include <unordered_set>
 #endif
 
 using RecompFunc = void (*)(CPUState&);
@@ -226,7 +227,18 @@ bool Run(uint32_t pc) {
 
 #ifdef HAVE_DOLPHIN_CORE
     static const bool diff = getenv("SUNBRIGHT_DIFF") != nullptr;
-    if (diff) return diff_run(pc, fn);
+    if (diff) {
+        // Validate each function ONCE (first call), then run it at normal recomp
+        // speed — otherwise diffing every call is too slow to reach rendering
+        // scenes. SUNBRIGHT_DIFF_ALL re-diffs every call (catches input-dependent
+        // divergences, but slow).
+        static const bool diff_all = getenv("SUNBRIGHT_DIFF_ALL") != nullptr;
+        static std::unordered_set<u32> validated;
+        if (diff_all || !validated.count(pc)) {
+            validated.insert(pc);
+            return diff_run(pc, fn);
+        }
+    }
 
     // Translate Dolphin's live ppcState into our CPUState
     CPUState cpu;
