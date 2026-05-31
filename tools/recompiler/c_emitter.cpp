@@ -597,7 +597,11 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
         line("%s = (%s >= 0.0) ? %s : %s;", fd.c_str(), fa.c_str(), fc.c_str(), fb.c_str());
         break;
     case PPCOp::FCMPU:
-        line("{ double _a=%s,_b=%s; cpu.cr[%d].lt=_a<_b; cpu.cr[%d].gt=_a>_b; cpu.cr[%d].eq=_a==_b; cpu.cr[%d].so=0; }",
+        // The CR field's bit-3 (the .so slot) is the FU "unordered" flag for FP
+        // compares — set when either operand is NaN (not hardcoded 0). A wrong FU
+        // sends bun/bns branches the wrong way (found via the diff harness: atan2f
+        // returned Inf instead of NaN).
+        line("{ double _a=%s,_b=%s; cpu.cr[%d].lt=_a<_b; cpu.cr[%d].gt=_a>_b; cpu.cr[%d].eq=_a==_b; cpu.cr[%d].so=(std::isnan(_a)||std::isnan(_b)); }",
              fa.c_str(), fb.c_str(), i.crfD, i.crfD, i.crfD, i.crfD);
         break;
     case PPCOp::FCMPO:  // ordered compare — same result as FCMPU for our purposes
