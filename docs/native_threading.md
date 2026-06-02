@@ -80,7 +80,28 @@ fpr @0x90, fpscr @0x190, srr0 @0x198, srr1 @0x19C, gqr @0x1A4, psf @0x1C8.
    pending DSP/DVD/VI IRQ fires; its (guest) handler calls `OSWakeupThread` (our HLE) → marks
    a thread ready → scheduler grants it the token. This replaces the GC idle thread.
 
+## Finding (2026-06-02): interception must be universal
+Overrides (`SUNBRIGHT_OVERRIDE`) are only consulted on the **recomp path** (`recomp_lookup`
+in `call_ppc` / `Run`). When code runs under the **interpreter** inside `run_jit_sync`, the
+interpreter executes raw PPC and never consults `override_lookup` — so the override is
+bypassed. Confirmed live: with a trace override on `OSCreateThread`+lifecycle, **zero** fired
+during boot→audio-init, because that whole region runs under the interpreter. The entry into
+the interpreter here is a `call_ppc` to an **interior** address of `__OSInitAudioSystem`
+(`0x80343fe4`, mid-function — not a registered recomp entry, so `recomp_lookup` misses), and
+once in `run_jit_sync` everything below (including `OSCreateThread` and the scheduler) is
+interpreted. The blocking OS calls we must replace happen *under the interpreter*.
+
+⇒ **Prerequisite for native threading:** the OS primitives must be intercepted regardless of
+execution backend. Recomp-native option (preferred, no new Dolphin coupling): make the
+`run_jit_sync` loop **recomp/override-aware** — before stepping, if `ppc.pc` is an override
+or a recomp entry, run that instead of single-stepping (this both fires overrides everywhere
+and lets recomp re-engage inside interpreter runs). Care: mid-function PCs, and avoid
+re-entrancy hazards. This lands before any native scheduler work.
+
 ## Phasing
+- **Phase 0a — universal interception (prerequisite):** `run_jit_sync` consults
+  overrides/recomp entries so OS-primitive overrides fire under the interpreter too. Verify
+  with the `SUNBRIGHT_OSTRACE` trace actually logging `OSCreateThread` during boot.
 - **Phase 0 — foundation:** per-thread `CPUState`, CPU token, GuestThread registry, adopt
   thread 0, native scheduler core (pick highest-priority ready, grant token). Compiles, boots
   unchanged (still one thread until something creates a second).
