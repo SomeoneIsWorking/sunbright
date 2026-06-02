@@ -17,6 +17,26 @@ no step budget, no dependence on emulated timing. A blocked thread is simply a h
 parked on a condvar, so its continuation lives on its own native C stack (no
 "resume-mid-function" problem).
 
+## Threading model (clarified 2026-06-03)
+The goal is **not parallelism**. The emulated machine is single-core, and we keep it that
+way: exactly one guest context runs at a time (the CPU token — already built). "Native
+threads" here means the *older-console-port* pattern, not running game logic on many cores:
+
+- The **process main thread = SDL/subsystem thread**: window, input, frame presentation,
+  vblank/present timing — the host side.
+- The **game runs as the second thread** (today: Dolphin's EmuThread running recomp).
+- The game's **blocking waits are satisfied by a subsystem host thread signalling a native
+  mutex/condvar.** The canonical example: a "wait for vblank" blocks the game thread on a
+  condvar that the present/vblank thread signals once per frame. The audio/DSP and DVD waits
+  follow the same shape — a subsystem host thread does the work and signals the waiter.
+
+⇒ This **supersedes** the earlier "hard part" (a native idle/driver advancing Dolphin's
+CoreTiming so an emulated DSP/DVD/VI interrupt fires to wake a thread). Instead the subsystem
+host thread signals the wake **directly** via native sync — fewer moving parts, and it
+removes a dependence on Dolphin's interrupt/CoreTiming plumbing. The CPU-token + cooperative
+scheduler substrate still applies for the game's own (cooperative, non-parallel) threads;
+what changes is *where wakes come from*.
+
 ## Current execution model (what we're changing)
 - `runtime/jit_hook.cpp`: `--wrap` on `JitTrampoline` → `SunbrightBridge::Run(pc)` when the
   block is recompiled. Runs **on Dolphin's EmuThread**.
