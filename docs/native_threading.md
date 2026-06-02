@@ -230,11 +230,15 @@ recomp-path-specific deferred-delivery and must NOT fire under the interpreter).
 - **Phase 0 — foundation:** per-thread `CPUState`, CPU token, GuestThread registry, adopt
   thread 0, native scheduler core (pick highest-priority ready, grant token). Compiles, boots
   unchanged (still one thread until something creates a second).
-  - ✅ **Done (2026-06-02): the CPU-token + cooperative scheduler core**, `runtime/native_threads.{h,cpp}`:
-    `spawn`/`block`/`make_ready`/`run_and_wait` over real host threads, one token holder at
-    a time, highest-priority-Ready (FIFO among ties) selection, condvar parking (no spin).
-    Proven in isolation by `nthr::self_test()` (`SUNBRIGHT_NTHR_SELFTEST=1`): two host
-    threads, serialized, round-robin, 5/5 PASS (`concurrent=no`). Not yet wired to the game.
+  - ✅ **Done (2026-06-02): cooperative scheduler core**, `runtime/native_threads.{h,cpp}`:
+    `spawn`/`block`/`make_ready`/`run_and_wait`, highest-priority-Ready (FIFO among ties),
+    parking with no spin. Proven by `nthr::self_test()` (`SUNBRIGHT_NTHR_SELFTEST=1`).
+  - ✅ **Done (2026-06-03): converted to the fiber model** (the decided execution context).
+    Guest threads are now `ucontext` fibers multiplexed on ONE thread (`swapcontext`),
+    single-threaded cooperative ⇒ **no locks**. Validated by the same API tests: round-robin,
+    the SMS producer/consumer starvation pattern (lower-prio consumer not starved), and a
+    fiber + `siglongjmp`-with-per-fiber-jmpbuf test — 5/5 PASS. Keeps everything on one
+    thread, so Dolphin's CPU-thread identity is intact when this is wired in. Not yet wired.
   - Next: adopt the boot thread as guest thread 0 (link it to the guest `OSThread*` at the
     low-mem current-thread slot) and run a real recompiled function body on a spawned guest
     thread under the token — then layer the OS-primitive overrides (Phase 0a/1).

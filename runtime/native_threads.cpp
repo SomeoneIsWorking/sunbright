@@ -1,41 +1,35 @@
 #include "native_threads.h"
 
 #include <atomic>
-#include <condition_variable>
 #include <csetjmp>
 #include <cstdio>
-#include <mutex>
-#include <thread>
 #include <ucontext.h>
 #include <vector>
 
 namespace nthr {
 
+// Guest threads are FIBERS multiplexed on ONE host thread (see docs/native_threading.md:
+// keeps Dolphin's single CPU-thread identity, avoids IsCPUThread/s_core_mutex). Cooperative
+// + single-threaded ⇒ no locks: only the running fiber (or the scheduler) executes at a time.
 struct GuestThread {
-    std::thread             host;
-    std::condition_variable cv;        // parked here until granted the token
-    bool                    granted = false;
-    State                   state   = State::Blocked;
-    int                     prio    = 16;
-    uint64_t                ready_seq = 0;   // FIFO order among equal-priority Ready
-    std::function<void()>   body;
+    ucontext_t            ctx;
+    std::vector<char>     stack;
+    State                 state = State::Blocked;
+    int                   prio  = 16;
+    uint64_t              ready_seq = 0;   // FIFO order among equal-priority Ready
+    std::function<void()> body;
 };
 
 namespace {
 
-std::mutex                 g_mx;        // guards all scheduler state below
+ucontext_t                 g_sched_ctx;     // the scheduler loop's context (run_and_wait)
 std::vector<GuestThread*>  g_threads;
-GuestThread*               g_running = nullptr;
+GuestThread*               g_running = nullptr;   // fiber currently executing (null in sched)
 uint64_t                   g_seq = 0;
-std::condition_variable    g_all_done_cv;   // signalled when no thread is alive
+constexpr size_t           STACK_SIZE = 1u << 20; // 1 MiB per fiber (recomp uses the C stack)
 
-thread_local GuestThread*  tls_current = nullptr;
-
-// Pick the highest-priority Ready thread (lowest prio number; FIFO among ties) and
-// grant it the token. If none is Ready: signal all-done when nothing is alive, else
-// report a deadlock (a thread blocked with no one able to wake it — a bug in this
-// minimal core, which has no idle/driver yet). Must be called holding g_mx.
-void pick_next_locked() {
+// Highest-priority Ready fiber (lowest prio number; FIFO among ties), or null.
+GuestThread* pick_next() {
     GuestThread* best = nullptr;
     for (auto* t : g_threads) {
         if (t->state != State::Ready) continue;
@@ -43,66 +37,45 @@ void pick_next_locked() {
             (t->prio == best->prio && t->ready_seq < best->ready_seq))
             best = t;
     }
-    if (best) {
-        best->state   = State::Running;
-        best->granted = true;
-        g_running     = best;
-        best->cv.notify_one();
-        return;
-    }
-    g_running = nullptr;
-    bool any_alive = false;
-    for (auto* t : g_threads)
-        if (t->state != State::Dead) { any_alive = true; break; }
-    if (!any_alive)
-        g_all_done_cv.notify_all();
-    else
-        fprintf(stderr, "[nthr] deadlock: no Ready thread but %zu still alive\n",
-                g_threads.size());
+    return best;
+}
+
+// Entry trampoline for every fiber: run its body, mark dead, return to the scheduler.
+void fiber_trampoline() {
+    g_running->body();
+    g_running->state = State::Dead;
+    swapcontext(&g_running->ctx, &g_sched_ctx);   // back to scheduler; never resumes
 }
 
 }  // namespace
 
-GuestThread* current()                 { return tls_current; }
+GuestThread* current()                   { return g_running; }
 int          priority_of(GuestThread* t) { return t->prio; }
 
 GuestThread* spawn(int priority, std::function<void()> body, bool start_ready) {
     auto* gt = new GuestThread;
-    gt->prio  = priority;
-    gt->body  = std::move(body);
-    {
-        std::lock_guard<std::mutex> lk(g_mx);
-        gt->state     = start_ready ? State::Ready : State::Blocked;
-        gt->ready_seq = g_seq++;
-        g_threads.push_back(gt);
-    }
-    gt->host = std::thread([gt] {
-        {   // park until the scheduler grants us the token
-            std::unique_lock<std::mutex> lk(g_mx);
-            gt->cv.wait(lk, [gt] { return gt->granted; });
-        }
-        tls_current = gt;
-        gt->body();                       // runs holding the token (g_mx not held)
-        std::lock_guard<std::mutex> lk(g_mx);
-        gt->state   = State::Dead;
-        gt->granted = false;
-        pick_next_locked();               // hand the token to the next ready thread
-    });
+    gt->prio      = priority;
+    gt->body      = std::move(body);
+    gt->state     = start_ready ? State::Ready : State::Blocked;
+    gt->ready_seq = g_seq++;
+    gt->stack.resize(STACK_SIZE);
+    getcontext(&gt->ctx);
+    gt->ctx.uc_stack.ss_sp   = gt->stack.data();
+    gt->ctx.uc_stack.ss_size = gt->stack.size();
+    gt->ctx.uc_link          = &g_sched_ctx;
+    makecontext(&gt->ctx, fiber_trampoline, 0);
+    g_threads.push_back(gt);
     return gt;
 }
 
 void block(State newState) {
-    GuestThread* self = tls_current;
-    std::unique_lock<std::mutex> lk(g_mx);
+    GuestThread* self = g_running;
     self->state     = newState;
-    self->granted   = false;
-    self->ready_seq = g_seq++;            // go to the back of the FIFO (round-robin)
-    pick_next_locked();                   // grant the token to someone else
-    self->cv.wait(lk, [self] { return self->granted; });  // park until rescheduled
+    self->ready_seq = g_seq++;            // back of the FIFO (round-robin for Ready)
+    swapcontext(&self->ctx, &g_sched_ctx);   // to scheduler; resumes here when rescheduled
 }
 
 void make_ready(GuestThread* t) {
-    std::lock_guard<std::mutex> lk(g_mx);
     if (t->state == State::Blocked) {
         t->state     = State::Ready;
         t->ready_seq = g_seq++;
@@ -110,20 +83,23 @@ void make_ready(GuestThread* t) {
 }
 
 void run_and_wait() {
-    std::unique_lock<std::mutex> lk(g_mx);
-    if (!g_running) pick_next_locked();   // grant the token to the first ready thread
-    g_all_done_cv.wait(lk, [] {
-        for (auto* t : g_threads)
-            if (t->state != State::Dead) return false;
-        return true;
-    });
-    std::vector<GuestThread*> snapshot = g_threads;
-    lk.unlock();
-    for (auto* t : snapshot) if (t->host.joinable()) t->host.join();
-    lk.lock();
-    for (auto* t : snapshot) delete t;
+    for (;;) {
+        GuestThread* gt = pick_next();
+        if (!gt) {
+            bool any_alive = false;
+            for (auto* t : g_threads)
+                if (t->state != State::Dead) { any_alive = true; break; }
+            if (any_alive)   // blocked with no waker — no idle/driver in the core yet
+                fprintf(stderr, "[nthr] deadlock: no Ready fiber but threads still alive\n");
+            break;
+        }
+        g_running = gt;
+        gt->state = State::Running;
+        swapcontext(&g_sched_ctx, &gt->ctx);   // run the fiber until it blocks or dies
+        g_running = nullptr;
+    }
+    for (auto* t : g_threads) delete t;
     g_threads.clear();
-    g_running = nullptr;
     g_seq = 0;
 }
 
