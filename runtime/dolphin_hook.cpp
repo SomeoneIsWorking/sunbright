@@ -74,13 +74,39 @@ RecompFunc recomp_lookup(u32 address) {
 // address is called. This is the capture primitive the motion interpolator will
 // use — point it at J3DModel::viewCalc / a draw fn to grab per-object transforms.
 extern f32 mem_rf32(u32 ea);   // from memory_bridge
+extern u32 mem_r32(u32 ea);    // from memory_bridge
 static u32 watch_addr() {
     static const u32 a = getenv("SUNBRIGHT_WATCH")
                          ? (u32)strtoul(getenv("SUNBRIGHT_WATCH"), nullptr, 16) : 0;
     return a;
 }
 
+// SUNBRIGHT_OSWATCH: pure observation of the OS blocking/sync primitives (GMSE01),
+// to map "what blocks waiting on what, woken by whom" during e.g. audio init. Logs the
+// call's object (r3 = thread queue / mutex / cond) and the current OSThread* (low-mem
+// slot 0x800000E4, as OSGetCurrentThread reads it). Observation only — never alters
+// control flow; called from both the recomp path (call_ppc) and the interpreter loop
+// (run_jit_sync) so it sees the calls regardless of which backend runs them.
+static void os_sync_watch(u32 pc, u32 r3, u32 r4, u32 lr) {
+    static const bool on = getenv("SUNBRIGHT_OSWATCH") != nullptr;
+    if (!on || pc < 0x80346710u || pc > 0x803493ccu) return;   // fast range filter
+    const char* name = nullptr;
+    switch (pc) {
+        case 0x80346710u: name = "OSLockMutex";    break;
+        case 0x803467ecu: name = "OSUnlockMutex";  break;
+        case 0x80346a00u: name = "OSWaitCond";     break;
+        case 0x80346ad4u: name = "OSSignalCond";   break;
+        case 0x80348d08u: name = "OSJoinThread";   break;
+        case 0x803492e0u: name = "OSSleepThread";  break;
+        case 0x803493ccu: name = "OSWakeupThread"; break;
+        default: return;
+    }
+    fprintf(stderr, "[oswatch] %-14s cur=%08x r3=%08x r4=%08x (lr=%08x)\n",
+            name, mem_r32(0x800000E4u), r3, r4, lr);
+}
+
 void call_ppc(CPUState& cpu, u32 address) {
+    os_sync_watch(address, cpu.gpr[3], cpu.gpr[4], cpu.lr);
     if (address == watch_addr() && watch_addr() != 0) {
         static unsigned long n = 0;
         if ((n++ % 1000) == 0) {
@@ -123,7 +149,10 @@ void call_ppc(CPUState& cpu, u32 address) {
     // make progress and their interrupts actually fire.
     constexpr long MAX = 500'000'000;
     long n = 0;
-    while (ppc.pc != ret && n++ < MAX) interp.SingleStep();
+    while (ppc.pc != ret && n++ < MAX) {
+        os_sync_watch(ppc.pc, ppc.gpr[3], ppc.gpr[4], ppc.spr[SPR_LR]);
+        interp.SingleStep();
+    }
     if (n >= MAX)
         fprintf(stderr, "[sunbright] run_jit_sync(%08x→%08x) exceeded step budget\n", address, ret);
     dolphin_state_to_cpu(ppc, cpu);

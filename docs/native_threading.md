@@ -84,6 +84,55 @@ coherent even though scheduling is native.
 @0x304, `stackEnd` @0x308. `OSContext`: gpr @0x0, cr @0x80, lr @0x84, ctr @0x88, xer @0x8C,
 fpr @0x90, fpscr @0x190, srr0 @0x198, srr1 @0x19C, gqr @0x1A4, psf @0x1C8.
 
+## Blocking-primitive inventory + the audio-init stall (2026-06-03, via SUNBRIGHT_OSWATCH)
+`SUNBRIGHT_OSWATCH` (a pure-observation trace in `call_ppc` + the `run_jit_sync` loop —
+`runtime/dolphin_hook.cpp`) logged every OS sync call (object in r3, current `OSThread*`
+read from low-mem `0x800000E4`) through the audio-init stall. Findings:
+
+**The blocking/sync primitives SMS uses (GMSE01 addresses):**
+- `OSSleepThread` 0x803492e0 / `OSWakeupThread` 0x803493cc — sleep on / wake a thread queue.
+- `OSSendMessage` **0x80346190** / `OSReceiveMessage` **0x80346258** — message queue (verified
+  by reading the recomp: send enqueues, wakes recv-waiters, sleeps on full; receive dequeues,
+  wakes send-waiters, sleeps on empty). `OSInitMessageQueue` ≈ 0x80346130.
+- `OSLockMutex` 0x80346710 / `OSUnlockMutex` 0x803467ec — heavily used, ~matched pairs.
+- `OSWaitCond` 0x80346a00 / `OSSignalCond` 0x80346ad4 — rare.
+- `OSJoinThread` 0x80348d08 — once.
+
+**Struct layouts (confirmed from the recomp):**
+- `OSThread`: `.state` @0x2C8 (4=sleeping), thread-queue link follows; current-thread ptr at
+  low-mem `0x800000E4` (`OSGetCurrentThread` = `lwz r3, 0xE4(0x80000000)`).
+- `OSMessageQueue` (32 B): `+0` queueSend (OSThreadQueue head/tail, threads blocked on full),
+  `+8` queueReceive (threads blocked on empty), `+16` msgArray, `+20` capacity, `+24`
+  firstIndex, `+28` usedCount. `OSThreadQueue` = {head@+0, tail@+4}.
+
+**The stall:** a producer thread (`80402aa8`) floods a message queue at `0x803fd858`
+(lock → `OSSendMessage`+wake → unlock, ~5500×) while the receiver (`804075c0`) sleeps on the
+queue's recv-wait list (`0x803fd860 = 0x803fd858+8`). The producer accounted for 16467 of
+17719 sync events; the receiver only 916 — i.e. **the receiver is starved**. It's woken but
+almost never scheduled, because we run the PPC scheduler synchronously under `run_jit_sync`
+(single-step one context) instead of actually switching to the woken thread. Pure-Dolphin
+schedules it fine; this is our execution-model mismatch — exactly what native scheduling fixes.
+
+### Native implementation plan for these primitives
+Map each onto `nthr` (the host-thread scheduler) + the guest structures, so the actual
+blocking is a native park and waking actually schedules the woken thread:
+- Maintain a `guest OSThread* ↔ nthr::GuestThread*` map; keep guest-visible state coherent
+  (write `OSThread.state`, the current-thread ptr at `0x800000E4`, queue links) so game code
+  that inspects them still sees the truth.
+- `OSSleepThread(q)`: enqueue self on guest queue `q`, set state, `nthr::block(Blocked)`.
+- `OSWakeupThread(q)`: for each guest thread on `q`, `nthr::make_ready(map[it])`.
+- `OSSendMessage`/`OSReceiveMessage`: native enqueue/dequeue on the guest `OSMessageQueue`,
+  then wake the opposite queue / block on own queue via the two above.
+- `OSLockMutex`/`OSUnlockMutex`, `OSWaitCond`/`OSSignalCond`: same shape (own thread queues).
+- `OSCreateThread`/`OSResumeThread`: register a `nthr` guest thread whose body runs recomp
+  from the entry PC; `OSResumeThread` = `make_ready`. Adopt the boot/EmuThread as thread 0.
+- **Open integration risk:** a spawned host thread that runs a non-recomp call goes through
+  Dolphin's interpreter, which asserts `Core::IsCPUThread()` and uses `s_core_mutex`. The
+  token serializes execution (one at a time), so the token holder must present as the CPU
+  thread (`DeclareAsCPUThread` / hold `s_core_mutex`). De-risk this in isolation before wiring
+  it to the game. Cooperative switching also assumes threads yield via OS primitives; if a
+  thread busy-waits without blocking, add a preemption nudge (see preemption note).
+
 ## Target architecture
 1. **Per-thread CPU context.** `CPUState` + `g_tail_jmp` become per host thread (the latter
    already thread-local). Each guest thread runs its recomp tree on its own native stack.
