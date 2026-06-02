@@ -552,16 +552,23 @@ int main(int argc, char* argv[]) {
                                         : "$SUNBRIGHT_ROM";
     const char* recomp_lib = (argc > 2) ? argv[2] : "build/libsms_recomp.so";
 
-    // SDL
-    if (SDL_Init(SDL_INIT_VIDEO) < 0) {
+    // SUNBRIGHT_HEADLESS=1: no window, Null video backend, muted audio — for fast,
+    // unattended repro/CI. Implies turbo (unthrottled emulation). SUNBRIGHT_TURBO=1
+    // unthrottles emulation speed without going headless (keeps the window).
+    const bool headless = getenv("SUNBRIGHT_HEADLESS") != nullptr;
+    const bool turbo    = headless || getenv("SUNBRIGHT_TURBO") != nullptr;
+
+    // SDL — headless still needs the event/timer subsystem for SDL_GetTicks (autostart
+    // timing) but no video device (which would require a display).
+    if (SDL_Init(headless ? (SDL_INIT_TIMER | SDL_INIT_EVENTS) : SDL_INIT_VIDEO) < 0) {
         fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
         return 1;
     }
-    // Size the window to the output aspect so the game fills it (no letterbox bars).
-    // 16:9 by default (matches the widescreen output), 4:3 if widescreen is off.
-    // Dolphin scales the image to the window while preserving aspect; F11 toggles
-    // fullscreen at runtime.
-    {
+    if (!headless) {
+        // Size the window to the output aspect so the game fills it (no letterbox bars).
+        // 16:9 by default (matches the widescreen output), 4:3 if widescreen is off.
+        // Dolphin scales the image to the window while preserving aspect; F11 toggles
+        // fullscreen at runtime.
         const char* w = getenv("SUNBRIGHT_WIDESCREEN");
         const bool wide = !w || atoi(w) != 0;
         const int win_w = wide ? 1280 : 960, win_h = 720;
@@ -569,13 +576,15 @@ int main(int argc, char* argv[]) {
             "Sunbright — Super Mario Sunshine",
             SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, win_w, win_h,
             SDL_WINDOW_RESIZABLE | SDL_WINDOW_SHOWN);
+        if (!g_window) {
+            fprintf(stderr, "SDL_CreateWindow: %s\n", SDL_GetError());
+            SDL_Quit();
+            return 1;
+        }
+    } else {
+        fprintf(stderr, "[sunbright] HEADLESS: Null video backend, no window\n");
     }
-    if (!g_window) {
-        fprintf(stderr, "SDL_CreateWindow: %s\n", SDL_GetError());
-        SDL_Quit();
-        return 1;
-    }
-    g_focused = true;
+    g_focused = true;  // input override bypasses the focus gate; headless has no window
 
     // Load recompiled native functions into the JIT hook table
     if (!SunbrightBridge::Init(recomp_lib)) {
@@ -584,7 +593,9 @@ int main(int argc, char* argv[]) {
                 recomp_lib);
     }
 
-    const WindowSystemInfo wsi = build_wsi();
+    WindowSystemInfo wsi;
+    if (headless) wsi.type = WindowSystemType::Headless;
+    else          wsi = build_wsi();
     fprintf(stderr, "[sunbright] WSI type=%d render_window=%p display=%p\n",
             static_cast<int>(wsi.type), wsi.render_window, wsi.display_connection);
 
@@ -614,6 +625,23 @@ int main(int argc, char* argv[]) {
     if (backend_env) {
         Config::SetBase(Config::MAIN_GFX_BACKEND, std::string(backend_env));
         fprintf(stderr, "[sunbright] Using backend: %s\n", backend_env);
+    } else if (headless) {
+        Config::SetBase(Config::MAIN_GFX_BACKEND, std::string("Null"));
+        fprintf(stderr, "[sunbright] Using backend: Null (headless)\n");
+    }
+
+    // Turbo: unthrottle the emulation speed (0 = run as fast as the host allows) and
+    // drop vsync so nothing paces the CPU/GPU threads to real time. The intermittent
+    // corruption reproduces far faster this way.
+    if (turbo) {
+        Config::SetBase(Config::MAIN_EMULATION_SPEED, 0.0f);
+        Config::SetBase(Config::GFX_VSYNC, false);
+        fprintf(stderr, "[sunbright] TURBO: emulation speed unthrottled, vsync off\n");
+    }
+    // Headless: no audio device (avoids needing a sound server) and muted.
+    if (headless) {
+        Config::SetBase(Config::MAIN_AUDIO_BACKEND, std::string(BACKEND_NULLSOUND));
+        Config::SetBase(Config::MAIN_AUDIO_MUTED, true);
     }
 
     // ── Graphics quality ────────────────────────────────────────────────────
@@ -716,8 +744,17 @@ int main(int argc, char* argv[]) {
         repl_thread.detach();
     }
 
+    // SUNBRIGHT_RUN_SECONDS=N: auto-exit after N seconds of wall time (CI / repro).
+    const char* run_secs_env = getenv("SUNBRIGHT_RUN_SECONDS");
+    const uint32_t run_ms = run_secs_env ? (uint32_t)(atof(run_secs_env) * 1000.0) : 0;
+
     // Main event loop — Dolphin runs its CPU/GPU on its own threads
     while (g_running) {
+        if (run_ms && SDL_GetTicks() >= run_ms) {
+            fprintf(stderr, "[sunbright] RUN_SECONDS elapsed — exiting\n");
+            g_running = false;
+            break;
+        }
         // Once the video backend's presenter exists, sync the swapchain to the
         // current window size once — the window may have been sized by the WM after
         // the swapchain was first created at boot (otherwise: black band).

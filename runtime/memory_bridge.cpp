@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <stdexcept>
+#include <execinfo.h>
 
 bool g_recomp_touched_mmio = false;
 
@@ -127,6 +128,33 @@ static inline u8* ram_ptr(u32 ea) {
 #  define MMIO_W(bits, ea, v)  ((void)0)
 #endif
 
+// ── Wild-write trap ─────────────────────────────────────────────────────────
+// A guest store whose effective address is neither main RAM (0x8xxxxxxx /
+// 0xCxxxxxxx low 24 MB, handled by ram_ptr) nor the write-gather pipe nor a real
+// hardware region — MMIO 0xCC.., EFB 0xC8.., locked cache 0xE0.., all >=
+// 0xC0000000 — is a *wild write*: the symptom of a corrupted base/stack pointer
+// (e.g. r1 ≈ a float bit-pattern). A correct port never does this, so it is always
+// fatal — we do NOT let Dolphin's MMU swallow it with a one-line "Invalid write"
+// warning and let the game limp on over garbage. Because recomp→recomp calls stay
+// on the host C stack (single C-call model), the native backtrace names the exact
+// recomp function chain that produced the bad address.
+[[noreturn]] static void trap_wild_write(u32 ea, unsigned long long val, int bits) {
+    fflush(stdout);
+    fprintf(stderr,
+        "\n[sunbright] FATAL wild guest write: ea=0x%08x val=0x%0*llx (%d-bit)\n"
+        "  ea is outside main RAM / gather-pipe / MMIO — corrupted base or stack pointer.\n"
+        "  Native backtrace (recomp call chain, innermost first):\n",
+        ea, bits / 4, val, bits);
+    void* bt[96];
+    int n = backtrace(bt, 96);
+    backtrace_symbols_fd(bt, n, fileno(stderr));
+    fflush(stderr);
+    abort();
+}
+static inline void check_wild_write(u32 ea, unsigned long long val, int bits) {
+    if (ea < 0xC0000000u) trap_wild_write(ea, val, bits);
+}
+
 // ── Byte-swapped reads/writes (GC = big-endian, host = little-endian) ───────
 
 u8 mem_r8(u32 ea) {
@@ -169,6 +197,7 @@ void mem_w8(u32 ea, u8 v) {
         g_recomp_touched_mmio = true; GPF().Write8(v); return;
     }
 #endif
+    check_wild_write(ea, v, 8);
     MMIO_W(8, ea, v);
 }
 
@@ -177,6 +206,7 @@ void mem_w16(u32 ea, u16 v) {
 #ifdef HAVE_DOLPHIN_MEMMAP
     if (is_gather_pipe(ea)) { g_recomp_touched_mmio = true; GPF().Write16(v); return; }
 #endif
+    check_wild_write(ea, v, 16);
     MMIO_W(16, ea, v);
 }
 
@@ -190,6 +220,7 @@ void mem_w32(u32 ea, u32 v) {
         g_recomp_touched_mmio = true; GPF().Write32(v); return;
     }
 #endif
+    check_wild_write(ea, v, 32);
     MMIO_W(32, ea, v);
 }
 
@@ -200,6 +231,7 @@ void mem_w64(u32 ea, u64 v) {
     }
 #ifdef HAVE_DOLPHIN_MEMMAP
     if (is_gather_pipe(ea)) { g_recomp_touched_mmio = true; GPF().Write64(v); return; }
+    check_wild_write(ea, v, 64);
     // No Write_U64 in Dolphin's MMIO API — split into two 32-bit writes.
     MMIO_W(32, ea, (u32)(v >> 32));
     MMIO_W(32, ea + 4, (u32)v);
