@@ -131,6 +131,14 @@ recomp-path-specific deferred-delivery and must NOT fire under the interpreter).
 - **Phase 0 — foundation:** per-thread `CPUState`, CPU token, GuestThread registry, adopt
   thread 0, native scheduler core (pick highest-priority ready, grant token). Compiles, boots
   unchanged (still one thread until something creates a second).
+  - ✅ **Done (2026-06-02): the CPU-token + cooperative scheduler core**, `runtime/native_threads.{h,cpp}`:
+    `spawn`/`block`/`make_ready`/`run_and_wait` over real host threads, one token holder at
+    a time, highest-priority-Ready (FIFO among ties) selection, condvar parking (no spin).
+    Proven in isolation by `nthr::self_test()` (`SUNBRIGHT_NTHR_SELFTEST=1`): two host
+    threads, serialized, round-robin, 5/5 PASS (`concurrent=no`). Not yet wired to the game.
+  - Next: adopt the boot thread as guest thread 0 (link it to the guest `OSThread*` at the
+    low-mem current-thread slot) and run a real recompiled function body on a spawned guest
+    thread under the token — then layer the OS-primitive overrides (Phase 0a/1).
 - **Phase 1 — lifecycle + the audio block (first milestone):** override OSCreateThread /
   Resume / Suspend / Sleep / Wakeup / Yield / Exit / Join / InitThreadQueue / GetCurrentThread
   / SetThreadPriority + message queues; native idle/driver. **Goal: audio init completes with

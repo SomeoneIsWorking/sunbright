@@ -56,6 +56,7 @@
 #include "UICommon/UICommon.h"
 
 #include "sunbright_bridge.h"
+#include "native_threads.h"
 
 #include <optional>
 #include <string_view>
@@ -538,6 +539,11 @@ static void on_signal(int) { g_running = false; }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 int main(int argc, char* argv[]) {
+    // SUNBRIGHT_NTHR_SELFTEST: validate the native-threading CPU-token hand-off in
+    // isolation, then exit — no Dolphin/SDL/game involved.
+    if (getenv("SUNBRIGHT_NTHR_SELFTEST"))
+        return nthr::self_test() ? 0 : 1;
+
     // Auto-ignore Dolphin panic alerts (headless — no Qt dialog available).
     // The apploader boot sequence triggers a benign ISI alert on return-to-LR=0;
     // we log it and continue so the game can keep running.
