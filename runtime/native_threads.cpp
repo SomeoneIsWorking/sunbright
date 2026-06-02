@@ -2,9 +2,11 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <csetjmp>
 #include <cstdio>
 #include <mutex>
 #include <thread>
+#include <ucontext.h>
 #include <vector>
 
 namespace nthr {
@@ -192,12 +194,64 @@ bool test_producer_consumer() {
     return pass;
 }
 
+// Test 3: FIBER feasibility (the recommended execution model — see docs/native_threading.md).
+// Two cooperative fibers (ucontext) multiplexed on ONE thread via swapcontext, proving:
+//  (a) fiber context switching works and interleaves as scheduled;
+//  (b) a sigsetjmp/siglongjmp pair with a jmpbuf living on the FIBER's own stack (not
+//      thread_local) lands correctly within that fiber — this is exactly the recomp
+//      tail-handoff (g_tail_jmp) mechanism, which must become per-fiber once guest threads
+//      are fibers sharing one thread's TLS. If this works, fibers are viable for guest
+//      execution without tripping Dolphin's IsCPUThread (everything stays on the EmuThread).
+ucontext_t fb_sched, fb_ctx[2];
+bool       fb_done[2] = {false, false};
+int        fb_seq[16], fb_seq_n = 0;
+bool       fb_jmp_ok = false;
+
+void fiber_a_fn() {
+    for (int i = 0; i < 3; i++) { fb_seq[fb_seq_n++] = 0; swapcontext(&fb_ctx[0], &fb_sched); }
+    fb_done[0] = true;                       // falls through to uc_link (= fb_sched)
+}
+void fiber_b_fn() {
+    sigjmp_buf jb;                           // on THIS fiber's stack, not thread_local
+    if (sigsetjmp(jb, 0) == 0) {
+        for (int i = 0; i < 3; i++) { fb_seq[fb_seq_n++] = 1; swapcontext(&fb_ctx[1], &fb_sched); }
+        siglongjmp(jb, 1);                   // tail-handoff style jump back into this fiber
+    } else {
+        fb_jmp_ok = true; fb_seq[fb_seq_n++] = 9;
+    }
+    fb_done[1] = true;
+}
+
+bool test_fibers() {
+    static std::vector<char> sa(128 * 1024), sb(128 * 1024);
+    fb_seq_n = 0; fb_jmp_ok = false; fb_done[0] = fb_done[1] = false;
+
+    getcontext(&fb_ctx[0]);
+    fb_ctx[0].uc_stack.ss_sp = sa.data(); fb_ctx[0].uc_stack.ss_size = sa.size();
+    fb_ctx[0].uc_link = &fb_sched; makecontext(&fb_ctx[0], fiber_a_fn, 0);
+    getcontext(&fb_ctx[1]);
+    fb_ctx[1].uc_stack.ss_sp = sb.data(); fb_ctx[1].uc_stack.ss_size = sb.size();
+    fb_ctx[1].uc_link = &fb_sched; makecontext(&fb_ctx[1], fiber_b_fn, 0);
+
+    int turn = 0, guard = 0;
+    while (!(fb_done[0] && fb_done[1]) && guard++ < 100) {
+        if (!fb_done[turn]) swapcontext(&fb_sched, &fb_ctx[turn]);
+        turn ^= 1;
+    }
+    // expected interleave 0,1,0,1,0,1 then B's longjmp lands → 9
+    const bool pass = fb_jmp_ok && fb_seq_n == 7 && fb_seq[6] == 9 &&
+                      fb_done[0] && fb_done[1];
+    fprintf(stderr, "[nthr] fibers:            %s  (siglongjmp-in-fiber=%s seq_n=%d)\n",
+            pass ? "PASS" : "FAIL", fb_jmp_ok ? "ok" : "BAD", fb_seq_n);
+    return pass;
+}
 }  // namespace
 
 bool self_test() {
     bool ok = true;
     ok &= test_round_robin();
     ok &= test_producer_consumer();
+    ok &= test_fibers();
     fprintf(stderr, "[nthr] self_test: %s\n", ok ? "ALL PASS" : "FAILURES");
     return ok;
 }
