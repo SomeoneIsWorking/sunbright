@@ -133,6 +133,36 @@ blocking is a native park and waking actually schedules the woken thread:
   it to the game. Cooperative switching also assumes threads yield via OS primitives; if a
   thread busy-waits without blocking, add a preemption nudge (see preemption note).
 
+## Execution-context decision: fibers on the EmuThread vs. host-thread-per-guest-thread
+The `nthr` scheduler *logic* (priority pick, Ready/Blocked, the producer/consumer hand-off)
+is validated and **independent of how a guest context is parked/resumed**. But *where* guest
+code physically runs is a real fork, forced by a hard Dolphin constraint:
+
+> Dolphin's interpreter asserts `Core::IsCPUThread()` (a thread-local set only on the
+> EmuThread) and guards core state with `s_core_mutex`. Non-recomp guest calls go through
+> that interpreter. So whatever runs guest code must satisfy Dolphin's "I am the CPU thread"
+> identity.
+
+- **Host-thread-per-guest-thread + token** (what the substrate currently uses): each guest
+  thread is a real OS thread; the token serializes them. *Risk:* every such thread must
+  present as Dolphin's CPU thread (`DeclareAsCPUThread`, and likely hold `s_core_mutex`), and
+  Dolphin may have other single-CPU-thread invariants (CoreTiming/GPU-Fifo affinity) that
+  only surface when driven from a non-EmuThread. Medium-high, discoverable only by trying.
+- **Fibers on the EmuThread** (lean toward this): guest threads are fibers (e.g.
+  `swapcontext`) multiplexed on the **one** EmuThread, switched cooperatively at block points.
+  Dolphin always sees its single CPU thread → the whole `IsCPUThread`/`s_core_mutex` risk
+  class **disappears**. Each fiber keeps its own stack, so a blocked guest's recomp
+  continuation is preserved (same property we need). Subsystems stay *real* host threads that
+  signal a fiber Ready via a condvar across the EmuThread boundary.
+
+**Recommendation:** fibers-on-the-EmuThread for guest execution; real host threads only for
+subsystems (SDL/present/vblank, audio out) that signal wakes. The validated `nthr` scheduler
+logic + self-tests carry over unchanged; only the park/resume layer swaps condvar↔swapcontext.
+**To reconcile when implementing:** the existing tail-branch handoff uses `siglongjmp`
+(`g_tail_jmp`) — verify `siglongjmp` interacts correctly with fiber contexts (longjmp must
+stay within a fiber's own stack), or route the tail handoff through the fiber switch instead.
+This is the next decision to settle before wiring native threading into the game.
+
 ## Target architecture
 1. **Per-thread CPU context.** `CPUState` + `g_tail_jmp` become per host thread (the latter
    already thread-local). Each guest thread runs its recomp tree on its own native stack.
