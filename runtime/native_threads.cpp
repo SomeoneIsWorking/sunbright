@@ -125,7 +125,10 @@ void run_and_wait() {
     g_seq = 0;
 }
 
-bool self_test() {
+namespace {
+
+// Test 1: two equal-priority threads round-robin via block(Ready); serialized, all run.
+bool test_round_robin() {
     constexpr int N = 1000;
     std::atomic<int>  in_crit{0};   // >1 would mean two threads ran concurrently
     std::atomic<bool> concurrent{false};
@@ -139,15 +142,64 @@ bool self_test() {
             block(State::Ready);            // yield the token to the other thread
         }
     };
-
     spawn(10, work, /*start_ready=*/true);
     spawn(10, work, /*start_ready=*/true);
     run_and_wait();
 
     const bool pass = !concurrent && total.load() == 2 * N;
-    fprintf(stderr, "[nthr] self_test: %s  (concurrent=%s  total=%d/%d)\n",
+    fprintf(stderr, "[nthr] round_robin:       %s  (concurrent=%s  total=%d/%d)\n",
             pass ? "PASS" : "FAIL", concurrent ? "YES" : "no", total.load(), 2 * N);
     return pass;
+}
+
+// Test 2: the SMS pattern — a HIGHER-priority producer and a LOWER-priority consumer share
+// a bounded buffer, blocking via block(Blocked) and waking each other via make_ready. This
+// is exactly the message-queue case that starves under run_jit_sync today: if the scheduler
+// fails to run the woken (lower-prio) consumer, this hangs or comes up short. PASS proves the
+// substrate schedules a woken thread correctly regardless of priority.
+bool test_producer_consumer() {
+    constexpr int N = 2000;
+    constexpr int CAP = 1;
+    int count = 0, produced = 0, consumed = 0;   // touched only by the token holder
+    GuestThread* prod = nullptr;
+    GuestThread* cons = nullptr;
+    std::atomic<int>  in_crit{0};
+    std::atomic<bool> concurrent{false};
+    auto enter = [&] { if (in_crit.fetch_add(1) != 0) concurrent = true; };
+    auto leave = [&] { in_crit.fetch_sub(1); };
+
+    prod = spawn(8, [&] {                          // higher priority (lower number)
+        for (int i = 0; i < N; i++) {
+            while (count >= CAP) block(State::Blocked);   // buffer full → sleep
+            enter(); count++; produced++; leave();
+            make_ready(cons);                              // wake the consumer
+        }
+    }, /*start_ready=*/true);
+
+    cons = spawn(12, [&] {                          // lower priority
+        for (int i = 0; i < N; i++) {
+            while (count == 0) block(State::Blocked);     // buffer empty → sleep
+            enter(); count--; consumed++; leave();
+            make_ready(prod);                              // wake the producer
+        }
+    }, /*start_ready=*/true);
+
+    run_and_wait();
+
+    const bool pass = !concurrent && produced == N && consumed == N && count == 0;
+    fprintf(stderr, "[nthr] producer_consumer: %s  (produced=%d consumed=%d count=%d concurrent=%s)\n",
+            pass ? "PASS" : "FAIL", produced, consumed, count, concurrent ? "YES" : "no");
+    return pass;
+}
+
+}  // namespace
+
+bool self_test() {
+    bool ok = true;
+    ok &= test_round_robin();
+    ok &= test_producer_consumer();
+    fprintf(stderr, "[nthr] self_test: %s\n", ok ? "ALL PASS" : "FAILURES");
+    return ok;
 }
 
 }  // namespace nthr
