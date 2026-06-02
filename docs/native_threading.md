@@ -251,6 +251,29 @@ recomp-path-specific deferred-delivery and must NOT fire under the interpreter).
   Dolphin-scheduler reliance entirely; relax the token toward real parallelism as Dolphin
   hardware deps are replaced.
 
+## Next session — ordered integration checklist (each step independently verifiable)
+The fiber scheduler (`nthr`) is built + validated in isolation. Wiring it into the game is
+the next chunk; do it in this order, verifying each against a headless run before the next:
+
+1. **Per-fiber tail-jmp.** `g_tail_jmp` in `dolphin_hook.cpp` is `thread_local`; fibers share
+   one thread's TLS, so move the jmpbuf into the running fiber's state (set on fiber resume).
+   No behavior change yet (one fiber) — verify boot/render unchanged.
+2. **Adopt the boot context as fiber 0.** The EmuThread's recomp execution becomes nthr fiber
+   0 holding the "CPU". Restructure so `run_and_wait` (or an equivalent) drives execution.
+   This is the invasive step — verify boot/render unchanged before adding a 2nd fiber.
+3. **Scoped interception.** `run_jit_sync` (and `call_ppc`) consult a *dedicated native-OS set*
+   (NOT the general override table — keep the interrupt overrides recomp-path-only) so the
+   native primitives fire under the interpreter too. Verify with `SUNBRIGHT_OSWATCH`.
+4. **Native `OSCreateThread`/`OSResumeThread`.** Register a fiber whose body runs recomp from
+   the entry PC; map guest `OSThread*` ↔ `nthr::GuestThread*`; keep `0x800000E4` + state
+   coherent. Verify the 5 boot threads spawn as fibers.
+5. **Native `OSSleepThread`/`OSWakeupThread`, then `OSSendMessage`/`OSReceiveMessage`,** then
+   mutex/cond — each on the guest structs (offsets above) + `nthr::block`/`make_ready`.
+   Verify the audio-init stall clears (no `exceeded step budget`, no `JUTException`, audio
+   assets load at pure-Dolphin speed).
+6. **Subsystem wakes + preemption-if-needed.** SDL/present thread signals vblank waiters; add
+   a preemption nudge only if a busy-wait thread is found not to yield.
+
 ## Verification
 Headless turbo (`SUNBRIGHT_HEADLESS=1 SUNBRIGHT_TURBO`, `SUNBRIGHT_RUN_SECONDS=N`) with
 `SUNBRIGHT_AUTOSTART=1`: audio asset loads should match pure-Dolphin timing (no multi-second
