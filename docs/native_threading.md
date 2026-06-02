@@ -92,16 +92,42 @@ once in `run_jit_sync` everything below (including `OSCreateThread` and the sche
 interpreted. The blocking OS calls we must replace happen *under the interpreter*.
 
 ⇒ **Prerequisite for native threading:** the OS primitives must be intercepted regardless of
-execution backend. Recomp-native option (preferred, no new Dolphin coupling): make the
-`run_jit_sync` loop **recomp/override-aware** — before stepping, if `ppc.pc` is an override
-or a recomp entry, run that instead of single-stepping (this both fires overrides everywhere
-and lets recomp re-engage inside interpreter runs). Care: mid-function PCs, and avoid
-re-entrancy hazards. This lands before any native scheduler work.
+execution backend. Recomp-native option (no new Dolphin coupling): make the `run_jit_sync`
+loop consult overrides — before stepping, if `ppc.pc` is an override, run it instead of
+single-stepping.
+
+### Step result (2026-06-02): interception works, but super-call is the wrong shape
+Prototyped `run_jit_sync` consulting `override_lookup` per step, with `sms_os_threads.cpp`
+overriding the lifecycle calls as a *trace that super-calls the recomp body*. Results:
+- **Interception fires** under the interpreter — the trace logged, mechanism validated.
+- **Captured SMS thread topology** (created during boot, via `OSCreateThread`):
+  | thread | entry | prio | stack | caller |
+  |---|---|---|---|---|
+  | 8042fe60 | 802c54b8 | 8  | 16 KB | 802c5380 | ← 3-thread worker pool
+  | 80434300 | 802c54b8 | 8  | 16 KB | 802c5380 |   (same entry/caller, diff param)
+  | 80438700 | 802c54b8 | 8  | 16 KB | 802c5380 |
+  | 80575ec8 | 802a9184 | 15 | 4 KB  | 802a9410 |
+  | 803fcbe8 | 802a7878 | 17 | 64 KB | 802a7854 | ← big stack, made during audio init (likely audio thread)
+- **But it regressed boot** (loaded only `nintendo.szs`, then idled in the scheduler).
+  Root cause (confirmed — excluding the interrupt primitives did NOT fix it): super-calling
+  the recompiled `OSResumeThread`/`OSCreateThread` bodies runs `__OSReschedule` → a context
+  switch (`rfi` to another thread) that **never returns to its caller** — the same call-model
+  break this whole effort exists to fix. ⇒ **The OS thread/scheduler functions cannot be
+  traced via super-call; they must be replaced with genuinely native logic** (no super-call),
+  in any context. Both experimental pieces were reverted.
+
+Revised plan: there is no behaviour-neutral "trace then super-call" foothold for these
+functions. The first real unit is a **native implementation of one primitive + scoped
+interception, together** — interception consulting a *dedicated native-OS override set*
+(NOT the general override table; the interrupt-primitive overrides in `sms_os_intr.cpp` are
+recomp-path-specific deferred-delivery and must NOT fire under the interpreter).
 
 ## Phasing
-- **Phase 0a — universal interception (prerequisite):** `run_jit_sync` consults
-  overrides/recomp entries so OS-primitive overrides fire under the interpreter too. Verify
-  with the `SUNBRIGHT_OSTRACE` trace actually logging `OSCreateThread` during boot.
+- **Phase 0a — scoped interception + first native primitive (together):** `run_jit_sync`
+  consults a *dedicated native-OS override set* (not the general override table) so native
+  OS primitives fire under the interpreter; deliver alongside the first genuinely native
+  primitive (no super-call). Interception alone is not a standalone step — there is no
+  behaviour-neutral super-call foothold (see Step result above).
 - **Phase 0 — foundation:** per-thread `CPUState`, CPU token, GuestThread registry, adopt
   thread 0, native scheduler core (pick highest-priority ready, grant token). Compiles, boots
   unchanged (still one thread until something creates a second).
