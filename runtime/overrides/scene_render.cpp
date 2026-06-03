@@ -1,59 +1,98 @@
 // Native render port — own the object model, keep Dolphin's GPU.
 //
-// Settled scope (docs/model_interpolation.md): hook the game's scene-graph draws, build our own
-// per-object model, and drive Dolphin's GX→Vulkan backend from it. We own *what/where*
-// (transforms, 2D layout, interpolated in-between frames); Dolphin keeps rasterizing. This one
-// interception layer serves BOTH open render problems — widescreen 2D layout (center overlays /
-// expand backdrops) and N64Recomp-style transform interpolation.
+// Settled scope (docs/model_interpolation.md): hook the game's scene-graph draws / projection
+// setup, drive Dolphin's GX→Vulkan backend from it. We own *what/where* (projection, 2D layout,
+// transforms, interpolated in-between frames); Dolphin keeps rasterizing.
 //
-// This file is the foundation increment: a *super-call* hook on J2DScreen::draw. The override
-// runs the ORIGINAL draw (via recomp_raw — bypassing itself), so with no adjustment yet the frame
-// is byte-identical — that's the point of this step: prove we can wrap a draw without regressing
-// it, and surface the J2DGrafContext layout (the 2D ortho = the layout control point) so the next
-// increment can center/expand 2D for 16:9. Env-gated: zero effect unless SUNBRIGHT_RENDERPORT=1.
+// ── Native 16:9 widescreen ──────────────────────────────────────────────────────────────────
+// Done HERE, at the source, instead of patching .data constants or using Dolphin's ForceWide
+// (which blindly stretches the whole 4:3 EFB — 2D included — so the HUD/title shift and stretch).
+// We override the JDrama camera's projection-aspect setter to widen the 3D projection to 16:9.
+// Dolphin's AspectMode::Auto then auto-detects each frame's real aspect from its projection: the
+// widened 3D → 16:9 (presented wide), the untouched 2D ortho → 4:3 (presented centered). So 2D
+// overlays keep their authored 4:3 composition, centered, while the 3D world gets the wider FOV.
 
 #include "../overrides.h"
 #include "../intrinsics.h"
 #include <cstdlib>
 #include <cstdio>
 
-// J2DScreen::draw(int x, int y, const J2DGrafContext*) — USA/GMSE01 0x802cfda8.
-// Verified live (SUNBRIGHT_WATCH=802cfda8): fires on the title screen; r3 = J2DScreen* (stable
-// object ID), r4 = x, r5 = y, r6 = J2DGrafContext*. The GrafContext holds the 2D ortho bounds —
-// the thing we adjust to fix the off-center logo / un-expanded backdrops under 16:9.
+// GXSetProjection(const f32 mtx[4][4], GXProjectionType type) — USA/GMSE01 0x80362c34.
+// The universal point EVERY 3D projection passes through (and what Dolphin's Auto aspect heuristic
+// analyzes). r3 = pointer to the projection matrix, r4 = type (GX_PERSPECTIVE=0, GX_ORTHOGRAPHIC=1).
+// For a perspective matrix, m[0][0] (offset 0) is the horizontal scale = cot(fovx/2); scaling it by
+// 0.75 (= (4:3)/(16:9)) widens the horizontal FOV to 16:9. We touch ONLY perspective projections, so
+// the 2D orthographic ones stay 4:3 → Dolphin presents 3D frames at 16:9 and 2D centered at 4:3.
+static constexpr u32 GX_SET_PROJECTION = 0x80362c34u;
+static constexpr u32 GX_PERSPECTIVE    = 0u;
+
+static bool widescreen_on() {
+    static const bool on = [] { const char* w = getenv("SUNBRIGHT_WIDESCREEN"); return !w || atoi(w) != 0; }();
+    return on;
+}
+
+static void ov_gx_projection(CPUState& cpu) {
+    const u32 mtx = cpu.gpr[3];
+    const u32 type = cpu.gpr[4];
+    static const bool log = getenv("SUNBRIGHT_RENDERPORT_LOG") != nullptr;
+    if (log) { static unsigned long n = 0;
+        if ((n++ % 120) == 0) std::fprintf(stderr, "[renderport] GXSetProjection#%lu type=%u m00=%.4f\n",
+                                            n, type, mem_rf32(mtx)); }
+
+    // 0.75 = (4/3)/(16/9). We horizontally squeeze BOTH projection types by this factor so the EFB
+    // is rendered anamorphically and Dolphin presents it at 16:9:
+    //   • perspective: scale m[0][0] (X scale) → wider horizontal FOV (true Hor+ widescreen);
+    //   • orthographic (2D): scale m[0][0] AND m[0][3] (X offset) → the 2D image shrinks toward the
+    //     screen centre, so after the 16:9 present it is correct-aspect and CENTERED (not stretched).
+    // Both are restored after the original packs them (the game reuses the matrices).
+    static const float scale = [] { const char* e = getenv("SUNBRIGHT_WS_SCALE"); return e ? (float)atof(e) : 0.75f; }();
+    const bool is2d = (type != GX_PERSPECTIVE);
+    // Only squeeze 2D once the game has rendered 3D (latched): the pure-2D boot/intro logos render
+    // before any perspective and present at 4:3, so squeezing them would wrongly narrow them. After
+    // the first 3D frame (title onward), 2D shares a 16:9 EFB and must be pre-squeezed.
+    static bool seen_3d = false;
+    if (!is2d) seen_3d = true;
+    bool patched = false; f32 m00 = 0.0f, m03 = 0.0f;
+    if (widescreen_on() && (!is2d || seen_3d) && mtx >= 0x80000000u && mtx < 0x81800000u) {
+        m00 = mem_rf32(mtx + 0x00);
+        mem_wf32(mtx + 0x00, m00 * scale);
+        if (is2d) { m03 = mem_rf32(mtx + 0x0c); mem_wf32(mtx + 0x0c, m03 * scale); }
+        patched = true;
+    }
+    if (RecompFunc orig = recomp_raw(GX_SET_PROJECTION)) orig(cpu);
+    else { if (patched) { mem_wf32(mtx + 0x00, m00); if (is2d) mem_wf32(mtx + 0x0c, m03); } call_ppc(cpu, cpu.lr); return; }
+    if (patched) { mem_wf32(mtx + 0x00, m00); if (is2d) mem_wf32(mtx + 0x0c, m03); }   // restore
+}
+
+static const bool s_proj_registered = [] {
+    register_override(GX_SET_PROJECTION, &ov_gx_projection);
+    std::fprintf(stderr, "[renderport] native widescreen: hooked GXSetProjection @ %08x\n",
+                 GX_SET_PROJECTION);
+    return true;
+}();
+
+// ── 2D draw scaffold (SUNBRIGHT_RENDERPORT) ─────────────────────────────────────────────────
+// J2DScreen::draw(int x, int y, const J2DGrafContext*) @ 0x802cfda8 — the top-level 2D screen
+// draw. Super-call wrap (recomp_raw) proven to run the original draw with no regression; r3 =
+// stable J2DScreen* (object ID), r6 = J2DGrafContext (its 2D ortho is 0..640 × 0..448, stored at
+// +0x08/+0x18). Kept as the foundation for future 2D ownership (backdrop expansion, capture); the
+// log dumps the GrafContext for RE. Off unless SUNBRIGHT_RENDERPORT is set.
 static constexpr u32 J2DSCREEN_DRAW = 0x802cfda8u;
 
 static void ov_j2dscreen_draw(CPUState& cpu) {
-    // RE aid: dump the screen pointer + a window of the GrafContext as floats so we can locate the
-    // ortho (left/right/top/bottom) for the layout fix. Throttled — this is called thousands/frame.
     static const bool log = getenv("SUNBRIGHT_RENDERPORT_LOG") != nullptr;
     if (log) {
         static unsigned long n = 0;
-        if ((n++ % 2000) == 0) {
-            const u32 screen = cpu.gpr[3], grafctx = cpu.gpr[6];
-            std::fprintf(stderr, "[renderport] J2DScreen::draw screen=%08x x=%d y=%d grafctx=%08x\n",
-                         screen, (s32)cpu.gpr[4], (s32)cpu.gpr[5], grafctx);
-            if (grafctx >= 0x80000000u && grafctx < 0x81800000u) {
-                std::fprintf(stderr, "  grafctx floats:");
-                for (u32 off = 0; off <= 0x40; off += 4)
-                    std::fprintf(stderr, " +%02x=%.2f", off, mem_rf32(grafctx + off));
-                std::fprintf(stderr, "\n");
-            }
-        }
+        if ((n++ % 2000) == 0)
+            std::fprintf(stderr, "[renderport] J2DScreen::draw screen=%08x grafctx=%08x\n",
+                         cpu.gpr[3], cpu.gpr[6]);
     }
-
-    // Super-call the real draw. Its blr is a C return in the single-call model, so control comes
-    // back here and we simply return — exactly as if the override weren't present. No layout change
-    // yet: this increment only establishes the wrap (verify: the title logo still renders).
     if (RecompFunc orig = recomp_raw(J2DSCREEN_DRAW)) orig(cpu);
-    else call_ppc(cpu, cpu.lr);   // not recompiled (shouldn't happen — it is) → degrade gracefully
+    else call_ppc(cpu, cpu.lr);
 }
 
 static const bool s_renderport_registered = [] {
-    if (getenv("SUNBRIGHT_RENDERPORT")) {
+    if (getenv("SUNBRIGHT_RENDERPORT"))
         register_override(J2DSCREEN_DRAW, &ov_j2dscreen_draw);
-        std::fprintf(stderr, "[renderport] hooked J2DScreen::draw @ %08x (super-call wrap)\n",
-                     J2DSCREEN_DRAW);
-    }
     return true;
 }();
