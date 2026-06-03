@@ -1,5 +1,6 @@
 #include "memory_bridge.h"
 #include "cpu_state.h"
+#include "intrinsics.h"   // inline fast-path sb_r*/sb_w* + sb_poll_note (and the mem_* decls we define)
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
@@ -119,13 +120,13 @@ static inline GPFifo::GPFifoManager& GPF() { return Core::System::GetInstance().
 // Only fires on a confirmed tight poll, so one-off reads (incl. the DSP mailbox handshake) and
 // normal sequential RAM access (different addresses) are untouched.
 extern void sunbright_poll_yield();   // dolphin_hook.cpp
-static thread_local bool g_in_poll_yield = false;   // re-entrancy guard (the ISR reads memory too)
-static void poll_detect(u32 ea) {
-    if (g_in_poll_yield) return;
-    static u32 s_last = 0; static u32 s_reps = 0;
-    if (ea != s_last) { s_last = ea; s_reps = 0; return; }
-    if (++s_reps < 24) return;                 // not yet a confirmed poll loop
-    s_reps = 0;
+// Spin-loop detector state. The fast-path note (sb_poll_note) lives inline in intrinsics.h so a
+// RAM read is just load+bswap; only a confirmed poll calls sb_poll_fire here. These globals are
+// touched only on the EmuThread (the recomp + its yield), so plain globals (no thread_local).
+bool g_in_poll_yield = false;   // re-entrancy guard (the ISR reads memory too)
+u32  g_poll_last = 0;
+u32  g_poll_reps = 0;
+void sb_poll_fire(u32 ea) {
     g_in_poll_yield = true;
     if (ea >= 0xCC000000u) {                    // MMIO device register: advance only (defer IRQ)
         auto& sys = Core::System::GetInstance();
@@ -144,6 +145,10 @@ static void poll_detect(u32 ea) {
         fprintf(stderr, "[poll] yield at %08x (x%ld)\n", ea, n); }
 }
 
+// Base of main RAM (low 24 MB), published for the inlined fast path in intrinsics.h. Set lazily on
+// the first RAM access through ram_ptr below (memory is built before boot, so it's stable after).
+u8* g_ram_base = nullptr;
+
 // Fast path: main RAM only (cached 0x8xxxxxxx / uncached 0xCxxxxxxx mirrors of the
 // low 24 MB). Returns nullptr for everything else — MMIO, locked cache, etc. —
 // which must go through Dolphin's Read_U*/Write_U* so hardware register handlers
@@ -152,12 +157,8 @@ static void poll_detect(u32 ea) {
 static inline u8* ram_ptr(u32 ea) {
     const u32 top = ea >> 28;
     if ((top == 0x8 || top == 0xC) && (ea & 0x0FFFFFFF) < 0x01800000) {
-        // Hot path: direct base+offset instead of the (non-inlined, bounds-checked)
-        // GetPointerForRange call — this runs on EVERY guest RAM access. m_ram is stable once the
-        // EmuThread is executing (memory is built before boot), so cache it.
-        static u8* base = nullptr;
-        if (!base) base = MEM().GetRAM();
-        return base ? base + (ea & 0x01FFFFFFu) : MEM().GetPointerForRange(ea, 1);
+        if (!g_ram_base) g_ram_base = MEM().GetRAM();
+        return g_ram_base ? g_ram_base + (ea & 0x01FFFFFFu) : MEM().GetPointerForRange(ea, 1);
     }
     return nullptr;
 }
@@ -219,43 +220,39 @@ static inline void check_wild_write(u32 ea, unsigned long long val, int bits) {
 }
 
 // ── Byte-swapped reads/writes (GC = big-endian, host = little-endian) ───────
+// These are the OUT-OF-LINE slow paths: MMIO, the gather pipe, the wild-write trap, and the
+// pre-memory-init RAM window (ram_ptr lazily publishes g_ram_base on first use). The hot RAM
+// case never reaches here — it is inlined at the call site (sb_r*/sb_w* in intrinsics.h). The
+// reads still note spin-loops (sb_poll_note) so an MMIO status-bit poll is detected; r64 matches
+// the original (no poll note). The thin public mem_r*/mem_w* wrappers at the bottom dispatch
+// through the same inline fast path for callers that don't use the MEM_* macros.
 
-u8 mem_r8(u32 ea) {
-    poll_detect(ea);
+u8 mem_r8_slow(u32 ea) {
+    sb_poll_note(ea);
     if (u8* p = ram_ptr(ea)) return *p;
     return MMIO_R(8, ea);
 }
 
-u16 mem_r16(u32 ea) {
-    poll_detect(ea);
+u16 mem_r16_slow(u32 ea) {
+    sb_poll_note(ea);
     if (u8* p = ram_ptr(ea)) return ((u16)p[0] << 8) | p[1];
     return MMIO_R(16, ea);
 }
 
-u32 mem_r32(u32 ea) {
-    poll_detect(ea);
+u32 mem_r32_slow(u32 ea) {
+    sb_poll_note(ea);
     if (u8* p = ram_ptr(ea)) return ((u32)p[0]<<24)|((u32)p[1]<<16)|((u32)p[2]<<8)|p[3];
     return MMIO_R(32, ea);
 }
 
-u64 mem_r64(u32 ea) {
+u64 mem_r64_slow(u32 ea) {
     if (u8* p = ram_ptr(ea))
         return ((u64)p[0]<<56)|((u64)p[1]<<48)|((u64)p[2]<<40)|((u64)p[3]<<32)
              | ((u64)p[4]<<24)|((u64)p[5]<<16)|((u64)p[6]<<8)|p[7];
     return MMIO_R(64, ea);
 }
 
-f32 mem_rf32(u32 ea) {
-    u32 bits = mem_r32(ea);
-    f32 v; std::memcpy(&v, &bits, 4); return v;
-}
-
-f64 mem_rf64(u32 ea) {
-    u64 bits = mem_r64(ea);
-    f64 v; std::memcpy(&v, &bits, 8); return v;
-}
-
-void mem_w8(u32 ea, u8 v) {
+void mem_w8_slow(u32 ea, u8 v) {
     if (u8* p = ram_ptr(ea)) { *p = v; return; }
 #ifdef HAVE_DOLPHIN_MEMMAP
     if (is_gather_pipe(ea)) {
@@ -267,7 +264,7 @@ void mem_w8(u32 ea, u8 v) {
     MMIO_W(8, ea, v);
 }
 
-void mem_w16(u32 ea, u16 v) {
+void mem_w16_slow(u32 ea, u16 v) {
     if (u8* p = ram_ptr(ea)) { p[0] = v >> 8; p[1] = v & 0xFF; return; }
 #ifdef HAVE_DOLPHIN_MEMMAP
     if (is_gather_pipe(ea)) { fifo_count(); g_recomp_touched_mmio = true; GPF().Write16(v); return; }
@@ -276,7 +273,7 @@ void mem_w16(u32 ea, u16 v) {
     MMIO_W(16, ea, v);
 }
 
-void mem_w32(u32 ea, u32 v) {
+void mem_w32_slow(u32 ea, u32 v) {
     if (u8* p = ram_ptr(ea)) {
         p[0]=v>>24; p[1]=(v>>16)&0xFF; p[2]=(v>>8)&0xFF; p[3]=v&0xFF; return;
     }
@@ -290,7 +287,7 @@ void mem_w32(u32 ea, u32 v) {
     MMIO_W(32, ea, v);
 }
 
-void mem_w64(u32 ea, u64 v) {
+void mem_w64_slow(u32 ea, u64 v) {
     if (u8* p = ram_ptr(ea)) {
         p[0]=v>>56; p[1]=(v>>48)&0xFF; p[2]=(v>>40)&0xFF; p[3]=(v>>32)&0xFF;
         p[4]=(v>>24)&0xFF; p[5]=(v>>16)&0xFF; p[6]=(v>>8)&0xFF; p[7]=v&0xFF; return;
@@ -307,13 +304,19 @@ void mem_w64(u32 ea, u64 v) {
 #endif
 }
 
-void mem_wf32(u32 ea, f32 v) {
-    u32 bits; std::memcpy(&bits, &v, 4); mem_w32(ea, bits);
-}
-
-void mem_wf64(u32 ea, f64 v) {
-    u64 bits; std::memcpy(&bits, &v, 8); mem_w64(ea, bits);
-}
+// Public out-of-line wrappers (declared in intrinsics.h) — dispatch through the inline fast path.
+u8   mem_r8 (u32 ea)         { return sb_r8(ea);  }
+u16  mem_r16(u32 ea)         { return sb_r16(ea); }
+u32  mem_r32(u32 ea)         { return sb_r32(ea); }
+u64  mem_r64(u32 ea)         { return sb_r64(ea); }
+f32  mem_rf32(u32 ea)        { return sb_rf32(ea); }
+f64  mem_rf64(u32 ea)        { return sb_rf64(ea); }
+void mem_w8 (u32 ea, u8  v)  { sb_w8(ea, v);  }
+void mem_w16(u32 ea, u16 v)  { sb_w16(ea, v); }
+void mem_w32(u32 ea, u32 v)  { sb_w32(ea, v); }
+void mem_w64(u32 ea, u64 v)  { sb_w64(ea, v); }
+void mem_wf32(u32 ea, f32 v) { sb_wf32(ea, v); }
+void mem_wf64(u32 ea, f64 v) { sb_wf64(ea, v); }
 
 // ── psq dequantize/quantize ──────────────────────────────────────────────────
 // GQR types: 0=f32, 4=u8, 5=u16, 6=s8, 7=s16

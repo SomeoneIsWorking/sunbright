@@ -3,9 +3,64 @@
 #include <bit>
 #include <cmath>
 
-// Memory access — implemented in memory_bridge.cpp, backed by Dolphin's MemMap.
+// Memory access — backed by Dolphin's MemMap (memory_bridge.cpp).
 // All addresses are effective (as the game sees them).
-// The bridge strips the top bit (0x8xxxxxxx → 0x0xxxxxxx) for physical access.
+//
+// The generated game code is dense with loads/stores, so the common case — an access to main
+// RAM (cached 0x8xxxxxxx / uncached 0xCxxxxxxx mirror of the low 24 MB) — is INLINED here to a
+// single host load/store + bswap with no function call (sb_r*/sb_w* below, reached via the
+// MEM_* macros the emitter uses). Only non-RAM (MMIO / gather pipe / wild-write trap) and the
+// brief pre-memory-init window fall back to the out-of-line *_slow handlers. Profiling showed
+// ~99% of recomp wall-time was the old per-access function call into the bridge; inlining the
+// RAM path is the fix. The out-of-line mem_r*/mem_w* wrappers (declared below) stay for the
+// handful of runtime callers (native_os, overrides) that call them directly without the macros.
+extern u8*  g_ram_base;        // base of main RAM, or nullptr until memory init (→ slow path)
+extern bool g_in_poll_yield;   // re-entrancy guard while a spin-loop yield runs
+extern u32  g_poll_last;       // last read EA (spin-loop detector state)
+extern u32  g_poll_reps;       // consecutive reads of g_poll_last
+
+// Out-of-line slow paths (MMIO, gather pipe, wild-write trap, pre-init RAM).
+extern u8   mem_r8_slow (u32 ea);
+extern u16  mem_r16_slow(u32 ea);
+extern u32  mem_r32_slow(u32 ea);
+extern u64  mem_r64_slow(u32 ea);
+extern void mem_w8_slow (u32 ea, u8  v);
+extern void mem_w16_slow(u32 ea, u16 v);
+extern void mem_w32_slow(u32 ea, u32 v);
+extern void mem_w64_slow(u32 ea, u64 v);
+extern void sb_poll_fire(u32 ea);   // advance CoreTiming / deliver IRQ once a tight poll is confirmed
+
+// RAM fast-path host pointer for `ea`, or nullptr → caller takes the slow path.
+inline u8* sb_ram_fast(u32 ea) {
+    const u32 top = ea >> 28;
+    if ((top == 0x8u || top == 0xCu) && (ea & 0x0FFFFFFFu) < 0x01800000u && g_ram_base)
+        return g_ram_base + (ea & 0x01FFFFFFu);
+    return nullptr;
+}
+// Cheap inlined spin-loop note (on reads): same address ≥24× in a row → confirmed poll → yield.
+// Only the threshold case makes the out-of-line call; normal sequential access just resets.
+inline void sb_poll_note(u32 ea) {
+    if (g_in_poll_yield) return;
+    if (ea != g_poll_last) { g_poll_last = ea; g_poll_reps = 0; return; }
+    if (++g_poll_reps < 24u) return;
+    g_poll_reps = 0;
+    sb_poll_fire(ea);
+}
+
+inline u8  sb_r8 (u32 ea) { if (u8* p = sb_ram_fast(ea)) { sb_poll_note(ea); return *p; } return mem_r8_slow(ea); }
+inline u16 sb_r16(u32 ea) { if (u8* p = sb_ram_fast(ea)) { sb_poll_note(ea); u16 v; __builtin_memcpy(&v,p,2); return __builtin_bswap16(v); } return mem_r16_slow(ea); }
+inline u32 sb_r32(u32 ea) { if (u8* p = sb_ram_fast(ea)) { sb_poll_note(ea); u32 v; __builtin_memcpy(&v,p,4); return __builtin_bswap32(v); } return mem_r32_slow(ea); }
+inline u64 sb_r64(u32 ea) { if (u8* p = sb_ram_fast(ea)) { u64 v; __builtin_memcpy(&v,p,8); return __builtin_bswap64(v); } return mem_r64_slow(ea); }
+inline f32 sb_rf32(u32 ea) { u32 b = sb_r32(ea); f32 v; __builtin_memcpy(&v,&b,4); return v; }
+inline f64 sb_rf64(u32 ea) { u64 b = sb_r64(ea); f64 v; __builtin_memcpy(&v,&b,8); return v; }
+inline void sb_w8 (u32 ea, u8  v) { if (u8* p = sb_ram_fast(ea)) { *p = v; return; } mem_w8_slow(ea, v); }
+inline void sb_w16(u32 ea, u16 v) { if (u8* p = sb_ram_fast(ea)) { u16 b = __builtin_bswap16(v); __builtin_memcpy(p,&b,2); return; } mem_w16_slow(ea, v); }
+inline void sb_w32(u32 ea, u32 v) { if (u8* p = sb_ram_fast(ea)) { u32 b = __builtin_bswap32(v); __builtin_memcpy(p,&b,4); return; } mem_w32_slow(ea, v); }
+inline void sb_w64(u32 ea, u64 v) { if (u8* p = sb_ram_fast(ea)) { u64 b = __builtin_bswap64(v); __builtin_memcpy(p,&b,8); return; } mem_w64_slow(ea, v); }
+inline void sb_wf32(u32 ea, f32 v) { u32 b; __builtin_memcpy(&b,&v,4); sb_w32(ea, b); }
+inline void sb_wf64(u32 ea, f64 v) { u64 b; __builtin_memcpy(&b,&v,8); sb_w64(ea, b); }
+
+// Out-of-line wrappers (defined in memory_bridge.cpp) for callers that don't use the macros.
 extern u8  mem_r8 (u32 ea);
 extern u16 mem_r16(u32 ea);
 extern u32 mem_r32(u32 ea);
@@ -19,19 +74,19 @@ extern void mem_w64(u32 ea, u64 v);
 extern void mem_wf32(u32 ea, f32 v);
 extern void mem_wf64(u32 ea, f64 v);
 
-// Convenience macros used by emitted code
-#define MEM_R8(ea)      mem_r8(ea)
-#define MEM_R16(ea)     mem_r16(ea)
-#define MEM_R32(ea)     mem_r32(ea)
-#define MEM_R64(ea)     mem_r64(ea)
-#define MEM_RF32(ea)    mem_rf32(ea)
-#define MEM_RF64(ea)    mem_rf64(ea)
-#define MEM_W8(ea,v)    mem_w8(ea,v)
-#define MEM_W16(ea,v)   mem_w16(ea,v)
-#define MEM_W32(ea,v)   mem_w32(ea,v)
-#define MEM_W64(ea,v)   mem_w64(ea,v)
-#define MEM_WF32(ea,v)  mem_wf32(ea,v)
-#define MEM_WF64(ea,v)  mem_wf64(ea,v)
+// Convenience macros used by emitted code → the INLINE fast path.
+#define MEM_R8(ea)      sb_r8(ea)
+#define MEM_R16(ea)     sb_r16(ea)
+#define MEM_R32(ea)     sb_r32(ea)
+#define MEM_R64(ea)     sb_r64(ea)
+#define MEM_RF32(ea)    sb_rf32(ea)
+#define MEM_RF64(ea)    sb_rf64(ea)
+#define MEM_W8(ea,v)    sb_w8(ea,v)
+#define MEM_W16(ea,v)   sb_w16(ea,v)
+#define MEM_W32(ea,v)   sb_w32(ea,v)
+#define MEM_W64(ea,v)   sb_w64(ea,v)
+#define MEM_WF32(ea,v)  sb_wf32(ea,v)
+#define MEM_WF64(ea,v)  sb_wf64(ea,v)
 
 // Byte-swap helpers (GC is big-endian, host is little-endian)
 inline u16 bswap16(u16 v) { return __builtin_bswap16(v); }
