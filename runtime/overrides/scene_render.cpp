@@ -60,15 +60,18 @@ static void ov_gx_projection(CPUState& cpu) {
     // the first 3D frame (title onward), 2D shares a 16:9 EFB and must be pre-squeezed.
     static bool seen_3d = false;
     if (!is2d) seen_3d = true;
-    // The in-game HUD is corner-anchored: don't squeeze its 2D ortho — let it span the full EFB so
-    // the gauges sit at the 16:9 edges (after the present) instead of the 4:3 safe area. (First cut:
-    // full-width = corners at corners; refine to per-element anchoring if the slight stretch shows.)
-    const bool hud_exempt = g_in_hud && is2d;
+    // The in-game HUD is corner-anchored, so its 2D ortho uses a SEPARATE squeeze factor
+    // (SUNBRIGHT_HUD_SCALE, default 1.0): 1.0 = no squeeze → gauges fill to the 16:9 corners but the
+    // EFB→16:9 present stretches them ~1.33×; 0.75 = full squeeze → correct aspect but centred in the
+    // 4:3 safe area. Tune between for the anchor-vs-stretch tradeoff. (A true no-stretch edge anchor
+    // needs per-element pre-squeeze + scissor repositioning — see docs; this knob is the interim.)
+    static const float hud_scale = [] { const char* e = getenv("SUNBRIGHT_HUD_SCALE"); return e ? (float)atof(e) : 1.0f; }();
+    const float eff = (g_in_hud && is2d) ? hud_scale : scale;
     bool patched = false; f32 m00 = 0.0f, m03 = 0.0f;
-    if (widescreen_on() && (!is2d || seen_3d) && !hud_exempt && mtx >= 0x80000000u && mtx < 0x81800000u) {
+    if (widescreen_on() && (!is2d || seen_3d) && eff != 1.0f && mtx >= 0x80000000u && mtx < 0x81800000u) {
         m00 = mem_rf32(mtx + 0x00);
-        mem_wf32(mtx + 0x00, m00 * scale);
-        if (is2d) { m03 = mem_rf32(mtx + 0x0c); mem_wf32(mtx + 0x0c, m03 * scale); }
+        mem_wf32(mtx + 0x00, m00 * eff);
+        if (is2d) { m03 = mem_rf32(mtx + 0x0c); mem_wf32(mtx + 0x0c, m03 * eff); }
         patched = true;
     }
     if (RecompFunc orig = recomp_raw(GX_SET_PROJECTION)) orig(cpu);
@@ -105,6 +108,25 @@ static void ov_hud_perform(CPUState& cpu) {
 }
 static const bool s_hud_registered = [] {
     register_override(TGCCONSOLE2_PERFORM, &ov_hud_perform);
+    return true;
+}();
+
+// GXSetViewport(f32 left, f32 top, f32 w, f32 h, f32 nearZ, f32 farZ) @ 0x803630c8. Log-only during
+// the HUD (SUNBRIGHT_RENDERPORT_LOG) to learn how the HUD positions each element (per-element
+// viewport rects in EFB pixels) — that decides the no-stretch edge-anchor.
+static constexpr u32 GX_SET_VIEWPORT = 0x803630c8u;
+static void ov_gx_viewport(CPUState& cpu) {
+    static const bool log = getenv("SUNBRIGHT_RENDERPORT_LOG") != nullptr;
+    if (log && g_in_hud) {
+        static unsigned long n = 0;
+        if ((n++ % 20) == 0)
+            std::fprintf(stderr, "[renderport] HUD GXSetViewport left=%.1f top=%.1f w=%.1f h=%.1f\n",
+                         cpu.fpr[1].ps0, cpu.fpr[2].ps0, cpu.fpr[3].ps0, cpu.fpr[4].ps0);
+    }
+    if (RecompFunc orig = recomp_raw(GX_SET_VIEWPORT)) orig(cpu); else call_ppc(cpu, cpu.lr);
+}
+static const bool s_viewport_registered = [] {
+    if (getenv("SUNBRIGHT_RENDERPORT_LOG")) register_override(GX_SET_VIEWPORT, &ov_gx_viewport);
     return true;
 }();
 

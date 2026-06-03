@@ -62,6 +62,19 @@ keyed by a stable per-model ID.
 >   TGCConsole2::perform, find the HUD's 2D ortho, and EDGE-ANCHOR the corner gauges to the 16:9 edges
 >   (a uniform squeeze would wrongly centre them). The FLUDD water gauge is likely a separate TViewObj
 >   — find its perform via vtable[8] the same way.
+>   **DONE (edge-anchor) + the no-stretch problem:** `scene_render.cpp` hooks TGCConsole2::perform,
+>   flags the HUD window, and gives the HUD ortho its own squeeze factor `SUNBRIGHT_HUD_SCALE`
+>   (default 1.0 = no squeeze → gauges fill to the 16:9 corners; 0.75 = full squeeze → centred,
+>   correct-aspect; tune between). Verified: at 1.0 the coins sit top-left, WATER gauge bottom-right.
+>   FUNDAMENTAL no-stretch issue: the 4:3 EFB presents at 16:9, stretching ALL EFB content ~1.33×, so
+>   un-stretching requires PRE-SQUEEZING (×0.75), which CENTRES — you can't both keep correct aspect
+>   AND reach the edges with one linear ortho (size+position are coupled). True no-stretch edge-anchor
+>   = per-element: pre-squeeze each HUD element AND reposition its scissor/ortho to its corner. The HUD
+>   positions elements via per-element ortho + GXSetScissor (0x80363138); the GXSetViewport
+>   (0x803630c8) is full-screen (logged under SUNBRIGHT_RENDERPORT_LOG). NEXT (fresh focus): hook
+>   GXSetScissor during the HUD, log each element's scissor rect, classify by corner, pre-squeeze +
+>   move scissor per element. Gameplay capture for iteration: SUNBRIGHT_SAVE_ON_HUD auto-saves a state
+>   at the HUD (scratch/hud_gameplay.sav); load it with SUNBRIGHT_STATE for instant HUD iteration.
 > The right model is per-element: overlays/logo → centre (squeeze ok); fades/backdrops → fill;
 > HUD → edge-anchor. Hook the J2D/element draws, classify by object, apply per class.
 > 2. **Interpolation** — capture each object's transform, slerp prev→cur, re-present
