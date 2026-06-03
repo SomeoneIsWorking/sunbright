@@ -32,4 +32,9 @@ void cpu_to_dolphin_state(const CPUState& src, PowerPC::PowerPCState& dst);
 // C-call model: install the longjmp target a tail-branch into non-recomp code uses
 // to unwind the recomp C stack. Returns the previous slot (restore it when done).
 sigjmp_buf* sunbright_set_tail_jmp(sigjmp_buf* j);
+
+// Native threading: adopt the calling host thread (Dolphin's EmuThread / CPU thread)
+// as nthr guest thread 0 and install the context-switch hooks. Idempotent; call from
+// the guest-entry path so it runs exactly once, on the right thread.
+void sunbright_adopt_cpu_thread();
 #endif

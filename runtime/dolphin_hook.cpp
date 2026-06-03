@@ -1,6 +1,8 @@
 #include "dolphin_hook.h"
 #include "overrides.h"
+#include "native_threads.h"
 #include <dlfcn.h>
+#include <mutex>
 #include <cstdlib>
 #ifdef HAVE_DOLPHIN_CORE
 #  include "Core/HW/SystemTimers.h"
@@ -295,5 +297,32 @@ void cpu_to_dolphin_state(const CPUState& src, PowerPC::PowerPCState& dst) {
     dst.xer_ca = src.xer.ca;
     dst.xer_so_ov = (src.xer.so << 1) | src.xer.ov;   // bit1=SO, bit0=OV
     for (int i = 0; i < 8; i++) dst.spr[912 + i] = src.gqr[i];
+}
+
+// ── Native-threading runtime glue ────────────────────────────────────────────
+// Each guest thread's PPC register context (the GC OSContext, done natively) lives in a
+// CPUState in its nthr `user` slot. The switch hooks swap that slot with Dolphin's single
+// global PowerPCState on every token hand-off: save out the thread giving up the token,
+// restore in the one taking it. `g_tail_jmp` needs no hook — it is thread_local and every
+// guest thread is a real host thread, so it is per-thread for free.
+static void nthr_ctx_save(nthr::GuestThread* t) {
+    if (auto* slot = static_cast<CPUState*>(nthr::user_slot(t)))
+        dolphin_state_to_cpu(Core::System::GetInstance().GetPPCState(), *slot);
+}
+static void nthr_ctx_restore(nthr::GuestThread* t) {
+    if (auto* slot = static_cast<CPUState*>(nthr::user_slot(t)))
+        cpu_to_dolphin_state(*slot, Core::System::GetInstance().GetPPCState());
+}
+
+void sunbright_adopt_cpu_thread() {
+    static std::once_flag once;
+    std::call_once(once, [] {
+        nthr::set_switch_hooks(nthr_ctx_save, nthr_ctx_restore);
+        nthr::GuestThread* t0 = nthr::adopt_current(/*priority=*/16);
+        nthr::user_slot(t0) = new CPUState();   // its saved-context slot
+        // With only thread 0 active the token is always held and the hooks never fire,
+        // so this is behaviourally inert until native OS threads spawn (later steps).
+        fprintf(stderr, "[nthr] adopted EmuThread as guest thread 0 (CPU token held)\n");
+    });
 }
 #endif

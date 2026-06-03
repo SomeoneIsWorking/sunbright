@@ -106,6 +106,17 @@ GuestThread* spawn(int priority, std::function<void()> body, bool start_ready) {
     return gt;
 }
 
+GuestThread* adopt_current(int priority) {
+    std::unique_lock<std::mutex> lk(g_mtx);
+    auto* gt = new GuestThread;       // no host std::thread — this IS the caller
+    gt->prio      = priority;
+    gt->state     = State::Running;
+    gt->ready_seq = g_seq++;
+    g_threads.push_back(gt);
+    g_running = gt;                   // the calling thread holds the token immediately
+    return gt;
+}
+
 void block(State newState) {
     std::unique_lock<std::mutex> lk(g_mtx);
     GuestThread* self = g_running;

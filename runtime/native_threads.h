@@ -33,6 +33,12 @@ int          priority_of(GuestThread*);
 // Blocked (suspended) until make_ready().
 GuestThread* spawn(int priority, std::function<void()> body, bool start_ready);
 
+// Adopt the CALLING host thread as a guest thread that ALREADY holds the CPU token (it
+// is the running thread, not one nthr spawned — no new host thread is created and the
+// caller keeps running). Used to make Dolphin's EmuThread guest thread 0. Call once,
+// on that thread, before any second guest thread can exist.
+GuestThread* adopt_current(int priority);
+
 // The current thread yields the CPU token until rescheduled. `newState` is Ready to
 // round-robin (stay schedulable) or Blocked to sleep until something makes it Ready.
 void block(State newState);

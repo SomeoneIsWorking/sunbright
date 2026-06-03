@@ -292,6 +292,11 @@ bool diff_run(uint32_t pc, RecompFunc fn) {
 #endif
 
 bool Run(uint32_t pc) {
+#ifdef HAVE_DOLPHIN_CORE
+    // First guest entry on the EmuThread: adopt it as nthr guest thread 0 (holds the CPU
+    // token). Idempotent (std::call_once) and inert with only thread 0 active.
+    sunbright_adopt_cpu_thread();
+#endif
     // Hand-written native override takes precedence over the generated function.
     RecompFunc fn = override_lookup(pc);
     if (!fn) {

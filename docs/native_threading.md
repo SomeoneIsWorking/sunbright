@@ -169,9 +169,14 @@ through the hooks, survives a yield to another thread.
    super-call foothold, so deliver this **together with the first genuinely native primitive**, not
    alone. Verify the lifecycle/sync calls are now intercepted during boot→audio-init via
    `SUNBRIGHT_OSWATCH` (previously zero).
-3. **Wire the host-thread substrate into the game (substrate itself done, step 1).** Adopt the
-   EmuThread as guest thread 0; the `nthr` CPU token serialises contexts; `DeclareAsCPUThread`
-   while holding it. Verify boot/render unchanged with only thread 0 active.
+3. ✅ **Wire the host-thread substrate into the game** (done 2026-06-03). `nthr::adopt_current`
+   registers Dolphin's EmuThread as guest thread 0 holding the CPU token (no new host thread);
+   the switch hooks (`nthr_ctx_save`/`restore` in `dolphin_hook.cpp`) swap a per-thread `CPUState`
+   slot with the global `PowerPCState` on each hand-off. Adopted on first `SunbrightBridge::Run`
+   via `std::call_once` (`sunbright_adopt_cpu_thread`). The EmuThread is already Dolphin's CPU
+   thread, so no extra `DeclareAsCPUThread` for thread 0 (needed when a *different* host thread
+   takes the token, step 4). Verified: boot reaches the **identical** stall point
+   (`run_jit_sync 80343fe4→803488c0`, same step budget) — inert with only thread 0, no regression.
 4. **Native `OSCreateThread`/`OSResumeThread`.** Spawn a host thread whose body runs recomp from
    the entry PC; map guest `OSThread*` ↔ `nthr::GuestThread*`; keep `0x800000E4` + state/priority
    coherent; PPC register file saved/restored per context via the step-1 hooks. Verify the 5 boot
