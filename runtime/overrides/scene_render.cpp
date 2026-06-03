@@ -60,8 +60,12 @@ static void ov_gx_projection(CPUState& cpu) {
     // the first 3D frame (title onward), 2D shares a 16:9 EFB and must be pre-squeezed.
     static bool seen_3d = false;
     if (!is2d) seen_3d = true;
+    // Fade exemption: a screen fade/wipe is a solid-colour fill that must cover the WHOLE 16:9
+    // screen, so do NOT squeeze its 2D ortho — let its quad span the full EFB (→ full screen after
+    // the 16:9 present). Stretching a solid colour is invisible. Perspective stays widened.
+    const bool fade_exempt = g_in_fade && is2d;
     bool patched = false; f32 m00 = 0.0f, m03 = 0.0f;
-    if (widescreen_on() && (!is2d || seen_3d) && mtx >= 0x80000000u && mtx < 0x81800000u) {
+    if (widescreen_on() && (!is2d || seen_3d) && !fade_exempt && mtx >= 0x80000000u && mtx < 0x81800000u) {
         m00 = mem_rf32(mtx + 0x00);
         mem_wf32(mtx + 0x00, m00 * scale);
         if (is2d) { m03 = mem_rf32(mtx + 0x0c); mem_wf32(mtx + 0x0c, m03 * scale); }
@@ -121,7 +125,8 @@ static void ov_fader_draw(CPUState& cpu) {
     g_in_fade = false;
 }
 static const bool s_fader_registered = [] {
-    if (getenv("SUNBRIGHT_RENDERPORT"))
-        register_override(TSMSFADER_DRAW, &ov_fader_draw);
+    // Always on (when widescreen): the fade must cover the full screen — this is a functional
+    // widescreen fix, not just diagnostics.
+    register_override(TSMSFADER_DRAW, &ov_fader_draw);
     return true;
 }();
