@@ -480,6 +480,8 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
         case SPR_GQR0: case SPR_GQR0+1: case SPR_GQR0+2: case SPR_GQR0+3:
         case SPR_GQR0+4: case SPR_GQR0+5: case SPR_GQR0+6: case SPR_GQR0+7:
             line("%s = cpu.gqr[%d];", d.c_str(), spr - SPR_GQR0); break;
+        case SPR_SRR0:  line("%s = cpu.srr0;", d.c_str()); break;
+        case SPR_SRR1:  line("%s = cpu.srr1;", d.c_str()); break;
         default:
             // Not modeled in CPUState — read Dolphin's live SPR (HID0/HID2/BAT/...)
             line("%s = spr_get(%d);", d.c_str(), spr); break;
@@ -498,6 +500,8 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
         case SPR_GQR0: case SPR_GQR0+1: case SPR_GQR0+2: case SPR_GQR0+3:
         case SPR_GQR0+4: case SPR_GQR0+5: case SPR_GQR0+6: case SPR_GQR0+7:
             line("cpu.gqr[%d] = %s;", spr - SPR_GQR0, s.c_str()); break;
+        case SPR_SRR0:  line("cpu.srr0 = %s;", s.c_str()); break;
+        case SPR_SRR1:  line("cpu.srr1 = %s;", s.c_str()); break;
         default:
             // Not modeled in CPUState — write Dolphin's live SPR (HID0/HID2/BAT/...)
             line("spr_set(%d, %s);", spr, s.c_str()); break;
@@ -794,11 +798,18 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
     case PPCOp::MFMSR: line("%s = msr_get(); // live MSR from Dolphin", d.c_str()); break;
     case PPCOp::MFSR:  line("%s = 0; // MFSR: segment registers not emulated", d.c_str()); break;
     case PPCOp::MFSRIN:line("%s = 0; // MFSRIN: segment registers not emulated", d.c_str()); break;
-    // MTMSR/RFI/segment/TLB writes redirect control flow or have HW side effects we
-    // can't reproduce inline — function_needs_jit() keeps these functions out of the
-    // recomp table so Dolphin's JIT runs them. These cases are belt-and-suspenders.
-    case PPCOp::MTMSR: line("msr_set(%s); return; // should be JIT-routed", s.c_str()); break;
-    case PPCOp::RFI:   line("return; // RFI — should be JIT-routed"); break;
+    // MTMSR: set the modeled MSR without a synchronous exception check (delivery is deferred to a
+    // recomp→JIT boundary — matches the OSDisableInterrupts hazard fix; never deliver mid-tree).
+    case PPCOp::MTMSR: line("msr_set_raw(%s);", s.c_str()); break;
+    // RFI (exception return / OS context switch): restore MSR from SRR1, branch to SRR0. The
+    // function ends here — tail-branch to the resumed PC (recomp target → nested call; else handoff).
+    case PPCOp::RFI:
+        line("msr_set_raw(cpu.srr1);");
+        line("tail_ppc(cpu, cpu.srr0 & ~3u);");
+        line("return;");
+        break;
+    // Segment/TLB writes still have HW side effects we can't reproduce — function_needs_jit keeps
+    // those functions in Dolphin; these emits are belt-and-suspenders.
 
     // ── lmw / stmw ────────────────────────────────────────────────────────────
     // Load/store multiple: rD..r31 from consecutive words starting at EA

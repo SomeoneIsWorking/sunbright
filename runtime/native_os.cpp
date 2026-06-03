@@ -229,11 +229,10 @@ void native_os_init() {
     // it runs under the interpreter. OSGetCurrentThread is behaviour-identical, harmless, and
     // exercises the seam.
     native_os_register(0x80348368u, os_get_current_thread);
-    // PC-port threading replication: track the game's worker threads at creation, and keep them
-    // dormant at resume (their work is done synchronously — see sms_jkrthread.cpp). No GC scheduler,
-    // no context switch; the main/default thread keeps running. See os_resume_thread_sync above.
-    native_os_register(0x80348948u, os_create_thread);     // record workers (super-calls real body)
-    native_os_register(0x80348ee8u, os_resume_thread_sync); // dormant worker / faithful main resume
+    // The GC scheduler / context-switch / interrupt primitives are now RECOMPILED (the recompiler
+    // models mtmsr/rfi/SRR — tools/recompiler), so the PC port runs the real threading. The old
+    // dormant-worker override (os_create_thread + os_resume_thread_sync) is REMOVED — it bypassed
+    // the scheduler and starved the workers, which broke the producer/consumer message handshakes.
     // ── Diagnostics (env-gated, kept permanently — see memory keep-diagnostics) ──
     if (getenv("SUNBRIGHT_DBG_CONSOLE"))
         native_os_register(0x8033ba90u, dbg_write_console);   // surface GC console / crash report
@@ -243,8 +242,8 @@ void native_os_init() {
     // faithfully (as before this effort) and stalls at audio init, which is fixed instead by a
     // native subsystem override (the PC-native replicate-the-behaviour approach), registered below
     // as it is built. (void)s keep the implementations linked for reference / future reuse.
-    (void)&os_create_thread; (void)&os_resume_thread;
-    (void)&os_sleep_thread;  (void)&os_wakeup_thread;
+    (void)&os_create_thread; (void)&os_resume_thread; (void)&os_resume_thread_sync;
+    (void)&os_sleep_thread;  (void)&os_wakeup_thread; (void)&is_guest_worker;
     fprintf(stderr, "[native_os] registered %zu native OS primitive(s) over [%08x,%08x)\n",
             g_native_os.size(), g_os_lo, g_os_hi);
 }

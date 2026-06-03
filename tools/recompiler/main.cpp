@@ -24,6 +24,7 @@ namespace fs = std::filesystem;
 // L2CR, WPAR, BATs, DABR, …) carries HW side effects only Dolphin reproduces.
 static bool spr_is_modeled(u16 spr) {
     if (spr == SPR_XER || spr == SPR_LR || spr == SPR_CTR) return true;
+    if (spr == SPR_SRR0 || spr == SPR_SRR1) return true;   // exception/context save-restore — modeled
     if (spr >= SPR_GQR0 && spr <= SPR_GQR0 + 7) return true;
     return false;
 }
@@ -31,7 +32,8 @@ static bool spr_is_modeled(u16 spr) {
 static bool function_needs_jit(const std::vector<PPCInstr>& instrs) {
     for (const auto& i : instrs) {
         switch (i.op) {
-        case PPCOp::MTMSR:
+        // MTMSR (→ msr_set_raw) is modeled in the recomp. RFI (exception/context return) is still
+        // JIT for now — recompiling it regressed early-boot exception handling; revisit.
         case PPCOp::RFI:
         case PPCOp::MTSR:  case PPCOp::MTSRIN:
         case PPCOp::TLBIE: case PPCOp::TLBSYNC:

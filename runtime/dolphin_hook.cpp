@@ -255,15 +255,34 @@ bool interp_run_until(u32 ret, long budget) {
 // flag is never set. Advance emulated time; if interrupts are enabled and one becomes pending,
 // Advance vectors to the handler — run the ISR (so e.g. a DVD/DSP/VI ISR calls OSWakeupThread,
 // setting RunQueueBits) until it rfi's back, then the recomp's next read sees the updated flag.
+// A guest `b .` (0x48000000) to park the idle PC at — a delivered IRQ needs a valid srr0 to rfi to.
+// We never execute it (interp_run_until stops the moment pc returns there), so any one will do.
+static u32 sunbright_idle_spin_pc() {
+    static u32 cached = 0;
+    if (cached) return cached;
+    for (u32 a = 0x80003100u; a < 0x80040000u; a += 4)
+        if (mem_r32(a) == 0x48000000u) { cached = a; break; }
+    if (!cached) cached = 0x80003100u;
+    return cached;
+}
 void sunbright_poll_yield() {
     auto& sys = Core::System::GetInstance();
     auto& ppc = sys.GetPPCState();
     auto& ct  = sys.GetCoreTiming();
-    const u32 ret = ppc.npc;        // CheckExternalExceptions sets srr0 = npc, then pc = npc = vector
-    ct.Idle();                      // fast-forward to the next scheduled device event
-    ct.Advance();                   // process events; if EE & pending, vector ppc.pc to the ISR
-    if (ppc.pc != ret)              // an interrupt was delivered
-        interp_run_until(ret, 5'000'000);   // run the ISR until it rfi's back to `ret`
+    // Park at a clean idle PC with EE=1 so a device IRQ that becomes pending has a valid srr0 and
+    // can vector. Save/restore the guest PC/MSR — they belong to the recomp poll loop we interrupted.
+    const u32 idle_pc   = sunbright_idle_spin_pc();
+    const u32 saved_pc  = ppc.pc, saved_npc = ppc.npc;
+    const u32 saved_msr = ppc.msr.Hex;
+    ppc.pc = ppc.npc = idle_pc;
+    ppc.msr.Hex |= 0x8000u;
+    ct.Idle();                                  // fast-forward to the next scheduled device event
+    ct.Advance();                               // process it — a device callback raises a pending IRQ
+    sys.GetPowerPC().CheckExceptions();         // …which Advance does NOT deliver: vector pc to the ISR
+    if (ppc.pc != idle_pc)                      // an interrupt was delivered → run its handler
+        interp_run_until(idle_pc, 5'000'000);   // ISR sets the polled flag / calls OSWakeupThread, rfi's back
+    ppc.msr.Hex = saved_msr;
+    ppc.pc = saved_pc; ppc.npc = saved_npc;
 }
 
 // PC-port frame-sync replication. The game's render loop blocks on VIWaitForRetrace (vsync) and
@@ -392,6 +411,8 @@ void dolphin_state_to_cpu(const PowerPC::PowerPCState& src, CPUState& dst) {
     u32_to_cr(dst, src.cr.Get());
     // GQR
     for (int i = 0; i < 8; i++) dst.gqr[i] = src.spr[912 + i];
+    dst.srr0 = src.spr[26];   // SRR0 — needed now that rfi/exception code is recompiled
+    dst.srr1 = src.spr[27];   // SRR1
 }
 
 void cpu_to_dolphin_state(const CPUState& src, PowerPC::PowerPCState& dst) {
@@ -407,6 +428,8 @@ void cpu_to_dolphin_state(const CPUState& src, PowerPC::PowerPCState& dst) {
     dst.xer_ca = src.xer.ca;
     dst.xer_so_ov = (src.xer.so << 1) | src.xer.ov;   // bit1=SO, bit0=OV
     for (int i = 0; i < 8; i++) dst.spr[912 + i] = src.gqr[i];
+    dst.spr[26] = src.srr0;   // SRR0
+    dst.spr[27] = src.srr1;   // SRR1
 }
 
 // ── Native-threading runtime glue ────────────────────────────────────────────
