@@ -28,12 +28,28 @@ keyed by a stable per-model ID.
 > The user's next ask: squeezing every 2D element is wrong — specific elements need specific
 > treatment. Pinned 2D elements (USA/GMSE01):
 > - **Screen fader `TSMSFader`** — `draw` 0x8013fc88, `drawFadeinout` 0x8013fa54, `setDisplaySize`
->   0x8013f680, `draw__...TRect` takes the screen rect in r4. Fades/wipes must cover the WHOLE
->   16:9 screen; the squeeze leaves the side ~12.5% uncovered. **Finding:** `TSMSFader::draw`
->   fires every frame and MANY projections (incl. perspective m00≈2.04) occur within its scope —
->   so it is NOT a simple full-screen quad; a "flag the fade window and exempt its projection"
->   fix does not directly apply. Needs more RE (what geometry/grafctx the fade fill uses) before
->   fixing. Hook scaffold + cross-logging is in `scene_render.cpp` (SUNBRIGHT_RENDERPORT[_LOG]).
+>   0x8013f680. Fades/wipes must cover the WHOLE 16:9 screen; the squeeze leaves the side ~12.5%
+>   uncovered. **RE results (verified):**
+>   - `TSMSFader::draw` (0x8013fc88) is NOT the fade quad — it wraps the whole 2D draw pass (all
+>     the screen's projections occur in its scope). **Do NOT flag it and exempt "during fade"** —
+>     that un-squeezes EVERY 2D element and stretches the menu (tried, reverted in fac8faf).
+>   - `drawFadeinout` (0x8013fa54) IS the fade fill: it does GX vtx setup + draws the quad using
+>     the **current 2D ortho** — it sets no projection of its own. So the quad inherits the
+>     squeezed ortho → covers only the centre 75%.
+>   - **Fix to implement (verify on BOTH a fade frame AND a menu frame):** give the fade quad an
+>     un-squeezed ortho. Either (a) in `ov_gx_projection` save the last ortho's original (un-scaled)
+>     matrix bytes + guest addr; hook `drawFadeinout`, temporarily restore that matrix and re-call
+>     `GXSetProjection` (recomp_raw 0x80362c34) so the quad loads full-range, super-call, done; or
+>     (b) intercept the quad's GXPosition X coords and widen 0→-107 / 640→747. (a) is cleaner.
+> - **2D-element identification tool — DONE (`SUNBRIGHT_2DID=1`, `runtime/overrides/scene_id.cpp`).**
+>   Wraps J2DScreen::draw + J2DPicture/J2DTextBox::drawSelf and writes a compact per-screen inventory
+>   to `scratch/2d_elements/elements.log`: each element's type, NAME, screen rect, object-ID.
+>   **J2DPane layout decoded:** +0x08 type fourCC, **+0x10 NAME fourCC** (the .blo tag, e.g. `'yaji'`
+>   arrow, `'shn0'` shine, `'n_0a'` digit, `'root'` screen), **+0x14/0x18/0x1c/0x20 bounds x0/y0/x1/y1**
+>   (s32, 640×480 space). `tools/crop_2d_elements.py` crops each element from a SUNBRIGHT_DUMP frame
+>   → a PNG. CAVEAT: rects are pane-LOCAL, so nested panes crop offset — absolute positioning needs
+>   the parent-transform accumulation (the drawSelf matrix r6, TODO to decode; would also give
+>   absolute rects in the log). Use this to classify elements for the per-element widescreen fixes.
 > - **In-game HUD `TGCConsole2`** — coins/timer/balloons/telop (0x8014xxxx cluster). Drawn in the
 >   2D ortho; the squeeze centres it in the 4:3 safe area. NEXT: decide per-element anchoring
 >   (corner-anchored gauges should move to the 16:9 edges, not stay 4:3-centred).
