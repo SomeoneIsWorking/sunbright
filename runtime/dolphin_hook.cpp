@@ -272,6 +272,19 @@ void sunbright_poll_yield() {
 // Dolphin's VI OutputField presents the frame, and the GP FIFO drains. No guest sleep, no scheduler.
 // Interrupts are deferred (MSR[EE] cleared) so we never redirect into a guest ISR mid-call; the
 // pending VI/GP IRQs are delivered cleanly at the next recomp→JIT boundary.
+// 'sc' (syscall) replication. The recompiler stubs every sc to os_hle_call (c_emitter.cpp), and the
+// real OS effect lives in the syscall exception handler (vector 0x80000C00) — which only Dolphin has.
+// So run the sc under Dolphin's interpreter from its PC: the interpreter takes the syscall exception,
+// runs the OS handler, rfi's back, and returns to the caller (cpu.lr). Stubbing it to nothing broke
+// every OS operation that goes through sc. (Used by os_hle_call.)
+void sunbright_run_syscall(CPUState& cpu, u32 sc_pc) {
+    auto& ppc = Core::System::GetInstance().GetPPCState();
+    cpu_to_dolphin_state(cpu, ppc);
+    ppc.pc = ppc.npc = sc_pc;
+    interp_run_until(cpu.lr, 5'000'000);
+    dolphin_state_to_cpu(ppc, cpu);
+}
+
 void sunbright_wait_vi_field() {
     auto& sys = Core::System::GetInstance();
     auto& ppc = sys.GetPPCState();

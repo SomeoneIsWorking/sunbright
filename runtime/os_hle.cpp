@@ -44,6 +44,10 @@ static HLEEntry g_hle_table[] = {
     // { 0x803A0100, hle_os_panic,  "OSPanic"  },
 };
 
+#ifdef HAVE_DOLPHIN_CORE
+extern void sunbright_run_syscall(CPUState& cpu, u32 sc_pc);   // dolphin_hook.cpp
+#endif
+
 void os_hle_call(CPUState& cpu, u32 address) {
     for (const auto& e : g_hle_table) {
         if (e.addr == address) {
@@ -51,6 +55,11 @@ void os_hle_call(CPUState& cpu, u32 address) {
             return;
         }
     }
-    // SC instruction: delegate to Dolphin's syscall handler if available
+#ifdef HAVE_DOLPHIN_CORE
+    // `sc` at `address`: run it under Dolphin so the OS syscall exception handler actually executes
+    // (the recompiler stubs every sc to this call). Was a silent no-op, which stalled the game.
+    sunbright_run_syscall(cpu, address);
+#else
     fprintf(stderr, "[os_hle] unhandled call at 0x%08x\n", address);
+#endif
 }
