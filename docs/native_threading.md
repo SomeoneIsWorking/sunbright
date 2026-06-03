@@ -271,6 +271,29 @@ Concrete design (Dolphin API scouted 2026-06-03):
   mutates global `ppc` (discarded when the woken thread's ctx is restored) + guest RAM/device state
   (the real work of delivering the interrupt) — intended.
 
+### Attempt 1 — bare `b .` spin (RULED OUT, 2026-06-03)
+Implemented the idle handler above (`b .` spin found by scanning RAM; `CoreTiming::Idle()` +
+`SingleStep` with the native-OS intercept; drop the fallback). **It does not deliver device
+interrupts.** Findings from the headless run:
+- Removing the `ready_count()==0` fallback **breaks early boot**: the very first `OSSleepThread`
+  (`cur=8042ba20 q=803e0220`, `ready_others=0`) is a single-runnable-context hardware wait the
+  fallback was quietly handling. So the fallback is load-bearing for early boot, not just the audio case.
+- The `b .` spin carries the *blocked thread's* MSR/context (`msr=0x1032`, `EE=0`; I force `EE=1`).
+  Stepping it 20M–200M times delivered **no external-interrupt vector at all** (`0x500` never
+  entered); the manual `Idle()`+`Advance()` variant fired the **decrementer (`0x900`) exactly once**
+  then nothing. So a bare spin does NOT reproduce what the GC idle/reschedule does — the device
+  IRQ that completes the wait never becomes pending/delivered.
+- Why the *fallback* works where the bare spin doesn't is the key open question: the fallback runs
+  the **real GC idle thread** (its own context/stack) via `SelectThread` under the interpreter, which
+  evidently drives the device-completion path (PI unmask / servicing) that a context-less `b .` does
+  not. Likely the idle context must be the genuine IdleThread context (load its full register file),
+  or the wait completes by the thread re-polling a flag the ISR sets rather than via `OSWakeupThread`.
+- **Next attempt:** run the **full GC IdleThread context** (load all 32 GPRs from `0x803EB298+0`, not
+  a bare `b .`) as the idle spin and re-check whether `0x500` IRQs deliver; if they still don't,
+  trace the *fallback's* wakeup of `8042ba20` (set `SUNBRIGHT_OSWATCH`, watch `q=803e0220`) to learn
+  whether it's an `OSWakeupThread` or a polled-flag completion. Code was reverted to the committed
+  WIP (fallback retained) so `main` stays in the best working state meanwhile.
+
 ### Older notes
 SDL/present thread signals vblank waiters via the native condvar; audio-out thread signals audio
 waiters. A preemption nudge may be needed if a busy-wait guest thread is found not to yield.
