@@ -25,6 +25,15 @@ u32         g_gx_addr = 0;
 u32         g_gx_words[12];
 unsigned long g_gx_total = 0;
 
+// SUNBRIGHT_DBG_FIFO: count writes to the GP write-gather pipe (every GX draw command flows through
+// here). Distinguishes "game isn't issuing draws" (count stays ~0) from "draws don't reach the GPU".
+bool          g_dbg_fifo = getenv("SUNBRIGHT_DBG_FIFO") != nullptr;
+unsigned long g_fifo_writes = 0;
+inline void fifo_count() {
+    if (g_dbg_fifo && (++g_fifo_writes % 200000) == 1)
+        std::fprintf(stderr, "[fifo] %lu gather-pipe writes\n", g_fifo_writes);
+}
+
 inline void gx_tap_cmd(u8 v) {       // a u8 written to the gather pipe
     if (v == 0x10) g_gx_state = 1;   // XF load command
     else if (g_gx_state != 2) g_gx_state = 0;
@@ -245,7 +254,7 @@ void mem_w8(u32 ea, u8 v) {
 #ifdef HAVE_DOLPHIN_MEMMAP
     if (is_gather_pipe(ea)) {
         if (g_gxcap) gx_tap_cmd(v);
-        g_recomp_touched_mmio = true; GPF().Write8(v); return;
+        fifo_count(); g_recomp_touched_mmio = true; GPF().Write8(v); return;
     }
 #endif
     check_wild_write(ea, v, 8);
@@ -255,7 +264,7 @@ void mem_w8(u32 ea, u8 v) {
 void mem_w16(u32 ea, u16 v) {
     if (u8* p = ram_ptr(ea)) { p[0] = v >> 8; p[1] = v & 0xFF; return; }
 #ifdef HAVE_DOLPHIN_MEMMAP
-    if (is_gather_pipe(ea)) { g_recomp_touched_mmio = true; GPF().Write16(v); return; }
+    if (is_gather_pipe(ea)) { fifo_count(); g_recomp_touched_mmio = true; GPF().Write16(v); return; }
 #endif
     check_wild_write(ea, v, 16);
     MMIO_W(16, ea, v);
@@ -268,7 +277,7 @@ void mem_w32(u32 ea, u32 v) {
 #ifdef HAVE_DOLPHIN_MEMMAP
     if (is_gather_pipe(ea)) {
         if (g_gxcap) gx_tap_word(v);
-        g_recomp_touched_mmio = true; GPF().Write32(v); return;
+        fifo_count(); g_recomp_touched_mmio = true; GPF().Write32(v); return;
     }
 #endif
     check_wild_write(ea, v, 32);

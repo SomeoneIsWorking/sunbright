@@ -15,12 +15,20 @@
 
 #ifdef HAVE_DOLPHIN_CORE
 extern void sunbright_wait_vi_field();   // dolphin_hook.cpp
+extern u32  mem_r32(u32 ea);
+extern void mem_w32(u32 ea, u32 v);
 
 // VIWaitForRetrace(): replace the retrace-count spin + OSSleepThread with a one-field CoreTiming
-// advance (Dolphin's VI presents the frame). Returns void.
+// advance (Dolphin's VI presents the frame), then advance the guest retrace counter ourselves.
+// VIWaitForRetrace's body spins `while (count == MEM_R32(r13-22768)) OSSleepThread(...)` — that
+// counter is normally bumped by the VI retrace ISR, which we deliberately don't run. Without
+// bumping it, guest *time* never advances: every frame is rendered identical (frozen scene). One
+// increment per call == one retrace per frame, matching the hardware. (VIGetRetraceCount reads the
+// same global, so all guest timing tracks.)
 SUNBRIGHT_OVERRIDE(ov_VIWaitForRetrace, 0x8034f684u) {
-    (void)cpu;
     sunbright_wait_vi_field();
+    const u32 cnt = cpu.gpr[13] - 22768u;
+    mem_w32(cnt, mem_r32(cnt) + 1);
 }
 
 // GXDrawDone(): the GP draw completes within a field; advance one field so Dolphin drains the FIFO,
