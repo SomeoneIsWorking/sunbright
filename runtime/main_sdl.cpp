@@ -882,10 +882,20 @@ int main(int argc, char* argv[]) {
             }
             static const uint32_t save_at = getenv("SUNBRIGHT_SAVE_AT") ? (uint32_t)(atof(getenv("SUNBRIGHT_SAVE_AT")) * 1000) : 0;
             static bool saved = false;
+            // SUNBRIGHT_SAVE_ON_HUD=<file>: save automatically once the in-game HUD has drawn for a
+            // bit (g_hud_perform_count) — i.e. we're in real gameplay. Lets the game be driven to a
+            // gameplay state without any manual save.
+            extern std::atomic<uint64_t> g_hud_perform_count;
+            const char* save_on_hud = getenv("SUNBRIGHT_SAVE_ON_HUD");
             if (state_save && save_at && !saved && guest_mem_ready() && SDL_GetTicks() >= save_at) {
                 saved = true;
                 State::SaveAs(Core::System::GetInstance(), state_save);
                 fprintf(stderr, "[state] saved to %s\n", state_save);
+            } else if (save_on_hud && !saved && guest_mem_ready()
+                       && g_hud_perform_count.load(std::memory_order_relaxed) >= 120) {
+                saved = true;
+                State::SaveAs(Core::System::GetInstance(), save_on_hud);
+                fprintf(stderr, "[state] auto-saved at gameplay HUD → %s\n", save_on_hud);
             }
         }
 

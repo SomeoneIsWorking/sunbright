@@ -16,6 +16,7 @@
 #include "../intrinsics.h"
 #include <cstdlib>
 #include <cstdio>
+#include <atomic>
 
 // GXSetProjection(const f32 mtx[4][4], GXProjectionType type) — USA/GMSE01 0x80362c34.
 // The universal point EVERY 3D projection passes through (and what Dolphin's Auto aspect heuristic
@@ -31,11 +32,18 @@ static bool widescreen_on() {
     return on;
 }
 
+// Set while inside TGCConsole2::perform (the in-game HUD draw). The HUD is corner-anchored, so the
+// centering squeeze (which keeps menus in the 4:3 safe area) would wrongly pull the gauges inward.
+static bool g_in_hud = false;
+
 static void ov_gx_projection(CPUState& cpu) {
     const u32 mtx = cpu.gpr[3];
     const u32 type = cpu.gpr[4];
     static const bool log = getenv("SUNBRIGHT_RENDERPORT_LOG") != nullptr;
-    if (log) { static unsigned long n = 0;
+    if (log) {
+        if (g_in_hud) std::fprintf(stderr, "[renderport] GXSetProjection DURING HUD type=%u m00=%.4f m03=%.4f\n",
+                                   type, mem_rf32(mtx), mem_rf32(mtx + 0x0c));
+        static unsigned long n = 0;
         if ((n++ % 120) == 0) std::fprintf(stderr, "[renderport] GXSetProjection#%lu type=%u m00=%.4f\n",
                                             n, type, mem_rf32(mtx)); }
 
@@ -52,8 +60,12 @@ static void ov_gx_projection(CPUState& cpu) {
     // the first 3D frame (title onward), 2D shares a 16:9 EFB and must be pre-squeezed.
     static bool seen_3d = false;
     if (!is2d) seen_3d = true;
+    // The in-game HUD is corner-anchored: don't squeeze its 2D ortho — let it span the full EFB so
+    // the gauges sit at the 16:9 edges (after the present) instead of the 4:3 safe area. (First cut:
+    // full-width = corners at corners; refine to per-element anchoring if the slight stretch shows.)
+    const bool hud_exempt = g_in_hud && is2d;
     bool patched = false; f32 m00 = 0.0f, m03 = 0.0f;
-    if (widescreen_on() && (!is2d || seen_3d) && mtx >= 0x80000000u && mtx < 0x81800000u) {
+    if (widescreen_on() && (!is2d || seen_3d) && !hud_exempt && mtx >= 0x80000000u && mtx < 0x81800000u) {
         m00 = mem_rf32(mtx + 0x00);
         mem_wf32(mtx + 0x00, m00 * scale);
         if (is2d) { m03 = mem_rf32(mtx + 0x0c); mem_wf32(mtx + 0x0c, m03 * scale); }
@@ -68,6 +80,31 @@ static const bool s_proj_registered = [] {
     register_override(GX_SET_PROJECTION, &ov_gx_projection);
     std::fprintf(stderr, "[renderport] native widescreen: hooked GXSetProjection @ %08x\n",
                  GX_SET_PROJECTION);
+    return true;
+}();
+
+// ── In-game HUD (TGCConsole2::perform @ 0x8014083c) ─────────────────────────────────────────
+// Found by vtable RE (perform = vtable slot 8 for JDrama::TViewObj subclasses; TGCConsole2 vtable
+// @ 0x803c0304). This is the gameplay HUD draw (coins/timer/lives) — NOT J2D. Flag the window so
+// its 2D ortho is edge-anchored (above) rather than centre-squeezed. Fires only in real gameplay,
+// so it also confirms we reached the HUD (vs a cutscene).
+static constexpr u32 TGCCONSOLE2_PERFORM = 0x8014083cu;
+// Counts HUD draws — read by main_sdl to auto-save a state once the HUD is up (= real gameplay),
+// so a gameplay save state can be captured by driving the game, with no manual save needed.
+std::atomic<uint64_t> g_hud_perform_count{0};
+static void ov_hud_perform(CPUState& cpu) {
+    g_hud_perform_count.fetch_add(1, std::memory_order_relaxed);
+    static const bool log = getenv("SUNBRIGHT_RENDERPORT_LOG") != nullptr;
+    if (log) { static unsigned long n = 0;
+        if ((n++ % 30) == 0) std::fprintf(stderr, "[renderport] TGCConsole2::perform#%lu this=%08x flags=%08x\n",
+                                          n, cpu.gpr[3], cpu.gpr[4]); }
+    g_in_hud = true;
+    if (RecompFunc orig = recomp_raw(TGCCONSOLE2_PERFORM)) orig(cpu);
+    else call_ppc(cpu, cpu.lr);
+    g_in_hud = false;
+}
+static const bool s_hud_registered = [] {
+    register_override(TGCCONSOLE2_PERFORM, &ov_hud_perform);
     return true;
 }();
 
