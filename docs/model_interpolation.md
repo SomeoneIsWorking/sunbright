@@ -23,6 +23,22 @@ keyed by a stable per-model ID.
 >    rather than *expanded* to fill 16:9 (the user's "expand backdrops") — needs per-screen
 >    distinction of backdrop vs overlay (the J2DScreen hook below is the lever); and the squeeze
 >    latch is global, not per-frame (a 2D-only screen after 3D would squeeze — rare).
+>
+> ### 2D-element identification (in progress) — the blanket squeeze isn't enough
+> The user's next ask: squeezing every 2D element is wrong — specific elements need specific
+> treatment. Pinned 2D elements (USA/GMSE01):
+> - **Screen fader `TSMSFader`** — `draw` 0x8013fc88, `drawFadeinout` 0x8013fa54, `setDisplaySize`
+>   0x8013f680, `draw__...TRect` takes the screen rect in r4. Fades/wipes must cover the WHOLE
+>   16:9 screen; the squeeze leaves the side ~12.5% uncovered. **Finding:** `TSMSFader::draw`
+>   fires every frame and MANY projections (incl. perspective m00≈2.04) occur within its scope —
+>   so it is NOT a simple full-screen quad; a "flag the fade window and exempt its projection"
+>   fix does not directly apply. Needs more RE (what geometry/grafctx the fade fill uses) before
+>   fixing. Hook scaffold + cross-logging is in `scene_render.cpp` (SUNBRIGHT_RENDERPORT[_LOG]).
+> - **In-game HUD `TGCConsole2`** — coins/timer/balloons/telop (0x8014xxxx cluster). Drawn in the
+>   2D ortho; the squeeze centres it in the 4:3 safe area. NEXT: decide per-element anchoring
+>   (corner-anchored gauges should move to the 16:9 edges, not stay 4:3-centred).
+> The right model is per-element: overlays/logo → centre (squeeze ok); fades/backdrops → fill;
+> HUD → edge-anchor. Hook the J2D/element draws, classify by object, apply per class.
 > 2. **Interpolation** — capture each object's transform, slerp prev→cur, re-present
 >    inter-frames between VI swaps. Capture + lerp are already prototyped (see below).
 >

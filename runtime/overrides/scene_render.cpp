@@ -31,13 +31,21 @@ static bool widescreen_on() {
     return on;
 }
 
+// Set while inside TSMSFader::draw (the screen fader). The fade must cover the FULL screen, but the
+// 2D squeeze would shrink it to the centre 75%. We use this to identify whether the fader sets its
+// own projection (so we can exempt it) vs. draws into the parent 2D ortho.
+static bool g_in_fade = false;
+
 static void ov_gx_projection(CPUState& cpu) {
     const u32 mtx = cpu.gpr[3];
     const u32 type = cpu.gpr[4];
     static const bool log = getenv("SUNBRIGHT_RENDERPORT_LOG") != nullptr;
-    if (log) { static unsigned long n = 0;
+    if (log) {
+        if (g_in_fade) std::fprintf(stderr, "[renderport] GXSetProjection DURING FADE type=%u m00=%.4f\n", type, mem_rf32(mtx));
+        static unsigned long n = 0;
         if ((n++ % 120) == 0) std::fprintf(stderr, "[renderport] GXSetProjection#%lu type=%u m00=%.4f\n",
-                                            n, type, mem_rf32(mtx)); }
+                                            n, type, mem_rf32(mtx));
+    }
 
     // 0.75 = (4/3)/(16/9). We horizontally squeeze BOTH projection types by this factor so the EFB
     // is rendered anamorphically and Dolphin presents it at 16:9:
@@ -94,5 +102,26 @@ static void ov_j2dscreen_draw(CPUState& cpu) {
 static const bool s_renderport_registered = [] {
     if (getenv("SUNBRIGHT_RENDERPORT"))
         register_override(J2DSCREEN_DRAW, &ov_j2dscreen_draw);
+    return true;
+}();
+
+// ── Screen fader (TSMSFader::draw @ 0x8013fc88) ─────────────────────────────────────────────
+// The fade/wipe must cover the WHOLE screen; the 2D squeeze otherwise leaves the side 12.5%
+// uncovered. Wrap the draw to flag the fade window (the projection hook logs what it does so we
+// can pick the fix: exempt its projection, or expand its rect).
+static constexpr u32 TSMSFADER_DRAW = 0x8013fc88u;
+static void ov_fader_draw(CPUState& cpu) {
+    static const bool log = getenv("SUNBRIGHT_RENDERPORT_LOG") != nullptr;
+    if (log) { static unsigned long n = 0;
+        if ((n++ % 60) == 0) std::fprintf(stderr, "[renderport] TSMSFader::draw#%lu this=%08x rect=%08x\n",
+                                          n, cpu.gpr[3], cpu.gpr[4]); }
+    g_in_fade = true;
+    if (RecompFunc orig = recomp_raw(TSMSFADER_DRAW)) orig(cpu);
+    else call_ppc(cpu, cpu.lr);
+    g_in_fade = false;
+}
+static const bool s_fader_registered = [] {
+    if (getenv("SUNBRIGHT_RENDERPORT"))
+        register_override(TSMSFADER_DRAW, &ov_fader_draw);
     return true;
 }();
