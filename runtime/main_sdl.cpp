@@ -844,8 +844,8 @@ int main(int argc, char* argv[]) {
         if (autostart) {
             const uint32_t t = SDL_GetTicks();
             uint32_t bits = 0;
-            if (t < 15000) {
-                if ((t % 1000) < 200) bits = P_START;     // spam Start ~5x/sec
+            if (t < 45000) {
+                if ((t % 1000) < 200) bits = P_START;     // spam Start ~5x/sec (boot+intro+title)
             } else {
                 bits = ((t / 2000) & 1) ? P_RIGHT : P_LEFT;  // hold right 2s, left 2s, …
                 static uint32_t last = 0;
