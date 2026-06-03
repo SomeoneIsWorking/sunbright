@@ -83,6 +83,16 @@ RecompFunc recomp_lookup(u32 address) {
     return nullptr;
 }
 
+// Super-call: the ORIGINAL generated body for `address`, bypassing any override registered on it.
+// This is what lets an override observe/adjust a function and still run the real thing — the basis
+// of the "own the object model, keep Dolphin's GPU" render port (e.g. hook J2DScreen::draw, fix the
+// 2D layout, then run the original draw). Returns nullptr if `address` isn't recompiled.
+RecompFunc recomp_raw(u32 address) {
+    if (address >= g_dispatch_lo && address < g_dispatch_hi && !(address & 3))
+        return g_dispatch[(address - g_dispatch_lo) >> 2];
+    return nullptr;
+}
+
 // Observe a recompiled function without replacing it: SUNBRIGHT_WATCH=<hexaddr>
 // logs args (and, for a matrix loader, the 3x4 matrix at r3) every time that
 // address is called. This is the capture primitive the motion interpolator will

@@ -24,6 +24,11 @@ using RecompFunc = void (*)(CPUState&);
 RecompFunc override_lookup(u32 addr);     // nullptr if none
 void       register_override(u32 addr, RecompFunc fn);
 
+// Super-call: the original generated body for `addr`, bypassing the override registered on it.
+// Lets an override run the real function after observing/adjusting state (run the original draw
+// after fixing 2D layout, capture transforms, etc.). nullptr if `addr` isn't recompiled.
+RecompFunc recomp_raw(u32 addr);
+
 bool is_jit_forced(u32 addr);
 void force_jit(u32 addr);                 // single address
 void force_jit_range(u32 lo, u32 hi);     // [lo, hi)

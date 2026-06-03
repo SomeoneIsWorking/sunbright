@@ -217,11 +217,17 @@ Scope confirmed above (own object model, keep Dolphin GPU). Pinned draw hooks (U
 - `J2DScreen::drawSelf` 0x802d01c8, `J2DPicture::draw` 0x802ccef4, `J2DTextBox::draw`
   0x802d0b28 — leaf 2D elements (image / text).
 
-  → **First increment:** `SUNBRIGHT_OVERRIDE` (super-call) `J2DScreen::draw` and adjust the 2D
-  layout for 16:9 — center overlays (the title logo is shifted left because the 4:3 ortho is
-  stretched to 16:9) and expand backdrops. Verify by frame dump: the logo should center. This
-  is the visible widescreen bug AND the first piece of owning the draw path. (`.data` constant
-  patching in `widescreen_patch_tick` can't reach per-screen 2D layout — see `sms_widescreen.cpp`.)
+  → **First increment — DONE (foundation):** `runtime/overrides/scene_render.cpp` hooks
+  `J2DScreen::draw` and *super-calls* the original via the new `recomp_raw(addr)` (runtime
+  `SUNBRIGHT_RENDERPORT=1`). Verified: the hook fires, the original draw runs, the frame is
+  unchanged (no regression) — i.e. we can now wrap any draw, observe/adjust state, then run the
+  real thing. This is the mechanism the whole "own the draw path" port stands on.
+  Finding: the J2DScreen's `J2DGrafContext` is a **fixed object at 0x80426fb4**; its ortho bounds
+  are NOT plain floats in the first 0x40 bytes (mostly 0/nan there — likely behind a vtable / in a
+  JUTRect member further in). NEXT: RE the GrafContext ortho (or hook `J2DGrafContext::setPort`/
+  `place`), then adjust it to center overlays + expand backdrops for 16:9; verify the logo centers
+  by frame dump. (`.data` constant patching in `widescreen_patch_tick` can't reach per-screen 2D
+  layout — see `sms_widescreen.cpp`.)
 
 **3D path (J3D/MActor) — interpolation capture:** `MActor::viewCalc` 0x80239734,
 `MActor::entry` 0x802394c8, `TMario::calcView` 0x802446c0. NOT yet probed live — the autotest
