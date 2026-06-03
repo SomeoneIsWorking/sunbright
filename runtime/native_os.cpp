@@ -179,11 +179,19 @@ void native_os_init() {
     static bool done = false;
     if (done) return;
     done = true;
+    // The native-OS *interception seam* (native_os_lookup, consulted by call_ppc AND under the
+    // run_jit_sync interpreter) is kept — it's how a native override reaches a function even when
+    // it runs under the interpreter. OSGetCurrentThread is behaviour-identical, harmless, and
+    // exercises the seam.
     native_os_register(0x80348368u, os_get_current_thread);
-    native_os_register(0x80348948u, os_create_thread);
-    native_os_register(0x80348ee8u, os_resume_thread);
-    native_os_register(0x803492e0u, os_sleep_thread);
-    native_os_register(0x803493ccu, os_wakeup_thread);
+    // The GC-thread SCHEDULER emulation (OSCreateThread/Resume/Sleep/Wakeup + nthr) is the
+    // wrong layer for a PORT (it reimplements emulator internals). Disabled — see
+    // memory port-not-emulate + docs/native_threading.md. The game runs the GC threading
+    // faithfully (as before this effort) and stalls at audio init, which is fixed instead by a
+    // native subsystem override (the PC-native replicate-the-behaviour approach), registered below
+    // as it is built. (void)s keep the implementations linked for reference / future reuse.
+    (void)&os_create_thread; (void)&os_resume_thread;
+    (void)&os_sleep_thread;  (void)&os_wakeup_thread;
     fprintf(stderr, "[native_os] registered %zu native OS primitive(s) over [%08x,%08x)\n",
             g_native_os.size(), g_os_lo, g_os_hi);
 }
