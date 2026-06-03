@@ -97,15 +97,31 @@ static void os_get_current_thread(CPUState& cpu) {
     cpu.gpr[3] = mem_r32(0x800000E4u);
 }
 
-// EXPERIMENT (SUNBRIGHT_NORESCHED): OSResumeThread that does NOT reschedule — just decrement the
-// suspend count and return. Tests whether boot can run with NO GC worker thread ever scheduled
-// (the JKRThread workers stay suspended; their work is done synchronously, see sms_jkrthread.cpp),
-// so the GC scheduler is never exercised. If boot progresses, single-threaded boot is viable.
-static void os_resume_thread_noresched(CPUState& cpu) {
+// Is this OSThread one the game created via OSCreateThread (i.e. a worker), as opposed to the
+// main/default thread? Used to decide whether a resume must actually schedule it.
+static bool is_guest_worker(u32 thread) {
+    for (const auto& r : g_guest_threads) if (r.os_thread == thread) return true;
+    return false;
+}
+
+// OSResumeThread (0x80348ee8) — PC-port replication. Observation (SUNBRIGHT_OSWATCH): every
+// OSCreateThread'd worker (JKRThread decomp/stream pool, audio) immediately OSReceiveMessage-waits
+// for work and otherwise does nothing; its work is replicated SYNCHRONOUSLY on the caller
+// (sms_jkrthread.cpp). So a worker never needs to run: drop its suspend count (keep the game's
+// bookkeeping consistent) and return WITHOUT scheduling — no GC scheduler, no context switch. The
+// main/default thread (0x800000E4 = 80402aa8) is never an OSCreateThread'd worker, so it is left
+// entirely alone and keeps running. (This is why blanket NORESCHED nulled 0x800000E4 and this does
+// not: we only skip workers.)
+extern "C" void func_80348ee8(CPUState& cpu);   // recomp OSResumeThread (for the non-worker case)
+static void os_resume_thread_sync(CPUState& cpu) {
     const u32 thread = cpu.gpr[3];
-    const s32 old = (s32)mem_r32(thread + 716u);   // OSThread.suspend @+0x2CC
-    mem_w32(thread + 716u, (u32)(old - 1));
-    cpu.gpr[3] = (u32)old;                          // return previous suspend count; NO reschedule
+    if (is_guest_worker(thread)) {
+        const s32 old = (s32)mem_r32(thread + T_SUSPEND);
+        mem_w32(thread + T_SUSPEND, (u32)(old - 1));
+        cpu.gpr[3] = (u32)old;
+        return;
+    }
+    func_80348ee8(cpu);   // not a worker (not expected during boot) → faithful resume
 }
 
 // OSCreateThread (0x80348948): BOOL OSCreateThread(OSThread* r3, func r4, param r5, stack r6,
@@ -124,11 +140,11 @@ static void os_create_thread(CPUState& cpu) {
     if (cpu.gpr[3] == 0) return;        // creation failed (bad priority) — nothing to record
 
     g_guest_threads.push_back({os_thread, entry, param, stack, stack_sz, priority});
-    nthrt_spawn_guest(os_thread, entry, param, stack, priority);   // host thread, SUSPENDED
     fprintf(stderr,
         "[native_os] OSCreateThread #%zu  OSThread=%08x entry=%08x param=%08x stack=%08x "
-        "size=%u prio=%d\n",
-        g_guest_threads.size(), os_thread, entry, param, stack, stack_sz, priority);
+        "size=%u prio=%d  (cur=%08x)\n",
+        g_guest_threads.size(), os_thread, entry, param, stack, stack_sz, priority,
+        mem_r32(OS_CURRENT_THREAD));
 }
 
 // OSResumeThread (0x80348ee8): decrement the suspend count; when it reaches 0 and the thread is
@@ -213,8 +229,11 @@ void native_os_init() {
     // it runs under the interpreter. OSGetCurrentThread is behaviour-identical, harmless, and
     // exercises the seam.
     native_os_register(0x80348368u, os_get_current_thread);
-    if (getenv("SUNBRIGHT_NORESCHED"))
-        native_os_register(0x80348ee8u, os_resume_thread_noresched);   // experiment: no GC scheduling
+    // PC-port threading replication: track the game's worker threads at creation, and keep them
+    // dormant at resume (their work is done synchronously — see sms_jkrthread.cpp). No GC scheduler,
+    // no context switch; the main/default thread keeps running. See os_resume_thread_sync above.
+    native_os_register(0x80348948u, os_create_thread);     // record workers (super-calls real body)
+    native_os_register(0x80348ee8u, os_resume_thread_sync); // dormant worker / faithful main resume
     // ── Diagnostics (env-gated, kept permanently — see memory keep-diagnostics) ──
     if (getenv("SUNBRIGHT_DBG_CONSOLE"))
         native_os_register(0x8033ba90u, dbg_write_console);   // surface GC console / crash report

@@ -20,6 +20,7 @@
 #  include "Core/System.h"
 #  include "Core/Core.h"
 #  include "Core/CoreTiming.h"
+#  include "Core/HW/VideoInterface.h"
 #endif
 
 extern void mem_w32(u32 ea, u32 v);   // from memory_bridge
@@ -263,6 +264,27 @@ void sunbright_poll_yield() {
     ct.Advance();                   // process events; if EE & pending, vector ppc.pc to the ISR
     if (ppc.pc != ret)              // an interrupt was delivered
         interp_run_until(ret, 5'000'000);   // run the ISR until it rfi's back to `ret`
+}
+
+// PC-port frame-sync replication. The game's render loop blocks on VIWaitForRetrace (vsync) and
+// GXDrawDone (GPU finished) via OSSleepThread — GC scheduler parks woken by a HW ISR. On a PC port
+// the VI/GP hardware is Dolphin's, so the wait is satisfied by advancing CoreTiming one VI field:
+// Dolphin's VI OutputField presents the frame, and the GP FIFO drains. No guest sleep, no scheduler.
+// Interrupts are deferred (MSR[EE] cleared) so we never redirect into a guest ISR mid-call; the
+// pending VI/GP IRQs are delivered cleanly at the next recomp→JIT boundary.
+void sunbright_wait_vi_field() {
+    auto& sys = Core::System::GetInstance();
+    auto& ppc = sys.GetPPCState();
+    auto& ct  = sys.GetCoreTiming();
+    auto& vi  = sys.GetVideoInterface();
+    const u32 saved_msr = ppc.msr.Hex;
+    ppc.msr.Hex &= ~0x8000u;                        // defer IRQ delivery
+    const u64 target = ct.GetTicks() + vi.GetTicksPerField();
+    for (int guard = 0; ct.GetTicks() < target && guard < 4096; ++guard) {
+        ct.Idle();                                  // skip to the next scheduled device event
+        ct.Advance();                               // process it (VI retrace presents the frame)
+    }
+    ppc.msr.Hex = saved_msr;
 }
 #endif
 
