@@ -47,9 +47,9 @@ keyed by a stable per-model ID.
 >   **J2DPane layout decoded:** +0x08 type fourCC, **+0x10 NAME fourCC** (the .blo tag, e.g. `'yaji'`
 >   arrow, `'shn0'` shine, `'n_0a'` digit, `'root'` screen), **+0x14/0x18/0x1c/0x20 bounds x0/y0/x1/y1**
 >   (s32, 640×480 space). `tools/crop_2d_elements.py` crops each element from a SUNBRIGHT_DUMP frame
->   → a PNG. Uses the GLOBAL (absolute) rect at +0x24, so nested panes crop correctly too (verified shn0→shine icon). (Earlier note: absolute positioning would otherwise need
->   the parent-transform accumulation (the drawSelf matrix r6, TODO to decode; would also give
->   absolute rects in the log). Use this to classify elements for the per-element widescreen fixes.
+>   → a PNG. The log uses the pane's GLOBAL (absolute screen) rect at +0x24/0x28/0x2c/0x30, so
+>   nested panes crop correctly too (verified: 'shn0' → shine icon, 'yaji' → OPTIONS arrow). Use
+>   this to classify elements for the per-element widescreen fixes (full-screen fill vs edge-anchor).
 > - **In-game HUD `TGCConsole2`** — coins/timer/balloons/telop (0x8014xxxx cluster). Drawn in the
 >   2D ortho; the squeeze centres it in the 4:3 safe area. NEXT: decide per-element anchoring
 >   (corner-anchored gauges should move to the 16:9 edges, not stay 4:3-centred).
