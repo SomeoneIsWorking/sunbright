@@ -4,8 +4,8 @@ Pick up the in-flight work without re-deriving context. Read first, then act.
 
 ## 1. Reconstruct state (read, don't guess)
 1. `git log --oneline -15` and `git status` — what landed recently and what's dirty.
-2. Read the **top section of `docs/native_threading.md`** ("⚠ Execution-model decision
-   status") — this is the live thread of work and may flag an OPEN decision.
+2. Read the **top section of `docs/native_threading.md`** ("✅ Execution-model decision —
+   PINNED") — the substrate is DECIDED (PC-native host threads); do not reopen it.
 3. Read `docs/native_threading.md` "Next session — ordered integration checklist" for the
    step sequence and which steps are ✅ done.
 4. Skim `MEMORY.md` + the `native-threading-plan`, `done-right-over-working`,
@@ -16,30 +16,29 @@ Pick up the in-flight work without re-deriving context. Read first, then act.
 deterministically as a fail-fast `abort()` (exit 134) at `run_jit_sync(80343fe4→803488c0)` —
 run headless: `SUNBRIGHT_HEADLESS=1 SUNBRIGHT_TURBO=1 SUNBRIGHT_AUTOSTART=1 SUNBRIGHT_RUN_SECONDS=N ./build/sunbright`.
 
-**Done:** the `nthr` scheduler logic + per-fiber switch hooks, validated in isolation
+**Done:** the `nthr` scheduler logic + per-context switch hooks, validated in isolation
 (`SUNBRIGHT_NTHR_SELFTEST=1`, 5/5 PASS). Fail-fast at the step-budget root cause. NOT wired
 into the game yet.
 
-**⚠ OPEN DECISION — settle before large work:** the *execution substrate* is unresolved.
-The committed "fibers-on-the-EmuThread" model was Claude's instinct, not user-ratified; the
-user's north star is **true PC-native — recreate the game's execution on PC, not limited by
-Dolphin or the game's own code.** Fibers exist only to dodge Dolphin's `IsCPUThread`/`s_core_mutex`
-wall, which itself only exists because guest code still runs under Dolphin's *interpreter*.
-The PC-native path: reduce/remove the interpreter dependency (native scheduler + MSR/critical-
-section code) → real host threads → Dolphin demoted to swappable backends. The `nthr` scheduler
-logic + switch hooks carry over either way.
-**Do NOT relabel the substrate "decided" or rip out working code until the user confirms.**
+**✅ EXECUTION SUBSTRATE — PINNED (do NOT reopen):** **PC-native host-thread execution; fibers
+dropped.** Confirmed 2026-06-03 by a full transcript audit at the user's instruction — the user
+never endorsed fibers ("Weren't we going to drop fiber in favor of PC native execution?"). North
+star: a real PC port, **not limited by Dolphin or the game's own code**; replicate what the game
+does under Dolphin with PC-native architecture; make **non-blocking** native versions of the
+blocking OS primitives; one proper path, no env-gating. The gating sub-goal is removing the
+Dolphin-interpreter dependency for the OS thread/sync primitives. The `nthr` scheduler logic +
+switch-hook mechanism carry over (park/resume = host-thread condvar, not `swapcontext`). Full
+rationale + the ordered checklist are in `docs/native_threading.md`.
 
 ## 3. How to work here
 - Verify each step against a headless run before the next; commit + push verified milestones
   (don't wait to be asked). One `main` branch.
 - No env-gated dual logic paths / stopgaps — one proper path (`done-right-over-working`).
 - On a laid-out checklist, proceed step by step; don't pause to ask which approach
-  (`dont-ask-keep-porting`). But the OPEN execution-substrate decision above is a genuine fork
-  that the user owns — surface it, don't silently pick.
+  (`dont-ask-keep-porting`). The substrate is pinned — do NOT re-ask which model; if something
+  genuinely new contradicts it, surface that specifically, don't relitigate the settled fork.
 - Scratch artifacts under `scratch/`, never `/tmp`.
 
 ## 4. Then
-State the reconstructed status in 3–5 lines, name the single next concrete action, and either
-proceed (if the open decision is already settled in the docs) or get the substrate direction
-confirmed first.
+State the reconstructed status in 3–5 lines, name the single next concrete action from the
+checklist, and proceed — the substrate is settled.

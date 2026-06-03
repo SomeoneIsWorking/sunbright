@@ -1,39 +1,50 @@
 # Native OS threading (PC-port model)
 
-## ⚠ Execution-model decision status — REOPENED (2026-06-03, corrected)
-**The "fibers-on-the-EmuThread" choice below was Claude's technical instinct, NOT a decision
-the user ratified.** Reconstructed from the session transcripts: the user gave a *north star*
-and said "go with your instincts," and Claude then picked fibers and recorded it as "the
-decided model" — overstating the user's involvement. The user's actual, repeated direction:
+## ✅ Execution-model decision — PINNED (2026-06-03, user-confirmed via transcript audit)
+**DECIDED: PC-native host-thread execution. Fibers are dropped.** This was confirmed by
+auditing every prior Claude Code transcript at the user's explicit instruction ("check all the
+previous Claude Code transcripts then pin the model"). Do NOT reopen this. The audit found the
+user **never once endorsed fibers** — the only user mention of the word is *"Weren't we going
+to drop fiber in favor of PC native execution?"* Fibers were Claude's instinct, mis-recorded as
+"decided." The user's repeated, unambiguous direction across sessions:
 
 > "We are ultimately trying to make a **PC port** so we shouldn't be limited by Dolphin or the
 > game's own code. This won't be just Dolphin with rom hacks — this will be a PC port."
 > "Analyze what the game does under Dolphin and **replicate it on PC side with PC-native
-> architecture.**" "Recreate the game execution on PC **without being limited by Dolphin or
-> the game's own code.**" "Find what is blocking what and maybe **make non-blocking versions**
-> of them." (The game itself *does* spawn ~5 internal OS threads that block on each other — so
-> "the game is one thread" doesn't fully hold; its internal threading must be handled somehow.)
+> architecture.**" "Create a **PC-native approach that doesn't depend on timing and spins** —
+> do it like a PC game would." "Find what is blocking what and maybe **make non-blocking
+> versions** of them." "One logic path which is the proper one" (no env-gating). "Done right +
+> not working can be fixed; fucked up + working is a dead end."
 
-**The tension to resolve:** fibers-on-the-EmuThread exist *only* to satisfy a **Dolphin**
-constraint — `IsCPUThread`/`s_core_mutex` (see below). By the north star, that is bending to
-Dolphin, the opposite of the goal. The wall exists **only because guest code still runs through
-Dolphin's interpreter** (`run_jit_sync`) for the JIT-only functions (MSR/scheduler/HW-SPR). The
-PC-native endgame is to **remove that interpreter dependency** — natively implement the
-scheduler + MSR/critical-section code so guest threads never enter Dolphin's interpreter — at
-which point real **host threads** have no `IsCPUThread` problem and Dolphin demotes to swappable
-GFX/DSP/Memory backends. That is "recreating the game's execution on PC."
+**Why fibers are out:** fibers-on-the-EmuThread exist *only* to satisfy a **Dolphin** constraint
+— `IsCPUThread`/`s_core_mutex` (see below) — by keeping all guest code inside Dolphin's CPU loop
+and interpreter. That is *being limited by Dolphin*, the exact opposite of the north star. The
+wall itself exists **only because guest code still runs through Dolphin's interpreter**
+(`run_jit_sync`) for the JIT-only functions (MSR/scheduler/HW-SPR).
 
-**What survives regardless of the choice:** the validated `nthr` scheduler *logic* (priority
-pick, Ready/Blocked, the SMS producer/consumer hand-off) and the step-1 per-fiber switch hooks
-— only the park/resume layer differs (fiber `swapcontext` vs. host-thread condvar). So the work
-so far is not wasted; the open question is purely the execution substrate.
+**The pinned model:**
+- **PC-native execution.** The gating sub-goal is to **remove the Dolphin-interpreter dependency
+  for guest code** — natively implement the OS scheduler + MSR/critical-section primitives so
+  guest threads never enter Dolphin's interpreter. Once guest code never enters the interpreter,
+  real **host threads** have no `IsCPUThread`/`s_core_mutex` problem and Dolphin demotes to a
+  swappable GFX/DSP/Memory backend.
+- **Subsystem-thread shape (the user's older-console-port pattern).** The SDL/main thread is the
+  *primary* host thread (window, input, present, vblank timing); the **game runs as the second
+  host thread**. Guest blocking waits (vblank, audio/DSP, DVD) are satisfied by a **subsystem
+  host thread signalling a native mutex/condvar** — make **non-blocking** native versions of the
+  blocking OS primitives rather than running the PPC scheduler/idle loop. No dependence on
+  emulated CoreTiming/interrupt plumbing for wakes.
+- **One proper path.** No env-gated dual logic, no interim stopgap kept "to preserve a working
+  state." Correct-but-not-yet-working is acceptable and expected; hacked-but-working is not.
 
-**Recommended direction (to confirm before large work):** pursue true PC-native — host threads
-per guest OS thread + native OS HLE — and treat *reducing the Dolphin-interpreter dependency for
-guest code* as the gating sub-goal. Keep fibers only as a possible interim substrate, not the
-endgame. Do NOT relabel this "decided" until the user confirms (the mistake above). See
-`/keep-going`. Sections below (esp. "Execution-context decision" and "Target architecture") are
-kept for context but read them through this lens.
+**What survives from the work so far:** the validated `nthr` scheduler *logic* (priority pick,
+Ready/Blocked, the SMS producer/consumer hand-off) and the per-fiber switch-hook *mechanism* —
+both are substrate-agnostic (the park/resume layer becomes host-thread condvar instead of
+`swapcontext`). The fail-fast at the `run_jit_sync` step-budget root cause stays. Sections below
+(esp. "Execution-context decision" and the fiber-specific "Control-flow finding") are **kept only
+as historical record** of the rejected fiber substrate — read them as "why not fibers," not as
+the plan. The **Target architecture** section (host threads + token + native primitives + native
+idle/driver) is the live plan.
 
 ## Why
 Sunbright is a **PC port**, not "Dolphin with ROM hacks." The GameCube OS multiplexes
@@ -174,7 +185,11 @@ blocking is a native park and waking actually schedules the woken thread:
   it to the game. Cooperative switching also assumes threads yield via OS primitives; if a
   thread busy-waits without blocking, add a preemption nudge (see preemption note).
 
-## Execution-context decision: fibers on the EmuThread vs. host-thread-per-guest-thread
+## [HISTORICAL — fiber substrate REJECTED, see pinned decision at top] Execution-context decision: fibers on the EmuThread vs. host-thread-per-guest-thread
+> Kept as the record of why fibers were considered and dropped. The pinned model is
+> host-thread-per-guest-thread (the first bullet below), NOT fibers. The "recommendation" in
+> this section is superseded.
+
 The `nthr` scheduler *logic* (priority pick, Ready/Blocked, the producer/consumer hand-off)
 is validated and **independent of how a guest context is parked/resumed**. But *where* guest
 code physically runs is a real fork, forced by a hard Dolphin constraint:
@@ -204,7 +219,7 @@ logic + self-tests carry over unchanged; only the park/resume layer swaps condva
 stay within a fiber's own stack), or route the tail handoff through the fiber switch instead.
 This is the next decision to settle before wiring native threading into the game.
 
-## Control-flow finding (2026-06-03): we do NOT own the EmuThread loop — fibers run *under* our hooks
+## [HISTORICAL — fiber substrate REJECTED] Control-flow finding (2026-06-03): we do NOT own the EmuThread loop — fibers run *under* our hooks
 Investigated the actual execution entry while planning step 2. `main_sdl.cpp` calls
 `BootManager::BootCore`, which **spins up Dolphin's EmuThread internally** (Dolphin owns that
 thread and runs `CPUManager`'s CPU loop on it). Our *only* seam into guest execution is the
@@ -338,39 +353,49 @@ recomp-path-specific deferred-delivery and must NOT fire under the interpreter).
   hardware deps are replaced.
 
 ## Next session — ordered integration checklist (each step independently verifiable)
-The fiber scheduler (`nthr`) is built + validated in isolation. Wiring it into the game is
-the next chunk; do it in this order, verifying each against a headless run before the next:
+**Substrate: PC-native host threads (pinned, see top). The `nthr` scheduler *logic* + switch-hook
+*mechanism* carry over; the park/resume layer is a host-thread condvar, not `swapcontext`.** Do
+the steps in order, verifying each against a headless run before the next.
 
-1. ✅ **Per-fiber tail-jmp (done 2026-06-03).** `g_tail_jmp` in `dolphin_hook.cpp` is
-   `thread_local`; all fibers share one host thread's TLS, so a resumed fiber would read
-   another fiber's stale jmpbuf. Built the generic mechanism in `nthr`: each fiber has one
-   opaque `user` slot + a registered `set_switch_hooks(save, restore)` pair invoked around
-   every `swapcontext` (`save(self)` before a fiber yields in `block()`, `restore(t)` before
-   a fiber is granted the CPU in `run_and_wait()`). `nthr` stays agnostic to *what* is saved;
-   the runtime will register hooks that move `g_tail_jmp` into/out of the slot when fiber 0 is
-   adopted (step 2). Proven by the `per_fiber_tls` self-test (`SUNBRIGHT_NTHR_SELFTEST=1`,
-   5/5 PASS): two fibers write distinct markers into a shared `thread_local`, yield, and each
-   observes its own marker on resume (FAIL without the hooks). Game path doesn't touch `nthr`
-   yet → boot/render unchanged (intro renders; only the known `run_jit_sync(80343fe4)`
-   audio-init stall remains — the thing steps 4–5 fix).
-2. **Prove recomp-on-a-fiber (the core mechanic).** Per the control-flow finding above, "adopt
-   fiber 0" is not standalone-observable (one fiber never switches), and nthr runs *under* our
-   hooks, not above. So the verifiable unit is: run a real, pure (no-MMIO) recomp function body
-   directly vs. inside a spawned nthr fiber from identical `CPUState`, assert identical results
-   (a self-test). Fiber 0 is the EmuThread's lazily-captured continuation; per-fiber PPC-state
-   save/restore lands with step 4 where a 2nd fiber first runs. Verify boot/render unchanged.
-3. **Scoped interception.** `run_jit_sync` (and `call_ppc`) consult a *dedicated native-OS set*
-   (NOT the general override table — keep the interrupt overrides recomp-path-only) so the
-   native primitives fire under the interpreter too. Verify with `SUNBRIGHT_OSWATCH`.
-4. **Native `OSCreateThread`/`OSResumeThread`.** Register a fiber whose body runs recomp from
-   the entry PC; map guest `OSThread*` ↔ `nthr::GuestThread*`; keep `0x800000E4` + state
-   coherent. Verify the 5 boot threads spawn as fibers.
+Repro for the target stall (must clear by step 5):
+`SUNBRIGHT_HEADLESS=1 SUNBRIGHT_TURBO=1 SUNBRIGHT_AUTOSTART=1 SUNBRIGHT_RUN_SECONDS=N ./build/sunbright`
+— today aborts (exit 134) at `run_jit_sync(80343fe4→803488c0)` step-budget exhaustion.
+
+1. ✅ **Per-context switch hooks (done 2026-06-03, substrate-agnostic).** Generic mechanism in
+   `nthr`: each guest context has one opaque `user` slot + a registered `set_switch_hooks(save,
+   restore)` pair invoked around every context switch (`save(self)` before a context yields in
+   `block()`, `restore(t)` before a context is granted the CPU). `nthr` stays agnostic to *what*
+   is saved; the runtime registers hooks that move `g_tail_jmp` (and the PPC register file, step
+   4) into/out of the slot. Proven by the `per_fiber_tls` self-test (`SUNBRIGHT_NTHR_SELFTEST=1`,
+   5/5 PASS). Carries over to host threads unchanged (each host thread has its own TLS, so the
+   `g_tail_jmp` save/restore becomes trivially correct; the PPC-register-file save/restore is the
+   real per-context state). Game path untouched → boot/render unchanged.
+2. **Reduce the interpreter dependency for the OS thread/sync primitives (the gating sub-goal).**
+   The native-thread model only works if guest blocking calls do NOT enter Dolphin's interpreter
+   (that's what forces the `IsCPUThread` wall and the spin). So first make the OS primitives
+   intercept *regardless of execution backend*: `run_jit_sync` (and `call_ppc`) consult a
+   *dedicated native-OS override set* (NOT the general override table — keep the interrupt
+   overrides recomp-path-only) so a native primitive fires even when reached under the
+   interpreter. Verify the lifecycle/sync calls are intercepted during boot→audio-init with
+   `SUNBRIGHT_OSWATCH` (previously zero fired because that region runs under the interpreter).
+3. **Stand up the host-thread substrate + CPU token.** Adopt the EmuThread as guest thread 0.
+   A global CPU token serialises guest contexts (single-core semantics preserved). `CPUState` +
+   `g_tail_jmp` per host thread (already `thread_local`). Each runnable guest thread is a host
+   `std::thread` that `DeclareAsCPUThread`s while it holds the token (needed only for the
+   residual interpreter calls; the endgame removes even that). Verify boot/render unchanged with
+   the substrate present but only thread 0 active.
+4. **Native `OSCreateThread`/`OSResumeThread`.** Spawn a host thread whose body runs recomp from
+   the entry PC; map guest `OSThread*` ↔ `nthr::GuestThread*`; keep `0x800000E4` + the OSThread
+   state/priority fields coherent for guest reads. PPC register file saved/restored per context
+   via the step-1 hooks. Verify the 5 boot threads spawn as host threads.
 5. **Native `OSSleepThread`/`OSWakeupThread`, then `OSSendMessage`/`OSReceiveMessage`,** then
-   mutex/cond — each on the guest structs (offsets above) + `nthr::block`/`make_ready`.
-   Verify the audio-init stall clears (no `FATAL ... exceeded step budget` abort, no `JUTException`, audio
-   assets load at pure-Dolphin speed).
-6. **Subsystem wakes + preemption-if-needed.** SDL/present thread signals vblank waiters; add
-   a preemption nudge only if a busy-wait thread is found not to yield.
+   mutex/cond — each on the guest structs (offsets above) + `nthr::block`/`make_ready` (blocking
+   = release token, condvar-wait, reacquire). The PPC scheduler (`SelectThread`/`__OSReschedule`/
+   idle) is **never run**. Verify the audio-init stall clears (no `FATAL ... exceeded step budget`
+   abort, no `JUTException`, audio assets load at pure-Dolphin speed).
+6. **Subsystem wakes + preemption-if-needed.** SDL/present thread signals vblank waiters via the
+   native condvar; audio-out thread signals audio waiters. Add a preemption nudge only if a
+   busy-wait guest thread is found not to yield.
 
 ## Verification
 Headless turbo (`SUNBRIGHT_HEADLESS=1 SUNBRIGHT_TURBO`, `SUNBRIGHT_RUN_SECONDS=N`) with
