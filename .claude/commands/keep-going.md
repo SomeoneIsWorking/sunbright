@@ -19,12 +19,12 @@ Pick up the in-flight work without re-deriving context. Read first, then act.
 >    ([[dont-ask-keep-porting]]). Verify each step, then continue.
 >
 > If you catch yourself drafting an `AskUserQuestion` about any of the above: stop, re-read
-> the PINNED section of `docs/native_threading.md`, and proceed instead.
+> the "## Decision" section at the top of `docs/native_threading.md`, and proceed instead.
 
 ## 1. Reconstruct state (read, don't guess)
 1. `git log --oneline -15` and `git status` — what landed recently and what's dirty.
-2. Read the **top section of `docs/native_threading.md`** ("✅ Execution-model decision —
-   PINNED") — the substrate is DECIDED (PC-native host threads); do not reopen it.
+2. Read the **"## Decision" section at the top of `docs/native_threading.md`** — the substrate
+   is DECIDED (PC-native host threads); do not reopen it.
 3. Read `docs/native_threading.md` "Next session — ordered integration checklist" for the
    step sequence and which steps are ✅ done.
 4. Skim `MEMORY.md` + the `native-threading-plan`, `done-right-over-working`,
