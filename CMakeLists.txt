@@ -102,6 +102,7 @@ add_executable(sunbright
     runtime/dolphin_hook.cpp
     runtime/memory_bridge.cpp
     runtime/native_threads.cpp
+    runtime/native_os.cpp
     runtime/os_hle.cpp
     runtime/overrides.cpp
     runtime/recomp_table_weak.cpp

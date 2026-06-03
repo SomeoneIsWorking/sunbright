@@ -163,12 +163,16 @@ through the hooks, survives a yield to another thread.
    validated in isolation (`SUNBRIGHT_NTHR_SELFTEST`, 3/3, stable). Game path untouched →
    boot/render unchanged. Remaining for step 3: adopt the EmuThread as guest thread 0 and wire the
    token into the live game.
-2. **Scoped native-OS interception (the gating sub-goal).** `run_jit_sync` (and `call_ppc`) consult
-   a **dedicated native-OS override set** so an OS primitive fires even when reached under the
-   interpreter — keep interrupt overrides recomp-path-only. There is no behaviour-neutral
-   super-call foothold, so deliver this **together with the first genuinely native primitive**, not
-   alone. Verify the lifecycle/sync calls are now intercepted during boot→audio-init via
-   `SUNBRIGHT_OSWATCH` (previously zero).
+2. ✅ **Scoped native-OS interception (the gating sub-goal)** — mechanism done 2026-06-03.
+   `runtime/native_os.{h,cpp}` is a dedicated native-OS override set (separate from the general
+   `SUNBRIGHT_OVERRIDE` table and from the recomp-path-only `sms_os_intr.cpp` interrupt overrides).
+   `call_ppc` consults it on the recomp path AND inside the `run_jit_sync` interpreter loop (the
+   interpreter-path intercept converts ppc↔CPUState around the native fn and resumes the caller at
+   its LR). Proven with the first genuinely-native primitive, **OSGetCurrentThread (0x80348368)**
+   — behaviour-identical (`r3 = *(0x800000E4)`), so boot reaches the identical stall point; the
+   `[native_os] first interpreter-path intercept at 80348368` log confirms the set fires under the
+   interpreter (where the general override table never did). The load-bearing scheduling primitives
+   (create/resume/sleep/wakeup/message queues) are added on this proven seam in steps 4–5.
 3. ✅ **Wire the host-thread substrate into the game** (done 2026-06-03). `nthr::adopt_current`
    registers Dolphin's EmuThread as guest thread 0 holding the CPU token (no new host thread);
    the switch hooks (`nthr_ctx_save`/`restore` in `dolphin_hook.cpp`) swap a per-thread `CPUState`

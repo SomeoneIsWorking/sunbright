@@ -1,6 +1,7 @@
 #include "dolphin_hook.h"
 #include "overrides.h"
 #include "native_threads.h"
+#include "native_os.h"
 #include <dlfcn.h>
 #include <mutex>
 #include <cstdlib>
@@ -55,6 +56,7 @@ void recomp_build_dispatch() {
 
     g_have_overrides  = overrides_registered();
     g_have_jit_forced = jit_forced_registered();
+    native_os_init();   // register the native OS primitive set (consulted below)
     fprintf(stderr, "[sunbright] Dispatch table: %zu funcs over [%08x,%08x) (%zu slots)\n",
             g_recomp_table_size, lo, hi, n);
 }
@@ -122,6 +124,9 @@ void call_ppc(CPUState& cpu, u32 address) {
             fprintf(stderr, "\n");
         }
     }
+    // Native OS primitive takes precedence over the recomp body / interpreter (genuinely
+    // native, no super-call): run it and return to the caller, exactly like the callee's blr.
+    if (NativeOSFn nf = native_os_lookup(address)) { nf(cpu); return; }
     RecompFunc fn = recomp_lookup(address);
     if (fn) {
         // Recompiled target → nested native call. Control comes back here when the
@@ -154,6 +159,20 @@ void call_ppc(CPUState& cpu, u32 address) {
     constexpr long MAX = 500'000'000;
     long n = 0;
     while (ppc.pc != ret && n++ < MAX) {
+        // A native OS primitive reached under the interpreter: run the native version on the
+        // live ppc state instead of interpreting the function, then resume the caller at its
+        // LR (the function's blr target). This is the interception the audio-init region needs
+        // — those calls run here, not via recomp_lookup.
+        if (NativeOSFn nf = native_os_lookup(ppc.pc)) {
+            static bool first = true;
+            if (first) { first = false;
+                fprintf(stderr, "[native_os] first interpreter-path intercept at %08x\n", ppc.pc); }
+            CPUState t; dolphin_state_to_cpu(ppc, t); t.pc = ppc.pc;
+            nf(t);
+            cpu_to_dolphin_state(t, ppc);
+            ppc.pc = ppc.npc = t.lr;   // return to the guest caller (LR), like the callee's blr
+            continue;
+        }
         os_sync_watch(ppc.pc, ppc.gpr[3], ppc.gpr[4], ppc.spr[SPR_LR]);
         interp.SingleStep();
     }
