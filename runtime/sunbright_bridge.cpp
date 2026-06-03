@@ -349,17 +349,7 @@ bool Run(uint32_t pc) {
     //      committed ppc.pc — just fall through to the JIT.
     static const bool trace = getenv("SUNBRIGHT_TRACE") != nullptr;
     if (trace) fprintf(stderr, "[recomp] running func_%08x\n", pc);
-    {
-        sigjmp_buf jb;
-        sigjmp_buf* prev = sunbright_set_tail_jmp(&jb);
-        if (sigsetjmp(jb, 0) == 0) {
-            fn(cpu);
-            auto& ppc = Core::System::GetInstance().GetPPCState();
-            cpu_to_dolphin_state(cpu, ppc);
-            ppc.pc = ppc.npc = cpu.lr;
-        }
-        sunbright_set_tail_jmp(prev);
-    }
+    sunbright_run_recomp_tree(cpu, fn);   // shared entry/tail-jmp logic (see dolphin_hook.cpp)
     if (trace) fprintf(stderr, "[recomp] func_%08x returned\n", pc);
 #else
     fprintf(stderr, "[sunbright] Run() called without HAVE_DOLPHIN_CORE — no-op\n");

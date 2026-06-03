@@ -344,4 +344,18 @@ void sunbright_adopt_cpu_thread() {
         fprintf(stderr, "[nthr] adopted EmuThread as guest thread 0 (CPU token held)\n");
     });
 }
+
+void sunbright_run_recomp_tree(CPUState& cpu, void (*fn)(CPUState&)) {
+    sigjmp_buf jb;
+    sigjmp_buf* prev = sunbright_set_tail_jmp(&jb);
+    if (sigsetjmp(jb, 0) == 0) {
+        fn(cpu);
+        // Normal C return (top-level blr): commit our state and continue at the return addr.
+        auto& ppc = Core::System::GetInstance().GetPPCState();
+        cpu_to_dolphin_state(cpu, ppc);
+        ppc.pc = ppc.npc = cpu.lr;
+    }
+    // else: a tail-branch into non-recomp code siglongjmp'd back, having already committed ppc.
+    sunbright_set_tail_jmp(prev);
+}
 #endif

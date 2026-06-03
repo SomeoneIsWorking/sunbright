@@ -37,4 +37,11 @@ sigjmp_buf* sunbright_set_tail_jmp(sigjmp_buf* j);
 // as nthr guest thread 0 and install the context-switch hooks. Idempotent; call from
 // the guest-entry path so it runs exactly once, on the right thread.
 void sunbright_adopt_cpu_thread();
+
+// Run a recompiled function tree to completion on the current native C stack, handling
+// both exits: a normal C return (top-level blr) commits cpu→ppc and sets pc=lr; a
+// tail-branch into non-recomp code siglongjmps back having already committed ppc. Shared
+// by SunbrightBridge::Run (JIT entry) and a guest host-thread body (native threading), so
+// both use the identical tail-jmp logic. `fn` is the recomp body for `cpu.pc`.
+void sunbright_run_recomp_tree(CPUState& cpu, void (*fn)(CPUState&));
 #endif
