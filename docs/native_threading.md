@@ -114,12 +114,20 @@ Struct layouts (confirmed from the recomp):
   `+8` queueReceive (blocked on empty), `+16` msgArray, `+20` capacity, `+24` firstIndex,
   `+28` usedCount.
 
-SMS boot thread topology (created via `OSCreateThread`):
-| entry | prio | stack | caller | note |
+SMS boot thread topology — captured live by native `OSCreateThread` up to the audio-init stall
+(`[native_os] OSCreateThread #N`), in creation order:
+| # | entry | prio | stack | note |
 |---|---|---|---|---|
-| 802c54b8 | 8  | 16 KB | 802c5380 | 3-thread worker pool (×3, diff param) |
-| 802a9184 | 15 | 4 KB  | 802a9410 | |
-| 802a7878 | 17 | 64 KB | 802a7854 | big stack, made during audio init (likely audio thread) |
+| 1–3 | 802c54b8 | 8  | 16 KB | 3-thread worker pool (×3, different param) |
+| 4 | 802a9184 | 15 | 4 KB  | |
+| 5 | 802a7878 | 17 | 64 KB | big stack, made during audio init (audio thread) |
+| 6 | 80311170 | 2  | 4 KB  | high-priority (OSThread 804075c0 — the OSWATCH receiver) |
+| 7 | 803171ec | 3  | 4 KB  | |
+| 8 | 802b3264 | 14 | 4 KB  | |
+| 9 | 802a7080 | 17 | 64 KB | reuses OSThread 803fcbe8 (#5's) — audio thread re-created |
+
+(#6's `OSThread*` 804075c0 is the message-queue receiver the stall analysis named — see "The
+stall, concretely" above.)
 
 ## Target architecture
 1. **Per-thread CPU context.** `CPUState` + `g_tail_jmp` per host thread (the latter already
@@ -188,10 +196,14 @@ through the hooks, survives a yield to another thread.
    takes the token, step 4). Verified: boot reaches the **identical** stall point
    (`run_jit_sync 80343fe4→803488c0`, same step budget) — inert with only thread 0, no regression.
 4. **Native `OSCreateThread`/`OSResumeThread`.**
-   - 4a **`OSCreateThread`** (super-call the reschedule-free recomp body for faithful struct init,
-     then spawn the matching `nthr` host thread SUSPENDED; map guest `OSThread*` ↔
-     `nthr::GuestThread*`). Verify the 5 boot threads spawn as host threads and boot still reaches
-     the identical stall (threads parked, no regression). ← next concrete step.
+   - 4a ✅ **`OSCreateThread` interception + faithful init + native registry** (done 2026-06-03).
+     The native primitive super-calls the reschedule-free recomp body (`func_80348948`) for faithful
+     guest `OSThread` struct init, then records the thread (`OSThread*`, entry, param, stack, size,
+     priority) in a native registry and logs it. Verified: the boot threads are captured matching
+     the known topology and boot reaches the identical stall (no regression). The real `nthr` host
+     thread + body is spawned in 4b (a spawned thread can only actually run once thread 0 yields at
+     a native block point, so spawning is landed with resume+blocking where it's end-to-end
+     testable — avoids committing an unexercised thread body).
    - 4b **`OSResumeThread`** (genuinely native — it reschedules via `SelectThread`, no super-call):
      decrement the guest suspend count, and when runnable `nthr::make_ready` the mapped thread.
      Best landed WITH step 5, since a resumed thread only actually runs once thread 0 yields at a
