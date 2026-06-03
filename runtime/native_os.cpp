@@ -97,6 +97,17 @@ static void os_get_current_thread(CPUState& cpu) {
     cpu.gpr[3] = mem_r32(0x800000E4u);
 }
 
+// EXPERIMENT (SUNBRIGHT_NORESCHED): OSResumeThread that does NOT reschedule — just decrement the
+// suspend count and return. Tests whether boot can run with NO GC worker thread ever scheduled
+// (the JKRThread workers stay suspended; their work is done synchronously, see sms_jkrthread.cpp),
+// so the GC scheduler is never exercised. If boot progresses, single-threaded boot is viable.
+static void os_resume_thread_noresched(CPUState& cpu) {
+    const u32 thread = cpu.gpr[3];
+    const s32 old = (s32)mem_r32(thread + 716u);   // OSThread.suspend @+0x2CC
+    mem_w32(thread + 716u, (u32)(old - 1));
+    cpu.gpr[3] = (u32)old;                          // return previous suspend count; NO reschedule
+}
+
 // OSCreateThread (0x80348948): BOOL OSCreateThread(OSThread* r3, func r4, param r5, stack r6,
 // stackSize r7, priority r8, attr r9). Reschedule-free, so we super-call the recomp body to
 // init the guest struct faithfully (state/priority/links/context/canary + active-thread list),
@@ -202,6 +213,8 @@ void native_os_init() {
     // it runs under the interpreter. OSGetCurrentThread is behaviour-identical, harmless, and
     // exercises the seam.
     native_os_register(0x80348368u, os_get_current_thread);
+    if (getenv("SUNBRIGHT_NORESCHED"))
+        native_os_register(0x80348ee8u, os_resume_thread_noresched);   // experiment: no GC scheduling
     // ── Diagnostics (env-gated, kept permanently — see memory keep-diagnostics) ──
     if (getenv("SUNBRIGHT_DBG_CONSOLE"))
         native_os_register(0x8033ba90u, dbg_write_console);   // surface GC console / crash report
