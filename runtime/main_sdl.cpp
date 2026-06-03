@@ -650,6 +650,13 @@ int main(int argc, char* argv[]) {
         Config::SetBase(Config::MAIN_AUDIO_MUTED, true);
     }
 
+    // Dual-core: run the GPU/FIFO on its own thread. In single-core mode Dolphin processes the GP
+    // FIFO on the CPU thread (Fifo::RunGpuOnCpu) inline with the recomp — profiling showed ~all
+    // CPU-thread time there, serializing rendering with game logic. A separate GPU thread
+    // parallelizes it. The recomp runs on the CPU thread (JitTrampoline hook), independent of the
+    // GPU thread, which reads the FIFO the gather pipe bursts to.
+    Config::SetBase(Config::MAIN_CPU_THREAD, true);
+
     // ── Graphics quality ────────────────────────────────────────────────────
     // Internal resolution scale (SUNBRIGHT_RES_SCALE, default 3 = 3× native EFB).
     {
@@ -844,8 +851,10 @@ int main(int argc, char* argv[]) {
         if (autostart) {
             const uint32_t t = SDL_GetTicks();
             uint32_t bits = 0;
-            if (t < 45000) {
-                if ((t % 1000) < 200) bits = P_START;     // spam Start ~5x/sec (boot+intro+title)
+            if (t < 60000) {
+                // Drive through the menus: Start (title + skip THP intro movie), A (select a file).
+                if      ((t % 1000) < 200) bits = P_START;
+                else if ((t % 1000) < 400) bits = P_A;
             } else {
                 bits = ((t / 2000) & 1) ? P_RIGHT : P_LEFT;  // hold right 2s, left 2s, …
                 static uint32_t last = 0;
