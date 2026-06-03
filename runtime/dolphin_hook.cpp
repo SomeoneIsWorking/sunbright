@@ -2,6 +2,7 @@
 #include "overrides.h"
 #include "native_threads.h"
 #include "native_os.h"
+#include "probe_server.h"
 #include <dlfcn.h>
 #include <mutex>
 #include <cstdlib>
@@ -12,6 +13,7 @@
 #include <cstdio>
 #include <cstring>
 #include <csetjmp>
+#include <chrono>
 #include <algorithm>
 #include <unordered_map>
 #include <execinfo.h>
@@ -153,14 +155,19 @@ void call_ppc(CPUState& cpu, u32 address) {
     }
     // Native OS primitive takes precedence over the recomp body / interpreter (genuinely
     // native, no super-call): run it and return to the caller, exactly like the callee's blr.
-    if (NativeOSFn nf = native_os_lookup(address)) { nf(cpu); return; }
+    if (NativeOSFn nf = native_os_lookup(address)) {
+        if (g_probe_enabled) g_probe.call_native_os.fetch_add(1, std::memory_order_relaxed);
+        nf(cpu); return;
+    }
     RecompFunc fn = recomp_lookup(address);
     if (fn) {
         // Recompiled target → nested native call. Control comes back here when the
         // callee returns (its blr is a C return); the caller then continues inline.
+        if (g_probe_enabled) g_probe.call_recomp.fetch_add(1, std::memory_order_relaxed);
         fn(cpu);
         return;
     }
+    if (g_probe_enabled) g_probe.call_interp.fetch_add(1, std::memory_order_relaxed);
 #ifdef HAVE_DOLPHIN_CORE
     static const bool trace = getenv("SUNBRIGHT_TRACE") != nullptr;
     if (trace) {
@@ -227,6 +234,17 @@ void call_ppc(CPUState& cpu, u32 address) {
 bool interp_run_until(u32 ret, long budget) {
     auto& ppc    = Core::System::GetInstance().GetPPCState();
     auto& interp = Core::System::GetInstance().GetInterpreter();
+    struct InterpTimer {
+        std::chrono::steady_clock::time_point t0;
+        InterpTimer() { if (g_probe_enabled) t0 = std::chrono::steady_clock::now(); }
+        ~InterpTimer() {
+            if (g_probe_enabled)
+                g_probe.interp_ns.fetch_add(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now() - t0).count(),
+                    std::memory_order_relaxed);
+        }
+    } _it;
     long n = 0;
     while (ppc.pc != ret) {
         if (budget) { if (n++ >= budget) return false; }
@@ -245,6 +263,7 @@ bool interp_run_until(u32 ret, long budget) {
         }
         os_sync_watch(ppc.pc, ppc.gpr[3], ppc.gpr[4], ppc.spr[SPR_LR]);
         interp.SingleStep();
+        if (g_probe_enabled) g_probe.interp_steps.fetch_add(1, std::memory_order_relaxed);
     }
     return true;
 }
@@ -266,6 +285,7 @@ static u32 sunbright_idle_spin_pc() {
     return cached;
 }
 void sunbright_poll_yield() {
+    if (g_probe_enabled) g_probe.poll_yield.fetch_add(1, std::memory_order_relaxed);
     auto& sys = Core::System::GetInstance();
     auto& ppc = sys.GetPPCState();
     auto& ct  = sys.GetCoreTiming();
@@ -331,6 +351,7 @@ void sunbright_wait_vi_field(CPUState& cpu) {
 #endif
 
 void tail_ppc(CPUState& cpu, u32 address) {
+    if (g_probe_enabled) g_probe.tail.fetch_add(1, std::memory_order_relaxed);
     RecompFunc fn = recomp_lookup(address);
     if (fn) { fn(cpu); return; }   // tail to recomp → nested call; the caller then returns
 #ifdef HAVE_DOLPHIN_CORE
