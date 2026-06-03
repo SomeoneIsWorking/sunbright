@@ -175,6 +175,24 @@ static void os_wakeup_thread(CPUState& cpu) {
     }
 }
 
+// DIAGNOSTIC (SUNBRIGHT_DBG_CONSOLE): surface the GC debug console __write_console(?, buf=r4,
+// len=r5) — where the game / JUTException prints its crash report; Dolphin doesn't capture it.
+// OBSERVES (super-calls the real recompiled body), so behaviour is unchanged. Kept permanently.
+extern u8 mem_r8(u32 ea);
+extern "C" void func_8033ba90(CPUState& cpu);   // __write_console (recomp body)
+extern u32 mem_r32(u32 ea);
+static void dbg_write_console(CPUState& cpu) {
+    // __write_console(chan=r3, buf=r4, len*=r5): r5 points to the byte count (writes char-by-char).
+    const u32 buf = cpu.gpr[4];
+    const u32 len = cpu.gpr[5] ? mem_r32(cpu.gpr[5]) : 0;
+    static char s[1024];
+    u32 n = len < sizeof(s) - 1 ? len : sizeof(s) - 1;
+    for (u32 i = 0; i < n; i++) s[i] = (char)mem_r8(buf + i);
+    s[n] = 0;
+    fprintf(stderr, "%s", s);   // raw console stream (noise OK; grep/python post-process)
+    func_8033ba90(cpu);         // run the real __write_console (observe, don't replace)
+}
+
 void native_os_init() {
     static bool done = false;
     if (done) return;
@@ -184,6 +202,9 @@ void native_os_init() {
     // it runs under the interpreter. OSGetCurrentThread is behaviour-identical, harmless, and
     // exercises the seam.
     native_os_register(0x80348368u, os_get_current_thread);
+    // ── Diagnostics (env-gated, kept permanently — see memory keep-diagnostics) ──
+    if (getenv("SUNBRIGHT_DBG_CONSOLE"))
+        native_os_register(0x8033ba90u, dbg_write_console);   // surface GC console / crash report
     // The GC-thread SCHEDULER emulation (OSCreateThread/Resume/Sleep/Wakeup + nthr) is the
     // wrong layer for a PORT (it reimplements emulator internals). Disabled — see
     // memory port-not-emulate + docs/native_threading.md. The game runs the GC threading
