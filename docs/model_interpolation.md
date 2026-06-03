@@ -1,8 +1,27 @@
-# Motion interpolation (N64Recomp-style) — design map
+# Native rendering port + motion interpolation (N64Recomp-style) — design map
 
 Goal: decouple SMS's 60 Hz game tick from display refresh and synthesize in-between
 frames by interpolating each 3D model's transform between frame N-1 and frame N,
 keyed by a stable per-model ID.
+
+> ## 🛑 SETTLED DECISION (2026-06-03, user-ratified) — render scope
+> **Own the object model; keep Dolphin's GPU.** Hook the game's scene-graph draws
+> (MActor/J3D + J2D), build OUR per-frame per-object model (transforms keyed by object
+> pointer), and drive Dolphin's proven GX→Vulkan backend from it. We own *what/where*
+> (transforms, 2D layout, interpolated in-between frames); Dolphin keeps doing the
+> rasterization. We do **NOT** rewrite the GX→GPU rasterizer from scratch — that was
+> explicitly rejected (enormous, no interpolation benefit). Do not reopen this.
+>
+> This one interception layer serves BOTH open render problems:
+> 1. **Widescreen 2D layout** — the off-center title logo / HUD / fade and un-expanded
+>    2D backdrops are NOT fixable by more `.data` constant patches
+>    (`widescreen_patch_tick` / `sms_widescreen.cpp` already notes this). Owning the J2D
+>    draw path lets us center overlays and expand backdrops directly.
+> 2. **Interpolation** — capture each object's transform, slerp prev→cur, re-present
+>    inter-frames between VI swaps. Capture + lerp are already prototyped (see below).
+>
+> Entry points (USA / GMSE01): `MActor::viewCalc` 0x80239734, `MActor::entry`
+> 0x802394c8, `TMario::calcView` 0x802446c0; GX matrix loaders pinned below.
 
 ## 1. How SMS builds & manages 3D objects
 
@@ -185,6 +204,30 @@ Remaining to ship real interpolation: slerp the 3×3 rotation (lerp is fine only
 near-identity), pin the specific transform you want (Mario's model matrix vs camera),
 generate the in-between *frames* (re-present with interpolated matrices between VI
 swaps), and skip on spawns/cuts. The capture + math are demonstrated; this is plumbing.
+
+## 7. Native-render port — pinned hooks & first increment (2026-06-03)
+
+Scope confirmed above (own object model, keep Dolphin GPU). Pinned draw hooks (USA / GMSE01):
+
+**2D path (J2D) — the widescreen-layout fix; VERIFIED firing on the title screen:**
+- `J2DScreen::draw(int x, int y, const J2DGrafContext*)` — **0x802cfda8** — top-level 2D
+  screen draw. Probed live (`SUNBRIGHT_WATCH=802cfda8`): fires thousands of times/frame at
+  the title, `r3` = a stable `J2DScreen*` (object ID, e.g. 0x80ccb51c), `r4`=x (0), `r6`=the
+  `J2DGrafContext` (defines the 2D ortho / viewport — the layout control point).
+- `J2DScreen::drawSelf` 0x802d01c8, `J2DPicture::draw` 0x802ccef4, `J2DTextBox::draw`
+  0x802d0b28 — leaf 2D elements (image / text).
+
+  → **First increment:** `SUNBRIGHT_OVERRIDE` (super-call) `J2DScreen::draw` and adjust the 2D
+  layout for 16:9 — center overlays (the title logo is shifted left because the 4:3 ortho is
+  stretched to 16:9) and expand backdrops. Verify by frame dump: the logo should center. This
+  is the visible widescreen bug AND the first piece of owning the draw path. (`.data` constant
+  patching in `widescreen_patch_tick` can't reach per-screen 2D layout — see `sms_widescreen.cpp`.)
+
+**3D path (J3D/MActor) — interpolation capture:** `MActor::viewCalc` 0x80239734,
+`MActor::entry` 0x802394c8, `TMario::calcView` 0x802446c0. NOT yet probed live — the autotest
+didn't advance past the (2D) title into a 3D scene in the headless runs; verify these fire once
+a 3D scene (file-select Mario / gameplay) is reached, then snapshot the J3DMtxBuffer keyed by
+`this`. Capture+lerp math already prototyped (§"Proven end-to-end").
 
 ## 6. Concrete next steps
 
