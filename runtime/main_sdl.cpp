@@ -52,6 +52,7 @@
 #include "InputCommon/ControllerEmu/ControllerEmu.h"
 #include "VideoCommon/VideoConfig.h"   // AspectMode
 #include "probe_server.h"
+#include "watchdog.h"
 #include "VideoCommon/Present.h"       // g_presenter (surface resize)
 #include "UICommon/DiscordPresence.h"
 #include "UICommon/UICommon.h"
@@ -736,6 +737,9 @@ int main(int argc, char* argv[]) {
     // SUNBRIGHT_PROBE=1: bring up the HTTP/JSON perf probe (http://127.0.0.1:17654/metrics).
     // Lets a headless run be measured live (emulation speed, recomp-vs-interp call mix).
     probe_server_start();
+
+    // Freeze watchdog (on by default): dumps context to scratch/watchdog/ if a frame stalls.
+    watchdog_init();
 
     // SUNBRIGHT_RUN_SECONDS=N: auto-exit after N seconds of wall time (CI / repro).
     const char* run_secs_env = getenv("SUNBRIGHT_RUN_SECONDS");

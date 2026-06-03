@@ -1,4 +1,5 @@
 #include "sunbright_bridge.h"
+#include "watchdog.h"
 #include "cpu_state.h"
 #include "dolphin_hook.h"
 #include "overrides.h"
@@ -297,6 +298,7 @@ bool Run(uint32_t pc) {
     // First guest entry on the EmuThread: adopt it as nthr guest thread 0 (holds the CPU
     // token). Idempotent (std::call_once) and inert with only thread 0 active.
     sunbright_adopt_cpu_thread();
+    watchdog_register_emu_thread();   // record this (the emu thread) for the freeze-backtrace signal
 #endif
     // Native-OS / PC-native subsystem override takes precedence even at a top-level JIT entry, so
     // the seam is universal (call_ppc + run_jit_sync interpreter + here). Runs and returns to lr.
