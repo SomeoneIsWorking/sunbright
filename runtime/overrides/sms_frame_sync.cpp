@@ -12,36 +12,20 @@
 // context switch — the main thread just continues. sunbright_wait_vi_field() does the advance.
 
 #include "../overrides.h"
-#include <cstdio>
-#include <cstdlib>
 
 #ifdef HAVE_DOLPHIN_CORE
-extern void sunbright_wait_vi_field();   // dolphin_hook.cpp
-extern u32  mem_r32(u32 ea);
-extern void mem_w32(u32 ea, u32 v);
+extern void sunbright_wait_vi_field(CPUState& cpu);   // dolphin_hook.cpp
 
-// VIWaitForRetrace(): replace the retrace-count spin + OSSleepThread with a one-field CoreTiming
-// advance (Dolphin's VI presents the frame), then advance the guest retrace counter ourselves.
-// VIWaitForRetrace's body spins `while (count == MEM_R32(r13-22768)) OSSleepThread(...)` — that
-// counter is normally bumped by the VI retrace ISR, which we deliberately don't run. Without
-// bumping it, guest *time* never advances: every frame is rendered identical (frozen scene). One
-// increment per call == one retrace per frame, matching the hardware. (VIGetRetraceCount reads the
-// same global, so all guest timing tracks.)
+// VIWaitForRetrace(): replace the retrace-count spin + OSSleepThread with one VI field advanced
+// under Dolphin, DELIVERING the interrupts that fire (the VI retrace ISR — which advances the scene
+// and bumps the guest retrace counter — plus audio/DSP). See sunbright_wait_vi_field.
 SUNBRIGHT_OVERRIDE(ov_VIWaitForRetrace, 0x8034f684u) {
-    sunbright_wait_vi_field();
-    const u32 cnt = cpu.gpr[13] - 22768u;
-    mem_w32(cnt, mem_r32(cnt) + 1);
-    if (getenv("SUNBRIGHT_DBG_VIRET")) {   // who's spinning the vsync loop?
-        static unsigned long n = 0;
-        if ((n++ % 60) == 0) fprintf(stderr, "[viret] #%lu caller lr=%08x r3=%08x r31=%08x\n",
-                                     n, cpu.lr, cpu.gpr[3], cpu.gpr[31]);
-    }
+    sunbright_wait_vi_field(cpu);
 }
 
-// GXDrawDone(): the GP draw completes within a field; advance one field so Dolphin drains the FIFO,
-// then return instead of OSSleepThread-parking on the draw-done token interrupt.
+// GXDrawDone(): waits for the GPU to finish. The GP FIFO is drained by the VIWaitForRetrace field
+// advance that follows each frame, so return; no OSSleepThread-park on the draw-done token IRQ.
 SUNBRIGHT_OVERRIDE(ov_GXDrawDone, 0x8035dae8u) {
     (void)cpu;
-    sunbright_wait_vi_field();
 }
 #endif

@@ -285,19 +285,29 @@ void sunbright_run_syscall(CPUState& cpu, u32 sc_pc) {
     dolphin_state_to_cpu(ppc, cpu);
 }
 
-void sunbright_wait_vi_field() {
+// Advance Dolphin's VI one field (presents the frame, drains the GP FIFO) AND deliver every
+// interrupt that fires during it. CRUCIAL: the game's per-frame logic and async subsystems run in
+// interrupt handlers (the VI retrace callback that advances the scene; audio DMA/DSP). The recomp
+// runs on the native C stack and never hits a recomp→JIT boundary inside the frame loop, so if we
+// deferred IRQs they'd never be delivered and the game freezes. So we park the guest at the caller's
+// continuation (cpu.lr) and let the interpreter take + run each ISR (it rfi's back to cpu.lr), so
+// the handlers actually execute before we return to the recomp.
+void sunbright_wait_vi_field(CPUState& cpu) {
     auto& sys = Core::System::GetInstance();
     auto& ppc = sys.GetPPCState();
     auto& ct  = sys.GetCoreTiming();
     auto& vi  = sys.GetVideoInterface();
-    const u32 saved_msr = ppc.msr.Hex;
-    ppc.msr.Hex &= ~0x8000u;                        // defer IRQ delivery
+    cpu_to_dolphin_state(cpu, ppc);
+    ppc.pc = ppc.npc = cpu.lr;                      // continuation an ISR will rfi back to
     const u64 target = ct.GetTicks() + vi.GetTicksPerField();
-    for (int guard = 0; ct.GetTicks() < target && guard < 4096; ++guard) {
+    for (int guard = 0; ct.GetTicks() < target && guard < 8192; ++guard) {
+        const u32 ret = ppc.pc;
         ct.Idle();                                  // skip to the next scheduled device event
-        ct.Advance();                               // process it (VI retrace presents the frame)
+        ct.Advance();                               // process it; if EE & pending, vector to the ISR
+        if (ppc.pc != ret)                          // an interrupt fired → run its handler + callbacks
+            interp_run_until(ret, 5'000'000);
     }
-    ppc.msr.Hex = saved_msr;
+    dolphin_state_to_cpu(ppc, cpu);
 }
 #endif
 
