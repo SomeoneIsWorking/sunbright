@@ -294,6 +294,32 @@ interrupts.** Findings from the headless run:
   whether it's an `OSWakeupThread` or a polled-flag completion. Code was reverted to the committed
   WIP (fallback retained) so `main` stays in the best working state meanwhile.
 
+### Attempt 2 — traced the working fallback (2026-06-03): the deeper conflict
+Instrumented the committed (working-fallback) boot to learn how waits actually resolve:
+- **`OSWakeupThread` is NEVER called during boot** (native `os_wakeup_thread` logged zero hits).
+  Yet the audio thread (`803fcbe8`) sleeps on `q=8040e870` and the fallback returns ("woken")
+  immediately, in a tight loop. So the wakeup is **not** an `OSWakeupThread` — the GC `SelectThread`
+  inside the fallback just re-selects the same sleeping thread. The audio wait is for a **DSP/AI
+  hardware event** whose ISR *would* call `OSWakeupThread(8040e870)`, but that IRQ isn't firing.
+- The first sleeper `8042ba20` (`q=803e0220`) blocks, and **the 5 worker threads are created while
+  it is still inside its fallback `OSSleepThread`** — i.e. the fallback's `SelectThread` switched to
+  another guest context (under the interpreter) which ran boot + `OSCreateThread`. So the fallback is
+  **running the GC scheduler**, switching guest contexts, *concurrently with* `nthr` tracking the
+  same threads — **two schedulers over the same guest structures.** This is the real conflict:
+  native threading and the GC scheduler cannot coexist; the fallback must be fully removed, not kept.
+
+**Reframed problem & plan.** The blocker is not "compose the fallback" — it's that finishing native
+threading requires *both*: (a) a real idle/hardware driver that delivers device IRQs so an ISR's
+`OSWakeupThread` wakes an `nthr` thread (the audio `8040e870` wait needs the DSP/AI IRQ), **and**
+(b) removing the GC-scheduler fallback entirely (it conflicts). Attempt 1 showed a bare `b .` spin
+delivers no IRQs — but it was tested on `8042ba20`'s early wait, which the trace shows is **woken by
+a context switch, not an IRQ**, so that was the wrong test case. Open questions for the next session,
+in order: (1) map the early-boot thread identities — is `8042ba20` `nthr` thread 0, and who is meant
+to run when it sleeps? (the model assumes one boot thread, but boot uses several); (2) confirm the
+audio `8040e870` wait's waker is the DSP/AI ISR (set a watch on `OSWakeupThread`/the AI/DSP vectors);
+(3) get the idle driver to deliver that specific DSP/AI IRQ. This likely needs the **full IdleThread
+context** (not a bare spin) and possibly servicing the AI/DSP the way the GC idle path does.
+
 ### Older notes
 SDL/present thread signals vblank waiters via the native condvar; audio-out thread signals audio
 waiters. A preemption nudge may be needed if a busy-wait guest thread is found not to yield.
