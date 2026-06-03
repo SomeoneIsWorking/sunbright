@@ -18,7 +18,11 @@
 #include <sys/resource.h>
 #ifdef HAVE_DOLPHIN_CORE
 #  include "Core/System.h"
+#  include "Core/Core.h"
 #endif
+
+extern void mem_w32(u32 ea, u32 v);   // from memory_bridge
+extern void mem_w16(u32 ea, u16 v);
 
 using RecompFunc = void (*)(CPUState&);
 struct JumpEntry { uint32_t addr; RecompFunc fn; };
@@ -111,6 +115,10 @@ static void os_sync_watch(u32 pc, u32 r3, u32 r4, u32 lr) {
             name, mem_r32(0x800000E4u), r3, r4, lr);
 }
 
+#ifdef HAVE_DOLPHIN_CORE
+bool interp_run_until(u32 ret, long budget);   // defined below; used by call_ppc
+#endif
+
 void call_ppc(CPUState& cpu, u32 address) {
     os_sync_watch(address, cpu.gpr[3], cpu.gpr[4], cpu.lr);
     if (address == watch_addr() && watch_addr() != 0) {
@@ -152,31 +160,8 @@ void call_ppc(CPUState& cpu, u32 address) {
     const u32 ret = cpu.lr;
     cpu_to_dolphin_state(cpu, ppc);
     ppc.pc = ppc.npc = address;
-    auto& interp = Core::System::GetInstance().GetInterpreter();
-    // SingleStep (not SingleStepInner) advances CoreTiming and checks exceptions each
-    // instruction, so HW-wait/spin loops inside the callee (EXI/DI/VI/DSP polling)
-    // make progress and their interrupts actually fire.
     constexpr long MAX = 500'000'000;
-    long n = 0;
-    while (ppc.pc != ret && n++ < MAX) {
-        // A native OS primitive reached under the interpreter: run the native version on the
-        // live ppc state instead of interpreting the function, then resume the caller at its
-        // LR (the function's blr target). This is the interception the audio-init region needs
-        // — those calls run here, not via recomp_lookup.
-        if (NativeOSFn nf = native_os_lookup(ppc.pc)) {
-            static bool first = true;
-            if (first) { first = false;
-                fprintf(stderr, "[native_os] first interpreter-path intercept at %08x\n", ppc.pc); }
-            CPUState t; dolphin_state_to_cpu(ppc, t); t.pc = ppc.pc;
-            nf(t);
-            cpu_to_dolphin_state(t, ppc);
-            ppc.pc = ppc.npc = t.lr;   // return to the guest caller (LR), like the callee's blr
-            continue;
-        }
-        os_sync_watch(ppc.pc, ppc.gpr[3], ppc.gpr[4], ppc.spr[SPR_LR]);
-        interp.SingleStep();
-    }
-    if (n >= MAX) {
+    if (!interp_run_until(ret, MAX)) {
         // The interpreter never returned to the caller's LR within the budget — the
         // callee rescheduled to a never-returning context (the GC OS idle loop after a
         // blocking OS call) and is spinning. This is THE root cause behind the later
@@ -210,6 +195,39 @@ void call_ppc(CPUState& cpu, u32 address) {
     fprintf(stderr, "[sunbright] call_ppc 0x%08x: not recompiled and no JIT available\n", address);
 #endif
 }
+
+#ifdef HAVE_DOLPHIN_CORE
+// Step the Dolphin interpreter from ppc.pc until it reaches `ret`, dispatching native OS
+// primitives reached along the way (so e.g. OSSleepThread parks the host thread instead of
+// being single-stepped). `budget` caps the steps (0 = unlimited, for a guest thread body that
+// blocks via native parking rather than returning). Returns true if `ret` was reached, false if
+// the budget was exhausted. SingleStep (not SingleStepInner) advances CoreTiming and checks
+// exceptions each instruction, so HW-wait/poll loops make progress and their interrupts fire.
+bool interp_run_until(u32 ret, long budget) {
+    auto& ppc    = Core::System::GetInstance().GetPPCState();
+    auto& interp = Core::System::GetInstance().GetInterpreter();
+    long n = 0;
+    while (ppc.pc != ret) {
+        if (budget) { if (n++ >= budget) return false; }
+        else if ((++n & 0x7FFFFFF) == 0)   // budget-less (thread body): periodic progress probe
+            fprintf(stderr, "[interp] thread-body still running pc=%08x after %ldM steps\n",
+                    ppc.pc, n / 1'000'000);
+        if (NativeOSFn nf = native_os_lookup(ppc.pc)) {
+            static bool first = true;
+            if (first) { first = false;
+                fprintf(stderr, "[native_os] first interpreter-path intercept at %08x\n", ppc.pc); }
+            CPUState t; dolphin_state_to_cpu(ppc, t); t.pc = ppc.pc;
+            nf(t);
+            cpu_to_dolphin_state(t, ppc);
+            ppc.pc = ppc.npc = t.lr;   // return to the guest caller (LR), like the callee's blr
+            continue;
+        }
+        os_sync_watch(ppc.pc, ppc.gpr[3], ppc.gpr[4], ppc.spr[SPR_LR]);
+        interp.SingleStep();
+    }
+    return true;
+}
+#endif
 
 // ── Tail-branch handoff ──────────────────────────────────────────────────────
 // Set by SunbrightBridge::Run for the duration of a top-level recomp entry so a
@@ -319,29 +337,163 @@ void cpu_to_dolphin_state(const CPUState& src, PowerPC::PowerPCState& dst) {
 }
 
 // ── Native-threading runtime glue ────────────────────────────────────────────
-// Each guest thread's PPC register context (the GC OSContext, done natively) lives in a
-// CPUState in its nthr `user` slot. The switch hooks swap that slot with Dolphin's single
-// global PowerPCState on every token hand-off: save out the thread giving up the token,
-// restore in the one taking it. `g_tail_jmp` needs no hook — it is thread_local and every
-// guest thread is a real host thread, so it is per-thread for free.
+// Per-guest-thread runtime record, stored in the nthr `user` slot. `ctx` is the global PPC
+// register-file snapshot the switch hooks swap with Dolphin's single global PowerPCState on
+// each token hand-off (the GC OSContext save/load, done natively). `g_tail_jmp` needs no hook
+// — it is thread_local and every guest thread is a real host thread, so it is per-thread free.
+namespace {
+constexpr u32 OS_CURRENT_THREAD = 0x800000E4u;   // *(this) = OSGetCurrentThread
+
+struct GuestRuntime {
+    CPUState ctx;            // global-ppc snapshot for the switch hooks
+    u32 os_thread = 0;       // guest OSThread*
+    u32 entry = 0, param = 0, stack = 0;
+    bool is_thread0 = false;
+};
+
+std::unordered_map<u32, nthr::GuestThread*> g_os_to_gt;   // guest OSThread* -> nthr thread
+std::mutex                                  g_os_map_mtx;
+
+GuestRuntime* runtime_of(nthr::GuestThread* t) {
+    return static_cast<GuestRuntime*>(nthr::user_slot(t));
+}
+}  // namespace
+
 static void nthr_ctx_save(nthr::GuestThread* t) {
-    if (auto* slot = static_cast<CPUState*>(nthr::user_slot(t)))
-        dolphin_state_to_cpu(Core::System::GetInstance().GetPPCState(), *slot);
+    auto* gr = runtime_of(t);
+    if (!gr) return;
+    dolphin_state_to_cpu(Core::System::GetInstance().GetPPCState(), gr->ctx);
+    // The running thread's OSThread* is authoritative in 0x800000E4 (it set it). Capture it so the
+    // restore hook writes the right current-thread pointer back (thread 0's identity isn't known
+    // until boot installs it, after adoption). No map/lock here — the hooks run under nthr's lock.
+    if (u32 cur = mem_r32(OS_CURRENT_THREAD)) gr->os_thread = cur;
 }
 static void nthr_ctx_restore(nthr::GuestThread* t) {
-    if (auto* slot = static_cast<CPUState*>(nthr::user_slot(t)))
-        cpu_to_dolphin_state(*slot, Core::System::GetInstance().GetPPCState());
+    auto* gr = runtime_of(t);
+    if (!gr) return;
+    cpu_to_dolphin_state(gr->ctx, Core::System::GetInstance().GetPPCState());
+    // We own the current-thread pointer now (the GC scheduler that maintained it is never run),
+    // so make OSGetCurrentThread coherent with whoever is about to run.
+    if (gr->os_thread) mem_w32(OS_CURRENT_THREAD, gr->os_thread);
+}
+
+// All guest threads are Blocked waiting on hardware and there is no idle/driver yet to advance
+// device timing and deliver the waking IRQ. Fail fast (suppress the multi-GB core — see
+// [[abort-coredump-hang]]) so this surfaces as a diagnosable signal, not a silent hang.
+static void nthr_idle_fatal() {
+    fflush(stdout);
+    fprintf(stderr,
+        "\n[nthr] FATAL: all guest threads Blocked, none Ready — reached a hardware-wait idle.\n"
+        "  The native idle/driver (advance CoreTiming so a DSP/DVD/VI IRQ handler wakes a\n"
+        "  waiter) is not implemented yet — this is the next step (docs step 5/6).\n");
+    fflush(stderr);
+    struct rlimit no_core{0, 0};
+    setrlimit(RLIMIT_CORE, &no_core);
+    abort();
+}
+
+// Body of a spawned guest host thread: runs the guest thread function on its own native stack
+// from the entry PC, holding the CPU token. Blocks (parks the host thread) at native OS block
+// points; only returns if the guest function actually returns (thread exit).
+static void guest_thread_body(u32 os_thread, u32 entry, u32 param, u32 stack) {
+    Core::DeclareAsCPUThread();           // we hold the token; become Dolphin's CPU thread
+    mem_w32(OS_CURRENT_THREAD, os_thread);
+
+    // Load the initial register context OSCreateThread built (OSContext @ OSThread+0): it holds
+    // gpr1=stack, gpr2/gpr13 = small-data (SDA) bases, gpr3=param, srr0=entry, lr=exit trampoline.
+    // Hand-setting only sp/param/pc left r2/r13 zero, so every small-data access in the thread
+    // computed a wild address (0 − sda_offset = 0xFFFFxxxx) → the strcpy wild-write crash.
+    CPUState cpu; cpu.reset();
+    for (int i = 0; i < 32; i++) cpu.gpr[i] = mem_r32(os_thread + (u32)(i * 4));
+    cpu.lr  = mem_r32(os_thread + 0x84);  // OSContext.lr = exit trampoline
+    cpu.ctr = mem_r32(os_thread + 0x88);
+    for (int i = 0; i < 8; i++) cpu.gqr[i] = mem_r32(os_thread + 0x1A4 + (u32)(i * 4));
+    cpu.pc  = mem_r32(os_thread + 0x198); // OSContext.srr0 = entry
+    (void)entry; (void)param; (void)stack;
+
+    const u32 exit_ret = cpu.lr;          // OSContext.lr = exit trampoline (thread done)
+    fprintf(stderr, "[nthr] >>> thread %08x body START pc=%08x sp=%08x r3=%08x r13=%08x exit=%08x\n",
+            os_thread, cpu.pc, cpu.gpr[1], cpu.gpr[3], cpu.gpr[13], exit_ret);
+
+    if (RecompFunc fn = recomp_lookup(cpu.pc)) {
+        sunbright_run_recomp_tree(cpu, fn);            // recomp entry: native C stack
+    } else {
+        // Non-recomp (JIT-only) entry: run the whole thread under the interpreter, budget-less —
+        // it blocks by native parking (OSSleepThread intercept), not by returning, so a step
+        // budget would false-positive. Exits only when the thread function returns to its exit
+        // trampoline. (If it busy-waits on hardware without ever blocking, that surfaces as a
+        // hang — the preemption/idle-driver case, docs step 6.)
+        auto& ppc = Core::System::GetInstance().GetPPCState();
+        cpu_to_dolphin_state(cpu, ppc);
+        ppc.pc = ppc.npc = cpu.pc;
+        interp_run_until(exit_ret, /*budget=*/0);
+        dolphin_state_to_cpu(ppc, cpu);
+    }
+
+    // The guest thread function returned (exited). Drop it from the map and let nthr reap.
+    { std::lock_guard<std::mutex> lk(g_os_map_mtx); g_os_to_gt.erase(os_thread); }
+    fprintf(stderr, "[nthr] guest thread %08x (entry %08x) returned/exited\n", os_thread, entry);
+    Core::UndeclareAsCPUThread();
+}
+
+// OSCreateThread → spawn the matching native host thread, SUSPENDED (created threads start with
+// suspend=1; OSResumeThread makes it Ready). Maps guest OSThread* ↔ nthr thread.
+void nthrt_spawn_guest(u32 os_thread, u32 entry, u32 param, u32 stack, int prio) {
+    nthr::GuestThread* gt = nthr::spawn(prio,
+        [os_thread, entry, param, stack] { guest_thread_body(os_thread, entry, param, stack); },
+        /*start_ready=*/false);
+    auto* gr = new GuestRuntime();
+    gr->os_thread = os_thread; gr->entry = entry; gr->param = param; gr->stack = stack;
+    nthr::user_slot(gt) = gr;
+    std::lock_guard<std::mutex> lk(g_os_map_mtx);
+    g_os_to_gt[os_thread] = gt;
+}
+
+// OSResumeThread / OSWakeupThread → mark the mapped host thread Ready (cooperative: it runs at
+// the current thread's next block point).
+void nthrt_make_ready(u32 os_thread) {
+    nthr::GuestThread* gt = nullptr;
+    { std::lock_guard<std::mutex> lk(g_os_map_mtx);
+      auto it = g_os_to_gt.find(os_thread); if (it != g_os_to_gt.end()) gt = it->second; }
+    if (gt) nthr::make_ready(gt);
+}
+
+// Ensure the running guest thread is mapped under its authoritative OSThread* (`os_thread`), so
+// a later OSWakeupThread on a queue holding it resolves to this host thread. Needed because
+// thread 0's real OSThread* isn't known at adoption time (0x800000E4 is still 0 then). Called off
+// nthr's lock (from a blocking primitive), so taking the map lock here is order-safe.
+void nthrt_bind_current(u32 os_thread) {
+    nthr::GuestThread* gt = nthr::current();
+    if (!gt || !os_thread) return;
+    if (auto* gr = runtime_of(gt)) gr->os_thread = os_thread;
+    std::lock_guard<std::mutex> lk(g_os_map_mtx);
+    g_os_to_gt[os_thread] = gt;
+}
+
+// OSSleepThread → yield the current guest thread until woken. Brackets the park with
+// Undeclare/Declare so exactly one host thread is Dolphin's CPU thread at a time.
+void nthrt_block_current() {
+    Core::UndeclareAsCPUThread();
+    nthr::block(nthr::State::Blocked);
+    Core::DeclareAsCPUThread();           // reacquired the token (ctx restored by the hook)
 }
 
 void sunbright_adopt_cpu_thread() {
     static std::once_flag once;
     std::call_once(once, [] {
         nthr::set_switch_hooks(nthr_ctx_save, nthr_ctx_restore);
+        nthr::set_idle_handler(nthr_idle_fatal);
         nthr::GuestThread* t0 = nthr::adopt_current(/*priority=*/16);
-        nthr::user_slot(t0) = new CPUState();   // its saved-context slot
-        // With only thread 0 active the token is always held and the hooks never fire,
-        // so this is behaviourally inert until native OS threads spawn (later steps).
-        fprintf(stderr, "[nthr] adopted EmuThread as guest thread 0 (CPU token held)\n");
+        auto* gr = new GuestRuntime();
+        gr->is_thread0 = true;
+        gr->os_thread  = mem_r32(OS_CURRENT_THREAD);   // the GC DefaultThread
+        nthr::user_slot(t0) = gr;
+        if (gr->os_thread) {
+            std::lock_guard<std::mutex> lk(g_os_map_mtx);
+            g_os_to_gt[gr->os_thread] = t0;
+        }
+        fprintf(stderr, "[nthr] adopted EmuThread as guest thread 0 (OSThread=%08x, token held)\n",
+                gr->os_thread);
     });
 }
 

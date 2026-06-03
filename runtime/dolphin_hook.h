@@ -44,4 +44,11 @@ void sunbright_adopt_cpu_thread();
 // by SunbrightBridge::Run (JIT entry) and a guest host-thread body (native threading), so
 // both use the identical tail-jmp logic. `fn` is the recomp body for `cpu.pc`.
 void sunbright_run_recomp_tree(CPUState& cpu, void (*fn)(CPUState&));
+
+// Native-threading runtime (host-thread guest threads + guest↔host mapping). Called by the
+// native OS primitives in native_os.cpp. See dolphin_hook.cpp.
+void nthrt_spawn_guest(u32 os_thread, u32 entry, u32 param, u32 stack, int prio);  // OSCreateThread
+void nthrt_make_ready(u32 os_thread);   // OSResumeThread / OSWakeupThread (mark Ready)
+void nthrt_bind_current(u32 os_thread); // map the running thread under its authoritative OSThread*
+void nthrt_block_current();             // OSSleepThread (park current until woken)
 #endif

@@ -1,15 +1,60 @@
 #include "native_os.h"
+#include "dolphin_hook.h"      // nthrt_spawn_guest / nthrt_make_ready / nthrt_block_current
+#include "native_threads.h"    // nthr::ready_count
 
 #include <algorithm>
 #include <cstdio>
 #include <unordered_map>
 #include <vector>
 
-extern u32 mem_r32(u32 ea);   // from memory_bridge
+extern u32  mem_r32(u32 ea);          // from memory_bridge
+extern void mem_w32(u32 ea, u32 v);
+extern void mem_w16(u32 ea, u16 v);
 
-// The reschedule-free recompiled OSCreateThread, super-called for faithful guest-struct init
-// (see docs/native_threading.md: it never calls SelectThread/__OSReschedule, so it returns).
+// Reschedule-free recompiled OSCreateThread, super-called for faithful guest-struct init (see
+// docs/native_threading.md: it never calls SelectThread/__OSReschedule, so it returns).
 extern "C" void func_80348948(CPUState& cpu);
+// Recompiled OSSleepThread, used as the hardware-wait fallback when this is the sole runnable
+// context: its SelectThread reschedule runs the idle thread under the interpreter, which
+// single-steps + delivers the waking IRQ (the proven pre-native-threading path).
+extern "C" void func_803492e0(CPUState& cpu);
+
+// ── Guest OSThread / OSThreadQueue layout (confirmed from the recomp) ─────────
+namespace {
+constexpr u32 OS_CURRENT_THREAD = 0x800000E4u;
+// OSThread fields:
+constexpr u32 T_STATE   = 712;   // u16: 1=READY, 2=RUNNING, 4=WAITING, 8=MORIBUND
+constexpr u32 T_SUSPEND = 716;   // s32: suspend count (>0 ⇒ not runnable)
+constexpr u32 T_PRIO    = 720;   // s32: effective priority (lower = higher)
+constexpr u32 T_QUEUE   = 732;   // OSThreadQueue* the thread is currently queued on
+constexpr u32 T_NEXT    = 736;   // link toward tail
+constexpr u32 T_PREV    = 740;   // link toward head
+// OSThreadQueue fields: head @+0, tail @+4
+constexpr u32 Q_HEAD = 0, Q_TAIL = 4;
+
+inline u16 r_state(u32 th)   { return (u16)(mem_r32(th + T_STATE) >> 16); }  // halfword at +712
+
+// Insert `th` into thread-wait queue `q` ordered by priority — faithful to OSSleepThread's
+// insert (same links/head/tail), so guest code that walks the queue still sees the truth.
+void wait_queue_insert(u32 q, u32 th) {
+    const s32 prio = (s32)mem_r32(th + T_PRIO);
+    u32 n = mem_r32(q + Q_HEAD);
+    while (n != 0 && (s32)mem_r32(n + T_PRIO) <= prio) n = mem_r32(n + T_NEXT);
+    if (n == 0) {                                   // append at tail
+        u32 tail = mem_r32(q + Q_TAIL);
+        if (tail == 0) mem_w32(q + Q_HEAD, th); else mem_w32(tail + T_NEXT, th);
+        mem_w32(th + T_PREV, tail);
+        mem_w32(th + T_NEXT, 0);
+        mem_w32(q + Q_TAIL, th);
+    } else {                                        // insert before n
+        u32 prev = mem_r32(n + T_PREV);
+        mem_w32(th + T_NEXT, n);
+        mem_w32(th + T_PREV, prev);
+        mem_w32(n + T_PREV, th);
+        if (prev == 0) mem_w32(q + Q_HEAD, th); else mem_w32(prev + T_NEXT, th);
+    }
+}
+}  // namespace
 
 namespace {
 std::unordered_map<u32, NativeOSFn> g_native_os;
@@ -68,10 +113,66 @@ static void os_create_thread(CPUState& cpu) {
     if (cpu.gpr[3] == 0) return;        // creation failed (bad priority) — nothing to record
 
     g_guest_threads.push_back({os_thread, entry, param, stack, stack_sz, priority});
+    nthrt_spawn_guest(os_thread, entry, param, stack, priority);   // host thread, SUSPENDED
     fprintf(stderr,
         "[native_os] OSCreateThread #%zu  OSThread=%08x entry=%08x param=%08x stack=%08x "
         "size=%u prio=%d\n",
         g_guest_threads.size(), os_thread, entry, param, stack, stack_sz, priority);
+}
+
+// OSResumeThread (0x80348ee8): decrement the suspend count; when it reaches 0 and the thread is
+// READY, make the mapped host thread runnable. (Genuinely native — the recomp body reschedules
+// via SelectThread, which we never run.) Returns the previous suspend count in r3.
+static void os_resume_thread(CPUState& cpu) {
+    const u32 thread = cpu.gpr[3];
+    const s32 old_suspend = (s32)mem_r32(thread + T_SUSPEND);
+    const s32 suspend = old_suspend - 1;
+    mem_w32(thread + T_SUSPEND, (u32)suspend);
+    if (suspend <= 0 && r_state(thread) == 1 /*READY*/)
+        nthrt_make_ready(thread);
+    fprintf(stderr, "[native_os] OSResumeThread %08x suspend %d->%d state=%u%s\n",
+            thread, old_suspend, suspend, r_state(thread),
+            (suspend <= 0 && r_state(thread) == 1) ? " -> READY" : "");
+    cpu.gpr[3] = (u32)old_suspend;
+}
+
+// OSSleepThread (0x803492e0): enqueue the current thread on wait-queue r3 (set state=WAITING,
+// thread->queue), then park until OSWakeupThread wakes it. Replaces the recomp body's
+// SelectThread reschedule with a native host-thread park.
+static void os_sleep_thread(CPUState& cpu) {
+    if (nthr::ready_count() == 0) {
+        // Sole runnable context → this is a hardware wait, not a thread-to-thread switch. Defer
+        // to the proven path: the recomp body reschedules to the idle thread, which the
+        // interpreter single-steps, delivering the waking IRQ. (docs step 6 replaces this with a
+        // native idle/driver so even hardware waits never touch the interpreter.)
+        func_803492e0(cpu);
+        return;
+    }
+    const u32 queue  = cpu.gpr[3];
+    const u32 thread = mem_r32(OS_CURRENT_THREAD);
+    nthrt_bind_current(thread);            // ensure OSWakeupThread can resolve us (esp. thread 0)
+    mem_w16(thread + T_STATE, 4);          // WAITING
+    mem_w32(thread + T_QUEUE, queue);
+    wait_queue_insert(queue, thread);
+    nthrt_block_current();                 // yield to another ready thread (Undeclare/park/Declare)
+    // Woken: OSWakeupThread already dequeued us and set state=READY. Return (void).
+}
+
+// OSWakeupThread (0x803493cc): dequeue every thread on wait-queue r3, set state=READY, and make
+// the runnable ones (suspend<=0) Ready in nthr. Replaces the recomp body's run-queue insert +
+// SelectThread with native make_ready.
+static void os_wakeup_thread(CPUState& cpu) {
+    const u32 queue = cpu.gpr[3];
+    for (;;) {
+        u32 th = mem_r32(queue + Q_HEAD);
+        if (th == 0) break;
+        u32 next = mem_r32(th + T_NEXT);   // dequeue head
+        if (next != 0) mem_w32(next + T_PREV, 0); else mem_w32(queue + Q_TAIL, 0);
+        mem_w32(queue + Q_HEAD, next);
+        mem_w16(th + T_STATE, 1);          // READY
+        if ((s32)mem_r32(th + T_SUSPEND) <= 0)
+            nthrt_make_ready(th);
+    }
 }
 
 void native_os_init() {
@@ -80,6 +181,9 @@ void native_os_init() {
     done = true;
     native_os_register(0x80348368u, os_get_current_thread);
     native_os_register(0x80348948u, os_create_thread);
+    native_os_register(0x80348ee8u, os_resume_thread);
+    native_os_register(0x803492e0u, os_sleep_thread);
+    native_os_register(0x803493ccu, os_wakeup_thread);
     fprintf(stderr, "[native_os] registered %zu native OS primitive(s) over [%08x,%08x)\n",
             g_native_os.size(), g_os_lo, g_os_hi);
 }

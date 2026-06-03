@@ -47,6 +47,11 @@ void block(State newState);
 // the token until it next yields, then the scheduler may pick the woken thread.
 void make_ready(GuestThread*);
 
+// Number of threads currently Ready (runnable, excluding the running one). A blocking OS
+// primitive uses this to decide whether there is another guest context to switch to: if zero,
+// the caller is the sole runnable context (a hardware wait) and must not park with no waker.
+int ready_count();
+
 // ── Per-context switch hooks ─────────────────────────────────────────────────
 // The PPC register file is a single GLOBAL (`ppc`) that run_jit_sync drives, so even though
 // each guest thread is its own host thread, the running thread's registers live in that one
@@ -58,6 +63,12 @@ void make_ready(GuestThread*);
 // docs/native_threading.md step 1.
 void   set_switch_hooks(void (*save)(GuestThread*), void (*restore)(GuestThread*));
 void*& user_slot(GuestThread*);
+
+// Called when the scheduler finds no Ready thread but live (Blocked) threads remain — i.e. every
+// guest thread is parked waiting on something external (a hardware IRQ). The registered handler
+// gets a chance to make a thread Ready (e.g. advance device timing so an IRQ handler wakes a
+// waiter); after it returns the scheduler re-picks. If none is registered this is a deadlock.
+void set_idle_handler(void (*handler)());
 
 // Bootstrap entry: the calling (non-guest) host thread grants the token to the first
 // ready thread and blocks until every spawned thread is Dead, then joins them. Used by

@@ -40,6 +40,7 @@ uint64_t                   g_seq = 0;
 
 void (*g_save_hook)(GuestThread*)    = nullptr;   // called on the thread giving up the token
 void (*g_restore_hook)(GuestThread*) = nullptr;   // called for the thread about to get it
+void (*g_idle_handler)()             = nullptr;   // called when nothing is Ready but threads live
 
 // Highest-priority Ready thread (lowest prio number; FIFO among ties), or null.
 GuestThread* pick_next() {
@@ -54,18 +55,34 @@ GuestThread* pick_next() {
 }
 
 // Give up the token: save `outgoing`'s context, pick the next Ready thread, restore its
-// context and wake it (or wake run_and_wait() if nothing is runnable). Caller holds g_mtx.
-// `outgoing` is null when the bootstrap thread grants the token without owning one.
-void grant_token_locked(GuestThread* outgoing) {
+// context and wake it. Caller holds g_mtx via `lk`. `outgoing` is null when the bootstrap
+// thread grants the token without owning one. If nothing is Ready but threads are still alive
+// (all Blocked on something external), the idle handler is run — unlocked, so it can make a
+// thread Ready (advance hardware) — and we re-pick; with no handler, control returns to
+// run_and_wait().
+void grant_token_locked(std::unique_lock<std::mutex>& lk, GuestThread* outgoing) {
     if (outgoing && g_save_hook) g_save_hook(outgoing);   // stash the global ctx into its slot
-    GuestThread* next = pick_next();
-    g_running = next;
-    if (next) {
-        next->state = State::Running;
-        if (g_restore_hook) g_restore_hook(next);         // load the global ctx from its slot
-        next->cv.notify_one();
-    } else {
-        g_idle_cv.notify_all();   // nobody runnable — hand control back to run_and_wait()
+    for (;;) {
+        GuestThread* next = pick_next();
+        if (next) {
+            g_running = next;
+            next->state = State::Running;
+            if (g_restore_hook) g_restore_hook(next);     // load the global ctx from its slot
+            next->cv.notify_one();
+            return;
+        }
+        bool any_alive = false;
+        for (auto* t : g_threads) if (t->state != State::Dead) { any_alive = true; break; }
+        if (!any_alive || !g_idle_handler) {
+            g_running = nullptr;
+            g_idle_cv.notify_all();   // run_and_wait (self-test) waiter; game has none
+            return;
+        }
+        // Every live thread is Blocked waiting on something external. Let the idle handler try
+        // to wake one (it runs unlocked — it may call make_ready / run guest code), then re-pick.
+        lk.unlock();
+        g_idle_handler();
+        lk.lock();
     }
 }
 
@@ -80,7 +97,7 @@ void thread_main(GuestThread* self) {
 
     lk.lock();
     self->state = State::Dead;
-    grant_token_locked(self);     // pass the token on; we never get it back
+    grant_token_locked(lk, self); // pass the token on; we never get it back
 }
 
 }  // namespace
@@ -92,6 +109,15 @@ void*&       user_slot(GuestThread* t)   { return t->user; }
 void set_switch_hooks(void (*save)(GuestThread*), void (*restore)(GuestThread*)) {
     g_save_hook    = save;
     g_restore_hook = restore;
+}
+
+void set_idle_handler(void (*handler)()) { g_idle_handler = handler; }
+
+int ready_count() {
+    std::unique_lock<std::mutex> lk(g_mtx);
+    int n = 0;
+    for (auto* t : g_threads) if (t->state == State::Ready) n++;
+    return n;
 }
 
 GuestThread* spawn(int priority, std::function<void()> body, bool start_ready) {
@@ -122,7 +148,7 @@ void block(State newState) {
     GuestThread* self = g_running;
     self->state     = newState;
     self->ready_seq = g_seq++;            // back of the FIFO (round-robin for Ready)
-    grant_token_locked(self);            // save our ctx, hand the token to the next thread
+    grant_token_locked(lk, self);        // save our ctx, hand the token to the next thread
     while (g_running != self) self->cv.wait(lk);   // park until the token returns to us
     // Resumed: grant_token_locked already restored our ctx via g_restore_hook.
 }
@@ -138,7 +164,7 @@ void make_ready(GuestThread* t) {
 
 void run_and_wait() {
     std::unique_lock<std::mutex> lk(g_mtx);
-    grant_token_locked(nullptr);          // hand the token to the first Ready thread
+    grant_token_locked(lk, nullptr);      // hand the token to the first Ready thread
     for (;;) {
         bool any_alive = false;
         for (auto* t : g_threads)

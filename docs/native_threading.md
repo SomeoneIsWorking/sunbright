@@ -216,20 +216,52 @@ through the hooks, survives a yield to another thread.
      thread + body is spawned in 4b (a spawned thread can only actually run once thread 0 yields at
      a native block point, so spawning is landed with resume+blocking where it's end-to-end
      testable — avoids committing an unexercised thread body).
-   - 4b **`OSResumeThread`** (genuinely native — it reschedules via `SelectThread`, no super-call):
-     decrement the guest suspend count, and when runnable `nthr::make_ready` the mapped thread.
-     Best landed WITH step 5, since a resumed thread only actually runs once thread 0 yields at a
-     native block point. The body runs recomp from the entry PC on its own host stack; PPC register
-     file saved/restored per context via the step-1 hooks; keep `0x800000E4` + state/priority
-     coherent. A guest thread that runs on a non-EmuThread host thread needs `DeclareAsCPUThread`
-     while it holds the token.
-5. **Native `OSSleepThread`/`OSWakeupThread` → `OSSendMessage`/`OSReceiveMessage` → mutex/cond.**
-   Blocking = release token, condvar-wait, reacquire; PPC scheduler never run. **Verify the
-   audio-init stall clears** (no step-budget abort, no `JUTException`, audio assets load at
-   pure-Dolphin speed).
-6. **Subsystem wakes + preemption-if-needed.** SDL/present thread signals vblank waiters via the
-   native condvar; audio-out thread signals audio waiters. Add a preemption nudge only if a
-   busy-wait guest thread is found not to yield.
+   - 4b 🔄 **`OSResumeThread` + spawn + run + sleep/wakeup** (core working 2026-06-03; integration
+     unfinished — see "Current frontier"). Implemented & verified to run: native `OSResumeThread`
+     (decrement suspend; `nthr::make_ready` when runnable), `OSCreateThread` spawns the host thread
+     SUSPENDED, the body runs recomp (or the budget-less interpreter loop for a JIT-only entry) on
+     its own host stack, native `OSSleepThread`/`OSWakeupThread` park/wake via `nthr` on the guest
+     wait-queues. Verified headless: all 5 boot threads spawn, start with the correct context, and
+     park/switch cooperatively (workers sleep on their work queues; the audio thread runs).
+     **Two bugs found & fixed along the way:**
+     - The thread body MUST load its full initial register file from the guest `OSContext`
+       (`OSThread+0`), not just sp/param/pc — otherwise `r2`/`r13` (the small-data bases) are zero
+       and every SDA access is a wild `0xFFFFxxxx` pointer (the `strcpy` wild-write crash).
+     - A JIT-only thread entry can't run under a *budgeted* `run_jit_sync` (the budget is for short
+       synchronous callees); it runs under a **budget-less** `interp_run_until` and blocks by native
+       parking, not by returning. (`interp_run_until` is the extracted shared interpreter loop.)
+     - `DeclareAsCPUThread`/`Undeclare` bracket the body and every native block, so exactly one host
+       thread is Dolphin's CPU thread at a time; `0x800000E4` is kept coherent via the restore hook
+       + `nthrt_bind_current` (thread 0's real OSThread* isn't known until after adoption).
+5. ✅ **`OSSleepThread`/`OSWakeupThread` are native (step 4b above);** `OSSendMessage`/
+   `OSReceiveMessage`/mutex/cond stay recomp/interpreted and reach them through the interception
+   seam (verified from the disasm: the message/cond primitives don't inline queueing — they *call*
+   OSSleepThread/OSWakeupThread). So nativizing just sleep/wakeup covers the whole sync layer.
+6. **Native idle/hardware driver (the current blocker — next step).** Replace the
+   `ready_count()==0` fallback (see below) so a wakeup always flows through `nthr`.
+
+## Current frontier (2026-06-03) — the idle/hardware driver
+The native-threading core works, but the **`ready_count()==0` fallback does NOT compose with native
+`OSWakeupThread`** and is the blocker. When a thread calls `OSSleepThread` and no other `nthr`
+thread is Ready (early single-threaded boot, or all-threads-blocked), `os_sleep_thread` currently
+super-calls the recomp `OSSleepThread`, whose `SelectThread` runs the GC idle thread under the
+interpreter to await the waking IRQ. But the waking IRQ's handler calls native `OSWakeupThread` →
+`nthr::make_ready`, which the **GC idle loop's run-queue never sees** → the wakeup is lost. Observed:
+the audio thread (JIT-only `802a7878`) busy-waits in `DVDChangeDir` (`8034be30`) / re-enters
+`OSSleepThread` forever, because the DVD-completion wakeup is routed through `nthr` but awaited by
+the GC idle loop.
+
+**Fix (next):** a real idle driver in the `nthr` idle handler (already wired via `set_idle_handler`,
+currently a fail-fast). When no `nthr` thread is Ready, advance CoreTiming + deliver pending
+interrupts so the IRQ handler's native `OSWakeupThread` makes an `nthr` thread Ready, then re-pick —
+no GC idle loop, no fallback. Open design points: what PC to run for delivery (idle-thread context
+vs `CoreTiming::Idle()` + `CheckExternalExceptions()` + run the ISR), and a budget to distinguish a
+genuine deadlock. Removing the fallback is required by [[done-right-over-working]] — it is a
+known-broken stopgap, not a kept dual path.
+
+### Older notes
+SDL/present thread signals vblank waiters via the native condvar; audio-out thread signals audio
+waiters. A preemption nudge may be needed if a busy-wait guest thread is found not to yield.
 
 ## Verification
 Headless turbo (`SUNBRIGHT_HEADLESS=1 SUNBRIGHT_TURBO=1`, `SUNBRIGHT_RUN_SECONDS=N`,
