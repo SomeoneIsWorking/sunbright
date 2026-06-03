@@ -31,21 +31,13 @@ static bool widescreen_on() {
     return on;
 }
 
-// Set while inside TSMSFader::draw (the screen fader). The fade must cover the FULL screen, but the
-// 2D squeeze would shrink it to the centre 75%. We use this to identify whether the fader sets its
-// own projection (so we can exempt it) vs. draws into the parent 2D ortho.
-static bool g_in_fade = false;
-
 static void ov_gx_projection(CPUState& cpu) {
     const u32 mtx = cpu.gpr[3];
     const u32 type = cpu.gpr[4];
     static const bool log = getenv("SUNBRIGHT_RENDERPORT_LOG") != nullptr;
-    if (log) {
-        if (g_in_fade) std::fprintf(stderr, "[renderport] GXSetProjection DURING FADE type=%u m00=%.4f\n", type, mem_rf32(mtx));
-        static unsigned long n = 0;
+    if (log) { static unsigned long n = 0;
         if ((n++ % 120) == 0) std::fprintf(stderr, "[renderport] GXSetProjection#%lu type=%u m00=%.4f\n",
-                                            n, type, mem_rf32(mtx));
-    }
+                                            n, type, mem_rf32(mtx)); }
 
     // 0.75 = (4/3)/(16/9). We horizontally squeeze BOTH projection types by this factor so the EFB
     // is rendered anamorphically and Dolphin presents it at 16:9:
@@ -60,12 +52,8 @@ static void ov_gx_projection(CPUState& cpu) {
     // the first 3D frame (title onward), 2D shares a 16:9 EFB and must be pre-squeezed.
     static bool seen_3d = false;
     if (!is2d) seen_3d = true;
-    // Fade exemption: a screen fade/wipe is a solid-colour fill that must cover the WHOLE 16:9
-    // screen, so do NOT squeeze its 2D ortho — let its quad span the full EFB (→ full screen after
-    // the 16:9 present). Stretching a solid colour is invisible. Perspective stays widened.
-    const bool fade_exempt = g_in_fade && is2d;
     bool patched = false; f32 m00 = 0.0f, m03 = 0.0f;
-    if (widescreen_on() && (!is2d || seen_3d) && !fade_exempt && mtx >= 0x80000000u && mtx < 0x81800000u) {
+    if (widescreen_on() && (!is2d || seen_3d) && mtx >= 0x80000000u && mtx < 0x81800000u) {
         m00 = mem_rf32(mtx + 0x00);
         mem_wf32(mtx + 0x00, m00 * scale);
         if (is2d) { m03 = mem_rf32(mtx + 0x0c); mem_wf32(mtx + 0x0c, m03 * scale); }
@@ -109,24 +97,8 @@ static const bool s_renderport_registered = [] {
     return true;
 }();
 
-// ── Screen fader (TSMSFader::draw @ 0x8013fc88) ─────────────────────────────────────────────
-// The fade/wipe must cover the WHOLE screen; the 2D squeeze otherwise leaves the side 12.5%
-// uncovered. Wrap the draw to flag the fade window (the projection hook logs what it does so we
-// can pick the fix: exempt its projection, or expand its rect).
-static constexpr u32 TSMSFADER_DRAW = 0x8013fc88u;
-static void ov_fader_draw(CPUState& cpu) {
-    static const bool log = getenv("SUNBRIGHT_RENDERPORT_LOG") != nullptr;
-    if (log) { static unsigned long n = 0;
-        if ((n++ % 60) == 0) std::fprintf(stderr, "[renderport] TSMSFader::draw#%lu this=%08x rect=%08x\n",
-                                          n, cpu.gpr[3], cpu.gpr[4]); }
-    g_in_fade = true;
-    if (RecompFunc orig = recomp_raw(TSMSFADER_DRAW)) orig(cpu);
-    else call_ppc(cpu, cpu.lr);
-    g_in_fade = false;
-}
-static const bool s_fader_registered = [] {
-    // Always on (when widescreen): the fade must cover the full screen — this is a functional
-    // widescreen fix, not just diagnostics.
-    register_override(TSMSFADER_DRAW, &ov_fader_draw);
-    return true;
-}();
+// NOTE: TSMSFader::draw (0x8013fc88) is NOT the fade quad — it wraps the whole 2D draw pass
+// (its scope contains all the screen's projections). Flagging it and exempting "during fade"
+// un-squeezed every 2D element (stretched the file-select menu), so that approach is abandoned.
+// The fade-covers-full-screen fix needs a NARROWER hook on the actual solid-fill draw
+// (drawFadeinout 0x8013fa54 → the GX quad), or expanding the fill rect. TODO, see docs.
