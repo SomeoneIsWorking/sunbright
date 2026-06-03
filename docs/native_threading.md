@@ -320,6 +320,30 @@ audio `8040e870` wait's waker is the DSP/AI ISR (set a watch on `OSWakeupThread`
 (3) get the idle driver to deliver that specific DSP/AI IRQ. This likely needs the **full IdleThread
 context** (not a bare spin) and possibly servicing the AI/DSP the way the GC idle path does.
 
+### Attempt 3 — ROOT CAUSE: threads created before interception (2026-06-03)
+`SUNBRIGHT_OSWATCH` trace of early boot pins the real problem:
+- The **main boot thread is `80402aa8`** (= `nthr` thread 0 / the adopted EmuThread — it owns almost
+  every early OS call: the malloc-lock `OSLockMutex`/`Unlock` on `80427838`, etc.).
+- **`8042ba20` is a *different* guest thread** (sleeps on message queue `803e0220` via
+  `OSReceiveMessage`, `lr=803462b0`) — and it was **never seen by our `OSCreateThread` intercept**.
+  So it (and `80402aa8`) were created during **early `OSInit`, before any recomp ran**, i.e. before
+  `native_os` interception is active (the intercept only fires inside `call_ppc`/`interp_run_until`).
+
+**Root cause.** `nthr` adopts "thread 0 = the EmuThread" as *one* thread, but the EmuThread is really
+the **GC scheduler multiplexing several pre-existing guest threads** (`80402aa8`, `8042ba20`, …)
+created before interception. So `nthr` can't see those context switches; when `8042ba20` sleeps and
+the GC scheduler switches to `80402aa8`, `nthr` still thinks its single thread 0 is running. The
+native primitives + fallback therefore operate on a thread set that doesn't match reality — hence the
+"two schedulers" tangle and the audio thread's `8040e870` wait never being driven.
+
+**What this means for the design.** Adopting only the EmuThread is insufficient. To finish, native
+threading must **enumerate and adopt the GC OS's already-existing threads at takeover** (walk the
+active-thread list at `0x800000DC` / the run queue `0x803EB198`, create an `nthr` GuestThread for
+each, map current `0x800000E4`), and intercept `OSCreateThread` for all *future* ones — i.e. take over
+the scheduler at a single well-defined point with the full thread set, rather than incrementally
+from the EmuThread. Until that redesign, the committed WIP (native primitives + GC-scheduler fallback)
+is the best working state; the fallback can't be removed without the full adoption.
+
 ### Older notes
 SDL/present thread signals vblank waiters via the native condvar; audio-out thread signals audio
 waiters. A preemption nudge may be needed if a busy-wait guest thread is found not to yield.
