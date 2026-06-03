@@ -169,6 +169,51 @@ logic + self-tests carry over unchanged; only the park/resume layer swaps condva
 stay within a fiber's own stack), or route the tail handoff through the fiber switch instead.
 This is the next decision to settle before wiring native threading into the game.
 
+## Control-flow finding (2026-06-03): we do NOT own the EmuThread loop — fibers run *under* our hooks
+Investigated the actual execution entry while planning step 2. `main_sdl.cpp` calls
+`BootManager::BootCore`, which **spins up Dolphin's EmuThread internally** (Dolphin owns that
+thread and runs `CPUManager`'s CPU loop on it). Our *only* seam into guest execution is the
+`--wrap` on `JitTrampoline` → `SunbrightBridge::Run(pc)`, plus `run_jit_sync` (interpreter) and
+`call_ppc`/`tail_ppc` — **all called nested inside Dolphin's CPU loop**, on the EmuThread. The
+SDL/main thread only pumps events + presents; it does not drive guest code.
+
+⇒ This forces the shape of the fiber integration (resolves the "next decision to settle" above):
+- **nthr cannot sit *above* execution as the top-level driver.** Dolphin's CPU loop is the
+  driver and we can't cleanly wrap it in a fiber (we don't own the EmuThread's entry function).
+  Fibers are therefore **driven from *within* our hooks**: a guest thread's fiber body runs the
+  recomp tree / `run_jit_sync` itself (both are self-contained on the EmuThread — recomp is
+  plain C calls; `run_jit_sync` single-steps the interpreter), and yields at OS block points.
+- **Fiber 0 is not "adopted" up front — it is the EmuThread's own continuation, captured lazily
+  at the first block.** When guest code first hits a blocking OS primitive (our override),
+  `nthr::block` does `swapcontext(&fiber0.ctx, &g_sched_ctx)`, freezing Dolphin's CPU-loop
+  frames (below the block point) on fiber 0's stack and entering the scheduler. When fiber 0 is
+  rescheduled it resumes right after `block()` and unwinds back out into Dolphin's loop normally.
+  The scheduler context (`g_sched_ctx`) and spawned fibers' stacks all live on the EmuThread.
+- **`IsCPUThread`/`s_core_mutex` is a non-issue** (the payoff of the fiber choice): every fiber
+  runs on the EmuThread, which already holds the CPU-thread identity. No `DeclareAsCPUThread`,
+  no cross-thread core mutex. (Target-architecture items #1–#2's "token + DeclareAsCPUThread" are
+  the *host-thread* model and no longer apply; keep the **token** concept only as the trivial
+  "one fiber runs at a time," which cooperative single-threaded fibers give for free.)
+- **The one real per-fiber state beyond the C stack is the global Dolphin PPC register file.**
+  `run_jit_sync` works directly on the single global `ppc` state; recomp syncs it in/out at
+  `Run` boundaries and otherwise uses a stack-local `CPUState`. So a fiber that blocks *inside*
+  `run_jit_sync` (the audio case — audio init runs under the interpreter) has live state in the
+  global `ppc`. Switching to another fiber that also touches `ppc` would clobber it ⇒ **the PPC
+  register file must be saved/restored per fiber at the block/resume switch** (via the step-1
+  `set_switch_hooks`, alongside `g_tail_jmp`). This is the OSContext save/load the GC scheduler
+  did, done natively. Not needed until a 2nd fiber actually runs (steps 4–5); wire it with step 4.
+
+### Revised step 2 (given the above)
+"Adopt boot context as fiber 0" is *not* a standalone observable change (with one fiber nothing
+switches), so don't chase a contrived boot-time hook. The verifiable unit is: **prove a real
+recomp function body executes correctly when run inside an nthr fiber** (own stack, entered via
+the scheduler, `swapcontext` in/out) — the core mechanic everything else rests on. Do it as a
+self-test using a real, pure (no MMIO) recomp function: run it directly vs. inside a spawned
+fiber from identical `CPUState`, assert identical results. Low risk (fibers stay on the
+EmuThread; recomp is just C on a different stack), zero boot impact. The lazy fiber-0 capture +
+per-fiber PPC save/restore then land with step 4 (native `OSCreateThread`/`OSResumeThread`),
+where a 2nd fiber first exists and the switch is actually exercised against the audio stall.
+
 ## Target architecture
 1. **Per-thread CPU context.** `CPUState` + `g_tail_jmp` become per host thread (the latter
    already thread-local). Each guest thread runs its recomp tree on its own native stack.
@@ -273,9 +318,12 @@ the next chunk; do it in this order, verifying each against a headless run befor
    observes its own marker on resume (FAIL without the hooks). Game path doesn't touch `nthr`
    yet → boot/render unchanged (intro renders; only the known `run_jit_sync(80343fe4)`
    audio-init stall remains — the thing steps 4–5 fix).
-2. **Adopt the boot context as fiber 0.** The EmuThread's recomp execution becomes nthr fiber
-   0 holding the "CPU". Restructure so `run_and_wait` (or an equivalent) drives execution.
-   This is the invasive step — verify boot/render unchanged before adding a 2nd fiber.
+2. **Prove recomp-on-a-fiber (the core mechanic).** Per the control-flow finding above, "adopt
+   fiber 0" is not standalone-observable (one fiber never switches), and nthr runs *under* our
+   hooks, not above. So the verifiable unit is: run a real, pure (no-MMIO) recomp function body
+   directly vs. inside a spawned nthr fiber from identical `CPUState`, assert identical results
+   (a self-test). Fiber 0 is the EmuThread's lazily-captured continuation; per-fiber PPC-state
+   save/restore lands with step 4 where a 2nd fiber first runs. Verify boot/render unchanged.
 3. **Scoped interception.** `run_jit_sync` (and `call_ppc`) consult a *dedicated native-OS set*
    (NOT the general override table — keep the interrupt overrides recomp-path-only) so the
    native primitives fire under the interpreter too. Verify with `SUNBRIGHT_OSWATCH`.
