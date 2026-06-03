@@ -32,9 +32,9 @@ static bool spr_is_modeled(u16 spr) {
 static bool function_needs_jit(const std::vector<PPCInstr>& instrs) {
     for (const auto& i : instrs) {
         switch (i.op) {
-        // MTMSR (→ msr_set_raw) is modeled in the recomp. RFI (exception/context return) is still
-        // JIT for now — recompiling it regressed early-boot exception handling; revisit.
-        case PPCOp::RFI:
+        // MTMSR (→ msr_set_raw) and RFI (→ restore SRR1→MSR + branch SRR0) are modeled in the recomp,
+        // so the OS interrupt/scheduler/context-switch primitives are recompiled (PC port owns them).
+        // Only genuine HW side effects below stay JIT.
         case PPCOp::MTSR:  case PPCOp::MTSRIN:
         case PPCOp::TLBIE: case PPCOp::TLBSYNC:
         case PPCOp::ECIWX: case PPCOp::ECOWX:
