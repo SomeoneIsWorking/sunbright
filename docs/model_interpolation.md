@@ -50,9 +50,18 @@ keyed by a stable per-model ID.
 >   → a PNG. The log uses the pane's GLOBAL (absolute screen) rect at +0x24/0x28/0x2c/0x30, so
 >   nested panes crop correctly too (verified: 'shn0' → shine icon, 'yaji' → OPTIONS arrow). Use
 >   this to classify elements for the per-element widescreen fixes (full-screen fill vs edge-anchor).
-> - **In-game HUD `TGCConsole2`** — coins/timer/balloons/telop (0x8014xxxx cluster). Drawn in the
->   2D ortho; the squeeze centres it in the 4:3 safe area. NEXT: decide per-element anchoring
->   (corner-anchored gauges should move to the 16:9 edges, not stay 4:3-centred).
+> - **In-game HUD `TGCConsole2` — NOT J2D (the menus are; the HUD isn't).** Verified: with a save
+>   state the game reaches Delfino (dolpic5), but no J2DScreen/J2DPicture/J2DTextBox draw hook fires
+>   for the HUD — it draws via its `perform`, an *unnamed virtual* (hence hidden in the symbol list).
+>   **Found by vtable RE: `perform` is vtable slot 8 for every `JDrama::TViewObj` subclass** (use a
+>   class whose perform IS named, e.g. `TPauseMenu2::perform` 0x80155788 = its vtable[8], to fix the
+>   slot; then read the target class's vtable[8]). TGCConsole2's vtable is at 0x803c0304, so
+>   **`TGCConsole2::perform` = 0x8014083c** (confirmed: `rlwinm.` on r4=flags for the draw pass, then
+>   reads `this` enable bytes + draws). Vtable address comes from the class's ctor/dtor lis/addi; read
+>   `.data` from `scratch/bin/sms.dol` (the `--disasm` tool only reads code). NEXT: hook
+>   TGCConsole2::perform, find the HUD's 2D ortho, and EDGE-ANCHOR the corner gauges to the 16:9 edges
+>   (a uniform squeeze would wrongly centre them). The FLUDD water gauge is likely a separate TViewObj
+>   — find its perform via vtable[8] the same way.
 > The right model is per-element: overlays/logo → centre (squeeze ok); fades/backdrops → fill;
 > HUD → edge-anchor. Hook the J2D/element draws, classify by object, apply per class.
 > 2. **Interpolation** — capture each object's transform, slerp prev→cur, re-present
