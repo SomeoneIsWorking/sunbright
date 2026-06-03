@@ -864,12 +864,21 @@ int main(int argc, char* argv[]) {
             static bool loaded = false;
             static const uint64_t need = getenv("SUNBRIGHT_STATE_FIELDS")
                 ? (uint64_t)atoll(getenv("SUNBRIGHT_STATE_FIELDS")) : 1500;
+            static uint32_t loaded_tick = 0;
             if (state_load && !loaded && guest_mem_ready()
                 && g_present_fields.load(std::memory_order_relaxed) >= need) {
                 loaded = true;
+                loaded_tick = SDL_GetTicks();
                 State::LoadAs(Core::System::GetInstance(), state_load);
                 fprintf(stderr, "[state] loaded %s after %llu fields — in the saved game directly\n",
                         state_load, (unsigned long long)g_present_fields.load());
+            }
+            // SUNBRIGHT_STATE_THEN_A: after loading a file-select state, pulse A to start the game
+            // (the saved moment is one A-press before gameplay), then hands off so gameplay runs free.
+            if (loaded && loaded_tick && getenv("SUNBRIGHT_STATE_THEN_A")) {
+                const uint32_t dt = SDL_GetTicks() - loaded_tick;
+                if (dt > 800 && dt < 7000)        g_pad.store((dt % 1000) < 200 ? P_A : 0, std::memory_order_relaxed);
+                else if (dt >= 7000)              g_pad.store(0, std::memory_order_relaxed);
             }
             static const uint32_t save_at = getenv("SUNBRIGHT_SAVE_AT") ? (uint32_t)(atof(getenv("SUNBRIGHT_SAVE_AT")) * 1000) : 0;
             static bool saved = false;

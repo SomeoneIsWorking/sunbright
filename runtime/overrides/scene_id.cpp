@@ -30,9 +30,11 @@ namespace {
 
 // The screen draws its child panes through their per-pane drawSelf(x, y, Mtx) — that's where each
 // individual element (image / text) actually renders, so hook those, not the standalone draw().
-constexpr u32 J2DSCREEN_DRAW      = 0x802cfda8u;   // J2DScreen::draw(int x, int y, const J2DGrafContext*) — top level
-constexpr u32 J2DPICTURE_DRAWSELF = 0x802cc7c0u;   // J2DPicture::drawSelf(int x, int y, Mtx) — image element
-constexpr u32 J2DTEXTBOX_DRAWSELF = 0x802d0dd8u;   // J2DTextBox::drawSelf(int x, int y, Mtx) — text element
+constexpr u32 J2DSCREEN_DRAW       = 0x802cfda8u;   // J2DScreen::draw(int x, int y, const J2DGrafContext*) — top level
+constexpr u32 J2DPICTURE_DRAWSELF  = 0x802cc7c0u;   // J2DPicture::drawSelf(int x, int y, Mtx) — image (menus)
+constexpr u32 J2DTEXTBOX_DRAWSELF  = 0x802d0dd8u;   // J2DTextBox::drawSelf(int x, int y, Mtx) — text (menus)
+constexpr u32 J2DPICTURE_DRAWSELF2 = 0x802cc758u;   // J2DPicture::drawSelf(int x, int y) — image (HUD?)
+constexpr u32 J2DTEXTBOX_DRAWSELF2 = 0x802d0d70u;   // J2DTextBox::drawSelf(int x, int y) — text (HUD?)
 
 bool g_on = false;
 FILE* g_log = nullptr;
@@ -126,6 +128,14 @@ void ov_textbox(CPUState& cpu) {
     log_elem("TextBox", cpu.gpr[3]);
     if (RecompFunc o = recomp_raw(J2DTEXTBOX_DRAWSELF)) o(cpu); else call_ppc(cpu, cpu.lr);
 }
+void ov_picture2(CPUState& cpu) {
+    log_elem("PictureB", cpu.gpr[3]);
+    if (RecompFunc o = recomp_raw(J2DPICTURE_DRAWSELF2)) o(cpu); else call_ppc(cpu, cpu.lr);
+}
+void ov_textbox2(CPUState& cpu) {
+    log_elem("TextBoxB", cpu.gpr[3]);
+    if (RecompFunc o = recomp_raw(J2DTEXTBOX_DRAWSELF2)) o(cpu); else call_ppc(cpu, cpu.lr);
+}
 
 }  // namespace
 
@@ -135,9 +145,11 @@ static const bool s_2did_registered = [] {
     (void)mkdir("scratch", 0755);
     (void)mkdir("scratch/2d_elements", 0755);
     g_log = std::fopen("scratch/2d_elements/elements.log", "w");
-    register_override(J2DSCREEN_DRAW,      &ov_screen);
-    register_override(J2DPICTURE_DRAWSELF, &ov_picture);
-    register_override(J2DTEXTBOX_DRAWSELF, &ov_textbox);
+    register_override(J2DSCREEN_DRAW,       &ov_screen);
+    register_override(J2DPICTURE_DRAWSELF,  &ov_picture);
+    register_override(J2DTEXTBOX_DRAWSELF,  &ov_textbox);
+    register_override(J2DPICTURE_DRAWSELF2, &ov_picture2);
+    register_override(J2DTEXTBOX_DRAWSELF2, &ov_textbox2);
     // (the per-field frame counter is subscribed lazily in ensure_frame_hook() — see above)
     std::fprintf(stderr, "[2did] 2D-element identification ON → scratch/2d_elements/elements.log\n");
     return true;
