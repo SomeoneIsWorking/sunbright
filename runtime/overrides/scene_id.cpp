@@ -57,10 +57,43 @@ void ensure_frame_hook() {
 // element IDs changes (the same screen redraws the same panes every frame), so the log is a compact
 // list of "this screen contains these elements" rather than thousands of identical lines.
 std::string g_frame_set, g_last_set;
+// One-time per-ID struct dump (SUNBRIGHT_2DID_STRUCT) to find the bounds offset + name tag.
+std::string g_seen_struct;
+void dump_struct_once(const char* type, u32 id) {
+    if (!g_log || !getenv("SUNBRIGHT_2DID_STRUCT")) return;
+    if (id < 0x80000000u || id >= 0x81800000u) return;
+    char key[12]; std::snprintf(key, sizeof key, "%08x", id);
+    if (g_seen_struct.find(key) != std::string::npos) return;
+    g_seen_struct += key;
+    std::fprintf(g_log, "STRUCT %-8s id=%08x  hex:", type, id);
+    for (u32 o = 0; o <= 0x60; o += 4) std::fprintf(g_log, " %08x", mem_r32(id + o));
+    std::fprintf(g_log, "\n              flt:");
+    for (u32 o = 0; o <= 0x60; o += 4) std::fprintf(g_log, " %.1f", mem_rf32(id + o));
+    std::fprintf(g_log, "\n");
+    std::fflush(g_log);
+}
+
+// J2DPane layout (decoded): +0x08 type fourCC, +0x10 NAME fourCC (the layout tag — "titl","s_01"…),
+// +0x14/+0x18/+0x1c/+0x20 bounds x0/y0/x1/y1 (s32, 640×480 space). Name + rect make a pane usable.
+void pane_name(u32 id, char out[5]) {
+    u32 t = mem_r32(id + 0x10);
+    for (int i = 0; i < 4; i++) { u8 c = (t >> (24 - i * 8)) & 0xff; out[i] = (c >= 0x20 && c < 0x7f) ? (char)c : '.'; }
+    out[4] = 0;
+}
+
 void log_elem(const char* type, u32 id) {
     ensure_frame_hook();
-    char e[40];
-    std::snprintf(e, sizeof e, "  %-8s id=%08x\n", type, id);
+    dump_struct_once(type, id);
+    char e[80];
+    if (id >= 0x80000000u && id < 0x81800000u) {
+        char nm[5]; pane_name(id, nm);
+        const s32 x0 = (s32)mem_r32(id + 0x14), y0 = (s32)mem_r32(id + 0x18),
+                  x1 = (s32)mem_r32(id + 0x1c), y1 = (s32)mem_r32(id + 0x20);
+        std::snprintf(e, sizeof e, "  %-8s '%s' id=%08x rect=(%d,%d %dx%d)\n",
+                      type, nm, id, x0, y0, x1 - x0, y1 - y0);
+    } else {
+        std::snprintf(e, sizeof e, "  %-8s id=%08x\n", type, id);
+    }
     g_frame_set += e;
 }
 void flush_frame_set() {
