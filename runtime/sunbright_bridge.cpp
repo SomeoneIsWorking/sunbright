@@ -2,6 +2,7 @@
 #include "cpu_state.h"
 #include "dolphin_hook.h"
 #include "overrides.h"
+#include "native_os.h"
 #include "memory_bridge.h"
 #include <cstdio>
 #include <cstdlib>
@@ -296,6 +297,18 @@ bool Run(uint32_t pc) {
     // First guest entry on the EmuThread: adopt it as nthr guest thread 0 (holds the CPU
     // token). Idempotent (std::call_once) and inert with only thread 0 active.
     sunbright_adopt_cpu_thread();
+#endif
+    // Native-OS / PC-native subsystem override takes precedence even at a top-level JIT entry, so
+    // the seam is universal (call_ppc + run_jit_sync interpreter + here). Runs and returns to lr.
+#ifdef HAVE_DOLPHIN_CORE
+    if (NativeOSFn nf = native_os_lookup(pc)) {
+        CPUState cpu; dolphin_state_to_cpu(Core::System::GetInstance().GetPPCState(), cpu); cpu.pc = pc;
+        nf(cpu);
+        auto& ppc = Core::System::GetInstance().GetPPCState();
+        cpu_to_dolphin_state(cpu, ppc);
+        ppc.pc = ppc.npc = cpu.lr;
+        return true;
+    }
 #endif
     // Hand-written native override takes precedence over the generated function.
     RecompFunc fn = override_lookup(pc);

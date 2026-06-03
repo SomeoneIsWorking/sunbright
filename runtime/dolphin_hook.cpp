@@ -117,6 +117,23 @@ static void os_sync_watch(u32 pc, u32 r3, u32 r4, u32 lr) {
 
 #ifdef HAVE_DOLPHIN_CORE
 bool interp_run_until(u32 ret, long budget);   // defined below; used by call_ppc
+
+// ── Tail-branch handoff ──────────────────────────────────────────────────────
+// Set by SunbrightBridge::Run for the duration of a top-level recomp entry so a tail-branch (or a
+// context switch, see call_ppc) into non-recomp code can siglongjmp back out, abandoning the
+// recomp C-call stack and letting Dolphin's CPU loop take over.
+static thread_local sigjmp_buf* g_tail_jmp = nullptr;
+sigjmp_buf* sunbright_set_tail_jmp(sigjmp_buf* j) {
+    sigjmp_buf* prev = g_tail_jmp; g_tail_jmp = j; return prev;
+}
+
+// GC OS context-switch primitive OSLoadContext (0x80343fe4, JIT-only): it rfi's into another
+// thread's context and never returns to its caller. Running it synchronously under the interpreter
+// (run_jit_sync) tries to run the whole switched-to thread inline → it reschedules to the OS idle
+// loop and spins. Instead, hand off to Dolphin's CPU loop (which already runs the GC threading
+// correctly — the hybrid design): commit state and longjmp out, exactly like a tail branch. The
+// recomp re-enters via the JIT trampoline when a recompiled function next runs.
+static constexpr u32 OS_LOAD_CONTEXT = 0x80343fe4u;
 #endif
 
 void call_ppc(CPUState& cpu, u32 address) {
@@ -160,6 +177,8 @@ void call_ppc(CPUState& cpu, u32 address) {
     const u32 ret = cpu.lr;
     cpu_to_dolphin_state(cpu, ppc);
     ppc.pc = ppc.npc = address;
+    // A context switch never returns to us — hand off to Dolphin's CPU loop instead of spinning.
+    if (address == OS_LOAD_CONTEXT && g_tail_jmp) siglongjmp(*g_tail_jmp, 1);
     constexpr long MAX = 500'000'000;
     if (!interp_run_until(ret, MAX)) {
         // The interpreter never returned to the caller's LR within the budget — the
@@ -228,15 +247,6 @@ bool interp_run_until(u32 ret, long budget) {
     return true;
 }
 #endif
-
-// ── Tail-branch handoff ──────────────────────────────────────────────────────
-// Set by SunbrightBridge::Run for the duration of a top-level recomp entry so a
-// tail-branch into non-recomp code can siglongjmp back out, abandoning the recomp
-// C-call stack (which is exactly what the PPC tail branch does to its own stack).
-static thread_local sigjmp_buf* g_tail_jmp = nullptr;
-sigjmp_buf* sunbright_set_tail_jmp(sigjmp_buf* j) {
-    sigjmp_buf* prev = g_tail_jmp; g_tail_jmp = j; return prev;
-}
 
 void tail_ppc(CPUState& cpu, u32 address) {
     RecompFunc fn = recomp_lookup(address);
