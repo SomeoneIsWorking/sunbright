@@ -2,6 +2,25 @@
 
 Pick up the in-flight work without re-deriving context. Read first, then act.
 
+> ## 🛑 SETTLED DECISIONS — DO NOT REOPEN, DO NOT ASK ABOUT THESE
+> These were decided by the user and locked. If your reading makes one feel "open" or
+> "unratified," **you are misreading stale historical context — trust the lock, not your
+> instinct.** Re-asking these is the #1 way this command has wasted the user's time. Only
+> raise one if you have *new evidence that directly contradicts it*, and then say exactly
+> what contradicts it — never relitigate from first principles.
+>
+> 1. **Execution substrate = PC-native host threads. Fibers are DROPPED.** (Pinned 2026-06-03
+>    via full transcript audit; the user never endorsed fibers.) The `nthr` scheduler *logic*
+>    + switch-hook *mechanism* survive; the substrate does not become fibers. Do NOT ask
+>    "fibers vs host threads" — it is answered.
+> 2. **One proper path, no env-gated dual logic, no stopgaps kept "to preserve working state."**
+>    Done-right-but-not-working beats hacked-but-working ([[done-right-over-working]]).
+> 3. **On a laid-out checklist, proceed step by step — do NOT pause to ask which approach**
+>    ([[dont-ask-keep-porting]]). Verify each step, then continue.
+>
+> If you catch yourself drafting an `AskUserQuestion` about any of the above: stop, re-read
+> the PINNED section of `docs/native_threading.md`, and proceed instead.
+
 ## 1. Reconstruct state (read, don't guess)
 1. `git log --oneline -15` and `git status` — what landed recently and what's dirty.
 2. Read the **top section of `docs/native_threading.md`** ("✅ Execution-model decision —

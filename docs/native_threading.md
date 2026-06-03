@@ -1,404 +1,177 @@
 # Native OS threading (PC-port model)
 
-## ✅ Execution-model decision — PINNED (2026-06-03, user-confirmed via transcript audit)
-**DECIDED: PC-native host-thread execution. Fibers are dropped.** This was confirmed by
-auditing every prior Claude Code transcript at the user's explicit instruction ("check all the
-previous Claude Code transcripts then pin the model"). Do NOT reopen this. The audit found the
-user **never once endorsed fibers** — the only user mention of the word is *"Weren't we going
-to drop fiber in favor of PC native execution?"* Fibers were Claude's instinct, mis-recorded as
-"decided." The user's repeated, unambiguous direction across sessions:
+## Decision — host-thread substrate (settled 2026-06-03)
+**Guest OS threads become native host threads. We do NOT run the game's PPC scheduler, and we
+do NOT use fibers.** The GC OS HLE (thread lifecycle + sync primitives) is reimplemented in
+native C++ so guest threads never enter Dolphin's interpreter.
 
-> "We are ultimately trying to make a **PC port** so we shouldn't be limited by Dolphin or the
-> game's own code. This won't be just Dolphin with rom hacks — this will be a PC port."
-> "Analyze what the game does under Dolphin and **replicate it on PC side with PC-native
-> architecture.**" "Create a **PC-native approach that doesn't depend on timing and spins** —
-> do it like a PC game would." "Find what is blocking what and maybe **make non-blocking
-> versions** of them." "One logic path which is the proper one" (no env-gating). "Done right +
-> not working can be fixed; fucked up + working is a dead end."
+Why host threads and not fibers (a fiber = a cooperative coroutine with its own stack, switched
+by hand on one OS thread; both fibers and host threads give the "own stack you can park/resume"
+that fixes the stall, so the *scheduler logic is identical either way*):
+- The real Dolphin coupling is **guest code running under Dolphin's interpreter at all**, not
+  the substrate. Removing that interpreter dependency (native scheduler + MSR/critical-section
+  primitives) is the north-star work and is needed regardless of substrate — and once it's done,
+  Dolphin's "one CPU thread" wall disappears and host threads are friction-free.
+- Subsystems (SDL/present, audio out) **must** be real host threads; they signal guest waiters
+  via a native mutex/condvar. Fibers would force a split model (guest=fibers + subsystems=threads,
+  bridged); host-threads-everywhere is one uniform model and matches the target shape below.
+- Avoids building a `swapcontext` layer we'd retire later.
 
-**Why fibers are out:** fibers-on-the-EmuThread exist *only* to satisfy a **Dolphin** constraint
-— `IsCPUThread`/`s_core_mutex` (see below) — by keeping all guest code inside Dolphin's CPU loop
-and interpreter. That is *being limited by Dolphin*, the exact opposite of the north star. The
-wall itself exists **only because guest code still runs through Dolphin's interpreter**
-(`run_jit_sync`) for the JIT-only functions (MSR/scheduler/HW-SPR).
+Fibers would have worked for the interim and are a cheap fallback if host threads hit a real
+Dolphin wall — the validated `nthr` scheduler *logic* + per-context switch-hook *mechanism* carry
+over either way (only park/resume differs: condvar vs `swapcontext`).
 
-**The pinned model:**
-- **PC-native execution.** The gating sub-goal is to **remove the Dolphin-interpreter dependency
-  for guest code** — natively implement the OS scheduler + MSR/critical-section primitives so
-  guest threads never enter Dolphin's interpreter. Once guest code never enters the interpreter,
-  real **host threads** have no `IsCPUThread`/`s_core_mutex` problem and Dolphin demotes to a
-  swappable GFX/DSP/Memory backend.
-- **Subsystem-thread shape (the user's older-console-port pattern).** The SDL/main thread is the
-  *primary* host thread (window, input, present, vblank timing); the **game runs as the second
-  host thread**. Guest blocking waits (vblank, audio/DSP, DVD) are satisfied by a **subsystem
-  host thread signalling a native mutex/condvar** — make **non-blocking** native versions of the
-  blocking OS primitives rather than running the PPC scheduler/idle loop. No dependence on
-  emulated CoreTiming/interrupt plumbing for wakes.
-- **One proper path.** No env-gated dual logic, no interim stopgap kept "to preserve a working
-  state." Correct-but-not-yet-working is acceptable and expected; hacked-but-working is not.
+## Target shape
+The machine is single-core; **we keep it single-core** (one guest context runs at a time, via a
+CPU token). "Native threads" = the older-console-port pattern, not parallel game logic:
+- **Process main thread = SDL/subsystem thread:** window, input, present, vblank timing.
+- **Game = a second host thread.** Its blocking waits (vblank, audio/DSP, DVD) are satisfied by a
+  subsystem host thread **signalling a native condvar** — i.e. native NON-blocking versions of the
+  blocking OS primitives. No dependence on Dolphin CoreTiming/interrupt timing for wakes.
 
-**What survives from the work so far:** the validated `nthr` scheduler *logic* (priority pick,
-Ready/Blocked, the SMS producer/consumer hand-off) and the per-fiber switch-hook *mechanism* —
-both are substrate-agnostic (the park/resume layer becomes host-thread condvar instead of
-`swapcontext`). The fail-fast at the `run_jit_sync` step-budget root cause stays. Sections below
-(esp. "Execution-context decision" and the fiber-specific "Control-flow finding") are **kept only
-as historical record** of the rejected fiber substrate — read them as "why not fibers," not as
-the plan. The **Target architecture** section (host threads + token + native primitives + native
-idle/driver) is the live plan.
+## The problem this fixes
+The GC OS multiplexes software threads onto one CPU via a PPC scheduler (`SelectThread` /
+`__OSReschedule` + OSContext save/load). Our recomp runs that scheduler under Dolphin's
+interpreter inside `run_jit_sync`, single-stepping until the call returns to LR. A blocking OS
+call reschedules to the OS **idle loop**, which never returns to LR → `run_jit_sync` spins to its
+500M-step budget. This is now a **fail-fast `abort()`** (exit 134, with a recomp backtrace) at the
+budget exhaustion in `runtime/dolphin_hook.cpp` — the root cause. Continuing with the
+half-executed state is what previously produced the downstream `FATAL wild guest write` /
+`JUTException::run`. (Both fail-fast traps `setrlimit(RLIMIT_CORE,0)` before aborting so
+systemd-coredump doesn't dump the multi-GB process — see [[abort-coredump-hang]].)
 
-## Why
-Sunbright is a **PC port**, not "Dolphin with ROM hacks." The GameCube OS multiplexes
-software threads onto one CPU via a PPC software scheduler (`SelectThread` /
-`__OSReschedule` + context save/load). Our recomp currently runs that scheduler under
-Dolphin's interpreter inside `run_jit_sync`, single-stepping **until the call returns to
-LR**. A blocking OS call (audio init waiting on the audio thread / a DVD read) reschedules
-to the OS **idle loop**, which never returns to LR — so `run_jit_sync` spins to its
-500M step budget. This is now a **fail-fast `abort()`** (with a recomp backtrace) at the
-budget exhaustion in `runtime/dolphin_hook.cpp`: it is the root cause, and continuing with
-the half-executed, inconsistent state is what previously produced the downstream
-`FATAL wild guest write` / `JUTException::run`. (Both fail-fast traps suppress the core dump
-via `setrlimit(RLIMIT_CORE,0)` before aborting — the default `core_pattern` pipes to
-systemd-coredump, which would dump the multi-GB process and wedge for minutes; the printed
-backtrace is the artifact we want. Exit 134.)
+**Repro:**
+`SUNBRIGHT_HEADLESS=1 SUNBRIGHT_TURBO=1 SUNBRIGHT_AUTOSTART=1 SUNBRIGHT_RUN_SECONDS=N ./build/sunbright`
+→ aborts at `run_jit_sync(80343fe4→803488c0)`. `SUNBRIGHT_DISABLE_RECOMP=1` (pure Dolphin)
+handles the same scene fine, so it's our execution-model mismatch, not the game.
 
-The fix is not to lean on Dolphin's emulated scheduler (a stopgap, `SUNBRIGHT_*_HANDOFF`),
-but to make threading **native**: each guest OS thread becomes a host thread, and the OS
-thread/sync primitives are HLE'd to native C++ (`std::thread`, `std::mutex`,
-`std::condition_variable`). The PPC scheduler is then **never executed** — no busy-spin,
-no step budget, no dependence on emulated timing. A blocked thread is simply a host thread
-parked on a condvar, so its continuation lives on its own native C stack (no
-"resume-mid-function" problem).
+**The stall, concretely (via `SUNBRIGHT_OSWATCH`):** a producer thread (`80402aa8`) floods a
+message queue at `0x803fd858` (lock → `OSSendMessage`+wake → unlock, ~5500×) while the receiver
+(`804075c0`) sleeps on the queue's recv-wait list (`0x803fd860`). Producer = 16467/17719 sync
+events, receiver only 916 — the receiver is **starved**: it's woken but almost never scheduled,
+because we single-step one context under `run_jit_sync` instead of switching to the woken thread.
 
-## Threading model (clarified 2026-06-03)
-The goal is **not parallelism**. The emulated machine is single-core, and we keep it that
-way: exactly one guest context runs at a time (the CPU token — already built). "Native
-threads" here means the *older-console-port* pattern, not running game logic on many cores:
+## Key constraints (verified)
+- **We do not own the EmuThread loop.** `main_sdl.cpp` → `BootManager::BootCore` spins up
+  Dolphin's EmuThread, which runs the CPU loop. Our only seam into guest execution is the
+  `--wrap` on `JitTrampoline` → `SunbrightBridge::Run(pc)`, plus `run_jit_sync`/`call_ppc`/
+  `tail_ppc`, all nested *inside* Dolphin's CPU loop. So a guest thread's native body runs the
+  recomp tree / `run_jit_sync` itself and yields at OS block points.
+- **Interception must be universal.** `SUNBRIGHT_OVERRIDE` is only consulted on the recomp path
+  (`recomp_lookup`). The audio-init region runs under the **interpreter** (entry is a `call_ppc`
+  to an interior addr `0x80343fe4` of `__OSInitAudioSystem`, not a registered recomp entry → once
+  in `run_jit_sync` everything below is interpreted). Confirmed: a trace override on the lifecycle
+  calls fired **zero** times during boot→audio-init. ⇒ the OS primitives must be intercepted in
+  the `run_jit_sync` loop too, via a **dedicated native-OS override set** — NOT the general
+  override table (the `sms_os_intr.cpp` interrupt overrides are recomp-path-only deferred-delivery
+  and must NOT fire under the interpreter).
+- **No super-call foothold for the scheduler/lifecycle funcs.** Super-calling the recompiled
+  `OSResumeThread`/`OSCreateThread` runs `__OSReschedule` → a context switch (`rfi` to another
+  thread) that never returns to its caller — the exact call-model break this effort fixes. ⇒ these
+  must be **genuinely native** (no super-call); a behaviour-neutral "trace then super-call"
+  prototype regressed boot and was reverted.
+- **Per-context PPC register file must be saved/restored at each switch.** `run_jit_sync` works on
+  the single global `ppc`; a context that blocks inside it has live state there. This is the
+  OSContext save/load the GC scheduler did, done natively — wire it via the step-1 switch hooks
+  when a 2nd context first runs (step 4).
 
-- The **process main thread = SDL/subsystem thread**: window, input, frame presentation,
-  vblank/present timing — the host side.
-- The **game runs as the second thread** (today: Dolphin's EmuThread running recomp).
-- The game's **blocking waits are satisfied by a subsystem host thread signalling a native
-  mutex/condvar.** The canonical example: a "wait for vblank" blocks the game thread on a
-  condvar that the present/vblank thread signals once per frame. The audio/DSP and DVD waits
-  follow the same shape — a subsystem host thread does the work and signals the waiter.
-
-⇒ This **supersedes** the earlier "hard part" (a native idle/driver advancing Dolphin's
-CoreTiming so an emulated DSP/DVD/VI interrupt fires to wake a thread). Instead the subsystem
-host thread signals the wake **directly** via native sync — fewer moving parts, and it
-removes a dependence on Dolphin's interrupt/CoreTiming plumbing. The CPU-token + cooperative
-scheduler substrate still applies for the game's own (cooperative, non-parallel) threads;
-what changes is *where wakes come from*.
-
-## Current execution model (what we're changing)
-- `runtime/jit_hook.cpp`: `--wrap` on `JitTrampoline` → `SunbrightBridge::Run(pc)` when the
-  block is recompiled. Runs **on Dolphin's EmuThread**.
-- `runtime/sunbright_bridge.cpp` `Run()`: makes a **stack-local `CPUState`**, syncs from the
-  single global `PowerPC::PowerPCState`, runs the recomp tree, syncs back. One register file
-  of record (Dolphin's), ephemeral `CPUState` per entry.
-- `runtime/dolphin_hook.cpp`: `call_ppc` (recomp→recomp = nested C call; recomp→non-recomp =
-  `run_jit_sync` interpreter loop), `tail_ppc` (siglongjmp back to `Run` via thread-local
-  `g_tail_jmp`), `cpu_to_dolphin_state` / `dolphin_state_to_cpu`.
-- `runtime/overrides/`: `SUNBRIGHT_OVERRIDE(name, addr)` registers a native replacement;
-  consulted by `recomp_lookup` and `Run`. `force_jit` routes an address to Dolphin's JIT.
-
-### Hard constraints found
-- Dolphin's interpreter **asserts `Core::IsCPUThread()`** (`tls_is_cpu_thread`, set only in
-  `EmuThread` via `DeclareAsCPUThread`) and uses `s_core_mutex`. A host thread that runs the
-  interpreter must declare itself the CPU thread, and only one may do so at a time.
-- **CoreTiming + interrupt delivery are driven by the CPU loop running.** If the EmuThread
-  blocks, DSP/DVD/VI IRQs stop firing. So when no guest thread is runnable, a native
-  **idle/driver** must advance CoreTiming until an IRQ marks a thread ready.
-
-## Reference: GC OS API (GMSE01) — to override natively
-Thread lifecycle: `OSCreateThread` 0x80348948, `OSExitThread` 0x80348a68,
-`OSCancelThread` 0x80348b4c, `OSJoinThread` 0x80348d08, `OSDetachThread` 0x80348e48,
-`OSResumeThread` 0x80348ee8, `OSSuspendThread` 0x80349170, `OSYieldThread` 0x8034890c,
-`OSSleepThread` 0x803492e0, `OSWakeupThread` 0x803493cc, `OSSetThreadPriority` (see map),
-`OSGetThreadPriority` 0x803494d0, `OSGetCurrentThread` 0x80348368,
+## Reference: GC OS API (GMSE01) — to reimplement natively
+Lifecycle: `OSCreateThread` 0x80348948, `OSExitThread` 0x80348a68, `OSCancelThread` 0x80348b4c,
+`OSJoinThread` 0x80348d08, `OSDetachThread` 0x80348e48, `OSResumeThread` 0x80348ee8,
+`OSSuspendThread` 0x80349170, `OSYieldThread` 0x8034890c, `OSSleepThread` 0x803492e0,
+`OSWakeupThread` 0x803493cc, `OSGetThreadPriority` 0x803494d0, `OSGetCurrentThread` 0x80348368,
 `OSInitThreadQueue` 0x80348358, `__OSThreadInit` 0x80348230.
-Scheduler (to bypass / make inert): `SelectThread` 0x803486dc, `__OSReschedule` 0x803488dc,
-`OSEnableScheduler` 0x803483e8, `OSDisableScheduler` 0x803483a8, `__OSPromoteThread`
-0x8034868c, `__OSGetEffectivePriority` 0x80348490.
+Scheduler (make inert / never run): `SelectThread` 0x803486dc, `__OSReschedule` 0x803488dc,
+`OSEnableScheduler` 0x803483e8, `OSDisableScheduler` 0x803483a8, `__OSPromoteThread` 0x8034868c,
+`__OSGetEffectivePriority` 0x80348490.
 Sync: `OSInitMutex` 0x803466d8, `OSLockMutex` 0x80346710, `OSUnlockMutex` 0x803467ec,
 `OSTryLockMutex` 0x80346924, `OSInitCond` 0x803469e0, `OSWaitCond` 0x80346a00,
-`OSSignalCond` 0x80346ad4. Message queues: `OSInitMessageQueue`, `OSSendMessage`,
-`OSReceiveMessage` (addresses differ by region; resolve from the map at impl time).
-Interrupt primitives already overridden in `runtime/overrides/sms_os_intr.cpp`.
+`OSSignalCond` 0x80346ad4.
+Message queues: `OSInitMessageQueue` ≈ 0x80346130, `OSSendMessage` 0x80346190,
+`OSReceiveMessage` 0x80346258 (send enqueues/wakes recv-waiters/sleeps on full; receive
+dequeues/wakes send-waiters/sleeps on empty).
+Interrupt primitives already overridden in `runtime/overrides/sms_os_intr.cpp` (recomp-path-only).
 
 OS globals: `RunQueue` 0x803EB198, `RunQueueBits` 0x80409E30, `IdleThread` 0x803EB298,
-`DefaultThread` 0x803EB5A8. Current-thread pointer at the standard low-mem slot (0x800000C0
-region) — verify at impl time. Guest code reads `OSGetCurrentThread` and thread fields, so
-the guest-visible current-thread pointer and `OSThread` fields (priority/state) must stay
-coherent even though scheduling is native.
+`DefaultThread` 0x803EB5A8. Current-thread ptr at low-mem `0x800000E4`
+(`OSGetCurrentThread` = `lwz r3, 0xE4(0x80000000)`). Guest code reads `OSGetCurrentThread` and
+thread fields, so the current-thread ptr and `OSThread` fields must stay coherent though
+scheduling is native.
 
-`OSThread` (0x310): `context` @0x0 (OSContext 0x2C8), `state` @0x2C8, `suspend` @0x2CC,
-`effective_priority` @0x2D0, `base_priority` @0x2D4, `queue` links @0x2DC.., `stackBase`
-@0x304, `stackEnd` @0x308. `OSContext`: gpr @0x0, cr @0x80, lr @0x84, ctr @0x88, xer @0x8C,
-fpr @0x90, fpscr @0x190, srr0 @0x198, srr1 @0x19C, gqr @0x1A4, psf @0x1C8.
+Struct layouts (confirmed from the recomp):
+- `OSThread` (0x310): `context` @0x0 (OSContext), `state` @0x2C8 (4 = sleeping), `suspend` @0x2CC,
+  `effective_priority` @0x2D0, `base_priority` @0x2D4, queue links @0x2DC.., `stackBase` @0x304,
+  `stackEnd` @0x308.
+- `OSContext` (0x2C8): gpr @0x0, cr @0x80, lr @0x84, ctr @0x88, xer @0x8C, fpr @0x90, fpscr @0x190,
+  srr0 @0x198, srr1 @0x19C, gqr @0x1A4, psf @0x1C8.
+- `OSMessageQueue` (32 B): `+0` queueSend (`OSThreadQueue` {head@+0,tail@+4}, blocked on full),
+  `+8` queueReceive (blocked on empty), `+16` msgArray, `+20` capacity, `+24` firstIndex,
+  `+28` usedCount.
 
-## Blocking-primitive inventory + the audio-init stall (2026-06-03, via SUNBRIGHT_OSWATCH)
-`SUNBRIGHT_OSWATCH` (a pure-observation trace in `call_ppc` + the `run_jit_sync` loop —
-`runtime/dolphin_hook.cpp`) logged every OS sync call (object in r3, current `OSThread*`
-read from low-mem `0x800000E4`) through the audio-init stall. Findings:
-
-**The blocking/sync primitives SMS uses (GMSE01 addresses):**
-- `OSSleepThread` 0x803492e0 / `OSWakeupThread` 0x803493cc — sleep on / wake a thread queue.
-- `OSSendMessage` **0x80346190** / `OSReceiveMessage` **0x80346258** — message queue (verified
-  by reading the recomp: send enqueues, wakes recv-waiters, sleeps on full; receive dequeues,
-  wakes send-waiters, sleeps on empty). `OSInitMessageQueue` ≈ 0x80346130.
-- `OSLockMutex` 0x80346710 / `OSUnlockMutex` 0x803467ec — heavily used, ~matched pairs.
-- `OSWaitCond` 0x80346a00 / `OSSignalCond` 0x80346ad4 — rare.
-- `OSJoinThread` 0x80348d08 — once.
-
-**Struct layouts (confirmed from the recomp):**
-- `OSThread`: `.state` @0x2C8 (4=sleeping), thread-queue link follows; current-thread ptr at
-  low-mem `0x800000E4` (`OSGetCurrentThread` = `lwz r3, 0xE4(0x80000000)`).
-- `OSMessageQueue` (32 B): `+0` queueSend (OSThreadQueue head/tail, threads blocked on full),
-  `+8` queueReceive (threads blocked on empty), `+16` msgArray, `+20` capacity, `+24`
-  firstIndex, `+28` usedCount. `OSThreadQueue` = {head@+0, tail@+4}.
-
-**The stall:** a producer thread (`80402aa8`) floods a message queue at `0x803fd858`
-(lock → `OSSendMessage`+wake → unlock, ~5500×) while the receiver (`804075c0`) sleeps on the
-queue's recv-wait list (`0x803fd860 = 0x803fd858+8`). The producer accounted for 16467 of
-17719 sync events; the receiver only 916 — i.e. **the receiver is starved**. It's woken but
-almost never scheduled, because we run the PPC scheduler synchronously under `run_jit_sync`
-(single-step one context) instead of actually switching to the woken thread. Pure-Dolphin
-schedules it fine; this is our execution-model mismatch — exactly what native scheduling fixes.
-
-### Native implementation plan for these primitives
-Map each onto `nthr` (the host-thread scheduler) + the guest structures, so the actual
-blocking is a native park and waking actually schedules the woken thread:
-- Maintain a `guest OSThread* ↔ nthr::GuestThread*` map; keep guest-visible state coherent
-  (write `OSThread.state`, the current-thread ptr at `0x800000E4`, queue links) so game code
-  that inspects them still sees the truth.
-- `OSSleepThread(q)`: enqueue self on guest queue `q`, set state, `nthr::block(Blocked)`.
-- `OSWakeupThread(q)`: for each guest thread on `q`, `nthr::make_ready(map[it])`.
-- `OSSendMessage`/`OSReceiveMessage`: native enqueue/dequeue on the guest `OSMessageQueue`,
-  then wake the opposite queue / block on own queue via the two above.
-- `OSLockMutex`/`OSUnlockMutex`, `OSWaitCond`/`OSSignalCond`: same shape (own thread queues).
-- `OSCreateThread`/`OSResumeThread`: register a `nthr` guest thread whose body runs recomp
-  from the entry PC; `OSResumeThread` = `make_ready`. Adopt the boot/EmuThread as thread 0.
-- **Open integration risk:** a spawned host thread that runs a non-recomp call goes through
-  Dolphin's interpreter, which asserts `Core::IsCPUThread()` and uses `s_core_mutex`. The
-  token serializes execution (one at a time), so the token holder must present as the CPU
-  thread (`DeclareAsCPUThread` / hold `s_core_mutex`). De-risk this in isolation before wiring
-  it to the game. Cooperative switching also assumes threads yield via OS primitives; if a
-  thread busy-waits without blocking, add a preemption nudge (see preemption note).
-
-## [HISTORICAL — fiber substrate REJECTED, see pinned decision at top] Execution-context decision: fibers on the EmuThread vs. host-thread-per-guest-thread
-> Kept as the record of why fibers were considered and dropped. The pinned model is
-> host-thread-per-guest-thread (the first bullet below), NOT fibers. The "recommendation" in
-> this section is superseded.
-
-The `nthr` scheduler *logic* (priority pick, Ready/Blocked, the producer/consumer hand-off)
-is validated and **independent of how a guest context is parked/resumed**. But *where* guest
-code physically runs is a real fork, forced by a hard Dolphin constraint:
-
-> Dolphin's interpreter asserts `Core::IsCPUThread()` (a thread-local set only on the
-> EmuThread) and guards core state with `s_core_mutex`. Non-recomp guest calls go through
-> that interpreter. So whatever runs guest code must satisfy Dolphin's "I am the CPU thread"
-> identity.
-
-- **Host-thread-per-guest-thread + token** (what the substrate currently uses): each guest
-  thread is a real OS thread; the token serializes them. *Risk:* every such thread must
-  present as Dolphin's CPU thread (`DeclareAsCPUThread`, and likely hold `s_core_mutex`), and
-  Dolphin may have other single-CPU-thread invariants (CoreTiming/GPU-Fifo affinity) that
-  only surface when driven from a non-EmuThread. Medium-high, discoverable only by trying.
-- **Fibers on the EmuThread** (lean toward this): guest threads are fibers (e.g.
-  `swapcontext`) multiplexed on the **one** EmuThread, switched cooperatively at block points.
-  Dolphin always sees its single CPU thread → the whole `IsCPUThread`/`s_core_mutex` risk
-  class **disappears**. Each fiber keeps its own stack, so a blocked guest's recomp
-  continuation is preserved (same property we need). Subsystems stay *real* host threads that
-  signal a fiber Ready via a condvar across the EmuThread boundary.
-
-**Recommendation:** fibers-on-the-EmuThread for guest execution; real host threads only for
-subsystems (SDL/present/vblank, audio out) that signal wakes. The validated `nthr` scheduler
-logic + self-tests carry over unchanged; only the park/resume layer swaps condvar↔swapcontext.
-**To reconcile when implementing:** the existing tail-branch handoff uses `siglongjmp`
-(`g_tail_jmp`) — verify `siglongjmp` interacts correctly with fiber contexts (longjmp must
-stay within a fiber's own stack), or route the tail handoff through the fiber switch instead.
-This is the next decision to settle before wiring native threading into the game.
-
-## [HISTORICAL — fiber substrate REJECTED] Control-flow finding (2026-06-03): we do NOT own the EmuThread loop — fibers run *under* our hooks
-Investigated the actual execution entry while planning step 2. `main_sdl.cpp` calls
-`BootManager::BootCore`, which **spins up Dolphin's EmuThread internally** (Dolphin owns that
-thread and runs `CPUManager`'s CPU loop on it). Our *only* seam into guest execution is the
-`--wrap` on `JitTrampoline` → `SunbrightBridge::Run(pc)`, plus `run_jit_sync` (interpreter) and
-`call_ppc`/`tail_ppc` — **all called nested inside Dolphin's CPU loop**, on the EmuThread. The
-SDL/main thread only pumps events + presents; it does not drive guest code.
-
-⇒ This forces the shape of the fiber integration (resolves the "next decision to settle" above):
-- **nthr cannot sit *above* execution as the top-level driver.** Dolphin's CPU loop is the
-  driver and we can't cleanly wrap it in a fiber (we don't own the EmuThread's entry function).
-  Fibers are therefore **driven from *within* our hooks**: a guest thread's fiber body runs the
-  recomp tree / `run_jit_sync` itself (both are self-contained on the EmuThread — recomp is
-  plain C calls; `run_jit_sync` single-steps the interpreter), and yields at OS block points.
-- **Fiber 0 is not "adopted" up front — it is the EmuThread's own continuation, captured lazily
-  at the first block.** When guest code first hits a blocking OS primitive (our override),
-  `nthr::block` does `swapcontext(&fiber0.ctx, &g_sched_ctx)`, freezing Dolphin's CPU-loop
-  frames (below the block point) on fiber 0's stack and entering the scheduler. When fiber 0 is
-  rescheduled it resumes right after `block()` and unwinds back out into Dolphin's loop normally.
-  The scheduler context (`g_sched_ctx`) and spawned fibers' stacks all live on the EmuThread.
-- **`IsCPUThread`/`s_core_mutex` is a non-issue** (the payoff of the fiber choice): every fiber
-  runs on the EmuThread, which already holds the CPU-thread identity. No `DeclareAsCPUThread`,
-  no cross-thread core mutex. (Target-architecture items #1–#2's "token + DeclareAsCPUThread" are
-  the *host-thread* model and no longer apply; keep the **token** concept only as the trivial
-  "one fiber runs at a time," which cooperative single-threaded fibers give for free.)
-- **The one real per-fiber state beyond the C stack is the global Dolphin PPC register file.**
-  `run_jit_sync` works directly on the single global `ppc` state; recomp syncs it in/out at
-  `Run` boundaries and otherwise uses a stack-local `CPUState`. So a fiber that blocks *inside*
-  `run_jit_sync` (the audio case — audio init runs under the interpreter) has live state in the
-  global `ppc`. Switching to another fiber that also touches `ppc` would clobber it ⇒ **the PPC
-  register file must be saved/restored per fiber at the block/resume switch** (via the step-1
-  `set_switch_hooks`, alongside `g_tail_jmp`). This is the OSContext save/load the GC scheduler
-  did, done natively. Not needed until a 2nd fiber actually runs (steps 4–5); wire it with step 4.
-
-### Revised step 2 (given the above)
-"Adopt boot context as fiber 0" is *not* a standalone observable change (with one fiber nothing
-switches), so don't chase a contrived boot-time hook. The verifiable unit is: **prove a real
-recomp function body executes correctly when run inside an nthr fiber** (own stack, entered via
-the scheduler, `swapcontext` in/out) — the core mechanic everything else rests on. Do it as a
-self-test using a real, pure (no MMIO) recomp function: run it directly vs. inside a spawned
-fiber from identical `CPUState`, assert identical results. Low risk (fibers stay on the
-EmuThread; recomp is just C on a different stack), zero boot impact. The lazy fiber-0 capture +
-per-fiber PPC save/restore then land with step 4 (native `OSCreateThread`/`OSResumeThread`),
-where a 2nd fiber first exists and the switch is actually exercised against the audio stall.
+SMS boot thread topology (created via `OSCreateThread`):
+| entry | prio | stack | caller | note |
+|---|---|---|---|---|
+| 802c54b8 | 8  | 16 KB | 802c5380 | 3-thread worker pool (×3, diff param) |
+| 802a9184 | 15 | 4 KB  | 802a9410 | |
+| 802a7878 | 17 | 64 KB | 802a7854 | big stack, made during audio init (likely audio thread) |
 
 ## Target architecture
-1. **Per-thread CPU context.** `CPUState` + `g_tail_jmp` become per host thread (the latter
-   already thread-local). Each guest thread runs its recomp tree on its own native stack.
-2. **CPU token.** A global lock; exactly one guest thread executes guest/Dolphin code at a
-   time (preserves single-core semantics + Dolphin thread-safety). Each runnable thread calls
-   `DeclareAsCPUThread` so the interpreter's assert holds; the token serializes them.
-3. **GuestThread registry.** host `std::thread`, entry PC + arg, guest stack, `CPUState`,
-   state (ready/running/blocked/suspended/dead), priority, per-thread condvar. Mapped to the
-   guest `OSThread*` so guest reads stay coherent. Adopt the EmuThread as guest thread 0.
-4. **Native primitives (overrides).** Lifecycle + message queues + mutex/cond implemented on
-   host threads/condvars. Blocking = release token, condvar-wait, reacquire. The PPC
-   scheduler (`SelectThread`/`__OSReschedule`/idle) is never run.
+1. **Per-thread CPU context.** `CPUState` + `g_tail_jmp` per host thread (the latter already
+   `thread_local`). Each guest thread runs its recomp tree on its own native stack.
+2. **CPU token.** A global lock; exactly one guest thread runs guest/Dolphin code at a time
+   (single-core semantics + Dolphin thread-safety). While it holds the token a thread calls
+   `DeclareAsCPUThread` (needed only for the residual interpreter calls; the endgame removes it).
+3. **GuestThread registry.** host `std::thread`, entry PC + arg, guest stack, `CPUState`, state,
+   priority, per-thread condvar; mapped to the guest `OSThread*`. Adopt the EmuThread as thread 0.
+4. **Native primitives (overrides).** Lifecycle + message queues + mutex/cond on host
+   threads/condvars. Blocking = release token, condvar-wait, reacquire. The PPC scheduler
+   (`SelectThread`/`__OSReschedule`/idle) is never run.
 5. **Native idle/driver.** When no guest thread is runnable, advance Dolphin CoreTiming so a
-   pending DSP/DVD/VI IRQ fires; its (guest) handler calls `OSWakeupThread` (our HLE) → marks
-   a thread ready → scheduler grants it the token. This replaces the GC idle thread.
+   pending DSP/DVD/VI IRQ fires; its guest handler calls `OSWakeupThread` (our HLE) → marks a
+   thread ready → token granted. Replaces the GC idle thread.
 
-## Finding (2026-06-02): interception must be universal
-Overrides (`SUNBRIGHT_OVERRIDE`) are only consulted on the **recomp path** (`recomp_lookup`
-in `call_ppc` / `Run`). When code runs under the **interpreter** inside `run_jit_sync`, the
-interpreter executes raw PPC and never consults `override_lookup` — so the override is
-bypassed. Confirmed live: with a trace override on `OSCreateThread`+lifecycle, **zero** fired
-during boot→audio-init, because that whole region runs under the interpreter. The entry into
-the interpreter here is a `call_ppc` to an **interior** address of `__OSInitAudioSystem`
-(`0x80343fe4`, mid-function — not a registered recomp entry, so `recomp_lookup` misses), and
-once in `run_jit_sync` everything below (including `OSCreateThread` and the scheduler) is
-interpreted. The blocking OS calls we must replace happen *under the interpreter*.
+Primitive mapping onto `nthr` + guest structs (blocking = native park; waking actually schedules):
+- `OSSleepThread(q)`: enqueue self on guest queue `q`, set `OSThread.state`, `nthr::block(Blocked)`.
+- `OSWakeupThread(q)`: for each guest thread on `q`, `nthr::make_ready(map[it])`.
+- `OSSendMessage`/`OSReceiveMessage`: native enqueue/dequeue on the guest `OSMessageQueue`, then
+  wake the opposite queue / block on own queue via the two above.
+Keep guest-visible state coherent throughout (write `OSThread.state`, the `0x800000E4` ptr, queue
+links) so game code inspecting them still sees the truth.
 
-⇒ **Prerequisite for native threading:** the OS primitives must be intercepted regardless of
-execution backend. Recomp-native option (no new Dolphin coupling): make the `run_jit_sync`
-loop consult overrides — before stepping, if `ppc.pc` is an override, run it instead of
-single-stepping.
+## Built + validated in isolation
+`runtime/native_threads.{h,cpp}` (`SUNBRIGHT_NTHR_SELFTEST=1`, 5/5 PASS): scheduler core —
+`spawn`/`block`/`make_ready`/`run_and_wait`, highest-priority-Ready (FIFO among ties), parking
+with no spin; the SMS producer/consumer starvation pattern (lower-prio consumer not starved); and
+per-context switch hooks (`set_switch_hooks(save, restore)` invoked around each context switch,
+agnostic to *what* is saved — the runtime registers hooks that move `g_tail_jmp` + the PPC
+register file in/out of each context's slot). NOT yet wired into the game.
 
-### Step result (2026-06-02): interception works, but super-call is the wrong shape
-Prototyped `run_jit_sync` consulting `override_lookup` per step, with `sms_os_threads.cpp`
-overriding the lifecycle calls as a *trace that super-calls the recomp body*. Results:
-- **Interception fires** under the interpreter — the trace logged, mechanism validated.
-- **Captured SMS thread topology** (created during boot, via `OSCreateThread`):
-  | thread | entry | prio | stack | caller |
-  |---|---|---|---|---|
-  | 8042fe60 | 802c54b8 | 8  | 16 KB | 802c5380 | ← 3-thread worker pool
-  | 80434300 | 802c54b8 | 8  | 16 KB | 802c5380 |   (same entry/caller, diff param)
-  | 80438700 | 802c54b8 | 8  | 16 KB | 802c5380 |
-  | 80575ec8 | 802a9184 | 15 | 4 KB  | 802a9410 |
-  | 803fcbe8 | 802a7878 | 17 | 64 KB | 802a7854 | ← big stack, made during audio init (likely audio thread)
-- **But it regressed boot** (loaded only `nintendo.szs`, then idled in the scheduler).
-  Root cause (confirmed — excluding the interrupt primitives did NOT fix it): super-calling
-  the recompiled `OSResumeThread`/`OSCreateThread` bodies runs `__OSReschedule` → a context
-  switch (`rfi` to another thread) that **never returns to its caller** — the same call-model
-  break this whole effort exists to fix. ⇒ **The OS thread/scheduler functions cannot be
-  traced via super-call; they must be replaced with genuinely native logic** (no super-call),
-  in any context. Both experimental pieces were reverted.
-
-Revised plan: there is no behaviour-neutral "trace then super-call" foothold for these
-functions. The first real unit is a **native implementation of one primitive + scoped
-interception, together** — interception consulting a *dedicated native-OS override set*
-(NOT the general override table; the interrupt-primitive overrides in `sms_os_intr.cpp` are
-recomp-path-specific deferred-delivery and must NOT fire under the interpreter).
-
-## Phasing
-- **Phase 0a — scoped interception + first native primitive (together):** `run_jit_sync`
-  consults a *dedicated native-OS override set* (not the general override table) so native
-  OS primitives fire under the interpreter; deliver alongside the first genuinely native
-  primitive (no super-call). Interception alone is not a standalone step — there is no
-  behaviour-neutral super-call foothold (see Step result above).
-- **Phase 0 — foundation:** per-thread `CPUState`, CPU token, GuestThread registry, adopt
-  thread 0, native scheduler core (pick highest-priority ready, grant token). Compiles, boots
-  unchanged (still one thread until something creates a second).
-  - ✅ **Done (2026-06-02): cooperative scheduler core**, `runtime/native_threads.{h,cpp}`:
-    `spawn`/`block`/`make_ready`/`run_and_wait`, highest-priority-Ready (FIFO among ties),
-    parking with no spin. Proven by `nthr::self_test()` (`SUNBRIGHT_NTHR_SELFTEST=1`).
-  - ✅ **Done (2026-06-03): converted to the fiber model** (the decided execution context).
-    Guest threads are now `ucontext` fibers multiplexed on ONE thread (`swapcontext`),
-    single-threaded cooperative ⇒ **no locks**. Validated by the same API tests: round-robin,
-    the SMS producer/consumer starvation pattern (lower-prio consumer not starved), and a
-    fiber + `siglongjmp`-with-per-fiber-jmpbuf test — 5/5 PASS. Keeps everything on one
-    thread, so Dolphin's CPU-thread identity is intact when this is wired in. Not yet wired.
-  - Next: adopt the boot thread as guest thread 0 (link it to the guest `OSThread*` at the
-    low-mem current-thread slot) and run a real recompiled function body on a spawned guest
-    thread under the token — then layer the OS-primitive overrides (Phase 0a/1).
-- **Phase 1 — lifecycle + the audio block (first milestone):** override OSCreateThread /
-  Resume / Suspend / Sleep / Wakeup / Yield / Exit / Join / InitThreadQueue / GetCurrentThread
-  / SetThreadPriority + message queues; native idle/driver. **Goal: audio init completes with
-  no spin, audio plays, matches pure-Dolphin.**
-- **Phase 2 — sync + correctness:** mutex / cond / cancel / detach; diff-harness pass.
-- **Phase 3 — preemption + decoupling:** approximate decrementer/IRQ preemption; remove
-  Dolphin-scheduler reliance entirely; relax the token toward real parallelism as Dolphin
-  hardware deps are replaced.
-
-## Next session — ordered integration checklist (each step independently verifiable)
-**Substrate: PC-native host threads (pinned, see top). The `nthr` scheduler *logic* + switch-hook
-*mechanism* carry over; the park/resume layer is a host-thread condvar, not `swapcontext`.** Do
-the steps in order, verifying each against a headless run before the next.
-
-Repro for the target stall (must clear by step 5):
-`SUNBRIGHT_HEADLESS=1 SUNBRIGHT_TURBO=1 SUNBRIGHT_AUTOSTART=1 SUNBRIGHT_RUN_SECONDS=N ./build/sunbright`
-— today aborts (exit 134) at `run_jit_sync(80343fe4→803488c0)` step-budget exhaustion.
-
-1. ✅ **Per-context switch hooks (done 2026-06-03, substrate-agnostic).** Generic mechanism in
-   `nthr`: each guest context has one opaque `user` slot + a registered `set_switch_hooks(save,
-   restore)` pair invoked around every context switch (`save(self)` before a context yields in
-   `block()`, `restore(t)` before a context is granted the CPU). `nthr` stays agnostic to *what*
-   is saved; the runtime registers hooks that move `g_tail_jmp` (and the PPC register file, step
-   4) into/out of the slot. Proven by the `per_fiber_tls` self-test (`SUNBRIGHT_NTHR_SELFTEST=1`,
-   5/5 PASS). Carries over to host threads unchanged (each host thread has its own TLS, so the
-   `g_tail_jmp` save/restore becomes trivially correct; the PPC-register-file save/restore is the
-   real per-context state). Game path untouched → boot/render unchanged.
-2. **Reduce the interpreter dependency for the OS thread/sync primitives (the gating sub-goal).**
-   The native-thread model only works if guest blocking calls do NOT enter Dolphin's interpreter
-   (that's what forces the `IsCPUThread` wall and the spin). So first make the OS primitives
-   intercept *regardless of execution backend*: `run_jit_sync` (and `call_ppc`) consult a
-   *dedicated native-OS override set* (NOT the general override table — keep the interrupt
-   overrides recomp-path-only) so a native primitive fires even when reached under the
-   interpreter. Verify the lifecycle/sync calls are intercepted during boot→audio-init with
-   `SUNBRIGHT_OSWATCH` (previously zero fired because that region runs under the interpreter).
-3. **Stand up the host-thread substrate + CPU token.** Adopt the EmuThread as guest thread 0.
-   A global CPU token serialises guest contexts (single-core semantics preserved). `CPUState` +
-   `g_tail_jmp` per host thread (already `thread_local`). Each runnable guest thread is a host
-   `std::thread` that `DeclareAsCPUThread`s while it holds the token (needed only for the
-   residual interpreter calls; the endgame removes even that). Verify boot/render unchanged with
-   the substrate present but only thread 0 active.
+## Integration checklist (each step independently verifiable; verify against a headless run)
+1. ✅ **Per-context switch hooks** (done 2026-06-03, substrate-agnostic — see above). Game path
+   untouched → boot/render unchanged.
+2. **Scoped native-OS interception (the gating sub-goal).** `run_jit_sync` (and `call_ppc`) consult
+   a **dedicated native-OS override set** so an OS primitive fires even when reached under the
+   interpreter — keep interrupt overrides recomp-path-only. There is no behaviour-neutral
+   super-call foothold, so deliver this **together with the first genuinely native primitive**, not
+   alone. Verify the lifecycle/sync calls are now intercepted during boot→audio-init via
+   `SUNBRIGHT_OSWATCH` (previously zero).
+3. **Host-thread substrate + CPU token.** Adopt the EmuThread as guest thread 0; global token
+   serialises contexts; `DeclareAsCPUThread` while holding it. Verify boot/render unchanged with
+   only thread 0 active.
 4. **Native `OSCreateThread`/`OSResumeThread`.** Spawn a host thread whose body runs recomp from
-   the entry PC; map guest `OSThread*` ↔ `nthr::GuestThread*`; keep `0x800000E4` + the OSThread
-   state/priority fields coherent for guest reads. PPC register file saved/restored per context
-   via the step-1 hooks. Verify the 5 boot threads spawn as host threads.
-5. **Native `OSSleepThread`/`OSWakeupThread`, then `OSSendMessage`/`OSReceiveMessage`,** then
-   mutex/cond — each on the guest structs (offsets above) + `nthr::block`/`make_ready` (blocking
-   = release token, condvar-wait, reacquire). The PPC scheduler (`SelectThread`/`__OSReschedule`/
-   idle) is **never run**. Verify the audio-init stall clears (no `FATAL ... exceeded step budget`
-   abort, no `JUTException`, audio assets load at pure-Dolphin speed).
+   the entry PC; map guest `OSThread*` ↔ `nthr::GuestThread*`; keep `0x800000E4` + state/priority
+   coherent; PPC register file saved/restored per context via the step-1 hooks. Verify the 5 boot
+   threads spawn as host threads.
+5. **Native `OSSleepThread`/`OSWakeupThread` → `OSSendMessage`/`OSReceiveMessage` → mutex/cond.**
+   Blocking = release token, condvar-wait, reacquire; PPC scheduler never run. **Verify the
+   audio-init stall clears** (no step-budget abort, no `JUTException`, audio assets load at
+   pure-Dolphin speed).
 6. **Subsystem wakes + preemption-if-needed.** SDL/present thread signals vblank waiters via the
    native condvar; audio-out thread signals audio waiters. Add a preemption nudge only if a
    busy-wait guest thread is found not to yield.
 
 ## Verification
-Headless turbo (`SUNBRIGHT_HEADLESS=1 SUNBRIGHT_TURBO`, `SUNBRIGHT_RUN_SECONDS=N`) with
-`SUNBRIGHT_AUTOSTART=1`: audio asset loads should match pure-Dolphin timing (no multi-second
-gaps), no `FATAL ... exceeded step budget` abort, no `FATAL wild guest write` (the trap in
-`runtime/memory_bridge.cpp`), no `JUTException`. A/B against `SUNBRIGHT_DISABLE_RECOMP=1`.
+Headless turbo (`SUNBRIGHT_HEADLESS=1 SUNBRIGHT_TURBO=1`, `SUNBRIGHT_RUN_SECONDS=N`,
+`SUNBRIGHT_AUTOSTART=1`): audio asset loads should match pure-Dolphin timing (no multi-second
+gaps), no `FATAL ... exceeded step budget` abort, no `FATAL wild guest write`, no `JUTException`.
+A/B against `SUNBRIGHT_DISABLE_RECOMP=1`.
