@@ -7,7 +7,13 @@ software threads onto one CPU via a PPC software scheduler (`SelectThread` /
 Dolphin's interpreter inside `run_jit_sync`, single-stepping **until the call returns to
 LR**. A blocking OS call (audio init waiting on the audio thread / a DVD read) reschedules
 to the OS **idle loop**, which never returns to LR — so `run_jit_sync` spins to its
-500M step budget, bails with inconsistent state, and the game enters `JUTException::run`.
+500M step budget. This is now a **fail-fast `abort()`** (with a recomp backtrace) at the
+budget exhaustion in `runtime/dolphin_hook.cpp`: it is the root cause, and continuing with
+the half-executed, inconsistent state is what previously produced the downstream
+`FATAL wild guest write` / `JUTException::run`. (Both fail-fast traps suppress the core dump
+via `setrlimit(RLIMIT_CORE,0)` before aborting — the default `core_pattern` pipes to
+systemd-coredump, which would dump the multi-GB process and wedge for minutes; the printed
+backtrace is the artifact we want. Exit 134.)
 
 The fix is not to lean on Dolphin's emulated scheduler (a stopgap, `SUNBRIGHT_*_HANDOFF`),
 but to make threading **native**: each guest OS thread becomes a host thread, and the OS
@@ -278,7 +284,7 @@ the next chunk; do it in this order, verifying each against a headless run befor
    coherent. Verify the 5 boot threads spawn as fibers.
 5. **Native `OSSleepThread`/`OSWakeupThread`, then `OSSendMessage`/`OSReceiveMessage`,** then
    mutex/cond — each on the guest structs (offsets above) + `nthr::block`/`make_ready`.
-   Verify the audio-init stall clears (no `exceeded step budget`, no `JUTException`, audio
+   Verify the audio-init stall clears (no `FATAL ... exceeded step budget` abort, no `JUTException`, audio
    assets load at pure-Dolphin speed).
 6. **Subsystem wakes + preemption-if-needed.** SDL/present thread signals vblank waiters; add
    a preemption nudge only if a busy-wait thread is found not to yield.
@@ -286,5 +292,5 @@ the next chunk; do it in this order, verifying each against a headless run befor
 ## Verification
 Headless turbo (`SUNBRIGHT_HEADLESS=1 SUNBRIGHT_TURBO`, `SUNBRIGHT_RUN_SECONDS=N`) with
 `SUNBRIGHT_AUTOSTART=1`: audio asset loads should match pure-Dolphin timing (no multi-second
-gaps), no `exceeded step budget`, no `FATAL wild guest write` (the trap in
+gaps), no `FATAL ... exceeded step budget` abort, no `FATAL wild guest write` (the trap in
 `runtime/memory_bridge.cpp`), no `JUTException`. A/B against `SUNBRIGHT_DISABLE_RECOMP=1`.

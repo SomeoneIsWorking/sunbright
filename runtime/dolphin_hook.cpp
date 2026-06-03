@@ -11,6 +11,8 @@
 #include <csetjmp>
 #include <algorithm>
 #include <unordered_map>
+#include <execinfo.h>
+#include <sys/resource.h>
 #ifdef HAVE_DOLPHIN_CORE
 #  include "Core/System.h"
 #endif
@@ -153,8 +155,35 @@ void call_ppc(CPUState& cpu, u32 address) {
         os_sync_watch(ppc.pc, ppc.gpr[3], ppc.gpr[4], ppc.spr[SPR_LR]);
         interp.SingleStep();
     }
-    if (n >= MAX)
-        fprintf(stderr, "[sunbright] run_jit_sync(%08x→%08x) exceeded step budget\n", address, ret);
+    if (n >= MAX) {
+        // The interpreter never returned to the caller's LR within the budget — the
+        // callee rescheduled to a never-returning context (the GC OS idle loop after a
+        // blocking OS call) and is spinning. This is THE root cause behind the later
+        // "wild guest write": bailing here and continuing with half-executed, inconsistent
+        // state corrupts a base/stack pointer downstream. Fail fast AT the cause instead of
+        // limping on — same fail-fast discipline as the wild-write trap. (Native threading
+        // removes this budget entirely: a blocked guest thread parks on its own fiber rather
+        // than spinning the interpreter.)
+        fflush(stdout);
+        fprintf(stderr,
+            "\n[sunbright] FATAL run_jit_sync(%08x→%08x) exceeded step budget (%ld steps)\n"
+            "  The interpreted callee never returned to LR — it rescheduled to a\n"
+            "  never-returning context (blocking OS call → OS idle loop). Continuing would\n"
+            "  corrupt state. This is the audio-init/blocking stall native threading fixes.\n"
+            "  Native backtrace (recomp call chain, innermost first):\n",
+            address, ret, MAX);
+        void* bt[96];
+        int bn = backtrace(bt, 96);
+        backtrace_symbols_fd(bt, bn, fileno(stderr));
+        fflush(stderr);
+        // Suppress the core dump: with the default core_pattern piping to systemd-coredump,
+        // SIGABRT would dump this multi-GB (Dolphin + game) process and wedge for minutes —
+        // looking like "prints FATAL but never exits". The backtrace above is the artifact we
+        // want; skip the core so abort() terminates promptly (exit 134).
+        struct rlimit no_core{0, 0};
+        setrlimit(RLIMIT_CORE, &no_core);
+        abort();
+    }
     dolphin_state_to_cpu(ppc, cpu);
 #else
     fprintf(stderr, "[sunbright] call_ppc 0x%08x: not recompiled and no JIT available\n", address);

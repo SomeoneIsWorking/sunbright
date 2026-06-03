@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <stdexcept>
 #include <execinfo.h>
+#include <sys/resource.h>
 
 bool g_recomp_touched_mmio = false;
 
@@ -149,6 +150,12 @@ static inline u8* ram_ptr(u32 ea) {
     int n = backtrace(bt, 96);
     backtrace_symbols_fd(bt, n, fileno(stderr));
     fflush(stderr);
+    // Suppress the core dump: the default core_pattern pipes to systemd-coredump, which
+    // dumps this multi-GB process and wedges for minutes (looks like "prints FATAL but
+    // never exits"). The backtrace above is what we want; skip the core so abort() exits
+    // promptly (exit 134).
+    struct rlimit no_core{0, 0};
+    setrlimit(RLIMIT_CORE, &no_core);
     abort();
 }
 static inline void check_wild_write(u32 ea, unsigned long long val, int bits) {
