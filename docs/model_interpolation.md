@@ -13,10 +13,16 @@ keyed by a stable per-model ID.
 > explicitly rejected (enormous, no interpolation benefit). Do not reopen this.
 >
 > This one interception layer serves BOTH open render problems:
-> 1. **Widescreen 2D layout** — the off-center title logo / HUD / fade and un-expanded
->    2D backdrops are NOT fixable by more `.data` constant patches
->    (`widescreen_patch_tick` / `sms_widescreen.cpp` already notes this). Owning the J2D
->    draw path lets us center overlays and expand backdrops directly.
+> 1. **Widescreen — DONE natively (2026-06-03).** Removed the `.data` patch + Dolphin's
+>    ForceWide. `runtime/overrides/scene_render.cpp` hooks **`GXSetProjection` (0x80362c34)** —
+>    the universal projection point Dolphin's `AspectMode::Auto` heuristic reads — and squeezes
+>    the projection by 0.75=(4:3)/(16:9): perspective m[0][0] → wider FOV; ortho m[0][0]+m[0][3]
+>    → 2D shrinks toward centre so after the 16:9 present it's correct-aspect + CENTERED, not
+>    stretched. 2D squeeze latches on the first 3D frame (boot logos stay 4:3). Title verified
+>    1604×896 (16:9), logo centered. REMAINING: full-screen 2D *backdrops* are centered/squeezed
+>    rather than *expanded* to fill 16:9 (the user's "expand backdrops") — needs per-screen
+>    distinction of backdrop vs overlay (the J2DScreen hook below is the lever); and the squeeze
+>    latch is global, not per-frame (a 2D-only screen after 3D would squeeze — rare).
 > 2. **Interpolation** — capture each object's transform, slerp prev→cur, re-present
 >    inter-frames between VI swaps. Capture + lerp are already prototyped (see below).
 >
