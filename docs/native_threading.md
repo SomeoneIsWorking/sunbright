@@ -1,5 +1,40 @@
 # Native OS threading (PC-port model)
 
+## ⚠ Execution-model decision status — REOPENED (2026-06-03, corrected)
+**The "fibers-on-the-EmuThread" choice below was Claude's technical instinct, NOT a decision
+the user ratified.** Reconstructed from the session transcripts: the user gave a *north star*
+and said "go with your instincts," and Claude then picked fibers and recorded it as "the
+decided model" — overstating the user's involvement. The user's actual, repeated direction:
+
+> "We are ultimately trying to make a **PC port** so we shouldn't be limited by Dolphin or the
+> game's own code. This won't be just Dolphin with rom hacks — this will be a PC port."
+> "Analyze what the game does under Dolphin and **replicate it on PC side with PC-native
+> architecture.**" "Recreate the game execution on PC **without being limited by Dolphin or
+> the game's own code.**" "Find what is blocking what and maybe **make non-blocking versions**
+> of them." (The game itself *does* spawn ~5 internal OS threads that block on each other — so
+> "the game is one thread" doesn't fully hold; its internal threading must be handled somehow.)
+
+**The tension to resolve:** fibers-on-the-EmuThread exist *only* to satisfy a **Dolphin**
+constraint — `IsCPUThread`/`s_core_mutex` (see below). By the north star, that is bending to
+Dolphin, the opposite of the goal. The wall exists **only because guest code still runs through
+Dolphin's interpreter** (`run_jit_sync`) for the JIT-only functions (MSR/scheduler/HW-SPR). The
+PC-native endgame is to **remove that interpreter dependency** — natively implement the
+scheduler + MSR/critical-section code so guest threads never enter Dolphin's interpreter — at
+which point real **host threads** have no `IsCPUThread` problem and Dolphin demotes to swappable
+GFX/DSP/Memory backends. That is "recreating the game's execution on PC."
+
+**What survives regardless of the choice:** the validated `nthr` scheduler *logic* (priority
+pick, Ready/Blocked, the SMS producer/consumer hand-off) and the step-1 per-fiber switch hooks
+— only the park/resume layer differs (fiber `swapcontext` vs. host-thread condvar). So the work
+so far is not wasted; the open question is purely the execution substrate.
+
+**Recommended direction (to confirm before large work):** pursue true PC-native — host threads
+per guest OS thread + native OS HLE — and treat *reducing the Dolphin-interpreter dependency for
+guest code* as the gating sub-goal. Keep fibers only as a possible interim substrate, not the
+endgame. Do NOT relabel this "decided" until the user confirms (the mistake above). See
+`/keep-going`. Sections below (esp. "Execution-context decision" and "Target architecture") are
+kept for context but read them through this lens.
+
 ## Why
 Sunbright is a **PC port**, not "Dolphin with ROM hacks." The GameCube OS multiplexes
 software threads onto one CPU via a PPC software scheduler (`SelectThread` /
