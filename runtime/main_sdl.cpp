@@ -51,6 +51,7 @@
 #include "InputCommon/InputConfig.h"
 #include "InputCommon/ControllerEmu/ControllerEmu.h"
 #include "VideoCommon/VideoConfig.h"   // AspectMode
+#include "probe_server.h"
 #include "VideoCommon/Present.h"       // g_presenter (surface resize)
 #include "UICommon/DiscordPresence.h"
 #include "UICommon/UICommon.h"
@@ -687,11 +688,16 @@ int main(int argc, char* argv[]) {
     // SUNBRIGHT_DUMP=1: dump every presented frame as a PNG to the user Dump/Frames
     // dir. Definitive proof of what's rendered, independent of window capture (which
     // is unreliable under XWayland).
-    if (getenv("SUNBRIGHT_DUMP")) {
-        Config::SetBase(Config::MAIN_MOVIE_DUMP_FRAMES, true);
-        Config::SetBase(Config::GFX_DUMP_FRAMES_AS_IMAGES, true);
-        fprintf(stderr, "[sunbright] Frame dumping enabled\n");
-    }
+    // ALWAYS set this explicitly (not just when enabling): Dolphin PERSISTS these flags to
+    // <home>/.config/dolphin-emu/{Dolphin,GFX}.ini, so a single past SUNBRIGHT_DUMP run leaves
+    // DumpFrames=True on disk and EVERY later run silently re-enables the FrameDumper — which
+    // PNG-encodes every frame on its own thread at ~95% CPU and throttles the whole emulator to
+    // ~0.15× real-time. (This was the "game is too slow" report: stale persisted dump config,
+    // not the recomp.) Force it off unless explicitly requested this run.
+    const bool want_dump = getenv("SUNBRIGHT_DUMP") != nullptr;
+    Config::SetBase(Config::MAIN_MOVIE_DUMP_FRAMES, want_dump);
+    Config::SetBase(Config::GFX_DUMP_FRAMES_AS_IMAGES, want_dump);
+    if (want_dump) fprintf(stderr, "[sunbright] Frame dumping enabled\n");
 
     fprintf(stderr, "[sunbright] UICommon::InitControllers...\n");
     UICommon::InitControllers(wsi);
@@ -756,6 +762,10 @@ int main(int argc, char* argv[]) {
         repl_thread = std::thread(repl_reader, std::string(repl_src));
         repl_thread.detach();
     }
+
+    // SUNBRIGHT_PROBE=1: bring up the HTTP/JSON perf probe (http://127.0.0.1:17654/metrics).
+    // Lets a headless run be measured live (emulation speed, recomp-vs-interp call mix).
+    probe_server_start();
 
     // SUNBRIGHT_RUN_SECONDS=N: auto-exit after N seconds of wall time (CI / repro).
     const char* run_secs_env = getenv("SUNBRIGHT_RUN_SECONDS");
