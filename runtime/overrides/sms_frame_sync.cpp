@@ -12,6 +12,8 @@
 // context switch — the main thread just continues. sunbright_wait_vi_field() does the advance.
 
 #include "../overrides.h"
+#include <cstdio>
+#include <cstdlib>
 
 #ifdef HAVE_DOLPHIN_CORE
 extern void sunbright_wait_vi_field();   // dolphin_hook.cpp
@@ -29,6 +31,11 @@ SUNBRIGHT_OVERRIDE(ov_VIWaitForRetrace, 0x8034f684u) {
     sunbright_wait_vi_field();
     const u32 cnt = cpu.gpr[13] - 22768u;
     mem_w32(cnt, mem_r32(cnt) + 1);
+    if (getenv("SUNBRIGHT_DBG_VIRET")) {   // who's spinning the vsync loop?
+        static unsigned long n = 0;
+        if ((n++ % 60) == 0) fprintf(stderr, "[viret] #%lu caller lr=%08x r3=%08x r31=%08x\n",
+                                     n, cpu.lr, cpu.gpr[3], cpu.gpr[31]);
+    }
 }
 
 // GXDrawDone(): the GP draw completes within a field; advance one field so Dolphin drains the FIFO,
