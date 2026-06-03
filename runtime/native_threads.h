@@ -41,6 +41,18 @@ void block(State newState);
 // the token until it next yields, then the scheduler may pick the woken thread.
 void make_ready(GuestThread*);
 
+// ── Per-fiber context-switch hooks ───────────────────────────────────────────
+// All fibers share the host thread's real thread-local storage, so any state that must
+// be per-guest-thread (the recomp tail-jmp target `g_tail_jmp`) would be clobbered when
+// another fiber runs. nthr gives each fiber one opaque `user` slot and invokes the
+// registered hooks around every context switch: `save(self)` just before a fiber yields,
+// `restore(t)` just before a fiber is granted the CPU. The runtime registers hooks that
+// move the host thread-local into/out of that slot, so the value follows the fiber rather
+// than the thread. nthr itself stays agnostic to what is saved. See docs/native_threading.md
+// step 1 (per-fiber tail-jmp).
+void   set_switch_hooks(void (*save)(GuestThread*), void (*restore)(GuestThread*));
+void*& user_slot(GuestThread*);
+
 // Bootstrap entry: the calling (non-guest) host thread grants the token to the first
 // ready thread and blocks until every spawned thread is Dead, then joins them. Used by
 // the self-test and the initial hand-off.

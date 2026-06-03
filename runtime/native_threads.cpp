@@ -18,6 +18,7 @@ struct GuestThread {
     int                   prio  = 16;
     uint64_t              ready_seq = 0;   // FIFO order among equal-priority Ready
     std::function<void()> body;
+    void*                 user  = nullptr; // per-fiber slot for saved host TLS (see hooks)
 };
 
 namespace {
@@ -27,6 +28,9 @@ std::vector<GuestThread*>  g_threads;
 GuestThread*               g_running = nullptr;   // fiber currently executing (null in sched)
 uint64_t                   g_seq = 0;
 constexpr size_t           STACK_SIZE = 1u << 20; // 1 MiB per fiber (recomp uses the C stack)
+
+void (*g_save_hook)(GuestThread*)    = nullptr;   // called when a fiber yields the CPU
+void (*g_restore_hook)(GuestThread*) = nullptr;   // called before a fiber is granted the CPU
 
 // Highest-priority Ready fiber (lowest prio number; FIFO among ties), or null.
 GuestThread* pick_next() {
@@ -51,6 +55,12 @@ void fiber_trampoline() {
 
 GuestThread* current()                   { return g_running; }
 int          priority_of(GuestThread* t) { return t->prio; }
+void*&       user_slot(GuestThread* t)   { return t->user; }
+
+void set_switch_hooks(void (*save)(GuestThread*), void (*restore)(GuestThread*)) {
+    g_save_hook    = save;
+    g_restore_hook = restore;
+}
 
 GuestThread* spawn(int priority, std::function<void()> body, bool start_ready) {
     auto* gt = new GuestThread;
@@ -72,7 +82,9 @@ void block(State newState) {
     GuestThread* self = g_running;
     self->state     = newState;
     self->ready_seq = g_seq++;            // back of the FIFO (round-robin for Ready)
+    if (g_save_hook) g_save_hook(self);   // stash this fiber's host TLS before leaving it
     swapcontext(&self->ctx, &g_sched_ctx);   // to scheduler; resumes here when rescheduled
+    // Resumed: run_and_wait already restored our TLS via g_restore_hook before swapping in.
 }
 
 void make_ready(GuestThread* t) {
@@ -95,6 +107,7 @@ void run_and_wait() {
         }
         g_running = gt;
         gt->state = State::Running;
+        if (g_restore_hook) g_restore_hook(gt);   // restore this fiber's host TLS before it runs
         swapcontext(&g_sched_ctx, &gt->ctx);   // run the fiber until it blocks or dies
         g_running = nullptr;
     }
@@ -221,6 +234,43 @@ bool test_fibers() {
             pass ? "PASS" : "FAIL", fb_jmp_ok ? "ok" : "BAD", fb_seq_n);
     return pass;
 }
+
+// Test 4: PER-FIBER host TLS (the per-fiber tail-jmp mechanism — docs step 1). All fibers
+// share the host thread's real thread_local storage, so without save/restore one fiber would
+// clobber another's `g_tail_jmp`. Each fiber writes its own marker into a shared thread_local,
+// yields (block(Ready)) — letting the other fiber overwrite the shared slot — and on resume
+// MUST still observe its own marker. The switch hooks move the thread_local into/out of the
+// fiber's `user` slot, exactly as the runtime will move g_tail_jmp. FAIL ⇒ a resumed fiber
+// would siglongjmp through another fiber's stale jmpbuf.
+thread_local void* t_shared_tls = nullptr;   // stand-in for the real g_tail_jmp thread_local
+void tls_save(GuestThread* t)    { user_slot(t) = t_shared_tls; }
+void tls_restore(GuestThread* t) { t_shared_tls = user_slot(t); }
+
+bool test_per_fiber_tls() {
+    constexpr int N = 500;
+    bool clobbered = false;
+    int  ran[2] = {0, 0};
+
+    auto work = [&](void* marker, int idx) {
+        t_shared_tls = marker;                    // this fiber's "g_tail_jmp"
+        for (int i = 0; i < N; i++) {
+            block(State::Ready);                  // yield; the other fiber overwrites t_shared_tls
+            if (t_shared_tls != marker) clobbered = true;   // must be restored to OUR marker
+            ran[idx]++;
+        }
+    };
+
+    set_switch_hooks(tls_save, tls_restore);
+    spawn(10, [&] { work((void*)0x1111, 0); }, /*start_ready=*/true);
+    spawn(10, [&] { work((void*)0x2222, 1); }, /*start_ready=*/true);
+    run_and_wait();
+    set_switch_hooks(nullptr, nullptr);           // don't leak hooks past the test
+
+    const bool pass = !clobbered && ran[0] == N && ran[1] == N;
+    fprintf(stderr, "[nthr] per_fiber_tls:     %s  (clobbered=%s ran=%d,%d)\n",
+            pass ? "PASS" : "FAIL", clobbered ? "YES" : "no", ran[0], ran[1]);
+    return pass;
+}
 }  // namespace
 
 bool self_test() {
@@ -228,6 +278,7 @@ bool self_test() {
     ok &= test_round_robin();
     ok &= test_producer_consumer();
     ok &= test_fibers();
+    ok &= test_per_fiber_tls();
     fprintf(stderr, "[nthr] self_test: %s\n", ok ? "ALL PASS" : "FAILURES");
     return ok;
 }

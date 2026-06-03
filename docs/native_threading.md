@@ -255,9 +255,18 @@ recomp-path-specific deferred-delivery and must NOT fire under the interpreter).
 The fiber scheduler (`nthr`) is built + validated in isolation. Wiring it into the game is
 the next chunk; do it in this order, verifying each against a headless run before the next:
 
-1. **Per-fiber tail-jmp.** `g_tail_jmp` in `dolphin_hook.cpp` is `thread_local`; fibers share
-   one thread's TLS, so move the jmpbuf into the running fiber's state (set on fiber resume).
-   No behavior change yet (one fiber) — verify boot/render unchanged.
+1. ✅ **Per-fiber tail-jmp (done 2026-06-03).** `g_tail_jmp` in `dolphin_hook.cpp` is
+   `thread_local`; all fibers share one host thread's TLS, so a resumed fiber would read
+   another fiber's stale jmpbuf. Built the generic mechanism in `nthr`: each fiber has one
+   opaque `user` slot + a registered `set_switch_hooks(save, restore)` pair invoked around
+   every `swapcontext` (`save(self)` before a fiber yields in `block()`, `restore(t)` before
+   a fiber is granted the CPU in `run_and_wait()`). `nthr` stays agnostic to *what* is saved;
+   the runtime will register hooks that move `g_tail_jmp` into/out of the slot when fiber 0 is
+   adopted (step 2). Proven by the `per_fiber_tls` self-test (`SUNBRIGHT_NTHR_SELFTEST=1`,
+   5/5 PASS): two fibers write distinct markers into a shared `thread_local`, yield, and each
+   observes its own marker on resume (FAIL without the hooks). Game path doesn't touch `nthr`
+   yet → boot/render unchanged (intro renders; only the known `run_jit_sync(80343fe4)`
+   audio-init stall remains — the thing steps 4–5 fix).
 2. **Adopt the boot context as fiber 0.** The EmuThread's recomp execution becomes nthr fiber
    0 holding the "CPU". Restructure so `run_and_wait` (or an equivalent) drives execution.
    This is the invasive step — verify boot/render unchanged before adding a 2nd fiber.
