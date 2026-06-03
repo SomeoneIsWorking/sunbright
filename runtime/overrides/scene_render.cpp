@@ -130,6 +130,21 @@ static const bool s_viewport_registered = [] {
     return true;
 }();
 
+// GXSetScissor(u32 left, u32 top, u32 wd, u32 ht) @ 0x80363138 (EFB pixels). The HUD positions each
+// element by its scissor rect — log them during the HUD to classify each by corner for the anchor.
+static constexpr u32 GX_SET_SCISSOR = 0x80363138u;
+static void ov_gx_scissor(CPUState& cpu) {
+    static const bool log = getenv("SUNBRIGHT_RENDERPORT_LOG") != nullptr;
+    if (log && g_in_hud)
+        std::fprintf(stderr, "[renderport] HUD GXSetScissor left=%u top=%u w=%u h=%u\n",
+                     cpu.gpr[3], cpu.gpr[4], cpu.gpr[5], cpu.gpr[6]);
+    if (RecompFunc orig = recomp_raw(GX_SET_SCISSOR)) orig(cpu); else call_ppc(cpu, cpu.lr);
+}
+static const bool s_scissor_registered = [] {
+    if (getenv("SUNBRIGHT_RENDERPORT_LOG")) register_override(GX_SET_SCISSOR, &ov_gx_scissor);
+    return true;
+}();
+
 // ── 2D draw scaffold (SUNBRIGHT_RENDERPORT) ─────────────────────────────────────────────────
 // J2DScreen::draw(int x, int y, const J2DGrafContext*) @ 0x802cfda8 — the top-level 2D screen
 // draw. Super-call wrap (recomp_raw) proven to run the original draw with no regression; r3 =

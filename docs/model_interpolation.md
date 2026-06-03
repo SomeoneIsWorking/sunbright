@@ -70,11 +70,18 @@ keyed by a stable per-model ID.
 >   un-stretching requires PRE-SQUEEZING (×0.75), which CENTRES — you can't both keep correct aspect
 >   AND reach the edges with one linear ortho (size+position are coupled). True no-stretch edge-anchor
 >   = per-element: pre-squeeze each HUD element AND reposition its scissor/ortho to its corner. The HUD
->   positions elements via per-element ortho + GXSetScissor (0x80363138); the GXSetViewport
->   (0x803630c8) is full-screen (logged under SUNBRIGHT_RENDERPORT_LOG). NEXT (fresh focus): hook
->   GXSetScissor during the HUD, log each element's scissor rect, classify by corner, pre-squeeze +
->   move scissor per element. Gameplay capture for iteration: SUNBRIGHT_SAVE_ON_HUD auto-saves a state
->   at the HUD (scratch/hud_gameplay.sav); load it with SUNBRIGHT_STATE for instant HUD iteration.
+>   (0x803630c8) is full-screen. **Investigated 2026-06-04 — NO clean per-element handle:** logged
+>   GXSetScissor (0x80363138) AND GXSetViewport during the HUD. Scissor is set ONCE per HUD frame to a
+>   single bottom strip (left=45 top=389 w=455 h=26 = the subtitle line), NOT per gauge; viewport is
+>   full-screen. So the corner gauges are positioned by their GEOMETRY inside a full-screen 2D ortho
+>   (m00=2/640, m03=-1) — no per-element scissor/viewport/ortho to retarget, and one linear ortho
+>   can't anchor BOTH corners (a single m03 shift moves all elements the same way). A true no-stretch
+>   anchor needs: (a) RE TGCConsole2::perform (0x8014083c) element-position fields — it reads each
+>   element's x/y from this+offsets; shift left-corner elements' x negative and right-corner positive
+>   so that after the ×0.75 pre-squeeze they land at the 16:9 edges (correct aspect, anchored); or
+>   (b) vertex-level interception (very deep). The SUNBRIGHT_HUD_SCALE knob is the practical interim.
+>   Gameplay capture for iteration: SUNBRIGHT_SAVE_ON_HUD auto-saves at the HUD
+>   (scratch/hud_gameplay.sav); load it with SUNBRIGHT_STATE for instant HUD iteration.
 > The right model is per-element: overlays/logo → centre (squeeze ok); fades/backdrops → fill;
 > HUD → edge-anchor. Hook the J2D/element draws, classify by object, apply per class.
 > 2. **Interpolation** — capture each object's transform, slerp prev→cur, re-present
