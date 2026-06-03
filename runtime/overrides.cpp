@@ -16,11 +16,19 @@ static std::vector<std::pair<u32, u32>>& jit_ranges() {
     return v;
 }
 
+// [lo, hi) bounding range of all override addresses — a cheap reject so the hashmap find runs only
+// for addresses that could possibly be an override. override_lookup is on the hot call_ppc path
+// (every bl/blr), so the common "not an override" case must be a couple of compares, not a hash.
+static u32 g_ov_lo = 0xFFFFFFFFu, g_ov_hi = 0;
+
 void register_override(u32 addr, RecompFunc fn) {
     override_table()[addr] = fn;
+    if (addr < g_ov_lo) g_ov_lo = addr;
+    if (addr + 4 > g_ov_hi) g_ov_hi = addr + 4;
 }
 
 RecompFunc override_lookup(u32 addr) {
+    if (addr < g_ov_lo || addr >= g_ov_hi) return nullptr;   // cheap reject (hot path)
     auto& t = override_table();
     auto it = t.find(addr);
     return it == t.end() ? nullptr : it->second;

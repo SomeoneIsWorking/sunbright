@@ -151,8 +151,14 @@ static void poll_detect(u32 ea) {
 // garbage and breaks any code that polls a hardware status bit.
 static inline u8* ram_ptr(u32 ea) {
     const u32 top = ea >> 28;
-    if ((top == 0x8 || top == 0xC) && (ea & 0x0FFFFFFF) < 0x01800000)
-        return MEM().GetPointerForRange(ea, 1);
+    if ((top == 0x8 || top == 0xC) && (ea & 0x0FFFFFFF) < 0x01800000) {
+        // Hot path: direct base+offset instead of the (non-inlined, bounds-checked)
+        // GetPointerForRange call — this runs on EVERY guest RAM access. m_ram is stable once the
+        // EmuThread is executing (memory is built before boot), so cache it.
+        static u8* base = nullptr;
+        if (!base) base = MEM().GetRAM();
+        return base ? base + (ea & 0x01FFFFFFu) : MEM().GetPointerForRange(ea, 1);
+    }
     return nullptr;
 }
 
