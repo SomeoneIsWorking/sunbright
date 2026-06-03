@@ -761,6 +761,19 @@ int main(int argc, char* argv[]) {
             g_running = false;
             break;
         }
+        // SUNBRIGHT_DBG_SAMPLE: periodic guest-PC sampler — for a silent hang, the cluster of
+        // sampled PCs shows the spin loop. Env-gated, kept (see memory keep-diagnostics).
+        static const bool dbg_sample = getenv("SUNBRIGHT_DBG_SAMPLE") != nullptr;
+        if (dbg_sample && guest_mem_ready()) {
+            static uint32_t s_last = 0;
+            uint32_t s_now = SDL_GetTicks();
+            if (s_now - s_last >= 100) {
+                s_last = s_now;
+                auto& ppc = Core::System::GetInstance().GetPPCState();
+                fprintf(stderr, "[sample] pc=%08x lr=%08x ctr=%08x r3=%08x\n",
+                        ppc.pc, ppc.spr[SPR_LR], ppc.spr[SPR_CTR], ppc.gpr[3]);
+            }
+        }
         // Once the video backend's presenter exists, sync the swapchain to the
         // current window size once — the window may have been sized by the WM after
         // the swapchain was first created at boot (otherwise: black band).
