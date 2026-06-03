@@ -890,14 +890,20 @@ int main(int argc, char* argv[]) {
             //   this LOADS into gameplay directly, no opening cutscene) and clear any confirm. This
             //   is what reaches the in-game HUD so SUNBRIGHT_2DID can capture the gameplay elements.
             //   (Pulse, don't hold, so the game sees discrete presses.)
-            if (t < 18000) {
+            // Reach the in-game HUD by LOADING file A's existing save (the leftmost file — it has a
+            // save, so it loads straight to Delfino Plaza, no opening cutscene). Pressing A on an
+            // empty "New" slot instead starts a new game (the plane cutscene), so we must land on
+            // file A specifically:
+            //   t<15s : Start  — title + skip the THP intro movie.
+            //   15–28s: LEFT   — walk Mario all the way onto file A (leftmost; can't overshoot).
+            //   28s+  : A      — pulse A to load the now-selected file A.
+            if (t < 15000) {
                 if ((t % 800) < 160) bits = P_START;
-            } else {
-                // At the file-select Mario must WALK onto a file box before A selects it. Hold LEFT
-                // to walk onto file A (which has a save → loads straight into gameplay), and pulse A
-                // to enter/confirm. This is what reaches the in-game HUD for SUNBRIGHT_2DID.
+            } else if (t < 28000) {
                 bits = P_LEFT;
-                if ((t % 1600) < 240) bits = P_A;
+            } else {
+                bits = P_LEFT;                       // keep pinned on file A
+                if ((t % 1600) < 240) bits = P_A;    // …and press A to load it
             }
             g_pad.store(bits, std::memory_order_relaxed);
         }
