@@ -51,6 +51,7 @@
 #include "InputCommon/InputConfig.h"
 #include "InputCommon/ControllerEmu/ControllerEmu.h"
 #include "VideoCommon/VideoConfig.h"   // AspectMode
+#include "Core/State.h"                // save states (boot directly into a saved game)
 #include "probe_server.h"
 #include "watchdog.h"
 #include "VideoCommon/Present.h"       // g_presenter (surface resize)
@@ -86,6 +87,9 @@ enum PadBit : uint32_t {
     P_UP = 1u<<8, P_DOWN = 1u<<9, P_LEFT = 1u<<10, P_RIGHT = 1u<<11,
 };
 static std::atomic<uint32_t> g_pad{0};
+// VI fields presented — a mode-independent measure of GAME progress (unlike wall time, it doesn't
+// change with the frame-dump throttle). Used to load a save state only once the game is past boot.
+static std::atomic<uint64_t> g_present_fields{0};
 // REPL-driven pad bits, OR'd with the keyboard bits so scripted input and the
 // keyboard coexist (SUNBRIGHT_REPL).
 static std::atomic<uint32_t> g_repl_bits{0};
@@ -798,6 +802,16 @@ int main(int argc, char* argv[]) {
                         Host_RendererIsFullscreen() ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP);
                 else if (ev.key.keysym.sym == SDLK_F5 && getenv("SUNBRIGHT_FINDMARIO"))
                     findmario_step();   // cheat-search: snapshot on your cue
+                else if (ev.key.keysym.sym == SDLK_F2) {   // save state (default scratch/quick.sav)
+                    const char* p = getenv("SUNBRIGHT_SAVE_STATE"); if (!p) p = "scratch/quick.sav";
+                    State::SaveAs(Core::System::GetInstance(), p);
+                    fprintf(stderr, "[state] F2 saved -> %s\n", p);
+                } else if (ev.key.keysym.sym == SDLK_F3) {  // load state
+                    const char* p = getenv("SUNBRIGHT_STATE"); if (!p) p = getenv("SUNBRIGHT_SAVE_STATE");
+                    if (!p) p = "scratch/quick.sav";
+                    State::LoadAs(Core::System::GetInstance(), p);
+                    fprintf(stderr, "[state] F3 loaded <- %s\n", p);
+                }
                 else if (uint32_t b = key_to_padbit(ev.key.keysym.sym)) {
                     g_pad.fetch_or(b, std::memory_order_relaxed);
                     static const bool ilog = getenv("SUNBRIGHT_MOVIESKIP_LOG") != nullptr;
@@ -828,21 +842,62 @@ int main(int argc, char* argv[]) {
         // SUNBRIGHT_AUTOSTART: input self-test. Spam Start for the first 15s, then
         // alternate holding RIGHT / LEFT every 2s — watch whether Mario walks back
         // and forth (confirms the keyboard→GCPad override actually drives the game).
-        static const bool autostart = getenv("SUNBRIGHT_AUTOSTART") != nullptr;
+        // ── Save states — boot directly into a saved game (SUNBRIGHT_STATE=<file>) ───────────────
+        // SUNBRIGHT_STATE=<file>  : once the core is running + settled, load this state → instant
+        //                           gameplay (no title/file-select). F3 also loads it.
+        // SUNBRIGHT_SAVE_STATE=<file> [+ SUNBRIGHT_SAVE_AT=<sec>] : F2 (or auto at <sec>) writes a
+        //                           state — play to the moment you want once, then reload it forever.
+        static const char* state_load = getenv("SUNBRIGHT_STATE");
+        static const char* state_save = getenv("SUNBRIGHT_SAVE_STATE");
+        {
+            // Subscribe (lazily, once video is up) to count presented VI fields.
+            static Common::EventHook field_hook; static bool subscribed = false;
+            if (state_load && !subscribed && guest_mem_ready()) {
+                subscribed = true;
+                field_hook = GetVideoEvents().vi_end_field_event.Register(
+                    [] { g_present_fields.fetch_add(1, std::memory_order_relaxed); });
+            }
+            // Load only once the game is past the boot logos. Loading too early doesn't take, and the
+            // right threshold is in GAME progress (VI fields), not wall time — wall time is fooled by
+            // the frame-dump throttle. ~1500 fields ≈ 25 s of game-time ≈ the title screen.
+            // SUNBRIGHT_STATE_FIELDS overrides the threshold; F3 loads manually any time.
+            static bool loaded = false;
+            static const uint64_t need = getenv("SUNBRIGHT_STATE_FIELDS")
+                ? (uint64_t)atoll(getenv("SUNBRIGHT_STATE_FIELDS")) : 1500;
+            if (state_load && !loaded && guest_mem_ready()
+                && g_present_fields.load(std::memory_order_relaxed) >= need) {
+                loaded = true;
+                State::LoadAs(Core::System::GetInstance(), state_load);
+                fprintf(stderr, "[state] loaded %s after %llu fields — in the saved game directly\n",
+                        state_load, (unsigned long long)g_present_fields.load());
+            }
+            static const uint32_t save_at = getenv("SUNBRIGHT_SAVE_AT") ? (uint32_t)(atof(getenv("SUNBRIGHT_SAVE_AT")) * 1000) : 0;
+            static bool saved = false;
+            if (state_save && save_at && !saved && guest_mem_ready() && SDL_GetTicks() >= save_at) {
+                saved = true;
+                State::SaveAs(Core::System::GetInstance(), state_save);
+                fprintf(stderr, "[state] saved to %s\n", state_save);
+            }
+        }
+
+        // Autostart drives the menus; skip it entirely when we're loading a state (already in-game).
+        static const bool autostart = getenv("SUNBRIGHT_AUTOSTART") != nullptr && !getenv("SUNBRIGHT_STATE");
         if (autostart) {
             const uint32_t t = SDL_GetTicks();
             uint32_t bits = 0;
-            if (t < 60000) {
-                // Drive through the menus: Start (title + skip THP intro movie), A (select a file).
-                if      ((t % 1000) < 200) bits = P_START;
-                else if ((t % 1000) < 400) bits = P_A;
+            // Phase 1 (0–18s): spam Start — title screen + skip the THP intro movie.
+            // Phase 2 (18s+):  spam A — select the highlighted save file (file A has a save, so
+            //   this LOADS into gameplay directly, no opening cutscene) and clear any confirm. This
+            //   is what reaches the in-game HUD so SUNBRIGHT_2DID can capture the gameplay elements.
+            //   (Pulse, don't hold, so the game sees discrete presses.)
+            if (t < 18000) {
+                if ((t % 800) < 160) bits = P_START;
             } else {
-                bits = ((t / 2000) & 1) ? P_RIGHT : P_LEFT;  // hold right 2s, left 2s, …
-                static uint32_t last = 0;
-                if (t - last > 2000) { last = t;
-                    fprintf(stdout, "[autotest] %s\n", (bits & P_RIGHT) ? "RIGHT" : "LEFT");
-                    fflush(stdout);
-                }
+                // At the file-select Mario must WALK onto a file box before A selects it. Hold LEFT
+                // to walk onto file A (which has a save → loads straight into gameplay), and pulse A
+                // to enter/confirm. This is what reaches the in-game HUD for SUNBRIGHT_2DID.
+                bits = P_LEFT;
+                if ((t % 1600) < 240) bits = P_A;
             }
             g_pad.store(bits, std::memory_order_relaxed);
         }
