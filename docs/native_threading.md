@@ -254,10 +254,22 @@ the GC idle loop.
 **Fix (next):** a real idle driver in the `nthr` idle handler (already wired via `set_idle_handler`,
 currently a fail-fast). When no `nthr` thread is Ready, advance CoreTiming + deliver pending
 interrupts so the IRQ handler's native `OSWakeupThread` makes an `nthr` thread Ready, then re-pick —
-no GC idle loop, no fallback. Open design points: what PC to run for delivery (idle-thread context
-vs `CoreTiming::Idle()` + `CheckExternalExceptions()` + run the ISR), and a budget to distinguish a
-genuine deadlock. Removing the fallback is required by [[done-right-over-working]] — it is a
+no GC idle loop, no fallback. **`os_sleep_thread` then always native-parks (drop the
+`ready_count()==0` branch).** Required by [[done-right-over-working]] — the fallback is a
 known-broken stopgap, not a kept dual path.
+
+Concrete design (Dolphin API scouted 2026-06-03):
+- Save global `ppc`; set `ppc.pc = ppc.npc =` a safe idle spin and `MSR[EE]=1`. Idle-spin PC = the
+  GC IdleThread's context srr0 `mem_r32(0x803EB298 + 0x198)` if it's a valid `0x80xxxxxx` (it spins
+  with interrupts on — exactly the idle context); else scan RAM/DOL once for a `b .` (`0x48000000`).
+- Loop: `coretiming.Idle()` (zeroes `ppc.downcount` so the next step's `Advance()` fires due events)
+  then `interp.SingleStep()` (Advance raises the pending IRQ; the exception check vectors to
+  `0x80000500`; the ISR runs and calls native `OSWakeupThread` → `nthr::make_ready`). Stop the moment
+  `nthr::ready_count() > 0`; a step budget with no progress = genuine deadlock (fail-fast).
+- The idle handler runs on the parking host thread with `nthr`'s lock released (see
+  `grant_token_locked`), so `make_ready`/`ready_count` (which take the lock) are order-safe. It only
+  mutates global `ppc` (discarded when the woken thread's ctx is restored) + guest RAM/device state
+  (the real work of delivering the interrupt) — intended.
 
 ### Older notes
 SDL/present thread signals vblank waiters via the native condvar; audio-out thread signals audio
