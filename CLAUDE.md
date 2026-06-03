@@ -59,8 +59,24 @@ Useful env vars:
 - `SUNBRIGHT_WIDESCREEN=0` — disable 16:9 (default on: `GFX_ASPECT_RATIO=ForceWide` + `GFX_WIDESCREEN_HACK`; the hack widens the 3D projection so 4:3 SMS isn't stretched)
 - `SUNBRIGHT_DISABLE_RECOMP=1` — force everything through Dolphin's JIT (A/B control)
 - `SUNBRIGHT_TRACE=1` — log every recompiled function entry (very verbose)
+- `SUNBRIGHT_PROBE=1` — built-in HTTP/JSON perf probe at `http://127.0.0.1:17654/metrics`
+  (`SUNBRIGHT_PROBE_PORT` overrides). `curl` it to read live emulation speed (Dolphin
+  `GetSpeed/VPS/FPS`), the recomp-vs-interpreter call mix, interpreter step rate + its share of
+  wall time (`interp_wall_frac`), poll-yields. This is how you measure **headlessly** — run the
+  game in the background and probe it (`runtime/probe_server.cpp`).
 Graphics config is applied in `main_sdl.cpp` via `Config::SetBase` (GFX_EFB_SCALE,
 GFX_ASPECT_RATIO, GFX_WIDESCREEN_HACK) before boot.
+
+### Performance gotcha — stale persisted frame-dump config (was THE "too slow" cause)
+Dolphin **persists** the frame-dump flags to `<home>/.config/dolphin-emu/` (`DumpFrames` in
+`Dolphin.ini`, `DumpFramesAsImages` in `GFX.ini`). One past `SUNBRIGHT_DUMP=1` run leaves
+`DumpFrames=True` on disk, so EVERY later run (incl. `run.sh`) silently re-enables the FrameDumper
+— it PNG-encodes every frame on its own thread at ~95% CPU and throttles the whole emulator to
+~0.15× real-time, recomp thread idle at ~5%. `main_sdl.cpp` now sets both flags **explicitly each
+run** from `SUNBRIGHT_DUMP` (off by default). If a run is mysteriously slow, check per-thread CPU
+(`top -H -p <pid>`): a hot `FrameDumper` = this. Dump-off headless speed is ~3.7× real-time
+(uncapped); the memory-bridge RAM path is inlined (`intrinsics.h` `sb_r*/sb_w*` — host load+bswap,
+not a function call), so the recomp thread (not the dumper) is the active worker.
 
 F11 toggles fullscreen. X11 and Wayland both work (SDL2 auto-detects).
 Kill a stuck run with `timeout -s KILL N` — our clean-shutdown path can hang.
