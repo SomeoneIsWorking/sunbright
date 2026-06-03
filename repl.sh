@@ -25,7 +25,8 @@ set -eo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN="$HERE/build/sunbright"
-FIFO="${SUNBRIGHT_REPL:-/tmp/sunbright.ctl}"
+mkdir -p "$HERE/scratch/logs"
+FIFO="${SUNBRIGHT_REPL:-$HERE/scratch/sunbright.ctl}"
 
 # Args (any order): a ROM image and/or a command-script file.
 ROM="$SUNBRIGHT_ROM"
@@ -45,7 +46,7 @@ export SDL_VIDEODRIVER="${SDL_VIDEODRIVER:-x11}"
 export SUNBRIGHT_BACKEND="${SUNBRIGHT_BACKEND:-OGL}"
 export DISPLAY="${DISPLAY:-:0}"
 export SUNBRIGHT_REPL="$FIFO"
-LOG="${SUNBRIGHT_LOG:-/tmp/sunbright_repl.log}"
+LOG="${SUNBRIGHT_LOG:-$HERE/scratch/logs/sunbright_repl.log}"
 
 echo "[repl] FIFO=$FIFO   log=$LOG"
 echo "[repl] ROM=$ROM"

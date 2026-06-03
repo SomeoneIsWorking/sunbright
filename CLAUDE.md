@@ -153,7 +153,8 @@ Registered at startup in `runtime/overrides/sms_overrides.cpp`. Consulted by bot
   recomp vs Dolphin's interpreter from the same state and compares register/RAM at a
   matching exit PC. Aggregates EVERY diverging function (deduped, counted, named from
   `reference/sms_gmse01_funcs.txt`) into a frequency-sorted, incrementally-written
-  report at `/tmp/sunbright_diff_report.txt`. Each function is validated ONCE then runs
+  report at `scratch/sunbright_diff_report.txt` (override with `SUNBRIGHT_DIFF_REPORT`;
+  never /tmp — it's a small quota'd tmpfs). Each function is validated ONCE then runs
   at normal speed (so you can play through scenes); `SUNBRIGHT_DIFF_ALL=1` re-diffs every
   call; `SUNBRIGHT_DIFF_STOP=1` halts at the first divergence; `SUNBRIGHT_DIFF_RAM=1`
   also compares RAM. Skips MMIO-reading and long-loop functions (false positives).

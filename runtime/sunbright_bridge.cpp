@@ -5,6 +5,7 @@
 #include "memory_bridge.h"
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <unordered_map>
 #include <string>
 
@@ -111,7 +112,9 @@ void restore(PowerPC::PowerPCState& s, const RegSnap& r) {
 // Aggregate every recomp function that diverges from Dolphin's interpreter across
 // a play session into a prioritized, named report (instead of stopping at the
 // first). Run with SUNBRIGHT_DIFF=1; the report is rewritten incrementally to
-// /tmp/sunbright_diff_report.txt so results survive a kill.
+// scratch/sunbright_diff_report.txt (override with SUNBRIGHT_DIFF_REPORT) so results
+// survive a kill. NEVER default this to /tmp — it's a small RAM-backed tmpfs with a
+// per-user quota; large run artifacts belong under the repo's gitignored scratch/.
 struct DiffInfo { long count = 0; u32 exit_pc = 0; std::string detail; };
 static std::map<u32, DiffInfo> g_diffs;
 
@@ -148,7 +151,11 @@ static const std::map<u32, std::string>& func_names() {
 }
 
 static void write_diff_report() {
-    std::ofstream f("/tmp/sunbright_diff_report.txt");
+    const char* env = std::getenv("SUNBRIGHT_DIFF_REPORT");
+    std::string path = (env && *env) ? env : "scratch/sunbright_diff_report.txt";
+    if (auto p = std::filesystem::path(path).parent_path(); !p.empty())
+        std::filesystem::create_directories(p);
+    std::ofstream f(path);
     f << g_diffs.size() << " diverging recomp functions (most frequent first)\n\n";
     std::vector<std::pair<u32, DiffInfo>> v(g_diffs.begin(), g_diffs.end());
     std::sort(v.begin(), v.end(),

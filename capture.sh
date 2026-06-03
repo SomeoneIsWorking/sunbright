@@ -16,7 +16,8 @@ set -eo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN="$HERE/build/sunbright"
 ROM="${1:-$SUNBRIGHT_ROM}"
-LOG="${SUNBRIGHT_LOG:-/tmp/sunbright_capture.log}"
+mkdir -p "$HERE/scratch/logs"
+LOG="${SUNBRIGHT_LOG:-$HERE/scratch/logs/sunbright_capture.log}"
 OUT="$HERE/mario_candidates.txt"
 
 [[ -x "$BIN" ]] || { echo "build first: cmake --build \"$HERE/build\" --target sunbright -j\$(nproc)" >&2; exit 1; }

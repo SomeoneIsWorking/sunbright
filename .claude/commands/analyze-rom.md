@@ -22,8 +22,8 @@ Inspect the Super Mario Sunshine ROM without full recompilation.
    ```bash
    ./build/tools/recompiler/sunbright-recomp \
      "$SUNBRIGHT_ROM" \
-     --dump-dol --output /tmp/sms.dol
-   xxd /tmp/sms.dol | head -40
+     --dump-dol --output scratch/bin/sms.dol
+   xxd scratch/bin/sms.dol | head -40
    ```
 
 ## What to look for

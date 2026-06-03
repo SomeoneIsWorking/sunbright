@@ -403,7 +403,9 @@ int main(int argc, char** argv) {
     DOL dol = DOL::from_bytes(dol_bytes);
 
     if (dump_dol) {
-        if (out_dir.empty()) out_dir = "/tmp/sms.dol";
+        if (out_dir.empty()) out_dir = "scratch/bin/sms.dol";
+        if (auto p = std::filesystem::path(out_dir).parent_path(); !p.empty())
+            std::filesystem::create_directories(p);
         std::ofstream f(out_dir, std::ios::binary);
         f.write((char*)dol_bytes.data(), dol_bytes.size());
         std::cout << "DOL written to " << out_dir << " (" << dol_bytes.size() << " bytes)\n";
