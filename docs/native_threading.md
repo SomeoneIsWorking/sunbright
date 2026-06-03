@@ -65,11 +65,17 @@ because we single-step one context under `run_jit_sync` instead of switching to 
   the `run_jit_sync` loop too, via a **dedicated native-OS override set** — NOT the general
   override table (the `sms_os_intr.cpp` interrupt overrides are recomp-path-only deferred-delivery
   and must NOT fire under the interpreter).
-- **No super-call foothold for the scheduler/lifecycle funcs.** Super-calling the recompiled
-  `OSResumeThread`/`OSCreateThread` runs `__OSReschedule` → a context switch (`rfi` to another
-  thread) that never returns to its caller — the exact call-model break this effort fixes. ⇒ these
-  must be **genuinely native** (no super-call); a behaviour-neutral "trace then super-call"
-  prototype regressed boot and was reverted.
+- **Super-call foothold differs per function (verified from the recomp disasm, 2026-06-03).**
+  Earlier notes lumped `OSCreateThread` with `OSResumeThread` as un-super-callable; that is wrong.
+  - `OSResumeThread` (0x80348ee8) DOES reschedule — it calls `SelectThread` (0x803486dc) — so a
+    super-call would context-switch and never return. It must be **genuinely native** (no
+    super-call). (A behaviour-neutral "trace then super-call" prototype on it regressed boot.)
+  - `OSCreateThread` (0x80348948) is **reschedule-free** — it only calls `OSInitContext`
+    (0x803440e8) + `OSDisableInterrupts`/`OSRestoreInterrupts`, then returns normally. So it CAN be
+    super-called: the native primitive runs the recomp body to faithfully init the guest `OSThread`
+    struct (state/priority/links/context/stack-canary + active-thread list), then additionally
+    spawns the matching native host thread. Running it atomically is in fact more correct (it
+    already wraps its critical section in the interrupt primitives).
 - **Per-context PPC register file must be saved/restored at each switch.** `run_jit_sync` works on
   the single global `ppc`; a context that blocks inside it has live state there. This is the
   OSContext save/load the GC scheduler did, done natively — wire it via the step-1 switch hooks
@@ -181,10 +187,18 @@ through the hooks, survives a yield to another thread.
    thread, so no extra `DeclareAsCPUThread` for thread 0 (needed when a *different* host thread
    takes the token, step 4). Verified: boot reaches the **identical** stall point
    (`run_jit_sync 80343fe4→803488c0`, same step budget) — inert with only thread 0, no regression.
-4. **Native `OSCreateThread`/`OSResumeThread`.** Spawn a host thread whose body runs recomp from
-   the entry PC; map guest `OSThread*` ↔ `nthr::GuestThread*`; keep `0x800000E4` + state/priority
-   coherent; PPC register file saved/restored per context via the step-1 hooks. Verify the 5 boot
-   threads spawn as host threads.
+4. **Native `OSCreateThread`/`OSResumeThread`.**
+   - 4a **`OSCreateThread`** (super-call the reschedule-free recomp body for faithful struct init,
+     then spawn the matching `nthr` host thread SUSPENDED; map guest `OSThread*` ↔
+     `nthr::GuestThread*`). Verify the 5 boot threads spawn as host threads and boot still reaches
+     the identical stall (threads parked, no regression). ← next concrete step.
+   - 4b **`OSResumeThread`** (genuinely native — it reschedules via `SelectThread`, no super-call):
+     decrement the guest suspend count, and when runnable `nthr::make_ready` the mapped thread.
+     Best landed WITH step 5, since a resumed thread only actually runs once thread 0 yields at a
+     native block point. The body runs recomp from the entry PC on its own host stack; PPC register
+     file saved/restored per context via the step-1 hooks; keep `0x800000E4` + state/priority
+     coherent. A guest thread that runs on a non-EmuThread host thread needs `DeclareAsCPUThread`
+     while it holds the token.
 5. **Native `OSSleepThread`/`OSWakeupThread` → `OSSendMessage`/`OSReceiveMessage` → mutex/cond.**
    Blocking = release token, condvar-wait, reacquire; PPC scheduler never run. **Verify the
    audio-init stall clears** (no step-budget abort, no `JUTException`, audio assets load at
