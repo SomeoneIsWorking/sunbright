@@ -139,25 +139,39 @@ Keep guest-visible state coherent throughout (write `OSThread.state`, the `0x800
 links) so game code inspecting them still sees the truth.
 
 ## Built + validated in isolation
-`runtime/native_threads.{h,cpp}` (`SUNBRIGHT_NTHR_SELFTEST=1`, 5/5 PASS): scheduler core —
-`spawn`/`block`/`make_ready`/`run_and_wait`, highest-priority-Ready (FIFO among ties), parking
-with no spin; the SMS producer/consumer starvation pattern (lower-prio consumer not starved); and
-per-context switch hooks (`set_switch_hooks(save, restore)` invoked around each context switch,
-agnostic to *what* is saved — the runtime registers hooks that move `g_tail_jmp` + the PPC
-register file in/out of each context's slot). NOT yet wired into the game.
+`runtime/native_threads.{h,cpp}` (`SUNBRIGHT_NTHR_SELFTEST=1`, 3/3 PASS, stable over 8 runs):
+**host-thread substrate** (one `std::thread` per guest thread, serialised by a single CPU token
+= `g_running`; block = park on the thread's own condvar, no spin). Scheduler core —
+`spawn`/`block`/`make_ready`/`run_and_wait`, highest-priority-Ready (FIFO among ties); the SMS
+producer/consumer starvation pattern (lower-prio consumer not starved, and `concurrent=no` now
+genuinely proves token mutual exclusion across real OS threads); and per-context switch hooks
+(`set_switch_hooks(save, restore)` invoked around each token hand-off, agnostic to *what* is
+saved). NOT yet wired into the game.
+
+Converted from the validated fiber prototype on 2026-06-03 (the dropped substrate): park/resume
+is now a host-thread condvar instead of `swapcontext`; the scheduler logic and switch-hook
+mechanism carried over unchanged. **`g_tail_jmp` no longer needs the hook** — it is `thread_local`
+and each guest thread is now a real host thread, so it is per-guest-thread for free. The switch
+hook now carries only the **global PPC register file** (the single `ppc` that `run_jit_sync`
+drives), which all guest threads share and must be swapped on each hand-off. The self-test's
+`per_thread_ctx` case validates exactly this: a non-`thread_local` global slot, saved/restored
+through the hooks, survives a yield to another thread.
 
 ## Integration checklist (each step independently verifiable; verify against a headless run)
-1. ✅ **Per-context switch hooks** (done 2026-06-03, substrate-agnostic — see above). Game path
-   untouched → boot/render unchanged.
+1. ✅ **Host-thread substrate + per-context switch hooks** (done 2026-06-03 — see above).
+   `nthr` is now host threads + CPU token + condvar park (fiber/`swapcontext` prototype retired);
+   validated in isolation (`SUNBRIGHT_NTHR_SELFTEST`, 3/3, stable). Game path untouched →
+   boot/render unchanged. Remaining for step 3: adopt the EmuThread as guest thread 0 and wire the
+   token into the live game.
 2. **Scoped native-OS interception (the gating sub-goal).** `run_jit_sync` (and `call_ppc`) consult
    a **dedicated native-OS override set** so an OS primitive fires even when reached under the
    interpreter — keep interrupt overrides recomp-path-only. There is no behaviour-neutral
    super-call foothold, so deliver this **together with the first genuinely native primitive**, not
    alone. Verify the lifecycle/sync calls are now intercepted during boot→audio-init via
    `SUNBRIGHT_OSWATCH` (previously zero).
-3. **Host-thread substrate + CPU token.** Adopt the EmuThread as guest thread 0; global token
-   serialises contexts; `DeclareAsCPUThread` while holding it. Verify boot/render unchanged with
-   only thread 0 active.
+3. **Wire the host-thread substrate into the game (substrate itself done, step 1).** Adopt the
+   EmuThread as guest thread 0; the `nthr` CPU token serialises contexts; `DeclareAsCPUThread`
+   while holding it. Verify boot/render unchanged with only thread 0 active.
 4. **Native `OSCreateThread`/`OSResumeThread`.** Spawn a host thread whose body runs recomp from
    the entry PC; map guest `OSThread*` ↔ `nthr::GuestThread*`; keep `0x800000E4` + state/priority
    coherent; PPC register file saved/restored per context via the step-1 hooks. Verify the 5 boot

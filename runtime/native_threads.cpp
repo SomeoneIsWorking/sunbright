@@ -1,38 +1,47 @@
 #include "native_threads.h"
 
 #include <atomic>
-#include <csetjmp>
+#include <condition_variable>
 #include <cstdio>
-#include <ucontext.h>
+#include <mutex>
+#include <thread>
 #include <vector>
 
 namespace nthr {
 
-// Guest threads are FIBERS multiplexed on ONE host thread (see docs/native_threading.md:
-// keeps Dolphin's single CPU-thread identity, avoids IsCPUThread/s_core_mutex). Cooperative
-// + single-threaded ⇒ no locks: only the running fiber (or the scheduler) executes at a time.
+// Guest threads are REAL host threads (one std::thread each), serialised by a single CPU
+// token so that — as on the single-core GameCube — exactly one runs guest/Dolphin code at a
+// time (see docs/native_threading.md: host-thread substrate, fibers dropped). A thread that
+// blocks parks on its own condition variable; the token is handed to the highest-priority
+// Ready thread. No busy-spin, no step budget, no timing dependence.
+//
+// The token is `g_running`: a thread executes its body only while `g_running == self`; every
+// other live thread is parked in `cv.wait` (lock released). Token hand-off happens under
+// `g_mtx`, whose acquire/release also publishes the body's writes (e.g. the global PPC
+// register file) to the next thread — so the plain ints the tests touch "only by the token
+// holder" are safe without extra synchronisation.
 struct GuestThread {
-    ucontext_t            ctx;
-    std::vector<char>     stack;
-    State                 state = State::Blocked;
-    int                   prio  = 16;
-    uint64_t              ready_seq = 0;   // FIFO order among equal-priority Ready
-    std::function<void()> body;
-    void*                 user  = nullptr; // per-fiber slot for saved host TLS (see hooks)
+    std::thread             host;
+    std::condition_variable cv;          // parked here until granted the token
+    State                   state = State::Blocked;
+    int                     prio  = 16;
+    uint64_t                ready_seq = 0;   // FIFO order among equal-priority Ready
+    std::function<void()>   body;
+    void*                   user  = nullptr; // per-thread slot for saved global ctx (see hooks)
 };
 
 namespace {
 
-ucontext_t                 g_sched_ctx;     // the scheduler loop's context (run_and_wait)
+std::mutex                 g_mtx;            // guards the token and the registry
+std::condition_variable    g_idle_cv;       // run_and_wait() parks here while a thread runs
 std::vector<GuestThread*>  g_threads;
-GuestThread*               g_running = nullptr;   // fiber currently executing (null in sched)
+GuestThread*               g_running = nullptr;   // the token holder (null ⇒ scheduler idle)
 uint64_t                   g_seq = 0;
-constexpr size_t           STACK_SIZE = 1u << 20; // 1 MiB per fiber (recomp uses the C stack)
 
-void (*g_save_hook)(GuestThread*)    = nullptr;   // called when a fiber yields the CPU
-void (*g_restore_hook)(GuestThread*) = nullptr;   // called before a fiber is granted the CPU
+void (*g_save_hook)(GuestThread*)    = nullptr;   // called on the thread giving up the token
+void (*g_restore_hook)(GuestThread*) = nullptr;   // called for the thread about to get it
 
-// Highest-priority Ready fiber (lowest prio number; FIFO among ties), or null.
+// Highest-priority Ready thread (lowest prio number; FIFO among ties), or null.
 GuestThread* pick_next() {
     GuestThread* best = nullptr;
     for (auto* t : g_threads) {
@@ -44,11 +53,34 @@ GuestThread* pick_next() {
     return best;
 }
 
-// Entry trampoline for every fiber: run its body, mark dead, return to the scheduler.
-void fiber_trampoline() {
-    g_running->body();
-    g_running->state = State::Dead;
-    swapcontext(&g_running->ctx, &g_sched_ctx);   // back to scheduler; never resumes
+// Give up the token: save `outgoing`'s context, pick the next Ready thread, restore its
+// context and wake it (or wake run_and_wait() if nothing is runnable). Caller holds g_mtx.
+// `outgoing` is null when the bootstrap thread grants the token without owning one.
+void grant_token_locked(GuestThread* outgoing) {
+    if (outgoing && g_save_hook) g_save_hook(outgoing);   // stash the global ctx into its slot
+    GuestThread* next = pick_next();
+    g_running = next;
+    if (next) {
+        next->state = State::Running;
+        if (g_restore_hook) g_restore_hook(next);         // load the global ctx from its slot
+        next->cv.notify_one();
+    } else {
+        g_idle_cv.notify_all();   // nobody runnable — hand control back to run_and_wait()
+    }
+}
+
+// Body trampoline for every host thread: wait for the token, run the body, then die and
+// hand the token on. Never reacquires the token after the body returns.
+void thread_main(GuestThread* self) {
+    std::unique_lock<std::mutex> lk(g_mtx);
+    while (g_running != self) self->cv.wait(lk);   // restore_hook already ran for us
+    lk.unlock();
+
+    self->body();
+
+    lk.lock();
+    self->state = State::Dead;
+    grant_token_locked(self);     // pass the token on; we never get it back
 }
 
 }  // namespace
@@ -63,55 +95,53 @@ void set_switch_hooks(void (*save)(GuestThread*), void (*restore)(GuestThread*))
 }
 
 GuestThread* spawn(int priority, std::function<void()> body, bool start_ready) {
+    std::unique_lock<std::mutex> lk(g_mtx);
     auto* gt = new GuestThread;
     gt->prio      = priority;
     gt->body      = std::move(body);
     gt->state     = start_ready ? State::Ready : State::Blocked;
     gt->ready_seq = g_seq++;
-    gt->stack.resize(STACK_SIZE);
-    getcontext(&gt->ctx);
-    gt->ctx.uc_stack.ss_sp   = gt->stack.data();
-    gt->ctx.uc_stack.ss_size = gt->stack.size();
-    gt->ctx.uc_link          = &g_sched_ctx;
-    makecontext(&gt->ctx, fiber_trampoline, 0);
     g_threads.push_back(gt);
+    gt->host = std::thread(thread_main, gt);   // parks on cv until granted the token
     return gt;
 }
 
 void block(State newState) {
+    std::unique_lock<std::mutex> lk(g_mtx);
     GuestThread* self = g_running;
     self->state     = newState;
     self->ready_seq = g_seq++;            // back of the FIFO (round-robin for Ready)
-    if (g_save_hook) g_save_hook(self);   // stash this fiber's host TLS before leaving it
-    swapcontext(&self->ctx, &g_sched_ctx);   // to scheduler; resumes here when rescheduled
-    // Resumed: run_and_wait already restored our TLS via g_restore_hook before swapping in.
+    grant_token_locked(self);            // save our ctx, hand the token to the next thread
+    while (g_running != self) self->cv.wait(lk);   // park until the token returns to us
+    // Resumed: grant_token_locked already restored our ctx via g_restore_hook.
 }
 
 void make_ready(GuestThread* t) {
+    std::unique_lock<std::mutex> lk(g_mtx);
     if (t->state == State::Blocked) {
         t->state     = State::Ready;
         t->ready_seq = g_seq++;
     }
+    // Cooperative: the running thread keeps the token until it next blocks; no preemption.
 }
 
 void run_and_wait() {
+    std::unique_lock<std::mutex> lk(g_mtx);
+    grant_token_locked(nullptr);          // hand the token to the first Ready thread
     for (;;) {
-        GuestThread* gt = pick_next();
-        if (!gt) {
-            bool any_alive = false;
-            for (auto* t : g_threads)
-                if (t->state != State::Dead) { any_alive = true; break; }
-            if (any_alive)   // blocked with no waker — no idle/driver in the core yet
-                fprintf(stderr, "[nthr] deadlock: no Ready fiber but threads still alive\n");
+        bool any_alive = false;
+        for (auto* t : g_threads)
+            if (t->state != State::Dead) { any_alive = true; break; }
+        if (!any_alive) break;
+        if (!g_running) {   // blocked with no waker — no idle/driver in the core yet
+            fprintf(stderr, "[nthr] deadlock: no Ready thread but threads still alive\n");
             break;
         }
-        g_running = gt;
-        gt->state = State::Running;
-        if (g_restore_hook) g_restore_hook(gt);   // restore this fiber's host TLS before it runs
-        swapcontext(&g_sched_ctx, &gt->ctx);   // run the fiber until it blocks or dies
-        g_running = nullptr;
+        g_idle_cv.wait(lk);   // a thread holds the token; wait until it goes idle/dies
     }
-    for (auto* t : g_threads) delete t;
+    lk.unlock();
+
+    for (auto* t : g_threads) { if (t->host.joinable()) t->host.join(); delete t; }
     g_threads.clear();
     g_seq = 0;
 }
@@ -183,91 +213,40 @@ bool test_producer_consumer() {
     return pass;
 }
 
-// Test 3: FIBER feasibility (the recommended execution model — see docs/native_threading.md).
-// Two cooperative fibers (ucontext) multiplexed on ONE thread via swapcontext, proving:
-//  (a) fiber context switching works and interleaves as scheduled;
-//  (b) a sigsetjmp/siglongjmp pair with a jmpbuf living on the FIBER's own stack (not
-//      thread_local) lands correctly within that fiber — this is exactly the recomp
-//      tail-handoff (g_tail_jmp) mechanism, which must become per-fiber once guest threads
-//      are fibers sharing one thread's TLS. If this works, fibers are viable for guest
-//      execution without tripping Dolphin's IsCPUThread (everything stays on the EmuThread).
-ucontext_t fb_sched, fb_ctx[2];
-bool       fb_done[2] = {false, false};
-int        fb_seq[16], fb_seq_n = 0;
-bool       fb_jmp_ok = false;
+// Test 3: PER-THREAD context save/restore (the switch-hook mechanism — docs step 1). The
+// real PPC register file is a single GLOBAL (`ppc`); run_jit_sync works on it, so on every
+// token hand-off the outgoing thread's registers must be saved out of that global and the
+// incoming thread's restored into it. Here a non-thread_local global slot stands in for that
+// register file: each thread writes its own marker into the shared global, yields (letting
+// the other thread overwrite it), and on resume MUST still observe its own marker — which
+// only holds because the switch hooks move the global into/out of each thread's `user` slot.
+// FAIL ⇒ a resumed guest thread would run on another thread's registers.
+void* g_shared_ctx = nullptr;                 // stand-in for the global PPC register file
+void ctx_save(GuestThread* t)    { user_slot(t) = g_shared_ctx; }
+void ctx_restore(GuestThread* t) { g_shared_ctx = user_slot(t); }
 
-void fiber_a_fn() {
-    for (int i = 0; i < 3; i++) { fb_seq[fb_seq_n++] = 0; swapcontext(&fb_ctx[0], &fb_sched); }
-    fb_done[0] = true;                       // falls through to uc_link (= fb_sched)
-}
-void fiber_b_fn() {
-    sigjmp_buf jb;                           // on THIS fiber's stack, not thread_local
-    if (sigsetjmp(jb, 0) == 0) {
-        for (int i = 0; i < 3; i++) { fb_seq[fb_seq_n++] = 1; swapcontext(&fb_ctx[1], &fb_sched); }
-        siglongjmp(jb, 1);                   // tail-handoff style jump back into this fiber
-    } else {
-        fb_jmp_ok = true; fb_seq[fb_seq_n++] = 9;
-    }
-    fb_done[1] = true;
-}
-
-bool test_fibers() {
-    static std::vector<char> sa(128 * 1024), sb(128 * 1024);
-    fb_seq_n = 0; fb_jmp_ok = false; fb_done[0] = fb_done[1] = false;
-
-    getcontext(&fb_ctx[0]);
-    fb_ctx[0].uc_stack.ss_sp = sa.data(); fb_ctx[0].uc_stack.ss_size = sa.size();
-    fb_ctx[0].uc_link = &fb_sched; makecontext(&fb_ctx[0], fiber_a_fn, 0);
-    getcontext(&fb_ctx[1]);
-    fb_ctx[1].uc_stack.ss_sp = sb.data(); fb_ctx[1].uc_stack.ss_size = sb.size();
-    fb_ctx[1].uc_link = &fb_sched; makecontext(&fb_ctx[1], fiber_b_fn, 0);
-
-    int turn = 0, guard = 0;
-    while (!(fb_done[0] && fb_done[1]) && guard++ < 100) {
-        if (!fb_done[turn]) swapcontext(&fb_sched, &fb_ctx[turn]);
-        turn ^= 1;
-    }
-    // expected interleave 0,1,0,1,0,1 then B's longjmp lands → 9
-    const bool pass = fb_jmp_ok && fb_seq_n == 7 && fb_seq[6] == 9 &&
-                      fb_done[0] && fb_done[1];
-    fprintf(stderr, "[nthr] fibers:            %s  (siglongjmp-in-fiber=%s seq_n=%d)\n",
-            pass ? "PASS" : "FAIL", fb_jmp_ok ? "ok" : "BAD", fb_seq_n);
-    return pass;
-}
-
-// Test 4: PER-FIBER host TLS (the per-fiber tail-jmp mechanism — docs step 1). All fibers
-// share the host thread's real thread_local storage, so without save/restore one fiber would
-// clobber another's `g_tail_jmp`. Each fiber writes its own marker into a shared thread_local,
-// yields (block(Ready)) — letting the other fiber overwrite the shared slot — and on resume
-// MUST still observe its own marker. The switch hooks move the thread_local into/out of the
-// fiber's `user` slot, exactly as the runtime will move g_tail_jmp. FAIL ⇒ a resumed fiber
-// would siglongjmp through another fiber's stale jmpbuf.
-thread_local void* t_shared_tls = nullptr;   // stand-in for the real g_tail_jmp thread_local
-void tls_save(GuestThread* t)    { user_slot(t) = t_shared_tls; }
-void tls_restore(GuestThread* t) { t_shared_tls = user_slot(t); }
-
-bool test_per_fiber_tls() {
+bool test_per_thread_ctx() {
     constexpr int N = 500;
     bool clobbered = false;
     int  ran[2] = {0, 0};
 
     auto work = [&](void* marker, int idx) {
-        t_shared_tls = marker;                    // this fiber's "g_tail_jmp"
+        g_shared_ctx = marker;                    // this thread's "register file"
         for (int i = 0; i < N; i++) {
-            block(State::Ready);                  // yield; the other fiber overwrites t_shared_tls
-            if (t_shared_tls != marker) clobbered = true;   // must be restored to OUR marker
+            block(State::Ready);                  // yield; the other thread overwrites the global
+            if (g_shared_ctx != marker) clobbered = true;   // must be restored to OUR marker
             ran[idx]++;
         }
     };
 
-    set_switch_hooks(tls_save, tls_restore);
+    set_switch_hooks(ctx_save, ctx_restore);
     spawn(10, [&] { work((void*)0x1111, 0); }, /*start_ready=*/true);
     spawn(10, [&] { work((void*)0x2222, 1); }, /*start_ready=*/true);
     run_and_wait();
     set_switch_hooks(nullptr, nullptr);           // don't leak hooks past the test
 
     const bool pass = !clobbered && ran[0] == N && ran[1] == N;
-    fprintf(stderr, "[nthr] per_fiber_tls:     %s  (clobbered=%s ran=%d,%d)\n",
+    fprintf(stderr, "[nthr] per_thread_ctx:    %s  (clobbered=%s ran=%d,%d)\n",
             pass ? "PASS" : "FAIL", clobbered ? "YES" : "no", ran[0], ran[1]);
     return pass;
 }
@@ -277,8 +256,7 @@ bool self_test() {
     bool ok = true;
     ok &= test_round_robin();
     ok &= test_producer_consumer();
-    ok &= test_fibers();
-    ok &= test_per_fiber_tls();
+    ok &= test_per_thread_ctx();
     fprintf(stderr, "[nthr] self_test: %s\n", ok ? "ALL PASS" : "FAILURES");
     return ok;
 }

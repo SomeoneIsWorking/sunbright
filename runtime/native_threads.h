@@ -41,15 +41,15 @@ void block(State newState);
 // the token until it next yields, then the scheduler may pick the woken thread.
 void make_ready(GuestThread*);
 
-// ── Per-fiber context-switch hooks ───────────────────────────────────────────
-// All fibers share the host thread's real thread-local storage, so any state that must
-// be per-guest-thread (the recomp tail-jmp target `g_tail_jmp`) would be clobbered when
-// another fiber runs. nthr gives each fiber one opaque `user` slot and invokes the
-// registered hooks around every context switch: `save(self)` just before a fiber yields,
-// `restore(t)` just before a fiber is granted the CPU. The runtime registers hooks that
-// move the host thread-local into/out of that slot, so the value follows the fiber rather
-// than the thread. nthr itself stays agnostic to what is saved. See docs/native_threading.md
-// step 1 (per-fiber tail-jmp).
+// ── Per-context switch hooks ─────────────────────────────────────────────────
+// The PPC register file is a single GLOBAL (`ppc`) that run_jit_sync drives, so even though
+// each guest thread is its own host thread, the running thread's registers live in that one
+// global and must be swapped on every token hand-off. nthr gives each thread one opaque
+// `user` slot and invokes the registered hooks around every switch: `save(self)` on the
+// thread giving up the token, `restore(t)` for the thread about to get it. The runtime
+// registers hooks that move the global register file into/out of that slot, so each thread's
+// registers follow it. nthr itself stays agnostic to what is saved. See
+// docs/native_threading.md step 1.
 void   set_switch_hooks(void (*save)(GuestThread*), void (*restore)(GuestThread*));
 void*& user_slot(GuestThread*);
 
