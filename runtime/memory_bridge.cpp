@@ -96,31 +96,43 @@ static inline PowerPC::MMU& MMU_() {
 static inline bool is_gather_pipe(u32 ea) { return (ea & 0x0FFFFFFF) == 0x0C008000; }
 static inline GPFifo::GPFifoManager& GPF() { return Core::System::GetInstance().GetGPFifo(); }
 
-// ── Recomp MMIO poll-loop CoreTiming nudge ──────────────────────────────────
-// A guest busy-wait that polls a hardware status bit (DSP/ARAM/DVD/PE...) runs in recomp as a
-// tight native C loop: it never reaches a recomp→JIT boundary, so Dolphin's CoreTiming never
-// advances, the emulated device never processes, and the polled bit never changes → infinite
-// spin. (e.g. JKRAram::create polling 0xCC005016 bit0 stalls boot at 0 frames.) Under pure Dolphin
-// the CPU loop advances CoreTiming every instruction so the device completes. Fix: detect a poll
-// (many repeated reads of the SAME hardware register) and advance CoreTiming so the device runs.
-// Interrupt delivery is DEFERRED (clear MSR[EE] across the nudge — the recomp can't redirect to a
-// handler mid-function; the pending IRQ is delivered at the next recomp→JIT boundary). Only fires
-// on a confirmed tight poll, so one-off MMIO reads (incl. the DSP mailbox handshake) are untouched.
-static void mmio_poll_nudge(u32 ea) {
+// ── Recomp poll-loop progress (CoreTiming nudge / interrupt yield) ──────────
+// A guest busy-wait that polls a status flag runs in recomp as a tight native C loop: it never
+// reaches a recomp→JIT boundary, so Dolphin's CoreTiming never advances, no interrupt is delivered,
+// and the polled flag never changes → infinite spin (99.5% CPU). Pure Dolphin advances CoreTiming
+// every instruction. Fix: detect a poll (≥N repeated reads of the SAME address) and let the polled
+// thing make progress:
+//   • MMIO device register (0xCCxxxxxx): advance CoreTiming so the device updates the register;
+//     interrupt deferred (clear MSR[EE]) — recomp can't redirect to a handler mid-function.
+//     (e.g. JKRAram::create polling DSP/ARAM 0xCC005016 bit0.)
+//   • RAM flag (e.g. the GC OS idle loop's RunQueueBits): advance CoreTiming AND deliver the pending
+//     interrupt + run its ISR (sunbright_poll_yield), so the ISR (OSWakeupThread) can set the flag.
+// Only fires on a confirmed tight poll, so one-off reads (incl. the DSP mailbox handshake) and
+// normal sequential RAM access (different addresses) are untouched.
+extern void sunbright_poll_yield();   // dolphin_hook.cpp
+static thread_local bool g_in_poll_yield = false;   // re-entrancy guard (the ISR reads memory too)
+static void poll_detect(u32 ea) {
+    if (g_in_poll_yield) return;
     static u32 s_last = 0; static u32 s_reps = 0;
     if (ea != s_last) { s_last = ea; s_reps = 0; return; }
     if (++s_reps < 24) return;                 // not yet a confirmed poll loop
     s_reps = 0;
-    auto& sys = Core::System::GetInstance();
-    auto& ppc = sys.GetPPCState();
-    const u32 saved_msr = ppc.msr.Hex;
-    ppc.msr.Hex &= ~0x8000u;                    // EE=0: defer interrupt delivery (don't lose it)
-    sys.GetCoreTiming().Idle();                 // fast-forward to the next scheduled device event
-    sys.GetCoreTiming().Advance();              // process it → devices update their registers
-    ppc.msr.Hex = saved_msr;                    // restore; pending IRQ delivered at the JIT boundary
+    g_in_poll_yield = true;
+    if (ea >= 0xCC000000u) {                    // MMIO device register: advance only (defer IRQ)
+        auto& sys = Core::System::GetInstance();
+        auto& ppc = sys.GetPPCState();
+        const u32 saved_msr = ppc.msr.Hex;
+        ppc.msr.Hex &= ~0x8000u;
+        sys.GetCoreTiming().Idle();
+        sys.GetCoreTiming().Advance();
+        ppc.msr.Hex = saved_msr;
+    } else {                                    // RAM flag (idle loop): advance + deliver IRQ + ISR
+        sunbright_poll_yield();
+    }
+    g_in_poll_yield = false;
     static const bool log = getenv("SUNBRIGHT_DBG_POLL") != nullptr;
     if (log) { static long n = 0; if ((n++ & 0x3FF) == 0)
-        fprintf(stderr, "[poll] nudged CoreTiming at MMIO %08x (x%ld)\n", ea, n); }
+        fprintf(stderr, "[poll] yield at %08x (x%ld)\n", ea, n); }
 }
 
 // Fast path: main RAM only (cached 0x8xxxxxxx / uncached 0xCxxxxxxx mirrors of the
@@ -194,20 +206,20 @@ static inline void check_wild_write(u32 ea, unsigned long long val, int bits) {
 // ── Byte-swapped reads/writes (GC = big-endian, host = little-endian) ───────
 
 u8 mem_r8(u32 ea) {
+    poll_detect(ea);
     if (u8* p = ram_ptr(ea)) return *p;
-    mmio_poll_nudge(ea);
     return MMIO_R(8, ea);
 }
 
 u16 mem_r16(u32 ea) {
+    poll_detect(ea);
     if (u8* p = ram_ptr(ea)) return ((u16)p[0] << 8) | p[1];
-    mmio_poll_nudge(ea);
     return MMIO_R(16, ea);
 }
 
 u32 mem_r32(u32 ea) {
+    poll_detect(ea);
     if (u8* p = ram_ptr(ea)) return ((u32)p[0]<<24)|((u32)p[1]<<16)|((u32)p[2]<<8)|p[3];
-    mmio_poll_nudge(ea);
     return MMIO_R(32, ea);
 }
 

@@ -19,6 +19,7 @@
 #ifdef HAVE_DOLPHIN_CORE
 #  include "Core/System.h"
 #  include "Core/Core.h"
+#  include "Core/CoreTiming.h"
 #endif
 
 extern void mem_w32(u32 ea, u32 v);   // from memory_bridge
@@ -245,6 +246,23 @@ bool interp_run_until(u32 ret, long budget) {
         interp.SingleStep();
     }
     return true;
+}
+
+// Called when a recomp RAM poll loop is detected (e.g. the GC OS idle loop spinning on
+// RunQueueBits, which an ISR sets when a thread becomes runnable). The recomp runs the spin as a
+// tight native loop, so CoreTiming never advances and no interrupt is ever delivered — the polled
+// flag is never set. Advance emulated time; if interrupts are enabled and one becomes pending,
+// Advance vectors to the handler — run the ISR (so e.g. a DVD/DSP/VI ISR calls OSWakeupThread,
+// setting RunQueueBits) until it rfi's back, then the recomp's next read sees the updated flag.
+void sunbright_poll_yield() {
+    auto& sys = Core::System::GetInstance();
+    auto& ppc = sys.GetPPCState();
+    auto& ct  = sys.GetCoreTiming();
+    const u32 ret = ppc.npc;        // CheckExternalExceptions sets srr0 = npc, then pc = npc = vector
+    ct.Idle();                      // fast-forward to the next scheduled device event
+    ct.Advance();                   // process events; if EE & pending, vector ppc.pc to the ISR
+    if (ppc.pc != ret)              // an interrupt was delivered
+        interp_run_until(ret, 5'000'000);   // run the ISR until it rfi's back to `ret`
 }
 #endif
 

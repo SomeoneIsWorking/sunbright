@@ -48,6 +48,10 @@ void sunbright_run_recomp_tree(CPUState& cpu, void (*fn)(CPUState&));
 // Native-threading runtime (host-thread guest threads + guest↔host mapping). Called by the
 // native OS primitives in native_os.cpp. See dolphin_hook.cpp.
 void nthrt_spawn_guest(u32 os_thread, u32 entry, u32 param, u32 stack, int prio);  // OSCreateThread
+// Recomp RAM poll loop (e.g. the GC OS idle loop on RunQueueBits): advance CoreTiming and deliver
+// a pending interrupt + run its ISR, so an ISR can set the polled flag. See dolphin_hook.cpp.
+void sunbright_poll_yield();
+
 void nthrt_make_ready(u32 os_thread);   // OSResumeThread / OSWakeupThread (mark Ready)
 void nthrt_bind_current(u32 os_thread); // map the running thread under its authoritative OSThread*
 void nthrt_block_current();             // OSSleepThread (park current until woken)
