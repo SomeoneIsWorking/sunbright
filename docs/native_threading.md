@@ -80,6 +80,18 @@ because we single-step one context under `run_jit_sync` instead of switching to 
   the single global `ppc`; a context that blocks inside it has live state there. This is the
   OSContext save/load the GC scheduler did, done natively — wire it via the step-1 switch hooks
   when a 2nd context first runs (step 4).
+- **Dolphin's CPU-thread identity is per-host-thread and reassignable (verified 2026-06-03).**
+  `Core::IsCPUThread()` reads `static thread_local bool tls_is_cpu_thread`, set/cleared by
+  `DeclareAsCPUThread()`/`UndeclareAsCPUThread()` — no global thread id, no assert against
+  re-declaration (`externals/dolphin/.../Core.cpp:129,293`). Since the CPU **token** guarantees
+  exactly one guest thread runs at a time, each guest host thread can `DeclareAsCPUThread()` while
+  it holds the token and `UndeclareAsCPUThread()` when it yields — so a guest host thread may still
+  dip into `run_jit_sync` (the interpreter) for not-yet-native callees without tripping Dolphin's
+  `IsCPUThread` asserts. **This is what makes the host-thread substrate viable in the interim**
+  (the north-star goal of removing the interpreter dependency entirely is then an incremental
+  optimisation, not a prerequisite). Mechanism for 4b: the native blocking primitives bracket
+  `Undeclare → nthr::block → Declare`, and a freshly-scheduled guest thread body `Declare`s at
+  entry / `Undeclare`s before it exits.
 
 ## Reference: GC OS API (GMSE01) — to reimplement natively
 Lifecycle: `OSCreateThread` 0x80348948, `OSExitThread` 0x80348a68, `OSCancelThread` 0x80348b4c,
