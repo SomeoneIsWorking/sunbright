@@ -94,6 +94,15 @@ keyed by a stable per-model ID.
 >   each of those against scratch/hud_gameplay.sav, see which draws each visible element + its
 >   position field, then spread+squeeze per element. (The width-constant approach was tried and
 >   reverted — it bunched the whole HUD left; the elements aren't positioned via those constants.)
+>   **Further finding (2026-06-04):** NONE of perform's direct bl targets fire in Delfino gameplay
+>   (verified: 0x8013ebf0, 0x8014ce84, 0x8014cc20, 0x8014c7e8, 0x80148f64 hooks never hit). So the
+>   visible coins/shine/water/lives are NOT drawn by perform's direct calls — they're drawn
+>   INDIRECTLY (each is almost certainly its own JDrama::TViewObj child object, drawn via its own
+>   perform = vtable[8] dispatched indirectly; TGCConsole2::perform handles the dark overlay +
+>   dispatch). So the per-element port needs, PER ELEMENT: identify the child object (e.g. from a
+>   TGCConsole2 field / the scene graph), find its class + vtable + perform, hook it, spread+squeeze
+>   its position. That's a multi-object RE effort. The working/shipped result remains the
+>   SUNBRIGHT_HUD_SCALE knob (1.0 edge-anchored+stretch ↔ 0.75 centered+correct-aspect).
 > The right model is per-element: overlays/logo → centre (squeeze ok); fades/backdrops → fill;
 > HUD → edge-anchor. Hook the J2D/element draws, classify by object, apply per class.
 > 2. **Interpolation** — capture each object's transform, slerp prev→cur, re-present

@@ -132,6 +132,26 @@ static const bool s_counter_registered = [] {
     return true;
 }();
 
+// perform's other element-draw calls — log which actually fire in gameplay + the object/pos, to
+// pin which draws each visible element (coins/shine/water/lives/dark-overlay). Gated diagnostic.
+template <u32 ADDR>
+static void ov_hud_probe(CPUState& cpu) {
+    static const bool log = getenv("SUNBRIGHT_RENDERPORT_LOG") != nullptr;
+    if (log) { static unsigned long n = 0;
+        if (n++ < 8) std::fprintf(stderr, "[renderport] HUD draw %08x fired r3=%08x r4=%08x f1=%.1f f2=%.1f\n",
+                                  ADDR, cpu.gpr[3], cpu.gpr[4], cpu.fpr[1].ps0, cpu.fpr[2].ps0); }
+    if (RecompFunc orig = recomp_raw(ADDR)) orig(cpu); else call_ppc(cpu, cpu.lr);
+}
+static const bool s_hud_probes = [] {
+    if (getenv("SUNBRIGHT_RENDERPORT_LOG")) {
+        register_override(0x8014ce84u, &ov_hud_probe<0x8014ce84u>);
+        register_override(0x8014cc20u, &ov_hud_probe<0x8014cc20u>);
+        register_override(0x8014c7e8u, &ov_hud_probe<0x8014c7e8u>);
+        register_override(0x80148f64u, &ov_hud_probe<0x80148f64u>);
+    }
+    return true;
+}();
+
 // GXSetViewport(f32 left, f32 top, f32 w, f32 h, f32 nearZ, f32 farZ) @ 0x803630c8. Log-only during
 // the HUD (SUNBRIGHT_RENDERPORT_LOG) to learn how the HUD positions each element (per-element
 // viewport rects in EFB pixels) — that decides the no-stretch edge-anchor.
