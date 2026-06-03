@@ -92,6 +92,12 @@ round-trip, no per-call register-file copy. Implemented in `runtime/dolphin_hook
     instead would try to run the whole game inside `SingleStep` and spin. `Run` installs
     the longjmp target via `sunbright_set_tail_jmp`.
   - `cpu_to_dolphin_state` writes back XER[SO]/OV too (needed for the C return).
+  - **Context-switch handoff (`OS_LOAD_CONTEXT` 0x80343fe4):** the GC scheduler's `OSLoadContext`
+    (JIT-only) rfi's into another thread and never returns to its caller. `call_ppc` detects this
+    target and does the same `siglongjmp` handoff as `tail_ppc` — letting **Dolphin's CPU loop run
+    the GC threading** (the hybrid: Dolphin owns OS/threading, recomp owns game logic) instead of
+    spinning it under `run_jit_sync`. This cleared the audio-init boot stall. (Reimplementing the
+    GC scheduler natively was tried and abandoned — wrong layer; see `docs/native_threading.md`.)
 
 Status: boots reliably (0/16 runs crash) and renders correctly at **full coverage**
 (13460 funcs, CFG + pointer-discovery). The throughput win is in CPU-bound scenes (the
@@ -203,7 +209,10 @@ emu thread) maps it to pad 0. Keys: Enter=Start, Z=A, X=B, C=X, V=Y, Q=Z, A=L, S
 arrows=Main Stick. SI port 0 is forced to a Standard Controller. `SUNBRIGHT_AUTOSTART=1`
 pulses Start/A on a timer (headless testing — drives the intro → file-select).
 
-Reaches the interactive **file-select screen** (and 3D cutscenes) under recomp.
+Reaches the interactive **file-select screen** (and 3D cutscenes) under recomp. The audio-init
+boot stall (GC scheduler context switch spinning under `run_jit_sync`) is **fixed** by the
+`OS_LOAD_CONTEXT` handoff (see Call model) — boot now proceeds past audio init to an interactive
+state under recomp (autotest navigates menus, no step-budget abort).
 Next: gameplay/Delfino, audio output, FP/edge-case accuracy via `SUNBRIGHT_DIFF_RAM`.
 
 ## Skills (slash commands)

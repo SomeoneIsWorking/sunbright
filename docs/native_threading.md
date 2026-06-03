@@ -1,5 +1,20 @@
 # Native OS threading (PC-port model)
 
+> ## ⛔ SUPERSEDED & RESOLVED (2026-06-03) — read this first
+> This entire document describes the **native host-thread scheduler** approach to the audio-init
+> stall. **That was the wrong layer** — reimplementing the GC OS thread scheduler is building an
+> emulator, not porting (see memory `port-not-emulate`). The `nthr` scheduler is disabled; it stays
+> in the tree/history for reference only.
+>
+> **The stall is actually fixed** by a ~10-line **hybrid handoff**: the GC context-switch primitive
+> `OSLoadContext` (0x80343fe4, JIT-only) never returns to its caller, so running it synchronously
+> under `run_jit_sync` spun. `call_ppc` now hands it off to **Dolphin's CPU loop** (commit state +
+> `siglongjmp` the tail-jmp — like a tail branch); Dolphin already runs the GC threading correctly
+> (hybrid: Dolphin owns OS/threading, recomp owns game logic). Boot then proceeds past audio init to
+> an interactive state. See `runtime/dolphin_hook.cpp` (`OS_LOAD_CONTEXT` in `call_ppc`).
+>
+> The rest of this doc is retained as a record of the (superseded) investigation.
+
 ## Decision — host-thread substrate (settled 2026-06-03)
 **Guest OS threads become native host threads. We do NOT run the game's PPC scheduler, and we
 do NOT use fibers.** The GC OS HLE (thread lifecycle + sync primitives) is reimplemented in
