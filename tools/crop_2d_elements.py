@@ -15,11 +15,8 @@ EFB is presented at 16:9, so game-x maps to frame-x as:
     fy =   y/game_h * H                                (vertical is untouched)
 Tune --squeeze / --game-w if the crops are offset (root screen reports 600 wide, panes 640-ish).
 
-CAVEAT: the logged rects are pane-LOCAL (relative to the parent in the J2D layout hierarchy), so
-top-level panes crop correctly but NESTED panes (e.g. the shine icon inside a sub-menu pane) land
-offset. Absolute positioning needs accumulating the parent transforms — the drawSelf matrix (r6,
-TODO to decode) — which would also let scene_id log absolute rects directly. Until then this is a
-best-effort/eyeball tool, most reliable for whole-screen and top-level elements.
+The logged rects are the pane's GLOBAL (absolute screen) rect, so nested panes crop correctly too
+(verified: 'shn0' crops to the shine icon, 'yaji' to the OPTIONS arrow).
 """
 import argparse, os, re, sys
 

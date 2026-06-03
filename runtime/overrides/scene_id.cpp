@@ -87,8 +87,11 @@ void log_elem(const char* type, u32 id) {
     char e[80];
     if (id >= 0x80000000u && id < 0x81800000u) {
         char nm[5]; pane_name(id, nm);
-        const s32 x0 = (s32)mem_r32(id + 0x14), y0 = (s32)mem_r32(id + 0x18),
-                  x1 = (s32)mem_r32(id + 0x1c), y1 = (s32)mem_r32(id + 0x20);
+        // +0x14..0x20 is the pane-LOCAL rect; +0x24..0x30 is the GLOBAL (absolute screen) rect after
+        // layout — for a nested pane these differ (e.g. shn0 local (27,7) vs global (57,191)). Use
+        // the global one so the rect is a real screen position (and the crop tool lines up).
+        const s32 x0 = (s32)mem_r32(id + 0x24), y0 = (s32)mem_r32(id + 0x28),
+                  x1 = (s32)mem_r32(id + 0x2c), y1 = (s32)mem_r32(id + 0x30);
         std::snprintf(e, sizeof e, "  %-8s '%s' id=%08x rect=(%d,%d %dx%d)\n",
                       type, nm, id, x0, y0, x1 - x0, y1 - y0);
     } else {
