@@ -111,6 +111,27 @@ static const bool s_hud_registered = [] {
     return true;
 }();
 
+// Counter-element draw (shine/coins), called 6× from perform with r3 = the element sub-object;
+// it reads a float position from element+0x18. Log-only first (RENDERPORT_LOG) to confirm the
+// position field, toward the no-stretch fix (full-squeeze ortho + spread each element's position
+// ×1.333 around centre so it lands back at its anchor at correct size).
+static constexpr u32 HUD_COUNTER_DRAW = 0x8013ebf0u;
+static void ov_hud_counter(CPUState& cpu) {
+    static const bool log = getenv("SUNBRIGHT_RENDERPORT_LOG") != nullptr;
+    const u32 e = cpu.gpr[3];
+    if (log) {
+        static unsigned long n = 0;
+        if (n++ < 30)
+            std::fprintf(stderr, "[renderport] HUD counter#%lu e=%08x +14=%.1f +18=%.1f +1c=%.1f +20=%.1f\n",
+                         n, e, mem_rf32(e+0x14), mem_rf32(e+0x18), mem_rf32(e+0x1c), mem_rf32(e+0x20));
+    }
+    if (RecompFunc orig = recomp_raw(HUD_COUNTER_DRAW)) orig(cpu); else call_ppc(cpu, cpu.lr);
+}
+static const bool s_counter_registered = [] {
+    if (getenv("SUNBRIGHT_RENDERPORT_LOG")) register_override(HUD_COUNTER_DRAW, &ov_hud_counter);
+    return true;
+}();
+
 // GXSetViewport(f32 left, f32 top, f32 w, f32 h, f32 nearZ, f32 farZ) @ 0x803630c8. Log-only during
 // the HUD (SUNBRIGHT_RENDERPORT_LOG) to learn how the HUD positions each element (per-element
 // viewport rects in EFB pixels) — that decides the no-stretch edge-anchor.

@@ -82,6 +82,18 @@ keyed by a stable per-model ID.
 >   (b) vertex-level interception (very deep). The SUNBRIGHT_HUD_SCALE knob is the practical interim.
 >   Gameplay capture for iteration: SUNBRIGHT_SAVE_ON_HUD auto-saves at the HUD
 >   (scratch/hud_gameplay.sav); load it with SUNBRIGHT_STATE for instant HUD iteration.
+>   **No-stretch MATH (worked out):** the elements are ALREADY at the right anchors under the
+>   exemption (HUD_SCALE=1.0) — only the size is stretched. Clean fix = FULL-squeeze the HUD ortho
+>   (m00 AND m03 ×0.75 → correct aspect) AND spread each element's stored position ×1.333 about
+>   centre 320 (x' = 320 + (x−320)×1.333); spread×1.333 then squeeze×0.75 = no net position change
+>   (stays anchored) but size ×0.75 (un-stretched). **Blocker:** must do it per-element, and the
+>   element draws are not yet pinned. perform (0x8014083c) calls 0x8013ebf0 ×6 (a counter draw that
+>   reads pos at element+0x18) but those 6 are CONDITIONAL and NOT called in normal Delfino gameplay
+>   (verified — hook never fired). The visible coins/shine/water/lives/dark-overlay are drawn by the
+>   OTHER calls from perform: 0x8014ce84, 0x8014cc20, 0x8014c7e8, 0x80148f64 (+ indirect). NEXT: hook
+>   each of those against scratch/hud_gameplay.sav, see which draws each visible element + its
+>   position field, then spread+squeeze per element. (The width-constant approach was tried and
+>   reverted — it bunched the whole HUD left; the elements aren't positioned via those constants.)
 > The right model is per-element: overlays/logo → centre (squeeze ok); fades/backdrops → fill;
 > HUD → edge-anchor. Hook the J2D/element draws, classify by object, apply per class.
 > 2. **Interpolation** — capture each object's transform, slerp prev→cur, re-present
