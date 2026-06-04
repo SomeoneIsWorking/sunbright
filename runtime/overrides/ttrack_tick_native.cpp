@@ -3,15 +3,22 @@
 // after w1stLoad: force_jit bisection pins the bug uniquely to this function (force_jit 8031d83c
 // clears it 0/6; force_jit of every callee path — parser, cmd handlers, updateSeq/updateTrack/
 // mainProc — does NOT). The freeze is its phase-wrap loop never terminating, even though the
-// generated C reads as a faithful translation — i.e. a recomp execution-model issue (e.g. the
-// limit kept in guest f31 across the call to TTrack::mainProc), not a logic mistranslation.
+// generated C reads as a faithful translation. This faithful native port behaves CORRECTLY:
+// phase accumulates ~rate/tick (tempo), reaches limit, the wrap loop runs ONE iteration
+// (TTrack::mainProc drops phase below limit), repeat — normal playback (SUNBRIGHT_TICK_LOG).
 //
-// Owning it natively: limit/phase live in C locals here, immune to any guest-register clobber
-// across the callee. We super-call the (correct) recomp callees by address. SUNBRIGHT_TICK_LOG
-// dumps the wrap loop. This override is the SOLE path (always registered); the recomp body stays
-// reachable via recomp_raw(0x8031d83c) for A/B diffing only. Verified: clears the deterministic
-// post-w1stLoad freeze (was 6/6) and boots through to the intro movie / game-data load (VI fields
-// advancing), matching pure-Dolphin progress.
+// ROOT CAUSE STILL UNEXPLAINED — do NOT re-assert a guess. Ruled OUT: limit kept in guest f31
+// being clobbered across the TTrack::mainProc call (probe: f31 survived, 0 clobbers over 10 wrap
+// iterations). The recomp's own wrap loop spins where this faithful native equivalent does not;
+// the exact divergence is unknown — exactly the "issue we can't even see" this native port
+// bypasses. Flagged for a recompiler-level investigation (debugging-path branch 2): faithful
+// generated C that still diverges points at the recomp execution model, not one bad instruction.
+//
+// Owning it natively: limit/phase live in C locals; we super-call the (correct) recomp callees by
+// address. This override is the SOLE path (always registered); the recomp body stays reachable via
+// recomp_raw(0x8031d83c) for A/B diffing only. SUNBRIGHT_TICK_LOG dumps the per-tick decision +
+// wrap loop. Verified: clears the freeze (was 6/6 frozen) and boots through to the intro movie /
+// game-data load, VI fields advancing, matching pure-Dolphin (SUNBRIGHT_DISABLE_RECOMP=1) progress.
 #include "../overrides.h"
 #include "../intrinsics.h"
 #include "../dolphin_hook.h"
@@ -68,6 +75,12 @@ void ov_ttrack_tick(CPUState& cpu) {
     mem_wf32(self + 0x3ac, phase);
     phase = mem_rf32(self + 0x3ac);                    // reload (round-trip through f32, as the orig)
 
+    if (log) {
+        static int n = 0;
+        if (n++ < 40)
+            std::fprintf(stderr, "[tick] self=%08x flag=%u r2=%08x phase=%.6f limit=%.6f path=%s\n",
+                         self, flag, r2, phase, limit, (phase < limit) ? "noWrap" : "WRAP");
+    }
     if (phase < limit) {
         cpu.gpr[3]=self; cpu.gpr[4]=0; cpu.gpr[5]=1; super(cpu, UPDATE_SEQ);
     } else {
