@@ -155,28 +155,28 @@ static const bool s_hud_probes = [] {
     return true;
 }();
 
-// J2DPicture::drawFullSet(int x, int y, int w, int h, ...) @ 0x802cc838 — the HUD draws its picture
-// elements through this, and the dest rect is in the ARGS (r4..r7). In gameplay there are no menus,
-// so this is HUD-only and directly repositionable. Log the rects to map the HUD element positions.
+// J2DPicture::drawFullSet(int x, int y, int w, int h, ...) @ 0x802cc838 — used by BOTH the HUD and
+// menus (e.g. the file-select). The dest rect is in the ARGS (r4..r7). A blanket x-spread here was
+// WRONG: it shoved the centered file-select items right. Repositioning must be PER-ELEMENT, keyed by
+// the element's NAME (J2DPicture is a J2DPane → fourCC tag at this+0x10) + its draw context. This is
+// log-only for now (SUNBRIGHT_RENDERPORT_LOG) to build the complete element map before touching any.
 static constexpr u32 J2DPICTURE_DRAWFULLSET = 0x802cc838u;
+static void elem_name(u32 id, char out[5]) {
+    u32 t = (id >= 0x80000000u && id < 0x81800000u) ? mem_r32(id + 0x10) : 0;
+    for (int i = 0; i < 4; i++) { u8 c = (t >> (24 - i*8)) & 0xff; out[i] = (c >= 0x20 && c < 0x7f) ? (char)c : '.'; }
+    out[4] = 0;
+}
 static void ov_drawfullset(CPUState& cpu) {
     static const bool log = getenv("SUNBRIGHT_RENDERPORT_LOG") != nullptr;
-    if (log) { static unsigned long n = 0;
-        if (n++ < 40) std::fprintf(stderr, "[renderport] drawFullSet this=%08x rect=(%d,%d %dx%d)\n",
-                                   cpu.gpr[3], (s32)cpu.gpr[4], (s32)cpu.gpr[5], (s32)cpu.gpr[6], (s32)cpu.gpr[7]); }
-    // Edge-anchor: the 2D ortho is squeezed ×0.75 (centring), so spread this element's x by 1.333
-    // about the 320 centre — net position = the game's authored position (anchored), size = ×0.75
-    // (un-stretched). The HUD draws through drawFullSet; menus use drawSelf, so they're unaffected.
-    s32 saved_x = (s32)cpu.gpr[4];
-    if (widescreen_on()) {
-        static const float k = [] { const char* e = getenv("SUNBRIGHT_HUD_SPREAD"); return e ? (float)atof(e) : 1.0f / 0.75f; }();
-        cpu.gpr[4] = (u32)(s32)(320.0f + (saved_x - 320) * k);
+    if (log) {
+        char nm[5]; elem_name(cpu.gpr[3], nm);
+        std::fprintf(stderr, "[map] drawFullSet '%s' id=%08x rect=(%d,%d %dx%d) hud=%d\n",
+                     nm, cpu.gpr[3], (s32)cpu.gpr[4], (s32)cpu.gpr[5], (s32)cpu.gpr[6], (s32)cpu.gpr[7], (int)g_in_hud);
     }
     if (RecompFunc orig = recomp_raw(J2DPICTURE_DRAWFULLSET)) orig(cpu); else call_ppc(cpu, cpu.lr);
-    cpu.gpr[4] = (u32)saved_x;
 }
 static const bool s_drawfullset_registered = [] {
-    register_override(J2DPICTURE_DRAWFULLSET, &ov_drawfullset);   // functional (always on in widescreen)
+    if (getenv("SUNBRIGHT_RENDERPORT_LOG")) register_override(J2DPICTURE_DRAWFULLSET, &ov_drawfullset);
     return true;
 }();
 
