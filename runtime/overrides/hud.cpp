@@ -47,7 +47,13 @@ static void read_fourcc(u32 self, char out[5]) {
 
 static HudAnchor hud_anchor(const char n[5]) {
     if (n[0] == 'g' && n[1] == 'o' && std::isdigit((unsigned char)n[2]) && std::isdigit((unsigned char)n[3]))
-        return A_CENTER;
+        return A_CENTER;                                        // health "sun" segments
+    // FLUDD nozzle indicator (bottom-right, with the water gauge): nozzle icon nz<NN>, button prompt
+    // xb<NN>. (The "WATER" label w_tx and w_t1 already classify RIGHT via the cluster rules below.)
+    if (n[0] == 'n' && n[1] == 'z' && std::isdigit((unsigned char)n[2]) && std::isdigit((unsigned char)n[3]))
+        return A_RIGHT;
+    if (n[0] == 'x' && n[1] == 'b' && std::isdigit((unsigned char)n[2]) && std::isdigit((unsigned char)n[3]))
+        return A_RIGHT;
     char cl, r0, r1;
     if (n[1] == '_')      { cl = n[0]; r0 = n[2]; r1 = n[3]; }
     else if (n[2] == '_') { cl = n[1]; r0 = n[3]; r1 = 0;    }
@@ -125,18 +131,32 @@ static constexpr u32 GX_LOAD_POS_MTX_IMM = 0x80362e0cu;
 // identity position matrix then draws part of the gauge in the 2D ortho; shifting that matrix's m03
 // by +pillar moves everything that draw emits to the 16:9 right edge with the rest of the gauge.
 //   0x8014421c drawWater (water level)   0x8014487c drawJuice
-//   0x8014930c func@0x801492a4 (nozzle, "WATER" text, blue swirl background, button prompt)
+//   0x8014930c func@0x801492a4 = drawWaterBack (the blue swirl circle background)
 static constexpr u32 kGaugePosMtxLR[] = { 0x8014421cu, 0x8014487cu, 0x8014930cu };
+
+// J2DPicture::draw (0x802ccef4) loads each picture's own matrix (this+0x54) at this call site. The
+// FLUDD nozzle indicator (nozzle icon nz<NN>, "WATER" label w_tx, water w_t1, button prompt xb<NN>)
+// and the health sun go through here — NOT the quad emitter — so we anchor them here, per element by
+// name (read from this = mtx − 0x54). The matrix m03 is its on-screen X (same as go0x earlier).
+static constexpr u32 J2DPIC_DRAW_POSMTX_LR = 0x802ccfc0u;
 
 static void ov_water_posmtx(CPUState& cpu) {
     const u32 lr = cpu.lr, mtx = cpu.gpr[3];
-    bool is_gauge = false;
-    for (u32 site : kGaugePosMtxLR) if (lr == site) { is_gauge = true; break; }
+    int shift = 0;
+    // Whole-function gauge draws (drawWater/Juice/Back): shift by call site.
+    for (u32 site : kGaugePosMtxLR) if (lr == site) { shift = hud_pillar(); break; }
+    // Per-element J2DPicture::draw matrix: shift by the element's anchor (name at this+0x10 = mtx-0x44).
+    if (!shift && lr == J2DPIC_DRAW_POSMTX_LR && mtx >= 0x80000054u && mtx < 0x81800000u) {
+        char nm[5]; read_fourcc(mtx - 0x54, nm);
+        const HudAnchor a = hud_anchor(nm);
+        if (a == A_LEFT)  shift = -hud_pillar();
+        if (a == A_RIGHT) shift =  hud_pillar();
+    }
 
     f32 m03 = 0.0f; bool moved = false;
-    if (is_gauge && mtx >= 0x80000000u && mtx < 0x81800000u) {
+    if (shift && mtx >= 0x80000000u && mtx < 0x81800000u) {
         m03 = mem_rf32(mtx + 0x0c);
-        mem_wf32(mtx + 0x0c, m03 + (f32)hud_pillar());
+        mem_wf32(mtx + 0x0c, m03 + (f32)shift);
         moved = true;
     }
     if (RecompFunc orig = recomp_raw(GX_LOAD_POS_MTX_IMM)) orig(cpu);
