@@ -16,6 +16,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <sys/resource.h>
 
 #ifdef HAVE_DOLPHIN_CORE
 #  include "Core/System.h"
@@ -169,6 +170,14 @@ void watchdog_loop(int timeout_sec) {
         if (++stalled >= timeout_sec && !fired) {      // one dump per freeze episode
             dump_freeze(timeout_sec);
             fired = true;
+            // A freeze is ALWAYS fatal: report the stack trace (above) then KILL the process — a hung
+            // run must never sit forever, and headless/CI runs must surface the freeze as a non-zero
+            // exit. Not env-gated: a freeze is a bug, we always stop on it.
+            std::fprintf(stderr, "[watchdog] FROZE — killing process (exit 137).\n");
+            std::fflush(stderr);
+            struct rlimit no_core{0, 0};               // skip the multi-GB core dump (shutdown hang)
+            setrlimit(RLIMIT_CORE, &no_core);
+            _exit(137);
         }
     }
 }
