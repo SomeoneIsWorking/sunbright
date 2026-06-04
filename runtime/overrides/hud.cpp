@@ -84,30 +84,32 @@ static void ov_quad(CPUState& cpu) {
     char nm[5]; read_fourcc(self, nm);
     const HudAnchor a = hud_anchor(nm);
 
-    // Shift the element's authored X by the anchor offset right before the emitter reads it. Probe
-    // (SUNBRIGHT_HUD_PROBE) selects which field to shift so a diff shows which one positions the quad:
-    //   1 = global rect x0 (this+0x24)   2 = local rect x0/x1 (this+0x14/0x1c)   3 = both
-    // RE so far (measured by frame-diff): the EMITTER is now override-reachable (recompiler force-CFG
-    // of drawFullSet). probe=1 (global) = no change — global is consumed before the emitter. probe=2
-    // (local) DOES move elements, but the leaf's local rect is ALSO its clip rect, so left clusters
-    // get clipped off when pushed toward the edge. The clean lever is the leaf's PARENT pane (shift it
-    // once → all children + the clip move together). NEXT: walk this→parent (J2DPane parent ptr) and
-    // shift the cluster-parent's rect. Default 0 = no shift (HUD renders normally) until that lands.
-    static const int probe = getenv("SUNBRIGHT_HUD_PROBE") ? atoi(getenv("SUNBRIGHT_HUD_PROBE")) : 0;
-    const int d = (a == A_LEFT) ? -hud_pillar() : (a == A_RIGHT ? hud_pillar() : 0);
-    s32 s24 = 0, s14 = 0, s1c = 0; bool t24 = false, t1 = false;
-    if (d && self >= 0x80000000u && self < 0x81800000u) {
-        if (probe == 1 || probe == 3) { s24 = (s32)mem_r32(self+0x24); mem_w32(self+0x24, (u32)(s24+d)); t24 = true; }
-        if (probe == 2 || probe == 3) { s14 = (s32)mem_r32(self+0x14); s1c = (s32)mem_r32(self+0x1c);
-            mem_w32(self+0x14, (u32)(s14+d)); mem_w32(self+0x1c, (u32)(s1c+d)); t1 = true; }
+    // The element's screen position is the X translation (m03) of its transform matrix at this+0x84
+    // (verified: m03 == the element's 640-space screen X — counters 13, lives 223, water 515). The
+    // emitter builds the GX position matrix from this+0x84 right here, so shifting m03 by the pillar
+    // offset moves the element to its 16:9 edge — and it's a TRANSFORM, not a clip rect, so nothing
+    // is clipped away. We restore it after the draw (the matrix is persistent object state).
+    static constexpr u32 MTX84_M03 = 0x90;   // this+0x84 + 0x0c
+    f32 m03 = 0.0f; bool moved = false;
+    if ((a == A_LEFT || a == A_RIGHT) && self >= 0x80000000u && self < 0x81800000u) {
+        m03 = mem_rf32(self + MTX84_M03);
+        mem_wf32(self + MTX84_M03, m03 + (f32)(a == A_LEFT ? -hud_pillar() : hud_pillar()));
+        moved = true;
     }
 
     if (RecompFunc orig = recomp_raw(QUAD_EMITTER)) orig(cpu);
     else call_ppc(cpu, cpu.lr);
 
-    if (t24) mem_w32(self+0x24, (u32)s24);
-    if (t1)  { mem_w32(self+0x14, (u32)s14); mem_w32(self+0x1c, (u32)s1c); }
+    if (moved) mem_wf32(self + MTX84_M03, m03);   // restore persistent matrix
 }
+
+// ── FLUDD water gauge blue fill — TODO ──────────────────────────────────────────────────────────
+// The gauge's outline box (w_t0) goes through the emitter above and IS anchored. The blue liquid +
+// "WATER" + nozzle are drawn by TGCConsole2::drawWater (0x801441e0) / drawJuice (0x80144840) via a
+// J2DOrthoGraph, called DIRECTLY from perform — which runs JIT-block-linked, so overrides on those
+// functions never fire (verified). Reaching them needs the same recompiler force-CFG treatment as
+// drawFullSet but for perform (it's fragmented in the function list, so not a one-liner). Until then
+// the blue fill stays at the un-anchored 4:3 position next to the (anchored) box.
 
 static const bool s_hud_registered = [] {
     register_override(QUAD_EMITTER, &ov_quad);
