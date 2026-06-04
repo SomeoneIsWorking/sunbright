@@ -232,36 +232,11 @@ static void ov_fade_probe_fill(CPUState& cpu) {
                          r, mem_rf32(r+0), mem_rf32(r+4), mem_rf32(r+8), mem_rf32(r+0xc)); }
     if (RecompFunc o = recomp_raw(0x8013fa54u)) o(cpu); else call_ppc(cpu, cpu.lr);
 }
-// TSunGlass::draw(const JDrama::TRect&, JUtility::TColor) @ 0x8017d354 — the full-screen darkening
-// curtain (plaza fade-in etc.). It positions its quad via GXLoadPosMtxImm (a modelview matrix), drawn
-// in the squeezed 2D ortho → only covers the centre 75%. Flag the window so its modelview X is scaled
-// by 1/0.75 (ov_gx_loadposmtx) — cancels the ortho squeeze so the solid tint covers the full 16:9.
-static constexpr u32 TSUNGLASS_DRAW   = 0x8017d354u;
-static constexpr u32 GX_LOADPOSMTXIMM = 0x80362e0cu;
-static bool g_in_sunglass = false;
-static void ov_sunglass(CPUState& cpu) {
-    g_in_sunglass = true;
-    if (RecompFunc o = recomp_raw(TSUNGLASS_DRAW)) o(cpu); else call_ppc(cpu, cpu.lr);
-    g_in_sunglass = false;
-}
-// GXLoadPosMtxImm(f32 mtx[3][4], u32 id) @ 0x80362e0c — VERY hot (every 3D model). We only touch the
-// matrix while drawing the sunglass curtain: scale row 0 (the X mapping) by 1/0.75 so the quad widens
-// to cancel the ortho squeeze → full-screen tint. Restored after the original packs it.
-static void ov_gx_loadposmtx(CPUState& cpu) {
-    const u32 m = cpu.gpr[3];
-    bool patched = false; f32 r0c0 = 0, r0c3 = 0;
-    if (g_in_sunglass && widescreen_on() && m >= 0x80000000u && m < 0x81800000u) {
-        static const float k = 1.0f / 0.75f;
-        r0c0 = mem_rf32(m + 0x00); r0c3 = mem_rf32(m + 0x0c);
-        mem_wf32(m + 0x00, r0c0 * k); mem_wf32(m + 0x0c, r0c3 * k);
-        patched = true;
-    }
-    if (RecompFunc o = recomp_raw(GX_LOADPOSMTXIMM)) o(cpu); else { if (patched) { mem_wf32(m+0,r0c0); mem_wf32(m+0xc,r0c3); } call_ppc(cpu, cpu.lr); return; }
-    if (patched) { mem_wf32(m + 0x00, r0c0); mem_wf32(m + 0x0c, r0c3); }
-}
+// NOTE: the TSunGlass curtain fix via an always-registered GXLoadPosMtxImm hook gated on a
+// g_in_sunglass flag was REVERTED — that flag leaks across the tail-recursive scene draw (same leak
+// g_in_hud has), so the modelview-X scale bled onto non-curtain draws and right-shifted the
+// file-select. A correct curtain fix must NOT use a leaky draw-window flag on a hot global hook.
 static const bool s_fade_probes = [] {
-    register_override(TSUNGLASS_DRAW,   &ov_sunglass);        // functional (always on in widescreen)
-    register_override(GX_LOADPOSMTXIMM, &ov_gx_loadposmtx);
     if (getenv("SUNBRIGHT_RENDERPORT_LOG")) {
         register_override(0x802d18ecu, &ov_fade_probe_window);
         register_override(0x8013fa54u, &ov_fade_probe_fill);
