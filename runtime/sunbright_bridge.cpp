@@ -417,6 +417,7 @@ bool Run(uint32_t pc) {
     //      committed ppc.pc — just fall through to the JIT.
     static const bool trace = getenv("SUNBRIGHT_TRACE") != nullptr;
     if (trace) fprintf(stderr, "[recomp] running func_%08x\n", pc);
+    sunbright_dispatch_profile_note(pc);  // SUNBRIGHT_DISPATCH_PROFILE: which blocks bounce the boundary
     sunbright_run_recomp_tree(cpu, fn);   // shared entry/tail-jmp logic (see dolphin_hook.cpp)
     if (trace) fprintf(stderr, "[recomp] func_%08x returned\n", pc);
 #else

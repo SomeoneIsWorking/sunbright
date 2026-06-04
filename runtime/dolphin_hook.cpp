@@ -169,6 +169,43 @@ void sunbright_dump_interp_profile() {
     fflush(stderr);
 }
 
+// ── Dispatch profiler (SUNBRIGHT_DISPATCH_PROFILE) ───────────────────────────
+// Histograms the guest block addresses dispatched through the JIT→recomp boundary
+// (SunbrightBridge::Run). A spin/idle loop that bounces out to Dolphin's CPU loop every
+// iteration — instead of staying on the native C stack — shows up as the dominant entry.
+// This is what the same-address poll detector (memory_bridge.cpp) misses for a multi-address
+// wait loop: it never advances CoreTiming, so the loop crawls at a fraction of real-time.
+static const bool g_dispatch_profile = getenv("SUNBRIGHT_DISPATCH_PROFILE") != nullptr;
+static std::unordered_map<u32, unsigned long long>& dispatch_prof_map() {
+    static std::unordered_map<u32, unsigned long long> m; return m;
+}
+void sunbright_dump_dispatch_profile() {
+    if (!g_dispatch_profile) return;
+    auto& m = dispatch_prof_map();
+    std::vector<std::pair<u32, unsigned long long>> v(m.begin(), m.end());
+    std::sort(v.begin(), v.end(), [](auto& a, auto& b) { return a.second > b.second; });
+    unsigned long long total = 0;
+    for (auto& e : v) total += e.second;
+    fprintf(stderr, "\n[dispatch-profile] top JIT->recomp dispatch entries (addr  count):\n");
+    int shown = 0;
+    for (auto& e : v) {
+        if (shown++ >= 40) break;
+        fprintf(stderr, "[dispatch-profile] 0x%08x  %14llu  (%.1f%%)\n", e.first, e.second,
+                total ? 100.0 * (double)e.second / (double)total : 0.0);
+    }
+    fprintf(stderr, "[dispatch-profile] total dispatches across %zu entries: %llu\n",
+            v.size(), total);
+    fflush(stderr);
+}
+void sunbright_dispatch_profile_note(u32 pc) {
+    if (!g_dispatch_profile) return;
+    static bool registered = (atexit(sunbright_dump_dispatch_profile), true);
+    (void)registered;
+    dispatch_prof_map()[pc]++;
+    static unsigned long long since = 0;
+    if ((++since & 0x3FFFFFull) == 0) sunbright_dump_dispatch_profile();   // ~every 4M
+}
+
 // ── Tail-branch handoff ──────────────────────────────────────────────────────
 // Set by SunbrightBridge::Run for the duration of a top-level recomp entry so a tail-branch (or a
 // context switch, see call_ppc) into non-recomp code can siglongjmp back out, abandoning the
