@@ -1,5 +1,32 @@
 # Sunbright — GameCube Static Recompiler
 
+## 🛑 THE ONLY ALLOWED DEBUGGING PATH (user directive — never deviate, never propose alternatives)
+When you face a **bug / crash / hang**, follow this exact path. The user is tired of
+reiterating it — do NOT propose any other kind of solution (no env-gated fallback "to keep it
+working", no force_jit-as-fix, no skipping the function, no magic constant, no bandaid):
+
+1. **Find where** the bug/crash/hang happens.
+2. **Find its root cause** (name it — symptom gone ≠ fixed).
+3. Then, depending on what the root cause is:
+   - **Cause = behavior that wasn't recompiled and is running under Dolphin fallback** →
+     **Fix the recompiler so it stops missing that function** (recompile it).
+   - **Cause = a bug in the recompiler itself** → **Fix the recompiler, AND add a test** so
+     that exact problem can't regress.
+   - **Cause = some other behavior** → **Reverse-engineer that behavior, port it to a PC-native
+     override, and fix the problem there.**
+
+`force_jit` / `SUNBRIGHT_FORCE_JIT` / interpreter fallback are **diagnostics for bisection
+only**, NEVER the fix. The fix is always one of the three branches above. This rule overrides
+any instinct to stabilize by routing around a problem.
+
+**NO BANDAIDS — ALWAYS REVERSE-ENGINEER, PORT, AND FIX IN THE PORT.** No magic constant/offset
+to make output line up, no special-casing the failing input, no try/except-swallow, no
+retry/sleep-to-fix-a-race, no commenting-out a failing check, no hardcoded expected value, no
+"temporary" workaround. When the root cause is a game behavior, the fix lives in a faithful
+PC-native port of that behavior — understand what the original does, port it, fix it there.
+Symptom-gone ≠ fixed. If a real fix is genuinely too big right now, do NOT silently patch —
+name the proper fix and let the user decide; never slip a hack in as if it were a fix.
+
 ## What this project is
 Static recompiler for Super Mario Sunshine (GameCube/PowerPC) → native PC binary.
 ROM: `$SUNBRIGHT_ROM`
