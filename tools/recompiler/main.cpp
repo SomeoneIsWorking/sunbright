@@ -188,15 +188,65 @@ static int recompile_mode(const DiscLoader& disc, const DOL& dol, const std::str
     // the correctness harness validates the extra code and the C-call model lands.
     std::unordered_set<u32> ptr_funcs;
     if (getenv("SUNBRIGHT_DISCOVER_POINTERS")) {
-        for (const auto& s : dol.sections) {
+        // A value `v` is a function-entry candidate iff it points into .text, the first word
+        // there is real code (not padding/terminator), and it sits at a function BOUNDARY
+        // (a section start, or preceded by a terminator). The boundary test rejects interior
+        // labels and stray data addresses that happen to land in .text, so over-adding is safe
+        // (an extra real function is harmless; ptr entries never act as fend boundaries).
+        auto consider = [&](u32 v) {
+            if (v & 3) return;
+            u32 w, prev;
+            if (!text_word(v, w)) return;                // points into .text?
+            if (w == 0 || is_term(w)) return;            // first insn must be real code
+            if (is_section_start(v) || (text_word(v - 4, prev) && is_term(prev)))
+                ptr_funcs.insert(v);
+        };
+
+        // (1) Data-stored pointers (vtables, function-pointer tables): any aligned word that
+        //     looks like a .text entry.
+        for (const auto& s : dol.sections)
             for (u32 off = 0; off + 4 <= s.size; off += 4) {
                 u32 v; std::memcpy(&v, s.data.data() + off, 4); v = __builtin_bswap32(v);
-                if (v & 3) continue;
-                u32 w, prev;
-                if (!text_word(v, w)) continue;          // points into .text?
-                if (w == 0 || is_term(w)) continue;      // first insn must be real code
-                bool boundary = is_section_start(v) || (text_word(v - 4, prev) && is_term(prev));
-                if (boundary) ptr_funcs.insert(v);
+                consider(v);
+            }
+
+        // (2) CODE-materialized pointers: `lis rX,hi` then `addi/ori rY,rX,lo` builds an address
+        //     in a register. When that address lands in .text it is a function pointer passed by
+        //     value (e.g. the per-element ctor handed to __construct_array) — NOT reachable via
+        //     any data pointer or direct branch, so (1)/CFG/symbols all miss it, and it would
+        //     fall to the interpreter. We track the lis high-half per register and pair it with a
+        //     following addi/ori in the same basic block (cleared at any branch/terminator).
+        //     OPT-IN (SUNBRIGHT_DISCOVER_CODEPTRS), separate from data-pointer discovery: it also
+        //     pulls in ~454 previously-interpreted funcs incl. HW/MMU-sensitive OS code
+        //     (__OSInitMemoryProtection, OSReceiveMessage, DVDInquiryAsync) that don't recompile
+        //     cleanly yet (they need function_needs_jit-style routing / native ports first), so
+        //     enabling it as-is destabilizes boot. WIP — keep off until those are handled.
+        for (const auto& s : dol.sections) {
+            if (!getenv("SUNBRIGHT_DISCOVER_CODEPTRS")) break;
+            if (!s.is_text) continue;
+            u32 hi[32]; bool hi_ok[32] = {};
+            for (u32 off = 0; off + 4 <= s.size; off += 4) {
+                u32 w; std::memcpy(&w, s.data.data() + off, 4); w = __builtin_bswap32(w);
+                const u32 op = w >> 26;
+                const u32 f21 = (w >> 21) & 31, f16 = (w >> 16) & 31;  // the two GPR fields
+                // First CONSUME a tracked high-half (lis result still live in the base register).
+                if (op == 14 && f16 != 0 && hi_ok[f16])               // addi rD,rA,SIMM
+                    consider(hi[f16] + (u32)(s32)(s16)(w & 0xffff));
+                else if (op == 24 && hi_ok[f21])                      // ori rA,rS,UIMM (rS=f21)
+                    consider(hi[f21] | (w & 0xffff));
+                // Then UPDATE validity. SOUNDNESS RULE: pair a lis only with a following addi/ori
+                // that has NO intervening write to the base register. We don't fully decode every
+                // opcode's destination, so conservatively invalidate BOTH GPR fields of every
+                // instruction (over-invalidating only costs a missed pair → that fn falls to the
+                // interpreter, which is handled; under-invalidating would mint a BOGUS entry from a
+                // stale high-half — that crashed boot). A branch/terminator clears all (block end).
+                if (op == 15 && f16 == 0) {              // lis rD,SIMM — set the tracked high-half
+                    hi[f21] = (u32)((s32)(s16)(w & 0xffff) << 16); hi_ok[f21] = true;
+                } else if (is_term(w)) {
+                    for (bool& b : hi_ok) b = false;
+                } else {
+                    hi_ok[f21] = false; hi_ok[f16] = false;
+                }
             }
         }
         std::printf("Pointer-referenced function candidates: %zu\n", ptr_funcs.size());
