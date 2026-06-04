@@ -161,6 +161,26 @@ int main() {
         CHECK(has(lin.code, "goto lbl_80100008"), "loop back-edge is a goto");
     }
 
+    // 6. fend must come from REAL function boundaries, not pointer-discovered interior labels.
+    //    A discovered label between two real functions must collect to the next REAL boundary
+    //    (so it's a valid alternate entry), and must NOT shrink the preceding function's fend.
+    //    (The JAIBasic audio crash: checkInitDataFile re-truncated at a discovered interior label.)
+    {
+        const uint32_t cap = 0x80400000u;
+        // Two real functions: checkInitDataFile [0x80300f30, 0x803017b0) and the next one.
+        std::vector<uint32_t> real = { 0x80300f30u, 0x803017b0u };
+        // A real function: fend = the next real boundary.
+        CHECK(next_func_boundary(0x80300f30u, real, cap) == 0x803017b0u,
+              "real function fend = next real boundary");
+        // A discovered interior label inside [0x80300f30, 0x803017b0): fend = next real boundary,
+        // NOT the label itself or some nearer discovered entry → collects to the function end.
+        CHECK(next_func_boundary(0x80300fa0u, real, cap) == 0x803017b0u,
+              "discovered interior label collects to the END of its containing function");
+        // Past the last real boundary → capped at section end.
+        CHECK(next_func_boundary(0x803017b0u, real, cap) == cap,
+              "last function fend = section end (cap)");
+    }
+
     std::printf("recomp_test: %d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

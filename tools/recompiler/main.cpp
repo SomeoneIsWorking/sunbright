@@ -204,18 +204,27 @@ static int recompile_mode(const DiscLoader& disc, const DOL& dol, const std::str
 
     // Collect all functions from text sections
     for (const auto& [base, data] : dol.text_sections()) {
-        auto funcs = find_functions(data.data(), base, data.size());
-        for (u32 p : ptr_funcs)                       // merge in vtable/ptr entries
-            if (p >= base && p < base + data.size()) funcs.push_back(p);
+        // real_funcs = genuine function starts (symbol/heuristic). These — and ONLY these —
+        // delimit function ENDS (fend). Pointer-discovered entries are additional ENTRY points
+        // but must NOT act as fend boundaries: an interior label between two real functions would
+        // otherwise shrink the preceding function's fend and re-truncate it (the JAIBasic audio
+        // crash — checkInitDataFile was cut at a discovered interior label, splitting its body).
+        const u32 sec_end = base + (u32)data.size();
+        auto real_funcs = find_functions(data.data(), base, data.size());
+        std::sort(real_funcs.begin(), real_funcs.end());
+        real_funcs.erase(std::unique(real_funcs.begin(), real_funcs.end()), real_funcs.end());
+
+        auto funcs = real_funcs;                       // all recomp ENTRY points = real + discovered
+        for (u32 p : ptr_funcs)                        // merge in vtable/ptr entries
+            if (p >= base && p < sec_end) funcs.push_back(p);
         std::sort(funcs.begin(), funcs.end());
         funcs.erase(std::unique(funcs.begin(), funcs.end()), funcs.end());
         all_funcs.insert(all_funcs.end(), funcs.begin(), funcs.end());
 
-        // For each function, collect instructions until next function or bl
+        // For each entry, collect instructions until the next REAL function boundary or bl
         for (size_t fi = 0; fi < funcs.size(); fi++) {
             u32 faddr = funcs[fi];
-            u32 fend  = (fi + 1 < funcs.size()) ? funcs[fi + 1] : (base + (u32)data.size());
-            fend = std::min(fend, base + (u32)data.size());
+            u32 fend  = next_func_boundary(faddr, real_funcs, sec_end);
 
             // Force full-CFG collection for specific functions even when the global linear mode is
             // on. Linear mode stops at the first unconditional branch, which TRUNCATES functions

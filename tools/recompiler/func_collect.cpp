@@ -1,6 +1,7 @@
 #include "func_collect.h"
 #include <cstring>
 #include <map>
+#include <algorithm>
 
 std::vector<PPCInstr> collect_function(const uint8_t* data, uint32_t base, size_t size,
                                        uint32_t faddr, uint32_t fend, bool cfg) {
@@ -52,6 +53,12 @@ std::vector<PPCInstr> collect_function(const uint8_t* data, uint32_t base, size_
         }
     }
     return instrs;
+}
+
+uint32_t next_func_boundary(uint32_t faddr, const std::vector<uint32_t>& real_funcs, uint32_t cap) {
+    auto it = std::upper_bound(real_funcs.begin(), real_funcs.end(), faddr);
+    uint32_t fend = (it != real_funcs.end()) ? *it : cap;
+    return std::min(fend, cap);
 }
 
 std::unordered_set<uint32_t> intra_branch_targets(const std::vector<PPCInstr>& instrs, uint32_t faddr) {

@@ -25,3 +25,11 @@ std::vector<PPCInstr> collect_function(const uint8_t* data, uint32_t base, size_
 // Build the set of intra-function branch-target labels for an EmitContext, given the collected
 // instruction list. A target counts as intra-function when it lies in [faddr, last_instr_pc + 4).
 std::unordered_set<uint32_t> intra_branch_targets(const std::vector<PPCInstr>& instrs, uint32_t faddr);
+
+// fend for an entry = the next REAL function boundary strictly greater than `faddr` (capped at
+// `cap` = section end). `real_funcs` must be sorted ascending and contain ONLY genuine function
+// starts (symbol/heuristic boundaries), NOT pointer-discovered interior labels. Using the next
+// real boundary — rather than the next entry in the discovery-augmented list — keeps a discovered
+// interior label from shrinking its containing function's fend and re-truncating it; the label
+// instead collects to the end of that function as a valid alternate entry point.
+uint32_t next_func_boundary(uint32_t faddr, const std::vector<uint32_t>& real_funcs, uint32_t cap);
