@@ -401,7 +401,7 @@ bool Run(uint32_t pc) {
         static unsigned long n = 0;
         if ((n++ % 500) == 0) {
             u32 m = cpu.gpr[3];
-            fprintf(stderr, "[watch] %08x call#%lu r3=%08x r4=%08x", pc, n, m, cpu.gpr[4]);
+            fprintf(stderr, "[watch] %08x call#%lu lr=%08x r3=%08x r4=%08x", pc, n, cpu.lr, m, cpu.gpr[4]);
             if (m >= 0x80000000u && m < 0x81800000u)
                 fprintf(stderr, "  pos=(%.2f, %.2f, %.2f)",
                         mem_rf32(m + 12), mem_rf32(m + 28), mem_rf32(m + 44));

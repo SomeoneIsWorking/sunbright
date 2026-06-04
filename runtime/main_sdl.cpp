@@ -664,6 +664,15 @@ int main(int argc, char* argv[]) {
     // GPU thread, which reads the FIFO the gather pipe bursts to.
     Config::SetBase(Config::MAIN_CPU_THREAD, true);
 
+    // Fast disc speed: treat every DVD read as buffered (DMA-speed, no seek latency). On a PC port
+    // the asset bytes are already local, so reproducing GC disc seek/read latency is pointless — and
+    // it's actively harmful here: the boot/stage loader (TApplication::mountStageArchive) yield-spins
+    // waiting out that latency, and under recomp each spin iteration is an expensive JIT↔recomp
+    // boundary bounce (~9.8M of them = the slow "Nintendo logo"). Removing the latency makes the load
+    // complete near-instantly, so the wait resolves in a handful of iterations. (Dolphin's
+    // "Speed up Disc Transfer Rate" — faithful, just faster, no spin acrobatics.)
+    Config::SetBase(Config::MAIN_FAST_DISC_SPEED, true);
+
     // ── Graphics quality ────────────────────────────────────────────────────
     // Internal resolution scale (SUNBRIGHT_RES_SCALE, default 3 = 3× native EFB).
     {
