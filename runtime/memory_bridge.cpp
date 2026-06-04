@@ -219,6 +219,36 @@ static inline void check_wild_write(u32 ea, unsigned long long val, int bits) {
     if (ea < 0xC0000000u) trap_wild_write(ea, val, bits);
 }
 
+// ── Wild-read trap ──────────────────────────────────────────────────────────
+// The read counterpart of the wild-write trap above. A guest READ whose effective address is
+// neither main RAM (handled by ram_ptr) nor a real hardware region (all >= 0xC0000000) — e.g. the
+// reported "Invalid read from 0x01fe023e" — is a corrupted base/pointer (a pointer that lost its
+// high bit, or a read through NULL/garbage). Dolphin's MMU otherwise swallows it with a one-line
+// "Invalid read" warning and hands back garbage, so the game limps on over poison until it dies
+// somewhere downstream. That downstream death hides the real cause, so we make the ORIGINATING read
+// fatal here — the native backtrace names the exact recomp function that produced the bad address.
+[[noreturn]] static void trap_wild_read(u32 ea, int bits) {
+    fflush(stdout);
+    fprintf(stderr,
+        "\n[sunbright] FATAL wild guest read: ea=0x%08x (%d-bit)\n"
+        "  ea is outside main RAM (0x80000000-0x817FFFFF) and all hardware regions (>=0xC0000000)\n"
+        "  — a corrupted base/pointer (lost high bit, or read through NULL/garbage). This is the\n"
+        "  ORIGINATOR; Dolphin's MMU would warn 'Invalid read' and return garbage, and the game\n"
+        "  would crash later somewhere else, hiding this root cause.\n"
+        "  Native backtrace (recomp call chain, innermost first):\n",
+        ea, bits);
+    void* bt[96];
+    int n = backtrace(bt, 96);
+    backtrace_symbols_fd(bt, n, fileno(stderr));
+    fflush(stderr);
+    struct rlimit no_core{0, 0};   // skip the multi-GB core dump (see trap_wild_write)
+    setrlimit(RLIMIT_CORE, &no_core);
+    abort();
+}
+static inline void check_wild_read(u32 ea, int bits) {
+    if (ea < 0xC0000000u) trap_wild_read(ea, bits);
+}
+
 // ── Byte-swapped reads/writes (GC = big-endian, host = little-endian) ───────
 // These are the OUT-OF-LINE slow paths: MMIO, the gather pipe, the wild-write trap, and the
 // pre-memory-init RAM window (ram_ptr lazily publishes g_ram_base on first use). The hot RAM
@@ -230,18 +260,21 @@ static inline void check_wild_write(u32 ea, unsigned long long val, int bits) {
 u8 mem_r8_slow(u32 ea) {
     sb_poll_note(ea);
     if (u8* p = ram_ptr(ea)) return *p;
+    check_wild_read(ea, 8);
     return MMIO_R(8, ea);
 }
 
 u16 mem_r16_slow(u32 ea) {
     sb_poll_note(ea);
     if (u8* p = ram_ptr(ea)) return ((u16)p[0] << 8) | p[1];
+    check_wild_read(ea, 16);
     return MMIO_R(16, ea);
 }
 
 u32 mem_r32_slow(u32 ea) {
     sb_poll_note(ea);
     if (u8* p = ram_ptr(ea)) return ((u32)p[0]<<24)|((u32)p[1]<<16)|((u32)p[2]<<8)|p[3];
+    check_wild_read(ea, 32);
     return MMIO_R(32, ea);
 }
 
@@ -249,6 +282,7 @@ u64 mem_r64_slow(u32 ea) {
     if (u8* p = ram_ptr(ea))
         return ((u64)p[0]<<56)|((u64)p[1]<<48)|((u64)p[2]<<40)|((u64)p[3]<<32)
              | ((u64)p[4]<<24)|((u64)p[5]<<16)|((u64)p[6]<<8)|p[7];
+    check_wild_read(ea, 64);
     return MMIO_R(64, ea);
 }
 
