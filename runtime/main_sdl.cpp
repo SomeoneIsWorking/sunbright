@@ -31,6 +31,7 @@
 #include "Common/WindowSystemInfo.h"
 #include "Core/Boot/Boot.h"
 #include "Core/BootManager.h"
+#include "Core/ConfigManager.h"
 #include "Core/Config/GraphicsSettings.h"
 #include "Core/Config/MainSettings.h"
 #include "Core/Core.h"
@@ -599,6 +600,18 @@ int main(int argc, char* argv[]) {
             lm->SetEnable(Common::Log::LogType::VIDEO, true);
             lm->SetEnable(Common::Log::LogType::HOST_GPU, true);
         }
+    }
+
+    // Disable Dolphin JIT block-linking + branch-following by DEFAULT so every block dispatch goes
+    // through our JitTrampoline hook → ALL recompiled functions actually run as recomp and honour
+    // overrides. With these on, the JIT links/inlines blocks directly into e.g. TGCConsole2::perform
+    // and drawWater, jumping past the hook so those functions can't be owned (the FLUDD water gauge
+    // couldn't be anchored). Measured perf is identical (3.52× headless either way — the recomp does
+    // the work; the JIT only runs OS/HLE). SUNBRIGHT_JIT_LINK=1 restores the stock JIT for A/B.
+    if (!getenv("SUNBRIGHT_JIT_LINK")) {
+        SConfig::GetInstance().bJITNoBlockLinking = true;
+        Config::SetBase(Config::MAIN_JIT_FOLLOW_BRANCH, false);
+        fprintf(stderr, "[sunbright] JIT block-linking + branch-following disabled (full recomp interception)\n");
     }
 
     // Override backend via env (e.g. SUNBRIGHT_BACKEND=OGL, Vulkan, Software)
