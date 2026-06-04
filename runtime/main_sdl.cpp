@@ -766,6 +766,10 @@ int main(int argc, char* argv[]) {
     while (g_running) {
         if (run_ms && SDL_GetTicks() >= run_ms) {
             fprintf(stderr, "[sunbright] RUN_SECONDS elapsed — exiting\n");
+            // Dump the interp-step profile NOW: the atexit hook is swallowed by the
+            // multi-GB-binary core-dump shutdown hang, so the timed-exit path must dump it.
+            extern void sunbright_dump_interp_profile();
+            sunbright_dump_interp_profile();
             g_running = false;
             break;
         }

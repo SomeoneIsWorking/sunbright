@@ -264,8 +264,32 @@ static int recompile_mode(const DiscLoader& disc, const DOL& dol, const std::str
         std::sort(real_funcs.begin(), real_funcs.end());
         real_funcs.erase(std::unique(real_funcs.begin(), real_funcs.end()), real_funcs.end());
 
+        // Forced ENTRY points: real function starts reached ONLY via indirect (vtable/fn-ptr)
+        // calls that neither symbols, CFG, nor the data-pointer scan discover, so they fall
+        // through to the interpreter at runtime (SUNBRIGHT_INTERP_PROFILE flagged these as the
+        // dominant interpreter load — JAudio/THP tick methods). Verified real prologues (mfspr
+        // r0,LR; word at addr-4 is blr). Merged as ENTRY points ONLY (like ptr_funcs) — they are
+        // NOT added to real_funcs, so they never act as fend boundaries (re-truncating the
+        // preceding function — the JAIBasic-style bug). Also force-CFG below (collect whole).
+        static const std::unordered_set<u32> kForceEntry = {
+            0x8031d83cu,  // JASystem::TTrack tick (87.2% of interp steps)
+            0x8001fa88u,  // THP movie player region (6.2%)
+            0x80316ffcu,  // JASystem::Kernel portCmdInit region (2.5%)
+            0x803121acu,  // __UpdateJcToDSP__Q28JASystem6Driver (0.7%)
+            0x8031a2ecu,  // read16__Q28JASystem8TSeqCtrl (0.2%)
+            // 2nd wave: undiscovered indirect-callees the above redistributed load onto
+            // (re-profiled after forcing the first wave). Same JAudio class, verified real
+            // function starts (prologue + preceding blr).
+            0x803399ccu,  // JAudio region (44.5% of residual interp steps, long loop)
+            0x8031a50cu,  // JAudio leaf (18.5%)
+            0x8030fe50u,  // JAudio leaf (10.9%)
+            0x80313ddcu,  // JAudio region (9.2%)
+        };
+
         auto funcs = real_funcs;                       // all recomp ENTRY points = real + discovered
         for (u32 p : ptr_funcs)                        // merge in vtable/ptr entries
+            if (p >= base && p < sec_end) funcs.push_back(p);
+        for (u32 p : kForceEntry)                      // merge in forced indirect-call entries
             if (p >= base && p < sec_end) funcs.push_back(p);
         std::sort(funcs.begin(), funcs.end());
         funcs.erase(std::unique(funcs.begin(), funcs.end()), funcs.end());
@@ -288,7 +312,13 @@ static int recompile_mode(const DiscLoader& disc, const DOL& dol, const std::str
             //     when they return. Linear-truncated, they'd tail_ppc out (siglongjmp) and never
             //     return to the override → its scope flag would leak and shift the whole screen. Whole
             //     (force-CFG) they end in blr and return cleanly.
-            static const std::unordered_set<u32> kForceCFG = { 0x802cc838u, 0x801441e0u, 0x80144840u };
+            static const std::unordered_set<u32> kForceCFG = {
+                0x802cc838u, 0x801441e0u, 0x80144840u,
+                // Forced indirect-call entries (see kForceEntry above) — collect whole so linear
+                // mode doesn't truncate them mid-body into a JIT bounce (defeats the purpose).
+                0x8031d83cu, 0x8001fa88u, 0x80316ffcu, 0x803121acu, 0x8031a2ecu,
+                0x803399ccu, 0x8031a50cu, 0x8030fe50u, 0x80313ddcu,
+            };
 
             // Collection (linear-truncate vs full-CFG) is extracted to func_collect.{h,cpp} and
             // unit-tested (tools/recompiler/tests) — its behaviour repeatedly broke assumptions.
