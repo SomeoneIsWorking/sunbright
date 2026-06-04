@@ -9,6 +9,7 @@
 #include <sys/resource.h>
 
 bool g_recomp_touched_mmio = false;
+bool g_recomp_context_switched = false;
 
 // ── GX matrix-load tap (SUNBRIGHT_GXCAP=1) ───────────────────────────────────
 // Every model's transform reaches the GPU as an XF matrix-load through the write-
@@ -227,7 +228,7 @@ static inline void check_wild_write(u32 ea, unsigned long long val, int bits) {
 // "Invalid read" warning and hands back garbage, so the game limps on over poison until it dies
 // somewhere downstream. That downstream death hides the real cause, so we make the ORIGINATING read
 // fatal here — the native backtrace names the exact recomp function that produced the bad address.
-[[noreturn]] static void trap_wild_read(u32 ea, int bits) {
+static void report_wild_read(u32 ea, int bits) {
     fflush(stdout);
     fprintf(stderr,
         "\n[sunbright] FATAL wild guest read: ea=0x%08x (%d-bit)\n"
@@ -241,12 +242,23 @@ static inline void check_wild_write(u32 ea, unsigned long long val, int bits) {
     int n = backtrace(bt, 96);
     backtrace_symbols_fd(bt, n, fileno(stderr));
     fflush(stderr);
+}
+static inline void check_wild_read(u32 ea, int bits) {
+    if (ea >= 0xC0000000u) return;
+    // Diagnostic-only escape hatch: when set, report the first few wild reads but let
+    // execution continue (the read falls through to Dolphin's MMU = garbage, as upstream).
+    // This lets the SUNBRIGHT_DIFF harness run THROUGH the corruption to the function whose
+    // RAM output first diverges (the real corruptor). The DEFAULT still aborts (fail-fast).
+    static const bool nonfatal = getenv("SUNBRIGHT_WILD_READ_NONFATAL") != nullptr;
+    if (nonfatal) {
+        static int once = 0;
+        if (once++ < 8) report_wild_read(ea, bits);
+        return;
+    }
+    report_wild_read(ea, bits);
     struct rlimit no_core{0, 0};   // skip the multi-GB core dump (see trap_wild_write)
     setrlimit(RLIMIT_CORE, &no_core);
     abort();
-}
-static inline void check_wild_read(u32 ea, int bits) {
-    if (ea < 0xC0000000u) trap_wild_read(ea, bits);
 }
 
 // ── Byte-swapped reads/writes (GC = big-endian, host = little-endian) ───────

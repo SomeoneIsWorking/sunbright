@@ -9,3 +9,9 @@ void memory_bridge_init(const u8* initial_ram = nullptr, u32 size = 0);
 // The differential validator uses this to ignore functions whose result depends on
 // hardware-register reads — those legitimately differ between two separate runs.
 extern bool g_recomp_touched_mmio;
+
+// Set when a recompiled call tree yielded via the GC OS context-switch handoff
+// (OSLoadContext → siglongjmp) instead of returning. Such a function did not "return"
+// — it rescheduled — so the differential validator cannot compare it (the mutex-lock
+// path in JKR heap alloc, etc.). The validator skips these, like MMIO functions.
+extern bool g_recomp_context_switched;

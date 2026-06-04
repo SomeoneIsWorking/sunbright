@@ -185,6 +185,7 @@ bool diff_run(uint32_t pc, RecompFunc fn) {
 
     // (1) recompiled version — exits via call_ppc which writes ppc + ppc.pc.
     g_recomp_touched_mmio = false;
+    g_recomp_context_switched = false;
     CPUState cpu; dolphin_state_to_cpu(ppc, cpu); cpu.pc = pc;
     g_in_recomp = 1;
     if (sigsetjmp(g_diff_jmp, 1) != 0) {
@@ -225,16 +226,38 @@ bool diff_run(uint32_t pc, RecompFunc fn) {
     std::memcpy(ramRec.data(), ram, RAM_SIZE);   // recomp's resulting RAM
 
     // Hardware-register reads legitimately differ between two separate runs (the
-    // register changes with time). Don't compare such functions — commit recomp.
-    if (mmio) { restore(ppc, rec); std::memcpy(ram, ramRec.data(), RAM_SIZE); return true; }
+    // register changes with time). A context-switch yield (OSLoadContext handoff) means
+    // the function rescheduled rather than returned, so there is no comparable exit
+    // state. Don't compare either — commit recomp and move on.
+    if (mmio || g_recomp_context_switched) {
+        restore(ppc, rec); std::memcpy(ram, ramRec.data(), RAM_SIZE); return true;
+    }
 
-    // (2) reference: interpreter from the same entry until it reaches recomp's exit.
+    // (2) reference: interpreter from the same entry until the function RETURNS.
+    //
+    // The exit must be detected by ground truth, NOT by `ppc.pc == exit_pc` where
+    // exit_pc=cpu.lr-after-the-recomp-run. When a function's call tree runs non-recomp
+    // code via call_ppc (e.g. OSLockMutex, which has mtmsr → JIT), the interpreter
+    // excursion mutates LR, so the recomp can finish with cpu.lr pointing INSIDE an OS
+    // primitive (0x80346778 in OSLockMutex, 0x803506e8, …). The reference loop would
+    // then stop the FIRST time the interpreter passes through that mid-primitive address
+    // — long before the function actually returns — leaving registers half-set (the
+    // notorious r4/r5 ≈ 0x2030 sentinel) and reporting a flood of bogus divergences.
+    //
+    // A normal function returns to its ENTRY LR (s0.lr) with the stack frame popped back
+    // to the entry SP (s0.gpr[1]); s0.lr lives in the *caller*, so the body never reaches
+    // it except by returning, and the SP guard rejects same-address pass-throughs at a
+    // deeper frame. For a tail-branch exit the recomp committed a real target PC + SP, so
+    // match those.
     restore(ppc, s0);
     std::memcpy(ram, ram0.data(), RAM_SIZE);
     ppc.pc = pc; ppc.npc = pc;
     auto& interp = sys.GetInterpreter();
     long steps = 0; constexpr long MAX = 3'000'000;
-    while (ppc.pc != exit_pc && steps++ < MAX) interp.SingleStepInner();
+    const u32 ret_pc = tailed ? exit_pc : s0.lr;
+    const u32 ret_sp = tailed ? rec.gpr[1] : s0.gpr[1];
+    while (!(ppc.pc == ret_pc && ppc.gpr[1] == ret_sp) && steps++ < MAX)
+        interp.SingleStepInner();
 
     if (steps >= MAX) {
         // The interpreter never reached recomp's exit within budget — almost always
@@ -247,10 +270,21 @@ bool diff_run(uint32_t pc, RecompFunc fn) {
 
     RegSnap ref; snap(ppc, ref);   // committed state is the interpreter's = correct
 
-    // (3) compare — same exit reached, so any difference is a real bug.
-    bool regs_differ = (rec.lr != ref.lr || rec.ctr != ref.ctr ||
-                        rec.cr != ref.cr || rec.ca != ref.ca);
-    for (int i = 0; i < 32 && !regs_differ; i++)
+    // (3) compare — but only the ABI-OBSERVABLE state at a return boundary.
+    //
+    // At a function boundary the PPC EABI only constrains: the return value (r3), and the
+    // CALLEE-PRESERVED registers (non-volatile GPRs r14-r31 and CR fields CR2-CR4). The
+    // volatile/scratch set — r0, r4-r12, LR, CTR, XER[CA], and the volatile CR fields
+    // (CR0/1/5/6/7) — is "undefined" across the call: the caller must assume it's
+    // clobbered, so the recomp and the interpreter are FREE to leave different values
+    // there without it being a bug. Comparing those produced a flood of false positives
+    // (the notorious r4/r5 ≈ 0x2030 sentinels: a shared epilogue's intermediate scratch),
+    // drowning the real signal. Compare only what a correct callee must guarantee — plus
+    // memory (DIFF_RAM), which is where a genuine corruptor bug actually lands.
+    constexpr u32 CR_NONVOL = 0x00FFF000u;   // CR2,CR3,CR4 (callee-saved); CR0/1/5/6/7 volatile
+    bool regs_differ = (rec.gpr[3] != ref.gpr[3]) ||
+                       ((rec.cr & CR_NONVOL) != (ref.cr & CR_NONVOL));
+    for (int i = 14; i < 32 && !regs_differ; i++)
         if (rec.gpr[i] != ref.gpr[i]) regs_differ = true;
 
     // RAM: recomp's result (ramRec) vs the interpreter's (now live in `ram`).
@@ -270,14 +304,16 @@ bool diff_run(uint32_t pc, RecompFunc fn) {
         info.count++;
         if (first) {
             // Build a compact one-line detail of what diverged (first occurrence).
+            // Only the ABI-observable registers (matches the comparison above): the
+            // return value r3 and the non-volatile r14-r31 + CR2-CR4.
             char d[256]; int o = 0;
-            for (int i = 0; i < 32 && o < 200; i++)
+            if (rec.gpr[3] != ref.gpr[3])
+                o += std::snprintf(d + o, sizeof(d) - o, "r3:%08x/%08x ", rec.gpr[3], ref.gpr[3]);
+            for (int i = 14; i < 32 && o < 200; i++)
                 if (rec.gpr[i] != ref.gpr[i])
                     o += std::snprintf(d + o, sizeof(d) - o, "r%d:%08x/%08x ", i, rec.gpr[i], ref.gpr[i]);
-            if (rec.lr  != ref.lr)  o += std::snprintf(d+o, sizeof(d)-o, "lr:%08x/%08x ", rec.lr, ref.lr);
-            if (rec.ctr != ref.ctr) o += std::snprintf(d+o, sizeof(d)-o, "ctr:%08x/%08x ", rec.ctr, ref.ctr);
-            if (rec.cr  != ref.cr)  o += std::snprintf(d+o, sizeof(d)-o, "cr:%08x/%08x ", rec.cr, ref.cr);
-            if (rec.ca  != ref.ca)  o += std::snprintf(d+o, sizeof(d)-o, "ca:%u/%u ", rec.ca, ref.ca);
+            if ((rec.cr & CR_NONVOL) != (ref.cr & CR_NONVOL))
+                o += std::snprintf(d+o, sizeof(d)-o, "cr:%08x/%08x ", rec.cr, ref.cr);
             if (ram_diff_off >= 0)  o += std::snprintf(d+o, sizeof(d)-o, "RAM@%08x:%02x/%02x",
                                         RAM_BASE+(u32)ram_diff_off, ramRec[ram_diff_off], ram[ram_diff_off]);
             info.exit_pc = exit_pc;

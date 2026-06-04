@@ -1,4 +1,5 @@
 #include "dolphin_hook.h"
+#include "memory_bridge.h"
 #include "overrides.h"
 #include "native_threads.h"
 #include "native_os.h"
@@ -209,7 +210,7 @@ void call_ppc(CPUState& cpu, u32 address) {
     cpu_to_dolphin_state(cpu, ppc);
     ppc.pc = ppc.npc = address;
     // A context switch never returns to us — hand off to Dolphin's CPU loop instead of spinning.
-    if (address == OS_LOAD_CONTEXT && g_tail_jmp) siglongjmp(*g_tail_jmp, 1);
+    if (address == OS_LOAD_CONTEXT && g_tail_jmp) { g_recomp_context_switched = true; siglongjmp(*g_tail_jmp, 1); }
     constexpr long MAX = 500'000'000;
     if (!interp_run_until(ret, MAX)) {
         // The interpreter never returned to the caller's LR within the budget — the
