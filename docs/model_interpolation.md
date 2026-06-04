@@ -50,6 +50,24 @@ keyed by a stable per-model ID.
 >   → a PNG. The log uses the pane's GLOBAL (absolute screen) rect at +0x24/0x28/0x2c/0x30, so
 >   nested panes crop correctly too (verified: 'shn0' → shine icon, 'yaji' → OPTIONS arrow). Use
 >   this to classify elements for the per-element widescreen fixes (full-screen fill vs edge-anchor).
+> - **✅ HUD FULLY OWNED (2026-06-04) — `runtime/overrides/hud.cpp`.** The in-game HUD's per-element
+>   widescreen layout is now owned natively. Every HUD picture draws through
+>   `J2DPicture::drawFullSet(this,x,y,w,h,…)` (0x802cc838), dest rect in the ARGS, so `hud.cpp` takes
+>   over that function and rewrites x per element. Each element is classified by its `.blo` NAME
+>   (J2DPane fourCC at this+0x10) into LEFT / CENTER / RIGHT and shifted toward its 16:9 edge by the
+>   pillar width `off = 320·(1−scale)/scale` (≈107 px at WS_SCALE 0.75). The ortho squeeze already
+>   gives correct aspect (round gauge), so ONLY x is translated — width/height/Y untouched.
+>   **Verified element map (Delfino save):** LEFT = `s_*/d_*/c_*` (top-left counters: shine/coin/fruit);
+>   CENTER = `m_*` (top-centre lives) + `go00/01/02` (health sun); RIGHT = `w_t0` (FLUDD water gauge).
+>   **IDENTITY, NOT A FLAG:** no `g_in_hud`-style flag — that leaks across the tail-recursive scene
+>   draw (it stretched/shifted the menus twice). The file-select menu ALSO uses drawFullSet (names
+>   `s_0a/.s_1/n_0a/shn0/yaji/.x_0`); we match ONLY exact HUD role suffixes (`_ba/_ic/_tx/_x/_n<d>/_t<d>`,
+>   or `go<NN>`) so the menu's `_0<x>` roles never match — proven live: every menu element classifies
+>   `anchor=-` (x unmodified, original draw run verbatim → menus byte-identical). Verified frame:
+>   `scratch/hud_native_owned.png` (counters hug top-left, water gauge hugs bottom-right, all correct
+>   aspect). The long investigation below is kept as the trail; the answer was drawFullSet's arg rect +
+>   per-element name classification. (Separate open item: the bottom subtitle/fade black bar — that's
+>   the fade-curtain, not the HUD.)
 > - **In-game HUD `TGCConsole2` — NOT J2D (the menus are; the HUD isn't).** Verified: with a save
 >   state the game reaches Delfino (dolpic5), but no J2DScreen/J2DPicture/J2DTextBox draw hook fires
 >   for the HUD — it draws via its `perform`, an *unnamed virtual* (hence hidden in the symbol list).

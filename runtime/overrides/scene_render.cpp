@@ -61,15 +61,11 @@ static void ov_gx_projection(CPUState& cpu) {
     // the first 3D frame (title onward), 2D shares a 16:9 EFB and must be pre-squeezed.
     static bool seen_3d = false;
     if (!is2d) seen_3d = true;
-    // The in-game HUD is corner-anchored, so its 2D ortho uses a SEPARATE squeeze factor
-    // (SUNBRIGHT_HUD_SCALE, default 1.0): 1.0 = no squeeze → gauges fill to the 16:9 corners but the
-    // EFB→16:9 present stretches them ~1.33×; 0.75 = full squeeze → correct aspect but centred in the
-    // 4:3 safe area. Tune between for the anchor-vs-stretch tradeoff. (A true no-stretch edge anchor
-    // needs per-element pre-squeeze + scissor repositioning — see docs; this knob is the interim.)
-    // ALL 2D (menus AND the HUD ortho) gets the centering squeeze → correct aspect. The HUD is then
-    // edge-anchored per-element by spreading each drawFullSet x (ov_drawfullset) so it lands back at
-    // its authored position — un-stretched. (The old g_in_hud full-ortho exemption is gone: it
-    // stretched, and g_in_hud leaks across the tail-recursive scene draw anyway.)
+    // ALL 2D (menus AND the in-game HUD) gets this centring squeeze → correct aspect, content in the
+    // centre `scale` of the 16:9 screen. The HUD's corner gauges are then edge-anchored back out to
+    // the real 16:9 edges PER ELEMENT in hud.cpp (it owns drawFullSet and shifts each element's x by
+    // the pillar width). Doing it per-element by name — not via a "during HUD" ortho exemption —
+    // avoids the tail-recursive flag leak that previously stretched/shifted the menus.
     bool patched = false; f32 m00 = 0.0f, m03 = 0.0f;
     if (widescreen_on() && (!is2d || seen_3d) && mtx >= 0x80000000u && mtx < 0x81800000u) {
         m00 = mem_rf32(mtx + 0x00);
@@ -114,105 +110,12 @@ static const bool s_hud_registered = [] {
     return true;
 }();
 
-// Counter-element draw (shine/coins), called 6× from perform with r3 = the element sub-object;
-// it reads a float position from element+0x18. Log-only first (RENDERPORT_LOG) to confirm the
-// position field, toward the no-stretch fix (full-squeeze ortho + spread each element's position
-// ×1.333 around centre so it lands back at its anchor at correct size).
-static constexpr u32 HUD_COUNTER_DRAW = 0x8013ebf0u;
-static void ov_hud_counter(CPUState& cpu) {
-    static const bool log = getenv("SUNBRIGHT_RENDERPORT_LOG") != nullptr;
-    const u32 e = cpu.gpr[3];
-    if (log) {
-        static unsigned long n = 0;
-        if (n++ < 30)
-            std::fprintf(stderr, "[renderport] HUD counter#%lu e=%08x +14=%.1f +18=%.1f +1c=%.1f +20=%.1f\n",
-                         n, e, mem_rf32(e+0x14), mem_rf32(e+0x18), mem_rf32(e+0x1c), mem_rf32(e+0x20));
-    }
-    if (RecompFunc orig = recomp_raw(HUD_COUNTER_DRAW)) orig(cpu); else call_ppc(cpu, cpu.lr);
-}
-static const bool s_counter_registered = [] {
-    if (getenv("SUNBRIGHT_RENDERPORT_LOG")) register_override(HUD_COUNTER_DRAW, &ov_hud_counter);
-    return true;
-}();
-
-// perform's other element-draw calls — log which actually fire in gameplay + the object/pos, to
-// pin which draws each visible element (coins/shine/water/lives/dark-overlay). Gated diagnostic.
-template <u32 ADDR>
-static void ov_hud_probe(CPUState& cpu) {
-    static const bool log = getenv("SUNBRIGHT_RENDERPORT_LOG") != nullptr;
-    if (log) { static unsigned long n = 0;
-        if (n++ < 8) std::fprintf(stderr, "[renderport] HUD draw %08x fired r3=%08x r4=%08x f1=%.1f f2=%.1f\n",
-                                  ADDR, cpu.gpr[3], cpu.gpr[4], cpu.fpr[1].ps0, cpu.fpr[2].ps0); }
-    if (RecompFunc orig = recomp_raw(ADDR)) orig(cpu); else call_ppc(cpu, cpu.lr);
-}
-static const bool s_hud_probes = [] {
-    if (getenv("SUNBRIGHT_RENDERPORT_LOG")) {
-        register_override(0x8014ce84u, &ov_hud_probe<0x8014ce84u>);
-        register_override(0x8014cc20u, &ov_hud_probe<0x8014cc20u>);
-        register_override(0x8014c7e8u, &ov_hud_probe<0x8014c7e8u>);
-        register_override(0x80148f64u, &ov_hud_probe<0x80148f64u>);
-    }
-    return true;
-}();
-
-// J2DPicture::drawFullSet(int x, int y, int w, int h, ...) @ 0x802cc838 — used by BOTH the HUD and
-// menus (e.g. the file-select). The dest rect is in the ARGS (r4..r7). A blanket x-spread here was
-// WRONG: it shoved the centered file-select items right. Repositioning must be PER-ELEMENT, keyed by
-// the element's NAME (J2DPicture is a J2DPane → fourCC tag at this+0x10) + its draw context. This is
-// log-only for now (SUNBRIGHT_RENDERPORT_LOG) to build the complete element map before touching any.
-static constexpr u32 J2DPICTURE_DRAWFULLSET = 0x802cc838u;
-static void elem_name(u32 id, char out[5]) {
-    u32 t = (id >= 0x80000000u && id < 0x81800000u) ? mem_r32(id + 0x10) : 0;
-    for (int i = 0; i < 4; i++) { u8 c = (t >> (24 - i*8)) & 0xff; out[i] = (c >= 0x20 && c < 0x7f) ? (char)c : '.'; }
-    out[4] = 0;
-}
-static void ov_drawfullset(CPUState& cpu) {
-    static const bool log = getenv("SUNBRIGHT_RENDERPORT_LOG") != nullptr;
-    if (log) {
-        char nm[5]; elem_name(cpu.gpr[3], nm);
-        std::fprintf(stderr, "[map] drawFullSet '%s' id=%08x rect=(%d,%d %dx%d) hud=%d\n",
-                     nm, cpu.gpr[3], (s32)cpu.gpr[4], (s32)cpu.gpr[5], (s32)cpu.gpr[6], (s32)cpu.gpr[7], (int)g_in_hud);
-    }
-    if (RecompFunc orig = recomp_raw(J2DPICTURE_DRAWFULLSET)) orig(cpu); else call_ppc(cpu, cpu.lr);
-}
-static const bool s_drawfullset_registered = [] {
-    if (getenv("SUNBRIGHT_RENDERPORT_LOG")) register_override(J2DPICTURE_DRAWFULLSET, &ov_drawfullset);
-    return true;
-}();
-
-// GXSetViewport(f32 left, f32 top, f32 w, f32 h, f32 nearZ, f32 farZ) @ 0x803630c8. Log-only during
-// the HUD (SUNBRIGHT_RENDERPORT_LOG) to learn how the HUD positions each element (per-element
-// viewport rects in EFB pixels) — that decides the no-stretch edge-anchor.
-static constexpr u32 GX_SET_VIEWPORT = 0x803630c8u;
-static void ov_gx_viewport(CPUState& cpu) {
-    static const bool log = getenv("SUNBRIGHT_RENDERPORT_LOG") != nullptr;
-    if (log && g_in_hud) {
-        static unsigned long n = 0;
-        if ((n++ % 20) == 0)
-            std::fprintf(stderr, "[renderport] HUD GXSetViewport left=%.1f top=%.1f w=%.1f h=%.1f\n",
-                         cpu.fpr[1].ps0, cpu.fpr[2].ps0, cpu.fpr[3].ps0, cpu.fpr[4].ps0);
-    }
-    if (RecompFunc orig = recomp_raw(GX_SET_VIEWPORT)) orig(cpu); else call_ppc(cpu, cpu.lr);
-}
-static const bool s_viewport_registered = [] {
-    if (getenv("SUNBRIGHT_RENDERPORT_LOG")) register_override(GX_SET_VIEWPORT, &ov_gx_viewport);
-    return true;
-}();
-
-// GXSetScissor(u32 left, u32 top, u32 wd, u32 ht) @ 0x80363138 (EFB pixels). The HUD positions each
-// element by its scissor rect — log them during the HUD to classify each by corner for the anchor.
-static constexpr u32 GX_SET_SCISSOR = 0x80363138u;
-static void ov_gx_scissor(CPUState& cpu) {
-    static const bool log = getenv("SUNBRIGHT_RENDERPORT_LOG") != nullptr;
-    if (log && g_in_hud)
-        std::fprintf(stderr, "[renderport] HUD GXSetScissor left=%u top=%u w=%u h=%u\n",
-                     cpu.gpr[3], cpu.gpr[4], cpu.gpr[5], cpu.gpr[6]);
-    if (RecompFunc orig = recomp_raw(GX_SET_SCISSOR)) orig(cpu); else call_ppc(cpu, cpu.lr);
-}
-static const bool s_scissor_registered = [] {
-    if (getenv("SUNBRIGHT_RENDERPORT_LOG")) register_override(GX_SET_SCISSOR, &ov_gx_scissor);
-    return true;
-}();
+// The in-game HUD's per-element widescreen layout (edge-anchoring the corner gauges) is owned
+// natively in runtime/overrides/hud.cpp — it takes over J2DPicture::drawFullSet (0x802cc838) and
+// repositions each HUD element by its .blo name. (The RE scaffolding that lived here — the
+// 0x8013ebf0 counter probe, the perform bl-target probes, the GXSetViewport/GXSetScissor HUD logs —
+// is removed now that the element map is pinned: viewport is full-screen and scissor is just the
+// subtitle strip, neither positions the gauges; the gauges are positioned by drawFullSet's args.)
 
 // Fade-curtain probes (SUNBRIGHT_RENDERPORT_LOG). The plaza fade-in (load file A → Delfino) triggers
 // the curtain. Log both candidate paths to see which draws it + its rect.
