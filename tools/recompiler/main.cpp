@@ -3,6 +3,7 @@
 #include "dol_parser.h"
 #include "ppc_decoder.h"
 #include "c_emitter.h"
+#include "func_collect.h"
 
 #include <iostream>
 #include <fstream>
@@ -230,42 +231,10 @@ static int recompile_mode(const DiscLoader& disc, const DOL& dol, const std::str
             //     (force-CFG) they end in blr and return cleanly.
             static const std::unordered_set<u32> kForceCFG = { 0x802cc838u, 0x801441e0u, 0x80144840u };
 
-            auto& instrs = func_instrs[faddr];
-            if (getenv("SUNBRIGHT_CFG") || kForceCFG.count(faddr)) {
-                // Full-CFG collection (opt-in): walk the function's whole control-flow
-                // graph so forward branches become in-recomp gotos rather than JIT
-                // bounces — required by the C-call model. Off by default (its
-                // newly-included blocks still need harness validation).
-                std::map<u32, PPCInstr> by_addr;
-                std::unordered_set<u32> seen;
-                std::vector<u32> work{faddr};
-                while (!work.empty()) {
-                    u32 a = work.back(); work.pop_back();
-                    while (a >= faddr && a < fend && !seen.count(a)) {
-                        seen.insert(a);
-                        u32 wb; std::memcpy(&wb, data.data() + (a - base), 4);
-                        PPCInstr ins = decode(__builtin_bswap32(wb), a);
-                        by_addr[a] = ins;
-                        if (!ins.lk) { u32 t = branch_target(ins); if (t >= faddr && t < fend) work.push_back(t); }
-                        if (is_unconditional_branch(ins)) break;
-                        a += 4;
-                    }
-                }
-                instrs.reserve(by_addr.size());
-                for (auto& kv : by_addr) instrs.push_back(kv.second);
-            } else {
-                for (u32 addr = faddr; addr < fend; addr += 4) {
-                    u32 off = addr - base;
-                    u32 w_be;
-                    std::memcpy(&w_be, data.data() + off, 4);
-                    u32 w = __builtin_bswap32(w_be);
-                    instrs.push_back(decode(w, addr));
-                    if (is_unconditional_branch(instrs.back())) {
-                        addr += 4;  // include the delay-slot (PPC has none, so just stop)
-                        break;
-                    }
-                }
-            }
+            // Collection (linear-truncate vs full-CFG) is extracted to func_collect.{h,cpp} and
+            // unit-tested (tools/recompiler/tests) — its behaviour repeatedly broke assumptions.
+            const bool use_cfg = getenv("SUNBRIGHT_CFG") || kForceCFG.count(faddr);
+            func_instrs[faddr] = collect_function(data.data(), base, data.size(), faddr, fend, use_cfg);
         }
     }
 
@@ -336,18 +305,7 @@ static int recompile_mode(const DiscLoader& disc, const DOL& dol, const std::str
             ctx.func_addr = addr;
             ctx.instrs    = func_instrs[addr];
 
-            // Use the last (highest-address) instruction's PC: correct for both
-            // linear (contiguous) and CFG (gapped) collection, so every
-            // intra-function branch target falls inside and gets a goto label.
-            u32 func_end = ctx.instrs.empty() ? addr : ctx.instrs.back().pc + 4;
-            for (const auto& instr : ctx.instrs) {
-                u32 tgt = branch_target(instr);
-                if (tgt != 0 && tgt >= addr && tgt < func_end)
-                    ctx.branch_targets.insert(tgt);
-                if ((instr.op == PPCOp::BC) && instr.target != 0
-                    && instr.target >= addr && instr.target < func_end)
-                    ctx.branch_targets.insert(instr.target);
-            }
+            ctx.branch_targets = intra_branch_targets(ctx.instrs, addr);
             emitter.emit_function(ctx);
         }
         total_unhandled += emitter.unhandled_count();

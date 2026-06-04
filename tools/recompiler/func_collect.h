@@ -1,0 +1,27 @@
+#pragma once
+#include "ppc_decoder.h"
+#include <cstdint>
+#include <cstddef>
+#include <unordered_set>
+#include <vector>
+
+// Function instruction collection — the step that decides which instructions belong to a function
+// and therefore whether a branch becomes an intra-function `goto`, a `call_ppc`, or a `tail_ppc`.
+// Extracted from main.cpp so it can be unit-tested (see tools/recompiler/tests): the recompiler's
+// behaviour here repeatedly surprised assumptions, so it is covered by tests.
+//
+// `data`/`base`/`size` describe the loaded big-endian code image (data[0] is at guest addr `base`).
+// [faddr, fend) bound the function (fend is normally the next function's address).
+//
+//   cfg == false (legacy/default LINEAR): decode straight through from faddr until the FIRST
+//     unconditional branch, then stop. Functions whose body continues past one are TRUNCATED — their
+//     later blocks fall outside the returned set, so forward branches into them become tail_ppc.
+//   cfg == true (full CFG): walk the control-flow graph from faddr, following every branch target
+//     that stays within [faddr, fend), so the whole function is collected and intra-function
+//     branches become gotos.  (The legacy mode is what made e.g. J2DPicture::drawFullSet truncate.)
+std::vector<PPCInstr> collect_function(const uint8_t* data, uint32_t base, size_t size,
+                                       uint32_t faddr, uint32_t fend, bool cfg);
+
+// Build the set of intra-function branch-target labels for an EmitContext, given the collected
+// instruction list. A target counts as intra-function when it lies in [faddr, last_instr_pc + 4).
+std::unordered_set<uint32_t> intra_branch_targets(const std::vector<PPCInstr>& instrs, uint32_t faddr);

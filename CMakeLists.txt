@@ -46,6 +46,7 @@ add_subdirectory("${DOLPHIN_DIR}" dolphin EXCLUDE_FROM_ALL)
 
 # ── Recompiler tool ───────────────────────────────────────────────────────────
 file(GLOB_RECURSE RECOMP_SOURCES tools/recompiler/*.cpp)
+list(FILTER RECOMP_SOURCES EXCLUDE REGEX "tools/recompiler/tests/")   # tests have their own main()
 add_executable(sunbright-recomp ${RECOMP_SOURCES})
 
 target_include_directories(sunbright-recomp PRIVATE
@@ -66,6 +67,20 @@ endif()
 target_compile_options(sunbright-recomp PRIVATE
     -Wall -Wextra -Wno-unused-parameter
 )
+
+# ── Recompiler unit tests (sunbright-recomp-test) ────────────────────────────
+# Self-contained: only the decode/emit/collect units, no disc/Dolphin I/O.
+add_executable(sunbright-recomp-test
+    tools/recompiler/tests/recomp_test.cpp
+    tools/recompiler/func_collect.cpp
+    tools/recompiler/ppc_decoder.cpp
+    tools/recompiler/ppc_mnemonic.cpp
+    tools/recompiler/c_emitter.cpp
+)
+target_include_directories(sunbright-recomp-test PRIVATE tools/recompiler runtime)
+target_compile_options(sunbright-recomp-test PRIVATE -Wall -Wextra -Wno-unused-parameter)
+enable_testing()
+add_test(NAME recomp_test COMMAND sunbright-recomp-test)
 
 # ── Launcher executable (SDL2 window + Dolphin Core) ─────────────────────────
 # Everything — launcher, runtime bridge, hand-written overrides, and the
