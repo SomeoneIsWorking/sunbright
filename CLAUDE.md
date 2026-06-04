@@ -10,13 +10,23 @@ working", no force_jit-as-fix, no skipping the function, no magic constant, no b
 3. Then, depending on what the root cause is:
    - **Cause = behavior that wasn't recompiled and is running under Dolphin fallback** →
      **Fix the recompiler so it stops missing that function** (recompile it).
-   - **Cause = a bug in the recompiler itself** → **Fix the recompiler, AND add a test** so
-     that exact problem can't regress.
-   - **Cause = some other behavior** → **Reverse-engineer that behavior, port it to a PC-native
-     override, and fix the problem there.**
+   - **Cause = a CONCRETELY IDENTIFIED mistranslation in the recompiler** → **Fix the
+     recompiler, AND add a test** so that exact problem can't regress. This branch requires
+     pointing at the specific emitted code and saying "this instruction/pattern was translated
+     wrong; it should be X instead." A specific, named defect — not a deduction.
+   - **Cause = some other behavior, OR a recomp misbehavior you canNOT pin to a specific
+     mistranslation** → **Reverse-engineer that behavior, port it to a PC-native override, and
+     fix it there (own the path).**
+
+**"JIT works but recomp doesn't" is NOT a recompiler-fix trigger.** Neither is "the generated C
+reads as a faithful translation yet behaves differently / the mechanism is unexplained." Those
+are *deductions* that a recomp bug exists, not an *identified* defect — do NOT go hunting the
+recompiler on that basis. They fall to the **own-it-natively** path. Only touch the recompiler
+when you've DIRECTLY found the wrong translation (e.g. "this opcode emits `a` but PPC semantics
+are `b`"). When in doubt, own it natively.
 
 `force_jit` / `SUNBRIGHT_FORCE_JIT` / interpreter fallback are **diagnostics for bisection
-only**, NEVER the fix. The fix is always one of the three branches above. This rule overrides
+only**, NEVER the fix. The fix is always one of the branches above. This rule overrides
 any instinct to stabilize by routing around a problem.
 
 **NO BANDAIDS — ALWAYS REVERSE-ENGINEER, PORT, AND FIX IN THE PORT.** No magic constant/offset
