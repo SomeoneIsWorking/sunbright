@@ -1,3 +1,4 @@
+#include <cmath>
 #include "memory_bridge.h"
 #include "cpu_state.h"
 #include "intrinsics.h"   // inline fast-path sb_r*/sb_w* + sb_poll_note (and the mem_* decls we define)
@@ -413,4 +414,60 @@ u32 psq_quantize(f64 val, u32 type, u32 scale) {
     case 7:  return (u16)(s16)std::max(-32768.0, std::min(32767.0, val * s));
     default: return 0;
     }
+}
+
+// psq_l / psq_st with the CORRECT element width and stride per GQR type. The old emitter always
+// did MEM_R32(ea)/MEM_R32(ea+4) and cast the (byteswapped) 32-bit word to (u8)/(u16) — only valid
+// for float (4-byte) elements. A quantized type (u8/s8 = 1 byte at +0/+1; u16/s16 = 2 bytes at
+// +0/+2) needs a narrow, correctly-strided load, and the narrow load must read the element AT `ea`
+// (not the low byte of a 32-bit word, which big-endian byteswap puts at the highest address).
+// This is what corrupted the THP paired-single IDCT (s16, type 7) → garbage FMV.
+static inline bool  psq_is_float(u32 t) { return t != 4 && t != 5 && t != 6 && t != 7; }
+static inline u32   psq_stride(u32 t)   { return (t == 4 || t == 6) ? 1u : (t == 5 || t == 7) ? 2u : 4u; }
+// The GQR scale is a 6-bit SIGNED value (0–31 positive, 32–63 = −32..−1). Load multiplies by
+// 2^(-scale), store by 2^(+scale) — matching Dolphin's m_dequantizeTable / m_quantizeTable.
+// (The old code did `1u << scale` — unsigned, and undefined behavior for scale>=32, e.g. the u8
+// YUV store here uses scale=61 = −3 → multiplier 2^3 on load / 2^-3 on store.)
+static inline float psq_ld_mult(u32 scale6) { int s=(int)(scale6&0x3F); if(s>=32) s-=64; return std::ldexp(1.0f,-s); }
+static inline float psq_st_mult(u32 scale6) { int s=(int)(scale6&0x3F); if(s>=32) s-=64; return std::ldexp(1.0f, s); }
+
+void psq_load(u32 ea, u32 gqr, u32 w, f64* p0, f64* p1) {
+    const u32 t = gqr_ld_type(gqr);
+    if (psq_is_float(t)) {                       // float: 4-byte elements, scale ignored
+        u32 r0 = sb_r32(ea); f32 v0; std::memcpy(&v0, &r0, 4); *p0 = v0;
+        if (!w) { u32 r1 = sb_r32(ea + 4); f32 v1; std::memcpy(&v1, &r1, 4); *p1 = v1; }
+        else *p1 = 1.0;
+        return;
+    }
+    const float s = psq_ld_mult(gqr_ld_scale(gqr));
+    auto one = [&](u32 a) -> f64 {
+        switch (t) {
+        case 4:  return (u8) sb_r8 (a) * s;
+        case 5:  return (u16)sb_r16(a) * s;
+        case 6:  return (s8) sb_r8 (a) * s;
+        default: return (s16)sb_r16(a) * s;      // 7 = s16
+        }
+    };
+    *p0 = one(ea);
+    *p1 = w ? 1.0 : one(ea + psq_stride(t));
+}
+
+void psq_store(u32 ea, u32 gqr, u32 w, f64 v0, f64 v1) {
+    const u32 t = gqr_st_type(gqr);
+    if (psq_is_float(t)) {                       // float: 4-byte elements, scale ignored
+        f32 f0 = (f32)v0; u32 r0; std::memcpy(&r0, &f0, 4); sb_w32(ea, r0);
+        if (!w) { f32 f1 = (f32)v1; u32 r1; std::memcpy(&r1, &f1, 4); sb_w32(ea + 4, r1); }
+        return;
+    }
+    const float s = psq_st_mult(gqr_st_scale(gqr));
+    auto one = [&](u32 a, f64 v) {
+        switch (t) {
+        case 4:  sb_w8 (a, (u8) std::max(0.0, std::min(255.0,   (f64)((f32)v * s)))); break;
+        case 5:  sb_w16(a, (u16)std::max(0.0, std::min(65535.0, (f64)((f32)v * s)))); break;
+        case 6:  sb_w8 (a, (u8)(s8) std::max(-128.0,   std::min(127.0,   (f64)((f32)v * s)))); break;
+        default: sb_w16(a, (u16)(s16)std::max(-32768.0, std::min(32767.0, (f64)((f32)v * s)))); break;  // 7 = s16
+        }
+    };
+    one(ea, v0);
+    if (!w) one(ea + psq_stride(t), v1);
 }

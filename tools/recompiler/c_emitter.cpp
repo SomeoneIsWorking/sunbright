@@ -590,30 +590,35 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
     case PPCOp::FSUB:  line("%s = %s - %s;", fd.c_str(), fa.c_str(), fb.c_str()); break;
     case PPCOp::FMUL:  line("%s = %s * %s;", fd.c_str(), fa.c_str(), fc.c_str()); break;
     case PPCOp::FDIV:  line("%s = %s / %s;", fd.c_str(), fa.c_str(), fb.c_str()); break;
-    case PPCOp::FADDS: line("%s = (f32)(%s + %s);", fd.c_str(), fa.c_str(), fb.c_str()); break;
-    case PPCOp::FSUBS: line("%s = (f32)(%s - %s);", fd.c_str(), fa.c_str(), fb.c_str()); break;
-    case PPCOp::FMULS: line("%s = (f32)(%s * %s);", fd.c_str(), fa.c_str(), fc.c_str()); break;
-    case PPCOp::FDIVS: line("%s = (f32)(%s / %s);", fd.c_str(), fa.c_str(), fb.c_str()); break;
+    // Single-precision scalar FP ops BROADCAST the result to BOTH paired slots (ps1=ps0) on
+    // Gekko — Dolphin's `ps[FD].Fill(result)` (see Interpreter_FloatingPoint.cpp: "PS1 must be set
+    // to the value of PS0 or DragonballZ will be f**ked up"). Emitting ps0 only left ps1 stale, so
+    // any later paired use of ps1 read garbage — the every-other-pixel comb in the THP paired-single
+    // IDCT (and the skinned-model distortion). Double-precision ops below leave ps1 unchanged.
+    case PPCOp::FADDS: line("%s = (f32)(%s + %s); %s = %s;", fd.c_str(), fa.c_str(), fb.c_str(), psd1.c_str(), psd0.c_str()); break;
+    case PPCOp::FSUBS: line("%s = (f32)(%s - %s); %s = %s;", fd.c_str(), fa.c_str(), fb.c_str(), psd1.c_str(), psd0.c_str()); break;
+    case PPCOp::FMULS: line("%s = (f32)(%s * %s); %s = %s;", fd.c_str(), fa.c_str(), fc.c_str(), psd1.c_str(), psd0.c_str()); break;
+    case PPCOp::FDIVS: line("%s = (f32)(%s / %s); %s = %s;", fd.c_str(), fa.c_str(), fb.c_str(), psd1.c_str(), psd0.c_str()); break;
     // Gekko's madd family is a true fused multiply-add (single rounding), matching
     // Dolphin's std::fma(). Emitting a*c+b would round twice and diverge.
     case PPCOp::FMADD: line("%s = std::fma(%s, %s, %s);", fd.c_str(), fa.c_str(), fc.c_str(), fb.c_str()); break;
     case PPCOp::FMSUB: line("%s = std::fma(%s, %s, -(%s));", fd.c_str(), fa.c_str(), fc.c_str(), fb.c_str()); break;
     case PPCOp::FNMADD:line("%s = -std::fma(%s, %s, %s);", fd.c_str(), fa.c_str(), fc.c_str(), fb.c_str()); break;
     case PPCOp::FNMSUB:line("%s = -std::fma(%s, %s, -(%s));", fd.c_str(), fa.c_str(), fc.c_str(), fb.c_str()); break;
-    case PPCOp::FMADDS:line("%s = (f32)std::fma(%s, %s, %s);", fd.c_str(), fa.c_str(), fc.c_str(), fb.c_str()); break;
-    case PPCOp::FMSUBS:line("%s = (f32)std::fma(%s, %s, -(%s));", fd.c_str(), fa.c_str(), fc.c_str(), fb.c_str()); break;
-    case PPCOp::FNMADDS:line("%s = (f32)(-std::fma(%s, %s, %s));", fd.c_str(), fa.c_str(), fc.c_str(), fb.c_str()); break;
-    case PPCOp::FNMSUBS:line("%s = (f32)(-std::fma(%s, %s, -(%s)));", fd.c_str(), fa.c_str(), fc.c_str(), fb.c_str()); break;
+    case PPCOp::FMADDS:line("%s = (f32)std::fma(%s, %s, %s); %s = %s;", fd.c_str(), fa.c_str(), fc.c_str(), fb.c_str(), psd1.c_str(), psd0.c_str()); break;
+    case PPCOp::FMSUBS:line("%s = (f32)std::fma(%s, %s, -(%s)); %s = %s;", fd.c_str(), fa.c_str(), fc.c_str(), fb.c_str(), psd1.c_str(), psd0.c_str()); break;
+    case PPCOp::FNMADDS:line("%s = (f32)(-std::fma(%s, %s, %s)); %s = %s;", fd.c_str(), fa.c_str(), fc.c_str(), fb.c_str(), psd1.c_str(), psd0.c_str()); break;
+    case PPCOp::FNMSUBS:line("%s = (f32)(-std::fma(%s, %s, -(%s))); %s = %s;", fd.c_str(), fa.c_str(), fc.c_str(), fb.c_str(), psd1.c_str(), psd0.c_str()); break;
     case PPCOp::FABS:  line("%s = std::abs(%s);", fd.c_str(), fb.c_str()); break;
     case PPCOp::FNABS: line("%s = -std::abs(%s);", fd.c_str(), fb.c_str()); break;
     case PPCOp::FNEG:  line("%s = -%s;", fd.c_str(), fb.c_str()); break;
     case PPCOp::FMR:   line("%s = %s;", fd.c_str(), fb.c_str()); break;
-    case PPCOp::FRSP:  line("%s = (f32)%s;", fd.c_str(), fb.c_str()); break;
+    case PPCOp::FRSP:  line("%s = (f32)%s; %s = %s;", fd.c_str(), fb.c_str(), psd1.c_str(), psd0.c_str()); break;
     case PPCOp::FCTIW: line("%s = std::bit_cast<f64>((u64)(u32)(s32)%s);", fd.c_str(), fb.c_str()); break;
     case PPCOp::FCTIWZ:line("%s = std::bit_cast<f64>((u64)(u32)(s32)%s);", fd.c_str(), fb.c_str()); break;
-    case PPCOp::FRES:  line("%s = fres(%s);", fd.c_str(), fb.c_str()); break;
-    case PPCOp::FRSQRTE:line("%s = frsqrte(%s);", fd.c_str(), fb.c_str()); break;
-    case PPCOp::FRESS: line("%s = (f32)fres(%s);", fd.c_str(), fb.c_str()); break;
+    case PPCOp::FRES:  line("%s = fres(%s); %s = %s;", fd.c_str(), fb.c_str(), psd1.c_str(), psd0.c_str()); break;
+    case PPCOp::FRSQRTE:line("%s = frsqrte(%s);", fd.c_str(), fb.c_str()); break;  // double-est: ps0 only (Dolphin SetPS0)
+    case PPCOp::FRESS: line("%s = (f32)fres(%s); %s = %s;", fd.c_str(), fb.c_str(), psd1.c_str(), psd0.c_str()); break;
     case PPCOp::FSEL:
         line("%s = (%s >= 0.0) ? %s : %s;", fd.c_str(), fa.c_str(), fc.c_str(), fb.c_str());
         break;
@@ -732,42 +737,25 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
         break;
 
     // ── psq_l / psq_st ───────────────────────────────────────────────────────
-    case PPCOp::PSQ_L: {
-        std::string addr = ea(i);
-        line("{ u32 _gqr=cpu.gqr[%d]; u32 _t=gqr_ld_type(_gqr),_s=gqr_ld_scale(_gqr);", i.i_gqr);
-        line("  %s = psq_dequantize(MEM_R32(%s), _t, _s);", psd0.c_str(), addr.c_str());
-        if (i.w == 0)
-            line("  %s = psq_dequantize(MEM_R32((%s)+4), _t, _s); }", psd1.c_str(), addr.c_str());
-        else
-            line("  %s = 1.0; }", psd1.c_str());
+    // psq_load/psq_store do the type-correct element width + stride (1/2/4 bytes). Emitting
+    // MEM_R32(ea)/MEM_R32(ea+4) here was only valid for float; quantized types (u8/s8/u16/s16)
+    // need a narrow, correctly-strided access. See runtime/memory_bridge.cpp.
+    case PPCOp::PSQ_L:
+        line("psq_load(%s, cpu.gqr[%d], %d, &%s, &%s);", ea(i).c_str(), i.i_gqr, i.w, psd0.c_str(), psd1.c_str());
         break;
-    }
     case PPCOp::PSQ_LU: {
         std::string addr = ea(i);
-        line("{ u32 _gqr=cpu.gqr[%d]; u32 _t=gqr_ld_type(_gqr),_s=gqr_ld_scale(_gqr);", i.i_gqr);
-        line("  %s = psq_dequantize(MEM_R32(%s), _t, _s);", psd0.c_str(), addr.c_str());
-        if (i.w == 0)
-            line("  %s = psq_dequantize(MEM_R32((%s)+4), _t, _s);", psd1.c_str(), addr.c_str());
-        line("  %s = %s; }", a.c_str(), addr.c_str());
+        line("{ u32 _ea=%s; psq_load(_ea, cpu.gqr[%d], %d, &%s, &%s); %s = _ea; }",
+             addr.c_str(), i.i_gqr, i.w, psd0.c_str(), psd1.c_str(), a.c_str());
         break;
     }
-    case PPCOp::PSQ_ST: {
-        std::string addr = ea(i);
-        line("{ u32 _gqr=cpu.gqr[%d]; u32 _t=gqr_st_type(_gqr),_s=gqr_st_scale(_gqr);", i.i_gqr);
-        line("  MEM_W32(%s, psq_quantize(%s, _t, _s));", addr.c_str(), psd0.c_str());
-        if (i.w == 0)
-            line("  MEM_W32((%s)+4, psq_quantize(%s, _t, _s)); }", addr.c_str(), psd1.c_str());
-        else
-            line("}");
+    case PPCOp::PSQ_ST:
+        line("psq_store(%s, cpu.gqr[%d], %d, %s, %s);", ea(i).c_str(), i.i_gqr, i.w, psd0.c_str(), psd1.c_str());
         break;
-    }
     case PPCOp::PSQ_STU: {
         std::string addr = ea(i);
-        line("{ u32 _gqr=cpu.gqr[%d]; u32 _t=gqr_st_type(_gqr),_s=gqr_st_scale(_gqr);", i.i_gqr);
-        line("  MEM_W32(%s, psq_quantize(%s, _t, _s));", addr.c_str(), psd0.c_str());
-        if (i.w == 0)
-            line("  MEM_W32((%s)+4, psq_quantize(%s, _t, _s));", addr.c_str(), psd1.c_str());
-        line("  %s = %s; }", a.c_str(), addr.c_str());
+        line("{ u32 _ea=%s; psq_store(_ea, cpu.gqr[%d], %d, %s, %s); %s = _ea; }",
+             addr.c_str(), i.i_gqr, i.w, psd0.c_str(), psd1.c_str(), a.c_str());
         break;
     }
 
@@ -872,24 +860,12 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
         break;
 
     // ── psq_lx / psq_stx (indexed PS quantized) ──────────────────────────────
-    case PPCOp::PSQ_LX: {
-        line("{ u32 _gqr=cpu.gqr[%d]; u32 _t=gqr_ld_type(_gqr),_s=gqr_ld_scale(_gqr);", i.i_gqr);
-        line("  %s = psq_dequantize(MEM_R32(%s), _t, _s);", psd0.c_str(), ea_x(i).c_str());
-        if (i.w == 0)
-            line("  %s = psq_dequantize(MEM_R32((%s)+4), _t, _s); }", psd1.c_str(), ea_x(i).c_str());
-        else
-            line("  %s = 1.0; }", psd1.c_str());
+    case PPCOp::PSQ_LX:
+        line("psq_load(%s, cpu.gqr[%d], %d, &%s, &%s);", ea_x(i).c_str(), i.i_gqr, i.w, psd0.c_str(), psd1.c_str());
         break;
-    }
-    case PPCOp::PSQ_STX: {
-        line("{ u32 _gqr=cpu.gqr[%d]; u32 _t=gqr_st_type(_gqr),_s=gqr_st_scale(_gqr);", i.i_gqr);
-        line("  MEM_W32(%s, psq_quantize(%s, _t, _s));", ea_x(i).c_str(), psd0.c_str());
-        if (i.w == 0)
-            line("  MEM_W32((%s)+4, psq_quantize(%s, _t, _s)); }", ea_x(i).c_str(), psd1.c_str());
-        else
-            line("}");
+    case PPCOp::PSQ_STX:
+        line("psq_store(%s, cpu.gqr[%d], %d, %s, %s);", ea_x(i).c_str(), i.i_gqr, i.w, psd0.c_str(), psd1.c_str());
         break;
-    }
 
     // ── Unhandled ────────────────────────────────────────────────────────────
     default:

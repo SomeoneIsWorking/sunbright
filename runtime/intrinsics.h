@@ -118,17 +118,25 @@ inline bool sub_carry(u32 a, u32 b) {
     return a >= b;  // PPC carry is inverted borrow
 }
 
-// Paired singles — GQR decode for psq_l/psq_st
-// GQR format: [ST_TYPE:3][pad:5][ST_SCALE:6][pad:2][LD_TYPE:3][pad:5][LD_SCALE:6]
-inline u32 gqr_ld_type (u32 gqr) { return  gqr & 0x7;        }
-inline u32 gqr_ld_scale(u32 gqr) { return (gqr >> 8) & 0x3F;  }
-inline u32 gqr_st_type (u32 gqr) { return (gqr >> 16) & 0x7;  }
-inline u32 gqr_st_scale(u32 gqr) { return (gqr >> 24) & 0x3F; }
+// Paired singles — GQR decode for psq_l/psq_st.
+// Gekko GQR layout (matches Dolphin UGQR, value bit 0 = LSB):
+//   ST_TYPE: bits 0-2   ST_SCALE: bits 8-13   LD_TYPE: bits 16-18   LD_SCALE: bits 24-29
+// (LD and ST were SWAPPED here — psq_l then dequantized with the *store* type/scale. Harmless
+// when LD==ST or GQR=0/float, but a load-only quantized GQR — e.g. THP's paired-single IDCT,
+// GQR5 — decoded to garbage. Fixed: load reads the high half, store the low half.)
+inline u32 gqr_st_type (u32 gqr) { return  gqr & 0x7;        }
+inline u32 gqr_st_scale(u32 gqr) { return (gqr >> 8) & 0x3F;  }
+inline u32 gqr_ld_type (u32 gqr) { return (gqr >> 16) & 0x7;  }
+inline u32 gqr_ld_scale(u32 gqr) { return (gqr >> 24) & 0x3F; }
 
 // Quantized load/store implementations (psq_l / psq_st)
 // Types: 0=f32, 4=u8, 5=u16, 6=s8, 7=s16
 f64 psq_dequantize(u32 raw, u32 type, u32 scale);
 u32 psq_quantize(f64 val, u32 type, u32 scale);
+// Width/stride-correct paired-single load/store (what the emitter uses): reads/writes 1/2/4-byte
+// elements at the right stride per the GQR load/store type. w=1 → single element (ps1=1.0).
+void psq_load (u32 ea, u32 gqr, u32 w, f64* p0, f64* p1);
+void psq_store(u32 ea, u32 gqr, u32 w, f64 v0, f64 v1);
 
 // FP single rounding (frsp)
 inline f64 frsp(f64 v) { return (f32)v; }

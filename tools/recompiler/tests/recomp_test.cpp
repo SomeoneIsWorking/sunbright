@@ -181,6 +181,41 @@ int main() {
               "last function fend = section end (cap)");
     }
 
+    // 6. Paired-single quantized load/store emit the width/stride-correct runtime helpers
+    //    (psq_load/psq_store), NOT a fixed MEM_R32(ea)/MEM_R32(ea+4). The old emission was only
+    //    valid for float elements; for a quantized type (u8/s8/u16/s16) it read/wrote 4 bytes at a
+    //    +4 stride and took the (byteswapped) word's low byte → garbage. This corrupted the THP
+    //    paired-single IDCT (s16) → fully corrupt FMV. Pin the helper-based emission.
+    {
+        // psq_l f3, 0(r4), W=0, I=5 : (56<<26)|(3<<21)|(4<<16)|(0<<15)|(5<<12)|0
+        const uint32_t psq_l  = (56u<<26)|(3u<<21)|(4u<<16)|(0u<<15)|(5u<<12)|0u;
+        // psq_st f3, 8(r4), W=0, I=5 : (60<<26)|(3<<21)|(4<<16)|(0<<15)|(5<<12)|8
+        const uint32_t psq_st = (60u<<26)|(3u<<21)|(4u<<16)|(0u<<15)|(5u<<12)|8u;
+        Built b = build(0x80100000u, { psq_l, psq_st, BLR }, false);
+        CHECK(has(b.code, "psq_load("),  "psq_l emits the psq_load helper (type-correct width/stride)");
+        CHECK(has(b.code, "psq_store("), "psq_st emits the psq_store helper (type-correct width/stride)");
+        CHECK(has(b.code, "cpu.gqr[5]"), "psq op uses the GQR named by the I field");
+        CHECK(!has(b.code, "psq_dequantize(MEM_R32"),
+              "psq_l no longer emits the float-only MEM_R32 dequantize (the bug)");
+    }
+
+    // 7. Single-precision scalar FP ops broadcast the result to BOTH paired slots (ps1 = ps0),
+    //    matching Gekko/Dolphin's Fill(). Leaving ps1 stale corrupted the ps1 lane of any later
+    //    paired op — the every-other-pixel comb in the THP paired-single IDCT. Double-precision
+    //    ops must NOT broadcast (ps1 unchanged).
+    {
+        // fadds f3, f4, f5 : (59<<26)|(3<<21)|(4<<16)|(5<<11)|(21<<1)
+        const uint32_t fadds = (59u<<26)|(3u<<21)|(4u<<16)|(5u<<11)|(21u<<1);
+        // fadd  f3, f4, f5 : (63<<26)|(3<<21)|(4<<16)|(5<<11)|(21<<1)  (double — no broadcast)
+        const uint32_t fadd  = (63u<<26)|(3u<<21)|(4u<<16)|(5u<<11)|(21u<<1);
+        Built bs = build(0x80100000u, { fadds, BLR }, false);
+        CHECK(has(bs.code, "cpu.fpr[3].ps1 = cpu.fpr[3].ps0"),
+              "fadds (single) broadcasts result to ps1 (Gekko Fill)");
+        Built bd = build(0x80100000u, { fadd, BLR }, false);
+        CHECK(!has(bd.code, "cpu.fpr[3].ps1 = cpu.fpr[3].ps0"),
+              "fadd (double) leaves ps1 unchanged");
+    }
+
     std::printf("recomp_test: %d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }
