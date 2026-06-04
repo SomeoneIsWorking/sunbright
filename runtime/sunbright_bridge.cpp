@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <unordered_map>
+#include <set>
 #include <string>
 
 // Pull in Dolphin's PowerPCState when building inside Dolphin
@@ -263,6 +264,15 @@ bool diff_run(uint32_t pc, RecompFunc fn) {
         // The interpreter never reached recomp's exit within budget — almost always
         // a long internal loop (cache flush, memset) recomp finished in native C.
         // Inconclusive, not a divergence: commit recomp's result and move on.
+        // SUNBRIGHT_DIFF_LOG_SKIP logs these so we can tell whether a suspected
+        // corruptor (e.g. an SZS/Yaz0 decompressor) is being silently skipped here.
+        static const bool log_skip = getenv("SUNBRIGHT_DIFF_LOG_SKIP") != nullptr;
+        if (log_skip) {
+            static std::set<u32> seen;
+            if (seen.insert(pc).second)
+                fprintf(stderr, "[DIFF-SKIP] func_%08x (long-loop, %ldM steps, exit=%08x)\n",
+                        pc, MAX / 1'000'000, exit_pc);
+        }
         restore(ppc, rec);
         std::memcpy(ram, ramRec.data(), RAM_SIZE);
         return true;
