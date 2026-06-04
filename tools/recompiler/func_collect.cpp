@@ -32,10 +32,23 @@ std::vector<PPCInstr> collect_function(const uint8_t* data, uint32_t base, size_
         instrs.reserve(by_addr.size());
         for (auto& kv : by_addr) instrs.push_back(kv.second);
     } else {
-        // Legacy LINEAR collection: straight through until the first unconditional branch.
+        // LINEAR collection: straight through the function body [faddr, fend). An
+        // unconditional branch ENDS collection only when it actually LEAVES the function:
+        // a tail call (direct target outside [faddr, fend)) or an indirect/return branch
+        // (blr/bctr/rfi → branch_target 0, i.e. not in range). An unconditional branch to
+        // an address INSIDE the function is an INTERNAL jump — a loop back-edge, or a
+        // forward jump to the loop's condition test — and must NOT truncate collection.
+        // Truncating there emitted the rest of the body as a mid-function tail_ppc → JIT
+        // handoff, which corrupts state non-deterministically. That cut initAllCheckData
+        // at `b 0x801915c4` (its grid-populate loop), so the collision grid base was never
+        // stored → NULL TBGCheckList → wild reads in addAfterPreNode/update on level load.
         for (uint32_t a = faddr; a < fend; a += 4) {
             instrs.push_back(decode(read_word(a), a));
-            if (is_unconditional_branch(instrs.back())) break;
+            if (is_unconditional_branch(instrs.back())) {
+                uint32_t t = branch_target(instrs.back());
+                const bool internal = (t >= faddr && t < fend);
+                if (!internal) break;   // tail call / blr / bctr / rfi → real function exit
+            }
         }
     }
     return instrs;

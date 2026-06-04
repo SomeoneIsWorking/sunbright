@@ -58,18 +58,23 @@ static bool has(const std::string& s, const std::string& sub) { return s.find(su
 int main() {
     const uint32_t B = 0x80100000u;
 
-    // 1. Linear collection truncates at the first unconditional branch; CFG collects the whole body.
-    //    Layout:  +0 addi ; +4 b->+12 ; +8 addi(dead-on-linear) ; +12 addi ; +16 blr
+    // 1. An unconditional branch to an address INSIDE the function (a forward `b` over a block) is
+    //    an internal jump and must NOT truncate linear collection. Linear collects the whole
+    //    [faddr,fend) body (incl. the unreachable +8 as dead code); CFG collects only the reachable
+    //    blocks. Both turn the in-function branch into a goto, never a tail_ppc.
+    //    Layout:  +0 addi ; +4 b->+12 ; +8 addi(unreachable) ; +12 addi ; +16 blr
     {
         std::vector<uint32_t> w = {
             enc_addi(3,3,1),                 // +0
-            enc_b(B+4, B+12, false),         // +4  b -> +12 (skips +8)
-            enc_addi(4,4,1),                 // +8  (reached only via fallthrough-less CFG? no — unreachable)
+            enc_b(B+4, B+12, false),         // +4  b -> +12 (internal; skips +8)
+            enc_addi(4,4,1),                 // +8  unreachable
             enc_addi(5,5,1),                 // +12 branch target
             BLR,                             // +16
         };
         Built lin = build(B, w, /*cfg=*/false);
-        CHECK(lin.n_instrs == 2, "linear stops at the unconditional branch (addi + b)");
+        CHECK(lin.n_instrs == 5, "linear collects the whole body (internal branch does NOT truncate)");
+        CHECK(has(lin.code, "goto lbl_8010000c"), "linear: in-function branch becomes a goto");
+        CHECK(!has(lin.code, "tail_ppc"), "linear: no tail_ppc for an in-function branch");
 
         Built cfg = build(B, w, /*cfg=*/true);
         // CFG follows the b to +12, collecting +0,+4,+12,+16 (not the unreachable +8).
@@ -79,22 +84,23 @@ int main() {
         CHECK(has(cfg.code, "return;"), "CFG: function ends in a return (blr)");
     }
 
-    // 2. THE drawFullSet REGRESSION: a bl to a callee that lives in a block AFTER an unconditional
-    //    branch. Linear truncates before it (so the call is never emitted → unreachable by overrides);
-    //    CFG reaches it and emits call_ppc(callee). This is exactly the HUD quad-emitter bug.
+    // 2. THE drawFullSet REGRESSION: a bl to a callee in a block AFTER an internal unconditional
+    //    branch. The internal-branch truncation bug used to drop it (call never emitted → unreachable
+    //    by overrides). Now linear keeps collecting past the internal `b`, so BOTH linear and CFG
+    //    emit call_ppc(callee). (This is the HUD quad-emitter bug AND the initAllCheckData class.)
     {
         const uint32_t callee = 0x802cd2ecu;
         std::vector<uint32_t> w = {
             enc_bc(B+0, B+12, 4, 0),         // +0  bc -> +12 (forward, conditional)
             enc_addi(3,3,1),                 // +4
-            enc_b(B+8, B+16, false),         // +8  b -> +16 (unconditional — linear stops here)
+            enc_b(B+8, B+16, false),         // +8  b -> +16 (internal — used to truncate here)
             enc_addi(4,4,1),                 // +12 (bc target)
-            enc_b(B+16, callee, true),       // +16 bl callee   ← in the dropped tail
+            enc_b(B+16, callee, true),       // +16 bl callee   ← formerly in the dropped tail
             BLR,                             // +20
         };
         Built lin = build(B, w, false);
-        CHECK(!has(lin.code, "call_ppc(cpu, 0x802cd2ecu)"),
-              "linear truncation drops the bl to the callee (the bug)");
+        CHECK(has(lin.code, "call_ppc(cpu, 0x802cd2ecu)"),
+              "linear no longer truncates at the internal branch → emits the later bl (the fix)");
 
         Built cfg = build(B, w, true);
         CHECK(has(cfg.code, "call_ppc(cpu, 0x802cd2ecu)"),
@@ -128,6 +134,31 @@ int main() {
         };
         Built b = build(B, w, false);
         CHECK(has(b.code, "goto lbl_80100000"), "backward conditional branch is a goto");
+    }
+
+    // 5. THE initAllCheckData REGRESSION (the level-load NULL-collision-list crash). A function
+    //    whose body is a loop entered by a forward `b` to the loop-condition test — the classic
+    //    "jump to condition, condition branches back to body" layout the compiler emits. Linear
+    //    collection USED to truncate at that forward `b`, emitting `tail_ppc(loop_cond)` and handing
+    //    the whole grid-populate loop to a mid-function JIT handoff that corrupted state. The body
+    //    must stay in the recompiled function: the forward `b` is a goto, the back-edge is a goto,
+    //    and there is NO tail_ppc.
+    //    Layout: +0 head ; +4 b->+16 (to cond) ; +8/+12 loop body ; +16 bc->+8 (back-edge) ; +20 blr
+    {
+        std::vector<uint32_t> w = {
+            enc_addi(3,3,1),                 // +0  head
+            enc_b(B+4, B+16, false),         // +4  b -> +16 (forward, to the loop condition)
+            enc_addi(4,4,1),                 // +8  loop body (back-edge target)
+            enc_addi(5,5,1),                 // +12 loop body
+            enc_bc(B+16, B+8, 12, 0),        // +16 bc -> +8 (loop condition, back-edge)
+            BLR,                             // +20 epilogue
+        };
+        Built lin = build(B, w, /*cfg=*/false);
+        CHECK(lin.n_instrs == 6, "initAllCheckData pattern: linear collects the whole loop function");
+        CHECK(!has(lin.code, "tail_ppc"),
+              "initAllCheckData fix: the loop body is recompiled, NOT a mid-function JIT handoff");
+        CHECK(has(lin.code, "goto lbl_80100010"), "forward `b` to the loop condition is a goto");
+        CHECK(has(lin.code, "goto lbl_80100008"), "loop back-edge is a goto");
     }
 
     std::printf("recomp_test: %d checks, %d failures\n", g_checks, g_failures);
