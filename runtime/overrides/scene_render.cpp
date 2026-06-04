@@ -56,6 +56,9 @@ static void ov_gx_projection(CPUState& cpu) {
     // Both are restored after the original packs them (the game reuses the matrices).
     static const float scale = [] { const char* e = getenv("SUNBRIGHT_WS_SCALE"); return e ? (float)atof(e) : 0.75f; }();
     const bool is2d = (type != GX_PERSPECTIVE);
+    // Tell the HUD module which projection mode is current: position matrices loaded while a 2D
+    // orthographic projection is active are 2D elements (the in-game HUD, once 3D has been seen).
+    extern bool g_2d_active; g_2d_active = is2d;
     // Only squeeze 2D once the game has rendered 3D (latched): the pure-2D boot/intro logos render
     // before any perspective and present at 4:3, so squeezing them would wrongly narrow them. After
     // the first 3D frame (title onward), 2D shares a 16:9 EFB and must be pre-squeezed.
