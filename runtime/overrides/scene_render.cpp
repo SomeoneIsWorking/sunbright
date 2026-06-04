@@ -214,6 +214,61 @@ static const bool s_scissor_registered = [] {
     return true;
 }();
 
+// Fade-curtain probes (SUNBRIGHT_RENDERPORT_LOG). The plaza fade-in (load file A → Delfino) triggers
+// the curtain. Log both candidate paths to see which draws it + its rect.
+static void ov_fade_probe_window(CPUState& cpu) {
+    static const bool log = getenv("SUNBRIGHT_RENDERPORT_LOG") != nullptr;
+    if (log) { static unsigned long n = 0; const u32 t = cpu.gpr[3];
+        if (n++ < 30 && t >= 0x80000000u && t < 0x81800000u)
+            std::fprintf(stderr, "[renderport] J2DWindow this=%08x bounds{%d,%d,%d,%d} rectA=%08x\n",
+                         t, (s32)mem_r32(t+0x24), (s32)mem_r32(t+0x28), (s32)mem_r32(t+0x2c), (s32)mem_r32(t+0x30), cpu.gpr[4]); }
+    if (RecompFunc o = recomp_raw(0x802d18ecu)) o(cpu); else call_ppc(cpu, cpu.lr);
+}
+static void ov_fade_probe_fill(CPUState& cpu) {
+    static const bool log = getenv("SUNBRIGHT_RENDERPORT_LOG") != nullptr;
+    if (log) { static unsigned long n = 0; const u32 r = cpu.gpr[4];
+        if (n++ < 12 && r >= 0x80000000u && r < 0x81800000u)
+            std::fprintf(stderr, "[renderport] drawFadeinout TRect=%08x f{%.1f %.1f %.1f %.1f}\n",
+                         r, mem_rf32(r+0), mem_rf32(r+4), mem_rf32(r+8), mem_rf32(r+0xc)); }
+    if (RecompFunc o = recomp_raw(0x8013fa54u)) o(cpu); else call_ppc(cpu, cpu.lr);
+}
+// TSunGlass::draw(const JDrama::TRect&, JUtility::TColor) @ 0x8017d354 — the full-screen darkening
+// curtain (plaza fade-in etc.). It positions its quad via GXLoadPosMtxImm (a modelview matrix), drawn
+// in the squeezed 2D ortho → only covers the centre 75%. Flag the window so its modelview X is scaled
+// by 1/0.75 (ov_gx_loadposmtx) — cancels the ortho squeeze so the solid tint covers the full 16:9.
+static constexpr u32 TSUNGLASS_DRAW   = 0x8017d354u;
+static constexpr u32 GX_LOADPOSMTXIMM = 0x80362e0cu;
+static bool g_in_sunglass = false;
+static void ov_sunglass(CPUState& cpu) {
+    g_in_sunglass = true;
+    if (RecompFunc o = recomp_raw(TSUNGLASS_DRAW)) o(cpu); else call_ppc(cpu, cpu.lr);
+    g_in_sunglass = false;
+}
+// GXLoadPosMtxImm(f32 mtx[3][4], u32 id) @ 0x80362e0c — VERY hot (every 3D model). We only touch the
+// matrix while drawing the sunglass curtain: scale row 0 (the X mapping) by 1/0.75 so the quad widens
+// to cancel the ortho squeeze → full-screen tint. Restored after the original packs it.
+static void ov_gx_loadposmtx(CPUState& cpu) {
+    const u32 m = cpu.gpr[3];
+    bool patched = false; f32 r0c0 = 0, r0c3 = 0;
+    if (g_in_sunglass && widescreen_on() && m >= 0x80000000u && m < 0x81800000u) {
+        static const float k = 1.0f / 0.75f;
+        r0c0 = mem_rf32(m + 0x00); r0c3 = mem_rf32(m + 0x0c);
+        mem_wf32(m + 0x00, r0c0 * k); mem_wf32(m + 0x0c, r0c3 * k);
+        patched = true;
+    }
+    if (RecompFunc o = recomp_raw(GX_LOADPOSMTXIMM)) o(cpu); else { if (patched) { mem_wf32(m+0,r0c0); mem_wf32(m+0xc,r0c3); } call_ppc(cpu, cpu.lr); return; }
+    if (patched) { mem_wf32(m + 0x00, r0c0); mem_wf32(m + 0x0c, r0c3); }
+}
+static const bool s_fade_probes = [] {
+    register_override(TSUNGLASS_DRAW,   &ov_sunglass);        // functional (always on in widescreen)
+    register_override(GX_LOADPOSMTXIMM, &ov_gx_loadposmtx);
+    if (getenv("SUNBRIGHT_RENDERPORT_LOG")) {
+        register_override(0x802d18ecu, &ov_fade_probe_window);
+        register_override(0x8013fa54u, &ov_fade_probe_fill);
+    }
+    return true;
+}();
+
 // ── 2D draw scaffold (SUNBRIGHT_RENDERPORT) ─────────────────────────────────────────────────
 // J2DScreen::draw(int x, int y, const J2DGrafContext*) @ 0x802cfda8 — the top-level 2D screen
 // draw. Super-call wrap (recomp_raw) proven to run the original draw with no regression; r3 =
