@@ -10,6 +10,7 @@
 
 bool g_recomp_touched_mmio = false;
 bool g_recomp_context_switched = false;
+thread_local CPUState* g_cur_recomp_cpu = nullptr;
 
 // ── GX matrix-load tap (SUNBRIGHT_GXCAP=1) ───────────────────────────────────
 // Every model's transform reaches the GPU as an XF matrix-load through the write-
@@ -238,6 +239,20 @@ static void report_wild_read(u32 ea, int bits) {
         "  would crash later somewhere else, hiding this root cause.\n"
         "  Native backtrace (recomp call chain, innermost first):\n",
         ea, bits);
+    if (g_cur_recomp_cpu) {
+        const CPUState& c = *g_cur_recomp_cpu;
+        fprintf(stderr, "  Guest registers at fault (lr=%08x ctr=%08x):\n", c.lr, c.ctr);
+        for (int i = 0; i < 32; i += 4)
+            fprintf(stderr, "    r%-2d=%08x  r%-2d=%08x  r%-2d=%08x  r%-2d=%08x\n",
+                    i, c.gpr[i], i+1, c.gpr[i+1], i+2, c.gpr[i+2], i+3, c.gpr[i+3]);
+        // Name the base register: whichever GPR, plus a small displacement, equals ea.
+        for (int i = 0; i < 32; i++) {
+            u32 d = ea - c.gpr[i];
+            if (d <= 0xffffu)
+                fprintf(stderr, "  ▶ base looks like r%d=%08x + 0x%x (the bad pointer is r%d)\n",
+                        i, c.gpr[i], d, i);
+        }
+    }
     void* bt[96];
     int n = backtrace(bt, 96);
     backtrace_symbols_fd(bt, n, fileno(stderr));

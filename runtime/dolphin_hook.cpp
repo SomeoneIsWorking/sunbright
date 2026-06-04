@@ -640,6 +640,8 @@ void sunbright_adopt_cpu_thread() {
 void sunbright_run_recomp_tree(CPUState& cpu, void (*fn)(CPUState&)) {
     sigjmp_buf jb;
     sigjmp_buf* prev = sunbright_set_tail_jmp(&jb);
+    CPUState* prev_cpu = g_cur_recomp_cpu; g_cur_recomp_cpu = &cpu;   // for fault diagnostics
+    struct CpuRestore { CPUState* p; ~CpuRestore() { g_cur_recomp_cpu = p; } } cpu_restore{prev_cpu};
     if (sigsetjmp(jb, 0) == 0) {
         fn(cpu);
         // Normal C return (top-level blr): commit our state and continue at the return addr.
