@@ -111,30 +111,24 @@ static void ov_quad(CPUState& cpu) {
 // drawFullSet but for perform (it's fragmented in the function list, so not a one-liner). Until then
 // the blue fill stays at the un-anchored 4:3 position next to the (anchored) box.
 
-// The blue fill + "WATER" + nozzle are drawn by drawWater/drawJuice via a J2DOrthoGraph; both load a
-// GX position matrix at the start of their draw. We scope a +pillar shift of that matrix's m03 to
-// those functions so everything they draw moves right with the (already-anchored) gauge box. These
-// are called directly from TGCConsole2::perform; they're only override-reachable because JIT
-// block-linking + branch-following are disabled by default (main_sdl.cpp) so every block dispatches
-// through our hook (otherwise perform links/inlines them and the overrides never fire).
+// The blue fill + "WATER" + nozzle are drawn by TGCConsole2::drawWater (0x801441e0) / drawJuice
+// (0x80144840) via a J2DOrthoGraph — NOT the emitter — and each loads its GX position matrix via
+// GXLoadPosMtxImm at one fixed call site. We shift that matrix's m03 by +pillar so everything they
+// draw moves right with the (already-anchored) gauge box. Keyed on the CALL SITE (cpu.lr at the
+// GXLoadPosMtxImm override) — NOT a "we're in drawWater" scope flag: drawWater calls sub-functions
+// that siglongjmp out (interpreter/JIT handoff) and never return, so a flag would never be cleared
+// and would shift the WHOLE screen (verified). The lr key has nothing to leak. drawWater/drawJuice
+// are only override-reachable because JIT block-linking + branch-following are off (main_sdl.cpp).
 static constexpr u32 GX_LOAD_POS_MTX_IMM = 0x80362e0cu;
-static int g_water_pillar = 0;
-
-template <u32 ADDR>
-static void ov_water_draw(CPUState& cpu) {
-    const int prev = g_water_pillar;
-    g_water_pillar = hud_pillar();
-    if (RecompFunc orig = recomp_raw(ADDR)) orig(cpu);
-    else call_ppc(cpu, cpu.lr);
-    g_water_pillar = prev;
-}
+static constexpr u32 DRAWWATER_POSMTX_LR = 0x8014421cu;   // GXLoadPosMtxImm call in drawWater
+static constexpr u32 DRAWJUICE_POSMTX_LR = 0x8014487cu;   // GXLoadPosMtxImm call in drawJuice
 
 static void ov_water_posmtx(CPUState& cpu) {
-    const u32 mtx = cpu.gpr[3];
+    const u32 lr = cpu.lr, mtx = cpu.gpr[3];
     f32 m03 = 0.0f; bool moved = false;
-    if (g_water_pillar && mtx >= 0x80000000u && mtx < 0x81800000u) {
+    if ((lr == DRAWWATER_POSMTX_LR || lr == DRAWJUICE_POSMTX_LR) && mtx >= 0x80000000u && mtx < 0x81800000u) {
         m03 = mem_rf32(mtx + 0x0c);
-        mem_wf32(mtx + 0x0c, m03 + (f32)g_water_pillar);
+        mem_wf32(mtx + 0x0c, m03 + (f32)hud_pillar());
         moved = true;
     }
     if (RecompFunc orig = recomp_raw(GX_LOAD_POS_MTX_IMM)) orig(cpu);
@@ -144,8 +138,6 @@ static void ov_water_posmtx(CPUState& cpu) {
 
 static const bool s_hud_registered = [] {
     register_override(QUAD_EMITTER, &ov_quad);
-    register_override(0x801441e0u, &ov_water_draw<0x801441e0u>);   // TGCConsole2::drawWater
-    register_override(0x80144840u, &ov_water_draw<0x80144840u>);   // TGCConsole2::drawJuice
     register_override(GX_LOAD_POS_MTX_IMM, &ov_water_posmtx);
     std::fprintf(stderr, "[hud] native HUD: own 2D quad emitter @ %08x + water gauge\n", QUAD_EMITTER);
     return true;

@@ -223,7 +223,12 @@ static int recompile_mode(const DiscLoader& disc, const DOL& dol, const std::str
             // These J2D draw functions must be whole so the 2D quad emitter they bl (0x802cd2ec) is
             // emitted as call_ppc and can be owned natively (the widescreen HUD layout, hud.cpp):
             //   0x802cc838 J2DPicture::drawFullSet — bl's the quad emitter from its (truncated) tail.
-            static const std::unordered_set<u32> kForceCFG = { 0x802cc838u };
+            //   0x801441e0 TGCConsole2::drawWater, 0x80144840 drawJuice — these draw the FLUDD blue
+            //     gauge; hud.cpp wraps them to shift the gauge for widescreen and must regain control
+            //     when they return. Linear-truncated, they'd tail_ppc out (siglongjmp) and never
+            //     return to the override → its scope flag would leak and shift the whole screen. Whole
+            //     (force-CFG) they end in blr and return cleanly.
+            static const std::unordered_set<u32> kForceCFG = { 0x802cc838u, 0x801441e0u, 0x80144840u };
 
             auto& instrs = func_instrs[faddr];
             if (getenv("SUNBRIGHT_CFG") || kForceCFG.count(faddr)) {
