@@ -99,7 +99,15 @@ round-trip, no per-call register-file copy. Implemented in `runtime/dolphin_hook
   - `call_ppc` (bl/bctrl): recomp target → nested C call; non-recomp target →
     run it under the Dolphin **interpreter** (`SingleStep`, NOT `SingleStepInner`, so
     CoreTiming advances and HW-wait/spin loops progress) until control returns to
-    `cpu.lr`, then continue the caller inline.
+    `cpu.lr`, then continue the caller inline. **Return detection is stack-aware**
+    (`interp_run_until(ret, budget, sp_floor)`): it stops only when `pc == ret` AND the
+    guest stack has unwound to the caller's SP (`gpr[1] >= sp_floor`). A bare `pc == ret`
+    match is ambiguous when the interpreted callee **re-enters that same address** — e.g. a
+    recursive callee whose own post-call continuation IS `ret` (`__construct_array`
+    `0x80337f78`): it would stop EARLY mid-call with a half-unwound register file, leaking
+    the callee's loop registers back to the caller (the `TBeamManager`-ctor crash: a valid
+    `this` came back as ≈5 → wild write). The `sp_floor` floor rejects the deeper nested
+    re-entries. ISR/syscall/idle/thread-body callers pass `sp_floor=0` (bare-PC, unchanged).
   - `tail_ppc` (b/bctr that leave the function): recomp target → nested call then the
     caller returns; non-recomp target → commit state and `siglongjmp` back to
     `SunbrightBridge::Run`, unwinding the recomp C stack and letting the CPU loop take

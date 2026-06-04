@@ -131,7 +131,7 @@ static void os_sync_watch(u32 pc, u32 r3, u32 r4, u32 lr) {
 }
 
 #ifdef HAVE_DOLPHIN_CORE
-bool interp_run_until(u32 ret, long budget);   // defined below; used by call_ppc
+bool interp_run_until(u32 ret, long budget, u32 sp_floor = 0);   // defined below; used by call_ppc
 
 // ── Tail-branch handoff ──────────────────────────────────────────────────────
 // Set by SunbrightBridge::Run for the duration of a top-level recomp entry so a tail-branch (or a
@@ -207,12 +207,16 @@ void call_ppc(CPUState& cpu, u32 address) {
     // precisely the callee's final blr. Running it synchronously keeps the rest of
     // the caller on the native C stack.
     const u32 ret = cpu.lr;
+    // Stack floor for return detection: a real return to `ret` lands with the stack unwound back
+    // to the caller's SP. This disambiguates a recursive interpreted callee that transiently
+    // revisits `ret` at a deeper frame (see interp_run_until / the __construct_array crash).
+    const u32 sp_floor = cpu.gpr[1];
     cpu_to_dolphin_state(cpu, ppc);
     ppc.pc = ppc.npc = address;
     // A context switch never returns to us — hand off to Dolphin's CPU loop instead of spinning.
     if (address == OS_LOAD_CONTEXT && g_tail_jmp) { g_recomp_context_switched = true; siglongjmp(*g_tail_jmp, 1); }
     constexpr long MAX = 500'000'000;
-    if (!interp_run_until(ret, MAX)) {
+    if (!interp_run_until(ret, MAX, sp_floor)) {
         // The interpreter never returned to the caller's LR within the budget — the
         // callee rescheduled to a never-returning context (the GC OS idle loop after a
         // blocking OS call) and is spinning. This is THE root cause behind the later
@@ -254,7 +258,17 @@ void call_ppc(CPUState& cpu, u32 address) {
 // blocks via native parking rather than returning). Returns true if `ret` was reached, false if
 // the budget was exhausted. SingleStep (not SingleStepInner) advances CoreTiming and checks
 // exceptions each instruction, so HW-wait/poll loops make progress and their interrupts fire.
-bool interp_run_until(u32 ret, long budget) {
+// Run the interpreter until control returns to `ret`. `sp_floor` (when non-zero) makes the
+// return detection STACK-AWARE: a genuine return to `ret` only happens once the guest stack has
+// unwound back to the caller's stack pointer (ppc.gpr[1] >= sp_floor). Without it, a bare
+// `pc == ret` match is ambiguous — if the interpreted callee re-enters that same address (e.g. a
+// RECURSIVE callee whose own post-call continuation IS `ret`, like __construct_array 0x80337f78),
+// we would stop EARLY, mid-call, with a half-unwound register file (the TBeamManager-ctor crash:
+// the callee's loop r30/r29/r31 leaked back to the caller as `this`≈5). At a true return the
+// callee has balanced its frame so ppc.gpr[1] == sp_floor; nested re-entries sit at a deeper
+// (smaller) SP, so `>= sp_floor` rejects them. Callers that aren't bl/bctrl returns (ISR/syscall/
+// idle/thread-body) pass sp_floor=0 and keep the original bare-PC behavior.
+bool interp_run_until(u32 ret, long budget, u32 sp_floor) {
     auto& ppc    = Core::System::GetInstance().GetPPCState();
     auto& interp = Core::System::GetInstance().GetInterpreter();
     struct InterpTimer {
@@ -269,7 +283,7 @@ bool interp_run_until(u32 ret, long budget) {
         }
     } _it;
     long n = 0;
-    while (ppc.pc != ret) {
+    while (ppc.pc != ret || (sp_floor && ppc.gpr[1] < sp_floor)) {
         if (budget) { if (n++ >= budget) return false; }
         else if ((++n & 0x7FFFFFF) == 0)   // budget-less (thread body): periodic progress probe
             fprintf(stderr, "[interp] thread-body still running pc=%08x after %ldM steps\n",
@@ -637,7 +651,34 @@ void sunbright_adopt_cpu_thread() {
     });
 }
 
+// A guest stack pointer (r1) is ALWAYS a valid main-RAM address (cached 0x80000000–0x817FFFFF):
+// every PPC prologue does `stwu r1, -frame(r1)`. So at a recomp entry, an r1 outside RAM means the
+// caller already corrupted the frame/base pointer — the same class as the wild-write trap, but
+// caught HERE, at the entry of the bad frame, before its prologue stores spray garbage and bury the
+// originator. (This was added after a TBeamManager-ctor crash: a near-NULL `this` only tripped the
+// wild-write trap several instructions deep; an entry guard fails faster and names the entry fn.)
+static inline bool sb_guest_sp_ok(u32 sp) {
+    return (sp >> 28) == 0x8u && (sp & 0x0FFFFFFFu) < 0x01800000u;
+}
+[[noreturn]] static void sb_fatal_bad_entry_sp(const CPUState& cpu) {
+    fflush(stdout);
+    fprintf(stderr,
+        "\n[sunbright] FATAL bad guest stack pointer at recomp entry: r1=%08x (lr=%08x)\n"
+        "  r1 is outside main RAM (0x80000000-0x817FFFFF) — the caller corrupted the stack/base\n"
+        "  pointer before this call. Failing at the entry frame (earlier than the wild-write trap).\n"
+        "  Native backtrace (recomp call chain, innermost first):\n",
+        cpu.gpr[1], cpu.lr);
+    void* bt[96];
+    int bn = backtrace(bt, 96);
+    backtrace_symbols_fd(bt, bn, fileno(stderr));
+    fflush(stderr);
+    struct rlimit no_core{0, 0};   // skip the multi-GB core dump (see the step-budget trap above)
+    setrlimit(RLIMIT_CORE, &no_core);
+    abort();
+}
+
 void sunbright_run_recomp_tree(CPUState& cpu, void (*fn)(CPUState&)) {
+    if (!sb_guest_sp_ok(cpu.gpr[1])) sb_fatal_bad_entry_sp(cpu);
     sigjmp_buf jb;
     sigjmp_buf* prev = sunbright_set_tail_jmp(&jb);
     CPUState* prev_cpu = g_cur_recomp_cpu; g_cur_recomp_cpu = &cpu;   // for fault diagnostics

@@ -188,6 +188,26 @@ static inline u8* ram_ptr(u32 ea) {
 #  define MMIO_W(bits, ea, v)  ((void)0)
 #endif
 
+// Shared diagnostic: dump the live guest register file and name whichever GPR, plus a
+// small displacement, equals the faulting ea — i.e. the corrupted base pointer. Used by
+// BOTH the wild-read and wild-write traps so a bad store names its base register the same
+// way a bad load does (the asymmetry hid that the TBeamManager-ctor crash was `this`≈small).
+static void dump_guest_regs_naming_base(u32 ea) {
+    if (!g_cur_recomp_cpu) return;
+    const CPUState& c = *g_cur_recomp_cpu;
+    fprintf(stderr, "  Guest registers at fault (lr=%08x ctr=%08x):\n", c.lr, c.ctr);
+    for (int i = 0; i < 32; i += 4)
+        fprintf(stderr, "    r%-2d=%08x  r%-2d=%08x  r%-2d=%08x  r%-2d=%08x\n",
+                i, c.gpr[i], i+1, c.gpr[i+1], i+2, c.gpr[i+2], i+3, c.gpr[i+3]);
+    // Name the base register: whichever GPR, plus a small displacement, equals ea.
+    for (int i = 0; i < 32; i++) {
+        u32 d = ea - c.gpr[i];
+        if (d <= 0xffffu)
+            fprintf(stderr, "  ▶ base looks like r%d=%08x + 0x%x (the bad pointer is r%d)\n",
+                    i, c.gpr[i], d, i);
+    }
+}
+
 // ── Wild-write trap ─────────────────────────────────────────────────────────
 // A guest store whose effective address is neither main RAM (0x8xxxxxxx /
 // 0xCxxxxxxx low 24 MB, handled by ram_ptr) nor the write-gather pipe nor a real
@@ -202,9 +222,10 @@ static inline u8* ram_ptr(u32 ea) {
     fflush(stdout);
     fprintf(stderr,
         "\n[sunbright] FATAL wild guest write: ea=0x%08x val=0x%0*llx (%d-bit)\n"
-        "  ea is outside main RAM / gather-pipe / MMIO — corrupted base or stack pointer.\n"
-        "  Native backtrace (recomp call chain, innermost first):\n",
+        "  ea is outside main RAM / gather-pipe / MMIO — corrupted base or stack pointer.\n",
         ea, bits / 4, val, bits);
+    dump_guest_regs_naming_base(ea);
+    fprintf(stderr, "  Native backtrace (recomp call chain, innermost first):\n");
     void* bt[96];
     int n = backtrace(bt, 96);
     backtrace_symbols_fd(bt, n, fileno(stderr));
@@ -236,23 +257,10 @@ static void report_wild_read(u32 ea, int bits) {
         "  ea is outside main RAM (0x80000000-0x817FFFFF) and all hardware regions (>=0xC0000000)\n"
         "  — a corrupted base/pointer (lost high bit, or read through NULL/garbage). This is the\n"
         "  ORIGINATOR; Dolphin's MMU would warn 'Invalid read' and return garbage, and the game\n"
-        "  would crash later somewhere else, hiding this root cause.\n"
-        "  Native backtrace (recomp call chain, innermost first):\n",
+        "  would crash later somewhere else, hiding this root cause.\n",
         ea, bits);
-    if (g_cur_recomp_cpu) {
-        const CPUState& c = *g_cur_recomp_cpu;
-        fprintf(stderr, "  Guest registers at fault (lr=%08x ctr=%08x):\n", c.lr, c.ctr);
-        for (int i = 0; i < 32; i += 4)
-            fprintf(stderr, "    r%-2d=%08x  r%-2d=%08x  r%-2d=%08x  r%-2d=%08x\n",
-                    i, c.gpr[i], i+1, c.gpr[i+1], i+2, c.gpr[i+2], i+3, c.gpr[i+3]);
-        // Name the base register: whichever GPR, plus a small displacement, equals ea.
-        for (int i = 0; i < 32; i++) {
-            u32 d = ea - c.gpr[i];
-            if (d <= 0xffffu)
-                fprintf(stderr, "  ▶ base looks like r%d=%08x + 0x%x (the bad pointer is r%d)\n",
-                        i, c.gpr[i], d, i);
-        }
-    }
+    dump_guest_regs_naming_base(ea);
+    fprintf(stderr, "  Native backtrace (recomp call chain, innermost first):\n");
     void* bt[96];
     int n = backtrace(bt, 96);
     backtrace_symbols_fd(bt, n, fileno(stderr));
