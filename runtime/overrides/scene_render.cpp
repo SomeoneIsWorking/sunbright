@@ -34,7 +34,8 @@ static bool widescreen_on() {
 
 // Set while inside TGCConsole2::perform (the in-game HUD draw). The HUD is corner-anchored, so the
 // centering squeeze (which keeps menus in the 4:3 safe area) would wrongly pull the gauges inward.
-static bool g_in_hud = false;
+// Global (not static) so call_ppc can log every function called during the HUD (find element draws).
+bool g_in_hud = false;
 
 static void ov_gx_projection(CPUState& cpu) {
     const u32 mtx = cpu.gpr[3];
@@ -65,13 +66,15 @@ static void ov_gx_projection(CPUState& cpu) {
     // EFB→16:9 present stretches them ~1.33×; 0.75 = full squeeze → correct aspect but centred in the
     // 4:3 safe area. Tune between for the anchor-vs-stretch tradeoff. (A true no-stretch edge anchor
     // needs per-element pre-squeeze + scissor repositioning — see docs; this knob is the interim.)
-    static const float hud_scale = [] { const char* e = getenv("SUNBRIGHT_HUD_SCALE"); return e ? (float)atof(e) : 1.0f; }();
-    const float eff = (g_in_hud && is2d) ? hud_scale : scale;
+    // ALL 2D (menus AND the HUD ortho) gets the centering squeeze → correct aspect. The HUD is then
+    // edge-anchored per-element by spreading each drawFullSet x (ov_drawfullset) so it lands back at
+    // its authored position — un-stretched. (The old g_in_hud full-ortho exemption is gone: it
+    // stretched, and g_in_hud leaks across the tail-recursive scene draw anyway.)
     bool patched = false; f32 m00 = 0.0f, m03 = 0.0f;
-    if (widescreen_on() && (!is2d || seen_3d) && eff != 1.0f && mtx >= 0x80000000u && mtx < 0x81800000u) {
+    if (widescreen_on() && (!is2d || seen_3d) && mtx >= 0x80000000u && mtx < 0x81800000u) {
         m00 = mem_rf32(mtx + 0x00);
-        mem_wf32(mtx + 0x00, m00 * eff);
-        if (is2d) { m03 = mem_rf32(mtx + 0x0c); mem_wf32(mtx + 0x0c, m03 * eff); }
+        mem_wf32(mtx + 0x00, m00 * scale);
+        if (is2d) { m03 = mem_rf32(mtx + 0x0c); mem_wf32(mtx + 0x0c, m03 * scale); }
         patched = true;
     }
     if (RecompFunc orig = recomp_raw(GX_SET_PROJECTION)) orig(cpu);
@@ -149,6 +152,31 @@ static const bool s_hud_probes = [] {
         register_override(0x8014c7e8u, &ov_hud_probe<0x8014c7e8u>);
         register_override(0x80148f64u, &ov_hud_probe<0x80148f64u>);
     }
+    return true;
+}();
+
+// J2DPicture::drawFullSet(int x, int y, int w, int h, ...) @ 0x802cc838 — the HUD draws its picture
+// elements through this, and the dest rect is in the ARGS (r4..r7). In gameplay there are no menus,
+// so this is HUD-only and directly repositionable. Log the rects to map the HUD element positions.
+static constexpr u32 J2DPICTURE_DRAWFULLSET = 0x802cc838u;
+static void ov_drawfullset(CPUState& cpu) {
+    static const bool log = getenv("SUNBRIGHT_RENDERPORT_LOG") != nullptr;
+    if (log) { static unsigned long n = 0;
+        if (n++ < 40) std::fprintf(stderr, "[renderport] drawFullSet this=%08x rect=(%d,%d %dx%d)\n",
+                                   cpu.gpr[3], (s32)cpu.gpr[4], (s32)cpu.gpr[5], (s32)cpu.gpr[6], (s32)cpu.gpr[7]); }
+    // Edge-anchor: the 2D ortho is squeezed ×0.75 (centring), so spread this element's x by 1.333
+    // about the 320 centre — net position = the game's authored position (anchored), size = ×0.75
+    // (un-stretched). The HUD draws through drawFullSet; menus use drawSelf, so they're unaffected.
+    s32 saved_x = (s32)cpu.gpr[4];
+    if (widescreen_on()) {
+        static const float k = [] { const char* e = getenv("SUNBRIGHT_HUD_SPREAD"); return e ? (float)atof(e) : 1.0f / 0.75f; }();
+        cpu.gpr[4] = (u32)(s32)(320.0f + (saved_x - 320) * k);
+    }
+    if (RecompFunc orig = recomp_raw(J2DPICTURE_DRAWFULLSET)) orig(cpu); else call_ppc(cpu, cpu.lr);
+    cpu.gpr[4] = (u32)saved_x;
+}
+static const bool s_drawfullset_registered = [] {
+    register_override(J2DPICTURE_DRAWFULLSET, &ov_drawfullset);   // functional (always on in widescreen)
     return true;
 }();
 

@@ -151,6 +151,18 @@ static constexpr u32 OS_LOAD_CONTEXT = 0x80343fe4u;
 #endif
 
 void call_ppc(CPUState& cpu, u32 address) {
+    // SUNBRIGHT_HUDCALLS: log each DISTINCT function called during the in-game HUD draw (g_in_hud),
+    // to find the indirect element-draw functions (coins/water gauge/lives) that aren't perform's
+    // direct calls. Deduped so the log is the set of HUD-involved functions, not every call.
+    extern bool g_in_hud;
+    static const bool hudcalls = getenv("SUNBRIGHT_HUDCALLS") != nullptr;
+    if (hudcalls && g_in_hud) {
+        static std::unordered_map<u32, char> seen;
+        if (seen.find(address) == seen.end()) {
+            seen[address] = 1;
+            fprintf(stderr, "[hudcall] %08x  r3=%08x\n", address, cpu.gpr[3]);
+        }
+    }
     os_sync_watch(address, cpu.gpr[3], cpu.gpr[4], cpu.lr);
     if (address == watch_addr() && watch_addr() != 0) {
         static unsigned long n = 0;
