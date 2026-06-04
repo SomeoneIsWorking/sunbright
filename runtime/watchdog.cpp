@@ -36,6 +36,12 @@ std::atomic<bool> g_bt_done{false};
 void*  g_bt_addrs[128];                        // emu-thread backtrace captured by the SIGUSR2 handler
 std::atomic<int> g_bt_n{0};
 
+// On-demand freeze dump: `kill -QUIT <pid>` sets this; the watchdog thread does the (non-async-
+// signal-safe) dump_freeze on its next tick. Lets us capture the guest PC + symbolized recomp call
+// chain DURING a freeze the heartbeat can't auto-detect (e.g. a spin that keeps VI fields ticking).
+std::atomic<bool> g_force_dump{false};
+void wd_sigquit(int) { g_force_dump.store(true); }
+
 #ifdef HAVE_DOLPHIN_CORE
 Common::EventHook g_field_hook;               // kept alive to stay subscribed
 #endif
@@ -181,6 +187,10 @@ void watchdog_loop(int timeout_sec) {
     const bool dbg = getenv("SUNBRIGHT_WATCHDOG_DEBUG") != nullptr;
     for (;;) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
+        if (g_force_dump.exchange(false)) {            // `kill -QUIT <pid>` → on-demand dump
+            std::fprintf(stderr, "[watchdog] on-demand dump (SIGQUIT)\n");
+            dump_freeze(timeout_sec);
+        }
         const uint64_t cur_fields = g_fields.load();
         const uint64_t cur_ticks  = guest_ticks();
         if (dbg)
@@ -236,6 +246,12 @@ void watchdog_init() {
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = SA_RESTART;
     sigaction(SIGUSR2, &sa, nullptr);
+
+    struct sigaction sq{};                             // SIGQUIT → on-demand freeze dump
+    sq.sa_handler = wd_sigquit;
+    sigemptyset(&sq.sa_mask);
+    sq.sa_flags = SA_RESTART;
+    sigaction(SIGQUIT, &sq, nullptr);
 
 #ifdef HAVE_DOLPHIN_CORE
     g_field_hook = GetVideoEvents().vi_end_field_event.Register(

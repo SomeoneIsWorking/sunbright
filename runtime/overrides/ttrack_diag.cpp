@@ -9,18 +9,26 @@
 #include <cstdio>
 
 static void ov_ttrack_tick(CPUState& cpu) {
-    if (getenv("SUNBRIGHT_TTRACK_DIAG")) {
-        u32 self = cpu.gpr[3], r2 = cpu.gpr[2];
-        float phase = (self >= 0x80000000u && self < 0x81800000u) ? mem_rf32(self + 940) : 0.f;
-        float rate  = (self >= 0x80000000u && self < 0x81800000u) ? mem_rf32(self + 944) : 0.f;
-        u8    flag  = (self >= 0x80000000u && self < 0x81800000u) ? mem_r8(self + 964)  : 0;
-        float limit = (r2 >= 0x80000000u && r2 < 0x81800000u) ? mem_rf32(r2 + 1916) : 0.f;
-        static int n = 0;
-        if (n++ < 60)
-            std::fprintf(stderr, "[ttrack] this=%08x flag=%u phase=%.6f rate=%.6f limit=%.6f\n",
-                         self, flag, phase, rate, limit);
+    const bool diag = getenv("SUNBRIGHT_TTRACK_DIAG");
+    u32 self = cpu.gpr[3], r2 = cpu.gpr[2];
+    auto okp = [](u32 p){ return p >= 0x80000000u && p < 0x81800000u; };
+    if (diag) {
+        float phase = okp(self) ? mem_rf32(self + 940) : 0.f;
+        float rate  = okp(self) ? mem_rf32(self + 944) : 0.f;
+        u8    flag  = okp(self) ? mem_r8(self + 964)  : 0;
+        float limit = okp(r2)   ? mem_rf32(r2 + 1916) : 0.f;
+        // Log EVERY call, flush immediately: the LAST line printed before the run stalls is the
+        // call whose recomp body (→updateSeq→TSeqParser) never returns = the freezing input.
+        std::fprintf(stderr, "[ttrack] this=%08x flag=%u phase=%.6f rate=%.6f limit=%.6f\n",
+                     self, flag, phase, rate, limit);
+        std::fflush(stderr);
     }
     if (RecompFunc o = recomp_raw(0x8031d83cu)) o(cpu); else call_ppc(cpu, cpu.lr);
+    if (diag) {
+        float phase = okp(self) ? mem_rf32(self + 940) : 0.f;
+        std::fprintf(stderr, "[ttrack]   -> returned r3=%d phase_after=%.6f\n", (int)cpu.gpr[3], phase);
+        std::fflush(stderr);
+    }
 }
 
 static const bool ttrack_diag_reg = [] {

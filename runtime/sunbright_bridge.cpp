@@ -374,8 +374,15 @@ bool Run(uint32_t pc) {
         // scenes. SUNBRIGHT_DIFF_ALL re-diffs every call (catches input-dependent
         // divergences, but slow).
         static const bool diff_all = getenv("SUNBRIGHT_DIFF_ALL") != nullptr;
+        // SUNBRIGHT_DIFF_ONLY=<hexaddr>: re-diff just this one pc on EVERY call (and skip
+        // diffing all others) — fast enough to reach input-dependent divergences that the
+        // once-per-pc validation misses (a function whose first call has benign inputs).
+        static const u32 diff_only = getenv("SUNBRIGHT_DIFF_ONLY")
+                                     ? (u32)strtoul(getenv("SUNBRIGHT_DIFF_ONLY"), nullptr, 16) : 0;
         static std::unordered_set<u32> validated;
-        if (diff_all || !validated.count(pc)) {
+        if (diff_only) {
+            if (pc == diff_only) return diff_run(pc, fn);
+        } else if (diff_all || !validated.count(pc)) {
             validated.insert(pc);
             return diff_run(pc, fn);
         }
