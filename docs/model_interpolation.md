@@ -62,6 +62,17 @@ keyed by a stable per-model ID.
 >   TGCConsole2::perform, find the HUD's 2D ortho, and EDGE-ANCHOR the corner gauges to the 16:9 edges
 >   (a uniform squeeze would wrongly centre them). The FLUDD water gauge is likely a separate TViewObj
 >   — find its perform via vtable[8] the same way.
+>   **✅ SOLVED (2026-06-04) — no-stretch edge-anchored HUD.** The in-game HUD draws each picture
+>   element through **`J2DPicture::drawFullSet` (0x802cc838)**, which takes the dest rect (x,y,w,h) as
+>   ARGUMENTS — so we own each element's position directly (found by `SUNBRIGHT_HUDCALLS`, which logs
+>   every fn called during the HUD draw). Fix in `scene_render.cpp`: squeeze the HUD's 2D ortho ×0.75
+>   like the menus (correct aspect), and in a `drawFullSet` override spread each element's x by 1/0.75
+>   about centre 320 → squeeze×spread = the game's authored position (anchored) at correct size
+>   (un-stretched). Menus use `drawSelf` not `drawFullSet`, so they're untouched. Verified: HUD at the
+>   16:9 corners, round shine/water-gauge (not oval); title + file-select still correct. The long
+>   investigation below (vtable RE of TGCConsole2::perform, scissor/viewport ruled out, the indirect-
+>   draw dead-ends) is kept as the trail; the answer was drawFullSet's arg-level rect.
+>   --- (historical) ---
 >   **DONE (edge-anchor) + the no-stretch problem:** `scene_render.cpp` hooks TGCConsole2::perform,
 >   flags the HUD window, and gives the HUD ortho its own squeeze factor `SUNBRIGHT_HUD_SCALE`
 >   (default 1.0 = no squeeze → gauges fill to the 16:9 corners; 0.75 = full squeeze → centred,
