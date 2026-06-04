@@ -26,7 +26,10 @@ set -eo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN="$HERE/build/sunbright"
-ROM="${1:-$SUNBRIGHT_ROM}"
+# ROM source (no machine-specific path in the tree): explicit arg, else $SUNBRIGHT_ROM (set it in a
+# gitignored .env next to this script, or in your env), else a drop-in rom.rvz in the repo dir.
+[ -f "$HERE/.env" ] && { set -a; . "$HERE/.env"; set +a; }
+ROM="${1:-${SUNBRIGHT_ROM:-$HERE/rom.rvz}}"
 
 if [[ ! -x "$BIN" ]]; then
     echo "sunbright not built. Build it with:" >&2

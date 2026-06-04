@@ -15,7 +15,8 @@
 set -eo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN="$HERE/build/sunbright"
-ROM="${1:-$SUNBRIGHT_ROM}"
+[ -f "$HERE/.env" ] && { set -a; . "$HERE/.env"; set +a; }
+ROM="${1:-${SUNBRIGHT_ROM:-$HERE/rom.rvz}}"
 mkdir -p "$HERE/scratch/logs"
 LOG="${SUNBRIGHT_LOG:-$HERE/scratch/logs/sunbright_capture.log}"
 OUT="$HERE/mario_candidates.txt"

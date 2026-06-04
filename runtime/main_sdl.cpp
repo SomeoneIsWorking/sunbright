@@ -530,8 +530,12 @@ int main(int argc, char* argv[]) {
         return true;  // "yes" / ignore and continue
     });
 
-    const char* rom_path   = (argc > 1) ? argv[1]
-                                        : "$SUNBRIGHT_ROM";
+    // ROM: explicit arg, else $SUNBRIGHT_ROM (set it directly or via a gitignored .env), else a
+    // drop-in rom.rvz in the cwd. No machine-specific path baked into the tree.
+    const char* rom_env    = getenv("SUNBRIGHT_ROM");
+    const char* rom_path   = (argc > 1)         ? argv[1]
+                           : (rom_env && *rom_env) ? rom_env
+                                                 : "rom.rvz";
     const char* recomp_lib = (argc > 2) ? argv[2] : "build/libsms_recomp.so";
 
     // SUNBRIGHT_HEADLESS=1: no window and nothing presented/played, but the emulation still

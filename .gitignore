@@ -17,3 +17,10 @@ mario_candidates.txt
 
 # Local scratch workspace (core dumps, logs, extracted DOL, frames)
 scratch/
+
+# Local machine config (ROM path etc.) and ROM/disc images — never commit (machine-specific / copyrighted)
+.env
+*.rvz
+*.iso
+*.gcm
+rom.rvz

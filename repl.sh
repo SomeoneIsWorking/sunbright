@@ -29,7 +29,8 @@ mkdir -p "$HERE/scratch/logs"
 FIFO="${SUNBRIGHT_REPL:-$HERE/scratch/sunbright.ctl}"
 
 # Args (any order): a ROM image and/or a command-script file.
-ROM="$SUNBRIGHT_ROM"
+[ -f "$HERE/.env" ] && { set -a; . "$HERE/.env"; set +a; }
+ROM="${SUNBRIGHT_ROM:-$HERE/rom.rvz}"
 SCRIPT=""
 for arg in "$@"; do
     case "$arg" in

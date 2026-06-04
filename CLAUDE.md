@@ -29,7 +29,8 @@ name the proper fix and let the user decide; never slip a hack in as if it were 
 
 ## What this project is
 Static recompiler for Super Mario Sunshine (GameCube/PowerPC) → native PC binary.
-ROM: `$SUNBRIGHT_ROM`
+ROM: provided via `$SUNBRIGHT_ROM` (set it in a gitignored `.env` next to `run.sh`, or drop a
+`rom.rvz` in the repo dir). No machine-specific ROM path is committed.
 
 Pipeline: RVZ → extract DOL → decode PowerPC → emit C → compile → native .so
 Runtime: Dolphin subsystems (GFX/DSP/Memory/Input) drive the native code via hook layer.
@@ -70,7 +71,7 @@ resolution, 16:9 widescreen. The window opens at the output aspect so the game f
 it (F11 toggles fullscreen). Running `./build/sunbright` directly on a
 **native Wayland** session fails with "failed to initialize video backend" — Dolphin's
 GL/Vulkan can't make a surface on a native Wayland window; XWayland (x11 driver) works
-for **both OGL and Vulkan**. Default ROM: `$SUNBRIGHT_ROM`.
+for **both OGL and Vulkan**. ROM comes from `$SUNBRIGHT_ROM` / `.env` / a drop-in `rom.rvz`.
 
 Keyboard → GC pad (window focused): Enter=Start, Z=A(jump), X=B, C=X, V=Y, Q=Z, A=L,
 S=R(spray), arrows=control stick, F11=fullscreen.
