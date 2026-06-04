@@ -222,9 +222,40 @@ sigjmp_buf* sunbright_set_tail_jmp(sigjmp_buf* j) {
 // correctly — the hybrid design): commit state and longjmp out, exactly like a tail branch. The
 // recomp re-enters via the JIT trampoline when a recompiled function next runs.
 static constexpr u32 OS_LOAD_CONTEXT = 0x80343fe4u;
+
+// Fail-fast on a branch/call through a NULL (or near-NULL) guest pointer — i.e. a `bctrl`/`bctr`/
+// `bl` whose target is 0 or low garbage. This is the ORIGINATOR of the "ISI exception at
+// 0x00000000" + downstream run_jit_sync step-budget abort: some struct's function pointer / vtable
+// slot was clobbered to 0 (usually by earlier memory corruption), then called. Trapping here dumps
+// the recomp call chain at the bad call instead of limping into Dolphin's exception path. Valid
+// code lives at >= 0x80003100; anything below 0x80001000 is wild.
+[[noreturn]] static void sb_fatal_wild_branch(u32 target, const CPUState& cpu) {
+    fflush(stdout);
+    fprintf(stderr,
+        "\n[sunbright] FATAL branch through wild/NULL pointer: target=0x%08x (lr=%08x ctr=%08x)\n"
+        "  A bl/bctr/bctrl jumped to a non-code address — a clobbered function pointer or vtable\n"
+        "  slot called as a function. This is the ISI-at-0 originator; trapping at the call site.\n"
+        "  Native backtrace (recomp call chain, innermost first):\n",
+        target, cpu.lr, cpu.ctr);
+    void* bt[96];
+    int bn = backtrace(bt, 96);
+    backtrace_symbols_fd(bt, bn, fileno(stderr));
+    fflush(stderr);
+    struct rlimit no_core{0, 0};
+    setrlimit(RLIMIT_CORE, &no_core);
+    abort();
+}
+// Wild iff the high bit isn't set: a real guest code address is always in 0x8xxxxxxx (cached) or
+// 0xCxxxxxxx (uncached mirror). A target < 0x80000000 is NULL or a pointer that lost its top
+// bit(s) (e.g. a virtual→physical rlwinm mask whose rfi must run under Dolphin's MMU, not recomp).
+// This range also can't false-positive on the exception vectors (0x80000100+ — high bit set).
+static inline bool sb_is_wild_branch_target(u32 a) { return a < 0x80000000u; }
 #endif
 
 void call_ppc(CPUState& cpu, u32 address) {
+#ifdef HAVE_DOLPHIN_CORE
+    if (sb_is_wild_branch_target(address)) sb_fatal_wild_branch(address, cpu);
+#endif
     // SUNBRIGHT_HUDCALLS: log each DISTINCT function called during the in-game HUD draw (g_in_hud),
     // to find the indirect element-draw functions (coins/water gauge/lives) that aren't perform's
     // direct calls. Deduped so the log is the set of HUD-involved functions, not every call.
@@ -477,6 +508,9 @@ void sunbright_wait_vi_field(CPUState& cpu) {
 #endif
 
 void tail_ppc(CPUState& cpu, u32 address) {
+#ifdef HAVE_DOLPHIN_CORE
+    if (sb_is_wild_branch_target(address)) sb_fatal_wild_branch(address, cpu);
+#endif
     if (g_probe_enabled) g_probe.tail.fetch_add(1, std::memory_order_relaxed);
     RecompFunc fn = recomp_lookup(address);
     if (fn) { fn(cpu); return; }   // tail to recomp → nested call; the caller then returns
