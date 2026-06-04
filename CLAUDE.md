@@ -265,7 +265,20 @@ Reaches the interactive **file-select screen** (and 3D cutscenes) under recomp. 
 boot stall (GC scheduler context switch spinning under `run_jit_sync`) is **fixed** by the
 `OS_LOAD_CONTEXT` handoff (see Call model) — boot now proceeds past audio init to an interactive
 state under recomp (autotest navigates menus, no step-budget abort).
-Next: gameplay/Delfino, audio output, FP/edge-case accuracy via `SUNBRIGHT_DIFF_RAM`.
+
+A second, distinct **post-`w1stLoad` audio freeze** (deterministic once headless renders/mixes for
+real) is **fixed** by a PC-native port of the JASystem TTrack tick (`func_8031d83c`,
+`runtime/overrides/ttrack_tick_native.cpp`) — the recomp of that one function spun its phase-wrap
+loop where a faithful native equivalent does not. **The recomp root cause is still OPEN** (f31
+clobber ruled out; flagged for a recompiler-level investigation); the native port owns the path and
+bypasses it. Isolated via `SUNBRIGHT_FORCE_JIT=LO-HI` range bisection; `SUNBRIGHT_SEQ_DIAG` /
+`SUNBRIGHT_TICK_LOG` make the BMS command cycle + tick decision visible.
+
+Headless now renders (real Vulkan, no present) and mixes audio (real Cubeb, muted) for real — Null
+backends are gone, so render/audio-timing bugs reproduce headless. `SUNBRIGHT_TURBO=1` is opt-in
+(headless defaults to real-time). Watchdog catches freezes via no-VI-field (CoreTiming arms it,
+pre-first-frame too) and `kill -QUIT <pid>` forces an on-demand dump.
+Next: gameplay/Delfino, audio output, the recomp TTrack-tick root cause, FP/edge-case accuracy.
 
 ## Skills (slash commands)
 | Command | What it does |
