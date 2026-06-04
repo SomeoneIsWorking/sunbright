@@ -90,7 +90,7 @@ void dump_freeze(int timeout_sec) {
     char line[512];
     std::snprintf(line, sizeof line,
         "Sunbright freeze watchdog\n=========================\n"
-        "No VI field advanced for %d s (heartbeat stuck at %llu fields).\n\n",
+        "No VI field presented for %d s (heartbeat stuck at %llu fields) while the core kept running.\n\n",
         timeout_sec, (unsigned long long)g_fields.load());
     wd_write(fd, line);
 
@@ -150,24 +150,52 @@ void dump_freeze(int timeout_sec) {
     std::fflush(stderr);
 }
 
+// "Core has started executing" detector. CoreTiming ticks advance whenever guest time moves
+// (Dolphin's CPU loop / JIT / interpreter). Used ONLY to arm the watchdog (so it doesn't fire
+// before boot begins) — NOT as the freeze heartbeat: a guest spin-WAIT (e.g. a timed poll loop on
+// mftb waiting for an event that never arrives — the post-w1stLoad audio-init stall) keeps burning
+// guest cycles, so ticks keep advancing even though the game is frozen. The only signal that the
+// game is actually making forward progress is a presented VI field (vi_end_field, driven by the VI
+// hardware emulation — fires headless too, it is NOT gated by swapchain present).
+uint64_t guest_ticks() {
+#ifdef HAVE_DOLPHIN_CORE
+    return Core::System::GetInstance().GetCoreTiming().GetTicks();
+#else
+    return 0;
+#endif
+}
+
 void watchdog_loop(int timeout_sec) {
     // SUNBRIGHT_WATCHDOG_TEST=1: once the game is running, force a single dump to validate the
     // full path (file + counters + guest state + emu-thread backtrace) without a real freeze.
     const bool selftest = getenv("SUNBRIGHT_WATCHDOG_TEST") != nullptr;
-    uint64_t last = g_fields.load();
+    // First-frame grace: from "core started" to the first VI field a healthy boot legitimately
+    // presents nothing for a while (OS/apploader/asset load). Give that window a longer budget;
+    // once frames flow, hold to the tight timeout. A boot that NEVER reaches its first field within
+    // the grace is itself a freeze (this is exactly the post-w1stLoad stall) and must fire.
+    const int boot_grace = timeout_sec > 20 ? timeout_sec : 20;
+    uint64_t last_fields = g_fields.load();
+    uint64_t last_ticks  = guest_ticks();
     int stalled = 0;
-    bool armed = false, fired = false;
+    bool armed = false, first_field = false, fired = false, selftest_done = false;
+    const bool dbg = getenv("SUNBRIGHT_WATCHDOG_DEBUG") != nullptr;
     for (;;) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
-        const uint64_t cur = g_fields.load();
-        if (cur != last) {
-            last = cur; stalled = 0; fired = false;
-            if (!armed && selftest) { armed = true; dump_freeze(timeout_sec); }   // one-shot self-test
-            armed = true;
-            continue;                                  // progress
+        const uint64_t cur_fields = g_fields.load();
+        const uint64_t cur_ticks  = guest_ticks();
+        if (dbg)
+            std::fprintf(stderr, "[watchdog] fields=%llu ticks=%llu armed=%d first_field=%d stalled=%d\n",
+                         (unsigned long long)cur_fields, (unsigned long long)cur_ticks, armed, first_field, stalled);
+        if (cur_ticks != last_ticks) { last_ticks = cur_ticks; armed = true; }  // core is executing
+        // A presented VI field is the ONLY real forward-progress signal (see guest_ticks comment).
+        if (cur_fields != last_fields) {
+            last_fields = cur_fields; stalled = 0; fired = false; first_field = true;
+            if (selftest && !selftest_done) { selftest_done = true; dump_freeze(timeout_sec); }
+            continue;
         }
-        if (!armed) continue;                          // never started running — don't fire during boot
-        if (++stalled >= timeout_sec && !fired) {      // one dump per freeze episode
+        if (!armed) continue;                          // core hasn't started yet — don't fire pre-boot
+        const int limit = first_field ? timeout_sec : boot_grace;
+        if (++stalled >= limit && !fired) {            // one dump per freeze episode
             dump_freeze(timeout_sec);
             fired = true;
             // A freeze is ALWAYS fatal: report the stack trace (above) then KILL the process — a hung
@@ -197,7 +225,7 @@ void watchdog_init() {
     if (dis && atoi(dis) == 0) return;                 // explicitly disabled
     started = true;
 
-    int timeout_sec = 10;
+    int timeout_sec = 5;
     if (const char* s = getenv("SUNBRIGHT_WATCHDOG_SEC")) { int v = atoi(s); if (v > 0) timeout_sec = v; }
 
     // The dispatch counters drive the spin-vs-block diagnosis; make them live even without the probe.
@@ -215,6 +243,6 @@ void watchdog_init() {
 #endif
 
     std::thread(watchdog_loop, timeout_sec).detach();
-    std::fprintf(stderr, "[watchdog] armed (fires after %ds without a VI field; SUNBRIGHT_WATCHDOG=0 to disable)\n",
-                 timeout_sec);
+    std::fprintf(stderr, "[watchdog] armed (fires after %ds with no VI field while the core runs; "
+                 "SUNBRIGHT_WATCHDOG=0 to disable)\n", timeout_sec);
 }

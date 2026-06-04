@@ -534,11 +534,16 @@ int main(int argc, char* argv[]) {
                                         : "$SUNBRIGHT_ROM";
     const char* recomp_lib = (argc > 2) ? argv[2] : "build/libsms_recomp.so";
 
-    // SUNBRIGHT_HEADLESS=1: no window, Null video backend, muted audio — for fast,
-    // unattended repro/CI. Implies turbo (unthrottled emulation). SUNBRIGHT_TURBO=1
-    // unthrottles emulation speed without going headless (keeps the window).
+    // SUNBRIGHT_HEADLESS=1: no window and nothing presented/played, but the emulation still
+    // RENDERS (real Vulkan backend, Headless WSI — present skipped) and PROCESSES AUDIO (real
+    // backend, muted) so rendering- and audio-timing-dependent bugs reproduce. For fast, unattended
+    // repro/CI. Runs at real-time pacing by default (turbo is now opt-in, orthogonal — see below).
+    // SUNBRIGHT_TURBO=1 unthrottles emulation speed (works with or without headless).
     const bool headless = getenv("SUNBRIGHT_HEADLESS") != nullptr;
-    const bool turbo    = headless || getenv("SUNBRIGHT_TURBO") != nullptr;
+    // Turbo (unthrottled) is ORTHOGONAL to headless — headless renders/processes audio at REAL-TIME
+    // pacing by default so audio-timing-dependent behaviour matches a windowed run. Set
+    // SUNBRIGHT_TURBO=1 to unthrottle (faster repro of timing-INdependent bugs).
+    const bool turbo    = getenv("SUNBRIGHT_TURBO") != nullptr;
 
     // SDL — headless still needs the event/timer subsystem for SDL_GetTicks (autostart
     // timing) but no video device (which would require a display).
@@ -564,7 +569,7 @@ int main(int argc, char* argv[]) {
             return 1;
         }
     } else {
-        fprintf(stderr, "[sunbright] HEADLESS: Null video backend, no window\n");
+        fprintf(stderr, "[sunbright] HEADLESS: real rendering + audio, no window/present/sound output\n");
     }
     g_focused = true;  // input override bypasses the focus gate; headless has no window
 
@@ -620,8 +625,13 @@ int main(int argc, char* argv[]) {
         Config::SetBase(Config::MAIN_GFX_BACKEND, std::string(backend_env));
         fprintf(stderr, "[sunbright] Using backend: %s\n", backend_env);
     } else if (headless) {
-        Config::SetBase(Config::MAIN_GFX_BACKEND, std::string("Null"));
-        fprintf(stderr, "[sunbright] Using backend: Null (headless)\n");
+        // Headless renders for REAL with a hardware backend (Vulkan) under a Headless WSI: the GX
+        // pipeline, FIFO, texture decode and EFB/XFB all run; only the swapchain *present* is skipped
+        // (VKGfx::IsHeadless() → Present.cpp gates it). NOT the Null backend — Null skips all GX work,
+        // so rendering-path bugs (and audio timing tied to frame pacing) wouldn't reproduce. The
+        // emulation layer does the work; the result just isn't shown.
+        Config::SetBase(Config::MAIN_GFX_BACKEND, std::string("Vulkan"));
+        fprintf(stderr, "[sunbright] Using backend: Vulkan (headless — renders, no present)\n");
     }
 
     // Turbo: unthrottle the emulation speed (0 = run as fast as the host allows) and
@@ -632,9 +642,14 @@ int main(int argc, char* argv[]) {
         Config::SetBase(Config::GFX_VSYNC, false);
         fprintf(stderr, "[sunbright] TURBO: emulation speed unthrottled, vsync off\n");
     }
-    // Headless: no audio device (avoids needing a sound server) and muted.
+    // Headless audio: process for REAL (real backend → real DSP/AX mixing + the game's audio
+    // sequencer run, and the backend's real-time consumption paces the audio frame callbacks the
+    // same as a windowed run), just MUTED so nothing is audible. NOT NULLSOUND — that changes the
+    // mixer's consumption/pacing, so audio-timing-dependent bugs (e.g. the JASystem::TTrack
+    // sequencer freeze after w1stLoad) don't reproduce headless. The emulation layer does the work;
+    // the output is silenced.
     if (headless) {
-        Config::SetBase(Config::MAIN_AUDIO_BACKEND, std::string(BACKEND_NULLSOUND));
+        Config::SetBase(Config::MAIN_AUDIO_BACKEND, std::string(BACKEND_CUBEB));
         Config::SetBase(Config::MAIN_AUDIO_MUTED, true);
     }
 

@@ -4,6 +4,7 @@
 // phase→huge/NaN) under our recomp. Delete once root-caused.
 #include "../overrides.h"
 #include "../intrinsics.h"
+#include "../dolphin_hook.h"
 #include <cstdlib>
 #include <cstdio>
 
