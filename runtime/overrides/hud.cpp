@@ -31,6 +31,7 @@
 #include <cstdio>
 #include <cctype>
 #include <cmath>
+#include <unordered_set>
 
 static constexpr u32 QUAD_EMITTER = 0x802cd2ecu;
 
@@ -120,13 +121,20 @@ static void ov_quad(CPUState& cpu) {
 // and would shift the WHOLE screen (verified). The lr key has nothing to leak. drawWater/drawJuice
 // are only override-reachable because JIT block-linking + branch-following are off (main_sdl.cpp).
 static constexpr u32 GX_LOAD_POS_MTX_IMM = 0x80362e0cu;
-static constexpr u32 DRAWWATER_POSMTX_LR = 0x8014421cu;   // GXLoadPosMtxImm call in drawWater
-static constexpr u32 DRAWJUICE_POSMTX_LR = 0x8014487cu;   // GXLoadPosMtxImm call in drawJuice
+// GXLoadPosMtxImm call sites (cpu.lr) inside the TGCConsole2 FLUDD-gauge draws. Each loads an
+// identity position matrix then draws part of the gauge in the 2D ortho; shifting that matrix's m03
+// by +pillar moves everything that draw emits to the 16:9 right edge with the rest of the gauge.
+//   0x8014421c drawWater (water level)   0x8014487c drawJuice
+//   0x8014930c func@0x801492a4 (nozzle, "WATER" text, blue swirl background, button prompt)
+static constexpr u32 kGaugePosMtxLR[] = { 0x8014421cu, 0x8014487cu, 0x8014930cu };
 
 static void ov_water_posmtx(CPUState& cpu) {
     const u32 lr = cpu.lr, mtx = cpu.gpr[3];
+    bool is_gauge = false;
+    for (u32 site : kGaugePosMtxLR) if (lr == site) { is_gauge = true; break; }
+
     f32 m03 = 0.0f; bool moved = false;
-    if ((lr == DRAWWATER_POSMTX_LR || lr == DRAWJUICE_POSMTX_LR) && mtx >= 0x80000000u && mtx < 0x81800000u) {
+    if (is_gauge && mtx >= 0x80000000u && mtx < 0x81800000u) {
         m03 = mem_rf32(mtx + 0x0c);
         mem_wf32(mtx + 0x0c, m03 + (f32)hud_pillar());
         moved = true;
