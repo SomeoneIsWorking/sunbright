@@ -140,6 +140,13 @@ static constexpr u32 kGaugePosMtxLR[] = { 0x8014421cu, 0x8014487cu, 0x8014930cu 
 // name (read from this = mtx − 0x54). The matrix m03 is its on-screen X (same as go0x earlier).
 static constexpr u32 J2DPIC_DRAW_POSMTX_LR = 0x802ccfc0u;
 
+// TSunGlass::draw (0x8017d354) draws the full-screen fade/darkening curtain as ONE quad over a 4:3
+// rect (0..640) with an identity matrix at this load site. Under the 2D squeeze that quad only covers
+// the centre 75% → the 16:9 side strips stay un-darkened. We un-squeeze its matrix to cover the whole
+// 16:9 screen: map x∈[0,640] → screen[0,1], i.e. x' = (1/scale)·x − pillar, so m00 = 1/scale and
+// m03 = −pillar (the matrix is identity here). Scale-and-translate, not just the gauge's translate.
+static constexpr u32 TSUNGLASS_POSMTX_LR = 0x8017d3ecu;
+
 static void ov_water_posmtx(CPUState& cpu) {
     const u32 lr = cpu.lr, mtx = cpu.gpr[3];
     int shift = 0;
@@ -151,6 +158,17 @@ static void ov_water_posmtx(CPUState& cpu) {
         const HudAnchor a = hud_anchor(nm);
         if (a == A_LEFT)  shift = -hud_pillar();
         if (a == A_RIGHT) shift =  hud_pillar();
+    }
+
+    // Fade curtain: un-squeeze to full screen (scale m00 + translate m03), restore after.
+    if (lr == TSUNGLASS_POSMTX_LR && hud_pillar() != 0 && mtx >= 0x80000000u && mtx < 0x81800000u) {
+        const f32 inv_scale = 1.0f + (f32)hud_pillar() / 320.0f;          // = 1/scale
+        const f32 m00 = mem_rf32(mtx + 0x00), m03c = mem_rf32(mtx + 0x0c);
+        mem_wf32(mtx + 0x00, m00 * inv_scale);
+        mem_wf32(mtx + 0x0c, m03c - (f32)hud_pillar());
+        if (RecompFunc orig = recomp_raw(GX_LOAD_POS_MTX_IMM)) orig(cpu); else call_ppc(cpu, cpu.lr);
+        mem_wf32(mtx + 0x00, m00); mem_wf32(mtx + 0x0c, m03c);
+        return;
     }
 
     f32 m03 = 0.0f; bool moved = false;
