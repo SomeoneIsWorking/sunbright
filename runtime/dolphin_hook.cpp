@@ -17,6 +17,7 @@
 #include <chrono>
 #include <algorithm>
 #include <unordered_map>
+#include <vector>
 #include <execinfo.h>
 #include <sys/resource.h>
 #ifdef HAVE_DOLPHIN_CORE
@@ -133,6 +134,41 @@ static void os_sync_watch(u32 pc, u32 r3, u32 r4, u32 lr) {
 #ifdef HAVE_DOLPHIN_CORE
 bool interp_run_until(u32 ret, long budget, u32 sp_floor = 0);   // defined below; used by call_ppc
 
+// ── Per-target interpreter-step profiler (SUNBRIGHT_INTERP_PROFILE=1) ────────────
+// The project directive: never lean on the interpreter for game logic — recompile or
+// port it. To know WHICH non-recomp targets cost the most interpreter time, the
+// interpreter loop records the steps it took for its most recent run in
+// g_last_interp_steps; call_ppc attributes that to the target address. A periodic +
+// atexit dump prints the worst offenders (the run currently ends in an abort, so we
+// also dump from a timer-less periodic flush keyed on accumulated steps). All gated.
+static const bool g_interp_profile = getenv("SUNBRIGHT_INTERP_PROFILE") != nullptr;
+static long g_last_interp_steps = 0;   // steps the last interp_run_until took
+struct InterpProfEntry { unsigned long long steps = 0; unsigned long long calls = 0; };
+static std::unordered_map<u32, InterpProfEntry>& interp_prof_map() {
+    static std::unordered_map<u32, InterpProfEntry> m;
+    return m;
+}
+void sunbright_dump_interp_profile() {
+    if (!g_interp_profile) return;
+    auto& m = interp_prof_map();
+    std::vector<std::pair<u32, InterpProfEntry>> v(m.begin(), m.end());
+    std::sort(v.begin(), v.end(),
+              [](auto& a, auto& b) { return a.second.steps > b.second.steps; });
+    fprintf(stderr, "\n[interp-profile] top interpreter-step consumers (addr  steps  calls):\n");
+    unsigned long long total = 0;
+    for (auto& e : v) total += e.second.steps;
+    int shown = 0;
+    for (auto& e : v) {
+        if (shown++ >= 40) break;
+        fprintf(stderr, "[interp-profile] 0x%08x  %14llu  %10llu  (%.1f%%)\n",
+                e.first, e.second.steps, e.second.calls,
+                total ? 100.0 * (double)e.second.steps / (double)total : 0.0);
+    }
+    fprintf(stderr, "[interp-profile] total interpreter steps across %zu targets: %llu\n",
+            v.size(), total);
+    fflush(stderr);
+}
+
 // ── Tail-branch handoff ──────────────────────────────────────────────────────
 // Set by SunbrightBridge::Run for the duration of a top-level recomp entry so a tail-branch (or a
 // context switch, see call_ppc) into non-recomp code can siglongjmp back out, abandoning the
@@ -246,6 +282,21 @@ void call_ppc(CPUState& cpu, u32 address) {
         abort();
     }
     dolphin_state_to_cpu(ppc, cpu);
+    if (g_interp_profile) {
+        // Attribute the steps this interpreted callee took to its entry address. call_ppc is
+        // effectively single-threaded for guest code (the CPU token serializes it), so a plain
+        // map needs no lock. Register the atexit dump once; also flush periodically because the
+        // boot run currently ends in abort() (wild-read trap) which still runs atexit handlers,
+        // but the periodic dump guarantees we have data even if a future abort path skips them.
+        static bool registered = (atexit(sunbright_dump_interp_profile), true);
+        (void)registered;
+        auto& e = interp_prof_map()[address];
+        e.steps += (unsigned long long)g_last_interp_steps;
+        e.calls += 1;
+        static unsigned long long since_dump = 0;
+        since_dump += (unsigned long long)g_last_interp_steps;
+        if (since_dump >= 50'000'000ull) { since_dump = 0; sunbright_dump_interp_profile(); }
+    }
 #else
     fprintf(stderr, "[sunbright] call_ppc 0x%08x: not recompiled and no JIT available\n", address);
 #endif
@@ -284,7 +335,7 @@ bool interp_run_until(u32 ret, long budget, u32 sp_floor) {
     } _it;
     long n = 0;
     while (ppc.pc != ret || (sp_floor && ppc.gpr[1] < sp_floor)) {
-        if (budget) { if (n++ >= budget) return false; }
+        if (budget) { if (n++ >= budget) { g_last_interp_steps = n; return false; } }
         else if ((++n & 0x7FFFFFF) == 0)   // budget-less (thread body): periodic progress probe
             fprintf(stderr, "[interp] thread-body still running pc=%08x after %ldM steps\n",
                     ppc.pc, n / 1'000'000);
@@ -302,6 +353,7 @@ bool interp_run_until(u32 ret, long budget, u32 sp_floor) {
         interp.SingleStep();
         if (g_probe_enabled) g_probe.interp_steps.fetch_add(1, std::memory_order_relaxed);
     }
+    g_last_interp_steps = n;
     return true;
 }
 
