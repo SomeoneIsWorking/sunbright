@@ -216,8 +216,17 @@ static int recompile_mode(const DiscLoader& disc, const DOL& dol, const std::str
             u32 fend  = (fi + 1 < funcs.size()) ? funcs[fi + 1] : (base + (u32)data.size());
             fend = std::min(fend, base + (u32)data.size());
 
+            // Force full-CFG collection for specific functions even when the global linear mode is
+            // on. Linear mode stops at the first unconditional branch, which TRUNCATES functions
+            // whose body continues past one (forward branches then become tail_ppc → JIT bounce,
+            // making the dropped blocks — and anything they bl — unreachable by recomp overrides).
+            // These J2D draw functions must be whole so the 2D quad emitter they bl (0x802cd2ec) is
+            // emitted as call_ppc and can be owned natively (the widescreen HUD layout, hud.cpp):
+            //   0x802cc838 J2DPicture::drawFullSet — bl's the quad emitter from its (truncated) tail.
+            static const std::unordered_set<u32> kForceCFG = { 0x802cc838u };
+
             auto& instrs = func_instrs[faddr];
-            if (getenv("SUNBRIGHT_CFG")) {
+            if (getenv("SUNBRIGHT_CFG") || kForceCFG.count(faddr)) {
                 // Full-CFG collection (opt-in): walk the function's whole control-flow
                 // graph so forward branches become in-recomp gotos rather than JIT
                 // bounces — required by the C-call model. Off by default (its
