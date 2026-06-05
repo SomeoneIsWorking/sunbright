@@ -35,6 +35,10 @@ static bool function_needs_jit(const std::vector<PPCInstr>& instrs) {
         switch (i.op) {
         // MTMSR (→ msr_set_raw) and RFI (→ restore SRR1→MSR + branch SRR0) are modeled in the recomp,
         // so the OS interrupt/scheduler/context-switch primitives are recompiled (PC port owns them).
+        // NOTE (2026-06-05): routing MTMSR/RFI back to JIT here HANGS boot immediately at early OS
+        // init (the first context switch spins under run_jit_sync) — the pre-fb76ced handoff-based
+        // boot can't be restored by function_needs_jit alone; the recompiled scheduler boots further
+        // (reaches THP). The post-THP crash is fixed by finishing native threading, not this revert.
         // Only genuine HW side effects below stay JIT.
         case PPCOp::MTSR:  case PPCOp::MTSRIN:
         case PPCOp::TLBIE: case PPCOp::TLBSYNC:
