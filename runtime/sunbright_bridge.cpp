@@ -69,6 +69,10 @@ bool IsRecompiled(uint32_t pc) {
     if (disabled) return false;
     if (is_jit_forced(pc)) return false;            // routed to Dolphin's JIT
     if (override_lookup(pc)) return true;           // hand-written native override
+    if (native_os_lookup(pc)) return true;          // native-OS primitive (nthr scheduler) — MUST
+        // intercept on the JIT-entry path too, else JIT'd code (e.g. mountStageArchive) calling
+        // OSSleepThread links straight to the recompiled GC scheduler, bypassing nthr → two
+        // schedulers over one context → corrupted thread state (the mountFixed null-this crash).
     return g_inited && g_table.count(pc);
 }
 

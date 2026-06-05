@@ -207,6 +207,20 @@ static void dump_guest_regs_naming_base(u32 ea) {
             fprintf(stderr, "  ▶ base looks like r%d=%08x + 0x%x (the bad pointer is r%d)\n",
                     i, c.gpr[i], d, i);
     }
+    // Current guest OSThread + guest call chain (the recomp runs on the host C stack and doesn't
+    // track guest pc mid-tree, but the GUEST stack still links its frames: back-chain at [r1],
+    // saved LR at [r1+4]). Walk it to recover the guest caller chain — names who called into the
+    // crashing code (e.g. the archive-mount path) even when it runs under the JIT.
+    fprintf(stderr, "  Current OSThread (0x800000E4) = %08x\n", mem_r32(0x800000E4u));
+    fprintf(stderr, "  Guest call chain (saved LRs up the stack):\n");
+    u32 fp = c.gpr[1];
+    for (int i = 0; i < 16 && fp >= 0x80000000u && fp < 0x81800000u; i++) {
+        u32 lr = mem_r32(fp + 4);
+        fprintf(stderr, "    [%d] lr=%08x\n", i, lr);
+        u32 next = mem_r32(fp);
+        if (next <= fp || next < 0x80000000u || next >= 0x81800000u) break;
+        fp = next;
+    }
 }
 
 // ── Wild-write trap ─────────────────────────────────────────────────────────
