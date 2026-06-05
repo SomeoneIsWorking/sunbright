@@ -38,6 +38,10 @@ sigjmp_buf* sunbright_set_tail_jmp(sigjmp_buf* j);
 // the guest-entry path so it runs exactly once, on the right thread.
 void sunbright_adopt_cpu_thread();
 
+// Takeover-time adoption of all GC threads created before interception (lazy; idempotent). Builds
+// the nthr registry for the pre-existing threads; inert until the native primitives schedule them.
+void sunbright_adopt_all_gc_threads();
+
 // Run a recompiled function tree to completion on the current native C stack, handling
 // both exits: a normal C return (top-level blr) commits cpu→ppc and sets pc=lr; a
 // tail-branch into non-recomp code siglongjmps back having already committed ppc. Shared

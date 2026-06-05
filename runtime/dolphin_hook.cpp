@@ -849,6 +849,37 @@ void log_active_threads(const char* tag) {
 }
 }  // namespace
 
+// Takeover-time adoption of the threads the GC OS ALREADY created during early OSInit (before recomp
+// interception was live) — the documented blocker (Attempt 3). Walks the active-thread queue and
+// registers an nthr GuestThread for every existing guest thread except the running one (= nthr
+// thread 0, bound here to its real OSThread*). Adopted threads are spawned PARKED (start_ready=false)
+// resuming from their saved OSContext (srr0); nothing makes them Ready yet, so this is INERT — it
+// only builds the g_os_to_gt map the native scheduling primitives need. Idempotent; lazy (fires from
+// the first native-OS primitive once the queue is populated — adoption itself runs before thread-init
+// when the queue is still empty).
+void sunbright_adopt_all_gc_threads() {
+    u32 cur = mem_r32(OS_CURRENT_THREAD);
+    if (!cur || mem_r32(OS_ACTIVE_HEAD) < 0x80000000u) return;   // queue not populated yet
+    // Incremental re-scan (NOT one-shot): GC threads are created over the course of boot (the worker
+    // pool / audio thread come after the first call), and __OSLinkActiveThread links each into the
+    // active queue. So walk the queue every call and adopt any thread not yet in the registry — the
+    // map fills in as the OS creates threads, without needing the OSCreateThread intercept.
+    nthrt_bind_current(cur);                // nthr thread 0 IS the running GC thread now
+    for (u32 th = mem_r32(OS_ACTIVE_HEAD);
+         th >= 0x80000000u && th < 0x81800000u;
+         th = mem_r32(th + T_LINK_NEXT)) {
+        if (th == cur) continue;
+        { std::lock_guard<std::mutex> lk(g_os_map_mtx); if (g_os_to_gt.count(th)) continue; }
+        const u32 srr0 = mem_r32(th + T_CTX_SRR0);
+        const u32 sp   = mem_r32(th + T_CTX_SP);
+        const int prio = (int)(s32)mem_r32(th + T_OS_EPRIO);
+        nthrt_spawn_guest(th, srr0, 0, sp, prio);   // parked; body resumes from OSContext
+        static const bool dbg = getenv("SUNBRIGHT_DBG_ADOPT") != nullptr;
+        if (dbg) fprintf(stderr, "[nthr] adopted pre-existing GC thread %08x (srr0=%08x sp=%08x prio=%d)\n",
+                         th, srr0, sp, prio);
+    }
+}
+
 void sunbright_adopt_cpu_thread() {
     static std::once_flag once;
     std::call_once(once, [] {

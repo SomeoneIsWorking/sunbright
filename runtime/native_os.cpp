@@ -96,13 +96,11 @@ NativeOSFn native_os_lookup(u32 addr) {
 extern void sunbright_dbg_log_active_threads(const char* tag);   // dolphin_hook.cpp
 static void os_get_current_thread(CPUState& cpu) {
     cpu.gpr[3] = mem_r32(0x800000E4u);
-    // One-shot: dump the GC active-thread set the first time it is populated (the adopt point runs
-    // before OS thread-init). Verifies lazy takeover-time enumeration against the known topology.
-    static const bool dbg = getenv("SUNBRIGHT_DBG_ADOPT") != nullptr;
-    if (dbg) {
-        static bool logged = false;
-        if (!logged && cpu.gpr[3] != 0) { logged = true; sunbright_dbg_log_active_threads("first-populated"); }
-    }
+    // Lazy takeover-time adoption: the adopt point runs before OS thread-init (queue empty), so the
+    // first time the active-thread queue is populated, register all the GC threads the OS already
+    // created into the nthr registry. Idempotent (std::call_once inside); inert until the native
+    // scheduling primitives are enabled.
+    sunbright_adopt_all_gc_threads();
 }
 
 // Is this OSThread one the game created via OSCreateThread (i.e. a worker), as opposed to the
