@@ -181,6 +181,9 @@ static void os_sleep_thread(CPUState& cpu) {
     // driver). [[done-right-over-working]]: one path, no recompiled-scheduler fallback.
     const u32 queue  = cpu.gpr[3];
     const u32 thread = mem_r32(OS_CURRENT_THREAD);
+    static const bool dbg = getenv("SUNBRIGHT_DBG_SCHED") != nullptr;
+    if (dbg) fprintf(stderr, "[sched] SLEEP  thread=%08x on queue=%08x (lr=%08x) ready=%d\n",
+                     thread, queue, cpu.lr, nthr::ready_count());
     nthrt_bind_current(thread);            // ensure OSWakeupThread can resolve us (esp. thread 0)
     mem_w16(thread + T_STATE, 4);          // WAITING
     mem_w32(thread + T_QUEUE, queue);
@@ -194,6 +197,9 @@ static void os_sleep_thread(CPUState& cpu) {
 // SelectThread with native make_ready.
 static void os_wakeup_thread(CPUState& cpu) {
     const u32 queue = cpu.gpr[3];
+    static const bool dbg = getenv("SUNBRIGHT_DBG_SCHED") != nullptr;
+    if (dbg) fprintf(stderr, "[sched] WAKEUP queue=%08x head=%08x (lr=%08x)\n",
+                     queue, mem_r32(queue + Q_HEAD), cpu.lr);
     for (;;) {
         u32 th = mem_r32(queue + Q_HEAD);
         if (th == 0) break;
