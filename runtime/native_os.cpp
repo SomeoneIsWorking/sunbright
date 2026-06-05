@@ -146,11 +146,13 @@ static void os_create_thread(CPUState& cpu) {
     if (cpu.gpr[3] == 0) return;        // creation failed (bad priority) — nothing to record
 
     g_guest_threads.push_back({os_thread, entry, param, stack, stack_sz, priority});
-    fprintf(stderr,
-        "[native_os] OSCreateThread #%zu  OSThread=%08x entry=%08x param=%08x stack=%08x "
-        "size=%u prio=%d  (cur=%08x)\n",
-        g_guest_threads.size(), os_thread, entry, param, stack, stack_sz, priority,
-        mem_r32(OS_CURRENT_THREAD));
+    // Spawn the matching nthr host thread, PARKED (created threads start suspend=1; OSResumeThread
+    // makes it Ready). Registers OSThread*↔nthr in g_os_to_gt (so the lazy adoption re-scan skips it).
+    nthrt_spawn_guest(os_thread, entry, param, stack, priority);
+    static const bool dbg = getenv("SUNBRIGHT_DBG_ADOPT") != nullptr;
+    if (dbg) fprintf(stderr,
+        "[native_os] OSCreateThread #%zu  OSThread=%08x entry=%08x param=%08x stack=%08x prio=%d\n",
+        g_guest_threads.size(), os_thread, entry, param, stack, priority);
 }
 
 // OSResumeThread (0x80348ee8): decrement the suspend count; when it reaches 0 and the thread is
@@ -173,14 +175,10 @@ static void os_resume_thread(CPUState& cpu) {
 // thread->queue), then park until OSWakeupThread wakes it. Replaces the recomp body's
 // SelectThread reschedule with a native host-thread park.
 static void os_sleep_thread(CPUState& cpu) {
-    if (nthr::ready_count() == 0) {
-        // Sole runnable context → this is a hardware wait, not a thread-to-thread switch. Defer
-        // to the proven path: the recomp body reschedules to the idle thread, which the
-        // interpreter single-steps, delivering the waking IRQ. (docs step 6 replaces this with a
-        // native idle/driver so even hardware waits never touch the interpreter.)
-        func_803492e0(cpu);
-        return;
-    }
+    // Always native-park (the GC-scheduler fallback is gone — it was the "two schedulers" conflict).
+    // When this is the sole runnable context (a hardware wait), nthr's idle handler advances device
+    // timing so the waking IRQ's ISR calls native OSWakeupThread → make_ready (the native idle/IRQ
+    // driver). [[done-right-over-working]]: one path, no recompiled-scheduler fallback.
     const u32 queue  = cpu.gpr[3];
     const u32 thread = mem_r32(OS_CURRENT_THREAD);
     nthrt_bind_current(thread);            // ensure OSWakeupThread can resolve us (esp. thread 0)
@@ -226,6 +224,12 @@ static void dbg_write_console(CPUState& cpu) {
     func_8033ba90(cpu);         // run the real __write_console (observe, don't replace)
 }
 
+// __OSReschedule (0x803488dc): the GC scheduler's "switch to the highest-priority ready thread"
+// entry. With nthr owning scheduling, this must NOT context-switch (two schedulers over one global
+// ppc = the documented conflict). No-op → returns to the caller; nthr switches at native block
+// points instead (cooperative). The run-queue bookkeeping it skips is unused (nthr owns readiness).
+static void os_reschedule_noop(CPUState& /*cpu*/) {}
+
 void native_os_init() {
     static bool done = false;
     if (done) return;
@@ -235,21 +239,22 @@ void native_os_init() {
     // it runs under the interpreter. OSGetCurrentThread is behaviour-identical, harmless, and
     // exercises the seam.
     native_os_register(0x80348368u, os_get_current_thread);
-    // The GC scheduler / context-switch / interrupt primitives are now RECOMPILED (the recompiler
-    // models mtmsr/rfi/SRR — tools/recompiler), so the PC port runs the real threading. The old
-    // dormant-worker override (os_create_thread + os_resume_thread_sync) is REMOVED — it bypassed
-    // the scheduler and starved the workers, which broke the producer/consumer message handshakes.
+    // ── Native threading: nthr OWNS the GC scheduler (docs/native_threading.md). ──────────────
+    // The lifecycle + blocking primitives run on the nthr host-thread substrate (one host thread per
+    // guest thread, single CPU token, condvar park). Registered on the native_os seam so they
+    // intercept on BOTH the recomp call path and the run_jit_sync interpreter.
+    native_os_register(0x80348948u, os_create_thread);   // OSCreateThread → init + spawn parked nthr
+    native_os_register(0x80348ee8u, os_resume_thread);   // OSResumeThread → make_ready when runnable
+    native_os_register(0x803492e0u, os_sleep_thread);    // OSSleepThread  → enqueue + nthr park
+    native_os_register(0x803493ccu, os_wakeup_thread);   // OSWakeupThread → dequeue + make_ready
+    // Neutralize the GC scheduler's context-switch: nthr switches at native block points, so the
+    // recompiled __OSReschedule must NOT also switch (the "two schedulers over one ppc" conflict).
+    // No-op = cooperative (never preempt); a woken higher-prio thread runs at the next nthr yield.
+    native_os_register(0x803488dcu, os_reschedule_noop); // __OSReschedule → no switch
     // ── Diagnostics (env-gated, kept permanently — see memory keep-diagnostics) ──
     if (getenv("SUNBRIGHT_DBG_CONSOLE"))
         native_os_register(0x8033ba90u, dbg_write_console);   // surface GC console / crash report
-    // The GC-thread SCHEDULER emulation (OSCreateThread/Resume/Sleep/Wakeup + nthr) is the
-    // wrong layer for a PORT (it reimplements emulator internals). Disabled — see
-    // memory port-not-emulate + docs/native_threading.md. The game runs the GC threading
-    // faithfully (as before this effort) and stalls at audio init, which is fixed instead by a
-    // native subsystem override (the PC-native replicate-the-behaviour approach), registered below
-    // as it is built. (void)s keep the implementations linked for reference / future reuse.
-    (void)&os_create_thread; (void)&os_resume_thread; (void)&os_resume_thread_sync;
-    (void)&os_sleep_thread;  (void)&os_wakeup_thread; (void)&is_guest_worker;
+    (void)&os_resume_thread_sync; (void)&is_guest_worker;   // old dormant-worker path, kept for ref
     fprintf(stderr, "[native_os] registered %zu native OS primitive(s) over [%08x,%08x)\n",
             g_native_os.size(), g_os_lo, g_os_hi);
 }
