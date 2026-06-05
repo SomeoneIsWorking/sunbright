@@ -19,12 +19,26 @@
 >    halt. Fixed.
 >
 > **The post-THP recompiled-scheduler crash is GONE.** Boot now runs the native scheduler through
-> early thread + audio init into asset loading (nintendo.szs). **Current frontier:** a null-pointer
-> read at +8 in `JKRMemArchive::mountFixed` on thread0 (802f80d0 → mount) — the archive memory is
-> NULL, likely a heap/DVD-load-completion gap from the new scheduling (the audio thread 803fcbe8
-> cycles sleep→IRQ→sleep, probably normal DSP servicing). Next: why the mount buffer is null —
-> trace the allocation/DVD-read completion under native scheduling. Diagnostics: SUNBRIGHT_DBG_IDLE
-> (per-IRQ context), SUNBRIGHT_DBG_SWITCH (thread switches), SUNBRIGHT_DBG_ADOPT.
+> early thread + audio init into asset loading (nintendo.szs) and early rendering (thread0 reaches
+> `JDrama::TDisplay::endRendering` 802f80d0).
+>
+> **Current frontier — DETERMINISTIC null archive (heap-not-ready / thread ORDERING, not a race).**
+> A thread crashes with a null `this` in `JKRMemArchive::mountFixed` ⇒ `new JKRMemArchive` returned
+> NULL (heap alloc failed). The fault regs (r26=803e9700, r5=0xffff) point at the **audio thread
+> 803fcbe8** (entry 802a7878) running `SMSMountAramArchive` (802a797c) — i.e. the audio thread mounts
+> its ARAM archive before its heap/prereqs are ready. It's DETERMINISTIC (same point every run), so
+> it's an ORDERING bug from cooperative scheduling, not corruption: the audio thread is made Ready by
+> OSResumeThread and, with `__OSReschedule` no-op'd (no preemption) + whatever yield thread0 takes,
+> runs before the init that sets up the audio archive heap. **Ruled out:** the JKRThread decomp
+> workers (same null with SUNBRIGHT_JKR_SYNC=1); the context save (gpr/fpr/lr/ctr/xer/cr/gqr/srr all
+> saved; **MSR now saved per-thread too**, fixed b3c2378 — a real critical-section bug, but not this
+> crash). A separate DBG_CONSOLE run hit `double free` — there IS latent heap corruption too.
+> **Next, in order:** (1) confirm WHICH thread faults + its guest call chain (the recomp doesn't track
+> guest pc mid-tree — add a guest-stack walk to the wild-read trap, or watch OSResumeThread→first-run
+> ordering); (2) check whether the audio thread needs a wait/sequencing that the GC scheduler provided
+> via preemption and `__OSReschedule` no-op removed — may need to honor a reschedule point or a
+> message/cond wait; (3) verify the audio heap/ARAM init completed before the audio thread runs.
+> Diagnostics: SUNBRIGHT_DBG_IDLE (per-IRQ context), SUNBRIGHT_DBG_SWITCH (switches), SUNBRIGHT_DBG_ADOPT.
 
 > ## 🟢 REOPENED — full native threading is THE direction (2026-06-05, user-directed)
 > The 2026-06-03 "superseded" banner below is itself superseded. The hybrid that replaced this —
