@@ -1,5 +1,31 @@
 # Native OS threading (PC-port model)
 
+> ## 🟢 ACTIVE BUILD — native scheduler is LIVE (2026-06-05, increments 1–4 landed)
+> Per the user directive "do it incrementally even though it will break", the nthr scheduler is now
+> ENABLED and owns GC threading. Landed + committed:
+> 1. **Lazy incremental adoption** (`sunbright_adopt_all_gc_threads`, af8d57d) — re-scans the active
+>    queue on each native-OS call, registers every GC thread (worker pool + audio) into nthr as the
+>    OS creates them. Inert alone.
+> 2. **Native primitives + scheduler neutralized** (c4d9e39) — OSCreateThread→spawn parked nthr,
+>    OSResumeThread→make_ready, OSSleepThread→nthr park (GC fallback removed), OSWakeupThread→
+>    make_ready, **__OSReschedule→no-op** (nthr switches at block points, the GC must not also switch
+>    the one global ppc). Verified: all boot threads spawn, run their bodies on their own host stacks,
+>    switch cooperatively, and park.
+> 3. **Native idle/IRQ driver** (`nthr_idle_driver`, 5efbd35) — when all threads block, advance
+>    CoreTiming (Idle+Advance) + CheckExceptions to deliver the pending device IRQ; its ISR calls
+>    native OSWakeupThread→make_ready. Loops until a thread wakes; deadlock fail-fasts.
+> 4. **Clean recoverable MSR per IRQ** (a3b3887) — take each interrupt on a fixed IDLE_MSR
+>    (EE|ME|IR|DR|RI), not the degrading parked MSR, else RI=0 → "Non-recoverable Exception 4" → TRK
+>    halt. Fixed.
+>
+> **The post-THP recompiled-scheduler crash is GONE.** Boot now runs the native scheduler through
+> early thread + audio init into asset loading (nintendo.szs). **Current frontier:** a null-pointer
+> read at +8 in `JKRMemArchive::mountFixed` on thread0 (802f80d0 → mount) — the archive memory is
+> NULL, likely a heap/DVD-load-completion gap from the new scheduling (the audio thread 803fcbe8
+> cycles sleep→IRQ→sleep, probably normal DSP servicing). Next: why the mount buffer is null —
+> trace the allocation/DVD-read completion under native scheduling. Diagnostics: SUNBRIGHT_DBG_IDLE
+> (per-IRQ context), SUNBRIGHT_DBG_SWITCH (thread switches), SUNBRIGHT_DBG_ADOPT.
+
 > ## 🟢 REOPENED — full native threading is THE direction (2026-06-05, user-directed)
 > The 2026-06-03 "superseded" banner below is itself superseded. The hybrid that replaced this —
 > **recompile the GC scheduler** (model `rfi`/`mtmsr` in the recompiler, commits `fb76ced`/`118263f`,
