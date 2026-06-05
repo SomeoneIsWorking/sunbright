@@ -705,21 +705,61 @@ static void nthr_ctx_restore(nthr::GuestThread* t) {
     // We own the current-thread pointer now (the GC scheduler that maintained it is never run),
     // so make OSGetCurrentThread coherent with whoever is about to run.
     if (gr->os_thread) mem_w32(OS_CURRENT_THREAD, gr->os_thread);
+    static const bool dbg = getenv("SUNBRIGHT_DBG_SWITCH") != nullptr;
+    if (dbg) {
+        static long n = 0;
+        if ((++n & 0xFFF) == 0 || n < 64)
+            fprintf(stderr, "[switch #%ld] -> thread %08x pc=%08x sp=%08x\n",
+                    n, gr->os_thread, gr->ctx.pc, gr->ctx.gpr[1]);
+    }
 }
 
-// All guest threads are Blocked waiting on hardware and there is no idle/driver yet to advance
-// device timing and deliver the waking IRQ. Fail fast (suppress the multi-GB core — see
-// [[abort-coredump-hang]]) so this surfaces as a diagnosable signal, not a silent hang.
-static void nthr_idle_fatal() {
-    fflush(stdout);
-    fprintf(stderr,
-        "\n[nthr] FATAL: all guest threads Blocked, none Ready — reached a hardware-wait idle.\n"
-        "  The native idle/driver (advance CoreTiming so a DSP/DVD/VI IRQ handler wakes a\n"
-        "  waiter) is not implemented yet — this is the next step (docs step 5/6).\n");
-    fflush(stderr);
-    struct rlimit no_core{0, 0};
-    setrlimit(RLIMIT_CORE, &no_core);
-    abort();
+// Native idle / hardware-IRQ driver. Called by nthr (UNLOCKED, on the parking thread's host thread)
+// when every guest thread is Blocked waiting on something external — i.e. a hardware wait that only
+// a device IRQ can satisfy. Replaces the GC idle thread: advance Dolphin's CoreTiming so the pending
+// DSP/DVD/VI device event fires, deliver the external-interrupt exception, and run its ISR — which
+// calls native OSWakeupThread → nthr::make_ready, making a guest thread Ready. Loop until one wakes.
+//
+// The global `ppc` here holds the just-parked thread's context (g_save_hook copied it to the slot but
+// did NOT clear ppc), so it has a valid r1 + current-thread pointer for the GC exception handler to
+// run on; any mutation we make to it is discarded when the woken thread's context is restored. This
+// is the documented poll_yield pattern (park at a clean idle PC with EE=1; Idle()+Advance() raises
+// the IRQ; CheckExceptions() vectors to 0x80000500; interp the ISR until it rfi's back) — looped.
+static void nthr_idle_driver() {
+    auto& sys = Core::System::GetInstance();
+    auto& ppc = sys.GetPPCState();
+    auto& ct  = sys.GetCoreTiming();
+    const u32 idle_pc = sunbright_idle_spin_pc();
+    static const bool dbg = getenv("SUNBRIGHT_DBG_IDLE") != nullptr;
+    static long total_calls = 0; static long total_irqs = 0;
+    Core::DeclareAsCPUThread();   // we run the interpreter here; the parker Undeclared before block()
+    int guard = 0, irqs = 0;
+    for (; nthr::ready_count() == 0 && guard < 200000; ++guard) {
+        ppc.pc = ppc.npc = idle_pc;
+        ppc.msr.Hex |= 0x8000u;                     // EE=1 so a pending IRQ can vector
+        ct.Idle();                                  // fast-forward to the next scheduled device event
+        ct.Advance();                               // process it — a device callback raises the IRQ
+        sys.GetPowerPC().CheckExceptions();         // deliver it: vector pc to the ISR (0x80000500)
+        if (ppc.pc != idle_pc) {
+            interp_run_until(idle_pc, 5'000'000);   // run the ISR → OSWakeupThread → nthr::make_ready
+            ++irqs;
+        }
+    }
+    Core::UndeclareAsCPUThread();
+    total_calls++; total_irqs += irqs;
+    if (dbg && (total_calls & 0x3FF) == 0)
+        fprintf(stderr, "[idle] call #%ld: %d steps, %d IRQs delivered, ready_count now %d (cum IRQs %ld)\n",
+                total_calls, guard, irqs, nthr::ready_count(), total_irqs);
+    if (nthr::ready_count() == 0) {                 // genuine deadlock: nothing ever woke
+        fflush(stdout);
+        fprintf(stderr,
+            "\n[nthr] FATAL: idle driver advanced %d device steps, no thread woke (deadlock).\n"
+            "  Every guest thread is Blocked and no DSP/DVD/VI IRQ made one Ready.\n", guard);
+        fflush(stderr);
+        struct rlimit no_core{0, 0};
+        setrlimit(RLIMIT_CORE, &no_core);
+        abort();
+    }
 }
 
 // Body of a spawned guest host thread: runs the guest thread function on its own native stack
@@ -884,7 +924,7 @@ void sunbright_adopt_cpu_thread() {
     static std::once_flag once;
     std::call_once(once, [] {
         nthr::set_switch_hooks(nthr_ctx_save, nthr_ctx_restore);
-        nthr::set_idle_handler(nthr_idle_fatal);
+        nthr::set_idle_handler(nthr_idle_driver);
         nthr::GuestThread* t0 = nthr::adopt_current(/*priority=*/16);
         auto* gr = new GuestRuntime();
         gr->is_thread0 = true;
