@@ -22,7 +22,20 @@
 > early thread + audio init into asset loading (nintendo.szs) and early rendering (thread0 reaches
 > `JDrama::TDisplay::endRendering` 802f80d0).
 >
-> **Current frontier — DETERMINISTIC null archive (heap-not-ready / thread ORDERING, not a race).**
+> **Current frontier (2026-06-05, refined) — file-load pipeline stalls under native scheduling.**
+> Only nintendo.szs loads; the SECOND file's DVD read is never issued, so thread0 reaches
+> `TApplication::mountStageArchive` with a NULL stage-data buffer (`[r13-0x602c]`) → `mountFixed(null
+> mem)` → wild read in func_802c43a8. Confirmed via the guest-stack trap walk (current OSThread=
+> 80402aa8=thread0; chain 80005628→mountStageArchive→mountFixed→JKRFileLoader::ct). SUNBRIGHT_DBG_SCHED
+> shows the audio thread 803fcbe8 livelock-cycling on queue 8040e870 (AI ISR 8034bea0 wakes / 8034be68
+> re-sleeps) — the idle driver fires the frequent AI/decrementer IRQs unthrottled. thread0 IS woken on
+> 8040e8d8 (by 8034ef1c) and proceeds, but its load never happened. FIXED this session: the JIT-path
+> interception gap (IsRecompiled now covers native_os, so JIT'd OSSleepThread routes to nthr not the GC
+> scheduler — commit 50ab1d6). Next, in order: (1) does thread0 even ISSUE the 2nd DVD read, or skip it
+> (control-flow/ordering)? trace the file-load request path; (2) which thread issues DVD reads (a file/
+> DVD worker?) and does it run; (3) pace the idle driver's IRQ delivery (the AI interrupt floods it).
+>
+> **(superseded sub-note) DETERMINISTIC null archive (heap-not-ready / thread ORDERING, not a race).**
 > A thread crashes with a null `this` in `JKRMemArchive::mountFixed` ⇒ `new JKRMemArchive` returned
 > NULL (heap alloc failed). The fault regs (r26=803e9700, r5=0xffff) point at the **audio thread
 > 803fcbe8** (entry 802a7878) running `SMSMountAramArchive` (802a797c) — i.e. the audio thread mounts
