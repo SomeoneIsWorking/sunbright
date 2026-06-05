@@ -1,19 +1,45 @@
 # Native OS threading (PC-port model)
 
-> ## ⛔ SUPERSEDED & RESOLVED (2026-06-03) — read this first
-> This entire document describes the **native host-thread scheduler** approach to the audio-init
-> stall. **That was the wrong layer** — reimplementing the GC OS thread scheduler is building an
-> emulator, not porting (see memory `port-not-emulate`). The `nthr` scheduler is disabled; it stays
-> in the tree/history for reference only.
+> ## 🟢 REOPENED — full native threading is THE direction (2026-06-05, user-directed)
+> The 2026-06-03 "superseded" banner below is itself superseded. The hybrid that replaced this —
+> **recompile the GC scheduler** (model `rfi`/`mtmsr` in the recompiler, commits `fb76ced`/`118263f`,
+> and the `OSLoadContext`→Dolphin handoff) — is now the SOURCE of boot crashes: recompiling the
+> exception/interrupt/context machinery (real-mode `rfi`, BAT/MMU, full Gekko context save/restore)
+> can't be done faithfully, and a non-recomp thread-proc that **blocks** spins under
+> `interp_run_until` to the 500M-step budget (`run_jit_sync(802c6830→…)`). Pure Dolphin handles all
+> of it; it's our hybrid interaction. See memory `blocking-call-interp-spin`.
 >
-> **The stall is actually fixed** by a ~10-line **hybrid handoff**: the GC context-switch primitive
-> `OSLoadContext` (0x80343fe4, JIT-only) never returns to its caller, so running it synchronously
-> under `run_jit_sync` spun. `call_ppc` now hands it off to **Dolphin's CPU loop** (commit state +
-> `siglongjmp` the tail-jmp — like a tail branch); Dolphin already runs the GC threading correctly
-> (hybrid: Dolphin owns OS/threading, recomp owns game logic). Boot then proceeds past audio init to
-> an interactive state. See `runtime/dolphin_hook.cpp` (`OS_LOAD_CONTEXT` in `call_ppc`).
+> **User directive (2026-06-05):** own threading natively; Dolphin is for **rendering + oracle only**,
+> NOT for OS/threading. So we UN-SHELVE the `nthr` host-thread scheduler below and FINISH it. The
+> substrate (`runtime/native_threads.{h,cpp}`, std::thread + CPU token + condvar — macOS-safe, no
+> `ucontext`) and the native-OS primitive set (`runtime/native_os.cpp`) are already built and were
+> only DISABLED, not removed.
 >
-> The rest of this doc is retained as a record of the (superseded) investigation.
+> ### What's left to finish (the two documented blockers + the conflict removal)
+> 1. **Lazy takeover-time adoption of ALL existing GC threads.** Confirmed 2026-06-05: at the first
+>    recomp entry (where `sunbright_adopt_cpu_thread` runs) the GC active-thread queue is EMPTY and
+>    `0x800000E4`=0 — takeover precedes `__OSThreadInit`. So adoption can't be a one-time snapshot
+>    there; it must fire LAZILY at the first native-OS scheduling primitive, when threads exist.
+>    Enumerate via the **GC `__OSActiveThreadQueue`** (extracted from `OSCreateThread`'s
+>    `__OSLinkActiveThread`): head @ `0x800000DC`, tail @ `0x800000E0`; `OSThread.linkActive.next`
+>    @ `+0x2FC`, `.prev` @ `+0x300`. Walk head→next. Map each `OSThread*`→`nthr` thread; the current
+>    (`0x800000E4`, state=2 RUNNING) is the token holder, others get a host body that restores their
+>    `OSContext` and resumes at `srr0` (`+0x198`) when scheduled. (Diagnostic:
+>    `SUNBRIGHT_DBG_ADOPT` logs the set — verified it shows DefaultThread `80402aa8` at first-populate.)
+> 2. **Native idle/hardware driver** (`nthr` idle handler, currently `nthr_idle_fatal`): when no
+>    `nthr` thread is Ready, advance CoreTiming + deliver the pending DSP/DVD/VI IRQ so its handler's
+>    native `OSWakeupThread` makes an `nthr` thread Ready. Then `os_sleep_thread` ALWAYS native-parks
+>    (drop the `ready_count()==0` GC-scheduler fallback — it's the "two schedulers" conflict).
+> 3. **Remove the conflicting recompiled-scheduler path**: un-model `rfi`/`mtmsr` (or otherwise stop
+>    recompiling the exception/interrupt/context primitives) once native threading owns the path, so
+>    the two schedulers don't fight.
+>
+> The 2026-06-03 investigation below (esp. "Attempt 3 — ROOT CAUSE") is the map for blocker 1.
+
+> ## ⛔ (older) SUPERSEDED note (2026-06-03)
+> This document describes the **native host-thread scheduler** approach to the audio-init stall.
+> It was shelved 2026-06-03 in favor of the recompile-the-scheduler hybrid — see the REOPENED banner
+> above for why that's now reversed.
 
 ## Decision — host-thread substrate (settled 2026-06-03)
 **Guest OS threads become native host threads. We do NOT run the game's PPC scheduler, and we

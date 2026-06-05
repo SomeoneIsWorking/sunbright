@@ -774,6 +774,47 @@ void nthrt_block_current() {
     Core::DeclareAsCPUThread();           // reacquired the token (ctx restored by the hook)
 }
 
+// GC __OSActiveThreadQueue (OS low mem): every live OSThread is linked here from creation to exit.
+//   head @ 0x800000DC, tail @ 0x800000E0 ; OSThread linkActive.next @ +0x2FC, .prev @ +0x300.
+// (Extracted from OSCreateThread 0x80348948's __OSLinkActiveThread insert.) Walking it is how we
+// enumerate the threads the GC OS already created during early OSInit — BEFORE recomp/native_os
+// interception was live — which is the documented blocker for finishing native threading
+// (docs/native_threading.md, Attempt 3): adopting only the EmuThread misses them.
+namespace {
+constexpr u32 OS_ACTIVE_HEAD = 0x800000DCu;
+constexpr u32 T_LINK_NEXT    = 0x2FCu;   // OSThread.linkActive.next
+constexpr u32 T_OS_STATE     = 0x2C8u;   // u16 state (1=READY,2=RUNNING,4=WAITING,8=MORIBUND)
+constexpr u32 T_OS_SUSPEND   = 0x2CCu;   // s32 suspend count
+constexpr u32 T_OS_EPRIO     = 0x2D0u;   // s32 effective priority
+constexpr u32 T_CTX_SP       = 0x4u;     // OSContext.gpr[1]
+constexpr u32 T_CTX_SRR0     = 0x198u;   // OSContext.srr0 (resume PC)
+
+// Walk the active-thread queue and log every thread (verification step toward takeover-time
+// adoption). Read-only — no scheduling change.
+void log_active_threads(const char* tag);
+}  // namespace
+// Exposed for native_os.cpp to trigger lazily once the GC has actually created threads (the
+// adopt point runs before OS thread-init, when the queue is still empty).
+void sunbright_dbg_log_active_threads(const char* tag) { log_active_threads(tag); }
+namespace {
+void log_active_threads(const char* tag) {
+    u32 cur = mem_r32(OS_CURRENT_THREAD);
+    fprintf(stderr, "[adopt] %s: active GC threads (current=%08x):\n", tag, cur);
+    int n = 0;
+    for (u32 th = mem_r32(OS_ACTIVE_HEAD); th >= 0x80000000u && th < 0x81800000u && n < 64;
+         th = mem_r32(th + T_LINK_NEXT), ++n) {
+        u16 st   = (u16)(mem_r32(th + T_OS_STATE) >> 16);
+        s32 susp = (s32)mem_r32(th + T_OS_SUSPEND);
+        s32 ep   = (s32)mem_r32(th + T_OS_EPRIO);
+        u32 sp   = mem_r32(th + T_CTX_SP);
+        u32 srr0 = mem_r32(th + T_CTX_SRR0);
+        fprintf(stderr, "  [%d] OSThread=%08x state=%u suspend=%d eprio=%d sp=%08x srr0=%08x%s\n",
+                n, th, st, susp, ep, sp, srr0, th == cur ? "  <-- current" : "");
+    }
+    fprintf(stderr, "[adopt] %s: %d active thread(s)\n", tag, n);
+}
+}  // namespace
+
 void sunbright_adopt_cpu_thread() {
     static std::once_flag once;
     std::call_once(once, [] {
@@ -790,6 +831,7 @@ void sunbright_adopt_cpu_thread() {
         }
         fprintf(stderr, "[nthr] adopted EmuThread as guest thread 0 (OSThread=%08x, token held)\n",
                 gr->os_thread);
+        if (getenv("SUNBRIGHT_DBG_ADOPT")) log_active_threads("at-takeover");
     });
 }
 
