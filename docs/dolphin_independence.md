@@ -40,6 +40,12 @@ Part of "less constrained" is *seeing* what happens. Owning a subsystem natively
 instrument it with our own env-gated diagnostics (cf. `SUNBRIGHT_DISPATCH_PROFILE`,
 `SUNBRIGHT_INTERP_PROFILE`, the probe). Build the diagnostic alongside each native subsystem.
 
+## Dolphin as a debugging ORACLE is fine (≠ runtime dependence)
+Reducing *runtime* dependence does NOT mean giving up Dolphin as a **reference/oracle** for
+debugging. Comparing "what does Dolphin load/decode/show here vs what do we" is the core
+differential method (`SUNBRIGHT_DISABLE_RECOMP=1`, the DIFF harness) and is encouraged — it's how
+we find where our owned code diverges from correct. Keep using it.
+
 ## Honest caveats
 - This is a large, multi-step effort; do it incrementally, verifying each step against the
   Dolphin baseline (`SUNBRIGHT_DISABLE_RECOMP=1`) so we don't lose correctness while gaining
