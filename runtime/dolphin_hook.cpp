@@ -676,6 +676,10 @@ constexpr u32 OS_CURRENT_THREAD = 0x800000E4u;   // *(this) = OSGetCurrentThread
 
 struct GuestRuntime {
     CPUState ctx;            // global-ppc snapshot for the switch hooks
+    u32 saved_msr = 0x00009032u;  // per-thread MSR (NOT in ctx/dolphin_state_to_cpu). Critical: a
+                            // thread parked inside OSDisableInterrupts has MSR[EE]=0; without saving
+                            // MSR per thread the global ppc.msr leaks across switches → a critical
+                            // section runs with interrupts wrongly enabled → heap corruption.
     u32 os_thread = 0;       // guest OSThread*
     u32 entry = 0, param = 0, stack = 0;
     bool is_thread0 = false;
@@ -692,7 +696,9 @@ GuestRuntime* runtime_of(nthr::GuestThread* t) {
 static void nthr_ctx_save(nthr::GuestThread* t) {
     auto* gr = runtime_of(t);
     if (!gr) return;
-    dolphin_state_to_cpu(Core::System::GetInstance().GetPPCState(), gr->ctx);
+    auto& ppc = Core::System::GetInstance().GetPPCState();
+    dolphin_state_to_cpu(ppc, gr->ctx);
+    gr->saved_msr = ppc.msr.Hex;   // MSR is NOT in ctx — save it per thread (critical-section EE bit)
     // The running thread's OSThread* is authoritative in 0x800000E4 (it set it). Capture it so the
     // restore hook writes the right current-thread pointer back (thread 0's identity isn't known
     // until boot installs it, after adoption). No map/lock here — the hooks run under nthr's lock.
@@ -701,7 +707,10 @@ static void nthr_ctx_save(nthr::GuestThread* t) {
 static void nthr_ctx_restore(nthr::GuestThread* t) {
     auto* gr = runtime_of(t);
     if (!gr) return;
-    cpu_to_dolphin_state(gr->ctx, Core::System::GetInstance().GetPPCState());
+    auto& sys = Core::System::GetInstance();
+    cpu_to_dolphin_state(gr->ctx, sys.GetPPCState());
+    sys.GetPPCState().msr.Hex = gr->saved_msr;   // restore this thread's MSR (EE/critical-section)
+    sys.GetPowerPC().MSRUpdated();                // keep Dolphin's derived MSR flags coherent
     // We own the current-thread pointer now (the GC scheduler that maintained it is never run),
     // so make OSGetCurrentThread coherent with whoever is about to run.
     if (gr->os_thread) mem_w32(OS_CURRENT_THREAD, gr->os_thread);
