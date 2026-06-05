@@ -734,13 +734,23 @@ static void nthr_idle_driver() {
     static long total_calls = 0; static long total_irqs = 0;
     Core::DeclareAsCPUThread();   // we run the interpreter here; the parker Undeclared before block()
     int guard = 0, irqs = 0;
+    // A clean, RECOVERABLE kernel context to take each interrupt on: EE (interrupts on), RI
+    // (recoverable — the GC handler rejects RI=0 as "Non-recoverable Exception"), ME, IR/DR
+    // (translation on). Reset every iteration so a previous exception clearing MSR (real mode,
+    // RI=0) doesn't leave the next delivery in a non-recoverable context.
+    constexpr u32 IDLE_MSR = 0x00009032u;           // EE|ME|FP?|IR|DR|RI  (EE|ME|IR|DR|RI)
     for (; nthr::ready_count() == 0 && guard < 200000; ++guard) {
         ppc.pc = ppc.npc = idle_pc;
-        ppc.msr.Hex |= 0x8000u;                     // EE=1 so a pending IRQ can vector
+        ppc.msr.Hex = IDLE_MSR;
+        const u32 msr_before = ppc.msr.Hex;
         ct.Idle();                                  // fast-forward to the next scheduled device event
         ct.Advance();                               // process it — a device callback raises the IRQ
         sys.GetPowerPC().CheckExceptions();         // deliver it: vector pc to the ISR (0x80000500)
         if (ppc.pc != idle_pc) {
+            if (dbg && irqs < 4)
+                fprintf(stderr, "[idle] IRQ -> pc=%08x msr=%08x(was %08x) srr0=%08x srr1=%08x r1=%08x cur=%08x\n",
+                        ppc.pc, ppc.msr.Hex, msr_before, ppc.spr[SPR_SRR0], ppc.spr[SPR_SRR1],
+                        ppc.gpr[1], mem_r32(OS_CURRENT_THREAD));
             interp_run_until(idle_pc, 5'000'000);   // run the ISR → OSWakeupThread → nthr::make_ready
             ++irqs;
         }
