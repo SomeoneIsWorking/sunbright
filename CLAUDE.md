@@ -320,7 +320,8 @@ Update this table as ppc_decoder.cpp gains coverage:
 | mfmsr / mtmsr | ✅ | mfmsr→live `msr_get()`; mtmsr→func routed to JIT |
 | Paired singles (ps_*, psq_l/st) | 🔄 | GC-specific, critical for SMS |
 | System calls (sc) | ✅ | HLE via Dolphin |
-| Cache ops (dcbt, icbi, etc.) | ✅ | NOP in recomp is fine |
+| Cache ops (dcbt, dcbf, icbi, etc.) | ✅ | NOP in recomp — EXCEPT `dcbz` |
+| dcbz (Data Cache Block Zero) | ✅ | NOT a no-op: zeroes the 32-byte block at EA (`dcbz32`). NOP'ing it left stale THP DCT coefficients → FMV comb (fixed 8bc12c5) |
 | lmw / stmw (multi-word load/store) | ✅ | expanded to per-reg loads/stores |
 | mftb (time base read) | ✅ | monotonic fake counter |
 | mffs / mtfsf / mtfsb0/1 | ✅ | FPSCR modeled in CPUState |
