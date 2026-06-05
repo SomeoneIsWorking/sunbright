@@ -4,6 +4,7 @@
 #include "native_threads.h"
 #include "native_os.h"
 #include "probe_server.h"
+#include "sb_assert.h"
 #include <dlfcn.h>
 #include <mutex>
 #include <cstdlib>
@@ -143,6 +144,20 @@ bool interp_run_until(u32 ret, long budget, u32 sp_floor = 0);   // defined belo
 // also dump from a timer-less periodic flush keyed on accumulated steps). All gated.
 static const bool g_interp_profile = getenv("SUNBRIGHT_INTERP_PROFILE") != nullptr;
 static long g_last_interp_steps = 0;   // steps the last interp_run_until took
+
+// Spin-locator: when interp_run_until blows its step budget, we want to know WHERE it was
+// spinning (the OS idle loop? a busy-wait? a specific function?). Sample the pc periodically into
+// a histogram and, on the FATAL, dump the hottest PCs — that names the loop the scheduler is stuck
+// in. Sampling is a cheap masked-counter add, only the histogram insert is occasional.
+static std::unordered_map<u32, unsigned long long> g_interp_pc_hist;
+static void sunbright_dump_pc_hist(const char* tag) {
+    if (g_interp_pc_hist.empty()) return;
+    std::vector<std::pair<u32, unsigned long long>> v(g_interp_pc_hist.begin(), g_interp_pc_hist.end());
+    std::sort(v.begin(), v.end(), [](auto& a, auto& b) { return a.second > b.second; });
+    fprintf(stderr, "  [%s] hottest interpreted PCs (sampled):\n", tag);
+    for (size_t i = 0; i < v.size() && i < 16; i++)
+        fprintf(stderr, "    pc=%08x  %llu samples\n", v[i].first, v[i].second);
+}
 struct InterpProfEntry { unsigned long long steps = 0; unsigned long long calls = 0; };
 static std::unordered_map<u32, InterpProfEntry>& interp_prof_map() {
     static std::unordered_map<u32, InterpProfEntry> m;
@@ -344,6 +359,7 @@ void call_ppc(CPUState& cpu, u32 address) {
             "  corrupt state. This is the audio-init/blocking stall native threading fixes.\n"
             "  Native backtrace (recomp call chain, innermost first):\n",
             address, ret, MAX);
+        sunbright_dump_pc_hist("spin");
         void* bt[96];
         int bn = backtrace(bt, 96);
         backtrace_symbols_fd(bt, bn, fileno(stderr));
@@ -409,7 +425,23 @@ bool interp_run_until(u32 ret, long budget, u32 sp_floor) {
         }
     } _it;
     long n = 0;
+    u32 prev_pc = ppc.pc;   // the instruction executed just before the current pc (the branch, if pc went wild)
     while (ppc.pc != ret || (sp_floor && ppc.gpr[1] < sp_floor)) {
+        // Wild-branch invariant on the INTERP path (mirror of sb_fatal_wild_branch on the recomp
+        // path): guest code lives at >= 0x80003100, so a pc in low/NULL space means a branch went
+        // through a clobbered/NULL function pointer. The next interpreter fetch would raise Dolphin's
+        // "ISI exception at 0x0", then the OS exception machinery (JUTException reporter daemon) spins
+        // forever under us → the 500M-step budget abort. Trap AT the branch instead, naming prev_pc
+        // (the offending bl/bctr/blr) + LR/CTR so the originating call site is visible.
+        //   Exceptions to the rule (legitimately low pc): (1) the real-mode PowerPC exception-vector
+        //   page 0x100..0x1800 — an `sc`/external-interrupt/DSI taken mid-step vectors here and the
+        //   handler `rfi`s back; (2) pc==ret, a sentinel caller may pass a low return address.
+        const bool in_vector_page = ppc.pc >= 0x00000100u && ppc.pc < 0x00001800u;
+        SB_ASSERT(ppc.pc >= 0x80001000u || ppc.pc == ret || in_vector_page,
+            "interp wild branch to pc=%08x from prev_pc=%08x: lr=%08x ctr=%08x r1=%08x r3=%08x "
+            "(run_jit_sync ret=%08x, %ld steps in). A guest bl/bctr/blr went through a NULL/wild "
+            "pointer — the ISI-at-0 originator that wakes the JUTException reporter -> step-budget spin.",
+            ppc.pc, prev_pc, ppc.spr[SPR_LR], ppc.spr[SPR_CTR], ppc.gpr[1], ppc.gpr[3], ret, n);
         if (budget) { if (n++ >= budget) { g_last_interp_steps = n; return false; } }
         else if ((++n & 0x7FFFFFF) == 0)   // budget-less (thread body): periodic progress probe
             fprintf(stderr, "[interp] thread-body still running pc=%08x after %ldM steps\n",
@@ -425,6 +457,8 @@ bool interp_run_until(u32 ret, long budget, u32 sp_floor) {
             continue;
         }
         os_sync_watch(ppc.pc, ppc.gpr[3], ppc.gpr[4], ppc.spr[SPR_LR]);
+        if ((n & 0xFFFF) == 0) g_interp_pc_hist[ppc.pc]++;   // spin-locator sample (~every 64K steps)
+        prev_pc = ppc.pc;
         interp.SingleStep();
         if (g_probe_enabled) g_probe.interp_steps.fetch_add(1, std::memory_order_relaxed);
     }
