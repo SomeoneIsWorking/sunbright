@@ -318,7 +318,14 @@ void call_ppc(CPUState& cpu, u32 address) {
     cpu_to_dolphin_state(cpu, ppc);
     ppc.pc = ppc.npc = address;
     // A context switch never returns to us — hand off to Dolphin's CPU loop instead of spinning.
-    if (address == OS_LOAD_CONTEXT && g_tail_jmp) { g_recomp_context_switched = true; siglongjmp(*g_tail_jmp, 1); }
+    if (address == OS_LOAD_CONTEXT && g_tail_jmp) {
+        if (getenv("SUNBRIGHT_DBG_CTX")) {
+            u32 ctxp = cpu.gpr[3];
+            fprintf(stderr, "[ctx] OSLoadContext ctx=%08x loaded r1=%08x srr0=%08x lr=%08x\n",
+                    ctxp, mem_r32(ctxp + 4), mem_r32(ctxp + 0x198), mem_r32(ctxp + 0x84));
+        }
+        g_recomp_context_switched = true; siglongjmp(*g_tail_jmp, 1);
+    }
     constexpr long MAX = 500'000'000;
     if (!interp_run_until(ret, MAX, sp_floor)) {
         // The interpreter never returned to the caller's LR within the budget — the
