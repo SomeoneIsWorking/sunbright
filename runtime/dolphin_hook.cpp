@@ -451,11 +451,23 @@ void sunbright_poll_yield() {
     const u32 idle_pc   = sunbright_idle_spin_pc();
     const u32 saved_pc  = ppc.pc, saved_npc = ppc.npc;
     const u32 saved_msr = ppc.msr.Hex;
+    // Sync the LIVE recomp register file into Dolphin before delivering the interrupt. In the C-call
+    // model recomp keeps its own CPUState and only commits to Dolphin at a recomp↔JIT boundary, so
+    // ppc.gpr[] here is stale (last boundary). An async interrupt preempts the *currently running*
+    // context, and the GC exception handler saves the live GPRs (incl. r1, the stack) into the
+    // thread's OSContext — so it must see the live recomp registers, not the stale snapshot. Without
+    // this the ISR saved/restored a stale stack pointer, eventually surfacing as an r1 whose high bit
+    // was lost (a physical/real-mode-looking 0x000xxxxx stack) and a wild-write/bad-entry-sp crash.
+    // wait_vi_field already does this (it has the cpu in hand); poll_yield was the missing case.
+    if (g_cur_recomp_cpu) cpu_to_dolphin_state(*g_cur_recomp_cpu, ppc);
     ppc.pc = ppc.npc = idle_pc;
     ppc.msr.Hex |= 0x8000u;
     ct.Idle();                                  // fast-forward to the next scheduled device event
     ct.Advance();                               // process it — a device callback raises a pending IRQ
     sys.GetPowerPC().CheckExceptions();         // …which Advance does NOT deliver: vector pc to the ISR
+    if (getenv("SUNBRIGHT_DBG_YIELD") && ppc.pc != idle_pc)
+        fprintf(stderr, "[yield] IRQ delivered pc=%08x ppc.r1=%08x recomp.r1=%08x\n",
+                ppc.pc, ppc.gpr[1], g_cur_recomp_cpu ? g_cur_recomp_cpu->gpr[1] : 0xDEADu);
     if (ppc.pc != idle_pc)                      // an interrupt was delivered → run its handler
         interp_run_until(idle_pc, 5'000'000);   // ISR sets the polled flag / calls OSWakeupThread, rfi's back
     ppc.msr.Hex = saved_msr;
