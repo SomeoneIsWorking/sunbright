@@ -70,6 +70,7 @@ extern f64 mem_rf64(u32 ea);
 extern void mem_w8 (u32 ea, u8  v);
 extern void mem_w16(u32 ea, u16 v);
 extern void mem_w32(u32 ea, u32 v);
+extern void dcbz32(u32 ea);          // dcbz: zero the 32-byte cache block containing ea
 extern void mem_w64(u32 ea, u64 v);
 extern void mem_wf32(u32 ea, f32 v);
 extern void mem_wf64(u32 ea, f64 v);

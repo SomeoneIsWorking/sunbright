@@ -216,6 +216,23 @@ int main() {
               "fadd (double) leaves ps1 unchanged");
     }
 
+    // 8. dcbz (Data Cache Block set to Zero) is NOT a no-op: it zeroes the 32-byte cache block
+    //    containing EA. SMS's THP video decoder uses it to clear the DCT coefficient buffer before
+    //    the VLC decoder fills only the non-zero coefficients; emitting it as a comment-only no-op
+    //    left stale coefficients from the previous block → a per-MCU "comb" in the FMV. Pin that it
+    //    emits the dcbz32 zeroing helper at the indexed EA (rA|0)+rB, not a no-op. (dcbi/icbi etc.
+    //    stay no-ops — they have no memory effect we model.)
+    {
+        // dcbz r0, r4 : (31<<26)|(0<<16 rA)|(4<<11 rB)|(1014<<1 xo)  == 0x7c0027ec (the THP form)
+        const uint32_t dcbz = (31u<<26)|(0u<<16)|(4u<<11)|(1014u<<1);
+        // dcbi r0, r4 : (31<<26)|(4<<11)|(470<<1)  — must remain a no-op (control case)
+        const uint32_t dcbi = (31u<<26)|(0u<<16)|(4u<<11)|(470u<<1);
+        Built b = build(0x80100000u, { dcbz, dcbi, BLR }, false);
+        CHECK(has(b.code, "dcbz32(cpu.gpr[4])"), "dcbz zeroes the 32-byte block at (rA|0)+rB");
+        CHECK(!has(b.code, "dcbz \xE2\x80\x94 no-op"), "dcbz is no longer a no-op (the THP-comb bug)");
+        CHECK(has(b.code, "dcbi \xE2\x80\x94 no-op"), "dcbi stays a no-op (no modeled memory effect)");
+    }
+
     std::printf("recomp_test: %d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

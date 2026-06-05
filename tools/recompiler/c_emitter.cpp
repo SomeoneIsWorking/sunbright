@@ -778,9 +778,15 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
         break;
     case PPCOp::SYNC: case PPCOp::ISYNC: case PPCOp::EIEIO:
     case PPCOp::DCBT: case PPCOp::DCBTST: case PPCOp::DCBF:
-    case PPCOp::DCBI: case PPCOp::ICBI: case PPCOp::DCBZ:
+    case PPCOp::DCBI: case PPCOp::ICBI:
     case PPCOp::DCBST: case PPCOp::TLBIE: case PPCOp::TLBSYNC:
         line("// %s — no-op in recomp", i.mnemonic().c_str());
+        break;
+    // dcbz is NOT a no-op: it zeroes the 32-byte cache block containing EA (no memory read).
+    // SMS's THP decoder uses it to clear the DCT coefficient buffer before the VLC decoder fills
+    // the non-zero coefficients; NOP'ing it left stale data → the per-MCU comb in the FMV.
+    case PPCOp::DCBZ:
+        line("dcbz32(%s);", ea_x(i).c_str());
         break;
 
     case PPCOp::MFMSR: line("%s = msr_get(); // live MSR from Dolphin", d.c_str()); break;

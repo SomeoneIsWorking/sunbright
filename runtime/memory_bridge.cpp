@@ -374,6 +374,17 @@ void mem_w64_slow(u32 ea, u64 v) {
 #endif
 }
 
+// dcbz (Data Cache Block set to Zero): NOT a no-op — it zeroes the cache block (32 bytes on
+// Gekko/Broadway) containing EA, without reading memory first. SMS's THP video decoder relies on
+// this to clear the DCT coefficient buffer (and to establish locked-cache output lines) before the
+// VLC decoder fills only the non-zero coefficients; NOP'ing it left stale coefficients from the
+// previous block → a per-MCU "comb" in the FMV. Zero is endian-agnostic, and the memory bridge
+// routes the address correctly (main RAM fast path, or the locked cache / MMIO slow path).
+void dcbz32(u32 ea) {
+    ea &= ~0x1Fu;                          // align to the 32-byte cache block
+    for (int i = 0; i < 8; i++) sb_w32(ea + (u32)(i * 4), 0);
+}
+
 // Public out-of-line wrappers (declared in intrinsics.h) — dispatch through the inline fast path.
 u8   mem_r8 (u32 ea)         { return sb_r8(ea);  }
 u16  mem_r16(u32 ea)         { return sb_r16(ea); }
