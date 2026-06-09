@@ -405,6 +405,13 @@
 >    director-null (802a6160), so the r31 clobberer is in endRendering's subtree — bisect its callees
 >    (802fc9a4/802ca1e0/802f917c/8035d8f0) with FATAL_HOLD + read the LIVE recomp r31 (g_cur_recomp_cpu),
 >    not the stale ppc dump, to pin it.
+>    UPDATE: the live-recomp-reg dump (memory_bridge.cpp, g_cur_recomp_cpu) did NOT fire at the 6338
+>    fault ⇒ g_cur_recomp_cpu is NULL there ⇒ 802a5f50 at the crash is NOT running as pure recomp; it is
+>    on the interpreter/hybrid path (run_jit_sync), and the ppc r31=802a6324 is stale ([802a634c]=806da118
+>    != the faulting 0x28040000). So the r31 clobber is most likely a recomp<->interpreter REGISTER-SYNC
+>    hazard (cpu<->ppc around a run_jit_sync callee in the render path), i.e. the call-model handoff, NOT
+>    a single mistranslated function. Next: find which render-path callee runs interpreted (function_needs_jit)
+>    and audit the cpu<->ppc sync (cpu_to_dolphin_state/dolphin_state_to_cpu) around it for r31 fidelity.
 > 2) **null-director chicken-egg:** scene state machine `802a6398` (loops on [this+8]; jump table @803df424,
 >    states 0..9). Common tail `lbl_802a6644` each iteration: `if(r29==0) call 802a5f50` (DRAW) → director
 >    cleanup → **clears [this+4]=0 @802a667c** → state-2 case `lbl_802a669c` (re)creates the director via

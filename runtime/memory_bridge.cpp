@@ -332,8 +332,16 @@ static inline void check_wild_read(u32 ea, int bits) {
         "  pointer that lost its high bit). Aborting at the originator instead of returning garbage\n"
         "  and crashing later somewhere else, which would hide this root cause.\n",
         write ? "write" : "read", ea, pc);
+    // If the fault came through the recomp's slow path, g_cur_recomp_cpu (thread_local, same thread)
+    // holds the LIVE recomp registers — the real r31 etc. The Dolphin ppc.gpr below is STALE for
+    // recomp faults (recomp keeps state in CPUState, not ppc). Dump the live recomp regs first.
+    if (g_cur_recomp_cpu) {
+        fprintf(stderr, "  LIVE recomp registers (g_cur_recomp_cpu — authoritative for recomp faults):\n");
+        dump_guest_regs_core(g_cur_recomp_cpu->gpr, g_cur_recomp_cpu->lr, g_cur_recomp_cpu->ctr, ea);
+    }
 #ifdef HAVE_DOLPHIN_MEMMAP
     auto& ppc = Core::System::GetInstance().GetPPCState();
+    fprintf(stderr, "  (Dolphin ppc registers — may be stale for recomp faults:)\n");
     dump_guest_regs_core(ppc.gpr, LR(ppc), CTR(ppc), ea);
 #endif
     fprintf(stderr, "  Native backtrace (host call chain, innermost first):\n");
