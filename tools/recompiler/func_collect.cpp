@@ -90,3 +90,65 @@ std::unordered_set<uint32_t> intra_branch_targets(const std::vector<PPCInstr>& i
     }
     return bt;
 }
+
+std::unordered_set<uint32_t> jumptable_targets(
+    const std::vector<PPCInstr>& instrs, uint32_t faddr, uint32_t fend,
+    const std::function<bool(uint32_t, uint32_t&)>& read_word) {
+    std::unordered_set<uint32_t> out;
+    for (size_t k = 0; k < instrs.size(); ++k) {
+        if (instrs[k].op != PPCOp::BCCTR || instrs[k].lk) continue;   // computed/tail `bctr` only
+        const int lo_j = (int)k - 24 < 0 ? 0 : (int)k - 24;           // short same-region back-scan
+        auto stop = [](const PPCInstr& q) { return is_unconditional_branch(q); };
+
+        // 1) `mtctr rCtr` — the register feeding CTR
+        int ctr_reg = -1;
+        for (int j = (int)k - 1; j >= lo_j; --j) {
+            const PPCInstr& q = instrs[j];
+            if (q.op == PPCOp::MTSPR && decode_spr(q.spr) == SPR_CTR) { ctr_reg = q.rS; break; }
+            if (stop(q)) break;
+        }
+        if (ctr_reg < 0) continue;
+
+        // 2) the table load into rCtr: `lwzx rCtr,base,index` (indexed) or `lwz rCtr,disp(base)`
+        int base_reg = -1; bool indexed = false; int32_t disp = 0;
+        for (int j = (int)k - 1; j >= lo_j; --j) {
+            const PPCInstr& q = instrs[j];
+            if (q.op == PPCOp::LWZX && q.rD == ctr_reg) { base_reg = q.rA; indexed = true;  break; }
+            if (q.op == PPCOp::LWZ  && q.rD == ctr_reg) { base_reg = q.rA; disp = q.d; indexed = false; break; }
+            if (stop(q)) break;
+        }
+        if (base_reg < 0) continue;
+
+        // 3) materialize the table base register: `lis base,hi` [+ `addi base,base,lo`] (or `li`)
+        uint32_t base = 0; bool have_base = false; int32_t add_lo = 0;
+        for (int j = (int)k - 1; j >= lo_j; --j) {
+            const PPCInstr& q = instrs[j];
+            if (q.op == PPCOp::ADDI && q.rD == base_reg && q.rA == base_reg) { add_lo += q.simm; continue; }
+            if (q.op == PPCOp::ADDIS && q.rD == base_reg && q.rA == 0) { base = (uint32_t)q.uimm << 16; have_base = true; break; }
+            if (q.op == PPCOp::ADDI  && q.rD == base_reg && q.rA == 0) { base = (uint32_t)q.simm;        have_base = true; break; } // li
+            if (stop(q)) break;
+        }
+        if (!have_base) continue;
+        const uint32_t table = base + (uint32_t)add_lo + (indexed ? 0u : (uint32_t)disp);
+
+        // 4) bound: the nearest preceding `cmpli idx,N` gives the max index ⇒ N+1 entries
+        int count = -1;
+        for (int j = (int)k - 1; j >= lo_j; --j) {
+            const PPCInstr& q = instrs[j];
+            if (q.op == PPCOp::CMPLI) { count = (int)q.uimm + 1; break; }
+            if (stop(q)) break;
+        }
+
+        // 5) read entries; keep the ones that land inside this function's body. With a known count
+        //    read exactly that many; otherwise read until the first word that is not a main-RAM
+        //    code pointer (a contiguous table of .text pointers).
+        const int limit = (count > 0 && count <= 256) ? count : 64;
+        for (int e = 0; e < limit; ++e) {
+            uint32_t w;
+            if (!read_word(table + (uint32_t)e * 4, w)) break;
+            if (w >= faddr && w < fend) out.insert(w);
+            else if (count < 0 && (w < 0x80000000u || w >= 0x81800000u)) break;
+        }
+    }
+    return out;
+}

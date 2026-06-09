@@ -466,7 +466,20 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
             line("cpu.lr = 0x%xu;", i.pc + 4);
             line("call_ppc(cpu, cpu.ctr);");
         } else {                                        // bctr — computed/tail branch
-            line("tail_ppc(cpu, cpu.ctr); return;");
+            // If this is a jump table into THIS function, dispatch CTR to the in-function case
+            // labels instead of handing off to Dolphin's JIT via tail_ppc (which corrupts
+            // non-volatile regs across the recomp↔JIT boundary — the boot render crash). Genuine
+            // external computed branches (e.g. a vtable tail call) fall through to tail_ppc.
+            if (!ctx.jumptable_targets.empty()) {
+                std::vector<u32> tgts(ctx.jumptable_targets.begin(), ctx.jumptable_targets.end());
+                std::sort(tgts.begin(), tgts.end());
+                line("switch (cpu.ctr) {");
+                for (u32 t : tgts) line("case 0x%xu: goto lbl_%x;", t, t);
+                line("default: tail_ppc(cpu, cpu.ctr); return;");
+                line("}");
+            } else {
+                line("tail_ppc(cpu, cpu.ctr); return;");
+            }
         }
         break;
 

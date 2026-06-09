@@ -2,6 +2,7 @@
 #include "ppc_decoder.h"
 #include <cstdint>
 #include <cstddef>
+#include <functional>
 #include <unordered_set>
 #include <vector>
 
@@ -25,6 +26,17 @@ std::vector<PPCInstr> collect_function(const uint8_t* data, uint32_t base, size_
 // Build the set of intra-function branch-target labels for an EmitContext, given the collected
 // instruction list. A target counts as intra-function when it lies in [faddr, last_instr_pc + 4).
 std::unordered_set<uint32_t> intra_branch_targets(const std::vector<PPCInstr>& instrs, uint32_t faddr);
+
+// Discover computed-`bctr` jump-table case targets that land INSIDE this function [faddr, fend).
+// A `bctr` whose CTR is loaded from a `base[index*4]` table is a switch: its case labels are reached
+// ONLY through the indirect branch, so they are not in intra_branch_targets and the emitter would
+// render the `bctr` as a `tail_ppc` handoff to Dolphin's JIT — corrupting non-volatile regs across
+// the recomp↔JIT boundary (the boot render crash). We pattern-match `cmpli idx,N; … ; lis/addi base;
+// lwzx/lwz ctr,[base+idx]; mtctr; bctr`, read N+1 table entries via `read_word` (reads any loaded
+// section), and return the in-function targets so they become labels + a `switch(ctr){goto}`.
+std::unordered_set<uint32_t> jumptable_targets(
+    const std::vector<PPCInstr>& instrs, uint32_t faddr, uint32_t fend,
+    const std::function<bool(uint32_t, uint32_t&)>& read_word);
 
 // fend for an entry = the next REAL function boundary strictly greater than `faddr` (capped at
 // `cap` = section end). `real_funcs` must be sorted ascending and contain ONLY genuine function

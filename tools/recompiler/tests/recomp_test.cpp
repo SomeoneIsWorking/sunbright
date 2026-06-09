@@ -256,6 +256,63 @@ int main() {
         CHECK(has(b.code, "dcbi \xE2\x80\x94 no-op"), "dcbi stays a no-op (no modeled memory effect)");
     }
 
+    // 9. THE BOOT JIT-HANDOFF REGRESSION: a computed `bctr` jump table whose case labels live INSIDE
+    //    the function must dispatch via an in-function `switch(ctr){goto}` — NOT a `tail_ppc` handoff
+    //    to Dolphin's JIT (which corrupted non-volatile regs across the recomp↔JIT boundary = the boot
+    //    render crash). jumptable_targets() reads the `lis/addi base; lwzx ctr,[base+idx]; mtctr; bctr`
+    //    table and returns the in-function targets so they become labels + switch cases.
+    {
+        auto enc_addis = [](int rt, int ra, uint16_t ui) { return (15u<<26)|(rt<<21)|(ra<<16)|ui; };
+        auto enc_cmpli = [](int bf, int ra, uint16_t ui) { return (10u<<26)|(bf<<23)|(ra<<16)|ui; };
+        auto enc_lwzx  = [](int rt, int ra, int rb) { return (31u<<26)|(rt<<21)|(ra<<16)|(rb<<11)|(23u<<1); };
+        // mtspr CTR: spr field (bits11-20) = 288 so decode_spr(288)==9 (SPR_CTR)
+        auto enc_mtctr = [](int rs) { return (31u<<26)|(rs<<21)|(288u<<11)|(467u<<1); };
+        const uint32_t BCTR = 0x4e800420u;
+        const uint32_t B = 0x80100000u;
+        const uint32_t TABLE = 0x803d0000u;             // a .data table address (lis 0x803d, addi 0)
+        // A forward `bc` (the out-of-range bound check, here bgt→B+44) keeps LINEAR collection going
+        // past the `bctr` so the bctr-only case bodies are collected — exactly the real structure.
+        // +0 cmpli ; +4 bgt->B+44 ; +8 lis ; +12 addi ; +16 lwzx ; +20 mtctr ; +24 bctr ;
+        // +28 case0 ; +32 blr ; +36 case1 ; +40 blr ; +44 case2 ; +48 blr
+        std::vector<uint32_t> w = {
+            enc_cmpli(0,0,2),               // +0  cmpli r0,2  → 3 entries
+            enc_bc(B+4, B+44, 12, 1),       // +4  bgt -> B+44 (forward in-function bound check)
+            enc_addis(3,0,0x803d),          // +8  lis r3,0x803d
+            enc_addi(3,3,0),                // +12 addi r3,r3,0  → r3 = 0x803d0000
+            enc_lwzx(0,3,0),                // +16 lwzx r0,r3,r0
+            enc_mtctr(0),                   // +20 mtctr r0
+            BCTR,                           // +24 bctr (the jump table)
+            enc_addi(5,5,1), BLR,           // +28 case0 (B+28), +32
+            enc_addi(6,6,1), BLR,           // +36 case1 (B+36), +40
+            enc_addi(7,7,1), BLR,           // +44 case2 (B+44), +48
+        };
+        const uint32_t cases[3] = { B+28, B+36, B+44 };
+        auto data(w);  // big-endian image for collection
+        std::vector<uint8_t> bytes(w.size()*4);
+        for (size_t i=0;i<w.size();++i){ uint32_t be=__builtin_bswap32(w[i]); std::memcpy(&bytes[i*4],&be,4); }
+        const uint32_t fend = B + (uint32_t)w.size()*4;
+        std::vector<PPCInstr> instrs = collect_function(bytes.data(), B, bytes.size(), B, fend, /*cfg=*/false);
+        auto read_word = [&](uint32_t a, uint32_t& out) -> bool {
+            if (a >= TABLE && a < TABLE + 12) { out = cases[(a - TABLE)/4]; return true; }
+            return false;
+        };
+        auto jt = jumptable_targets(instrs, B, fend, read_word);
+        CHECK(jt.size() == 3, "jumptable_targets finds all 3 in-function case targets");
+        CHECK(jt.count(B+28) && jt.count(B+36) && jt.count(B+44), "jumptable_targets returns the table entries");
+
+        EmitContext ctx; ctx.func_addr = B; ctx.instrs = instrs;
+        ctx.branch_targets = intra_branch_targets(instrs, B);
+        ctx.jumptable_targets = jt;
+        ctx.branch_targets.insert(jt.begin(), jt.end());
+        std::ostringstream ss; CEmitter em(ss); em.emit_function(ctx);
+        std::string code = ss.str();
+        CHECK(has(code, "switch (cpu.ctr) {"), "bctr jump table emits an in-function switch(ctr)");
+        CHECK(has(code, "case 0x8010001cu: goto lbl_8010001c;"), "switch dispatches CTR to the case label (no handoff)");
+        CHECK(has(code, "lbl_80100024:"), "the bctr-only case body gets a label");
+        // the default arm still hands off for genuinely-external computed targets
+        CHECK(has(code, "default: tail_ppc(cpu, cpu.ctr); return;"), "external CTR values still tail_ppc");
+    }
+
     std::printf("recomp_test: %d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

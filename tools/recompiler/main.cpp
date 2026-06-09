@@ -399,6 +399,21 @@ static int recompile_mode(const DiscLoader& disc, const DOL& dol, const std::str
             ctx.instrs    = func_instrs[addr];
 
             ctx.branch_targets = intra_branch_targets(ctx.instrs, addr);
+            // Pull computed-`bctr` jump-table case labels into the function so they emit as in-function
+            // `switch(ctr){goto}` rather than a `tail_ppc` handoff to Dolphin's JIT (the boot crash).
+            if (!ctx.instrs.empty()) {
+                const u32 fend = ctx.instrs.back().pc + 4;
+                auto any_word = [&](u32 a, u32& out) -> bool {
+                    for (const auto& s : dol.sections)
+                        if (a >= s.addr && a + 4 <= s.addr + s.size) {
+                            std::memcpy(&out, s.data.data() + (a - s.addr), 4);
+                            out = __builtin_bswap32(out); return true;
+                        }
+                    return false;
+                };
+                ctx.jumptable_targets = jumptable_targets(ctx.instrs, addr, fend, any_word);
+                ctx.branch_targets.insert(ctx.jumptable_targets.begin(), ctx.jumptable_targets.end());
+            }
             emitter.emit_function(ctx);
         }
         total_unhandled += emitter.unhandled_count();

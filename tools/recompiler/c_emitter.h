@@ -17,7 +17,8 @@
 struct EmitContext {
     u32 func_addr;
     std::vector<PPCInstr> instrs;
-    std::unordered_set<u32> branch_targets;  // within-function jump labels
+    std::unordered_set<u32> branch_targets;     // within-function jump labels
+    std::unordered_set<u32> jumptable_targets;  // bctr jump-table case labels (subset of branch_targets)
 };
 
 class CEmitter {
