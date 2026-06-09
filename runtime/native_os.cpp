@@ -12,6 +12,19 @@ extern u16  mem_r16(u32 ea);
 extern void mem_w32(u32 ea, u32 v);
 extern void mem_w16(u32 ea, u16 v);
 extern void call_ppc(CPUState& cpu, u32 address);   // intrinsics.h (run a recomp callee inline)
+extern bool g_in_poll_yield;          // spin-loop detector suppressor (memory_bridge)
+
+namespace {
+// Runtime-internal guest-RAM reads must not feed the guest spin-loop detector: the retrace
+// wakeup reads the SAME queue-head EA every frame, accumulating "consecutive identical reads"
+// across calls until sb_poll_fire ran the IRQ pump mid-primitive on an interp thread's context
+// (wild branch to 0x58, 2026-06-10). Same defect class as the nthr ctx_save raw-read fix.
+struct PollSuppress {
+    bool prev;
+    PollSuppress() : prev(g_in_poll_yield) { g_in_poll_yield = true; }
+    ~PollSuppress() { g_in_poll_yield = prev; }
+};
+}  // namespace
 
 // Reschedule-free recompiled OSCreateThread, super-called for faithful guest-struct init (see
 // docs/native_threading.md: it never calls SelectThread/__OSReschedule, so it returns).
@@ -39,6 +52,7 @@ inline u16 r_state(u32 th)   { return (u16)(mem_r32(th + T_STATE) >> 16); }  // 
 // Insert `th` into thread-wait queue `q` ordered by priority — faithful to OSSleepThread's
 // insert (same links/head/tail), so guest code that walks the queue still sees the truth.
 void wait_queue_insert(u32 q, u32 th) {
+    PollSuppress ps;
     const s32 prio = (s32)mem_r32(th + T_PRIO);
     u32 n = mem_r32(q + Q_HEAD);
     while (n != 0 && (s32)mem_r32(n + T_PRIO) <= prio) n = mem_r32(n + T_NEXT);
@@ -214,6 +228,7 @@ static void os_sleep_thread(CPUState& cpu) {
 // (suspend<=0) Ready in nthr — the body of OSWakeupThread, factored so the thread-exit
 // bookkeeping can also wake a thread's join queue.
 static void wake_queue(u32 queue) {
+    PollSuppress ps;   // see PollSuppress: internal queue walks must not feed the poll detector
     for (;;) {
         u32 th = mem_r32(queue + Q_HEAD);
         if (th == 0) break;
@@ -355,6 +370,14 @@ void native_os_init() {
     // archive/audio-wave ARAM wait completes immediately; no AR DMA interrupt, no timing). ──
     extern void native_aram_register();
     native_aram_register();
+    // ── Native PPCSync: `sc; blr` store barrier → no-op (gather-pipe writes are synchronous
+    // here; the interpreted syscall round-trip was the GXFlush per-frame choke). ──
+    extern void native_ppcsync_register();
+    native_ppcsync_register();
+    // ── Native DVD→ARAM ripper: JKRDvdAramRipper::loadToAram served host-side (read + Yaz0 +
+    // guest-heap alloc + ARAM memcpy) — the stream-thread pipeline never completed under nthr. ──
+    extern void native_aram_ripper_register();
+    native_aram_ripper_register();
     // ── Diagnostics (env-gated, kept permanently — see memory keep-diagnostics) ──
     if (getenv("SUNBRIGHT_DBG_CONSOLE"))
         native_os_register(0x8033ba90u, dbg_write_console);   // surface GC console / crash report

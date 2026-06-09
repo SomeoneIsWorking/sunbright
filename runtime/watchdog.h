@@ -12,3 +12,10 @@
 // On by default; SUNBRIGHT_WATCHDOG=0 disables, SUNBRIGHT_WATCHDOG_SEC=N sets the timeout.
 void watchdog_init();                  // install handler, subscribe to VI fields, start the thread
 void watchdog_register_emu_thread();   // call from the first recomp entry — records the emu thread
+
+// Deliberate diagnostic park: the caller has detected an unrecoverable runtime bug, dumped its
+// context, and now parks its thread CPU-idle (sleep loop) so the SUNBRIGHT_PROBE REPL stays
+// available for live inspection. Marks the process "parked" so the watchdog does NOT treat the
+// stopped frame flow as a freeze-and-kill — a park must never busy-spin OR get reaped before
+// it can be inspected. [[noreturn]] for the calling thread.
+[[noreturn]] void sunbright_park(const char* reason);

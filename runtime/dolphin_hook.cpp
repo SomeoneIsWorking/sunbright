@@ -6,8 +6,10 @@
 #include "native_os.h"
 #include "probe_server.h"
 #include "sb_assert.h"
+#include "watchdog.h"
 #include <dlfcn.h>
 #include <mutex>
+#include <atomic>
 #include <cstdlib>
 #ifdef HAVE_DOLPHIN_CORE
 #  include "Core/HW/SystemTimers.h"
@@ -22,14 +24,20 @@
 #include <vector>
 #include <execinfo.h>
 #include <sys/resource.h>
+#include <unistd.h>
 #ifdef HAVE_DOLPHIN_CORE
 #  include "Core/System.h"
 #  include "Core/Core.h"
 #  include "Core/CoreTiming.h"
 #  include "Core/HW/VideoInterface.h"
+#  include "Core/HW/ProcessorInterface.h"
+#  include "Core/HLE/HLE.h"
+#  include "Core/PowerPC/MMU.h"
+#  include "Core/PowerPC/PPCSymbolDB.h"
 #endif
 
 extern void mem_w32(u32 ea, u32 v);   // from memory_bridge
+extern u16  mem_r16(u32 ea);
 extern void mem_w16(u32 ea, u16 v);
 
 using RecompFunc = void (*)(CPUState&);
@@ -491,7 +499,58 @@ void call_ppc(CPUState& cpu, u32 address) {
 // callee has balanced its frame so ppc.gpr[1] == sp_floor; nested re-entries sit at a deeper
 // (smaller) SP, so `>= sp_floor` rejects them. Callers that aren't bl/bctrl returns (ISR/syscall/
 // idle/thread-body) pass sp_floor=0 and keep the original bare-PC behavior.
+// Per-step PC ring (single writer: the CPU-token holder). Dumped by the MEM-dispatch trap to show
+// the exact instruction path that led into the impossible handler — cheaper and more precise than
+// re-running with trace env vars (REPL-era diagnostic, 2026-06-10).
+static constexpr int kPcRingN = 4096;           // power of two
+static u32 g_pc_ring[kPcRingN];
+static unsigned char g_pc_ring_tid[kPcRingN];
+static unsigned g_pc_ring_i = 0;
+// PC bits 1:0 are always 0 — stash a 2-bit host-thread tag there so the dump exposes interleaving:
+// the interpreter state (global ppc) is single-writer BY CONTRACT (the CPU token); two tags
+// alternating inside one "call chain" = two host threads racing the interpreter (the corruption
+// class behind the spurious MEM dispatch / mid-run teleports, 2026-06-10).
+static std::atomic<int> g_tid_seq{0};
+static inline unsigned char sb_ring_tag() {
+    static thread_local int t_tag = g_tid_seq.fetch_add(1, std::memory_order_relaxed);
+    return (unsigned char)t_tag;
+}
+static inline void sb_ring_push(u32 pc) {
+    const unsigned i = g_pc_ring_i++ & (kPcRingN - 1);
+    g_pc_ring[i] = pc; g_pc_ring_tid[i] = sb_ring_tag();
+}
+// Dump the ring as collapsed straight-line runs: "start..end" per run, one run per branch taken.
+// 4096 raw steps collapse to ~a screen of control flow — enough to see the whole call chain.
+static void sunbright_dump_pc_ring(FILE* f) {
+    fprintf(f, "  Last %d interp steps as straight-line runs (oldest first):\n", kPcRingN);
+    u32 run_start = 0, prev = 0; unsigned tag = 0; bool open = false; int col = 0;
+    for (int i = 0; i < kPcRingN; i++) {
+        const unsigned idx = (g_pc_ring_i + (unsigned)i) & (kPcRingN - 1);
+        const u32 p = g_pc_ring[idx]; const unsigned t = g_pc_ring_tid[idx];
+        if (!p) continue;
+        if (!open) { run_start = prev = p; tag = t; open = true; continue; }
+        if (p == prev + 4 && t == tag) { prev = p; continue; }
+        fprintf(f, "%s%08x..%08x/%u", (col % 4) ? "  " : "    ", run_start, prev, tag);
+        if ((++col % 4) == 0) fputc('\n', f);
+        run_start = prev = p; tag = t;
+    }
+    if (open) fprintf(f, "%s%08x..%08x/%u\n", (col % 4) ? "  " : "    ", run_start, prev, tag);
+}
+
+// Interpreter token guard: only the nthr token holder (or pre-adoption boot / the idle-hook
+// context) may step the shared interpreter. A violator scrambles the global ppc — the corruption
+// class behind the spurious MEM dispatch. Suspended interp frames (a thread parked mid-intercept)
+// are legal; the invariant is on who is STEPPING now.
+static int native_dispatch_pending();   // fwd (defined with the native dispatcher below)
+static bool in_native_dispatch();        // fwd
+
 bool interp_run_until(u32 ret, long budget, u32 sp_floor) {
+    if (!nthr::self_may_run_guest()) {
+        fprintf(stderr, "\n[interp] TOKEN VIOLATION: this host thread entered the interpreter "
+                "without holding the nthr token (pc=%08x ret=%08x).\n",
+                Core::System::GetInstance().GetPPCState().pc, ret);
+        sunbright_park("interpreter token violation");
+    }
     auto& ppc    = Core::System::GetInstance().GetPPCState();
     auto& interp = Core::System::GetInstance().GetInterpreter();
     struct InterpTimer {
@@ -530,15 +589,42 @@ bool interp_run_until(u32 ret, long budget, u32 sp_floor) {
         //   page 0x100..0x1800 — an `sc`/external-interrupt/DSI taken mid-step vectors here and the
         //   handler `rfi`s back; (2) pc==ret, a sentinel caller may pass a low return address.
         const bool in_vector_page = ppc.pc >= 0x00000100u && ppc.pc < 0x00001800u;
-        SB_ASSERT(ppc.pc >= 0x80001000u || ppc.pc == ret || in_vector_page,
-            "interp wild branch to pc=%08x from prev_pc=%08x: lr=%08x ctr=%08x r1=%08x r3=%08x "
-            "(run_jit_sync ret=%08x, %ld steps in). A guest bl/bctr/blr went through a NULL/wild "
-            "pointer — the ISI-at-0 originator that wakes the JUTException reporter -> step-budget spin.",
-            ppc.pc, prev_pc, ppc.spr[SPR_LR], ppc.spr[SPR_CTR], ppc.gpr[1], ppc.gpr[3], ret, n);
+        if (!(ppc.pc >= 0x80001000u || ppc.pc == ret || in_vector_page)) {
+            fprintf(stderr,
+                "\n[interp] wild branch to pc=%08x from prev_pc=%08x: lr=%08x ctr=%08x r1=%08x "
+                "r3=%08x (ret=%08x, %ld steps in). A guest bl/bctr/blr went through a NULL/wild "
+                "pointer — or the CODE at prev_pc was overwritten (verify with /r).\n",
+                ppc.pc, prev_pc, ppc.spr[SPR_LR], ppc.spr[SPR_CTR], ppc.gpr[1], ppc.gpr[3], ret, n);
+            sunbright_dump_pc_ring(stderr);
+            // Park (not abort): the guest state — especially possibly-overwritten CODE bytes — is
+            // the evidence; the REPL (/r) must be able to read it post-mortem.
+            sunbright_park("interp wild branch");
+        }
         if (budget) { if (n++ >= budget) { g_last_interp_steps = n; return false; } }
-        else if ((++n & 0x7FFFFFF) == 0)   // budget-less (thread body): periodic progress probe
+        else if ((++n & 0x7FFFFFF) == 0) { // budget-less (thread body): periodic progress probe
             fprintf(stderr, "[interp] thread-body still running pc=%08x after %ldM steps\n",
                     ppc.pc, n / 1'000'000);
+            // A thread body that interprets >400M steps without blocking/exiting is a livelock
+            // (e.g. the JUTException reporter spinning its crash screen). Always die loudly with
+            // a dump instead of pegging the host forever — the freeze must kill, never linger.
+            if (n >= 400'000'000) {
+                fprintf(stderr,
+                    "\n[interp] FATAL: thread-body livelock — %ldM interpreter steps without "
+                    "exit/block.\n  pc=%08x lr=%08x r1=%08x r3=%08x cur_thread=%08x ret=%08x\n"
+                    "  Top interp PCs (spin-locator samples):\n",
+                    n / 1'000'000, ppc.pc, ppc.spr[SPR_LR], ppc.gpr[1], ppc.gpr[3],
+                    mem_r32(0x800000E4u), ret);
+                {
+                    std::vector<std::pair<u32, unsigned long long>> top(g_interp_pc_hist.begin(), g_interp_pc_hist.end());
+                    std::sort(top.begin(), top.end(),
+                              [](auto& a, auto& b) { return a.second > b.second; });
+                    for (size_t i = 0; i < top.size() && i < 12; i++)
+                        fprintf(stderr, "    %08x  %llu samples\n", top[i].first,
+                                (unsigned long long)top[i].second);
+                }
+                sunbright_park("interp thread-body livelock");
+            }
+        }
         if (NativeOSFn nf = native_os_lookup(ppc.pc)) {
             static bool first = true;
             if (first) { first = false;
@@ -556,9 +642,79 @@ bool interp_run_until(u32 ret, long budget, u32 sp_floor) {
             ppc.pc = ppc.npc = t.lr;   // return to the guest caller (LR), like the callee's blr
             continue;
         }
+        // SUNBRIGHT_DBG_DISPATCH: log every __OSDispatchInterrupt entry (0x80345d84) with Dolphin's
+        // live PI cause/mask and the MI protection-cause reg — names the IRQ source the GC OS is
+        // about to dispatch. Built to pin the spurious MEM-interrupt → OSError 15 → JUTException
+        // reporter livelock (2026-06-10). Permanent diagnostic (see memory keep-diagnostics).
+        static const bool dbg_dispatch = getenv("SUNBRIGHT_DBG_DISPATCH") != nullptr;
+        if (dbg_dispatch && ppc.pc == 0x80345d84u) {
+            auto& pi = Core::System::GetInstance().GetProcessorInterface();
+            static long hits = 0;
+            if (hits++ < 512)
+                fprintf(stderr, "[dispatch] PI cause=%08x mask=%08x mem_cause=%04x srr0=%08x "
+                        "intmsk_c4=%08x_%08x\n",
+                        pi.GetCause(), pi.GetMask(), mem_r16(0xCC00401Eu), ppc.spr[SPR_SRR0],
+                        mem_r32(0x800000C4u), mem_r32(0x800000C8u));
+        }
+        // MEM-protection interrupt trap (always on): Dolphin NEVER raises PI cause bit 0x80 and the
+        // MI cause register is never set, so the GC OS reaching MEMIntrruptHandler (0x80346370 —
+        // raises OSError 15 → JUTException crash screen → MarErrException readPad livelock) is
+        // impossible on faithful hardware state. If we get here, OUR runtime corrupted the dispatch
+        // (stale/garbage INTSR or MI reads). Dump the dispatch registers + live PI state and PARK so
+        // the REPL (/r, /stack, /cur) can inspect the exact faulting state. 2026-06-10.
+        if (ppc.pc == 0x80346370u) {
+            auto& pi = Core::System::GetInstance().GetProcessorInterface();
+            fprintf(stderr,
+                "\n[interp] TRAP: MEMIntrruptHandler dispatched (impossible on faithful HW state).\n"
+                "  PI cause=%08x mask=%08x  MI cause reg=%04x\n"
+                "  srr0=%08x srr1=%08x lr=%08x ctx(r4)=%08x intr#(r29)=%08x\n"
+                "  intmsk C4=%08x C8=%08x  cur_thread=%08x\n"
+                "  Parked for REPL inspection (kill -9 to exit).\n",
+                pi.GetCause(), pi.GetMask(), mem_r16(0xCC00401Eu),
+                ppc.spr[SPR_SRR0], ppc.spr[SPR_SRR1], ppc.spr[SPR_LR], ppc.gpr[4], ppc.gpr[29],
+                mem_r32(0x800000C4u), mem_r32(0x800000C8u), mem_r32(0x800000E4u));
+            sunbright_dump_pc_ring(stderr);
+            sunbright_park("spurious MEM-interrupt dispatch");
+        }
+        // DSP-handler step diag (temporary, surgical): print fetched opcode + HLE hook state at
+        // the exact derail site 803378a8/803378ac (straight-line code cannot jump; either the
+        // fetch differs from RAM or an HLE hook fires).
+        if (ppc.pc == 0x803378a8u || ppc.pc == 0x803378acu) {
+            static long hits = 0;
+            if (hits++ < 16) {
+                auto& sysd = Core::System::GetInstance();
+                const u32 op = sysd.GetMMU().Read_Opcode(ppc.pc);
+                const u32 hook = HLE::GetHookByFunctionAddress(sysd.GetPPCSymbolDB(), ppc.pc);
+                fprintf(stderr, "[dspdiag] pc=%08x fetched=%08x ram=%08x hle_hook=%u lr=%08x npc=%08x\n",
+                        ppc.pc, op, mem_r32(ppc.pc), hook, ppc.spr[SPR_LR], ppc.npc);
+            }
+        }
+        // Poisoned-entry trap: a function entered with LR == its own address returns to itself —
+        // the __DSPHandler self-loop signature. Catch it AT entry so the ring shows the poisoner.
+        if ((ppc.pc == 0x80337880u || ppc.pc == 0x80352ae4u || ppc.pc == 0x80353018u) &&
+            ppc.spr[SPR_LR] == ppc.pc) {
+            fprintf(stderr, "\n[interp] TRAP: handler %08x entered with LR == its own address "
+                    "(r1=%08x ctr=%08x ret=%08x)\n", ppc.pc, ppc.gpr[1], ppc.spr[SPR_CTR], ret);
+            sunbright_dump_pc_ring(stderr);
+            sunbright_park("poisoned handler entry (LR == pc)");
+        }
         os_sync_watch(ppc.pc, ppc.gpr[3], ppc.gpr[4], ppc.spr[SPR_LR]);
         if ((n & 0xFFFF) == 0) g_interp_pc_hist[ppc.pc]++;   // spin-locator sample (~every 64K steps)
+        // Native external-interrupt delivery (completes the PC-native port of the GC interrupt
+        // path): when an external IRQ is pending and the guest's EE is on, dispatch it natively
+        // HERE — never let SingleStep vector through 0x80000500 into the guest
+        // ExternalInterruptHandler/__OSDispatchInterrupt/OSLoadContext machinery (retired; its
+        // re-entrancy under the hybrid produced the OSError-15 corruption class). sc/DSI/program
+        // exceptions still vector normally — they are synchronous and self-contained.
+        if ((ppc.Exceptions & 0x00000004u /*EXCEPTION_EXTERNAL_INT*/) && (ppc.msr.Hex & 0x8000u) &&
+            !in_native_dispatch()) {
+            const u32 resume_pc = ppc.pc, resume_npc = ppc.npc;
+            native_dispatch_pending();
+            ppc.pc = resume_pc; ppc.npc = resume_npc;   // continue exactly where the body was
+            continue;
+        }
         prev_pc = ppc.pc;
+        sb_ring_push(ppc.pc);
         interp.SingleStep();
         if (g_probe_enabled) g_probe.interp_steps.fetch_add(1, std::memory_order_relaxed);
     }
@@ -587,6 +743,147 @@ static u32 sunbright_idle_spin_pc() {
     mem_w32(cached, 0x48000000u);   // b .
     return cached;
 }
+// ─── Native __OSDispatchInterrupt — PC-native port of OSInterrupt.c (doldecomp/sms) ────────────
+// The GC external-interrupt path (vector page 0x500 → ExternalInterruptHandler context save on the
+// interrupt stack → __OSDispatchInterrupt MMIO cause walk → handler → __OSReschedule →
+// OSLoadContext rfi) is single-threaded, non-reentrant guest machinery. Stepping it under the
+// interpreter while our runtime owns threading/idle repeatedly produced impossible states (nested
+// dispatch, scrambled interrupt index → spurious MEMIntrruptHandler → OSError 15 → JUTException
+// crash screen). This is the behavior port: read Dolphin's live PI cause/mask host-side, build the
+// OS cause word exactly as OSInterrupt.c does (DSP/AI/EXI sub-cause MMIO reads through the bridge),
+// apply the OS mask globals, walk InterruptPrioTable, and CALL the registered guest handler
+// directly (r3=interrupt, r4=current OSContext) via call_ppc — most handlers are recompiled. No
+// vector page, no interrupt stack, no rfi, no nesting. Scheduling glue (OSDisableScheduler /
+// __OSReschedule / OSLoadContext) is owned by nthr and intentionally absent.
+//
+// GMSE01 OS globals (from the dispatch disassembly at 0x80345d84, r13 = 0x804141C0):
+static constexpr u32 OS_INTR_TABLE_PTR = 0x8040E7B0u;  // __OSInterruptHandlerTable → 0x80003040
+static constexpr u32 OS_LAST_INTR      = 0x8040E7B8u;  // u16 __OSLastInterrupt
+static constexpr u32 OS_LAST_SRR0      = 0x8040E7B4u;  // u32 __OSLastInterruptSrr0
+static constexpr u32 OS_LAST_TIME      = 0x8040E7C0u;  // u64 __OSLastInterruptTime
+static constexpr u32 kMask = 0x80000000u;               // OS_INTERRUPTMASK(n) = kMask >> n
+// InterruptPrioTable, verbatim from OSInterrupt.c.
+static const u32 kIntrPrio[] = {
+    (kMask >> 23),                                   // PI_ERROR
+    (kMask >> 25),                                   // PI_DEBUG
+    0xF8000000u,                                     // MEM (0..4)
+    (kMask >> 22),                                   // PI_RSW
+    (kMask >> 24),                                   // PI_VI
+    (kMask >> 18) | (kMask >> 19),                   // PI_PE (TOKEN|FINISH)
+    (kMask >> 26),                                   // PI_HSP
+    (kMask >> 6) | (kMask >> 7) | (kMask >> 8)       // DSP_ARAM | DSP_DSP | AI
+        | 0x007F8000u                                // EXI (9..16)
+        | (kMask >> 20) | (kMask >> 21),             // PI_SI | PI_DI
+    (kMask >> 5),                                    // DSP_AI
+    (kMask >> 17),                                   // PI_CP
+    0xFFFFFFFFu,
+};
+
+// Dispatch ONE pending interrupt natively. Returns true if a handler ran (call again — more cause
+// bits may remain), false when nothing is dispatchable (no PI cause, PI-masked, or OS-masked).
+static thread_local bool t_in_native_dispatch = false;  // a handler's own bridge reads can poll-fire
+static bool in_native_dispatch() { return t_in_native_dispatch; }
+static bool native_dispatch_one() {
+    if (t_in_native_dispatch) return false;
+    auto& sys = Core::System::GetInstance();
+    auto& pi  = sys.GetProcessorInterface();
+    const u32 intsr = pi.GetCause() & ~0x00010000u;   // drop the RSWST status bit, like the OS
+    const u32 intmsk = pi.GetMask();
+    if (intsr == 0 || (intsr & intmsk) == 0) return false;
+
+    u32 cause = 0;
+    // intsr & 0x80 (MEM) deliberately unhandled: Dolphin never raises it (see the MEM trap above).
+    if (intsr & 0x40) {                                // DSP
+        const u16 r = mem_r16(0xCC00500Au);            // __DSPRegs[5] (DSP CSR)
+        if (r & 0x08) cause |= kMask >> 5;             // DSP_AI
+        if (r & 0x20) cause |= kMask >> 6;             // DSP_ARAM
+        if (r & 0x80) cause |= kMask >> 7;             // DSP_DSP
+    }
+    if (intsr & 0x20) {                                // AI
+        const u32 r = mem_r32(0xCC006C00u);            // __AIRegs[0]
+        if (r & 0x08) cause |= kMask >> 8;             // AI_AI
+    }
+    if (intsr & 0x10) {                                // EXI
+        u32 r = mem_r32(0xCC006800u);                  // __EXIRegs[0]
+        if (r & 0x002) cause |= kMask >> 9;
+        if (r & 0x008) cause |= kMask >> 10;
+        if (r & 0x800) cause |= kMask >> 11;
+        r = mem_r32(0xCC006814u);                      // __EXIRegs[5]
+        if (r & 0x002) cause |= kMask >> 12;
+        if (r & 0x008) cause |= kMask >> 13;
+        if (r & 0x800) cause |= kMask >> 14;
+        r = mem_r32(0xCC006828u);                      // __EXIRegs[10]
+        if (r & 0x002) cause |= kMask >> 15;
+        if (r & 0x008) cause |= kMask >> 16;
+    }
+    if (intsr & 0x2000) cause |= kMask >> 26;          // PI_HSP
+    if (intsr & 0x1000) cause |= kMask >> 25;          // PI_DEBUG
+    if (intsr & 0x0400) cause |= kMask >> 19;          // PI_PE_FINISH
+    if (intsr & 0x0200) cause |= kMask >> 18;          // PI_PE_TOKEN
+    if (intsr & 0x0100) cause |= kMask >> 24;          // PI_VI
+    if (intsr & 0x0008) cause |= kMask >> 20;          // PI_SI
+    if (intsr & 0x0004) cause |= kMask >> 21;          // PI_DI
+    if (intsr & 0x0002) cause |= kMask >> 22;          // PI_RSW
+    if (intsr & 0x0800) cause |= kMask >> 17;          // PI_CP
+    if (intsr & 0x0001) cause |= kMask >> 23;          // PI_ERROR
+
+    const u32 unmasked = cause & ~(mem_r32(0x800000C4u) | mem_r32(0x800000C8u));
+    if (!unmasked) return false;                       // OS-masked: leave it pending, like the OS
+
+    int interrupt = -1;
+    for (const u32* p = kIntrPrio;; ++p)
+        if (unmasked & *p) { interrupt = __builtin_clz(unmasked & *p); break; }
+
+    const u32 table   = mem_r32(OS_INTR_TABLE_PTR);
+    const u32 handler = table ? mem_r32(table + 4u * (u32)interrupt) : 0;
+    if (!handler) {
+        // Faithful OS behavior is to resume and re-take the interrupt; with no handler that is an
+        // IRQ storm. An unmasked cause with no registered handler is a runtime bug — surface it.
+        static long warned = 0;
+        if (warned++ < 8)
+            fprintf(stderr, "[nintr] unmasked interrupt %d (cause=%08x intsr=%08x) has no handler\n",
+                    interrupt, unmasked, intsr);
+        return false;
+    }
+
+    auto& ppc = sys.GetPPCState();
+    if (interrupt > 4) {                               // the OS records only non-MEM dispatches
+        mem_w16(OS_LAST_INTR, (u16)interrupt);
+        mem_w32(OS_LAST_SRR0, ppc.pc);
+        const u64 tb = Core::System::GetInstance().GetSystemTimers().GetFakeTimeBase();
+        mem_w32(OS_LAST_TIME,     (u32)(tb >> 32));
+        mem_w32(OS_LAST_TIME + 4, (u32)tb);
+    }
+
+    // Run the guest handler natively: r3 = interrupt, r4 = current OSContext (what the GC handler
+    // chain would have passed). The register file seeds from the live ppc so r2/r13 (SDA bases)
+    // are valid for OS code; call_ppc returns when the handler blr's.
+    t_in_native_dispatch = true;
+    static const bool dbg_nintr = getenv("SUNBRIGHT_DBG_IDLE") != nullptr;
+    if (dbg_nintr) {
+        static long d = 0;
+        if (d++ < 256)
+            fprintf(stderr, "[nintr] dispatch intr=%d handler=%08x (cause=%08x unmasked=%08x) r1=%08x\n",
+                    interrupt, handler, cause, unmasked, ppc.gpr[1]);
+    }
+    CPUState cpu;
+    dolphin_state_to_cpu(ppc, cpu);
+    cpu.gpr[3] = (u32)interrupt;
+    cpu.gpr[4] = mem_r32(0x800000D4u);
+    cpu.lr     = sunbright_idle_spin_pc();             // interp ret sentinel if the handler isn't recomp
+    call_ppc(cpu, handler);
+    t_in_native_dispatch = false;
+    return true;
+}
+
+// Deliver every currently-dispatchable interrupt natively. Bounded: each handler acks its device
+// (dropping the PI cause bit); 16 rounds covers every simultaneous source with room to spare.
+static int native_dispatch_pending() {
+    int n = 0;
+    while (n < 16 && native_dispatch_one()) n++;
+    return n;
+}
+
 void sunbright_poll_yield() {
     if (g_probe_enabled) g_probe.poll_yield.fetch_add(1, std::memory_order_relaxed);
     auto& sys = Core::System::GetInstance();
@@ -607,15 +904,14 @@ void sunbright_poll_yield() {
     // wait_vi_field already does this (it has the cpu in hand); poll_yield was the missing case.
     if (g_cur_recomp_cpu) cpu_to_dolphin_state(*g_cur_recomp_cpu, ppc);
     ppc.pc = ppc.npc = idle_pc;
-    ppc.msr.Hex |= 0x8000u;
-    ct.Idle();                                  // fast-forward to the next scheduled device event
-    ct.Advance();                               // process it — a device callback raises a pending IRQ
-    sys.GetPowerPC().CheckExceptions();         // …which Advance does NOT deliver: vector pc to the ISR
-    if (getenv("SUNBRIGHT_DBG_YIELD") && ppc.pc != idle_pc)
-        fprintf(stderr, "[yield] IRQ delivered pc=%08x ppc.r1=%08x recomp.r1=%08x\n",
-                ppc.pc, ppc.gpr[1], g_cur_recomp_cpu ? g_cur_recomp_cpu->gpr[1] : 0xDEADu);
-    if (ppc.pc != idle_pc)                      // an interrupt was delivered → run its handler
-        interp_run_until(idle_pc, 5'000'000);   // ISR sets the polled flag / calls OSWakeupThread, rfi's back
+    ppc.msr.Hex &= ~0x8000u;                    // EE off: Advance must only make IRQs PENDING —
+    ct.Idle();                                  // delivery is native, never the guest vector path.
+    ct.Advance();                               // device callback raises the pending IRQ…
+    const int delivered = native_dispatch_pending();   // …dispatched natively (handlers via call_ppc)
+    if (getenv("SUNBRIGHT_DBG_YIELD") && delivered) {
+        static long y = 0;
+        if (y++ < 64) fprintf(stderr, "[yield] %d IRQ(s) dispatched natively\n", delivered);
+    }
     ppc.msr.Hex = saved_msr;
     ppc.pc = saved_pc; ppc.npc = saved_npc;
 }
@@ -804,6 +1100,17 @@ struct GuestRuntime {
     u32 os_thread = 0;       // guest OSThread*
     u32 entry = 0, param = 0, stack = 0;
     bool is_thread0 = false;
+    // Exception-window state, also NOT in CPUState. A thread parked while inside an exception /
+    // interrupt-dispatch window (its interp frame suspended mid-ISR) must get ITS OWN SRR0/SRR1
+    // and exact npc back on resume — with the global ppc shared, another thread's dispatch
+    // overwrites them, and this thread's eventual `rfi` then jumps to a FOREIGN srr0 (observed:
+    // "returns" into the middle of an unrelated function whose prologue never ran → epilogue
+    // loads a never-written LR slot → blr to 0; also the scrambled __OSDispatchInterrupt →
+    // spurious OSError 15 → JUTException crash-screen livelock). The lwarx reservation travels
+    // for the same reason. 2026-06-10.
+    u32 saved_srr0 = 0, saved_srr1 = 0, saved_npc = 0;
+    bool saved_reserve = false;
+    u32 saved_reserve_addr = 0;
 };
 
 std::unordered_map<u32, nthr::GuestThread*> g_os_to_gt;   // guest OSThread* -> nthr thread
@@ -820,6 +1127,11 @@ static void nthr_ctx_save(nthr::GuestThread* t) {
     auto& ppc = Core::System::GetInstance().GetPPCState();
     dolphin_state_to_cpu(ppc, gr->ctx);
     gr->saved_msr = ppc.msr.Hex;   // MSR is NOT in ctx — save it per thread (critical-section EE bit)
+    gr->saved_srr0 = ppc.spr[SPR_SRR0];   // exception-window state: see GuestRuntime comment
+    gr->saved_srr1 = ppc.spr[SPR_SRR1];
+    gr->saved_npc  = ppc.npc;
+    gr->saved_reserve      = ppc.reserve;
+    gr->saved_reserve_addr = ppc.reserve_address;
     // The running thread's OSThread* is authoritative in 0x800000E4 (it set it). Capture it so the
     // restore hook writes the right current-thread pointer back (thread 0's identity isn't known
     // until boot installs it, after adoption). No map/lock here — the hooks run under nthr's lock.
@@ -837,6 +1149,14 @@ static void nthr_ctx_restore(nthr::GuestThread* t) {
     cpu_to_dolphin_state(gr->ctx, sys.GetPPCState());
     sys.GetPPCState().msr.Hex = gr->saved_msr;   // restore this thread's MSR (EE/critical-section)
     sys.GetPowerPC().MSRUpdated();                // keep Dolphin's derived MSR flags coherent
+    {   // exception-window state back (SRR0/SRR1/npc/reservation — see GuestRuntime comment)
+        auto& p2 = sys.GetPPCState();
+        p2.spr[SPR_SRR0] = gr->saved_srr0;
+        p2.spr[SPR_SRR1] = gr->saved_srr1;
+        if (gr->saved_npc) p2.npc = gr->saved_npc;
+        p2.reserve         = gr->saved_reserve;
+        p2.reserve_address = gr->saved_reserve_addr;
+    }
     // We own the current-thread pointer now (the GC scheduler that maintained it is never run),
     // so make OSGetCurrentThread coherent with whoever is about to run. The current-CONTEXT
     // globals (0x800000D4 virtual / 0x800000C0 physical — what OSSetCurrentContext maintains)
@@ -926,25 +1246,26 @@ static bool idle_run(long max_steps) {
                 ct.GetScheduledEventsSummary().c_str()); }
     for (; n < max_steps; n++) {
         if (nthr::ready_count() > 0) break;
-        ppc.msr.Hex = IDLE_MSR;                     // keep EE on at the spin (the ISR's rfi may clear it)
+        ppc.msr.Hex = IDLE_MSR & ~0x8000u;          // EE OFF at the spin: IRQs become pending only —
         // Skip straight to the next scheduled device event instead of burning one SingleStep per
         // guest cycle (that capped the whole emulator at ~0.06×). Idle()+Advance() DOES move the
         // global timer now: charge_guest_time keeps the downcount/slice bookkeeping primed outside
         // the JIT loop (the old "ticks +0" failure was unprimed slices, not a CoreTiming property).
-        // Advance's CheckExternalExceptions delivers any pending IRQ here — EE is on and we're
-        // parked at the recoverable idle spin, which is exactly where delivery belongs.
+        // delivery is NATIVE (native_dispatch_pending), never the guest 0x500 vector → dispatcher →
+        // OSLoadContext chain. Stepping that chain under the interpreter is what produced the
+        // nested-dispatch corruption (spurious MEMIntrruptHandler → OSError 15, 2026-06-10).
         ct.Idle();
         ct.Advance();
-        if (ppc.pc == idle_pc) interp.SingleStep(); // no event fired an IRQ: nudge one step anyway
-        if (ppc.pc != idle_pc) {                    // an interrupt vectored us into the ISR
-            if (dbg) {
-                static long v = 0;
-                if (v++ < 64)
-                    fprintf(stderr, "[idle] IRQ vectored pc=%08x srr0=%08x ctx_c0=%08x ctx_d4=%08x cur_e4=%08x\n",
-                            ppc.pc, ppc.spr[SPR_SRR0], mem_r32(0x800000C0u), mem_r32(0x800000D4u),
-                            mem_r32(OS_CURRENT_THREAD));
-            }
-            interp_run_until(idle_pc, 5'000'000);   // run it to completion (native_os routes OSWakeupThread)
+        const int delivered = native_dispatch_pending();
+        if (delivered && dbg) {
+            static long v = 0;
+            if (v++ < 64)
+                fprintf(stderr, "[idle] %d IRQ(s) dispatched natively, ready=%d\n",
+                        delivered, nthr::ready_count());
+        }
+        if (!delivered && ppc.pc == idle_pc) {      // no event fired an IRQ: nudge one step anyway
+            sb_ring_push(ppc.pc);
+            interp.SingleStep();
         }
     }
     const bool woke = nthr::ready_count() > 0;

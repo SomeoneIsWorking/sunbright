@@ -1,4 +1,5 @@
 #include "native_threads.h"
+#include "watchdog.h"
 
 #include <atomic>
 #include <condition_variable>
@@ -36,6 +37,7 @@ std::mutex                 g_mtx;            // guards the token and the registr
 std::condition_variable    g_idle_cv;       // run_and_wait() parks here while a thread runs
 std::vector<GuestThread*>  g_threads;
 GuestThread*               g_running = nullptr;   // the token holder (null ⇒ scheduler idle)
+thread_local GuestThread*  t_self    = nullptr;   // THIS host thread's GuestThread (identity)
 uint64_t                   g_seq = 0;
 
 void (*g_save_hook)(GuestThread*)    = nullptr;   // called on the thread giving up the token
@@ -95,6 +97,7 @@ void grant_token_locked(std::unique_lock<std::mutex>& lk, GuestThread* outgoing)
 // Body trampoline for every host thread: wait for the token, run the body, then die and
 // hand the token on. Never reacquires the token after the body returns.
 void thread_main(GuestThread* self) {
+    t_self = self;                                 // host-thread identity, never changes
     std::unique_lock<std::mutex> lk(g_mtx);
     while (g_running != self) self->cv.wait(lk);   // restore_hook already ran for us
     lk.unlock();
@@ -109,6 +112,12 @@ void thread_main(GuestThread* self) {
 }  // namespace
 
 GuestThread* current()                   { return g_running; }
+// True iff the CALLING host thread may legitimately run guest code right now: it holds the token,
+// or nthr isn't driving yet (early boot, before adoption), or the scheduler is idle (the idle-hook
+// context runs guest ISRs with g_running == nullptr). Diagnostic for the interpreter entry guard.
+bool self_may_run_guest() {
+    return g_threads.empty() || g_running == nullptr || g_running == t_self;
+}
 int          priority_of(GuestThread* t) { return t->prio; }
 void*&       user_slot(GuestThread* t)   { return t->user; }
 
@@ -146,12 +155,29 @@ GuestThread* adopt_current(int priority) {
     gt->ready_seq = g_seq++;
     g_threads.push_back(gt);
     g_running = gt;                   // the calling thread holds the token immediately
+    t_self    = gt;                   // host-thread identity for block()/yield paths
     return gt;
 }
 
 void block(State newState) {
     std::unique_lock<std::mutex> lk(g_mtx);
-    GuestThread* self = g_running;
+    // Identity MUST be the calling host thread, never "whoever holds the token": with the old
+    // `self = g_running`, a non-holder calling block() (e.g. guest code run from the idle hook
+    // after the token was re-picked underneath it) blocked the WRONG GuestThread and waited on
+    // that thread's condvar — when the token later reached that thread, BOTH host threads woke
+    // and ran concurrently, racing the shared interpreter/ppc state (the spurious-MEM-dispatch /
+    // OSError-15 corruption class, 2026-06-10).
+    GuestThread* self = t_self;
+    if (!self || self != g_running) {
+        fprintf(stderr,
+            "\n[nthr] FATAL: block(%d) by a host thread that does not hold the token "
+            "(self=%p running=%p). Guest code that can sleep must never run from a non-holder "
+            "context (idle hook / interrupt dispatch).\n",
+            (int)newState, (void*)self, (void*)g_running);
+        fflush(stderr);
+        lk.unlock();
+        sunbright_park("nthr block() without token");
+    }
     self->state     = newState;
     self->ready_seq = g_seq++;            // back of the FIFO (round-robin for Ready)
     grant_token_locked(lk, self);        // save our ctx, hand the token to the next thread

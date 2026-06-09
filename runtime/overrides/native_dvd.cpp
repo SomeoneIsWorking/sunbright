@@ -124,6 +124,12 @@ void sunbright_native_dvd_set_path(const char* path) {
     if (path) g_disc_path = path;
 }
 
+// Host-side disc read for other native services (the ARAM ripper). Same volume, same raw bytes.
+bool sunbright_disc_read(u64 offset, u64 length, u8* out) {
+    DiscIO::Volume* v = volume();
+    return v && v->Read(offset, length, out, v->GetGamePartition());
+}
+
 void native_dvd_register() {
     native_os_register(0x8034da6cu, native_dvd_read_abs_async);   // DVDReadAbsAsyncPrio
     fprintf(stderr, "[native_dvd] registered native DVD read service (DVDReadAbsAsyncPrio 8034da6c)\n");

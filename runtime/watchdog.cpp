@@ -42,6 +42,8 @@ std::atomic<int> g_bt_n{0};
 std::atomic<bool> g_force_dump{false};
 void wd_sigquit(int) { g_force_dump.store(true); }
 
+std::atomic<bool> g_parked{false};            // a thread parked deliberately (see sunbright_park)
+
 #ifdef HAVE_DOLPHIN_CORE
 Common::EventHook g_field_hook;               // kept alive to stay subscribed
 #endif
@@ -203,6 +205,7 @@ void watchdog_loop(int timeout_sec) {
             if (selftest && !selftest_done) { selftest_done = true; dump_freeze(timeout_sec); }
             continue;
         }
+        if (g_parked.load()) continue;                 // deliberate diagnostic park — not a freeze
         if (!armed) continue;                          // core hasn't started yet — don't fire pre-boot
         const int limit = first_field ? timeout_sec : boot_grace;
         if (++stalled >= limit && !fired) {            // one dump per freeze episode
@@ -221,6 +224,17 @@ void watchdog_loop(int timeout_sec) {
 }
 
 }  // namespace
+
+[[noreturn]] void sunbright_park(const char* reason) {
+    g_parked.store(true);
+    std::fprintf(stderr, "[sunbright] PARKED (%s) — process held CPU-idle for REPL inspection "
+                         "(http://127.0.0.1:17654 if SUNBRIGHT_PROBE=1); kill when done.\n",
+                 reason ? reason : "diagnostic");
+    std::fflush(stderr);
+    struct rlimit no_core{0, 0};               // a later manual kill must not dump the multi-GB core
+    setrlimit(RLIMIT_CORE, &no_core);
+    for (;;) sleep(3600);
+}
 
 void watchdog_register_emu_thread() {
     if (g_emu_recorded.load(std::memory_order_relaxed)) return;
