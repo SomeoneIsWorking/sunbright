@@ -97,11 +97,17 @@ Useful env vars:
 - `SUNBRIGHT_WIDESCREEN=0` — disable 16:9 (default on: `GFX_ASPECT_RATIO=ForceWide` + `GFX_WIDESCREEN_HACK`; the hack widens the 3D projection so 4:3 SMS isn't stretched)
 - `SUNBRIGHT_DISABLE_RECOMP=1` — force everything through Dolphin's JIT (A/B control)
 - `SUNBRIGHT_TRACE=1` — log every recompiled function entry (very verbose)
-- `SUNBRIGHT_PROBE=1` — built-in HTTP/JSON perf probe at `http://127.0.0.1:17654/metrics`
-  (`SUNBRIGHT_PROBE_PORT` overrides). `curl` it to read live emulation speed (Dolphin
-  `GetSpeed/VPS/FPS`), the recomp-vs-interpreter call mix, interpreter step rate + its share of
-  wall time (`interp_wall_frac`), poll-yields. This is how you measure **headlessly** — run the
+- `SUNBRIGHT_PROBE=1` — built-in HTTP/JSON perf probe + **interactive REPL** at
+  `http://127.0.0.1:17654` (`SUNBRIGHT_PROBE_PORT` overrides). `curl` it to read live emulation speed
+  (Dolphin `GetSpeed/VPS/FPS`), the recomp-vs-interpreter call mix, interpreter step rate + its share
+  of wall time (`interp_wall_frac`), poll-yields. This is how you measure **headlessly** — run the
   game in the background and probe it (`runtime/probe_server.cpp`).
+  **REPL endpoints (prefer these over adding env-gated `fprintf` logs + rebuilds):**
+  `/metrics` (perf JSON) · `/r?a=HEX&n=N` (read N guest words) · `/fn?a=HEX` (addr→nearest function
+  name, from `reference/sms_gmse01_funcs.txt`) · `/stack?sp=HEX` (walk a guest back-chain, each LR
+  named) · `/cur` (current OSThread + saved srr0/lr/sp/prio) · `/help`. Walk the GC active-thread
+  queue with `/r?a=800000d8` (head@DC, tail@E0, current@E4; OSThread.link.next @+0x2FC), then inspect
+  each thread's context (`+0x198`=srr0, `+0x84`=lr, `+0x4`=sp, `+0x2c8`=state, `+0x2d0`=prio).
 Graphics config is applied in `main_sdl.cpp` via `Config::SetBase` (GFX_EFB_SCALE,
 GFX_ASPECT_RATIO, GFX_WIDESCREEN_HACK) before boot.
 

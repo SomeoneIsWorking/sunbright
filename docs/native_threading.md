@@ -69,14 +69,18 @@
 > stays JIT-only; no recompile. VERIFIED: the run_jit_sync spin is gone, audio init completes, boot runs
 > the full headless duration with no FATAL.
 >
-> **NEW frontier (2026-06-09) — ISI exception at 0x00000000 (NULL branch) after audio init.** With audio
-> init completing, a guest `bl/bctr` through a NULL pointer fires (`Jit64: ISI exception at 0x00000000`),
-> waking the GC exception reporter — a thread is now spinning in `JUTException::waitTime` (802c79f0,
-> calling `__div2i`) i.e. the crash-report delay loop. So the game hit a null function-pointer/vtable
-> call somewhere downstream of audio init (likely an engine callback/vtable not set up under native
-> scheduling/ordering). Next: capture the faulting context (which thread, the call site of the NULL
-> branch) — the JUTException report has PC+regs. NOTE: per user directive, prefer an interactive REPL to
-> inspect guest state over adding new env-gated logs.
+> **NEW frontier (2026-06-09) — ISI/panic after audio init, in TMarDirector teardown.** With audio init
+> completing, the boot fails (`Jit64: ISI exception at 0x00000000` + an OS panic) and the GC exception
+> reporter runs: the faulting thread is **thread0** (80402aa8), now spinning in `JUTException::readPad`
+> →`waitTime`→`__div2i` (the crash-report input/delay loop, speed collapses to ~0.06×). Located with the
+> REPL (curl `/cur`, `/stack?sp=<thread0 sp>`): thread0's stack is `OSExitThread←JKRThread::ct←
+> JUTException::run(802c6730)←__dt__12TMarDirector+0xb8 (8029d070)`. So `TMarDirector::~TMarDirector`
+> (entry 8029cfb8) reached the JUTException path (its `bl 802c79a8` at +0xb4) — i.e. the main game
+> Director is being TORN DOWN during boot and/or hit an assert. Next (use the REPL, not env logs): read
+> the JUTException saved fault context for the real null-branch PC/LR; determine WHY TMarDirector is
+> destructing during boot (an earlier failed init it's unwinding?) — likely another native-scheduling
+> ordering/`OSReceiveMessage`-shaped dependency exposed now that audio init runs. Tools: REPL endpoints
+> (see CLAUDE.md), `sunbright-recomp --disasm`.
 >
 > **(superseded sub-note) DETERMINISTIC null archive (heap-not-ready / thread ORDERING, not a race).**
 > A thread crashes with a null `this` in `JKRMemArchive::mountFixed` ⇒ `new JKRMemArchive` returned

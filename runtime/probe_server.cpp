@@ -25,7 +25,111 @@
 ProbeCounters g_probe;
 bool g_probe_enabled = false;
 
+#ifdef HAVE_DOLPHIN_CORE
+#  include <vector>
+#  include <algorithm>
+#  include <fstream>
+extern u32 mem_r32(u32 ea);
+#endif
+
 namespace {
+
+#ifdef HAVE_DOLPHIN_CORE
+// ── REPL: interactive guest-state inspection (curl the endpoints; no rebuild/env-log cycle) ──
+// Symbol map (reference/sms_gmse01_funcs.txt: "ADDR name" per line), loaded once for addr→name.
+std::vector<std::pair<u32, std::string>>& symtab() {
+    static std::vector<std::pair<u32, std::string>> t;
+    static bool loaded = false;
+    if (!loaded) {
+        loaded = true;
+        const char* path = getenv("SUNBRIGHT_SYMBOLS");
+        std::ifstream f(path ? path : "reference/sms_gmse01_funcs.txt");
+        std::string line;
+        while (std::getline(f, line)) {
+            char* end = nullptr;
+            unsigned long a = strtoul(line.c_str(), &end, 16);
+            if (end == line.c_str() || !end) continue;
+            while (*end == ' ' || *end == '\t') end++;
+            if (a) t.emplace_back((u32)a, std::string(end));
+        }
+        std::sort(t.begin(), t.end());
+        fprintf(stderr, "[probe/repl] loaded %zu symbols\n", t.size());
+    }
+    return t;
+}
+// Nearest function entry at or below `a` → "name+0xNN" (or raw hex if no map).
+std::string sym(u32 a) {
+    auto& t = symtab();
+    if (t.empty() || a < t.front().first) { char b[16]; snprintf(b, sizeof b, "%08x", a); return b; }
+    auto it = std::upper_bound(t.begin(), t.end(), a,
+        [](u32 v, const std::pair<u32,std::string>& p){ return v < p.first; });
+    --it;
+    char b[256]; snprintf(b, sizeof b, "%s+0x%x", it->second.c_str(), a - it->first);
+    return b;
+}
+u32 qarg(const char* path, const char* key, u32 def) {
+    std::string pat = std::string(key) + "=";
+    const char* p = strstr(path, pat.c_str());
+    if (!p) return def;
+    return (u32)strtoul(p + pat.size(), nullptr, 16);
+}
+
+// REPL request handler. Returns the response body for any /repl path; empty string = not a REPL path.
+std::string handle_repl(const char* path) {
+    char buf[8192]; int n = 0;
+    auto app = [&](const char* fmt, auto... a){ if (n < (int)sizeof buf) n += snprintf(buf+n, sizeof buf-n, fmt, a...); };
+
+    if (strncmp(path, "/r?", 3) == 0 || strncmp(path, "/r ", 3) == 0) {
+        u32 a = qarg(path, "a", 0), cnt = qarg(path, "n", 8);
+        if (cnt > 256) cnt = 256;
+        for (u32 i = 0; i < cnt; i++) {
+            if ((i & 3) == 0) app("%08x:", a + i*4);
+            app(" %08x", mem_r32(a + i*4));
+            if ((i & 3) == 3) app("\n");
+        }
+        if (cnt & 3) app("\n");
+        return std::string(buf, n);
+    }
+    if (strncmp(path, "/fn?", 4) == 0) {
+        u32 a = qarg(path, "a", 0);
+        app("%08x  %s\n", a, sym(a).c_str());
+        return std::string(buf, n);
+    }
+    if (strncmp(path, "/stack?", 7) == 0) {
+        u32 fp = qarg(path, "sp", 0);
+        app("guest stack from sp=%08x (back-chain + saved LR):\n", fp);
+        for (int i = 0; i < 24 && fp >= 0x80000000u && fp < 0x81800000u; i++) {
+            u32 lr = mem_r32(fp + 4);
+            app("  [%2d] lr=%08x  %s\n", i, lr, sym(lr).c_str());
+            u32 nx = mem_r32(fp);
+            if (nx <= fp || nx < 0x80000000u || nx >= 0x81800000u) break;
+            fp = nx;
+        }
+        return std::string(buf, n);
+    }
+    if (strncmp(path, "/cur", 4) == 0) {
+        u32 cur = mem_r32(0x800000E4u);
+        app("OS_CURRENT_THREAD = %08x\n", cur);
+        if (cur >= 0x80000000u && cur < 0x81800000u) {
+            // OSThread/OSContext: srr0 @ +0x198, lr @ +0x84, gpr1(sp) @ +0x4, state @ +0x2c8, prio @ +0x2d0
+            u32 srr0 = mem_r32(cur + 0x198), lr = mem_r32(cur + 0x84), sp = mem_r32(cur + 0x4);
+            app("  srr0=%08x  %s\n", srr0, sym(srr0).c_str());
+            app("  lr  =%08x  %s\n", lr, sym(lr).c_str());
+            app("  sp  =%08x  state=%u prio=%d\n", sp, mem_r32(cur + 0x2c8) & 0xffff, (int)mem_r32(cur + 0x2d0));
+        }
+        return std::string(buf, n);
+    }
+    if (strncmp(path, "/help", 5) == 0 || strcmp(path, "/") == 0) {
+        return "sunbright REPL (curl http://127.0.0.1:17654<path>):\n"
+               "  /metrics            perf counters (JSON)\n"
+               "  /r?a=HEX&n=N        read N words at guest addr (default 8)\n"
+               "  /fn?a=HEX           resolve addr -> nearest function name\n"
+               "  /stack?sp=HEX       walk guest back-chain LRs from sp, named\n"
+               "  /cur                current OSThread + saved srr0/lr/sp/prio\n";
+    }
+    return std::string();
+}
+#endif
 
 using clock_t_ = std::chrono::steady_clock;
 
@@ -117,12 +221,20 @@ std::string build_metrics() {
 }
 
 void serve_conn(int fd) {
-    // Drain the request headers (we only ever answer /metrics, so we don't parse the verb/path
-    // beyond reading to the blank line so the client's write completes).
-    char req[1024];
-    (void)recv(fd, req, sizeof req, 0);
+    char req[1024] = {0};
+    (void)recv(fd, req, sizeof req - 1, 0);
 
-    const std::string body = build_metrics();
+    // Parse "GET <path> HTTP/1.1" → route. /metrics (default) + the REPL inspection endpoints.
+    std::string body;
+    char path[512] = "/metrics";
+    if (sscanf(req, "%*s %511s", path) == 1) {}
+#ifdef HAVE_DOLPHIN_CORE
+    if (strncmp(path, "/metrics", 8) != 0) {
+        body = handle_repl(path);
+        if (body.empty()) body = "unknown path; try /help\n";
+    } else
+#endif
+        body = build_metrics();
     char hdr[256];
     int hn = snprintf(hdr, sizeof hdr,
         "HTTP/1.1 200 OK\r\n"
