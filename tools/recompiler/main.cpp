@@ -288,6 +288,15 @@ static int recompile_mode(const DiscLoader& disc, const DOL& dol, const std::str
             0x8031a50cu,  // JAudio leaf (18.5%)
             0x8030fe50u,  // JAudio leaf (10.9%)
             0x80313ddcu,  // JAudio region (9.2%)
+            // 3rd wave: the JASystem audio THREAD ENTRIES themselves (OSCreateThread targets — real
+            // prologues, preceded by blr). Without these the audio thread runs its WHOLE life under
+            // the interpreter (guest_thread_body falls to interp_run_until when the entry isn't a
+            // recomp func), where the general-table TTrack-tick override (ttrack_tick_native) is NOT
+            // consulted, so the tick spins and the cooperative nthr scheduler never switches to the
+            // renderer → vps=0. Recompiled, the thread runs on the native stack: the override fires
+            // and OS block points yield. (Ref mislabels them portCmdInit+0x278 / TCardManager+0x184.)
+            0x803171ecu,  // JASystem::Kernel audio thread proc
+            0x802b3264u,  // 2nd audio/JASystem thread proc
         };
 
         auto funcs = real_funcs;                       // all recomp ENTRY points = real + discovered
@@ -322,6 +331,7 @@ static int recompile_mode(const DiscLoader& disc, const DOL& dol, const std::str
                 // mode doesn't truncate them mid-body into a JIT bounce (defeats the purpose).
                 0x8031d83cu, 0x8001fa88u, 0x80316ffcu, 0x803121acu, 0x8031a2ecu,
                 0x803399ccu, 0x8031a50cu, 0x8030fe50u, 0x80313ddcu,
+                0x803171ecu, 0x802b3264u,   // audio thread procs (3rd wave)
             };
 
             // Collection (linear-truncate vs full-CFG) is extracted to func_collect.{h,cpp} and
