@@ -425,6 +425,15 @@
 >    exact point r31 diverges in ppc — likely a recomp block exits without flushing r31 to ppc, or a JIT
 >    block runs before a recomp store of r31 commits.
 >
+> NEW FRONTIER (2026-06-09, after the GXDrawDone native port) — boot no longer deadlocks (runs the
+> full RUN_SECONDS, no FATAL, no freeze) but presents ~0 VI fields (vps=0). A JASystem audio Kernel
+> thread (entry 803171ec portCmdInit) runs under the INTERPRETER and spins ~30M interp-steps/s
+> (pc cycles 8031b9fc/803212a4/8031d300/… — audio cmd loop), hogging the cooperative nthr token and
+> starving the render thread → no frames. interp_wall_frac is low (~0.036) so it is not a wall-time
+> hog, it is a SCHEDULER-fairness/yield issue: the interp audio thread rarely hits a native block
+> point so nthr never switches to the renderer. NEXT: get that audio thread off the interpreter
+> (recompile its JIT-only entry / port it) OR make it yield, like [[blocking-call-interp-spin]].
+>
 > NEW FRONTIER (2026-06-09, after the recompiler jump-table fix landed) — boot now renders **7 VI
 > fields** then DEADLOCKS: the main thread parks in **GXDrawDone (8035dae8)** via
 > func_802a5f50→THPPlayerDrawDone(8001e920)→GXDrawDone→OSSleepThread, waiting for the GPU draw-done
