@@ -385,6 +385,28 @@
 > object `[r13-24360]`=80427820 and installs it as current, and confirm via A/B that under native it is
 > null/late at the moment 802a6dd0 runs; then enforce that ordering (condvar/sequential) at that seam.
 >
+> CORRECTION (2026-06-09, via SUNBRIGHT_FATAL_HOLD REPL inspection) — the heap-race hypothesis above is
+> **WRONG**. New tool: `SUNBRIGHT_FATAL_HOLD=1` (+ `SUNBRIGHT_WATCHDOG=0`) parks the process at the fault
+> instead of aborting, so the SUNBRIGHT_PROBE REPL stays up and you read guest state at the crash via /r
+> (memory_bridge.cpp fatal_hold_or_abort). At the native fault ALL of these match Dolphin and are healthy:
+> currentHeap[8040e290]=**804278c0**, rootHeap[8040e298]=**80427820**, loadedArchive[8040e194]=**8131f0e0**,
+> disp[this+28=803e971c]=**8056dd90 (VALID)**. Only dir[this+4]=0, state[this+8]=2. Heaps/archive are
+> READY — NOT a heap-ordering race. TWO separate problems:
+> 1) **r31-clobber recomp bug = the actual native crash (802a6338):** fault reads `[r31+28]`=0x28040000 but
+>    MEMORY [803e971c]=8056dd90 is fine ⇒ **r31 (=this) was corrupted by a render-path callee that fails to
+>    restore non-volatile r31.** 802a5f50's render path (6174→6338) calls 802ca1e0×3, GX
+>    803630c8/80363138/8034a4d4/80362c34, [this+52] vtables, 8001e920, endRendering 802f80d0; force_jit of
+>    endRendering moves the crash ⇒ clobberer is in endRendering's subtree. Recompiler register-preservation
+>    bug to bisect (or own that callee). THIS is the concrete next target.
+> 2) **null-director chicken-egg:** scene state machine `802a6398` (loops on [this+8]; jump table @803df424,
+>    states 0..9). Common tail `lbl_802a6644` each iteration: `if(r29==0) call 802a5f50` (DRAW) → director
+>    cleanup → **clears [this+4]=0 @802a667c** → state-2 case `lbl_802a669c` (re)creates the director via
+>    `802a6dd0` IFF pad-gate `[8040e1b8]&(1<<[this+32].f120)`==0 (gate is OPEN under native: padmask=0). So
+>    the DRAW runs BEFORE the director-create in the same frame; first state-2 frame has [this+4]=0, which
+>    Dolphin's draw tolerates but native faults on (issue #1, and the [this+4] deref at 802a6160 seen under
+>    force_jit). "make it sequential / condvar" does NOT apply (no heap race); the real bug is recomp
+>    register preservation in the render path.
+>
 > **(superseded sub-note) DETERMINISTIC null archive (heap-not-ready / thread ORDERING, not a race).**
 > A thread crashes with a null `this` in `JKRMemArchive::mountFixed` ⇒ `new JKRMemArchive` returned
 > NULL (heap alloc failed). The fault regs (r26=803e9700, r5=0xffff) point at the **audio thread

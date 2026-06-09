@@ -193,6 +193,21 @@ static inline u8* ram_ptr(u32 ea) {
 // small displacement, equals the faulting ea — i.e. the corrupted base pointer. Used by
 // BOTH the wild-read and wild-write traps so a bad store names its base register the same
 // way a bad load does (the asymmetry hid that the TBeamManager-ctor crash was `this`≈small).
+// SUNBRIGHT_FATAL_HOLD=1: instead of aborting, print a marker and PARK forever so the process (and
+// the SUNBRIGHT_PROBE REPL) stay alive — lets you inspect guest state at the fault via the REPL
+// (/r, /poll, /stack) without racing a fast crash. Default still aborts (fail-fast). Always skips
+// the multi-GB core dump first (see trap_wild_write).
+[[noreturn]] static void fatal_hold_or_abort() {
+    struct rlimit no_core{0, 0};
+    setrlimit(RLIMIT_CORE, &no_core);
+    if (getenv("SUNBRIGHT_FATAL_HOLD")) {
+        fprintf(stderr, "[sunbright] FATAL_HOLD: parked at fault — inspect via REPL, kill -9 to exit\n");
+        fflush(stderr);
+        for (;;) sleep(3600);
+    }
+    abort();
+}
+
 // Core dump: works off ANY guest register source (recomp CPUState or Dolphin PPCState),
 // so the recomp wild-access traps and the Dolphin-side invalid-access trap share one format.
 static void dump_guest_regs_core(const u32* gpr, u32 lr, u32 ctr, u32 ea) {
@@ -254,9 +269,7 @@ static void dump_guest_regs_naming_base(u32 ea) {
     // dumps this multi-GB process and wedges for minutes (looks like "prints FATAL but
     // never exits"). The backtrace above is what we want; skip the core so abort() exits
     // promptly (exit 134).
-    struct rlimit no_core{0, 0};
-    setrlimit(RLIMIT_CORE, &no_core);
-    abort();
+    fatal_hold_or_abort();
 }
 static inline void check_wild_write(u32 ea, unsigned long long val, int bits) {
     if (ea < 0xC0000000u) trap_wild_write(ea, val, bits);
@@ -299,9 +312,7 @@ static inline void check_wild_read(u32 ea, int bits) {
         return;
     }
     report_wild_read(ea, bits);
-    struct rlimit no_core{0, 0};   // skip the multi-GB core dump (see trap_wild_write)
-    setrlimit(RLIMIT_CORE, &no_core);
-    abort();
+    fatal_hold_or_abort();
 }
 
 // ── Dolphin-side invalid-access trap ─────────────────────────────────────────
@@ -330,9 +341,7 @@ static inline void check_wild_read(u32 ea, int bits) {
     int n = backtrace(bt, 96);
     backtrace_symbols_fd(bt, n, fileno(stderr));
     fflush(stderr);
-    struct rlimit no_core{0, 0};   // skip the multi-GB core dump (see trap_wild_write)
-    setrlimit(RLIMIT_CORE, &no_core);
-    abort();
+    fatal_hold_or_abort();
 }
 
 // ── Byte-swapped reads/writes (GC = big-endian, host = little-endian) ───────
