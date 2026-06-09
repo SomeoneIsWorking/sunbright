@@ -43,12 +43,30 @@ std::vector<PPCInstr> collect_function(const uint8_t* data, uint32_t base, size_
         // handoff, which corrupts state non-deterministically. That cut initAllCheckData
         // at `b 0x801915c4` (its grid-populate loop), so the collision grid base was never
         // stored → NULL TBGCheckList → wild reads in addAfterPreNode/update on level load.
+        //
+        // SECOND truncation class (same symptom): a `blr`/tail EXIT that an EARLIER forward branch
+        // JUMPS OVER is also NOT the function end — e.g. a switch where one case ends in `blr` at X
+        // and a later case is reached via `bc <X+4>`. func_80337ccc (__va_arg): `blr` @80337d14 is
+        // jumped over by `bc 0x80337d18` @80337cf8, so collection stopped at 80337d14 and the rest
+        // (80337d18..) became a mid-function tail_ppc → JIT handoff. Under a recomp `bl` caller that
+        // handoff siglongjmp-unwinds the caller's C frame and drops its non-volatiles (the boot
+        // endRendering→vsnprintf→__va_arg r31 clobber). Fix: track the furthest in-function forward
+        // branch target and only treat an exit as the end when nothing branches past it.
+        uint32_t max_internal_target = faddr;
         for (uint32_t a = faddr; a < fend; a += 4) {
             instrs.push_back(decode(read_word(a), a));
-            if (is_unconditional_branch(instrs.back())) {
-                uint32_t t = branch_target(instrs.back());
+            const PPCInstr& ins = instrs.back();
+            // Record any in-function forward branch target (unconditional via branch_target(),
+            // conditional via BC's .target — branch_target() returns 0 for BC).
+            uint32_t ut = branch_target(ins);
+            if (ut >= faddr && ut < fend && ut > max_internal_target) max_internal_target = ut;
+            if (ins.op == PPCOp::BC && ins.target >= faddr && ins.target < fend
+                && ins.target > max_internal_target) max_internal_target = ins.target;
+            if (is_unconditional_branch(ins)) {
+                uint32_t t = branch_target(ins);
                 const bool internal = (t >= faddr && t < fend);
-                if (!internal) break;   // tail call / blr / bctr / rfi → real function exit
+                // Break only at a real exit (tail call / blr / bctr / rfi) that nothing jumps past.
+                if (!internal && a >= max_internal_target) break;
             }
         }
     }

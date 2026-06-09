@@ -161,6 +161,29 @@ int main() {
         CHECK(has(lin.code, "goto lbl_80100008"), "loop back-edge is a goto");
     }
 
+    // 5b. THE __va_arg / waitForRetrace REGRESSION: a `blr` (one switch-case's exit) that an EARLIER
+    //     forward conditional branch JUMPS OVER. Collection must NOT stop at that blr — the code after
+    //     it is a later case reached via the forward `bc`. Truncating there emitted the rest as a
+    //     mid-function tail_ppc → JIT handoff that, under a recomp `bl` caller, siglongjmp-unwound the
+    //     caller's C frame and dropped its non-volatiles (the boot endRendering→vsnprintf→__va_arg r31
+    //     clobber: func_80337ccc `blr` @80337d14 jumped over by `bc 0x80337d18`).
+    //     Layout: +0 bc->+12 (over the blr) ; +4 case1 ; +8 blr ; +12 case2 (bc target) ; +16 blr
+    {
+        std::vector<uint32_t> w = {
+            enc_bc(B+0, B+12, 4, 0),         // +0  bc -> +12 (forward; jumps OVER the +8 blr)
+            enc_addi(3,3,1),                 // +4  case 1 body
+            BLR,                             // +8  case 1 exit — USED to truncate the function here
+            enc_addi(4,4,1),                 // +12 case 2 body (bc target)
+            BLR,                             // +16 real end
+        };
+        Built lin = build(B, w, /*cfg=*/false);
+        CHECK(lin.n_instrs == 5, "a blr jumped over by a forward branch does NOT end the function");
+        CHECK(!has(lin.code, "tail_ppc"),
+              "no mid-function tail_ppc: the case after the jumped-over blr is recompiled");
+        CHECK(has(lin.code, "goto lbl_8010000c"),
+              "forward branch over the blr is a goto into the later case");
+    }
+
     // 6. fend must come from REAL function boundaries, not pointer-discovered interior labels.
     //    A discovered label between two real functions must collect to the next REAL boundary
     //    (so it's a valid alternate entry), and must NOT shrink the preceding function's fend.
