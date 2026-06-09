@@ -96,7 +96,23 @@
 > path fails to satisfy (likely an async load-complete the sequencer polls). Tools: REPL `/poll`,
 > `/trace`, `/r`, `/fn`, `/stack` (see CLAUDE.md). NB: run ONE instance at a time + `kill -9` the exact
 > pid between runs (`pgrep -x sunbright`, NOT `-f` which self-matches the shell); stacked headless
-> Vulkan instances exhaust GPU memory (`VK_ERROR_OUT_OF_DEVICE_MEMORY`).
+> Vulkan instances exhaust GPU memory (`VK_ERROR_OUT_OF_DEVICE_MEMORY`) — use `SUNBRIGHT_BACKEND=Software`
+> for state-inspection A/B (no GPU).
+>
+> PINNED TO ONE BYTE (2026-06-09, via Software-backend A/B + REPL `/poll`). The director ([this+4]) is a
+> **`TMarDirector`** (vtable 803df0c8). It is created by a SEPARATE state machine — `func 802a6398`
+> (the reference lumps it under mountStageArchive; `this`=803e9700, called from 80005624) — which loops
+> reading a STATE BYTE at **`[this+8]` = `[803e9708]`** (`lbz r0,8(r31)` @802a67c8), dispatches a
+> 10-entry jump table @803df424 for states 0–9 (7=exit), and on its COMMON TAIL @802a6650 calls
+> `802a5f50` which USES `[this+4]`. So every iteration drives the director after the switch.
+> A/B at the same boot point: pure-Dolphin `[803e9708]`=**0x05** (valid; director `[803e9704]`=80902a40,
+> app fields `[+c]=[+10]=0x0f00` populated); native `[803e9708]`=**0x18** (=24, OUT of range → default
+> path, never the create-state; director=0, app fields 0 = UNINITIALIZED). So native's director-creator
+> state byte holds garbage 0x18 and the app object never got initialized — yet 802a5f50 still runs and
+> derefs the null director. NEXT: find who writes `[803e9708]` (the app ctor's initial value + the
+> per-state advance) and why native lands on 0x18 instead of stepping 0→…→5 — i.e. which create-state's
+> work (or its gating condition) native skipped. Search generated/ for stores to app+8 / the 803e9700
+> ctor.
 >
 > **(superseded sub-note) DETERMINISTIC null archive (heap-not-ready / thread ORDERING, not a race).**
 > A thread crashes with a null `this` in `JKRMemArchive::mountFixed` ⇒ `new JKRMemArchive` returned
