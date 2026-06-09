@@ -424,6 +424,23 @@
 >    execution mode through the render path (DBG_SWITCH + which blocks are recomp vs Dolphin-JIT) and the
 >    exact point r31 diverges in ppc — likely a recomp block exits without flushing r31 to ppc, or a JIT
 >    block runs before a recomp store of r31 commits.
+>
+> ROOT CAUSE FOUND (2026-06-09) — the boot JIT handoff is a RECOMPILER jump-table gap. SUNBRIGHT_DBG_TAIL
+> shows `func_802a5b44` (per-frame scene-change reader, called from 802a5f50's render path @802a6048)
+> does `tail_ppc(cpu, ctr)` for its computed `bctr` jump table (base 0x803df3f0, indexed by a small
+> state) to targets **802a5c5c / 802a5f30 / ...** which DBG_TAIL flags **non-recomp**. But those targets
+> are **INTERIOR LABELS of func_802a5b44's own recomp body** (`goto lbl_802a5c5c` exists in it) — they
+> are just not REGISTERED function entries. So tail_ppc(ctr)->IsRecompiled(802a5c5c)=false (it only knows
+> entries) -> siglongjmp handoff to Dolphin's CPU loop/JIT -> the render continuation (incl. 802a5f50)
+> runs under Dolphin JIT -> ppc.gpr[31] diverges -> the 802a6338 crash. (Pointer-discovery's
+> 'preceded-by-a-terminator' heuristic in tools/recompiler/main.cpp accepts 802a6398's table @803df424
+> — those cases ARE registered, e.g. 802a63e4 — but rejects 802a5b44's interior case labels @803df3f0.)
+> FIX (recompiler, per user directive 'no JIT handoffs in boot'): recognize the `lwz rX,(base+idx*4);
+> mtctr; bctr` jump-table pattern, read the table, and either register the case targets as recomp
+> entries OR emit a C `switch(idx){case k: goto lbl_target;}` so the bctr stays IN-function (no tail_ppc
+> handoff). Add a recompiler unit test (sunbright-recomp-test) for the pattern. This is the debug-path
+> 'behavior wasn't recompiled -> fix the recompiler' branch; the r31-clobber/JIT-exec notes above are
+> all downstream SYMPTOMS of this one missed-jump-table handoff.
 > 2) **null-director chicken-egg:** scene state machine `802a6398` (loops on [this+8]; jump table @803df424,
 >    states 0..9). Common tail `lbl_802a6644` each iteration: `if(r29==0) call 802a5f50` (DRAW) → director
 >    cleanup → **clears [this+4]=0 @802a667c** → state-2 case `lbl_802a669c` (re)creates the director via
