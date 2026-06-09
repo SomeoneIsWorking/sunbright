@@ -350,6 +350,25 @@
 >   heap ordering, cf. the prior "null archive" frontier). That early exit, not the frame state machine,
 >   is the thing to own/port natively.
 >
+> ROOT FOUND (2026-06-09) — it is the **null-archive / director-create** family, not a frame-fn or
+> register bug. REPL/dump ground truth at the native crash (gpApplication 803e9700): **state[+8]=2**
+> (stuck at "wait-for-loader-thread"), **dir[+4]=0** (director NEVER created), disp[+28]=**8056dd90
+> (VALID — matches Dolphin; the 0x28040000 at 802a6338 is an r31/register artifact in the render path,
+> NOT memory corruption)**, loadedArchive[8040e194]=**8131f0e0 (archive DID load — native_dvd served 28
+> reads, all result=len, ~110KB)**. Pure-Dolphin here: state=5, dir=80902a40, disp=8056dd90. So the
+> archive **loads fine**; what fails is **mounting it + creating the director**. The director/scene is
+> built by `func_802a6dd0` (mountStageArchive+0x1438): `new` a 108-byte scene obj → vtable init →
+> **`JKRMemArchive::mountFixed` 802c40ec** → more vtable init; called from 7 scene-init states in the
+> 802axxxx jump table. Under native, with boot stuck at state 2, those states aren't reached / the mount
+> doesn't complete, so dir stays null and the per-frame TApplication fn (802a5f50) renders a null
+> director → crash. This is the SAME "JKRMemArchive::mountFixed returned NULL — heap not ready / thread
+> ORDERING" frontier from [[blocking-call-interp-spin]] / paired-single notes. NEXT: determine whether
+> (a) the boot state machine never advances 2→3 under native (find the [this+8] writer — it is NOT in
+> 802a5f50/802a5b44, so an external fn consuming the archive) or (b) mountFixed is called but returns
+> NULL (heap-not-ready ordering). Tools: REPL /trace?a=803e9708 (state byte) + /trace?a=803e9704 (dir)
+> native-vs-Dolphin; /poll for A/B snapshots. The fix is to own the archive-mount / heap-ready ordering
+> natively (the long-standing native-threading frontier), not the frame state machine.
+>
 > **(superseded sub-note) DETERMINISTIC null archive (heap-not-ready / thread ORDERING, not a race).**
 > A thread crashes with a null `this` in `JKRMemArchive::mountFixed` ⇒ `new JKRMemArchive` returned
 > NULL (heap alloc failed). The fault regs (r26=803e9700, r5=0xffff) point at the **audio thread
