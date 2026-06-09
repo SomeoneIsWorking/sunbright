@@ -60,4 +60,5 @@ void sunbright_dispatch_profile_note(u32 pc);   // SUNBRIGHT_DISPATCH_PROFILE hi
 void nthrt_make_ready(u32 os_thread);   // OSResumeThread / OSWakeupThread (mark Ready)
 void nthrt_bind_current(u32 os_thread); // map the running thread under its authoritative OSThread*
 void nthrt_block_current();             // OSSleepThread (park current until woken)
+void nthrt_yield_current();             // priority preempt: yield token, stay Ready (reschedule)
 #endif

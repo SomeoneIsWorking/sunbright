@@ -163,12 +163,28 @@ static void os_resume_thread(CPUState& cpu) {
     const s32 old_suspend = (s32)mem_r32(thread + T_SUSPEND);
     const s32 suspend = old_suspend - 1;
     mem_w32(thread + T_SUSPEND, (u32)suspend);
-    if (suspend <= 0 && r_state(thread) == 1 /*READY*/)
+    const bool made_ready = (suspend <= 0 && r_state(thread) == 1 /*READY*/);
+    if (made_ready)
         nthrt_make_ready(thread);
     fprintf(stderr, "[native_os] OSResumeThread %08x suspend %d->%d state=%u%s\n",
             thread, old_suspend, suspend, r_state(thread),
-            (suspend <= 0 && r_state(thread) == 1) ? " -> READY" : "");
+            made_ready ? " -> READY" : "");
     cpu.gpr[3] = (u32)old_suspend;
+    // Priority preemption (GC __OSReschedule semantics, run inside OSResumeThread): if the thread
+    // we just made runnable is STRICTLY higher priority than the caller, the GC scheduler would
+    // switch to it now. Our scheduler is otherwise cooperative (no preemption), so the caller would
+    // race ahead — exactly the JASystem audio-thread bug: AudioThread::start creates+resumes the
+    // higher-priority audio thread (which runs Driver::init -> initBuffer to ALLOCATE the DSP FX
+    // buffers) and returns WITHOUT waiting, relying on this preemption; without it the main thread
+    // reaches JAIData::initData and configures FX lines that were never allocated -> null write.
+    // Yield (stay Ready); the scheduler picks the higher-prio thread, and the token returns here
+    // when it next blocks. Lower priority NUMBER = higher priority (GC convention). [[native-threading-plan]]
+    if (made_ready) {
+        const u32 cur = mem_r32(OS_CURRENT_THREAD);
+        if (cur && cur != thread &&
+            (s32)mem_r32(thread + T_PRIO) < (s32)mem_r32(cur + T_PRIO))
+            nthrt_yield_current();
+    }
 }
 
 // OSSleepThread (0x803492e0): enqueue the current thread on wait-queue r3 (set state=WAITING,

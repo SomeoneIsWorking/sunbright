@@ -867,6 +867,17 @@ void nthrt_block_current() {
     Core::DeclareAsCPUThread();           // reacquired the token (ctx restored by the hook)
 }
 
+// Priority preemption point: the current guest thread yields the token but stays RUNNABLE
+// (Ready), so the scheduler hands the token to the highest-priority Ready thread — which is how
+// the GC scheduler's __OSReschedule (run inside OSResumeThread/OSWakeupThread) switches to a
+// just-made-ready higher-priority thread. When that thread later blocks, the token comes back here
+// and this returns. Bracketed with Undeclare/Declare like nthrt_block_current.
+void nthrt_yield_current() {
+    Core::UndeclareAsCPUThread();
+    nthr::block(nthr::State::Ready);
+    Core::DeclareAsCPUThread();           // reacquired the token (ctx restored by the hook)
+}
+
 // GC __OSActiveThreadQueue (OS low mem): every live OSThread is linked here from creation to exit.
 //   head @ 0x800000DC, tail @ 0x800000E0 ; OSThread linkActive.next @ +0x2FC, .prev @ +0x300.
 // (Extracted from OSCreateThread 0x80348948's __OSLinkActiveThread insert.) Walking it is how we

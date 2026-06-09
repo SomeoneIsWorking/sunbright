@@ -42,15 +42,36 @@
 > Block layout (from the 8034da6c prologue): 0x08 cmd, 0x0c state, 0x10 disc-offset, 0x14 len, 0x18
 > dest, 0x20 transferred, 0x28 prio. Args r3=block,r4=addr,r5=len,r6=offset,r7=prio,r8=cb.
 >
-> **NEW frontier (2026-06-09) — audio DSP init: null FX-line buffer.** thread0 now progresses
-> `mountStageArchive`→`MSound::startSoundSet`→`JAIBasic::initInterface`→`initInterfaceMain`→
-> `initAllocParameter`→`JAIData::initData`→`JASystem::DSPInterface::FXBuffer::setFXLine` (8031506c)
-> and crashes there with a wild 16-bit write to ea=0 (`*(s16*)lines = 0`, the `lines` arg is NULL).
-> `setFXLine` is called from a loop in `initData` (~803047f4) with r28(=lines)=NULL — the DSP FX
-> buffer was never allocated/assigned. Deterministic. Next: find where `initData` allocates the FX
-> buffer (r28) and why it's null under native scheduling — likely a DSP-mailbox/ARAM dependency or an
-> alloc from a heap not yet set up. Diag: SUNBRIGHT_DBG_DVD (native_dvd read trace; DVDLowRead probe in
-> dbg_dvd.cpp should stay at 0 — non-zero = the GC FSM is still being kicked somewhere).
+> **Audio DSP init null FX-line buffer — FIXED (2026-06-09) by priority preemption on OSResumeThread.**
+> ROOT CAUSE: `JAIBasic::initDriver` (80301a28) calls `JASystem::AudioThread::start` (803113c4), which
+> `OSCreateThread`+`OSResumeThread`s the higher-priority audio driver thread and RETURNS WITHOUT
+> WAITING — relying on the GC scheduler PREEMPTING to it at the resume (`__OSReschedule` inside
+> `OSResumeThread`). That driver thread runs `Driver::init`→`DSPInterface::initBuffer` (80314f50) which
+> ALLOCATES the DSP FX-line array (global `[r13-0x5c04]`). Our scheduler was cooperative (no preempt,
+> `__OSReschedule` no-op'd), so the main thread raced ahead to `JAIData::initData`→`setFXLine` and wrote
+> through the not-yet-allocated FX array (null `getFXHandle(0)`) → wild 16-bit write to ea=0. FIX:
+> `os_resume_thread` now yields (`nthrt_yield_current`, stay Ready) when the resumed thread is STRICTLY
+> higher priority than the caller — replicating GC reschedule-on-resume without the GC scheduler
+> (nthr makes the decision; `pick_next` already honors priority). VERIFIED: `fxbase` is now allocated
+> (805fe7e0) when initData runs; the setFXLine null crash is gone. Diag: SUNBRIGHT_DBG_AUDIO traces
+> Driver::init / initBuffer / initDriver / initData with the FX-base value + current thread.
+>
+> **NEW frontier (2026-06-09) — audio DSP command-port handshake spins under run_jit_sync.** The audio
+> driver thread now runs its DSP init and reaches `JASystem::Kernel::portCmdInit` (8031758c) which
+> busy-waits on `[r13-0x5b94]` (a DSP command-port progress counter the DSP updates as it consumes the
+> init commands) — it never advances → spin. It surfaces as `FATAL run_jit_sync(802c6830→80344898)
+> exceeded step budget`: `802c6830` (a DSP-init function called via a computed indirect `bclrl` from
+> `__OSInitAudioSystem`) is NOT recompiled — it uses only modeled SPRs (mflr/mtlr), so it's a COVERAGE
+> gap, not a function_needs_jit exclusion — so it runs under the interpreter (`run_jit_sync`), and its
+> blocking/idle path reaches the GC `SelectThread+0x138` (80348814) idle loop, which spins on the GC
+> run-queue hint `[r13-0x59c0]` that nthr never populates (the residual "two schedulers" conflict).
+> Per the user directive **run_jit_sync must never run engine code**, the fix is two-fold: (1) close the
+> recomp COVERAGE gap so `802c6830`/`80344160`/`8031758c` (and other indirect-only engine targets) are
+> recompiled — they're reached via a function-pointer `bclrl` (`lwz r12,0(r28); mtlr r12; bclrl`), so
+> pointer-discovery must capture that table; (2) ensure the DSP command-port handshake actually
+> completes (drive Dolphin's DSP so `[r13-0x5b94]` advances) AND that no engine path falls into the GC
+> `SelectThread` idle (nthr must own idle). Diag: the run_jit_sync FATAL dumps the hottest interpreted
+> PCs (SelectThread idle + portCmdInit DSP-wait).
 >
 > **(superseded sub-note) DETERMINISTIC null archive (heap-not-ready / thread ORDERING, not a race).**
 > A thread crashes with a null `this` in `JKRMemArchive::mountFixed` ⇒ `new JKRMemArchive` returned
