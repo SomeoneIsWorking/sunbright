@@ -412,6 +412,18 @@
 >    hazard (cpu<->ppc around a run_jit_sync callee in the render path), i.e. the call-model handoff, NOT
 >    a single mistranslated function. Next: find which render-path callee runs interpreted (function_needs_jit)
 >    and audit the cpu<->ppc sync (cpu_to_dolphin_state/dolphin_state_to_cpu) around it for r31 fidelity.
+>    UPDATE2 (backtrace symbolized): the faulting read is **PowerPC::ReadFromJit<u32>** — DOLPHIN's
+>    JIT/fastmem path, not our recomp's sb_r32. So 802a5f50 at the crash runs as **Dolphin JIT-compiled
+>    code** (a mid-function branch-target block whose entry isn't a registered recomp func, so the JIT
+>    hook didn't route it to recomp), and ppc IS the live state there — but ppc.gpr[31] is already
+>    corrupt going INTO that JIT block. Thread 0 (main TApplication) is nthr-ADOPTED (adopt_current,
+>    sunbright_adopt_cpu_thread) and runs under Dolphin's CPU loop; nthr's per-thread ctx save/restore
+>    (nthr_ctx_save/restore, full gpr/fpr/cr/lr/ctr/xer/gqr/srr — verified complete) handles its parks.
+>    So r31 is lost at a **recomp->JIT(->park) handoff in the render path** (recomp computes/holds r31 in
+>    its CPUState, exits to Dolphin JIT, and the synced ppc.gpr[31] is wrong). NEXT: trace thread 0's
+>    execution mode through the render path (DBG_SWITCH + which blocks are recomp vs Dolphin-JIT) and the
+>    exact point r31 diverges in ppc — likely a recomp block exits without flushing r31 to ppc, or a JIT
+>    block runs before a recomp store of r31 commits.
 > 2) **null-director chicken-egg:** scene state machine `802a6398` (loops on [this+8]; jump table @803df424,
 >    states 0..9). Common tail `lbl_802a6644` each iteration: `if(r29==0) call 802a5f50` (DRAW) → director
 >    cleanup → **clears [this+4]=0 @802a667c** → state-2 case `lbl_802a669c` (re)creates the director via
