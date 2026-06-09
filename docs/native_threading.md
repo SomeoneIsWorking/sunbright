@@ -22,18 +22,35 @@
 > early thread + audio init into asset loading (nintendo.szs) and early rendering (thread0 reaches
 > `JDrama::TDisplay::endRendering` 802f80d0).
 >
-> **Current frontier (2026-06-05, refined) — file-load pipeline stalls under native scheduling.**
-> Only nintendo.szs loads; the SECOND file's DVD read is never issued, so thread0 reaches
-> `TApplication::mountStageArchive` with a NULL stage-data buffer (`[r13-0x602c]`) → `mountFixed(null
-> mem)` → wild read in func_802c43a8. Confirmed via the guest-stack trap walk (current OSThread=
-> 80402aa8=thread0; chain 80005628→mountStageArchive→mountFixed→JKRFileLoader::ct). SUNBRIGHT_DBG_SCHED
-> shows the audio thread 803fcbe8 livelock-cycling on queue 8040e870 (AI ISR 8034bea0 wakes / 8034be68
-> re-sleeps) — the idle driver fires the frequent AI/decrementer IRQs unthrottled. thread0 IS woken on
-> 8040e8d8 (by 8034ef1c) and proceeds, but its load never happened. FIXED this session: the JIT-path
-> interception gap (IsRecompiled now covers native_os, so JIT'd OSSleepThread routes to nthr not the GC
-> scheduler — commit 50ab1d6). Next, in order: (1) does thread0 even ISSUE the 2nd DVD read, or skip it
-> (control-flow/ordering)? trace the file-load request path; (2) which thread issues DVD reads (a file/
-> DVD worker?) and does it run; (3) pace the idle driver's IRQ delivery (the AI interrupt floods it).
+> **FILE-LOAD PIPELINE STALL — FIXED (2026-06-09) by a native DVD read service.**
+> ROOT CAUSE: under cooperative native scheduling the GC DVD command FSM stalls after the FIRST
+> transfer. A thread calls `DVDRead`→`DVDReadAbsAsyncPrio` (8034da6c), which queues a DVDCommandBlock
+> and relies on the DI hardware interrupt + the OS command-queue "dispatch next on completion" to
+> advance. JIT-only threads (e.g. the audio thread, entry 802a7878 — NOT in functions.h) run wholly
+> under Dolphin's interpreter, where the general SUNBRIGHT_OVERRIDE table is never consulted, so they
+> hit the raw GC FSM; the dispatch-next step never fires (no preemption), so the 2nd read's DVDLowRead
+> is never kicked. Confirmed: only `data/nintendo.szs` transferred under native vs pure-Dolphin reading
+> `sequence.arc`/`*.aw`/`mario.szs`/… next; the audio thread livelocked in DVDRead's wait loop (8034be2c
+> polling block->state@0xc), and thread0 reached `mountStageArchive`→`mountFixed(null)` → wild read.
+> FIX (own the path, not the hardware): `runtime/overrides/native_dvd.cpp` registers a native
+> `DVDReadAbsAsyncPrio` on the **native_os seam** (fires on BOTH the recomp call path AND the
+> interpreter, so JIT-only threads are covered). It reads `length` bytes at the absolute disc offset
+> straight from our own read-only `DiscIO::Volume` into guest RAM (`CopyToEmu`, raw bytes like the DVD
+> DMA), fills the command block (state=END, transferred=length), and invokes the completion callback.
+> No DI registers, no interrupt, no queue dispatch. VERIFIED: audio thread now streams its archive
+> reads; thread0's stage archive mounts; boot runs deep into audio init (deterministic, 2 runs).
+> Block layout (from the 8034da6c prologue): 0x08 cmd, 0x0c state, 0x10 disc-offset, 0x14 len, 0x18
+> dest, 0x20 transferred, 0x28 prio. Args r3=block,r4=addr,r5=len,r6=offset,r7=prio,r8=cb.
+>
+> **NEW frontier (2026-06-09) — audio DSP init: null FX-line buffer.** thread0 now progresses
+> `mountStageArchive`→`MSound::startSoundSet`→`JAIBasic::initInterface`→`initInterfaceMain`→
+> `initAllocParameter`→`JAIData::initData`→`JASystem::DSPInterface::FXBuffer::setFXLine` (8031506c)
+> and crashes there with a wild 16-bit write to ea=0 (`*(s16*)lines = 0`, the `lines` arg is NULL).
+> `setFXLine` is called from a loop in `initData` (~803047f4) with r28(=lines)=NULL — the DSP FX
+> buffer was never allocated/assigned. Deterministic. Next: find where `initData` allocates the FX
+> buffer (r28) and why it's null under native scheduling — likely a DSP-mailbox/ARAM dependency or an
+> alloc from a heap not yet set up. Diag: SUNBRIGHT_DBG_DVD (native_dvd read trace; DVDLowRead probe in
+> dbg_dvd.cpp should stay at 0 — non-zero = the GC FSM is still being kicked somewhere).
 >
 > **(superseded sub-note) DETERMINISTIC null archive (heap-not-ready / thread ORDERING, not a race).**
 > A thread crashes with a null `this` in `JKRMemArchive::mountFixed` ⇒ `new JKRMemArchive` returned

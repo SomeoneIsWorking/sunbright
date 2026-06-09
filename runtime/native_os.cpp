@@ -257,6 +257,12 @@ void native_os_init() {
     // recompiled __OSReschedule must NOT also switch (the "two schedulers over one ppc" conflict).
     // No-op = cooperative (never preempt); a woken higher-prio thread runs at the next nthr yield.
     native_os_register(0x803488dcu, os_reschedule_noop); // __OSReschedule → no switch
+    // ── Native DVD read service: own the file-read path (docs/native_threading.md frontier). ──
+    // The GC DVD command FSM stalls after the first transfer under cooperative native scheduling;
+    // service reads directly from our own DiscIO::Volume instead. Registered on this same seam so
+    // it fires for JIT-only threads running under the interpreter (e.g. the audio thread).
+    extern void native_dvd_register();
+    native_dvd_register();
     // ── Diagnostics (env-gated, kept permanently — see memory keep-diagnostics) ──
     if (getenv("SUNBRIGHT_DBG_CONSOLE"))
         native_os_register(0x8033ba90u, dbg_write_console);   // surface GC console / crash report

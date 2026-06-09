@@ -538,6 +538,11 @@ int main(int argc, char* argv[]) {
                                                  : "rom.rvz";
     const char* recomp_lib = (argc > 2) ? argv[2] : "build/libsms_recomp.so";
 
+    // Native DVD read service (runtime/overrides/native_dvd.cpp) reads file data straight from
+    // the disc image; hand it the same path the emulator boots from.
+    extern void sunbright_native_dvd_set_path(const char* path);
+    sunbright_native_dvd_set_path(rom_path);
+
     // SUNBRIGHT_HEADLESS=1: no window and nothing presented/played, but the emulation still
     // RENDERS (real Vulkan backend, Headless WSI — present skipped) and PROCESSES AUDIO (real
     // backend, muted) so rendering- and audio-timing-dependent bugs reproduce. For fast, unattended
