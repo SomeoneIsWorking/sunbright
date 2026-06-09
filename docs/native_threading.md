@@ -182,6 +182,27 @@
 > (which call_ppc ancestor handed it to the interpreter) since that boundary is where a guest
 > non-volatile would be dropped.
 >
+> ROOT CAUSE PINNED (2026-06-09) — `func_802f80d0` (`JDrama::TDisplay::endRendering`) recomp drops
+> non-volatile r31. New diagnostic `SUNBRIGHT_DBG_TRAMP=LO-HI` (jit_hook.cpp) logs every Dolphin-JIT
+> block dispatch in a range with the engine (recomp vs JIT) + live regs (block-linking is off, so
+> every basic-block boundary hits the trampoline). It showed the boot-logo loop runs under Dolphin JIT
+> with r31=803e9700 (the valid TApplication `this`) correct through the WHOLE loop until the virtual
+> call `bclrl @802a6320` (`method = [[r31+0x1c]vtable+0xc]`). That method dispatches to
+> **`802f80d0 -> recomp`** (entered with r31=803e9700 correct); the very next dispatch `802a6324` has
+> **r31=802a6324** — i.e. `endRendering`'s recomp returned with r31 = the call's own return address.
+> CONFIRMED by bisection: `SUNBRIGHT_FORCE_JIT=802f80d0-802f816c` (route endRendering to Dolphin JIT,
+> DIAGNOSTIC ONLY) → r31 stays 803e9700 across the call and the `0x28040060` wild read DISAPPEARS. So
+> the defect is in our recomp of endRendering or a function in its call tree — NOT the game.
+> endRendering's own recomp prologue/epilogue is CORRECT (saves r31 to [r1+0x24], restores from the
+> same slot; saves LR to [r1+4]→[r1+0x2c]). The corruption value 0x802a6324 == the saved-LR linkage
+> slot [entry_sp+4], and reading r31 from [r1+0x24] would hit that slot iff cpu.gpr[1] (SP) at the
+> epilogue is +8 too high — i.e. an **inner `call_ppc` in endRendering returns SP off by +8** (an
+> unbalanced-stack mistranslation in one of its callees: 0x802fc9a4, 0x8035d8f0, and the bl targets
+> @802f8110/@802f8144). NEXT: force_jit-bisect endRendering's four inner calls (one at a time) to find
+> which returns a corrupted SP, then fix that callee's recomp frame handling + add a recompiler test.
+> Getting past this clobber reveals the NEXT crash: `Invalid read ea=0x00000000 PC=0x802a6160` (the
+> null `[this+4]` deref the entries above chased) — a separate downstream issue.
+>
 > **(superseded sub-note) DETERMINISTIC null archive (heap-not-ready / thread ORDERING, not a race).**
 > A thread crashes with a null `this` in `JKRMemArchive::mountFixed` ⇒ `new JKRMemArchive` returned
 > NULL (heap alloc failed). The fault regs (r26=803e9700, r5=0xffff) point at the **audio thread

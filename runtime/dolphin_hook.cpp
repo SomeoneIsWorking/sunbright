@@ -426,7 +426,19 @@ bool interp_run_until(u32 ret, long budget, u32 sp_floor) {
     } _it;
     long n = 0;
     u32 prev_pc = ppc.pc;   // the instruction executed just before the current pc (the branch, if pc went wild)
+    // SUNBRIGHT_DBG_OVERSHOOT: catch the sp_floor return-detection OVERSHOOT — the interpreter reaches
+    // the caller's return address `ret` but sp hasn't unwound to sp_floor, so the loop keeps stepping
+    // INTO the caller's body (running recomp-owned code under interp with a possibly diverged register
+    // file). Logs the moment a legit-looking return is rejected, with sp vs sp_floor + r31, capped.
+    static const bool dbg_overshoot = getenv("SUNBRIGHT_DBG_OVERSHOOT") != nullptr;
     while (ppc.pc != ret || (sp_floor && ppc.gpr[1] < sp_floor)) {
+        if (dbg_overshoot && ppc.pc == ret && sp_floor && ppc.gpr[1] < sp_floor) {
+            static long hits = 0;
+            if (hits++ < 64)
+                fprintf(stderr, "[overshoot] reached ret=%08x but sp=%08x < sp_floor=%08x "
+                        "(r31=%08x r3=%08x lr=%08x) — NOT stopping, stepping into caller body (step %ld)\n",
+                        ret, ppc.gpr[1], sp_floor, ppc.gpr[31], ppc.gpr[3], ppc.spr[SPR_LR], n);
+        }
         // Wild-branch invariant on the INTERP path (mirror of sb_fatal_wild_branch on the recomp
         // path): guest code lives at >= 0x80003100, so a pc in low/NULL space means a branch went
         // through a clobbered/NULL function pointer. The next interpreter fetch would raise Dolphin's
