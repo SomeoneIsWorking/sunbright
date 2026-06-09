@@ -193,34 +193,39 @@ static inline u8* ram_ptr(u32 ea) {
 // small displacement, equals the faulting ea — i.e. the corrupted base pointer. Used by
 // BOTH the wild-read and wild-write traps so a bad store names its base register the same
 // way a bad load does (the asymmetry hid that the TBeamManager-ctor crash was `this`≈small).
-static void dump_guest_regs_naming_base(u32 ea) {
-    if (!g_cur_recomp_cpu) return;
-    const CPUState& c = *g_cur_recomp_cpu;
-    fprintf(stderr, "  Guest registers at fault (lr=%08x ctr=%08x):\n", c.lr, c.ctr);
+// Core dump: works off ANY guest register source (recomp CPUState or Dolphin PPCState),
+// so the recomp wild-access traps and the Dolphin-side invalid-access trap share one format.
+static void dump_guest_regs_core(const u32* gpr, u32 lr, u32 ctr, u32 ea) {
+    fprintf(stderr, "  Guest registers at fault (lr=%08x ctr=%08x):\n", lr, ctr);
     for (int i = 0; i < 32; i += 4)
         fprintf(stderr, "    r%-2d=%08x  r%-2d=%08x  r%-2d=%08x  r%-2d=%08x\n",
-                i, c.gpr[i], i+1, c.gpr[i+1], i+2, c.gpr[i+2], i+3, c.gpr[i+3]);
+                i, gpr[i], i+1, gpr[i+1], i+2, gpr[i+2], i+3, gpr[i+3]);
     // Name the base register: whichever GPR, plus a small displacement, equals ea.
     for (int i = 0; i < 32; i++) {
-        u32 d = ea - c.gpr[i];
+        u32 d = ea - gpr[i];
         if (d <= 0xffffu)
             fprintf(stderr, "  ▶ base looks like r%d=%08x + 0x%x (the bad pointer is r%d)\n",
-                    i, c.gpr[i], d, i);
+                    i, gpr[i], d, i);
     }
-    // Current guest OSThread + guest call chain (the recomp runs on the host C stack and doesn't
-    // track guest pc mid-tree, but the GUEST stack still links its frames: back-chain at [r1],
-    // saved LR at [r1+4]). Walk it to recover the guest caller chain — names who called into the
-    // crashing code (e.g. the archive-mount path) even when it runs under the JIT.
+    // Current guest OSThread + guest call chain. The guest stack links its frames regardless of
+    // where the code runs (recomp host C stack or Dolphin JIT/interp): back-chain at [r1], saved
+    // LR at [r1+4]. Walk it to recover the guest caller chain — names who called into the crashing
+    // code (e.g. the archive-mount / boot-sequencer path).
     fprintf(stderr, "  Current OSThread (0x800000E4) = %08x\n", mem_r32(0x800000E4u));
     fprintf(stderr, "  Guest call chain (saved LRs up the stack):\n");
-    u32 fp = c.gpr[1];
+    u32 fp = gpr[1];
     for (int i = 0; i < 16 && fp >= 0x80000000u && fp < 0x81800000u; i++) {
-        u32 lr = mem_r32(fp + 4);
-        fprintf(stderr, "    [%d] lr=%08x\n", i, lr);
+        u32 saved_lr = mem_r32(fp + 4);
+        fprintf(stderr, "    [%d] lr=%08x\n", i, saved_lr);
         u32 next = mem_r32(fp);
         if (next <= fp || next < 0x80000000u || next >= 0x81800000u) break;
         fp = next;
     }
+}
+static void dump_guest_regs_naming_base(u32 ea) {
+    if (!g_cur_recomp_cpu) return;
+    const CPUState& c = *g_cur_recomp_cpu;
+    dump_guest_regs_core(c.gpr, c.lr, c.ctr, ea);
 }
 
 // ── Wild-write trap ─────────────────────────────────────────────────────────
@@ -294,6 +299,37 @@ static inline void check_wild_read(u32 ea, int bits) {
         return;
     }
     report_wild_read(ea, bits);
+    struct rlimit no_core{0, 0};   // skip the multi-GB core dump (see trap_wild_write)
+    setrlimit(RLIMIT_CORE, &no_core);
+    abort();
+}
+
+// ── Dolphin-side invalid-access trap ─────────────────────────────────────────
+// The recomp wild-read/write traps above only see accesses our memory bridge routes — i.e. code
+// our recompiler emitted. Code still running under Dolphin's interpreter/JIT (e.g. JIT-only OS
+// primitives, or the boot sequencer before it hands to recomp) goes through Dolphin's own MMU,
+// which on an unmapped guest address PanicAlerts "Invalid read/write" and then RETURNS GARBAGE and
+// lets the game limp on — hiding the corrupting originator exactly like the swallowed warnings the
+// traps above were written to replace. main_sdl.cpp's MsgAlertHandler routes those two panics here
+// so a Dolphin-side wild access is just as fatal, with the same guest-state + backtrace dump. ea/pc
+// are parsed from the panic text by the handler (Dolphin doesn't set DAR/DSISR outside MMU mode).
+[[noreturn]] void sunbright_trap_invalid_access(u32 ea, u32 pc, bool write) {
+    fflush(stdout);
+    fprintf(stderr,
+        "\n[sunbright] FATAL invalid guest %s under Dolphin: ea=0x%08x PC=0x%08x\n"
+        "  Dolphin's MMU flagged an unmapped guest access — a corrupted base/pointer (NULL or a\n"
+        "  pointer that lost its high bit). Aborting at the originator instead of returning garbage\n"
+        "  and crashing later somewhere else, which would hide this root cause.\n",
+        write ? "write" : "read", ea, pc);
+#ifdef HAVE_DOLPHIN_MEMMAP
+    auto& ppc = Core::System::GetInstance().GetPPCState();
+    dump_guest_regs_core(ppc.gpr, LR(ppc), CTR(ppc), ea);
+#endif
+    fprintf(stderr, "  Native backtrace (host call chain, innermost first):\n");
+    void* bt[96];
+    int n = backtrace(bt, 96);
+    backtrace_symbols_fd(bt, n, fileno(stderr));
+    fflush(stderr);
     struct rlimit no_core{0, 0};   // skip the multi-GB core dump (see trap_wild_write)
     setrlimit(RLIMIT_CORE, &no_core);
     abort();

@@ -21,3 +21,8 @@ extern thread_local CPUState* g_cur_recomp_cpu;
 // — it rescheduled — so the differential validator cannot compare it (the mutex-lock
 // path in JKR heap alloc, etc.). The validator skips these, like MMIO functions.
 extern bool g_recomp_context_switched;
+
+// Abort with a guest-state + native backtrace dump for an unmapped guest access made by code
+// running under Dolphin (the recomp wild-read/write traps only cover recomp-emitted accesses).
+// main_sdl.cpp's MsgAlertHandler calls this when Dolphin's MMU PanicAlerts "Invalid read/write".
+[[noreturn]] void sunbright_trap_invalid_access(u32 ea, u32 pc, bool write);

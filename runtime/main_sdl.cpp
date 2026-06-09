@@ -10,6 +10,7 @@
 #include <cmath>
 #include <csignal>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <sys/stat.h>
@@ -61,6 +62,7 @@
 
 #include "sunbright_bridge.h"
 #include "native_threads.h"
+#include "memory_bridge.h"            // sunbright_trap_invalid_access
 
 #include <optional>
 #include <string_view>
@@ -527,7 +529,21 @@ int main(int argc, char* argv[]) {
                                        bool /*yes_no*/, Common::MsgType style) -> bool {
         fprintf(stderr, "[dolphin/%s] %s: %s\n",
                 style == Common::MsgType::Warning ? "warn" : "err", caption, text);
-        return true;  // "yes" / ignore and continue
+        // An unmapped guest access from Dolphin-executed code surfaces as one of these two MMU
+        // panics (MMU.cpp GenerateDSIException, non-MMU mode). Dolphin would return garbage and let
+        // the game limp on, hiding the corrupting originator — same failure mode our recomp
+        // wild-read/write traps exist to stop. Make them fatal with a full guest-state dump.
+        // Parse ea + PC from the stable panic text (DAR/DSISR aren't set outside MMU mode).
+        const char* is_read  = strstr(text, "Invalid read from ");
+        const char* is_write = strstr(text, "Invalid write to ");
+        if (is_read || is_write) {
+            const char* p = strstr(text, "0x");          // first hex = effective address
+            const char* q = p ? strstr(p + 2, "0x") : nullptr;  // second hex = PC
+            unsigned long ea = p ? strtoul(p, nullptr, 16) : 0;
+            unsigned long pc = q ? strtoul(q, nullptr, 16) : 0;
+            sunbright_trap_invalid_access((u32)ea, (u32)pc, is_write != nullptr);  // [[noreturn]]
+        }
+        return true;  // other alerts: log and continue (e.g. benign apploader notices)
     });
 
     // ROM: explicit arg, else $SUNBRIGHT_ROM (set it directly or via a gitignored .env), else a
