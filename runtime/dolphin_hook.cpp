@@ -798,36 +798,49 @@ static void nthr_ctx_restore(nthr::GuestThread* t) {
 // run on; any mutation we make to it is discarded when the woken thread's context is restored. This
 // is the documented poll_yield pattern (park at a clean idle PC with EE=1; Idle()+Advance() raises
 // the IRQ; CheckExceptions() vectors to 0x80000500; interp the ISR until it rfi's back) — looped.
-static void nthr_idle_driver() {
+// One step of the native idle/hardware driver: park the global ppc at a clean RECOVERABLE idle
+// context, fast-forward CoreTiming to the next scheduled device event, deliver any pending external
+// interrupt, and run its ISR (→ native OSWakeupThread → nthr::make_ready). Returns true if an IRQ
+// was delivered. Caller must be Declared as the CPU thread (single-active under cooperative nthr).
+// Mutates global ppc + guest RAM/device state; the register mutations are discarded by the caller
+// (idle driver: when a woken thread's ctx is restored; yield path: it restores ppc itself).
+//
+// A clean RECOVERABLE kernel MSR to take each interrupt on: EE (interrupts on), RI (recoverable —
+// the GC handler rejects RI=0 as "Non-recoverable Exception"), ME, IR/DR (translation on). Reset
+// every step so a previous exception clearing MSR (real mode, RI=0) doesn't leave the next delivery
+// non-recoverable.
+static bool idle_advance_step() {
+    static const bool dbg = getenv("SUNBRIGHT_DBG_IDLE") != nullptr;
+    static long dbg_irqs = 0;
     auto& sys = Core::System::GetInstance();
     auto& ppc = sys.GetPPCState();
     auto& ct  = sys.GetCoreTiming();
     const u32 idle_pc = sunbright_idle_spin_pc();
+    constexpr u32 IDLE_MSR = 0x00009032u;           // EE|ME|IR|DR|RI
+    ppc.pc = ppc.npc = idle_pc;
+    ppc.msr.Hex = IDLE_MSR;
+    const u32 msr_before = ppc.msr.Hex;
+    ct.Idle();                                      // fast-forward to the next scheduled device event
+    ct.Advance();                                   // process it — a device callback raises the IRQ
+    sys.GetPowerPC().CheckExceptions();             // deliver it: vector pc to the ISR (0x80000500)
+    if (ppc.pc != idle_pc) {
+        if (dbg && dbg_irqs++ < 8)
+            fprintf(stderr, "[idle] IRQ -> pc=%08x msr=%08x(was %08x) srr0=%08x srr1=%08x r1=%08x cur=%08x\n",
+                    ppc.pc, ppc.msr.Hex, msr_before, ppc.spr[SPR_SRR0], ppc.spr[SPR_SRR1],
+                    ppc.gpr[1], mem_r32(OS_CURRENT_THREAD));
+        interp_run_until(idle_pc, 5'000'000);       // run the ISR → OSWakeupThread → nthr::make_ready
+        return true;
+    }
+    return false;
+}
+
+static void nthr_idle_driver() {
     static const bool dbg = getenv("SUNBRIGHT_DBG_IDLE") != nullptr;
     static long total_calls = 0; static long total_irqs = 0;
     Core::DeclareAsCPUThread();   // we run the interpreter here; the parker Undeclared before block()
     int guard = 0, irqs = 0;
-    // A clean, RECOVERABLE kernel context to take each interrupt on: EE (interrupts on), RI
-    // (recoverable — the GC handler rejects RI=0 as "Non-recoverable Exception"), ME, IR/DR
-    // (translation on). Reset every iteration so a previous exception clearing MSR (real mode,
-    // RI=0) doesn't leave the next delivery in a non-recoverable context.
-    constexpr u32 IDLE_MSR = 0x00009032u;           // EE|ME|FP?|IR|DR|RI  (EE|ME|IR|DR|RI)
-    for (; nthr::ready_count() == 0 && guard < 200000; ++guard) {
-        ppc.pc = ppc.npc = idle_pc;
-        ppc.msr.Hex = IDLE_MSR;
-        const u32 msr_before = ppc.msr.Hex;
-        ct.Idle();                                  // fast-forward to the next scheduled device event
-        ct.Advance();                               // process it — a device callback raises the IRQ
-        sys.GetPowerPC().CheckExceptions();         // deliver it: vector pc to the ISR (0x80000500)
-        if (ppc.pc != idle_pc) {
-            if (dbg && irqs < 4)
-                fprintf(stderr, "[idle] IRQ -> pc=%08x msr=%08x(was %08x) srr0=%08x srr1=%08x r1=%08x cur=%08x\n",
-                        ppc.pc, ppc.msr.Hex, msr_before, ppc.spr[SPR_SRR0], ppc.spr[SPR_SRR1],
-                        ppc.gpr[1], mem_r32(OS_CURRENT_THREAD));
-            interp_run_until(idle_pc, 5'000'000);   // run the ISR → OSWakeupThread → nthr::make_ready
-            ++irqs;
-        }
-    }
+    for (; nthr::ready_count() == 0 && guard < 200000; ++guard)
+        if (idle_advance_step()) ++irqs;
     Core::UndeclareAsCPUThread();
     total_calls++; total_irqs += irqs;
     if (dbg && (total_calls & 0x3FF) == 0)
@@ -944,6 +957,39 @@ void nthrt_block_current() {
 // and this returns. Bracketed with Undeclare/Declare like nthrt_block_current.
 void nthrt_yield_current() {
     Core::UndeclareAsCPUThread();
+    // GC OSYieldThread is an explicit "I have nothing useful to do right now" scheduling point: the
+    // guest calls it inside hardware/time poll loops (TCardManager's CARDProbeEx/__EXIProbe EXI
+    // debounce; audio DSP-init waits). On real hardware time keeps passing at such a point — the
+    // decrementer and the VI/DSP/EXI device events keep firing and interrupts preempt — so the polled
+    // condition (a debounce elapsing, a device flag) eventually changes. Under cooperative nthr,
+    // recomp runs on the native stack and nothing advances CoreTiming, so time FREEZES while a guest
+    // spin-yields: the debounce never elapses, no VI IRQ is delivered (the render thread parked in
+    // VIWaitForRetrace never wakes), and when several threads only yield to each other none ever
+    // blocks (ready_count never hits 0) so the all-blocked idle driver never runs → livelock/freeze.
+    // Faithful fix: advance ONE hardware step at every yield — fast-forward CoreTiming to the next
+    // scheduled device event, deliver any pending IRQ, run its ISR (which may wake the render thread
+    // or complete a probe) — exactly the hardware progress a real reschedule sees. Then hand the
+    // token on (block(Ready)) so an equal/higher-priority Ready thread still gets to run.
+    //
+    // ADVANCE TIME ONLY, DEFER THE IRQ (do NOT run the GC interrupt handler here): fast-forward
+    // CoreTiming to the next scheduled device event and process its callback (which updates the time
+    // base + device registers — e.g. the EXI status the probe reads) but with MSR[EE] cleared so
+    // CheckExceptions does not vector into the GC ISR. Running the full ISR on the yielding thread's
+    // host thread corrupts state — the exception prologue saves context into the (card) thread's
+    // OSContext and tangles with nthr owning scheduling (observed: wild write to 0xfffffff8). The
+    // pending IRQ stays pending and is delivered later by the all-threads-blocked idle driver (EE on),
+    // which is the safe place. This is the documented MMIO poll-yield pattern (see sb_poll_fire).
+    {
+        auto& sys = Core::System::GetInstance();
+        auto& ppc = sys.GetPPCState();
+        const u32 saved_msr = ppc.msr.Hex;
+        ppc.msr.Hex &= ~0x8000u;            // mask EE: advance + run device callbacks, but defer delivery
+        Core::DeclareAsCPUThread();
+        sys.GetCoreTiming().Idle();         // fast-forward to the next scheduled device event
+        sys.GetCoreTiming().Advance();      // run its callback (advances TB, updates EXI/VI/DSP regs)
+        Core::UndeclareAsCPUThread();
+        ppc.msr.Hex = saved_msr;
+    }
     nthr::block(nthr::State::Ready);
     Core::DeclareAsCPUThread();           // reacquired the token (ctx restored by the hook)
 }
