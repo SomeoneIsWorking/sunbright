@@ -393,6 +393,22 @@ void call_ppc(CPUState& cpu, u32 address) {
         abort();
     }
     dolphin_state_to_cpu(ppc, cpu);
+    // SUNBRIGHT_DBG_SPCHK (interp path): same SP-balance invariant as the recomp path above. A
+    // non-recomp callee run under interp_run_until must return with r1 unchanged; if it comes back
+    // with a different SP, interp_run_until stopped at the wrong point (pc==ret but the stack not
+    // unwound to the caller's SP — the sp_floor `>=` test accepts sp = sp_floor + k>0). That leaks a
+    // wrong SP back into the recomp caller, whose epilogue then loads its saved non-volatiles from
+    // the wrong slots (the boot endRendering→waitForRetrace r31 clobber: SP came back +8).
+    {
+        static const bool dbg_spchk = getenv("SUNBRIGHT_DBG_SPCHK") != nullptr;
+        if (dbg_spchk && !g_recomp_context_switched && cpu.gpr[1] != sp_floor) {
+            static long hits = 0;
+            if (hits++ < 32)
+                fprintf(stderr, "[spchk/interp] call %08x (ret=%08x) returned SP %08x -> %08x "
+                        "(delta %+d) — interp_run_until stopped with stack not unwound to caller SP\n",
+                        address, ret, sp_floor, cpu.gpr[1], (int)(cpu.gpr[1] - sp_floor));
+        }
+    }
     if (g_interp_profile) {
         // Attribute the steps this interpreted callee took to its entry address. call_ppc is
         // effectively single-threaded for guest code (the CPU token serializes it), so a plain
@@ -599,6 +615,17 @@ void tail_ppc(CPUState& cpu, u32 address) {
     if (g_probe_enabled) g_probe.tail.fetch_add(1, std::memory_order_relaxed);
     RecompFunc fn = recomp_lookup(address);
     if (fn) { fn(cpu); return; }   // tail to recomp → nested call; the caller then returns
+    // SUNBRIGHT_DBG_TAIL: log tail-branches to NON-recomp targets — these siglongjmp back to Run,
+    // unwinding every recomp C frame in between. If one fires inside a recomp call tree whose caller
+    // expected an inline return (a `bl`, not a tail), the caller's epilogue never runs in C and its
+    // continuation resumes under Dolphin JIT from the committed state — the boot endRendering clobber.
+    static const bool dbg_tail = getenv("SUNBRIGHT_DBG_TAIL") != nullptr;
+    if (dbg_tail) {
+        static long hits = 0;
+        if (hits++ < 48)
+            fprintf(stderr, "[tail] tail_ppc -> %08x (non-recomp) lr=%08x sp=%08x r31=%08x r3=%08x\n",
+                    address, cpu.lr, cpu.gpr[1], cpu.gpr[31], cpu.gpr[3]);
+    }
 #ifdef HAVE_DOLPHIN_CORE
     auto& ppc = Core::System::GetInstance().GetPPCState();
     cpu_to_dolphin_state(cpu, ppc);

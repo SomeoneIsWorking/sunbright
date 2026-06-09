@@ -221,6 +221,37 @@
 > OSSleepThread on the retrace queue) and port it, like the TTrack-tick native port. That keeps the
 > wait off the recomp C stack so no handoff abandons a live recomp frame.
 >
+> CORRECTED MECHANISM (2026-06-09) — it is a CALL-MODEL tail-handoff hazard, not waitForRetrace logic.
+> Added `SUNBRIGHT_DBG_SPCHK` interp-path coverage (checks cpu.gpr[1] vs sp_floor after
+> interp_run_until) and `SUNBRIGHT_DBG_TAIL` (logs tail_ppc to non-recomp targets). For the
+> endRendering window:
+>   - `SUNBRIGHT_DBG_SPCHK` fires on NEITHER the recomp nor the interp call path → no call returns with
+>     a changed SP. The earlier "inner call returns SP +8" theory is FALSIFIED.
+>   - `SUNBRIGHT_DBG_TAIL` shows MANY `tail_ppc -> 8033xxxx` (non-recomp) handoffs during the window
+>     (8033bc1c/8033addc/80337d18, lr=80338fb8…). Each siglongjmp's back to `Run`, unwinding the recomp
+>     C frames between it and Run.
+>   - `SUNBRIGHT_DBG_TRAMP=802f80d0-802f8170` shows endRendering dispatched to recomp exactly ONCE and
+>     its epilogue NEVER runs under JIT; `SUNBRIGHT_DBG_CTX` shows ZERO OSLoadContext switches.
+> So: endRendering(recomp) calls waitForRetrace via `bl` (call-and-continue, expecting its C
+> continuation/epilogue to run). Deep in waitForRetrace's tree a `tail_ppc` to a non-recomp 8033xxxx
+> leaf siglongjmp's back to Run, UNWINDING endRendering's (and other `bl`-callers') C frames. Their C
+> epilogues never run; execution resumes under Dolphin JIT from the committed shared register file.
+> Because the unwinding bypasses endRendering's epilogue, the non-volatile r31 is never restored to the
+> value the still-active logo-loop frame holds → it surfaces as 0x802a6324 at the logo loop's resume.
+> tail_ppc's own comment claims unwinding a non-tail `bl` caller is "correct… resumes under the JIT from
+> the shared state" — THIS CASE FALSIFIES THAT when a `bl` caller still needs a non-volatile.
+> force_jit(waitForRetrace) works only because it keeps the entire handoff-heavy subtree OFF the recomp
+> C stack, so no live `bl`-caller frame is unwound.
+> FIX OPTIONS (next session — do NOT ship a half-understood reimplementation):
+>   (a) Call-model fix (the real root, architectural): a tail/context handoff must not silently unwind
+>       `bl`-caller recomp frames that still need their non-volatiles — those frames must run their C
+>       epilogues (restore guest non-volatiles) before control leaves, OR the handoff must guarantee
+>       the guest stack fully encodes every unwound frame's restore so the JIT resume is register-exact.
+>   (b) Targeted own-it-natively: native override of waitForRetrace (func_802fc9a4) so its wait +
+>       8033xxxx handoffs never sit under a recomp `bl` caller — needs faithful RE of its spin + the
+>       post-wait field double-buffering ([this+0x3c..0x5c]→[this+0..0x1c], [this+0x78], [this+0x84]).
+> force_jit(802fc9a4) is the confirmed ISOLATION (a DIAGNOSTIC, NOT committed as a fix).
+>
 > **(superseded sub-note) DETERMINISTIC null archive (heap-not-ready / thread ORDERING, not a race).**
 > A thread crashes with a null `this` in `JKRMemArchive::mountFixed` ⇒ `new JKRMemArchive` returned
 > NULL (heap alloc failed). The fault regs (r26=803e9700, r5=0xffff) point at the **audio thread
