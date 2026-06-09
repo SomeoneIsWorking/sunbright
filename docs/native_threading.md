@@ -142,6 +142,33 @@
 > data in the REPL, not env-gated stderr). That will show directly what `8034c374` returns and why
 > native picks the non-create / 0x18 branch.
 >
+> **REFRAME (2026-06-09) — the register file is CORRUPT; chase r31, not the state-machine logic.**
+> New tooling: a Dolphin-side invalid-access trap (commit 874e90b) makes Dolphin's "Invalid
+> read/write" MMU PanicAlert fatal at the ORIGINATING access (it used to swallow it and return
+> garbage, so the game limped on and died later — that downstream death is the `802a6160` ISI the
+> entries above chased). Running headless, the trap now aborts at the TRUE originator:
+> `Invalid read from 0x28040060, PC=0x802a6338` (in `mountStageArchive`, same function as 802a5f50 /
+> 802a6160). Disasm of the fault:
+> ```
+> 802a6334: lwz r3, 0x1c(r31)    ; r3 = [r31+0x1c]
+> 802a6338: lwz r6, 0x60(r3)     ; FAULTS: ea = 0x28040060
+> ```
+> Execution-time regs at the fault (Dolphin PPCState, reliable — this is the live faulting state, NOT
+> a post-crash REPL snapshot): **r31 = 0x802a6324** — a `.text` CODE address, never a valid `this`.
+> `[0x802a6324+0x1c] = [0x802a6340]` = the instruction word `0x28040000` (the `cmpli` at 802a6340),
+> so r3 = 0x28040000 and `[r3+0x60]` = the wild read. So **r31 (a non-volatile GPR holding `this`) is
+> clobbered to a code address.** Note 0x802a6324 is exactly the return addr of the **virtual call**
+> @802a6320 (`lwz r12,0(r3); lwz r12,0xc(r12); mtlr r12; bclrl`) — i.e. r31 survives that call
+> corrupted. This means the `[803e9708]=0x18` garbage state the entries above analyzed is almost
+> certainly a CONSEQUENCE of register/`this` corruption, not the root — static analysis of the state
+> machine assumed a good register file that isn't there. Since `SUNBRIGHT_DISABLE_RECOMP=1` boots, the
+> clobber is in our recomp/native-threading hybrid (a non-volatile-register-preservation bug across a
+> call boundary), not the game. NEXT: trace r31 across the calls inside mountStageArchive (the virtual
+> call @802a6320 and the recursive 802a5f50 calls @802a6650) to find which RETURN first leaves r31 ≠
+> its caller value — that callee's recomp↔interp boundary drops the non-volatile. Confirm whether the
+> clobbering callee is recomp or JIT, and whether the hybrid copies guest non-volatiles correctly on
+> return.
+>
 > **(superseded sub-note) DETERMINISTIC null archive (heap-not-ready / thread ORDERING, not a race).**
 > A thread crashes with a null `this` in `JKRMemArchive::mountFixed` ⇒ `new JKRMemArchive` returned
 > NULL (heap alloc failed). The fault regs (r26=803e9700, r5=0xffff) point at the **audio thread
