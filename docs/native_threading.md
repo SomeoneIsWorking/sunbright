@@ -80,8 +80,15 @@
 > NEVER stored in this function (no `stw _,4(r31)`), so it is created elsewhere and that creation was
 > skipped/failed under native scheduling. This is real forward progress: the earlier crash was at
 > 802a6338 (mountFixed null) EARLIER in the same sequencer; it now advances past audio init to a later
-> state. Next (REPL, not env logs): find `this` (caller 80005628 passes it) + read `[this+0/4]`; find
-> who stores `[this+4]` (the director/scene creation) across generated/, and why that state didn't run.
+> state.
+> MECHANISM (refined): 802a5f50 is a **jump-table state machine** (`bctr` @802a63e0, indexed on state
+> `[r13-0x6030]`). One case CREATES `[this+4]`: `new 0x48`-byte object (@802a63f8) → init → `stw r25,
+> 4(r31)` (@802a6410; also 6464/64ec/6554/65bc/6630/667c — several states set it). Other cases CALL
+> `[this+4]->vtable->method@0x64()` (@802a60ec, guarded on state bit0; and @802a615c = the fault). So a
+> CALL-state ran before the CREATE-state populated `[this+4]` → null vtable → ISI. `[this+4]` is the
+> per-scene director/loader the sequencer drives. Next (REPL, not env logs): find what gates the
+> create-state vs the call-state — the state-transition condition (likely an async load-complete /
+> message flag) whose ordering native scheduling changed.
 >
 > **(superseded sub-note) DETERMINISTIC null archive (heap-not-ready / thread ORDERING, not a race).**
 > A thread crashes with a null `this` in `JKRMemArchive::mountFixed` ⇒ `new JKRMemArchive` returned
