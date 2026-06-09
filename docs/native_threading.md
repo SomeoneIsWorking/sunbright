@@ -369,6 +369,22 @@
 > native-vs-Dolphin; /poll for A/B snapshots. The fix is to own the archive-mount / heap-ready ordering
 > natively (the long-standing native-threading frontier), not the frame state machine.
 >
+> FULL CHAIN (2026-06-09) — boot orchestration: `80005600` (per-frame, this=gpApplication) →
+> `802a6398` = the **scene state machine** (loops on `[this+8]`, the `bctr@802a63e0` jump-table the doc
+> referenced; state 7 = exit). Early state-cases create the scene/director via **`802a6dd0`**
+> (mountStageArchive+0x1438): `JKRHeap::becomeCurrentHeap([r13-24360])` → **alloc the 108-byte scene
+> obj from the JKR current heap `[r13-24368]` = 8040e290** → `JKRMemArchive::mountFixed` (802c40ec) the
+> loaded archive → store the director. The later state (2) calls `802a5f50` (draw), which needs the
+> director. Native reached state 2 ⇒ the create-case RAN, but produced a null director ⇒ **the JKR heap
+> `[8040e290]` / `[r13-24360]` was not ready when 802a6dd0 ran** (Dolphin: current-heap=804278c0,
+> heap-obj[8040e298]=80427820, dir=80902a40, state=5). `[8040e290]` is the JKR **current heap** global,
+> set by `becomeCurrentHeap`/`becomeSystemHeap`/`~JKRHeap` (802c3730/802c3720/802c3524). So the fix is a
+> **heap-ready-before-scene-create ordering** fix (the user's condvar / make-sequential instinct): under
+> native scheduling the thread/step that creates+installs that heap hasn't run when the scene-create
+> fires. IMMEDIATE NEXT (before adding any sync — don't guess): find which thread/step creates the heap
+> object `[r13-24360]`=80427820 and installs it as current, and confirm via A/B that under native it is
+> null/late at the moment 802a6dd0 runs; then enforce that ordering (condvar/sequential) at that seam.
+>
 > **(superseded sub-note) DETERMINISTIC null archive (heap-not-ready / thread ORDERING, not a race).**
 > A thread crashes with a null `this` in `JKRMemArchive::mountFixed` ⇒ `new JKRMemArchive` returned
 > NULL (heap alloc failed). The fault regs (r26=803e9700, r5=0xffff) point at the **audio thread
