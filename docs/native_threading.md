@@ -330,6 +330,26 @@
 > by polling (Software boots to it in <2s); inspect via pure-Dolphin A/B and/or a one-shot state dump in
 > the FATAL handler.
 >
+> DEEPER TRACE (2026-06-09, force_jit bisection) — confirmed facts:
+> • `this` = gpApplication = **803e9700** (RELIABLE: the force_jit crash dump shows r31=803e9700; the
+>   normal-path dump's regs are stale Dolphin-sync values). `func_802a5f50` layout: `[this+8]` u8 = boot
+>   **state byte** (2 = wait-for-loader-thread → OSIsThreadTerminated/OSJoinThread; 3 = director
+>   bitfield-init `[8040e190]`; else → DRAW path lbl_802a615c); `[this+4]` = TDirector; `[this+28]` =
+>   JDrama TDisplay; `[this+32 + i*4]` (i<4) = 4 viewports.
+> • PRIMARY bug: **`[this+4]` (director) is NULL under native** (Dolphin = 0x80902a40). Force_jit'ing
+>   endRendering (802f80d0) moves the crash from the `[this+28]` read (802a6338) to the director-null
+>   deref at **802a6160** (`[this+4]->vtable`, ea=0). So the deepest wrong state is the un-created
+>   director; the `[this+28]` clobber is a separate timing-dependent recomp effect of endRendering's
+>   RECOMP path (its own body writes only the TDisplay `this`+`[sp]`, never gpApplication+28 — a callee /
+>   register-restore artifact, not a direct bad store; secondary).
+> • The director is created off the **loader thread 803fcbe8** (`mountStageArchive` body, entry 802a7878,
+>   r3=this=803e9700). Under native it **opens the disc then exits almost immediately (val=0)** without
+>   completing the archive load + director creation — so OSIsThreadTerminated/join now succeed (the
+>   thread-exit fix) but the joined thread did nothing useful. NEXT: RE `802a7878` — why it returns early
+>   under native scheduling (native_dvd read result? an OS wait native short-circuits? object-create vs
+>   heap ordering, cf. the prior "null archive" frontier). That early exit, not the frame state machine,
+>   is the thing to own/port natively.
+>
 > **(superseded sub-note) DETERMINISTIC null archive (heap-not-ready / thread ORDERING, not a race).**
 > A thread crashes with a null `this` in `JKRMemArchive::mountFixed` ⇒ `new JKRMemArchive` returned
 > NULL (heap alloc failed). The fault regs (r26=803e9700, r5=0xffff) point at the **audio thread
