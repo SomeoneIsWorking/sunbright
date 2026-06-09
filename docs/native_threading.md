@@ -398,6 +398,13 @@
 >    803630c8/80363138/8034a4d4/80362c34, [this+52] vtables, 8001e920, endRendering 802f80d0; force_jit of
 >    endRendering moves the crash ⇒ clobberer is in endRendering's subtree. Recompiler register-preservation
 >    bug to bisect (or own that callee). THIS is the concrete next target.
+>    DEAD-END (don't repeat): force_jit of waitForRetrace (802fc9a4) HANGS — the VI-retrace wait breaks
+>    under pure JIT — INCONCLUSIVE, not proof it's the clobberer. waitForRetrace's recomp is correct
+>    (saves r31@802fc9b0, restores@802fcb44; VIWaitForRetrace 8034f684 is recompiled, parks via native
+>    OSSleepThread). Solid: force_jit of endRendering (802f80d0) cleanly moves the crash to the
+>    director-null (802a6160), so the r31 clobberer is in endRendering's subtree — bisect its callees
+>    (802fc9a4/802ca1e0/802f917c/8035d8f0) with FATAL_HOLD + read the LIVE recomp r31 (g_cur_recomp_cpu),
+>    not the stale ppc dump, to pin it.
 > 2) **null-director chicken-egg:** scene state machine `802a6398` (loops on [this+8]; jump table @803df424,
 >    states 0..9). Common tail `lbl_802a6644` each iteration: `if(r29==0) call 802a5f50` (DRAW) → director
 >    cleanup → **clears [this+4]=0 @802a667c** → state-2 case `lbl_802a669c` (re)creates the director via
