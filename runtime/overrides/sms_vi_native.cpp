@@ -1,0 +1,132 @@
+// Native VI frame-sync — owns the 1/60s frame heartbeat (user-approved scope, handoff.md).
+//
+// The GC frame clock is standard Nintendo SDK VI code: __VIRetraceHandler (ISR @0x8034ED18,
+// raised by the emulated VI hardware interrupt) bumps retraceCount, runs the pre/post-retrace
+// callbacks, applies the VIFlush'd shadow registers to VI hardware, and wakes the threads
+// sleeping in VIWaitForRetrace. Under the native scheduler that chain is fragile: the IRQ must
+// be delivered at an interp boundary, the ISR runs under SingleStep on a borrowed context, and
+// the render thread's wake raced into a wild read (ea=0x32323502) in TVideo::waitForRetrace.
+//
+// This override owns the whole retrace transaction natively on the WAITING thread instead:
+// VIWaitForRetrace paces on Dolphin's host-side vi_end_field_event (the VI device still
+// generates fields; we keep Dolphin for GPU/present), then performs the ISR's documented
+// bookkeeping itself — count bump, pre-CB, shadow-register flush apply, SI refresh, post-CB,
+// queue wakeup. The guest VI DI interrupt enables are cleared on every entry so the emulated
+// IRQ does not double-run the original ISR. No HW interrupt, no OSSleepThread-on-retrace.
+//
+// Globals extracted from the SMS GMSE01 DOL (scratch/bin/ppcdis.py over __VIRetraceHandler):
+//   retraceCount   0x8040E8D0 (r13-0x58f0)      flushFlag      0x8040E8D4
+//   retraceQueue   0x8040E8D8                   preRetraceCB   0x8040E8E0
+//   postRetraceCB  0x8040E8E4                   changedMask    0x8040E908/0x8040E90C (64-bit)
+//   shadowRegs     0x80403340 (= VI BSS 0x804032C8 + 0x78), halfword per VI reg, MSB-first mask
+//   SI sample regs 0x8040E910 <- [0x8040340C], 0x8040E914 <- [0x804033E0] (on flush apply)
+// The real ISR latches the flush on a matching even/odd field (0x8040E900); we apply it on the
+// next retrace unconditionally — same frame granularity, no field parity dependence.
+
+#include "../overrides.h"
+#include "../intrinsics.h"
+#include "../dolphin_hook.h"
+#include <chrono>
+#include <thread>
+
+#ifdef HAVE_DOLPHIN_CORE
+
+namespace {
+
+constexpr u32 RETRACE_COUNT = 0x8040E8D0u;
+constexpr u32 FLUSH_FLAG    = 0x8040E8D4u;
+constexpr u32 RETRACE_QUEUE = 0x8040E8D8u;
+constexpr u32 PRE_CB        = 0x8040E8E0u;
+constexpr u32 POST_CB       = 0x8040E8E4u;
+constexpr u32 CHANGED_HI    = 0x8040E908u;
+constexpr u32 CHANGED_LO    = 0x8040E90Cu;
+constexpr u32 SHADOW_REGS   = 0x80403340u;
+constexpr u32 VI_MMIO       = 0xCC002000u;
+constexpr u32 OS_WAKEUP     = 0x803493CCu;  // OSWakeupThread (routed native via native_os)
+constexpr u32 SI_REFRESH    = 0x80369ADCu;  // SIRefreshSamplingRate
+constexpr u32 VI_WAIT       = 0x8034F684u;  // VIWaitForRetrace (guest)
+constexpr u32 VI_GET_COUNT  = 0x803504ECu;  // VIGetRetraceCount (guest)
+
+
+// Clear the INT_ENB bit (bit 28) of the four VI display-interrupt registers so the emulated VI
+// never raises the retrace IRQ — the original __VIRetraceHandler must not run in parallel with
+// this native port. VIConfigure rewrites these on a render-mode change; re-clearing on every
+// VIWaitForRetrace entry re-owns them the next frame.
+void disable_vi_interrupts() {
+    for (u32 reg = 0xCC002030u; reg <= 0xCC00203Cu; reg += 4) {
+        u32 v = sb_r32(reg);
+        if (v & 0x10000000u) sb_w32(reg, v & ~0x10000000u);
+    }
+}
+
+inline void guest_call(CPUState& cpu, u32 addr) {
+    cpu.lr = VI_WAIT;        // valid code address for interp return detection if non-recomp
+    call_ppc(cpu, addr);
+}
+
+// The ISR's flush-apply: write every changed shadow halfword to the VI hardware registers
+// (this is how VISetNextFrameBuffer/VIFlush reach Dolphin's VI — the XFB swap), then clear the
+// changed mask + flush flag, refresh the SI sampling registers and call SIRefreshSamplingRate.
+void apply_flush(CPUState& cpu) {
+    const u32 hi = sb_r32(CHANGED_HI), lo = sb_r32(CHANGED_LO);
+    for (int i = 0; i < 32; i++)
+        if (hi & (0x80000000u >> i)) sb_w16(VI_MMIO + i * 2, sb_r16(SHADOW_REGS + i * 2));
+    for (int i = 0; i < 32; i++)
+        if (lo & (0x80000000u >> i)) sb_w16(VI_MMIO + (32 + i) * 2, sb_r16(SHADOW_REGS + (32 + i) * 2));
+    sb_w32(CHANGED_HI, 0);
+    sb_w32(CHANGED_LO, 0);
+    sb_w32(FLUSH_FLAG, 0);
+    sb_w32(0x8040E910u, sb_r32(0x8040340Cu));
+    sb_w32(0x8040E914u, sb_r32(0x804033E0u));
+    guest_call(cpu, SI_REFRESH);
+}
+
+// One native retrace: the documented __VIRetraceHandler bookkeeping, minus the HW interrupt.
+void retrace_tick(CPUState& cpu) {
+    const u32 count = sb_r32(RETRACE_COUNT) + 1;
+    sb_w32(RETRACE_COUNT, count);
+    if (u32 cb = sb_r32(PRE_CB))  { cpu.gpr[3] = count; guest_call(cpu, cb); }
+    if (sb_r32(FLUSH_FLAG) != 0)  apply_flush(cpu);
+    if (u32 cb = sb_r32(POST_CB)) { cpu.gpr[3] = count; guest_call(cpu, cb); }
+    cpu.gpr[3] = RETRACE_QUEUE;   // wake any guest thread still sleeping on the retrace queue
+    guest_call(cpu, OS_WAKEUP);
+}
+
+// VIWaitForRetrace 0x8034F684 — the native frame heartbeat, NOT a wait on emulated time.
+// Each call IS one frame: yield once so other ready guest threads run their per-frame work,
+// perform the retrace transaction (count bump, callbacks, flush apply), and return. Boot
+// progress is event-driven and deterministic — it never depends on the emulated VI clock
+// crawling forward. Real-time pacing (when not turbo) is a HOST-clock sleep, never a guest
+// time loop.
+SUNBRIGHT_OVERRIDE(ov_VIWaitForRetrace, VI_WAIT) {
+    disable_vi_interrupts();
+    static const bool paced = !getenv("SUNBRIGHT_TURBO");
+    if (paced) {
+        // Host-clock 60 Hz frame pacing (fields are 1/59.94s; one retrace per call).
+        using clock = std::chrono::steady_clock;
+        static clock::time_point next = clock::now();
+        const auto period = std::chrono::nanoseconds(16'683'350);
+        std::this_thread::sleep_until(next);
+        const auto now = clock::now();
+        next = (now > next + period) ? now + period : next + period;
+    }
+    // Frame barrier: give the rest of the frame to EVERY other runnable thread — including
+    // lower-priority ones (the boot setup thread at prio 0x11 vs main's 16), which a plain
+    // priority yield would starve forever. On the GC the retrace wait blocked the caller, so
+    // all runnable work proceeded during the frame; block_drain is the deterministic
+    // equivalent: resume exactly when everyone else has run to its own block/yield point.
+    nthrt_block_drain(&cpu);
+    // The heartbeat is also the device-IRQ pump: deliver pending device completions (DSP, SI,
+    // any residual DVD interrupt) once per frame, deterministically.
+    sunbright_poll_yield();
+    retrace_tick(cpu);
+}
+
+// VIGetRetraceCount 0x803504EC — plain load of the (natively bumped) counter.
+SUNBRIGHT_OVERRIDE(ov_VIGetRetraceCount, VI_GET_COUNT) {
+    cpu.gpr[3] = sb_r32(RETRACE_COUNT);
+}
+
+}  // namespace
+
+#endif  // HAVE_DOLPHIN_CORE

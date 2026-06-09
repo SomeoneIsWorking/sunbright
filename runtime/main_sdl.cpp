@@ -694,6 +694,13 @@ int main(int argc, char* argv[]) {
     // "Speed up Disc Transfer Rate" — faithful, just faster, no spin acrobatics.)
     Config::SetBase(Config::MAIN_FAST_DISC_SPEED, true);
 
+    // Deterministic CPU⇄GPU pacing: with the native VI frame-sync the game's frame loop no longer
+    // waits on emulated time, so nothing throttles GX submission against GPU consumption — the GP
+    // FIFO overflows ("CPU thread is too fast!" CommandProcessor assert). SyncGPU blocks the CPU
+    // thread on FIFO drain (an event, not a time wait), which is exactly the pacing model the
+    // deterministic boot needs.
+    Config::SetBase(Config::MAIN_SYNC_GPU, true);
+
     // ── Graphics quality ────────────────────────────────────────────────────
     // Internal resolution scale (SUNBRIGHT_RES_SCALE, default 3 = 3× native EFB).
     {

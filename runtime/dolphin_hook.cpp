@@ -1,5 +1,6 @@
 #include "dolphin_hook.h"
 #include "memory_bridge.h"
+#include "intrinsics.h"
 #include "overrides.h"
 #include "native_threads.h"
 #include "native_os.h"
@@ -267,9 +268,53 @@ static constexpr u32 OS_LOAD_CONTEXT = 0x80343fe4u;
 static inline bool sb_is_wild_branch_target(u32 a) { return a < 0x80000000u; }
 #endif
 
+#ifdef HAVE_DOLPHIN_CORE
+// Recomp guest-time advancement — the recomp equivalent of the JIT's per-block downcount.
+// Pure-recomp execution previously advanced NO guest time: TB (SystemTimers::GetFakeTimeBase)
+// derives from CoreTiming ticks, so any recomp loop waiting on time (the TCardManager EXI
+// insertion debounce; any OSGetTime timeout) spun forever and starved every scheduled device
+// event (VI fields stop → frame-wait threads never wake). Charge a per-call cycle cost against
+// PowerPC downcount and run CoreTiming::Advance when the slice expires — device events (VI/DSP/
+// DVD/throttle) fire, interrupts become *pending* only (no CheckExceptions; delivery stays at
+// the boundaries — see the interrupt-delivery hazard in CLAUDE.md). Guarded: only the declared
+// CPU thread (token holder) may advance, and never reentrantly (device callbacks can call back
+// into guest helpers).
+static constexpr int kCyclesPerCall = 96;   // ~avg recomp function cost; order-of-magnitude is enough
+static thread_local bool t_in_advance = false;
+static inline void charge_guest_time() {
+    // Armed only once the GC OS has threading + exception handlers installed (current-thread
+    // pointer set). Charging during early boot shifts device/decrementer events into the
+    // real-mode, vectors-not-yet-installed init window → wild vectoring (run12, 2026-06-09).
+    static bool armed = false;
+    if (!armed) {
+        u32 cur = 0;
+        if (u8* p = sb_ram_fast(0x800000E4u)) { memcpy(&cur, p, 4); cur = __builtin_bswap32(cur); }
+        if (!cur) return;
+        armed = true;
+    }
+    auto& sys = Core::System::GetInstance();
+    auto& ppc = sys.GetPPCState();
+    ppc.downcount -= kCyclesPerCall;
+    if (ppc.downcount <= 0 && !t_in_advance && Core::IsCPUThread()) {
+        t_in_advance = true;
+        // Mask EE around Advance: it ends in CheckExternalExceptions(), which would DELIVER the
+        // interrupt right here (pc=vector, MSR→real mode) on the mid-tree global ppc with nobody
+        // to run the ISR — leaving every later MMIO bridge access untranslated (the cc006800
+        // "Unable to resolve" storm, run13). Pending IRQs stay pending; the idle driver and the
+        // interp paths deliver them at a proper boundary. (Same pattern as sb_poll_fire's MMIO arm.)
+        const u32 saved_msr = ppc.msr.Hex;
+        ppc.msr.Hex &= ~0x8000u;
+        sys.GetCoreTiming().Advance();
+        ppc.msr.Hex = saved_msr;
+        t_in_advance = false;
+    }
+}
+#endif
+
 void call_ppc(CPUState& cpu, u32 address) {
 #ifdef HAVE_DOLPHIN_CORE
     if (sb_is_wild_branch_target(address)) sb_fatal_wild_branch(address, cpu);
+    charge_guest_time();
 #endif
     // SUNBRIGHT_HUDCALLS: log each DISTINCT function called during the in-game HUD draw (g_in_hud),
     // to find the indirect element-draw functions (coins/water gauge/lives) that aren't perform's
@@ -498,6 +543,13 @@ bool interp_run_until(u32 ret, long budget, u32 sp_floor) {
             static bool first = true;
             if (first) { first = false;
                 fprintf(stderr, "[native_os] first interpreter-path intercept at %08x\n", ppc.pc); }
+            static const bool dbg_isr = getenv("SUNBRIGHT_DBG_ISR") != nullptr;
+            if (dbg_isr) {
+                static long hits = 0;
+                if (hits++ < 256)
+                    fprintf(stderr, "[isr-intercept] pc=%08x prev_pc=%08x lr=%08x r3=%08x r1=%08x ret=%08x\n",
+                            ppc.pc, prev_pc, ppc.spr[SPR_LR], ppc.gpr[3], ppc.gpr[1], ret);
+            }
             CPUState t; dolphin_state_to_cpu(ppc, t); t.pc = ppc.pc;
             nf(t);
             cpu_to_dolphin_state(t, ppc);
@@ -523,11 +575,16 @@ bool interp_run_until(u32 ret, long budget, u32 sp_floor) {
 // A guest `b .` (0x48000000) to park the idle PC at — a delivered IRQ needs a valid srr0 to rfi to.
 // We never execute it (interp_run_until stops the moment pc returns there), so any one will do.
 static u32 sunbright_idle_spin_pc() {
+    // PLANT the spin — do not scavenge one from game text. The old scan (0x80003100..0x80040000)
+    // found no 0x48000000 in SMS's init text (OS halt loops live at 0x8034xxxx, above the cap) and
+    // fell back to 0x80003100 = real code, so the "idle spin" actually EXECUTED the program forward
+    // on whatever stale registers ppc held — wandering into GXDrawDone's OSSleepThread call and
+    // corrupting its wait queue (the 0x32323502 wild read, 2026-06-09). 0x80002FF8 sits in the
+    // unused low-mem gap between the exception vectors (end 0x80001800) and the DOL text (0x80003100).
     static u32 cached = 0;
     if (cached) return cached;
-    for (u32 a = 0x80003100u; a < 0x80040000u; a += 4)
-        if (mem_r32(a) == 0x48000000u) { cached = a; break; }
-    if (!cached) cached = 0x80003100u;
+    cached = 0x80002FF8u;
+    mem_w32(cached, 0x48000000u);   // b .
     return cached;
 }
 void sunbright_poll_yield() {
@@ -766,7 +823,12 @@ static void nthr_ctx_save(nthr::GuestThread* t) {
     // The running thread's OSThread* is authoritative in 0x800000E4 (it set it). Capture it so the
     // restore hook writes the right current-thread pointer back (thread 0's identity isn't known
     // until boot installs it, after adoption). No map/lock here — the hooks run under nthr's lock.
-    if (u32 cur = mem_r32(OS_CURRENT_THREAD)) gr->os_thread = cur;
+    // Raw read, NOT mem_r32: a runtime-internal read must not feed the guest spin-loop detector —
+    // repeated yields (e.g. a native frame-wait loop) would confirm a "poll" on this EA and
+    // sb_poll_fire would advance CoreTiming mid-context-switch on an Undeclared thread.
+    u32 cur = 0;
+    if (u8* p = sb_ram_fast(OS_CURRENT_THREAD)) { memcpy(&cur, p, 4); cur = __builtin_bswap32(cur); }
+    if (cur) gr->os_thread = cur;
 }
 static void nthr_ctx_restore(nthr::GuestThread* t) {
     auto* gr = runtime_of(t);
@@ -776,8 +838,18 @@ static void nthr_ctx_restore(nthr::GuestThread* t) {
     sys.GetPPCState().msr.Hex = gr->saved_msr;   // restore this thread's MSR (EE/critical-section)
     sys.GetPowerPC().MSRUpdated();                // keep Dolphin's derived MSR flags coherent
     // We own the current-thread pointer now (the GC scheduler that maintained it is never run),
-    // so make OSGetCurrentThread coherent with whoever is about to run.
-    if (gr->os_thread) mem_w32(OS_CURRENT_THREAD, gr->os_thread);
+    // so make OSGetCurrentThread coherent with whoever is about to run. The current-CONTEXT
+    // globals (0x800000D4 virtual / 0x800000C0 physical — what OSSetCurrentContext maintains)
+    // must follow too: the exception prologue saves srr0 into *0xC0 and __OSDispatchInterrupt
+    // exits via OSLoadContext(*0xD4). If they point at a previously-running thread's OSContext,
+    // an ISR taken later (e.g. in the idle driver) "returns" into that thread's STALE context —
+    // re-running its blocked OSSleepThread call and corrupting the wait queue (the 0x32323502
+    // wild read, 2026-06-09). OSContext is at OSThread+0.
+    if (gr->os_thread) {
+        mem_w32(OS_CURRENT_THREAD, gr->os_thread);
+        mem_w32(0x800000D4u, gr->os_thread);
+        mem_w32(0x800000C0u, gr->os_thread & 0x7FFFFFFFu);
+    }
     static const bool dbg = getenv("SUNBRIGHT_DBG_SWITCH") != nullptr;
     if (dbg) {
         static long n = 0;
@@ -827,13 +899,53 @@ static bool idle_run(long max_steps) {
     const u64 t0 = sys.GetCoreTiming().GetTicks();
     ppc.pc = ppc.npc = idle_pc;
     ppc.msr.Hex = IDLE_MSR;
+    // Point the OS current-context globals at a coherent OSContext for the duration of the idle
+    // spin: an exception saves srr0(=idle_pc) into *0x800000C0 and the dispatcher exits via
+    // OSLoadContext(*0x800000D4) — they MUST reference the same context or the rfi resumes some
+    // parked thread's stale state (see nthr_ctx_restore). The current thread's OSContext is
+    // scratch while parked (nthr's authoritative copy is host-side gr->ctx), so borrow it.
+    {
+        u32 cur = 0;
+        if (u8* p = sb_ram_fast(OS_CURRENT_THREAD)) { memcpy(&cur, p, 4); cur = __builtin_bswap32(cur); }
+        if (cur) {
+            mem_w32(0x800000D4u, cur); mem_w32(0x800000C0u, cur & 0x7FFFFFFFu);
+            // The exception prologue runs ON ppc's registers: it stwu's a frame at r1 and ISR code
+            // reads SDA globals off r2/r13. The borrowed register file is NOT guaranteed valid here
+            // (a just-exited thread leaves r1=0 → exception writes to 0xfffffff8). Give the idle
+            // context a dedicated scratch stack in the unused low-mem gap (below our spin at
+            // 0x80002FF8) and the real SDA bases from the current OSThread's saved context.
+            ppc.gpr[1]  = 0x80002F00u;
+            ppc.gpr[2]  = mem_r32(cur + 0x08u);   // OSContext.gpr[2]  (SDA2 base)
+            ppc.gpr[13] = mem_r32(cur + 0x34u);   // OSContext.gpr[13] (SDA base)
+        }
+    }
     long n = 0;
+    auto& ct = sys.GetCoreTiming();
+    if (dbg) { static int dumps = 0; if (dumps++ < 3)
+        fprintf(stderr, "[idle] ticks=%lld\n%s", (long long)ct.GetTicks(),
+                ct.GetScheduledEventsSummary().c_str()); }
     for (; n < max_steps; n++) {
         if (nthr::ready_count() > 0) break;
         ppc.msr.Hex = IDLE_MSR;                     // keep EE on at the spin (the ISR's rfi may clear it)
-        interp.SingleStep();                        // advance CoreTiming; deliver + vector any pending IRQ
-        if (ppc.pc != idle_pc)                      // an interrupt vectored us into the ISR
+        // Skip straight to the next scheduled device event instead of burning one SingleStep per
+        // guest cycle (that capped the whole emulator at ~0.06×). Idle()+Advance() DOES move the
+        // global timer now: charge_guest_time keeps the downcount/slice bookkeeping primed outside
+        // the JIT loop (the old "ticks +0" failure was unprimed slices, not a CoreTiming property).
+        // Advance's CheckExternalExceptions delivers any pending IRQ here — EE is on and we're
+        // parked at the recoverable idle spin, which is exactly where delivery belongs.
+        ct.Idle();
+        ct.Advance();
+        if (ppc.pc == idle_pc) interp.SingleStep(); // no event fired an IRQ: nudge one step anyway
+        if (ppc.pc != idle_pc) {                    // an interrupt vectored us into the ISR
+            if (dbg) {
+                static long v = 0;
+                if (v++ < 64)
+                    fprintf(stderr, "[idle] IRQ vectored pc=%08x srr0=%08x ctx_c0=%08x ctx_d4=%08x cur_e4=%08x\n",
+                            ppc.pc, ppc.spr[SPR_SRR0], mem_r32(0x800000C0u), mem_r32(0x800000D4u),
+                            mem_r32(OS_CURRENT_THREAD));
+            }
             interp_run_until(idle_pc, 5'000'000);   // run it to completion (native_os routes OSWakeupThread)
+        }
     }
     const bool woke = nthr::ready_count() > 0;
     if (dbg) { static long c = 0; if ((c++ & 0xFF) == 0)
@@ -948,6 +1060,16 @@ void nthrt_block_current() {
     Core::UndeclareAsCPUThread();
     nthr::block(nthr::State::Blocked);
     Core::DeclareAsCPUThread();           // reacquired the token (ctx restored by the hook)
+}
+
+// Frame barrier (native VIWaitForRetrace): block until every other Ready thread has run to its
+// own block/yield point. The caller's live recomp context must be synced into ppc first so the
+// ctx-save hook stashes real state (same rule as nthrt_yield_current).
+void nthrt_block_drain(CPUState* caller) {
+    if (caller) cpu_to_dolphin_state(*caller, Core::System::GetInstance().GetPPCState());
+    Core::UndeclareAsCPUThread();
+    nthr::block_drain();
+    Core::DeclareAsCPUThread();
 }
 
 // Priority preemption point: the current guest thread yields the token but stays RUNNABLE

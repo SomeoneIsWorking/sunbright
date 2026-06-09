@@ -87,6 +87,7 @@ inline void gx_tap_word(u32 v) {     // a u32 written to the gather pipe
 #  include "Core/HW/GPFifo.h"
 #  include "Core/PowerPC/MMU.h"
 #  include "Core/PowerPC/PowerPC.h"
+#  include "Core/Core.h"
 #  include "Core/CoreTiming.h"
 #  include "Core/System.h"
 
@@ -130,6 +131,11 @@ bool g_in_poll_yield = false;   // re-entrancy guard (the ISR reads memory too)
 u32  g_poll_last = 0;
 u32  g_poll_reps = 0;
 void sb_poll_fire(u32 ea) {
+    // Advancing CoreTiming requires owning the CPU: a confirmed poll on a thread that is not the
+    // declared CPU thread (e.g. runtime bookkeeping reads during an nthr context switch, after the
+    // yielder Undeclared) must not fire — a VI/device callback taken here can CPUThreadGuard-
+    // deadlock against the real CPU loop (Core::OnFrameEnd → PauseAndLock, found 2026-06-09).
+    if (!Core::IsCPUThread()) { g_poll_reps = 0; return; }
     g_in_poll_yield = true;
     if (ea >= 0xCC000000u) {                    // MMIO device register: advance only (defer IRQ)
         auto& sys = Core::System::GetInstance();

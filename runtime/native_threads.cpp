@@ -71,6 +71,12 @@ void grant_token_locked(std::unique_lock<std::mutex>& lk, GuestThread* outgoing)
             next->cv.notify_one();
             return;
         }
+        // Frame barrier: nothing Ready — release DrainWait threads (they resume exactly when
+        // every other thread has run to its own block/yield point) before the idle handler.
+        bool drained = false;
+        for (auto* t : g_threads)
+            if (t->state == State::DrainWait) { t->state = State::Ready; t->ready_seq = g_seq++; drained = true; }
+        if (drained) continue;
         bool any_alive = false;
         for (auto* t : g_threads) if (t->state != State::Dead) { any_alive = true; break; }
         if (!any_alive || !g_idle_handler) {
@@ -152,6 +158,8 @@ void block(State newState) {
     while (g_running != self) self->cv.wait(lk);   // park until the token returns to us
     // Resumed: grant_token_locked already restored our ctx via g_restore_hook.
 }
+
+void block_drain() { block(State::DrainWait); }
 
 void make_ready(GuestThread* t) {
     std::unique_lock<std::mutex> lk(g_mtx);

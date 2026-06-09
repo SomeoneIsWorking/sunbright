@@ -351,6 +351,10 @@ void native_os_init() {
     // it fires for JIT-only threads running under the interpreter (e.g. the audio thread).
     extern void native_dvd_register();
     native_dvd_register();
+    // ── Native ARAM transfer service: synchronous ARQPostRequest (boot determinism — every
+    // archive/audio-wave ARAM wait completes immediately; no AR DMA interrupt, no timing). ──
+    extern void native_aram_register();
+    native_aram_register();
     // ── Diagnostics (env-gated, kept permanently — see memory keep-diagnostics) ──
     if (getenv("SUNBRIGHT_DBG_CONSOLE"))
         native_os_register(0x8033ba90u, dbg_write_console);   // surface GC console / crash report

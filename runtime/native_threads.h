@@ -20,7 +20,9 @@
 
 namespace nthr {
 
-enum class State { Ready, Running, Blocked, Dead };
+// DrainWait: a frame-barrier wait (block_drain) — runnable again only once no other thread is
+// Ready (everyone else has run to its own block/yield point). Deterministic, no time involved.
+enum class State { Ready, Running, Blocked, DrainWait, Dead };
 
 struct GuestThread;  // opaque (defined in native_threads.cpp)
 
@@ -46,6 +48,13 @@ void block(State newState);
 // Mark a Blocked thread Ready (a wakeup/resume). Cooperative: the running thread keeps
 // the token until it next yields, then the scheduler may pick the woken thread.
 void make_ready(GuestThread*);
+
+// Frame barrier: block the current thread until every other Ready thread has run to its own
+// block/yield point (the scheduler found nothing Ready). The native VIWaitForRetrace uses this
+// as the deterministic equivalent of "the frame wait gives the rest of the frame to every
+// runnable thread, regardless of priority" — without it a never-blocking frame loop starves
+// lower-priority threads (the boot setup thread) forever.
+void block_drain();
 
 // Number of threads currently Ready (runnable, excluding the running one). A blocking OS
 // primitive uses this to decide whether there is another guest context to switch to: if zero,
