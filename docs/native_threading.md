@@ -1,5 +1,34 @@
 # Native OS threading (PC-port model)
 
+> ## 🟢 2026-06-10 — external-interrupt delivery is NOW FULLY PC-NATIVE
+> The GC guest interrupt path (0x500 vector → ExternalInterruptHandler → __OSDispatchInterrupt →
+> handler → OSLoadContext rfi) is RETIRED from live execution. `native_dispatch_one/pending`
+> (dolphin_hook.cpp) is a behavior port of OSInterrupt.c: it reads Dolphin's PI cause/mask
+> host-side, builds the OS cause word (DSP/AI/EXI sub-cause MMIO reads), masks with the OS globals
+> (0x800000C4/C8), walks InterruptPrioTable, and calls the registered guest handler from the table
+> at *0x8040E7B0 directly via call_ppc (r3=interrupt, r4=context). Delivery happens ONLY at owned
+> points: the idle driver, poll_yield, and the interp loop (pending+EE check before SingleStep).
+>
+> WHY (the OSError-15 corruption class, fully root-caused): stepping the non-reentrant guest
+> dispatch under the hybrid corrupted it three independent ways —
+> 1. `nthr::block()` used `self = g_running` (the token holder) instead of the CALLING host
+>    thread; a non-holder blocking parked the wrong GuestThread and later woke TWO runners.
+> 2. The per-thread context switch did not carry SRR0/SRR1/npc/lwarx-reservation; a thread parked
+>    mid-exception-window resumed with a foreign srr0 → its rfi jumped into the middle of
+>    unrelated functions (epilogue loads a never-written LR slot → blr to 0).
+> 3. Forced delivery at EE=0 points nested a second dispatch inside the first (interrupt index
+>    scrambled to 0 → MEMIntrruptHandler → spurious OSError 15 → JUTException crash screen →
+>    MarErrException readPad spin = the "infinite spin" symptom).
+> All three fixed (commit "Native interrupt dispatch", 2026-06-10). Diagnostics kept: per-step PC
+> ring (collapsed-run, thread-tagged), poisoned-entry traps, MEM-dispatch trap, interpreter token
+> guard, and `sunbright_park()` (CPU-idle park, REPL stays up, watchdog spares it — nothing
+> busy-spins on a failure anymore).
+>
+> Current frontier: deterministic wild write ea=0x10000000 at PC=802c9f00
+> (JUTGamePadRecord::padStatusToStreamData — a JUTGamePad in mPadList has a garbage
+> mPadRecord pointer; ctor sets it to 0, so the object or list is corrupt). ~3 min into boot,
+> well past all previous failure points.
+
 > ## 🟢 ACTIVE BUILD — native scheduler is LIVE (2026-06-05, increments 1–4 landed)
 > Per the user directive "do it incrementally even though it will break", the nthr scheduler is now
 > ENABLED and owns GC threading. Landed + committed:
