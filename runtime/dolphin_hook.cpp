@@ -809,48 +809,48 @@ static void nthr_ctx_restore(nthr::GuestThread* t) {
 // the GC handler rejects RI=0 as "Non-recoverable Exception"), ME, IR/DR (translation on). Reset
 // every step so a previous exception clearing MSR (real mode, RI=0) doesn't leave the next delivery
 // non-recoverable.
-static bool idle_advance_step() {
+// Run the GC idle thread faithfully: spin an idle `b .` under the INTERPRETER. SingleStep is the
+// only thing that advances CoreTiming outside the JIT loop — ct.Idle()+Advance() alone does NOT move
+// the global timer here (verified: ticks +0), which is why the bare-CoreTiming idle delivered no
+// device IRQs (native_threading.md Attempt 1). Each SingleStep consumes downcount → scheduled
+// VI/DSP/DVD events fire → with EE on their interrupt is delivered and vectors pc into the ISR; we
+// then run the ISR to completion (interp_run_until back to the spin), whose OSWakeupThread is routed
+// to nthr::make_ready by the native_os intercept inside interp_run_until. Stops as soon as a thread
+// becomes Ready, or after `max_steps` idle steps. Returns whether a thread woke.
+static bool idle_run(long max_steps) {
     static const bool dbg = getenv("SUNBRIGHT_DBG_IDLE") != nullptr;
-    static long dbg_irqs = 0;
     auto& sys = Core::System::GetInstance();
     auto& ppc = sys.GetPPCState();
-    auto& ct  = sys.GetCoreTiming();
+    auto& interp = sys.GetInterpreter();
     const u32 idle_pc = sunbright_idle_spin_pc();
     constexpr u32 IDLE_MSR = 0x00009032u;           // EE|ME|IR|DR|RI
+    const u64 t0 = sys.GetCoreTiming().GetTicks();
     ppc.pc = ppc.npc = idle_pc;
     ppc.msr.Hex = IDLE_MSR;
-    const u32 msr_before = ppc.msr.Hex;
-    ct.Idle();                                      // fast-forward to the next scheduled device event
-    ct.Advance();                                   // process it — a device callback raises the IRQ
-    sys.GetPowerPC().CheckExceptions();             // deliver it: vector pc to the ISR (0x80000500)
-    if (ppc.pc != idle_pc) {
-        if (dbg && dbg_irqs++ < 8)
-            fprintf(stderr, "[idle] IRQ -> pc=%08x msr=%08x(was %08x) srr0=%08x srr1=%08x r1=%08x cur=%08x\n",
-                    ppc.pc, ppc.msr.Hex, msr_before, ppc.spr[SPR_SRR0], ppc.spr[SPR_SRR1],
-                    ppc.gpr[1], mem_r32(OS_CURRENT_THREAD));
-        interp_run_until(idle_pc, 5'000'000);       // run the ISR → OSWakeupThread → nthr::make_ready
-        return true;
+    long n = 0;
+    for (; n < max_steps; n++) {
+        if (nthr::ready_count() > 0) break;
+        ppc.msr.Hex = IDLE_MSR;                     // keep EE on at the spin (the ISR's rfi may clear it)
+        interp.SingleStep();                        // advance CoreTiming; deliver + vector any pending IRQ
+        if (ppc.pc != idle_pc)                      // an interrupt vectored us into the ISR
+            interp_run_until(idle_pc, 5'000'000);   // run it to completion (native_os routes OSWakeupThread)
     }
-    return false;
+    const bool woke = nthr::ready_count() > 0;
+    if (dbg) { static long c = 0; if ((c++ & 0xFF) == 0)
+        fprintf(stderr, "[idle] %ld steps, ticks +%lld, woke=%d ready=%d\n",
+                n, (long long)(sys.GetCoreTiming().GetTicks() - t0), woke, nthr::ready_count()); }
+    return woke;
 }
 
 static void nthr_idle_driver() {
-    static const bool dbg = getenv("SUNBRIGHT_DBG_IDLE") != nullptr;
-    static long total_calls = 0; static long total_irqs = 0;
     Core::DeclareAsCPUThread();   // we run the interpreter here; the parker Undeclared before block()
-    int guard = 0, irqs = 0;
-    for (; nthr::ready_count() == 0 && guard < 200000; ++guard)
-        if (idle_advance_step()) ++irqs;
+    const bool woke = idle_run(20'000'000);
     Core::UndeclareAsCPUThread();
-    total_calls++; total_irqs += irqs;
-    if (dbg && (total_calls & 0x3FF) == 0)
-        fprintf(stderr, "[idle] call #%ld: %d steps, %d IRQs delivered, ready_count now %d (cum IRQs %ld)\n",
-                total_calls, guard, irqs, nthr::ready_count(), total_irqs);
-    if (nthr::ready_count() == 0) {                 // genuine deadlock: nothing ever woke
+    if (!woke) {                                    // genuine deadlock: nothing ever woke
         fflush(stdout);
         fprintf(stderr,
-            "\n[nthr] FATAL: idle driver advanced %d device steps, no thread woke (deadlock).\n"
-            "  Every guest thread is Blocked and no DSP/DVD/VI IRQ made one Ready.\n", guard);
+            "\n[nthr] FATAL: idle driver stepped the interpreter, no thread woke (deadlock).\n"
+            "  Every guest thread is Blocked and no DSP/DVD/VI IRQ made one Ready.\n");
         fflush(stderr);
         struct rlimit no_core{0, 0};
         setrlimit(RLIMIT_CORE, &no_core);
@@ -955,40 +955,39 @@ void nthrt_block_current() {
 // the GC scheduler's __OSReschedule (run inside OSResumeThread/OSWakeupThread) switches to a
 // just-made-ready higher-priority thread. When that thread later blocks, the token comes back here
 // and this returns. Bracketed with Undeclare/Declare like nthrt_block_current.
-void nthrt_yield_current() {
+void nthrt_yield_current(CPUState* yielder) {
     Core::UndeclareAsCPUThread();
-    // GC OSYieldThread is an explicit "I have nothing useful to do right now" scheduling point: the
-    // guest calls it inside hardware/time poll loops (TCardManager's CARDProbeEx/__EXIProbe EXI
-    // debounce; audio DSP-init waits). On real hardware time keeps passing at such a point — the
-    // decrementer and the VI/DSP/EXI device events keep firing and interrupts preempt — so the polled
-    // condition (a debounce elapsing, a device flag) eventually changes. Under cooperative nthr,
-    // recomp runs on the native stack and nothing advances CoreTiming, so time FREEZES while a guest
-    // spin-yields: the debounce never elapses, no VI IRQ is delivered (the render thread parked in
-    // VIWaitForRetrace never wakes), and when several threads only yield to each other none ever
-    // blocks (ready_count never hits 0) so the all-blocked idle driver never runs → livelock/freeze.
-    // Faithful fix: advance ONE hardware step at every yield — fast-forward CoreTiming to the next
-    // scheduled device event, deliver any pending IRQ, run its ISR (which may wake the render thread
-    // or complete a probe) — exactly the hardware progress a real reschedule sees. Then hand the
-    // token on (block(Ready)) so an equal/higher-priority Ready thread still gets to run.
+    // GC OSYieldThread: hand the CPU to the next runnable thread. The guest calls it inside
+    // hardware/time poll loops (TCardManager's CARDProbeEx/__EXIProbe EXI insertion debounce; audio
+    // DSP-init waits). On real hardware, if nothing else is runnable the scheduler switches to the
+    // IDLE THREAD, which spins with interrupts ON: time keeps passing (the decrementer, VI/DSP/EXI
+    // device events keep firing) and their interrupts are DELIVERED, so a blocked thread's wait
+    // completes (a VI field wakes the render thread; the EXI debounce elapses as time advances).
     //
-    // ADVANCE TIME ONLY, DEFER THE IRQ (do NOT run the GC interrupt handler here): fast-forward
-    // CoreTiming to the next scheduled device event and process its callback (which updates the time
-    // base + device registers — e.g. the EXI status the probe reads) but with MSR[EE] cleared so
-    // CheckExceptions does not vector into the GC ISR. Running the full ISR on the yielding thread's
-    // host thread corrupts state — the exception prologue saves context into the (card) thread's
-    // OSContext and tangles with nthr owning scheduling (observed: wild write to 0xfffffff8). The
-    // pending IRQ stays pending and is delivered later by the all-threads-blocked idle driver (EE on),
-    // which is the safe place. This is the documented MMIO poll-yield pattern (see sb_poll_fire).
-    {
-        auto& sys = Core::System::GetInstance();
-        auto& ppc = sys.GetPPCState();
-        const u32 saved_msr = ppc.msr.Hex;
-        ppc.msr.Hex &= ~0x8000u;            // mask EE: advance + run device callbacks, but defer delivery
+    // Under cooperative nthr, recomp runs on the native stack so nothing advances CoreTiming while a
+    // guest spin-yields. If nothing else is Ready, replicate the idle thread faithfully: advance
+    // CoreTiming AND deliver device IRQs (EE on — NOT deferred) until a thread becomes Ready (e.g.
+    // the VI field wakes the render thread) or we've advanced a bounded number of events (then the
+    // yielder re-polls — its own time-based wait has progressed). Nothing is special-cased or
+    // skipped; the debounce still runs, just with time advancing as on real hardware.
+    //
+    // The ISR is interpreted on the global ppc, so it needs a VALID stack/context. call_ppc invokes
+    // this native override WITHOUT syncing the recomp `cpu` into ppc, so ppc.r1 would be stale —
+    // running the ISR on it faulted (wild write to 0xfffffff8). Sync the yielder's live context in
+    // first (valid r1/r2/r13), run the idle steps on it, then restore ppc so block()'s save sees the
+    // pre-yield context. (Re-entrancy guard: an ISR that itself yields must not recurse the driver.)
+    static thread_local bool in_yield_idle = false;
+    if (yielder && !in_yield_idle && nthr::ready_count() == 0) {
+        in_yield_idle = true;
+        auto& ppc = Core::System::GetInstance().GetPPCState();
+        alignas(PowerPC::PowerPCState) unsigned char saved[sizeof(PowerPC::PowerPCState)];
+        memcpy(saved, &ppc, sizeof(ppc));
+        cpu_to_dolphin_state(*yielder, ppc);     // valid stack/context for the interpreted ISR
         Core::DeclareAsCPUThread();
-        sys.GetCoreTiming().Idle();         // fast-forward to the next scheduled device event
-        sys.GetCoreTiming().Advance();      // run its callback (advances TB, updates EXI/VI/DSP regs)
+        idle_run(5'000'000);                     // step the idle spin until a thread wakes (e.g. VI → render)
         Core::UndeclareAsCPUThread();
-        ppc.msr.Hex = saved_msr;
+        memcpy(&ppc, saved, sizeof(ppc));        // restore pre-yield ppc; ISR's RAM/device effects kept
+        in_yield_idle = false;
     }
     nthr::block(nthr::State::Ready);
     Core::DeclareAsCPUThread();           // reacquired the token (ctx restored by the hook)

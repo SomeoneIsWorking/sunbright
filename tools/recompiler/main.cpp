@@ -295,8 +295,15 @@ static int recompile_mode(const DiscLoader& disc, const DOL& dol, const std::str
             // consulted, so the tick spins and the cooperative nthr scheduler never switches to the
             // renderer → vps=0. Recompiled, the thread runs on the native stack: the override fires
             // and OS block points yield. (Ref mislabels them portCmdInit+0x278 / TCardManager+0x184.)
-            0x803171ecu,  // JASystem::Kernel audio thread proc
-            0x802b3264u,  // 2nd audio/JASystem thread proc
+            0x803171ecu,  // JASystem::Kernel audio thread proc (portCmdInit)
+            0x80311170u,  // JASystem::AudioThread main proc — the DSP-synced mix/seq thread (entry
+                          // missed by discovery): its loop OSReceiveMessage's each audio frame then
+                          // updateDac → TSeqParser::mainProc → TTrack tick. Under interp the
+                          // ttrack_tick_native override is skipped so the tick spins (vps=0);
+                          // recompiled it runs on the native stack and the override fires.
+            0x802b3264u,  // TCardManager thread proc (NOT audio — ref mislabels it TCardManager+0x184;
+                          // its CARDProbeEx/__EXIProbe debounce loop is unblocked by the OSYieldThread
+                          // CoreTiming-advance fix, ecd63ac).
         };
 
         auto funcs = real_funcs;                       // all recomp ENTRY points = real + discovered
@@ -331,7 +338,7 @@ static int recompile_mode(const DiscLoader& disc, const DOL& dol, const std::str
                 // mode doesn't truncate them mid-body into a JIT bounce (defeats the purpose).
                 0x8031d83cu, 0x8001fa88u, 0x80316ffcu, 0x803121acu, 0x8031a2ecu,
                 0x803399ccu, 0x8031a50cu, 0x8030fe50u, 0x80313ddcu,
-                0x803171ecu, 0x802b3264u,   // audio thread procs (3rd wave)
+                0x803171ecu, 0x80311170u, 0x802b3264u,   // audio + card thread procs (3rd wave)
             };
 
             // Collection (linear-truncate vs full-CFG) is extracted to func_collect.{h,cpp} and

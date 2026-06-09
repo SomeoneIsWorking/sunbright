@@ -185,7 +185,7 @@ static void os_resume_thread(CPUState& cpu) {
         const u32 cur = mem_r32(OS_CURRENT_THREAD);
         if (cur && cur != thread &&
             (s32)mem_r32(thread + T_PRIO) < (s32)mem_r32(cur + T_PRIO))
-            nthrt_yield_current();
+            nthrt_yield_current(&cpu);
     }
 }
 
@@ -264,9 +264,8 @@ static void dbg_write_console(CPUState& cpu) {
 // reports. Native equivalent: yield the token but stay Ready (nthr's pick_next then picks the
 // highest-priority Ready thread, FIFO among ties = round-robin; returns to us when we're highest).
 // This keeps engine code OUT of run_jit_sync scheduler spins WITHOUT recompiling it. [[no-run_jit_sync-crutch]]
-extern void nthrt_yield_current();   // dolphin_hook.cpp
-static void os_yield_thread(CPUState& /*cpu*/) {
-    nthrt_yield_current();
+static void os_yield_thread(CPUState& cpu) {
+    nthrt_yield_current(&cpu);
 }
 
 // __OSReschedule (0x803488dc): the GC scheduler's "switch to the highest-priority ready thread"
