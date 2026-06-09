@@ -29,7 +29,25 @@ bool g_probe_enabled = false;
 #  include <vector>
 #  include <algorithm>
 #  include <fstream>
+#  include <atomic>
 extern u32 mem_r32(u32 ea);
+
+// ── REPL-readable trace ring ──────────────────────────────────────────────────
+// A thin observer (e.g. a SUNBRIGHT_OVERRIDE) calls sb_trace(tag,a,b,c,d) to record an event;
+// the REPL `/tracelog` endpoint dumps it. Keeps execution-trace data in the REPL instead of
+// env-gated stderr logs. Lock-free-ish: a single producer (the guest thread holding the CPU
+// token) writes; the probe thread reads a snapshot. Good enough for diagnosis.
+struct TraceRec { char tag[16]; uint32_t a, b, c, d; uint64_t seq; };
+constexpr int SB_TRACE_N = 512;
+TraceRec           g_trace[SB_TRACE_N];
+std::atomic<uint64_t> g_trace_seq{0};
+
+extern "C" void sb_trace(const char* tag, uint32_t a, uint32_t b, uint32_t c, uint32_t d) {
+    uint64_t s = g_trace_seq.fetch_add(1, std::memory_order_relaxed);
+    TraceRec& r = g_trace[s % SB_TRACE_N];
+    int i = 0; for (; tag[i] && i < 15; i++) r.tag[i] = tag[i]; r.tag[i] = 0;
+    r.a = a; r.b = b; r.c = c; r.d = d; r.seq = s;
+}
 #endif
 
 namespace {
@@ -155,6 +173,20 @@ std::string handle_repl(const char* path) {
         }
         return std::string(buf, n);
     }
+    if (strncmp(path, "/tracelog", 9) == 0) {
+        // Dump the trace ring in chronological order, each event's tag + 4 named hex args.
+        uint64_t end = g_trace_seq.load(std::memory_order_relaxed);
+        uint64_t start = end > SB_TRACE_N ? end - SB_TRACE_N : 0;
+        app("tracelog: %llu events (showing %llu..%llu)\n",
+            (unsigned long long)end, (unsigned long long)start, (unsigned long long)end);
+        for (uint64_t s = start; s < end; s++) {
+            const TraceRec& r = g_trace[s % SB_TRACE_N];
+            if (r.seq != s) continue;   // overwritten mid-read
+            app("  #%-6llu %-12s a=%08x b=%08x c=%08x d=%08x\n",
+                (unsigned long long)r.seq, r.tag, r.a, r.b, r.c, r.d);
+        }
+        return std::string(buf, n);
+    }
     if (strncmp(path, "/help", 5) == 0 || strcmp(path, "/") == 0) {
         return "sunbright REPL (curl http://127.0.0.1:17654<path>):\n"
                "  /metrics            perf counters (JSON)\n"
@@ -163,7 +195,8 @@ std::string handle_repl(const char* path) {
                "  /stack?sp=HEX       walk guest back-chain LRs from sp, named\n"
                "  /cur                current OSThread + saved srr0/lr/sp/prio\n"
                "  /trace?a=HEX&ms=N   sample a word for N ms, list value transitions (A/B Dolphin vs native)\n"
-               "  /poll?a=HEX&b=..    snapshot up to 6 cells (a..f), each named\n";
+               "  /poll?a=HEX&b=..    snapshot up to 6 cells (a..f), each named\n"
+               "  /tracelog           dump the trace ring (events from sb_trace observers)\n";
     }
     return std::string();
 }
