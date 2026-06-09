@@ -169,6 +169,19 @@
 > clobbering callee is recomp or JIT, and whether the hybrid copies guest non-volatiles correctly on
 > return.
 >
+> CONFIRMED OUR HYBRID, NOT THE GAME (2026-06-09 A/B). `SUNBRIGHT_DISABLE_RECOMP=1`
+> `SUNBRIGHT_BACKEND=Software` headless boots clean PAST mountStageArchive — it loads the stage/option
+> assets (`w1stLoad`, `yoshi.szs`, `scenecmn.bin`, `params.szs`, `option.szs`, `PerformLists.bin`) and
+> never trips the invalid read. So the r31 clobber is introduced by our recomp/native-threading hybrid.
+> The fault PC 0x802a6338 lives in **`func_802a5f50`** (recompiled — spans 802a5f50→802a637c, no recomp
+> entry between it and func_802a6380), YET the faulting load went through Dolphin's MMU (our recomp
+> wild-read trap did NOT fire), so func_802a5f50 is executing under Dolphin (interp/JIT) at fault time,
+> not as recomp — i.e. an ancestor entered the interpreter via call_ppc and the whole subtree runs
+> there. NEXT (mechanism hunt): runtime-trace r31 through func_802a5f50 (the trace ring, 5876e71) to
+> find the first call whose return leaves r31 != caller value; and establish how 802a5f50 is reached
+> (which call_ppc ancestor handed it to the interpreter) since that boundary is where a guest
+> non-volatile would be dropped.
+>
 > **(superseded sub-note) DETERMINISTIC null archive (heap-not-ready / thread ORDERING, not a race).**
 > A thread crashes with a null `this` in `JKRMemArchive::mountFixed` ⇒ `new JKRMemArchive` returned
 > NULL (heap alloc failed). The fault regs (r26=803e9700, r5=0xffff) point at the **audio thread
