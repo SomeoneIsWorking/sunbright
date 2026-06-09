@@ -127,6 +127,21 @@
 > 0x18 is likely a "skip/abort logo" code returned when an early-frame/VI/load precondition isn't met —
 > the same native-scheduling ordering class as every prior wall this session.
 >
+> GATE LOCATED, but static RE stalls (2026-06-09). In 802a5f50 at logo-state 2 (`lbz [this+8]`==2 check
+> @802a60a0): it calls **`8034c374(r30)`** @802a60b4 — if NON-ZERO → `8034c374`... then `li r29,3`
+> @802a60cc (advance to state 3 = `new TMarDirector`); if zero → branches away, no create. So
+> `8034c374`'s return is the condition native fails (the symbol is a sparse-table mislabel — it
+> disassembles as a 3-instr stub `stw r4,[r13-0x5918]; li r3,1; blr`, i.e. one arm of a switch/lookup,
+> so the REAL callee/return needs runtime confirmation). CONTRADICTION blocking pure static analysis:
+> 802a5f50 returns `r29`, whose only writes are `{0,1,3,4,7}` or `r29=r3` from the `[this+4]`-method
+> call @802a6170 — so `0x18` could only come from that null-`[this+4]` path, which would CRASH, yet
+> native returns 0x18 without crashing there. 802a5f50 is recursive (the crash stack had several of its
+> frames) and juggles TWO state vars ([this+8]=803e9708 AND [r13-0x6030]=8040e190), so the post-crash
+> snapshot ≠ execution-time values. RESOLUTION NEEDED: runtime tracing of 802a5f50's per-call inputs/
+> return (proposed: a REPL-readable ring buffer written by a thin observer on 802a5f50/802a6398 — keeps
+> data in the REPL, not env-gated stderr). That will show directly what `8034c374` returns and why
+> native picks the non-create / 0x18 branch.
+>
 > **(superseded sub-note) DETERMINISTIC null archive (heap-not-ready / thread ORDERING, not a race).**
 > A thread crashes with a null `this` in `JKRMemArchive::mountFixed` ⇒ `new JKRMemArchive` returned
 > NULL (heap alloc failed). The fault regs (r26=803e9700, r5=0xffff) point at the **audio thread
