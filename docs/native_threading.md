@@ -308,11 +308,27 @@
 > reachable. (Matches the user directive: port init to PC, remove cycle-waiting that a PC build doesn't
 > need — do NOT make the wait elapse via a time-base/downcount/spin-detector; those were rejected.)
 >
-> NEW FRONTIER (2026-06-09) — with audio init unblocked, boot reaches the **TApplication boot-sequencer
-> null crash** at `802a6338` (`mountStageArchive`/802a5f50 region), an invalid read through a null
-> sub-object (`[this+28]`/`[this+4]`). This is the same documented sequencer state-machine bug analyzed
-> above (lines ~72–100): a jump-table CALL-state runs before the CREATE-state populates the per-scene
-> director, because under native scheduling the sequencer state never advances 0→3. Continue there.
+> NEW FRONTIER (2026-06-09, sharpened) — with audio init AND thread-exit unblocked, boot reaches the
+> **TApplication per-frame state machine** `func_802a5f50` (unnamed in the sparse reference; sits
+> between `mountStageArchive` 802a5998 and `__ct__12TApplication` 802a7b08; called from the main loop
+> 80005628). It is a yielding state machine on `this`=gpApplication **803e9700**: early states init
+> (create the JDrama TDisplay + TDirector), later states DRAW (`JDrama::TDisplay::startRendering`
+> 802f7fd8 / `endRendering` 802f80d0 bracketing the director draw). It crashes at `802a6338` reading
+> `[this+28]+96` where `[this+28]` (the TDisplay member) = garbage **0x28040000**.
+> A/B GROUND TRUTH (pure-Dolphin, Software backend, REPL `/r`): `[803e9704]` (this+4, TDirector,
+> vtable 803df0c8) = **0x80902a40**; `[803e971c]` (this+28, TDisplay, vtable 803e1dc0) = **0x8056dd90**;
+> state `[8040e190]` (=`[r13-0x6030]`) = **3**. Native crashes with this+28 = 0x28040000 (never created —
+> not even null; an out-of-RAM junk address), i.e. **the state machine runs a DRAW state before the
+> INIT states created the TDisplay/director.** Same root the doc flagged at lines ~72–100: under native
+> scheduling the state never advances 0→3. NB the bitfield state `[8040e190]` is gated by bit0 =
+> `[this+4].director->method@0x64()==4` and bit1 = `OSIsThreadTerminated(loader 803fcbe8)`; bit1 is now
+> satisfiable (loader exits → MORIBUND via the new native OSExitThread bookkeeping) — re-check whether
+> the director (this+4) is now created and only the TDisplay (this+28) lags, or the machine still stalls
+> earlier. DIRECTION (user, 2026-06-09): **own this natively — replace this hard-to-debug GC frame
+> state machine with native PC code** (port `func_802a5f50` + the TDisplay/TDirector create path so the
+> ordering is explicit), rather than chasing the recomp-level corruption. The crash is too fast to catch
+> by polling (Software boots to it in <2s); inspect via pure-Dolphin A/B and/or a one-shot state dump in
+> the FATAL handler.
 >
 > **(superseded sub-note) DETERMINISTIC null archive (heap-not-ready / thread ORDERING, not a race).**
 > A thread crashes with a null `this` in `JKRMemArchive::mountFixed` ⇒ `new JKRMemArchive` returned
