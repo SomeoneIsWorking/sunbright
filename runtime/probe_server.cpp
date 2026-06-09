@@ -119,13 +119,51 @@ std::string handle_repl(const char* path) {
         }
         return std::string(buf, n);
     }
+    if (strncmp(path, "/trace?", 7) == 0) {
+        // Sample one guest word as fast as possible for `ms` (default 3000), report VALUE TRANSITIONS
+        // (index, t_ms, old->new). Run in native AND pure-Dolphin (SUNBRIGHT_DISABLE_RECOMP=1), both
+        // with SUNBRIGHT_PROBE=1, and diff the two transition sequences to see where they diverge.
+        u32 a = qarg(path, "a", 0), ms = qarg(path, "ms", 0xbb8 /*3000*/);
+        auto t0 = std::chrono::steady_clock::now();
+        u32 last = mem_r32(a); long samples = 0; int trans = 0;
+        app("trace %08x for %u ms:\n", a, ms);
+        app("  [%6ld] t=%5dms  start=%08x\n", 0L, 0, last);
+        for (;;) {
+            u32 v = mem_r32(a); samples++;
+            if (v != last) {
+                int t = (int)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+                if (trans < 200) app("  [%6ld] t=%5dms  %08x -> %08x\n", samples, t, last, v);
+                last = v; trans++;
+            }
+            if ((samples & 0x3fff) == 0 &&
+                std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count() >= (long)ms)
+                break;
+        }
+        app("  done: %ld samples, %d transitions, final=%08x\n", samples, trans, last);
+        return std::string(buf, n);
+    }
+    if (strncmp(path, "/poll?", 6) == 0) {
+        // One-shot snapshot of up to 6 addresses (a,b,c,d,e,f as hex), each named — a compact
+        // "compare these key cells" line for A/B between native and Dolphin runs.
+        const char* keys = "abcdef";
+        for (int i = 0; keys[i]; i++) {
+            char k[2] = {keys[i], 0};
+            u32 a = qarg(path, k, 0);
+            if (!a) continue;
+            u32 v = mem_r32(a);
+            app("%c: [%08x]=%08x  (%s)\n", keys[i], a, v, sym(v).c_str());
+        }
+        return std::string(buf, n);
+    }
     if (strncmp(path, "/help", 5) == 0 || strcmp(path, "/") == 0) {
         return "sunbright REPL (curl http://127.0.0.1:17654<path>):\n"
                "  /metrics            perf counters (JSON)\n"
                "  /r?a=HEX&n=N        read N words at guest addr (default 8)\n"
                "  /fn?a=HEX           resolve addr -> nearest function name\n"
                "  /stack?sp=HEX       walk guest back-chain LRs from sp, named\n"
-               "  /cur                current OSThread + saved srr0/lr/sp/prio\n";
+               "  /cur                current OSThread + saved srr0/lr/sp/prio\n"
+               "  /trace?a=HEX&ms=N   sample a word for N ms, list value transitions (A/B Dolphin vs native)\n"
+               "  /poll?a=HEX&b=..    snapshot up to 6 cells (a..f), each named\n";
     }
     return std::string();
 }
@@ -146,7 +184,7 @@ Snap g_last{};
 bool g_have_last = false;
 
 double now_s() {
-    return std::chrono::duration<double>(clock_t_::now() - g_start).count();
+    return std::chrono::duration<double>(std::chrono::steady_clock::now() - g_start).count();
 }
 
 // Build the /metrics JSON body.
@@ -282,7 +320,7 @@ void probe_server_start() {
     if (!getenv("SUNBRIGHT_PROBE")) return;
     started = true;
     g_probe_enabled = true;
-    g_start = clock_t_::now();
+    g_start = std::chrono::steady_clock::now();
     int port = 17654;
     if (const char* p = getenv("SUNBRIGHT_PROBE_PORT")) { int v = atoi(p); if (v > 0) port = v; }
     std::thread(server_loop, port).detach();

@@ -86,9 +86,17 @@
 > 4(r31)` (@802a6410; also 6464/64ec/6554/65bc/6630/667c — several states set it). Other cases CALL
 > `[this+4]->vtable->method@0x64()` (@802a60ec, guarded on state bit0; and @802a615c = the fault). So a
 > CALL-state ran before the CREATE-state populated `[this+4]` → null vtable → ISI. `[this+4]` is the
-> per-scene director/loader the sequencer drives. Next (REPL, not env logs): find what gates the
-> create-state vs the call-state — the state-transition condition (likely an async load-complete /
-> message flag) whose ordering native scheduling changed.
+> per-scene director/loader the sequencer drives.
+> A/B CONFIRMED (REPL `/poll`, native vs `SUNBRIGHT_DISABLE_RECOMP=1`): `this` = global **803e9700**
+> (the app/manager; was r26 in the first crash too). Pure-Dolphin: `[803e9704]` (this+4) = **80902a40**
+> (director created), state `[8040e190]` = **3**. Native at crash: `[803e9704]` = **0**, state = **0**.
+> So under native the boot sequencer's state never advances to the create-state, so the director is
+> never `new`'d, yet a later call-state still runs → null. Next: trace how Dolphin advances state
+> 0→3 (REPL `/trace?a=8040e190` during early boot) and find the per-iteration condition the native
+> path fails to satisfy (likely an async load-complete the sequencer polls). Tools: REPL `/poll`,
+> `/trace`, `/r`, `/fn`, `/stack` (see CLAUDE.md). NB: run ONE instance at a time + `kill -9` the exact
+> pid between runs (`pgrep -x sunbright`, NOT `-f` which self-matches the shell); stacked headless
+> Vulkan instances exhaust GPU memory (`VK_ERROR_OUT_OF_DEVICE_MEMORY`).
 >
 > **(superseded sub-note) DETERMINISTIC null archive (heap-not-ready / thread ORDERING, not a race).**
 > A thread crashes with a null `this` in `JKRMemArchive::mountFixed` ⇒ `new JKRMemArchive` returned
