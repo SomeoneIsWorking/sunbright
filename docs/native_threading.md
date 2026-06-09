@@ -425,6 +425,15 @@
 >    exact point r31 diverges in ppc — likely a recomp block exits without flushing r31 to ppc, or a JIT
 >    block runs before a recomp store of r31 commits.
 >
+> NEW FRONTIER (2026-06-09, after the recompiler jump-table fix landed) — boot now renders **7 VI
+> fields** then DEADLOCKS: the main thread parks in **GXDrawDone (8035dae8)** via
+> func_802a5f50→THPPlayerDrawDone(8001e920)→GXDrawDone→OSSleepThread, waiting for the GPU draw-done
+> (PE_FINISH) interrupt, which the native idle/IRQ driver does not deliver → no wakeup → watchdog
+> freeze (Dispatch +0 across the board, all threads blocked). The recompiler jump-table fix is
+> CONFIRMED working: the scene state machine 802a6398 now dispatches its bctr cases (func_802a63f0
+> etc.) in-function, no JIT handoff, and reaches real rendering. NEXT: make the native idle driver
+> deliver the PE_FINISH / GX draw-done interrupt (or own GXDrawDone natively) so the waiter wakes.
+>
 > ROOT CAUSE FOUND (2026-06-09) — the boot JIT handoff is a RECOMPILER jump-table gap. SUNBRIGHT_DBG_TAIL
 > shows `func_802a5b44` (per-frame scene-change reader, called from 802a5f50's render path @802a6048)
 > does `tail_ppc(cpu, ctr)` for its computed `bctr` jump table (base 0x803df3f0, indexed by a small
