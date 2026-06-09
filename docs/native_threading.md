@@ -277,6 +277,30 @@
 >       The [[linear-truncation-bug]]/pointer-discovery area; needs /recompile + regression test.
 > Whichever: getting past the r31 clobber also reveals the next crash (Invalid read ea=0 PC=802a6160).
 >
+> ✅ FIXED (2026-06-09) — the chosen fix was the RECOMPILER one (option 2), and the root turned out to
+> be a function-collection TRUNCATION, not a coverage gap. `func_collect`'s linear pass stopped at the
+> first `blr`/tail exit, but `func_80337ccc` (`__va_arg`) has a `blr` @80337d14 that an EARLIER forward
+> `bc 0x80337d18` @80337cf8 JUMPS OVER (switch: case1 ends in blr, case2 reached via the bc). Collection
+> truncated at 80337d14, so 80337d18..80337dbc became a mid-function `tail_ppc` to a non-recomp address
+> → the handoff. Same class as the earlier initAllCheckData truncation, different trigger (a jumped-over
+> blr vs a forward `b` to a loop test). Fix (tools/recompiler/func_collect.cpp): track the furthest
+> in-function forward branch target; only treat an exit as the function end when nothing branches past
+> it. + recomp_test regression case. Regenerated (13480 funcs): all interior tail_ppc gone, the libc
+> bodies (__va_arg/vsnprintf/fwrite/fwide) are whole, and the boot wild read 0x28040060 is GONE
+> (verified headless). No native override or call-model change needed — the most PC-native outcome (the
+> functions now run fully as native recomp code, no Dolphin handoff). force_jit/tail-sync were
+> diagnostics only; none shipped.
+>
+> NEW FRONTIER (2026-06-09) — boot now advances past the logo to an `__OSInitAudioSystem` (func_803433b4)
+> SPIN. Watchdog freeze: recomp spinning (recomp +18M/300ms, tail +0, interp_steps +0, **poll_yield +0**)
+> at pc≈803433f8, backtrace func_803433b4 → call_ppc → override_lookup, CoreTiming NOT advancing
+> (fakeTB frozen). poll_yield=0 means it is NOT detected as an MMIO/RAM poll loop — it is a function-call
+> loop whose exit condition never becomes true because emulated time/hardware isn't advancing (the recomp
+> spins without yielding). Distinct from the truncation bug. This is the same wall the reverted tail-sync
+> experiment hit, so it was always the next issue. NEXT: RE func_803433b4's loop (what it calls + what it
+> waits on — likely a DSP/AI ready bit or a time/retrace count); it polls VI/DSP MMIO (writes 0xCC005012,
+> reads [r31]) — find why CoreTiming doesn't advance for this spin (the mftb/poll-yield gap noted above).
+>
 > **(superseded sub-note) DETERMINISTIC null archive (heap-not-ready / thread ORDERING, not a race).**
 > A thread crashes with a null `this` in `JKRMemArchive::mountFixed` ⇒ `new JKRMemArchive` returned
 > NULL (heap alloc failed). The fault regs (r26=803e9700, r5=0xffff) point at the **audio thread
