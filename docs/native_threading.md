@@ -69,18 +69,19 @@
 > stays JIT-only; no recompile. VERIFIED: the run_jit_sync spin is gone, audio init completes, boot runs
 > the full headless duration with no FATAL.
 >
-> **NEW frontier (2026-06-09) — ISI/panic after audio init, in TMarDirector teardown.** With audio init
-> completing, the boot fails (`Jit64: ISI exception at 0x00000000` + an OS panic) and the GC exception
-> reporter runs: the faulting thread is **thread0** (80402aa8), now spinning in `JUTException::readPad`
-> →`waitTime`→`__div2i` (the crash-report input/delay loop, speed collapses to ~0.06×). Located with the
-> REPL (curl `/cur`, `/stack?sp=<thread0 sp>`): thread0's stack is `OSExitThread←JKRThread::ct←
-> JUTException::run(802c6730)←__dt__12TMarDirector+0xb8 (8029d070)`. So `TMarDirector::~TMarDirector`
-> (entry 8029cfb8) reached the JUTException path (its `bl 802c79a8` at +0xb4) — i.e. the main game
-> Director is being TORN DOWN during boot and/or hit an assert. Next (use the REPL, not env logs): read
-> the JUTException saved fault context for the real null-branch PC/LR; determine WHY TMarDirector is
-> destructing during boot (an earlier failed init it's unwinding?) — likely another native-scheduling
-> ordering/`OSReceiveMessage`-shaped dependency exposed now that audio init runs. Tools: REPL endpoints
-> (see CLAUDE.md), `sunbright-recomp --disasm`.
+> **NEW frontier (2026-06-09) — null sub-object in the TApplication boot sequencer (after audio init).**
+> With audio init completing, boot fails with `Jit64: ISI exception at 0x00000000` and the GC exception
+> reporter runs (thread0 spins in `JUTException::readPad`/`waitTime`/`__div2i`, speed ~0.06×; the
+> "TMarDirector teardown" read earlier was a sparse-symbol mislabel of the reporter's own delay loop).
+> REAL fault from the Dolphin MMU log: `PC=0x802a6160` reads `[0x0]` then `[0x64]` → ISI at 0. Disasm:
+> the boot sequencer **function at 802a5f50** (`this` in r3→r31; the reference lumps it under
+> `mountStageArchive`) does a C++ virtual call `[r31+4]->vtable->method@0x64()` at 802a615c–616c where
+> `[this+4]` is NULL — a sub-object (director/scene) the state machine expects at this state. It is
+> NEVER stored in this function (no `stw _,4(r31)`), so it is created elsewhere and that creation was
+> skipped/failed under native scheduling. This is real forward progress: the earlier crash was at
+> 802a6338 (mountFixed null) EARLIER in the same sequencer; it now advances past audio init to a later
+> state. Next (REPL, not env logs): find `this` (caller 80005628 passes it) + read `[this+0/4]`; find
+> who stores `[this+4]` (the director/scene creation) across generated/, and why that state didn't run.
 >
 > **(superseded sub-note) DETERMINISTIC null archive (heap-not-ready / thread ORDERING, not a race).**
 > A thread crashes with a null `this` in `JKRMemArchive::mountFixed` ⇒ `new JKRMemArchive` returned
