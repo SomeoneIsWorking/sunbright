@@ -114,6 +114,19 @@
 > work (or its gating condition) native skipped. Search generated/ for stores to app+8 / the 803e9700
 > ctor.
 >
+> TRACED FURTHER (2026-06-09) — this is the **GC boot-logo state machine**, and 802a5f50 RETURNS the
+> next state. Jump table @803df424: case2=802a63e4 `SMSSetupGCLogoRenderingInfo` (calls `VIGetTvFormat`),
+> case3=802a63f0 = the `new TMarDirector`+store `[this+4]`. The state byte `[this+8]` is written by
+> EXACTLY ONE instruction: `stb r30,8(r31)` @802a6794, where `r30 = (802a5f50 return) & 0xff` (mask
+> @802a6654). So `802a5f50` (the per-iteration director/logo driver, called @802a6650) computes & returns
+> the NEXT logo state. A/B: at logo-state 2, Dolphin's 802a5f50 returns a value stepping toward 3→5
+> (creates the director); native's returns **0x18** → out-of-range → default → never creates the director,
+> then a later iteration calls 802a5f50 at state 0x18 and derefs the null `[this+4]` → ISI. NOT autostart
+> (reproduces without it). NEXT: RE `802a5f50`'s return — find which sub-call/condition yields 0x18 at
+> logo-state 2 under native (its loop body starts @802a5f98 with a `[this+0x1c]`=TDisplay vtable call@8).
+> 0x18 is likely a "skip/abort logo" code returned when an early-frame/VI/load precondition isn't met —
+> the same native-scheduling ordering class as every prior wall this session.
+>
 > **(superseded sub-note) DETERMINISTIC null archive (heap-not-ready / thread ORDERING, not a race).**
 > A thread crashes with a null `this` in `JKRMemArchive::mountFixed` ⇒ `new JKRMemArchive` returned
 > NULL (heap alloc failed). The fault regs (r26=803e9700, r5=0xffff) point at the **audio thread
