@@ -883,7 +883,13 @@ static void guest_thread_body(u32 os_thread, u32 entry, u32 param, u32 stack) {
         dolphin_state_to_cpu(ppc, cpu);
     }
 
-    // The guest thread function returned (exited). Drop it from the map and let nthr reap.
+    // The guest thread function returned to its exit trampoline (OSExitThread, 0x80348a68). nthr
+    // stops AT it, so run OSExitThread's bookkeeping natively (mark MORIBUND / free, release
+    // mutexes, wake the join queue) MINUS its GC SelectThread reschedule — otherwise
+    // OSIsThreadTerminated / OSJoinThread never see this thread finish (boot-sequencer wait).
+    native_os_thread_exit(cpu, os_thread, cpu.gpr[3] /*thread fn return value = exit val*/);
+
+    // Drop it from the map and let nthr reap.
     { std::lock_guard<std::mutex> lk(g_os_map_mtx); g_os_to_gt.erase(os_thread); }
     fprintf(stderr, "[nthr] guest thread %08x (entry %08x) returned/exited\n", os_thread, entry);
     Core::UndeclareAsCPUThread();

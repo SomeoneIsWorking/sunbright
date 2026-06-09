@@ -8,8 +8,10 @@
 #include <vector>
 
 extern u32  mem_r32(u32 ea);          // from memory_bridge
+extern u16  mem_r16(u32 ea);
 extern void mem_w32(u32 ea, u32 v);
 extern void mem_w16(u32 ea, u16 v);
+extern void call_ppc(CPUState& cpu, u32 address);   // intrinsics.h (run a recomp callee inline)
 
 // Reschedule-free recompiled OSCreateThread, super-called for faithful guest-struct init (see
 // docs/native_threading.md: it never calls SelectThread/__OSReschedule, so it returns).
@@ -208,14 +210,10 @@ static void os_sleep_thread(CPUState& cpu) {
     // Woken: OSWakeupThread already dequeued us and set state=READY. Return (void).
 }
 
-// OSWakeupThread (0x803493cc): dequeue every thread on wait-queue r3, set state=READY, and make
-// the runnable ones (suspend<=0) Ready in nthr. Replaces the recomp body's run-queue insert +
-// SelectThread with native make_ready.
-static void os_wakeup_thread(CPUState& cpu) {
-    const u32 queue = cpu.gpr[3];
-    static const bool dbg = getenv("SUNBRIGHT_DBG_SCHED") != nullptr;
-    if (dbg) fprintf(stderr, "[sched] WAKEUP queue=%08x head=%08x (lr=%08x)\n",
-                     queue, mem_r32(queue + Q_HEAD), cpu.lr);
+// Dequeue every thread on wait-queue `queue`, set state=READY, and make the runnable ones
+// (suspend<=0) Ready in nthr — the body of OSWakeupThread, factored so the thread-exit
+// bookkeeping can also wake a thread's join queue.
+static void wake_queue(u32 queue) {
     for (;;) {
         u32 th = mem_r32(queue + Q_HEAD);
         if (th == 0) break;
@@ -226,6 +224,17 @@ static void os_wakeup_thread(CPUState& cpu) {
         if ((s32)mem_r32(th + T_SUSPEND) <= 0)
             nthrt_make_ready(th);
     }
+}
+
+// OSWakeupThread (0x803493cc): dequeue every thread on wait-queue r3, set state=READY, and make
+// the runnable ones (suspend<=0) Ready in nthr. Replaces the recomp body's run-queue insert +
+// SelectThread with native make_ready.
+static void os_wakeup_thread(CPUState& cpu) {
+    const u32 queue = cpu.gpr[3];
+    static const bool dbg = getenv("SUNBRIGHT_DBG_SCHED") != nullptr;
+    if (dbg) fprintf(stderr, "[sched] WAKEUP queue=%08x head=%08x (lr=%08x)\n",
+                     queue, mem_r32(queue + Q_HEAD), cpu.lr);
+    wake_queue(queue);
 }
 
 // DIAGNOSTIC (SUNBRIGHT_DBG_CONSOLE): surface the GC debug console __write_console(?, buf=r4,
@@ -265,6 +274,55 @@ static void os_yield_thread(CPUState& /*cpu*/) {
 // ppc = the documented conflict). No-op → returns to the caller; nthr switches at native block
 // points instead (cooperative). The run-queue bookkeeping it skips is unused (nthr owns readiness).
 static void os_reschedule_noop(CPUState& /*cpu*/) {}
+
+// ── Native OSExitThread bookkeeping (the piece nthr was skipping) ─────────────────────────────
+// When a guest thread function returns, nthr stops AT the exit trampoline (0x80348a68 =
+// OSExitThread) without running it, so the OSThread was never marked MORIBUND and its join queue
+// never woken — so OSIsThreadTerminated / OSJoinThread (still recompiled, both correct once the
+// state is set) never saw the thread finish. The boot sequencer (802a5f50) waits on exactly that:
+// OSIsThreadTerminated(loader) -> OSJoinThread, gating the per-scene director creation; without it
+// the state machine never advances and a later state derefs the null/garbage director -> crash.
+//
+// This mirrors OSExitThread (func_80348a68) MINUS its final GC SelectThread reschedule — nthr owns
+// scheduling, so we must not run the GC scheduler (the two-schedulers conflict). The sub-calls we
+// keep are pure cleanup: 0x803440c4 resets the thread's owned-mutex queue; __OSUnlockAllMutex
+// (0x803468b4) releases its mutexes (waking waiters via the now-native OSWakeupThread). Operates on
+// the explicit os_thread (not OS_CURRENT_THREAD) since that is who exited.
+namespace {
+constexpr u32 T_DETACH   = 714;   // u16: bit0 = detached
+constexpr u32 T_VAL      = 728;   // void* exit value
+constexpr u32 T_JOINQ    = 744;   // OSThreadQueue queueJoin (head@+0, tail@+4)
+constexpr u32 T_ACT_PREV = 764;   // active-thread-queue link toward head
+constexpr u32 T_ACT_NEXT = 768;   // active-thread-queue link toward tail
+constexpr u32 ACT_HEAD   = 0x800000E0u;  // OS active-thread-queue head ptr
+constexpr u32 ACT_TAIL   = 0x800000DCu;  // OS active-thread-queue tail ptr
+}
+void native_os_thread_exit(CPUState& cpu, u32 thread, u32 exit_val) {
+    // 0x803440c4(thread): reset the dying thread's owned-mutex queue (faithful pre-step).
+    cpu.gpr[3] = thread; cpu.lr = 0x80348a8cu; call_ppc(cpu, 0x803440c4u);
+
+    if (mem_r16(thread + T_DETACH) & 1) {
+        // Detached: nobody will join — unlink from the active-thread queue and free (state=0).
+        u32 prev = mem_r32(thread + T_ACT_PREV), next = mem_r32(thread + T_ACT_NEXT);
+        if (prev == 0) mem_w32(ACT_HEAD, next); else mem_w32(prev + T_ACT_NEXT, next);
+        if (next == 0) mem_w32(ACT_TAIL, prev); else mem_w32(next + T_ACT_PREV, prev);
+        mem_w16(thread + T_STATE, 0);
+    } else {
+        // Joinable: mark MORIBUND and publish the exit value; the joiner reaps it (OSJoinThread).
+        mem_w16(thread + T_STATE, 8);          // MORIBUND
+        mem_w32(thread + T_VAL, exit_val);
+    }
+
+    // __OSUnlockAllMutex(thread): release held mutexes (wakes waiters via native OSWakeupThread).
+    cpu.gpr[3] = thread; cpu.lr = 0x80348b00u; call_ppc(cpu, 0x803468b4u);
+
+    // OSWakeupThread(&thread->queueJoin): release anyone blocked in OSJoinThread on this thread.
+    wake_queue(thread + T_JOINQ);
+
+    static const bool dbg = getenv("SUNBRIGHT_DBG_SCHED") != nullptr;
+    if (dbg) fprintf(stderr, "[sched] EXIT   thread=%08x val=%08x detach=%u -> state=%u\n",
+                     thread, exit_val, mem_r16(thread + T_DETACH) & 1, r_state(thread));
+}
 
 void native_os_init() {
     static bool done = false;

@@ -20,3 +20,10 @@ using NativeOSFn = void (*)(CPUState& cpu);
 void       native_os_register(u32 addr, NativeOSFn fn);
 NativeOSFn native_os_lookup(u32 addr);   // null if no native primitive at addr
 void       native_os_init();             // register the primitive set (idempotent)
+
+// Native OSExitThread bookkeeping (minus the GC SelectThread reschedule, which nthr owns).
+// Called from nthr's guest-thread exit path when a guest thread function returns to its exit
+// trampoline (0x80348a68): marks the OSThread MORIBUND / frees it if detached, releases its
+// mutexes, and wakes its join queue — so the (still-recompiled) OSIsThreadTerminated /
+// OSJoinThread see the thread finish. `exit_val` = the thread function's return value (r3).
+void       native_os_thread_exit(CPUState& cpu, u32 os_thread, u32 exit_val);
