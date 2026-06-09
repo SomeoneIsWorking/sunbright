@@ -203,6 +203,24 @@
 > Getting past this clobber reveals the NEXT crash: `Invalid read ea=0x00000000 PC=0x802a6160` (the
 > null `[this+4]` deref the entries above chased) — a separate downstream issue.
 >
+> NARROWED + MECHANISM (2026-06-09). force_jit-bisecting endRendering's four inner calls (0x802fc9a4,
+> 0x802ca1e0, 0x802f917c, 0x8035d8f0) one at a time, watching r31 at the 802a6324 dispatch: ONLY
+> `SUNBRIGHT_FORCE_JIT=802fc9a4-...` restores r31=803e9700 and kills the wild read. So the corruptor is
+> **`func_802fc9a4` = `JDrama::TVideo::waitForRetrace(u16)`** (a retrace WAIT loop) or its recomp tree.
+> Built a reusable SP-imbalance detector `SUNBRIGHT_DBG_SPCHK` (dolphin_hook.cpp call_ppc): the PPC ABI
+> guarantees r1 is identical across any call, so a recomp call returning with a changed SP (excluding
+> context-switch handoffs) is an unbalanced-stack bug. IT DID NOT FIRE — so this is NOT a plain
+> unbalanced-stack instruction mistranslation. waitForRetrace does not return normally through
+> call_ppc: as a retrace wait it does a WAIT/CONTEXT-SWITCH handoff (OSSleepThread/siglongjmp) that
+> ABANDONS endRendering's recomp C frame; when the thread is later woken and control returns toward the
+> logo loop, it resumes under Dolphin JIT with SP/r31 off by 8 (epilogue then reads r31 from the
+> saved-LR slot = 0x802a6324). force_jit fixes it because Dolphin/the native scheduler runs the wait +
+> resume consistently. This is a recomp×native-threading boundary issue, NOT a pinnable single-opcode
+> mistranslation → per the debug-path rule it falls to OWN-IT-NATIVELY. PROPER FIX: a PC-native
+> override of `waitForRetrace` (func_802fc9a4) — RE what it waits on (VI retrace count via the VI ISR /
+> OSSleepThread on the retrace queue) and port it, like the TTrack-tick native port. That keeps the
+> wait off the recomp C stack so no handoff abandons a live recomp frame.
+>
 > **(superseded sub-note) DETERMINISTIC null archive (heap-not-ready / thread ORDERING, not a race).**
 > A thread crashes with a null `this` in `JKRMemArchive::mountFixed` ⇒ `new JKRMemArchive` returned
 > NULL (heap alloc failed). The fault regs (r26=803e9700, r5=0xffff) point at the **audio thread

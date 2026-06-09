@@ -306,6 +306,26 @@ void call_ppc(CPUState& cpu, u32 address) {
         // Recompiled target → nested native call. Control comes back here when the
         // callee returns (its blr is a C return); the caller then continues inline.
         if (g_probe_enabled) g_probe.call_recomp.fetch_add(1, std::memory_order_relaxed);
+        // SUNBRIGHT_DBG_SPCHK: SP-imbalance detector. The PPC ABI guarantees r1 (SP) is identical
+        // before and after any call — the callee tears down exactly the frame it built. So a recomp
+        // call that RETURNS with a changed SP (and did not hand off via a context switch) has an
+        // unbalanced-stack mistranslation in its body or call tree. This names the innermost culprit
+        // directly (it fires at the deepest call where SP first diverges), instead of force_jit
+        // bisecting level by level. Pinned the boot endRendering→waitForRetrace r31 clobber.
+        static const bool dbg_spchk = getenv("SUNBRIGHT_DBG_SPCHK") != nullptr;
+        if (dbg_spchk) {
+            const u32 sp_before = cpu.gpr[1];
+            const bool cs_before = g_recomp_context_switched;
+            fn(cpu);
+            if (!cs_before && !g_recomp_context_switched && cpu.gpr[1] != sp_before) {
+                static long hits = 0;
+                if (hits++ < 32)
+                    fprintf(stderr, "[spchk] call %08x returned SP %08x -> %08x (delta %+d) — "
+                            "unbalanced stack in its recomp tree\n",
+                            address, sp_before, cpu.gpr[1], (int)(cpu.gpr[1] - sp_before));
+            }
+            return;
+        }
         fn(cpu);
         return;
     }
