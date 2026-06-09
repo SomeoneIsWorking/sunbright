@@ -291,15 +291,28 @@
 > functions now run fully as native recomp code, no Dolphin handoff). force_jit/tail-sync were
 > diagnostics only; none shipped.
 >
-> NEW FRONTIER (2026-06-09) — boot now advances past the logo to an `__OSInitAudioSystem` (func_803433b4)
-> SPIN. Watchdog freeze: recomp spinning (recomp +18M/300ms, tail +0, interp_steps +0, **poll_yield +0**)
-> at pc≈803433f8, backtrace func_803433b4 → call_ppc → override_lookup, CoreTiming NOT advancing
-> (fakeTB frozen). poll_yield=0 means it is NOT detected as an MMIO/RAM poll loop — it is a function-call
-> loop whose exit condition never becomes true because emulated time/hardware isn't advancing (the recomp
-> spins without yielding). Distinct from the truncation bug. This is the same wall the reverted tail-sync
-> experiment hit, so it was always the next issue. NEXT: RE func_803433b4's loop (what it calls + what it
-> waits on — likely a DSP/AI ready bit or a time/retrace count); it polls VI/DSP MMIO (writes 0xCC005012,
-> reads [r31]) — find why CoreTiming doesn't advance for this spin (the mftb/poll-yield gap noted above).
+> `__OSInitAudioSystem` (func_803433b4) SPIN — **FIXED (2026-06-09) by a PC-native port that drops the
+> HW-settle busy-waits** (`runtime/overrides/os_init_audio_native.cpp`). ROOT CAUSE: the recompiled
+> __OSInitAudioSystem runs as native C on our call stack and never returns to the CPU loop, so it cannot
+> advance Dolphin's CoreTiming / fake time base. Its DSP-boot + ARAM-init sequence is full of waits that
+> only clear once CoreTiming/TB advances: DSP-reset poll (DSP_CONTROL bit0 — HLE clears it synchronously
+> anyway), two AR-DMA-complete polls (DSP_CONTROL 0x20 INT_ARAM — set by the `DSP::CompleteARAM` CoreTiming
+> event; the data is already moved synchronously inside `Do_ARAM_DMA`), a DSPInitCode poll (DSP_CONTROL
+> 0x400 — DSPHLE sets it on the DSPInit 1→0 edge and only clears it after FakeTimeBase advances 130 ticks),
+> a mail-from-DSP poll (`INITUCode::Initialize()` pushes mail synchronously on SetUCode), and an OSGetTick
+> 2194-tick settle delay. Under DSP-HLE every awaited signal is *deferred latency*; the functional work
+> (ucode load, ARAM DMA data movement, mail push) is synchronous. A PC build has no reason to busy-wait on
+> hardware settle, so the native port does every MMIO config access in order (identical Dolphin DSP-HLE /
+> ARAM state) and drops each wait loop + the OSGetTick delays. VERIFIED: boot advances from this spin all
+> the way to the boot-sequencer (`mountStageArchive`) — pure-Dolphin A/B confirms the rest of boot is
+> reachable. (Matches the user directive: port init to PC, remove cycle-waiting that a PC build doesn't
+> need — do NOT make the wait elapse via a time-base/downcount/spin-detector; those were rejected.)
+>
+> NEW FRONTIER (2026-06-09) — with audio init unblocked, boot reaches the **TApplication boot-sequencer
+> null crash** at `802a6338` (`mountStageArchive`/802a5f50 region), an invalid read through a null
+> sub-object (`[this+28]`/`[this+4]`). This is the same documented sequencer state-machine bug analyzed
+> above (lines ~72–100): a jump-table CALL-state runs before the CREATE-state populates the per-scene
+> director, because under native scheduling the sequencer state never advances 0→3. Continue there.
 >
 > **(superseded sub-note) DETERMINISTIC null archive (heap-not-ready / thread ORDERING, not a race).**
 > A thread crashes with a null `this` in `JKRMemArchive::mountFixed` ⇒ `new JKRMemArchive` returned
