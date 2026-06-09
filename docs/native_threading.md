@@ -56,22 +56,27 @@
 > (805fe7e0) when initData runs; the setFXLine null crash is gone. Diag: SUNBRIGHT_DBG_AUDIO traces
 > Driver::init / initBuffer / initDriver / initData with the FX-base value + current thread.
 >
-> **NEW frontier (2026-06-09) — audio DSP command-port handshake spins under run_jit_sync.** The audio
-> driver thread now runs its DSP init and reaches `JASystem::Kernel::portCmdInit` (8031758c) which
-> busy-waits on `[r13-0x5b94]` (a DSP command-port progress counter the DSP updates as it consumes the
-> init commands) — it never advances → spin. It surfaces as `FATAL run_jit_sync(802c6830→80344898)
-> exceeded step budget`: `802c6830` (a DSP-init function called via a computed indirect `bclrl` from
-> `__OSInitAudioSystem`) is NOT recompiled — it uses only modeled SPRs (mflr/mtlr), so it's a COVERAGE
-> gap, not a function_needs_jit exclusion — so it runs under the interpreter (`run_jit_sync`), and its
-> blocking/idle path reaches the GC `SelectThread+0x138` (80348814) idle loop, which spins on the GC
-> run-queue hint `[r13-0x59c0]` that nthr never populates (the residual "two schedulers" conflict).
-> Per the user directive **run_jit_sync must never run engine code**, the fix is two-fold: (1) close the
-> recomp COVERAGE gap so `802c6830`/`80344160`/`8031758c` (and other indirect-only engine targets) are
-> recompiled — they're reached via a function-pointer `bclrl` (`lwz r12,0(r28); mtlr r12; bclrl`), so
-> pointer-discovery must capture that table; (2) ensure the DSP command-port handshake actually
-> completes (drive Dolphin's DSP so `[r13-0x5b94]` advances) AND that no engine path falls into the GC
-> `SelectThread` idle (nthr must own idle). Diag: the run_jit_sync FATAL dumps the hottest interpreted
-> PCs (SelectThread idle + portCmdInit DSP-wait).
+> **Audio-init run_jit_sync engine spin — FIXED (2026-06-09) by a native OSYieldThread.** ROOT CAUSE:
+> the audio DSP-init `802c6830` (JIT-only, reached via a computed `bclrl` from `__OSInitAudioSystem`,
+> run under run_jit_sync) calls **`OSYieldThread`** (8034890c) after kicking the DSP. OSYieldThread was
+> NOT on the native_os seam, so it ran the GC `SelectThread` — which under native threading finds NO
+> runnable GC thread (nthr owns them; GC run-queue empty), sets `OS_CURRENT_THREAD=0`, and spins the GC
+> idle loop (`SelectThread+0x138` = 80348814) on `[r13-0x59c0]` forever → run_jit_sync step-budget abort.
+> Guest chain confirmed it (`80005628→…→__OSInitAudioSystem→802c6830(+0xdc)→OSYieldThread→SelectThread`).
+> FIX (satisfies all three user directives — port to native, no run_jit_sync engine spin, leave gameplay
+> in JIT): `os_yield_thread` on the native_os seam → `nthrt_yield_current()` (yield the token but stay
+> Ready; `block(State::Ready)` re-stamps ready_seq = round-robin, matching OSYieldThread). Engine code
+> stays JIT-only; no recompile. VERIFIED: the run_jit_sync spin is gone, audio init completes, boot runs
+> the full headless duration with no FATAL.
+>
+> **NEW frontier (2026-06-09) — ISI exception at 0x00000000 (NULL branch) after audio init.** With audio
+> init completing, a guest `bl/bctr` through a NULL pointer fires (`Jit64: ISI exception at 0x00000000`),
+> waking the GC exception reporter — a thread is now spinning in `JUTException::waitTime` (802c79f0,
+> calling `__div2i`) i.e. the crash-report delay loop. So the game hit a null function-pointer/vtable
+> call somewhere downstream of audio init (likely an engine callback/vtable not set up under native
+> scheduling/ordering). Next: capture the faulting context (which thread, the call site of the NULL
+> branch) — the JUTException report has PC+regs. NOTE: per user directive, prefer an interactive REPL to
+> inspect guest state over adding new env-gated logs.
 >
 > **(superseded sub-note) DETERMINISTIC null archive (heap-not-ready / thread ORDERING, not a race).**
 > A thread crashes with a null `this` in `JKRMemArchive::mountFixed` ⇒ `new JKRMemArchive` returned

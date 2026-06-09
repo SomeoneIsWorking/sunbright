@@ -246,6 +246,20 @@ static void dbg_write_console(CPUState& cpu) {
     func_8033ba90(cpu);         // run the real __write_console (observe, don't replace)
 }
 
+// OSYieldThread (0x8034890c): give up the CPU to the next runnable thread of equal-or-higher
+// priority (round-robin among equals), then resume. The recomp/JIT body does this via the GC
+// SelectThread — which, under native threading, finds NO runnable GC thread (nthr owns them; the GC
+// run-queue is empty), sets OS_CURRENT_THREAD=0, and spins the GC idle loop (SelectThread+0x138)
+// forever. Engine code calls it: the audio DSP init `802c6830` (JIT-only, run under run_jit_sync)
+// yields here after kicking the DSP, and the GC idle spin is what the run_jit_sync step-budget abort
+// reports. Native equivalent: yield the token but stay Ready (nthr's pick_next then picks the
+// highest-priority Ready thread, FIFO among ties = round-robin; returns to us when we're highest).
+// This keeps engine code OUT of run_jit_sync scheduler spins WITHOUT recompiling it. [[no-run_jit_sync-crutch]]
+extern void nthrt_yield_current();   // dolphin_hook.cpp
+static void os_yield_thread(CPUState& /*cpu*/) {
+    nthrt_yield_current();
+}
+
 // __OSReschedule (0x803488dc): the GC scheduler's "switch to the highest-priority ready thread"
 // entry. With nthr owning scheduling, this must NOT context-switch (two schedulers over one global
 // ppc = the documented conflict). No-op → returns to the caller; nthr switches at native block
@@ -273,6 +287,7 @@ void native_os_init() {
     // recompiled __OSReschedule must NOT also switch (the "two schedulers over one ppc" conflict).
     // No-op = cooperative (never preempt); a woken higher-prio thread runs at the next nthr yield.
     native_os_register(0x803488dcu, os_reschedule_noop); // __OSReschedule → no switch
+    native_os_register(0x8034890cu, os_yield_thread);    // OSYieldThread → nthr yield (stay Ready)
     // ── Native DVD read service: own the file-read path (docs/native_threading.md frontier). ──
     // The GC DVD command FSM stalls after the first transfer under cooperative native scheduling;
     // service reads directly from our own DiscIO::Volume instead. Registered on this same seam so
