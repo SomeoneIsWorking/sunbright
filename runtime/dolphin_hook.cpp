@@ -631,10 +631,15 @@ void tail_ppc(CPUState& cpu, u32 address) {
     cpu_to_dolphin_state(cpu, ppc);
     ppc.pc = ppc.npc = address;
     if (g_tail_jmp) {
-        // Hand the committed state to the CPU loop and unwind every recomp C frame
-        // back to Run. Correct even when an intermediate caller was a non-tail `bl`:
-        // its continuation simply resumes under the JIT from the shared state instead
-        // of on the C stack.
+        // Hand the committed state to the CPU loop and unwind every recomp C frame back to Run.
+        // NOTE (2026-06-09): this unwinding is NOT safe when an intermediate caller used a non-tail
+        // `bl` and still needs a callee-saved register — the unwound frame's C epilogue never runs, so
+        // its guest non-volatile is never restored (the boot endRendering→…→vsnprintf r31 clobber).
+        // A blanket "run returning tail targets synchronously instead of longjmp" fix was tried and
+        // REVERTED: it cleared the logo clobber but hung boot at the OS time-wait func_803433b4 — the
+        // longjmp handoff is load-bearing for mftb/CoreTiming-advancing OS waits, which spin forever on
+        // the recomp C stack. The correct fix is surgical (avoid the handoff at its source: the libc
+        // jump-table interior branches), see docs/native_threading.md.
         siglongjmp(*g_tail_jmp, 1);
     }
 #else

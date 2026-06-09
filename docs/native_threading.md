@@ -252,6 +252,31 @@
 >       post-wait field double-buffering ([this+0x3c..0x5c]→[this+0..0x1c], [this+0x78], [this+0x84]).
 > force_jit(802fc9a4) is the confirmed ISOLATION (a DIAGNOSTIC, NOT committed as a fix).
 >
+> TRIED + REVERTED (2026-06-09) — blanket "run returning tail targets synchronously" call-model fix.
+> Changed tail_ppc's non-recomp path to `interp_run_until(cpu.lr, budget, sp_floor)` + return (like
+> call_ppc) instead of siglongjmp, so a `bl`-caller frame survives. RESULT: it DID clear the logo r31
+> clobber (Invalid read 0x28040060 gone), but boot then HUNG — watchdog FREEZE, recomp spinning at
+> `pc=803433f8` in `func_803433b4 → func_803494f0 → SystemTimers::GetFakeTimeBase` (an OS mftb
+> time-wait), with `tail +0 interp_steps +0 poll_yield +0` (CoreTiming not advancing). So the
+> siglongjmp handoff is LOAD-BEARING: it is how OS time-wait/delay loops get run under Dolphin's CPU
+> loop where CoreTiming (and thus mftb/the fake TB) advances. Kept on the recomp C stack they spin
+> forever (the poll-yield detector watches RAM-flag reads, not mftb spins). A blanket call-model change
+> is therefore the WRONG fix; reverted (no env-gated dual path left, per done-right-over-working).
+> REFINED FIX DIRECTION — kill the handoff at its SOURCE, not the handoff mechanism. The tail handoffs
+> that corrupt the r31 are into libc string functions (vsnprintf 80339874, fwrite 80338f8c, __va_arg
+> 80337ccc, fwide 8033bc08) whose internal jump-table `bctr` branches land at interior addresses that
+> aren't recomp entries → tail_ppc → longjmp. These are STANDARD C LIBRARY routines; a PC-native
+> program just uses the host's. Two surgical options:
+>   (1) Native overrides of the libc string/format functions (vsnprintf/sprintf/fwrite/__va_arg…),
+>       like the existing OSReport→printf mapping — they then run as clean single-entry native C with
+>       no interior handoff. Lowest-risk + most "PC native"; needs careful guest-ABI marshaling of the
+>       format string + va_list from guest memory, and the output buffer (callers seen writing to stack
+>       buffers e.g. 804277bc, so the formatted result IS consumed — must be byte-faithful).
+>   (2) Recompiler-level: make the interior jump-table targets dispatchable (register them as entries /
+>       keep intra-function branches as gotos) so the branch never escapes to a non-recomp address.
+>       The [[linear-truncation-bug]]/pointer-discovery area; needs /recompile + regression test.
+> Whichever: getting past the r31 clobber also reveals the next crash (Invalid read ea=0 PC=802a6160).
+>
 > **(superseded sub-note) DETERMINISTIC null archive (heap-not-ready / thread ORDERING, not a race).**
 > A thread crashes with a null `this` in `JKRMemArchive::mountFixed` ⇒ `new JKRMemArchive` returned
 > NULL (heap alloc failed). The fault regs (r26=803e9700, r5=0xffff) point at the **audio thread
