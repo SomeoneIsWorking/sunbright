@@ -791,9 +791,18 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
         break;
     case PPCOp::SYNC: case PPCOp::ISYNC: case PPCOp::EIEIO:
     case PPCOp::DCBT: case PPCOp::DCBTST: case PPCOp::DCBF:
-    case PPCOp::DCBI: case PPCOp::ICBI:
+    case PPCOp::DCBI:
     case PPCOp::DCBST: case PPCOp::TLBIE: case PPCOp::TLBSYNC:
         line("// %s — no-op in recomp", i.mnemonic().c_str());
+        break;
+    // icbi is NOT a no-op: recomp execution never fetches through Dolphin's instruction cache,
+    // but the INTERPRETER (hybrid paths: thread bodies, native interrupt handlers, run_jit_sync)
+    // does. Game code that loads/copies code under recomp and then ICInvalidateRange's it must
+    // invalidate Dolphin's icache too, or the interpreter later fetches the stale pre-copy line
+    // (caught live: fetched=4800302d vs ram=7c800038 at 803378a8 — a phantom `bl` into the middle
+    // of a printf helper -> blr through a never-written LR slot -> JUT crash screen, 2026-06-10).
+    case PPCOp::ICBI:
+        line("icbi32(%s);", ea_x(i).c_str());
         break;
     // dcbz is NOT a no-op: it zeroes the 32-byte cache block containing EA (no memory read).
     // SMS's THP decoder uses it to clear the DCT coefficient buffer before the VLC decoder fills

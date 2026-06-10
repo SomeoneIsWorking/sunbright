@@ -90,6 +90,7 @@ inline void gx_tap_word(u32 v) {     // a u32 written to the gather pipe
 #  include "Core/Core.h"
 #  include "Core/CoreTiming.h"
 #  include "Core/System.h"
+#  include "Core/PowerPC/JitInterface.h"
 
 static inline Memory::MemoryManager& MEM() {
     return Core::System::GetInstance().GetMemory();
@@ -207,9 +208,8 @@ static inline u8* ram_ptr(u32 ea) {
     struct rlimit no_core{0, 0};
     setrlimit(RLIMIT_CORE, &no_core);
     if (getenv("SUNBRIGHT_FATAL_HOLD")) {
-        fprintf(stderr, "[sunbright] FATAL_HOLD: parked at fault — inspect via REPL, kill -9 to exit\n");
-        fflush(stderr);
-        for (;;) sleep(3600);
+        extern void sunbright_park(const char*);   // watchdog.h — marks the park so the watchdog spares it
+        sunbright_park("FATAL_HOLD at fault");
     }
     abort();
 }
@@ -456,6 +456,20 @@ void mem_w64_slow(u32 ea, u64 v) {
 void dcbz32(u32 ea) {
     ea &= ~0x1Fu;                          // align to the 32-byte cache block
     for (int i = 0; i < 8; i++) sb_w32(ea + (u32)(i * 4), 0);
+}
+
+// icbi: invalidate the 32-byte instruction-cache block containing EA, in DOLPHIN's caches.
+// Recomp execution never fetches through Dolphin's icache, but the interpreter (hybrid paths)
+// does — so game code that loads/copies code under recomp and ICInvalidateRange's it must reach
+// Dolphin's InstructionCache + JIT block cache, or the interpreter later executes the stale
+// pre-copy line (the phantom-`bl` JUT-crash, 2026-06-10). Faithful port of the icbi side effect.
+void icbi32(u32 ea) {
+#ifdef HAVE_DOLPHIN_MEMMAP
+    auto& sys = Core::System::GetInstance();
+    sys.GetPPCState().iCache.Invalidate(sys.GetMemory(), sys.GetJitInterface(), ea & ~0x1Fu);
+#else
+    (void)ea;
+#endif
 }
 
 // Public out-of-line wrappers (declared in intrinsics.h) — dispatch through the inline fast path.

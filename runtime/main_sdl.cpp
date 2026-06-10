@@ -644,6 +644,15 @@ int main(int argc, char* argv[]) {
         fprintf(stderr, "[sunbright] JIT block-linking + branch-following disabled (full recomp interception)\n");
     }
 
+    // Disable Dolphin's instruction-cache emulation: our PC-port memory model is fetch-from-RAM
+    // (same contract as the flat no-MMU bridge). With icache emulation on, its set/way + lookup
+    // bookkeeping served ANOTHER address's line under the hybrid (fetched 0x803428A8's word at
+    // 0x803378A8, same cache set — a phantom mis-based `bl` → blr through a never-written LR slot
+    // → JUT crash screen). The icache is a hardware timing artifact; no game behavior we port
+    // depends on stale-fetch semantics, and icbi side effects (JIT block invalidation) are still
+    // honored via icbi32. 2026-06-10.
+    Config::SetBase(Config::MAIN_DISABLE_ICACHE, true);
+
     // Override backend via env (e.g. SUNBRIGHT_BACKEND=OGL, Vulkan, Software)
     const char* backend_env = getenv("SUNBRIGHT_BACKEND");
     if (backend_env) {

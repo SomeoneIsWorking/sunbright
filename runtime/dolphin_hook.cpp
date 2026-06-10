@@ -679,6 +679,15 @@ bool interp_run_until(u32 ret, long budget, u32 sp_floor) {
         // DSP-handler step diag (temporary, surgical): print fetched opcode + HLE hook state at
         // the exact derail site 803378a8/803378ac (straight-line code cannot jump; either the
         // fetch differs from RAM or an HLE hook fires).
+        if ((ppc.pc >= 0x80337880u && ppc.pc < 0x80337900u) && ppc.gpr[3] == 0x803e9700u) {
+            auto& sysd = Core::System::GetInstance();
+            const u32 op  = sysd.GetMMU().Read_Opcode(ppc.pc);
+            const u32 ram = mem_r32(ppc.pc);
+            fprintf(stderr, "[dspdiag-BAD] pc=%08x fetched=%08x ram=%08x lr=%08x r1=%08x r3=%08x\n",
+                    ppc.pc, op, ram, ppc.spr[SPR_LR], ppc.gpr[1], ppc.gpr[3]);
+            sunbright_dump_pc_ring(stderr);
+            sunbright_park(op != ram ? "stale icache fetch" : "bad-context handler entry (fetch==ram)");
+        }
         if (ppc.pc == 0x803378a8u || ppc.pc == 0x803378acu) {
             static long hits = 0;
             if (hits++ < 16) {
@@ -708,10 +717,31 @@ bool interp_run_until(u32 ret, long budget, u32 sp_floor) {
         // exceptions still vector normally — they are synchronous and self-contained.
         if ((ppc.Exceptions & 0x00000004u /*EXCEPTION_EXTERNAL_INT*/) && (ppc.msr.Hex & 0x8000u) &&
             !in_native_dispatch()) {
-            const u32 resume_pc = ppc.pc, resume_npc = ppc.npc;
+            // Full context save/restore around the dispatch — exactly what the GC exception
+            // prologue/OSLoadContext pair does. The handlers run on the SAME global ppc (call_ppc
+            // interp path), so without this the interrupted body resumed with the HANDLER's
+            // register file (boot static-ctor loop continued with r3=garbage → the 0x10000000
+            // wild write at 802c9f00, 2026-06-10).
+            CPUState saved_ctx;
+            dolphin_state_to_cpu(ppc, saved_ctx);
+            const u32 r_pc = ppc.pc, r_npc = ppc.npc, r_msr = ppc.msr.Hex;
+            const u32 r_srr0 = ppc.spr[SPR_SRR0], r_srr1 = ppc.spr[SPR_SRR1];
             native_dispatch_pending();
-            ppc.pc = resume_pc; ppc.npc = resume_npc;   // continue exactly where the body was
+            cpu_to_dolphin_state(saved_ctx, ppc);
+            ppc.pc = r_pc; ppc.npc = r_npc; ppc.msr.Hex = r_msr;
+            ppc.spr[SPR_SRR0] = r_srr0; ppc.spr[SPR_SRR1] = r_srr1;
             continue;
+        }
+        // SUNBRIGHT_DBG_RAWTRACE=ADDR: once an interp run with ret==idle-sentinel reaches ADDR,
+        // print EVERY step (pc lr r1 r3) until the run ends — the exact, uncollapsed flow.
+        static const char* rawtrace_env = getenv("SUNBRIGHT_DBG_RAWTRACE");
+        static const u32 rawtrace_at = rawtrace_env ? (u32)strtoul(rawtrace_env, nullptr, 16) : 0;
+        static long rawtrace_left = 0;
+        if (rawtrace_at && ppc.pc == rawtrace_at && ret == 0x80002FF8u) rawtrace_left = 1200;
+        if (rawtrace_left > 0) {
+            rawtrace_left--;
+            fprintf(stderr, "[raw] %08x lr=%08x r1=%08x r3=%08x r4=%08x\n",
+                    ppc.pc, ppc.spr[SPR_LR], ppc.gpr[1], ppc.gpr[3], ppc.gpr[4]);
         }
         prev_pc = ppc.pc;
         sb_ring_push(ppc.pc);
@@ -859,6 +889,14 @@ static bool native_dispatch_one() {
     // chain would have passed). The register file seeds from the live ppc so r2/r13 (SDA bases)
     // are valid for OS code; call_ppc returns when the handler blr's.
     t_in_native_dispatch = true;
+    // Hardware semantics: taking an external interrupt CLEARS MSR[EE] for the handler (srr1 holds
+    // the old MSR; rfi restores it). Without this the handler inherits the interrupted body's
+    // EE=1 and Dolphin's interpreter can vector a NESTED guest dispatch mid-handler — observed
+    // double-running __DSPHandler, which double-consumed the DSP mail and left the outer handler
+    // polling the CPU->DSP mailbox bit forever (the 500M-step run_jit_sync abort, 2026-06-10).
+    auto& ppc_msr = Core::System::GetInstance().GetPPCState();
+    const u32 saved_ee_msr = ppc_msr.msr.Hex;
+    ppc_msr.msr.Hex &= ~0x8000u;
     static const bool dbg_nintr = getenv("SUNBRIGHT_DBG_IDLE") != nullptr;
     if (dbg_nintr) {
         static long d = 0;
@@ -872,6 +910,7 @@ static bool native_dispatch_one() {
     cpu.gpr[4] = mem_r32(0x800000D4u);
     cpu.lr     = sunbright_idle_spin_pc();             // interp ret sentinel if the handler isn't recomp
     call_ppc(cpu, handler);
+    ppc_msr.msr.Hex = saved_ee_msr;   // rfi-equivalent: restore the interrupted context's MSR
     t_in_native_dispatch = false;
     return true;
 }

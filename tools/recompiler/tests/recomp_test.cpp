@@ -256,6 +256,19 @@ int main() {
         CHECK(has(b.code, "dcbi \xE2\x80\x94 no-op"), "dcbi stays a no-op (no modeled memory effect)");
     }
 
+    // 8b. icbi is NOT a no-op either: the interpreter (hybrid paths) fetches through Dolphin's
+    //     instruction cache, so code loaded/copied under recomp and then ICInvalidateRange'd must
+    //     invalidate Dolphin's icache — a NOP'd icbi left a stale line and the interpreter executed
+    //     phantom pre-copy bytes (fetched=4800302d vs ram=7c800038 at 803378a8 → wild blr-to-0 →
+    //     JUT crash screen, 2026-06-10). Pin that icbi emits the icbi32 helper at (rA|0)+rB.
+    {
+        // icbi r0, r4 : (31<<26)|(0<<16 rA)|(4<<11 rB)|(982<<1 xo)
+        const uint32_t icbi = (31u<<26)|(0u<<16)|(4u<<11)|(982u<<1);
+        Built b = build(0x80100000u, { icbi, BLR }, false);
+        CHECK(has(b.code, "icbi32(cpu.gpr[4])"), "icbi invalidates Dolphin's icache line at (rA|0)+rB");
+        CHECK(!has(b.code, "icbi \xE2\x80\x94 no-op"), "icbi is no longer a no-op (stale-fetch bug)");
+    }
+
     // 9. THE BOOT JIT-HANDOFF REGRESSION: a computed `bctr` jump table whose case labels live INSIDE
     //    the function must dispatch via an in-function `switch(ctr){goto}` — NOT a `tail_ppc` handoff
     //    to Dolphin's JIT (which corrupted non-volatile regs across the recomp↔JIT boundary = the boot
