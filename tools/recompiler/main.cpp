@@ -319,6 +319,10 @@ static int recompile_mode(const DiscLoader& disc, const DOL& dol, const std::str
             0x8001fc04u,  // game thread (movie era)
             0x800200d8u,  // game thread (movie era)
             0x80296dd4u,  // game thread
+            // GX draw-sync token callback chain (registered via GXSetDrawSyncCallback — pointer-only;
+            // the funcs-map label at 802a8db8 is a DIFFERENT method, the live global holds 802a9318):
+            0x802a9318u,  // TDrawSyncManager::drawSyncCallback (static)
+            0x802a9078u,  // TDrawSyncManager::drawSyncCallbackSub
         };
 
         auto funcs = real_funcs;                       // all recomp ENTRY points = real + discovered
@@ -354,6 +358,11 @@ static int recompile_mode(const DiscLoader& disc, const DOL& dol, const std::str
                 0x8031d83cu, 0x8001fa88u, 0x80316ffcu, 0x803121acu, 0x8031a2ecu,
                 0x803399ccu, 0x8031a50cu, 0x8030fe50u, 0x80313ddcu,
                 0x803171ecu, 0x80311170u, 0x802b3264u,   // audio + card thread procs (3rd wave)
+                // 4th wave thread entries + the draw-sync callback chain: collect whole (CFG) so
+                // linear mode can't truncate them mid-body into a JIT bounce.
+                0x802c54b8u, 0x802a9184u, 0x802a7878u, 0x802a7080u, 0x802b6fdcu,
+                0x8001dcd0u, 0x8001fc04u, 0x800200d8u, 0x80296dd4u,
+                0x802a9318u, 0x802a9078u,
             };
 
             // Collection (linear-truncate vs full-CFG) is extracted to func_collect.{h,cpp} and

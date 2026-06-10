@@ -903,8 +903,10 @@ static bool native_dispatch_one(const CPUState* seed) {
     t_in_native_dispatch = true;
     if (interrupt == 17 || interrupt == 18) {  // PI_CP / PE_TOKEN: always log (FIFO pacing chain)
         static long cp_logs = 0;
-        if (cp_logs++ < 48)
-            fprintf(stderr, "[nintr] intr=%d -> handler %08x (cause=%08x)\n", interrupt, handler, cause);
+        if (cp_logs++ < 200)
+            fprintf(stderr, "[nintr] intr=%d -> handler %08x (cause=%08x tok=%04x r13=%08x cbg=%08x)\n",
+                    interrupt, handler, cause, (unsigned)mem_r16(0xCC00100Eu),
+                    ppc.gpr[13], mem_r32(0x8040EA18u));
     }
     g_nintr_counts[interrupt & 31]++;
     // Hardware semantics: taking an external interrupt CLEARS MSR[EE] for the handler (srr1 holds
