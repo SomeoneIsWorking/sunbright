@@ -43,6 +43,9 @@ std::atomic<bool> g_force_dump{false};
 void wd_sigquit(int) { g_force_dump.store(true); }
 
 std::atomic<bool> g_parked{false};            // a thread parked deliberately (see sunbright_park)
+}  // pause anon namespace for an external hook
+extern "C" unsigned long long sunbright_presented_frames();   // main_sdl: g_presenter FrameCount
+namespace {
 
 #ifdef HAVE_DOLPHIN_CORE
 Common::EventHook g_field_hook;               // kept alive to stay subscribed
@@ -206,6 +209,24 @@ void watchdog_loop(int timeout_sec) {
             continue;
         }
         if (g_parked.load()) continue;                 // deliberate diagnostic park — not a freeze
+        // GAME-PROGRESS heartbeat (2026-06-10): with the native frame heartbeat, VI fields keep
+        // ticking even when the game LOGIC wedges (the title/load freezes ran "fields OK" while
+        // nothing new rendered — the watchdog was blind). Watch real presented frames
+        // (XFB copies): fields advancing while FrameCount is frozen ≥30s = a game-logic stall.
+        // Dump loudly (REPL stays available); no kill — presentation itself is alive.
+        {
+            static u64 last_frames = 0; static int frames_stalled = 0; static bool warned = false;
+            const u64 cur = sunbright_presented_frames();
+            if (cur != last_frames) { last_frames = cur; frames_stalled = 0; warned = false; }
+            else if (cur != 0 && ++frames_stalled == 30 && !warned) {
+                warned = true;
+                std::fprintf(stderr, "[watchdog] GAME-PROGRESS STALL: VI fields ticking but no new "
+                             "frame presented for 30s (FrameCount=%llu) — game logic is wedged. "
+                             "Dumping context (process stays up; inspect via REPL).\n",
+                             (unsigned long long)cur);
+                dump_freeze(timeout_sec);
+            }
+        }
         if (!armed) continue;                          // core hasn't started yet — don't fire pre-boot
         const int limit = first_field ? timeout_sec : boot_grace;
         if (++stalled >= limit && !fired) {            // one dump per freeze episode

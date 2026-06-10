@@ -56,7 +56,7 @@
 #include "Core/State.h"                // save states (boot directly into a saved game)
 #include "probe_server.h"
 #include "watchdog.h"
-#include "VideoCommon/Present.h"       // g_presenter (surface resize)
+#include "VideoCommon/Present.h"       // g_presenter (surface resize, FrameCount)
 #include "UICommon/DiscordPresence.h"
 #include "UICommon/UICommon.h"
 
@@ -93,6 +93,9 @@ static std::atomic<uint32_t> g_pad{0};
 // VI fields presented — a mode-independent measure of GAME progress (unlike wall time, it doesn't
 // change with the frame-dump throttle). Used to load a save state only once the game is past boot.
 static std::atomic<uint64_t> g_present_fields{0};
+// Real presented-frame counter for the watchdog's game-progress heartbeat (XFB copies → presents;
+// distinct from VI fields, which the native heartbeat ticks even when game logic wedges).
+extern "C" unsigned long long sunbright_presented_frames();
 // REPL-driven pad bits, OR'd with the keyboard bits so scripted input and the
 // keyboard coexist (SUNBRIGHT_REPL).
 static std::atomic<uint32_t> g_repl_bits{0};
@@ -1081,4 +1084,9 @@ int main(int argc, char* argv[]) {
 
     SunbrightBridge::Shutdown();
     return 0;
+}
+
+
+unsigned long long sunbright_presented_frames() {
+    return g_presenter ? (unsigned long long)g_presenter->FrameCount() : 0;
 }
