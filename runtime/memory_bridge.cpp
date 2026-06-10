@@ -511,6 +511,17 @@ void mem_w16_slow(u32 ea, u16 v) {
 #endif
 }
 
+// EXI register writes → trace ring (probe /tracelog). Permanent diagnostic (keep-diagnostics):
+// the CARDMount lost-completion deadlock (2026-06-10) was a memcard EXI transfer whose TC
+// interrupt never got delivered — these events are sparse (~dozens per mount), so ring-trace
+// every EXI0/1/2 register write with the writer's pc to reconstruct the op/ack sequence.
+extern "C" void sb_trace(const char* tag, uint32_t a, uint32_t b, uint32_t c, uint32_t d);
+static inline void trace_exi_write(u32 ea, u32 v, int bits) {
+    const u32 lo = ea & 0x0FFFFFFFu;
+    if (lo >= 0x0C006800u && lo < 0x0C006840u)
+        sb_trace("exiw", ea, v, (u32)bits, g_cur_recomp_cpu ? g_cur_recomp_cpu->pc : 0);
+}
+
 void mem_w32_slow(u32 ea, u32 v) {
     if (u8* p = ram_ptr(ea)) {
         p[0]=v>>24; p[1]=(v>>16)&0xFF; p[2]=(v>>8)&0xFF; p[3]=v&0xFF; return;
@@ -523,6 +534,7 @@ void mem_w32_slow(u32 ea, u32 v) {
 #endif
     check_wild_write(ea, v, 32);
     sb_log_fifo_reg_write(ea, v, 32);
+    trace_exi_write(ea, v, 32);
     MMIO_W(32, ea, v);
 }
 

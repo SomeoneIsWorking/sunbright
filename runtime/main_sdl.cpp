@@ -382,6 +382,9 @@ static void repl_reader(std::string src) {
     }
 }
 
+// Probe /pad endpoint → same action queue as the REPL fifo (probe_server.cpp).
+void sunbright_repl_inject(const char* line) { repl_parse_line(line); }
+
 // Called each main-loop iteration when REPL is active. Returns the pad bits to
 // drive this frame (0 when idle). Runs one timed action at a time.
 static uint32_t repl_tick() {
@@ -926,9 +929,9 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        // SUNBRIGHT_REPL: apply the current scripted action's pad bits this frame.
-        if (repl_src && *repl_src)
-            g_repl_bits.store(repl_tick(), std::memory_order_relaxed);
+        // Scripted pad input: the REPL fifo and the probe's /pad endpoint share one action
+        // queue — consume it whenever anything has enqueued (no env gate needed for /pad).
+        g_repl_bits.store(repl_tick(), std::memory_order_relaxed);
 
         // Start during a THP movie → skip it (see movie_skip_tick).
         movie_skip_tick(g_pad.load(std::memory_order_relaxed)

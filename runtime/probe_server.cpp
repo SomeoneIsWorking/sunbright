@@ -37,6 +37,7 @@ bool g_probe_enabled = false;
 #endif
 extern u32 mem_r32(u32 ea);
 extern u16 mem_r16(u32 ea);
+extern void sunbright_repl_inject(const char* line);   // main_sdl.cpp — /pad scripted input
 extern unsigned long g_ds_token_dispatches, g_ds_callbacks, g_ds_sleeps, g_ds_wakes;
 unsigned long long watchdog_vi_fields();
 
@@ -98,6 +99,14 @@ u32 qarg(const char* path, const char* key, u32 def) {
     const char* p = strstr(path, pat.c_str());
     if (!p) return def;
     return (u32)strtoul(p + pat.size(), nullptr, 16);
+}
+// Decimal variant — for durations (ms=...); hex-parsing 90000 as 0x90000 ms once wedged the
+// single-threaded server for 10 minutes and looked like "HTTP is dead".
+u32 qarg_dec(const char* path, const char* key, u32 def) {
+    std::string pat = std::string(key) + "=";
+    const char* p = strstr(path, pat.c_str());
+    if (!p) return def;
+    return (u32)strtoul(p + pat.size(), nullptr, 10);
 }
 
 // REPL request handler. Returns the response body for any /repl path; empty string = not a REPL path.
@@ -186,7 +195,8 @@ std::string handle_repl(const char* path) {
         // Sample one guest word as fast as possible for `ms` (default 3000), report VALUE TRANSITIONS
         // (index, t_ms, old->new). Run in native AND pure-Dolphin (SUNBRIGHT_DISABLE_RECOMP=1), both
         // with SUNBRIGHT_PROBE=1, and diff the two transition sequences to see where they diverge.
-        u32 a = qarg(path, "a", 0), ms = qarg(path, "ms", 0xbb8 /*3000*/);
+        u32 a = qarg(path, "a", 0), ms = qarg_dec(path, "ms", 3000);
+        if (ms > 15000) ms = 15000;   // single-threaded server: a long trace blocks every other probe
         auto t0 = std::chrono::steady_clock::now();
         u32 last = mem_r32(a); long samples = 0; int trans = 0;
         app("trace %08x for %u ms:\n", a, ms);
@@ -203,6 +213,21 @@ std::string handle_repl(const char* path) {
                 break;
         }
         app("  done: %ld samples, %d transitions, final=%08x\n", samples, trans, last);
+        return std::string(buf, n);
+    }
+    if (strncmp(path, "/pad?", 5) == 0) {
+        // Inject a scripted pad action: /pad?do=<combo>&ms=<hold-ms> — same grammar as the
+        // SUNBRIGHT_REPL fifo (combo = a|b|x|y|z|start|l|r|up|down|left|right joined by '+',
+        // 'wait' to idle). Queued; the main loop holds the bits for ms. e.g. /pad?do=up&ms=2000
+        char combo[64] = {0}; u32 ms = qarg_dec(path, "ms", 150);
+        if (const char* p = strstr(path, "do=")) {
+            size_t i = 0; p += 3;
+            while (*p && *p != '&' && i + 1 < sizeof combo) combo[i++] = *p++;
+        }
+        if (!combo[0]) return std::string("usage: /pad?do=<combo>&ms=<ms>\n");
+        char line[96]; snprintf(line, sizeof line, "%s %u", combo, ms);
+        sunbright_repl_inject(line);
+        app("queued: %s\n", line);
         return std::string(buf, n);
     }
     if (strncmp(path, "/poll?", 6) == 0) {
@@ -337,6 +362,10 @@ std::string build_metrics() {
 }
 
 void serve_conn(int fd) {
+    // The server is single-threaded: a client that connects but never sends (e.g. a curl
+    // killed between connect and write) must not park the whole probe in recv() forever.
+    timeval tv{2, 0};
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
     char req[1024] = {0};
     (void)recv(fd, req, sizeof req - 1, 0);
 
@@ -359,8 +388,10 @@ void serve_conn(int fd) {
         "Access-Control-Allow-Origin: *\r\n"
         "Content-Length: %zu\r\n\r\n",
         body.size());
-    (void)!write(fd, hdr, (size_t)hn);
-    (void)!write(fd, body.data(), body.size());
+    // MSG_NOSIGNAL: a client that timed out and closed (curl -m) must not SIGPIPE-kill the
+    // whole emulator — long endpoints (/trace) regularly outlive the client.
+    (void)send(fd, hdr, (size_t)hn, MSG_NOSIGNAL);
+    (void)send(fd, body.data(), body.size(), MSG_NOSIGNAL);
     close(fd);
 }
 
