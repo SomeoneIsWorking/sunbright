@@ -725,10 +725,12 @@ int main(int argc, char* argv[]) {
     Config::SetBase(Config::MAIN_SYNC_GPU, true);
 
     // ── Graphics quality ────────────────────────────────────────────────────
-    // Internal resolution scale (SUNBRIGHT_RES_SCALE, default 3 = 3× native EFB).
+    // Internal resolution scale (SUNBRIGHT_RES_SCALE; default 3× windowed, 1× headless).
+    // Headless raster cost at 3× halves throughput (A/B 2026-06-10: 8.2 vs 3.7 XFB frames/s at
+    // file select) and nobody sees the pixels except frame dumps — CI/diagnosis wants speed.
     {
         const char* rs = getenv("SUNBRIGHT_RES_SCALE");
-        int scale = rs ? atoi(rs) : 3;
+        int scale = rs ? atoi(rs) : (headless ? 1 : 3);
         if (scale < 1) scale = 1;
         Config::SetBase(Config::GFX_EFB_SCALE, scale);
         fprintf(stderr, "[sunbright] Internal resolution scale: %d×\n", scale);
