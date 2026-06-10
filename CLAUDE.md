@@ -311,7 +311,13 @@ Headless now renders (real Vulkan, no present) and mixes audio (real Cubeb, mute
 backends are gone, so render/audio-timing bugs reproduce headless. `SUNBRIGHT_TURBO=1` is opt-in
 (headless defaults to real-time). Watchdog catches freezes via no-VI-field (CoreTiming arms it,
 pre-first-frame too) and `kill -QUIT <pid>` forces an on-demand dump.
-Next: gameplay/Delfino, audio output, the recomp TTrack-tick root cause, FP/edge-case accuracy.
+**Audio fixed (2026-06-11, c069f31):** the dead-audio bug (silence after the first instant) was the
+JAS audioproc thread silently exiting on a DSP frame-done message with intcount==0 — impossible on
+hardware, routine under Dolphin's instant HLE mails. Native port `overrides/audioproc_native.cpp`
+(+ tail_ppc bare-blr return, forced entry 0x80312000, native direct-OSExitThread). Verify audio
+headlessly with `SUNBRIGHT_DUMP_AUDIO=1` → Dump/Audio WAV → RMS per second (no ears needed).
+Next: THP-transition NULL-deref read (~79s under autostart), gameplay/Delfino, the recomp
+TTrack-tick root cause, FP/edge-case accuracy.
 
 ## Skills (slash commands)
 | Command | What it does |
