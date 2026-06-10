@@ -5,6 +5,7 @@
 #include "native_threads.h"
 #include "native_os.h"
 #include "probe_server.h"
+#include "sb_spin.h"
 #include "sb_assert.h"
 #include "watchdog.h"
 #include <dlfcn.h>
@@ -960,6 +961,7 @@ bool sunbright_deliver_pending_recomp(u32 logical_msr) {
 }
 
 void sunbright_poll_yield() {
+    SB_SPIN_GUARD("poll_yield");
     if (g_probe_enabled) g_probe.poll_yield.fetch_add(1, std::memory_order_relaxed);
     auto& sys = Core::System::GetInstance();
     auto& ppc = sys.GetPPCState();
@@ -1356,6 +1358,7 @@ static bool idle_run(long max_steps) {
         fprintf(stderr, "[idle] ticks=%lld\n%s", (long long)ct.GetTicks(),
                 ct.GetScheduledEventsSummary().c_str()); }
     for (; n < max_steps; n++) {
+        SB_SPIN_GUARD("idle_driver");
         if (nthr::ready_count() > 0) break;
         ppc.msr.Hex = IDLE_MSR & ~0x8000u;          // EE OFF at the spin: IRQs become pending only —
         // Skip straight to the next scheduled device event instead of burning one SingleStep per

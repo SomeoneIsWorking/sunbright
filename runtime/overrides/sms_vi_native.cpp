@@ -26,6 +26,7 @@
 #include "../overrides.h"
 #include "../intrinsics.h"
 #include "../dolphin_hook.h"
+#include "../sb_spin.h"
 #include "Core/System.h"
 #include "VideoCommon/CommandProcessor.h"
 #include "VideoCommon/Fifo.h"
@@ -160,6 +161,7 @@ SUNBRIGHT_OVERRIDE(ov_VIWaitForRetrace, VI_WAIT) {
             const u32 threshold = fifo_cap / 8;
             int spins = 0;
             while (fifo.CPReadWriteDistance.load() > threshold && spins++ < 2500) {
+                SB_SPIN_GUARD("vi.gpu_backpressure");
                 sys.GetFifo().RunGpu();                    // distance > threshold here: data IS pending
                 // The drain needs the WHOLE pipeline serviced, not just the GPU thread: the PE
                 // draw-sync token lands as a CoreTiming event (needs Advance), its interrupt as a

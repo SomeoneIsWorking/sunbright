@@ -1,5 +1,6 @@
 #include "watchdog.h"
 #include "probe_server.h"   // reuse the dispatch counters (spin vs block)
+#include "sb_spin.h"        // busy-spin site accounting (SB_SPIN_GUARD in the polling loops)
 
 #include <atomic>
 #include <thread>
@@ -202,6 +203,83 @@ void watchdog_loop(int timeout_sec) {
             std::fprintf(stderr, "[watchdog] fields=%llu ticks=%llu armed=%d first_field=%d stalled=%d\n",
                          (unsigned long long)cur_fields, (unsigned long long)cur_ticks, armed, first_field, stalled);
         if (cur_ticks != last_ticks) { last_ticks = cur_ticks; armed = true; }  // core is executing
+        // BUSY-SPIN detector (2026-06-10): the freeze/stall heartbeats are blind to a CRAWL — VI
+        // fields and frames still tick, just absurdly slowly, while a polling wait loop burns a
+        // whole core (the PE-token-era GPU-backpressure crawl: 3.1 s/frame at 99% CPU). Signal:
+        // the instrumented wait loops (SB_SPIN_GUARD) own the majority of wall time while
+        // presented frames run well under the 60 Hz pace, sustained. That is a busy-spin —
+        // healthy blocking waits aren't instrumented, and a legitimately CPU-bound scene spends
+        // its time in recomp code, not in wait loops. Report the per-site table (the locator),
+        // dump full context, and kill (exit 138). SUNBRIGHT_SPIN_KILL=0 reports without killing;
+        // SUNBRIGHT_SPIN_SEC overrides the 10 s window.
+        if (first_field && !g_parked.load()) {
+            static int spin_sec_limit = [] {
+                const char* s = getenv("SUNBRIGHT_SPIN_SEC");
+                return (s && atoi(s) > 0) ? atoi(s) : 10;
+            }();
+            static double spin_fps_limit = [] {
+                const char* s = getenv("SUNBRIGHT_SPIN_FPS");
+                return (s && atof(s) > 0) ? atof(s) : 30.0;
+            }();
+            static const bool spin_kill = !(getenv("SUNBRIGHT_SPIN_KILL") &&
+                                            atoi(getenv("SUNBRIGHT_SPIN_KILL")) == 0);
+            static auto last_wall = std::chrono::steady_clock::now();
+            static uint64_t last_spin_us = sb_spin_total_us();
+            static uint64_t last_pframes = 0;
+            static uint64_t base_us[64], base_it[64];
+            static const SbSpinSite* base_sites[64];
+            static int base_n = -1, hot = 0;
+            static bool spin_fired = false;
+
+            const auto now_w = std::chrono::steady_clock::now();
+            const double wall_s = std::chrono::duration<double>(now_w - last_wall).count();
+            last_wall = now_w;
+            const uint64_t spin_us = sb_spin_total_us();
+            const uint64_t pframes = sunbright_presented_frames();
+            const double spin_frac = wall_s > 0 ? (double)(spin_us - last_spin_us) / 1e6 / wall_s : 0;
+            const double fps = wall_s > 0 ? (double)(pframes - last_pframes) / wall_s : 0;
+            last_spin_us = spin_us;
+            last_pframes = pframes;
+
+            int n = 0;
+            for (const SbSpinSite* s = sb_spin_site_list(); s && n < 64; s = s->next) n++;
+            // 0.60/30fps, not 0.75/10: the PE-token-era backpressure crawl limped at ~20 fps with
+            // ~75% of wall in the poll loop and the stricter gates never fired (2026-06-10). A
+            // healthy vsync-paced scene spends its wall in the pace sleep (uninstrumented), so
+            // spin_frac stays low there. SUNBRIGHT_SPIN_FPS overrides the fps gate.
+            const bool spinning = spin_frac > 0.60 && fps < spin_fps_limit;
+            if (!spinning || n != base_n) {            // (re)open the window on any quiet tick or
+                hot = 0; base_n = n;                   //  when a new site registered mid-window
+                int i = 0;
+                for (const SbSpinSite* s = sb_spin_site_list(); s && i < 64; s = s->next, i++) {
+                    base_sites[i] = s;
+                    base_us[i] = s->us.load();
+                    base_it[i] = s->iters.load();
+                }
+            } else if (++hot >= spin_sec_limit && !spin_fired) {
+                spin_fired = true;
+                std::fprintf(stderr,
+                    "[watchdog] BUSY-SPIN: %.0f%% of wall time inside polling wait loops for %ds "
+                    "while presenting %.1f fps. Wait-loop time over the window:\n",
+                    spin_frac * 100, spin_sec_limit, fps);
+                for (int i = 0; i < base_n; i++) {
+                    const uint64_t dus = base_sites[i]->us.load() - base_us[i];
+                    const uint64_t dit = base_sites[i]->iters.load() - base_it[i];
+                    if (dus || dit)
+                        std::fprintf(stderr, "  %-24s %8llu ms  %10llu iterations\n",
+                                     base_sites[i]->name,
+                                     (unsigned long long)dus / 1000, (unsigned long long)dit);
+                }
+                dump_freeze(timeout_sec);
+                if (spin_kill) {
+                    std::fprintf(stderr, "[watchdog] BUSY-SPIN — killing process (exit 138).\n");
+                    std::fflush(stderr);
+                    struct rlimit no_core{0, 0};
+                    setrlimit(RLIMIT_CORE, &no_core);
+                    _exit(138);
+                }
+            }
+        }
         // A presented VI field is the ONLY real forward-progress signal (see guest_ticks comment).
         if (cur_fields != last_fields) {
             last_fields = cur_fields; stalled = 0; fired = false; first_field = true;

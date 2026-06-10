@@ -122,6 +122,7 @@ add_executable(sunbright
     runtime/overrides.cpp
     runtime/probe_server.cpp
     runtime/watchdog.cpp
+    runtime/sb_spin.cpp
     runtime/recomp_table_weak.cpp
     ${SUNBRIGHT_OVERRIDE_SOURCES}
     ${SUNBRIGHT_GENERATED_SOURCES}
