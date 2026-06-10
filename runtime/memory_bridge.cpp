@@ -380,6 +380,9 @@ static void report_wild_read(u32 ea, int bits) {
         "  ORIGINATOR; Dolphin's MMU would warn 'Invalid read' and return garbage, and the game\n"
         "  would crash later somewhere else, hiding this root cause.\n",
         ea, bits);
+    if (g_cur_recomp_cpu)
+        fprintf(stderr, "  current recomp function pc=%08x (coarse — the function being executed)\n",
+                g_cur_recomp_cpu->pc);
     dump_guest_regs_naming_base(ea);
     fprintf(stderr, "  Native backtrace (recomp call chain, innermost first):\n");
     void* bt[96];

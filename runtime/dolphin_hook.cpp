@@ -1146,14 +1146,6 @@ void tail_ppc(CPUState& cpu, u32 address) {
     // unwinding every recomp C frame in between. If one fires inside a recomp call tree whose caller
     // expected an inline return (a `bl`, not a tail), the caller's epilogue never runs in C and its
     // continuation resumes under Dolphin JIT from the committed state — the boot endRendering clobber.
-    // Name any handoff that unwinds the native audioproc frame (dead-audio investigation).
-    extern bool g_in_audioproc;
-    if (g_in_audioproc) {
-        static long logged = 0;
-        if (logged++ < 8)
-            fprintf(stderr, "[audioproc] TAIL HANDOFF to non-recomp %08x (lr=%08x) — unwinds the "
-                            "native audio thread frame\n", address, cpu.lr);
-    }
     static const bool dbg_tail = getenv("SUNBRIGHT_DBG_TAIL") != nullptr;
     if (dbg_tail) {
         static std::unordered_map<u32, unsigned long long> hist;

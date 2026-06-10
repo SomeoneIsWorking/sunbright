@@ -162,6 +162,30 @@ std::string handle_repl(const char* path) {
 #endif
         return std::string(buf, n);
     }
+    if (strncmp(path, "/vpb", 4) == 0) {
+        // JAS DSP voice parameter blocks, read straight from guest RAM (CH_BUF global
+        // 0x8040E5B8 → 64 × 0x180-byte DSPBuffer; layout = Dolphin Zelda VPB, BE u16s).
+        // The ear-free voice probe: enabled/done flags + per-channel target/current volumes.
+        const u32 base = mem_r32(0x8040E5B8u);
+        app("CH_BUF=%08x\n", base);
+        if (base >= 0x80000000u && base < 0x81800000u) {
+            for (int v = 0; v < 64; v++) {
+                const u32 b = base + (u32)v * 0x180u;
+                const u16 en = mem_r16(b), done = mem_r16(b + 2);
+                if (!en && !done) continue;
+                app("v%02d en=%u done=%u", v, en, done);
+                for (int c = 0; c < 6; c++) {
+                    const u32 ch = b + 0x10u + (u32)c * 8u;   // channels[6]{id,tgt,cur,unk} u16s
+                    const u16 id = mem_r16(ch);
+                    if (id) app(" ch%04x=%d/%d", id, (s16)mem_r16(ch + 2), (s16)mem_r16(ch + 4));
+                }
+                if (mem_r16(b + 0x58u))                       // use_dolby_volume (u16 idx 0x2C)
+                    app(" dolby=%d/%d", (s16)mem_r16(b + 0x54u), (s16)mem_r16(b + 0x56u));
+                app(" pos=%u:%u\n", mem_r16(b + 0x68u), mem_r16(b + 0x6Au));
+            }
+        }
+        return std::string(buf, n);
+    }
     if (strncmp(path, "/nintr", 6) == 0) {     // native interrupt dispatch counters per source
         for (int i = 0; i < 32; i++)
             if (g_nintr_counts[i]) app("intr%d=%lu\n", i, g_nintr_counts[i]);
