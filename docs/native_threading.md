@@ -55,6 +55,19 @@
 > run 88, 2026-06-10). Next: menus/file-select under autostart, in-game, audio output, and a
 > real perf pass with honest metrics.
 
+> ## 🟢 2026-06-10 (latest) — draw-sync token loss RESOLVED, FILE SELECT reached
+> Dolphin's PixelEngine coalesces draw-sync token interrupts; SMS's TDrawSyncManager counts
+> token messages to advance its frame FIFO + CP breakpoint → one swallowed token parked the GPU
+> at the breakpoint forever (the post-title wedge). Fixed state-based from the IDLE DRIVER:
+> GPU parked on the fifo's next boundary + empty queue ⇒ post synthetic token-0 through the real
+> OSSendMessage; the game's own threadFunc advances (sms_drawsync_native.cpp).
+> Gotchas earned: (1) interp_run_until single-steps INTO recompiled/overridden callees —
+> override-based counters/instrumentation miss raw-interp invocations; (2) never replace a
+> blocked sync thread with a native POLLING loop — perpetually-Ready breaks nthrt_block_drain
+> (frame barrier never completes, zero frames). Verified run 106: 1824 frames, file-select
+> beach scene with Mario rendered. Open: intro audio-out (AI→Cubeb), watchdog game-progress
+> heartbeat, in-game progression + perf pass.
+
 > ## 🟢 ACTIVE BUILD — native scheduler is LIVE (2026-06-05, increments 1–4 landed)
 > Per the user directive "do it incrementally even though it will break", the nthr scheduler is now
 > ENABLED and owns GC threading. Landed + committed:
