@@ -159,6 +159,11 @@ void sb_log_fifo_reg_write(u32 ea, u32 v, int bits) {
 void sb_log_first_gather() {
     static unsigned long bursts = 0;
     bursts++;
+    // Telemetry gated: the periodic CP-register reads below go through MMIO and each one
+    // triggers Dolphin's SyncGPUForRegisterAccess (a full GPU sync) — measurable drag on the
+    // hot gather path. Permanent diagnostic, env-gated per keep-diagnostics.
+    static const bool dbg_fifo = getenv("SUNBRIGHT_DBG_FIFO") != nullptr;
+    if (!dbg_fifo) return;
     if ((bursts & 0xFF) == 0) {      // every 256 bursts: FIFO backing up? (GPU stalled)
         const u32 dist = ((u32)sb_r16(0xCC000032u) << 16) | sb_r16(0xCC000030u);
         if (dist > 0x7A000u) {

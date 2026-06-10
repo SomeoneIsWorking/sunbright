@@ -62,6 +62,7 @@ void nthrt_bind_current(u32 os_thread); // map the running thread under its auth
 void nthrt_block_current();             // OSSleepThread (park current until woken)
 void nthrt_block_drain(CPUState* caller = nullptr);  // frame barrier: resume once nothing else Ready
 void nthrt_yield_current(CPUState* yielder = nullptr);  // OSYieldThread: yield token, stay Ready;
+void sunbright_wait_vi_field(CPUState& cpu);  // force ONE VI field of emulated time (native IRQ dispatch)
                                         // if nothing else runnable, run the GC idle thread (advance
                                         // CoreTiming + deliver device IRQs) on the yielder's context
 #endif

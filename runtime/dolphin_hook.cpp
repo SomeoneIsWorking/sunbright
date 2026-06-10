@@ -1013,21 +1013,41 @@ void sunbright_run_syscall(CPUState& cpu, u32 sc_pc) {
 // continuation (cpu.lr) and let the interpreter take + run each ISR (it rfi's back to cpu.lr), so
 // the handlers actually execute before we return to the recomp.
 void sunbright_wait_vi_field(CPUState& cpu) {
+    // Force ONE VI field of emulated time — the emu-clock half of the frame heartbeat. Without
+    // this, emulated time advances only via per-call cycle charging (~0.014x real), Dolphin's VI
+    // presents a field every ~1.2 wall-seconds, and everything paced on presented fields (idle
+    // retrace, FPS) crawls even though the pipeline is correct (2026-06-10). Delivery is NATIVE:
+    // EE stays masked so Advance only makes IRQs pending; native_dispatch_pending runs the
+    // handlers. The caller's CPUState is untouched (handlers run on copies / the global ppc).
     auto& sys = Core::System::GetInstance();
     auto& ppc = sys.GetPPCState();
     auto& ct  = sys.GetCoreTiming();
     auto& vi  = sys.GetVideoInterface();
     cpu_to_dolphin_state(cpu, ppc);
-    ppc.pc = ppc.npc = cpu.lr;                      // continuation an ISR will rfi back to
-    const u64 target = ct.GetTicks() + vi.GetTicksPerField();
-    for (int guard = 0; ct.GetTicks() < target && guard < 8192; ++guard) {
-        const u32 ret = ppc.pc;
+    const u32 saved_pc = ppc.pc, saved_npc = ppc.npc, saved_msr = ppc.msr.Hex;
+    ppc.pc = ppc.npc = sunbright_idle_spin_pc();
+    ppc.msr.Hex &= ~0x8000u;
+    const u64 t0 = ct.GetTicks();
+    const u64 target = t0 + vi.GetTicksPerField();
+    int guard = 0;
+    for (; ct.GetTicks() < target && guard < 8192; ++guard) {
         ct.Idle();                                  // skip to the next scheduled device event
-        ct.Advance();                               // process it; if EE & pending, vector to the ISR
-        if (ppc.pc != ret)                          // an interrupt fired → run its handler + callbacks
-            interp_run_until(ret, 5'000'000);
+        ct.Advance();                               // process it — IRQs become pending only
+        native_dispatch_pending();                  // …and are dispatched natively
     }
-    dolphin_state_to_cpu(ppc, cpu);
+    {   // field-advance telemetry: is emulated time really moving one field per heartbeat?
+        static long calls = 0; static u64 ticks_acc = 0; static int guards_acc = 0;
+        ticks_acc += ct.GetTicks() - t0; guards_acc += guard;
+        if ((++calls & 63) == 0) {
+            extern unsigned long long watchdog_vi_fields();
+            fprintf(stderr, "[vi-field] 64 calls: ticks+%llu (target/call=%llu) guards=%d fields=%llu\n",
+                    (unsigned long long)ticks_acc, (unsigned long long)vi.GetTicksPerField(),
+                    guards_acc, watchdog_vi_fields());
+            ticks_acc = 0; guards_acc = 0;
+        }
+    }
+    ppc.msr.Hex = saved_msr;
+    ppc.pc = saved_pc; ppc.npc = saved_npc;
 }
 #endif
 

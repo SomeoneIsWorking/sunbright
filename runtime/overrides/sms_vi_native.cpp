@@ -101,10 +101,30 @@ void retrace_tick(CPUState& cpu) {
 // progress is event-driven and deterministic — it never depends on the emulated VI clock
 // crawling forward. Real-time pacing (when not turbo) is a HOST-clock sleep, never a guest
 // time loop.
+// Per-phase wall-time accounting for the frame heartbeat (printed every 64 frames; permanent
+// perf diagnostic — found the 1.2s/frame mystery by naming the slow phase, 2026-06-10).
+struct PhaseTimer {
+    const char* name; long long* acc;
+    std::chrono::steady_clock::time_point t0;
+    PhaseTimer(const char* n, long long* a) : name(n), acc(a), t0(std::chrono::steady_clock::now()) {}
+    ~PhaseTimer() { *acc += std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::steady_clock::now() - t0).count(); }
+};
+static long long g_ph_pace, g_ph_field, g_ph_bp, g_ph_drain, g_ph_pump, g_ph_tick;
+static long g_ph_frames;
+
 SUNBRIGHT_OVERRIDE(ov_VIWaitForRetrace, VI_WAIT) {
     disable_vi_interrupts();
+    if (++g_ph_frames % 64 == 0) {
+        fprintf(stderr, "[vi-perf] %ld frames: pace=%lldms field=%lldms backpressure=%lldms "
+                "drain=%lldms pump=%lldms tick=%lldms\n", g_ph_frames,
+                g_ph_pace/1000, g_ph_field/1000, g_ph_bp/1000, g_ph_drain/1000,
+                g_ph_pump/1000, g_ph_tick/1000);
+        g_ph_pace=g_ph_field=g_ph_bp=g_ph_drain=g_ph_pump=g_ph_tick=0;
+    }
     static const bool paced = !getenv("SUNBRIGHT_TURBO");
     if (paced) {
+        PhaseTimer _t("pace", &g_ph_pace);
         // Host-clock 60 Hz frame pacing (fields are 1/59.94s; one retrace per call).
         using clock = std::chrono::steady_clock;
         static clock::time_point next = clock::now();
@@ -113,6 +133,10 @@ SUNBRIGHT_OVERRIDE(ov_VIWaitForRetrace, VI_WAIT) {
         const auto now = clock::now();
         next = (now > next + period) ? now + period : next + period;
     }
+    // Emu-clock half of the heartbeat: force one VI field of emulated time per host frame, so
+    // Dolphin's VI presents fields at the heartbeat rate (emu speed ~1x in render loops) instead
+    // of crawling at the per-call cycle-charge rate (~0.014x — frames every 1.2s, 2026-06-10).
+    { PhaseTimer _t("field", &g_ph_field); sunbright_wait_vi_field(cpu); }
     // GPU backpressure — the half of the GC frame contract the host-clock pacing alone misses.
     // On hardware the CPU can never run far ahead of the GPU: the CP FIFO + draw-sync breakpoint
     // throttle it to ~2 frames. Our native heartbeat returned at a fixed 60 Hz regardless, so at
@@ -123,11 +147,17 @@ SUNBRIGHT_OVERRIDE(ov_VIWaitForRetrace, VI_WAIT) {
     // FIFO has drained to a sane depth before starting the next frame — exactly the stall real
     // hardware would impose, delivered as a host sleep instead of a guest spin.
     {
+        PhaseTimer _t("bp", &g_ph_bp);
         auto& sys  = Core::System::GetInstance();
         auto& fifo = sys.GetCommandProcessor().GetFifo();
         const u32 fifo_cap = fifo.CPEnd.load() - fifo.CPBase.load();
         if (fifo_cap > 0x2000u) {
-            const u32 threshold = fifo_cap / 8;            // ≈ 1-2 frames of display lists
+            // Threshold cap/8: tight on purpose. A watermark-relative threshold (hiwm*3/4) was
+            // tried and DEADLOCKED again — letting the queue grow re-enters the token-coalescing
+            // /suspension regime (Dolphin PE keeps only the latest token). Until token delivery
+            // is provably loss-free at depth, keep the queue shallow. [[no-bandaids: the slow
+            // serial cycle is the GPU-side drain rate, being root-caused separately.]]
+            const u32 threshold = fifo_cap / 8;
             int spins = 0;
             while (fifo.CPReadWriteDistance.load() > threshold && spins++ < 2500) {
                 sys.GetFifo().RunGpu();                    // CP hardware never sleeps with data pending
@@ -150,11 +180,11 @@ SUNBRIGHT_OVERRIDE(ov_VIWaitForRetrace, VI_WAIT) {
     // priority yield would starve forever. On the GC the retrace wait blocked the caller, so
     // all runnable work proceeded during the frame; block_drain is the deterministic
     // equivalent: resume exactly when everyone else has run to its own block/yield point.
-    nthrt_block_drain(&cpu);
+    { PhaseTimer _t("drain", &g_ph_drain); nthrt_block_drain(&cpu); }
     // The heartbeat is also the device-IRQ pump: deliver pending device completions (DSP, SI,
     // any residual DVD interrupt) once per frame, deterministically.
-    sunbright_poll_yield();
-    retrace_tick(cpu);
+    { PhaseTimer _t("pump", &g_ph_pump); sunbright_poll_yield(); }
+    { PhaseTimer _t("tick", &g_ph_tick); retrace_tick(cpu); }
 }
 
 // VIGetRetraceCount 0x803504EC — plain load of the (natively bumped) counter.
