@@ -235,6 +235,7 @@ static void os_suspend_thread(CPUState& cpu) {
 unsigned long g_ds_sleeps = 0, g_ds_wakes = 0;   // drawsync diag: the TDrawSyncManager queue
 static constexpr u32 kDrawSyncQueue = 0x805761E0u; // (stable heap addr this build; diagnostic only)
 
+extern "C" void sb_trace(const char* tag, u32 a, u32 b, u32 c, u32 d);
 static void os_sleep_thread(CPUState& cpu) {
     // Always native-park (the GC-scheduler fallback is gone — it was the "two schedulers" conflict).
     // When this is the sole runnable context (a hardware wait), nthr's idle handler advances device
@@ -246,6 +247,8 @@ static void os_sleep_thread(CPUState& cpu) {
     if (dbg) fprintf(stderr, "[sched] SLEEP  thread=%08x on queue=%08x (lr=%08x) ready=%d\n",
                      thread, queue, cpu.lr, nthr::ready_count());
     if (queue == kDrawSyncQueue) g_ds_sleeps++;
+    static const bool trace_q2 = getenv("SUNBRIGHT_DBG_SCHED") != nullptr;
+    if (trace_q2) sb_trace("sleepq", queue, thread, cpu.lr, 0);
     nthrt_bind_current(thread);            // ensure OSWakeupThread can resolve us (esp. thread 0)
     mem_w16(thread + T_STATE, 4);          // WAITING
     mem_w32(thread + T_QUEUE, queue);
@@ -259,6 +262,8 @@ static void os_sleep_thread(CPUState& cpu) {
 // bookkeeping can also wake a thread's join queue.
 static void wake_queue(u32 queue) {
     if (queue == kDrawSyncQueue) g_ds_wakes++;
+    static const bool trace_q = getenv("SUNBRIGHT_DBG_SCHED") != nullptr;   // hot path: gated
+    if (trace_q) sb_trace("wakeq", queue, mem_r32(queue + Q_HEAD), 0, 0);
     PollSuppress ps;   // see PollSuppress: internal queue walks must not feed the poll detector
     for (;;) {
         u32 th = mem_r32(queue + Q_HEAD);
@@ -369,6 +374,20 @@ void native_os_thread_exit(CPUState& cpu, u32 thread, u32 exit_val) {
                      thread, exit_val, mem_r16(thread + T_DETACH) & 1, r_state(thread));
 }
 
+// Direct OSExitThread(r3 = exit value) calls — e.g. JASystem::AudioThread::audioproc on the THP
+// movie's stop message. The recompiled body must NOT run: it stores through real-mode low memory
+// (ea 0xE4 → wild-write trap) and ends in the GC SelectThread reschedule (the two-schedulers
+// conflict). Do the native bookkeeping, then park this host thread forever — the guest thread is
+// dead and never made ready again. (A later AudioThread::start() re-creates via OSCreateThread,
+// which spawns its own fresh host thread.)
+static void os_exit_thread_direct(CPUState& cpu) {
+    const u32 cur = mem_r32(OS_CURRENT_THREAD);
+    fprintf(stderr, "[native_os] OSExitThread(thread=%08x val=%08x) — native exit + park\n",
+            cur, cpu.gpr[3]);
+    native_os_thread_exit(cpu, cur, cpu.gpr[3]);
+    for (;;) nthrt_block_current();        // dead: parked, never woken
+}
+
 void native_os_init() {
     static bool done = false;
     if (done) return;
@@ -392,6 +411,7 @@ void native_os_init() {
     // No-op = cooperative (never preempt); a woken higher-prio thread runs at the next nthr yield.
     native_os_register(0x803488dcu, os_reschedule_noop); // __OSReschedule → no switch
     native_os_register(0x8034890cu, os_yield_thread);    // OSYieldThread → nthr yield (stay Ready)
+    native_os_register(0x80348a68u, os_exit_thread_direct); // OSExitThread → native exit + park
     // ── Native DVD read service: own the file-read path (docs/native_threading.md frontier). ──
     // The GC DVD command FSM stalls after the first transfer under cooperative native scheduling;
     // service reads directly from our own DiscIO::Volume instead. Registered on this same seam so

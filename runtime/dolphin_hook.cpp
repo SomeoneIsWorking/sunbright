@@ -357,6 +357,12 @@ void call_ppc(CPUState& cpu, u32 address) {
     static const bool dbg_card = getenv("SUNBRIGHT_DBG_CARD") != nullptr;
     if (dbg_card && address >= 0x80354000u && address < 0x8036b000u)
         sb_trace("card", address, cpu.gpr[3], cpu.gpr[4], cpu.lr);
+    // SUNBRIGHT_DBG_AUD: the audio frame-cycle chain (dead-audio bug) — __AIDHandler →
+    // syncAudio → OSSendMessage(audioproc_mq) → audio thread updateDac.
+    static const bool dbg_aud = getenv("SUNBRIGHT_DBG_AUD") != nullptr;
+    if (dbg_aud && (address == 0x80352ae4u || address == 0x803110f0u ||
+                    address == 0x80346190u || address == 0x80346508u))
+        sb_trace("aud", address, cpu.gpr[3], cpu.gpr[4], cpu.lr);
     if (address == watch_addr() && watch_addr() != 0) {
         static unsigned long n = 0;
         if ((n++ % 1000) == 0) {
@@ -834,7 +840,17 @@ static const u32 kIntrPrio[] = {
 // bits may remain), false when nothing is dispatchable (no PI cause, PI-masked, or OS-masked).
 static thread_local bool t_in_native_dispatch = false;  // a handler's own bridge reads can poll-fire
 static bool in_native_dispatch() { return t_in_native_dispatch; }
-static unsigned long g_nintr_counts[32];                 // per-interrupt dispatch counters (diag)
+// Which DSP-CSR status bit the currently-dispatching handler is entitled to ack (0 outside a
+// DSP-source dispatch). The memory bridge consults this to stop guest CSR write-backs from
+// write-1-clearing a PENDING, UNDISPATCHED sibling status: on hardware an EE-on context can
+// never observe a pending DSPINT (it vectors immediately), so the JASystem CPU→DSP mailbox kick
+// (CSR |= 0x2 via read-modify-write) can never swallow a DSP-done there — here delivery is
+// deferred to boundaries, and exactly that swallow killed all audio ~3 s into boot (intr7 frozen
+// at 605, the kernel waiting forever on a DSP-done that was acked-by-accident; /tracelog #8469:
+// dispatch read CSR=0x9D2 with 0x80 pending, next event the guest wrote 0x9D2 back).
+static thread_local u32 t_dsp_ack_allowed = 0;
+u32 sunbright_dsp_ack_allowed() { return t_dsp_ack_allowed; }
+unsigned long g_nintr_counts[32];                        // per-interrupt dispatch counters (diag; probe /nintr)
 unsigned long g_ds_token_dispatches = 0;                 // drawsync diag (probe /drawsync)
 static bool native_dispatch_one(const CPUState* seed) {
     if (t_in_native_dispatch) return false;
@@ -848,6 +864,7 @@ static bool native_dispatch_one(const CPUState* seed) {
     // intsr & 0x80 (MEM) deliberately unhandled: Dolphin never raises it (see the MEM trap above).
     if (intsr & 0x40) {                                // DSP
         const u16 r = mem_r16(0xCC00500Au);            // __DSPRegs[5] (DSP CSR)
+        sb_trace("dspint", intsr, r, 0, 0);            // CSR at dispatch (dead-audio localizer)
         if (r & 0x08) cause |= kMask >> 5;             // DSP_AI
         if (r & 0x20) cause |= kMask >> 6;             // DSP_ARAM
         if (r & 0x80) cause |= kMask >> 7;             // DSP_DSP
@@ -982,7 +999,12 @@ static bool native_dispatch_one(const CPUState* seed) {
     cpu.gpr[3] = (u32)interrupt;
     cpu.gpr[4] = mem_r32(0x800000D4u);
     cpu.lr     = sunbright_idle_spin_pc();             // interp ret sentinel if the handler isn't recomp
+    // DSP-source handlers may ack exactly their own CSR status bit (see t_dsp_ack_allowed).
+    const u32 saved_ack = t_dsp_ack_allowed;
+    t_dsp_ack_allowed = (interrupt == 5) ? 0x08u : (interrupt == 6) ? 0x20u
+                        : (interrupt == 7) ? 0x80u : 0u;
     call_ppc(cpu, handler);
+    t_dsp_ack_allowed = saved_ack;
     ppc_msr.msr.Hex = saved_ee_msr;   // rfi-equivalent: restore the interrupted context's MSR
     t_in_native_dispatch = false;
     return true;
@@ -1113,10 +1135,25 @@ void tail_ppc(CPUState& cpu, u32 address) {
     if (g_probe_enabled) g_probe.tail.fetch_add(1, std::memory_order_relaxed);
     RecompFunc fn = recomp_lookup(address);
     if (fn) { fn(cpu); return; }   // tail to recomp → nested call; the caller then returns
+#ifdef HAVE_DOLPHIN_CORE
+    // Tail to a bare `blr` (an empty default callback, e.g. the no-op sound-frame hook at
+    // 800339a0): executing it just returns to lr — exactly what returning from tail_ppc does in
+    // the C-call model. Never worth a siglongjmp handoff that unwinds live native frames
+    // (it killed the native audioproc loop at every frame boundary, 2026-06-10).
+    if (mem_r32(address) == 0x4E800020u) return;
+#endif
     // SUNBRIGHT_DBG_TAIL: log tail-branches to NON-recomp targets — these siglongjmp back to Run,
     // unwinding every recomp C frame in between. If one fires inside a recomp call tree whose caller
     // expected an inline return (a `bl`, not a tail), the caller's epilogue never runs in C and its
     // continuation resumes under Dolphin JIT from the committed state — the boot endRendering clobber.
+    // Name any handoff that unwinds the native audioproc frame (dead-audio investigation).
+    extern bool g_in_audioproc;
+    if (g_in_audioproc) {
+        static long logged = 0;
+        if (logged++ < 8)
+            fprintf(stderr, "[audioproc] TAIL HANDOFF to non-recomp %08x (lr=%08x) — unwinds the "
+                            "native audio thread frame\n", address, cpu.lr);
+    }
     static const bool dbg_tail = getenv("SUNBRIGHT_DBG_TAIL") != nullptr;
     if (dbg_tail) {
         static std::unordered_map<u32, unsigned long long> hist;

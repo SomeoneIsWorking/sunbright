@@ -770,6 +770,12 @@ int main(int argc, char* argv[]) {
     Config::SetBase(Config::MAIN_MOVIE_DUMP_FRAMES, want_dump);
     Config::SetBase(Config::GFX_DUMP_FRAMES_AS_IMAGES, want_dump);
     if (want_dump) fprintf(stderr, "[sunbright] Frame dumping enabled\n");
+    // SUNBRIGHT_DUMP_AUDIO=1: dump the mixed audio to Dump/Audio/*.wav — the ear-free way to
+    // verify sound (headless mixes real Cubeb muted). Set explicitly each run like the frame
+    // flags above, so a stale persisted value can't silently re-enable it.
+    const bool want_adump = getenv("SUNBRIGHT_DUMP_AUDIO") != nullptr;
+    Config::SetBase(Config::MAIN_DUMP_AUDIO, want_adump);
+    if (want_adump) fprintf(stderr, "[sunbright] Audio dumping enabled\n");
 
     fprintf(stderr, "[sunbright] UICommon::InitControllers...\n");
     UICommon::InitControllers(wsi);

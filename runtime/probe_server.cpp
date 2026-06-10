@@ -38,6 +38,7 @@ bool g_probe_enabled = false;
 extern u32 mem_r32(u32 ea);
 extern u16 mem_r16(u32 ea);
 extern void sunbright_repl_inject(const char* line);   // main_sdl.cpp — /pad scripted input
+extern unsigned long g_nintr_counts[32];               // dolphin_hook.cpp — /nintr counters
 extern unsigned long g_ds_token_dispatches, g_ds_callbacks, g_ds_sleeps, g_ds_wakes;
 unsigned long long watchdog_vi_fields();
 
@@ -47,7 +48,9 @@ unsigned long long watchdog_vi_fields();
 // env-gated stderr logs. Lock-free-ish: a single producer (the guest thread holding the CPU
 // token) writes; the probe thread reads a snapshot. Good enough for diagnosis.
 struct TraceRec { char tag[16]; uint32_t a, b, c, d; uint64_t seq; };
-constexpr int SB_TRACE_N = 512;
+constexpr int SB_TRACE_N = 8192;   // ~40 B/entry; big enough to hold the seconds AROUND a fault
+                                   // at audio-frame event rates (the 512 ring aged out the
+                                   // dead-audio death window before a poller could react)
 TraceRec           g_trace[SB_TRACE_N];
 std::atomic<uint64_t> g_trace_seq{0};
 
@@ -159,6 +162,11 @@ std::string handle_repl(const char* path) {
 #endif
         return std::string(buf, n);
     }
+    if (strncmp(path, "/nintr", 6) == 0) {     // native interrupt dispatch counters per source
+        for (int i = 0; i < 32; i++)
+            if (g_nintr_counts[i]) app("intr%d=%lu\n", i, g_nintr_counts[i]);
+        return std::string(buf, n);
+    }
     if (strncmp(path, "/drawsync", 9) == 0) {  // pollution/drawsync pipeline counters
         app("token_dispatches=%lu callbacks=%lu sleeps=%lu wakes=%lu vi_fields=%llu\n",
             g_ds_token_dispatches, g_ds_callbacks, g_ds_sleeps, g_ds_wakes, watchdog_vi_fields());
@@ -247,8 +255,12 @@ std::string handle_repl(const char* path) {
     }
     if (strncmp(path, "/tracelog", 9) == 0) {
         // Dump the trace ring in chronological order, each event's tag + 4 named hex args.
+        // /tracelog?s=<startseq>&n=<count> (decimal) windows the dump — the full 8192-entry ring
+        // exceeds the response buffer, so page through it.
         uint64_t end = g_trace_seq.load(std::memory_order_relaxed);
         uint64_t start = end > SB_TRACE_N ? end - SB_TRACE_N : 0;
+        if (uint64_t s_arg = qarg_dec(path, "s", 0); s_arg > start && s_arg < end) start = s_arg;
+        if (uint64_t n_arg = qarg_dec(path, "n", 700); end - start > n_arg) end = start + n_arg;
         app("tracelog: %llu events (showing %llu..%llu)\n",
             (unsigned long long)end, (unsigned long long)start, (unsigned long long)end);
         for (uint64_t s = start; s < end; s++) {

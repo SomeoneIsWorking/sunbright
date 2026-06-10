@@ -135,6 +135,7 @@ extern void sb_log_first_gather();
 // Only fires on a confirmed tight poll, so one-off reads (incl. the DSP mailbox handshake) and
 // normal sequential RAM access (different addresses) are untouched.
 extern void sunbright_poll_yield();   // dolphin_hook.cpp
+extern "C" void sb_trace(const char* tag, uint32_t a, uint32_t b, uint32_t c, uint32_t d);
 // Spin-loop detector state. The fast-path note (sb_poll_note) lives inline in intrinsics.h so a
 // RAM read is just load+bswap; only a confirmed poll calls sb_poll_fire here. These globals are
 // touched only on the EmuThread (the recomp + its yield), so plain globals (no thread_local).
@@ -458,14 +459,27 @@ u16 mem_r16_slow(u32 ea) {
     sb_poll_note(ea);
     if (u8* p = ram_ptr(ea)) return ((u16)p[0] << 8) | p[1];
     check_wild_read(ea, 16);
-    return MMIO_R(16, ea);
+    const u16 v = MMIO_R(16, ea);
+    // DSP→CPU mailbox reads (the JAS syncDSP mail consume): a duplicated/mistimed consume is the
+    // suspected dead-audio trigger (extra 0xFF00 frame-done → audioproc intcount==0 exit).
+    {
+        const u32 lo = ea & 0x0FFFFFFFu;
+        if (lo == 0x0C005004u || lo == 0x0C005006u)
+            sb_trace("dspmr", ea, v, 0, g_cur_recomp_cpu ? g_cur_recomp_cpu->pc : 0);
+    }
+    return v;
 }
 
 u32 mem_r32_slow(u32 ea) {
     sb_poll_note(ea);
     if (u8* p = ram_ptr(ea)) return ((u32)p[0]<<24)|((u32)p[1]<<16)|((u32)p[2]<<8)|p[3];
     check_wild_read(ea, 32);
-    return MMIO_R(32, ea);
+    const u32 v = MMIO_R(32, ea);
+    // DSP→CPU mailbox consume (DSPReadMailFromDSP does one 32-bit read of both halves) — the
+    // JAS syncDSP mail sequence; see mem_r16_slow's twin trace for halfword readers.
+    if ((ea & 0x0FFFFFFFu) == 0x0C005004u)
+        sb_trace("dspmr", ea, v, 0, g_cur_recomp_cpu ? g_cur_recomp_cpu->pc : 0);
+    return v;
 }
 
 u64 mem_r64_slow(u32 ea) {
@@ -488,6 +502,12 @@ void mem_w8_slow(u32 ea, u8 v) {
     MMIO_W(8, ea, v);
 }
 
+// EXI/DSP-mailbox register write tracing (probe /tracelog). Permanent diagnostic
+// (keep-diagnostics): the CARDMount lost-completion deadlock and the dead-audio bug were both
+// pinned by reconstructing these sparse op/ack sequences. Defined here so both the 16-bit and
+extern "C" void sb_trace(const char* tag, uint32_t a, uint32_t b, uint32_t c, uint32_t d);
+static inline void trace_exi_write(u32 ea, u32 v, int bits);
+
 void mem_w16_slow(u32 ea, u16 v) {
     if (u8* p = ram_ptr(ea)) { p[0] = v >> 8; p[1] = v & 0xFF; return; }
 #ifdef HAVE_DOLPHIN_MEMMAP
@@ -495,6 +515,22 @@ void mem_w16_slow(u32 ea, u16 v) {
 #endif
     check_wild_write(ea, v, 16);
     sb_log_fifo_reg_write(ea, v, 16);
+    trace_exi_write(ea, v, 16);
+    // DSP CSR (0xCC00500A) write-1-to-clear protection: a guest read-modify-write (the JASystem
+    // CPU→DSP mailbox kick, OS mask updates) must not clear a PENDING status bit whose interrupt
+    // we haven't dispatched yet — on hardware an EE-on context can't observe a pending DSPINT
+    // (it vectors immediately). Only the currently-dispatching DSP handler may ack its own bit.
+    // This was THE dead-audio bug: one swallowed DSP-done froze the whole frame cycle.
+    if ((ea & 0x0FFFFFFEu) == 0x0C00500Au) {
+        extern u32 sunbright_dsp_ack_allowed();
+        const u16 old = MMIO_R(16, ea);
+        const u16 pending = old & 0x00A8u;             // AIDINT|ARINT|DSPINT currently set
+        const u16 protect = pending & (u16)~sunbright_dsp_ack_allowed();
+        if (v & protect) {
+            sb_trace("dspprot", ea, v, protect, old);  // would-have-swallowed (kept pending)
+            v &= (u16)~protect;
+        }
+    }
     MMIO_W(16, ea, v);
 #ifdef HAVE_DOLPHIN_MEMMAP
     // CP breakpoint-register writes must wake the GPU loop: real CP hardware re-evaluates the
@@ -511,15 +547,15 @@ void mem_w16_slow(u32 ea, u16 v) {
 #endif
 }
 
-// EXI register writes → trace ring (probe /tracelog). Permanent diagnostic (keep-diagnostics):
-// the CARDMount lost-completion deadlock (2026-06-10) was a memcard EXI transfer whose TC
-// interrupt never got delivered — these events are sparse (~dozens per mount), so ring-trace
-// every EXI0/1/2 register write with the writer's pc to reconstruct the op/ack sequence.
-extern "C" void sb_trace(const char* tag, uint32_t a, uint32_t b, uint32_t c, uint32_t d);
 static inline void trace_exi_write(u32 ea, u32 v, int bits) {
     const u32 lo = ea & 0x0FFFFFFFu;
     if (lo >= 0x0C006800u && lo < 0x0C006840u)
         sb_trace("exiw", ea, v, (u32)bits, g_cur_recomp_cpu ? g_cur_recomp_cpu->pc : 0);
+    // DSP mailbox + CSR writes: the JASystem per-frame command cycle and the interrupt acks.
+    // A CSR (0xCC00500A) read-modify-write ack that carries a sibling status bit swallows that
+    // sibling's interrupt — suspected mechanism of the dead-audio DSP-done loss (2026-06-10).
+    if (lo >= 0x0C005000u && lo < 0x0C005010u)
+        sb_trace("dspmb", ea, v, (u32)bits, g_cur_recomp_cpu ? g_cur_recomp_cpu->pc : 0);
 }
 
 void mem_w32_slow(u32 ea, u32 v) {

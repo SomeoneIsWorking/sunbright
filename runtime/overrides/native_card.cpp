@@ -45,8 +45,11 @@
 extern u32 mem_r32(u32 ea);
 extern void mem_w32(u32 ea, u32 v);
 extern void mem_w16(u32 ea, u16 v);
+extern void mem_w8(u32 ea, u8 v);
 extern "C" void func_8035796c(CPUState&);   // __CARDVerify   (recompiled, pure-RAM)
 extern "C" void func_8035532c(CPUState&);   // __CARDPutControlBlock (recompiled)
+extern "C" void func_80347798(CPUState&);   // __OSLockSramEx (recompiled)
+extern "C" void func_80347b20(CPUState&);   // __OSUnlockSramEx (recompiled)
 
 namespace {
 
@@ -164,6 +167,27 @@ void native_card_mount_async(CPUState& cpu) {
     mem_w16(card + F_CBLOCK, (u16)(g_size / SECTOR));
     mem_w32(card + F_LATENCY, 4);
     mem_w32(card + F_MOUNTSTEP, 2 + SYSTEM_BLOCKS);
+
+    // Virtual-card identity — the DoMount step-0 port. VerifyID checks the header serial against
+    // SRAM flashID scrambled with the format-time rand; real mounts refresh SRAM from the card's
+    // physical flash ID every time. Our virtual card has a CONSTANT ID: write it (+ checksum)
+    // into SRAM via the recompiled __OSLockSramEx/__OSUnlockSramEx so the game's own CARDFormat
+    // serial verifies on every later boot ("memory card corrupt on every start" fix).
+    {
+        static const u8 kFlashID[12] = {'S','U','N','B','R','I','G','H','T','C','R','D'};
+        CPUState c = cpu;
+        func_80347798(c);                              // __OSLockSramEx() → r3 = OSSramEx*
+        const u32 sram = c.gpr[3];
+        if (sram >= 0x80000000u) {
+            u8 sum = 0;
+            for (int i = 0; i < 12; i++) { mem_w8(sram + (u32)i, kFlashID[i]); sum += kFlashID[i]; }
+            mem_w8(sram + 38u, (u8)~sum);              // flashIDCheckSum[0] (OSSramEx +0x26)
+            for (int i = 0; i < 12; i++) mem_w8(card + 0x18u + (u32)i, kFlashID[i]);  // card->id
+        }
+        CPUState u = cpu;
+        u.gpr[3] = 1;                                  // unlock(TRUE) — mark SRAM dirty/flush
+        func_80347b20(u);                              // __OSUnlockSramEx
+    }
 
     // System area (5 blocks) → workArea, then the recompiled verifier.
     static u8 buf[SECTOR * SYSTEM_BLOCKS];

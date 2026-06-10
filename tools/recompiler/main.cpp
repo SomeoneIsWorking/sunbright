@@ -301,6 +301,12 @@ static int recompile_mode(const DiscLoader& disc, const DOL& dol, const std::str
                           // updateDac → TSeqParser::mainProc → TTrack tick. Under interp the
                           // ttrack_tick_native override is skipped so the tick spins (vps=0);
                           // recompiled it runs on the native stack and the override fires.
+            0x80312000u,  // JASystem DSP-channel loop head INSIDE func_8031204c's body: 8031204c is
+                          // also a real indirect entry, so its emission starts mid-loop and the
+                          // backward branch to 80312000 left ITS body → tail_ppc handoff at every
+                          // audio frame boundary (unwound the native audioproc loop, 2026-06-11).
+                          // As a forced ENTRY the loop head gets its own emission; the backward
+                          // branch becomes a recomp call that returns via blr.
             0x802b3264u,  // TCardManager thread proc (NOT audio — ref mislabels it TCardManager+0x184;
                           // its CARDProbeEx/__EXIProbe debounce loop is unblocked by the OSYieldThread
                           // CoreTiming-advance fix, ecd63ac).
