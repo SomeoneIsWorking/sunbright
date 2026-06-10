@@ -101,6 +101,12 @@ void ov_ttrack_tick(CPUState& cpu) {
 }
 
 const bool ttrack_tick_native_reg = [] {
+    // SUNBRIGHT_NO_TTRACK_NATIVE=1: A/B diagnostic — run the recompiled tick instead (the
+    // original phase-wrap spin may be obsolete since the call-model/jump-table fixes).
+    if (getenv("SUNBRIGHT_NO_TTRACK_NATIVE")) {
+        fprintf(stderr, "[ttrack] native tick DISABLED (recompiled body runs)\n");
+        return false;
+    }
     register_override(0x8031d83cu, &ov_ttrack_tick);   // sole path — owns the JASystem TTrack tick
     return true;
 }();

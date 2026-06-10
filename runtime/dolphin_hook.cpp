@@ -363,6 +363,26 @@ void call_ppc(CPUState& cpu, u32 address) {
     if (dbg_aud && (address == 0x80352ae4u || address == 0x803110f0u ||
                     address == 0x80346190u || address == 0x80346508u))
         sb_trace("aud", address, cpu.gpr[3], cpu.gpr[4], cpu.lr);
+    // SUNBRIGHT_DBG_NOTE: JAS note/voice lifecycle (the choppy-music bug) — noteOn, noteOff,
+    // release/force-stop, DSP queue add/remove. d = monotonic ms (note-duration measurement).
+    static const bool dbg_note = getenv("SUNBRIGHT_DBG_NOTE") != nullptr;
+    if (dbg_note && (address == 0x8030dc7cu /*BankMgr::noteOn*/ ||
+                     address == 0x8031ab50u /*TTrack::noteOff*/ ||
+                     address == 0x80312790u /*TChannel::releaseOsc*/ ||
+                     address == 0x8031273cu /*TChannel::forceStopOsc*/ ||
+                     address == 0x80314660u /*TDSPChannel::forceStop*/ ||
+                     address == 0x80311550u /*DSPQueue::enQueue*/ ||
+                     address == 0x80311708u /*DSPQueue::deleteQueue*/ ||
+                     address == 0x8031c914u /*TTrack::closeTrack*/ ||
+                     address == 0x8031ce68u /*TTrack::openTrack*/  ||
+                     address == 0x8031defcu /*TrackMgr::deAllocRoot*/ ||
+                     address == 0x8031deb4u /*TrackMgr::allocNewRoot — song start*/ ||
+                     address == 0x8031dd00u /*TrackMgr::reset*/)) {
+        // c = caller lr (who ends the note/track), d = monotonic ms.
+        struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+        sb_trace("note", address, cpu.gpr[3], cpu.lr,
+                 (u32)(ts.tv_sec * 1000 + ts.tv_nsec / 1000000));
+    }
     if (address == watch_addr() && watch_addr() != 0) {
         static unsigned long n = 0;
         if ((n++ % 1000) == 0) {
