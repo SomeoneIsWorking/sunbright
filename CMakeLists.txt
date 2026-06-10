@@ -125,6 +125,7 @@ add_executable(sunbright
     runtime/sb_spin.cpp
     runtime/pe_token_wrap.cpp
     runtime/coretiming_trace.cpp
+    runtime/mixer_trace.cpp
     runtime/recomp_table_weak.cpp
     ${SUNBRIGHT_OVERRIDE_SOURCES}
     ${SUNBRIGHT_GENERATED_SOURCES}
@@ -158,6 +159,9 @@ target_link_options(sunbright PRIVATE
     # CoreTiming schedule/remove tracer (memcard EXI lost-completion diagnostic, SUNBRIGHT_DBG_CARD)
     "-Wl,--wrap=_ZN10CoreTiming17CoreTimingManager13ScheduleEventElPNS_9EventTypeEmNS_10FromThreadE"
     "-Wl,--wrap=_ZN10CoreTiming17CoreTimingManager11RemoveEventEPNS_9EventTypeE"
+    # Host audio flow meter (SUNBRIGHT_DBG_MIXER): mixer push vs backend pull rates
+    "-Wl,--wrap=_ZN5Mixer11PushSamplesEPKsm"
+    "-Wl,--wrap=_ZN5Mixer3MixEPsm"
 )
 
 # ── Install ───────────────────────────────────────────────────────────────────

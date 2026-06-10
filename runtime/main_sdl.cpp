@@ -203,9 +203,16 @@ static void movie_skip_tick(uint32_t pad_bits) {
     if (log && movie_active) { static uint32_t lpb = 0; if (now - lpb > 1000) { lpb = now;
         fprintf(stderr, "[movieskip] movie active (state=%u) START=%d (phys=%d)\n",
                 s, (int)start, (int)g_phys_start.load(std::memory_order_relaxed)); } }
+    // SUNBRIGHT_SKIP_THP=1: arm automatically whenever a movie session is active — unattended
+    // runs no longer idle through full THP playbacks waiting for a Start press.
+    static const bool auto_skip = getenv("SUNBRIGHT_SKIP_THP") != nullptr;
     if (start && movie_active && !armed) {
         armed = true;
         if (log) fprintf(stderr, "[movieskip] armed by Start (state=%u)\n", s);
+    }
+    if (auto_skip && movie_active && !armed) {
+        armed = true;
+        if (log) fprintf(stderr, "[movieskip] auto-armed (SUNBRIGHT_SKIP_THP, state=%u)\n", s);
     }
     if (s != 0) zero_since = 0;
     else if (zero_since == 0) zero_since = now;
