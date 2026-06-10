@@ -653,6 +653,15 @@ int main(int argc, char* argv[]) {
     // honored via icbi32. 2026-06-10.
     Config::SetBase(Config::MAIN_DISABLE_ICACHE, true);
 
+    // SyncGPU: run the GPU in deterministic lockstep slices on the CPU timeline. The free-running
+    // dual-core GPU + our hybrid breaks SMS's draw-sync token protocol: Dolphin's PixelEngine
+    // COALESCES token interrupts (keeps only the latest), and TDrawSyncManager counts messages to
+    // advance the FIFO breakpoint — one lost token wedges the whole render pipeline at the
+    // breakpoint (the title-screen freeze, 2026-06-10). With SyncGPU the token events originate on
+    // the CPU timeline and can never coalesce. SUNBRIGHT_SYNC_GPU=0 restores free-running for A/B.
+    if (!getenv("SUNBRIGHT_SYNC_GPU") || atoi(getenv("SUNBRIGHT_SYNC_GPU")) != 0)
+        Config::SetBase(Config::MAIN_SYNC_GPU, true);
+
     // Override backend via env (e.g. SUNBRIGHT_BACKEND=OGL, Vulkan, Software)
     const char* backend_env = getenv("SUNBRIGHT_BACKEND");
     if (backend_env) {
