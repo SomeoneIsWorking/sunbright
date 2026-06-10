@@ -323,6 +323,13 @@ static int recompile_mode(const DiscLoader& disc, const DOL& dol, const std::str
             // the funcs-map label at 802a8db8 is a DIFFERENT method, the live global holds 802a9318):
             0x802a9318u,  // TDrawSyncManager::drawSyncCallback (static)
             0x802a9078u,  // TDrawSyncManager::drawSyncCallbackSub
+            // GX shared TEV dispatchers (perf): tiny recompiled GXSetTev* entries TAIL (`b`) into
+            // these shared bctr dispatchers; un-recompiled, every TEV call siglongjmp'd to the JIT
+            // and bounced back — 12.26M of 12.58M tails at file select = the 0.6 fps in-scene
+            // crawl (tail-hist, 2026-06-10). As recomp entries the chain stays on the C stack
+            // (their bctr cases are already discovered entries).
+            0x8035ce14u,  // GX TEV-register dispatcher (97.5% of tails)
+            0x8035c334u,  // second GX dispatcher (2.5%)
         };
 
         auto funcs = real_funcs;                       // all recomp ENTRY points = real + discovered
@@ -363,6 +370,7 @@ static int recompile_mode(const DiscLoader& disc, const DOL& dol, const std::str
                 0x802c54b8u, 0x802a9184u, 0x802a7878u, 0x802a7080u, 0x802b6fdcu,
                 0x8001dcd0u, 0x8001fc04u, 0x800200d8u, 0x80296dd4u,
                 0x802a9318u, 0x802a9078u,
+                0x8035ce14u, 0x8035c334u,  // GX shared TEV dispatchers (perf)
             };
 
             // Collection (linear-truncate vs full-CFG) is extracted to func_collect.{h,cpp} and

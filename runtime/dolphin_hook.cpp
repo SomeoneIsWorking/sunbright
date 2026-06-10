@@ -1068,10 +1068,16 @@ void tail_ppc(CPUState& cpu, u32 address) {
     // continuation resumes under Dolphin JIT from the committed state — the boot endRendering clobber.
     static const bool dbg_tail = getenv("SUNBRIGHT_DBG_TAIL") != nullptr;
     if (dbg_tail) {
-        static long hits = 0;
-        if (hits++ < 48)
-            fprintf(stderr, "[tail] tail_ppc -> %08x (non-recomp) lr=%08x sp=%08x r31=%08x r3=%08x\n",
-                    address, cpu.lr, cpu.gpr[1], cpu.gpr[31], cpu.gpr[3]);
+        static std::unordered_map<u32, unsigned long long> hist;
+        static unsigned long long n = 0;
+        hist[address]++;
+        if ((++n & 0xFFFFF) == 0) {        // every ~1M tails: top non-recomp tail targets
+            std::vector<std::pair<u32, unsigned long long>> v(hist.begin(), hist.end());
+            std::sort(v.begin(), v.end(), [](auto& a, auto& b) { return a.second > b.second; });
+            fprintf(stderr, "[tail-hist] top non-recomp tail targets after %llu tails:\n", n);
+            for (size_t i = 0; i < v.size() && i < 16; i++)
+                fprintf(stderr, "[tail-hist]   %08x  %llu\n", v[i].first, v[i].second);
+        }
     }
 #ifdef HAVE_DOLPHIN_CORE
     auto& ppc = Core::System::GetInstance().GetPPCState();
