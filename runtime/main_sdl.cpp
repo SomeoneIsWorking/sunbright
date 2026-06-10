@@ -691,10 +691,12 @@ int main(int argc, char* argv[]) {
     // mixer's consumption/pacing, so audio-timing-dependent bugs (e.g. the JASystem::TTrack
     // sequencer freeze after w1stLoad) don't reproduce headless. The emulation layer does the work;
     // the output is silenced.
-    if (headless) {
-        Config::SetBase(Config::MAIN_AUDIO_BACKEND, std::string(BACKEND_CUBEB));
-        Config::SetBase(Config::MAIN_AUDIO_MUTED, true);
-    }
+    // Set BOTH ways EVERY run: Config::SetBase persists to Dolphin.ini on shutdown, so one
+    // headless (muted) run would otherwise leave every later windowed run silently muted — the
+    // exact persistence trap as the DumpFrames flag (no intro/THP sound under run.sh,
+    // 2026-06-10). SUNBRIGHT_MUTE=1 forces mute in windowed runs too.
+    Config::SetBase(Config::MAIN_AUDIO_BACKEND, std::string(BACKEND_CUBEB));
+    Config::SetBase(Config::MAIN_AUDIO_MUTED, headless || getenv("SUNBRIGHT_MUTE") != nullptr);
 
     // Dual-core: run the GPU/FIFO on its own thread. In single-core mode Dolphin processes the GP
     // FIFO on the CPU thread (Fifo::RunGpuOnCpu) inline with the recomp — profiling showed ~all
