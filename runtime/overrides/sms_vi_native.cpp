@@ -26,6 +26,9 @@
 #include "../overrides.h"
 #include "../intrinsics.h"
 #include "../dolphin_hook.h"
+#include "Core/System.h"
+#include "VideoCommon/CommandProcessor.h"
+#include "VideoCommon/Fifo.h"
 #include <chrono>
 #include <thread>
 
@@ -110,6 +113,38 @@ SUNBRIGHT_OVERRIDE(ov_VIWaitForRetrace, VI_WAIT) {
         const auto now = clock::now();
         next = (now > next + period) ? now + period : next + period;
     }
+    // GPU backpressure — the half of the GC frame contract the host-clock pacing alone misses.
+    // On hardware the CPU can never run far ahead of the GPU: the CP FIFO + draw-sync breakpoint
+    // throttle it to ~2 frames. Our native heartbeat returned at a fixed 60 Hz regardless, so at
+    // boot (first-use pipeline compilation makes the host GPU hitch for ~seconds) the game ran
+    // 18+ frames ahead; Dolphin's PixelEngine coalesces draw-sync token interrupts (keeps only
+    // the latest), the TDrawSyncManager thread lost tokens, the breakpoint stopped advancing,
+    // and the pipeline deadlocked at the hi watermark (2026-06-10). Wait host-side until the
+    // FIFO has drained to a sane depth before starting the next frame — exactly the stall real
+    // hardware would impose, delivered as a host sleep instead of a guest spin.
+    {
+        auto& sys  = Core::System::GetInstance();
+        auto& fifo = sys.GetCommandProcessor().GetFifo();
+        const u32 fifo_cap = fifo.CPEnd.load() - fifo.CPBase.load();
+        if (fifo_cap > 0x2000u) {
+            const u32 threshold = fifo_cap / 8;            // ≈ 1-2 frames of display lists
+            int spins = 0;
+            while (fifo.CPReadWriteDistance.load() > threshold && spins++ < 2500) {
+                sys.GetFifo().RunGpu();                    // CP hardware never sleeps with data pending
+                // The drain needs the WHOLE pipeline serviced, not just the GPU thread: the PE
+                // draw-sync token lands as a CoreTiming event (needs Advance), its interrupt as a
+                // native dispatch, and the TDrawSyncManager thread (which moves the breakpoint)
+                // needs the nthr token. A bare host sleep here starved all three (2026-06-10).
+                sunbright_poll_yield();                    // Advance + native IRQ dispatch (EE-safe)
+                nthrt_yield_current(&cpu);                 // let the woken sync thread run NOW
+                std::this_thread::sleep_for(std::chrono::microseconds(200));
+            }
+            static long warned = 0;
+            if (spins >= 2500 && warned++ < 8)
+                fprintf(stderr, "[vi] GPU backpressure timeout: dist=%08x after 500ms (GPU stalled?)\n",
+                        fifo.CPReadWriteDistance.load());
+        }
+    }
     // Frame barrier: give the rest of the frame to EVERY other runnable thread — including
     // lower-priority ones (the boot setup thread at prio 0x11 vs main's 16), which a plain
     // priority yield would starve forever. On the GC the retrace wait blocked the caller, so
@@ -129,4 +164,23 @@ SUNBRIGHT_OVERRIDE(ov_VIGetRetraceCount, VI_GET_COUNT) {
 
 }  // namespace
 
+// Idle-driver retrace: on real hardware the VI retrace is an INTERRUPT, independent of any
+// thread. The native port runs the retrace transaction inside VIWaitForRetrace on the calling
+// thread — correct while the render loop is alive, but when the GX pusher is SUSPENDED at the
+// CP hi watermark (FIFO pacing), nobody calls VIWaitForRetrace and the vsync callbacks that
+// move the FIFO breakpoint never run → GPU pinned at the breakpoint → full deadlock
+// (2026-06-10). When every guest thread is blocked, the idle driver calls this once per
+// presented VI field to run the same retrace transaction from the idle context.
+bool sunbright_vi_idle_retrace(CPUState& cpu) {
+    extern unsigned long long watchdog_vi_fields();
+    static unsigned long long last_fields = 0;
+    const unsigned long long f = watchdog_vi_fields();
+    if (f == last_fields) return false;
+    last_fields = f;
+    retrace_tick(cpu);
+    return true;
+}
+
+#else
+bool sunbright_vi_idle_retrace(CPUState&) { return false; }
 #endif  // HAVE_DOLPHIN_CORE

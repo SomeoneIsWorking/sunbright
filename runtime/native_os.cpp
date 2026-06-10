@@ -203,6 +203,32 @@ static void os_resume_thread(CPUState& cpu) {
     }
 }
 
+// OSSuspendThread (0x80349170): increment the suspend count; suspending SELF parks the host
+// thread until OSResumeThread drops the count back and makes it Ready. This is the GX FIFO
+// pacing contract: at the CP hi watermark __GXOverflowHandler suspends the PUSHING thread, and
+// the lo-watermark (underflow) handler resumes it once the GPU drains. Without this port the
+// suspend was a recomp no-op (its reschedule never ran), the pusher never stopped, and the FIFO
+// overflowed by a full lap ("FIFO is overflowed by GatherPipe!", 2026-06-10). Returns the
+// previous suspend count in r3 like the real function.
+static void os_suspend_thread(CPUState& cpu) {
+    const u32 thread = cpu.gpr[3];
+    const s32 old_suspend = (s32)mem_r32(thread + T_SUSPEND);
+    mem_w32(thread + T_SUSPEND, (u32)(old_suspend + 1));
+    const u32 cur = mem_r32(OS_CURRENT_THREAD);
+    static long logs = 0;
+    if (logs++ < 64)
+        fprintf(stderr, "[native_os] OSSuspendThread %08x suspend %d->%d (cur=%08x)\n",
+                thread, old_suspend, old_suspend + 1, cur);
+    cpu.gpr[3] = (u32)old_suspend;
+    if (thread == cur && old_suspend + 1 > 0) {
+        nthrt_bind_current(thread);
+        mem_w16(thread + T_STATE, 1);      // READY: runnable again the moment the count drops
+        nthrt_block_current();             // park until OSResumeThread make_ready's us
+    }
+    // Suspending ANOTHER thread: cooperative nthr cannot preempt it mid-run; the recorded count
+    // takes effect at its next scheduling point (the GX use-case is always self-suspend).
+}
+
 // OSSleepThread (0x803492e0): enqueue the current thread on wait-queue r3 (set state=WAITING,
 // thread->queue), then park until OSWakeupThread wakes it. Replaces the recomp body's
 // SelectThread reschedule with a native host-thread park.
@@ -353,6 +379,7 @@ void native_os_init() {
     // intercept on BOTH the recomp call path and the run_jit_sync interpreter.
     native_os_register(0x80348948u, os_create_thread);   // OSCreateThread → init + spawn parked nthr
     native_os_register(0x80348ee8u, os_resume_thread);   // OSResumeThread → make_ready when runnable
+    native_os_register(0x80349170u, os_suspend_thread);  // OSSuspendThread → self-suspend parks (GX FIFO pacing)
     native_os_register(0x803492e0u, os_sleep_thread);    // OSSleepThread  → enqueue + nthr park
     native_os_register(0x803493ccu, os_wakeup_thread);   // OSWakeupThread → dequeue + make_ready
     // Neutralize the GC scheduler's context-switch: nthr switches at native block points, so the

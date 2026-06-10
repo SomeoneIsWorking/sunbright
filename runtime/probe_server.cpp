@@ -30,7 +30,13 @@ bool g_probe_enabled = false;
 #  include <algorithm>
 #  include <fstream>
 #  include <atomic>
+#ifdef HAVE_DOLPHIN_CORE
+#include "Core/System.h"
+#include "Core/HW/ProcessorInterface.h"
+#include "VideoCommon/CommandProcessor.h"
+#endif
 extern u32 mem_r32(u32 ea);
+extern u16 mem_r16(u32 ea);
 
 // ── REPL-readable trace ring ──────────────────────────────────────────────────
 // A thin observer (e.g. a SUNBRIGHT_OVERRIDE) calls sb_trace(tag,a,b,c,d) to record an event;
@@ -106,6 +112,38 @@ std::string handle_repl(const char* path) {
             if ((i & 3) == 3) app("\n");
         }
         if (cnt & 3) app("\n");
+        return std::string(buf, n);
+    }
+    if (strncmp(path, "/r16?", 5) == 0) {   // 16-bit reads (CP/PE/VI MMIO regs have no 32-bit mapping)
+        u32 a = qarg(path, "a", 0), cnt = qarg(path, "n", 8);
+        if (cnt > 256) cnt = 256;
+        for (u32 i = 0; i < cnt; i++) {
+            if ((i & 7) == 0) app("%08x:", a + i*2);
+            app(" %04x", (unsigned)mem_r16(a + i*2));
+            if ((i & 7) == 7) app("\n");
+        }
+        if (cnt & 7) app("\n");
+        return std::string(buf, n);
+    }
+    if (strncmp(path, "/gx", 3) == 0) {     // CP/Fifo internals (dual-core pacing diagnostics)
+#ifdef HAVE_DOLPHIN_CORE
+        auto& sys = Core::System::GetInstance();
+        auto& cp  = sys.GetCommandProcessor();
+        auto& ff  = cp.GetFifo();
+        app("CPBase=%08x CPEnd=%08x CPHiWM=%08x CPLoWM=%08x\n",
+            ff.CPBase.load(), ff.CPEnd.load(), ff.CPHiWatermark, ff.CPLoWatermark);
+        app("wp=%08x rp=%08x dist=%08x bp=%08x\n",
+            ff.CPWritePointer.load(), ff.CPReadPointer.load(),
+            ff.CPReadWriteDistance.load(), ff.CPBreakpoint.load());
+        app("bpEnable=%d bpInt=%d bpHit=%d hiWM=%d hiWMInt=%d loWM=%d loWMInt=%d gpRead=%d\n",
+            (int)ff.bFF_BPEnable.load(), (int)ff.bFF_BPInt.load(), (int)ff.bFF_Breakpoint.load(),
+            (int)ff.bFF_HiWatermark.load(), (int)ff.bFF_HiWatermarkInt.load(),
+            (int)ff.bFF_LoWatermark.load(), (int)ff.bFF_LoWatermarkInt.load(),
+            (int)ff.bFF_GPReadEnable.load());
+        app("interrupt_waiting=%d pi_cause=%08x pi_mask=%08x\n",
+            (int)cp.IsInterruptWaiting(),
+            sys.GetProcessorInterface().GetCause(), sys.GetProcessorInterface().GetMask());
+#endif
         return std::string(buf, n);
     }
     if (strncmp(path, "/fn?", 4) == 0) {

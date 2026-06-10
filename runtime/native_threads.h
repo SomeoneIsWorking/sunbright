@@ -29,6 +29,7 @@ struct GuestThread;  // opaque (defined in native_threads.cpp)
 // The guest thread currently executing on this host thread (null on a non-guest host).
 GuestThread* current();
 bool self_may_run_guest();   // diagnostic: may THIS host thread run guest code now?
+void dump_threads(void* FILE_ptr);   // deadlock diagnostics: one line per thread
 int          priority_of(GuestThread*);
 
 // Create a guest thread that runs `body` on its own host thread once it is granted the

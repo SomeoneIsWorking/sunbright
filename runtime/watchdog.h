@@ -19,3 +19,7 @@ void watchdog_register_emu_thread();   // call from the first recomp entry — r
 // stopped frame flow as a freeze-and-kill — a park must never busy-spin OR get reaped before
 // it can be inspected. [[noreturn]] for the calling thread.
 [[noreturn]] void sunbright_park(const char* reason);
+
+// VI-field heartbeat counter (presented fields, pet by vi_end_field_event). Used by the idle
+// driver to pace the native retrace transaction when every guest thread is blocked.
+unsigned long long watchdog_vi_fields();

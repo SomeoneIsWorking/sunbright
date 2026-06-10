@@ -225,6 +225,8 @@ void watchdog_loop(int timeout_sec) {
 
 }  // namespace
 
+unsigned long long watchdog_vi_fields() { return g_fields.load(); }
+
 [[noreturn]] void sunbright_park(const char* reason) {
     g_parked.store(true);
     std::fprintf(stderr, "[sunbright] PARKED (%s) — process held CPU-idle for REPL inspection "

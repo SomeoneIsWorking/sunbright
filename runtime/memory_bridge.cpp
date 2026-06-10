@@ -91,6 +91,10 @@ inline void gx_tap_word(u32 v) {     // a u32 written to the gather pipe
 #  include "Core/CoreTiming.h"
 #  include "Core/System.h"
 #  include "Core/PowerPC/JitInterface.h"
+#  include "Core/HW/ProcessorInterface.h"
+#  include "VideoCommon/CommandProcessor.h"
+#  include "VideoCommon/Fifo.h"
+#  include "Core/Core.h"
 
 static inline Memory::MemoryManager& MEM() {
     return Core::System::GetInstance().GetMemory();
@@ -110,6 +114,12 @@ static inline PowerPC::MMU& MMU_() {
 // Pointer" and the commands would never reach the GPU.
 static inline bool is_gather_pipe(u32 ea) { return (ea & 0x0FFFFFFF) == 0x0C008000; }
 static inline GPFifo::GPFifoManager& GPF() { return Core::System::GetInstance().GetGPFifo(); }
+
+// One-shot diagnostic: name the FIRST gather-pipe writer of the run (guest pc/lr + host backtrace).
+// Bursting the pipe before the game programs the CP FIFO registers overflows instantly
+// ("FIFO is overflowed by GatherPipe", CP base/end still 0) — this names who jumped the gun.
+extern void sb_log_first_gather();
+
 
 // ── Recomp poll-loop progress (CoreTiming nudge / interrupt yield) ──────────
 // A guest busy-wait that polls a status flag runs in recomp as a tight native C loop: it never
@@ -131,6 +141,72 @@ extern void sunbright_poll_yield();   // dolphin_hook.cpp
 bool g_in_poll_yield = false;   // re-entrancy guard (the ISR reads memory too)
 u32  g_poll_last = 0;
 u32  g_poll_reps = 0;
+// One-shot CP/PI-FIFO programming log: the first 24 hardware writes that configure the GP FIFO.
+// Diagnostic for "gather burst with CP unprogrammed" — shows whether/what GXSetGPFifo wrote.
+void sb_log_fifo_reg_write(u32 ea, u32 v, int bits) {
+    static int left = 48;
+    const u32 lo = ea & 0x0FFFFFFFu;
+    const bool is_ctrl = (lo == 0x0C000002u);     // CPCtrl (GPReadEnable etc.): always log
+    if (left <= 0 && !is_ctrl) return;
+    if ((lo >= 0x0C000000u && lo < 0x0C000080u) || (lo >= 0x0C003000u && lo < 0x0C003030u) ||
+        (lo >= 0x0C001000u && lo < 0x0C001010u)) {
+        if (!is_ctrl) left--;
+        fprintf(stderr, "[fiforeg] w%d %08x <- %08x (recomp pc=%08x)\n", bits, ea, v,
+                g_cur_recomp_cpu ? g_cur_recomp_cpu->pc : 0);
+    }
+}
+
+void sb_log_first_gather() {
+    static unsigned long bursts = 0;
+    bursts++;
+    if ((bursts & 0xFF) == 0) {      // every 256 bursts: FIFO backing up? (GPU stalled)
+        const u32 dist = ((u32)sb_r16(0xCC000032u) << 16) | sb_r16(0xCC000030u);
+        if (dist > 0x7A000u) {
+            static int tele = 48;
+            if (tele > 0) {
+                tele--;
+                const u32 rp     = ((u32)sb_r16(0xCC00003Au) << 16) | sb_r16(0xCC000038u);
+                const u32 wp     = ((u32)sb_r16(0xCC000036u) << 16) | sb_r16(0xCC000034u);
+                const u16 status = sb_r16(0xCC000000u);
+                const u16 ctrl   = sb_r16(0xCC000002u);
+                auto& sysm = Core::System::GetInstance();
+                const u32 pi_cause = sysm.GetProcessorInterface().GetCause();
+                const u32 pi_mask  = sysm.GetProcessorInterface().GetMask();
+                const u32 exc      = sysm.GetPPCState().Exceptions;
+                const u32 msr      = sysm.GetPPCState().msr.Hex;
+                fprintf(stderr, "[gather] STALL burst#%lu dist=%08x rp=%08x wp=%08x status=%04x ctrl=%04x "
+                        "pi=%08x/%08x exc=%08x msr=%08x intmsk=%08x intr_waiting=%d cpu_thread=%d\n",
+                        bursts, dist, rp, wp, status, ctrl, pi_cause, pi_mask, exc, msr,
+                        sb_r32(0x800000C4u),
+                        (int)sysm.GetCommandProcessor().IsInterruptWaiting(),
+                        (int)Core::IsCPUThread());
+            }
+        }
+    }
+    static bool logged = false;
+    if (logged) return;
+    logged = true;
+    fprintf(stderr, "[gather] FIRST gather-pipe write: recomp pc/lr=%08x/%08x r1=%08x\n",
+            g_cur_recomp_cpu ? g_cur_recomp_cpu->pc : 0,
+            g_cur_recomp_cpu ? g_cur_recomp_cpu->lr : 0,
+            g_cur_recomp_cpu ? g_cur_recomp_cpu->gpr[1] : 0);
+    void* bt[48];
+    int n = backtrace(bt, 48);
+    backtrace_symbols_fd(bt, n, fileno(stderr));
+    // Bursting the pipe with the CP FIFO unprogrammed (base==end==0) instantly overflows — on
+    // real HW this scribbles via a wild WPAR too. Invariant: the first burst must find a
+    // configured FIFO; park for REPL stack inspection if not.
+    // CP regs are 16-bit; a 32-bit MMIO read returns 0 (no 32-bit mapping) — read halves.
+    const u32 cp_base = ((u32)sb_r16(0xCC000022u) << 16) | sb_r16(0xCC000020u);
+    const u32 cp_end  = ((u32)sb_r16(0xCC000026u) << 16) | sb_r16(0xCC000024u);
+    fprintf(stderr, "[gather] CP base=%08x end=%08x\n", cp_base, cp_end);
+    fflush(stderr);
+    if (cp_base == 0 && cp_end == 0) {
+        extern void sunbright_park(const char*);
+        sunbright_park("gather-pipe burst with CP FIFO unprogrammed");
+    }
+}
+
 void sb_poll_fire(u32 ea) {
     // Advancing CoreTiming requires owning the CPU: a confirmed poll on a thread that is not the
     // declared CPU thread (e.g. runtime bookkeeping reads during an nthr context switch, after the
@@ -400,7 +476,7 @@ void mem_w8_slow(u32 ea, u8 v) {
 #ifdef HAVE_DOLPHIN_MEMMAP
     if (is_gather_pipe(ea)) {
         if (g_gxcap) gx_tap_cmd(v);
-        fifo_count(); g_recomp_touched_mmio = true; GPF().Write8(v); return;
+        sb_log_first_gather(); fifo_count(); g_recomp_touched_mmio = true; GPF().Write8(v); return;
     }
 #endif
     check_wild_write(ea, v, 8);
@@ -413,7 +489,21 @@ void mem_w16_slow(u32 ea, u16 v) {
     if (is_gather_pipe(ea)) { fifo_count(); g_recomp_touched_mmio = true; GPF().Write16(v); return; }
 #endif
     check_wild_write(ea, v, 16);
+    sb_log_fifo_reg_write(ea, v, 16);
     MMIO_W(16, ea, v);
+#ifdef HAVE_DOLPHIN_MEMMAP
+    // CP breakpoint-register writes must wake the GPU loop: real CP hardware re-evaluates the
+    // breakpoint continuously, but Dolphin's RunGpuLoop only wakes on gather bursts and CTRL
+    // writes. When the GX pusher is SUSPENDED at the hi watermark (FIFO pacing) and the
+    // draw-sync thread moves the breakpoint via FIFO_BP_LO/HI alone, nothing wakes the GPU —
+    // it stays parked at the OLD breakpoint forever and the whole pipeline deadlocks
+    // (2026-06-10). Faithful hardware semantics: a BP change lets the GPU proceed NOW.
+    {
+        const u32 lo = ea & 0x0FFFFFFFu;
+        if (lo == 0x0C00003Cu || lo == 0x0C00003Eu)
+            Core::System::GetInstance().GetFifo().RunGpu();
+    }
+#endif
 }
 
 void mem_w32_slow(u32 ea, u32 v) {
@@ -423,10 +513,11 @@ void mem_w32_slow(u32 ea, u32 v) {
 #ifdef HAVE_DOLPHIN_MEMMAP
     if (is_gather_pipe(ea)) {
         if (g_gxcap) gx_tap_word(v);
-        fifo_count(); g_recomp_touched_mmio = true; GPF().Write32(v); return;
+        sb_log_first_gather(); fifo_count(); g_recomp_touched_mmio = true; GPF().Write32(v); return;
     }
 #endif
     check_wild_write(ea, v, 32);
+    sb_log_fifo_reg_write(ea, v, 32);
     MMIO_W(32, ea, v);
 }
 

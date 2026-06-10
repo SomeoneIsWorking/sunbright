@@ -112,6 +112,15 @@ void thread_main(GuestThread* self) {
 }  // namespace
 
 GuestThread* current()                   { return g_running; }
+// Deadlock diagnostics: dump every registered thread's scheduler state.
+void dump_threads(void* file) {
+    FILE* f = (FILE*)file;
+    std::unique_lock<std::mutex> lk(g_mtx);
+    int i = 0;
+    for (auto* t : g_threads)
+        fprintf(f, "  [thr %2d] state=%d prio=%d user=%p%s\n", i++, (int)t->state, t->prio,
+                t->user, t == g_running ? "  <RUNNING>" : "");
+}
 // True iff the CALLING host thread may legitimately run guest code right now: it holds the token,
 // or nthr isn't driving yet (early boot, before adoption), or the scheduler is idle (the idle-hook
 // context runs guest ISRs with g_running == nullptr). Diagnostic for the interpreter entry guard.

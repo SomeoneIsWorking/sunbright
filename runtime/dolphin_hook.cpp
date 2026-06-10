@@ -32,6 +32,7 @@
 #  include "Core/HW/VideoInterface.h"
 #  include "Core/HW/ProcessorInterface.h"
 #  include "Core/HLE/HLE.h"
+#  include "VideoCommon/Fifo.h"
 #  include "Core/PowerPC/MMU.h"
 #  include "Core/PowerPC/PPCSymbolDB.h"
 #endif
@@ -315,6 +316,16 @@ static inline void charge_guest_time() {
         sys.GetCoreTiming().Advance();
         ppc.msr.Hex = saved_msr;
         t_in_advance = false;
+        // Deliver any pending external IRQ HERE, at the recomp call boundary — natively (see
+        // native_dispatch_one). On hardware the CP/VI/DSP interrupt preempts the running thread
+        // immediately; recomp code that never blocks (a GX display-list push loop) otherwise
+        // outruns the GPU for a whole frame and overflows the CP FIFO before reaching any other
+        // delivery point ("FIFO is overflowed by GatherPipe! CPU thread is too fast"). The
+        // handler is seeded from the LIVE recomp context (real r1/r2/r13 — it runs on the
+        // interrupted thread's stack, exactly like the GC exception prologue); the caller's own
+        // CPUState is untouched (handlers preserve non-volatiles per the EABI).
+        extern bool sunbright_deliver_pending_recomp(u32 logical_msr);
+        if (saved_msr & 0x8000u) sunbright_deliver_pending_recomp(saved_msr);
     }
 }
 #endif
@@ -541,7 +552,7 @@ static void sunbright_dump_pc_ring(FILE* f) {
 // context) may step the shared interpreter. A violator scrambles the global ppc — the corruption
 // class behind the spurious MEM dispatch. Suspended interp frames (a thread parked mid-intercept)
 // are legal; the invariant is on who is STEPPING now.
-static int native_dispatch_pending();   // fwd (defined with the native dispatcher below)
+static int native_dispatch_pending(const CPUState* seed = nullptr);   // fwd (native dispatcher below)
 static bool in_native_dispatch();        // fwd
 
 bool interp_run_until(u32 ret, long budget, u32 sp_floor) {
@@ -813,7 +824,8 @@ static const u32 kIntrPrio[] = {
 // bits may remain), false when nothing is dispatchable (no PI cause, PI-masked, or OS-masked).
 static thread_local bool t_in_native_dispatch = false;  // a handler's own bridge reads can poll-fire
 static bool in_native_dispatch() { return t_in_native_dispatch; }
-static bool native_dispatch_one() {
+static unsigned long g_nintr_counts[32];                 // per-interrupt dispatch counters (diag)
+static bool native_dispatch_one(const CPUState* seed) {
     if (t_in_native_dispatch) return false;
     auto& sys = Core::System::GetInstance();
     auto& pi  = sys.GetProcessorInterface();
@@ -889,6 +901,12 @@ static bool native_dispatch_one() {
     // chain would have passed). The register file seeds from the live ppc so r2/r13 (SDA bases)
     // are valid for OS code; call_ppc returns when the handler blr's.
     t_in_native_dispatch = true;
+    if (interrupt == 17 || interrupt == 18) {  // PI_CP / PE_TOKEN: always log (FIFO pacing chain)
+        static long cp_logs = 0;
+        if (cp_logs++ < 48)
+            fprintf(stderr, "[nintr] intr=%d -> handler %08x (cause=%08x)\n", interrupt, handler, cause);
+    }
+    g_nintr_counts[interrupt & 31]++;
     // Hardware semantics: taking an external interrupt CLEARS MSR[EE] for the handler (srr1 holds
     // the old MSR; rfi restores it). Without this the handler inherits the interrupted body's
     // EE=1 and Dolphin's interpreter can vector a NESTED guest dispatch mid-handler — observed
@@ -905,7 +923,8 @@ static bool native_dispatch_one() {
                     interrupt, handler, cause, unmasked, ppc.gpr[1]);
     }
     CPUState cpu;
-    dolphin_state_to_cpu(ppc, cpu);
+    if (seed) cpu = *seed;                             // recomp-boundary delivery: the LIVE thread ctx
+    else      dolphin_state_to_cpu(ppc, cpu);          // idle/poll/interp delivery: the global ppc
     cpu.gpr[3] = (u32)interrupt;
     cpu.gpr[4] = mem_r32(0x800000D4u);
     cpu.lr     = sunbright_idle_spin_pc();             // interp ret sentinel if the handler isn't recomp
@@ -917,10 +936,22 @@ static bool native_dispatch_one() {
 
 // Deliver every currently-dispatchable interrupt natively. Bounded: each handler acks its device
 // (dropping the PI cause bit); 16 rounds covers every simultaneous source with room to spare.
-static int native_dispatch_pending() {
+static int native_dispatch_pending(const CPUState* seed) {
     int n = 0;
-    while (n < 16 && native_dispatch_one()) n++;
+    while (n < 16 && native_dispatch_one(seed)) n++;
     return n;
+}
+
+// Recomp-boundary delivery (called from charge_guest_time when the slice expired and the guest's
+// logical EE is on). Seeds handlers from the live recomp CPUState so they run on the interrupted
+// thread's real stack/SDA. Global ppc is scratch at a recomp boundary, so handler runs through
+// call_ppc's interp path are safe.
+bool sunbright_deliver_pending_recomp(u32 logical_msr) {
+    (void)logical_msr;
+    auto& sys = Core::System::GetInstance();
+    if (!(sys.GetPPCState().Exceptions & 0x00000004u /*EXCEPTION_EXTERNAL_INT*/)) return false;
+    if (t_in_native_dispatch || !g_cur_recomp_cpu) return false;
+    return native_dispatch_pending(g_cur_recomp_cpu) > 0;
 }
 
 void sunbright_poll_yield() {
@@ -1155,6 +1186,16 @@ struct GuestRuntime {
 std::unordered_map<u32, nthr::GuestThread*> g_os_to_gt;   // guest OSThread* -> nthr thread
 std::mutex                                  g_os_map_mtx;
 
+static void sunbright_dump_guest_threads(FILE* f) {
+    std::lock_guard<std::mutex> lk(g_os_map_mtx);
+    for (auto& [os_thread, gt] : g_os_to_gt) {
+        fprintf(f, "  os_thread=%08x prio(gc)=%d state(gc)=%u suspend=%d srr0=%08x lr=%08x sp=%08x\n",
+                os_thread, (int)mem_r32(os_thread + 0x2d0), (unsigned)(mem_r32(os_thread + 0x2c8) >> 16),
+                (int)mem_r32(os_thread + 0x2cc), mem_r32(os_thread + 0x198), mem_r32(os_thread + 0x84),
+                mem_r32(os_thread + 0x4));
+    }
+}
+
 GuestRuntime* runtime_of(nthr::GuestThread* t) {
     return static_cast<GuestRuntime*>(nthr::user_slot(t));
 }
@@ -1295,7 +1336,23 @@ static bool idle_run(long max_steps) {
         // nested-dispatch corruption (spurious MEMIntrruptHandler → OSError 15, 2026-06-10).
         ct.Idle();
         ct.Advance();
-        const int delivered = native_dispatch_pending();
+        // Real CP hardware never sleeps while FIFO data is pending; Dolphin's GPU loop does
+        // (it only wakes on bursts/CTRL writes). With every guest thread blocked there are no
+        // bursts, so kick it each idle step — harmless when idle, required when a breakpoint
+        // move must let it drain (FIFO-pacing deadlock, 2026-06-10).
+        sys.GetFifo().RunGpu();
+        int delivered = native_dispatch_pending();
+        // Native retrace from idle: when every guest thread is blocked, the VI retrace
+        // transaction (vsync callbacks — incl. the FIFO-breakpoint move that lets the GPU
+        // drain and raise the CP underflow resume) must still run once per presented field;
+        // on hardware it is an interrupt, not a courtesy of the render loop. (FIFO-pacing
+        // deadlock, 2026-06-10.)
+        {
+            extern bool sunbright_vi_idle_retrace(CPUState&);
+            CPUState icpu;
+            dolphin_state_to_cpu(ppc, icpu);
+            if (sunbright_vi_idle_retrace(icpu)) delivered++;
+        }
         if (delivered && dbg) {
             static long v = 0;
             if (v++ < 64)
@@ -1323,10 +1380,13 @@ static void nthr_idle_driver() {
         fprintf(stderr,
             "\n[nthr] FATAL: idle driver stepped the interpreter, no thread woke (deadlock).\n"
             "  Every guest thread is Blocked and no DSP/DVD/VI IRQ made one Ready.\n");
-        fflush(stderr);
-        struct rlimit no_core{0, 0};
-        setrlimit(RLIMIT_CORE, &no_core);
-        abort();
+        nthr::dump_threads(stderr);
+        fprintf(stderr, "  native dispatch counts:");
+        for (int i = 0; i < 32; i++)
+            if (g_nintr_counts[i]) fprintf(stderr, " intr%d=%lu", i, g_nintr_counts[i]);
+        fputc('\n', stderr);
+        sunbright_dump_guest_threads(stderr);   // each thread's guest identity + saved pc/lr/sp
+        sunbright_park("nthr idle deadlock");
     }
 }
 
