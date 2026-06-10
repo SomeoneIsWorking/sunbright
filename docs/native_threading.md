@@ -44,9 +44,16 @@
 > Verified: long runs with draw-sync tokens + CP interrupts alternating continuously, VI fields
 > presented throughout, no overflow/deadlock. REPL gained /r16 (16-bit MMIO reads) and /gx
 > (CP/Fifo internals: rp/wp/bp/watermarks/interrupt_waiting).
-> Frontier: PERFORMANCE — pipeline correct but slow (~0.01×) during boot; Video thread pegged
-> (suspect first-use pipeline compilation + per-frame full drains); JUTGamePadRecord wild write
-> was a misattribution of an earlier corruption (gone since the ctx-restore fix).
+> 🟢 RESOLVED same day — the "0.01×" was a MEASUREMENT ARTIFACT plus a missing emu-clock tick:
+> `sunbright_wait_vi_field` (modernized: EE-masked Advance + native dispatch) is wired into the
+> heartbeat, forcing exactly one VI field of emulated time per host frame → ~60 presented
+> fields/s (verified by the [vi-field] telemetry and the watchdog field counter). Dolphin's
+> GetSpeed/FPS counters read ~0 on this path — their update hooks sit on the throttle path we
+> bypass; TRUST the field counter + frame dumps, not those metrics. Backpressure threshold must
+> stay fifo_cap/8 (watermark-relative re-entered the token-coalescing deadlock — measured).
+> **BOOT REACHES THE SMS TITLE SCREEN HEADLESS** (Dolby logo → title, framedump evidence,
+> run 88, 2026-06-10). Next: menus/file-select under autostart, in-game, audio output, and a
+> real perf pass with honest metrics.
 
 > ## 🟢 ACTIVE BUILD — native scheduler is LIVE (2026-06-05, increments 1–4 landed)
 > Per the user directive "do it incrementally even though it will break", the nthr scheduler is now
