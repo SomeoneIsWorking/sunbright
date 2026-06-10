@@ -24,10 +24,29 @@
 > guard, and `sunbright_park()` (CPU-idle park, REPL stays up, watchdog spares it — nothing
 > busy-spins on a failure anymore).
 >
-> Current frontier: deterministic wild write ea=0x10000000 at PC=802c9f00
-> (JUTGamePadRecord::padStatusToStreamData — a JUTGamePad in mPadList has a garbage
-> mPadRecord pointer; ctor sets it to 0, so the object or list is corrupt). ~3 min into boot,
-> well past all previous failure points.
+> ## 🟢 2026-06-10 (later) — GX FIFO CPU↔GPU pacing ported natively
+> The "FIFO is overflowed by GatherPipe" crash + the all-blocked deadlocks after it were ONE
+> chain — the GC frame-pacing contract was unported. Five pieces (commit "GX FIFO pacing"):
+> 1. OSSuspendThread (0x80349170) ported — __GXOverflowHandler's hi-watermark self-suspend of
+>    the pushing thread now parks the nthr thread (was a recomp no-op → overflow by a full lap).
+> 2. Recomp call boundaries deliver pending IRQs natively (charge_guest_time → dispatch seeded
+>    from the live recomp ctx) — a GX push loop never reaches another delivery point.
+> 3. The native VI retrace transaction also runs from the IDLE driver (once per presented field)
+>    — when every guest thread is blocked the retrace must still tick (it is an interrupt).
+> 4. Dolphin's GPU loop only wakes on bursts/CTRL writes: our bridge kicks Fifo::RunGpu on
+>    FIFO_BP_LO/HI writes and the idle driver kicks it each step (real CP never sleeps).
+> 5. VIWaitForRetrace gained GPU BACKPRESSURE (wait until FIFO < cap/8 before the next frame),
+>    pumping CoreTiming + native dispatch + yielding the nthr token each spin. Without it the
+>    game ran 18+ frames ahead during boot shader-compile hitches; Dolphin's PE coalesces
+>    draw-sync token interrupts (keeps only the latest) → TDrawSyncManager lost tokens → the
+>    breakpoint stopped advancing → watermark deadlock. Key decomp source:
+>    reference/sms/src/System/DrawSyncManager.cpp (token→breakpoint protocol).
+> Verified: long runs with draw-sync tokens + CP interrupts alternating continuously, VI fields
+> presented throughout, no overflow/deadlock. REPL gained /r16 (16-bit MMIO reads) and /gx
+> (CP/Fifo internals: rp/wp/bp/watermarks/interrupt_waiting).
+> Frontier: PERFORMANCE — pipeline correct but slow (~0.01×) during boot; Video thread pegged
+> (suspect first-use pipeline compilation + per-frame full drains); JUTGamePadRecord wild write
+> was a misattribution of an earlier corruption (gone since the ctx-restore fix).
 
 > ## 🟢 ACTIVE BUILD — native scheduler is LIVE (2026-06-05, increments 1–4 landed)
 > Per the user directive "do it incrementally even though it will break", the nthr scheduler is now
