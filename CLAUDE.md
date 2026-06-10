@@ -326,7 +326,8 @@ Update this table as ppc_decoder.cpp gains coverage:
 | mfmsr / mtmsr | ✅ | mfmsr→live `msr_get()`; mtmsr→func routed to JIT |
 | Paired singles (ps_*, psq_l/st) | 🔄 | GC-specific, critical for SMS |
 | System calls (sc) | ✅ | HLE via Dolphin |
-| Cache ops (dcbt, dcbf, icbi, etc.) | ✅ | NOP in recomp — EXCEPT `dcbz` |
+| Cache ops (dcbt, dcbf, etc.) | ✅ | NOP in recomp — EXCEPT `dcbz` and `icbi` |
+| icbi | ✅ | NOT a no-op: `icbi32(EA)` invalidates Dolphin icache line + JIT blocks (interp fetches through them). Dolphin icache *emulation* itself is OFF (`MAIN_DISABLE_ICACHE`, main_sdl.cpp) — its set/way bookkeeping served the WRONG line under the hybrid (phantom-`bl` fetch 4800302d@803378a8 from 803428a8, same set; → wild blr → JUT crash, 2026-06-10). PC-port memory model = fetch-from-RAM |
 | dcbz (Data Cache Block Zero) | ✅ | NOT a no-op: zeroes the 32-byte block at EA (`dcbz32`). NOP'ing it left stale THP DCT coefficients → FMV comb (fixed 8bc12c5) |
 | lmw / stmw (multi-word load/store) | ✅ | expanded to per-reg loads/stores |
 | mftb (time base read) | ✅ | monotonic fake counter |
