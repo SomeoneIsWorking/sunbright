@@ -332,6 +332,8 @@ static inline void charge_guest_time() {
 }
 #endif
 
+extern "C" void sb_trace(const char* tag, u32 a, u32 b, u32 c, u32 d);   // probe /tracelog ring
+
 void call_ppc(CPUState& cpu, u32 address) {
 #ifdef HAVE_DOLPHIN_CORE
     if (sb_is_wild_branch_target(address)) sb_fatal_wild_branch(address, cpu);
@@ -350,6 +352,11 @@ void call_ppc(CPUState& cpu, u32 address) {
         }
     }
     os_sync_watch(address, cpu.gpr[3], cpu.gpr[4], cpu.lr);
+    // SUNBRIGHT_DBG_CARD: ring-trace every call into the CARD/EXI SDK region (incl. the unnamed
+    // __CARDTxHandler callback chain) — the CARDMount lost-completion deadlock localizer.
+    static const bool dbg_card = getenv("SUNBRIGHT_DBG_CARD") != nullptr;
+    if (dbg_card && address >= 0x80354000u && address < 0x8036b000u)
+        sb_trace("card", address, cpu.gpr[3], cpu.gpr[4], cpu.lr);
     if (address == watch_addr() && watch_addr() != 0) {
         static unsigned long n = 0;
         if ((n++ % 1000) == 0) {
@@ -1463,7 +1470,9 @@ static void nthr_idle_driver() {
         fflush(stdout);
         fprintf(stderr,
             "\n[nthr] FATAL: idle driver stepped the interpreter, no thread woke (deadlock).\n"
-            "  Every guest thread is Blocked and no DSP/DVD/VI IRQ made one Ready.\n");
+            "  Every guest thread is Blocked and no DSP/DVD/VI IRQ made one Ready.\n"
+            "  CoreTiming GetTicks=%llu (compare against the last ctsched 'b' base in /tracelog)\n",
+            (unsigned long long)Core::System::GetInstance().GetCoreTiming().GetTicks());
         nthr::dump_threads(stderr);
         fprintf(stderr, "  native dispatch counts:");
         for (int i = 0; i < 32; i++)

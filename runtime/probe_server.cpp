@@ -111,7 +111,9 @@ u32 qarg_dec(const char* path, const char* key, u32 def) {
 
 // REPL request handler. Returns the response body for any /repl path; empty string = not a REPL path.
 std::string handle_repl(const char* path) {
-    char buf[8192]; int n = 0;
+    // 64 KB: /tracelog dumps up to 512 ring entries (~80 bytes each) — the old 8 KB cut the
+    // tail off exactly where a deadlock's last events live.
+    static thread_local char buf[65536]; int n = 0;
     auto app = [&](const char* fmt, auto... a){ if (n < (int)sizeof buf) n += snprintf(buf+n, sizeof buf-n, fmt, a...); };
 
     if (strncmp(path, "/r?", 3) == 0 || strncmp(path, "/r ", 3) == 0) {

@@ -402,6 +402,10 @@ void native_os_init() {
     // archive/audio-wave ARAM wait completes immediately; no AR DMA interrupt, no timing). ──
     extern void native_aram_register();
     native_aram_register();
+    // ── Native memory-card service: own the CARD hardware layer (EXI DMA completions were lost
+    // under the hybrid timing → CARDMount wedge → dead file-select menu, 2026-06-10). ──
+    extern void native_card_register();
+    native_card_register();
     // ── Native PPCSync: `sc; blr` store barrier → no-op (gather-pipe writes are synchronous
     // here; the interpreted syscall round-trip was the GXFlush per-frame choke). ──
     extern void native_ppcsync_register();
