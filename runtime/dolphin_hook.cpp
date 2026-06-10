@@ -392,7 +392,8 @@ void call_ppc(CPUState& cpu, u32 address) {
                      address == 0x802bb920u /*scene sound-init — REAL entry (loadWave caller)*/ ||
                      address == 0x802b76f4u || address == 0x802b77ecu ||
                      address == 0x802b77fcu || address == 0x802b7898u ||
-                     address == 0x80299838u /*static caller of 802b76f4*/)) {
+                     address == 0x80299838u /*static caller of 802b76f4*/ ||
+                     address == 0x80348d08u /*OSJoinThread — join-once semantics chase*/)) {
         // c = caller lr (who ends the note/track), d = monotonic ms.
         struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
         sb_trace("note", address, cpu.gpr[3], cpu.lr,
@@ -1589,11 +1590,12 @@ static void guest_thread_body(u32 os_thread, u32 entry, u32 param, u32 stack) {
     // stops AT it, so run OSExitThread's bookkeeping natively (mark MORIBUND / free, release
     // mutexes, wake the join queue) MINUS its GC SelectThread reschedule — otherwise
     // OSIsThreadTerminated / OSJoinThread never see this thread finish (boot-sequencer wait).
-    native_os_thread_exit(cpu, os_thread, cpu.gpr[3] /*thread fn return value = exit val*/);
+    const u32 true_exit_val = cpu.gpr[3];   // capture BEFORE bookkeeping calls clobber r3
+    native_os_thread_exit(cpu, os_thread, true_exit_val);
 
     // Drop it from the map and let nthr reap.
     { std::lock_guard<std::mutex> lk(g_os_map_mtx); g_os_to_gt.erase(os_thread); }
-    fprintf(stderr, "[nthr] guest thread %08x (entry %08x) returned/exited\n", os_thread, entry);
+    fprintf(stderr, "[nthr] guest thread %08x (entry %08x) returned/exited (exit_val=%08x)\n", os_thread, entry, true_exit_val);
     Core::UndeclareAsCPUThread();
 }
 

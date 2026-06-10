@@ -93,3 +93,18 @@ either preserve the body's true return value, or make the join/exitval semantics
 already-reaped (state 0, detached) thread returns FALSE without writing exitval — the GAME
 expects join-once; a premature join by our runtime is the likely culprit (grep native_os for
 OSJoinThread handling / who could double-join).
+
+## Session 2 final state (context limit)
+- TRUE setup-thread exit values are ALL 0 (the earlier 0x803fcbe8 values were a logging bug —
+  r3 captured AFTER bookkeeping; fixed in dolphin_hook). Stored T_VAL(+728)=0 ✓.
+- OSIsThreadTerminated(803FCBE8) returns TRUE (state=0 path → r3=1, disasm-verified).
+- ANOMALY to resolve first thing next session: OSJoinThread (80348d08) trace produced ZERO
+  events while func_80299838 ran 2887× — either the join isn't reached at the title (the 2887
+  count may predate the title; the state machine may have completed/halted differently), or
+  the trace window missed it. NEXT: single run, trace 80299838 + 80348374 + 80348d08 +
+  802b76f4 TOGETHER with ms timestamps, and dump the state machine's STAGE variable (the
+  store after the 802b76f4 call: `r0=1` → find its target address in the emitted body of
+  func_80299838 around // 802998bc-802998d0) to learn which stage the machine is stuck in at
+  the title. Then root-cause that stage's gate.
+- All tooling for this is in place (SUNBRIGHT_DBG_NOTE list in dolphin_hook.cpp — just extend
+  the address list; /tracelog windowed; /r).
