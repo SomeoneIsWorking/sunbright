@@ -119,17 +119,80 @@ std::unordered_set<uint32_t> jumptable_targets(
         }
         if (base_reg < 0) continue;
 
-        // 3) materialize the table base register: `lis base,hi` [+ `addi base,base,lo`] (or `li`)
-        uint32_t base = 0; bool have_base = false; int32_t add_lo = 0;
+        // 3) materialize the table base register at the load: forward constant propagation over
+        //    the whole function body. The base is often built in the PROLOGUE (lis rX; addi
+        //    rBase,rX,lo — note the cross-register addi), dozens of instructions and several
+        //    branches before the bctr (TCardManager::cmdLoop 802b16b0: r31 = 0x803DF9C8 set at
+        //    +0x14, bctr at +0x5c after an unconditional `b` — the old 24-instruction back-scan
+        //    requiring `addi rD,rD` never saw it, the bctr emitted as tail_ppc, and the card
+        //    worker thread died on the mid-body JIT handoff = the dead file-select menu).
+        //    Linear scan is sound here because we only track constant-forming ops and invalidate
+        //    on everything else; a base register is in practice written exactly once.
+        uint32_t known[32] = {0}; bool valid[32] = {false};
+        // index of the table-load instruction (we want base_reg's value just before it)
+        int load_idx = -1;
         for (int j = (int)k - 1; j >= lo_j; --j) {
             const PPCInstr& q = instrs[j];
-            if (q.op == PPCOp::ADDI && q.rD == base_reg && q.rA == base_reg) { add_lo += q.simm; continue; }
-            if (q.op == PPCOp::ADDIS && q.rD == base_reg && q.rA == 0) { base = (uint32_t)q.uimm << 16; have_base = true; break; }
-            if (q.op == PPCOp::ADDI  && q.rD == base_reg && q.rA == 0) { base = (uint32_t)q.simm;        have_base = true; break; } // li
-            if (stop(q)) break;
+            if ((q.op == PPCOp::LWZX || q.op == PPCOp::LWZ) && q.rD == ctr_reg) { load_idx = j; break; }
         }
-        if (!have_base) continue;
-        const uint32_t table = base + (uint32_t)add_lo + (indexed ? 0u : (uint32_t)disp);
+        if (load_idx < 0) continue;
+        for (int j = 0; j < load_idx; ++j) {
+            const PPCInstr& q = instrs[j];
+            switch (q.op) {
+            case PPCOp::ADDIS:   // lis / addis
+                if (q.rA == 0) { known[q.rD] = (uint32_t)q.uimm << 16; valid[q.rD] = true; }
+                else if (valid[q.rA]) { known[q.rD] = known[q.rA] + ((uint32_t)q.uimm << 16); valid[q.rD] = true; }
+                else valid[q.rD] = false;
+                break;
+            case PPCOp::ADDI:    // li / addi
+                if (q.rA == 0) { known[q.rD] = (uint32_t)q.simm; valid[q.rD] = true; }
+                else if (valid[q.rA]) { known[q.rD] = known[q.rA] + (uint32_t)q.simm; valid[q.rD] = true; }
+                else valid[q.rD] = false;
+                break;
+            case PPCOp::ORI:     // ori rA,rS,uimm (dest is rA)
+                if (valid[q.rS]) { known[q.rA] = known[q.rS] | q.uimm; valid[q.rA] = true; }
+                else valid[q.rA] = false;
+                break;
+            case PPCOp::ORIS:
+                if (valid[q.rS]) { known[q.rA] = known[q.rS] | ((uint32_t)q.uimm << 16); valid[q.rA] = true; }
+                else valid[q.rA] = false;
+                break;
+            // No GPR written — constants survive.
+            case PPCOp::CMP: case PPCOp::CMPI: case PPCOp::CMPL: case PPCOp::CMPLI:
+            case PPCOp::STB: case PPCOp::STBX: case PPCOp::STH: case PPCOp::STHX:
+            case PPCOp::STW: case PPCOp::STWX: case PPCOp::STMW:
+            case PPCOp::STWBRX: case PPCOp::STHBRX: case PPCOp::STWCX:
+            case PPCOp::STFS: case PPCOp::STFSX: case PPCOp::STFD: case PPCOp::STFDX:
+            case PPCOp::STFIWX: case PPCOp::DCBST:
+            case PPCOp::MTSPR: case PPCOp::MTCRF: case PPCOp::MTFSB0: case PPCOp::MTFSB1:
+            case PPCOp::MTFSF: case PPCOp::MTFSFI:
+            case PPCOp::B: case PPCOp::BA: case PPCOp::BC: case PPCOp::BCA:
+            case PPCOp::BCLR: case PPCOp::BCCTR:
+            case PPCOp::CRAND: case PPCOp::CRANDC: case PPCOp::CROR: case PPCOp::CRORC:
+            case PPCOp::CRXOR: case PPCOp::CRNOR: case PPCOp::CRNAND: case PPCOp::CREQV:
+            case PPCOp::MCRF: case PPCOp::MCRXR: case PPCOp::MCRFS:
+            case PPCOp::FCMPU: case PPCOp::FCMPO:
+                break;
+            // Calls clobber the volatile GPRs.
+            case PPCOp::BL: case PPCOp::BLA: case PPCOp::BCL: case PPCOp::BCLA:
+            case PPCOp::BCLRL: case PPCOp::BCCTRL:
+                valid[0] = false;
+                for (int r = 3; r <= 12; ++r) valid[r] = false;
+                break;
+            // Multi-register loads: give up on everything.
+            case PPCOp::LMW: case PPCOp::LSWI: case PPCOp::LSWX:
+                for (int r = 0; r < 32; ++r) valid[r] = false;
+                break;
+            default:
+                // Anything else conservatively invalidates the registers it could write
+                // (rD for loads/arithmetic, rA for logical/rotate dest and update forms).
+                valid[q.rD & 31] = false;
+                valid[q.rA & 31] = false;
+                break;
+            }
+        }
+        if (base_reg > 31 || !valid[base_reg]) continue;
+        const uint32_t table = known[base_reg] + (indexed ? 0u : (uint32_t)disp);
 
         // 4) bound: the nearest preceding `cmpli idx,N` gives the max index ⇒ N+1 entries
         int count = -1;
@@ -142,13 +205,19 @@ std::unordered_set<uint32_t> jumptable_targets(
         // 5) read entries; keep the ones that land inside this function's body. With a known count
         //    read exactly that many; otherwise read until the first word that is not a main-RAM
         //    code pointer (a contiguous table of .text pointers).
+        //    The constant-propagated base makes a wrong-but-plausible table address possible in
+        //    principle, so validate hard: every entry up to the known count must be a code pointer;
+        //    one bad word rejects the whole table (better a tail_ppc than wrong labels).
         const int limit = (count > 0 && count <= 256) ? count : 64;
+        std::unordered_set<uint32_t> cand;
+        bool reject = false;
         for (int e = 0; e < limit; ++e) {
             uint32_t w;
-            if (!read_word(table + (uint32_t)e * 4, w)) break;
-            if (w >= faddr && w < fend) out.insert(w);
-            else if (count < 0 && (w < 0x80000000u || w >= 0x81800000u)) break;
+            if (!read_word(table + (uint32_t)e * 4, w)) { reject = count > 0; break; }
+            if (w >= faddr && w < fend) cand.insert(w);
+            else if (w < 0x80003000u || w >= 0x81800000u) { reject = count > 0; if (count < 0) break; }
         }
+        if (!reject) out.insert(cand.begin(), cand.end());
     }
     return out;
 }

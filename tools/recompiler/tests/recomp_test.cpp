@@ -326,6 +326,57 @@ int main() {
         CHECK(has(code, "default: tail_ppc(cpu, cpu.ctr); return;"), "external CTR values still tail_ppc");
     }
 
+    // 10. JUMP-TABLE BASE BUILT IN THE PROLOGUE (TCardManager::cmdLoop 802b16b0): the table base
+    //     register is materialized once at function start — `lis rX; addi rBase,rX,lo` (CROSS-register
+    //     addi) — with an unconditional `b` and a `bl` between it and the `bctr`. The old 24-instr
+    //     back-scan requiring `addi rD,rD` missed it → bctr emitted as tail_ppc → mid-thread-body JIT
+    //     handoff killed the card worker thread → file-select menu never opened (2026-06-10).
+    //     jumptable_targets must constant-propagate the base across the whole body (bl clobbers only
+    //     volatile r3-r12; the nonvolatile base must survive).
+    {
+        auto enc_addis = [](int rt, int ra, uint16_t ui) { return (15u<<26)|(rt<<21)|(ra<<16)|ui; };
+        auto enc_cmpli = [](int bf, int ra, uint16_t ui) { return (10u<<26)|(bf<<23)|(ra<<16)|ui; };
+        auto enc_lwzx  = [](int rt, int ra, int rb) { return (31u<<26)|(rt<<21)|(ra<<16)|(rb<<11)|(23u<<1); };
+        auto enc_mtctr = [](int rs) { return (31u<<26)|(rs<<21)|(288u<<11)|(467u<<1); };
+        auto enc_lwz   = [](int rt, int ra, int16_t d) { return (32u<<26)|(rt<<21)|(ra<<16)|(uint16_t)d; };
+        const uint32_t BCTR = 0x4e800420u;
+        const uint32_t B = 0x80200000u;
+        const uint32_t TABLE = 0x803df9c8u;
+        // +0  lis r4,0x803e ; +4 addi r31,r4,-0x638 (r31=0x803DF9C8) ; +8 b -> +20 (skip case body)
+        // +12 case0 ; +16 blr
+        // +20 bl -> +12 (a call: clobbers volatiles, must NOT kill r31)
+        // +24 lwz r0,0x448(r29) (unrelated load between base def and use)
+        // +28 cmpli r0,2 ; +32 bgt -> +12 ; +36 rlwinm r0,r0,2 ; +40 lwzx r0,r31,r0 ; +44 mtctr ; +48 bctr
+        const uint32_t RLWINM_x4 = (21u<<26)|(0u<<21)|(0u<<16)|(2u<<11)|(0u<<6)|(29u<<1); // rlwinm r0,r0,2,0,29
+        std::vector<uint32_t> w = {
+            enc_addis(4,0,0x803e),          // +0
+            enc_addi(31,4,-0x638),          // +4   cross-register addi
+            enc_b(B+8,  B+20, false),       // +8   unconditional b past the case body
+            enc_addi(5,5,1),                // +12  case0 body
+            BLR,                            // +16
+            enc_b(B+20, B+12, true),        // +20  bl (volatile clobber only)
+            enc_lwz(0,29,0x448),            // +24
+            enc_cmpli(0,0,2),               // +28  3 entries
+            enc_bc(B+32, B+12, 12, 1),      // +32  bgt default
+            RLWINM_x4,                      // +36
+            enc_lwzx(0,31,0),               // +40
+            enc_mtctr(0),                   // +44
+            BCTR,                           // +48
+        };
+        const uint32_t cases[3] = { B+12, B+12, B+12 };
+        std::vector<uint8_t> bytes(w.size()*4);
+        for (size_t i=0;i<w.size();++i){ uint32_t be=__builtin_bswap32(w[i]); std::memcpy(&bytes[i*4],&be,4); }
+        const uint32_t fend = B + (uint32_t)w.size()*4;
+        std::vector<PPCInstr> instrs = collect_function(bytes.data(), B, bytes.size(), B, fend, /*cfg=*/false);
+        auto read_word = [&](uint32_t a, uint32_t& out) -> bool {
+            if (a >= TABLE && a < TABLE + 12) { out = cases[(a - TABLE)/4]; return true; }
+            return false;
+        };
+        auto jt = jumptable_targets(instrs, B, fend, read_word);
+        CHECK(jt.size() == 1 && jt.count(B+12),
+              "jumptable_targets resolves a prologue-built (cross-register, branch/call-separated) table base");
+    }
+
     std::printf("recomp_test: %d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

@@ -800,6 +800,7 @@ static u32 sunbright_idle_spin_pc() {
 // __OSReschedule / OSLoadContext) is owned by nthr and intentionally absent.
 //
 // GMSE01 OS globals (from the dispatch disassembly at 0x80345d84, r13 = 0x804141C0):
+extern "C" void sb_trace(const char* tag, u32 a, u32 b, u32 c, u32 d);   // probe /tracelog ring
 static constexpr u32 OS_INTR_TABLE_PTR = 0x8040E7B0u;  // __OSInterruptHandlerTable → 0x80003040
 static constexpr u32 OS_LAST_INTR      = 0x8040E7B8u;  // u16 __OSLastInterrupt
 static constexpr u32 OS_LAST_SRR0      = 0x8040E7B4u;  // u32 __OSLastInterruptSrr0
@@ -850,6 +851,7 @@ static bool native_dispatch_one(const CPUState* seed) {
     }
     if (intsr & 0x10) {                                // EXI
         u32 r = mem_r32(0xCC006800u);                  // __EXIRegs[0]
+        sb_trace("exint", intsr, r, mem_r32(0x800000C4u), mem_r32(0x800000C8u));
         if (r & 0x002) cause |= kMask >> 9;
         if (r & 0x008) cause |= kMask >> 10;
         if (r & 0x800) cause |= kMask >> 11;
@@ -889,6 +891,45 @@ static bool native_dispatch_one(const CPUState* seed) {
             fprintf(stderr, "[nintr] unmasked interrupt %d (cause=%08x intsr=%08x) has no handler\n",
                     interrupt, unmasked, intsr);
         return false;
+    }
+
+    // PE_TOKEN (18): owned natively, loss-free. Dolphin's SetToken coalesces back-to-back tokens
+    // (only the latest survives its single in-flight event); SMS ends every frame with two
+    // (pollution-range value then frame-done 0), so one was dropped nearly every frame and the
+    // drawsync pipeline crawled on the idle-driver's synthetic recovery (see pe_token_wrap.cpp).
+    // The --wrap on SetToken recorded every interrupt-worthy value in order; deliver them all:
+    // this is a native port of the GX token ISR 8035dd5c — call the registered GX token callback
+    // (TokenCB @ 0x8040EA18, = TDrawSyncManager::drawSyncCallback) with r3 = token, then ack the
+    // PE token interrupt via the ctrl reg (|0x4, exactly what the guest ISR writes). The guest
+    // ISR itself must NOT also run — it would re-deliver the coalesced register value.
+    if (interrupt == 18) {
+        extern bool sb_token_ring_pop(uint16_t*);
+        auto& tppc = sys.GetPPCState();
+        uint16_t tok;
+        int delivered = 0;
+        while (sb_token_ring_pop(&tok)) {
+            if (const u32 cb = mem_r32(0x8040EA18u)) {
+                CPUState tcpu;
+                if (seed) tcpu = *seed;
+                else      dolphin_state_to_cpu(tppc, tcpu);
+                tcpu.gpr[3] = tok;
+                tcpu.lr     = sunbright_idle_spin_pc();
+                t_in_native_dispatch = true;
+                const u32 saved_msr = tppc.msr.Hex;
+                tppc.msr.Hex &= ~0x8000u;              // ISR semantics: EE off in the handler
+                call_ppc(tcpu, cb);
+                tppc.msr.Hex = saved_msr;
+                t_in_native_dispatch = false;
+            }
+            delivered++;
+        }
+        // Ack even when the ring was already drained (the coalesced event re-raised the signal
+        // for a token we delivered earlier) — consuming it silently is what keeps the guest ISR
+        // from double-running the latest value.
+        mem_w16(0xCC00100Au, (u16)(mem_r16(0xCC00100Au) | 0x4u));
+        g_nintr_counts[18]++;
+        g_ds_token_dispatches += delivered;
+        return true;
     }
 
     auto& ppc = sys.GetPPCState();
