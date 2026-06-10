@@ -71,3 +71,25 @@ see zero traffic. Worth a recompiler-level dedupe/containment pass eventually.
    sustain shape.
 3. Tools added: /aram (FNV over ARAM), SUNBRIGHT_DBG_NOTE extended (wave-load + seq lifecycle),
   SUNBRIGHT_TICK_RATE (per-root tick accounting + -1 returns), SUNBRIGHT_NO_TTRACK_NATIVE.
+
+## FRONTIER (end of session 2) — the gate that skips scene sound init
+Per-frame scene state machine func_80299838 (runs 2887×, the TApplication/director boot-stage
+step) gates on the SETUP THREAD 0x803FCBE8:
+  1. OSIsThreadTerminated(803FCBE8) [80348374: state==8||state==0 → true] — PASSES (state=0).
+  2. OSJoinThread(803FCBE8, &exitval) [80348d08]; then `if (exitval != 0) return 4` — TAKES THE
+     ERROR PATH every frame (sound init 802b76f4 → MSound::loadWave(0x212) → wScene bank load
+     NEVER runs ⇒ scene instruments missing ⇒ the audible chopping).
+Hypotheses for exitval != 0 (ranked):
+  a. state already 0 ⇒ thread was ALREADY JOINED once (or our detached-exit cleared it) ⇒ this
+     join FAILS and never writes exitval ⇒ stack garbage at r1+344 ⇒ nonzero ⇒ error path.
+     (Our native_os_thread_exit sets MORIBUND=8 for joinable; live state reads 0 ⇒ someone
+     joined earlier, or double bookkeeping.)
+  b. the setup body's r3 at return (used as exit value in guest_thread_body →
+     native_os_thread_exit(cpu, thr, cpu.gpr[3])) is garbage/nonzero under the C-call model.
+NEXT STEP (concrete): add exit-val + joiner logging: print exit_val in the body-exit log; trace
+OSJoinThread (80348d08) callers/results for 803FCBE8 (who joins first, what value). Then fix:
+either preserve the body's true return value, or make the join/exitval semantics faithful
+(e.g. keep exitval retrievable after first join, per SDK). Note the SDK: OSJoinThread on an
+already-reaped (state 0, detached) thread returns FALSE without writing exitval — the GAME
+expects join-once; a premature join by our runtime is the likely culprit (grep native_os for
+OSJoinThread handling / who could double-join).

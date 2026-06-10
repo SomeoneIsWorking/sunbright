@@ -389,7 +389,10 @@ void call_ppc(CPUState& cpu, u32 address) {
                      address == 0x80015640u /*MSound::loadWave(scene) — scene-code callers*/ ||
                      address == 0x8001569cu /*MSound::loadGroupWave*/ ||
                      address == 0x802bc10cu /*orphan overlap copy (diag)*/ ||
-                     address == 0x802bb920u /*scene sound-init — REAL entry (loadWave caller)*/)) {
+                     address == 0x802bb920u /*scene sound-init — REAL entry (loadWave caller)*/ ||
+                     address == 0x802b76f4u || address == 0x802b77ecu ||
+                     address == 0x802b77fcu || address == 0x802b7898u ||
+                     address == 0x80299838u /*static caller of 802b76f4*/)) {
         // c = caller lr (who ends the note/track), d = monotonic ms.
         struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
         sb_trace("note", address, cpu.gpr[3], cpu.lr,
