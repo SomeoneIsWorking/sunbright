@@ -65,8 +65,12 @@
 > override-based counters/instrumentation miss raw-interp invocations; (2) never replace a
 > blocked sync thread with a native POLLING loop — perpetually-Ready breaks nthrt_block_drain
 > (frame barrier never completes, zero frames). Verified run 106: 1824 frames, file-select
-> beach scene with Mario rendered. Open: intro audio-out (AI→Cubeb), watchdog game-progress
-> heartbeat, in-game progression + perf pass.
+> beach scene with Mario rendered. Audio-out FIXED (persisted-mute trap:
+> headless SetBase(MAIN_AUDIO_MUTED,true) persisted to Dolphin.ini, muting windowed runs — set
+> both ways every run now; game-side AID DMA was streaming all along). Watchdog gained a
+> GAME-PROGRESS heartbeat (presented FrameCount vs ticking fields → loud stall dump, no kill).
+> Open: in-game progression under run.sh, perf pass (honest metrics), pollution-counter
+> readback accuracy under token coalescing (gameplay graffiti %).
 
 > ## 🟢 ACTIVE BUILD — native scheduler is LIVE (2026-06-05, increments 1–4 landed)
 > Per the user directive "do it incrementally even though it will break", the nthr scheduler is now
