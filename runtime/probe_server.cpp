@@ -33,6 +33,7 @@ bool g_probe_enabled = false;
 #ifdef HAVE_DOLPHIN_CORE
 #include "Core/System.h"
 #include "Core/HW/ProcessorInterface.h"
+#include "Core/HW/DSP.h"
 #include "VideoCommon/CommandProcessor.h"
 #endif
 extern u32 mem_r32(u32 ea);
@@ -160,6 +161,18 @@ std::string handle_repl(const char* path) {
             (int)cp.IsInterruptWaiting(),
             sys.GetProcessorInterface().GetCause(), sys.GetProcessorInterface().GetMask());
 #endif
+        return std::string(buf, n);
+    }
+    if (strncmp(path, "/aram", 5) == 0) {
+        // ARAM content checker (instrument wave banks): /aram?a=<offset>&n=<bytes, hex> →
+        // FNV-1a hash + nonzero count of the region. Compare oracle vs recomp uploads.
+        u32 a = qarg(path, "a", 0), len = qarg(path, "n", 0x10000);
+        if (len > 0x400000) len = 0x400000;
+        const u8* p = Core::System::GetInstance().GetDSP().GetARAMPtr();
+        if (!p) { app("no ARAM ptr\n"); return std::string(buf, n); }
+        u32 h = 2166136261u; unsigned long nz = 0;
+        for (u32 i = 0; i < len; i++) { const u8 b = p[a + i]; h = (h ^ b) * 16777619u; nz += b != 0; }
+        app("aram a=%08x n=%x fnv=%08x nonzero=%lu\n", a, len, h, nz);
         return std::string(buf, n);
     }
     if (strncmp(path, "/vpb", 4) == 0) {

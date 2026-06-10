@@ -23,6 +23,7 @@
 #include "../intrinsics.h"
 #include "../dolphin_hook.h"
 #include <cstdlib>
+#include <unordered_map>
 #include <cstdio>
 
 namespace {
@@ -63,12 +64,32 @@ void channel_update(CPUState& cpu, u32 self) {
 void ov_ttrack_tick(CPUState& cpu) {
     const bool log = getenv("SUNBRIGHT_TICK_LOG");
     const u32 self = cpu.gpr[3];
+    // SUNBRIGHT_TICK_RATE: per-root tick-call accounting — the choppy-music localizer (the BGM
+    // root was ticked every ~4.5s instead of every DAC frame, executing catch-up bursts).
+    if (getenv("SUNBRIGHT_TICK_RATE")) {
+        static std::unordered_map<u32, unsigned long> counts;
+        static std::unordered_map<u32, u32> last_lr;
+        static unsigned long total = 0;
+        counts[self]++;
+        last_lr[self] = cpu.lr;
+        if ((++total % 2000) == 0) {
+            std::fprintf(stderr, "[tickrate] after %lu ticks:", total);
+            for (auto& [t, c] : counts)
+                std::fprintf(stderr, " %08x=%lu(lr=%08x)", t, c, last_lr[t]);
+            std::fprintf(stderr, "\n");
+        }
+    }
     const u32 r2   = cpu.gpr[2];
 
     if (self == 0)            { cpu.gpr[3] = (u32)-1; return; }
     u8 flag = mem_r8(self + 0x3c4);
-    if (flag == 0)            { cpu.gpr[3] = (u32)-1; return; }
-    if (flag == 3)            { finish(cpu, self); return; }
+    static const bool diag = getenv("SUNBRIGHT_TICK_RATE") != nullptr;
+    if (flag == 0)            { if (diag) std::fprintf(stderr,
+            "[tick] self=%08x flag=0 -> RETURN -1 (callback will be UNREGISTERED)\n", self);
+                                cpu.gpr[3] = (u32)-1; return; }
+    if (flag == 3)            { if (diag) std::fprintf(stderr,
+            "[tick] self=%08x flag=3 -> finish (callback unregistered)\n", self);
+                                finish(cpu, self); return; }
 
     const float limit = mem_rf32(r2 + 1916);           // C local — cannot be clobbered by callees
     float phase = mem_rf32(self + 0x3ac) + mem_rf32(self + 0x3b0);   // phase += rate
@@ -93,7 +114,9 @@ void ov_ttrack_tick(CPUState& cpu) {
                 std::fprintf(stderr, "[tick] self=%08x iter=%d phase=%.6f limit=%.6f mainProc=%d\n",
                              self, iters, phase, limit, r);
             iters++;
-            if (r == -1) { finish(cpu, self); return; }
+            if (r == -1) { if (getenv("SUNBRIGHT_TICK_RATE")) std::fprintf(stderr,
+                "[tick] self=%08x mainProc=-1 -> finish (callback unregistered)\n", self);
+                           finish(cpu, self); return; }
             phase = mem_rf32(self + 0x3ac);            // reload for the re-check
         }
     }

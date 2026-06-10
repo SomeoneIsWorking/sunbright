@@ -377,7 +377,19 @@ void call_ppc(CPUState& cpu, u32 address) {
                      address == 0x8031ce68u /*TTrack::openTrack*/  ||
                      address == 0x8031defcu /*TrackMgr::deAllocRoot*/ ||
                      address == 0x8031deb4u /*TrackMgr::allocNewRoot — song start*/ ||
-                     address == 0x8031dd00u /*TrackMgr::reset*/)) {
+                     address == 0x8031dd00u /*TrackMgr::reset*/ ||
+                     address == 0x8031c894u /*TTrack::stopSeq*/ ||
+                     address == 0x8031c818u /*TTrack::startSeq*/ ||
+                     address == 0x803068d8u /*JAIBasic::stopSeq*/ ||
+                     address == 0x803017b0u /*JAIBasic::loadSceneWave*/ ||
+                     address == 0x80301850u /*JAIBasic::checkSceneWaveOnMemory*/ ||
+                     address == 0x80301884u /*JAIBasic::loadGroupWave*/ ||
+                     address == 0x80310994u /*WaveBankMgr::loadWave*/ ||
+                     address == 0x80310694u /*WaveArcLoader::loadWave*/ ||
+                     address == 0x80015640u /*MSound::loadWave(scene) — scene-code callers*/ ||
+                     address == 0x8001569cu /*MSound::loadGroupWave*/ ||
+                     address == 0x802bc10cu /*orphan overlap copy (diag)*/ ||
+                     address == 0x802bb920u /*scene sound-init — REAL entry (loadWave caller)*/)) {
         // c = caller lr (who ends the note/track), d = monotonic ms.
         struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
         sb_trace("note", address, cpu.gpr[3], cpu.lr,
