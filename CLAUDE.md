@@ -290,6 +290,23 @@ clobber ruled out; flagged for a recompiler-level investigation); the native por
 bypasses it. Isolated via `SUNBRIGHT_FORCE_JIT=LO-HI` range bisection; `SUNBRIGHT_SEQ_DIAG` /
 `SUNBRIGHT_TICK_LOG` make the BMS command cycle + tick decision visible.
 
+**File-select fixed (2026-06-10)** by two root-cause fixes: (1) recompiler bctr jump-table bases
+now resolve via forward constant propagation (TCardManager::cmdLoop's prologue-built base was
+missed → bctr emitted as tail_ppc → mid-thread-body JIT handoff killed the card worker thread);
+(2) the CARD hardware layer is **native** (`runtime/overrides/native_card.cpp`: probe / mount /
+read-segment / write-page / erase-sector served against a host .raw image, auto-created blank on
+first run; synchronous completions) because memcard EXI DMA completion events were lost under
+hybrid timing — the CoreTiming global timer crawls (~1 tick per idle iteration) while all guest
+threads are parked, so the scheduled `memcardTransferCompleteA` was unreachable and `__CARDSync`
+slept forever mid-mount (evidence chain in commit d1b88e2). All card FS logic stays recompiled.
+`/recompile` should run with `SUNBRIGHT_DISCOVER_POINTERS=1 SUNBRIGHT_DISCOVER_CODEPTRS=1` —
+code-materialized pointer discovery covers runtime-registered handlers (EXIIntrruptHandler
+0x8036aa4c was interpreter-only before); the old "CODEPTRS destabilizes boot" caveat is obsolete
+since function_needs_jit routing + native OS landed. Probe additions: `/pad?do=<combo>&ms=<ms>`
+injects pad input over HTTP (works headed too), `ms`/durations parse as DECIMAL, dead clients
+can't wedge/kill the probe, and `SUNBRIGHT_DBG_CARD` ring-traces EXI writes + CoreTiming card
+events into `/tracelog`.
+
 Headless now renders (real Vulkan, no present) and mixes audio (real Cubeb, muted) for real — Null
 backends are gone, so render/audio-timing bugs reproduce headless. `SUNBRIGHT_TURBO=1` is opt-in
 (headless defaults to real-time). Watchdog catches freezes via no-VI-field (CoreTiming arms it,
