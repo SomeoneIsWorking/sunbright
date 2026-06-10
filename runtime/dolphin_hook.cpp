@@ -33,6 +33,7 @@
 #  include "Core/HW/ProcessorInterface.h"
 #  include "Core/HLE/HLE.h"
 #  include "VideoCommon/Fifo.h"
+#  include "VideoCommon/CommandProcessor.h"
 #  include "Core/PowerPC/MMU.h"
 #  include "Core/PowerPC/PPCSymbolDB.h"
 #endif
@@ -1366,11 +1367,13 @@ static bool idle_run(long max_steps) {
         // nested-dispatch corruption (spurious MEMIntrruptHandler → OSError 15, 2026-06-10).
         ct.Idle();
         ct.Advance();
-        // Real CP hardware never sleeps while FIFO data is pending; Dolphin's GPU loop does
-        // (it only wakes on bursts/CTRL writes). With every guest thread blocked there are no
-        // bursts, so kick it each idle step — harmless when idle, required when a breakpoint
-        // move must let it drain (FIFO-pacing deadlock, 2026-06-10).
-        sys.GetFifo().RunGpu();
+        // Real CP hardware never sleeps while FIFO data is pending — and never SPINS an empty
+        // one. Kick the GPU loop only when there is actually data to consume: an unconditional
+        // per-step kick kept the Video thread busy-spinning its mainloop at ~99% CPU for nothing
+        // (no-busy-spins rule, 2026-06-10). Required when a breakpoint move must let it drain
+        // (FIFO-pacing deadlock) — and then distance is nonzero by definition.
+        if (sys.GetCommandProcessor().GetFifo().CPReadWriteDistance.load(std::memory_order_relaxed))
+            sys.GetFifo().RunGpu();
         int delivered = native_dispatch_pending();
         {   // drawsync loss recovery: GPU parked on the fifo's next boundary + empty queue means
             // its token was PE-coalesced away — post the synthetic token-0 through the normal

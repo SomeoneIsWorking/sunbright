@@ -160,7 +160,7 @@ SUNBRIGHT_OVERRIDE(ov_VIWaitForRetrace, VI_WAIT) {
             const u32 threshold = fifo_cap / 8;
             int spins = 0;
             while (fifo.CPReadWriteDistance.load() > threshold && spins++ < 2500) {
-                sys.GetFifo().RunGpu();                    // CP hardware never sleeps with data pending
+                sys.GetFifo().RunGpu();                    // distance > threshold here: data IS pending
                 // The drain needs the WHOLE pipeline serviced, not just the GPU thread: the PE
                 // draw-sync token lands as a CoreTiming event (needs Advance), its interrupt as a
                 // native dispatch, and the TDrawSyncManager thread (which moves the breakpoint)
