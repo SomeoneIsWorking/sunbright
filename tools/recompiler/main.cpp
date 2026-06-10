@@ -304,6 +304,21 @@ static int recompile_mode(const DiscLoader& disc, const DOL& dol, const std::str
             0x802b3264u,  // TCardManager thread proc (NOT audio — ref mislabels it TCardManager+0x184;
                           // its CARDProbeEx/__EXIProbe debounce loop is unblocked by the OSYieldThread
                           // CoreTiming-advance fix, ecd63ac).
+            // 4th wave (2026-06-10): EVERY remaining OSCreateThread entry observed at boot —
+            // verified mflr prologues. Pointer-only targets (entry built by lis/addi into
+            // OSCreateThread's r4): neither bl-reachability nor data-table pointer discovery
+            // finds them, so their threads ran their WHOLE LIVES under the interpreter (~100x):
+            // the THP video decode crawled at 134M+ interp steps (pc=80371af0, Huffman inner
+            // loop) = slow intro movie + general boot sluggishness + no input responsiveness.
+            0x802c54b8u,  // JKRThread::start trampoline (4 worker threads incl. THP decode pool)
+            0x802a9184u,  // render/draw-sync thread
+            0x802a7878u,  // boot setup thread A
+            0x802a7080u,  // boot setup thread B
+            0x802b6fdcu,  // boot stage thread
+            0x8001dcd0u,  // game thread (movie era)
+            0x8001fc04u,  // game thread (movie era)
+            0x800200d8u,  // game thread (movie era)
+            0x80296dd4u,  // game thread
         };
 
         auto funcs = real_funcs;                       // all recomp ENTRY points = real + discovered
