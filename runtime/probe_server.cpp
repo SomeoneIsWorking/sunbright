@@ -37,6 +37,8 @@ bool g_probe_enabled = false;
 #endif
 extern u32 mem_r32(u32 ea);
 extern u16 mem_r16(u32 ea);
+extern unsigned long g_ds_token_dispatches, g_ds_callbacks, g_ds_sleeps, g_ds_wakes;
+unsigned long long watchdog_vi_fields();
 
 // ── REPL-readable trace ring ──────────────────────────────────────────────────
 // A thin observer (e.g. a SUNBRIGHT_OVERRIDE) calls sb_trace(tag,a,b,c,d) to record an event;
@@ -144,6 +146,11 @@ std::string handle_repl(const char* path) {
             (int)cp.IsInterruptWaiting(),
             sys.GetProcessorInterface().GetCause(), sys.GetProcessorInterface().GetMask());
 #endif
+        return std::string(buf, n);
+    }
+    if (strncmp(path, "/drawsync", 9) == 0) {  // pollution/drawsync pipeline counters
+        app("token_dispatches=%lu callbacks=%lu sleeps=%lu wakes=%lu vi_fields=%llu\n",
+            g_ds_token_dispatches, g_ds_callbacks, g_ds_sleeps, g_ds_wakes, watchdog_vi_fields());
         return std::string(buf, n);
     }
     if (strncmp(path, "/fn?", 4) == 0) {

@@ -232,6 +232,9 @@ static void os_suspend_thread(CPUState& cpu) {
 // OSSleepThread (0x803492e0): enqueue the current thread on wait-queue r3 (set state=WAITING,
 // thread->queue), then park until OSWakeupThread wakes it. Replaces the recomp body's
 // SelectThread reschedule with a native host-thread park.
+unsigned long g_ds_sleeps = 0, g_ds_wakes = 0;   // drawsync diag: the TDrawSyncManager queue
+static constexpr u32 kDrawSyncQueue = 0x805761E0u; // (stable heap addr this build; diagnostic only)
+
 static void os_sleep_thread(CPUState& cpu) {
     // Always native-park (the GC-scheduler fallback is gone — it was the "two schedulers" conflict).
     // When this is the sole runnable context (a hardware wait), nthr's idle handler advances device
@@ -242,6 +245,7 @@ static void os_sleep_thread(CPUState& cpu) {
     static const bool dbg = getenv("SUNBRIGHT_DBG_SCHED") != nullptr;
     if (dbg) fprintf(stderr, "[sched] SLEEP  thread=%08x on queue=%08x (lr=%08x) ready=%d\n",
                      thread, queue, cpu.lr, nthr::ready_count());
+    if (queue == kDrawSyncQueue) g_ds_sleeps++;
     nthrt_bind_current(thread);            // ensure OSWakeupThread can resolve us (esp. thread 0)
     mem_w16(thread + T_STATE, 4);          // WAITING
     mem_w32(thread + T_QUEUE, queue);
@@ -254,6 +258,7 @@ static void os_sleep_thread(CPUState& cpu) {
 // (suspend<=0) Ready in nthr — the body of OSWakeupThread, factored so the thread-exit
 // bookkeeping can also wake a thread's join queue.
 static void wake_queue(u32 queue) {
+    if (queue == kDrawSyncQueue) g_ds_wakes++;
     PollSuppress ps;   // see PollSuppress: internal queue walks must not feed the poll detector
     for (;;) {
         u32 th = mem_r32(queue + Q_HEAD);

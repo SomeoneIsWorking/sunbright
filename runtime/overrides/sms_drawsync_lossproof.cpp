@@ -22,25 +22,18 @@
 #include <cstdio>
 
 extern "C" void func_802a9318(CPUState&);   // recomp TDrawSyncManager::drawSyncCallback(u16)
+unsigned long g_ds_callbacks = 0;            // drawsync diag (probe /drawsync)
 
 SUNBRIGHT_OVERRIDE(ov_drawsync_lossproof, 0x802a9318u) {
     static u16  last = 0;
     static bool have_last = false;
     const u16 tok = (u16)cpu.gpr[3];
-    if (have_last) {
-        u16 expect = (u16)(last + 1);
-        for (int guard = 0; expect != tok && guard < 64; ++guard, ++expect) {
-            CPUState synth = cpu;               // same register file; only the token differs
-            synth.gpr[3] = expect;
-            func_802a9318(synth);
-            static long logs = 0;
-            if (logs++ < 32)
-                fprintf(stderr, "[drawsync] synthesized missed token %u (real=%u)\n", expect, tok);
-        }
-    }
-    last = tok;
-    have_last = true;
-    static long cb_logs = 0;
-    if (cb_logs++ < 200) fprintf(stderr, "[drawsync] callback tok=%04x\n", tok);
+    // Sequence synthesis RETIRED (2026-06-10): SMS interleaves several token namespaces (frame
+    // counter 0x7c/0x7d, zeros, pollution range 0xDFC0+), so "sequential gap" is not a loss
+    // signal. Loss recovery is now state-based in the native sync thread
+    // (sms_drawsync_native.cpp: GPU parked at our breakpoint ⇒ boundary done ⇒ advance).
+    (void)last; (void)have_last; (void)tok;
+    extern unsigned long g_ds_callbacks;
+    g_ds_callbacks++;
     func_802a9318(cpu);                         // the real delivery
 }

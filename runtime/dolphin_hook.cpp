@@ -825,6 +825,7 @@ static const u32 kIntrPrio[] = {
 static thread_local bool t_in_native_dispatch = false;  // a handler's own bridge reads can poll-fire
 static bool in_native_dispatch() { return t_in_native_dispatch; }
 static unsigned long g_nintr_counts[32];                 // per-interrupt dispatch counters (diag)
+unsigned long g_ds_token_dispatches = 0;                 // drawsync diag (probe /drawsync)
 static bool native_dispatch_one(const CPUState* seed) {
     if (t_in_native_dispatch) return false;
     auto& sys = Core::System::GetInstance();
@@ -909,6 +910,7 @@ static bool native_dispatch_one(const CPUState* seed) {
                     ppc.gpr[13], mem_r32(0x8040EA18u));
     }
     g_nintr_counts[interrupt & 31]++;
+    if (interrupt == 18) g_ds_token_dispatches++;
     // Hardware semantics: taking an external interrupt CLEARS MSR[EE] for the handler (srr1 holds
     // the old MSR; rfi restores it). Without this the handler inherits the interrupted body's
     // EE=1 and Dolphin's interpreter can vector a NESTED guest dispatch mid-handler — observed
@@ -1364,6 +1366,13 @@ static bool idle_run(long max_steps) {
         // move must let it drain (FIFO-pacing deadlock, 2026-06-10).
         sys.GetFifo().RunGpu();
         int delivered = native_dispatch_pending();
+        {   // drawsync loss recovery: GPU parked on the fifo's next boundary + empty queue means
+            // its token was PE-coalesced away — post the synthetic token-0 through the normal
+            // queue so the real threadFunc advances (sms_drawsync_native.cpp, 2026-06-10).
+            CPUState rcpu;
+            dolphin_state_to_cpu(ppc, rcpu);
+            if (sunbright_drawsync_recover(rcpu)) delivered++;
+        }
         // Native retrace from idle: when every guest thread is blocked, the VI retrace
         // transaction (vsync callbacks — incl. the FIFO-breakpoint move that lets the GPU
         // drain and raise the CP underflow resume) must still run once per presented field;
