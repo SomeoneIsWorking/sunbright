@@ -123,6 +123,7 @@ add_executable(sunbright
     runtime/probe_server.cpp
     runtime/watchdog.cpp
     runtime/sb_spin.cpp
+    runtime/pe_token_wrap.cpp
     runtime/recomp_table_weak.cpp
     ${SUNBRIGHT_OVERRIDE_SOURCES}
     ${SUNBRIGHT_GENERATED_SOURCES}
@@ -152,6 +153,7 @@ target_link_libraries(sunbright PRIVATE
 # Use the mangled C++ name (verified via nm libcore.a | grep JitTrampoline).
 target_link_options(sunbright PRIVATE
     "-Wl,--wrap=_Z13JitTrampolineR7JitBasej"
+    "-Wl,--wrap=_ZN11PixelEngine18PixelEngineManager8SetTokenEtbi"
 )
 
 # ── Install ───────────────────────────────────────────────────────────────────
