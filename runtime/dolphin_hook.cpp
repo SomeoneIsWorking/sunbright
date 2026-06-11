@@ -390,7 +390,11 @@ void call_ppc(CPUState& cpu, u32 address) {
                      address == 0x8031c818u /*TTrack::startSeq*/ ||
                      address == 0x80301e80u /*JAIBasic::startSoundActor*/ ||
                      address == 0x80301fc4u /*startSoundDirectID*/ ||
-                     address == 0x80302034u /*startSoundIndirectID*/))
+                     address == 0x80302034u /*startSoundIndirectID*/ ||
+                     address == 0x80306a1cu /*checkEntriedSeq*/ ||
+                     address == 0x80307e18u /*checkStartedSeq*/ ||
+                     address == 0x80307facu /*checkReadSeq*/ ||
+                     address == 0x8030d284u /*trackToSeqp*/))
         fprintf(stderr, "[wave] call %08x r3=%08x r4=%08x lr=%08x\n",
                 address, cpu.gpr[3], cpu.gpr[4], cpu.lr);
     // SUNBRIGHT_DBG_NOTE: JAS note/voice lifecycle (the choppy-music bug) — noteOn, noteOff,

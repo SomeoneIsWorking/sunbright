@@ -259,3 +259,24 @@ NEXT SESSION (one step): trace JAIBasic::checkStartedSeq (find addr via funcs/ge
 of it) and its internals — find why the stored seq request never advances (its own gates:
 sequence data load state, seq parameter pool getSeqParametermeterPointer 8030262c, or the
 processFrameWork branch that calls it). Fix per the path. SE sounds prove the rest of JAI works.
+
+## 05:05 ★★ ROOT CAUSE FOUND (gate-level, evidenced)
+processFrameWork (80301c3c) gates the ENTIRE seq pipeline on three conditions; at the recomp
+title GATE A FAILS: the state byte at *(JAIBasic+56)+1 (sub-obj 806ACC28, word 0x03040A00,
+byte[1]) reads **4**, the pipeline requires **3**.
+INTERPRETATION (osdsp task model): the JAS DSP TASK yielded to the THP movie's DSP task
+(osdsp_task.c: yield mails 0xDCD10002/0xDCD10005, task states) and NEVER RESUMED after the
+movie — "Audio Resumed" (0xDCD10001 handler) never printed in any log. Post-movie, JAI stays
+in the yielded state (4) forever: the seq pipeline never runs → no BGM ever starts after the
+FIRST THP → exactly matches every observation (logo bling works = pre-movie; SE work = ungated
+path; oracle resumes fine).
+This also retro-explains the user's organic no-music experience (real play passes through THPs
+too) — and SUNBRIGHT_SKIP_THP makes it deterministic (the skip bypasses the player teardown,
+but the legit path ALSO fails to resume under recomp).
+NEXT SESSION:
+1. Confirm: trace the osdsp task-switch mails (0xCDD10001/0xDCD10001/2/5) around the THP
+   start/end (dspmr/dspmb rings or DBG-style stderr); find where the resume handshake dies
+   under recomp (the __DSP_exec_task switch, DSP_prior_yield, or the THP task's done mail).
+2. Fix per the path: likely a native port of the osdsp task-switch (we own DSP mail dispatch
+   already) or fixing the resume mail delivery. Verify: state byte returns to 3 post-movie;
+   clean A/B title RMS sustained.
