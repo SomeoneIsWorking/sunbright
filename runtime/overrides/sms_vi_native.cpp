@@ -182,7 +182,11 @@ SUNBRIGHT_OVERRIDE(ov_VIWaitForRetrace, VI_WAIT) {
     // priority yield would starve forever. On the GC the retrace wait blocked the caller, so
     // all runnable work proceeded during the frame; block_drain is the deterministic
     // equivalent: resume exactly when everyone else has run to its own block/yield point.
-    { PhaseTimer _t("drain", &g_ph_drain); nthrt_block_drain(&cpu); }
+    // BOUNDED to one field period: the retrace is a hardware interrupt — a thread that
+    // yield-spins instead of blocking (loadResource's OSGetTick timed wait) may delay it by
+    // at most one field, never starve it. Unbounded, that wait parked this heartbeat for
+    // ~60 s and emulated time + DSP audio crawled at the idle rate (slow-audio bug).
+    { PhaseTimer _t("drain", &g_ph_drain); nthrt_block_drain(&cpu, 16'683); }
     // The heartbeat is also the device-IRQ pump: deliver pending device completions (DSP, SI,
     // any residual DVD interrupt) once per frame, deterministically.
     { PhaseTimer _t("pump", &g_ph_pump); sunbright_poll_yield(); }

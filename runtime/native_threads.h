@@ -56,12 +56,28 @@ void make_ready(GuestThread*);
 // as the deterministic equivalent of "the frame wait gives the rest of the frame to every
 // runnable thread, regardless of priority" — without it a never-blocking frame loop starves
 // lower-priority threads (the boot setup thread) forever.
-void block_drain();
+//
+// `deadline_us`: maximum host time to stay parked. On hardware the retrace is an INTERRUPT —
+// a lower-priority thread that yield-spins (stays Ready) instead of blocking can delay the
+// retrace by at most one field, never starve it. An unbounded drain is unfaithful there: the
+// scene-load timed wait (loadResource's OSGetTick loop, OSYieldThread each iteration) kept
+// itself Ready for its whole wait, the heartbeat thread starved for ~60 s, and emulated
+// time/DSP audio crawled at the idle driver's rate (the slow-audio / endless fade-out bug,
+// 2026-06-11). Pass <= 0 for the pure barrier (release only when nothing else is Ready).
+void block_drain(long deadline_us);
 
 // Number of threads currently Ready (runnable, excluding the running one). A blocking OS
 // primitive uses this to decide whether there is another guest context to switch to: if zero,
 // the caller is the sole runnable context (a hardware wait) and must not park with no waker.
 int ready_count();
+
+// True while any thread sits in a deadline-bounded DrainWait (the frame heartbeat). The yield
+// idle path uses this to NOT spin emulated time forward: the heartbeat itself will resume at
+// its deadline and advance time at the host frame rate — exactly the hardware retrace cadence.
+bool bounded_drain_pending();
+// True once such a thread's deadline has passed (it is due to be released at the next token
+// hand-off). idle_run breaks on this so a long idle budget can't hold the token past the frame.
+bool bounded_drain_expired();
 
 // ── Per-context switch hooks ─────────────────────────────────────────────────
 // The PPC register file is a single GLOBAL (`ppc`) that run_jit_sync drives, so even though

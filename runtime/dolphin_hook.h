@@ -60,7 +60,9 @@ void sunbright_dispatch_profile_note(u32 pc);   // SUNBRIGHT_DISPATCH_PROFILE hi
 void nthrt_make_ready(u32 os_thread);   // OSResumeThread / OSWakeupThread (mark Ready)
 void nthrt_bind_current(u32 os_thread); // map the running thread under its authoritative OSThread*
 void nthrt_block_current();             // OSSleepThread (park current until woken)
-void nthrt_block_drain(CPUState* caller = nullptr);  // frame barrier: resume once nothing else Ready
+// Frame barrier: resume once nothing else is Ready, or after deadline_us of host time (<=0 =
+// unbounded). Bounded matches hardware: the retrace interrupt can't be starved by a yield-spin.
+void nthrt_block_drain(CPUState* caller = nullptr, long deadline_us = 0);
 void nthrt_yield_current(CPUState* yielder = nullptr);  // OSYieldThread: yield token, stay Ready;
 void sunbright_wait_vi_field(CPUState& cpu);  // force ONE VI field of emulated time (native IRQ dispatch)
 bool sunbright_drawsync_recover(CPUState& cpu); // idle: recover a PE-coalesced draw-sync token (sms_drawsync_native)

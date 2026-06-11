@@ -2,6 +2,7 @@
 #include "watchdog.h"
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdio>
 #include <mutex>
@@ -29,6 +30,10 @@ struct GuestThread {
     uint64_t                ready_seq = 0;   // FIFO order among equal-priority Ready
     std::function<void()>   body;
     void*                   user  = nullptr; // per-thread slot for saved global ctx (see hooks)
+    // DrainWait bound: the host-clock instant at which the frame barrier resumes even if other
+    // threads are still Ready (the hardware retrace interrupt cannot be starved by a yield-spin).
+    std::chrono::steady_clock::time_point drain_deadline{};
+    bool                    drain_bounded = false;
 };
 
 namespace {
@@ -65,6 +70,18 @@ GuestThread* pick_next() {
 void grant_token_locked(std::unique_lock<std::mutex>& lk, GuestThread* outgoing) {
     if (outgoing && g_save_hook) g_save_hook(outgoing);   // stash the global ctx into its slot
     for (;;) {
+        // Bounded frame barrier: a DrainWait whose host-clock deadline has passed resumes NOW,
+        // even though other threads are still Ready — the hardware retrace is an interrupt and
+        // cannot be starved by a thread that yield-spins instead of blocking. Checked on every
+        // token hand-off (a yield-spinner hands the token back each loop iteration).
+        {
+            const auto now = std::chrono::steady_clock::now();
+            for (auto* t : g_threads)
+                if (t->state == State::DrainWait && t->drain_bounded && now >= t->drain_deadline) {
+                    t->state = State::Ready;
+                    t->ready_seq = g_seq++;
+                }
+        }
         GuestThread* next = pick_next();
         if (next) {
             g_running = next;
@@ -144,6 +161,22 @@ int ready_count() {
     return n;
 }
 
+bool bounded_drain_pending() {
+    std::unique_lock<std::mutex> lk(g_mtx);
+    for (auto* t : g_threads)
+        if (t->state == State::DrainWait && t->drain_bounded) return true;
+    return false;
+}
+
+bool bounded_drain_expired() {
+    std::unique_lock<std::mutex> lk(g_mtx);
+    const auto now = std::chrono::steady_clock::now();
+    for (auto* t : g_threads)
+        if (t->state == State::DrainWait && t->drain_bounded && now >= t->drain_deadline)
+            return true;
+    return false;
+}
+
 GuestThread* spawn(int priority, std::function<void()> body, bool start_ready) {
     std::unique_lock<std::mutex> lk(g_mtx);
     auto* gt = new GuestThread;
@@ -168,7 +201,7 @@ GuestThread* adopt_current(int priority) {
     return gt;
 }
 
-void block(State newState) {
+static void block_impl(State newState, long deadline_us) {
     std::unique_lock<std::mutex> lk(g_mtx);
     // Identity MUST be the calling host thread, never "whoever holds the token": with the old
     // `self = g_running`, a non-holder calling block() (e.g. guest code run from the idle hook
@@ -189,12 +222,18 @@ void block(State newState) {
     }
     self->state     = newState;
     self->ready_seq = g_seq++;            // back of the FIFO (round-robin for Ready)
+    self->drain_bounded = (newState == State::DrainWait && deadline_us > 0);
+    if (self->drain_bounded)
+        self->drain_deadline = std::chrono::steady_clock::now()
+                             + std::chrono::microseconds(deadline_us);
     grant_token_locked(lk, self);        // save our ctx, hand the token to the next thread
     while (g_running != self) self->cv.wait(lk);   // park until the token returns to us
     // Resumed: grant_token_locked already restored our ctx via g_restore_hook.
 }
 
-void block_drain() { block(State::DrainWait); }
+void block(State newState) { block_impl(newState, /*deadline_us=*/0); }
+
+void block_drain(long deadline_us) { block_impl(State::DrainWait, deadline_us); }
 
 void make_ready(GuestThread* t) {
     std::unique_lock<std::mutex> lk(g_mtx);

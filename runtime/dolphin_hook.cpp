@@ -1595,6 +1595,9 @@ static bool idle_run(long max_steps) {
     for (; n < max_steps; n++) {
         SB_SPIN_GUARD("idle_driver");
         if (nthr::ready_count() > 0) break;
+        // The frame heartbeat's bounded DrainWait is due: stop idling so the token hand-off
+        // releases it on time (it advances emulated time at the host frame rate itself).
+        if (nthr::bounded_drain_expired()) break;
         ppc.msr.Hex = IDLE_MSR & ~0x8000u;          // EE OFF at the spin: IRQs become pending only —
         // Skip straight to the next scheduled device event instead of burning one SingleStep per
         // guest cycle (that capped the whole emulator at ~0.06×). Idle()+Advance() DOES move the
@@ -1766,10 +1769,10 @@ void nthrt_block_current() {
 // Frame barrier (native VIWaitForRetrace): block until every other Ready thread has run to its
 // own block/yield point. The caller's live recomp context must be synced into ppc first so the
 // ctx-save hook stashes real state (same rule as nthrt_yield_current).
-void nthrt_block_drain(CPUState* caller) {
+void nthrt_block_drain(CPUState* caller, long deadline_us) {
     if (caller) cpu_to_dolphin_state(*caller, Core::System::GetInstance().GetPPCState());
     Core::UndeclareAsCPUThread();
-    nthr::block_drain();
+    nthr::block_drain(deadline_us);
     Core::DeclareAsCPUThread();
 }
 
@@ -1800,7 +1803,12 @@ void nthrt_yield_current(CPUState* yielder) {
     // first (valid r1/r2/r13), run the idle steps on it, then restore ppc so block()'s save sees the
     // pre-yield context. (Re-entrancy guard: an ISR that itself yields must not recurse the driver.)
     static thread_local bool in_yield_idle = false;
-    if (yielder && !in_yield_idle && nthr::ready_count() == 0) {
+    // A bounded DrainWait (the frame heartbeat parked in VIWaitForRetrace) is NOT "nothing
+    // runnable": it resumes at its host-clock deadline and advances emulated time one VI field
+    // per frame — the hardware cadence. Idling time forward here as well would (a) hold the
+    // token past the heartbeat's deadline for the whole idle budget (the residual slow-audio
+    // crawl) and (b) double-advance the clock the heartbeat already owns.
+    if (yielder && !in_yield_idle && nthr::ready_count() == 0 && !nthr::bounded_drain_pending()) {
         in_yield_idle = true;
         auto& ppc = Core::System::GetInstance().GetPPCState();
         alignas(PowerPC::PowerPCState) unsigned char saved[sizeof(PowerPC::PowerPCState)];
