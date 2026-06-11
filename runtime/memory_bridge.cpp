@@ -716,3 +716,15 @@ void psq_store(u32 ea, u32 gqr, u32 w, f64 v0, f64 v1) {
     one(ea, v0);
     if (!w) one(ea + psq_stride(t), v1);
 }
+
+// ---- SUNBRIGHT_WATCH_WADDR write-watch (see intrinsics.h sb_w*) -------------------------
+#include <dlfcn.h>
+u32 g_watch_wa = [](){
+    const char* e = getenv("SUNBRIGHT_WATCH_WADDR");
+    return e ? (u32)strtoul(e, nullptr, 16) : 0u;
+}();
+void sb_watch_fire(u32 ea, u32 v, int width, void* host_ra) {
+    Dl_info di{};
+    const char* fn = (dladdr(host_ra, &di) && di.dli_sname) ? di.dli_sname : "?";
+    fprintf(stderr, "[watchw] ea=%08x v=%0*x w%d from %s\n", ea, width * 2, v, width, fn);
+}

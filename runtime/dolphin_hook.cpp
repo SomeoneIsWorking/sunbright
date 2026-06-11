@@ -421,9 +421,32 @@ void call_ppc(CPUState& cpu, u32 address) {
                     address == 0x80320300u /*cmdSyncCPU*/ ||
                     address == 0x803029e0u /*JAIBasic::setParameterSeqSync (track callback)*/ ||
                     address == 0x8030b330u /*JAISound::setSeqPortData*/ ||
-                    address == 0x8030b5e0u /*JAISound::setTrackPortData*/))
+                    address == 0x8030b5e0u /*JAISound::setTrackPortData*/ ||
+                    address == 0x80312bb8u /*TChannel::play*/ ||
+                    address == 0x80311550u /*DSPQueue::enQueue*/ ||
+                    address == 0x80311600u /*DSPQueue::deQueue*/ ||
+                    address == 0x80311708u /*DSPQueue::deleteQueue*/ ||
+                    address == 0x803148acu /*TDSPChannel::alloc*/ ||
+                    address == 0x80314704u /*TDSPChannel::play*/ ||
+                    address == 0x8031473cu /*TDSPChannel::stop*/ ||
+                    address == 0x80314660u /*TDSPChannel::forceStop*/ ||
+                    address == 0x803146f0u /*TDSPChannel::forceDelete*/ ||
+                    address == 0x80312790u /*TChannel::releaseOsc*/ ||
+                    address == 0x8031273cu /*TChannel::forceStopOsc*/))
         fprintf(stderr, "[seq] call %08x r3=%08x r4=%08x r5=%08x lr=%08x\n",
                 address, cpu.gpr[3], cpu.gpr[4], cpu.gpr[5], cpu.lr);
+    // BankMgr::noteOn result probe: silent-music chase — how many noteOns return NULL
+    // (bank/inst/wave lookup failed) vs a real channel?
+    if (dbg_seq && address == 0x8030dc7cu) {
+        const u32 mgr = cpu.gpr[3], bank = cpu.gpr[4], prog = cpu.gpr[5];
+        RecompFunc fno = recomp_lookup(address);
+        if (fno) {
+            fno(cpu);
+            fprintf(stderr, "[noteon] mgr=%08x bank=%02x prog=%02x -> chan=%08x\n",
+                    mgr, bank & 0xff, prog & 0xff, cpu.gpr[3]);
+            return;
+        }
+    }
     // The game's registered seq-sync callback (sCallBackFunc=800158a8): log cmd AND result.
     if (dbg_seq && address == 0x800158a8u) {
         const u32 trk = cpu.gpr[3], cmd = cpu.gpr[4];

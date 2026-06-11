@@ -365,3 +365,33 @@ GPU-failed runs, not the probe); VK_ERROR_OUT_OF_DEVICE_MEMORY recurred on oracl
 3D-scene entry while plain VRAM usage is only 3.3/12.8 GB — NOT global VRAM pressure;
 recomp runs unaffected; investigating (suspect: descriptor-pool sizing under the
 JIT-timing path; do NOT overlap two sunbright instances — also breaks probe port).
+
+## ★★ ROOT CAUSE FOUND AND FIXED — music plays (2026-06-11 11:25)
+**Root cause: TDSPChannel::updateAll's DSP-overload limiter.** updateAll (0x80314c60) measures
+OSGetTick() deltas between the 8 DSP subframe syncs; when history[0]/delta < DSP_LIMIT_RATIO it
+calls breakLowerActive(126) — force-stopping every voice below priority 126 (all music). On
+hardware the syncs are evenly paced and this never trips; under the hybrid, Dolphin's DSP HLE
+delivers sync mails INSTANTLY → tiny/erratic deltas → the limiter fired every frame, killing
+every voice within a frame of starting. Hence: "single-frame samples", play=131/stop=131
+symmetry, forceStop storm from lr=80314d48 (inside updateAll), THP/stream audio unaffected.
+Same disease class as the audioproc intcount==0 suicide: HLE instantaneity vs HW pacing.
+
+**Fix (own the behavior):** PC-native port `runtime/overrides/dsp_update_native.cpp` — faithful
+64-voice loop + tick bookkeeping, overload limiter dropped (no DSP to overload on PC).
+**Verified:** WAV RMS sustained 250–4000 for 280s across all attract cycles (was flat ~10 with
+1-second blips). 
+
+Exonerated along the way (kept as owned native ports + tools):
+- Sequencer fully healthy: tree builds, ticks at oracle rate (1137 vs 1162/s), cursors track
+  the oracle, durations parse right. The "wait-loop children" of the master se.bms ARE idle by
+  design (oracle identical); the music seq is a separate root on the song BMS, restarted per
+  attract cycle. cmdNoteOn ported native (cmdnoteon_native.cpp) — decisions sane.
+- BankMgr::noteOn never fails (bank/wave lookups fine). TOscillator ported native
+  (oscillator_native.cpp) — envelope math identical, not the killer.
+- New tools: /jas (track-tree walk), /vpb wave-source fields, SUNBRIGHT_WATCH_WADDR write-watch
+  (dladdr names the emitted writer), DBG_SEQ tracer + [noteon]/[sync] result probes.
+- Gotchas: shipped binary INLINES checkStartedSeq/trackInit/cmdNoteOn call sites — entry-count
+  traces undercount; oracle track addresses differ per run; oracle under Vulkan kept dying with
+  VK_ERROR_OUT_OF_DEVICE_MEMORY at 3D-scene entry (VRAM NOT exhausted; OGL backend works —
+  workaround SUNBRIGHT_BACKEND=OGL for oracle runs; cause still open); never overlap two
+  sunbright instances (probe port + transient GPU pressure).

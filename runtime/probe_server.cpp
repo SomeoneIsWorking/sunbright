@@ -187,6 +187,40 @@ std::string handle_repl(const char* path) {
         app("aram a=%08x n=%x fnv=%08x nonzero=%lu\n", a, len, h, nz);
         return std::string(buf, n);
     }
+    if (strncmp(path, "/jas", 4) == 0) {
+        // JASystem track-tree walk: master roots from the TrackMgr handle table
+        // (ptr @r13-23296=0x8040E6C0, count @0x8040E6C8). Per track: BMS base/cursor/wait,
+        // tempo (unk3B8), timing mode (unk3BD), active (unk3C4), tick accum/step (3AC/3B0),
+        // port0 value (+0x68). Recurses children via unk2C4[16]. The silent-BGM scope.
+        const u32 tbl = mem_r32(0x8040E6C0u), cnt = mem_r32(0x8040E6C8u);
+        app("handle_table=%08x count=%u\n", tbl, cnt);
+        // simple iterative DFS with explicit stack (depth, addr)
+        struct Ent { u32 t; int d; };
+        Ent stk[256]; int sp = 0;
+        for (u32 h = 0; h < cnt && h < 8; h++) {
+            u32 root = mem_r32(tbl + h * 4);
+            if (root >= 0x80000000u && root < 0x81800000u) { stk[sp++] = { root, 0 }; }
+        }
+        int emitted = 0;
+        while (sp > 0 && emitted < 120) {
+            Ent e = stk[--sp];
+            const u32 t = e.t;
+            const u32 base = mem_r32(t), cur = mem_r32(t + 4), wait = mem_r32(t + 8);
+            const u32 tempo = mem_r16(t + 0x3B8);
+            const u32 b3bc = mem_r32(t + 0x3BC), b3c4 = mem_r32(t + 0x3C4);
+            const u32 bd = (b3bc >> 16) & 0xff, act = (b3c4 >> 24) & 0xff;
+            const u32 acc = mem_r32(t + 0x3AC), step = mem_r32(t + 0x3B0);
+            const u32 p0 = mem_r16(t + 0x68);
+            app("%*s%08x base=%08x cur=+%x wait=%d tempo=%u tmode=%u act=%u acc=%08x step=%08x port0=%04x\n",
+                e.d * 2, "", t, base, cur - base, (int)wait, tempo, bd, act, acc, step, p0);
+            emitted++;
+            for (int i = 15; i >= 0 && sp < 250; i--) {
+                u32 c = mem_r32(t + 0x2C4 + (u32)i * 4);
+                if (c >= 0x80000000u && c < 0x81800000u && c != t) stk[sp++] = { c, e.d + 1 };
+            }
+        }
+        return std::string(buf, n);
+    }
     if (strncmp(path, "/vpb", 4) == 0) {
         // JAS DSP voice parameter blocks, read straight from guest RAM (CH_BUF global
         // 0x8040E5B8 → 64 × 0x180-byte DSPBuffer; layout = Dolphin Zelda VPB, BE u16s).
@@ -206,6 +240,12 @@ std::string handle_repl(const char* path) {
                 }
                 if (mem_r16(b + 0x58u))                       // use_dolby_volume (u16 idx 0x2C)
                     app(" dolby=%d/%d", (s16)mem_r16(b + 0x54u), (s16)mem_r16(b + 0x56u));
+                // wave source block (u16 idx 0x80+): type, loop flag, end_requested,
+                // loop addr, base addr — the "notes die after one sample pass" probe.
+                app(" src=%u loop=%u endreq=%u loopa=%04x%04x base=%04x%04x",
+                    mem_r16(b + 0x100u), mem_r16(b + 0x102u), mem_r16(b + 0x10Au),
+                    mem_r16(b + 0x110u), mem_r16(b + 0x112u),
+                    mem_r16(b + 0x118u), mem_r16(b + 0x11Au));
                 app(" pos=%u:%u\n", mem_r16(b + 0x68u), mem_r16(b + 0x6Au));
             }
         }
