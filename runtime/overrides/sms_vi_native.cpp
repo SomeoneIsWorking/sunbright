@@ -36,6 +36,7 @@
 #ifdef HAVE_DOLPHIN_CORE
 
 bool sunbright_time_ahead_now();   // governor query (dolphin_hook.cpp)
+bool sunbright_drawsync_recover(CPUState&);  // lost-token recovery (sms_drawsync_native.cpp)
 
 namespace {
 
@@ -176,6 +177,13 @@ SUNBRIGHT_OVERRIDE(ov_VIWaitForRetrace, VI_WAIT) {
                 // independent processor; a GPU stall never starves the speakers.
                 int k = 0;
                 do { sunbright_poll_yield(); } while (k++ < 256 && !sunbright_time_ahead_now());
+                // Drawsync loss recovery must also run HERE, not only in the idle driver: while
+                // this loop spins, the main thread stays Ready, so idle_run (the only other
+                // caller) never executes — a PE-coalesced token wedge under backpressure was
+                // permanent (logo-transition freeze, 2026-06-11). On hardware the token interrupt
+                // is delivered no matter what the CPU is doing. The recovery is self-guarded by
+                // exact FIFO state (GPU parked on the fifo's next boundary, queue empty).
+                sunbright_drawsync_recover(cpu);
                 nthrt_yield_current(&cpu);                 // let the woken sync thread run NOW
                 std::this_thread::sleep_for(std::chrono::microseconds(200));
             }

@@ -1074,6 +1074,41 @@ static thread_local u32 t_dsp_ack_allowed = 0;
 u32 sunbright_dsp_ack_allowed() { return t_dsp_ack_allowed; }
 unsigned long g_nintr_counts[32];                        // per-interrupt dispatch counters (diag; probe /nintr)
 unsigned long g_ds_token_dispatches = 0;                 // drawsync diag (probe /drawsync)
+
+// Drain the loss-free PE token ring (pe_token_wrap.cpp): native port of the GX token ISR
+// 8035dd5c — call the registered GX token callback (TokenCB @ 0x8040EA18, =
+// TDrawSyncManager::drawSyncCallback) once per recorded token, in order. Callable from ANY
+// device-service seam, not just the PE_TOKEN dispatch: the PI cause only becomes pending via
+// PixelEngine's 0-cycle SetTokenFinish CoreTiming event, which the host-clock governor parks
+// when emulated time is at target — tokens then sat in the ring undelivered and the drawsync
+// breakpoint pipeline wedged (logo-transition freeze, 2026-06-11). On hardware token delivery
+// is the PE's own act, independent of CPU time.
+int sunbright_pe_token_drain(const CPUState* seed) {
+    if (t_in_native_dispatch) return 0;
+    extern bool sb_token_ring_pop(uint16_t*);
+    auto& tppc = Core::System::GetInstance().GetPPCState();
+    uint16_t tok;
+    int delivered = 0;
+    while (sb_token_ring_pop(&tok)) {
+        if (const u32 cb = mem_r32(0x8040EA18u)) {
+            CPUState tcpu;
+            if (seed) tcpu = *seed;
+            else      dolphin_state_to_cpu(tppc, tcpu);
+            tcpu.gpr[3] = tok;
+            tcpu.lr     = sunbright_idle_spin_pc();
+            t_in_native_dispatch = true;
+            const u32 saved_msr = tppc.msr.Hex;
+            tppc.msr.Hex &= ~0x8000u;              // ISR semantics: EE off in the handler
+            call_ppc(tcpu, cb);
+            tppc.msr.Hex = saved_msr;
+            t_in_native_dispatch = false;
+        }
+        delivered++;
+    }
+    g_ds_token_dispatches += delivered;
+    return delivered;
+}
+
 static bool native_dispatch_one(const CPUState* seed) {
     if (t_in_native_dispatch) return false;
     auto& sys = Core::System::GetInstance();
@@ -1149,32 +1184,12 @@ static bool native_dispatch_one(const CPUState* seed) {
     // PE token interrupt via the ctrl reg (|0x4, exactly what the guest ISR writes). The guest
     // ISR itself must NOT also run — it would re-deliver the coalesced register value.
     if (interrupt == 18) {
-        extern bool sb_token_ring_pop(uint16_t*);
-        auto& tppc = sys.GetPPCState();
-        uint16_t tok;
-        int delivered = 0;
-        while (sb_token_ring_pop(&tok)) {
-            if (const u32 cb = mem_r32(0x8040EA18u)) {
-                CPUState tcpu;
-                if (seed) tcpu = *seed;
-                else      dolphin_state_to_cpu(tppc, tcpu);
-                tcpu.gpr[3] = tok;
-                tcpu.lr     = sunbright_idle_spin_pc();
-                t_in_native_dispatch = true;
-                const u32 saved_msr = tppc.msr.Hex;
-                tppc.msr.Hex &= ~0x8000u;              // ISR semantics: EE off in the handler
-                call_ppc(tcpu, cb);
-                tppc.msr.Hex = saved_msr;
-                t_in_native_dispatch = false;
-            }
-            delivered++;
-        }
+        sunbright_pe_token_drain(seed);
         // Ack even when the ring was already drained (the coalesced event re-raised the signal
         // for a token we delivered earlier) — consuming it silently is what keeps the guest ISR
         // from double-running the latest value.
         mem_w16(0xCC00100Au, (u16)(mem_r16(0xCC00100Au) | 0x4u));
         g_nintr_counts[18]++;
-        g_ds_token_dispatches += delivered;
         return true;
     }
 
@@ -1278,6 +1293,32 @@ void sunbright_poll_yield() {
         ct.Idle();                              // delivery is native, never the guest vector path.
         ct.Advance();                           // device callback raises the pending IRQ…
     }
+    // CP interrupt service — TIME-INDEPENDENT (hardware truth: the Command Processor is an
+    // independent unit; it asserts its interrupt the instant the breakpoint/watermark condition
+    // holds, regardless of what the CPU clock does). Dolphin instead defers it from the video
+    // thread as a 0-cycle CoreTiming event and parks the GPU on m_interrupt_waiting until that
+    // event runs on the CPU thread. Under the host-clock/audio governor, Advance() stops the
+    // moment emulated time reaches the target — the 0-cycle event then NEVER fires, the flag
+    // never clears, RunGpuLoop refuses to consume (its loop requires !IsInterruptWaiting), the
+    // FIFO never drains, no field presents, and the whole machine wedges at 99% CPU (the
+    // logo-transition boot freeze, 2026-06-11). Service it here from live FIFO state — the same
+    // computation SetCPStatusFromGPU deferred — so CP delivery never depends on time advancing.
+    {
+        auto& cp = sys.GetCommandProcessor();
+        if (cp.IsInterruptWaiting()) {
+            auto& f = cp.GetFifo();
+            const bool bp   = f.bFF_Breakpoint.load(std::memory_order_relaxed) &&
+                              f.bFF_BPInt.load(std::memory_order_relaxed);
+            const bool ovf  = f.bFF_HiWatermark.load(std::memory_order_relaxed) &&
+                              f.bFF_HiWatermarkInt.load(std::memory_order_relaxed);
+            const bool undf = f.bFF_LoWatermark.load(std::memory_order_relaxed) &&
+                              f.bFF_LoWatermarkInt.load(std::memory_order_relaxed);
+            const bool irq  = (bp || ovf || undf) && f.bFF_GPReadEnable.load(std::memory_order_relaxed);
+            cp.UpdateInterrupts(irq ? 1 : 0);   // sets/clears PI INT_CAUSE_CP, clears waiting, kicks GPU
+        }
+    }
+    // PE token delivery — equally time-independent (see sunbright_pe_token_drain).
+    sunbright_pe_token_drain(g_cur_recomp_cpu);
     const int delivered = native_dispatch_pending();   // …dispatched natively (handlers via call_ppc)
     if (getenv("SUNBRIGHT_DBG_YIELD") && delivered) {
         static long y = 0;
@@ -1675,11 +1716,15 @@ static bool idle_run(long max_steps) {
         // releases it on time (it advances emulated time at the host frame rate itself).
         if (nthr::bounded_drain_expired()) break;
         // Governor: emulated time has reached the host-clock target — a real idle thread WAITS
-        // here (host sleep), it does not fast-forward device events ahead of real time.
-        if (sb_time_ahead()) {
-            std::this_thread::sleep_for(std::chrono::microseconds(200));
-            continue;
-        }
+        // here (host sleep), it does not fast-forward device events ahead of real time. But the
+        // GPU and VI are INDEPENDENT processors: pausing guest time must never pause their
+        // service. Skipping the RunGpu kick / drawsync recovery / idle retrace here left the
+        // lost-token wedge permanent whenever the governor held time at target (logo-transition
+        // freeze, 2026-06-11) — so only the time advancement is gated, the device service below
+        // always runs.
+        const bool time_parked = sb_time_ahead();
+        if (time_parked) std::this_thread::sleep_for(std::chrono::microseconds(200));
+        if (!time_parked) {
         ppc.msr.Hex = IDLE_MSR & ~0x8000u;          // EE OFF at the spin: IRQs become pending only —
         // Skip straight to the next scheduled device event instead of burning one SingleStep per
         // guest cycle (that capped the whole emulator at ~0.06×). Idle()+Advance() DOES move the
@@ -1690,6 +1735,7 @@ static bool idle_run(long max_steps) {
         // nested-dispatch corruption (spurious MEMIntrruptHandler → OSError 15, 2026-06-10).
         ct.Idle();
         ct.Advance();
+        }
         // Real CP hardware never sleeps while FIFO data is pending — and never SPINS an empty
         // one. Kick the GPU loop only when there is actually data to consume: an unconditional
         // per-step kick kept the Video thread busy-spinning its mainloop at ~99% CPU for nothing
@@ -1703,6 +1749,7 @@ static bool idle_run(long max_steps) {
             // queue so the real threadFunc advances (sms_drawsync_native.cpp, 2026-06-10).
             CPUState rcpu;
             dolphin_state_to_cpu(ppc, rcpu);
+            delivered += sunbright_pe_token_drain(&rcpu);   // time-independent token delivery
             if (sunbright_drawsync_recover(rcpu)) delivered++;
         }
         // Native retrace from idle: when every guest thread is blocked, the VI retrace
@@ -1722,7 +1769,7 @@ static bool idle_run(long max_steps) {
                 fprintf(stderr, "[idle] %d IRQ(s) dispatched natively, ready=%d\n",
                         delivered, nthr::ready_count());
         }
-        if (!delivered && ppc.pc == idle_pc) {      // no event fired an IRQ: nudge one step anyway
+        if (!time_parked && !delivered && ppc.pc == idle_pc) {  // no event fired an IRQ: nudge one step anyway
             sb_ring_push(ppc.pc);
             interp.SingleStep();
         }
