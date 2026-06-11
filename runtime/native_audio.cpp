@@ -231,7 +231,12 @@ size_t be_rl_to_host_lr(const int16_t* s, size_t n, int16_t* out, size_t out_cap
     return n;
 }
 }  // namespace
+// Set on the first real DSP push: before this, the game hasn't produced any audio yet and
+// there is nothing for the time governor to pace — boot/loading runs uncapped, PC-game style.
+std::atomic<bool> g_na_ever_pushed{false};
+extern "C" bool na_ever_pushed() { return g_na_ever_pushed.load(std::memory_order_relaxed); }
 extern "C" void na_push_dsp(const int16_t* s, size_t n) {
+    if (n) g_na_ever_pushed.store(true, std::memory_order_relaxed);
     if (!g_dsp.in_rate.load(std::memory_order_relaxed))
         g_dsp.in_rate.store(32028, std::memory_order_relaxed);   // default until divisor seen
     static int16_t conv[kRingCap * 2];

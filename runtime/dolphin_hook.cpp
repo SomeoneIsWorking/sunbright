@@ -315,6 +315,7 @@ static thread_local bool t_in_advance = false;
 // host clock by up to kMaxLeadMs to refill it; once cushioned, it locks back to 1x. Steady
 // state is a few-ms sawtooth around the cushion, never a runaway (hard-capped at +kMaxLeadMs).
 extern "C" long sunbright_audio_fill_ms();   // native_audio.cpp (native sink ring fill)
+extern "C" bool na_ever_pushed();            // native_audio.cpp (first real DSP push seen)
 static bool sb_time_ahead();
 // Exported governor query: lets long host-side waits (the GPU backpressure loop) keep
 // emulated time — and with it DSP audio production — flowing at the governed rate while the
@@ -324,6 +325,14 @@ bool sunbright_time_ahead_now() { return sb_time_ahead(); }
 static bool sb_time_ahead() {
     static const bool turbo = getenv("SUNBRIGHT_TURBO") != nullptr;
     if (turbo) return false;
+    // PC-game boot: until the game pushes its FIRST audio sample there is nothing to pace —
+    // no mixer to overrun, no pitch to hold. A real PC port loads as fast as the machine
+    // allows; pinning boot to the pretend-GC clock just delayed the logo/jingle (landed at
+    // host second ~8 instead of <5). On first push the anchor below is taken fresh, so the
+    // boot-time lead is not treated as catch-up backlog; from then on the audio-fill servo
+    // and host clock own pacing as before.
+    static bool audio_live = false;
+    if (!audio_live && !na_ever_pushed()) return false;  // uncapped boot/loading
     // kCushionMs MUST exceed the native sink's starting-gate threshold (kGateMs,
     // native_audio.cpp) or boot deadlocks: the gate waits for a fill that production,
     // stopped here, will never deliver (froze at 4 VI fields, 2026-06-11).
@@ -336,7 +345,9 @@ static bool sb_time_ahead() {
     static clock::time_point host0;
     static u64 ticks0 = 0;
     static bool anchored = false;
-    if (!anchored) { host0 = clock::now(); ticks0 = now_ticks; anchored = true; }
+    if (!anchored || !audio_live) {   // first call, and again at the boot→audio transition:
+        host0 = clock::now(); ticks0 = now_ticks; anchored = true; audio_live = true;
+    }                                 // the uncapped-boot lead must not read as "ahead"
     const double el = std::chrono::duration<double>(clock::now() - host0).count();
     u64 target = ticks0 + (u64)(el * (double)tps);
     if (now_ticks + tps / 4 < target) {   // >250 ms behind: slip the anchor — no catch-up burst

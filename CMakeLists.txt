@@ -68,6 +68,14 @@ target_compile_options(sunbright-recomp PRIVATE
     -Wall -Wextra -Wno-unused-parameter
 )
 
+# ── Jingle extractor (PC-native ROM audio proof tool) ────────────────────────
+add_executable(sunbright-jingle tools/jingle/jingle_extract.cpp tools/recompiler/host_stubs.cpp)
+target_include_directories(sunbright-jingle PRIVATE
+    "${DOLPHIN_DIR}/Source/Core"
+    "${CMAKE_BINARY_DIR}/dolphin/Source/Core"
+)
+target_link_libraries(sunbright-jingle PRIVATE discio)
+
 # ── Recompiler unit tests (sunbright-recomp-test) ────────────────────────────
 # Self-contained: only the decode/emit/collect units, no disc/Dolphin I/O.
 add_executable(sunbright-recomp-test

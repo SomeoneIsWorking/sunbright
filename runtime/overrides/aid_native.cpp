@@ -103,6 +103,12 @@ extern "C" void __wrap__ZN3DSP10DSPManager30GenerateDSPInterruptFromDSPEmuENS_16
 // nested call from an already-dispatching context a safe no-op (stays pending for the next round).
 void sunbright_dsp_flush_sync() {
     if (!g_cur_recomp_cpu) return;                     // no live guest context: pump handles it
+    // EE-off = critical section (hardware truth: GC ISRs and the JAS mail engine run with
+    // interrupts masked, which serializes ALL mail traffic). Dispatching here anyway nested a
+    // syncDSP/updateDSP mail send inside another thread's in-flight mail sequence → torn mails
+    // (a CDD1 high half paired with a command-param low half, "cdd17ac0") → protocol desync.
+    // Leave it captured; the pump delivers after EE is restored.
+    if (!(Core::System::GetInstance().GetPPCState().msr.Hex & 0x8000u)) return;
     if (const u32 t = g_dspemu_due.exchange(0, std::memory_order_relaxed)) {
         __real__ZN3DSP10DSPManager20GenerateDSPInterruptEml(
             &Core::System::GetInstance().GetDSP(), t, 0);
