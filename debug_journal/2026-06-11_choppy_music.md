@@ -469,3 +469,14 @@ a 500 (START); ~20 s scene load.
   effect (refraction/reflection EFB-copy) not rendering right in Plaza — top suspect list:
   TScreenTexture (8022d360 replace), TMirrorModelManager (80192d60), sea J3D material with
   indirect EFB texture. Both queued behind interp stage 2 / the DSP-mail dispatcher.
+
+## Deadlock class IDENTIFIED (scene-entry freezes)
+Watchdog dump 14:44: emu thread parked in nthr::block, blocking guest lr=802b36b8 (TCardManager
+region) during Plaza scene entry — the scene-entry card access (autosave state read) blocks a
+guest thread whose WAKE never arrives under native threading + native CARD. Matches the pattern:
+today's BLOCKED-class freezes cluster at scene loads/transitions. Earlier DSP-mail-wait freezes
+(pc=80315f6c vframeWork) are the second member of the lost-wake family. FIX DIRECTION (user-
+approved "can't deadlock by construction"): single native dispatcher owning DSP mails; for the
+card path, audit native_card completion → OSSendMessage/OSResumeThread wake delivery under nthr
+(suspect: completion posted before the waiter parks → wake lost; needs a token/condvar handoff
+like the GX PE-token fix). NEXT SESSION: this is the top item — it gates all interactive work.
