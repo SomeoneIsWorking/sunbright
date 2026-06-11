@@ -135,6 +135,7 @@ add_executable(sunbright
     runtime/coretiming_trace.cpp
     runtime/mixer_trace.cpp
     runtime/native_audio.cpp
+    runtime/native_jas.cpp
     runtime/vpb_trace.cpp
     runtime/recomp_table_weak.cpp
     ${SUNBRIGHT_OVERRIDE_SOURCES}

@@ -36,9 +36,23 @@ HardStream/THP audio: keep current path (it WORKS — it is what has been audibl
 ```
 
 ## Milestones
-1. **M1 — jingle**: native SE engine subset: load WSYS/IBNK + w1stLoad bank, hook
-   startSoundSystemSE, interpret enough of the SE BMS to play MSD_SE_MV_CHAO (0x7914) voices,
-   mix into the sink. Success = headless WAV matches w1stLoad_0_w02 (zcr 1208–1316).
+1. **M1 — jingle: ✅ DONE (2026-06-12, runtime/native_jas.cpp).** Native engine loads
+   WSYS/IBNK/sequence.arc from the ROM at first SE, runs the REAL init/SE BMS (offset 0 of
+   sequence.arc) through a TSeqParser/TTrack port, and synthesizes voices (IBNK keymap →
+   WSYS wave → AFC PCM, TOscillator ADSR, C5BASE pitch). Intake = override on
+   JAIBasic::startSoundBasic 0x803020ac (`runtime/overrides/se_native.cpp`): SE ids tee to
+   `njas_se_start(id)`, original still runs (guest bookkeeping until M4). The engine does
+   the exact JAIBasic port protocol: find idle worker track exporting `port9 == (id>>12)&0xFF`,
+   write `port4 = id&0x3FF`, `port0 = 1`. Output mixes into the DSP stream inside
+   `na_push_dsp` (`njas_mix`). Verified: engine-solo dump (`SUNBRIGHT_DUMP_NJAS=1` →
+   scratch/wav/njas_solo.raw) jingle zcr/s 2475 vs reference w1stLoad_0_w02 2457 (0.7%),
+   decay envelope matches window-for-window ×0.707 (center-pan stereo split). NOTE: the
+   boot SE is id 0x7915 (not 0x7914 as previously assumed).
+   **SE-BMS findings (tools/audio/bms_dis.py):** the init BMS opens per-category worker
+   tracks (two mid tracks × ≤16 children); each worker loops `readport 0` until ==1, then
+   `readport 4` → `call jumptable[port4*3]` into a per-sound snippet (e.g. cat-7 table at
+   0xdbc, 304 entries; 0x7915 → snippet: r6=bank3/prog3, noteon key 60 vel 127, wait till
+   note end). Snippets set r6 = (bank<<8)|prog and use simpleadsr/oscfull.
 2. **M2 — all SE**: full SE BMS opcode coverage + category volumes + handles (stop/pan/pitch).
 3. **M3 — BGM**: sequenced music (multi-track BMS, tempo, instruments across wScene banks,
    ARAM-equivalent bank residency = host RAM, no ARAM).

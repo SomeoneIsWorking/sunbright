@@ -241,6 +241,7 @@ size_t be_rl_to_host_lr(const int16_t* s, size_t n, int16_t* out, size_t out_cap
 std::atomic<bool> g_na_ever_pushed{false};
 static const auto g_na_t0 = std::chrono::steady_clock::now();   // ≈ process start (static init)
 extern "C" bool na_ever_pushed() { return g_na_ever_pushed.load(std::memory_order_relaxed); }
+extern "C" void njas_mix(int16_t*, size_t);   // native JAS engine (native_jas.cpp)
 extern "C" void na_push_dsp(const int16_t* s, size_t n) {
     if (!g_na_ever_pushed.load(std::memory_order_relaxed)) {
         for (size_t i = 0; i < n * 2; i++)
@@ -256,6 +257,12 @@ extern "C" void na_push_dsp(const int16_t* s, size_t n) {
         g_dsp.in_rate.store(32028, std::memory_order_relaxed);   // default until divisor seen
     static int16_t conv[kRingCap * 2];
     n = be_rl_to_host_lr(s, n, conv, kRingCap);
+    {   // native JAS engine output mixes into the same DSP stream (native_jas.cpp)
+        njas_mix(conv, n);
+        if (!g_na_ever_pushed.load(std::memory_order_relaxed))
+            for (size_t i = 0; i < n * 2; i++)
+                if (conv[i]) { g_na_ever_pushed.store(true, std::memory_order_relaxed); break; }
+    }
     g_dsp.push(conv, n);
     if (dump_enabled()) {
         if (!g_dump_dsp.f && !g_dump_dsp.rate)

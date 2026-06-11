@@ -423,7 +423,24 @@ Additional session landings (2026-06-11 late):
 - SUNBRIGHT_PACED_BOOT=1 = A/B env to re-pin boot to 60fps/host clock (ruled OUT pacing as the
   seq-audio death cause — wedge identical both ways).
 
-Next: the init-BMS note-start wedge above (the real jingle/SE/BGM blocker), residual
+**NATIVE AUDIO ENGINE M1 ✅ (2026-06-12): the jingle (and all SE-class sounds) play through a
+fully PC-native JAS engine** (`runtime/native_jas.cpp`, plan + verified details in
+`docs/native_audio_engine.md`). It loads WSYS/IBNK/sequence.arc straight from the ROM, runs
+the REAL SE BMS (a TSeqParser/TTrack port), synthesizes AFC voices, and mixes into the DSP
+sink inside `na_push_dsp`. Intake: override tee at JAIBasic::startSoundBasic 0x803020ac
+(`overrides/se_native.cpp`); the guest path still runs for bookkeeping (deleted at M4). The
+old init-BMS note-start wedge is thereby MOOT for audibility (the guest JAS stack remains
+wedged but unreferenced for SE output). Verified by engine-solo dump (`SUNBRIGHT_DUMP_NJAS=1`
+→ scratch/wav/njas_solo.raw): jingle zcr within 0.7% of the ROM-decoded reference; boot SE id
+is 0x7915. BMS disassembler: `tools/audio/bms_dis.py` (opcode names/args derived from the
+JASSeqParser decomp — note sCmdPList names ≥0xD0 are shifted −1 vs a naive reading; the
+Arglist in the tool is byte-stream-verified). Engine debug: `SUNBRIGHT_DBG_NJAS=1`; disable:
+`SUNBRIGHT_NO_NJAS=1`; oracle (DISABLE_RECOMP) is automatically unaffected (overrides never
+dispatch there).
+
+Next: native audio M2 (full SE coverage: category volumes, stop/pan/pitch handles, JAISoundInfo
+volume/pitch application, busy-worker retrigger queue) and M3 (BGM: multi-track BMS via
+Vload arc entries, wScene bank residency) per docs/native_audio_engine.md; residual
 backpressure wedge (~1/3 runs), THP-transition NULL-deref read, gameplay/Delfino, the recomp
 TTrack-tick root cause, FP/edge-case accuracy, widescreen fade overlays / 3D screenspace
 effects / culling (user backlog).
