@@ -1084,6 +1084,17 @@ static bool in_native_dispatch() { return t_in_native_dispatch; }
 // dispatch read CSR=0x9D2 with 0x80 pending, next event the guest wrote 0x9D2 back).
 static thread_local u32 t_dsp_ack_allowed = 0;
 u32 sunbright_dsp_ack_allowed() { return t_dsp_ack_allowed; }
+
+// Live CP write pointer (guest address) for the native TDrawSyncManager pushBreakPoint —
+// equivalent of GXGetFifoPtrs(GXGetCPUFifo()).writePtr after a GXFlush.
+u32 sunbright_cp_write_ptr() {
+#ifdef HAVE_DOLPHIN_CORE
+    auto& fifo = Core::System::GetInstance().GetCommandProcessor().GetFifo();
+    return 0x80000000u | fifo.CPWritePointer.load(std::memory_order_relaxed);
+#else
+    return 0;
+#endif
+}
 unsigned long g_nintr_counts[32];                        // per-interrupt dispatch counters (diag; probe /nintr)
 unsigned long g_ds_token_dispatches = 0;                 // drawsync diag (probe /drawsync)
 
@@ -1718,22 +1729,34 @@ static bool idle_run(long max_steps) {
     // Point the OS current-context globals at a coherent OSContext for the duration of the idle
     // spin: an exception saves srr0(=idle_pc) into *0x800000C0 and the dispatcher exits via
     // OSLoadContext(*0x800000D4) — they MUST reference the same context or the rfi resumes some
-    // parked thread's stale state (see nthr_ctx_restore). The current thread's OSContext is
-    // scratch while parked (nthr's authoritative copy is host-side gr->ctx), so borrow it.
+    // parked thread's stale state (see nthr_ctx_restore).
+    //
+    // Use a DEDICATED idle OSContext in the low-mem gap, never the current OSThread's. Borrowing
+    // the current thread's OSContext was the boot-logo / THP-transition crash (2026-06-12): when
+    // the "current" thread had just EXITED, its context read back zeros, so the idle register
+    // file got r13=0 — the next natively-dispatched ISR read SDA at 0 - 0x7138 = ea 0xffff8ec8
+    // and died at PC 0x80002FF8 (the idle spin itself). SDA bases (r2/r13) are process constants
+    // after OS init; cache them from the last VALID context seen instead of trusting whatever
+    // the current-thread pointer references.
     {
+        constexpr u32 IDLE_CTX = 0x80001900u;   // OSContext (0x2C8 B) in the vector/DOL-text gap,
+                                                // clear of the idle scratch stack at 0x80002F00↓
+        static u32 sda_r2 = 0, sda_r13 = 0;
         u32 cur = 0;
         if (u8* p = sb_ram_fast(OS_CURRENT_THREAD)) { memcpy(&cur, p, 4); cur = __builtin_bswap32(cur); }
         if (cur) {
-            mem_w32(0x800000D4u, cur); mem_w32(0x800000C0u, cur & 0x7FFFFFFFu);
-            // The exception prologue runs ON ppc's registers: it stwu's a frame at r1 and ISR code
-            // reads SDA globals off r2/r13. The borrowed register file is NOT guaranteed valid here
-            // (a just-exited thread leaves r1=0 → exception writes to 0xfffffff8). Give the idle
-            // context a dedicated scratch stack in the unused low-mem gap (below our spin at
-            // 0x80002FF8) and the real SDA bases from the current OSThread's saved context.
-            ppc.gpr[1]  = 0x80002F00u;
-            ppc.gpr[2]  = mem_r32(cur + 0x08u);   // OSContext.gpr[2]  (SDA2 base)
-            ppc.gpr[13] = mem_r32(cur + 0x34u);   // OSContext.gpr[13] (SDA base)
+            const u32 r2 = mem_r32(cur + 0x08u), r13 = mem_r32(cur + 0x34u);
+            if (r2  >= 0x80000000u && r2  < 0x81800000u) sda_r2  = r2;
+            if (r13 >= 0x80000000u && r13 < 0x81800000u) sda_r13 = r13;
         }
+        // Pre-thread boot fallback: the live register file (the parked caller's) has valid bases.
+        if (!sda_r2  && ppc.gpr[2]  >= 0x80000000u) sda_r2  = ppc.gpr[2];
+        if (!sda_r13 && ppc.gpr[13] >= 0x80000000u) sda_r13 = ppc.gpr[13];
+        mem_w32(0x800000D4u, IDLE_CTX);
+        mem_w32(0x800000C0u, IDLE_CTX & 0x7FFFFFFFu);
+        ppc.gpr[1] = 0x80002F00u;               // dedicated scratch stack for exception frames
+        if (sda_r2)  ppc.gpr[2]  = sda_r2;
+        if (sda_r13) ppc.gpr[13] = sda_r13;
     }
     long n = 0;
     auto& ct = sys.GetCoreTiming();

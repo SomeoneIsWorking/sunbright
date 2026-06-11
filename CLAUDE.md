@@ -354,6 +354,37 @@ pending CP interrupts from live FIFO state + drains the PE token ring + flushes 
 mails; idle_run gates only time advancement, not device service; drawsync recovery also runs
 from the backpressure spin (idle_run can't run while the main thread spins Ready).
 
+**Native TDrawSyncManager (2026-06-12, sms_drawsync_lossproof.cpp) — the backpressure-wedge
+ROOT CAUSE fix.** The guest threadFunc paces CPU↔GPU by COUNTING queue messages (boundary
+pushes vs tokens); that is only sound when a frame's token always arrives after its boundary
+push. In the hybrid, tokens batch at dispatch points while pushBreakPoint posts immediately —
+an early token underflowed the guest TFifo, leaving a phantom entry; terminal state (size 1,
+breakpoint enabled at a completed boundary, GPU parked, queue empty) was captured live and the
+old state-based recovery refused it (`size>=2` guard) → permanent vi.gpu_backpressure spin →
+watchdog kill (the Delfino-entry freeze). Now the WHOLE protocol is PC-native:
+overrides on drawSyncCallback 0x802a9318 (token 0 = retire; ranged tokens call their guest
+callback via vtable+8 then retire) and pushBreakPoint 0x802a9020 (GXFlush + record live CP
+write ptr) keep a host deque + CREDIT counter (order-independent accounting) and apply the
+faithful breakpoint policy (≥2 outstanding → BP at second boundary; else off) idempotently.
+GOTCHA: guest GX calls (GXEnableBreakPt) deliver nested token events on the same host thread —
+the manager uses a recursive mutex + g_applying re-entrancy guard (a plain mutex self-
+deadlocked). The guest counting thread now sleeps forever (no messages); the synthetic-token
+recovery is retired (sms_drawsync_native.cpp is a stub). Verified: 7-min headless run,
+18432 pushes / 18431 retires, backpressure phase 0ms throughout, gameplay reached past the
+Delfino entry animation. SUNBRIGHT_DBG_DS=1 = per-256-push accounting line.
+
+**Idle-driver crash fix (2026-06-12, dolphin_hook.cpp idle_run):** never borrow the current
+OSThread's saved OSContext for the idle spin — when that thread has just EXITED its context
+reads back zeros, the idle register file got r13=0, and the next natively-dispatched ISR read
+SDA at 0-0x7138 (ea 0xffff8ec8, PC 0x80002FF8 = the idle `b .`) — the boot-logo/THP-transition
+crash. idle_run now uses a dedicated idle OSContext at 0x80001900 and caches SDA bases (r2/r13)
+from the last valid context.
+
+**Boot pacing has TWO engage signals (2026-06-12):** first audible sample (na_ever_pushed) OR
+first timed visual — TSMSFader::startWipe override (overrides/fader_pace.cpp, sb_visual_live).
+The GC-logo fade-in precedes all audio; unpaced it completed in milliseconds and the logo
+popped in fully visible.
+
 **CORRECTION (2026-06-11, late): the "jingle fixed" claim below was FALSE.** What played was
 the THP-movie/HardStream mix (low-pitch, RMS ~400 vs the real jingle's ~5000, zcr ~300-500 vs
 1208-1316 — verified against the oracle and the ROM-decoded wave). ALL sequenced JAS audio

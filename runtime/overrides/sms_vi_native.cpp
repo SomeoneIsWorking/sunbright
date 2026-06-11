@@ -115,6 +115,7 @@ struct PhaseTimer {
                         std::chrono::steady_clock::now() - t0).count(); }
 };
 extern "C" bool na_ever_pushed();   // native_audio.cpp (first real DSP push seen)
+extern "C" bool sb_visual_live();   // fader_pace.cpp (first timed visual: TSMSFader::startWipe)
 static long long g_ph_pace, g_ph_field, g_ph_bp, g_ph_drain, g_ph_pump, g_ph_tick;
 static long g_ph_frames;
 
@@ -132,7 +133,10 @@ SUNBRIGHT_OVERRIDE(ov_VIWaitForRetrace, VI_WAIT) {
     // as the time governor, dolphin_hook.cpp). The boot logo's frame-counted fades at a pinned
     // 60 fps put the jingle at host second ~8; a PC port boots as fast as the machine renders.
     static const bool paced_boot = getenv("SUNBRIGHT_PACED_BOOT") != nullptr;
-    if (paced && (paced_boot || na_ever_pushed())) {
+    // Pace from the first audible sample OR the first timed visual (fade/wipe), whichever comes
+    // first: the GC-logo fade-IN precedes all audio, so unpaced it completed in milliseconds and
+    // the logo popped in fully visible (2026-06-12).
+    if (paced && (paced_boot || na_ever_pushed() || sb_visual_live())) {
         PhaseTimer _t("pace", &g_ph_pace);
         // Host-clock 60 Hz frame pacing (fields are 1/59.94s; one retrace per call).
         using clock = std::chrono::steady_clock;

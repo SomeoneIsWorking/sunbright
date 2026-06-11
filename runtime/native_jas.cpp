@@ -25,6 +25,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "DiscIO/Blob.h"
@@ -1578,11 +1579,13 @@ static FILE* g_solo_dump = nullptr;   // SUNBRIGHT_DUMP_NJAS: engine-only wav
 struct PendingSE { u32 id; };
 static std::vector<PendingSE> g_pending;
 
-static bool engine_init() {
-    if (g_inited) return true;
-    if (g_init_failed) return false;
+// Data load runs on its own thread: it decodes every wave in the ROM (~1500 AFC
+// streams) and MUST NOT block either the emu thread (se_start caller) or the
+// audio push path (njas_mix). g_mtx is only ever held for cheap engine work.
+static std::atomic<int> g_load_state{0};   // 0 idle, 1 loading, 2 ok, 3 failed
+
+static void engine_start_locked() {        // g_mtx held, data loaded
     init_osc_defaults();
-    if (!load_data()) { g_init_failed = true; return false; }
     g_root = track_alloc();
     g_root->trackMode = 3;   // setSeqData root mode
     track_init(*g_root, g_data.seq.data(), 0, nullptr);
@@ -1593,6 +1596,21 @@ static bool engine_init() {
     track_update_tempo(*g_root);
     g_inited = true;
     fprintf(stderr, "[njas] native JAS engine running (init BMS @0, %zu banks)\n", g_data.banks.size());
+}
+
+static bool engine_init() {                // g_mtx held; returns true once running
+    if (g_inited) return true;
+    int st = g_load_state.load(std::memory_order_acquire);
+    if (st == 3) return false;
+    if (st == 0 && g_load_state.compare_exchange_strong(st, 1)) {
+        std::thread([] {
+            const bool ok = load_data();
+            g_load_state.store(ok ? 2 : 3, std::memory_order_release);
+        }).detach();
+        return false;
+    }
+    if (g_load_state.load(std::memory_order_acquire) != 2) return false;  // still loading
+    engine_start_locked();
     return true;
 }
 
@@ -1730,8 +1748,12 @@ static void render_subframe() {
 // as equal (guest 32028 vs JAS 32028.5 — 0.0016% apart, inaudible).
 extern "C" void njas_mix(int16_t* buf, size_t frames) {
     using namespace njas;
-    std::lock_guard<std::mutex> lk(g_mtx);
-    if (!g_inited) return;   // engine starts on first se_start
+    std::unique_lock<std::mutex> lk(g_mtx, std::try_to_lock);
+    if (!lk.owns_lock()) return;          // never stall the audio path
+    if (!g_inited) {
+        // finish engine start once the async data load completes
+        if (g_load_state.load(std::memory_order_acquire) != 2 || !engine_init()) return;
+    }
     static bool dump_checked = false;
     if (!dump_checked) {
         dump_checked = true;
@@ -1758,6 +1780,6 @@ extern "C" void njas_mix(int16_t* buf, size_t frames) {
 extern "C" void njas_se_start(uint32_t id) {
     using namespace njas;
     std::lock_guard<std::mutex> lk(g_mtx);
-    if (!engine_init()) return;
-    g_pending.push_back({ id });
+    engine_init();                 // kicks the async data load on first call
+    g_pending.push_back({ id });   // queued until the engine is running
 }
