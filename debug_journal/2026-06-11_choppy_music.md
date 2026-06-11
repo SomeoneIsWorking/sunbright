@@ -395,3 +395,15 @@ Exonerated along the way (kept as owned native ports + tools):
   VK_ERROR_OUT_OF_DEVICE_MEMORY at 3D-scene entry (VRAM NOT exhausted; OGL backend works —
   workaround SUNBRIGHT_BACKEND=OGL for oracle runs; cause still open); never overlap two
   sunbright instances (probe port + transient GPU pressure).
+
+## Post-music sweep (same day)
+- THP-transition NULL-read: NO LONGER REPRODUCES (200s + 420s autostart runs, zero
+  wild/fatal/trap). Likely cured by one of the intervening native ports (audioproc/syncDSP/
+  CARD/updateAll). Removed from the open list; reopen only with a fresh repro.
+- [fiforeg] CPCtrl per-frame log was ungated (~200k lines/run) → now behind SUNBRIGHT_DBG_FIFOREG.
+- Widescreen fades FIXED: TSMSFader::draw/drawFadeinout fill the caller's 4:3 TRect; under
+  widescreen the 2D plane maps 0..640 to the center 4:3, so fades left the side thirds unfaded.
+  Native wrapper (overrides/fader_widescreen.cpp) widens the rect x-extents by (w/6+1) per side
+  around the recompiled call. VERIFIED via framedump: mid-fade frames dim edge-to-edge
+  (was: bright pillars). Circular shine-wipe geometry not yet checked (needs a shine event /
+  headed eyes).
