@@ -452,3 +452,20 @@ With those fixed, drove headless: title → file select (**imported save VISIBLE
 lives ×3 from the save, graffiti portal rendering). gci_import.py chain fully verified.
 File-select recipe (for the next session): hold start 3000 at title; left 900; a 400 (block A);
 a 500 (START); ~20 s scene load.
+
+## 60fps interpolation — stage 1 (capture) LANDED + user visual findings
+- `overrides/interp_capture.cpp` (SUNBRIGHT_INTERP=1): hooks J3DModel::viewCalc 0x802deeb8,
+  snapshots every model's joint world matrices (mNodeMatrices +0x58, jointNum modelData+0x1C)
+  into a host double buffer keyed by J3DModel*. Verified live: 32 models/227 joints (title),
+  124/631 (busy scene), ~640 snaps/s, pointer IDs stable, 5s expiry. The doc's "need a symbol
+  map" blocker is obsolete — sms_gmse01_funcs.txt names everything. NEXT (stage 2): prev→cur
+  slerp + draw replay with overwritten mNodeMatrices, present pacing between VI swaps
+  (docs/model_interpolation.md §4-5).
+- USER VISUAL FINDINGS (Plaza orbit shots): (1) the location-name banner BACKDROP (scene-entry
+  "DELFINO PLAZA" pan-in) is not widescreen-accommodated — it's the known "backdrops must
+  EXPAND to fill 16:9, not centre-squeeze" class (same fix shape as the fader: widen the fill
+  rect; see docs/model_interpolation.md 2D-element classification). (2) the dock tower/column
+  "splits at the waterline unnaturally" + flat gray open sea = the screenspace WATER surface
+  effect (refraction/reflection EFB-copy) not rendering right in Plaza — top suspect list:
+  TScreenTexture (8022d360 replace), TMirrorModelManager (80192d60), sea J3D material with
+  indirect EFB texture. Both queued behind interp stage 2 / the DSP-mail dispatcher.
