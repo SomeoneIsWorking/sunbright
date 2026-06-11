@@ -181,3 +181,19 @@ shared-tail call site; all earlier "never called" results were tracer blind spot
   queued file 2 — that handoff is the broken link (file 3 works because requested later, when
   the loader is idle). Suspect the loader's completion→dequeue-next path; trace its functions
   (neighbors of 80310694) with SUNBRIGHT_DBG_WAVE.
+
+## Session 3 true-final (04:10) — the last link, explicit
+WaveArcLoader::loadWave (decomp JASWaveArcLoader.cpp) = checkFileExtend + heap alloc +
+**Dvd::loadToAramDvdT(0, "/Banks/wScene_10.aw", dest, 0, extent, flagPtr, 0)** → posts a TDvdCall
+to the JAS DVD THREAD's message queue (JASDvdThread mq; OSSendMessage(&mq, cs, **blocking=1**)).
+The JAS dvd thread (OSThread 8040AC00, prio 3 — earlier misidentified as "audio kernel thread")
+sits parked on that queue's receive (T_QUEUE=803FD8D8) FOREVER — the posted message for file 2
+is never serviced = the ARAM hole = silent select-scene instruments = THE CHOPPY MUSIC.
+Files 1/3 work because their CALLERS spin-wait (`while(!done)`) → poll-yield pumps processing
+(verify!), or their sends occurred while the thread was already awake.
+**NEXT (first thing):** confirm with /r: the dvd-thread mq (base near 803FD8D0; queueReceive
++8=803FD8D8) usedCount ≥1 while thread parked. Then fix the wake: OSSendMessage→OSWakeupThread
+on that queue under nthr from the BOOT-thread context (compare with the working audioproc mq
+sends from ISR context). Possibly the same join/wake class as everything else tonight — or the
+blocking-send path (flags=1) differs from noblock in the recompiled OSSendMessage and its sleep/
+wake interplay needs the native seam. Fix → wScene_10 streams → hole fills → MUSIC.
