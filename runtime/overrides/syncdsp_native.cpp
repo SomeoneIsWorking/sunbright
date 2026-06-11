@@ -14,6 +14,9 @@
 // (its intcount==0 suicide branch simply becomes unreachable, as it is on hardware).
 #include "../overrides.h"
 #include "../intrinsics.h"
+#include "../dolphin_hook.h"
+#include "Core/System.h"
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 
@@ -34,6 +37,9 @@ constexpr u32 G_MQ_INIT         = 0x804141C0u - 23660;  // audioproc_mq_init
 constexpr u32 G_INTCOUNT        = 0x804141C0u - 23656;  // intcount (expected frame-done mails)
 
 unsigned long g_stray_framedone = 0;
+// Early frame-done mails (the intcount race, see ov_sync_dsp) parked until intcount>0.
+std::atomic<unsigned> g_deferred_framedone{0};
+bool g_frames_seen = false;     // first intcount>0 observed (first real DSP frame started)
 
 void ov_sync_dsp(CPUState& cpu) {
     // Verbatim port of the emitted func_803112d0 (same callees, same flow).
@@ -51,12 +57,22 @@ void ov_sync_dsp(CPUState& cpu) {
     if ((mail & 0xFF00u) == 0xFF00u) {                // frame-done class
         if (mem_r32(G_MQ_INIT) != 0) {
             if (mem_r32(G_INTCOUNT) == 0) {
-                // HW-impossible stray (instant HLE mails): the frame already completed. The
-                // original forwards msg 1 and audioproc's defensive `if (intcount==0) return`
-                // KILLS THE AUDIO THREAD. Drop it instead — count + log once.
-                if (g_stray_framedone++ == 0)
-                    fprintf(stderr, "[syncdsp] stray frame-done mail %08x with intcount==0 — "
-                                    "dropped (would have killed the audio thread)\n", mail);
+                // intcount==0 frame-done. Two cases, both HW-impossible-by-timing:
+                //  · the single boot-time stray (DspBoot's instant HLE mail) — must be discarded
+                //    (forwarding msg 1 makes audioproc's intcount==0 branch EXIT THE THREAD,
+                //    the original dead-audio bug);
+                //  · the intcount RACE: under nthr + instant HLE the mail's interrupt dispatch
+                //    can run before the audioproc thread's setDSPSyncCount lands. The mail is
+                //    REAL — dropping it kills the whole frame chain (each mail triggers the
+                //    next updateDSP; one loss = no more mails ever, finishDSPFrame never runs,
+                //    voices freeze at last state = the post-jingle constant-DC / silent-boot
+                //    bug, 2026-06-11). DEFER it: sunbright_jas_flush_deferred forwards it the
+                //    moment intcount>0; the boot stray is discarded there at the first frame
+                //    transition instead of here (we cannot tell the two apart yet).
+                g_deferred_framedone.fetch_add(1, std::memory_order_relaxed);
+                if (g_stray_framedone++ < 4)
+                    fprintf(stderr, "[syncdsp] frame-done mail %08x with intcount==0 — deferred "
+                                    "(total %lu)\n", mail, g_stray_framedone);
                 return;
             }
             c.gpr[3] = MQ_AUDIOPROC;                  // OSSendMessage(&mq, 1, NOBLOCK)
@@ -75,6 +91,43 @@ void ov_sync_dsp(CPUState& cpu) {
     }
 }
 
+}  // namespace
+
+// Deferred frame-done flush — called from the time-independent device-service seam
+// (sunbright_poll_yield), like the CP-interrupt and PE-token pumps: JAS mail delivery is the
+// DSP's own act and must not depend on interrupt-dispatch/thread-schedule ordering. At the
+// FIRST intcount>0 transition the single boot stray is discarded; afterwards every deferred
+// mail is forwarded as the msg 1 the audioproc loop expects, as soon as it can be consumed
+// safely (intcount>0).
+int sunbright_jas_flush_deferred(const CPUState* seed) {
+    using namespace ::std;
+    if (!g_deferred_framedone.load(std::memory_order_relaxed)) return 0;
+    if (mem_r32(G_INTCOUNT) == 0) return 0;
+    if (!g_frames_seen) {
+        g_frames_seen = true;
+        const unsigned dropped = g_deferred_framedone.exchange(0, std::memory_order_relaxed);
+        if (dropped > 1) g_deferred_framedone.store(dropped - 1, std::memory_order_relaxed);
+        fprintf(stderr, "[syncdsp] first DSP frame started — discarded 1 boot stray "
+                        "(%u were pending)\n", dropped);
+        if (!g_deferred_framedone.load(std::memory_order_relaxed)) return 0;
+    }
+    int sent = 0;
+    while (g_deferred_framedone.load(std::memory_order_relaxed) && mem_r32(G_INTCOUNT) != 0) {
+        CPUState c;
+        if (seed) c = *seed;
+        else dolphin_state_to_cpu(Core::System::GetInstance().GetPPCState(), c);
+        c.gpr[3] = MQ_AUDIOPROC;
+        c.gpr[4] = 1;
+        c.gpr[5] = 0;
+        c.lr     = 0x80311334u;
+        call_ppc(c, OS_SEND_MESSAGE);
+        g_deferred_framedone.fetch_sub(1, std::memory_order_relaxed);
+        sent++;
+    }
+    return sent;
+}
+
+namespace {
 static const bool s_registered = [] {
     register_override(SYNC_DSP, &ov_sync_dsp);
     fprintf(stderr, "[syncdsp] native syncDSP registered "

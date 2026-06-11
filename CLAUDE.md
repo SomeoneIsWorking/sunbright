@@ -340,9 +340,35 @@ fields, `SUNBRIGHT_WATCH_WADDR` write-watch (dladdr names the emitted writer). O
 `SUNBRIGHT_BACKEND=OGL` for DISABLE_RECOMP runs (Vulkan oracle dies with a spurious
 VK_ERROR_OUT_OF_DEVICE_MEMORY at 3D-scene entry; cause open); never overlap two instances.
 
-Next: THP-transition NULL-deref read (~79s under autostart), gameplay/Delfino, the recomp
-TTrack-tick root cause, FP/edge-case accuracy, widescreen fade overlays / 3D screenspace
-effects / culling (user backlog).
+**Garbage-audio fixed (2026-06-11 pm):** the native sink was fed raw Mixer::Push*Samples
+buffers, which are BIG-ENDIAN R-L (Dolphin converts only inside PushSample) → byteswapped PCM
+= loud noise. na_push_dsp/dtk now convert. WAV-RMS canNOT catch this (byteswapped noise has
+healthy RMS) — verify dumps with adjacent-sample delta²/energy (real ≲0.05, garbage ≳0.25) and
+a constant-DC check (constant nonzero = frozen voice feed, hear silence).
+
+**Time-independent device service (2026-06-11 pm):** CP interrupts, PE tokens, and idle-driver
+device service must NEVER depend on CoreTiming advancing — the host-clock/audio governor parks
+time at target, and any 0-cycle "deliver later" CoreTiming event then never fires (CP
+m_interrupt_waiting wedged the GPU loop at 99% = the logo boot freeze). poll_yield now services
+pending CP interrupts from live FIFO state + drains the PE token ring + flushes deferred JAS
+mails; idle_run gates only time advancement, not device service; drawsync recovery also runs
+from the backpressure spin (idle_run can't run while the main thread spins Ready).
+
+**OPEN FRONTIER — audio dies at the logo transition (intermittent, the "jingle inaudible" bug):**
+evidence chain: /nintr shows intr7 (DSP/AID) dispatches stall (~2.5/s vs ~57/s expected; other
+causes keep flowing) while UpdateAudioDMA keeps pushing (so the AudioDMA CoreTiming event runs);
+DSP_CONTROL=0x0952 (AID_mask enabled), AUDIO_DMA enabled. The JAS chain is msg-0-driven:
+AID IRQ → __AIDHandler → syncAudio → msg 0 → updateDac (per-frame tick); when AID delivery
+starves, voices freeze → constant-DC pushes (sounds like silence). ORACLE (DISABLE_RECOMP+OGL,
+same binary) plays continuous music — everything below the hybrid interrupt layer is sound.
+Also still intermittent: a residual backpressure wedge (~1/3 runs, watchdog kill). Next: own
+AID delivery time-independently (like CP/PE above) or root-cause why cause-7 dispatch starves;
+syncdsp_native.cpp now DEFERS intcount==0 frame-done mails (flush at poll_yield) instead of
+dropping — protocol-faithful, but wasn't the death mechanism (zero occurrences in dead runs).
+
+Next: the AID-starvation frontier above, the residual wedge, THP-transition NULL-deref read,
+gameplay/Delfino, the recomp TTrack-tick root cause, FP/edge-case accuracy, widescreen fade
+overlays / 3D screenspace effects / culling (user backlog).
 
 ## Skills (slash commands)
 | Command | What it does |

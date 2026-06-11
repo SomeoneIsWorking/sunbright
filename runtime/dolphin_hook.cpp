@@ -1319,6 +1319,12 @@ void sunbright_poll_yield() {
     }
     // PE token delivery — equally time-independent (see sunbright_pe_token_drain).
     sunbright_pe_token_drain(g_cur_recomp_cpu);
+    // Deferred JAS frame-done mails (the intcount race) — forwarded once consumable
+    // (syncdsp_native.cpp).
+    {
+        extern int sunbright_jas_flush_deferred(const CPUState*);
+        sunbright_jas_flush_deferred(g_cur_recomp_cpu);
+    }
     const int delivered = native_dispatch_pending();   // …dispatched natively (handlers via call_ppc)
     if (getenv("SUNBRIGHT_DBG_YIELD") && delivered) {
         static long y = 0;
