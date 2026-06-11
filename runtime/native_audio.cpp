@@ -215,24 +215,44 @@ bool dump_enabled() {
 }  // namespace
 
 // ── producer-side entry points (called from the Mixer wraps / main_sdl) ─────────────────────
+// The wraps intercept Mixer::Push*Samples BEFORE Dolphin's conversion: the AI DMA buffer is
+// BIG-ENDIAN, R-L ordered stereo (see Mixer.cpp PushSamples: swap16(ptr[1]), swap16(ptr[0])).
+// Convert to host-endian L-R here, so the ring AND the WAV dump carry playable PCM. Feeding
+// the raw bytes through was the "complete garbage audio" bug — byteswapped PCM is loud noise,
+// and its RMS looks healthy, so the WAV-RMS check could not catch it.
+namespace {
+size_t be_rl_to_host_lr(const int16_t* s, size_t n, int16_t* out, size_t out_cap_frames) {
+    if (n > out_cap_frames) n = out_cap_frames;
+    for (size_t i = 0; i < n; i++) {
+        const uint16_t r = (uint16_t)s[i * 2 + 0], l = (uint16_t)s[i * 2 + 1];
+        out[i * 2 + 0] = (int16_t)((l >> 8) | (l << 8));
+        out[i * 2 + 1] = (int16_t)((r >> 8) | (r << 8));
+    }
+    return n;
+}
+}  // namespace
 extern "C" void na_push_dsp(const int16_t* s, size_t n) {
     if (!g_dsp.in_rate.load(std::memory_order_relaxed))
         g_dsp.in_rate.store(32028, std::memory_order_relaxed);   // default until divisor seen
-    g_dsp.push(s, n);
+    static int16_t conv[kRingCap * 2];
+    n = be_rl_to_host_lr(s, n, conv, kRingCap);
+    g_dsp.push(conv, n);
     if (dump_enabled()) {
         if (!g_dump_dsp.f && !g_dump_dsp.rate)
             g_dump_dsp.open("scratch/wav/native_dsp.wav", g_dsp.in_rate.load());
-        g_dump_dsp.write(s, n);
+        g_dump_dsp.write(conv, n);
     }
 }
 extern "C" void na_push_dtk(const int16_t* s, size_t n) {
     if (!g_dtk.in_rate.load(std::memory_order_relaxed))
         g_dtk.in_rate.store(48043, std::memory_order_relaxed);
-    g_dtk.push(s, n);
+    static int16_t conv[kRingCap * 2];
+    n = be_rl_to_host_lr(s, n, conv, kRingCap);
+    g_dtk.push(conv, n);
     if (dump_enabled()) {
         if (!g_dump_dtk.f && !g_dump_dtk.rate)
             g_dump_dtk.open("scratch/wav/native_dtk.wav", g_dtk.in_rate.load());
-        g_dump_dtk.write(s, n);
+        g_dump_dtk.write(conv, n);
     }
 }
 extern "C" void na_set_dsp_rate(uint32_t rate) { g_dsp.in_rate.store(rate, std::memory_order_relaxed); }
