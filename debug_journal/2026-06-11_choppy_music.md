@@ -502,3 +502,25 @@ names the exact lost edge. Then redesign the handoff so it can't deadlock: singl
 generation counter, every state transition publishes under the lock, scheduler re-checks
 readiness after every wait (no naked notify), timed-yield threads get a deadline the scheduler
 owns (it advances CoreTiming itself when the only Ready work is a future deadline).
+
+## Deadlock ROOT CAUSE (structural, confirmed by code read + dump correlation)
+nthr's cv handoff is sound (notify under lock + predicate recheck). The hole:
+grant_token_locked, when nothing is Ready, calls g_idle_handler() UNLOCKED — and the idle
+driver can block UNBOUNDEDLY inside Dolphin: CoreTiming::Idle() → Fifo::FlushGpu() waits for
+the GPU thread, which itself can be waiting for CPU-side PE-token dispatch (the drawsync
+class) → AB-BA across our token loop and Dolphin's GPU sync. The whole scheduler hangs inside
+the idle call: dispatch counters all +0, every guest thread parked in cv.wait — exactly the
+watchdog dumps (one literally shows #7 FlushGpu #8 CoreTiming::Idle under nthrt_yield_current).
+Clusters at scene loads (max FIFO + token traffic + thread churn).
+
+FIX (can't-deadlock-by-construction):
+1. The idle driver must never make an unbounded blocking Dolphin call. Replace CoreTiming
+   Idle()/FlushGpu inside idle_run with BOUNDED slices: advance CoreTiming by fixed event
+   quanta; between slices, PUMP the PE-token/drawsync dispatch (the existing
+   g_ds_token_dispatch machinery) so the GPU's CPU-side dependency always progresses.
+2. Add a watchdog-visible heartbeat in the idle driver (slice counter) so a future stall
+   names itself.
+3. Then the timed-yield (card delay 802b35cc) and vframeWork mail waits complete naturally —
+   they only needed time to keep advancing.
+Watchdog enhancement (do first): freeze dump prints every GuestThread {state, ready_seq,
+os_thread, blocked-at lr} + token holder — one dump = full scheduler picture.
