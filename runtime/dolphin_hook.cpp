@@ -365,6 +365,15 @@ void call_ppc(CPUState& cpu, u32 address) {
     if (dbg_aud && (address == 0x80352ae4u || address == 0x803110f0u ||
                     address == 0x80346190u || address == 0x80346508u))
         sb_trace("aud", address, cpu.gpr[3], cpu.gpr[4], cpu.lr);
+    // SUNBRIGHT_DBG_WAVE: the wave-bank load chain — direct stderr (sparse events; the ring
+    // floods and drops them between probe polls).
+    static const bool dbg_wave = getenv("SUNBRIGHT_DBG_WAVE") != nullptr;
+    if (dbg_wave && (address == 0x80318050u || address == 0x80310694u ||
+                     address == 0x80310994u || address == 0x80301884u ||
+                     address == 0x803017b0u || address == 0x80015640u ||
+                     address == 0x8001569cu))
+        fprintf(stderr, "[wave] call %08x r3=%08x r4=%08x lr=%08x\n",
+                address, cpu.gpr[3], cpu.gpr[4], cpu.lr);
     // SUNBRIGHT_DBG_NOTE: JAS note/voice lifecycle (the choppy-music bug) — noteOn, noteOff,
     // release/force-stop, DSP queue add/remove. d = monotonic ms (note-duration measurement).
     static const bool dbg_note = getenv("SUNBRIGHT_DBG_NOTE") != nullptr;
@@ -395,6 +404,9 @@ void call_ppc(CPUState& cpu, u32 address) {
                      address == 0x802b76f4u || address == 0x802b77ecu ||
                      address == 0x802b77fcu || address == 0x802b7898u ||
                      address == 0x80299838u /*static caller of 802b76f4*/ ||
+                     address == 0x80346190u /*OSSendMessage (JAS dvd queue chase)*/ ||
+                     address == 0x80318050u /*wave-stream chunk continuation (ARQ cb)*/ ||
+                     address == 0x80346258u /*OSReceiveMessage*/ ||
                      address == 0x80348d08u /*OSJoinThread — join-once semantics chase*/ ||
                      address == 0x80348374u /*OSIsThreadTerminated*/)) {
         // c = caller lr (who ends the note/track), d = monotonic ms.
@@ -1855,7 +1867,7 @@ void sunbright_trace_jit_entry(u32 address, u32 r3, u32 lr) {
     case 0x8031ce68u: case 0x8031defcu: case 0x8031deb4u: case 0x8031dd00u:
     case 0x8031c894u: case 0x8031c818u: case 0x803068d8u: case 0x803017b0u:
     case 0x80301850u: case 0x80301884u: case 0x80310994u: case 0x80310694u:
-    case 0x80015640u: case 0x8001569cu: case 0x802bc10cu: case 0x802bb920u:
+    case 0x80015640u: case 0x8001569cu: case 0x802bc10cu: case 0x802bb920u: case 0x80318050u:
     case 0x802b76f4u: case 0x802b77ecu: case 0x802b77fcu: case 0x802b7898u:
     case 0x80299838u: case 0x80348d08u: case 0x80348374u: {
         struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);

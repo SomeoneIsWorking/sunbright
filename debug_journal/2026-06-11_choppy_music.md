@@ -163,3 +163,21 @@ OSJoinThread handling / who could double-join).
   state. Next: trace TFlagManager::getBool + MenuDir's load call (find their addresses via
   generated call sites of 80015640 inside the MenuDir region ~802e-802fxxxx?) at the select
   arrival with the five-context tracers; read flag 0x30007's backing storage.
+
+## Session 3 final (04:05) — chain almost closed
+WITH SUNBRIGHT_DBG_WAVE (direct-stderr tracer; ring polling DROPS sparse events under flood —
+use stderr for low-rate chains): ALL THREE wave loads are REQUESTED:
+  (0,0)=w1stLoad ✓ streams fully; (2,0x10)=wScene_10 loader obj 8066a040 REGISTERED at boot but
+  its FIRST DVD READ never issues (zero chunks, zero DVD reads — the ARAM hole 0xEA-0xEE);
+  (1,0)=wScene_1 ✓ streams fully at the scene change (the 0xE02680..0xE9A680 marcher).
+Also CONFIRMED: the scene sound-init runs (loadWave 0x20A and 0x212 fire from lr=802BC278 — the
+shared-tail call site; all earlier "never called" results were tracer blind spots).
+- native_aram now defers ARQ callbacks ISR-style (ordering faithfulness; did NOT fix this bug
+  but is more correct; keep).
+- NEXT (precise): why does WaveArcLoader obj 8066a040's stream never start? Read
+  JASystem WaveArcLoader source (reference/sms JASystem; loadWave lr=80310a0c context inside
+  WaveBankMgr::loadWave 80310994) — find what kicks the FIRST chunk (its own thread? a DVD-T
+  call? a finish-callback of the PREVIOUS file?). w1stLoad (file 1) completes → should kick
+  queued file 2 — that handoff is the broken link (file 3 works because requested later, when
+  the loader is idle). Suspect the loader's completion→dequeue-next path; trace its functions
+  (neighbors of 80310694) with SUNBRIGHT_DBG_WAVE.

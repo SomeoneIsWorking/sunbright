@@ -23,6 +23,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <vector>
 
 #ifdef HAVE_DOLPHIN_CORE
 #include "../native_os.h"
@@ -34,6 +35,18 @@ namespace {
 
 constexpr u32 ARQ_POST_REQUEST = 0x80353BDCu;
 constexpr u32 ARQ_DEFAULT_CB   = 0x80353AA4u;  // bare blr
+
+// ISR-faithful callback serialization. The real ARQ completes via a LATER interrupt: the post
+// returns first, then the callback runs. Calling the callback synchronously INSIDE the post
+// inverted that ordering — a callback that re-posts (the JAS wave-streamer chunk pump) ran its
+// whole chain before the original caller's post-return bookkeeping, and the loader's queued
+// NEXT FILE was lost (wScene_10.aw never streamed → silent select-scene instruments, the
+// choppy-music bug, 2026-06-11). Defer: queue completions; the OUTERMOST post drains the queue
+// after it returns-equivalent (its own fill is done), so each callback still runs "immediately
+// after its DMA" but never inside another post's frame.
+struct PendingCb { u32 cb, task; };
+std::vector<PendingCb> g_pending;
+bool g_draining = false;
 
 void native_arq_post_request(CPUState& cpu) {
     const u32 task = cpu.gpr[3];
@@ -68,13 +81,22 @@ void native_arq_post_request(CPUState& cpu) {
     if (dbg) fprintf(stderr, "[native_aram] %s mram=%08x aram=%08x len=%u cb=%08x\n",
                      type == 0 ? "MRAM->ARAM" : "ARAM->MRAM", mram_phys, aram_off, length, cb);
 
-    // Hardware completion: the ARQ ISR pops the request and calls its callback(task).
-    if (cb != 0 && cb != ARQ_DEFAULT_CB) {
-        const u32 saved_lr = cpu.lr;
-        cpu.gpr[3] = task;
-        cpu.lr = ARQ_POST_REQUEST;
-        call_ppc(cpu, cb);
-        cpu.lr = saved_lr;
+    // Hardware completion: the ARQ ISR pops the request and calls its callback(task) — AFTER
+    // the post returns. Queue it; the outermost post drains (ISR-like serialization, see above).
+    if (cb != 0 && cb != ARQ_DEFAULT_CB)
+        g_pending.push_back({cb, task});
+    if (!g_draining) {
+        g_draining = true;
+        while (!g_pending.empty()) {
+            PendingCb p = g_pending.front();
+            g_pending.erase(g_pending.begin());
+            const u32 saved_lr = cpu.lr;
+            cpu.gpr[3] = p.task;
+            cpu.lr = ARQ_POST_REQUEST;
+            call_ppc(cpu, p.cb);
+            cpu.lr = saved_lr;
+        }
+        g_draining = false;
     }
     cpu.gpr[3] = task;   // void return; keep r3 harmless
 }
