@@ -208,3 +208,24 @@ may CLOBBER a slot before the thread runs it, or the thread dispatched a stale f
 trace dvdProc's dispatches (which fn ptr + args it executes per message, SUNBRIGHT_DBG_WAVE
 style); follow file 2's TDvdCall from post to dispatch. The fix likely = native port of the
 JAS dvd thread proc or its call-stack handoff (own the path), per the established pattern.
+
+## Session 4 (04:40) — the cleanest finding yet + forced stop
+CORRECTIONS (keep the record honest):
+- "Two roots frozen at 4406 ticks" = the boot jingles legitimately ENDING (deterministic stream
+  length), NOT a bug. stopSeq never fires at the no-input title.
+- The ARAM 0xEB-0xEE "hole" = scene skew (oracle-in-gameplay loads more banks). wScene_10 is a
+  ~64KB file and STREAMS COMPLETELY (the "strays" at 0xEFA760 are its data).
+- Clean no-input A/B (same boot, no input): oracle = full music from sec 2; recomp = logo bling
+  then silence with rare blips. THE defect is real and scene-clean.
+★ THE FINDING: at the recomp title, the BGM root (80639888, ticking at full rate, stream cur
+  deep at 0x8071E50B — it executed its child-opening commands) has **ALL 16 CHILD SLOTS NULL**.
+  The song's parts never attach ⇒ silence. Suspect: TrackMgr::getNewTrack (8031de2c) pool
+  exhaustion/failure (leak from earlier churn, or the native ttrack tick finish() path not
+  freeing children), or cmdOpenTrack failing under recomp.
+  NEXT: (1) oracle A/B of the same root's children (blocked tonight by GPU exhaustion);
+  (2) read TrackMgr's pool state under recomp (globals from getNewTrack disasm; count free);
+  (3) trace cmdOpenTrack (80320084's flow) / getNewTrack return at the title.
+FORCED STOP: the machine hit VK_ERROR_OUT_OF_DEVICE_MEMORY after ~50 runs tonight — Vulkan
+device memory exhausted (also the cause of the repeated "oracle probe didn't come up"
+failures late in the night). Reboot or GPU settle needed before further runs; treat late-night
+oracle-side nulls with suspicion.
