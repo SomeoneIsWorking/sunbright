@@ -322,6 +322,7 @@ static uint32_t repl_combo_bits(const std::string& combo) {
     std::stringstream ss(combo);
     std::string tok;
     while (std::getline(ss, tok, '+')) {
+        for (auto& c : tok) c = (char)tolower((unsigned char)c);   // /pad?do=START etc.
         if      (tok == "start") bits |= P_START;
         else if (tok == "a" || tok == "jump") bits |= P_A;
         else if (tok == "b")     bits |= P_B;
