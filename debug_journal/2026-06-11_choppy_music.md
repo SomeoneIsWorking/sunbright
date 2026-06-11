@@ -197,3 +197,14 @@ on that queue under nthr from the BOOT-thread context (compare with the working 
 sends from ISR context). Possibly the same join/wake class as everything else tonight — or the
 blocking-send path (flags=1) differs from noblock in the recompiled OSSendMessage and its sleep/
 wake interplay needs the native seam. Fix → wScene_10 streams → hole fills → MUSIC.
+
+## 04:15 correction — queue is EMPTY, not stuck
+The dvd-thread mq (base 803FD8D8): usedCount=0 with the thread parked → the file-2 TDvdCall was
+CONSUMED (or never enqueued), yet no DVD reads followed. JASDvdThread mechanism (decomp
+JASDvdThread.cpp): callers copy a TDvdCall struct + fn ptr into a SHARED call-stack slot
+(getCallStack()) and OSSendMessage(&mq, cs, 1). Back-to-back boot posts (file-1 chain + file 2)
+may CLOBBER a slot before the thread runs it, or the thread dispatched a stale fn.
+**NEXT SESSION:** read JASDvdThread.cpp fully (getCallStack rotation, dvdProc receive loop);
+trace dvdProc's dispatches (which fn ptr + args it executes per message, SUNBRIGHT_DBG_WAVE
+style); follow file 2's TDvdCall from post to dispatch. The fix likely = native port of the
+JAS dvd thread proc or its call-stack handoff (own the path), per the established pattern.
