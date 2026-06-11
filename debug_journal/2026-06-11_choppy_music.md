@@ -302,3 +302,28 @@ NEXT SESSION (concrete):
   never sets — note the seq tracks DID close).
 3. Diagnostics: /w poke handle state or unk38=0 at title to confirm BGM then starts (poke =
   confirmation only; fix per the path).
+
+## 05:40 poke results — the gate is real but clearing it isn't enough at the title
+Confirmation pokes via the new `/w` endpoint (all at the recomp title, RMS tail = per-second
+audio RMS from SUNBRIGHT_DUMP_AUDIO):
+- handle state byte 806ACC29: 4 → wrote 3 → reads back **4** (something rewrites it every
+  frame — the stop path is actively re-asserting "stopping", not a one-shot stale value).
+- DSP_prior_yield 0x8040E708 already 1; rewriting it changes nothing (osdsp exonerated, again).
+- **unk38 (805F3A10) cleared to 0 → NO music starts.** RMS tail stays blip-only.
+  Consistent with: the title fires startBGM only twice, EARLY (lr=8016d824, id 0x80010010),
+  and never retries. So a poke after boot can't confirm via audio; the gate test would need
+  unk38 cleared BEFORE those two early attempts (or a forced re-trigger of startBGM).
+- Negative results are still informative: the per-frame rewrite of state-4 means the stop
+  processing IS running every frame and considers the stop incomplete — i.e. it's waiting on
+  a completion condition (seq-done/fadeout-done flag) that never becomes true under recomp.
+  That condition is the next thing to find (checkStoppedSeq / TJASCFader path).
+
+NEXT SESSION (unchanged plan, sharpened):
+1. Find checkStoppedSeq addr + the exact condition it polls (decomp JAIBasic.cpp); trace that
+   flag/seq under recomp during the boot-era stop.
+2. Root-cause why it never completes (likely the seq side never signals done — note seq tracks
+   DID close); fix per the debugging path (recompiler defect → fix+test, else native port).
+3. Verify: handle releases (state 4 → free, unk38=0) during boot; then the title's two early
+   startBGM calls succeed; clean no-input A/B RMS shows sustained music.
+4. Machine note: GPU was exhausted (VK_ERROR_OUT_OF_DEVICE_MEMORY after ~50 runs) — reboot
+   before the next run batch; late-night oracle runs were unreliable because of this.
