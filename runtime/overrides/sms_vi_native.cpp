@@ -114,6 +114,7 @@ struct PhaseTimer {
     ~PhaseTimer() { *acc += std::chrono::duration_cast<std::chrono::microseconds>(
                         std::chrono::steady_clock::now() - t0).count(); }
 };
+extern "C" bool na_ever_pushed();   // native_audio.cpp (first real DSP push seen)
 static long long g_ph_pace, g_ph_field, g_ph_bp, g_ph_drain, g_ph_pump, g_ph_tick;
 static long g_ph_frames;
 
@@ -127,7 +128,10 @@ SUNBRIGHT_OVERRIDE(ov_VIWaitForRetrace, VI_WAIT) {
         g_ph_pace=g_ph_field=g_ph_bp=g_ph_drain=g_ph_pump=g_ph_tick=0;
     }
     static const bool paced = !getenv("SUNBRIGHT_TURBO");
-    if (paced) {
+    // PC-game boot: no frame pacing until the game produces its first audio sample (same rule
+    // as the time governor, dolphin_hook.cpp). The boot logo's frame-counted fades at a pinned
+    // 60 fps put the jingle at host second ~8; a PC port boots as fast as the machine renders.
+    if (paced && na_ever_pushed()) {
         PhaseTimer _t("pace", &g_ph_pace);
         // Host-clock 60 Hz frame pacing (fields are 1/59.94s; one retrace per call).
         using clock = std::chrono::steady_clock;

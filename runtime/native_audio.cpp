@@ -27,6 +27,7 @@
 // reproduce headless. SUNBRIGHT_DBG_NAUDIO=1 logs per-second sink stats.
 #include <SDL.h>
 #include <atomic>
+#include <chrono>
 #include <climits>
 #include <cstdint>
 #include <cstdio>
@@ -231,12 +232,24 @@ size_t be_rl_to_host_lr(const int16_t* s, size_t n, int16_t* out, size_t out_cap
     return n;
 }
 }  // namespace
-// Set on the first real DSP push: before this, the game hasn't produced any audio yet and
-// there is nothing for the time governor to pace — boot/loading runs uncapped, PC-game style.
+// Set on the first AUDIBLE DSP push (any nonzero sample): before this, the game has produced
+// only silence and there is nothing for the time governor or the frame pacer to protect —
+// boot/loading runs uncapped, PC-game style. (The DAC pushes all-zero frames from audio-init
+// onward, seconds before the first real sound — "ever pushed at all" latches far too early.)
 std::atomic<bool> g_na_ever_pushed{false};
+static const auto g_na_t0 = std::chrono::steady_clock::now();   // ≈ process start (static init)
 extern "C" bool na_ever_pushed() { return g_na_ever_pushed.load(std::memory_order_relaxed); }
 extern "C" void na_push_dsp(const int16_t* s, size_t n) {
-    if (n) g_na_ever_pushed.store(true, std::memory_order_relaxed);
+    if (!g_na_ever_pushed.load(std::memory_order_relaxed)) {
+        for (size_t i = 0; i < n * 2; i++)
+            if (s[i]) {
+                g_na_ever_pushed.store(true, std::memory_order_relaxed);
+                fprintf(stderr, "[naudio] first audible sample at host +%.1fs (boot pacing engages)\n",
+                        std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                                      g_na_t0).count());
+                break;
+            }
+    }
     if (!g_dsp.in_rate.load(std::memory_order_relaxed))
         g_dsp.in_rate.store(32028, std::memory_order_relaxed);   // default until divisor seen
     static int16_t conv[kRingCap * 2];
