@@ -1008,7 +1008,7 @@ bool interp_run_until(u32 ret, long budget, u32 sp_floor) {
 // setting RunQueueBits) until it rfi's back, then the recomp's next read sees the updated flag.
 // A guest `b .` (0x48000000) to park the idle PC at — a delivered IRQ needs a valid srr0 to rfi to.
 // We never execute it (interp_run_until stops the moment pc returns there), so any one will do.
-static u32 sunbright_idle_spin_pc() {
+u32 sunbright_idle_spin_pc() {
     // PLANT the spin — do not scavenge one from game text. The old scan (0x80003100..0x80040000)
     // found no 0x48000000 in SMS's init text (OS halt loops live at 0x8034xxxx, above the cap) and
     // fell back to 0x80003100 = real code, so the "idle spin" actually EXECUTED the program forward
@@ -1324,6 +1324,13 @@ void sunbright_poll_yield() {
     {
         extern int sunbright_jas_flush_deferred(const CPUState*);
         sunbright_jas_flush_deferred(g_cur_recomp_cpu);
+    }
+    // AID interrupts + DSP mails — owned natively end to end (aid_native.cpp): the raise is
+    // intercepted before PI, delivery happens here, mails drain here. The starving PI cause-7
+    // dispatch is out of the audio chain entirely.
+    {
+        extern int sunbright_aid_pump(const CPUState*);
+        sunbright_aid_pump(g_cur_recomp_cpu);
     }
     const int delivered = native_dispatch_pending();   // …dispatched natively (handlers via call_ppc)
     if (getenv("SUNBRIGHT_DBG_YIELD") && delivered) {

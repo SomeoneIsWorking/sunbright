@@ -539,6 +539,13 @@ void mem_w16_slow(u32 ea, u16 v) {
     }
     MMIO_W(16, ea, v);
 #ifdef HAVE_DOLPHIN_MEMMAP
+    // CPU→DSP mailbox-low write completed: if the HLE raised a DSP interrupt for its reply mails
+    // (captured in aid_native.cpp, never CoreTiming-scheduled), deliver it NOW — the post-store
+    // instruction boundary is where hardware takes it. Keeps the JAS mail round-trip synchronous.
+    if ((ea & 0x0FFFFFFEu) == 0x0C005002u) {
+        extern void sunbright_dsp_flush_sync();
+        sunbright_dsp_flush_sync();
+    }
     // CP breakpoint-register writes must wake the GPU loop: real CP hardware re-evaluates the
     // breakpoint continuously, but Dolphin's RunGpuLoop only wakes on gather bursts and CTRL
     // writes. When the GX pusher is SUSPENDED at the hi watermark (FIFO pacing) and the

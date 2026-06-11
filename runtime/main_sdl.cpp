@@ -659,6 +659,13 @@ int main(int argc, char* argv[]) {
             lm->SetEnable(Common::Log::LogType::VIDEO, true);
             lm->SetEnable(Common::Log::LogType::HOST_GPU, true);
         }
+        // SUNBRIGHT_DSPLOG=1: DSP HLE mail/ucode protocol logs at INFO — the HLE's own view of
+        // the JAS task handshake/yield cycle (which mail it waits for when production stops).
+        if (getenv("SUNBRIGHT_DSPLOG")) {
+            lm->SetConfigLogLevel(Common::Log::LogLevel::LINFO);
+            lm->SetEnable(Common::Log::LogType::DSPHLE, true);
+            lm->SetEnable(Common::Log::LogType::DSP_MAIL, true);
+        }
     }
 
     // Disable Dolphin JIT block-linking + branch-following by DEFAULT so every block dispatch goes

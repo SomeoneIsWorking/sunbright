@@ -42,12 +42,14 @@ std::atomic<unsigned> g_deferred_framedone{0};
 bool g_frames_seen = false;     // first intcount>0 observed (first real DSP frame started)
 
 void ov_sync_dsp(CPUState& cpu) {
-    // Verbatim port of the emitted func_803112d0 (same callees, same flow).
+    // Port of the emitted func_803112d0 (same callees, same flow) — with ONE deviation: the
+    // original busy-waits for a mail (on HW the ISR only fires with one pending). Under native
+    // ownership the aid_native pump drains mails at the service seam, so a guest-dispatched
+    // call can find the mailbox already empty — return instead of spinning forever.
     CPUState c = cpu;
-    do {                                              // while (!DSPCheckMailFromDSP());
-        c.lr = 0x803112e0u;
-        call_ppc(c, DSP_CHECK_MAIL);
-    } while (c.gpr[3] == 0);
+    c.lr = 0x803112e0u;
+    call_ppc(c, DSP_CHECK_MAIL);
+    if (c.gpr[3] == 0) return;                        // no mail: already drained natively
     c.lr = 0x803112ecu;
     call_ppc(c, DSP_READ_MAIL);                       // r3 = mail
     const u32 mail = c.gpr[3];
@@ -92,6 +94,10 @@ void ov_sync_dsp(CPUState& cpu) {
 }
 
 }  // namespace
+
+// Native syncDSP entry for the aid_native pump (mail already verified pending by the caller,
+// but ov_sync_dsp re-checks and no-ops safely either way).
+void sunbright_syncdsp_run(CPUState& cpu) { ov_sync_dsp(cpu); }
 
 // Deferred frame-done flush — called from the time-independent device-service seam
 // (sunbright_poll_yield), like the CP-interrupt and PE-token pumps: JAS mail delivery is the

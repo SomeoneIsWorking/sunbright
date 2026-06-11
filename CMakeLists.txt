@@ -158,6 +158,12 @@ target_link_libraries(sunbright PRIVATE
 target_link_options(sunbright PRIVATE
     "-Wl,--wrap=_Z13JitTrampolineR7JitBasej"
     "-Wl,--wrap=_ZN11PixelEngine18PixelEngineManager8SetTokenEtbi"
+    # Native AID interrupt ownership (aid_native.cpp): strip INT_AID before PI, deliver natively
+    "-Wl,--wrap=_ZN3DSP10DSPManager20GenerateDSPInterruptEml"
+    # Native SMS DAC ucode (zelda_ucode_native.cpp): own the mail state machine, no self-halt
+    "-Wl,--wrap=_ZN3DSP3HLE12UCodeFactoryEjPNS0_6DSPHLEEb"
+    "-Wl,--wrap=_ZN3DSP10DSPManager14UpdateAudioDMAEv"
+    "-Wl,--wrap=_ZN3DSP10DSPManager30GenerateDSPInterruptFromDSPEmuENS_16DSPInterruptTypeEi"
     # CoreTiming schedule/remove tracer (memcard EXI lost-completion diagnostic, SUNBRIGHT_DBG_CARD)
     "-Wl,--wrap=_ZN10CoreTiming17CoreTimingManager13ScheduleEventElPNS_9EventTypeEmNS_10FromThreadE"
     "-Wl,--wrap=_ZN10CoreTiming17CoreTimingManager11RemoveEventEPNS_9EventTypeE"
