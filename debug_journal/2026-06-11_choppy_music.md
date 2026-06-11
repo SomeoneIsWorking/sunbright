@@ -244,3 +244,18 @@ NEXT SESSION (after GPU reset/reboot):
    trace it five-context on both builds at the no-input title.
 2. Walk its guard upstream to the diverging game state.
 Tools/lessons all in place; pool/alloc/seq/DSP/ARAM layers ALL exonerated with evidence.
+
+## 05:00 FINAL frontier (precise, evidence-backed)
+Chain at the no-input recomp title (all confirmed firing via DBG_WAVE stderr):
+  MSBgm::startBGM(0x80010010) ×2 → JAIBasic::startSoundActor → startSoundDirectID ✓
+  checkSceneWaveOnMemory → returns 1 (wave gate OPEN) ✓
+  …then NOTHING: no handleToSeq/allocNewRoot/registTrack/TTrack::startSeq, ever.
+Decomp (JAIBasic::startSoundBasic, case 0x80000000): the request is stored into the seq request
+buffer (unk0->unk1FC.storeBuffer) and unk38 (current-BGM handle) tracks it; the per-frame DRAIN
+(JAIBasic::checkStartedSeq, called from processFrameWork line ~502) must turn it into a playing
+seq — it never does. The SECOND startBGM is then DROPPED by the gate
+(unk38 id low-10-bits match) — explaining the double call with no retry effect.
+NEXT SESSION (one step): trace JAIBasic::checkStartedSeq (find addr via funcs/generated callers
+of it) and its internals — find why the stored seq request never advances (its own gates:
+sequence data load state, seq parameter pool getSeqParametermeterPointer 8030262c, or the
+processFrameWork branch that calls it). Fix per the path. SE sounds prove the rest of JAI works.

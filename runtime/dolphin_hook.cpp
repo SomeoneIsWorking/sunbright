@@ -368,13 +368,29 @@ void call_ppc(CPUState& cpu, u32 address) {
     // SUNBRIGHT_DBG_WAVE: the wave-bank load chain — direct stderr (sparse events; the ring
     // floods and drops them between probe polls).
     static const bool dbg_wave = getenv("SUNBRIGHT_DBG_WAVE") != nullptr;
+    if (dbg_wave && address == 0x80301850u) {   // checkSceneWaveOnMemory: log args AND result
+        const u32 a3 = cpu.gpr[3], a4 = cpu.gpr[4];
+        RecompFunc f2 = recomp_lookup(address);
+        if (f2) {
+            f2(cpu);
+            fprintf(stderr, "[wave] checkSceneWaveOnMemory(%u,%u) -> %d\n", a3, a4, (int)cpu.gpr[3]);
+            return;
+        }
+    }
     if (dbg_wave && (address == 0x80318050u || address == 0x80310694u ||
                      address == 0x80310994u || address == 0x80301884u ||
                      address == 0x803017b0u || address == 0x80015640u ||
                      address == 0x8001569cu || address == 0x8030dc7cu /*BankMgr::noteOn*/ ||
                      address == 0x8031c894u /*TTrack::stopSeq*/ || address == 0x803068d8u /*JAIBasic::stopSeq*/ ||
                      address == 0x8031bb08u /*TTrack::mainProc*/ ||
-                     address == 0x80016978u /*MSBgm::startBGM — the title-music start funnel*/))
+                     address == 0x80016978u /*MSBgm::startBGM — the title-music start funnel*/ ||
+                     address == 0x8031deb4u /*TrackMgr::allocNewRoot*/ ||
+                     address == 0x8031dcdcu /*TrackMgr::handleToSeq*/ ||
+                     address == 0x8031df48u /*TrackMgr::registTrack*/ ||
+                     address == 0x8031c818u /*TTrack::startSeq*/ ||
+                     address == 0x80301e80u /*JAIBasic::startSoundActor*/ ||
+                     address == 0x80301fc4u /*startSoundDirectID*/ ||
+                     address == 0x80302034u /*startSoundIndirectID*/))
         fprintf(stderr, "[wave] call %08x r3=%08x r4=%08x lr=%08x\n",
                 address, cpu.gpr[3], cpu.gpr[4], cpu.lr);
     // SUNBRIGHT_DBG_NOTE: JAS note/voice lifecycle (the choppy-music bug) — noteOn, noteOff,
