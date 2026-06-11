@@ -20,6 +20,7 @@
 #include <cstring>
 #include <csetjmp>
 #include <chrono>
+#include <climits>
 #include <thread>
 #include <algorithm>
 #include <unordered_map>
@@ -305,9 +306,20 @@ static thread_local bool t_in_advance = false;
 // Falling BEHIND (a host GPU hitch, a load stall) re-anchors after 250 ms of backlog: a stall
 // must slip, never be followed by a fast-forward burst (the same mixer-overrun class).
 // SUNBRIGHT_TURBO disables the governor (uncapped, headless measurement runs).
+// Audio-clock servo on top: the HOST AUDIO SINK is the master clock for audio (PC-native —
+// on hardware the DSP runs ahead of the speaker by the AI FIFO depth; the speaker clocks the
+// system). Dolphin's granule mixer loops its last granule when its queue runs dry, which is
+// the audible skip/warble — and an exactly-1x governor makes any startup deficit PERMANENT
+// (the sink began pulling ~40 ms before the first push; measured fill sat at -33..-63 ms
+// forever). So while the mixer fill is below the cushion, emulated time may run ahead of the
+// host clock by up to kMaxLeadMs to refill it; once cushioned, it locks back to 1x. Steady
+// state is a few-ms sawtooth around the cushion, never a runaway (hard-capped at +kMaxLeadMs).
+extern "C" long sunbright_audio_fill_ms();   // mixer_trace.cpp (push/pull wrap accounting)
 static bool sb_time_ahead() {
     static const bool turbo = getenv("SUNBRIGHT_TURBO") != nullptr;
     if (turbo) return false;
+    constexpr long kCushionMs = 50;
+    constexpr long kMaxLeadMs = 150;
     auto& sys = Core::System::GetInstance();
     const u64 tps = sys.GetSystemTimers().GetTicksPerSecond();
     const u64 now_ticks = sys.GetCoreTiming().GetTicks();
@@ -317,10 +329,19 @@ static bool sb_time_ahead() {
     static bool anchored = false;
     if (!anchored) { host0 = clock::now(); ticks0 = now_ticks; anchored = true; }
     const double el = std::chrono::duration<double>(clock::now() - host0).count();
-    const u64 target = ticks0 + (u64)(el * (double)tps);
+    u64 target = ticks0 + (u64)(el * (double)tps);
     if (now_ticks + tps / 4 < target) {   // >250 ms behind: slip the anchor — no catch-up burst
         host0 = clock::now(); ticks0 = now_ticks;
         return false;
+    }
+    const long fill = sunbright_audio_fill_ms();
+    if (fill != LONG_MIN) {
+        // Audio master clock: the sink pulls at the device rate; pace emulated time so the
+        // mixer keeps exactly the cushion. The fill estimate's constant bias and slow drift
+        // are absorbed (the servo holds FILL, not a host-time offset). Hard cap: never run
+        // more than kMaxLeadMs past the host clock even if the fill signal misbehaves.
+        if (now_ticks >= target + tps * kMaxLeadMs / 1000) return true;
+        return fill >= kCushionMs;
     }
     return now_ticks >= target;
 }
