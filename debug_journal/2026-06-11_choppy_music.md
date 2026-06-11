@@ -108,3 +108,18 @@ OSJoinThread handling / who could double-join).
   the title. Then root-cause that stage's gate.
 - All tooling for this is in place (SUNBRIGHT_DBG_NOTE list in dolphin_hook.cpp — just extend
   the address list; /tracelog windowed; /r).
+
+## Session 2 closing addendum (stage-flag finding)
+- func_80299838 runs every frame at the title (lr=802A6170 = TApplication gameLoop dispatcher)
+  but bails BEFORE the IsTerminated gate: stage flag obj+608 (obj=0x80902A40, the current
+  director/app stage object) is ALREADY 1.
+- Flag writers: ctor-ish func_80296df4 (initializes 588/589/592/604/608 with one value) and the
+  success path in func_80299838 itself (after 802b76f4). +604 reads 0 while +608 reads 1 ⇒ the
+  success path DID run once — EARLY (logo era, loading wScene_1 = the 20 observed chunks) —
+  before the wave-id global became 0x212 (title/select id).
+- WORKING THEORY: the scene-change re-init (new director / re-armed stage machine per scene)
+  doesn't happen for the title/select scene under recomp — the wave id updates but no stage
+  re-runs the load. Next: map the director lifecycle (who re-creates/re-arms the stage object
+  at scene changes; compare flag+608 timeline against scene transitions; find the scene-change
+  path that should reset it (or call loadSceneWave directly) and why it's skipped).
+- Method note: trace windows are ring-limited — capture from seq 1 for boot-era events.
