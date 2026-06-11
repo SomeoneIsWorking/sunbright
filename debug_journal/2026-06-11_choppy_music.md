@@ -418,3 +418,22 @@ Exonerated along the way (kept as owned native ports + tools):
   swimming behind the pier (user called it). Memory + index updated to RESOLVED.
 - force_jit over the J3DModel block (802dddf0-802df844) froze boot — force_jit remains
   diagnostics-only and unreliable for visual bisection; not needed anyway.
+
+## Save import + widescreen culling (late afternoon)
+- **Dolphin save imported**: the user's Delfino-Plaza save lived in Dolphin's GCI-folder format
+  (GC/USA/Card A/01-GMSE-…gci), not the .raw our native CARD serves. New tool
+  `tools/gci_import.py` splices a .gci into the .raw (same-block-count entry replacement,
+  both dir copies + checksums updated, .bak first). Import verified: entry+banner intact across
+  multiple boots, card mounts clean, no format prompt. In-game load check left for a headed run
+  (headless title→file-select menu timing is fiddly; attract loop kept bouncing my captures).
+- **Widescreen 3D culling fixed**: game culls actors via SetViewFrustumClipCheckPerspective
+  (802260cc) with the camera's 4:3 aspect while the GPU projection is widened → edge pop-in.
+  Override scales the aspect ×4/3 (cull_widescreen.cpp), the game's own math does the rest.
+  Smoke-tested (gameplay renders normally); edge-case proof needs headed eyes.
+- **Open: intermittent boot/menu freeze class** — ~3-4 of ~15 runs today froze (watchdog dumps:
+  one VIWaitForRetrace blocked, two DSP-mail waits at pc=80315f6c, one FlushGpu spin under
+  DUMP backpressure which is explained). NOT deterministic; not tied to today's ports (600s runs
+  with all ports survived). Needs its own session: collect the watchdog dumps, classify, RE the
+  DSP-mail wait path. NEXT after that: screenspace effects under widescreen (TScreenTexture /
+  TMirrorModelManager EFB-copy rects — survey started, addresses 8022d360 / 80192d60 region),
+  then the 60fps model-interpolation project (docs/model_interpolation.md).
