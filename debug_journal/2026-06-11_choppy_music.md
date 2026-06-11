@@ -280,3 +280,25 @@ NEXT SESSION:
 2. Fix per the path: likely a native port of the osdsp task-switch (we own DSP mail dispatch
    already) or fixing the resume mail delivery. Verify: state byte returns to 3 post-movie;
    clean A/B title RMS sustained.
+
+## 05:15 corrected root cause (the osdsp-yield reading was wrong)
+- DSP_prior_yield (0x8040E708) is ALREADY 1 (running) — osdsp task switch is FINE.
+- *(JAIBasic+56) = **unk38 = the CURRENT BGM JAISound handle** (not a DSP state object!).
+  Its state byte (sound->unk1 at handle+1) is stuck at **4** ("stopping/fading").
+- THE REAL CHAIN: a boot-era BGM was legitimately stopped; its JAISound handle entered state 4;
+  the STOP COMPLETION (handle release → unk38 cleared, state → free) never happens under recomp
+  (the per-frame stop/fadeout processing — checkStoppedSeq/checkFadeoutSeq — never finalizes).
+  With unk38 occupied, every new BGM request (the title music, id low-bits matching or the
+  unk38!=null gate) is DROPPED at startSoundBasic. Hence: zero BGM forever after the first stop;
+  SE unaffected.
+- ALSO corrected: my "processFrameWork gate" reading was too hasty — the head iterates the
+  sound list; do not trust that interpretation without re-reading the emitted flow.
+NEXT SESSION (concrete):
+1. Read JAISound state machine (decomp JAIBasic/JAISound: unk1 states; who advances 4→released;
+   likely checkStoppedSeq → JAISystemInterface::checkSeqActive → when seq fully gone, release
+   handle + clear unk38).
+2. Trace checkStoppedSeq (find addr) + the handle state byte (806ACC29 via /trace) around the
+  boot stop; find the stuck condition (probably waiting on a seq-done flag the recomp seq side
+  never sets — note the seq tracks DID close).
+3. Diagnostics: /w poke handle state or unk38=0 at title to confirm BGM then starts (poke =
+  confirmation only; fix per the path).

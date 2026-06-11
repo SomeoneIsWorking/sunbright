@@ -40,6 +40,8 @@ extern u32 mem_r32(u32 ea);
 extern u16 mem_r16(u32 ea);
 extern void sunbright_repl_inject(const char* line);   // main_sdl.cpp — /pad scripted input
 extern unsigned long g_nintr_counts[32];               // dolphin_hook.cpp — /nintr counters
+extern void mem_w32(u32, u32);                         // memory_bridge — /w diagnostic poke
+extern void mem_w8(u32, u8);
 extern unsigned long g_ds_token_dispatches, g_ds_callbacks, g_ds_sleeps, g_ds_wakes;
 unsigned long long watchdog_vi_fields();
 
@@ -161,6 +163,16 @@ std::string handle_repl(const char* path) {
             (int)cp.IsInterruptWaiting(),
             sys.GetProcessorInterface().GetCause(), sys.GetProcessorInterface().GetMask());
 #endif
+        return std::string(buf, n);
+    }
+    if (strncmp(path, "/w?", 3) == 0) {
+        // Diagnostic guest-memory poke: /w?a=HEX&v=HEX[&b=1 for byte] — hypothesis testing
+        // (e.g. forcing a state byte to confirm a gate theory) without rebuild cycles.
+        u32 a = qarg(path, "a", 0), v = qarg(path, "v", 0), byte = qarg(path, "b", 0);
+        if (a >= 0x80000000u && a < 0x81800000u) {
+            if (byte) mem_w8(a, (u8)v); else mem_w32(a, v);
+            app("wrote %08x to %08x (%s)\n", v, a, byte ? "byte" : "word");
+        } else app("refused: %08x not in RAM\n", a);
         return std::string(buf, n);
     }
     if (strncmp(path, "/aram", 5) == 0) {
