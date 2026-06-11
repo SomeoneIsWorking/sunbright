@@ -124,6 +124,7 @@ Ring g_dsp, g_dtk;
 std::atomic<int> g_dtk_vol_l{256}, g_dtk_vol_r{256};
 std::atomic<bool> g_muted{false};
 std::atomic<uint64_t> g_cb_count{0};
+std::atomic<uint64_t> g_consumed_frames{0};   // device frames pulled (the master audio clock)
 SDL_AudioDeviceID g_dev = 0;
 
 bool dbg() { static const bool on = getenv("SUNBRIGHT_DBG_NAUDIO") != nullptr; return on; }
@@ -153,6 +154,7 @@ void sdl_callback(void*, Uint8* stream, int len) {
         out[i] = mute ? 0 : (int16_t)v;
     }
     g_cb_count.fetch_add(1, std::memory_order_relaxed);
+    g_consumed_frames.fetch_add(frames, std::memory_order_relaxed);
     if (dbg()) {
         static uint64_t last = 0;
         const uint64_t c = g_cb_count.load();
@@ -282,6 +284,11 @@ extern "C" void na_set_dtk_volume(int l, int r) {
 
 // Governor audio-clock signal: DSP ring fill in ms (LONG_MIN until the stream starts). The
 // sink consumes at the device clock; emulated time leads the host clock while this is low.
+// Device frames consumed since start — the master clock for the native JAS frame driver
+// (one JAS period per DMA-period's worth of device time).
+extern "C" uint64_t na_consumed_frames() {
+    return g_consumed_frames.load(std::memory_order_relaxed);
+}
 extern "C" long sunbright_audio_fill_ms() {
     if (!g_dev) return LONG_MIN;                       // no native sink: no audio clock
     return g_dsp.fill_ms();

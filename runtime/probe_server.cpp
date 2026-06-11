@@ -249,7 +249,7 @@ std::string handle_repl(const char* path) {
                 const u32 b = base + (u32)v * 0x180u;
                 const u16 en = mem_r16(b), done = mem_r16(b + 2);
                 if (!en && !done) continue;
-                app("v%02d en=%u done=%u", v, en, done);
+                app("v%02d en=%u done=%u ratio=%04x", v, en, done, mem_r16(b + 4));
                 for (int c = 0; c < 6; c++) {
                     const u32 ch = b + 0x10u + (u32)c * 8u;   // channels[6]{id,tgt,cur,unk} u16s
                     const u16 id = mem_r16(ch);

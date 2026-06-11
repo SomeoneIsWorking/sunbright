@@ -131,7 +131,8 @@ SUNBRIGHT_OVERRIDE(ov_VIWaitForRetrace, VI_WAIT) {
     // PC-game boot: no frame pacing until the game produces its first audio sample (same rule
     // as the time governor, dolphin_hook.cpp). The boot logo's frame-counted fades at a pinned
     // 60 fps put the jingle at host second ~8; a PC port boots as fast as the machine renders.
-    if (paced && na_ever_pushed()) {
+    static const bool paced_boot = getenv("SUNBRIGHT_PACED_BOOT") != nullptr;
+    if (paced && (paced_boot || na_ever_pushed())) {
         PhaseTimer _t("pace", &g_ph_pace);
         // Host-clock 60 Hz frame pacing (fields are 1/59.94s; one retrace per call).
         using clock = std::chrono::steady_clock;

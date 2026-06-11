@@ -22,15 +22,13 @@ struct SMSOverrides {
         //   force_jit_range(lo, hi);        // …or a whole region
         //
         // ── SMS-specific JIT routing ─────────────────────────────────────────
-        // JAIBasic audio per-frame work (processFrameWork/checkStream/
-        // checkDummyPositionBuffer, 0x80301c3c..0x80301de8). Its recomp call tree
-        // corrupts the JAIBasic singleton DATA-DEPENDENTLY → later
-        // checkPlayingSeq (0x80307c44) dereferences a NULL `this` (ea=0x180) once
-        // the level is up. force-JIT bisection: routing any function in this tree
-        // clears it. Audio frame-work is not hot-path, so route the cluster to
-        // Dolphin's JIT (documented hybrid) rather than chase the data-dependent
-        // miscompile. The proper emitter fix is TODO; tuned for THIS game.
-        force_jit_range(0x80301c00u, 0x80301e00u);
+        // (REMOVED 2026-06-11) force_jit_range(0x80301c00,0x80301e00) — an old stopgap that
+        // routed the JAI per-frame work (processFrameWork/checkStream) to the interpreter to
+        // dodge a then-unexplained data-dependent corruption. Under the current architecture
+        // it silently KILLED all sequenced audio: the interpreted frame work never matured SE
+        // requests (the jingle-dead bug's true root). The corruption it dodged predates the
+        // rlwinm/addc/dcbz/paired-single emitter fixes; if it resurfaces, root-cause the
+        // emitter — never re-add the route (debug-path rule: force_jit is diagnostics only).
 
         // ── Native overrides ─────────────────────────────────────────────────
         // Register with SUNBRIGHT_OVERRIDE in a .cpp here for a hand-written

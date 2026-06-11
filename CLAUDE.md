@@ -354,8 +354,28 @@ pending CP interrupts from live FIFO state + drains the PE token ring + flushes 
 mails; idle_run gates only time advancement, not device service; drawsync recovery also runs
 from the backpressure spin (idle_run can't run while the main thread spins Ready).
 
-**Jingle FIXED (2026-06-11 night — audible at host +0.8 s, 3/3 runs).** The old frontier
-(intr7/AID starvation, ucode self-halt) is closed by owning each link natively:
+**CORRECTION (2026-06-11, late): the "jingle fixed" claim below was FALSE.** What played was
+the THP-movie/HardStream mix (low-pitch, RMS ~400 vs the real jingle's ~5000, zcr ~300-500 vs
+1208-1316 — verified against the oracle and the ROM-decoded wave). ALL sequenced JAS audio
+(SE + BGM) is dead under recomp; only streams are audible. RMS alone cannot tell them apart —
+always check zcr/pitch against `scratch/wav/jingle/w1stLoad_0_w02.wav` or the oracle.
+**THE REAL FRONTIER (precisely pinned, reproduce with the probes below):** the JAI init sound
+(id 0x80000800, handle at `gpMSound[0x8040E17C]+0x38`) sticks at state 3 (byte +1; oracle
+reaches 4 in ~3 s). State 3→4 needs `checkSeqActiveFlag`: root TTrack (0x80625848) must have
+CHILD tracks (+0x2C4..) — oracle has 2, recomp 0. Children are opened by the parser, but
+`TTrack::mainProc` is stuck in wait-for-note-end (`mSeqCtrl.mWaitTimer==-1` + a NoteMgr channel
+that never reaches state 0xFF): the note's TChannel never starts — `TDSPChannel::alloc` /
+`playLogicalChannel` are NEVER called (DSPQueue empty or enQueue/breakLower failing), no VPB
+ever gets enabled=1, so the voice neither plays nor ends. Suspects: cmdnoteon_native /
+oscillator_native ports, or the enQueue path under recomp. Trace tooling lives in
+`overrides/jas_rate_diag.cpp` (SUNBRIGHT_JAS_RATE=1; [vstart] traces alloc/play).
+**MEASUREMENT GOTCHA (cost hours): runtime overrides do NOT fire on recomp→recomp direct
+calls** — override-based call counters only see dispatch entries (call_ppc/JIT-entry/our own
+callg subtrees). A zero count means nothing unless the caller is known non-recomp. SUNBRIGHT_TRACE
+logs dispatch entries only, same blindness.
+
+The infrastructure below from this session is real and kept (it fixed crashes/protocol wedges,
+just not the sequenced-audio death):
 - **AID/DSP-interrupt chain native** (`overrides/aid_native.cpp`): AID raise claimed at the
   `UpdateAudioDMA` --wrap seam (`GenerateDSPInterrupt` is INLINED there — wrapping it alone
   misses the raise), delivered as a level-triggered FLAG (bursting a backlog desyncs the
@@ -386,10 +406,27 @@ the FST — it lives inside /data/nintendo.szs. Never decode an .aw flat: waves 
 the WSYS table (flat decode = garbage). `tools/audio/run_check.sh [secs] [ENV=V…]` = one-command
 headless run + per-second WAV profile.
 
-Next: confirm music survives into menus/gameplay (post-jingle), residual backpressure wedge
-(~1/3 runs), THP-transition NULL-deref read, gameplay/Delfino, the recomp TTrack-tick root
-cause, FP/edge-case accuracy, widescreen fade overlays / 3D screenspace effects / culling
-(user backlog).
+Additional session landings (2026-06-11 late):
+- **Native JAS frame driver** (`overrides/jas_driver_native.cpp`): replaces AID-IRQ/DSP-mail
+  ping-pong with direct OSSendMessage posts (msg0 + batches of 7 msg1, gated on guest intcount
+  ==7) to the real audioproc thread, device-clocked (one period per 839 output frames via
+  `na_consumed_frames`). Engages on the ucode's first cmd02; ack mails suppressed; AID delivery
+  and DSP-mail interrupts off in driver mode. v1 (running updateDac/updateDSP NESTED on
+  arbitrary threads) corrupted TApplication state — the work must run on the audioproc thread;
+  only message posts are ISR-safe. 9/9 runs crash-free.
+- **Oracle guard**: all audio wraps/overrides pass through under SUNBRIGHT_DISABLE_RECOMP —
+  the native AID capture had silently broken the oracle (110 s of zero pushes). Oracle runs
+  need this or they prove nothing.
+- **force_jit_range(0x80301c00,0x80301e00) REMOVED** (sms_overrides.cpp): an old stopgap that
+  interpreted the JAI frame work; under current architecture it killed SE-request processing
+  outright. Its original excuse (data-dependent JAIBasic corruption) predates the emitter fixes.
+- SUNBRIGHT_PACED_BOOT=1 = A/B env to re-pin boot to 60fps/host clock (ruled OUT pacing as the
+  seq-audio death cause — wedge identical both ways).
+
+Next: the init-BMS note-start wedge above (the real jingle/SE/BGM blocker), residual
+backpressure wedge (~1/3 runs), THP-transition NULL-deref read, gameplay/Delfino, the recomp
+TTrack-tick root cause, FP/edge-case accuracy, widescreen fade overlays / 3D screenspace
+effects / culling (user backlog).
 
 ## Skills (slash commands)
 | Command | What it does |

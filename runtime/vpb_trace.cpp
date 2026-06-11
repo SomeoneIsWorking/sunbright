@@ -43,7 +43,8 @@ extern "C" void __wrap__ZN3DSP3HLE18ZeldaAudioRenderer8FetchVPBEtPNS1_3VPBE(
     if ((int)voice_id <= last_voice) frame++;          // ids restart each render pass
     last_voice = voice_id;
     if (!w[F_ENABLED] && !w[F_DONE]) return;           // idle slot: skip noise
-    fprintf(f, "%lu v%u en=%u done=%u", frame, voice_id, w[F_ENABLED], w[F_DONE]);
+    fprintf(f, "%lu v%u en=%u done=%u ratio=%04x src=%u base=%04x%04x", frame, voice_id,
+            w[F_ENABLED], w[F_DONE], w[2], w[0x80], w[0x8C], w[0x8D]);
     for (int c = 0; c < 6; c++) {
         const uint16_t* ch = w + F_CH0 + c * 4;
         if (ch[0])  // active mixing channel

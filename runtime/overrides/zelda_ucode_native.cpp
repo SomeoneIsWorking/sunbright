@@ -29,6 +29,11 @@
 #include <memory>
 
 #ifdef HAVE_DOLPHIN_CORE
+// Native JAS frame driver hooks (jas_driver_native.cpp) — declared at file scope so the
+// references don't acquire this file's anonymous-namespace linkage.
+extern void sunbright_jas_driver_engage();
+extern bool sunbright_jas_driver_engaged();
+
 namespace {
 
 using DSP::HLE::DSPHLE;
@@ -101,7 +106,8 @@ public:
         default:
           // MAIL_RESUME / unknown end-rendering action: Dolphin HALTs forever here.
           // Tailored: ignore — a stray mail must not kill audio for the run.
-          fprintf(stderr, "[zelda_native] ignored end-rendering mail %08x\n", mail);
+          if (++m_ignored_mails <= 8)
+            fprintf(stderr, "[zelda_native] ignored end-rendering mail %08x\n", mail);
           break;
         }
       }
@@ -202,7 +208,8 @@ private:
       case 0x01:
       {
         m_voices_per_frame = (u16)extra_data;
-        m_renderer.SetVPBBaseAddress(Read32());
+        m_vpb_base = Read32();
+        m_renderer.SetVPBBaseAddress(m_vpb_base);
 
         auto& memory = m_dsphle->GetSystem().GetMemory();
         const u32 address = Read32();
@@ -231,14 +238,29 @@ private:
 
       // Command 02: render N frames. Hijacks the mail flow until rendering completes.
       case 0x02:
+      {
+        // Steady-state render cycle exists: hand the cadence to the native JAS frame driver
+        // (jas_driver_native.cpp). From here on cmd02s arrive synchronously from the driver's
+        // finishDSPFrame calls; ack mails have no consumer and are suppressed (see
+        // SendCommandAck).
+        sunbright_jas_driver_engage();
         m_requested_frames = (cmd_mail >> 16) & 0xFF;
         m_renderer.SetOutputVolume((u16)(cmd_mail & 0xFFFF));
         m_renderer.SetOutputLeftBufferAddr(Read32());
         m_renderer.SetOutputRightBufferAddr(Read32());
         m_curr_frame = 0;
         m_curr_voice = 0;
+        // Driver mode: no sync-mail ping-pong — render every voice of every subframe now.
+        // AddVoice itself skips disabled/done VPBs, which is the ground truth the voice-map
+        // mails were derived from (DSP_CreateMap reads the same enabled bits).
+        if (sunbright_jas_driver_engaged())
+        {
+          m_sync_max_voice_id = 0xFFFFFFFF;
+          m_sync_skip_flags.fill(0xFFFF);
+        }
         RenderAudio();
         return;
+      }
 
       // NOPs on the SMS ucode (incl. 0C/0D which are NOP'd for this CRC).
       case 0x00:
@@ -269,6 +291,10 @@ private:
 
   void SendCommandAck(Ack type, u16 sync_value)
   {
+    // Driver mode: nothing consumes acks (no audioproc message pump) — pushing them would
+    // only grow the pending-mail queue and raise interrupts nobody wants.
+    if (sunbright_jas_driver_engaged())
+      return;
     m_mail_handler.PushMail(type == Ack::STANDARD ? DSP_SYNC : DSP_FRAME_END, true);
     if (type == Ack::STANDARD)
       m_mail_handler.PushMail(0xF3550000 | sync_value);
@@ -294,7 +320,23 @@ private:
         const u16 flags = m_sync_skip_flags[m_curr_voice >> 4];
         const u8 bit = 0xF - (m_curr_voice & 0xF);
         if (flags & (1 << bit))
+        {
+          // SUNBRIGHT_DBG_VOICE=1: guest VPB fields for every voice actually rendered —
+          // resampling ratio (4.12), source type, ARAM base — read straight from guest RAM.
+          static const bool dbgv = getenv("SUNBRIGHT_DBG_VOICE") != nullptr;
+          if (dbgv)
+          {
+            u16 vw[0x90];
+            m_dsphle->GetSystem().GetMemory().CopyFromEmuSwapped(
+                vw, m_vpb_base + (u32)m_curr_voice * 0x180u, sizeof(vw));
+            if (vw[0])
+              fprintf(stderr,
+                      "[voice] v%u ratio=%04x src=%u base=%04x%04x loop=%u pos=%u:%u vol2c=%d\n",
+                      m_curr_voice, vw[2], vw[0x80], vw[0x8C], vw[0x8D], vw[0x81], vw[0x34],
+                      vw[0x35], (s16)vw[0x2A]);
+          }
           m_renderer.AddVoice((u16)m_curr_voice);
+        }
 
         m_curr_voice++;
       }
@@ -314,6 +356,7 @@ private:
   State m_state = State::WAITING;
   u32 m_expected_cmd_mails = 0;
   u32 m_stray_syncs = 0;
+  u32 m_ignored_mails = 0;
 
   u32 m_sync_max_voice_id = 0;
   std::array<u16, 256> m_sync_skip_flags{};
@@ -325,6 +368,7 @@ private:
   u32 m_pending_commands = 0;
   bool m_cmd_can_execute = true;
 
+  u32 m_vpb_base = 0;
   u32 m_requested_frames = 0;
   u16 m_voices_per_frame = 0;
   u32 m_curr_frame = 0;
@@ -343,7 +387,8 @@ __real__ZN3DSP3HLE12UCodeFactoryEjPNS0_6DSPHLEEb(u32 crc, DSPHLE* dsphle, bool w
 extern "C" std::unique_ptr<UCodeInterface>
 __wrap__ZN3DSP3HLE12UCodeFactoryEjPNS0_6DSPHLEEb(u32 crc, DSPHLE* dsphle, bool wii)
 {
-  if (crc == kSmsDacCrc)
+  static const bool oracle = getenv("SUNBRIGHT_DISABLE_RECOMP") != nullptr;
+  if (crc == kSmsDacCrc && !oracle)   // oracle runs must stay pure Dolphin
     return std::make_unique<NativeZeldaUCode>(dsphle, crc);
   return __real__ZN3DSP3HLE12UCodeFactoryEjPNS0_6DSPHLEEb(crc, dsphle, wii);
 }

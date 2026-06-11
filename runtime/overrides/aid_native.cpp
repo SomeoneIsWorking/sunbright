@@ -42,11 +42,19 @@ namespace {
 constexpr u32 AID_CALLBACK_GLOBAL = 0x8040E94Cu;      // AIRegisterDMACallback storage (r13-0x5874)
 std::atomic<unsigned> g_aid_due{0};
 unsigned long g_aid_delivered = 0, g_mail_drained = 0; // diag
+// ORACLE GUARD: under SUNBRIGHT_DISABLE_RECOMP the recomp seams (poll_yield pump, mailbox
+// flush) never run, so natively-owned delivery would strand every captured interrupt — the
+// "oracle" would silently stop being pure Dolphin (it did: 110 s of zero pushes, 2026-06-11).
+// All wraps pass through untouched in that mode.
+bool native_chain_enabled() {
+    static const bool disabled = getenv("SUNBRIGHT_DISABLE_RECOMP") != nullptr;
+    return !disabled;
+}
 }  // namespace
 
 extern "C" void __real__ZN3DSP10DSPManager20GenerateDSPInterruptEml(void* self, u64 t, s64 c);
 extern "C" void __wrap__ZN3DSP10DSPManager20GenerateDSPInterruptEml(void* self, u64 t, s64 c) {
-    if (t & 0x08u) {                                   // INT_AID: owned natively, never reaches PI
+    if (native_chain_enabled() && (t & 0x08u)) {                                   // INT_AID: owned natively, never reaches PI
         g_aid_due.store(1, std::memory_order_relaxed);
         t &= ~0x08ull;
         if (!t) return;
@@ -65,6 +73,7 @@ extern void mem_w16(u32 ea, u16 v);
 extern "C" void __real__ZN3DSP10DSPManager14UpdateAudioDMAEv(void* self);
 extern "C" void __wrap__ZN3DSP10DSPManager14UpdateAudioDMAEv(void* self) {
     __real__ZN3DSP10DSPManager14UpdateAudioDMAEv(self);
+    if (!native_chain_enabled()) return;
     const u16 ctrl = mem_r16(0xCC00500Au);
     if (ctrl & 0x0008u) {                              // AID status latched by this DMA step
         mem_w16(0xCC00500Au, (u16)((ctrl & ~(0x0080u | 0x0020u)) | 0x0008u));
@@ -89,6 +98,11 @@ extern "C" void __real__ZN3DSP10DSPManager30GenerateDSPInterruptFromDSPEmuENS_16
     void* self, int type, int cycles_into_future);
 extern "C" void __wrap__ZN3DSP10DSPManager30GenerateDSPInterruptFromDSPEmuENS_16DSPInterruptTypeEi(
     void* self, int type, int cycles_into_future) {
+    if (!native_chain_enabled()) {
+        __real__ZN3DSP10DSPManager30GenerateDSPInterruptFromDSPEmuENS_16DSPInterruptTypeEi(
+            self, type, cycles_into_future);
+        return;
+    }
     (void)self; (void)cycles_into_future;
     g_dspemu_due.fetch_or((u32)type, std::memory_order_relaxed);
 }
@@ -122,7 +136,13 @@ void sunbright_dsp_flush_sync() {
 int sunbright_aid_pump(const CPUState* seed) {
     auto& ppc = Core::System::GetInstance().GetPPCState();
     int n = 0;
-    if (g_aid_due.exchange(0, std::memory_order_relaxed)) {
+    // Once the native JAS frame driver owns the cadence (jas_driver_native.cpp), AID delivery
+    // must stop: the driver calls updateDac directly; delivering syncAudio too would
+    // double-tick the DAC (msg0s pile up in audioproc's queue with no consumer anyway).
+    extern bool sunbright_jas_driver_engaged();
+    if (sunbright_jas_driver_engaged())
+        g_aid_due.store(0, std::memory_order_relaxed);
+    else if (g_aid_due.exchange(0, std::memory_order_relaxed)) {
         const u32 cb = mem_r32(AID_CALLBACK_GLOBAL);
         if (cb) {
         CPUState c;
@@ -143,10 +163,12 @@ int sunbright_aid_pump(const CPUState* seed) {
     // mailbox drain: consuming DMBH ourselves stole the DspBoot handshake mails (boot crash,
     // aidfix4) — the SDK's own ISR must do the reading.
     if (const u32 t = g_dspemu_due.exchange(0, std::memory_order_relaxed)) {
-        __real__ZN3DSP10DSPManager20GenerateDSPInterruptEml(
-            &Core::System::GetInstance().GetDSP(), t, 0);
-        g_mail_drained++;
-        n++;
+        if (!sunbright_jas_driver_engaged()) {   // driver mode: no DSP-mail interrupts at all
+            __real__ZN3DSP10DSPManager20GenerateDSPInterruptEml(
+                &Core::System::GetInstance().GetDSP(), t, 0);
+            g_mail_drained++;
+            n++;
+        }
     }
     // SUNBRIGHT_DBG_AID=1: per-second chain liveness — AID callbacks delivered, mails drained,
     // live callback ptr, JAS intcount. The link that stops moving is the one that died.

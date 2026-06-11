@@ -332,7 +332,8 @@ static bool sb_time_ahead() {
     // boot-time lead is not treated as catch-up backlog; from then on the audio-fill servo
     // and host clock own pacing as before.
     static bool audio_live = false;
-    if (!audio_live && !na_ever_pushed()) return false;  // uncapped boot/loading
+    static const bool paced_boot = getenv("SUNBRIGHT_PACED_BOOT") != nullptr;  // A/B diagnostic
+    if (!paced_boot && !audio_live && !na_ever_pushed()) return false;  // uncapped boot/loading
     // kCushionMs MUST exceed the native sink's starting-gate threshold (kGateMs,
     // native_audio.cpp) or boot deadlocks: the gate waits for a fill that production,
     // stopped here, will never deliver (froze at 4 VI fields, 2026-06-11).
@@ -1342,6 +1343,12 @@ void sunbright_poll_yield() {
     {
         extern int sunbright_aid_pump(const CPUState*);
         sunbright_aid_pump(g_cur_recomp_cpu);
+    }
+    // Native JAS frame driver (jas_driver_native.cpp): once engaged, the whole audio frame
+    // cycle (updateDac → finishDSPFrame → updateDSP ×6) runs synchronously here, sink-clocked.
+    {
+        extern int sunbright_jas_driver_pump(const CPUState*);
+        sunbright_jas_driver_pump(g_cur_recomp_cpu);
     }
     const int delivered = native_dispatch_pending();   // …dispatched natively (handlers via call_ppc)
     if (getenv("SUNBRIGHT_DBG_YIELD") && delivered) {
