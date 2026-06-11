@@ -29,6 +29,7 @@
 #endif
 
 using RecompFunc = void (*)(CPUState&);
+void sunbright_trace_jit_entry(u32 address, u32 r3, u32 lr);   // dolphin_hook.cpp
 struct JumpEntry { uint32_t addr; RecompFunc fn; };
 
 extern f32 mem_rf32(u32 ea);  // from memory_bridge (for SUNBRIGHT_WATCH matrix dump)
@@ -369,6 +370,15 @@ bool Run(uint32_t pc) {
         if (it == g_table.end()) return false;
         fn = it->second;
     }
+#ifdef HAVE_DOLPHIN_CORE
+    // JIT-entry visibility for the call tracers: a JIT-context caller enters recompiled
+    // functions HERE, bypassing call_ppc — without this, traced functions invoked from
+    // JIT-handed-off code report zero calls (the choppy-music false trail, 2026-06-11).
+    {
+        auto& tppc = Core::System::GetInstance().GetPPCState();
+        ::sunbright_trace_jit_entry(pc, tppc.gpr[3], LR(tppc));
+    }
+#endif
 
 #ifdef HAVE_DOLPHIN_CORE
     static const bool diff = getenv("SUNBRIGHT_DIFF") != nullptr;

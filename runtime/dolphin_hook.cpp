@@ -126,6 +126,8 @@ static u32 watch_addr() {
 // slot 0x800000E4, as OSGetCurrentThread reads it). Observation only — never alters
 // control flow; called from both the recomp path (call_ppc) and the interpreter loop
 // (run_jit_sync) so it sees the calls regardless of which backend runs them.
+void sunbright_trace_interp_pc(u32 pc, u32 r3, u32 lr);   // defined at file end (inote tracer)
+void sunbright_trace_jit_entry(u32 address, u32 r3, u32 lr);  // defined at file end (jnote tracer)
 static void os_sync_watch(u32 pc, u32 r3, u32 r4, u32 lr) {
     static const bool on = getenv("SUNBRIGHT_OSWATCH") != nullptr;
     if (!on || pc < 0x80346710u || pc > 0x803493ccu) return;   // fast range filter
@@ -393,7 +395,8 @@ void call_ppc(CPUState& cpu, u32 address) {
                      address == 0x802b76f4u || address == 0x802b77ecu ||
                      address == 0x802b77fcu || address == 0x802b7898u ||
                      address == 0x80299838u /*static caller of 802b76f4*/ ||
-                     address == 0x80348d08u /*OSJoinThread — join-once semantics chase*/)) {
+                     address == 0x80348d08u /*OSJoinThread — join-once semantics chase*/ ||
+                     address == 0x80348374u /*OSIsThreadTerminated*/)) {
         // c = caller lr (who ends the note/track), d = monotonic ms.
         struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
         sb_trace("note", address, cpu.gpr[3], cpu.lr,
@@ -770,6 +773,9 @@ bool interp_run_until(u32 ret, long budget, u32 sp_floor) {
             sunbright_park("poisoned handler entry (LR == pc)");
         }
         os_sync_watch(ppc.pc, ppc.gpr[3], ppc.gpr[4], ppc.spr[SPR_LR]);
+        // Interpreter-context twin of the DBG_NOTE tracers (third execution context — call_ppc
+        // and the bridge JIT entry don't see interpreted code; tag "inote").
+        sunbright_trace_interp_pc(ppc.pc, ppc.gpr[3], ppc.spr[SPR_LR]);
         if ((n & 0xFFFF) == 0) g_interp_pc_hist[ppc.pc]++;   // spin-locator sample (~every 64K steps)
         // Native external-interrupt delivery (completes the PC-native port of the GC interrupt
         // path): when an external IRQ is pending and the guest's EE is on, dispatch it natively
@@ -1170,7 +1176,12 @@ void tail_ppc(CPUState& cpu, u32 address) {
 #endif
     if (g_probe_enabled) g_probe.tail.fetch_add(1, std::memory_order_relaxed);
     RecompFunc fn = recomp_lookup(address);
-    if (fn) { fn(cpu); return; }   // tail to recomp → nested call; the caller then returns
+    if (fn) {
+        // Tail-to-recomp is a DIRECT dispatch — the call tracers in call_ppc never see it
+        // (the fifth execution context; the wave-load chain ran through here invisibly).
+        sunbright_trace_jit_entry(address, cpu.gpr[3], cpu.lr);
+        fn(cpu); return;
+    }
 #ifdef HAVE_DOLPHIN_CORE
     // Tail to a bare `blr` (an empty default callback, e.g. the no-op sound-frame hook at
     // 800339a0): executing it just returns to lr — exactly what returning from tail_ppc does in
@@ -1186,8 +1197,10 @@ void tail_ppc(CPUState& cpu, u32 address) {
     if (dbg_tail) {
         static std::unordered_map<u32, unsigned long long> hist;
         static unsigned long long n = 0;
+        if (hist.find(address) == hist.end() && hist.size() < 48)
+            fprintf(stderr, "[tail-new] non-recomp tail target %08x (lr=%08x)\n", address, cpu.lr);
         hist[address]++;
-        if ((++n & 0xFFFFF) == 0) {        // every ~1M tails: top non-recomp tail targets
+        if ((++n & 0xFFFF) == 0) {         // every ~64K tails: top non-recomp tail targets
             std::vector<std::pair<u32, unsigned long long>> v(hist.begin(), hist.end());
             std::sort(v.begin(), v.end(), [](auto& a, auto& b) { return a.second > b.second; });
             fprintf(stderr, "[tail-hist] top non-recomp tail targets after %llu tails:\n", n);
@@ -1829,3 +1842,44 @@ void sunbright_run_recomp_tree(CPUState& cpu, void (*fn)(CPUState&)) {
     sunbright_set_tail_jmp(prev);
 }
 #endif
+
+// JIT-entry twin of the call_ppc tracers (see sunbright_bridge.cpp Run): logs the same DBG_NOTE
+// address set when a recompiled function is entered FROM A JIT CONTEXT (which bypasses call_ppc).
+// Tagged "jnote" so trace analysis can tell the contexts apart.
+void sunbright_trace_jit_entry(u32 address, u32 r3, u32 lr) {
+    static const bool dbg_note = getenv("SUNBRIGHT_DBG_NOTE") != nullptr;
+    if (!dbg_note) return;
+    switch (address) {
+    case 0x8030dc7cu: case 0x8031ab50u: case 0x80312790u: case 0x8031273cu:
+    case 0x80314660u: case 0x80311550u: case 0x80311708u: case 0x8031c914u:
+    case 0x8031ce68u: case 0x8031defcu: case 0x8031deb4u: case 0x8031dd00u:
+    case 0x8031c894u: case 0x8031c818u: case 0x803068d8u: case 0x803017b0u:
+    case 0x80301850u: case 0x80301884u: case 0x80310994u: case 0x80310694u:
+    case 0x80015640u: case 0x8001569cu: case 0x802bc10cu: case 0x802bb920u:
+    case 0x802b76f4u: case 0x802b77ecu: case 0x802b77fcu: case 0x802b7898u:
+    case 0x80299838u: case 0x80348d08u: case 0x80348374u: {
+        struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+        sb_trace("jnote", address, r3, lr, (u32)(ts.tv_sec * 1000 + ts.tv_nsec / 1000000));
+        break;
+    }
+    default: break;
+    }
+}
+
+// Interpreter-context tracer (see interp loop): same DBG_NOTE set, tag "inote".
+void sunbright_trace_interp_pc(u32 pc, u32 r3, u32 lr) {
+    static const bool dbg_note = getenv("SUNBRIGHT_DBG_NOTE") != nullptr;
+    if (!dbg_note) return;
+    switch (pc) {
+    case 0x8030dc7cu: case 0x8031ab50u: case 0x8031c914u: case 0x8031ce68u:
+    case 0x803017b0u: case 0x80301850u: case 0x80301884u: case 0x80310994u:
+    case 0x80310694u: case 0x80015640u: case 0x8001569cu: case 0x802bb920u:
+    case 0x802bc10cu: case 0x802b76f4u: case 0x802b77ecu: case 0x802b77fcu:
+    case 0x802b7898u: case 0x80299838u: {
+        struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+        sb_trace("inote", pc, r3, lr, (u32)(ts.tv_sec * 1000 + ts.tv_nsec / 1000000));
+        break;
+    }
+    default: break;
+    }
+}

@@ -123,3 +123,33 @@ OSJoinThread handling / who could double-join).
   at scene changes; compare flag+608 timeline against scene transitions; find the scene-change
   path that should reset it (or call loadSceneWave directly) and why it's skipped).
 - Method note: trace windows are ring-limited — capture from seq 1 for boot-era events.
+
+## Session 3 (early morning) — corrections + tooling lessons
+- ★ FIVE EXECUTION CONTEXTS: call_ppc, bridge JIT-entry (Run), interpreter (interp_run_until),
+  raw-JIT mid-function, and tail_ppc→recomp DIRECT DISPATCH. Tracers now cover call_ppc + bridge
+  + interp + tail-to-recomp (jnote/inote tags). Raw-JIT mid-function remains invisible by nature
+  — but zero non-recomp tails this session means raw-JIT exposure is currently nil.
+- CORRECTION: the "wave id global = 0x212" was a MISREAD — the value at 0x8040E1E8 increments
+  (0x20A→0x212 = +8): something unrelated aliases it via pointer writes. The wave-id setter
+  family (802bb920 + 31 case copies) NEVER executes in any covered context.
+- Stage flag (0x80902A40+608, word at 0x80902CA0): cycles 1→0→1 at ~24-26s (a real per-scene
+  re-arm + completion: logo→title). NO further cycle at the title→select transition — the
+  select screen's wave bank (wScene_10.aw in oracle FileMon) is loaded by a DIFFERENT path tied
+  to the option/select screen load, not this stage machine.
+- Tail histogram: ZERO non-recomp tail targets over a 200s run (de-JIT state is clean).
+- New freeze observed once (watchdog 137, "Core state → Paused", pc=80002ff8) in tails2 run —
+  possibly unrelated/intermittent; freeze dump at scratch/watchdog/freeze_20260611_033114.txt.
+
+## NEXT (concrete)
+1. Find the oracle's wScene_10.aw trigger: in pure Dolphin run with FileMonitor, the load happens
+   with option.szs/scene/option.szs — find the game function that loads the OPTION scene's wave
+   (likely the select/option screen init calling JAIBasic::loadSceneWave directly, or an MSound
+   call from the boot director's menu-stage). Use the now-complete five-context tracers on
+   the recomp side at the file-select arrival moment with autostart (the chain WILL show if it
+   starts); what's missing is WHO should start it — compare with static callers of
+   loadSceneWave (803017b0)/loadGroupWave (80301884) in generated code (grep call sites, then
+   identify their containing REAL functions and trace those).
+2. The select screen under recomp shows the CARD dialog (format) which may also gate its init
+   differently than oracle (oracle had a formatted card from the start of its run).
+   Consider pre-formatting the card image before comparisons (run once, let it format, keep
+   the .raw) so both builds see identical select-screen flow.
