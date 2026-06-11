@@ -88,6 +88,7 @@ enum PadBit : uint32_t {
     P_START = 1u<<0, P_A = 1u<<1, P_B = 1u<<2, P_X = 1u<<3, P_Y = 1u<<4,
     P_Z = 1u<<5, P_L = 1u<<6, P_R = 1u<<7,
     P_UP = 1u<<8, P_DOWN = 1u<<9, P_LEFT = 1u<<10, P_RIGHT = 1u<<11,
+    P_CUP = 1u<<12, P_CDOWN = 1u<<13, P_CLEFT = 1u<<14, P_CRIGHT = 1u<<15,  // C-stick (camera)
 };
 static std::atomic<uint32_t> g_pad{0};
 // VI fields presented — a mode-independent measure of GAME progress (unlike wall time, it doesn't
@@ -147,6 +148,14 @@ pad_override(std::string_view group, std::string_view control, ControlState base
         } else if (control == "Y") {
             if (p & P_UP)    return  1.0;
             if (p & P_DOWN)  return -1.0;
+        }
+    } else if (group == "C-Stick") {
+        if (control == "X") {
+            if (p & P_CRIGHT) return  1.0;
+            if (p & P_CLEFT)  return -1.0;
+        } else if (control == "Y") {
+            if (p & P_CUP)    return  1.0;
+            if (p & P_CDOWN)  return -1.0;
         }
     } else if (group == "Triggers") {
         if (control == "L" || control == "L-Analog") return on(P_L);
@@ -335,6 +344,10 @@ static uint32_t repl_combo_bits(const std::string& combo) {
         else if (tok == "down")  bits |= P_DOWN;
         else if (tok == "left")  bits |= P_LEFT;
         else if (tok == "right") bits |= P_RIGHT;
+        else if (tok == "cup")    bits |= P_CUP;     // C-stick (camera)
+        else if (tok == "cdown")  bits |= P_CDOWN;
+        else if (tok == "cleft")  bits |= P_CLEFT;
+        else if (tok == "cright") bits |= P_CRIGHT;
     }
     return bits;
 }
