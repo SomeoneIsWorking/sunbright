@@ -314,12 +314,21 @@ static thread_local bool t_in_advance = false;
 // forever). So while the mixer fill is below the cushion, emulated time may run ahead of the
 // host clock by up to kMaxLeadMs to refill it; once cushioned, it locks back to 1x. Steady
 // state is a few-ms sawtooth around the cushion, never a runaway (hard-capped at +kMaxLeadMs).
-extern "C" long sunbright_audio_fill_ms();   // mixer_trace.cpp (push/pull wrap accounting)
+extern "C" long sunbright_audio_fill_ms();   // native_audio.cpp (native sink ring fill)
+static bool sb_time_ahead();
+// Exported governor query: lets long host-side waits (the GPU backpressure loop) keep
+// emulated time — and with it DSP audio production — flowing at the governed rate while the
+// CPU thread stalls. On hardware the DSP is an independent processor: a GPU stall never
+// starves the speakers.
+bool sunbright_time_ahead_now() { return sb_time_ahead(); }
 static bool sb_time_ahead() {
     static const bool turbo = getenv("SUNBRIGHT_TURBO") != nullptr;
     if (turbo) return false;
-    constexpr long kCushionMs = 50;
-    constexpr long kMaxLeadMs = 150;
+    // kCushionMs MUST exceed the native sink's starting-gate threshold (kGateMs,
+    // native_audio.cpp) or boot deadlocks: the gate waits for a fill that production,
+    // stopped here, will never deliver (froze at 4 VI fields, 2026-06-11).
+    constexpr long kCushionMs = 80;
+    constexpr long kMaxLeadMs = 200;
     auto& sys = Core::System::GetInstance();
     const u64 tps = sys.GetSystemTimers().GetTicksPerSecond();
     const u64 now_ticks = sys.GetCoreTiming().GetTicks();
@@ -370,6 +379,16 @@ static inline void charge_guest_time() {
         const u32 saved_msr = ppc.msr.Hex;
         ppc.msr.Hex &= ~0x8000u;
         sys.GetCoreTiming().Advance();
+        // Catch up to the governor target at this slice boundary: the fixed per-call charge
+        // (kCyclesPerCall) undershoots real time during compute-heavy stretches (~0.6x), so
+        // audio production fell behind and the native sink underran between heartbeats. The
+        // governor knows exactly how far time should be; drive event-to-event until there
+        // (bounded). This makes the per-call estimate self-correcting — the host clock, not
+        // the charge constant, owns the rate.
+        for (int g = 0; g < 64 && !sb_time_ahead(); g++) {
+            sys.GetCoreTiming().Idle();
+            sys.GetCoreTiming().Advance();
+        }
         ppc.msr.Hex = saved_msr;
         t_in_advance = false;
         // Deliver any pending external IRQ HERE, at the recomp call boundary — natively (see

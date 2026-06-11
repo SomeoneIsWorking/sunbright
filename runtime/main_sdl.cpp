@@ -67,6 +67,8 @@
 #include <optional>
 #include <string_view>
 
+extern "C" bool na_start(bool muted);   // PC-native audio sink (runtime/native_audio.cpp)
+
 // ── Globals ───────────────────────────────────────────────────────────────────
 static SDL_Window* g_window  = nullptr;
 static std::atomic<bool> g_focused{false};
@@ -719,18 +721,20 @@ int main(int argc, char* argv[]) {
         Config::SetBase(Config::GFX_VSYNC, false);
         fprintf(stderr, "[sunbright] TURBO: emulation speed unthrottled, vsync off\n");
     }
-    // Headless audio: process for REAL (real backend → real DSP/AX mixing + the game's audio
-    // sequencer run, and the backend's real-time consumption paces the audio frame callbacks the
-    // same as a windowed run), just MUTED so nothing is audible. NOT NULLSOUND — that changes the
-    // mixer's consumption/pacing, so audio-timing-dependent bugs (e.g. the JASystem::TTrack
-    // sequencer freeze after w1stLoad) don't reproduce headless. The emulation layer does the work;
-    // the output is silenced.
-    // Set BOTH ways EVERY run: Config::SetBase persists to Dolphin.ini on shutdown, so one
-    // headless (muted) run would otherwise leave every later windowed run silently muted — the
-    // exact persistence trap as the DumpFrames flag (no intro/THP sound under run.sh,
-    // 2026-06-10). SUNBRIGHT_MUTE=1 forces mute in windowed runs too.
-    Config::SetBase(Config::MAIN_AUDIO_BACKEND, std::string(BACKEND_CUBEB));
-    Config::SetBase(Config::MAIN_AUDIO_MUTED, headless || getenv("SUNBRIGHT_MUTE") != nullptr);
+    // PC-NATIVE AUDIO SINK (runtime/native_audio.cpp): our SDL device is the audio clock — the
+    // Mixer::PushSamples/PushStreamingSamples wraps feed its ring buffers and Dolphin's own
+    // backend is "No Audio Output" so nothing else consumes. This REPLACED the Cubeb path:
+    // Dolphin's granule mixer REPLAYS the last half-queue when its queue runs dry (the skipping
+    // boot-jingle bug); the native sink outputs silence on underrun and gates playback on a real
+    // cushion instead. Headless runs the identical sink, just muted (timing preserved, audio
+    // bugs reproduce headless — same principle as the muted-Cubeb setup this replaces).
+    // MAIN_AUDIO_MUTED is still set both ways every run (Config persists to Dolphin.ini).
+    {
+        const bool muted = headless || getenv("SUNBRIGHT_MUTE") != nullptr;
+        na_start(muted);
+        Config::SetBase(Config::MAIN_AUDIO_BACKEND, std::string(BACKEND_NULLSOUND));
+        Config::SetBase(Config::MAIN_AUDIO_MUTED, muted);
+    }
 
     // Dual-core: run the GPU/FIFO on its own thread. In single-core mode Dolphin processes the GP
     // FIFO on the CPU thread (Fifo::RunGpuOnCpu) inline with the recomp — profiling showed ~all

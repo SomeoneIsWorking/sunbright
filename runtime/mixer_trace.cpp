@@ -18,20 +18,13 @@ namespace {
 std::atomic<uint64_t> g_pushed{0}, g_pulled{0}, g_nonzero{0}, g_out_nonzero{0};
 }  // namespace
 
-// DSP-fifo fill estimate in ms of output time: samples pushed (resampled 32028 -> 48000)
-// minus samples pulled by the backend. The governor's audio servo reads this to keep a
-// cushion in front of the sink — Dolphin's granule mixer LOOPS its last granule when the
-// queue runs dry (m_queue_looping), which is the audible skip/warble. Negative = the sink
-// has consumed more than was ever produced (chronically dry). Approximate (fixed 32028
-// ratio, ignores DTK) — fine for a servo signal, not an absolute fill.
-// Returns LONG_MIN while the backend is not pulling yet (no audio clock to follow).
-extern "C" long sunbright_audio_fill_ms() {
-    const uint64_t pushed = g_pushed.load(std::memory_order_relaxed);
-    const uint64_t pulled = g_pulled.load(std::memory_order_relaxed);
-    if (pulled == 0 || pushed == 0) return LONG_MIN;   // no audio clock yet
-    const long long fill = (long long)(pushed * 48000.0 / 32028.0) - (long long)pulled;
-    return (long)(fill * 1000 / 48000);
-}
+// The governor's audio-clock signal (sunbright_audio_fill_ms) lives in native_audio.cpp now —
+// it reads the NATIVE sink's DSP ring fill directly instead of a push/pull estimate.
+extern "C" void na_push_dsp(const int16_t* s, size_t n);
+extern "C" void na_push_dtk(const int16_t* s, size_t n);
+extern "C" void na_set_dsp_rate(uint32_t rate);
+extern "C" void na_set_dtk_rate(uint32_t rate);
+extern "C" void na_set_dtk_volume(int l, int r);
 
 namespace {
 bool dbg() { static const bool on = getenv("SUNBRIGHT_DBG_MIXER") != nullptr; return on; }
@@ -75,21 +68,7 @@ double now_s() {
 
 extern "C" void __real__ZN5Mixer11PushSamplesEPKsm(void* self, const short* samples, size_t n);
 extern "C" void __wrap__ZN5Mixer11PushSamplesEPKsm(void* self, const short* samples, size_t n) {
-    // Prime the sink ONCE with ~50 ms of silence before the first real sample. The granule
-    // queue starts at zero depth, and the host-clock governor holds production at exactly the
-    // consumption rate — a cushion can never build on its own, so the queue runs borderline-dry
-    // forever and every scheduling hiccup longer than a granule trips Dolphin's dry-queue
-    // behavior: jump the playhead back half a queue and LOOP it (the audible skip/warble of the
-    // boot jingle). A one-time 50 ms latency is imperceptible; the 1:1 lock then maintains it.
-    {
-        static const bool primed = [self] {
-            static short silence[1600 * 2] = {};   // 1600 frames @32028 ≈ 50 ms
-            g_pushed.fetch_add(1600, std::memory_order_relaxed);
-            __real__ZN5Mixer11PushSamplesEPKsm(self, silence, 1600);
-            return true;
-        }();
-        (void)primed;
-    }
+    na_push_dsp(samples, n);                 // native sink: the only real consumer
     g_pushed.fetch_add(n, std::memory_order_relaxed);
     uint64_t nz = 0;
     for (size_t i = 0; i < n * 2; i++) nz += samples[i] != 0;
@@ -143,4 +122,28 @@ extern "C" size_t __wrap__ZN5Mixer3MixEPsm(void* self, short* samples, size_t n)
         tick("pull");
         return r;
     }
+}
+
+// ── native-sink feed wraps (the port: our SDL sink consumes; Dolphin's backend is null) ──────
+extern "C" void __real__ZN5Mixer20PushStreamingSamplesEPKsm(void* self, const short* s, size_t n);
+extern "C" void __wrap__ZN5Mixer20PushStreamingSamplesEPKsm(void* self, const short* s, size_t n) {
+    na_push_dtk(s, n);
+    __real__ZN5Mixer20PushStreamingSamplesEPKsm(self, s, n);   // keep Dolphin's DTK dump working
+}
+
+// Exact input rates: rate = FIXED_SAMPLE_RATE_DIVIDEND (108000000) / divisor.
+extern "C" void __real__ZN5Mixer28SetDMAInputSampleRateDivisorEj(void* self, unsigned div);
+extern "C" void __wrap__ZN5Mixer28SetDMAInputSampleRateDivisorEj(void* self, unsigned div) {
+    if (div) na_set_dsp_rate(108000000u / div);
+    __real__ZN5Mixer28SetDMAInputSampleRateDivisorEj(self, div);
+}
+extern "C" void __real__ZN5Mixer31SetStreamInputSampleRateDivisorEj(void* self, unsigned div);
+extern "C" void __wrap__ZN5Mixer31SetStreamInputSampleRateDivisorEj(void* self, unsigned div) {
+    if (div) na_set_dtk_rate(108000000u / div);
+    __real__ZN5Mixer31SetStreamInputSampleRateDivisorEj(self, div);
+}
+extern "C" void __real__ZN5Mixer18SetStreamingVolumeEjj(void* self, unsigned l, unsigned r);
+extern "C" void __wrap__ZN5Mixer18SetStreamingVolumeEjj(void* self, unsigned l, unsigned r) {
+    na_set_dtk_volume((int)l, (int)r);
+    __real__ZN5Mixer18SetStreamingVolumeEjj(self, l, r);
 }

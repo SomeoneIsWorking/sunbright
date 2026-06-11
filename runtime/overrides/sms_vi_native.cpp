@@ -35,6 +35,8 @@
 
 #ifdef HAVE_DOLPHIN_CORE
 
+bool sunbright_time_ahead_now();   // governor query (dolphin_hook.cpp)
+
 namespace {
 
 constexpr u32 RETRACE_COUNT = 0x8040E8D0u;
@@ -167,7 +169,13 @@ SUNBRIGHT_OVERRIDE(ov_VIWaitForRetrace, VI_WAIT) {
                 // draw-sync token lands as a CoreTiming event (needs Advance), its interrupt as a
                 // native dispatch, and the TDrawSyncManager thread (which moves the breakpoint)
                 // needs the nthr token. A bare host sleep here starved all three (2026-06-10).
-                sunbright_poll_yield();                    // Advance + native IRQ dispatch (EE-safe)
+                // Keep the DSP running while the CPU waits on the GPU: drive CoreTiming up to the
+                // governor target each spin, not one event per 200 us — a multi-second drain
+                // otherwise stops audio production cold (the native sink's underrun bursts all
+                // correlated with backpressure spikes, 2026-06-11). On hardware the DSP is an
+                // independent processor; a GPU stall never starves the speakers.
+                int k = 0;
+                do { sunbright_poll_yield(); } while (k++ < 256 && !sunbright_time_ahead_now());
                 nthrt_yield_current(&cpu);                 // let the woken sync thread run NOW
                 std::this_thread::sleep_for(std::chrono::microseconds(200));
             }

@@ -126,6 +126,7 @@ add_executable(sunbright
     runtime/pe_token_wrap.cpp
     runtime/coretiming_trace.cpp
     runtime/mixer_trace.cpp
+    runtime/native_audio.cpp
     runtime/vpb_trace.cpp
     runtime/recomp_table_weak.cpp
     ${SUNBRIGHT_OVERRIDE_SOURCES}
@@ -163,6 +164,10 @@ target_link_options(sunbright PRIVATE
     # Host audio flow meter (SUNBRIGHT_DBG_MIXER): mixer push vs backend pull rates
     "-Wl,--wrap=_ZN5Mixer11PushSamplesEPKsm"
     "-Wl,--wrap=_ZN5Mixer3MixEPsm"
+    "-Wl,--wrap=_ZN5Mixer20PushStreamingSamplesEPKsm"
+    "-Wl,--wrap=_ZN5Mixer28SetDMAInputSampleRateDivisorEj"
+    "-Wl,--wrap=_ZN5Mixer31SetStreamInputSampleRateDivisorEj"
+    "-Wl,--wrap=_ZN5Mixer18SetStreamingVolumeEjj"
     # DSP HLE voice parameter tracer (SUNBRIGHT_DUMP_VPB): per-frame VPB fields per voice
     "-Wl,--wrap=_ZN3DSP3HLE18ZeldaAudioRenderer8FetchVPBEtPNS1_3VPBE"
 )
