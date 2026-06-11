@@ -127,7 +127,7 @@ static u32 watch_addr() {
 // control flow; called from both the recomp path (call_ppc) and the interpreter loop
 // (run_jit_sync) so it sees the calls regardless of which backend runs them.
 void sunbright_trace_interp_pc(u32 pc, u32 r3, u32 lr);   // defined at file end (inote tracer)
-void sunbright_trace_jit_entry(u32 address, u32 r3, u32 lr);  // defined at file end (jnote tracer)
+void sunbright_trace_jit_entry(u32 address, u32 r3, u32 lr, u32 r4 = 0, u32 r5 = 0);  // defined at file end (jnote tracer)
 static void os_sync_watch(u32 pc, u32 r3, u32 r4, u32 lr) {
     static const bool on = getenv("SUNBRIGHT_OSWATCH") != nullptr;
     if (!on || pc < 0x80346710u || pc > 0x803493ccu) return;   // fast range filter
@@ -397,6 +397,56 @@ void call_ppc(CPUState& cpu, u32 address) {
                      address == 0x8030d284u /*trackToSeqp*/))
         fprintf(stderr, "[wave] call %08x r3=%08x r4=%08x lr=%08x\n",
                 address, cpu.gpr[3], cpu.gpr[4], cpu.lr);
+    // SUNBRIGHT_DBG_SEQ: BMS parser dispatch — does the BGM root ever execute cmdOpenTrack?
+    // (silent-BGM bug: root ticks, all 16 child slots NULL). Direct stderr — sparse events.
+    static const bool dbg_seq = getenv("SUNBRIGHT_DBG_SEQ") != nullptr;
+    if (dbg_seq && (address == 0x80321300u /*TSeqParser::mainProc*/ ||
+                    address == 0x8031f8f8u /*cmdOpenTrack*/ ||
+                    address == 0x8031f978u /*cmdOpenTrackBros*/ ||
+                    address == 0x8031cdd4u /*TTrack::startTrack*/ ||
+                    address == 0x8031de2cu /*TrackMgr::getNewTrack*/ ||
+                    address == 0x8031ce68u /*TTrack::openTrack*/ ||
+                    address == 0x80320f30u /*TSeqParser::cmdNoteOn*/ ||
+                    address == 0x8031a818u /*TTrack::noteOn*/ ||
+                    address == 0x8030dc7cu /*BankMgr::noteOn*/ ||
+                    address == 0x8030e08cu /*BankMgr::noteOnOsc*/ ||
+                    address == 0x8031ab50u /*TTrack::noteOff*/ ||
+                    address == 0x8030d3c4u /*JAISystemInterface::trackInit*/ ||
+                    address == 0x8030d330u /*setSeqPortargsU32*/ ||
+                    address == 0x8031d470u /*TTrack::writePortApp*/ ||
+                    address == 0x8031d3c4u /*TTrack::writePortAppDirect*/ ||
+                    address == 0x8031fda0u /*cmdWritePort*/ ||
+                    address == 0x8031fe74u /*cmdParentWritePort*/ ||
+                    address == 0x8031feacu /*cmdChildWritePort*/ ||
+                    address == 0x80320300u /*cmdSyncCPU*/ ||
+                    address == 0x803029e0u /*JAIBasic::setParameterSeqSync (track callback)*/ ||
+                    address == 0x8030b330u /*JAISound::setSeqPortData*/ ||
+                    address == 0x8030b5e0u /*JAISound::setTrackPortData*/))
+        fprintf(stderr, "[seq] call %08x r3=%08x r4=%08x r5=%08x lr=%08x\n",
+                address, cpu.gpr[3], cpu.gpr[4], cpu.gpr[5], cpu.lr);
+    // The game's registered seq-sync callback (sCallBackFunc=800158a8): log cmd AND result.
+    if (dbg_seq && address == 0x800158a8u) {
+        const u32 trk = cpu.gpr[3], cmd = cpu.gpr[4];
+        RecompFunc fcb = recomp_lookup(address);
+        if (fcb) {
+            fcb(cpu);
+            fprintf(stderr, "[sync] cb trk=%08x cmd=%04x -> %04x lr=%08x\n",
+                    trk, cmd & 0xffff, cpu.gpr[3] & 0xffff, cpu.lr);
+            return;
+        }
+    }
+    // Sampled BMS-cursor dump (every 512th mainProc): which bytes is each track's parser
+    // reading, does the cursor advance, what's the wait timer? r5 = TSeqCtrl*.
+    if (dbg_seq && address == 0x80321300u) {
+        static unsigned long n = 0;
+        if ((n++ % 512) == 0) {
+            const u32 ctrl = cpu.gpr[5];
+            const u32 base = mem_r32(ctrl), cur = mem_r32(ctrl + 4), wait = mem_r32(ctrl + 8);
+            u32 b[2] = { mem_r32(cur), mem_r32(cur + 4) };
+            fprintf(stderr, "[seqcur] trk=%08x base=%08x cur=%08x(+%x) wait=%d bytes=%08x %08x\n",
+                    cpu.gpr[4], base, cur, cur - base, (int)wait, b[0], b[1]);
+        }
+    }
     // SUNBRIGHT_DBG_NOTE: JAS note/voice lifecycle (the choppy-music bug) — noteOn, noteOff,
     // release/force-stop, DSP queue add/remove. d = monotonic ms (note-duration measurement).
     static const bool dbg_note = getenv("SUNBRIGHT_DBG_NOTE") != nullptr;
@@ -1215,7 +1265,7 @@ void tail_ppc(CPUState& cpu, u32 address) {
     if (fn) {
         // Tail-to-recomp is a DIRECT dispatch — the call tracers in call_ppc never see it
         // (the fifth execution context; the wave-load chain ran through here invisibly).
-        sunbright_trace_jit_entry(address, cpu.gpr[3], cpu.lr);
+        sunbright_trace_jit_entry(address, cpu.gpr[3], cpu.lr, cpu.gpr[4], cpu.gpr[5]);
         fn(cpu); return;
     }
 #ifdef HAVE_DOLPHIN_CORE
@@ -1882,7 +1932,22 @@ void sunbright_run_recomp_tree(CPUState& cpu, void (*fn)(CPUState&)) {
 // JIT-entry twin of the call_ppc tracers (see sunbright_bridge.cpp Run): logs the same DBG_NOTE
 // address set when a recompiled function is entered FROM A JIT CONTEXT (which bypasses call_ppc).
 // Tagged "jnote" so trace analysis can tell the contexts apart.
-void sunbright_trace_jit_entry(u32 address, u32 r3, u32 lr) {
+void sunbright_trace_jit_entry(u32 address, u32 r3, u32 lr, u32 r4, u32 r5) {
+    // DBG_SEQ twin (see call_ppc): catch parser-chain entries arriving from a JIT context.
+    static const bool dbg_seq = getenv("SUNBRIGHT_DBG_SEQ") != nullptr;
+    if (dbg_seq && (address == 0x80321300u || address == 0x8031f8f8u ||
+                    address == 0x8031f978u || address == 0x8031cdd4u ||
+                    address == 0x8031de2cu || address == 0x8031ce68u ||
+                    address == 0x80320f30u || address == 0x8031a818u ||
+                    address == 0x8030dc7cu || address == 0x8030e08cu ||
+                    address == 0x8031ab50u || address == 0x8030d3c4u ||
+                    address == 0x8030d330u || address == 0x8031d470u ||
+                    address == 0x8031d3c4u || address == 0x8031fda0u ||
+                    address == 0x8031fe74u || address == 0x8031feacu ||
+                    address == 0x80320300u || address == 0x803029e0u ||
+                    address == 0x8030b330u || address == 0x8030b5e0u))
+        fprintf(stderr, "[seq-jt] call %08x r3=%08x r4=%08x r5=%08x lr=%08x\n",
+                address, r3, r4, r5, lr);
     static const bool dbg_note = getenv("SUNBRIGHT_DBG_NOTE") != nullptr;
     if (!dbg_note) return;
     switch (address) {

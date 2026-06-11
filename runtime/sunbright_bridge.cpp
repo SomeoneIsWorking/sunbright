@@ -29,7 +29,7 @@
 #endif
 
 using RecompFunc = void (*)(CPUState&);
-void sunbright_trace_jit_entry(u32 address, u32 r3, u32 lr);   // dolphin_hook.cpp
+void sunbright_trace_jit_entry(u32 address, u32 r3, u32 lr, u32 r4, u32 r5);   // dolphin_hook.cpp
 struct JumpEntry { uint32_t addr; RecompFunc fn; };
 
 extern f32 mem_rf32(u32 ea);  // from memory_bridge (for SUNBRIGHT_WATCH matrix dump)
@@ -376,7 +376,7 @@ bool Run(uint32_t pc) {
     // JIT-handed-off code report zero calls (the choppy-music false trail, 2026-06-11).
     {
         auto& tppc = Core::System::GetInstance().GetPPCState();
-        ::sunbright_trace_jit_entry(pc, tppc.gpr[3], LR(tppc));
+        ::sunbright_trace_jit_entry(pc, tppc.gpr[3], LR(tppc), tppc.gpr[4], tppc.gpr[5]);
     }
 #endif
 

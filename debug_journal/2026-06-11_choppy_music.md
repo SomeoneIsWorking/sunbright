@@ -327,3 +327,41 @@ NEXT SESSION (unchanged plan, sharpened):
    startBGM calls succeed; clean no-input A/B RMS shows sustained music.
 4. Machine note: GPU was exhausted (VK_ERROR_OUT_OF_DEVICE_MEMORY after ~50 runs) — reboot
    before the next run batch; late-night oracle runs were unreliable because of this.
+
+## Day session — silent-BGM mechanism fully mapped (root cause narrowed to the cue write)
+Corrections to earlier readings (IMPORTANT):
+- **JAISound state 4 = PLAYING normally** (3=started, 5=fading). The "stuck stopping handle"
+  reading was WRONG: checkStartedSeq sets 3→4 when checkSeqActiveFlag!=0 (my state poke 4→3 got
+  re-promoted to 4 — proof checkStartedSeq runs). checkStoppedSeq's flag==0 release is normal
+  end-of-song cleanup. The engine believes the title BGM IS playing.
+- checkStartedSeq/trackInit "zero calls" were INLINING artifacts: the shipped binary inlines
+  them into the caller (writePortApp calls show lr INSIDE trackInit's body at 8030d954).
+
+Mechanism (traced with new SUNBRIGHT_DBG_SEQ stderr tracer + sampled BMS-cursor dumps):
+- The BGM track tree builds CORRECTLY under recomp: root 80625848 opens 2 mid-parents,
+  each opens 16 children (76 cmdOpenTrack); tempo 120 set; all faithful to the BMS bytes
+  (verified byte-by-byte against live memory at 80716240).
+- The root conductor then enters wait 0xFFFF → jmp-back **infinite sleep BY DESIGN**
+  (bytes `88 ff ff / c8 00 …`); root parser ticking 2×/100s is CORRECT behavior.
+- Each child sits in a BMS poll loop: `cb 00 00` (readPort0 → reg, mirrored into reg3 by
+  writeRegDirect) / `c8 03 …` (exit if ==1) / `80 01` wait / jmp back. The song starts when
+  **port0 import == 1** (the game's section cue).
+- Under recomp ports 0/1 of the children read **0x00FF**, rewritten every frame (clobbers pokes).
+  Poking port0=1 in the gap freed child 806263b8 → it advanced to the next gate (mechanism
+  CONFIRMED: the cue value is what's missing).
+- Game APIs that write track ports (JAISound::setTrackPortData 8030b5e0 / setSeqPortData
+  8030b330) — **zero calls under recomp**. setSeqPortargsU32/cmdChild/ParentWritePort — zero.
+  writePortAppDirect writes only ports 0xe/0xf (value 0) from 80015ba8/bb8 (MSSeCallBack init).
+- sCallBackFunc = 800158A8 = MSSeCallBack::setParameterSeqSync (SE water-filter etc.;
+  cmd 0x0C → 0xFF traffic is healthy SE logic, unrelated).
+
+OPEN: who writes the 0xFF to ports0/1 each frame, and who (in the oracle) writes the section
+cue (1). Oracle memory comparison in progress — note track heap addresses DIFFER under
+DISABLE_RECOMP; locate via TrackMgr handle table (ptr @0x8040E6C0, count @0x8040E6C8, SDA
+r13-23296/-23288).
+
+Infra gotchas today: /r probe reads under DISABLE_RECOMP initially looked dead (was the
+GPU-failed runs, not the probe); VK_ERROR_OUT_OF_DEVICE_MEMORY recurred on oracle runs at
+3D-scene entry while plain VRAM usage is only 3.3/12.8 GB — NOT global VRAM pressure;
+recomp runs unaffected; investigating (suspect: descriptor-pool sizing under the
+JIT-timing path; do NOT overlap two sunbright instances — also breaks probe port).
