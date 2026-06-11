@@ -316,8 +316,19 @@ JAS audioproc thread silently exiting on a DSP frame-done message with intcount=
 hardware, routine under Dolphin's instant HLE mails. Native port `overrides/audioproc_native.cpp`
 (+ tail_ppc bare-blr return, forced entry 0x80312000, native direct-OSExitThread). Verify audio
 headlessly with `SUNBRIGHT_DUMP_AUDIO=1` → Dump/Audio WAV → RMS per second (no ears needed).
+**Music fixed (2026-06-11):** silent BGM/SE ("single-frame samples") was TDSPChannel::updateAll's
+DSP-overload limiter (breakLowerActive(126)) misfiring because Dolphin's DSP HLE delivers the 8
+subframe sync mails instantly (HW pacing assumption broken — same class as the audioproc
+intcount==0 fix). Native port `overrides/dsp_update_native.cpp` (faithful 64-voice loop, limiter
+dropped). Verified by WAV RMS: sustained music for 280 s. Also ported native (exonerated but
+owned): cmdNoteOn, TOscillator. New tools: `/jas` (live JAS track-tree walk), `/vpb` wave-source
+fields, `SUNBRIGHT_WATCH_WADDR` write-watch (dladdr names the emitted writer). Oracle gotcha: use
+`SUNBRIGHT_BACKEND=OGL` for DISABLE_RECOMP runs (Vulkan oracle dies with a spurious
+VK_ERROR_OUT_OF_DEVICE_MEMORY at 3D-scene entry; cause open); never overlap two instances.
+
 Next: THP-transition NULL-deref read (~79s under autostart), gameplay/Delfino, the recomp
-TTrack-tick root cause, FP/edge-case accuracy.
+TTrack-tick root cause, FP/edge-case accuracy, widescreen fade overlays / 3D screenspace
+effects / culling (user backlog).
 
 ## Skills (slash commands)
 | Command | What it does |
