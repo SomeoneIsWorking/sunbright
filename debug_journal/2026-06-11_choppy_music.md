@@ -437,3 +437,18 @@ Exonerated along the way (kept as owned native ports + tools):
   DSP-mail wait path. NEXT after that: screenspace effects under widescreen (TScreenTexture /
   TMirrorModelManager EFB-copy rects — survey started, addresses 8022d360 / 80192d60 region),
   then the 60fps model-interpolation project (docs/model_interpolation.md).
+
+## Title-screen mystery SOLVED + save import VERIFIED IN-GAME (evening)
+Why /pad "didn't work": THREE stacked causes, all fixed/understood:
+1. **/pad combos were case-sensitive** — every `do=START`/`do=A` sent today parsed to 0 bits and
+   was silently dropped (fixed: tolower; commit earlier).
+2. **Stale-instance port theft** — a wedged old run held :17654; new run's probe logged
+   "bind failed: Address already in use" and every command went to the zombie. RULE: after
+   pkill, wait for process death before relaunching (and check the bind line in the log).
+3. **Menu input timing** — the title needs Start HELD long (~1s+); 300ms presses fall through.
+   3000ms hold worked instantly.
+With those fixed, drove headless: title → file select (**imported save VISIBLE: file A ☀×01**)
+→ jumped into block A → START → **DELFINO PLAZA loaded and playing** (Mario+FLUDD, Piantas,
+lives ×3 from the save, graffiti portal rendering). gci_import.py chain fully verified.
+File-select recipe (for the next session): hold start 3000 at title; left 900; a 400 (block A);
+a 500 (START); ~20 s scene load.
