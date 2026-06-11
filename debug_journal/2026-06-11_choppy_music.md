@@ -524,3 +524,15 @@ FIX (can't-deadlock-by-construction):
    they only needed time to keep advancing.
 Watchdog enhancement (do first): freeze dump prints every GuestThread {state, ready_seq,
 os_thread, blocked-at lr} + token holder — one dump = full scheduler picture.
+
+## ★ DEADLOCK FIXED (verified 3/3)
+Root cause as analyzed: MAIN_SYNC_ON_SKIP_IDLE (implied by SYNC_GPU) made CoreTiming::Idle()
+wait for the GPU thread inside the nthr idle driver, while the GPU sat at a drawsync FIFO
+breakpoint waiting for CPU-side token dispatch that runs LATER in the same idle iteration —
+AB-BA, whole scheduler parked (dispatch +0). Fix: Config MAIN_SYNC_ON_SKIP_IDLE=false at boot
+(main_sdl.cpp) — the idle driver owns GPU pacing (RunGpu kick, drawsync recovery, VI retrace);
+normal slices keep SyncGPU token semantics. VERIFIED: 3 consecutive scripted Plaza scene-entry
+drives, zero freezes, zero new watchdog dumps (was 3/3 frozen before the fix).
+Remaining nit: the /shot burst at scene entry yields 0 frames (timing lands in the load gap) —
+capture works post-load; banner-fix image verification still pending a post-load banner moment
+(or user's headed look).

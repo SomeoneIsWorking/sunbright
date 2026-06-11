@@ -688,6 +688,13 @@ int main(int argc, char* argv[]) {
     // the CPU timeline and can never coalesce. SUNBRIGHT_SYNC_GPU=0 restores free-running for A/B.
     if (!getenv("SUNBRIGHT_SYNC_GPU") || atoi(getenv("SUNBRIGHT_SYNC_GPU")) != 0)
         Config::SetBase(Config::MAIN_SYNC_GPU, true);
+    // …but never sync the GPU from CoreTiming::Idle(). The nthr idle driver calls Idle() in its
+    // bounded loop; with skip-idle sync on, Idle() waits for the GPU thread, which can itself be
+    // parked at a drawsync FIFO breakpoint waiting for CPU-side token dispatch — which runs LATER
+    // in the same idle iteration. That AB-BA froze the scheduler (dispatch +0, all threads parked;
+    // watchdog dumps 2026-06-11, scene-entry cluster). The idle driver does its own GPU pacing
+    // (RunGpu kick, drawsync recovery, VI retrace), so the skip-idle sync is redundant here.
+    Config::SetBase(Config::MAIN_SYNC_ON_SKIP_IDLE, false);
 
     // Override backend via env (e.g. SUNBRIGHT_BACKEND=OGL, Vulkan, Software)
     const char* backend_env = getenv("SUNBRIGHT_BACKEND");
