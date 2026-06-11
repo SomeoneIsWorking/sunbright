@@ -371,13 +371,17 @@ void call_ppc(CPUState& cpu, u32 address) {
     if (dbg_wave && (address == 0x80318050u || address == 0x80310694u ||
                      address == 0x80310994u || address == 0x80301884u ||
                      address == 0x803017b0u || address == 0x80015640u ||
-                     address == 0x8001569cu))
+                     address == 0x8001569cu || address == 0x8030dc7cu /*BankMgr::noteOn*/ ||
+                     address == 0x8031c894u /*TTrack::stopSeq*/ || address == 0x803068d8u /*JAIBasic::stopSeq*/ ||
+                     address == 0x8031bb08u /*TTrack::mainProc*/ ||
+                     address == 0x80016978u /*MSBgm::startBGM — the title-music start funnel*/))
         fprintf(stderr, "[wave] call %08x r3=%08x r4=%08x lr=%08x\n",
                 address, cpu.gpr[3], cpu.gpr[4], cpu.lr);
     // SUNBRIGHT_DBG_NOTE: JAS note/voice lifecycle (the choppy-music bug) — noteOn, noteOff,
     // release/force-stop, DSP queue add/remove. d = monotonic ms (note-duration measurement).
     static const bool dbg_note = getenv("SUNBRIGHT_DBG_NOTE") != nullptr;
     if (dbg_note && (address == 0x8030dc7cu /*BankMgr::noteOn*/ ||
+                     address == 0x8031c894u /*TTrack::stopSeq*/ || address == 0x803068d8u /*JAIBasic::stopSeq*/ ||
                      address == 0x8031ab50u /*TTrack::noteOff*/ ||
                      address == 0x80312790u /*TChannel::releaseOsc*/ ||
                      address == 0x8031273cu /*TChannel::forceStopOsc*/ ||
@@ -1865,9 +1869,17 @@ void sunbright_trace_jit_entry(u32 address, u32 r3, u32 lr) {
     case 0x8030dc7cu: case 0x8031ab50u: case 0x80312790u: case 0x8031273cu:
     case 0x80314660u: case 0x80311550u: case 0x80311708u: case 0x8031c914u:
     case 0x8031ce68u: case 0x8031defcu: case 0x8031deb4u: case 0x8031dd00u:
-    case 0x8031c894u: case 0x8031c818u: case 0x803068d8u: case 0x803017b0u:
+    case 0x8031c818u: case 0x803068d8u: case 0x803017b0u:
     case 0x80301850u: case 0x80301884u: case 0x80310994u: case 0x80310694u:
     case 0x80015640u: case 0x8001569cu: case 0x802bc10cu: case 0x802bb920u: case 0x80318050u:
+    case 0x8031c894u: {
+        // stopSeq via jit/tail context: also direct stderr under DBG_WAVE (ring drops events).
+        static const bool dw = getenv("SUNBRIGHT_DBG_WAVE") != nullptr;
+        if (dw) fprintf(stderr, "[wave-jt] call %08x r3=%08x lr=%08x\n", address, r3, lr);
+        struct timespec ts2; clock_gettime(CLOCK_MONOTONIC, &ts2);
+        sb_trace("jnote", address, r3, lr, (u32)(ts2.tv_sec * 1000 + ts2.tv_nsec / 1000000));
+        break;
+    }
     case 0x802b76f4u: case 0x802b77ecu: case 0x802b77fcu: case 0x802b7898u:
     case 0x80299838u: case 0x80348d08u: case 0x80348374u: {
         struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
