@@ -49,6 +49,22 @@ paths stand down once CoreTiming reaches host-elapsed × ticks/s; >250 ms behind
 anchor (no catch-up bursts); TURBO bypasses. Verified: push rate locked to 32048-32072/s
 (0.1%). This is the own-the-timing-natively step from docs/dolphin_independence.md.
 
+## Part 3 — the PORT: native SDL audio sink (56eb14d) — the skipping jingle's real home
+Knob fixes (governor, prime) could not remove the mechanism: Dolphin's granule mixer REPLAYS
+the last half-queue on a dry queue, and the queue went dry on every emu-thread stall. Port:
+runtime/native_audio.cpp owns delivery — push wraps → our DSP/DTK rings → SDL 48 kHz callback
+(fill servo to 80 ms, starting gate 60 ms, silence-not-replay on underrun, native WAV dump);
+Dolphin backend = null. Governor reads the real ring fill. Production kept alive through CPU
+stalls: backpressure loop + charge_guest_time both drive CoreTiming to the governor target
+(underruns 91→39→6 across the steps, autostart 110 s).
+GOTCHAS for next session:
+- Governor stop level (kCushionMs 80, dolphin_hook) MUST exceed the sink gate (kGateMs 60,
+  native_audio) or boot deadlocks with fill parked between them (froze at 4 VI fields).
+- SUNBRIGHT_DUMP_AUDIO now writes scratch/wav/native_{dsp,dtk}.wav (Dolphin's Dump/Audio WAVs
+  are header-only stubs under the null backend).
+- Remaining 6 underruns/110 s + intermittent scene-entry freeze = the pre-existing GPU FIFO
+  wedge frontier, not the audio path.
+
 ## Dead ends / notes
 - /cur during the stall showed srr0=80296dd4 lr=OSExitThread for the setup thread — that is
   its CREATION context (OSThread ctx is stale while a thread runs natively); /cur is not a
