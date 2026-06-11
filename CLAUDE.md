@@ -354,21 +354,42 @@ pending CP interrupts from live FIFO state + drains the PE token ring + flushes 
 mails; idle_run gates only time advancement, not device service; drawsync recovery also runs
 from the backpressure spin (idle_run can't run while the main thread spins Ready).
 
-**OPEN FRONTIER — audio dies at the logo transition (intermittent, the "jingle inaudible" bug):**
-evidence chain: /nintr shows intr7 (DSP/AID) dispatches stall (~2.5/s vs ~57/s expected; other
-causes keep flowing) while UpdateAudioDMA keeps pushing (so the AudioDMA CoreTiming event runs);
-DSP_CONTROL=0x0952 (AID_mask enabled), AUDIO_DMA enabled. The JAS chain is msg-0-driven:
-AID IRQ → __AIDHandler → syncAudio → msg 0 → updateDac (per-frame tick); when AID delivery
-starves, voices freeze → constant-DC pushes (sounds like silence). ORACLE (DISABLE_RECOMP+OGL,
-same binary) plays continuous music — everything below the hybrid interrupt layer is sound.
-Also still intermittent: a residual backpressure wedge (~1/3 runs, watchdog kill). Next: own
-AID delivery time-independently (like CP/PE above) or root-cause why cause-7 dispatch starves;
-syncdsp_native.cpp now DEFERS intcount==0 frame-done mails (flush at poll_yield) instead of
-dropping — protocol-faithful, but wasn't the death mechanism (zero occurrences in dead runs).
+**Jingle FIXED (2026-06-11 night — audible at host +0.8 s, 3/3 runs).** The old frontier
+(intr7/AID starvation, ucode self-halt) is closed by owning each link natively:
+- **AID/DSP-interrupt chain native** (`overrides/aid_native.cpp`): AID raise claimed at the
+  `UpdateAudioDMA` --wrap seam (`GenerateDSPInterrupt` is INLINED there — wrapping it alone
+  misses the raise), delivered as a level-triggered FLAG (bursting a backlog desyncs the
+  JAS↔ucode cycle → Zelda HLE self-halt); DSP-mail interrupts captured at
+  `GenerateDSPInterruptFromDSPEmu` so they are never CoreTiming-scheduled (the time-parked
+  starvation root cause behind intr7 ~2.5/s). SUNBRIGHT_DBG_AID=1 = per-second chain liveness.
+- **Native SMS DAC ucode** (`overrides/zelda_ucode_native.cpp`, --wrap `UCodeFactory`, CRC
+  56d36052): our own SYNC_PER_FRAME mail state machine reusing Dolphin's pure-math
+  ZeldaAudioRenderer. Tailored: NO permanent HALTED state (Dolphin's "Sync mail received when
+  rendering was not active. Halting." killed audio for the whole run); out-of-phase syncs
+  dropped, unknown commands acked. SUNBRIGHT_DBG_ZN=1 traces every mail + state.
+- **Synchronous mail delivery** (`memory_bridge.cpp` mem_w16_slow): the captured DSP interrupt
+  is flushed at the post-store boundary of the CPU→DSP mailbox-low write (0xCC005002) — but
+  ONLY with EE on. Flushing into an EE-masked critical section interleaves nested JAS mail
+  sends into an in-flight mail sequence (torn mail `cdd17ac0` = CDD1 high + param low);
+  flushing from inside HandleMail deadlocks boot. Without the flush the round-trip waited for
+  poll_yield: ~1.5 s per render cycle = audio at 1/40 speed = silence.
+- **Unpaced boot**: neither the time governor (`sb_time_ahead`) nor the 60 fps frame pacer
+  (`ov_VIWaitForRetrace`) engage until the game pushes its first NONZERO audio sample
+  (`na_ever_pushed`, native_audio.cpp — "ever pushed at all" latches too early: the DAC pushes
+  silence from audio-init). Boot loading loops yield once per frame, so pacing from frame 0
+  cost ~8 s wall. PC-game rule: load uncapped, pace from the first audible sample.
 
-Next: the AID-starvation frontier above, the residual wedge, THP-transition NULL-deref read,
-gameplay/Delfino, the recomp TTrack-tick root cause, FP/edge-case accuracy, widescreen fade
-overlays / 3D screenspace effects / culling (user backlog).
+**Audio data decodes PC-natively from the ROM** (`docs/audio_data_formats.md`, `tools/jingle/`):
+RVZ→FST (`sunbright-jingle` extractor), nintendo.szs→Yaz0→RARC→mSound.aaf→WSYS wave table→AFC
+(`jingle.py`). `w1stLoad_0.aw` wave 2 = the boot jingle (verified by ear). mSound.aaf is NOT on
+the FST — it lives inside /data/nintendo.szs. Never decode an .aw flat: waves are offset-cut by
+the WSYS table (flat decode = garbage). `tools/audio/run_check.sh [secs] [ENV=V…]` = one-command
+headless run + per-second WAV profile.
+
+Next: confirm music survives into menus/gameplay (post-jingle), residual backpressure wedge
+(~1/3 runs), THP-transition NULL-deref read, gameplay/Delfino, the recomp TTrack-tick root
+cause, FP/edge-case accuracy, widescreen fade overlays / 3D screenspace effects / culling
+(user backlog).
 
 ## Skills (slash commands)
 | Command | What it does |
