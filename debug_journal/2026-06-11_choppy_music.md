@@ -407,3 +407,14 @@ Exonerated along the way (kept as owned native ports + tools):
   around the recompiled call. VERIFIED via framedump: mid-fade frames dim edge-to-edge
   (was: bright pillars). Circular shine-wipe geometry not yet checked (needs a shine event /
   headed eyes).
+
+## Gameplay verification sweep (afternoon)
+- **Headless gameplay reached and driven**: autostart → menus → airstrip; /pad moves Mario;
+  new probe endpoint **/shot?on=1|0** toggles burst frame-dump on demand (continuous
+  SUNBRIGHT_DUMP falls behind the GPU on long runs → FIFO backs up → VI stalls → watchdog
+  kill; two freeze reports were exactly this, not a guest bug).
+- **3D-skin bug NO LONGER REPRODUCES**: Mario renders correctly on the airstrip (screenshot
+  verified — cap/overalls/proportions all right). The "invisible Mario" earlier was him
+  swimming behind the pier (user called it). Memory + index updated to RESOLVED.
+- force_jit over the J3DModel block (802dddf0-802df844) froze boot — force_jit remains
+  diagnostics-only and unreliable for visual bisection; not needed anyway.

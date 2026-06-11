@@ -15,6 +15,9 @@
 #include <arpa/inet.h>
 
 #ifdef HAVE_DOLPHIN_CORE
+#  include "Common/Config/Config.h"
+#  include "Core/Config/MainSettings.h"
+#  include "Core/Config/GraphicsSettings.h"
 #  include "Core/System.h"
 #  include "Core/Core.h"
 #  include "Core/CoreTiming.h"
@@ -185,6 +188,20 @@ std::string handle_repl(const char* path) {
         u32 h = 2166136261u; unsigned long nz = 0;
         for (u32 i = 0; i < len; i++) { const u8 b = p[a + i]; h = (h ^ b) * 16777619u; nz += b != 0; }
         app("aram a=%08x n=%x fnv=%08x nonzero=%lu\n", a, len, h, nz);
+        return std::string(buf, n);
+    }
+    if (strncmp(path, "/shot", 5) == 0) {
+        // Burst frame dump: /shot?on=1 enables Dolphin's image dump, /shot (or ?on=0)
+        // disables it. Headless has no present path, so Core::SaveScreenShot never fires;
+        // the dump path works headless. Short bursts replace SUNBRIGHT_DUMP for long
+        // interactive drives — continuous PNG dumping falls behind the GPU and stalls VI
+        // into a watchdog kill. Frames land in User/Dump/Frames/.
+#ifdef HAVE_DOLPHIN_CORE
+        const bool on = qarg(path, "on", 0) != 0;
+        Config::SetCurrent(Config::MAIN_MOVIE_DUMP_FRAMES, on);
+        Config::SetCurrent(Config::GFX_DUMP_FRAMES_AS_IMAGES, on);
+        app("frame dump %s\n", on ? "ON" : "OFF");
+#endif
         return std::string(buf, n);
     }
     if (strncmp(path, "/jas", 4) == 0) {
