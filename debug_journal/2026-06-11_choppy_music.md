@@ -229,3 +229,18 @@ FORCED STOP: the machine hit VK_ERROR_OUT_OF_DEVICE_MEMORY after ~50 runs tonigh
 device memory exhausted (also the cause of the repeated "oracle probe didn't come up"
 failures late in the night). Reboot or GPU settle needed before further runs; treat late-night
 oracle-side nulls with suspicion.
+
+## 04:45 — pool exonerated; corrected frontier statement
+TrackMgr pool at the recomp title: seqRemain=0x98/0xB9 free — HEALTHY. getNewTrack cannot be
+the blocker. Root 80639888 (NULL children, sparse noteOns) is most plausibly the SE/system
+root — the blips ARE its sound effects. SIMPLEST TRUE STATEMENT: under recomp the TITLE BGM
+SEQUENCE IS NEVER STARTED (no root created for it; allocNewRoot fired 0× all night), while the
+oracle starts and plays it. The divergence is the GAME's decision/path to start the title BGM
+(JAIBasic startSeq / MSound BGM start — find the title-music start call: likely
+MSound::startSoundBGM-ish from the title director; gate suspects: save/option state, the
+intro-THP completion state, or a sound-handle status read).
+NEXT SESSION (after GPU reset/reboot):
+1. Find the BGM-start API (MSoundBGM.cpp in decomp; funcs for startSound* with BGM ids) and
+   trace it five-context on both builds at the no-input title.
+2. Walk its guard upstream to the diverging game state.
+Tools/lessons all in place; pool/alloc/seq/DSP/ARAM layers ALL exonerated with evidence.
