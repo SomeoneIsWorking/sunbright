@@ -153,3 +153,13 @@ OSJoinThread handling / who could double-join).
    differently than oracle (oracle had a formatted card from the start of its run).
    Consider pre-formatting the card image before comparisons (run once, let it format, keep
    the .raw) so both builds see identical select-screen flow.
+
+## Session 3 verification (formatted card)
+- With the now-persistent formatted card: ARAM hole PERSISTS (0xEC0000 region nonzero=22378 of
+  256KB), voices still ~1 concurrent, RMS still choppy. The card alone doesn't fix it.
+- ACTIVE LEAD: the menu/select wave load is save-flag-gated (reference/sms/src/System/
+  MenuDir.cpp:174-176: TFlagManager getBool(0x30007) → gpMSound->loadWave(MS_WAVE_UNK128)).
+  Decomp polarity may be imprecise; the lesson is the menu sound flow depends on save/flag
+  state. Next: trace TFlagManager::getBool + MenuDir's load call (find their addresses via
+  generated call sites of 80015640 inside the MenuDir region ~802e-802fxxxx?) at the select
+  arrival with the five-context tracers; read flag 0x30007's backing storage.
