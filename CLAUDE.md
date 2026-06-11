@@ -307,15 +307,29 @@ injects pad input over HTTP (works headed too), `ms`/durations parse as DECIMAL,
 can't wedge/kill the probe, and `SUNBRIGHT_DBG_CARD` ring-traces EXI writes + CoreTiming card
 events into `/tracelog`.
 
-Headless now renders (real Vulkan, no present) and mixes audio (real Cubeb, muted) for real — Null
-backends are gone, so render/audio-timing bugs reproduce headless. `SUNBRIGHT_TURBO=1` is opt-in
-(headless defaults to real-time). Watchdog catches freezes via no-VI-field (CoreTiming arms it,
-pre-first-frame too) and `kill -QUIT <pid>` forces an on-demand dump.
+Headless now renders (real Vulkan, no present) and mixes audio for real — Null backends are gone,
+so render/audio-timing bugs reproduce headless. `SUNBRIGHT_TURBO=1` is opt-in (headless defaults
+to real-time). Watchdog catches freezes via no-VI-field (CoreTiming arms it, pre-first-frame too)
+and `kill -QUIT <pid>` forces an on-demand dump.
+**Audio is PC-NATIVE (2026-06-11, 56eb14d, `runtime/native_audio.cpp`):** our SDL 48 kHz device is
+the audio clock — `Mixer::Push*` wraps feed our DSP/DTK ring buffers (fill servo 80 ms, starting
+gate 60 ms, SILENCE on underrun), Dolphin's backend is null (its granule mixer REPLAYS audio on a
+dry queue = the skipping-jingle class; never reintroduce it as the sink). Emulated time is paced by
+`sb_time_ahead()` (dolphin_hook.cpp): host-clock governor + audio-fill servo; the GPU-backpressure
+loop and `charge_guest_time` both drive CoreTiming to the governor target so a CPU/GPU stall never
+starves audio production (hardware truth: the DSP is an independent processor). GOTCHA: governor
+stop level (kCushionMs 80) must exceed the sink gate (kGateMs 60) or boot deadlocks. Audio dump:
+`SUNBRIGHT_DUMP_AUDIO=1` → `scratch/wav/native_{dsp,dtk}.wav` (Dolphin's Dump/Audio is a stub now).
+Diagnostics: `SUNBRIGHT_DBG_NAUDIO=1` (per-second ring fill + underrun counts — read THIS first for
+any audio complaint; underruns correlating with `[vi-perf]` backpressure = GPU stall, not audio),
+`SUNBRIGHT_DBG_MIXER[_BURST=N|_OUT=path]`, analyzers `tools/audio/wav_rms.py` + `loop_detect.py`
+(beware: JAS loops wave samples — bit-exact repeats in the jingle are CONTENT, not sink loops).
 **Audio fixed (2026-06-11, c069f31):** the dead-audio bug (silence after the first instant) was the
 JAS audioproc thread silently exiting on a DSP frame-done message with intcount==0 — impossible on
 hardware, routine under Dolphin's instant HLE mails. Native port `overrides/audioproc_native.cpp`
 (+ tail_ppc bare-blr return, forced entry 0x80312000, native direct-OSExitThread). Verify audio
-headlessly with `SUNBRIGHT_DUMP_AUDIO=1` → Dump/Audio WAV → RMS per second (no ears needed).
+headlessly with `SUNBRIGHT_DUMP_AUDIO=1` → `scratch/wav/native_dsp.wav` → RMS per second (no ears
+needed).
 **Music fixed (2026-06-11):** silent BGM/SE ("single-frame samples") was TDSPChannel::updateAll's
 DSP-overload limiter (breakLowerActive(126)) misfiring because Dolphin's DSP HLE delivers the 8
 subframe sync mails instantly (HW pacing assumption broken — same class as the audioproc
