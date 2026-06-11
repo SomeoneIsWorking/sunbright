@@ -480,3 +480,25 @@ approved "can't deadlock by construction"): single native dispatcher owning DSP 
 card path, audit native_card completion → OSSendMessage/OSResumeThread wake delivery under nthr
 (suspect: completion posted before the waiter parks → wake lost; needs a token/condvar handoff
 like the GX PE-token fix). NEXT SESSION: this is the top item — it gates all interactive work.
+
+## Deadlock analysis (full mechanism, evening session 2)
+Latest freeze (14:49) decoded end to end:
+- Main/render thread: nthrt_block_drain (VIWaitForRetrace frame barrier) — waits for all other
+  Ready threads to reach block points.
+- Card-delay thread: func_802b35cc = TIMED OSYieldThread loop (OSGetTick elapsed vs duration —
+  the card "loading" minimum-display delay at scene entry). Needs CoreTiming/TB to advance.
+- nthrt_yield_current runs idle_run (time advance) ONLY when ready_count()==0; yielding thread
+  stays Ready otherwise.
+- THE SMOKING GUN: watchdog dispatch counters all +0 (recomp/interp_steps/poll_yield) — NOBODY
+  executes. Not a guest-logic wait: the nthr scheduler itself stopped dispatching. With threads
+  parked in nthr::block and the idle handler not stepping (interp_steps +0), this is a
+  HOST-LEVEL LOST WAKE in nthr's token handoff (cv notify lost / missed wakeup between block()
+  release and the scheduler's pick loop), racing exactly at the block_drain + timed-yield +
+  scene-load thread-churn window. The earlier vframeWork DSP-mail and FlushGpu-in-idle freezes
+  are the same scheduler stall observed from different parked frames.
+NEXT (first move of the fix): extend the watchdog freeze dump to print EVERY GuestThread's nthr
+state (Ready/Blocked/DrainWait/seq), the token holder, and each host thread's backtrace — that
+names the exact lost edge. Then redesign the handoff so it can't deadlock: single condvar +
+generation counter, every state transition publishes under the lock, scheduler re-checks
+readiness after every wait (no naked notify), timed-yield threads get a deadline the scheduler
+owns (it advances CoreTiming itself when the only Ready work is a future deadline).
