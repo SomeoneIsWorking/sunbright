@@ -20,6 +20,7 @@
 #include <cstring>
 #include <csetjmp>
 #include <chrono>
+#include <thread>
 #include <algorithm>
 #include <unordered_map>
 #include <vector>
@@ -294,6 +295,35 @@ static inline bool sb_is_wild_branch_target(u32 a) { return a < 0x80000000u; }
 // into guest helpers).
 static constexpr int kCyclesPerCall = 96;   // ~avg recomp function cost; order-of-magnitude is enough
 static thread_local bool t_in_advance = false;
+
+// Host-clock time governor — own the pacing natively (docs/dolphin_independence.md). Emulated
+// CoreTiming must never run AHEAD of the host clock: the advancing paths (per-call charge, the
+// VI heartbeat's forced field, the idle/yield drivers) each pace themselves, but they SUM —
+// measured 34.3k-37k DSP samples/s pushed against the 32028 Hz rate (7-15% fast), overrunning
+// the host mixer and skipping (the jittery/slow boot-jingle bug, 2026-06-11). Every advancing
+// path asks sb_time_ahead() and stands down while emulated time is at/past the host target.
+// Falling BEHIND (a host GPU hitch, a load stall) re-anchors after 250 ms of backlog: a stall
+// must slip, never be followed by a fast-forward burst (the same mixer-overrun class).
+// SUNBRIGHT_TURBO disables the governor (uncapped, headless measurement runs).
+static bool sb_time_ahead() {
+    static const bool turbo = getenv("SUNBRIGHT_TURBO") != nullptr;
+    if (turbo) return false;
+    auto& sys = Core::System::GetInstance();
+    const u64 tps = sys.GetSystemTimers().GetTicksPerSecond();
+    const u64 now_ticks = sys.GetCoreTiming().GetTicks();
+    using clock = std::chrono::steady_clock;
+    static clock::time_point host0;
+    static u64 ticks0 = 0;
+    static bool anchored = false;
+    if (!anchored) { host0 = clock::now(); ticks0 = now_ticks; anchored = true; }
+    const double el = std::chrono::duration<double>(clock::now() - host0).count();
+    const u64 target = ticks0 + (u64)(el * (double)tps);
+    if (now_ticks + tps / 4 < target) {   // >250 ms behind: slip the anchor — no catch-up burst
+        host0 = clock::now(); ticks0 = now_ticks;
+        return false;
+    }
+    return now_ticks >= target;
+}
 static inline void charge_guest_time() {
     // Armed only once the GC OS has threading + exception handlers installed (current-thread
     // pointer set). Charging during early boot shifts device/decrementer events into the
@@ -305,6 +335,7 @@ static inline void charge_guest_time() {
         if (!cur) return;
         armed = true;
     }
+    if (sb_time_ahead()) return;   // governor: emulated time is at the host-clock target
     auto& sys = Core::System::GetInstance();
     auto& ppc = sys.GetPPCState();
     ppc.downcount -= kCyclesPerCall;
@@ -1203,8 +1234,10 @@ void sunbright_poll_yield() {
     if (g_cur_recomp_cpu) cpu_to_dolphin_state(*g_cur_recomp_cpu, ppc);
     ppc.pc = ppc.npc = idle_pc;
     ppc.msr.Hex &= ~0x8000u;                    // EE off: Advance must only make IRQs PENDING —
-    ct.Idle();                                  // delivery is native, never the guest vector path.
-    ct.Advance();                               // device callback raises the pending IRQ…
+    if (!sb_time_ahead()) {                     // governor: don't advance past the host clock
+        ct.Idle();                              // delivery is native, never the guest vector path.
+        ct.Advance();                           // device callback raises the pending IRQ…
+    }
     const int delivered = native_dispatch_pending();   // …dispatched natively (handlers via call_ppc)
     if (getenv("SUNBRIGHT_DBG_YIELD") && delivered) {
         static long y = 0;
@@ -1258,11 +1291,14 @@ void sunbright_wait_vi_field(CPUState& cpu) {
     const u64 t0 = ct.GetTicks();
     const u64 target = t0 + vi.GetTicksPerField();
     int guard = 0;
-    for (; ct.GetTicks() < target && guard < 8192; ++guard) {
+    // Governor-bounded: if the per-call charges already advanced this frame's worth of time,
+    // forcing another full field on top is exactly the over-rate the governor exists to stop.
+    for (; ct.GetTicks() < target && guard < 8192 && !sb_time_ahead(); ++guard) {
         ct.Idle();                                  // skip to the next scheduled device event
         ct.Advance();                               // process it — IRQs become pending only
         native_dispatch_pending();                  // …and are dispatched natively
     }
+    native_dispatch_pending();   // deliver pending IRQs even on a governor-skipped frame
     {   // field-advance telemetry: is emulated time really moving one field per heartbeat?
         static long calls = 0; static u64 ticks_acc = 0; static int guards_acc = 0;
         ticks_acc += ct.GetTicks() - t0; guards_acc += guard;
@@ -1598,6 +1634,12 @@ static bool idle_run(long max_steps) {
         // The frame heartbeat's bounded DrainWait is due: stop idling so the token hand-off
         // releases it on time (it advances emulated time at the host frame rate itself).
         if (nthr::bounded_drain_expired()) break;
+        // Governor: emulated time has reached the host-clock target — a real idle thread WAITS
+        // here (host sleep), it does not fast-forward device events ahead of real time.
+        if (sb_time_ahead()) {
+            std::this_thread::sleep_for(std::chrono::microseconds(200));
+            continue;
+        }
         ppc.msr.Hex = IDLE_MSR & ~0x8000u;          // EE OFF at the spin: IRQs become pending only —
         // Skip straight to the next scheduled device event instead of burning one SingleStep per
         // guest cycle (that capped the whole emulator at ~0.06×). Idle()+Advance() DOES move the
