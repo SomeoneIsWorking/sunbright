@@ -536,3 +536,14 @@ drives, zero freezes, zero new watchdog dumps (was 3/3 frozen before the fix).
 Remaining nit: the /shot burst at scene entry yields 0 frames (timing lands in the load gap) —
 capture works post-load; banner-fix image verification still pending a post-load banner moment
 (or user's headed look).
+
+## Widescreen wipe curtain FIXED (verified by pixel measurement)
+The file-select circle wipe (hx_wiper, not decompiled) drew its curtain 0..640 under the
+squeezed 2D ortho → black covered only the centre 4:3, scene visible in the side pillars
+(left/right luminance 120 during wipe frames). Fix: TSMSFader::draw scope now SUSPENDS the
+global 2D squeeze (g_ws_2d_suspend, honored in scene_render's GXSetProjection hook) and
+re-issues the last 2D ortho unsqueezed on entry / resqueezed on exit — every fade/wipe
+primitive then spans the full 16:9 present. VERIFIED: wipe frames measure 0/0/0 across the
+width (was 0 centre /120 sides); aperture circle centred (mildly elliptical — same as real
+hardware stretched to a 16:9 TV). Banner (telop) fill check still pending a Plaza-entry
+capture; fill_rect widening covers it mechanically.

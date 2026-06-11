@@ -69,8 +69,14 @@ static void ov_gx_projection(CPUState& cpu) {
     // the real 16:9 edges PER ELEMENT in hud.cpp (it owns drawFullSet and shifts each element's x by
     // the pillar width). Doing it per-element by name — not via a "during HUD" ortho exemption —
     // avoids the tail-recursive flag leak that previously stretched/shifted the menus.
+    // Fader/wipe scope (fader_widescreen.cpp): full-screen curtains must span the whole 16:9
+    // present, so the squeeze is suspended and the ortho reloaded for the duration of
+    // TSMSFader::draw. Record the last 2D ortho so the fader wrap can re-issue it.
+    extern bool g_ws_2d_suspend; extern u32 g_ws_last_ortho;
+    if (is2d && mtx >= 0x80000000u) g_ws_last_ortho = mtx;
     bool patched = false; f32 m00 = 0.0f, m03 = 0.0f;
-    if (widescreen_on() && (!is2d || seen_3d) && mtx >= 0x80000000u && mtx < 0x81800000u) {
+    if (widescreen_on() && !(is2d && g_ws_2d_suspend) &&
+        (!is2d || seen_3d) && mtx >= 0x80000000u && mtx < 0x81800000u) {
         m00 = mem_rf32(mtx + 0x00);
         mem_wf32(mtx + 0x00, m00 * scale);
         if (is2d) { m03 = mem_rf32(mtx + 0x0c); mem_wf32(mtx + 0x0c, m03 * scale); }
