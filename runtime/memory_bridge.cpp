@@ -146,8 +146,11 @@ u32  g_poll_reps = 0;
 // Diagnostic for "gather burst with CP unprogrammed" — shows whether/what GXSetGPFifo wrote.
 void sb_log_fifo_reg_write(u32 ea, u32 v, int bits) {
     static int left = 48;
+    // CPCtrl is written every frame; logging it unbounded was ~200k lines per run.
+    // SUNBRIGHT_DBG_FIFOREG=1 restores the always-log-CPCtrl firehose.
+    static const bool fifohose = getenv("SUNBRIGHT_DBG_FIFOREG") != nullptr;
     const u32 lo = ea & 0x0FFFFFFFu;
-    const bool is_ctrl = (lo == 0x0C000002u);     // CPCtrl (GPReadEnable etc.): always log
+    const bool is_ctrl = fifohose && (lo == 0x0C000002u);
     if (left <= 0 && !is_ctrl) return;
     if ((lo >= 0x0C000000u && lo < 0x0C000080u) || (lo >= 0x0C003000u && lo < 0x0C003030u) ||
         (lo >= 0x0C001000u && lo < 0x0C001010u)) {
