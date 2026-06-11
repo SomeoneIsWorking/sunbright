@@ -39,6 +39,16 @@ delay it at most one field, never starve it. The unbounded drain was the unfaith
 Headless autostart through file-select into scene load: max drain 321 ms (was 59982), vi-perf
 continuous, audio WAV accumulates through the loading window. recomp_test 43/43.
 
+## Part 2 — boot-jingle jitter/skip = emulated time running 7-15% FAST (FIXED 610f1bf)
+User then reported the Nintendo-logo jingle under ./run.sh is jittery/skippy and slow.
+Measured with SUNBRIGHT_DBG_MIXER (mixer_trace wrap): pushes 34.3k-37k samples/s against the
+32028 Hz DSP rate — the advancing paths SUM (per-call 96-cycle charge + heartbeat's forced
+field + poll_yield + idle_run), so emulated time ran 7-15% fast and the host mixer overran →
+drops/jitter. Fix: sb_time_ahead() host-clock governor (dolphin_hook.cpp) — all advancing
+paths stand down once CoreTiming reaches host-elapsed × ticks/s; >250 ms behind slips the
+anchor (no catch-up bursts); TURBO bypasses. Verified: push rate locked to 32048-32072/s
+(0.1%). This is the own-the-timing-natively step from docs/dolphin_independence.md.
+
 ## Dead ends / notes
 - /cur during the stall showed srr0=80296dd4 lr=OSExitThread for the setup thread — that is
   its CREATION context (OSThread ctx is stale while a thread runs natively); /cur is not a
