@@ -513,13 +513,20 @@ perc TPmap pitch@0 (oracle-verified; pikmin2's getParam re-crosses its parser fi
 the oracle, not field names); spray stop-fade (engine owns vol[6] during stopFade).
 **Audio A/B harness:** tools/audio/delfino_ab.sh (+ spray driver) joins oracle /vpb voices to
 native /njas voices by wave content hash (FNV of first 64 .aw bytes) → per-wave pitch ¢ / vol
-dB report. GOTCHA: medians are scene-timeline-noisy between sides; for fine work time-align or
-ear-check. OPEN (quantified): 0:233 BGM-bank drums ~-35 dB quiet natively (chain factors all
-1.0 — deficit unexplained, suspect oracle-side boost or velocity curve); bank-6 fixed-key SE
-family still ±20-45 dB scattered; wave 10:1 -16 semitones; ~10 oracle-only waves missing;
-PER2 release parse garbage (0xC00A). Pikmin 2 decomp clone at scratch/ref/pikmin2 (same-gen
-JASystem, matched — better nav source than reference/sms); Dusklight at scratch/ref/dusklight
-(native JAudio2 PC port — freeverb fxmix reference).
+dB report (p90 peak-gain — medians mix BGM/SE contexts). HARNESS GOTCHAS (both burned a
+triage round): dolby voices must read dolby_volume_current (channels[6] are IGNORED by the
+ucode when use_dolby_volume — stale ch values masked all 3D motion as constant volume), and
+scene timelines drift between sides.
+**Inaudible-BGM-drums FIXED (9271566) — the osc-route class:** cmdSimpleADSR/SimpleEnv do NOT
+route the track osc onto notes (only cmdOscRoute; reg-6 write resets routes to 0xF); our
+force-route + initStart hijacked percussion attacks (1-tick drum notes peaked 0.0167) and
+wiped perc directRelease. PER2 release 0xC00A is NOT garbage (bits14-15=curve mode).
+OPEN (quantified, post-fix): wave 10:1 ~-16 semitones; 11:0 -300¢; 5:229 drum keys ±100-300¢
+medians; 6:77/6:231 +13..25 dB; ~9-17 oracle-only waves missing per run; fxmix/dolby buses
+unimplemented. Pikmin 2 decomp clone at scratch/ref/pikmin2 (same-gen JASystem, matched —
+better nav source than reference/sms; but its TPmap getParam field-crossing is a trap: trust
+the ORACLE for data semantics); Dusklight at scratch/ref/dusklight (native JAudio2 PC port —
+freeverb fxmix reference).
 
 Next: native audio M4 (delete the guest audio path) per docs/native_audio_engine.md; oracle
 ear-check of BGM fidelity (tempo/instruments); fxmix/dolby + category concurrency; residual
