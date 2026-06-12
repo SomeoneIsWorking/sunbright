@@ -763,6 +763,10 @@ struct Track {
     // effective channel params (TChannelMgr mVolume etc.)
     float chVol = 1.f, chPitch = 1.f, chPan = 0.5f, chFx = 0.f, chDolby = 0.f;
     u32 updateFlags = 0;           // unk3B4
+    // BMS entry this track was opened at (recorded by track_init) — lets the SE layer
+    // clone a category worker snippet onto a private per-sound track (direct dispatch).
+    const u8* openData = nullptr; u32 openOff = 0;
+    u32 gen = 0;   // alloc generation — owners must match before touching a recycled track
 
     void writePortImport(u32 port, u16 v) {
         portImport[port & 15] = 1;
@@ -771,7 +775,7 @@ struct Track {
     }
 };
 
-static Track g_tracks[64];
+static Track g_tracks[160];   // direct per-sound dispatch: each live SE owns a private track
 static Track* g_root = nullptr;
 
 // SUNBRIGHT_NJAS_SOLO_CHILD=N (diagnostic): solo one root-child track index — only notes
@@ -793,7 +797,7 @@ static int root_child_index(Track& t) {
 
 static Track* track_alloc() {
     for (auto& t : g_tracks)
-        if (!t.used) { t = Track(); t.used = true; return &t; }
+        if (!t.used) { const u32 g = t.gen + 1; t = Track(); t.gen = g; t.used = true; return &t; }
     fprintf(stderr, "[njas] out of tracks\n");
     return nullptr;
 }
@@ -827,6 +831,7 @@ static void track_update(Track& t);
 
 static void track_init(Track& t, const u8* data, u32 off, Track* parent) {
     t.seq.init(data, off);
+    t.openData = data; t.openOff = off;
     if (!parent) {
         t.tempo = 0x78; t.timebase = 0x30; t.timeRelate = 1; t.paused = 0;
         t.pauseStatus = 10; t.volumeMode = 0; t.mute = 0;
@@ -1906,6 +1911,9 @@ struct ActiveSE {
     u32 posPtr = 0;                      // game-world position Vec* (JAIActor.pos)
     u16 sinceReq = 0;                    // ticks since last (re-)request (JAISound lifeTime)
     float lastDist = 0.f;                // camera distance from the 3D tick (steal score)
+    u32 dbg3d = 0;                       // rate limiter for the se_3d debug line
+    bool did3d = false;                  // first 3D application snaps (no ramp from 1.0)
+    u32 workerGen = 0;                   // worker->gen at bind (track pool recycles)
 };
 static ActiveSE g_active[32];
 
@@ -1918,6 +1926,10 @@ static u32 ab_owner_id(Track& t) {
 
 // all root tracks ticked by render_subframe: g_root (init/SE BMS) + one per playing BGM
 static std::vector<Track*> g_players;
+// private per-sound SE tracks (direct dispatch): parented to their category mid for
+// param/tempo inheritance but ticked from this list, NOT the parent's 16-slot child
+// array (the slot limit starved spawns: 24k expired requests in one 150 s run)
+static std::vector<Track*> g_se_tracks;
 
 // recursive close: silence notes, free the whole child tree (TTrack::close semantics)
 static void track_close_recursive(Track& t) {
@@ -1940,18 +1952,27 @@ static bool se_category_muted(u32 id) {
 
 static void active_init(ActiveSE& a, Track* w, u32 id, u32 swbit, u8 prio) {
     a = ActiveSE();
-    a.used = true; a.worker = w; a.id = id; a.swbit = swbit; a.prio = prio;
+    a.used = true; a.worker = w; a.workerGen = w ? w->gen : 0;
+    a.id = id; a.swbit = swbit; a.prio = prio;
     for (int i = 0; i < 9; i++) {
         a.pan[i].cur = a.pan[i].target = 0.5f;
         a.fx[i].cur = a.fx[i].target = 0.f;      // fx/dolby combine ADDITIVELY: neutral = 0
         a.dolby[i].cur = a.dolby[i].target = 0.f;
     }
 }
+// Free a private SE track: detach from its parent's child slot and tear down its tree.
+static void se_track_free(Track* w) {
+    if (!w) return;
+    for (auto it = g_se_tracks.begin(); it != g_se_tracks.end();)
+        it = (*it == w) ? g_se_tracks.erase(it) : it + 1;
+    track_close_recursive(*w);
+}
 static void worker_outer_reset(Track* w) {
     w->outerSwitch = 0; w->outerVol = 1.f; w->outerPitch = 1.f; w->outerPan = 0.5f;
     w->outerFx = 0.f; w->outerDolby = 0.f;
 }
 static void active_stop_now(ActiveSE& a) {
+    if (a.worker && (!a.worker->used || a.worker->gen != a.workerGen)) a.worker = nullptr;
     if (a.worker) {
         if (a.isBgm) {
             // stopSeq: tear down the whole BGM root tree and unregister the player
@@ -1959,16 +1980,12 @@ static void active_stop_now(ActiveSE& a) {
             for (auto it = g_players.begin(); it != g_players.end();)
                 it = (*it == a.worker) ? g_players.erase(it) : it + 1;
         } else {
-            // Stop protocol (worker snippet @0x37d + releaseSeRegist binary): port0=0 AND
-            // track interrupt 5 — the armed stop vector (@0x425). Per-sound snippets that
-            // LOOP (spray @0x8b2: noteon;jmp) never poll port0; only the interrupt can
-            // unwind them (its handler clri+rets out of the call.tbl snippet back to the
-            // worker's idle loop). Without it every looping SE leaked its worker forever —
-            // cat-0 starved, splash one-shots expired ("plays once, never again").
-            a.worker->writePortImport(0, 0);
-            a.worker->intr.request(5);
-            for (int i = 0; i < 8; i++) track_note_off(*a.worker, (u8)i, 0);
-            worker_outer_reset(a.worker);
+            // Immediate stop: the track is PRIVATE (direct dispatch) — tear it down.
+            // The port0=0 + interrupt-5 graceful-unwind dance existed to return a SHARED
+            // worker to its idle poll loop; with per-sound tracks there is nothing to
+            // hand back. (Graceful release still uses the protocol — see the class-0
+            // release path — because the snippet's stop vector plays the release tail.)
+            se_track_free(a.worker);
         }
     }
     a.used = false;
@@ -2064,6 +2081,20 @@ static float calc_pan(float csx, float dist, float catDist) {   // MSHandle::cal
     return v < 0.f ? 0.f : (v > 1.f ? 1.f : v);
 }
 static bool finite_pos(float f) { return f == f && f > -1e8f && f < 1e8f; }
+// camera distance of a guest world position (the se_3d transform); <0 = unknown
+static float se_cam_dist(u32 posPtr) {
+    const u32 mtx = g_cam.mtx.load(std::memory_order_relaxed);
+    if (!mtx || !posPtr) return -1.f;
+    float w[3], m[12];
+    for (int i = 0; i < 3; i++)  w[i] = sb_rf32(posPtr + i * 4);
+    for (int i = 0; i < 12; i++) m[i] = sb_rf32(mtx + i * 4);
+    if (!finite_pos(w[0]) || !finite_pos(w[1]) || !finite_pos(w[2])) return -1.f;
+    float cs[3];
+    for (int r = 0; r < 3; r++)
+        cs[r] = m[r*4]*w[0] + m[r*4+1]*w[1] + m[r*4+2]*w[2] + m[r*4+3];
+    const float d = sqrtf(cs[0]*cs[0] + cs[1]*cs[1] + cs[2]*cs[2]);
+    return finite_pos(d) ? d : -1.f;
+}
 static void se_3d_tick(ActiveSE& a) {                   // MSHandle::setSeDistanceParameters
     if (a.isBgm || !a.posPtr) return;
     const u32 cat = se_cat_of(a.id);
@@ -2092,10 +2123,24 @@ static void se_3d_tick(ActiveSE& a) {                   // MSHandle::setSeDistan
         return;
     }
     const u8 swType = (u8)((a.swbit >> 16) & 7);
+    // First application SNAPS (guest checkEntriedSe applies distance params at entry,
+    // before the note starts): without it a distant one-shot played its opening ~50 ms
+    // at full volume — and restart churn could re-arm that window forever (the loud
+    // far-bird class). Later applications smooth over the category's move time.
+    const u32 mt = a.did3d ? c.type : 0;
+    a.did3d = true;
     const float vol = (a.swbit & 2) ? 1.f : calc_volume(dist, c.dist, swType, cat);
-    a.vol[4].set(vol, c.type);
+    a.vol[4].set(vol, mt);
     const float pan = calc_pan(cs[0], dist, c.dist);
-    a.pan[4].set(pan, c.type);
+    a.pan[4].set(pan, mt);
+    // rate-limited 3D state line (DBG_NJAS): the ground truth for "is distance
+    // attenuation applying" complaints — read this before theorizing.
+    if (((++a.dbg3d) & 0x7F) == 1) {
+        float vp = 1.f; for (int i = 0; i < 9; i++) vp *= a.vol[i].cur;
+        NJLOG("se_3d id=%05x dist=%.0f vol4=%.3f cur=%.3f vp=%.3f pan4=%.3f sw=%06x w=%p outer=%.3f osw=%x\n",
+              a.id, dist, vol, a.vol[4].cur, vp, pan, a.swbit, (void*)a.worker,
+              a.worker ? a.worker->outerVol : -1.f, a.worker ? a.worker->outerSwitch : 0);
+    }
     if (pan != 0.5f || a.pan[4].cur != 0.5f) a.panTouched = true;
     if (a.swbit & 0x10) {                               // random pitch wobble per frame
         const float p = 1.f - (float)(rand() & 0xF) / 192.f;
@@ -2113,15 +2158,32 @@ static void jai_tick() {
             // BGM root: released when the sequence finishes (track_main -1 in the driver)
             if (!w->used || !w->active) { a.used = false; continue; }
         } else {
-            // worker went busy then idle again → sound ended, release the slot
+            // FINISHED zombie (track gone, registration kept): absorbs the actor's
+            // continuous re-requests so a finished one-shot does not replay every frame
+            // (guest storeBuffer state-5 semantics — the machine-gun class). Freed once
+            // requests cease for the class's release window; the NEXT request is then
+            // fresh and replays legitimately.
+            if (!w) {
+                if (++a.sinceReq > ((a.id & 0xC00) == 0 ? 21 : 10)) a.used = false;
+                continue;
+            }
+            // ownership check: the track pool recycles — a track that was re-allocated
+            // to another sound is no longer ours to read or free
+            if (!w->used || w->gen != a.workerGen) { a.used = false; continue; }
+            // snippet went busy then idle again → sound ended; free the private track.
+            // Restart-class (0x800) registrations die with it; other classes linger as
+            // finished zombies (see above).
             if (w->portValue[2] != 0) a.seenBusy = true;
             if (a.seenBusy && w->portValue[2] == 0) {
                 NJLOG("se_end id=%05x (snippet idle, age=%u)\n", a.id, a.startAge);
-                worker_outer_reset(w); a.used = false; continue;
+                se_track_free(w);
+                if ((a.id & 0xC00) == 0x800) a.used = false;
+                else { a.worker = nullptr; a.sinceReq = 0; }
+                continue;
             }
             if (!a.seenBusy && a.startAge > 60) {
                 NJLOG("se_end id=%05x (never busy)\n", a.id);
-                worker_outer_reset(w); a.used = false; continue;
+                se_track_free(w); a.used = false; continue;
             }
         }
         if (a.stopFade == 0) { active_stop_now(a); continue; }
@@ -2150,7 +2212,9 @@ static void jai_tick() {
                     a.worker->intr.request(5);    // releaseSeRegist: port0=0 + stop vector
                     a.relSent = true;
                 }
-                if (a.worker && a.worker->portValue[2] == 0) { a.used = false; continue; }
+                if (a.worker && a.worker->portValue[2] == 0) {
+                    se_track_free(a.worker); a.used = false; continue;
+                }
             }
         }
         se_3d_tick(a);
@@ -2200,6 +2264,7 @@ static void engine_start_locked() {        // g_mtx held, data loaded
     track_update_tempo(*g_root);
     g_players.clear();
     g_players.push_back(g_root);
+    g_se_tracks.clear();
     g_inited = true;
     fprintf(stderr, "[njas] native JAS engine running (init BMS @0, %zu banks)\n", g_data.banks.size());
 }
@@ -2225,10 +2290,6 @@ static bool engine_init() {                // g_mtx held; returns true once runn
 // pending pass would otherwise both see it "idle" and double-dispatch (the voice-leak
 // root cause: the second id overwrites port4, the bindings mismatch, and the guest's
 // stop-by-id then releases the wrong slot, leaking looping ambient voices)
-static bool worker_claimed(Track* w) {
-    for (auto& a : g_active) if (a.used && !a.isBgm && a.worker == w) return true;
-    return false;
-}
 
 // number of worker tracks serving a category — the REAL per-category capacity (cat 0
 // has exactly 2 in the init BMS; the old hardcoded >=4 steal threshold could never
@@ -2247,24 +2308,45 @@ static int cat_capacity(u32 cat) {
     return n;
 }
 
-// find a category worker track: exports port9 == cat, idle (export port2 value == 0)
-static Track* find_worker(u32 cat, bool* any_for_cat) {
+// Direct per-sound dispatch (audio M4): each SE instance gets a PRIVATE track running a
+// clone of its category's worker snippet — same BMS code, same port protocol, no sharing.
+// The shared physical workers (opened by the init BMS) stay parked and never receive
+// port writes; they only serve as templates (snippet entry, trackMode, port9 category,
+// parent mid). Sharing them was the whack-a-mole source: cross-instance outer-param
+// stomps, double-binding races, busy/idle inference on a multiplexed loop.
+static Track* se_spawn_worker(u32 cat, bool* any_for_cat) {
     *any_for_cat = false;
     if (!g_root) return nullptr;
-    for (int i = 0; i < 16; i++) {
+    Track* tpl = nullptr;
+    for (int i = 0; i < 16 && !tpl; i++) {
         Track* mid = g_root->child[i];
         if (!mid) continue;
         for (int j = 0; j < 16; j++) {
             Track* w = mid->child[j];
             if (!w || !w->active) continue;
-            if (!w->portExport[9] && w->portValue[9] != cat) continue;
-            if (w->portExport[9] && w->portValue[9] == cat) {
-                *any_for_cat = true;
-                if (w->portValue[2] == 0 && !worker_claimed(w)) return w;   // idle + unclaimed
-            }
+            if (w->portExport[9] && w->portValue[9] == cat) { *any_for_cat = true; tpl = w; break; }
         }
     }
-    return nullptr;
+    if (!tpl) return nullptr;
+    Track* mid = tpl->parent;
+    Track* c = track_alloc();
+    if (!c) return nullptr;
+    c->trackMode = tpl->trackMode;
+    track_init(*c, tpl->openData, tpl->openOff, mid);   // parent = inheritance only
+    g_se_tracks.push_back(c);                           // ticked from the engine list
+    // the snippet self-initializes via ports; seed the category export like the template
+    c->portValue[9] = tpl->portValue[9];
+    c->portExport[9] = tpl->portExport[9];
+    track_update(*c);
+    // Run the snippet's PROLOGUE to its idle poll loop NOW (a few sequencer steps): the
+    // physical workers parked there at boot long before any dispatch. Writing port0=1
+    // into a track whose prologue hasn't run yet loses the start (the prologue's
+    // interrupt-arming resets the pending request) — every spawned snippet sat idle
+    // forever ("never busy" × 127, zero SE noteOns, verified 2026-06-12).
+    for (int k = 0; k < 8 && c->active; k++)
+        if (track_main(*c) == -1) break;
+    if (!c->active) { se_track_free(c); return nullptr; }
+    return c;
 }
 
 // spawn a BGM root playing the BARC entry's BMS (g_mtx held, engine running)
@@ -2323,6 +2405,20 @@ static void process_pending() {
             NJLOG("se_drop id=%05x (category muted)\n", id);
             it = g_pending.erase(it);
             continue;
+        }
+        // Distance GATE before dispatch (swbit bit5, same threshold as the in-flight
+        // cull): an out-of-range continuous request must never start. Start-then-cull
+        // churned forever on far emitters (plaza waterfall at dist ~21000 re-requested
+        // each frame: dispatch → cull → stop → re-dispatch ~2/s, each restart leaking
+        // one pre-flush tick of audio = the machine-gun/skippy ambience, 2026-06-12).
+        if (it->swbit & 0x20) {
+            const float d = se_cam_dist(it->posPtr);
+            if (d > 12000.f) {
+                static u32 gate_log = 0;
+                if ((gate_log++ & 0x3F) == 0) NJLOG("se_gate id=%05x (dist=%.0f)\n", id, d);
+                it = g_pending.erase(it);
+                continue;
+            }
         }
         // Instance identity is (id, actor) — JAISeEntry::storeBuffer matches BOTH the id
         // and the actor position pointer; the same SE id sounding from several actors is
@@ -2393,29 +2489,11 @@ static void process_pending() {
                     continue;
                 }
                 (void)alive;
-                // Restart class / finished instance: re-dispatch onto the SAME worker
-                // immediately (JAISeEntry slot semantics — a restart reuses the worker
-                // slot; the port-0 import interrupt re-vectors the snippet). Waiting for
-                // the worker to drain to idle (port2==0, after its release tail) made
-                // rapid retriggers — spray-button spam — queue behind the release and
-                // play late or expire silently (user report 2026-06-12).
-                Track* w0 = same->worker;
+                // Restart class (0x800): stop the old instance, fall through to the
+                // generic dispatch — a FRESH private track is spawned (direct dispatch),
+                // so a rapid retrigger never queues behind the old release tail.
                 active_stop_now(*same);
-                if (w0 && w0->active) {
-                    ActiveSE* slot = nullptr;
-                    for (auto& a : g_active) if (!a.used) { slot = &a; break; }
-                    if (slot) {
-                        active_init(*slot, w0, id, it->swbit, it->prio);
-                        slot->posPtr = it->posPtr;
-                        w0->writePortImport(4, (u16)(id & 0x3FF));
-                        w0->writePortImport(0, 1);
-                        ab_anchor("se", id, nullptr);
-                        NJLOG("se_restart id=%05x cat=%u pos=%08x → same worker %p\n",
-                              id, cat, it->posPtr, (void*)w0);
-                        it = g_pending.erase(it);
-                        continue;
-                    }
-                }
+                NJLOG("se_restart id=%05x cat=%u pos=%08x\n", id, cat, it->posPtr);
             } else if (catCount >= cat_capacity(cat) && catCount > 0) {
                 // Category full (capacity = the category's actual worker count).
                 // JAISeEntry::storeBuffer eviction is PRIORITY-based: evict the weakest
@@ -2439,15 +2517,24 @@ static void process_pending() {
             }
         }
         bool any = false;
-        Track* w = find_worker(cat, &any);
+        ActiveSE* slot = nullptr;
+        for (auto& a : g_active) if (!a.used) { slot = &a; break; }
+        if (!slot) { ++it; continue; }       // registry full — wait (binding is mandatory)
+        Track* w = se_spawn_worker(cat, &any);
         if (w) {
-            ActiveSE* slot = nullptr;
-            for (auto& a : g_active) if (!a.used) { slot = &a; break; }
-            if (!slot) { ++it; continue; }   // registry full — wait (binding is mandatory)
             active_init(*slot, w, id, it->swbit, it->prio);
             slot->posPtr = it->posPtr;
             w->writePortImport(4, (u16)(id & 0x3FF));
             w->writePortImport(0, 1);
+            // apply distance volume NOW: the first jai_tick flush is up to ~16 ms away
+            // and the snippet's first notes start at full category volume otherwise
+            // (audible as a click on far-but-in-range starts)
+            if (!g_catvol_init) { for (auto& v : g_catvol) v = 1.f; g_catvol_init = true; }
+            se_3d_tick(*slot);
+            float v0 = 1.f; for (int i = 0; i < 9; i++) v0 *= slot->vol[i].cur;
+            w->outerVol = g_catvol[cat] * v0;
+            w->outerSwitch |= 1;
+            w->updateFlags |= 1;
             ab_anchor("se", id, nullptr);
             NJLOG("se_start id=%05x cat=%u idx=%u pos=%08x → worker %p\n", id, cat, id & 0x3FF,
                   it->posPtr, (void*)w);
@@ -2582,6 +2669,7 @@ static void render_subframe() {
     static float jai_acc = 0.f;
     jai_acc += 60.f * kSub / kDacRate;
     while (jai_acc >= 1.f) { jai_acc -= 1.f; jai_tick(); }
+    int root_ticks = 0;   // g_root's tick count this subframe — SE tracks follow it
     for (auto it = g_players.begin(); it != g_players.end();) {
         Track* root = *it;
         bool finished = !root->used || !root->active;
@@ -2592,6 +2680,7 @@ static void render_subframe() {
                 while (root->tickAcc >= 1.f) {
                     root->tickAcc -= 1.f;
                     if (track_main(*root) == -1) { finished = true; break; }
+                    if (root == g_root) root_ticks++;
                 }
             }
             if (!finished) track_inc_self_osc(*root);
@@ -2601,6 +2690,22 @@ static void render_subframe() {
             root->active = 0;
         }
         ++it;
+    }
+    // Private SE tracks tick at g_root's cadence — exactly when the physical workers
+    // (g_root's grandchildren) would have, so snippet timing is unchanged.
+    if (root_ticks) {
+        for (auto it = g_se_tracks.begin(); it != g_se_tracks.end();) {
+            Track* t = *it;
+            bool finished = !t->used || !t->active;
+            if (!finished) {
+                track_update_seq(*t, 0, true);
+                for (int k = 0; k < root_ticks && !finished; k++)
+                    if (track_main(*t) == -1) finished = true;
+                if (!finished) track_inc_self_osc(*t);
+            }
+            if (finished) { track_close_recursive(*t); it = g_se_tracks.erase(it); continue; }
+            ++it;
+        }
     }
 
     memset(g_mixbuf, 0, sizeof(g_mixbuf));

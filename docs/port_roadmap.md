@@ -114,9 +114,33 @@ Stop guarding emulation seams; delete the emulation-era path and own the subsyst
   k_camera→k_dolpic + ambient SEs sustained; baseline A/B shows the ~48 s self-pause
   (MSD_SE_SY_PAUSE_ON) is pre-existing, not pool-caused. User-confirmed in real play.
   OPEN from real play: some bird/ambient SEs extra-loud (distance attenuation suspect).
-  Still ahead in M4: guest audioproc/updateDac bookkeeping off entirely; worker-snippet
-  indirection → direct per-sound dispatch; the two M4 gates (MSound::checkWaveOnAram
-  stage-transition block, THP audio).
+  **Direct per-sound dispatch LANDED (2026-06-12 pm, user-driven):** the shared
+  worker-snippet indirection is gone — every SE instance spawns a PRIVATE track running
+  a clone of its category worker snippet (template = the parked physical worker:
+  entry/trackMode/port9; ticked from g_se_tracks at g_root cadence, parent mid =
+  inheritance only). Killed by it: cross-instance outer-param stomps, double-binding,
+  busy/idle inference on a multiplexed loop. Root-caused on the way: spawned snippets
+  must run their PROLOGUE to the poll loop before port0=1 (else the start is lost —
+  "never busy" everywhere, zero SE noteOns); parent child-array slots starved spawns
+  (24k expired requests) → dedicated tick list; track-pool recycling needs generation
+  tags. ALSO fixed: first 3D application SNAPS (ramp-from-1.0 + restart churn kept
+  distant one-shots at full volume = the loud-bird class; birds out of range now birth
+  at vol 0). Verified 150 s headless: 0 expired, 0 never-busy, 1467 clean snippet ends,
+  distance attenuation reaching voices (outer tracks the curve), sustained BGM+SE WAV.
+  **Machine-gun/skippy ambience FIXED (2026-06-12 night, user-confirmed in real play):**
+  far emitters (plaza waterfall id 0x3022 at dist ~21000, 0x81c1) were started on every
+  re-request, culled 6 ticks later, and restarted ~2/s — each restart leaking one
+  pre-flush tick (~16 ms) of full-category-volume audio = a click train. Fix: swbit-0x20
+  requests beyond the 12000 cull range are GATED before dispatch (guest behavior:
+  out-of-range continuous SEs never start), and in-range dispatches snap their distance
+  volume onto the track immediately instead of waiting for the next 60 Hz flush.
+  Also fixed in the same arc: finished non-restart-class registrations linger as
+  zombies absorbing re-requests (guest storeBuffer state-5 — a finished one-shot must
+  not replay every frame).
+  OPEN: sea ambience plays ~28 dB hotter than oracle (it is a DOLBY-bus voice there;
+  fxmix/dolby buses still unimplemented — A/B delfino report 2026-06-12).
+  Still ahead in M4: guest audioproc/updateDac bookkeeping off entirely; the two M4
+  gates (MSound::checkWaveOnAram stage-transition block, THP audio).
 - **Graphics (months-scale arc):** native renderer direction — own the GX command stream →
   Vulkan with pregenerated game-tailored pipelines. Dolphin GPU semantics (FIFO
   backpressure, first-use shader compile, device-resource lifetime/OOM) cease to exist
