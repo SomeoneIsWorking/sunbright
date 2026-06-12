@@ -10,14 +10,20 @@
 // Output: text lines to SUNBRIGHT_DUMP_VPB=<path>. Format:
 //   <frame#> v<voice> en=<enabled> done=<done> ch=<id:tgt:cur>x6 dolby=<cur>/<tgt> pos=<hi:lo>
 // Frame# increments on voice_id wrap (a new render pass fetches voices in order).
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <thread>
 
+#include "Core/Core.h"
 #include "Core/System.h"
 #include "Core/HW/DSP.h"
+
+extern uint32_t mem_r32(uint32_t ea);   // memory_bridge.cpp
+extern uint16_t mem_r16(uint32_t ea);
 
 namespace {
 FILE* out() {
@@ -60,6 +66,70 @@ uint32_t aram_hash64(uint32_t base) {
     for (uint32_t i = 0; i < 64; i++) h = (h ^ p[base + i]) * 16777619u;
     return h;
 }
+
+// Oracle-side event source: an in-process poller over the guest's CH_BUF VPB table
+// (0x8040E5B8 → 64 × 0x180-byte DSPBuffer, the same data the /vpb probe reads).
+// NOTE: the FetchVPB --wrap above CANNOT serve this — all FetchVPB callers live in the
+// same TU (Zelda.cpp), so the linker wrap never intercepts them (it only rewrites
+// cross-object references). Enable edges persist a full 5 ms HLE frame, so a 1.5 ms
+// poll catches every voice start/end. Enabled by SUNBRIGHT_AB_ORACLE=1 + AB_EVENTS.
+struct AbOraclePoller {
+    AbOraclePoller() {
+        const char* e = getenv("SUNBRIGHT_AB_ORACLE");
+        if (!e || !*e || *e == '0' || !getenv("SUNBRIGHT_AB_EVENTS")) return;
+        std::thread([] {
+            using namespace std::chrono_literals;
+            FILE* ab = nullptr;
+            while (!ab) { std::this_thread::sleep_for(250ms); ab = ab_out(); }
+            // wait for the core (guest RAM) to come up
+            while (Core::GetState(Core::System::GetInstance()) != Core::State::Running)
+                std::this_thread::sleep_for(100ms);
+            unsigned frames = 0;
+            for (;;) {
+                std::this_thread::sleep_for(1500us);
+                const uint32_t base = mem_r32(0x8040E5B8u);
+                if (base < 0x80000000u || base >= 0x81800000u) continue;
+                frames++;
+                for (int vi = 0; vi < 0x60; vi++) {
+                    const uint32_t b = base + (uint32_t)vi * 0x180u;
+                    const bool en = mem_r16(b) != 0 && mem_r16(b + 2) == 0;
+                    AbVoice& v = g_ab_voice[vi];
+                    if (!en && !v.on) continue;
+                    int vol = 0;
+                    if (mem_r16(b + 0x58)) {                       // use_dolby_volume
+                        vol = (int16_t)mem_r16(b + 0x54); if (vol < 0) vol = -vol;
+                    } else for (int c = 0; c < 6; c++) {
+                        const uint32_t ch = b + 0x10 + (uint32_t)c * 8;
+                        if (!mem_r16(ch)) continue;
+                        int cv = (int16_t)mem_r16(ch + 4); if (cv < 0) cv = -cv;
+                        if (cv > vol) vol = cv;
+                    }
+                    if (en && !v.on) {
+                        const uint32_t wbase =
+                            ((uint32_t)mem_r16(b + 0x118) << 16) | mem_r16(b + 0x11A);
+                        v.on = true; v.hash = aram_hash64(wbase);
+                        v.ratio = mem_r16(b + 4);
+                        v.peak = vol; v.t_on = ab_now_ms(); v.frames = frames;
+                        fprintf(ab, "{\"ev\":\"von\",\"t\":%.1f,\"voice\":%d,"
+                                    "\"hash\":\"%08x\",\"ratio\":%u}\n",
+                                v.t_on, vi, v.hash, v.ratio);
+                        fflush(ab);
+                    } else if (en) {
+                        if (vol > v.peak) v.peak = vol;
+                    } else {
+                        v.on = false;
+                        fprintf(ab, "{\"ev\":\"voff\",\"t\":%.1f,\"voice\":%d,"
+                                    "\"hash\":\"%08x\",\"ratio\":%u,\"dur\":%u,"
+                                    "\"peak\":%d}\n",
+                                ab_now_ms(), vi, v.hash, v.ratio,
+                                (unsigned)((ab_now_ms() - v.t_on) / 5.0), v.peak);
+                        fflush(ab);
+                    }
+                }
+            }
+        }).detach();
+    }
+} g_ab_oracle_poller;
 // VPB field offsets in u16 units (struct ZeldaAudioRenderer::VPB, Zelda.cpp:682).
 constexpr int F_ENABLED = 0, F_DONE = 1;
 constexpr int F_CH0 = 8;            // channels[6]: {id, target_volume, current_volume, unk} ×6
@@ -72,36 +142,6 @@ extern "C" void __real__ZN3DSP3HLE18ZeldaAudioRenderer8FetchVPBEtPNS1_3VPBE(
 extern "C" void __wrap__ZN3DSP3HLE18ZeldaAudioRenderer8FetchVPBEtPNS1_3VPBE(
     void* self, uint16_t voice_id, void* vpb) {
     __real__ZN3DSP3HLE18ZeldaAudioRenderer8FetchVPBEtPNS1_3VPBE(self, voice_id, vpb);
-    if (FILE* ab = ab_out(); ab && voice_id < 0x60) {
-        const uint16_t* w = (const uint16_t*)vpb;
-        AbVoice& v = g_ab_voice[voice_id];
-        const bool en = w[0] != 0 && w[1] == 0;        // enabled && !done
-        // live gain: dolby voices mix via dolby_volume_current; others via channels[6]
-        int vol = 0;
-        if (w[0x2C]) vol = (int16_t)w[0x2A] < 0 ? -(int16_t)w[0x2A] : (int16_t)w[0x2A];
-        else for (int c = 0; c < 6; c++) {
-            const uint16_t* ch = w + 8 + c * 4;
-            const int cv = (int16_t)ch[2] < 0 ? -(int16_t)ch[2] : (int16_t)ch[2];
-            if (ch[0] && cv > vol) vol = cv;
-        }
-        if (en && !v.on) {
-            const uint32_t base = ((uint32_t)w[0x8C] << 16) | w[0x8D];
-            v.on = true; v.hash = aram_hash64(base); v.ratio = w[2];
-            v.peak = vol; v.t_on = ab_now_ms(); v.frames = 0;
-            fprintf(ab, "{\"ev\":\"von\",\"t\":%.1f,\"voice\":%u,\"hash\":\"%08x\","
-                        "\"ratio\":%u}\n", v.t_on, voice_id, v.hash, v.ratio);
-            fflush(ab);
-        } else if (v.on && en) {
-            if (vol > v.peak) v.peak = vol;
-            v.frames++;
-        } else if (v.on && !en) {
-            v.on = false;
-            fprintf(ab, "{\"ev\":\"voff\",\"t\":%.1f,\"voice\":%u,\"hash\":\"%08x\","
-                        "\"ratio\":%u,\"dur\":%u,\"peak\":%d}\n",
-                    ab_now_ms(), voice_id, v.hash, v.ratio, v.frames, v.peak);
-            fflush(ab);
-        }
-    }
     FILE* f = out();
     if (!f) return;
     const uint16_t* w = (const uint16_t*)vpb;

@@ -1,0 +1,4 @@
+[
+  {"class": "PITCH", "hash": "*", "_disabled": true,
+   "why": "template entry — copy, set a real hash, remove _disabled. Every residual MUST explain why it is benign."}
+]

@@ -1,0 +1,15 @@
+[
+  {"name": "file-select reached (t_select BGM)",
+   "trigger": {"ev": "bgm", "id": "8001000e"},
+   "actions": []},
+  {"name": "in Delfino (k_dolpic BGM) — settle then spray",
+   "trigger": {"ev": "bgm", "id": "80010001"},
+   "actions": [{"do": "wait", "ms": 4000},
+               {"do": "r", "ms": 900}, {"do": "wait", "ms": 1500},
+               {"do": "r", "ms": 900}, {"do": "wait", "ms": 1500},
+               {"do": "up+r", "ms": 800}, {"do": "wait", "ms": 1500},
+               {"do": "z", "ms": 200}, {"do": "wait", "ms": 800},
+               {"do": "z", "ms": 200}, {"do": "wait", "ms": 800},
+               {"do": "up", "ms": 2000},
+               {"do": "r", "ms": 900}]}
+]
