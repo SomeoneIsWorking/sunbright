@@ -774,6 +774,23 @@ struct Track {
 static Track g_tracks[64];
 static Track* g_root = nullptr;
 
+// SUNBRIGHT_NJAS_SOLO_CHILD=N (diagnostic): solo one root-child track index — only notes
+// from that child (or its subtree) of a parentless root play; its mute flag is bypassed
+// so muted layers (e.g. the k_dolpic Yoshi percussion, child 15) can be auditioned via
+// SUNBRIGHT_DUMP_NJAS. -1/unset = normal playback.
+static int njas_solo_child() {
+    static int v = -2;
+    if (v == -2) { const char* e = getenv("SUNBRIGHT_NJAS_SOLO_CHILD"); v = e ? atoi(e) : -1; }
+    return v;
+}
+static int root_child_index(Track& t) {
+    Track* c = &t;
+    while (c->parent && c->parent->parent) c = c->parent;
+    if (!c->parent) return -1;                 // t is itself a root
+    for (int i = 0; i < 16; i++) if (c->parent->child[i] == c) return i;
+    return -1;
+}
+
 static Track* track_alloc() {
     for (auto& t : g_tracks)
         if (!t.used) { t = Track(); t.used = true; return &t; }
@@ -956,7 +973,7 @@ static bool track_note_off(Track& t, u8 note, u16 release) {
 static void track_update(Track& t) {
     float vol = t.timed[0].cur;
     if (t.volumeMode == 0) vol *= vol;
-    if (t.mute) vol = 0.f;
+    if (t.mute && njas_solo_child() < 0) vol = 0.f;   // solo diag bypasses mute (see noteOn)
     float pitch = pitch_to_ratio(t.timed[1].cur, (float)t.pitchRange);
     float pan = t.timed[3].cur, fx = t.timed[2].cur, dolby = t.timed[4].cur;
     for (int i = 0; i < 2; i++) {
@@ -1018,7 +1035,10 @@ static s32 seq_to_dsp_time(Track& t, s32 time, u8 gatePct) {
 
 // BankMgr::noteOn port
 static int track_note_on(Track& t, u8 chanIdx, s32 key, s32 vel, s32 gateTime) {
-    if (t.mute && (t.pauseStatus & 0x40)) return -1;
+    const int solo = njas_solo_child();
+    if (solo >= 0) {
+        if (root_child_index(t) != solo) return -1;   // solo mode: everything else silent
+    } else if (t.mute && (t.pauseStatus & 0x40)) return -1;
     if (track_voice(t, chanIdx)) track_note_off(t, chanIdx, 0);
 
     const u16 reg6 = reg_read(t, 6);
@@ -1630,8 +1650,35 @@ static int run_cmd(Track& t, u8 op, u16 maskExtra) {
     case 0xE3: t.intr.enabled = 1; t.seq.retIntr(); return 2;               // reti
     case 0xE4: t.intr.timer = (u16)a[0]; t.intr.timerPeriod = (u16)a[1]; t.intr.timerCount = (u16)a[0]; return 0;
     case 0xE6: return 0;                       // connectopen
-    case 0xE7: return 0;                       // connectclose
-    case 0xE9: reg_write(t, 3, 0); return 0;   // synccpu (no JAI callback natively)
+    case 0xE7: {
+        // 0xE7 = cmdSyncCPU, NOT connectclose: the old name here was the sCmdPList −1 shift
+        // trap. Proof from the binary side: ARGLIST idx 0x27 = one u16 — cmdSyncCPU's exact
+        // shape (connectopen/close take none) — and every BGM track body STARTS with
+        // "e7 00 00" = syncCPU(0), the per-track init callback. The parser calls the
+        // registered track callback with the arg and stores the return in reg 3. SMS's
+        // callback is MSSeCallBack::setParameterSeqSync (MSound.cpp): the case that matters
+        // to the engine is 0 — track init — which sets pauseStatus=74 (0x40 bit: mute
+        // rejects noteOn) and MUTES the track if it is the root's child 15: the stage-BGM
+        // percussion layer (k_dolpic drums), unmuted only while riding Yoshi via
+        // MSBgm::setStageBgmYoshiPercussion. The base-case-0 outer init (JAI handle↔track
+        // binding) is owned by the native handle registry already.
+        u16 ret = 0;
+        switch ((u16)a[0]) {
+        case 0:
+            t.pauseStatus = 74;
+            if (t.parent && t.parent->child[15] == &t) {
+                t.mute = 1;
+                NJLOG("synccpu0: child15 percussion layer muted\n");
+            }
+            break;
+        case 1: break;                         // base case 1: outer defaults — native M2 layer owns
+        default:                               // 11/13 water filter, 30 pan, 40, 110, 120-127 ukulele…
+            NJLOG("synccpu: unhandled sync value %u\n", (unsigned)a[0]);
+            break;
+        }
+        reg_write(t, 3, ret); return 0;
+    }
+    case 0xE9: return 0;                       // (name uncertain — 0 args; was wrongly "synccpu")
     case 0xEA:   // flushall
         for (int i = 0; i < 8; i++) track_note_off(t, (u8)i, 0);
         return 0;
@@ -1820,7 +1867,8 @@ static float g_mixbuf[kSub * 2];
 static int g_mix_have = 0, g_mix_pos = 0;
 static FILE* g_solo_dump = nullptr;   // SUNBRIGHT_DUMP_NJAS: engine-only wav
 
-struct PendingSE { u32 id; u32 swbit; u8 prio; bool isBgm = false; u16 age = 0; u32 posPtr = 0; };
+struct PendingSE { u32 id; u32 swbit; u8 prio; bool isBgm = false; u16 age = 0; u32 posPtr = 0;
+                   u32 bgmSwbit = 0; };   // real JAISoundInfo swbit for BGMs (swbit = slot there)
 static std::vector<PendingSE> g_pending;
 
 // ---- M2: SE handle layer (category volumes, per-sound move params, stop/fade).
@@ -1845,6 +1893,7 @@ struct ActiveSE {
     bool isBgm = false;                  // worker = a BGM root track, not an SE worker
     Track* worker = nullptr;
     u32 id = 0, swbit = 0;
+    u32 bgmSwbit = 0;                    // real JAISoundInfo swbit (BGM only; swbit = slot there)
     u8 prio = 0;
     bool seenBusy = false;               // worker's port2 went nonzero since dispatch
     u16 startAge = 0;                    // ticks since dispatch (busy-detect grace)
@@ -2177,7 +2226,7 @@ static Track* find_worker(u32 cat, bool* any_for_cat) {
 }
 
 // spawn a BGM root playing the BARC entry's BMS (g_mtx held, engine running)
-static void bgm_dispatch(u32 id, u8 seqTrack, u8 prio) {
+static void bgm_dispatch(u32 id, u8 seqTrack, u8 prio, u32 bgmSwbit) {
     const u32 idx = id & 0x3FF;
     if (idx >= g_data.barc.size()) return;
     const BarcEntry& e = g_data.barc[idx];
@@ -2204,7 +2253,7 @@ static void bgm_dispatch(u32 id, u8 seqTrack, u8 prio) {
     g_players.push_back(root);
     ActiveSE* slot = nullptr;
     for (auto& a : g_active) if (!a.used) { slot = &a; break; }
-    if (slot) { active_init(*slot, root, id, seqTrack, prio); slot->isBgm = true; }
+    if (slot) { active_init(*slot, root, id, seqTrack, prio); slot->isBgm = true; slot->bgmSwbit = bgmSwbit; }
     { char nm[15]; memcpy(nm, e.name, 14); nm[14] = 0; ab_anchor("bgm", id, nm); }
     NJLOG("bgm_start id=%08x slot=%u prio=%u → %.14s (off=%#x size=%#x)\n", id, seqTrack,
           prio, e.name, e.off, e.size);
@@ -2215,7 +2264,7 @@ static void process_pending() {
         const u32 id = it->id;
         const u32 cat = (id >> 12) & 0xFF;
         if (it->isBgm) {
-            bgm_dispatch(id, (u8)it->swbit, it->prio);   // swbit reused = seq track slot
+            bgm_dispatch(id, (u8)it->swbit, it->prio, it->bgmSwbit);   // swbit reused = seq track slot
             it = g_pending.erase(it);
             continue;
         }
@@ -2573,13 +2622,33 @@ extern "C" void njas_set_camera(uint32_t posPtr, uint32_t mtxPtr) {
 // offsets point into sequence.arc, which is loaded whole). Entry 0 = the init/SE BMS
 // already running as g_root — ignored. All banks/waves are resident natively, so the
 // guest's wScene/ARAM residency dance is unnecessary.
-extern "C" void njas_bgm_start(uint32_t id, uint8_t seqTrack, uint8_t prio) {
+extern "C" void njas_bgm_start(uint32_t id, uint8_t seqTrack, uint8_t prio, uint32_t swbit) {
     using namespace njas;
     std::lock_guard<std::mutex> lk(g_mtx);
     if (!g_catvol_init) { for (auto& v : g_catvol) v = 1.f; g_catvol_init = true; }
     engine_init();                              // kicks the async data load on first call
     if ((id & 0x3FF) == 0) return;              // entry 0 = the init/SE BMS (always running)
-    g_pending.push_back({ id, seqTrack, prio, true });   // swbit slot reused = seq track
+    PendingSE p{ id, seqTrack, prio, true };    // swbit slot reused = seq track
+    p.bgmSwbit = swbit;                         // real JAISoundInfo swbit (0x10000000 = Yoshi layer)
+    g_pending.push_back(p);
+}
+
+// MSBgm::setStageBgmYoshiPercussion (0x80016548), ported: gate the stage BGM's percussion
+// layer (root child 15, muted at open by synccpu case 0) on riding Yoshi. The guest guards
+// on getBstSwitch(id) & 0x10000000 — the sound-table switch bit marking BGMs that carry the
+// layer — which we captured at the start tee as bgmSwbit. Stage BGM = seq-track slot 0
+// (smBgmInTrack[0]). Writes the mute flag only, exactly like the guest (no channel stop).
+extern "C" void njas_bgm_yoshi_percussion(int riding) {
+    using namespace njas;
+    std::lock_guard<std::mutex> lk(g_mtx);
+    for (auto& a : g_active) {
+        if (!a.used || !a.isBgm || a.swbit != 0 || !a.worker) continue;
+        if (!(a.bgmSwbit & 0x10000000u)) { NJLOG("yoshi_perc: bgm %08x has no layer bit\n", a.id); return; }
+        Track* t = a.worker->child[15];
+        if (t) { t->mute = riding ? 0 : 1; NJLOG("yoshi_perc: bgm %08x child15 mute=%d\n", a.id, !riding); }
+        return;
+    }
+    NJLOG("yoshi_perc: no stage bgm active\n");
 }
 
 // Game→BMS port write (setSeqPortData / setTrackPortData tees): the data channel the

@@ -18,7 +18,8 @@
 extern "C" void njas_se_start(uint32_t id, uint32_t swbit, uint8_t prio, uint32_t posPtr);
 extern "C" void njas_set_camera(uint32_t posPtr, uint32_t mtxPtr);
 extern "C" void njas_set_jaibasic(uint32_t self);
-extern "C" void njas_bgm_start(uint32_t id, uint8_t seqTrack, uint8_t prio);
+extern "C" void njas_bgm_start(uint32_t id, uint8_t seqTrack, uint8_t prio, uint32_t swbit);
+extern "C" void njas_bgm_yoshi_percussion(int riding);
 extern "C" void njas_se_stop(uint32_t id, uint32_t fade, uint32_t posPtr);
 extern "C" void njas_se_param(uint32_t id, int kind, uint8_t slot, float value, uint32_t time);
 extern "C" void njas_se_category_volume(uint8_t cat, uint8_t vol);
@@ -99,11 +100,13 @@ SUNBRIGHT_OVERRIDE(ov_startSoundBasic, 0x803020acu) {
         // the seq entry allows ONE playing BGM per slot — starting another stops the
         // incumbent (JAISeqEntry::storeBuffer) — that's how the title music ends.
         uint8_t prio = 0x40, seqTrack = 0;
+        uint32_t bgmSwbit = 0;
         if (info >= 0x80000000u && info < 0x81800000u) {
             prio = sb_r8(info + 4);
             seqTrack = sb_r8(info + 5);
+            bgmSwbit = sb_r32(info);   // JAISoundInfo swbit: 0x10000000 = Yoshi percussion layer
         }
-        njas_bgm_start(id, seqTrack, prio);
+        njas_bgm_start(id, seqTrack, prio, bgmSwbit);
     }
     func_803020ac(cpu);
 }
@@ -133,6 +136,15 @@ SUNBRIGHT_OVERRIDE(ov_stopSoundHandle, 0x80302224u) {
     if (njas_enabled() && handled_id(id)) njas_se_stop(id, cpu.gpr[5], posPtr);
     func_80302224(cpu);
 }
+// MSBgm::setStageBgmYoshiPercussion(bool) — Yoshi mount/dismount gates the stage BGM's
+// percussion layer (track 15, muted at open by the synccpu-0 callback). Tee to the native
+// engine; the guest body still runs for its own (dead) JAS bookkeeping.
+SUNBRIGHT_OVERRIDE(ov_setStageBgmYoshiPercussion, 0x80016548u) {
+    if (dbg()) fprintf(stderr, "[se_native] setStageBgmYoshiPercussion(%u)\n", cpu.gpr[3] & 1);
+    if (njas_enabled()) njas_bgm_yoshi_percussion((int)(cpu.gpr[3] & 1));
+    if (RecompFunc o = recomp_raw(0x80016548u)) o(cpu); else call_ppc(cpu, cpu.lr);
+}
+
 SUNBRIGHT_OVERRIDE(ov_setSeCategoryVolume, 0x803029a4u) {
     if (njas_enabled()) njas_se_category_volume((uint8_t)cpu.gpr[4], (uint8_t)cpu.gpr[5]);
     func_803029a4(cpu);

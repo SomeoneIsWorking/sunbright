@@ -20,7 +20,10 @@ CMD_NAMES = {
     0xDA: "closetrack", 0xDB: "outswitch", 0xDC: "updatesync", 0xDD: "busconnect",
     0xDE: "pausestatus", 0xDF: "setinterrupt", 0xE0: "disinterrupt", 0xE1: "clri",
     0xE2: "seti", 0xE3: "reti", 0xE4: "inttimer", 0xE6: "connectopen",
-    0xE7: "connectclose", 0xE9: "synccpu", 0xEA: "flushall", 0xEB: "flushrelease",
+    # 0xE7 = syncCPU (binary-verified: one u16 arg = cmdSyncCPU's shape; every track body
+    # starts with e7 00 00 = the per-track init callback). The old "connectclose @E7 /
+    # synccpu @E9" naming was the sCmdPList −1-shift trap; E9 takes 0 args, name uncertain.
+    0xE7: "synccpu", 0xE9: "unk_e9", 0xEA: "flushall", 0xEB: "flushrelease",
     0xEC: "wait3", 0xED: "panpowset", 0xEE: "iirset", 0xEF: "firset",
     0xF0: "extset", 0xF1: "panswset", 0xF2: "oscroute", 0xF3: "iircutoff",
     0xF4: "oscfull", 0xF5: "volumemode", 0xFA: "checkwave", 0xFB: "printf",
