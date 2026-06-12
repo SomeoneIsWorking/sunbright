@@ -357,3 +357,35 @@ Three layers, exactly parallel to volume/pan:
   param-0 update); envelope rate = envTime*(dacRate/80/600)/updateInterval — the
   interval cancels out of wall time, so native's interval==1 assumption is exact.
   Emu-clock A/B (ab_report4): the arpeggio LIFE/onset divergences are gone.
+
+## SE worker port protocol (init-BMS worker snippet @0x37d, RE'd 2026-06-12)
+
+Each SE category worker is a BMS snippet driven entirely through track ports:
+
+| port | writer | meaning |
+|---|---|---|
+| 9 | worker | exports its category number |
+| 0 | JAI→worker | 1 = (re)start (worker consumes: sets 0xFFFF); 0 = stop; 0xFFFF = "playing" |
+| 4 | JAI→worker | sound index (id & 0x3FF) — call-table dispatch to the per-sound snippet |
+| 2 | worker | busy state: 0 idle, 2 starting, 0xFFFF in per-sound snippet, 1 post-snippet poll |
+| 3 | JAI→worker | nonzero → pre-start delay (wait_r) with vol/pan zeroed |
+
+Worker poll loop after dispatch: port0==1 → restart, port0==0 → stop (close child
+tracks → idle), port0==0xFFFF → keep playing while the per-sound snippet's children
+live (interrupt 5 = the stop/cleanup vector, armed at init — releaseSeRegist fires it).
+
+SE id class bits (id & 0xC00):
+- 0x000 — continuous-by-rerequest: per-sound snippet LOOPS FOREVER (spray @0x8b2:
+  noteon;jmp). Game re-requests every frame; storeBuffer REVIVES (no port writes);
+  ~1 frame after requests stop, releaseSeRegist sends port0=0 (+track interrupt) and
+  the worker stops itself. FLUDD spray = MSD_SE_PO_WATER_HI 0x0000.
+- 0x400/0xC00 — continuous with lifeTime fade (JAI-side 10-frame expiry).
+- 0x800 — one-shot trigger class (e.g. MSD_SE_PO_WATER_*_TRG): same id+actor
+  re-request = stop + fresh start; never revived.
+
+Native port (native_jas.cpp process_pending + expiry): revive touches no ports unless
+canceling an in-flight release; class-0 release = one port0=0 after ~3 frames without
+re-request (10 subframe ticks spuriously released half-rate re-requesters — 2281-restart
+churn), slot freed at worker idle. Writing port0=1 per frame RESTARTS the snippet each
+frame — that was the spray plays-1s-then-dies bug (plus class-0 wrongly excluded from
+revive: restart churn wedged the worker).

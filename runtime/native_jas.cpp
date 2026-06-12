@@ -1894,6 +1894,7 @@ struct ActiveSE {
     Track* worker = nullptr;
     u32 id = 0, swbit = 0;
     u32 bgmSwbit = 0;                    // real JAISoundInfo swbit (BGM only; swbit = slot there)
+    bool relSent = false;                // release sent (port0=0 written) — worker is stopping
     u8 prio = 0;
     bool seenBusy = false;               // worker's port2 went nonzero since dispatch
     u16 startAge = 0;                    // ticks since dispatch (busy-detect grace)
@@ -2127,13 +2128,21 @@ static void jai_tick() {
                 a.vol[6].set(0.f, 6);
                 a.stopFade = 6;
             }
-            // Class-0 continuous SEs (spray): the snippet starves out on its own once
-            // re-requests (and their port refreshes) cease — no fade; just free the
-            // registry slot after the worker idles so it doesn't block reuse.
-            if (cls == 0 && ++a.sinceReq > 10 && a.worker && a.worker->portValue[2] == 0) {
-                NJLOG("se_release id=%05x (class 0, worker idle)\n", a.id);
-                active_stop_now(a);
-                continue;
+            // Class-0 SEs: ~1 frame after the last re-request the guest releases the
+            // registration (releaseSeRegist → port0=0 + track interrupt) and the worker
+            // stops the sound itself (snippet stop path @0x406). Port of that: send
+            // port0=0 once, then free the registry slot when the worker reaches idle.
+            // Threshold: subframe ticks (~7/video frame). The guest releases one frame
+            // after the last request, but some callers re-request at half rate — 10
+            // ticks (~1.5 frames) spuriously released live sounds (2281-restart churn
+            // in the regression run); ~3 frames is tolerant and still snappy.
+            if (cls == 0 && ++a.sinceReq > 21) {
+                if (!a.relSent && a.worker) {
+                    NJLOG("se_release id=%05x (class 0, no re-request)\n", a.id);
+                    a.worker->writePortImport(0, 0);
+                    a.relSent = true;
+                }
+                if (a.worker && a.worker->portValue[2] == 0) { a.used = false; continue; }
             }
         }
         se_3d_tick(a);
@@ -2320,15 +2329,21 @@ static void process_pending() {
                 // MSD_SE_PO_WATER_HI = 0x0000, re-requested every frame while held)
                 // through the restart path every frame — ~1 s of churn then permanent
                 // silence (user report).
+                //
+                // Worker port protocol (RE'd from the init-BMS worker snippet @0x37d):
+                //   port0 = 1     → (re)start: consume request, dispatch per-sound snippet
+                //   port0 = 0     → stop: close sound tracks, return to idle
+                //   port0 = 0xFFFF → "consumed", sound plays/loops on its own
+                // So a revive touches NO ports while the sound is playing (writing 1
+                // every frame restarted the snippet each frame — the spray bug). Only a
+                // revive of a STOPPING instance (release already sent) re-arms port0.
                 if ((id & 0x800) == 0 && alive) {
-                    same->sinceReq = 0;               // keep-alive refresh, no restart
-                    // Re-feed the worker's ports: continuous snippets poll the port-0
-                    // import per loop iteration and starve out (worker idles) when the
-                    // game stops re-requesting — that is how a held spray sustains and
-                    // how it ends on release, with no explicit stop call anywhere.
-                    if (same->worker) {
+                    same->sinceReq = 0;
+                    if (same->relSent && same->worker) {   // cancel an in-flight release
                         same->worker->writePortImport(4, (u16)(id & 0x3FF));
                         same->worker->writePortImport(0, 1);
+                        same->relSent = false;
+                        NJLOG("se_revive id=%05x (release canceled)\n", id);
                     }
                     it = g_pending.erase(it);
                     continue;
