@@ -1,6 +1,7 @@
 #include <cmath>
 #include "memory_bridge.h"
 #include "cpu_state.h"
+#include "gx_stream.h"
 #include "intrinsics.h"   // inline fast-path sb_r*/sb_w* + sb_poll_note (and the mem_* decls we define)
 #include <cstring>
 #include <cstdio>
@@ -505,7 +506,9 @@ void mem_w8_slow(u32 ea, u8 v) {
 #ifdef HAVE_DOLPHIN_MEMMAP
     if (is_gather_pipe(ea)) {
         if (g_gxcap) gx_tap_cmd(v);
-        sb_log_first_gather(); fifo_count(); g_recomp_touched_mmio = true; GPF().Write8(v); return;
+        sb_log_first_gather(); fifo_count(); g_recomp_touched_mmio = true;
+        if (gxs_active()) gxs_w8(v); else GPF().Write8(v);
+        return;
     }
 #endif
     check_wild_write(ea, v, 8);
@@ -521,7 +524,11 @@ static inline void trace_exi_write(u32 ea, u32 v, int bits);
 void mem_w16_slow(u32 ea, u16 v) {
     if (u8* p = ram_ptr(ea)) { p[0] = v >> 8; p[1] = v & 0xFF; return; }
 #ifdef HAVE_DOLPHIN_MEMMAP
-    if (is_gather_pipe(ea)) { fifo_count(); g_recomp_touched_mmio = true; GPF().Write16(v); return; }
+    if (is_gather_pipe(ea)) {
+        fifo_count(); g_recomp_touched_mmio = true;
+        if (gxs_active()) gxs_w16(v); else GPF().Write16(v);
+        return;
+    }
 #endif
     check_wild_write(ea, v, 16);
     sb_log_fifo_reg_write(ea, v, 16);
@@ -582,7 +589,9 @@ void mem_w32_slow(u32 ea, u32 v) {
 #ifdef HAVE_DOLPHIN_MEMMAP
     if (is_gather_pipe(ea)) {
         if (g_gxcap) gx_tap_word(v);
-        sb_log_first_gather(); fifo_count(); g_recomp_touched_mmio = true; GPF().Write32(v); return;
+        sb_log_first_gather(); fifo_count(); g_recomp_touched_mmio = true;
+        if (gxs_active()) gxs_w32(v); else GPF().Write32(v);
+        return;
     }
 #endif
     check_wild_write(ea, v, 32);
@@ -597,7 +606,11 @@ void mem_w64_slow(u32 ea, u64 v) {
         p[4]=(v>>24)&0xFF; p[5]=(v>>16)&0xFF; p[6]=(v>>8)&0xFF; p[7]=v&0xFF; return;
     }
 #ifdef HAVE_DOLPHIN_MEMMAP
-    if (is_gather_pipe(ea)) { g_recomp_touched_mmio = true; GPF().Write64(v); return; }
+    if (is_gather_pipe(ea)) {
+        g_recomp_touched_mmio = true;
+        if (gxs_active()) gxs_w64(v); else GPF().Write64(v);
+        return;
+    }
     check_wild_write(ea, v, 64);
     // No Write_U64 in Dolphin's MMIO API — split into two 32-bit writes.
     MMIO_W(32, ea, (u32)(v >> 32));

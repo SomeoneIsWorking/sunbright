@@ -127,6 +127,8 @@ add_executable(sunbright
     runtime/sunbright_bridge.cpp
     runtime/dolphin_hook.cpp
     runtime/memory_bridge.cpp
+    runtime/gx_stream.cpp
+    runtime/gpfifo_wrap.cpp
     runtime/native_threads.cpp
     runtime/native_os.cpp
     runtime/os_hle.cpp
@@ -170,6 +172,10 @@ target_link_libraries(sunbright PRIVATE
 target_link_options(sunbright PRIVATE
     "-Wl,--wrap=_Z13JitTrampolineR7JitBasej"
     "-Wl,--wrap=_ZN11PixelEngine18PixelEngineManager8SetTokenEtbi"
+    "-Wl,--wrap=_ZN6GPFifo13GPFifoManager6Write8Eh"
+    "-Wl,--wrap=_ZN6GPFifo13GPFifoManager7Write16Et"
+    "-Wl,--wrap=_ZN6GPFifo13GPFifoManager7Write32Ej"
+    "-Wl,--wrap=_ZN6GPFifo13GPFifoManager7Write64Em"
     # Native AID interrupt ownership (aid_native.cpp): strip INT_AID before PI, deliver natively
     "-Wl,--wrap=_ZN3DSP10DSPManager20GenerateDSPInterruptEml"
     # Native SMS DAC ucode (zelda_ucode_native.cpp): own the mail state machine, no self-halt

@@ -1,5 +1,6 @@
 #include "dolphin_hook.h"
 #include "memory_bridge.h"
+#include "gx_stream.h"
 #include "intrinsics.h"
 #include "overrides.h"
 #include "native_threads.h"
@@ -698,6 +699,7 @@ void call_ppc(CPUState& cpu, u32 address) {
             fprintf(stderr, "[ctx] OSLoadContext ctx=%08x loaded r1=%08x srr0=%08x lr=%08x\n",
                     ctxp, mem_r32(ctxp + 4), mem_r32(ctxp + 0x198), mem_r32(ctxp + 0x84));
         }
+        gxs_flush("jit");   // Dolphin's CPU loop takes over — same boundary rule as interp_run_until
         g_recomp_context_switched = true; siglongjmp(*g_tail_jmp, 1);
     }
     constexpr long MAX = 500'000'000;
@@ -831,6 +833,12 @@ static int native_dispatch_pending(const CPUState* seed = nullptr);   // fwd (na
 static bool in_native_dispatch();        // fwd
 
 bool interp_run_until(u32 ret, long budget, u32 sp_floor) {
+    // GX stream assembler: guest code about to run under Dolphin's interpreter (and any JIT
+    // blocks it chains into) writes the gather pipe directly, bypassing the recomp funnel.
+    // Flushing here keeps this thread's program order in the FIFO — foreign bytes can only
+    // land AFTER everything recomp wrote before the boundary. (Boot-time GXInit-class JIT
+    // functions writing the pipe inline were the held-mode FIFO corruption; see gx_stream.h.)
+    gxs_flush("jit");
     if (!nthr::self_may_run_guest()) {
         fprintf(stderr, "\n[interp] TOKEN VIOLATION: this host thread entered the interpreter "
                 "without holding the nthr token (pc=%08x ret=%08x).\n",
@@ -1510,6 +1518,7 @@ void tail_ppc(CPUState& cpu, u32 address) {
     cpu_to_dolphin_state(cpu, ppc);
     ppc.pc = ppc.npc = address;
     if (g_tail_jmp) {
+        gxs_flush("jit");   // CPU-loop handoff — same gather-pipe ordering rule as interp_run_until
         // Hand the committed state to the CPU loop and unwind every recomp C frame back to Run.
         // NOTE (2026-06-09): this unwinding is NOT safe when an intermediate caller used a non-tail
         // `bl` and still needs a callee-saved register — the unwound frame's C epilogue never runs, so
