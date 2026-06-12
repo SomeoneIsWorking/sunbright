@@ -92,6 +92,17 @@ No shared library, no dlopen. (An optional 2nd arg is accepted but ignored; the
 recomp table is linked directly via `generated/jump_table.cpp`.)
 
 Useful env vars:
+- `SUNBRIGHT_FASTBOOT=1` — boot straight into save File 1, Delfino Plaza (no input driving, no
+  save state): a PC-native port of the boot sequencing + file-select→gameplay transition
+  (`runtime/overrides/fastboot_native.cpp`). Skips logo/attract-movie/title; reads the File 1
+  save block from the host memcard image, ports TFlagManager::load + moveStage's
+  decideNextScenario (episode from save flags), returns APP_STATE_GAMEPLAY from the movie
+  director. GOTCHAS learned: the movie-direct override must WAIT for gSetupThread (0x803FCBE8)
+  to terminate + join before returning — tearing down TMovieDirector mid-THP-open crashes the
+  THP workers (the game's own setup-failure path proves wait+join+return-5 is safe); scenario
+  0xFF must be resolved (raw 0xFF fails mountStageArchive → loadResource 1 → DONE bail);
+  TMovieDirector's ctor stores TWO vptrs — the final vtable is 0x803DFA50 (direct = +0x64 →
+  0x802b5b30), 0x803E1D50 is the base sub-object's.
 - `SUNBRIGHT_BACKEND=OGL|Vulkan|Software` — GFX backend (both OGL & Vulkan work under XWayland; Vulkan is the default)
 - `SUNBRIGHT_RES_SCALE=N` — internal resolution multiplier (default 3 = 3× native EFB)
 - `SUNBRIGHT_WIDESCREEN=0` — disable 16:9 (default on: `GFX_ASPECT_RATIO=ForceWide` + `GFX_WIDESCREEN_HACK`; the hack widens the 3D projection so 4:3 SMS isn't stretched)
