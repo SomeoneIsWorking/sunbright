@@ -1989,6 +1989,16 @@ static void se_3d_tick(ActiveSE& a) {                   // MSHandle::setSeDistan
     const float dist = sqrtf(cs[0]*cs[0] + cs[1]*cs[1] + cs[2]*cs[2]);
     if (!finite_pos(dist)) return;
     const SeCategory& c = kSeCategory[cat];
+    // Distance CULL (JAIBasic::checkNextFrameSe): sounds with swbit bit5 are STOPPED
+    // beyond distanceMax (MSound init: max enabled smSeCategory dist = 12000) — the
+    // oracle never sounds the far plaza festival drums at all; attenuation alone left
+    // them audible ("loud drums"). Re-entry is free: keep-alive re-requests redispatch.
+    if ((a.swbit & 0x20) && dist > 12000.f && a.stopFade < 0) {
+        NJLOG("se_cull id=%05x dist=%.0f\n", a.id, dist);
+        a.vol[6].set(0.f, 6);
+        a.stopFade = 6;
+        return;
+    }
     const u8 swType = (u8)((a.swbit >> 16) & 7);
     const float vol = (a.swbit & 2) ? 1.f : calc_volume(dist, c.dist, swType, cat);
     a.vol[4].set(vol, c.type);
