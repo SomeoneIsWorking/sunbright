@@ -28,13 +28,11 @@
 // and testable.
 //
 // Modes:
-//   default              — guest-identical 4:3 math; the override does NOT modify memory
-//                          (pixel-A/B gate vs no-override build must be identical).
-//   SUNBRIGHT_WATER_WS=1 — true-aspect: lookup m00 scaled by ws_squeeze_scale() so the
-//                          screen-texture lookup matches the squeezed raster projection.
-//                          (Required for correct water whenever SUNBRIGHT_WIDESCREEN is
-//                          active; kept opt-in until the 4:3 gate has passed.)
-//   SUNBRIGHT_WATER_NATIVE=0 — disable both overrides (pure guest path).
+//   default — lookup m00 scaled by the LIVE raster squeeze (ws_squeeze_scale): matches the
+//             squeezed projection at 16:9, exactly 1.0 (no memory touch) at 4:3. The old
+//             SUNBRIGHT_WATER_WS opt-in gate is gone — user-verified in Delfino 2026-06-12
+//             (the pier/sea silhouette smear), and 4:3 is identical by construction.
+//   SUNBRIGHT_WATER_NATIVE=0 — disable both overrides (pure guest path, A/B).
 //
 // FOR THE MAIN SESSION — verification plan (docs/decomp/water_rendering.md §Verification):
 //   1. 4:3 gate: SUNBRIGHT_WIDESCREEN=0, WATER_WS unset → frame dumps pixel-identical to a
@@ -86,15 +84,12 @@ bool native_on() {
     static const bool on = !(e && e[0] == '0');
     return on;
 }
-bool true_aspect_on() {
-    static const char* e = getenv("SUNBRIGHT_WATER_WS");
-    static const bool on = (e && e[0] == '1');
-    return on;
-}
-// Scale applied to lookup m00. 1.0 in default (guest-identical) mode; the raster squeeze
-// under SUNBRIGHT_WATER_WS=1 (raster m00 = guest m00 × squeeze ⇒ lookup must match).
+// Scale applied to lookup m00: always the live raster squeeze (raster m00 = guest m00 ×
+// squeeze ⇒ lookup must match). At 4:3 the squeeze is 1.0, so guest-identical behavior
+// falls out by construction — no mode flag. (Was SUNBRIGHT_WATER_WS=1 opt-in pending
+// verification; user-verified in Delfino 2026-06-12, gate removed.)
 float water_lookup_scale() {
-    return true_aspect_on() ? ws_squeeze_scale() : 1.0f;
+    return ws_squeeze_scale();
 }
 bool dbg_on() {
     static const bool d = getenv("SUNBRIGHT_DBG_WATER") != nullptr;

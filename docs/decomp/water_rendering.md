@@ -175,7 +175,8 @@ Hence the fix is SCOPED to drawRefracAndSpec, not applied at 0x8034a17c globally
 Native ownership of the two lookup-matrix derivations, parameterized by an aspect factor:
 
 - `water_lookup_scale()` = 1.0 (default, guest-identical 4:3 math → bit-exact A/B) or
-  `ws_squeeze_scale()` when `SUNBRIGHT_WATER_WS=1` (true-aspect: lookup m00 matches the
+  `ws_squeeze_scale()` ALWAYS (default since 2026-06-12 — the gate is removed; at 4:3 the
+scale is 1.0 so guest math is untouched by construction) (true-aspect: lookup m00 matches the
   squeezed raster m00, because raster_m00 = guest_m00 × squeeze ⇒ lookup must scale the same).
 - Seam 1: override 0x8022ba74 — guest body via `recomp_raw` (keeps guest trig bit-exact),
   then `out[0][0] ×= scale` computed natively. Multiplication is the EXACT aspect
@@ -185,7 +186,12 @@ Native ownership of the two lookup-matrix derivations, parameterized by an aspec
 - Pure-math reference implementations (`water_effect_m00`, `water_lightpersp_m00`) live in
   the file as testable functions and document the closed-form values.
 
-## Verification key (for the main session)
+## Verification key — RESULTS (2026-06-12)
+
+User-verified live at 16:9: the pier/sea silhouette smear is gone with the scaled lookup
+(then-`SUNBRIGHT_WATER_WS=1`, now default). 4:3 is untouched by construction (scale 1.0 →
+no memory write). Remaining items below were the original plan; droplet/mirror checks
+still worth an eyeball on next gameplay session.
 
 1. **4:3 bit-exactness gate**: `SUNBRIGHT_WIDESCREEN=0` (and WATER_WS unset) — frame-dump
    A/B vs a build without water_native.cpp must be pixel-identical (scale=1.0 path writes
