@@ -29,6 +29,9 @@ extern "C" void func_8013fc88(CPUState&);
 // frame, 2026-06-11). The last-loaded 2D ortho is re-issued unsqueezed on entry and
 // re-squeezed on exit.
 bool g_ws_2d_suspend = false;
+// Perspective-squeeze suspend: for OFFSCREEN perspective renders consumed via texture
+// lookups built from the UNsqueezed camera params (TMirrorCamera, efbtex_widescreen.cpp).
+bool g_ws_persp_suspend = false;
 u32  g_ws_last_ortho = 0;
 
 static constexpr u32 kGXSetProjection = 0x80362c34u;

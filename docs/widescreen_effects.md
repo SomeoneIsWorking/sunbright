@@ -27,6 +27,8 @@ note in scene_render.cpp).
 | HUD corner gauges | J2DPicture::drawFullSet | ✅ per-element edge anchoring, `hud.cpp` |
 | TSunModel EFB occlusion probes (sun glow / lens flare visibility) | getZBufValue 0x8002ea70 | ✅ `sunmodel_widescreen.cpp` — unkB4 EFB pixels recomputed from unkF8 with the 0.75 squeeze (game samples 4:3 pixels of an anamorphic EFB; verified live: x43=0.942 → game pixel 621 vs true EFB 545) |
 | BathWater draw_mist EFB copy-replay | 0x801aa6cc | ✅ `screenfx_widescreen.cpp` — squeeze suspended (flag only): its own EFB-pixel ortho (bl 0x801aac30 → GXSetProjection) must be the identity EFB mapping or the replay misaligns vs the GXCopyTex source |
+| TMirrorCamera offscreen perspective (bathroom mirrors) | perform 0x80193fbc | ✅ `efbtex_widescreen.cpp` — perspective squeeze suspended (g_ws_persp_suspend): the mirror texture is sampled via drawSetting's C_MTXLightPerspective built from UNsqueezed camera params; squeezing the render but not the lookup shifts reflections ~25% |
+| EFB→texture passes: graffiti/pollution counting + mirror pre-render | TEfbCtrlTex::perform 0x802f8bac (bracket 0x80…0x8) | ✅ `efbtex_widescreen.cpp` — pass-scoped squeeze suspend; their TOrthoProj orthos are TEXTURE-pixel space 1:1 with GXReadPixMetric counts / GXCopyTex rects (squeezing them shrank pollution pixel counts ~25% and smeared layer copy-backs). TOrthoProj canNOT be blanket-exempted: the same class is the screen 2D camera (0,16,600,464) which must stay squeezed. TEfbCtrlDisp::perform(0x80) force-clears the flag (leak guard) |
 
 ## Not screenspace (checked, no action needed)
 
@@ -50,6 +52,19 @@ note in scene_render.cpp).
   far inside both aspects — unaffected.
 - THP FMV: full-screen 2D under the squeeze → presented centered 4:3; movies are 4:3
   content, correct by design.
+- Frustum-cull setter arg order: TNPCManager::clipEnemies *looks* like it passes
+  (aspect, fovy) in the decomp, but the binary (0x8020a29c) loads f1=[cam+0x48]=fovy,
+  f2=[cam+0x4C]=aspect — standard order; cull_widescreen.cpp's f2×4/3 is right for
+  ALL callers (Animal/NPC/conductor/gesso/enemyAttachment/livemanager).
+- JPA particles: no screen-space emitters and no CPU screen culling in SMS's JParticle
+  (the "ClipBoard" is just draw state; GXSetClipMode is GPU clip) — covered by the
+  widened perspective.
+- MsIsInSight & friends: entity sight cones (AI), not camera/screen — must NOT be
+  touched.
+- TModelWaterManager::drawShineShadowVolume full-screen alpha quad: ±1000 at z=-200
+  under the current (squeezed) perspective — covers the 16:9 frustum with huge margin.
+- Demo letterboxing: SMS plays demos full-screen (no cinema-bar draw path found in the
+  decomp) — nothing to widen.
 
 ## Dead ends / gotchas
 
@@ -59,3 +74,12 @@ note in scene_render.cpp).
   are the only safe shape.
 - `ws_2d_suspend_*` actively re-issues GXSetProjection with `g_ws_last_ortho`; only
   wrap draws that actually run under a 2D ortho (verify by disasm/decomp first).
+- Orthos issued inside a suspend scope are NOT recorded as `g_ws_last_ortho` (often
+  stack-local matrices, e.g. draw_mist's — recording them would dangle the fader's
+  reload pointer).
+- The "通常シーン描画ステージ" normal-scene EfbCtrlTex bracket may stay open across the
+  whole GX perform list; the TEfbCtrlDisp::perform(0x80) clear in efbtex_widescreen.cpp
+  is load-bearing (restores the squeeze before the screen 2D groups), not just a guard.
+- Headless verification: `SUNBRIGHT_STATE=<sav>` needs `SUNBRIGHT_STATE_FIELDS=0` under
+  SUNBRIGHT_HEADLESS — the vi_end_field_event field counter never increments without a
+  presenter, so the default 1500-field threshold never arms.

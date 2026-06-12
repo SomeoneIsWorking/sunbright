@@ -79,13 +79,13 @@ static void ov_gx_projection(CPUState& cpu) {
     // Fader/wipe scope (fader_widescreen.cpp): full-screen curtains must span the whole 16:9
     // present, so the squeeze is suspended and the ortho reloaded for the duration of
     // TSMSFader::draw. Record the last 2D ortho so the fader wrap can re-issue it.
-    extern bool g_ws_2d_suspend; extern u32 g_ws_last_ortho;
+    extern bool g_ws_2d_suspend; extern bool g_ws_persp_suspend; extern u32 g_ws_last_ortho;
     // Don't record orthos issued inside a suspend scope: those are effect-internal
     // (e.g. draw_mist's EFB-pixel ortho lives on the guest STACK — recording it would
     // leave the fader's reload pointer dangling once the frame returns).
     if (is2d && mtx >= 0x80000000u && !g_ws_2d_suspend) g_ws_last_ortho = mtx;
     bool patched = false; f32 m00 = 0.0f, m03 = 0.0f;
-    if (widescreen_on() && !(is2d && g_ws_2d_suspend) &&
+    if (widescreen_on() && !(is2d && g_ws_2d_suspend) && !(!is2d && g_ws_persp_suspend) &&
         (!is2d || seen_3d) && mtx >= 0x80000000u && mtx < 0x81800000u) {
         m00 = mem_rf32(mtx + 0x00);
         mem_wf32(mtx + 0x00, m00 * scale);
