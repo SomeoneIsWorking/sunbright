@@ -15,7 +15,7 @@
 #include "../overrides.h"
 #include "../intrinsics.h"
 
-extern "C" void njas_se_start(uint32_t id, uint32_t swbit, uint8_t prio);
+extern "C" void njas_se_start(uint32_t id, uint32_t swbit, uint8_t prio, uint32_t guest);
 extern "C" void njas_bgm_start(uint32_t id);
 extern "C" void njas_se_stop(uint32_t id, uint32_t fade);
 extern "C" void njas_se_param(uint32_t id, int kind, uint8_t slot, float value, uint32_t time);
@@ -64,18 +64,27 @@ SUNBRIGHT_OVERRIDE(ov_startSoundActor, 0x80301e80u) {
     func_80301e80(cpu);
 }
 SUNBRIGHT_OVERRIDE(ov_startSoundBasic, 0x803020acu) {
-    const uint32_t id = cpu.gpr[4], info = cpu.gpr[9];
+    const uint32_t id = cpu.gpr[4], handlePP = cpu.gpr[5], info = cpu.gpr[9];
     if (dbg()) fprintf(stderr, "[se_native] startSoundBasic id=%08x info=%08x\n", id, info);
-    if (njas_enabled() && is_se_id(id)) {
-        uint32_t swbit = 0; uint8_t prio = 0;
-        if (info >= 0x80000000u && info < 0x81800000u) {
-            swbit = sb_r32(info);            // JAISoundInfo unk0
-            prio = sb_r8(info + 4);          // JAISoundInfo unk4
-        }
-        njas_se_start(id, swbit, prio);
+    const bool se = njas_enabled() && is_se_id(id);
+    uint32_t swbit = 0; uint8_t prio = 0;
+    if (se && info >= 0x80000000u && info < 0x81800000u) {
+        swbit = sb_r32(info);            // JAISoundInfo unk0
+        prio = sb_r8(info + 4);          // JAISoundInfo unk4
     }
     if (njas_enabled() && is_seq_id(id)) njas_bgm_start(id);
+    // run the guest first so the JAISound handle exists, then bind it for the
+    // param-block mirror (startSoundBasic r5 = JAISound** out-pointer; may be 0)
     func_803020ac(cpu);
+    if (se) {
+        uint32_t guest = 0;
+        if (handlePP >= 0x80000000u && handlePP < 0x81800000u) {
+            const uint32_t snd = sb_r32(handlePP);
+            if (snd >= 0x80000000u && snd < 0x81800000u && sb_r32(snd + 0x8) == id)
+                guest = snd;
+        }
+        njas_se_start(id, swbit, prio, guest);
+    }
 }
 SUNBRIGHT_OVERRIDE(ov_startSoundDirectID, 0x80301fc4u) {
     if (dbg()) fprintf(stderr, "[se_native] startSoundDirectID id=%08x\n", cpu.gpr[4]);
@@ -115,8 +124,11 @@ SUNBRIGHT_OVERRIDE(ov_wavebank_loadWave, 0x80310994u) {
 }
 // Outer JAISound::setVolume/setPan/setPitch (this=r3, f1=value, r4=time, r5=slot):
 // route SEQ (BGM) ids here. SE ids are captured one level down at the setSeInter*
-// setters, which also see all guest-computed 3D distance attenuation/pan (MSHandle
-// setSeDistance* funnels into them with the per-purpose slot numbers).
+// setters. FALSIFIED (2026-06-12): setSeDistance* does NOT funnel through these — it
+// writes the param-block slot memory directly (stfsu via getSeParameter()); bound
+// sounds are therefore mirrored from the guest param block each jai_tick instead
+// (njas mirror_guest_params), which also covers recomp→recomp setter calls that
+// overrides can't see. The tees below remain for unbound (handle-less) sounds.
 SUNBRIGHT_OVERRIDE(ov_jaisound_setVolume, 0x8030a57cu) {
     const uint32_t id = handle_id(cpu.gpr[3]);
     if (njas_enabled() && is_seq_id(id))

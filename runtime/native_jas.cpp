@@ -29,6 +29,8 @@
 #include <thread>
 #include <vector>
 
+#include "intrinsics.h"
+
 #include "DiscIO/Blob.h"
 #include "DiscIO/Volume.h"
 
@@ -306,8 +308,12 @@ static void parse_ibnk(const u8* bnk, u32 size, Bank& out) {
             const u8* pmap = bnk + pm;
             auto& pc = in->percs[j];
             pc.valid = true;
-            pc.vol = bef32(pmap);
-            pc.pitch = bef32(pmap + 4);
+            // TPmap layout is PITCH first, then volume (pikmin2 JASBNKParser TPmap:
+            // mPitch @+0, mVolume @+4 — reverse of TInst's vol@8/pitch@C order!).
+            // Reading them swapped made drums quiet-and-sharp (the 0:233 −30 dB /
+            // +105-cent A/B signature).
+            pc.pitch = bef32(pmap);
+            pc.vol = bef32(pmap + 4);
             // PER2 extras (JASBNKParser): unk288[j]/127 is the per-key PAN (the old code
             // multiplied it into volume — percussion loudness bug), unk308[j] = release.
             if (per2) { pc.pan = (float)perc[0x288 + j] / 127.f; pc.release = be16(perc + 0x308 + j * 2); }
@@ -1696,7 +1702,7 @@ static float g_mixbuf[kSub * 2];
 static int g_mix_have = 0, g_mix_pos = 0;
 static FILE* g_solo_dump = nullptr;   // SUNBRIGHT_DUMP_NJAS: engine-only wav
 
-struct PendingSE { u32 id; u32 swbit; u8 prio; bool isBgm = false; u16 age = 0; };
+struct PendingSE { u32 id; u32 swbit; u8 prio; bool isBgm = false; u16 age = 0; u32 guest = 0; };
 static std::vector<PendingSE> g_pending;
 
 // ---- M2: SE handle layer (category volumes, per-sound move params, stop/fade).
@@ -1727,6 +1733,7 @@ struct ActiveSE {
     MovePara vol[9], pitch[9], pan[9];   // pitch/pan slots init neutral below
     bool panTouched = false;
     s32 stopFade = -1;                   // >=0: fading to stop, counts down
+    u32 guest = 0;                       // guest JAISound* (param-block mirror source)
 };
 static ActiveSE g_active[32];
 
@@ -1769,6 +1776,37 @@ static ActiveSE* active_find(u32 id) {
     return nullptr;
 }
 
+// Mirror the guest JAISound's SE-parameter move slots into ours. The guest computes
+// 3D distance attenuation/pan/pitch by writing the slot memory DIRECTLY (e.g.
+// setSeDistanceVolume 8030c2d0: stfsu into getSeParameter()+0x164 = vol slot 4) — no
+// setter call, so function tees can never see it (and recomp→recomp calls bypass
+// overrides anyway). Reading the block each tick captures every write path at once.
+// Layout (binary-verified, setSeInter* emitters): JAISound+0x38 → param block; slot
+// arrays of 8 × 16-byte {target, cur, step, count} at +0x124 vol, +0x1A4 pan,
+// +0x224 pitch. We read CUR — the guest's own frame loop ticks the moves.
+static bool mirror_ok(float f, float lo, float hi) { return f == f && f >= lo && f <= hi; }
+static void mirror_guest_params(ActiveSE& a) {
+    if (!a.guest || a.isBgm) return;
+    // Stop-fading sound: WE own the envelope (vol[6] → 0 over stopFade ticks). The
+    // guest handle is being torn down and its slots stay at full volume — mirroring
+    // them stomped the fade (full volume, then an abrupt cut when the counter hit 0).
+    if (a.stopFade >= 0) return;
+    if (sb_r32(a.guest + 0x8) != a.id) { a.guest = 0; return; }   // handle re-used/freed
+    const u32 param = sb_r32(a.guest + 0x38);
+    if (param < 0x80000000u || param >= 0x81800000u) return;
+    for (int i = 0; i < 8; i++) {
+        const float v = sb_rf32(param + 0x124 + i * 16 + 4);
+        const float p = sb_rf32(param + 0x1A4 + i * 16 + 4);
+        const float t = sb_rf32(param + 0x224 + i * 16 + 4);
+        if (mirror_ok(v, 0.f, 8.f))  a.vol[i].cur = a.vol[i].target = v;
+        if (mirror_ok(t, 0.f, 16.f)) a.pitch[i].cur = a.pitch[i].target = t;
+        if (mirror_ok(p, 0.f, 1.f)) {
+            if (p != 0.5f || a.pan[i].cur != 0.5f) a.panTouched = true;
+            a.pan[i].cur = a.pan[i].target = p;
+        }
+    }
+}
+
 // one JAI frame (60 Hz): advance move params, flush products to worker outer params
 static void jai_tick() {
     for (auto& a : g_active) {
@@ -1786,6 +1824,7 @@ static void jai_tick() {
         }
         if (a.stopFade == 0) { active_stop_now(a); continue; }
         if (a.stopFade > 0) a.stopFade--;
+        mirror_guest_params(a);
         float vp = 1.f, pp = 1.f, pn = 0.5f;
         for (int i = 0; i < 9; i++) {
             a.vol[i].tick(); a.pitch[i].tick(); a.pan[i].tick();
@@ -1917,9 +1956,11 @@ static void process_pending() {
             for (auto& a : g_active) if (!a.used) { slot = &a; break; }
             if (!slot) { ++it; continue; }   // registry full — wait (binding is mandatory)
             active_init(*slot, w, id, it->swbit, it->prio);
+            slot->guest = it->guest;
             w->writePortImport(4, (u16)(id & 0x3FF));
             w->writePortImport(0, 1);
-            NJLOG("se_start id=%05x cat=%u idx=%u → worker %p\n", id, cat, id & 0x3FF, (void*)w);
+            NJLOG("se_start id=%05x cat=%u idx=%u guest=%08x → worker %p\n", id, cat, id & 0x3FF,
+                  it->guest, (void*)w);
             it = g_pending.erase(it);
         } else if (g_inited && ++it->age > 800) {
             // expire stale requests (~2 s of subframes with no worker): all busy or unknown category
@@ -2068,12 +2109,14 @@ extern "C" void njas_mix(int16_t* buf, size_t frames) {
 
 // Start an SE natively (called from the startSoundBasic tee). SE ids only (top bits 0);
 // seq/stream ids are ignored here. swbit/prio come from the guest JAISoundInfo.
-extern "C" void njas_se_start(uint32_t id, uint32_t swbit, uint8_t prio) {
+extern "C" void njas_se_start(uint32_t id, uint32_t swbit, uint8_t prio, uint32_t guest) {
     using namespace njas;
     std::lock_guard<std::mutex> lk(g_mtx);
     if (!g_catvol_init) { for (auto& v : g_catvol) v = 1.f; g_catvol_init = true; }
     engine_init();                            // kicks the async data load on first call
-    g_pending.push_back({ id, swbit, prio }); // queued until the engine is running
+    PendingSE p{ id, swbit, prio };
+    p.guest = guest;                          // guest JAISound* (0 = fire-and-forget)
+    g_pending.push_back(p);                   // queued until the engine is running
 }
 
 // Start a BGM natively (seq-class id 0x8xxxxxxx from the startSoundBasic tee): spawn a
@@ -2133,6 +2176,12 @@ extern "C" int njas_probe(char* out, int cap) {
     if (!lk.owns_lock()) { app("busy\n"); return n; }
     app("inited=%d players=%zu scene0=%d scene1=%d scene2=%d\n", (int)g_inited,
         g_players.size(), g_wave_scene[0].load(), g_wave_scene[1].load(), g_wave_scene[2].load());
+    for (auto& a : g_active) {
+        if (!a.used || a.isBgm) continue;
+        float vp = 1.f; for (int i = 0; i < 9; i++) vp *= a.vol[i].cur;
+        app("a id=%05x guest=%08x volprod=%.4f outer=%.4f\n", a.id, a.guest, vp,
+            a.worker ? a.worker->outerVol : -1.f);
+    }
     for (int i = 0; i < kMaxVoices; i++) {
         Voice& v = g_voices[i];
         if (!v.active || !v.wave) continue;

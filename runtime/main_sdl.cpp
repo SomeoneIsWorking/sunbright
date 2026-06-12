@@ -129,7 +129,11 @@ static std::optional<ControlState>
 pad_override(std::string_view group, std::string_view control, ControlState base) {
     const uint32_t p = g_pad.load(std::memory_order_relaxed)
                      | g_repl_bits.load(std::memory_order_relaxed);
-    auto on = [&](PadBit b) { return (p & b) ? std::optional<ControlState>(1.0) : std::nullopt; };
+    // Return 0.0 (not nullopt) for owned-but-unpressed controls: nullopt falls back to
+    // Dolphin's DEFAULT keyboard GCPad profile (`base`), which binds the same letter
+    // keys to different GC buttons (S=Y, Z=B, …) — so every keypress fired TWO pad
+    // actions at once (the "spray also does a second action" tangle).
+    auto on = [&](PadBit b) { return std::optional<ControlState>((p & b) ? 1.0 : 0.0); };
     if (group == "Buttons") {
         if (control == "Start") {
             // Capture the REAL Start state (our injection OR Dolphin's own mapping
@@ -147,17 +151,21 @@ pad_override(std::string_view group, std::string_view control, ControlState base
         if (control == "X") {
             if (p & P_RIGHT) return  1.0;
             if (p & P_LEFT)  return -1.0;
+            return 0.0;
         } else if (control == "Y") {
             if (p & P_UP)    return  1.0;
             if (p & P_DOWN)  return -1.0;
+            return 0.0;
         }
     } else if (group == "C-Stick") {
         if (control == "X") {
             if (p & P_CRIGHT) return  1.0;
             if (p & P_CLEFT)  return -1.0;
+            return 0.0;
         } else if (control == "Y") {
             if (p & P_CUP)    return  1.0;
             if (p & P_CDOWN)  return -1.0;
+            return 0.0;
         }
     } else if (group == "Triggers") {
         if (control == "L" || control == "L-Analog") return on(P_L);
