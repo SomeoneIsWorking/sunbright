@@ -4,6 +4,7 @@
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_syswm.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cerrno>
 #include <chrono>
@@ -107,6 +108,95 @@ static std::atomic<uint32_t> g_repl_bits{0};
 // Dolphin's own input path, not our SDL window. Used to arm the movie skip.
 static std::atomic<bool> g_phys_start{false};
 
+// ── SDL game controller → GameCube pad (hotswap) ───────────────────────────
+// Physical controllers are opened/closed on SDL_CONTROLLERDEVICE{ADDED,REMOVED}
+// and POLLED each main-loop tick into the shared state below; pad_override
+// merges it with the keyboard bits (buttons OR, controller analog wins over
+// keyboard digital when displaced past the deadzone). All fields are atomics
+// because pad_override runs on the emulation thread.
+static std::atomic<uint32_t> g_ctl_pad{0};       // PadBit mask from controller buttons
+static std::atomic<float> g_ctl_lx{0}, g_ctl_ly{0};   // left stick  (-1..+1, +Y = up)
+static std::atomic<float> g_ctl_cx{0}, g_ctl_cy{0};   // right stick (C-stick)
+static std::atomic<float> g_ctl_tl{0}, g_ctl_tr{0};   // analog triggers (0..1)
+static std::vector<SDL_GameController*> g_controllers;  // main thread only
+
+static void controller_added(int device_index) {
+    SDL_GameController* gc = SDL_GameControllerOpen(device_index);
+    if (!gc) {
+        fprintf(stderr, "[input] controller open failed (index %d): %s\n",
+                device_index, SDL_GetError());
+        return;
+    }
+    g_controllers.push_back(gc);
+    fprintf(stderr, "[input] controller connected: %s (%zu active)\n",
+            SDL_GameControllerName(gc) ? SDL_GameControllerName(gc) : "?",
+            g_controllers.size());
+}
+
+static void controller_removed(SDL_JoystickID instance_id) {
+    for (auto it = g_controllers.begin(); it != g_controllers.end(); ++it) {
+        SDL_Joystick* js = SDL_GameControllerGetJoystick(*it);
+        if (js && SDL_JoystickInstanceID(js) == instance_id) {
+            fprintf(stderr, "[input] controller disconnected: %s (%zu remain)\n",
+                    SDL_GameControllerName(*it) ? SDL_GameControllerName(*it) : "?",
+                    g_controllers.size() - 1);
+            SDL_GameControllerClose(*it);
+            g_controllers.erase(it);
+            break;
+        }
+    }
+    if (g_controllers.empty()) {  // don't leave stale held state behind
+        g_ctl_pad.store(0, std::memory_order_relaxed);
+        g_ctl_lx.store(0); g_ctl_ly.store(0);
+        g_ctl_cx.store(0); g_ctl_cy.store(0);
+        g_ctl_tl.store(0); g_ctl_tr.store(0);
+    }
+}
+
+// Poll every open controller into the shared atomics (multiple controllers merge:
+// buttons OR, axes take the largest displacement).
+static void controller_poll() {
+    if (g_controllers.empty()) return;
+    uint32_t bits = 0;
+    float lx = 0, ly = 0, cx = 0, cy = 0, tl = 0, tr = 0;
+    auto axmax = [](float& acc, float v) { if (std::fabs(v) > std::fabs(acc)) acc = v; };
+    for (SDL_GameController* gc : g_controllers) {
+        if (!SDL_GameControllerGetAttached(gc)) continue;  // removal event still pending
+        auto btn = [&](SDL_GameControllerButton b, PadBit p) {
+            if (SDL_GameControllerGetButton(gc, b)) bits |= p;
+        };
+        btn(SDL_CONTROLLER_BUTTON_START, P_START);
+        btn(SDL_CONTROLLER_BUTTON_A, P_A);
+        btn(SDL_CONTROLLER_BUTTON_B, P_B);
+        btn(SDL_CONTROLLER_BUTTON_X, P_X);
+        btn(SDL_CONTROLLER_BUTTON_Y, P_Y);
+        // GC Z lives on the right shoulder of modern pads.
+        btn(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER, P_Z);
+        btn(SDL_CONTROLLER_BUTTON_LEFTSHOULDER, P_L);
+        // D-pad → Main Stick fallback (digital, merged via the PadBit path).
+        btn(SDL_CONTROLLER_BUTTON_DPAD_UP, P_UP);
+        btn(SDL_CONTROLLER_BUTTON_DPAD_DOWN, P_DOWN);
+        btn(SDL_CONTROLLER_BUTTON_DPAD_LEFT, P_LEFT);
+        btn(SDL_CONTROLLER_BUTTON_DPAD_RIGHT, P_RIGHT);
+        auto ax = [&](SDL_GameControllerAxis a) {
+            return std::clamp(SDL_GameControllerGetAxis(gc, a) / 32767.0f, -1.0f, 1.0f);
+        };
+        axmax(lx, ax(SDL_CONTROLLER_AXIS_LEFTX));
+        axmax(ly, -ax(SDL_CONTROLLER_AXIS_LEFTY));   // SDL +Y = down; GC stick +Y = up
+        axmax(cx, ax(SDL_CONTROLLER_AXIS_RIGHTX));
+        axmax(cy, -ax(SDL_CONTROLLER_AXIS_RIGHTY));
+        axmax(tl, std::max(0.0f, ax(SDL_CONTROLLER_AXIS_TRIGGERLEFT)));
+        axmax(tr, std::max(0.0f, ax(SDL_CONTROLLER_AXIS_TRIGGERRIGHT)));
+    }
+    g_ctl_pad.store(bits, std::memory_order_relaxed);
+    g_ctl_lx.store(lx, std::memory_order_relaxed);
+    g_ctl_ly.store(ly, std::memory_order_relaxed);
+    g_ctl_cx.store(cx, std::memory_order_relaxed);
+    g_ctl_cy.store(cy, std::memory_order_relaxed);
+    g_ctl_tl.store(tl, std::memory_order_relaxed);
+    g_ctl_tr.store(tr, std::memory_order_relaxed);
+}
+
 static uint32_t key_to_padbit(SDL_Keycode k) {
     switch (k) {
     case SDLK_RETURN: return P_START;
@@ -128,7 +218,16 @@ static uint32_t key_to_padbit(SDL_Keycode k) {
 static std::optional<ControlState>
 pad_override(std::string_view group, std::string_view control, ControlState base) {
     const uint32_t p = g_pad.load(std::memory_order_relaxed)
-                     | g_repl_bits.load(std::memory_order_relaxed);
+                     | g_repl_bits.load(std::memory_order_relaxed)
+                     | g_ctl_pad.load(std::memory_order_relaxed);   // controller buttons OR in
+    constexpr float kDeadzone = 0.15f;  // below this the controller axis yields to keyboard digital
+    // Controller analog wins over the keyboard's digital ±1 when actually displaced.
+    auto axis = [&](float ctl, PadBit pos, PadBit neg) -> std::optional<ControlState> {
+        if (std::fabs(ctl) > kDeadzone) return (ControlState)ctl;
+        if (p & pos) return  1.0;
+        if (p & neg) return -1.0;
+        return 0.0;
+    };
     // Return 0.0 (not nullopt) for owned-but-unpressed controls: nullopt falls back to
     // Dolphin's DEFAULT keyboard GCPad profile (`base`), which binds the same letter
     // keys to different GC buttons (S=Y, Z=B, …) — so every keypress fired TWO pad
@@ -148,28 +247,20 @@ pad_override(std::string_view group, std::string_view control, ControlState base
         if (control == "Z")     return on(P_Z);
     } else if (group == "Main Stick") {
         // The analog stick queries "X"/"Y" axes (-1..+1), not direction buttons.
-        if (control == "X") {
-            if (p & P_RIGHT) return  1.0;
-            if (p & P_LEFT)  return -1.0;
-            return 0.0;
-        } else if (control == "Y") {
-            if (p & P_UP)    return  1.0;
-            if (p & P_DOWN)  return -1.0;
-            return 0.0;
-        }
+        if (control == "X") return axis(g_ctl_lx.load(std::memory_order_relaxed), P_RIGHT, P_LEFT);
+        if (control == "Y") return axis(g_ctl_ly.load(std::memory_order_relaxed), P_UP, P_DOWN);
     } else if (group == "C-Stick") {
-        if (control == "X") {
-            if (p & P_CRIGHT) return  1.0;
-            if (p & P_CLEFT)  return -1.0;
-            return 0.0;
-        } else if (control == "Y") {
-            if (p & P_CUP)    return  1.0;
-            if (p & P_CDOWN)  return -1.0;
-            return 0.0;
-        }
+        if (control == "X") return axis(g_ctl_cx.load(std::memory_order_relaxed), P_CRIGHT, P_CLEFT);
+        if (control == "Y") return axis(g_ctl_cy.load(std::memory_order_relaxed), P_CUP, P_CDOWN);
     } else if (group == "Triggers") {
-        if (control == "L" || control == "L-Analog") return on(P_L);
-        if (control == "R" || control == "R-Analog") return on(P_R);
+        // Digital press (keyboard / controller shoulder) = full pull; analog trigger
+        // value merges in via max so partial pulls reach the L/R-Analog inputs.
+        const float tl = g_ctl_tl.load(std::memory_order_relaxed);
+        const float tr = g_ctl_tr.load(std::memory_order_relaxed);
+        if (control == "L" || control == "L-Analog")
+            return std::max((ControlState)((p & P_L) ? 1.0 : 0.0), (ControlState)tl);
+        if (control == "R" || control == "R-Analog")
+            return std::max((ControlState)((p & P_R) ? 1.0 : 0.0), (ControlState)tr);
     }
     return std::nullopt;
 }
@@ -609,7 +700,8 @@ int main(int argc, char* argv[]) {
 
     // SDL — headless still needs the event/timer subsystem for SDL_GetTicks (autostart
     // timing) but no video device (which would require a display).
-    if (SDL_Init(headless ? (SDL_INIT_TIMER | SDL_INIT_EVENTS) : SDL_INIT_VIDEO) < 0) {
+    if (SDL_Init((headless ? (SDL_INIT_TIMER | SDL_INIT_EVENTS) : SDL_INIT_VIDEO)
+                 | SDL_INIT_GAMECONTROLLER) < 0) {
         fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
         return 1;
     }
@@ -977,10 +1069,22 @@ int main(int argc, char* argv[]) {
                 if (uint32_t b = key_to_padbit(ev.key.keysym.sym))
                     g_pad.fetch_and(~b, std::memory_order_relaxed);
                 break;
+            // Controller hotswap: handles are opened/closed here; state is polled
+            // each loop tick (controller_poll below), not event-driven.
+            case SDL_CONTROLLERDEVICEADDED:
+                controller_added(ev.cdevice.which);   // which = device index for ADDED
+                break;
+            case SDL_CONTROLLERDEVICEREMOVED:
+                controller_removed(ev.cdevice.which); // which = instance id for REMOVED
+                break;
             default:
                 break;
             }
         }
+
+        // Physical controllers (hotswappable): poll all open handles into the
+        // shared atomics the pad_override merges with the keyboard.
+        controller_poll();
 
         // Scripted pad input: the REPL fifo and the probe's /pad endpoint share one action
         // queue — consume it whenever anything has enqueued (no env gate needed for /pad).
