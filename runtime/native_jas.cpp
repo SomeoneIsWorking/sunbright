@@ -2811,32 +2811,12 @@ extern "C" void njas_seq_port(uint32_t id, uint8_t track, uint8_t port, uint16_t
 extern "C" void njas_se_stop(uint32_t id, uint32_t fade, uint32_t posPtr) {
     using namespace njas;
     std::lock_guard<std::mutex> lk(g_mtx);
-    // Contradictory-signal guard: the guest JAI frame logic (alive but wedged under the
-    // native engine — its camera/track state is garbage) emits a bogus stopSoundHandle
-    // EVERY frame for the FLUDD spray (id 0) while the game simultaneously re-requests
-    // it every frame (observed live: startSoundBasic + stopSoundHandle pairs each frame).
-    // For class-0 continuous SEs the native lifecycle fully owns end-of-life (release on
-    // request-cease), so a guest stop while the instance is alive AND actively
-    // re-requested is noise from the dead stack — trust the requests.
-    if ((id & 0xC00) == 0) {
-        for (auto& a : g_active) {
-            if (!a.used || a.isBgm || a.id != id) continue;
-            if (posPtr && a.posPtr != posPtr) continue;
-            if (a.stopFade < 0 && !a.relSent && a.sinceReq <= 21) {
-                NJLOG("se_stop id=%05x IGNORED (class 0, actively re-requested)\n", id);
-                return;
-            }
-        }
-    }
-    // Drop any not-yet-dispatched request for this instance — but NOT for class-0 SEs:
-    // the wedged guest stack emits a stop for these EVERY frame, and the game's per-frame
-    // re-request would be purged before dispatch (observed live: 178 spray requests, one
-    // start — request+stop pairs cancelling each frame after the first play ended).
-    // Class-0 end-of-life is native-owned (release on request-cease); guest stops add
-    // nothing for pending entries.
-    if ((id & 0xC00) != 0)
-        for (auto it = g_pending.begin(); it != g_pending.end();)
-            it = (it->id == id && (!posPtr || it->posPtr == posPtr)) ? g_pending.erase(it) : it + 1;
+    // Stops arriving here are GAME INTENT (actor code): the guest per-frame SE processor
+    // — the source of the bogus per-frame stop stream that forced contradictory-signal
+    // guards — no longer runs (checkNextFrameSe no-op'd, audio M4). Clean semantics:
+    // a stop cancels pending requests and stops the exact instance. No special cases.
+    for (auto it = g_pending.begin(); it != g_pending.end();)
+        it = (it->id == id && (!posPtr || it->posPtr == posPtr)) ? g_pending.erase(it) : it + 1;
     // Exact instance match ONLY (identity = id + actor pos Vec*). The old id-only
     // fallback pass let a STALE guest stop (dead instance's pos) kill the LIVING
     // instance of the same id every frame — the per-frame request then restarted it:

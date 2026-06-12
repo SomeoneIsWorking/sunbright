@@ -136,6 +136,17 @@ SUNBRIGHT_OVERRIDE(ov_stopSoundHandle, 0x80302224u) {
     if (njas_enabled() && handled_id(id)) njas_se_stop(id, cpu.gpr[5], posPtr);
     func_80302224(cpu);
 }
+// JAIBasic::checkNextFrameSe (0x80305204) — the guest per-frame SE processor: distance
+// culls, handle-state transitions, port writes to GUEST tracks. Under the native engine
+// the guest JAS stack is dead weight, its camera/track state is garbage, and this loop's
+// only observable output was a stream of bogus stopSoundHandle calls (killed the spray;
+// guarding them re-broke ambient one-shots — the seam was unwinnable). PC-game
+// architecture (audio M4, user-directed): the guest frame processor DOES NOT RUN.
+// Game-intent calls (start/stop/params from actor code) still arrive via their tees.
+SUNBRIGHT_OVERRIDE(ov_checkNextFrameSe, 0x80305204u) {
+    if (!njas_enabled()) { if (RecompFunc o = recomp_raw(0x80305204u)) o(cpu); else call_ppc(cpu, cpu.lr); }
+}
+
 // MSBgm::setStageBgmYoshiPercussion(bool) — Yoshi mount/dismount gates the stage BGM's
 // percussion layer (track 15, muted at open by the synccpu-0 callback). Tee to the native
 // engine; the guest body still runs for its own (dead) JAS bookkeeping.

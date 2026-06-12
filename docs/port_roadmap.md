@@ -67,6 +67,21 @@ per-actor gameplay logic that stays recompiled until the engine layers are owned
 7. **User directive:** if any of these trace to a Dolphin dependency, reduce that dependency
    (own the behavior natively) rather than working around it.
 
+## PC-game architecture directive (user, 2026-06-12 — supersedes seam-patching)
+"I want PC game mumbo jumbo, not emulation mumbo jumbo… I don't care if it will take months."
+Stop guarding emulation seams; delete the emulation-era path and own the subsystem:
+- **Audio M4 (STARTED 2026-06-12):** guest JAI/JAS must not run. First cut: guest per-frame
+  SE processor (checkNextFrameSe 0x80305204) no-op'd — the bogus-stop source died, the
+  contradictory-signal guards were REMOVED (clean stop semantics, no special cases).
+  Next cuts: guest audioproc/updateDac bookkeeping off; MSound game-layer API owned at the
+  game-call seams; worker-snippet indirection replaced by direct per-sound dispatch;
+  respect the two M4 gates (MSound::checkWaveOnAram stage-transition block, THP audio).
+- **Graphics (months-scale arc):** native renderer direction — own the GX command stream →
+  Vulkan with pregenerated game-tailored pipelines. Dolphin GPU semantics (FIFO
+  backpressure, first-use shader compile, device-resource lifetime/OOM) cease to exist
+  rather than being tuned. Interim state: backpressure wait removed, synchronous shaders +
+  persistent cache + boot precompile.
+
 ## Order of battle (current)
 1. Audio JAI frame layer (category gating, priority stealing) + fxmix/dolby — finishes the
    "sounds from everywhere" class; then audio M4 (guest path off; respect the two M4 gates above).
