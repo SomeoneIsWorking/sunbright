@@ -50,20 +50,23 @@ per-actor gameplay logic that stays recompiled until the engine layers are owned
 4. Potentially more audio issues behind those two.
 4a. **FLUDD nozzle-change SE too loud** (user, 2026-06-12 pm) — distance attenuation not
     applying, or wrong base volume, when the water device changes shape.
-4b. **Spray-spam silence — FIXED** (1b18a0c, user-verified): four stacked lifecycle bugs
-    (missing worker stop-interrupt → permanent worker leak; wrong capacity/steal model;
-    finished-instance revive replaying one-shots; stale stops killing living instances).
-    SE worker protocol RE'd + documented in docs/re_notes/audio_re_findings.md. Next
-    audio milestone: delete the worker indirection — direct per-sound snippet dispatch.
+4b. **Spray — STILL BROKEN, blocked on the M4 handle pool** (see the PC-game architecture
+    section below — that is THE next task). Four engine-internal lifecycle bugs were fixed
+    along the way (1b18a0c: worker stop-interrupt, capacity, finished-revive, exact-match
+    stops; protocol RE'd in docs/re_notes/audio_re_findings.md) and those fixes are real,
+    but the seam disease (guest registry of never-finishing sounds feeding garbage stops)
+    re-breaks it through ever-new readers. Do NOT patch another reader.
     (Delfino drums issue #3: FIXED cf8ad85 — BMS 0xE7 = syncCPU, ported callback.)
 5. **60 fps model interpolation** — standing task (docs/model_interpolation.md).
-6. **Map-screen freezes — root-caused + fixed (pending user verify)**: the freeze was
-   synchronous Vulkan pipeline compilation on first-seen materials (map open / level entry)
-   stalling the GPU thread; the CPU then hit the backpressure wait (vi-perf showed
-   backpressure=2684ms windows). Fix: GFX_SHADER_COMPILATION_MODE = AsynchronousUberShaders
-   (main_sdl.cpp). The backpressure wait itself STAYS: a 300 s A/B proved removing it
-   trades freezes for VK_ERROR_OUT_OF_DEVICE_MEMORY at ~4 min (the wait incidentally
-   bounds Dolphin's GPU-side resource growth; that leak is a separate open item).
+6. **Map-screen freezes — root-caused; interim state shipped**: cause = synchronous Vulkan
+   pipeline compilation on first-seen materials stalling the GPU thread, CPU then frozen in
+   the backpressure wait (vi-perf: backpressure=2684ms windows). CURRENT STATE (9c08bc7):
+   backpressure wait REMOVED (user-directed); shaders = Synchronous + persistent per-game
+   cache + WAIT_FOR_SHADERS boot precompile (user: NO ubershaders). Hitches fade as the
+   cache warms across sessions. KNOWN RISK from the 300 s A/B: headless no-present runs OOM
+   (VK_ERROR_OUT_OF_DEVICE_MEMORY ~4 min) without the wait — if the user reports that crash
+   in real play, the Dolphin-Vulkan resource-growth item escalates. Permanent fix = the
+   native renderer arc below.
 7. **User directive:** if any of these trace to a Dolphin dependency, reduce that dependency
    (own the behavior natively) rather than working around it.
 
