@@ -476,6 +476,13 @@ static bool load_data() {
                     fprintf(f, "\n");
                 }
             }
+        for (size_t ws = 0; f && ws < g_data.wsys_waves.size(); ws++)
+            for (size_t g = 0; g < g_data.wsys_waves[ws].groups.size(); g++)
+                for (const auto& w : g_data.wsys_waves[ws].groups[g])
+                    fprintf(f, "wsys%zu grp%zu wave%u fmt=%u key=%u rate=%.0f loop=%u "
+                               "ls=%u le=%u pcm=%zu\n",
+                            ws, g, w.id, w.fmt, w.key, w.rate, w.loop, w.loop_s, w.loop_e,
+                            w.pcm.size());
         if (f) fclose(f);
     }
     // BARC: "BARC----" magic, count @+0xC, archive name @+0x10, 0x20-byte entries @+0x20:
@@ -931,6 +938,9 @@ static void voice_release(Voice& v, u16 release) {
 
 static bool track_note_off(Track& t, u8 note, u16 release) {
     Voice* c = track_voice(t, note);
+    if (c && c->bankProg == 0x00E9)   // drum-release tracer (bank0 prog233)
+        NJLOG("noteOff DRUM t=%p ch=%u rel=%u age=%u st=%u\n",
+              (void*)&t, note, release, c->age, c->oscs[0].state);
     if (!c) return false;
     voice_release(*c, release == 0 ? 0 : release);
     t.note[note & 7] = nullptr;
@@ -1160,15 +1170,31 @@ static int track_note_on(Track& t, u8 chanIdx, s32 key, s32 vel, s32 gateTime) {
         v->oscs[0].initStart();
     }
     if (directRel) v->oscs[0].releaseDirect(directRel);
-    // track oscillator overrides (cmdSimpleADSR / oscSetup*)
+    // Track oscillator overrides — TTrack::noteOn JASTrack.cpp:212 semantics. Only an
+    // explicit oscroute (≠0xE/0xF) applies them; route ≥8 with a live inst osc KEEPS the
+    // inst osc (copyOsc clones it back over the track data); route 4..7 keeps the inst
+    // ATTACK and takes the track RELEASE; only an osc-less slot adopts the track osc
+    // outright. Never initStart() here — the envelope is mid-flight and directRelease
+    // (perc release) must survive (overwriteOsc never resets state on hardware). The
+    // old behavior (any simpleadsr force-routed + initStart) restarted percussion under
+    // the track's slow ADSR attack = the inaudible-drums bug (peak 0.0167).
     for (int i = 0; i < 2; i++) {
         u8 route = t.oscRoute[i];
         if (route == 0xF || route == 0xE) continue;
         u32 slot = route >= 8 ? route - 8 : route >= 4 ? route - 4 : route;
-        if (slot < 2) {
-            v->trackOscCopy[i] = t.oscSrc[i];
+        if (slot >= 2) continue;
+        const bool haveInst = v->oscs[slot].isOsc();
+        if (route >= 8 && haveInst) continue;            // inst osc wins (copyOsc round-trip)
+        v->trackOscCopy[i] = t.oscSrc[i];
+        if (route >= 4 && route < 8 && haveInst) {       // inst attack + track release
+            v->trackOscCopy[i].attack = v->oscs[slot].osc->attack;
             v->oscs[slot].set(&v->trackOscCopy[i]);
-            v->oscs[slot].initStart();
+        } else if (haveInst) {
+            v->oscs[slot].set(&v->trackOscCopy[i]);      // swap data, keep state
+        } else {
+            v->oscs[slot].set(&v->trackOscCopy[i]);
+            v->oscs[slot].initStart();                   // never started — start now
+            if (directRel && slot == 0) v->oscs[0].releaseDirect(directRel);
         }
     }
     v->key = (u8)key; v->vel = (u8)vel; v->bankProg = reg6;
@@ -1295,7 +1321,11 @@ static void write_reg_param(Track& t, u8 param) {
     case 0x22: reg_write(t, 0, (u16)(val >> 8)); val &= 0xff; tgt = 1; mirror = (u16)val; break;
     default: break;
     }
-    if (tgt == 6) t.bankProg = (u16)val;
+    if (tgt == 6) {
+        t.bankProg = (u16)val;
+        // bank/prog write resets osc routes (TTrack setParam: route → 0xF unless 0xE)
+        for (int i = 0; i < 2; i++) if (t.oscRoute[i] != 0xE) t.oscRoute[i] = 0xF;
+    }
     if (tgt < 48) t.reg[tgt] = (u16)val;
     t.reg[3] = mirror;
     if (tgt == 7) t.updateFlags |= 2;
@@ -1333,6 +1363,10 @@ static int cmd_note_on(Track& t, u8 note) {
         if (dspTime != -1) dspTime = seq_to_dsp_time(t, dspTime, gatePct);
         // gateOn: retarget existing channel — M1: treat as fresh note if channel gone
         Voice* c = track_voice(t, chan);
+        if (!c) NJLOG("tie LOST t=%p ch=%u key=%d (no live channel)\n", (void*)&t, chan, key);
+        else if (c->bankProg == 0x00E9)
+            NJLOG("tie DRUM t=%p ch=%u key=%d age=%u st=%u ph=%.4f\n",
+                  (void*)&t, chan, key, c->age, c->oscs[0].state, c->oscs[0].phase);
         if (c) {
             int kk = key + 0x3C - (c->wave ? c->wave->key : 60);
             if (kk < 0) kk = 0; if (kk > 0x7f) kk = 0x7f;
@@ -1518,7 +1552,7 @@ static int run_cmd(Track& t, u8 op, u16 maskExtra) {
             for (;;) { s16 m = (s16)be16(p), ti = (s16)be16(p + 2), va = (s16)be16(p + 4);
                 t.oscSrc[0].attack.push_back(m); t.oscSrc[0].attack.push_back(ti); t.oscSrc[0].attack.push_back(va);
                 p += 6; if (m > 0xa) break; }
-            t.oscRoute[0] = 0x8;   // overwrite both
+            // NOTE: does NOT set oscRoute — only cmdOscRoute does (JASSeqParser).
         }
         return 0;
     case 0xD8: { // simpleadsr (A dt, A target, S dt, S target?, release)
@@ -1533,7 +1567,9 @@ static int run_cmd(Track& t, u8 op, u16 maskExtra) {
         memcpy(t.relTable, rel, sizeof(rel));
         t.oscSrc[0].attack.assign(t.adsTable, t.adsTable + 12);
         t.oscSrc[0].release.assign(t.relTable, t.relTable + 6);
-        t.oscRoute[0] = 0x8;
+        // NOTE: cmdSimpleADSR does NOT route the osc (JASSeqParser.cpp:309) — the BMS
+        // must issue oscroute for it to affect notes. Forcing route 8 here hijacked
+        // percussion envelopes (the inaudible-BGM-drums bug).
         return 0;
     }
     case 0xD9:   // transpose
@@ -1929,8 +1965,14 @@ static void jai_tick() {
         } else {
             // worker went busy then idle again → sound ended, release the slot
             if (w->portValue[2] != 0) a.seenBusy = true;
-            if (a.seenBusy && w->portValue[2] == 0) { worker_outer_reset(w); a.used = false; continue; }
-            if (!a.seenBusy && a.startAge > 60) { worker_outer_reset(w); a.used = false; continue; }
+            if (a.seenBusy && w->portValue[2] == 0) {
+                NJLOG("se_end id=%05x (snippet idle, age=%u)\n", a.id, a.startAge);
+                worker_outer_reset(w); a.used = false; continue;
+            }
+            if (!a.seenBusy && a.startAge > 60) {
+                NJLOG("se_end id=%05x (never busy)\n", a.id);
+                worker_outer_reset(w); a.used = false; continue;
+            }
         }
         if (a.stopFade == 0) { active_stop_now(a); continue; }
         if (a.stopFade > 0) a.stopFade--;
@@ -1939,6 +1981,7 @@ static void jai_tick() {
         if (!a.isBgm && a.stopFade < 0) {
             const u32 cls = a.id & 0xC00;
             if (cls != 0 && cls != 0x800 && ++a.sinceReq > 10) {
+                NJLOG("se_expire id=%05x (no re-request for %u ticks)\n", a.id, a.sinceReq);
                 a.vol[6].set(0.f, 6);
                 a.stopFade = 6;
             }
