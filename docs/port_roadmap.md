@@ -37,6 +37,25 @@ per-actor gameplay logic that stays recompiled until the engine layers are owned
 | Boss/enemy/NPC/item actors | ~600 | Recompiled | stays recompiled until engine layers done |
 | Remaining game-misc | ~5,700 | Recompiled | same |
 
+## User-reported issue backlog (2026-06-12, Delfino Plaza gameplay) — all fix-by-RE+port
+(Pre-existing issues, NOT fastboot regressions — user confirmed.)
+1. **Stage-title banner not widescreen** — the dark band behind "DELFINO PLAZA" (stage-name
+   card on stage entry) covers only the 4:3 region; left edge visible at 16:9. Same class as
+   fillrect/fader widescreen. → identify the drawing element (SUNBRIGHT_2DID), widen natively.
+2. **Audio: sounds not dying properly** — some SEs linger past their source (lifecycle/stop
+   propagation in the native JAS layer?). Needs concrete repro + per-handle trace.
+3. **Audio: drums in Delfino Plaza BGM that shouldn't play** — user: the percussion layer is
+   the ride-Yoshi dynamic-BGM variant. SMS BGM mutes/unmutes per-track layers at runtime;
+   suspicion: native BGM ignores the track-mute state (all tracks audible from start).
+4. Potentially more audio issues behind those two.
+5. **60 fps model interpolation** — standing task (docs/model_interpolation.md).
+6. **Map-screen freezes** — opening the map (Z button / Q key), while opening, closing and
+   while open: the whole game freezes frequently for 1–2 s. Suspect classes: EFB/texture
+   readback stalls, drawsync/backpressure, or DVD/ARAM loads under hybrid timing — profile
+   with vi-perf phase line + SUNBRIGHT_DBG_DRAIN + gdb stack sampling during map use.
+7. **User directive:** if any of these trace to a Dolphin dependency, reduce that dependency
+   (own the behavior natively) rather than working around it.
+
 ## Order of battle (current)
 1. Audio JAI frame layer (category gating, priority stealing) + fxmix/dolby — finishes the
    "sounds from everywhere" class; then audio M4 (guest path off; respect the two M4 gates above).

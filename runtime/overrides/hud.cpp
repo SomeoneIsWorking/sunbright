@@ -86,10 +86,35 @@ static int hud_pillar() {
 
 // The 2D quad emitter (0x802cd2ec): r3=this(J2DPicture), f1..f8 = the quad's corner coords. We log
 // them first to learn which args are X; the per-anchor shift is applied to the X args once confirmed.
+// Full-width band panes that must stretch to the 16:9 edges instead of anchoring: the stage-title
+// card's dark masks (TConsoleStr scenario_demo_1.blo 'msk1'/'msk2' — 600x70 strips at x=0 behind
+// "DELFINO PLAZA"/episode text; identified via SUNBRIGHT_2DID). Same un-squeeze math as the
+// TSunGlass curtain below: x' = inv_scale·x − pillar on the this+0x84 transform.
+static bool hud_stretch_band(const char n[5]) {
+    return n[0] == 'm' && n[1] == 's' && n[2] == 'k' && (n[3] == '1' || n[3] == '2');
+}
+
 static void ov_quad(CPUState& cpu) {
     const u32 self = cpu.gpr[3];
     char nm[5]; read_fourcc(self, nm);
     const HudAnchor a = hud_anchor(nm);
+
+    static constexpr u32 MTX84_M00 = 0x84;
+    if (hud_stretch_band(nm) && hud_pillar() != 0 && self >= 0x80000000u && self < 0x81800000u) {
+        // The squeeze scales NDC x by `scale` around the PROJECTION's own centre. TConsoleStr's
+        // screen draws under the 600-wide J2D ortho (root 600x480), so the centre is 300 — not
+        // 320 like TSunGlass's 640-wide quad. Un-squeeze around it: x' = (x-300)/scale + 300
+        // (composed into the pane transform). With 300 it spans exactly -100..700; using the
+        // 640-space pillar left the right edge ~7 units short (user-visible gap).
+        const f32 inv_scale = 1.0f + (f32)hud_pillar() / 320.0f;   // = 1/scale
+        const f32 kCenter = 300.0f;
+        const f32 m00 = mem_rf32(self + MTX84_M00), m03 = mem_rf32(self + MTX84_M00 + 0x0c);
+        mem_wf32(self + MTX84_M00, m00 * inv_scale);
+        mem_wf32(self + MTX84_M00 + 0x0c, (m03 - kCenter) * inv_scale + kCenter);
+        if (RecompFunc orig = recomp_raw(QUAD_EMITTER)) orig(cpu); else call_ppc(cpu, cpu.lr);
+        mem_wf32(self + MTX84_M00, m00); mem_wf32(self + MTX84_M00 + 0x0c, m03);
+        return;
+    }
 
     // The element's screen position is the X translation (m03) of its transform matrix at this+0x84
     // (verified: m03 == the element's 640-space screen X — counters 13, lives 223, water 515). The
