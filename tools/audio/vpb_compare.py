@@ -125,6 +125,11 @@ def compare(oracle_path, native_path):
     # population volume normalization (units differ between sides)
     def med(v):
         s = sorted(v); return s[len(s) // 2] if s else 0
+    # p90 = peak-gain envelope: waves play in MULTIPLE contexts (BGM track + 3D SE) and
+    # at varying distances; medians mix contexts. The near-peak gain is the
+    # context-independent static-gain check.
+    def p90(v):
+        s = sorted(v); return s[int(len(s) * 0.9)] if s else 0
     vol_deltas = []
     rows = []
     for h in common:
@@ -139,7 +144,7 @@ def compare(oracle_path, native_path):
                 best = min(orat, key=lambda o: abs(cents(nr, o)))
                 pdiffs.append(cents(nr, best))
         meta = nside[h][0]
-        vol_db = (20 * math.log10(med(nv) / med(ov))) if ov and nv and med(ov) > 0 and med(nv) > 0 else None
+        vol_db = (20 * math.log10(p90(nv) / p90(ov))) if ov and nv and p90(ov) > 0 and p90(nv) > 0 else None
         if vol_db is not None:
             vol_deltas.append(vol_db)
         rows.append((h, meta, pdiffs, vol_db, len(orat), len(nrat)))
