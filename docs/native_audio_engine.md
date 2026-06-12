@@ -77,8 +77,31 @@ HardStream/THP audio: keep current path (it WORKS — it is what has been audibl
    (the guest computes these into move-param slots we don't tee — only the JAISound
    setVolume/setPan/setPitch API surface is captured), fxmix/dolby outer params,
    per-category concurrent-sound limits and priority stealing.
-3. **M3 — BGM**: sequenced music (multi-track BMS, tempo, instruments across wScene banks,
-   ARAM-equivalent bank residency = host RAM, no ARAM).
+3. **M3 — BGM: ✅ DONE (2026-06-12).** Sequenced music plays natively:
+   - **BARC table** (mSound.aaf chunk 4, magic `BARC----`): 48 entries, 0x20 bytes each
+     (name[14] @+0, u32 offset @+0x18, u32 size @+0x1C), offsets into sequence.arc
+     (loaded whole). **BGM id & 0x3FF = BARC index** (0x80010010 → 16 k_title.com,
+     0x8001000e → 14 t_select.com, 0x80010001 → 1 k_dolpic.com — all confirmed live).
+     Entry 0 = se.scom, the init/SE BMS already running as the engine root.
+     NOTE: sequence.arc has NO Vload header (JaiArcS.hed is not on the SMS FST) — the
+     decomp's Vload path is dead code for SMS; BARC is the real seq table.
+   - **Multi-root player**: the subframe driver ticks a list of root tracks (init/SE root
+     + one per playing BGM); a finished/stopped BGM root is closed recursively and removed.
+   - **Intake**: startSoundBasic tee routes seq-class ids (0x8xxxxxxx) → njas_bgm_start;
+     queued via the same pending queue (engine may still be loading at title time). Same
+     BGM already playing → skip (JAIBasic seq gate). Stream ids (0xCxxxxxxx) stay guest.
+   - **Handles**: stop/fade/volume/pitch reuse the M2 registry (isBgm slots: no category
+     volume, release when the root finishes; stop = recursive root close). Confirmed live:
+     k_camera stopped with fade=20 on demo end, then k_dolpic started.
+   - **Bank residency is moot natively**: all IBNK banks and all WSYS wave groups are
+     decoded at load (merged wave-id tables), so wScene/ARAM residency is unnecessary.
+     RISK (open): if two scene groups of one WSYS assign different waves to the SAME wave
+     id, the merged table keeps the last group — no wrong-sounding instrument observed yet;
+     revisit per-scene tables if a stage BGM sounds wrong.
+   Verified (150 s headless autostart): title → file-select → camera demo → Delfino
+   Plaza, 831 noteOns across multi-track roots (bank 0 progs), sustained music RMS
+   5000–7000 / zcr 1500–3000 / d2e ≤0.21 (raw_profile.py), zero unhandled BMS opcodes,
+   no voice/track exhaustion, no crash.
 4. **M4 — delete the guest path**: audioproc thread never started; JAS DSP/ucode/driver/mails
    removed from the audio chain; Dolphin DSPHLE unused.
 

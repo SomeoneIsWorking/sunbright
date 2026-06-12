@@ -483,8 +483,18 @@ distance attenuation/pan (guest computes those into internal slots we don't tee)
 outer, per-category concurrency limits/priority stealing — M2.5 list in
 docs/native_audio_engine.md.
 
-Next: native audio M3 (BGM: multi-track BMS via Vload arc entries, wScene bank residency)
-per docs/native_audio_engine.md; M2.5 SE distance attenuation; residual
+**NATIVE AUDIO M3 ✅ (2026-06-12): BGM plays natively.** The seq table is **BARC** (mSound.aaf
+chunk 4) — 48 entries, BGM id & 0x3FF = index, offsets into sequence.arc (which has NO Vload
+header; JaiArcS.hed isn't on the SMS FST — the decomp's Vload path is dead code for SMS).
+Multi-root subframe driver (init/SE root + one root per BGM), seq-class ids (0x8xxxxxxx) tee
+to njas_bgm_start, handles reuse the M2 registry (fade-stop, dedupe-while-playing, recursive
+root close). Bank residency moot: all banks/waves decoded at load. Verified live: k_title →
+t_select → k_camera (fade=20 stop) → k_dolpic, 831 noteOns, sustained music RMS 5–7k zcr
+1.5–3k, 0 unhandled BMS ops, no crash 150 s. Open risk: per-scene wave-id collisions in the
+merged WSYS tables (none observed; revisit if a stage BGM sounds wrong).
+
+Next: native audio M2.5 (SE 3D distance attenuation/pan), M4 (delete the guest audio path)
+per docs/native_audio_engine.md; oracle ear-check of BGM fidelity (tempo/instruments); residual
 backpressure wedge (~1/3 runs), THP-transition NULL-deref read, gameplay/Delfino, the recomp
 TTrack-tick root cause, FP/edge-case accuracy, widescreen fade overlays / 3D screenspace
 effects / culling (user backlog).

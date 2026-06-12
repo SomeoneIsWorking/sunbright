@@ -82,12 +82,15 @@ struct Bank {
     int wsys = 0;
 };
 
+struct BarcEntry { u32 off = 0, size = 0; char name[15] = {}; };
+
 struct Data {
     bool ok = false;
     std::vector<Bank> banks;          // physical index = AAF chunk-2 order
     int vir2phy[256];
     std::vector<std::vector<Wave>> wsys_waves;  // [wsys][waveid] (wave-id table)
     std::vector<u8> seq;              // sequence.arc
+    std::vector<BarcEntry> barc;      // AAF chunk 4 "BARC": BGM index → BMS offset in seq
 } g_data;
 
 // ---- disc access
@@ -379,9 +382,11 @@ static bool load_data() {
     u32 o = 0;
     std::vector<std::pair<u32, u32>> ibnks;   // offset, wsys-assignment flag
     std::vector<u32> wsyss;
+    u32 barc_off = 0;
     while (o + 4 <= aaf.size()) {
         const u32 cid = be32(aaf.data() + o); o += 4;
         if (cid == 0) break;
+        if (cid == 4) barc_off = be32(aaf.data() + o);   // BARC sequence collection
         if (cid == 1 || (cid >= 4 && cid <= 7)) { o += 12; continue; }
         if (cid == 2 || cid == 3) {
             for (;;) {
@@ -411,6 +416,21 @@ static bool load_data() {
         parse_ibnk(bnk, 0, g_data.banks[i]);
         NJLOG("bank phys %zu: virt %u wsys %d\n", i, virt, g_data.banks[i].wsys);
     }
+    // BARC: "BARC----" magic, count @+0xC, archive name @+0x10, 0x20-byte entries @+0x20:
+    // name[14], u16 flags, u32×2, u32 offset (into sequence.arc), u32 size
+    if (barc_off && !memcmp(aaf.data() + barc_off, "BARC", 4)) {
+        const u8* b = aaf.data() + barc_off;
+        const u32 n = be32(b + 0xC);
+        g_data.barc.resize(n);
+        for (u32 i = 0; i < n; i++) {
+            const u8* e = b + 0x20 + i * 0x20;
+            memcpy(g_data.barc[i].name, e, 14);
+            g_data.barc[i].off = be32(e + 0x18);
+            g_data.barc[i].size = be32(e + 0x1C);
+        }
+        NJLOG("BARC: %u sequences (1=%s 16=%s)\n", n,
+              n > 1 ? g_data.barc[1].name : "?", n > 16 ? g_data.barc[16].name : "?");
+    } else fprintf(stderr, "[njas] no BARC chunk — BGM unavailable\n");
     NJLOG("data loaded: %zu banks, %zu wsys, seq %zu bytes\n",
           g_data.banks.size(), g_data.wsys_waves.size(), g_data.seq.size());
     g_data.ok = true;
@@ -1588,7 +1608,7 @@ static float g_mixbuf[kSub * 2];
 static int g_mix_have = 0, g_mix_pos = 0;
 static FILE* g_solo_dump = nullptr;   // SUNBRIGHT_DUMP_NJAS: engine-only wav
 
-struct PendingSE { u32 id; u32 swbit; u8 prio; u16 age = 0; };
+struct PendingSE { u32 id; u32 swbit; u8 prio; bool isBgm = false; u16 age = 0; };
 static std::vector<PendingSE> g_pending;
 
 // ---- M2: SE handle layer (category volumes, per-sound move params, stop/fade).
@@ -1610,6 +1630,7 @@ struct MovePara {                        // JAISound::initMoveParameter semantic
 };
 struct ActiveSE {
     bool used = false;
+    bool isBgm = false;                  // worker = a BGM root track, not an SE worker
     Track* worker = nullptr;
     u32 id = 0, swbit = 0;
     u8 prio = 0;
@@ -1621,6 +1642,17 @@ struct ActiveSE {
 };
 static ActiveSE g_active[32];
 
+// all root tracks ticked by render_subframe: g_root (init/SE BMS) + one per playing BGM
+static std::vector<Track*> g_players;
+
+// recursive close: silence notes, free the whole child tree (TTrack::close semantics)
+static void track_close_recursive(Track& t) {
+    for (int i = 0; i < 8; i++) track_note_off(t, (u8)i, 0);
+    for (int i = 0; i < 16; i++)
+        if (t.child[i]) { track_close_recursive(*t.child[i]); t.child[i] = nullptr; }
+    t.active = 0; t.used = false;
+}
+
 static void active_init(ActiveSE& a, Track* w, u32 id, u32 swbit, u8 prio) {
     a = ActiveSE();
     a.used = true; a.worker = w; a.id = id; a.swbit = swbit; a.prio = prio;
@@ -1631,9 +1663,16 @@ static void worker_outer_reset(Track* w) {
 }
 static void active_stop_now(ActiveSE& a) {
     if (a.worker) {
-        a.worker->writePortImport(0, 0);                 // looping snippets poll port0
-        for (int i = 0; i < 8; i++) track_note_off(*a.worker, (u8)i, 0);
-        worker_outer_reset(a.worker);
+        if (a.isBgm) {
+            // stopSeq: tear down the whole BGM root tree and unregister the player
+            track_close_recursive(*a.worker);
+            for (auto it = g_players.begin(); it != g_players.end();)
+                it = (*it == a.worker) ? g_players.erase(it) : it + 1;
+        } else {
+            a.worker->writePortImport(0, 0);             // looping snippets poll port0
+            for (int i = 0; i < 8; i++) track_note_off(*a.worker, (u8)i, 0);
+            worker_outer_reset(a.worker);
+        }
     }
     a.used = false;
 }
@@ -1648,10 +1687,15 @@ static void jai_tick() {
         if (!a.used) continue;
         Track* w = a.worker;
         if (a.startAge < 0xFFFF) a.startAge++;
-        // worker went busy then idle again → sound ended, release the slot
-        if (w->portValue[2] != 0) a.seenBusy = true;
-        if (a.seenBusy && w->portValue[2] == 0) { worker_outer_reset(w); a.used = false; continue; }
-        if (!a.seenBusy && a.startAge > 60) { worker_outer_reset(w); a.used = false; continue; }
+        if (a.isBgm) {
+            // BGM root: released when the sequence finishes (track_main -1 in the driver)
+            if (!w->used || !w->active) { a.used = false; continue; }
+        } else {
+            // worker went busy then idle again → sound ended, release the slot
+            if (w->portValue[2] != 0) a.seenBusy = true;
+            if (a.seenBusy && w->portValue[2] == 0) { worker_outer_reset(w); a.used = false; continue; }
+            if (!a.seenBusy && a.startAge > 60) { worker_outer_reset(w); a.used = false; continue; }
+        }
         if (a.stopFade == 0) { active_stop_now(a); continue; }
         if (a.stopFade > 0) a.stopFade--;
         float vp = 1.f, pp = 1.f, pn = 0.5f;
@@ -1662,7 +1706,7 @@ static void jai_tick() {
             pn += a.pan[i].cur - 0.5f;
         }
         const u32 cat = (a.id >> 12) & 0xFF;
-        w->outerVol = g_catvol[cat] * vp;
+        w->outerVol = (a.isBgm ? 1.f : g_catvol[cat]) * vp;   // SE categories don't apply to seq
         w->outerPitch = pp;
         w->outerSwitch |= 1 | 2;
         if (a.panTouched) {
@@ -1689,6 +1733,8 @@ static void engine_start_locked() {        // g_mtx held, data loaded
     track_update(*g_root);
     g_root->active = 1;
     track_update_tempo(*g_root);
+    g_players.clear();
+    g_players.push_back(g_root);
     g_inited = true;
     fprintf(stderr, "[njas] native JAS engine running (init BMS @0, %zu banks)\n", g_data.banks.size());
 }
@@ -1729,10 +1775,38 @@ static Track* find_worker(u32 cat, bool* any_for_cat) {
     return nullptr;
 }
 
+// spawn a BGM root playing the BARC entry's BMS (g_mtx held, engine running)
+static void bgm_dispatch(u32 id) {
+    const u32 idx = id & 0x3FF;
+    if (idx >= g_data.barc.size()) return;
+    const BarcEntry& e = g_data.barc[idx];
+    if (!e.size || e.off + e.size > g_data.seq.size()) return;
+    if (active_find(id)) return;   // same BGM already playing → skip (JAIBasic seq gate)
+    Track* root = track_alloc();
+    if (!root) return;
+    root->trackMode = 3;                  // setSeqData root mode (unk3BC = 3)
+    track_init(*root, g_data.seq.data() + e.off, 0, nullptr);
+    root->tickAcc = 0.f;
+    root->tickPerCall = 1.f;
+    track_update(*root);
+    root->active = 1;
+    track_update_tempo(*root);
+    g_players.push_back(root);
+    ActiveSE* slot = nullptr;
+    for (auto& a : g_active) if (!a.used) { slot = &a; break; }
+    if (slot) { active_init(*slot, root, id, 0, 0); slot->isBgm = true; }
+    NJLOG("bgm_start id=%08x → %.14s (off=%#x size=%#x)\n", id, e.name, e.off, e.size);
+}
+
 static void process_pending() {
     for (auto it = g_pending.begin(); it != g_pending.end();) {
         const u32 id = it->id;
         const u32 cat = (id >> 12) & 0xFF;
+        if (it->isBgm) {
+            bgm_dispatch(id);
+            it = g_pending.erase(it);
+            continue;
+        }
         // same-id retrigger (JAISeEntry::storeBuffer): a new request for an id already
         // playing stops the old instance first, unless swbit bit19 allows stacking
         if (ActiveSE* old = active_find(id)) {
@@ -1765,16 +1839,25 @@ static void render_subframe() {
     static float jai_acc = 0.f;
     jai_acc += 60.f * kSub / kDacRate;
     while (jai_acc >= 1.f) { jai_acc -= 1.f; jai_tick(); }
-    if (g_root && g_root->active) {
-        g_root->tickAcc += g_root->tickPerCall;
-        if (g_root->tickAcc > 1.f) {
-            track_update_seq(*g_root, 0, true);
-            while (g_root->tickAcc >= 1.f) {
-                g_root->tickAcc -= 1.f;
-                if (track_main(*g_root) == -1) { g_root->active = 0; break; }
+    for (auto it = g_players.begin(); it != g_players.end();) {
+        Track* root = *it;
+        bool finished = !root->used || !root->active;
+        if (!finished) {
+            root->tickAcc += root->tickPerCall;
+            if (root->tickAcc > 1.f) {
+                track_update_seq(*root, 0, true);
+                while (root->tickAcc >= 1.f) {
+                    root->tickAcc -= 1.f;
+                    if (track_main(*root) == -1) { finished = true; break; }
+                }
             }
+            if (!finished) track_inc_self_osc(*root);
         }
-        track_inc_self_osc(*g_root);
+        if (finished) {
+            if (root != g_root) { track_close_recursive(*root); it = g_players.erase(it); continue; }
+            root->active = 0;
+        }
+        ++it;
     }
 
     memset(g_mixbuf, 0, sizeof(g_mixbuf));
@@ -1890,6 +1973,20 @@ extern "C" void njas_se_start(uint32_t id, uint32_t swbit, uint8_t prio) {
     if (!g_catvol_init) { for (auto& v : g_catvol) v = 1.f; g_catvol_init = true; }
     engine_init();                            // kicks the async data load on first call
     g_pending.push_back({ id, swbit, prio }); // queued until the engine is running
+}
+
+// Start a BGM natively (seq-class id 0x8xxxxxxx from the startSoundBasic tee): spawn a
+// new root track playing the BARC entry's BMS (id & 0x3FF indexes the BARC table; the
+// offsets point into sequence.arc, which is loaded whole). Entry 0 = the init/SE BMS
+// already running as g_root — ignored. All banks/waves are resident natively, so the
+// guest's wScene/ARAM residency dance is unnecessary.
+extern "C" void njas_bgm_start(uint32_t id) {
+    using namespace njas;
+    std::lock_guard<std::mutex> lk(g_mtx);
+    if (!g_catvol_init) { for (auto& v : g_catvol) v = 1.f; g_catvol_init = true; }
+    engine_init();                              // kicks the async data load on first call
+    if ((id & 0x3FF) == 0) return;              // entry 0 = the init/SE BMS (always running)
+    g_pending.push_back({ id, 0, 0, true });    // queued until the engine is running
 }
 
 // Stop a playing SE (JAIBasic::stopSoundHandle tee). fade = frames to fade out (0 = now).
