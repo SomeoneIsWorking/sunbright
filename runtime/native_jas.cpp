@@ -1959,7 +1959,14 @@ static void active_stop_now(ActiveSE& a) {
             for (auto it = g_players.begin(); it != g_players.end();)
                 it = (*it == a.worker) ? g_players.erase(it) : it + 1;
         } else {
-            a.worker->writePortImport(0, 0);             // looping snippets poll port0
+            // Stop protocol (worker snippet @0x37d + releaseSeRegist binary): port0=0 AND
+            // track interrupt 5 — the armed stop vector (@0x425). Per-sound snippets that
+            // LOOP (spray @0x8b2: noteon;jmp) never poll port0; only the interrupt can
+            // unwind them (its handler clri+rets out of the call.tbl snippet back to the
+            // worker's idle loop). Without it every looping SE leaked its worker forever —
+            // cat-0 starved, splash one-shots expired ("plays once, never again").
+            a.worker->writePortImport(0, 0);
+            a.worker->intr.request(5);
             for (int i = 0; i < 8; i++) track_note_off(*a.worker, (u8)i, 0);
             worker_outer_reset(a.worker);
         }
@@ -2140,6 +2147,7 @@ static void jai_tick() {
                 if (!a.relSent && a.worker) {
                     NJLOG("se_release id=%05x (class 0, no re-request)\n", a.id);
                     a.worker->writePortImport(0, 0);
+                    a.worker->intr.request(5);    // releaseSeRegist: port0=0 + stop vector
                     a.relSent = true;
                 }
                 if (a.worker && a.worker->portValue[2] == 0) { a.used = false; continue; }
@@ -2220,6 +2228,23 @@ static bool engine_init() {                // g_mtx held; returns true once runn
 static bool worker_claimed(Track* w) {
     for (auto& a : g_active) if (a.used && !a.isBgm && a.worker == w) return true;
     return false;
+}
+
+// number of worker tracks serving a category — the REAL per-category capacity (cat 0
+// has exactly 2 in the init BMS; the old hardcoded >=4 steal threshold could never
+// fire for it, so a splash requested while both were busy just expired).
+static int cat_capacity(u32 cat) {
+    if (!g_root) return 0;
+    int n = 0;
+    for (int i = 0; i < 16; i++) {
+        Track* mid = g_root->child[i];
+        if (!mid) continue;
+        for (int j = 0; j < 16; j++) {
+            Track* w = mid->child[j];
+            if (w && w->active && w->portExport[9] && w->portValue[9] == cat) n++;
+        }
+    }
+    return n;
 }
 
 // find a category worker track: exports port9 == cat, idle (export port2 value == 0)
@@ -2337,7 +2362,14 @@ static void process_pending() {
                 // So a revive touches NO ports while the sound is playing (writing 1
                 // every frame restarted the snippet each frame — the spray bug). Only a
                 // revive of a STOPPING instance (release already sent) re-arms port0.
-                if ((id & 0x800) == 0 && alive) {
+                //
+                // Crucially this holds for FINISHED instances too (storeBuffer's state-5
+                // revive is bookkeeping only): a class-0 one-shot whose actor keeps
+                // re-requesting it every frame must NOT replay when the snippet ends —
+                // restarting on "finished + re-requested" machine-gunned ambient
+                // one-shots from the start of the scene, worse while moving (user
+                // report). It replays only after a real release → fresh request.
+                if ((id & 0x800) == 0) {
                     same->sinceReq = 0;
                     if (same->relSent && same->worker) {   // cancel an in-flight release
                         same->worker->writePortImport(4, (u16)(id & 0x3FF));
@@ -2348,6 +2380,7 @@ static void process_pending() {
                     it = g_pending.erase(it);
                     continue;
                 }
+                (void)alive;
                 // Restart class / finished instance: re-dispatch onto the SAME worker
                 // immediately (JAISeEntry slot semantics — a restart reuses the worker
                 // slot; the port-0 import interrupt re-vectors the snippet). Waiting for
@@ -2371,19 +2404,26 @@ static void process_pending() {
                         continue;
                     }
                 }
-            } else if (catCount >= 4 && worst) {
-                // per-CATEGORY capacity with priority+distance stealing (the real model
-                // uses per-scene counts from JAIData unk4 — table shape not yet
-                // binary-verified, capacity 4 is the interim; see docs/port_roadmap.md)
-                const float nps = (float)(0xFF - it->prio);
-                const float newScore = nps * nps * 5776.f;   // dist unknown at request
-                if (newScore >= worstScore) {                 // new sound is the most expendable
-                    NJLOG("se_drop id=%05x (category %u full, outranked)\n", id, cat);
+            } else if (catCount >= cat_capacity(cat) && catCount > 0) {
+                // Category full (capacity = the category's actual worker count).
+                // JAISeEntry::storeBuffer eviction is PRIORITY-based: evict the weakest
+                // active sound only if the new one strictly outranks it; equal or lower
+                // priority → drop the NEW request. (The earlier distance-weighted steal
+                // let every near sound evict far ambients per request — 232 steals incl.
+                // self-evictions, constant restart churn = audible noise.)
+                ActiveSE* weakest = nullptr;
+                for (auto& a : g_active) {
+                    if (!a.used || a.isBgm || se_cat_of(a.id) != cat) continue;
+                    if (!weakest || a.prio < weakest->prio) weakest = &a;
+                }
+                if (!weakest || weakest->prio >= it->prio) {
+                    NJLOG("se_drop id=%05x (category %u full, not outranked)\n", id, cat);
                     it = g_pending.erase(it);
                     continue;
                 }
-                NJLOG("se_steal id=%05x evicts %05x (score %.0f)\n", id, worst->id, worstScore);
-                active_stop_now(*worst);
+                NJLOG("se_steal id=%05x (prio %u) evicts %05x (prio %u)\n",
+                      id, it->prio, weakest->id, weakest->prio);
+                active_stop_now(*weakest);
             }
         }
         bool any = false;
@@ -2486,8 +2526,45 @@ struct Reverb {
 static fxbus::Reverb* g_reverb;      // heap: ~100 KB of delay lines
 static float g_fxbuf[kSub * 2];
 
+// SUNBRIGHT_NJAS_TEST=spray (diagnostic): simulate the game's request pattern for the
+// FLUDD spray (id 0x0000, class-0 continuous, re-requested every video frame): 3 s of
+// requests, 2 s silence, 2 s requests. Observes the full lifecycle headlessly with the
+// worker port state logged — no gameplay input needed.
+static void test_driver_tick() {
+    static int mode = -2;
+    if (mode == -2) { const char* e = getenv("SUNBRIGHT_NJAS_TEST");
+                      mode = (e && !strcmp(e, "spray")) ? 1 : 0; }
+    if (!mode || !g_inited) return;
+    static u32 tick = 0;
+    tick++;
+    const u32 fps = 400;                     // ≈ subframe rate
+    const u32 t = tick;
+    const bool requesting = (t < 3*fps) || (t >= 5*fps && t < 7*fps);
+    if (requesting && (t % 7) == 0) {
+        PendingSE p{ 0x0000u, 0, 0x40 };
+        g_pending.push_back(p);
+    }
+    if ((t % 400) == 200 && t < 8*fps) {       // splash one-shot every ~1 s, both phases
+        PendingSE p{ 0x0804u, 0, 0x40 };
+        g_pending.push_back(p);
+        fprintf(stderr, "[njas-test] t=%u splash 0x804 requested\n", t);
+    }
+    if ((t % 100) == 0 && t < 8*fps) {
+        // find the cat-0 worker state + registry entry
+        for (auto& a : g_active) {
+            if (!a.used || a.isBgm || a.id != 0) continue;
+            fprintf(stderr, "[njas-test] t=%u req=%d port0=%u port2=%u relSent=%d sinceReq=%u stopFade=%d\n",
+                    t, requesting, a.worker ? a.worker->portValue[0] : 9999,
+                    a.worker ? a.worker->portValue[2] : 9999, a.relSent, a.sinceReq, a.stopFade);
+            return;
+        }
+        fprintf(stderr, "[njas-test] t=%u req=%d (no active entry)\n", t, requesting);
+    }
+}
+
 static void render_subframe() {
     g_ab_subframes++;
+    test_driver_tick();
     process_pending();
     // JAI frame clock: handle/move-param flush runs at 60 Hz (subframe rate ≈ 400.36 Hz)
     static float jai_acc = 0.f;
@@ -2734,20 +2811,40 @@ extern "C" void njas_seq_port(uint32_t id, uint8_t track, uint8_t port, uint16_t
 extern "C" void njas_se_stop(uint32_t id, uint32_t fade, uint32_t posPtr) {
     using namespace njas;
     std::lock_guard<std::mutex> lk(g_mtx);
+    // Contradictory-signal guard: the guest JAI frame logic (alive but wedged under the
+    // native engine — its camera/track state is garbage) emits a bogus stopSoundHandle
+    // EVERY frame for the FLUDD spray (id 0) while the game simultaneously re-requests
+    // it every frame (observed live: startSoundBasic + stopSoundHandle pairs each frame).
+    // For class-0 continuous SEs the native lifecycle fully owns end-of-life (release on
+    // request-cease), so a guest stop while the instance is alive AND actively
+    // re-requested is noise from the dead stack — trust the requests.
+    if ((id & 0xC00) == 0) {
+        for (auto& a : g_active) {
+            if (!a.used || a.isBgm || a.id != id) continue;
+            if (posPtr && a.posPtr != posPtr) continue;
+            if (a.stopFade < 0 && !a.relSent && a.sinceReq <= 21) {
+                NJLOG("se_stop id=%05x IGNORED (class 0, actively re-requested)\n", id);
+                return;
+            }
+        }
+    }
     // also drop any not-yet-dispatched request for this instance
     for (auto it = g_pending.begin(); it != g_pending.end();)
         it = (it->id == id && (!posPtr || it->posPtr == posPtr)) ? g_pending.erase(it) : it + 1;
+    // Exact instance match ONLY (identity = id + actor pos Vec*). The old id-only
+    // fallback pass let a STALE guest stop (dead instance's pos) kill the LIVING
+    // instance of the same id every frame — the per-frame request then restarted it:
+    // 18 chirps/s of MSD_SE_SHINE_EXIST = the "repeating one-shots" noise (user
+    // report). Unmatched stops are safe to drop: every class has native end-of-life
+    // (class-0 release on request-cease, 0x400/0xC00 lifeTime fade, 0x800 natural end).
     bool matched = false;
-    for (int pass = 0; pass < 2 && !matched; pass++) {
-        for (auto& a : g_active) {
-            if (!a.used || a.id != id) continue;
-            if (pass == 0 && posPtr && a.posPtr != posPtr) continue;   // exact instance first
-            matched = true;
-            if (fade == 0) { active_stop_now(a); continue; }
-            a.vol[6].set(0.f, fade);          // stopSoundHandle: setSeInterVolume(6, 0, fade)
-            a.stopFade = (s32)fade;
-        }
-        if (!posPtr) break;
+    for (auto& a : g_active) {
+        if (!a.used || a.id != id) continue;
+        if (posPtr && a.posPtr != posPtr) continue;
+        matched = true;
+        if (fade == 0) { active_stop_now(a); continue; }
+        a.vol[6].set(0.f, fade);              // stopSoundHandle: setSeInterVolume(6, 0, fade)
+        a.stopFade = (s32)fade;
     }
     NJLOG("se_stop id=%05x fade=%u pos=%08x matched=%d\n", id, fade, posPtr, (int)matched);
 }
