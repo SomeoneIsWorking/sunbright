@@ -15,7 +15,8 @@
 #include "../overrides.h"
 #include "../intrinsics.h"
 
-extern "C" void njas_se_start(uint32_t id, uint32_t swbit, uint8_t prio, uint32_t guest);
+extern "C" void njas_se_start(uint32_t id, uint32_t swbit, uint8_t prio, uint32_t posPtr);
+extern "C" void njas_set_camera(uint32_t posPtr, uint32_t mtxPtr);
 extern "C" void njas_bgm_start(uint32_t id);
 extern "C" void njas_se_stop(uint32_t id, uint32_t fade);
 extern "C" void njas_se_param(uint32_t id, int kind, uint8_t slot, float value, uint32_t time);
@@ -23,6 +24,7 @@ extern "C" void njas_se_category_volume(uint8_t cat, uint8_t vol);
 extern "C" void njas_set_wave_scene(int wsys, int scene);
 
 extern "C" void func_80301e80(CPUState& cpu);   // JAIBasic::startSoundActor
+extern "C" void func_80300ce4(CPUState& cpu);   // JAIBasic::setCameraInfo
 extern "C" void func_803020ac(CPUState& cpu);   // JAIBasic::startSoundBasic
 extern "C" void func_80301fc4(CPUState& cpu);   // JAIBasic::startSoundDirectID
 extern "C" void func_80302034(CPUState& cpu);   // JAIBasic::startSoundIndirectID
@@ -64,27 +66,33 @@ SUNBRIGHT_OVERRIDE(ov_startSoundActor, 0x80301e80u) {
     func_80301e80(cpu);
 }
 SUNBRIGHT_OVERRIDE(ov_startSoundBasic, 0x803020acu) {
-    const uint32_t id = cpu.gpr[4], handlePP = cpu.gpr[5], info = cpu.gpr[9];
-    if (dbg()) fprintf(stderr, "[se_native] startSoundBasic id=%08x info=%08x\n", id, info);
-    const bool se = njas_enabled() && is_se_id(id);
-    uint32_t swbit = 0; uint8_t prio = 0;
-    if (se && info >= 0x80000000u && info < 0x81800000u) {
-        swbit = sb_r32(info);            // JAISoundInfo unk0
-        prio = sb_r8(info + 4);          // JAISoundInfo unk4
+    const uint32_t id = cpu.gpr[4], actor = cpu.gpr[6], info = cpu.gpr[9];
+    if (dbg()) fprintf(stderr, "[se_native] startSoundBasic id=%08x actor=%08x info=%08x\n",
+                       id, actor, info);
+    if (njas_enabled() && is_se_id(id)) {
+        uint32_t swbit = 0; uint8_t prio = 0;
+        if (info >= 0x80000000u && info < 0x81800000u) {
+            swbit = sb_r32(info);            // JAISoundInfo unk0
+            prio = sb_r8(info + 4);          // JAISoundInfo unk4
+        }
+        // 3D input: JAIActor (r6, caller-stack temp) holds the PERSISTENT game-world
+        // position Vec* in its first field — copy the Vec* now (the temp dies on return).
+        uint32_t posPtr = 0;
+        if (actor >= 0x80000000u && actor < 0x81800000u) {
+            const uint32_t v = sb_r32(actor);
+            if (v >= 0x80000000u && v < 0x81800000u) posPtr = v;
+        }
+        njas_se_start(id, swbit, prio, posPtr);
     }
     if (njas_enabled() && is_seq_id(id)) njas_bgm_start(id);
-    // run the guest first so the JAISound handle exists, then bind it for the
-    // param-block mirror (startSoundBasic r5 = JAISound** out-pointer; may be 0)
     func_803020ac(cpu);
-    if (se) {
-        uint32_t guest = 0;
-        if (handlePP >= 0x80000000u && handlePP < 0x81800000u) {
-            const uint32_t snd = sb_r32(handlePP);
-            if (snd >= 0x80000000u && snd < 0x81800000u && sb_r32(snd + 0x8) == id)
-                guest = snd;
-        }
-        njas_se_start(id, swbit, prio, guest);
-    }
+}
+// Camera input for the native 3D layer: JAIBasic::setCameraInfo(this, pos Vec* r4,
+// dir Vec* r5, view Mtx* r6, cam id r7). SMS runs audioCameraMax == 1.
+SUNBRIGHT_OVERRIDE(ov_setCameraInfo, 0x80300ce4u) {
+    if (njas_enabled() && cpu.gpr[7] == 0)
+        njas_set_camera(cpu.gpr[4], cpu.gpr[6]);
+    func_80300ce4(cpu);
 }
 SUNBRIGHT_OVERRIDE(ov_startSoundDirectID, 0x80301fc4u) {
     if (dbg()) fprintf(stderr, "[se_native] startSoundDirectID id=%08x\n", cpu.gpr[4]);
@@ -124,11 +132,11 @@ SUNBRIGHT_OVERRIDE(ov_wavebank_loadWave, 0x80310994u) {
 }
 // Outer JAISound::setVolume/setPan/setPitch (this=r3, f1=value, r4=time, r5=slot):
 // route SEQ (BGM) ids here. SE ids are captured one level down at the setSeInter*
-// setters. FALSIFIED (2026-06-12): setSeDistance* does NOT funnel through these — it
-// writes the param-block slot memory directly (stfsu via getSeParameter()); bound
-// sounds are therefore mirrored from the guest param block each jai_tick instead
-// (njas mirror_guest_params), which also covers recomp→recomp setter calls that
-// overrides can't see. The tees below remain for unbound (handle-less) sounds.
+// setters. FALSIFIED (2026-06-12): setSeDistance* does NOT funnel through these — the
+// compiler INLINED the slot write (stfsu via getSeParameter()). Distance vol/pan/pitch
+// are computed by the engine's own native 3D layer instead (njas se_3d_tick: MSHandle
+// curve port; camera from the setCameraInfo tee, position from JAIActor). The tees
+// below carry the explicit-API param calls (vol slots 0-3 & 5-8, UI sounds, etc.).
 SUNBRIGHT_OVERRIDE(ov_jaisound_setVolume, 0x8030a57cu) {
     const uint32_t id = handle_id(cpu.gpr[3]);
     if (njas_enabled() && is_seq_id(id))

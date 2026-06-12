@@ -1702,7 +1702,7 @@ static float g_mixbuf[kSub * 2];
 static int g_mix_have = 0, g_mix_pos = 0;
 static FILE* g_solo_dump = nullptr;   // SUNBRIGHT_DUMP_NJAS: engine-only wav
 
-struct PendingSE { u32 id; u32 swbit; u8 prio; bool isBgm = false; u16 age = 0; u32 guest = 0; };
+struct PendingSE { u32 id; u32 swbit; u8 prio; bool isBgm = false; u16 age = 0; u32 posPtr = 0; };
 static std::vector<PendingSE> g_pending;
 
 // ---- M2: SE handle layer (category volumes, per-sound move params, stop/fade).
@@ -1733,7 +1733,7 @@ struct ActiveSE {
     MovePara vol[9], pitch[9], pan[9];   // pitch/pan slots init neutral below
     bool panTouched = false;
     s32 stopFade = -1;                   // >=0: fading to stop, counts down
-    u32 guest = 0;                       // guest JAISound* (param-block mirror source)
+    u32 posPtr = 0;                      // game-world position Vec* (JAIActor.pos)
 };
 static ActiveSE g_active[32];
 
@@ -1776,34 +1776,117 @@ static ActiveSE* active_find(u32 id) {
     return nullptr;
 }
 
-// Mirror the guest JAISound's SE-parameter move slots into ours. The guest computes
-// 3D distance attenuation/pan/pitch by writing the slot memory DIRECTLY (e.g.
-// setSeDistanceVolume 8030c2d0: stfsu into getSeParameter()+0x164 = vol slot 4) — no
-// setter call, so function tees can never see it (and recomp→recomp calls bypass
-// overrides anyway). Reading the block each tick captures every write path at once.
-// Layout (binary-verified, setSeInter* emitters): JAISound+0x38 → param block; slot
-// arrays of 8 × 16-byte {target, cur, step, count} at +0x124 vol, +0x1A4 pan,
-// +0x224 pitch. We read CUR — the guest's own frame loop ticks the moves.
-static bool mirror_ok(float f, float lo, float hi) { return f == f && f >= lo && f <= hi; }
-static void mirror_guest_params(ActiveSE& a) {
-    if (!a.guest || a.isBgm) return;
-    // Stop-fading sound: WE own the envelope (vol[6] → 0 over stopFade ticks). The
-    // guest handle is being torn down and its slots stay at full volume — mirroring
-    // them stomped the fade (full volume, then an abrupt cut when the counter hit 0).
-    if (a.stopFade >= 0) return;
-    if (sb_r32(a.guest + 0x8) != a.id) { a.guest = 0; return; }   // handle re-used/freed
-    const u32 param = sb_r32(a.guest + 0x38);
-    if (param < 0x80000000u || param >= 0x81800000u) return;
-    for (int i = 0; i < 8; i++) {
-        const float v = sb_rf32(param + 0x124 + i * 16 + 4);
-        const float p = sb_rf32(param + 0x1A4 + i * 16 + 4);
-        const float t = sb_rf32(param + 0x224 + i * 16 + 4);
-        if (mirror_ok(v, 0.f, 8.f))  a.vol[i].cur = a.vol[i].target = v;
-        if (mirror_ok(t, 0.f, 16.f)) a.pitch[i].cur = a.pitch[i].target = t;
-        if (mirror_ok(p, 0.f, 1.f)) {
-            if (p != 0.5f || a.pan[i].cur != 0.5f) a.panTouched = true;
-            a.pan[i].cur = a.pan[i].target = p;
-        }
+// ---- M2.6 native 3D SE layer (PC-native port of MSHandle's distance code) ----------
+// The engine owns cameras, sound positions, and the SMS curves. Inputs are GAME data
+// captured at API seams (setCameraInfo tee = camera pos/view-mtx pointers; JAIActor
+// position Vec* from the startSoundBasic tee) — guest AUDIO state is never read.
+// Sources: reference/sms/src/MSound/MSHandle.cpp (smSeCategory, MSACos, calcVolume,
+// calcPan, setSeDistance*) — SMS OVERRIDES the generic JAISound curves; per-frame
+// transform per JAIGFrameSe.cpp: camSpace = ViewMtx × worldPos, dist = |camSpace|.
+// Not modeled yet: dolby/fir/fxmix buses (engine has no such buses), doppler (slot 1),
+// the swbit-0xC0 pitch-offset term (JAISound.unk3, no native source yet).
+struct SeCategory { u8 type; float dist, vol, falloff7; };
+static const SeCategory kSeCategory[16] = {            // MSHandle::smSeCategory
+    { 2,  8000.f, 0.76f, 150.f }, { 2,  8000.f, 1.f,   150.f },
+    { 2,  6000.f, 1.f,   500.f }, { 3,  6000.f, 0.81f, 500.f },
+    { 2, 12000.f, 0.84f, 500.f }, { 4, 12000.f, 0.59f, 500.f },
+    { 2,  7000.f, 0.90f, 500.f }, { 2,  8000.f, 1.f,   500.f },
+    { 2,  6000.f, 0.76f, 500.f }, { 2,  8000.f, 1.f,   500.f },
+    { 2,  8000.f, 1.f,   500.f }, { 2,  8000.f, 1.f,   500.f },
+    { 2,  8000.f, 1.f,   500.f }, { 2,  8000.f, 1.f,   500.f },
+    { 2,  8000.f, 1.f,   500.f }, { 2,  8000.f, 1.f,   500.f },
+};
+static const float kACosPrm[101] = {                   // MSHandle::smACosPrm
+    3.141592f,   2.941258f,   2.857799f,   2.793427f,   2.738877f,   2.690566f,
+    2.6466579f,  2.606066f,   2.568079f,   2.532207f,   2.4980919f,  2.465462f,
+    2.434109f,   2.403867f,   2.374599f,   2.346194f,   2.3185589f,  2.291615f,
+    2.265295f,   2.2395389f,  2.214298f,   2.1895249f,  2.165182f,   2.141233f,
+    2.1176469f,  2.0943949f,  2.0714509f,  2.0487909f,  2.026395f,   2.004241f,
+    1.982313f,   1.960593f,   1.939064f,   1.917713f,   1.896526f,   1.875489f,
+    1.854591f,   1.833819f,   1.813162f,   1.792611f,   1.772154f,   1.751783f,
+    1.731487f,   1.711258f,   1.691086f,   1.670964f,   1.650882f,   1.630832f,
+    1.6108069f,  1.590798f,   1.570796f,   1.550795f,   1.530786f,   1.5107599f,
+    1.490711f,   1.470629f,   1.450507f,   1.430335f,   1.4101059f,  1.38981f,
+    1.369439f,   1.348982f,   1.328431f,   1.3077739f,  1.287002f,   1.266104f,
+    1.245067f,   1.223879f,   1.202528f,   1.181f,      1.1592799f,  1.137351f,
+    1.115198f,   1.092801f,   1.070142f,   1.047198f,   1.023945f,   1.000359f,
+    0.97641098f, 0.95206797f, 0.927295f,   0.902054f,   0.876298f,   0.849978f,
+    0.82303399f, 0.795399f,   0.766994f,   0.73772597f, 0.70748299f, 0.676131f,
+    0.64350098f, 0.609386f,   0.57351297f, 0.53552699f, 0.49493399f, 0.451027f,
+    0.402716f,   0.34816599f, 0.28379399f, 0.200335f,   0.0f,
+};
+static constexpr float kPanMaxAmp = 0.499f, kPanCAdjust = 0.02f, kPanCShift = 1.6394f,
+                       kPanHiSenceDist = 12.f, kMSDistMaxSence = 0.5f,
+                       kMaxVolumeDistance = 1200.f;     // MSound init: setParamMaxVolumeDistance
+struct AudioCam { std::atomic<u32> pos{0}, mtx{0}; };   // guest Vec* / Mtx* (game-owned)
+static AudioCam g_cam;                                  // SMS: audioCameraMax == 1
+
+static u32 se_cat_of(u32 id) {                          // MSHandle get_thing
+    const u32 top = id >> 30;
+    if (top == 0) return (id >> 12) & 0xF;
+    return 16;                                          // seq/stream — not an SE category
+}
+static float ms_acos(float x) {
+    const int i = (int)((x + 1.f) * 50.f);
+    return kACosPrm[i < 0 ? 0 : (i > 100 ? 100 : i)];
+}
+static float calc_volume(float dist, float catDist, u8 swType, u32 cat) {
+    if (dist < kMaxVolumeDistance) return 1.f;
+    const float d = dist - kMaxVolumeDistance;
+    float range = catDist - kMaxVolumeDistance;
+    switch (swType) {
+    case 1: range = range * 4.f / 3.f; break;
+    case 2: range = range * 5.f / 3.f; break;
+    case 3: range = range * 2.f;       break;
+    case 4: range = range * 3.f / 4.f; break;
+    case 5: range = range / 2.f;       break;
+    case 6: range = range / 4.f;       break;
+    case 7: range = kSeCategory[cat].falloff7; break;
+    }
+    if (range <= 0.f) return 0.f;
+    const float v = 1.f - d / range;                    // JALCalc::linearTransform 1→0
+    return v < 0.f ? 0.f : (v > 1.f ? 1.f : v);
+}
+static float calc_pan(float csx, float dist, float catDist) {   // MSHandle::calcPan
+    const float amp = kPanMaxAmp;
+    const float ac = dist <= 0.f ? 0.f : ms_acos(-csx / dist);
+    float v = kPanCAdjust + amp * 2.f * ac / (float)M_PI - amp - kPanCAdjust;
+    v = (v < 0.f) ? -amp * powf(-v / amp, kPanCShift)
+                  :  amp * powf( v / amp, kPanCShift);
+    if (dist < kPanHiSenceDist)
+        v *= dist / kPanHiSenceDist;
+    else
+        v *= (kMSDistMaxSence - 1.f) / (catDist - kPanHiSenceDist)
+                 * (dist - kPanHiSenceDist) + 1.f;
+    v += amp;
+    return v < 0.f ? 0.f : (v > 1.f ? 1.f : v);
+}
+static bool finite_pos(float f) { return f == f && f > -1e8f && f < 1e8f; }
+static void se_3d_tick(ActiveSE& a) {                   // MSHandle::setSeDistanceParameters
+    if (a.isBgm || !a.posPtr) return;
+    const u32 cat = se_cat_of(a.id);
+    if (cat >= 16) return;
+    const u32 mtx = g_cam.mtx.load(std::memory_order_relaxed);
+    if (!mtx) return;
+    float w[3], m[12];
+    for (int i = 0; i < 3; i++)  w[i] = sb_rf32(a.posPtr + i * 4);
+    for (int i = 0; i < 12; i++) m[i] = sb_rf32(mtx + i * 4);
+    if (!finite_pos(w[0]) || !finite_pos(w[1]) || !finite_pos(w[2])) return;
+    float cs[3];                                        // camera space = ViewMtx × world
+    for (int r = 0; r < 3; r++)
+        cs[r] = m[r*4]*w[0] + m[r*4+1]*w[1] + m[r*4+2]*w[2] + m[r*4+3];
+    const float dist = sqrtf(cs[0]*cs[0] + cs[1]*cs[1] + cs[2]*cs[2]);
+    if (!finite_pos(dist)) return;
+    const SeCategory& c = kSeCategory[cat];
+    const u8 swType = (u8)((a.swbit >> 16) & 7);
+    const float vol = (a.swbit & 2) ? 1.f : calc_volume(dist, c.dist, swType, cat);
+    a.vol[4].set(vol, c.type);
+    const float pan = calc_pan(cs[0], dist, c.dist);
+    a.pan[4].set(pan, c.type);
+    if (pan != 0.5f || a.pan[4].cur != 0.5f) a.panTouched = true;
+    if (a.swbit & 0x10) {                               // random pitch wobble per frame
+        const float p = 1.f - (float)(rand() & 0xF) / 192.f;
+        a.pitch[4].set(p, c.type);
     }
 }
 
@@ -1824,7 +1907,7 @@ static void jai_tick() {
         }
         if (a.stopFade == 0) { active_stop_now(a); continue; }
         if (a.stopFade > 0) a.stopFade--;
-        mirror_guest_params(a);
+        se_3d_tick(a);
         float vp = 1.f, pp = 1.f, pn = 0.5f;
         for (int i = 0; i < 9; i++) {
             a.vol[i].tick(); a.pitch[i].tick(); a.pan[i].tick();
@@ -1956,11 +2039,11 @@ static void process_pending() {
             for (auto& a : g_active) if (!a.used) { slot = &a; break; }
             if (!slot) { ++it; continue; }   // registry full — wait (binding is mandatory)
             active_init(*slot, w, id, it->swbit, it->prio);
-            slot->guest = it->guest;
+            slot->posPtr = it->posPtr;
             w->writePortImport(4, (u16)(id & 0x3FF));
             w->writePortImport(0, 1);
-            NJLOG("se_start id=%05x cat=%u idx=%u guest=%08x → worker %p\n", id, cat, id & 0x3FF,
-                  it->guest, (void*)w);
+            NJLOG("se_start id=%05x cat=%u idx=%u pos=%08x → worker %p\n", id, cat, id & 0x3FF,
+                  it->posPtr, (void*)w);
             it = g_pending.erase(it);
         } else if (g_inited && ++it->age > 800) {
             // expire stale requests (~2 s of subframes with no worker): all busy or unknown category
@@ -2109,14 +2192,22 @@ extern "C" void njas_mix(int16_t* buf, size_t frames) {
 
 // Start an SE natively (called from the startSoundBasic tee). SE ids only (top bits 0);
 // seq/stream ids are ignored here. swbit/prio come from the guest JAISoundInfo.
-extern "C" void njas_se_start(uint32_t id, uint32_t swbit, uint8_t prio, uint32_t guest) {
+extern "C" void njas_se_start(uint32_t id, uint32_t swbit, uint8_t prio, uint32_t posPtr) {
     using namespace njas;
     std::lock_guard<std::mutex> lk(g_mtx);
     if (!g_catvol_init) { for (auto& v : g_catvol) v = 1.f; g_catvol_init = true; }
     engine_init();                            // kicks the async data load on first call
     PendingSE p{ id, swbit, prio };
-    p.guest = guest;                          // guest JAISound* (0 = fire-and-forget)
+    p.posPtr = posPtr;                        // game-world Vec* (0 = no 3D / UI sound)
     g_pending.push_back(p);                   // queued until the engine is running
+}
+
+// Camera input for the native 3D layer (JAIBasic::setCameraInfo tee): the game hands
+// JAI its camera position/view-matrix POINTERS once per camera; we keep the same.
+extern "C" void njas_set_camera(uint32_t posPtr, uint32_t mtxPtr) {
+    using namespace njas;
+    g_cam.pos.store(posPtr, std::memory_order_relaxed);
+    g_cam.mtx.store(mtxPtr, std::memory_order_relaxed);
 }
 
 // Start a BGM natively (seq-class id 0x8xxxxxxx from the startSoundBasic tee): spawn a
@@ -2179,8 +2270,8 @@ extern "C" int njas_probe(char* out, int cap) {
     for (auto& a : g_active) {
         if (!a.used || a.isBgm) continue;
         float vp = 1.f; for (int i = 0; i < 9; i++) vp *= a.vol[i].cur;
-        app("a id=%05x guest=%08x volprod=%.4f outer=%.4f\n", a.id, a.guest, vp,
-            a.worker ? a.worker->outerVol : -1.f);
+        app("a id=%05x pos=%08x volprod=%.4f outer=%.4f vol4=%.3f pan4=%.3f\n", a.id,
+            a.posPtr, vp, a.worker ? a.worker->outerVol : -1.f, a.vol[4].cur, a.pan[4].cur);
     }
     for (int i = 0; i < kMaxVoices; i++) {
         Voice& v = g_voices[i];
