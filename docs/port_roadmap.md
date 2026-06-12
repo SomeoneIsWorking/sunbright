@@ -57,12 +57,14 @@ per-actor gameplay logic that stays recompiled until the engine layers are owned
     but the seam disease (guest registry of never-finishing sounds feeding garbage stops)
     re-breaks it through ever-new readers. Do NOT patch another reader.
     (Delfino drums issue #3: FIXED cf8ad85 — BMS 0xE7 = syncCPU, ported callback.)
-4c. **Corner stars visible in widescreen** (user screenshot, 2026-06-12 pm) — the pause/menu
-    star decorations are parked just outside the 4:3 frame (the game "hides" them there);
-    at 16:9 they enter the visible area at the top corners. Known widescreen-class issue —
-    also reproduces on stock Dolphin + WS patch, so it's the game's layout assumption, not
-    our projection hack. Fix: identify the parking positions (SUNBRIGHT_2DID / J2D pane or
-    3D screenspace object) and move them outside the ACTUAL aspect's bounds natively.
+4c. **Corner stars visible in widescreen** (user screenshot, 2026-06-12 pm) — animated star
+    decorations fly through the view, leave, and later drift back into the top corners;
+    at 4:3 their idle/parked path stays off-frame, at 16:9 it doesn't. Known widescreen-class
+    issue — also reproduces on stock Dolphin + WS patch (game layout assumption, not our
+    projection hack). USER DECISION: remove the effect entirely (serves no purpose), don't
+    reposition. Catch them while ACTIVE to identify the element (they are not visible at
+    scene start — SUNBRIGHT_2DID / J2D pane or screenspace object while the animation runs),
+    then suppress its draw natively.
 5. **60 fps model interpolation** — standing task (docs/model_interpolation.md).
 6. **Map-screen freezes — root-caused; interim state shipped**: cause = synchronous Vulkan
    pipeline compilation on first-seen materials stalling the GPU thread, CPU then frozen in
