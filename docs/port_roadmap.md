@@ -65,7 +65,23 @@ per-actor gameplay logic that stays recompiled until the engine layers are owned
     reposition. Catch them while ACTIVE to identify the element (they are not visible at
     scene start — SUNBRIGHT_2DID / J2D pane or screenspace object while the animation runs),
     then suppress its draw natively.
-5. **60 fps model interpolation** — standing task (docs/model_interpolation.md).
+5. **60 fps model interpolation** — **WORKING, opt-in (2026-06-13, SUNBRIGHT_INTERP60=1)**.
+   Object-level render decoupling (user-ruled: NOT FIFO replay — that build was rejected as
+   emulation-layer; its assembler/parser remain as native-renderer groundwork only): on the
+   in-between field, TMarDirector's draw-pass perform lists are re-issued with each J3DModel's
+   draw/nrm matrices blended ½ between tick N-1 and N (J3D's own double buffer; pointer swap +
+   swap-back; teleport snap guard). interp_redraw.cpp + viewCalc hook in interp_capture.cpp.
+   Verified headless: frame-dump pair analysis — NOBLEND 49.4% identical consecutive presents
+   (pure 30 Hz) vs blend 14.7% (in-between frames are unique half-steps); 0 FIFO errors with
+   admission control (bounded CP drain-wait; optional frame skipped when the ring is full).
+   Root-caused on the way: CP watermark/BP interrupts must be LEVEL-evaluated from live FIFO
+   state in BOTH poll_yield and the idle driver (lo-watermark resume for the GX FIFO-link
+   suspend was lost when its target thread was the poll_yield caller = the idle deadlock).
+   KNOWN LIMIT: headless-no-present runs die in the documented Dolphin-Vulkan resource
+   exhaustion (~110 s at 2x volume, VKVertexManager starvation → VK OOM — item 6's class);
+   headed runs present and recycle. NEEDS: user real-play check (smoothness, artifacts on
+   billboards/CPU-skinned models), then default-on decision. Long-term home: trivial reimpl
+   on the native renderer.
 6. **Map-screen freezes — root-caused; interim state shipped**: cause = synchronous Vulkan
    pipeline compilation on first-seen materials stalling the GPU thread, CPU then frozen in
    the backpressure wait (vi-perf: backpressure=2684ms windows). CURRENT STATE (9c08bc7):

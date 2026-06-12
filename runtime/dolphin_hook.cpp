@@ -1132,6 +1132,77 @@ u32 sunbright_cp_write_ptr() {
     return 0;
 #endif
 }
+
+// CP FIFO ring occupancy as a fraction in [0,1] — admission control for OPTIONAL
+// command production (the 60fps in-between redraw, interp_redraw.cpp). The CPU can
+// outrun the GPU and lap the ring since the backpressure wait was removed (the
+// GatherPipe-overflow / Unknown-Opcode class, roadmap #6); optional work must only
+// be inserted when there is room.
+float sunbright_cp_fill();   // defined below
+
+// CP interrupt service — LEVEL-triggered from live FIFO state, never gated on Dolphin's
+// IsInterruptWaiting edge flag. Real CP hardware asserts the interrupt line as long as the
+// condition (breakpoint / hi-watermark / lo-watermark with its enable) holds; Dolphin's edge
+// notification from the video thread can collapse assert+deassert between our samples. The GX
+// FIFO-link protocol depends on the level: at the hi watermark the producer thread suspends
+// itself and ONLY the lo-watermark interrupt resumes it. Must be called from EVERY context
+// that delivers interrupts while threads are parked — poll_yield AND the idle driver (the
+// 60fps-redraw deadlock, pinned 2026-06-13: flagLo=1 intLo=1 at the deadlock dump, but only
+// poll_yield evaluated the level, and its caller was the suspended thread itself).
+void sunbright_cp_level_service() {
+#ifdef HAVE_DOLPHIN_CORE
+    auto& cp = Core::System::GetInstance().GetCommandProcessor();
+    auto& f = cp.GetFifo();
+    const bool bp   = f.bFF_Breakpoint.load(std::memory_order_relaxed) &&
+                      f.bFF_BPInt.load(std::memory_order_relaxed);
+    const bool ovf  = f.bFF_HiWatermark.load(std::memory_order_relaxed) &&
+                      f.bFF_HiWatermarkInt.load(std::memory_order_relaxed);
+    const bool undf = f.bFF_LoWatermark.load(std::memory_order_relaxed) &&
+                      f.bFF_LoWatermarkInt.load(std::memory_order_relaxed);
+    const bool irq  = (bp || ovf || undf) && f.bFF_GPReadEnable.load(std::memory_order_relaxed);
+    if (irq || cp.IsInterruptWaiting())
+        cp.UpdateInterrupts(irq ? 1 : 0);   // sets/clears PI INT_CAUSE_CP, clears waiting, kicks GPU
+#endif
+}
+
+// Bounded drain-wait for OPTIONAL command production: give the GPU a short,
+// hard-capped window to drain the ring below `target` fill before inserting
+// extra work. Services pending device events while waiting (token delivery is
+// what lets a drawsync-parked GPU advance). Returns false on timeout — the
+// caller must SKIP its optional work, never push into a full ring. This is not
+// the removed frame-blocking backpressure wait: the mandatory stream never
+// waits here, and the cap is microseconds.
+bool sunbright_cp_drain_wait(float target, int max_us) {
+#ifdef HAVE_DOLPHIN_CORE
+    float fill;
+    const auto t0 = std::chrono::steady_clock::now();
+    while ((fill = sunbright_cp_fill()) >= target) {
+        auto& sys = Core::System::GetInstance();
+        if (sys.GetCommandProcessor().GetFifo().CPReadWriteDistance.load(std::memory_order_relaxed))
+            sys.GetFifo().RunGpu();
+        sunbright_poll_yield();
+        if (std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - t0).count() >= max_us)
+            return false;
+        std::this_thread::sleep_for(std::chrono::microseconds(50));
+    }
+    return true;
+#else
+    return false;
+#endif
+}
+
+float sunbright_cp_fill() {
+#ifdef HAVE_DOLPHIN_CORE
+    auto& fifo = Core::System::GetInstance().GetCommandProcessor().GetFifo();
+    const u32 base = fifo.CPBase.load(std::memory_order_relaxed);
+    const u32 end  = fifo.CPEnd.load(std::memory_order_relaxed);
+    const u32 dist = fifo.CPReadWriteDistance.load(std::memory_order_relaxed);
+    return (end > base) ? (float)dist / (float)(end - base) : 1.0f;
+#else
+    return 1.0f;
+#endif
+}
 unsigned long g_nintr_counts[32];                        // per-interrupt dispatch counters (diag; probe /nintr)
 unsigned long g_ds_token_dispatches = 0;                 // drawsync diag (probe /drawsync)
 
@@ -1363,20 +1434,7 @@ void sunbright_poll_yield() {
     // FIFO never drains, no field presents, and the whole machine wedges at 99% CPU (the
     // logo-transition boot freeze, 2026-06-11). Service it here from live FIFO state — the same
     // computation SetCPStatusFromGPU deferred — so CP delivery never depends on time advancing.
-    {
-        auto& cp = sys.GetCommandProcessor();
-        if (cp.IsInterruptWaiting()) {
-            auto& f = cp.GetFifo();
-            const bool bp   = f.bFF_Breakpoint.load(std::memory_order_relaxed) &&
-                              f.bFF_BPInt.load(std::memory_order_relaxed);
-            const bool ovf  = f.bFF_HiWatermark.load(std::memory_order_relaxed) &&
-                              f.bFF_HiWatermarkInt.load(std::memory_order_relaxed);
-            const bool undf = f.bFF_LoWatermark.load(std::memory_order_relaxed) &&
-                              f.bFF_LoWatermarkInt.load(std::memory_order_relaxed);
-            const bool irq  = (bp || ovf || undf) && f.bFF_GPReadEnable.load(std::memory_order_relaxed);
-            cp.UpdateInterrupts(irq ? 1 : 0);   // sets/clears PI INT_CAUSE_CP, clears waiting, kicks GPU
-        }
-    }
+    sunbright_cp_level_service();
     // PE token delivery — equally time-independent (see sunbright_pe_token_drain).
     sunbright_pe_token_drain(g_cur_recomp_cpu);
     // Deferred JAS frame-done mails (the intcount race) — forwarded once consumable
@@ -1835,6 +1893,10 @@ static bool idle_run(long max_steps) {
         // (FIFO-pacing deadlock) — and then distance is nonzero by definition.
         if (sys.GetCommandProcessor().GetFifo().CPReadWriteDistance.load(std::memory_order_relaxed))
             sys.GetFifo().RunGpu();
+        // CP watermark/breakpoint interrupt LEVEL must be evaluated here too — poll_yield's
+        // evaluation never runs when its caller is the thread the lo-watermark resume is FOR
+        // (the GX FIFO-link suspend deadlock; see sunbright_cp_level_service).
+        sunbright_cp_level_service();
         int delivered = native_dispatch_pending();
         {   // drawsync loss recovery: GPU parked on the fifo's next boundary + empty queue means
             // its token was PE-coalesced away — post the synthetic token-0 through the normal
@@ -1885,6 +1947,21 @@ static void nthr_idle_driver() {
             "  CoreTiming GetTicks=%llu (compare against the last ctsched 'b' base in /tracelog)\n",
             (unsigned long long)Core::System::GetInstance().GetCoreTiming().GetTicks());
         nthr::dump_threads(stderr);
+        {   // CP/PI state — is the GX FIFO-link resume chain broken at the flag, the enable,
+            // or the dispatch? (the 60fps-redraw suspend-without-resume deadlock)
+            auto& sys2 = Core::System::GetInstance();
+            auto& f = sys2.GetCommandProcessor().GetFifo();
+            fprintf(stderr,
+                "  CP: dist=%x base=%x end=%x loWM=%x hiWM=%x flagLo=%d intLo=%d flagHi=%d intHi=%d "
+                "bp=%d bpInt=%d readEn=%d gpLink=%d intWaiting=%d\n",
+                f.CPReadWriteDistance.load(), f.CPBase.load(), f.CPEnd.load(),
+                f.CPLoWatermark, f.CPHiWatermark,
+                (int)f.bFF_LoWatermark.load(), (int)f.bFF_LoWatermarkInt.load(),
+                (int)f.bFF_HiWatermark.load(), (int)f.bFF_HiWatermarkInt.load(),
+                (int)f.bFF_Breakpoint.load(), (int)f.bFF_BPInt.load(),
+                (int)f.bFF_GPReadEnable.load(), (int)f.bFF_GPLinkEnable.load(),
+                (int)sys2.GetCommandProcessor().IsInterruptWaiting());
+        }
         fprintf(stderr, "  native dispatch counts:");
         for (int i = 0; i < 32; i++)
             if (g_nintr_counts[i]) fprintf(stderr, " intr%d=%lu", i, g_nintr_counts[i]);

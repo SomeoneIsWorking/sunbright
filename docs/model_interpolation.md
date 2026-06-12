@@ -1,5 +1,71 @@
 # Native rendering port + motion interpolation (N64Recomp-style) — design map
 
+> ## 🛑 ARCHITECTURE RULING (user, 2026-06-12) — object level, NOT stream level
+> A FIFO-replay design (capture gather-pipe bytes, strip tokens, patch CP
+> ARRAY_BASE loads, re-push through GPFifo, juggle XFB presents) was built and
+> verified (commits "60fps interp M-A/M-P": gx_stream.cpp assembler — 0 FIFO
+> errors over 3968 held frames; gx_parse.cpp analyzer — 896/896 frames parse,
+> ~1100 mtx-array patch points/frame) and then REJECTED by the user as
+> emulation-layer engineering: it deepens the Dolphin dependency the project is
+> deleting. Those modules stay (env-gated, off) as native-renderer-arc
+> groundwork ONLY. Interpolation is built at the JDrama/J3D OBJECT level.
+>
+> ## The PC-port design: decouple the render pass from the game tick
+> Game simulates at 30 Hz; render every 60 Hz field. On the in-between field,
+> re-issue the engine's own draw pass with per-model draw matrices blended
+> between tick N-1 and tick N (both already live in guest RAM — J3D
+> double-buffers mDrawMtxBuf, swapDrawMtx at viewCalc top).
+>
+> Pinned pieces (USA / GMSE01, RE'd 2026-06-12):
+> - **Draw pass** = TMarDirector::direct's (0x80299838, VERIFIED) draw branch:
+>   perform(0xffffffff, &graphics) over member lists +0x40, +0x38, +0x3C,
+>   +0x1C mPerformListGX, [+0x20 silhouette if gpSilhouetteManager->unk48>0 ||
+>   gpCamera->unk2C8 != -1], +0x24 mPerformListGXPost, then GXInvalidateTexAll.
+>   TGraphics = plain 0x100-byte struct, zero-initialized, unk2=0 for the draw
+>   branch; cameras/viewports fill it during the pass.
+> - **Cadence hook**: VIWaitForRetrace (native override, sms_vi_native.cpp)
+>   runs 2.05×/game frame (measured) — the second call per game frame IS the
+>   in-between field, on the game thread.
+> - **Blend, race-free, no game-state corruption** (redraw-mode J3DModel::
+>   viewCalc override 0x802deeb8 — does NOT call the guest body):
+>   write lerp(buf0[i], buf1[i], ½) into buf0 (prev draw-mtx buffer: dead until
+>   the next real swap), swap mDrawMtxBuf[0]/[1][viewNo] pointers for the
+>   redraw, swap back after the redraw frame. Frame N stays intact in buf1 as
+>   the next blend's source; buf0's blend data lives until frame N+1's viewCalc
+>   overwrites it — the same double-buffer lifetime the game's own GPU reads
+>   rely on. Nrm 3x3 buffers (+0x68) ditto. Teleport/cut guard: per-model
+>   translation delta over threshold → no blend (copy buf1).
+> - **Copy + present**: after the redraw pass, issue the display copy
+>   (IssueGXCopyDisp 0x802f917c / the TApplication endRender path — exact args
+>   RE pending) into the alternate XFB; present scheduling at the VI
+>   apply_flush seam (sms_vi_native.cpp owns the shadow-reg→VI-MMIO apply).
+>
+> Staging: (1) redraw WITHOUT blend on the in-between field — re-render frame N
+> verbatim; verifies the draw pass re-issues cleanly (no double-tick of
+> particles/anim/state, drawsync stable). (2) blend redraw → real 60 fps.
+> (3) artifacts pass: slerp upgrade if component-lerp rotation shows, exclusion
+> list (2D/HUD lists already separate), camera-cut detection.
+>
+> ### Stage-1 findings (2026-06-13, runtime/overrides/interp_redraw.cpp)
+> - A fabricated zeroed TGraphics corrupts the pass — direct() reuses ONE
+>   TGraphics across calc+draw; cameras/viewports populate it in the CALC
+>   passes. Fix: snapshot the live TGraphics when the game performs the GX list
+>   (TPerformList::perform tee, r5 = TGraphics*), redraw with the snapshot.
+> - Redraw-then-Unknown-Opcode was NOT stream corruption from the redraw: with
+>   the gx_parse analyzer armed, every captured frame (game + redraw) parsed
+>   clean while the CP still read garbage. FALSIFIED along the way: guest stack
+>   overflow into the FIFO ring (headroom measured 63 KB at redraw entry; stack
+>   0x804177e4..0x804274a0 is not adjacent to the ring 0x80448d60+).
+> - ROOT CAUSE: CP FIFO ring OVERFLOW — CPReadWriteDistance 0x82CA0 > ring size
+>   0x80000 (writer lapped the reader; hundreds of "FIFO is overflowed by
+>   GatherPipe" warnings per run). Pre-existing roadmap item #6 (unthrottled
+>   production since the backpressure wait was removed), amplified by the
+>   redraw's 2x command volume. Resolution for the OPTIONAL redraw: admission
+>   control — sunbright_cp_fill() (dolphin_hook.cpp) reads ring occupancy; the
+>   in-between frame is only inserted under 50% fill, else that frame stays
+>   30 fps. The mandatory-stream overflow remains item #6 (dies with the native
+>   renderer).
+
 Goal: decouple SMS's 60 Hz game tick from display refresh and synthesize in-between
 frames by interpolating each 3D model's transform between frame N-1 and frame N,
 keyed by a stable per-model ID.
