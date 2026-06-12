@@ -45,7 +45,7 @@ include_directories(BEFORE
 add_subdirectory("${DOLPHIN_DIR}" dolphin EXCLUDE_FROM_ALL)
 
 # ── Recompiler tool ───────────────────────────────────────────────────────────
-file(GLOB_RECURSE RECOMP_SOURCES tools/recompiler/*.cpp)
+file(GLOB_RECURSE RECOMP_SOURCES CONFIGURE_DEPENDS tools/recompiler/*.cpp)
 list(FILTER RECOMP_SOURCES EXCLUDE REGEX "tools/recompiler/tests/")   # tests have their own main()
 add_executable(sunbright-recomp ${RECOMP_SOURCES})
 
@@ -97,14 +97,17 @@ add_test(NAME recomp_test COMMAND sunbright-recomp-test)
 find_package(SDL2 REQUIRED)
 
 # Hand-written native overrides for functions the recompiler can't reproduce.
-file(GLOB SUNBRIGHT_OVERRIDE_SOURCES runtime/overrides/*.cpp)
+# CONFIGURE_DEPENDS: re-glob at build time — a NEW override file must never be
+# silently left out of the binary (cost: the committed TAfterEffect/EfbCtrlTex
+# widescreen fixes 26556fa never ran; the "fixed" smear shipped broken).
+file(GLOB SUNBRIGHT_OVERRIDE_SOURCES CONFIGURE_DEPENDS runtime/overrides/*.cpp)
 
 # Generated game code (present after /recompile). The recompiler splits function
 # bodies across many address-bucketed generated/functions_*.cpp files (plus a
 # shared functions.h and jump_table.cpp) so they compile in parallel. The weak
 # fallback table lets the binary link even before generation; the generated
 # strong symbols win.
-file(GLOB SUNBRIGHT_GENERATED_SOURCES
+file(GLOB SUNBRIGHT_GENERATED_SOURCES CONFIGURE_DEPENDS
     generated/functions_*.cpp
     generated/jump_table.cpp
 )

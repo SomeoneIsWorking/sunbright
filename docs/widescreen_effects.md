@@ -68,6 +68,25 @@ note in scene_render.cpp).
 
 ## Dead ends / gotchas
 
+- **The Delfino edge-smear bug report (2026-06-12) was NOT a geometry defect** — the
+  committed TAfterEffect/TEfbCtrlTex fixes (26556fa) were never in the binary: `file(GLOB
+  runtime/overrides/*.cpp)` had been evaluated before those files existed, so the build
+  silently dropped them (zero `[screenfx]` log lines pre-fix). Root-cause fix:
+  `CONFIGURE_DEPENDS` on the overrides/generated/recompiler globs in CMakeLists.txt —
+  new sources now re-glob at build time, a new override can never silently drop out again.
+  RE re-verified the geometry while chasing it: the screen capture is the
+  "通常シーン描画ステージ" TEfbCtrlTex with src rect (0,0,renderW,renderH) — the FULL EFB
+  (MarDirectorSetupObjects.cpp) — copied half-res into TScreenTexture, so under the
+  anamorphic scheme the texture holds the full 16:9 frame and the full-width quad stretch
+  is correct as-committed. Verified live in Delfino (probe-poked gpAfterEffect
+  [r13-0x6108=0x8040E0B8] — alpha/scale forced visible, frame dumps): overlay covers the
+  full 804px present, no seam at the 4:3 boundary columns (x≈100/703), and the
+  horizontal-streak metric (left/bottom dy/dx) is 0.8–1.7 with the effect active vs 5–6
+  in the bug screenshot (scratch/screenshots/ws_smear_bug.png vs ws_fix_*.png).
+- Poking TAfterEffect live: a hidden (non-decomp) Mario-side driver rewrites
+  unk50/unk5C/unk60/unk64 and holds unk15=2 every frame, and calcDashBlurValue then
+  recomputes the targets — to hold a visible state, hammer the CURRENT values
+  (+0x38..+0x44 offset/scale, +0x20/+0x24 alpha) and the alpha TARGETS (+0x1B/+0x1C).
 - The earlier TSunGlass fix via an always-on GXLoadPosMtxImm hook gated on a
   `g_in_sunglass` flag was REVERTED — the flag leaked across the tail-recursive scene
   draw and right-shifted the file-select. Scoped wraps on the effect's own draw entry
