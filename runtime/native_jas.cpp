@@ -2311,7 +2311,29 @@ static void process_pending() {
                     it = g_pending.erase(it);
                     continue;
                 }
-                active_stop_now(*same);               // restart class / finished → fresh
+                // Restart class / finished instance: re-dispatch onto the SAME worker
+                // immediately (JAISeEntry slot semantics — a restart reuses the worker
+                // slot; the port-0 import interrupt re-vectors the snippet). Waiting for
+                // the worker to drain to idle (port2==0, after its release tail) made
+                // rapid retriggers — spray-button spam — queue behind the release and
+                // play late or expire silently (user report 2026-06-12).
+                Track* w0 = same->worker;
+                active_stop_now(*same);
+                if (w0 && w0->active) {
+                    ActiveSE* slot = nullptr;
+                    for (auto& a : g_active) if (!a.used) { slot = &a; break; }
+                    if (slot) {
+                        active_init(*slot, w0, id, it->swbit, it->prio);
+                        slot->posPtr = it->posPtr;
+                        w0->writePortImport(4, (u16)(id & 0x3FF));
+                        w0->writePortImport(0, 1);
+                        ab_anchor("se", id, nullptr);
+                        NJLOG("se_restart id=%05x cat=%u pos=%08x → same worker %p\n",
+                              id, cat, it->posPtr, (void*)w0);
+                        it = g_pending.erase(it);
+                        continue;
+                    }
+                }
             } else if (catCount >= 4 && worst) {
                 // per-CATEGORY capacity with priority+distance stealing (the real model
                 // uses per-scene counts from JAIData unk4 — table shape not yet
