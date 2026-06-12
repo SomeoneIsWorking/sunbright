@@ -27,6 +27,13 @@
 static constexpr u32 GX_SET_PROJECTION = 0x80362c34u;
 static constexpr u32 GX_PERSPECTIVE    = 0u;
 
+// The anamorphic squeeze factor (4:3)/(16:9) = 0.75 — shared with every consumer that must
+// reason about where squeezed geometry actually lands in the EFB (sun occlusion probes etc.).
+float ws_squeeze_scale() {
+    static const float scale = [] { const char* e = getenv("SUNBRIGHT_WS_SCALE"); return e ? (float)atof(e) : 0.75f; }();
+    return scale;
+}
+
 static bool widescreen_on() {
     static const bool on = [] { const char* w = getenv("SUNBRIGHT_WIDESCREEN"); return !w || atoi(w) != 0; }();
     return on;
@@ -54,7 +61,7 @@ static void ov_gx_projection(CPUState& cpu) {
     //   • orthographic (2D): scale m[0][0] AND m[0][3] (X offset) → the 2D image shrinks toward the
     //     screen centre, so after the 16:9 present it is correct-aspect and CENTERED (not stretched).
     // Both are restored after the original packs them (the game reuses the matrices).
-    static const float scale = [] { const char* e = getenv("SUNBRIGHT_WS_SCALE"); return e ? (float)atof(e) : 0.75f; }();
+    const float scale = ws_squeeze_scale();
     const bool is2d = (type != GX_PERSPECTIVE);
     // Tell the HUD module which projection mode is current: position matrices loaded while a 2D
     // orthographic projection is active are 2D elements (the in-game HUD, once 3D has been seen).
@@ -73,7 +80,10 @@ static void ov_gx_projection(CPUState& cpu) {
     // present, so the squeeze is suspended and the ortho reloaded for the duration of
     // TSMSFader::draw. Record the last 2D ortho so the fader wrap can re-issue it.
     extern bool g_ws_2d_suspend; extern u32 g_ws_last_ortho;
-    if (is2d && mtx >= 0x80000000u) g_ws_last_ortho = mtx;
+    // Don't record orthos issued inside a suspend scope: those are effect-internal
+    // (e.g. draw_mist's EFB-pixel ortho lives on the guest STACK — recording it would
+    // leave the fader's reload pointer dangling once the frame returns).
+    if (is2d && mtx >= 0x80000000u && !g_ws_2d_suspend) g_ws_last_ortho = mtx;
     bool patched = false; f32 m00 = 0.0f, m03 = 0.0f;
     if (widescreen_on() && !(is2d && g_ws_2d_suspend) &&
         (!is2d || seen_3d) && mtx >= 0x80000000u && mtx < 0x81800000u) {

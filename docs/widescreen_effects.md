@@ -25,6 +25,8 @@ note in scene_render.cpp).
 | TAfterEffect dash-blur / screen-flash quad | perform 0x8022d4f8 | ✅ `screenfx_widescreen.cpp` (suspend only — quad covers viewport; the half-res screen capture is anamorphic so the stretch is correct) |
 | TShimmer heat haze | perform 0x8019f83c | removed by design (`sms_widescreen.cpp`, SUNBRIGHT_KEEP_SHIMMER to restore) |
 | HUD corner gauges | J2DPicture::drawFullSet | ✅ per-element edge anchoring, `hud.cpp` |
+| TSunModel EFB occlusion probes (sun glow / lens flare visibility) | getZBufValue 0x8002ea70 | ✅ `sunmodel_widescreen.cpp` — unkB4 EFB pixels recomputed from unkF8 with the 0.75 squeeze (game samples 4:3 pixels of an anamorphic EFB; verified live: x43=0.942 → game pixel 621 vs true EFB 545) |
+| BathWater draw_mist EFB copy-replay | 0x801aa6cc | ✅ `screenfx_widescreen.cpp` — squeeze suspended (flag only): its own EFB-pixel ortho (bl 0x801aac30 → GXSetProjection) must be the identity EFB mapping or the replay misaligns vs the GXCopyTex source |
 
 ## Not screenspace (checked, no action needed)
 
@@ -35,6 +37,19 @@ note in scene_render.cpp).
 - `TScreenTexture` / `SMS_FillScreenAlpha`: EFB alpha fill at ±1000 with identity
   matrices — already covers the whole EFB regardless of aspect.
 - `TMovieSubTitle`: J2D text via ortho graph — centered 4:3 composition is correct.
+- `TMario::drawSyncCallback` GXPeekARGB occlusion probe (silhouette): screen pos comes
+  from `GXProject(GXGetProjectionv(...))` in boxDrawPrepare — the LIVE GX projection,
+  which already holds our squeezed values → EFB-correct as-is. (Contrast TSunModel,
+  which projects with the camera's stored 4:3 matrix — that one needed the fix.)
+- `TLensFlare` / `TLensGlow` placement: both compute offsets from the sun's 4:3
+  normalized screen pos and render the result under the SAME squeezed perspective
+  projection — the 0.75 applies once to both sun and flare, so screen alignment is
+  preserved. Their visibility inputs (unk191/194/calcHiddenRatio) are fixed via the
+  TSunModel probe fix. Do NOT scale unkF8 itself — flare offsets would get 0.75².
+- `TSunMgr` Noki-warp gate `isInBounds(0.3f)`: a small centre-screen region (|x43|≤0.3),
+  far inside both aspects — unaffected.
+- THP FMV: full-screen 2D under the squeeze → presented centered 4:3; movies are 4:3
+  content, correct by design.
 
 ## Dead ends / gotchas
 
