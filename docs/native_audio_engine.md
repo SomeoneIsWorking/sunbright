@@ -109,11 +109,23 @@ HardStream/THP audio: keep current path (it WORKS — it is what has been audibl
    - **Handles**: stop/fade/volume/pitch reuse the M2 registry (isBgm slots: no category
      volume, release when the root finishes; stop = recursive root close). Confirmed live:
      k_camera stopped with fade=20 on demo end, then k_dolpic started.
-   - **Bank residency is moot natively**: all IBNK banks and all WSYS wave groups are
-     decoded at load (merged wave-id tables), so wScene/ARAM residency is unnecessary.
-     RISK (open): if two scene groups of one WSYS assign different waves to the SAME wave
-     id, the merged table keeps the last group — no wrong-sounding instrument observed yet;
-     revisit per-scene tables if a stage BGM sounds wrong.
+   - **Wave-scene residency (fixed 2026-06-12 — was the Delfino breakdown):** wsys 2
+     ("wScene") has 22 per-stage groups whose wave ids HEAVILY overlap (group 16 alone
+     collides on 107 ids) — a merged table plays the wrong samples outside the
+     last-parsed stage. Now each group keeps its OWN table; the active group per wsys is
+     teed from the guest. TEE GOTCHA: `JAIBasic::loadGroupWave` is VIRTUAL and SMS
+     overrides it (MSound::loadGroupWave — not in the symbol map; its wScene path loads
+     .aw files itself via MSLoadWave, additive residency, never reaching WaveBankMgr) —
+     the covering tee points are `JAIBasic::loadSceneWave` 0x803017b0 (stage loads) +
+     `WaveBankMgr::loadWave` 0x80310994 (init/stay + the 0x210 common-group direct).
+     Lookup order: active scene group → group 0 → first group that has the id (handles
+     wsys-2 additive co-residency, e.g. Delfino scene 1 + common group 16).
+   - **Voice stealing (fixed 2026-06-12):** dense sequences (k_dolpic's mandolin tremolo,
+     ~20 notes/s/track) legitimately spawn notes faster than long looping-wave releases
+     decay; the 64-voice pool saturates by CHURN and rejecting new notes mutes the
+     melody to keep release tails (hardware reclaims via DSP-channel priority stealing/
+     breakLower). On exhaustion the allocator now steals the quietest RELEASING voice
+     (envelope states 4/5/6, lowest phase). 0 out-of-voices over 150 s incl. Delfino.
    Verified (150 s headless autostart): title → file-select → camera demo → Delfino
    Plaza, 831 noteOns across multi-track roots (bank 0 progs), sustained music RMS
    5000–7000 / zcr 1500–3000 / d2e ≤0.21 (raw_profile.py), zero unhandled BMS opcodes,

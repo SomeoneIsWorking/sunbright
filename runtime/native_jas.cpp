@@ -16,6 +16,7 @@
 //
 // Subframe clock: everything (track tick, envelope update, gate countdown) runs once
 // per 80 output samples at dacRate 32028.5 Hz, matching JAS's subframe callback.
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdint>
@@ -84,14 +85,22 @@ struct Bank {
 
 struct BarcEntry { u32 off = 0, size = 0; char name[15] = {}; };
 
+// A WSYS holds one wave-id table PER SCENE GROUP (wScene has 22 groups whose wave ids
+// OVERLAP — different stages reuse the same ids for different samples; a merged table
+// plays the wrong waves outside the last-parsed stage). The guest selects the resident
+// group per wsys via JAIBasic::loadGroupWave — teed into g_wave_scene[].
+struct WsysBank { std::vector<std::vector<Wave>> groups; };
+
 struct Data {
     bool ok = false;
     std::vector<Bank> banks;          // physical index = AAF chunk-2 order
     int vir2phy[256];
-    std::vector<std::vector<Wave>> wsys_waves;  // [wsys][waveid] (wave-id table)
+    std::vector<WsysBank> wsys_waves; // [wsys].groups[scene][waveid]
     std::vector<u8> seq;              // sequence.arc
     std::vector<BarcEntry> barc;      // AAF chunk 4 "BARC": BGM index → BMS offset in seq
 } g_data;
+
+static std::atomic<int> g_wave_scene[8];   // active scene group per wsys (loadGroupWave tee)
 
 // ---- disc access
 struct Disc {
@@ -307,8 +316,9 @@ static void parse_ibnk(const u8* bnk, u32 size, Bank& out) {
     }
 }
 
-// ---- WSYS parse (JASWSParser semantics: ctrl wave-id table + WINF archive entries)
-static void parse_wsys(const u8* d, u32 size, Disc& disc, std::vector<Wave>& table) {
+// ---- WSYS parse (JASWSParser semantics: ctrl wave-id table + WINF archive entries).
+// Each scene group gets its OWN table — ids overlap between groups (different content).
+static void parse_wsys(const u8* d, u32 size, Disc& disc, WsysBank& bank) {
     (void)size;
     if (memcmp(d, "WSYS", 4)) return;
     const u32 winf = be32(d + 0x10);          // archive bank ("WINF")
@@ -316,28 +326,24 @@ static void parse_wsys(const u8* d, u32 size, Disc& disc, std::vector<Wave>& tab
     if (memcmp(d + winf, "WINF", 4)) { fprintf(stderr, "[njas] WSYS: no WINF\n"); return; }
     const u32 group_count = be32(d + wbct + 8);
     const u32 arc_count = be32(d + winf + 4);
-    u32 max_id = 0;
-    // first pass: find table size
+    bank.groups.resize(std::min(group_count, arc_count));
     for (u32 g = 0; g < group_count && g < arc_count; g++) {
+        std::vector<Wave>& table = bank.groups[g];
         const u32 scene_off = be32(d + wbct + 0xC + g * 4);
         const u32 ctrl_off = be32(d + scene_off + 0xC);
         const u32 wave_count = be32(d + ctrl_off + 4);
+        u32 max_id = 0;
         for (u32 w = 0; w < wave_count; w++) {
             const u32 cw = be32(d + ctrl_off + 8 + w * 4);
             const u32 id = be32(d + cw) & 0xFFFF;
             if (id > max_id) max_id = id;
         }
-    }
-    table.resize(max_id + 1);
-    for (u32 g = 0; g < group_count && g < arc_count; g++) {
+        table.resize(max_id + 1);
         const u32 arc_off = be32(d + winf + 8 + g * 4);
         const char* aw_name = (const char*)(d + arc_off);
         std::vector<u8> aw;
         if (!disc.read(std::string("/AudioRes/Banks/") + aw_name, aw)) continue;
         const u32 wave_count_a = be32(d + arc_off + 0x70);
-        const u32 scene_off = be32(d + wbct + 0xC + g * 4);
-        const u32 ctrl_off = be32(d + scene_off + 0xC);
-        const u32 wave_count = be32(d + ctrl_off + 4);
         for (u32 w = 0; w < wave_count && w < wave_count_a; w++) {
             const u32 we = be32(d + arc_off + 0x74 + w * 4);
             const u32 cw = be32(d + ctrl_off + 8 + w * 4);
@@ -995,16 +1001,44 @@ static int track_note_on(Track& t, u8 chanIdx, s32 key, s32 vel, s32 gateTime) {
     }
 
     if (bank.wsys < 0 || bank.wsys >= (int)g_data.wsys_waves.size()) return -1;
-    auto& wtable = g_data.wsys_waves[bank.wsys];
-    if (waveid >= wtable.size() || wtable[waveid].pcm.empty()) {
-        NJLOG("noteOn: wave %u missing (wsys %d)\n", waveid, bank.wsys);
+    // group-aware wave lookup: the guest-selected resident scene group first (the
+    // faithful choice — ids overlap between groups), then group 0 (stay waves), then
+    // any group that has it (forgiving fallback for tee/start ordering races).
+    WsysBank& wb = g_data.wsys_waves[bank.wsys];
+    const Wave* wvp = nullptr;
+    const int curScene = (bank.wsys < 8) ? g_wave_scene[bank.wsys].load(std::memory_order_relaxed) : 0;
+    auto try_group = [&](int g) {
+        if (wvp || g < 0 || g >= (int)wb.groups.size()) return;
+        auto& t = wb.groups[g];
+        if (waveid < t.size() && !t[waveid].pcm.empty()) wvp = &t[waveid];
+    };
+    try_group(curScene);
+    try_group(0);
+    for (int g = 0; !wvp && g < (int)wb.groups.size(); g++) try_group(g);
+    if (!wvp) {
+        NJLOG("noteOn: wave %u missing (wsys %d scene %d)\n", waveid, bank.wsys, curScene);
         return -1;
     }
-    const Wave& wv = wtable[waveid];
+    const Wave& wv = *wvp;
 
     // allocate voice
     Voice* v = nullptr;
     for (auto& cand : g_voices) if (!cand.active) { v = &cand; break; }
+    if (!v) {
+        // Voice stealing (the JAS DSP-channel allocator analogue: hardware reclaims
+        // channels under load via priority stealing/breakLower). Dense sequences
+        // (k_dolpic's mandolin tremolo) legitimately spawn notes faster than long
+        // looping-wave releases decay — rejecting NEW notes would mute the melody to
+        // keep old release tails. Steal the quietest RELEASING voice instead.
+        float bestlvl = 1e9f;
+        for (auto& cand : g_voices) {
+            const u8 st = cand.oscs[0].state;
+            if (st != 4 && st != 5 && st != 6) continue;   // release/forced/direct-release only
+            const float lvl = cand.oscs[0].phase;
+            if (lvl < bestlvl) { bestlvl = lvl; v = &cand; }
+        }
+        if (v) v->stop_now();
+    }
     if (!v) {
         static u32 oov = 0;
         if (dbg() && (oov++ % 2000) == 0) {
@@ -2041,6 +2075,16 @@ extern "C" void njas_se_param(uint32_t id, int kind, uint8_t slot, float value, 
     case 2: a->pitch[slot].set(value, time); break;
     }
     NJLOG("se_param id=%05x kind=%d slot=%u v=%.3f t=%u\n", id, kind, slot, value, time);
+}
+
+// Resident wave-scene selection (JAIBasic::loadGroupWave tee): the guest loads scene
+// group `scene` for wave bank `wsys` (on hardware: into ARAM). Natively all groups are
+// pre-decoded — we just switch the active table used by future noteOns.
+extern "C" void njas_set_wave_scene(int wsys, int scene) {
+    using namespace njas;
+    if (wsys < 0 || wsys >= 8) return;
+    g_wave_scene[wsys].store(scene, std::memory_order_relaxed);
+    NJLOG("wave scene: wsys %d → group %d\n", wsys, scene);
 }
 
 // Category master volume (JAIBasic::setSeCategoryVolume tee), vol = 0..127.

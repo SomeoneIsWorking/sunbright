@@ -20,6 +20,7 @@ extern "C" void njas_bgm_start(uint32_t id);
 extern "C" void njas_se_stop(uint32_t id, uint32_t fade);
 extern "C" void njas_se_param(uint32_t id, int kind, uint8_t slot, float value, uint32_t time);
 extern "C" void njas_se_category_volume(uint8_t cat, uint8_t vol);
+extern "C" void njas_set_wave_scene(int wsys, int scene);
 
 extern "C" void func_80301e80(CPUState& cpu);   // JAIBasic::startSoundActor
 extern "C" void func_803020ac(CPUState& cpu);   // JAIBasic::startSoundBasic
@@ -27,6 +28,8 @@ extern "C" void func_80301fc4(CPUState& cpu);   // JAIBasic::startSoundDirectID
 extern "C" void func_80302034(CPUState& cpu);   // JAIBasic::startSoundIndirectID
 extern "C" void func_80302224(CPUState& cpu);   // JAIBasic::stopSoundHandle
 extern "C" void func_803029a4(CPUState& cpu);   // JAIBasic::setSeCategoryVolume
+extern "C" void func_803017b0(CPUState& cpu);   // JAIBasic::loadSceneWave
+extern "C" void func_80310994(CPUState& cpu);   // JASystem::WaveBankMgr::loadWave
 extern "C" void func_8030a57c(CPUState& cpu);   // JAISound::setVolume
 extern "C" void func_8030a604(CPUState& cpu);   // JAISound::setPan
 extern "C" void func_8030a68c(CPUState& cpu);   // JAISound::setPitch
@@ -91,6 +94,24 @@ SUNBRIGHT_OVERRIDE(ov_stopSoundHandle, 0x80302224u) {
 SUNBRIGHT_OVERRIDE(ov_setSeCategoryVolume, 0x803029a4u) {
     if (njas_enabled()) njas_se_category_volume((uint8_t)cpu.gpr[4], (uint8_t)cpu.gpr[5]);
     func_803029a4(cpu);
+}
+// Resident wave-scene switch. NOTE: JAIBasic::loadGroupWave is VIRTUAL and SMS
+// overrides it (MSound::loadGroupWave, not in the symbol map; its wScene path loads
+// the .aw itself via MSLoadWave and never reaches WaveBankMgr) — so tee the two
+// covering entry points instead:
+//   JAIBasic::loadSceneWave(this=r3, wsys=r4, scene=r5) — all stage wave loads
+//   WaveBankMgr::loadWave(wsys=r3, scene=r4)            — init stay groups + directs
+SUNBRIGHT_OVERRIDE(ov_loadSceneWave, 0x803017b0u) {
+    if (dbg()) fprintf(stderr, "[se_native] loadSceneWave wsys=%d scene=%d\n",
+                       (int)cpu.gpr[4], (int)cpu.gpr[5]);
+    if (njas_enabled()) njas_set_wave_scene((int)cpu.gpr[4], (int)cpu.gpr[5]);
+    func_803017b0(cpu);
+}
+SUNBRIGHT_OVERRIDE(ov_wavebank_loadWave, 0x80310994u) {
+    if (dbg()) fprintf(stderr, "[se_native] WaveBankMgr::loadWave wsys=%d scene=%d\n",
+                       (int)cpu.gpr[3], (int)cpu.gpr[4]);
+    if (njas_enabled()) njas_set_wave_scene((int)cpu.gpr[3], (int)cpu.gpr[4]);
+    func_80310994(cpu);
 }
 // Outer JAISound::setVolume/setPan/setPitch (this=r3, f1=value, r4=time, r5=slot):
 // route SEQ (BGM) ids here. SE ids are captured one level down at the setSeInter*
