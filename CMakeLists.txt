@@ -128,6 +128,7 @@ add_executable(sunbright
     runtime/dolphin_hook.cpp
     runtime/memory_bridge.cpp
     runtime/gx_stream.cpp
+    runtime/gx_parse.cpp
     runtime/gpfifo_wrap.cpp
     runtime/native_threads.cpp
     runtime/native_os.cpp

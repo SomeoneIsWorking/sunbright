@@ -1,5 +1,6 @@
 // GX stream assembler — see gx_stream.h for the design contract.
 #include "gx_stream.h"
+#include "gx_parse.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -29,6 +30,14 @@ bool g_armed = false;
 
 // Held gather-pipe bytes, in FIFO order (big-endian, exactly what GPFifo gets).
 std::vector<u8> g_buf;
+
+// Whole-frame capture: every armed byte, regardless of mid-frame flushes (the
+// flush queue empties ~5×/frame at GXFlush; the replay needs the full frame).
+// Rotated at the display-copy boundary; parsed by gx_parse.
+std::vector<u8> g_frame, g_prev_frame;
+GxFrameInfo g_frame_info, g_prev_info;
+unsigned long g_parse_ok = 0, g_parse_fail = 0;
+unsigned long long g_tokens_seen = 0, g_mtx_arrays_seen = 0;
 
 // Safety cap: a frame stream is typically a few hundred KB; if a frame somehow
 // never hits a flush point, burst rather than grow unbounded.
@@ -81,6 +90,7 @@ void check_foreign() {
 inline void append(const u8* p, size_t n) {
     if (!g_buf.empty()) check_foreign();
     g_buf.insert(g_buf.end(), p, p + n);
+    g_frame.insert(g_frame.end(), p, p + n);
     g_frame_bytes += n;
     if (sync_mode()) { gxs_flush(nullptr); return; }
     if (g_buf.size() >= kFlushCap) { g_fl_cap++; gxs_flush(nullptr); }
@@ -133,10 +143,37 @@ void gxs_frame_boundary() {
     gxs_flush("copy");
     g_fl_copy++;
     g_frames++;
+
+    // Analyze the completed frame; only a fully-parsed frame qualifies as a
+    // replay source (the very first armed frames mis-size vertices until J3D
+    // reprograms VCD/VAT — ok=false catches that).
+    if (gxp_parse_frame(g_frame.data(), g_frame.size(), g_frame_info)) {
+        g_parse_ok++;
+        g_tokens_seen     += g_frame_info.token_offsets.size();
+        g_mtx_arrays_seen += g_frame_info.mtx_arrays.size();
+    } else {
+        g_parse_fail++;
+        if (dbg() && g_parse_fail <= 12) {
+            const u32 o = g_frame_info.fail_offset;
+            fprintf(stderr, "[gxs] parse FAIL at %u/%u op=%02x ctx:", o, g_frame_info.total,
+                    g_frame_info.fail_opcode);
+            for (u32 i = (o >= 8 ? o - 8 : 0); i < o + 12 && i < g_frame.size(); i++)
+                fprintf(stderr, "%s%02x", i == o ? " | " : " ", g_frame[i]);
+            fprintf(stderr, "\n");
+        }
+    }
+    g_frame.swap(g_prev_frame);
+    std::swap(g_frame_info, g_prev_info);
+    g_frame.clear();
+
     if (dbg() && (g_frames % 128) == 0)
         fprintf(stderr,
-                "[gxs] frames=%lu last_frame_bytes=%llu total=%lluMB flushes gx=%lu copy=%lu cap=%lu\n",
+                "[gxs] frames=%lu last_frame_bytes=%llu total=%lluMB flushes gx=%lu copy=%lu cap=%lu "
+                "parse ok=%lu fail=%lu tokens/f=%.1f mtxarrays/f=%.1f\n",
                 g_frames, g_frame_bytes, g_total_bytes >> 20,
-                g_fl_gxflush, g_fl_copy, g_fl_cap);
+                g_fl_gxflush, g_fl_copy, g_fl_cap,
+                g_parse_ok, g_parse_fail,
+                g_parse_ok ? (double)g_tokens_seen / g_parse_ok : 0.0,
+                g_parse_ok ? (double)g_mtx_arrays_seen / g_parse_ok : 0.0);
     g_frame_bytes = 0;
 }
