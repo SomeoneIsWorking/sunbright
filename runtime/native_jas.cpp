@@ -2847,6 +2847,34 @@ extern "C" void njas_se_stop(uint32_t id, uint32_t fade, uint32_t posPtr) {
     NJLOG("se_stop id=%05x fade=%u pos=%08x matched=%d\n", id, fade, posPtr, (int)matched);
 }
 
+// Liveness query for the native JAISound handle pool (se_native.cpp, audio M4): a
+// handle's sound is alive while a pending request, an active SE instance (identity =
+// id + actor pos Vec*), or a BGM root with that id exists. The pool reclaims dead
+// handles (clears the actor's handle variable, JAISound::clearMainSoundPPointer
+// semantics) from its per-frame tick.
+extern "C" int njas_handle_alive(uint32_t id, uint32_t posPtr) {
+    using namespace njas;
+    std::lock_guard<std::mutex> lk(g_mtx);
+    for (auto& p : g_pending)
+        if (p.id == id && (p.isBgm || p.posPtr == posPtr)) return 1;
+    for (auto& a : g_active)
+        if (a.used && a.id == id && (a.isBgm || a.posPtr == posPtr)) return 1;
+    return 0;
+}
+
+// JAIBasic::stopAllSe(u8 category) tee: with the guest registry never populated
+// (audio M4 handle pool), the guest body walks an empty list — the category sweep is
+// served natively instead. No fade, like the guest (stopSoundHandle(sound, 0) per hit).
+extern "C" void njas_se_stop_category(uint8_t cat) {
+    using namespace njas;
+    std::lock_guard<std::mutex> lk(g_mtx);
+    for (auto it = g_pending.begin(); it != g_pending.end();)
+        it = (!it->isBgm && se_cat_of(it->id) == cat) ? g_pending.erase(it) : it + 1;
+    for (auto& a : g_active)
+        if (a.used && !a.isBgm && se_cat_of(a.id) == cat) active_stop_now(a);
+    NJLOG("se_stop_category cat=%u\n", cat);
+}
+
 // Handle param op (JAISound::setVolume/setPan/setPitch tees). kind: 0=vol 1=pan 2=pitch.
 extern "C" void njas_se_param(uint32_t id, int kind, uint8_t slot, float value, uint32_t time) {
     using namespace njas;

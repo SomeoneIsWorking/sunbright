@@ -66,7 +66,11 @@ per-actor gameplay logic that stays recompiled until the engine layers are owned
    cache warms across sessions. KNOWN RISK from the 300 s A/B: headless no-present runs OOM
    (VK_ERROR_OUT_OF_DEVICE_MEMORY ~4 min) without the wait — if the user reports that crash
    in real play, the Dolphin-Vulkan resource-growth item escalates. Permanent fix = the
-   native renderer arc below.
+   native renderer arc below. LINKED (user, 2026-06-12 pm): with the backpressure wait gone
+   the CP GatherPipe overflows ("FIFO is overflowed by GatherPipe! CPU thread is too fast!",
+   CommandProcessor.cpp:390) — unthrottled command production is plausibly what grows
+   device memory to the VK OOM. Same Dolphin-GPU-semantics class; don't tune it, delete it
+   (native renderer).
 7. **User directive:** if any of these trace to a Dolphin dependency, reduce that dependency
    (own the behavior natively) rather than working around it.
 
@@ -86,16 +90,25 @@ Stop guarding emulation seams; delete the emulation-era path and own the subsyst
   during all three real-world spray regressions. It validates engine-internal lifecycle
   only. Real verification = the USER playing via ./run-dev.sh (hand them the command; do
   not launch headed runs yourself) + reading the tee events in the log.
-  **THE DECISIVE CUT — native JAISound handle pool (THE next task, fresh context):**
-  startSoundBasic stops calling the guest body for handled ids. Instead the override
-  returns a handle from a NATIVE-owned pool of JAISound-shaped objects in guest memory
-  (static arena; populate id @+0x8, actor/pos @+0x20, the fields actor code reads; all
-  lifecycle native). Game actor code keeps working — it null-checks and calls
-  setVolume/setPan/stop on the handle, and the existing tees key on handle->id. The guest
-  registry is never populated → nothing stale to read → this whole bug class becomes
-  unrepresentable. Then: guest audioproc/updateDac bookkeeping off entirely;
-  worker-snippet indirection → direct per-sound dispatch; respect the two M4 gates
-  (MSound::checkWaveOnAram stage-transition block, THP audio).
+  **THE DECISIVE CUT — native JAISound handle pool: LANDED 2026-06-12 pm** (se_native.cpp).
+  startSoundBasic no longer calls the guest body for SE/seq ids: handles come from a
+  native-owned pool of JAISound-shaped objects in guest low-mem (48×0x48 @ 0x80001C00;
+  id @+0x8, state @+0x1, pos vecs, slot backptr @+0x34); all lifecycle native (reclaim
+  tick on the checkNextFrameSe seat polls njas_handle_alive, clears the actor's handle
+  variable). Streams stay guest. Guest registry never populated. Landed alongside, each
+  root-caused by a verified crash: checkSeMovePara cut (unconditional
+  unk38->getSeqParameter()->unk1755 deref — its move-param work is native MovePara);
+  pool state byte = 4 (state 1 left processFrameWork's checkNextFrameSe gate closed →
+  no reclaim → pool exhaustion); the JAI init-sound handle (0x80000800 → JAIBasic+0x38)
+  is PINNED (processFrameWork null-derefs unk38 every frame; engine starts no instance
+  for it). stopAllSe(u8) is teed (njas_se_stop_category) since the guest walk is empty.
+  Verified: 150 s headless fastboot Delfino — no crash, pool never exhausts, BGM
+  k_camera→k_dolpic + ambient SEs sustained; baseline A/B shows the ~48 s self-pause
+  (MSD_SE_SY_PAUSE_ON) is pre-existing, not pool-caused. User-confirmed in real play.
+  OPEN from real play: some bird/ambient SEs extra-loud (distance attenuation suspect).
+  Still ahead in M4: guest audioproc/updateDac bookkeeping off entirely; worker-snippet
+  indirection → direct per-sound dispatch; the two M4 gates (MSound::checkWaveOnAram
+  stage-transition block, THP audio).
 - **Graphics (months-scale arc):** native renderer direction — own the GX command stream →
   Vulkan with pregenerated game-tailored pipelines. Dolphin GPU semantics (FIFO
   backpressure, first-use shader compile, device-resource lifetime/OOM) cease to exist
