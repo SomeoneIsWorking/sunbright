@@ -78,7 +78,12 @@ Stop guarding emulation seams; delete the emulation-era path and own the subsyst
   sounds that never finish (guest JAS is dead), and every guest reader of that registry
   (frame culls, mono checks, handle-state logic, whatever we haven't found yet) misfires
   and emits stops that the tee faithfully forwards. Whack-a-mole by design; we are blind.
-  **THE DECISIVE CUT — native JAISound handle pool (next session, fresh context):**
+  **VERIFICATION WARNING:** the synthetic spray driver (SUNBRIGHT_NJAS_TEST=spray) injects
+  requests directly into the native engine, BYPASSING the guest game-code path — it passed
+  during all three real-world spray regressions. It validates engine-internal lifecycle
+  only. Real verification = the USER playing via ./run-dev.sh (hand them the command; do
+  not launch headed runs yourself) + reading the tee events in the log.
+  **THE DECISIVE CUT — native JAISound handle pool (THE next task, fresh context):**
   startSoundBasic stops calling the guest body for handled ids. Instead the override
   returns a handle from a NATIVE-owned pool of JAISound-shaped objects in guest memory
   (static arena; populate id @+0x8, actor/pos @+0x20, the fields actor code reads; all
