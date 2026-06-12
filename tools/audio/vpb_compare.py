@@ -65,12 +65,18 @@ def capture_oracle(base_url, out_path, seconds):
                 h = hash_cache[addr]
                 if not h:
                     continue
-                vols = [abs(int(c)) for c, _ in re_ch.findall(rest)]
-                md = re_dolby.search(rest)         # positional voices mix via dolby volume
+                # Dolby (3D-positioned) voices: the ucode IGNORES channels[6] volumes
+                # entirely (Zelda VPB comment) — the live gain is dolby_volume_current.
+                # Taking max(ch, dolby) let a STALE channel value mask the live dolby
+                # gain (constant-volume artifact: every 3D voice read as never moving).
+                md = re_dolby.search(rest)
                 if md:
-                    vols.append(abs(int(md.group(1))))
+                    vol = abs(int(md.group(1)))
+                else:
+                    vols = [abs(int(c)) for c, _ in re_ch.findall(rest)]
+                    vol = max(vols) if vols else 0
                 out.write(json.dumps({'t': now, 'hash': h, 'ratio': ratio,
-                                      'vol': max(vols) if vols else 0, 'base': addr}) + '\n')
+                                      'vol': vol, 'base': addr}) + '\n')
             out.flush()
             time.sleep(0.1)
 
