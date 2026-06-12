@@ -400,10 +400,14 @@ that never reaches state 0xFF): the note's TChannel never starts — `TDSPChanne
 ever gets enabled=1, so the voice neither plays nor ends. Suspects: cmdnoteon_native /
 oscillator_native ports, or the enQueue path under recomp. Trace tooling lives in
 `overrides/jas_rate_diag.cpp` (SUNBRIGHT_JAS_RATE=1; [vstart] traces alloc/play).
-**MEASUREMENT GOTCHA (cost hours): runtime overrides do NOT fire on recomp→recomp direct
-calls** — override-based call counters only see dispatch entries (call_ppc/JIT-entry/our own
-callg subtrees). A zero count means nothing unless the caller is known non-recomp. SUNBRIGHT_TRACE
-logs dispatch entries only, same blindness.
+**CORRECTED (2026-06-12): overrides DO fire on recomp→recomp calls under the current call
+model.** The emitter renders every `bl`/`bctrl` as `call_ppc(...)`, which consults
+`recomp_lookup()` → override table first (dolphin_hook.cpp). The old "overrides are blind to
+recomp→recomp direct calls" claim dates from the pre-C-call emitter and is FALSE now — override
+tees are a reliable interception seam everywhere (proved: the setSeInterVolume tee fires from
+recompiled JAI callers). A zero override count means the guest genuinely doesn't CALL that
+function — e.g. setSeDistanceVolume never calls setSeInterVolume; the compiler inlined it into
+a direct param-slot write (the loud-ambient-SE root cause).
 
 The infrastructure below from this session is real and kept (it fixed crashes/protocol wedges,
 just not the sequenced-audio death):

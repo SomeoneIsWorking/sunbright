@@ -130,6 +130,31 @@ HardStream/THP audio: keep current path (it WORKS — it is what has been audibl
    Plaza, 831 noteOns across multi-track roots (bank 0 progs), sustained music RMS
    5000–7000 / zcr 1500–3000 / d2e ≤0.21 (raw_profile.py), zero unhandled BMS opcodes,
    no voice/track exhaustion, no crash.
+   **M2.5 CORRECTION (2026-06-12): the "inner setters are the funnel" claim is FALSE for
+   SMS distance code.** The compiler INLINED setSeInterVolume into
+   JAISound::setSeDistanceVolume 0x8030c2d0 (binary: `stfsu` straight into
+   getSeParameter()+0x164 = vol slot 4) — no call, no tee. An interim guest-param-block
+   mirror (mirror_guest_params: param block +0x124 vol / +0x1A4 pan / +0x224 pitch,
+   8×16-byte {target,cur,step,count}, read cur each jai_tick, JAISound* bound from
+   startSoundBasic r5) made distance attenuation work but reads guest engine state —
+   an acknowledged stopgap, deleted by M2.6.
+   **M2.6 — native 3D SE layer (NEXT, replaces the mirror — user-ratified direction:
+   no guest-state mirroring; PC-native ownership before "fully working sound", because
+   full correctness is unreachable while params come from the guest):**
+   - Engine owns cameras, per-sound positions, and the SMS curves; tees capture only
+     GAME INPUTS (positions/cameras/API calls), never guest audio state.
+   - Camera: tee JAIBasic::setCameraInfo 0x80300ce4 (pos Vec*, dir Vec*, mtx, cam id).
+   - Per-sound position: JAIActor (Vec* pos…) from the startSoundActor 0x80301e80 tee,
+     bound to the ActiveSE; reading the game-world Vec each tick is engine INPUT, not
+     mirroring.
+   - Curves: port MSHandle::calcVolume / setDistanceVolumeCommon 0x8001c9ac (SMS
+     overrides the generic JAISound curve!) incl. the static smSeCategory per-category
+     max-distance table (read once from the DOL image) and JAIGlobalParameter constants.
+   - Outputs feed the existing M2 move slots (vol/pan/pitch slot 4, doppler pitch slot 1).
+   - KEY ENABLER (2026-06-12): overrides DO intercept recomp→recomp calls — every
+     emitted `bl`/`bctrl` goes through call_ppc → recomp_lookup → override table. The
+     old "overrides are blind to direct calls" gotcha was pre-C-call-model and is gone;
+     the whole JAI surface can be natively owned with plain overrides.
 4. **M4 — delete the guest path**: audioproc thread never started; JAS DSP/ucode/driver/mails
    removed from the audio chain; Dolphin DSPHLE unused.
 
