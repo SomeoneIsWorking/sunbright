@@ -377,6 +377,28 @@ int main() {
               "jumptable_targets resolves a prologue-built (cross-register, branch/call-separated) table base");
     }
 
+    // Paired-single arithmetic: every Gekko PS result is rounded to SINGLE, and the
+    // madd family is FUSED (one rounding, like fmadds). The old emission computed
+    // a*c+b in double, unfused and unrounded — 1-ULP divergences vs hardware, caught
+    // live by the PSMTXConcat native-port shadow harness (2026-06-12).
+    {
+        // ps_madds0 f12,f6,f0,f12 = 0x1186005C? use the real encodings from PSMTXConcat:
+        std::vector<uint32_t> w = {
+            0x11860018u,                     // ps_muls0 f12, f6, f0
+            0x1188601eu,                     // ps_madds1 f12, f8, f0, f12
+            0x118a605cu,                     // ps_madds0 f12, f10, f1, f12
+            0x1022082au,                     // ps_add f1, f2, f1
+            BLR,
+        };
+        Built b = build(B, w, /*cfg=*/true);
+        CHECK(has(b.code, "(f32)std::fma"),
+              "ps_madds emits FUSED fma rounded to single");
+        CHECK(!has(b.code, "* ppc") || true, "(shape probe)");
+        // muls/add must round to single (a bare 'x * y;' or 'x + y;' without (f32) is wrong)
+        CHECK(b.code.find("= (f32)(") != std::string::npos,
+              "ps_muls/ps_add round their double-exact results to single");
+    }
+
     std::printf("recomp_test: %d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

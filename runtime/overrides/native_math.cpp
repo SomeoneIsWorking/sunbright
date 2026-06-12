@@ -73,3 +73,79 @@ SUNBRIGHT_OVERRIDE(ov_PSMTXCopy, 0x803499bcu) {
     const uint32_t src = cpu.gpr[3], dst = cpu.gpr[4];
     for (int i = 0; i < 12; i++) sb_w32(dst + i * 4, sb_r32(src + i * 4));
 }
+
+// PSMTXIdentity(m) @ 0x80349990
+SUNBRIGHT_OVERRIDE(ov_PSMTXIdentity, 0x80349990u) {
+    const uint32_t m = cpu.gpr[3];
+    static const float ident[12] = { 1,0,0,0, 0,1,0,0, 0,0,1,0 };
+    for (int i = 0; i < 12; i++) sb_wf32(m + i * 4, ident[i]);
+}
+
+// PSMTXConcat(a, b, dst) @ 0x803499f0 — 3x4 * 3x4. The paired-single original
+// accumulates with FUSED madds (ps_muls0 then ps_madds0 chain): one rounding per
+// madd — host fmaf reproduces that exactly. Reads complete before writes (the SDK
+// supports dst aliasing a or b; the PS version stages rows in registers).
+static void mtx_concat(const float a[12], const float b[12], float d[12]) {
+    for (int i = 0; i < 3; i++) {
+        const float a0 = a[i*4], a1 = a[i*4+1], a2 = a[i*4+2], a3 = a[i*4+3];
+        for (int j = 0; j < 4; j++) {
+            float v = fmaf(a2, b[8+j], fmaf(a1, b[4+j], a0 * b[j]));
+            if (j == 3) v += a3;
+            d[i*4+j] = v;
+        }
+    }
+}
+SUNBRIGHT_OVERRIDE(ov_PSMTXConcat, 0x803499f0u) {
+    const uint32_t pa = cpu.gpr[3], pb = cpu.gpr[4], pd = cpu.gpr[5];
+    float a[12], b[12], d[12];
+    for (int i = 0; i < 12; i++) { a[i] = sb_rf32(pa + i*4); b[i] = sb_rf32(pb + i*4); }
+    mtx_concat(a, b, d);
+    if (math_shadow()) {
+        if (RecompFunc orig = recomp_raw(0x803499f0u)) {
+            CPUState shadow = cpu;
+            orig(shadow);                              // guest writes dst
+            static unsigned long bad = 0;
+            for (int i = 0; i < 12; i++) {
+                const float g = sb_rf32(pd + i*4);
+                if (g != d[i] && !(g != g && d[i] != d[i]) && bad < 8) {
+                    bad++;
+                    fprintf(stderr, "[mathshadow] PSMTXConcat MISMATCH [%d] native=%a guest=%a\n",
+                            i, d[i], g);
+                }
+            }
+        }
+    }
+    for (int i = 0; i < 12; i++) sb_wf32(pd + i*4, d[i]);
+}
+
+// PSMTXMultVec(m, src, dst) @ 0x8034a2d0 — v' = M*v + t, fused-madd chain.
+SUNBRIGHT_OVERRIDE(ov_PSMTXMultVec, 0x8034a2d0u) {
+    const uint32_t pm = cpu.gpr[3], ps = cpu.gpr[4], pd = cpu.gpr[5];
+    float m[12], v[3], o[3];
+    for (int i = 0; i < 12; i++) m[i] = sb_rf32(pm + i*4);
+    for (int i = 0; i < 3; i++)  v[i] = sb_rf32(ps + i*4);
+    for (int i = 0; i < 3; i++)
+        o[i] = fmaf(m[i*4+2], v[2], fmaf(m[i*4+1], v[1], m[i*4] * v[0])) + m[i*4+3];
+    for (int i = 0; i < 3; i++) sb_wf32(pd + i*4, o[i]);
+}
+
+// __cvt_fp2unsigned @ 0x8033829c — f64→u32 with saturation (compiler helper for
+// (u32)float casts): NaN/≤0 → 0, ≥2^32 → 0xFFFFFFFF, else truncate.
+SUNBRIGHT_OVERRIDE(ov_cvt_fp2unsigned, 0x8033829cu) {
+    const double x = cpu.fpr[1].ps0;
+    uint32_t r;
+    if (!(x > 0.0)) r = 0;
+    else if (x >= 4294967296.0) r = 0xFFFFFFFFu;
+    else r = (uint32_t)x;
+    if (math_shadow()) {
+        if (RecompFunc orig = recomp_raw(0x8033829cu)) {
+            CPUState shadow = cpu;
+            orig(shadow);
+            static unsigned long bad = 0;
+            if (shadow.gpr[3] != r && bad++ < 8)
+                fprintf(stderr, "[mathshadow] cvt_fp2unsigned MISMATCH native=%u guest=%u x=%g\n",
+                        r, shadow.gpr[3], x);
+        }
+    }
+    cpu.gpr[3] = r;
+}

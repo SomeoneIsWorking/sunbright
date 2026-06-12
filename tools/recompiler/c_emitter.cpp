@@ -650,36 +650,43 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
 
     // ── Paired singles ───────────────────────────────────────────────────────
     case PPCOp::PS_ADD:
-        line("%s = %s + %s;", psd0.c_str(), psa0.c_str(), psb0.c_str());
-        line("%s = %s + %s;", psd1.c_str(), psa1.c_str(), psb1.c_str());
+        // Every Gekko PS arithmetic result is rounded to SINGLE. single+single is
+        // exact in double, so (f32)(a+b) is the one correct rounding.
+        line("%s = (f32)(%s + %s);", psd0.c_str(), psa0.c_str(), psb0.c_str());
+        line("%s = (f32)(%s + %s);", psd1.c_str(), psa1.c_str(), psb1.c_str());
         break;
     case PPCOp::PS_SUB:
-        line("%s = %s - %s;", psd0.c_str(), psa0.c_str(), psb0.c_str());
-        line("%s = %s - %s;", psd1.c_str(), psa1.c_str(), psb1.c_str());
+        line("%s = (f32)(%s - %s);", psd0.c_str(), psa0.c_str(), psb0.c_str());
+        line("%s = (f32)(%s - %s);", psd1.c_str(), psa1.c_str(), psb1.c_str());
         break;
     case PPCOp::PS_MUL:
-        line("%s = %s * %s;", psd0.c_str(), psa0.c_str(), psc0.c_str());
-        line("%s = %s * %s;", psd1.c_str(), psa1.c_str(), psc1.c_str());
+        line("%s = (f32)(%s * %s);", psd0.c_str(), psa0.c_str(), psc0.c_str());
+        line("%s = (f32)(%s * %s);", psd1.c_str(), psa1.c_str(), psc1.c_str());
         break;
     case PPCOp::PS_DIV:
-        line("%s = %s / %s;", psd0.c_str(), psa0.c_str(), psb0.c_str());
-        line("%s = %s / %s;", psd1.c_str(), psa1.c_str(), psb1.c_str());
+        // single-rounded float division (a (f32) cast of the double quotient would
+        // double-round)
+        line("%s = (f32)%s / (f32)%s;", psd0.c_str(), psa0.c_str(), psb0.c_str());
+        line("%s = (f32)%s / (f32)%s;", psd1.c_str(), psa1.c_str(), psb1.c_str());
         break;
     case PPCOp::PS_MADD:
-        line("%s = %s*%s + %s;", psd0.c_str(), psa0.c_str(), psc0.c_str(), psb0.c_str());
-        line("%s = %s*%s + %s;", psd1.c_str(), psa1.c_str(), psc1.c_str(), psb1.c_str());
+        // FUSED like fmadds, then rounded to single (was a*c+b in double, unfused
+        // and unrounded — caught by the PSMTXConcat native-port shadow harness:
+        // 1-ULP divergences vs the fused hardware order)
+        line("%s = (f32)std::fma(%s, %s, %s);", psd0.c_str(), psa0.c_str(), psc0.c_str(), psb0.c_str());
+        line("%s = (f32)std::fma(%s, %s, %s);", psd1.c_str(), psa1.c_str(), psc1.c_str(), psb1.c_str());
         break;
     case PPCOp::PS_MSUB:
-        line("%s = %s*%s - %s;", psd0.c_str(), psa0.c_str(), psc0.c_str(), psb0.c_str());
-        line("%s = %s*%s - %s;", psd1.c_str(), psa1.c_str(), psc1.c_str(), psb1.c_str());
+        line("%s = (f32)std::fma(%s, %s, -%s);", psd0.c_str(), psa0.c_str(), psc0.c_str(), psb0.c_str());
+        line("%s = (f32)std::fma(%s, %s, -%s);", psd1.c_str(), psa1.c_str(), psc1.c_str(), psb1.c_str());
         break;
     case PPCOp::PS_NMADD:
-        line("%s = -(%s*%s+%s);", psd0.c_str(), psa0.c_str(), psc0.c_str(), psb0.c_str());
-        line("%s = -(%s*%s+%s);", psd1.c_str(), psa1.c_str(), psc1.c_str(), psb1.c_str());
+        line("%s = -(f32)std::fma(%s, %s, %s);", psd0.c_str(), psa0.c_str(), psc0.c_str(), psb0.c_str());
+        line("%s = -(f32)std::fma(%s, %s, %s);", psd1.c_str(), psa1.c_str(), psc1.c_str(), psb1.c_str());
         break;
     case PPCOp::PS_NMSUB:
-        line("%s = -(%s*%s-%s);", psd0.c_str(), psa0.c_str(), psc0.c_str(), psb0.c_str());
-        line("%s = -(%s*%s-%s);", psd1.c_str(), psa1.c_str(), psc1.c_str(), psb1.c_str());
+        line("%s = -(f32)std::fma(%s, %s, -%s);", psd0.c_str(), psa0.c_str(), psc0.c_str(), psb0.c_str());
+        line("%s = -(f32)std::fma(%s, %s, -%s);", psd1.c_str(), psa1.c_str(), psc1.c_str(), psb1.c_str());
         break;
     case PPCOp::PS_NEG:
         line("%s = -%s;", psd0.c_str(), psb0.c_str());
@@ -698,28 +705,28 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
         line("%s = %s;", psd1.c_str(), psb1.c_str());
         break;
     case PPCOp::PS_SUM0:
-        line("%s = %s + %s;", psd0.c_str(), psa0.c_str(), psb1.c_str());
+        line("%s = (f32)(%s + %s);", psd0.c_str(), psa0.c_str(), psb1.c_str());
         line("%s = %s;",      psd1.c_str(), psc1.c_str());
         break;
     case PPCOp::PS_SUM1:
         line("%s = %s;",      psd0.c_str(), psc0.c_str());
-        line("%s = %s + %s;", psd1.c_str(), psa0.c_str(), psb0.c_str());
+        line("%s = (f32)(%s + %s);", psd1.c_str(), psa0.c_str(), psb0.c_str());
         break;
     case PPCOp::PS_MULS0:  // fD.ps0 = fA.ps0 * fC.ps0; fD.ps1 = fA.ps1 * fC.ps0
-        line("%s = %s * %s;", psd0.c_str(), psa0.c_str(), psc0.c_str());
-        line("%s = %s * %s;", psd1.c_str(), psa1.c_str(), psc0.c_str());
+        line("%s = (f32)(%s * %s);", psd0.c_str(), psa0.c_str(), psc0.c_str());
+        line("%s = (f32)(%s * %s);", psd1.c_str(), psa1.c_str(), psc0.c_str());
         break;
     case PPCOp::PS_MULS1:  // fD.ps0 = fA.ps0 * fC.ps1; fD.ps1 = fA.ps1 * fC.ps1
-        line("%s = %s * %s;", psd0.c_str(), psa0.c_str(), psc1.c_str());
-        line("%s = %s * %s;", psd1.c_str(), psa1.c_str(), psc1.c_str());
+        line("%s = (f32)(%s * %s);", psd0.c_str(), psa0.c_str(), psc1.c_str());
+        line("%s = (f32)(%s * %s);", psd1.c_str(), psa1.c_str(), psc1.c_str());
         break;
     case PPCOp::PS_MADDS0: // fD.ps0 = fA.ps0*fC.ps0 + fB.ps0; fD.ps1 = fA.ps1*fC.ps0 + fB.ps1
-        line("%s = %s*%s + %s;", psd0.c_str(), psa0.c_str(), psc0.c_str(), psb0.c_str());
-        line("%s = %s*%s + %s;", psd1.c_str(), psa1.c_str(), psc0.c_str(), psb1.c_str());
+        line("%s = (f32)std::fma(%s, %s, %s);", psd0.c_str(), psa0.c_str(), psc0.c_str(), psb0.c_str());
+        line("%s = (f32)std::fma(%s, %s, %s);", psd1.c_str(), psa1.c_str(), psc0.c_str(), psb1.c_str());
         break;
     case PPCOp::PS_MADDS1: // fD.ps0 = fA.ps0*fC.ps1 + fB.ps0; fD.ps1 = fA.ps1*fC.ps1 + fB.ps1
-        line("%s = %s*%s + %s;", psd0.c_str(), psa0.c_str(), psc1.c_str(), psb0.c_str());
-        line("%s = %s*%s + %s;", psd1.c_str(), psa1.c_str(), psc1.c_str(), psb1.c_str());
+        line("%s = (f32)std::fma(%s, %s, %s);", psd0.c_str(), psa0.c_str(), psc1.c_str(), psb0.c_str());
+        line("%s = (f32)std::fma(%s, %s, %s);", psd1.c_str(), psa1.c_str(), psc1.c_str(), psb1.c_str());
         break;
     case PPCOp::PS_SEL:
         line("%s = (%s >= 0.0) ? %s : %s;", psd0.c_str(), psa0.c_str(), psc0.c_str(), psb0.c_str());
