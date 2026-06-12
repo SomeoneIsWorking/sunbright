@@ -503,6 +503,24 @@ tees moved to the inner setters setSeInterVolume 0x8030b700 / Pan 0x8030b8c8 / P
 MSHandle distance code. Verified: ambient SEs get per-frame vol/pan/pitch with 4-frame
 smoothing (23k param events / 130 s). Outer setVolume/Pan/Pitch tees route seq ids only.
 
+**NATIVE AUDIO M2.6 ✅ (2026-06-12 pm): PC-native 3D SE layer + JAI request lifecycle** —
+mirror deleted; engine owns cameras (setCameraInfo 80300ce4 tee), positions (JAIActor Vec*),
+MSHandle curves (smSeCategory/smACosPrm/calcVolume/calcPan as static data), and the request
+lifecycle (continuous-class re-request = REVIVE not restart; lifeTime 10 frames; expiry fade
+cancelable). Fixed alongside: pad double-action (pad_override must CLAIM controls — returning
+nullopt fell through to Dolphin's default keyboard profile, every key fired 2 GC buttons);
+perc TPmap pitch@0 (oracle-verified; pikmin2's getParam re-crosses its parser fields — trust
+the oracle, not field names); spray stop-fade (engine owns vol[6] during stopFade).
+**Audio A/B harness:** tools/audio/delfino_ab.sh (+ spray driver) joins oracle /vpb voices to
+native /njas voices by wave content hash (FNV of first 64 .aw bytes) → per-wave pitch ¢ / vol
+dB report. GOTCHA: medians are scene-timeline-noisy between sides; for fine work time-align or
+ear-check. OPEN (quantified): 0:233 BGM-bank drums ~-35 dB quiet natively (chain factors all
+1.0 — deficit unexplained, suspect oracle-side boost or velocity curve); bank-6 fixed-key SE
+family still ±20-45 dB scattered; wave 10:1 -16 semitones; ~10 oracle-only waves missing;
+PER2 release parse garbage (0xC00A). Pikmin 2 decomp clone at scratch/ref/pikmin2 (same-gen
+JASystem, matched — better nav source than reference/sms); Dusklight at scratch/ref/dusklight
+(native JAudio2 PC port — freeverb fxmix reference).
+
 Next: native audio M4 (delete the guest audio path) per docs/native_audio_engine.md; oracle
 ear-check of BGM fidelity (tempo/instruments); fxmix/dolby + category concurrency; residual
 backpressure wedge (~1/3 runs), THP-transition NULL-deref read, gameplay/Delfino, the recomp
