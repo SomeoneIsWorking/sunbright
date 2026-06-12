@@ -31,17 +31,28 @@ extern "C" void func_8013fc88(CPUState&);
 bool g_ws_2d_suspend = false;
 u32  g_ws_last_ortho = 0;
 
-namespace {
+static constexpr u32 kGXSetProjection = 0x80362c34u;
 
-constexpr u32 kGXSetProjection = 0x80362c34u;
-
-void reload_ortho(CPUState& cpu) {
+static void reload_ortho(CPUState& cpu) {
     if (!g_ws_last_ortho) return;
     CPUState c = cpu;                       // scratch: callee-preserved regs are enough
     c.gpr[3] = g_ws_last_ortho;
     c.gpr[4] = 1;                           // GX_ORTHOGRAPHIC
     call_ppc(c, kGXSetProjection);
 }
+
+// Shared 2D-squeeze suspend scope, used by other full-screen 2D effects too
+// (screenfx_widescreen.cpp: TSunGlass tint, TAfterEffect blur/flash quad).
+void ws_2d_suspend_begin(CPUState& cpu) {
+    g_ws_2d_suspend = true;
+    reload_ortho(cpu);                       // unsqueezed: 0..640 now spans the 16:9 present
+}
+void ws_2d_suspend_end(CPUState& cpu) {
+    g_ws_2d_suspend = false;
+    reload_ortho(cpu);                       // re-apply the squeeze for whatever draws next
+}
+
+namespace {
 
 bool widescreen_on() {
     static const char* e = getenv("SUNBRIGHT_WIDESCREEN");
@@ -68,11 +79,9 @@ SUNBRIGHT_OVERRIDE(ov_fader_drawFadeinout, 0x8013fa54u) {
 
 SUNBRIGHT_OVERRIDE(ov_fader_draw, 0x8013fc88u) {
     if (!widescreen_on()) { func_8013fc88(cpu); return; }
-    g_ws_2d_suspend = true;
-    reload_ortho(cpu);                       // unsqueezed: 0..640 now spans the 16:9 present
+    ws_2d_suspend_begin(cpu);
     with_widened_rect(cpu, func_8013fc88);   // rect widening is harmless overshoot here
-    g_ws_2d_suspend = false;
-    reload_ortho(cpu);                       // re-apply the squeeze for whatever draws next
+    ws_2d_suspend_end(cpu);
 }
 
 } // namespace
