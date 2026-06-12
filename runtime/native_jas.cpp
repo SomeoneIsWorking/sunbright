@@ -53,8 +53,17 @@ struct Wave {
     u8 fmt = 0, key = 60;
     float rate = 32000.f;
     u32 loop = 0, loop_s = 0, loop_e = 0;
+    u32 srcHash = 0;                  // FNV-1a of the first 64 raw .aw bytes — the
+                                      // oracle-comparison join key (/aram hashes the same
+                                      // bytes at the VPB base address in ARAM)
+    u16 id = 0; s8 wsysIdx = -1, groupIdx = -1;
     std::vector<s16> pcm;             // fully decoded at load
 };
+static u32 fnv1a(const u8* p, u32 n) {
+    u32 h = 2166136261u;
+    for (u32 i = 0; i < n; i++) h = (h ^ p[i]) * 16777619u;
+    return h;
+}
 
 struct VeloRegion { u8 maxvel; u16 waveid; float volmul, pitchmul; };
 struct KeyRegion  { u8 maxkey; std::vector<VeloRegion> velo; };
@@ -75,7 +84,8 @@ struct Inst {
     std::vector<KeyRegion> keys;
     // percussion (per-key map), used for insts 0xE4+
     bool is_perc = false;
-    struct Perc { bool valid = false; float vol = 1.f, pitch = 1.f; u16 release = 0; std::vector<VeloRegion> velo; };
+    struct Perc { bool valid = false; float vol = 1.f, pitch = 1.f, pan = 0.5f; u16 release = 0;
+                  std::vector<InstEffect> effects; std::vector<VeloRegion> velo; };
     std::vector<Perc> percs;
 };
 struct Bank {
@@ -298,7 +308,17 @@ static void parse_ibnk(const u8* bnk, u32 size, Bank& out) {
             pc.valid = true;
             pc.vol = bef32(pmap);
             pc.pitch = bef32(pmap + 4);
-            if (per2) { pc.vol *= (float)(s8)perc[0x288 + j] / 127.f; pc.release = be16(perc + 0x308 + j * 2); }
+            // PER2 extras (JASBNKParser): unk288[j]/127 is the per-key PAN (the old code
+            // multiplied it into volume — percussion loudness bug), unk308[j] = release.
+            if (per2) { pc.pan = (float)perc[0x288 + j] / 127.f; pc.release = be16(perc + 0x308 + j * 2); }
+            for (int e = 0; e < 2; e++) {              // pmap rand effects (TRand only)
+                const u32 ro = be32(pmap + 0x8 + e * 4);
+                if (!ro) continue;
+                const u8* r = bnk + ro;
+                InstEffect ef; ef.is_sense = false; ef.target = r[0];
+                ef.rand_base = bef32(r + 4); ef.rand_width = bef32(r + 8);
+                pc.effects.push_back(ef);
+            }
             const u32 vcount = be32(pmap + 0x10);
             for (u32 v = 0; v < vcount; v++) {
                 const u32 vo = be32(pmap + 0x14 + v * 4);
@@ -352,7 +372,10 @@ static void parse_wsys(const u8* d, u32 size, Disc& disc, WsysBank& bank) {
             wv.fmt = d[we + 1];
             wv.key = d[we + 2];
             wv.rate = bef32(d + we + 4);
+            wv.id = (u16)id;
+            wv.groupIdx = (s8)g;
             const u32 start = be32(d + we + 8), len = be32(d + we + 0xC);
+            if (start + 64 <= aw.size()) wv.srcHash = fnv1a(aw.data() + start, len < 64 ? len : 64);
             wv.loop = be32(d + we + 0x10);
             wv.loop_s = be32(d + we + 0x14);
             wv.loop_e = be32(d + we + 0x18);
@@ -410,8 +433,11 @@ static bool load_data() {
     }
 
     g_data.wsys_waves.resize(wsyss.size());
-    for (size_t i = 0; i < wsyss.size(); i++)
+    for (size_t i = 0; i < wsyss.size(); i++) {
         parse_wsys(aaf.data() + wsyss[i], 0, disc, g_data.wsys_waves[i]);
+        for (auto& grp : g_data.wsys_waves[i].groups)
+            for (auto& w : grp) w.wsysIdx = (s8)i;
+    }
 
     g_data.banks.resize(ibnks.size());
     for (size_t i = 0; i < ibnks.size(); i++) {
@@ -566,6 +592,8 @@ struct Voice {
     float fxSound = 0.f, dolbySound = 0.f;
     s32 gate = -1, gateLeft = -1;              // unk30 / unk34 (update ticks)
     u32 age = 0;                               // subframes since start (diagnostics)
+    u8 key = 0, vel = 0; u16 bankProg = 0;     // noteOn metadata (probe/compare)
+    float lastRatio = 0.f, lastVol = 0.f;      // effective values from the last subframe
     bool pause = false;
     Oscillator oscs[2];
     OscData trackOscCopy[2];   // storage when track overwrites osc
@@ -950,7 +978,7 @@ static int track_note_on(Track& t, u8 chanIdx, s32 key, s32 vel, s32 gateTime) {
     float ivol = 1.f, ipitch = 1.f, randVolPitch = 1.f, volEffect = 1.f;
     u16 waveid = 0; u16 directRel = 0;
     bool fixed_pitch = false;
-    float effPan = 0.5f, effFx = 0.f, effDolby = 0.f; (void)effPan; (void)effFx; (void)effDolby;
+    float effPan = 0.5f, effFx = 0.f, effDolby = 0.f; (void)effFx; (void)effDolby;
     if (prog < 0x100) inst = bank.insts[prog];
     if (!inst) { NJLOG("noteOn: no inst bank=%u prog=%u\n", virtBank, prog); return -1; }
 
@@ -975,8 +1003,12 @@ static int track_note_on(Track& t, u8 chanIdx, s32 key, s32 vel, s32 gateTime) {
                 else
                     y = (ef.sense_hi - 1.f) * ((src - ef.sense_center) / (float)(0x7f - ef.sense_center)) + 1.f;
             }
-            if (ef.target == 0) pitchEff *= y;
-            else if (ef.target == 1) volEffect *= y;
+            // Target mapping VERIFIED against the binary (BankMgr::noteOn 8030dec8..df7c:
+            // vol *= instParam+0x3C = target-0 product; pitchRatio *= instParam+0x40 =
+            // target-1 product). The decomp's JASBankMgr.cpp reads unk18 in BOTH spots —
+            // transcription error; target 0 is VOLUME, target 1 is PITCH.
+            if (ef.target == 0) volEffect *= y;
+            else if (ef.target == 1) pitchEff *= y;
         }
         randVolPitch = pitchEff;
         const KeyRegion* km = nullptr;
@@ -992,6 +1024,13 @@ static int track_note_on(Track& t, u8 chanIdx, s32 key, s32 vel, s32 gateTime) {
         if (key >= 0x80 || !inst->percs[key].valid) return -1;
         const auto& pc = inst->percs[key];
         ivol = pc.vol; ipitch = pc.pitch; directRel = pc.release;
+        effPan = pc.pan;
+        for (auto& ef : pc.effects) {              // perc rand effects (targets as inst)
+            float r = (float)rand() / (float)RAND_MAX * 2.f - 0.9999999f;
+            float y = r * ef.rand_width + ef.rand_base;
+            if (ef.target == 0) volEffect *= y;
+            else if (ef.target == 1) randVolPitch *= y;
+        }
         const VeloRegion* vr = nullptr;
         for (auto& v : pc.velo) if (vel <= v.maxvel) { vr = &v; break; }
         if (!vr) return -1;
@@ -1069,6 +1108,7 @@ static int track_note_on(Track& t, u8 chanIdx, s32 key, s32 vel, s32 gateTime) {
     v->volBase = ivol;
     float vv = vel / 127.f;
     v->vol = v->volBase * vv * vv * volEffect;
+    v->panSound = effPan;
     v->gate = gateTime == 0 ? -1 : gateTime;
     v->gateLeft = v->gate;
     // oscillators: bank oscs, then track overrides
@@ -1100,6 +1140,7 @@ static int track_note_on(Track& t, u8 chanIdx, s32 key, s32 vel, s32 gateTime) {
             v->oscs[slot].initStart();
         }
     }
+    v->key = (u8)key; v->vel = (u8)vel; v->bankProg = reg6;
     t.note[chanIdx & 7] = v;
     t.noteGen[chanIdx & 7] = v->gen;
     track_update(t);
@@ -1950,8 +1991,9 @@ static void render_subframe() {
 
         const float ratio = t.chPitch * v.pitchRatio * v.oscPitch;
         float vol = t.chVol * v.vol * v.oscVol;
+        v.lastRatio = ratio; v.lastVol = vol;
         if (vol < 0.f) vol = 0.f; if (vol > 1.f) vol = 1.f;
-        float pan = t.chPan;
+        float pan = t.chPan + (v.panSound - 0.5f);   // CALC_ADD combine (JASChannel calcPan)
         if (pan < 0.f) pan = 0.f; if (pan > 1.f) pan = 1.f;
         const float gl = vol * sinf((1.f - pan) * (float)M_PI / 2.f);
         const float gr = vol * sinf(pan * (float)M_PI / 2.f);
@@ -2075,6 +2117,31 @@ extern "C" void njas_se_param(uint32_t id, int kind, uint8_t slot, float value, 
     case 2: a->pitch[slot].set(value, time); break;
     }
     NJLOG("se_param id=%05x kind=%d slot=%u v=%.3f t=%u\n", id, kind, slot, value, time);
+}
+
+// Probe dump of the native voice table (probe_server /njas): one line per active voice
+// with the oracle-comparison join key (srcHash = FNV of the wave's first 64 raw .aw
+// bytes — the same bytes /aram hashes at a VPB's base address) plus the effective
+// resampling ratio in the VPB's 4.12 fixed-point and the pre-pan voice volume.
+extern "C" int njas_probe(char* out, int cap) {
+    using namespace njas;
+    std::unique_lock<std::mutex> lk(g_mtx, std::try_to_lock);
+    int n = 0;
+    auto app = [&](const char* fmt, auto... a) {
+        if (n < cap) n += snprintf(out + n, (size_t)(cap - n), fmt, a...);
+    };
+    if (!lk.owns_lock()) { app("busy\n"); return n; }
+    app("inited=%d players=%zu scene0=%d scene1=%d scene2=%d\n", (int)g_inited,
+        g_players.size(), g_wave_scene[0].load(), g_wave_scene[1].load(), g_wave_scene[2].load());
+    for (int i = 0; i < kMaxVoices; i++) {
+        Voice& v = g_voices[i];
+        if (!v.active || !v.wave) continue;
+        app("v%02d hash=%08x wsys=%d grp=%d wave=%u ratio=%04x vol=%.4f key=%u vel=%u bank=%u prog=%u st=%u age=%u\n",
+            i, v.wave->srcHash, (int)v.wave->wsysIdx, (int)v.wave->groupIdx, v.wave->id,
+            (unsigned)(v.lastRatio * 4096.f + 0.5f), v.lastVol,
+            v.key, v.vel, v.bankProg >> 8, v.bankProg & 0xFF, v.oscs[0].state, v.age);
+    }
+    return n;
 }
 
 // Resident wave-scene selection (JAIBasic::loadGroupWave tee): the guest loads scene

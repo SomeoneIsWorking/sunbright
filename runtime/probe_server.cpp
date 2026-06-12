@@ -68,6 +68,7 @@ extern "C" void sb_trace(const char* tag, uint32_t a, uint32_t b, uint32_t c, ui
 }
 #endif
 
+extern "C" int njas_probe(char* out, int cap);
 namespace {
 
 #ifdef HAVE_DOLPHIN_CORE
@@ -236,6 +237,12 @@ std::string handle_repl(const char* path) {
                 if (c >= 0x80000000u && c < 0x81800000u && c != t) stk[sp++] = { c, e.d + 1 };
             }
         }
+        return std::string(buf, n);
+    }
+    if (strncmp(path, "/njas", 5) == 0) {
+        // Native JAS engine voice table (recomp side of the oracle A/B): srcHash joins
+        // against /aram?a=<vpb base>&n=40 FNV on the oracle side. See tools/audio/vpb_compare.py.
+        n += njas_probe(buf + n, (int)sizeof(buf) - n);
         return std::string(buf, n);
     }
     if (strncmp(path, "/vpb", 4) == 0) {
