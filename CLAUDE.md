@@ -509,8 +509,9 @@ MSHandle curves (smSeCategory/smACosPrm/calcVolume/calcPan as static data), and 
 lifecycle (continuous-class re-request = REVIVE not restart; lifeTime 10 frames; expiry fade
 cancelable). Fixed alongside: pad double-action (pad_override must CLAIM controls — returning
 nullopt fell through to Dolphin's default keyboard profile, every key fired 2 GC buttons);
-perc TPmap pitch@0 (oracle-verified; pikmin2's getParam re-crosses its parser fields — trust
-the oracle, not field names); spray stop-fade (engine owns vol[6] during stopFade).
+perc TPmap pitch@0 (⚠ FALSIFIED 2026-06-12: binary BNKParser+TDrumSet::getParam prove
+**vol@0 / pitch@4**; the −30 dB fix actually came from the PER2 pan-as-volume correction —
+see docs/re_notes/audio_re_findings.md §2.3); spray stop-fade (engine owns vol[6] during stopFade).
 **Audio A/B harness:** tools/audio/delfino_ab.sh (+ spray driver) joins oracle /vpb voices to
 native /njas voices by wave content hash (FNV of first 64 .aw bytes) → per-wave pitch ¢ / vol
 dB report (p90 peak-gain — medians mix BGM/SE contexts). HARNESS GOTCHAS (both burned a
