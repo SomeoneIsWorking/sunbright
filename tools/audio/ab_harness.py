@@ -27,24 +27,29 @@ def cents(a, b):
 
 
 class Side:
-    def __init__(self, name, port, env):
+    def __init__(self, name, port, env, defer=False):
         self.name, self.port = name, port
+        self.env = env
+        self.proc = None
+        self.fh = None
+        self.script_idx = 0
+        self.t_last = 0.0
         self.events_path = os.path.join(LOGS, f'ab_{name}.events.jsonl')
         self.log_path = os.path.join(LOGS, f'ab_{name}.log')
-        for p in (self.events_path,):
-            if os.path.exists(p):
-                os.remove(p)
+        if not defer:
+            self.launch()
+
+    def launch(self):
+        if os.path.exists(self.events_path):
+            os.remove(self.events_path)
         e = dict(os.environ)
         e.update(SUNBRIGHT_HEADLESS='1', SUNBRIGHT_AUTOSTART='1', SUNBRIGHT_PROBE='1',
-                 SUNBRIGHT_PROBE_PORT=str(port), SUNBRIGHT_AB_EVENTS=self.events_path)
-        e.update(env)
+                 SUNBRIGHT_PROBE_PORT=str(self.port), SUNBRIGHT_AB_EVENTS=self.events_path)
+        e.update(self.env)
         self.proc = subprocess.Popen([os.path.join(REPO, 'build', 'sunbright')],
                                      env=e, cwd=REPO,
                                      stdout=open(self.log_path, 'w'),
                                      stderr=subprocess.STDOUT)
-        self.fh = None
-        self.script_idx = 0
-        self.t_last = 0.0
 
     def events(self):
         """Yield newly appended events."""
@@ -103,6 +108,8 @@ def main():
     ap.add_argument('--script', default=os.path.join(REPO, 'tools/audio/ab_script_delfino.json'))
     ap.add_argument('--window', type=float, default=4.0)
     ap.add_argument('--no-stop', action='store_true')
+    ap.add_argument('--sequential', action='store_true',
+                    help='run sides one at a time (no CPU contention), compare offline')
     args = ap.parse_args()
 
     os.makedirs(LOGS, exist_ok=True)
@@ -112,12 +119,37 @@ def main():
     if os.path.exists(rp):
         residuals = json.load(open(rp))
 
-    native = Side('native', 17654, {})
+    native = Side('native', 17654, {}, defer=args.sequential)
     oracle = Side('oracle', 17655, {'SUNBRIGHT_DISABLE_RECOMP': '1',
                                     'SUNBRIGHT_BACKEND': 'OGL',
-                                    'SUNBRIGHT_AB_ORACLE': '1'})
+                                    'SUNBRIGHT_AB_ORACLE': '1'}, defer=args.sequential)
     sides = {'native': native, 'oracle': oracle}
-    print(f'[ab] native pid={native.proc.pid}  oracle pid={oracle.proc.pid}')
+    if args.sequential:
+        # one side at a time: full CPU each, drive its script, then the other; the
+        # matching loop below runs identically — it just sees one stream growing at a
+        # time, and the final pass settles everything (phases end equal).
+        for s in (native, oracle):
+            print(f'[ab] sequential: running {s.name} for {args.secs}s')
+            s.launch()
+            t0s = time.time()
+            while time.time() - t0s < args.secs and s.proc.poll() is None:
+                time.sleep(0.2)
+                for ev in s.events():
+                    if s.script_idx < len(script):
+                        step = script[s.script_idx]
+                        trig = step['trigger'] if s.name == 'native' else \
+                               step.get('oracle_trigger', step['trigger'])
+                        if trigger_hit(ev, trig):
+                            s.script_idx += 1
+                            for act in step.get('actions', []):
+                                s.pad(act['do'], act.get('ms', 500))
+            s.kill()
+            s.fh = None          # reopen from the top for the offline pass
+        # offline pass: rewind both files and fall through to the matcher with both
+        # processes dead (loop below exits after one settle iteration)
+        native.script_idx = oracle.script_idx = 0
+    else:
+        print(f'[ab] native pid={native.proc.pid}  oracle pid={oracle.proc.pid}')
 
     # per-hash queues of unmatched events, per side
     pend = {'native': defaultdict(deque), 'oracle': defaultdict(deque)}
@@ -152,11 +184,16 @@ def main():
 
     t0 = time.time()
     stop = False
+    settle = 0
     try:
         while not stop and time.time() - t0 < args.secs:
-            time.sleep(0.2)
+            time.sleep(0.0 if args.sequential else 0.2)
+            if args.sequential:
+                settle += 1
+                if settle > 3:           # offline pass: ingest-all + match + expire, done
+                    break
             for sname, side in sides.items():
-                if side.proc.poll() is not None:
+                if not args.sequential and side.proc.poll() is not None:
                     print(f'[ab] {sname} exited rc={side.proc.returncode}')
                     stop = True
                 for ev in side.events():
