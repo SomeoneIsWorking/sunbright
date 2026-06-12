@@ -18,6 +18,7 @@
 // per 80 output samples at dacRate 32028.5 Hz, matching JAS's subframe callback.
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -508,6 +509,11 @@ static bool load_data() {
 
 // ============================ sequencer + synth ============================
 
+// A/B event stream (defined in the driver section below)
+static FILE* ab_out();
+static double ab_now_ms();
+static void ab_anchor(const char* kind, u32 id, const char* name);
+
 // C5BASE pitch table (JASDriverTables): 2^((k-60)/12)
 static float c5base(int k) {
     if (k < 0) k = 0; if (k > 127) k = 127;
@@ -632,6 +638,8 @@ struct Voice {
     u8 key = 0, vel = 0; u16 bankProg = 0;     // noteOn metadata (probe/compare)
     float lastRatio = 0.f, lastVol = 0.f;      // effective values from the last subframe
     float lastChVol = 0.f, lastOscVol = 0.f;   // chain factors (probe diagnosis)
+    bool abOpen = false; float abPeak = 0.f;   // A/B event stream bookkeeping
+    u32 abSeqOff = 0, abSoundId = 0;
     bool pause = false;
     Oscillator oscs[2];
     OscData trackOscCopy[2];   // storage when track overwrites osc
@@ -1198,6 +1206,21 @@ static int track_note_on(Track& t, u8 chanIdx, s32 key, s32 vel, s32 gateTime) {
         }
     }
     v->key = (u8)key; v->vel = (u8)vel; v->bankProg = reg6;
+    if (FILE* ab = ab_out()) {                 // A/B: voice-on with full cause context
+        u32 soundId = 0;
+        for (Track* p = &t; p && !soundId; p = p->parent)
+            for (auto& a : g_active)
+                if (a.used && a.worker == p) { soundId = a.id; break; }
+        v->abOpen = true; v->abPeak = 0.f;
+        v->abSeqOff = (u32)(t.seq.cur - t.seq.base);
+        v->abSoundId = soundId;
+        fprintf(ab, "{\"ev\":\"von\",\"t\":%.1f,\"hash\":\"%08x\",\"ratio\":%u,"
+                    "\"bank\":%u,\"prog\":%u,\"key\":%d,\"vel\":%d,\"seqoff\":\"%x\","
+                    "\"id\":\"%08x\"}\n",
+                ab_now_ms(), wv.srcHash, (unsigned)(v->pitchRatio * 4096.f + 0.5f),
+                virtBank, prog, key, vel, v->abSeqOff, soundId);
+        fflush(ab);
+    }
     t.note[chanIdx & 7] = v;
     t.noteGen[chanIdx & 7] = v->gen;
     track_update(t);
@@ -1756,6 +1779,30 @@ static void track_inc_self_osc(Track& t) {
         if (t.child[i]) track_inc_self_osc(*t.child[i]);
 }
 
+// ---- audio A/B harness event stream (docs/audio_ab_harness.md) ----------------
+// SUNBRIGHT_AB_EVENTS=<path>: JSONL voice + anchor events. The native side carries
+// the CAUSE context (bank:prog/key/vel, BMS offset, owning sound id) that turns a
+// "voice differs" into a fixable report.
+static FILE* ab_out() {
+    static FILE* f = [] {
+        const char* p = getenv("SUNBRIGHT_AB_EVENTS");
+        return p ? fopen(p, "w") : nullptr;
+    }();
+    return f;
+}
+static double ab_now_ms() {
+    using namespace std::chrono;
+    static const steady_clock::time_point t0 = steady_clock::now();
+    return duration_cast<duration<double, std::milli>>(steady_clock::now() - t0).count();
+}
+static void ab_anchor(const char* kind, u32 id, const char* name) {
+    if (FILE* f = ab_out()) {
+        fprintf(f, "{\"ev\":\"%s\",\"t\":%.1f,\"id\":\"%08x\"%s%s%s}\n", kind, ab_now_ms(),
+                id, name ? ",\"name\":\"" : "", name ? name : "", name ? "\"" : "");
+        fflush(f);
+    }
+}
+
 // ============================ engine driver ============================
 
 static std::mutex g_mtx;
@@ -2075,12 +2122,21 @@ static Track* find_worker(u32 cat, bool* any_for_cat) {
 }
 
 // spawn a BGM root playing the BARC entry's BMS (g_mtx held, engine running)
-static void bgm_dispatch(u32 id) {
+static void bgm_dispatch(u32 id, u8 seqTrack, u8 prio) {
     const u32 idx = id & 0x3FF;
     if (idx >= g_data.barc.size()) return;
     const BarcEntry& e = g_data.barc[idx];
     if (!e.size || e.off + e.size > g_data.seq.size()) return;
     if (active_find(id)) return;   // same BGM already playing → skip (JAIBasic seq gate)
+    // One playing BGM per seq-track slot (JAISeqEntry::storeBuffer): a new start stops
+    // the incumbent if its info priority allows (lower number = higher priority); this
+    // implicit replacement is how e.g. the title music ends when file-select starts —
+    // no explicit stop call ever happens.
+    for (auto& a : g_active) {
+        if (!a.used || !a.isBgm || a.swbit != seqTrack) continue;
+        if (a.prio <= prio) { NJLOG("bgm slot %u: %08x replaced by %08x\n", seqTrack, a.id, id); active_stop_now(a); }
+        else { NJLOG("bgm slot %u: %08x outranks %08x — start rejected\n", seqTrack, a.id, id); return; }
+    }
     Track* root = track_alloc();
     if (!root) return;
     root->trackMode = 3;                  // setSeqData root mode (unk3BC = 3)
@@ -2093,8 +2149,9 @@ static void bgm_dispatch(u32 id) {
     g_players.push_back(root);
     ActiveSE* slot = nullptr;
     for (auto& a : g_active) if (!a.used) { slot = &a; break; }
-    if (slot) { active_init(*slot, root, id, 0, 0); slot->isBgm = true; }
-    NJLOG("bgm_start id=%08x → %.14s (off=%#x size=%#x)\n", id, e.name, e.off, e.size);
+    if (slot) { active_init(*slot, root, id, seqTrack, prio); slot->isBgm = true; }
+    NJLOG("bgm_start id=%08x slot=%u prio=%u → %.14s (off=%#x size=%#x)\n", id, seqTrack,
+          prio, e.name, e.off, e.size);
 }
 
 static void process_pending() {
@@ -2102,7 +2159,7 @@ static void process_pending() {
         const u32 id = it->id;
         const u32 cat = (id >> 12) & 0xFF;
         if (it->isBgm) {
-            bgm_dispatch(id);
+            bgm_dispatch(id, (u8)it->swbit, it->prio);   // swbit reused = seq track slot
             it = g_pending.erase(it);
             continue;
         }
@@ -2112,19 +2169,33 @@ static void process_pending() {
         // drums, id 0x500x) are re-requested every frame and must NOT restart. Restart
         // class / different actor / one-shots: stop the old instance (unless swbit
         // bit19 allows stacking).
-        if (ActiveSE* old = active_find(id)) {
-            const u32 cls = id & 0xC00;
-            if (cls != 0 && cls != 0x800 && old->posPtr == it->posPtr
-                && !(it->swbit & 0x80000)) {
-                old->sinceReq = 0;                    // keep-alive refresh, no restart
-                if (old->stopFade >= 0) {             // revive a lifetime-expiring fade
-                    old->stopFade = -1;
-                    old->vol[6].set(1.f, 6);
-                }
-                it = g_pending.erase(it);
-                continue;
+        // Instance identity is (id, actor) — JAISeEntry::storeBuffer matches BOTH the id
+        // and the actor position pointer; the same SE id sounding from several actors is
+        // several concurrent sounds. Keying by id alone made every other-actor request
+        // stomp+restart the instance (4k restarts/170 s of one ambient id — churn that
+        // also starved the category's workers, silencing e.g. the water spray).
+        {
+            ActiveSE* same = nullptr;       // same id + same actor
+            int idCount = 0; ActiveSE* oldest = nullptr;
+            for (auto& a : g_active) {
+                if (!a.used || a.isBgm || a.id != id) continue;
+                idCount++;
+                if (a.posPtr == it->posPtr) same = &a;
+                if (!oldest || a.startAge > oldest->startAge) oldest = &a;
             }
-            if (!(it->swbit & 0x80000)) active_stop_now(*old);
+            if (same && !(it->swbit & 0x80000)) {
+                const u32 cls = id & 0xC00;
+                const bool alive = same->stopFade < 0 && same->worker
+                                   && same->worker->portValue[2] != 0;
+                if (cls != 0 && cls != 0x800 && alive) {
+                    same->sinceReq = 0;               // keep-alive refresh, no restart
+                    it = g_pending.erase(it);
+                    continue;
+                }
+                active_stop_now(*same);               // restart class / finished → fresh
+            } else if (idCount >= 4 && oldest) {
+                active_stop_now(*oldest);             // per-id concurrency cap (steal oldest)
+            }
         }
         bool any = false;
         Track* w = find_worker(cat, &any);
@@ -2236,6 +2307,22 @@ static void render_subframe() {
         }
         v.srcpos = pos;
     }
+    if (FILE* ab = ab_out()) {                 // A/B: peak tracking + voice-off sweep
+        for (int i = 0; i < kMaxVoices; i++) {
+            Voice& v = g_voices[i];
+            if (!v.abOpen) continue;
+            if (v.active) {
+                if (v.lastVol > v.abPeak) v.abPeak = v.lastVol;
+            } else {
+                v.abOpen = false;
+                fprintf(ab, "{\"ev\":\"voff\",\"t\":%.1f,\"hash\":\"%08x\",\"dur\":%u,"
+                            "\"peak\":%.4f,\"id\":\"%08x\",\"seqoff\":\"%x\"}\n",
+                        ab_now_ms(), v.wave ? v.wave->srcHash : 0, v.age, v.abPeak,
+                        v.abSoundId, v.abSeqOff);
+                fflush(ab);
+            }
+        }
+    }
     g_mix_have = kSub; g_mix_pos = 0;
 
     if (g_solo_dump) {
@@ -2310,28 +2397,36 @@ extern "C" void njas_set_camera(uint32_t posPtr, uint32_t mtxPtr) {
 // offsets point into sequence.arc, which is loaded whole). Entry 0 = the init/SE BMS
 // already running as g_root — ignored. All banks/waves are resident natively, so the
 // guest's wScene/ARAM residency dance is unnecessary.
-extern "C" void njas_bgm_start(uint32_t id) {
+extern "C" void njas_bgm_start(uint32_t id, uint8_t seqTrack, uint8_t prio) {
     using namespace njas;
     std::lock_guard<std::mutex> lk(g_mtx);
     if (!g_catvol_init) { for (auto& v : g_catvol) v = 1.f; g_catvol_init = true; }
     engine_init();                              // kicks the async data load on first call
     if ((id & 0x3FF) == 0) return;              // entry 0 = the init/SE BMS (always running)
-    g_pending.push_back({ id, 0, 0, true });    // queued until the engine is running
+    g_pending.push_back({ id, seqTrack, prio, true });   // swbit slot reused = seq track
 }
 
 // Stop a playing SE (JAIBasic::stopSoundHandle tee). fade = frames to fade out (0 = now).
-extern "C" void njas_se_stop(uint32_t id, uint32_t fade) {
+// posPtr disambiguates the instance (identity = id+actor); 0 / no match → stop all of id.
+extern "C" void njas_se_stop(uint32_t id, uint32_t fade, uint32_t posPtr) {
     using namespace njas;
     std::lock_guard<std::mutex> lk(g_mtx);
-    // also drop any not-yet-dispatched request for this id
+    // also drop any not-yet-dispatched request for this instance
     for (auto it = g_pending.begin(); it != g_pending.end();)
-        it = (it->id == id) ? g_pending.erase(it) : it + 1;
-    ActiveSE* a = active_find(id);
-    if (!a) return;
-    if (fade == 0) { active_stop_now(*a); return; }
-    a->vol[6].set(0.f, fade);                 // stopSoundHandle: setSeInterVolume(6, 0, fade)
-    a->stopFade = (s32)fade;
-    NJLOG("se_stop id=%05x fade=%u\n", id, fade);
+        it = (it->id == id && (!posPtr || it->posPtr == posPtr)) ? g_pending.erase(it) : it + 1;
+    bool matched = false;
+    for (int pass = 0; pass < 2 && !matched; pass++) {
+        for (auto& a : g_active) {
+            if (!a.used || a.id != id) continue;
+            if (pass == 0 && posPtr && a.posPtr != posPtr) continue;   // exact instance first
+            matched = true;
+            if (fade == 0) { active_stop_now(a); continue; }
+            a.vol[6].set(0.f, fade);          // stopSoundHandle: setSeInterVolume(6, 0, fade)
+            a.stopFade = (s32)fade;
+        }
+        if (!posPtr) break;
+    }
+    NJLOG("se_stop id=%05x fade=%u pos=%08x matched=%d\n", id, fade, posPtr, (int)matched);
 }
 
 // Handle param op (JAISound::setVolume/setPan/setPitch tees). kind: 0=vol 1=pan 2=pitch.

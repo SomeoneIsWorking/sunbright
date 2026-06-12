@@ -17,8 +17,8 @@
 
 extern "C" void njas_se_start(uint32_t id, uint32_t swbit, uint8_t prio, uint32_t posPtr);
 extern "C" void njas_set_camera(uint32_t posPtr, uint32_t mtxPtr);
-extern "C" void njas_bgm_start(uint32_t id);
-extern "C" void njas_se_stop(uint32_t id, uint32_t fade);
+extern "C" void njas_bgm_start(uint32_t id, uint8_t seqTrack, uint8_t prio);
+extern "C" void njas_se_stop(uint32_t id, uint32_t fade, uint32_t posPtr);
 extern "C" void njas_se_param(uint32_t id, int kind, uint8_t slot, float value, uint32_t time);
 extern "C" void njas_se_category_volume(uint8_t cat, uint8_t vol);
 extern "C" void njas_set_wave_scene(int wsys, int scene);
@@ -36,6 +36,9 @@ extern "C" void func_8030a57c(CPUState& cpu);   // JAISound::setVolume
 extern "C" void func_8030a604(CPUState& cpu);   // JAISound::setPan
 extern "C" void func_8030a68c(CPUState& cpu);   // JAISound::setPitch
 extern "C" void func_8030b700(CPUState& cpu);   // JAISound::setSeInterVolume
+extern "C" void func_8030ad44(CPUState& cpu);   // JAISound::setSeqInterVolume
+extern "C" void func_8030ae44(CPUState& cpu);   // JAISound::setSeqInterPan
+extern "C" void func_8030af44(CPUState& cpu);   // JAISound::setSeqInterPitch
 extern "C" void func_8030b8c8(CPUState& cpu);   // JAISound::setSeInterPan
 extern "C" void func_8030be20(CPUState& cpu);   // JAISound::setSeInterPitch
 
@@ -84,7 +87,17 @@ SUNBRIGHT_OVERRIDE(ov_startSoundBasic, 0x803020acu) {
         }
         njas_se_start(id, swbit, prio, posPtr);
     }
-    if (njas_enabled() && is_seq_id(id)) njas_bgm_start(id);
+    if (njas_enabled() && is_seq_id(id)) {
+        // JAISoundInfo +4 = priority, +5 = seq track slot (JAIBasic::getSeqTrackNumber):
+        // the seq entry allows ONE playing BGM per slot — starting another stops the
+        // incumbent (JAISeqEntry::storeBuffer) — that's how the title music ends.
+        uint8_t prio = 0x40, seqTrack = 0;
+        if (info >= 0x80000000u && info < 0x81800000u) {
+            prio = sb_r8(info + 4);
+            seqTrack = sb_r8(info + 5);
+        }
+        njas_bgm_start(id, seqTrack, prio);
+    }
     func_803020ac(cpu);
 }
 // Camera input for the native 3D layer: JAIBasic::setCameraInfo(this, pos Vec* r4,
@@ -103,9 +116,14 @@ SUNBRIGHT_OVERRIDE(ov_startSoundIndirectID, 0x80302034u) {
     func_80302034(cpu);
 }
 SUNBRIGHT_OVERRIDE(ov_stopSoundHandle, 0x80302224u) {
-    const uint32_t id = handle_id(cpu.gpr[4]);
-    if (dbg()) fprintf(stderr, "[se_native] stopSoundHandle id=%08x fade=%u\n", id, cpu.gpr[5]);
-    if (njas_enabled() && handled_id(id)) njas_se_stop(id, cpu.gpr[5]);
+    const uint32_t snd = cpu.gpr[4];
+    const uint32_t id = handle_id(snd);
+    // instance identity is (id, actor pos Vec*) — JAISound+0x20 (initSoundParameter)
+    uint32_t posPtr = 0;
+    if (snd >= 0x80000000u && snd < 0x81800000u) posPtr = sb_r32(snd + 0x20);
+    if (dbg()) fprintf(stderr, "[se_native] stopSoundHandle id=%08x fade=%u pos=%08x\n",
+                       id, cpu.gpr[5], posPtr);
+    if (njas_enabled() && handled_id(id)) njas_se_stop(id, cpu.gpr[5], posPtr);
     func_80302224(cpu);
 }
 SUNBRIGHT_OVERRIDE(ov_setSeCategoryVolume, 0x803029a4u) {
@@ -154,6 +172,27 @@ SUNBRIGHT_OVERRIDE(ov_jaisound_setPitch, 0x8030a68cu) {
     if (njas_enabled() && is_seq_id(id))
         njas_se_param(id, 2, (uint8_t)cpu.gpr[5], (float)cpu.fpr[1].ps0, cpu.gpr[4]);
     func_8030a68c(cpu);
+}
+// Seq (BGM) inter setters (this=r3, slot=r4, f1=value, time=r5): MSBgmXFade fades the
+// outgoing BGM through setSeqInterVolume (NOT stopSoundHandle) — un-teed, the title
+// music played at full volume forever into file-select.
+SUNBRIGHT_OVERRIDE(ov_setSeqInterVolume, 0x8030ad44u) {
+    const uint32_t id = handle_id(cpu.gpr[3]);
+    if (njas_enabled() && is_seq_id(id))
+        njas_se_param(id, 0, (uint8_t)cpu.gpr[4], (float)cpu.fpr[1].ps0, cpu.gpr[5]);
+    func_8030ad44(cpu);
+}
+SUNBRIGHT_OVERRIDE(ov_setSeqInterPan, 0x8030ae44u) {
+    const uint32_t id = handle_id(cpu.gpr[3]);
+    if (njas_enabled() && is_seq_id(id))
+        njas_se_param(id, 1, (uint8_t)cpu.gpr[4], (float)cpu.fpr[1].ps0, cpu.gpr[5]);
+    func_8030ae44(cpu);
+}
+SUNBRIGHT_OVERRIDE(ov_setSeqInterPitch, 0x8030af44u) {
+    const uint32_t id = handle_id(cpu.gpr[3]);
+    if (njas_enabled() && is_seq_id(id))
+        njas_se_param(id, 2, (uint8_t)cpu.gpr[4], (float)cpu.fpr[1].ps0, cpu.gpr[5]);
+    func_8030af44(cpu);
 }
 // Inner SE setters (this=r3, slot=r4, f1=value, time=r5): the funnel for BOTH the
 // public API and the per-frame distance attenuation (M2.5).
