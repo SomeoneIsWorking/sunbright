@@ -70,12 +70,24 @@ per-actor gameplay logic that stays recompiled until the engine layers are owned
 ## PC-game architecture directive (user, 2026-06-12 — supersedes seam-patching)
 "I want PC game mumbo jumbo, not emulation mumbo jumbo… I don't care if it will take months."
 Stop guarding emulation seams; delete the emulation-era path and own the subsystem:
-- **Audio M4 (STARTED 2026-06-12):** guest JAI/JAS must not run. First cut: guest per-frame
-  SE processor (checkNextFrameSe 0x80305204) no-op'd — the bogus-stop source died, the
-  contradictory-signal guards were REMOVED (clean stop semantics, no special cases).
-  Next cuts: guest audioproc/updateDac bookkeeping off; MSound game-layer API owned at the
-  game-call seams; worker-snippet indirection replaced by direct per-sound dispatch;
-  respect the two M4 gates (MSound::checkWaveOnAram stage-transition block, THP audio).
+- **Audio M4 (STARTED 2026-06-12):** guest JAI/JAS must not run. Cuts so far: guest
+  per-frame SE processor (checkNextFrameSe 0x80305204) and checkMonoSound (0x80017ddc)
+  no-op'd, mono rule reimplemented at native dispatch.
+  **WHY THE SPRAY KEPT BREAKING (3 regressions, root pattern):** the startSoundBasic tee
+  still RUNS THE GUEST BODY "for bookkeeping" — that populates the guest SE registry with
+  sounds that never finish (guest JAS is dead), and every guest reader of that registry
+  (frame culls, mono checks, handle-state logic, whatever we haven't found yet) misfires
+  and emits stops that the tee faithfully forwards. Whack-a-mole by design; we are blind.
+  **THE DECISIVE CUT — native JAISound handle pool (next session, fresh context):**
+  startSoundBasic stops calling the guest body for handled ids. Instead the override
+  returns a handle from a NATIVE-owned pool of JAISound-shaped objects in guest memory
+  (static arena; populate id @+0x8, actor/pos @+0x20, the fields actor code reads; all
+  lifecycle native). Game actor code keeps working — it null-checks and calls
+  setVolume/setPan/stop on the handle, and the existing tees key on handle->id. The guest
+  registry is never populated → nothing stale to read → this whole bug class becomes
+  unrepresentable. Then: guest audioproc/updateDac bookkeeping off entirely;
+  worker-snippet indirection → direct per-sound dispatch; respect the two M4 gates
+  (MSound::checkWaveOnAram stage-transition block, THP audio).
 - **Graphics (months-scale arc):** native renderer direction — own the GX command stream →
   Vulkan with pregenerated game-tailored pipelines. Dolphin GPU semantics (FIFO
   backpressure, first-use shader compile, device-resource lifetime/OOM) cease to exist
