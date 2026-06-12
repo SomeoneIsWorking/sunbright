@@ -309,12 +309,14 @@ static void parse_ibnk(const u8* bnk, u32 size, Bank& out) {
             const u8* pmap = bnk + pm;
             auto& pc = in->percs[j];
             pc.valid = true;
-            // TPmap layout is PITCH first, then volume (pikmin2 JASBNKParser TPmap:
-            // mPitch @+0, mVolume @+4 — reverse of TInst's vol@8/pitch@C order!).
-            // Reading them swapped made drums quiet-and-sharp (the 0:233 −30 dB /
-            // +105-cent A/B signature).
-            pc.pitch = bef32(pmap);
-            pc.vol = bef32(pmap + 4);
+            // TPmap order is VOLUME @+0, pitch @+4 — binary-verified at TDrumSet::getParam
+            // 0x8030fc4c (perc+0 → instParam volume, perc+4 → pitch; SMS data confirms:
+            // the +4 floats are semitone-quantized 0.7071/0.8409/1.6818…). The earlier
+            // pitch@0 reading was a falsified detour (docs/re_notes/audio_re_findings.md
+            // §2.3 — its "oracle verification" was confounded by the simultaneous PER2
+            // pan fix; 0:233's fields are 1.0/1.0, a no-op either way).
+            pc.vol = bef32(pmap);
+            pc.pitch = bef32(pmap + 4);
             // PER2 extras (JASBNKParser): unk288[j]/127 is the per-key PAN (the old code
             // multiplied it into volume — percussion loudness bug), unk308[j] = release.
             if (per2) { pc.pan = (float)perc[0x288 + j] / 127.f; pc.release = be16(perc + 0x308 + j * 2); }
@@ -513,6 +515,8 @@ static bool load_data() {
 static FILE* ab_out();
 static double ab_now_ms();
 static void ab_anchor(const char* kind, u32 id, const char* name);
+struct Track;
+static u32 ab_owner_id(Track& t);   // owning SE/BGM sound id (walks to the worker)
 
 // C5BASE pitch table (JASDriverTables): 2^((k-60)/12)
 static float c5base(int k) {
@@ -913,21 +917,13 @@ static u32 reg_exchange(Track& t, u8 r) {
     return i < 8 ? t.noteGen[i] : 0;
 }
 
-static float pitch_to_cent(float pitch, float range) {
-    float v = pitch * 4.f * range;
-    s16 whole = (s16)v;
-    float frac = v - whole;
-    if (v < 0.f && frac != 0.f) { frac += 1.f; whole -= 1; }
-    if (frac >= 1.f) { frac -= 1.f; whole += 1; }
-    // s_key_table[frac*64] ≈ 2^(frac/(12*4*64/48))... use exact: key_table[i] = 2^(i/768)
-    return exp2f(frac / 12.f / 4.f * 4.f / 16.f * 16.f / 4.f) /*== 2^(frac/12*?)*/;
-}
-
-// NOTE: pitchToCent semantics: result = key_table[frac*64] * C5BASE[whole+60]
-// where key_table[i] = 2^(i/768) (64 steps per semitone-quarter…). We compute exactly:
+// Player::pitchToCent 0x80319e30 (binary-verified, docs/re_notes/audio_re_findings.md):
+// v = pitch*4*range SEMITONES; result = C5BASE[whole+60] * key_table[frac*64] where
+// C5BASE[k+60] = 2^(k/12) and key_table[i] = 2^(i/768) (i = frac*64 → 2^(frac/12)).
+// Net ratio = 2^(v/12). The old /48 made every BMS pitch bend land at 1/4 size —
+// the −18-semitone wave 10:1, the −300¢ 11:0, and the 5:229 drum-cent class.
 static float pitch_to_ratio(float pitch, float range) {
-    float v = pitch * 4.f * range;            // quarter-semitone steps? (4 steps/semitone)
-    return exp2f(v / 48.f);                   // 48 steps per octave: C5BASE[whole+60]*2^(frac/48)
+    return exp2f(pitch * 4.f * range / 12.f);
 }
 
 static Voice* track_voice(Track& t, int idx) {
@@ -1207,10 +1203,7 @@ static int track_note_on(Track& t, u8 chanIdx, s32 key, s32 vel, s32 gateTime) {
     }
     v->key = (u8)key; v->vel = (u8)vel; v->bankProg = reg6;
     if (FILE* ab = ab_out()) {                 // A/B: voice-on with full cause context
-        u32 soundId = 0;
-        for (Track* p = &t; p && !soundId; p = p->parent)
-            for (auto& a : g_active)
-                if (a.used && a.worker == p) { soundId = a.id; break; }
+        const u32 soundId = ab_owner_id(t);
         v->abOpen = true; v->abPeak = 0.f;
         v->abSeqOff = (u32)(t.seq.cur - t.seq.base);
         v->abSoundId = soundId;
@@ -1795,6 +1788,7 @@ static double ab_now_ms() {
     static const steady_clock::time_point t0 = steady_clock::now();
     return duration_cast<duration<double, std::milli>>(steady_clock::now() - t0).count();
 }
+static u32 ab_owner_id(Track& t);   // defined after g_active below
 static void ab_anchor(const char* kind, u32 id, const char* name) {
     if (FILE* f = ab_out()) {
         fprintf(f, "{\"ev\":\"%s\",\"t\":%.1f,\"id\":\"%08x\"%s%s%s}\n", kind, ab_now_ms(),
@@ -1846,6 +1840,13 @@ struct ActiveSE {
     u16 sinceReq = 0;                    // ticks since last (re-)request (JAISound lifeTime)
 };
 static ActiveSE g_active[32];
+
+static u32 ab_owner_id(Track& t) {
+    for (Track* p = &t; p; p = p->parent)
+        for (auto& a : g_active)
+            if (a.used && a.worker == p) return a.id;
+    return 0;
+}
 
 // all root tracks ticked by render_subframe: g_root (init/SE BMS) + one per playing BGM
 static std::vector<Track*> g_players;
@@ -2150,6 +2151,7 @@ static void bgm_dispatch(u32 id, u8 seqTrack, u8 prio) {
     ActiveSE* slot = nullptr;
     for (auto& a : g_active) if (!a.used) { slot = &a; break; }
     if (slot) { active_init(*slot, root, id, seqTrack, prio); slot->isBgm = true; }
+    { char nm[15]; memcpy(nm, e.name, 14); nm[14] = 0; ab_anchor("bgm", id, nm); }
     NJLOG("bgm_start id=%08x slot=%u prio=%u → %.14s (off=%#x size=%#x)\n", id, seqTrack,
           prio, e.name, e.off, e.size);
 }
@@ -2207,6 +2209,7 @@ static void process_pending() {
             slot->posPtr = it->posPtr;
             w->writePortImport(4, (u16)(id & 0x3FF));
             w->writePortImport(0, 1);
+            ab_anchor("se", id, nullptr);
             NJLOG("se_start id=%05x cat=%u idx=%u pos=%08x → worker %p\n", id, cat, id & 0x3FF,
                   it->posPtr, (void*)w);
             it = g_pending.erase(it);
