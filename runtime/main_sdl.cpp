@@ -80,6 +80,7 @@ static std::atomic<bool> g_running{true};
 // the memory arena, so a concurrent GetPointerForRange can hand back a torn/stale
 // base pointer → wild write. Gate every main-thread guest-memory poke on this.
 static std::atomic<bool> g_core_running{false};
+static std::atomic<bool> g_autostart_stop{false};   // /pad?do=autostop — ends autostart injection
 static inline bool guest_mem_ready() { return g_core_running.load(std::memory_order_acquire); }
 
 // ── Keyboard → GameCube pad ─────────────────────────────────────────────────
@@ -449,6 +450,7 @@ static uint32_t repl_combo_bits(const std::string& combo) {
         else if (tok == "cdown")  bits |= P_CDOWN;
         else if (tok == "cleft")  bits |= P_CLEFT;
         else if (tok == "cright") bits |= P_CRIGHT;
+        else if (tok == "autostop") { g_autostart_stop.store(true, std::memory_order_relaxed); }
     }
     return bits;
 }
@@ -830,7 +832,16 @@ int main(int argc, char* argv[]) {
     // DISABLE_RECOMP oracle) silently ran unthrottled at ~6-9x — which wrecked all
     // wall-clock audio A/B timing (the false "SE tree runs 12x slower natively"
     // finding, 2026-06-12).
-    Config::SetBase(Config::MAIN_EMULATION_SPEED, turbo ? 0.0f : 1.0f);
+    // Recomp runs: Dolphin's CoreTiming::Throttle must be OFF (speed 0 = unlimited). Pacing is
+    // owned natively (sb_time_ahead host-clock/audio-fill governor + the VIWaitForRetrace host
+    // frame pacer); with BOTH governors active they fight: ours parks emulated time at the host
+    // target, so when a worker guest thread (audio / THP decode / DVD) catches CoreTiming up,
+    // Dolphin's throttle slept ~16 ms PER VI FIELD inside that thread's nthr token slice —
+    // the frame heartbeat missed its bounded-drain deadline by 100+ ms and whole scenes ran at
+    // 6-12 fps at a reported "speed 1.0" (the title/THP crawl, 2026-06-12). The DISABLE_RECOMP
+    // oracle has no native governor and still needs Dolphin's throttle at 1.0×.
+    const bool oracle = getenv("SUNBRIGHT_DISABLE_RECOMP") != nullptr;
+    Config::SetBase(Config::MAIN_EMULATION_SPEED, (turbo || !oracle) ? 0.0f : 1.0f);
     if (turbo) {
         Config::SetBase(Config::GFX_VSYNC, false);
         fprintf(stderr, "[sunbright] TURBO: emulation speed unthrottled, vsync off\n");
@@ -1185,10 +1196,14 @@ int main(int argc, char* argv[]) {
                 if ((t % 800) < 160) bits = P_START;
             } else if (t < 28000) {
                 bits = P_LEFT;
-            } else {
+            } else if (!g_autostart_stop.load(std::memory_order_relaxed)) {
                 bits = P_LEFT;                       // keep pinned on file A
                 if ((t % 1600) < 240) bits = P_A;    // …and press A to load it
             }
+            // Probe-controlled stop (/pad?do=autostop): wall-clock cutoffs proved
+            // fragile both ways (40s/55s stopped before slow boots reached file
+            // select; no cutoff made Mario run+jump through every "idle" capture).
+            // The capture script confirms gameplay, then kills the injection.
             g_pad.store(bits, std::memory_order_relaxed);
         }
 

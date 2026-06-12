@@ -529,6 +529,22 @@ better nav source than reference/sms; but its TPmap getParam field-crossing is a
 the ORACLE for data semantics); Dusklight at scratch/ref/dusklight (native JAudio2 PC port —
 freeverb fxmix reference).
 
+**Whole-game crawl fixed (2026-06-12): Dolphin's CoreTiming::Throttle is OFF on recomp runs**
+(MAIN_EMULATION_SPEED=0, main_sdl.cpp). Two governors fought: our native host-clock/audio
+governor parks emulated time, so when a worker guest thread (audio prio2 / THP decode prio20 /
+DVD) caught CoreTiming up via charge_guest_time, Dolphin's throttle slept ~16 ms PER VI FIELD
+inside that thread's nthr token slice → the VIWait bounded drain (16.7 ms) overshot by 100+ ms
+→ 6–12 fps at a reported "speed 1.0000" (title + THP + everywhere). Diagnosed with
+SUNBRIGHT_DBG_DRAIN=1 (nthr-hold per-prio token-hold accounting, native_threads.cpp) + gdb
+stack sampling (CoreTiming::Throttle inside call_ppc was the smoking gun). The DISABLE_RECOMP
+oracle keeps Dolphin's throttle (it has no native governor). Also landed: locked-L1-cache
+(0xE0000000) inline fast path (intrinsics.h/memory_bridge, backed by Dolphin's flat L1 array)
++ native LC DMA overrides (overrides/sms_lc_native.cpp: LCStoreBlocks/LCStoreData = memcpy,
+LCQueueWait/LCFlushQueue = no-op; addresses verified vs decomp OSCache.c — funcs.txt has a gap
+there) — THP decode uses the locked cache as scratch and its LC calls are mtspr-HW → were
+interpreted per 4 KB chunk. Perf triage order for "low fps at speed 1.0": vi-perf phase line →
+SUNBRIGHT_DBG_DRAIN → gdb -batch thread apply all bt (find the token holder sleeping).
+
 Next: native audio M4 (delete the guest audio path) per docs/native_audio_engine.md; oracle
 ear-check of BGM fidelity (tempo/instruments); fxmix/dolby + category concurrency; residual
 backpressure wedge (~1/3 runs), THP-transition NULL-deref read, gameplay/Delfino, the recomp

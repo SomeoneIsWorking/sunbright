@@ -243,6 +243,9 @@ void sb_poll_fire(u32 ea) {
 // Base of main RAM (low 24 MB), published for the inlined fast path in intrinsics.h. Set lazily on
 // the first RAM access through ram_ptr below (memory is built before boot, so it's stable after).
 u8* g_ram_base = nullptr;
+// Base of the locked-L1 array (0xE0000000): published with g_ram_base on first RAM access.
+// THP decode uses the locked cache as scratch; the inlined fast path needs this pointer.
+u8* g_l1_base = nullptr;
 
 // Fast path: main RAM only (cached 0x8xxxxxxx / uncached 0xCxxxxxxx mirrors of the
 // low 24 MB). Returns nullptr for everything else — MMIO, locked cache, etc. —
@@ -252,7 +255,7 @@ u8* g_ram_base = nullptr;
 static inline u8* ram_ptr(u32 ea) {
     const u32 top = ea >> 28;
     if ((top == 0x8 || top == 0xC) && (ea & 0x0FFFFFFF) < 0x01800000) {
-        if (!g_ram_base) g_ram_base = MEM().GetRAM();
+        if (!g_ram_base) { g_ram_base = MEM().GetRAM(); g_l1_base = MEM().GetL1Cache(); }
         return g_ram_base ? g_ram_base + (ea & 0x01FFFFFFu) : MEM().GetPointerForRange(ea, 1);
     }
     return nullptr;
@@ -262,6 +265,7 @@ static inline u8* ram_ptr(u32 ea) {
 #  define MMIO_W(bits, ea, v)  (g_recomp_touched_mmio = true, MMU_().Write<u##bits>((v), (ea)))
 #else
 // Standalone mode: flat 24 MB RAM buffer, no MMIO.
+u8* g_l1_base = nullptr;   // no locked-cache backing in standalone mode (fast path stays off)
 static u8 g_ram[24 * 1024 * 1024];
 static bool g_ram_init = false;
 

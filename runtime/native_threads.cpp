@@ -5,6 +5,8 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
+#include <cstdlib>
+#include <map>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -49,6 +51,43 @@ void (*g_save_hook)(GuestThread*)    = nullptr;   // called on the thread giving
 void (*g_restore_hook)(GuestThread*) = nullptr;   // called for the thread about to get it
 void (*g_idle_handler)()             = nullptr;   // called when nothing is Ready but threads live
 
+// SUNBRIGHT_DBG_DRAIN=1 — token-hold accounting (permanent diag). Attributes wall time to
+// whichever GuestThread held the token (or to idle, when nobody did) and reports once per
+// second together with the bounded-drain overshoot, so a "drain eats the frame" symptom names
+// the thread that actually consumed it instead of leaving it to stack-sample roulette.
+bool        g_dbg_drain = getenv("SUNBRIGHT_DBG_DRAIN") != nullptr;
+std::chrono::steady_clock::time_point g_hold_t0{};   // when the current holder got the token
+GuestThread* g_hold_who = nullptr;
+struct HoldStat { long long us = 0; long grants = 0; };
+std::map<int, HoldStat> g_hold_by_prio;              // keyed by guest prio (idle = -1)
+long long   g_drain_overshoot_us = 0;                // resumed past the bounded deadline
+long        g_drain_resumes = 0;
+std::chrono::steady_clock::time_point g_hold_report{};
+
+void hold_account_locked(GuestThread* next) {
+    if (!g_dbg_drain) return;
+    const auto now = std::chrono::steady_clock::now();
+    if (g_hold_t0.time_since_epoch().count() != 0) {
+        auto& s = g_hold_by_prio[g_hold_who ? g_hold_who->prio : -1];
+        s.us += std::chrono::duration_cast<std::chrono::microseconds>(now - g_hold_t0).count();
+        s.grants++;
+    }
+    g_hold_t0  = now;
+    g_hold_who = next;
+    if (g_hold_report.time_since_epoch().count() == 0) g_hold_report = now;
+    if (now - g_hold_report >= std::chrono::seconds(1)) {
+        g_hold_report = now;
+        fprintf(stderr, "[nthr-hold]");
+        for (auto& [prio, s] : g_hold_by_prio) {
+            fprintf(stderr, " prio%d=%lldms/%ld", prio, s.us / 1000, s.grants);
+            s = {};
+        }
+        fprintf(stderr, "  drain_overshoot=%lldms/%ld\n",
+                g_drain_overshoot_us / 1000, g_drain_resumes);
+        g_drain_overshoot_us = 0; g_drain_resumes = 0;
+    }
+}
+
 // Highest-priority Ready thread (lowest prio number; FIFO among ties), or null.
 GuestThread* pick_next() {
     GuestThread* best = nullptr;
@@ -84,6 +123,7 @@ void grant_token_locked(std::unique_lock<std::mutex>& lk, GuestThread* outgoing)
         }
         GuestThread* next = pick_next();
         if (next) {
+            hold_account_locked(next);
             g_running = next;
             next->state = State::Running;
             if (g_restore_hook) g_restore_hook(next);     // load the global ctx from its slot
@@ -105,6 +145,7 @@ void grant_token_locked(std::unique_lock<std::mutex>& lk, GuestThread* outgoing)
         }
         // Every live thread is Blocked waiting on something external. Let the idle handler try
         // to wake one (it runs unlocked — it may call make_ready / run guest code), then re-pick.
+        hold_account_locked(nullptr);   // idle period: attribute to prio -1
         lk.unlock();
         g_idle_handler();
         lk.lock();
@@ -229,6 +270,13 @@ static void block_impl(State newState, long deadline_us) {
     grant_token_locked(lk, self);        // save our ctx, hand the token to the next thread
     while (g_running != self) self->cv.wait(lk);   // park until the token returns to us
     // Resumed: grant_token_locked already restored our ctx via g_restore_hook.
+    if (g_dbg_drain && self->drain_bounded) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now > self->drain_deadline)
+            g_drain_overshoot_us += std::chrono::duration_cast<std::chrono::microseconds>(
+                now - self->drain_deadline).count();
+        g_drain_resumes++;
+    }
 }
 
 void block(State newState) { block_impl(newState, /*deadline_us=*/0); }

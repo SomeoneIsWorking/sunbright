@@ -15,6 +15,7 @@
 // RAM path is the fix. The out-of-line mem_r*/mem_w* wrappers (declared below) stay for the
 // handful of runtime callers (native_os, overrides) that call them directly without the macros.
 extern u8*  g_ram_base;        // base of main RAM, or nullptr until memory init (→ slow path)
+extern u8*  g_l1_base;         // base of the locked-L1 array (0xE0000000, 256 KB), or nullptr
 extern bool g_in_poll_yield;   // re-entrancy guard while a spin-loop yield runs
 extern u32  g_poll_last;       // last read EA (spin-loop detector state)
 extern u32  g_poll_reps;       // consecutive reads of g_poll_last
@@ -35,6 +36,11 @@ inline u8* sb_ram_fast(u32 ea) {
     const u32 top = ea >> 28;
     if ((top == 0x8u || top == 0xCu) && (ea & 0x0FFFFFFFu) < 0x01800000u && g_ram_base)
         return g_ram_base + (ea & 0x01FFFFFFu);
+    // Locked L1 cache (games use 0xE0000000; Dolphin backs it with a flat 256 KB array).
+    // THP video decode runs its DCT/color-convert scratch here — without this fast path every
+    // access in those inner loops took the out-of-line MMU slow path (the 6 fps movie crawl).
+    if (top == 0xEu && (ea & 0x0FFFFFFFu) < 0x00040000u && g_l1_base)
+        return g_l1_base + (ea & 0x0003FFFFu);
     return nullptr;
 }
 // Cheap inlined spin-loop note (on reads): same address ≥24× in a row → confirmed poll → yield.
