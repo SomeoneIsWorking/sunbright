@@ -2127,6 +2127,14 @@ static void jai_tick() {
                 a.vol[6].set(0.f, 6);
                 a.stopFade = 6;
             }
+            // Class-0 continuous SEs (spray): the snippet starves out on its own once
+            // re-requests (and their port refreshes) cease — no fade; just free the
+            // registry slot after the worker idles so it doesn't block reuse.
+            if (cls == 0 && ++a.sinceReq > 10 && a.worker && a.worker->portValue[2] == 0) {
+                NJLOG("se_release id=%05x (class 0, worker idle)\n", a.id);
+                active_stop_now(a);
+                continue;
+            }
         }
         se_3d_tick(a);
         float vp = 1.f, pp = 1.f, pn = 0.5f, fxp = 0.f, dbp = 0.f;
@@ -2306,8 +2314,22 @@ static void process_pending() {
                 const u32 cls = id & 0xC00;
                 const bool alive = same->stopFade < 0 && same->worker
                                    && same->worker->portValue[2] != 0;
-                if (cls != 0 && cls != 0x800 && alive) {
+                // Revive predicate is (id & 0x800) == 0 — JAISeEntry::storeBuffer: a same
+                // id+actor re-request revives ANY class except the 0x800 restart class.
+                // The old `cls != 0` exclusion sent class-0 continuous SEs (FLUDD spray
+                // MSD_SE_PO_WATER_HI = 0x0000, re-requested every frame while held)
+                // through the restart path every frame — ~1 s of churn then permanent
+                // silence (user report).
+                if ((id & 0x800) == 0 && alive) {
                     same->sinceReq = 0;               // keep-alive refresh, no restart
+                    // Re-feed the worker's ports: continuous snippets poll the port-0
+                    // import per loop iteration and starve out (worker idles) when the
+                    // game stops re-requesting — that is how a held spray sustains and
+                    // how it ends on release, with no explicit stop call anywhere.
+                    if (same->worker) {
+                        same->worker->writePortImport(4, (u16)(id & 0x3FF));
+                        same->worker->writePortImport(0, 1);
+                    }
                     it = g_pending.erase(it);
                     continue;
                 }
