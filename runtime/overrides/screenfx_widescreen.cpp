@@ -30,6 +30,7 @@
 // fader_widescreen.cpp
 void ws_2d_suspend_begin(CPUState& cpu);
 void ws_2d_suspend_end(CPUState& cpu);
+extern bool g_ws_2d_suspend;
 
 namespace {
 
@@ -44,6 +45,27 @@ bool widescreen_on() {
 void run_orig(CPUState& cpu, u32 addr) {
     if (RecompFunc orig = recomp_raw(addr)) orig(cpu);
     else call_ppc(cpu, cpu.lr);
+}
+
+// ── BathWaterManager draw_mist 0x801aa6cc — EFB round-trip, must NOT be squeezed ────
+// (Map/BathWaterManager.cpp): GXCopyTex's the EFB viewport region to a texture, then
+// redraws it over the SAME region through its own EFB-pixel ortho (C_MTXOrtho →
+// GXSetProjection ORTHO, disasm-verified bl at 0x801aac30 → 0x80362c34, quad verts in
+// EFB u16 pixels). The copy source is the real (anamorphic) EFB, so the replay must be
+// the identity EFB mapping: squeezing this ortho would shrink the redraw to the centre
+// 3/4 and misalign it against the copy (mist pillars). Suspend the squeeze for the
+// call — flag only, no ortho reload: draw_mist issues its own projection, and the
+// scene re-issues the perspective afterward.
+constexpr u32 kBathDrawMist = 0x801aa6ccu;
+
+SUNBRIGHT_OVERRIDE(ov_bath_drawmist_ws, kBathDrawMist) {
+    if (!widescreen_on()) { run_orig(cpu, kBathDrawMist); return; }
+    const bool prev = g_ws_2d_suspend;
+    g_ws_2d_suspend = true;
+    static bool once = false;
+    if (!once) { once = true; std::fprintf(stderr, "[screenfx] BathWater draw_mist reached — EFB-ortho squeeze suspended\n"); }
+    run_orig(cpu, kBathDrawMist);
+    g_ws_2d_suspend = prev;
 }
 
 SUNBRIGHT_OVERRIDE(ov_aftereffect_perform_ws, kAfterEffectPerf) {
