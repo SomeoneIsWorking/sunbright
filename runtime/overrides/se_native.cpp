@@ -37,6 +37,9 @@ extern "C" void func_8030a604(CPUState& cpu);   // JAISound::setPan
 extern "C" void func_8030a68c(CPUState& cpu);   // JAISound::setPitch
 extern "C" void func_8030b700(CPUState& cpu);   // JAISound::setSeInterVolume
 extern "C" void func_8030ad44(CPUState& cpu);   // JAISound::setSeqInterVolume
+extern "C" void func_8030b330(CPUState& cpu);   // JAISound::setSeqPortData
+extern "C" void func_8030b5e0(CPUState& cpu);   // JAISound::setTrackPortData
+extern "C" void njas_seq_port(uint32_t id, uint8_t track, uint8_t port, uint16_t value);
 extern "C" void func_8030ae44(CPUState& cpu);   // JAISound::setSeqInterPan
 extern "C" void func_8030af44(CPUState& cpu);   // JAISound::setSeqInterPitch
 extern "C" void func_8030b8c8(CPUState& cpu);   // JAISound::setSeInterPan
@@ -193,6 +196,21 @@ SUNBRIGHT_OVERRIDE(ov_setSeqInterPitch, 0x8030af44u) {
     if (njas_enabled() && is_seq_id(id))
         njas_se_param(id, 2, (uint8_t)cpu.gpr[4], (float)cpu.fpr[1].ps0, cpu.gpr[5]);
     func_8030af44(cpu);
+}
+// Seq port writes — the game→BMS data channel (Yoshi-drum track gate etc.): the BMS
+// reads these ports to mute/scale its tracks; without the tee our BGM takes the
+// default branch (drum tracks audible from scene start).
+SUNBRIGHT_OVERRIDE(ov_setSeqPortData, 0x8030b330u) {
+    const uint32_t id = handle_id(cpu.gpr[3]);
+    if (njas_enabled() && is_seq_id(id))
+        njas_seq_port(id, 0xFF, (uint8_t)cpu.gpr[4], (uint16_t)cpu.gpr[5]);
+    func_8030b330(cpu);
+}
+SUNBRIGHT_OVERRIDE(ov_setTrackPortData, 0x8030b5e0u) {
+    const uint32_t id = handle_id(cpu.gpr[3]);
+    if (njas_enabled() && is_seq_id(id))
+        njas_seq_port(id, (uint8_t)cpu.gpr[4], (uint8_t)cpu.gpr[5], (uint16_t)cpu.gpr[6]);
+    func_8030b5e0(cpu);
 }
 // Inner SE setters (this=r3, slot=r4, f1=value, time=r5): the funnel for BOTH the
 // public API and the per-frame distance attenuation (M2.5).

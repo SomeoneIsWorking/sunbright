@@ -2409,6 +2409,25 @@ extern "C" void njas_bgm_start(uint32_t id, uint8_t seqTrack, uint8_t prio) {
     g_pending.push_back({ id, seqTrack, prio, true });   // swbit slot reused = seq track
 }
 
+// Game→BMS port write (setSeqPortData / setTrackPortData tees): the data channel the
+// game uses to drive in-sequence logic (e.g. the Yoshi-drum track gate in k_dolpic).
+// track 0xFF = the root; else the root's child track. The game re-writes ports on
+// state changes, so a write landing before the BGM dispatches is recoverable.
+extern "C" void njas_seq_port(uint32_t id, uint8_t track, uint8_t port, uint16_t value) {
+    using namespace njas;
+    std::lock_guard<std::mutex> lk(g_mtx);
+    for (auto& a : g_active) {
+        if (!a.used || !a.isBgm || a.id != id || !a.worker) continue;
+        Track* t = a.worker;
+        if (track != 0xFF) t = t->child[track & 0xF];
+        if (t) t->writePortImport(port & 0xF, value);
+        NJLOG("seq_port id=%08x track=%u port=%u val=%u (%s)\n", id, track, port, value,
+              t ? "ok" : "no track");
+        return;
+    }
+    NJLOG("seq_port id=%08x track=%u port=%u val=%u (no active BGM)\n", id, track, port, value);
+}
+
 // Stop a playing SE (JAIBasic::stopSoundHandle tee). fade = frames to fade out (0 = now).
 // posPtr disambiguates the instance (identity = id+actor); 0 / no match → stop all of id.
 extern "C" void njas_se_stop(uint32_t id, uint32_t fade, uint32_t posPtr) {
