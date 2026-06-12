@@ -454,6 +454,30 @@ static bool load_data() {
         parse_ibnk(bnk, 0, g_data.banks[i]);
         NJLOG("bank phys %zu: virt %u wsys %d\n", i, virt, g_data.banks[i].wsys);
     }
+    if (getenv("SUNBRIGHT_DUMP_IBNK")) {       // offline inspection of parsed bank data
+        FILE* f = fopen("scratch/logs/ibnk_dump.txt", "w");
+        for (size_t b = 0; f && b < g_data.banks.size(); b++)
+            for (int p = 0; p < 0x100; p++) {
+                const Inst* in = g_data.banks[b].insts[p];
+                if (!in) continue;
+                if (!in->is_perc) {
+                    fprintf(f, "bank%zu prog%d inst vol=%.4f pitch=%.4f oscs=%zu effs=%zu\n",
+                            b, p, in->vol, in->pitch, in->oscs.size(), in->effects.size());
+                    continue;
+                }
+                for (int k = 0; k < 0x80; k++) {
+                    const auto& pc = in->percs[k];
+                    if (!pc.valid) continue;
+                    fprintf(f, "bank%zu prog%d key%d vol=%.4f pitch=%.4f pan=%.3f rel=%u",
+                            b, p, k, pc.vol, pc.pitch, pc.pan, pc.release);
+                    for (auto& vr : pc.velo)
+                        fprintf(f, " [maxvel=%u wave=%u volmul=%.4f pitchmul=%.4f]",
+                                vr.maxvel, vr.waveid, vr.volmul, vr.pitchmul);
+                    fprintf(f, "\n");
+                }
+            }
+        if (f) fclose(f);
+    }
     // BARC: "BARC----" magic, count @+0xC, archive name @+0x10, 0x20-byte entries @+0x20:
     // name[14], u16 flags, u32×2, u32 offset (into sequence.arc), u32 size
     if (barc_off && !memcmp(aaf.data() + barc_off, "BARC", 4)) {
@@ -600,6 +624,7 @@ struct Voice {
     u32 age = 0;                               // subframes since start (diagnostics)
     u8 key = 0, vel = 0; u16 bankProg = 0;     // noteOn metadata (probe/compare)
     float lastRatio = 0.f, lastVol = 0.f;      // effective values from the last subframe
+    float lastChVol = 0.f, lastOscVol = 0.f;   // chain factors (probe diagnosis)
     bool pause = false;
     Oscillator oscs[2];
     OscData trackOscCopy[2];   // storage when track overwrites osc
@@ -1150,8 +1175,9 @@ static int track_note_on(Track& t, u8 chanIdx, s32 key, s32 vel, s32 gateTime) {
     t.note[chanIdx & 7] = v;
     t.noteGen[chanIdx & 7] = v->gen;
     track_update(t);
-    NJLOG("noteOn t=%p ch=%u key=%d vel=%d bank=%u prog=%u wave=%u rate=%.0f ratio=%.3f gate=%d\n",
-          (void*)&t, chanIdx, key, vel, virtBank, prog, waveid, wv.rate, v->pitchRatio, gateTime);
+    NJLOG("noteOn t=%p ch=%u key=%d vel=%d bank=%u prog=%u wave=%u rate=%.0f ratio=%.3f gate=%d chvol=%.4f notevol=%.4f ivol=%.4f\n",
+          (void*)&t, chanIdx, key, vel, virtBank, prog, waveid, wv.rate, v->pitchRatio, gateTime,
+          t.chVol, v->vol, ivol);
     return 0;
 }
 
@@ -1734,6 +1760,7 @@ struct ActiveSE {
     bool panTouched = false;
     s32 stopFade = -1;                   // >=0: fading to stop, counts down
     u32 posPtr = 0;                      // game-world position Vec* (JAIActor.pos)
+    u16 sinceReq = 0;                    // ticks since last (re-)request (JAISound lifeTime)
 };
 static ActiveSE g_active[32];
 
@@ -1907,6 +1934,15 @@ static void jai_tick() {
         }
         if (a.stopFade == 0) { active_stop_now(a); continue; }
         if (a.stopFade > 0) a.stopFade--;
+        // lifeTime expiry (JAIEntry::initSoundParameter unk2 = 10): a continuous-class
+        // sound no longer re-requested by the game stops after 10 frames (short fade)
+        if (!a.isBgm && a.stopFade < 0) {
+            const u32 cls = a.id & 0xC00;
+            if (cls != 0 && cls != 0x800 && ++a.sinceReq > 10) {
+                a.vol[6].set(0.f, 6);
+                a.stopFade = 6;
+            }
+        }
         se_3d_tick(a);
         float vp = 1.f, pp = 1.f, pn = 0.5f;
         for (int i = 0; i < 9; i++) {
@@ -2027,9 +2063,24 @@ static void process_pending() {
             it = g_pending.erase(it);
             continue;
         }
-        // same-id retrigger (JAISeEntry::storeBuffer): a new request for an id already
-        // playing stops the old instance first, unless swbit bit19 allows stacking
+        // Request lifecycle (JAISeEntry::storeBuffer): a re-request of a CONTINUOUS-class
+        // sound (id & 0xC00 set, except the 0x800 restart class) with the same id+actor
+        // REVIVES the playing instance — ambient keep-alives (e.g. the plaza festival
+        // drums, id 0x500x) are re-requested every frame and must NOT restart. Restart
+        // class / different actor / one-shots: stop the old instance (unless swbit
+        // bit19 allows stacking).
         if (ActiveSE* old = active_find(id)) {
+            const u32 cls = id & 0xC00;
+            if (cls != 0 && cls != 0x800 && old->posPtr == it->posPtr
+                && !(it->swbit & 0x80000)) {
+                old->sinceReq = 0;                    // keep-alive refresh, no restart
+                if (old->stopFade >= 0) {             // revive a lifetime-expiring fade
+                    old->stopFade = -1;
+                    old->vol[6].set(1.f, 6);
+                }
+                it = g_pending.erase(it);
+                continue;
+            }
             if (!(it->swbit & 0x80000)) active_stop_now(*old);
         }
         bool any = false;
@@ -2116,6 +2167,7 @@ static void render_subframe() {
         const float ratio = t.chPitch * v.pitchRatio * v.oscPitch;
         float vol = t.chVol * v.vol * v.oscVol;
         v.lastRatio = ratio; v.lastVol = vol;
+        v.lastChVol = t.chVol; v.lastOscVol = v.oscVol;
         if (vol < 0.f) vol = 0.f; if (vol > 1.f) vol = 1.f;
         float pan = t.chPan + (v.panSound - 0.5f);   // CALC_ADD combine (JASChannel calcPan)
         if (pan < 0.f) pan = 0.f; if (pan > 1.f) pan = 1.f;
@@ -2276,10 +2328,11 @@ extern "C" int njas_probe(char* out, int cap) {
     for (int i = 0; i < kMaxVoices; i++) {
         Voice& v = g_voices[i];
         if (!v.active || !v.wave) continue;
-        app("v%02d hash=%08x wsys=%d grp=%d wave=%u ratio=%04x vol=%.4f key=%u vel=%u bank=%u prog=%u st=%u age=%u\n",
+        app("v%02d hash=%08x wsys=%d grp=%d wave=%u ratio=%04x vol=%.4f key=%u vel=%u bank=%u prog=%u st=%u age=%u chvol=%.4f notevol=%.4f oscvol=%.4f\n",
             i, v.wave->srcHash, (int)v.wave->wsysIdx, (int)v.wave->groupIdx, v.wave->id,
             (unsigned)(v.lastRatio * 4096.f + 0.5f), v.lastVol,
-            v.key, v.vel, v.bankProg >> 8, v.bankProg & 0xFF, v.oscs[0].state, v.age);
+            v.key, v.vel, v.bankProg >> 8, v.bankProg & 0xFF, v.oscs[0].state, v.age,
+            v.lastChVol, v.vol, v.lastOscVol);
     }
     return n;
 }
