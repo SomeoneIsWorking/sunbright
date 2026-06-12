@@ -559,6 +559,7 @@ struct Voice {
     float panSound = 0.5f, panEffect = 0.5f;  // unk68
     float fxSound = 0.f, dolbySound = 0.f;
     s32 gate = -1, gateLeft = -1;              // unk30 / unk34 (update ticks)
+    u32 age = 0;                               // subframes since start (diagnostics)
     bool pause = false;
     Oscillator oscs[2];
     OscData trackOscCopy[2];   // storage when track overwrites osc
@@ -1004,7 +1005,19 @@ static int track_note_on(Track& t, u8 chanIdx, s32 key, s32 vel, s32 gateTime) {
     // allocate voice
     Voice* v = nullptr;
     for (auto& cand : g_voices) if (!cand.active) { v = &cand; break; }
-    if (!v) { NJLOG("noteOn: out of voices\n"); return -1; }
+    if (!v) {
+        static u32 oov = 0;
+        if (dbg() && (oov++ % 2000) == 0) {
+            fprintf(stderr, "[njas] OUT OF VOICES #%u — table:\n", oov);
+            for (int i = 0; i < kMaxVoices; i++) {
+                Voice& d = g_voices[i];
+                fprintf(stderr, "  v%02d own=%p st=%u osc0=%u gate=%d/%d loop=%u age=%u vol=%.2f\n",
+                        i, (void*)d.owner, d.status, d.oscs[0].state, d.gate, d.gateLeft,
+                        d.wave ? d.wave->loop : 0, d.age, d.vol);
+            }
+        }
+        return -1;
+    }
     *v = Voice();
     v->active = true;
     v->status = 1;
@@ -1755,6 +1768,16 @@ static bool engine_init() {                // g_mtx held; returns true once runn
     return true;
 }
 
+// a worker with a bound ActiveSE is claimed even if its exported busy port (port2)
+// hasn't updated yet — the BMS only ticks after dispatch, so two requests in one
+// pending pass would otherwise both see it "idle" and double-dispatch (the voice-leak
+// root cause: the second id overwrites port4, the bindings mismatch, and the guest's
+// stop-by-id then releases the wrong slot, leaking looping ambient voices)
+static bool worker_claimed(Track* w) {
+    for (auto& a : g_active) if (a.used && !a.isBgm && a.worker == w) return true;
+    return false;
+}
+
 // find a category worker track: exports port9 == cat, idle (export port2 value == 0)
 static Track* find_worker(u32 cat, bool* any_for_cat) {
     *any_for_cat = false;
@@ -1768,7 +1791,7 @@ static Track* find_worker(u32 cat, bool* any_for_cat) {
             if (!w->portExport[9] && w->portValue[9] != cat) continue;
             if (w->portExport[9] && w->portValue[9] == cat) {
                 *any_for_cat = true;
-                if (w->portValue[2] == 0) return w;   // idle
+                if (w->portValue[2] == 0 && !worker_claimed(w)) return w;   // idle + unclaimed
             }
         }
     }
@@ -1817,7 +1840,8 @@ static void process_pending() {
         if (w) {
             ActiveSE* slot = nullptr;
             for (auto& a : g_active) if (!a.used) { slot = &a; break; }
-            if (slot) active_init(*slot, w, id, it->swbit, it->prio);
+            if (!slot) { ++it; continue; }   // registry full — wait (binding is mandatory)
+            active_init(*slot, w, id, it->swbit, it->prio);
             w->writePortImport(4, (u16)(id & 0x3FF));
             w->writePortImport(0, 1);
             NJLOG("se_start id=%05x cat=%u idx=%u → worker %p\n", id, cat, id & 0x3FF, (void*)w);
@@ -1863,6 +1887,7 @@ static void render_subframe() {
     memset(g_mixbuf, 0, sizeof(g_mixbuf));
     for (auto& v : g_voices) {
         if (!v.active) continue;
+        v.age++;
         Track& t = *v.owner;
         // per-update voice maintenance (updatecallDSPChannel param==0 path)
         v.oscPitch = 1.f; v.oscVol = 1.f;

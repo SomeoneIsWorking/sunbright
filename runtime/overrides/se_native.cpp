@@ -30,6 +30,9 @@ extern "C" void func_803029a4(CPUState& cpu);   // JAIBasic::setSeCategoryVolume
 extern "C" void func_8030a57c(CPUState& cpu);   // JAISound::setVolume
 extern "C" void func_8030a604(CPUState& cpu);   // JAISound::setPan
 extern "C" void func_8030a68c(CPUState& cpu);   // JAISound::setPitch
+extern "C" void func_8030b700(CPUState& cpu);   // JAISound::setSeInterVolume
+extern "C" void func_8030b8c8(CPUState& cpu);   // JAISound::setSeInterPan
+extern "C" void func_8030be20(CPUState& cpu);   // JAISound::setSeInterPitch
 
 static bool njas_enabled() {
     static int disabled = -1;
@@ -89,22 +92,45 @@ SUNBRIGHT_OVERRIDE(ov_setSeCategoryVolume, 0x803029a4u) {
     if (njas_enabled()) njas_se_category_volume((uint8_t)cpu.gpr[4], (uint8_t)cpu.gpr[5]);
     func_803029a4(cpu);
 }
-// JAISound::setVolume/setPan/setPitch(this=r3, f1=value, r4=time, r5=slot)
+// Outer JAISound::setVolume/setPan/setPitch (this=r3, f1=value, r4=time, r5=slot):
+// route SEQ (BGM) ids here. SE ids are captured one level down at the setSeInter*
+// setters, which also see all guest-computed 3D distance attenuation/pan (MSHandle
+// setSeDistance* funnels into them with the per-purpose slot numbers).
 SUNBRIGHT_OVERRIDE(ov_jaisound_setVolume, 0x8030a57cu) {
     const uint32_t id = handle_id(cpu.gpr[3]);
-    if (njas_enabled() && handled_id(id))
+    if (njas_enabled() && is_seq_id(id))
         njas_se_param(id, 0, (uint8_t)cpu.gpr[5], (float)cpu.fpr[1].ps0, cpu.gpr[4]);
     func_8030a57c(cpu);
 }
 SUNBRIGHT_OVERRIDE(ov_jaisound_setPan, 0x8030a604u) {
     const uint32_t id = handle_id(cpu.gpr[3]);
-    if (njas_enabled() && handled_id(id))
+    if (njas_enabled() && is_seq_id(id))
         njas_se_param(id, 1, (uint8_t)cpu.gpr[5], (float)cpu.fpr[1].ps0, cpu.gpr[4]);
     func_8030a604(cpu);
 }
 SUNBRIGHT_OVERRIDE(ov_jaisound_setPitch, 0x8030a68cu) {
     const uint32_t id = handle_id(cpu.gpr[3]);
-    if (njas_enabled() && handled_id(id))
+    if (njas_enabled() && is_seq_id(id))
         njas_se_param(id, 2, (uint8_t)cpu.gpr[5], (float)cpu.fpr[1].ps0, cpu.gpr[4]);
     func_8030a68c(cpu);
+}
+// Inner SE setters (this=r3, slot=r4, f1=value, time=r5): the funnel for BOTH the
+// public API and the per-frame distance attenuation (M2.5).
+SUNBRIGHT_OVERRIDE(ov_setSeInterVolume, 0x8030b700u) {
+    const uint32_t id = handle_id(cpu.gpr[3]);
+    if (njas_enabled() && is_se_id(id))
+        njas_se_param(id, 0, (uint8_t)cpu.gpr[4], (float)cpu.fpr[1].ps0, cpu.gpr[5]);
+    func_8030b700(cpu);
+}
+SUNBRIGHT_OVERRIDE(ov_setSeInterPan, 0x8030b8c8u) {
+    const uint32_t id = handle_id(cpu.gpr[3]);
+    if (njas_enabled() && is_se_id(id))
+        njas_se_param(id, 1, (uint8_t)cpu.gpr[4], (float)cpu.fpr[1].ps0, cpu.gpr[5]);
+    func_8030b8c8(cpu);
+}
+SUNBRIGHT_OVERRIDE(ov_setSeInterPitch, 0x8030be20u) {
+    const uint32_t id = handle_id(cpu.gpr[3]);
+    if (njas_enabled() && is_se_id(id))
+        njas_se_param(id, 2, (uint8_t)cpu.gpr[4], (float)cpu.fpr[1].ps0, cpu.gpr[5]);
+    func_8030be20(cpu);
 }

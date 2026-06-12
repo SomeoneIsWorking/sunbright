@@ -73,10 +73,26 @@ HardStream/THP audio: keep current path (it WORKS — it is what has been audibl
    jingle zcr 2476 (M1 unregressed), the game's own 30-frame jingle fade-on-skip is now
    audible, real category volumes captured (cat5=74 cat0=96…), 108 dispatches / 2163
    handle ops, zero unhandled BMS opcodes, zero missing waves, no voice/track leaks.
-   NOT yet modeled (M2.5 candidates): 3D distance attenuation/pan from actor positions
-   (the guest computes these into move-param slots we don't tee — only the JAISound
-   setVolume/setPan/setPitch API surface is captured), fxmix/dolby outer params,
-   per-category concurrent-sound limits and priority stealing.
+   **M2.5 — 3D distance attenuation: ✅ DONE (2026-06-12).** The SE param tees moved one
+   level down to the inner setters `setSeInterVolume` 0x8030b700 / `setSeInterPan`
+   0x8030b8c8 / `setSeInterPitch` 0x8030be20 (this=r3, slot=r4, f1=value, time=r5) — the
+   funnel for BOTH the public JAISound API and the per-frame guest distance code
+   (MSHandle::setSeDistance* → setSeInter*(4, …)). Verified: ambient SEs (0x5004/0x5005)
+   receive per-frame vol/pan/pitch (e.g. v=0.965 / pan 0.542 / pitch 0.95±random wobble,
+   4-frame smoothing) — 23 k param events over a 130 s run. Outer setVolume/setPan/setPitch
+   tees now route seq (BGM) ids only.
+   Still NOT modeled: fxmix/dolby outer params, per-category concurrent-sound limits and
+   priority stealing.
+   **GOTCHA — worker dispatch must claim, not just read port2 (fixed 2026-06-12):** the
+   worker's exported busy port only updates after its BMS ticks, so two requests in one
+   pending pass both saw the worker "idle" and double-dispatched (second id overwrote
+   port4; bindings mismatched; the guest's stop-by-id then released the wrong slot and
+   looping ambient voices leaked until all 64 were exhausted — d2e roughened to 0.4).
+   `find_worker` now also rejects workers with a bound ActiveSE (`worker_claimed`), and
+   dispatch is skipped when the registry has no free slot (binding is mandatory).
+   Verified: 0 out-of-voices over a 150 s gameplay run (was 8574), clean d2e ≤0.14.
+   Diagnostics: out-of-voices now dumps the 64-voice table (owner/state/gate/loop/age)
+   under SUNBRIGHT_DBG_NJAS.
 3. **M3 — BGM: ✅ DONE (2026-06-12).** Sequenced music plays natively:
    - **BARC table** (mSound.aaf chunk 4, magic `BARC----`): 48 entries, 0x20 bytes each
      (name[14] @+0, u32 offset @+0x18, u32 size @+0x1C), offsets into sequence.arc

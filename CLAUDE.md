@@ -493,8 +493,14 @@ t_select → k_camera (fade=20 stop) → k_dolpic, 831 noteOns, sustained music 
 1.5–3k, 0 unhandled BMS ops, no crash 150 s. Open risk: per-scene wave-id collisions in the
 merged WSYS tables (none observed; revisit if a stage BGM sounds wrong).
 
-Next: native audio M2.5 (SE 3D distance attenuation/pan), M4 (delete the guest audio path)
-per docs/native_audio_engine.md; oracle ear-check of BGM fidelity (tempo/instruments); residual
+**NATIVE AUDIO M2.5 ✅ (2026-06-12): SE 3D distance attenuation/pan/pitch native.** SE param
+tees moved to the inner setters setSeInterVolume 0x8030b700 / Pan 0x8030b8c8 / Pitch
+0x8030be20 (slot=r4, f1=value, time=r5) — the funnel for the public API AND the per-frame
+MSHandle distance code. Verified: ambient SEs get per-frame vol/pan/pitch with 4-frame
+smoothing (23k param events / 130 s). Outer setVolume/Pan/Pitch tees route seq ids only.
+
+Next: native audio M4 (delete the guest audio path) per docs/native_audio_engine.md; oracle
+ear-check of BGM fidelity (tempo/instruments); fxmix/dolby + category concurrency; residual
 backpressure wedge (~1/3 runs), THP-transition NULL-deref read, gameplay/Delfino, the recomp
 TTrack-tick root cause, FP/edge-case accuracy, widescreen fade overlays / 3D screenspace
 effects / culling (user backlog).
