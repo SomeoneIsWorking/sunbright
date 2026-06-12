@@ -2344,6 +2344,18 @@ static void process_pending() {
                     if (score > worstScore) { worstScore = score; worst = &a; }
                 }
             }
+            // Mono enforcement (MSoundSE::checkMonoSound, owned natively — the guest walk
+            // reads its dead registry and is no-op'd): a mono-flagged (swbit 0x4000) request
+            // stops any ACTIVE mono sound on the same actor with a DIFFERENT id.
+            if (it->swbit & 0x4000) {
+                for (auto& a : g_active) {
+                    if (!a.used || a.isBgm || a.id == id) continue;
+                    if (a.posPtr != it->posPtr || !(a.swbit & 0x4000)) continue;
+                    NJLOG("se_mono id=%05x stops %05x (same actor)\n", id, a.id);
+                    active_stop_now(a);
+                    break;
+                }
+            }
             if (same && !(it->swbit & 0x80000)) {
                 const u32 cls = id & 0xC00;
                 const bool alive = same->stopFade < 0 && same->worker

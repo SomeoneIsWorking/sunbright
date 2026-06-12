@@ -136,6 +136,18 @@ SUNBRIGHT_OVERRIDE(ov_stopSoundHandle, 0x80302224u) {
     if (njas_enabled() && handled_id(id)) njas_se_stop(id, cpu.gpr[5], posPtr);
     func_80302224(cpu);
 }
+// MSoundSE::checkMonoSound (0x80017ddc) — mono-flag (swbit 0x4000) enforcement: a new
+// mono request stops a DIFFERENT-id mono sound on the same actor. Correct logic, wrong
+// data: it walks the GUEST registry, where sounds never finish under the native engine —
+// a stale id-0 (spray) entry lingered forever and every other mono request from Mario
+// "stopped" it each frame, which the tee forwarded into killing the REAL spray (the
+// spray-breaks-again regression). The enforcement is implemented natively at dispatch
+// (native_jas.cpp, both sides' swbits are known there); the guest walk does not run.
+SUNBRIGHT_OVERRIDE(ov_checkMonoSound, 0x80017ddcu) {
+    if (!njas_enabled()) { if (RecompFunc o = recomp_raw(0x80017ddcu)) o(cpu); else call_ppc(cpu, cpu.lr); return; }
+    cpu.gpr[3] = 1;   // bool true, like the guest
+}
+
 // JAIBasic::checkNextFrameSe (0x80305204) — the guest per-frame SE processor: distance
 // culls, handle-state transitions, port writes to GUEST tracks. Under the native engine
 // the guest JAS stack is dead weight, its camera/track state is garbage, and this loop's
