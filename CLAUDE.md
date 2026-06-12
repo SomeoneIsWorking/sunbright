@@ -469,9 +469,22 @@ Arglist in the tool is byte-stream-verified). Engine debug: `SUNBRIGHT_DBG_NJAS=
 `SUNBRIGHT_NO_NJAS=1`; oracle (DISABLE_RECOMP) is automatically unaffected (overrides never
 dispatch there).
 
-Next: native audio M2 (full SE coverage: category volumes, stop/pan/pitch handles, JAISoundInfo
-volume/pitch application, busy-worker retrigger queue) and M3 (BGM: multi-track BMS via
-Vload arc entries, wScene bank residency) per docs/native_audio_engine.md; residual
+**NATIVE AUDIO M2 ✅ (2026-06-12): the JAI SE handle layer is native** — TOuterParam port on
+native tracks (vol×/pitch×/pan-replace, JASTrack.cpp:391 semantics), per-sound move-param
+slots (9× vol/pitch/pan) flushed at a 60 Hz JAI tick, tees keyed by sound id (guest
+JAISound+0x8) for stopSoundHandle 0x80302224 / setVolume/setPan/setPitch 0x8030a57c/a604/a68c
+/ setSeCategoryVolume 0x803029a4; startSoundBasic captures JAISoundInfo swbit+prio (gpr[9]).
+Same-id retrigger (unless swbit bit19), idle release via worker port2 busy→idle, fade-stop =
+vol slot 6 → 0 (stopSoundHandle semantics). Verified 100 s headless: jingle zcr 2476
+(unregressed), the game's own 30-frame jingle fade-on-skip now audible, real category volumes
+captured (cat5=74…), 0 unhandled BMS ops / 0 missing waves / no voice leaks. Raw-dump
+analyzer: `tools/audio/raw_profile.py` (per-second RMS+zcr of njas_solo.raw). NOT yet: 3D
+distance attenuation/pan (guest computes those into internal slots we don't tee), fxmix/dolby
+outer, per-category concurrency limits/priority stealing — M2.5 list in
+docs/native_audio_engine.md.
+
+Next: native audio M3 (BGM: multi-track BMS via Vload arc entries, wScene bank residency)
+per docs/native_audio_engine.md; M2.5 SE distance attenuation; residual
 backpressure wedge (~1/3 runs), THP-transition NULL-deref read, gameplay/Delfino, the recomp
 TTrack-tick root cause, FP/edge-case accuracy, widescreen fade overlays / 3D screenspace
 effects / culling (user backlog).

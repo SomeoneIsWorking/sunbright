@@ -651,6 +651,9 @@ struct Track {
     // track ports
     u16 portValue[16] = {};
     u8 portImport[16] = {}, portExport[16] = {};
+    // TOuterParam port (JASTrack.cpp:391-405) — JAI-side volume/pitch/pan on SE workers
+    float outerVol = 1.f, outerPitch = 1.f, outerPan = 0.5f;
+    u16 outerSwitch = 0;   // 1=vol 2=pitch 8=pan
     // effective channel params (TChannelMgr mVolume etc.)
     float chVol = 1.f, chPitch = 1.f, chPan = 0.5f, chFx = 0.f, chDolby = 0.f;
     u32 updateFlags = 0;           // unk3B4
@@ -866,6 +869,15 @@ static void track_update(Track& t) {
             case 4: dolby *= off; break;
             }
         }
+    }
+    // TOuterParam application (decomp TTrack::updateTrack): outer multiplies/replaces the
+    // track's own contribution before the parent combine. Pan uses panCalc with weight
+    // panPower[3]/32767 (default 0x7FFF → outer pan replaces).
+    if (t.outerSwitch & 1) vol *= t.outerVol;
+    if (t.outerSwitch & 2) pitch *= t.outerPitch;
+    if (t.outerSwitch & 8) {
+        float w = t.panPower[3] / 32767.f;
+        pan = pan * (1.f - w) + t.outerPan * w;
     }
     if (!t.parent || (t.trackMode & 1)) {
         t.chVol = vol; t.chPitch = pitch; t.chPan = pan; t.chFx = fx; t.chDolby = dolby;
@@ -1576,8 +1588,91 @@ static float g_mixbuf[kSub * 2];
 static int g_mix_have = 0, g_mix_pos = 0;
 static FILE* g_solo_dump = nullptr;   // SUNBRIGHT_DUMP_NJAS: engine-only wav
 
-struct PendingSE { u32 id; };
+struct PendingSE { u32 id; u32 swbit; u8 prio; u16 age = 0; };
 static std::vector<PendingSE> g_pending;
+
+// ---- M2: SE handle layer (category volumes, per-sound move params, stop/fade).
+// Mirrors the JAI side that cannot reach JAS under recomp: JAISound handle ops arrive
+// via the se_native.cpp tees keyed by sound id; per JAI frame (60 Hz) the move-param
+// products are flushed to the worker track's TOuterParam, exactly like
+// JAIBasic::sendSeAllParameter → JAISystemInterface::setSePortParameter.
+static float g_catvol[256];
+static bool g_catvol_init = false;
+
+struct MovePara {                        // JAISound::initMoveParameter semantics
+    float cur = 1.f, target = 1.f, step = 0.f; u32 left = 0;
+    void set(float v, u32 time) {
+        target = v;
+        if (time == 0) { cur = v; left = 0; step = 0.f; return; }
+        step = (v - cur) / (float)time; left = time;
+    }
+    void tick() { if (left) { cur += step; if (--left == 0) cur = target; } }
+};
+struct ActiveSE {
+    bool used = false;
+    Track* worker = nullptr;
+    u32 id = 0, swbit = 0;
+    u8 prio = 0;
+    bool seenBusy = false;               // worker's port2 went nonzero since dispatch
+    u16 startAge = 0;                    // ticks since dispatch (busy-detect grace)
+    MovePara vol[9], pitch[9], pan[9];   // pitch/pan slots init neutral below
+    bool panTouched = false;
+    s32 stopFade = -1;                   // >=0: fading to stop, counts down
+};
+static ActiveSE g_active[32];
+
+static void active_init(ActiveSE& a, Track* w, u32 id, u32 swbit, u8 prio) {
+    a = ActiveSE();
+    a.used = true; a.worker = w; a.id = id; a.swbit = swbit; a.prio = prio;
+    for (int i = 0; i < 9; i++) { a.pan[i].cur = a.pan[i].target = 0.5f; }
+}
+static void worker_outer_reset(Track* w) {
+    w->outerSwitch = 0; w->outerVol = 1.f; w->outerPitch = 1.f; w->outerPan = 0.5f;
+}
+static void active_stop_now(ActiveSE& a) {
+    if (a.worker) {
+        a.worker->writePortImport(0, 0);                 // looping snippets poll port0
+        for (int i = 0; i < 8; i++) track_note_off(*a.worker, (u8)i, 0);
+        worker_outer_reset(a.worker);
+    }
+    a.used = false;
+}
+static ActiveSE* active_find(u32 id) {
+    for (auto& a : g_active) if (a.used && a.id == id) return &a;
+    return nullptr;
+}
+
+// one JAI frame (60 Hz): advance move params, flush products to worker outer params
+static void jai_tick() {
+    for (auto& a : g_active) {
+        if (!a.used) continue;
+        Track* w = a.worker;
+        if (a.startAge < 0xFFFF) a.startAge++;
+        // worker went busy then idle again → sound ended, release the slot
+        if (w->portValue[2] != 0) a.seenBusy = true;
+        if (a.seenBusy && w->portValue[2] == 0) { worker_outer_reset(w); a.used = false; continue; }
+        if (!a.seenBusy && a.startAge > 60) { worker_outer_reset(w); a.used = false; continue; }
+        if (a.stopFade == 0) { active_stop_now(a); continue; }
+        if (a.stopFade > 0) a.stopFade--;
+        float vp = 1.f, pp = 1.f, pn = 0.5f;
+        for (int i = 0; i < 9; i++) {
+            a.vol[i].tick(); a.pitch[i].tick(); a.pan[i].tick();
+            vp *= a.vol[i].cur;
+            pp *= a.pitch[i].cur;
+            pn += a.pan[i].cur - 0.5f;
+        }
+        const u32 cat = (a.id >> 12) & 0xFF;
+        w->outerVol = g_catvol[cat] * vp;
+        w->outerPitch = pp;
+        w->outerSwitch |= 1 | 2;
+        if (a.panTouched) {
+            if (pn < 0.f) pn = 0.f; if (pn > 1.f) pn = 1.f;
+            w->outerPan = pn;
+            w->outerSwitch |= 8;
+        }
+        w->updateFlags |= 1;             // re-run track_update with new outer params
+    }
+}
 
 // Data load runs on its own thread: it decodes every wave in the ROM (~1500 AFC
 // streams) and MUST NOT block either the emu thread (se_start caller) or the
@@ -1638,19 +1733,27 @@ static void process_pending() {
     for (auto it = g_pending.begin(); it != g_pending.end();) {
         const u32 id = it->id;
         const u32 cat = (id >> 12) & 0xFF;
+        // same-id retrigger (JAISeEntry::storeBuffer): a new request for an id already
+        // playing stops the old instance first, unless swbit bit19 allows stacking
+        if (ActiveSE* old = active_find(id)) {
+            if (!(it->swbit & 0x80000)) active_stop_now(*old);
+        }
         bool any = false;
         Track* w = find_worker(cat, &any);
         if (w) {
+            ActiveSE* slot = nullptr;
+            for (auto& a : g_active) if (!a.used) { slot = &a; break; }
+            if (slot) active_init(*slot, w, id, it->swbit, it->prio);
             w->writePortImport(4, (u16)(id & 0x3FF));
             w->writePortImport(0, 1);
             NJLOG("se_start id=%05x cat=%u idx=%u → worker %p\n", id, cat, id & 0x3FF, (void*)w);
             it = g_pending.erase(it);
-        } else if (!any) {
-            // workers not opened yet (init BMS still booting) — keep pending
-            ++it;
+        } else if (g_inited && ++it->age > 800) {
+            // expire stale requests (~2 s of subframes with no worker): all busy or unknown category
+            NJLOG("se_start id=%05x expired (no idle worker, any_for_cat=%d)\n", id, any);
+            it = g_pending.erase(it);
         } else {
-            // all busy: retrigger on the busy one next tick (M1: just wait)
-            ++it;
+            ++it;   // workers not opened yet (init BMS booting) or all busy — wait
         }
     }
 }
@@ -1658,6 +1761,10 @@ static void process_pending() {
 // one subframe: tick sequencer + render kSub frames into g_mixbuf
 static void render_subframe() {
     process_pending();
+    // JAI frame clock: handle/move-param flush runs at 60 Hz (subframe rate ≈ 400.36 Hz)
+    static float jai_acc = 0.f;
+    jai_acc += 60.f * kSub / kDacRate;
+    while (jai_acc >= 1.f) { jai_acc -= 1.f; jai_tick(); }
     if (g_root && g_root->active) {
         g_root->tickAcc += g_root->tickPerCall;
         if (g_root->tickAcc > 1.f) {
@@ -1775,11 +1882,50 @@ extern "C" void njas_mix(int16_t* buf, size_t frames) {
     }
 }
 
-// Start an SE natively (called from the startSoundActor override). SE ids only
-// (top bits 0); seq/stream ids are ignored here.
-extern "C" void njas_se_start(uint32_t id) {
+// Start an SE natively (called from the startSoundBasic tee). SE ids only (top bits 0);
+// seq/stream ids are ignored here. swbit/prio come from the guest JAISoundInfo.
+extern "C" void njas_se_start(uint32_t id, uint32_t swbit, uint8_t prio) {
     using namespace njas;
     std::lock_guard<std::mutex> lk(g_mtx);
-    engine_init();                 // kicks the async data load on first call
-    g_pending.push_back({ id });   // queued until the engine is running
+    if (!g_catvol_init) { for (auto& v : g_catvol) v = 1.f; g_catvol_init = true; }
+    engine_init();                            // kicks the async data load on first call
+    g_pending.push_back({ id, swbit, prio }); // queued until the engine is running
+}
+
+// Stop a playing SE (JAIBasic::stopSoundHandle tee). fade = frames to fade out (0 = now).
+extern "C" void njas_se_stop(uint32_t id, uint32_t fade) {
+    using namespace njas;
+    std::lock_guard<std::mutex> lk(g_mtx);
+    // also drop any not-yet-dispatched request for this id
+    for (auto it = g_pending.begin(); it != g_pending.end();)
+        it = (it->id == id) ? g_pending.erase(it) : it + 1;
+    ActiveSE* a = active_find(id);
+    if (!a) return;
+    if (fade == 0) { active_stop_now(*a); return; }
+    a->vol[6].set(0.f, fade);                 // stopSoundHandle: setSeInterVolume(6, 0, fade)
+    a->stopFade = (s32)fade;
+    NJLOG("se_stop id=%05x fade=%u\n", id, fade);
+}
+
+// Handle param op (JAISound::setVolume/setPan/setPitch tees). kind: 0=vol 1=pan 2=pitch.
+extern "C" void njas_se_param(uint32_t id, int kind, uint8_t slot, float value, uint32_t time) {
+    using namespace njas;
+    std::lock_guard<std::mutex> lk(g_mtx);
+    ActiveSE* a = active_find(id);
+    if (!a || slot >= 9) return;
+    switch (kind) {
+    case 0: a->vol[slot].set(value, time); break;
+    case 1: a->pan[slot].set(value, time); a->panTouched = true; break;
+    case 2: a->pitch[slot].set(value, time); break;
+    }
+    NJLOG("se_param id=%05x kind=%d slot=%u v=%.3f t=%u\n", id, kind, slot, value, time);
+}
+
+// Category master volume (JAIBasic::setSeCategoryVolume tee), vol = 0..127.
+extern "C" void njas_se_category_volume(uint8_t cat, uint8_t vol) {
+    using namespace njas;
+    std::lock_guard<std::mutex> lk(g_mtx);
+    if (!g_catvol_init) { for (auto& v : g_catvol) v = 1.f; g_catvol_init = true; }
+    g_catvol[cat] = vol / 127.f;
+    NJLOG("se_catvol cat=%u vol=%u\n", cat, vol);
 }

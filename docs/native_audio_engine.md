@@ -53,7 +53,30 @@ HardStream/THP audio: keep current path (it WORKS — it is what has been audibl
    `readport 4` → `call jumptable[port4*3]` into a per-sound snippet (e.g. cat-7 table at
    0xdbc, 304 entries; 0x7915 → snippet: r6=bank3/prog3, noteon key 60 vel 127, wait till
    note end). Snippets set r6 = (bank<<8)|prog and use simpleadsr/oscfull.
-2. **M2 — all SE**: full SE BMS opcode coverage + category volumes + handles (stop/pan/pitch).
+2. **M2 — all SE: ✅ DONE (2026-06-12).** The JAI handle layer is native:
+   - **TOuterParam port** on native tracks (vol multiply / pitch multiply / pan replace
+     with weight `panPower[3]/32767`, applied before the parent combine — JASTrack.cpp:391).
+   - **Per-sound move-param slots** (9× vol/pitch/pan, JAISound::initMoveParameter
+     semantics) flushed to the worker's outer params once per JAI frame (60 Hz tick
+     derived from the subframe clock), like sendSeAllParameter → setSePortParameter.
+   - **Tees** (`overrides/se_native.cpp`, keyed by sound id read from guest JAISound+0x8):
+     stopSoundHandle 0x80302224 (fade = vol slot 6 → 0 over N frames, then stop — matching
+     `setSeInterVolume(6, 0, fade)`), JAISound::setVolume/setPan/setPitch
+     0x8030a57c/a604/a68c, setSeCategoryVolume 0x803029a4 (`unk28[cat] = v/127`).
+     startSoundBasic now also captures JAISoundInfo swbit/prio (gpr[9]).
+   - **Lifecycle**: dispatch binds an ActiveSE{worker, id}; released when the worker's
+     exported port2 goes busy→idle; same-id retrigger stops the old instance first unless
+     swbit bit19 (JAISeEntry::storeBuffer semantics); pending requests expire after ~2 s.
+   - Stop signal = `writePortImport(0, 0)` (looping snippets poll port0) + note-off all 8
+     worker channels (envelope release, not hard cut).
+   Verified (100 s headless boot→menus, `tools/audio/raw_profile.py` on the solo dump):
+   jingle zcr 2476 (M1 unregressed), the game's own 30-frame jingle fade-on-skip is now
+   audible, real category volumes captured (cat5=74 cat0=96…), 108 dispatches / 2163
+   handle ops, zero unhandled BMS opcodes, zero missing waves, no voice/track leaks.
+   NOT yet modeled (M2.5 candidates): 3D distance attenuation/pan from actor positions
+   (the guest computes these into move-param slots we don't tee — only the JAISound
+   setVolume/setPan/setPitch API surface is captured), fxmix/dolby outer params,
+   per-category concurrent-sound limits and priority stealing.
 3. **M3 — BGM**: sequenced music (multi-track BMS, tempo, instruments across wScene banks,
    ARAM-equivalent bank residency = host RAM, no ARAM).
 4. **M4 — delete the guest path**: audioproc thread never started; JAS DSP/ucode/driver/mails
