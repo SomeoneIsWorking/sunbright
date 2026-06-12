@@ -50,17 +50,20 @@ per-actor gameplay logic that stays recompiled until the engine layers are owned
 4. Potentially more audio issues behind those two.
 4a. **FLUDD nozzle-change SE too loud** (user, 2026-06-12 pm) — distance attenuation not
     applying, or wrong base volume, when the water device changes shape.
-4b. **Spray-spam silence** (user, 2026-06-12 pm) — standing still and spamming the spray
-    button: first spray audible, subsequent ones silent. Likely native SE retrigger path
-    (same-id retrigger / continuous-class revive / swbit bit19) mishandling rapid restarts.
+4b. **Spray-spam silence — FIXED** (1b18a0c, user-verified): four stacked lifecycle bugs
+    (missing worker stop-interrupt → permanent worker leak; wrong capacity/steal model;
+    finished-instance revive replaying one-shots; stale stops killing living instances).
+    SE worker protocol RE'd + documented in docs/re_notes/audio_re_findings.md. Next
+    audio milestone: delete the worker indirection — direct per-sound snippet dispatch.
     (Delfino drums issue #3: FIXED cf8ad85 — BMS 0xE7 = syncCPU, ported callback.)
 5. **60 fps model interpolation** — standing task (docs/model_interpolation.md).
-6. **Map-screen freezes = GPU-backpressure waits** (user-diagnosed) — 1–2 s whole-game
-   freezes opening/closing/using the map, also at level entry (e.g. first level in front
-   of Mario). User: "I don't think we have any use for backpressure waits" — with
-   TDrawSyncManager native (sms_drawsync_lossproof) the CPU↔GPU pacing is owned, so the
-   vi.gpu_backpressure VIWait drain may be removable outright. → revisit wait_vi_field /
-   backpressure spin; kill or bound it, verify with vi-perf phase line during map open.
+6. **Map-screen freezes — root-caused + fixed (pending user verify)**: the freeze was
+   synchronous Vulkan pipeline compilation on first-seen materials (map open / level entry)
+   stalling the GPU thread; the CPU then hit the backpressure wait (vi-perf showed
+   backpressure=2684ms windows). Fix: GFX_SHADER_COMPILATION_MODE = AsynchronousUberShaders
+   (main_sdl.cpp). The backpressure wait itself STAYS: a 300 s A/B proved removing it
+   trades freezes for VK_ERROR_OUT_OF_DEVICE_MEMORY at ~4 min (the wait incidentally
+   bounds Dolphin's GPU-side resource growth; that leak is a separate open item).
 7. **User directive:** if any of these trace to a Dolphin dependency, reduce that dependency
    (own the behavior natively) rather than working around it.
 

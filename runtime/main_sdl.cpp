@@ -895,6 +895,15 @@ int main(int argc, char* argv[]) {
         Config::SetBase(Config::GFX_EFB_SCALE, scale);
         fprintf(stderr, "[sunbright] Internal resolution scale: %d×\n", scale);
     }
+    // Shader compilation: async ubershaders. The Dolphin default (Synchronous specialized
+    // shaders) stalls the GPU thread for the full pipeline compile on every first-seen
+    // material/effect — map open/close and level entry hitched for seconds, the CPU hit the
+    // GPU-backpressure wait, and the WHOLE game froze 1–2 s (user-reported). Ubershaders
+    // render those draws generically while the specialized pipeline compiles in the
+    // background: no stall, no skipped draws, identical output once warmed.
+    Config::SetBase(Config::GFX_SHADER_COMPILATION_MODE,
+                    ShaderCompilationMode::AsynchronousUberShaders);
+    Config::SetBase(Config::GFX_WAIT_FOR_SHADERS_BEFORE_STARTING, false);
     // Widescreen — handled NATIVELY in the port (runtime/overrides/scene_render.cpp).
     // We widen the game's own 3D projection aspect at its source (the JDrama camera's
     // JSGSetProjectionAspect) to 16:9, and let Dolphin's per-frame aspect auto-detection
