@@ -419,11 +419,40 @@ static inline void charge_guest_time() {
 
 extern "C" void sb_trace(const char* tag, u32 a, u32 b, u32 c, u32 d);   // probe /tracelog ring
 
+// ---- dynamic call census (SUNBRIGHT_CALL_CENSUS=1) --------------------------------
+// Every emitted bl/bctrl dispatches through call_ppc, so counting here yields the
+// game's TRUE dynamic call footprint (which engine paths actually run, and how hot).
+// Fixed u32 array over the 24 MB text range (~24 MB host RAM), relaxed atomic
+// increments (counts are statistics). Dump via sb_census_dump → call_census.tsv;
+// aggregation drives docs/port_roadmap.md ordering (port-everything directive).
+static u32* g_census;
+static bool g_census_on;
+static struct CensusInit {
+    CensusInit() {
+        const char* e = getenv("SUNBRIGHT_CALL_CENSUS");
+        if (e && *e && *e != '0') {
+            g_census = (u32*)calloc(0x1800000 / 4, sizeof(u32));
+            g_census_on = g_census != nullptr;
+        }
+    }
+} s_census_init;
+extern "C" void sb_census_dump(const char* path) {
+    if (!g_census_on) return;
+    FILE* f = fopen(path && *path ? path : "scratch/logs/call_census.tsv", "w");
+    if (!f) return;
+    for (u32 i = 0; i < 0x1800000 / 4; i++)
+        if (g_census[i])
+            fprintf(f, "%08x\t%u\n", 0x80000000u + i * 4, g_census[i]);
+    fclose(f);
+}
+
 void call_ppc(CPUState& cpu, u32 address) {
 #ifdef HAVE_DOLPHIN_CORE
     if (sb_is_wild_branch_target(address)) sb_fatal_wild_branch(address, cpu);
     charge_guest_time();
 #endif
+    if (g_census_on && address >= 0x80000000u && address < 0x81800000u)
+        __atomic_fetch_add(&g_census[(address - 0x80000000u) >> 2], 1, __ATOMIC_RELAXED);
     // SUNBRIGHT_HUDCALLS: log each DISTINCT function called during the in-game HUD draw (g_in_hud),
     // to find the indirect element-draw functions (coins/water gauge/lives) that aren't perform's
     // direct calls. Deduped so the log is the set of HUD-involved functions, not every call.

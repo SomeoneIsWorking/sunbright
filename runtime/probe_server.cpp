@@ -69,6 +69,7 @@ extern "C" void sb_trace(const char* tag, uint32_t a, uint32_t b, uint32_t c, ui
 #endif
 
 extern "C" int njas_probe(char* out, int cap);
+extern "C" void sb_census_dump(const char* p);
 namespace {
 
 #ifdef HAVE_DOLPHIN_CORE
@@ -237,6 +238,12 @@ std::string handle_repl(const char* path) {
                 if (c >= 0x80000000u && c < 0x81800000u && c != t) stk[sp++] = { c, e.d + 1 };
             }
         }
+        return std::string(buf, n);
+    }
+    if (strncmp(path, "/census", 7) == 0) {
+        // dump the dynamic call census (SUNBRIGHT_CALL_CENSUS=1) → call_census.tsv
+        sb_census_dump("scratch/logs/call_census.tsv");
+        app("census dumped to scratch/logs/call_census.tsv\n");
         return std::string(buf, n);
     }
     if (strncmp(path, "/njas", 5) == 0) {
