@@ -895,15 +895,16 @@ int main(int argc, char* argv[]) {
         Config::SetBase(Config::GFX_EFB_SCALE, scale);
         fprintf(stderr, "[sunbright] Internal resolution scale: %d×\n", scale);
     }
-    // Shader compilation: async ubershaders. The Dolphin default (Synchronous specialized
-    // shaders) stalls the GPU thread for the full pipeline compile on every first-seen
-    // material/effect — map open/close and level entry hitched for seconds, the CPU hit the
-    // GPU-backpressure wait, and the WHOLE game froze 1–2 s (user-reported). Ubershaders
-    // render those draws generically while the specialized pipeline compiles in the
-    // background: no stall, no skipped draws, identical output once warmed.
-    Config::SetBase(Config::GFX_SHADER_COMPILATION_MODE,
-                    ShaderCompilationMode::AsynchronousUberShaders);
-    Config::SetBase(Config::GFX_WAIT_FOR_SHADERS_BEFORE_STARTING, false);
+    // Shader compilation (user-directed: NO ubershaders): synchronous specialized shaders +
+    // persistent per-game pipeline cache + boot-time precompile of every cached pipeline.
+    // The map-open/level-entry whole-game freezes were first-seen-material pipeline compiles
+    // stalling the GPU thread (the CPU then froze in the backpressure wait). With the disk
+    // cache, each material compiles ONCE per machine ever; WAIT_FOR_SHADERS precompiles the
+    // whole cached set during boot, so warmed sessions never hitch. The cache self-tailors
+    // to SMS as scenes are visited; headless warm-up runs can pre-seed it.
+    Config::SetBase(Config::GFX_SHADER_COMPILATION_MODE, ShaderCompilationMode::Synchronous);
+    Config::SetBase(Config::GFX_SHADER_CACHE, true);
+    Config::SetBase(Config::GFX_WAIT_FOR_SHADERS_BEFORE_STARTING, true);
     // Widescreen — handled NATIVELY in the port (runtime/overrides/scene_render.cpp).
     // We widen the game's own 3D projection aspect at its source (the JDrama camera's
     // JSGSetProjectionAspect) to 16:9, and let Dolphin's per-frame aspect auto-detection

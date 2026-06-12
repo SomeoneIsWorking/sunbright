@@ -2828,9 +2828,15 @@ extern "C" void njas_se_stop(uint32_t id, uint32_t fade, uint32_t posPtr) {
             }
         }
     }
-    // also drop any not-yet-dispatched request for this instance
-    for (auto it = g_pending.begin(); it != g_pending.end();)
-        it = (it->id == id && (!posPtr || it->posPtr == posPtr)) ? g_pending.erase(it) : it + 1;
+    // Drop any not-yet-dispatched request for this instance — but NOT for class-0 SEs:
+    // the wedged guest stack emits a stop for these EVERY frame, and the game's per-frame
+    // re-request would be purged before dispatch (observed live: 178 spray requests, one
+    // start — request+stop pairs cancelling each frame after the first play ended).
+    // Class-0 end-of-life is native-owned (release on request-cease); guest stops add
+    // nothing for pending entries.
+    if ((id & 0xC00) != 0)
+        for (auto it = g_pending.begin(); it != g_pending.end();)
+            it = (it->id == id && (!posPtr || it->posPtr == posPtr)) ? g_pending.erase(it) : it + 1;
     // Exact instance match ONLY (identity = id + actor pos Vec*). The old id-only
     // fallback pass let a STALE guest stop (dead instance's pos) kill the LIVING
     // instance of the same id every frame — the per-frame request then restarted it:

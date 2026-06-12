@@ -150,58 +150,14 @@ SUNBRIGHT_OVERRIDE(ov_VIWaitForRetrace, VI_WAIT) {
     // Dolphin's VI presents fields at the heartbeat rate (emu speed ~1x in render loops) instead
     // of crawling at the per-call cycle-charge rate (~0.014x — frames every 1.2s, 2026-06-10).
     { PhaseTimer _t("field", &g_ph_field); sunbright_wait_vi_field(cpu); }
-    // GPU backpressure — the half of the GC frame contract the host-clock pacing alone misses.
-    // On hardware the CPU can never run far ahead of the GPU: the CP FIFO + draw-sync breakpoint
-    // throttle it to ~2 frames. Our native heartbeat returned at a fixed 60 Hz regardless, so at
-    // boot (first-use pipeline compilation makes the host GPU hitch for ~seconds) the game ran
-    // 18+ frames ahead; Dolphin's PixelEngine coalesces draw-sync token interrupts (keeps only
-    // the latest), the TDrawSyncManager thread lost tokens, the breakpoint stopped advancing,
-    // and the pipeline deadlocked at the hi watermark (2026-06-10). Wait host-side until the
-    // FIFO has drained to a sane depth before starting the next frame — exactly the stall real
-    // hardware would impose, delivered as a host sleep instead of a guest spin.
-    {
-        PhaseTimer _t("bp", &g_ph_bp);
-        auto& sys  = Core::System::GetInstance();
-        auto& fifo = sys.GetCommandProcessor().GetFifo();
-        const u32 fifo_cap = fifo.CPEnd.load() - fifo.CPBase.load();
-        if (fifo_cap > 0x2000u) {
-            // Threshold cap/8: tight on purpose. A watermark-relative threshold (hiwm*3/4) was
-            // tried and DEADLOCKED again — letting the queue grow re-enters the token-coalescing
-            // /suspension regime (Dolphin PE keeps only the latest token). Until token delivery
-            // is provably loss-free at depth, keep the queue shallow. [[no-bandaids: the slow
-            // serial cycle is the GPU-side drain rate, being root-caused separately.]]
-            const u32 threshold = fifo_cap / 8;
-            int spins = 0;
-            while (fifo.CPReadWriteDistance.load() > threshold && spins++ < 2500) {
-                SB_SPIN_GUARD("vi.gpu_backpressure");
-                sys.GetFifo().RunGpu();                    // distance > threshold here: data IS pending
-                // The drain needs the WHOLE pipeline serviced, not just the GPU thread: the PE
-                // draw-sync token lands as a CoreTiming event (needs Advance), its interrupt as a
-                // native dispatch, and the TDrawSyncManager thread (which moves the breakpoint)
-                // needs the nthr token. A bare host sleep here starved all three (2026-06-10).
-                // Keep the DSP running while the CPU waits on the GPU: drive CoreTiming up to the
-                // governor target each spin, not one event per 200 us — a multi-second drain
-                // otherwise stops audio production cold (the native sink's underrun bursts all
-                // correlated with backpressure spikes, 2026-06-11). On hardware the DSP is an
-                // independent processor; a GPU stall never starves the speakers.
-                int k = 0;
-                do { sunbright_poll_yield(); } while (k++ < 256 && !sunbright_time_ahead_now());
-                // Drawsync loss recovery must also run HERE, not only in the idle driver: while
-                // this loop spins, the main thread stays Ready, so idle_run (the only other
-                // caller) never executes — a PE-coalesced token wedge under backpressure was
-                // permanent (logo-transition freeze, 2026-06-11). On hardware the token interrupt
-                // is delivered no matter what the CPU is doing. The recovery is self-guarded by
-                // exact FIFO state (GPU parked on the fifo's next boundary, queue empty).
-                sunbright_drawsync_recover(cpu);
-                nthrt_yield_current(&cpu);                 // let the woken sync thread run NOW
-                std::this_thread::sleep_for(std::chrono::microseconds(200));
-            }
-            static long warned = 0;
-            if (spins >= 2500 && warned++ < 8)
-                fprintf(stderr, "[vi] GPU backpressure timeout: dist=%08x after 500ms (GPU stalled?)\n",
-                        fifo.CPReadWriteDistance.load());
-        }
-    }
+    // GPU backpressure wait: REMOVED (2026-06-12, user-directed, second and final time).
+    // Originally guarded the PE token-coalescing drawsync wedge — structurally impossible
+    // since the lossproof native TDrawSyncManager (order-independent credit accounting).
+    // In practice it froze the WHOLE game whenever the GPU hitched (map open: 1-2 s, every
+    // time). True FIFO overflow is still bounded by Dolphin's GatherPipeBursted sync.
+    // KNOWN RISK (A/B 2026-06-12): a 300 s HEADLESS run without this wait died with
+    // VK_ERROR_OUT_OF_DEVICE_MEMORY (~4 min) — likely the no-present resource-recycling
+    // path; tracked as the separate Dolphin-Vulkan resource-growth item in the roadmap.
     // Frame barrier: give the rest of the frame to EVERY other runnable thread — including
     // lower-priority ones (the boot setup thread at prio 0x11 vs main's 16), which a plain
     // priority yield would starve forever. On the GC the retrace wait blocked the caller, so
