@@ -269,6 +269,10 @@ void native_card_erase_sector(CPUState& cpu) {
 
 }  // namespace
 
+// Host fd of the backing memcard image (opens/creates it on first use). Shared with
+// fastboot_native.cpp, which reads the SMS save file directly from the image.
+int native_card_image_fd() { return card_fd(); }
+
 void native_card_register() {
     native_os_register(PROBE_EX,     native_card_probe_ex);
     native_os_register(MOUNT_ASYNC,  native_card_mount_async);
@@ -279,5 +283,6 @@ void native_card_register() {
                     "(probe/mount/read/write/erase — no EXI, no DSP unlock)\n");
 }
 #else
+int native_card_image_fd() { return -1; }
 void native_card_register() {}
 #endif
