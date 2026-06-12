@@ -61,6 +61,20 @@ Both instances run simultaneously (native probe :17654, oracle :17655; distinct 
 files under scratch/logs/). `--sequential` falls back to one-at-a-time capture+offline
 compare if simultaneous proves unstable on a machine.
 
+## Clocks (IMPORTANT — wall time is banned here)
+- **Oracle events stamp EMULATED time** (CoreTiming ticks → ms, `vpb_trace.cpp
+  ab_now_ms`). The oracle instance's wall clock is meaningless: one stale persisted
+  `EmulationSpeed=0` (now fixed in main_sdl.cpp, set explicitly every run) had it
+  silently turboing at a fluctuating 2–10x, which manufactured the false "SE tree runs
+  12x slower natively" finding (see docs/re_notes/audio_re_findings.md dead-ends).
+- **Native events stamp the engine's own audio clock** (subframes rendered x 2.4977 ms)
+  — immune to the unpaced boot phase.
+- **Durations are in JAS subframes on BOTH sides** (oracle: emu-ms/2.4977), so LIFE
+  compares are unit-identical.
+- The two clocks have a constant-ish offset (boot length difference); the harness EMA +
+  bgm anchors absorb it. Wall-timed driving (autostart pulses, script waits) stretches
+  segments differently per side — expect offset steps at scene changes, not drift.
+
 ## Known limits / residual classes
 - RNG-driven SEs (rand effects, random pitch wobble) differ per-run by design — pitch
   threshold absorbs ±1 semitone of `IE_RAND`; bigger wobbles belong in residuals.

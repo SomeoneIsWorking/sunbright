@@ -17,6 +17,7 @@
 
 extern "C" void njas_se_start(uint32_t id, uint32_t swbit, uint8_t prio, uint32_t posPtr);
 extern "C" void njas_set_camera(uint32_t posPtr, uint32_t mtxPtr);
+extern "C" void njas_set_jaibasic(uint32_t self);
 extern "C" void njas_bgm_start(uint32_t id, uint8_t seqTrack, uint8_t prio);
 extern "C" void njas_se_stop(uint32_t id, uint32_t fade, uint32_t posPtr);
 extern "C" void njas_se_param(uint32_t id, int kind, uint8_t slot, float value, uint32_t time);
@@ -44,6 +45,8 @@ extern "C" void func_8030ae44(CPUState& cpu);   // JAISound::setSeqInterPan
 extern "C" void func_8030af44(CPUState& cpu);   // JAISound::setSeqInterPitch
 extern "C" void func_8030b8c8(CPUState& cpu);   // JAISound::setSeInterPan
 extern "C" void func_8030be20(CPUState& cpu);   // JAISound::setSeInterPitch
+extern "C" void func_8030ba90(CPUState& cpu);   // JAISound::setSeInterFxmix
+extern "C" void func_8030bc58(CPUState& cpu);   // JAISound::setSeInterDolby
 
 static bool njas_enabled() {
     static int disabled = -1;
@@ -73,6 +76,7 @@ SUNBRIGHT_OVERRIDE(ov_startSoundActor, 0x80301e80u) {
 }
 SUNBRIGHT_OVERRIDE(ov_startSoundBasic, 0x803020acu) {
     const uint32_t id = cpu.gpr[4], actor = cpu.gpr[6], info = cpu.gpr[9];
+    njas_set_jaibasic(cpu.gpr[3]);   // live JAIBasic* — category-mute config source
     if (dbg()) fprintf(stderr, "[se_native] startSoundBasic id=%08x actor=%08x info=%08x\n",
                        id, actor, info);
     if (njas_enabled() && is_se_id(id)) {
@@ -231,4 +235,16 @@ SUNBRIGHT_OVERRIDE(ov_setSeInterPitch, 0x8030be20u) {
     if (njas_enabled() && is_se_id(id))
         njas_se_param(id, 2, (uint8_t)cpu.gpr[4], (float)cpu.fpr[1].ps0, cpu.gpr[5]);
     func_8030be20(cpu);
+}
+SUNBRIGHT_OVERRIDE(ov_setSeInterFxmix, 0x8030ba90u) {
+    const uint32_t id = handle_id(cpu.gpr[3]);
+    if (njas_enabled() && is_se_id(id))
+        njas_se_param(id, 3, (uint8_t)cpu.gpr[4], (float)cpu.fpr[1].ps0, cpu.gpr[5]);
+    func_8030ba90(cpu);
+}
+SUNBRIGHT_OVERRIDE(ov_setSeInterDolby, 0x8030bc58u) {
+    const uint32_t id = handle_id(cpu.gpr[3]);
+    if (njas_enabled() && is_se_id(id))
+        njas_se_param(id, 4, (uint8_t)cpu.gpr[4], (float)cpu.fpr[1].ps0, cpu.gpr[5]);
+    func_8030bc58(cpu);
 }

@@ -19,8 +19,10 @@
 #include <thread>
 
 #include "Core/Core.h"
+#include "Core/CoreTiming.h"
 #include "Core/System.h"
 #include "Core/HW/DSP.h"
+#include "Core/HW/SystemTimers.h"
 
 extern uint32_t mem_r32(uint32_t ea);   // memory_bridge.cpp
 extern uint16_t mem_r16(uint32_t ea);
@@ -45,9 +47,21 @@ FILE* ab_out() {
     }();
     return f;
 }
+// EMULATED-time clock (CoreTiming), not wall clock. The oracle instance is unpaced
+// (DISABLE_RECOMP headless turbos at a fluctuating 2-10x real-time), so wall-clock
+// timestamps distort every timing measurement: the 2026-06-12 "SE tree runs 12x slower
+// natively" finding was exactly this artifact (oracle onsets compressed by a turbo
+// burst; emu-time gates/releases actually match the native engine). Falls back to wall
+// time until the core is up.
 double ab_now_ms() {
     using namespace std::chrono;
     static const steady_clock::time_point t0 = steady_clock::now();
+    auto& sys = Core::System::GetInstance();
+    if (Core::GetState(sys) == Core::State::Running) {
+        const uint64_t ticks = sys.GetCoreTiming().GetTicks();
+        const uint32_t tps   = sys.GetSystemTimers().GetTicksPerSecond();
+        if (tps) return double(ticks) * 1000.0 / double(tps);
+    }
     return duration_cast<duration<double, std::milli>>(steady_clock::now() - t0).count();
 }
 struct AbVoice {
@@ -122,7 +136,10 @@ struct AbOraclePoller {
                                     "\"hash\":\"%08x\",\"ratio\":%u,\"dur\":%u,"
                                     "\"peak\":%d}\n",
                                 ab_now_ms(), vi, v.hash, v.ratio,
-                                (unsigned)((ab_now_ms() - v.t_on) / 5.0), v.peak);
+                                // dur in JAS subframes (80 samples @32028.5 Hz =
+                                // 2.4977 emu-ms) — same unit as the native side's
+                                // voice age, so LIFE compares are 1:1.
+                                (unsigned)((ab_now_ms() - v.t_on) / 2.4977), v.peak);
                         fflush(ab);
                     }
                 }

@@ -339,3 +339,21 @@ Three layers, exactly parallel to volume/pan:
   the observed fix came from the PER2 pan-as-volume correction shipped in the same
   change; binary + semitone-quantized data prove vol@0 / pitch@4.
 - `pitch_to_cent()` in native_jas.cpp is dead, half-written code — never called.
+- **"SE worker tree runs ~12x slower natively" (2026-06-12): FALSIFIED — measurement
+  artifact.** Two compounding clock bugs in the A/B instrument, no engine defect:
+  1. A past `SUNBRIGHT_TURBO=1` run PERSISTED `EmulationSpeed = 0` into
+     `<home>/.config/dolphin-emu/Dolphin.ini` (same class as the DumpFrames gotcha), so every
+     "real-time" oracle ran unthrottled at a *fluctuating* 2–10x. Fixed: `main_sdl.cpp`
+     now sets `MAIN_EMULATION_SPEED` explicitly every run (1.0, or 0 under TURBO).
+  2. A/B event timestamps were WALL-clock on both sides; oracle turbo bursts compressed
+     onset spacing arbitrarily. Fixed: oracle events now stamp EMULATED time
+     (CoreTiming ticks, vpb_trace.cpp), native events stamp the engine's subframe clock
+     (g_ab_subframes x 2.4977 ms), and oracle voice durs are in subframe units (=native).
+  Verified binary/live ground truth along the way (all matching the native port):
+  `updateTempo` 0x8031b814 = timebase*tempo/dacRate*80/60; live oracle SE root+workers
+  all tick at tickPerCall 0.2398 (96 ticks/s, tempo 120 timebase 48); rootCallback runs
+  per SUBFRAME (`DSPBuf::updateDSP` → `Kernel::subframeCallback`); gates are in subframe
+  units on both sides (`TChannel::play` unk30/unk34, decremented by updateInterval per
+  param-0 update); envelope rate = envTime*(dacRate/80/600)/updateInterval — the
+  interval cancels out of wall time, so native's interval==1 assumption is exact.
+  Emu-clock A/B (ab_report4): the arpeggio LIFE/onset divergences are gone.

@@ -823,8 +823,15 @@ int main(int argc, char* argv[]) {
     // Turbo: unthrottle the emulation speed (0 = run as fast as the host allows) and
     // drop vsync so nothing paces the CPU/GPU threads to real time. The intermittent
     // corruption reproduces far faster this way.
+    //
+    // Set the speed EXPLICITLY every run (same class as the DumpFrames gotcha):
+    // Config::SetBase PERSISTS to <home>/.config/dolphin-emu/Dolphin.ini, so one past TURBO
+    // run left EmulationSpeed=0 on disk and every later "real-time" run (incl. the
+    // DISABLE_RECOMP oracle) silently ran unthrottled at ~6-9x — which wrecked all
+    // wall-clock audio A/B timing (the false "SE tree runs 12x slower natively"
+    // finding, 2026-06-12).
+    Config::SetBase(Config::MAIN_EMULATION_SPEED, turbo ? 0.0f : 1.0f);
     if (turbo) {
-        Config::SetBase(Config::MAIN_EMULATION_SPEED, 0.0f);
         Config::SetBase(Config::GFX_VSYNC, false);
         fprintf(stderr, "[sunbright] TURBO: emulation speed unthrottled, vsync off\n");
     }

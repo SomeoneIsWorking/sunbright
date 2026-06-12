@@ -758,6 +758,7 @@ struct Track {
     u8 portImport[16] = {}, portExport[16] = {};
     // TOuterParam port (JASTrack.cpp:391-405) — JAI-side volume/pitch/pan on SE workers
     float outerVol = 1.f, outerPitch = 1.f, outerPan = 0.5f;
+    float outerFx = 0.f, outerDolby = 0.f;
     u16 outerSwitch = 0;   // 1=vol 2=pitch 8=pan
     // effective channel params (TChannelMgr mVolume etc.)
     float chVol = 1.f, chPitch = 1.f, chPan = 0.5f, chFx = 0.f, chDolby = 0.f;
@@ -979,6 +980,11 @@ static void track_update(Track& t) {
         float w = t.panPower[3] / 32767.f;
         pan = pan * (1.f - w) + t.outerPan * w;
     }
+    // Outer fxmix/dolby (TOuterParam switch bits 4 / 0x10, JASTrack updateTrackAll)
+    if (t.outerSwitch & 4)    fx = fx * (1.f - t.panPower[3] / 32767.f)
+                                   + t.outerFx * (t.panPower[3] / 32767.f);
+    if (t.outerSwitch & 0x10) dolby = dolby * (1.f - t.panPower[3] / 32767.f)
+                                      + t.outerDolby * (t.panPower[3] / 32767.f);
     if (!t.parent || (t.trackMode & 1)) {
         t.chVol = vol; t.chPitch = pitch; t.chPan = pan; t.chFx = fx; t.chDolby = dolby;
     } else {
@@ -986,7 +992,9 @@ static void track_update(Track& t) {
         t.chPitch = t.parent->chPitch * pitch;
         float w = t.panPower[4] / 32767.f;
         t.chPan = pan * (1.f - w) + t.parent->chPan * w;
-        t.chFx = fx; t.chDolby = dolby;
+        // parent combine for fx/dolby (panCalc with panPower[4] weight, mode add-lerp)
+        t.chFx = fx * (1.f - w) + t.parent->chFx * w;
+        t.chDolby = dolby * (1.f - w) + t.parent->chDolby * w;
     }
 }
 static void track_update_seq(Track& t, u32 flags, bool recursive) {
@@ -1023,7 +1031,7 @@ static int track_note_on(Track& t, u8 chanIdx, s32 key, s32 vel, s32 gateTime) {
     float ivol = 1.f, ipitch = 1.f, randVolPitch = 1.f, volEffect = 1.f;
     u16 waveid = 0; u16 directRel = 0;
     bool fixed_pitch = false;
-    float effPan = 0.5f, effFx = 0.f, effDolby = 0.f; (void)effFx; (void)effDolby;
+    float effPan = 0.5f, effFx = 0.f, effDolby = 0.f;
     if (prog < 0x100) inst = bank.insts[prog];
     if (!inst) { NJLOG("noteOn: no inst bank=%u prog=%u\n", virtBank, prog); return -1; }
 
@@ -1054,6 +1062,9 @@ static int track_note_on(Track& t, u8 chanIdx, s32 key, s32 vel, s32 gateTime) {
             // transcription error; target 0 is VOLUME, target 1 is PITCH.
             if (ef.target == 0) volEffect *= y;
             else if (ef.target == 1) pitchEff *= y;
+            else if (ef.target == 2) effPan += y - 0.5f;     // JASINST_Pan (additive)
+            else if (ef.target == 3) effFx += y;             // JASINST_FxMix
+            else if (ef.target == 4) effDolby += y;          // JASINST_Dolby
         }
         randVolPitch = pitchEff;
         const KeyRegion* km = nullptr;
@@ -1075,6 +1086,9 @@ static int track_note_on(Track& t, u8 chanIdx, s32 key, s32 vel, s32 gateTime) {
             float y = r * ef.rand_width + ef.rand_base;
             if (ef.target == 0) volEffect *= y;
             else if (ef.target == 1) randVolPitch *= y;
+            else if (ef.target == 2) effPan += y - 0.5f;
+            else if (ef.target == 3) effFx += y;
+            else if (ef.target == 4) effDolby += y;
         }
         const VeloRegion* vr = nullptr;
         for (auto& v : pc.velo) if (vel <= v.maxvel) { vr = &v; break; }
@@ -1154,6 +1168,7 @@ static int track_note_on(Track& t, u8 chanIdx, s32 key, s32 vel, s32 gateTime) {
     float vv = vel / 127.f;
     v->vol = v->volBase * vv * vv * volEffect;
     v->panSound = effPan;
+    v->fxSound = effFx; v->dolbySound = effDolby;
     v->gate = gateTime == 0 ? -1 : gateTime;
     v->gateLeft = v->gate;
     // oscillators: bank oscs, then track overrides
@@ -1783,11 +1798,11 @@ static FILE* ab_out() {
     }();
     return f;
 }
-static double ab_now_ms() {
-    using namespace std::chrono;
-    static const steady_clock::time_point t0 = steady_clock::now();
-    return duration_cast<duration<double, std::milli>>(steady_clock::now() - t0).count();
-}
+// Engine-clock timestamps: subframes rendered x 2.4977 ms (80 samples @ 32028.5 Hz).
+// Matches the oracle side's switch to EMULATED time (vpb_trace.cpp ab_now_ms) — wall
+// clocks on either side are distorted by unpaced phases (oracle turbo, native boot).
+static u64 g_ab_subframes = 0;
+static double ab_now_ms() { return (double)g_ab_subframes * (80000.0 / kDacRate); }
 static u32 ab_owner_id(Track& t);   // defined after g_active below
 static void ab_anchor(const char* kind, u32 id, const char* name) {
     if (FILE* f = ab_out()) {
@@ -1834,10 +1849,13 @@ struct ActiveSE {
     bool seenBusy = false;               // worker's port2 went nonzero since dispatch
     u16 startAge = 0;                    // ticks since dispatch (busy-detect grace)
     MovePara vol[9], pitch[9], pan[9];   // pitch/pan slots init neutral below
+    MovePara fx[9], dolby[9];            // fxmix/dolby slots (init 0 = neutral adds)
+    bool fxTouched = false;
     bool panTouched = false;
     s32 stopFade = -1;                   // >=0: fading to stop, counts down
     u32 posPtr = 0;                      // game-world position Vec* (JAIActor.pos)
     u16 sinceReq = 0;                    // ticks since last (re-)request (JAISound lifeTime)
+    float lastDist = 0.f;                // camera distance from the 3D tick (steal score)
 };
 static ActiveSE g_active[32];
 
@@ -1859,13 +1877,29 @@ static void track_close_recursive(Track& t) {
     t.active = 0; t.used = false;
 }
 
+// Live JAIBasic instance (captured at the startSoundBasic tee) — source for the
+// category mute gate config. 0 until the first SE request.
+static std::atomic<u32> g_jaibasic{0};
+static bool se_category_muted(u32 id) {
+    const u32 basic = g_jaibasic.load(std::memory_order_relaxed);
+    if (basic < 0x80000000u || basic >= 0x81800000u) return false;
+    const u32 tbl = sb_r32(basic + 0x18);
+    if (tbl < 0x80000000u || tbl >= 0x81800000u) return false;
+    return sb_r8(tbl + ((id >> 12) & 0xFF)) != 0;
+}
+
 static void active_init(ActiveSE& a, Track* w, u32 id, u32 swbit, u8 prio) {
     a = ActiveSE();
     a.used = true; a.worker = w; a.id = id; a.swbit = swbit; a.prio = prio;
-    for (int i = 0; i < 9; i++) { a.pan[i].cur = a.pan[i].target = 0.5f; }
+    for (int i = 0; i < 9; i++) {
+        a.pan[i].cur = a.pan[i].target = 0.5f;
+        a.fx[i].cur = a.fx[i].target = 0.f;      // fx/dolby combine ADDITIVELY: neutral = 0
+        a.dolby[i].cur = a.dolby[i].target = 0.f;
+    }
 }
 static void worker_outer_reset(Track* w) {
     w->outerSwitch = 0; w->outerVol = 1.f; w->outerPitch = 1.f; w->outerPan = 0.5f;
+    w->outerFx = 0.f; w->outerDolby = 0.f;
 }
 static void active_stop_now(ActiveSE& a) {
     if (a.worker) {
@@ -1988,6 +2022,7 @@ static void se_3d_tick(ActiveSE& a) {                   // MSHandle::setSeDistan
         cs[r] = m[r*4]*w[0] + m[r*4+1]*w[1] + m[r*4+2]*w[2] + m[r*4+3];
     const float dist = sqrtf(cs[0]*cs[0] + cs[1]*cs[1] + cs[2]*cs[2]);
     if (!finite_pos(dist)) return;
+    a.lastDist = dist;
     const SeCategory& c = kSeCategory[cat];
     // Distance CULL (JAIBasic::checkNextFrameSe): sounds with swbit bit5 are STOPPED
     // beyond distanceMax (MSound init: max enabled smSeCategory dist = 12000) — the
@@ -2045,12 +2080,15 @@ static void jai_tick() {
             }
         }
         se_3d_tick(a);
-        float vp = 1.f, pp = 1.f, pn = 0.5f;
+        float vp = 1.f, pp = 1.f, pn = 0.5f, fxp = 0.f, dbp = 0.f;
         for (int i = 0; i < 9; i++) {
             a.vol[i].tick(); a.pitch[i].tick(); a.pan[i].tick();
+            a.fx[i].tick(); a.dolby[i].tick();
             vp *= a.vol[i].cur;
             pp *= a.pitch[i].cur;
             pn += a.pan[i].cur - 0.5f;
+            fxp += a.fx[i].cur;                  // fx/dolby slots combine additively
+            dbp += a.dolby[i].cur;
         }
         const u32 cat = (a.id >> 12) & 0xFF;
         w->outerVol = (a.isBgm ? 1.f : g_catvol[cat]) * vp;   // SE categories don't apply to seq
@@ -2060,6 +2098,12 @@ static void jai_tick() {
             if (pn < 0.f) pn = 0.f; if (pn > 1.f) pn = 1.f;
             w->outerPan = pn;
             w->outerSwitch |= 8;
+        }
+        if (a.fxTouched) {
+            if (fxp < 0.f) fxp = 0.f; if (fxp > 1.f) fxp = 1.f;
+            if (dbp < 0.f) dbp = 0.f; if (dbp > 1.f) dbp = 1.f;
+            w->outerFx = fxp; w->outerDolby = dbp;
+            w->outerSwitch |= 4 | 0x10;
         }
         w->updateFlags |= 1;             // re-run track_update with new outer params
     }
@@ -2181,6 +2225,14 @@ static void process_pending() {
         // drums, id 0x500x) are re-requested every frame and must NOT restart. Restart
         // class / different actor / one-shots: stop the old instance (unless swbit
         // bit19 allows stacking).
+        // Category mute gate (JAIBasic::startSoundBasic case 0, binary 80302184:
+        // lbzx [this+0x18 ptr][id>>12] != 0 → request dropped). Config read from the
+        // live JAIBasic instance captured at the tee.
+        if (se_category_muted(id)) {
+            NJLOG("se_drop id=%05x (category muted)\n", id);
+            it = g_pending.erase(it);
+            continue;
+        }
         // Instance identity is (id, actor) — JAISeEntry::storeBuffer matches BOTH the id
         // and the actor position pointer; the same SE id sounding from several actors is
         // several concurrent sounds. Keying by id alone made every other-actor request
@@ -2188,12 +2240,18 @@ static void process_pending() {
         // also starved the category's workers, silencing e.g. the water spray).
         {
             ActiveSE* same = nullptr;       // same id + same actor
-            int idCount = 0; ActiveSE* oldest = nullptr;
+            int catCount = 0; ActiveSE* worst = nullptr; float worstScore = -1.f;
             for (auto& a : g_active) {
-                if (!a.used || a.isBgm || a.id != id) continue;
-                idCount++;
-                if (a.posPtr == it->posPtr) same = &a;
-                if (!oldest || a.startAge > oldest->startAge) oldest = &a;
+                if (!a.used || a.isBgm) continue;
+                if (a.id == id && a.posPtr == it->posPtr) same = &a;
+                if (se_cat_of(a.id) == cat) {
+                    catCount++;
+                    // steal score (JAIGFrameSe.cpp:83): (0xff-prio)^2 * 0x1690 + dist^2
+                    // — higher = more expendable (low priority and/or far away)
+                    const float ps = (float)(0xFF - a.prio);
+                    const float score = ps * ps * 5776.f + a.lastDist * a.lastDist;
+                    if (score > worstScore) { worstScore = score; worst = &a; }
+                }
             }
             if (same && !(it->swbit & 0x80000)) {
                 const u32 cls = id & 0xC00;
@@ -2205,8 +2263,19 @@ static void process_pending() {
                     continue;
                 }
                 active_stop_now(*same);               // restart class / finished → fresh
-            } else if (idCount >= 4 && oldest) {
-                active_stop_now(*oldest);             // per-id concurrency cap (steal oldest)
+            } else if (catCount >= 4 && worst) {
+                // per-CATEGORY capacity with priority+distance stealing (the real model
+                // uses per-scene counts from JAIData unk4 — table shape not yet
+                // binary-verified, capacity 4 is the interim; see docs/port_roadmap.md)
+                const float nps = (float)(0xFF - it->prio);
+                const float newScore = nps * nps * 5776.f;   // dist unknown at request
+                if (newScore >= worstScore) {                 // new sound is the most expendable
+                    NJLOG("se_drop id=%05x (category %u full, outranked)\n", id, cat);
+                    it = g_pending.erase(it);
+                    continue;
+                }
+                NJLOG("se_steal id=%05x evicts %05x (score %.0f)\n", id, worst->id, worstScore);
+                active_stop_now(*worst);
             }
         }
         bool any = false;
@@ -2234,7 +2303,83 @@ static void process_pending() {
 }
 
 // one subframe: tick sequencer + render kSub frames into g_mixbuf
+// ---- FX (reverb) bus — the JAS fxmix path, oracle-law port -------------------------
+// SE tracks run the AUTOMIXER (BMS `busconnect 0xFFFF`): per the Zelda ucode
+// (Dolphin Zelda.cpp:1284) a voice's quadrant gain is sinT(x)*sinT(y) with
+// x=pan, y=dolby (front/back), its reverb send is quadrant*dolby_reverb_factor
+// (= fxmix), and Dolphin DROPS the back-quadrant energy (unimplemented back-buffer
+// fold) — the oracle reference therefore plays dolby-positioned voices at the FRONT
+// quadrant only; we match that (front factor sinT(1-dolby)).
+// The reverb itself: classic freeverb (public-domain Schroeder/Moorer), wet-only,
+// INPUT-scaled sends (tail decays correctly when fxmix changes mid-note — Dusklight's
+// proven pattern, docs/re_notes/audio_re_findings.md §5.2).
+namespace fxbus {
+struct Comb {
+    float buf[1700]; int size = 0, pos = 0; float store = 0.f;
+    void init(int n) { size = n; pos = 0; store = 0; memset(buf, 0, sizeof(buf)); }
+    float tick(float in, float feedback, float damp) {
+        float out = buf[pos];
+        store = out * (1.f - damp) + store * damp;
+        buf[pos] = in + store * feedback;
+        if (++pos >= size) pos = 0;
+        return out;
+    }
+};
+struct Allpass {
+    float buf[600]; int size = 0, pos = 0;
+    void init(int n) { size = n; pos = 0; memset(buf, 0, sizeof(buf)); }
+    float tick(float in) {
+        float b = buf[pos];
+        buf[pos] = in + b * 0.5f;
+        if (++pos >= size) pos = 0;
+        return b - in;
+    }
+};
+// freeverb tunings (44.1 kHz samples) scaled to our 32028.5 Hz rate
+constexpr int kCombT[8] = { 1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617 };
+constexpr int kAllpT[4] = { 556, 441, 341, 225 };
+constexpr float kFeedback = 0.84f;   // roomsize 0.5 → 0.7+0.5*0.28
+constexpr float kDamp = 0.7f * 0.4f;
+constexpr int kStereoSpread = 23;
+struct Reverb {
+    Comb combL[8], combR[8];
+    Allpass allpL[4], allpR[4];
+    float energy = 0.f;
+    Reverb() {
+        const float s = kDacRate / 44100.f;
+        for (int i = 0; i < 8; i++) {
+            combL[i].init((int)(kCombT[i] * s));
+            combR[i].init((int)((kCombT[i] + kStereoSpread) * s));
+        }
+        for (int i = 0; i < 4; i++) {
+            allpL[i].init((int)(kAllpT[i] * s));
+            allpR[i].init((int)((kAllpT[i] + kStereoSpread) * s));
+        }
+    }
+    void process_add(const float* in, float* out, int n) {   // in/out interleaved stereo
+        float e = 0.f;
+        for (int i = 0; i < n; i++) e += in[i*2]*in[i*2] + in[i*2+1]*in[i*2+1];
+        energy = energy * 0.97f + e;
+        if (energy < 1e-3f) return;                          // tail gate (silence)
+        for (int i = 0; i < n; i++) {
+            const float mono = (in[i*2] + in[i*2+1]) * 0.015f;   // freeverb fixedgain
+            float l = 0.f, r = 0.f;
+            for (int c = 0; c < 8; c++) {
+                l += combL[c].tick(mono, kFeedback, kDamp);
+                r += combR[c].tick(mono, kFeedback, kDamp);
+            }
+            for (int a = 0; a < 4; a++) { l = allpL[a].tick(l); r = allpR[a].tick(r); }
+            out[i*2]   += l;
+            out[i*2+1] += r;
+        }
+    }
+};
+}  // namespace fxbus
+static fxbus::Reverb* g_reverb;      // heap: ~100 KB of delay lines
+static float g_fxbuf[kSub * 2];
+
 static void render_subframe() {
+    g_ab_subframes++;
     process_pending();
     // JAI frame clock: handle/move-param flush runs at 60 Hz (subframe rate ≈ 400.36 Hz)
     static float jai_acc = 0.f;
@@ -2262,6 +2407,7 @@ static void render_subframe() {
     }
 
     memset(g_mixbuf, 0, sizeof(g_mixbuf));
+    memset(g_fxbuf, 0, sizeof(g_fxbuf));
     for (auto& v : g_voices) {
         if (!v.active) continue;
         v.age++;
@@ -2298,8 +2444,14 @@ static void render_subframe() {
         if (vol < 0.f) vol = 0.f; if (vol > 1.f) vol = 1.f;
         float pan = t.chPan + (v.panSound - 0.5f);   // CALC_ADD combine (JASChannel calcPan)
         if (pan < 0.f) pan = 0.f; if (pan > 1.f) pan = 1.f;
-        const float gl = vol * sinf((1.f - pan) * (float)M_PI / 2.f);
-        const float gr = vol * sinf(pan * (float)M_PI / 2.f);
+        // automixer quadrant law (oracle reference, Zelda ucode): gain = sinT(x)·sinT(y);
+        // back-quadrant energy is dropped by the oracle (front factor only), fx send =
+        // quadrant gain × fxmix. calcEffect default = add-all (mode 13).
+        float fx = v.fxSound + t.chFx;       if (fx < 0.f) fx = 0.f; if (fx > 1.f) fx = 1.f;
+        float dby = v.dolbySound + t.chDolby; if (dby < 0.f) dby = 0.f; if (dby > 1.f) dby = 1.f;
+        const float front = sinf((1.f - dby) * (float)M_PI / 2.f);
+        const float gl = vol * sinf((1.f - pan) * (float)M_PI / 2.f) * front;
+        const float gr = vol * sinf(pan * (float)M_PI / 2.f) * front;
         const std::vector<s16>& pcm = v.wave->pcm;
         const size_t n = pcm.size();
         const bool loop = v.wave->loop != 0;
@@ -2316,10 +2468,16 @@ static void render_subframe() {
             const float s = pcm[i0] * (1.f - fr) + pcm[i0 + 1 < n ? i0 + 1 : i0] * fr;
             g_mixbuf[i * 2 + 0] += s * gl;
             g_mixbuf[i * 2 + 1] += s * gr;
+            if (fx > 0.f) {                          // input-scaled reverb send
+                g_fxbuf[i * 2 + 0] += s * gl * fx;
+                g_fxbuf[i * 2 + 1] += s * gr * fx;
+            }
             pos += ratio;
         }
         v.srcpos = pos;
     }
+    if (!g_reverb) g_reverb = new fxbus::Reverb();
+    g_reverb->process_add(g_fxbuf, g_mixbuf, kSub);
     if (FILE* ab = ab_out()) {                 // A/B: peak tracking + voice-off sweep
         for (int i = 0; i < kMaxVoices; i++) {
             Voice& v = g_voices[i];
@@ -2397,6 +2555,11 @@ extern "C" void njas_se_start(uint32_t id, uint32_t swbit, uint8_t prio, uint32_
     g_pending.push_back(p);                   // queued until the engine is running
 }
 
+// Live JAIBasic instance pointer (startSoundBasic tee r3) — category-mute config source.
+extern "C" void njas_set_jaibasic(uint32_t self) {
+    njas::g_jaibasic.store(self, std::memory_order_relaxed);
+}
+
 // Camera input for the native 3D layer (JAIBasic::setCameraInfo tee): the game hands
 // JAI its camera position/view-matrix POINTERS once per camera; we keep the same.
 extern "C" void njas_set_camera(uint32_t posPtr, uint32_t mtxPtr) {
@@ -2470,6 +2633,8 @@ extern "C" void njas_se_param(uint32_t id, int kind, uint8_t slot, float value, 
     switch (kind) {
     case 0: a->vol[slot].set(value, time); break;
     case 1: a->pan[slot].set(value, time); a->panTouched = true; break;
+    case 3: a->fx[slot].set(value, time); a->fxTouched = true; break;
+    case 4: a->dolby[slot].set(value, time); a->fxTouched = true; break;
     case 2: a->pitch[slot].set(value, time); break;
     }
     NJLOG("se_param id=%05x kind=%d slot=%u v=%.3f t=%u\n", id, kind, slot, value, time);
