@@ -52,6 +52,14 @@ bool native_chain_enabled() {
 }
 }  // namespace
 
+// Level-triggered AID raise, set DIRECTLY (no DSP_CONTROL write, no MMU read). Used by the
+// optional native AI-DMA owner (overrides/native_aidma2.cpp, SUNBRIGHT_NATIVE_AIDMA) when it
+// drives the UpdateAudioDMA countdown itself: on a block-count wrap it calls this instead of
+// letting Dolphin's GenerateDSPInterrupt path raise AID. Delivered by sunbright_aid_pump exactly
+// like the wrap-captured raises. Inert unless that owner is enabled (and its seam applied), so
+// this is a no-cost addition for the default build.
+extern "C" void sunbright_aid_raise() { g_aid_due.store(1, std::memory_order_relaxed); }
+
 // Original Dolphin bodies, exposed by the fork (replace the --wrap __real_).
 extern "C" void sb_dsp_gen_interrupt_impl(void* self, u64 t, s64 c);
 extern "C" void sb_dsp_update_audio_dma_impl(void* self);

@@ -282,15 +282,38 @@ static inline bool is_mmio_phys(u32 ea) {
     const u32 phys = ea & 0x0FFFFFFFu;
     return phys >= 0x0C000000u && phys < 0x0E000000u;   // CP/PE/VI/PI/MI/DSP/DI/SI/EXI/AI registers
 }
+
+// ── Native MI (Memory Interface) mirror seam — overrides/native_mi.cpp (SUNBRIGHT_NATIVE_MI) ──
+// Default OFF: sb_native_mi_enabled() is false, so every check below is a single predicate that
+// short-circuits to Dolphin's MI. When on, MI register reads/writes (0xCC004000-0xCC004040) are
+// served from the native mirror (translation-independent, no MSR.DR dependence). See native_mi.cpp.
+extern bool sb_native_mi_enabled();
+extern bool sb_native_mi_read (u32 phys, int bytes, u32* out);   // true if served
+extern bool sb_native_mi_write(u32 phys, int bytes, u32 val);    // true if served
+static inline bool is_mi_phys(u32 ea) {
+    const u32 phys = ea & 0x0FFFFFFFu;
+    return phys >= 0x0C004000u && phys <= 0x0C004040u;
+}
+
 template <typename T> static inline T mmio_r(u32 ea) {
+    if (sb_native_mi_enabled() && is_mi_phys(ea)) {
+        u32 out = 0;
+        if (sb_native_mi_read(ea & 0x0FFFFFFFu, (int)sizeof(T), &out)) return (T)out;
+    }
     if constexpr (sizeof(T) <= 4) {
         if (is_mmio_phys(ea))
             return MEM().GetMMIOMapping()->Read<T>(Core::System::GetInstance(), ea & 0x0FFFFFFFu);
     }
     return MMU_().Read<T>(ea);    // locked cache / EFB / non-MMIO — keep the translate path
 }
+template <typename T> static inline void mmio_w(u32 ea, T v) {
+    if (sb_native_mi_enabled() && is_mi_phys(ea) &&
+        sb_native_mi_write(ea & 0x0FFFFFFFu, (int)sizeof(T), (u32)v))
+        return;
+    MMU_().Write<T>(v, ea);
+}
 #  define MMIO_R(bits, ea)     (g_recomp_touched_mmio = true, mmio_r<u##bits>(ea))
-#  define MMIO_W(bits, ea, v)  (g_recomp_touched_mmio = true, MMU_().Write<u##bits>((v), (ea)))
+#  define MMIO_W(bits, ea, v)  (g_recomp_touched_mmio = true, mmio_w<u##bits>((ea), (u##bits)(v)))
 #else
 // Standalone mode: flat 24 MB RAM buffer, no MMIO.
 u8* g_l1_base = nullptr;   // no locked-cache backing in standalone mode (fast path stays off)
@@ -524,10 +547,18 @@ u16 mem_r16_slow(u32 ea) {
     return v;
 }
 
+// ── Native PI (Processor Interface INTSR/INTMR) seam — overrides/native_pi2.cpp ──
+// (SUNBRIGHT_NATIVE_PI) READ of 0xCC003000/0xCC003004 served from a translation-independent
+// mirror; WRITEs are shadowed (the interceptor returns false → Dolphin still performs the real
+// store, remaining the authoritative raise/EE engine). Both no-ops when the flag is OFF.
+extern "C" bool sb_pi_intercept_read(uint32_t ea, int bits, uint32_t* out);
+extern "C" bool sb_pi_intercept_write(uint32_t ea, int bits, uint32_t val);
+
 u32 mem_r32_slow(u32 ea) {
     sb_poll_note(ea);
     if (u8* p = ram_ptr(ea)) return ((u32)p[0]<<24)|((u32)p[1]<<16)|((u32)p[2]<<8)|p[3];
     check_wild_read(ea, 32);
+    { uint32_t pv; if (sb_pi_intercept_read(ea, 32, &pv)) { g_recomp_touched_mmio = true; return pv; } }
     const u32 v = MMIO_R(32, ea);
     // DSP→CPU mailbox consume (DSPReadMailFromDSP does one 32-bit read of both halves) — the
     // JAS syncDSP mail sequence; see mem_r16_slow's twin trace for halfword readers.
@@ -597,6 +628,7 @@ void mem_w16_slow(u32 ea, u16 v) {
         }
     }
     MMIO_W(16, ea, v);
+    sb_pi_intercept_write(ea, 16, (u32)v);   // shadow halfword INTMR (no-op unless SUNBRIGHT_NATIVE_PI)
 #ifdef HAVE_DOLPHIN_MEMMAP
     // CPU→DSP mailbox-low write completed: if the HLE raised a DSP interrupt for its reply mails
     // (captured in aid_native.cpp, never CoreTiming-scheduled), deliver it NOW — the post-store
@@ -646,6 +678,7 @@ void mem_w32_slow(u32 ea, u32 v) {
     sb_log_fifo_reg_write(ea, v, 32);
     trace_exi_write(ea, v, 32);
     MMIO_W(32, ea, v);
+    sb_pi_intercept_write(ea, 32, v);   // shadow INTSR/INTMR (no-op unless SUNBRIGHT_NATIVE_PI)
 }
 
 void mem_w64_slow(u32 ea, u64 v) {
