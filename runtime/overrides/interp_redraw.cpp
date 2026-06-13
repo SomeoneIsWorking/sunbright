@@ -74,6 +74,8 @@ void interp60_registry_clear();         // interp_capture.cpp
 void interp60_blend_registry();         // interp_capture.cpp
 size_t interp60_registry_size();        // interp_capture.cpp — live-model count this frame
 bool sunbright_interp60_replay();       // interp60_replay.cpp — render-only replay in-between
+extern "C" void interp60_xfmap_build(float alpha);  // interp_capture.cpp — pos-matrix interp map
+extern "C" void interp60_xfmap_end();
 
 namespace {
 
@@ -210,7 +212,10 @@ SUNBRIGHT_OVERRIDE(ov_interp_endRendering, DISPLAY_END_RENDER) {
         g_i60.disp = display; g_i60.set_fb = alt;
         g_i60.redraw_gx_bytes = frameN.size();
         g_interp60_in_redraw = true;
-        gxs_replay_frame(frameN.data(), frameN.size());    // re-render frame N from captured commands
+        interp60_xfmap_build(g_i60.alpha);   // map cur->prev pos-matrix bases; arm the LoadIndexedXF
+                                             // hook to lerp(N-1,N) into XF (render-only, no game write)
+        gxs_replay_frame(frameN.data(), frameN.size());    // re-render frame N with interpolated mtx
+        interp60_xfmap_end();
         g_interp60_in_redraw = false;
         const u32 ob0 = MEM_R32(display + 4), ob1 = MEM_R32(display + 8);
         MEM_W32(display + 4, alt); MEM_W32(display + 8, alt);   // steer the copy dest to ALT

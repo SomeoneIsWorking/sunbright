@@ -24,11 +24,14 @@
 #include "../overrides.h"
 #include "../intrinsics.h"
 #include "../interp60.h"
+#include "Common/SunbrightHooks.h"   // sb_slot_xf_indexed — render-only matrix-interp seam
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <vector>
 #include <unordered_set>
+#include <unordered_map>
 
 // 60 fps redraw window state (defined in interp_redraw.cpp).
 extern bool g_interp60_in_redraw;
@@ -164,6 +167,59 @@ bool blend_model(u32 model) {
 // the in-between; a model NOT blended (new this frame / single-buffered) must run viewCalc so
 // prepareShapePackets() wires its shape packets — else J3DShape::draw reads a null draw-matrix.
 bool interp60_model_blended(u32 model) { return g_blended_models.count(model) != 0; }
+
+// ── Render-only pos-matrix interpolation (the new architecture) ──────────────────────────────────
+// During the in-between REPLAY (gx_stream replay), the captured stream's indexed pos-matrix loads
+// (CP array 12) read the model's mDrawMtxBuf[1][view] (= tick N). The fork's LoadIndexedXF hook
+// (sb_slot_xf_indexed) calls sb_hook_xf_indexed below, which substitutes lerp(N-1, N): N-1 is
+// mDrawMtxBuf[0][view], N is [1][view] — BOTH read-only from guest RAM; the interpolated result is
+// written only into XF/GPU memory by LoadIndexedXF. No guest memory is modified, no game code runs.
+static std::unordered_map<u32, u32> g_xfmap;   // cur pos-matrix base (phys) -> prev base (phys)
+static bool  g_xf_active = false;
+static float g_xf_alpha  = 0.5f;
+
+// Build the cur->prev map from this frame's live models (registry). Read-only. Same pairing as
+// blend_model. Call right before the in-between replay; clear with interp60_xfmap_end() after.
+extern "C" void interp60_xfmap_build(float alpha) {
+    g_xfmap.clear();
+    for (u32 model : g_registry) {
+        if (!ok_ram(model)) continue;
+        const u32 view = mem_r32(model + 0x7C);
+        if (view > 16) continue;
+        const u32 d0a = mem_r32(model + 0x60), d1a = mem_r32(model + 0x64);
+        if (!ok_ram(d0a) || !ok_ram(d1a)) continue;
+        const u32 prev = mem_r32(d0a + 4 * view);   // tick N-1
+        const u32 cur  = mem_r32(d1a + 4 * view);   // tick N (the stream's array-12 base)
+        if (!ok_ram(prev) || !ok_ram(cur) || prev == cur) continue;   // need a distinct N-1
+        g_xfmap[cur & 0x03FFFFFFu] = prev & 0x03FFFFFFu;
+    }
+    g_xf_alpha  = alpha;
+    g_xf_active = true;
+}
+extern "C" void interp60_xfmap_end() { g_xf_active = false; g_xfmap.clear(); }
+
+// Fork seam (XFStructs.cpp LoadIndexedXF). array 12 = XF_A pos matrix. Fill `out` (big-endian words,
+// guest format — LoadIndexedXF swap32's them into XF) with the interpolated matrix; return true. A
+// non-tracked base / inactive returns false (stock guest read).
+extern "C" bool sb_hook_xf_indexed(u32 array, u32 base, u32 stride, u32 index, u32 size, u32* out) {
+    if (!g_xf_active || array != 12) return false;
+    auto it = g_xfmap.find(base & 0x03FFFFFFu);
+    if (it == g_xfmap.end()) return false;
+    const u32 cur_addr  = ((base & 0x03FFFFFFu) | 0x80000000u) + stride * index;
+    const u32 prev_addr = (it->second           | 0x80000000u) + stride * index;
+    const float a = g_xf_alpha;
+    for (u32 i = 0; i < size; i++) {
+        const u32 cw = mem_r32(cur_addr + i * 4), pw = mem_r32(prev_addr + i * 4);   // host-order
+        float cf, pf; std::memcpy(&cf, &cw, 4); std::memcpy(&pf, &pw, 4);
+        const float v = (1.0f - a) * pf + a * cf;
+        u32 vw; std::memcpy(&vw, &v, 4);
+        out[i] = __builtin_bswap32(vw);   // back to big-endian for LoadIndexedXF's swap32
+    }
+    return true;
+}
+
+// Install the fork slot at load (default-null otherwise).
+static const bool s_xf_indexed_installed = (sb_slot_xf_indexed = &sb_hook_xf_indexed, true);
 
 // Restore every blended model's mDrawMtxBuf[1][view] back to tick N, leaving the
 // guest double-buffer exactly as the real field produced it. Called by
