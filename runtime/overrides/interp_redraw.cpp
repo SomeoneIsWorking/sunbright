@@ -26,6 +26,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <vector>
+#include <unordered_map>
+#include <array>
+#include <cmath>
 
 // Live debug + control state (declared in interp60.h).
 Interp60Dbg g_i60;
@@ -61,6 +64,7 @@ void interp60_restore_after_redraw();   // interp_capture.cpp
 void interp60_take_motion();            // interp_capture.cpp
 void interp60_registry_clear();         // interp_capture.cpp
 void interp60_blend_registry();         // interp_capture.cpp
+void interp60_blend_base(u32 addr, const float* prev12);  // interp_capture.cpp
 
 namespace {
 
@@ -168,12 +172,19 @@ SUNBRIGHT_OVERRIDE(ov_interp_endRendering, DISPLAY_END_RENDER) {
         for (u32 i = 0; i < 12; i++) saved_jview[i] = cur_view[i];   // restore after redraw
         g_i60.view_x = cur_view[3]; g_i60.view_y = cur_view[7]; g_i60.view_z = cur_view[11];
         g_i60.view_snaps++;
+        g_i60.is_cut = 0;
         if ((g_i60.mode == 2 || g_i60.mode == 3) && g_i60.have_prev_view) {
             const float a = g_i60.alpha;
             g_i60.view_dx = cur_view[3]  - prev_view[3];
             g_i60.view_dy = cur_view[7]  - prev_view[7];
             g_i60.view_dz = cur_view[11] - prev_view[11];
-            for (u32 i = 0; i < 12; i++) {
+            // Camera-level cut detector: a scene cut jumps the view far in one frame.
+            // Skip the whole in-between blend then (N-1 and N are different scenes) —
+            // far better than a per-object magnitude guard, which misfires on the
+            // large but smooth eye-space motion of distant geometry during rotation.
+            const float mag = std::sqrt(g_i60.view_dx*g_i60.view_dx + g_i60.view_dy*g_i60.view_dy + g_i60.view_dz*g_i60.view_dz);
+            if (mag > 8000.0f) { g_i60.is_cut = 1; g_i60.cuts++; }
+            if (!g_i60.is_cut) for (u32 i = 0; i < 12; i++) {
                 float v = (1.0f - a) * prev_view[i] + a * cur_view[i];
                 if (g_i60.perturb && (i == 3)) v = cur_view[i] + 300.0f;  // unmissable A/B
                 mem_wf32(J3DSYS_VIEWMTX + i * 4, v);   // j3dSys directly
@@ -195,12 +206,31 @@ SUNBRIGHT_OVERRIDE(ov_interp_endRendering, DISPLAY_END_RENDER) {
     // mode 3: blend EVERY registered model's draw-matrix double-buffer toward N-1
     // before the draw lists re-issue (the viewCalc override skips recompute in this
     // mode so the blend survives). This is what reaches the whole scene.
-    if (g_i60.mode == 3) interp60_blend_registry();
-    // The un-registered static world recomputes its draw matrix DURING the draw
-    // pass (its base changes every frame), so pre-blending buffers is futile — but
-    // it recomputes view × node, and we've blended the j3dSys view matrix above, so
-    // the recompute naturally yields the interpolated camera. (Registered models had
-    // their viewCalc skipped, so they keep the registry blend.)
+    g_i60.base_blended = 0;
+    if (g_i60.mode == 3 && !g_i60.is_cut) {
+        interp60_blend_registry();   // animated J3DModels (Mario, NPCs, items)
+        // Static world: batch-drawn outside J3DModel::viewCalc, recomputed in place
+        // each real frame (single-buffered, NOT touched during the redraw — RE'd via
+        // write-watch). The engine keeps no N-1, so we snapshot per base address and
+        // blend the buffer in place before re-issue. gxs_prev_frame_info() is the
+        // just-presented real frame N here.
+        static std::unordered_map<u32, std::array<float, 12>> base_prev;
+        const GxFrameInfo& fi = gxs_prev_frame_info();
+        for (const auto& m : fi.mtx_arrays) {
+            if (m.array != 12) continue;
+            const u32 addr = (m.base & 0x03FFFFFFu) | 0x80000000u;
+            if (addr < 0x80000000u || addr >= 0x81800000u || (addr & 0x1F)) continue;
+            bool in_registry = false;
+            for (u32 a : g_i60.blended_addrs)
+                if ((a & 0x03FFFFFFu) == (m.base & 0x03FFFFFFu)) { in_registry = true; break; }
+            if (in_registry) continue;          // animated model — registry handled it
+            std::array<float, 12> cur;
+            for (u32 i = 0; i < 12; i++) cur[i] = mem_rf32(addr + i * 4);   // N
+            auto it = base_prev.find(addr);
+            if (it != base_prev.end()) { interp60_blend_base(addr, it->second.data()); g_i60.base_blended++; }
+            base_prev[addr] = cur;              // original N -> next frame's N-1
+        }
+    }
     for (u32 li = 0; li < sizeof(kDrawLists) / sizeof(kDrawLists[0]); li++) {
         const u32 list = MEM_R32(g_mardir + kDrawLists[li]);
         if (!list) continue;
@@ -284,6 +314,11 @@ int interp60_probe(char* out, int cap, const char* query) {
         g_watch_wa = on ? g_i60.track_cur : 0;
         g_watch_redraw_only = on;
     }
+    if (present("watchaddr=")) {              // arm on an arbitrary addr, ALL writers (not redraw-gated)
+        extern u32 g_watch_wa; extern bool g_watch_redraw_only;
+        const char* p = strstr(query, "watchaddr="); u32 a = (u32)strtoul(p + 10, nullptr, 16);
+        g_watch_wa = a; g_watch_redraw_only = false;
+    }
 
     interp60_take_motion();   // publish + reset motion accumulator
 
@@ -305,6 +340,8 @@ int interp60_probe(char* out, int cap, const char* query) {
     app("registry(mode3): real-field viewCalc=%lu  models=%lu  blended=%lu bail(null=%lu single=%lu)\n",
         g_i60.vc_realfield, g_i60.reg_size, g_i60.vc_blended, g_i60.vc_bail_null, g_i60.vc_bail_single);
     app("redraw viewCalc calls=%lu\n", g_i60.vc_calls);
+    app("world (base-keyed): blended last redraw=%lu  | is_cut=%d cuts=%lu\n",
+        g_i60.base_blended, g_i60.is_cut, g_i60.cuts);
     app("  per-list viewCalc:");
     for (u32 i = 0; i < sizeof(kDrawLists)/sizeof(kDrawLists[0]); i++)
         app(" [%u:+%02x]=%lu", i, kDrawLists[i], g_i60.vc_per_list[i]);

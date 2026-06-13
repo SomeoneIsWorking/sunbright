@@ -757,7 +757,7 @@ extern bool g_interp60_in_redraw;
 void sb_watch_fire(u32 ea, u32 v, int width, void* host_ra) {
     if (g_watch_redraw_only && !g_interp60_in_redraw) return;
     static int fired = 0;
-    if (g_watch_redraw_only && fired >= 64) return;
+    if (fired >= 48) return;             // cap log volume (covers both modes)
     fired++;
     Dl_info di{};
     const char* fn = (dladdr(host_ra, &di) && di.dli_sname) ? di.dli_sname : "?";

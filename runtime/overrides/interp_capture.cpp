@@ -42,10 +42,6 @@ namespace {
 std::vector<u32> g_registry;
 std::unordered_set<u32> g_blended_set;   // dedup blended buffers within one redraw
 
-// A translation jump beyond this distance between N-1 and N means a cut/respawn
-// — draw tick N exactly rather than smear across the discontinuity.
-constexpr float kSnapDist2 = 600.0f * 600.0f;
-
 extern "C" void func_802deeb8(CPUState&);   // J3DModel::viewCalc
 
 // Frame-N draw matrices saved before we overwrite [1][view] with the blend, so
@@ -112,12 +108,16 @@ bool blend_model(u32 model) {
                 mem_wf32(cm + t * 4, mem_rf32(cm + t * 4) + 300.0f);
             continue;
         }
+        // NaN guard only (uninitialized buffer). The magnitude/teleport threshold
+        // is GONE — it misfired on distant geometry during camera rotation (large
+        // but smooth eye-space deltas read as a "cut"); cuts are now detected at the
+        // camera level (g_i60.is_cut) and skip the whole in-between.
         float dd = 0;
         for (u32 t = 3; t < 12; t += 4) {
             const float d = mem_rf32(cm + t * 4) - mem_rf32(pm + t * 4);
             dd += d * d;
         }
-        if (dd > kSnapDist2 || !(dd == dd)) continue;      // jump/NaN: keep N
+        if (!(dd == dd)) continue;                          // NaN: keep N
         for (u32 f = 0; f < 12; f++)
             mem_wf32(cm + f * 4, (1.0f - a) * mem_rf32(pm + f * 4) + a * mem_rf32(cm + f * 4));
     }
@@ -158,6 +158,25 @@ void interp60_restore_after_redraw() {
 
 // mode 3: clear the registry at the start of a real frame (TMarDirector::direct).
 void interp60_registry_clear() { g_registry.clear(); }
+
+// mode 3: blend ONE matrix (12 floats) at a GX pos-matrix array `addr` toward its
+// content last frame `prev12`. For the static world (batch-drawn outside J3DModel::
+// viewCalc, single-buffered: recomputed in place each real frame at a stable base,
+// never during the redraw — RE'd via write-watch). NO per-object teleport guard:
+// distant geometry legitimately sweeps far in eye-space during camera rotation, so
+// magnitude can't tell motion from a cut — cut detection is done at the camera
+// level by the caller (whole in-between skipped on a view discontinuity).
+void interp60_blend_base(u32 addr, const float* prev12) {
+    if (!ok_ram(addr) || (addr & 0x1F) || !ok_ram(addr + 48 - 1)) return;
+    if (!g_blended_set.insert(addr).second) return;      // already handled (registry/dup)
+    g_restore.push_back({});
+    Saved& s = g_restore.back();
+    s.addr = addr; s.f.resize(12);
+    for (u32 i = 0; i < 12; i++) s.f[i] = mem_rf32(addr + i * 4);   // = N (for restore)
+    const float a = g_i60.alpha;
+    for (u32 i = 0; i < 12; i++) mem_wf32(addr + i * 4, (1.0f - a) * prev12[i] + a * s.f[i]);
+    if (g_i60.blended_addrs.size() < 8192) g_i60.blended_addrs.push_back(addr);
+}
 
 // mode 3: blend every registered model's draw-matrix double-buffer toward N-1.
 // Called on the in-between field BEFORE re-issuing the draw lists. Reaches the

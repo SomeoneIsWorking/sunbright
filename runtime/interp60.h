@@ -82,6 +82,9 @@ struct Interp60Dbg {
     float view_x = 0, view_y = 0, view_z = 0;     // absolute view translation (sanity)
     unsigned long view_snaps = 0;                 // # frames a view was read at gfx+0xB4
     int   have_prev_view = 0;
+    int   is_cut = 0;                             // view jumped this frame -> skip the in-between blend
+    unsigned long cuts = 0;                       // cut count (diagnostic)
+    unsigned long base_blended = 0;              // world bases blended last redraw (diagnostic)
 };
 extern Interp60Dbg g_i60;
 
