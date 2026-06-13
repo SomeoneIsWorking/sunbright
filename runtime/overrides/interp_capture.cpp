@@ -195,6 +195,8 @@ extern "C" void interp60_xfmap_build(float alpha) {
     }
     g_xf_alpha  = alpha;
     g_xf_active = true;
+    g_i60.xf_map_size = (unsigned long)g_xfmap.size();
+    g_i60.xf_hits = 0; g_i60.xf_misses = 0;
 }
 extern "C" void interp60_xfmap_end() { g_xf_active = false; g_xfmap.clear(); }
 
@@ -204,7 +206,8 @@ extern "C" void interp60_xfmap_end() { g_xf_active = false; g_xfmap.clear(); }
 extern "C" bool sb_hook_xf_indexed(u32 array, u32 base, u32 stride, u32 index, u32 size, u32* out) {
     if (!g_xf_active || array != 12) return false;
     auto it = g_xfmap.find(base & 0x03FFFFFFu);
-    if (it == g_xfmap.end()) return false;
+    if (it == g_xfmap.end()) { g_i60.xf_misses++; return false; }
+    g_i60.xf_hits++;
     const u32 cur_addr  = ((base & 0x03FFFFFFu) | 0x80000000u) + stride * index;
     const u32 prev_addr = (it->second           | 0x80000000u) + stride * index;
     const float a = g_xf_alpha;

@@ -44,6 +44,10 @@ struct Interp60Dbg {
     // redraw insertion
     unsigned long redraws = 0, skip_rate = 0, skip_nodir = 0, skip_full = 0;
     unsigned long direct_stamp = 0;
+    // render-only motion interpolation (LoadIndexedXF hook): map size this frame, and per-window
+    // counts of interpolated pos-matrix loads (hits) vs array-12 loads whose base wasn't paired
+    // (misses). xf_hits>0 ⇒ the in-between is actually interpolating object transforms.
+    unsigned long xf_map_size = 0, xf_hits = 0, xf_misses = 0;
     u32 mardir = 0; int gfx_valid = 0;
     // XFB double-buffer wiring (the 30fps-output probe): the TDisplay and its two XFB
     // buffer pointers, the address we set the VI to for the in-between present, and the

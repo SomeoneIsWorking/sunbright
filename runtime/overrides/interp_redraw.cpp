@@ -499,6 +499,9 @@ int interp60_probe(char* out, int cap, const char* query) {
     app("redraws=%lu  skips(rate=%lu nodir=%lu full=%lu)  mardir=%08x gfx_valid=%d\n",
         g_i60.redraws, g_i60.skip_rate, g_i60.skip_nodir, g_i60.skip_full,
         g_i60.mardir, g_i60.gfx_valid);
+    app("MOTION-INTERP (LoadIndexedXF hook): map=%lu objects  hits=%lu (pos-mtx loads interpolated) "
+        "misses=%lu  %s\n", g_i60.xf_map_size, g_i60.xf_hits, g_i60.xf_misses,
+        g_i60.xf_hits ? "<<< INTERPOLATING" : "<<< NOT interpolating (no paired objects)");
     app("registry(mode3): real-field viewCalc=%lu  models=%lu  blended=%lu bail(null=%lu single=%lu)\n",
         g_i60.vc_realfield, g_i60.reg_size, g_i60.vc_blended, g_i60.vc_bail_null, g_i60.vc_bail_single);
     app("redraw viewCalc calls=%lu\n", g_i60.vc_calls);
