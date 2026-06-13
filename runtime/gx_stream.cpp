@@ -186,6 +186,25 @@ unsigned long long gxs_decoded_bytes() { return g_decoded_bytes; }
 unsigned long      gxs_decode_runs()   { return g_decode_runs; }
 const GxFrameInfo& gxs_prev_frame_info() { return g_prev_info; }
 
+// ── Render-only interpolation replay ─────────────────────────────────────────────────────────────
+const std::vector<u8>& gxs_cur_frame() { return g_frame; }
+
+void gxs_replay_frame(const u8* data, size_t n) {
+#ifdef HAVE_DOLPHIN_MEMMAP
+    if (!data || !n) return;
+    // Replay a complete, command-aligned frame stream straight through the OpcodeDecoder — renders
+    // the captured geometry again (to the EFB) with no CP ring and no game code. The buffer is a
+    // whole frame, so RunFifo consumes it fully; any unconsumed tail would be a capture bug.
+    Core::DeclareAsGPUThread();
+    u32 cycles = 0;
+    OpcodeDecoder::RunFifo<false>(
+        DataReader(const_cast<u8*>(data), const_cast<u8*>(data) + n), &cycles);
+    Core::UndeclareAsGPUThread();
+#else
+    (void)data; (void)n;
+#endif
+}
+
 // Inter-present (frame-boundary) wall-time stats over a sliding window — the
 // objective jitter measure. Even 60 fps delivery = tight ~16.7 ms intervals;
 // jitter shows as a large spread (stddev / min-max). Read via /frametime.

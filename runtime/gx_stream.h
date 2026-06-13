@@ -18,6 +18,8 @@
 // guest thread — so the buffer needs no lock.
 
 #include "cpu_state.h"
+#include <vector>
+#include <cstddef>
 
 bool gxs_active();                    // true once armed (first display copy seen)
 void gxs_arm();                       // called at the first display copy
@@ -45,6 +47,16 @@ unsigned long long gxs_decoded_bytes();   // running total of bytes decoded
 unsigned long      gxs_decode_runs();     // running count of decode_owned() runs
 struct GxFrameInfo;
 const GxFrameInfo& gxs_prev_frame_info(); // parse of the most-recently-completed frame
+
+// ── Render-only interpolation replay (the new object-based architecture) ─────────────────────────
+// The CURRENT in-progress frame's captured byte stream (the geometry drawn so far this frame, before
+// its GXCopyDisp). The in-between renderer parses this (gxp_parse_frame) for the per-object
+// pos-matrix array bases (GxFrameInfo::mtx_arrays), builds a base-redirected copy pointing at
+// interpolated scratch matrices, and replays it — WITHOUT re-running the game's draw code.
+const std::vector<u8>& gxs_cur_frame();
+// Replay a complete, command-aligned GX byte stream through the OpcodeDecoder (renders the geometry;
+// runs no game code). `data` is typically a base-redirected copy of gxs_cur_frame().
+void gxs_replay_frame(const u8* data, size_t n);
 
 // Inter-present wall-time jitter stats (the objective frame-delivery measure).
 void gxs_frametime_reset();
