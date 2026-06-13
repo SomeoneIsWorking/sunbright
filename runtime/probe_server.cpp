@@ -73,6 +73,7 @@ int interp60_probe(char* out, int cap, const char* query);   // runtime/interp60
 void gxs_frametime_reset();                                   // runtime/gx_stream.h
 void gxs_frametime_stats(unsigned long*, double*, double*, double*, double*);
 void gxs_frametime_decode(double*, double*);
+void gxs_frametime_ct(double*, double*);
 extern "C" void sb_census_dump(const char* p);
 namespace {
 
@@ -261,6 +262,9 @@ std::string handle_repl(const char* path) {
         double dec_mean, dec_atmax; gxs_frametime_decode(&dec_mean, &dec_atmax);
         app("  GX decode (sync render on guest thread): mean=%.2fms/frame  at-slowest-frame=%.2fms\n",
             dec_mean, dec_atmax);
+        double ct_mean, ct_atmax; gxs_frametime_ct(&ct_mean, &ct_atmax);
+        app("  CoreTiming Advance+catchup: mean=%.2fms/frame  at-slowest-frame=%.2fms\n",
+            ct_mean, ct_atmax);
         app("  -> if at-slowest-frame ~= max, the spikes are RENDER (own the GPU submission);\n"
             "     if decode is small vs max, the spikes are game logic / pacing.\n");
         return std::string(buf, n);

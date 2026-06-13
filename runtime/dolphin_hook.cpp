@@ -362,6 +362,8 @@ static bool sb_time_ahead() {
         // mixer keeps exactly the cushion. The fill estimate's constant bias and slow drift
         // are absorbed (the servo holds FILL, not a host-time offset). Hard cap: never run
         // more than kMaxLeadMs past the host clock even if the fill signal misbehaves.
+        // (This hard gate also BOUNDS the audio buffer — a soft servo let it balloon to 2s;
+        // and the jitter is NOT from this gate anyway — RE'd 2026-06-13.)
         if (now_ticks >= target + tps * kMaxLeadMs / 1000) return true;
         return fill >= kCushionMs;
     }
@@ -391,6 +393,7 @@ static inline void charge_guest_time() {
         // interp paths deliver them at a proper boundary. (Same pattern as sb_poll_fire's MMIO arm.)
         const u32 saved_msr = ppc.msr.Hex;
         ppc.msr.Hex &= ~0x8000u;
+        const double _ct0 = gxs_ct_tick_begin();
         sys.GetCoreTiming().Advance();
         // Catch up to the governor target at this slice boundary: the fixed per-call charge
         // (kCyclesPerCall) undershoots real time during compute-heavy stretches (~0.6x), so
@@ -398,10 +401,22 @@ static inline void charge_guest_time() {
         // governor knows exactly how far time should be; drive event-to-event until there
         // (bounded). This makes the per-call estimate self-correcting — the host clock, not
         // the charge constant, owns the rate.
+        int _iters = 0;
         for (int g = 0; g < 64 && !sb_time_ahead(); g++) {
             sys.GetCoreTiming().Idle();
             sys.GetCoreTiming().Advance();
+            _iters++;
         }
+        gxs_ct_tick_end(_ct0);
+        // DIAG (SUNBRIGHT_DBG_CT): this catch-up loop is the frame-jitter/perf bottleneck —
+        // ~19ms/frame, and it hits the 64-iteration cap ~100% of the time (RE'd 2026-06-13:
+        // CoreTiming::Advance can't raise the audio fill fast enough, so sb_time_ahead never
+        // trips and the loop always maxes). Pending a native-timing rework.
+        static const bool dbg_ct = getenv("SUNBRIGHT_DBG_CT") != nullptr;
+        if (dbg_ct) { static unsigned long calls=0, itsum=0, atmaxcap=0; calls++; itsum+=_iters;
+          if (_iters>=64) atmaxcap++;
+          if (calls % 4096 == 0) fprintf(stderr, "[ct] charge-advance: calls=%lu avg_catchup_iters=%.1f hit64cap=%lu\n",
+              calls, (double)itsum/calls, atmaxcap); }
         ppc.msr.Hex = saved_msr;
         t_in_advance = false;
         // Deliver any pending external IRQ HERE, at the recomp call boundary — natively (see

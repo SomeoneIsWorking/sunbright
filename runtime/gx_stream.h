@@ -51,5 +51,8 @@ void gxs_frametime_reset();
 void gxs_frametime_stats(unsigned long* n, double* mean_ms, double* stddev_ms,
                          double* min_ms, double* max_ms);
 void gxs_frametime_decode(double* mean_dec_ms, double* dec_at_max);
+void gxs_frametime_ct(double* mean_ct_ms, double* ct_at_max);
 double gxs_decode_tick_begin();
 void   gxs_decode_tick_end(double t0);
+double gxs_ct_tick_begin();
+void   gxs_ct_tick_end(double t0);

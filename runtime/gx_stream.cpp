@@ -197,6 +197,8 @@ double g_ft_sum = 0, g_ft_sumsq = 0, g_ft_min = 1e30, g_ft_max = 0;
 // whether frame-time spikes are render or game-logic. g_ft_dec_frame accumulates
 // decode ms within the current frame; captured at the boundary.
 double g_ft_dec_frame = 0, g_ft_dec_sum = 0, g_ft_dec_atmax = 0;
+// CoreTiming::Advance (Dolphin event/timing machinery) wall time per frame.
+double g_ft_ct_frame = 0, g_ft_ct_sum = 0, g_ft_ct_atmax = 0;
 double now_ms() {
     return std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -204,7 +206,9 @@ double now_ms() {
 }  // namespace
 double gxs_decode_tick_begin() { return now_ms(); }
 void   gxs_decode_tick_end(double t0) { g_ft_dec_frame += now_ms() - t0; }
-void gxs_frametime_reset() { g_ft_n = 0; g_ft_sum = g_ft_sumsq = g_ft_max = 0; g_ft_min = 1e30; g_ft_last_ms = 0; g_ft_dec_sum = g_ft_dec_atmax = 0; }
+double gxs_ct_tick_begin() { return now_ms(); }
+void   gxs_ct_tick_end(double t0) { g_ft_ct_frame += now_ms() - t0; }
+void gxs_frametime_reset() { g_ft_n = 0; g_ft_sum = g_ft_sumsq = g_ft_max = 0; g_ft_min = 1e30; g_ft_last_ms = 0; g_ft_dec_sum = g_ft_dec_atmax = 0; g_ft_ct_sum = g_ft_ct_atmax = 0; }
 void gxs_frametime_stats(unsigned long* n, double* mean, double* stddev, double* mn, double* mx) {
     *n = g_ft_n;
     *mean = g_ft_n ? g_ft_sum / g_ft_n : 0;
@@ -216,6 +220,10 @@ void gxs_frametime_decode(double* mean_dec_ms, double* dec_at_max) {
     *mean_dec_ms = g_ft_n ? g_ft_dec_sum / g_ft_n : 0;
     *dec_at_max = g_ft_dec_atmax;   // decode ms of the slowest frame
 }
+void gxs_frametime_ct(double* mean_ct_ms, double* ct_at_max) {
+    *mean_ct_ms = g_ft_n ? g_ft_ct_sum / g_ft_n : 0;
+    *ct_at_max = g_ft_ct_atmax;
+}
 
 void gxs_frame_boundary() {
     if (!g_armed) return;
@@ -226,9 +234,9 @@ void gxs_frame_boundary() {
       if (g_ft_last_ms > 0) { const double d = t - g_ft_last_ms;
           if (d > 0 && d < 1000) { g_ft_n++; g_ft_sum += d; g_ft_sumsq += d*d;
               if (d < g_ft_min) g_ft_min = d;
-              if (d > g_ft_max) { g_ft_max = d; g_ft_dec_atmax = g_ft_dec_frame; }
-              g_ft_dec_sum += g_ft_dec_frame; } }
-      g_ft_last_ms = t; g_ft_dec_frame = 0; }
+              if (d > g_ft_max) { g_ft_max = d; g_ft_dec_atmax = g_ft_dec_frame; g_ft_ct_atmax = g_ft_ct_frame; }
+              g_ft_dec_sum += g_ft_dec_frame; g_ft_ct_sum += g_ft_ct_frame; } }
+      g_ft_last_ms = t; g_ft_dec_frame = 0; g_ft_ct_frame = 0; }
 
     // Analyze the completed frame; only a fully-parsed frame qualifies as a
     // replay source (the very first armed frames mis-size vertices until J3D
