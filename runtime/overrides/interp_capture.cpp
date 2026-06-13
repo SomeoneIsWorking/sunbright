@@ -159,25 +159,6 @@ void interp60_restore_after_redraw() {
 // mode 3: clear the registry at the start of a real frame (TMarDirector::direct).
 void interp60_registry_clear() { g_registry.clear(); }
 
-// mode 3: blend ONE matrix (12 floats) at a GX pos-matrix array `addr` toward its
-// content last frame `prev12`. For the static world (batch-drawn outside J3DModel::
-// viewCalc, single-buffered: recomputed in place each real frame at a stable base,
-// never during the redraw — RE'd via write-watch). NO per-object teleport guard:
-// distant geometry legitimately sweeps far in eye-space during camera rotation, so
-// magnitude can't tell motion from a cut — cut detection is done at the camera
-// level by the caller (whole in-between skipped on a view discontinuity).
-void interp60_blend_base(u32 addr, const float* prev12) {
-    if (!ok_ram(addr) || (addr & 0x1F) || !ok_ram(addr + 48 - 1)) return;
-    if (!g_blended_set.insert(addr).second) return;      // already handled (registry/dup)
-    g_restore.push_back({});
-    Saved& s = g_restore.back();
-    s.addr = addr; s.f.resize(12);
-    for (u32 i = 0; i < 12; i++) s.f[i] = mem_rf32(addr + i * 4);   // = N (for restore)
-    const float a = g_i60.alpha;
-    for (u32 i = 0; i < 12; i++) mem_wf32(addr + i * 4, (1.0f - a) * prev12[i] + a * s.f[i]);
-    if (g_i60.blended_addrs.size() < 8192) g_i60.blended_addrs.push_back(addr);
-}
-
 // mode 3: blend every registered model's draw-matrix double-buffer toward N-1.
 // Called on the in-between field BEFORE re-issuing the draw lists. Reaches the
 // whole scene (every model that ran viewCalc this frame), not just the ~14 that
@@ -222,6 +203,26 @@ SUNBRIGHT_OVERRIDE(ov_j3d_viewCalc_blend, 0x802deeb8u) {
     // Capture `this` (r3) BEFORE the call — func_802deeb8 clobbers r3.
     const u32 model_this = cpu.gpr[3];
     func_802deeb8(cpu);
+    if (g_i60.mode == 3 && model_this >= 0x80000000u) {
+        g_i60.vc_realfield++;
+        if (g_registry.size() < 4096) g_registry.push_back(model_this);
+    }
+}
+
+// SDLModel::viewCalcSimple (0x8023d36c) — the STATIC WORLD/MAP draw-matrix computer.
+// SDLModel : public J3DModel, so it shares the mDrawMtxBuf double-buffer layout and
+// swapDrawMtx()s (draw[i] = camera × node[i] into [1][view]) exactly like J3DModel —
+// blend_model handles it identically. The world judders because this is a SEPARATE
+// class from J3DModel::viewCalc, so the registry missed it. Register it too.
+extern "C" void func_8023d36c(CPUState&);
+SUNBRIGHT_OVERRIDE(ov_sdl_viewCalcSimple, 0x8023d36cu) {
+    if (g_interp60_in_redraw) {
+        if (g_i60.mode == 3) return;   // registry pre-blended it; skip recompute (= frame N)
+        func_8023d36c(cpu);
+        return;
+    }
+    const u32 model_this = cpu.gpr[3];
+    func_8023d36c(cpu);
     if (g_i60.mode == 3 && model_this >= 0x80000000u) {
         g_i60.vc_realfield++;
         if (g_registry.size() < 4096) g_registry.push_back(model_this);

@@ -26,8 +26,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <vector>
-#include <unordered_map>
-#include <array>
 #include <cmath>
 
 // Live debug + control state (declared in interp60.h).
@@ -64,7 +62,6 @@ void interp60_restore_after_redraw();   // interp_capture.cpp
 void interp60_take_motion();            // interp_capture.cpp
 void interp60_registry_clear();         // interp_capture.cpp
 void interp60_blend_registry();         // interp_capture.cpp
-void interp60_blend_base(u32 addr, const float* prev12);  // interp_capture.cpp
 
 namespace {
 
@@ -206,31 +203,11 @@ SUNBRIGHT_OVERRIDE(ov_interp_endRendering, DISPLAY_END_RENDER) {
     // mode 3: blend EVERY registered model's draw-matrix double-buffer toward N-1
     // before the draw lists re-issue (the viewCalc override skips recompute in this
     // mode so the blend survives). This is what reaches the whole scene.
-    g_i60.base_blended = 0;
-    if (g_i60.mode == 3 && !g_i60.is_cut) {
-        interp60_blend_registry();   // animated J3DModels (Mario, NPCs, items)
-        // Static world: batch-drawn outside J3DModel::viewCalc, recomputed in place
-        // each real frame (single-buffered, NOT touched during the redraw — RE'd via
-        // write-watch). The engine keeps no N-1, so we snapshot per base address and
-        // blend the buffer in place before re-issue. gxs_prev_frame_info() is the
-        // just-presented real frame N here.
-        static std::unordered_map<u32, std::array<float, 12>> base_prev;
-        const GxFrameInfo& fi = gxs_prev_frame_info();
-        for (const auto& m : fi.mtx_arrays) {
-            if (m.array != 12) continue;
-            const u32 addr = (m.base & 0x03FFFFFFu) | 0x80000000u;
-            if (addr < 0x80000000u || addr >= 0x81800000u || (addr & 0x1F)) continue;
-            bool in_registry = false;
-            for (u32 a : g_i60.blended_addrs)
-                if ((a & 0x03FFFFFFu) == (m.base & 0x03FFFFFFu)) { in_registry = true; break; }
-            if (in_registry) continue;          // animated model — registry handled it
-            std::array<float, 12> cur;
-            for (u32 i = 0; i < 12; i++) cur[i] = mem_rf32(addr + i * 4);   // N
-            auto it = base_prev.find(addr);
-            if (it != base_prev.end()) { interp60_blend_base(addr, it->second.data()); g_i60.base_blended++; }
-            base_prev[addr] = cur;              // original N -> next frame's N-1
-        }
-    }
+    // Blend the whole scene's registered models (J3DModel + SDLModel/world) toward
+    // N-1, unless this is a scene cut. Both classes double-buffer mDrawMtxBuf, so
+    // blend_model handles them uniformly; their viewCalc bodies are skipped in the
+    // redraw so the blend survives the re-issue.
+    if (g_i60.mode == 3 && !g_i60.is_cut) interp60_blend_registry();
     for (u32 li = 0; li < sizeof(kDrawLists) / sizeof(kDrawLists[0]); li++) {
         const u32 list = MEM_R32(g_mardir + kDrawLists[li]);
         if (!list) continue;
@@ -340,8 +317,8 @@ int interp60_probe(char* out, int cap, const char* query) {
     app("registry(mode3): real-field viewCalc=%lu  models=%lu  blended=%lu bail(null=%lu single=%lu)\n",
         g_i60.vc_realfield, g_i60.reg_size, g_i60.vc_blended, g_i60.vc_bail_null, g_i60.vc_bail_single);
     app("redraw viewCalc calls=%lu\n", g_i60.vc_calls);
-    app("world (base-keyed): blended last redraw=%lu  | is_cut=%d cuts=%lu\n",
-        g_i60.base_blended, g_i60.is_cut, g_i60.cuts);
+    app("cut detect: is_cut=%d cuts=%lu  (world now via SDLModel registry, not base-keyed)\n",
+        g_i60.is_cut, g_i60.cuts);
     app("  per-list viewCalc:");
     for (u32 i = 0; i < sizeof(kDrawLists)/sizeof(kDrawLists[0]); i++)
         app(" [%u:+%02x]=%lu", i, kDrawLists[i], g_i60.vc_per_list[i]);

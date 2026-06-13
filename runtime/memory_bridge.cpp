@@ -761,6 +761,8 @@ void sb_watch_fire(u32 ea, u32 v, int width, void* host_ra) {
     fired++;
     Dl_info di{};
     const char* fn = (dladdr(host_ra, &di) && di.dli_sname) ? di.dli_sname : "?";
-    fprintf(stderr, "[watchw] %sea=%08x v=%0*x w%d from %s\n",
-            g_interp60_in_redraw ? "REDRAW " : "", ea, width * 2, v, width, fn);
+    // host_ra raw: addr2line -e build/sunbright <ra> -> generated/functions_*.cpp:line
+    // (the recomp funcs are internal symbols dladdr can't see; addr2line uses symtab).
+    fprintf(stderr, "[watchw] %sea=%08x v=%0*x w%d from %s  ra=%p\n",
+            g_interp60_in_redraw ? "REDRAW " : "", ea, width * 2, v, width, fn, host_ra);
 }
