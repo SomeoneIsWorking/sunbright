@@ -178,6 +178,10 @@ void gxs_flush(const char* why) {
     if (why && why[0] == 'g') g_fl_gxflush++;
 }
 
+unsigned long long gxs_decoded_bytes() { return g_decoded_bytes; }
+unsigned long      gxs_decode_runs()   { return g_decode_runs; }
+const GxFrameInfo& gxs_prev_frame_info() { return g_prev_info; }
+
 void gxs_frame_boundary() {
     if (!g_armed) return;
     gxs_flush("copy");

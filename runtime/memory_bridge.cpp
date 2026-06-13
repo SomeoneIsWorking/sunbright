@@ -750,8 +750,17 @@ u32 g_watch_wa = [](){
     const char* e = getenv("SUNBRIGHT_WATCH_WADDR");
     return e ? (u32)strtoul(e, nullptr, 16) : 0u;
 }();
+// When armed by /interp60?watch=1, fire only during the 60 fps in-between redraw
+// (so the real-field recompute doesn't drown the log) and cap the volume.
+bool g_watch_redraw_only = false;
+extern bool g_interp60_in_redraw;
 void sb_watch_fire(u32 ea, u32 v, int width, void* host_ra) {
+    if (g_watch_redraw_only && !g_interp60_in_redraw) return;
+    static int fired = 0;
+    if (g_watch_redraw_only && fired >= 64) return;
+    fired++;
     Dl_info di{};
     const char* fn = (dladdr(host_ra, &di) && di.dli_sname) ? di.dli_sname : "?";
-    fprintf(stderr, "[watchw] ea=%08x v=%0*x w%d from %s\n", ea, width * 2, v, width, fn);
+    fprintf(stderr, "[watchw] %sea=%08x v=%0*x w%d from %s\n",
+            g_interp60_in_redraw ? "REDRAW " : "", ea, width * 2, v, width, fn);
 }

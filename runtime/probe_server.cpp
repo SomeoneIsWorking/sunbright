@@ -69,6 +69,7 @@ extern "C" void sb_trace(const char* tag, uint32_t a, uint32_t b, uint32_t c, ui
 #endif
 
 extern "C" int njas_probe(char* out, int cap);
+int interp60_probe(char* out, int cap, const char* query);   // runtime/interp60.h
 extern "C" void sb_census_dump(const char* p);
 namespace {
 
@@ -246,6 +247,12 @@ std::string handle_repl(const char* path) {
         app("census dumped to scratch/logs/call_census.tsv\n");
         return std::string(buf, n);
     }
+    if (strncmp(path, "/interp60", 9) == 0) {
+        // 60 fps interpolation data path: counters + the does-the-blend-reach-the-GPU
+        // cross-check + live A/B controls (?alpha=<f> ?blend=<0|1> ?perturb=<0|1>).
+        n += interp60_probe(buf + n, (int)sizeof(buf) - n, path);
+        return std::string(buf, n);
+    }
     if (strncmp(path, "/njas", 5) == 0) {
         // Native JAS engine voice table (recomp side of the oracle A/B): srcHash joins
         // against /aram?a=<vpb base>&n=40 FNV on the oracle side. See tools/audio/vpb_compare.py.
@@ -400,7 +407,8 @@ std::string handle_repl(const char* path) {
                "  /cur                current OSThread + saved srr0/lr/sp/prio\n"
                "  /trace?a=HEX&ms=N   sample a word for N ms, list value transitions (A/B Dolphin vs native)\n"
                "  /poll?a=HEX&b=..    snapshot up to 6 cells (a..f), each named\n"
-               "  /tracelog           dump the trace ring (events from sb_trace observers)\n";
+               "  /tracelog           dump the trace ring (events from sb_trace observers)\n"
+               "  /interp60[?alpha=&blend=&perturb=]  60fps data path + live A/B controls\n";
     }
     return std::string();
 }

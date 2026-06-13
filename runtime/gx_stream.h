@@ -38,3 +38,10 @@ void gxs_flush(const char* why);
 // Frame boundary: GXCopyDisp completed (its bytes are in the buffer/FIFO).
 // Flushes and rotates the per-frame capture.
 void gxs_frame_boundary();
+
+// Instrumentation accessors (used by the 60 fps probe to measure whether the
+// in-between field actually re-rendered, and what matrix buffers it loaded).
+unsigned long long gxs_decoded_bytes();   // running total of bytes decoded
+unsigned long      gxs_decode_runs();     // running count of decode_owned() runs
+struct GxFrameInfo;
+const GxFrameInfo& gxs_prev_frame_info(); // parse of the most-recently-completed frame
