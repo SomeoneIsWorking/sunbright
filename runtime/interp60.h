@@ -107,6 +107,13 @@ struct Interp60Dbg {
     // (occlusion-darkening alpha) read BEFORE and AFTER the in-between redraw. If after!=before
     // the in-between mutated game state (the double unk48 advance + re-probe = the blink source).
     u32 sil_mgr = 0; float sil_before = 0, sil_after = 0;
+    // marukage draw instrumentation (TSilhouette::perform 0x80227914), split by field. If
+    // perform/&0x10 fire on the REAL field but not the in-between (or counts differ), the shadow
+    // is a draw ASYMMETRY (on/off blink). If both fire equally, the blink is POSITION detach
+    // (shadow center gpMarioPos at tick N vs the body's interpolated draw matrix).
+    unsigned long sil_perf_real = 0, sil_perf_redraw = 0;   // perform() calls per field
+    unsigned long sil_maru_real = 0, sil_maru_redraw = 0;   // &0x10 (marukage setup) per field
+    u32 sil_lastparam_real = 0, sil_lastparam_redraw = 0;   // last param_1 seen each field
 };
 extern Interp60Dbg g_i60;
 

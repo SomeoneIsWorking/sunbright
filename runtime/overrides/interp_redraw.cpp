@@ -96,6 +96,22 @@ SUNBRIGHT_OVERRIDE(ov_interp_setviewmtx, 0x80296a50u) {
     func_80296a50(cpu);
 }
 
+// Instrument the marukage draw (TSilhouette::perform). Split counts by field so we can tell a
+// draw-asymmetry blink (fires on one field, not the other) from a position-detach blink (fires
+// on both, but its gpMarioPos-projected center is at tick N while the body interpolates).
+extern "C" void func_80227914(CPUState&);   // TSilhouette::perform(u32 flags, TGraphics*)
+SUNBRIGHT_OVERRIDE(ov_silhouette_perform, 0x80227914u) {
+    const u32 param = cpu.gpr[4];
+    if (g_interp60_in_redraw) {
+        g_i60.sil_perf_redraw++; g_i60.sil_lastparam_redraw = param;
+        if (param & 0x10) g_i60.sil_maru_redraw++;
+    } else {
+        g_i60.sil_perf_real++; g_i60.sil_lastparam_real = param;
+        if (param & 0x10) g_i60.sil_maru_real++;
+    }
+    func_80227914(cpu);
+}
+
 SUNBRIGHT_OVERRIDE(ov_interp_mardir_direct, MARDIR_DIRECT) {
     g_mardir = cpu.gpr[3];
     if (g_i60.mode == 3) interp60_registry_clear();   // start a fresh model registry
@@ -409,6 +425,12 @@ int interp60_probe(char* out, int cap, const char* query) {
         g_i60.sil_mgr == 0 ? "<<< unresolved" :
         (g_i60.sil_after != g_i60.sil_before) ? "<<< in-between MUTATED occlusion alpha (blink source)" :
         "(in-between left it unchanged)");
+    app("MARUKAGE (TSilhouette::perform): real perf=%lu maru(&0x10)=%lu param=%08x | redraw perf=%lu maru=%lu param=%08x  %s\n",
+        g_i60.sil_perf_real, g_i60.sil_maru_real, g_i60.sil_lastparam_real,
+        g_i60.sil_perf_redraw, g_i60.sil_maru_redraw, g_i60.sil_lastparam_redraw,
+        (g_i60.sil_maru_redraw == 0 && g_i60.sil_maru_real > 0) ? "<<< marukage draws on REAL but NOT in-between (on/off blink)" :
+        (g_i60.sil_maru_real == 0 && g_i60.sil_maru_redraw > 0) ? "<<< marukage draws on in-between but NOT real (on/off blink)" :
+        "(fires on both fields -> position-detach, not on/off)");
     app("  per-list viewCalc:");
     for (u32 i = 0; i < sizeof(kDrawLists)/sizeof(kDrawLists[0]); i++)
         app(" [%u:+%02x]=%lu", i, kDrawLists[i], g_i60.vc_per_list[i]);
