@@ -89,9 +89,16 @@ extern "C" void func_80299838(CPUState&);   // TMarDirector::direct
 // dependence on Dolphin's VI field parity/phase + the progressive even-field offset (RRBB, H5).
 extern "C" volatile int g_sb_own_present;       // Present.cpp (fork)
 extern "C" void sb_present_xfb(unsigned xfb_addr);   // Present.cpp (fork) — present phys addr now
+extern "C" volatile int g_sb_efb_redirect_inbetween;  // BPStructs.cpp (fork) — in-between EFB-copy redirect
+extern "C" void sb_efb_redir_clear();                 // BPStructs.cpp (fork) — reset the redirect set
 static bool own_present_enabled() {
     static int v = -1;
     if (v < 0) v = getenv("SUNBRIGHT_NO_OWN_PRESENT") ? 0 : 1;  // default ON for interp60
+    return v == 1;
+}
+static bool efb_redirect_enabled() {
+    static int v = -1;
+    if (v < 0) v = getenv("SUNBRIGHT_NO_EFB_REDIRECT") ? 0 : 1;  // default ON for interp60
     return v == 1;
 }
 extern "C" void sb_efb_native_begin_inbetween();   // efb_native.cpp — per-field EFB-copy redirect
@@ -241,7 +248,14 @@ SUNBRIGHT_OVERRIDE(ov_interp_endRendering, DISPLAY_END_RENDER) {
         g_i60.disp = display; g_i60.set_fb = alt;
         g_i60.redraw_gx_bytes = frameN.size();
         g_interp60_in_redraw = true;
+        // Per-field EFB feedback: the in-between's EFB->texture copies go to their OWN ALT slots
+        // (VRAM-only, no guest RAM) and the in-between's consumers sample those ALT slots, so each
+        // screen-space effect (water reflection, mirror, graffiti) tracks the interpolated geometry
+        // (no Mario ghost) AND the real field's textures are never clobbered (no half-step lag).
+        // BPStructs.cpp + TextureInfo.cpp + TextureCacheBase.cpp. Off-switch: SUNBRIGHT_NO_EFB_REDIRECT.
+        if (efb_redirect_enabled()) { sb_efb_redir_clear(); g_sb_efb_redirect_inbetween = 1; }
         gxs_replay_frame(frameN.data(), frameN.size());    // re-render frame N with interpolated mtx
+        g_sb_efb_redirect_inbetween = 0;
         interp60_xfmap_end();
         g_interp60_in_redraw = false;
         const u32 ob0 = MEM_R32(display + 4), ob1 = MEM_R32(display + 8);
@@ -530,6 +544,12 @@ int interp60_probe(char* out, int cap, const char* query) {
     app("MOTION-INTERP (LoadIndexedXF hook): map=%lu objects  hits=%lu (pos-mtx loads interpolated) "
         "misses=%lu  %s\n", g_i60.xf_map_size, g_i60.xf_hits, g_i60.xf_misses,
         g_i60.xf_hits ? "<<< INTERPOLATING" : "<<< NOT interpolating (no paired objects)");
+    {   // indexed-XF array histogram: 12=pos(interpolated); others (texgen/tex-mtx) are NOT yet.
+        extern unsigned long g_xf_array_hist[16];
+        app("  XF indexed-load arrays (per-frame class):");
+        for (int i = 0; i < 16; i++) if (g_xf_array_hist[i]) app(" [%d]=%lu", i, g_xf_array_hist[i]);
+        app("\n");
+    }
     app("registry(mode3): real-field viewCalc=%lu  models=%lu  blended=%lu bail(null=%lu single=%lu)\n",
         g_i60.vc_realfield, g_i60.reg_size, g_i60.vc_blended, g_i60.vc_bail_null, g_i60.vc_bail_single);
     app("redraw viewCalc calls=%lu\n", g_i60.vc_calls);
@@ -590,6 +610,9 @@ int interp60_probe(char* out, int cap, const char* query) {
         extern volatile unsigned g_sb_ownpres_last;
         app("OWN-PRESENT: active=%d  manual=%lu gated-fields=%lu auto-presents=%lu  last_manual=%08x\n",
             g_sb_own_present, g_sb_ownpres_manual, g_sb_ownpres_gated, g_sb_ownpres_auto, g_sb_ownpres_last);
+        extern volatile unsigned long g_sb_efb_redirects;
+        app("EFB-REDIRECT (in-between copies -> alt, no real-frame clobber): redirected=%lu\n",
+            g_sb_efb_redirects);
     }
     app("RENDER VOLUME of in-between field: gx_bytes=%llu runs=%lu  %s\n",
         g_i60.redraw_gx_bytes, g_i60.redraw_gx_runs,

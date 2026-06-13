@@ -265,7 +265,13 @@ extern "C" void interp60_xfmap_end() { g_xf_active = false; g_xfmap.clear(); }
 // Fork seam (XFStructs.cpp LoadIndexedXF). array 12 = XF_A pos matrix. Fill `out` (big-endian words,
 // guest format — LoadIndexedXF swap32's them into XF) with the interpolated matrix; return true. A
 // non-tracked base / inactive returns false (stock guest read).
+// Per-array indexed-XF load histogram (diagnostic): which CP arrays does the scene load via
+// indexed XF? 12 = position matrices (interpolated). Texture/texgen-projection matrices used by
+// projected shadows/decals load via other arrays — if they appear here, the same seam can
+// interpolate them. Read via /interp60.
+unsigned long g_xf_array_hist[16] = {0};
 extern "C" bool sb_hook_xf_indexed(u32 array, u32 base, u32 stride, u32 index, u32 size, u32* out) {
+    if (g_xf_active && array < 16) g_xf_array_hist[array]++;
     if (!g_xf_active || array != 12) return false;
     static const int dbg = getenv("SUNBRIGHT_DBG_XF") ? 1 : 0;   // cached: hook is hot (per load)
     if (dbg) {   // first few hook bases — confirm parser base == load base
