@@ -168,7 +168,7 @@ SUNBRIGHT_OVERRIDE(ov_interp_endRendering, DISPLAY_END_RENDER) {
         for (u32 i = 0; i < 12; i++) saved_jview[i] = cur_view[i];   // restore after redraw
         g_i60.view_x = cur_view[3]; g_i60.view_y = cur_view[7]; g_i60.view_z = cur_view[11];
         g_i60.view_snaps++;
-        if (g_i60.mode == 2 && g_i60.have_prev_view) {
+        if ((g_i60.mode == 2 || g_i60.mode == 3) && g_i60.have_prev_view) {
             const float a = g_i60.alpha;
             g_i60.view_dx = cur_view[3]  - prev_view[3];
             g_i60.view_dy = cur_view[7]  - prev_view[7];
@@ -196,6 +196,11 @@ SUNBRIGHT_OVERRIDE(ov_interp_endRendering, DISPLAY_END_RENDER) {
     // before the draw lists re-issue (the viewCalc override skips recompute in this
     // mode so the blend survives). This is what reaches the whole scene.
     if (g_i60.mode == 3) interp60_blend_registry();
+    // The un-registered static world recomputes its draw matrix DURING the draw
+    // pass (its base changes every frame), so pre-blending buffers is futile — but
+    // it recomputes view × node, and we've blended the j3dSys view matrix above, so
+    // the recompute naturally yields the interpolated camera. (Registered models had
+    // their viewCalc skipped, so they keep the registry blend.)
     for (u32 li = 0; li < sizeof(kDrawLists) / sizeof(kDrawLists[0]); li++) {
         const u32 list = MEM_R32(g_mardir + kDrawLists[li]);
         if (!list) continue;
@@ -211,7 +216,7 @@ SUNBRIGHT_OVERRIDE(ov_interp_endRendering, DISPLAY_END_RENDER) {
     cpu.gpr[1] = saved_r1;
 
     // Restore j3dSys's view matrix to tick N (we blended it for the redraw).
-    if (g_i60.mode == 2 && g_i60.have_prev_view)
+    if ((g_i60.mode == 2 || g_i60.mode == 3) && g_i60.have_prev_view)
         for (u32 i = 0; i < 12; i++) mem_wf32(J3DSYS_VIEWMTX + i * 4, saved_jview[i]);
 
     // Clobber check: is the blend we wrote still in RAM now that all draw lists ran?
@@ -237,12 +242,15 @@ SUNBRIGHT_OVERRIDE(ov_interp_endRendering, DISPLAY_END_RENDER) {
         // GXSetArray stores a PHYSICAL base (virtual & 0x03FFFFFF); blended_addrs
         // are virtual — compare on the low 26 bits.
         g_i60.s_base = g_i60.s_addr = 0;
+        g_i60.miss_n = 0;
         for (const auto& m : fi.mtx_arrays) {
             if (m.array != 12) continue;     // 12 = XF_A pos matrix array
             if (!g_i60.s_base) g_i60.s_base = m.base;
             seen++;
+            bool found = false;
             for (u32 a : g_i60.blended_addrs)
-                if ((a & 0x03FFFFFFu) == (m.base & 0x03FFFFFFu)) { hit++; break; }
+                if ((a & 0x03FFFFFFu) == (m.base & 0x03FFFFFFu)) { hit++; found = true; break; }
+            if (!found && g_i60.miss_n < 8) g_i60.miss_base[g_i60.miss_n++] = (m.base & 0x03FFFFFFu) | 0x80000000u;
         }
         if (!g_i60.blended_addrs.empty()) g_i60.s_addr = g_i60.blended_addrs[0];
         g_i60.redraw_mtx_bases = seen;
@@ -286,11 +294,11 @@ int interp60_probe(char* out, int cap, const char* query) {
     app("interp60 enabled=%d  mode=%d(%s) alpha=%.3f blend=%d perturb=%d\n",
         (int)sunbright_interp60(), g_i60.mode, mname, g_i60.alpha, g_i60.blend, g_i60.perturb);
     app("CAMERA: view abs=(%.2f,%.2f,%.2f) snaps=%lu\n", g_i60.view_x, g_i60.view_y, g_i60.view_z, g_i60.view_snaps);
-    app("CAMERA (mode 2): TJ3DSysSetViewMtx during redraw=%lu  view delta N-1->N=(%.3f,%.3f,%.3f)  %s\n",
+    app("CAMERA (view-blend, modes 2&3): TJ3DSysSetViewMtx during redraw=%lu  view delta N-1->N=(%.3f,%.3f,%.3f)  %s\n",
         g_i60.setviewmtx_calls, g_i60.view_dx, g_i60.view_dy, g_i60.view_dz,
-        g_i60.mode != 2 ? "(mode!=2)" :
+        (g_i60.mode != 2 && g_i60.mode != 3) ? "(view-blend off)" :
         g_i60.setviewmtx_calls == 0 ? "<<< view node NEVER runs in redraw — blend can't reach j3dSys" :
-        "(view node runs — blended camera reaches j3dSys)");
+        "(view node runs — blended camera reaches j3dSys -> world recompute)");
     app("redraws=%lu  skips(rate=%lu nodir=%lu full=%lu)  mardir=%08x gfx_valid=%d\n",
         g_i60.redraws, g_i60.skip_rate, g_i60.skip_nodir, g_i60.skip_full,
         g_i60.mardir, g_i60.gfx_valid);
@@ -314,6 +322,9 @@ int interp60_probe(char* out, int cap, const char* query) {
     app("  sample: first array-12 base=%08x  first blended addr=%08x  (cmp low26: %s)\n",
         g_i60.s_base, g_i60.s_addr,
         (g_i60.s_base & 0x03FFFFFFu) == (g_i60.s_addr & 0x03FFFFFFu) ? "MATCH" : "differ");
+    app("  UN-blended bases (GPU read, not ours) [virt]:");
+    for (unsigned i = 0; i < g_i60.miss_n; i++) app(" %08x", g_i60.miss_base[i]);
+    app("\n");
     app("WIRING (tracked model %08x view=%u): d1a=%08x cur=%08x  pkt=%08x unk18=%08x unk18[view]=%08x\n",
         g_i60.track_model, g_i60.track_view, g_i60.track_d1a, g_i60.track_cur,
         g_i60.track_pkt, g_i60.track_unk18, g_i60.track_unk18_view);

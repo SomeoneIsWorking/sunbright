@@ -55,6 +55,8 @@ struct Interp60Dbg {
     unsigned long long redraw_gx_bytes = 0;
     unsigned long      redraw_gx_runs = 0;
     u32 s_base = 0, s_addr = 0;   // sample: first array-12 base / first blended addr
+    u32 miss_base[8] = {0};       // sample of pos-mtx bases the GPU read that we did NOT blend
+    unsigned miss_n = 0;
 
     // OUTPUT-SIDE proof: hash the real-field XFB vs the in-between-field XFB. If
     // they are ever DIFFERENT, the in-between produced different pixels (motion or
