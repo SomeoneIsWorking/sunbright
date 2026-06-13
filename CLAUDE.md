@@ -54,7 +54,11 @@ runtime/overrides/   Hand-written native overrides + manual JIT routing
 generated/           Recompiler output — gitignored, regenerate with /recompile
                      functions.h (decls) + functions_<addr>.cpp ×N (bucketed by
                      address, compiled in parallel) + jump_table.cpp
-externals/dolphin/   Dolphin git submodule — do NOT modify
+externals/dolphin/   Dolphin submodule — now our FORK (SomeoneIsWorking/dolphin,
+                     branch `sunbright`). Prefer runtime/ overrides; modify Dolphin only
+                     for real engine/base bugs (e.g. the headless frame-cycle VRAM leak).
+                     Commit in the submodule → push to the fork → bump the parent gitlink.
+                     Still do NOT touch Source/Core/PowerPC/ (that's what we replace).
 docs/                Living docs — update whenever architecture changes
 ```
 
