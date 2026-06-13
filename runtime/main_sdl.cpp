@@ -678,7 +678,10 @@ static WindowSystemInfo build_wsi() {
         }
         wsi.type           = WindowSystemType::MacOS;
         wsi.render_window  = reinterpret_cast<void*>(g_metal_view);
-        wsi.render_surface = SDL_Metal_GetLayer(g_metal_view);   // CAMetalLayer*
+        // PrepareWindow expects an NSView — it creates/attaches its own CAMetalLayer
+        // then overwrites render_surface with it. Passing the CAMetalLayer directly
+        // causes setWantsLayer: to be called on it → NSInvalidArgumentException crash.
+        wsi.render_surface = reinterpret_cast<void*>(g_metal_view);
         break;
     }
 #endif

@@ -7,6 +7,7 @@
 #include "memory_bridge.h"
 #include <cstdio>
 #include <cstdlib>
+#include <unistd.h>
 #include <filesystem>
 #include <unordered_map>
 #include <set>
