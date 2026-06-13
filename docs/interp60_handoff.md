@@ -11,12 +11,15 @@ Everything below is committed + pushed (parent `main` + the Dolphin fork branch 
 frame gets a real present AND an in-between present — a perfectly clean `R,B,R,B,R,B…`
 stream at 60fps, no exceptions, in every scene/state/load condition. This is non‑negotiable:
 
-- The `skips(rate / nodir / full)` counters in `/interp60` must all be **0** — always.
-  **DONE (2026-06-14):** all three are 0 through boot + gameplay (see Frontier 1 below).
-- The present **cadence doublings** must be **0%**. **DONE in gameplay (2026-06-14):** 0 new
+- The `skips(rate / nodir / full)` counters in `/interp60` must be **0 in gameplay**.
+  **DONE (2026-06-14):** 0 during gameplay. **CLARIFIED by the user (2026-06-14): boot frames are
+  fine** — `skip_full` during boot/scene-load (`!g_gfx_valid` startup frames) is intentionally left
+  (the earlier "eliminate the 9 boot skips" change was reverted at the user's request). The directive
+  is about *gameplay*, not the boot logos.
+- The present **cadence doublings** must be **0% in gameplay**. **DONE (2026-06-14):** 0 new
   doublings over a walk; the owned-present path (Frontier 1) makes the stream a deterministic
-  R,B,R,B. Residual ~5 lifetime doublings are the one-time boot auto→own handoff during fade-in
-  (pre-gameplay) — eliminate next if the directive is read literally for the boot logos too.
+  R,B,R,B. Residual handful of lifetime doublings are the one-time boot auto→own handoff during
+  fade-in (pre-gameplay) — fine.
 
 Do NOT treat any skip as a tolerable edge case, a transition exception, or a perf fallback.
 If a condition currently forces a skip (1‑field frame, not‑fresh, gfx‑not‑valid, VI field
@@ -66,9 +69,9 @@ Three bugs fixed, in order:
 
 ## FRONTIER 1 — RESOLVED (2026-06-14): own the present cadence
 
-**Was:** ~13% RRBB doublings + 9 boot skips. **Now:** 0 doublings + 0 skips in gameplay
-(`skips(rate=0 nodir=0 full=0)`; doublings flat over a walk). Residual ~5 lifetime doublings are
-the one-time boot auto→own present handoff during fade-in (pre-gameplay).
+**Was:** ~13% RRBB doublings in gameplay. **Now:** 0 doublings + 0 skips in gameplay (doublings
+flat over a walk). Boot/scene-load `skip_full` frames are intentionally left (user: boot frames are
+fine); the residual handful of lifetime doublings are the one-time boot auto→own handoff at fade-in.
 
 **Root cause (confirmed via tooling, not guessed):** hazard H5 — the two synchronous per-frame
 presents don't map 1:1 onto Dolphin's async VI fields. Two compounding defects, both found with
@@ -91,8 +94,8 @@ the new `/interp60` OWN-PRESENT + `/nativevi` probe lines:
   real copy and `sb_present_xfb(alt)` right after the in-between copy → deterministic R,B,R,B by
   construction, no VI-field-timing dependence, no progressive offset. Skip/non-interp frames set
   `g_sb_own_present=0` (Dolphin auto-presents). Off-switch: `SUNBRIGHT_NO_OWN_PRESENT`.
-- Boot skips: `room` no longer requires `g_gfx_valid` (the replay path doesn't use the TGraphics
-  snapshot — only the captured GX stream); guarded on `gxs_cur_frame()` non-empty instead.
+- Boot/scene-load `skip_full` frames are left as-is (user: boot frames are fine) — those frames
+  present a single real frame via Dolphin's auto path.
 
 **Superseded A/B (kept inert behind `SUNBRIGHT_NATIVE_VI`):** `native_vi2.cpp` + the
 `sms_vi_native.cpp apply_flush` re-assert program top-FBB=odd/bottom-FBB=even directly — only
