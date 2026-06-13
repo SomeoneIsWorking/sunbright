@@ -30,6 +30,7 @@
 #include <cstring>
 #include <vector>
 #include <mutex>
+#include <ctime>
 #include <sys/stat.h>
 
 namespace {
@@ -46,7 +47,8 @@ std::mutex g_mtx;
 Cap   g_ring[RING];
 int   g_count = 0;                     // total captured since arm (clamped index = g_count-1 % RING used)
 unsigned g_orig_addr = 0;              // first-seen address treated as the "real" buffer base
-int   g_session = 0;                   // bumped each arm; frames go to scratch/verify/s<NNN>/ (no rm)
+long  g_session = 0;                   // arm timestamp; frames go to scratch/verify/s<unixtime>/ (unique
+                                       // across processes, so a re-run never collides — and no rm)
 
 float mse(const float* a, const float* b) {
     double s = 0;
@@ -87,7 +89,7 @@ extern "C" void sb_hook_frame_captured(unsigned xfb_addr, const unsigned char* r
     {
         const bool between = (xfb_addr & 0x400000u) != (g_orig_addr & 0x400000u);
         mkdir("scratch", 0755); mkdir("scratch/verify", 0755);
-        char dir[96]; snprintf(dir, sizeof dir, "scratch/verify/s%03d", g_session); mkdir(dir, 0755);
+        char dir[96]; snprintf(dir, sizeof dir, "scratch/verify/s%ld", g_session); mkdir(dir, 0755);
         char path[160];
         snprintf(path, sizeof path, "%s/f%03d_%s_%08x.ppm", dir, g_count,
                  between ? "btwn" : "real", xfb_addr);
@@ -115,8 +117,11 @@ static const bool s_installed = (sb_slot_frame_captured = &sb_hook_frame_capture
 // Arm a capture of n unique presents (clears the ring). The fork decrements sb_capture_frames.
 extern "C" void interp_verify_arm(int n) {
     std::lock_guard<std::mutex> lk(g_mtx);
-    g_count = 0; g_orig_addr = 0; g_session++;
-    if (n < 2) n = 2; if (n > RING) n = RING;
+    g_count = 0; g_orig_addr = 0; g_session = (long)time(nullptr);
+    // The luma ring keeps only the last RING frames for the in-process report, but EVERY armed
+    // frame is dumped full-res to scratch/verify/s<NNN>/ — so a long capture (e.g. 600 = a 10s
+    // walk) is analyzed offline from the PPMs (tools/interp/verify_walk.py), not the ring.
+    if (n < 2) n = 2; if (n > 2000) n = 2000;
     sb_capture_frames = n;
 }
 

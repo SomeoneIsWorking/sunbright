@@ -436,9 +436,15 @@ std::string handle_repl(const char* path) {
         const u32 want = qarg_dec(path, "n", 0);
         if (want) {
             interp_verify_arm((int)want);
-            // Wait (bounded) for the fork to capture all armed frames (real-time ~ K/60 s + slack).
-            for (int i = 0; i < 600 && sb_capture_frames > 0; i++)
-                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            // Small captures: block until done (one-call convenience). Large captures (a long walk):
+            // arm and return immediately — poll /verify (no n) for "armed remaining=0".
+            if (want <= 64) {
+                for (int i = 0; i < 600 && sb_capture_frames > 0; i++)
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            } else {
+                app("armed %u-frame capture (full-res to scratch/verify) — poll /verify for remaining\n", want);
+                return std::string(buf, n);
+            }
         }
         n = interp_verify_report(buf, (int)sizeof buf);
         return std::string(buf, n);
