@@ -30,6 +30,7 @@
 #include "Common/Logging/Log.h"
 #include "Common/Logging/LogManager.h"
 #include "Common/MsgHandler.h"
+#include "Common/SunbrightHooks.h"
 #include "Common/WindowSystemInfo.h"
 #include "Core/Boot/Boot.h"
 #include "Core/BootManager.h"
@@ -701,6 +702,8 @@ static void sunbright_load_dotenv() {
 
 int main(int argc, char* argv[]) {
     sunbright_load_dotenv();   // make $SUNBRIGHT_* from .env available without manual sourcing
+    sb_install_hooks();        // point the Dolphin-fork hook slots at our runtime hooks (replaces
+                               // the old linker --wrap interception, except JitTrampoline)
 
     // SUNBRIGHT_NTHR_SELFTEST: validate the native-threading CPU-token hand-off in
     // isolation, then exit — no Dolphin/SDL/game involved.

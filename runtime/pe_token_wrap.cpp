@@ -31,11 +31,14 @@ bool sb_token_ring_pop(uint16_t* out) {
     return true;
 }
 
-extern "C" void __real__ZN11PixelEngine18PixelEngineManager8SetTokenEtbi(
-    void* self, uint16_t token, bool interrupt, int cycles_into_future);
+// Original Dolphin body, exposed by the fork (replaces the --wrap __real_).
+extern "C" void sb_pe_set_token_impl(void* self, uint16_t token, bool interrupt,
+                                     int cycles_into_future);
 
-extern "C" void __wrap__ZN11PixelEngine18PixelEngineManager8SetTokenEtbi(
-    void* self, uint16_t token, bool interrupt, int cycles_into_future) {
+// Fork hook (installed via sb_install_hooks → sb_hook_pe_set_token). Same body as the old
+// __wrap_; calls sb_pe_set_token_impl instead of __real_ to run Dolphin's original path.
+extern "C" void sb_hook_pe_set_token(void* self, uint16_t token, bool interrupt,
+                                     int cycles_into_future) {
     if (interrupt) {
         const uint32_t w = g_w.load(std::memory_order_relaxed);
         if (w - g_r.load(std::memory_order_acquire) < kCap) {   // full ring: drop (never happens
@@ -43,6 +46,5 @@ extern "C" void __wrap__ZN11PixelEngine18PixelEngineManager8SetTokenEtbi(
             g_w.store(w + 1, std::memory_order_release);        // drains every dispatch)
         }
     }
-    __real__ZN11PixelEngine18PixelEngineManager8SetTokenEtbi(self, token, interrupt,
-                                                             cycles_into_future);
+    sb_pe_set_token_impl(self, token, interrupt, cycles_into_future);
 }

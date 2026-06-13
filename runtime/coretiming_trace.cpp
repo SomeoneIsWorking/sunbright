@@ -40,9 +40,13 @@ bool interesting(void* event_type) {
 }
 }  // namespace
 
-extern "C" void __real__ZN10CoreTiming17CoreTimingManager13ScheduleEventElPNS_9EventTypeEmNS_10FromThreadE(
+// Original Dolphin bodies, exposed by the fork (replace the --wrap __real_).
+extern "C" void sb_ct_schedule_event_impl(
     void* self, int64_t cycles, void* event_type, uint64_t userdata, int from);
-extern "C" void __wrap__ZN10CoreTiming17CoreTimingManager13ScheduleEventElPNS_9EventTypeEmNS_10FromThreadE(
+extern "C" void sb_ct_remove_event_impl(void* self, void* event_type);
+
+// Fork hook (installed via sb_install_hooks → sb_hook_ct_schedule_event).
+extern "C" void sb_hook_ct_schedule_event(
     void* self, int64_t cycles, void* event_type, uint64_t userdata, int from) {
     // Tiny-delay reschedulers (cycles < 1000) starve the idle Advance: slice_length gets pinned
     // to ~0 and far events (the memcard completion) become unreachable. Trace them all; the ring
@@ -55,15 +59,12 @@ extern "C" void __wrap__ZN10CoreTiming17CoreTimingManager13ScheduleEventElPNS_9E
                  ((uint32_t)from << 1) | (Core::IsCPUThread() ? 1u : 0u),
                  (uint32_t)(uintptr_t)event_type);
     }
-    __real__ZN10CoreTiming17CoreTimingManager13ScheduleEventElPNS_9EventTypeEmNS_10FromThreadE(
-        self, cycles, event_type, userdata, from);
+    sb_ct_schedule_event_impl(self, cycles, event_type, userdata, from);
 }
 
-extern "C" void __real__ZN10CoreTiming17CoreTimingManager11RemoveEventEPNS_9EventTypeE(
-    void* self, void* event_type);
-extern "C" void __wrap__ZN10CoreTiming17CoreTimingManager11RemoveEventEPNS_9EventTypeE(
-    void* self, void* event_type) {
+// Fork hook (installed via sb_install_hooks → sb_hook_ct_remove_event).
+extern "C" void sb_hook_ct_remove_event(void* self, void* event_type) {
     if (dbg_card() && interesting(event_type))
         sb_trace("ctrm", (uint32_t)(uintptr_t)event_type, 0, Core::IsCPUThread() ? 1u : 0u, 0);
-    __real__ZN10CoreTiming17CoreTimingManager11RemoveEventEPNS_9EventTypeE(self, event_type);
+    sb_ct_remove_event_impl(self, event_type);
 }

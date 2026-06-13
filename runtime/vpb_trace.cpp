@@ -154,11 +154,11 @@ constexpr int F_DOLBY_CUR = 0x2A, F_DOLBY_TGT = 0x2B, F_USE_DOLBY = 0x2C;
 constexpr int F_POS_H = 0x34, F_POS_L = 0x35;
 }  // namespace
 
-extern "C" void __real__ZN3DSP3HLE18ZeldaAudioRenderer8FetchVPBEtPNS1_3VPBE(
-    void* self, uint16_t voice_id, void* vpb);
-extern "C" void __wrap__ZN3DSP3HLE18ZeldaAudioRenderer8FetchVPBEtPNS1_3VPBE(
-    void* self, uint16_t voice_id, void* vpb) {
-    __real__ZN3DSP3HLE18ZeldaAudioRenderer8FetchVPBEtPNS1_3VPBE(self, voice_id, vpb);
+// Fork hook (installed via sb_install_hooks → sb_hook_zelda_fetch_vpb). The fork calls this AFTER
+// FetchVPB has filled *vpb (the tracer only reads), so there is no __real_ to invoke here — the
+// original body already ran. This matches the prior --wrap which called __real_ then read vpb.
+extern "C" void sb_hook_zelda_fetch_vpb(void* self, uint16_t voice_id, void* vpb) {
+    (void)self;
     FILE* f = out();
     if (!f) return;
     const uint16_t* w = (const uint16_t*)vpb;

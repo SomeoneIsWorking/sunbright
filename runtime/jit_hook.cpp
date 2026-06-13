@@ -1,5 +1,10 @@
 // JIT interception via linker --wrap on JitTrampoline's mangled symbol.
-// No Dolphin source is modified.
+//
+// This is the ONLY surviving --wrap seam. Every other Dolphin interception was converted to a
+// direct fork hook (Common/SunbrightHooks.h sb_slot_*, installed by sb_install_hooks(),
+// docs/re_notes/wrap_removal.md). JitTrampoline can't be: its definition (JitCommon/JitBase.cpp)
+// and both call sites (Jit64/JitArm64 JitAsm.cpp) live entirely inside
+// Source/Core/Core/PowerPC/, which the project forbids modifying. So it keeps --wrap.
 //
 // --wrap=_Z13JitTrampolineR7JitBasej instructs the linker to:
 //   - Replace all references to _Z13JitTrampolineR7JitBasej with

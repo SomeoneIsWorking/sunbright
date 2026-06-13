@@ -52,14 +52,19 @@ bool native_chain_enabled() {
 }
 }  // namespace
 
-extern "C" void __real__ZN3DSP10DSPManager20GenerateDSPInterruptEml(void* self, u64 t, s64 c);
-extern "C" void __wrap__ZN3DSP10DSPManager20GenerateDSPInterruptEml(void* self, u64 t, s64 c) {
+// Original Dolphin bodies, exposed by the fork (replace the --wrap __real_).
+extern "C" void sb_dsp_gen_interrupt_impl(void* self, u64 t, s64 c);
+extern "C" void sb_dsp_update_audio_dma_impl(void* self);
+extern "C" void sb_dsp_gen_interrupt_from_emu_impl(void* self, int type, int cycles_into_future);
+
+// Fork hook (installed via sb_install_hooks → sb_hook_dsp_gen_interrupt).
+extern "C" void sb_hook_dsp_gen_interrupt(void* self, u64 t, s64 c) {
     if (native_chain_enabled() && (t & 0x08u)) {                                   // INT_AID: owned natively, never reaches PI
         g_aid_due.store(1, std::memory_order_relaxed);
         t &= ~0x08ull;
         if (!t) return;
     }
-    __real__ZN3DSP10DSPManager20GenerateDSPInterruptEml(self, t, c);
+    sb_dsp_gen_interrupt_impl(self, t, c);
 }
 
 // The raise actually reaches DSP_CONTROL through UpdateAudioDMA, which INLINES
@@ -70,9 +75,9 @@ extern "C" void __wrap__ZN3DSP10DSPManager20GenerateDSPInterruptEml(void* self, 
 // (DSP_CONTROL write-1-to-clear, other ack bits preserved-unacked, mask bits untouched — this
 // also clears the PI cause via the MMIO handler) and queue one native delivery.
 extern void mem_w16(u32 ea, u16 v);
-extern "C" void __real__ZN3DSP10DSPManager14UpdateAudioDMAEv(void* self);
-extern "C" void __wrap__ZN3DSP10DSPManager14UpdateAudioDMAEv(void* self) {
-    __real__ZN3DSP10DSPManager14UpdateAudioDMAEv(self);
+// Fork hook (installed via sb_install_hooks → sb_hook_dsp_update_audio_dma).
+extern "C" void sb_hook_dsp_update_audio_dma(void* self) {
+    sb_dsp_update_audio_dma_impl(self);
     if (!native_chain_enabled()) return;
     const u16 ctrl = mem_r16(0xCC00500Au);
     if (ctrl & 0x0008u) {                              // AID status latched by this DMA step
@@ -94,13 +99,10 @@ extern "C" void __wrap__ZN3DSP10DSPManager14UpdateAudioDMAEv(void* self) {
 // native_dispatch_pending delivers the guest __DSPHandler in the same pass — the SDK then
 // consumes the mailbox through its own unmodified protocol (handshake, task switch, req_cb).
 namespace { std::atomic<u32> g_dspemu_due{0}; }
-extern "C" void __real__ZN3DSP10DSPManager30GenerateDSPInterruptFromDSPEmuENS_16DSPInterruptTypeEi(
-    void* self, int type, int cycles_into_future);
-extern "C" void __wrap__ZN3DSP10DSPManager30GenerateDSPInterruptFromDSPEmuENS_16DSPInterruptTypeEi(
-    void* self, int type, int cycles_into_future) {
+// Fork hook (installed via sb_install_hooks → sb_hook_dsp_gen_interrupt_from_emu).
+extern "C" void sb_hook_dsp_gen_interrupt_from_emu(void* self, int type, int cycles_into_future) {
     if (!native_chain_enabled()) {
-        __real__ZN3DSP10DSPManager30GenerateDSPInterruptFromDSPEmuENS_16DSPInterruptTypeEi(
-            self, type, cycles_into_future);
+        sb_dsp_gen_interrupt_from_emu_impl(self, type, cycles_into_future);
         return;
     }
     (void)self; (void)cycles_into_future;
@@ -124,8 +126,7 @@ void sunbright_dsp_flush_sync() {
     // Leave it captured; the pump delivers after EE is restored.
     if (!(Core::System::GetInstance().GetPPCState().msr.Hex & 0x8000u)) return;
     if (const u32 t = g_dspemu_due.exchange(0, std::memory_order_relaxed)) {
-        __real__ZN3DSP10DSPManager20GenerateDSPInterruptEml(
-            &Core::System::GetInstance().GetDSP(), t, 0);
+        sb_dsp_gen_interrupt_impl(&Core::System::GetInstance().GetDSP(), t, 0);
         g_mail_drained++;
         sunbright_deliver_pending_recomp(0);
     }
@@ -164,8 +165,7 @@ int sunbright_aid_pump(const CPUState* seed) {
     // aidfix4) — the SDK's own ISR must do the reading.
     if (const u32 t = g_dspemu_due.exchange(0, std::memory_order_relaxed)) {
         if (!sunbright_jas_driver_engaged()) {   // driver mode: no DSP-mail interrupts at all
-            __real__ZN3DSP10DSPManager20GenerateDSPInterruptEml(
-                &Core::System::GetInstance().GetDSP(), t, 0);
+            sb_dsp_gen_interrupt_impl(&Core::System::GetInstance().GetDSP(), t, 0);
             g_mail_drained++;
             n++;
         }

@@ -28,26 +28,29 @@ bool note(int bits) {
 }
 }
 
+// Original Dolphin bodies, exposed by the fork (replace the --wrap __real_).
 extern "C" {
-void __real__ZN6GPFifo13GPFifoManager6Write8Eh(void* self, u8 v);
-void __real__ZN6GPFifo13GPFifoManager7Write16Et(void* self, u16 v);
-void __real__ZN6GPFifo13GPFifoManager7Write32Ej(void* self, u32 v);
-void __real__ZN6GPFifo13GPFifoManager7Write64Em(void* self, u64 v);
+void sb_gpfifo_write8_impl(void* self, u8 v);
+void sb_gpfifo_write16_impl(void* self, u16 v);
+void sb_gpfifo_write32_impl(void* self, u32 v);
+void sb_gpfifo_write64_impl(void* self, u64 v);
 
-void __wrap__ZN6GPFifo13GPFifoManager6Write8Eh(void* self, u8 v) {
+// Fork hooks (installed via sb_install_hooks → sb_hook_gpfifo_write*). Same bodies as the old
+// __wrap_; call the *_impl to run Dolphin's original path.
+void sb_hook_gpfifo_write8(void* self, u8 v) {
     if (gxs_active() && !gxs_in_flush()) { note(8); gxs_w8(v); return; }
-    __real__ZN6GPFifo13GPFifoManager6Write8Eh(self, v);
+    sb_gpfifo_write8_impl(self, v);
 }
-void __wrap__ZN6GPFifo13GPFifoManager7Write16Et(void* self, u16 v) {
+void sb_hook_gpfifo_write16(void* self, u16 v) {
     if (gxs_active() && !gxs_in_flush()) { note(16); gxs_w16(v); return; }
-    __real__ZN6GPFifo13GPFifoManager7Write16Et(self, v);
+    sb_gpfifo_write16_impl(self, v);
 }
-void __wrap__ZN6GPFifo13GPFifoManager7Write32Ej(void* self, u32 v) {
+void sb_hook_gpfifo_write32(void* self, u32 v) {
     if (gxs_active() && !gxs_in_flush()) { note(32); gxs_w32(v); return; }
-    __real__ZN6GPFifo13GPFifoManager7Write32Ej(self, v);
+    sb_gpfifo_write32_impl(self, v);
 }
-void __wrap__ZN6GPFifo13GPFifoManager7Write64Em(void* self, u64 v) {
+void sb_hook_gpfifo_write64(void* self, u64 v) {
     if (gxs_active() && !gxs_in_flush()) { note(64); gxs_w64(v); return; }
-    __real__ZN6GPFifo13GPFifoManager7Write64Em(self, v);
+    sb_gpfifo_write64_impl(self, v);
 }
 }  // extern "C"

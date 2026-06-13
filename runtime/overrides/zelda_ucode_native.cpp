@@ -379,17 +379,15 @@ private:
 
 }  // namespace
 
-// --wrap UCodeFactory: SMS DAC ucode → our native state machine; everything else → Dolphin's.
-// Declared with the real C++ return type (unique_ptr is returned via hidden sret pointer on
-// the Itanium ABI; matching the signature makes the compiler emit the right calling convention).
-extern "C" std::unique_ptr<UCodeInterface>
-__real__ZN3DSP3HLE12UCodeFactoryEjPNS0_6DSPHLEEb(u32 crc, DSPHLE* dsphle, bool wii);
-extern "C" std::unique_ptr<UCodeInterface>
-__wrap__ZN3DSP3HLE12UCodeFactoryEjPNS0_6DSPHLEEb(u32 crc, DSPHLE* dsphle, bool wii)
+// Fork hook (installed via sb_install_hooks → sb_hook_ucode_factory): SMS DAC ucode → our native
+// state machine. Returns a UCodeInterface* to override, or nullptr to fall through to Dolphin's
+// UCodeFactory (everything else, and oracle runs which must stay pure Dolphin).
+extern "C" void* sb_hook_ucode_factory(u32 crc, void* dsphle, bool wii)
 {
+  (void)wii;
   static const bool oracle = getenv("SUNBRIGHT_DISABLE_RECOMP") != nullptr;
-  if (crc == kSmsDacCrc && !oracle)   // oracle runs must stay pure Dolphin
-    return std::make_unique<NativeZeldaUCode>(dsphle, crc);
-  return __real__ZN3DSP3HLE12UCodeFactoryEjPNS0_6DSPHLEEb(crc, dsphle, wii);
+  if (crc == kSmsDacCrc && !oracle)
+    return new NativeZeldaUCode(static_cast<DSPHLE*>(dsphle), crc);
+  return nullptr;  // fall through to Dolphin's UCodeFactory
 }
 #endif  // HAVE_DOLPHIN_CORE

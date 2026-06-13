@@ -66,8 +66,16 @@ double now_s() {
 }
 }  // namespace
 
-extern "C" void __real__ZN5Mixer11PushSamplesEPKsm(void* self, const short* samples, size_t n);
-extern "C" void __wrap__ZN5Mixer11PushSamplesEPKsm(void* self, const short* samples, size_t n) {
+// Original Dolphin bodies, exposed by the fork (replace the --wrap __real_).
+extern "C" void sb_mixer_push_samples_impl(void* self, const short* samples, size_t n);
+extern "C" size_t sb_mixer_mix_impl(void* self, short* samples, size_t n);
+extern "C" void sb_mixer_push_streaming_impl(void* self, const short* s, size_t n);
+extern "C" void sb_mixer_set_dma_divisor_impl(void* self, unsigned div);
+extern "C" void sb_mixer_set_stream_divisor_impl(void* self, unsigned div);
+extern "C" void sb_mixer_set_streaming_volume_impl(void* self, unsigned l, unsigned r);
+
+// Fork hook (installed via sb_install_hooks → sb_hook_mixer_push_samples).
+extern "C" void sb_hook_mixer_push_samples(void* self, const short* samples, size_t n) {
     na_push_dsp(samples, n);                 // native sink: the only real consumer
     g_pushed.fetch_add(n, std::memory_order_relaxed);
     uint64_t nz = 0;
@@ -77,7 +85,7 @@ extern "C" void __wrap__ZN5Mixer11PushSamplesEPKsm(void* self, const short* samp
     if (t < burst_window())
         fprintf(stderr, "[mixb] %9.4f push %5zu nz=%llu\n", t, n, (unsigned long long)nz / 2);
     tick("push");
-    __real__ZN5Mixer11PushSamplesEPKsm(self, samples, n);
+    sb_mixer_push_samples_impl(self, samples, n);
 }
 
 // SUNBRIGHT_DBG_MIXER_OUT=path: record what the backend PULLS (the audible stream) as raw
@@ -85,8 +93,8 @@ extern "C" void __wrap__ZN5Mixer11PushSamplesEPKsm(void* self, const short* samp
 // construction cannot show sink-side jitter. Underruns/repeats appear here as the ear hears
 // them. Pair with [mixfill]: per second, the min/max backlog estimate (pushed resampled to
 // output rate minus pulled); min ~0 = the sink ran dry that second (audible stutter).
-extern "C" size_t __real__ZN5Mixer3MixEPsm(void* self, short* samples, size_t n);
-extern "C" size_t __wrap__ZN5Mixer3MixEPsm(void* self, short* samples, size_t n) {
+// Fork hook (installed via sb_install_hooks → sb_hook_mixer_mix).
+extern "C" size_t sb_hook_mixer_mix(void* self, short* samples, size_t n) {
     g_pulled.fetch_add(n, std::memory_order_relaxed);
     const double t = now_s();
     if (t < burst_window())
@@ -114,7 +122,7 @@ extern "C" size_t __wrap__ZN5Mixer3MixEPsm(void* self, short* samples, size_t n)
                         (long long)(fill_max.exchange(INT64_MIN) * 1000 / 48000));
             }
         }
-        const size_t r = __real__ZN5Mixer3MixEPsm(self, samples, n);
+        const size_t r = sb_mixer_mix_impl(self, samples, n);
         if (out) fwrite(samples, 4, n, out);
         uint64_t nz2 = 0;
         for (size_t i = 0; i < n * 2; i++) nz2 += samples[i] != 0;
@@ -124,26 +132,23 @@ extern "C" size_t __wrap__ZN5Mixer3MixEPsm(void* self, short* samples, size_t n)
     }
 }
 
-// ── native-sink feed wraps (the port: our SDL sink consumes; Dolphin's backend is null) ──────
-extern "C" void __real__ZN5Mixer20PushStreamingSamplesEPKsm(void* self, const short* s, size_t n);
-extern "C" void __wrap__ZN5Mixer20PushStreamingSamplesEPKsm(void* self, const short* s, size_t n) {
+// ── native-sink feed hooks (the port: our SDL sink consumes; Dolphin's backend is null) ──────
+// Fork hook (installed via sb_install_hooks → sb_hook_mixer_push_streaming).
+extern "C" void sb_hook_mixer_push_streaming(void* self, const short* s, size_t n) {
     na_push_dtk(s, n);
-    __real__ZN5Mixer20PushStreamingSamplesEPKsm(self, s, n);   // keep Dolphin's DTK dump working
+    sb_mixer_push_streaming_impl(self, s, n);   // keep Dolphin's DTK dump working
 }
 
 // Exact input rates: rate = FIXED_SAMPLE_RATE_DIVIDEND (108000000) / divisor.
-extern "C" void __real__ZN5Mixer28SetDMAInputSampleRateDivisorEj(void* self, unsigned div);
-extern "C" void __wrap__ZN5Mixer28SetDMAInputSampleRateDivisorEj(void* self, unsigned div) {
+extern "C" void sb_hook_mixer_set_dma_divisor(void* self, unsigned div) {
     if (div) na_set_dsp_rate(108000000u / div);
-    __real__ZN5Mixer28SetDMAInputSampleRateDivisorEj(self, div);
+    sb_mixer_set_dma_divisor_impl(self, div);
 }
-extern "C" void __real__ZN5Mixer31SetStreamInputSampleRateDivisorEj(void* self, unsigned div);
-extern "C" void __wrap__ZN5Mixer31SetStreamInputSampleRateDivisorEj(void* self, unsigned div) {
+extern "C" void sb_hook_mixer_set_stream_divisor(void* self, unsigned div) {
     if (div) na_set_dtk_rate(108000000u / div);
-    __real__ZN5Mixer31SetStreamInputSampleRateDivisorEj(self, div);
+    sb_mixer_set_stream_divisor_impl(self, div);
 }
-extern "C" void __real__ZN5Mixer18SetStreamingVolumeEjj(void* self, unsigned l, unsigned r);
-extern "C" void __wrap__ZN5Mixer18SetStreamingVolumeEjj(void* self, unsigned l, unsigned r) {
+extern "C" void sb_hook_mixer_set_streaming_volume(void* self, unsigned l, unsigned r) {
     na_set_dtk_volume((int)l, (int)r);
-    __real__ZN5Mixer18SetStreamingVolumeEjj(self, l, r);
+    sb_mixer_set_streaming_volume_impl(self, l, r);
 }

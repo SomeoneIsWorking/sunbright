@@ -124,6 +124,7 @@ endif()
 add_executable(sunbright
     runtime/main_sdl.cpp
     runtime/jit_hook.cpp
+    runtime/sunbright_hooks.cpp
     runtime/sunbright_bridge.cpp
     runtime/dolphin_hook.cpp
     runtime/memory_bridge.cpp
@@ -168,33 +169,15 @@ target_link_libraries(sunbright PRIVATE
     pthread
 )
 
-# Intercept JitTrampoline at link time — no Dolphin source changes needed.
+# Intercept JitTrampoline at link time. This is the ONE remaining --wrap: JitTrampoline is
+# defined and called entirely inside Source/Core/Core/PowerPC/ (JitCommon/JitBase.cpp +
+# Jit64/JitArm64 JitAsm.cpp), which the project forbids modifying — so it cannot be converted to
+# a direct fork hook. Every OTHER former --wrap symbol is now a direct fork hook
+# (Common/SunbrightHooks.h sb_slot_*, installed by sb_install_hooks() / runtime/sunbright_hooks.cpp).
+# See docs/re_notes/wrap_removal.md.
 # Use the mangled C++ name (verified via nm libcore.a | grep JitTrampoline).
 target_link_options(sunbright PRIVATE
     "-Wl,--wrap=_Z13JitTrampolineR7JitBasej"
-    "-Wl,--wrap=_ZN11PixelEngine18PixelEngineManager8SetTokenEtbi"
-    "-Wl,--wrap=_ZN6GPFifo13GPFifoManager6Write8Eh"
-    "-Wl,--wrap=_ZN6GPFifo13GPFifoManager7Write16Et"
-    "-Wl,--wrap=_ZN6GPFifo13GPFifoManager7Write32Ej"
-    "-Wl,--wrap=_ZN6GPFifo13GPFifoManager7Write64Em"
-    # Native AID interrupt ownership (aid_native.cpp): strip INT_AID before PI, deliver natively
-    "-Wl,--wrap=_ZN3DSP10DSPManager20GenerateDSPInterruptEml"
-    # Native SMS DAC ucode (zelda_ucode_native.cpp): own the mail state machine, no self-halt
-    "-Wl,--wrap=_ZN3DSP3HLE12UCodeFactoryEjPNS0_6DSPHLEEb"
-    "-Wl,--wrap=_ZN3DSP10DSPManager14UpdateAudioDMAEv"
-    "-Wl,--wrap=_ZN3DSP10DSPManager30GenerateDSPInterruptFromDSPEmuENS_16DSPInterruptTypeEi"
-    # CoreTiming schedule/remove tracer (memcard EXI lost-completion diagnostic, SUNBRIGHT_DBG_CARD)
-    "-Wl,--wrap=_ZN10CoreTiming17CoreTimingManager13ScheduleEventElPNS_9EventTypeEmNS_10FromThreadE"
-    "-Wl,--wrap=_ZN10CoreTiming17CoreTimingManager11RemoveEventEPNS_9EventTypeE"
-    # Host audio flow meter (SUNBRIGHT_DBG_MIXER): mixer push vs backend pull rates
-    "-Wl,--wrap=_ZN5Mixer11PushSamplesEPKsm"
-    "-Wl,--wrap=_ZN5Mixer3MixEPsm"
-    "-Wl,--wrap=_ZN5Mixer20PushStreamingSamplesEPKsm"
-    "-Wl,--wrap=_ZN5Mixer28SetDMAInputSampleRateDivisorEj"
-    "-Wl,--wrap=_ZN5Mixer31SetStreamInputSampleRateDivisorEj"
-    "-Wl,--wrap=_ZN5Mixer18SetStreamingVolumeEjj"
-    # DSP HLE voice parameter tracer (SUNBRIGHT_DUMP_VPB): per-frame VPB fields per voice
-    "-Wl,--wrap=_ZN3DSP3HLE18ZeldaAudioRenderer8FetchVPBEtPNS1_3VPBE"
 )
 
 # ── Install ───────────────────────────────────────────────────────────────────
