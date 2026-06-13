@@ -169,16 +169,10 @@ target_link_libraries(sunbright PRIVATE
     pthread
 )
 
-# Intercept JitTrampoline at link time. This is the ONE remaining --wrap: JitTrampoline is
-# defined and called entirely inside Source/Core/Core/PowerPC/ (JitCommon/JitBase.cpp +
-# Jit64/JitArm64 JitAsm.cpp), which the project forbids modifying — so it cannot be converted to
-# a direct fork hook. Every OTHER former --wrap symbol is now a direct fork hook
-# (Common/SunbrightHooks.h sb_slot_*, installed by sb_install_hooks() / runtime/sunbright_hooks.cpp).
-# See docs/re_notes/wrap_removal.md.
-# Use the mangled C++ name (verified via nm libcore.a | grep JitTrampoline).
-target_link_options(sunbright PRIVATE
-    "-Wl,--wrap=_Z13JitTrampolineR7JitBasej"
-)
+# JitTrampoline interception is now a direct fork hook (Common/SunbrightHooks.h
+# sb_slot_jit_trampoline, set in JitCommon/JitBase.cpp, installed by sb_install_hooks() /
+# runtime/sunbright_hooks.cpp). No linker --wrap remains — the build links under ld64 (macOS/arm64)
+# as well as GNU ld. See docs/re_notes/wrap_removal.md.
 
 # ── Install ───────────────────────────────────────────────────────────────────
 install(TARGETS sunbright DESTINATION bin)

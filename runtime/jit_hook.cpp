@@ -1,27 +1,18 @@
-// JIT interception via linker --wrap on JitTrampoline's mangled symbol.
+// JIT interception via the Dolphin-fork JitTrampoline hook slot (Common/SunbrightHooks.h
+// sb_slot_jit_trampoline). This was the last surviving linker --wrap seam; it is now a direct fork
+// hook like every other interception (docs/re_notes/wrap_removal.md), because ld64 (macOS/arm64)
+// cannot do --wrap. The fork's JitTrampoline (JitCommon/JitBase.cpp) calls our hook first: if we
+// ran a recompiled block we return true (Dolphin skips its JIT); otherwise we return false and
+// Dolphin JITs the block as normal. Installed by sb_install_hooks() (runtime/sunbright_hooks.cpp).
 //
-// This is the ONLY surviving --wrap seam. Every other Dolphin interception was converted to a
-// direct fork hook (Common/SunbrightHooks.h sb_slot_*, installed by sb_install_hooks(),
-// docs/re_notes/wrap_removal.md). JitTrampoline can't be: its definition (JitCommon/JitBase.cpp)
-// and both call sites (Jit64/JitArm64 JitAsm.cpp) live entirely inside
-// Source/Core/Core/PowerPC/, which the project forbids modifying. So it keeps --wrap.
-//
-// --wrap=_Z13JitTrampolineR7JitBasej instructs the linker to:
-//   - Replace all references to _Z13JitTrampolineR7JitBasej with
-//     __wrap__Z13JitTrampolineR7JitBasej  (our hook below)
-//   - Rename the original definition to
-//     __real__Z13JitTrampolineR7JitBasej  (Dolphin's original code)
-//
-// extern "C" prevents the compiler from further mangling the __wrap_/__real_ names.
+// When the slot is null (offline tools / a standalone fork build), JitTrampoline runs Dolphin's
+// JIT unchanged — so the fork still works standalone.
 
 #include <cstdio>
 #include <cstdlib>
-#include "Core/PowerPC/JitCommon/JitBase.h"
 #include "Core/PowerPC/PowerPC.h"
 #include "Core/System.h"
 #include "sunbright_bridge.h"
-
-extern "C" void __real__Z13JitTrampolineR7JitBasej(JitBase& jit, u32 em_address);
 
 // SUNBRIGHT_DBG_TRAMP=LO-HI (hex): log every Dolphin-JIT block dispatch whose address falls in
 // [LO,HI), with the engine it routes to (recomp vs Dolphin JIT) and the live guest regs. Block-
@@ -40,7 +31,9 @@ static void dbg_tramp_init() {
     g_dbg_tramp = true;
 }
 
-extern "C" void __wrap__Z13JitTrampolineR7JitBasej(JitBase& jit, u32 em_address) {
+// The fork hook body. jit is JitBase* (opaque here — we never need it; non-recomp returns false
+// and the fork's JitTrampoline calls jit.Jit() itself). Returns true iff we ran a recompiled block.
+extern "C" bool sb_hook_jit_trampoline(void* /*jit*/, u32 em_address) {
     const bool rc = SunbrightBridge::IsRecompiled(em_address);
     static const bool tramp_inited = (dbg_tramp_init(), true);
     (void)tramp_inited;
@@ -54,7 +47,7 @@ extern "C" void __wrap__Z13JitTrampolineR7JitBasej(JitBase& jit, u32 em_address)
     }
     if (rc) {
         SunbrightBridge::Run(em_address);
-        return;
+        return true;
     }
-    __real__Z13JitTrampolineR7JitBasej(jit, em_address);
+    return false;
 }

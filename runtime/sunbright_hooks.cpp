@@ -9,9 +9,8 @@
 //
 // Called once at the top of main() (main_sdl.cpp). Idempotent.
 //
-// JitTrampoline is NOT here: its definition and call sites live entirely inside
-// Source/Core/Core/PowerPC/ (JitCommon/JitBase.cpp + Jit64/JitArm64 JitAsm.cpp), which the
-// project forbids modifying. It therefore keeps the linker --wrap seam (runtime/jit_hook.cpp).
+// JitTrampoline is now here too (sb_slot_jit_trampoline) — formerly the last linker --wrap seam,
+// converted to a fork hook so the build works under ld64/macOS (runtime/jit_hook.cpp).
 
 #include "Common/SunbrightHooks.h"
 
@@ -20,6 +19,7 @@
 
 // The hook bodies, defined in the runtime TUs listed above (extern "C", plainly named).
 extern "C" {
+bool sb_hook_jit_trampoline(void* jit, u32 em_address);   // jit_hook.cpp
 void sb_hook_pe_set_token(void* self, u16 token, bool interrupt, int cycles_into_future);
 
 void sb_hook_gpfifo_write8(void* self, u8 v);
@@ -46,6 +46,9 @@ void sb_hook_zelda_fetch_vpb(void* self, u16 voice_id, void* vpb);
 }  // extern "C"
 
 void sb_install_hooks() {
+  // JIT dispatch (last former --wrap → fork hook; ld64/macOS-safe)
+  sb_slot_jit_trampoline = &sb_hook_jit_trampoline;
+
   // PixelEngine
   sb_slot_pe_set_token = &sb_hook_pe_set_token;
 
