@@ -42,6 +42,10 @@ struct Interp60Dbg {
     int cur_list = -1;                    // list index currently executing in the redraw
     // motion magnitude between tick N-1 and N (mean squared translation delta)
     double move_min = 0, move_max = 0, move_avg = 0; unsigned long move_n = 0;
+    // worst-offender capture (the model with the largest moved this window): identify
+    // WHY prev is garbage. vt=model's vtable (-> class), src=1 J3DModel/2 SDLModel.
+    u32 g_model = 0, g_vt = 0, g_view = 0, g_n = 0, g_prevbuf = 0, g_curbuf = 0; int g_src = 0;
+    float g_prev0 = 0, g_cur0 = 0; double g_worst = 0;
 
     // ── DECISIVE: does the blend reach the GPU? ──
     // Every mDrawMtxBuf[1][view] address the blend wrote during the LAST redraw.

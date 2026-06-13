@@ -41,6 +41,7 @@ namespace {
 // tick N-1 ([0][view]) and N ([1][view]) regardless of which pass computed it.
 std::vector<u32> g_registry;
 std::unordered_set<u32> g_blended_set;   // dedup blended buffers within one redraw
+std::unordered_set<u32> g_sdl_set;       // models registered via SDLModel::viewCalcSimple
 
 extern "C" void func_802deeb8(CPUState&);   // J3DModel::viewCalc
 
@@ -87,6 +88,16 @@ bool blend_model(u32 model) {
         g_move_n++; g_move_sum += moved;
         if (moved < g_move_min) g_move_min = moved;
         if (moved > g_move_max) g_move_max = moved;
+        // Capture the worst offender this window — to identify WHY prev is garbage.
+        if (moved > g_i60.g_worst) {
+            g_i60.g_worst = moved;
+            g_i60.g_model = model; g_i60.g_vt = mem_r32(model);
+            g_i60.g_view = view; g_i60.g_n = n;
+            g_i60.g_prevbuf = prev; g_i60.g_curbuf = cur;
+            g_i60.g_prev0 = mem_rf32(prev + 3 * 4);   // joint 0 translation X
+            g_i60.g_cur0  = mem_rf32(cur + 3 * 4);
+            g_i60.g_src = g_sdl_set.count(model) ? 2 : 1;
+        }
     }
 
     // Save N (the cur buffer) so the redraw can be undone after present.
@@ -157,7 +168,7 @@ void interp60_restore_after_redraw() {
 }
 
 // mode 3: clear the registry at the start of a real frame (TMarDirector::direct).
-void interp60_registry_clear() { g_registry.clear(); }
+void interp60_registry_clear() { g_registry.clear(); g_sdl_set.clear(); g_i60.g_worst = 0; }
 
 // mode 3: blend every registered model's draw-matrix double-buffer toward N-1.
 // Called on the in-between field BEFORE re-issuing the draw lists. Reaches the
@@ -226,6 +237,7 @@ SUNBRIGHT_OVERRIDE(ov_sdl_viewCalcSimple, 0x8023d36cu) {
     if (g_i60.mode == 3 && model_this >= 0x80000000u) {
         g_i60.vc_realfield++;
         if (g_registry.size() < 4096) g_registry.push_back(model_this);
+        g_sdl_set.insert(model_this);
     }
 }
 

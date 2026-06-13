@@ -325,6 +325,9 @@ int interp60_probe(char* out, int cap, const char* query) {
     app("\n");
     app("motion (N-1->N msd): n=%lu avg=%.3f min=%.3f max=%.3f\n",
         g_i60.move_n, g_i60.move_avg, g_i60.move_min, g_i60.move_max);
+    app("  WORST offender: model=%08x vt=%08x src=%s view=%u n=%u prevbuf=%08x curbuf=%08x prev0=%g cur0=%g\n",
+        g_i60.g_model, g_i60.g_vt, g_i60.g_src == 2 ? "SDLModel" : g_i60.g_src == 1 ? "J3DModel" : "?",
+        g_i60.g_view, g_i60.g_n, g_i60.g_prevbuf, g_i60.g_curbuf, g_i60.g_prev0, g_i60.g_cur0);
     app("RENDER VOLUME of in-between field: gx_bytes=%llu runs=%lu  %s\n",
         g_i60.redraw_gx_bytes, g_i60.redraw_gx_runs,
         g_i60.redraw_gx_bytes < 1024 ? "<<< ~ZERO: in-between NOT re-rendered (tick N re-presented)" : "(re-rendered)");
