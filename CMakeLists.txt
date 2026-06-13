@@ -156,11 +156,20 @@ target_include_directories(sunbright PRIVATE
     "${DOLPHIN_DIR}/Externals/fmt/fmt/include"
 )
 
+# Mirror Dolphin's target-arch define (it sets these via add_definitions) for our target. Must match
+# the host arch: _M_ARM_64 on Apple Silicon / aarch64, _M_X86_64 on x86-64. Hardcoding x86_64 breaks
+# the arm64 (macOS) build.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64|ARM64")
+    set(_SUNBRIGHT_ARCH_DEFINE _M_ARM_64=1)
+else()
+    set(_SUNBRIGHT_ARCH_DEFINE _M_X86_64=1)
+endif()
+
 target_compile_definitions(sunbright PRIVATE
     HAVE_DOLPHIN_CORE=1
     HAVE_DOLPHIN_DISCIO=1
     HAVE_DOLPHIN_MEMMAP=1  # memory_bridge routes through Dolphin's real MemMap
-    _M_X86_64=1            # Dolphin sets this via add_definitions; mirror it for our target
+    ${_SUNBRIGHT_ARCH_DEFINE}
 )
 
 target_link_libraries(sunbright PRIVATE
@@ -173,6 +182,8 @@ target_link_libraries(sunbright PRIVATE
 # sb_slot_jit_trampoline, set in JitCommon/JitBase.cpp, installed by sb_install_hooks() /
 # runtime/sunbright_hooks.cpp). No linker --wrap remains — the build links under ld64 (macOS/arm64)
 # as well as GNU ld. See docs/re_notes/wrap_removal.md.
+# (macOS frameworks (Cocoa/Metal/QuartzCore/IOKit) come transitively from the Dolphin core/uicommon
+# libs and SDL2, so no explicit framework links are needed here.)
 
 # ── Install ───────────────────────────────────────────────────────────────────
 install(TARGETS sunbright DESTINATION bin)

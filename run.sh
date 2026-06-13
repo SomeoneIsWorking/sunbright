@@ -43,10 +43,19 @@ if [[ ! -f "$ROM" ]]; then
 fi
 
 # Pin the working video path (override by exporting these before calling).
-export SDL_VIDEODRIVER="${SDL_VIDEODRIVER:-x11}"
-export SUNBRIGHT_BACKEND="${SUNBRIGHT_BACKEND:-Vulkan}"
-export DISPLAY="${DISPLAY:-:0}"
+# macOS uses the cocoa SDL driver + MoltenVK; Linux/XWayland uses x11.
+if [[ "$(uname)" == "Darwin" ]]; then
+    export SDL_VIDEODRIVER="${SDL_VIDEODRIVER:-cocoa}"
+    export SUNBRIGHT_BACKEND="${SUNBRIGHT_BACKEND:-Vulkan}"
+    # Dolphin on macOS skips the system Vulkan loader and dlopen's libMoltenVK directly. Since we're
+    # not an app bundle, point it at the (homebrew or Vulkan SDK) MoltenVK dylib.
+    export LIBVULKAN_PATH="${LIBVULKAN_PATH:-/opt/homebrew/lib/libMoltenVK.dylib}"
+else
+    export SDL_VIDEODRIVER="${SDL_VIDEODRIVER:-x11}"
+    export SUNBRIGHT_BACKEND="${SUNBRIGHT_BACKEND:-Vulkan}"
+    export DISPLAY="${DISPLAY:-:0}"
+fi
 
-echo "[run] SDL_VIDEODRIVER=$SDL_VIDEODRIVER  SUNBRIGHT_BACKEND=$SUNBRIGHT_BACKEND  DISPLAY=$DISPLAY"
+echo "[run] SDL_VIDEODRIVER=$SDL_VIDEODRIVER  SUNBRIGHT_BACKEND=$SUNBRIGHT_BACKEND"
 echo "[run] $BIN \"$ROM\""
 exec "$BIN" "$ROM" "${@:2}"

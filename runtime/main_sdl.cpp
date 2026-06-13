@@ -635,6 +635,9 @@ void SetDiscordPresenceEnabled(bool) {}
 }  // namespace Discord
 
 // ── SDL → WindowSystemInfo ────────────────────────────────────────────────────
+#if defined(__APPLE__)
+static SDL_MetalView g_metal_view = nullptr;   // Metal-backed view (+ CAMetalLayer) for MoltenVK
+#endif
 static WindowSystemInfo build_wsi() {
     WindowSystemInfo wsi;
     SDL_SysWMinfo wm{};
@@ -660,6 +663,24 @@ static WindowSystemInfo build_wsi() {
         wsi.render_window      = wm.info.wl.surface;
         wsi.render_surface     = wsi.render_window;
         break;
+#endif
+#if defined(__APPLE__)
+    case SDL_SYSWM_COCOA: {
+        // Dolphin's Vulkan/MoltenVK backend wants a CAMetalLayer in render_surface
+        // (VKSwapChain.cpp: WindowSystemType::MacOS → CAMetalLayer, via VK_EXT_metal_surface).
+        // SDL creates a Metal-backed NSView + CAMetalLayer for us; this MUST happen on the main
+        // thread, which build_wsi() does (called from main() before BootCore).
+        g_metal_view = SDL_Metal_CreateView(g_window);
+        if (!g_metal_view) {
+            fprintf(stderr, "[sunbright] SDL_Metal_CreateView failed: %s — headless\n", SDL_GetError());
+            wsi.type = WindowSystemType::Headless;
+            break;
+        }
+        wsi.type           = WindowSystemType::MacOS;
+        wsi.render_window  = reinterpret_cast<void*>(g_metal_view);
+        wsi.render_surface = SDL_Metal_GetLayer(g_metal_view);   // CAMetalLayer*
+        break;
+    }
 #endif
     default:
         fprintf(stderr, "[sunbright] Unsupported SDL WM subsystem %d — headless\n",
