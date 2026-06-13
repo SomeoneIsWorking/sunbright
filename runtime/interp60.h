@@ -103,6 +103,10 @@ struct Interp60Dbg {
     // resolve failed and the shadow blend is a no-op.
     u32 mario_vec = 0; float mario_x = 0, mario_y = 0, mario_z = 0;
     float mario_dx = 0, mario_dy = 0, mario_dz = 0;
+    // Silhouette-manager state probe: gpSilhouetteManager (r13-0x6094) and its unk48
+    // (occlusion-darkening alpha) read BEFORE and AFTER the in-between redraw. If after!=before
+    // the in-between mutated game state (the double unk48 advance + re-probe = the blink source).
+    u32 sil_mgr = 0; float sil_before = 0, sil_after = 0;
 };
 extern Interp60Dbg g_i60;
 

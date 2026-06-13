@@ -490,6 +490,11 @@ u32 mem_r32_slow(u32 ea) {
     // JAS syncDSP mail sequence; see mem_r16_slow's twin trace for halfword readers.
     if ((ea & 0x0FFFFFFFu) == 0x0C005004u)
         sb_trace("dspmr", ea, v, 0, g_cur_recomp_cpu ? g_cur_recomp_cpu->pc : 0);
+    // DIAG: the misaligned 32-bit read of DSP_CONTROL (0xCC00500A) that the MMU can't resolve
+    // (Dolphin only registers 4-aligned u32 DSP handlers). If this trace fires, the read comes
+    // from RECOMP (our bridge); if the MMU warning fires WITHOUT this trace, it's the interpreter.
+    if ((ea & 0x0FFFFFFFu) == 0x0C00500Au)
+        sb_trace("dspctl32", ea, v, 0, g_cur_recomp_cpu ? g_cur_recomp_cpu->pc : 0);
     return v;
 }
 

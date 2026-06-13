@@ -21,6 +21,7 @@
 #include "../interp60.h"
 #include "../gx_stream.h"
 #include "../gx_parse.h"
+#include "VideoCommon/AbstractGfx.h"   // g_gfx->Flush() between the two fields
 
 #include <cstdio>
 #include <cstdlib>
@@ -146,6 +147,15 @@ SUNBRIGHT_OVERRIDE(ov_interp_endRendering, DISPLAY_END_RENDER) {
     cpu.gpr[3] = display;
     func_802f80d0(cpu);
 
+    // Submit the real field's command buffer NOW, before the in-between re-issues a second
+    // full scene. The two fields would otherwise pile both scenes' vertices into the GPU
+    // streaming buffer with no intervening submit to recycle it — it overflows and the vertex
+    // manager force-flushes mid-draw ("Executing command list while waiting for space…"),
+    // stalling on a fence and tanking the framerate. A proactive Flush (Vulkan: submit
+    // off-thread, no present; OGL: no-op) recycles the buffer between the two frames. It is
+    // also semantically right: the real field IS a finished frame.
+    if (g_gfx) g_gfx->Flush();
+
     // Tell the VI the in-between present will land at ALT (the present address comes from
     // this setNextXFB, NOT from display's fb pointer — verified: redirecting only the copy
     // left the present on the original buffer).
@@ -238,6 +248,14 @@ SUNBRIGHT_OVERRIDE(ov_interp_endRendering, DISPLAY_END_RENDER) {
         }
     }
 
+    // Silhouette-manager state probe (confirm the in-between double-mutates occlusion alpha).
+    u32 sil_mgr = 0;
+    {
+        const u32 pp = cpu.gpr[13] + (u32)(s32)(s16)0x9f6c;   // &gpSilhouetteManager
+        const u32 m  = (pp >= 0x80000000u && pp < 0x81800000u) ? MEM_R32(pp) : 0;
+        if (m >= 0x80000000u && m < 0x81800000u) { sil_mgr = m; g_i60.sil_mgr = m; g_i60.sil_before = mem_rf32(m + 0x48); }
+    }
+
     // ── instrument: measure the in-between field's actual GX render volume ──
     g_i60.setviewmtx_calls = 0;
     g_i60.blended_addrs.clear();
@@ -266,6 +284,7 @@ SUNBRIGHT_OVERRIDE(ov_interp_endRendering, DISPLAY_END_RENDER) {
     }
     g_i60.cur_list = -1;
     call_ppc(cpu, GX_INVALIDATE_TEXALL);
+    if (sil_mgr) g_i60.sil_after = mem_rf32(sil_mgr + 0x48);   // did the in-between move unk48?
     g_interp60_in_redraw = false;
     cpu.gpr[1] = saved_r1;
 
@@ -385,6 +404,11 @@ int interp60_probe(char* out, int cap, const char* query) {
         g_i60.mario_vec ? "(resolved)" : "<<< gpMarioPos UNRESOLVED (shadow blend no-op)");
     app("list_mask=0x%02x (bits=re-issued lists: 0:+40 1:+38 2:+3c 3:+1c[GX] 4:+20[silhouette] 5:+24[GXPost])\n",
         g_i60.list_mask);
+    app("SILHOUETTE mgr=%08x unk48(occlusion alpha) before=%.4f after-inbetween=%.4f  %s\n",
+        g_i60.sil_mgr, g_i60.sil_before, g_i60.sil_after,
+        g_i60.sil_mgr == 0 ? "<<< unresolved" :
+        (g_i60.sil_after != g_i60.sil_before) ? "<<< in-between MUTATED occlusion alpha (blink source)" :
+        "(in-between left it unchanged)");
     app("  per-list viewCalc:");
     for (u32 i = 0; i < sizeof(kDrawLists)/sizeof(kDrawLists[0]); i++)
         app(" [%u:+%02x]=%lu", i, kDrawLists[i], g_i60.vc_per_list[i]);
