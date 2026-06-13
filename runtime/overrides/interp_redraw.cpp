@@ -610,8 +610,11 @@ int interp60_probe(char* out, int cap, const char* query) {
         app("OWN-PRESENT: active=%d  manual=%lu gated-fields=%lu auto-presents=%lu  last_manual=%08x\n",
             g_sb_own_present, g_sb_ownpres_manual, g_sb_ownpres_gated, g_sb_ownpres_auto, g_sb_ownpres_last);
         extern volatile unsigned long g_sb_efb_redirects;
-        app("EFB-OWNED (in-between EFB copies -> Sunbright per-field textures): owned=%lu\n",
-            g_sb_efb_redirects);
+        extern volatile unsigned long g_sb_efb_owned_hits, g_sb_efb_owned_miss, g_sb_efb_inbetween_ramwrite;
+        app("EFB-OWNED: copies=%lu  in-between samples hit=%lu miss=%lu  fallthrough-RAM=%lu  %s\n",
+            g_sb_efb_redirects, g_sb_efb_owned_hits, g_sb_efb_owned_miss, g_sb_efb_inbetween_ramwrite,
+            g_sb_efb_inbetween_ramwrite ? "<<< in-between WRITES RAM (clobbers real frame = lag)"
+                                        : "(no in-between RAM writes)");
     }
     app("RENDER VOLUME of in-between field: gx_bytes=%llu runs=%lu  %s\n",
         g_i60.redraw_gx_bytes, g_i60.redraw_gx_runs,
