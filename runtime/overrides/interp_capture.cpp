@@ -215,18 +215,14 @@ SUNBRIGHT_OVERRIDE(ov_j3d_viewCalc_blend, 0x802deeb8u) {
             if (g_i60.blend && cpu.gpr[3] >= 0x80000000u) blend_model(cpu.gpr[3]);
             return;   // do NOT run the guest body (it would recompute = frame N)
         }
-        // mode 3 (registry buffer-blend): skip the body ONLY for models we actually blended (their
-        // shape packets are prepared and their draw matrices hold interpolated values). A model NOT
-        // blended this redraw — created this frame / single-buffered, its first viewCalc in the draw
-        // pass — must RUN viewCalc so prepareShapePackets() wires its shape packets; otherwise
-        // J3DShape::draw reads mDrawMatrices[*mCurrentViewNo] through a null pointer (the file-select
-        // →gameplay mountStageArchive null-deref). Running it draws that model at frame N, correct
-        // for something with no N-1 to interpolate.
-        if (g_i60.mode == 3) {
-            if (interp60_model_blended(cpu.gpr[3])) return;
-            func_802deeb8(cpu);
-            return;
-        }
+        // mode 3 (registry buffer-blend): the registry was already blended before the re-issue.
+        // Skip the body so the models that recompute in the draw pass don't overwrite the blend
+        // back to N. We must NOT run viewCalc here: it mutates game memory (swapDrawMtx toggles
+        // mCurrentViewNo, recompute + DCStoreRange) and that is not restored — interp60 is
+        // render-only. A model whose shape packets aren't prepared (created this frame, never had a
+        // viewCalc before the in-between) is handled READ-ONLY by ov_j3dshape_draw_guard below
+        // (it skips that shape's draw instead of crashing on a null draw-matrix pointer).
+        if (g_i60.mode == 3) return;
         // mode 2 (view-blend) / mode 0: run the guest body so it recomputes the
         // draw matrices against the (interpolated, in mode 2) j3dSys view matrix.
         func_802deeb8(cpu);
@@ -250,11 +246,9 @@ SUNBRIGHT_OVERRIDE(ov_j3d_viewCalc_blend, 0x802deeb8u) {
 extern "C" void func_8023d36c(CPUState&);
 SUNBRIGHT_OVERRIDE(ov_sdl_viewCalcSimple, 0x8023d36cu) {
     if (g_interp60_in_redraw) {
-        if (g_i60.mode == 3) {         // skip only if blended (see ov_j3d_viewCalc_blend); else
-            if (interp60_model_blended(cpu.gpr[3])) return;   // run viewCalc to prepare new models
-            func_8023d36c(cpu);
-            return;
-        }
+        if (g_i60.mode == 3) return;   // registry pre-blended it; skip recompute (= frame N). No
+                                       // viewCalc here (it would mutate mCurrentViewNo); unprepared
+                                       // shapes are guarded read-only in ov_j3dshape_draw_guard.
         func_8023d36c(cpu);
         return;
     }
@@ -265,6 +259,28 @@ SUNBRIGHT_OVERRIDE(ov_sdl_viewCalcSimple, 0x8023d36cu) {
         if (g_registry.size() < 4096) g_registry.push_back(model_this);
         g_sdl_set.insert(model_this);
     }
+}
+
+// J3DShape::draw read-only guard for the in-between (0x802e0390). A shape whose draw-matrix pointers
+// aren't prepared — a model created THIS frame whose first viewCalc/prepareShapePackets is in the
+// draw pass — has mDrawMatrices (shape+0x50) / mDrawMatrices[*mCurrentViewNo] null. On the in-between
+// (viewCalc skipped to stay render-only) drawing it deref's that null (the file-select→gameplay
+// mountStageArchive crash). We do NOT run viewCalc to prepare it (that mutates game memory:
+// mCurrentViewNo swap, matrix recompute, DCStoreRange — interp60 must not touch game state). Instead
+// just SKIP this shape's draw on the in-between; a brand-new object absent for one interpolated field
+// is invisible, and the next real field draws it normally. Read-only: no game memory is modified.
+extern "C" void func_802e0390(CPUState&);   // J3DShape::draw
+SUNBRIGHT_OVERRIDE(ov_j3dshape_draw_guard, 0x802e0390u) {
+    if (g_interp60_in_redraw) {
+        const u32 shape = cpu.gpr[3];
+        if (shape >= 0x80000000u) {
+            const u32 dm  = mem_r32(shape + 0x50);   // mDrawMatrices (Mtx**)
+            const u32 vno = mem_r32(shape + 0x58);   // mCurrentViewNo (u32*)
+            if (dm < 0x80000000u || vno < 0x80000000u) return;             // pointers not prepared
+            if (mem_r32(dm + mem_r32(vno) * 4) < 0x80000000u) return;      // null per-view matrices
+        }
+    }
+    func_802e0390(cpu);
 }
 
 } // namespace
