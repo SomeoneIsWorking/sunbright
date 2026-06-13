@@ -55,6 +55,15 @@ bool sunbright_interp60() {
     return v == 1;
 }
 
+// Bisection knob: SUNBRIGHT_INTERP60_NOSYNTH=1 keeps INTERP60's viewCalc registration active but
+// NEVER synthesizes an in-between field (no blend, no draw-list re-issue, no alt present). Isolates
+// "the in-between synthesis crashes" from "the real-field overrides crash".
+static bool interp60_nosynth() {
+    static int v = -1;
+    if (v < 0) v = getenv("SUNBRIGHT_INTERP60_NOSYNTH") ? 1 : 0;
+    return v == 1;
+}
+
 // Redraw window state, consumed by the J3DModel::viewCalc override in
 // interp_capture.cpp: while true, viewCalc substitutes blended draw matrices
 // into mDrawMtxBuf[1][view] and skips the guest body.
@@ -63,6 +72,7 @@ void interp60_restore_after_redraw();   // interp_capture.cpp
 void interp60_take_motion();            // interp_capture.cpp
 void interp60_registry_clear();         // interp_capture.cpp
 void interp60_blend_registry();         // interp_capture.cpp
+size_t interp60_registry_size();        // interp_capture.cpp — live-model count this frame
 
 namespace {
 
@@ -159,7 +169,7 @@ SUNBRIGHT_OVERRIDE(ov_interp_endRendering, DISPLAY_END_RENDER) {
     // Insert the in-between field only for a fresh 2-field gameplay frame drawn by
     // TMarDirector with a valid TGraphics snapshot. 1-field scenes (60 fps menus)
     // present every field already.
-    const bool room = sunbright_interp60() && fresh && g_mardir && g_gfx_valid && wait == 2;
+    const bool room = sunbright_interp60() && !interp60_nosynth() && fresh && g_mardir && g_gfx_valid && wait == 2;
     if (!room) {
         if (sunbright_interp60() && fresh && wait != 2) g_i60.skip_rate++;
         if (sunbright_interp60() && fresh && !g_mardir)  g_i60.skip_nodir++;
@@ -167,6 +177,7 @@ SUNBRIGHT_OVERRIDE(ov_interp_endRendering, DISPLAY_END_RENDER) {
         func_802f80d0(cpu);
         return;
     }
+
 
     // SMS is single-XFB-buffered (display's two buffer slots are identical), so the real
     // frame and the in-between would copy to and present from the SAME XFB texture — the
@@ -306,7 +317,8 @@ SUNBRIGHT_OVERRIDE(ov_interp_endRendering, DISPLAY_END_RENDER) {
     // N-1, unless this is a scene cut. Both classes double-buffer mDrawMtxBuf, so
     // blend_model handles them uniformly; their viewCalc bodies are skipped in the
     // redraw so the blend survives the re-issue.
-    if (g_i60.mode == 3 && !g_i60.is_cut) interp60_blend_registry();
+    static const bool noblend = getenv("SUNBRIGHT_INTERP60_NOBLEND") != nullptr;  // bisect: redraw w/o blend
+    if (g_i60.mode == 3 && !g_i60.is_cut && !noblend) interp60_blend_registry();
     // Native per-field EFB-copy: redirect this in-between's EFB-copy resolves + their consumer
     // texture reads to a distinct ALT address (efb_native.cpp) so the real field's screen/mirror/
     // graffiti textures are not overwritten — each field gets its own correct copy = true 60fps

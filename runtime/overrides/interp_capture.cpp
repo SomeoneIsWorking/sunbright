@@ -40,8 +40,9 @@ namespace {
 // the full set of live models — and each one's mDrawMtxBuf double-buffer holds
 // tick N-1 ([0][view]) and N ([1][view]) regardless of which pass computed it.
 std::vector<u32> g_registry;
-std::unordered_set<u32> g_blended_set;   // dedup blended buffers within one redraw
-std::unordered_set<u32> g_sdl_set;       // models registered via SDLModel::viewCalcSimple
+std::unordered_set<u32> g_blended_set;     // dedup blended buffers within one redraw
+std::unordered_set<u32> g_blended_models;  // MODELS successfully blended this redraw (drawn interpolated)
+std::unordered_set<u32> g_sdl_set;         // models registered via SDLModel::viewCalcSimple
 
 extern "C" void func_802deeb8(CPUState&);   // J3DModel::viewCalc
 
@@ -151,11 +152,18 @@ bool blend_model(u32 model) {
             g_i60.track_unk18_view = (unk18 >= 0x80000000u) ? mem_r32(unk18 + 4 * view) : 0;
         }
     }
+    g_blended_models.insert(model);   // this model is drawn interpolated → safe to skip its viewCalc
     g_i60.vc_blended++;
     return true;
 }
 
 }  // namespace
+
+// True if `model` was successfully blended this redraw (its shape packets are prepared and its
+// draw matrices hold the interpolated values). Only such models may have their viewCalc SKIPPED on
+// the in-between; a model NOT blended (new this frame / single-buffered) must run viewCalc so
+// prepareShapePackets() wires its shape packets — else J3DShape::draw reads a null draw-matrix.
+bool interp60_model_blended(u32 model) { return g_blended_models.count(model) != 0; }
 
 // Restore every blended model's mDrawMtxBuf[1][view] back to tick N, leaving the
 // guest double-buffer exactly as the real field produced it. Called by
@@ -165,10 +173,16 @@ void interp60_restore_after_redraw() {
         for (size_t i = 0; i < s.f.size(); i++) mem_wf32(s.addr + (u32)i * 4, s.f[i]);
     g_restore.clear();
     g_blended_set.clear();
+    g_blended_models.clear();
 }
 
 // mode 3: clear the registry at the start of a real frame (TMarDirector::direct).
 void interp60_registry_clear() { g_registry.clear(); g_sdl_set.clear(); g_i60.g_worst = 0; }
+
+// Number of live models the real field registered this frame (the scene's draw-matrix population).
+// 0 / a sharply changing count = a menu/loading/transition scene, not a stable 3D scene to
+// interpolate — interp_redraw uses this to skip the in-between across transitions.
+size_t interp60_registry_size() { return g_registry.size(); }
 
 // mode 3: blend every registered model's draw-matrix double-buffer toward N-1.
 // Called on the in-between field BEFORE re-issuing the draw lists. Reaches the
@@ -201,10 +215,18 @@ SUNBRIGHT_OVERRIDE(ov_j3d_viewCalc_blend, 0x802deeb8u) {
             if (g_i60.blend && cpu.gpr[3] >= 0x80000000u) blend_model(cpu.gpr[3]);
             return;   // do NOT run the guest body (it would recompute = frame N)
         }
-        // mode 3 (registry buffer-blend): the registry was already blended before
-        // the re-issue. Skip the body so the ~14 models that recompute in the draw
-        // pass don't overwrite the blend back to N.
-        if (g_i60.mode == 3) return;
+        // mode 3 (registry buffer-blend): skip the body ONLY for models we actually blended (their
+        // shape packets are prepared and their draw matrices hold interpolated values). A model NOT
+        // blended this redraw — created this frame / single-buffered, its first viewCalc in the draw
+        // pass — must RUN viewCalc so prepareShapePackets() wires its shape packets; otherwise
+        // J3DShape::draw reads mDrawMatrices[*mCurrentViewNo] through a null pointer (the file-select
+        // →gameplay mountStageArchive null-deref). Running it draws that model at frame N, correct
+        // for something with no N-1 to interpolate.
+        if (g_i60.mode == 3) {
+            if (interp60_model_blended(cpu.gpr[3])) return;
+            func_802deeb8(cpu);
+            return;
+        }
         // mode 2 (view-blend) / mode 0: run the guest body so it recomputes the
         // draw matrices against the (interpolated, in mode 2) j3dSys view matrix.
         func_802deeb8(cpu);
@@ -228,7 +250,11 @@ SUNBRIGHT_OVERRIDE(ov_j3d_viewCalc_blend, 0x802deeb8u) {
 extern "C" void func_8023d36c(CPUState&);
 SUNBRIGHT_OVERRIDE(ov_sdl_viewCalcSimple, 0x8023d36cu) {
     if (g_interp60_in_redraw) {
-        if (g_i60.mode == 3) return;   // registry pre-blended it; skip recompute (= frame N)
+        if (g_i60.mode == 3) {         // skip only if blended (see ov_j3d_viewCalc_blend); else
+            if (interp60_model_blended(cpu.gpr[3])) return;   // run viewCalc to prepare new models
+            func_8023d36c(cpu);
+            return;
+        }
         func_8023d36c(cpu);
         return;
     }
