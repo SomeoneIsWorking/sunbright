@@ -24,6 +24,8 @@
 #include "../overrides.h"
 #include "../intrinsics.h"
 #include "../interp60.h"
+#include "../gx_parse.h"             // gxp_parse_frame, GxFrameInfo (per-object array-12 bases)
+#include "../gx_stream.h"            // gxs_prev_frame_info — previous frame's parse
 #include "Common/SunbrightHooks.h"   // sb_slot_xf_indexed — render-only matrix-interp seam
 
 #include <cstdio>
@@ -174,29 +176,37 @@ bool interp60_model_blended(u32 model) { return g_blended_models.count(model) !=
 // (sb_slot_xf_indexed) calls sb_hook_xf_indexed below, which substitutes lerp(N-1, N): N-1 is
 // mDrawMtxBuf[0][view], N is [1][view] — BOTH read-only from guest RAM; the interpolated result is
 // written only into XF/GPU memory by LoadIndexedXF. No guest memory is modified, no game code runs.
+// SMS double-buffers the draw matrices by ALTERNATING the array POINTER each frame (this frame's
+// pos-matrix base = buffer X, last frame's = buffer Y, both resident in guest RAM). So N-1 is still
+// readable from the previous buffer — no snapshot needed. Pair the i-th pos-matrix array (CP
+// array 12) base in THIS frame with the i-th in the PREVIOUS frame by draw order (deterministic
+// perform lists → same object at the same index): cur base -> prev base. The hook then lerps the
+// current matrices against the previous buffer's. Guest RAM is only READ; XF/GPU is the only write.
 static std::unordered_map<u32, u32> g_xfmap;   // cur pos-matrix base (phys) -> prev base (phys)
+static std::vector<u32> g_prev12;              // LAST frame's array-12 bases, in draw order. We keep
+                                               // our own copy: gxs_prev_frame_info() gets clobbered by
+                                               // the in-between's SECOND GXCopyDisp boundary (it parses
+                                               // the empty post-replay g_frame).
 static bool  g_xf_active = false;
 static float g_xf_alpha  = 0.5f;
 
-// Build the cur->prev map from this frame's live models (registry). Read-only. Same pairing as
-// blend_model. Call right before the in-between replay; clear with interp60_xfmap_end() after.
-extern "C" void interp60_xfmap_build(float alpha) {
+extern "C" void interp60_xfmap_build(const u8* frame, u32 n, float alpha) {
     g_xfmap.clear();
-    for (u32 model : g_registry) {
-        if (!ok_ram(model)) continue;
-        const u32 view = mem_r32(model + 0x7C);
-        if (view > 16) continue;
-        const u32 d0a = mem_r32(model + 0x60), d1a = mem_r32(model + 0x64);
-        if (!ok_ram(d0a) || !ok_ram(d1a)) continue;
-        const u32 prev = mem_r32(d0a + 4 * view);   // tick N-1
-        const u32 cur  = mem_r32(d1a + 4 * view);   // tick N (the stream's array-12 base)
-        if (!ok_ram(prev) || !ok_ram(cur) || prev == cur) continue;   // need a distinct N-1
-        g_xfmap[cur & 0x03FFFFFFu] = prev & 0x03FFFFFFu;
-    }
-    g_xf_alpha  = alpha;
+    g_xf_alpha = alpha;
     g_xf_active = true;
-    g_i60.xf_map_size = (unsigned long)g_xfmap.size();
     g_i60.xf_hits = 0; g_i60.xf_misses = 0;
+    if (!frame || !n) { g_i60.xf_map_size = 0; g_prev12.clear(); return; }
+    GxFrameInfo cur;
+    gxp_parse_frame(frame, n, cur);   // mtx_arrays filled even if !ok
+    std::vector<u32> cur12;
+    for (const auto& a : cur.mtx_arrays) if (a.array == 12) cur12.push_back(a.base & 0x03FFFFFFu);
+    // Pair this frame's i-th pos-matrix base with last frame's i-th (draw order). Bases alternate
+    // between the two double-buffers, so cur != prev = the previous buffer (resident, holds N-1).
+    const size_t m = cur12.size() < g_prev12.size() ? cur12.size() : g_prev12.size();
+    for (size_t i = 0; i < m; i++)
+        if (cur12[i] != g_prev12[i]) g_xfmap[cur12[i]] = g_prev12[i];
+    g_i60.xf_map_size = (unsigned long)g_xfmap.size();
+    g_prev12.swap(cur12);   // becomes next frame's "previous"
 }
 extern "C" void interp60_xfmap_end() { g_xf_active = false; g_xfmap.clear(); }
 
@@ -206,10 +216,10 @@ extern "C" void interp60_xfmap_end() { g_xf_active = false; g_xfmap.clear(); }
 extern "C" bool sb_hook_xf_indexed(u32 array, u32 base, u32 stride, u32 index, u32 size, u32* out) {
     if (!g_xf_active || array != 12) return false;
     auto it = g_xfmap.find(base & 0x03FFFFFFu);
-    if (it == g_xfmap.end()) { g_i60.xf_misses++; return false; }
+    if (it == g_xfmap.end()) { g_i60.xf_misses++; return false; }   // not paired (static / new object)
     g_i60.xf_hits++;
-    const u32 cur_addr  = ((base & 0x03FFFFFFu) | 0x80000000u) + stride * index;
-    const u32 prev_addr = (it->second           | 0x80000000u) + stride * index;
+    const u32 cur_addr  = ((base & 0x03FFFFFFu) | 0x80000000u) + stride * index;   // guest tick N
+    const u32 prev_addr = (it->second           | 0x80000000u) + stride * index;   // guest tick N-1
     const float a = g_xf_alpha;
     for (u32 i = 0; i < size; i++) {
         const u32 cw = mem_r32(cur_addr + i * 4), pw = mem_r32(prev_addr + i * 4);   // host-order

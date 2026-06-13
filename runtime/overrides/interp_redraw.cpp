@@ -74,7 +74,7 @@ void interp60_registry_clear();         // interp_capture.cpp
 void interp60_blend_registry();         // interp_capture.cpp
 size_t interp60_registry_size();        // interp_capture.cpp — live-model count this frame
 bool sunbright_interp60_replay();       // interp60_replay.cpp — render-only replay in-between
-extern "C" void interp60_xfmap_build(float alpha);  // interp_capture.cpp — pos-matrix interp map
+extern "C" void interp60_xfmap_build(const u8* frame, u32 n, float alpha);  // interp_capture.cpp
 extern "C" void interp60_xfmap_end();
 
 namespace {
@@ -204,6 +204,11 @@ SUNBRIGHT_OVERRIDE(ov_interp_endRendering, DISPLAY_END_RENDER) {
         // Snapshot frame N's captured command stream NOW — the first-half copy below does a
         // GXCopyDisp that triggers gxs_frame_boundary and clears g_frame.
         std::vector<u8> frameN(gxs_cur_frame());
+        // Build the cur->prev pos-matrix map BEFORE the first copy: the copy's GXCopyDisp boundary
+        // swaps frame N into gxs_prev_frame_info(), so doing this after would pair N with itself
+        // (nothing to interpolate). Now gxs_prev_frame_info() is still frame N-1. Arms the
+        // LoadIndexedXF hook to lerp(N-1,N) into XF — render-only, no game memory written.
+        interp60_xfmap_build(frameN.data(), (u32)frameN.size(), g_i60.alpha);
         MEM_W16(display + 0x4C, 1);
         cpu.gpr[3] = display; func_802f80d0(cpu);          // present REAL frame N to the game XFB
         if (g_gfx) g_gfx->Flush();
@@ -212,8 +217,6 @@ SUNBRIGHT_OVERRIDE(ov_interp_endRendering, DISPLAY_END_RENDER) {
         g_i60.disp = display; g_i60.set_fb = alt;
         g_i60.redraw_gx_bytes = frameN.size();
         g_interp60_in_redraw = true;
-        interp60_xfmap_build(g_i60.alpha);   // map cur->prev pos-matrix bases; arm the LoadIndexedXF
-                                             // hook to lerp(N-1,N) into XF (render-only, no game write)
         gxs_replay_frame(frameN.data(), frameN.size());    // re-render frame N with interpolated mtx
         interp60_xfmap_end();
         g_interp60_in_redraw = false;
