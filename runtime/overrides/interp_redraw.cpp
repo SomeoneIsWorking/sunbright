@@ -70,6 +70,8 @@ u32 g_mardir = 0;                 // TMarDirector* seen by the last direct()
 unsigned long g_direct_stamp = 0, g_consumed_stamp = 0;
 
 extern "C" void func_80299838(CPUState&);   // TMarDirector::direct
+extern "C" void sb_efb_native_begin_inbetween();   // efb_native.cpp — per-field EFB-copy redirect
+extern "C" void sb_efb_native_end_inbetween();
 extern "C" void func_802f80d0(CPUState&);   // TDisplay::endRendering
 extern "C" void func_802a4e28(CPUState&);   // TPerformList::perform
 
@@ -305,6 +307,12 @@ SUNBRIGHT_OVERRIDE(ov_interp_endRendering, DISPLAY_END_RENDER) {
     // blend_model handles them uniformly; their viewCalc bodies are skipped in the
     // redraw so the blend survives the re-issue.
     if (g_i60.mode == 3 && !g_i60.is_cut) interp60_blend_registry();
+    // Native per-field EFB-copy: redirect this in-between's EFB-copy resolves + their consumer
+    // texture reads to a distinct ALT address (efb_native.cpp) so the real field's screen/mirror/
+    // graffiti textures are not overwritten — each field gets its own correct copy = true 60fps
+    // screen-space effects, no flicker, no ghost. The tracked set was populated by THIS pair's real
+    // field (ov_efb_native_copytex self-tracks every real-field GXCopyTex dest).
+    sb_efb_native_begin_inbetween();
     for (u32 li = 0; li < sizeof(kDrawLists) / sizeof(kDrawLists[0]); li++) {
         if (!(g_i60.list_mask & (1u << li))) continue;   // bisection: skip masked-off passes
         const u32 list = MEM_R32(g_mardir + kDrawLists[li]);
@@ -321,7 +329,11 @@ SUNBRIGHT_OVERRIDE(ov_interp_endRendering, DISPLAY_END_RENDER) {
         call_ppc(cpu, PERFORM_LIST_PERFORM);
     }
     g_i60.cur_list = -1;
+    // (The cast shadow now draws IN PHASE during the +0x20 silhouette list re-issue above —
+    // see shadow_interp.cpp. The old trailing replay ran after +0x24's EFB->XFB copy = out of
+    // phase = the blink, and is removed.)
     call_ppc(cpu, GX_INVALIDATE_TEXALL);
+    sb_efb_native_end_inbetween();
     if (sil_mgr) g_i60.sil_after = mem_rf32(sil_mgr + 0x48);   // did the in-between move unk48?
     g_interp60_in_redraw = false;
     cpu.gpr[1] = saved_r1;
