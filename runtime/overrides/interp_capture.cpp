@@ -176,17 +176,17 @@ bool interp60_model_blended(u32 model) { return g_blended_models.count(model) !=
 // (sb_slot_xf_indexed) calls sb_hook_xf_indexed below, which substitutes lerp(N-1, N): N-1 is
 // mDrawMtxBuf[0][view], N is [1][view] — BOTH read-only from guest RAM; the interpolated result is
 // written only into XF/GPU memory by LoadIndexedXF. No guest memory is modified, no game code runs.
-// SMS double-buffers the draw matrices by ALTERNATING the array POINTER each frame (this frame's
-// pos-matrix base = buffer X, last frame's = buffer Y, both resident in guest RAM). So N-1 is still
-// readable from the previous buffer — no snapshot needed. Pair the i-th pos-matrix array (CP
-// array 12) base in THIS frame with the i-th in the PREVIOUS frame by draw order (deterministic
-// perform lists → same object at the same index): cur base -> prev base. The hook then lerps the
-// current matrices against the previous buffer's. Guest RAM is only READ; XF/GPU is the only write.
+// SMS double-buffers the draw matrices PER MODEL: each J3DModel/SDLModel owns mDrawMtxBuf[0] and
+// [1]; after a real field's viewCalc, mDrawMtxBuf[1][view] holds tick N (the base the GX stream
+// loads via CP array 12) and mDrawMtxBuf[0][view] holds tick N-1. We pair cur=[1][view] -> prev=
+// [0][view] from the SAME registered model, so the mapping is by OBJECT IDENTITY. (The earlier
+// draw-order prefix pairing — i-th array-12 base this frame ↔ i-th last frame — mispaired unrelated
+// objects the instant the array-12 count shifted, e.g. a particle/object appearing or disappearing;
+// lerping object A's matrix against object B's = exploded vertices. Identity pairing has no such
+// failure: prev/cur always belong to the same object's own two buffers.) Guest RAM is only READ;
+// the interpolated result is written only into XF/GPU memory by LoadIndexedXF.
 static std::unordered_map<u32, u32> g_xfmap;   // cur pos-matrix base (phys) -> prev base (phys)
-static std::vector<u32> g_prev12;              // LAST frame's array-12 bases, in draw order. We keep
-                                               // our own copy: gxs_prev_frame_info() gets clobbered by
-                                               // the in-between's SECOND GXCopyDisp boundary (it parses
-                                               // the empty post-replay g_frame).
+static std::unordered_set<u32> g_prev_registry; // models present LAST frame (have a valid N-1 buffer)
 static bool  g_xf_active = false;
 static float g_xf_alpha  = 0.5f;
 
@@ -195,18 +195,45 @@ extern "C" void interp60_xfmap_build(const u8* frame, u32 n, float alpha) {
     g_xf_alpha = alpha;
     g_xf_active = true;
     g_i60.xf_hits = 0; g_i60.xf_misses = 0;
-    if (!frame || !n) { g_i60.xf_map_size = 0; g_prev12.clear(); return; }
-    GxFrameInfo cur;
-    gxp_parse_frame(frame, n, cur);   // mtx_arrays filled even if !ok
-    std::vector<u32> cur12;
-    for (const auto& a : cur.mtx_arrays) if (a.array == 12) cur12.push_back(a.base & 0x03FFFFFFu);
-    // Pair this frame's i-th pos-matrix base with last frame's i-th (draw order). Bases alternate
-    // between the two double-buffers, so cur != prev = the previous buffer (resident, holds N-1).
-    const size_t m = cur12.size() < g_prev12.size() ? cur12.size() : g_prev12.size();
-    for (size_t i = 0; i < m; i++)
-        if (cur12[i] != g_prev12[i]) g_xfmap[cur12[i]] = g_prev12[i];
+    std::unordered_set<u32> seen;   // this frame's models, to carry into g_prev_registry
+    // Build the identity map from the model registry (every model the real field's viewCalc saw).
+    for (u32 model : g_registry) {
+        if (!ok_ram(model)) continue;
+        seen.insert(model);
+        // A model that wasn't drawn LAST frame has no tick-N-1 draw matrices: its mDrawMtxBuf[0]
+        // is uninitialized (or holds a previous tenant's matrices from the heap). Interpolating
+        // tick N against that garbage explodes the object for one field. Only interpolate models
+        // present both frames — a freshly-spawned object simply renders at N (no interp) until its
+        // second frame, when a real N-1 exists. (Not a magnitude threshold: a definitional gate —
+        // no N-1 data exists, so there is nothing to interpolate.)
+        if (!g_prev_registry.count(model)) continue;
+        const u32 view = mem_r32(model + 0x7C);            // mCurrentViewNo
+        if (view > 16) continue;
+        const u32 d0a = mem_r32(model + 0x60), d1a = mem_r32(model + 0x64);   // mDrawMtxBuf[0],[1]
+        if (!ok_ram(d0a) || !ok_ram(d1a)) continue;
+        const u32 cur  = mem_r32(d1a + 4 * view);          // tick N   (GX loads this base)
+        const u32 prev = mem_r32(d0a + 4 * view);          // tick N-1
+        if (!ok_ram(cur) || !ok_ram(prev)) continue;
+        if ((cur & 0x1F) || (prev & 0x1F)) continue;       // draw-matrix arrays are 0x20-aligned
+        if (cur == prev) continue;                         // single-buffered: nothing to interpolate
+        g_xfmap[cur & 0x03FFFFFFu] = prev & 0x03FFFFFFu;
+    }
+    g_prev_registry.swap(seen);   // this frame's models become next frame's "present last frame"
     g_i60.xf_map_size = (unsigned long)g_xfmap.size();
-    g_prev12.swap(cur12);   // becomes next frame's "previous"
+    // SUNBRIGHT_DBG_XF: compare the identity-mapped objects against the array-12 bases the GX stream
+    // actually sets this frame (registry coverage vs the GPU's real pos-matrix loads).
+    if (getenv("SUNBRIGHT_DBG_XF")) {
+        std::vector<u32> cur12;
+        if (frame && n) {
+            GxFrameInfo cur;
+            gxp_parse_frame(frame, n, cur);
+            for (const auto& a : cur.mtx_arrays) if (a.array == 12) cur12.push_back(a.base & 0x03FFFFFFu);
+        }
+        static int k = 0;
+        if (k++ < 16)
+            fprintf(stderr, "[xf] registry=%zu mapped=%zu gx_array12=%zu\n",
+                    g_registry.size(), g_xfmap.size(), cur12.size());
+    }
 }
 extern "C" void interp60_xfmap_end() { g_xf_active = false; g_xfmap.clear(); }
 
@@ -215,6 +242,12 @@ extern "C" void interp60_xfmap_end() { g_xf_active = false; g_xfmap.clear(); }
 // non-tracked base / inactive returns false (stock guest read).
 extern "C" bool sb_hook_xf_indexed(u32 array, u32 base, u32 stride, u32 index, u32 size, u32* out) {
     if (!g_xf_active || array != 12) return false;
+    static const int dbg = getenv("SUNBRIGHT_DBG_XF") ? 1 : 0;   // cached: hook is hot (per load)
+    if (dbg) {   // first few hook bases — confirm parser base == load base
+        static int k = 0;
+        if (k++ < 8) fprintf(stderr, "[xf] hook array=%u base=%06x stride=%u index=%u size=%u\n",
+                             array, base & 0x03FFFFFFu, stride, index, size);
+    }
     auto it = g_xfmap.find(base & 0x03FFFFFFu);
     if (it == g_xfmap.end()) { g_i60.xf_misses++; return false; }   // not paired (static / new object)
     g_i60.xf_hits++;
