@@ -1,7 +1,7 @@
-// GX stream assembler sync points (SUNBRIGHT_GXOWN=1) — see runtime/gx_stream.h.
+// GX stream assembler sync points — see runtime/gx_stream.h.
 //
 // The assembler holds gather-pipe bytes host-side; the guest's own pipeline sync
-// points are where they must reach Dolphin's GPFifo:
+// points are where they must be decoded (synchronous OpcodeDecoder):
 //   - GXFlush (0x8035d8f0): the GC contract is "after GXFlush the GPU can see
 //     everything written so far" — every guest wait (drawsync pushBreakPoint,
 //     GXDrawDone, PE-token polls) flushes first, so flushing here preserves all

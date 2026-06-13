@@ -18,28 +18,18 @@
 
 namespace {
 
-// Tailored renderer — Stage 1 (docs/port_roadmap.md "native renderer arc").
-// SUNBRIGHT_OWN_RENDER=1 changes the SINK of the owned GX byte stream: instead
-// of pushing the held bytes back into Dolphin's CP FIFO *ring* (GPFifoManager →
-// 512 KB ring → async GPU thread drain), we decode them SYNCHRONOUSLY on the
-// producing guest thread via Dolphin's OpcodeDecoder. There is no fixed ring, so
-// the "FIFO is overflowed by GatherPipe! CPU thread is too fast!" crash
-// (CommandProcessor.cpp:390 — CPReadWriteDistance > CPEnd-CPBase) is structurally
-// impossible: each held run is decoded the moment its sync point is reached. We
-// still drive Dolphin's VideoCommon rasterizer (VertexManager → Vulkan, texture
-// cache, shader-gen) — we own the *frontend* (FIFO pacing/lifetime), not the
-// rasterizer (kept by doctrine). Implies the holding path (GXOWN) is on.
-bool own_render() {
-    static int v = -1;
-    if (v < 0) v = getenv("SUNBRIGHT_OWN_RENDER") ? 1 : 0;
-    return v == 1;
-}
-
-bool env_on() {
-    static int v = -1;
-    if (v < 0) v = (getenv("SUNBRIGHT_GXOWN") || getenv("SUNBRIGHT_OWN_RENDER")) ? 1 : 0;
-    return v == 1;
-}
+// Tailored renderer (docs/port_roadmap.md "native renderer arc") — THE renderer,
+// for both vanilla and 60 fps. We own the GX byte stream: instead of pushing the
+// held bytes back into Dolphin's CP FIFO *ring* (GPFifoManager → 512 KB ring →
+// async GPU thread drain), we decode them SYNCHRONOUSLY on the producing guest
+// thread via Dolphin's OpcodeDecoder. There is no fixed ring, so the "FIFO is
+// overflowed by GatherPipe! CPU thread is too fast!" crash (CommandProcessor.cpp
+// :390 — CPReadWriteDistance > CPEnd-CPBase) is structurally impossible: each
+// held run is decoded the moment its sync point is reached. This is what lets the
+// 60 fps redraw double the command volume without lapping a ring. We still drive
+// Dolphin's VideoCommon rasterizer (VertexManager → Vulkan, texture cache,
+// shader-gen) — we own the *frontend* (FIFO pacing/lifetime), not the rasterizer
+// (kept by doctrine).
 bool dbg() {
     static int v = -1;
     if (v < 0) v = getenv("SUNBRIGHT_DBG_GXS") ? 1 : 0;
@@ -51,7 +41,7 @@ bool g_armed = false;
 // Held gather-pipe bytes, in FIFO order (big-endian, exactly what GPFifo gets).
 std::vector<u8> g_buf;
 
-// Owned-render (SUNBRIGHT_OWN_RENDER) persistent decode buffer = our "video
+// Persistent decode buffer = our "video
 // buffer". RunFifo decodes whole commands only and returns a pointer past the
 // last complete one; a partial trailing command (rare — guest sync points land
 // on command boundaries) carries to the next flush. Stats: bytes decoded, and
@@ -134,10 +124,10 @@ namespace { bool g_in_flush = false; }   // guest threads are nthr-serialized
 bool gxs_in_flush() { return g_in_flush; }
 
 void gxs_arm() {
-    if (g_armed || !env_on()) return;
+    if (g_armed) return;
     g_armed = true;
-    fprintf(stderr, "[gxs] GX stream assembler armed (first display copy)%s\n",
-            own_render() ? " — OWN_RENDER sink (direct OpcodeDecoder, no CP ring)" : "");
+    fprintf(stderr, "[gxs] tailored GX frontend armed (first display copy) — "
+                    "direct OpcodeDecoder, no CP ring\n");
 }
 
 void gxs_w8(u8 v)  { append(&v, 1); }
@@ -179,19 +169,7 @@ void gxs_flush(const char* why) {
     if (g_buf.empty()) return;
 #ifdef HAVE_DOLPHIN_MEMMAP
     g_in_flush = true;
-    if (own_render()) {
-        decode_owned();
-    } else {
-        auto& gpf = Core::System::GetInstance().GetGPFifo();
-        size_t i = 0;
-        const size_t n = g_buf.size();
-        for (; i + 4 <= n; i += 4) {
-            u32 v;
-            memcpy(&v, &g_buf[i], 4);
-            gpf.Write32(__builtin_bswap32(v));
-        }
-        for (; i < n; i++) gpf.Write8(g_buf[i]);
-    }
+    decode_owned();   // synchronous OpcodeDecoder, no CP ring (the only sink)
     g_in_flush = false;
 #endif
     g_total_bytes += g_buf.size();
@@ -228,22 +206,11 @@ void gxs_frame_boundary() {
     std::swap(g_frame_info, g_prev_info);
     g_frame.clear();
 
-    if (dbg() && (g_frames % 128) == 0) {
-        if (own_render())
-            fprintf(stderr,
-                    "[gxs] OWN_RENDER frames=%lu last_frame_bytes=%llu decoded=%lluMB runs=%lu "
-                    "tail_hi=%zu flushes gx=%lu copy=%lu\n",
-                    g_frames, g_frame_bytes, g_decoded_bytes >> 20, g_decode_runs,
-                    g_tail_hi, g_fl_gxflush, g_fl_copy);
-        else
-            fprintf(stderr,
-                    "[gxs] frames=%lu last_frame_bytes=%llu total=%lluMB flushes gx=%lu copy=%lu cap=%lu "
-                    "parse ok=%lu fail=%lu tokens/f=%.1f mtxarrays/f=%.1f\n",
-                    g_frames, g_frame_bytes, g_total_bytes >> 20,
-                    g_fl_gxflush, g_fl_copy, g_fl_cap,
-                    g_parse_ok, g_parse_fail,
-                    g_parse_ok ? (double)g_tokens_seen / g_parse_ok : 0.0,
-                    g_parse_ok ? (double)g_mtx_arrays_seen / g_parse_ok : 0.0);
-    }
+    if (dbg() && (g_frames % 128) == 0)
+        fprintf(stderr,
+                "[gxs] frames=%lu last_frame_bytes=%llu decoded=%lluMB runs=%lu "
+                "tail_hi=%zu flushes gx=%lu copy=%lu parse ok=%lu fail=%lu\n",
+                g_frames, g_frame_bytes, g_decoded_bytes >> 20, g_decode_runs,
+                g_tail_hi, g_fl_gxflush, g_fl_copy, g_parse_ok, g_parse_fail);
     g_frame_bytes = 0;
 }

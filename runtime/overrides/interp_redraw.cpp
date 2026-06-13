@@ -6,13 +6,12 @@
 // TMarDirector's perform lists and present it with a second display copy.
 // No FIFO capture, no stream patching — the engine draws when we say.
 //
-// Stage 1 (this file, no blend yet): re-render the SAME frame on the
-// in-between field. Visual no-op by construction; proves the draw pass
-// re-issues cleanly (no double-tick of game state — anim/movement live in
-// separate perform lists that we do not run) and that the second copy+present
-// paces at one field each. Stage 2 redirects each J3DModel to draw matrices
-// blended between tick N-1 and N (J3D double-buffers mDrawMtxBuf; see the
-// design doc) — that turns this into real 60 fps motion.
+// On the in-between field we re-issue the scene-graph draw pass with each
+// J3DModel's draw matrices BLENDED between tick N-1 and N (J3D double-buffers
+// mDrawMtxBuf; the blend is applied in the viewCalc override, interp_capture.cpp)
+// — real 60 fps motion. No double-tick of game state: anim/movement live in
+// separate perform lists we do not run; only the draw lists re-issue, and the
+// second copy+present paces at one field.
 //
 // Frame anatomy (RE'd from reference/sms decomp + USA addresses verified in
 // docs/decomp/mar_director_application.md):
@@ -29,6 +28,7 @@
 // field + copy of the redraw) — same 2-field game cadence, two presents.
 #include "../overrides.h"
 #include "../intrinsics.h"
+#include "../interp60.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -50,11 +50,6 @@ constexpr u32 kDrawLists[] = { 0x40, 0x38, 0x3C, 0x1C, 0x24 };
 // +0x20 silhouette list is conditional in direct() (gpSilhouetteManager state);
 // skipped in stage 1 — silhouettes absent on in-between fields only.
 
-bool on() {
-    static int v = -1;
-    if (v < 0) v = getenv("SUNBRIGHT_INTERP60") ? 1 : 0;
-    return v == 1;
-}
 bool dbg() {
     static int v = -1;
     if (v < 0) v = getenv("SUNBRIGHT_DBG_INTERP60") ? 1 : 0;
@@ -62,6 +57,13 @@ bool dbg() {
 }
 
 }  // namespace (reopened below)
+
+// SSOT: is 60 fps interpolation enabled? (declared in runtime/interp60.h)
+bool sunbright_interp60() {
+    static int v = -1;
+    if (v < 0) v = getenv("SUNBRIGHT_INTERP60") ? 1 : 0;
+    return v == 1;
+}
 
 // Redraw window state, consumed by the J3DModel::viewCalc override in
 // interp_capture.cpp: while true, viewCalc substitutes blended draw matrices
@@ -91,7 +93,7 @@ u8  g_gfx_snap[0x100];
 bool g_gfx_valid = false;
 
 SUNBRIGHT_OVERRIDE(ov_interp_perform_snap, 0x802a4e28u) {
-    if (on() && g_mardir && cpu.gpr[3] == MEM_R32(g_mardir + 0x1C) && cpu.gpr[5] >= 0x80000000u) {
+    if (sunbright_interp60() && g_mardir && cpu.gpr[3] == MEM_R32(g_mardir + 0x1C) && cpu.gpr[5] >= 0x80000000u) {
         for (u32 i = 0; i < 0x100; i++) g_gfx_snap[i] = MEM_R8(cpu.gpr[5] + i);
         g_gfx_valid = true;
     }
@@ -113,7 +115,7 @@ SUNBRIGHT_OVERRIDE(ov_interp_endRendering, DISPLAY_END_RENDER) {
     g_consumed_stamp = g_direct_stamp;
 
     const u16 wait = (u16)MEM_R16(display + 0x4C);
-    if (on() && dbg()) {
+    if (sunbright_interp60() && dbg()) {
         static int shown = 0;
         if (shown < 8) {
             fprintf(stderr, "[interp60] endRendering display=%08x wait=%u fresh=%d mardir=%08x\n",
@@ -131,15 +133,15 @@ SUNBRIGHT_OVERRIDE(ov_interp_endRendering, DISPLAY_END_RENDER) {
     // give the GPU up to 3 ms to get the ring under 25% (token delivery is
     // serviced inside, so a drawsync-parked GPU can retire and advance); on
     // timeout skip the redraw — this frame presents at 30 fps, never corrupts.
-    const bool room = on() && fresh && g_mardir && g_gfx_valid && wait == 2
+    const bool room = sunbright_interp60() && fresh && g_mardir && g_gfx_valid && wait == 2
                       && sunbright_cp_drain_wait(0.25f, 3000);
-    if (on() && fresh && !room) g_skip_full++;
+    if (sunbright_interp60() && fresh && !room) g_skip_full++;
 
     // Only a 2-field frame has an in-between field (gameplay). 1-field scenes
     // (60 fps menus) present every field already.
     if (!room) {
-        if (on() && fresh && wait != 2) g_skip_rate++;
-        if (on() && fresh && !g_mardir) g_skip_nodir++;
+        if (sunbright_interp60() && fresh && wait != 2) g_skip_rate++;
+        if (sunbright_interp60() && fresh && !g_mardir) g_skip_nodir++;
         func_802f80d0(cpu);
         return;
     }
@@ -181,20 +183,12 @@ SUNBRIGHT_OVERRIDE(ov_interp_endRendering, DISPLAY_END_RENDER) {
     for (u32 i = 0; i < 0x100; i++) MEM_W8(gfx + i, g_gfx_snap[i]);
     cpu.gpr[1] = (gfx - 0x20u) & ~0xFu;
 
-    // Optional bisect mask for the redraw lists (SUNBRIGHT_INTERP60_LISTS=hex
-    // bitmask over kDrawLists indices; default all).
-    static const u32 list_mask = [] {
-        const char* e = getenv("SUNBRIGHT_INTERP60_LISTS");
-        return e ? (u32)strtoul(e, nullptr, 16) : 0xFFu;
-    }();
     // Blend window: viewCalc calls inside the pass substitute interpolated
-    // matrices (interp_capture.cpp). SUNBRIGHT_INTERP60_NOBLEND=1 = A/B off.
-    static const bool blend = !getenv("SUNBRIGHT_INTERP60_NOBLEND");
+    // matrices (interp_capture.cpp).
     g_interp60_touched.clear();
-    g_interp60_in_redraw = blend;
+    g_interp60_in_redraw = true;
 
     for (u32 li = 0; li < sizeof(kDrawLists) / sizeof(kDrawLists[0]); li++) {
-        if (!(list_mask & (1u << li))) continue;
         const u32 list = MEM_R32(g_mardir + kDrawLists[li]);
         if (!list) continue;
         if (dbg() && g_redraws < 4)

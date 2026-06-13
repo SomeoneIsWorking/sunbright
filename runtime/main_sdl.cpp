@@ -791,15 +791,7 @@ int main(int argc, char* argv[]) {
     // honored via icbi32. 2026-06-10.
     Config::SetBase(Config::MAIN_DISABLE_ICACHE, true);
 
-    // SyncGPU: run the GPU in deterministic lockstep slices on the CPU timeline. The free-running
-    // dual-core GPU + our hybrid breaks SMS's draw-sync token protocol: Dolphin's PixelEngine
-    // COALESCES token interrupts (keeps only the latest), and TDrawSyncManager counts messages to
-    // advance the FIFO breakpoint — one lost token wedges the whole render pipeline at the
-    // breakpoint (the title-screen freeze, 2026-06-10). With SyncGPU the token events originate on
-    // the CPU timeline and can never coalesce. SUNBRIGHT_SYNC_GPU=0 restores free-running for A/B.
-    if (!getenv("SUNBRIGHT_SYNC_GPU") || atoi(getenv("SUNBRIGHT_SYNC_GPU")) != 0)
-        Config::SetBase(Config::MAIN_SYNC_GPU, true);
-    // …but never sync the GPU from CoreTiming::Idle(). The nthr idle driver calls Idle() in its
+    // …never sync the GPU from CoreTiming::Idle(). The nthr idle driver calls Idle() in its
     // bounded loop; with skip-idle sync on, Idle() waits for the GPU thread, which can itself be
     // parked at a drawsync FIFO breakpoint waiting for CPU-side token dispatch — which runs LATER
     // in the same idle iteration. That AB-BA froze the scheduler (dispatch +0, all threads parked;
@@ -861,24 +853,15 @@ int main(int argc, char* argv[]) {
         Config::SetBase(Config::MAIN_AUDIO_MUTED, muted);
     }
 
-    // Dual-core: run the GPU/FIFO on its own thread. In single-core mode Dolphin processes the GP
-    // FIFO on the CPU thread (Fifo::RunGpuOnCpu) inline with the recomp — profiling showed ~all
-    // CPU-thread time there, serializing rendering with game logic. A separate GPU thread
-    // parallelizes it. The recomp runs on the CPU thread (JitTrampoline hook), independent of the
-    // GPU thread, which reads the FIFO the gather pipe bursts to.
-    //
-    // Tailored renderer (SUNBRIGHT_OWN_RENDER, gx_stream.cpp): we decode the owned GX byte stream
-    // SYNCHRONOUSLY on the producing guest thread (no CP ring, no async drain — kills the
-    // "CPU thread is too fast!" FIFO overflow). VideoCommon must then have exactly one driver
-    // thread, so force single-core; the async GPU thread would otherwise race our inline decode.
-    const bool own_render = getenv("SUNBRIGHT_OWN_RENDER") != nullptr;
-    if (own_render) {
-        Config::SetBase(Config::MAIN_CPU_THREAD, false);
-        Config::SetBase(Config::MAIN_SYNC_GPU, false);   // no ring to drain — pacing is our flush
-        fprintf(stderr, "[sunbright] OWN_RENDER: tailored GX frontend (single-core, no CP ring)\n");
-    } else {
-        Config::SetBase(Config::MAIN_CPU_THREAD, true);
-    }
+    // Tailored renderer (gx_stream.cpp) — THE renderer for both vanilla and 60 fps: we decode the
+    // owned GX byte stream SYNCHRONOUSLY on the producing guest thread (no CP ring, no async drain —
+    // kills the "CPU thread is too fast!" FIFO overflow, and lets the 60 fps redraw double the
+    // command volume without lapping a ring). VideoCommon must then have exactly one driver thread,
+    // so force single-core; the async GPU thread would otherwise race our inline decode. With no
+    // ring to drain, SyncGPU is moot (pacing is our own flush at the guest's sync points).
+    Config::SetBase(Config::MAIN_CPU_THREAD, false);
+    Config::SetBase(Config::MAIN_SYNC_GPU, false);
+    fprintf(stderr, "[sunbright] tailored GX frontend (single-core, no CP ring)\n");
 
     // Fast disc speed: treat every DVD read as buffered (DMA-speed, no seek latency). On a PC port
     // the asset bytes are already local, so reproducing GC disc seek/read latency is pointless — and
@@ -889,13 +872,8 @@ int main(int argc, char* argv[]) {
     // "Speed up Disc Transfer Rate" — faithful, just faster, no spin acrobatics.)
     Config::SetBase(Config::MAIN_FAST_DISC_SPEED, true);
 
-    // Deterministic CPU⇄GPU pacing: with the native VI frame-sync the game's frame loop no longer
-    // waits on emulated time, so nothing throttles GX submission against GPU consumption — the GP
-    // FIFO overflows ("CPU thread is too fast!" CommandProcessor assert). SyncGPU blocks the CPU
-    // thread on FIFO drain (an event, not a time wait), which is exactly the pacing model the
-    // deterministic boot needs. (OWN_RENDER decodes inline with no ring — no SyncGPU to pace.)
-    if (!own_render)
-        Config::SetBase(Config::MAIN_SYNC_GPU, true);
+    // (No SyncGPU: the tailored renderer decodes the GX stream inline with no CP ring — there is
+    // no async FIFO to drain or pace against. See MAIN_SYNC_GPU=false above.)
 
     // ── Graphics quality ────────────────────────────────────────────────────
     // Internal resolution scale (SUNBRIGHT_RES_SCALE; default 3× windowed, 1× headless).
