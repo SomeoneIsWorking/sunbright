@@ -102,7 +102,13 @@ SUNBRIGHT_OVERRIDE(ov_interp_mardir_direct, MARDIR_DIRECT) {
     g_direct_stamp++;
 }
 
+// Engine logic-frame counter (one tick per TDisplay::endRendering) — the OSD readout in
+// Dolphin's Present.cpp ViSwap divides this against the present rate to show game-vs-output fps.
+// Storage lives in videocommon (Present.cpp) so the offline tools link; we just bump it.
+extern "C" volatile unsigned long g_sb_game_seq;
+
 SUNBRIGHT_OVERRIDE(ov_interp_endRendering, DISPLAY_END_RENDER) {
+    g_sb_game_seq = g_sb_game_seq + 1;
     const u32 display = cpu.gpr[3];
     const bool fresh = g_direct_stamp != g_consumed_stamp;
     g_consumed_stamp = g_direct_stamp;
@@ -198,6 +204,40 @@ SUNBRIGHT_OVERRIDE(ov_interp_endRendering, DISPLAY_END_RENDER) {
         g_i60.have_prev_view = 1;
     }
 
+    // ── Mario's world position for projected effects (shadow + water-surface shadow) ──
+    // TSilhouette::perform (the +0x20 silhouette list) projects Mario's drop shadow onto the
+    // ground AND the water using the LIVE global gpMarioPos (-0x60B4 off the SDA base r13),
+    // NOT a draw matrix — so the registry blend never reaches it. On the in-between field the
+    // shadow snapped to tick-N gpMarioPos while Mario's model interpolated, the two detaching
+    // every other frame: the in-sync water+shadow 30 Hz flicker (RE'd from
+    // reference/sms MarioUtil/DrawUtil.cpp TSilhouette::perform/setting). Fix: blend the global
+    // Vec toward N-1 for the duration of the redraw so every gpMarioPos reader (shadow, any
+    // water 2D overlay) sees the same interpolated position the geometry uses; restore after.
+    u32 mario_vec = 0; float saved_mario[3] = {0,0,0};
+    {
+        const u32 pp = cpu.gpr[13] + (u32)(s32)(s16)0x9f4c;   // &gpMarioPos
+        const u32 v  = (pp >= 0x80000000u && pp < 0x81800000u) ? MEM_R32(pp) : 0;
+        g_i60.mario_vec = v;
+        if (v >= 0x80000000u && v < 0x81800000u) {
+            mario_vec = v;
+            static float prev_mario[3]; static int have_prev_mario = 0;
+            float cur_mario[3];
+            for (u32 i = 0; i < 3; i++) cur_mario[i] = mem_rf32(v + i * 4);
+            for (u32 i = 0; i < 3; i++) saved_mario[i] = cur_mario[i];   // restore after redraw
+            g_i60.mario_x = cur_mario[0]; g_i60.mario_y = cur_mario[1]; g_i60.mario_z = cur_mario[2];
+            if (g_i60.shadow_blend && (g_i60.mode == 2 || g_i60.mode == 3) && have_prev_mario && !g_i60.is_cut) {
+                const float a = g_i60.alpha;
+                g_i60.mario_dx = cur_mario[0] - prev_mario[0];
+                g_i60.mario_dy = cur_mario[1] - prev_mario[1];
+                g_i60.mario_dz = cur_mario[2] - prev_mario[2];
+                for (u32 i = 0; i < 3; i++)
+                    mem_wf32(v + i * 4, (1.0f - a) * prev_mario[i] + a * cur_mario[i]);
+            }
+            for (u32 i = 0; i < 3; i++) prev_mario[i] = cur_mario[i];
+            have_prev_mario = 1;
+        }
+    }
+
     // ── instrument: measure the in-between field's actual GX render volume ──
     g_i60.setviewmtx_calls = 0;
     g_i60.blended_addrs.clear();
@@ -215,6 +255,7 @@ SUNBRIGHT_OVERRIDE(ov_interp_endRendering, DISPLAY_END_RENDER) {
     // redraw so the blend survives the re-issue.
     if (g_i60.mode == 3 && !g_i60.is_cut) interp60_blend_registry();
     for (u32 li = 0; li < sizeof(kDrawLists) / sizeof(kDrawLists[0]); li++) {
+        if (!(g_i60.list_mask & (1u << li))) continue;   // bisection: skip masked-off passes
         const u32 list = MEM_R32(g_mardir + kDrawLists[li]);
         if (!list) continue;
         g_i60.cur_list = (int)li;
@@ -231,6 +272,9 @@ SUNBRIGHT_OVERRIDE(ov_interp_endRendering, DISPLAY_END_RENDER) {
     // Restore j3dSys's view matrix to tick N (we blended it for the redraw).
     if ((g_i60.mode == 2 || g_i60.mode == 3) && g_i60.have_prev_view)
         for (u32 i = 0; i < 12; i++) mem_wf32(J3DSYS_VIEWMTX + i * 4, saved_jview[i]);
+
+    // Restore gpMarioPos to tick N (we blended it for the shadow projection).
+    if (mario_vec) for (u32 i = 0; i < 3; i++) mem_wf32(mario_vec + i * 4, saved_mario[i]);
 
     // Clobber check: is the blend we wrote still in RAM now that all draw lists ran?
     if (g_i60.track_addr) g_i60.track_after = mem_rf32(g_i60.track_addr + 3 * 4);
@@ -296,6 +340,11 @@ int interp60_probe(char* out, int cap, const char* query) {
     if (present("mode="))    g_i60.mode    = (int)farg("mode=", (float)g_i60.mode);
     if (present("blend="))   g_i60.blend   = (int)farg("blend=", (float)g_i60.blend);
     if (present("perturb=")) g_i60.perturb = (int)farg("perturb=", (float)g_i60.perturb);
+    if (present("shadow="))  g_i60.shadow_blend = (int)farg("shadow=", (float)g_i60.shadow_blend);
+    if (present("listmask=")) {              // hex bitmask of kDrawLists indices to re-issue
+        const char* p = strstr(query, "listmask=");
+        g_i60.list_mask = (unsigned)strtoul(p + 9, nullptr, 0);
+    }
     if (present("watch=")) {                 // arm the write-watch on the tracked buffer
         extern u32 g_watch_wa; extern bool g_watch_redraw_only;
         const bool on = (int)farg("watch=", 0) != 0;
@@ -330,6 +379,12 @@ int interp60_probe(char* out, int cap, const char* query) {
     app("redraw viewCalc calls=%lu\n", g_i60.vc_calls);
     app("cut detect: is_cut=%d cuts=%lu  (world now via SDLModel registry, not base-keyed)\n",
         g_i60.is_cut, g_i60.cuts);
+    app("SHADOW (gpMarioPos blend): shadow_blend=%d vec=%08x pos=(%.1f,%.1f,%.1f) deltaN-1->N=(%.2f,%.2f,%.2f)  %s\n",
+        g_i60.shadow_blend, g_i60.mario_vec, g_i60.mario_x, g_i60.mario_y, g_i60.mario_z,
+        g_i60.mario_dx, g_i60.mario_dy, g_i60.mario_dz,
+        g_i60.mario_vec ? "(resolved)" : "<<< gpMarioPos UNRESOLVED (shadow blend no-op)");
+    app("list_mask=0x%02x (bits=re-issued lists: 0:+40 1:+38 2:+3c 3:+1c[GX] 4:+20[silhouette] 5:+24[GXPost])\n",
+        g_i60.list_mask);
     app("  per-list viewCalc:");
     for (u32 i = 0; i < sizeof(kDrawLists)/sizeof(kDrawLists[0]); i++)
         app(" [%u:+%02x]=%lu", i, kDrawLists[i], g_i60.vc_per_list[i]);

@@ -30,6 +30,11 @@ struct Interp60Dbg {
     int   blend   = 1;     // (mode 1 only) 0 = re-present tick N unblended
     int   perturb = 0;     // 1 = GROSS offset instead of blend (perturbation test):
                            //     mode 1 = +offset draw mtx; mode 2 = +offset the camera
+    int   shadow_blend = 0;// 1 = interpolate gpMarioPos for the in-between (projected shadow);
+                           //     off by default (it made the marukage blink faster, not better).
+    unsigned list_mask = 0x3F;  // which kDrawLists[] indices to RE-ISSUE on the in-between field
+                           //     (bit i = list i). Bisection knob for the shadow/water blink:
+                           //     clear a bit to stop re-drawing that pass on the in-between.
 
     // ── observations (engine writes, probe reads) ──
     // redraw insertion
@@ -93,6 +98,11 @@ struct Interp60Dbg {
     int   is_cut = 0;                             // view jumped this frame -> skip the in-between blend
     unsigned long cuts = 0;                       // cut count (diagnostic)
     unsigned long base_blended = 0;              // world bases blended last redraw (diagnostic)
+    // gpMarioPos shadow-projection interpolation (interp_redraw.cpp): the resolved Vec*,
+    // tick-N position, and the N-1->N delta the in-between blends. mario_vec==0 ⇒ the SDA
+    // resolve failed and the shadow blend is a no-op.
+    u32 mario_vec = 0; float mario_x = 0, mario_y = 0, mario_z = 0;
+    float mario_dx = 0, mario_dy = 0, mario_dz = 0;
 };
 extern Interp60Dbg g_i60;
 

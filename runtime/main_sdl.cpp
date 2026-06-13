@@ -876,15 +876,20 @@ int main(int argc, char* argv[]) {
     // no async FIFO to drain or pace against. See MAIN_SYNC_GPU=false above.)
 
     // ── Graphics quality ────────────────────────────────────────────────────
-    // Internal resolution scale (SUNBRIGHT_RES_SCALE; default 3× windowed, 1× headless).
+    // Internal resolution scale (SUNBRIGHT_RES_SCALE; default 2× windowed = 1080p, 1× headless).
+    // EFB scale is an integer multiplier of native 640×528: 2× = 1280×1056 (Dolphin's own
+    // "for 1080p" tier), the visible XFB then = 1280×896 upscaled to the window. Default was 3×
+    // (1920×1344) which, fullscreen on a 4K panel, renders ~1.3k lines and blits to 2160p — heavy
+    // enough to mask the 60fps interpolation. 2× is the 1080p sweet spot for the in-between redraw.
     // Headless raster cost at 3× halves throughput (A/B 2026-06-10: 8.2 vs 3.7 XFB frames/s at
     // file select) and nobody sees the pixels except frame dumps — CI/diagnosis wants speed.
     {
         const char* rs = getenv("SUNBRIGHT_RES_SCALE");
-        int scale = rs ? atoi(rs) : (headless ? 1 : 3);
+        int scale = rs ? atoi(rs) : (headless ? 1 : 2);
         if (scale < 1) scale = 1;
         Config::SetBase(Config::GFX_EFB_SCALE, scale);
-        fprintf(stderr, "[sunbright] Internal resolution scale: %d×\n", scale);
+        fprintf(stderr, "[sunbright] Internal resolution scale: %d× (%d×%d internal)\n",
+                scale, 640 * scale, 528 * scale);
     }
     // Shader compilation (user-directed: NO ubershaders): synchronous specialized shaders +
     // persistent per-game pipeline cache + boot-time precompile of every cached pipeline.
