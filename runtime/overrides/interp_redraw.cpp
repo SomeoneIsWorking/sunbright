@@ -180,15 +180,14 @@ SUNBRIGHT_OVERRIDE(ov_interp_endRendering, DISPLAY_END_RENDER) {
     g_i60.mardir = g_mardir;
     g_i60.gfx_valid = g_gfx_valid;
 
-    // Insert the in-between field for a fresh 2-field gameplay frame drawn by TMarDirector.
-    // The render-only replay path does NOT need the TGraphics snapshot (g_gfx_valid) — that was
-    // the old mutating path's requirement; it only needs a captured GX stream (checked below).
-    // Dropping g_gfx_valid here lets the early scene-load frames interpolate too (was 9 boot
-    // skips). 1-field scenes (60 fps menus) present every field already (wait != 2).
-    const bool room = (sunbright_interp60() || sunbright_interp60_replay()) && !interp60_nosynth() && fresh && g_mardir && wait == 2;
+    // Insert the in-between field only for a fresh 2-field gameplay frame drawn by
+    // TMarDirector with a valid TGraphics snapshot. 1-field scenes (60 fps menus)
+    // present every field already.
+    const bool room = (sunbright_interp60() || sunbright_interp60_replay()) && !interp60_nosynth() && fresh && g_mardir && g_gfx_valid && wait == 2;
     if (!room) {
         if (sunbright_interp60() && fresh && wait != 2) g_i60.skip_rate++;
         if (sunbright_interp60() && fresh && !g_mardir)  g_i60.skip_nodir++;
+        if (sunbright_interp60() && fresh && !g_gfx_valid) g_i60.skip_full++;
         // No in-between this frame: hand presentation back to Dolphin's automatic VI path.
         g_sb_own_present = 0;
         func_802f80d0(cpu);
@@ -224,20 +223,10 @@ SUNBRIGHT_OVERRIDE(ov_interp_endRendering, DISPLAY_END_RENDER) {
         const bool own = own_present_enabled();
         const u32 orig_phys = orig_fb & 0x3FFFFFFFu;
         const u32 alt_phys  = alt     & 0x3FFFFFFFu;
+        if (own) g_sb_own_present = 1;
         // Snapshot frame N's captured command stream NOW — the first-half copy below does a
         // GXCopyDisp that triggers gxs_frame_boundary and clears g_frame.
         std::vector<u8> frameN(gxs_cur_frame());
-        // No captured stream to replay (the very first frame of a scene — nothing to
-        // interpolate yet): present the single real frame via Dolphin's auto path. This is the
-        // one genuinely-unavoidable real-only frame, not a fixable skip.
-        if (frameN.empty()) {
-            g_sb_own_present = 0;
-            g_i60.skip_full++;
-            MEM_W16(display + 0x4C, wait);
-            cpu.gpr[3] = display; func_802f80d0(cpu);
-            return;
-        }
-        if (own) g_sb_own_present = 1;
         // Build the cur->prev pos-matrix map BEFORE the first copy: the copy's GXCopyDisp boundary
         // swaps frame N into gxs_prev_frame_info(), so doing this after would pair N with itself
         // (nothing to interpolate). Now gxs_prev_frame_info() is still frame N-1. Arms the
