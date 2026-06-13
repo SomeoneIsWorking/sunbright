@@ -189,17 +189,31 @@ static std::unordered_map<u32, u32> g_xfmap;   // cur pos-matrix base (phys) -> 
 static std::unordered_set<u32> g_prev_registry; // models present LAST frame (have a valid N-1 buffer)
 static bool  g_xf_active = false;
 static float g_xf_alpha  = 0.5f;
+// DBG_XF classification: every registered model's [1][v] (should be loaded by shapes) and [0][v]
+// (the prev buffers) bases, so a miss can be tagged registered-[1] / registered-[0] / unknown.
+static std::unordered_set<u32> g_dbg_d1, g_dbg_d0;
 
 extern "C" void interp60_xfmap_build(const u8* frame, u32 n, float alpha) {
     g_xfmap.clear();
     g_xf_alpha = alpha;
     g_xf_active = true;
     g_i60.xf_hits = 0; g_i60.xf_misses = 0;
+    const bool dbg = getenv("SUNBRIGHT_DBG_XF") != nullptr;
+    if (dbg) { g_dbg_d1.clear(); g_dbg_d0.clear(); }
     std::unordered_set<u32> seen;   // this frame's models, to carry into g_prev_registry
     // Build the identity map from the model registry (every model the real field's viewCalc saw).
     for (u32 model : g_registry) {
         if (!ok_ram(model)) continue;
         seen.insert(model);
+        if (dbg) {   // record ALL registered models' view bases (both buffers) for miss classification
+            const u32 a0 = mem_r32(model + 0x60), a1 = mem_r32(model + 0x64);
+            if (ok_ram(a0) && ok_ram(a1))
+                for (u32 v = 0; v < 16; v++) {
+                    const u32 c = mem_r32(a1 + 4 * v), p = mem_r32(a0 + 4 * v);
+                    if (!ok_ram(c) || (c & 0x1F) || !ok_ram(p) || (p & 0x1F)) break;
+                    g_dbg_d1.insert(c & 0x03FFFFFFu); g_dbg_d0.insert(p & 0x03FFFFFFu);
+                }
+        }
         // A model that wasn't drawn LAST frame has no tick-N-1 draw matrices: its mDrawMtxBuf[0]
         // is uninitialized (or holds a previous tenant's matrices from the heap). Interpolating
         // tick N against that garbage explodes the object for one field. Only interpolate models
@@ -207,16 +221,27 @@ extern "C" void interp60_xfmap_build(const u8* frame, u32 n, float alpha) {
         // second frame, when a real N-1 exists. (Not a magnitude threshold: a definitional gate —
         // no N-1 data exists, so there is nothing to interpolate.)
         if (!g_prev_registry.count(model)) continue;
-        const u32 view = mem_r32(model + 0x7C);            // mCurrentViewNo
-        if (view > 16) continue;
-        const u32 d0a = mem_r32(model + 0x60), d1a = mem_r32(model + 0x64);   // mDrawMtxBuf[0],[1]
+        const u32 d0a = mem_r32(model + 0x60), d1a = mem_r32(model + 0x64);   // mDrawMtxBuf[0],[1] (Mtx**)
         if (!ok_ram(d0a) || !ok_ram(d1a)) continue;
-        const u32 cur  = mem_r32(d1a + 4 * view);          // tick N   (GX loads this base)
-        const u32 prev = mem_r32(d0a + 4 * view);          // tick N-1
-        if (!ok_ram(cur) || !ok_ram(prev)) continue;
-        if ((cur & 0x1F) || (prev & 0x1F)) continue;       // draw-matrix arrays are 0x20-aligned
-        if (cur == prev) continue;                         // single-buffered: nothing to interpolate
-        g_xfmap[cur & 0x03FFFFFFu] = prev & 0x03FFFFFFu;
+        // SMS draws a model under several VIEWS (main camera, reflections, …) and double-buffers the
+        // draw matrices: the two pointers a=[0][v], b=[1][v] are swapped every frame by swapDrawMtx,
+        // so at any instant {a,b} = {this frame's buffer, last frame's buffer}. WHICH of the two the
+        // GX stream actually loads has MIXED phase across objects (empirically ~90% load [0], the
+        // rest [1]) — the number of swaps a model gets per frame varies (multi-pass / multi-view), so
+        // it cannot be predicted from mDrawMtxBuf[1]/mCurrentViewNo at build time. So map BOTH
+        // directions a<->b: whichever buffer the stream loads is the current frame, and the map
+        // resolves to the OTHER buffer = the previous frame (lerp toward the loaded = current is
+        // correct for any alpha). Both bases belong to the same model+view, so there is no
+        // cross-object risk. Iterate all views; stop at the first non-heap-matrix slot (the Mtx**
+        // array is contiguous 0..param_3-1, so this is exactly the view count, no OOB skip).
+        for (u32 v = 0; v < 16; v++) {
+            const u32 a = mem_r32(d0a + 4 * v), b = mem_r32(d1a + 4 * v);   // the two double-buffers
+            if (!ok_ram(a) || (a & 0x1F)) break;           // end of the valid view array
+            if (!ok_ram(b) || (b & 0x1F)) break;
+            if (a == b) continue;                          // single-buffered for this view
+            g_xfmap[b & 0x03FFFFFFu] = a & 0x03FFFFFFu;     // stream loaded [1] -> prev is [0]
+            g_xfmap[a & 0x03FFFFFFu] = b & 0x03FFFFFFu;     // stream loaded [0] -> prev is [1]
+        }
     }
     g_prev_registry.swap(seen);   // this frame's models become next frame's "present last frame"
     g_i60.xf_map_size = (unsigned long)g_xfmap.size();
@@ -249,7 +274,20 @@ extern "C" bool sb_hook_xf_indexed(u32 array, u32 base, u32 stride, u32 index, u
                              array, base & 0x03FFFFFFu, stride, index, size);
     }
     auto it = g_xfmap.find(base & 0x03FFFFFFu);
-    if (it == g_xfmap.end()) { g_i60.xf_misses++; return false; }   // not paired (static / new object)
+    if (it == g_xfmap.end()) {                                       // not paired (static / new object)
+        g_i60.xf_misses++;
+        if (dbg) {   // classify distinct miss bases: registered-[1] / registered-[0] / unknown owner
+            static std::unordered_set<u32> seen;
+            const u32 b = base & 0x03FFFFFFu;
+            if (seen.insert(b).second && seen.size() <= 40) {
+                const char* cls = g_dbg_d1.count(b) ? "REG[1]-mapbug"
+                                : g_dbg_d0.count(b) ? "REG[0]-phase"
+                                : "UNKNOWN-owner";
+                fprintf(stderr, "[xf-miss] base=%06x stride=%u size=%u  %s\n", b, stride, size, cls);
+            }
+        }
+        return false;
+    }
     g_i60.xf_hits++;
     const u32 cur_addr  = ((base & 0x03FFFFFFu) | 0x80000000u) + stride * index;   // guest tick N
     const u32 prev_addr = (it->second           | 0x80000000u) + stride * index;   // guest tick N-1
