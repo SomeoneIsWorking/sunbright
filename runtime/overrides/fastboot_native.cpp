@@ -234,14 +234,36 @@ void do_transition(CPUState& cpu) {
         cpu.gpr[3] = fm; cpu.gpr[4] = 0x40003; cpu.gpr[5] = 0; super(cpu, FM_SET_FLAG);
     }
 
+    // Debug room: boot straight into an arbitrary stage/scenario instead of Delfino Plaza.
+    // SUNBRIGHT_DEBUGROOM=1 picks the first SECRET (_ex) stage — index 0x15 (the lowest of the
+    // ex range 0x15..0x34, per SMS_getShineIDofExStage); those are the "Mario + abstract platforms
+    // in a void" rooms with NO NPCs/enemies, i.e. only Mario casting a shadow. SUNBRIGHT_STAGE /
+    // SUNBRIGHT_SCENARIO (decimal or 0x..) override the index pair explicitly for sweeping rooms.
+    // When a debug stage is forced we skip the Delfino-specific decideNextScenario.
+    u32 stage = 1;
+    const char* es = getenv("SUNBRIGHT_STAGE");
+    bool debug_room = false;
+    if (es) {
+        stage = (u32)strtoul(es, nullptr, 0);
+        const char* sc = getenv("SUNBRIGHT_SCENARIO");
+        scenario = sc ? (u32)strtoul(sc, nullptr, 0) : 0;
+        debug_room = true;
+    } else if (getenv("SUNBRIGHT_DEBUGROOM")) {
+        stage = 0x15; scenario = 0; debug_room = true;
+    }
+
     // TCardLoad PROGRESS_UNK1B + setNextStage(1): File 1 active, next area = Delfino Plaza.
     mem_w8 (GPAPPLICATION + 0x38, (u8)file);      // mSaveFile
-    mem_w8 (GPAPPLICATION + 0x12, 1);             // mNextArea.stage
+    mem_w8 (GPAPPLICATION + 0x12, (u8)stage);     // mNextArea.stage
     mem_w8 (GPAPPLICATION + 0x13, (u8)scenario);  // mNextArea.scenario (resolved episode)
     mem_w16(GPAPPLICATION + 0x14, 0);             // mNextArea.flags
 
-    fprintf(stderr, "[fastboot] %s File 1 → Delfino Plaza (stage 1, episode %u)\n",
-            have_save ? "loaded save" : "blank save (firstStart)", scenario);
+    if (debug_room)
+        fprintf(stderr, "[fastboot] DEBUG ROOM → stage %u (0x%x) scenario %u%s\n",
+                stage, stage, scenario, (stage >= 0x15 && stage < 0x35) ? " [secret/Mario-only]" : "");
+    else
+        fprintf(stderr, "[fastboot] %s File 1 → Delfino Plaza (stage 1, episode %u)\n",
+                have_save ? "loaded save" : "blank save (firstStart)", scenario);
 }
 
 }  // namespace
