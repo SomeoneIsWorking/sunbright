@@ -83,6 +83,17 @@ u32 g_mardir = 0;                 // TMarDirector* seen by the last direct()
 unsigned long g_direct_stamp = 0, g_consumed_stamp = 0;
 
 extern "C" void func_80299838(CPUState&);   // TMarDirector::direct
+// Owned present (interp60): the runtime drives scan-out itself for a deterministic R,B,R,B
+// cadence — Dolphin's auto per-field present is gated off (g_sb_own_present), and we call
+// sb_present_xfb(phys_addr) exactly twice per game tick (real, in-between). This removes all
+// dependence on Dolphin's VI field parity/phase + the progressive even-field offset (RRBB, H5).
+extern "C" volatile int g_sb_own_present;       // Present.cpp (fork)
+extern "C" void sb_present_xfb(unsigned xfb_addr);   // Present.cpp (fork) — present phys addr now
+static bool own_present_enabled() {
+    static int v = -1;
+    if (v < 0) v = getenv("SUNBRIGHT_NO_OWN_PRESENT") ? 0 : 1;  // default ON for interp60
+    return v == 1;
+}
 extern "C" void sb_efb_native_begin_inbetween();   // efb_native.cpp — per-field EFB-copy redirect
 extern "C" void sb_efb_native_end_inbetween();
 extern "C" void func_802f80d0(CPUState&);   // TDisplay::endRendering
@@ -177,6 +188,8 @@ SUNBRIGHT_OVERRIDE(ov_interp_endRendering, DISPLAY_END_RENDER) {
         if (sunbright_interp60() && fresh && wait != 2) g_i60.skip_rate++;
         if (sunbright_interp60() && fresh && !g_mardir)  g_i60.skip_nodir++;
         if (sunbright_interp60() && fresh && !g_gfx_valid) g_i60.skip_full++;
+        // No in-between this frame: hand presentation back to Dolphin's automatic VI path.
+        g_sb_own_present = 0;
         func_802f80d0(cpu);
         return;
     }
@@ -201,6 +214,16 @@ SUNBRIGHT_OVERRIDE(ov_interp_endRendering, DISPLAY_END_RENDER) {
     // Fires for EITHER flag: SUNBRIGHT_INTERP60 (run60) now uses the render-only replay, so the old
     // mutating path below is unreachable (kept transiently for A/B; to be deleted).
     if (sunbright_interp60() || sunbright_interp60_replay()) {
+        // OWN the present (default): the runtime scans out both frames itself for a deterministic
+        // R,B,R,B cadence. Dolphin's automatic per-field present is gated off; we call
+        // sb_present_xfb(phys) once after the real copy and once after the in-between copy. This
+        // removes the RRBB doublings that came from Dolphin's VI field parity/phase + the
+        // progressive even-field address offset (hazard H5). Addresses are physical (GXCopyDisp's
+        // dest form, addr & 0x3FFFFFFF) — what the XFB texture cache is keyed by.
+        const bool own = own_present_enabled();
+        const u32 orig_phys = orig_fb & 0x3FFFFFFFu;
+        const u32 alt_phys  = alt     & 0x3FFFFFFFu;
+        if (own) g_sb_own_present = 1;
         // Snapshot frame N's captured command stream NOW — the first-half copy below does a
         // GXCopyDisp that triggers gxs_frame_boundary and clears g_frame.
         std::vector<u8> frameN(gxs_cur_frame());
@@ -210,8 +233,9 @@ SUNBRIGHT_OVERRIDE(ov_interp_endRendering, DISPLAY_END_RENDER) {
         // LoadIndexedXF hook to lerp(N-1,N) into XF — render-only, no game memory written.
         interp60_xfmap_build(frameN.data(), (u32)frameN.size(), g_i60.alpha);
         MEM_W16(display + 0x4C, 1);
-        cpu.gpr[3] = display; func_802f80d0(cpu);          // present REAL frame N to the game XFB
+        cpu.gpr[3] = display; func_802f80d0(cpu);          // pace 1 field + copy REAL frame N → orig
         if (g_gfx) g_gfx->Flush();
+        if (own) sb_present_xfb(orig_phys);                // R: present the real frame now
         const u32 video = MEM_R32(display + 0x60);
         cpu.gpr[3] = video; cpu.gpr[4] = alt; call_ppc(cpu, VIDEO_SET_NEXT_XFB);   // in-between → ALT
         g_i60.disp = display; g_i60.set_fb = alt;
@@ -223,9 +247,10 @@ SUNBRIGHT_OVERRIDE(ov_interp_endRendering, DISPLAY_END_RENDER) {
         const u32 ob0 = MEM_R32(display + 4), ob1 = MEM_R32(display + 8);
         MEM_W32(display + 4, alt); MEM_W32(display + 8, alt);   // steer the copy dest to ALT
         MEM_W16(display + 0x4C, 1);
-        cpu.gpr[3] = display; func_802f80d0(cpu);          // copy replayed EFB → ALT and present it
+        cpu.gpr[3] = display; func_802f80d0(cpu);          // pace 1 field + copy replayed EFB → ALT
         MEM_W32(display + 4, ob0); MEM_W32(display + 8, ob1);
         MEM_W16(display + 0x4C, wait);
+        if (own) sb_present_xfb(alt_phys);                 // B: present the in-between now
         g_i60.redraws++;
         return;
     }   // distinct low26, 32-aligned, within MEM1
@@ -561,6 +586,10 @@ int interp60_probe(char* out, int cap, const char* query) {
         const unsigned long alt = g_sb_cadence_alt, dbl = g_sb_cadence_dbl, tot = alt + dbl;
         app("CADENCE (lifetime, no readback): alt=%lu doublings=%lu  doubling-rate=%.1f%%  (0%% = clean 60fps R,B,R,B)\n",
             alt, dbl, tot ? 100.0 * dbl / tot : 0.0);
+        extern volatile unsigned long g_sb_ownpres_manual, g_sb_ownpres_gated, g_sb_ownpres_auto;
+        extern volatile unsigned g_sb_ownpres_last;
+        app("OWN-PRESENT: active=%d  manual=%lu gated-fields=%lu auto-presents=%lu  last_manual=%08x\n",
+            g_sb_own_present, g_sb_ownpres_manual, g_sb_ownpres_gated, g_sb_ownpres_auto, g_sb_ownpres_last);
     }
     app("RENDER VOLUME of in-between field: gx_bytes=%llu runs=%lu  %s\n",
         g_i60.redraw_gx_bytes, g_i60.redraw_gx_runs,

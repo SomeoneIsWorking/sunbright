@@ -37,6 +37,7 @@
 
 bool sunbright_time_ahead_now();   // governor query (dolphin_hook.cpp)
 bool sunbright_drawsync_recover(CPUState&);  // lost-token recovery (sms_drawsync_native.cpp)
+extern "C" void native_vi_reassert();  // native_vi2.cpp — re-assert the 60fps field-split
 
 namespace {
 
@@ -85,6 +86,11 @@ void apply_flush(CPUState& cpu) {
     sb_w32(FLUSH_FLAG, 0);
     sb_w32(0x8040E910u, sb_r32(0x8040340Cu));
     sb_w32(0x8040E914u, sb_r32(0x804033E0u));
+    // 60fps interp: the guest just programmed both FBB regs to a SINGLE XFB address
+    // (single-buffer). Re-assert the native field-split (top=real/bottom=in-between) so
+    // odd/even VI fields scan distinct buffers — clean R,B,R,B cadence (native_vi2.cpp).
+    // No-op unless SUNBRIGHT_NATIVE_VI and a pair is active.
+    native_vi_reassert();
     guest_call(cpu, SI_REFRESH);
 }
 

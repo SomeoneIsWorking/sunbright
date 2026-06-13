@@ -100,10 +100,18 @@ bool native_vi_enabled() {
 struct NativeViDbg {
     unsigned long pairs = 0;          // field-pairs programmed
     unsigned long single = 0;         // single-address programs (real-only frames)
+    unsigned long reasserts = 0;      // re-applies after a guest apply_flush clobber
     uint32_t last_top = 0, last_bot = 0;
     uint32_t last_orig = 0, last_alt = 0;
     unsigned long fields = 0;
 } g_nvi;
+
+// The currently-active field-split. The guest VI library re-programs the FBB regs (both
+// top and bottom to the SAME address) on every present via apply_flush (sms_vi_native.cpp);
+// without continuous re-assertion that clobbers our split back to single-buffer aliasing.
+// active != 0 ⇒ apply_flush re-asserts top=g_orig / bottom=g_alt after its shadow apply.
+bool     g_split_active = false;
+uint32_t g_split_orig = 0, g_split_alt = 0;
 
 // Encode a 32-aligned guest XFB virtual address into the VI FBB register pair the
 // way the GC VI library does (vi.c calcFbbs/setFbbRegs): physical = addr & 0x3FFFFFFF,
@@ -143,6 +151,7 @@ extern "C" void native_vi_set_field_pair(uint32_t orig, uint32_t alt) {
     g_nvi.last_top = orig; g_nvi.last_bot = alt;
     g_nvi.last_orig = orig; g_nvi.last_alt = alt;
     g_nvi.pairs++;
+    g_split_active = true; g_split_orig = orig; g_split_alt = alt;
 }
 
 // A frame with no in-between: scan the single real address on BOTH fields so the next
@@ -153,6 +162,19 @@ extern "C" void native_vi_set_single(uint32_t orig) {
     program_fbb(VI_FB_LEFT_BOT_HI, VI_FB_LEFT_BOT_LO, orig);
     g_nvi.last_top = g_nvi.last_bot = orig;
     g_nvi.single++;
+    g_split_active = false;
+}
+
+// Re-assert the active field-split into the VI MMIO. Called from sms_vi_native.cpp's
+// apply_flush AFTER it copies the guest shadow regs (which programmed top==bottom) so the
+// split survives the guest's single-buffer FBB write — this is what owns the clean R,B,R,B
+// cadence regardless of present-vs-field timing (hazard H5). No-op unless a pair is active.
+extern "C" void native_vi_reassert() {
+    if (!native_vi_enabled() || !g_split_active) return;
+    program_fbb(VI_FB_LEFT_TOP_HI, VI_FB_LEFT_TOP_LO, g_split_orig);   // odd field  -> real
+    program_fbb(VI_FB_LEFT_BOT_HI, VI_FB_LEFT_BOT_LO, g_split_alt);    // even field -> in-between
+    g_nvi.last_top = g_split_orig; g_nvi.last_bot = g_split_alt;
+    g_nvi.reasserts++;
 }
 
 extern "C" void native_vi_note_field() { if (native_vi_enabled()) g_nvi.fields++; }
@@ -162,8 +184,8 @@ extern "C" bool native_vi_active() { return native_vi_enabled(); }
 extern "C" int native_vi_probe(char* out, int cap, const char* /*query*/) {
     int n = 0;
     auto app = [&](const char* fmt, auto... a){ if (n < cap) n += snprintf(out+n, cap-n, fmt, a...); };
-    app("native_vi enabled=%d\n", (int)native_vi_enabled());
-    app("pairs=%lu single=%lu fields=%lu\n", g_nvi.pairs, g_nvi.single, g_nvi.fields);
+    app("native_vi enabled=%d  split_active=%d\n", (int)native_vi_enabled(), (int)g_split_active);
+    app("pairs=%lu single=%lu reasserts=%lu fields=%lu\n", g_nvi.pairs, g_nvi.single, g_nvi.reasserts, g_nvi.fields);
     app("last programmed: top(odd)=%08x bottom(even)=%08x  (orig=%08x alt=%08x)\n",
         g_nvi.last_top, g_nvi.last_bot, g_nvi.last_orig, g_nvi.last_alt);
     app("live VI FBB regs: top=%08x bottom=%08x  %s\n",
@@ -179,6 +201,7 @@ extern "C" int native_vi_probe(char* out, int cap, const char* /*query*/) {
 
 extern "C" void native_vi_set_field_pair(uint32_t, uint32_t) {}
 extern "C" void native_vi_set_single(uint32_t) {}
+extern "C" void native_vi_reassert() {}
 extern "C" void native_vi_note_field() {}
 extern "C" bool native_vi_active() { return false; }
 extern "C" int  native_vi_probe(char* out, int cap, const char*) {

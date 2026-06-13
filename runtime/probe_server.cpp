@@ -72,6 +72,7 @@ extern "C" void sb_trace(const char* tag, uint32_t a, uint32_t b, uint32_t c, ui
 
 extern "C" int njas_probe(char* out, int cap);
 int interp60_probe(char* out, int cap, const char* query);   // runtime/interp60.h
+extern "C" int native_vi_probe(char* out, int cap, const char* query);  // native_vi2.cpp
 void gxs_frametime_reset();                                   // runtime/gx_stream.h
 void gxs_frametime_stats(unsigned long*, double*, double*, double*, double*);
 void gxs_frametime_decode(double*, double*);
@@ -281,6 +282,11 @@ std::string handle_repl(const char* path) {
         // 60 fps interpolation data path: counters + the does-the-blend-reach-the-GPU
         // cross-check + live A/B controls (?alpha=<f> ?blend=<0|1> ?perturb=<0|1>).
         n += interp60_probe(buf + n, (int)sizeof(buf) - n, path);
+        return std::string(buf, n);
+    }
+    if (strncmp(path, "/nativevi", 9) == 0) {
+        // Native VI scan-out field-split accounting (pairs/single/reasserts, live top/bottom FBB).
+        n += native_vi_probe(buf + n, (int)sizeof(buf) - n, path);
         return std::string(buf, n);
     }
     if (strncmp(path, "/njas", 5) == 0) {
