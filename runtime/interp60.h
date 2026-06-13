@@ -18,11 +18,15 @@ bool sunbright_interp60();
 struct Interp60Dbg {
     // ── controls (settable live: /interp60?alpha=..&mode=..&perturb=..) ──
     float alpha   = 0.5f;  // blend toward N: 0 = tick N-1, 1 = tick N. 0.5 = midpoint.
-    int   mode    = 2;     // 0 = passthrough (present N twice, no interp)
-                           // 1 = buffer-blend: post-blend per-model draw matrices (only
-                           //     reaches the ~14 models that run J3DModel::viewCalc)
+    int   mode    = 3;     // 0 = passthrough (present N twice, no interp)
+                           // 1 = buffer-blend in the redraw's viewCalc (reaches only the
+                           //     ~14 models whose viewCalc fires DURING the draw pass)
                            // 2 = view-blend: interpolate the CAMERA (j3dSys view matrix)
-                           //     and let viewCalc recompute — reaches all recomputed geom
+                           //     and let viewCalc recompute — reaches only those ~14 too
+                           // 3 = registry buffer-blend: record EVERY model from the real
+                           //     field's viewCalc (runs for all models), then blend each
+                           //     one's draw-matrix double-buffer on the in-between field —
+                           //     reaches the whole scene (object + camera). THE FIX.
     int   blend   = 1;     // (mode 1 only) 0 = re-present tick N unblended
     int   perturb = 0;     // 1 = GROSS offset instead of blend (perturbation test):
                            //     mode 1 = +offset draw mtx; mode 2 = +offset the camera
@@ -69,6 +73,8 @@ struct Interp60Dbg {
     u32 track_pkt = 0, track_unk18 = 0, track_unk18_view = 0, track_view = 0;
 
     // ── view-blend (mode 2) instrumentation ──
+    unsigned long vc_realfield = 0;       // viewCalc calls on REAL fields (≈ all models)
+    unsigned long reg_size = 0;           // models recorded in the registry last frame
     unsigned long setviewmtx_calls = 0;   // TJ3DSysSetViewMtx::perform during redraw
     float view_dx = 0, view_dy = 0, view_dz = 0;  // camera translation delta N-1 -> N
     float view_x = 0, view_y = 0, view_z = 0;     // absolute view translation (sanity)

@@ -59,6 +59,8 @@ bool sunbright_interp60() {
 bool g_interp60_in_redraw = false;
 void interp60_restore_after_redraw();   // interp_capture.cpp
 void interp60_take_motion();            // interp_capture.cpp
+void interp60_registry_clear();         // interp_capture.cpp
+void interp60_blend_registry();         // interp_capture.cpp
 
 namespace {
 
@@ -94,7 +96,8 @@ SUNBRIGHT_OVERRIDE(ov_interp_setviewmtx, 0x80296a50u) {
 
 SUNBRIGHT_OVERRIDE(ov_interp_mardir_direct, MARDIR_DIRECT) {
     g_mardir = cpu.gpr[3];
-    func_80299838(cpu);
+    if (g_i60.mode == 3) interp60_registry_clear();   // start a fresh model registry
+    func_80299838(cpu);                                // populates it via real-field viewCalc
     g_direct_stamp++;
 }
 
@@ -189,6 +192,10 @@ SUNBRIGHT_OVERRIDE(ov_interp_endRendering, DISPLAY_END_RENDER) {
     const unsigned long      runs0  = gxs_decode_runs();
 
     g_interp60_in_redraw = true;
+    // mode 3: blend EVERY registered model's draw-matrix double-buffer toward N-1
+    // before the draw lists re-issue (the viewCalc override skips recompute in this
+    // mode so the blend survives). This is what reaches the whole scene.
+    if (g_i60.mode == 3) interp60_blend_registry();
     for (u32 li = 0; li < sizeof(kDrawLists) / sizeof(kDrawLists[0]); li++) {
         const u32 list = MEM_R32(g_mardir + kDrawLists[li]);
         if (!list) continue;
@@ -274,8 +281,8 @@ int interp60_probe(char* out, int cap, const char* query) {
 
     int n = 0;
     auto app = [&](const char* fmt, auto... a){ if (n < cap) n += snprintf(out+n, cap-n, fmt, a...); };
-    const char* mname = g_i60.mode == 0 ? "passthrough" : g_i60.mode == 1 ? "buffer-blend" :
-                        g_i60.mode == 2 ? "view-blend(camera)" : "?";
+    const char* mname = g_i60.mode == 0 ? "passthrough" : g_i60.mode == 1 ? "buffer-blend(redraw-viewCalc)" :
+                        g_i60.mode == 2 ? "view-blend(camera)" : g_i60.mode == 3 ? "registry-blend(scene-wide)" : "?";
     app("interp60 enabled=%d  mode=%d(%s) alpha=%.3f blend=%d perturb=%d\n",
         (int)sunbright_interp60(), g_i60.mode, mname, g_i60.alpha, g_i60.blend, g_i60.perturb);
     app("CAMERA: view abs=(%.2f,%.2f,%.2f) snaps=%lu\n", g_i60.view_x, g_i60.view_y, g_i60.view_z, g_i60.view_snaps);
@@ -287,8 +294,9 @@ int interp60_probe(char* out, int cap, const char* query) {
     app("redraws=%lu  skips(rate=%lu nodir=%lu full=%lu)  mardir=%08x gfx_valid=%d\n",
         g_i60.redraws, g_i60.skip_rate, g_i60.skip_nodir, g_i60.skip_full,
         g_i60.mardir, g_i60.gfx_valid);
-    app("last redraw: viewCalc calls=%lu blended=%lu bail(null=%lu single=%lu)\n",
-        g_i60.vc_calls, g_i60.vc_blended, g_i60.vc_bail_null, g_i60.vc_bail_single);
+    app("registry(mode3): real-field viewCalc=%lu  models=%lu  blended=%lu bail(null=%lu single=%lu)\n",
+        g_i60.vc_realfield, g_i60.reg_size, g_i60.vc_blended, g_i60.vc_bail_null, g_i60.vc_bail_single);
+    app("redraw viewCalc calls=%lu\n", g_i60.vc_calls);
     app("  per-list viewCalc:");
     for (u32 i = 0; i < sizeof(kDrawLists)/sizeof(kDrawLists[0]); i++)
         app(" [%u:+%02x]=%lu", i, kDrawLists[i], g_i60.vc_per_list[i]);

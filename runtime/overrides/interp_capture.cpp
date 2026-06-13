@@ -28,11 +28,19 @@
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
+#include <unordered_set>
 
 // 60 fps redraw window state (defined in interp_redraw.cpp).
 extern bool g_interp60_in_redraw;
 
 namespace {
+
+// mode 3 registry: every J3DModel seen by the real field's viewCalc this frame.
+// viewCalc runs once per model per frame (in the calc OR draw pass), so this is
+// the full set of live models — and each one's mDrawMtxBuf double-buffer holds
+// tick N-1 ([0][view]) and N ([1][view]) regardless of which pass computed it.
+std::vector<u32> g_registry;
+std::unordered_set<u32> g_blended_set;   // dedup blended buffers within one redraw
 
 // A translation jump beyond this distance between N-1 and N means a cut/respawn
 // — draw tick N exactly rather than smear across the discontinuity.
@@ -51,16 +59,25 @@ double g_move_min = 1e30, g_move_max = 0, g_move_sum = 0; unsigned long g_move_n
 // Produce the in-between draw matrices for one model into mDrawMtxBuf[1][view]
 // (the buffer the shape packets load). Saves the N contents for
 // interp60_restore_after_redraw(). No guest call, no buffer swap.
+inline bool ok_ram(u32 a) { return a >= 0x80000000u && a < 0x81800000u; }
+
 bool blend_model(u32 model) {
+    if (!ok_ram(model)) { g_i60.vc_bail_null++; return false; }
     const u32 data = mem_r32(model + 0x04);
     const u32 view = mem_r32(model + 0x7C);
-    const u32 n    = data ? mem_r16(data + 0x98) : 0;     // J3DDrawMtxData.mEntryNum
+    if (!ok_ram(data) || view > 16) { g_i60.vc_bail_null++; return false; }
+    const u32 n   = mem_r16(data + 0x98);                 // J3DDrawMtxData.mEntryNum
     const u32 d0a = mem_r32(model + 0x60), d1a = mem_r32(model + 0x64);
-    if (!n || n > 512 || !d0a || !d1a) { g_i60.vc_bail_null++; return false; }
+    if (!n || n > 512 || !ok_ram(d0a) || !ok_ram(d1a)) { g_i60.vc_bail_null++; return false; }
     const u32 prev = mem_r32(d0a + 4 * view);             // tick N-1
     const u32 cur  = mem_r32(d1a + 4 * view);             // tick N (shapes load this)
-    if (!prev || !cur) { g_i60.vc_bail_null++; return false; }
+    // Matrix arrays are 0x20-aligned (new (0x20) Mtx[...]); reject anything that
+    // isn't a plausible aligned heap matrix buffer — a bad write here corrupts a
+    // pointer and faults later in the draw (RE'd: wild read of a float bit-pattern).
+    if (!ok_ram(prev) || !ok_ram(cur) || (prev & 0x1F) || (cur & 0x1F)) { g_i60.vc_bail_null++; return false; }
+    if (!ok_ram(cur + n * 48 - 1)) { g_i60.vc_bail_null++; return false; }   // whole array in RAM
     if (prev == cur)   { g_i60.vc_bail_single++; return false; } // single-buffered: no N-1
+    if (!g_blended_set.insert(cur).second) return false;         // already blended this redraw
 
     // motion sample (pre-blend): mean squared translation delta over all joints.
     double moved = 0;
@@ -136,6 +153,20 @@ void interp60_restore_after_redraw() {
     for (Saved& s : g_restore)
         for (size_t i = 0; i < s.f.size(); i++) mem_wf32(s.addr + (u32)i * 4, s.f[i]);
     g_restore.clear();
+    g_blended_set.clear();
+}
+
+// mode 3: clear the registry at the start of a real frame (TMarDirector::direct).
+void interp60_registry_clear() { g_registry.clear(); }
+
+// mode 3: blend every registered model's draw-matrix double-buffer toward N-1.
+// Called on the in-between field BEFORE re-issuing the draw lists. Reaches the
+// whole scene (every model that ran viewCalc this frame), not just the ~14 that
+// recompute in the draw pass.
+void interp60_blend_registry() {
+    g_i60.reg_size = (unsigned long)g_registry.size();
+    for (u32 model : g_registry)
+        if (model >= 0x80000000u) blend_model(model);
 }
 
 // Publish + reset the per-window motion stats (called by the probe).
@@ -159,12 +190,23 @@ SUNBRIGHT_OVERRIDE(ov_j3d_viewCalc_blend, 0x802deeb8u) {
             if (g_i60.blend && cpu.gpr[3] >= 0x80000000u) blend_model(cpu.gpr[3]);
             return;   // do NOT run the guest body (it would recompute = frame N)
         }
+        // mode 3 (registry buffer-blend): the registry was already blended before
+        // the re-issue. Skip the body so the ~14 models that recompute in the draw
+        // pass don't overwrite the blend back to N.
+        if (g_i60.mode == 3) return;
         // mode 2 (view-blend) / mode 0: run the guest body so it recomputes the
         // draw matrices against the (interpolated, in mode 2) j3dSys view matrix.
         func_802deeb8(cpu);
         return;
     }
-    func_802deeb8(cpu);   // real field: compute draw matrices normally
+    // Real field: compute draw matrices normally, and (mode 3) register the model.
+    // Capture `this` (r3) BEFORE the call — func_802deeb8 clobbers r3.
+    const u32 model_this = cpu.gpr[3];
+    func_802deeb8(cpu);
+    if (g_i60.mode == 3 && model_this >= 0x80000000u) {
+        g_i60.vc_realfield++;
+        if (g_registry.size() < 4096) g_registry.push_back(model_this);
+    }
 }
 
 } // namespace
