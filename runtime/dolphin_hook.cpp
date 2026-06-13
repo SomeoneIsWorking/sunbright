@@ -318,6 +318,9 @@ static thread_local bool t_in_advance = false;
 extern "C" long sunbright_audio_fill_ms();   // native_audio.cpp (native sink ring fill)
 extern "C" bool na_ever_pushed();            // native_audio.cpp (first real DSP push seen)
 static bool sb_time_ahead();
+// Governor host-clock anchor (file-static so the catch-up loop can ask "has emulated time
+// caught up to real time?"). Updated only inside sb_time_ahead.
+namespace { std::chrono::steady_clock::time_point g_host0; u64 g_ticks0 = 0; bool g_anchored = false; }
 // Exported governor query: lets long host-side waits (the GPU backpressure loop) keep
 // emulated time — and with it DSP audio production — flowing at the governed rate while the
 // CPU thread stalls. On hardware the DSP is an independent processor: a GPU stall never
@@ -344,16 +347,13 @@ static bool sb_time_ahead() {
     const u64 tps = sys.GetSystemTimers().GetTicksPerSecond();
     const u64 now_ticks = sys.GetCoreTiming().GetTicks();
     using clock = std::chrono::steady_clock;
-    static clock::time_point host0;
-    static u64 ticks0 = 0;
-    static bool anchored = false;
-    if (!anchored || !audio_live) {   // first call, and again at the boot→audio transition:
-        host0 = clock::now(); ticks0 = now_ticks; anchored = true; audio_live = true;
-    }                                 // the uncapped-boot lead must not read as "ahead"
-    const double el = std::chrono::duration<double>(clock::now() - host0).count();
-    u64 target = ticks0 + (u64)(el * (double)tps);
+    if (!g_anchored || !audio_live) {   // first call, and again at the boot→audio transition:
+        g_host0 = clock::now(); g_ticks0 = now_ticks; g_anchored = true; audio_live = true;
+    }                                   // the uncapped-boot lead must not read as "ahead"
+    const double el = std::chrono::duration<double>(clock::now() - g_host0).count();
+    u64 target = g_ticks0 + (u64)(el * (double)tps);
     if (now_ticks + tps / 4 < target) {   // >250 ms behind: slip the anchor — no catch-up burst
-        host0 = clock::now(); ticks0 = now_ticks;
+        g_host0 = clock::now(); g_ticks0 = now_ticks;
         return false;
     }
     const long fill = sunbright_audio_fill_ms();
@@ -395,28 +395,38 @@ static inline void charge_guest_time() {
         ppc.msr.Hex &= ~0x8000u;
         const double _ct0 = gxs_ct_tick_begin();
         sys.GetCoreTiming().Advance();
-        // Catch up to the governor target at this slice boundary: the fixed per-call charge
-        // (kCyclesPerCall) undershoots real time during compute-heavy stretches (~0.6x), so
-        // audio production fell behind and the native sink underran between heartbeats. The
-        // governor knows exactly how far time should be; drive event-to-event until there
-        // (bounded). This makes the per-call estimate self-correcting — the host clock, not
-        // the charge constant, owns the rate.
-        int _iters = 0;
-        for (int g = 0; g < 64 && !sb_time_ahead(); g++) {
-            sys.GetCoreTiming().Idle();
-            sys.GetCoreTiming().Advance();
-            _iters++;
+        // Catch emulated CoreTiming up to the HOST CLOCK in ONE batched step (its real job:
+        // emulated time == host wall-clock time). The fixed per-call charge (kCyclesPerCall)
+        // undershoots real time during compute-heavy stretches, so a deficit accumulates; close
+        // it by setting the slice so the next Advance() jumps global_timer straight to the
+        // host-clock target. Every periodic CoreTiming callback reschedules with
+        // `period - cycles_late`, so a far jump does NOT skip events — each fires inside that
+        // one Advance, re-firing until it catches up (VI/DSP/decrementer self-correct). No event-
+        // by-event Idle()/Advance() walk (it advanced only one ~20k-cycle slice per iteration,
+        // never closing a multi-ms deficit, burning ~19ms/frame = the gameplay jitter) and no
+        // tuned iteration cap (a magic constant). The deficit is bounded by the 250ms anchor-slip
+        // in sb_time_ahead(), so the jump fires at most ~quarter-second of events on a host hitch
+        // and ~one charge-interval in steady state. Identity downcount<->cycles only holds at
+        // 1.0x; with overclock fall back to the plain per-call Advance above.
+        s64 _adv = 0;
+        if (sys.GetCoreTiming().GetOverclock() == 1.0f && g_anchored) {
+            auto& glob = sys.GetCoreTiming().GetGlobals();
+            const u64 tps = sys.GetSystemTimers().GetTicksPerSecond();
+            const double el = std::chrono::duration<double>(std::chrono::steady_clock::now() - g_host0).count();
+            const s64 target = (s64)g_ticks0 + (s64)(el * (double)tps);
+            const s64 deficit = target - glob.global_timer;
+            if (deficit > 0 && deficit < (s64)tps) {   // <1s guard; >250ms already slipped the anchor
+                ppc.downcount = (int)((s64)glob.slice_length - deficit);  // Advance jumps by `deficit`
+                sys.GetCoreTiming().Advance();
+                _adv = deficit;
+            }
         }
         gxs_ct_tick_end(_ct0);
-        // DIAG (SUNBRIGHT_DBG_CT): this catch-up loop is the frame-jitter/perf bottleneck —
-        // ~19ms/frame, and it hits the 64-iteration cap ~100% of the time (RE'd 2026-06-13:
-        // CoreTiming::Advance can't raise the audio fill fast enough, so sb_time_ahead never
-        // trips and the loop always maxes). Pending a native-timing rework.
         static const bool dbg_ct = getenv("SUNBRIGHT_DBG_CT") != nullptr;
-        if (dbg_ct) { static unsigned long calls=0, itsum=0, atmaxcap=0; calls++; itsum+=_iters;
-          if (_iters>=64) atmaxcap++;
-          if (calls % 4096 == 0) fprintf(stderr, "[ct] charge-advance: calls=%lu avg_catchup_iters=%.1f hit64cap=%lu\n",
-              calls, (double)itsum/calls, atmaxcap); }
+        if (dbg_ct) { static unsigned long calls=0; static s64 advsum=0, advmax=0; calls++; advsum+=_adv;
+          if (_adv>advmax) advmax=_adv;
+          if (calls % 4096 == 0) { fprintf(stderr, "[ct] charge-advance: calls=%lu avg_jump=%.0f max_jump=%lld ticks\n",
+              calls, (double)advsum/calls, (long long)advmax); advmax=0; } }
         ppc.msr.Hex = saved_msr;
         t_in_advance = false;
         // Deliver any pending external IRQ HERE, at the recomp call boundary — natively (see
