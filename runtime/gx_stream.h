@@ -45,3 +45,11 @@ unsigned long long gxs_decoded_bytes();   // running total of bytes decoded
 unsigned long      gxs_decode_runs();     // running count of decode_owned() runs
 struct GxFrameInfo;
 const GxFrameInfo& gxs_prev_frame_info(); // parse of the most-recently-completed frame
+
+// Inter-present wall-time jitter stats (the objective frame-delivery measure).
+void gxs_frametime_reset();
+void gxs_frametime_stats(unsigned long* n, double* mean_ms, double* stddev_ms,
+                         double* min_ms, double* max_ms);
+void gxs_frametime_decode(double* mean_dec_ms, double* dec_at_max);
+double gxs_decode_tick_begin();
+void   gxs_decode_tick_end(double t0);

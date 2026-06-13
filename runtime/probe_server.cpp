@@ -70,6 +70,9 @@ extern "C" void sb_trace(const char* tag, uint32_t a, uint32_t b, uint32_t c, ui
 
 extern "C" int njas_probe(char* out, int cap);
 int interp60_probe(char* out, int cap, const char* query);   // runtime/interp60.h
+void gxs_frametime_reset();                                   // runtime/gx_stream.h
+void gxs_frametime_stats(unsigned long*, double*, double*, double*, double*);
+void gxs_frametime_decode(double*, double*);
 extern "C" void sb_census_dump(const char* p);
 namespace {
 
@@ -245,6 +248,21 @@ std::string handle_repl(const char* path) {
         // dump the dynamic call census (SUNBRIGHT_CALL_CENSUS=1) → call_census.tsv
         sb_census_dump("scratch/logs/call_census.tsv");
         app("census dumped to scratch/logs/call_census.tsv\n");
+        return std::string(buf, n);
+    }
+    if (strncmp(path, "/frametime", 10) == 0) {
+        // Inter-present wall-time jitter — the objective frame-delivery measure.
+        // ?reset=1 zeroes the window first. Even 60fps = mean~16.7ms, low stddev.
+        if (qarg(path, "reset", 0)) { gxs_frametime_reset(); app("reset\n"); return std::string(buf, n); }
+        unsigned long fn2; double mean, sd, mn, mx;
+        gxs_frametime_stats(&fn2, &mean, &sd, &mn, &mx);
+        app("frametime: n=%lu mean=%.2fms stddev=%.2fms min=%.2fms max=%.2fms  fps=%.1f\n",
+            fn2, mean, sd, mn, mx, mean > 0 ? 1000.0 / mean : 0.0);
+        double dec_mean, dec_atmax; gxs_frametime_decode(&dec_mean, &dec_atmax);
+        app("  GX decode (sync render on guest thread): mean=%.2fms/frame  at-slowest-frame=%.2fms\n",
+            dec_mean, dec_atmax);
+        app("  -> if at-slowest-frame ~= max, the spikes are RENDER (own the GPU submission);\n"
+            "     if decode is small vs max, the spikes are game logic / pacing.\n");
         return std::string(buf, n);
     }
     if (strncmp(path, "/interp60", 9) == 0) {

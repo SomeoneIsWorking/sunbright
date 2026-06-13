@@ -6,6 +6,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <vector>
+#include <chrono>
+#include <cmath>
 
 #ifdef HAVE_DOLPHIN_MEMMAP
 #include "Core/HW/GPFifo.h"
@@ -152,7 +154,9 @@ void decode_owned() {
     u8* const end   = start + g_decbuf.size();
     Core::DeclareAsGPUThread();
     u32 cycles = 0;
+    const double dec_t0 = gxs_decode_tick_begin();
     u8* const consumed = OpcodeDecoder::RunFifo<false>(DataReader(start, end), &cycles);
+    gxs_decode_tick_end(dec_t0);
     Core::UndeclareAsGPUThread();
 
     const size_t used = static_cast<size_t>(consumed - start);
@@ -182,11 +186,49 @@ unsigned long long gxs_decoded_bytes() { return g_decoded_bytes; }
 unsigned long      gxs_decode_runs()   { return g_decode_runs; }
 const GxFrameInfo& gxs_prev_frame_info() { return g_prev_info; }
 
+// Inter-present (frame-boundary) wall-time stats over a sliding window — the
+// objective jitter measure. Even 60 fps delivery = tight ~16.7 ms intervals;
+// jitter shows as a large spread (stddev / min-max). Read via /frametime.
+namespace {
+double g_ft_last_ms = 0;
+unsigned long g_ft_n = 0;
+double g_ft_sum = 0, g_ft_sumsq = 0, g_ft_min = 1e30, g_ft_max = 0;
+// GX decode (synchronous render submission on the guest thread) wall time, to see
+// whether frame-time spikes are render or game-logic. g_ft_dec_frame accumulates
+// decode ms within the current frame; captured at the boundary.
+double g_ft_dec_frame = 0, g_ft_dec_sum = 0, g_ft_dec_atmax = 0;
+double now_ms() {
+    return std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+}  // namespace
+double gxs_decode_tick_begin() { return now_ms(); }
+void   gxs_decode_tick_end(double t0) { g_ft_dec_frame += now_ms() - t0; }
+void gxs_frametime_reset() { g_ft_n = 0; g_ft_sum = g_ft_sumsq = g_ft_max = 0; g_ft_min = 1e30; g_ft_last_ms = 0; g_ft_dec_sum = g_ft_dec_atmax = 0; }
+void gxs_frametime_stats(unsigned long* n, double* mean, double* stddev, double* mn, double* mx) {
+    *n = g_ft_n;
+    *mean = g_ft_n ? g_ft_sum / g_ft_n : 0;
+    const double var = g_ft_n ? g_ft_sumsq / g_ft_n - (*mean) * (*mean) : 0;
+    *stddev = var > 0 ? std::sqrt(var) : 0;
+    *mn = g_ft_n ? g_ft_min : 0; *mx = g_ft_max;
+}
+void gxs_frametime_decode(double* mean_dec_ms, double* dec_at_max) {
+    *mean_dec_ms = g_ft_n ? g_ft_dec_sum / g_ft_n : 0;
+    *dec_at_max = g_ft_dec_atmax;   // decode ms of the slowest frame
+}
+
 void gxs_frame_boundary() {
     if (!g_armed) return;
     gxs_flush("copy");
     g_fl_copy++;
     g_frames++;
+    { const double t = now_ms();
+      if (g_ft_last_ms > 0) { const double d = t - g_ft_last_ms;
+          if (d > 0 && d < 1000) { g_ft_n++; g_ft_sum += d; g_ft_sumsq += d*d;
+              if (d < g_ft_min) g_ft_min = d;
+              if (d > g_ft_max) { g_ft_max = d; g_ft_dec_atmax = g_ft_dec_frame; }
+              g_ft_dec_sum += g_ft_dec_frame; } }
+      g_ft_last_ms = t; g_ft_dec_frame = 0; }
 
     // Analyze the completed frame; only a fully-parsed frame qualifies as a
     // replay source (the very first armed frames mis-size vertices until J3D
