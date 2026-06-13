@@ -30,6 +30,7 @@
 #include <cstring>
 #include <vector>
 #include <mutex>
+#include <sys/stat.h>
 
 namespace {
 
@@ -45,6 +46,7 @@ std::mutex g_mtx;
 Cap   g_ring[RING];
 int   g_count = 0;                     // total captured since arm (clamped index = g_count-1 % RING used)
 unsigned g_orig_addr = 0;              // first-seen address treated as the "real" buffer base
+int   g_session = 0;                   // bumped each arm; frames go to scratch/verify/s<NNN>/ (no rm)
 
 float mse(const float* a, const float* b) {
     double s = 0;
@@ -80,6 +82,30 @@ extern "C" void sb_hook_frame_captured(unsigned xfb_addr, const unsigned char* r
     }
     std::lock_guard<std::mutex> lk(g_mtx);
     if (g_count == 0) g_orig_addr = xfb_addr & ~0x400000u;   // first frame defines the "real" base
+    // Also write the FULL-resolution frame to scratch/verify/ as a PPM so the pan shots and pixel
+    // diffs can be rendered (tools/interp/verify_shots.py). Tagged real/btwn by the alt-buffer bit.
+    {
+        const bool between = (xfb_addr & 0x400000u) != (g_orig_addr & 0x400000u);
+        mkdir("scratch", 0755); mkdir("scratch/verify", 0755);
+        char dir[96]; snprintf(dir, sizeof dir, "scratch/verify/s%03d", g_session); mkdir(dir, 0755);
+        char path[160];
+        snprintf(path, sizeof path, "%s/f%03d_%s_%08x.ppm", dir, g_count,
+                 between ? "btwn" : "real", xfb_addr);
+        if (FILE* fp = fopen(path, "wb")) {
+            fprintf(fp, "P6\n%d %d\n255\n", w, h);
+            std::vector<unsigned char> rgb((size_t)w * 3);
+            for (int y = 0; y < h; y++) {
+                const unsigned char* row = rgba + (size_t)y * stride;
+                for (int x = 0; x < w; x++) {
+                    rgb[x * 3 + 0] = row[x * 4 + 0];
+                    rgb[x * 3 + 1] = row[x * 4 + 1];
+                    rgb[x * 3 + 2] = row[x * 4 + 2];
+                }
+                fwrite(rgb.data(), 1, rgb.size(), fp);
+            }
+            fclose(fp);
+        }
+    }
     g_ring[g_count % RING] = c;
     g_count++;
 }
@@ -89,7 +115,7 @@ static const bool s_installed = (sb_slot_frame_captured = &sb_hook_frame_capture
 // Arm a capture of n unique presents (clears the ring). The fork decrements sb_capture_frames.
 extern "C" void interp_verify_arm(int n) {
     std::lock_guard<std::mutex> lk(g_mtx);
-    g_count = 0; g_orig_addr = 0;
+    g_count = 0; g_orig_addr = 0; g_session++;
     if (n < 2) n = 2; if (n > RING) n = RING;
     sb_capture_frames = n;
 }
