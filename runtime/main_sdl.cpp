@@ -646,7 +646,62 @@ static WindowSystemInfo build_wsi() {
 static void on_signal(int) { g_running = false; }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
+// Load a gitignored `.env` (KEY=VALUE per line) so the binary is self-sufficient — no manual
+// `source ./.env` before every run. Looked for in the cwd, then next to the executable, then one
+// level up from it (build/sunbright → repo root). Existing environment variables WIN (setenv
+// overwrite=0), so an explicit `FOO=bar ./build/sunbright` still overrides the file. Values may be
+// optionally single/double quoted; everything after the first '=' is the value (spaces kept), so
+// paths like `SUNBRIGHT_ROM=/x/Super Mario Sunshine (USA).rvz` work unquoted. `#` lines are skipped.
+static void sunbright_load_dotenv() {
+    auto try_file = [](const std::string& path) -> bool {
+        FILE* f = std::fopen(path.c_str(), "r");
+        if (!f) return false;
+        char line[4096];
+        while (std::fgets(line, sizeof line, f)) {
+            char* s = line;
+            while (*s == ' ' || *s == '\t') ++s;
+            if (*s == '#' || *s == '\n' || *s == '\r' || *s == '\0') continue;
+            if (!std::strncmp(s, "export ", 7)) s += 7;   // tolerate `export KEY=...`
+            char* eq = std::strchr(s, '=');
+            if (!eq) continue;
+            *eq = '\0';
+            char* key = s;
+            char* val = eq + 1;
+            // trim key trailing ws
+            for (char* k = key + std::strlen(key) - 1; k >= key && (*k == ' ' || *k == '\t'); --k) *k = '\0';
+            // strip trailing newline/CR from value
+            for (char* v = val + std::strlen(val) - 1; v >= val && (*v == '\n' || *v == '\r'); --v) *v = '\0';
+            // strip one layer of surrounding quotes
+            size_t vl = std::strlen(val);
+            if (vl >= 2 && ((val[0] == '"' && val[vl-1] == '"') || (val[0] == '\'' && val[vl-1] == '\''))) {
+                val[vl-1] = '\0';
+                ++val;
+            }
+            if (*key) setenv(key, val, 0);   // 0 = do NOT override an already-set env var
+        }
+        std::fclose(f);
+        fprintf(stderr, "[sunbright] loaded env from %s\n", path.c_str());
+        return true;
+    };
+    if (try_file(".env")) return;
+    char exe[4096];
+    ssize_t n = readlink("/proc/self/exe", exe, sizeof exe - 1);
+    if (n > 0) {
+        exe[n] = '\0';
+        std::string p(exe);
+        size_t slash = p.find_last_of('/');
+        if (slash != std::string::npos) {
+            std::string dir = p.substr(0, slash);
+            if (try_file(dir + "/.env")) return;        // next to the exe
+            size_t slash2 = dir.find_last_of('/');
+            if (slash2 != std::string::npos && try_file(dir.substr(0, slash2) + "/.env")) return;  // one up
+        }
+    }
+}
+
 int main(int argc, char* argv[]) {
+    sunbright_load_dotenv();   // make $SUNBRIGHT_* from .env available without manual sourcing
+
     // SUNBRIGHT_NTHR_SELFTEST: validate the native-threading CPU-token hand-off in
     // isolation, then exit — no Dolphin/SDL/game involved.
     if (getenv("SUNBRIGHT_NTHR_SELFTEST"))

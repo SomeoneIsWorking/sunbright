@@ -93,6 +93,7 @@ inline void gx_tap_word(u32 v) {     // a u32 written to the gather pipe
 #  include "Core/System.h"
 #  include "Core/PowerPC/JitInterface.h"
 #  include "Core/HW/ProcessorInterface.h"
+#  include "Core/HW/MMIO.h"
 #  include "VideoCommon/CommandProcessor.h"
 #  include "VideoCommon/Fifo.h"
 #  include "Core/Core.h"
@@ -262,7 +263,33 @@ static inline u8* ram_ptr(u32 ea) {
     return nullptr;
 }
 
-#  define MMIO_R(bits, ea)     (g_recomp_touched_mmio = true, MMU_().Read<u##bits>(ea))
+// A hardware MMIO READ must resolve regardless of the guest's transient MSR.DR. Dolphin's
+// MMU::Read honors MSR.DR (BAT translation): when a CoreTiming device callback fires while the
+// guest CPU is momentarily in REAL MODE (DR=0, mid-rfi of an exception return) — e.g.
+// AudioDMACallback → UpdateAudioDMA reading DSP_CONTROL, or the OS external-interrupt vector
+// (PC 0xc0x) polling DSP status — translation is skipped and the uncached-virtual address
+// (0xCC00500A) misses every case in ReadFromHardware → "Unable to resolve" (it would return a
+// garbage 0). A register read has no bus side effect, so resolving it via the MMIO mapping with
+// the PHYSICAL address (translation-independent) is always correct. Main RAM never gets here
+// (ram_ptr() takes it first); locked cache / EFB keep the MMU path (is_mmio_phys=false).
+//
+// WRITES are deliberately NOT rerouted: in real mode WriteToHardware also drops uncached-virtual
+// MMIO, and forcing those writes through corrupts CP/FIFO state — a real-mode CP register write
+// the baseline silently dropped started executing → "FIFO: Unknown Opcode" → wild-pointer crash
+// (verified: broad read+write reroute crashed 3/3, read-only is clean). Those dropped writes are
+// spurious; only the missed READS were the actual bug.
+static inline bool is_mmio_phys(u32 ea) {
+    const u32 phys = ea & 0x0FFFFFFFu;
+    return phys >= 0x0C000000u && phys < 0x0E000000u;   // CP/PE/VI/PI/MI/DSP/DI/SI/EXI/AI registers
+}
+template <typename T> static inline T mmio_r(u32 ea) {
+    if constexpr (sizeof(T) <= 4) {
+        if (is_mmio_phys(ea))
+            return MEM().GetMMIOMapping()->Read<T>(Core::System::GetInstance(), ea & 0x0FFFFFFFu);
+    }
+    return MMU_().Read<T>(ea);    // locked cache / EFB / non-MMIO — keep the translate path
+}
+#  define MMIO_R(bits, ea)     (g_recomp_touched_mmio = true, mmio_r<u##bits>(ea))
 #  define MMIO_W(bits, ea, v)  (g_recomp_touched_mmio = true, MMU_().Write<u##bits>((v), (ea)))
 #else
 // Standalone mode: flat 24 MB RAM buffer, no MMIO.
@@ -303,6 +330,22 @@ static inline u8* ram_ptr(u32 ea) {
     }
     abort();
 }
+
+// SUNBRIGHT: park hook for Dolphin's MMU when it hits an unresolved hardware read (a real bug,
+// e.g. a misaligned 32-bit MMIO access it can't route). MMU.cpp prints the guest context and
+// calls this; we park CPU-idle so the SUNBRIGHT_PROBE REPL stays queryable (the watchdog spares
+// a deliberate park). Installed into ::g_sb_unresolved_read_hook (defined in Dolphin core) by a
+// global ctor so there is no link-time coupling to the offline tools (which never set it).
+extern "C" void (*g_sb_unresolved_read_hook)();
+void sunbright_park(const char*);   // watchdog.h (global scope so the anon-ns user binds to it)
+namespace {
+void sunbright_unresolved_read_park() {
+    sunbright_park("unresolved hardware read (see banner above)");
+}
+struct InstallUnresolvedReadHook {
+    InstallUnresolvedReadHook() { g_sb_unresolved_read_hook = &sunbright_unresolved_read_park; }
+} g_install_unresolved_read_hook;
+}  // namespace
 
 // Core dump: works off ANY guest register source (recomp CPUState or Dolphin PPCState),
 // so the recomp wild-access traps and the Dolphin-side invalid-access trap share one format.
