@@ -127,6 +127,12 @@ u32 qarg_dec(const char* path, const char* key, u32 def) {
     return (u32)strtoul(p + pat.size(), nullptr, 10);
 }
 
+// 60fps midpoint-verification tool (interp_verify.cpp / fork Present.cpp). Namespace-scope so the
+// extern "C" linkage is legal (block-scope extern "C" is ill-formed).
+extern "C" void interp_verify_arm(int);
+extern "C" int  interp_verify_report(char*, int);
+extern "C" int  sb_capture_frames;
+
 // REPL request handler. Returns the response body for any /repl path; empty string = not a REPL path.
 std::string handle_repl(const char* path) {
     // 64 KB: /tracelog dumps up to 512 ring entries (~80 bytes each) — the old 8 KB cut the
@@ -422,6 +428,21 @@ std::string handle_repl(const char* path) {
         return std::string(buf, n);
     }
 #endif
+    if (strncmp(path, "/verify", 7) == 0) {
+        // 60fps interpolation VISUAL midpoint check (interp_verify.cpp). /verify?n=K arms a capture
+        // of K unique presents, waits for it to fill, and prints the midpoint analysis; /verify with
+        // no n just reports the current ring. Drive motion first, e.g.
+        //   curl '/pad?do=cright&ms=3000' &   then   curl '/verify?n=24'
+        const u32 want = qarg_dec(path, "n", 0);
+        if (want) {
+            interp_verify_arm((int)want);
+            // Wait (bounded) for the fork to capture all armed frames (real-time ~ K/60 s + slack).
+            for (int i = 0; i < 600 && sb_capture_frames > 0; i++)
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        n = interp_verify_report(buf, (int)sizeof buf);
+        return std::string(buf, n);
+    }
     if (strncmp(path, "/poll?", 6) == 0) {
         // One-shot snapshot of up to 6 addresses (a,b,c,d,e,f as hex), each named — a compact
         // "compare these key cells" line for A/B between native and Dolphin runs.

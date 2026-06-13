@@ -555,6 +555,12 @@ int interp60_probe(char* out, int cap, const char* query) {
             app(" %08x%s", g_sb_present_ring[idx & 15], g_sb_present_dup[idx & 15] ? "(dup)" : "");
         }
         app("\n");
+        // Cheap always-on cadence (no readback, unlike /verify): fraction of unique presents that
+        // DOUBLED (two presents to the same buffer in a row = a 60Hz hitch). 0% = clean R,B,R,B.
+        extern volatile unsigned long g_sb_cadence_alt, g_sb_cadence_dbl;
+        const unsigned long alt = g_sb_cadence_alt, dbl = g_sb_cadence_dbl, tot = alt + dbl;
+        app("CADENCE (lifetime, no readback): alt=%lu doublings=%lu  doubling-rate=%.1f%%  (0%% = clean 60fps R,B,R,B)\n",
+            alt, dbl, tot ? 100.0 * dbl / tot : 0.0);
     }
     app("RENDER VOLUME of in-between field: gx_bytes=%llu runs=%lu  %s\n",
         g_i60.redraw_gx_bytes, g_i60.redraw_gx_runs,
