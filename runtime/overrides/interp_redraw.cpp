@@ -196,7 +196,9 @@ SUNBRIGHT_OVERRIDE(ov_interp_endRendering, DISPLAY_END_RENDER) {
     // This eliminates the whole crash class (particle/shape/director re-execution). TODO: per-object
     // matrix interpolation toward N-1 via GXSetArray base redirection; currently replays N as-is, so
     // the in-between == N (true 60fps cadence, but no motion-interpolation yet).
-    if (sunbright_interp60_replay()) {
+    // Fires for EITHER flag: SUNBRIGHT_INTERP60 (run60) now uses the render-only replay, so the old
+    // mutating path below is unreachable (kept transiently for A/B; to be deleted).
+    if (sunbright_interp60() || sunbright_interp60_replay()) {
         // Snapshot frame N's captured command stream NOW — the first-half copy below does a
         // GXCopyDisp that triggers gxs_frame_boundary and clears g_frame.
         std::vector<u8> frameN(gxs_cur_frame());
