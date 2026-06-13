@@ -38,6 +38,8 @@ bool g_probe_enabled = false;
 #include "Core/HW/ProcessorInterface.h"
 #include "Core/HW/DSP.h"
 #include "VideoCommon/CommandProcessor.h"
+#include "VideoCommon/FrameDumper.h"
+#include <sys/stat.h>
 #endif
 extern u32 mem_r32(u32 ea);
 extern u16 mem_r16(u32 ea);
@@ -389,6 +391,37 @@ std::string handle_repl(const char* path) {
         app("queued: %s\n", line);
         return std::string(buf, n);
     }
+#ifdef HAVE_DOLPHIN_CORE
+    if (strncmp(path, "/screenshot", 11) == 0) {
+        // On-demand PNG of the current presented frame (the XFB), serviced on the next
+        // present by Dolphin's FrameDumper (works headless — the readback path runs
+        // regardless of swapchain). /screenshot?name=foo -> scratch/screenshots/foo.png
+        if (!g_frame_dumper) return std::string("no frame dumper\n");
+        char name[64] = {0};
+        if (const char* p = strstr(path, "name=")) {
+            size_t i = 0; p += 5;
+            while (*p && *p != '&' && *p != ' ' && i + 1 < sizeof name) {
+                char c = *p++;
+                name[i++] = (c=='/'||c=='\\') ? '_' : c;   // no path escapes
+            }
+        }
+        if (!name[0]) snprintf(name, sizeof name, "shot_%llu",
+                               (unsigned long long)std::chrono::duration_cast<std::chrono::seconds>(
+                                   std::chrono::system_clock::now().time_since_epoch()).count());
+        mkdir("scratch", 0755); mkdir("scratch/screenshots", 0755);
+        char full[256]; snprintf(full, sizeof full, "scratch/screenshots/%s.png", name);
+        ::unlink(full);
+        g_frame_dumper->SaveScreenshot(full);
+        // Wait for the dumper thread to write the file (serviced within a frame or two).
+        struct stat st{}; bool ok = false;
+        for (int i = 0; i < 200; i++) {            // up to ~2 s
+            if (stat(full, &st) == 0 && st.st_size > 0) { ok = true; break; }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        app("%s %s (%lld bytes)\n", ok ? "saved" : "TIMEOUT", full, (long long)st.st_size);
+        return std::string(buf, n);
+    }
+#endif
     if (strncmp(path, "/poll?", 6) == 0) {
         // One-shot snapshot of up to 6 addresses (a,b,c,d,e,f as hex), each named — a compact
         // "compare these key cells" line for A/B between native and Dolphin runs.

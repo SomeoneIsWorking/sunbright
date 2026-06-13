@@ -36,6 +36,10 @@ struct Interp60Dbg {
     unsigned long redraws = 0, skip_rate = 0, skip_nodir = 0, skip_full = 0;
     unsigned long direct_stamp = 0;
     u32 mardir = 0; int gfx_valid = 0;
+    // XFB double-buffer wiring (the 30fps-output probe): the TDisplay and its two XFB
+    // buffer pointers, the address we set the VI to for the in-between present, and the
+    // physical address the VI actually presented (cmp low26 against the buffers).
+    u32 disp = 0, buf0 = 0, buf1 = 0, set_fb = 0;
     // viewCalc blend (interp_capture.cpp), last window
     unsigned long vc_calls = 0, vc_blended = 0, vc_bail_null = 0, vc_bail_single = 0;
     unsigned long vc_per_list[8] = {0};   // viewCalc attributed to each kDrawLists[] index

@@ -65,6 +65,22 @@ void interp60_blend_registry();         // interp_capture.cpp
 
 namespace {
 
+// FNV-1a over a strided sample of an XFB buffer (guest RAM). The decisive output-side
+// check: if the real field's XFB and the in-between field's XFB ever hash DIFFERENTLY,
+// the in-between produced different pixels (interpolation reached the screen). If they
+// are always identical, the in-between is just tick N re-presented = 30 fps.
+u32 hash_xfb(u32 addr) {
+    u8* p = sb_ram_fast(addr);
+    if (!p) return 0;
+    // SMS XFB ~ 640x448x2 ≈ 0x8C000 bytes; sample every 64 bytes across 0x90000.
+    u32 h = 2166136261u;
+    for (u32 off = 0; off < 0x90000u; off += 64) {
+        u32 v; __builtin_memcpy(&v, p + off, 4);
+        h = (h ^ v) * 16777619u;
+    }
+    return h;
+}
+
 u32 g_mardir = 0;                 // TMarDirector* seen by the last direct()
 unsigned long g_direct_stamp = 0, g_consumed_stamp = 0;
 
@@ -142,6 +158,7 @@ SUNBRIGHT_OVERRIDE(ov_interp_endRendering, DISPLAY_END_RENDER) {
     cpu.gpr[3] = video;
     cpu.gpr[4] = fb;
     call_ppc(cpu, VIDEO_SET_NEXT_XFB);
+    g_i60.disp = display; g_i60.buf0 = MEM_R32(display + 4); g_i60.buf1 = MEM_R32(display + 8); g_i60.set_fb = fb;
 
     // Re-issue the scene draw pass with the TGraphics snapshot taken while the
     // game performed this frame's GX list. viewCalc inside the pass substitutes
@@ -238,7 +255,18 @@ SUNBRIGHT_OVERRIDE(ov_interp_endRendering, DISPLAY_END_RENDER) {
     g_i60.redraw_gx_bytes = gxs_decoded_bytes() - bytes0;
     g_i60.redraw_gx_runs  = gxs_decode_runs()  - runs0;
 
-    (void)old_idx;
+    // OUTPUT-SIDE proof: hash the real-field XFB (buffer[old_idx]) vs the in-between
+    // XFB (buffer[old_idx^1]). Both copies are complete now. If these ever differ, the
+    // in-between rendered different pixels (interp reached the screen). If always equal,
+    // the in-between == tick N = 30 fps no matter the cadence.
+    {
+        const u32 fb_real   = MEM_R32(display + 4 + 4u * old_idx);
+        const u32 fb_redraw = MEM_R32(display + 4 + 4u * (old_idx ^ 1));
+        g_i60.xfb_real_hash   = hash_xfb(fb_real);
+        g_i60.xfb_redraw_hash = hash_xfb(fb_redraw);
+        g_i60.xfb_pairs++;
+        if (g_i60.xfb_real_hash != g_i60.xfb_redraw_hash) g_i60.xfb_differ++;
+    }
 
     // DECISIVE cross-check: the redraw frame's copy just rotated g_prev_info.
     // Count how many POS-matrix array bases (CP array 12) the GX stream set point
@@ -328,6 +356,24 @@ int interp60_probe(char* out, int cap, const char* query) {
     app("  WORST offender: model=%08x vt=%08x src=%s view=%u n=%u prevbuf=%08x curbuf=%08x prev0=%g cur0=%g\n",
         g_i60.g_model, g_i60.g_vt, g_i60.g_src == 2 ? "SDLModel" : g_i60.g_src == 1 ? "J3DModel" : "?",
         g_i60.g_view, g_i60.g_n, g_i60.g_prevbuf, g_i60.g_curbuf, g_i60.g_prev0, g_i60.g_cur0);
+    // Ground truth: the actual XFB addresses the presenter showed (last 8 presents).
+    // If they alternate between two distinct buffers, 2 distinct frames/game-frame reach
+    // the screen (60fps). If the same address repeats, the in-between isn't presented.
+    {
+        extern volatile unsigned long g_sb_present_seq;
+        extern volatile unsigned int g_sb_present_ring[16];
+        extern volatile unsigned char g_sb_present_dup[16];
+        unsigned long s = g_sb_present_seq;
+        app("XFB BUFS: display=%08x buf0=%08x buf1=%08x  set_fb(redraw)=%08x  (buf0==buf1? %s)\n",
+            g_i60.disp, g_i60.buf0, g_i60.buf1, g_i60.set_fb, g_i60.buf0 == g_i60.buf1 ? "YES single-buffered" : "no");
+        app("PRESENTED XFB addrs (newest last):");
+        for (int i = 8; i >= 1; i--) {
+            unsigned long idx = s - (unsigned long)i;
+            if ((long)(s) - i < 0) continue;
+            app(" %08x%s", g_sb_present_ring[idx & 15], g_sb_present_dup[idx & 15] ? "(dup)" : "");
+        }
+        app("\n");
+    }
     app("RENDER VOLUME of in-between field: gx_bytes=%llu runs=%lu  %s\n",
         g_i60.redraw_gx_bytes, g_i60.redraw_gx_runs,
         g_i60.redraw_gx_bytes < 1024 ? "<<< ~ZERO: in-between NOT re-rendered (tick N re-presented)" : "(re-rendered)");
