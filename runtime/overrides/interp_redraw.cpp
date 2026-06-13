@@ -89,8 +89,7 @@ extern "C" void func_80299838(CPUState&);   // TMarDirector::direct
 // dependence on Dolphin's VI field parity/phase + the progressive even-field offset (RRBB, H5).
 extern "C" volatile int g_sb_own_present;       // Present.cpp (fork)
 extern "C" void sb_present_xfb(unsigned xfb_addr);   // Present.cpp (fork) — present phys addr now
-extern "C" volatile int g_sb_efb_redirect_inbetween;  // BPStructs.cpp (fork) — in-between EFB-copy redirect
-extern "C" void sb_efb_redir_clear();                 // BPStructs.cpp (fork) — reset the redirect set
+extern "C" volatile int g_sb_efb_redirect_inbetween;  // BPStructs.cpp (fork) — in-between owned-EFB routing
 static bool own_present_enabled() {
     static int v = -1;
     if (v < 0) v = getenv("SUNBRIGHT_NO_OWN_PRESENT") ? 0 : 1;  // default ON for interp60
@@ -248,12 +247,12 @@ SUNBRIGHT_OVERRIDE(ov_interp_endRendering, DISPLAY_END_RENDER) {
         g_i60.disp = display; g_i60.set_fb = alt;
         g_i60.redraw_gx_bytes = frameN.size();
         g_interp60_in_redraw = true;
-        // Per-field EFB feedback: the in-between's EFB->texture copies go to their OWN ALT slots
-        // (VRAM-only, no guest RAM) and the in-between's consumers sample those ALT slots, so each
-        // screen-space effect (water reflection, mirror, graffiti) tracks the interpolated geometry
-        // (no Mario ghost) AND the real field's textures are never clobbered (no half-step lag).
-        // BPStructs.cpp + TextureInfo.cpp + TextureCacheBase.cpp. Off-switch: SUNBRIGHT_NO_EFB_REDIRECT.
-        if (efb_redirect_enabled()) { sb_efb_redir_clear(); g_sb_efb_redirect_inbetween = 1; }
+        // Per-field EFB feedback: the in-between's EFB->texture copies go into Sunbright-OWNED
+        // per-field textures (TextureCacheBase m_sb_efb_own) and the in-between samples those, so
+        // each screen-space effect (water reflection, mirror, graffiti) reflects the interpolated
+        // geometry (no Mario ghost) AND the real field's textures are never clobbered (no lag) —
+        // without touching guest RAM or Dolphin's address-keyed cache. Off: SUNBRIGHT_NO_EFB_REDIRECT.
+        if (efb_redirect_enabled()) g_sb_efb_redirect_inbetween = 1;
         gxs_replay_frame(frameN.data(), frameN.size());    // re-render frame N with interpolated mtx
         g_sb_efb_redirect_inbetween = 0;
         interp60_xfmap_end();
@@ -611,7 +610,7 @@ int interp60_probe(char* out, int cap, const char* query) {
         app("OWN-PRESENT: active=%d  manual=%lu gated-fields=%lu auto-presents=%lu  last_manual=%08x\n",
             g_sb_own_present, g_sb_ownpres_manual, g_sb_ownpres_gated, g_sb_ownpres_auto, g_sb_ownpres_last);
         extern volatile unsigned long g_sb_efb_redirects;
-        app("EFB-REDIRECT (in-between copies -> alt, no real-frame clobber): redirected=%lu\n",
+        app("EFB-OWNED (in-between EFB copies -> Sunbright per-field textures): owned=%lu\n",
             g_sb_efb_redirects);
     }
     app("RENDER VOLUME of in-between field: gx_bytes=%llu runs=%lu  %s\n",
