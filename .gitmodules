@@ -1,6 +1,7 @@
 [submodule "externals/dolphin"]
 	path = externals/dolphin
-	url = https://github.com/dolphin-emu/dolphin.git
+	url = https://github.com/SomeoneIsWorking/dolphin.git
+	branch = sunbright
 [submodule "reference/sms"]
 	path = reference/sms
 	url = https://github.com/doldecomp/sms.git
