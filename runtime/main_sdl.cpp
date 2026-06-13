@@ -568,14 +568,40 @@ void Host_Message(HostMessageID id) {
 }
 void Host_PPCSymbolsChanged()     {}
 void Host_PPCBreakpointsChanged() {}
+// Dolphin calls this from the video/CPU thread when the render size changes. On macOS, NSWindow
+// geometry may ONLY be modified on the main thread (Cocoa throws NSInternalInconsistencyException:
+// "NSWindow geometry should only be modified on the main thread" otherwise), and SDL window ops
+// belong on the thread that pumps events anyway. So never touch the window here — queue the request
+// and let the main-thread event loop apply it via apply_pending_resize().
+static std::atomic<bool> g_pending_resize{false};
+static std::atomic<int>  g_pending_w{0}, g_pending_h{0};
+// Queued window title (FPS/VPS), filled by Host_UpdateTitle (video thread), applied on main thread.
+static std::mutex        g_title_mtx;
+static std::string       g_pending_title;
+static std::atomic<bool> g_title_dirty{false};
 void Host_RequestRenderWindowSize(int w, int h) {
-    if (g_window) SDL_SetWindowSize(g_window, w, h);
+    g_pending_w.store(w, std::memory_order_relaxed);
+    g_pending_h.store(h, std::memory_order_relaxed);
+    g_pending_resize.store(true, std::memory_order_release);
+}
+// Apply queued window ops (resize + title) on the MAIN thread; called from the event loop.
+static void apply_pending_resize() {   // main thread only
+    if (g_pending_resize.exchange(false, std::memory_order_acquire) && g_window)
+        SDL_SetWindowSize(g_window, g_pending_w.load(std::memory_order_relaxed),
+                                    g_pending_h.load(std::memory_order_relaxed));
+    if (g_title_dirty.exchange(false, std::memory_order_acquire) && g_window) {
+        std::lock_guard<std::mutex> lk(g_title_mtx);
+        SDL_SetWindowTitle(g_window, g_pending_title.c_str());
+    }
 }
 void Host_UpdateDisasmDialog()    {}
 void Host_JitCacheInvalidation()  {}
 void Host_JitProfileDataWiped()   {}
+// Called from the video thread (carries FPS/VPS). SDL_SetWindowTitle is an NSWindow op too, so on
+// macOS it must run on the main thread — queue it (globals above) and apply in the event loop.
 void Host_UpdateTitle(const std::string& title) {
-    if (g_window) SDL_SetWindowTitle(g_window, title.c_str());
+    { std::lock_guard<std::mutex> lk(g_title_mtx); g_pending_title = title; }
+    g_title_dirty.store(true, std::memory_order_release);   // applied on the main thread, see above
     // Dolphin's title carries the FPS/VPS counters; logging it confirms whether
     // frames are actually being presented (VPS > 0 = the GPU pipeline is alive).
     static bool log = getenv("SUNBRIGHT_VLOG") != nullptr;
@@ -1097,6 +1123,9 @@ int main(int argc, char* argv[]) {
                         ppc.pc, ppc.spr[SPR_LR], ppc.spr[SPR_CTR], ppc.gpr[3]);
             }
         }
+        // Apply any render-window resize Dolphin requested from the video thread, on the MAIN
+        // thread (macOS Cocoa requires it; harmless elsewhere). See Host_RequestRenderWindowSize.
+        apply_pending_resize();
         // Once the video backend's presenter exists, sync the swapchain to the
         // current window size once — the window may have been sized by the WM after
         // the swapchain was first created at boot (otherwise: black band).
