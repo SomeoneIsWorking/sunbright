@@ -11,13 +11,33 @@
 #include "Core/HW/GPFifo.h"
 #include "Core/PowerPC/PowerPC.h"
 #include "Core/System.h"
+#include "Core/Core.h"
+#include "VideoCommon/OpcodeDecoding.h"
+#include "VideoCommon/DataReader.h"
 #endif
 
 namespace {
 
+// Tailored renderer — Stage 1 (docs/port_roadmap.md "native renderer arc").
+// SUNBRIGHT_OWN_RENDER=1 changes the SINK of the owned GX byte stream: instead
+// of pushing the held bytes back into Dolphin's CP FIFO *ring* (GPFifoManager →
+// 512 KB ring → async GPU thread drain), we decode them SYNCHRONOUSLY on the
+// producing guest thread via Dolphin's OpcodeDecoder. There is no fixed ring, so
+// the "FIFO is overflowed by GatherPipe! CPU thread is too fast!" crash
+// (CommandProcessor.cpp:390 — CPReadWriteDistance > CPEnd-CPBase) is structurally
+// impossible: each held run is decoded the moment its sync point is reached. We
+// still drive Dolphin's VideoCommon rasterizer (VertexManager → Vulkan, texture
+// cache, shader-gen) — we own the *frontend* (FIFO pacing/lifetime), not the
+// rasterizer (kept by doctrine). Implies the holding path (GXOWN) is on.
+bool own_render() {
+    static int v = -1;
+    if (v < 0) v = getenv("SUNBRIGHT_OWN_RENDER") ? 1 : 0;
+    return v == 1;
+}
+
 bool env_on() {
     static int v = -1;
-    if (v < 0) v = getenv("SUNBRIGHT_GXOWN") ? 1 : 0;
+    if (v < 0) v = (getenv("SUNBRIGHT_GXOWN") || getenv("SUNBRIGHT_OWN_RENDER")) ? 1 : 0;
     return v == 1;
 }
 bool dbg() {
@@ -30,6 +50,16 @@ bool g_armed = false;
 
 // Held gather-pipe bytes, in FIFO order (big-endian, exactly what GPFifo gets).
 std::vector<u8> g_buf;
+
+// Owned-render (SUNBRIGHT_OWN_RENDER) persistent decode buffer = our "video
+// buffer". RunFifo decodes whole commands only and returns a pointer past the
+// last complete one; a partial trailing command (rare — guest sync points land
+// on command boundaries) carries to the next flush. Stats: bytes decoded, and
+// the high-water tail (a non-zero steady tail would mean we're mis-splitting).
+std::vector<u8> g_decbuf;
+unsigned long long g_decoded_bytes = 0;
+unsigned long g_decode_runs = 0;
+size_t g_tail_hi = 0;
 
 // Whole-frame capture: every armed byte, regardless of mid-frame flushes (the
 // flush queue empties ~5×/frame at GXFlush; the replay needs the full frame).
@@ -106,7 +136,8 @@ bool gxs_in_flush() { return g_in_flush; }
 void gxs_arm() {
     if (g_armed || !env_on()) return;
     g_armed = true;
-    fprintf(stderr, "[gxs] GX stream assembler armed (first display copy)\n");
+    fprintf(stderr, "[gxs] GX stream assembler armed (first display copy)%s\n",
+            own_render() ? " — OWN_RENDER sink (direct OpcodeDecoder, no CP ring)" : "");
 }
 
 void gxs_w8(u8 v)  { append(&v, 1); }
@@ -117,19 +148,50 @@ void gxs_w32(u32 v) {
 }
 void gxs_w64(u64 v) { gxs_w32((u32)(v >> 32)); gxs_w32((u32)v); }
 
+#ifdef HAVE_DOLPHIN_MEMMAP
+// Owned-render sink: decode the held bytes through Dolphin's OpcodeDecoder right
+// here, on the guest thread, with no CP ring. nthr serializes guest threads, so
+// only one thread is ever in here; we declare it the GPU thread for the duration
+// because VertexManager/TextureCache/Vulkan submission gate on Core::IsGPUThread.
+void decode_owned() {
+    if (g_buf.empty()) return;
+    g_decbuf.insert(g_decbuf.end(), g_buf.begin(), g_buf.end());
+    g_buf.clear();
+
+    u8* const start = g_decbuf.data();
+    u8* const end   = start + g_decbuf.size();
+    Core::DeclareAsGPUThread();
+    u32 cycles = 0;
+    u8* const consumed = OpcodeDecoder::RunFifo<false>(DataReader(start, end), &cycles);
+    Core::UndeclareAsGPUThread();
+
+    const size_t used = static_cast<size_t>(consumed - start);
+    const size_t tail = g_decbuf.size() - used;
+    g_decoded_bytes += used;
+    g_decode_runs++;
+    if (tail > g_tail_hi) g_tail_hi = tail;
+    // Keep the unconsumed partial-command tail for the next flush.
+    if (used) g_decbuf.erase(g_decbuf.begin(), g_decbuf.begin() + used);
+}
+#endif
+
 void gxs_flush(const char* why) {
     if (g_buf.empty()) return;
 #ifdef HAVE_DOLPHIN_MEMMAP
     g_in_flush = true;
-    auto& gpf = Core::System::GetInstance().GetGPFifo();
-    size_t i = 0;
-    const size_t n = g_buf.size();
-    for (; i + 4 <= n; i += 4) {
-        u32 v;
-        memcpy(&v, &g_buf[i], 4);
-        gpf.Write32(__builtin_bswap32(v));
+    if (own_render()) {
+        decode_owned();
+    } else {
+        auto& gpf = Core::System::GetInstance().GetGPFifo();
+        size_t i = 0;
+        const size_t n = g_buf.size();
+        for (; i + 4 <= n; i += 4) {
+            u32 v;
+            memcpy(&v, &g_buf[i], 4);
+            gpf.Write32(__builtin_bswap32(v));
+        }
+        for (; i < n; i++) gpf.Write8(g_buf[i]);
     }
-    for (; i < n; i++) gpf.Write8(g_buf[i]);
     g_in_flush = false;
 #endif
     g_total_bytes += g_buf.size();
@@ -166,14 +228,22 @@ void gxs_frame_boundary() {
     std::swap(g_frame_info, g_prev_info);
     g_frame.clear();
 
-    if (dbg() && (g_frames % 128) == 0)
-        fprintf(stderr,
-                "[gxs] frames=%lu last_frame_bytes=%llu total=%lluMB flushes gx=%lu copy=%lu cap=%lu "
-                "parse ok=%lu fail=%lu tokens/f=%.1f mtxarrays/f=%.1f\n",
-                g_frames, g_frame_bytes, g_total_bytes >> 20,
-                g_fl_gxflush, g_fl_copy, g_fl_cap,
-                g_parse_ok, g_parse_fail,
-                g_parse_ok ? (double)g_tokens_seen / g_parse_ok : 0.0,
-                g_parse_ok ? (double)g_mtx_arrays_seen / g_parse_ok : 0.0);
+    if (dbg() && (g_frames % 128) == 0) {
+        if (own_render())
+            fprintf(stderr,
+                    "[gxs] OWN_RENDER frames=%lu last_frame_bytes=%llu decoded=%lluMB runs=%lu "
+                    "tail_hi=%zu flushes gx=%lu copy=%lu\n",
+                    g_frames, g_frame_bytes, g_decoded_bytes >> 20, g_decode_runs,
+                    g_tail_hi, g_fl_gxflush, g_fl_copy);
+        else
+            fprintf(stderr,
+                    "[gxs] frames=%lu last_frame_bytes=%llu total=%lluMB flushes gx=%lu copy=%lu cap=%lu "
+                    "parse ok=%lu fail=%lu tokens/f=%.1f mtxarrays/f=%.1f\n",
+                    g_frames, g_frame_bytes, g_total_bytes >> 20,
+                    g_fl_gxflush, g_fl_copy, g_fl_cap,
+                    g_parse_ok, g_parse_fail,
+                    g_parse_ok ? (double)g_tokens_seen / g_parse_ok : 0.0,
+                    g_parse_ok ? (double)g_mtx_arrays_seen / g_parse_ok : 0.0);
+    }
     g_frame_bytes = 0;
 }

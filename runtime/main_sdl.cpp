@@ -866,7 +866,19 @@ int main(int argc, char* argv[]) {
     // CPU-thread time there, serializing rendering with game logic. A separate GPU thread
     // parallelizes it. The recomp runs on the CPU thread (JitTrampoline hook), independent of the
     // GPU thread, which reads the FIFO the gather pipe bursts to.
-    Config::SetBase(Config::MAIN_CPU_THREAD, true);
+    //
+    // Tailored renderer (SUNBRIGHT_OWN_RENDER, gx_stream.cpp): we decode the owned GX byte stream
+    // SYNCHRONOUSLY on the producing guest thread (no CP ring, no async drain — kills the
+    // "CPU thread is too fast!" FIFO overflow). VideoCommon must then have exactly one driver
+    // thread, so force single-core; the async GPU thread would otherwise race our inline decode.
+    const bool own_render = getenv("SUNBRIGHT_OWN_RENDER") != nullptr;
+    if (own_render) {
+        Config::SetBase(Config::MAIN_CPU_THREAD, false);
+        Config::SetBase(Config::MAIN_SYNC_GPU, false);   // no ring to drain — pacing is our flush
+        fprintf(stderr, "[sunbright] OWN_RENDER: tailored GX frontend (single-core, no CP ring)\n");
+    } else {
+        Config::SetBase(Config::MAIN_CPU_THREAD, true);
+    }
 
     // Fast disc speed: treat every DVD read as buffered (DMA-speed, no seek latency). On a PC port
     // the asset bytes are already local, so reproducing GC disc seek/read latency is pointless — and
@@ -881,8 +893,9 @@ int main(int argc, char* argv[]) {
     // waits on emulated time, so nothing throttles GX submission against GPU consumption — the GP
     // FIFO overflows ("CPU thread is too fast!" CommandProcessor assert). SyncGPU blocks the CPU
     // thread on FIFO drain (an event, not a time wait), which is exactly the pacing model the
-    // deterministic boot needs.
-    Config::SetBase(Config::MAIN_SYNC_GPU, true);
+    // deterministic boot needs. (OWN_RENDER decodes inline with no ring — no SyncGPU to pace.)
+    if (!own_render)
+        Config::SetBase(Config::MAIN_SYNC_GPU, true);
 
     // ── Graphics quality ────────────────────────────────────────────────────
     // Internal resolution scale (SUNBRIGHT_RES_SCALE; default 3× windowed, 1× headless).

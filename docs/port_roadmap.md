@@ -162,6 +162,24 @@ Stop guarding emulation seams; delete the emulation-era path and own the subsyst
   backpressure, first-use shader compile, device-resource lifetime/OOM) cease to exist
   rather than being tuned. Interim state: backpressure wait removed, synchronous shaders +
   persistent cache + boot precompile.
+  **TAILORED RENDERER — STAGE 1 LANDED (2026-06-13, SUNBRIGHT_OWN_RENDER=1):** we own the GX
+  command FRONTEND. The held gather-pipe byte stream (gx_stream.cpp, the GXOWN groundwork) is
+  decoded SYNCHRONOUSLY on the producing guest thread via Dolphin's OpcodeDecoder::RunFifo —
+  NOT pushed into Dolphin's CP FIFO *ring*. There is no fixed ring, so the "FIFO is overflowed
+  by GatherPipe! CPU thread is too fast!" crash (CommandProcessor.cpp:390, item #6/#96) is
+  STRUCTURALLY IMPOSSIBLE — each held run decodes the moment its sync point (GXFlush/GXCopyDisp)
+  is reached. The rasterizer (VertexManager→Vulkan, texture cache, shader-gen) is still
+  Dolphin's by doctrine — we own the frontend (FIFO pacing/lifetime), not the raster. Config:
+  single-core + SyncGPU off (one VideoCommon driver thread; the guest thread is Declared as the
+  GPU thread around RunFifo). Verified headless fastboot Delfino: 2176+ frames decoded, 765 MB,
+  tail_hi=0 (clean command boundaries), ZERO overflow, Delfino Plaza renders correctly (frame
+  dump scratch/screenshots/own_render_frame.png: HUD anchored, Mario/FLUDD/plaza/shine intact).
+  Default path (OWN_RENDER off) byte-identical (gated). NEXT (stage 2+): flip default after
+  user real-play check; then the in-between-frame 60 fps redraw becomes trivial here (no CP-ring
+  admission control needed — the reason INTERP60 needed it dies with the ring); then progressively
+  peel the Vulkan backend / pregenerate pipelines. OPEN: headless-no-present VKVertexManager
+  buffer pressure ("Executing command list while waiting for space") — resource recycling is
+  present-gated; harmless headless, watch in real play (item #92 class).
 
 ## Order of battle (current)
 1. Audio JAI frame layer (category gating, priority stealing) + fxmix/dolby — finishes the
