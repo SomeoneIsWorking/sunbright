@@ -96,6 +96,23 @@ SUNBRIGHT_OVERRIDE(ov_interp_setviewmtx, 0x80296a50u) {
     func_80296a50(cpu);
 }
 
+// PROBE (falsified-as-a-fix, kept as a toggle + finding): TEfbCtrlTex::perform (&0x8) does
+// GXCopyTex(EFB -> screen texture); SMS water/refraction samples that texture. Skipping the copy
+// on the in-between (so it reuses the REAL field's capture) was tried as a flicker fix — but it
+// GHOSTS Mario into the reflection (the stale texture has Mario at the real-field position while
+// his geometry is at the interpolated position → duplicate in the sky). So default OFF. The
+// useful FINDING it proved: the water reflection DOES sample this screen texture, and the
+// real flicker is that effects toggle/​differ per field — not a clean reuse problem. Real fix is
+// being designed from docs/re_notes/ (which effects draw in which perform list/phase).
+extern "C" void func_802f8bac(CPUState&);   // JDrama::TEfbCtrlTex::perform(u32 flags, TGraphics*)
+SUNBRIGHT_OVERRIDE(ov_efbctrltex_perform, 0x802f8bacu) {
+    if (g_interp60_in_redraw && g_i60.skip_efbcopy) {
+        g_i60.efbcopy_skipped++;
+        cpu.gpr[4] &= ~0x8u;          // drop the EFB->screen-texture copy; keep setup
+    }
+    func_802f8bac(cpu);
+}
+
 // Instrument the marukage draw (TSilhouette::perform). Split counts by field so we can tell a
 // draw-asymmetry blink (fires on one field, not the other) from a position-detach blink (fires
 // on both, but its gpMarioPos-projected center is at tick N while the body interpolates).
@@ -376,6 +393,7 @@ int interp60_probe(char* out, int cap, const char* query) {
     if (present("blend="))   g_i60.blend   = (int)farg("blend=", (float)g_i60.blend);
     if (present("perturb=")) g_i60.perturb = (int)farg("perturb=", (float)g_i60.perturb);
     if (present("shadow="))  g_i60.shadow_blend = (int)farg("shadow=", (float)g_i60.shadow_blend);
+    if (present("skip_efbcopy=")) g_i60.skip_efbcopy = (int)farg("skip_efbcopy=", (float)g_i60.skip_efbcopy);
     if (present("listmask=")) {              // hex bitmask of kDrawLists indices to re-issue
         const char* p = strstr(query, "listmask=");
         g_i60.list_mask = (unsigned)strtoul(p + 9, nullptr, 0);
@@ -425,6 +443,8 @@ int interp60_probe(char* out, int cap, const char* query) {
         g_i60.sil_mgr == 0 ? "<<< unresolved" :
         (g_i60.sil_after != g_i60.sil_before) ? "<<< in-between MUTATED occlusion alpha (blink source)" :
         "(in-between left it unchanged)");
+    app("EFB-COPY skip (water/screen-space flicker fix): skip_efbcopy=%d  copies_skipped_on_inbetween=%lu\n",
+        g_i60.skip_efbcopy, g_i60.efbcopy_skipped);
     app("MARUKAGE (TSilhouette::perform): real perf=%lu maru(&0x10)=%lu param=%08x | redraw perf=%lu maru=%lu param=%08x  %s\n",
         g_i60.sil_perf_real, g_i60.sil_maru_real, g_i60.sil_lastparam_real,
         g_i60.sil_perf_redraw, g_i60.sil_maru_redraw, g_i60.sil_lastparam_redraw,

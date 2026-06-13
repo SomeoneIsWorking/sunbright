@@ -114,6 +114,11 @@ struct Interp60Dbg {
     unsigned long sil_perf_real = 0, sil_perf_redraw = 0;   // perform() calls per field
     unsigned long sil_maru_real = 0, sil_maru_redraw = 0;   // &0x10 (marukage setup) per field
     u32 sil_lastparam_real = 0, sil_lastparam_redraw = 0;   // last param_1 seen each field
+    // Screen-space flicker fix: on the in-between field, skip TEfbCtrlTex's EFB->screen-texture
+    // copy so water/refraction (and the marukage on it) reuse the real field's capture. Default
+    // ON; /interp60?skip_efbcopy=0 to A/B against the flicker.
+    int skip_efbcopy = 0; unsigned long efbcopy_skipped = 0;   // reverted: reusing the stale screen
+        // texture ghosts Mario into the reflection. Kept as a probe toggle only, default OFF.
 };
 extern Interp60Dbg g_i60;
 
