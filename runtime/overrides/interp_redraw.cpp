@@ -65,22 +65,6 @@ void interp60_blend_registry();         // interp_capture.cpp
 
 namespace {
 
-// FNV-1a over a strided sample of an XFB buffer (guest RAM). The decisive output-side
-// check: if the real field's XFB and the in-between field's XFB ever hash DIFFERENTLY,
-// the in-between produced different pixels (interpolation reached the screen). If they
-// are always identical, the in-between is just tick N re-presented = 30 fps.
-u32 hash_xfb(u32 addr) {
-    u8* p = sb_ram_fast(addr);
-    if (!p) return 0;
-    // SMS XFB ~ 640x448x2 ≈ 0x8C000 bytes; sample every 64 bytes across 0x90000.
-    u32 h = 2166136261u;
-    for (u32 off = 0; off < 0x90000u; off += 64) {
-        u32 v; __builtin_memcpy(&v, p + off, 4);
-        h = (h ^ v) * 16777619u;
-    }
-    return h;
-}
-
 u32 g_mardir = 0;                 // TMarDirector* seen by the last direct()
 unsigned long g_direct_stamp = 0, g_consumed_stamp = 0;
 
@@ -142,23 +126,28 @@ SUNBRIGHT_OVERRIDE(ov_interp_endRendering, DISPLAY_END_RENDER) {
         return;
     }
 
-    // XFB buffer index BEFORE the first present's flip: the real frame copies to
-    // buffer[old_idx], the redraw to buffer[old_idx^1].
-    const u32 old_idx = MEM_R16(display + 0xC) & 1;
+    // SMS is single-XFB-buffered (display's two buffer slots are identical), so the real
+    // frame and the in-between would copy to and present from the SAME XFB texture — the
+    // async VI then shows it twice = 30 fps (RE'd via the present-address ring). Give the
+    // in-between its OWN distinct XFB address so the two presents alternate (true 60 fps).
+    // copy_to_ram is false (XFBToTexture), so a second address writes NO guest RAM — it is
+    // purely a separate texture-cache key.
+    const u32 orig_fb = MEM_R32(display + 4);
+    const u32 alt = orig_fb ^ 0x00400000u;   // distinct low26, 32-aligned, within MEM1
 
-    // First half: one field + the real frame's copy (EFB → XFB, copy-clear).
+    // First half: one field + the real frame's copy (EFB → XFB at the game's address).
     MEM_W16(display + 0x4C, 1);
     cpu.gpr[3] = display;
     func_802f80d0(cpu);
 
-    // The flip (unkC ^= 1) just ran — tell the VI the redraw will land in the
-    // new current buffer, so the second present shows it.
+    // Tell the VI the in-between present will land at ALT (the present address comes from
+    // this setNextXFB, NOT from display's fb pointer — verified: redirecting only the copy
+    // left the present on the original buffer).
     const u32 video = MEM_R32(display + 0x60);
-    const u32 fb    = MEM_R32(display + 4 + 4u * (MEM_R16(display + 0xC) & 1));
     cpu.gpr[3] = video;
-    cpu.gpr[4] = fb;
+    cpu.gpr[4] = alt;
     call_ppc(cpu, VIDEO_SET_NEXT_XFB);
-    g_i60.disp = display; g_i60.buf0 = MEM_R32(display + 4); g_i60.buf1 = MEM_R32(display + 8); g_i60.set_fb = fb;
+    g_i60.disp = display; g_i60.buf0 = MEM_R32(display + 4); g_i60.buf1 = MEM_R32(display + 8); g_i60.set_fb = alt;
 
     // Re-issue the scene draw pass with the TGraphics snapshot taken while the
     // game performed this frame's GX list. viewCalc inside the pass substitutes
@@ -246,27 +235,21 @@ SUNBRIGHT_OVERRIDE(ov_interp_endRendering, DISPLAY_END_RENDER) {
     // Clobber check: is the blend we wrote still in RAM now that all draw lists ran?
     if (g_i60.track_addr) g_i60.track_after = mem_rf32(g_i60.track_addr + 3 * 4);
 
-    // Second half: one more field + the redraw's copy — the in-between present.
+    // Second half: one more field + the redraw's copy. Steer the display's fb pointer to
+    // ALT so endRendering's GXCopyDisp writes the blend into texture[ALT] (matching the
+    // setNextXFB(alt) above, so the present reads what we copied). Restore afterward.
+    const u32 orig_b0 = MEM_R32(display + 4), orig_b1 = MEM_R32(display + 8);
+    MEM_W32(display + 4, alt);
+    MEM_W32(display + 8, alt);
     MEM_W16(display + 0x4C, 1);
     cpu.gpr[3] = display;
     func_802f80d0(cpu);
+    MEM_W32(display + 4, orig_b0);            // restore the game's single XFB
+    MEM_W32(display + 8, orig_b1);
 
     // GX volume + decode-run delta for the whole in-between field.
     g_i60.redraw_gx_bytes = gxs_decoded_bytes() - bytes0;
     g_i60.redraw_gx_runs  = gxs_decode_runs()  - runs0;
-
-    // OUTPUT-SIDE proof: hash the real-field XFB (buffer[old_idx]) vs the in-between
-    // XFB (buffer[old_idx^1]). Both copies are complete now. If these ever differ, the
-    // in-between rendered different pixels (interp reached the screen). If always equal,
-    // the in-between == tick N = 30 fps no matter the cadence.
-    {
-        const u32 fb_real   = MEM_R32(display + 4 + 4u * old_idx);
-        const u32 fb_redraw = MEM_R32(display + 4 + 4u * (old_idx ^ 1));
-        g_i60.xfb_real_hash   = hash_xfb(fb_real);
-        g_i60.xfb_redraw_hash = hash_xfb(fb_redraw);
-        g_i60.xfb_pairs++;
-        if (g_i60.xfb_real_hash != g_i60.xfb_redraw_hash) g_i60.xfb_differ++;
-    }
 
     // DECISIVE cross-check: the redraw frame's copy just rotated g_prev_info.
     // Count how many POS-matrix array bases (CP array 12) the GX stream set point
