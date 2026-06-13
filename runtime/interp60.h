@@ -35,6 +35,10 @@ struct Interp60Dbg {
     unsigned list_mask = 0x3F;  // which kDrawLists[] indices to RE-ISSUE on the in-between field
                            //     (bit i = list i). Bisection knob for the shadow/water blink:
                            //     clear a bit to stop re-drawing that pass on the in-between.
+    unsigned perform_mask = 0xFFFFFFFCu;  // perform() flags for the in-between re-issue. Default
+                           //     clears &1 (movement) + &2 (calc-anim) so the in-between only
+                           //     DRAWS and never double-steps animation/water-scroll (the flicker).
+                           //     /interp60?perform_mask=0xffffffff = old all-bits pass (A/B).
 
     // ── observations (engine writes, probe reads) ──
     // redraw insertion

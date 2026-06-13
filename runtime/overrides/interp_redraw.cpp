@@ -311,7 +311,12 @@ SUNBRIGHT_OVERRIDE(ov_interp_endRendering, DISPLAY_END_RENDER) {
         if (!list) continue;
         g_i60.cur_list = (int)li;
         cpu.gpr[3] = list;
-        cpu.gpr[4] = 0xFFFFFFFFu;
+        // The in-between must DRAW, not advance state. Clearing &1 (movement) + &2 (calc-anim)
+        // stops re-running the water move()/scroll counter (unk5E00) and other per-frame anim
+        // that double-steps the texture every other field = the water flicker (RE:
+        // docs/re_notes/water_60fps_correctness.md). Keeps view-calc/draw/post (0x4/0x8/0x10/0x80).
+        // Live-tunable for A/B: /interp60?perform_mask=0xffffffff restores the old all-bits pass.
+        cpu.gpr[4] = g_i60.perform_mask;
         cpu.gpr[5] = gfx;
         call_ppc(cpu, PERFORM_LIST_PERFORM);
     }
@@ -397,6 +402,10 @@ int interp60_probe(char* out, int cap, const char* query) {
     if (present("listmask=")) {              // hex bitmask of kDrawLists indices to re-issue
         const char* p = strstr(query, "listmask=");
         g_i60.list_mask = (unsigned)strtoul(p + 9, nullptr, 0);
+    }
+    if (present("perform_mask=")) {          // perform() flag mask for the in-between re-issue
+        const char* p = strstr(query, "perform_mask=");
+        g_i60.perform_mask = (unsigned)strtoul(p + 13, nullptr, 0);
     }
     if (present("watch=")) {                 // arm the write-watch on the tracked buffer
         extern u32 g_watch_wa; extern bool g_watch_redraw_only;
