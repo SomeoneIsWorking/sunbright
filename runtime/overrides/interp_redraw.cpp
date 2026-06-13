@@ -73,6 +73,7 @@ void interp60_take_motion();            // interp_capture.cpp
 void interp60_registry_clear();         // interp_capture.cpp
 void interp60_blend_registry();         // interp_capture.cpp
 size_t interp60_registry_size();        // interp_capture.cpp — live-model count this frame
+bool sunbright_interp60_replay();       // interp60_replay.cpp — render-only replay in-between
 
 namespace {
 
@@ -92,7 +93,7 @@ u8  g_gfx_snap[0x100];
 bool g_gfx_valid = false;
 
 SUNBRIGHT_OVERRIDE(ov_interp_perform_snap, 0x802a4e28u) {
-    if (sunbright_interp60() && g_mardir && cpu.gpr[3] == MEM_R32(g_mardir + 0x1C) && cpu.gpr[5] >= 0x80000000u) {
+    if ((sunbright_interp60() || sunbright_interp60_replay()) && g_mardir && cpu.gpr[3] == MEM_R32(g_mardir + 0x1C) && cpu.gpr[5] >= 0x80000000u) {
         for (u32 i = 0; i < 0x100; i++) g_gfx_snap[i] = MEM_R8(cpu.gpr[5] + i);
         g_gfx_valid = true;
     }
@@ -169,7 +170,7 @@ SUNBRIGHT_OVERRIDE(ov_interp_endRendering, DISPLAY_END_RENDER) {
     // Insert the in-between field only for a fresh 2-field gameplay frame drawn by
     // TMarDirector with a valid TGraphics snapshot. 1-field scenes (60 fps menus)
     // present every field already.
-    const bool room = sunbright_interp60() && !interp60_nosynth() && fresh && g_mardir && g_gfx_valid && wait == 2;
+    const bool room = (sunbright_interp60() || sunbright_interp60_replay()) && !interp60_nosynth() && fresh && g_mardir && g_gfx_valid && wait == 2;
     if (!room) {
         if (sunbright_interp60() && fresh && wait != 2) g_i60.skip_rate++;
         if (sunbright_interp60() && fresh && !g_mardir)  g_i60.skip_nodir++;
@@ -186,7 +187,38 @@ SUNBRIGHT_OVERRIDE(ov_interp_endRendering, DISPLAY_END_RENDER) {
     // copy_to_ram is false (XFBToTexture), so a second address writes NO guest RAM — it is
     // purely a separate texture-cache key.
     const u32 orig_fb = MEM_R32(display + 4);
-    const u32 alt = orig_fb ^ 0x00400000u;   // distinct low26, 32-aligned, within MEM1
+    const u32 alt = orig_fb ^ 0x00400000u;
+
+    // ── Render-only replay in-between (SUNBRIGHT_INTERP60_REPLAY) ─────────────────────────────────
+    // interp60 ON TOP of the game: present the real frame, then render the in-between by REPLAYING
+    // frame N's captured GX command stream through the OpcodeDecoder — no game code runs, no game
+    // memory is written (the old mutate-mDrawMtxBuf + re-issue-perform-lists path below is bypassed).
+    // This eliminates the whole crash class (particle/shape/director re-execution). TODO: per-object
+    // matrix interpolation toward N-1 via GXSetArray base redirection; currently replays N as-is, so
+    // the in-between == N (true 60fps cadence, but no motion-interpolation yet).
+    if (sunbright_interp60_replay()) {
+        // Snapshot frame N's captured command stream NOW — the first-half copy below does a
+        // GXCopyDisp that triggers gxs_frame_boundary and clears g_frame.
+        std::vector<u8> frameN(gxs_cur_frame());
+        MEM_W16(display + 0x4C, 1);
+        cpu.gpr[3] = display; func_802f80d0(cpu);          // present REAL frame N to the game XFB
+        if (g_gfx) g_gfx->Flush();
+        const u32 video = MEM_R32(display + 0x60);
+        cpu.gpr[3] = video; cpu.gpr[4] = alt; call_ppc(cpu, VIDEO_SET_NEXT_XFB);   // in-between → ALT
+        g_i60.disp = display; g_i60.set_fb = alt;
+        g_i60.redraw_gx_bytes = frameN.size();
+        g_interp60_in_redraw = true;
+        gxs_replay_frame(frameN.data(), frameN.size());    // re-render frame N from captured commands
+        g_interp60_in_redraw = false;
+        const u32 ob0 = MEM_R32(display + 4), ob1 = MEM_R32(display + 8);
+        MEM_W32(display + 4, alt); MEM_W32(display + 8, alt);   // steer the copy dest to ALT
+        MEM_W16(display + 0x4C, 1);
+        cpu.gpr[3] = display; func_802f80d0(cpu);          // copy replayed EFB → ALT and present it
+        MEM_W32(display + 4, ob0); MEM_W32(display + 8, ob1);
+        MEM_W16(display + 0x4C, wait);
+        g_i60.redraws++;
+        return;
+    }   // distinct low26, 32-aligned, within MEM1
 
     // First half: one field + the real frame's copy (EFB → XFB at the game's address).
     MEM_W16(display + 0x4C, 1);
