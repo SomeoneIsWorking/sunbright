@@ -60,6 +60,33 @@ tailored boundary AND (b) reads/writes one engine-object field — end-to-end, v
 oracle. The function half is proven (the thunk); the data half is the experiment. If type-aware
 translation of field access doesn't come out clean on the slice, escalate before scaling.
 
+**DE-RISK RESULT (2026-06-14): GREEN — the emission mechanism is proven.**
+`runtime/tests/run_field_slice_test.sh` (+ `field_slice_gen.cpp`, `field_slice_test.cpp`) runs ONE
+real recompiled game function — `mr; lfs f1,8(this); bl eng_scale; stfs f1,8(this); blr` — through
+the **real** decoder + collection + emitter, twice: ORACLE (raw guest-layout `MEM_RF32`,
+big-endian, guest offset 8 = what today's recomp/Dolphin emits) and TAILORED (host-native, baked as
+`((EngineCam*)sb_eng_host(cpu.gpr[3]))->mFov`). The host `EngineCam` has an 8-byte pointer member,
+so `mFov` sits at **host offset 16** while its guest offset is 8 — a load-bearing divergence. Both
+paths call the SAME bridged engine fn (`eng_scale`, via `SUNBRIGHT_BRIDGE`) and both produce 7.0;
+TAILORED's host field write == ORACLE's guest field write. So a recompiled function CAN read a host
+field, call an engine fn through the boundary, and write a host field back, with correct host
+offset/endianness/pointer-width. The new emitter capability is `EmitContext::eng_fields`
+(`tools/recompiler/c_emitter.{h,cpp}` `emit_eng_field`): at a typed load/store it bakes a direct
+host-struct member access instead of `MEM_R*/MEM_W*`. Mechanism chosen for the slice (marked
+explicitly): **engine pointers are 32-bit HANDLES** (`sb_eng_host(token)→host obj`), keeping the
+recomp register file 32-bit; game objects stay guest-layout, engine objects are host-native.
+
+**What is NOT yet proven (the residual risk to close next, do NOT claim solved):**
+- *Seeded type recovery at scale.* The slice's seed is a hand pass over `mr`/`addi-0` copies + a
+  one-type layout map. Real recovery must propagate types through the full dataflow (merges, memory
+  round-trips, casts/unions, `this`-adjustment) over ~9,700 game functions. The slice proves the
+  EMISSION, not that recovery scales — that is the next de-risk.
+- *Pointer-into-object / interior addresses.* A handle is opaque-pass + deref only. Game code that
+  takes `&engineObj->field` and derefs it under a different static type, does pointer arithmetic on
+  an embedded sub-object, or stores the pointer in guest RAM and compares it, is NOT covered.
+- *Embedded value types* (inline `JGeometry::TVec3` etc. with endianness at the boundary) and
+  *nested engine objects* as members — not exercised.
+
 ## Consolidation — what each tree is now
 
 | Tree | Role in the target | Notes |
@@ -80,7 +107,11 @@ translation of field access doesn't come out clean on the slice, escalate before
   playable" framing is now subordinate to THIS doc — the renderer ultimately moves into `port/`).
 
 ## Next
-1. The **tailored-recomp de-risk slice** (above) — the gating experiment. This is the priority;
-   everything else scales only if it comes out clean.
-2. Then build out the tailored recompiler boundary (calls + type-aware field access) +
-   grow the `port/` engine to cover what the game touches, slice by slice, oracle-verified.
+1. ~~The tailored-recomp de-risk slice~~ — DONE, GREEN (see DE-RISK RESULT above). The emission
+   mechanism (`eng_fields` host field access) + the call bridge compose cleanly and match the oracle.
+2. **De-risk #2: seeded type recovery at scale** — the now-leading risk. Build the real propagation
+   (decomp-signature seeds → dataflow over a whole function, then across calls) that produces
+   `eng_fields` automatically for a REAL game function touching a REAL `port/` engine object, and
+   handle the pointer-into-object / embedded-value cases the slice left open. Stay oracle-verified.
+3. Then build out the rest of the tailored boundary + grow the `port/` engine to cover what the game
+   touches, slice by slice, oracle-verified.

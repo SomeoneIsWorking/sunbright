@@ -121,7 +121,56 @@ void CEmitter::emit_function(const EmitContext& ctx) {
     out_ << "}\n";
 }
 
+// TAILORED-RECOMP boundary, field-access half (docs/ARCHITECTURE_TARGET.md). When the
+// base register at a load/store site is statically typed as a host-native PC-engine
+// object, bake a direct host-struct member access — host offset (resolved by the C++
+// compiler from `member`), host endianness (a native read, no bswap), host pointer
+// width — instead of a guest-offset/big-endian MEM access. The base register holds a
+// 32-bit guest TOKEN (the slice's chosen engine-pointer representation: a handle, not
+// a raw host pointer — keeps the recomp register file 32-bit); sb_eng_host() maps it
+// to the host object. The guest displacement i.d is NOT used: `member` already encodes
+// the host field. Returns false (→ fall through to the normal MEM emit) for any op not
+// modeled here or any site not in eng_fields.
+bool CEmitter::emit_eng_field(const PPCInstr& i, const EmitContext& ctx) {
+    auto it = ctx.eng_fields.find(i.pc);
+    if (it == ctx.eng_fields.end()) return false;
+    const EngField& f = it->second;
+
+    char obj[160];
+    snprintf(obj, sizeof(obj), "((%s*)sb_eng_host(cpu.gpr[%d]))->%s",
+             f.type_cname.c_str(), i.rA, f.member.c_str());
+
+    const std::string d  = "cpu.gpr[" + std::to_string(i.rD) + "]";
+    const std::string s  = "cpu.gpr[" + std::to_string(i.rS) + "]";   // store src GPR (rS==rD bits)
+    const std::string fd  = "cpu.fpr[" + std::to_string(i.rD) + "].ps0";
+    const std::string fd1 = "cpu.fpr[" + std::to_string(i.rD) + "].ps1";
+    const std::string fs  = "cpu.fpr[" + std::to_string(i.rD) + "].ps0";  // store src FPR (frS==rD bits)
+
+    switch (i.op) {
+    // Integer loads: read the host member, zero/sign-extend into the 32-bit register.
+    case PPCOp::LWZ: line("%s = (u32)(%s);", d.c_str(), obj); return true;
+    case PPCOp::LBZ: line("%s = (u32)(u8)(%s);",  d.c_str(), obj); return true;
+    case PPCOp::LHZ: line("%s = (u32)(u16)(%s);", d.c_str(), obj); return true;
+    case PPCOp::LHA: line("%s = (u32)(s32)(s16)(%s);", d.c_str(), obj); return true;
+    // Float load: host member is f32, widened to the f64 ps slots (GC fills ps1=ps0).
+    case PPCOp::LFS: line("%s = %s; %s = %s;", fd.c_str(), obj, fd1.c_str(), fd.c_str()); return true;
+    // Integer stores: write the register value into the host member.
+    case PPCOp::STW: line("%s = (u32)%s;", obj, s.c_str()); return true;
+    case PPCOp::STB: line("%s = (u8)%s;",  obj, s.c_str()); return true;
+    case PPCOp::STH: line("%s = (u16)%s;", obj, s.c_str()); return true;
+    // Float store: narrow the ps0 f64 back to the host f32 member.
+    case PPCOp::STFS: line("%s = (f32)%s;", obj, fs.c_str()); return true;
+    default:
+        // Typed access not modeled for this op (e.g. update-form, indexed). Falling
+        // through to the guest MEM emit would be WRONG for a host object — make it loud.
+        line("// TAILORED-UNMODELED: %s on host object %s at 0x%08x", i.mnemonic().c_str(),
+             f.type_cname.c_str(), i.pc);
+        return false;
+    }
+}
+
 void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
+    if (emit_eng_field(i, ctx)) return;  // tailored host field access takes precedence
     const std::string d = "cpu.gpr[" + std::to_string(i.rD) + "]";
     const std::string a = "cpu.gpr[" + std::to_string(i.rA) + "]";
     const std::string b = "cpu.gpr[" + std::to_string(i.rB) + "]";

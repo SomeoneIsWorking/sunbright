@@ -1,9 +1,23 @@
 #pragma once
 #include "ppc_decoder.h"
+#include <map>
 #include <string>
 #include <sstream>
 #include <unordered_set>
 #include <vector>
+
+// TAILORED-RECOMP boundary, field-access half (see docs/ARCHITECTURE_TARGET.md).
+// At a load/store site whose base register is statically typed as a *host-native*
+// PC-engine object (type recovery seeded by decomp signatures), the emitter must
+// NOT emit a raw guest-offset/big-endian MEM_R*/MEM_W* — it reads/writes the HOST
+// struct member directly (host offset, host endianness, host pointer width). An
+// EngField names the host C++ type + member to bake at that site; the guest
+// displacement is subsumed by `member` (which already encodes the host offset).
+// An empty eng_fields map = the legacy all-guest behaviour (no tailored sites).
+struct EngField {
+    std::string type_cname;  // host C++ type name, e.g. "EngineCam"
+    std::string member;      // host member expression, e.g. "mFov"
+};
 
 // Emits C source code from a decoded sequence of PPC instructions.
 // Output is #include-able into generated/functions.cpp and compiled as C++.
@@ -19,6 +33,7 @@ struct EmitContext {
     std::vector<PPCInstr> instrs;
     std::unordered_set<u32> branch_targets;     // within-function jump labels
     std::unordered_set<u32> jumptable_targets;  // bctr jump-table case labels (subset of branch_targets)
+    std::map<u32, EngField> eng_fields;         // load/store pc -> host engine-object field access (tailored)
 };
 
 class CEmitter {
@@ -44,6 +59,10 @@ private:
     std::vector<std::string> unhandled_ops_;
 
     void emit_instr(const PPCInstr& i, const EmitContext& ctx);
+
+    // Tailored-boundary load/store: if `i` is registered in ctx.eng_fields, emit a
+    // direct host-struct member access (instead of MEM_R*/MEM_W*) and return true.
+    bool emit_eng_field(const PPCInstr& i, const EmitContext& ctx);
 
     // Helpers
     std::string ea(const PPCInstr& i);   // effective address: rA+d or rA+rB
