@@ -79,6 +79,7 @@ int sb_vk_quad_selftest(char*, int);                         // runtime/render/v
 int sb_j2d_dump(char*, int);                                 // runtime/render/j2d_walk.cpp
 int sb_j2d_render(char*, int);                               // runtime/render/j2d_render.cpp
 int sb_ngx_vertex_selftest(char*, int);                      // runtime/ngx/ngx_vertex.cpp
+int sb_ngx_mesh_selftest(char*, int);                        // runtime/ngx/ngx_mesh.cpp
 void gxs_frametime_reset();                                   // runtime/gx_stream.h
 void gxs_frametime_stats(unsigned long*, double*, double*, double*, double*);
 void gxs_frametime_decode(double*, double*);
@@ -215,8 +216,12 @@ std::string handle_repl(const char* path) {
         app("%s", rep);
         return std::string(buf, n);
     }
-    if (strncmp(path, "/ngxvtx", 7) == 0) {  // N4 native GX vertex-position extractor self-test
+    if (strncmp(path, "/ngxvtx", 7) == 0) {  // N4 native GX vertex-attribute extractor self-test
         char rep[2048]; sb_ngx_vertex_selftest(rep, sizeof rep); app("%s", rep);
+        return std::string(buf, n);
+    }
+    if (strncmp(path, "/ngxmesh", 8) == 0) {  // N4 native mesh assembly + triangulation self-test
+        char rep[2048]; sb_ngx_mesh_selftest(rep, sizeof rep); app("%s", rep);
         return std::string(buf, n);
     }
     if (strncmp(path, "/ngx", 4) == 0) {   // R1 native-GX-decoder parity vs oracle

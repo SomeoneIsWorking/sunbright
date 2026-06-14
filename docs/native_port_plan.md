@@ -290,8 +290,16 @@ decoder; runtime GP-FIFO path on the delete list. Then, on the object-model arch
   channels, per-channel Frac dequant). A shared `ngx_attr_offset()` in `ngx_decode` is the single
   source of vertex-layout truth (ngx_vertex_size re-expressed via it); `resolve_attr` unifies
   Direct/Index8/Index16 fetch. `/ngxvtx` self-test 18/18 (multi-attr offsets, every color format,
-  normal/tex dequant, all indexed paths). Pure/offline. **Next: hook J3DShape → resolve guest
-  pos/nrm/col/tex arrays (CP ARRAY_BASE) → assemble a native indexed mesh per shape packet.**
+  normal/tex dequant, all indexed paths). Pure/offline.
+- **N4 mesh assembler ✅** (this commit) — `runtime/ngx/ngx_mesh.{h,cpp}`, the layer above the
+  extractors: given a GX DRAW primitive (CP descriptor + opcode + vertex block + resolved indexed
+  arrays `NgxArrays`), extracts ALL present attributes into interleaved native vertices `NgxVertex`
+  and triangulates the GX primitive type (Quads→2 tris, Tris→list, TriStrip→alternating winding,
+  TriFan, Lines/Points→none) into a triangle-index list — exactly a native GPU vertex+index buffer.
+  Owns no GX framing of its own (caller supplies the primitive); pure/offline. `/ngxmesh` self-test
+  14/14 (tri counts, index winding, attribute interleave, multi-primitive append base). **Next: the
+  live J3DShape hook — RE J3DShape/BMD SHP1+VTX1, resolve guest CP ARRAY_BASE/STRIDE → NgxArrays,
+  walk a shape's display-list packets → ngx_assemble_primitive → one native mesh per shape.**
 
 **PRESENT FINDING (2026-06-14):** making the native render visible must NOT be a quick overlay via
 `sb_present_xfb`/`Presenter::ViSwap` — that path IS Dolphin VideoCommon (XFB = Dolphin AbstractTexture),
