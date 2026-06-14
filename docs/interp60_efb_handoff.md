@@ -6,6 +6,42 @@ it lists every dead end so you don't repeat the ~8 wrong hypotheses this session
 
 ---
 
+## ✅ UPDATE (2026-06-14, next session): UNIFIED REPLAY — own BOTH presents through one pipeline
+This is the fix the previous session's "Next idea if resuming" pointed at, and it matches the user
+directive (own the render, not tweak knobs). **Both the real present AND the in-between present are now
+produced by the SAME render-only replay** (`runtime/overrides/interp_redraw.cpp`, the replay branch):
+
+- **REAL present** = `gxs_replay_frame` at **alpha 1.0** (== frame N exactly) into a freshly-cleared
+  EFB → copy → orig XFB → present.
+- **IN-BETWEEN present** = `gxs_replay_frame` at **g_i60.alpha** (lerp N-1→N) into a freshly-cleared
+  EFB → copy → alt XFB → present.
+
+The game's live 30 Hz render still runs (it builds the captured GX stream) but **its EFB output is
+discarded** — we `sb_clear_efb()` and re-render both presented frames ourselves. Each replay re-runs
+the engine's OWN EFB-copy/screen-texture commands, so each present samples its OWN freshly-copied
+screen texture. **Why this fixes Frontier 2 by construction:** previously the real present was the
+game's LIVE render, which sampled the screen texture left by the PREVIOUS in-between (N-1/2) → water/
+mirror/EFB feedback lagged a half-step on real frames while the in-between (a replay) looked right —
+two DIFFERENT pipelines that disagreed. Now they are ONE pipeline and cannot disagree (the user's
+"there should be only one outcome").
+
+- Built clean, runs headless: redraws climb, motion-interp full coverage (hits≫misses), **0 new
+  gameplay doublings + 0 new gameplay skips** over a 14s walk (Frontier 1 held). Mechanism for the
+  pairing map at two alphas: `interp60_xfmap_build` ONCE (correct freshly-spawned gating off LAST
+  frame's registry) + `interp60_xfmap_set_alpha` per replay (the map is alpha-independent base<->base
+  pairing). At alpha 1.0 the lerp collapses to N for every model, so the real present is frame N
+  regardless of pairing.
+- A/B off-switch: `SUNBRIGHT_NO_UNIFIED_REPLAY=1` reverts to the old live-real-frame path (the
+  lagged one) for comparison. Delete that fallback once verified headed.
+- **NEEDS USER HEADED VERIFICATION** of the water/tower reflection (headless capture can't force the
+  motion-dependent artifact; per "verification is broken" below). The old EFB-redirect/owned-texture
+  machinery (efb_native.cpp, m_sb_efb_own, sb_efb_reset_binds) is now only used by the A/B fallback
+  and is a candidate for deletion after confirmation.
+- The DEAD ENDS list below remains valid history; the unified-replay approach sidesteps all of them
+  by not trying to patch the in-between or the real frame separately.
+
+---
+
 ## ⛔ USER DIRECTIVE (most important — re-read every time)
 > "stop tweaking knobs, own more of the code, less dolphin, less emulation, more native code,
 > like the interp you made that lives over the renderer."

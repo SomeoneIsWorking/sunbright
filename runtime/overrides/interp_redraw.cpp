@@ -75,6 +75,7 @@ void interp60_blend_registry();         // interp_capture.cpp
 size_t interp60_registry_size();        // interp_capture.cpp — live-model count this frame
 bool sunbright_interp60_replay();       // interp60_replay.cpp — render-only replay in-between
 extern "C" void interp60_xfmap_build(const u8* frame, u32 n, float alpha);  // interp_capture.cpp
+extern "C" void interp60_xfmap_set_alpha(float alpha);  // interp_capture.cpp — re-aim map per replay
 extern "C" void interp60_xfmap_end();
 
 namespace {
@@ -232,43 +233,85 @@ SUNBRIGHT_OVERRIDE(ov_interp_endRendering, DISPLAY_END_RENDER) {
     // Fires for EITHER flag: SUNBRIGHT_INTERP60 (run60) now uses the render-only replay, so the old
     // mutating path below is unreachable (kept transiently for A/B; to be deleted).
     if (sunbright_interp60() || sunbright_interp60_replay()) {
-        // OWN the present (default): the runtime scans out both frames itself for a deterministic
-        // R,B,R,B cadence. Dolphin's automatic per-field present is gated off; we call
-        // sb_present_xfb(phys) once after the real copy and once after the in-between copy. This
-        // removes the RRBB doublings that came from Dolphin's VI field parity/phase + the
-        // progressive even-field address offset (hazard H5). Addresses are physical (GXCopyDisp's
-        // dest form, addr & 0x3FFFFFFF) — what the XFB texture cache is keyed by.
+        // ── OWN BOTH PRESENTS through the SAME render path (one outcome by construction) ──
+        // The game simulates at 30 Hz and renders frame N once through the live FIFO (that render
+        // built the captured command stream below; its EFB output is discarded). We then re-render
+        // BOTH presented frames OURSELVES from that one stream, each into a freshly-cleared EFB:
+        //   REAL       = replay @ alpha 1.0  (== frame N exactly)
+        //   IN-BETWEEN = replay @ g_i60.alpha (lerp N-1 -> N)
+        // Each replay re-runs the engine's OWN EFB-copy / screen-texture commands, so each present
+        // samples its OWN freshly-copied screen texture. This is what fixes Frontier 2 (effects
+        // wrong on REAL frames): previously the real present was the game's LIVE render, which
+        // sampled the screen texture left by the PREVIOUS in-between (N-1/2) => water/mirror/EFB
+        // feedback lagged a half-step on real frames, while the in-between (a replay) looked right.
+        // Real and in-between were two DIFFERENT pipelines and disagreed. Now they are one pipeline
+        // and cannot disagree. A/B off-switch: SUNBRIGHT_NO_UNIFIED_REPLAY (old live-real path).
+        //
+        // OWN the present (default): the runtime scans out both frames itself (sb_present_xfb) for a
+        // deterministic R,B,R,B cadence, independent of Dolphin's VI field parity/phase (hazard H5).
+        // Addresses are physical (GXCopyDisp dest form, & 0x3FFFFFFF) — the XFB cache key.
         const bool own = own_present_enabled();
         const u32 orig_phys = orig_fb & 0x3FFFFFFFu;
         const u32 alt_phys  = alt     & 0x3FFFFFFFu;
         if (own) g_sb_own_present = 1;
-        // Snapshot frame N's captured command stream NOW — the first-half copy below does a
-        // GXCopyDisp that triggers gxs_frame_boundary and clears g_frame.
+        const u32 video = MEM_R32(display + 0x60);
+        g_i60.disp = display; g_i60.set_fb = alt;
+
+        // Snapshot frame N's captured command stream NOW — the copies below do GXCopyDisp which
+        // triggers gxs_frame_boundary and clears g_frame. frameN is a stable private copy.
         std::vector<u8> frameN(gxs_cur_frame());
-        // Build the cur->prev pos-matrix map BEFORE the first copy: the copy's GXCopyDisp boundary
-        // swaps frame N into gxs_prev_frame_info(), so doing this after would pair N with itself
-        // (nothing to interpolate). Now gxs_prev_frame_info() is still frame N-1. Arms the
-        // LoadIndexedXF hook to lerp(N-1,N) into XF — render-only, no game memory written.
+        g_i60.redraw_gx_bytes = frameN.size();
+
+        // Build the pos-matrix pairing map ONCE, with correct freshly-spawned gating (against LAST
+        // frame's registry). The map is alpha-independent base<->base pairing; we re-aim it at each
+        // alpha below without rebuilding (interp60_xfmap_set_alpha). Reads model RAM buffers (stable
+        // across both replays — the replay writes only XF/GPU, never guest RAM).
         interp60_xfmap_build(frameN.data(), (u32)frameN.size(), g_i60.alpha);
+
+        const bool unified = getenv("SUNBRIGHT_NO_UNIFIED_REPLAY") == nullptr;
+
+        if (unified) {
+            // ── REAL present: replay frame N (alpha 1.0) into a clean EFB, copy -> orig, present ──
+            sb_clear_efb();                                    // discard the game's live EFB; render fresh
+            interp60_xfmap_set_alpha(1.0f);
+            g_interp60_in_redraw = true;
+            gxs_replay_frame(frameN.data(), frameN.size());    // re-render N (own EFB-copy/screen tex)
+            g_interp60_in_redraw = false;
+            MEM_W16(display + 0x4C, 1);
+            cpu.gpr[3] = display; func_802f80d0(cpu);          // pace 1 field + copy real EFB -> orig
+            if (g_gfx) g_gfx->Flush();
+            if (own) sb_present_xfb(orig_phys);                // R: present the real frame now
+
+            // ── IN-BETWEEN present: replay frame N (g_i60.alpha) into a clean EFB, copy -> alt ──
+            cpu.gpr[3] = video; cpu.gpr[4] = alt; call_ppc(cpu, VIDEO_SET_NEXT_XFB);
+            sb_clear_efb();
+            interp60_xfmap_set_alpha(g_i60.alpha);
+            g_interp60_in_redraw = true;
+            gxs_replay_frame(frameN.data(), frameN.size());    // re-render N-1/2
+            g_interp60_in_redraw = false;
+            interp60_xfmap_end();
+            const u32 ob0 = MEM_R32(display + 4), ob1 = MEM_R32(display + 8);
+            MEM_W32(display + 4, alt); MEM_W32(display + 8, alt);   // steer the copy dest to ALT
+            MEM_W16(display + 0x4C, 1);
+            cpu.gpr[3] = display; func_802f80d0(cpu);          // pace 1 field + copy in-between -> alt
+            MEM_W32(display + 4, ob0); MEM_W32(display + 8, ob1);
+            MEM_W16(display + 0x4C, wait);
+            if (own) sb_present_xfb(alt_phys);                 // B: present the in-between now
+            g_i60.redraws++;
+            return;
+        }
+
+        // ── A/B fallback (SUNBRIGHT_NO_UNIFIED_REPLAY): old live-real-frame path ──
+        // Real present is the game's LIVE render (sampled the previous in-between's screen texture =
+        // the half-step effect lag this whole change fixes). Kept only for A/B until the user
+        // confirms the unified path headed; then delete.
         MEM_W16(display + 0x4C, 1);
         cpu.gpr[3] = display; func_802f80d0(cpu);          // pace 1 field + copy REAL frame N → orig
         if (g_gfx) g_gfx->Flush();
         if (own) sb_present_xfb(orig_phys);                // R: present the real frame now
-        const u32 video = MEM_R32(display + 0x60);
         cpu.gpr[3] = video; cpu.gpr[4] = alt; call_ppc(cpu, VIDEO_SET_NEXT_XFB);   // in-between → ALT
-        g_i60.disp = display; g_i60.set_fb = alt;
-        g_i60.redraw_gx_bytes = frameN.size();
         g_interp60_in_redraw = true;
-        // Per-field EFB feedback: the in-between's EFB->texture copies go into Sunbright-OWNED
-        // per-field textures (TextureCacheBase m_sb_efb_own) and the in-between samples those, so
-        // each screen-space effect (water reflection, mirror, graffiti) reflects the interpolated
-        // geometry (no Mario ghost) AND the real field's textures are never clobbered (no lag) —
-        // without touching guest RAM or Dolphin's address-keyed cache. Off: SUNBRIGHT_NO_EFB_REDIRECT.
         if (efb_redirect_enabled()) g_sb_efb_redirect_inbetween = 1;
-        // Own-mode: reset the bound-texture reuse cache so the in-between binds its own owned-EFB
-        // textures fresh, and (after) so the next REAL frame re-binds its own — otherwise the
-        // owned bind leaks into the real frame's Load() and every real frame samples the
-        // in-between's N-1/2 readback (= the real-frame EFB lag). See SbResetBinds.
         if (efb_reset_binds_enabled()) sb_efb_reset_binds();
         gxs_replay_frame(frameN.data(), frameN.size());    // re-render frame N with interpolated mtx
         g_sb_efb_redirect_inbetween = 0;
@@ -282,11 +325,6 @@ SUNBRIGHT_OVERRIDE(ov_interp_endRendering, DISPLAY_END_RENDER) {
         MEM_W32(display + 4, ob0); MEM_W32(display + 8, ob1);
         MEM_W16(display + 0x4C, wait);
         if (own) sb_present_xfb(alt_phys);                 // B: present the in-between now
-        // Own the EFB clear (opt-in SUNBRIGHT_EFB_CLEAR): wipe the EFB so the GAME's next real frame
-        // renders on a clean buffer. Addresses the un-cleared-residue doubling (the tower images),
-        // but did NOT fix Mario's reflection — under evaluation; off by default. See the handoff.
-        static const int efb_clear = getenv("SUNBRIGHT_EFB_CLEAR") ? 1 : 0;
-        if (efb_clear) sb_clear_efb();
         g_i60.redraws++;
         return;
     }   // distinct low26, 32-aligned, within MEM1

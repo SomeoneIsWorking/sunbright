@@ -262,6 +262,13 @@ extern "C" void interp60_xfmap_build(const u8* frame, u32 n, float alpha) {
 }
 extern "C" void interp60_xfmap_end() { g_xf_active = false; g_xfmap.clear(); }
 
+// Re-aim the SAME pairing map at a different blend alpha without rebuilding it (the map is a pure
+// base<->base pairing; only the lerp weight changes). interp_redraw builds the map ONCE per game
+// frame (with correct freshly-spawned gating off LAST frame's registry) and replays it twice: the
+// REAL present at alpha 1.0 (== frame N) and the IN-BETWEEN at g_i60.alpha. At alpha 1.0 the lerp
+// collapses to N for every model, so the real present is frame N regardless of pairing.
+extern "C" void interp60_xfmap_set_alpha(float alpha) { g_xf_alpha = alpha; }
+
 // Fork seam (XFStructs.cpp LoadIndexedXF). array 12 = XF_A pos matrix. Fill `out` (big-endian words,
 // guest format — LoadIndexedXF swap32's them into XF) with the interpolated matrix; return true. A
 // non-tracked base / inactive returns false (stock guest read).
