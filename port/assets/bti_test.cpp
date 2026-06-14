@@ -175,7 +175,10 @@ int main(int argc, char** argv) {
 		if (!is_bti) continue;
 		++bti_count;
 		if (want) { if (fi.name == want) pick = &fi; }
-		else if (!pick) pick = &fi;  // first .bti
+		// Default: the LARGEST .bti — the content-bearing texture. (Picking the
+		// first can land on a tiny all-zero placeholder like bl.bti, which decodes
+		// correctly but is legitimately blank, tripping the non-trivial check.)
+		else if (!pick || fi.size > pick->size) pick = &fi;
 	}
 	std::printf("%d .bti files in archive\n", bti_count);
 	if (!pick) { std::printf("FAIL: no matching .bti file found\n"); return 1; }
