@@ -24,6 +24,8 @@ g++ -std=c++17 -O0 -g -Wall -Wextra \
     tools/recompiler/ppc_mnemonic.cpp \
     tools/recompiler/func_collect.cpp \
     tools/recompiler/type_recovery.cpp \
+    tools/recompiler/abi_layout.cpp \
+    tools/recompiler/type_db.cpp \
     -o "$out/field_slice_gen"
 "$out/field_slice_gen" "$gen_out"
 

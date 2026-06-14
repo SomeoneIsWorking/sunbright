@@ -26,6 +26,7 @@
 #include "../../tools/recompiler/c_emitter.h"
 #include "../../tools/recompiler/func_collect.h"
 #include "../../tools/recompiler/type_recovery.h"
+#include "../../tools/recompiler/type_db.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -61,14 +62,17 @@ static std::vector<uint32_t> game_words(uint32_t base) {
 }
 
 // The host engine layout + the accessor's signature, seeded as the real recompiler would
-// from the decomp headers + symbol map. Type names ARE the host C++ struct names.
+// from the decomp headers + symbol map. Type names ARE the host C++ struct names. The
+// guest field offsets are COMPUTED by abi_layout (GameCube ABI) from the field list — not
+// hand-entered — via build_engine_layout: a polymorphic EngineCam yields mNext@4, mFov@8,
+// mFlags@12 (guest), matching the host struct's mNext@8/mFov@16/mFlags@20 by name.
 static TypeDB make_db(uint32_t base) {
     TypeDB db;
-    db.layouts["EngineCam"].fields = {
-        { 4,  FieldDesc{ "mNext", "EngineCam" } },   // nested engine pointer
-        { 8,  FieldDesc{ "mFov",  ""          } },
-        { 12, FieldDesc{ "mFlags", ""         } },
-    };
+    db.layouts["EngineCam"] = build_engine_layout({
+        { "mNext",  FKind::Ptr, "EngineCam" },   // nested engine pointer
+        { "mFov",   FKind::F32, ""          },
+        { "mFlags", FKind::I32, ""          },
+    }, /*polymorphic=*/true);
     db.signatures[base] = { { 3, "EngineCam" } };    // this in r3
     return db;
 }
