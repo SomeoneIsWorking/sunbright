@@ -91,13 +91,33 @@ in the 32-bit recomp register file, so a load of such a field yields a **handle*
 `obj->next->field` chains work. So: engine objects host-native with real host pointers between
 them; recompiled code sees handles at the boundary.
 
+**DE-RISK #2 step 1 DONE (2026-06-14, second commit family): auto DB + CFG recovery +
+COMPLETE-coverage proof on REAL code.** The hand-built DB and straight-line pass are replaced
+by the full auto pipeline, each unit-tested + ctest:
+- `tools/recompiler/decomp_parse.{h,cpp}` — parse engine field lists (name, FKind, nested type,
+  guest offset, base, polymorphic) from the decomp headers; validated against the decomp's own
+  `/* 0x */` annotations on **304 real structs** (0 ABI/parser bugs; 5 residuals are documented
+  decomp-data/HW quirks). FINDING: the CodeWarrior vtable is NOT always at offset 0 (base-most
+  polymorphic classes append it at the END) — `docs/re_notes/abi_findings.md`; the DB reads
+  absolute offsets from annotations so this never affects field resolution.
+- `tools/recompiler/func_sig.{h,cpp}` — GNU-v2 demangler → `this`/param engine-type seeds
+  (PPC-EABI GPR assignment, floats→FPR). Caveat: assumes instance methods (static methods, a
+  minority, would mis-seed r3; to resolve via the header's `static`).
+- `recover_eng_fields` is now a **forward CFG dataflow fixpoint** (meet at joins, loops
+  converge) and reports the dangerous "typed base / unmapped offset" misses.
+- **GATE: `coverage_real_test`** runs the whole pipeline on REAL DOL bytes and asserts COMPLETE
+  coverage vs the decomp SOURCE oracle — proven on `TCameraMarioData::isMarioGoDown` (reads
+  `unk10`; global derefs correctly untyped) and the branchy `::calcAndSetMarioData` (5 fields
+  r/w across switch + if/else). 0 misses. So: emission equivalence (field_slice) + coverage
+  (this) are both green for single-object straight-line AND branchy accessors.
+
 **Still NOT proven (the residual risk — do NOT claim solved):**
-- *Recovery COVERAGE at scale.* The pass is a single straight-line forward pass with NO merge
-  handling at control-flow joins, over a hand-built layout/signature DB. Real use needs the DB
-  auto-built from decomp headers + `sms_gmse01_funcs.txt`, merge/branch handling, and validation
-  across ~9,700 game functions. CRITICAL: unlike the guest-only recompiler, a MISS here is a
-  *correctness bug* (a guest MEM access against a handle), not a safe fallback — recovery must be
-  COMPLETE on engine-typed sites, not merely sound. (Recorded in `type_recovery.h`.)
+- *Coverage at SCALE / harder shapes.* Proven on two single-object accessors of one clean type.
+  Not yet: inheritance (base-subobject layout must be prepended — `decomp_parse` captures the
+  base name but doesn't compose layouts yet), embedded value types (TVec3/Mtx/TParamRT — parsed
+  but marked not-sizable, so their sub-fields aren't in the layout), the static-method seed
+  caveat, and a broad sweep over the ~9,700 game functions. A MISS is a *correctness bug*
+  (guest MEM access against a handle), not a safe fallback — coverage must be COMPLETE.
 - *Pointer-into-object / interior addresses.* `&engineObj->field` (an `addi` by a nonzero offset)
   is deliberately left untyped (the pass is honest about it); deref'ing it under a different static
   type, or pointer arithmetic into an embedded sub-object, is NOT covered.
