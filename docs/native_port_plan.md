@@ -263,12 +263,22 @@ coverage, native water re-issue at N½. Dead ends recorded: blanket direct-XF in
 12. **Boot fully native** (fastboot-only path).
 13. **N8 + unlink Dolphin** — delete VideoCommon/backend/DSP/CoreTiming/MMU from the link. Done.
 
-**Progress:** R1 (Dolphin-free GP-FIFO decoder, commit 102912f) was built+verified, then the seam was
-**corrected by the user** (§3 DIRECTION CORRECTION): GP-FIFO decoding is still GPU emulation. R1 is
-repurposed as the BMD/display-list **asset**-geometry decoder (N1); the runtime GP-FIFO path is on the
-delete list. **Next concrete steps:** N0 (deterministic capture) + **N1 START: native GC texture
-decoder** (`runtime/render/tex_decode.{h,cpp}`, validated vs Dolphin's TextureDecoder oracle) — pure,
-offline-testable, the first brick of the native PC game's content layer.
+**Progress (2026-06-14):** R1 (Dolphin-free GP-FIFO decoder, 102912f) built+verified, then seam
+**corrected by user** (§3): GP-FIFO decode is still GPU emulation → R1 repurposed as the BMD asset
+decoder; runtime GP-FIFO path on the delete list. Then, on the object-model architecture:
+- **N1 textures ✅** (81c9a5b) — `runtime/render/tex_decode.{h,cpp}`, all GC formats → RGBA8,
+  byte-parity vs Dolphin's TextureDecoder (119 cases, 0 fail; `/tex`).
+- **N2 first native pixels ✅** (3db6c70) — `runtime/render/vk_quad.cpp`, our own Vulkan pipeline +
+  embedded SPIR-V renders a textured quad offscreen (reusing Dolphin's VkDevice as bring-up scaffold),
+  readback EXACT vs the decoded texels (`/vkquad`; 64×64 4096/4096, stable under gameplay).
+- **N3 start ✅** (22880d7) — `runtime/render/j2d_walk.cpp`, reads the live J2D HUD pane tree from
+  guest memory (bounds-checked), canonical J2DScreen::draw tee publishes the root (`/j2d`). Verified:
+  coherent HUD tree (bars/textboxes/transition halves).
+
+**Next concrete step:** finish the N3 slice — resolve each pane's `JUTTexture` → BTI image+format →
+`sb_tex_decode` → upload + draw the pane quad (ortho) via the vk path = **the HUD rendered natively**.
+Then N0 (deterministic capture) to A/B it vs the game, then present integration, then N4 (J3D).
+Still pending/parallel: N0 deterministic capture, BMD geometry decoder, native present/swapchain.
 
 ---
 
