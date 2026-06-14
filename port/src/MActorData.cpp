@@ -1,0 +1,329 @@
+// OWNED portable copy of reference/sms/src/M3DUtil/MActorData.cpp — keep in
+// sync with the decomp.
+//
+// Only change vs the pristine decomp: in MActorAnmData::addFileTable, the local
+// `char* pcVar1` is assigned from strstr()/strrchr(), which in C++ are overloaded
+// to return `const char*` when given a `const char*` argument (param_1). That is
+// an error here (`const char*` -> `char*`), but was accepted by CodeWarrior's
+// C-style <string.h> (char* in/out). The decomp NEVER writes through these
+// returned pointers (they are used only for a null-check and as a strlen arg;
+// pcVar1 is reassigned to a fresh `new char[]` buffer before any store). So a
+// const_cast<char*>(...) is behavior-preserving and matches the decomp's char*
+// typing intent.
+#include <M3DUtil/MActorData.hpp>
+#include <M3DUtil/SampleCtrlModel.hpp>
+#include <JSystem/JKernel/JKRFileFinder.hpp>
+#include <JSystem/JKernel/JKRHeap.hpp>
+
+static int to_upper_hack(int c)
+{
+	if (c >= 'a' && c <= 'z')
+		return c + ('A' - 'a');
+
+	return c;
+}
+
+static int strcmp_ignore_case(const char* fst, const char* snd)
+{
+	while (*fst != '\0' && *snd != '\0') {
+		if (to_upper_hack(*fst) > to_upper_hack(*snd))
+			return -1;
+
+		if (to_upper_hack(*fst) < to_upper_hack(*snd))
+			return 1;
+
+		++fst;
+		++snd;
+	}
+
+	if (to_upper_hack(*fst) > to_upper_hack(*snd))
+		return -1;
+
+	if (to_upper_hack(*fst) < to_upper_hack(*snd))
+		return 1;
+
+	return 0;
+}
+
+void MActorAnmDataBase::checkLower(const char* param_1)
+{
+	for (int i = 0; i < unk0; ++i) {
+		if (strcmp_ignore_case(param_1, unk8[i])) {
+			// assert?
+		}
+	}
+}
+
+void MActorAnmDataBase::sortByFileNameRaw(void** param_1)
+{
+	if (unk0 > 1) {
+		for (int i = 1; i < unk0; ++i) {
+			int j;
+
+			const char* str = unk8[i];
+			u16 key         = unk4[i];
+			void* prm       = param_1[i];
+
+			for (j = i - 1; j >= 0; --j) {
+
+				if (strcmp_ignore_case(str, unk8[j]) < 0)
+					break;
+
+				unk8[j + 1]    = unk8[j];
+				unk4[j + 1]    = unk4[j];
+				param_1[j + 1] = param_1[j];
+			}
+
+			unk8[j + 1]    = str;
+			unk4[j + 1]    = key;
+			param_1[j + 1] = prm;
+		}
+	}
+}
+
+MActorAnmData::MActorAnmData()
+{
+	unk2C = nullptr;
+	unk30 = nullptr;
+	unk34 = nullptr;
+	unk38 = nullptr;
+	unk3C = nullptr;
+	unk40 = nullptr;
+
+	unk44 = 0;
+	unk48 = nullptr;
+
+	unk4  = 0;
+	unk8  = 0;
+	unkC  = 0;
+	unk10 = 0;
+	unk14 = 0;
+	unk18 = 0;
+}
+
+u16 MActorCalcKeyCode(const char* name)
+{
+	u32 result = 0;
+	while (*name != '\0') {
+		result = *name++ + result * 5;
+	}
+	return result;
+}
+
+u32 MActorAnmData::partsNameToIdx(const char* name)
+{
+	typedef JGadget::TList<MActorSubAnmInfo>::iterator I;
+	u32 idx = 0;
+	for (I it = unk1C.begin(), e = unk1C.end(); it != e; ++idx, ++it)
+		if (strcmp(it->unk4, name) == 0)
+			return idx;
+	return -1;
+}
+
+void MActorAnmData::init(const char* param_1, const char** param_2)
+{
+	char thing[256];
+	int uMVar1;
+
+	if (*param_1 != '/')
+		uMVar1 = snprintf(thing, 0xff, "%s%s", "/", param_1);
+	else
+		uMVar1 = snprintf(thing, 0xff, "%s", param_1);
+
+	if (uMVar1 < 0 || uMVar1 > 0xfe)
+		return;
+
+	char thing2[256];
+	snprintf(thing2, 0xff, "%s%s", thing, "/");
+
+	JKRFileFinder* fileFinder = JKRFileLoader::findFirstFile(thing2);
+
+	JKRFileFinder* finder = fileFinder;
+	do {
+		addFileNum(finder->mBase.mFileName);
+	} while (finder->findNextFile());
+
+	if (param_2 != nullptr)
+		for (int i = 0; i == 0 || param_2[i] != nullptr; ++i)
+			addFileNum(param_2[i]);
+
+	delete fileFinder;
+
+	if (unk4 > 0)
+		unk2C = new MActorAnmDataEach<J3DAnmTransformKey>(unk4);
+	if (unkC > 0)
+		unk30 = new MActorAnmDataEach<J3DAnmColorKey>(unkC);
+	if (unk10 > 0)
+		unk34 = new MActorAnmDataEach<J3DAnmTexPattern>(unk10);
+	if (unk14 > 0)
+		unk38 = new MActorAnmDataEach<J3DAnmTextureSRTKey>(unk14);
+	if (unk18 > 0)
+		unk3C = new MActorAnmDataEach<J3DAnmTevRegKey>(unk18);
+	if (unk8 > 0)
+		unk40 = new MActorAnmDataEach<J3DAnmClusterKey>(unk8);
+
+	unk4  = 0;
+	unk8  = 0;
+	unkC  = 0;
+	unk10 = 0;
+	unk14 = 0;
+	unk18 = 0;
+
+	fileFinder = JKRFileLoader::findFirstFile(thing2);
+	do {
+		strstr(fileFinder->mBase.mFileName, "#");
+		addFileTable(fileFinder->mBase.mFileName);
+	} while (fileFinder->findNextFile());
+
+	if (param_2 != nullptr && *param_2 != nullptr) {
+		for (int i = 0; i == 0 || param_2[i] != nullptr; ++i)
+			addFileTable(param_2[i]);
+	}
+
+	delete fileFinder;
+
+	if (unk2C)
+		unk2C->loadAnmPtrArray2(thing, ".bck");
+	if (unk30)
+		unk30->loadAnmPtrArray2(thing, ".bpk");
+	if (unk34)
+		unk34->loadAnmPtrArray2(thing, ".btp");
+	if (unk38)
+		unk38->loadAnmPtrArray2(thing, ".btk");
+	if (unk3C)
+		unk3C->loadAnmPtrArray2(thing, ".brk");
+	if (unk40)
+		unk40->loadAnmPtrArray2(thing, ".blk");
+}
+
+void MActorAnmData::addFileNum(const char* name)
+{
+	if (strstr(name, ".bck"))
+		++unk4;
+	if (strstr(name, ".bpk"))
+		++unkC;
+	if (strstr(name, ".btp"))
+		++unk10;
+	if (strstr(name, ".btk"))
+		++unk14;
+	if (strstr(name, ".brk"))
+		++unk18;
+	if (strstr(name, ".blk"))
+		++unk8;
+}
+
+void MActorAnmData::addFileTable(const char* param_1)
+{
+	char* pcVar1;
+	size_t sVar2;
+	size_t sVar3;
+	u16 uVar4;
+	u32 uVar5;
+
+	pcVar1 = const_cast<char*>(strstr(param_1, ".bck"));
+	if (pcVar1 != (char*)0x0) {
+		sVar2  = strlen(param_1);
+		pcVar1 = const_cast<char*>(strrchr(param_1, 0x2e));
+		sVar3  = strlen(pcVar1);
+		uVar5  = sVar2 - (sVar3 - 1);
+		pcVar1 = new char[uVar5];
+		snprintf(pcVar1, uVar5, "%s", param_1);
+		uVar4             = 0;
+		unk2C->unk8[unk4] = pcVar1;
+		while (*pcVar1 != '\0') {
+			uVar4 = *pcVar1++ + uVar4 * 5;
+		}
+		unk2C->unk4[unk4] = uVar4;
+		++unk4;
+	}
+
+	pcVar1 = const_cast<char*>(strstr(param_1, ".bpk"));
+	if (pcVar1 != (char*)0x0) {
+		sVar2  = strlen(param_1);
+		pcVar1 = const_cast<char*>(strrchr(param_1, 0x2e));
+		sVar3  = strlen(pcVar1);
+		uVar5  = sVar2 - (sVar3 - 1);
+		pcVar1 = new char[uVar5];
+		snprintf(pcVar1, uVar5, "%s", param_1);
+		uVar4             = 0;
+		unk30->unk8[unkC] = pcVar1;
+		while (*pcVar1 != '\0') {
+			uVar4 = *pcVar1++ + uVar4 * 5;
+		}
+		unk30->unk4[unkC] = uVar4;
+		++unkC;
+	}
+
+	pcVar1 = const_cast<char*>(strstr(param_1, ".btp"));
+	if (pcVar1 != (char*)0x0) {
+		sVar2  = strlen(param_1);
+		pcVar1 = const_cast<char*>(strrchr(param_1, 0x2e));
+		sVar3  = strlen(pcVar1);
+		uVar5  = sVar2 - (sVar3 - 1);
+		pcVar1 = new char[uVar5];
+		snprintf(pcVar1, uVar5, "%s", param_1);
+		uVar4              = 0;
+		unk34->unk8[unk10] = pcVar1;
+		while (*pcVar1 != '\0') {
+			uVar4 = *pcVar1++ + uVar4 * 5;
+		}
+		unk34->unk4[unk10] = uVar4;
+		++unk10;
+	}
+
+	pcVar1 = const_cast<char*>(strstr(param_1, ".btk"));
+	if (pcVar1 != (char*)0x0) {
+		sVar2  = strlen(param_1);
+		pcVar1 = const_cast<char*>(strrchr(param_1, 0x2e));
+		sVar3  = strlen(pcVar1);
+		uVar5  = sVar2 - (sVar3 - 1);
+		pcVar1 = new char[uVar5];
+		snprintf(pcVar1, uVar5, "%s", param_1);
+		uVar4              = 0;
+		unk38->unk8[unk14] = pcVar1;
+		while (*pcVar1 != '\0') {
+			uVar4 = *pcVar1++ + uVar4 * 5;
+		}
+		unk38->unk4[unk14] = uVar4;
+		++unk14;
+	}
+
+	pcVar1 = const_cast<char*>(strstr(param_1, ".brk"));
+	if (pcVar1 != (char*)0x0) {
+		sVar2  = strlen(param_1);
+		pcVar1 = const_cast<char*>(strrchr(param_1, 0x2e));
+		sVar3  = strlen(pcVar1);
+		uVar5  = sVar2 - (sVar3 - 1);
+		pcVar1 = new char[uVar5];
+		snprintf(pcVar1, uVar5, "%s", param_1);
+		uVar4              = 0;
+		unk3C->unk8[unk18] = pcVar1;
+		while (*pcVar1 != '\0') {
+			uVar4 = *pcVar1++ + uVar4 * 5;
+		}
+		unk3C->unk4[unk18] = uVar4;
+		++unk18;
+	}
+
+	pcVar1 = const_cast<char*>(strstr(param_1, ".blk"));
+	if (pcVar1 != (char*)0x0) {
+		sVar2  = strlen(param_1);
+		pcVar1 = const_cast<char*>(strrchr(param_1, 0x2e));
+		sVar3  = strlen(pcVar1);
+		uVar5  = sVar2 - (sVar3 - 1);
+		pcVar1 = new char[uVar5];
+		snprintf(pcVar1, uVar5, "%s", param_1);
+		uVar4             = 0;
+		unk40->unk8[unk8] = pcVar1;
+		while (*pcVar1 != '\0') {
+			uVar4 = *pcVar1++ + uVar4 * 5;
+		}
+		unk40->unk4[unk8] = uVar4;
+		++unk8;
+	}
+}
+
+void MActorAnmData::createSampleModelData(J3DModelData* data)
+{
+	unk48 = new SampleCtrlModelData(data);
+}

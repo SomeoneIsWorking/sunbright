@@ -116,3 +116,11 @@ reference/sms/src/Enemy/enemymanager.cpp
 reference/sms/src/JSystem/JUtility/JUTConsole.cpp
 reference/sms/src/JSystem/JDrama/JDRViewObj.cpp
 reference/sms/src/System/ParamInst.cpp
+port/src/JRenderer.cpp
+port/src/J3DDrawBuffer.cpp
+port/src/J3DModelLoader.cpp
+port/src/J3DAnmLoader.cpp
+port/src/MActorData.cpp
+reference/sms/src/Strategic/livemanager.cpp
+reference/sms/src/JSystem/JDrama/JDRActor.cpp
+reference/sms/src/JSystem/JDrama/JDRNameRefGen.cpp

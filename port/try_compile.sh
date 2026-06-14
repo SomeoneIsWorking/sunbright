@@ -17,7 +17,7 @@ for f in "$@"; do
   tag=$(echo "$f" | tr '/' '_')
   obj="$OUT/$tag.o"
   err="$OUT/$tag.err"
-  g++ -std=c++17 -w "${EXTRA[@]}" -c "${INCS[@]}" "${FORCE[@]}" "$f" -o "$obj" 2>"$err"
+  g++ -std=gnu++17 -w "${EXTRA[@]}" -c "${INCS[@]}" "${FORCE[@]}" "$f" -o "$obj" 2>"$err"
   if [ $? -eq 0 ]; then
     echo "PASS $f"; echo "$f" >> "$OUT/pass.txt"; pass=$((pass+1))
   else
