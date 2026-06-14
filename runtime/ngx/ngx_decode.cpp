@@ -171,22 +171,33 @@ u32 run_command(const u8* d, u32 avail, NgxCP& cp, GxFrameInfo& out, u32 offset,
 
 }  // namespace
 
-u32 ngx_vertex_size(const NgxCP& cp, unsigned vat) {
-    u32 size = (u32)__builtin_popcount(cp.vcd_lo & 0x1FF);  // PosMatIdx + 8 TexMatIdx bytes
+u32 ngx_attr_offset(const NgxCP& cp, unsigned vat, int attr) {
+    // Matrix-index bytes (PosMatIdx + 8 TexMatIdx) precede the position.
+    u32 off = (u32)__builtin_popcount(cp.vcd_lo & 0x1FF);
+    if (attr <= NGX_POS) return off;
 
     // Position
-    size += pos_size((cp.vcd_lo >> 9) & 3, (cp.vat[vat][0] >> 1) & 7, (cp.vat[vat][0] >> 0) & 1);
+    off += pos_size((cp.vcd_lo >> 9) & 3, (cp.vat[vat][0] >> 1) & 7, (cp.vat[vat][0] >> 0) & 1);
+    if (attr == NGX_NRM) return off;
     // Normal
-    size += normal_size((cp.vcd_lo >> 11) & 3, (cp.vat[vat][0] >> 31) & 1,
-                        (cp.vat[vat][0] >> 9) & 1, (cp.vat[vat][0] >> 10) & 7);
-    // Colors 0,1
-    size += color_size((cp.vcd_lo >> 13) & 3, (cp.vat[vat][0] >> 14) & 7);
-    size += color_size((cp.vcd_lo >> 15) & 3, (cp.vat[vat][0] >> 18) & 7);
+    off += normal_size((cp.vcd_lo >> 11) & 3, (cp.vat[vat][0] >> 31) & 1,
+                       (cp.vat[vat][0] >> 9) & 1, (cp.vat[vat][0] >> 10) & 7);
+    if (attr == NGX_CLR0) return off;
+    // Color0
+    off += color_size((cp.vcd_lo >> 13) & 3, (cp.vat[vat][0] >> 14) & 7);
+    if (attr == NGX_CLR1) return off;
+    // Color1
+    off += color_size((cp.vcd_lo >> 15) & 3, (cp.vat[vat][0] >> 18) & 7);
     // Tex coords 0..7
-    for (int i = 0; i < 8; i++)
-        size += tex_size((cp.vcd_hi >> (2 * i)) & 3, tex_fmt(cp, vat, i), tex_elem(cp, vat, i));
+    for (int i = 0; i < 8; i++) {
+        if (attr == NGX_TEX0 + i) return off;
+        off += tex_size((cp.vcd_hi >> (2 * i)) & 3, tex_fmt(cp, vat, i), tex_elem(cp, vat, i));
+    }
+    return off;  // NGX_ATTR_END == full vertex size
+}
 
-    return size;
+u32 ngx_vertex_size(const NgxCP& cp, unsigned vat) {
+    return ngx_attr_offset(cp, vat, NGX_ATTR_END);
 }
 
 NgxCP& ngx_cp_state() { return g_ngx_cp; }

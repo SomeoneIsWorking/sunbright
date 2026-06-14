@@ -281,6 +281,17 @@ decoder; runtime GP-FIFO path on the delete list. Then, on the object-model arch
 - **N3 J2D color/alpha modulation ✅** (2b1ad64) — faithful J2DPicture TEV (texColor×RASC,
   texAlpha×RASA folding mColorAlpha); corner colors from mCornerColor@0x144. Verified: HUD bars now
   (160,160,160) = white×(160/255) over black (translucency applied; was opaque white).
+- **N4 vertex extractor — positions ✅** (d6344e0) — `runtime/ngx/ngx_vertex.{h,cpp}`, reads GC
+  position attribute VALUES (u8/s8/u16/s16/float, XY/XYZ, PosFrac dequant, Direct/Index8/16) into a
+  native float buffer; `/ngxvtx` self-test.
+- **N4 vertex extractor — normals/colors/texcoords ✅** (this commit) — extends the extractor to ALL
+  vertex attributes: normals (FracAdjust dequant, NTB→N, direct+indexed), colors (all 6 GC formats
+  565/888/888x/4444/6666/8888 with Dolphin's exact per-format endianness, →RGBA8), tex coords (all 8
+  channels, per-channel Frac dequant). A shared `ngx_attr_offset()` in `ngx_decode` is the single
+  source of vertex-layout truth (ngx_vertex_size re-expressed via it); `resolve_attr` unifies
+  Direct/Index8/Index16 fetch. `/ngxvtx` self-test 18/18 (multi-attr offsets, every color format,
+  normal/tex dequant, all indexed paths). Pure/offline. **Next: hook J3DShape → resolve guest
+  pos/nrm/col/tex arrays (CP ARRAY_BASE) → assemble a native indexed mesh per shape packet.**
 
 **PRESENT FINDING (2026-06-14):** making the native render visible must NOT be a quick overlay via
 `sb_present_xfb`/`Presenter::ViSwap` — that path IS Dolphin VideoCommon (XFB = Dolphin AbstractTexture),

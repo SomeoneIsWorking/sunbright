@@ -35,6 +35,21 @@ struct NgxCP {
     u32 vat[8][3] = {};      // [vat][group] : group 0=VAT_A(0x70) 1=VAT_B(0x80) 2=VAT_C(0x90)
 };
 
+// Vertex attribute identifiers, in GC vertex-layout order (matrix-index bytes
+// precede NGX_POS and are folded into NGX_POS's offset). NGX_ATTR_END is the
+// one-past-tex7 marker = the full vertex size.
+enum NgxAttr {
+    NGX_POS = 0, NGX_NRM, NGX_CLR0, NGX_CLR1,
+    NGX_TEX0, NGX_TEX1, NGX_TEX2, NGX_TEX3, NGX_TEX4, NGX_TEX5, NGX_TEX6, NGX_TEX7,
+    NGX_ATTR_END
+};
+
+// Byte offset of `attr` within a vertex under the current CP descriptor (sum of
+// the sizes of all preceding attributes). NGX_POS's offset = the matrix-index
+// bytes; NGX_ATTR_END returns the full vertex size. Shares the size tables with
+// ngx_vertex_size so layout truth lives in one place.
+u32 ngx_attr_offset(const NgxCP& cp, unsigned vat, int attr);
+
 // Vertex size in bytes for the given VAT under the current CP descriptor.
 // Mirrors VertexLoaderBase::GetVertexSize exactly.
 u32 ngx_vertex_size(const NgxCP& cp, unsigned vat);
