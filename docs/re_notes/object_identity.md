@@ -177,6 +177,26 @@ delete`. Stack temps (C) release at scope end (the frame teardown) — needs a s
 4. Scale: sweep allocation recognition across all engine-type ctors/methods; confirm no
    mis-recognition (a non-engine use of an operator-new result must stay guest memory).
 
+## SCALE VALIDATION (2026-06-15, `scratch/identity_sweep <Type>` over all 9680 DOL funcs)
+Recognition behaves across the whole game, not just hand-picked callers. JUTTexture: 21
+construction functions, 30 heap-new sites, 36 stack-temp sites — and **1 function with 9 gaps**:
+`__ct__9J2DWindow` (the SHARP EDGE firing as designed). J3DModelData: 0 constructions, 0 gaps
+(it is loader-managed, never `new`'d). The gap finding is REAL and important:
+
+**DERIVED-TYPE CONSTRUCTION is recognized as the BASE type.** J2DWindow constructs
+`J2DWindow::Texture : JUTTexture` (J2DWindow.hpp:28) — `li r3,0x58 ; bl operator new` (0x58, NOT
+sizeof(JUTTexture)=0x54), then `bl storeTIMG(this)` + a derived-field write `stw …,0x54(this)`.
+Recognition types `this` as JUTTexture (it IS the base subobject, passed to a JUTTexture method),
+so: (a) `sb_eng_alloc<JUTTexture>()` would UNDER-ALLOCATE (host base size, not the derived size),
+and (b) the derived field at 0x54 is a GAP → emitted as guest MEM against the host handle = the
+SHARP EDGE correctness bug. So **flipping a base type whose subclasses the game constructs is
+UNSAFE** until the derived types are in the type DB (type-set closure). The tell is the alloc size
+(`li` before `operator new`) ≠ the recognized type's guest size. Proper fix: include derived types
+in the DB and have recognition prefer the MOST-DERIVED type (match alloc size / most-derived method
+called). GATE: a clean flip requires the sweep's gap report to be EMPTY for the active type set —
+`scratch/identity_sweep` is that gate. (For JUTTexture the JUTPalette + J2DWindow::Texture closure
+must be flipped together, consistent with the handoff's JUTPalette-closure note.)
+
 ## Open questions / risks (do NOT claim solved)
 - **Stack temp scope/lifetime** (C): when is the host object freed? Frame teardown model needed.
 - **new[] / array ctors** and the second allocator 0x802fa69c — uncharacterized.
