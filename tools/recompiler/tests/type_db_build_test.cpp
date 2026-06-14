@@ -36,13 +36,15 @@ int main() {
         CHECK(c && c->member == "unkC",    "TViewObj: own unkC at 0xC");
     }
 
-    // TViewport : TViewObj : TNameRef — three-level chain composed into one layout.
+    // TViewport : TViewObj : TNameRef — three-level chain composed into one layout. unk10 is an
+    // embedded TRect(:JUTRect) so it expands to unk10.x1@0x10 (recursive embedded composition);
+    // unk20 is a scalar.
     {
         EngineLayout L = compose_layout("TViewport", index, {}, nullptr);
-        CHECK(at(L, 0x4)  && at(L, 0x4)->member  == "mName",  "TViewport: base mName@4");
-        CHECK(at(L, 0xC)  && at(L, 0xC)->member  == "unkC",   "TViewport: TViewObj unkC@C");
-        CHECK(at(L, 0x10) && at(L, 0x10)->member == "unk10",  "TViewport: own unk10@0x10");
-        CHECK(at(L, 0x20) && at(L, 0x20)->member == "unk20",  "TViewport: own unk20@0x20");
+        CHECK(at(L, 0x4)  && at(L, 0x4)->member  == "mName",     "TViewport: base mName@4");
+        CHECK(at(L, 0xC)  && at(L, 0xC)->member  == "unkC",      "TViewport: TViewObj unkC@C");
+        CHECK(at(L, 0x10) && at(L, 0x10)->member == "unk10.x1",  "TViewport: embedded TRect unk10.x1@0x10");
+        CHECK(at(L, 0x20) && at(L, 0x20)->member == "unk20",     "TViewport: own scalar unk20@0x20");
     }
 
     // build_type_db end-to-end for a no-base type: layout + signatures both populated.
@@ -52,6 +54,10 @@ int main() {
         CHECK(r.db.layouts.count("TCameraMarioData"), "build_type_db: layout present");
         const auto& L = r.db.layouts["TCameraMarioData"];
         CHECK(at(L, 0x10) && at(L, 0x10)->member == "unk10", "build_type_db: unk10@0x10 in layout");
+        // embedded value type: unk0 is JGeometry::TVec3<f32> -> expanded to unk0.x/y/z at 0/4/8
+        CHECK(at(L, 0x0) && at(L, 0x0)->member == "unk0.x", "embedded TVec3: unk0.x at 0x0");
+        CHECK(at(L, 0x4) && at(L, 0x4)->member == "unk0.y", "embedded TVec3: unk0.y at 0x4");
+        CHECK(at(L, 0x8) && at(L, 0x8)->member == "unk0.z", "embedded TVec3: unk0.z at 0x8");
         // signatures: the isMario* / calcAndSetMarioData methods seed this=TCameraMarioData in r3
         bool seeded = false;
         for (const auto& [addr, m] : r.db.signatures) {

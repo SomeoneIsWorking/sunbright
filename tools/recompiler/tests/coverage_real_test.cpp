@@ -55,10 +55,12 @@ int main() {
       while (f >> a >> n) { try { syms.push_back({ (u32)std::stoul(a, nullptr, 16), n }); } catch (...) {} } }
     std::sort(syms.begin(), syms.end(), [](const Sym& x, const Sym& y){ return x.addr < y.addr; });
     auto find_sym = [&](const std::string& name) -> const Sym* {
-        for (auto& s : syms) if (s.name == name) return &s; return nullptr;
+        for (auto& s : syms) if (s.name == name) return &s;
+        return nullptr;
     };
     auto fend_of = [&](u32 addr) -> u32 {
-        for (auto& s : syms) if (s.addr > addr) return s.addr; return addr + 0x400;
+        for (auto& s : syms) if (s.addr > addr) return s.addr;
+        return addr + 0x400;
     };
 
     // One real accessor to prove. `expect` = the this-field members it touches, per the decomp
@@ -105,7 +107,10 @@ int main() {
         // Resolve any computed-bctr jump table (reads table entries from the DOL) so the CFG is
         // complete even for switch-heavy functions.
         auto read_word = [&](u32 a, u32& outw) -> bool {
-            if (!dol.section_at(a)) return false; outw = dol.read_u32(a); return true; };
+            if (!dol.section_at(a)) return false;
+            outw = dol.read_u32(a);
+            return true;
+        };
         auto jt = jumptable_targets(instrs, addr, fend, read_word);
 
         // Recover, capturing the dangerous-miss list.

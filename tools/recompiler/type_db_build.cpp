@@ -34,7 +34,114 @@ std::string slurp(const std::string& p) {
 
 bool is_ident(char c) { return std::isalnum((unsigned char)c) || c == '_'; }
 
+// Strip only a leading namespace ("a::b::X<f>" -> "X<f>"), keeping any template arg list.
+std::string strip_ns(const std::string& t) {
+    size_t lt = t.find('<');
+    std::string head = (lt == std::string::npos) ? t : t.substr(0, lt);
+    size_t ns = head.rfind("::");
+    return ns == std::string::npos ? t : t.substr(ns + 2);
+}
+
+// Strip a leading namespace AND a trailing template arg list ("a::b::X<f>" -> "X").
+std::string base_name(const std::string& t) {
+    std::string s = strip_ns(t);
+    size_t lt = s.find('<');
+    return lt == std::string::npos ? s : s.substr(0, lt);
+}
+
+// Sub-field of an embedded VALUE type: host member + offset within the value.
+struct Sub { std::string member; int off; };
+
+// Known templated / builtin value types the focused parser can't crack (templates, dolphin
+// typedefs). Member names mirror the decomp/JGeometry/GX field names the port/ engine uses.
+const std::map<std::string, std::vector<Sub>>& known_embedded() {
+    static const std::map<std::string, std::vector<Sub>> tab = {
+        { "Vec",        { {"x",0}, {"y",4}, {"z",8} } },                 // f32 x3
+        { "Point3d",    { {"x",0}, {"y",4}, {"z",8} } },
+        { "TVec3<f32>", { {"x",0}, {"y",4}, {"z",8} } },                 // JGeometry::TVec3<f32> : Vec
+        { "TVec2<f32>", { {"x",0}, {"y",4} } },
+        { "S16Vec",     { {"x",0}, {"y",2}, {"z",4} } },                 // s16 x3
+        { "TVec3<s16>", { {"x",0}, {"y",2}, {"z",4} } },
+        { "TVec2<s16>", { {"x",0}, {"y",2} } },
+        { "GXColor",    { {"r",0}, {"g",1}, {"b",2}, {"a",3} } },        // u8 RGBA
+        { "TColor",     { {"r",0}, {"g",1}, {"b",2}, {"a",3} } },
+        { "GXColorS10", { {"r",0}, {"g",2}, {"b",4}, {"a",6} } },        // s16 RGBA
+    };
+    return tab;
+}
+
 }  // namespace
+
+// forward decls (mutually recursive: base chain <-> embedded expansion)
+static EngineLayout build_layout(const std::string& type_name,
+                                 const std::map<std::string, std::string>& index,
+                                 const std::set<std::string>& engine_types,
+                                 std::set<std::string>& seen, std::vector<std::string>* unresolved);
+
+// The expanded sub-layout (offsets relative to the value) of an embedded VALUE-type field, or
+// empty if we can't determine it (then the caller keeps a single best-effort entry and any
+// sub-offset access shows up as a coverage gap — honest, not a silent wrong field).
+static EngineLayout embedded_layout(const std::string& type_str,
+                                    const std::map<std::string, std::string>& index,
+                                    const std::set<std::string>& engine_types,
+                                    std::set<std::string>& seen, std::vector<std::string>* unresolved) {
+    EngineLayout L;
+    // 1. known templated/builtin value types
+    auto try_tab = [&](const std::string& key) -> bool {
+        auto it = known_embedded().find(key);
+        if (it == known_embedded().end()) return false;
+        for (const auto& s : it->second) L.fields[s.off] = FieldDesc{ s.member, "" };
+        return true;
+    };
+    if (try_tab(type_str) || try_tab(strip_ns(type_str)) || try_tab(base_name(type_str))) return L;
+    // 2. a concrete (non-template) struct in the headers -> recurse
+    std::string leaf = base_name(type_str);
+    if (type_str.find('<') == std::string::npos && index.count(leaf))
+        return build_layout(leaf, index, engine_types, seen, unresolved);
+    return L;   // unknown value type
+}
+
+// Add one parsed field to a layout, expanding embedded value types into their sub-fields.
+static void add_field(EngineLayout& L, const ParsedField& f,
+                      const std::map<std::string, std::string>& index,
+                      const std::set<std::string>& engine_types,
+                      std::set<std::string>& seen, std::vector<std::string>* unresolved) {
+    if (f.is_pointer) {
+        std::string nested = engine_types.count(f.pointee) ? f.pointee : "";
+        L.fields[f.offset] = FieldDesc{ f.name, nested };
+        return;
+    }
+    if (f.sizable) {                               // scalar (incl. scalar arrays)
+        L.fields[f.offset] = FieldDesc{ f.name, "" };
+        return;
+    }
+    // embedded value type / enum / unknown — try to expand its sub-fields
+    EngineLayout sub = embedded_layout(f.type, index, engine_types, seen, unresolved);
+    if (!sub.fields.empty())
+        for (const auto& [off, fd] : sub.fields)
+            L.fields[f.offset + off] = FieldDesc{ f.name + "." + fd.member, fd.nested_type };
+    else
+        L.fields[f.offset] = FieldDesc{ f.name, "" };   // best effort; sub-offsets stay gaps
+}
+
+// Fully expanded layout for `type_name`: base chain (single inheritance, base subobject at 0,
+// so base fields are already object-absolute) + own fields, embedded value types expanded.
+static EngineLayout build_layout(const std::string& type_name,
+                                 const std::map<std::string, std::string>& index,
+                                 const std::set<std::string>& engine_types,
+                                 std::set<std::string>& seen, std::vector<std::string>* unresolved) {
+    EngineLayout L;
+    if (seen.count(type_name)) return L;                 // cycle guard
+    auto it = index.find(type_name);
+    if (it == index.end()) { if (unresolved) unresolved->push_back(type_name); return L; }
+    ParsedType t = parse_decomp_file(it->second, type_name);
+    if (!t.found) { if (unresolved) unresolved->push_back(type_name); return L; }
+    seen.insert(type_name);
+    if (!t.base.empty()) L = build_layout(t.base, index, engine_types, seen, unresolved);
+    for (const auto& f : t.fields) add_field(L, f, index, engine_types, seen, unresolved);
+    seen.erase(type_name);
+    return L;
+}
 
 std::map<std::string, std::string> index_headers(const std::string& include_dir) {
     std::map<std::string, std::string> index;
@@ -65,26 +172,8 @@ EngineLayout compose_layout(const std::string& type_name,
                             const std::map<std::string, std::string>& index,
                             const std::set<std::string>& engine_types,
                             std::vector<std::string>* unresolved) {
-    EngineLayout L;
-    // Walk the single-inheritance chain root-first so derived fields win on any offset clash.
-    std::vector<ParsedType> chain;
     std::set<std::string> seen;
-    std::string cur = type_name;
-    while (!cur.empty() && !seen.count(cur)) {
-        seen.insert(cur);
-        auto it = index.find(cur);
-        if (it == index.end()) { if (unresolved) unresolved->push_back(cur); break; }
-        ParsedType t = parse_decomp_file(it->second, cur);
-        if (!t.found) { if (unresolved) unresolved->push_back(cur); break; }
-        chain.push_back(t);
-        cur = t.base;
-    }
-    // Union fields by annotated (object-absolute) offset, base-most first.
-    for (auto rit = chain.rbegin(); rit != chain.rend(); ++rit) {
-        EngineLayout one = to_engine_layout(*rit, engine_types);
-        for (const auto& [off, fd] : one.fields) L.fields[off] = fd;
-    }
-    return L;
+    return build_layout(type_name, index, engine_types, seen, unresolved);
 }
 
 TypeDBBuildResult build_type_db(const std::set<std::string>& active_types,
