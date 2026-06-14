@@ -33,7 +33,17 @@ struct NgxCP {
     u32 vcd_lo = 0;          // VCD low  (CP reg 0x50): matrix idx + pos/nrm/col classes
     u32 vcd_hi = 0;          // VCD high (CP reg 0x60): tex-coord classes
     u32 vat[8][3] = {};      // [vat][group] : group 0=VAT_A(0x70) 1=VAT_B(0x80) 2=VAT_C(0x90)
+    // CP vertex-array state (guest addresses / byte strides). Array index = CPArray
+    // enum: Position=0, Normal=1, Color0=2, Color1=3, TexCoord0..7=4..11,
+    // XF_A pos-mtx=12, XF_B nrm-mtx=13. Reg 0xA0+i = base, 0xB0+i = stride.
+    u32 array_base[16] = {};
+    u32 array_stride[16] = {};
 };
+
+// One DRAW primitive surfaced during a stream walk: opcode (0x80..0xBF; prim
+// type = op&0xF8, vat = op&7), vertex count, and a host pointer to the
+// primitive's vertex block.
+struct NgxPrim { unsigned op; int count; const unsigned char* vtx; };
 
 // Vertex attribute identifiers, in GC vertex-layout order (matrix-index bytes
 // precede NGX_POS and are folded into NGX_POS's offset). NGX_ATTR_END is the
@@ -58,6 +68,13 @@ u32 ngx_vertex_size(const NgxCP& cp, unsigned vat);
 // Uses+advances the persistent global CP state. Returns out.ok (parsed exactly
 // to the end with no unknown opcode — same verdict as gxp_parse_frame).
 bool ngx_parse_frame(const u8* p, size_t n, GxFrameInfo& out);
+
+// Walk a GX command stream (e.g. a J3D shape display list), updating `cp` on CP
+// register loads (incl. array base/stride) and invoking `on_prim` for every
+// DRAW primitive. Same framing as ngx_parse_frame. Returns true if the stream
+// framed cleanly to the end (no truncation / unknown opcode).
+bool ngx_walk_stream(const u8* p, size_t n, NgxCP& cp,
+                     void (*on_prim)(const NgxPrim&, void*), void* user);
 
 // Test/diagnostic access to the persistent CP state (parity harness, unit tests).
 NgxCP& ngx_cp_state();

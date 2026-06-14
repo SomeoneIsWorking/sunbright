@@ -92,15 +92,18 @@ inline u32 tex_elem(const NgxCP& cp, unsigned vat, int i) {
     }
 }
 
-// Apply a CP register load (only the fields that affect parsing/vertex size).
+// Apply a CP register load (the fields that affect parsing/vertex size + the
+// vertex-array base/stride state the native mesh builder resolves).
 void load_cp(NgxCP& cp, u8 sub, u32 val) {
+    if (sub >= 0xA0 && sub <= 0xAF) { cp.array_base[sub - 0xA0] = val; return; }   // ARRAY_BASE
+    if (sub >= 0xB0 && sub <= 0xBF) { cp.array_stride[sub - 0xB0] = val; return; } // ARRAY_STRIDE
     switch (sub & 0xF0) {
     case 0x50: cp.vcd_lo = val; break;          // VCD_LO
     case 0x60: cp.vcd_hi = val; break;          // VCD_HI
     case 0x70: cp.vat[sub & 7][0] = val; break;  // VAT_A
     case 0x80: cp.vat[sub & 7][1] = val; break;  // VAT_B
     case 0x90: cp.vat[sub & 7][2] = val; break;  // VAT_C
-    default: break;  // MATINDEX_A/B, ARRAY_BASE/STRIDE, unknowns: no effect on framing
+    default: break;  // MATINDEX_A/B, unknowns: no effect on framing
     }
 }
 
@@ -109,7 +112,10 @@ NgxCP g_ngx_cp;   // persistent across frames; guest threads are nthr-serialized
 // Decode one command. Returns its byte size, 0 on truncation (need more bytes),
 // sets `unknown` on a fatal unknown opcode (framing failure). Mirrors
 // OpcodeDecoder::detail::RunCommand + the Analyzer callbacks.
-u32 run_command(const u8* d, u32 avail, NgxCP& cp, GxFrameInfo& out, u32 offset, bool& unknown) {
+typedef void (*PrimCb)(const NgxPrim&, void*);
+
+u32 run_command(const u8* d, u32 avail, NgxCP& cp, GxFrameInfo& out, u32 offset, bool& unknown,
+                PrimCb cb, void* user) {
     if (avail < 1) return 0;
     const u8 op = d[0];
 
@@ -160,6 +166,7 @@ u32 run_command(const u8* d, u32 avail, NgxCP& cp, GxFrameInfo& out, u32 offset,
         const u16 nv = be16(d + 1);
         if (avail < 3 + (u32)nv * vsize) return 0;
         out.prims++;
+        if (cb) { NgxPrim pr{op, (int)nv, d + 3}; cb(pr, user); }
         return 3 + (u32)nv * vsize;
     }
 
@@ -207,7 +214,7 @@ bool ngx_parse_frame(const u8* p, size_t n, GxFrameInfo& out) {
     bool unknown = false;
     u32 pos = 0;
     while (pos < n) {
-        const u32 sz = run_command(p + pos, (u32)(n - pos), g_ngx_cp, out, pos, unknown);
+        const u32 sz = run_command(p + pos, (u32)(n - pos), g_ngx_cp, out, pos, unknown, nullptr, nullptr);
         if (sz == 0 || unknown) break;  // truncated or unknown opcode
         pos += sz;
     }
@@ -215,4 +222,18 @@ bool ngx_parse_frame(const u8* p, size_t n, GxFrameInfo& out) {
     out.total = (u32)n;
     if (!out.ok) { out.fail_offset = pos; out.fail_opcode = pos < n ? p[pos] : 0; }
     return out.ok;
+}
+
+bool ngx_walk_stream(const u8* p, size_t n, NgxCP& cp,
+                     void (*on_prim)(const NgxPrim&, void*), void* user) {
+    GxFrameInfo scratch{};   // forensics discarded; we only want the prim callback
+    bool unknown = false;
+    u32 pos = 0;
+    while (pos < n) {
+        const u32 sz = run_command(p + pos, (u32)(n - pos), cp, scratch, pos, unknown,
+                                   (PrimCb)on_prim, user);
+        if (sz == 0 || unknown) break;
+        pos += sz;
+    }
+    return (pos == n) && !unknown;
 }

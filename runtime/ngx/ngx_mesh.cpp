@@ -88,6 +88,45 @@ int ngx_assemble_primitive(const NgxCP& cp, unsigned op,
     return (int)((indices.size() - tris0) / 3);
 }
 
+namespace {
+// Context threaded through ngx_walk_stream's primitive callback.
+struct BuildCtx {
+    NgxCP* cp;                       // live (walk-updated) CP state
+    NgxHostResolve resolve;
+    void* user;
+    std::vector<NgxVertex>* verts;
+    std::vector<unsigned>* indices;
+    int tris;
+};
+
+void build_on_prim(const NgxPrim& pr, void* u) {
+    BuildCtx* c = (BuildCtx*)u;
+    const NgxCP& cp = *c->cp;
+    // Resolve the present indexed arrays from the live CP base/stride. Direct
+    // attributes ignore the pointer (resolve_attr handles class internally), so
+    // resolving an unused base is harmless.
+    NgxArrays a{};
+    a.pos = c->resolve(cp.array_base[0], c->user); a.pos_stride = cp.array_stride[0];
+    a.nrm = c->resolve(cp.array_base[1], c->user); a.nrm_stride = cp.array_stride[1];
+    a.clr[0] = c->resolve(cp.array_base[2], c->user); a.clr_stride[0] = cp.array_stride[2];
+    a.clr[1] = c->resolve(cp.array_base[3], c->user); a.clr_stride[1] = cp.array_stride[3];
+    for (int i = 0; i < 8; i++) {
+        a.tex[i] = c->resolve(cp.array_base[4 + i], c->user);
+        a.tex_stride[i] = cp.array_stride[4 + i];
+    }
+    c->tris += ngx_assemble_primitive(cp, pr.op, pr.vtx, pr.count, a, *c->verts, *c->indices);
+}
+}  // namespace
+
+int ngx_build_mesh(const NgxCP& cp, const unsigned char* dl, size_t dl_size,
+                   NgxHostResolve resolve, void* resolve_user,
+                   std::vector<NgxVertex>& verts, std::vector<unsigned>& indices) {
+    NgxCP work = cp;                 // walk may load CP regs; don't mutate caller's
+    BuildCtx ctx{&work, resolve, resolve_user, &verts, &indices, 0};
+    if (!ngx_walk_stream(dl, dl_size, work, build_on_prim, &ctx)) return -1;
+    return ctx.tris;
+}
+
 // ── Self-test ───────────────────────────────────────────────────────────────
 namespace {
 bool approx(float a, float b) { float d = a - b; if (d < 0) d = -d; return d <= 1e-4f * (1 + (b < 0 ? -b : b)); }
@@ -171,6 +210,52 @@ int sb_ngx_mesh_selftest(char* outbuf, int cap) {
       ngx_assemble_primitive(cp, 0x80, b, 4, arr, vs, ix);
       expect("append vertcount", vs.size() == 8, "expected 8 verts");
       expect("append base", ix.size()==12 && ix[6]==4 && ix[8]==6, "2nd prim base != 4"); }
+
+    // 7. Display-list build with indexed position array + direct color.
+    //    cp: Position Index16 float XYZ (array 0), Color0 Direct RGBA8888.
+    {
+        NgxCP dcp{};
+        dcp.vcd_lo = (3u << 9) | (1u << 13);              // Pos Index16, Color0 Direct
+        dcp.vat[0][0] = (1u << 0) | (4u << 1) | (5u << 14);
+        dcp.array_base[0] = 0x1000; dcp.array_stride[0] = 12;   // pos array @0x1000, stride 12
+
+        // Position array: 4 entries (x = 10,11,12,13).
+        static unsigned char posbuf[48];
+        for (int i = 0; i < 4; i++) {
+            put_bef32(posbuf + i * 12, (float)(10 + i));
+            put_bef32(posbuf + i * 12 + 4, 0); put_bef32(posbuf + i * 12 + 8, 0);
+        }
+        // Display list: one Quads prim, 4 verts; vert = u16 index + RGBA8 color (vstride 6).
+        unsigned char dl[3 + 4 * 6];
+        dl[0] = 0x80; dl[1] = 0; dl[2] = 4;               // Quads, count 4
+        for (int i = 0; i < 4; i++) {
+            unsigned char* v = dl + 3 + i * 6;
+            v[0] = 0; v[1] = (unsigned char)i;            // index = i (be16)
+            v[2] = (unsigned char)(i + 1); v[3] = 0; v[4] = 0; v[5] = 255;  // color
+        }
+        auto resolve = [](unsigned addr, void*) -> const unsigned char* {
+            if (addr >= 0x1000 && addr < 0x1000 + sizeof(posbuf)) return posbuf + (addr - 0x1000);
+            return nullptr;
+        };
+        std::vector<NgxVertex> vs; std::vector<unsigned> ix;
+        int nt = ngx_build_mesh(dcp, dl, sizeof dl, resolve, nullptr, vs, ix);
+        expect("dl build tricount", nt == 2, "expected 2 triangles");
+        expect("dl build vertcount", vs.size() == 4, "expected 4 verts");
+        bool pok = approx(vs[0].pos[0],10.f) && approx(vs[3].pos[0],13.f);
+        expect("dl indexed pos", pok, "indexed position resolution");
+        expect("dl direct color", vs[2].clr[0][0]==3, "direct color in same vertex");
+        bool iok = ix.size()==6 && ix[0]==0&&ix[2]==2&&ix[5]==3;
+        expect("dl indices", iok, "quad triangulation");
+    }
+
+    // 8. Malformed stream → -1 (clean failure, no crash).
+    {
+        NgxCP dcp{}; dcp.vcd_lo = (1u<<9); dcp.vat[0][0] = (1u<<0)|(4u<<1);
+        unsigned char bad[4] = {0x7F, 0, 0, 0};           // 0x7F = unknown opcode
+        std::vector<NgxVertex> vs; std::vector<unsigned> ix;
+        int nt = ngx_build_mesh(dcp, bad, sizeof bad, [](unsigned,void*)->const unsigned char*{return nullptr;}, nullptr, vs, ix);
+        expect("malformed -> -1", nt == -1, "expected clean -1 on bad opcode");
+    }
 
     app("ngx_mesh_selftest: %d cases, %d failing -> %s\n", cases, fails, fails==0?"OK":"MISMATCH");
     return fails;

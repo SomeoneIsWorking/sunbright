@@ -52,6 +52,22 @@ int ngx_assemble_primitive(const NgxCP& cp, unsigned op,
                            std::vector<NgxVertex>& verts,
                            std::vector<unsigned>& indices);
 
-// Self-test: hand-built primitives (quad/strip/fan/list) with known attributes;
-// verifies vertex assembly + triangulation. Returns failing-case count (0 = OK).
+// Resolve a guest address to a host byte pointer (or null if out of range). The
+// live J3D hook passes the memory-bridge resolver; the self-test passes an
+// identity over a flat buffer. Called for each indexed vertex array.
+typedef const unsigned char* (*NgxHostResolve)(unsigned guest_addr, void* user);
+
+// Build a native mesh from a J3D shape display list. Walks `dl` (the GX primitive
+// stream — J3DShapeDraw::mDisplayList), resolving each present attribute's vertex
+// array (cp.array_base/stride → host pointer via `resolve`) and assembling every
+// DRAW primitive into `verts` + triangulated `indices`. `cp` is the CP state the
+// shape's GD-command list programmed (VCD/VAT/array bases); it is copied so the
+// walk's CP updates don't leak out. Returns total triangles emitted, or -1 if the
+// stream failed to frame cleanly to the end.
+int ngx_build_mesh(const NgxCP& cp, const unsigned char* dl, size_t dl_size,
+                   NgxHostResolve resolve, void* resolve_user,
+                   std::vector<NgxVertex>& verts, std::vector<unsigned>& indices);
+
+// Self-test: hand-built primitives (quad/strip/fan/list) with known attributes +
+// a display-list build with indexed-array resolution. Returns failing-case count.
 int sb_ngx_mesh_selftest(char* out, int cap);
