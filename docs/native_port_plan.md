@@ -91,12 +91,17 @@ a deterministic capture: drive a fixed number of GAME FRAMES (not wall-ms), dump
 the readback perturbing pacing, so an A/B compares identical scenes. Without this, every renderer
 change is an unverifiable guess (it has already cost ~2 sessions). Reuse `tools/interp/verify_*.py`.
 
-**R1. Own GX command decoder (started this session).** Our own GameCube GP FIFO decoder, NO Dolphin
-`OpcodeDecoder`/`VertexLoaderBase`. Pure logic, testable headless by parity against the existing
-Dolphin-based `gxp_parse_frame` (oracle) over captured frames. Command framing + persistent CP state
-(VCD/VAT/array bases) + vertex-size math. **The exact spec gathered this session is in §3a below —
-implement directly from it.** Deliverable: `runtime/ngx/ngx_decode.{h,cpp}`; validate 100% byte-parity
-+ matching prim/DL/copy counts vs the oracle across a long gameplay capture.
+**R1. Own GX command decoder — ✅ DONE + VERIFIED (commit 102912f).** Our own GameCube GP FIFO
+decoder, NO Dolphin `OpcodeDecoder`/`VertexLoaderBase`. Pure logic, tested headless by parity against
+the Dolphin-based `gxp_parse_frame` (oracle). Command framing + persistent CP state (VCD/VAT/array
+bases) + vertex-size math, all in `runtime/ngx/ngx_decode.{h,cpp}` (constants transcribed from
+externals/dolphin VideoCommon; vertex sizes via formula, DL counted-not-recursed to match the
+analyzer). Parity harness: `SUNBRIGHT_NGX_PARITY=1` runs both in lockstep each frame boundary
+(gx_stream.cpp), compares prims/DLs/copies/token-offsets/matrix-array-offsets+values/ok/fail-offset;
+read via the `/ngx` probe endpoint or the `SUNBRIGHT_DBG_GXS` line. **Verified:** fastboot → Delfino
+Plaza, walk+jump+heavy camera — 1261 frames mismatch=0 (run 1); `parse ok=384 fail=0` (all full
+parses, no trivial fail-matching), `ngx cmp=384 mismatch=0` over 114 MB decoded stream (~310 KB
+frames), verdict PARITY-OK (run 2). The exact spec is preserved in §3a below for reference.
 
 **R2. GX register state model.** Mirror the GX state the decoder sees (BP/CP/XF registers) into our own
 state structs (TEV stages, tev/alpha/z config, tex coord gen, viewport, scissor, blend, format). This
@@ -241,9 +246,12 @@ coverage, native water re-issue at N½. Dead ends recorded: blanket direct-XF in
 11. **Boot fully native** (fastboot-only path).
 12. **R8 + unlink Dolphin** — delete VideoCommon/backend/DSP/CoreTiming/MMU from the link. Done.
 
-**First concrete step for the new session:** build R0 (deterministic capture), then implement R1 from
-the §3a spec and prove byte-parity against the oracle over a gameplay capture. That is pure,
-headless-verifiable, Dolphin-free foundation work with zero risk to the running build.
+**Progress:** R1 ✅ DONE+VERIFIED (commit 102912f — native GX decoder at byte-parity vs the oracle
+over a 114 MB gameplay capture, 0 mismatches). **Next concrete steps:** R0 (deterministic
+frame-count-driven capture, still the prerequisite for any *pixel*-level renderer verification) and
+R2 (mirror the GX register state — BP/CP/XF — into our own structs, validated field-by-field against
+Dolphin's bpmem/xfmem/cpmem; the decoder from R1 already gives us the command/CP-state seam to build
+on). Both are pure, headless-verifiable, Dolphin-free foundation work.
 
 ---
 
