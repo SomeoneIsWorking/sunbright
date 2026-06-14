@@ -1,17 +1,18 @@
 // Shadow <stdio.h> for the native port.
 //
 // Several decomp sources do `#include <stdio.h>` for snprintf/vsnprintf. With
-// the MetroWerks MSL tree kept off the include path, that include lands on
-// glibc's <stdio.h> — whose object-like `EOF` macro (-1) collides with the
-// decomp's enumerator `enum EIoState { GOOD, EOF }` (JSUStreamEnum.hpp),
-// producing "expected identifier before '(' token".
+// the MetroWerks MSL tree kept off the include path, that include lands on the
+// system <stdio.h>. We #include_next to pull the REAL system header (the next on
+// the search path after this shadow — NOT <cstdio>, which would recurse back
+// into this file). port/compat/include is first on -I, so this shadow is seen
+// first; #include_next reaches the system header.
 //
-// We use #include_next to pull the REAL system <stdio.h> (the next one on the
-// search path after this shadow — NOT <cstdio>, which would recurse back into
-// this file), then #undef EOF so the game's enumerator spelling survives.
-// Verified: no port-core source compares against the stdio EOF *macro* value,
-// so this is behavior-preserving. (port/compat/include is first on -I, so this
-// shadow is seen first; #include_next reaches the system header.)
+// EOF NOTE: the system `EOF` macro (-1) collides with the decomp's ENUMERATOR
+// `enum EIoState { GOOD, EOF }`. We do NOT #undef EOF globally here — that broke
+// standard C++ library headers (e.g. libc++ <algorithm> -> char_traits.h) that
+// legitimately use the EOF macro. Instead the collision is handled SURGICALLY in
+// the shadow JSystem/JSupport/JSUStreamEnum.hpp (push_macro/undef/pop_macro
+// around just that one enum definition), leaving the macro intact everywhere else.
 #pragma once
 // MSL's <stdio.h> transitively exposed the varargs macros; some decomp TUs
 // (e.g. JUTDirectPrint.cpp) use va_start/va_end having included only <stdio.h>.
@@ -21,6 +22,4 @@
 // FIRST, then the system <stdio.h>.
 #include <stdarg.h>
 #include_next <stdio.h>
-#ifdef EOF
-#undef EOF
-#endif
+// (EOF is intentionally left defined — see the EOF NOTE above.)
