@@ -36,6 +36,10 @@ chk "tailored writes mEmbPalette to the HOST member" \
     "grep -q 'sb_eng_host(cpu.gpr\[3\]))->mEmbPalette = ' $gen_out/construct_tailored.inc"
 chk "tailored still calls the type-revealing engine method (bridged)" \
     "grep -q 'call_ppc(cpu, 0x80009200u)' $gen_out/construct_tailored.inc"
+chk "Pattern A: tailored out-of-line ctor (recompiled) writes the HOST mWidth member" \
+    "grep -q 'sb_eng_host(cpu.gpr\[3\]))->mWidth = ' $gen_out/construct_tailored.inc"
+chk "Pattern A: tailored caller still calls the out-of-line ctor (no special bridge)" \
+    "grep -q 'call_ppc(cpu, 0x80022000u)' $gen_out/construct_tailored.inc"
 chk "oracle calls the real operator new" \
     "grep -q 'call_ppc(cpu, 0x80009100u)' $gen_out/construct_oracle.inc"
 chk "oracle uses raw guest MEM for the inlined writes" \

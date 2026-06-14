@@ -79,8 +79,13 @@ static void eng_touch(EngineTex*) {}
 SUNBRIGHT_BRIDGE(0x80009200u, &eng_touch);
 
 // ── the emitter's own output (the real recompiler code path under test) ───────────────
-extern "C" void func_80010000(CPUState& cpu);   // ORACLE   (guest-layout buffer)
-extern "C" void func_80020000(CPUState& cpu);   // TAILORED (host construction)
+// Pattern B caller @ ..0000; Pattern A caller @ ..1000; Pattern A out-of-line ctor @ ..2000.
+extern "C" void func_80010000(CPUState& cpu);   // ORACLE   B caller
+extern "C" void func_80011000(CPUState& cpu);   // ORACLE   A caller
+extern "C" void func_80012000(CPUState& cpu);   // ORACLE   A ctor (guest-layout)
+extern "C" void func_80020000(CPUState& cpu);   // TAILORED B caller
+extern "C" void func_80021000(CPUState& cpu);   // TAILORED A caller
+extern "C" void func_80022000(CPUState& cpu);   // TAILORED A ctor (host-native)
 #include "../../scratch/port/construct_oracle.inc"
 #include "../../scratch/port/construct_tailored.inc"
 
@@ -88,39 +93,40 @@ int main() {
     std::setbuf(stdout, nullptr);
     const u32 STACK = 0x80200000u;
 
-    // ORACLE: operator new bump-allocates a guest buffer; inlined writes go to it.
-    register_override(0x80009100u, &oracle_operator_new);
-    u32 oracle_obj;
-    {
-        CPUState cpu; cpu.reset();
-        cpu.gpr[1] = STACK;
-        func_80010000(cpu);
-        oracle_obj = cpu.gpr[3];                 // the constructed object (guest ptr)
-    }
-    u32 oracle_width = tst_r32(oracle_obj + 0x3c);
-    u32 oracle_emb   = tst_r32(oracle_obj + 0x28);
+    register_override(0x80009100u, &oracle_operator_new);   // operator new (oracle only)
+    // The out-of-line ctors are ordinary recompiled functions; call_ppc dispatches to them.
+    register_override(0x80012000u, &func_80012000);         // ORACLE   ctor (guest layout)
+    register_override(0x80022000u, &func_80022000);         // TAILORED ctor (host-native, recompiled)
 
-    // TAILORED: operator new is rewritten to sb_eng_alloc<EngineTex>(); writes hit the host object.
-    EngineTex* host_obj = nullptr;
-    {
-        CPUState cpu; cpu.reset();
-        cpu.gpr[1] = STACK;
-        func_80020000(cpu);
-        host_obj = (EngineTex*)sb_eng_host(cpu.gpr[3]);   // r3 = the handle for the new object
-    }
+    // ── Pattern B (heap new, INLINED ctor) ──
+    u32 b_oracle_obj;
+    { CPUState cpu; cpu.reset(); cpu.gpr[1] = STACK; func_80010000(cpu); b_oracle_obj = cpu.gpr[3]; }
+    u32 b_oracle_width = tst_r32(b_oracle_obj + 0x3c), b_oracle_emb = tst_r32(b_oracle_obj + 0x28);
+    EngineTex* b_host = nullptr;
+    { CPUState cpu; cpu.reset(); cpu.gpr[1] = STACK; func_80020000(cpu); b_host = (EngineTex*)sb_eng_host(cpu.gpr[3]); }
 
-    std::printf("[construct_slice] oracle: mWidth=%u mEmbPalette=%u   tailored: host=%p mWidth=%d mEmbPalette=%d\n",
-                oracle_width, oracle_emb, (void*)host_obj,
-                host_obj ? host_obj->mWidth : -1, host_obj ? host_obj->mEmbPalette : -1);
+    CHECK(b_oracle_width == 64 && b_oracle_emb == 0, "B ORACLE: inlined ctor writes land in the guest buffer");
+    CHECK(b_host != nullptr, "B TAILORED: operator new produced a HOST object via its handle");
+    CHECK(b_host && b_host->mWidth == (int)b_oracle_width,
+          "B TAILORED: mWidth matches oracle (host offset != guest offset)");
+    CHECK(b_host && b_host->mEmbPalette == (int)b_oracle_emb, "B TAILORED: mEmbPalette matches oracle");
 
-    CHECK(oracle_width == 64 && oracle_emb == 0, "ORACLE: inlined ctor writes land in the guest buffer");
-    CHECK(host_obj != nullptr, "TAILORED: operator new produced a HOST object reachable via its handle");
-    CHECK(host_obj && host_obj->mWidth == (int)oracle_width,
-          "TAILORED: mWidth written to the host member matches the oracle (host offset != guest offset)");
-    CHECK(host_obj && host_obj->mEmbPalette == (int)oracle_emb,
-          "TAILORED: mEmbPalette written to the host member matches the oracle");
+    // ── Pattern A (heap new, OUT-OF-LINE ctor — the recompiled tailored ctor does host writes) ──
+    u32 a_oracle_obj;
+    { CPUState cpu; cpu.reset(); cpu.gpr[1] = STACK; func_80011000(cpu); a_oracle_obj = cpu.gpr[3]; }
+    u32 a_oracle_width = tst_r32(a_oracle_obj + 0x3c);
+    EngineTex* a_host = nullptr;
+    { CPUState cpu; cpu.reset(); cpu.gpr[1] = STACK; func_80021000(cpu); a_host = (EngineTex*)sb_eng_host(cpu.gpr[3]); }
+
+    std::printf("[construct_slice] B: oracle mWidth=%u host mWidth=%d   A: oracle mWidth=%u host mWidth=%d\n",
+                b_oracle_width, b_host ? b_host->mWidth : -1, a_oracle_width, a_host ? a_host->mWidth : -1);
+
+    CHECK(a_oracle_width == 77, "A ORACLE: out-of-line ctor writes mWidth into the guest buffer");
+    CHECK(a_host != nullptr, "A TAILORED: out-of-line ctor produced a HOST object via its handle");
+    CHECK(a_host && a_host->mWidth == (int)a_oracle_width,
+          "A TAILORED: recompiled out-of-line ctor wrote the HOST member (no special ctor bridge needed)");
 
     if (g_fail) { std::printf("[construct_slice] RESULT: FAIL\n"); return 1; }
-    std::printf("[construct_slice] RESULT: PASS — host-native engine construction verified vs oracle\n");
+    std::printf("[construct_slice] RESULT: PASS — host-native engine construction verified vs oracle (Patterns A+B)\n");
     return 0;
 }
