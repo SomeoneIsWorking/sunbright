@@ -133,6 +133,7 @@ add_executable(sunbright
     runtime/ngx/ngx_decode.cpp
     runtime/render/tex_decode.cpp
     runtime/render/tex_decode_selftest.cpp
+    runtime/render/vk_quad.cpp
     runtime/gpfifo_wrap.cpp
     runtime/native_threads.cpp
     runtime/native_os.cpp
@@ -177,6 +178,7 @@ target_compile_definitions(sunbright PRIVATE
 
 target_link_libraries(sunbright PRIVATE
     core discio uicommon
+    videovulkan          # N2: native renderer reuses Dolphin's VkDevice during bring-up
     SDL2::SDL2
     pthread
 )
