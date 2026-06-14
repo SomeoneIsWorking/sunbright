@@ -93,6 +93,37 @@ add_library(smsport_texdecode STATIC "${SMS_REPO_ROOT}/runtime/render/tex_decode
 target_include_directories(smsport_texdecode PUBLIC "${SMS_REPO_ROOT}/runtime/render")
 
 # ---------------------------------------------------------------------------
+# Portable GameCube MTX/VEC math PAL (port/pal/mtx.cpp).
+#
+# The decomp implements the GC MTX/VEC SDK math (PSMTX*/PSVEC*/C_MTX*) and the
+# MarioUtil Ms* helpers in CodeWarrior PowerPC paired-single inline asm, which
+# cannot compile/run on x86-64/arm64 -> a link scan leaves them UNDEFINED.
+# This lib provides portable C++ implementations with the EXACT GC signatures
+# (matched against reference/sms/include/dolphin/mtx.h) and numeric semantics
+# (frsqrte estimate + Newton refine for the PS* magnitude/normalize, raw
+# estimate for the Ms* helpers — see port/pal/mtx.cpp). Needs the shims:
+# the intrinsics force-include supplies __frsqrte/__fres/__fsel; the shadow
+# dolphin/types.h gives int-based u32 (so PSMTXInverse's u32 return matches).
+# ---------------------------------------------------------------------------
+add_library(smsport_pal STATIC pal/mtx.cpp)
+target_include_directories(smsport_pal PRIVATE ${SMS_INCLUDES})
+target_compile_options(smsport_pal PRIVATE
+  ${SMS_FORCE_INCLUDE}
+  -fno-strict-aliasing
+  -Wno-multichar)
+
+# Unit test: mathematical identities (Concat/Inverse/Transpose/Normalize/
+# projection entries). Runs under CTest; exits non-zero on any failed check.
+add_executable(mtx_test pal/mtx_test.cpp)
+target_include_directories(mtx_test PRIVATE ${SMS_INCLUDES})
+target_compile_options(mtx_test PRIVATE
+  ${SMS_FORCE_INCLUDE}
+  -fno-strict-aliasing
+  -Wno-multichar)
+target_link_libraries(mtx_test PRIVATE smsport_pal)
+add_test(NAME mtx_test COMMAND mtx_test)
+
+# ---------------------------------------------------------------------------
 # Minimal native-boot smoke executable (SCOPING PROBE).
 #
 # Links a trivial main() against the whole core lib so the linker (and `nm`)
@@ -115,7 +146,7 @@ if(SMSPORT_BUILD_MAIN)
   target_include_directories(smsport_main PRIVATE ${SMS_INCLUDES})
   target_link_libraries(smsport_main PRIVATE
     -Wl,--whole-archive smsport_core -Wl,--no-whole-archive
-    smsport_assets smsport_texdecode)
+    smsport_assets smsport_texdecode smsport_pal)
 endif()
 
 enable_testing()
