@@ -127,14 +127,6 @@ struct Interp60Dbg {
     // ON; /interp60?skip_efbcopy=0 to A/B against the flicker.
     int skip_efbcopy = 0; unsigned long efbcopy_skipped = 0;   // reverted: reusing the stale screen
         // texture ghosts Mario into the reflection. Kept as a probe toggle only, default OFF.
-
-    // ── direct-XF matrix interpolation (interp_capture.cpp sb_slot_xf_reg, SUNBRIGHT_INTERP60_DIRECTXF) ──
-    // Direct LoadXFReg matrix writes (water screen-space projection, banners, smoke, projected
-    // shadows) interpolated on the in-between. recorded = real-replay writes captured; interp =
-    // in-between writes substituted with lerp(N-1,N); miss = no N-1 pair (new/static); cut = paired
-    // but rejected by the magnitude guard (mispaired reused slot -> rendered at N, no explosion).
-    int directxf = 0;   // 1 = feature active this run (set from the env flag at first use)
-    unsigned long dxf_recorded = 0, dxf_interp = 0, dxf_miss = 0, dxf_cut = 0;
 };
 extern Interp60Dbg g_i60;
 
