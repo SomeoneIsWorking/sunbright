@@ -134,6 +134,26 @@ target_compile_options(sunbright-func-sig-test PRIVATE -Wall -Wextra -Wno-unused
 add_test(NAME func_sig_test COMMAND sunbright-func-sig-test
          WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
+# End-to-end COMPLETE-coverage proof on REAL game code (the de-risk #2 gate): full auto pipeline
+# (header parse -> layout, demangle -> signature, DOL decode, CFG recovery) vs the decomp source.
+# SKIPs cleanly when the extracted DOL (gitignored) is absent, so a ROM-less checkout still passes.
+add_executable(sunbright-coverage-real-test
+    tools/recompiler/tests/coverage_real_test.cpp
+    tools/recompiler/dol_parser.cpp
+    tools/recompiler/ppc_decoder.cpp
+    tools/recompiler/ppc_mnemonic.cpp
+    tools/recompiler/func_collect.cpp
+    tools/recompiler/decomp_parse.cpp
+    tools/recompiler/abi_layout.cpp
+    tools/recompiler/func_sig.cpp
+    tools/recompiler/type_recovery.cpp
+    tools/recompiler/c_emitter.cpp
+)
+target_include_directories(sunbright-coverage-real-test PRIVATE tools/recompiler runtime)
+target_compile_options(sunbright-coverage-real-test PRIVATE -Wall -Wextra -Wno-unused-parameter)
+add_test(NAME coverage_real_test COMMAND sunbright-coverage-real-test
+         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+
 # ── Launcher executable (SDL2 window + Dolphin Core) ─────────────────────────
 # Everything — launcher, runtime bridge, hand-written overrides, and the
 # statically-recompiled game code — is compiled into one self-contained binary.

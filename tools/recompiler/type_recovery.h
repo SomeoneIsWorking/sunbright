@@ -57,7 +57,12 @@ struct TypeDB {
 // forward dataflow fixpoint over, so a register's type at a join is the MEET of all incoming
 // paths (a type kept only when every predecessor agrees) and loops converge. Passing empty
 // sets degrades to a single straight-line pass.
+// If `unmapped` is non-null, it is filled with the pcs of load/store sites whose base register
+// IS an engine type but whose displacement is NOT in that type's layout — the dangerous
+// "typed base, unmapped offset" misses (the SHARP EDGE): the emitter would fall back to a guest
+// MEM access against a host handle = a correctness bug. A COMPLETE recovery leaves this empty.
 std::map<u32, EngField> recover_eng_fields(const std::vector<PPCInstr>& instrs,
                                            u32 func_addr, const TypeDB& db,
                                            const std::unordered_set<u32>& branch_targets,
-                                           const std::unordered_set<u32>& jumptable_targets);
+                                           const std::unordered_set<u32>& jumptable_targets,
+                                           std::vector<u32>* unmapped = nullptr);

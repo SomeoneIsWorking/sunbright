@@ -75,15 +75,20 @@ bool is_call(const PPCInstr& i) {
                     i.op == PPCOp::BCCTR || i.op == PPCOp::BCLR);
 }
 
-// Apply instruction `i` to state `s`. If `out` is non-null, record any typed field site.
-void apply(const PPCInstr& i, State& s, const TypeDB& db, std::map<u32, EngField>* out) {
+// Apply instruction `i` to state `s`. If `out` is non-null, record any typed field site; if
+// `gaps` is non-null, record a "typed base, unmapped offset" miss (the dangerous case).
+void apply(const PPCInstr& i, State& s, const TypeDB& db,
+           std::map<u32, EngField>* out, std::vector<u32>* gaps) {
     auto field_at = [&](int base_reg, int disp) -> std::string {
         const std::string& ty = s.reg[base_reg];
         if (ty.empty()) return "";
         auto L = db.layouts.find(ty);
         if (L == db.layouts.end()) return "";
         auto f = L->second.fields.find(disp);
-        if (f == L->second.fields.end()) return "";          // typed base, unmapped offset (gap)
+        if (f == L->second.fields.end()) {                     // typed base, unmapped offset (gap)
+            if (gaps) gaps->push_back(i.pc);
+            return "";
+        }
         if (out) (*out)[i.pc] = EngField{ ty, f->second.member, f->second.nested_type };
         return f->second.nested_type;                          // nested engine ptr -> chaining
     };
@@ -140,7 +145,8 @@ void apply(const PPCInstr& i, State& s, const TypeDB& db, std::map<u32, EngField
 std::map<u32, EngField> recover_eng_fields(const std::vector<PPCInstr>& instrs,
                                            u32 func_addr, const TypeDB& db,
                                            const std::unordered_set<u32>& branch_targets,
-                                           const std::unordered_set<u32>& jumptable_targets) {
+                                           const std::unordered_set<u32>& jumptable_targets,
+                                           std::vector<u32>* unmapped) {
     std::map<u32, EngField> out;
     const int n = (int)instrs.size();
     if (n == 0) return out;
@@ -209,7 +215,7 @@ std::map<u32, EngField> recover_eng_fields(const std::vector<PPCInstr>& instrs,
     std::deque<int> work;
     std::vector<char> queued(n, 0);
     in[0] = seed;
-    outs[0] = seed; apply(instrs[0], outs[0], db, nullptr);
+    outs[0] = seed; apply(instrs[0], outs[0], db, nullptr, nullptr);
     work.push_back(0); queued[0] = 1;
     // ensure every node gets visited even if unreachable from a clean entry chain
     for (int k = 1; k < n; ++k) { work.push_back(k); queued[k] = 1; }
@@ -226,7 +232,7 @@ std::map<u32, EngField> recover_eng_fields(const std::vector<PPCInstr>& instrs,
         in[k] = nin;
 
         State nout = nin;
-        apply(instrs[k], nout, db, nullptr);
+        apply(instrs[k], nout, db, nullptr, nullptr);
         nout.defined = true;
         outs[k] = nout;
 
@@ -237,7 +243,7 @@ std::map<u32, EngField> recover_eng_fields(const std::vector<PPCInstr>& instrs,
     for (int k = 0; k < n; ++k) {
         if (!in[k].defined) continue;                          // unreachable: nothing to record
         State s = in[k];
-        apply(instrs[k], s, db, &out);
+        apply(instrs[k], s, db, &out, unmapped);
     }
     return out;
 }
