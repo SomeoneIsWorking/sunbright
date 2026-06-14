@@ -112,8 +112,16 @@ individual engine base methods to native while the object stays guest-resident.
 ## 4. Phasing
 
 1. **Build the marshalling thunk layer** (`SUNBRIGHT_BRIDGE` template) + a guest↔host pointer
-   helper exposed to `port/`. Thin vertical slice: route ONE real service call from recomp into
-   a `port/` native function and A/B verify identical behavior (oracle/`recomp_raw` super-call).
+   helper exposed to `port/`. ✅ DONE (e9514f0): `runtime/bridge.h` + `runtime/tests/bridge_test.cpp`
+   (4/4, EABI bank-separation verified). **NEXT GATE — link coexistence:** routing a REAL guest
+   call into a `port/` function needs `port/` and the sunbright binary to coexist in ONE link.
+   They have conflicting symbols (`port/` host `JKRHeap`/`operator new`/OS scheduler vs the
+   recomp world's guest `JKRHeap` + `runtime/native_threads` + libc++ `operator new`). Pulling a
+   `port/` object drags its whole engine-runtime neighborhood. Resolve **leaf-first**: bridge a
+   PURE, dependency-free `port/` function (e.g. `JKRDecomp::decodeSZS` — host pointers in/out,
+   no heap/thread/OS) so only that object links; A/B-verify vs `recomp_raw`. Decide the general
+   coexistence model (link only leaf objects, vs namespace/partition the two runtimes) before
+   bridging functions that need the `port/` heap/threads.
 2. **Flip service subsystems to `port/` native** via the bridge, one at a time, each A/B-verified:
    decomp → archive/file I/O → (audio is already native, re-home it on `port/` later). High
    value (these are the slow/IO/asset paths), low coupling (no shared field access).
