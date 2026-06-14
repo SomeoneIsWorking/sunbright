@@ -188,6 +188,17 @@ target_compile_options(sunbright-coverage-sweep-test PRIVATE -Wall -Wextra -Wno-
 add_test(NAME coverage_sweep_test COMMAND sunbright-coverage-sweep-test
          WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
+# Engine-object handle table (the data half of the tailored-recomp boundary).
+add_executable(sunbright-eng-handle-test
+    runtime/tests/eng_handle_test.cpp
+    runtime/eng_handle.cpp
+)
+target_include_directories(sunbright-eng-handle-test PRIVATE runtime)
+target_compile_options(sunbright-eng-handle-test PRIVATE -Wall -Wextra -Wno-unused-parameter)
+find_package(Threads REQUIRED)
+target_link_libraries(sunbright-eng-handle-test PRIVATE Threads::Threads)
+add_test(NAME eng_handle_test COMMAND sunbright-eng-handle-test)
+
 # ── Launcher executable (SDL2 window + Dolphin Core) ─────────────────────────
 # Everything — launcher, runtime bridge, hand-written overrides, and the
 # statically-recompiled game code — is compiled into one self-contained binary.
@@ -226,6 +237,7 @@ add_executable(sunbright
     runtime/sunbright_bridge.cpp
     runtime/dolphin_hook.cpp
     runtime/memory_bridge.cpp
+    runtime/eng_handle.cpp
     runtime/gx_stream.cpp
     runtime/gx_parse.cpp
     runtime/ngx/ngx_decode.cpp

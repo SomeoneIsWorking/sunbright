@@ -336,6 +336,15 @@ static inline u8* ram_ptr(u32 ea) {
 #  define MMIO_W(bits, ea, v)  ((void)0)
 #endif
 
+// Guest main-RAM effective address -> host pointer, for the SUNBRIGHT_BRIDGE marshalling thunk
+// (runtime/bridge.h): when recompiled game code calls a host-native engine function, a guest
+// POINTER argument (a game object in main RAM) is translated to a host pointer here. ea==0 maps
+// to nullptr. Only main RAM is valid for a bridged pointer arg; anything else returns nullptr.
+// Defined unconditionally (both MemMap and the standalone test backend provide ram_ptr).
+void* sb_guest_to_host(u32 ea) {
+    return ea ? (void*)ram_ptr(ea) : nullptr;
+}
+
 // Shared diagnostic: dump the live guest register file and name whichever GPR, plus a
 // small displacement, equals the faulting ea — i.e. the corrupted base pointer. Used by
 // BOTH the wild-read and wild-write traps so a bad store names its base register the same

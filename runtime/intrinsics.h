@@ -213,3 +213,17 @@ extern void msr_set_raw(u32 v);
 // advances with CoreTiming — code that spins until the TB reaches a target (delay
 // loops, timeouts) actually makes progress. Standalone builds use a fake counter.
 extern u64  tb_get();
+
+// ── Tailored-recomp boundary (docs/ARCHITECTURE_TARGET.md) ───────────────────
+// Engine-object handle table: recompiled game code holds 32-bit HANDLES for the
+// host-native PC-engine objects it reads/calls. The emitter bakes sb_eng_host()
+// at every typed field-access site (see tools/recompiler/c_emitter.cpp
+// emit_eng_field) and sb_eng_handle() when an engine pointer crosses the
+// boundary. Defined in runtime/eng_handle.cpp; full contract in eng_handle.h.
+extern u32   sb_eng_handle(void* host);
+extern void* sb_eng_host(u32 handle);
+extern void  sb_eng_release(void* host);
+
+// Guest main-RAM effective address -> host pointer (for the SUNBRIGHT_BRIDGE
+// marshalling thunk, runtime/bridge.h). ea==0 -> nullptr. Defined in memory_bridge.cpp.
+extern void* sb_guest_to_host(u32 ea);
