@@ -117,11 +117,17 @@ individual engine base methods to native while the object stays guest-resident.
    call into a `port/` function needs `port/` and the sunbright binary to coexist in ONE link.
    They have conflicting symbols (`port/` host `JKRHeap`/`operator new`/OS scheduler vs the
    recomp world's guest `JKRHeap` + `runtime/native_threads` + libc++ `operator new`). Pulling a
-   `port/` object drags its whole engine-runtime neighborhood. Resolve **leaf-first**: bridge a
-   PURE, dependency-free `port/` function (e.g. `JKRDecomp::decodeSZS` — host pointers in/out,
-   no heap/thread/OS) so only that object links; A/B-verify vs `recomp_raw`. Decide the general
-   coexistence model (link only leaf objects, vs namespace/partition the two runtimes) before
-   bridging functions that need the `port/` heap/threads.
+   `port/` object drags its whole engine-runtime neighborhood. **COEXISTENCE MODEL — RESOLVED
+   (verified link experiment):** plain object-granularity linking of `JKRDecomp.o` drags 113
+   undefined refs (ARAM/OS/heap). But compiling `port/` with `-ffunction-sections -fdata-sections`
+   and linking the binary with `-Wl,--gc-sections` makes referencing only `decodeSZS` link CLEAN
+   (0 undefined) — the unreferenced siblings (`orderSync` …) and their deps are GC'd. So a pure
+   leaf costs nothing extra and there is NO symbol conflict for leaves. Functions that genuinely
+   need the `port/` heap/threads will pull them in, and THAT is where the `port/`-runtime vs
+   recomp-runtime symbol boundary appears (handle then: leaf-first, and partition the runtimes
+   when a non-leaf is needed). **Next concrete step:** wire `port/src/JKRDecomp.cpp` (function
+   sections) into the sunbright binary, `SUNBRIGHT_BRIDGE(<decodeSZS guest addr>, &JKRDecomp::
+   decodeSZS)`, build with `--gc-sections`, A/B-verify vs `recomp_raw`.
 2. **Flip service subsystems to `port/` native** via the bridge, one at a time, each A/B-verified:
    decomp → archive/file I/O → (audio is already native, re-home it on `port/` later). High
    value (these are the slow/IO/asset paths), low coupling (no shared field access).
