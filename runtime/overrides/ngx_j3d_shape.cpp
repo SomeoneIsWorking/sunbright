@@ -44,8 +44,13 @@ bool g_enabled = (getenv("SUNBRIGHT_NGX_SHAPE") != nullptr);
 
 // Latest GX texmap-0 binding (from the GXLoadTexObj tee), associated with shapes
 // drawn after it. Decoded from the GXTexObj's packed registers.
-struct CurTex { u32 addr = 0; u16 w = 0, h = 0; u8 fmt = 0; bool valid = false; };
+struct CurTex { u32 addr = 0; u16 w = 0, h = 0; u8 fmt = 0; u32 tlut_addr = 0; u8 tlut_fmt = 0; bool valid = false; };
 CurTex g_curtex;
+
+// TLUT registry: tlut_name (GXTlut, the TMEM slot) → palette guest addr + format,
+// populated by the GXLoadTlut tee. CI texobjs reference a tlut_name (texobj+0x18).
+struct TlutEntry { u32 addr = 0; u8 fmt = 0; bool valid = false; };
+TlutEntry g_tlut[256];
 
 inline bool valid(u32 a) { return a >= 0x80000000u && a < 0x81800000u; }
 inline u32  r32(u32 a) { return valid(a) ? mem_r32(a) : 0; }
@@ -201,10 +206,10 @@ void transform_eye() {
     // never splits a triangle; on wrap the batch list resets with the buffer).
     if (g_have_proj && !g_indices.empty()) {
         if (g_snap.size() < SNAP_CAP) g_snap.resize(SNAP_CAP);
-        // Texmap-0 binding for this shape; paletted formats (C4/C8/C14X2) need a
-        // TLUT we don't yet capture → render flat (tex_addr 0) for now.
-        const bool tex_ok = g_curtex.valid && g_curtex.fmt != 0x8 &&
-                            g_curtex.fmt != 0x9 && g_curtex.fmt != 0xA && g_curtex.addr;
+        // Texmap-0 binding for this shape. CI formats (C4/C8/C14X2) are now OK iff
+        // their TLUT was resolved; otherwise render flat (tex_addr 0).
+        const bool is_ci = (g_curtex.fmt == 0x8 || g_curtex.fmt == 0x9 || g_curtex.fmt == 0xA);
+        const bool tex_ok = g_curtex.valid && g_curtex.addr && (!is_ci || g_curtex.tlut_addr);
         const uint32_t taddr = tex_ok ? g_curtex.addr : 0u;
         for (size_t t = 0; t + 3 <= g_indices.size(); t += 3) {
             if (g_snap_count + 3 > SNAP_CAP) { g_snap_count = 0; g_batches.clear(); }
@@ -212,8 +217,9 @@ void transform_eye() {
             if (g_batches.empty() || g_batches.back().tex_addr != taddr ||
                 g_batches.back().vstart + g_batches.back().vcount != (uint32_t)g_snap_count) {
                 if (g_batches.size() >= BATCH_CAP) break;  // bounded
-                g_batches.push_back(NgxRenderBatch{taddr, g_curtex.w, g_curtex.h,
-                                                   g_curtex.fmt, (uint32_t)g_snap_count, 0});
+                g_batches.push_back(NgxRenderBatch{taddr, g_curtex.w, g_curtex.h, g_curtex.fmt,
+                                                   tex_ok ? g_curtex.tlut_addr : 0u, g_curtex.tlut_fmt,
+                                                   (uint32_t)g_snap_count, 0});
             }
             for (int e = 0; e < 3; e++) {
                 const unsigned vidx = g_indices[t + e];
@@ -298,6 +304,22 @@ const NgxRenderBatch* ngx_snap_batches(int* nbatches) {
 // binding so shapes drawn after it can be textured. GXTexObj packed fields
 // (reference/sms GXInitTexObj + docs/re_notes/efb_native_60fps.md): image0@0x08 =
 // width-1[0:9] / height-1[10:19] / fmt&0xF[20:23]; image3@0x0C = (addr>>5)[0:20].
+// GXLoadTlut(GXTlutObj* tlut_obj, u32 tlut_name) @ 0x803601fc — record the palette
+// for a TMEM tlut slot. __GXTlutObjInt: tlut@0x00 (fmt@bits10-11), loadTlut0@0x04
+// (lut addr>>5 @bits0-20). CI texobjs reference the slot via texobj.tlutName@0x18.
+SUNBRIGHT_OVERRIDE(ov_gxloadtlut, 0x803601fcu) {
+    if (g_enabled) {
+        const u32 obj = cpu.gpr[3], name = cpu.gpr[4] & 0xFF;
+        if (valid(obj)) {
+            const u32 tlut = r32(obj + 0x00), loadTlut0 = r32(obj + 0x04);
+            g_tlut[name].fmt = (u8)((tlut >> 10) & 3);
+            g_tlut[name].addr = 0x80000000u | ((loadTlut0 & 0x1FFFFFu) << 5);
+            g_tlut[name].valid = true;
+        }
+    }
+    if (RecompFunc o = recomp_raw(0x803601fcu)) o(cpu); else call_ppc(cpu, cpu.lr);
+}
+
 SUNBRIGHT_OVERRIDE(ov_gxloadtexobj, 0x80360160u) {
     if (g_enabled && cpu.gpr[4] == 0) {          // GX_TEXMAP0
         const u32 obj = cpu.gpr[3];
@@ -307,6 +329,11 @@ SUNBRIGHT_OVERRIDE(ov_gxloadtexobj, 0x80360160u) {
             g_curtex.h = (u16)(((image0 >> 10) & 0x3FF) + 1);
             g_curtex.fmt = (u8)((image0 >> 20) & 0xF);
             g_curtex.addr = 0x80000000u | ((image3 & 0x1FFFFFu) << 5);
+            g_curtex.tlut_addr = 0; g_curtex.tlut_fmt = 0;
+            if (g_curtex.fmt == 0x8 || g_curtex.fmt == 0x9 || g_curtex.fmt == 0xA) {  // CI → resolve TLUT
+                const u32 name = r32(obj + 0x18) & 0xFF;   // texobj.tlutName
+                if (g_tlut[name].valid) { g_curtex.tlut_addr = g_tlut[name].addr; g_curtex.tlut_fmt = g_tlut[name].fmt; }
+            }
             g_curtex.valid = true;
         }
     }

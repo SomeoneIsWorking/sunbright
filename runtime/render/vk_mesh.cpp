@@ -89,7 +89,7 @@ int sb_ngx_render(char* outbuf, int cap) {
         const NgxRenderBatch& B = batches[b];
         if (B.tex_addr == 0 || B.w == 0 || B.h == 0) { batch_tex[b] = 0; continue; }
         const uint64_t key = ((uint64_t)B.tex_addr << 16) ^ ((uint64_t)B.fmt << 56) ^
-                             ((uint64_t)B.w << 40) ^ ((uint64_t)B.h << 28);
+                             ((uint64_t)B.w << 40) ^ ((uint64_t)B.h << 28) ^ ((uint64_t)B.tlut_addr << 4);
         auto it = tex_index.find(key);
         if (it != tex_index.end()) { batch_tex[b] = it->second; continue; }
         if ((int)texs.size() >= MAXTEX) { batch_tex[b] = 0; continue; }
@@ -99,11 +99,19 @@ int sb_ngx_render(char* outbuf, int cap) {
         // Guard: the tiled source must fit within the 24 MB main RAM window.
         const int srcbytes = sb_tex_size_bytes(w, h, B.fmt);
         if (srcbytes <= 0 || (B.tex_addr & 0x01FFFFFFu) + (uint32_t)srcbytes > 0x1800000u) { batch_tex[b] = 0; continue; }
+        // CI formats need the palette; bound it (C4=16 / C8=256 / C14X2=16384 entries × 2 B).
+        const uint8_t* tlut = nullptr;
+        if (B.fmt == SB_TF_C4 || B.fmt == SB_TF_C8 || B.fmt == SB_TF_C14X2) {
+            const uint32_t entries = B.fmt == SB_TF_C4 ? 16u : B.fmt == SB_TF_C8 ? 256u : 16384u;
+            if (B.tlut_addr && (B.tlut_addr & 0x01FFFFFFu) + entries * 2u <= 0x1800000u)
+                tlut = sb_ram_fast(B.tlut_addr);
+            if (!tlut) { batch_tex[b] = 0; continue; }   // no palette → render flat
+        }
         const size_t rgba = (size_t)w * h * 4;
         if (staging.size() + rgba > TEX_STAGING) { batch_tex[b] = 0; continue; }
         const size_t off = staging.size();
         staging.resize(off + rgba);
-        sb_tex_decode((uint32_t*)(staging.data() + off), host, w, h, B.fmt, nullptr, 0);
+        sb_tex_decode((uint32_t*)(staging.data() + off), host, w, h, B.fmt, tlut, B.tlut_fmt);
         const int idx = (int)texs.size();
         texs.push_back({w, h, off});
         tex_index[key] = idx;

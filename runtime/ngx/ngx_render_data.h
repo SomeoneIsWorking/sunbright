@@ -21,6 +21,8 @@ struct NgxRenderBatch {
     uint32_t tex_addr;        // guest address of the tiled texture bytes (0 = none)
     uint16_t w, h;            // texture dimensions
     uint8_t  fmt;             // GX texture format (SbTexFormat)
+    uint32_t tlut_addr;       // guest palette address for CI formats (0 = none)
+    uint8_t  tlut_fmt;        // GX TLUT format (SbTlutFormat) for CI formats
     uint32_t vstart, vcount;  // [vstart, vstart+vcount) into the vertex list
 };
 

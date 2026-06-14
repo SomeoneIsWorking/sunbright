@@ -30,7 +30,12 @@ int ngx_assemble_primitive(const NgxCP& cp, unsigned op,
     for (int i = 0; i < count; i++) {
         NgxVertex& v = verts[base + i];
         std::memset(&v, 0, sizeof v);
-        v.clr[0][3] = v.clr[1][3] = 0xFF;
+        // Absent vertex-color channels default to WHITE, not black: in the common
+        // texColor×rasColor modulate, a missing color channel must pass the texture
+        // through (black would kill all texture-only / colorless geometry). Present
+        // CLR0/CLR1 overwrite this below.
+        v.clr[0][0]=v.clr[0][1]=v.clr[0][2]=v.clr[0][3]=0xFF;
+        v.clr[1][0]=v.clr[1][1]=v.clr[1][2]=v.clr[1][3]=0xFF;
     }
 
     // Extract each present attribute across all vertices, then scatter into the

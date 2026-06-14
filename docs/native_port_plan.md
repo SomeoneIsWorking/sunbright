@@ -362,10 +362,24 @@ decoder; runtime GP-FIFO path on the delete list. Then, on the object-model arch
   Verified live (Delfino): real building window/wall texture detail appears (vs the flat-white
   version), correct UVs, no crash/VK errors. KNOWN-INCOMPLETE (honest): dim, because most SMS
   surfaces use PALETTE textures (C4/C8/C14X2) — skipped here (need the TLUT) → flat dark vertex
-  color — and there is no lighting / full TEV combiner yet. **Next: (1) TLUT capture (GXLoadTlut)
-  → decode the paletted formats so most surfaces texture; (2) the real TEV combiner
-  (J3DMaterial/J3DTevs → SPIR-V, Dolphin PixelShaderGen as math ref) for correct material color;
-  (3) lighting (normal transform via j3dSys.mCurrentNormMtx).**
+  color — and there is no lighting / full TEV combiner yet.
+- **N5 — TLUT capture + colorless-default fix ✅** (this commit) — palette (CI) texture support +
+  a correctness fix. A GXLoadTlut tee (0x803601fc) records each TMEM tlut slot's palette
+  (addr/fmt from __GXTlutObjInt: tlut@0x00 fmt-bits10-11, loadTlut0@0x04 addr>>5); the GXLoadTexObj
+  tee resolves a CI texobj's tlutName (texobj+0x18) → palette, carried in NgxRenderBatch; vk_mesh
+  feeds it to the N1 decoder (already palette-parity-tested). Bounds-checked (C4=16/C8=256/C14X2=
+  16384 entries). Also FIXED: the mesh assembler defaulted absent vertex colors to BLACK → killed
+  texture-only/colorless geometry to black; now defaults to WHITE (faithful for the texColor×color
+  modulate — texture passes through). Verified no crash/VK errors.
+  **HONEST STATE / THE REAL FRONTIER:** the scene is still dim. Diagnosis (not guesswork): the
+  earlier flat-color renders (o=vColor) were bright; the ONLY change that darkens is ×texColor → so
+  `texColor×vColor` is demonstrably NOT the right combine for these materials. Guessing a combine is
+  a bandaid. **The fix is the real per-material TEV combiner — N5 proper: walk J3DMaterial's TEV
+  stages (reference/sms J3DTevs.cpp; Dolphin PixelShaderGen as the math reference, re-derived) →
+  generate a per-material-state SPIR-V fragment shader (TEV-state→shader cache), with the actual
+  Konst/raster/texture inputs + alpha/blend.** Then lighting (normal transform via
+  j3dSys.mCurrentNormMtx). Low texture-capture count per chunk also suggests some bindings come via
+  GXLoadTexObjPreLoaded / other texmaps — widen capture alongside TEV.
 
 **J3DShape DRAW PATH (RE'd 2026-06-14, `reference/sms/.../J3DShape.cpp`) — the live-hook seam.**
 `J3DShape::draw()` does, in order:
