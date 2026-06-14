@@ -5,6 +5,7 @@
 namespace {
 
 void kind_size_align(FKind k, const ABIOpts& o, int& size, int& align) {
+    size = 1; align = 1;                 // safe default (every FKind is covered below)
     switch (k) {
     case FKind::I8:  case FKind::U8:  size = 1; align = 1; break;
     case FKind::I16: case FKind::U16: size = 2; align = 2; break;

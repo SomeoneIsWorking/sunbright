@@ -4,6 +4,8 @@
 #include "ppc_decoder.h"
 #include "c_emitter.h"
 #include "func_collect.h"
+#include "type_db_build.h"
+#include "type_recovery.h"
 
 #include <iostream>
 #include <fstream>
@@ -411,6 +413,33 @@ static int recompile_mode(const DiscLoader& disc, const DOL& dol, const std::str
     // functions together and lets the chunks compile in parallel.
     std::sort(all_funcs.begin(), all_funcs.end());
 
+    // ── Tailored boundary: host-native engine field access (ARCHITECTURE_TARGET) ──
+    // Build the type DB for the ACTIVE engine types (those whose port/ objects are host-native).
+    // Default = empty: recovered eng_fields stays empty, so every load/store emits the unchanged
+    // guest-layout MEM access (the guest-only path). Flip a subsystem on by listing its engine
+    // types in SUNBRIGHT_ENGINE_TYPES (comma/space-separated) once port/ owns those objects — one
+    // path, per-subsystem, no env toggle selecting native-vs-GC at runtime.
+    TypeDB g_type_db;
+    if (const char* e = getenv("SUNBRIGHT_ENGINE_TYPES")) {
+        std::set<std::string> active;
+        std::string cur;
+        for (char ch : std::string(e)) {
+            if (ch == ',' || ch == ' ' || ch == '\t') { if (!cur.empty()) { active.insert(cur); cur.clear(); } }
+            else cur += ch;
+        }
+        if (!cur.empty()) active.insert(cur);
+        if (!active.empty()) {
+            const char* inc = getenv("SUNBRIGHT_DECOMP_INCLUDE");
+            const char* fx  = getenv("SUNBRIGHT_FUNCS_TXT");
+            auto built = build_type_db(active, inc ? inc : "reference/sms/include",
+                                       fx ? fx : "reference/sms_gmse01_funcs.txt");
+            g_type_db = std::move(built.db);
+            std::cout << "Tailored boundary: " << g_type_db.layouts.size() << " engine type(s) active\n";
+            for (const auto& m : built.missing_types)
+                std::cerr << "  WARN: engine type not found in headers: " << m << "\n";
+        }
+    }
+
     // ── Shared header: forward declarations for every recompiled function ─────
     // Each functions_*.cpp and jump_table.cpp include this, so cross-file calls
     // resolve without repeating 6000+ declarations in every translation unit.
@@ -469,6 +498,10 @@ static int recompile_mode(const DiscLoader& disc, const DOL& dol, const std::str
                 ctx.jumptable_targets = jumptable_targets(ctx.instrs, addr, fend, any_word);
                 ctx.branch_targets.insert(ctx.jumptable_targets.begin(), ctx.jumptable_targets.end());
             }
+            // Tailored boundary: type-recover host engine fields (empty DB -> empty -> unchanged).
+            if (!g_type_db.layouts.empty())
+                ctx.eng_fields = recover_eng_fields(ctx.instrs, addr, g_type_db,
+                                                    ctx.branch_targets, ctx.jumptable_targets);
             emitter.emit_function(ctx);
         }
         total_unhandled += emitter.unhandled_count();
