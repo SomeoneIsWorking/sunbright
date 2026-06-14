@@ -77,6 +77,11 @@ bool sunbright_interp60_replay();       // interp60_replay.cpp — render-only r
 extern "C" void interp60_xfmap_build(const u8* frame, u32 n, float alpha);  // interp_capture.cpp
 extern "C" void interp60_xfmap_set_alpha(float alpha);  // interp_capture.cpp — re-aim map per replay
 extern "C" void interp60_xfmap_end();
+// Direct-XF matrix interpolation (interp_capture.cpp) — water screen-space projection / banners /
+// smoke / projected shadows that set transforms via direct LoadXFReg, not indexed arrays.
+extern "C" void interp60_dxf_begin(int mode);   // 1 = record (real replay), 2 = interp (in-between)
+extern "C" void interp60_dxf_end();
+extern "C" void interp60_dxf_rotate();          // N becomes N-1 for next frame
 
 namespace {
 
@@ -111,6 +116,14 @@ static bool own_present_enabled() {
 static bool efb_redirect_enabled() {
     static int v = -1;
     if (v < 0) v = getenv("SUNBRIGHT_NO_EFB_REDIRECT") ? 0 : 1;  // default ON for interp60
+    return v == 1;
+}
+// Direct-XF matrix interpolation (water screen-space projection / banners / smoke / projected
+// shadows). Default OFF while it proves out headed — exploding a mispaired matrix is invisible
+// headless, so it stays opt-in until the user confirms it helps the water without artifacts.
+static bool directxf_enabled() {
+    static int v = -1;
+    if (v < 0) { v = getenv("SUNBRIGHT_INTERP60_DIRECTXF") ? 1 : 0; g_i60.directxf = v; }
     return v == 1;
 }
 extern "C" void sb_efb_native_begin_inbetween();   // efb_native.cpp — per-field EFB-copy redirect
@@ -269,14 +282,17 @@ SUNBRIGHT_OVERRIDE(ov_interp_endRendering, DISPLAY_END_RENDER) {
         interp60_xfmap_build(frameN.data(), (u32)frameN.size(), g_i60.alpha);
 
         const bool unified = getenv("SUNBRIGHT_NO_UNIFIED_REPLAY") == nullptr;
+        const bool dxf = directxf_enabled();
 
         if (unified) {
             // ── REAL present: replay frame N (alpha 1.0) into a clean EFB, copy -> orig, present ──
             sb_clear_efb();                                    // discard the game's live EFB; render fresh
             interp60_xfmap_set_alpha(1.0f);
+            if (dxf) interp60_dxf_begin(1);                    // record frame N's direct matrix writes
             g_interp60_in_redraw = true;
             gxs_replay_frame(frameN.data(), frameN.size());    // re-render N (own EFB-copy/screen tex)
             g_interp60_in_redraw = false;
+            if (dxf) interp60_dxf_end();
             MEM_W16(display + 0x4C, 1);
             cpu.gpr[3] = display; func_802f80d0(cpu);          // pace 1 field + copy real EFB -> orig
             if (g_gfx) g_gfx->Flush();
@@ -286,9 +302,11 @@ SUNBRIGHT_OVERRIDE(ov_interp_endRendering, DISPLAY_END_RENDER) {
             cpu.gpr[3] = video; cpu.gpr[4] = alt; call_ppc(cpu, VIDEO_SET_NEXT_XFB);
             sb_clear_efb();
             interp60_xfmap_set_alpha(g_i60.alpha);
+            if (dxf) interp60_dxf_begin(2);                    // lerp direct matrices toward recorded N-1
             g_interp60_in_redraw = true;
             gxs_replay_frame(frameN.data(), frameN.size());    // re-render N-1/2
             g_interp60_in_redraw = false;
+            if (dxf) { interp60_dxf_end(); interp60_dxf_rotate(); }   // N becomes N-1 for next frame
             interp60_xfmap_end();
             const u32 ob0 = MEM_R32(display + 4), ob1 = MEM_R32(display + 8);
             MEM_W32(display + 4, alt); MEM_W32(display + 8, alt);   // steer the copy dest to ALT
@@ -628,6 +646,12 @@ int interp60_probe(char* out, int cap, const char* query) {
         "(in-between left it unchanged)");
     app("EFB-COPY skip (water/screen-space flicker fix): skip_efbcopy=%d  copies_skipped_on_inbetween=%lu\n",
         g_i60.skip_efbcopy, g_i60.efbcopy_skipped);
+    app("DIRECT-XF interp (LoadXFReg matrices: water proj/banners/smoke/shadows): enabled=%d  "
+        "recorded=%lu interp=%lu miss=%lu cut=%lu  %s\n",
+        g_i60.directxf, g_i60.dxf_recorded, g_i60.dxf_interp, g_i60.dxf_miss, g_i60.dxf_cut,
+        !g_i60.directxf ? "(off: SUNBRIGHT_INTERP60_DIRECTXF=1 to enable)" :
+        g_i60.dxf_interp ? "<<< interpolating direct matrices" :
+        "<<< enabled but nothing paired (all miss/cut)");
     app("MARUKAGE (TSilhouette::perform): real perf=%lu maru(&0x10)=%lu param=%08x | redraw perf=%lu maru=%lu param=%08x  %s\n",
         g_i60.sil_perf_real, g_i60.sil_maru_real, g_i60.sil_lastparam_real,
         g_i60.sil_perf_redraw, g_i60.sil_maru_redraw, g_i60.sil_lastparam_redraw,

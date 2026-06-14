@@ -148,7 +148,30 @@ check the filenames). `SendUserFile` works but the user prefers files left on di
 
 ---
 
-## DIRECT-TRANSFORM JITTER (banners/smoke/shadows) — NOT STARTED, fully scoped
+## DIRECT-TRANSFORM INTERP — STARTED (2026-06-14): direct LoadXFReg matrix interpolation
+The water still jittered after unified replay. RE'd cause: the water screen-space refraction
+**projection/texgen matrix is a DIRECT `LoadXFReg` write** to XF matrix memory, which the indexed
+(array-12) interp hook never sees — so on the in-between the surface verts interpolate (indexed) while
+the screen-space warp matrix stays at tick N = the "swim"/jitter (efb_dynamic_texture_chain.md §3's
+non-linear warning). Same class as banners/smoke/projected shadows (all direct LoadXFReg).
+
+**Native fix (commit pending), behind `SUNBRIGHT_INTERP60_DIRECTXF=1` (default off until verified):**
+a new fork seam `sb_slot_xf_reg` in `XFStructs.cpp` `LoadXFReg` (the XF-mem branch), mirroring the
+indexed seam. Runtime side in `interp_capture.cpp`:
+- REAL replay (`interp60_dxf_begin(1)`): RECORD every direct matrix-memory write, keyed by
+  (xf-mem address, k-th occurrence within the frame). Renders N as-is.
+- IN-BETWEEN replay (`interp60_dxf_begin(2)`): substitute `lerp(N-1, N)` for each write at the same
+  (addr, occ). A per-element **magnitude guard (>8000 → render at N)** rejects a mispaired reused slot
+  (draw-order shift) so a bad pair can't explode geometry.
+- `interp60_dxf_rotate()` after the in-between: N becomes N-1 for next frame.
+
+Verified headless: enabled, **96–98% coverage** (interp≈554k of 574k writes over a walk+camera-rotate),
+miss/cut low (cut ≈1.9%, all safely rendered at N), **no crash, no geometry explosion, cadence +
+motion-interp unchanged**. `/interp60` "DIRECT-XF" line reports recorded/interp/miss/cut.
+**NEEDS USER HEADED VERIFY:** does it smooth the water/banner jitter? If yes, flip default on; the
+pairing-by-(addr,occ) may need scoping to texgen/post-matrix ranges if any effect mispairs visibly.
+
+## DIRECT-TRANSFORM JITTER (banners/smoke/shadows) — original scoping below (now addressed by the seam above)
 Confirmed via the `/interp60` XF array histogram: the scene only does **indexed** loads for arrays
 **12 (position)** and **13 (normal)**. So banners, smoke particles, and projected-texture
 shadows/decals set their transforms via **direct `LoadXFReg` writes** (modelview + texgen-projection

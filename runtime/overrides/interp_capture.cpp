@@ -31,6 +31,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cmath>
 #include <vector>
 #include <unordered_set>
 #include <unordered_map>
@@ -317,6 +318,63 @@ extern "C" bool sb_hook_xf_indexed(u32 array, u32 base, u32 stride, u32 index, u
 
 // Install the fork slot at load (default-null otherwise).
 static const bool s_xf_indexed_installed = (sb_slot_xf_indexed = &sb_hook_xf_indexed, true);
+
+// ── Direct-XF matrix interpolation (sb_slot_xf_reg) ───────────────────────────────────────────
+// Banners, smoke, projected shadows and the water screen-space refraction projection set their
+// transforms via DIRECT LoadXFReg writes to XF matrix memory, which the indexed seam never sees —
+// on the in-between they stay at tick N while the geometry interpolates = the "swim"/jitter. Mirror
+// of the indexed scheme: record each frame's direct matrix-memory writes keyed by (xf-mem address,
+// k-th occurrence within the frame); on the in-between, substitute lerp(N-1, N) per element. A
+// per-element magnitude guard rejects a mispaired slot (a reused matrix address holding a different
+// object's matrix when draw order shifts) so a bad pair renders at N rather than exploding.
+namespace {
+int g_dxf_mode = 0;   // 0 off, 1 record (real replay = N), 2 interp (in-between vs recorded N-1)
+struct DxfKey { u32 addr, occ; bool operator==(const DxfKey& o) const { return addr == o.addr && occ == o.occ; } };
+struct DxfHash { size_t operator()(const DxfKey& k) const { return (size_t)k.addr * 1000003u + k.occ; } };
+std::unordered_map<DxfKey, std::vector<float>, DxfHash> g_dxf_cur, g_dxf_prev;
+std::unordered_map<u32, u32> g_dxf_occ;   // per-address occurrence counter, reset each replay pass
+
+inline float dxf_be_f(const u8* p) {      // big-endian word -> float
+    u32 w = ((u32)p[0] << 24) | ((u32)p[1] << 16) | ((u32)p[2] << 8) | p[3];
+    float f; std::memcpy(&f, &w, 4); return f;
+}
+inline u32 dxf_f_be(float f) {            // float -> big-endian word (matches LoadXFReg's swap32 read)
+    u32 w; std::memcpy(&w, &f, 4); return __builtin_bswap32(w);
+}
+}  // namespace
+
+extern "C" bool sb_hook_xf_reg(u32 addr, u32 size, const u8* data_be, u32* out_be) {
+    if (g_dxf_mode == 0) return false;
+    const u32 occ = g_dxf_occ[addr]++;
+    if (g_dxf_mode == 1) {                    // record frame N's direct matrix write
+        std::vector<float>& v = g_dxf_cur[{addr, occ}];
+        v.resize(size);
+        for (u32 i = 0; i < size; i++) v[i] = dxf_be_f(data_be + i * 4);
+        g_i60.dxf_recorded++;
+        return false;                         // real replay renders N as-is
+    }
+    auto it = g_dxf_prev.find({addr, occ});   // mode 2: lerp this write (N) toward recorded N-1
+    if (it == g_dxf_prev.end() || it->second.size() != size) { g_i60.dxf_miss++; return false; }
+    const std::vector<float>& prev = it->second;
+    for (u32 i = 0; i < size; i++)            // cut guard: reject a mispaired slot -> render at N
+        if (std::fabs(dxf_be_f(data_be + i * 4) - prev[i]) > 8000.0f) { g_i60.dxf_cut++; return false; }
+    const float a = g_xf_alpha;
+    for (u32 i = 0; i < size; i++)
+        out_be[i] = dxf_f_be((1.0f - a) * prev[i] + a * dxf_be_f(data_be + i * 4));
+    g_i60.dxf_interp++;
+    return true;
+}
+
+// Arm/disarm per replay + rotate the frame buffers, called by interp_redraw around each replay.
+extern "C" void interp60_dxf_begin(int mode) {   // 1 = record (real), 2 = interp (in-between)
+    g_dxf_mode = mode;
+    g_dxf_occ.clear();
+    if (mode == 1) g_dxf_cur.clear();            // start recording frame N fresh
+}
+extern "C" void interp60_dxf_end() { g_dxf_mode = 0; }
+extern "C" void interp60_dxf_rotate() { g_dxf_prev.swap(g_dxf_cur); }   // N becomes N-1 for next frame
+
+static const bool s_xf_reg_installed = (sb_slot_xf_reg = &sb_hook_xf_reg, true);
 
 // Restore every blended model's mDrawMtxBuf[1][view] back to tick N, leaving the
 // guest double-buffer exactly as the real field produced it. Called by
