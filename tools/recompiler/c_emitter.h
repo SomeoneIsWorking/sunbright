@@ -15,8 +15,14 @@
 // displacement is subsumed by `member` (which already encodes the host offset).
 // An empty eng_fields map = the legacy all-guest behaviour (no tailored sites).
 struct EngField {
-    std::string type_cname;  // host C++ type name, e.g. "EngineCam"
-    std::string member;      // host member expression, e.g. "mFov"
+    std::string type_cname;       // host C++ type name of the BASE object, e.g. "EngineCam"
+    std::string member;           // host member expression, e.g. "mFov"
+    // If this field is itself an engine-object POINTER, the host C++ type it points at
+    // (e.g. "EngineCam" for `EngineCam* mNext`); empty for a scalar/value field. An
+    // engine-pointer field can't fit a raw host pointer in the 32-bit recomp register
+    // file, so a load yields a HANDLE (sb_eng_handle) and a store consumes one
+    // (sb_eng_host) — this is what makes chained field access (obj->next->field) work.
+    std::string ptr_type_cname;
 };
 
 // Emits C source code from a decoded sequence of PPC instructions.

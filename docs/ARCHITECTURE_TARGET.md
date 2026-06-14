@@ -76,16 +76,33 @@ host-struct member access instead of `MEM_R*/MEM_W*`. Mechanism chosen for the s
 explicitly): **engine pointers are 32-bit HANDLES** (`sb_eng_host(token)→host obj`), keeping the
 recomp register file 32-bit; game objects stay guest-layout, engine objects are host-native.
 
-**What is NOT yet proven (the residual risk to close next, do NOT claim solved):**
-- *Seeded type recovery at scale.* The slice's seed is a hand pass over `mr`/`addi-0` copies + a
-  one-type layout map. Real recovery must propagate types through the full dataflow (merges, memory
-  round-trips, casts/unions, `this`-adjustment) over ~9,700 game functions. The slice proves the
-  EMISSION, not that recovery scales — that is the next de-risk.
-- *Pointer-into-object / interior addresses.* A handle is opaque-pass + deref only. Game code that
-  takes `&engineObj->field` and derefs it under a different static type, does pointer arithmetic on
-  an embedded sub-object, or stores the pointer in guest RAM and compares it, is NOT covered.
-- *Embedded value types* (inline `JGeometry::TVec3` etc. with endianness at the boundary) and
-  *nested engine objects* as members — not exercised.
+**DE-RISK #2 progress (2026-06-14, same commit family): real recovery + the hard dataflow.**
+The hand stub is replaced by a real recompiler pass `tools/recompiler/type_recovery.{h,cpp}`
+(`recover_eng_fields`): signature-seeded (`this`/param engine types), propagated forward through
+register copies, the **prologue stack spill/reload of `this`** (frame-slot type tracking — the
+dominant real pattern: the compiler saves `this` to the stack and reloads it into a non-volatile
+across a call), **chained field access through a nested engine pointer**, with volatile-clobber at
+calls and conservative invalidation elsewhere. Unit-tested (`type_recovery_test`, 7 checks) AND run
+end-to-end through the real emitter + oracle on a harder accessor (`stw this; lwz mNext; lfs
+mNext->mFov; bl eng_scale; lwz this(reload); stfs this->mFov`) — tailored host == oracle guest.
+KEY FINDING (settles an OPEN choice): an engine-pointer FIELD can't hold a raw 64-bit host pointer
+in the 32-bit recomp register file, so a load of such a field yields a **handle**
+(`sb_eng_handle`, the inverse of `sb_eng_host`) and a store consumes one — this is what makes
+`obj->next->field` chains work. So: engine objects host-native with real host pointers between
+them; recompiled code sees handles at the boundary.
+
+**Still NOT proven (the residual risk — do NOT claim solved):**
+- *Recovery COVERAGE at scale.* The pass is a single straight-line forward pass with NO merge
+  handling at control-flow joins, over a hand-built layout/signature DB. Real use needs the DB
+  auto-built from decomp headers + `sms_gmse01_funcs.txt`, merge/branch handling, and validation
+  across ~9,700 game functions. CRITICAL: unlike the guest-only recompiler, a MISS here is a
+  *correctness bug* (a guest MEM access against a handle), not a safe fallback — recovery must be
+  COMPLETE on engine-typed sites, not merely sound. (Recorded in `type_recovery.h`.)
+- *Pointer-into-object / interior addresses.* `&engineObj->field` (an `addi` by a nonzero offset)
+  is deliberately left untyped (the pass is honest about it); deref'ing it under a different static
+  type, or pointer arithmetic into an embedded sub-object, is NOT covered.
+- *Embedded value types* (inline `JGeometry::TVec3` etc. — layout matches but endianness differs at
+  the boundary) — not yet exercised.
 
 ## Consolidation — what each tree is now
 
@@ -109,9 +126,10 @@ recomp register file 32-bit; game objects stay guest-layout, engine objects are 
 ## Next
 1. ~~The tailored-recomp de-risk slice~~ — DONE, GREEN (see DE-RISK RESULT above). The emission
    mechanism (`eng_fields` host field access) + the call bridge compose cleanly and match the oracle.
-2. **De-risk #2: seeded type recovery at scale** — the now-leading risk. Build the real propagation
-   (decomp-signature seeds → dataflow over a whole function, then across calls) that produces
-   `eng_fields` automatically for a REAL game function touching a REAL `port/` engine object, and
-   handle the pointer-into-object / embedded-value cases the slice left open. Stay oracle-verified.
+2. **De-risk #2: seeded type recovery** — core mechanism PROVEN (`type_recovery.cpp`: signature
+   seeds, spill/reload, nested-handle chains; oracle-verified). REMAINING: auto-build the
+   layout/signature DB from the decomp headers + `sms_gmse01_funcs.txt`, add merge/branch handling,
+   and prove COMPLETE coverage on a REAL decomp function touching a REAL `port/` engine object
+   (a miss = a correctness bug, so coverage is the bar). Stay oracle-verified.
 3. Then build out the rest of the tailored boundary + grow the `port/` engine to cover what the game
    touches, slice by slice, oracle-verified.

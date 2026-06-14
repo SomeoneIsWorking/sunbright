@@ -19,9 +19,11 @@
 #include "../cpu_state.h"
 #include "../bridge.h"     // SUNBRIGHT_BRIDGE + the override-table externs it needs
 
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <map>
+#include <vector>
 
 static int g_fail = 0;
 #define CHECK(cond, msg) do { \
@@ -48,14 +50,12 @@ static unsigned char g_guest_ram[0x2000000];                 // 32 MB fake guest
 static unsigned char* gram(u32 ea) { return g_guest_ram + (ea & 0x01FFFFFFu); }
 void* sb_guest_to_host(u32 ea) { return ea ? gram(ea) : nullptr; }
 
-static f32 tst_rf32(u32 ea) {
-    u32 b; std::memcpy(&b, gram(ea), 4); b = __builtin_bswap32(b);
-    f32 v; std::memcpy(&v, &b, 4); return v;
-}
-static void tst_wf32(u32 ea, f32 v) {
-    u32 b; std::memcpy(&b, &v, 4); b = __builtin_bswap32(b);
-    std::memcpy(gram(ea), &b, 4);
-}
+static u32  tst_r32(u32 ea) { u32 b; std::memcpy(&b, gram(ea), 4); return __builtin_bswap32(b); }
+static void tst_w32(u32 ea, u32 v) { u32 b = __builtin_bswap32(v); std::memcpy(gram(ea), &b, 4); }
+static f32 tst_rf32(u32 ea) { u32 b = tst_r32(ea); f32 v; std::memcpy(&v, &b, 4); return v; }
+static void tst_wf32(u32 ea, f32 v) { u32 b; std::memcpy(&b, &v, 4); tst_w32(ea, b); }
+#define MEM_R32(ea)     tst_r32(ea)
+#define MEM_W32(ea,v)   tst_w32(ea,v)
 #define MEM_RF32(ea)    tst_rf32(ea)
 #define MEM_WF32(ea,v)  tst_wf32(ea,v)
 
@@ -66,20 +66,32 @@ static void tst_wf32(u32 ea, f32 v) {
 // byte-swapped the value) would be caught.
 struct EngineCam {
     void*      vtable;   // host off 0  (8 bytes)
-    EngineCam* mNext;    // host off 8  (8 bytes)
+    EngineCam* mNext;    // host off 8  (8 bytes) — a real HOST pointer (NOT a handle)
     float      mFov;     // host off 16
     int        mFlags;   // host off 20
 };
 static_assert(offsetof(EngineCam, mFov) == 16, "host layout: mFov must differ from guest offset 8");
+static_assert(offsetof(EngineCam, mNext) == 8, "host layout: mNext is a real 8-byte host pointer");
 
-static EngineCam g_host_cam;
-
-// guest token (a HANDLE — the slice's chosen engine-pointer representation, keeping the
-// recomp register file 32-bit) -> host object. Populated at the boundary.
-static std::map<u32, void*> g_eng_objs;
-void* sb_eng_host(u32 token) {
-    auto it = g_eng_objs.find(token);
-    return it == g_eng_objs.end() ? nullptr : it->second;
+// Bidirectional handle table — the slice's chosen engine-pointer representation. A 32-bit
+// HANDLE lives in the recomp register file / guest RAM; the host object lives in host
+// memory. sb_eng_handle() allocates a stable handle for a host pointer (so a loaded
+// engine-pointer FIELD becomes a handle that round-trips through a 32-bit register), and
+// sb_eng_host() is its inverse. This is what makes obj->next->field chains work without
+// widening the register file to 64-bit.
+static std::vector<void*> g_eng_table = { nullptr };   // index 0 reserved == null handle
+static std::map<void*, u32> g_eng_index;
+void* sb_eng_host(u32 handle) {
+    return (handle < g_eng_table.size()) ? g_eng_table[handle] : nullptr;
+}
+u32 sb_eng_handle(void* host) {
+    if (!host) return 0;
+    auto it = g_eng_index.find(host);
+    if (it != g_eng_index.end()) return it->second;
+    u32 h = (u32)g_eng_table.size();
+    g_eng_table.push_back(host);
+    g_eng_index[host] = h;
+    return h;
 }
 
 // ── the engine function called through the boundary ──────────────────────────────────
@@ -96,37 +108,46 @@ extern "C" void func_80020000(CPUState& cpu);   // TAILORED (host-native field a
 int main() {
     std::setbuf(stdout, nullptr);
 
-    const float kInitFov = 3.5f;          // not byte-palindromic: catches a wrong byteswap
-    const float kExpect  = kInitFov * 2;  // eng_scale doubles it -> 7.0
+    const float kNestedFov = 3.5f;         // this->mNext->mFov (not byte-palindromic)
+    const float kExpect    = kNestedFov*2; // eng_scale doubles it -> 7.0; written to this->mFov
+    const u32   STACK      = 0x80200000u;  // a valid guest stack address (for the spill/reload)
 
-    // ORACLE world: object lives in guest RAM at a guest address, big-endian.
-    const u32 GUEST_OBJ = 0x80100000u;
-    tst_wf32(GUEST_OBJ + 8, kInitFov);    // guest mFov at guest offset 8
+    // ORACLE world: two guest-layout objects in guest RAM (this @ A, this->mNext @ B).
+    const u32 A = 0x80100000u, Bn = 0x80101000u;
+    tst_w32 (A + 4, Bn);                    // this->mNext = guest pointer to B
+    tst_wf32(Bn + 8, kNestedFov);           // B.mFov = 3.5
+    tst_wf32(A + 8, 0.0f);                   // this->mFov starts 0
     {
         CPUState cpu; cpu.reset();
-        cpu.gpr[3] = GUEST_OBJ;           // this = guest pointer
+        cpu.gpr[1] = STACK;                  // stack pointer (spill target)
+        cpu.gpr[3] = A;                      // this = guest pointer
         func_80010000(cpu);
     }
-    float oracle_fov = tst_rf32(GUEST_OBJ + 8);
+    float oracle_this_fov = tst_rf32(A + 8);
+    float oracle_nested   = tst_rf32(Bn + 8);
 
-    // TAILORED world: object is host-native; r3 holds a HANDLE mapped to it.
-    const u32 CAM_TOKEN = 0xE0000001u;
-    g_eng_objs[CAM_TOKEN] = &g_host_cam;
-    g_host_cam = EngineCam{};
-    g_host_cam.mFov = kInitFov;
+    // TAILORED world: two HOST-NATIVE objects; mNext is a real host pointer. r3 = a handle.
+    static EngineCam host_a, host_b;
+    host_a = EngineCam{}; host_b = EngineCam{};
+    host_a.mNext = &host_b;                  // real host pointer (8 bytes)
+    host_b.mFov  = kNestedFov;
+    host_a.mFov  = 0.0f;
     {
         CPUState cpu; cpu.reset();
-        cpu.gpr[3] = CAM_TOKEN;           // this = engine handle
+        cpu.gpr[1] = STACK;                  // same guest stack (the handle spills here as a u32)
+        cpu.gpr[3] = sb_eng_handle(&host_a); // this = engine handle
         func_80020000(cpu);
     }
-    float tailored_fov = g_host_cam.mFov;
+    float tailored_this_fov = host_a.mFov;
+    float tailored_nested   = host_b.mFov;
 
-    std::printf("[field_slice] oracle mFov=%.3f  tailored mFov=%.3f  expected=%.3f\n",
-                oracle_fov, tailored_fov, kExpect);
+    std::printf("[field_slice] oracle this->mFov=%.3f (nested %.3f)  tailored this->mFov=%.3f (nested %.3f)  expected=%.3f\n",
+                oracle_this_fov, oracle_nested, tailored_this_fov, tailored_nested, kExpect);
 
-    CHECK(oracle_fov == kExpect,           "ORACLE: field read -> engine call -> field write (guest layout)");
-    CHECK(tailored_fov == kExpect,         "TAILORED: same, against a HOST-NATIVE engine object");
-    CHECK(tailored_fov == oracle_fov,      "TAILORED field translation matches the ORACLE (the gating result)");
+    CHECK(oracle_this_fov == kExpect,      "ORACLE: spill -> nested-ptr chase -> engine call -> reload -> field write (guest)");
+    CHECK(tailored_this_fov == kExpect,    "TAILORED: same against HOST-NATIVE nested objects (handle chain + spill/reload)");
+    CHECK(tailored_this_fov == oracle_this_fov, "TAILORED field translation matches the ORACLE (the gating result)");
+    CHECK(tailored_nested == oracle_nested,     "the nested object's field was READ, not clobbered, on both sides");
 
     if (g_fail) { std::printf("[field_slice] RESULT: FAIL\n"); return 1; }
     std::printf("[field_slice] RESULT: PASS — tailored host field access verified vs oracle\n");

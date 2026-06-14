@@ -90,6 +90,18 @@ target_compile_options(sunbright-recomp-test PRIVATE -Wall -Wextra -Wno-unused-p
 enable_testing()
 add_test(NAME recomp_test COMMAND sunbright-recomp-test)
 
+# Seeded type-recovery unit tests (the tailored-recomp boundary's field-access half).
+add_executable(sunbright-type-recovery-test
+    tools/recompiler/tests/type_recovery_test.cpp
+    tools/recompiler/type_recovery.cpp
+    tools/recompiler/func_collect.cpp
+    tools/recompiler/ppc_decoder.cpp
+    tools/recompiler/ppc_mnemonic.cpp
+)
+target_include_directories(sunbright-type-recovery-test PRIVATE tools/recompiler runtime)
+target_compile_options(sunbright-type-recovery-test PRIVATE -Wall -Wextra -Wno-unused-parameter)
+add_test(NAME type_recovery_test COMMAND sunbright-type-recovery-test)
+
 # ── Launcher executable (SDL2 window + Dolphin Core) ─────────────────────────
 # Everything — launcher, runtime bridge, hand-written overrides, and the
 # statically-recompiled game code — is compiled into one self-contained binary.
