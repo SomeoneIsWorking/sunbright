@@ -40,10 +40,31 @@
 // stubbed by the unit test). ea==0 must map to nullptr.
 extern void* sb_guest_to_host(u32 ea);
 
+// engine-object handle table (runtime/eng_handle.{h,cpp}; stubbed by the unit
+// test). A pointer to a HOST-NATIVE engine object crosses the boundary as a
+// 32-bit handle, NOT a guest address — so engine-typed pointer args/returns go
+// through these, while plain guest-data pointers keep sb_guest_to_host.
+extern void* sb_eng_host(u32 handle);
+extern u32   sb_eng_handle(void* host);
+
 // recomp dispatch back to the caller (declared in intrinsics.h in the real build).
 extern void call_ppc(CPUState& cpu, u32 address);
 
+// Marks a host C++ type as a PC-native ENGINE object (port/ JSystem etc.). A
+// pointer to such a type is passed across the boundary as a handle (sb_eng_host
+// on the way in, sb_eng_handle on the way out) instead of a guest RAM address.
+// Declare one per flipped engine type, mirroring SUNBRIGHT_ENGINE_TYPES:
+//     SB_ENGINE_TYPE(JUTTexture);
+template <class T> struct sb_is_engine_type : std::false_type {};
+#define SB_ENGINE_TYPE(T) template <> struct sb_is_engine_type<T> : std::true_type {}
+
 namespace sbbridge {
+
+// True if T is `EngineType*` / `const EngineType*` (a pointer to a marked engine type).
+template <class T>
+inline constexpr bool is_engine_ptr_v =
+    std::is_pointer_v<T> &&
+    sb_is_engine_type<std::remove_cv_t<std::remove_pointer_t<T>>>::value;
 
 // Pull one argument of type T from the guest EABI banks, advancing the matching
 // counter (gpr for int/ptr, fpr for float) — the two advance independently.
@@ -51,6 +72,9 @@ template <class T>
 T extract_arg(CPUState& cpu, int& gpr, int& fpr) {
 	if constexpr (std::is_floating_point_v<T>) {
 		return static_cast<T>(cpu.fpr[fpr++].ps0);
+	} else if constexpr (is_engine_ptr_v<T>) {
+		// pointer to a host-native engine object: the GPR holds a 32-bit handle.
+		return reinterpret_cast<T>(sb_eng_host(cpu.gpr[gpr++]));
 	} else if constexpr (std::is_pointer_v<T>) {
 		u32 ea = cpu.gpr[gpr++];
 		return reinterpret_cast<T>(sb_guest_to_host(ea));
@@ -72,11 +96,16 @@ void invoke(R (*fn)(Args...), CPUState& cpu) {
 		std::apply(fn, args);
 	} else if constexpr (std::is_floating_point_v<R>) {
 		cpu.fpr[1].ps0 = static_cast<double>(std::apply(fn, args));
+	} else if constexpr (is_engine_ptr_v<R>) {
+		// returned host-native engine object -> hand the game a 32-bit handle.
+		cpu.gpr[3] = sb_eng_handle(reinterpret_cast<void*>(std::apply(fn, args)));
 	} else {
 		static_assert(std::is_integral_v<R> || std::is_enum_v<R>,
 		              "SUNBRIGHT_BRIDGE: unsupported return type "
-		              "(returned guest pointer needs host->guest; a returned host "
-		              "object needs a handle — see docs/native_recomp_bridge.md)");
+		              "(a returned GUEST pointer needs host->guest, not yet "
+		              "marshalled; a returned engine object must be a pointer to a "
+		              "SB_ENGINE_TYPE so it becomes a handle — see "
+		              "docs/native_recomp_bridge.md)");
 		cpu.gpr[3] = static_cast<u32>(std::apply(fn, args));
 	}
 	call_ppc(cpu, cpu.lr);
