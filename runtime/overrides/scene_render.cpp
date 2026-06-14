@@ -174,7 +174,10 @@ static const bool s_fade_probes = [] {
 // log dumps the GrafContext for RE. Off unless SUNBRIGHT_RENDERPORT is set.
 static constexpr u32 J2DSCREEN_DRAW = 0x802cfda8u;
 
+void sb_j2d_set_root(u32 root);   // runtime/render/j2d_walk.cpp — publishes the live root for /j2d
+
 static void ov_j2dscreen_draw(CPUState& cpu) {
+    sb_j2d_set_root(cpu.gpr[3]);   // publish the live root J2DScreen* (the native J2D walker reads it)
     static const bool log = getenv("SUNBRIGHT_RENDERPORT_LOG") != nullptr;
     if (log) {
         static unsigned long n = 0;
@@ -186,9 +189,11 @@ static void ov_j2dscreen_draw(CPUState& cpu) {
     else call_ppc(cpu, cpu.lr);
 }
 
+// Registered unconditionally now: the tee is behavior-neutral (it super-calls the
+// original draw) and is the canonical capture of the live 2D root for the native
+// J2D renderer. The renderport logging inside stays env-gated.
 static const bool s_renderport_registered = [] {
-    if (getenv("SUNBRIGHT_RENDERPORT"))
-        register_override(J2DSCREEN_DRAW, &ov_j2dscreen_draw);
+    register_override(J2DSCREEN_DRAW, &ov_j2dscreen_draw);
     return true;
 }();
 

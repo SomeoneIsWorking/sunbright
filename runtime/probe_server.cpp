@@ -76,6 +76,7 @@ extern "C" int native_vi_probe(char* out, int cap, const char* query);  // nativ
 void gxs_ngx_parity_stats(unsigned long*, unsigned long*, unsigned long*, const char**);  // gx_stream.h
 int sb_tex_selftest(char*, int);                             // runtime/render/tex_decode_selftest.cpp
 int sb_vk_quad_selftest(char*, int);                         // runtime/render/vk_quad.cpp
+int sb_j2d_dump(char*, int);                                 // runtime/render/j2d_walk.cpp
 void gxs_frametime_reset();                                   // runtime/gx_stream.h
 void gxs_frametime_stats(unsigned long*, double*, double*, double*, double*);
 void gxs_frametime_decode(double*, double*);
@@ -192,6 +193,12 @@ std::string handle_repl(const char* path) {
         int fails = sb_tex_selftest(rep, sizeof rep);
         app("%s", rep);
         app("verdict=%s\n", fails == 0 ? "PARITY-OK" : (fails < 0 ? "NO-ORACLE" : "MISMATCH"));
+        return std::string(buf, n);
+    }
+    if (strncmp(path, "/j2d", 4) == 0) {     // N3 J2D pane-tree walk (live HUD draw data)
+        char rep[16384];
+        sb_j2d_dump(rep, sizeof rep);
+        app("%s", rep);
         return std::string(buf, n);
     }
     if (strncmp(path, "/vkquad", 7) == 0) {  // N2 native Vulkan textured-quad offscreen render

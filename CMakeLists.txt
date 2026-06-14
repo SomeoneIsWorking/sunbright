@@ -134,6 +134,7 @@ add_executable(sunbright
     runtime/render/tex_decode.cpp
     runtime/render/tex_decode_selftest.cpp
     runtime/render/vk_quad.cpp
+    runtime/render/j2d_walk.cpp
     runtime/gpfifo_wrap.cpp
     runtime/native_threads.cpp
     runtime/native_os.cpp
