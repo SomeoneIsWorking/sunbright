@@ -61,7 +61,18 @@ RE'd (docs/re_notes/water_refraction_projection.md):
 - **Why blanket direct-XF interp failed:** it interpolated the small-delta HUD ortho matrices (mangled
   the HUD) and the >8000 cut-guard rejected the large-entry water projection matrix (so it never even
   interpolated the thing that mattered). REVERTED.
-- **Candidate native fix (not yet built):** on the in-between replay, detect the water refraction draw
+- **BUILT (2026-06-14, commit d26ac3a) — re-derive the water via the guest path at N½** (user-chosen
+  direction): after the in-between raw replay, re-issue `TModelWaterManager::perform(0x8027beb0)` with
+  flags `&4|&0x80` through the guest path, passing a fabricated gfx whose `mViewMtx` (+0xB4) =
+  `lerp(prevView,curView,alpha)` of the j3dSys view (0x804045DC). `&4` (calcVMAll) rebuilds the
+  eye-space quad at the N½ camera; `&0x80` draws the refraction sampling the N½ screen texture (the
+  replay already copied it correctly). Caches the live water manager from real-field perform calls
+  (reset each frame in mardir_direct). Off-switch `SUNBRIGHT_NO_WATER_REISSUE`. Verified headless:
+  stable, no crash, water renders clean, no gross doubling, cadence unchanged. **NEEDS USER HEADED
+  VERIFY of reflection tracking during camera motion.** KNOWN RISK: this overdraws the replay's frozen
+  tick-N water (double-draw); if doubling is visible, suppress the frozen water in the raw replay
+  (skip its draw via an OpcodeDecoder/primitive seam keyed off the texmtx-0x1e marker).
+- **Alternative candidate (superseded by the above unless it double-draws):** on the in-between replay, detect the water refraction draw
   by its texmtx-slot-0x1e load marker and substitute PNMTX0 = view(N½)·view(N)⁻¹ (eye-space
   reprojection of the tick-N quad to the interpolated camera) so quad + screen-texture agree. Targeted
   (water marker only, won't touch HUD). Needs the eye-space-delta math + HEADED verification.
