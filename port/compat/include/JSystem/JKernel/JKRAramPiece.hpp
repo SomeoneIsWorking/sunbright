@@ -6,8 +6,11 @@
 // on LP64 a host pointer truncates. Widened mSrc/mDst + the source/destination
 // params of prepareCommand/orderAsync/orderSync/JKRAramPcs to uintptr_t (ARAM
 // addresses also fit), and AsyncCallback's arg (callers pass `(uintptr_t)command`).
-// `mTransferDirection`/`mDataLength` and `doneDMA`'s ARQ request address stay as
-// declared. Verbatim otherwise.
+// `mTransferDirection`/`mDataLength` stay as declared. `doneDMA`'s arg is the ARQ
+// request/command address — it is the ARQCallback the driver invokes (and the
+// JKRAramPiece.cpp body casts it back to JKRAMCommand*), so it is widened to
+// uintptr_t too (a u32 doneDMA cannot be passed where ARQCallback=void(*)(uintptr_t)
+// is required). Verbatim otherwise.
 #ifndef JKR_ARAM_PIECE_HPP
 #define JKR_ARAM_PIECE_HPP
 
@@ -70,7 +73,7 @@ public:
 	static bool sync(JKRAMCommand*, int);
 	static bool orderSync(int, uintptr_t, uintptr_t, u32, JKRAramBlock*);
 	static void startDMA(JKRAMCommand*);
-	static void doneDMA(u32);
+	static void doneDMA(uintptr_t);
 
 private:
 	static void lock() { OSLockMutex(&mMutex); }

@@ -236,3 +236,9 @@ port/src/JASDvdThread.cpp
 port/src/JASWaveArcLoader.cpp
 port/src/JASSeqParser.cpp
 port/src/JASTrack.cpp
+port/src/JAIGFrameSe.cpp
+port/src/JASAiCtrl.cpp
+port/src/JASChAllocQueue.cpp
+port/src/JASHeapCtrl.cpp
+port/src/JKRAramPiece.cpp
+port/src/JKRAramStream.cpp
