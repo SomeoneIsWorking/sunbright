@@ -92,6 +92,32 @@ target_compile_options(smsport_assets PRIVATE -Wall -Wextra)
 add_library(smsport_texdecode STATIC "${SMS_REPO_ROOT}/runtime/render/tex_decode.cpp")
 target_include_directories(smsport_texdecode PUBLIC "${SMS_REPO_ROOT}/runtime/render")
 
+# ---------------------------------------------------------------------------
+# Minimal native-boot smoke executable (SCOPING PROBE).
+#
+# Links a trivial main() against the whole core lib so the linker (and `nm`)
+# surface the GameCube-SDK / platform symbols the core references but does NOT
+# define — i.e. the PAL implementation worklist for a minimal native boot.
+#
+# Guarded behind SMSPORT_BUILD_MAIN (default ON) so the lib-only build is never
+# broken by this target failing to link (it is EXPECTED to fail with undefined
+# references until the PAL is implemented). Turn OFF to build only the libs:
+#   cmake -S port -B port/build -DSMSPORT_BUILD_MAIN=OFF
+#
+# --whole-archive forces every core object in (a static archive otherwise only
+# contributes objects that satisfy an existing undefined reference; a trivial
+# main() would pull in nothing). EXCLUDE_FROM_ALL keeps it out of the default
+# `all` build so `cmake --build` of the libs still succeeds.
+# ---------------------------------------------------------------------------
+option(SMSPORT_BUILD_MAIN "Build the minimal native-boot smoke executable (may not link yet)" ON)
+if(SMSPORT_BUILD_MAIN)
+  add_executable(smsport_main EXCLUDE_FROM_ALL src/smsport_main.cpp)
+  target_include_directories(smsport_main PRIVATE ${SMS_INCLUDES})
+  target_link_libraries(smsport_main PRIVATE
+    -Wl,--whole-archive smsport_core -Wl,--no-whole-archive
+    smsport_assets smsport_texdecode)
+endif()
+
 enable_testing()
 add_executable(rarc_test assets/rarc_test.cpp)
 target_link_libraries(rarc_test PRIVATE smsport_assets)
