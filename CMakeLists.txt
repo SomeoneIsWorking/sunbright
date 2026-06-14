@@ -131,6 +131,7 @@ add_executable(sunbright
     runtime/gx_stream.cpp
     runtime/gx_parse.cpp
     runtime/ngx/ngx_decode.cpp
+    runtime/ngx/ngx_vertex.cpp
     runtime/render/tex_decode.cpp
     runtime/render/tex_decode_selftest.cpp
     runtime/render/vk_quad.cpp
