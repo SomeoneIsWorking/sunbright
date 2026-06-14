@@ -198,7 +198,7 @@ add_test(NAME bti_test
 # JKRHeap/JKRThread and vice-versa — a circular static-lib dependency).
 # ---------------------------------------------------------------------------
 find_package(Threads REQUIRED)
-foreach(rt heap_run os_thread_run)
+foreach(rt heap_run os_thread_run decomp_run)
   add_executable(${rt} tests/${rt}.cpp)
   target_include_directories(${rt} PRIVATE ${SMS_INCLUDES})
   target_compile_options(${rt} PRIVATE

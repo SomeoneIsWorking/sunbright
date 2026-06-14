@@ -1,8 +1,13 @@
 // OWNED COPY of reference/sms/src/JSystem/JKernel/JKRDecomp.cpp — keep in sync.
-// ONLY 64-bit-port change: the async-decompress callback invocation passed the
-// host JKRDecompCommand* through `(u32)command`; the AsyncCallback param is now
-// uintptr_t (see the JKRDecomp.hpp shadow), so the cast is widened to
-// (uintptr_t)command to round-trip the pointer. Verbatim otherwise.
+// Port changes (both required for a portable 64-bit little-endian build):
+//   1. The async-decompress callback invocation passed the host
+//      JKRDecompCommand* through `(u32)command`; the AsyncCallback param is now
+//      uintptr_t (see the JKRDecomp.hpp shadow), so the cast is widened to
+//      (uintptr_t)command to round-trip the pointer.
+//   2. decodeSZS read the Yaz0 decompressed-size header (+4) native-endian — a
+//      latent little-endian corruption bug (see the comment at the call site).
+//      Fixed to READU32_BE, matching decodeSZP. Caught by port/tests/decomp_run.
+// Verbatim otherwise.
 #include <stdint.h>
 #include <JSystem/JKernel/JKRDecomp.hpp>
 #include <JSystem/JKernel/JKRAramPiece.hpp>
@@ -211,7 +216,16 @@ void JKRDecomp::decodeSZS(u8* src_buffer, u8* dst_buffer, u32 srcSize,
 	s32 chunkBitsLeft = 0;
 	s32 chunkBits;
 
-	decompEnd = dst_buffer + *(int*)(src_buffer + 4) - dstSize;
+	// ENDIANNESS FIX (64-bit/LE port): the Yaz0 header's decompressed-size field
+	// at +4 is BIG-ENDIAN on disk. The decomp read it with a native `*(int*)`,
+	// which is correct only on the big-endian console — on little-endian it
+	// byteswaps the size, so decompEnd is wrong and EVERY Yaz0 (.szs) decode
+	// truncates/overruns. Read it big-endian, matching decodeSZP just above
+	// (which was already fixed) and the value the hardware computed. (The +0
+	// magic compare below is left verbatim: `*(u32*)src_buffer` is the "Yaz0"
+	// magic, a large value either way, so that guard never trips on either
+	// endianness — it is not the bug.)
+	decompEnd = dst_buffer + READU32_BE(src_buffer, 4) - dstSize;
 
 	if (srcSize == 0) {
 		return;
