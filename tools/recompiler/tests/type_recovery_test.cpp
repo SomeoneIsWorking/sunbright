@@ -29,12 +29,21 @@ static uint32_t enc_lwz (int rd, int ra, int16_t d)   { return (32u<<26)|(rd<<21
 static uint32_t enc_stw (int rs, int ra, int16_t d)   { return (36u<<26)|(rs<<21)|(ra<<16)|(uint16_t)d; }
 static uint32_t enc_lfs (int frd,int ra, int16_t d)   { return (48u<<26)|(frd<<21)|(ra<<16)|(uint16_t)d; }
 static uint32_t enc_bl  (uint32_t from,uint32_t to)   { int32_t dl=(int32_t)(to-from); return (18u<<26)|((uint32_t)dl&0x03fffffc)|1u; }
+static uint32_t enc_b   (uint32_t from,uint32_t to)   { int32_t dl=(int32_t)(to-from); return (18u<<26)|((uint32_t)dl&0x03fffffc); }
+// bc bo,bi,target — bo=12 (branch if CR[bi] set), conditional (no link).
+static uint32_t enc_bc  (uint32_t from,uint32_t to)   { int16_t d=(int16_t)(to-from); return (16u<<26)|(12u<<21)|(0u<<16)|((uint16_t)d & 0xFFFCu); }
 static constexpr uint32_t BLR = 0x4e800020u;
 
 static std::vector<PPCInstr> collect(uint32_t base, const std::vector<uint32_t>& w) {
     std::vector<uint8_t> b(w.size()*4);
     for (size_t k=0;k<w.size();++k){ uint32_t be=__builtin_bswap32(w[k]); std::memcpy(&b[k*4],&be,4); }
     return collect_function(b.data(), base, b.size(), base, base+(uint32_t)w.size()*4, /*cfg=*/false);
+}
+// Full-CFG collection (follows branches) — for the merge/branch/loop cases.
+static std::vector<PPCInstr> collect_cfg(uint32_t base, const std::vector<uint32_t>& w) {
+    std::vector<uint8_t> b(w.size()*4);
+    for (size_t k=0;k<w.size();++k){ uint32_t be=__builtin_bswap32(w[k]); std::memcpy(&b[k*4],&be,4); }
+    return collect_function(b.data(), base, b.size(), base, base+(uint32_t)w.size()*4, /*cfg=*/true);
 }
 
 int main() {
@@ -61,7 +70,7 @@ int main() {
     {
         std::vector<uint32_t> w = { enc_lfs(1,3,8), BLR };
         auto ins = collect(B, w);
-        auto ef = recover_eng_fields(ins, B, db);
+        auto ef = recover_eng_fields(ins, B, db, intra_branch_targets(ins, B), {});
         const EngField* f = field_at_idx(ins, ef, 0);
         CHECK(f && f->type_cname=="Cam" && f->member=="mFov", "seeded `this` field read is typed (Cam::mFov)");
     }
@@ -78,7 +87,7 @@ int main() {
             BLR,
         };
         auto ins = collect(B, w);
-        auto ef = recover_eng_fields(ins, B, db);
+        auto ef = recover_eng_fields(ins, B, db, intra_branch_targets(ins, B), {});
         const EngField* f = field_at_idx(ins, ef, 3);   // the lfs
         CHECK(f && f->member=="mFov", "type survives a stack spill/reload of `this` across a call");
     }
@@ -89,7 +98,7 @@ int main() {
     {
         std::vector<uint32_t> w = { enc_bl(B+0, 0x80009000u), enc_lfs(1,3,8), BLR };
         auto ins = collect(B, w);
-        auto ef = recover_eng_fields(ins, B, db);
+        auto ef = recover_eng_fields(ins, B, db, intra_branch_targets(ins, B), {});
         CHECK(field_at_idx(ins, ef, 1) == nullptr, "clobbered volatile is NOT typed after a call (no false host access)");
     }
 
@@ -98,7 +107,7 @@ int main() {
     {
         std::vector<uint32_t> w = { enc_lwz(4,3,4), enc_lfs(1,4,8), BLR };
         auto ins = collect(B, w);
-        auto ef = recover_eng_fields(ins, B, db);
+        auto ef = recover_eng_fields(ins, B, db, intra_branch_targets(ins, B), {});
         const EngField* fn = field_at_idx(ins, ef, 0);   // lwz mNext
         const EngField* ff = field_at_idx(ins, ef, 1);   // lfs through mNext
         CHECK(fn && fn->member=="mNext", "nested-pointer field load is itself typed (Cam::mNext)");
@@ -111,7 +120,7 @@ int main() {
     {
         std::vector<uint32_t> w = { enc_addi(5,3,0x10), enc_lwz(0,5,0), BLR };
         auto ins = collect(B, w);
-        auto ef = recover_eng_fields(ins, B, db);
+        auto ef = recover_eng_fields(ins, B, db, intra_branch_targets(ins, B), {});
         CHECK(field_at_idx(ins, ef, 1) == nullptr, "interior address (addi nonzero) does not carry the object type");
     }
 
@@ -120,9 +129,57 @@ int main() {
     {
         std::vector<uint32_t> w = { enc_or(30,3,3), enc_lfs(1,30,8), BLR };
         auto ins = collect(B, w);
-        auto ef = recover_eng_fields(ins, B, db);
+        auto ef = recover_eng_fields(ins, B, db, intra_branch_targets(ins, B), {});
         const EngField* f = field_at_idx(ins, ef, 1);
         CHECK(f && f->member=="mFov", "mr copy of `this` keeps the engine type");
+    }
+
+    // find the EngField recovered at an absolute pc
+    auto field_at_pc = [&](const std::map<u32,EngField>& m, u32 pc) -> const EngField* {
+        auto it = m.find(pc); return it == m.end() ? nullptr : &it->second;
+    };
+
+    // 7. Diamond CFG, both arms agree: r30 = `this` on each path; the field read at the JOIN
+    //    is typed because the MEET of the two predecessors keeps Cam.
+    //      +0  bc  -> L1(+12)        +4 mr r30,r3 ; +8 b JOIN(+16)
+    //      +12 mr r30,r3 (L1)        +16 lfs f1,8(r30) (JOIN) ; +20 blr
+    {
+        std::vector<uint32_t> w = {
+            enc_bc(B+0, B+12), enc_or(30,3,3), enc_b(B+8, B+16),
+            enc_or(30,3,3), enc_lfs(1,30,8), BLR,
+        };
+        auto ins = collect_cfg(B, w);
+        auto ef = recover_eng_fields(ins, B, db, intra_branch_targets(ins, B), {});
+        const EngField* f = field_at_pc(ef, B+16);
+        CHECK(f && f->member=="mFov", "merge: field typed when both CFG paths agree on the type");
+    }
+
+    // 8. Diamond CFG, arms DISAGREE: one path has r30=`this`, the other clears it. The MEET
+    //    drops to unknown, so the JOIN field read is a (sound) MISS — exactly what stops a
+    //    wrong type being carried across an edge (the bug the single linear pass could hit).
+    //      +0  bc -> L1(+12)         +4 mr r30,r3 ; +8 b JOIN(+16)
+    //      +12 addi r30,r0,0 (L1)    +16 lfs f1,8(r30) (JOIN) ; +20 blr
+    {
+        std::vector<uint32_t> w = {
+            enc_bc(B+0, B+12), enc_or(30,3,3), enc_b(B+8, B+16),
+            enc_addi(30,0,0), enc_lfs(1,30,8), BLR,
+        };
+        auto ins = collect_cfg(B, w);
+        auto ef = recover_eng_fields(ins, B, db, intra_branch_targets(ins, B), {});
+        CHECK(field_at_pc(ef, B+16) == nullptr, "merge: disagreeing paths -> sound MISS, no wrong type carried");
+    }
+
+    // 9. Loop (back-edge): the type established before the loop survives across iterations
+    //    (the fixpoint converges; the back-edge predecessor doesn't clobber r30).
+    //      +0 mr r30,r3 ; +4 lfs f1,8(r30) (LOOP) ; +8 bc -> LOOP(+4) ; +12 blr
+    {
+        std::vector<uint32_t> w = {
+            enc_or(30,3,3), enc_lfs(1,30,8), enc_bc(B+8, B+4), BLR,
+        };
+        auto ins = collect_cfg(B, w);
+        auto ef = recover_eng_fields(ins, B, db, intra_branch_targets(ins, B), {});
+        const EngField* f = field_at_pc(ef, B+4);
+        CHECK(f && f->member=="mFov", "loop: type established before the loop survives the back-edge");
     }
 
     std::printf("type_recovery_test: %d checks, %d failures\n", g_checks, g_fail);

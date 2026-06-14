@@ -90,7 +90,9 @@ static std::string emit_one(uint32_t base, bool tailored) {
     ctx.func_addr = base;
     ctx.instrs = collect_function(bytes.data(), base, bytes.size(), base, fend, /*cfg=*/false);
     ctx.branch_targets = intra_branch_targets(ctx.instrs, base);
-    if (tailored) ctx.eng_fields = recover_eng_fields(ctx.instrs, base, make_db(base));
+    if (tailored)
+        ctx.eng_fields = recover_eng_fields(ctx.instrs, base, make_db(base),
+                                            ctx.branch_targets, /*jumptable=*/{});
 
     std::ostringstream ss;
     CEmitter em(ss);

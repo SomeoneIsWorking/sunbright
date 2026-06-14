@@ -3,6 +3,7 @@
 #include "c_emitter.h"   // EngField
 #include <map>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 // =============================================================================
@@ -51,5 +52,12 @@ struct TypeDB {
 
 // Recover eng_fields (load/store pc -> host field access) for ONE function body.
 // `instrs` is the collected (in-order) decode; `func_addr` selects the signature seed.
+// `branch_targets` are the intra-function label pcs and `jumptable_targets` the computed-bctr
+// case pcs (both from func_collect) — they define the control-flow graph this pass runs a
+// forward dataflow fixpoint over, so a register's type at a join is the MEET of all incoming
+// paths (a type kept only when every predecessor agrees) and loops converge. Passing empty
+// sets degrades to a single straight-line pass.
 std::map<u32, EngField> recover_eng_fields(const std::vector<PPCInstr>& instrs,
-                                           u32 func_addr, const TypeDB& db);
+                                           u32 func_addr, const TypeDB& db,
+                                           const std::unordered_set<u32>& branch_targets,
+                                           const std::unordered_set<u32>& jumptable_targets);
