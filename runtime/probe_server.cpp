@@ -73,6 +73,7 @@ extern "C" void sb_trace(const char* tag, uint32_t a, uint32_t b, uint32_t c, ui
 extern "C" int njas_probe(char* out, int cap);
 int interp60_probe(char* out, int cap, const char* query);   // runtime/interp60.h
 extern "C" int native_vi_probe(char* out, int cap, const char* query);  // native_vi2.cpp
+void gxs_ngx_parity_stats(unsigned long*, unsigned long*, unsigned long*, const char**);  // gx_stream.h
 void gxs_frametime_reset();                                   // runtime/gx_stream.h
 void gxs_frametime_stats(unsigned long*, double*, double*, double*, double*);
 void gxs_frametime_decode(double*, double*);
@@ -182,6 +183,15 @@ std::string handle_repl(const char* path) {
             (int)cp.IsInterruptWaiting(),
             sys.GetProcessorInterface().GetCause(), sys.GetProcessorInterface().GetMask());
 #endif
+        return std::string(buf, n);
+    }
+    if (strncmp(path, "/ngx", 4) == 0) {   // R1 native-GX-decoder parity vs oracle
+        unsigned long frames = 0, mismatch = 0, first = 0; const char* what = "";
+        gxs_ngx_parity_stats(&frames, &mismatch, &first, &what);
+        app("ngx_parity frames=%lu mismatch=%lu first_frame=%lu first_what=%s\n"
+            "verdict=%s\n",
+            frames, mismatch, first, (what && *what) ? what : "-",
+            (frames > 0 && mismatch == 0) ? "PARITY-OK" : (frames == 0 ? "NO-DATA" : "MISMATCH"));
         return std::string(buf, n);
     }
     if (strncmp(path, "/w?", 3) == 0) {

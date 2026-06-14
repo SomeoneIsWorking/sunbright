@@ -1,6 +1,7 @@
 // GX stream assembler — see gx_stream.h for the design contract.
 #include "gx_stream.h"
 #include "gx_parse.h"
+#include "ngx/ngx_decode.h"   // R1: native GX decoder, run in lockstep for parity
 
 #include <cstdio>
 #include <cstdlib>
@@ -60,6 +61,67 @@ std::vector<u8> g_frame, g_prev_frame;
 GxFrameInfo g_frame_info, g_prev_info;
 unsigned long g_parse_ok = 0, g_parse_fail = 0;
 unsigned long long g_tokens_seen = 0, g_mtx_arrays_seen = 0;
+
+// ── R1 parity harness (SUNBRIGHT_NGX_PARITY=1) ──────────────────────────────
+// Run our native decoder (ngx_parse_frame) in lockstep with the Dolphin-based
+// oracle (gxp_parse_frame) over the SAME frame stream and compare field-by-field.
+// Both keep persistent CP state advanced by these calls only, so feeding them the
+// identical sequence of frames keeps them in sync. Goal: zero mismatches.
+bool ngx_parity() {
+    static int v = -1;
+    if (v < 0) v = getenv("SUNBRIGHT_NGX_PARITY") ? 1 : 0;
+    return v == 1;
+}
+unsigned long g_ngx_frames = 0;      // frames compared
+unsigned long g_ngx_mismatch = 0;    // frames with ANY field mismatch
+unsigned long g_ngx_first_off = 0;   // first mismatching frame index (1-based) or 0
+char g_ngx_first_what[64] = {0};     // what differed on that first mismatch
+
+void ngx_check(const u8* p, size_t n, const GxFrameInfo& oracle) {
+    GxFrameInfo mine;
+    ngx_parse_frame(p, n, mine);
+    g_ngx_frames++;
+
+    const char* what = nullptr;
+    char buf[64];
+    auto cmp_u32 = [&](const char* name, u32 a, u32 b) {
+        if (!what && a != b) { snprintf(buf, sizeof buf, "%s %u!=%u", name, a, b); what = buf; }
+    };
+    if (!what && mine.ok != oracle.ok) {
+        snprintf(buf, sizeof buf, "ok %d!=%d @%u", mine.ok, oracle.ok, mine.fail_offset);
+        what = buf;
+    }
+    cmp_u32("prims", mine.prims, oracle.prims);
+    cmp_u32("dls", mine.display_lists, oracle.display_lists);
+    cmp_u32("copies", mine.copies, oracle.copies);
+    cmp_u32("tokens", (u32)mine.token_offsets.size(), (u32)oracle.token_offsets.size());
+    cmp_u32("mtx", (u32)mine.mtx_arrays.size(), (u32)oracle.mtx_arrays.size());
+    cmp_u32("failoff", mine.fail_offset, oracle.fail_offset);
+    // exact offsets/values of the recorded patch points (byte-level parity)
+    if (!what && mine.token_offsets.size() == oracle.token_offsets.size())
+        for (size_t i = 0; i < mine.token_offsets.size(); i++)
+            if (mine.token_offsets[i] != oracle.token_offsets[i]) {
+                snprintf(buf, sizeof buf, "tokoff[%zu]", i); what = buf; break;
+            }
+    if (!what && mine.mtx_arrays.size() == oracle.mtx_arrays.size())
+        for (size_t i = 0; i < mine.mtx_arrays.size(); i++) {
+            const auto& a = mine.mtx_arrays[i]; const auto& b = oracle.mtx_arrays[i];
+            if (a.offset != b.offset || a.array != b.array || a.base != b.base) {
+                snprintf(buf, sizeof buf, "mtx[%zu]", i); what = buf; break;
+            }
+        }
+
+    if (what) {
+        g_ngx_mismatch++;
+        if (!g_ngx_first_off) {
+            g_ngx_first_off = g_ngx_frames;
+            snprintf(g_ngx_first_what, sizeof g_ngx_first_what, "%s", what);
+        }
+        if (dbg() && g_ngx_mismatch <= 16)
+            fprintf(stderr, "[ngx-parity] frame %lu MISMATCH: %s (bytes=%zu)\n",
+                    g_ngx_frames, what, n);
+    }
+}
 
 // Safety cap: a frame stream is typically a few hundred KB; if a frame somehow
 // never hits a flush point, burst rather than grow unbounded.
@@ -186,6 +248,14 @@ unsigned long long gxs_decoded_bytes() { return g_decoded_bytes; }
 unsigned long      gxs_decode_runs()   { return g_decode_runs; }
 const GxFrameInfo& gxs_prev_frame_info() { return g_prev_info; }
 
+void gxs_ngx_parity_stats(unsigned long* frames, unsigned long* mismatch,
+                          unsigned long* first_frame, const char** first_what) {
+    if (frames)      *frames = g_ngx_frames;
+    if (mismatch)    *mismatch = g_ngx_mismatch;
+    if (first_frame) *first_frame = g_ngx_first_off;
+    if (first_what)  *first_what = g_ngx_first_off ? g_ngx_first_what : "";
+}
+
 // ── Render-only interpolation replay ─────────────────────────────────────────────────────────────
 const std::vector<u8>& gxs_cur_frame() { return g_frame; }
 
@@ -260,7 +330,11 @@ void gxs_frame_boundary() {
     // Analyze the completed frame; only a fully-parsed frame qualifies as a
     // replay source (the very first armed frames mis-size vertices until J3D
     // reprograms VCD/VAT — ok=false catches that).
-    if (gxp_parse_frame(g_frame.data(), g_frame.size(), g_frame_info)) {
+    const bool parse_ok = gxp_parse_frame(g_frame.data(), g_frame.size(), g_frame_info);
+    // R1: native decoder parity check — MUST run on every frame (in lockstep) so
+    // its persistent CP state tracks the oracle's. Compares against g_frame_info.
+    if (ngx_parity()) ngx_check(g_frame.data(), g_frame.size(), g_frame_info);
+    if (parse_ok) {
         g_parse_ok++;
         g_tokens_seen     += g_frame_info.token_offsets.size();
         g_mtx_arrays_seen += g_frame_info.mtx_arrays.size();
@@ -282,8 +356,11 @@ void gxs_frame_boundary() {
     if (dbg() && (g_frames % 128) == 0)
         fprintf(stderr,
                 "[gxs] frames=%lu last_frame_bytes=%llu decoded=%lluMB runs=%lu "
-                "tail_hi=%zu flushes gx=%lu copy=%lu parse ok=%lu fail=%lu\n",
+                "tail_hi=%zu flushes gx=%lu copy=%lu parse ok=%lu fail=%lu "
+                "ngx[cmp=%lu mismatch=%lu first=%lu:%s]\n",
                 g_frames, g_frame_bytes, g_decoded_bytes >> 20, g_decode_runs,
-                g_tail_hi, g_fl_gxflush, g_fl_copy, g_parse_ok, g_parse_fail);
+                g_tail_hi, g_fl_gxflush, g_fl_copy, g_parse_ok, g_parse_fail,
+                g_ngx_frames, g_ngx_mismatch, g_ngx_first_off,
+                g_ngx_first_off ? g_ngx_first_what : "-");
     g_frame_bytes = 0;
 }

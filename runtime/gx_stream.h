@@ -41,6 +41,12 @@ void gxs_flush(const char* why);
 // Flushes and rotates the per-frame capture.
 void gxs_frame_boundary();
 
+// R1 parity harness (SUNBRIGHT_NGX_PARITY): native-decoder vs oracle comparison
+// counters, for the /ngx probe endpoint. `first_what` is a short tag of the first
+// mismatch (empty if none).
+void gxs_ngx_parity_stats(unsigned long* frames, unsigned long* mismatch,
+                          unsigned long* first_frame, const char** first_what);
+
 // Instrumentation accessors (used by the 60 fps probe to measure whether the
 // in-between field actually re-rendered, and what matrix buffers it loaded).
 unsigned long long gxs_decoded_bytes();   // running total of bytes decoded
