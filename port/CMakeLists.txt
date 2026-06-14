@@ -81,9 +81,16 @@ message(STATUS "smsport_core: ${SMS_CORE_REL} (see core_sources.txt)")
 # format spec, not ports of the struct-overlay decomp code. Portable to
 # x86-64 and arm64 (host-byte-order independent).
 # ---------------------------------------------------------------------------
-add_library(smsport_assets STATIC assets/rarc.cpp)
+add_library(smsport_assets STATIC assets/rarc.cpp assets/bti.cpp)
 target_include_directories(smsport_assets PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/assets")
 target_compile_options(smsport_assets PRIVATE -Wall -Wextra)
+
+# PC-native GameCube texture decoder (../runtime/render/tex_decode.cpp). It is
+# standalone C++ with ZERO Dolphin dependency (only <cstdint>/<cstring> + its own
+# header), so we COMPILE the existing file directly here rather than fork it —
+# the port and the runtime share one decoder, no divergence. We do not EDIT it.
+add_library(smsport_texdecode STATIC "${SMS_REPO_ROOT}/runtime/render/tex_decode.cpp")
+target_include_directories(smsport_texdecode PUBLIC "${SMS_REPO_ROOT}/runtime/render")
 
 enable_testing()
 add_executable(rarc_test assets/rarc_test.cpp)
@@ -92,4 +99,11 @@ target_link_libraries(rarc_test PRIVATE smsport_assets)
 # (the test PASSES without it via the synthetic fixture + Yaz0 round-trip).
 add_test(NAME rarc_test
          COMMAND rarc_test
+         WORKING_DIRECTORY "${SMS_REPO_ROOT}")
+
+# End-to-end native asset path: RARC -> BTI -> RGBA8 -> PNG.
+add_executable(bti_test assets/bti_test.cpp)
+target_link_libraries(bti_test PRIVATE smsport_assets smsport_texdecode)
+add_test(NAME bti_test
+         COMMAND bti_test
          WORKING_DIRECTORY "${SMS_REPO_ROOT}")
