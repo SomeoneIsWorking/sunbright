@@ -435,6 +435,41 @@ int main() {
               "no raw guest MEM access remains at the typed sites");
     }
 
+    // OBJECT-IDENTITY emission (docs/re_notes/object_identity.md): at an engine-CONSTRUCTION site
+    // (ctx.alloc_sites, from type_recovery find_alloc_sites) the emitter rewrites the guest
+    // `operator new` bl into `cpu.gpr[3] = sb_eng_alloc<Type>()` (raw host storage + handle), while
+    // the inlined ctor writes (typed via eng_fields) initialize the HOST object and the following
+    // engine method stays a bridged call_ppc. Mirrors Pattern B (heap new, inlined ctor).
+    {
+        const uint32_t B = 0x80100000u;
+        const uint32_t ALLOC = 0x802c3ba4u;   // operator new
+        const uint32_t STORE = 0x802ca640u;   // a JUTTexture method (bridged)
+        auto enc_stw = [](int rs, int ra, int16_t d) { return (36u<<26)|(rs<<21)|(ra<<16)|(uint16_t)d; };
+        std::vector<uint32_t> w = {
+            enc_b(B+0, ALLOC, /*lk=*/true),   // +0  r3 = operator new(...)  -> rewritten
+            enc_stw(0,3,0x28),                // +4  inlined ctor: mEmbPalette = 0  (host write)
+            enc_b(B+8, STORE, /*lk=*/true),   // +8  storeTIMG(this=r3)            (bridged)
+            BLR,
+        };
+        std::vector<uint8_t> bytes(w.size()*4);
+        for (size_t i=0;i<w.size();++i){ uint32_t be=__builtin_bswap32(w[i]); std::memcpy(&bytes[i*4],&be,4); }
+        EmitContext ctx; ctx.func_addr = B;
+        ctx.instrs = collect_function(bytes.data(), B, bytes.size(), B, B+(uint32_t)w.size()*4, /*cfg=*/false);
+        ctx.branch_targets = intra_branch_targets(ctx.instrs, B);
+        ctx.alloc_sites[B+0] = "JUTTexture";
+        ctx.eng_fields[B+4] = EngField{ "JUTTexture", "mEmbPalette", "", /*guest_ptr=*/false };
+        std::ostringstream ss; CEmitter em(ss); em.emit_function(ctx);
+        std::string code = ss.str();
+        CHECK(has(code, "cpu.gpr[3] = sb_eng_alloc<JUTTexture>()"),
+              "construction: operator new is rewritten to a host alloc returning a handle");
+        CHECK(!has(code, "call_ppc(cpu, 0x802c3ba4u)"),
+              "construction: the guest operator new bl is NOT emitted as a call");
+        CHECK(has(code, "((JUTTexture*)sb_eng_host(cpu.gpr[3]))->mEmbPalette"),
+              "construction: the inlined ctor write initializes the HOST object field");
+        CHECK(has(code, "call_ppc(cpu, 0x802ca640u)"),
+              "construction: the engine method after the ctor stays a bridged call_ppc");
+    }
+
     std::printf("recomp_test: %d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

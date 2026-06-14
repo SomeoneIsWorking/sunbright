@@ -141,10 +141,19 @@ delete`. Stack temps (C) release at scope end (the frame teardown) — needs a s
    Opt-in params `raw_allocators` + `alloc_sites` on `recover_eng_fields` (off by default).
    Tests: `type_recovery_test` cases 10–13 (Patterns A/B/C + negative). Real-code: `scratch/
    identity_check JUTTexture 8022d474 8019b7d8`. **NOT yet wired into the emitter (step 2).**
-2. **Emitter alloc rewrite + ctor placement-new bridge + `sb_eng_alloc`** (runtime). Wire so a
-   flagged alloc site emits `sb_eng_alloc` and the typed inlined writes / bridged ctor construct
-   the host object. Prove A+B end-to-end with a STUB host type (port/ link + real JUTTexture/GX
-   come later) against the oracle, field_slice-style.
+2. **Emitter alloc rewrite + `sb_eng_alloc`** — DONE (emission half). `EmitContext::alloc_sites`;
+   a flagged heap site emits `cpu.gpr[3] = sb_eng_alloc<T>()` (runtime `intrinsics.h`: raw
+   `::operator new(sizeof(T))` + `sb_eng_handle`); the inlined ctor writes (typed via eng_fields)
+   init the HOST object; the following engine method stays a bridged `call_ppc`. Wired into
+   `main.cpp` (raw_allocators={0x802c3ba4}, no-op when SUNBRIGHT_ENGINE_TYPES is empty). Test:
+   `recomp_test` "OBJECT-IDENTITY emission". KEY FINDING (unblocked this): **JUTTexture is
+   NON-POLYMORPHIC** (no `virtual` in the header; its ctor stores `stb`/`stw` to scalar fields, NO
+   vtable store to `0(this)`), so raw alloc + the typed inlined writes faithfully mirror the guest
+   `operator new + ctor` — no host-ctor injection needed for the inlined case. **STILL TODO for full
+   step 2:** the out-of-line ctor PLACEMENT-NEW bridge (Pattern A — bridge `__ct` to
+   `new(sb_eng_host(h)) T(args)`); stack-temp (Pattern C) emission; a runnable construct_slice
+   end-to-end vs the oracle (needs port/ link). Polymorphic engine types WILL need the ctor bridge
+   to set the host vtable.
 3. **Stack temporaries (Pattern C)** — interior `addi r1,off` typed as engine → host side object +
    handle + scope release. Heavier (needs the frame/scope model); defer until A/B are solid.
 4. Scale: sweep allocation recognition across all engine-type ctors/methods; confirm no
@@ -155,6 +164,10 @@ delete`. Stack temps (C) release at scope end (the frame teardown) — needs a s
 - **new[] / array ctors** and the second allocator 0x802fa69c — uncharacterized.
 - **Placement-new vs the host ctor's own allocation** — host JUTTexture ctor must not itself
   allocate the object (only its members). True for value/JKR types; verify per type.
+- **vtable for polymorphic engine types** — RESOLVED for JUTTexture (non-polymorphic, see step 2).
+  A polymorphic type's INLINED ctor sets the vtable via a guest-address store we can't replay on
+  the host; such types MUST go through the out-of-line ctor placement-new bridge (or get a host
+  vtable fix-up) — do not flip a polymorphic type with an inlined ctor on the raw-alloc path.
 - **Multiple inheritance / vtable-at-end** ctors (see abi_findings.md) — the `this` adjustment
   (`addi this, base, +subobjOffset`) at a base ctor call must not be mistaken for a stack-temp.
 - A MISS here is a correctness bug (raw guest pointer reaches `sb_eng_host` → fault), same SHARP

@@ -2,6 +2,7 @@
 #include "cpu_state.h"
 #include <bit>
 #include <cmath>
+#include <new>
 
 // Memory access — backed by Dolphin's MemMap (memory_bridge.cpp).
 // All addresses are effective (as the game sees them).
@@ -223,6 +224,14 @@ extern u64  tb_get();
 extern u32   sb_eng_handle(void* host);
 extern void* sb_eng_host(u32 handle);
 extern void  sb_eng_release(void* host);
+
+// Allocate RAW host storage for an engine object of type T and return a 32-bit HANDLE.
+// Emitted in place of a guest `operator new` bl at a recognized engine-CONSTRUCTION site
+// (type_recovery find_alloc_sites; docs/re_notes/object_identity.md). Storage only — the ctor
+// then initializes the fields: an out-of-line ctor runs (bridged) on sb_eng_host(handle); an
+// INLINED ctor's field writes (now host-typed) do it in the recompiled caller. Faithfully
+// mirrors the guest `operator new(sizeof) + ctor` for a non-polymorphic T (e.g. JUTTexture).
+template <class T> inline u32 sb_eng_alloc() { return sb_eng_handle(::operator new(sizeof(T))); }
 
 // Guest main-RAM effective address -> host pointer (for the SUNBRIGHT_BRIDGE
 // marshalling thunk, runtime/bridge.h). ea==0 -> nullptr. Defined in memory_bridge.cpp.

@@ -499,9 +499,15 @@ static int recompile_mode(const DiscLoader& disc, const DOL& dol, const std::str
                 ctx.branch_targets.insert(ctx.jumptable_targets.begin(), ctx.jumptable_targets.end());
             }
             // Tailored boundary: type-recover host engine fields (empty DB -> empty -> unchanged).
-            if (!g_type_db.layouts.empty())
+            // With the DB active, also recognize engine-CONSTRUCTION sites (object_identity.md):
+            // a guest `operator new` whose result becomes an engine object is rewritten to a host
+            // alloc + handle (ctx.alloc_sites), and its inlined ctor field writes are typed.
+            if (!g_type_db.layouts.empty()) {
+                static const std::unordered_set<u32> raw_allocators = { 0x802c3ba4u };  // operator new
                 ctx.eng_fields = recover_eng_fields(ctx.instrs, addr, g_type_db,
-                                                    ctx.branch_targets, ctx.jumptable_targets);
+                                                    ctx.branch_targets, ctx.jumptable_targets,
+                                                    nullptr, &raw_allocators, &ctx.alloc_sites);
+            }
             emitter.emit_function(ctx);
         }
         total_unhandled += emitter.unhandled_count();

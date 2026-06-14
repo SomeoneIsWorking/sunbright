@@ -45,6 +45,12 @@ struct EmitContext {
     std::unordered_set<u32> branch_targets;     // within-function jump labels
     std::unordered_set<u32> jumptable_targets;  // bctr jump-table case labels (subset of branch_targets)
     std::map<u32, EngField> eng_fields;         // load/store pc -> host engine-object field access (tailored)
+    // Engine-CONSTRUCTION sites (type_recovery find_alloc_sites; docs/re_notes/object_identity.md):
+    // pc of a guest `operator new` bl -> host C++ type name to allocate. At such a site the emitter
+    // emits `cpu.gpr[3] = sb_eng_alloc<Type>()` (raw host storage + a 32-bit handle) instead of the
+    // guest call, so the recompiled (inlined/bridged) ctor initializes a HOST object. Empty = no
+    // construction rewrites (the legacy path). (Interior-stack temps — Pattern C — are not yet here.)
+    std::map<u32, std::string> alloc_sites;
 };
 
 class CEmitter {

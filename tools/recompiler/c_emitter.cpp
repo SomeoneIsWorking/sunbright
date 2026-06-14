@@ -458,6 +458,13 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
     case PPCOp::B: {
         bool intra = ctx.branch_targets.count(i.target) > 0;
         if (i.lk) {
+            auto al = ctx.alloc_sites.find(i.pc);
+            if (al != ctx.alloc_sites.end()) {                // engine-CONSTRUCTION: rewrite the
+                // guest `operator new` into a host alloc returning a 32-bit handle in r3. The ctor
+                // (inlined here, or bridged) then initializes the host object. No call_ppc.
+                line("cpu.gpr[3] = sb_eng_alloc<%s>();", al->second.c_str());
+                break;
+            }
             line("cpu.lr = 0x%xu;", i.pc + 4);
             line("call_ppc(cpu, 0x%xu);", i.target);          // call, continue inline
         } else if (intra) {
