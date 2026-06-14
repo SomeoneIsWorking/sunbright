@@ -19,6 +19,13 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS ON)   # GNU extensions (the decomp relies on a few)
 
+# The decomp is CodeWarrior-era C++ and uses the `register` storage class, which
+# C++17 removed. GCC accepts it under gnu++17 but warns (-Wregister); the decomp's
+# own headers carry it, so it leaks into every TU that includes them. Suppress
+# just that one removed-keyword deprecation project-wide (keeps all other warnings
+# on for the PAL/asset/test targets). NOT an error — purely noise reduction.
+add_compile_options(-Wno-register)
+
 # Repo root = parent of this port/ dir.
 get_filename_component(SMS_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
 set(SMS_DECOMP "${SMS_REPO_ROOT}/reference/sms")
