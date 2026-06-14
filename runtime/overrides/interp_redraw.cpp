@@ -39,6 +39,8 @@ constexpr u32 GX_INVALIDATE_TEXALL = 0x80360400u;  // GXInvalidateTexAll
 constexpr u32 VIDEO_SET_NEXT_XFB   = 0x802fc99cu;  // JDrama::TVideo::setNextXFB(const void*)
 constexpr u32 MARDIR_DIRECT        = 0x80299838u;  // TMarDirector::direct (virtual)
 constexpr u32 DISPLAY_END_RENDER   = 0x802f80d0u;  // JDrama::TDisplay::endRendering
+constexpr u32 WATER_PERFORM        = 0x8027beb0u;  // TModelWaterManager::perform(u32 flags, TGraphics*)
+constexpr u32 J3DSYS_VIEWMTX       = 0x804045DCu;  // j3dSys view matrix (live camera, 3x4)
 
 // TMarDirector perform-list members (reference/sms include/System/MarDirector.hpp),
 // in direct()'s draw order. +0x20 is the silhouette/shadow list — it MUST be
@@ -174,8 +176,19 @@ SUNBRIGHT_OVERRIDE(ov_silhouette_perform, 0x80227914u) {
     func_80227914(cpu);
 }
 
+// Cache the live TModelWaterManager so the in-between can re-derive its screen-space refraction at
+// the interpolated camera (the raw-GX replay re-emits the frozen tick-N water quad — see the water
+// root cause in docs/interp60_efb_handoff.md). Captured on REAL-field perform calls only.
+u32 g_water_mgr = 0;
+extern "C" void func_8027beb0(CPUState&);   // TModelWaterManager::perform
+SUNBRIGHT_OVERRIDE(ov_water_perform_cache, WATER_PERFORM) {
+    if (!g_interp60_in_redraw) g_water_mgr = cpu.gpr[3];
+    func_8027beb0(cpu);
+}
+
 SUNBRIGHT_OVERRIDE(ov_interp_mardir_direct, MARDIR_DIRECT) {
     g_mardir = cpu.gpr[3];
+    g_water_mgr = 0;                                   // re-cached by this frame's water perform (if any)
     if (g_i60.mode == 3) interp60_registry_clear();   // start a fresh model registry
     func_80299838(cpu);                                // populates it via real-field viewCalc
     g_direct_stamp++;
@@ -290,6 +303,36 @@ SUNBRIGHT_OVERRIDE(ov_interp_endRendering, DISPLAY_END_RENDER) {
             gxs_replay_frame(frameN.data(), frameN.size());    // re-render N-1/2
             g_interp60_in_redraw = false;
             interp60_xfmap_end();
+
+            // Re-derive the water's screen-space refraction at the interpolated (N½) camera so the
+            // reflection tracks the surface. The raw replay re-emitted the FROZEN tick-N water quad
+            // (eye-space verts baked into the GX stream, drawn with identity PNMTX + a view-less
+            // texmtx) sampling the N½ screen texture → the reflection swam (root cause in
+            // docs/interp60_efb_handoff.md). Owning the fix: run the water manager's quad rebuild
+            // (&4 = calcVMAll(gfx->mViewMtx)) + refraction draw (&0x80) through the GUEST path with a
+            // gfx whose view matrix is the N½-blended camera, so the eye-space quad rebuilds at N½ and
+            // matches the surface. water_native's overrides fire here (guest path). Off-switch:
+            // SUNBRIGHT_NO_WATER_REISSUE. (g_water_mgr is set only by the REAL field's water perform.)
+            static const bool water_reissue = getenv("SUNBRIGHT_NO_WATER_REISSUE") == nullptr;
+            if (water_reissue && g_water_mgr && g_gfx_valid) {
+                static float prev_view_w[12]; static bool have_prev_w = false;
+                float cur_view[12], half_view[12];
+                for (u32 i = 0; i < 12; i++) cur_view[i] = mem_rf32(J3DSYS_VIEWMTX + i * 4);
+                const float a = g_i60.alpha;
+                for (u32 i = 0; i < 12; i++)
+                    half_view[i] = have_prev_w ? (1.0f - a) * prev_view_w[i] + a * cur_view[i] : cur_view[i];
+                const u32 saved_r1 = cpu.gpr[1];
+                const u32 gfx = (saved_r1 - 0x110u) & ~0xFu;
+                for (u32 i = 0; i < 0x100; i++) MEM_W8(gfx + i, g_gfx_snap[i]);
+                for (u32 i = 0; i < 12; i++) mem_wf32(gfx + 0xB4 + i * 4, half_view[i]);   // gfx->mViewMtx = N½
+                cpu.gpr[1] = (gfx - 0x20u) & ~0xFu;
+                cpu.gpr[3] = g_water_mgr; cpu.gpr[4] = 0x84u; cpu.gpr[5] = gfx;   // perform(&4|&0x80, gfx)
+                call_ppc(cpu, WATER_PERFORM);
+                cpu.gpr[1] = saved_r1;
+                for (u32 i = 0; i < 12; i++) prev_view_w[i] = cur_view[i];
+                have_prev_w = true;
+            }
+
             const u32 ob0 = MEM_R32(display + 4), ob1 = MEM_R32(display + 8);
             MEM_W32(display + 4, alt); MEM_W32(display + 8, alt);   // steer the copy dest to ALT
             MEM_W16(display + 0x4C, 1);
