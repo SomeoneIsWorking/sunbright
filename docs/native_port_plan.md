@@ -343,8 +343,17 @@ decoder; runtime GP-FIFO path on the delete list. Then, on the object-model arch
   ground features, correct perspective/orientation) — recognizable scene structure proves the whole
   chain (extract→modelview→projection→native raster) is faithful, Dolphin-free. No crash/VK errors.
   Vert shader forces z=0 (GX NDC z isn't in Vulkan's [0,w]) + Y-flip; no depth test yet (painter's
-  order). **Next: real depth (remap GX NDC z→[0,1] + depth buffer) so overlapping geometry sorts;
-  then N5 TEV→fragment shader for textures/materials (use the N1 tex decoder + per-material state).**
+  order).
+- **N4 native depth testing ✅** (this commit) — faithful GC→Vulkan depth. GC NDC z ∈ [−1(near),
+  0(far)] (confirmed vs Dolphin VertexShaderGen "near z<−w / far z>0") → Vulkan [0,1] via the
+  documented map depth=clip.z/w+1 (clip-space z'=clip.z+clip.w; NOT a magic constant), which also
+  makes Vulkan's depth-clip do correct near/far frustum clipping. Added a D32 depth attachment +
+  depth-test (LESS_OR_EQUAL, write, clear 1.0). Verified live (Delfino, 118805 tris, 100% coverage):
+  the readback shows the plaza buildings correctly OCCLUDED behind foreground geometry, foliage in
+  front, no z-fighting / no far-over-near — depth-correct. (Exact GXSetViewport depth-range scaling,
+  for depth-texture effects, is a later refinement; occlusion is faithful.) **Next: N5 TEV→fragment
+  shader — feed the N1 native texture decoder + per-material TEV state so materials/textures replace
+  the flat vertex color (the foliage/water/buildings get their real surfaces).**
 
 **J3DShape DRAW PATH (RE'd 2026-06-14, `reference/sms/.../J3DShape.cpp`) — the live-hook seam.**
 `J3DShape::draw()` does, in order:

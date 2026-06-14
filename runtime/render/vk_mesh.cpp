@@ -72,6 +72,7 @@ int sb_ngx_render(char* outbuf, int cap) {
     const VkDeviceSize img_bytes = (VkDeviceSize)W * H * 4;
 
     VkImage rt_img = VK_NULL_HANDLE; VkDeviceMemory rt_mem = VK_NULL_HANDLE; VkImageView rt_view = VK_NULL_HANDLE;
+    VkImage ds_img = VK_NULL_HANDLE; VkDeviceMemory ds_mem = VK_NULL_HANDLE; VkImageView ds_view = VK_NULL_HANDLE;
     VkBuffer vbuf = VK_NULL_HANDLE, rb_buf = VK_NULL_HANDLE;
     VkDeviceMemory vmem = VK_NULL_HANDLE, rb_mem = VK_NULL_HANDLE;
     VkShaderModule vs = VK_NULL_HANDLE, fs = VK_NULL_HANDLE;
@@ -125,6 +126,25 @@ int sb_ngx_render(char* outbuf, int cap) {
         vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
         if ((vr = vkCreateImageView(dev, &vci, nullptr, &rt_view))) { FAIL("rt view"); goto done; }
     }
+    {   // depth attachment (D32) — occlusion sort, GC z mapped to [0,1] in the vert shader
+        VkImageCreateInfo ici{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+        ici.imageType = VK_IMAGE_TYPE_2D; ici.format = VK_FORMAT_D32_SFLOAT;
+        ici.extent = {(uint32_t)W, (uint32_t)H, 1}; ici.mipLevels = 1; ici.arrayLayers = 1;
+        ici.samples = VK_SAMPLE_COUNT_1_BIT; ici.tiling = VK_IMAGE_TILING_OPTIMAL;
+        ici.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+        ici.sharingMode = VK_SHARING_MODE_EXCLUSIVE; ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        if ((vr = vkCreateImage(dev, &ici, nullptr, &ds_img))) { FAIL("ds image"); goto done; }
+        VkMemoryRequirements mr; vkGetImageMemoryRequirements(dev, ds_img, &mr);
+        VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+        ai.allocationSize = mr.size;
+        ai.memoryTypeIndex = find_mem(phys, mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        if ((vr = vkAllocateMemory(dev, &ai, nullptr, &ds_mem))) { FAIL("ds mem"); goto done; }
+        if ((vr = vkBindImageMemory(dev, ds_img, ds_mem, 0))) { FAIL("ds bind"); goto done; }
+        VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+        vci.image = ds_img; vci.viewType = VK_IMAGE_VIEW_TYPE_2D; vci.format = VK_FORMAT_D32_SFLOAT;
+        vci.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+        if ((vr = vkCreateImageView(dev, &vci, nullptr, &ds_view))) { FAIL("ds view"); goto done; }
+    }
     if (!make_buffer(vbuf, vmem, vbytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)) { FAIL("vertex buf"); goto done; }
     if (!make_buffer(rb_buf, rb_mem, img_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT)) { FAIL("readback buf"); goto done; }
     {
@@ -140,20 +160,27 @@ int sb_ngx_render(char* outbuf, int cap) {
         VkPipelineLayoutCreateInfo plci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
         if ((vr = vkCreatePipelineLayout(dev, &plci, nullptr, &pll))) { FAIL("pipeline layout"); goto done; }
 
-        VkAttachmentDescription at{};
-        at.format = VK_FORMAT_R8G8B8A8_UNORM; at.samples = VK_SAMPLE_COUNT_1_BIT;
-        at.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; at.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-        at.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE; at.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        at.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED; at.finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        VkAttachmentDescription at[2] = {};
+        at[0].format = VK_FORMAT_R8G8B8A8_UNORM; at[0].samples = VK_SAMPLE_COUNT_1_BIT;
+        at[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; at[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        at[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE; at[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        at[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED; at[0].finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        at[1].format = VK_FORMAT_D32_SFLOAT; at[1].samples = VK_SAMPLE_COUNT_1_BIT;
+        at[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; at[1].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        at[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE; at[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        at[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        at[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
         VkAttachmentReference ar{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+        VkAttachmentReference dr{1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
         VkSubpassDescription sd{}; sd.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-        sd.colorAttachmentCount = 1; sd.pColorAttachments = &ar;
+        sd.colorAttachmentCount = 1; sd.pColorAttachments = &ar; sd.pDepthStencilAttachment = &dr;
         VkRenderPassCreateInfo rpci{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
-        rpci.attachmentCount = 1; rpci.pAttachments = &at; rpci.subpassCount = 1; rpci.pSubpasses = &sd;
+        rpci.attachmentCount = 2; rpci.pAttachments = at; rpci.subpassCount = 1; rpci.pSubpasses = &sd;
         if ((vr = vkCreateRenderPass(dev, &rpci, nullptr, &rpass))) { FAIL("render pass"); goto done; }
 
+        VkImageView fbatt[2] = {rt_view, ds_view};
         VkFramebufferCreateInfo fci{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
-        fci.renderPass = rpass; fci.attachmentCount = 1; fci.pAttachments = &rt_view;
+        fci.renderPass = rpass; fci.attachmentCount = 2; fci.pAttachments = fbatt;
         fci.width = W; fci.height = H; fci.layers = 1;
         if ((vr = vkCreateFramebuffer(dev, &fci, nullptr, &fbo))) { FAIL("framebuffer"); goto done; }
     }
@@ -184,12 +211,16 @@ int sb_ngx_render(char* outbuf, int cap) {
         rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE; rs.lineWidth = 1.0f;
         VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
         ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+        VkPipelineDepthStencilStateCreateInfo dss{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+        dss.depthTestEnable = VK_TRUE; dss.depthWriteEnable = VK_TRUE;
+        dss.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;   // near (z=0) occludes far (z=1)
         VkPipelineColorBlendAttachmentState cba{}; cba.colorWriteMask = 0xF;
         VkPipelineColorBlendStateCreateInfo cb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
         cb.attachmentCount = 1; cb.pAttachments = &cba;
         VkGraphicsPipelineCreateInfo gp{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
         gp.stageCount = 2; gp.pStages = ss; gp.pVertexInputState = &vi; gp.pInputAssemblyState = &ia;
         gp.pViewportState = &vps; gp.pRasterizationState = &rs; gp.pMultisampleState = &ms;
+        gp.pDepthStencilState = &dss;
         gp.pColorBlendState = &cb; gp.layout = pll; gp.renderPass = rpass; gp.subpass = 0;
         if ((vr = vkCreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, nullptr, &pipe))) { FAIL("pipeline"); goto done; }
     }
@@ -211,11 +242,13 @@ int sb_ngx_render(char* outbuf, int cap) {
         bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         if ((vr = vkBeginCommandBuffer(cmd, &bi))) { FAIL("begin cmd"); goto done; }
 
-        VkClearValue clear{}; clear.color = {{0.10f, 0.12f, 0.18f, 1.f}};   // dark slate background
+        VkClearValue clear[2]{};
+        clear[0].color = {{0.10f, 0.12f, 0.18f, 1.f}};   // dark slate background
+        clear[1].depthStencil = {1.0f, 0};               // far
         VkRenderPassBeginInfo rbi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
         rbi.renderPass = rpass; rbi.framebuffer = fbo;
         rbi.renderArea = {{0, 0}, {(uint32_t)W, (uint32_t)H}};
-        rbi.clearValueCount = 1; rbi.pClearValues = &clear;
+        rbi.clearValueCount = 2; rbi.pClearValues = clear;
         vkCmdBeginRenderPass(cmd, &rbi, VK_SUBPASS_CONTENTS_INLINE);
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
         VkDeviceSize voff = 0;
@@ -285,6 +318,9 @@ done:
     if (rt_view) vkDestroyImageView(dev, rt_view, nullptr);
     if (rt_img)  vkDestroyImage(dev, rt_img, nullptr);
     if (rt_mem)  vkFreeMemory(dev, rt_mem, nullptr);
+    if (ds_view) vkDestroyImageView(dev, ds_view, nullptr);
+    if (ds_img)  vkDestroyImage(dev, ds_img, nullptr);
+    if (ds_mem)  vkFreeMemory(dev, ds_mem, nullptr);
     return result;
 }
 
