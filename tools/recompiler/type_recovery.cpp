@@ -76,9 +76,14 @@ bool is_call(const PPCInstr& i) {
 }
 
 // Apply instruction `i` to state `s`. If `out` is non-null, record any typed field site; if
-// `gaps` is non-null, record a "typed base, unmapped offset" miss (the dangerous case).
+// `gaps` is non-null, record a "typed base, unmapped offset" miss (the dangerous case). If
+// `alloc_types` is non-null, an instruction whose pc is a resolved engine-CONSTRUCTION site (the
+// `operator new` bl, or the interior-stack `addi`) SEEDS its result register with the constructed
+// engine type — this is what carries the new object's type forward so the inlined ctor field
+// writes and the container store of the handle are typed (see object_identity.md / find_alloc_sites).
 void apply(const PPCInstr& i, State& s, const TypeDB& db,
-           std::map<u32, EngField>* out, std::vector<u32>* gaps) {
+           std::map<u32, EngField>* out, std::vector<u32>* gaps,
+           const std::map<u32, std::string>* alloc_types = nullptr) {
     auto field_at = [&](int base_reg, int disp) -> std::string {
         const std::string& ty = s.reg[base_reg];
         if (ty.empty()) return "";
@@ -138,6 +143,126 @@ void apply(const PPCInstr& i, State& s, const TypeDB& db,
         }
         break;
     }
+
+    // Engine-construction seed: at a resolved alloc site the result register becomes the new
+    // object's engine type (overriding the clobber above), so the type flows forward from here.
+    if (alloc_types) {
+        auto a = alloc_types->find(i.pc);
+        if (a != alloc_types->end()) {
+            if (is_call(i)) s.reg[3] = a->second;              // operator new -> return in r3
+            else if (i.op == PPCOp::ADDI) s.reg[i.rD] = a->second;  // interior-stack temp -> rD
+        }
+    }
+}
+
+// Resolved direct-call target of a linking branch (0 if indirect).
+u32 call_target(const PPCInstr& i) {
+    if (i.lk && i.op == PPCOp::B) return i.target;
+    return 0;
+}
+
+// ── Engine-CONSTRUCTION recognition (forward "allocation origin" analysis) ────────────────────
+// The type of a freshly-made engine object is not known at its allocation — it is revealed only
+// when the object is first used as a known engine method's `this`/engine-arg. A purely forward
+// TYPE pass therefore can't type the allocation or its inlined ctor writes; a backward DEMAND pass
+// can, but its MEET is unsound across the ubiquitous `new`-then-null-check merge (demand on the
+// used path is intersected away by the skip path). So we instead track, forward, each register's
+// allocation ORIGIN (the pc of the `operator new` bl, or the interior-stack `addi`) — which
+// survives the null-check merge cleanly because the skip path branches AROUND the use, not into it.
+// When an origin-carrying register is used as an engine arg, we resolve {origin -> engine type}.
+// A second forward TYPE pass then seeds those origins with their resolved type (apply's
+// alloc_types), so everything downstream — inlined writes, the container store — types normally.
+struct OState {
+    std::array<u32, 32> reg{};            // GPR -> alloc-origin pc (0 = none)
+    std::map<int, u32>  frame;            // r1 displacement -> alloc-origin pc
+    bool defined = false;
+    bool operator==(const OState& o) const { return reg == o.reg && frame == o.frame; }
+};
+void ometet_into(OState& acc, const OState& in) {            // intersect (disagree -> 0)
+    if (!in.defined) return;
+    if (!acc.defined) { acc = in; acc.defined = true; return; }
+    for (int r = 0; r < 32; ++r) if (acc.reg[r] != in.reg[r]) acc.reg[r] = 0;
+    std::map<int, u32> merged;
+    for (const auto& [d, v] : acc.frame) {
+        auto it = in.frame.find(d);
+        if (it != in.frame.end() && it->second == v) merged.emplace(d, v);
+    }
+    acc.frame.swap(merged);
+}
+// Apply `i` to origin-state `s`. At an engine-arg use of an origin-carrying register, record
+// {origin -> engine type} into `sites` (`db.signatures` gives the call target's arg types).
+void apply_origin(const PPCInstr& i, OState& s, const TypeDB& db,
+                  const std::unordered_set<u32>& raw_allocators,
+                  std::map<u32, std::string>* sites) {
+    switch (i.op) {
+    case PPCOp::OR:                                            // mr rD,rS
+        s.reg[i.rA] = (i.rS == i.rB) ? s.reg[i.rS] : 0u;
+        break;
+    case PPCOp::ADDI:
+        if (i.rA == 1 && i.simm != 0) s.reg[i.rD] = i.pc;     // interior stack addr = stack-temp origin
+        else if (i.rA != 0 && i.simm == 0) s.reg[i.rD] = s.reg[i.rA];  // ptr copy
+        else s.reg[i.rD] = 0;
+        break;
+    case PPCOp::STW:
+        if (i.rA == 1) { if (s.reg[i.rS]) s.frame[(int)i.d] = s.reg[i.rS]; else s.frame.erase((int)i.d); }
+        break;
+    case PPCOp::LWZ:
+        if (i.rA == 1) { auto it = s.frame.find((int)i.d); s.reg[i.rD] = (it==s.frame.end())?0u:it->second; }
+        else s.reg[i.rD] = 0;
+        break;
+    case PPCOp::LBZU: case PPCOp::LHZU: case PPCOp::LWZU: case PPCOp::LHAU:
+    case PPCOp::LBZX: case PPCOp::LHZX: case PPCOp::LWZX: case PPCOp::LHAX:
+    case PPCOp::LBZ: case PPCOp::LHZ: case PPCOp::LHA:
+        s.reg[i.rD] = 0;                                       // load defines rD
+        break;
+    default:
+        if (is_call(i)) {
+            u32 tgt = call_target(i);
+            if (sites && tgt) {                               // engine-arg use of an origin -> resolve
+                auto sig = db.signatures.find(tgt);
+                if (sig != db.signatures.end())
+                    for (const auto& [idx, ty] : sig->second)
+                        if (idx >= 3 && idx <= 10 && s.reg[idx]) (*sites)[s.reg[idx]] = ty;
+            }
+            for (int r = 3; r <= 12; r++) s.reg[r] = 0;       // volatiles clobbered
+            if (tgt && raw_allocators.count(tgt)) s.reg[3] = i.pc;  // operator new -> origin in r3
+        } else {
+            int rc = clobbered_gpr(i);
+            if (rc >= 0) s.reg[rc] = 0;
+        }
+        break;
+    }
+}
+
+// Forward origin fixpoint over the CFG -> {construction-site pc -> engine type}.
+std::map<u32, std::string> find_alloc_sites(const std::vector<PPCInstr>& instrs,
+        const TypeDB& db, const std::unordered_set<u32>& raw_allocators,
+        const std::vector<std::vector<int>>& succ, const std::vector<std::vector<int>>& pred) {
+    const int n = (int)instrs.size();
+    std::vector<OState> in(n), outs(n);
+    std::deque<int> work;
+    for (int k = 0; k < n; ++k) work.push_back(k);
+    while (!work.empty()) {
+        int k = work.front(); work.pop_front();
+        OState nin;
+        if (k == 0) nin.defined = true;
+        else for (int p : pred[k]) ometet_into(nin, outs[p]);
+        if (!nin.defined) continue;
+        if (in[k].defined && nin == in[k]) continue;
+        in[k] = nin;
+        OState nout = nin;
+        apply_origin(instrs[k], nout, db, raw_allocators, nullptr);
+        nout.defined = true;
+        outs[k] = nout;
+        for (int t : succ[k]) work.push_back(t);
+    }
+    std::map<u32, std::string> sites;
+    for (int k = 0; k < n; ++k) {
+        if (!in[k].defined) continue;
+        OState s = in[k];
+        apply_origin(instrs[k], s, db, raw_allocators, &sites);
+    }
+    return sites;
 }
 
 }  // namespace
@@ -146,7 +271,9 @@ std::map<u32, EngField> recover_eng_fields(const std::vector<PPCInstr>& instrs,
                                            u32 func_addr, const TypeDB& db,
                                            const std::unordered_set<u32>& branch_targets,
                                            const std::unordered_set<u32>& jumptable_targets,
-                                           std::vector<u32>* unmapped) {
+                                           std::vector<u32>* unmapped,
+                                           const std::unordered_set<u32>* raw_allocators,
+                                           std::map<u32, std::string>* alloc_sites) {
     std::map<u32, EngField> out;
     const int n = (int)instrs.size();
     if (n == 0) return out;
@@ -209,13 +336,25 @@ std::map<u32, EngField> recover_eng_fields(const std::vector<PPCInstr>& instrs,
         for (const auto& [idx, ty] : sig->second)
             if (idx >= 0 && idx < 32) seed.reg[idx] = ty;
 
+    // Engine-CONSTRUCTION recognition (opt-in): a forward "allocation origin" pass resolves which
+    // `operator new` / interior-stack sites construct an engine object and of which type, so the
+    // TYPE pass below can seed them. This is what closes the object-identity gap (the handoff CRUX:
+    // an object's type is unknown at its allocation; it is revealed at the first engine-method use).
+    std::map<u32, std::string> alloc_local;
+    const std::map<u32, std::string>* alloc_types = nullptr;
+    if (raw_allocators && !raw_allocators->empty()) {
+        alloc_local = find_alloc_sites(instrs, db, *raw_allocators, succ, pred);
+        alloc_types = &alloc_local;
+        if (alloc_sites) *alloc_sites = alloc_local;
+    }
+
     std::vector<State> in(n), outs(n);
 
-    // Forward dataflow fixpoint.
+    // Forward dataflow fixpoint (type lattice; seeds engine-construction sites via alloc_types).
     std::deque<int> work;
     std::vector<char> queued(n, 0);
     in[0] = seed;
-    outs[0] = seed; apply(instrs[0], outs[0], db, nullptr, nullptr);
+    outs[0] = seed; apply(instrs[0], outs[0], db, nullptr, nullptr, alloc_types);
     work.push_back(0); queued[0] = 1;
     // ensure every node gets visited even if unreachable from a clean entry chain
     for (int k = 1; k < n; ++k) { work.push_back(k); queued[k] = 1; }
@@ -232,18 +371,20 @@ std::map<u32, EngField> recover_eng_fields(const std::vector<PPCInstr>& instrs,
         in[k] = nin;
 
         State nout = nin;
-        apply(instrs[k], nout, db, nullptr, nullptr);
+        apply(instrs[k], nout, db, nullptr, nullptr, alloc_types);
         nout.defined = true;
         outs[k] = nout;
 
         for (int t : succ[k]) if (!queued[t]) { work.push_back(t); queued[t] = 1; }
     }
 
-    // Final pass: record field sites from each instruction's stable entry state.
+    // Final pass: record field sites from each instruction's stable entry state. With construction
+    // recognition the alloc result reg carries the new object's type forward, so its inlined ctor
+    // writes type naturally.
     for (int k = 0; k < n; ++k) {
         if (!in[k].defined) continue;                          // unreachable: nothing to record
         State s = in[k];
-        apply(instrs[k], s, db, &out, unmapped);
+        apply(instrs[k], s, db, &out, unmapped, alloc_types);
     }
     return out;
 }

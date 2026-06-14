@@ -182,6 +182,85 @@ int main() {
         CHECK(f && f->member=="mFov", "loop: type established before the loop survives the back-edge");
     }
 
+    // ── OBJECT-IDENTITY back-typing (docs/re_notes/object_identity.md) ────────────────────
+    // A register used as `this` of a known engine ctor/method IS that engine type, and the type
+    // propagates BACKWARD to its definition — typing inlined ctor writes that PRECEDE the call and
+    // flagging the construction site. Opt in via the raw_allocators + alloc_sites params.
+    TypeDB tdb;
+    tdb.layouts["Tex"].fields = {
+        { 8,    FieldDesc{ "mFov",        "" } },
+        { 0x28, FieldDesc{ "mEmbPalette", "" } },
+    };
+    const uint32_t ALLOC = 0x80200000u;   // a raw allocator (operator new)
+    const uint32_t CTOR  = 0x80210000u;   // out-of-line ctor:  __ct__Tex(this, ...)
+    const uint32_t STORE = 0x80220000u;   // a method:          storeTIMG(this, ...)
+    tdb.signatures[CTOR]  = { { 3, "Tex" } };
+    tdb.signatures[STORE] = { { 3, "Tex" } };
+    std::unordered_set<u32> raws = { ALLOC };
+
+    // 10. Pattern A — heap new, OUT-OF-LINE ctor, WITH the real null-check merge. The store into
+    //     the container field uses the SAVED operator-new result, so identity must attach at the
+    //     ALLOCATION not the ctor return; and the `if (p==null) skip` branch must NOT defeat
+    //     recognition (it broke a backward demand analysis — the forward origin pass survives it).
+    //       li r3,0x54 ; bl ALLOC ; mr. r29,r3 ; beq +24 ; mr r3,r29 ; bl CTOR ;
+    //       (merge) stw r29,0x10(r30) ; blr
+    {
+        std::vector<uint32_t> w = {
+            enc_addi(3,0,0x54), enc_bl(B+4, ALLOC), enc_or(29,3,3),
+            enc_bc(B+12, B+24), enc_or(3,29,29), enc_bl(B+20, CTOR),
+            enc_stw(29,30,0x10), BLR,
+        };
+        auto ins = collect_cfg(B, w);
+        std::map<u32,std::string> sites;
+        recover_eng_fields(ins, B, tdb, intra_branch_targets(ins, B), {}, nullptr, &raws, &sites);
+        CHECK(sites.count(B+4) && sites[B+4]=="Tex",
+              "Pattern A: operator-new flagged as Tex alloc, surviving the null-check merge");
+    }
+
+    // 11. Pattern B — heap new, INLINED ctor (the handoff CRUX). The inlined field write that
+    //     PRECEDES the revealing method call must be typed, and the alloc site flagged.
+    //       bl ALLOC ; stw r0,0x28(r3) ; bl STORE ; blr
+    {
+        std::vector<uint32_t> w = {
+            enc_bl(B+0, ALLOC), enc_stw(0,3,0x28), enc_bl(B+8, STORE), BLR,
+        };
+        auto ins = collect(B, w);
+        std::map<u32,std::string> sites;
+        auto ef = recover_eng_fields(ins, B, tdb, intra_branch_targets(ins, B), {}, nullptr, &raws, &sites);
+        const EngField* f = field_at_pc(ef, B+4);   // the inlined stw mEmbPalette
+        CHECK(f && f->type_cname=="Tex" && f->member=="mEmbPalette",
+              "Pattern B: inlined ctor write BEFORE the call is back-typed (Tex::mEmbPalette)");
+        CHECK(sites.count(B+0) && sites[B+0]=="Tex",
+              "Pattern B: operator-new site flagged as engine alloc of Tex (inlined ctor)");
+    }
+
+    // 12. Pattern C — STACK temporary. `this` is an interior stack address (addi r3,r1,off); the
+    //     write off it before the method call is typed and the addi flagged as a stack-temp ctor.
+    //       addi r3,r1,0x28 ; stw r0,8(r3) ; bl STORE ; blr
+    {
+        std::vector<uint32_t> w = {
+            enc_addi(3,1,0x28), enc_stw(0,3,8), enc_bl(B+8, STORE), BLR,
+        };
+        auto ins = collect(B, w);
+        std::map<u32,std::string> sites;
+        auto ef = recover_eng_fields(ins, B, tdb, intra_branch_targets(ins, B), {}, nullptr, &raws, &sites);
+        const EngField* f = field_at_pc(ef, B+4);   // stw off the stack temp
+        CHECK(f && f->member=="mFov", "Pattern C: write off a stack-temp engine object is typed (Tex::mFov)");
+        CHECK(sites.count(B+0) && sites[B+0]=="Tex",
+              "Pattern C: interior-stack addi flagged as a stack-temp engine ctor of Tex");
+    }
+
+    // 13. Negative: a raw-allocator result NOT used as an engine `this` must NOT be flagged
+    //     (operator new is generic — only engine constructions are rewritten).
+    //       bl ALLOC ; stw r3,0x10(r30) ; blr   (result stored as a plain pointer, no ctor)
+    {
+        std::vector<uint32_t> w = { enc_bl(B+0, ALLOC), enc_stw(3,30,0x10), BLR };
+        auto ins = collect(B, w);
+        std::map<u32,std::string> sites;
+        recover_eng_fields(ins, B, tdb, intra_branch_targets(ins, B), {}, nullptr, &raws, &sites);
+        CHECK(sites.empty(), "Negative: non-engine operator-new result is not flagged as an engine alloc");
+    }
+
     std::printf("type_recovery_test: %d checks, %d failures\n", g_checks, g_fail);
     return g_fail ? 1 : 0;
 }

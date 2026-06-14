@@ -67,8 +67,23 @@ struct TypeDB {
 // IS an engine type but whose displacement is NOT in that type's layout — the dangerous
 // "typed base, unmapped offset" misses (the SHARP EDGE): the emitter would fall back to a guest
 // MEM access against a host handle = a correctness bug. A COMPLETE recovery leaves this empty.
+//
+// OBJECT-IDENTITY / back-typing (docs/re_notes/object_identity.md): a register used as `this`
+// (arg0) of a known engine method/ctor IS that engine type, and that type propagates BACKWARD to
+// the register's definition — which a purely forward pass cannot see. This is what types the
+// INLINED ctor field writes that PRECEDE the revealing call (the handoff CRUX), and what flags the
+// engine-CONSTRUCTION site. Opt in by passing the two extra params (existing callers pass nullptr
+// and get the unchanged forward-only behavior):
+//   * `raw_allocators` — guest addrs of raw allocators (`operator new` 0x802c3ba4, …). A
+//     raw-allocator `bl` whose result is demanded as engine type T is a heap `new T` → flagged.
+//   * `alloc_sites` — filled with {site pc -> engine type}: the heap `operator new` bl OR the
+//     interior-stack `addi rD,r1,off` whose result becomes an engine object. The emitter rewrites
+//     a flagged heap site to `sb_eng_alloc()` (host storage + handle). When `alloc_sites` is
+//     non-null the backward pass also runs, so pre-call inlined field writes get typed into `out`.
 std::map<u32, EngField> recover_eng_fields(const std::vector<PPCInstr>& instrs,
                                            u32 func_addr, const TypeDB& db,
                                            const std::unordered_set<u32>& branch_targets,
                                            const std::unordered_set<u32>& jumptable_targets,
-                                           std::vector<u32>* unmapped = nullptr);
+                                           std::vector<u32>* unmapped = nullptr,
+                                           const std::unordered_set<u32>* raw_allocators = nullptr,
+                                           std::map<u32, std::string>* alloc_sites = nullptr);
