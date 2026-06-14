@@ -30,6 +30,7 @@
 #include "../overrides.h"
 #include "../intrinsics.h"
 #include "../ngx/ngx_mesh.h"
+#include "../ngx/ngx_render_data.h"
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
@@ -39,6 +40,12 @@
 namespace {
 
 constexpr u32 J3DSYS = 0x804045DCu;
+bool g_enabled = (getenv("SUNBRIGHT_NGX_SHAPE") != nullptr);
+
+// Latest GX texmap-0 binding (from the GXLoadTexObj tee), associated with shapes
+// drawn after it. Decoded from the GXTexObj's packed registers.
+struct CurTex { u32 addr = 0; u16 w = 0, h = 0; u8 fmt = 0; bool valid = false; };
+CurTex g_curtex;
 
 inline bool valid(u32 a) { return a >= 0x80000000u && a < 0x81800000u; }
 inline u32  r32(u32 a) { return valid(a) ? mem_r32(a) : 0; }
@@ -111,7 +118,6 @@ bool build_cp(u32 sh, NgxCP& cp) {
 // ── Published stats (read best-effort by /ngxshape from the HTTP thread; the
 //    emu/render thread is the only writer, so torn reads at worst misreport a
 //    counter by one — acceptable for a diagnostic) ─────────────────────────────
-bool          g_enabled = false;
 unsigned long g_calls = 0, g_meshes = 0, g_fail = 0, g_badcp = 0;
 unsigned long g_total_verts = 0, g_total_tris = 0;
 unsigned      g_last_verts = 0, g_last_tris = 0, g_max_verts = 0;
@@ -132,12 +138,14 @@ bool          g_have_proj = false;
 unsigned long g_ndc_total = 0, g_ndc_wpos = 0, g_ndc_inbox = 0;
 
 // Clip-space triangle SNAPSHOT for the native Vulkan mesh render (vk_mesh.cpp):
-// a rolling window of recent scene triangles, each vertex = clip.xyzw (4f) +
-// rgba0 (4f). The render reads this best-effort from the HTTP thread (a torn
-// read at worst shows a stray triangle — diagnostic-acceptable).
-constexpr size_t SNAP_CAP = 600000;   // vertices (200k tris) ≈ 19 MB
-std::vector<float> g_snap;            // SNAP_CAP*8, lazily reserved
-size_t             g_snap_count = 0;  // valid vertices currently in g_snap
+// a rolling window of recent scene triangles + per-texture draw batches. Read
+// best-effort from the HTTP thread (a torn read at worst shows a stray triangle
+// — diagnostic-acceptable).
+constexpr size_t SNAP_CAP  = 600000;   // vertices (200k tris)
+constexpr size_t BATCH_CAP = 8192;     // draw batches
+std::vector<NgxRenderVertex> g_snap;   // SNAP_CAP entries, lazily sized
+size_t                       g_snap_count = 0;
+std::vector<NgxRenderBatch>  g_batches;
 
 // Reusable scratch (single emu/render thread serialized by nthr).
 std::vector<NgxVertex> g_verts;
@@ -188,22 +196,37 @@ void transform_eye() {
         }
     }
 
-    // Accumulate this shape's clip-space triangles into the render snapshot
-    // (triangle-aligned roll-over so a wrap never splits a triangle).
+    // Accumulate this shape's clip-space triangles into the render snapshot,
+    // grouped into a per-texture batch (triangle-aligned roll-over so a wrap
+    // never splits a triangle; on wrap the batch list resets with the buffer).
     if (g_have_proj && !g_indices.empty()) {
-        if (g_snap.size() < SNAP_CAP * 8) g_snap.resize(SNAP_CAP * 8);
+        if (g_snap.size() < SNAP_CAP) g_snap.resize(SNAP_CAP);
+        // Texmap-0 binding for this shape; paletted formats (C4/C8/C14X2) need a
+        // TLUT we don't yet capture → render flat (tex_addr 0) for now.
+        const bool tex_ok = g_curtex.valid && g_curtex.fmt != 0x8 &&
+                            g_curtex.fmt != 0x9 && g_curtex.fmt != 0xA && g_curtex.addr;
+        const uint32_t taddr = tex_ok ? g_curtex.addr : 0u;
         for (size_t t = 0; t + 3 <= g_indices.size(); t += 3) {
-            if (g_snap_count + 3 > SNAP_CAP) g_snap_count = 0;
+            if (g_snap_count + 3 > SNAP_CAP) { g_snap_count = 0; g_batches.clear(); }
+            // Open a new batch on texture change, after a wrap, or at the start.
+            if (g_batches.empty() || g_batches.back().tex_addr != taddr ||
+                g_batches.back().vstart + g_batches.back().vcount != (uint32_t)g_snap_count) {
+                if (g_batches.size() >= BATCH_CAP) break;  // bounded
+                g_batches.push_back(NgxRenderBatch{taddr, g_curtex.w, g_curtex.h,
+                                                   g_curtex.fmt, (uint32_t)g_snap_count, 0});
+            }
             for (int e = 0; e < 3; e++) {
                 const unsigned vidx = g_indices[t + e];
                 const float* cp = &g_clip[vidx * 4];
                 const NgxVertex& v = g_verts[vidx];
-                float* d = &g_snap[g_snap_count * 8];
-                d[0]=cp[0]; d[1]=cp[1]; d[2]=cp[2]; d[3]=cp[3];
-                d[4]=v.clr[0][0]/255.f; d[5]=v.clr[0][1]/255.f;
-                d[6]=v.clr[0][2]/255.f; d[7]=v.clr[0][3]/255.f;
+                NgxRenderVertex& d = g_snap[g_snap_count];
+                d.clip[0]=cp[0]; d.clip[1]=cp[1]; d.clip[2]=cp[2]; d.clip[3]=cp[3];
+                d.rgba[0]=v.clr[0][0]/255.f; d.rgba[1]=v.clr[0][1]/255.f;
+                d.rgba[2]=v.clr[0][2]/255.f; d.rgba[3]=v.clr[0][3]/255.f;
+                d.uv[0]=v.tex[0][0]; d.uv[1]=v.tex[0][1];
                 g_snap_count++;
             }
+            g_batches.back().vcount += 3;
         }
     }
 }
@@ -260,19 +283,37 @@ void ngx_set_projection(const float* m44, unsigned type) {
     g_have_proj = true;
 }
 
-// Best-effort snapshot of the accumulated clip-space triangle list for the native
-// Vulkan mesh render. Returns the base pointer (8 floats/vertex: clip.xyzw +
-// rgba0) and sets *nverts. Read from the HTTP thread; the emu thread keeps
-// writing, so the caller should copy promptly (a torn read at worst yields a
-// stray triangle — acceptable for a diagnostic render).
-const float* ngx_mesh_snapshot(int* nverts) {
+// Best-effort snapshot accessors for the native Vulkan mesh render (copy promptly
+// — the emu thread keeps writing; a torn read at worst yields a stray triangle).
+const NgxRenderVertex* ngx_snap_verts(int* nverts) {
     *nverts = (int)g_snap_count;
     return g_snap.empty() ? nullptr : g_snap.data();
 }
+const NgxRenderBatch* ngx_snap_batches(int* nbatches) {
+    *nbatches = (int)g_batches.size();
+    return g_batches.empty() ? nullptr : g_batches.data();
+}
+
+// GXLoadTexObj(GXTexObj* obj, GXTexMapID id) @ 0x80360160 — track the texmap-0
+// binding so shapes drawn after it can be textured. GXTexObj packed fields
+// (reference/sms GXInitTexObj + docs/re_notes/efb_native_60fps.md): image0@0x08 =
+// width-1[0:9] / height-1[10:19] / fmt&0xF[20:23]; image3@0x0C = (addr>>5)[0:20].
+SUNBRIGHT_OVERRIDE(ov_gxloadtexobj, 0x80360160u) {
+    if (g_enabled && cpu.gpr[4] == 0) {          // GX_TEXMAP0
+        const u32 obj = cpu.gpr[3];
+        if (valid(obj)) {
+            const u32 image0 = r32(obj + 0x08), image3 = r32(obj + 0x0C);
+            g_curtex.w = (u16)((image0 & 0x3FF) + 1);
+            g_curtex.h = (u16)(((image0 >> 10) & 0x3FF) + 1);
+            g_curtex.fmt = (u8)((image0 >> 20) & 0xF);
+            g_curtex.addr = 0x80000000u | ((image3 & 0x1FFFFFu) << 5);
+            g_curtex.valid = true;
+        }
+    }
+    if (RecompFunc o = recomp_raw(0x80360160u)) o(cpu); else call_ppc(cpu, cpu.lr);
+}
 
 SUNBRIGHT_OVERRIDE(ov_j3dshape_draw, 0x802e0390u) {
-    static const bool init = (g_enabled = (getenv("SUNBRIGHT_NGX_SHAPE") != nullptr), true);
-    (void)init;
     const u32 sh = cpu.gpr[3];   // save before the super-call clobbers gpr
     // Run the real draw FIRST: J3DShape::draw is what sets j3dSys's per-view vertex
     // arrays (loadVtxArray) AND the modelview (setModelDrawMtx) for THIS shape, so

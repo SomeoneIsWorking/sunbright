@@ -351,9 +351,21 @@ decoder; runtime GP-FIFO path on the delete list. Then, on the object-model arch
   depth-test (LESS_OR_EQUAL, write, clear 1.0). Verified live (Delfino, 118805 tris, 100% coverage):
   the readback shows the plaza buildings correctly OCCLUDED behind foreground geometry, foliage in
   front, no z-fighting / no far-over-near — depth-correct. (Exact GXSetViewport depth-range scaling,
-  for depth-texture effects, is a later refinement; occlusion is faithful.) **Next: N5 TEV→fragment
-  shader — feed the N1 native texture decoder + per-material TEV state so materials/textures replace
-  the flat vertex color (the foliage/water/buildings get their real surfaces).**
+  for depth-texture effects, is a later refinement; occlusion is faithful.)
+- **N5 first slice — native texture sampling ✅** (this commit) — the bound GX texmap-0 texture now
+  textures the geometry, decoded natively. A GXLoadTexObj tee (0x80360160) records the current
+  texmap-0 (addr/w/h/fmt from the GXTexObj packed regs: image0@0x08, image3@0x0C); the J3DShape
+  capture groups triangles into per-texture BATCHES (NgxRenderBatch + tex0 UV added to the snapshot
+  vertex, shared contract in `runtime/ngx/ngx_render_data.h`); vk_mesh decodes each unique texture
+  with the N1 decoder (`sb_tex_decode`), uploads it, and draws each batch with its own descriptor
+  set; the frag shader does texColor×vertexColor (no/unsupported tex → 1×1 white = flat color).
+  Verified live (Delfino): real building window/wall texture detail appears (vs the flat-white
+  version), correct UVs, no crash/VK errors. KNOWN-INCOMPLETE (honest): dim, because most SMS
+  surfaces use PALETTE textures (C4/C8/C14X2) — skipped here (need the TLUT) → flat dark vertex
+  color — and there is no lighting / full TEV combiner yet. **Next: (1) TLUT capture (GXLoadTlut)
+  → decode the paletted formats so most surfaces texture; (2) the real TEV combiner
+  (J3DMaterial/J3DTevs → SPIR-V, Dolphin PixelShaderGen as math ref) for correct material color;
+  (3) lighting (normal transform via j3dSys.mCurrentNormMtx).**
 
 **J3DShape DRAW PATH (RE'd 2026-06-14, `reference/sms/.../J3DShape.cpp`) — the live-hook seam.**
 `J3DShape::draw()` does, in order:

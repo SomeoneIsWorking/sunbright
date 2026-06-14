@@ -12,8 +12,11 @@
 //     effects — is a later refinement; occlusion sort order is faithful here.)
 layout(location = 0) in vec4 clipPos;
 layout(location = 1) in vec4 color;
+layout(location = 2) in vec2 uv;
 layout(location = 0) out vec4 vColor;
+layout(location = 1) out vec2 vUV;
 void main() {
     vColor = color;
+    vUV = uv;
     gl_Position = vec4(clipPos.x, -clipPos.y, clipPos.z + clipPos.w, clipPos.w);
 }
