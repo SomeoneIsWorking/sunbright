@@ -278,13 +278,23 @@ decoder; runtime GP-FIFO path on the delete list. Then, on the object-model arch
   push-constant rect, alpha-blended) → offscreen + PPM (`/j2drender`). Verified: 2 HUD bars at
   pixel-exact screen rects (rows 0-70 + 410-480 full, middle empty), invisible/text panes excluded.
 
-**Next concrete steps (N3 fidelity, then make it visible):**
-1. J2D color/alpha modulation — bars currently render white (the I4 texture is a fill; real tint =
-   pane color / vertex color / TEV; + pane alpha 160). Pull J2D color into the shader.
-2. J2DTextBox/font rendering (coins/time text), palette resolution (C4/C8/C14X2 + JUTPalette).
-3. Present-to-screen so the native HUD is actually displayed (not just offscreen) — the present
-   integration that N0 verification + N4 (J3D) also need.
-Still pending/parallel: N0 deterministic capture, BMD geometry decoder, native present/swapchain.
+- **N3 J2D color/alpha modulation ✅** (2b1ad64) — faithful J2DPicture TEV (texColor×RASC,
+  texAlpha×RASA folding mColorAlpha); corner colors from mCornerColor@0x144. Verified: HUD bars now
+  (160,160,160) = white×(160/255) over black (translucency applied; was opaque white).
+
+**PRESENT FINDING (2026-06-14):** making the native render visible must NOT be a quick overlay via
+`sb_present_xfb`/`Presenter::ViSwap` — that path IS Dolphin VideoCommon (XFB = Dolphin AbstractTexture),
+so an overlay would lean *more* on Dolphin (wrong direction). Visible native output = **own the
+swapchain** (N7), a real milestone. Until then the native renderer is verified offscreen via readback.
+
+**Next concrete steps:**
+1. **N4 J3D world geometry** (the bulk of the game) — object-model: RE J3DShape + BMD SHP1/VTX1, decode
+   a shape's display-list packets to a native mesh (positions/normals/uv/color, direct + indexed). The
+   GX vertex-attribute extractor is unit-testable against a known oracle (extend the ngx approach).
+2. N3 fidelity polish (lower priority, not in current scene): J2DTextBox/font, palette resolution
+   (C4/C8/C14X2 — decode already parity-proven; needs JUTPalette→GXTlutObj data ptr), multi-texture.
+3. N0 deterministic capture + N7 own-swapchain present (make it all visible + A/B-able).
+Still pending/parallel: N0 deterministic capture, native present/swapchain (N7).
 
 ---
 
