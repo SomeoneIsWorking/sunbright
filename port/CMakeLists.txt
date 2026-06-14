@@ -67,6 +67,10 @@ target_include_directories(smsport_core PRIVATE ${SMS_INCLUDES})
 target_compile_options(smsport_core PRIVATE
   ${SMS_FORCE_INCLUDE}
   -fno-strict-aliasing       # the decomp type-puns through unions/casts
+  -fcommon                   # decomp declares HW globals (AT_ADDRESS) in headers
+                             # included by many TUs; -fcommon merges them to one
+                             # COMMON symbol (the MWCC model). Real values come
+                             # from port/pal/os/os_globals.cpp.
   -Wno-multichar)            # GC fourcc 'RTI ' style literals
 
 # Keep the warning floor low but DO NOT silence pointer-truncation: that's the
@@ -105,11 +109,27 @@ target_include_directories(smsport_texdecode PUBLIC "${SMS_REPO_ROOT}/runtime/re
 # the intrinsics force-include supplies __frsqrte/__fres/__fsel; the shadow
 # dolphin/types.h gives int-based u32 (so PSMTXInverse's u32 return matches).
 # ---------------------------------------------------------------------------
-add_library(smsport_pal STATIC pal/mtx.cpp)
+# Platform Abstraction Layer: the GameCube SDK / hardware boundary the engine
+# calls but that has no native equivalent, implemented portably (x86-64 + arm64):
+#   pal/mtx.cpp        — MTX/VEC math (PSMTX*/PSVEC*/C_MTX*/Ms*), portable C++.
+#   pal/os/os_pal.cpp  — OS time (host clock @40.5MHz TB), interrupts (no-op),
+#                        OSReport/OSPanic, DC* cache (no-op / DCZeroRange=memset).
+#   pal/os/os_globals.cpp — single defs of __OSBusClock/__OSCoreClock (see file).
+#   pal/heap/heap_pal.cpp — minimal malloc-backed JKRHeap + global operator new.
+#   pal/pad/pad_pal.cpp   — neutral-controller PAD stubs (real SDL input later).
+#   pal/gx/gx_stub.cpp    — 74 GX graphics SDK no-op stubs (link now, render later).
+add_library(smsport_pal STATIC
+  pal/mtx.cpp
+  pal/os/os_pal.cpp
+  pal/os/os_globals.cpp
+  pal/heap/heap_pal.cpp
+  pal/pad/pad_pal.cpp
+  pal/gx/gx_stub.cpp)
 target_include_directories(smsport_pal PRIVATE ${SMS_INCLUDES})
 target_compile_options(smsport_pal PRIVATE
   ${SMS_FORCE_INCLUDE}
   -fno-strict-aliasing
+  -fcommon
   -Wno-multichar)
 
 # Unit test: mathematical identities (Concat/Inverse/Transpose/Normalize/
