@@ -111,6 +111,19 @@ target_include_directories(sunbright-abi-layout-test PRIVATE tools/recompiler ru
 target_compile_options(sunbright-abi-layout-test PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-invalid-offsetof)
 add_test(NAME abi_layout_test COMMAND sunbright-abi-layout-test)
 
+# Decomp header field-list parser (front end of the tailored-recomp type DB): parses real
+# reference/sms headers and validates the ABI engine against their annotated offsets at scale.
+add_executable(sunbright-decomp-parse-test
+    tools/recompiler/tests/decomp_parse_test.cpp
+    tools/recompiler/decomp_parse.cpp
+    tools/recompiler/abi_layout.cpp
+)
+target_include_directories(sunbright-decomp-parse-test PRIVATE tools/recompiler runtime)
+target_compile_options(sunbright-decomp-parse-test PRIVATE -Wall -Wextra -Wno-unused-parameter)
+# Runs from the repo root so the corpus sweep can read reference/sms/include.
+add_test(NAME decomp_parse_test COMMAND sunbright-decomp-parse-test
+         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+
 # ── Launcher executable (SDL2 window + Dolphin Core) ─────────────────────────
 # Everything — launcher, runtime bridge, hand-written overrides, and the
 # statically-recompiled game code — is compiled into one self-contained binary.

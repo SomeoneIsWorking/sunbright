@@ -24,12 +24,13 @@
 // real annotations (JUTRect) AND against the host compiler via offsetof (abi_layout_test).
 // =============================================================================
 
-enum class FKind { I8, U8, I16, U16, I32, U32, F32, F64, Ptr };
+enum class FKind { I8, U8, I16, U16, I32, U32, I64, U64, F32, F64, Ptr };
 
 struct LField {
     std::string name;
     FKind kind;
     std::string nested_type;   // if kind==Ptr and it points at an engine object, its type; else ""
+    int array_count = 1;       // >1 for an array member; the element kind is `kind`
 };
 
 struct ABIOpts {
@@ -46,5 +47,13 @@ struct LResult {
 };
 
 // Compute field offsets. If `polymorphic`, a vtable pointer occupies [0, ptr_size) first
-// and members follow (their offsets reflect that).
+// and members follow (their offsets reflect that). NOTE: the GameCube CodeWarrior ABI does
+// NOT always put the vtable at offset 0 — a class introducing virtuals over a non-polymorphic
+// base appends it at the END instead (see docs/re_notes/abi_findings.md). So `polymorphic`
+// models only the vtable-at-0 case; vtable placement is otherwise resolved from the decomp.
 LResult compute_layout(const std::vector<LField>& fields, bool polymorphic, const ABIOpts& o);
+
+// One field's natural size and alignment under ABI `o` (element size × array count for
+// arrays; alignment is the element's). Exposed so callers can validate annotated offsets
+// (alignment / non-overlap) without recomputing a full layout.
+void field_size_align(const LField& f, const ABIOpts& o, int& size, int& align);
