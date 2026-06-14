@@ -1,0 +1,175 @@
+# Super Mario Sunshine — native PC port scaffold (FIRST BRICK)
+
+This directory stands up a **native x86-64 build** of the SMS decompilation
+(`doldecomp/sms`, vendored read-only at `../reference/sms`) plus the compat-shim
+layer every later port track will build on. It is a **parallel, independent**
+build from the sunbright recompiler — it does **not** touch `../runtime`,
+`../CMakeLists.txt`, or `../build`, and it does **not** modify the pristine
+vendored decomp.
+
+The deliverable is `libsmsport_core.a`: a static library of the portable engine
+core (math / util / geometry / particle / 2D-graphics-context). It proves the
+build pipeline and the shims work. No `main()` — it is a library.
+
+## Build
+
+```bash
+cmake -S port -B port/build/cmake
+cmake --build port/build/cmake -j"$(nproc)"
+# -> port/build/cmake/libsmsport_core.a
+```
+
+Verify:
+
+```bash
+ar t port/build/cmake/libsmsport_core.a | wc -l     # 62 object files
+```
+
+A standalone probe script, `port/try_compile.sh`, compiles an arbitrary list of
+decomp sources with the same shim flags and reports PASS/FAIL + the first error
+per file (used to curate `core_sources.txt`):
+
+```bash
+port/try_compile.sh reference/sms/src/JSystem/JMath.cpp ...
+# add -p as the first arg to also try -fpermissive
+```
+
+## Compat-shim design
+
+Everything the native build needs that the GameCube/CodeWarrior toolchain
+provided implicitly lives under `port/compat/`. Two shim headers are
+**force-included** (`-include`) into every translation unit, ahead of any decomp
+source; the rest are **shadow headers** resolved via include-path ordering.
+
+### `compat/intrinsics.h` (force-included)
+Host implementations of the CodeWarrior PowerPC **compiler intrinsics** the
+decomp uses (g++/clang don't provide the `__name` forms):
+
+- `__frsqrte` / `__fres` — **bit-accurate** Gekko/Broadway reciprocal-sqrt and
+  reciprocal *estimates* (~12-bit piecewise lookup table), ported verbatim from
+  Dolphin's `Common::ApproximateReciprocal[SquareRoot]`
+  (`externals/dolphin/Source/Core/Common/FloatUtils.cpp`) — the same math
+  `runtime/intrinsics.h` reuses. **Not** `1/sqrt(x)` / `1/x`: MSL's
+  `sqrt`/`sqrtf` and the game math (MathUtil, JPAMath) refine the estimate with
+  Newton-Raphson, so the exact estimate bits matter. Self-contained (no Dolphin
+  link); the lookup tables are inlined here.
+- `__fabs`/`__fabsf`, `__cntlzw` (clz, with `clz(0)==32` per PPC), `__fsel`/
+  `__fself` (branchless floating select), `__fnabs`.
+- `bit_cast_` — a C++17-portable `std::bit_cast` (the std one is C++20).
+
+### `compat/msl_shim.h` (force-included)
+The MetroWerks Standard Library (MSL) libc headers under
+`reference/sms/include/PowerPC_EABI_Support/Msl/` are kept **off** the include
+path (they re-declare the C standard library and clash with / shadow host
+glibc/libstdc++). But the game uses a few **non-standard MSL `<math.h>` macros**.
+This shim provides them on top of the real system `<cmath>`:
+
+- `M_PI` redefined as a **float** literal (MSL spelled it `3.14159...f`; glibc
+  spells it as a double) — the decomp relies on float-typed `M_PI`.
+- `TAU`, `LONG_TAU`, `HALF_PI`, `THIRD_PI`, `QUARTER_PI`, `SIN_2_5`, `M_SQRT3`.
+- `DEG_TO_RAD` / `RAD_TO_DEG` (the latter keeps the decomp's `+0.000005f`
+  fakematch term for bit-identical results).
+
+It deliberately does **not** pull `<cstdio>` globally — that would drag in the
+`EOF` macro, which collides with the decomp's enumerator
+`enum EIoState { GOOD, EOF }`. stdio/stdarg are handled by shadow headers
+(below) only for the TUs that ask for them.
+
+## Shadow-header strategy (override without editing the decomp)
+
+Hard constraint: `../reference/sms` is pristine and stays upstream-tracking. We
+override by **shadowing** — placing a corrected header at the same logical path
+under `port/compat/include`, which is **earlier on the `-I` path**, so it wins
+header resolution while the original stays unreachable/untouched.
+
+| Shadow header | Overrides | Why |
+|---|---|---|
+| `compat/include/dolphin/types.h` | `reference/.../dolphin/types.h` | **The key fix.** GC was ILP32 big-endian where `long`==4 bytes; the decomp typedef'd `u32`/`s32` as `signed/unsigned long`. On x86-64 (LP64) `long`==8 bytes, silently doubling every `u32`/`s32` field and corrupting struct layouts/sizeof/masks. The shadow typedefs them as `int` (always 4 bytes). |
+| `compat/include/stdio.h` | system `<stdio.h>` (for decomp `#include <stdio.h>`) | Pulls the **real** system stdio via `#include_next`, then `#undef EOF` so the game's `EOF` enumerator survives. Also pulls `<stdarg.h>` *first* (some TUs use `va_start` having included only `<stdio.h>`, as MSL allowed). |
+| `compat/include/stdarg.h` | system `<stdarg.h>` | `#include_next` to the compiler builtin (va_list/va_start/...); MSL's is off the path. |
+| `compat/include/PowerPC_EABI_Support/Msl/MSL_C/MSL_Common/math.h` | the MSL `<math.h>` some TUs include **by full path** (e.g. `JMath.cpp`) | The real MSL tree is off the path, so that include would fail. This shadow routes to system `<cmath>` + the MSL macros. |
+| `compat/include/JSystem/J3d/J3DGraphBase/Blocks/J3DTevBlocks.hpp` | a **case-fold** fix | `J3DMaterial.hpp` includes `JSystem/J3d/...` (lowercase `J3d`); the real file is `JSystem/J3D/...` (uppercase). CodeWarrior on Win/macOS resolved case-insensitively; Linux does not. The shadow forwards to the correctly-cased real header. |
+
+## Include-path rules (order matters)
+
+```
+-I port/compat/include      # 1. shadows WIN (corrected types.h, shadow libc, case-fold, MSL-math)
+-I reference/sms/include     # 2. the pristine decomp headers
+# (NOT added) reference/sms/include/PowerPC_EABI_Support/Msl  — shadows host libc, won't compile
+-include port/compat/intrinsics.h
+-include port/compat/msl_shim.h
+-std=c++17 -fno-strict-aliasing -Wno-multichar
+```
+
+No `-fpermissive`: the core set compiles **cleanly** without it, so the 64-bit
+pointer-truncation diagnostics stay ON and act as the porting to-do signal.
+
+## What's in the core lib (62 files)
+
+Curated in `core_sources.txt` (every file compiles cleanly with the shims under
+strict `-std=c++17`). By area:
+
+| Area | Files | Examples |
+|---|---|---|
+| `JSystem/JParticle` | 16 | JPAMath, JPABaseShape, JPAEmitter, JPAField, JPADynamicsBlock |
+| `MarioUtil` | 9 | LightUtil, ShadowUtil, RumbleMgr, EffectUtil, GDUtil |
+| `JSystem/JUtility` | 9 | JUTRect, JUTColor, JUTGamePad, JUTPalette, JUTDirectPrint, JUTFont |
+| `JSystem/JStage` | 6 | JSGObject, JSGCamera, JSGLight, JSGActor |
+| `JSystem/J2D` | 5 | J2DGrafContext, J2DOrthoGraph, J2DPicture, J2DTextBox, J2DWindow |
+| `JSystem/JSupport` | 5 | JSUList, JSUMemoryStream, JSUInputStream, JSUOutputStream |
+| `JSystem/JGadget` | 4 | linklist, singlelinklist, std-list, std-vector |
+| `JSystem/J3D` | 5 | J3DShape, J3DVertex, J3DNode, J3DSys, J3DMaterialAttach |
+| `JSystem` (root) | 2 | JMath, random |
+| `M3DUtil` | 1 | MotionBlendCtrl |
+
+## What's deferred (47 files), by reason
+
+Run `port/try_compile.sh` over the full candidate sweep and inspect
+`port/build/probe/classified.txt` to regenerate. Categories:
+
+- **Pointer→`u32` truncation — 37 files (the real 64-bit-port work).** The
+  decomp stashes pointers in `u32`/`s32` fields and casts `void*`→`u32`
+  (`cast from 'void*' to 'u32' loses precision`). Sound on the 32-bit GC,
+  lossy on x86-64. Fixing means porting those fields/casts to pointer-width
+  types (`uintptr_t`) — actual engineering, not a shim. Includes the J3D model
+  graph (J3DModel/J3DMaterial/J3DShapeFactory/...), the M3DUtil actor layer
+  (MActor/M3UModel/...), and most of MarioUtil's GX helpers.
+- **Inline PPC `asm` — 2 files** (`MathUtil.cpp` `MsVECMag2`/`MsVECNormalize`,
+  `J3DTransform.cpp`). CodeWarrior PPC assembly won't parse under g++; needs a
+  C/intrinsic reimplementation of those functions.
+- **C++11 brace-init narrowing — 3 files** (`JUTConsole`, `JUTResFont`,
+  `JUTRomFont`). A negative constant brace-initialized into an `int` field; was
+  legal under CodeWarrior, now `-Wnarrowing`.
+- **Covariant-return width mismatch — 2 files** (`JUTResource`, `J2DScreen`).
+  Surfaced by the `s32`→`int` fix: `JKRFileLoader::getResSize` is declared
+  returning literal `long` while the `JKRArchive` override returns `s32`. Both
+  were 4 bytes on GC; now `long`(8) ≠ `int`(4), so the virtual override is
+  rejected. Needs the decomp's stray `long`s ported to `s32`.
+- **`snprintf` in a template body — 1 file** (`MActorData`), **overload
+  resolution — 1 file** (`ToolData`: `getValue(int&, s32&, long*)` no longer
+  matches after the type fix), **template two-phase lookup — 1 file**
+  (`J2DPane`: `appendChild` calls unqualified `append` from a dependent base;
+  CodeWarrior was lax, g++ wants `this->append`).
+
+Several of the narrowing/two-phase/overload cases compile under `-fpermissive`,
+but that also masks the genuine pointer-truncation bugs, so the core build keeps
+it off and defers them honestly.
+
+## Files in this scaffold
+
+```
+port/
+  CMakeLists.txt          build of libsmsport_core.a from core_sources.txt
+  core_sources.txt        the 62 clean core sources (paths relative to repo root)
+  try_compile.sh          probe: compile a file list with the shim flags, report PASS/FAIL
+  README.md               this file
+  compat/
+    intrinsics.h          force-included PPC-intrinsic shim (bit-accurate frsqrte/fres)
+    msl_shim.h            force-included MSL <math.h> macro shim
+    include/
+      dolphin/types.h     shadow: int-based u32/s32
+      stdio.h, stdarg.h   shadow: forward to system libc, fix EOF macro/enum clash
+      PowerPC_EABI_Support/Msl/MSL_C/MSL_Common/math.h   shadow: MSL math by full path
+      JSystem/J3d/.../J3DTevBlocks.hpp                    shadow: J3d->J3D case fold
+  build/                  throwaway output (gitignored): cmake/, probe/
+```
