@@ -168,6 +168,26 @@ target_compile_options(sunbright-type-db-build-test PRIVATE -Wall -Wextra -Wno-u
 add_test(NAME type_db_build_test COMMAND sunbright-type-db-build-test
          WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
+# Coverage-at-scale sweep: recovery over every DOL function a type set seeds; gates that the
+# clean default type set sweeps with ZERO gaps. SUNBRIGHT_SWEEP_TYPES overrides. SKIPs w/o DOL.
+add_executable(sunbright-coverage-sweep-test
+    tools/recompiler/tests/coverage_sweep_test.cpp
+    tools/recompiler/dol_parser.cpp
+    tools/recompiler/ppc_decoder.cpp
+    tools/recompiler/ppc_mnemonic.cpp
+    tools/recompiler/func_collect.cpp
+    tools/recompiler/decomp_parse.cpp
+    tools/recompiler/abi_layout.cpp
+    tools/recompiler/func_sig.cpp
+    tools/recompiler/type_recovery.cpp
+    tools/recompiler/c_emitter.cpp
+    tools/recompiler/type_db_build.cpp
+)
+target_include_directories(sunbright-coverage-sweep-test PRIVATE tools/recompiler runtime)
+target_compile_options(sunbright-coverage-sweep-test PRIVATE -Wall -Wextra -Wno-unused-parameter)
+add_test(NAME coverage_sweep_test COMMAND sunbright-coverage-sweep-test
+         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+
 # ── Launcher executable (SDL2 window + Dolphin Core) ─────────────────────────
 # Everything — launcher, runtime bridge, hand-written overrides, and the
 # statically-recompiled game code — is compiled into one self-contained binary.

@@ -132,9 +132,13 @@ static EngineLayout build_layout(const std::string& type_name,
                                  std::set<std::string>& seen, std::vector<std::string>* unresolved) {
     EngineLayout L;
     if (seen.count(type_name)) return L;                 // cycle guard
+    // Resolve against the bare-name index (a base may be written "JDrama::TNameRef").
     auto it = index.find(type_name);
+    if (it == index.end()) it = index.find(strip_ns(type_name));
+    if (it == index.end()) it = index.find(base_name(type_name));
     if (it == index.end()) { if (unresolved) unresolved->push_back(type_name); return L; }
-    ParsedType t = parse_decomp_file(it->second, type_name);
+    // Parse with the matched BARE key (the header declares "class TNameRef", not "JDrama::TNameRef").
+    ParsedType t = parse_decomp_file(it->second, it->first);
     if (!t.found) { if (unresolved) unresolved->push_back(type_name); return L; }
     seen.insert(type_name);
     if (!t.base.empty()) L = build_layout(t.base, index, engine_types, seen, unresolved);
