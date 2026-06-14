@@ -178,6 +178,39 @@ Several of the narrowing/two-phase/overload cases compile under `-fpermissive`,
 but that also masks the genuine pointer-truncation bugs, so the core build keeps
 it off and defers them honestly.
 
+## Endian-safe asset loading (`port/assets/`)
+
+**Principle: GameCube on-disk asset formats are BIG-ENDIAN; read every
+multi-byte field with explicit big-endian byte assembly, NEVER by casting raw
+file bytes to a struct.** The decomp parses formats via struct overlay (e.g.
+`JKRArchive::SArcHeader` in
+`reference/sms/include/JSystem/JKernel/JKRArchive.hpp` is a plain
+`struct { u32 signature; u32 file_length; ... }` cast over the file bytes). On a
+little-endian host (x86-64, arm64) that silently misreads every field — a
+`file_length` of `0x00084000` reads back as `0x00400800`, names land at bogus
+offsets, sizes come out as byteswapped garbage. This is the #1 correctness risk
+of the port.
+
+`port/assets/rarc.{h,cpp}` is the native replacement for the outermost
+container — **Yaz0 (SZS) decompression + RARC/ARC archive parsing** — written
+to the format spec with `be16()`/`be32()` helpers for every multi-byte read. No
+struct overlay, no host-byte-order assumption (portable to x86-64 **and**
+arm64). API:
+
+- `yaz0_decompress(src, srclen, out)` — Yaz0 magic + big-endian uncompressed
+  size + the standard run-length/back-reference scheme.
+- `rarc_parse(buf, len, out)` — returns each regular file's name, size, and a
+  pointer/offset into the buffer (directories excluded).
+
+`assets/rarc_test.cpp` (CTest target `rarc_test`) proves it: a synthetic
+hand-built big-endian RARC fixture (deterministic), a Yaz0 round-trip, and — if
+present — the real `scratch/audiores/data/nintendo.szs`. **Verified** against
+that real archive: it decompresses (107 016 -> 543 584 bytes) and parses 8 files
+with real SMS asset names (`msound.aaf`, `standard_fontex.bfn`, `*.bti`
+textures, `nintendo.blo`) at sane sizes — i.e. NOT byteswapped garbage. Run:
+`ctest --test-dir port/build -R rarc_test`. Every later asset reader (BTI, BMD,
+BCK, ...) follows this same explicit-big-endian rule.
+
 ## Files in this scaffold
 
 ```

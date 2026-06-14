@@ -74,3 +74,22 @@ target_compile_options(smsport_core PRIVATE
 target_compile_options(smsport_core PRIVATE -w)
 
 message(STATUS "smsport_core: ${SMS_CORE_REL} (see core_sources.txt)")
+
+# ---------------------------------------------------------------------------
+# Endian-safe asset readers (port/assets/). Standalone: NO dependency on the
+# decomp core or its shims — these are clean native readers written from the
+# format spec, not ports of the struct-overlay decomp code. Portable to
+# x86-64 and arm64 (host-byte-order independent).
+# ---------------------------------------------------------------------------
+add_library(smsport_assets STATIC assets/rarc.cpp)
+target_include_directories(smsport_assets PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/assets")
+target_compile_options(smsport_assets PRIVATE -Wall -Wextra)
+
+enable_testing()
+add_executable(rarc_test assets/rarc_test.cpp)
+target_link_libraries(rarc_test PRIVATE smsport_assets)
+# Run from the repo root so the default real-archive scratch path resolves
+# (the test PASSES without it via the synthetic fixture + Yaz0 round-trip).
+add_test(NAME rarc_test
+         COMMAND rarc_test
+         WORKING_DIRECTORY "${SMS_REPO_ROOT}")
