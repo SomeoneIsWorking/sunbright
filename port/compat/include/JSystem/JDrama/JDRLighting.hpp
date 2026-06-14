@@ -110,7 +110,7 @@ public:
 	virtual TNameRef* searchF(u16, const char*);
 	virtual void perform(u32, TGraphics*);
 
-	void setLightNum(long);
+	void setLightNum(s32); // was `long`: .cpp defines setLightNum(s32); s32!=long on LP64 (stray-long class)
 
 public:
 	/* 0x10 */ TIdxLight* mLights;
@@ -148,7 +148,7 @@ public:
 	virtual TNameRef* searchF(u16, const char*);
 	virtual void perform(u32, TGraphics*) { }
 
-	void setAmbNum(long);
+	void setAmbNum(s32); // was `long`: .cpp defines setAmbNum(s32); s32!=long on LP64 (stray-long class)
 
 public:
 	/* 0x10 */ TAmbColor* mAmbColors;
