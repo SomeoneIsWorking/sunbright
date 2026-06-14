@@ -22,7 +22,7 @@ cmake --build port/build/cmake -j"$(nproc)"
 Verify:
 
 ```bash
-ar t port/build/cmake/libsmsport_core.a | wc -l     # 62 object files
+ar t port/build/cmake/libsmsport_core.a | wc -l     # 85 object files
 ```
 
 A standalone probe script, `port/try_compile.sh`, compiles an arbitrary list of
@@ -89,6 +89,9 @@ header resolution while the original stays unreachable/untouched.
 | `compat/include/stdarg.h` | system `<stdarg.h>` | `#include_next` to the compiler builtin (va_list/va_start/...); MSL's is off the path. |
 | `compat/include/PowerPC_EABI_Support/Msl/MSL_C/MSL_Common/math.h` | the MSL `<math.h>` some TUs include **by full path** (e.g. `JMath.cpp`) | The real MSL tree is off the path, so that include would fail. This shadow routes to system `<cmath>` + the MSL macros. |
 | `compat/include/JSystem/J3d/J3DGraphBase/Blocks/J3DTevBlocks.hpp` | a **case-fold** fix | `J3DMaterial.hpp` includes `JSystem/J3d/...` (lowercase `J3d`); the real file is `JSystem/J3D/...` (uppercase). CodeWarrior on Win/macOS resolved case-insensitively; Linux does not. The shadow forwards to the correctly-cased real header. |
+| `compat/include/JSystem/JGadget/std-list.hpp` | `reference/.../JGadget/std-list.hpp` | **CodeWarrior-lax template.** In `TList_pointer<T>::iterator` the inner `typedef Base::iterator Base;` re-declares the name `Base` (already meaning the outer `typedef TList_pointer_void Base;`, used in the base-specifier `class iterator : Base::iterator`) to a different type in the same scope → g++ `-Wchanges-meaning` error ("declaration of 'Base' changes meaning of 'Base'"). Gated every TU pulling `std-list.hpp` via `MActorData.hpp` (the whole MActor/M3DUtil cluster). Fix: rename the inner typedef to `BaseIt` (resolves to the identical type). |
+| `compat/include/printf.h` | system stdio (for decomp `#include <printf.h>`) | On GC, `<printf.h>` was the MSL header that declared the printf family incl. `snprintf`. With the MSL tree off the path, `<printf.h>` lands on glibc's *internal* `/usr/include/printf.h`, which lacks `snprintf` → inside a template body (`MActorAnmDataEach::loadAnmPtrArray`) g++ rejects the unqualified `snprintf` (`-Wtemplate-body`, two-phase lookup needs the decl). Routes `<printf.h>` to the shadow `<stdio.h>` (real system decls + EOF fix), as MSL did. |
+| `compat/include/M3DUtil/MActorData.hpp` | `reference/.../M3DUtil/MActorData.hpp` | **CodeWarrior-lax conversion.** In `MActorAnmDataEach<T>::loadAnmPtrArray` the call `sortByFileNameRaw(unkC)` passes `unkC` (`J3DAnmBase**`) to a `void**` parameter; C++ does NOT implicitly convert `T**`→`void**`. The function is type-erased (only reorders the pointer array, layout-identical), so the fix is an explicit `(void**)` cast — behavior-preserving. |
 
 ## Include-path rules (order matters)
 
@@ -104,52 +107,72 @@ header resolution while the original stays unreachable/untouched.
 No `-fpermissive`: the core set compiles **cleanly** without it, so the 64-bit
 pointer-truncation diagnostics stay ON and act as the porting to-do signal.
 
-## What's in the core lib (62 files)
+## What's in the core lib (85 files)
 
 Curated in `core_sources.txt` (every file compiles cleanly with the shims under
-strict `-std=c++17`). By area:
+strict `-std=c++17`, **no `-w`/`-fpermissive` masking**). By area:
 
 | Area | Files | Examples |
 |---|---|---|
 | `JSystem/JParticle` | 16 | JPAMath, JPABaseShape, JPAEmitter, JPAField, JPADynamicsBlock |
-| `MarioUtil` | 9 | LightUtil, ShadowUtil, RumbleMgr, EffectUtil, GDUtil |
+| `MarioUtil` | 13 | LightUtil, ShadowUtil, RumbleMgr, EffectUtil, GDUtil, DrawUtil, MapUtil, ModelUtil, ScreenUtil, TexUtil |
+| `JSystem/J3D` | 14 | J3DShape, J3DVertex, J3DModel, J3DMaterial, J3DAnimation, J3DJoint, J3DCluster, J3DPacket, J3DMaterialFactory_v21 |
+| `M3DUtil` | 9 | MotionBlendCtrl, MActor, MActorAnm, MActorUtil, LodAnm, M3UModel, M3UJoint, SampleCtrlModel, SDLModel |
 | `JSystem/JUtility` | 9 | JUTRect, JUTColor, JUTGamePad, JUTPalette, JUTDirectPrint, JUTFont |
 | `JSystem/JStage` | 6 | JSGObject, JSGCamera, JSGLight, JSGActor |
 | `JSystem/J2D` | 5 | J2DGrafContext, J2DOrthoGraph, J2DPicture, J2DTextBox, J2DWindow |
 | `JSystem/JSupport` | 5 | JSUList, JSUMemoryStream, JSUInputStream, JSUOutputStream |
 | `JSystem/JGadget` | 4 | linklist, singlelinklist, std-list, std-vector |
-| `JSystem/J3D` | 5 | J3DShape, J3DVertex, J3DNode, J3DSys, J3DMaterialAttach |
 | `JSystem` (root) | 2 | JMath, random |
-| `M3DUtil` | 1 | MotionBlendCtrl |
 
-## What's deferred (47 files), by reason
+The 2026-06-14 growth (62 → 85) added 23 files: the std-list `-Wchanges-meaning`
+fix + the `<printf.h>`/`MActorData.hpp` shadows unblocked the whole MActor/M3DUtil
+cluster (MActor, MActorAnm, MActorUtil, LodAnm, M3UModel, M3UJoint, SampleCtrlModel,
+SampleCtrlNode, SDLModel) and several J3D animator/loader files
+(J3DModel, J3DMaterial, J3DPacket, J3DAnimation, J3DJoint, J3DCluster,
+J3DMaterialAnm, J3DClusterLoader, J3DMaterialFactory_v21) plus MarioUtil
+DrawUtil/MapUtil/ModelUtil/ScreenUtil/TexUtil — all already-pointer-clean once the
+template/header blockers were removed.
+
+## What's deferred (24 files), by reason
 
 Run `port/try_compile.sh` over the full candidate sweep and inspect
-`port/build/probe/classified.txt` to regenerate. Categories:
+`port/build/probe/classified.txt` to regenerate. Categories (after the
+2026-06-14 std-list/printf/MActorData header fixes, 47 → 24 remaining):
 
-- **Pointer→`u32` truncation — 37 files (the real 64-bit-port work).** The
-  decomp stashes pointers in `u32`/`s32` fields and casts `void*`→`u32`
-  (`cast from 'void*' to 'u32' loses precision`). Sound on the 32-bit GC,
-  lossy on x86-64. Fixing means porting those fields/casts to pointer-width
-  types (`uintptr_t`) — actual engineering, not a shim. Includes the J3D model
-  graph (J3DModel/J3DMaterial/J3DShapeFactory/...), the M3DUtil actor layer
-  (MActor/M3UModel/...), and most of MarioUtil's GX helpers.
+- **Pointer→`u32`/`s32` truncation — ~13 files (the real 64-bit-port work).**
+  The decomp stashes pointers in `u32`/`s32` fields and casts `void*`→`u32`
+  (`cast from 'void*' to 'u32' loses precision` — a hard `-fpermissive`-gated
+  error in C++, not just a warning). Sound on the 32-bit GC, lossy on
+  x86-64/arm64. Fixing means porting those fields/casts to pointer-width types
+  (`uintptr_t`) in the **.cpp bodies** — actual engineering, not a shim. The
+  shared-header truncations (J3DPacket/J3DMaterial/J3DTexture/JSUConvertOffset…)
+  were already fixed in 03f68ac, which is why most of the model graph now
+  compiles; what remains is the per-`.cpp` residue (J3DTevs, J3DDrawBuffer,
+  J3DAnmLoader, J3D*Factory, J3DModelLoader, JRenderer, J2DPrint, JUTDirectFile,
+  JUTTexture, PacketUtil).
 - **Inline PPC `asm` — 2 files** (`MathUtil.cpp` `MsVECMag2`/`MsVECNormalize`,
   `J3DTransform.cpp`). CodeWarrior PPC assembly won't parse under g++; needs a
   C/intrinsic reimplementation of those functions.
-- **C++11 brace-init narrowing — 3 files** (`JUTConsole`, `JUTResFont`,
-  `JUTRomFont`). A negative constant brace-initialized into an `int` field; was
-  legal under CodeWarrior, now `-Wnarrowing`.
+- **C++11 brace-init narrowing — 4 files** (`JUTConsole`, `JUTResFont`,
+  `JUTRomFont`, `JUTException`). A negative constant brace-initialized into an
+  `int` field; was legal under CodeWarrior, now `-Wnarrowing`.
 - **Covariant-return width mismatch — 2 files** (`JUTResource`, `J2DScreen`).
   Surfaced by the `s32`→`int` fix: `JKRFileLoader::getResSize` is declared
   returning literal `long` while the `JKRArchive` override returns `s32`. Both
   were 4 bytes on GC; now `long`(8) ≠ `int`(4), so the virtual override is
   rejected. Needs the decomp's stray `long`s ported to `s32`.
-- **`snprintf` in a template body — 1 file** (`MActorData`), **overload
-  resolution — 1 file** (`ToolData`: `getValue(int&, s32&, long*)` no longer
-  matches after the type fix), **template two-phase lookup — 1 file**
+- **overload resolution — 1 file** (`ToolData`: `getValue(int&, s32&, long*)`
+  no longer matches after the type fix), **template two-phase lookup — 1 file**
   (`J2DPane`: `appendChild` calls unqualified `append` from a dependent base;
-  CodeWarrior was lax, g++ wants `this->append`).
+  CodeWarrior was lax, g++ wants `this->append`), **`jump to case label` — 1
+  file** (`MtxUtil`), **`const char*`→`char*` — 1 file** (`MActorData.cpp`
+  body — distinct from the now-fixed `MActorData.hpp` template).
+
+The `snprintf`-in-a-template-body and the `std-list` `-Wchanges-meaning`
+blockers (which gated the whole MActor/M3DUtil cluster at `#include` time) are
+**fixed** as of 2026-06-14 via the `printf.h` / `std-list.hpp` / `MActorData.hpp`
+shadows (see the shadow table above).
 
 Several of the narrowing/two-phase/overload cases compile under `-fpermissive`,
 but that also masks the genuine pointer-truncation bugs, so the core build keeps
@@ -160,7 +183,7 @@ it off and defers them honestly.
 ```
 port/
   CMakeLists.txt          build of libsmsport_core.a from core_sources.txt
-  core_sources.txt        the 62 clean core sources (paths relative to repo root)
+  core_sources.txt        the 85 clean core sources (paths relative to repo root)
   try_compile.sh          probe: compile a file list with the shim flags, report PASS/FAIL
   README.md               this file
   compat/
