@@ -324,9 +324,18 @@ decoder; runtime GP-FIFO path on the delete list. Then, on the object-model arch
   state. Verified live (Delfino): 167M verts transformed, **98.9% land in front of the camera
   (eye z<0)**, no_mtx=0 — a wrong matrix or garbage positions could never yield 99% coherently
   in-front, so this proves extraction + matrix capture + transform are all faithful. `/ngxshape`
-  now reports xf in-front %, eye bbox, sample eye pos. **Next: native projection (clip→NDC→screen)
-  to close the transform chain, then feed meshes+MVP to the native Vulkan path (vk_quad → a depth-
-  tested mesh pipeline, flat-shaded first) → first native 3D world pixels; then N5 TEV→shader.**
+  now reports xf in-front %, eye bbox, sample eye pos.
+- **N4 native projection (full vertex pipeline) ✅** (this commit) — closes the transform chain:
+  the scene_render GXSetProjection tee (0x80362c34) publishes the authored perspective matrix to
+  ngx (`ngx_set_projection`); the shape hook computes clip = P·(eye,1) and NDC = clip.xyz/clip.w
+  per vertex. The recompiled game's matrices, consumed natively, now take model→eye→clip→NDC with
+  ZERO Dolphin. Verified live (Delfino): **clip.w>0 count == eye z<0 count exactly** (172970307,
+  the consistency check — for GX perspective w=−ez so they must match iff the matrix form is right),
+  and **57.5% of 175M verts project inside the NDC screen box** (≈99% in front, ≈57% on-screen, rest
+  off-screen geometry the game submits — exactly the profile of a real 3D scene). The native vertex
+  pipeline is complete bar rasterization. **Next: feed meshes + the NDC/clip positions to the native
+  Vulkan path (vk_quad → a depth-tested flat-shaded mesh pipeline) → FIRST NATIVE 3D WORLD PIXELS;
+  then N5 TEV→shader for materials.**
 
 **J3DShape DRAW PATH (RE'd 2026-06-14, `reference/sms/.../J3DShape.cpp`) — the live-hook seam.**
 `J3DShape::draw()` does, in order:

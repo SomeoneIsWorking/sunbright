@@ -47,6 +47,14 @@ bool g_in_hud = false;
 static void ov_gx_projection(CPUState& cpu) {
     const u32 mtx = cpu.gpr[3];
     const u32 type = cpu.gpr[4];
+    // Publish the AUTHORED projection (before the widescreen squeeze below) to the
+    // native renderer's transform-chain verifier (ngx_j3d_shape).
+    extern void ngx_set_projection(const float*, unsigned);
+    if (mtx >= 0x80000000u && mtx < 0x81800000u) {
+        float pm[16];
+        for (int i = 0; i < 16; i++) pm[i] = mem_rf32(mtx + i * 4);
+        ngx_set_projection(pm, type);
+    }
     static const bool log = getenv("SUNBRIGHT_RENDERPORT_LOG") != nullptr;
     if (log) {
         if (g_in_hud) std::fprintf(stderr, "[renderport] GXSetProjection DURING HUD type=%u m00=%.4f m03=%.4f\n",

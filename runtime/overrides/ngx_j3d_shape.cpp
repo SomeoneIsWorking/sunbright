@@ -123,6 +123,13 @@ float         g_last_pos[3] = {0, 0, 0};
 unsigned long g_xf_total = 0, g_xf_front = 0, g_xf_nomtx = 0;
 float         g_last_eye[3] = {0, 0, 0};
 float         g_eye_min[3] = {0, 0, 0}, g_eye_max[3] = {0, 0, 0};
+// Native projection stage: the latest perspective projection matrix (4x4 row-
+// major, as the game passes to GXSetProjection), published by the scene_render
+// GXSetProjection tee. eye → clip = P·(eye,1) → NDC = clip.xyz/clip.w. On-screen
+// geometry has clip.w>0 (in front of the near plane) and NDC x,y in [-1,1].
+float         g_proj[16] = {0};
+bool          g_have_proj = false;
+unsigned long g_ndc_total = 0, g_ndc_wpos = 0, g_ndc_inbox = 0;
 
 // Reusable scratch (single emu/render thread serialized by nthr).
 std::vector<NgxVertex> g_verts;
@@ -151,6 +158,20 @@ void transform_eye() {
                if(ey<g_eye_min[1])g_eye_min[1]=ey; if(ey>g_eye_max[1])g_eye_max[1]=ey;
                if(ez<g_eye_min[2])g_eye_min[2]=ez; if(ez>g_eye_max[2])g_eye_max[2]=ez; }
         g_last_eye[0]=ex; g_last_eye[1]=ey; g_last_eye[2]=ez;
+
+        // Native projection: clip = P·(eye,1); NDC = clip.xyz / clip.w.
+        if (g_have_proj) {
+            const float* p = g_proj;
+            const float cw = p[12]*ex + p[13]*ey + p[14]*ez + p[15];
+            g_ndc_total++;
+            if (cw > 0.0f) {
+                g_ndc_wpos++;
+                const float cx = p[0]*ex + p[1]*ey + p[2]*ez + p[3];
+                const float cy = p[4]*ex + p[5]*ey + p[6]*ez + p[7];
+                const float nx = cx / cw, ny = cy / cw;
+                if (nx >= -1.0f && nx <= 1.0f && ny >= -1.0f && ny <= 1.0f) g_ndc_inbox++;
+            }
+        }
     }
 }
 
@@ -197,6 +218,15 @@ void capture(u32 sh) {
 
 }  // namespace
 
+// Published by the scene_render GXSetProjection tee (0x80362c34) with the
+// authored projection matrix. Only perspective (type 0 = GX_PERSPECTIVE) is kept
+// — the J3D world uses it; 2D HUD uses orthographic which we don't transform here.
+void ngx_set_projection(const float* m44, unsigned type) {
+    if (type != 0) return;
+    for (int i = 0; i < 16; i++) g_proj[i] = m44[i];
+    g_have_proj = true;
+}
+
 SUNBRIGHT_OVERRIDE(ov_j3dshape_draw, 0x802e0390u) {
     static const bool init = (g_enabled = (getenv("SUNBRIGHT_NGX_SHAPE") != nullptr), true);
     (void)init;
@@ -217,7 +247,8 @@ int sb_ngx_shape_dump(char* out, int cap) {
         "  last shape: verts=%u tris=%u vstride=%u vcd_lo=%08x vcd_hi=%08x\n"
         "  last pos[0]=(%.3f, %.3f, %.3f)  max_verts/shape=%u\n"
         "  native XF (modelview): xf_verts=%lu  in_front(z<0)=%lu (%.1f%%)  no_mtx=%lu\n"
-        "  eye bbox: x[%.1f..%.1f] y[%.1f..%.1f] z[%.1f..%.1f]  last_eye=(%.2f, %.2f, %.2f)\n",
+        "  eye bbox: x[%.1f..%.1f] y[%.1f..%.1f] z[%.1f..%.1f]  last_eye=(%.2f, %.2f, %.2f)\n"
+        "  native projection: have_proj=%d  clip.w>0=%lu/%lu  NDC xy in [-1,1]=%lu (%.1f%%)\n",
         g_enabled ? "ON" : "OFF (set SUNBRIGHT_NGX_SHAPE=1)",
         g_calls, g_meshes, g_badcp, g_fail,
         g_total_verts, g_total_tris,
@@ -226,6 +257,8 @@ int sb_ngx_shape_dump(char* out, int cap) {
         g_xf_total, g_xf_front, g_xf_total ? 100.0 * (double)g_xf_front / (double)g_xf_total : 0.0,
         g_xf_nomtx,
         g_eye_min[0], g_eye_max[0], g_eye_min[1], g_eye_max[1], g_eye_min[2], g_eye_max[2],
-        g_last_eye[0], g_last_eye[1], g_last_eye[2]);
+        g_last_eye[0], g_last_eye[1], g_last_eye[2],
+        g_have_proj ? 1 : 0, g_ndc_wpos, g_ndc_total,
+        g_ndc_inbox, g_ndc_total ? 100.0 * (double)g_ndc_inbox / (double)g_ndc_total : 0.0);
     return n;
 }
