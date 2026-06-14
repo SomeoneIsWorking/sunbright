@@ -25,7 +25,7 @@
 #include "VideoBackends/Vulkan/VulkanLoader.h"
 #include "VideoBackends/Vulkan/VulkanContext.h"
 #include "render/shaders/quad_ortho_vert_spv.h"
-#include "render/shaders/quad_frag_spv.h"
+#include "render/shaders/quad_modulate_frag_spv.h"
 
 extern unsigned mem_r32(unsigned);   // guest RAM word read (big-endian-interpreted); intrinsics.h
 
@@ -134,8 +134,8 @@ int sb_j2d_render(char* outbuf, int cap) {
         read_guest(raw.data(), q.data, src_bytes);
         Decoded d; d.idx = i; d.w = wp; d.h = hp; d.rgba.assign((size_t)wp * hp, 0);
         sb_tex_decode(d.rgba.data(), raw.data(), wp, hp, q.fmt, nullptr, 0);
-        rep("  quad %d: rect[%d,%d %dx%d] fmt=%d tex %dx%d a=%u\n", i, q.x0, q.y0,
-            q.x1 - q.x0, q.y1 - q.y0, q.fmt, q.w, q.h, q.alpha);
+        rep("  quad %d: rect[%d,%d %dx%d] fmt=%d tex %dx%d colorAlpha=%u corner0=%08x\n", i, q.x0, q.y0,
+            q.x1 - q.x0, q.y1 - q.y0, q.fmt, q.w, q.h, q.alpha, q.corner[0]);
         dec.push_back(std::move(d));
     }
     if (dec.empty()) { rep("j2drender: no non-paletted quads to draw\n"); return 0; }
@@ -153,7 +153,7 @@ int sb_j2d_render(char* outbuf, int cap) {
         VkShaderModuleCreateInfo si{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
         si.codeSize = sizeof kQuadOrthoVertSpv; si.pCode = kQuadOrthoVertSpv;
         if ((vr = vkCreateShaderModule(dev, &si, nullptr, &vs))) { FAIL("vs"); goto done; }
-        si.codeSize = sizeof kQuadFragSpv; si.pCode = kQuadFragSpv;
+        si.codeSize = sizeof kQuadModulateFragSpv; si.pCode = kQuadModulateFragSpv;
         if ((vr = vkCreateShaderModule(dev, &si, nullptr, &fs))) { FAIL("fs"); goto done; }
     }
     {
@@ -166,7 +166,7 @@ int sb_j2d_render(char* outbuf, int cap) {
         VkDescriptorPoolCreateInfo pci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
         pci.maxSets = (uint32_t)dec.size(); pci.poolSizeCount = 1; pci.pPoolSizes = &ps;
         if ((vr = vkCreateDescriptorPool(dev, &pci, nullptr, &dpool))) { FAIL("dpool"); goto done; }
-        VkPushConstantRange pcr{VK_SHADER_STAGE_VERTEX_BIT, 0, 24};
+        VkPushConstantRange pcr{VK_SHADER_STAGE_VERTEX_BIT, 0, 48};  // rect + misc(target,colorAlpha) + corners
         VkPipelineLayoutCreateInfo plci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
         plci.setLayoutCount = 1; plci.pSetLayouts = &dsl; plci.pushConstantRangeCount = 1; plci.pPushConstantRanges = &pcr;
         if ((vr = vkCreatePipelineLayout(dev, &plci, nullptr, &pll))) { FAIL("pll"); goto done; }
@@ -279,8 +279,12 @@ int sb_j2d_render(char* outbuf, int cap) {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
         for (size_t i = 0; i < dec.size(); i++) {
             const J2dQuad& q = quads[dec[i].idx];
-            float pc[6] = {(float)q.x0,(float)q.y0,(float)q.x1,(float)q.y1,(float)sw,(float)sh};
-            vkCmdPushConstants(cmd, pll, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof pc, pc);
+            // Push constant: vec4 rect | vec4 misc(target.xy, colorAlpha, pad) | uvec4 corners.
+            struct { float rect[4]; float misc[4]; uint32_t corners[4]; } pc;
+            pc.rect[0] = (float)q.x0; pc.rect[1] = (float)q.y0; pc.rect[2] = (float)q.x1; pc.rect[3] = (float)q.y1;
+            pc.misc[0] = (float)sw; pc.misc[1] = (float)sh; pc.misc[2] = q.alpha / 255.0f; pc.misc[3] = 0;
+            for (int c = 0; c < 4; c++) pc.corners[c] = q.corner[c];
+            vkCmdPushConstants(cmd, pll, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof pc, &pc);
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pll, 0, 1, &tex[i].dset, 0, nullptr);
             vkCmdDraw(cmd, 4, 1, 0, 0);
         }

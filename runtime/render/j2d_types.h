@@ -14,6 +14,7 @@ struct J2dQuad {
     uint32_t data;             // guest addr of raw tiled image bytes (JUTTexture.mTexData)
     uint32_t tlut;             // guest addr of palette entries (paletted formats), else 0
     int      tlutfmt;          // SbTlutFormat (paletted only)
+    uint32_t corner[4];        // J2DPicture mCornerColor[TL,TR,BL,BR], packed 0xRRGGBBAA (RASC)
 };
 
 // Walk the live J2D pane tree (root captured by the J2DScreen::draw tee) and fill
