@@ -16,8 +16,7 @@
 #include "../dol_parser.h"
 #include "../ppc_decoder.h"
 #include "../func_collect.h"
-#include "../decomp_parse.h"
-#include "../func_sig.h"
+#include "../type_db_build.h"
 #include "../type_recovery.h"
 
 #include <algorithm>
@@ -64,18 +63,24 @@ int main() {
 
     // One real accessor to prove. `expect` = the this-field members it touches, per the decomp
     // source (the oracle). Add more cases as the engine grows.
-    struct Case { const char* mangled; const char* type; const char* header; std::set<std::string> expect; };
+    struct Case { const char* mangled; const char* type; std::set<std::string> expect; };
     std::vector<Case> cases = {
         // TCameraMarioData::isMarioGoDown() const — source reads only `unk10` off `this`
         // (the other derefs are the globals gpMarioPos / gpMarioOriginal, not engine-typed).
-        { "isMarioGoDown__16TCameraMarioDataCFv", "TCameraMarioData",
-          "reference/sms/include/Camera/CameraMarioData.hpp", { "unk10" } },
+        { "isMarioGoDown__16TCameraMarioDataCFv", "TCameraMarioData", { "unk10" } },
         // TCameraMarioData::calcAndSetMarioData() — branchy (switch + if/else); the source
         // reads/writes unkC, unk10, unk14, unk18, unk1C off `this` (unk0/the TVec3 is a local).
         { "calcAndSetMarioData__16TCameraMarioDataFv", "TCameraMarioData",
-          "reference/sms/include/Camera/CameraMarioData.hpp",
           { "unkC", "unk10", "unk14", "unk18", "unk1C" } },
     };
+
+    // Build the DB for every type the cases touch ONCE, via the real production builder
+    // (auto-resolves headers + composes inheritance + builds signatures from the symbol file).
+    std::set<std::string> active;
+    for (const Case& c : cases) active.insert(c.type);
+    auto built = build_type_db(active, "reference/sms/include", "reference/sms_gmse01_funcs.txt");
+    CHECK(built.missing_types.empty(), "build_type_db resolved every case type");
+    const TypeDB& db = built.db;
 
     int total_typed_sites = 0;
 
@@ -92,15 +97,10 @@ int main() {
             collect_function(sec->data.data(), sec->addr, sec->data.size(), addr, fend, /*cfg=*/true);
         CHECK(!instrs.empty(), "decoded a non-empty function body");
 
-        // Build the DB: layout from the header, signature from the symbol.
-        ParsedType pt = parse_decomp_file(c.header, c.type);
-        CHECK(pt.found, "engine type parsed from its decomp header");
-        std::set<std::string> eng = { c.type };
-        TypeDB db;
-        db.layouts[c.type] = to_engine_layout(pt, eng);
-        FuncSig fs = demangle_signature(c.mangled);
-        CHECK(fs.is_method && fs.class_leaf == c.type, "symbol resolves `this` to the engine type");
-        for (const auto& a : fs.ptr_args) if (eng.count(a.type)) db.signatures[addr][a.gpr] = a.type;
+        // The builder must have seeded this=type in r3 for this method.
+        auto sit = db.signatures.find(addr);
+        CHECK(sit != db.signatures.end() && sit->second.count(3) && sit->second.at(3) == c.type,
+              "build_type_db seeded `this` = engine type in r3 for this accessor");
 
         // Resolve any computed-bctr jump table (reads table entries from the DOL) so the CFG is
         // complete even for switch-heavy functions.

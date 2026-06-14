@@ -148,10 +148,24 @@ add_executable(sunbright-coverage-real-test
     tools/recompiler/func_sig.cpp
     tools/recompiler/type_recovery.cpp
     tools/recompiler/c_emitter.cpp
+    tools/recompiler/type_db_build.cpp
 )
 target_include_directories(sunbright-coverage-real-test PRIVATE tools/recompiler runtime)
 target_compile_options(sunbright-coverage-real-test PRIVATE -Wall -Wextra -Wno-unused-parameter)
 add_test(NAME coverage_real_test COMMAND sunbright-coverage-real-test
+         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+
+# Composed type-DB builder (inheritance composition + auto header resolution + signatures).
+add_executable(sunbright-type-db-build-test
+    tools/recompiler/tests/type_db_build_test.cpp
+    tools/recompiler/type_db_build.cpp
+    tools/recompiler/decomp_parse.cpp
+    tools/recompiler/abi_layout.cpp
+    tools/recompiler/func_sig.cpp
+)
+target_include_directories(sunbright-type-db-build-test PRIVATE tools/recompiler runtime)
+target_compile_options(sunbright-type-db-build-test PRIVATE -Wall -Wextra -Wno-unused-parameter)
+add_test(NAME type_db_build_test COMMAND sunbright-type-db-build-test
          WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
 # ── Launcher executable (SDL2 window + Dolphin Core) ─────────────────────────
