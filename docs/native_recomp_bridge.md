@@ -7,6 +7,17 @@ pointers, host endianness) has to interoperate with the recompiler's game logic 
 a 24 MB linear array, big-endian, 32-bit guest addresses) for as long as game logic stays
 recompiled (the scope seam in [[sms-pc-port-direction]]).
 
+## 0. ONE PATH — no env toggles (user directive, hard rule)
+
+The product has exactly ONE runtime path: **PC-native engine + recomp game behavior.** There is
+NO environment variable that selects native-vs-recomp (or native-vs-emulation) for a subsystem.
+When a function/subsystem is bridged to native, it IS native, unconditionally — not an opt-in.
+Do not add `SUNBRIGHT_*` gates that fork product behavior (this is the [[done-right-over-working]]
+principle: one proper path, never an env-gated fallback). `recomp_raw` (the original recompiled
+body) is used ONLY as a transient correctness oracle while flipping a function — a dev-time diff,
+run once to verify the native output matches, then the native override is simply the path. It is
+not a runtime alternative the shipped game can switch to.
+
 ## 1. The two worlds, and the one hard constraint
 
 | | Native engine (`port/`) | Recomp game logic |
@@ -153,5 +164,6 @@ individual engine base methods to native while the object stays guest-resident.
 - Re-entrancy/threading: a bridged native call may run on a guest worker thread (cooperative
   scheduler); native services must be safe under the single-CPU cooperative model (they are by
   construction — one thread at a time).
-- A/B harness: every bridged function keeps `recomp_raw` available so the recomp body remains
-  the oracle for that function ([[recomp-overrides]] discipline).
+- Verification (NOT a runtime toggle, see §0): while flipping a function, use `recomp_raw` as a
+  one-shot diff oracle to confirm the native output matches the recompiled body, then ship the
+  native override as the single path. No env gate, no permanent dual path.
