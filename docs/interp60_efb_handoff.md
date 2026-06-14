@@ -42,6 +42,32 @@ two DIFFERENT pipelines that disagreed. Now they are ONE pipeline and cannot dis
 
 ---
 
+## ★ ROOT CAUSE PINNED (2026-06-14) — water reflection SLIDES, interp60-only
+User ground truth: the jitter is **interp60-only** (plain 30fps water is fine) and is the
+**reflection sliding/swimming relative to the (correctly interpolated) surface**. Mechanism, fully
+RE'd (docs/re_notes/water_refraction_projection.md):
+- `TModelWaterManager::drawRefracAndSpec` (0x8027c12c) draws the refraction with **PNMTX0 = IDENTITY**
+  and a **view-less texmtx** (slot 0x1e = `C_MTXLightPerspective(fovy,aspect)`, no rotation/translation).
+  The screen-UV comes from the quad's **eye-space vertex positions** (`unk5D30`, a TDLTexQuad), which
+  the game built at tick N from `gfx+0xB4` and **baked into the GX stream as raw vertex data**.
+- The raw-GX replay (unified replay / `gxs_replay_frame`) re-emits those **tick-N** quad verts
+  verbatim. The indexed-matrix interp seam (LoadIndexedXF, array 12) only substitutes pos *matrices* —
+  it never touches raw vertex data, and the refraction uses identity PNMTX anyway. So the refraction
+  quad's projection stays at **N** while the screen texture it samples is re-rendered at **N½** →
+  reflection swims. Real frames are consistent (both N) — unified replay fixed those.
+- **STRUCTURAL WALL:** `water_native.cpp` owns the projection by hooking the GUEST functions
+  (drawRefracAndSpec / C_MTXLightPerspective). The raw-GX replay makes **NO guest calls**, so those
+  overrides never fire on the in-between — nothing re-derives the water projection per-field.
+- **Why blanket direct-XF interp failed:** it interpolated the small-delta HUD ortho matrices (mangled
+  the HUD) and the >8000 cut-guard rejected the large-entry water projection matrix (so it never even
+  interpolated the thing that mattered). REVERTED.
+- **Candidate native fix (not yet built):** on the in-between replay, detect the water refraction draw
+  by its texmtx-slot-0x1e load marker and substitute PNMTX0 = view(N½)·view(N)⁻¹ (eye-space
+  reprojection of the tick-N quad to the interpolated camera) so quad + screen-texture agree. Targeted
+  (water marker only, won't touch HUD). Needs the eye-space-delta math + HEADED verification.
+  Alternative per water_refraction_projection.md §6: re-issue the water draw via the guest path on the
+  in-between with gfx+0xB4 set to N½ (overrides fire) — hybrid, heavier.
+
 ## ⛔ USER DIRECTIVE (most important — re-read every time)
 > "stop tweaking knobs, own more of the code, less dolphin, less emulation, more native code,
 > like the interp you made that lives over the renderer."
