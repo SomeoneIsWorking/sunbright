@@ -118,5 +118,7 @@ int main() {
 	stage_b();
 	if (g_fail) { std::printf("[os_thread_run] RESULT: FAIL\n"); return 1; }
 	std::printf("[os_thread_run] RESULT: PASS — native cooperative threads run + hand off work\n");
-	_Exit(0);   // skip static teardown (separate bring-up step; see heap_run)
+	// Return NORMALLY (no _Exit): all workers have exited+joined, so static
+	// teardown runs cleanly too (verifies the teardown-safety fix end to end).
+	return 0;
 }

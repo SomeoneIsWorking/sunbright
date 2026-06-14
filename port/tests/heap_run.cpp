@@ -35,7 +35,8 @@ int main() {
     delete n;
 
     std::printf("[heap_run] PASS: compiled engine alloc path runs natively via PAL heap\n");
-    // Alloc path proven. Static teardown (~JKRHeap / global dtors) still touches the
-    // uninitialized heap tree and would segfault — a separate teardown-only gap.
-    std::_Exit(0);
+    // Return NORMALLY (no _Exit) so static teardown runs: this also verifies the
+    // teardown-safety fix — the root heap is a placement-new process-lifetime
+    // singleton, so no atexit ~JKRHeap runs root tree-teardown on a null parent.
+    return 0;
 }

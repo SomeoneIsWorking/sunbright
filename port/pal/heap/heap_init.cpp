@@ -16,6 +16,7 @@
 #include <JSystem/JKernel/JKRHeap.hpp>
 #include <cstdlib>
 #include <cstdint>
+#include <new>
 
 namespace {
 
@@ -44,7 +45,25 @@ struct HostHeap : JKRHeap {
 	bool dump() override { return true; }
 };
 
-HostHeap* g_root() { static HostHeap h; return &h; }
+// The root heap has PROCESS lifetime and is intentionally never destroyed —
+// exactly as on GameCube, where the console never tears the root heap down (it
+// runs no static/global destructors at power-off). Built with PLACEMENT NEW into
+// a static buffer, for two reasons:
+//   1. No atexit destructor. A function-local `static HostHeap` would register
+//      one; at process exit ~JKRHeap runs its tree-teardown —
+//      mChildTree.getParent()->removeChild(...) — which assumes a NON-root heap
+//      in a populated tree. For a root heap getParent() is null (it was never
+//      appended as anyone's child), so it calls JSUPtrList::remove on a null
+//      `this` and segfaults. A placement-new object has no auto destructor.
+//   2. No global operator new. The engine's `operator new` (in core) routes
+//      through JKRHeap::alloc -> sCurrentHeap, which is NOT installed yet at
+//      bring-up — so `new HostHeap()` would null-deref. Placement new does not
+//      call operator new; it constructs in place in already-reserved storage.
+HostHeap* g_root() {
+	alignas(HostHeap) static unsigned char storage[sizeof(HostHeap)];
+	static HostHeap* h = new (storage) HostHeap();
+	return h;
+}
 
 } // namespace
 
