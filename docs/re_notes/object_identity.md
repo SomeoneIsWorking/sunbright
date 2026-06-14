@@ -149,11 +149,15 @@ delete`. Stack temps (C) release at scope end (the frame teardown) — needs a s
    `recomp_test` "OBJECT-IDENTITY emission". KEY FINDING (unblocked this): **JUTTexture is
    NON-POLYMORPHIC** (no `virtual` in the header; its ctor stores `stb`/`stw` to scalar fields, NO
    vtable store to `0(this)`), so raw alloc + the typed inlined writes faithfully mirror the guest
-   `operator new + ctor` — no host-ctor injection needed for the inlined case. **STILL TODO for full
-   step 2:** the out-of-line ctor PLACEMENT-NEW bridge (Pattern A — bridge `__ct` to
-   `new(sb_eng_host(h)) T(args)`); stack-temp (Pattern C) emission; a runnable construct_slice
-   end-to-end vs the oracle (needs port/ link). Polymorphic engine types WILL need the ctor bridge
-   to set the host vtable.
+   `operator new + ctor` — no host-ctor injection needed for the inlined case.
+   **END-TO-END PROVEN (Pattern B, stub type):** `runtime/tests/run_construct_slice_test.sh` runs a
+   recompiled `new EngineTex` (inlined ctor) twice — ORACLE (guest buffer) vs TAILORED
+   (`sb_eng_alloc<EngineTex>()` host object) — and verifies the host object's members get the
+   oracle's field values, with host offsets DIFFERENT from the guest displacements. PASS.
+   **STILL TODO for full step 2:** the out-of-line ctor PLACEMENT-NEW bridge (Pattern A — bridge
+   `__ct` to `new(sb_eng_host(h)) T(args)`); stack-temp (Pattern C) emission. Polymorphic engine
+   types WILL need the ctor bridge to set the host vtable. Real JUTTexture still gated on GX +
+   port/ link.
 3. **Stack temporaries (Pattern C)** — interior `addi r1,off` typed as engine → host side object +
    handle + scope release. Heavier (needs the frame/scope model); defer until A/B are solid.
 4. Scale: sweep allocation recognition across all engine-type ctors/methods; confirm no
