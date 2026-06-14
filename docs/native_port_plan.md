@@ -69,73 +69,90 @@ Status as of 2026-06-14 (from CLAUDE.md, `docs/port_roadmap.md`, session memory)
 
 ---
 
-## 3. The renderer plan (the dominant effort) — GX-level native renderer
+## 3. The renderer plan (the dominant effort) — OBJECT-MODEL native renderer
 
-### Why GX-level, not object-level (J3D)
-Two candidate seams were considered:
-- **Object-level (intercept J3D/scene draws, render meshes/materials natively, bypass GX).** Rejected
-  as the primary: SMS rendering is overwhelmingly **GX display lists** — pre-baked GX command bytes in
-  the BMD/asset data — so GX interpretation is unavoidable regardless. And J3D + every actor draw +
-  particles + HUD is a far larger, less-bounded surface than the GX API.
-- **GX-level (own the GX command stream + GX register state → native GPU).** CHOSEN. The GX SDK
-  (~210 functions) and the GX FIFO command set are a **fixed, bounded seam** that ALL rendering passes
-  through (immediate mode AND display lists). We already own the frontend capture and have started the
-  decoder. The recompiled game keeps calling GX/J3D unchanged; we replace what's *below* GX.
+### ⛔ DIRECTION CORRECTION (2026-06-14, user) — supersedes the old "GX-level" decision
+> "GameCube GP FIFO decoder is still emulation. I want you to port the game to PC as PC native, not
+> just decouple it from Dolphin." … (seam question) → **"PC native PC game."**
 
-### Renderer sub-stages (each independently verifiable)
+The earlier plan chose a **GX-level** renderer: own the GX command stream + register state → native
+GPU (and R1 built a Dolphin-free GP-FIFO decoder, commit 102912f). **The user has rejected that as
+still-emulation:** decoding the live GP-FIFO byte stream at the gather-pipe / CommandProcessor
+boundary is *reimplementing the GameCube's command processor* — decoupled from Dolphin, but still
+emulating the GPU pipeline. Removing Dolphin is NOT the goal; a **native PC game** is.
 
-**R0. Deterministic headless render verification (PREREQUISITE — build first).**
-The current `/verify` readback perturbs timing so captures aren't frame-aligned across runs (see
-`docs/interp60_efb_handoff.md` "VERIFICATION IS BROKEN HEADLESS"). Before touching the renderer, build
-a deterministic capture: drive a fixed number of GAME FRAMES (not wall-ms), dump each to disk without
-the readback perturbing pacing, so an A/B compares identical scenes. Without this, every renderer
-change is an unverifiable guess (it has already cost ~2 sessions). Reuse `tools/interp/verify_*.py`.
+**New seam = the J3D/J2D object model + GC asset formats.** We own, as native PC C++ talking to a
+native GPU API:
+- the **scene-graph draws** — J3DModel / J3DShape / J3DMaterial, J2DScreen / J2DPane / J2DPicture,
+  JPA particles (the game's render objects),
+- the **GC asset formats** decoded to native data — **BMD** geometry → native meshes, **BTI/TLUT**
+  textures → native textures, **TEV materials** → native shaders,
+- a **native GPU backend** (our own Vulkan device/pipeline/present).
 
-**R1. Own GX command decoder — ✅ DONE + VERIFIED (commit 102912f).** Our own GameCube GP FIFO
-decoder, NO Dolphin `OpcodeDecoder`/`VertexLoaderBase`. Pure logic, tested headless by parity against
-the Dolphin-based `gxp_parse_frame` (oracle). Command framing + persistent CP state (VCD/VAT/array
-bases) + vertex-size math, all in `runtime/ngx/ngx_decode.{h,cpp}` (constants transcribed from
-externals/dolphin VideoCommon; vertex sizes via formula, DL counted-not-recursed to match the
-analyzer). Parity harness: `SUNBRIGHT_NGX_PARITY=1` runs both in lockstep each frame boundary
-(gx_stream.cpp), compares prims/DLs/copies/token-offsets/matrix-array-offsets+values/ok/fail-offset;
-read via the `/ngx` probe endpoint or the `SUNBRIGHT_DBG_GXS` line. **Verified:** fastboot → Delfino
-Plaza, walk+jump+heavy camera — 1261 frames mismatch=0 (run 1); `parse ok=384 fail=0` (all full
-parses, no trivial fail-matching), `ngx cmp=384 mismatch=0` over 114 MB decoded stream (~310 KB
-frames), verdict PARITY-OK (run 2). The exact spec is preserved in §3a below for reference.
+The **recompiled PowerPC keeps doing game logic only** — transforms, animation (J3DAnm), collision,
+camera, AI, physics — and calls *into our native renderer* instead of the GX SDK. No console GPU
+pipeline anywhere: not Dolphin's VideoCommon, not a GX-FIFO reimplementation.
 
-**R2. GX register state model.** Mirror the GX state the decoder sees (BP/CP/XF registers) into our own
-state structs (TEV stages, tev/alpha/z config, tex coord gen, viewport, scissor, blend, format). This
-is the input to the shader translator and the fixed-function setup. Validate field-by-field against
-Dolphin's `bpmem`/`xfmem`/`cpmem` on real frames.
+**R1 is repurposed, not wasted.** Pre-baked model geometry (BMD shape packets) IS GX-display-list
+*data*; decoding it is **asset decoding**, done offline / at load time into native meshes — NOT a live
+runtime FIFO. The R1 framing/vertex-size logic (§3a) becomes that asset-geometry decoder. The runtime
+GP-FIFO path + Dolphin VideoCommon get deleted.
 
-**R3. Native GPU backend bring-up (own Vulkan, in parallel with Dolphin).** Stand up our own Vulkan
-device/swapchain (or share the surface) and a minimal pipeline. First visible milestone: present a
-cleared color + a single hardcoded triangle from our path, A/B alongside Dolphin. This is where the
-"own the present/scan-out" peel lands (we already drive present timing via `sb_present_xfb`).
+### What we port from (faithful RE source)
+The full JSystem decomp is vendored at `reference/sms` — port from it directly, don't re-derive:
+- J2D: `reference/sms/src/JSystem/J2D/{J2DScreen,J2DPane,J2DPicture,J2DGrafContext,J2DTextBox,J2DWindow,J2DPrint}.cpp`
+- J3D: `reference/sms/src/JSystem/J3D/J3DGraphBase/{J3DShape,J3DMaterial,J3DVertex,J3DTevs,J3DTransform,J3DDrawBuffer,J3DPacket,J3DSys}.cpp`
+  + `J3DGraphLoader` (BMD load) + `J3DGraphAnimator` (anim).
+- Textures: `reference/sms/src/JSystem/JUtility/JUTTexture.cpp`, `J3D/J3DGraphBase/J3DTexture`.
+- Particles: `reference/sms/src/JSystem/JParticle/`.
+Dolphin's `TextureDecoder` / `PixelShaderGen` are references for *the math* (re-derive natively, don't
+link). Validate against the **oracle** (`SUNBRIGHT_DISABLE_RECOMP`) and against Dolphin's frame dumps.
 
-**R4. Vertex pipeline.** Decoder draws → our vertex assembly (CP/VAT formats → native vertex buffers)
-→ XF transform (position/normal matrices, the indexed matrix arrays the interp60 work already
-understands — array 12 pos, 13 nrm) → a vertex shader. Render opaque geometry natively; A/B vs
-Dolphin. The interp60 motion-interp seam (`sb_slot_xf_indexed`) becomes a native, first-class feature
-here instead of a hook over Dolphin.
+### Native-renderer stages (thin vertical slice first, each independently verifiable)
+The strategy is a **thin vertical slice** — get ONE simple thing fully native end-to-end (asset →
+object → native GPU → present), then widen — rather than building each horizontal layer in isolation.
 
-**R5. TEV → fragment shader (the hard core).** Translate the GameCube TEV combiner + alpha/z/blend
-state into our own SPIR-V/shaders. This is the single hardest piece of GC rendering. Build a TEV-state
-→ shader cache. Validate per-material against Dolphin frame dumps. (Dolphin's `PixelShaderGen` is the
-reference for *what* the math is — re-derive it natively, don't link it.)
+**N0. Deterministic headless render verification (PREREQUISITE — still build first).** Frame-count-
+driven capture (not wall-ms), dump to disk without the `/verify` readback perturbing pacing, so A/B
+compares identical scenes (see `docs/interp60_efb_handoff.md` "VERIFICATION IS BROKEN HEADLESS").
+Reuse `tools/interp/verify_*.py`. Without it every render change is an unverifiable guess.
 
-**R6. Textures + EFB.** GC texture format decode (CMPR/I4/I8/IA/RGB565/RGB5A3/RGBA8/C4/C8/C14X2 +
-TLUTs) → native textures; sampler state. EFB as our own render target; EFB copies (to texture / to XFB)
-as our own resolves. **This is where the interp60 screen-space effect problems dissolve by
-construction:** when WE own the EFB-copy textures per field, the water reflection / Mario's ghost
-"frozen at tick N" class disappears — each field's effect is our own correctly-addressed copy (see §4).
+**N1. Native GC asset decoders (pure, offline-testable — START HERE).** No GPU, no running game.
+  - **Textures:** GC image formats (I4/I8/IA4/IA8/RGB565/RGB5A3/RGBA8/CMPR/C4/C8/C14X2 + TLUTs) →
+    RGBA8, ported native. Validate against Dolphin's `TextureDecoder` (oracle for the math) over a
+    table of formats/sizes. Deliverable: `runtime/render/tex_decode.{h,cpp}`.
+  - **BMD geometry:** repurpose R1 (§3a) as an asset display-list → native mesh (positions/normals/
+    UVs/colors, indexed) decoder. Validate vertex counts/positions against the live game's draws.
 
-**R7. Framebuffer / XFB / present, fully native.** EFB→XFB resolve, XFB→swapchain present, all ours.
-Delete the Dolphin Present/VideoInterface path and the `sb_present_xfb` shim into Dolphin.
+**N2. Native GPU backend bring-up (own Vulkan).** Our own Vulkan device/pipeline/present (reuse the
+existing surface during bring-up; we already drive present timing via `sb_present_xfb`). First visible
+milestone: a cleared color + one textured quad from a decoded BTI, A/B alongside Dolphin.
 
-**R8. Delete Dolphin VideoCommon + backend from the link.** Renderer fully native.
+**N3. Vertical slice — J2D HUD native.** Override `J2DScreen::draw` / pane draws (J2DScreen::draw @
+`0x802cfda8` already located); walk the J2D pane tree from the game's live objects; render native
+textured quads (ortho) with decoded textures. Smallest *complete* slice (2D quads, simple blend, no
+skinning/heavy TEV). Verify the HUD vs the oracle. This proves the whole pipeline thin.
 
-### 3a. GX decoder spec (gathered this session — implement R1 directly from this)
+**N4. J3D opaque geometry.** Override the J3D shape/packet draw; native vertex assembly from decoded
+BMD meshes; XF transform (position/normal matrices — the interp60 indexed-matrix seam, array 12 pos /
+13 nrm, becomes a native first-class feature here). Render opaque world geometry; A/B vs oracle. The
+recompiled J3DModel/anim still computes the matrices.
+
+**N5. TEV → fragment shader (the hard core).** Translate J3DMaterial's TEV combiner + alpha/z/blend
+into native SPIR-V; TEV-state→shader cache. Validate per-material vs oracle frame dumps. (`J3DTevs.cpp`
++ Dolphin `PixelShaderGen` as math references.)
+
+**N6. EFB + screen-space effects native.** Our own EFB render target + EFB→texture/XFB resolves.
+**This dissolves the interp60 effect class by construction** (water reflection / Mario ghost "frozen
+at tick N"): WE own per-field effect textures and re-issue each field's effect at the interpolated
+camera — no Dolphin texture-cache aliasing (see §4).
+
+**N7. Particles (JPA), then the long tail** — remaining draw paths, fog, decals, projected shadows.
+
+**N8. Delete Dolphin VideoCommon + backend (and the runtime GP-FIFO path) from the link.** Renderer
+fully native.
+
+### 3a. GX display-list / asset-geometry decode spec (was the R1 GP-FIFO spec — now the BMD/DL asset decoder reference)
 
 GP FIFO command framing (opcode = first byte):
 - `0x00` NOP — 0 operands.
@@ -231,38 +248,43 @@ coverage, native water re-issue at N½. Dead ends recorded: blanket direct-XF in
 
 ## 6. Recommended order (each stage shippable; dependencies noted)
 
-1. **R0** deterministic render verification (unblocks everything render).
-2. **Native DVD/asset loading** (S, independent, removes a device + latency coupling) — can run in
-   parallel with R0/R1.
-3. **R1 → R2** GX decoder + state model (pure logic, headless-testable; no GPU yet).
-4. **Native time/event model** (enabler for owning MMIO devices cleanly) — can interleave.
-5. **R3 → R4** native Vulkan bring-up + vertex pipeline (first native pixels).
-6. **MMIO devices native** (VI/PE/CP first — they pair with the renderer; SI/EXI/PI follow).
-7. **R5** TEV→shader (the long pole).
-8. **R6 → R7** textures/EFB + framebuffer/present native (resolves the effect-jitter class).
-9. **DSP/audio finish** (drop ZeldaAudioRenderer dependency).
-10. **CPU: model the remaining JIT-only HW ops natively** (`mtmsr`/`rfi`/MMU/HW-SPR), shrink interp
+1. **N0** deterministic render verification (unblocks everything render).
+2. **N1** native GC asset decoders — textures + BMD geometry (pure, offline-testable; no GPU).
+3. **Native DVD/asset loading** (S, independent, removes a device + latency coupling) — parallel.
+4. **N2** native Vulkan backend bring-up (first native pixel: a textured quad).
+5. **N3** vertical slice: J2D HUD native (smallest complete asset→object→GPU→present path).
+6. **N4** J3D opaque geometry native (vertex pipeline + XF; interp60 matrix seam goes native here).
+7. **Native time/event model** + **MMIO devices native** (VI/PE/CP pair with the renderer) — interleave.
+8. **N5** TEV→shader (the long pole).
+9. **N6 → N7** EFB/screen-space effects + particles native (resolves the interp60 effect-jitter class).
+10. **DSP/audio finish** (drop ZeldaAudioRenderer dependency).
+11. **CPU: model the remaining JIT-only HW ops natively** (`mtmsr`/`rfi`/MMU/HW-SPR), shrink interp
     fallback to zero.
-11. **Boot fully native** (fastboot-only path).
-12. **R8 + unlink Dolphin** — delete VideoCommon/backend/DSP/CoreTiming/MMU from the link. Done.
+12. **Boot fully native** (fastboot-only path).
+13. **N8 + unlink Dolphin** — delete VideoCommon/backend/DSP/CoreTiming/MMU from the link. Done.
 
-**Progress:** R1 ✅ DONE+VERIFIED (commit 102912f — native GX decoder at byte-parity vs the oracle
-over a 114 MB gameplay capture, 0 mismatches). **Next concrete steps:** R0 (deterministic
-frame-count-driven capture, still the prerequisite for any *pixel*-level renderer verification) and
-R2 (mirror the GX register state — BP/CP/XF — into our own structs, validated field-by-field against
-Dolphin's bpmem/xfmem/cpmem; the decoder from R1 already gives us the command/CP-state seam to build
-on). Both are pure, headless-verifiable, Dolphin-free foundation work.
+**Progress:** R1 (Dolphin-free GP-FIFO decoder, commit 102912f) was built+verified, then the seam was
+**corrected by the user** (§3 DIRECTION CORRECTION): GP-FIFO decoding is still GPU emulation. R1 is
+repurposed as the BMD/display-list **asset**-geometry decoder (N1); the runtime GP-FIFO path is on the
+delete list. **Next concrete steps:** N0 (deterministic capture) + **N1 START: native GC texture
+decoder** (`runtime/render/tex_decode.{h,cpp}`, validated vs Dolphin's TextureDecoder oracle) — pure,
+offline-testable, the first brick of the native PC game's content layer.
 
 ---
 
 ## 7. Risks / honest unknowns
-- **TEV→shader (R5) is genuinely hard** — it is the core of GC rendering. Budget accordingly; use
+- **TEV→shader (N5) is genuinely hard** — it is the core of GC rendering. Budget accordingly; use
   Dolphin's `PixelShaderGen` only as a *reference for the math*, re-derived natively.
+- **J3D surface is large/less-bounded** — this is the cost of the object-level seam (the GX-level seam
+  was rejected as still-emulation). Mitigate with the thin-vertical-slice approach (J2D HUD first) and
+  by porting faithfully from `reference/sms` JSystem rather than re-deriving. Keep the recompiled
+  J3DModel/anim doing the matrix/animation math; we own only the *draw*.
 - **Vulkan device ownership vs Dolphin during bring-up** — running our Vulkan alongside Dolphin's on
-  one surface is awkward; may need to take the surface fully (R3) earlier than ideal, or render
-  offscreen and blit. Decide at R3.
-- **Display-list recursion + state persistence** — CP/VAT/array state persists across DLs and frames;
-  the decoder must thread it exactly (the existing analyzer already relies on this).
+  one surface is awkward; may need to take the surface fully (N2) earlier than ideal, or render
+  offscreen and blit. Decide at N2.
+- **Asset display-list state persistence** — CP/VAT/array state persists across BMD shape packets; the
+  asset-geometry decoder (repurposed R1, §3a) must thread it exactly (the analyzer already relies on
+  this). This is now a load-time/offline concern, not a live-FIFO one.
 - **Scope is months.** The user has explicitly accepted this (`pc-game-architecture-directive`). Keep
   each stage shippable so progress is always demonstrable.
 - **Don't lose the recomp.** Game/actor logic stays recompiled; this plan removes Dolphin's *hardware*
