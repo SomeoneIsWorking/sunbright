@@ -102,6 +102,15 @@ target_include_directories(sunbright-type-recovery-test PRIVATE tools/recompiler
 target_compile_options(sunbright-type-recovery-test PRIVATE -Wall -Wextra -Wno-unused-parameter)
 add_test(NAME type_recovery_test COMMAND sunbright-type-recovery-test)
 
+# GameCube/host ABI offset computation (the type-DB construction core).
+add_executable(sunbright-abi-layout-test
+    tools/recompiler/tests/abi_layout_test.cpp
+    tools/recompiler/abi_layout.cpp
+)
+target_include_directories(sunbright-abi-layout-test PRIVATE tools/recompiler runtime)
+target_compile_options(sunbright-abi-layout-test PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-invalid-offsetof)
+add_test(NAME abi_layout_test COMMAND sunbright-abi-layout-test)
+
 # ── Launcher executable (SDL2 window + Dolphin Core) ─────────────────────────
 # Everything — launcher, runtime bridge, hand-written overrides, and the
 # statically-recompiled game code — is compiled into one self-contained binary.
