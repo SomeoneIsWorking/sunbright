@@ -7,3 +7,4 @@ gen() { glslc -fshader-stage=$2 --target-env=vulkan1.0 -O -mfmt=c "$1" -o /dev/s
     echo "static const uint32_t $3[] = $(cat .t);"; } > "$4"; rm -f .t; echo "wrote $4"; }
 gen quad.vert.glsl vert kQuadVertSpv quad_vert_spv.h
 gen quad.frag.glsl frag kQuadFragSpv quad_frag_spv.h
+gen quad_ortho.vert.glsl vert kQuadOrthoVertSpv quad_ortho_vert_spv.h

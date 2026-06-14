@@ -20,6 +20,7 @@
 //   J2DPicture (kind 'PIC1'/'PIC2'): mTextures[4]@0xEC, mTextureNum@0xFC.
 
 #include "../intrinsics.h"     // mem_r32, u32/u8
+#include "j2d_types.h"
 #include <cstdarg>
 #include <cstdio>
 
@@ -34,13 +35,23 @@ inline u8   rb(u32 a) { return valid(a) ? (u8)(mem_r32(a) >> 24) : 0; }  // 4-al
 
 constexpr u32 PANE_KIND     = 0x08;
 constexpr u32 PANE_VISIBLE  = 0x0C;
-constexpr u32 PANE_BOUNDS   = 0x14;   // x1,y1,x2,y2
+constexpr u32 PANE_BOUNDS   = 0x14;   // mBounds (local) x1,y1,x2,y2
+constexpr u32 PANE_GBOUNDS  = 0x24;   // mGlobalBounds (screen-space) x1,y1,x2,y2
 constexpr u32 PANE_ALPHA    = 0xCC;
 constexpr u32 PANE_TREEHEAD = 0xD0;   // JSUList::mHead (first child LINK)
 constexpr u32 LINK_DATA     = 0x00;   // JSUPtrLink::mData  (owner pane)
 constexpr u32 LINK_NEXT     = 0x0C;   // JSUPtrLink::mNext  (next sibling link)
 constexpr u32 PIC_TEXTURES  = 0xEC;
 constexpr u32 PIC_TEXNUM    = 0xFC;
+// JUTTexture fields
+constexpr u32 TEX_DATA      = 0x24;   // mTexData (raw tiled image bytes)
+constexpr u32 TEX_EMBPAL    = 0x28;   // mEmbPalette (JUTPalette*)
+constexpr u32 TEX_FORMAT    = 0x34;   // mFormat (GX TextureFormat)
+constexpr u32 TEX_WH        = 0x3C;   // mWidth(u16)@0x3C, mHeight(u16)@0x3E
+
+inline bool is_picture(u32 kind) {    // 'PIC1'/'PIC2'
+    return (kind >> 8) == 0x504943u;  // "PIC"
+}
 
 }  // namespace
 
@@ -99,4 +110,57 @@ int sb_j2d_dump(char* out, int cap) {
     }
     app("j2d: %d panes visited%s\n", visited, visited >= 1024 ? " (capped)" : "");
     return visited;
+}
+
+// Collect visible J2DPicture quads (screen rect + texture) in draw order.
+int sb_j2d_collect(J2dQuad* out, int max, int* screen_w, int* screen_h) {
+    const u32 root = g_root;
+    if (screen_w) *screen_w = 0;
+    if (screen_h) *screen_h = 0;
+    if (!valid(root) || !out || max <= 0) return 0;
+
+    if (screen_w) *screen_w = (int)r32(root + PANE_GBOUNDS + 8) - (int)r32(root + PANE_GBOUNDS + 0);
+    if (screen_h) *screen_h = (int)r32(root + PANE_GBOUNDS + 12) - (int)r32(root + PANE_GBOUNDS + 4);
+    // Fall back to local bounds if global isn't populated (degenerate size).
+    if (screen_w && *screen_w <= 0) *screen_w = (int)r32(root + PANE_BOUNDS + 8) - (int)r32(root + PANE_BOUNDS + 0);
+    if (screen_h && *screen_h <= 0) *screen_h = (int)r32(root + PANE_BOUNDS + 12) - (int)r32(root + PANE_BOUNDS + 4);
+
+    struct Item { u32 pane; };
+    Item stack[256]; int sp = 0, n = 0, seen = 0;
+    stack[sp++] = {root};
+    while (sp > 0 && seen < 1024 && n < max) {
+        const u32 p = stack[--sp].pane;
+        if (!valid(p)) continue;
+        seen++;
+
+        const u32 kind = r32(p + PANE_KIND);
+        const bool vis = rb(p + PANE_VISIBLE) != 0;
+        if (vis && is_picture(kind)) {
+            const u32 tex = r32(p + PIC_TEXTURES);   // mTextures[0]
+            if (valid(tex)) {
+                // Prefer global bounds; fall back to local if empty.
+                int x0 = (int)r32(p + PANE_GBOUNDS + 0), y0 = (int)r32(p + PANE_GBOUNDS + 4);
+                int x1 = (int)r32(p + PANE_GBOUNDS + 8), y1 = (int)r32(p + PANE_GBOUNDS + 12);
+                if (x1 <= x0 || y1 <= y0) {
+                    x0 = (int)r32(p + PANE_BOUNDS + 0); y0 = (int)r32(p + PANE_BOUNDS + 4);
+                    x1 = (int)r32(p + PANE_BOUNDS + 8); y1 = (int)r32(p + PANE_BOUNDS + 12);
+                }
+                const u32 wh = r32(tex + TEX_WH);
+                J2dQuad& q = out[n];
+                q.x0 = x0; q.y0 = y0; q.x1 = x1; q.y1 = y1;
+                q.alpha = rb(p + PANE_ALPHA);
+                q.fmt = (int)(r32(tex + TEX_FORMAT) & 0xFF);
+                q.w = (int)(wh >> 16); q.h = (int)(wh & 0xFFFF);
+                q.data = r32(tex + TEX_DATA);
+                q.tlut = 0; q.tlutfmt = 0;   // palette resolution: later (M+)
+                if (q.w > 0 && q.h > 0 && valid(q.data)) n++;
+            }
+        }
+        // children, pushed reversed for draw order
+        u32 kids[64]; int nk = 0;
+        for (u32 link = r32(p + PANE_TREEHEAD); valid(link) && nk < 64; link = r32(link + LINK_NEXT))
+            kids[nk++] = r32(link + LINK_DATA);
+        for (int i = nk - 1; i >= 0 && sp < 256; i--) stack[sp++] = {kids[i]};
+    }
+    return n;
 }
