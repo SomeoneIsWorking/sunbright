@@ -1,0 +1,187 @@
+// ngx_j3d_shape — N4 live hook (docs/native_port_plan.md §3): observe the game's
+// J3D world-geometry draws and assemble them into native meshes, Dolphin-free.
+//
+// A tee on J3DShape::draw (0x802e0390) reads the shape's vertex descriptor from
+// the J3D OBJECTS (not by decoding a GX byte stream): GXVtxDescList (unk2C) →
+// VCD, J3DVertexData::getVtxAttrFmtList (unk44+0xC) → VAT, and the live vertex
+// arrays (j3dSys pos/nrm/clr0 override + J3DVertexData for clr1/tex). It then
+// walks each J3DShapeDraw display list (mDraws[i]->mDisplayList — the GX
+// primitive stream) through ngx_build_mesh, producing native vertices + a
+// triangle-index list per shape. The real recompiled draw still runs (Dolphin
+// keeps rasterizing during bring-up); we only OBSERVE, and publish stats over the
+// probe (/ngxshape) so the native geometry can be verified vs the oracle.
+//
+// Layout (reference/sms JSystem decomp, verified addresses):
+//   J3DShape:     mElementCount@0x6, mGDCommands@0x28, GXVtxDescList* unk2C@0x2C,
+//                 bool unk30(NBT)@0x30, J3DShapeDraw** mDraws@0x38,
+//                 J3DVertexData* unk44@0x44.
+//   J3DShapeDraw: vtable@0, mDisplayListSize@4, const u8* mDisplayList@8 (the
+//                 decomp header omits the vtable; confirmed by disasm of the ctor
+//                 0x802dfe70 — stw r4(list),8(this) / stw r5(size),4(this) — and
+//                 draw 0x802dfe88 — lwz list,8(this) / lwz size,4(this)).
+//   J3DVertexData: GXVtxAttrFmtList* @0xC, posArr@0x10, nrmArr@0x14, nbtArr@0x18,
+//                  colorArr[2]@0x1C, texCoordArr[8]@0x24.
+//   j3dSys @0x804045DC: unk10C(vtxPos)@+0x10C, unk110(vtxNrm)@+0x110,
+//                  unk114(vtxClr0)@+0x114  (loadVtxArray's live-buffer override).
+//   GXVtxDescList entry = {u32 attr, u32 type} (8 B). GXVtxAttrFmtList entry =
+//                  {u32 attr, u32 cnt, u32 type, u8 frac} (16 B). attr 0xFF = end.
+//   GXAttr: POS=9 NRM=10 CLR0=11 CLR1=12 TEX0..7=13..20. GXAttrType=VCD class.
+
+#include "../overrides.h"
+#include "../intrinsics.h"
+#include "../ngx/ngx_mesh.h"
+#include <cstdarg>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <vector>
+
+namespace {
+
+constexpr u32 J3DSYS = 0x804045DCu;
+
+inline bool valid(u32 a) { return a >= 0x80000000u && a < 0x81800000u; }
+inline u32  r32(u32 a) { return valid(a) ? mem_r32(a) : 0; }
+inline u8   rb(u32 a) { return valid(a) ? (u8)(mem_r32(a) >> 24) : 0; }  // big-endian byte @ word
+
+const unsigned char* resolve(unsigned addr, void*) { return sb_ram_fast(addr); }
+
+// Build the CP descriptor for a shape from its J3D objects. Returns false if the
+// descriptor/format objects are missing or malformed.
+bool build_cp(u32 sh, NgxCP& cp) {
+    const u32 desc  = r32(sh + 0x2C);          // GXVtxDescList*
+    const u32 vdata = r32(sh + 0x44);          // J3DVertexData*
+    if (!valid(desc) || !valid(vdata)) return false;
+    const u32 fmt = r32(vdata + 0x0C);         // GXVtxAttrFmtList*
+    if (!valid(fmt)) return false;
+    const bool nbt = rb(sh + 0x30) & 1;
+
+    // VCD from the descriptor list.
+    for (u32 e = desc; e < desc + 0x200; e += 8) {
+        const u32 attr = r32(e), type = r32(e + 4);
+        if (attr == 0xFF) break;
+        if (attr == 0)               cp.vcd_lo |= (type ? 1u : 0u) << 0;       // PNMTXIDX
+        else if (attr <= 8)          cp.vcd_lo |= (type ? 1u : 0u) << attr;    // TEXiMTXIDX
+        else if (attr == 9)          cp.vcd_lo |= (type & 3) << 9;             // POS
+        else if (attr == 10)         cp.vcd_lo |= (type & 3) << 11;            // NRM
+        else if (attr == 11)         cp.vcd_lo |= (type & 3) << 13;            // CLR0
+        else if (attr == 12)         cp.vcd_lo |= (type & 3) << 15;            // CLR1
+        else if (attr >= 13 && attr <= 20) cp.vcd_hi |= (type & 3) << (2 * (attr - 13));  // TEX
+    }
+
+    // VAT (+ array strides via attribute formats) from the format list.
+    u32 pos_type = 4, nrm_type = 4, tex_type[8] = {4,4,4,4,4,4,4,4};
+    u32& A = cp.vat[0][0]; u32& B = cp.vat[0][1]; u32& C = cp.vat[0][2];
+    for (u32 e = fmt; e < fmt + 0x400; e += 16) {
+        const u32 attr = r32(e), cnt = r32(e + 4), type = r32(e + 8), frac = rb(e + 12) & 0x1f;
+        if (attr == 0xFF) break;
+        switch (attr) {
+        case 9:  A |= (cnt & 1) | ((type & 7) << 1) | (frac << 4); pos_type = type; break;
+        case 10: A |= ((cnt ? 1u : 0u) << 9) | ((type & 7) << 10); if (cnt == 2) A |= 1u << 31;
+                 nrm_type = type; break;
+        case 11: A |= ((cnt & 1) << 13) | ((type & 7) << 14); break;
+        case 12: A |= ((cnt & 1) << 17) | ((type & 7) << 18); break;
+        case 13: A |= ((cnt & 1) << 21) | ((type & 7) << 22) | (frac << 25); tex_type[0] = type; break;
+        case 14: B |= (cnt & 1) | ((type & 7) << 1) | (frac << 4);            tex_type[1] = type; break;
+        case 15: B |= ((cnt & 1) << 9)  | ((type & 7) << 10) | (frac << 13);  tex_type[2] = type; break;
+        case 16: B |= ((cnt & 1) << 18) | ((type & 7) << 19) | (frac << 22);  tex_type[3] = type; break;
+        case 17: B |= ((cnt & 1) << 27) | ((type & 7) << 28); C |= frac;      tex_type[4] = type; break;
+        case 18: C |= ((cnt & 1) << 5)  | ((type & 7) << 6)  | (frac << 9);   tex_type[5] = type; break;
+        case 19: C |= ((cnt & 1) << 14) | ((type & 7) << 15) | (frac << 18);  tex_type[6] = type; break;
+        case 20: C |= ((cnt & 1) << 23) | ((type & 7) << 24) | (frac << 27);  tex_type[7] = type; break;
+        default: break;
+        }
+    }
+
+    // Live vertex-array bases + strides (loadVtxArray overrides pos/nrm/clr0 with
+    // j3dSys's per-view buffers; clr1/tex come from the static BMD arrays).
+    cp.array_base[0] = r32(J3DSYS + 0x10C);  cp.array_stride[0] = (pos_type == 4) ? 12 : 6;
+    cp.array_base[1] = nbt ? r32(vdata + 0x18) : r32(J3DSYS + 0x110);
+    cp.array_stride[1] = ((nrm_type == 4) ? 12 : 6) * (nbt ? 3 : 1);
+    cp.array_base[2] = r32(J3DSYS + 0x114);  cp.array_stride[2] = 4;
+    cp.array_base[3] = r32(vdata + 0x20);    cp.array_stride[3] = 4;
+    for (int i = 0; i < 8; i++) {
+        cp.array_base[4 + i]   = r32(vdata + 0x24 + i * 4);
+        cp.array_stride[4 + i] = (tex_type[i] == 4) ? 8 : 4;
+    }
+    return true;
+}
+
+// ── Published stats (read best-effort by /ngxshape from the HTTP thread; the
+//    emu/render thread is the only writer, so torn reads at worst misreport a
+//    counter by one — acceptable for a diagnostic) ─────────────────────────────
+bool          g_enabled = false;
+unsigned long g_calls = 0, g_meshes = 0, g_fail = 0, g_badcp = 0;
+unsigned long g_total_verts = 0, g_total_tris = 0;
+unsigned      g_last_verts = 0, g_last_tris = 0, g_max_verts = 0;
+u32           g_last_vcdlo = 0, g_last_vcdhi = 0, g_last_vstride = 0;
+float         g_last_pos[3] = {0, 0, 0};
+
+// Reusable scratch (single emu/render thread serialized by nthr).
+std::vector<NgxVertex> g_verts;
+std::vector<unsigned>  g_indices;
+
+void capture(u32 sh) {
+    g_calls++;
+    NgxCP cp{};
+    if (!build_cp(sh, cp)) { g_badcp++; return; }
+
+    const u32 nelem = r32(sh + 4) & 0xFFFF;        // mElementCount @0x6
+    const u32 draws = r32(sh + 0x38);              // J3DShapeDraw**
+    if (!nelem || !valid(draws)) return;
+
+    g_verts.clear();
+    g_indices.clear();
+    int tris = 0;
+    bool any_fail = false;
+    for (u32 i = 0; i < nelem && i < 64; i++) {
+        const u32 dp = r32(draws + i * 4);
+        if (!valid(dp)) continue;
+        const u32 size = r32(dp + 4);              // mDisplayListSize (vtable@0)
+        const u32 list = r32(dp + 8);              // mDisplayList
+        const unsigned char* host = sb_ram_fast(list);
+        if (!host || size == 0 || size > 0x200000) continue;
+        const int t = ngx_build_mesh(cp, host, size, resolve, nullptr, g_verts, g_indices);
+        if (t < 0) any_fail = true; else tris += t;
+    }
+
+    g_meshes++;
+    if (any_fail) g_fail++;
+    g_total_verts += g_verts.size();
+    g_total_tris  += (unsigned)tris;
+    g_last_verts = (unsigned)g_verts.size();
+    g_last_tris  = (unsigned)tris;
+    g_last_vcdlo = cp.vcd_lo; g_last_vcdhi = cp.vcd_hi;
+    g_last_vstride = ngx_vertex_size(cp, 0);
+    if (g_last_verts > g_max_verts) g_max_verts = g_last_verts;
+    if (!g_verts.empty()) {
+        g_last_pos[0] = g_verts[0].pos[0];
+        g_last_pos[1] = g_verts[0].pos[1];
+        g_last_pos[2] = g_verts[0].pos[2];
+    }
+}
+
+}  // namespace
+
+SUNBRIGHT_OVERRIDE(ov_j3dshape_draw, 0x802e0390u) {
+    static const bool init = (g_enabled = (getenv("SUNBRIGHT_NGX_SHAPE") != nullptr), true);
+    (void)init;
+    if (g_enabled) capture(cpu.gpr[3]);
+    if (RecompFunc o = recomp_raw(0x802e0390u)) o(cpu); else call_ppc(cpu, cpu.lr);
+}
+
+// Probe report (/ngxshape).
+int sb_ngx_shape_dump(char* out, int cap) {
+    int n = snprintf(out, cap,
+        "ngx J3DShape capture: %s\n"
+        "  calls=%lu  meshes_built=%lu  badcp=%lu  framing_fail=%lu\n"
+        "  cumulative: verts=%lu tris=%lu\n"
+        "  last shape: verts=%u tris=%u vstride=%u vcd_lo=%08x vcd_hi=%08x\n"
+        "  last pos[0]=(%.3f, %.3f, %.3f)  max_verts/shape=%u\n",
+        g_enabled ? "ON" : "OFF (set SUNBRIGHT_NGX_SHAPE=1)",
+        g_calls, g_meshes, g_badcp, g_fail,
+        g_total_verts, g_total_tris,
+        g_last_verts, g_last_tris, g_last_vstride, g_last_vcdlo, g_last_vcdhi,
+        g_last_pos[0], g_last_pos[1], g_last_pos[2], g_max_verts);
+    return n;
+}

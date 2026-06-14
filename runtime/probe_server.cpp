@@ -80,6 +80,7 @@ int sb_j2d_dump(char*, int);                                 // runtime/render/j
 int sb_j2d_render(char*, int);                               // runtime/render/j2d_render.cpp
 int sb_ngx_vertex_selftest(char*, int);                      // runtime/ngx/ngx_vertex.cpp
 int sb_ngx_mesh_selftest(char*, int);                        // runtime/ngx/ngx_mesh.cpp
+int sb_ngx_shape_dump(char*, int);                           // runtime/overrides/ngx_j3d_shape.cpp
 void gxs_frametime_reset();                                   // runtime/gx_stream.h
 void gxs_frametime_stats(unsigned long*, double*, double*, double*, double*);
 void gxs_frametime_decode(double*, double*);
@@ -222,6 +223,10 @@ std::string handle_repl(const char* path) {
     }
     if (strncmp(path, "/ngxmesh", 8) == 0) {  // N4 native mesh assembly + triangulation self-test
         char rep[2048]; sb_ngx_mesh_selftest(rep, sizeof rep); app("%s", rep);
+        return std::string(buf, n);
+    }
+    if (strncmp(path, "/ngxshape", 9) == 0) {  // N4 live J3DShape native-mesh capture stats
+        char rep[1024]; sb_ngx_shape_dump(rep, sizeof rep); app("%s", rep);
         return std::string(buf, n);
     }
     if (strncmp(path, "/ngx", 4) == 0) {   // R1 native-GX-decoder parity vs oracle

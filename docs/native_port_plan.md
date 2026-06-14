@@ -297,9 +297,26 @@ decoder; runtime GP-FIFO path on the delete list. Then, on the object-model arch
   and triangulates the GX primitive type (Quads→2 tris, Tris→list, TriStrip→alternating winding,
   TriFan, Lines/Points→none) into a triangle-index list — exactly a native GPU vertex+index buffer.
   Owns no GX framing of its own (caller supplies the primitive); pure/offline. `/ngxmesh` self-test
-  14/14 (tri counts, index winding, attribute interleave, multi-primitive append base). **Next: the
-  live J3DShape hook — RE J3DShape/BMD SHP1+VTX1, resolve guest CP ARRAY_BASE/STRIDE → NgxArrays,
-  walk a shape's display-list packets → ngx_assemble_primitive → one native mesh per shape.**
+  14/14 (tri counts, index winding, attribute interleave, multi-primitive append base).
+- **N4 display-list mesh builder ✅** (5936699) — `NgxCP` now tracks per-attribute array base+stride
+  (CP regs 0xA0-0xAF/0xB0-0xBF); `ngx_walk_stream` walks a GX command stream invoking a per-DRAW
+  callback (shares ngx_decode framing; ngx_parse_frame parity unchanged); `ngx_build_mesh` resolves
+  arrays via a guest→host resolver and assembles a whole shape display list into one mesh. `/ngxmesh`
+  20/20 (added indexed-array dl build + clean −1 on malformed stream).
+- **N4 LIVE J3DShape hook ✅** (this commit) — `runtime/overrides/ngx_j3d_shape.cpp`, the first
+  GAME 3D WORLD GEOMETRY assembled natively. Tee on `J3DShape::draw` (0x802e0390, gated
+  `SUNBRIGHT_NGX_SHAPE=1`, real draw still runs): builds `NgxCP` from the J3D **objects** (object-
+  model, NOT GX byte decode) — `GXVtxDescList` (unk2C@0x2C) → VCD, `J3DVertexData` attr-fmt list
+  (unk44@0x44 → +0xC) → VAT, GXAttr/CompType/Cnt enums map 1:1 to NgxCP — resolves live arrays
+  (j3dSys@0x804045DC unk10C/110/114 pos/nrm/clr0 override + J3DVertexData clr1/tex), walks each
+  `mDraws[i]` display list through `ngx_build_mesh`. Verified live (Delfino, fastboot, 75s, no
+  crash): 1.2M shape draws, **0 bad-CP / 0 framing failures**, ~470 shapes/frame, sane meshes
+  (e.g. 87 verts→49 tris, vstride 6 matching Index16 pos/clr/tex), real world-space positions
+  (−974, 1531, −8200), max 15790 verts/shape. `/ngxshape` probe. GOTCHA found+fixed: J3DShapeDraw
+  has a **vtable@0** the decomp header omits → real layout vtable@0 / size@4 / list@8 (confirmed by
+  ctor+draw disasm); reading size@0/list@4 skipped every list (0 verts). **Next: A/B the native
+  vertex/tri counts vs the Dolphin oracle per frame (faithfulness proof); then feed these meshes
+  to the native Vulkan path (vk_quad → a mesh pipeline) with the recompiled J3D matrices (→ N5 TEV).**
 
 **J3DShape DRAW PATH (RE'd 2026-06-14, `reference/sms/.../J3DShape.cpp`) — the live-hook seam.**
 `J3DShape::draw()` does, in order:
