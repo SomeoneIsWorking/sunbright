@@ -107,8 +107,10 @@ static void add_field(EngineLayout& L, const ParsedField& f,
                       const std::set<std::string>& engine_types,
                       std::set<std::string>& seen, std::vector<std::string>* unresolved) {
     if (f.is_pointer) {
-        std::string nested = engine_types.count(f.pointee) ? f.pointee : "";
-        L.fields[f.offset] = FieldDesc{ f.name, nested };
+        const bool engine = engine_types.count(f.pointee) != 0;
+        // engine-object pointer -> nested_type (handle); pointer to GUEST data -> guest_ptr
+        // (host<->guest translation). A pointer is never a plain scalar — one of the two.
+        L.fields[f.offset] = FieldDesc{ f.name, engine ? f.pointee : "", /*guest_ptr=*/!engine };
         return;
     }
     if (f.sizable) {                               // scalar (incl. scalar arrays)

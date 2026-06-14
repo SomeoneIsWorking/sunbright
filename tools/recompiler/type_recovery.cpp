@@ -89,7 +89,7 @@ void apply(const PPCInstr& i, State& s, const TypeDB& db,
             if (gaps) gaps->push_back(i.pc);
             return "";
         }
-        if (out) (*out)[i.pc] = EngField{ ty, f->second.member, f->second.nested_type };
+        if (out) (*out)[i.pc] = EngField{ ty, f->second.member, f->second.nested_type, f->second.guest_ptr };
         return f->second.nested_type;                          // nested engine ptr -> chaining
     };
 

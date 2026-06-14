@@ -227,3 +227,12 @@ extern void  sb_eng_release(void* host);
 // Guest main-RAM effective address -> host pointer (for the SUNBRIGHT_BRIDGE
 // marshalling thunk, runtime/bridge.h). ea==0 -> nullptr. Defined in memory_bridge.cpp.
 extern void* sb_guest_to_host(u32 ea);
+// Inverse: host pointer (held in a guest-data POINTER FIELD of a host engine object) ->
+// 32-bit guest address. Emitted at a LWZ of such a field (c_emitter.cpp emit_eng_field).
+extern u32 sb_host_to_guest(void* host);
+// Store a 32-bit guest address into a guest-data pointer field of a host engine object,
+// translating to a host pointer. Deduces the member's pointer type so the assignment is
+// type-correct (incl. const-qualified pointees) without the emitter carrying the type name.
+template <class P> inline void sb_set_guest_ptr(P*& field, u32 ea) {
+    field = static_cast<P*>(sb_guest_to_host(ea));
+}

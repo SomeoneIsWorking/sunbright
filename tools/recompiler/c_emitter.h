@@ -23,6 +23,11 @@ struct EngField {
     // file, so a load yields a HANDLE (sb_eng_handle) and a store consumes one
     // (sb_eng_host) — this is what makes chained field access (obj->next->field) work.
     std::string ptr_type_cname;
+    // True if this field is a POINTER to GUEST data (not an engine object): on the host an
+    // 8-byte host pointer into guest RAM, but the game reads/writes a 32-bit guest ADDRESS.
+    // A load translates host->guest (sb_host_to_guest); a store guest->host (sb_set_guest_ptr).
+    // Mutually exclusive with ptr_type_cname (engine-object pointer).
+    bool guest_ptr = false;
 };
 
 // Emits C source code from a decoded sequence of PPC instructions.

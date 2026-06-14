@@ -263,6 +263,15 @@ static inline u8* ram_ptr(u32 ea) {
     return nullptr;
 }
 
+// Inverse of ram_ptr: a host pointer into main RAM -> the canonical (cached, 0x8) guest EA.
+// Used by sb_host_to_guest when recompiled code reads a guest-data pointer FIELD out of a
+// host-native engine object (the field holds a host pointer; the game wants a 32-bit address).
+static inline u32 host_to_guest_ea(u8* host) {
+    if (!host || !g_ram_base) return 0;
+    uintptr_t off = (uintptr_t)host - (uintptr_t)g_ram_base;
+    return off < 0x01800000u ? (0x80000000u | (u32)off) : 0;
+}
+
 // A hardware MMIO READ must resolve regardless of the guest's transient MSR.DR. Dolphin's
 // MMU::Read honors MSR.DR (BAT translation): when a CoreTiming device callback fires while the
 // guest CPU is momentarily in REAL MODE (DR=0, mid-rfi of an exception return) — e.g.
@@ -332,6 +341,12 @@ static inline u8* ram_ptr(u32 ea) {
     return g_ram + phys;
 }
 
+static inline u32 host_to_guest_ea(u8* host) {
+    if (!host) return 0;
+    uintptr_t off = (uintptr_t)host - (uintptr_t)g_ram;
+    return off < sizeof(g_ram) ? (0x80000000u | (u32)off) : 0;
+}
+
 #  define MMIO_R(bits, ea)     0
 #  define MMIO_W(bits, ea, v)  ((void)0)
 #endif
@@ -343,6 +358,13 @@ static inline u8* ram_ptr(u32 ea) {
 // Defined unconditionally (both MemMap and the standalone test backend provide ram_ptr).
 void* sb_guest_to_host(u32 ea) {
     return ea ? (void*)ram_ptr(ea) : nullptr;
+}
+
+// Inverse: a host pointer (held in a guest-data pointer FIELD of a host engine object) -> the
+// 32-bit guest address the recompiled game expects. nullptr -> 0. See eng_handle.h /
+// c_emitter.cpp emit_eng_field (LWZ of a guest_ptr field).
+u32 sb_host_to_guest(void* host) {
+    return host_to_guest_ea((u8*)host);
 }
 
 // Shared diagnostic: dump the live guest register file and name whichever GPR, plus a

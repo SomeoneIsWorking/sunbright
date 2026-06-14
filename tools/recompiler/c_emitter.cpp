@@ -152,6 +152,8 @@ bool CEmitter::emit_eng_field(const PPCInstr& i, const EmitContext& ctx) {
     case PPCOp::LWZ:
         if (is_ptr)  // engine-pointer field -> hand back a 32-bit HANDLE for the host object
             line("%s = sb_eng_handle((void*)(%s));", d.c_str(), obj);
+        else if (f.guest_ptr)  // pointer to GUEST data -> host pointer back to a 32-bit guest address
+            line("%s = sb_host_to_guest((void*)(%s));", d.c_str(), obj);
         else         // scalar field -> read the host member into the 32-bit register
             line("%s = (u32)(%s);", d.c_str(), obj);
         return true;
@@ -163,6 +165,8 @@ bool CEmitter::emit_eng_field(const PPCInstr& i, const EmitContext& ctx) {
     case PPCOp::STW:
         if (is_ptr)  // store a handle back as a real host pointer in the engine member
             line("%s = (%s*)sb_eng_host(%s);", obj, f.ptr_type_cname.c_str(), s.c_str());
+        else if (f.guest_ptr)  // store a 32-bit guest address as a host pointer in the member
+            line("sb_set_guest_ptr(%s, %s);", obj, s.c_str());
         else
             line("%s = (u32)%s;", obj, s.c_str());
         return true;

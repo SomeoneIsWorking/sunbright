@@ -399,6 +399,42 @@ int main() {
               "ps_muls/ps_add round their double-exact results to single");
     }
 
+    // TAILORED boundary field access (docs/ARCHITECTURE_TARGET.md): at a load/store whose base
+    // register is a host-native engine object, the emitter bakes a host member access. Three
+    // pointer/scalar kinds must be distinguished — a guest-data pointer field (e.g. ResTIMG*)
+    // must NOT be truncated to 32 bits (the bug the JUTTexture flip surfaced).
+    {
+        auto enc_lwz = [](int rt, int ra, int16_t d) { return (32u<<26)|(rt<<21)|(ra<<16)|(uint16_t)d; };
+        auto enc_stw = [](int rs, int ra, int16_t d) { return (36u<<26)|(rs<<21)|(ra<<16)|(uint16_t)d; };
+        std::vector<uint32_t> w = {
+            enc_lwz(4,3,0x20),   // +0  load guest-data ptr field  (mTexInfo)
+            enc_lwz(5,3,0x3c),   // +4  load scalar field          (mWidth)
+            enc_lwz(6,3,0x28),   // +8  load engine-object ptr field (mEmbPalette -> handle)
+            enc_stw(4,3,0x24),   // +12 store guest-data ptr field (mTexData)
+            BLR,
+        };
+        std::vector<uint8_t> bytes(w.size()*4);
+        for (size_t i=0;i<w.size();++i){ uint32_t be=__builtin_bswap32(w[i]); std::memcpy(&bytes[i*4],&be,4); }
+        EmitContext ctx; ctx.func_addr = B;
+        ctx.instrs = collect_function(bytes.data(), B, bytes.size(), B, B+(uint32_t)w.size()*4, /*cfg=*/false);
+        ctx.eng_fields[B+0]  = EngField{ "JUTTexture", "mTexInfo",    "",           /*guest_ptr=*/true  };
+        ctx.eng_fields[B+4]  = EngField{ "JUTTexture", "mWidth",      "",           /*guest_ptr=*/false };
+        ctx.eng_fields[B+8]  = EngField{ "JUTTexture", "mEmbPalette", "JUTPalette", /*guest_ptr=*/false };
+        ctx.eng_fields[B+12] = EngField{ "JUTTexture", "mTexData",    "",           /*guest_ptr=*/true  };
+        std::ostringstream ss; CEmitter em(ss); em.emit_function(ctx);
+        std::string code = ss.str();
+        CHECK(has(code, "sb_host_to_guest((void*)(((JUTTexture*)sb_eng_host(cpu.gpr[3]))->mTexInfo))"),
+              "guest-data ptr field LOAD translates host->guest (no 32-bit truncation)");
+        CHECK(has(code, "= (u32)(((JUTTexture*)sb_eng_host(cpu.gpr[3]))->mWidth)"),
+              "scalar field load reads the host member directly");
+        CHECK(has(code, "sb_eng_handle((void*)(((JUTTexture*)sb_eng_host(cpu.gpr[3]))->mEmbPalette))"),
+              "engine-object ptr field load yields a handle");
+        CHECK(has(code, "sb_set_guest_ptr(((JUTTexture*)sb_eng_host(cpu.gpr[3]))->mTexData, cpu.gpr[4])"),
+              "guest-data ptr field STORE translates guest->host (type-deduced)");
+        CHECK(!has(code, "MEM_R32") && !has(code, "MEM_W32"),
+              "no raw guest MEM access remains at the typed sites");
+    }
+
     std::printf("recomp_test: %d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

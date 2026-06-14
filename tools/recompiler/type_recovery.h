@@ -36,6 +36,12 @@ struct FieldDesc {
     std::string nested_type;   // if this field is itself an engine-object POINTER, the
                                // engine type it points at (so loads THROUGH it stay
                                // typed — chained field access); "" for a scalar/value field.
+    bool guest_ptr = false;    // true if this field is a POINTER to GUEST data (e.g. ResTIMG*,
+                               // void* into a loaded archive) — NOT an engine object. On the host
+                               // it is an 8-byte host pointer into guest RAM, but the recompiled
+                               // game reads/writes a 32-bit guest ADDRESS, so the boundary must
+                               // translate host<->guest (sb_host_to_guest / sb_guest_to_host)
+                               // instead of truncating the host pointer to a scalar.
 };
 
 // Per-engine-type host layout, keyed by GUEST displacement (from decomp headers).
