@@ -1,16 +1,12 @@
 // ===========================================================================
-// port/pal/os/os_thread_heap_stub.cpp — PAL stubs for the GameCube OS threads,
-// message queues, OSAlloc heaps, arena, and OS font API.
+// port/pal/os/os_thread_heap_stub.cpp — PAL implementations for the GameCube
+// OSAlloc heaps, the arena model, and the OS font API.
 //
-// Companion to os_pal.cpp (OS time / interrupts / mutexes / OSReport) and
-// os_globals.cpp (the AT_ADDRESS low-RAM globals). This file intentionally does
-// NOT touch either of those (per the PAL task constraint) — it adds ONLY the
-// remaining OS* symbols left undefined at the smsport_main link:
+// Companion to os_pal.cpp (OS time / interrupts / OSReport), os_globals.cpp (the
+// AT_ADDRESS low-RAM globals), and os_thread.cpp (the REAL native cooperative
+// thread/message/mutex scheduler — threads & message queues used to be stubbed
+// here; they now live there and actually run). This file owns ONLY:
 //
-//   Threads   : OSCreateThread, OSExitThread, OSCancelThread, OSDetachThread,
-//               OSResumeThread, OSSleepThread, OSWakeupThread, OSInitThreadQueue,
-//               OSIsThreadTerminated, OSGetCurrentThread, OSGetThreadPriority
-//   Messages  : OSInitMessageQueue, OSSendMessage, OSReceiveMessage
 //   OSAlloc   : OSInitAlloc, OSCreateHeap, OSDestroyHeap, OSAllocFromHeap,
 //               OSFreeToHeap, OSCheckHeap, OSDumpHeap, OSReferentSize
 //   Arena     : OSGetArenaHi, OSGetArenaLo, OSSetArenaHi, OSSetArenaLo
@@ -22,25 +18,7 @@
 // this introduces no new multiple-definition risk (the globals are extern'd
 // there; their single definitions live in os_globals.cpp).
 //
-// BEHAVIOR (bring-up placeholders — FLAG FOR PM): the PC port does NOT yet run
-// the GameCube cooperative scheduler. Real threading for the engine's worker
-// threads is provided elsewhere (the recompiler track's native scheduler; the
-// port track's port/src/JKRThread.cpp wrapper). These are LINK-time stubs:
-//
-//   - OSCreateThread returns 1 (success) but spawns NOTHING; the thread body
-//     never runs. OSResumeThread/OSExitThread/OSCancel/Detach are no-ops.
-//     OSGetCurrentThread returns nullptr (no current OS thread). OSGetThread
-//     Priority returns 0. OSIsThreadTerminated returns TRUE (treat as already
-//     finished, so a join/wait loop terminates rather than spinning).
-//     FLAG: any subsystem that depends on a spawned OS thread actually running
-//     will not function until native threading is wired in.
-//   - Message queues: a minimal, correct ring-buffer FIFO (no blocking — the
-//     NOBLOCK semantics). Send returns FALSE when full, Receive FALSE when
-//     empty; both return TRUE and move the message otherwise. This is real,
-//     portable behavior (not a no-op) so single-threaded producer/consumer
-//     handoff works; with no scheduler, BLOCK-mode senders/receivers degrade to
-//     non-blocking (they get FALSE rather than sleeping). FLAG: cross-thread
-//     blocking handoff is not honored without native threading.
+// BEHAVIOR (bring-up placeholders — FLAG FOR PM):
 //   - OSAlloc heaps: a thin wrapper over the host allocator. OSCreateHeap
 //     returns a heap handle; OSAllocFromHeap == malloc, OSFreeToHeap == free.
 //     OSReferentSize returns 0 (size not tracked). OSCheckHeap returns 0 (OK),
@@ -81,60 +59,9 @@ void ensure_arena() {
 
 extern "C" {
 
-// --------------------------------------------------------------- Threads
-int OSCreateThread(OSThread* /*thread*/, void* (* /*func*/)(void*),
-                   void* /*param*/, void* /*stack*/, u32 /*stackSize*/,
-                   s32 /*priority*/, u16 /*attr*/) {
-    return 1;  // "created" — but no real thread is spawned (see header).
-}
-void OSExitThread(OSThread* /*thread*/) {}
-void OSCancelThread(OSThread* /*thread*/) {}
-void OSDetachThread(OSThread* /*thread*/) {}
-long OSResumeThread(OSThread* /*thread*/) { return 0; }
-void OSSleepThread(OSThreadQueue* /*queue*/) {}
-void OSWakeupThread(OSThreadQueue* /*queue*/) {}
-void OSInitThreadQueue(OSThreadQueue* queue) {
-    // Zero the queue head/tail so it is a defined empty queue.
-    if (queue) std::memset(queue, 0, sizeof(*queue));
-}
-BOOL OSIsThreadTerminated(OSThread* /*thread*/) {
-    return 1;  // TRUE: treat as finished so join/wait loops terminate.
-}
-OSThread* OSGetCurrentThread(void) { return nullptr; }
-long OSGetThreadPriority(OSThread* /*thread*/) { return 0; }
-
-// --------------------------------------------------------------- Messages
-// A correct non-blocking ring FIFO over the SDK OSMessageQueue layout. The
-// struct's msgArray/msgCount/firstIndex/usedCount fields are filled by
-// OSInitMessageQueue; we operate on them directly so producer/consumer handoff
-// works without faking hardware. (No scheduler -> BLOCK flag degrades to
-// non-blocking; see header.)
-void OSInitMessageQueue(struct OSMessageQueue* mq, void* msgArray,
-                        long msgCount) {
-    if (!mq) return;
-    std::memset(mq, 0, sizeof(*mq));
-    mq->msgArray = msgArray;        // struct field is void* (array of OSMessage)
-    mq->msgCount = msgCount;
-    mq->firstIndex = 0;
-    mq->usedCount = 0;
-}
-int OSSendMessage(struct OSMessageQueue* mq, void* msg, long /*flags*/) {
-    if (!mq || !mq->msgArray || mq->msgCount <= 0) return 0;
-    if (mq->usedCount >= mq->msgCount) return 0;  // full (non-blocking)
-    long idx = (mq->firstIndex + mq->usedCount) % mq->msgCount;
-    static_cast<OSMessage*>(mq->msgArray)[idx] = msg;  // OSMessage == void*
-    mq->usedCount++;
-    return 1;
-}
-int OSReceiveMessage(struct OSMessageQueue* mq, void* msg, long /*flags*/) {
-    if (!mq || !mq->msgArray || mq->usedCount <= 0) return 0;  // empty
-    if (msg)
-        *static_cast<OSMessage*>(msg) =
-            static_cast<OSMessage*>(mq->msgArray)[mq->firstIndex];
-    mq->firstIndex = (mq->firstIndex + 1) % mq->msgCount;
-    mq->usedCount--;
-    return 1;
-}
+// NOTE: Threads, message queues, sleep/wakeup, and mutexes are NO LONGER stubbed
+// here — they moved to os_thread.cpp (the real native cooperative scheduler).
+// This file now owns ONLY the OSAlloc heaps, the arena model, and the OS font API.
 
 // --------------------------------------------------------------- OSAlloc heaps
 // OSHeapHandle is `int`. We hand back a single fixed handle; alloc/free wrap the

@@ -190,3 +190,23 @@ target_link_libraries(bti_test PRIVATE smsport_assets smsport_texdecode)
 add_test(NAME bti_test
          COMMAND bti_test
          WORKING_DIRECTORY "${SMS_REPO_ROOT}")
+
+# ---------------------------------------------------------------------------
+# Runtime bring-up smoke tests — drive REAL compiled engine code natively via the
+# PAL, one per bring-up step (heap -> OS/threads -> ...). They link the engine
+# core + PAL in a --start-group/--end-group (the heap/thread PAL calls into core
+# JKRHeap/JKRThread and vice-versa — a circular static-lib dependency).
+# ---------------------------------------------------------------------------
+find_package(Threads REQUIRED)
+foreach(rt heap_run os_thread_run)
+  add_executable(${rt} tests/${rt}.cpp)
+  target_include_directories(${rt} PRIVATE ${SMS_INCLUDES})
+  target_compile_options(${rt} PRIVATE
+    ${SMS_FORCE_INCLUDE}
+    -fno-strict-aliasing
+    -Wno-multichar)
+  target_link_libraries(${rt} PRIVATE
+    -Wl,--start-group smsport_core smsport_pal -Wl,--end-group
+    Threads::Threads)
+  add_test(NAME ${rt} COMMAND ${rt})
+endforeach()
