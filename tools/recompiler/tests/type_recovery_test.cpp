@@ -261,6 +261,72 @@ int main() {
         CHECK(sites.empty(), "Negative: non-engine operator-new result is not flagged as an engine alloc");
     }
 
+    // ── MOST-DERIVED-TYPE recognition (object_identity.md SCALE VALIDATION) ────────────────
+    // A polymorphic subclass (D : Tex) is constructed via `new D` = `li r3,sizeof(D); bl new;
+    // <inlined ctor incl. the appended-vtable store>; bl Tex_method(base)`. The first engine call
+    // takes `this` as the BASE Tex, so signature resolution alone under-reports the type as Tex —
+    // and the inlined vtable write at the appended offset becomes a recovery GAP. The `li` size is
+    // ground truth: with `sizes`+`bases` in the DB, recognition upgrades Tex -> D by size match,
+    // mapping the appended-vtable offset (no gap) and flagging D's polymorphic construction.
+    TypeDB pdb;
+    pdb.layouts["Tex"].fields = {
+        { 8,    FieldDesc{ "mFov",        "" } },
+        { 0x28, FieldDesc{ "mEmbPalette", "" } },
+    };
+    // D : Tex appends a vtable pointer at the end (CodeWarrior: virtuals introduced over a
+    // non-polymorphic base go at offset == base size). D's layout = Tex's fields + the vptr@0x54.
+    pdb.layouts["D"].fields = pdb.layouts["Tex"].fields;
+    pdb.layouts["D"].fields[0x54] = FieldDesc{ "__vtbl", "" };
+    pdb.sizes = { { "Tex", 0x54 }, { "D", 0x58 } };
+    pdb.bases = { { "D", "Tex" } };
+    pdb.signatures[STORE] = { { 3, "Tex" } };   // storeTIMG(this : Tex)
+    std::unordered_set<u32> praws = { ALLOC };
+
+    // 14. `new D` (subclass) recognized as D by the `li 0x58` size, even though the only engine
+    //     call is a Tex method. The inlined appended-vtable write @0x54 is then a MAPPED field of D
+    //     (not a gap), and the alloc site is flagged as D.
+    //       li r3,0x58 ; bl ALLOC ; stw r0,0x28(r3) ; stw r4,0x54(r3) ; bl STORE(this=r3) ; blr
+    {
+        std::vector<uint32_t> w = {
+            enc_addi(3,0,0x58), enc_bl(B+4, ALLOC), enc_stw(0,3,0x28),
+            enc_stw(4,3,0x54), enc_bl(B+16, STORE), BLR,
+        };
+        auto ins = collect(B, w);
+        std::vector<u32> gaps;
+        std::map<u32,std::string> sites;
+        auto ef = recover_eng_fields(ins, B, pdb, intra_branch_targets(ins, B), {}, &gaps, &praws, &sites);
+        CHECK(sites.count(B+4) && sites[B+4]=="D",
+              "most-derived: `new D` flagged as D (subclass) via the li 0x58 size, not the base Tex");
+        const EngField* vt = field_at_pc(ef, B+12);  // the appended-vtable store @0x54
+        CHECK(vt && vt->type_cname=="D" && vt->member=="__vtbl",
+              "most-derived: D's appended-vtable write @0x54 is a MAPPED field of D (gap cleared)");
+        CHECK(gaps.empty(), "most-derived: no recovery gap once the subclass D is recognized");
+    }
+
+    // 15. `new Tex` (the base itself): `li 0x54` matches the base size, no subclass upgrade.
+    //       li r3,0x54 ; bl ALLOC ; stw r0,0x28(r3) ; bl STORE ; blr
+    {
+        std::vector<uint32_t> w = {
+            enc_addi(3,0,0x54), enc_bl(B+4, ALLOC), enc_stw(0,3,0x28), enc_bl(B+12, STORE), BLR,
+        };
+        auto ins = collect(B, w);
+        std::map<u32,std::string> sites;
+        recover_eng_fields(ins, B, pdb, intra_branch_targets(ins, B), {}, nullptr, &praws, &sites);
+        CHECK(sites.count(B+4) && sites[B+4]=="Tex",
+              "most-derived: base size matches the base type -> no spurious subclass upgrade");
+    }
+
+    // 16. Unknown size (no `li`, e.g. size came from a register): stays the signature type Tex.
+    //       bl ALLOC ; stw r0,0x28(r3) ; bl STORE ; blr
+    {
+        std::vector<uint32_t> w = { enc_bl(B+0, ALLOC), enc_stw(0,3,0x28), enc_bl(B+8, STORE), BLR };
+        auto ins = collect(B, w);
+        std::map<u32,std::string> sites;
+        recover_eng_fields(ins, B, pdb, intra_branch_targets(ins, B), {}, nullptr, &praws, &sites);
+        CHECK(sites.count(B+0) && sites[B+0]=="Tex",
+              "most-derived: unknown allocation size keeps the signature type (honest fallback)");
+    }
+
     std::printf("type_recovery_test: %d checks, %d failures\n", g_checks, g_fail);
     return g_fail ? 1 : 0;
 }

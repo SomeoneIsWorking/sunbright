@@ -54,6 +54,16 @@ struct TypeDB {
     std::map<std::string, EngineLayout> layouts;                 // type name -> layout
     // func guest addr -> {GPR index (3..10, EABI arg slots) -> engine type name}.
     std::map<u32, std::map<int, std::string>> signatures;
+    // Object-identity most-derived-type recognition (docs/re_notes/object_identity.md):
+    //   sizes : type name -> guest object size in bytes (the value materialized by the `li`
+    //           before `operator new`). 0/absent = unknown.
+    //   bases : type name -> immediate base class name ("" = none). Lets a base type resolved
+    //           from a called method's signature be UPGRADED to the most-derived subclass whose
+    //           guest size matches the allocation `li` — so a polymorphic subclass construction
+    //           (J2DWindow::Texture : JUTTexture) is recognized as the subclass, not the base,
+    //           and its appended-vtable write stops being a recovery gap.
+    std::map<std::string, int>         sizes;
+    std::map<std::string, std::string> bases;
 };
 
 // Recover eng_fields (load/store pc -> host field access) for ONE function body.

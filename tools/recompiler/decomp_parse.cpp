@@ -197,13 +197,13 @@ std::string normalize_type(std::string t) {
 // Defined below; parses one member declaration line into `f`.
 static bool parse_field_decl(const std::string& decl_in, ParsedField& f);
 
-ParsedType parse_decomp_type(const std::string& text, const std::string& type_name) {
-    ParsedType pt;
-    pt.name = type_name;
-
-    // Locate the definition: "class NAME" / "struct NAME" followed (after an optional base
-    // list) by '{'. Skip forward declarations ("class NAME;").
-    size_t pos = 0, body_start = std::string::npos, body_end = std::string::npos;
+// Locate a class/struct DEFINITION named `type_name` in `text`: its base (first base), and the
+// [body_start, body_end) span between the matching braces. Skips forward declarations. Returns
+// found=false if no definition is present.
+struct ClassLoc { bool found = false; std::string base; size_t body_start = std::string::npos, body_end = std::string::npos; };
+static ClassLoc locate_class(const std::string& text, const std::string& type_name) {
+    ClassLoc loc;
+    size_t pos = 0;
     while (true) {
         size_t c = text.find("class " + type_name, pos);
         size_t s = text.find("struct " + type_name, pos);
@@ -211,9 +211,7 @@ ParsedType parse_decomp_type(const std::string& text, const std::string& type_na
         if (at == std::string::npos) break;
         size_t after = at + (at == c ? 6 : 7) + type_name.size();
         pos = after;
-        // require a word boundary right after the name
-        if (after < text.size() && is_ident_char(text[after])) continue;
-        // scan forward to ';' (forward decl) or '{' (definition), capturing a base list
+        if (after < text.size() && is_ident_char(text[after])) continue;   // word boundary
         size_t i = after;
         std::string base;
         bool defn = false;
@@ -222,14 +220,12 @@ ParsedType parse_decomp_type(const std::string& text, const std::string& type_na
             if (ch == ';') break;                 // forward declaration -> keep searching
             if (ch == '{') { defn = true; break; }
             if (ch == ':') {
-                // base list: take the first type after access keywords
                 size_t j = i + 1;
                 std::string tok;
                 while (j < text.size() && text[j] != '{' && text[j] != ',') {
                     char b = text[j];
                     if (is_ident_char(b) || b == ':') tok += b;
                     else if (!tok.empty()) {
-                        // finished a token; skip access/virtual keywords
                         if (tok != "public" && tok != "protected" && tok != "private" &&
                             tok != "virtual") { if (base.empty()) base = tok; }
                         tok.clear();
@@ -244,20 +240,43 @@ ParsedType parse_decomp_type(const std::string& text, const std::string& type_na
             ++i;
         }
         if (!defn) continue;
-        pt.base = base;
-        body_start = i + 1;  // just past '{'
-        // find matching close brace
+        loc.base = base;
+        loc.body_start = i + 1;
         int depth = 1;
-        size_t k = body_start;
+        size_t k = loc.body_start;
         for (; k < text.size(); ++k) {
             if (text[k] == '{') ++depth;
-            else if (text[k] == '}') { if (--depth == 0) { body_end = k; break; } }
+            else if (text[k] == '}') { if (--depth == 0) { loc.body_end = k; break; } }
         }
-        pt.found = true;
+        loc.found = (loc.body_end != std::string::npos);
         break;
     }
-    if (!pt.found || body_start == std::string::npos || body_end == std::string::npos)
-        { pt.found = false; return pt; }
+    return loc;
+}
+
+ParsedType parse_decomp_type(const std::string& text, const std::string& type_name) {
+    // Qualified nested type "Outer::Inner[::...]": narrow to the outer class's body, then parse the
+    // remaining (possibly still-qualified) name inside it. This is how a nested engine subclass like
+    // J2DWindow::Texture is reached (object_identity.md — most-derived recognition).
+    size_t sep = type_name.find("::");
+    if (sep != std::string::npos) {
+        std::string outer = type_name.substr(0, sep), rest = type_name.substr(sep + 2);
+        ClassLoc oc = locate_class(text, outer);
+        if (!oc.found) { ParsedType pt; pt.name = type_name; pt.found = false; return pt; }
+        ParsedType inner = parse_decomp_type(text.substr(oc.body_start, oc.body_end - oc.body_start), rest);
+        inner.name = type_name;       // keep the fully-qualified name
+        return inner;
+    }
+
+    ParsedType pt;
+    pt.name = type_name;
+
+    // Locate the definition (skips forward declarations), capturing the first base and body span.
+    ClassLoc loc = locate_class(text, type_name);
+    if (!loc.found) { pt.found = false; return pt; }
+    pt.base = loc.base;
+    pt.found = true;
+    size_t body_start = loc.body_start, body_end = loc.body_end;
 
     std::string body = text.substr(body_start, body_end - body_start);
 

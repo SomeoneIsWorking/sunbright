@@ -161,6 +161,69 @@ u32 call_target(const PPCInstr& i) {
     return 0;
 }
 
+// ── Most-derived-type recognition (object_identity.md SCALE VALIDATION) ────────────────────────
+// The allocation `bl operator new` is preceded by `li r3, <guest size>` — ground truth for which
+// concrete type is being constructed. The type RESOLVED from the first engine-method call is only
+// the type that method's `this` is declared as (a polymorphic subclass passes its BASE subobject to
+// a base method), so it under-reports. This upgrades a resolved base type to the most-derived KNOWN
+// subclass whose guest size equals the allocation size.
+
+// The guest size materialized into r3 just before an `operator new` bl at index `k`: the nearest
+// preceding `li r3, X` (= `addi r3, 0, X`), or -1 if r3 was set some other way / not found. The
+// size is, in real CodeWarrior codegen, an immediate `li` adjacent to the call; a bounded backward
+// scan stopping at the first definer of r3 captures it without a full constant-propagation pass.
+int alloc_size_before(const std::vector<PPCInstr>& instrs, int k) {
+    for (int j = k - 1; j >= 0 && j >= k - 16; --j) {
+        const PPCInstr& p = instrs[j];
+        if (p.op == PPCOp::ADDI && p.rD == 3)                  // li r3,X / addi r3,rA,X
+            return (p.rA == 0) ? (int)p.simm : -1;             // only a plain li is a known size
+        if (p.op == PPCOp::ADDIS && p.rD == 3) return -1;      // lis r3,.. -> not a small size
+        if (is_call(p)) return -1;                             // a call defines r3 (its return)
+        // any other instruction that writes r3 ends the search inconclusively
+        switch (p.op) {
+        case PPCOp::OR: if (p.rA == 3) return -1; break;       // mr r3,..
+        case PPCOp::LBZ: case PPCOp::LHZ: case PPCOp::LHA: case PPCOp::LWZ:
+        case PPCOp::LBZU: case PPCOp::LHZU: case PPCOp::LWZU: case PPCOp::LHAU:
+        case PPCOp::LBZX: case PPCOp::LHZX: case PPCOp::LWZX: case PPCOp::LHAX:
+            if (p.rD == 3) return -1;
+            break;
+        default:
+            if (clobbered_gpr(p) == 3) return -1;
+            break;
+        }
+    }
+    return -1;
+}
+
+// `sub` IS `base` or a (transitive, single-inheritance) subclass of it — and the chain depth
+// (0 when sub==base). Returns -1 when unrelated. Walks `db.bases` upward with a cycle guard.
+int subclass_depth(const TypeDB& db, const std::string& sub, const std::string& base) {
+    std::string cur = sub;
+    std::unordered_set<std::string> guard;
+    for (int depth = 0; ; ++depth) {
+        if (cur == base) return depth;
+        auto b = db.bases.find(cur);
+        if (b == db.bases.end() || b->second.empty()) return -1;
+        if (!guard.insert(cur).second) return -1;             // cycle
+        cur = b->second;
+    }
+}
+
+// Upgrade `base_ty` to the most-derived known subclass whose guest size == `size` (preferring the
+// deepest in the inheritance chain). Returns `base_ty` unchanged when the size is unknown or no
+// related type matches it (the honest fallback — recognition stays at the signature type).
+std::string most_derived(const TypeDB& db, const std::string& base_ty, int size) {
+    if (size <= 0 || db.sizes.empty()) return base_ty;
+    std::string best = base_ty;
+    int best_depth = -1;
+    for (const auto& [u, usz] : db.sizes) {
+        if (usz != size) continue;
+        int d = subclass_depth(db, u, base_ty);
+        if (d > best_depth) { best = u; best_depth = d; }
+    }
+    return best;
+}
+
 // ── Engine-CONSTRUCTION recognition (forward "allocation origin" analysis) ────────────────────
 // The type of a freshly-made engine object is not known at its allocation — it is revealed only
 // when the object is first used as a known engine method's `this`/engine-arg. A purely forward
@@ -261,6 +324,21 @@ std::map<u32, std::string> find_alloc_sites(const std::vector<PPCInstr>& instrs,
         if (!in[k].defined) continue;
         OState s = in[k];
         apply_origin(instrs[k], s, db, raw_allocators, &sites);
+    }
+
+    // Most-derived-type upgrade: for each heap `operator new` site, the `li` before it gives the
+    // constructed object's guest size; prefer the deepest known subclass of the resolved type whose
+    // size matches (so a polymorphic subclass is recognized, not its base). Stack-temp origins (an
+    // interior addi, not an operator-new bl) have no size signal and keep the signature type.
+    std::map<u32, int> origin_size;
+    for (int k = 0; k < n; ++k) {
+        const PPCInstr& i = instrs[k];
+        if (is_call(i) && raw_allocators.count(call_target(i)))
+            origin_size[i.pc] = alloc_size_before(instrs, k);
+    }
+    for (auto& [origin, ty] : sites) {
+        auto sz = origin_size.find(origin);
+        if (sz != origin_size.end()) ty = most_derived(db, ty, sz->second);
     }
     return sites;
 }

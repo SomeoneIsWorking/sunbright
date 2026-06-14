@@ -207,6 +207,47 @@ appended offset. GATE: a clean flip requires the sweep's gap report EMPTY for th
 part of the closure: either flip those polymorphic subclasses via the ctor bridge, or scope the
 first slice to callers that don't construct them.
 
+## MOST-DERIVED-TYPE RECOGNITION (2026-06-15) — the J2DWindow sweep gap is CLOSED
+The SCALE-VALIDATION gap above (`__ct__9J2DWindow` constructing the polymorphic subclass
+`J2DWindow::Texture : JUTTexture`, 9 unmapped-offset gaps at the appended vtable) is now resolved at
+the RECOGNITION level. The `li` before `operator new` is ground truth for the constructed object's
+guest SIZE; the type resolved from the first engine-method call is only that method's `this` type
+(the BASE subobject), so it under-reports a subclass. The fix prefers the most-derived KNOWN subclass
+whose guest size matches the allocation `li`:
+- **`tools/recompiler/decomp_parse.cpp`** now parses a NESTED qualified type (`Outer::Inner`) by
+  narrowing to the enclosing class body (`locate_class` + the `::` split). So `J2DWindow::Texture`
+  is parseable (base JUTTexture, polymorphic, 0 own data fields).
+- **`tools/recompiler/type_db_build.cpp`** computes each type's GUEST SIZE (`guest_size_impl`: own
+  fields + single-inheritance base chain + the CodeWarrior vtable slot — appended at base size for a
+  class introducing virtuals over a NON-polymorphic base, per abi_findings.md; 0 = indeterminable),
+  scans every header for class/struct defs with qualified names + first base (`scan_header_types`,
+  enclosing-scope stack), and `discover_subclasses` pulls the active types' subclasses into the DB by
+  leaf-name base matching. `build_type_db` now fills `TypeDB::sizes` + `TypeDB::bases` for the active
+  set AND its subclasses, and `compose_layout` MAPS the appended vtable slot (`__vtbl`) so the store
+  is recognized, not an unmapped gap. Verified: JUTTexture=0x54, J2DWindow::Texture=0x58 (base+vtable),
+  base link → JUTTexture, layout maps @0x54.
+- **`tools/recompiler/type_recovery.cpp`** `find_alloc_sites` captures the `li r3,<size>` before each
+  `operator new` bl (`alloc_size_before`, bounded backward scan) and upgrades the signature-resolved
+  type to `most_derived(db, base_ty, size)` — the deepest type in `db.bases` chain whose `db.sizes`
+  matches. A wrong/unknown size can only MISS an upgrade, never force a false one (the guest `li` is
+  the comparand), so it is the honest fallback. Stack-temp origins (an interior addi, no size signal)
+  keep the signature type.
+Tests: `type_recovery_test` cases 14–16 (subclass-by-size / base-size-no-upgrade / unknown-size
+fallback); `type_db_build_test` (real-header discovery of J2DWindow::Texture + sizes + base + vtable
+slot). **`scratch/identity_sweep JUTTexture` now reports `0 gaps in 0 funcs`** (was 9 gaps in
+`__ct__9J2DWindow`) — and the only way @0x54 maps is if the alloc was upgraded to J2DWindow::Texture
+(that offset exists in NO other type's layout), so the gap-clear proves the upgrade fired.
+
+### ⚠ REQUIRED EMITTER FOLLOW-UP before flipping a type with a polymorphic subclass
+Recognition now correctly TYPES a `new J2DWindow::Texture` as the polymorphic subclass. The emitter
+must then ROUTE that construction through the out-of-line PLACEMENT-NEW ctor bridge (Pattern AV:
+`new(sb_eng_host(h)) T(args)` runs the real C++ ctor → real host vtable) — it must NOT take the
+raw-alloc + inlined-write path, because the inlined `stw <guest vtable addr>, 0x54(this)` cannot be
+replayed host-side (the `__vtbl` slot is a recognition marker, not a writable host member). Until that
+routing exists, do NOT add a polymorphic subclass (or a base whose game-constructed subclasses are
+polymorphic, e.g. JUTTexture) to `SUNBRIGHT_ENGINE_TYPES`. The gate is unchanged: `identity_sweep
+<Type>` must report ZERO gaps AND every flagged polymorphic construction must reach the ctor bridge.
+
 ## Open questions / risks (do NOT claim solved)
 - **Stack temp scope/lifetime** (C): when is the host object freed? Frame teardown model needed.
 - **new[] / array ctors** and the second allocator 0x802fa69c — uncharacterized.
