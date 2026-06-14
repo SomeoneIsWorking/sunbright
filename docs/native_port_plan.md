@@ -301,6 +301,29 @@ decoder; runtime GP-FIFO path on the delete list. Then, on the object-model arch
   live J3DShape hook — RE J3DShape/BMD SHP1+VTX1, resolve guest CP ARRAY_BASE/STRIDE → NgxArrays,
   walk a shape's display-list packets → ngx_assemble_primitive → one native mesh per shape.**
 
+**J3DShape DRAW PATH (RE'd 2026-06-14, `reference/sms/.../J3DShape.cpp`) — the live-hook seam.**
+`J3DShape::draw()` does, in order:
+  1. `GXCallDisplayList(mGDCommands, 0xC0)` — a prebuilt 0xC0-byte GD list that programs the GP-FIFO
+     CP state for this shape: `GDSetVtxDescv(unk2C)` (→ VCD), `makeVtxArrayCmd()` (→ `GDSetArray`/
+     `GDSetArrayRaw` array bases+strides for attrs POS..TEX7), `J3DSetVtxAttrFmtv(GX_VTXFMT0, …)`
+     (→ VAT). So after this call, **our `ngx_cp_state()` VCD/VAT are already correct** if the FIFO
+     capture fed them — but the per-attribute **array bases** (CP reg 0xA0+i, strides 0xB0+i) are
+     NOT yet tracked by `NgxCP` (only matrix arrays 12/13 are). **TODO: extend `NgxCP` to record
+     array base+stride for attrs 0..11**, set in `load_cp` (reg 0xA0–0xAF base, 0xB0–0xBF stride).
+  2. `loadVtxArray()` — OVERRIDES the POS/NRM/CLR0 array bases via `J3DLoadArrayBasePtr` to
+     `j3dSys.unk10C/110/114` (the live per-view vertex buffers; for skinned models these are the
+     CPU-transformed positions, NOT the static BMD arrays). **The native hook must read the array
+     base from the LIVE CP state after this, not from the BMD/`unk44` directly**, or skinned meshes
+     resolve to the wrong (untransformed) vertices.
+  3. matrix load + `setModelDrawMtx`/`setModelNrmMtx` (the pos/nrm matrix the recompiled game already
+     computes — interp60 matrix seam), then per element `mMatrices[i]->load()` + `mDraws[i]->draw()`.
+  4. `J3DShapeDraw::draw()` = `GXCallDisplayList(mDisplayList, mDisplayListSize)` — **this is the GX
+     primitive stream** (BMD SHP1 packet bytes) to walk with ngx framing → `ngx_assemble_primitive`.
+Plan for the hook: tee `J3DShapeDraw::draw` (or the shape draw); build `NgxArrays` from the live CP
+array base/stride regs (host-resolved); frame `mDisplayList` (extend ngx_decode to emit primitives,
+or add a callback) → `ngx_assemble_primitive` per DRAW → one `NgxVertex`+index mesh per shape.
+Verify counts/positions vs the oracle. The matrix transform stays recompiled; we own only the draw.
+
 **PRESENT FINDING (2026-06-14):** making the native render visible must NOT be a quick overlay via
 `sb_present_xfb`/`Presenter::ViSwap` — that path IS Dolphin VideoCommon (XFB = Dolphin AbstractTexture),
 so an overlay would lean *more* on Dolphin (wrong direction). Visible native output = **own the
