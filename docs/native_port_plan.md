@@ -333,9 +333,18 @@ decoder; runtime GP-FIFO path on the delete list. Then, on the object-model arch
   the consistency check — for GX perspective w=−ez so they must match iff the matrix form is right),
   and **57.5% of 175M verts project inside the NDC screen box** (≈99% in front, ≈57% on-screen, rest
   off-screen geometry the game submits — exactly the profile of a real 3D scene). The native vertex
-  pipeline is complete bar rasterization. **Next: feed meshes + the NDC/clip positions to the native
-  Vulkan path (vk_quad → a depth-tested flat-shaded mesh pipeline) → FIRST NATIVE 3D WORLD PIXELS;
-  then N5 TEV→shader for materials.**
+  pipeline is complete bar rasterization.
+- **N4 FIRST NATIVE 3D WORLD PIXELS ✅** (this commit) — `runtime/render/vk_mesh.cpp` + mesh
+  shaders. Our own Vulkan pipeline (clip-space passthrough vert + flat vertex-color frag, vertex-
+  buffer input, 640×448 offscreen) rasterizes the game's REAL J3D geometry — the J3DShape hook now
+  snapshots a rolling window of clip-space triangles (clip.xyzw + rgba0, triangle-aligned) which
+  `sb_ngx_render` (/ngxrender) draws and reads back. Verified live (Delfino): 10968 tris → **27.7%
+  coverage, and the readback PPM is unmistakably Delfino Plaza** (Shine Gate arch + buildings +
+  ground features, correct perspective/orientation) — recognizable scene structure proves the whole
+  chain (extract→modelview→projection→native raster) is faithful, Dolphin-free. No crash/VK errors.
+  Vert shader forces z=0 (GX NDC z isn't in Vulkan's [0,w]) + Y-flip; no depth test yet (painter's
+  order). **Next: real depth (remap GX NDC z→[0,1] + depth buffer) so overlapping geometry sorts;
+  then N5 TEV→fragment shader for textures/materials (use the N1 tex decoder + per-material state).**
 
 **J3DShape DRAW PATH (RE'd 2026-06-14, `reference/sms/.../J3DShape.cpp`) — the live-hook seam.**
 `J3DShape::draw()` does, in order:

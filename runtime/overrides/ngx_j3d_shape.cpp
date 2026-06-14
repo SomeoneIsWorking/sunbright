@@ -131,9 +131,18 @@ float         g_proj[16] = {0};
 bool          g_have_proj = false;
 unsigned long g_ndc_total = 0, g_ndc_wpos = 0, g_ndc_inbox = 0;
 
+// Clip-space triangle SNAPSHOT for the native Vulkan mesh render (vk_mesh.cpp):
+// a rolling window of recent scene triangles, each vertex = clip.xyzw (4f) +
+// rgba0 (4f). The render reads this best-effort from the HTTP thread (a torn
+// read at worst shows a stray triangle — diagnostic-acceptable).
+constexpr size_t SNAP_CAP = 600000;   // vertices (200k tris) ≈ 19 MB
+std::vector<float> g_snap;            // SNAP_CAP*8, lazily reserved
+size_t             g_snap_count = 0;  // valid vertices currently in g_snap
+
 // Reusable scratch (single emu/render thread serialized by nthr).
 std::vector<NgxVertex> g_verts;
 std::vector<unsigned>  g_indices;
+std::vector<float>     g_clip;        // 4 floats/vertex (clip-space), scratch
 
 // Transform this shape's extracted model-space positions by the live modelview
 // matrix (Mtx 3x4 at *j3dSys.mCurrentDrawMtx) and fold into the eye-space stats.
@@ -145,7 +154,10 @@ void transform_eye() {
     float m[12];
     for (int i = 0; i < 12; i++) m[i] = rf(mp + i * 4);   // row-major 3x4
     bool first = (g_xf_total == 0);
-    for (const NgxVertex& v : g_verts) {
+    const size_t nv = g_verts.size();
+    if (g_have_proj) g_clip.assign(nv * 4, 0.0f);
+    for (size_t vi = 0; vi < nv; vi++) {
+        const NgxVertex& v = g_verts[vi];
         const float x = v.pos[0], y = v.pos[1], z = v.pos[2];
         const float ex = m[0]*x + m[1]*y + m[2]*z  + m[3];
         const float ey = m[4]*x + m[5]*y + m[6]*z  + m[7];
@@ -162,14 +174,35 @@ void transform_eye() {
         // Native projection: clip = P·(eye,1); NDC = clip.xyz / clip.w.
         if (g_have_proj) {
             const float* p = g_proj;
+            const float cx = p[0]*ex + p[1]*ey + p[2]*ez + p[3];
+            const float cy = p[4]*ex + p[5]*ey + p[6]*ez + p[7];
+            const float cz = p[8]*ex + p[9]*ey + p[10]*ez + p[11];
             const float cw = p[12]*ex + p[13]*ey + p[14]*ez + p[15];
+            float* cp = &g_clip[vi * 4]; cp[0]=cx; cp[1]=cy; cp[2]=cz; cp[3]=cw;
             g_ndc_total++;
             if (cw > 0.0f) {
                 g_ndc_wpos++;
-                const float cx = p[0]*ex + p[1]*ey + p[2]*ez + p[3];
-                const float cy = p[4]*ex + p[5]*ey + p[6]*ez + p[7];
                 const float nx = cx / cw, ny = cy / cw;
                 if (nx >= -1.0f && nx <= 1.0f && ny >= -1.0f && ny <= 1.0f) g_ndc_inbox++;
+            }
+        }
+    }
+
+    // Accumulate this shape's clip-space triangles into the render snapshot
+    // (triangle-aligned roll-over so a wrap never splits a triangle).
+    if (g_have_proj && !g_indices.empty()) {
+        if (g_snap.size() < SNAP_CAP * 8) g_snap.resize(SNAP_CAP * 8);
+        for (size_t t = 0; t + 3 <= g_indices.size(); t += 3) {
+            if (g_snap_count + 3 > SNAP_CAP) g_snap_count = 0;
+            for (int e = 0; e < 3; e++) {
+                const unsigned vidx = g_indices[t + e];
+                const float* cp = &g_clip[vidx * 4];
+                const NgxVertex& v = g_verts[vidx];
+                float* d = &g_snap[g_snap_count * 8];
+                d[0]=cp[0]; d[1]=cp[1]; d[2]=cp[2]; d[3]=cp[3];
+                d[4]=v.clr[0][0]/255.f; d[5]=v.clr[0][1]/255.f;
+                d[6]=v.clr[0][2]/255.f; d[7]=v.clr[0][3]/255.f;
+                g_snap_count++;
             }
         }
     }
@@ -225,6 +258,16 @@ void ngx_set_projection(const float* m44, unsigned type) {
     if (type != 0) return;
     for (int i = 0; i < 16; i++) g_proj[i] = m44[i];
     g_have_proj = true;
+}
+
+// Best-effort snapshot of the accumulated clip-space triangle list for the native
+// Vulkan mesh render. Returns the base pointer (8 floats/vertex: clip.xyzw +
+// rgba0) and sets *nverts. Read from the HTTP thread; the emu thread keeps
+// writing, so the caller should copy promptly (a torn read at worst yields a
+// stray triangle — acceptable for a diagnostic render).
+const float* ngx_mesh_snapshot(int* nverts) {
+    *nverts = (int)g_snap_count;
+    return g_snap.empty() ? nullptr : g_snap.data();
 }
 
 SUNBRIGHT_OVERRIDE(ov_j3dshape_draw, 0x802e0390u) {

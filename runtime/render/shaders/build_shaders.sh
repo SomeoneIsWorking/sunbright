@@ -9,3 +9,5 @@ gen quad.vert.glsl vert kQuadVertSpv quad_vert_spv.h
 gen quad.frag.glsl frag kQuadFragSpv quad_frag_spv.h
 gen quad_ortho.vert.glsl vert kQuadOrthoVertSpv quad_ortho_vert_spv.h
 gen quad_modulate.frag.glsl frag kQuadModulateFragSpv quad_modulate_frag_spv.h
+gen mesh.vert.glsl vert kMeshVertSpv mesh_vert_spv.h
+gen mesh.frag.glsl frag kMeshFragSpv mesh_frag_spv.h
