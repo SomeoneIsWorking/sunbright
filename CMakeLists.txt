@@ -124,6 +124,16 @@ target_compile_options(sunbright-decomp-parse-test PRIVATE -Wall -Wextra -Wno-un
 add_test(NAME decomp_parse_test COMMAND sunbright-decomp-parse-test
          WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
+# GNU-v2 demangler -> this/param engine-type seeds (the signature half of the type DB).
+add_executable(sunbright-func-sig-test
+    tools/recompiler/tests/func_sig_test.cpp
+    tools/recompiler/func_sig.cpp
+)
+target_include_directories(sunbright-func-sig-test PRIVATE tools/recompiler runtime)
+target_compile_options(sunbright-func-sig-test PRIVATE -Wall -Wextra -Wno-unused-parameter)
+add_test(NAME func_sig_test COMMAND sunbright-func-sig-test
+         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+
 # ── Launcher executable (SDL2 window + Dolphin Core) ─────────────────────────
 # Everything — launcher, runtime bridge, hand-written overrides, and the
 # statically-recompiled game code — is compiled into one self-contained binary.
