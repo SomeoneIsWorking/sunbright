@@ -43,6 +43,7 @@ constexpr u32 J3DSYS = 0x804045DCu;
 inline bool valid(u32 a) { return a >= 0x80000000u && a < 0x81800000u; }
 inline u32  r32(u32 a) { return valid(a) ? mem_r32(a) : 0; }
 inline u8   rb(u32 a) { return valid(a) ? (u8)(mem_r32(a) >> 24) : 0; }  // big-endian byte @ word
+inline float rf(u32 a) { u32 u = r32(a); float f; std::memcpy(&f, &u, 4); return f; }
 
 const unsigned char* resolve(unsigned addr, void*) { return sb_ram_fast(addr); }
 
@@ -116,10 +117,42 @@ unsigned long g_total_verts = 0, g_total_tris = 0;
 unsigned      g_last_verts = 0, g_last_tris = 0, g_max_verts = 0;
 u32           g_last_vcdlo = 0, g_last_vcdhi = 0, g_last_vstride = 0;
 float         g_last_pos[3] = {0, 0, 0};
+// Native XF (vertex-transform) verification: model-space positions transformed by
+// the game's modelview (j3dSys.mCurrentDrawMtx) → eye space. On-screen geometry
+// faces the camera (GC camera looks down −Z), so eye.z<0 is "in front".
+unsigned long g_xf_total = 0, g_xf_front = 0, g_xf_nomtx = 0;
+float         g_last_eye[3] = {0, 0, 0};
+float         g_eye_min[3] = {0, 0, 0}, g_eye_max[3] = {0, 0, 0};
 
 // Reusable scratch (single emu/render thread serialized by nthr).
 std::vector<NgxVertex> g_verts;
 std::vector<unsigned>  g_indices;
+
+// Transform this shape's extracted model-space positions by the live modelview
+// matrix (Mtx 3x4 at *j3dSys.mCurrentDrawMtx) and fold into the eye-space stats.
+// This is the native XF stage; the matrix is the same one the recompiled J3D
+// computed (the interp60 pos-matrix seam, now consumed natively).
+void transform_eye() {
+    const u32 mp = r32(J3DSYS + 0x104);     // mCurrentDrawMtx (Mtx*)
+    if (!valid(mp)) { g_xf_nomtx++; return; }
+    float m[12];
+    for (int i = 0; i < 12; i++) m[i] = rf(mp + i * 4);   // row-major 3x4
+    bool first = (g_xf_total == 0);
+    for (const NgxVertex& v : g_verts) {
+        const float x = v.pos[0], y = v.pos[1], z = v.pos[2];
+        const float ex = m[0]*x + m[1]*y + m[2]*z  + m[3];
+        const float ey = m[4]*x + m[5]*y + m[6]*z  + m[7];
+        const float ez = m[8]*x + m[9]*y + m[10]*z + m[11];
+        g_xf_total++;
+        if (ez < 0.0f) g_xf_front++;
+        if (first) { g_eye_min[0]=g_eye_max[0]=ex; g_eye_min[1]=g_eye_max[1]=ey;
+                     g_eye_min[2]=g_eye_max[2]=ez; first=false; }
+        else { if(ex<g_eye_min[0])g_eye_min[0]=ex; if(ex>g_eye_max[0])g_eye_max[0]=ex;
+               if(ey<g_eye_min[1])g_eye_min[1]=ey; if(ey>g_eye_max[1])g_eye_max[1]=ey;
+               if(ez<g_eye_min[2])g_eye_min[2]=ez; if(ez>g_eye_max[2])g_eye_max[2]=ez; }
+        g_last_eye[0]=ex; g_last_eye[1]=ey; g_last_eye[2]=ez;
+    }
+}
 
 void capture(u32 sh) {
     g_calls++;
@@ -159,6 +192,7 @@ void capture(u32 sh) {
         g_last_pos[1] = g_verts[0].pos[1];
         g_last_pos[2] = g_verts[0].pos[2];
     }
+    transform_eye();   // native XF stage (modelview) + eye-space verification
 }
 
 }  // namespace
@@ -166,8 +200,12 @@ void capture(u32 sh) {
 SUNBRIGHT_OVERRIDE(ov_j3dshape_draw, 0x802e0390u) {
     static const bool init = (g_enabled = (getenv("SUNBRIGHT_NGX_SHAPE") != nullptr), true);
     (void)init;
-    if (g_enabled) capture(cpu.gpr[3]);
+    const u32 sh = cpu.gpr[3];   // save before the super-call clobbers gpr
+    // Run the real draw FIRST: J3DShape::draw is what sets j3dSys's per-view vertex
+    // arrays (loadVtxArray) AND the modelview (setModelDrawMtx) for THIS shape, so
+    // we must capture after it for the arrays + matrix to be current.
     if (RecompFunc o = recomp_raw(0x802e0390u)) o(cpu); else call_ppc(cpu, cpu.lr);
+    if (g_enabled) capture(sh);
 }
 
 // Probe report (/ngxshape).
@@ -177,11 +215,17 @@ int sb_ngx_shape_dump(char* out, int cap) {
         "  calls=%lu  meshes_built=%lu  badcp=%lu  framing_fail=%lu\n"
         "  cumulative: verts=%lu tris=%lu\n"
         "  last shape: verts=%u tris=%u vstride=%u vcd_lo=%08x vcd_hi=%08x\n"
-        "  last pos[0]=(%.3f, %.3f, %.3f)  max_verts/shape=%u\n",
+        "  last pos[0]=(%.3f, %.3f, %.3f)  max_verts/shape=%u\n"
+        "  native XF (modelview): xf_verts=%lu  in_front(z<0)=%lu (%.1f%%)  no_mtx=%lu\n"
+        "  eye bbox: x[%.1f..%.1f] y[%.1f..%.1f] z[%.1f..%.1f]  last_eye=(%.2f, %.2f, %.2f)\n",
         g_enabled ? "ON" : "OFF (set SUNBRIGHT_NGX_SHAPE=1)",
         g_calls, g_meshes, g_badcp, g_fail,
         g_total_verts, g_total_tris,
         g_last_verts, g_last_tris, g_last_vstride, g_last_vcdlo, g_last_vcdhi,
-        g_last_pos[0], g_last_pos[1], g_last_pos[2], g_max_verts);
+        g_last_pos[0], g_last_pos[1], g_last_pos[2], g_max_verts,
+        g_xf_total, g_xf_front, g_xf_total ? 100.0 * (double)g_xf_front / (double)g_xf_total : 0.0,
+        g_xf_nomtx,
+        g_eye_min[0], g_eye_max[0], g_eye_min[1], g_eye_max[1], g_eye_min[2], g_eye_max[2],
+        g_last_eye[0], g_last_eye[1], g_last_eye[2]);
     return n;
 }

@@ -314,9 +314,19 @@ decoder; runtime GP-FIFO path on the delete list. Then, on the object-model arch
   (e.g. 87 verts→49 tris, vstride 6 matching Index16 pos/clr/tex), real world-space positions
   (−974, 1531, −8200), max 15790 verts/shape. `/ngxshape` probe. GOTCHA found+fixed: J3DShapeDraw
   has a **vtable@0** the decomp header omits → real layout vtable@0 / size@4 / list@8 (confirmed by
-  ctor+draw disasm); reading size@0/list@4 skipped every list (0 verts). **Next: A/B the native
-  vertex/tri counts vs the Dolphin oracle per frame (faithfulness proof); then feed these meshes
-  to the native Vulkan path (vk_quad → a mesh pipeline) with the recompiled J3D matrices (→ N5 TEV).**
+  ctor+draw disasm); reading size@0/list@4 skipped every list (0 verts).
+- **N4 native XF (vertex transform) ✅** (this commit) — the J3D transform stage ported native. The
+  shape hook now reads the live modelview `j3dSys.mCurrentDrawMtx` (Mtx* @ j3dSys+0x104, 3×4
+  row-major) — the SAME matrix the recompiled J3D computes (the interp60 pos-matrix seam, now
+  consumed natively) — and transforms every extracted model-space position to eye space. Capture
+  moved to AFTER the super-call: `J3DShape::draw` is what sets the per-view arrays (loadVtxArray) AND
+  the matrix (setModelDrawMtx) for THIS shape, so pre-draw capture read stale (previous-shape)
+  state. Verified live (Delfino): 167M verts transformed, **98.9% land in front of the camera
+  (eye z<0)**, no_mtx=0 — a wrong matrix or garbage positions could never yield 99% coherently
+  in-front, so this proves extraction + matrix capture + transform are all faithful. `/ngxshape`
+  now reports xf in-front %, eye bbox, sample eye pos. **Next: native projection (clip→NDC→screen)
+  to close the transform chain, then feed meshes+MVP to the native Vulkan path (vk_quad → a depth-
+  tested mesh pipeline, flat-shaded first) → first native 3D world pixels; then N5 TEV→shader.**
 
 **J3DShape DRAW PATH (RE'd 2026-06-14, `reference/sms/.../J3DShape.cpp`) — the live-hook seam.**
 `J3DShape::draw()` does, in order:
