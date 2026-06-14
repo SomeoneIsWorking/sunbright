@@ -183,19 +183,24 @@ construction functions, 30 heap-new sites, 36 stack-temp sites — and **1 funct
 `__ct__9J2DWindow` (the SHARP EDGE firing as designed). J3DModelData: 0 constructions, 0 gaps
 (it is loader-managed, never `new`'d). The gap finding is REAL and important:
 
-**DERIVED-TYPE CONSTRUCTION is recognized as the BASE type.** J2DWindow constructs
-`J2DWindow::Texture : JUTTexture` (J2DWindow.hpp:28) — `li r3,0x58 ; bl operator new` (0x58, NOT
-sizeof(JUTTexture)=0x54), then `bl storeTIMG(this)` + a derived-field write `stw …,0x54(this)`.
-Recognition types `this` as JUTTexture (it IS the base subobject, passed to a JUTTexture method),
-so: (a) `sb_eng_alloc<JUTTexture>()` would UNDER-ALLOCATE (host base size, not the derived size),
-and (b) the derived field at 0x54 is a GAP → emitted as guest MEM against the host handle = the
-SHARP EDGE correctness bug. So **flipping a base type whose subclasses the game constructs is
-UNSAFE** until the derived types are in the type DB (type-set closure). The tell is the alloc size
-(`li` before `operator new`) ≠ the recognized type's guest size. Proper fix: include derived types
-in the DB and have recognition prefer the MOST-DERIVED type (match alloc size / most-derived method
-called). GATE: a clean flip requires the sweep's gap report to be EMPTY for the active type set —
-`scratch/identity_sweep` is that gate. (For JUTTexture the JUTPalette + J2DWindow::Texture closure
-must be flipped together, consistent with the handoff's JUTPalette-closure note.)
+**The gap is a POLYMORPHIC SUBCLASS's vtable store — the polymorphic-construction case.**
+J2DWindow constructs `J2DWindow::Texture : JUTTexture` (J2DWindow.hpp:28), which adds
+`virtual ~Texture()` → it IS polymorphic even though its JUTTexture base is not. `li r3,0x58 ;
+bl operator new` (0x58 = JUTTexture 0x54 + a 4-byte vtable ptr CodeWarrior appends at the END for
+a base-most-polymorphic class, per abi_findings.md), then the inlined ctor does `bl storeTIMG(base)`
++ `lis r0,0x803e ; addi r0,r0,0x77c ; stw r0,0x54(this)` — i.e. **store the Texture vtable @0x54**.
+Recognition types `this` as JUTTexture (correct — it's the base subobject passed to a JUTTexture
+method), so the vtable store at 0x54 is a GAP. This is the SHARP EDGE doing its job: it flags the
+exact case the raw-alloc + typed-inlined-writes path CANNOT handle — a polymorphic construction
+whose guest vtable-address store can't be replayed host-side (the host vtable address differs and is
+set only by running the real C++ ctor). So **a type whose game-constructed subclasses are polymorphic
+must route those constructions through the out-of-line PLACEMENT-NEW ctor bridge** (Pattern A bridge:
+`new(sb_eng_host(h)) T(args)` runs the real ctor → real host vtable). The tell is the alloc size
+(`li` before `operator new`) > the base type's size, and/or a `.data` vtable-address store at the
+appended offset. GATE: a clean flip requires the sweep's gap report EMPTY for the active set —
+`scratch/identity_sweep <Type>` is that gate. For JUTTexture, J2DWindow::Texture (+ JUTPalette) is
+part of the closure: either flip those polymorphic subclasses via the ctor bridge, or scope the
+first slice to callers that don't construct them.
 
 ## Open questions / risks (do NOT claim solved)
 - **Stack temp scope/lifetime** (C): when is the host object freed? Frame teardown model needed.
