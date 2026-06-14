@@ -1,40 +1,14 @@
-# SMS → native PC port: the plan to remove ALL emulation (master plan + handoff)
+# Renderer engineering reference (native GX → Vulkan)
 
-**Written 2026-06-14. READ THIS FIRST.** Supersedes the GPU carve-out in
-`docs/dolphin_independence.md` (§"GPU/GX→Vulkan: KEEP") — the user has reversed that: the renderer
-is now in scope too. North star, in the user's words:
+> Subordinate to **`docs/ARCHITECTURE_TARGET.md`** (the one-path target: PC-native engine +
+> tailored-recomp game). This is NOT a competing plan — it is the renderer's engineering
+> reference: the stage breakdown (N0–N8), the GX/VAT vertex-decode spec (§3a), the J3DShape
+> draw-path RE, verification notes, and the progress log. The renderer ultimately lives in the
+> `port/` engine and draws host objects; the current "render over recomp-on-guest-memory" form is
+> transitional. The superseded high-level *plan* sections (definition-of-done, guiding-principles
+> dup, recommended-order) were removed — the architecture lives in ARCHITECTURE_TARGET.md.
 
-> "Keep porting SMS to PC until it doesn't need any emulation. Build PC-native solutions, don't use
-> Dolphin. Start somewhere, keep working until we can remove Dolphin altogether."
-
-This document is the staged plan to get there. It is a living tracker — each stage moves rightward
-only with cited verification (oracle A/B, frame dumps, harness verdicts), never by vibe.
-
----
-
-## 0. Definition of done — and what "no emulation" means
-
-**Done = a single native PC binary that links NO Dolphin at runtime.** It runs the statically
-recompiled SMS game code plus a native PC implementation of every subsystem the game touches
-(rendering, audio, OS/threading, timing, file I/O, input). Dolphin survives only as an **offline
-debugging oracle** (a separate build, never linked into the shipping binary) for the differential
-method (`SUNBRIGHT_DISABLE_RECOMP`, the DIFF harness).
-
-**Recompiled game code is NOT "emulation" — it is the port of the game logic.** Static recompilation
-translates SMS's own PowerPC into native x86 ahead of time; there is no runtime interpreter for
-recompiled functions. Hand-porting all ~9,700 functions is infeasible and pointless; the recompiler
-IS the port for game/actor logic. We hand-port *engine layers* (render, audio, OS, timing) where PC
-reality demands it (aspect, host clock, host threads, a real GPU API). This is the established N64/PC
-static-recomp port model.
-
-**The "emulation" we must delete is Dolphin's hardware emulation:** the GameCube GPU (VideoCommon +
-Vulkan backend), the DSP microcode, the MMIO device handlers, CoreTiming, the MMU/address
-translation, and the **interpreter fallback** (the one piece of runtime CPU emulation that remains —
-used today for JIT-only HW PowerPC ops: `mtmsr`/`rfi`/MMU/HW-SPR).
-
----
-
-## 1. Current Dolphin dependency surface (what must be removed)
+## 1. Dolphin dependency surface (what the renderer/platform must replace)
 
 Status as of 2026-06-14 (from CLAUDE.md, `docs/port_roadmap.md`, session memory):
 
@@ -50,22 +24,6 @@ Status as of 2026-06-14 (from CLAUDE.md, `docs/port_roadmap.md`, session memory)
 | **DVD / asset loading** | Dolphin DVD thread + emulated seek (band-aided `FastDiscSpeed`). ROM data already decoded natively for audio (`tools/jingle`, FST extractor). | **S (do early)** | Serve JKR/DVD read API from extracted files natively, instant. Removes a device + latency coupling. |
 | **EXI memcard / SI input** | Memcard native (`native_card.cpp`). Input native (override). | done | — |
 | **Boot / HW init** | `SUNBRIGHT_FASTBOOT` is a native port of the boot→gameplay sequencing; the full cold boot still leans on Dolphin HW init. | **M (late)** | Make fastboot the only path, fully native; delete the emulated cold-boot dependency. |
-
----
-
-## 2. Guiding principles (do not violate)
-
-- **Port behavior, not hardware** (`port-not-emulate`). A native subsystem replicates what the game
-  *observes*, not the chip. Don't build "our GameCube GPU"; build the renderer the game needs.
-- **Incremental + always-shippable.** Each subsystem is removed independently and verified against the
-  Dolphin oracle (`SUNBRIGHT_DISABLE_RECOMP`) BEFORE unplugging it. Never lose correctness to gain
-  independence. Keep an A/B off-switch per subsystem during its bring-up; delete the switch once
-  verified (no permanent dual paths — `done-right-over-working`).
-- **No bandaids.** Root-cause every divergence; the fix is the native port, not a constant/skip.
-- **Verification is a first-class deliverable, not an afterthought.** See §5 — the headless
-  rendering-verification gap is the single biggest process risk and must be closed before the renderer
-  work, or it will burn sessions guessing (it already has).
-- **Build tools/diagnostics alongside each subsystem** (env-gated, durable, driveable over the probe).
 
 ---
 
@@ -246,22 +204,10 @@ coverage, native water re-issue at N½. Dead ends recorded: blanket direct-XF in
 
 ---
 
-## 6. Recommended order (each stage shippable; dependencies noted)
+## 6. Renderer progress log + J3DShape draw-path RE
 
-1. **N0** deterministic render verification (unblocks everything render).
-2. **N1** native GC asset decoders — textures + BMD geometry (pure, offline-testable; no GPU).
-3. **Native DVD/asset loading** (S, independent, removes a device + latency coupling) — parallel.
-4. **N2** native Vulkan backend bring-up (first native pixel: a textured quad).
-5. **N3** vertical slice: J2D HUD native (smallest complete asset→object→GPU→present path).
-6. **N4** J3D opaque geometry native (vertex pipeline + XF; interp60 matrix seam goes native here).
-7. **Native time/event model** + **MMIO devices native** (VI/PE/CP pair with the renderer) — interleave.
-8. **N5** TEV→shader (the long pole).
-9. **N6 → N7** EFB/screen-space effects + particles native (resolves the interp60 effect-jitter class).
-10. **DSP/audio finish** (drop ZeldaAudioRenderer dependency).
-11. **CPU: model the remaining JIT-only HW ops natively** (`mtmsr`/`rfi`/MMU/HW-SPR), shrink interp
-    fallback to zero.
-12. **Boot fully native** (fastboot-only path).
-13. **N8 + unlink Dolphin** — delete VideoCommon/backend/DSP/CoreTiming/MMU from the link. Done.
+(The stage ORDER lived here; it was superseded by ARCHITECTURE_TARGET.md and removed. The
+renderer progress log + the J3DShape draw-path RE below are kept as engineering reference.)
 
 **Progress (2026-06-14):** R1 (Dolphin-free GP-FIFO decoder, 102912f) built+verified, then seam
 **corrected by user** (§3): GP-FIFO decode is still GPU emulation → R1 repurposed as the BMD asset

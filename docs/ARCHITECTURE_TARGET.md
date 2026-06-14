@@ -1,0 +1,86 @@
+# Sunbright — THE target architecture (READ THIS FIRST)
+
+Authoritative as of 2026-06-14. **Supersedes the conflicting framing in
+`docs/native_port_plan.md`, `docs/native_recomp_bridge.md`, and the source-port memory.** If
+those disagree with this doc, this doc wins. Written because the two parallel tracks (`port/`
+source-port vs `runtime/` native renderer) were redundant/confusing and a single coherent path
+had to be chosen.
+
+## North star (user, 2026-06-14, exact intent)
+A single native PC binary, **no Dolphin**, that is:
+- **Engine = a real PC game, in PC-native C++** — JSystem (J3D/J2D/JKR/JDrama/JUtility),
+  JAudio, the renderer, and the platform (timing/threads/I/O/input), written as host-native C++
+  with host objects, host ABI, host endianness. This is `port/` (source-ported from
+  `reference/sms`).
+- **Game behavior = recompiled, NOT hand-ported** — Mario, enemies, NPCs, camera, map, items.
+  But via a **TAILORED recompiler** so the recompiled game code speaks the **PC engine's**
+  ABI/layout, not the GameCube's. "GameCube game logic adapted to call the PC engine."
+- One path. No env toggle selects native-vs-Dolphin or native-vs-GC-engine ([[done-right-over-working]]).
+
+**Why not the alternatives** (settled — do not relitigate):
+- *Recompile everything + native platform only* (keep the GC engine as recomp): rejected — the
+  engine would still be GameCube code, not a PC game engine. The user wants the engine to BE PC.
+- *Hand-port everything incl. game logic* (full source-port): rejected — ~9,700 funcs of
+  game/actor logic is infeasible to hand-port; the recompiler is the port for game behavior.
+- *port/ host-native engine + plain recomp game logic*: does NOT work as-is — recomp reads
+  engine fields by raw guest offset/endianness, incompatible with host objects. The **tailored
+  recompiler is exactly the bridge** that makes this combination work.
+
+## The game ↔ engine boundary (the crux)
+
+Two halves, very different difficulty:
+
+1. **Function calls — TRACTABLE (mechanism proven).** Recompiled game code calling an engine
+   function → the recompiler emits a marshalled native call into the PC engine, using the
+   signature from the decomp symbol map (`reference/sms_gmse01_funcs.txt` + the decomp headers).
+   This is the `SUNBRIGHT_BRIDGE` marshalling thunk (`runtime/bridge.h`, built + unit-tested
+   2026-06-14) — applied at recomp time, not just as a runtime override. Virtual calls (`bctrl`
+   through a vtable) dispatch to the **host** vtable using the static type.
+
+2. **Data / object-field access — THE HARD, LOAD-BEARING CORE.** Recompiled game code reads
+   engine-object fields as raw `lwz rD, off(rA)` — guest offset, big-endian, 32-bit. To hit a
+   host-native engine object (different offsets / endianness / pointer width) the recompiler must
+   know the **type** of `rA` at that site and translate to the host field/accessor. This needs
+   **type recovery** — but *seeded* type recovery: every function's `this`/parameter types are
+   known from the decomp signatures, so types propagate through dataflow rather than being
+   recovered blind. Feasible, but this is the **single hardest, least-proven piece of the whole
+   project** (harder than the renderer).
+
+   OPEN mechanism choices (decide with the de-risk slice, do not assume):
+   - Do GAME objects stay guest-layout (engine objects host-native, boundary translated), or do
+     game objects also become host-native? Leaning: game objects guest-layout, engine objects
+     host-native, recompiler translates at the boundary.
+   - Engine-object pointers held in guest memory: raw host pointer (needs 64-bit slots) vs handle.
+   - Embedded engine value types in game structs (e.g. `JGeometry::TVec3` inline): layout matches
+     but endianness differs — marshalled at the boundary or kept guest-side.
+
+**DE-RISK FIRST (mandatory before committing the whole port):** prove a thin vertical slice —
+ONE real recompiled game function that (a) calls a real `port/` engine function through the
+tailored boundary AND (b) reads/writes one engine-object field — end-to-end, verified against the
+oracle. The function half is proven (the thunk); the data half is the experiment. If type-aware
+translation of field access doesn't come out clean on the slice, escalate before scaling.
+
+## Consolidation — what each tree is now
+
+| Tree | Role in the target | Notes |
+|---|---|---|
+| `port/` | **The PC-native engine** (central). | Source-ported JSystem/JAudio + renderer + platform. Eventually owns rendering from host objects. KEEP — not redundant. |
+| `tools/recompiler` | **Tailored** to target the PC engine. | The new core effort: emit engine-aware calls + type-aware field translation for game logic. |
+| `runtime/` | Recomp runtime, dispatch, the bridge, platform glue. | Its native renderer (reads **guest** J3D objects) is **TRANSITIONAL**: the Vulkan backend + `tex_decode` are reusable as the engine's GPU backend, but the "read guest objects" front is superseded once the engine renders its own host objects. |
+| `externals/dolphin` | Offline oracle only. | Never linked in the shipping binary; A/B verification (`SUNBRIGHT_DISABLE_RECOMP`, DIFF). |
+
+## Status (2026-06-14)
+- `port/` engine: ~243 TUs compile; PAL heap + cooperative single-CPU scheduler + teardown safe;
+  asset pipeline (endian-safe Yaz0/RARC/BTI); JKRDecomp worker runs natively. See
+  [[port-runtime-bringup]].
+- Bridge: `SUNBRIGHT_BRIDGE` marshalling thunk built + tested; link-coexistence solved
+  (function-sections + `--gc-sections`). See [[native-recomp-bridge]].
+- `runtime/` renderer (transitional): N1–N4 done — renders real Delfino geometry offscreen,
+  Dolphin-free. See [[native-playable-path]] (note: its "renderer track is the fast path to
+  playable" framing is now subordinate to THIS doc — the renderer ultimately moves into `port/`).
+
+## Next
+1. The **tailored-recomp de-risk slice** (above) — the gating experiment. This is the priority;
+   everything else scales only if it comes out clean.
+2. Then build out the tailored recompiler boundary (calls + type-aware field access) +
+   grow the `port/` engine to cover what the game touches, slice by slice, oracle-verified.
