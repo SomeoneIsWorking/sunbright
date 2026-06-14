@@ -271,13 +271,19 @@ decoder; runtime GP-FIFO path on the delete list. Then, on the object-model arch
 - **N2 first native pixels ✅** (3db6c70) — `runtime/render/vk_quad.cpp`, our own Vulkan pipeline +
   embedded SPIR-V renders a textured quad offscreen (reusing Dolphin's VkDevice as bring-up scaffold),
   readback EXACT vs the decoded texels (`/vkquad`; 64×64 4096/4096, stable under gameplay).
-- **N3 start ✅** (22880d7) — `runtime/render/j2d_walk.cpp`, reads the live J2D HUD pane tree from
-  guest memory (bounds-checked), canonical J2DScreen::draw tee publishes the root (`/j2d`). Verified:
-  coherent HUD tree (bars/textboxes/transition halves).
+- **N3 walk ✅** (22880d7) — `runtime/render/j2d_walk.cpp`, reads the live J2D HUD pane tree from
+  guest memory (bounds-checked), canonical J2DScreen::draw tee publishes the root (`/j2d`).
+- **N3 native HUD render ✅** (8f5c201) — `runtime/render/j2d_render.cpp` — FIRST GAME CONTENT drawn
+  by our renderer: live draw list → `sb_tex_decode` → our Vulkan ortho pipeline (`quad_ortho.vert` +
+  push-constant rect, alpha-blended) → offscreen + PPM (`/j2drender`). Verified: 2 HUD bars at
+  pixel-exact screen rects (rows 0-70 + 410-480 full, middle empty), invisible/text panes excluded.
 
-**Next concrete step:** finish the N3 slice — resolve each pane's `JUTTexture` → BTI image+format →
-`sb_tex_decode` → upload + draw the pane quad (ortho) via the vk path = **the HUD rendered natively**.
-Then N0 (deterministic capture) to A/B it vs the game, then present integration, then N4 (J3D).
+**Next concrete steps (N3 fidelity, then make it visible):**
+1. J2D color/alpha modulation — bars currently render white (the I4 texture is a fill; real tint =
+   pane color / vertex color / TEV; + pane alpha 160). Pull J2D color into the shader.
+2. J2DTextBox/font rendering (coins/time text), palette resolution (C4/C8/C14X2 + JUTPalette).
+3. Present-to-screen so the native HUD is actually displayed (not just offscreen) — the present
+   integration that N0 verification + N4 (J3D) also need.
 Still pending/parallel: N0 deterministic capture, BMD geometry decoder, native present/swapchain.
 
 ---
