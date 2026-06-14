@@ -451,24 +451,12 @@ void C_MTXLightPerspective(Mtx m, f32 fovY, f32 aspect, f32 scaleS, f32 scaleT,
 
 // ===========================================================================
 // MarioUtil Ms* helpers (C++ linkage; declared in MarioUtil/MathUtil.hpp).
-// These use the RAW frsqrte estimate with NO Newton-Raphson refinement —
-// the fast/approximate path the asm uses. Replicated exactly.
+//
+// MsVECMag2 and MsVECNormalize USED to live here (this TU stood in for the
+// deferred MathUtil.cpp while that file still had inline PPC asm). They now
+// have their proper home in the owned copy port/src/MathUtil.cpp, which is in
+// the core lib (core_sources.txt). Defining them here too would be a duplicate
+// symbol → multiple-definition link error, so they were removed. The owned
+// MathUtil.cpp implementations are identical (raw frsqrte estimate, no Newton
+// refinement, fsel(-sq) zero-guard).
 // ===========================================================================
-
-f32 MsVECMag2(Vec* v)
-{
-    float sq    = v->x * v->x + v->y * v->y + v->z * v->z;
-    float rsqrt = (float)__frsqrte((double)sq);
-    // fsel(-sq, sq, rsqrt): when sq>0 -> rsqrt; when sq==0 -> sq(0).
-    float sel   = fsel_(-sq, sq, rsqrt);
-    return sq * sel;
-}
-
-void MsVECNormalize(Vec* v1, Vec* v2)
-{
-    float sq    = v1->x * v1->x + v1->y * v1->y + v1->z * v1->z;
-    float rsqrt = (float)__frsqrte((double)sq);   // raw estimate, no refine
-    v2->x = v1->x * rsqrt;
-    v2->y = v1->y * rsqrt;
-    v2->z = v1->z * rsqrt;
-}

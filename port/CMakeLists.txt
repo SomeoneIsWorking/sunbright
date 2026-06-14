@@ -67,11 +67,12 @@ target_include_directories(smsport_core PRIVATE ${SMS_INCLUDES})
 target_compile_options(smsport_core PRIVATE
   ${SMS_FORCE_INCLUDE}
   -fno-strict-aliasing       # the decomp type-puns through unions/casts
-  -fcommon                   # decomp declares HW globals (AT_ADDRESS) in headers
-                             # included by many TUs; -fcommon merges them to one
-                             # COMMON symbol (the MWCC model). Real values come
-                             # from port/pal/os/os_globals.cpp.
   -Wno-multichar)            # GC fourcc 'RTI ' style literals
+  # NOTE: the decomp's AT_ADDRESS hardware globals (__OSBusClock/__VIRegs/...) are
+  # C++ definitions in headers included by many TUs -> they multiply-define at the
+  # smsport_main --whole-archive link. (-fcommon does NOT fix this: it only applies
+  # to C tentative definitions, not C++.) Proper fix = extern the decls in the
+  # shadow headers + single defs in port/pal/os/os_globals.cpp — tracked task.
 
 # Keep the warning floor low but DO NOT silence pointer-truncation: that's the
 # real 64-bit-port signal. (Files that trip it are deferred, not in core.)
@@ -118,18 +119,16 @@ target_include_directories(smsport_texdecode PUBLIC "${SMS_REPO_ROOT}/runtime/re
 #   pal/heap/heap_pal.cpp — minimal malloc-backed JKRHeap + global operator new.
 #   pal/pad/pad_pal.cpp   — neutral-controller PAD stubs (real SDL input later).
 #   pal/gx/gx_stub.cpp    — 74 GX graphics SDK no-op stubs (link now, render later).
-add_library(smsport_pal STATIC
-  pal/mtx.cpp
-  pal/os/os_pal.cpp
-  pal/os/os_globals.cpp
-  pal/heap/heap_pal.cpp
-  pal/pad/pad_pal.cpp
-  pal/gx/gx_stub.cpp)
+# All pal/ implementation files auto-wire (CONFIGURE_DEPENDS picks up new ones),
+# so parallel PAL tracks can drop files into pal/<area>/ without racing on this
+# file. Test files (*_test.cpp) are excluded (they're their own exe targets).
+file(GLOB_RECURSE SMS_PAL_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/pal/*.cpp")
+list(FILTER SMS_PAL_SOURCES EXCLUDE REGEX "_test\\.cpp$")
+add_library(smsport_pal STATIC ${SMS_PAL_SOURCES})
 target_include_directories(smsport_pal PRIVATE ${SMS_INCLUDES})
 target_compile_options(smsport_pal PRIVATE
   ${SMS_FORCE_INCLUDE}
   -fno-strict-aliasing
-  -fcommon
   -Wno-multichar)
 
 # Unit test: mathematical identities (Concat/Inverse/Transpose/Normalize/

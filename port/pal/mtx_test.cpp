@@ -14,8 +14,8 @@
 #include <cstdio>
 
 // MarioUtil Ms* helpers (C++ linkage).
-void MsVECNormalize(Vec*, Vec*);
-f32  MsVECMag2(Vec*);
+// (MsVECNormalize/MsVECMag2 are MarioUtil — they now live in the core lib's
+//  port/src/MathUtil.cpp, not the math PAL — covered by that file's own test.)
 
 static int g_pass = 0;
 static int g_fail = 0;
@@ -152,16 +152,6 @@ int main()
         Vec d0 = {0,0,0}, d1 = {0,3,4};
         check("Distance((0,0,0),(0,3,4)) == 5", fclose_(PSVECDistance(&d0,&d1), 5.0f, 1e-3f));
         check("SquareMag(3,0,4) == 25", fclose_(PSVECSquareMag(&a), 25.0f));
-    }
-
-    // --- MsVEC* (raw-estimate path; looser tolerance, ~12-bit) ---
-    {
-        Vec a = {3.0f, 0.0f, 4.0f}, u;
-        MsVECNormalize(&a, &u);
-        float mag = std::sqrt(u.x*u.x + u.y*u.y + u.z*u.z);
-        // frsqrte estimate -> ~1% accuracy expected (no NR refine)
-        check("MsVECNormalize ~ unit length (raw est, <2%)", std::fabs(mag - 1.0f) < 0.02f);
-        check("MsVECMag2(3,0,4) ~ 5 (raw est, <2%)", std::fabs(MsVECMag2(&a) - 5.0f) < 0.1f);
     }
 
     // --- C_MTXOrtho known entries ---

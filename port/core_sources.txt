@@ -83,3 +83,6 @@ reference/sms/src/MarioUtil/RumbleType.cpp
 reference/sms/src/MarioUtil/ScreenUtil.cpp
 reference/sms/src/MarioUtil/ShadowUtil.cpp
 reference/sms/src/MarioUtil/TexUtil.cpp
+port/src/MathUtil.cpp
+port/src/J3DTransform.cpp
+port/src/J3DTevs.cpp
