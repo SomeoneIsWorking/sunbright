@@ -83,6 +83,11 @@ reference/sms/src/MarioUtil/RumbleType.cpp
 reference/sms/src/MarioUtil/ScreenUtil.cpp
 reference/sms/src/MarioUtil/ShadowUtil.cpp
 reference/sms/src/MarioUtil/TexUtil.cpp
+reference/sms/src/JSystem/J2D/J2DPane.cpp
+reference/sms/src/JSystem/JUtility/JUTResFont.cpp
+reference/sms/src/JSystem/JUtility/JUTResource.cpp
 port/src/MathUtil.cpp
 port/src/J3DTransform.cpp
 port/src/J3DTevs.cpp
+port/src/JUTTexture.cpp
+port/src/J2DPrint.cpp

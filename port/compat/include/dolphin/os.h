@@ -57,15 +57,20 @@ typedef struct BI2Debug {
 	/* 0x24 */ u32 padSpec;
 } BI2Debug;
 
-u32 __OSPhysicalMemSize AT_ADDRESS(OS_BASE_CACHED | 0x0028);
-volatile u32 __OSTVMode AT_ADDRESS(OS_BASE_CACHED | 0x00CC);
-OSThread* __gUnkThread1 AT_ADDRESS(OS_BASE_CACHED | 0x00D8);
-OSThreadQueue __OSActiveThreadQueue AT_ADDRESS(OS_BASE_CACHED | 0x00DC);
-OSThread* __gCurrentThread AT_ADDRESS(OS_BASE_CACHED | 0x00E4);
-u32 __OSSimulatedMemSize AT_ADDRESS(OS_BASE_CACHED | 0x00F0);
-u32 __OSBusClock AT_ADDRESS(OS_BASE_CACHED | 0x00F8);
-u32 __OSCoreClock AT_ADDRESS(OS_BASE_CACHED | 0x00FC);
-unsigned int __gUnknown800030C0[2] AT_ADDRESS(OS_BASE_CACHED | 0x30C0);
+// SHADOW (64-bit port): these are AT_ADDRESS hardware/low-RAM globals. On the
+// host AT_ADDRESS expands to nothing, so the upstream header form is a C++
+// DEFINITION emitted by every TU that includes it -> "multiple definition" at
+// the --whole-archive link. Adding `extern` makes them DECLARATIONS only; the
+// single real definitions live in port/pal/os/os_globals.cpp.
+extern u32 __OSPhysicalMemSize AT_ADDRESS(OS_BASE_CACHED | 0x0028);
+extern volatile u32 __OSTVMode AT_ADDRESS(OS_BASE_CACHED | 0x00CC);
+extern OSThread* __gUnkThread1 AT_ADDRESS(OS_BASE_CACHED | 0x00D8);
+extern OSThreadQueue __OSActiveThreadQueue AT_ADDRESS(OS_BASE_CACHED | 0x00DC);
+extern OSThread* __gCurrentThread AT_ADDRESS(OS_BASE_CACHED | 0x00E4);
+extern u32 __OSSimulatedMemSize AT_ADDRESS(OS_BASE_CACHED | 0x00F0);
+extern u32 __OSBusClock AT_ADDRESS(OS_BASE_CACHED | 0x00F8);
+extern u32 __OSCoreClock AT_ADDRESS(OS_BASE_CACHED | 0x00FC);
+extern unsigned int __gUnknown800030C0[2] AT_ADDRESS(OS_BASE_CACHED | 0x30C0);
 
 #define OS_BUS_CLOCK   __OSBusClock
 #define OS_CORE_CLOCK  __OSCoreClock
