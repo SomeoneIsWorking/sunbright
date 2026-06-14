@@ -92,6 +92,25 @@ template <class T> struct SbStackObj {
 static void eng_touch(EngineTex*) {}
 SUNBRIGHT_BRIDGE(0x80009200u, &eng_touch);
 
+// ── a POLYMORPHIC engine type + its out-of-line PLACEMENT-NEW ctor bridge ─────────────
+// EngineTexV has a vtable; raw sb_eng_alloc gives uninitialized storage, so the host vtable is set
+// only by running the real C++ ctor. The ctor bridge does placement-new on the raw storage — this
+// is the path polymorphic types need (the recompiled/inlined-ctor path can't replay a vtable store).
+struct EngineTexV {
+    virtual int kind() { return 42; }   // a vtable slot -> proves the host vtable got set
+    int mWidth;
+};
+SB_ENGINE_TYPE(EngineTexV);
+// CodeWarrior ctors take `this` and return it; here `this` is the raw sb_eng_alloc storage (a handle
+// marshalled to a host ptr by the bridge). Placement-new constructs in place (sets the vtable),
+// then the ctor body sets fields; returning `this` round-trips the same handle.
+static EngineTexV* sb_ct_EngineTexV(EngineTexV* self, int w) {
+    EngineTexV* p = new (self) EngineTexV();   // placement-new on the raw storage -> host vtable
+    p->mWidth = w;
+    return p;
+}
+SUNBRIGHT_BRIDGE(0x80009300u, &sb_ct_EngineTexV);
+
 // ── the emitter's own output (the real recompiler code path under test) ───────────────
 // Pattern B caller @ ..0000; Pattern A caller @ ..1000; Pattern A out-of-line ctor @ ..2000.
 extern "C" void func_80010000(CPUState& cpu);   // ORACLE   B caller
@@ -102,6 +121,7 @@ extern "C" void func_80020000(CPUState& cpu);   // TAILORED B caller
 extern "C" void func_80021000(CPUState& cpu);   // TAILORED A caller
 extern "C" void func_80022000(CPUState& cpu);   // TAILORED A ctor (host-native)
 extern "C" void func_80023000(CPUState& cpu);   // TAILORED C stack temp (host SbStackObj)
+extern "C" void func_80024000(CPUState& cpu);   // TAILORED A polymorphic (bridged placement-new ctor)
 #include "../../scratch/port/construct_oracle.inc"
 #include "../../scratch/port/construct_tailored.inc"
 
@@ -158,7 +178,18 @@ int main() {
           "C TAILORED: re-materialized addi shares ONE host SbStackObj — write off addi#1 read back off addi#2");
     CHECK(c_tailored == c_oracle, "C: tailored stack-temp value matches the oracle");
 
+    // ── Pattern A, POLYMORPHIC — sb_eng_alloc (raw) + a bridged placement-new ctor sets the host
+    //    vtable. Tailored-only (the oracle world would marshal a guest ptr into the bridge). ──
+    EngineTexV* av_host = nullptr;
+    { CPUState cpu; cpu.reset(); cpu.gpr[1] = STACK; func_80024000(cpu); av_host = (EngineTexV*)sb_eng_host(cpu.gpr[3]); }
+    std::printf("[construct_slice] AV: host=%p kind()=%d mWidth=%d (expect kind 42, mWidth 99)\n",
+                (void*)av_host, av_host ? av_host->kind() : -1, av_host ? av_host->mWidth : -1);
+    CHECK(av_host != nullptr, "AV: polymorphic ctor bridge produced a HOST object via its handle");
+    CHECK(av_host && av_host->kind() == 42,
+          "AV: the bridged PLACEMENT-NEW ctor set the host VTABLE (virtual call resolves)");
+    CHECK(av_host && av_host->mWidth == 99, "AV: the ctor set the field");
+
     if (g_fail) { std::printf("[construct_slice] RESULT: FAIL\n"); return 1; }
-    std::printf("[construct_slice] RESULT: PASS — host-native engine construction verified vs oracle (Patterns A+B)\n");
+    std::printf("[construct_slice] RESULT: PASS — host-native engine construction verified (heap A+B, stack C, polymorphic AV)\n");
     return 0;
 }

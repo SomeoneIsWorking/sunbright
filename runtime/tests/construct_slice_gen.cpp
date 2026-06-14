@@ -42,12 +42,14 @@ static constexpr uint32_t BLR = 0x4e800020u;
 
 static constexpr uint32_t OPNEW     = 0x80009100u;   // operator new (raw allocator)
 static constexpr uint32_t ENG_TOUCH = 0x80009200u;   // an EngineTex method (type-revealing, no-op)
+static constexpr uint32_t CTORV     = 0x80009300u;   // a POLYMORPHIC type's out-of-line ctor (bridged)
 
 // Per-world function addresses (oracle base 0x80010000, tailored base 0x80020000).
 static uint32_t fB(uint32_t base)    { return base + 0x0000; }   // Pattern B caller
 static uint32_t fAcall(uint32_t base){ return base + 0x1000; }   // Pattern A caller
 static uint32_t fActor(uint32_t base){ return base + 0x2000; }   // Pattern A out-of-line ctor
 static uint32_t fC(uint32_t base)    { return base + 0x3000; }   // Pattern C stack temporary
+static uint32_t fAV(uint32_t base)   { return base + 0x4000; }   // Pattern A, POLYMORPHIC (bridged ctor)
 
 static std::vector<uint32_t> patB_words(uint32_t a) {
     return {
@@ -69,6 +71,20 @@ static std::vector<uint32_t> patAcall_words(uint32_t a, uint32_t ctor) {
 }
 static std::vector<uint32_t> patActor_words() {
     return { enc_stw(4,3,0x3c), BLR };   // this->mWidth = r4
+}
+// Pattern A for a POLYMORPHIC type: same as patAcall but the ctor is BRIDGED (a placement-new
+// wrapper that runs the real C++ ctor -> sets the host vtable). The caller is identical shape;
+// only the ctor target (CTORV) is a bridge, not a recompiled function.
+static std::vector<uint32_t> patAVcall_words(uint32_t a) {
+    return {
+        enc_bl(a + 0, OPNEW),    // r3 = operator new -> sb_eng_alloc<EngineTexV>()
+        enc_or(29,3,3),          // mr r29,r3
+        enc_addi(4,0,99),        // li r4,99
+        enc_or(3,29,29),         // mr r3,r29 (this=handle)
+        enc_bl(a + 16, CTORV),   // ctor(this, 99)  -> bridged placement-new (sets vtable)
+        enc_or(3,29,29),         // mr r3,r29 (return the object)
+        BLR,
+    };
 }
 // Pattern C — a STACK temporary (interior `addi r1,off`), written then re-materialized and read
 // back: the two addis for the same frame slot must share ONE host object (same handle), and the
@@ -93,8 +109,10 @@ static TypeDB make_db(uint32_t ctor_addr) {
         { 0x28, FieldDesc{ "mEmbPalette", "" } },
         { 0x3c, FieldDesc{ "mWidth",      "" } },
     };
+    db.layouts["EngineTexV"] = {};                       // polymorphic; no inline field access in caller
     db.signatures[ENG_TOUCH] = { { 3, "EngineTex" } };   // eng_touch(this)
     db.signatures[ctor_addr] = { { 3, "EngineTex" } };   // ctor(this, ...) — reveal + self-seed
+    db.signatures[CTORV]     = { { 3, "EngineTexV" } };  // polymorphic ctor(this, ...) — flags the alloc
     return db;
 }
 
@@ -123,6 +141,7 @@ static std::string emit_world(uint32_t base, bool tailored) {
     s += emit_fn(fAcall(base), patAcall_words(fAcall(base), fActor(base)), tailored, fActor(base));
     s += emit_fn(fActor(base), patActor_words(),                     tailored, fActor(base));
     s += emit_fn(fC(base),     patC_words(fC(base)),                 tailored, fActor(base));
+    s += emit_fn(fAV(base),    patAVcall_words(fAV(base)),           tailored, fActor(base));
     return s;
 }
 

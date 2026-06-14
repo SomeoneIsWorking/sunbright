@@ -169,9 +169,14 @@ delete`. Stack temps (C) release at scope end (the frame teardown) — needs a s
    heap path). Tests: `recomp_test` "stack temporary" + `construct_slice` Pattern C (write off
    addi#1, read back off a re-materialized addi#2 → same object → matches the oracle). All four
    patterns (A/B/C heap+stack construction, D field-loaded) now handled for NON-POLYMORPHIC types.
-   **REMAINING:** POLYMORPHIC types need an out-of-line PLACEMENT-NEW ctor bridge
-   (`new(sb_eng_host(h)) T(args)`) to set the host vtable — the recompiled-ctor path can't replay
-   the guest vtable store. Real JUTTexture (non-polymorphic) still gated on GX + port/ link.
+   **POLYMORPHIC types — PROVEN too (stub):** an out-of-line PLACEMENT-NEW ctor bridge
+   (`new(sb_eng_host(h)) T(args)`) runs the real C++ ctor so the HOST vtable is set — the
+   recompiled/inlined-ctor path can't (the guest stores a guest vtable address). `construct_slice`
+   Pattern AV: `sb_eng_alloc<EngineTexV>()` (raw) + a bridged ctor wrapper (`SB_ENGINE_TYPE` marshals
+   `this` from a handle; `new(self) EngineTexV(); self->mWidth=w`) → the host virtual call resolves
+   (`kind()==42`) and the field is set. So the bridge is just a per-type wrapper, no recompiler
+   change. This is the path J2DWindow::Texture (the sweep gap) needs. ALL construction cases are now
+   proven end-to-end with stubs. Real JUTTexture/J2DWindow still gated on GX + port/ link.
 3. **Stack temporaries (Pattern C)** — interior `addi r1,off` typed as engine → host side object +
    handle + scope release. Heavier (needs the frame/scope model); defer until A/B are solid.
 4. Scale: sweep allocation recognition across all engine-type ctors/methods; confirm no

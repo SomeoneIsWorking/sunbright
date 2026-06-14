@@ -46,6 +46,8 @@ chk "Pattern C: tailored addi yields the shared stack-object handle" \
     "grep -q '_eng_stack_[0-9]*.handle()' $gen_out/construct_tailored.inc"
 chk "Pattern C: oracle keeps the interior addi as raw stack arithmetic" \
     "grep -q 'cpu.gpr\[3\] = cpu.gpr\[1\] + 40' $gen_out/construct_oracle.inc"
+chk "Polymorphic: tailored allocs the polymorphic type raw, then bridges its ctor" \
+    "grep -q 'cpu.gpr\[3\] = sb_eng_alloc<EngineTexV>()' $gen_out/construct_tailored.inc && grep -q 'call_ppc(cpu, 0x80009300u)' $gen_out/construct_tailored.inc"
 chk "oracle calls the real operator new" \
     "grep -q 'call_ppc(cpu, 0x80009100u)' $gen_out/construct_oracle.inc"
 chk "oracle uses raw guest MEM for the inlined writes" \
