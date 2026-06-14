@@ -1,10 +1,14 @@
 # Reducing Dolphin dependence (strategic direction)
 
-> **Direction (set 2026-06-05):** Be *less constrained to Dolphin*. Keep Dolphin for **GPU
-> rendering only** (GX → Vulkan/OGL — high complexity, low value to replace). Gradually own
-> everything else with PC-native implementations of the *behavior* (not faithful HW/OS
-> emulation — see `port-not-emulate`). North star: a real PC port whose non-graphics
-> subsystems we control and can debug with our own tools.
+> **⚠ SUPERSEDED (2026-06-14):** the GPU carve-out below is reversed. The user now wants the
+> **renderer owned too** and Dolphin removed ENTIRELY. The master plan is
+> `docs/native_port_plan.md` — read that first. This doc remains valid for the non-GPU subsystems
+> and the rationale/method; ignore only the "Keep Dolphin for GPU" line.
+
+> **Direction (set 2026-06-05, GPU clause now superseded):** Be *less constrained to Dolphin*.
+> ~~Keep Dolphin for **GPU rendering only**~~ (now in scope — see native_port_plan.md §3). Gradually
+> own everything with PC-native implementations of the *behavior* (not faithful HW/OS emulation — see
+> `port-not-emulate`). North star: a real PC port that needs no emulation at all.
 
 ## Why
 The hard, slow-to-diagnose bugs this project keeps hitting share a root: non-graphics behavior
