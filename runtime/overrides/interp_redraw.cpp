@@ -90,6 +90,18 @@ extern "C" void func_80299838(CPUState&);   // TMarDirector::direct
 extern "C" volatile int g_sb_own_present;       // Present.cpp (fork)
 extern "C" void sb_present_xfb(unsigned xfb_addr);   // Present.cpp (fork) — present phys addr now
 extern "C" volatile int g_sb_efb_redirect_inbetween;  // BPStructs.cpp (fork) — in-between owned-EFB routing
+extern "C" void sb_efb_reset_binds();                 // TextureCacheBase.cpp (fork) — drop bound-tex reuse
+extern "C" void sb_clear_efb();                       // BPFunctions.cpp (fork) — clear EFB (own the clear)
+static bool efb_own_enabled() {                        // SUNBRIGHT_EFB_OWN: per-field owned EFB textures
+    static int v = -1;
+    if (v < 0) v = getenv("SUNBRIGHT_EFB_OWN") ? 1 : 0;
+    return v == 1;
+}
+static bool efb_reset_binds_enabled() {                // A/B: SUNBRIGHT_EFB_NORESET disables the fix
+    static int v = -1;
+    if (v < 0) v = (efb_own_enabled() && !getenv("SUNBRIGHT_EFB_NORESET")) ? 1 : 0;
+    return v == 1;
+}
 static bool own_present_enabled() {
     static int v = -1;
     if (v < 0) v = getenv("SUNBRIGHT_NO_OWN_PRESENT") ? 0 : 1;  // default ON for interp60
@@ -253,8 +265,14 @@ SUNBRIGHT_OVERRIDE(ov_interp_endRendering, DISPLAY_END_RENDER) {
         // geometry (no Mario ghost) AND the real field's textures are never clobbered (no lag) —
         // without touching guest RAM or Dolphin's address-keyed cache. Off: SUNBRIGHT_NO_EFB_REDIRECT.
         if (efb_redirect_enabled()) g_sb_efb_redirect_inbetween = 1;
+        // Own-mode: reset the bound-texture reuse cache so the in-between binds its own owned-EFB
+        // textures fresh, and (after) so the next REAL frame re-binds its own — otherwise the
+        // owned bind leaks into the real frame's Load() and every real frame samples the
+        // in-between's N-1/2 readback (= the real-frame EFB lag). See SbResetBinds.
+        if (efb_reset_binds_enabled()) sb_efb_reset_binds();
         gxs_replay_frame(frameN.data(), frameN.size());    // re-render frame N with interpolated mtx
         g_sb_efb_redirect_inbetween = 0;
+        if (efb_reset_binds_enabled()) sb_efb_reset_binds();
         interp60_xfmap_end();
         g_interp60_in_redraw = false;
         const u32 ob0 = MEM_R32(display + 4), ob1 = MEM_R32(display + 8);
@@ -264,6 +282,11 @@ SUNBRIGHT_OVERRIDE(ov_interp_endRendering, DISPLAY_END_RENDER) {
         MEM_W32(display + 4, ob0); MEM_W32(display + 8, ob1);
         MEM_W16(display + 0x4C, wait);
         if (own) sb_present_xfb(alt_phys);                 // B: present the in-between now
+        // Own the EFB clear (opt-in SUNBRIGHT_EFB_CLEAR): wipe the EFB so the GAME's next real frame
+        // renders on a clean buffer. Addresses the un-cleared-residue doubling (the tower images),
+        // but did NOT fix Mario's reflection — under evaluation; off by default. See the handoff.
+        static const int efb_clear = getenv("SUNBRIGHT_EFB_CLEAR") ? 1 : 0;
+        if (efb_clear) sb_clear_efb();
         g_i60.redraws++;
         return;
     }   // distinct low26, 32-aligned, within MEM1
@@ -611,10 +634,13 @@ int interp60_probe(char* out, int cap, const char* query) {
             g_sb_own_present, g_sb_ownpres_manual, g_sb_ownpres_gated, g_sb_ownpres_auto, g_sb_ownpres_last);
         extern volatile unsigned long g_sb_efb_redirects;
         extern volatile unsigned long g_sb_efb_owned_hits, g_sb_efb_owned_miss, g_sb_efb_inbetween_ramwrite;
-        app("EFB-OWNED: copies=%lu  in-between samples hit=%lu miss=%lu  fallthrough-RAM=%lu  %s\n",
-            g_sb_efb_redirects, g_sb_efb_owned_hits, g_sb_efb_owned_miss, g_sb_efb_inbetween_ramwrite,
-            g_sb_efb_inbetween_ramwrite ? "<<< in-between WRITES RAM (clobbers real frame = lag)"
-                                        : "(no in-between RAM writes)");
+        extern volatile unsigned long g_sb_efb_resets, g_sb_efb_real_reused_owned;
+        app("EFB-OWNED: copies=%lu  in-between samples hit=%lu miss=%lu  fallthrough-RAM=%lu\n",
+            g_sb_efb_redirects, g_sb_efb_owned_hits, g_sb_efb_owned_miss, g_sb_efb_inbetween_ramwrite);
+        app("EFB-LEAK: bind-resets=%lu  REAL-frame reused OWNED tex=%lu  %s\n",
+            g_sb_efb_resets, g_sb_efb_real_reused_owned,
+            g_sb_efb_real_reused_owned ? "<<< LEAK: real frames sample the in-between's texture (= lag)"
+                                       : "(no owned-texture leak into real frames)");
     }
     app("RENDER VOLUME of in-between field: gx_bytes=%llu runs=%lu  %s\n",
         g_i60.redraw_gx_bytes, g_i60.redraw_gx_runs,
