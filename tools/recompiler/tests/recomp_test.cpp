@@ -470,6 +470,29 @@ int main() {
               "construction: the engine method after the ctor stays a bridged call_ppc");
     }
 
+    // OBJECT-IDENTITY stack temporary (Pattern C): an interior-stack `addi rD,r1,off` recognized as
+    // a stack-temp engine object becomes a RAII host SbStackObj local (declared at function top) and
+    // the addi yields its shared handle — so re-materialized addis for the same slot alias one object.
+    {
+        const uint32_t B = 0x80100000u;
+        auto enc_addi2 = [](int rd, int ra, int16_t si) { return (14u<<26)|(rd<<21)|(ra<<16)|(uint16_t)si; };
+        std::vector<uint32_t> w = { enc_addi2(3,1,0x28), BLR };   // addi r3,r1,0x28 ; blr
+        std::vector<uint8_t> bytes(w.size()*4);
+        for (size_t i=0;i<w.size();++i){ uint32_t be=__builtin_bswap32(w[i]); std::memcpy(&bytes[i*4],&be,4); }
+        EmitContext ctx; ctx.func_addr = B;
+        ctx.instrs = collect_function(bytes.data(), B, bytes.size(), B, B+(uint32_t)w.size()*4, /*cfg=*/false);
+        ctx.branch_targets = intra_branch_targets(ctx.instrs, B);
+        ctx.alloc_sites[B+0] = "JUTTexture";        // recognized stack-temp construction
+        std::ostringstream ss; CEmitter em(ss); em.emit_function(ctx);
+        std::string code = ss.str();
+        CHECK(has(code, "SbStackObj<JUTTexture> _eng_stack_40;"),
+              "stack temp: a RAII host object is declared for the frame slot (offset 0x28=40)");
+        CHECK(has(code, "cpu.gpr[3] = _eng_stack_40.handle();"),
+              "stack temp: the interior addi yields the shared host-object handle");
+        CHECK(!has(code, "cpu.gpr[3] = cpu.gpr[1] + 40"),
+              "stack temp: the raw stack-pointer arithmetic is NOT emitted at a flagged site");
+    }
+
     std::printf("recomp_test: %d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

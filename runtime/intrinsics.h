@@ -233,6 +233,22 @@ extern void  sb_eng_release(void* host);
 // mirrors the guest `operator new(sizeof) + ctor` for a non-polymorphic T (e.g. JUTTexture).
 template <class T> inline u32 sb_eng_alloc() { return sb_eng_handle(::operator new(sizeof(T))); }
 
+// A STACK-local engine object (Pattern C, object_identity.md): raw, properly-aligned host storage
+// for T plus a stable handle, registered on construction and released on destruction (handle only —
+// T's own ctor/dtor are the recompiled tailored ctor/dtor over the storage, like the heap path).
+// The emitter declares ONE per distinct guest frame slot at the top of a generated function, so
+// C++ RAII gives it exactly the function-activation lifetime of the guest stack temporary (no leak,
+// no manual tracking), and every `addi rD,r1,off` for that slot yields the SAME handle.
+template <class T> struct SbStackObj {
+    alignas(T) unsigned char storage[sizeof(T)];
+    u32 h_;
+    SbStackObj() : h_(sb_eng_handle(storage)) {}
+    ~SbStackObj() { sb_eng_release(storage); }
+    SbStackObj(const SbStackObj&) = delete;
+    SbStackObj& operator=(const SbStackObj&) = delete;
+    u32 handle() const { return h_; }
+};
+
 // Guest main-RAM effective address -> host pointer (for the SUNBRIGHT_BRIDGE
 // marshalling thunk, runtime/bridge.h). ea==0 -> nullptr. Defined in memory_bridge.cpp.
 extern void* sb_guest_to_host(u32 ea);

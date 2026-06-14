@@ -159,10 +159,19 @@ delete`. Stack temps (C) release at scope end (the frame teardown) — needs a s
    own `this` field writes are host-native (its `this` is signature-seeded), so it constructs the
    host object directly. So for non-polymorphic engine types the whole heap-construction path
    (A + B) is `sb_eng_alloc` + ordinary tailored recompilation; nothing else.
-   **STILL TODO for full step 2:** stack-temp (Pattern C) emission (interior `addi r1,off` → host
-   side object + handle + scope release). POLYMORPHIC types still need an out-of-line PLACEMENT-NEW
-   ctor bridge (`new(sb_eng_host(h)) T(args)`) to set the host vtable — the recompiled-ctor path
-   can't replay the guest vtable store. Real JUTTexture (non-polymorphic) still gated on GX + port/ link.
+3. **Stack-temp (Pattern C) emission — DONE.** A flagged interior-stack `addi rD,r1,off` becomes a
+   RAII host object: the emitter declares one `SbStackObj<T>` local per distinct frame slot at the
+   top of the generated function (`runtime/intrinsics.h` — raw aligned storage + a handle, released
+   on its dtor) and the `addi` yields `_eng_stack_<off>.handle()`. C++ RAII gives exactly the
+   guest stack temporary's function-activation lifetime — no manual lifetime tracking, no leak — and
+   every re-materialized `addi` for the same slot aliases ONE host object (same handle). The
+   recompiled tailored inlined ctor/dtor init/destruct the storage via host field access (like the
+   heap path). Tests: `recomp_test` "stack temporary" + `construct_slice` Pattern C (write off
+   addi#1, read back off a re-materialized addi#2 → same object → matches the oracle). All four
+   patterns (A/B/C heap+stack construction, D field-loaded) now handled for NON-POLYMORPHIC types.
+   **REMAINING:** POLYMORPHIC types need an out-of-line PLACEMENT-NEW ctor bridge
+   (`new(sb_eng_host(h)) T(args)`) to set the host vtable — the recompiled-ctor path can't replay
+   the guest vtable store. Real JUTTexture (non-polymorphic) still gated on GX + port/ link.
 3. **Stack temporaries (Pattern C)** — interior `addi r1,off` typed as engine → host side object +
    handle + scope release. Heavier (needs the frame/scope model); defer until A/B are solid.
 4. Scale: sweep allocation recognition across all engine-type ctors/methods; confirm no

@@ -40,6 +40,12 @@ chk "Pattern A: tailored out-of-line ctor (recompiled) writes the HOST mWidth me
     "grep -q 'sb_eng_host(cpu.gpr\[3\]))->mWidth = ' $gen_out/construct_tailored.inc"
 chk "Pattern A: tailored caller still calls the out-of-line ctor (no special bridge)" \
     "grep -q 'call_ppc(cpu, 0x80022000u)' $gen_out/construct_tailored.inc"
+chk "Pattern C: tailored declares a RAII host SbStackObj for the frame slot" \
+    "grep -q 'SbStackObj<EngineTex> _eng_stack_' $gen_out/construct_tailored.inc"
+chk "Pattern C: tailored addi yields the shared stack-object handle" \
+    "grep -q '_eng_stack_[0-9]*.handle()' $gen_out/construct_tailored.inc"
+chk "Pattern C: oracle keeps the interior addi as raw stack arithmetic" \
+    "grep -q 'cpu.gpr\[3\] = cpu.gpr\[1\] + 40' $gen_out/construct_oracle.inc"
 chk "oracle calls the real operator new" \
     "grep -q 'call_ppc(cpu, 0x80009100u)' $gen_out/construct_oracle.inc"
 chk "oracle uses raw guest MEM for the inlined writes" \

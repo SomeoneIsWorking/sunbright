@@ -73,6 +73,20 @@ u32 sb_eng_handle(void* host) {
 }
 // Mirrors runtime/intrinsics.h: raw host storage + a handle (no ctor — the inlined writes init it).
 template <class T> static inline u32 sb_eng_alloc() { return sb_eng_handle(::operator new(sizeof(T))); }
+void sb_eng_release(void* host) {                 // release a handle by host pointer
+    auto it = g_eng_index.find(host);
+    if (it == g_eng_index.end()) return;
+    g_eng_table[it->second] = nullptr;
+    g_eng_index.erase(it);
+}
+// Mirrors runtime/intrinsics.h SbStackObj: RAII host storage + handle (handle released on dtor).
+template <class T> struct SbStackObj {
+    alignas(T) unsigned char storage[sizeof(T)];
+    u32 h_;
+    SbStackObj() : h_(sb_eng_handle(storage)) {}
+    ~SbStackObj() { sb_eng_release(storage); }
+    u32 handle() const { return h_; }
+};
 
 // ── the type-revealing engine method (no-op at runtime; only seeds the offline recovery) ─
 static void eng_touch(EngineTex*) {}
@@ -83,9 +97,11 @@ SUNBRIGHT_BRIDGE(0x80009200u, &eng_touch);
 extern "C" void func_80010000(CPUState& cpu);   // ORACLE   B caller
 extern "C" void func_80011000(CPUState& cpu);   // ORACLE   A caller
 extern "C" void func_80012000(CPUState& cpu);   // ORACLE   A ctor (guest-layout)
+extern "C" void func_80013000(CPUState& cpu);   // ORACLE   C stack temp (guest stack)
 extern "C" void func_80020000(CPUState& cpu);   // TAILORED B caller
 extern "C" void func_80021000(CPUState& cpu);   // TAILORED A caller
 extern "C" void func_80022000(CPUState& cpu);   // TAILORED A ctor (host-native)
+extern "C" void func_80023000(CPUState& cpu);   // TAILORED C stack temp (host SbStackObj)
 #include "../../scratch/port/construct_oracle.inc"
 #include "../../scratch/port/construct_tailored.inc"
 
@@ -125,6 +141,22 @@ int main() {
     CHECK(a_host != nullptr, "A TAILORED: out-of-line ctor produced a HOST object via its handle");
     CHECK(a_host && a_host->mWidth == (int)a_oracle_width,
           "A TAILORED: recompiled out-of-line ctor wrote the HOST member (no special ctor bridge needed)");
+
+    // ── Pattern C (stack temporary) — write off addi#1, read back off a re-materialized addi#2
+    //    (SAME frame slot -> SAME host object), export to frame+0x100 for comparison. ──
+    const u32 EXPORT = STACK + 0x100;
+    tst_w32(EXPORT, 0);
+    { CPUState cpu; cpu.reset(); cpu.gpr[1] = STACK; func_80013000(cpu); }
+    u32 c_oracle = tst_r32(EXPORT);
+    tst_w32(EXPORT, 0);
+    { CPUState cpu; cpu.reset(); cpu.gpr[1] = STACK; func_80023000(cpu); }
+    u32 c_tailored = tst_r32(EXPORT);
+
+    std::printf("[construct_slice] C: oracle exported=%u  tailored exported=%u (expect 88)\n", c_oracle, c_tailored);
+    CHECK(c_oracle == 88, "C ORACLE: stack-temp mWidth written+read via the guest stack frame");
+    CHECK(c_tailored == 88,
+          "C TAILORED: re-materialized addi shares ONE host SbStackObj — write off addi#1 read back off addi#2");
+    CHECK(c_tailored == c_oracle, "C: tailored stack-temp value matches the oracle");
 
     if (g_fail) { std::printf("[construct_slice] RESULT: FAIL\n"); return 1; }
     std::printf("[construct_slice] RESULT: PASS — host-native engine construction verified vs oracle (Patterns A+B)\n");

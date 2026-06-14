@@ -47,6 +47,7 @@ static constexpr uint32_t ENG_TOUCH = 0x80009200u;   // an EngineTex method (typ
 static uint32_t fB(uint32_t base)    { return base + 0x0000; }   // Pattern B caller
 static uint32_t fAcall(uint32_t base){ return base + 0x1000; }   // Pattern A caller
 static uint32_t fActor(uint32_t base){ return base + 0x2000; }   // Pattern A out-of-line ctor
+static uint32_t fC(uint32_t base)    { return base + 0x3000; }   // Pattern C stack temporary
 
 static std::vector<uint32_t> patB_words(uint32_t a) {
     return {
@@ -68,6 +69,22 @@ static std::vector<uint32_t> patAcall_words(uint32_t a, uint32_t ctor) {
 }
 static std::vector<uint32_t> patActor_words() {
     return { enc_stw(4,3,0x3c), BLR };   // this->mWidth = r4
+}
+// Pattern C — a STACK temporary (interior `addi r1,off`), written then re-materialized and read
+// back: the two addis for the same frame slot must share ONE host object (same handle), and the
+// value is exported to the frame (untyped) so the test can compare it to the oracle.
+static std::vector<uint32_t> patC_words(uint32_t a) {
+    return {
+        enc_addi(3,1,0x28),          // +0   this = stack temp (addi#1)
+        enc_addi(0,0,88),            // +4   r0 = 88
+        enc_stw(0,3,0x3c),           // +8   this->mWidth = 88   (host write off addi#1)
+        enc_bl(a + 12, ENG_TOUCH),   // +12  eng_touch(this) -> reveals/flags addi#1
+        enc_addi(3,1,0x28),          // +16  re-materialize this (addi#2, SAME slot)
+        enc_lwz(5,3,0x3c),           // +20  r5 = this->mWidth  (host read off addi#2 -> same obj)
+        enc_stw(5,1,0x100),          // +24  export to frame+0x100 (untyped, observable)
+        enc_bl(a + 28, ENG_TOUCH),   // +28  eng_touch(this) -> reveals/flags addi#2
+        BLR,                         // +32
+    };
 }
 
 static TypeDB make_db(uint32_t ctor_addr) {
@@ -105,6 +122,7 @@ static std::string emit_world(uint32_t base, bool tailored) {
     s += emit_fn(fB(base),     patB_words(fB(base)),                 tailored, fActor(base));
     s += emit_fn(fAcall(base), patAcall_words(fAcall(base), fActor(base)), tailored, fActor(base));
     s += emit_fn(fActor(base), patActor_words(),                     tailored, fActor(base));
+    s += emit_fn(fC(base),     patC_words(fC(base)),                 tailored, fActor(base));
     return s;
 }
 

@@ -107,6 +107,22 @@ void CEmitter::emit_function(const EmitContext& ctx) {
     out_ << "\nextern \"C\" void func_" << std::hex << ctx.func_addr
          << "(CPUState& cpu) {\n";
 
+    // Pattern C stack temporaries (object_identity.md): one RAII host object per distinct guest
+    // frame slot used as an engine stack temporary. Declared before any label so gotos in the body
+    // never jump over their construction; C++ RAII gives function-activation lifetime + handle
+    // release, and every `addi rD,r1,off` for that slot shares this object (same handle).
+    {
+        std::map<int, std::string> stack_temps;   // frame offset -> host type
+        for (const auto& i : ctx.instrs)
+            if (i.op == PPCOp::ADDI && i.rA == 1) {
+                auto a = ctx.alloc_sites.find(i.pc);
+                if (a != ctx.alloc_sites.end()) stack_temps[(int)i.simm] = a->second;
+            }
+        for (const auto& [off, ty] : stack_temps)
+            out_ << "    SbStackObj<" << ty << "> _eng_stack_" << std::dec
+                 << (unsigned)(off & 0xffff) << std::hex << ";\n";
+    }
+
     for (const auto& i : ctx.instrs) {
         // Emit label if this is a branch target within the function
         if (ctx.branch_targets.count(i.pc))
@@ -207,6 +223,13 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
     switch (i.op) {
     // ── Integer arithmetic ──────────────────────────────────────────────────
     case PPCOp::ADDI:
+        // Pattern C engine-CONSTRUCTION: an interior-stack `addi rD,r1,off` recognized as a
+        // stack-temporary engine object yields the SHARED handle of that frame slot's host object
+        // (declared as a SbStackObj local at the top of this function). See object_identity.md.
+        if (i.rA == 1 && ctx.alloc_sites.count(i.pc)) {
+            line("%s = _eng_stack_%u.handle();", d.c_str(), (unsigned)(i.simm & 0xffff));
+            break;
+        }
         if (i.rA == 0)
             line("%s = %d;", d.c_str(), (int)i.simm);
         else
