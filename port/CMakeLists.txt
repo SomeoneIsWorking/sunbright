@@ -251,3 +251,15 @@ target_link_libraries(bmd_load_run PRIVATE
   Threads::Threads)
 add_test(NAME bmd_load_run COMMAND bmd_load_run
          WORKING_DIRECTORY "${SMS_REPO_ROOT}")
+
+# STEP 1 port foundation: construct a host J3DModel from a loaded model and run
+# the GX-free calc() path natively (see tests/model_calc_run.cpp). SKIPs w/o BMDs.
+add_executable(model_calc_run tests/model_calc_run.cpp)
+target_include_directories(model_calc_run PRIVATE ${SMS_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}/assets")
+target_compile_options(model_calc_run PRIVATE
+  ${SMS_FORCE_INCLUDE} -fno-strict-aliasing -Wno-multichar)
+target_link_libraries(model_calc_run PRIVATE
+  -Wl,--start-group smsport_assets smsport_core smsport_pal -Wl,--end-group
+  Threads::Threads)
+add_test(NAME model_calc_run COMMAND model_calc_run
+         WORKING_DIRECTORY "${SMS_REPO_ROOT}")
