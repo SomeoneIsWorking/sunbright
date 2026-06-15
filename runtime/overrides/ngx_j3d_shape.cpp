@@ -38,6 +38,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <unordered_map>
+#include <atomic>
 #include <vector>
 
 namespace {
@@ -605,15 +606,26 @@ float         g_proj[16] = {0};
 bool          g_have_proj = false;
 unsigned long g_ndc_total = 0, g_ndc_wpos = 0, g_ndc_inbox = 0;
 
-// Clip-space triangle SNAPSHOT for the native Vulkan mesh render (vk_mesh.cpp):
-// a rolling window of recent scene triangles + per-texture draw batches. Read
-// best-effort from the HTTP thread (a torn read at worst shows a stray triangle
-// — diagnostic-acceptable).
-constexpr size_t SNAP_CAP  = 600000;   // vertices (200k tris)
-constexpr size_t BATCH_CAP = 8192;     // draw batches
-std::vector<NgxRenderVertex> g_snap;   // SNAP_CAP entries, lazily sized
-size_t                       g_snap_count = 0;
-std::vector<NgxRenderBatch>  g_batches;
+// Clip-space triangle SNAPSHOT for the native Vulkan mesh render (vk_mesh.cpp /
+// ngx_present.cpp): one frame's scene triangles + per-texture draw batches.
+//
+// DOUBLE-BUFFERED per frame. The game thread accumulates the current frame into
+// the `g_cur` buffer; at each frame boundary (GXSetProjection, ngx_frame_begin)
+// the just-completed buffer is published to `g_front` (atomic) and accumulation
+// flips to the other buffer. The present (video thread) always reads the last
+// COMPLETE frame from `g_front` — never a half-accumulated one. Before this, a
+// single live buffer was read mid-accumulation/mid-wrap, so a present that landed
+// just after the buffer wrapped showed a partial scene (the plaza floor missing,
+// or near-empty) → intermittent black frames.
+constexpr size_t SNAP_CAP  = 600000;   // vertices (200k tris) per buffer
+constexpr size_t BATCH_CAP = 8192;     // draw batches per buffer
+std::vector<NgxRenderVertex> g_snap[2];   // SNAP_CAP entries each, lazily sized
+size_t                       g_snap_count[2] = {0, 0};
+std::vector<NgxRenderBatch>  g_batches[2];
+int                          g_cur = 0;       // accumulation buffer (game thread only)
+std::atomic<int>             g_front{0};       // published buffer (present reads)
+int                          g_read_front = 0; // latched by ngx_snap_verts for batches
+unsigned long                g_frame_swaps = 0;
 
 // Reusable scratch (single emu/render thread serialized by nthr).
 std::vector<NgxVertex> g_verts;
@@ -787,7 +799,10 @@ void transform_eye() {
     // grouped into a per-texture batch (triangle-aligned roll-over so a wrap
     // never splits a triangle; on wrap the batch list resets with the buffer).
     if (g_have_proj && !g_indices.empty()) {
-        if (g_snap.size() < SNAP_CAP) g_snap.resize(SNAP_CAP);
+        std::vector<NgxRenderVertex>& snap = g_snap[g_cur];
+        std::vector<NgxRenderBatch>&  batches = g_batches[g_cur];
+        size_t& count = g_snap_count[g_cur];
+        if (snap.size() < SNAP_CAP) snap.resize(SNAP_CAP);
         // Per-texmap bindings for this shape's material (object-model, g_mat_tex).
         // CI formats (C4/C8/C14X2) need a resolved TLUT; else render that texmap flat.
         NgxTexBind tb[8] = {};
@@ -797,30 +812,30 @@ void transform_eye() {
             if (c.addr && c.w && c.h && (!is_ci || c.tlut_addr)) tb[m] = c;
         }
         for (size_t t = 0; t + 3 <= g_indices.size(); t += 3) {
-            if (g_snap_count + 3 > SNAP_CAP) { g_snap_count = 0; g_batches.clear(); }
+            if (count + 3 > SNAP_CAP) { count = 0; batches.clear(); }  // safety wrap (huge frame)
             // Open a new batch on material/binding change, after a wrap, or at start.
-            const bool tex_diff = g_batches.empty() ||
-                memcmp(g_batches.back().tex, tb, sizeof tb) != 0;
-            if (g_batches.empty() || tex_diff ||
-                g_batches.back().tev_index != g_cur_tev_index ||
-                g_batches.back().vstart + g_batches.back().vcount != (uint32_t)g_snap_count) {
-                if (g_batches.size() >= BATCH_CAP) break;  // bounded
+            const bool tex_diff = batches.empty() ||
+                memcmp(batches.back().tex, tb, sizeof tb) != 0;
+            if (batches.empty() || tex_diff ||
+                batches.back().tev_index != g_cur_tev_index ||
+                batches.back().vstart + batches.back().vcount != (uint32_t)count) {
+                if (batches.size() >= BATCH_CAP) break;  // bounded
                 NgxRenderBatch nb{}; memcpy(nb.tex, tb, sizeof tb);
-                nb.vstart = (uint32_t)g_snap_count; nb.vcount = 0; nb.tev_index = g_cur_tev_index;
-                g_batches.push_back(nb);
+                nb.vstart = (uint32_t)count; nb.vcount = 0; nb.tev_index = g_cur_tev_index;
+                batches.push_back(nb);
             }
             for (int e = 0; e < 3; e++) {
                 const unsigned vidx = g_indices[t + e];
                 const float* cp = &g_clip[vidx * 4];
                 const float* lit = &g_litrgba[vidx * 4];
                 const float* uvp = &g_uvs[vidx * 16];
-                NgxRenderVertex& d = g_snap[g_snap_count];
+                NgxRenderVertex& d = snap[count];
                 d.clip[0]=cp[0]; d.clip[1]=cp[1]; d.clip[2]=cp[2]; d.clip[3]=cp[3];
                 d.rgba[0]=lit[0]; d.rgba[1]=lit[1]; d.rgba[2]=lit[2]; d.rgba[3]=lit[3];
                 for (int m = 0; m < 8; m++) { d.uv[m][0]=uvp[m*2+0]; d.uv[m][1]=uvp[m*2+1]; }
-                g_snap_count++;
+                count++;
             }
-            g_batches.back().vcount += 3;
+            batches.back().vcount += 3;
         }
     }
 }
@@ -878,15 +893,37 @@ void ngx_set_projection(const float* m44, unsigned type) {
     g_have_proj = true;
 }
 
+// Explicit per-frame boundary, called from the J2DScreen::draw tee (scene_render.cpp):
+// the HUD draws ONCE per frame AFTER all 3D drawing, so the accumulation buffer holds
+// a complete 3D frame at that point. Publish it to the front buffer and flip
+// accumulation to the other one — the present (video thread) then always reads a whole
+// frame, never a half-accumulated one. The empty-guard makes repeat HUD draws within a
+// frame (dialogue etc.) no-ops, and it aligns the 3D publish with the J2D HUD snapshot
+// (both taken at the same tee → consistent composited frame). NOT GXSetProjection
+// (fires ~5×/frame); NOT a GX HW function (GXCopyDisp can't be safely super-called).
+void ngx_frame_publish() {
+    if (g_snap_count[g_cur] == 0 && g_batches[g_cur].empty()) return;  // no 3D this frame: keep last
+    g_front.store(g_cur, std::memory_order_release);
+    g_cur ^= 1;
+    if (g_snap[g_cur].size() < SNAP_CAP) g_snap[g_cur].resize(SNAP_CAP);
+    g_snap_count[g_cur] = 0;
+    g_batches[g_cur].clear();
+    g_frame_swaps++;
+}
+
 // Best-effort snapshot accessors for the native Vulkan mesh render (copy promptly
 // — the emu thread keeps writing; a torn read at worst yields a stray triangle).
 const NgxRenderVertex* ngx_snap_verts(int* nverts) {
-    *nverts = (int)g_snap_count;
-    return g_snap.empty() ? nullptr : g_snap.data();
+    // Latch the published buffer index so ngx_snap_batches reads the SAME frame
+    // (the caller fetches verts then batches; a swap between them would mismatch).
+    g_read_front = g_front.load(std::memory_order_acquire);
+    *nverts = (int)g_snap_count[g_read_front];
+    return g_snap[g_read_front].empty() ? nullptr : g_snap[g_read_front].data();
 }
 const NgxRenderBatch* ngx_snap_batches(int* nbatches) {
-    *nbatches = (int)g_batches.size();
-    return g_batches.empty() ? nullptr : g_batches.data();
+    const int f = g_read_front;
+    *nbatches = (int)g_batches[f].size();
+    return g_batches[f].empty() ? nullptr : g_batches[f].data();
 }
 const NgxTevState* ngx_snap_tevstates(int* nstates) {
     *nstates = (int)g_tevstates.size();
@@ -1002,7 +1039,7 @@ int sb_ngx_shape_dump(char* out, int cap) {
         "  last pos[0]=(%.3f, %.3f, %.3f)  max_verts/shape=%u\n"
         "  native XF (modelview): xf_verts=%lu  in_front(z<0)=%lu (%.1f%%)  no_mtx=%lu\n"
         "  eye bbox: x[%.1f..%.1f] y[%.1f..%.1f] z[%.1f..%.1f]  last_eye=(%.2f, %.2f, %.2f)\n"
-        "  native projection: have_proj=%d  clip.w>0=%lu/%lu  NDC xy in [-1,1]=%lu (%.1f%%)\n",
+        "  native projection: have_proj=%d  clip.w>0=%lu/%lu  NDC xy in [-1,1]=%lu (%.1f%%)  frame_swaps=%lu\n",
         g_enabled ? "ON" : "OFF (set SUNBRIGHT_NGX_SHAPE=1)",
         g_calls, g_meshes, g_badcp, g_fail,
         g_total_verts, g_total_tris,
@@ -1013,7 +1050,8 @@ int sb_ngx_shape_dump(char* out, int cap) {
         g_eye_min[0], g_eye_max[0], g_eye_min[1], g_eye_max[1], g_eye_min[2], g_eye_max[2],
         g_last_eye[0], g_last_eye[1], g_last_eye[2],
         g_have_proj ? 1 : 0, g_ndc_wpos, g_ndc_total,
-        g_ndc_inbox, g_ndc_total ? 100.0 * (double)g_ndc_inbox / (double)g_ndc_total : 0.0);
+        g_ndc_inbox, g_ndc_total ? 100.0 * (double)g_ndc_inbox / (double)g_ndc_total : 0.0,
+        g_frame_swaps);
 
     // N5 per-material TEV capture stats.
     n += snprintf(out + n, cap - n,
@@ -1074,9 +1112,10 @@ int sb_ngx_shape_dump(char* out, int cap) {
             (k % 4 == 0) ? " " : "", g_dbg_cb_raw[k]);
         n += snprintf(out + n, cap - n, "\n");
     }
-    {   // batch texture stats: how many batches have a real texmap0 + distinct addrs
+    {   // batch texture stats (published frame): texmap0 presence + distinct addrs
+        const std::vector<NgxRenderBatch>& fb = g_batches[g_front.load(std::memory_order_acquire)];
         unsigned tb_tex0 = 0, tb_none = 0, distinct = 0; u32 seen[64];
-        for (const auto& B : g_batches) {
+        for (const auto& B : fb) {
             if (B.tex[0].addr) {
                 tb_tex0++;
                 bool f = false; for (unsigned i = 0; i < distinct; i++) if (seen[i] == B.tex[0].addr) { f = true; break; }
@@ -1088,7 +1127,7 @@ int sb_ngx_shape_dump(char* out, int cap) {
         n += snprintf(out + n, cap - n,
             "    batches=%zu  with_tex0=%u  untextured=%u  distinct_tex0_addr=%u\n"
             "    distinct addrs bound to texmap0 (lifetime)=%u%s\n",
-            g_batches.size(), tb_tex0, tb_none, distinct,
+            fb.size(), tb_tex0, tb_none, distinct,
             g_distinct_n, g_distinct_overflow ? "+ (overflow)" : "");
     }
     n += snprintf(out + n, cap - n, "    GXLoadTexObj by texmap:");

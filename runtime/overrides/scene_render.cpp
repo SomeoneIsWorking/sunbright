@@ -184,9 +184,15 @@ static constexpr u32 J2DSCREEN_DRAW = 0x802cfda8u;
 
 void sb_j2d_set_root(u32 root);   // runtime/render/j2d_walk.cpp — publishes the live root for /j2d
 void sb_j2d_capture(u32 root);    // runtime/render/j2d_walk.cpp — snapshots the post-draw pane tree
+void ngx_frame_publish();         // runtime/overrides/ngx_j3d_shape.cpp — publish the 3D frame snapshot
 
 static void ov_j2dscreen_draw(CPUState& cpu) {
     const u32 root = cpu.gpr[3];
+    // J2DScreen::draw runs once per frame AFTER all 3D drawing (the HUD draws on top),
+    // so the 3D capture buffer holds a complete frame here. Publish it as the explicit
+    // per-frame boundary for the native present (so it reads a whole frame, not a
+    // half-accumulated one) — aligned with the J2D HUD snapshot taken just below.
+    ngx_frame_publish();
     sb_j2d_set_root(root);         // publish the live root J2DScreen* (the /j2d diagnostic probes read it)
     static const bool log = getenv("SUNBRIGHT_RENDERPORT_LOG") != nullptr;
     if (log) {
