@@ -38,6 +38,10 @@ struct J3DShapeDrawInitData {
 	/* 0x04 */ u32 mDisplayListIndex;
 };
 
+// FILE-OVERLAY block: offset members declared `u32` (not typed pointers) for the
+// LP64 struct-overlay fix — see the J3DModelLoader.hpp shadow + the
+// first_flip_endianness.md note. (Second change in this shadow beyond the
+// allocVcdVatCmdBuffer mangling fix below.)
 struct J3DShapeBlock {
 	/* 0x00 */ u8 mMagic[4];
 	/* 0x04 */ u32 mSize;
@@ -45,14 +49,14 @@ struct J3DShapeBlock {
 	/* 0x08 */ u16 mShapeNum;
 	/* 0x0A */ u16 _pad;
 
-	/* 0x0C */ J3DShapeInitData* mpShapeInitData;
-	/* 0x10 */ u16* mpIndexTable;
-	/* 0x14 */ ResNTAB* mpNameTable;
-	/* 0x18 */ GXVtxDescList* mpVtxDescList;
-	/* 0x1C */ u16* mpMtxTable;
-	/* 0x20 */ u8* mpDisplayListData;
-	/* 0x24 */ J3DShapeMtxInitData* mpMtxInitData;
-	/* 0x28 */ J3DShapeDrawInitData* mpDrawInitData;
+	/* 0x0C */ u32 mpShapeInitData;   // was J3DShapeInitData*
+	/* 0x10 */ u32 mpIndexTable;      // was u16*
+	/* 0x14 */ u32 mpNameTable;       // was ResNTAB*
+	/* 0x18 */ u32 mpVtxDescList;     // was GXVtxDescList*
+	/* 0x1C */ u32 mpMtxTable;        // was u16*
+	/* 0x20 */ u32 mpDisplayListData; // was u8*
+	/* 0x24 */ u32 mpMtxInitData;     // was J3DShapeMtxInitData*
+	/* 0x28 */ u32 mpDrawInitData;    // was J3DShapeDrawInitData*
 }; // Size: 0x2C
 
 enum J3DMdlDataFlag {

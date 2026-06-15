@@ -39,9 +39,33 @@ GDLObj* __GDCurrentDL = nullptr;
 // ---------------------------------------------------------------------------
 // Base: display-list object lifecycle / flush / overflow  (GDBase.h)
 // ---------------------------------------------------------------------------
-void GDInitGDLObj(GDLObj*, void*, u32) {}
+// GDInitGDLObj and GDPadCurr32 are NOT no-ops: the GD display-list contract is
+// that GDInitGDLObj sets up the GDLObj (start/ptr/top/length) and the header's
+// inline GDWrite_* / __GDWrite helpers then append bytes through __GDCurrentDL->
+// ptr. A no-op GDInitGDLObj leaves the caller's stack GDLObj UNINITIALIZED, so
+// the very real inline writers (e.g. from J3DShape::makeVcdVatCmd ->
+// makeVtxArrayCmd / J3DSetVtxAttrFmtv) write through a garbage ptr and corrupt
+// memory (smashed J3DModelData::makeHierarchy stack -> SEGV). These two must
+// faithfully maintain the GDLObj so the bytes land in the shape's GD-command
+// buffer (mGDCommands, a real per-shape allocation). Faithful to GDBase.c.
+void GDInitGDLObj(GDLObj* dl, void* start, u32 length)
+{
+	dl->start  = (u8*)start;
+	dl->ptr    = (u8*)start;
+	dl->top    = (u8*)start + length;
+	dl->length = length;
+}
+// Pad the current display list up to a 32-byte boundary (writes 0s via the same
+// append path the SDK uses). `(unsigned long)ptr & 0x1f` is value-preserving for
+// the low-5-bit alignment on LP64.
+void GDPadCurr32(void)
+{
+	while (((unsigned long)__GDCurrentDL->ptr & 0x1f) != 0)
+		*__GDCurrentDL->ptr++ = 0;
+}
+// Host memory is coherent and the native renderer reads mGDCommands directly —
+// no CPU->GPU cache flush needed (the GameCube DCFlushRange is meaningless here).
 void GDFlushCurrToMem(void) {}
-void GDPadCurr32(void) {}
 void GDOverflowed(void) {}
 void GDSetOverflowCallback(GDOverflowCb) {}
 

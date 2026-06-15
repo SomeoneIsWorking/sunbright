@@ -1,7 +1,11 @@
 # First-flip blocker: the port engine reads big-endian assets but has no byteswap layer
 
-**Status (2026-06-15): CONFIRMED blocker. Invalidates the handoff's J3DModelData first-flip plan.
-Affects the ENTIRE loader-managed / asset-data engine-type category.**
+**Status (2026-06-15): RESOLVED ✅ — the real port `J3DModelLoaderDataBase::load` now loads a
+fully-swapped real BMD into a non-null `J3DModelData` with correct joint/shape/material counts for
+all 15 test BMDs (`scratch/bmd/load_gate`). Three layers were needed (all done): (1) the BE→host BMD
+swap (`port/assets/bmd_swap`), (2) the LP64 struct-overlay fix (`port/compat` block-struct shadows),
+(3) a faithful `GDInitGDLObj`/`GDPadCurr32` (`port/pal/gd/gd_stub.cpp`). See the two UPDATE sections
+below. The historical blocker narrative is kept for context.**
 
 ## What was tried
 The plan (handoff) was: flip `J3DModelData` first because it is loader-managed (0 game `new`
@@ -73,6 +77,71 @@ Independent of the endianness blocker, the link integration is proven cheap:
   `--whole-archive` (smsport_main). Normal archive GC (pull-on-demand) does not trigger it for the
   J3DModelData closure — the seam links clean against core+pal alone.
 Probes kept: `scratch/flip_link_probe.cpp`, `scratch/endian_probe.cpp`, `scratch/flip_undef.txt`.
+
+## UPDATE (2026-06-15, later): BE asset layer DONE — and a SECOND blocker surfaced (LP64 struct overlay)
+The big-endian→host BMD swap layer (Path A) is **complete**: `port/assets/bmd_swap.{h,cpp}` swaps
+all 8 J3D2 blocks (INF1/VTX1/EVP1/DRW1/JNT1/SHP1/MAT3/TEX1), verified on 15 real BMDs
+(`scratch/bmd/verify_real`) + synthetic `bmd_swap_test`. Stride/landmine notes resolved empirically
+(J3DJointInitData stride is **0x40** not the header's 0x30; JNT1 jointNum feeds EVP1's inv-bind count
+via a pre-pass; SHP1 display-list interior + TEX1 texel data stay GC-native by design — decoded at
+render time).
+
+**But feeding a fully-swapped BMD to the real port loader (`J3DModelLoaderDataBase::load`) SEGVs in
+`readDraw` — a SECOND, independent blocker: LP64 struct-overlay layout.** The decomp's file-overlay
+block structs (`J3DDrawBlock`, `J3DModelInfoBlock`, `J3DVertexBlock`, `J3DEnvelopBlock`,
+`J3DTextureBlock`, `J3DJointBlock`, `J3DShapeBlock`, `J3DMaterialBlock`) declare their
+offset members as `void*` / typed pointers. On the GameCube `sizeof(void*)==4` == the 4-byte file
+offset, so the overlay works. On a 64-bit host `sizeof(void*)==8`, so (a) every pointer member is
+8-byte aligned → field offsets SHIFT off the file layout, and (b) reading one over-reads 8 bytes =
+a wild pointer. `readDraw` is the first site that DEREFERENCES a converted offset
+(`mDrawMtxFlag[i]`), so it's where the crash lands; the bug is in EVERY block struct.
+Evidence: `scratch/bmd/load_gate` (heap bringup → swap → `load`) → SIGSEGV in `readDraw`; the BMD's
+`mpDrawMtxFlag` (a 4-byte file offset 0x14) is read as an 8-byte host pointer 0x00540000_00000016.
+
+This is **separate from endianness** and is required "own the engine for a 64-bit host" work. The
+fix: shadow the block-struct-declaring headers in `port/compat`, changing the file-offset members
+from `void*`/typed-pointer to `u32` (matching the 4-byte file layout AND the decomp's GC semantics).
+The loader passes these members to `JSUConvertOffsetToPtr(base, offset)` (which has a `u32` overload),
+so a `u32` member yields the correct host pointer. The factories' *internal* pointer members are real
+host pointers set at runtime (8 bytes, fine) — only the FILE-OVERLAY `*Block` structs need the change.
+(Port/compat already shadows `J3DShapeFactory.hpp` for the `unsigned long` vs `u32` mangling issue —
+same shadow-the-header pattern, different LP64 problem.)
+
+## UPDATE (2026-06-15, latest): LOADER GATE GREEN — both blockers fixed + a GD-init bug + a ccache trap
+After the LP64 block-struct shadows (above), the loader crashed deeper, in two more spots — both fixed:
+
+1. **GD display-list init was a no-op (memory corruption).** `J3DShape::makeVcdVatCmd` does
+   `GDInitGDLObj(&list, mGDCommands, 0xC0)` then calls the header's INLINE `GDWrite_*`/`__GDWrite`
+   helpers (via `makeVtxArrayCmd`/`J3DSetVtxAttrFmtv`), which append bytes through
+   `__GDCurrentDL->ptr`. `port/pal/gd/gd_stub.cpp` had `GDInitGDLObj` as a NO-OP, leaving the stack
+   `GDLObj` uninitialized → the inline writers wrote through a garbage `ptr` → smashed the
+   `makeHierarchy` stack → SEGV. Fix: implement `GDInitGDLObj` + `GDPadCurr32` faithfully (per
+   `GDBase.c`) so the bytes land in the shape's real `mGDCommands` buffer. `GDFlushCurrToMem` stays a
+   no-op (host memory is coherent; the native renderer reads `mGDCommands` directly).
+
+2. **⚠ CCACHE TRAP (cost a long debug detour) — newly-added higher-priority shadow headers don't
+   invalidate ccache.** The build uses `/usr/lib64/ccache/c++`. When a `port/compat` shadow header is
+   CREATED for a path that previously resolved to `reference/sms`, the source+flags hash is unchanged,
+   so ccache returns a STALE object compiled against the OLD (reference) header — the factory ctors
+   kept reading the old 8-byte-pointer block layout (disasm showed `mov 0x10(%rax)` instead of
+   `0xc`). A fresh build dir did NOT help (same ccache). Symptom: `-H`/manual compile is correct but
+   the CMake object is wrong; the `.o.d` depfile lists the reference header. FIX: rebuild affected TUs
+   with `CCACHE_DISABLE=1` (or `ccache -C`) whenever a NEW shadow header is added on top of an existing
+   include path. (Editing an EXISTING file invalidates ccache normally; only NEWLY-APPEARING
+   higher-priority headers slip through.)
+
+The loader gate harness is `scratch/bmd/load_gate.cpp` (heap bringup -> bmd_swap -> `load` -> assert
+non-null + sane counts), linked against `port/build-flip2/lib{assets,core,pal}.a`. Build the libs
+with `CCACHE_DISABLE=1 cmake --build port/build-flip2 --target smsport_core smsport_pal smsport_assets`.
+
+### Remaining toward the actual flip (loader works; now wire it)
+The port loader producing a valid host `J3DModelData` is the gate the handoff's NEXT step 2 wanted.
+Still to do (handoff steps 3-4): re-add the `port/` -> sunbright link, `SB_ENGINE_TYPE(J3DModelData)`
++ bridge `J3DModelLoaderDataBase::load @0x802e6f00` (swap in the bridge: copy guest BMD ->
+`bmd_swap_to_host` -> port `load` -> handle) + free-fn wrappers for the out-of-line J3DModelData
+methods, then `SUNBRIGHT_ENGINE_TYPES=J3DModelData` recompile + oracle-verify. NOTE: the J3DModelData
+methods that touch GX/render still run against the GD/GX stubs — field/method-correctness verification
+is the realistic near-term check (a textured frame needs the renderer owned in `port/`).
 
 ## Next-session decision (open)
 Pick the forward path:
