@@ -53,7 +53,8 @@ extern void call_ppc(CPUState& cpu, u32 address);
 // Marks a host C++ type as a PC-native ENGINE object (port/ JSystem etc.). A
 // pointer to such a type is passed across the boundary as a handle (sb_eng_host
 // on the way in, sb_eng_handle on the way out) instead of a guest RAM address.
-// Declare one per flipped engine type, mirroring SUNBRIGHT_ENGINE_TYPES:
+// Declare one per engine type that appears in a bridged function signature (so its
+// `this`/engine-typed args/returns marshal handle<->host):
 //     SB_ENGINE_TYPE(JUTTexture);
 template <class T> struct sb_is_engine_type : std::false_type {};
 #define SB_ENGINE_TYPE(T) template <> struct sb_is_engine_type<T> : std::true_type {}

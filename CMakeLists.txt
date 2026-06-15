@@ -157,7 +157,6 @@ add_executable(sunbright-coverage-real-test
     tools/recompiler/abi_layout.cpp
     tools/recompiler/func_sig.cpp
     tools/recompiler/type_recovery.cpp
-    tools/recompiler/c_emitter.cpp
     tools/recompiler/type_db_build.cpp
 )
 target_include_directories(sunbright-coverage-real-test PRIVATE tools/recompiler runtime)
@@ -190,7 +189,6 @@ add_executable(sunbright-coverage-sweep-test
     tools/recompiler/abi_layout.cpp
     tools/recompiler/func_sig.cpp
     tools/recompiler/type_recovery.cpp
-    tools/recompiler/c_emitter.cpp
     tools/recompiler/type_db_build.cpp
 )
 target_include_directories(sunbright-coverage-sweep-test PRIVATE tools/recompiler runtime)
@@ -238,33 +236,6 @@ if(SUNBRIGHT_GENERATED_SOURCES)
     # which the emitter handles explicitly via std::fma).
     set_source_files_properties(${SUNBRIGHT_GENERATED_SOURCES}
         PROPERTIES COMPILE_OPTIONS "-O3;-ffp-contract=off")
-endif()
-
-# Tailored engine-accessor thunk TU (docs/re_notes/j3d_subsystem_ownership_plan.md STEP 0, Option A).
-# When SUNBRIGHT_ENGINE_TYPES flips a subsystem, /recompile emits generated/eng_accessors.cpp with
-# the host-struct field/ctor thunks — the ONE generated TU that #includes the decomp headers. So it
-# must compile in the PORT environment (compat shadows + decomp includes + the CodeWarrior/MSL
-# force-includes), NOT with runtime/cpu_state.h (the u64 typedef clash STEP 0 fixed). When no type
-# is flipped the file is trivially empty and these flags are harmless. functions.h #includes the
-# matching eng_accessors.h (extern decls) so the generated game TUs call the thunks by symbol.
-file(GLOB SUNBRIGHT_ENG_ACCESSORS CONFIGURE_DEPENDS generated/eng_accessors.cpp)
-if(SUNBRIGHT_ENG_ACCESSORS)
-    # Compile the accessor TU as its OWN object library, NOT a source of the sunbright
-    # target. The two force-include shims need the SHELL: prefix to survive CMake's
-    # option de-duplication (without it the 2nd -include leaks as a stray positional
-    # source -> "cannot specify -o with -c with multiple files"). SHELL: is only honored
-    # by target_compile_options, not by set_source_files_properties COMPILE_OPTIONS — so
-    # this must be a real target (mirrors port/CMakeLists.txt SMS_FORCE_INCLUDE).
-    add_library(sb_eng_accessors OBJECT ${SUNBRIGHT_ENG_ACCESSORS})
-    target_include_directories(sb_eng_accessors PRIVATE
-        "${CMAKE_SOURCE_DIR}/port/compat/include"
-        "${CMAKE_SOURCE_DIR}/reference/sms/include"
-        "${CMAKE_SOURCE_DIR}/runtime")
-    target_compile_options(sb_eng_accessors PRIVATE
-        "SHELL:-include ${CMAKE_SOURCE_DIR}/port/compat/intrinsics.h"
-        "SHELL:-include ${CMAKE_SOURCE_DIR}/port/compat/msl_shim.h"
-        -fno-strict-aliasing -Wno-multichar -Wno-register -w)
-    target_compile_features(sb_eng_accessors PRIVATE cxx_std_17)
 endif()
 
 # ── Port engine (PC-native JSystem) — guest slice linked into the hybrid ──────
@@ -317,11 +288,6 @@ add_executable(sunbright
     ${SUNBRIGHT_OVERRIDE_SOURCES}
     ${SUNBRIGHT_GENERATED_SOURCES}
 )
-# The accessor TU links via its object library (see above) so its force-include
-# shims keep the SHELL: handling.
-if(TARGET sb_eng_accessors)
-    target_sources(sunbright PRIVATE $<TARGET_OBJECTS:sb_eng_accessors>)
-endif()
 
 target_include_directories(sunbright PRIVATE
     runtime

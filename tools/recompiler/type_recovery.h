@@ -1,34 +1,42 @@
 #pragma once
 #include "ppc_decoder.h"
-#include "c_emitter.h"   // EngField
 #include <map>
 #include <string>
 #include <unordered_set>
 #include <vector>
 
 // =============================================================================
-// type_recovery — SEEDED type recovery for the TAILORED-RECOMP boundary.
+// type_recovery — SEEDED type recovery (reg -> host-native engine type at each site).
 //
-// The field-access half of the game<->engine boundary (docs/ARCHITECTURE_TARGET.md)
-// needs to know, at each `lwz/lfs/stw/...` site, whether the base register points at a
-// HOST-NATIVE engine object — and if so, which host member. This pass computes that
-// (the `eng_fields` map the emitter consumes), SEEDED by the function's decomp
-// signature (its `this`/param types are known) and propagated through the function's
-// dataflow. The slice's hand stub (field_slice_gen.cpp seed_fields) is replaced by
-// this real pass.
+// Computes, at each `lwz/lfs/stw/...` site, whether the base register points at a
+// HOST-NATIVE engine object — and if so, which host member — SEEDED by the function's
+// decomp signature (its `this`/param types are known) and propagated through the
+// function's dataflow.
 //
-// SHARP EDGE (a de-risk #2 finding — recorded here so it isn't forgotten): in the
-// guest-only recompiler an unknown register type is harmless (a generic big-endian MEM
-// access against guest RAM is always correct). In the TAILORED build it is NOT: if this
-// pass MISSES an engine-field access (leaves the site untyped), the emitter emits a
-// guest MEM access against a 32-bit HANDLE — reading unrelated bytes = a correctness
-// bug. So recovery must be COMPLETE for engine-typed sites, not merely sound. This pass
-// is conservative about *introducing* a type (only via explicit, verified flow) but a
-// miss is a latent bug, not a safe fallback. Coverage is the hard problem at scale.
+// STATUS (2026-06-15): the FIELD-FLIP emitter that consumed this pass's `eng_fields`
+// output is RETIRED — the game<->engine boundary is FUNCTION-CALLS-ONLY
+// (docs/ARCHITECTURE_TARGET.md; engine objects cross as handles, game code never
+// field-derefs them). This pass + EngField SURVIVE as the reg->engine-type DATAFLOW
+// that the function-call boundary still needs: offset-0 VIRTUAL-DISPATCH-on-handle
+// routing (knowing `rA` at a `lwz r,0(rA); …; bctrl` is an engine handle of type T) and
+// bridge-arg marshalling. The `eng_fields` map is now the analysis result, not emitter
+// input; unit-tested standalone (type_recovery_test, coverage_real/sweep).
 //
 // Portable C++17 (no host-arch / endianness assumptions): pure analysis over decoded
 // PPCInstr. Builds the same on x86-64 and arm64.
 // =============================================================================
+
+// The recovered type of a load/store site whose base register is statically a host-native
+// PC-engine object: the host C++ type + member to access. (Historically consumed by the
+// field-flip emitter, now RETIRED — see docs/ARCHITECTURE_TARGET.md; the boundary is
+// function-calls-only. recover_eng_fields and this struct survive as the reg->engine-type
+// DATAFLOW that virtual-dispatch-on-handle routing and bridge marshalling will reuse.)
+struct EngField {
+    std::string type_cname;       // host C++ type name of the BASE object, e.g. "EngineCam"
+    std::string member;           // host member expression, e.g. "mFov"
+    std::string ptr_type_cname;   // if this field is an engine-object POINTER, the type it points at; "" otherwise
+    bool guest_ptr = false;       // true if this field is a POINTER to GUEST data (not an engine object)
+};
 
 // A field of a host-native engine type at a given guest displacement.
 struct FieldDesc {
@@ -87,9 +95,9 @@ struct TypeDB {
 //   * `raw_allocators` — guest addrs of raw allocators (`operator new` 0x802c3ba4, …). A
 //     raw-allocator `bl` whose result is demanded as engine type T is a heap `new T` → flagged.
 //   * `alloc_sites` — filled with {site pc -> engine type}: the heap `operator new` bl OR the
-//     interior-stack `addi rD,r1,off` whose result becomes an engine object. The emitter rewrites
-//     a flagged heap site to `sb_eng_alloc()` (host storage + handle). When `alloc_sites` is
-//     non-null the backward pass also runs, so pre-call inlined field writes get typed into `out`.
+//     interior-stack `addi rD,r1,off` whose result becomes an engine object (the CONSTRUCTION
+//     sites a function-call-boundary factory bridge will key on). When `alloc_sites` is non-null
+//     the backward pass also runs, so pre-call inlined field writes get typed into `out`.
 std::map<u32, EngField> recover_eng_fields(const std::vector<PPCInstr>& instrs,
                                            u32 func_addr, const TypeDB& db,
                                            const std::unordered_set<u32>& branch_targets,

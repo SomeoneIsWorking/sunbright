@@ -215,50 +215,17 @@ extern void msr_set_raw(u32 v);
 // loops, timeouts) actually makes progress. Standalone builds use a fake counter.
 extern u64  tb_get();
 
-// ── Tailored-recomp boundary (docs/ARCHITECTURE_TARGET.md) ───────────────────
+// ── Function-call boundary (docs/ARCHITECTURE_TARGET.md) ─────────────────────
 // Engine-object handle table: recompiled game code holds 32-bit HANDLES for the
-// host-native PC-engine objects it reads/calls. The emitter bakes sb_eng_host()
-// at every typed field-access site (see tools/recompiler/c_emitter.cpp
-// emit_eng_field) and sb_eng_handle() when an engine pointer crosses the
-// boundary. Defined in runtime/eng_handle.cpp; full contract in eng_handle.h.
+// host-native PC-engine objects it calls into. A bridged call marshals an engine
+// pointer ARG via sb_eng_host() and an engine pointer RETURN via sb_eng_handle()
+// (runtime/bridge.h SB_ENGINE_TYPE). Defined in runtime/eng_handle.cpp; full
+// contract in eng_handle.h. (The boundary is function-calls-only; the per-type
+// field-flip that also used these was retired — no field-access in game code.)
 extern u32   sb_eng_handle(void* host);
 extern void* sb_eng_host(u32 handle);
 extern void  sb_eng_release(void* host);
 
-// Engine-CONSTRUCTION (object_identity.md) is emitted as a CALL to a per-type factory thunk
-// (`sbnew_<T>()` in generated/eng_accessors.cpp, compiled with the decomp headers): it does the
-// host `::operator new(sizeof(T))` + sb_eng_handle. The generated TU never names the host type T
-// (it has no struct def — see eng_accessor_rt.h), so the old `sb_eng_alloc<T>()` template that
-// needed `sizeof(T)` is gone; the factory bakes the size on the port side.
-
-// A STACK-local engine object (Pattern C, object_identity.md): raw host storage sized by a
-// port-side `sbsizeof_<T>()` thunk plus a stable handle, registered on construction and released
-// on destruction (handle only — T's own ctor/dtor are the recompiled tailored ctor/dtor over the
-// storage, like the heap path). The emitter declares ONE per distinct guest frame slot at the top
-// of a generated function, so C++ RAII gives it exactly the function-activation lifetime of the
-// guest stack temporary, and every `addi rD,r1,off` for that slot yields the SAME handle. Sized at
-// runtime (the generated TU can't see sizeof(T)); storage is max-aligned ::operator new memory
-// (engine objects are not over-aligned beyond that), so this is type-agnostic and host-defined.
-struct SbDynStackObj {
-    void* storage_;
-    u32   h_;
-    explicit SbDynStackObj(std::size_t sz)
-        : storage_(::operator new(sz)), h_(sb_eng_handle(storage_)) {}
-    ~SbDynStackObj() { sb_eng_release(storage_); ::operator delete(storage_); }
-    SbDynStackObj(const SbDynStackObj&) = delete;
-    SbDynStackObj& operator=(const SbDynStackObj&) = delete;
-    u32 handle() const { return h_; }
-};
-
 // Guest main-RAM effective address -> host pointer (for the SUNBRIGHT_BRIDGE
 // marshalling thunk, runtime/bridge.h). ea==0 -> nullptr. Defined in memory_bridge.cpp.
 extern void* sb_guest_to_host(u32 ea);
-// Inverse: host pointer (held in a guest-data POINTER FIELD of a host engine object) ->
-// 32-bit guest address. Emitted at a LWZ of such a field (c_emitter.cpp emit_eng_field).
-extern u32 sb_host_to_guest(void* host);
-// Store a 32-bit guest address into a guest-data pointer field of a host engine object,
-// translating to a host pointer. Deduces the member's pointer type so the assignment is
-// type-correct (incl. const-qualified pointees) without the emitter carrying the type name.
-template <class P> inline void sb_set_guest_ptr(P*& field, u32 ea) {
-    field = static_cast<P*>(sb_guest_to_host(ea));
-}

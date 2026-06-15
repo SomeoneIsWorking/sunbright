@@ -26,9 +26,16 @@ gameplay logic underneath. The boundary is **function calls only**:
 SURVIVES the correction: `port/` engine; `runtime/bridge.h` + handle table (`runtime/eng_handle`) +
 `SB_ENGINE_TYPE` marshalling; the J3D load/ctor/calc/viewCalc bridges + overrides (2026-06-15, all
 function-call bridges); `func_sig`/`decomp_parse` for SIGNATURES (which arg is an engine ptr→handle).
-RETIRED (remove): `SUNBRIGHT_ENGINE_TYPES` field-flip, `emit_eng_field`/`sbf_`, `recover_eng_fields`
-field-mapping, `eng_accessors` field thunks, the engine-internal-method flip exclusion, the
-field-slice de-risk. See memory `no-field-flip-boundary`. **Everything below this banner is the OLD
+RETIRED — REMOVED from the code 2026-06-15 (the field-flip cleanup): the `SUNBRIGHT_ENGINE_TYPES`
+field-flip path (`main.cpp`), `emit_eng_field`/`sbf_`/`sbnew_`/`sbsizeof_` + the `EngAccessorTable`
+(`c_emitter`), the `eng_accessors.{h,cpp}` generation + its CMake object library, the runtime flip
+glue (`eng_accessor_rt.h`, `SbDynStackObj`, `sb_eng_alloc`, `sb_host_to_guest`, `sb_set_guest_ptr`),
+the engine-internal-method flip exclusion, and the field-slice/construct-slice/flip-compile de-risk
+tests. KEPT as the surviving reg->engine-type DATAFLOW + signature infra (the function-call boundary
+— virtual-dispatch-on-handle routing + bridge marshalling — reuses them): `type_recovery`
+(`recover_eng_fields`, `EngField` moved here), `type_db_build`, `decomp_parse`, `func_sig`,
+`abi_layout` and their unit tests; `runtime/bridge.h` `SB_ENGINE_TYPE`, `runtime/eng_handle`, the J3D
+bridges/overrides. See memory `no-field-flip-boundary`. **Everything below this banner is the OLD
 (field-flip) framing — kept for history; the function-call half (§1) is still right, the data half
 (§2) is DELETED, not "solved".**
 

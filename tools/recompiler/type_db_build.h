@@ -25,9 +25,8 @@ struct TypeDBBuildResult {
     std::vector<std::string> missing_types;     // active types whose header wasn't found
     std::vector<std::string> unresolved_bases;  // base names referenced but not located
     int                      header_count = 0;  // headers indexed
-    // type name -> defining-header PATH (as walked from include_dir). The generated accessor TU
-    // (generated/eng_accessors.cpp, Option A) #includes these so the host struct defs are in scope
-    // when the thunk bodies bake field offsets / ctor sizes by name.
+    // type name -> defining-header PATH (as walked from include_dir). For a port-side bridge
+    // codegen TU to #include the decomp headers and resolve host struct defs/sizes by name.
     std::map<std::string, std::string> type_headers;
 };
 

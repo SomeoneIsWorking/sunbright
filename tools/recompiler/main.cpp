@@ -4,9 +4,6 @@
 #include "ppc_decoder.h"
 #include "c_emitter.h"
 #include "func_collect.h"
-#include "type_db_build.h"
-#include "type_recovery.h"
-#include "func_sig.h"
 
 #include <iostream>
 #include <fstream>
@@ -414,73 +411,6 @@ static int recompile_mode(const DiscLoader& disc, const DOL& dol, const std::str
     // functions together and lets the chunks compile in parallel.
     std::sort(all_funcs.begin(), all_funcs.end());
 
-    // ── Tailored boundary: host-native engine field access (ARCHITECTURE_TARGET) ──
-    // Build the type DB for the ACTIVE engine types (those whose port/ objects are host-native).
-    // Default = empty: recovered eng_fields stays empty, so every load/store emits the unchanged
-    // guest-layout MEM access (the guest-only path). Flip a subsystem on by listing its engine
-    // types in SUNBRIGHT_ENGINE_TYPES (comma/space-separated) once port/ owns those objects — one
-    // path, per-subsystem, no env toggle selecting native-vs-GC at runtime.
-    TypeDB g_type_db;
-    std::map<std::string, std::string> g_type_headers;   // type -> include-relative header path
-    std::string g_decomp_include = "reference/sms/include";
-    // Functions that are METHODS OF a flipped engine type are port-owned (bridged via runtime
-    // overrides); the recompiled bodies are dead. They must NOT be field-flipped: flipping them
-    // generates sbf_ accessors for the type's INTERNAL graph-pointer fields (e.g. J3DModelData::
-    // mVertexData.mVtxPosArray, J3DModel::mBumpMtxArr) which are 8-byte host pointers to host
-    // sub-objects with no sound u32 representation -> the accessor TU does not compile. The
-    // field-flip is reserved for EXTERNAL (game) access of the type; the engine internals stay
-    // port-native. Emitting these as plain guest code (dead, overridden) compiles & is correct.
-    std::unordered_set<u32> g_port_owned_funcs;
-    if (const char* e = getenv("SUNBRIGHT_ENGINE_TYPES")) {
-        std::set<std::string> active;
-        std::string cur;
-        for (char ch : std::string(e)) {
-            if (ch == ',' || ch == ' ' || ch == '\t') { if (!cur.empty()) { active.insert(cur); cur.clear(); } }
-            else cur += ch;
-        }
-        if (!cur.empty()) active.insert(cur);
-        if (!active.empty()) {
-            const char* inc = getenv("SUNBRIGHT_DECOMP_INCLUDE");
-            const char* fx  = getenv("SUNBRIGHT_FUNCS_TXT");
-            if (inc) g_decomp_include = inc;
-            auto built = build_type_db(active, g_decomp_include,
-                                       fx ? fx : "reference/sms_gmse01_funcs.txt");
-            g_type_db = std::move(built.db);
-            // Make each header path include-relative (strip the scanned include_dir prefix) so the
-            // generated accessor TU can `#include` it under -I<decomp_include>.
-            std::string pre = g_decomp_include;
-            if (!pre.empty() && pre.back() != '/') pre += '/';
-            for (auto& [ty, path] : built.type_headers) {
-                std::string rel = path;
-                if (rel.rfind(pre, 0) == 0) rel = rel.substr(pre.size());
-                g_type_headers[ty] = rel;
-            }
-            std::cout << "Tailored boundary: " << g_type_db.layouts.size() << " engine type(s) active\n";
-            for (const auto& m : built.missing_types)
-                std::cerr << "  WARN: engine type not found in headers: " << m << "\n";
-
-            // Flag every function that is a METHOD of a modeled (port-owned) type so the emit loop
-            // skips field-flipping it (see g_port_owned_funcs decl). Read addr->mangled from funcs.txt
-            // and demangle the owning class; if it is a DB layout key, the function is engine-internal.
-            {
-                std::ifstream ff(fx ? fx : "reference/sms_gmse01_funcs.txt");
-                std::string line;
-                while (std::getline(ff, line)) {
-                    if (line.empty()) continue;
-                    std::size_t sp = line.find(' ');
-                    if (sp == std::string::npos) continue;
-                    u32 a = (u32)strtoul(line.substr(0, sp).c_str(), nullptr, 16);
-                    std::string mangled = line.substr(sp + 1);
-                    FuncSig sig = demangle_signature(mangled);
-                    if (sig.is_method && g_type_db.layouts.count(sig.class_leaf))
-                        g_port_owned_funcs.insert(a);
-                }
-                std::cout << "Tailored boundary: " << g_port_owned_funcs.size()
-                          << " engine-internal method(s) excluded from field-flip\n";
-            }
-        }
-    }
-
     // ── Shared header: forward declarations for every recompiled function ─────
     // Each functions_*.cpp and jump_table.cpp include this, so cross-file calls
     // resolve without repeating 6000+ declarations in every translation unit.
@@ -490,19 +420,10 @@ static int recompile_mode(const DiscLoader& disc, const DOL& dol, const std::str
              "#pragma once\n"
              "#include \"../runtime/cpu_state.h\"\n"
              "#include \"../runtime/intrinsics.h\"\n"
-             "#include \"eng_accessors.h\"   // extern decls for the tailored engine-accessor thunks\n"
              "#include <cstdint>\n"
              "#include <cmath>\n\n";
         for (u32 addr : all_funcs)
             h << "extern \"C\" void func_" << std::hex << addr << "(CPUState&);\n";
-    }
-
-    // Placeholder eng_accessors.h so functions.h resolves even when no engine type is flipped
-    // (the default build). Overwritten with the real extern decls after emission, below.
-    {
-        std::ofstream h(out_dir + "/eng_accessors.h");
-        h << "// AUTO-GENERATED by sunbright-recomp — DO NOT EDIT\n#pragma once\n"
-             "// (no engine types flipped — empty)\n";
     }
 
     // ── Function bodies, split into address-bucketed files ────────────────────
@@ -511,7 +432,6 @@ static int recompile_mode(const DiscLoader& disc, const DOL& dol, const std::str
     int total_unhandled = 0;
     std::set<std::string> unhandled_ops;
     std::vector<std::string> part_files;
-    EngAccessorTable accessors;   // shared across all per-file emitters; written out after emission
 
     for (size_t start = 0; start < all_funcs.size(); start += kFuncsPerFile) {
         const size_t end = std::min(start + kFuncsPerFile, all_funcs.size());
@@ -526,7 +446,7 @@ static int recompile_mode(const DiscLoader& disc, const DOL& dol, const std::str
           << " .. 0x" << all_funcs[end - 1] << "\n"
           << "#include \"functions.h\"\n";
 
-        CEmitter emitter(f, &accessors);
+        CEmitter emitter(f);
         for (size_t fi = start; fi < end; fi++) {
             u32 addr = all_funcs[fi];
             EmitContext ctx;
@@ -549,16 +469,6 @@ static int recompile_mode(const DiscLoader& disc, const DOL& dol, const std::str
                 ctx.jumptable_targets = jumptable_targets(ctx.instrs, addr, fend, any_word);
                 ctx.branch_targets.insert(ctx.jumptable_targets.begin(), ctx.jumptable_targets.end());
             }
-            // Tailored boundary: type-recover host engine fields (empty DB -> empty -> unchanged).
-            // With the DB active, also recognize engine-CONSTRUCTION sites (object_identity.md):
-            // a guest `operator new` whose result becomes an engine object is rewritten to a host
-            // alloc + handle (ctx.alloc_sites), and its inlined ctor field writes are typed.
-            if (!g_type_db.layouts.empty() && !g_port_owned_funcs.count(addr)) {
-                static const std::unordered_set<u32> raw_allocators = { 0x802c3ba4u };  // operator new
-                ctx.eng_fields = recover_eng_fields(ctx.instrs, addr, g_type_db,
-                                                    ctx.branch_targets, ctx.jumptable_targets,
-                                                    nullptr, &raw_allocators, &ctx.alloc_sites);
-            }
             emitter.emit_function(ctx);
         }
         total_unhandled += emitter.unhandled_count();
@@ -571,35 +481,6 @@ static int recompile_mode(const DiscLoader& disc, const DOL& dol, const std::str
         for (const auto& mn : unhandled_ops)
             std::cerr << "  UNHANDLED: " << mn << "\n";
         std::cerr << "Add these to ppc_decoder.cpp + c_emitter.cpp\n";
-    }
-
-    // ── Tailored engine-accessor thunks (Option A, STEP 0) ───────────────────
-    // The generated game TUs CALL these by symbol; their DEFINITIONS live here, in the ONE TU that
-    // is compiled with the decomp headers (so host field offsets / ctor sizes are baked by name,
-    // ABI-correct). This TU must NOT include runtime/cpu_state.h (u64 typedef clash) — only the
-    // eng_accessor_rt.h shim + the decomp headers for the flipped types.
-    {
-        // Real extern decls (overwrites the placeholder).
-        std::ofstream h(out_dir + "/eng_accessors.h");
-        h << "// AUTO-GENERATED by sunbright-recomp — DO NOT EDIT\n#pragma once\n"
-             "#include <cstdint>\n#include <cstddef>\n\n";
-        for (const auto& [sym, d] : accessors.by_symbol) h << d.decl << "\n";
-
-        std::ofstream f(out_dir + "/eng_accessors.cpp");
-        f << "// AUTO-GENERATED by sunbright-recomp — DO NOT EDIT\n"
-             "// Port-compiled accessor thunks for the tailored-recomp boundary (STEP 0, Option A).\n"
-             "// Build this TU with the decomp include dirs + shims (see port/CMakeLists.txt), NOT\n"
-             "// with runtime/cpu_state.h. It is empty unless SUNBRIGHT_ENGINE_TYPES flipped a type.\n"
-             "#include \"../runtime/eng_accessor_rt.h\"\n";
-        // #include the decomp header for every flipped engine type (host struct defs).
-        std::set<std::string> seen_hdr;
-        for (const auto& [ty, rel] : g_type_headers)
-            if (!rel.empty() && seen_hdr.insert(rel).second)
-                f << "#include <" << rel << ">\n";
-        f << "\n";
-        for (const auto& [sym, d] : accessors.by_symbol) f << d.def << "\n";
-        std::cout << "  eng_accessors   (" << accessors.by_symbol.size() << " thunks, "
-                  << seen_hdr.size() << " headers)\n";
     }
 
     // Write jump_table.cpp
