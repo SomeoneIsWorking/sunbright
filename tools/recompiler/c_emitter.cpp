@@ -442,8 +442,19 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
     case PPCOp::BCLR:
         if (i.bo == 0x14) {  // always blr
             if (i.lk) {
-                // blrl: save return addr in LR, then call old LR (continues inline)
-                line("{ u32 _tgt = cpu.lr; cpu.lr = 0x%xu; call_ppc(cpu, _tgt); }", i.pc + 4);
+                // blrl: save return addr in LR, then call old LR (continues inline).
+                // CodeWarrior emits a VIRTUAL CALL as `mtlr m; bclrl` — if this site is a routed
+                // virtual dispatch on an engine handle (r3), call the host-dispatch thunk instead.
+                auto vit = ctx.virt_calls.find(i.pc);
+                if (vit != ctx.virt_calls.end()) {
+                    const EmitVirtCall& v = vit->second;
+                    line("cpu.lr = 0x%xu;", i.pc + 4);
+                    line("%s(cpu.gpr[3]);", v.thunk.c_str());
+                    if (virt_thunk_seen_.insert(v.thunk).second)
+                        virt_thunks_.push_back(EmitVirtThunk{ v.thunk, v.type, v.method });
+                } else {
+                    line("{ u32 _tgt = cpu.lr; cpu.lr = 0x%xu; call_ppc(cpu, _tgt); }", i.pc + 4);
+                }
             } else {
                 line("return;");  // blr → C return
             }

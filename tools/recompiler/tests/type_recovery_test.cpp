@@ -33,7 +33,9 @@ static uint32_t enc_b   (uint32_t from,uint32_t to)   { int32_t dl=(int32_t)(to-
 // bc bo,bi,target — bo=12 (branch if CR[bi] set), conditional (no link).
 static uint32_t enc_bc  (uint32_t from,uint32_t to)   { int16_t d=(int16_t)(to-from); return (16u<<26)|(12u<<21)|(0u<<16)|((uint16_t)d & 0xFFFCu); }
 static uint32_t enc_mtctr(int rs)                     { return (31u<<26)|(rs<<21)|(0x120u<<11)|(467u<<1); } // mtspr CTR,rS
+static uint32_t enc_mtlr (int rs)                     { return (31u<<26)|(rs<<21)|(0x100u<<11)|(467u<<1); } // mtspr LR,rS
 static constexpr uint32_t BCTRL = (19u<<26)|(20u<<21)|(528u<<1)|1u;  // bctrl (bo=20 always)
+static constexpr uint32_t BCLRL = (19u<<26)|(20u<<21)|(16u<<1)|1u;   // bclrl (bo=20 always)
 static constexpr uint32_t BLR = 0x4e800020u;
 
 static std::vector<PPCInstr> collect(uint32_t base, const std::vector<uint32_t>& w) {
@@ -406,6 +408,26 @@ int main() {
         auto it = vc.find(ins[4].pc);
         CHECK(it != vc.end() && it->second.type == "Cam" && it->second.vtbl_off == 0x10,
               "return-typed base (getCam()->virtual()) is recognized -> (Cam, 0x10)");
+    }
+
+    // 21. The REAL CodeWarrior GameCube virtual-call form is `mtlr m; bclrl` (NOT mtctr/bctrl) —
+    //     verified on M3UModel::perform 0x80237930 (unk8->calc(): lwz r12,0(r3); lwz r12,0x10(r12);
+    //     mtlr r12; bclrl). Recognize the LR/bclrl chain too.
+    {
+        std::vector<uint32_t> w = {
+            enc_lwz(12, 3, 0),       // lwz r12,0(r3)      vtable of Cam
+            enc_lwz(12, 12, 0x10),   // lwz r12,0x10(r12)  method
+            enc_mtlr(12),            // mtlr r12
+            BCLRL,                   // bclrl
+            BLR,
+        };
+        auto ins = collect(B, w);
+        std::map<u32, VCall> vc;
+        recover_eng_fields(ins, B, db, intra_branch_targets(ins, B), {},
+                           nullptr, nullptr, nullptr, &vc);
+        auto it = vc.find(ins[3].pc);
+        CHECK(it != vc.end() && it->second.type == "Cam" && it->second.vtbl_off == 0x10,
+              "mtlr;bclrl virtual-call chain recognized -> (Cam, 0x10)");
     }
 
     std::printf("type_recovery_test: %d checks, %d failures\n", g_checks, g_fail);

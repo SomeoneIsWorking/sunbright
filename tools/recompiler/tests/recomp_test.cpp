@@ -421,6 +421,19 @@ int main() {
               em.virt_thunks()[0].type == "J3DModel" && em.virt_thunks()[0].method == "calc",
               "thunk manifest collected with type+method for the port-world TU");
 
+        // The REAL CodeWarrior form is `mtlr m; bclrl` — a routed bclrl must also call the thunk.
+        const uint32_t mtlr12 = (31u<<26)|(12u<<21)|(0x100u<<11)|(467u<<1);
+        const uint32_t bclrl  = (19u<<26)|(20u<<21)|(16u<<1)|1u;
+        std::vector<uint32_t> wl = { mtlr12, bclrl, BLR };
+        std::vector<uint8_t> dl(wl.size()*4);
+        for (size_t i = 0; i < wl.size(); ++i) { uint32_t be = __builtin_bswap32(wl[i]); std::memcpy(&dl[i*4], &be, 4); }
+        EmitContext cl; cl.func_addr = B; cl.instrs = collect_function(dl.data(), B, dl.size(), B, B+(uint32_t)wl.size()*4, false);
+        cl.branch_targets = intra_branch_targets(cl.instrs, B);
+        cl.virt_calls[B+4] = EmitVirtCall{ "J3DModel", "calc", "sbvirt_J3DModel_2" };
+        std::ostringstream sl; CEmitter eml(sl); eml.emit_function(cl);
+        CHECK(has(sl.str(), "sbvirt_J3DModel_2(cpu.gpr[3]);"), "routed bclrl (mtlr;bclrl form) calls the thunk");
+        CHECK(!has(sl.str(), "call_ppc(cpu, _tgt)"), "routed bclrl does NOT emit the LR call");
+
         // A bctrl NOT in virt_calls stays a normal guest CTR dispatch.
         EmitContext ctx2; ctx2.func_addr = B; ctx2.instrs = ctx.instrs;
         ctx2.branch_targets = ctx.branch_targets;
