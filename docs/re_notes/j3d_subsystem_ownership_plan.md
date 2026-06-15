@@ -20,11 +20,18 @@ Offset-0 virtual-dispatch routing is now BUILT, WIRED, and CORRECT end-to-end (r
    `SUNBRIGHT_OWN_TYPES=J3DModel` regen routes 35 real `new J3DModel` sites + emits sbnew_J3DModel; the
    ctor→handle→calc runtime chain is already bit-identical (j3d_bridge_run). Only HEAP operator-new `bl`
    sites are routed (stack-temp origins keep guest layout). ov_j3dmodel_ctor's stale comment corrected.
-2. **Consumer-closure bridging — THE remaining blocker.** First headless fault under
-   `SB_FLIP_J3D + OWN_TYPES=J3DModel`: `wild read ea=0x900000cf` in `createModelData__15TMonteMAManager`
-   (lr=802093b0) — an unbridged consumer field-derefs a **J3DModelData** handle (from the load bridge),
-   BEFORE any J3DModel is constructed. Every J3DModelData/J3DModel handle consumer on the path to a calc
-   must be bridged/handle-aware (the closure "stretch"). This is the next unit.
+2. **Consumer-closure bridging — THE remaining blocker (large subsystem unit).** First headless fault
+   under `SB_FLIP_J3D + OWN_TYPES=J3DModel`: PC **8021d524 in `createAndKeepData__16TModelDataKeeper`**
+   reads a **J3DModelData handle + 0xAC** (r3=r28=0x90000023, ea=0x900000cf). The handle comes from the
+   load bridge via `TModelDataKeeper::loadModelData` (ObjModel.cpp:37 — `J3DModelLoaderDataBase::load(res,
+   flags)` -> handle, then `new SDLModelData(data)`); game code then field-derefs it. This is the known
+   J3DModelData-consumer-closure problem (`j3dmodeldata_flip_closure.md`: ~26 fns traverse the
+   J3DModelData object graph) — the field-flip is the WRONG tool; per Option 1 these consumers must be
+   OWNED in port/ or bridged. Concrete first targets: TModelDataKeeper (createAndKeepData/loadModelData/
+   getNthData/getIndex — ObjModel.cpp), SDLModelData (M3DUtil/SDLModel.cpp — thin J3DModelData wrapper,
+   ctor stores unk0=model + gpConductor->registerSDLModelData), registerDataAndJoinNewNode, and whatever
+   reads J3DModelData+0xAC. Scope it as "own the model-data loading/keeping path in port/", not one fn.
+   This is the next session's unit (plan the closure breadth before coding).
 
 Decision (user, 2026-06-15): the first real flip is **own the J3D subsystem in `port/` behind a small
 bridged API**, game holds handles. This supersedes the J3DModelData field-access flip, which is the
