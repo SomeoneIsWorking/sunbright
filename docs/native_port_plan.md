@@ -432,11 +432,18 @@ decoder; runtime GP-FIFO path on the delete list. Then, on the object-model arch
     bright Delfino with the coin counter + FLUDD gauge over the native 3D frame. The counter
     **"smear" is the game's real slide-in motion-trail animation** — the Dolphin GX baseline shows
     the identical trails (`scratch/screenshots/baseline_tl.png`), so the overlay is faithful, NOT a
-    bug (ruled out widescreen/interp60 by comparison). NEXT fidelity (N3 polish): I-format
-    (intensity) textures need J2DPicture's black/white color remap (the trails are green in-game,
-    gray here — `mBlackColor`/`mWhiteColor` lerp by intensity); full counter-row + textbox/subtitle
-    coverage; palette (CI) resolution; multiple J2DScreen accumulation (snapshot holds the last
-    screen drawn). Then cache eviction on scene change + peel more VideoCommon.
+    bug (ruled out widescreen/interp60 by comparison).
+  - **I-format black/white color remap ✅** (ea7077e) — `J2DPicture::setTevMode` (J2DPicture.cpp:486)
+    colorizes intensity (I4/I8) textures with a black/white TEV stage: `prev.rgb = lerp(mBlack,
+    mWhite, texColor)` per channel, then × the RASC corner color. Ported: read `mWhite`@0x13C /
+    `mBlack`@0x140 → `J2dQuad`, pass through the ortho vert shader as flat varyings, `mix(black,
+    white, texel)` in `quad_modulate` before the corner modulate. Applied UNCONDITIONALLY — default
+    black=0/white=0xffffffff makes it identity (`lerp(0,1,t)=t`), so normal RGBA pictures are
+    untouched and no branch is needed (I4/I8 decode to intensity in all of RGBA → exact). Push
+    constant 48→64B. The counter trails now render green, matching the Dolphin GX baseline.
+  - NEXT fidelity (N3 polish): CI (paletted) texture resolution in the walker (currently skipped);
+    J2DTextBox/font (subtitle/dialogue); full counter-row coverage; multiple J2DScreen accumulation
+    (snapshot holds the last screen). Then present cache eviction on scene change + peel more VideoCommon.
 
 - **N7-present groundwork ✅ — render into an external color target** — parameterized the
   renderer (`vk_mesh.cpp`): `sb_ngx_render_into(view,img,w,h,final_layout,…)` rasterizes the
