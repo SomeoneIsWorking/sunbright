@@ -1,5 +1,84 @@
 # Owning J3D as a port/ subsystem — execution plan (2026-06-15, user-chosen Option 1)
 
+## ⏩⏩ LIVE UNIT (2026-06-15) — NEXT #2: MODEL-INSTANCE + KEEPER subsystem ownership (the J3DModelData consumer closure)
+**Closure breadth PLANNED here FIRST (per handoff). Key reframing finding: the entire consumer
+closure is ALREADY COMPILED in `port/` (`port/core_sources.txt` lists SDLModel.cpp, ObjModel.cpp,
+MActor.cpp, MActorData.cpp, conductor.cpp, SampleCtrlModel.cpp, M3UModel.cpp + the whole J3D graph).
+So this is NOT a porting job — it is BRIDGE WIRING + CONSTRUCTION OWNERSHIP.** The fault is purely
+that the recompiled GAME still runs these consumers on a J3DModelData *handle* it field-derefs.
+
+### Why the boundary must sit ABOVE the M3DUtil model layer
+`SDLModel::entryModelDataSDL` reads ~30 J3DModelData fields inline (getJointNum/getShapeNum/
+getMaterialNodePointer/getDrawMtxData/getTexture[+0xAC]/getVertexData…); `SDLModelData::entrySameMat`
+reads `unk0->getTexture()` (+0xAC — the live fault). These CANNOT stay recompiled under SB_FLIP_J3D
+(they deref the 0x9xxxxxxx handle token). They must run PORT-NATIVE on the host object. Since
+SDLModel IS-A J3DModel and MActor owns a SDLModel, the whole model-instance layer is one irreducible
+unit. Boundary = the public API of the keepers + MActor; the game holds HANDLES.
+
+### OWNED types (host+handle; all sources already in port/ core_sources.txt)
+- J3D (done): J3DModelData✓, J3DModel✓ (+ SDLModel subclass).
+- M3DUtil: **SDLModelData, SDLModel, MActor, MActorAnmData (MActorData.cpp), M3UModel, SampleCtrl{Model,ModelData,Node}.**
+- Strategic: **TModelDataKeeper, TModelDataNode, TMActorKeeper.**
+- conductor's `TConductor::registerSDLModelData` (80035148) just inserts into a TList — TConductor is
+  game-side; the SDLModelData ctor calls `gpConductor->registerSDLModelData(this)`. Either own the
+  insert (port-native TList on a host gpConductor mirror) OR override registerSDLModelData to a no-op
+  for the slice (the list is only walked by entrySDLModels/draw, gated at Step 3 / GX). Start: no-op.
+
+### Bridge surface (game → port). Each = override at guest addr → port thunk on `sb_eng_host(handle)`.
+Addresses from sms_gmse01_funcs.txt (⚠ labels are shifted by one slot around 8023exxx — VERIFY each
+by disassembly before wiring; e.g. real SDLModelData ctor = 8023e034, real entrySDLModels = 8023e098).
+- **TModelDataKeeper** (Strategic/ObjModel.cpp): ctor `__ct__…FPCc` 8021d2e4, createAndKeepData
+  8021d4c0, loadModelData(static) 8021d5a4, getNthData 8021d448, getIndex 8021d32c, getDataByName
+  8021d448?/verify, getModelDataNum 8021d300, registerDataAndJoinNewNode 8021d61c (TModelDataNode).
+- **TMActorKeeper** (ObjModel.cpp): ctors 0x… (2 forms, take TLiveManager*), createMActor,
+  createMActorFromNthData, createMActorFromDefaultBmd, createMActorFromAllBmd, createAndRegister
+  8021d228, getMActor(name) 8021d12c-ish, getMActor(int) inline.
+- **MActor** (M3DUtil/MActor.cpp): big API — setModel, setMActorAnmData, calc, calcAnm, viewCalc,
+  entry, update, frameUpdate, perform, setAnimation, setBck/Btk/Bpk/Brk/Blk/Btp(+FromIndex),
+  checkCurAnm, getFrameCtrl, … Bridge INCREMENTALLY as the game exercises each (Step 3+).
+- **SDLModel / SDLModelData**: mostly INTERNAL (constructed + used inside the above). SDLModel's
+  virtuals (viewCalcSimple override; calc/entry/viewCalc inherited from J3DModel) → VIRT routing.
+
+### THE CRUX (boundary rule, do not violate): port thunks must NEVER deref a GAME object
+Some bridged signatures take game-side pointers the port must not field-deref:
+- TMActorKeeper ctor takes `TLiveManager*` → calls `getModelDataKeeper()` (TObjManager+0x24) +
+  `getMActorAnmData()` (TObjManager+0x20). BOTH fields hold OWNED handles (set when the game's
+  `new TModelDataKeeper`/MActorAnmData ran). The runtime OVERRIDE (which CAN read guest RAM via the
+  memory bridge) reads those two guest words, resolves them with sb_eng_host, and passes the host
+  pointers to the port ctor — NOT the raw TLiveManager*.
+- MActor::perform takes `JDrama::TGraphics*` (engine → owned handle); setLightData takes
+  `TBGCheckData*` (map collision = guest data → marshal the needed Vec/values, don't pass the ptr).
+Rule: at every bridge, classify each arg = {owned handle | guest-data ptr | scalar}; the override
+marshals accordingly. This is the per-method integration work; reads are shallow (one field each).
+
+### Mechanisms reused (all already built — see below): OWN_TYPES construction, method overrides,
+SB_ENGINE_TYPE handle marshalling, VIRT_TYPES offset-0 virtual-dispatch routing. `new TMActorKeeper`
+appears at ~hundreds of enemy sites — OWN_TYPES handles ALL of them generically (per-site count
+irrelevant); one ctor override per type. vtable_db must learn SDLModel (subclass appended vtable).
+
+### Execution slices (each commit+push; verify before next)
+1. **Model-data keeping path (the LIVE fault, self-contained — scalar/handle boundary).**
+   OWN_TYPES += TModelDataKeeper, TModelDataNode, SDLModelData. SB_ENGINE_TYPE each. Port bridge
+   thunks + runtime overrides for: TModelDataKeeper ctor / createAndKeepData / loadModelData /
+   getNthData / getIndex / getDataByName / getModelDataNum / registerDataAndJoinNewNode; SDLModelData
+   ctor (stores unk0=J3DModelData handle→host, registerSDLModelData→no-op for now). Inputs are all
+   name strings (guest-data ptr) + flags (scalar) + handles — NO game-object deref needed.
+   VERIFY: SB_FLIP_J3D + OWN_TYPES binary boots PAST the createModelData/createAndKeepData fault
+   (8021d524) without faulting on a J3DModelData/SDLModelData/keeper handle deref. Milestone = the
+   next fault is downstream (TMActorKeeper/SDLModel), proving slice 1 closed its sub-closure.
+2. **MActor keeper + model-instance construction.** OWN_TYPES += TMActorKeeper, MActor, SDLModel,
+   MActorAnmData. ctor overrides (TMActorKeeper ctor marshals keeper+anmdata handles per the CRUX;
+   createAndRegister → port new SDLModel + new MActor; SDLModel::entryModelDataSDL now runs PORT-NATIVE
+   on the host J3DModelData — the big field-deref is sound). VERIFY: a host SDLModel is constructed
+   from a host J3DModelData with finite node/draw-mtx buffers (port unit test like model_calc_run but
+   via SDLModel(SDLModelData,flags,1)).
+3. **MActor per-frame + virtual calc routing → ORACLE COMPARE (NEXT #3).** Bridge MActor::calc/
+   calcAnm/viewCalc/entry/update; VIRT_TYPES += SDLModel so `model->calc()` routes to the host vtable
+   (J3DModel::calc slot, inherited). Drive headless to a frame, oracle-compare SDLModel(J3DModel) node
+   matrices vs DISABLE_RECOMP (j3d_bridge_run proves the bridge math; this proves the GAME reaches it).
+
+### Slice 1 starts now (see git log). Below: the prior virtual-dispatch / construction history.
+
 ## UPDATE 2026-06-15 (late) — SB_FLIP_J3D build integration DONE; routed-calc gated on 2 mechanisms
 Offset-0 virtual-dispatch routing is now BUILT, WIRED, and CORRECT end-to-end (recompiler side):
 - **Build integration:** `generated*/virt_thunks.cpp` compiles as its own PORT-WORLD object lib
