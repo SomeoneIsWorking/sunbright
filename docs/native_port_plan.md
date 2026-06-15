@@ -445,6 +445,20 @@ decoder; runtime GP-FIFO path on the delete list. Then, on the object-model arch
     J2DTextBox/font (subtitle/dialogue); full counter-row coverage; multiple J2DScreen accumulation
     (snapshot holds the last screen). Then present cache eviction on scene change + peel more VideoCommon.
 
+- **N7 — native J2DTextBox font rendering ✅ (HUD/dialogue text)** — the J2D overlay rendered
+  pictures but skipped textboxes ('TBX1'), so all UI text was missing. Ported the GameCube `.bfn`
+  font path natively (`j2d_walk.cpp` `emit_textbox`): read the textbox string + `JUTResFont`, port
+  `getFontCode` (MAP1 char→glyph: direct/index-table/sorted-pair), `loadImage` (GLY1 atlas page +
+  cell pixel origin), `getWidthEntry` (WID1 advance), `drawChar` (UV from cell, screen quad from
+  ascent/descent + font size, advance, newline) → emit one textured quad per glyph (atlas-cell UV
+  sub-rect), reusing the picture pipeline + the I4/IA4 black/white shader (atlas alpha = the glyph).
+  Plumbing: `J2dQuad` gains a UV sub-rect; `quad_ortho.vert` takes a `uvrect` push constant
+  (`vUV = mix(uvrect.xy, uvrect.zw, corner)`; identity (0,0,1,1) for pictures); push constant 64→80B;
+  J2D snapshot cap 128→1024. Field offsets verified vs reference/sms. Verified headless: the
+  "DELFINO PLAZA" stage-entry title renders crisply in the game's font over the native present
+  (`scratch/screenshots/subtitle_zoom.png`); hud_quads ~6→14 with glyphs. NEXT: J2DWindow (WIN1,
+  9-slice — the subtitle bar/message boxes); H/V text binding (currently left/top); gradient color.
+
 - **N7 — per-frame double-buffered J3D capture ✅ (fix intermittent black frames)** — the native
   present intermittently showed a black/partial scene (plaza floor missing, or near-empty — ~1 in 3
   frames). The J3D capture was a SINGLE live buffer the present read on the video thread while the
