@@ -43,6 +43,7 @@
 #include <algorithm>
 #include "VideoCommon/XFMemory.h"   // ground-truth GX lighting state (Dolphin XF registers)
 #include "VideoCommon/BPMemory.h"   // ground-truth GX pixel state (fog / blend / etc.)
+#include "VideoCommon/CPMemory.h"   // ground-truth GX vertex array bases (g_main_cp_state)
 #include "../render/tex_decode.h"   // DBG: decode a texture to check its brightness
 
 namespace {
@@ -128,6 +129,10 @@ u8   g_gx_matcol[2][4] = {{255,255,255,255},{255,255,255,255}}; bool g_gx_matcol
 unsigned long g_clr0cls_hist[4] = {0}, g_matsrc_hist[3] = {0}, g_litcfg_hist[2] = {0};
 size_t g_bigmap_verts = 0; unsigned g_bigmap_clr0cls = 0; bool g_bigmap_matvtx = false, g_bigmap_en = false;
 u8 g_bigmap_vcol[3] = {0}; u16 g_bigmap_cc = 0;
+double g_colcat_sum[5] = {0}; unsigned long g_colcat_n[5] = {0};  // col0 lum by category
+unsigned long g_clr0fmt_hist[8] = {0};  // CLR0 VAT format (0=565,1=888,2=888x,3=4444,4=6666,5=8888)
+size_t g_bigany_verts = 0; u16 g_bigany_cc = 0; bool g_bigany_hasnrm=false, g_bigany_matvtx=false, g_bigany_en=false;
+unsigned g_bigany_clr0cls=0; u8 g_bigany_vcol[3]={0}; double g_bigany_vcolmean=0; u32 g_bigany_clr0base=0;
 
 // J3DColorBlock variants (vtable ptrs, gmse01; from the block ctor/dtor disasm:
 // LightOn sets 0x803E0CD4, LightOff sets 0x803E0D38). Field offsets from
@@ -614,8 +619,14 @@ bool build_cp(u32 sh, NgxCP& cp) {
     cp.array_base[0] = r32(J3DSYS + 0x10C);  cp.array_stride[0] = (pos_type == 4) ? 12 : 6;
     cp.array_base[1] = nbt ? r32(vdata + 0x18) : r32(J3DSYS + 0x110);
     cp.array_stride[1] = ((nrm_type == 4) ? 12 : 6) * (nbt ? 3 : 1);
-    const u32 clr0_pv = r32(J3DSYS + 0x114);
-    cp.array_base[2] = clr0_pv ? clr0_pv : r32(vdata + 0x1C);  cp.array_stride[2] = 4;
+    // CLR0 array: take it from Dolphin's live CP state (the array GXSetArray actually bound
+    // for this shape — g_main_cp_state is updated by the recompiled draw that just ran). The
+    // engine picks per-view LIT colours (j3dSys.unk114) vs the static authored base each frame;
+    // reading unk114 ourselves got the WRONG one (stale null → static bright base → washed-out).
+    // Dolphin stores the address with the 0x8000_0000 region bit masked off → OR it back.
+    const u32 cp_clr0 = g_main_cp_state.array_bases[CPArray::Color0];
+    cp.array_base[2] = cp_clr0 ? (cp_clr0 | 0x80000000u) : r32(vdata + 0x1C);
+    cp.array_stride[2] = g_main_cp_state.array_strides[CPArray::Color0] ?: 4;
     cp.array_base[3] = r32(vdata + 0x20);    cp.array_stride[3] = 4;
     for (int i = 0; i < 8; i++) {
         cp.array_base[4 + i]   = r32(vdata + 0x24 + i * 4);
@@ -809,6 +820,12 @@ void transform_eye() {
         const float vcol0[4] = { v.clr[0][0]/255.f, v.clr[0][1]/255.f,
                                  v.clr[0][2]/255.f, v.clr[0][3]/255.f };
         light_vertex(eye, en, vcol0, &g_litrgba[vi * 4]);
+        // DBG: bucket the resulting col0 luminance by category to localize the bright bulk.
+        { const float* o = &g_litrgba[vi*4]; double lum=(o[0]+o[1]+o[2])/3.0;
+          const bool valid=g_cur_chan.valid; const bool mv=valid&&((g_cur_chan.color0>>0)&1);
+          const bool en2=valid&&((g_cur_chan.color0>>1)&1);
+          int cat = !valid ? 4 : (mv?2:0)+(en2?1:0);   // 0 reg/flat,1 reg/lit,2 vtx/flat,3 vtx/lit,4 noblock
+          g_colcat_sum[cat]+=lum; g_colcat_n[cat]++; }
 
         g_xf_total++;
         if (ez < 0.0f) g_xf_front++;
@@ -916,6 +933,7 @@ void capture(u32 sh) {
     if (g_last_verts > g_max_verts) g_max_verts = g_last_verts;
     // DBG: CLR0-class + matsrc histograms (vert-weighted) to localize the wash.
     { const unsigned cls = (cp.vcd_lo>>13)&3; g_clr0cls_hist[cls] += g_verts.size();
+      const unsigned cfmt = (cp.vat[0][0]>>14)&7; if (cfmt<8) g_clr0fmt_hist[cfmt] += g_verts.size();
       const bool mv = g_cur_chan.valid && ((g_cur_chan.color0>>0)&1);
       const bool en = g_cur_chan.valid && ((g_cur_chan.color0>>1)&1);
       g_matsrc_hist[g_cur_chan.valid ? (mv?1:0) : 2] += g_verts.size();
@@ -927,6 +945,16 @@ void capture(u32 sh) {
           g_bigmap_matvtx = mv; g_bigmap_en = en;
           g_bigmap_vcol[0]=g_verts[0].clr[0][0]; g_bigmap_vcol[1]=g_verts[0].clr[0][1];
           g_bigmap_vcol[2]=g_verts[0].clr[0][2]; g_bigmap_cc=g_cur_chan.color0;
+      }
+      // biggest shape OVERALL (likely the visible floor/building): cc + normals + vcol0
+      if (g_verts.size() > g_bigany_verts) {
+          g_bigany_verts = g_verts.size(); g_bigany_cc = g_cur_chan.color0;
+          g_bigany_hasnrm = has_nrm; g_bigany_matvtx = mv; g_bigany_en = en;
+          g_bigany_clr0cls = cls;
+          g_bigany_vcol[0]=g_verts[0].clr[0][0]; g_bigany_vcol[1]=g_verts[0].clr[0][1]; g_bigany_vcol[2]=g_verts[0].clr[0][2];
+          double s=0; for (auto&vv:g_verts) s+=(vv.clr[0][0]+vv.clr[0][1]+vv.clr[0][2])/3.0;
+          g_bigany_vcolmean = s/g_verts.size();
+          g_bigany_clr0base = cp.array_base[2];
       }
     }
     if (!g_verts.empty()) {
@@ -1306,6 +1334,24 @@ int sb_ngx_shape_dump(char* out, int cap) {
         "  BIGGEST no-normal (map) shape: verts=%zu clr0cls=%u matVtx=%d enable=%d cc=%04x vcol0=(%u,%u,%u)\n",
         g_bigmap_verts, g_bigmap_clr0cls, g_bigmap_matvtx, g_bigmap_en, g_bigmap_cc,
         g_bigmap_vcol[0], g_bigmap_vcol[1], g_bigmap_vcol[2]);
+    n += snprintf(out+n, cap-n,
+        "  BIGGEST shape overall: verts=%zu cc=%04x (matVtx=%d en=%d) hasNrm=%d clr0cls=%u vcol0=(%u,%u,%u) vcolMean=%.1f\n",
+        g_bigany_verts, g_bigany_cc, g_bigany_matvtx, g_bigany_en, g_bigany_hasnrm, g_bigany_clr0cls,
+        g_bigany_vcol[0],g_bigany_vcol[1],g_bigany_vcol[2], g_bigany_vcolmean);
+    n += snprintf(out+n, cap-n,
+        "  CLR0 array base: ours(biggest)=%08x  Dolphin g_main_cp_state[Color0]=%08x stride=%u\n",
+        g_bigany_clr0base, g_main_cp_state.array_bases[CPArray::Color0],
+        g_main_cp_state.array_strides[CPArray::Color0]);
+    n += snprintf(out+n, cap-n,
+        "  CLR0 VAT fmt hist (verts): 565=%lu 888=%lu 888x=%lu 4444=%lu 6666=%lu 8888=%lu\n",
+        g_clr0fmt_hist[0],g_clr0fmt_hist[1],g_clr0fmt_hist[2],g_clr0fmt_hist[3],g_clr0fmt_hist[4],g_clr0fmt_hist[5]);
+    n += snprintf(out+n, cap-n,
+        "  col0 lum by category (verts,avg): reg/flat=(%lu,%.2f) reg/lit=(%lu,%.2f) vtx/flat=(%lu,%.2f) vtx/lit=(%lu,%.2f) noblock=(%lu,%.2f)\n",
+        g_colcat_n[0], g_colcat_n[0]?g_colcat_sum[0]/g_colcat_n[0]:0.0,
+        g_colcat_n[1], g_colcat_n[1]?g_colcat_sum[1]/g_colcat_n[1]:0.0,
+        g_colcat_n[2], g_colcat_n[2]?g_colcat_sum[2]/g_colcat_n[2]:0.0,
+        g_colcat_n[3], g_colcat_n[3]?g_colcat_sum[3]/g_colcat_n[3]:0.0,
+        g_colcat_n[4], g_colcat_n[4]?g_colcat_sum[4]/g_colcat_n[4]:0.0);
     // CLR0 vertex-color array (J3DSYS+0x114) — indexed map-geometry colours. If this base is
     // wrong/stale, indexed CLR0 lookups fail → white default → washed-out map geometry.
     {

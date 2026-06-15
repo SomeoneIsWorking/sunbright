@@ -65,6 +65,24 @@ Even with the above, the PRESENT render stays ~washed and it is **flaky/scene-de
 - Per-material cc/matColor: the J3D color block (synchronous guest RAM), offsets above.
 - Pixel state (fog/blend): Dolphin `bpmem` (VideoCommon/BPMemory.h).
 
+## UPDATE (2026-06-16): CLR0 array source was wrong — fixed via Dolphin CP state
+The decisive find: ngx used a DIFFERENT CLR0 array than GX. For the biggest shape,
+`g_main_cp_state.array_bases[CPArray::Color0]` (Dolphin's authoritative base, set by the
+game's GXSetArray and read by Dolphin's own vertex loader) = `0x00d39c40` (guest 0x80d39c40),
+but our `build_cp` produced `0x80b9b600` — the STATIC authored base (bright), not the per-view
+LIT colours (dark) the engine binds via `j3dSys.unk114`. Our own `unk114` read was stale/null
+at capture time → wrong fallback. FIX: since `ov_j3dshape_draw` runs the real draw FIRST then
+captures, `g_main_cp_state.array_bases[Color0]` is current → use it (OR 0x80000000 back on, it's
+stored region-masked) with the static array as fallback. Result: sky + many buildings darkened
+toward GX; overall col0 (diag_ras) 0.63→0.52 vert-weighted; floor ti=10 col0 0.7→0.25.
+Verified the present DOES apply col0 (NGX_TEVDBG=ras shows the col0 structure).
+
+STILL washed though: specific visible-floor batches (e.g. ti=81/ti=79, tex 80d3c660, multi-stage)
+still have col0=white in the capture, and overall col0 ~0.72 area-weighted vs GX ~0.5. Those
+batches' own CLR0 entries read white OR they're a matsrc/lighting case needing different handling.
+Next: categorize the white-col0 visible batches (store per-batch matVtx/enable) and check whether
+their g_main_cp_state CLR0 base / entries are genuinely white or a wrong array at their draw.
+
 ## Next steps
 - Audit the per-shape col0 source for the NOT-PRESENT CLR0 case (12.7M verts) — what should
   col0 be there (matColor? persisted channel?). Likely the dominant remaining white.
