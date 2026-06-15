@@ -1,5 +1,29 @@
 # Owning J3D as a port/ subsystem — execution plan (2026-06-15, user-chosen Option 1)
 
+## ✅ J3D ANIMATION LOADER bridged (2026-06-15) — step 1 of the TShimmer animation consumer closure
+After the .bmt material-table path landed, the live fault was the J3D animation consumer closure in
+`load__8TShimmerFR20JSUMemoryInputStream` (0x8019f5ac). Step 1 (the animation-file loader) is DONE:
+- **anm_swap** (`port/assets/anm_swap.{h,cpp}`): BE→host swapper for the WHOLE J3D1 animation block
+  family — KEY: ANK1/TTK1/PAK1/CLK1/TRK1/VCK1; FULL: ANF1/PAF1/TPT1/CLF1/VAF1/VCF1. Element widths
+  mirror J3DAnmLoader.cpp's readAnm* readers (keyframe tables = u16 runs via J3DAnmKeyTableBase=3×u16;
+  scale/trans/weight/SRTCenter = f32; rotation + KEY-family color/tevreg = s16; FULL-family color +
+  updateTexMtxID = u8/no-swap; J3DAnmTexPatternFullTable = mixed stride-8; C/KRegKeyTable = stride-0x1C;
+  name tables = the shared `swap_ResNTAB_block` now exposed from bmd_blocks.h). It CLAMPS a block whose
+  declared mSize overruns the buffer — the J3D file-header mFileSize understates real size by trailing
+  block-alignment padding, and the in-game loader bounds nothing by it, so only padding is dropped, never
+  a referenced region; never OOB.
+- **Bridge** `J3DAnmLoaderDataBase::load` 0x802e8ca4 (static, `load__20J3DAnmLoaderDataBaseFPCv`): port
+  `sbport_j3d_anm_load` (anm_swap → port `J3DAnmLoaderDataBase::load` → host J3DAnmBase) + runtime
+  override `ov_j3d_anm_load` (SB_FLIP_J3D), returning a handle. Mirrors the .bmd/.bmt loader bridges.
+- Tests: `anm_swap_test` (synthetic ANK1 + the mixed TPT1 table + uncovered-block refusal contract) and
+  `anm_load_run` (gate: 288 real .bck/.btk/.btp/.brk from airport0.szs → non-null animators, sane
+  getFrameMax). Both ctest; SKIP without `$SUNBRIGHT_ANM_DIR`/scratch/bmt/anm (scan_anm --write).
+- VERIFIED: build-j3dvirt boots PAST the recompiled anm load — fault moved forward within TShimmer::load
+  to pc=8019f658 (a 16-bit handle+0x16 deref). NEXT (step 2): searchUpdateMaterialID(md) 0x802e3dd4, then
+  J3DMaterialAnm construction, J3DMaterial change/setMaterialAnm/setSomeFlag, entryTexMtxAnimator
+  0x802dd448 + getFrameMax. The 16-bit handle+0x16 read at 8019f658 is a J3DAnmTextureSRTKey field read
+  inline in TShimmer::load — disasm to choose FIELD_TYPES getter-route (+= J3DAnmTextureSRTKey) vs bridge.
+
 ## 🔎 RUNTIME EVIDENCE (2026-06-15, post bridged-getter emission 27ceadd) — the .bmt MATERIAL-TABLE path is the live fault
 With `SUNBRIGHT_FIELD_TYPES="J3DModelData,J3DMaterial"` the inlined J3DModelData reads route to host
 getters and the binary boots PAST createModelData/TShimmer::load. The NEXT fault (write-trap) is in

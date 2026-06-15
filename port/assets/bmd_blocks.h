@@ -19,6 +19,12 @@ namespace smsport::assets::detail {
 void swap_MAT3_block(uint8_t* out, const uint8_t* be, uint32_t size);
 void swap_TEX1_block(uint8_t* out, const uint8_t* be, uint32_t size);
 
+// ResNTAB (JUTNameTab) byteswap, shared with the .bck/.btk/... animation loader
+// (anm_swap) — every J3D name table has the identical layout. `off` is the
+// block-relative offset of the table (0 = absent, skipped).
+void swap_ResNTAB_block(uint8_t* out, const uint8_t* be, uint32_t off,
+                        uint32_t size);
+
 }  // namespace smsport::assets::detail
 
 #endif  // SMSPORT_ASSETS_BMD_BLOCKS_H

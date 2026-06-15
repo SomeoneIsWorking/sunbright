@@ -539,6 +539,10 @@ void swap_MAT3_block(uint8_t* out, const uint8_t* be, uint32_t size) {
 void swap_TEX1_block(uint8_t* out, const uint8_t* be, uint32_t size) {
 	swap_TEX1(out, be, size);
 }
+void swap_ResNTAB_block(uint8_t* out, const uint8_t* be, uint32_t off,
+                        uint32_t size) {
+	swap_ResNTAB(out, be, off, size);
+}
 }  // namespace detail
 
 // =============================================================================

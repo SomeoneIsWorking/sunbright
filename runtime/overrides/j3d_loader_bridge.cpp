@@ -29,6 +29,7 @@
 
 extern "C" void* sbport_j3d_load(const void* be_bmd, uint32_t flags);
 extern "C" void* sbport_j3d_loadMaterialTable(const void* be_bmt);
+extern "C" void* sbport_j3d_anm_load(const void* be_anm);
 
 #ifdef SB_FLIP_J3D
 // J3DModelLoaderDataBase::load(const void* data, u32 flags) @ 0x802e6f00
@@ -50,6 +51,21 @@ SUNBRIGHT_OVERRIDE(ov_j3d_load_material_table, 0x802e7128) {
 	void* host_bmt  = sb_guest_to_host(guest_bmt);
 	void* mt        = sbport_j3d_loadMaterialTable(host_bmt);
 	cpu.gpr[3] = mt ? sb_eng_handle(mt) : 0u;
+	call_ppc(cpu, cpu.lr);
+}
+
+// J3DAnmLoaderDataBase::load(const void* data) @ 0x802e8ca4 (static: r3=guest
+// animation-file addr, returns J3DAnmBase* in r3). The J3D animation consumer
+// closure (TShimmer::load and most actors that animate a model) loads .bck/.btk/
+// .brk/... here; route it to the PC-native port loader so the returned animator
+// is a host object the game holds as a handle. The downstream consumers of that
+// handle (searchUpdateMaterialID, setMaterialAnm, entryTexMtxAnimator, ...) are
+// bridged in turn.
+SUNBRIGHT_OVERRIDE(ov_j3d_anm_load, 0x802e8ca4) {
+	u32   guest_anm = cpu.gpr[3];
+	void* host_anm  = sb_guest_to_host(guest_anm);
+	void* anm       = sbport_j3d_anm_load(host_anm);
+	cpu.gpr[3] = anm ? sb_eng_handle(anm) : 0u;
 	call_ppc(cpu, cpu.lr);
 }
 #else

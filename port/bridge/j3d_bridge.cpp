@@ -25,13 +25,16 @@
 // path would free both together.
 // =============================================================================
 #include <JSystem/J3D/J3DGraphLoader/J3DModelLoader.hpp>
+#include <JSystem/J3D/J3DGraphLoader/J3DAnmLoader.hpp>
 #include <JSystem/J3D/J3DGraphAnimator/J3DModel.hpp>
+#include <JSystem/J3D/J3DGraphAnimator/J3DAnimation.hpp>
 #include <JSystem/J3D/J3DGraphAnimator/J3DMaterialAttach.hpp>
 #include <JSystem/JMath.hpp>
 #include <JSystem/ResTIMG.hpp>
 #include <MarioUtil/TexUtil.hpp>
 #include "bmd_swap.h"
 #include "bmt_swap.h"
+#include "anm_swap.h"
 
 #include <cstdint>
 #include <vector>
@@ -123,10 +126,53 @@ void* sbport_j3d_loadMaterialTable(const void* be_bmt) {
 	return mt;
 }
 
+// Load a big-endian guest animation file (.bck/.btk/.brk/.bpk/.btp/...) into a
+// host-native J3DAnmBase subclass. The recompiled game calls J3DAnmLoaderDataBase
+// ::load(data) at guest 0x802e8ca4 (static-like: r3=data, returns J3DAnmBase*);
+// the runtime override routes here, then hands the game a handle. Mirrors
+// sbport_j3d_load: byteswap the whole J3D1 block family (anm_swap) then run the
+// pristine port loader. Returns the host J3DAnmBase* (as void*) or nullptr.
+// The swapped copy is held for the animator's lifetime (loader references the
+// image in place, exactly like the model/material loaders).
+//
+// ⚠ The file-header mFileSize (read here as the copy length) understates the real
+// size for some files (trailing block alignment padding past mFileSize); that
+// padding holds no referenced region, so the copy still captures every region the
+// loader reads (anm_swap clamps regardless). In-game the buffer is the full
+// archive entry; we only have the pointer, so mFileSize is the available length.
+void* sbport_j3d_anm_load(const void* be_anm) {
+	if (!be_anm)
+		return nullptr;
+
+	sb_j3d_bringup();
+
+	const uint8_t* p = static_cast<const uint8_t*>(be_anm);
+	uint32_t len = be32(p + 8);             // J3D fileLength
+	if (len < 0x24)
+		return nullptr;
+
+	std::vector<uint8_t>* host = new std::vector<uint8_t>();
+	AnmSwapResult r = anm_swap_to_host(p, len, *host);
+	if (!r.ok || !r.all_covered) {
+		delete host;       // unknown/uncovered block: refuse rather than feed
+		return nullptr;    // a half-swapped buffer (would silently corrupt)
+	}
+
+	J3DAnmBase* anm = J3DAnmLoaderDataBase::load(host->data());
+	if (!anm)
+		delete host;       // swap copy unused; loader produced nothing
+	return anm;
+}
+
 // J3DMaterialTable accessors (oracle verification + the consumer-closure bridges).
 // `mt` is the host J3DMaterialTable (handle resolved by the runtime override).
 uint16_t sbport_j3dmaterialtable_getMaterialNum(void* mt) {
 	return mt ? static_cast<J3DMaterialTable*>(mt)->getMaterialNum() : 0;
+}
+
+// J3DAnmBase accessor (oracle verification of the loaded animator).
+int16_t sbport_j3danmbase_getFrameMax(void* anm) {
+	return anm ? static_cast<J3DAnmBase*>(anm)->getFrameMax() : 0;
 }
 
 // Field/method accessors for oracle verification of the flipped slice. The
