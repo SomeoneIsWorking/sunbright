@@ -16,17 +16,24 @@
 //
 // Portable across x86-64 and arm64 (no host-byte-order assumptions).
 //
-// STATUS (2026-06-15): file header + block table + INF1 + DRW1 + JNT1 + EVP1 +
-// VTX1 + SHP1 + TEX1 implemented & verified (synthetic bmd_swap_test AND real
-// BMDs via scratch/bmd/verify_real). EVP1's inverse-bind matrix count comes from
-// JNT1's joint count via a counts pre-pass; VTX1 swaps the fmt list then each
-// per-attr array as a homogeneous scalar run (width from the fmt type — handles
-// both f32 and s16 positions); SHP1 swaps all structural fields (init data,
-// vtx-desc lists, mtx/draw init data) but DEFERS the display-list byte-stream
-// interior (BE u16 counts/indices) to the render path; TEX1 swaps ResTIMG header
-// scalars and leaves the palette/texel pixel data GC-native (decoded by the port
-// texture loader). The last block (MAT3) is stubbed — see bmd_swap.cpp for the
-// per-block field-map plan.
+// STATUS (2026-06-15): ALL 8 J3D2 BMD blocks implemented & verified — file
+// header + block table + INF1 + VTX1 + EVP1 + DRW1 + JNT1 + SHP1 + MAT3 + TEX1
+// (synthetic bmd_swap_test AND 15 real BMDs via scratch/bmd/verify_real, every
+// file reaching all_covered==true with sane swapped values). Notes:
+//   - EVP1's inverse-bind matrix count comes from JNT1's joint count via a
+//     block-table counts pre-pass.
+//   - VTX1 swaps the fmt list then each per-attr array as a homogeneous scalar
+//     run (width from the fmt type — handles both f32 and s16 positions).
+//   - SHP1 swaps all structural fields but DEFERS the display-list byte-stream
+//     interior (BE u16 counts/indices) to the render path (VCD-driven parse).
+//   - TEX1 swaps ResTIMG header scalars; palette/texel pixel data stays GC-native
+//     (decoded by the port texture loader).
+//   - MAT3 swaps every load-time-read table (init-data u16 indices, matID,
+//     cull/texNo, texMtx/fog/nbtScale f32, tevColor s16, indInit f32); lightInfo
+//     is empty in all SMS BMDs and its decomp layout is undefined (flagged, not
+//     mis-swapped, if a non-empty span is ever hit).
+// Next: run the real port loader (J3DModelLoader_v26::load) on a fully-swapped
+// real BMD and confirm a non-null J3DModelData with sane fields (the flip gate).
 // Do NOT wire this into the loader bridge until ALL blocks a given test model uses
 // are covered, or the loader will crash on un-swapped interior data.
 // =============================================================================

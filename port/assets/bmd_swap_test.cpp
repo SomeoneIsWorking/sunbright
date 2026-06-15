@@ -38,12 +38,13 @@ int main() {
 	const uint32_t JNT1_OFF = DRW1_OFF + DRW1_SIZE, JNT1_SIZE = 0x60;
 	const uint32_t SHP1_OFF = JNT1_OFF + JNT1_SIZE, SHP1_SIZE = 0x90;
 	const uint32_t TEX1_OFF = SHP1_OFF + SHP1_SIZE, TEX1_SIZE = 0x40;
-	const uint32_t TOTAL = TEX1_OFF + TEX1_SIZE;
+	const uint32_t MAT3_OFF = TEX1_OFF + TEX1_SIZE, MAT3_SIZE = 0x264;
+	const uint32_t TOTAL = MAT3_OFF + MAT3_SIZE;
 	std::vector<uint8_t> be(TOTAL, 0);
 	put32(be, 0x00, 0x4A334432);          // 'J3D2'
 	put32(be, 0x04, 0x626D6433);          // 'bmd3'
 	put32(be, 0x08, TOTAL);               // fileSize
-	put32(be, 0x0C, 7);                   // blockNum = 7
+	put32(be, 0x0C, 8);                   // blockNum = 8
 	// INF1 block
 	put32(be, INF1_OFF+0x00, 0x494E4631); // 'INF1'
 	put32(be, INF1_OFF+0x04, INF1_SIZE);  // block size
@@ -167,12 +168,54 @@ int main() {
 		put32(be, b+0x1C, 0x00000040);    // imageDataOffset
 	}
 
+	// MAT3 block: matNum=1; initData@0x84 (stride 0x14C), matID@0x1d0,
+	//   texMtxInfo@0x1d4 (0x64), fogInfo@0x238 (0x2C); other tables absent.
+	const uint32_t MAT_INIT=0x84, MAT_ID=0x1d0, MAT_TEXMTX=0x1d4, MAT_FOG=0x238;
+	put32(be, MAT3_OFF+0x00, 0x4D415433); // 'MAT3'
+	put32(be, MAT3_OFF+0x04, MAT3_SIZE);
+	put16(be, MAT3_OFF+0x08, 0x0001);     // mMaterialNum
+	put32(be, MAT3_OFF+0x0C+0*4, MAT_INIT);   // [0] initData
+	put32(be, MAT3_OFF+0x0C+1*4, MAT_ID);     // [1] matID
+	put32(be, MAT3_OFF+0x0C+13*4, MAT_TEXMTX);// [13] texMtxInfo
+	put32(be, MAT3_OFF+0x0C+23*4, MAT_FOG);   // [23] fogInfo
+	// J3DMaterialInitData @0x84: u8 mode fields + u16 index arrays.
+	be[MAT3_OFF+MAT_INIT+0x00]=5;             // mMaterialMode (u8, no swap)
+	put16(be, MAT3_OFF+MAT_INIT+0x008, 0x0102); // mMatColorIdx[0]
+	put16(be, MAT3_OFF+MAT_INIT+0x048, 0x0007); // mTexMtxIdx[0]
+	put16(be, MAT3_OFF+MAT_INIT+0x144, 0x0003); // mFogIdx
+	put16(be, MAT3_OFF+MAT_ID, 0x0000);       // matID[0]
+	// J3DTexMtxInfo @0x1d4: u8 proj/info, Vec center, SRT, Mtx44 effect.
+	be[MAT3_OFF+MAT_TEXMTX+0x00]=1;           // mProjection (u8)
+	putf(be, MAT3_OFF+MAT_TEXMTX+0x04, 0.5f); // mCenter.x
+	put16(be, MAT3_OFF+MAT_TEXMTX+0x18, 0x4000); // SRT mRotation (s16)
+	putf(be, MAT3_OFF+MAT_TEXMTX+0x24, 1.0f); // mEffectMtx[0][0]
+	// J3DFogInfo @0x238: u16 center, f32 z's, GXColor, u16 adj table.
+	put16(be, MAT3_OFF+MAT_FOG+0x02, 0x0080); // mCenter
+	putf(be, MAT3_OFF+MAT_FOG+0x04, 100.0f);  // mStartZ
+	putf(be, MAT3_OFF+MAT_FOG+0x10, 5000.0f); // mFarZ
+	put16(be, MAT3_OFF+MAT_FOG+0x18, 0x1234); // mFogAdjTable[0]
+
 	std::vector<uint8_t> out;
 	BmdSwapResult r = bmd_swap_to_host(be.data(), be.size(), out);
 
 	CK(r.ok, "swap ok");
-	CK(r.block_num == 7, "block_num == 7");
-	CK(r.blocks_covered == 7 && r.all_covered, "all 7 blocks covered + all_covered");
+	CK(r.block_num == 8, "block_num == 8");
+	CK(r.blocks_covered == 8 && r.all_covered, "all 8 blocks covered + all_covered");
+
+	// MAT3: header + init-data u16 indices + matID + texMtxInfo(f32/s16) +
+	// fogInfo(u16/f32) swapped; u8 mode fields untouched.
+	CK(h16(out.data()+MAT3_OFF+0x08)==0x0001, "MAT3 mMaterialNum");
+	CK(out[MAT3_OFF+MAT_INIT+0x00]==5, "MAT3 mMaterialMode u8 untouched");
+	CK(h16(out.data()+MAT3_OFF+MAT_INIT+0x008)==0x0102, "MAT3 mMatColorIdx");
+	CK(h16(out.data()+MAT3_OFF+MAT_INIT+0x144)==0x0003, "MAT3 mFogIdx");
+	CK(h16(out.data()+MAT3_OFF+MAT_ID)==0x0000, "MAT3 matID");
+	CK(out[MAT3_OFF+MAT_TEXMTX+0x00]==1, "MAT3 texMtx mProjection u8 untouched");
+	{ float cx; memcpy(&cx,out.data()+MAT3_OFF+MAT_TEXMTX+0x04,4); CK(cx==0.5f,"MAT3 texMtx center.x");
+	  CK(h16(out.data()+MAT3_OFF+MAT_TEXMTX+0x18)==0x4000,"MAT3 texMtx SRT rotation s16");
+	  float m0; memcpy(&m0,out.data()+MAT3_OFF+MAT_TEXMTX+0x24,4); CK(m0==1.0f,"MAT3 texMtx effMtx[0]"); }
+	CK(h16(out.data()+MAT3_OFF+MAT_FOG+0x02)==0x0080, "MAT3 fog mCenter");
+	{ float fz; memcpy(&fz,out.data()+MAT3_OFF+MAT_FOG+0x10,4); CK(fz==5000.0f,"MAT3 fog mFarZ"); }
+	CK(h16(out.data()+MAT3_OFF+MAT_FOG+0x18)==0x1234, "MAT3 fog adjTable[0]");
 
 	// TEX1: ResTIMG header scalars swapped, u8 fields + texel data left intact.
 	CK(h16(out.data()+TEX1_OFF+0x08)==0x0001, "TEX1 mTextureNum");
@@ -231,7 +274,7 @@ int main() {
 	// Header reads host-endian after swap.
 	CK(h32(out.data()+0x00)==0x4A334432, "magic host-readable");
 	CK(h32(out.data()+0x08)==TOTAL,      "fileSize host-readable");
-	CK(h32(out.data()+0x0C)==7,          "blockNum host-readable");
+	CK(h32(out.data()+0x0C)==8,          "blockNum host-readable");
 	CK(h32(out.data()+INF1_OFF)==0x494E4631, "INF1 tag host-readable");
 	CK(h32(out.data()+DRW1_OFF)==0x44525731, "DRW1 tag host-readable");
 

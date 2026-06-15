@@ -422,6 +422,112 @@ static void swap_TEX1(uint8_t* out, const uint8_t* be, uint32_t size) {
 	swap_ResNTAB(out, be, off_name, size);
 }
 
+// MAT3 / J3DMaterialBlock (J3DMaterialFactory.hpp). The material factory reads
+// every table at LOAD time, so all multibyte fields must be swapped (unlike
+// SHP1/TEX1 render-time data). Block header: u16 mMaterialNum@0x08 then 30 u32
+// table offsets @0x0C..0x80. Each table's element count comes from its byte span
+// (next-offset - this-offset), so empty tables (offset == next) auto-skip.
+//
+// Per-table element layouts (from J3DStruct.hpp / J3DMaterialFactory.hpp). Tables
+// of pure u8 / GXColor(u8x4) bytes need NO swap and are omitted below:
+//   matColor/ambColor/tevKColor (GXColor), colorChanNum/texGenNum/tevStageNum/
+//   zCompLoc/dither (u8[]), colorChanInfo/tevOrderInfo/tevStageInfo/
+//   tevSwapModeInfo/tevSwapModeTableInfo/alphaCompInfo/blendInfo/zModeInfo/
+//   texCoordInfo/texCoord2Info (all-u8 structs).
+//   lightInfo is empty in all SMS BMDs and its layout is undefined in the decomp;
+//   a non-empty span is flagged (loud) rather than mis-swapped.
+static inline void sw16_n(uint8_t* p, int n) { for (int i=0;i<n;++i) sw16(p+i*2); }
+static inline void sw32_n(uint8_t* p, int n) { for (int i=0;i<n;++i) sw32(p+i*4); }
+
+static void swap_J3DMaterialInitData(uint8_t* e) {  // stride 0x14C
+	// 0x000..0x007 u8 fields: no swap.
+	sw16_n(e+0x008, 2);   // mMatColorIdx[2]
+	sw16_n(e+0x00C, 4);   // mColorChanIdx[4]
+	sw16_n(e+0x014, 2);   // mAmbColorIdx[2]
+	// 0x018 u8[16]
+	sw16_n(e+0x028, 8);   // mTexCoordIdx[8]
+	// 0x038 u8[16]
+	sw16_n(e+0x048, 8);   // mTexMtxIdx[8]
+	// 0x058 u8[44]
+	sw16_n(e+0x084, 8);   // mTexNoIdx[8]
+	sw16_n(e+0x094, 4);   // mTevKColorIdx[4]
+	// 0x09C u8[16], 0x0AC u8[16]
+	sw16_n(e+0x0BC, 16);  // mTevOrderIdx[16]
+	sw16_n(e+0x0DC, 4);   // mTevColorIdx[4]
+	sw16_n(e+0x0E4, 16);  // mTevStageIdx[16]
+	sw16_n(e+0x104, 16);  // mTevSwapModeIdx[16]
+	sw16_n(e+0x124, 4);   // mTevSwapModeTableIdx[4]
+	// 0x12C u8[24]
+	sw16_n(e+0x144, 4);   // mFogIdx, mAlphaCompIdx, mBlendIdx, mNBTScaleIdx
+}
+static void swap_J3DTexMtxInfo(uint8_t* e) {        // stride 0x64
+	// 0x00 u8 mProjection, 0x01 u8 mInfo, 0x02 pad[2]: no swap
+	sw32_n(e+0x04, 3);    // Vec mCenter
+	// J3DTextureSRTInfo @0x10 (0x14): f32 scaleX/Y, s16 rotation, f32 transX/Y
+	sw32_n(e+0x10, 2);    // mScaleX, mScaleY
+	sw16(e+0x18);         // mRotation (s16)  (+0x1A pad)
+	sw32_n(e+0x1C, 2);    // mTranslationX, mTranslationY
+	sw32_n(e+0x24, 16);   // Mtx44 mEffectMtx (f32[4][4])
+}
+static void swap_J3DFogInfo(uint8_t* e) {           // stride 0x2C
+	// 0x00 u8 mType, 0x01 u8 mAdjEnable
+	sw16(e+0x02);         // mCenter
+	sw32_n(e+0x04, 4);    // mStartZ, mEndZ, mNearZ, mFarZ
+	// 0x14 GXColor mColor (u8x4): no swap
+	sw16_n(e+0x18, 10);   // mFogAdjTable[10]
+}
+static void swap_J3DIndInitData(uint8_t* e) {       // stride 0x138
+	// J3DIndTexMtxInfo[3] @0x14, stride 0x1C: f32 mOffsetMtx[2][3] (6 f32),
+	// s8 mScaleExp@0x18 (no swap). Other fields are all u8.
+	for (int i = 0; i < 3; ++i) sw32_n(e + 0x14 + i * 0x1C, 6);
+}
+
+static void swap_MAT3(uint8_t* out, const uint8_t* be, uint32_t size) {
+	if (size < 0x84) return;
+	sw16(out + 0x08);                              // mMaterialNum
+	uint32_t off[30];
+	for (int k = 0; k < 30; ++k) {
+		off[k] = be32(be + 0x0C + k * 4);
+		sw32(out + 0x0C + k * 4);                  // swap each table offset
+	}
+	// Region-end resolver from the full sorted offset set + block size.
+	uint32_t bounds[31]; int nb = 0;
+	for (int k = 0; k < 30; ++k) if (off[k]) bounds[nb++] = off[k];
+	bounds[nb++] = size;
+	for (int i = 0; i < nb; ++i)
+		for (int j = i + 1; j < nb; ++j)
+			if (bounds[j] < bounds[i]) { uint32_t t = bounds[i]; bounds[i] = bounds[j]; bounds[j] = t; }
+	auto rend = [&](uint32_t s)->uint32_t {
+		uint32_t e = size;
+		for (int j = 0; j < nb; ++j) if (bounds[j] > s && bounds[j] < e) e = bounds[j];
+		return e;
+	};
+	auto each = [&](int k, uint32_t stride, void(*fn)(uint8_t*)) {
+		if (!off[k]) return;
+		uint32_t end = rend(off[k]);
+		for (uint32_t o = off[k]; o + stride <= end; o += stride) fn(out + o);
+	};
+	// Table indices (J3DMaterialBlock order): 0 init,1 matID,2 name,3 indInit,
+	// 4 cull,5 matColor,6 colorChanNum,7 colorChanInfo,8 ambColor,9 lightInfo,
+	// 10 texGenNum,11 texCoordInfo,12 texCoord2,13 texMtx,14 field44,15 texNo,
+	// 16 tevOrder,17 tevColor,18 tevKColor,19 tevStageNum,20 tevStageInfo,
+	// 21 tevSwapMode,22 tevSwapModeTable,23 fog,24 alphaComp,25 blend,26 zMode,
+	// 27 zCompLoc,28 dither,29 nbtScale.
+	each(0,  0x14C, swap_J3DMaterialInitData);
+	if (off[1])  swap_run(out, off[1], rend(off[1]), 2);   // matID u16[]
+	swap_ResNTAB(out, be, off[2], size);                   // name table
+	each(3,  0x138, swap_J3DIndInitData);
+	if (off[4])  swap_run(out, off[4], rend(off[4]), 4);   // cullMode u32[]
+	each(13, 0x64, swap_J3DTexMtxInfo);                    // texMtxInfo
+	each(14, 0x64, swap_J3DTexMtxInfo);                    // field_0x44 (TexMtxInfo)
+	if (off[15]) swap_run(out, off[15], rend(off[15]), 2); // texNo u16[]
+	if (off[17]) swap_run(out, off[17], rend(off[17]), 2); // tevColor GXColorS10 (s16x4)
+	each(23, 0x2C, swap_J3DFogInfo);                       // fogInfo
+	each(29, 0x10, [](uint8_t* e){ sw32_n(e + 0x04, 3); });// nbtScaleInfo Vec mScale
+	// lightInfo (index 9): undefined layout, empty in all SMS BMDs. Leave bytes;
+	// callers that hit a non-empty lightInfo span need its layout RE'd first.
+}
+
 // =============================================================================
 BmdSwapResult bmd_swap_to_host(const uint8_t* be_data, size_t len,
                                std::vector<uint8_t>& out) {
@@ -479,10 +585,7 @@ BmdSwapResult bmd_swap_to_host(const uint8_t* be_data, size_t len,
 		case 0x56545831: /* VTX1 */ swap_VTX1(obo, bbo, bsz); break;
 		case 0x53485031: /* SHP1 */ swap_SHP1(obo, bbo, bsz); break;
 		case 0x54455831: /* TEX1 */ swap_TEX1(obo, bbo, bsz); break;
-		// --- NOT YET IMPLEMENTED (field maps in the header doc) -------------
-		// MAT3: material entries — large; many u16/u8 index tables + color/reg data.
-		// TEX1 (J3DTextureBlock): mTextureNum u16 + offsets; ResTIMG headers
-		//   (format u8, width/height u16, ...) + palette/texel byte streams.
+		case 0x4D415433: /* MAT3 */ swap_MAT3(obo, bbo, bsz); break;
 		default: covered = false; break;
 		}
 		if (covered) r.blocks_covered++;
