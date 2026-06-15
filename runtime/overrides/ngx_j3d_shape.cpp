@@ -394,6 +394,119 @@ void capture_textures(u32 tevblock, u32 vt) {
     }
 }
 
+// ── N7 PE block (alpha test + blend + zmode) ────────────────────────────────────
+// The material's mPEBlock @ +0x30 decides framebuffer behaviour. Four variants,
+// identified by the block's vtable getType() return (self-identifying — no region-
+// specific vtable addresses hardcoded): 'PEOP' opaque, 'PEED' TexEdge cutout
+// (alpha-tested foliage), 'PEXL' xlu (alpha blend) are PRESETS storing no fields;
+// 'PEFL' full stores J3DAlphaComp/J3DBlend/J3DZMode. The preset GX state is ported
+// verbatim from J3DPEBlock*::load (reference/sms J3DMaterial.cpp). The J3DAlphaComp
+// / J3DZMode IDs decode as a plain bitfield — that IS what makeAlphaCmpTable /
+// makeZModeTable build (J3DTevs.cpp): alphaID=(comp0<<5)|(op<<3)|comp1,
+// zID=(cmpEn<<4)|(func<<1)|updEn.
+constexpr u32 PE_OP = 0x50454F50u /*'PEOP'*/, PE_ED = 0x50454544u /*'PEED'*/,
+              PE_XL = 0x5045584Cu /*'PEXL'*/, PE_FL = 0x5045464Cu /*'PEFL'*/;
+
+// Decode a J3D PE block's getType() tag from its vtable. Stored vtable ptr → slot 0
+// at +8 (this codebase's CW/GC convention, see sms_drawsync_lossproof.cpp); getType
+// is virtual slot 2 → vtable+0x10. Its body builds the 32-bit FourCC as
+// `lis r3,HI; {ori|addi} r3,r3,LO; blr` (the compiler picks ori or addi). Returns
+// 0 if it can't be decoded.
+u32 pe_block_type(u32 vptr) {
+    if (!valid(vptr)) return 0;
+    const u32 fn = r32(vptr + 0x10);          // virtual slot 2 = getType
+    if (!valid(fn)) return 0;
+    const u32 i0 = r32(fn), i1 = r32(fn + 4);
+    if ((i0 >> 26) != 15 || ((i0 >> 21) & 31) != 3) return 0;   // addis r3,0,HI (lis r3)
+    const u32 hi = i0 & 0xFFFF;
+    int lo = 0;
+    const u32 op1 = i1 >> 26;
+    if (op1 == 24)                                 lo = (int)(i1 & 0xFFFF);  // ori (zero-ext)
+    else if (op1 == 14 && ((i1 >> 16) & 31) == 3)  lo = (int16_t)(i1 & 0xFFFF); // addi (sign-ext)
+    return (u32)((int)(hi << 16) + lo);
+}
+
+// Diagnostics: distinct PE vtable → decoded tag + per-tag use count.
+struct PeVtEntry { u32 vt = 0, tag = 0, fn = 0, i0 = 0, i1 = 0; unsigned cnt = 0; };
+PeVtEntry g_pe_vt[8];
+unsigned long g_pe_op = 0, g_pe_ed = 0, g_pe_xl = 0, g_pe_fl = 0, g_pe_unk = 0, g_pe_none = 0;
+unsigned long g_pe_alpha = 0, g_pe_blend = 0, g_pe_nozwrite = 0;
+
+inline bool alpha_always_pass(int comp0, int aop, int comp1) {
+    const bool t0 = comp0 == 7, f0 = comp0 == 0;   // ALWAYS / NEVER
+    const bool t1 = comp1 == 7, f1 = comp1 == 0;
+    switch (aop) {
+    case 0:  return t0 && t1;              // AND
+    case 1:  return t0 || t1;              // OR
+    case 2:  return (t0 && f1) || (f0 && t1);   // XOR
+    default: return (t0 && t1) || (f0 && f1);   // XNOR
+    }
+}
+
+// Read the material's PE block into st.pe. Default (no/unknown block) = opaque:
+// depth test+write LEQUAL, no blend, no alpha test.
+void capture_pe(u32 material, NgxTevState& st) {
+    st.pe = NgxPEState{};
+    st.pe.z_test = 1; st.pe.z_func = 3 /*GX_LEQUAL*/; st.pe.z_write = 1;
+    const u32 peb = r32(material + 0x30);              // J3DMaterial::mPEBlock
+    if (!valid(peb)) { g_pe_none++; return; }
+    const u32 vt = r32(peb + 0x00);
+    const u32 tag = pe_block_type(vt);
+
+    for (int i = 0; i < 8; i++) {                       // vtable→tag histogram
+        if (g_pe_vt[i].vt == vt) { g_pe_vt[i].cnt++; break; }
+        if (g_pe_vt[i].vt == 0) {
+            g_pe_vt[i].vt = vt; g_pe_vt[i].tag = tag; g_pe_vt[i].cnt = 1;
+            g_pe_vt[i].fn = r32(vt + 0x10);
+            g_pe_vt[i].i0 = r32(g_pe_vt[i].fn); g_pe_vt[i].i1 = r32(g_pe_vt[i].fn + 4);
+            break;
+        }
+    }
+
+    if (tag == PE_OP) {            // opaque: ALWAYS alpha, no blend, z LEQUAL test+write
+        g_pe_op++;                 // defaults already opaque
+    } else if (tag == PE_ED) {     // TexEdge cutout (foliage): alpha >=0x80 AND <=0xff
+        g_pe_ed++;
+        st.pe.alpha_test = 1;
+        st.pe.comp0 = 6 /*GEQUAL*/; st.pe.ref0 = 0x80; st.pe.aop = 0 /*AND*/;
+        st.pe.comp1 = 3 /*LEQUAL*/; st.pe.ref1 = 0xFF;
+        g_pe_alpha++;
+    } else if (tag == PE_XL) {     // xlu: no alpha, SRCALPHA/INVSRCALPHA blend, z test, NO write
+        g_pe_xl++;
+        st.pe.blend_mode = 1 /*GX_BM_BLEND*/;
+        st.pe.src_factor = 4 /*GX_BL_SRCALPHA*/; st.pe.dst_factor = 5 /*GX_BL_INVSRCALPHA*/;
+        st.pe.logic_op = 3 /*GX_LO_COPY*/;
+        st.pe.z_test = 1; st.pe.z_func = 3; st.pe.z_write = 0;
+        g_pe_blend++; g_pe_nozwrite++;
+    } else if (tag == PE_FL) {     // full — read the stored J3DAlphaComp/J3DBlend/J3DZMode
+        g_pe_fl++;
+        const u8* B = sb_ram_fast(peb);
+        if (B) {
+            const u16 acid = (u16)((B[0x08] << 8) | B[0x09]);    // mAlphaComp.mAlphaCmpID
+            const u8 ref0 = B[0x0A], ref1 = B[0x0B];
+            if (acid != 0xFFFF) {
+                const int comp0 = (acid >> 5) & 7, aop = (acid >> 3) & 3, comp1 = acid & 7;
+                if (!alpha_always_pass(comp0, aop, comp1)) {
+                    st.pe.alpha_test = 1;
+                    st.pe.comp0 = (u8)comp0; st.pe.ref0 = ref0; st.pe.aop = (u8)aop;
+                    st.pe.comp1 = (u8)comp1; st.pe.ref1 = ref1;
+                    g_pe_alpha++;
+                }
+            }
+            st.pe.blend_mode = B[0x0C]; st.pe.src_factor = B[0x0D];   // J3DBlendInfo
+            st.pe.dst_factor = B[0x0E]; st.pe.logic_op = B[0x0F];
+            if (st.pe.blend_mode == 1 || st.pe.blend_mode == 3) g_pe_blend++;
+            const u16 zid = (u16)((B[0x10] << 8) | B[0x11]);          // mZMode.mZModeID
+            if (zid != 0xFFFF) {
+                st.pe.z_test = (zid >> 4) & 1; st.pe.z_func = (zid >> 1) & 7; st.pe.z_write = zid & 1;
+                if (!st.pe.z_write) g_pe_nozwrite++;
+            }
+        }
+    } else {
+        g_pe_unk++;                // unknown / undecodable block — keep opaque default
+    }
+}
+
 // The TEV-state table: deduped by key, persistent across the frame (materials are
 // bounded ~ hundreds). Batches reference a state by index. Reset only if it grows
 // past the cap (defensive; not expected to be hit).
@@ -569,6 +682,8 @@ int capture_material() {
     } else {
         std::memset(st.kcolor, 0xFF, sizeof st.kcolor);
     }
+
+    capture_pe(material, st);   // N7: PE block (alpha test → shader, blend/zmode → pipeline)
 
     // FNV-1a key over the captured state (excluding the key field itself).
     uint64_t h = 1469598103934665603ull;
@@ -988,6 +1103,20 @@ int sb_ngx_shape_dump(char* out, int cap) {
     n += snprintf(out + n, cap - n, "  type:");
     for (int i = 0; i < 12; i++) if (g_tg_type_hist[i]) n += snprintf(out + n, cap - n, " t%d=%lu", i, g_tg_type_hist[i]);
     n += snprintf(out + n, cap - n, "  mtx: id=%lu set=%lu (n=%lu)\n", g_tg_mtx_id, g_tg_mtx_set, g_tg_n);
+    // N7 PE block (alpha test + blend + zmode) capture stats + vtable→tag table.
+    n += snprintf(out + n, cap - n,
+        "  PE block: OP=%lu ED=%lu XL=%lu FL=%lu unknown=%lu none=%lu\n"
+        "    alpha_tested=%lu  blended=%lu  no-zwrite=%lu\n",
+        g_pe_op, g_pe_ed, g_pe_xl, g_pe_fl, g_pe_unk, g_pe_none,
+        g_pe_alpha, g_pe_blend, g_pe_nozwrite);
+    for (int i = 0; i < 8 && g_pe_vt[i].vt; i++) {
+        const u32 t = g_pe_vt[i].tag;
+        const char c[5] = { (char)(t >> 24), (char)(t >> 16), (char)(t >> 8), (char)t, 0 };
+        n += snprintf(out + n, cap - n,
+            "    vt=%08x tag=%08x '%s' getType=%08x [%08x %08x] cnt=%u\n",
+            g_pe_vt[i].vt, t, (t >> 24) ? c : "????", g_pe_vt[i].fn,
+            g_pe_vt[i].i0, g_pe_vt[i].i1, g_pe_vt[i].cnt);
+    }
     n += snprintf(out + n, cap - n, "  num-stages histogram:");
     for (int s = 1; s <= 16; s++) if (g_stage_hist[s])
         n += snprintf(out + n, cap - n, " [%d]=%u", s, g_stage_hist[s]);

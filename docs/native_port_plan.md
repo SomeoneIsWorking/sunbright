@@ -392,6 +392,35 @@ decoder; runtime GP-FIFO path on the delete list. Then, on the object-model arch
   - **Still first-slice gaps** (lower priority): identity TEV swap tables, no alpha
     test (PE block uncaptured → foliage cutouts show full quads), no indirect stages.
 
+- **N7 — PE block: alpha test + blend + z-mode ✅ (foliage/transparency)** — ported the
+  J3D pixel-engine block (`J3DMaterial mPEBlock`@+0x30) so cutout foliage and translucent
+  surfaces render correctly. Before: trees were solid green blobs and transparent decals
+  near the statue showed as opaque black rectangles. After: trees are see-through leafy
+  cutouts, the black artifacts are gone, blend applies to xlu surfaces (brightness 192→196,
+  coverage 100%, 0 shader fails). Mechanics:
+  - **Variant ID self-identifying** — read the block's `getType()` FourCC at runtime, not a
+    hardcoded vtable: stored vtable ptr → slot 0 at +8 (CW/GC convention), `getType` is
+    virtual slot 2 → vtable+0x10; its body is `lis r3,HI; {ori|addi} r3,r3,LO; blr` →
+    decode the 32-bit tag. (Delfino's getType compiles as `lis;addi`, so the decoder must
+    accept opcode 14 with sign-extension, not just `ori`/opcode 24.) On Delfino **every**
+    material is `'PEFL'` (full block); presets `'PEOP'`/`'PEED'`/`'PEXL'` are ported too
+    (GX state verbatim from `J3DPEBlock*::load`, `reference/sms J3DMaterial.cpp`).
+  - **PEFL fields** (J3DPEBlockFull): `mAlphaComp`@0x08 (`mAlphaCmpID` u16@0x08, ref0@0x0A,
+    ref1@0x0B), `mBlend`@0x0C (`J3DBlendInfo` raw mode/src/dst/logic), `mZMode`@0x10
+    (`mZModeID` u16). The alpha-comp / z-mode **IDs decode as a plain bitfield** — that IS
+    what `makeAlphaCmpTable`/`makeZModeTable` (`J3DTevs.cpp`) build: alphaID =
+    `(comp0<<5)|(op<<3)|comp1`, zID = `(cmpEn<<4)|(func<<1)|updEn`; ID 0xFFFF = "no change"
+    (keep default). No need to read the runtime `.bss` table.
+  - **Where it lands:** alpha test → baked into the generated TEV fragment shader as
+    `discard` after the last stage (compare clamped `prev.a` vs ref0/ref1 combined by the
+    GX alpha op AND/OR/XOR/XNOR); blend + z-mode → the Vulkan pipeline (per-material, since
+    the pipeline is 1:1 with the TEV-state which now includes `NgxPEState` in its hash).
+    GX→VK: blend-factor slots 2/3 are context-named (SRCCLR vs DSTCLR) → Dolphin's
+    src/dst tables; `GXCompare` values map 1:1 onto `VkCompareOp` (depth + nothing else).
+  - Verified `/ngxshape`: 348k materials all PEFL, 198k alpha-tested, 84k blended, 29k
+    z-write-off. NEXT gaps: N7 present (live on-screen path), TEV swap tables, indirect
+    stages, fog; transparency draw-order sorting; lighting-fidelity headed check.
+
 - **N6.7 — object-model per-material textures ✅ (THE darkness fix)** — Delfino now
   renders BRIGHT and correctly textured (Shine Gate, sandstone buildings, tiled plaza,
   hills, sky), Dolphin-free. The GX-tee texture path was fundamentally wrong for J3D:

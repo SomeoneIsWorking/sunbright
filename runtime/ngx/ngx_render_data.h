@@ -52,6 +52,27 @@ struct NgxTevStage {
     uint8_t  pad[3];
 };
 
+// ── N7 PE (pixel-engine) block: alpha test + blend + zmode (from mPEBlock) ──────
+// The J3D PE block decides per-material framebuffer behaviour: an alpha test
+// (compare the final TEV alpha against ref0/ref1, combined by an op) baked into
+// the fragment shader as discard, plus blend + depth state set on the pipeline.
+// GX enum values are kept raw (GXCompare/GXAlphaOp/GXBlendMode/GXBlendFactor) and
+// translated by the shader generator (alpha test) / vk_mesh (blend, depth).
+struct NgxPEState {
+    uint8_t  alpha_test;      // 1 = emit discard (the compare is meaningful), 0 = always pass
+    uint8_t  comp0, ref0;     // GXCompare comp0, u8 ref0
+    uint8_t  aop;             // GXAlphaOp (0=AND 1=OR 2=XOR 3=XNOR)
+    uint8_t  comp1, ref1;     // GXCompare comp1, u8 ref1
+    uint8_t  blend_mode;      // GXBlendMode (0=NONE 1=BLEND 2=LOGIC 3=SUBTRACT)
+    uint8_t  src_factor;      // GXBlendFactor (source)
+    uint8_t  dst_factor;      // GXBlendFactor (dest)
+    uint8_t  logic_op;        // GXLogicOp (unused by the GL/VK blend path)
+    uint8_t  z_test;          // depth compareEnable
+    uint8_t  z_func;          // GXCompare (== VkCompareOp values)
+    uint8_t  z_write;         // depth updateEnable
+    uint8_t  pad[3];
+};
+
 // A whole material's TEV combiner state — the cache key for a generated shader.
 struct NgxTevState {
     uint8_t  num_stages;       // 1..16
@@ -59,6 +80,7 @@ struct NgxTevState {
     NgxTevStage stage[16];
     int16_t  tev_color[4][4];  // CPREV/C0/C1/C2 register init values, S10 RGBA (-1024..1023)
     uint8_t  kcolor[4][4];     // KONST0..3 RGBA, 0..255
+    NgxPEState pe;             // N7 PE block (alpha test → shader, blend/zmode → pipeline)
     uint64_t key;              // FNV hash of the above (dedupe / shader-cache key)
 };
 

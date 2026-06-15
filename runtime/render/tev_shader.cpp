@@ -156,6 +156,35 @@ void write_stage(Buf& o, const NgxTevState& st, int n) {
     o.w(ac.clamp ? ", 0, 255);\n" : ", -1024, 1023);\n");
 }
 
+// GX alpha-compare term → GLSL bool over `_a` (the final 0..255 TEV alpha).
+// GXCompare: 0=NEVER 1=LESS 2=EQUAL 3=LEQUAL 4=GREATER 5=NEQUAL 6=GEQUAL 7=ALWAYS.
+const char* alpha_cmp(int comp, int ref, char* b, size_t n) {
+    switch (comp) {
+    case 0: return "false";
+    case 1: snprintf(b, n, "(_a < %d)",  ref); return b;
+    case 2: snprintf(b, n, "(_a == %d)", ref); return b;
+    case 3: snprintf(b, n, "(_a <= %d)", ref); return b;
+    case 4: snprintf(b, n, "(_a > %d)",  ref); return b;
+    case 5: snprintf(b, n, "(_a != %d)", ref); return b;
+    case 6: snprintf(b, n, "(_a >= %d)", ref); return b;
+    default: return "true";
+    }
+}
+
+// Emit the per-material alpha test as a discard (GX PE block). The two compares
+// are combined by the alpha op (AND/OR/XOR/XNOR); a failing pixel is discarded.
+void write_alpha_test(Buf& o, const NgxPEState& pe) {
+    if (!pe.alpha_test) return;
+    char b0[64], b1[64];
+    const char* c0 = alpha_cmp(pe.comp0, pe.ref0, b0, sizeof b0);
+    const char* c1 = alpha_cmp(pe.comp1, pe.ref1, b1, sizeof b1);
+    static const char* combine[4] = { "%s && %s", "%s || %s", "%s != %s", "%s == %s" };
+    char expr[160];
+    snprintf(expr, sizeof expr, combine[pe.aop & 3], c0, c1);
+    o.w("  int _a = clamp(prev.a, 0, 255);\n");
+    o.w("  if (!(%s)) discard;\n", expr);
+}
+
 }  // namespace
 
 std::string sb_tev_gen_fragment(const NgxTevState& st) {
@@ -177,7 +206,9 @@ std::string sb_tev_gen_fragment(const NgxTevState& st) {
     o.w("  ivec4 tevin_a, tevin_b, tevin_c, tevin_d;\n");
     int ns = st.num_stages; if (ns < 1) ns = 1; if (ns > 16) ns = 16;
     for (int n = 0; n < ns; n++) write_stage(o, st, n);
-    o.w("\n  o = clamp(vec4(prev) / 255.0, 0.0, 1.0);\n");
+    o.w("\n");
+    write_alpha_test(o, st.pe);   // N7: GX PE-block alpha test (discard)
+    o.w("  o = clamp(vec4(prev) / 255.0, 0.0, 1.0);\n");
     o.w("}\n");
     return o.s;
 }
