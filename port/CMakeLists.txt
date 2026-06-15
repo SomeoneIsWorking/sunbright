@@ -85,6 +85,15 @@ target_compile_options(smsport_core PRIVATE
 # real 64-bit-port signal. (Files that trip it are deferred, not in core.)
 target_compile_options(smsport_core PRIVATE -w)
 
+# GUEST-SLICE link mode: when the port is NOT the whole program (it is linked as a
+# slice into the hybrid sunbright binary, SMSPORT_BUILD_MAIN=OFF), the HOST owns
+# the global replaceable operator new/delete — the decomp's heap-routing versions
+# (port/src/JKRHeap.cpp) must NOT replace them program-wide (see that file). The
+# custom aligned/heap placement overloads stay; only the plain globals drop out.
+if(NOT SMSPORT_BUILD_MAIN)
+  target_compile_definitions(smsport_core PRIVATE SMSPORT_GUEST_SLICE=1)
+endif()
+
 message(STATUS "smsport_core: ${SMS_CORE_REL} (see core_sources.txt)")
 
 # ---------------------------------------------------------------------------
@@ -96,6 +105,21 @@ message(STATUS "smsport_core: ${SMS_CORE_REL} (see core_sources.txt)")
 add_library(smsport_assets STATIC assets/rarc.cpp assets/bti.cpp assets/bmd_swap.cpp)
 target_include_directories(smsport_assets PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/assets")
 target_compile_options(smsport_assets PRIVATE -Wall -Wextra)
+
+# ---------------------------------------------------------------------------
+# Tailored-recomp BRIDGE seam (port/bridge/). The C-ABI surface the sunbright
+# runtime overrides call to drive PC-native engine subsystems from recompiled
+# game logic (docs/ARCHITECTURE_TARGET.md). Compiled WITH the decomp shims (it
+# includes JSystem headers) but exposes only plain extern "C" (opaque void*/
+# scalars), so the Dolphin-based runtime can call it with no header bleed.
+# ---------------------------------------------------------------------------
+add_library(smsport_bridge STATIC bridge/j3d_bridge.cpp)
+target_include_directories(smsport_bridge PRIVATE
+  ${SMS_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}/assets")
+target_compile_options(smsport_bridge PRIVATE
+  ${SMS_FORCE_INCLUDE}
+  -fno-strict-aliasing
+  -Wno-multichar)
 
 # PC-native GameCube texture decoder (../runtime/render/tex_decode.cpp). It is
 # standalone C++ with ZERO Dolphin dependency (only <cstdint>/<cstring> + its own

@@ -234,10 +234,25 @@ void JKRDefaultMemoryErrorRoutine(void* heap, u32 size, int alignment)
 	OSErrorLine(694, "abort\n");
 }
 
+// The PLAIN global replaceable operator new/delete (size_t / void* forms) are
+// the decomp's heap-routing definitions. They are correct when the PORT is the
+// whole program (it owns the global allocator). But when the port is linked as a
+// GUEST SLICE into the hybrid sunbright binary (SMSPORT_GUEST_SLICE, set when
+// SMSPORT_BUILD_MAIN=OFF), they must NOT be defined: a strong static definition
+// of `operator new(size_t)` would REPLACE the global allocator for the ENTIRE
+// binary (Dolphin, the runtime, std::string/vector, Vulkan) and route it through
+// JKRHeap::alloc(sCurrentHeap) — which is null during static init -> crash. In
+// the slice, the HOST owns plain global new/delete (libstdc++ malloc); plain
+// `new Foo` in port code allocates host memory (correct for host engine objects).
+// The CUSTOM aligned/heap placement overloads below stay defined unconditionally
+// — they don't conflict with the standard globals and the loaders' `new (align)`
+// allocations still route to the current JKRHeap.
+#ifndef SMSPORT_GUEST_SLICE
 void* operator new(size_t byteCount)
 {
 	return JKRHeap::alloc(byteCount, 4, nullptr);
 }
+#endif
 void* operator new(size_t byteCount, int alignment)
 {
 	return JKRHeap::alloc(byteCount, alignment, nullptr);
@@ -247,10 +262,12 @@ void* operator new(size_t byteCount, JKRHeap* heap, int alignment)
 	return JKRHeap::alloc(byteCount, alignment, heap);
 }
 
+#ifndef SMSPORT_GUEST_SLICE
 void* operator new[](size_t byteCount)
 {
 	return JKRHeap::alloc(byteCount, 4, nullptr);
 }
+#endif
 void* operator new[](size_t byteCount, int alignment)
 {
 	return JKRHeap::alloc(byteCount, alignment, nullptr);
@@ -261,8 +278,10 @@ void* operator new[](size_t byteCount, JKRHeap* heap, int alignment)
 }
 
 // this is not needed without the other pragma and asm bs
+#ifndef SMSPORT_GUEST_SLICE
 void operator delete(void* memory) { JKRHeap::free(memory, nullptr); }
 void operator delete[](void* memory) { JKRHeap::free(memory, nullptr); }
+#endif
 
 void JKRHeap::state_register(JKRHeap::TState* p, u32) const
 {

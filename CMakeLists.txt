@@ -9,6 +9,12 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(SUNBRIGHT_USE_DOLPHIN_DISCIO  "Link recompiler against Dolphin DiscIO" ON)
 option(SUNBRIGHT_USE_DOLPHIN_CORE    "Link runtime against Dolphin Core"      ON)
 
+# Tailored-recomp subsystem flips. Each flips an engine type from guest-layout to
+# the PC-native port object (handle identity + host field access). The runtime
+# override half is gated by these defines; the GENERATED half must be recompiled
+# with the matching SUNBRIGHT_ENGINE_TYPES (build-time coupling — enable together).
+option(SB_FLIP_J3DMODELDATA "Route J3DModelLoader::load to the PC-native port loader" OFF)
+
 # ── Dolphin submodule ─────────────────────────────────────────────────────────
 set(DOLPHIN_DIR "${CMAKE_SOURCE_DIR}/externals/dolphin")
 
@@ -230,6 +236,19 @@ if(SUNBRIGHT_GENERATED_SOURCES)
         PROPERTIES COMPILE_OPTIONS "-O3;-ffp-contract=off")
 endif()
 
+# ── Port engine (PC-native JSystem) — guest slice linked into the hybrid ──────
+# The tailored-recomp boundary: recompiled game logic (built with
+# SUNBRIGHT_ENGINE_TYPES) calls PORT-native engine objects via the bridge. We link
+# a SLICE of port/ (the J3DModelData loader closure + its PAL + the C-ABI bridge)
+# into the sunbright binary. SMSPORT_BUILD_MAIN=OFF: the port is a GUEST SLICE, not
+# the whole program, so the HOST owns the global operator new/delete (the decomp's
+# heap-routing versions are dropped via SMSPORT_GUEST_SLICE — see
+# port/src/JKRHeap.cpp). EXCLUDE_FROM_ALL: only objects the link actually needs are
+# pulled (avoids the AT_ADDRESS hardware-global multiply-def that only bites the
+# --whole-archive smsport_main target).
+set(SMSPORT_BUILD_MAIN OFF CACHE BOOL "" FORCE)
+add_subdirectory(port port-build EXCLUDE_FROM_ALL)
+
 add_executable(sunbright
     runtime/main_sdl.cpp
     runtime/jit_hook.cpp
@@ -289,6 +308,7 @@ target_compile_definitions(sunbright PRIVATE
     HAVE_DOLPHIN_DISCIO=1
     HAVE_DOLPHIN_MEMMAP=1  # memory_bridge routes through Dolphin's real MemMap
     ${_SUNBRIGHT_ARCH_DEFINE}
+    $<$<BOOL:${SB_FLIP_J3DMODELDATA}>:SB_FLIP_J3DMODELDATA=1>
 )
 
 target_link_libraries(sunbright PRIVATE
@@ -296,6 +316,10 @@ target_link_libraries(sunbright PRIVATE
     videovulkan          # N2: native renderer reuses Dolphin's VkDevice during bring-up
     SDL2::SDL2
     pthread
+    # PC-native port engine slice. start-group: smsport_core<->smsport_pal are
+    # mutually recursive static libs; smsport_bridge is the C-ABI seam the runtime
+    # overrides call into (it pulls the J3DModelData loader closure on demand).
+    -Wl,--start-group smsport_bridge smsport_assets smsport_core smsport_pal -Wl,--end-group
 )
 
 # JitTrampoline interception is now a direct fork hook (Common/SunbrightHooks.h
