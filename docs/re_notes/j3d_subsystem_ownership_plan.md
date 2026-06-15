@@ -37,6 +37,42 @@ the RARE genuine game-side INLINE read of a SCALAR/embedded-VALUE field (joint m
   → J3DShape::draw → GX. port GX is 74 no-op stubs (port/pal/gx/gx_stub.cpp). A VISIBLE frame needs GX
   owned in `port/` (the renderer-ownership effort; runtime/render is the transitional reference).
 
+## ⛔ STEP 0 (PREREQUISITE, found 2026-06-15) — the generated engine-types code does NOT COMPILE
+The de-risk validated the flip EMISSION against STUB struct definitions in a harness; the real
+compile-into-the-binary path was never exercised, and it is BROKEN two layers deep. Verified by
+actually compiling a `SUNBRIGHT_ENGINE_TYPES=J3DModelData J3DModel` generated file:
+1. **No struct definitions.** Generated `functions_*.cpp` only `#include "functions.h"` (decls +
+   `intrinsics.h`); it does NOT define `J3DModelData`/`J3DModel`. So `((J3DModelData*)sb_eng_host(h))
+   ->mMaterials` and `sb_eng_alloc<J3DModel>()` (needs `sizeof`) → "J3DModel was not declared".
+2. **Type-system collision if you DO pull the decomp headers in.** Including the port/decomp engine
+   headers into the generated TU (to get the struct defs) conflicts with `runtime/cpu_state.h` (which
+   the generated TU needs for `CPUState`): `cpu_state.h` `using u64 = uint64_t` (== `unsigned long` on
+   LP64 Linux) vs the decomp `types.h` `typedef unsigned long long u64` → hard conflicting-declaration
+   error (and likely more macro/type clashes behind it). Two large header worlds can't co-inhabit one TU.
+
+**Consequence — the inline-host-struct emission model is not compile-integrable as-is. Resolve before
+ANY flip (this gates J3DModelData AND J3DModel — the load-bridge milestone dodged it only because it
+built with the NON-engine-types generated set).** Options:
+- **(A) RECOMMENDED for Option 1 — emit BRIDGE CALLS, never host structs in generated code.** A
+  recognized construction emits a bridge FACTORY call (alloc+construct in port/, returns a handle);
+  an engine field access in GAME code emits a bridge GETTER/SETTER (handle in, scalar/handle out).
+  Generated code then uses only `CPUState` + runtime types + opaque `u32` handles — the decomp headers
+  never enter the generated TU, the type collision vanishes, and the host graph stays wholly in port/.
+  This is the clean separation the architecture wants; cost = recompiler emission rework + generating
+  per-field/method bridge thunks (mechanical from the type DB). Engine METHODS are already bridged
+  (override at addr), so most "field access" in engine code disappears with the bridge; only genuine
+  game-side inline field reads need a generated getter.
+- (B) Emit standalone POD struct defs from the type DB into a generated header (no decomp headers) —
+  fragile for polymorphic/embedded/base-chain layouts; must stay binary-identical to port.
+- (C) Reconcile the type systems via a shim and compile engine-types generated TUs WITH the decomp
+  headers+shims — closest to the de-risk intent but mixes two header worlds per TU (brittle).
+
+Until Step 0 lands, the function-bridge surface below can still be BUILT and unit-tested in port/, but
+the recomp→bridge dispatch for CONSTRUCTION can't be wired (the construction site needs Step 0).
+Engine METHODS that take an already-existing handle (calc, animators) CAN be bridged via plain
+overrides today (no generated-code type needed) — but they're only reachable once a host J3DModel
+EXISTS, which needs construction = Step 0.
+
 ## Execution order (each step commit+push; verify before moving on)
 1. **J3DModel construct + calc bridge (GX-free).** Bridge ctor (placement-new) + entryModelData +
    calc family. Declare SB_ENGINE_TYPE(J3DModelData), SB_ENGINE_TYPE(J3DModel). Free-fn wrappers in
