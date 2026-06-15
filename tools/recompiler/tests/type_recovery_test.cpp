@@ -26,6 +26,7 @@ static int g_fail = 0, g_checks = 0;
 static uint32_t enc_addi(int rd, int ra, int16_t si) { return (14u<<26)|(rd<<21)|(ra<<16)|(uint16_t)si; }
 static uint32_t enc_or  (int rd, int rs, int rb)      { return (31u<<26)|(rs<<21)|(rd<<16)|(rb<<11)|(444u<<1); }
 static uint32_t enc_lwz (int rd, int ra, int16_t d)   { return (32u<<26)|(rd<<21)|(ra<<16)|(uint16_t)d; }
+static uint32_t enc_lhz (int rd, int ra, int16_t d)   { return (40u<<26)|(rd<<21)|(ra<<16)|(uint16_t)d; }
 static uint32_t enc_stw (int rs, int ra, int16_t d)   { return (36u<<26)|(rs<<21)|(ra<<16)|(uint16_t)d; }
 static uint32_t enc_lfs (int frd,int ra, int16_t d)   { return (48u<<26)|(frd<<21)|(ra<<16)|(uint16_t)d; }
 static uint32_t enc_bl  (uint32_t from,uint32_t to)   { int32_t dl=(int32_t)(to-from); return (18u<<26)|((uint32_t)dl&0x03fffffc)|1u; }
@@ -136,6 +137,29 @@ int main() {
         auto ef = recover_eng_fields(ins, B, db, intra_branch_targets(ins, B), {});
         const EngField* f = field_at_idx(ins, ef, 1);
         CHECK(f && f->member=="mFov", "mr copy of `this` keeps the engine type");
+    }
+
+    // 6b. HOLDER pattern (SUNBRIGHT_HOLDER_TYPES): a GAME actor type that HOLDS an engine
+    //     handle in a member field. The holder ("Actor", != the engine type) is in the DB only
+    //     so the engine type propagates: `lwz r3,0x44(this:Actor)` loads the J3DModelData* member
+    //     and types r3, so the following `lhz r4,0x24(r3)` is a typed J3DModelData::mMaterialNum
+    //     read (routed by main.cpp because the engine type is in field_types; the Actor's OWN
+    //     reads are NOT routed because Actor is not in field_types — gating is in main.cpp).
+    //     This is the mechanism that fixed TShimmer::load's inlined getMaterialNum (handoff step 2b).
+    {
+        TypeDB hdb;
+        hdb.layouts["Actor"].fields = { { 0x44, FieldDesc{ "unkMD", "MD" } } };  // engine-ptr member
+        hdb.layouts["MD"].fields    = { { 0x24, FieldDesc{ "mMaterialNum", "" } } };
+        hdb.signatures[B] = { { 3, "Actor" } };                                  // load__Actor(this)
+        std::vector<uint32_t> w = { enc_lwz(3,3,0x44), enc_lhz(4,3,0x24), BLR };
+        auto ins = collect(B, w);
+        auto ef = recover_eng_fields(ins, B, hdb, intra_branch_targets(ins, B), {});
+        const EngField* fh = field_at_idx(ins, ef, 0);   // lwz unkMD (the holder member)
+        const EngField* fm = field_at_idx(ins, ef, 1);   // lhz through the propagated MD
+        CHECK(fh && fh->type_cname=="Actor" && fh->member=="unkMD",
+              "holder member load is typed (Actor::unkMD)");
+        CHECK(fm && fm->type_cname=="MD" && fm->member=="mMaterialNum",
+              "engine-field read THROUGH a holder member is typed (MD::mMaterialNum)");
     }
 
     // find the EngField recovered at an absolute pc

@@ -440,10 +440,21 @@ static int recompile_mode(const DiscLoader& disc, const DOL& dol, const std::str
     // for these (they are not constructed in game code); their layout must be in the type DB so the
     // read sites get typed. Default empty = no field routing (byte-unchanged recompile).
     std::set<std::string> field_types = parse_type_list(getenv("SUNBRIGHT_FIELD_TYPES"));
+    // HOLDER types: GAME types (e.g. actors like TShimmer) whose member fields HOLD engine handles
+    // (TShimmer::unk44 = J3DModelData*). They are built into the type DB for member-type PROPAGATION
+    // ONLY — so an inline `lwz rD,off(this)` of an engine-pointer member types rD as that engine
+    // type, letting a following inline engine-field read route to its getter. They get NEITHER
+    // field-getter routing for their OWN fields (the holder stays guest-layout; `this` is a guest
+    // pointer, not a handle — routing its reads would call sb_eng_host on a guest ptr) NOR
+    // virtual-dispatch routing / construction. The mechanism the .bmd/.bmt/.btk loaders store an
+    // engine HANDLE into the actor's guest field; reloading it reads the handle (guest MEM), and the
+    // propagated type makes the next `getMaterialNum`/`getMaterialNodePointer` read route correctly.
+    std::set<std::string> holder_types = parse_type_list(getenv("SUNBRIGHT_HOLDER_TYPES"));
     // Types the recognition/recompile machinery must build a layout+signature DB for: the union of
-    // virtual-dispatch, owned-construction, and field-read type sets.
+    // virtual-dispatch, owned-construction, field-read, and holder (propagation-only) type sets.
     std::set<std::string> active_types = virt_types;
     for (const auto& t : field_types) active_types.insert(t);
+    for (const auto& t : holder_types) active_types.insert(t);
     // Raw allocators whose result is the constructed object (object_identity.md): the global
     // `operator new(size)` at 0x802c3ba4 (reads the current JKRHeap from SDA r13-0x5f2c). Used only
     // when OWN_TYPES is set, to find owned-type heap-construction sites.
@@ -488,6 +499,7 @@ static int recompile_mode(const DiscLoader& disc, const DOL& dol, const std::str
         }
         std::cout << "Type DB built for " << active_types.size() << " type(s)"
                   << " (virt-dispatch " << virt_types.size() << ", field-read " << field_types.size()
+                  << ", holder " << holder_types.size()
                   << "); " << vtbl_db.tables.size() << " vtable(s) read; "
                   << field_internal_funcs.size() << " engine-internal method(s) excluded from field-routing\n";
     }

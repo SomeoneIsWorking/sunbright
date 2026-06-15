@@ -18,11 +18,33 @@ After the .bmt material-table path landed, the live fault was the J3D animation 
 - Tests: `anm_swap_test` (synthetic ANK1 + the mixed TPT1 table + uncovered-block refusal contract) and
   `anm_load_run` (gate: 288 real .bck/.btk/.btp/.brk from airport0.szs → non-null animators, sane
   getFrameMax). Both ctest; SKIP without `$SUNBRIGHT_ANM_DIR`/scratch/bmt/anm (scan_anm --write).
-- VERIFIED: build-j3dvirt boots PAST the recompiled anm load — fault moved forward within TShimmer::load
-  to pc=8019f658 (a 16-bit handle+0x16 deref). NEXT (step 2): searchUpdateMaterialID(md) 0x802e3dd4, then
-  J3DMaterialAnm construction, J3DMaterial change/setMaterialAnm/setSomeFlag, entryTexMtxAnimator
-  0x802dd448 + getFrameMax. The 16-bit handle+0x16 read at 8019f658 is a J3DAnmTextureSRTKey field read
-  inline in TShimmer::load — disasm to choose FIELD_TYPES getter-route (+= J3DAnmTextureSRTKey) vs bridge.
+- VERIFIED: build-j3dvirt boots PAST the recompiled anm load — fault moved forward within TShimmer::load.
+
+### ✅ step 2a/2b (2026-06-15) — searchUpdateMaterialID bridge + the HOLDER_TYPES recompiler category
+- **searchUpdateMaterialID** @0x802e3dd4 bridged (override → port-native on host animator + host md).
+- **`SUNBRIGHT_HOLDER_TYPES` (new recompiler category, tools/recompiler/main.cpp)**: GAME types (actors)
+  whose member fields hold engine handles. Built into the type DB for member-type PROPAGATION ONLY — an
+  inline `lwz rD,off(this)` of an engine-pointer member (e.g. `TShimmer::unk44 = J3DModelData*`) types rD
+  as that engine type, so the following inlined engine-field read (getMaterialNum/getMaterialNodePointer)
+  routes to its FIELD_TYPES getter. The holder gets NEITHER getter-routing of its OWN fields (it stays
+  guest-layout; `this` is a guest ptr, not a handle) NOR virt/construction routing. main.cpp unions
+  holder_types into active_types (DB built) but keeps them out of field_types/virt_types; the existing
+  line-611 `field_types.count(ef.type_cname)` gate already restricts getter emission to the engine types.
+  SOUND because it keys on the field's static decomp type, not memory dataflow (an object-field
+  store→reload across calls would be unsound to track, which is why r1-frame-only spill tracking exists).
+  type_recovery_test case 6b. This is the GENERAL fix for the "engine handle in a game-object field +
+  inlined engine read" gap that recurs across ~46 actors. **Regen env now adds
+  `SUNBRIGHT_HOLDER_TYPES="TShimmer"`** (grow per actor). Verified: getMaterialNum/getMaterialNodePointer
+  emit sbget_J3DModelData_* in TShimmer::load; boot advanced into the material-anim loop.
+
+### ⏩ NEXT (step 3/4) — getMaterialNodePointer array indexing + J3DMaterialAnm + J3DMaterial methods
+Live fault (run-anm3.log): `ea=0x90000044 (32-bit)` — `getMaterialNodePointer(i) = mMaterials[i]`. The
+recompiled `lwzx` indexes the HOST mMaterials array (sbget returns the base) but the host array holds
+8-byte host pointers while guest `lwzx` is stride-4 → no valid J3DMaterial handle. THE ARRAY-OF-ENGINE-
+POINTERS problem. Fix options: index-aware getter `sbget_<T>_<member>(handle,i)` returning the i-th
+element as a handle (recompiler feature); or own the material-anim loop in port/. Then J3DMaterialAnm
+construction (OWN_TYPES += J3DMaterialAnm), J3DMaterial change/setMaterialAnm, entryTexMtxAnimator
+0x802dd448 + getFrameMax. Investigate the array getter first (blocks every material-iterating actor).
 
 ## 🔎 RUNTIME EVIDENCE (2026-06-15, post bridged-getter emission 27ceadd) — the .bmt MATERIAL-TABLE path is the live fault
 With `SUNBRIGHT_FIELD_TYPES="J3DModelData,J3DMaterial"` the inlined J3DModelData reads route to host
