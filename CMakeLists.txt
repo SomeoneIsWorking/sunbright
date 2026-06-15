@@ -249,9 +249,22 @@ endif()
 # matching eng_accessors.h (extern decls) so the generated game TUs call the thunks by symbol.
 file(GLOB SUNBRIGHT_ENG_ACCESSORS CONFIGURE_DEPENDS generated/eng_accessors.cpp)
 if(SUNBRIGHT_ENG_ACCESSORS)
-    set_source_files_properties(${SUNBRIGHT_ENG_ACCESSORS} PROPERTIES
-        INCLUDE_DIRECTORIES "${CMAKE_SOURCE_DIR}/port/compat/include;${CMAKE_SOURCE_DIR}/reference/sms/include"
-        COMPILE_OPTIONS "SHELL:-include ${CMAKE_SOURCE_DIR}/port/compat/intrinsics.h;SHELL:-include ${CMAKE_SOURCE_DIR}/port/compat/msl_shim.h;-fno-strict-aliasing;-Wno-multichar;-Wno-register;-w")
+    # Compile the accessor TU as its OWN object library, NOT a source of the sunbright
+    # target. The two force-include shims need the SHELL: prefix to survive CMake's
+    # option de-duplication (without it the 2nd -include leaks as a stray positional
+    # source -> "cannot specify -o with -c with multiple files"). SHELL: is only honored
+    # by target_compile_options, not by set_source_files_properties COMPILE_OPTIONS — so
+    # this must be a real target (mirrors port/CMakeLists.txt SMS_FORCE_INCLUDE).
+    add_library(sb_eng_accessors OBJECT ${SUNBRIGHT_ENG_ACCESSORS})
+    target_include_directories(sb_eng_accessors PRIVATE
+        "${CMAKE_SOURCE_DIR}/port/compat/include"
+        "${CMAKE_SOURCE_DIR}/reference/sms/include"
+        "${CMAKE_SOURCE_DIR}/runtime")
+    target_compile_options(sb_eng_accessors PRIVATE
+        "SHELL:-include ${CMAKE_SOURCE_DIR}/port/compat/intrinsics.h"
+        "SHELL:-include ${CMAKE_SOURCE_DIR}/port/compat/msl_shim.h"
+        -fno-strict-aliasing -Wno-multichar -Wno-register -w)
+    target_compile_features(sb_eng_accessors PRIVATE cxx_std_17)
 endif()
 
 # ── Port engine (PC-native JSystem) — guest slice linked into the hybrid ──────
@@ -303,8 +316,12 @@ add_executable(sunbright
     runtime/recomp_table_weak.cpp
     ${SUNBRIGHT_OVERRIDE_SOURCES}
     ${SUNBRIGHT_GENERATED_SOURCES}
-    ${SUNBRIGHT_ENG_ACCESSORS}
 )
+# The accessor TU links via its object library (see above) so its force-include
+# shims keep the SHELL: handling.
+if(TARGET sb_eng_accessors)
+    target_sources(sunbright PRIVATE $<TARGET_OBJECTS:sb_eng_accessors>)
+endif()
 
 target_include_directories(sunbright PRIVATE
     runtime
