@@ -240,13 +240,27 @@ slot). **`scratch/identity_sweep JUTTexture` now reports `0 gaps in 0 funcs`** (
 
 ### ⚠ REQUIRED EMITTER FOLLOW-UP before flipping a type with a polymorphic subclass
 Recognition now correctly TYPES a `new J2DWindow::Texture` as the polymorphic subclass. The emitter
-must then ROUTE that construction through the out-of-line PLACEMENT-NEW ctor bridge (Pattern AV:
-`new(sb_eng_host(h)) T(args)` runs the real C++ ctor → real host vtable) — it must NOT take the
-raw-alloc + inlined-write path, because the inlined `stw <guest vtable addr>, 0x54(this)` cannot be
-replayed host-side (the `__vtbl` slot is a recognition marker, not a writable host member). Until that
-routing exists, do NOT add a polymorphic subclass (or a base whose game-constructed subclasses are
-polymorphic, e.g. JUTTexture) to `SUNBRIGHT_ENGINE_TYPES`. The gate is unchanged: `identity_sweep
-<Type>` must report ZERO gaps AND every flagged polymorphic construction must reach the ctor bridge.
+must then HOST-CONSTRUCT it with a real host vtable — it must NOT take the raw-alloc + inlined-write
+path, because the inlined `stw <guest vtable addr>, 0x54(this)` cannot be replayed host-side (the
+`__vtbl` slot is a recognition marker, not a writable host member; the emitted
+`((J2DWindow::Texture*)sb_eng_host(..))->__vtbl = ..` does not compile — verified 2026-06-15 in
+c_emitter.cpp:484 + emit_eng_field STW). Until that exists, do NOT add a polymorphic subclass — or a
+base whose game-constructed subclasses are polymorphic, **e.g. JUTTexture** — to `SUNBRIGHT_ENGINE_TYPES`.
+
+⚠ **It is NOT enough to bridge the out-of-line ctor, and you cannot half-flip a type** (2026-06-15):
+- `J2DWindow::Texture`'s ctor is INLINED at its construction site (`__ct__9J2DWindow`): no `bl
+  __ct__Texture` to route to a placement-new bridge. The construct_slice Pattern-AV proof covers only
+  the OUT-OF-LINE ctor case. Host-constructing a polymorphic object whose guest ctor is INLINED — set
+  the real host vtable, run the (bridged) inlined work on the host object, suppress the guest vtable
+  store — is an UNSOLVED design problem (no portable "just set the vptr"; placement-new re-runs member
+  init; the type may not be default-constructible).
+- Leaving the polymorphic construction as guest code (an exclusion) is UNSOUND: `J2DWindow::Texture`
+  IS-A JUTTexture and reaches the flipped `JUTTexture::load(this)` (via `Texture::draw`); a
+  guest-layout object → guest pointer → `sb_eng_host(guestptr)` fault. ALL constructions of a flipped
+  type (incl. polymorphic subclasses) must produce host-object+handle, or none can.
+The practical consequence: the FIRST subsystem flip should pick a leaf engine type with NO game-
+constructed polymorphic subclasses (gate: `identity_sweep <Type>` zero gaps), not JUTTexture. The gate
+is unchanged: ZERO gaps AND every flagged polymorphic construction reaches a real host ctor.
 
 ## Open questions / risks (do NOT claim solved)
 - **Stack temp scope/lifetime** (C): when is the host object freed? Frame teardown model needed.
