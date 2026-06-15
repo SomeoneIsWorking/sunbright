@@ -7,11 +7,13 @@
 // bind each texture and draw its vertex range (N5: materials/textures).
 #include <cstdint>
 
-// One renderer-ready vertex: clip-space position, lit raster color0, tex0 UV.
+// One renderer-ready vertex: clip-space position, lit raster color0, and the 8 GX
+// texcoord UVs (one per GX_TEXCOORD0..7) with the per-material GX texgen already
+// applied on the CPU (N6.6). A TEV stage samples uv[its texcoord].
 struct NgxRenderVertex {
-    float clip[4];   // P·modelview·model (homogeneous clip space)
-    float rgba[4];   // lit raster color0 (N6 native lighting; = CLR0 when unlit), 0..1
-    float uv[2];     // tex0 coord (S,T)
+    float clip[4];    // P·modelview·model (homogeneous clip space)
+    float rgba[4];    // lit raster color0 (N6 native lighting; = CLR0 when unlit), 0..1
+    float uv[8][2];   // texgen'd UV per GX texcoord 0..7
 };
 
 // One bound GX texture (a single texmap). addr==0 means "no/unsupported texture"

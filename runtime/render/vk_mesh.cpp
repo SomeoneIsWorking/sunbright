@@ -328,14 +328,15 @@ int sb_ngx_render(char* outbuf, int cap) {
         ss[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; ss[1].pName = "main";   // module set per-slot below
 
         VkVertexInputBindingDescription vib{0, sizeof(NgxRenderVertex), VK_VERTEX_INPUT_RATE_VERTEX};
-        VkVertexInputAttributeDescription via[3] = {
+        VkVertexInputAttributeDescription via[10] = {
             {0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 0},                  // clip
             {1, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 4 * sizeof(float)},  // rgba
-            {2, 0, VK_FORMAT_R32G32_SFLOAT,       8 * sizeof(float)},  // uv
         };
+        for (uint32_t m = 0; m < 8; m++)                               // uv[0..7] (loc 2..9)
+            via[2 + m] = {2 + m, 0, VK_FORMAT_R32G32_SFLOAT, (uint32_t)((8 + m * 2) * sizeof(float))};
         VkPipelineVertexInputStateCreateInfo vi{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
         vi.vertexBindingDescriptionCount = 1; vi.pVertexBindingDescriptions = &vib;
-        vi.vertexAttributeDescriptionCount = 3; vi.pVertexAttributeDescriptions = via;
+        vi.vertexAttributeDescriptionCount = 10; vi.pVertexAttributeDescriptions = via;
         VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
         ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
         VkViewport vp{0, 0, (float)W, (float)H, 0, 1};
