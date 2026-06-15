@@ -17,8 +17,8 @@
 // Returning a handle is ONLY correct when the recompiled callers were generated
 // with SUNBRIGHT_ENGINE_TYPES=J3DModelData (so they treat the result as a handle,
 // not a guest pointer). Until that recompile is the active generated/ set, this
-// override is gated OFF behind SB_FLIP_J3DMODELDATA so the default binary is
-// unchanged. Enable the flip by building the runtime with -DSB_FLIP_J3DMODELDATA
+// override is gated OFF behind SB_FLIP_J3D so the default binary is
+// unchanged. Enable the flip by building the runtime with -DSB_FLIP_J3D
 // AND regenerating generated/ with the engine type set — the two land together.
 // (Build-time coupling of two halves of one translation, NOT a runtime toggle.)
 // =============================================================================
@@ -29,7 +29,7 @@
 
 extern "C" void* sbport_j3d_load(const void* be_bmd, uint32_t flags);
 
-#ifdef SB_FLIP_J3DMODELDATA
+#ifdef SB_FLIP_J3D
 // J3DModelLoaderDataBase::load(const void* data, u32 flags) @ 0x802e6f00
 SUNBRIGHT_OVERRIDE(ov_j3d_model_load, 0x802e6f00) {
 	u32   guest_bmd = cpu.gpr[3];

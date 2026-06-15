@@ -13,7 +13,11 @@ option(SUNBRIGHT_USE_DOLPHIN_CORE    "Link runtime against Dolphin Core"      ON
 # the PC-native port object (handle identity + host field access). The runtime
 # override half is gated by these defines; the GENERATED half must be recompiled
 # with the matching SUNBRIGHT_ENGINE_TYPES (build-time coupling — enable together).
-option(SB_FLIP_J3DMODELDATA "Route J3DModelLoader::load to the PC-native port loader" OFF)
+# SB_FLIP_J3D: own the J3D subsystem in port/ behind bridged calls — the load
+# bridge (J3DModelLoader::load -> host J3DModelData handle) + J3DModel construct
+# (placement-new ctor) + the GX-free calc cluster. Pairs with a recompile under
+# SUNBRIGHT_ENGINE_TYPES="J3DModelData J3DModel".
+option(SB_FLIP_J3D "Own the J3D model subsystem (load+construct+calc) in port/" OFF)
 
 # ── Dolphin submodule ─────────────────────────────────────────────────────────
 set(DOLPHIN_DIR "${CMAKE_SOURCE_DIR}/externals/dolphin")
@@ -323,7 +327,7 @@ target_compile_definitions(sunbright PRIVATE
     HAVE_DOLPHIN_DISCIO=1
     HAVE_DOLPHIN_MEMMAP=1  # memory_bridge routes through Dolphin's real MemMap
     ${_SUNBRIGHT_ARCH_DEFINE}
-    $<$<BOOL:${SB_FLIP_J3DMODELDATA}>:SB_FLIP_J3DMODELDATA=1>
+    $<$<BOOL:${SB_FLIP_J3D}>:SB_FLIP_J3D=1>
 )
 
 target_link_libraries(sunbright PRIVATE
