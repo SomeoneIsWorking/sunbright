@@ -37,9 +37,34 @@ the RARE genuine game-side INLINE read of a SCALAR/embedded-VALUE field (joint m
   → J3DShape::draw → GX. port GX is 74 no-op stubs (port/pal/gx/gx_stub.cpp). A VISIBLE frame needs GX
   owned in `port/` (the renderer-ownership effort; runtime/render is the transitional reference).
 
-## ⛔ STEP 0 (PREREQUISITE, found 2026-06-15) — the generated engine-types code does NOT COMPILE
+## ✅ STEP 0 (DONE 2026-06-15, commit pending) — a tailored flip now COMPILES (Option A landed)
+RESOLVED via Option A (bridge-call accessors). The recompiler no longer emits host-struct names into
+generated game TUs; it emits CALLS to `extern "C"` thunks and writes their DEFINITIONS to
+`generated/eng_accessors.cpp` (the one TU compiled WITH the decomp headers, ABI-correct by name).
+PROVEN on REAL recompiler output (`SUNBRIGHT_ENGINE_TYPES=JUTTexture`): all 6 flipped game TUs
+compile with NO decomp headers in scope (the u64 collision is structurally impossible), and
+`eng_accessors.cpp` compiles with the decomp headers + port shims and NO cpu_state.h. Standalone
+gate `runtime/tests/run_flip_compile_test.sh` compiles+links+RUNS a flipped function end-to-end.
+What landed:
+- Emitter (`c_emitter.{h,cpp}`): `emit_eng_field` → `sbf_<T>_<member>_<op>_<hash>(handle[,v])` calls;
+  construction → `sbnew_<T>_<hash>()`; stack temp → `SbDynStackObj(sbsizeof_<T>_<hash>())`. An
+  `EngAccessorTable` collects the thunk defs (deduped by symbol). NAME-based bodies (host compiler
+  computes offsets) — NOT numeric offsets.
+- Runtime: `runtime/eng_accessor_rt.h` (decls + `sb_set_guest_ptr` template, NO cpu_state.h) for the
+  accessor TU; `SbDynStackObj` (size-at-runtime RAII) in `intrinsics.h` for generated TUs.
+- main.cpp: writes `eng_accessors.h` (decls, #included by functions.h) + `eng_accessors.cpp`
+  (#includes the flipped types' decomp headers via `type_db_build` `type_headers`).
+- CMake: `generated/eng_accessors.cpp` built with the port shim/include env (harmless when empty).
+- LANDMINE handled: the type DB's `__vtbl` SENTINEL (appended-vtable slot of a polymorphic subclass)
+  is NOT a real member — the emitter SUPPRESSES that inlined guest vtable store (host construction
+  owns the vtable). JUTTexture compiles BECAUSE of this. ⚠ Still OPEN (does not block compile, blocks
+  runtime correctness of polymorphic-subclass flips): actually SETTING the host vtable for an inlined
+  polymorphic ctor (object_identity.md option 2). Don't rely on a polymorphic-subclass type being
+  runtime-correct until that ctor-bridge routing lands.
+
+### (historical) the blocker STEP 0 fixed — generated engine-types code did NOT COMPILE
 The de-risk validated the flip EMISSION against STUB struct definitions in a harness; the real
-compile-into-the-binary path was never exercised, and it is BROKEN two layers deep. Verified by
+compile-into-the-binary path was never exercised, and it was BROKEN two layers deep. Verified by
 actually compiling a `SUNBRIGHT_ENGINE_TYPES=J3DModelData J3DModel` generated file:
 1. **No struct definitions.** Generated `functions_*.cpp` only `#include "functions.h"` (decls +
    `intrinsics.h`); it does NOT define `J3DModelData`/`J3DModel`. So `((J3DModelData*)sb_eng_host(h))

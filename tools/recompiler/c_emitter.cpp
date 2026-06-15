@@ -4,6 +4,8 @@
 #include <cstdlib>
 #include <cassert>
 #include <cstring>
+#include <cctype>
+#include <cstdint>
 #include <algorithm>
 #include <unordered_set>
 
@@ -26,6 +28,128 @@ static u32 ppc_rotate_mask(u32 mb, u32 me) {
         if (b == me) break;
     }
     return m;
+}
+
+// ── Engine-accessor thunk codegen (Option A, STEP 0) ────────────────────────
+// Make a C-identifier-safe fragment from a host type/member name (which may contain `::`,
+// `.`, `[`, `]`, `<`, `>`). Used only to build readable symbol prefixes; uniqueness comes from
+// the appended hash below, so a lossy sanitization can never alias two different thunks.
+static std::string sanitize_ident(const std::string& s) {
+    std::string r;
+    for (char c : s) r += (std::isalnum((unsigned char)c) || c == '_') ? c : '_';
+    return r;
+}
+// 32-bit FNV-1a over the full accessor signature -> 8 hex digits. Folded into every symbol so
+// that two thunks with identical symbols ALWAYS have identical bodies (and dedupe), and two with
+// different bodies NEVER collide — even when sanitize_ident loses information.
+static std::string sig_hash(const std::string& s) {
+    uint32_t h = 2166136261u;
+    for (unsigned char c : s) { h ^= c; h *= 16777619u; }
+    char buf[16]; std::snprintf(buf, sizeof(buf), "%08x", h);
+    return buf;
+}
+
+// Build the per-field get/set thunk for a typed load/store site and return its call symbol.
+// The thunk body references the host struct member BY NAME (`((T*)sb_eng_host(h))->member`), so
+// the host C++ compiler resolves the offset/width/endianness/pointer-size in the accessor TU
+// (which has the decomp struct defs) — the generated game TU never names the host type.
+std::string CEmitter::eng_field_symbol(const EngField& f, PPCOp op) {
+    const bool is_ptr = !f.ptr_type_cname.empty();
+
+    // op suffix encodes BOTH the access width/sign AND the pointer kind (engine/guest/scalar),
+    // so distinct semantics get distinct thunks.
+    const char* opc = "";
+    switch (op) {
+        case PPCOp::LWZ:  opc = is_ptr ? "lwzp" : (f.guest_ptr ? "lwzg" : "lwz"); break;
+        case PPCOp::LBZ:  opc = "lbz"; break;
+        case PPCOp::LHZ:  opc = "lhz"; break;
+        case PPCOp::LHA:  opc = "lha"; break;
+        case PPCOp::LFS:  opc = "lfs"; break;
+        case PPCOp::STW:  opc = is_ptr ? "stwp" : (f.guest_ptr ? "stwg" : "stw"); break;
+        case PPCOp::STB:  opc = "stb"; break;
+        case PPCOp::STH:  opc = "sth"; break;
+        case PPCOp::STFS: opc = "stfs"; break;
+        default: return "";   // unmodeled op -> caller falls through to the guest MEM emit
+    }
+
+    const std::string sig = f.type_cname + "|" + f.member + "|" + opc + "|" + f.ptr_type_cname +
+                            "|" + (f.guest_ptr ? "g" : "");
+    const std::string sym = "sbf_" + sanitize_ident(f.type_cname) + "_" +
+                            sanitize_ident(f.member) + "_" + opc + "_" + sig_hash(sig);
+
+    if (accessors_ && !accessors_->by_symbol.count(sym)) {
+        const std::string obj = "((" + f.type_cname + "*)sb_eng_host(h))->" + f.member;
+        std::string ret, params, body;
+        switch (op) {
+            case PPCOp::LWZ:
+                ret = "std::uint32_t"; params = "std::uint32_t h";
+                if (is_ptr)        body = "return sb_eng_handle((void*)(" + obj + "));";
+                else if (f.guest_ptr) body = "return sb_host_to_guest((void*)(" + obj + "));";
+                else               body = "return (std::uint32_t)(" + obj + ");";
+                break;
+            case PPCOp::LBZ:
+                ret = "std::uint32_t"; params = "std::uint32_t h";
+                body = "return (std::uint32_t)(std::uint8_t)(" + obj + ");"; break;
+            case PPCOp::LHZ:
+                ret = "std::uint32_t"; params = "std::uint32_t h";
+                body = "return (std::uint32_t)(std::uint16_t)(" + obj + ");"; break;
+            case PPCOp::LHA:
+                ret = "std::uint32_t"; params = "std::uint32_t h";
+                body = "return (std::uint32_t)(std::int32_t)(std::int16_t)(" + obj + ");"; break;
+            case PPCOp::LFS:
+                ret = "double"; params = "std::uint32_t h";
+                body = "return (double)(" + obj + ");"; break;
+            case PPCOp::STW:
+                ret = "void"; params = "std::uint32_t h, std::uint32_t v";
+                if (is_ptr)        body = obj + " = (" + f.ptr_type_cname + "*)sb_eng_host(v);";
+                else if (f.guest_ptr) body = "sb_set_guest_ptr(" + obj + ", v);";
+                else               body = obj + " = (std::uint32_t)v;";
+                break;
+            case PPCOp::STB:
+                ret = "void"; params = "std::uint32_t h, std::uint32_t v";
+                body = obj + " = (std::uint8_t)v;"; break;
+            case PPCOp::STH:
+                ret = "void"; params = "std::uint32_t h, std::uint32_t v";
+                body = obj + " = (std::uint16_t)v;"; break;
+            case PPCOp::STFS:
+                ret = "void"; params = "std::uint32_t h, double v";
+                body = obj + " = (float)v;"; break;
+            default: break;
+        }
+        EngAccessorDef d;
+        d.decl = "extern \"C\" " + ret + " " + sym + "(" + params + ");";
+        d.def  = "extern \"C\" " + ret + " " + sym + "(" + params + ") { " + body + " }";
+        accessors_->by_symbol[sym] = std::move(d);
+    }
+    return sym;
+}
+
+// sbnew_<T>(): host `::operator new(sizeof(T))` -> 32-bit handle. Emitted at a recognized engine
+// `operator new` site (object_identity.md). The size is baked on the port side, so the generated
+// game TU needs no `sizeof(T)`.
+std::string CEmitter::eng_new_symbol(const std::string& type) {
+    const std::string sym = "sbnew_" + sanitize_ident(type) + "_" + sig_hash(type);
+    if (accessors_ && !accessors_->by_symbol.count(sym)) {
+        EngAccessorDef d;
+        d.decl = "extern \"C\" std::uint32_t " + sym + "();";
+        d.def  = "extern \"C\" std::uint32_t " + sym + "() { return sb_eng_handle(::operator new(sizeof(" +
+                 type + "))); }";
+        accessors_->by_symbol[sym] = std::move(d);
+    }
+    return sym;
+}
+
+// sbsizeof_<T>(): host sizeof(T), for sizing a Pattern-C stack temporary (SbDynStackObj) without
+// the generated TU seeing the host type.
+std::string CEmitter::eng_sizeof_symbol(const std::string& type) {
+    const std::string sym = "sbsizeof_" + sanitize_ident(type) + "_" + sig_hash(type);
+    if (accessors_ && !accessors_->by_symbol.count(sym)) {
+        EngAccessorDef d;
+        d.decl = "extern \"C\" std::size_t " + sym + "();";
+        d.def  = "extern \"C\" std::size_t " + sym + "() { return sizeof(" + type + "); }";
+        accessors_->by_symbol[sym] = std::move(d);
+    }
+    return sym;
 }
 
 void CEmitter::line(const char* fmt, ...) {
@@ -119,8 +243,8 @@ void CEmitter::emit_function(const EmitContext& ctx) {
                 if (a != ctx.alloc_sites.end()) stack_temps[(int)i.simm] = a->second;
             }
         for (const auto& [off, ty] : stack_temps)
-            out_ << "    SbStackObj<" << ty << "> _eng_stack_" << std::dec
-                 << (unsigned)(off & 0xffff) << std::hex << ";\n";
+            out_ << "    SbDynStackObj _eng_stack_" << std::dec << (unsigned)(off & 0xffff)
+                 << "(" << eng_sizeof_symbol(ty) << "());" << std::hex << "\n";
     }
 
     for (const auto& i : ctx.instrs) {
@@ -152,50 +276,59 @@ bool CEmitter::emit_eng_field(const PPCInstr& i, const EmitContext& ctx) {
     if (it == ctx.eng_fields.end()) return false;
     const EngField& f = it->second;
 
-    char obj[160];
-    snprintf(obj, sizeof(obj), "((%s*)sb_eng_host(cpu.gpr[%d]))->%s",
-             f.type_cname.c_str(), i.rA, f.member.c_str());
-
-    const std::string d  = "cpu.gpr[" + std::to_string(i.rD) + "]";
-    const std::string s  = "cpu.gpr[" + std::to_string(i.rS) + "]";   // store src GPR (rS==rD bits)
-    const std::string fd  = "cpu.fpr[" + std::to_string(i.rD) + "].ps0";
-    const std::string fd1 = "cpu.fpr[" + std::to_string(i.rD) + "].ps1";
-    const std::string fs  = "cpu.fpr[" + std::to_string(i.rD) + "].ps0";  // store src FPR (frS==rD bits)
-
-    const bool is_ptr = !f.ptr_type_cname.empty();
-
-    switch (i.op) {
-    case PPCOp::LWZ:
-        if (is_ptr)  // engine-pointer field -> hand back a 32-bit HANDLE for the host object
-            line("%s = sb_eng_handle((void*)(%s));", d.c_str(), obj);
-        else if (f.guest_ptr)  // pointer to GUEST data -> host pointer back to a 32-bit guest address
-            line("%s = sb_host_to_guest((void*)(%s));", d.c_str(), obj);
-        else         // scalar field -> read the host member into the 32-bit register
-            line("%s = (u32)(%s);", d.c_str(), obj);
+    // `__vtbl` is the type DB's SENTINEL for the appended-vtable slot of a polymorphic subclass
+    // (type_db_build appended_vtable_offset), NOT a real host member. Its only appearance is the
+    // inlined-ctor store of the guest vtable pointer at a polymorphic-subclass construction. Per the
+    // construction model (docs/re_notes/object_identity.md) that guest store is SUPPRESSED — the
+    // host C++ vtable is owned by host construction, not by replaying the guest pointer. Suppress it
+    // here (compiles; no broken `->__vtbl` accessor, no guest-MEM write against a handle). NOTE:
+    // setting the host vtable for an inlined polymorphic ctor is still the open hard problem — do NOT
+    // rely on a polymorphic-subclass type being runtime-correct until that ctor-bridge routing lands.
+    if (f.member == "__vtbl") {
+        line("// TAILORED: suppressed polymorphic-subclass vtable store at 0x%08x (host construction "
+             "owns the vtable; object_identity.md)", i.pc);
         return true;
-    case PPCOp::LBZ: line("%s = (u32)(u8)(%s);",  d.c_str(), obj); return true;
-    case PPCOp::LHZ: line("%s = (u32)(u16)(%s);", d.c_str(), obj); return true;
-    case PPCOp::LHA: line("%s = (u32)(s32)(s16)(%s);", d.c_str(), obj); return true;
-    // Float load: host member is f32, widened to the f64 ps slots (GC fills ps1=ps0).
-    case PPCOp::LFS: line("%s = %s; %s = %s;", fd.c_str(), obj, fd1.c_str(), fd.c_str()); return true;
-    case PPCOp::STW:
-        if (is_ptr)  // store a handle back as a real host pointer in the engine member
-            line("%s = (%s*)sb_eng_host(%s);", obj, f.ptr_type_cname.c_str(), s.c_str());
-        else if (f.guest_ptr)  // store a 32-bit guest address as a host pointer in the member
-            line("sb_set_guest_ptr(%s, %s);", obj, s.c_str());
-        else
-            line("%s = (u32)%s;", obj, s.c_str());
-        return true;
-    case PPCOp::STB: line("%s = (u8)%s;",  obj, s.c_str()); return true;
-    case PPCOp::STH: line("%s = (u16)%s;", obj, s.c_str()); return true;
-    // Float store: narrow the ps0 f64 back to the host f32 member.
-    case PPCOp::STFS: line("%s = (f32)%s;", obj, fs.c_str()); return true;
-    default:
+    }
+
+    const std::string sym = eng_field_symbol(f, i.op);
+    if (sym.empty()) {
         // Typed access not modeled for this op (e.g. update-form, indexed). Falling
         // through to the guest MEM emit would be WRONG for a host object — make it loud.
         line("// TAILORED-UNMODELED: %s on host object %s at 0x%08x", i.mnemonic().c_str(),
              f.type_cname.c_str(), i.pc);
         return false;
+    }
+
+    const std::string d  = "cpu.gpr[" + std::to_string(i.rD) + "]";
+    const std::string s  = "cpu.gpr[" + std::to_string(i.rS) + "]";   // store src GPR (rS==rD bits)
+    const std::string a  = "cpu.gpr[" + std::to_string(i.rA) + "]";   // base = engine handle
+    const std::string fd  = "cpu.fpr[" + std::to_string(i.rD) + "].ps0";
+    const std::string fd1 = "cpu.fpr[" + std::to_string(i.rD) + "].ps1";
+    const std::string fs  = "cpu.fpr[" + std::to_string(i.rD) + "].ps0";  // store src FPR (frS==rD bits)
+
+    switch (i.op) {
+    // Integer loads: the accessor returns the value (handle / guest addr / scalar) already in the
+    // op's width — see eng_field_symbol.
+    case PPCOp::LWZ:
+    case PPCOp::LBZ:
+    case PPCOp::LHZ:
+    case PPCOp::LHA:
+        line("%s = %s(%s);", d.c_str(), sym.c_str(), a.c_str());
+        return true;
+    // Float load: accessor returns the host f32 widened to double; GC fills both ps slots.
+    case PPCOp::LFS:
+        line("%s = %s(%s); %s = %s;", fd.c_str(), sym.c_str(), a.c_str(), fd1.c_str(), fd.c_str());
+        return true;
+    case PPCOp::STW:
+    case PPCOp::STB:
+    case PPCOp::STH:
+        line("%s(%s, %s);", sym.c_str(), a.c_str(), s.c_str());
+        return true;
+    case PPCOp::STFS:
+        line("%s(%s, %s);", sym.c_str(), a.c_str(), fs.c_str());
+        return true;
+    default:
+        return false;  // unreachable: eng_field_symbol returned "" for unmodeled ops above
     }
 }
 
@@ -483,9 +616,10 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
         if (i.lk) {
             auto al = ctx.alloc_sites.find(i.pc);
             if (al != ctx.alloc_sites.end()) {                // engine-CONSTRUCTION: rewrite the
-                // guest `operator new` into a host alloc returning a 32-bit handle in r3. The ctor
-                // (inlined here, or bridged) then initializes the host object. No call_ppc.
-                line("cpu.gpr[3] = sb_eng_alloc<%s>();", al->second.c_str());
+                // guest `operator new` into a host alloc returning a 32-bit handle in r3 — via a
+                // per-type factory thunk (sbnew_<T>) so the generated TU never names the host type
+                // or its sizeof. The ctor (inlined here, or bridged) then initializes the object.
+                line("cpu.gpr[3] = %s();", eng_new_symbol(al->second).c_str());
                 break;
             }
             line("cpu.lr = 0x%xu;", i.pc + 4);

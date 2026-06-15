@@ -102,6 +102,9 @@ SUNBRIGHT_BRIDGE(0x80009000u, &eng_scale);
 // ── the emitter's own output (the real recompiler code path under test) ──────────────
 extern "C" void func_80010000(CPUState& cpu);   // ORACLE   (guest-layout MEM access)
 extern "C" void func_80020000(CPUState& cpu);   // TAILORED (host-native field access)
+// Option A: the TAILORED body CALLS extern accessor thunks; their DEFS (host-field access baked by
+// name) compile here against the EngineCam stub above — this TU plays the port-compiled accessor TU.
+#include "../../scratch/port/slice_accessors.inc"
 #include "../../scratch/port/slice_oracle.inc"
 #include "../../scratch/port/slice_tailored.inc"
 

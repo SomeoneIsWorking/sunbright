@@ -421,18 +421,36 @@ int main() {
         ctx.eng_fields[B+4]  = EngField{ "JUTTexture", "mWidth",      "",           /*guest_ptr=*/false };
         ctx.eng_fields[B+8]  = EngField{ "JUTTexture", "mEmbPalette", "JUTPalette", /*guest_ptr=*/false };
         ctx.eng_fields[B+12] = EngField{ "JUTTexture", "mTexData",    "",           /*guest_ptr=*/true  };
-        std::ostringstream ss; CEmitter em(ss); em.emit_function(ctx);
+        // STEP 0 (Option A): the GAME TU emits CALLS to extern accessor thunks; the thunk DEFs
+        // (collected in the table) are the ONE place the host struct is named — they get compiled
+        // with the decomp headers. So: the generated game code names NO host type, and the table's
+        // defs carry the host<->boundary translation.
+        EngAccessorTable tbl;
+        std::ostringstream ss; CEmitter em(ss, &tbl); em.emit_function(ctx);
         std::string code = ss.str();
-        CHECK(has(code, "sb_host_to_guest((void*)(((JUTTexture*)sb_eng_host(cpu.gpr[3]))->mTexInfo))"),
-              "guest-data ptr field LOAD translates host->guest (no 32-bit truncation)");
-        CHECK(has(code, "= (u32)(((JUTTexture*)sb_eng_host(cpu.gpr[3]))->mWidth)"),
-              "scalar field load reads the host member directly");
-        CHECK(has(code, "sb_eng_handle((void*)(((JUTTexture*)sb_eng_host(cpu.gpr[3]))->mEmbPalette))"),
-              "engine-object ptr field load yields a handle");
-        CHECK(has(code, "sb_set_guest_ptr(((JUTTexture*)sb_eng_host(cpu.gpr[3]))->mTexData, cpu.gpr[4])"),
-              "guest-data ptr field STORE translates guest->host (type-deduced)");
+        std::string defs; for (auto& [s, d] : tbl.by_symbol) defs += d.def + "\n";
+        // Generated game code: accessor CALLS, no host type, no raw guest MEM.
+        CHECK(has(code, "= sbf_JUTTexture_mTexInfo_lwzg_") && has(code, "(cpu.gpr[3]);"),
+              "guest-data ptr field LOAD emits a call to the lwzg accessor thunk");
+        CHECK(has(code, "= sbf_JUTTexture_mWidth_lwz_"),
+              "scalar field LOAD emits a call to the lwz accessor thunk");
+        CHECK(has(code, "= sbf_JUTTexture_mEmbPalette_lwzp_"),
+              "engine-object ptr field LOAD emits a call to the lwzp accessor thunk");
+        CHECK(has(code, "sbf_JUTTexture_mTexData_stwg_") && has(code, ", cpu.gpr[4]);"),
+              "guest-data ptr field STORE emits a call to the stwg accessor thunk");
+        CHECK(!has(code, "sb_eng_host") && !has(code, "((JUTTexture*)"),
+              "generated game code NAMES no host struct type (compiles without decomp headers)");
         CHECK(!has(code, "MEM_R32") && !has(code, "MEM_W32"),
               "no raw guest MEM access remains at the typed sites");
+        // Accessor thunk defs: host member access + boundary translation, baked by NAME.
+        CHECK(has(defs, "return sb_host_to_guest((void*)(((JUTTexture*)sb_eng_host(h))->mTexInfo));"),
+              "lwzg thunk def translates the host member host->guest");
+        CHECK(has(defs, "return (std::uint32_t)(((JUTTexture*)sb_eng_host(h))->mWidth);"),
+              "lwz thunk def reads the host member directly");
+        CHECK(has(defs, "return sb_eng_handle((void*)(((JUTTexture*)sb_eng_host(h))->mEmbPalette));"),
+              "lwzp thunk def yields a handle for the engine-object member");
+        CHECK(has(defs, "sb_set_guest_ptr(((JUTTexture*)sb_eng_host(h))->mTexData, v);"),
+              "stwg thunk def translates guest->host (type-deduced) into the member");
     }
 
     // OBJECT-IDENTITY emission (docs/re_notes/object_identity.md): at an engine-CONSTRUCTION site
@@ -458,14 +476,20 @@ int main() {
         ctx.branch_targets = intra_branch_targets(ctx.instrs, B);
         ctx.alloc_sites[B+0] = "JUTTexture";
         ctx.eng_fields[B+4] = EngField{ "JUTTexture", "mEmbPalette", "", /*guest_ptr=*/false };
-        std::ostringstream ss; CEmitter em(ss); em.emit_function(ctx);
+        EngAccessorTable tbl;
+        std::ostringstream ss; CEmitter em(ss, &tbl); em.emit_function(ctx);
         std::string code = ss.str();
-        CHECK(has(code, "cpu.gpr[3] = sb_eng_alloc<JUTTexture>()"),
-              "construction: operator new is rewritten to a host alloc returning a handle");
+        std::string defs; for (auto& [s, d] : tbl.by_symbol) defs += d.def + "\n";
+        CHECK(has(code, "cpu.gpr[3] = sbnew_JUTTexture_") && has(code, "();"),
+              "construction: operator new is rewritten to a sbnew_<T> factory call returning a handle");
+        CHECK(has(defs, "return sb_eng_handle(::operator new(sizeof(JUTTexture)));"),
+              "construction: the sbnew_<T> thunk does the host alloc + handle (sizeof baked port-side)");
         CHECK(!has(code, "call_ppc(cpu, 0x802c3ba4u)"),
               "construction: the guest operator new bl is NOT emitted as a call");
-        CHECK(has(code, "((JUTTexture*)sb_eng_host(cpu.gpr[3]))->mEmbPalette"),
-              "construction: the inlined ctor write initializes the HOST object field");
+        CHECK(has(code, "sbf_JUTTexture_mEmbPalette_stw_") && has(code, "(cpu.gpr[3], cpu.gpr[0]);"),
+              "construction: the inlined ctor write goes through the host-field accessor thunk");
+        CHECK(!has(code, "sb_eng_host"),
+              "construction: the generated game code still names no host struct type");
         CHECK(has(code, "call_ppc(cpu, 0x802ca640u)"),
               "construction: the engine method after the ctor stays a bridged call_ppc");
     }
@@ -483,10 +507,14 @@ int main() {
         ctx.instrs = collect_function(bytes.data(), B, bytes.size(), B, B+(uint32_t)w.size()*4, /*cfg=*/false);
         ctx.branch_targets = intra_branch_targets(ctx.instrs, B);
         ctx.alloc_sites[B+0] = "JUTTexture";        // recognized stack-temp construction
-        std::ostringstream ss; CEmitter em(ss); em.emit_function(ctx);
+        EngAccessorTable tbl;
+        std::ostringstream ss; CEmitter em(ss, &tbl); em.emit_function(ctx);
         std::string code = ss.str();
-        CHECK(has(code, "SbStackObj<JUTTexture> _eng_stack_40;"),
-              "stack temp: a RAII host object is declared for the frame slot (offset 0x28=40)");
+        std::string defs; for (auto& [s, d] : tbl.by_symbol) defs += d.def + "\n";
+        CHECK(has(code, "SbDynStackObj _eng_stack_40(sbsizeof_JUTTexture_") && has(code, "());"),
+              "stack temp: a RAII host object (sized by the sbsizeof_<T> thunk) is declared for the slot");
+        CHECK(has(defs, "return sizeof(JUTTexture);"),
+              "stack temp: the sbsizeof_<T> thunk bakes the host sizeof (port-side)");
         CHECK(has(code, "cpu.gpr[3] = _eng_stack_40.handle();"),
               "stack temp: the interior addi yields the shared host-object handle");
         CHECK(!has(code, "cpu.gpr[3] = cpu.gpr[1] + 40"),

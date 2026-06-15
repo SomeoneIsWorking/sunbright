@@ -236,6 +236,20 @@ if(SUNBRIGHT_GENERATED_SOURCES)
         PROPERTIES COMPILE_OPTIONS "-O3;-ffp-contract=off")
 endif()
 
+# Tailored engine-accessor thunk TU (docs/re_notes/j3d_subsystem_ownership_plan.md STEP 0, Option A).
+# When SUNBRIGHT_ENGINE_TYPES flips a subsystem, /recompile emits generated/eng_accessors.cpp with
+# the host-struct field/ctor thunks — the ONE generated TU that #includes the decomp headers. So it
+# must compile in the PORT environment (compat shadows + decomp includes + the CodeWarrior/MSL
+# force-includes), NOT with runtime/cpu_state.h (the u64 typedef clash STEP 0 fixed). When no type
+# is flipped the file is trivially empty and these flags are harmless. functions.h #includes the
+# matching eng_accessors.h (extern decls) so the generated game TUs call the thunks by symbol.
+file(GLOB SUNBRIGHT_ENG_ACCESSORS CONFIGURE_DEPENDS generated/eng_accessors.cpp)
+if(SUNBRIGHT_ENG_ACCESSORS)
+    set_source_files_properties(${SUNBRIGHT_ENG_ACCESSORS} PROPERTIES
+        INCLUDE_DIRECTORIES "${CMAKE_SOURCE_DIR}/port/compat/include;${CMAKE_SOURCE_DIR}/reference/sms/include"
+        COMPILE_OPTIONS "SHELL:-include ${CMAKE_SOURCE_DIR}/port/compat/intrinsics.h;SHELL:-include ${CMAKE_SOURCE_DIR}/port/compat/msl_shim.h;-fno-strict-aliasing;-Wno-multichar;-Wno-register;-w")
+endif()
+
 # ── Port engine (PC-native JSystem) — guest slice linked into the hybrid ──────
 # The tailored-recomp boundary: recompiled game logic (built with
 # SUNBRIGHT_ENGINE_TYPES) calls PORT-native engine objects via the bridge. We link
@@ -285,6 +299,7 @@ add_executable(sunbright
     runtime/recomp_table_weak.cpp
     ${SUNBRIGHT_OVERRIDE_SOURCES}
     ${SUNBRIGHT_GENERATED_SOURCES}
+    ${SUNBRIGHT_ENG_ACCESSORS}
 )
 
 target_include_directories(sunbright PRIVATE

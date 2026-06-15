@@ -71,20 +71,20 @@ u32 sb_eng_handle(void* host) {
     g_eng_index[host] = h;
     return h;
 }
-// Mirrors runtime/intrinsics.h: raw host storage + a handle (no ctor — the inlined writes init it).
-template <class T> static inline u32 sb_eng_alloc() { return sb_eng_handle(::operator new(sizeof(T))); }
 void sb_eng_release(void* host) {                 // release a handle by host pointer
     auto it = g_eng_index.find(host);
     if (it == g_eng_index.end()) return;
     g_eng_table[it->second] = nullptr;
     g_eng_index.erase(it);
 }
-// Mirrors runtime/intrinsics.h SbStackObj: RAII host storage + handle (handle released on dtor).
-template <class T> struct SbStackObj {
-    alignas(T) unsigned char storage[sizeof(T)];
-    u32 h_;
-    SbStackObj() : h_(sb_eng_handle(storage)) {}
-    ~SbStackObj() { sb_eng_release(storage); }
+// Option A: construction is now a CALL to a per-type sbnew_<T>()/sbsizeof_<T>() thunk (defined in
+// construct_accessors.inc against the stub structs below); the generated code names no host type.
+// SbDynStackObj mirrors runtime/intrinsics.h — RAII host storage sized at runtime + a handle.
+struct SbDynStackObj {
+    void* storage_;
+    u32   h_;
+    explicit SbDynStackObj(std::size_t sz) : storage_(::operator new(sz)), h_(sb_eng_handle(storage_)) {}
+    ~SbDynStackObj() { sb_eng_release(storage_); ::operator delete(storage_); }
     u32 handle() const { return h_; }
 };
 
@@ -122,6 +122,9 @@ extern "C" void func_80021000(CPUState& cpu);   // TAILORED A caller
 extern "C" void func_80022000(CPUState& cpu);   // TAILORED A ctor (host-native)
 extern "C" void func_80023000(CPUState& cpu);   // TAILORED C stack temp (host SbStackObj)
 extern "C" void func_80024000(CPUState& cpu);   // TAILORED A polymorphic (bridged placement-new ctor)
+// Option A: the TAILORED bodies CALL sbnew_<T>/sbsizeof_<T>/sbf_<T>_<field> thunks; their DEFS
+// compile here against the EngineTex/EngineTexV stubs above (the port-compiled accessor TU role).
+#include "../../scratch/port/construct_accessors.inc"
 #include "../../scratch/port/construct_oracle.inc"
 #include "../../scratch/port/construct_tailored.inc"
 

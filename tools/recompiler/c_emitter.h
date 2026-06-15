@@ -39,6 +39,27 @@ struct EngField {
 // Memory accesses go through MEM_R32/MEM_W32 macros from intrinsics.h.
 // All arithmetic is 32-bit unsigned; cast to s32 when needed for signed ops.
 
+// One generated accessor thunk (docs/re_notes/j3d_subsystem_ownership_plan.md STEP 0, Option A).
+// The generated functions_*.cpp CANNOT name host engine struct types (their decomp headers
+// collide with runtime/cpu_state.h — the u64 typedef clash) and have no struct defs. So every
+// host-type-dependent operation — a field load/store, an engine `operator new`, a stack-temp
+// sizeof — is emitted as a CALL to one of these `extern "C"` thunks, whose DEFINITION is written
+// to generated/eng_accessors.cpp and compiled with the decomp headers (the one TU that bakes the
+// ABI-correct host offsets/sizes, by NAME, so the host compiler computes them). decl goes in
+// generated/eng_accessors.h (included by functions.h); def goes in generated/eng_accessors.cpp.
+struct EngAccessorDef {
+    std::string decl;   // extern "C" <ret> <symbol>(<params>);
+    std::string def;    // extern "C" <ret> <symbol>(<params>) { <body> }
+};
+
+// Accumulates the accessor thunks needed by an entire recompile run (deduped by symbol). One
+// instance shared across all per-file CEmitters; main.cpp writes it out after emission. When a
+// CEmitter has no table (unit tests), it still emits the deterministic accessor CALLS — it just
+// doesn't record the defs (the test asserts the call form, not the thunk bodies).
+struct EngAccessorTable {
+    std::map<std::string, EngAccessorDef> by_symbol;
+};
+
 struct EmitContext {
     u32 func_addr;
     std::vector<PPCInstr> instrs;
@@ -55,7 +76,11 @@ struct EmitContext {
 
 class CEmitter {
 public:
-    explicit CEmitter(std::ostream& out) : out_(out) {}
+    // `accessors` (optional) collects the engine-accessor thunk defs this emitter generates. Pass
+    // one shared table across all per-file CEmitters in a real recompile; pass nullptr in unit
+    // tests that only assert the emitted CALL form.
+    explicit CEmitter(std::ostream& out, EngAccessorTable* accessors = nullptr)
+        : out_(out), accessors_(accessors) {}
 
     // Emit the file header (includes, macros)
     void emit_header();
@@ -72,14 +97,21 @@ public:
 
 private:
     std::ostream& out_;
+    EngAccessorTable* accessors_ = nullptr;
     int unhandled_ = 0;
     std::vector<std::string> unhandled_ops_;
 
     void emit_instr(const PPCInstr& i, const EmitContext& ctx);
 
-    // Tailored-boundary load/store: if `i` is registered in ctx.eng_fields, emit a
-    // direct host-struct member access (instead of MEM_R*/MEM_W*) and return true.
+    // Tailored-boundary load/store: if `i` is registered in ctx.eng_fields, emit a CALL to a
+    // generated host-field accessor thunk (instead of MEM_R*/MEM_W*) and return true.
     bool emit_eng_field(const PPCInstr& i, const EmitContext& ctx);
+
+    // Accessor-thunk symbol generators. Each returns the `extern "C"` symbol to CALL from the
+    // generated code, and (when accessors_ is set) records the thunk's decl+def into the table.
+    std::string eng_field_symbol(const EngField& f, PPCOp op);  // field get/set thunk
+    std::string eng_new_symbol(const std::string& type);        // sbnew_<T>: host alloc -> handle
+    std::string eng_sizeof_symbol(const std::string& type);     // sbsizeof_<T>: host sizeof(T)
 
     // Helpers
     std::string ea(const PPCInstr& i);   // effective address: rA+d or rA+rB

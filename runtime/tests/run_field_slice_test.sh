@@ -33,19 +33,25 @@ echo
 echo "== stage 2: structural checks on the emitter output =="
 fail=0
 chk() { if eval "$2"; then echo "  ok: $1"; else echo "FAIL: $1"; fail=1; fi; }
-# TAILORED: nested engine-ptr field -> HANDLE; chained + reloaded field -> host member.
-chk "tailored loads the nested engine ptr as a HANDLE (sb_eng_handle on ->mNext)" \
-    "grep -q 'sb_eng_handle((void\*)(((EngineCam\*)sb_eng_host(cpu.gpr\[3\]))->mNext))' $gen_out/slice_tailored.inc"
-chk "tailored chains: reads ->mFov through the nested handle (base r4)" \
-    "grep -q 'sb_eng_host(cpu.gpr\[4\]))->mFov' $gen_out/slice_tailored.inc"
-chk "tailored writes ->mFov through the RELOADED this (base r31)" \
-    "grep -q 'sb_eng_host(cpu.gpr\[31\]))->mFov = ' $gen_out/slice_tailored.inc"
+# TAILORED game TU (Option A): field accesses are CALLS to accessor thunks; the host type is
+# named ONLY in the separate accessor defs (slice_accessors.inc), never in the game code.
+chk "tailored loads the nested engine ptr via the lwzp accessor thunk (-> HANDLE)" \
+    "grep -q 'sbf_EngineCam_mNext_lwzp_' $gen_out/slice_tailored.inc"
+chk "tailored chains: reads ->mFov through the nested handle (base r4) via the lfs accessor" \
+    "grep -Eq 'sbf_EngineCam_mFov_lfs_[0-9a-f]+\(cpu.gpr\[4\]\)' $gen_out/slice_tailored.inc"
+chk "tailored writes ->mFov through the RELOADED this (base r31) via the stfs accessor" \
+    "grep -Eq 'sbf_EngineCam_mFov_stfs_[0-9a-f]+\(cpu.gpr\[31\]' $gen_out/slice_tailored.inc"
+chk "tailored game code NAMES no host struct type (compiles without decomp headers)" \
+    "! grep -q '((EngineCam\*)' $gen_out/slice_tailored.inc && ! grep -q 'sb_eng_host' $gen_out/slice_tailored.inc"
 chk "tailored does NOT MEM_RF32 the engine field" \
     "! grep -q 'MEM_RF32' $gen_out/slice_tailored.inc"
 chk "tailored still spills/reloads the handle via guest MEM (the stack slot is NOT typed)" \
     "grep -q 'MEM_W32(cpu.gpr\[1\] + 8' $gen_out/slice_tailored.inc"
 chk "tailored still calls the engine fn through the boundary (call_ppc)" \
     "grep -q 'call_ppc(cpu, 0x80009000u)' $gen_out/slice_tailored.inc"
+# The accessor DEFS are where the host member is baked by name (the port-compiled TU).
+chk "accessor defs bake the host member access by name (->mNext, ->mFov)" \
+    "grep -q '((EngineCam\*)sb_eng_host(h))->mNext' $gen_out/slice_accessors.inc && grep -q '((EngineCam\*)sb_eng_host(h))->mFov' $gen_out/slice_accessors.inc"
 # ORACLE must use raw guest-layout MEM (the baseline the recompiler emits today).
 chk "oracle uses guest-layout MEM_RF32" \
     "grep -q 'MEM_RF32' $gen_out/slice_oracle.inc"

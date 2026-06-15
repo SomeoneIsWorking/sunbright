@@ -26,34 +26,36 @@ echo
 echo "== stage 2: structural checks on the emitter output =="
 fail=0
 chk() { if eval "$2"; then echo "  ok: $1"; else echo "FAIL: $1"; fail=1; fi; }
-chk "tailored rewrites operator new -> sb_eng_alloc<EngineTex>()" \
-    "grep -q 'cpu.gpr\[3\] = sb_eng_alloc<EngineTex>()' $gen_out/construct_tailored.inc"
+# TAILORED game TU (Option A): construction + field writes are CALLS to extern thunks; the host
+# type is named only in the accessor DEFS (construct_accessors.inc).
+chk "tailored rewrites operator new -> sbnew_EngineTex_<hash>() factory call" \
+    "grep -Eq 'cpu.gpr\[3\] = sbnew_EngineTex_[0-9a-f]+\(\)' $gen_out/construct_tailored.inc"
 chk "tailored does NOT call the guest operator new" \
     "! grep -q 'call_ppc(cpu, 0x80009100u)' $gen_out/construct_tailored.inc"
-chk "tailored writes mWidth to the HOST member" \
-    "grep -q 'sb_eng_host(cpu.gpr\[3\]))->mWidth = ' $gen_out/construct_tailored.inc"
-chk "tailored writes mEmbPalette to the HOST member" \
-    "grep -q 'sb_eng_host(cpu.gpr\[3\]))->mEmbPalette = ' $gen_out/construct_tailored.inc"
+chk "tailored game code NAMES no host struct type (compiles without decomp headers)" \
+    "! grep -q '((EngineTex' $gen_out/construct_tailored.inc && ! grep -q 'sb_eng_host' $gen_out/construct_tailored.inc"
+chk "accessor defs: sbnew bakes host sizeof; field writes hit the HOST members" \
+    "grep -q 'sizeof(EngineTex)' $gen_out/construct_accessors.inc && grep -q '((EngineTex\*)sb_eng_host(h))->mWidth = ' $gen_out/construct_accessors.inc && grep -q '((EngineTex\*)sb_eng_host(h))->mEmbPalette = ' $gen_out/construct_accessors.inc"
 chk "tailored still calls the type-revealing engine method (bridged)" \
     "grep -q 'call_ppc(cpu, 0x80009200u)' $gen_out/construct_tailored.inc"
-chk "Pattern A: tailored out-of-line ctor (recompiled) writes the HOST mWidth member" \
-    "grep -q 'sb_eng_host(cpu.gpr\[3\]))->mWidth = ' $gen_out/construct_tailored.inc"
+chk "Pattern A: tailored field write goes through the host-field accessor thunk" \
+    "grep -q 'sbf_EngineTex_mWidth_stw_' $gen_out/construct_tailored.inc"
 chk "Pattern A: tailored caller still calls the out-of-line ctor (no special bridge)" \
     "grep -q 'call_ppc(cpu, 0x80022000u)' $gen_out/construct_tailored.inc"
-chk "Pattern C: tailored declares a RAII host SbStackObj for the frame slot" \
-    "grep -q 'SbStackObj<EngineTex> _eng_stack_' $gen_out/construct_tailored.inc"
+chk "Pattern C: tailored declares a RAII host SbDynStackObj (sized by sbsizeof_<T>) for the slot" \
+    "grep -Eq 'SbDynStackObj _eng_stack_[0-9]+\(sbsizeof_EngineTex_' $gen_out/construct_tailored.inc"
 chk "Pattern C: tailored addi yields the shared stack-object handle" \
     "grep -q '_eng_stack_[0-9]*.handle()' $gen_out/construct_tailored.inc"
 chk "Pattern C: oracle keeps the interior addi as raw stack arithmetic" \
     "grep -q 'cpu.gpr\[3\] = cpu.gpr\[1\] + 40' $gen_out/construct_oracle.inc"
-chk "Polymorphic: tailored allocs the polymorphic type raw, then bridges its ctor" \
-    "grep -q 'cpu.gpr\[3\] = sb_eng_alloc<EngineTexV>()' $gen_out/construct_tailored.inc && grep -q 'call_ppc(cpu, 0x80009300u)' $gen_out/construct_tailored.inc"
+chk "Polymorphic: tailored allocs the polymorphic type raw (sbnew), then bridges its ctor" \
+    "grep -Eq 'cpu.gpr\[3\] = sbnew_EngineTexV_[0-9a-f]+\(\)' $gen_out/construct_tailored.inc && grep -q 'call_ppc(cpu, 0x80009300u)' $gen_out/construct_tailored.inc"
 chk "oracle calls the real operator new" \
     "grep -q 'call_ppc(cpu, 0x80009100u)' $gen_out/construct_oracle.inc"
 chk "oracle uses raw guest MEM for the inlined writes" \
     "grep -q 'MEM_W32' $gen_out/construct_oracle.inc"
 chk "oracle has NO host construction" \
-    "! grep -q 'sb_eng_alloc' $gen_out/construct_oracle.inc"
+    "! grep -q 'sbnew_' $gen_out/construct_oracle.inc && ! grep -q 'sb_eng_alloc' $gen_out/construct_oracle.inc"
 [ "$fail" = 0 ] || { echo "structural checks FAILED"; exit 1; }
 
 echo

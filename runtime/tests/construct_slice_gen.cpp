@@ -117,7 +117,7 @@ static TypeDB make_db(uint32_t ctor_addr) {
 }
 
 static std::string emit_fn(uint32_t base, const std::vector<uint32_t>& w, bool tailored,
-                           uint32_t ctor_addr) {
+                           uint32_t ctor_addr, EngAccessorTable* tbl = nullptr) {
     std::vector<uint8_t> bytes(w.size() * 4);
     for (size_t k = 0; k < w.size(); ++k) { uint32_t be = __builtin_bswap32(w[k]); std::memcpy(&bytes[k*4], &be, 4); }
     EmitContext ctx;
@@ -130,25 +130,26 @@ static std::string emit_fn(uint32_t base, const std::vector<uint32_t>& w, bool t
         ctx.eng_fields = recover_eng_fields(ctx.instrs, base, db, ctx.branch_targets,
                                             /*jumptable=*/{}, nullptr, &raws, &ctx.alloc_sites);
     }
-    std::ostringstream ss; CEmitter em(ss); em.emit_function(ctx);
+    std::ostringstream ss; CEmitter em(ss, tbl); em.emit_function(ctx);
     return ss.str();
 }
 
 // All functions for one world, concatenated.
-static std::string emit_world(uint32_t base, bool tailored) {
+static std::string emit_world(uint32_t base, bool tailored, EngAccessorTable* tbl = nullptr) {
     std::string s;
-    s += emit_fn(fB(base),     patB_words(fB(base)),                 tailored, fActor(base));
-    s += emit_fn(fAcall(base), patAcall_words(fAcall(base), fActor(base)), tailored, fActor(base));
-    s += emit_fn(fActor(base), patActor_words(),                     tailored, fActor(base));
-    s += emit_fn(fC(base),     patC_words(fC(base)),                 tailored, fActor(base));
-    s += emit_fn(fAV(base),    patAVcall_words(fAV(base)),           tailored, fActor(base));
+    s += emit_fn(fB(base),     patB_words(fB(base)),                 tailored, fActor(base), tbl);
+    s += emit_fn(fAcall(base), patAcall_words(fAcall(base), fActor(base)), tailored, fActor(base), tbl);
+    s += emit_fn(fActor(base), patActor_words(),                     tailored, fActor(base), tbl);
+    s += emit_fn(fC(base),     patC_words(fC(base)),                 tailored, fActor(base), tbl);
+    s += emit_fn(fAV(base),    patAVcall_words(fAV(base)),           tailored, fActor(base), tbl);
     return s;
 }
 
 int main(int argc, char** argv) {
     const char* dir = (argc > 1) ? argv[1] : "scratch/port";
+    EngAccessorTable accessors;
     std::string oracle   = emit_world(0x80010000u, /*tailored=*/false);
-    std::string tailored = emit_world(0x80020000u, /*tailored=*/true);
+    std::string tailored = emit_world(0x80020000u, /*tailored=*/true, &accessors);
     auto write = [&](const std::string& name, const std::string& body) {
         std::string path = std::string(dir) + "/" + name;
         std::ofstream f(path);
@@ -157,6 +158,11 @@ int main(int argc, char** argv) {
     };
     write("construct_oracle.inc",   oracle);
     write("construct_tailored.inc", tailored);
+    // Accessor thunk DEFS (Option A): sbnew_<T>/sbsizeof_<T>/sbf_<T>_<field> bodies. The test
+    // compiles these AFTER its stub EngineTex/EngineTexV defs (the port-compiled accessor TU role).
+    std::string defs;
+    for (auto& [s, d] : accessors.by_symbol) defs += d.def + "\n";
+    write("construct_accessors.inc", defs);
     std::printf("\n----- ORACLE (guest-layout) -----\n%s\n", oracle.c_str());
     std::printf("----- TAILORED (host-native construction) -----\n%s\n", tailored.c_str());
     return 0;

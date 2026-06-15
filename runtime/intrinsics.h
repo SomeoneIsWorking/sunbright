@@ -225,27 +225,28 @@ extern u32   sb_eng_handle(void* host);
 extern void* sb_eng_host(u32 handle);
 extern void  sb_eng_release(void* host);
 
-// Allocate RAW host storage for an engine object of type T and return a 32-bit HANDLE.
-// Emitted in place of a guest `operator new` bl at a recognized engine-CONSTRUCTION site
-// (type_recovery find_alloc_sites; docs/re_notes/object_identity.md). Storage only — the ctor
-// then initializes the fields: an out-of-line ctor runs (bridged) on sb_eng_host(handle); an
-// INLINED ctor's field writes (now host-typed) do it in the recompiled caller. Faithfully
-// mirrors the guest `operator new(sizeof) + ctor` for a non-polymorphic T (e.g. JUTTexture).
-template <class T> inline u32 sb_eng_alloc() { return sb_eng_handle(::operator new(sizeof(T))); }
+// Engine-CONSTRUCTION (object_identity.md) is emitted as a CALL to a per-type factory thunk
+// (`sbnew_<T>()` in generated/eng_accessors.cpp, compiled with the decomp headers): it does the
+// host `::operator new(sizeof(T))` + sb_eng_handle. The generated TU never names the host type T
+// (it has no struct def — see eng_accessor_rt.h), so the old `sb_eng_alloc<T>()` template that
+// needed `sizeof(T)` is gone; the factory bakes the size on the port side.
 
-// A STACK-local engine object (Pattern C, object_identity.md): raw, properly-aligned host storage
-// for T plus a stable handle, registered on construction and released on destruction (handle only —
-// T's own ctor/dtor are the recompiled tailored ctor/dtor over the storage, like the heap path).
-// The emitter declares ONE per distinct guest frame slot at the top of a generated function, so
-// C++ RAII gives it exactly the function-activation lifetime of the guest stack temporary (no leak,
-// no manual tracking), and every `addi rD,r1,off` for that slot yields the SAME handle.
-template <class T> struct SbStackObj {
-    alignas(T) unsigned char storage[sizeof(T)];
-    u32 h_;
-    SbStackObj() : h_(sb_eng_handle(storage)) {}
-    ~SbStackObj() { sb_eng_release(storage); }
-    SbStackObj(const SbStackObj&) = delete;
-    SbStackObj& operator=(const SbStackObj&) = delete;
+// A STACK-local engine object (Pattern C, object_identity.md): raw host storage sized by a
+// port-side `sbsizeof_<T>()` thunk plus a stable handle, registered on construction and released
+// on destruction (handle only — T's own ctor/dtor are the recompiled tailored ctor/dtor over the
+// storage, like the heap path). The emitter declares ONE per distinct guest frame slot at the top
+// of a generated function, so C++ RAII gives it exactly the function-activation lifetime of the
+// guest stack temporary, and every `addi rD,r1,off` for that slot yields the SAME handle. Sized at
+// runtime (the generated TU can't see sizeof(T)); storage is max-aligned ::operator new memory
+// (engine objects are not over-aligned beyond that), so this is type-agnostic and host-defined.
+struct SbDynStackObj {
+    void* storage_;
+    u32   h_;
+    explicit SbDynStackObj(std::size_t sz)
+        : storage_(::operator new(sz)), h_(sb_eng_handle(storage_)) {}
+    ~SbDynStackObj() { sb_eng_release(storage_); ::operator delete(storage_); }
+    SbDynStackObj(const SbDynStackObj&) = delete;
+    SbDynStackObj& operator=(const SbDynStackObj&) = delete;
     u32 handle() const { return h_; }
 };
 

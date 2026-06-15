@@ -390,6 +390,7 @@ TypeDBBuildResult build_type_db(const std::set<std::string>& active_types,
     for (const auto& ty : all) {
         ParsedType pt = resolve_parse(ty, index);
         if (!pt.found) { if (active_types.count(ty)) r.missing_types.push_back(ty); continue; }
+        if (index.count(ty)) r.type_headers[ty] = index[ty];   // for the accessor-TU #includes
         r.db.layouts[ty] = compose_layout(ty, index, all, &r.unresolved_bases);
         std::set<std::string> seen;
         int sz = guest_size_impl(ty, index, seen);

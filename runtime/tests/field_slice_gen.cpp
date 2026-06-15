@@ -77,7 +77,7 @@ static TypeDB make_db(uint32_t base) {
     return db;
 }
 
-static std::string emit_one(uint32_t base, bool tailored) {
+static std::string emit_one(uint32_t base, bool tailored, EngAccessorTable* tbl = nullptr) {
     std::vector<uint32_t> w = game_words(base);
     std::vector<uint8_t> bytes(w.size() * 4);
     for (size_t k = 0; k < w.size(); ++k) {
@@ -95,7 +95,7 @@ static std::string emit_one(uint32_t base, bool tailored) {
                                             ctx.branch_targets, /*jumptable=*/{});
 
     std::ostringstream ss;
-    CEmitter em(ss);
+    CEmitter em(ss, tbl);   // tailored: collect the accessor thunk defs (Option A)
     em.emit_function(ctx);
     return ss.str();
 }
@@ -103,8 +103,9 @@ static std::string emit_one(uint32_t base, bool tailored) {
 int main(int argc, char** argv) {
     const char* dir = (argc > 1) ? argv[1] : "scratch/port";
 
+    EngAccessorTable accessors;
     std::string oracle   = emit_one(0x80010000u, /*tailored=*/false);
-    std::string tailored = emit_one(0x80020000u, /*tailored=*/true);
+    std::string tailored = emit_one(0x80020000u, /*tailored=*/true, &accessors);
 
     auto write = [&](const std::string& name, const std::string& body) {
         std::string path = std::string(dir) + "/" + name;
@@ -114,6 +115,11 @@ int main(int argc, char** argv) {
     };
     write("slice_oracle.inc",   oracle);
     write("slice_tailored.inc", tailored);
+    // Accessor thunk DEFS (Option A): the host-field access baked by name. The test compiles these
+    // AFTER its stub EngineCam definition (it plays the port-compiled accessor TU role).
+    std::string defs;
+    for (auto& [s, d] : accessors.by_symbol) defs += d.def + "\n";
+    write("slice_accessors.inc", defs);
 
     std::printf("\n----- ORACLE (guest-layout) -----\n%s\n", oracle.c_str());
     std::printf("----- TAILORED (host-native, recovered) -----\n%s\n", tailored.c_str());
