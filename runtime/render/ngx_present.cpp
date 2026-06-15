@@ -21,6 +21,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+extern "C" unsigned ngx_tev_cc_dbg(int);
 #include <unordered_map>
 #include <vector>
 
@@ -606,6 +607,16 @@ AbstractTexture* PresentRenderer::render(int w, int h) {
             for (int c = 0; c < 4; c++) for (int k = 0; k < 4; k++) pc.kcolor[c][k] = st.kcolor[c][k];
             for (int c = 0; c < 3; c++) for (int k = 0; k < 4; k++) pc.tevreg[c][k] = st.tev_color[c][k];
         } else for (int c = 0; c < 4; c++) for (int k = 0; k < 4; k++) pc.kcolor[c][k] = 255;
+        // DBG cat mode: override kcolor[0] with a category colour (the cat shader outputs it).
+        static const char* s_dbg = getenv("SUNBRIGHT_NGX_TEVDBG");
+        if (s_dbg && !strcmp(s_dbg, "cat")) {
+            unsigned cc = ngx_tev_cc_dbg(ti);
+            int rC, gC, bC;
+            if (cc == 0xFFFF)      { rC=128; gC=128; bC=128; }   // no block = gray
+            else if (cc & 1)       { rC=0;   gC=255; bC=(cc&2)?255:0; }  // VTX: green (lit=cyan)
+            else                   { rC=255; gC=0;   bC=(cc&2)?255:0; }  // REG: red (lit=magenta)
+            pc.kcolor[0][0]=rC; pc.kcolor[0][1]=gC; pc.kcolor[0][2]=bC; pc.kcolor[0][3]=255;
+        }
         vkCmdPushConstants(cmd, pll, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof pc, &pc);
         vkCmdDraw(cmd, batches[b].vcount, 1, batches[b].vstart, 0);
     }

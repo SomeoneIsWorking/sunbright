@@ -130,6 +130,7 @@ unsigned long g_clr0cls_hist[4] = {0}, g_matsrc_hist[3] = {0}, g_litcfg_hist[2] 
 size_t g_bigmap_verts = 0; unsigned g_bigmap_clr0cls = 0; bool g_bigmap_matvtx = false, g_bigmap_en = false;
 u8 g_bigmap_vcol[3] = {0}; u16 g_bigmap_cc = 0;
 double g_colcat_sum[5] = {0}; unsigned long g_colcat_n[5] = {0};  // col0 lum by category
+double g_uplit_sum=0, g_uplit_max=0, g_uplit_amb=0, g_uplit_ndl=0; unsigned long g_uplit_n=0;
 unsigned long g_clr0fmt_hist[8] = {0};  // CLR0 VAT format (0=565,1=888,2=888x,3=4444,4=6666,5=8888)
 size_t g_bigany_verts = 0; u16 g_bigany_cc = 0; bool g_bigany_hasnrm=false, g_bigany_matvtx=false, g_bigany_en=false;
 unsigned g_bigany_clr0cls=0; u8 g_bigany_vcol[3]={0}; double g_bigany_vcolmean=0; u32 g_bigany_clr0base=0;
@@ -356,6 +357,14 @@ void light_vertex(const float eye[3], const float en[3], const float vcol0[4], f
     }
     if (g_dbgL_active) { g_dbgL_active = false;
         g_dbgL_illum[0]=illum[0]; g_dbgL_illum[1]=illum[1]; g_dbgL_illum[2]=illum[2]; }
+    // DBG: average + max illum for up-facing reg-color lit verts (the visible floor/ground).
+    if (!matVtx && en[1] > 0.7f) {
+        double il = (illum[0]+illum[1]+illum[2])/3.0;
+        g_uplit_sum += il; g_uplit_n++;
+        if (il > g_uplit_max) { g_uplit_max = il;
+            g_uplit_amb = (C.ambColor[0]+C.ambColor[1]+C.ambColor[2])/3.0/255.0;
+            g_uplit_ndl = en[0]*g_dbg_ld0[0]+en[1]*g_dbg_ld0[1]+en[2]*g_dbg_ld0[2]; }
+    }
     for (int k = 0; k < 3; k++) {
         float v = illum[k]; v = v < 0.f ? 0.f : (v > 1.f ? 1.f : v);
         out[k] = mat[k] * v;
@@ -1016,6 +1025,11 @@ const NgxTevState* ngx_snap_tevstates(int* nstates) {
     *nstates = (int)g_tevstates.size();
     return g_tevstates.empty() ? nullptr : g_tevstates.data();
 }
+// DBG: colour-channel ctrl for a tev index (0xFFFF = no block) — used by the present's
+// category-debug mode to tint each batch by its material category.
+extern "C" unsigned ngx_tev_cc_dbg(int idx) {
+    return (idx >= 0 && idx < (int)TEVSTATE_CAP) ? g_tev_cc[idx] : 0;
+}
 
 // GXLoadTexObj(GXTexObj* obj, GXTexMapID id) @ 0x80360160 — track the texmap-0
 // binding so shapes drawn after it can be textured. GXTexObj packed fields
@@ -1355,6 +1369,9 @@ int sb_ngx_shape_dump(char* out, int cap) {
         g_colcat_n[2], g_colcat_n[2]?g_colcat_sum[2]/g_colcat_n[2]:0.0,
         g_colcat_n[3], g_colcat_n[3]?g_colcat_sum[3]/g_colcat_n[3]:0.0,
         g_colcat_n[4], g_colcat_n[4]?g_colcat_sum[4]/g_colcat_n[4]:0.0);
+    n += snprintf(out+n, cap-n,
+        "  up-facing reg-lit illum (visible floor/ground): avg=%.3f max=%.3f (n=%lu) @max amb=%.3f ndl=%.3f\n",
+        g_uplit_n?g_uplit_sum/g_uplit_n:0.0, g_uplit_max, g_uplit_n, g_uplit_amb, g_uplit_ndl);
     // CLR0 vertex-color array (J3DSYS+0x114) — indexed map-geometry colours. If this base is
     // wrong/stale, indexed CLR0 lookups fail → white default → washed-out map geometry.
     {

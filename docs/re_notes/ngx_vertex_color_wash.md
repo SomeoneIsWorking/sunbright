@@ -83,6 +83,28 @@ batches' own CLR0 entries read white OR they're a matsrc/lighting case needing d
 Next: categorize the white-col0 visible batches (store per-batch matVtx/enable) and check whether
 their g_main_cp_state CLR0 base / entries are genuinely white or a wrong array at their draw.
 
+## UPDATE 2 (2026-06-16): category map → wash is reg/lit LIGHTING saturation
+`SUNBRIGHT_NGX_TEVDBG=cat` (tints each batch by material category) shows the ENTIRE visible
+floor + buildings + sky are **reg/lit** (matsrc=REG, lighting ON, matColor=white) → col0 =
+clamp(illum). Trees/hedges are vtx/flat (green). So the dominant wash is the per-vertex
+LIGHTING illum saturating to ~white on the visible surfaces.
+
+Measured: up-facing reg-lit illum avg=0.607, **max=1.106 (saturates)**; @max ndl=0.872, amb=0.
+GX floor illum ≈ 0.54 (floor 95 / tex ~180). So the AVERAGE is close to GX, but the visible
+high-ndl (sun-facing) verts blow out to white. Breakdown of a saturating floor vertex:
+light0 (sun, gray 0.31, Spot, attn=1) → +0.27; light1 (WHITE, pos near origin, distatt=(1,0,0)
+= NO distance falloff → attn=1) → +0.87 (unattenuated). Sum 1.14 → clamps to 1.0 = white.
+GX has the SAME light1/ambient/mat (verified vs xfmem; light color stored ABGR-reversed, our
+GXLoadLightObjImm read matches) yet floor = 0.54. The lighting MATH matches Dolphin
+(LightingShaderGen: Spot attn, Sign/Clamp diffuse, clamp lacc, mat*lacc/255). So an INPUT
+differs that I could not pin from captured data — candidates: (a) the ambient REGISTER value at
+the floor's actual draw (we force 0 for LightOff; xfmem snapshot=0 but laggy), (b) light1's
+real contribution (is it actually masked/attenuated for the floor in GX?), (c) the normal-matrix
+transform giving too-high ndl. NEEDS per-vertex GX ground truth: compare ngx light_vertex illum
+to Dolphin's computed `lacc` for the SAME vertex (e.g. instrument Dolphin's vertex path, or read
+back a known floor vertex's rasterized color). The cat/ras/tex TEVDBG modes + up-lit illum probe
+are the instruments.
+
 ## Next steps
 - Audit the per-shape col0 source for the NOT-PRESENT CLR0 case (12.7M verts) — what should
   col0 be there (matColor? persisted channel?). Likely the dominant remaining white.
