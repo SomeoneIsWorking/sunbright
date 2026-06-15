@@ -120,6 +120,8 @@ Useful env vars:
   TMovieDirector's ctor stores TWO vptrs — the final vtable is 0x803DFA50 (direct = +0x64 →
   0x802b5b30), 0x803E1D50 is the base sub-object's.
 - `SUNBRIGHT_BACKEND=OGL|Vulkan|Software` — GFX backend (both OGL & Vulkan work under XWayland; Vulkan is the default)
+- `SUNBRIGHT_NGX_SHAPE=1` — enable the native renderer's J3D capture + probes (`/ngxshape`, `/ngxrender`, `/ngxpresent`); diagnostic-only (does not change on-screen output)
+- `SUNBRIGHT_NGX_PRESENT=1` — **native present**: the native renderer's frame (`runtime/render/ngx_present.cpp`) becomes the live on-screen image (and the frame dump), replacing Dolphin's GX output in the render path (Vulkan only). Implies NGX_SHAPE capture. The 3D scene only — no J2D/HUD yet. `/ngxpresentlive` = renderer stats
 - `SUNBRIGHT_RES_SCALE=N` — internal resolution multiplier (default 3 = 3× native EFB)
 - `SUNBRIGHT_WIDESCREEN=0` — disable 16:9 (default on: `GFX_ASPECT_RATIO=ForceWide` + `GFX_WIDESCREEN_HACK`; the hack widens the 3D projection so 4:3 SMS isn't stretched)
 - `SUNBRIGHT_DISABLE_RECOMP=1` — force everything through Dolphin's JIT (A/B control)

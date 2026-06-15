@@ -392,6 +392,23 @@ decoder; runtime GP-FIFO path on the delete list. Then, on the object-model arch
   - **Still first-slice gaps** (lower priority): identity TEV swap tables, no alpha
     test (PE block uncaptured → foliage cutouts show full quads), no indirect stages.
 
+- **N7 — native present ✅ (the ngx frame IS the on-screen image)** — `SUNBRIGHT_NGX_PRESENT=1`
+  makes the native renderer's output the actual on-screen frame (and the frame dump), replacing
+  Dolphin's GX output in the render path. `runtime/render/ngx_present.cpp` is a PERSISTENT renderer
+  (vs the one-shot `/ngxrender` probe): shaders are compiled ONCE and pipeline + decoded-texture
+  caches survive across frames (per-frame glslang would be unusable). It renders the captured J3D
+  scene into a persistent Dolphin `AbstractTexture` each frame on the video thread (its own command
+  buffer + fence, isolated from Dolphin's StateTracker, ordered before Dolphin's present submit;
+  a per-frame GPU-bubble bring-up cost), then `VKTexture::OverrideImageLayout`. The fork's
+  `Present.cpp` substitutes that texture for `m_xfb_entry->texture` at `RenderXFBToScreen`
+  (on screen) + `ProcessFrameDumping` (the dump — so it's headless-verifiable) when
+  `g_sb_ngx_present`. Verified headless: init_ok, 444 frames, only 92 pipelines built + 187
+  textures decoded TOTAL (cached, not per-frame), stable. The dumped frame is the ngx render —
+  bright Delfino (meanRGB 200, NO HUD) vs the Dolphin baseline (meanRGB 81, with HUD/subtitle) —
+  proving the substitution. NEXT: composite the J2D/HUD overlay into the present (the native frame
+  has no HUD yet); cache lifetime/eviction on scene change; lighting/fog fidelity vs the oracle;
+  then peel more of Dolphin's VideoCommon.
+
 - **N7-present groundwork ✅ — render into an external color target** — parameterized the
   renderer (`vk_mesh.cpp`): `sb_ngx_render_into(view,img,w,h,final_layout,…)` rasterizes the
   ngx mesh into a caller-supplied color image left in a chosen layout (e.g. SHADER_READ), no
