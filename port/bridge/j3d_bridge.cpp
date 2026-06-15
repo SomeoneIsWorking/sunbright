@@ -175,6 +175,18 @@ int16_t sbport_j3danmbase_getFrameMax(void* anm) {
 	return anm ? static_cast<J3DAnmBase*>(anm)->getFrameMax() : 0;
 }
 
+// J3DAnmTextureSRTKey::searchUpdateMaterialID(J3DModelData*) @0x802e3dd4 — step 2
+// of the TShimmer animation closure. Resolves each animated material's name to an
+// index in the model's material name-table (table->getMaterialName()->getIndex).
+// `anm` = host J3DAnmTextureSRTKey, `md` = host J3DModelData (both handles resolved
+// by the override). Touches only the two host objects' own graphs.
+void sbport_j3danm_srtkey_searchUpdateMaterialID(void* anm, void* md) {
+	if (!anm || !md)
+		return;
+	static_cast<J3DAnmTextureSRTKey*>(anm)->searchUpdateMaterialID(
+	    static_cast<J3DModelData*>(md));
+}
+
 // Field/method accessors for oracle verification of the flipped slice. The
 // J3DModelData* is the host pointer (the runtime resolves the handle before
 // calling these via the bridge thunk).

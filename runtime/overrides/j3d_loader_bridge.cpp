@@ -30,6 +30,7 @@
 extern "C" void* sbport_j3d_load(const void* be_bmd, uint32_t flags);
 extern "C" void* sbport_j3d_loadMaterialTable(const void* be_bmt);
 extern "C" void* sbport_j3d_anm_load(const void* be_anm);
+extern "C" void  sbport_j3danm_srtkey_searchUpdateMaterialID(void* anm, void* md);
 
 #ifdef SB_FLIP_J3D
 // J3DModelLoaderDataBase::load(const void* data, u32 flags) @ 0x802e6f00
@@ -66,6 +67,19 @@ SUNBRIGHT_OVERRIDE(ov_j3d_anm_load, 0x802e8ca4) {
 	void* host_anm  = sb_guest_to_host(guest_anm);
 	void* anm       = sbport_j3d_anm_load(host_anm);
 	cpu.gpr[3] = anm ? sb_eng_handle(anm) : 0u;
+	call_ppc(cpu, cpu.lr);
+}
+
+// J3DAnmTextureSRTKey::searchUpdateMaterialID(J3DModelData*) @ 0x802e3dd4
+// (instance method: r3=this animator handle, r4=J3DModelData handle). The next
+// fault in TShimmer::load after the .btk loader bridge: the recompiled body
+// field-derefs both handle tokens. Route to the port-native method on the two
+// host objects. (Other animator subclasses have their own searchUpdateMaterialID
+// addresses — bridge those as they surface.)
+SUNBRIGHT_OVERRIDE(ov_j3danm_srtkey_search_update_matid, 0x802e3dd4) {
+	void* anm = sb_eng_host(cpu.gpr[3]);
+	void* md  = sb_eng_host(cpu.gpr[4]);
+	sbport_j3danm_srtkey_searchUpdateMaterialID(anm, md);
 	call_ppc(cpu, cpu.lr);
 }
 #else
