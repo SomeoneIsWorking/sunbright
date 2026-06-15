@@ -141,18 +141,32 @@ EXISTS, which needs construction = Step 0.
    game verification needs it). The CTOR 0x802dde2c, by contrast, HAS many direct `bl` callers
    (TJointModel::initActor, TLensFlare, TSunModel, TEnemyManager, …) — construction IS wireable now.
 
-   **NEXT for Step 1 (pick up here):**
-   (a) **Engine-types recompile compile-check (does construction emission compile for REAL J3DModel
-       callers?).** Run `SUNBRIGHT_ENGINE_TYPES="J3DModelData J3DModel"` (the recompiler builds the
-       type DB + emits sbnew_J3DModel / accessors). The construction sites are direct-bl so they wire.
-       Verify the generated game TUs + eng_accessors.cpp COMPILE (Option A split) and the SB_FLIP_J3D
-       binary LINKS. Watch the 39 field-access GAPS in 13 funcs (sweep) — engine-method bodies
-       (viewCalc/calcNrmMtx/…) are dead once overridden but must still COMPILE; game-caller gaps
-       (stampModel 801a1964, entryStaticDrawBufferSun/Shadow 801b7868/801b78b8, init__TMirrorActor
-       80224620) read a J3DModel field inline → need a bridged getter or scalar field-flip, else they
-       won't compile/run. Decide per gap.
-   (b) **Offset-0 virtual-dispatch routing** (the harder, needed for calc to actually fire from the
-       game). Then the game-driven matrix comparison becomes reachable.
+   **(a) Engine-types recompile compile-check — DONE & GREEN (2026-06-15).** `SUNBRIGHT_ENGINE_TYPES=
+   "J3DModel"` (J3DModel ONLY — see below) `SUNBRIGHT_DISCOVER_POINTERS=1 SUNBRIGHT_DISCOVER_CODEPTRS=1`
+   recompile to `generated-flip/` (gitignored; reusable, no re-recompile needed next session). Result:
+   ALL 55 generated game TUs compile with NO decomp headers (`-I runtime -I generated-flip`) and
+   `eng_accessors.cpp` compiles in the port world (`-I port/compat/include -I reference/sms/include`,
+   shims, NO cpu_state.h). Construction emits `sbnew_J3DModel` / `sbnew_SDLModel` (most-derived). 6
+   accessor thunks. The full-scale LINK is mechanically proven by `runtime/tests/run_flip_compile_test.sh`
+   (links+runs a flipped fn + accessor TU + boundary runtime) — only scale differs; next session's
+   first action is the SB_FLIP_J3D binary build off `generated-flip/` (cheap, just heavy: swap
+   generated/ → generated-flip, `cmake -B build -DSB_FLIP_J3D=ON`, build).
+   TWO recompiler/scoping findings that made (a) compile:
+   - **Engine-internal methods must NOT be field-flipped** (recompiler fix, committed): flipping a
+     type also processed its OWN methods (viewCalc/calcNrmMtx) → sbf_ accessors for the type's
+     internal graph-pointer fields (host 8-byte ptrs) → accessor TU didn't compile. main.cpp now
+     excludes functions whose demangled class is a flipped type (they're bridged/dead) from the flip.
+   - **Flip J3DModel ONLY, not J3DModelData.** Per Option 1 J3DModelData is held as an opaque HANDLE,
+     never field-flipped in game code. Including it flipped a game free-fn `SMS_SettingDrawShape`
+     (J3DModelData*) that reads `mVertexData.mVtxPosArray/Norm/TexCoord` (host-graph ptrs) inline →
+     non-compiling accessors. That fn is DRAW code (bridged at Step 3); as an opaque handle it stays
+     guest-typed in game code and loud-faults on the handle token if reached unbridged (fail-fast).
+     (J3DModel's own remaining accessors mModelData/mMatPackets/mShapePackets/mVertexBuffer are
+     pointer fields read by draw-path callers stampModel/entryStaticDrawBuffer* → emitted as
+     guest_ptr translations that COMPILE; runtime-correct only once those draw callers are bridged.)
+   (b) **NEXT: offset-0 virtual-dispatch routing** (needed for calc to fire from the game) — then the
+       game-driven matrix comparison becomes reachable. Also: build the SB_FLIP_J3D binary off
+       generated-flip/ and confirm it boots (link + no-regression with the flip + bridge overrides).
 2. **Animation bridge.** entry/set animators + J3DMtxCalc; verify animated matrices vs oracle.
 3. **GX ownership in port/** (the big one) → bridge entry/draw → first NO-DOLPHIN textured frame
    (the MVP gate). Move runtime/render's GX decode into port/ or write port GX over the same Vulkan.
