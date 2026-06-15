@@ -43,7 +43,8 @@
 namespace {
 
 constexpr u32 J3DSYS = 0x804045DCu;
-bool g_enabled = (getenv("SUNBRIGHT_NGX_SHAPE") != nullptr);
+bool g_enabled = (getenv("SUNBRIGHT_NGX_SHAPE") != nullptr) ||
+                 (getenv("SUNBRIGHT_NGX_PRESENT") != nullptr);  // present needs the capture
 
 // Latest GX texmap-0 binding (from the GXLoadTexObj tee), associated with shapes
 // drawn after it. Decoded from the GXTexObj's packed registers.

@@ -137,6 +137,7 @@ add_executable(sunbright
     runtime/render/tex_decode_selftest.cpp
     runtime/render/vk_quad.cpp
     runtime/render/vk_mesh.cpp
+    runtime/render/ngx_present.cpp
     runtime/render/tev_shader.cpp
     runtime/render/glsl_compile.cpp
     runtime/render/j2d_walk.cpp

@@ -70,6 +70,10 @@
 #include <string_view>
 
 extern "C" bool na_start(bool muted);   // PC-native audio sink (runtime/native_audio.cpp)
+// N7 native present hooks (Present.cpp fork + runtime/render/ngx_present.cpp).
+extern "C" volatile int g_sb_ngx_present;
+extern "C" const void* (*sb_ngx_present_xfb_cb)(int, int);
+extern "C" const void* sb_ngx_present_xfb(int, int);
 
 // ── Globals ───────────────────────────────────────────────────────────────────
 static SDL_Window* g_window  = nullptr;
@@ -807,6 +811,15 @@ int main(int argc, char* argv[]) {
     // pacing by default so audio-timing-dependent behaviour matches a windowed run. Set
     // SUNBRIGHT_TURBO=1 to unthrottle (faster repro of timing-INdependent bugs).
     const bool turbo    = getenv("SUNBRIGHT_TURBO") != nullptr;
+
+    // N7 native present: substitute the ngx-rendered frame for the XFB on screen (and
+    // in the frame dump). Needs the J3DShape capture (SUNBRIGHT_NGX_SHAPE) to feed it.
+    // The callback runs on the video thread; the renderer lazily inits once g_gfx is up.
+    if (getenv("SUNBRIGHT_NGX_PRESENT")) {
+        sb_ngx_present_xfb_cb = &sb_ngx_present_xfb;
+        g_sb_ngx_present = 1;
+        fprintf(stderr, "[sunbright] N7 NATIVE PRESENT enabled (ngx frame → XFB)\n");
+    }
 
     // SDL — headless still needs the event/timer subsystem for SDL_GetTicks (autostart
     // timing) but no video device (which would require a display).
