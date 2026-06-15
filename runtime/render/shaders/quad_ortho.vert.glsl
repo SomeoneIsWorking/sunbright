@@ -9,6 +9,7 @@ layout(push_constant) uniform PC {
     vec4  misc;       // misc.xy = target(w,h); misc.z = colorAlpha (0..1)
     uvec4 corners;    // packed 0xRRGGBBAA per corner: [TL,TR,BL,BR]
     uvec4 bw;         // bw.x = mWhite, bw.y = mBlack (packed 0xRRGGBBAA); .zw unused
+    vec4  uvrect;     // texture sub-rect u0,v0,u1,v1 (pictures = 0,0,1,1; glyphs = atlas cell)
 } pc;
 layout(location = 0) out vec2 vUV;
 layout(location = 1) out vec4 vCol;
@@ -23,7 +24,7 @@ void main() {
     vec2 c = vec2(float(ix & 1u), float((ix >> 1) & 1u));   // TL,TR,BL,BR
     vec4 col = unpack(pc.corners[(ix & 1u) + ((ix >> 1) & 1u) * 2u]);
     col.a *= pc.misc.z;
-    vUV = c;
+    vUV = mix(pc.uvrect.xy, pc.uvrect.zw, c);   // sub-rect for glyph atlas cells (0..1 for pictures)
     vCol = col;
     vWhite = unpack(pc.bw.x);
     vBlack = unpack(pc.bw.y);

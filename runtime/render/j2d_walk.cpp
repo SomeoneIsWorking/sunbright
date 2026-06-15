@@ -58,6 +58,30 @@ constexpr u32 TEX_WH        = 0x3C;   // mWidth(u16)@0x3C, mHeight(u16)@0x3E
 inline bool is_picture(u32 kind) {    // 'PIC1'/'PIC2'
     return (kind >> 8) == 0x504943u;  // "PIC"
 }
+inline bool is_textbox(u32 kind) { return kind == 0x54425831u; }   // 'TBX1'
+
+inline u16 r16(u32 a) { const u32 w = r32(a & ~3u); return (a & 2) ? (u16)(w & 0xFFFF) : (u16)(w >> 16); }
+inline u8  rb8(u32 a) { return valid(a & ~3u) ? (u8)(mem_r32(a & ~3u) >> (24 - (a & 3) * 8)) : 0; }  // any-align byte
+
+// J2DTextBox fields (reference/sms J2DTextBox.hpp)
+constexpr u32 TBX_FONT      = 0xEC;   // JUTFont* (JUTResFont for SMS HUD)
+constexpr u32 TBX_CHARCOLOR = 0xF0;   // TColor 0xRRGGBBAA
+constexpr u32 TBX_GRADCOLOR = 0xF4;
+constexpr u32 TBX_HBIND     = 0xF8;   // 0=center,1=right,2=left
+constexpr u32 TBX_VBIND     = 0xFC;   // 0=center,1=bottom,2=top
+constexpr u32 TBX_TEXT      = 0x100;  // char*
+constexpr u32 TBX_CHARSPACE = 0x10C;
+constexpr u32 TBX_LINESPACE = 0x110;
+constexpr u32 TBX_FONTSZX   = 0x114;
+constexpr u32 TBX_FONTSZY   = 0x118;
+// JUTResFont fields (reference/sms JUTResFont.hpp)
+constexpr u32 RF_INFO   = 0x4C;  // ResFONT::INF1*
+constexpr u32 RF_WIDS   = 0x50;  // WID1**
+constexpr u32 RF_GLYS   = 0x54;  // GLY1**
+constexpr u32 RF_MAPS   = 0x58;  // MAP1**
+constexpr u32 RF_NWID   = 0x5C;  // u16
+constexpr u32 RF_NGLY   = 0x5E;
+constexpr u32 RF_NMAP   = 0x60;
 
 }  // namespace
 
@@ -118,6 +142,118 @@ int sb_j2d_dump(char* out, int cap) {
     return visited;
 }
 
+// ── J2DTextBox font rendering (port of JUTResFont getFontCode/loadImage/drawChar) ──
+// chr → glyph index via the MAP1 blocks (reference/sms JUTResFont::getFontCode).
+static int font_code(u32 font, int chr) {
+    const u32 info = r32(font + RF_INFO);
+    const int def  = valid(info) ? r16(info + 0x12) : chr;   // INF1.defaultCode
+    const u32 maps = r32(font + RF_MAPS);
+    const int nmap = r16(font + RF_NMAP);
+    if (!valid(maps)) return chr;                            // no map → assume direct
+    for (int i = 0; i < nmap && i < 16; i++) {
+        const u32 m = r32(maps + i * 4);
+        if (!valid(m)) continue;
+        const int method = r16(m + 0x08), start = r16(m + 0x0A), end = r16(m + 0x0C);
+        if (chr < start || chr > end) continue;
+        if (method == 0) return chr - start;                          // direct
+        if (method == 2) return r16(m + 0x10 + (u32)(chr - start) * 2); // index table
+        if (method == 3) {                                            // sorted (code,index) pairs
+            const u32 base = m + 0x10; int lo = 0, hi = (int)r16(m + 0x0E) - 1;
+            while (hi >= lo) { const int mid = (lo + hi) / 2, c = r16(base + (u32)mid * 4);
+                if (chr < c) hi = mid - 1; else if (chr > c) lo = mid + 1; else return r16(base + (u32)mid * 4 + 2); }
+        }
+        return def;   // method 1 (SJIS) unsupported here
+    }
+    return def;
+}
+
+struct GlyphCell { u32 page; int fmt, texW, texH; int px, py; bool ok; };
+// glyph index → atlas page + cell pixel origin (reference/sms JUTResFont::loadImage).
+static GlyphCell load_glyph(u32 font, int code) {
+    GlyphCell g{};
+    const u32 glys = r32(font + RF_GLYS); const int ngly = r16(font + RF_NGLY);
+    if (!valid(glys)) return g;
+    for (int i = 0; i < ngly && i < 16; i++) {
+        const u32 gb = r32(glys + i * 4);
+        if (!valid(gb)) continue;
+        const int start = r16(gb + 0x08), end = r16(gb + 0x0A);
+        if (code < start || code > end) continue;
+        const int c = code - start;
+        const int cellW = r16(gb + 0x0C), cellH = r16(gb + 0x0E);
+        const u32 texSize = r32(gb + 0x10);
+        const int numRows = r16(gb + 0x16), numCols = r16(gb + 0x18);
+        const int pageCells = numRows * numCols;
+        if (pageCells <= 0) return g;
+        const int pageIdx = c / pageCells, inPage = c % pageCells;
+        const int row = inPage / numRows, col = inPage - row * numRows;   // decomp uses numRows for both
+        g.px = col * cellW; g.py = row * cellH;
+        g.fmt = r16(gb + 0x14); g.texW = r16(gb + 0x1A); g.texH = r16(gb + 0x1C);
+        g.page = gb + 0x20 + (u32)pageIdx * texSize; g.ok = true;
+        return g;
+    }
+    return g;
+}
+// glyph advance width (reference/sms JUTResFont::getWidthEntry; TWidth{kern@0, width@1}).
+static int glyph_width(u32 font, int code, int def_w) {
+    const u32 wids = r32(font + RF_WIDS); const int nwid = r16(font + RF_NWID);
+    if (!valid(wids)) return def_w;
+    for (int i = 0; i < nwid && i < 16; i++) {
+        const u32 wb = r32(wids + i * 4);
+        if (!valid(wb)) continue;
+        const int start = r16(wb + 0x08), end = r16(wb + 0x0A);
+        if (code < start || code > end) continue;
+        return rb8(wb + 0x0C + (u32)(code - start) * 2 + 1);   // field_0x1 = advance
+    }
+    return def_w;
+}
+
+// Emit one textured quad per glyph of a J2DTextBox's string (atlas cell → UV sub-rect).
+static int emit_textbox(u32 p, J2dQuad* out, int max, int n) {
+    const u32 font = r32(p + TBX_FONT), text = r32(p + TBX_TEXT);
+    if (!valid(font) || !valid(text)) return n;
+    const u32 info = r32(font + RF_INFO);
+    if (!valid(info)) return n;
+    const int ascent = r16(info + 0x0A), descent = r16(info + 0x0C), fwidth = r16(info + 0x0E);
+    const int height = ascent + descent;
+    if (height <= 0 || fwidth <= 0) return n;
+    int szx = (int)r32(p + TBX_FONTSZX), szy = (int)r32(p + TBX_FONTSZY);
+    if (szx <= 0) szx = fwidth;
+    if (szy <= 0) szy = height;
+    const int charSpace = (int)r32(p + TBX_CHARSPACE), lineSpace = (int)r32(p + TBX_LINESPACE);
+    u32 charCol = r32(p + TBX_CHARCOLOR);
+    if (charCol == 0) charCol = 0xFFFFFFFFu;   // uninit → white (else invisible)
+    const u8 alpha = rb(p + PANE_ALPHA);
+    int gx0 = (int)r32(p + PANE_GBOUNDS + 0), gy0 = (int)r32(p + PANE_GBOUNDS + 4);
+    const int gx1 = (int)r32(p + PANE_GBOUNDS + 8), gy1 = (int)r32(p + PANE_GBOUNDS + 12);
+    if (gx1 <= gx0 || gy1 <= gy0) { gx0 = (int)r32(p + PANE_BOUNDS + 0); gy0 = (int)r32(p + PANE_BOUNDS + 4); }
+    const float sxScale = (float)szx, syScale = (float)szy;
+    float penx = (float)gx0;
+    float baseY = (float)gy0 + (float)ascent * (syScale / height);   // baseline
+    for (int k = 0; k < 512 && n < max; k++) {
+        const int ch = rb8(text + (u32)k);
+        if (ch == 0) break;
+        if (ch == '\n') { penx = (float)gx0; baseY += syScale + lineSpace; continue; }
+        const int code = font_code(font, ch);
+        const int adv = glyph_width(font, code, fwidth);
+        const GlyphCell g = load_glyph(font, code);
+        if (ch != ' ' && g.ok && g.texW > 0 && g.texH > 0 && valid(g.page)) {
+            J2dQuad& q = out[n];
+            q.x0 = (int)penx; q.x1 = (int)(penx + sxScale);
+            q.y0 = (int)(baseY - (float)ascent * (syScale / height));
+            q.y1 = (int)(baseY + (float)descent * (syScale / height));
+            q.alpha = alpha; q.fmt = g.fmt; q.w = g.texW; q.h = g.texH; q.data = g.page;
+            q.tlut = 0; q.tlutfmt = 0;
+            for (int c = 0; c < 4; c++) q.corner[c] = charCol;
+            q.white = 0xFFFFFFFFu; q.black = 0;   // atlas intensity × charColor
+            q.u0 = (float)g.px / g.texW;          q.v0 = (float)g.py / g.texH;
+            q.u1 = (float)(g.px + fwidth) / g.texW; q.v1 = (float)(g.py + height) / g.texH;
+            n++;
+        }
+        penx += (float)adv * (sxScale / fwidth) + charSpace;
+    }
+    return n;
+}
+
 // Collect visible J2DPicture quads (screen rect + texture) in draw order, from a
 // given J2DScreen root. Pure read of guest memory — caller supplies the consistency
 // (snapshot at draw time on the game thread, or accept the live-read race for probes).
@@ -168,8 +304,11 @@ static int collect_from(u32 root, J2dQuad* out, int max, int* screen_w, int* scr
                 q.tlut = 0; q.tlutfmt = 0;   // palette resolution: later (M+)
                 for (int c = 0; c < 4; c++) q.corner[c] = r32(p + PIC_CORNERCOL + c * 4);
                 q.white = r32(p + PIC_WHITE); q.black = r32(p + PIC_BLACK);
+                q.u0 = 0.f; q.v0 = 0.f; q.u1 = 1.f; q.v1 = 1.f;   // whole texture
                 if (q.w > 0 && q.h > 0 && valid(q.data)) n++;
             }
+        } else if (is_textbox(kind)) {
+            n = emit_textbox(p, out, max, n);   // one quad per glyph (font atlas cells)
         }
         // children, pushed reversed for draw order
         u32 kids[64]; int nk = 0;
@@ -193,7 +332,7 @@ int sb_j2d_collect(J2dQuad* out, int max, int* screen_w, int* screen_h) {
 // live from another thread catches it half-updated (digits land at stale x → the HUD
 // smears). So we capture on the game thread right after J2DScreen::draw returns (the
 // tree is fully, consistently positioned) into a double buffer the video thread reads.
-constexpr int J2D_SNAP_MAX = 128;
+constexpr int J2D_SNAP_MAX = 1024;   // pictures (~105) + textbox glyphs
 static J2dQuad g_snap[2][J2D_SNAP_MAX];
 static int g_snap_n[2] = {0, 0};
 static int g_snap_w[2] = {0, 0}, g_snap_h[2] = {0, 0};

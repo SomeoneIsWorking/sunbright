@@ -85,7 +85,7 @@ struct PresentRenderer {
     VkPipeline j2d_pipe = VK_NULL_HANDLE;
     VkDescriptorPool j2d_dpool = VK_NULL_HANDLE; uint32_t j2d_dpool_cap = 0;
     // One prepared HUD quad draw (descriptor + push-constant payload).
-    struct J2dDraw { VkDescriptorSet dset; float rect[4]; float misc[4]; uint32_t corners[4]; uint32_t bw[4]; };
+    struct J2dDraw { VkDescriptorSet dset; float rect[4]; float misc[4]; uint32_t corners[4]; uint32_t bw[4]; float uvrect[4]; };
 
     unsigned long g_frames = 0, g_pipe_builds = 0, g_tex_decodes = 0, g_j2d_quads = 0;
 
@@ -241,7 +241,7 @@ bool PresentRenderer::init_j2d() {
     li.bindingCount = 1; li.pBindings = &b;
     if (vkCreateDescriptorSetLayout(dev, &li, nullptr, &j2d_dsl)) return false;
 
-    VkPushConstantRange pcr{VK_SHADER_STAGE_VERTEX_BIT, 0, 64};  // vec4 rect | vec4 misc | uvec4 corners | uvec4 bw
+    VkPushConstantRange pcr{VK_SHADER_STAGE_VERTEX_BIT, 0, 80};  // rect | misc | corners | bw | uvrect
     VkPipelineLayoutCreateInfo plci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     plci.setLayoutCount = 1; plci.pSetLayouts = &j2d_dsl; plci.pushConstantRangeCount = 1; plci.pPushConstantRanges = &pcr;
     if (vkCreatePipelineLayout(dev, &plci, nullptr, &j2d_pll)) return false;
@@ -476,9 +476,9 @@ VkImageView PresentRenderer::texture_for(const NgxTexBind& t, VkCommandBuffer up
 // in the walker yet) so an unresolved palette can't paint a white box.
 void PresentRenderer::prepare_j2d(VkCommandBuffer up_cmd, std::vector<VkBuffer>& stg_bufs,
                                   std::vector<VkDeviceMemory>& stg_mems, std::vector<J2dDraw>& out) {
-    J2dQuad quads[64];
+    static J2dQuad quads[1024];   // pictures + textbox glyphs
     int sw = 0, sh = 0;
-    int nq = sb_j2d_snapshot(quads, 64, &sw, &sh);   // consistent draw-time snapshot
+    int nq = sb_j2d_snapshot(quads, 1024, &sw, &sh);   // consistent draw-time snapshot
     if (nq <= 0) return;
     if (sw <= 0 || sw > 4096) sw = 640;
     if (sh <= 0 || sh > 4096) sh = 480;
@@ -512,6 +512,7 @@ void PresentRenderer::prepare_j2d(VkCommandBuffer up_cmd, std::vector<VkBuffer>&
         d.misc[0] = (float)sw; d.misc[1] = (float)sh; d.misc[2] = q.alpha / 255.0f; d.misc[3] = 0;
         for (int c = 0; c < 4; c++) d.corners[c] = q.corner[c];
         d.bw[0] = q.white; d.bw[1] = q.black; d.bw[2] = 0; d.bw[3] = 0;
+        d.uvrect[0] = q.u0; d.uvrect[1] = q.v0; d.uvrect[2] = q.u1; d.uvrect[3] = q.v1;
         out.push_back(d);
     }
     g_j2d_quads = out.size();
@@ -610,11 +611,12 @@ AbstractTexture* PresentRenderer::render(int w, int h) {
         VkRect2D scr{{0, 0}, {(uint32_t)w, (uint32_t)h}};
         vkCmdSetViewport(cmd, 0, 1, &vp); vkCmdSetScissor(cmd, 0, 1, &scr);
         for (const J2dDraw& d : j2d) {
-            struct { float rect[4]; float misc[4]; uint32_t corners[4]; uint32_t bw[4]; } pc;
+            struct { float rect[4]; float misc[4]; uint32_t corners[4]; uint32_t bw[4]; float uvrect[4]; } pc;
             std::memcpy(pc.rect, d.rect, sizeof pc.rect);
             std::memcpy(pc.misc, d.misc, sizeof pc.misc);
             std::memcpy(pc.corners, d.corners, sizeof pc.corners);
             std::memcpy(pc.bw, d.bw, sizeof pc.bw);
+            std::memcpy(pc.uvrect, d.uvrect, sizeof pc.uvrect);
             vkCmdPushConstants(cmd, j2d_pll, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof pc, &pc);
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, j2d_pll, 0, 1, &d.dset, 0, nullptr);
             vkCmdDraw(cmd, 4, 1, 0, 0);

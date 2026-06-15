@@ -18,6 +18,7 @@ struct J2dQuad {
     uint32_t white, black;     // J2DPicture mWhite/mBlack (0xRRGGBBAA) — the intensity-texture
                                // black/white color remap (GX setTevMode C0/C1 lerp by texel).
                                // Default black=0 / white=0xffffffff → the lerp is identity.
+    float    u0, v0, u1, v1;   // texture sub-rect (pictures = 0,0,1,1; J2DTextBox glyphs = atlas cell)
 };
 
 // Walk the live J2D pane tree (root captured by the J2DScreen::draw tee) and fill
