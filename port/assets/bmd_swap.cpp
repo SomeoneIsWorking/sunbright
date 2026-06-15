@@ -48,6 +48,24 @@ static void swap_INF1(uint8_t* out, const uint8_t* be, uint32_t size) {
 	}
 }
 
+// DRW1 / J3DDrawBlock:
+//   +0x08 u16 mMtxNum
+//   +0x0C u32 mpDrawMtxFlag  (offset -> u8[mMtxNum], NO swap)
+//   +0x10 u32 mpDrawMtxIndex (offset -> u16[mMtxNum], swap each)
+static void swap_DRW1(uint8_t* out, const uint8_t* be, uint32_t size) {
+	if (size < 0x14) return;
+	uint16_t mtx_num = be16(be + 0x08);
+	uint32_t off_idx = be32(be + 0x10);
+	sw16(out + 0x08);          // mMtxNum
+	sw32(out + 0x0C);          // mpDrawMtxFlag (offset; the u8 array needs no swap)
+	sw32(out + 0x10);          // mpDrawMtxIndex (offset)
+	for (uint32_t i = 0; i < mtx_num; ++i) {
+		uint32_t o = off_idx + i * 2;
+		if (o + 2 > size) break;
+		sw16(out + o);         // mDrawMtxIndex[i]
+	}
+}
+
 // =============================================================================
 BmdSwapResult bmd_swap_to_host(const uint8_t* be_data, size_t len,
                                std::vector<uint8_t>& out) {
@@ -81,13 +99,16 @@ BmdSwapResult bmd_swap_to_host(const uint8_t* be_data, size_t len,
 		bool covered = true;
 		switch (tag) {
 		case 0x494E4631: /* INF1 */ swap_INF1(obo, bbo, bsz); break;
+		case 0x44525731: /* DRW1 */ swap_DRW1(obo, bbo, bsz); break;
 		// --- NOT YET IMPLEMENTED (field maps in the header doc) -------------
 		// VTX1 (J3DVertexBlock): GXVtxAttrFmt list (attr/cnt/type u32 + frac u8)
 		//   then per-attr arrays whose element layout (f32 pos/nrm, u8 color,
 		//   f32 texcoord, ...) is driven by the fmt list. The hard one.
 		// EVP1 (J3DEnvelopBlock): mWEvlpMtxNum u16 + 4 offsets; arrays of u8
 		//   counts (no swap), u16 indices, f32 weights, Mtx (f32[3][4]) inv-binds.
-		// DRW1 (J3DDrawBlock): mMtxNum u16 + 2 offsets; u8 flags (no swap), u16 idx.
+		//   index/weight lengths = sum of the u8 counts (LOCAL); the inv-bind
+		//   matrix count = JOINT count from JNT1 -> needs a counts pre-pass
+		//   (cross-block dependency; blocks can precede JNT1).
 		// JNT1: joint count u16 + offsets; per-joint matrix-type u16, flags, scale
 		//   f32[3], rotation s16[3], translation f32[3], bbox f32.
 		// SHP1: shape descriptors (mtx-type/count u16, display-list offset/size)
