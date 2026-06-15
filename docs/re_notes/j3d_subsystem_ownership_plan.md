@@ -77,7 +77,47 @@ irrelevant); one ctor override per type. vtable_db must learn SDLModel (subclass
    (J3DModel::calc slot, inherited). Drive headless to a frame, oracle-compare SDLModel(J3DModel) node
    matrices vs DISABLE_RECOMP (j3d_bridge_run proves the bridge math; this proves the GAME reaches it).
 
-### Slice 1 starts now (see git log). Below: the prior virtual-dispatch / construction history.
+### ⛔⛔ DECISIVE FINDING (2026-06-15, slice 1 in progress) — the consumer closure includes PERVASIVE INLINED engine-field reads in GAME code; function-call bridging alone is INSUFFICIENT
+Slice 1 step 1 (bridge SMS_ChangeTextureAll @0x80236c3c) LANDED + VERIFIED: the SB_FLIP_J3D binary
+boots PAST the createModelData fault (8021d524, ea=0x900000cf) to the NEXT consumer. Good — clean
+function-call bridge, no recompiler change. But the next fault exposes the structural wall:
+
+**`TShimmer::load` (8019f5ac, a GAME actor load) faults at ea=0x900000ee = J3DModelData handle +0xB4.**
+Disassembly (scratch/dis 0x8019f5ac) shows it contains BOTH shapes:
+- **Callable seams (bridgeable, like SMS_ChangeTextureAll):** `bl searchUpdateMaterialID` (802e3dd4,
+  the +0xB4/getMaterialName read), `bl entryTexMtxAnimator` (802dd448). These I CAN override.
+- **INLINED J3DModelData graph reads (the hard core, NOT bridgeable):**
+  `lwz r3,0x44(this)`(=unk44 J3DModelData handle); `lhz r4,0x24(r3)` = **getMaterialNum** (+0x24
+  scalar) and `lwz r,0x28(r3); lwzx` = **getMaterialNodePointer** (+0x28 mMaterials, a HOST J3DMaterial**
+  → element is a host J3DMaterial* the game then calls change()/setMaterialAnm()/setSomeFlag() on).
+  These are inlined into the GAME function — there is NO call seam to override. On a 0x9xxxxxxx handle
+  they wild-fault.
+
+**SCALE: ~46 GAME source files** (Enemy/Map/Player/Camera/NPC — `grep getModelData()->|->getMaterialNum()|
+->getMaterialNodePointer|->getShapeNum()|->getJointNum()` minus J3D/M3DUtil) inline-read J3DModelData/
+J3DMaterial/J3DShape accessors. This is PERVASIVE core gameplay, not isolated. So:
+
+**The "gameplay never field-derefs engine objects" premise (no-field-flip correction, 2026-06-15) is
+empirically FALSE for SMS** — gameplay pervasively inlines engine accessor reads. The closure cannot
+be bridged purely as function calls. THREE ways forward (ARCHITECTURE FORK — user decision needed):
+- **A. Recompiler emits BRIDGED GETTERS for inline engine-field reads.** type_recovery already types
+  the base (it knows unk44=J3DModelData handle at the read site); emit `sbget_J3DModelData_materialNum(h)`
+  /`sbget_..._materialNodePtr(h,i)→handle` CALLS instead of `MEM_R*(handle+off)`. This IS a function
+  call (no host layout in the game TU), scales to all 46 files automatically. ⚠ BUT this is essentially
+  the eng_accessors getter mechanism the user RETIRED (41aaa69). Reintroducing it (getters-only,
+  graph-ptr→handle) needs user sign-off — it's a narrower, function-call-shaped subset of the retired
+  field-flip, not the full host-struct-in-game-TU flip.
+- **B. OWN every field-dereffing actor function in port/** (TShimmer::load + the ~46 files' load/setup/
+  draw fns). Strictly honors no-field-flip (only port code field-derefs). Cost: hand-port a large,
+  repetitive surface of model-setup glue; tension with "don't hand-port game behavior" (load/setup is
+  glue-ish, borderline). Doesn't scale cheaply.
+- **C. Reconsider the tailored-recomp-into-port direction** given pervasive inlined engine access
+  (the "unicorn" question the user already answered NO to once — but this is new, quantified evidence).
+
+Until resolved, slice 1 is BLOCKED at TShimmer::load. The SMS_ChangeTextureAll bridge is kept (real
+progress). Recommendation pending user input is A (function-call-shaped, auto-scaling) — see handoff.
+
+### Slice 1 step 1 landed (SMS_ChangeTextureAll). Below: the prior virtual-dispatch / construction history.
 
 ## UPDATE 2026-06-15 (late) — SB_FLIP_J3D build integration DONE; routed-calc gated on 2 mechanisms
 Offset-0 virtual-dispatch routing is now BUILT, WIRED, and CORRECT end-to-end (recompiler side):
