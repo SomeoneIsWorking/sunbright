@@ -183,9 +183,11 @@ static const bool s_fade_probes = [] {
 static constexpr u32 J2DSCREEN_DRAW = 0x802cfda8u;
 
 void sb_j2d_set_root(u32 root);   // runtime/render/j2d_walk.cpp — publishes the live root for /j2d
+void sb_j2d_capture(u32 root);    // runtime/render/j2d_walk.cpp — snapshots the post-draw pane tree
 
 static void ov_j2dscreen_draw(CPUState& cpu) {
-    sb_j2d_set_root(cpu.gpr[3]);   // publish the live root J2DScreen* (the native J2D walker reads it)
+    const u32 root = cpu.gpr[3];
+    sb_j2d_set_root(root);         // publish the live root J2DScreen* (the /j2d diagnostic probes read it)
     static const bool log = getenv("SUNBRIGHT_RENDERPORT_LOG") != nullptr;
     if (log) {
         static unsigned long n = 0;
@@ -195,6 +197,10 @@ static void ov_j2dscreen_draw(CPUState& cpu) {
     }
     if (RecompFunc orig = recomp_raw(J2DSCREEN_DRAW)) orig(cpu);
     else call_ppc(cpu, cpu.lr);
+    // Capture AFTER the draw: mGlobalBounds/mColorAlpha are now consistently computed
+    // for every visible pane. The native present (video thread) reads this snapshot —
+    // a live cross-thread walk would catch the tree mid-update (the HUD-smear bug).
+    sb_j2d_capture(root);
 }
 
 // Registered unconditionally now: the tee is behavior-neutral (it super-calls the

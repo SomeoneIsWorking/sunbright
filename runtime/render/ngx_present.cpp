@@ -16,6 +16,7 @@
 #include "tex_decode.h"
 #include "tev_shader.h"
 #include "glsl_compile.h"
+#include "j2d_types.h"
 #include "../ngx/ngx_render_data.h"
 #include <cstddef>
 #include <cstdint>
@@ -30,6 +31,8 @@
 #include "VideoCommon/AbstractGfx.h"
 #include "VideoCommon/TextureConfig.h"
 #include "render/shaders/mesh_vert_spv.h"
+#include "render/shaders/quad_ortho_vert_spv.h"
+#include "render/shaders/quad_modulate_frag_spv.h"
 #include "../intrinsics.h"
 
 namespace {
@@ -74,15 +77,29 @@ struct PresentRenderer {
 
     VkBuffer vbuf = VK_NULL_HANDLE; VkDeviceMemory vmem = VK_NULL_HANDLE; VkDeviceSize vcap = 0;
 
-    unsigned long g_frames = 0, g_pipe_builds = 0, g_tex_decodes = 0;
+    // ── J2D / HUD overlay (drawn over the 3D scene in the same render pass) ──
+    VkSampler j2d_sampler = VK_NULL_HANDLE;        // clamp-to-edge for HUD textures
+    VkDescriptorSetLayout j2d_dsl = VK_NULL_HANDLE;  // 1 combined image sampler
+    VkPipelineLayout j2d_pll = VK_NULL_HANDLE;
+    VkShaderModule j2d_vs = VK_NULL_HANDLE, j2d_fs = VK_NULL_HANDLE;
+    VkPipeline j2d_pipe = VK_NULL_HANDLE;
+    VkDescriptorPool j2d_dpool = VK_NULL_HANDLE; uint32_t j2d_dpool_cap = 0;
+    // One prepared HUD quad draw (descriptor + push-constant payload).
+    struct J2dDraw { VkDescriptorSet dset; float rect[4]; float misc[4]; uint32_t corners[4]; };
+
+    unsigned long g_frames = 0, g_pipe_builds = 0, g_tex_decodes = 0, g_j2d_quads = 0;
 
     bool init();
+    bool init_j2d();
     bool ensure_target(int w, int h);
     bool ensure_vbuf(VkDeviceSize bytes);
     bool ensure_dpool(uint32_t nsets);
+    bool ensure_j2d_dpool(uint32_t nsets);
     VkPipeline pipeline_for(const NgxTevState& st);
     VkImageView texture_for(const NgxTexBind& t, VkCommandBuffer up_cmd,
                             std::vector<VkBuffer>& stg_bufs, std::vector<VkDeviceMemory>& stg_mems);
+    void prepare_j2d(VkCommandBuffer up_cmd, std::vector<VkBuffer>& stg_bufs,
+                     std::vector<VkDeviceMemory>& stg_mems, std::vector<J2dDraw>& out);
     AbstractTexture* render(int w, int h);
 };
 
@@ -203,7 +220,71 @@ bool PresentRenderer::init() {
         vkResetFences(dev, 1, &fence); vkQueueSubmit(queue, 1, &su, fence); vkWaitForFences(dev, 1, &fence, VK_TRUE, 5'000'000'000ull);
         vkDestroyBuffer(dev, sbuf, nullptr); vkFreeMemory(dev, smem, nullptr);
     }
+    if (!init_j2d()) return false;
     return true;
+}
+
+// J2D/HUD overlay pipeline: an ortho textured-quad (quad_ortho vert + quad_modulate
+// frag) drawn over the 3D scene in the SAME render pass (depth test off). Built ONCE;
+// the pipeline is fixed (the render pass / target format never change shape). The
+// viewport/scissor are dynamic so it survives target-size changes without a rebuild.
+bool PresentRenderer::init_j2d() {
+    VkSamplerCreateInfo sci{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+    sci.magFilter = sci.minFilter = VK_FILTER_LINEAR; sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    sci.addressModeU = sci.addressModeV = sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    if (vkCreateSampler(dev, &sci, nullptr, &j2d_sampler)) return false;
+
+    VkDescriptorSetLayoutBinding b{};
+    b.binding = 0; b.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    b.descriptorCount = 1; b.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    li.bindingCount = 1; li.pBindings = &b;
+    if (vkCreateDescriptorSetLayout(dev, &li, nullptr, &j2d_dsl)) return false;
+
+    VkPushConstantRange pcr{VK_SHADER_STAGE_VERTEX_BIT, 0, 48};  // vec4 rect | vec4 misc | uvec4 corners
+    VkPipelineLayoutCreateInfo plci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    plci.setLayoutCount = 1; plci.pSetLayouts = &j2d_dsl; plci.pushConstantRangeCount = 1; plci.pPushConstantRanges = &pcr;
+    if (vkCreatePipelineLayout(dev, &plci, nullptr, &j2d_pll)) return false;
+
+    VkShaderModuleCreateInfo si{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+    si.codeSize = sizeof kQuadOrthoVertSpv; si.pCode = kQuadOrthoVertSpv;
+    if (vkCreateShaderModule(dev, &si, nullptr, &j2d_vs)) return false;
+    si.codeSize = sizeof kQuadModulateFragSpv; si.pCode = kQuadModulateFragSpv;
+    if (vkCreateShaderModule(dev, &si, nullptr, &j2d_fs)) return false;
+
+    VkPipelineShaderStageCreateInfo ss[2] = {};
+    ss[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+    ss[0].stage = VK_SHADER_STAGE_VERTEX_BIT; ss[0].module = j2d_vs; ss[0].pName = "main";
+    ss[1] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+    ss[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; ss[1].module = j2d_fs; ss[1].pName = "main";
+    VkPipelineVertexInputStateCreateInfo vi{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};  // none (gl_VertexIndex)
+    VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+    ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+    VkPipelineViewportStateCreateInfo vps{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+    vps.viewportCount = 1; vps.scissorCount = 1;   // dynamic
+    VkDynamicState dyn[2] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+    ds.dynamicStateCount = 2; ds.pDynamicStates = dyn;
+    VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+    rs.polygonMode = VK_POLYGON_MODE_FILL; rs.cullMode = VK_CULL_MODE_NONE;
+    rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE; rs.lineWidth = 1.0f;
+    VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+    ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    // The render pass has a depth attachment (shared with the 3D pass) — the HUD must
+    // provide a depth-stencil state but draws on top with test/write OFF.
+    VkPipelineDepthStencilStateCreateInfo dss{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+    dss.depthTestEnable = VK_FALSE; dss.depthWriteEnable = VK_FALSE; dss.depthCompareOp = VK_COMPARE_OP_ALWAYS;
+    VkPipelineColorBlendAttachmentState cba{}; cba.colorWriteMask = 0xF; cba.blendEnable = VK_TRUE;
+    cba.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA; cba.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA; cba.colorBlendOp = VK_BLEND_OP_ADD;
+    cba.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE; cba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA; cba.alphaBlendOp = VK_BLEND_OP_ADD;
+    VkPipelineColorBlendStateCreateInfo cb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+    cb.attachmentCount = 1; cb.pAttachments = &cba;
+    VkGraphicsPipelineCreateInfo gp{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+    gp.stageCount = 2; gp.pStages = ss; gp.pVertexInputState = &vi; gp.pInputAssemblyState = &ia;
+    gp.pViewportState = &vps; gp.pRasterizationState = &rs; gp.pMultisampleState = &ms;
+    gp.pDepthStencilState = &dss; gp.pColorBlendState = &cb; gp.pDynamicState = &ds;
+    gp.layout = j2d_pll; gp.renderPass = rpass; gp.subpass = 0;
+    return vkCreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, nullptr, &j2d_pipe) == VK_SUCCESS;
 }
 
 bool PresentRenderer::ensure_target(int w, int h) {
@@ -251,6 +332,18 @@ bool PresentRenderer::ensure_dpool(uint32_t nsets) {
     pci.maxSets = cap; pci.poolSizeCount = 1; pci.pPoolSizes = &ps;
     if (vkCreateDescriptorPool(dev, &pci, nullptr, &dpool)) return false;
     dpool_cap = cap; return true;
+}
+
+bool PresentRenderer::ensure_j2d_dpool(uint32_t nsets) {
+    if (j2d_dpool && j2d_dpool_cap >= nsets) { vkResetDescriptorPool(dev, j2d_dpool, 0); return true; }
+    vkDeviceWaitIdle(dev);
+    if (j2d_dpool) { vkDestroyDescriptorPool(dev, j2d_dpool, nullptr); j2d_dpool = VK_NULL_HANDLE; }
+    uint32_t cap = nsets + nsets / 2 + 8;
+    VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, cap};
+    VkDescriptorPoolCreateInfo pci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    pci.maxSets = cap; pci.poolSizeCount = 1; pci.pPoolSizes = &ps;
+    if (vkCreateDescriptorPool(dev, &pci, nullptr, &j2d_dpool)) return false;
+    j2d_dpool_cap = cap; return true;
 }
 
 // Build (or fetch cached) the pipeline for a material TEV+PE state. Compiles the
@@ -376,6 +469,53 @@ VkImageView PresentRenderer::texture_for(const NgxTexBind& t, VkCommandBuffer up
     return te.view;
 }
 
+// Collect the live J2D HUD draw list and prepare a per-quad draw (texture uploaded +
+// cached, descriptor set written). MUST run BEFORE vkCmdBeginRenderPass (texture
+// uploads record copies/barriers, illegal inside a render pass). The actual draws are
+// issued from render() inside the pass. Paletted quads are skipped (no TLUT resolved
+// in the walker yet) so an unresolved palette can't paint a white box.
+void PresentRenderer::prepare_j2d(VkCommandBuffer up_cmd, std::vector<VkBuffer>& stg_bufs,
+                                  std::vector<VkDeviceMemory>& stg_mems, std::vector<J2dDraw>& out) {
+    J2dQuad quads[64];
+    int sw = 0, sh = 0;
+    int nq = sb_j2d_snapshot(quads, 64, &sw, &sh);   // consistent draw-time snapshot
+    if (nq <= 0) return;
+    if (sw <= 0 || sw > 4096) sw = 640;
+    if (sh <= 0 || sh > 4096) sh = 480;
+    if (!ensure_j2d_dpool((uint32_t)nq)) return;
+
+    for (int i = 0; i < nq; i++) {
+        const J2dQuad& q = quads[i];
+        if (sb_tex_is_paletted(q.fmt)) continue;
+        if (q.x1 <= q.x0 || q.y1 <= q.y0) continue;
+        // GC textures store rows padded to the format's block dims; pad to a multiple
+        // of 8 (the largest block) so the tiled decode never over-runs (same as j2d_render).
+        NgxTexBind tb{};
+        tb.addr = q.data; tb.w = (uint16_t)((q.w + 7) & ~7); tb.h = (uint16_t)((q.h + 7) & ~7);
+        tb.fmt = (uint8_t)q.fmt; tb.tlut_addr = 0; tb.tlut_fmt = 0;
+        VkImageView view = texture_for(tb, up_cmd, stg_bufs, stg_mems);
+        if (view == VK_NULL_HANDLE) continue;
+
+        VkDescriptorSetAllocateInfo dai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        dai.descriptorPool = j2d_dpool; dai.descriptorSetCount = 1; dai.pSetLayouts = &j2d_dsl;
+        VkDescriptorSet set = VK_NULL_HANDLE;
+        if (vkAllocateDescriptorSets(dev, &dai, &set)) return;
+        VkDescriptorImageInfo dii{j2d_sampler, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        VkWriteDescriptorSet wr{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        wr.dstSet = set; wr.dstBinding = 0; wr.descriptorCount = 1;
+        wr.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; wr.pImageInfo = &dii;
+        vkUpdateDescriptorSets(dev, 1, &wr, 0, nullptr);
+
+        J2dDraw d{};
+        d.dset = set;
+        d.rect[0] = (float)q.x0; d.rect[1] = (float)q.y0; d.rect[2] = (float)q.x1; d.rect[3] = (float)q.y1;
+        d.misc[0] = (float)sw; d.misc[1] = (float)sh; d.misc[2] = q.alpha / 255.0f; d.misc[3] = 0;
+        for (int c = 0; c < 4; c++) d.corners[c] = q.corner[c];
+        out.push_back(d);
+    }
+    g_j2d_quads = out.size();
+}
+
 AbstractTexture* PresentRenderer::render(int w, int h) {
     int nv = 0, nb = 0, ntev = 0;
     const NgxRenderVertex* sv = ngx_snap_verts(&nv);
@@ -433,6 +573,11 @@ AbstractTexture* PresentRenderer::render(int w, int h) {
         vkUpdateDescriptorSets(dev, 1, &wr, 0, nullptr);
     }
 
+    // Prepare the HUD/J2D overlay (texture uploads recorded into `cmd`) BEFORE the
+    // render pass; the quads are drawn over the 3D scene inside it.
+    std::vector<J2dDraw> j2d;
+    prepare_j2d(cmd, stg_bufs, stg_mems, j2d);
+
     VkClearValue clear[2]{}; clear[0].color = {{0.10f, 0.12f, 0.18f, 1.f}}; clear[1].depthStencil = {1.0f, 0};
     VkRenderPassBeginInfo rbi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
     rbi.renderPass = rpass; rbi.framebuffer = fbo; rbi.renderArea = {{0, 0}, {(uint32_t)w, (uint32_t)h}};
@@ -456,6 +601,24 @@ AbstractTexture* PresentRenderer::render(int w, int h) {
         vkCmdPushConstants(cmd, pll, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof pc, &pc);
         vkCmdDraw(cmd, batches[b].vcount, 1, batches[b].vstart, 0);
     }
+
+    // HUD/J2D overlay over the 3D scene (alpha-blended, depth off, dynamic viewport).
+    if (j2d_pipe != VK_NULL_HANDLE && !j2d.empty()) {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, j2d_pipe);
+        VkViewport vp{0, 0, (float)w, (float)h, 0, 1};
+        VkRect2D scr{{0, 0}, {(uint32_t)w, (uint32_t)h}};
+        vkCmdSetViewport(cmd, 0, 1, &vp); vkCmdSetScissor(cmd, 0, 1, &scr);
+        for (const J2dDraw& d : j2d) {
+            struct { float rect[4]; float misc[4]; uint32_t corners[4]; } pc;
+            std::memcpy(pc.rect, d.rect, sizeof pc.rect);
+            std::memcpy(pc.misc, d.misc, sizeof pc.misc);
+            std::memcpy(pc.corners, d.corners, sizeof pc.corners);
+            vkCmdPushConstants(cmd, j2d_pll, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof pc, &pc);
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, j2d_pll, 0, 1, &d.dset, 0, nullptr);
+            vkCmdDraw(cmd, 4, 1, 0, 0);
+        }
+    }
+
     vkCmdEndRenderPass(cmd);   // target now SHADER_READ_ONLY (render-pass finalLayout)
     vkEndCommandBuffer(cmd);
 
@@ -484,14 +647,14 @@ extern "C" const void* sb_ngx_present_xfb(int w, int h) {
 
 // Diagnostics for the /ngxpresentlive probe.
 extern "C" void sb_ngx_present_stats(unsigned long* frames, unsigned long* pipes, unsigned long* texes,
-                                     int* w, int* h, int* ok) {
+                                     int* w, int* h, int* ok, unsigned long* j2d_quads) {
     *frames = g_pr.g_frames; *pipes = g_pr.g_pipe_builds; *texes = g_pr.g_tex_decodes;
-    *w = g_pr.tw; *h = g_pr.th; *ok = g_pr.init_ok ? 1 : 0;
+    *w = g_pr.tw; *h = g_pr.th; *ok = g_pr.init_ok ? 1 : 0; *j2d_quads = g_pr.g_j2d_quads;
 }
 
 #else
 extern "C" const void* sb_ngx_present_xfb(int, int) { return nullptr; }
-extern "C" void sb_ngx_present_stats(unsigned long* f, unsigned long* p, unsigned long* t, int* w, int* h, int* ok) {
-    *f = *p = *t = 0; *w = *h = 0; *ok = 0;
+extern "C" void sb_ngx_present_stats(unsigned long* f, unsigned long* p, unsigned long* t, int* w, int* h, int* ok, unsigned long* j2d) {
+    *f = *p = *t = 0; *w = *h = 0; *ok = 0; *j2d = 0;
 }
 #endif

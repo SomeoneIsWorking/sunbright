@@ -21,8 +21,10 @@
 
 #include "../intrinsics.h"     // mem_r32, u32/u8
 #include "j2d_types.h"
+#include <atomic>
 #include <cstdarg>
 #include <cstdio>
+#include <cstring>
 
 namespace {
 
@@ -114,9 +116,10 @@ int sb_j2d_dump(char* out, int cap) {
     return visited;
 }
 
-// Collect visible J2DPicture quads (screen rect + texture) in draw order.
-int sb_j2d_collect(J2dQuad* out, int max, int* screen_w, int* screen_h) {
-    const u32 root = g_root;
+// Collect visible J2DPicture quads (screen rect + texture) in draw order, from a
+// given J2DScreen root. Pure read of guest memory — caller supplies the consistency
+// (snapshot at draw time on the game thread, or accept the live-read race for probes).
+static int collect_from(u32 root, J2dQuad* out, int max, int* screen_w, int* screen_h) {
     if (screen_w) *screen_w = 0;
     if (screen_h) *screen_h = 0;
     if (!valid(root) || !out || max <= 0) return 0;
@@ -137,7 +140,13 @@ int sb_j2d_collect(J2dQuad* out, int max, int* screen_w, int* screen_h) {
 
         const u32 kind = r32(p + PANE_KIND);
         const bool vis = rb(p + PANE_VISIBLE) != 0;
-        if (vis && is_picture(kind)) {
+        // J2DPane::draw early-returns on an invisible pane: it draws neither itself
+        // NOR its children. So an invisible pane prunes its whole subtree — e.g. the
+        // counter-roll widget keeps its off-screen digit rows as vis=0 PAN1 parents
+        // whose PIC1 children are vis=1; descending into them would draw the hidden
+        // rows (the garbled HUD overlap). Skip the subtree entirely.
+        if (!vis) continue;
+        if (is_picture(kind)) {
             const u32 tex = r32(p + PIC_TEXTURES);   // mTextures[0]
             if (valid(tex)) {
                 // Prefer global bounds; fall back to local if empty.
@@ -165,5 +174,42 @@ int sb_j2d_collect(J2dQuad* out, int max, int* screen_w, int* screen_h) {
             kids[nk++] = r32(link + LINK_DATA);
         for (int i = nk - 1; i >= 0 && sp < 256; i--) stack[sp++] = {kids[i]};
     }
+    return n;
+}
+
+// Live walk of the current root — used by the /j2drender + /j2d diagnostic probes
+// (HTTP thread). Accepts the read-vs-update race; for the production present path use
+// the draw-time snapshot below.
+int sb_j2d_collect(J2dQuad* out, int max, int* screen_w, int* screen_h) {
+    return collect_from(g_root, out, max, screen_w, screen_h);
+}
+
+// ── Draw-time snapshot ─────────────────────────────────────────────────────────
+// The native present (video thread) needs a CONSISTENT HUD draw list. J2DPane::draw
+// computes mGlobalBounds/mColorAlpha into each pane DURING the draw; reading the tree
+// live from another thread catches it half-updated (digits land at stale x → the HUD
+// smears). So we capture on the game thread right after J2DScreen::draw returns (the
+// tree is fully, consistently positioned) into a double buffer the video thread reads.
+constexpr int J2D_SNAP_MAX = 128;
+static J2dQuad g_snap[2][J2D_SNAP_MAX];
+static int g_snap_n[2] = {0, 0};
+static int g_snap_w[2] = {0, 0}, g_snap_h[2] = {0, 0};
+static std::atomic<int> g_snap_front{0};
+
+// Called from the J2DScreen::draw tee (game thread) AFTER the real draw, when bounds
+// are freshly and consistently computed.
+void sb_j2d_capture(u32 root) {
+    const int back = 1 - g_snap_front.load(std::memory_order_relaxed);
+    g_snap_n[back] = collect_from(root, g_snap[back], J2D_SNAP_MAX, &g_snap_w[back], &g_snap_h[back]);
+    g_snap_front.store(back, std::memory_order_release);
+}
+
+// Read the latest consistent HUD draw list (video thread). Returns the quad count.
+int sb_j2d_snapshot(J2dQuad* out, int max, int* screen_w, int* screen_h) {
+    const int f = g_snap_front.load(std::memory_order_acquire);
+    int n = g_snap_n[f]; if (n > max) n = max;
+    if (n > 0) std::memcpy(out, g_snap[f], (size_t)n * sizeof(J2dQuad));
+    if (screen_w) *screen_w = g_snap_w[f];
+    if (screen_h) *screen_h = g_snap_h[f];
     return n;
 }

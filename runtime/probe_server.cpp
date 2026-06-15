@@ -83,7 +83,7 @@ int sb_ngx_mesh_selftest(char*, int);                        // runtime/ngx/ngx_
 int sb_ngx_shape_dump(char*, int);                           // runtime/overrides/ngx_j3d_shape.cpp
 int sb_ngx_render(char*, int);                               // runtime/render/vk_mesh.cpp
 int sb_ngx_present_test(char*, int);                         // runtime/render/vk_mesh.cpp
-extern "C" void sb_ngx_present_stats(unsigned long*, unsigned long*, unsigned long*, int*, int*, int*);  // ngx_present.cpp
+extern "C" void sb_ngx_present_stats(unsigned long*, unsigned long*, unsigned long*, int*, int*, int*, unsigned long*);  // ngx_present.cpp
 int sb_tev_shader_selftest(char*, int);                      // runtime/render/tev_shader.cpp
 void gxs_frametime_reset();                                   // runtime/gx_stream.h
 void gxs_frametime_stats(unsigned long*, double*, double*, double*, double*);
@@ -238,10 +238,10 @@ std::string handle_repl(const char* path) {
         return std::string(buf, n);
     }
     if (strncmp(path, "/ngxpresentlive", 15) == 0) {  // N7 live present: renderer stats (SUNBRIGHT_NGX_PRESENT)
-        unsigned long fr = 0, pi = 0, tx = 0; int w = 0, h = 0, ok = 0;
-        sb_ngx_present_stats(&fr, &pi, &tx, &w, &h, &ok);
-        app("ngx_present_live: init_ok=%d frames=%lu pipelines_built=%lu textures_decoded=%lu target=%dx%d\n",
-            ok, fr, pi, tx, w, h);
+        unsigned long fr = 0, pi = 0, tx = 0, jq = 0; int w = 0, h = 0, ok = 0;
+        sb_ngx_present_stats(&fr, &pi, &tx, &w, &h, &ok, &jq);
+        app("ngx_present_live: init_ok=%d frames=%lu pipelines_built=%lu textures_decoded=%lu target=%dx%d hud_quads=%lu\n",
+            ok, fr, pi, tx, w, h, jq);
         return std::string(buf, n);
     }
     if (strncmp(path, "/ngxpresent", 11) == 0) {  // N7 present primitive: render into an external target

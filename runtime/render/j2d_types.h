@@ -21,3 +21,8 @@ struct J2dQuad {
 // `out` with visible J2DPicture quads, in draw order (parent before child, first
 // child first). Returns the count (<= max). Also returns the root screen size.
 int sb_j2d_collect(J2dQuad* out, int max, int* screen_w, int* screen_h);
+
+// Read the latest CONSISTENT HUD draw list, captured on the game thread right after
+// J2DScreen::draw (so mGlobalBounds are fully computed). Use this from the render/
+// video thread instead of sb_j2d_collect to avoid the mid-update read race.
+int sb_j2d_snapshot(J2dQuad* out, int max, int* screen_w, int* screen_h);
