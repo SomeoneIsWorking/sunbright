@@ -263,6 +263,82 @@ static int emit_textbox(u32 p, J2dQuad* out, int max, int n) {
     return n;
 }
 
+// Read a J2DWindow::Texture* (a JUTTexture) → quad texture description.
+static bool win_tex(u32 texptr, u32& data, int& fmt, int& w, int& h) {
+    if (!valid(texptr)) return false;
+    data = r32(texptr + TEX_DATA);
+    fmt  = (int)(r32(texptr + TEX_FORMAT) & 0xFF);
+    const u32 wh = r32(texptr + TEX_WH);
+    w = (int)(wh >> 16); h = (int)(wh & 0xFFFF);
+    return valid(data) && w > 0 && h > 0;
+}
+
+// J2DWindow: contents fill + textured 9-slice border (port of J2DWindow::draw_private/
+// drawContents, reference/sms). The 4 corner textures (unk100=TL/104=TR/108=BL/10C=BR)
+// are placed at the corners and STRETCHED along the edges between them; UV flips come
+// from the unk114 flag bits (encoded here as swapped uvrect endpoints, matching
+// Texture::draw's 0x8000=1.0 / 0=0.0 texcoords).
+static int emit_window(u32 p, J2dQuad* out, int max, int n) {
+    int gx0 = (int)r32(p + PANE_GBOUNDS + 0), gy0 = (int)r32(p + PANE_GBOUNDS + 4);
+    int gx1 = (int)r32(p + PANE_GBOUNDS + 8), gy1 = (int)r32(p + PANE_GBOUNDS + 12);
+    if (gx1 <= gx0 || gy1 <= gy0) {
+        gx0 = (int)r32(p + PANE_BOUNDS + 0); gy0 = (int)r32(p + PANE_BOUNDS + 4);
+        gx1 = (int)r32(p + PANE_BOUNDS + 8); gy1 = (int)r32(p + PANE_BOUNDS + 12);
+    }
+    const int W = gx1 - gx0, H = gy1 - gy0;
+    if (W <= 0 || H <= 0) return n;
+    const u8 alpha = rb8(p + PANE_COLORALPHA);
+    u32 wht = r32(p + 0x128), blk = r32(p + 0x12C);   // window texture white/black remap
+    if (wht == 0) wht = 0xFFFFFFFFu;
+    const u32 fl = r32(p + 0x114);
+
+    // Contents fill (4-colour quad via the 1×1 white fallback).
+    if (n < max) {
+        J2dQuad& q = out[n];
+        q.x0 = gx0; q.y0 = gy0; q.x1 = gx1; q.y1 = gy1;
+        q.alpha = alpha; q.fmt = 0; q.w = 0; q.h = 0; q.data = 0; q.tlut = 0; q.tlutfmt = 0;
+        q.corner[0] = r32(p + WIN_COL_TL); q.corner[1] = r32(p + WIN_COL_TR);
+        q.corner[2] = r32(p + WIN_COL_BL); q.corner[3] = r32(p + WIN_COL_BR);
+        q.white = 0xFFFFFFFFu; q.black = 0;
+        q.u0 = 0.f; q.v0 = 0.f; q.u1 = 1.f; q.v1 = 1.f;
+        n++;
+    }
+
+    // Textured 9-slice border.
+    const u32 t100 = r32(p + 0x100), t104 = r32(p + 0x104), t108 = r32(p + 0x108), t10C = r32(p + 0x10C);
+    auto add = [&](u32 tex, int sx, int sy, int sw, int sh, float u0, float v0, float u1, float v1) {
+        u32 dd; int ff, ww, hh;
+        if (n >= max || sw <= 0 || sh <= 0 || !win_tex(tex, dd, ff, ww, hh)) return;
+        J2dQuad& q = out[n];
+        q.x0 = gx0 + sx; q.y0 = gy0 + sy; q.x1 = gx0 + sx + sw; q.y1 = gy0 + sy + sh;
+        q.alpha = alpha; q.fmt = ff; q.w = ww; q.h = hh; q.data = dd; q.tlut = 0; q.tlutfmt = 0;
+        for (int c = 0; c < 4; c++) q.corner[c] = 0xFFFFFFFFu;
+        q.white = wht; q.black = blk;
+        q.u0 = u0; q.v0 = v0; q.u1 = u1; q.v1 = v1;
+        n++;
+    };
+    u32 dd; int ff, w100 = 0, h100 = 0, w104 = 0, h104 = 0, w108 = 0, h108 = 0, w10C = 0, h10C = 0;
+    win_tex(t100, dd, ff, w100, h100); win_tex(t104, dd, ff, w104, h104);
+    win_tex(t108, dd, ff, w108, h108); win_tex(t10C, dd, ff, w10C, h10C);
+    const int iV6 = W - w10C, iV8 = H - h10C;
+    auto fU = [](bool h){ return h ? 1.f : 0.f; };          // flipped-left U
+    // Corners (hflip/vflip → swap uvrect endpoints).
+    add(t100, 0,   0,   w100, h100, fU(fl&0x80), fU(fl&0x40), fU(!(fl&0x80)), fU(!(fl&0x40)));
+    add(t104, iV6, 0,   w104, h104, fU(fl&0x20), fU(fl&0x10), fU(!(fl&0x20)), fU(!(fl&0x10)));
+    add(t108, 0,   iV8, w108, h108, fU(fl&0x08), fU(fl&0x04), fU(!(fl&0x08)), fU(!(fl&0x04)));
+    add(t10C, iV6, iV8, w10C, h10C, fU(fl&0x02), fU(fl&0x01), fU(!(fl&0x02)), fU(!(fl&0x01)));
+    // Edges (uvrect derived from J2DWindow::draw_private's explicit texcoords).
+    { float a=fU(fl&0x20), c=fU(!(fl&0x10)), d=1.f-c;                                  // TOP (unk104)
+      add(t104, w100, 0,   iV6 - w100, h104, a, d, a, c); }
+    { float a=fU(fl&0x02), b=fU(!(fl&0x01)), c=1.f-b;                                  // BOTTOM (unk10C)
+      add(t10C, w100, iV8, iV6 - w100, h10C, a, c, a, b); }
+    { float a=fU(!(fl&0x08)), b=1.f-a, c=fU(fl&0x04);                                  // LEFT (unk108)
+      add(t108, 0,   h100, w108, iV8 - h100, b, c, a, c); }
+    { float a=fU(!(fl&0x02)), b=1.f-a, c=fU(fl&0x01);                                  // RIGHT (unk10C)
+      add(t10C, iV6, h100, w10C, iV8 - h100, b, c, a, c); }
+    return n;
+}
+
 // Collect visible J2DPicture quads (screen rect + texture) in draw order, from a
 // given J2DScreen root. Pure read of guest memory — caller supplies the consistency
 // (snapshot at draw time on the game thread, or accept the live-read race for probes).
@@ -319,26 +395,7 @@ static int collect_from(u32 root, J2dQuad* out, int max, int* screen_w, int* scr
         } else if (is_textbox(kind)) {
             n = emit_textbox(p, out, max, n);   // one quad per glyph (font atlas cells)
         } else if (is_window(kind)) {
-            // J2DWindow contents fill: a 4-colour quad over the window interior (the dark
-            // subtitle bar / message-box background). The textured 9-slice border is TODO.
-            int x0 = (int)r32(p + PANE_GBOUNDS + 0), y0 = (int)r32(p + PANE_GBOUNDS + 4);
-            int x1 = (int)r32(p + PANE_GBOUNDS + 8), y1 = (int)r32(p + PANE_GBOUNDS + 12);
-            if (x1 <= x0 || y1 <= y0) {
-                x0 = (int)r32(p + PANE_BOUNDS + 0); y0 = (int)r32(p + PANE_BOUNDS + 4);
-                x1 = (int)r32(p + PANE_BOUNDS + 8); y1 = (int)r32(p + PANE_BOUNDS + 12);
-            }
-            if (x1 > x0 && y1 > y0 && n < max) {
-                J2dQuad& q = out[n];
-                q.x0 = x0; q.y0 = y0; q.x1 = x1; q.y1 = y1;
-                q.alpha = rb8(p + PANE_COLORALPHA);
-                q.fmt = 0; q.w = 0; q.h = 0; q.data = 0;   // no texture → 1×1 white × corner colour
-                q.tlut = 0; q.tlutfmt = 0;
-                q.corner[0] = r32(p + WIN_COL_TL); q.corner[1] = r32(p + WIN_COL_TR);
-                q.corner[2] = r32(p + WIN_COL_BL); q.corner[3] = r32(p + WIN_COL_BR);
-                q.white = 0xFFFFFFFFu; q.black = 0;
-                q.u0 = 0.f; q.v0 = 0.f; q.u1 = 1.f; q.v1 = 1.f;
-                n++;
-            }
+            n = emit_window(p, out, max, n);   // contents fill + textured 9-slice border
         }
         // children, pushed reversed for draw order
         u32 kids[64]; int nk = 0;
