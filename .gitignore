@@ -1,7 +1,6 @@
 build/
 generated/
-generated-flip/
-generated-noflip/
+generated-*/
 *.o
 *.so
 *.a
