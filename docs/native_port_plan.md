@@ -392,6 +392,23 @@ decoder; runtime GP-FIFO path on the delete list. Then, on the object-model arch
   - **Still first-slice gaps** (lower priority): identity TEV swap tables, no alpha
     test (PE block uncaptured → foliage cutouts show full quads), no indirect stages.
 
+- **N6.7 — object-model per-material textures ✅ (THE darkness fix)** — Delfino now
+  renders BRIGHT and correctly textured (Shine Gate, sandstone buildings, tiled plaza,
+  hills, sky), Dolphin-free. The GX-tee texture path was fundamentally wrong for J3D:
+  J3D preloads textures into TMEM upfront, so `GXLoadTexObj`-at-draw is STALE (every
+  shape in a frame bound the same one texture → "4 unique textures"). Fix reads the
+  binding object-model: material's TEV block `mTexNo[texmap]` (@blk+0x04, u16, count by
+  variant) → `j3dSys.mTexture` (J3DSYS+0x54: count u16@0x0, `ResTIMG* mResources`@0x4) →
+  `ResTIMG[texNo]` (size 0x20: format@0, width@2, height@4, colorFormat@9,
+  paletteOffset@0xC, imageDataOffset@0x1C, both self-relative) → image at
+  `timg+imageDataOffset`. Result: 4→159 unique textures, `/ngxrender` mean brightness
+  15→192. Confirmed the earlier "dark" was TEXTURES, not lighting/texgen (both A/B-ruled-
+  out). The GX tees are retained as `/ngxshape` diagnostics only.
+  - NEXT gaps (now that the base is correct): alpha test (PE block → `discard` for
+    foliage cutouts), Vulkan blend state (J3DBlend), TEV swap tables, indirect stages,
+    fog; then N7 present (make this the live on-screen path); and the lighting fidelity
+    headed check (layered correctly now, but confirm vs oracle).
+
 - **N6.5 — per-texmap texture capture + per-stage sampling ✅** (this commit) — the
   producer now captures the binding for ALL 8 GX texmaps (both `GXLoadTexObj`
   0x80360160 and `GXLoadTexObjPreLoaded` 0x8035ffb8 fire for texmaps 0..7 — verified
