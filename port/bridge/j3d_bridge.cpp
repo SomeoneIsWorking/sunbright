@@ -27,6 +27,8 @@
 #include <JSystem/J3D/J3DGraphLoader/J3DModelLoader.hpp>
 #include <JSystem/J3D/J3DGraphAnimator/J3DModel.hpp>
 #include <JSystem/JMath.hpp>
+#include <JSystem/ResTIMG.hpp>
+#include <MarioUtil/TexUtil.hpp>
 #include "bmd_swap.h"
 
 #include <cstdint>
@@ -163,6 +165,33 @@ int sbport_j3dmodel_getNodeMtx(void* self, uint32_t idx, float out12[12]) {
 		for (int c = 0; c < 4; ++c)
 			out12[r * 4 + c] = nm[r][c];
 	return 0;
+}
+
+// ── J3DModelData consumers (NEXT #2 slice 1: model-data consumer closure) ─────
+// These are engine free-fns/methods the recompiled GAME calls with a J3DModelData
+// HANDLE; they field-deref it (getTexture +0xAC, the unkA8 name table, the
+// material/shape graph). Under SB_FLIP_J3D the handle is a 0x9xxxxxxx token, so
+// the recompiled body wild-faults — they must run PORT-NATIVE on sb_eng_host(md).
+//
+// SMS_ChangeTextureAll @0x80236c3c (MarioUtil/TexUtil.cpp). The first J3DModelData
+// consumer the boot hits: TNPCManager::makePartsModelData_ -> changeTextureToPollution_
+// -> SMS_ChangeTextureAll(sdlModel->getModelData(), name, *pollutionTimg). It loops
+// the model's texture table comparing names, replacing matching texels.
+//   md   = host J3DModelData (handle resolved by the override)
+//   name = guest dummy-tex name string (guest-RAM, passed as host ptr)
+//   timg = the replacement ResTIMG. ⚠ ENDIANNESS: the source ResTIMG lives in
+//          guest RAM and is BIG-ENDIAN; setResTIMG copies the header host-side,
+//          so the copied scalar fields are byteswapped. The texel/palette pixel
+//          data stays GC-native (decoded at upload, per bmd_swap TEX1 notes), so
+//          this does not corrupt the boot path; the pollution-texture VISUAL
+//          correctness is a Step-3 (GX/upload) concern. TODO: swap the ResTIMG
+//          header here when the upload path is owned. For now it only needs to not
+//          wild-fault, which running on the host object achieves.
+void sbport_sms_changeTextureAll(void* md, const char* name, const void* timg) {
+	if (!md || !name || !timg)
+		return;
+	SMS_ChangeTextureAll(static_cast<J3DModelData*>(md), name,
+	                     *static_cast<const ResTIMG*>(timg));
 }
 
 }  // extern "C"

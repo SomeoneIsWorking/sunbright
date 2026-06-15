@@ -48,6 +48,7 @@ void  sbport_j3dmodel_entryModelData(void* self, void* md, uint32_t model_flag,
                                      uint32_t mtx_buffer_flag);
 void  sbport_j3dmodel_calc(void* self);
 void  sbport_j3dmodel_viewCalc(void* self);
+void  sbport_sms_changeTextureAll(void* md, const char* name, const void* timg);
 }
 
 #ifdef SB_FLIP_J3D
@@ -81,6 +82,20 @@ SUNBRIGHT_OVERRIDE(ov_j3dmodel_calc, 0x802debc4) {
 // viewCalc__8J3DModelFv @0x802deeb8
 SUNBRIGHT_OVERRIDE(ov_j3dmodel_viewCalc, 0x802deeb8) {
 	sbport_j3dmodel_viewCalc(sb_eng_host(cpu.gpr[3]));
+	call_ppc(cpu, cpu.lr);
+}
+
+// ── J3DModelData consumers (NEXT #2 slice 1) ─────────────────────────────────
+// SMS_ChangeTextureAll(J3DModelData*, const char*, const ResTIMG&) @0x80236c3c.
+// The FIRST J3DModelData consumer boot hits (TNPCManager::makePartsModelData_ ->
+// changeTextureToPollution_). r3=J3DModelData HANDLE, r4=name (guest str),
+// r5=ResTIMG& (guest data). Route to the port-native impl on the host object so
+// the +0xAC (getTexture) deref reads the host J3DModelData, not the handle token.
+SUNBRIGHT_OVERRIDE(ov_sms_changeTextureAll, 0x80236c3c) {
+	void*       md   = sb_eng_host(cpu.gpr[3]);
+	const char* name = static_cast<const char*>(sb_guest_to_host(cpu.gpr[4]));
+	const void* timg = sb_guest_to_host(cpu.gpr[5]);
+	sbport_sms_changeTextureAll(md, name, timg);
 	call_ppc(cpu, cpu.lr);
 }
 
