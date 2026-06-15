@@ -112,13 +112,47 @@ overrides today (no generated-code type needed) — but they're only reachable o
 EXISTS, which needs construction = Step 0.
 
 ## Execution order (each step commit+push; verify before moving on)
-1. **J3DModel construct + calc bridge (GX-free).** Bridge ctor (placement-new) + entryModelData +
-   calc family. Declare SB_ENGINE_TYPE(J3DModelData), SB_ENGINE_TYPE(J3DModel). Free-fn wrappers in
-   port/bridge (compiled with shims). Register overrides in runtime/overrides/. Build with
-   SB_FLIP_J3DMODELDATA-style option (extend to SB_FLIP_J3D). VERIFY: drive the game headless to a
-   model load+calc; compare the host J3DModel's joint/weight/normal matrices to the oracle's guest
-   matrices via the probe (/r reads guest matrices on the oracle; the native side dumps host). This is
-   the first end-to-end "recompiled game drives a port-native engine object" proof.
+1. **J3DModel construct + calc bridge (GX-free). — PORT + BRIDGE HALF DONE & VERIFIED (2026-06-15).**
+   Built + committed:
+   - **Port engine runs natively** (commit "STEP 1 foundation"): `model_calc_run` ctest loads a
+     bmd_swap'd BMD → `new J3DModel(md,0,1)` → `J3DModel::calc()` → finite node matrices, 14/14 BMDs.
+     calc IS GX-free as claimed. ONE engine global needed: `JMANewSinTable(0xC)` (Application.cpp:390)
+     — calc's joint transform math (J3DGetTranslateRotateMtx → JMASSin/Cos) reads the global
+     jmaSinTable, null until that init. Now in the idempotent `sb_j3d_bringup()`.
+   - **Bridge layer** (commit "J3DModel construct+calc bridge layer"): `port/bridge/j3d_bridge.cpp`
+     free-fns `sbport_j3dmodel_ctor` (PLACEMENT-NEW onto the sbnew raw buffer → host vtable+initialize+
+     entryModelData), `_entryModelData`, `_calc`, `_viewCalc`, `_getNodeMtx`; `runtime/overrides/
+     j3d_model_bridge.cpp` SUNBRIGHT_OVERRIDEs at ctor 0x802dde2c / entryModelData 0x802ddf90 / calc
+     0x802debc4 / viewCalc 0x802deeb8 resolving handles→host. Gate renamed SB_FLIP_J3DMODELDATA →
+     **SB_FLIP_J3D** (the slice is now load+construct+calc as one unit). Default build links clean.
+   - **End-to-end verification** (commit "verify ... real handle table"): `j3d_bridge_run` ctest runs
+     the EXACT override sequence through the real `runtime/eng_handle.cpp` (sb_eng_handle/host
+     round-trips, `::operator new(sizeof(J3DModel))` == generated sbnew, placement-new ctor, calc,
+     handle-resolved getNodeMtx) and asserts node matrices BIT-IDENTICAL to the direct path. 14/14 ok.
+     Proves the runtime half is sound for construction + placement-new host vtable + calc.
+
+   **⛔ DECISIVE BLOCKER for the game-driven verification: `calc__8J3DModel` 0x802debc4 has ZERO direct
+   `bl` callers — it is ALWAYS dispatched VIRTUALLY** (`scratch/callers 0x802debc4` = empty). A virtual
+   call loads the vtable from the J3DModel HANDLE token (`lwz r12,0(handle)`) and faults in the memory
+   bridge before the bctrl. So the calc override never fires from real game code, and "drive the game
+   to model load+calc, compare matrices" is **GATED on the offset-0 virtual-dispatch routing**
+   (recompiler must recognize `lwz rX,0(engine-handle); …; bctrl` and route to the host vtable / by
+   static type — docs/ARCHITECTURE_TARGET.md function-call half, listed as a separate item but Step 1's
+   game verification needs it). The CTOR 0x802dde2c, by contrast, HAS many direct `bl` callers
+   (TJointModel::initActor, TLensFlare, TSunModel, TEnemyManager, …) — construction IS wireable now.
+
+   **NEXT for Step 1 (pick up here):**
+   (a) **Engine-types recompile compile-check (does construction emission compile for REAL J3DModel
+       callers?).** Run `SUNBRIGHT_ENGINE_TYPES="J3DModelData J3DModel"` (the recompiler builds the
+       type DB + emits sbnew_J3DModel / accessors). The construction sites are direct-bl so they wire.
+       Verify the generated game TUs + eng_accessors.cpp COMPILE (Option A split) and the SB_FLIP_J3D
+       binary LINKS. Watch the 39 field-access GAPS in 13 funcs (sweep) — engine-method bodies
+       (viewCalc/calcNrmMtx/…) are dead once overridden but must still COMPILE; game-caller gaps
+       (stampModel 801a1964, entryStaticDrawBufferSun/Shadow 801b7868/801b78b8, init__TMirrorActor
+       80224620) read a J3DModel field inline → need a bridged getter or scalar field-flip, else they
+       won't compile/run. Decide per gap.
+   (b) **Offset-0 virtual-dispatch routing** (the harder, needed for calc to actually fire from the
+       game). Then the game-driven matrix comparison becomes reachable.
 2. **Animation bridge.** entry/set animators + J3DMtxCalc; verify animated matrices vs oracle.
 3. **GX ownership in port/** (the big one) → bridge entry/draw → first NO-DOLPHIN textured frame
    (the MVP gate). Move runtime/render's GX decode into port/ or write port GX over the same Vulkan.
