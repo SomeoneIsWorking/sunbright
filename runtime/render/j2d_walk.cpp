@@ -59,6 +59,15 @@ inline bool is_picture(u32 kind) {    // 'PIC1'/'PIC2'
     return (kind >> 8) == 0x504943u;  // "PIC"
 }
 inline bool is_textbox(u32 kind) { return kind == 0x54425831u; }   // 'TBX1'
+inline bool is_window(u32 kind)  { return kind == 0x57494E31u; }   // 'WIN1'
+
+// J2DWindow contents colors (reference/sms J2DWindow::drawContents quad order):
+// TL=unk118, TR=unk120, BR=unk124, BL=unk11C; mColorAlpha@0xCD.
+constexpr u32 WIN_COL_TL = 0x118;
+constexpr u32 WIN_COL_BL = 0x11C;
+constexpr u32 WIN_COL_TR = 0x120;
+constexpr u32 WIN_COL_BR = 0x124;
+constexpr u32 PANE_COLORALPHA = 0xCD;
 
 inline u16 r16(u32 a) { const u32 w = r32(a & ~3u); return (a & 2) ? (u16)(w & 0xFFFF) : (u16)(w >> 16); }
 inline u8  rb8(u32 a) { return valid(a & ~3u) ? (u8)(mem_r32(a & ~3u) >> (24 - (a & 3) * 8)) : 0; }  // any-align byte
@@ -309,6 +318,27 @@ static int collect_from(u32 root, J2dQuad* out, int max, int* screen_w, int* scr
             }
         } else if (is_textbox(kind)) {
             n = emit_textbox(p, out, max, n);   // one quad per glyph (font atlas cells)
+        } else if (is_window(kind)) {
+            // J2DWindow contents fill: a 4-colour quad over the window interior (the dark
+            // subtitle bar / message-box background). The textured 9-slice border is TODO.
+            int x0 = (int)r32(p + PANE_GBOUNDS + 0), y0 = (int)r32(p + PANE_GBOUNDS + 4);
+            int x1 = (int)r32(p + PANE_GBOUNDS + 8), y1 = (int)r32(p + PANE_GBOUNDS + 12);
+            if (x1 <= x0 || y1 <= y0) {
+                x0 = (int)r32(p + PANE_BOUNDS + 0); y0 = (int)r32(p + PANE_BOUNDS + 4);
+                x1 = (int)r32(p + PANE_BOUNDS + 8); y1 = (int)r32(p + PANE_BOUNDS + 12);
+            }
+            if (x1 > x0 && y1 > y0 && n < max) {
+                J2dQuad& q = out[n];
+                q.x0 = x0; q.y0 = y0; q.x1 = x1; q.y1 = y1;
+                q.alpha = rb8(p + PANE_COLORALPHA);
+                q.fmt = 0; q.w = 0; q.h = 0; q.data = 0;   // no texture → 1×1 white × corner colour
+                q.tlut = 0; q.tlutfmt = 0;
+                q.corner[0] = r32(p + WIN_COL_TL); q.corner[1] = r32(p + WIN_COL_TR);
+                q.corner[2] = r32(p + WIN_COL_BL); q.corner[3] = r32(p + WIN_COL_BR);
+                q.white = 0xFFFFFFFFu; q.black = 0;
+                q.u0 = 0.f; q.v0 = 0.f; q.u1 = 1.f; q.v1 = 1.f;
+                n++;
+            }
         }
         // children, pushed reversed for draw order
         u32 kids[64]; int nk = 0;
