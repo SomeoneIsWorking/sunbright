@@ -409,6 +409,35 @@ decoder; runtime GP-FIFO path on the delete list. Then, on the object-model arch
   has no HUD yet); cache lifetime/eviction on scene change; lighting/fog fidelity vs the oracle;
   then peel more of Dolphin's VideoCommon.
 
+- **N7 — J2D/HUD overlay composited into the native present ✅** — the native present now draws
+  the game's J2D HUD (coin/shine counters, FLUDD gauge, nameplate) over the ngx 3D frame, so it is
+  a true on-screen replacement for Dolphin's GX output. `ngx_present.cpp`: an ortho textured-quad
+  overlay (`quad_ortho` vert + `quad_modulate` frag, the existing `j2d_render` shaders) built ONCE
+  and drawn over the 3D batches in the SAME render pass (depth test off, src-alpha blend, dynamic
+  viewport so it survives target-size changes). Per frame it reads the HUD draw list, decodes +
+  caches each picture's GC texture (reusing the 3D `texture_for`/`texcache`), allocates descriptor
+  sets, and draws. Texture uploads are recorded BEFORE `vkCmdBeginRenderPass` (copies/barriers are
+  illegal inside a render pass); only the draws go in the pass. Two J2D-walker fixes were needed:
+  - **Prune invisible subtrees** (`j2d_walk.cpp`) — `J2DPane::draw` early-returns on an invisible
+    pane and draws neither itself NOR its children (`reference/sms J2DPane.cpp:173`). The
+    counter-roll widget keeps its off-screen digit rows as `vis=0` PAN1 parents whose PIC1 children
+    are `vis=1`; the old walk descended into them → the hidden rows drew on top of the live one (the
+    gross top-left overlap). Now an invisible pane prunes its whole subtree.
+  - **Draw-time snapshot** — `J2DPane::draw` computes `mGlobalBounds`/`mColorAlpha` INTO each pane
+    during the draw, so a live cross-thread walk from the video thread catches the tree half-updated.
+    Capture on the game thread right after `J2DScreen::draw` (the tee in `scene_render.cpp` →
+    `sb_j2d_capture`) into a double buffer the present reads — same capture/consume pattern as the
+    3D path. `sb_j2d_collect` (live) stays for the `/j2d`+`/j2drender` diagnostic probes.
+  - Verified headless (`SUNBRIGHT_NGX_PRESENT=1 SUNBRIGHT_DUMP=1`, `/ngxpresentlive` → `hud_quads`):
+    bright Delfino with the coin counter + FLUDD gauge over the native 3D frame. The counter
+    **"smear" is the game's real slide-in motion-trail animation** — the Dolphin GX baseline shows
+    the identical trails (`scratch/screenshots/baseline_tl.png`), so the overlay is faithful, NOT a
+    bug (ruled out widescreen/interp60 by comparison). NEXT fidelity (N3 polish): I-format
+    (intensity) textures need J2DPicture's black/white color remap (the trails are green in-game,
+    gray here — `mBlackColor`/`mWhiteColor` lerp by intensity); full counter-row + textbox/subtitle
+    coverage; palette (CI) resolution; multiple J2DScreen accumulation (snapshot holds the last
+    screen drawn). Then cache eviction on scene change + peel more VideoCommon.
+
 - **N7-present groundwork ✅ — render into an external color target** — parameterized the
   renderer (`vk_mesh.cpp`): `sb_ngx_render_into(view,img,w,h,final_layout,…)` rasterizes the
   ngx mesh into a caller-supplied color image left in a chosen layout (e.g. SHADER_READ), no
