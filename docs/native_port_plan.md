@@ -392,6 +392,20 @@ decoder; runtime GP-FIFO path on the delete list. Then, on the object-model arch
   - **Still first-slice gaps** (lower priority): identity TEV swap tables, no alpha
     test (PE block uncaptured → foliage cutouts show full quads), no indirect stages.
 
+- **N7-present groundwork ✅ — render into an external color target** — parameterized the
+  renderer (`vk_mesh.cpp`): `sb_ngx_render_into(view,img,w,h,final_layout,…)` rasterizes the
+  ngx mesh into a caller-supplied color image left in a chosen layout (e.g. SHADER_READ), no
+  readback — the primitive the present seam needs to fill the on-screen XFB texture. `/ngxrender`
+  keeps its own offscreen RT+readback unchanged. `/ngxpresent` (`sb_ngx_present_test`) verifies
+  the primitive headless: renders the scene into an external image, reads it back → bright correct
+  Delfino (meanRGB ~197), `scratch/screenshots/ngx_present.png`. The probe self-test uses its own
+  raw-Vulkan image/cmd buffer (safe off the video thread); **Dolphin `AbstractTexture` interop
+  must run on the video thread** (StateTracker isn't thread-safe). NEXT (the actual present): on
+  the video thread (`Presenter::Present` before `BindBackbuffer`, + `ProcessFrameDumping`),
+  render into a persistent Dolphin `AbstractTexture` and substitute it for `m_xfb_entry->texture`
+  — but record into Dolphin's command buffer (don't do our own submit + `vkDeviceWaitIdle`
+  per frame) and persist pipelines/textures across frames; use `VKTexture::OverrideImageLayout`.
+
 - **N7 — PE block: alpha test + blend + z-mode ✅ (foliage/transparency)** — ported the
   J3D pixel-engine block (`J3DMaterial mPEBlock`@+0x30) so cutout foliage and translucent
   surfaces render correctly. Before: trees were solid green blobs and transparent decals
