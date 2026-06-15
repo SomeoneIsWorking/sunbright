@@ -5,6 +5,7 @@
 #include "tev_shader.h"
 #include <cstdarg>
 #include <cstdio>
+#include <cstring>
 
 namespace {
 
@@ -187,7 +188,23 @@ void write_alpha_test(Buf& o, const NgxPEState& pe) {
 
 }  // namespace
 
+#include <cstdlib>
 std::string sb_tev_gen_fragment(const NgxTevState& st) {
+    // Diagnostics (A/B only): TEVDBG=tex → output raw texmap0; =ras → output vColor;
+    // =half → normal combiner × 0.5 (test "global 2x" hypothesis).
+    static const char* dbg = getenv("SUNBRIGHT_NGX_TEVDBG");
+    if (dbg && !strcmp(dbg, "tex")) {
+        return "#version 450\nlayout(location=0) in vec4 vColor;\n"
+               "layout(location=1) in vec2 vUV[8];\nlayout(location=0) out vec4 o;\n"
+               "layout(set=0,binding=0) uniform sampler2D tex[8];\n"
+               "void main(){ o = texture(tex[0], vUV[0]); }\n";
+    }
+    if (dbg && !strcmp(dbg, "ras")) {
+        return "#version 450\nlayout(location=0) in vec4 vColor;\n"
+               "layout(location=1) in vec2 vUV[8];\nlayout(location=0) out vec4 o;\n"
+               "layout(set=0,binding=0) uniform sampler2D tex[8];\n"
+               "void main(){ o = vec4(vColor.rgb, 1.0); }\n";
+    }
     Buf o;
     o.w("#version 450\n");
     o.w("layout(location=0) in vec4 vColor;\n");

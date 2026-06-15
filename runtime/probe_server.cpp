@@ -248,7 +248,7 @@ std::string handle_repl(const char* path) {
         return std::string(buf, n);
     }
     if (strncmp(path, "/ngxshape", 9) == 0) {  // N4 live J3DShape native-mesh capture stats
-        char rep[4096]; sb_ngx_shape_dump(rep, sizeof rep); app("%s", rep);
+        static thread_local char rep[16384]; sb_ngx_shape_dump(rep, sizeof rep); app("%s", rep);
         return std::string(buf, n);
     }
     if (strncmp(path, "/ngxpresentlive", 15) == 0) {  // N7 live present: renderer stats (SUNBRIGHT_NGX_PRESENT)
