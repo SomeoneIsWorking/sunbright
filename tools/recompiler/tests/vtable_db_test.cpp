@@ -78,6 +78,13 @@ int main() {
     for (size_t k = 0; k < pt.virtuals.size() && k < 5; ++k)
         CHECK(pt.virtuals[k] == want[k], "header virtual order matches the vtable slot order");
 
+    // The four `void f()` virtuals are safely host-dispatchable; the destructor is NOT.
+    CHECK(pt.simple_virtuals.count("calc") && pt.simple_virtuals.count("update") &&
+          pt.simple_virtuals.count("entry") && pt.simple_virtuals.count("viewCalc"),
+          "calc/update/entry/viewCalc are zero-arg void -> host-dispatchable");
+    CHECK(pt.simple_virtuals.count("~J3DModel") == 0, "destructor is NOT a simple virtual");
+    CHECK(pt.simple_virtuals.size() == 4, "exactly four simple virtuals");
+
     std::printf("vtable_db_test: %d/%d checks passed\n", g_checks - g_fail, g_checks);
     return g_fail ? 1 : 0;
 }

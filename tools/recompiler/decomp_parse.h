@@ -46,6 +46,10 @@ struct ParsedType {
                                               // {"update","entry","calc","viewCalc","~J3DModel"}.
                                               // CodeWarrior lays a class's NEW virtuals into the
                                               // vtable in this order (after the base chain's).
+    std::set<std::string>    simple_virtuals; // subset of `virtuals` that are `void name()` —
+                                              // void return AND zero args, NOT a destructor.
+                                              // ONLY these are safely host-dispatchable as
+                                              // `((T*)h)->name()` with no arg/return marshalling.
     std::vector<ParsedField> fields;          // in declaration order
     bool                     found = false;   // the type was located in the text
     bool                     fully_sizable = false; // every field is `sizable` AND no base

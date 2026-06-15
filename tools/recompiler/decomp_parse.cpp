@@ -321,8 +321,23 @@ ParsedType parse_decomp_type(const std::string& text, const std::string& type_na
                        (v == 0 || !is_ident_char(code[v - 1])) &&
                        (v + 7 >= code.size() || !is_ident_char(code[v + 7]));
             if (tok) {
-                std::string name = virtual_method_name(code.substr(v + 7));
-                if (!name.empty()) pt.virtuals.push_back(name);
+                std::string rest = code.substr(v + 7);
+                std::string name = virtual_method_name(rest);
+                if (!name.empty()) {
+                    pt.virtuals.push_back(name);
+                    // simple = `void name()`: void return token, empty/void arg list, not a dtor.
+                    size_t lp = rest.find('(');
+                    size_t rp = (lp == std::string::npos) ? std::string::npos : rest.find(')', lp);
+                    if (name[0] != '~' && lp != std::string::npos && rp != std::string::npos) {
+                        std::string before = trim(rest.substr(0, lp));
+                        if (before.size() >= name.size() &&
+                            before.substr(before.size() - name.size()) == name)
+                            before = trim(before.substr(0, before.size() - name.size()));
+                        std::string args = trim(rest.substr(lp + 1, rp - lp - 1));
+                        if (before == "void" && (args.empty() || args == "void"))
+                            pt.simple_virtuals.insert(name);
+                    }
+                }
             }
         }
 
