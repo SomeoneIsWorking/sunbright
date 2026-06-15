@@ -451,8 +451,10 @@ decoder; runtime GP-FIFO path on the delete list. Then, on the object-model arch
   1×1 white fallback texture × the contents corner colours (no texture). Corner map verified vs
   reference/sms (col1=TL@0x118, col3=TR@0x120, col4=BR@0x124, col2=BL@0x11C; alpha=mColorAlpha@0xCD).
   Verified: the intro-dialogue bar (global [37,400]-[480,442], contents 0x00000088 ≈53% black) renders
-  as a dark translucent bar (region lum 110 vs 226 above). TODO: the textured 9-slice border (4 corner
-  textures unk100..unk10C + stretched edges with unk114 flip flags).
+  as a dark translucent bar (region lum 110 vs 226 above). The textured 9-slice **border** is also
+  ported (J2DWindow::draw_private): the 4 corner textures placed at corners + stretched along the
+  edges, UV flips (unk114 bits) as swapped uvrect endpoints, white/black from unk128/unk12C — the bar
+  now shows a dark border frame around the translucent interior (`scratch/screenshots/wb3_zoom.png`).
 
 - **N7 — native J2DTextBox font rendering ✅ (HUD/dialogue text)** — the J2D overlay rendered
   pictures but skipped textboxes ('TBX1'), so all UI text was missing. Ported the GameCube `.bfn`
