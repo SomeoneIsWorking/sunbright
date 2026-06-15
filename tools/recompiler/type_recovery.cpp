@@ -351,7 +351,8 @@ std::map<u32, EngField> recover_eng_fields(const std::vector<PPCInstr>& instrs,
                                            const std::unordered_set<u32>& jumptable_targets,
                                            std::vector<u32>* unmapped,
                                            const std::unordered_set<u32>* raw_allocators,
-                                           std::map<u32, std::string>* alloc_sites) {
+                                           std::map<u32, std::string>* alloc_sites,
+                                           std::map<u32, VCall>* vcalls) {
     std::map<u32, EngField> out;
     const int n = (int)instrs.size();
     if (n == 0) return out;
@@ -459,8 +460,58 @@ std::map<u32, EngField> recover_eng_fields(const std::vector<PPCInstr>& instrs,
     // Final pass: record field sites from each instruction's stable entry state. With construction
     // recognition the alloc result reg carries the new object's type forward, so its inlined ctor
     // writes type naturally.
+    //
+    // VIRTUAL-CALL recognition (offset-0 dispatch, see VCall): the chain `lwz vt,0(rA);
+    // lwz m,N(vt); mtctr m; bctrl` on an engine-typed base rA is a virtual call — record
+    // {bctrl pc -> (type, N)}. Tracked with LOCAL per-register tags reset at each basic-block
+    // boundary (the chain is always within one block; a label or a control transfer between the
+    // load and the bctrl can't occur). Engine type of rA comes from the converged entry state.
+    std::array<std::string, 32> vt_of;   // reg -> "vtable ptr of type T"
+    std::array<std::string, 32> vm_t;    // reg -> "method ptr of type T"
+    std::array<int, 32>         vm_n{};   // reg -> vtable byte-offset of that method
+    std::string                 ctr_t;   // ctr holds method-of-type
+    int                         ctr_n = 0;
+    auto reset_tags = [&]() {
+        for (int r = 0; r < 32; ++r) { vt_of[r].clear(); vm_t[r].clear(); vm_n[r] = 0; }
+        ctr_t.clear(); ctr_n = 0;
+    };
+    auto clear_reg = [&](int r) { if (r >= 0 && r < 32) { vt_of[r].clear(); vm_t[r].clear(); } };
+
     for (int k = 0; k < n; ++k) {
         if (!in[k].defined) continue;                          // unreachable: nothing to record
+        const PPCInstr& i = instrs[k];
+        if (vcalls) {
+            // basic-block boundary: a label here, or the previous op left/branched control flow.
+            bool boundary = branch_targets.count(i.pc) || jumptable_targets.count(i.pc) ||
+                            (k > 0 && (is_call(instrs[k-1]) ||
+                                       instrs[k-1].op == PPCOp::B || instrs[k-1].op == PPCOp::BC ||
+                                       instrs[k-1].op == PPCOp::BCLR || instrs[k-1].op == PPCOp::BCCTR));
+            if (boundary) reset_tags();
+            const State& entry = in[k];
+            switch (i.op) {
+            case PPCOp::LWZ:
+                if (i.rA != 1 && i.d == 0 && !entry.reg[i.rA].empty()) {
+                    clear_reg(i.rD); vt_of[i.rD] = entry.reg[i.rA];     // vtable load off a handle
+                } else if (i.rA != 1 && !vt_of[i.rA].empty()) {
+                    std::string t = vt_of[i.rA];                       // lwz m,N(vtable)
+                    clear_reg(i.rD); vm_t[i.rD] = t; vm_n[i.rD] = (int)i.d;
+                } else clear_reg(i.rD);
+                break;
+            case PPCOp::MTSPR:
+                if (decode_spr(i.spr) == SPR_CTR) {
+                    if (!vm_t[i.rS].empty()) { ctr_t = vm_t[i.rS]; ctr_n = vm_n[i.rS]; }
+                    else { ctr_t.clear(); ctr_n = 0; }
+                }
+                break;
+            case PPCOp::BCCTR:
+                if (i.lk && !ctr_t.empty()) (*vcalls)[i.pc] = VCall{ ctr_t, ctr_n };
+                break;
+            default:
+                if (is_call(i)) { for (int r = 3; r <= 12; ++r) clear_reg(r); }
+                else { int rc = clobbered_gpr(i); if (rc >= 0) clear_reg(rc); }
+                break;
+            }
+        }
         State s = in[k];
         apply(instrs[k], s, db, &out, unmapped, alloc_types);
     }

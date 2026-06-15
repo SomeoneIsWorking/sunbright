@@ -32,6 +32,8 @@ static uint32_t enc_bl  (uint32_t from,uint32_t to)   { int32_t dl=(int32_t)(to-
 static uint32_t enc_b   (uint32_t from,uint32_t to)   { int32_t dl=(int32_t)(to-from); return (18u<<26)|((uint32_t)dl&0x03fffffc); }
 // bc bo,bi,target — bo=12 (branch if CR[bi] set), conditional (no link).
 static uint32_t enc_bc  (uint32_t from,uint32_t to)   { int16_t d=(int16_t)(to-from); return (16u<<26)|(12u<<21)|(0u<<16)|((uint16_t)d & 0xFFFCu); }
+static uint32_t enc_mtctr(int rs)                     { return (31u<<26)|(rs<<21)|(0x120u<<11)|(467u<<1); } // mtspr CTR,rS
+static constexpr uint32_t BCTRL = (19u<<26)|(20u<<21)|(528u<<1)|1u;  // bctrl (bo=20 always)
 static constexpr uint32_t BLR = 0x4e800020u;
 
 static std::vector<PPCInstr> collect(uint32_t base, const std::vector<uint32_t>& w) {
@@ -325,6 +327,61 @@ int main() {
         recover_eng_fields(ins, B, pdb, intra_branch_targets(ins, B), {}, nullptr, &praws, &sites);
         CHECK(sites.count(B+0) && sites[B+0]=="Tex",
               "most-derived: unknown allocation size keeps the signature type (honest fallback)");
+    }
+
+    // ── VIRTUAL-CALL recognition (offset-0 dispatch) ─────────────────────────────────────────
+    // 17. The canonical virtual-call chain on an engine handle: lwz vt,0(this); lwz m,N(vt);
+    //     mtctr m; bctrl  ->  record {bctrl pc -> (Cam, N)}. N=0x10 (slot 2, e.g. J3DModel::calc).
+    {
+        std::vector<uint32_t> w = {
+            enc_lwz(12, 3, 0),       // lwz r12,0(r3)      vtable of Cam
+            enc_lwz(12, 12, 0x10),   // lwz r12,0x10(r12)  method slot
+            enc_mtctr(12),           // mtctr r12
+            BCTRL,                   // bctrl
+            BLR,
+        };
+        auto ins = collect(B, w);
+        std::map<u32, VCall> vc;
+        recover_eng_fields(ins, B, db, intra_branch_targets(ins, B), {},
+                           nullptr, nullptr, nullptr, &vc);
+        auto it = vc.find(ins[3].pc);
+        CHECK(it != vc.end() && it->second.type == "Cam" && it->second.vtbl_off == 0x10,
+              "virtual-call chain recognized -> (Cam, 0x10)");
+        CHECK(vc.size() == 1, "exactly one virtual call recognized");
+    }
+
+    // 18. A NON-virtual indirect call (CTR loaded from a plain field, not a vtable chain) is NOT
+    //     recognized. lwz r12,8(r3) is Cam::mFov (a scalar field), not a vtable; mtctr/bctrl off it
+    //     must produce no VCall.
+    {
+        std::vector<uint32_t> w = {
+            enc_lwz(12, 3, 8),       // lwz r12,8(r3)   scalar field, not offset 0
+            enc_mtctr(12),
+            BCTRL,
+            BLR,
+        };
+        auto ins = collect(B, w);
+        std::map<u32, VCall> vc;
+        recover_eng_fields(ins, B, db, intra_branch_targets(ins, B), {},
+                           nullptr, nullptr, nullptr, &vc);
+        CHECK(vc.empty(), "non-vtable indirect call is not mis-recognized as virtual");
+    }
+
+    // 19. Base register NOT an engine type -> no recognition (lwz 0(rA) off an untyped reg).
+    {
+        std::vector<uint32_t> w = {
+            enc_lwz(4, 1, 0x20),     // r4 = some stack value (untyped)
+            enc_lwz(12, 4, 0),       // lwz r12,0(r4)
+            enc_lwz(12, 12, 0xC),
+            enc_mtctr(12),
+            BCTRL,
+            BLR,
+        };
+        auto ins = collect(B, w);
+        std::map<u32, VCall> vc;
+        recover_eng_fields(ins, B, db, intra_branch_targets(ins, B), {},
+                           nullptr, nullptr, nullptr, &vc);
+        CHECK(vc.empty(), "untyped base -> no virtual-call recognition");
     }
 
     std::printf("type_recovery_test: %d checks, %d failures\n", g_checks, g_fail);

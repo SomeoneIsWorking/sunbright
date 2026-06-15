@@ -38,6 +38,18 @@ struct EngField {
     bool guest_ptr = false;       // true if this field is a POINTER to GUEST data (not an engine object)
 };
 
+// A recognized VIRTUAL CALL through an engine handle (offset-0 virtual-dispatch routing,
+// docs/ARCHITECTURE_TARGET.md function-call boundary). At the `bctrl` whose CTR was loaded by
+// the chain `lwz vt,0(rA); lwz m,N(vt); mtctr m` with rA statically an engine type, we record
+// the base type and the guest vtable byte-offset N. The EMITTER validates N against the
+// vtable-slot DB (vtable_db.h) for that type and, if it names a method, routes the call to the
+// host virtual method instead of `call_ppc(cpu, cpu.ctr)` (which would fault on the handle's
+// vtable load). An unvalidated record harmlessly falls back to call_ppc.
+struct VCall {
+    std::string type;        // engine type leaf of the dispatched-on base register
+    int         vtbl_off;    // guest vtable byte-offset of the loaded method slot
+};
+
 // A field of a host-native engine type at a given guest displacement.
 struct FieldDesc {
     std::string member;        // host member expression, e.g. "mFov"
@@ -104,4 +116,5 @@ std::map<u32, EngField> recover_eng_fields(const std::vector<PPCInstr>& instrs,
                                            const std::unordered_set<u32>& jumptable_targets,
                                            std::vector<u32>* unmapped = nullptr,
                                            const std::unordered_set<u32>* raw_allocators = nullptr,
-                                           std::map<u32, std::string>* alloc_sites = nullptr);
+                                           std::map<u32, std::string>* alloc_sites = nullptr,
+                                           std::map<u32, VCall>* vcalls = nullptr);
