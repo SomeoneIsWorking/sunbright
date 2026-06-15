@@ -28,11 +28,12 @@ int main() {
 	int fail = 0;
 	#define CK(c,m) do{ if(!(c)){ printf("FAIL: %s\n",m); fail++; } }while(0)
 
-	// Build a synthetic big-endian BMD with 4 blocks. EVP1 precedes JNT1 so the
+	// Build a synthetic big-endian BMD with 5 blocks. EVP1 precedes JNT1 so the
 	// joint-count pre-pass (EVP1's inverse-bind matrix count = JNT1 jointNum) is
-	// exercised: INF1 + EVP1 + DRW1 + JNT1.
+	// exercised: INF1 + VTX1 + EVP1 + DRW1 + JNT1.
 	const uint32_t INF1_OFF = 0x20, INF1_SIZE = 0x28;
-	const uint32_t EVP1_OFF = INF1_OFF + INF1_SIZE, EVP1_SIZE = 0x70;
+	const uint32_t VTX1_OFF = INF1_OFF + INF1_SIZE, VTX1_SIZE = 0x80;
+	const uint32_t EVP1_OFF = VTX1_OFF + VTX1_SIZE, EVP1_SIZE = 0x70;
 	const uint32_t DRW1_OFF = EVP1_OFF + EVP1_SIZE, DRW1_SIZE = 0x20;
 	const uint32_t JNT1_OFF = DRW1_OFF + DRW1_SIZE, JNT1_SIZE = 0x60;
 	const uint32_t TOTAL = JNT1_OFF + JNT1_SIZE;
@@ -40,7 +41,7 @@ int main() {
 	put32(be, 0x00, 0x4A334432);          // 'J3D2'
 	put32(be, 0x04, 0x626D6433);          // 'bmd3'
 	put32(be, 0x08, TOTAL);               // fileSize
-	put32(be, 0x0C, 4);                   // blockNum = 4
+	put32(be, 0x0C, 5);                   // blockNum = 5
 	// INF1 block
 	put32(be, INF1_OFF+0x00, 0x494E4631); // 'INF1'
 	put32(be, INF1_OFF+0x04, INF1_SIZE);  // block size
@@ -52,6 +53,20 @@ int main() {
 	put16(be, INF1_OFF+0x18, 0x0010); put16(be, INF1_OFF+0x1A, 0x0000);  // joint #0
 	put16(be, INF1_OFF+0x1C, 0x0011); put16(be, INF1_OFF+0x1E, 0x0001);  // material #1
 	put16(be, INF1_OFF+0x20, 0x0000); put16(be, INF1_OFF+0x22, 0x0000);  // terminator
+	// VTX1 block: fmt list @0x40 (POS f32 entry + NULL), pos f32 array @0x60.
+	const uint32_t VTX_FMT=0x40, VTX_POS=0x60;
+	put32(be, VTX1_OFF+0x00, 0x56545831); // 'VTX1'
+	put32(be, VTX1_OFF+0x04, VTX1_SIZE);
+	put32(be, VTX1_OFF+0x08, VTX_FMT);    // mpVtxAttrFmtList
+	put32(be, VTX1_OFF+0x0C, VTX_POS);    // mpVtxPosArray
+	// (other array offsets 0x10..0x3C left 0)
+	put32(be, VTX1_OFF+VTX_FMT+0x00, 9);  // attr=GX_VA_POS
+	put32(be, VTX1_OFF+VTX_FMT+0x04, 1);  // cnt=GX_POS_XYZ
+	put32(be, VTX1_OFF+VTX_FMT+0x08, 4);  // type=GX_F32
+	be[VTX1_OFF+VTX_FMT+0x0C]=0;          // frac (u8, no swap)
+	put32(be, VTX1_OFF+VTX_FMT+0x10, 0xFF);  // GX_VA_NULL terminator
+	putf(be, VTX1_OFF+VTX_POS+0x00, 1.5f); putf(be, VTX1_OFF+VTX_POS+0x04, -2.5f);
+	putf(be, VTX1_OFF+VTX_POS+0x08, 3.5f);
 	// EVP1 block: mWEvlpMtxNum=1, u8 count[1]={2} @0x1C, u16 idx[2] @0x20,
 	//   f32 weight[2] @0x28, Mtx[jointNum=1] (f32[12]) @0x30.
 	const uint32_t EVP_NUM=0x1C, EVP_IDX=0x20, EVP_W=0x28, EVP_INV=0x30;
@@ -100,8 +115,15 @@ int main() {
 	BmdSwapResult r = bmd_swap_to_host(be.data(), be.size(), out);
 
 	CK(r.ok, "swap ok");
-	CK(r.block_num == 4, "block_num == 4");
-	CK(r.blocks_covered == 4 && r.all_covered, "INF1+EVP1+DRW1+JNT1 covered + all_covered");
+	CK(r.block_num == 5, "block_num == 5");
+	CK(r.blocks_covered == 5 && r.all_covered, "INF1+VTX1+EVP1+DRW1+JNT1 covered + all_covered");
+
+	// VTX1: fmt-list attr/cnt/type swapped, frac u8 untouched, pos f32 swapped.
+	CK(h32(out.data()+VTX1_OFF+VTX_FMT+0x00)==9, "VTX1 fmt attr");
+	CK(h32(out.data()+VTX1_OFF+VTX_FMT+0x08)==4, "VTX1 fmt type");
+	CK(h32(out.data()+VTX1_OFF+VTX_FMT+0x10)==0xFF, "VTX1 fmt NULL term");
+	{ float px; memcpy(&px,out.data()+VTX1_OFF+VTX_POS+0x00,4); CK(px==1.5f,"VTX1 pos[0]");
+	  float pz; memcpy(&pz,out.data()+VTX1_OFF+VTX_POS+0x08,4); CK(pz==3.5f,"VTX1 pos[2]"); }
 
 	// EVP1: mWEvlpMtxNum + u16 indices + f32 weights + inv-bind matrix swapped;
 	// u8 count array left intact.
@@ -127,7 +149,7 @@ int main() {
 	// Header reads host-endian after swap.
 	CK(h32(out.data()+0x00)==0x4A334432, "magic host-readable");
 	CK(h32(out.data()+0x08)==TOTAL,      "fileSize host-readable");
-	CK(h32(out.data()+0x0C)==4,          "blockNum host-readable");
+	CK(h32(out.data()+0x0C)==5,          "blockNum host-readable");
 	CK(h32(out.data()+INF1_OFF)==0x494E4631, "INF1 tag host-readable");
 	CK(h32(out.data()+DRW1_OFF)==0x44525731, "DRW1 tag host-readable");
 

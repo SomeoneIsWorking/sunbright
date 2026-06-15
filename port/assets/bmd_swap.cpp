@@ -189,6 +189,107 @@ static void swap_EVP1(uint8_t* out, const uint8_t* be, uint32_t size,
 	}
 }
 
+// VTX1 / J3DVertexBlock (J3DModelLoader.hpp + J3DVertex.hpp):
+//   +0x08 u32 mpVtxAttrFmtList   (offset -> GXVtxAttrFmtList[], NULL-terminated)
+//   +0x0C u32 mpVtxPosArray
+//   +0x10 u32 mpVtxNrmArray
+//   +0x14 u32 mpVtxNBTArray
+//   +0x18 u32 mpVtxColorArray[2]
+//   +0x20 u32 mpVtxTexCoordArray[8]
+// GXVtxAttrFmtList entry = {u32 attr; u32 cnt; u32 type; u8 frac} stride 0x10,
+// terminated by attr==GX_VA_NULL(0xFF). The per-attr arrays are contiguous; each
+// is a HOMOGENEOUS run of one scalar width (from the fmt `type`), so it can be
+// swapped as "every N-byte scalar across [thisOffset, nextOffset)" without
+// knowing component counts or vertex counts. Color arrays are packed bytes
+// (RGBA8/RGB8/...) needing NO swap except the 16-bit packed formats RGB565/RGBA4.
+// GXAttr values used here: POS=9, NRM=10, CLR0=11, CLR1=12, TEX0..7=13..20, NBT=25.
+static uint32_t vtx_fmt_type(const uint8_t* be, uint32_t fmt_off, uint32_t size,
+                             uint32_t want_attr, bool* found) {
+	*found = false;
+	if (fmt_off == 0) return 0;
+	for (uint32_t o = fmt_off; o + 0x10 <= size; o += 0x10) {
+		uint32_t attr = be32(be + o);
+		if (attr == 0xFF) break;                  // GX_VA_NULL
+		if (attr == want_attr) { *found = true; return be32(be + o + 0x08); }
+	}
+	return 0;
+}
+// Swap width for a non-color GXCompType: F32(4)->4, U16(2)/S16(3)->2, else 1(no-op).
+static uint32_t numeric_unit(uint32_t type) {
+	if (type == 4) return 4;          // GX_F32
+	if (type == 2 || type == 3) return 2;  // GX_U16 / GX_S16
+	return 1;                          // GX_U8 / GX_S8 -> byte, no swap
+}
+// Swap width for a color GXCompType: only the 16-bit packed RGB565(0)/RGBA4(3)
+// need a 2-byte swap; RGB8/RGBX8/RGBA6/RGBA8 are byte streams.
+static uint32_t color_unit(uint32_t type) {
+	if (type == 0 || type == 3) return 2;  // GX_RGB565 / GX_RGBA4
+	return 1;
+}
+static void swap_run(uint8_t* out, uint32_t start, uint32_t end, uint32_t unit) {
+	if (unit < 2) return;
+	for (uint32_t o = start; o + unit <= end; o += unit) {
+		if (unit == 2) sw16(out + o);
+		else if (unit == 4) sw32(out + o);
+	}
+}
+static void swap_VTX1(uint8_t* out, const uint8_t* be, uint32_t size) {
+	if (size < 0x40) return;
+	uint32_t fmt_off = be32(be + 0x08);
+	// Gather the 13 data-array offsets with their attr id (for type lookup).
+	struct Arr { uint32_t off; uint32_t attr; bool color; };
+	Arr arrs[13];
+	int  na = 0;
+	auto add = [&](uint32_t hdr_off, uint32_t attr, bool color) {
+		uint32_t o = be32(be + hdr_off);
+		sw32(out + hdr_off);                       // swap the header offset
+		if (o != 0) arrs[na++] = {o, attr, color};
+	};
+	add(0x0C, 9,  false);                          // GX_VA_POS
+	add(0x10, 10, false);                          // GX_VA_NRM
+	add(0x14, 25, false);                          // GX_VA_NBT
+	add(0x18, 11, true);                           // GX_VA_CLR0
+	add(0x1C, 12, true);                           // GX_VA_CLR1
+	for (int i = 0; i < 8; ++i)
+		add(0x20 + i * 4, 13 + i, false);          // GX_VA_TEX0..7
+	sw32(out + 0x08);                              // mpVtxAttrFmtList offset
+
+	// Swap the GXVtxAttrFmtList (attr/cnt/type u32, frac u8) until GX_VA_NULL.
+	if (fmt_off != 0) {
+		for (uint32_t o = fmt_off; o + 0x10 <= size; o += 0x10) {
+			uint32_t attr = be32(be + o);
+			sw32(out + o + 0x00);                  // attr
+			sw32(out + o + 0x04);                  // cnt
+			sw32(out + o + 0x08);                  // type
+			// o+0x0C frac u8 (+pad): no swap
+			if (attr == 0xFF) break;
+		}
+	}
+
+	// Each array runs from its offset to the next region boundary. Build the
+	// sorted boundary set (fmt list start + all array starts + block end).
+	uint32_t bounds[16]; int nb = 0;
+	if (fmt_off != 0) bounds[nb++] = fmt_off;
+	for (int i = 0; i < na; ++i) bounds[nb++] = arrs[i].off;
+	bounds[nb++] = size;
+	for (int i = 0; i < nb; ++i)                   // insertion sort (tiny)
+		for (int j = i + 1; j < nb; ++j)
+			if (bounds[j] < bounds[i]) { uint32_t t = bounds[i]; bounds[i] = bounds[j]; bounds[j] = t; }
+
+	for (int i = 0; i < na; ++i) {
+		uint32_t start = arrs[i].off;
+		uint32_t end   = size;
+		for (int j = 0; j < nb; ++j)
+			if (bounds[j] > start && bounds[j] < end) end = bounds[j];
+		bool found;
+		uint32_t type = vtx_fmt_type(be, fmt_off, size, arrs[i].attr, &found);
+		uint32_t unit = arrs[i].color ? color_unit(type) : numeric_unit(type);
+		// No fmt entry found -> default float (POS/NRM/TEX are f32 by default).
+		if (!found && !arrs[i].color) unit = 4;
+		swap_run(out, start, end, unit);
+	}
+}
+
 // =============================================================================
 BmdSwapResult bmd_swap_to_host(const uint8_t* be_data, size_t len,
                                std::vector<uint8_t>& out) {
@@ -243,10 +344,8 @@ BmdSwapResult bmd_swap_to_host(const uint8_t* be_data, size_t len,
 		case 0x44525731: /* DRW1 */ swap_DRW1(obo, bbo, bsz); break;
 		case 0x4A4E5431: /* JNT1 */ swap_JNT1(obo, bbo, bsz); break;
 		case 0x45565031: /* EVP1 */ swap_EVP1(obo, bbo, bsz, joint_num); break;
+		case 0x56545831: /* VTX1 */ swap_VTX1(obo, bbo, bsz); break;
 		// --- NOT YET IMPLEMENTED (field maps in the header doc) -------------
-		// VTX1 (J3DVertexBlock): GXVtxAttrFmt list (attr/cnt/type u32 + frac u8)
-		//   then per-attr arrays whose element layout (f32 pos/nrm, u8 color,
-		//   f32 texcoord, ...) is driven by the fmt list. The hard one.
 		// SHP1: shape descriptors (mtx-type/count u16, display-list offset/size)
 		//   + the GX display lists (byte streams — partial: swap descriptors only).
 		// MAT3: material entries — large; many u16/u8 index tables + color/reg data.
