@@ -6,6 +6,7 @@
 #include "func_collect.h"
 #include "type_db_build.h"
 #include "type_recovery.h"
+#include "func_sig.h"
 
 #include <iostream>
 #include <fstream>
@@ -422,6 +423,14 @@ static int recompile_mode(const DiscLoader& disc, const DOL& dol, const std::str
     TypeDB g_type_db;
     std::map<std::string, std::string> g_type_headers;   // type -> include-relative header path
     std::string g_decomp_include = "reference/sms/include";
+    // Functions that are METHODS OF a flipped engine type are port-owned (bridged via runtime
+    // overrides); the recompiled bodies are dead. They must NOT be field-flipped: flipping them
+    // generates sbf_ accessors for the type's INTERNAL graph-pointer fields (e.g. J3DModelData::
+    // mVertexData.mVtxPosArray, J3DModel::mBumpMtxArr) which are 8-byte host pointers to host
+    // sub-objects with no sound u32 representation -> the accessor TU does not compile. The
+    // field-flip is reserved for EXTERNAL (game) access of the type; the engine internals stay
+    // port-native. Emitting these as plain guest code (dead, overridden) compiles & is correct.
+    std::unordered_set<u32> g_port_owned_funcs;
     if (const char* e = getenv("SUNBRIGHT_ENGINE_TYPES")) {
         std::set<std::string> active;
         std::string cur;
@@ -449,6 +458,26 @@ static int recompile_mode(const DiscLoader& disc, const DOL& dol, const std::str
             std::cout << "Tailored boundary: " << g_type_db.layouts.size() << " engine type(s) active\n";
             for (const auto& m : built.missing_types)
                 std::cerr << "  WARN: engine type not found in headers: " << m << "\n";
+
+            // Flag every function that is a METHOD of a modeled (port-owned) type so the emit loop
+            // skips field-flipping it (see g_port_owned_funcs decl). Read addr->mangled from funcs.txt
+            // and demangle the owning class; if it is a DB layout key, the function is engine-internal.
+            {
+                std::ifstream ff(fx ? fx : "reference/sms_gmse01_funcs.txt");
+                std::string line;
+                while (std::getline(ff, line)) {
+                    if (line.empty()) continue;
+                    std::size_t sp = line.find(' ');
+                    if (sp == std::string::npos) continue;
+                    u32 a = (u32)strtoul(line.substr(0, sp).c_str(), nullptr, 16);
+                    std::string mangled = line.substr(sp + 1);
+                    FuncSig sig = demangle_signature(mangled);
+                    if (sig.is_method && g_type_db.layouts.count(sig.class_leaf))
+                        g_port_owned_funcs.insert(a);
+                }
+                std::cout << "Tailored boundary: " << g_port_owned_funcs.size()
+                          << " engine-internal method(s) excluded from field-flip\n";
+            }
         }
     }
 
@@ -524,7 +553,7 @@ static int recompile_mode(const DiscLoader& disc, const DOL& dol, const std::str
             // With the DB active, also recognize engine-CONSTRUCTION sites (object_identity.md):
             // a guest `operator new` whose result becomes an engine object is rewritten to a host
             // alloc + handle (ctx.alloc_sites), and its inlined ctor field writes are typed.
-            if (!g_type_db.layouts.empty()) {
+            if (!g_type_db.layouts.empty() && !g_port_owned_funcs.count(addr)) {
                 static const std::unordered_set<u32> raw_allocators = { 0x802c3ba4u };  // operator new
                 ctx.eng_fields = recover_eng_fields(ctx.instrs, addr, g_type_db,
                                                     ctx.branch_targets, ctx.jumptable_targets,
