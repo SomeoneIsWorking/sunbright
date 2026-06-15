@@ -555,6 +555,7 @@ void capture_pe(u32 material, NgxTevState& st) {
 constexpr size_t TEVSTATE_CAP = 4096;
 std::vector<NgxTevState>          g_tevstates;
 std::unordered_map<uint64_t, int> g_tevkey_index;
+u16 g_tev_cc[TEVSTATE_CAP] = {0};   // DBG: last colour-channel ctrl per tev index (matVtx/enable)
 int      g_cur_tev_index = -1;     // material index for the shape being captured
 unsigned long g_mat_found = 0, g_mat_novt = 0, g_mat_none = 0;
 u32      g_vt_hist_key[8] = {0};    // distinct vtable values seen
@@ -759,12 +760,14 @@ int capture_material() {
     if (ns <= 16) g_stage_hist[ns]++;
     g_mat_found++;
 
+    const u16 dbgcc = g_cur_chan.valid ? g_cur_chan.color0 : 0xFFFF;  // 0xFFFF = no colour block
     auto it = g_tevkey_index.find(h);
-    if (it != g_tevkey_index.end()) return it->second;
+    if (it != g_tevkey_index.end()) { if (it->second < (int)TEVSTATE_CAP) g_tev_cc[it->second] = dbgcc; return it->second; }
     if (g_tevstates.size() >= TEVSTATE_CAP) { g_tevstates.clear(); g_tevkey_index.clear(); }
     const int idx = (int)g_tevstates.size();
     g_tevstates.push_back(st);
     g_tevkey_index[h] = idx;
+    if (idx < (int)TEVSTATE_CAP) g_tev_cc[idx] = dbgcc;
     return idx;
 }
 
@@ -1415,8 +1418,10 @@ int sb_ngx_shape_dump(char* out, int cap) {
             // first vertex's col0 (the rgba fed to the shader) for this batch
             float r=0,g=0,bl=0; for (const auto& B2:bats) if (B2.tev_index==b.ti && B2.vcount){
                 if (B2.vstart<snap.size()){ r=snap[B2.vstart].rgba[0]; g=snap[B2.vstart].rgba[1]; bl=snap[B2.vstart].rgba[2]; } break; }
-            n += snprintf(out+n, cap-n, "    area=%.3f cy=%+.2f ti=%d vc=%u tex0=%08x col0=(%.2f,%.2f,%.2f)  %s s0ce=%06x chan=%u stg=%u\n",
-                b.area, b.cy, b.ti, b.vc, b.tex0, r,g,bl,
+            const u16 bcc = (b.ti>=0 && b.ti<(int)TEVSTATE_CAP) ? g_tev_cc[b.ti] : 0;
+            const char* mcat = bcc==0xFFFF ? "noblk" : ((bcc&1)?((bcc&2)?"vtx/lit":"vtx/flat"):((bcc&2)?"reg/lit":"reg/flat"));
+            n += snprintf(out+n, cap-n, "    area=%.3f cy=%+.2f ti=%d vc=%u tex0=%08x col0=(%.2f,%.2f,%.2f) cc=%04x[%s]  %s s0ce=%06x chan=%u stg=%u\n",
+                b.area, b.cy, b.ti, b.vc, b.tex0, r,g,bl, bcc, mcat,
                 s?(s->num_stages==1?"1stage":"multi"):"?",
                 s?s->stage[0].color_env:0, s?s->stage[0].color_chan:0, s?s->num_stages:0);
         }
