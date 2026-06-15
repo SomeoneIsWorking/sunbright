@@ -97,47 +97,49 @@ int sb_ngx_render(char* outbuf, int cap) {
     };
 
     // ── Decode the unique textures (N1 decoder) into one staging blob ───────────
+    // Each batch binds up to 8 texmaps; a TEV stage samples tex[its texmap]. We
+    // dedupe decoded textures across ALL texmaps of ALL batches, and record each
+    // batch's per-texmap texs index (0 = 1×1 white for unused/unsupported).
     struct TexEntry { int w, h; size_t off; };           // off = byte offset in staging
     std::vector<TexEntry> texs;                           // index 0 = white
-    std::unordered_map<uint64_t, int> tex_index;          // key(addr,fmt,w,h) → texs index
+    std::unordered_map<uint64_t, int> tex_index;          // key(addr,fmt,w,h,tlut) → texs index
     std::vector<uint8_t> staging;                         // concatenated RGBA8
     auto white_off = staging.size();
     { uint32_t w = 0xFFFFFFFFu; staging.insert(staging.end(), (uint8_t*)&w, (uint8_t*)&w + 4); }
     texs.push_back({1, 1, white_off});                    // index 0: 1×1 white
-    std::vector<int> batch_tex(batches.size(), 0);        // batch → texs index
+    std::vector<int> batch_texidx(batches.size() * 8, 0); // [b*8+texmap] → texs index
 
-    for (size_t b = 0; b < batches.size(); b++) {
-        const NgxRenderBatch& B = batches[b];
-        if (B.tex_addr == 0 || B.w == 0 || B.h == 0) { batch_tex[b] = 0; continue; }
-        const uint64_t key = ((uint64_t)B.tex_addr << 16) ^ ((uint64_t)B.fmt << 56) ^
-                             ((uint64_t)B.w << 40) ^ ((uint64_t)B.h << 28) ^ ((uint64_t)B.tlut_addr << 4);
+    auto decode_bind = [&](const NgxTexBind& T) -> int {
+        if (T.addr == 0 || T.w == 0 || T.h == 0) return 0;
+        const uint64_t key = ((uint64_t)T.addr << 16) ^ ((uint64_t)T.fmt << 56) ^
+                             ((uint64_t)T.w << 40) ^ ((uint64_t)T.h << 28) ^ ((uint64_t)T.tlut_addr << 4);
         auto it = tex_index.find(key);
-        if (it != tex_index.end()) { batch_tex[b] = it->second; continue; }
-        if ((int)texs.size() >= MAXTEX) { batch_tex[b] = 0; continue; }
-        const uint8_t* host = sb_ram_fast(B.tex_addr);
-        if (!host) { batch_tex[b] = 0; continue; }
-        const int w = B.w, h = B.h;
-        // Guard: the tiled source must fit within the 24 MB main RAM window.
-        const int srcbytes = sb_tex_size_bytes(w, h, B.fmt);
-        if (srcbytes <= 0 || (B.tex_addr & 0x01FFFFFFu) + (uint32_t)srcbytes > 0x1800000u) { batch_tex[b] = 0; continue; }
-        // CI formats need the palette; bound it (C4=16 / C8=256 / C14X2=16384 entries × 2 B).
+        if (it != tex_index.end()) return it->second;
+        if ((int)texs.size() >= MAXTEX) return 0;
+        const uint8_t* host = sb_ram_fast(T.addr);
+        if (!host) return 0;
+        const int w = T.w, h = T.h;
+        const int srcbytes = sb_tex_size_bytes(w, h, T.fmt);   // must fit the 24 MB RAM window
+        if (srcbytes <= 0 || (T.addr & 0x01FFFFFFu) + (uint32_t)srcbytes > 0x1800000u) return 0;
         const uint8_t* tlut = nullptr;
-        if (B.fmt == SB_TF_C4 || B.fmt == SB_TF_C8 || B.fmt == SB_TF_C14X2) {
-            const uint32_t entries = B.fmt == SB_TF_C4 ? 16u : B.fmt == SB_TF_C8 ? 256u : 16384u;
-            if (B.tlut_addr && (B.tlut_addr & 0x01FFFFFFu) + entries * 2u <= 0x1800000u)
-                tlut = sb_ram_fast(B.tlut_addr);
-            if (!tlut) { batch_tex[b] = 0; continue; }   // no palette → render flat
+        if (T.fmt == SB_TF_C4 || T.fmt == SB_TF_C8 || T.fmt == SB_TF_C14X2) {
+            const uint32_t entries = T.fmt == SB_TF_C4 ? 16u : T.fmt == SB_TF_C8 ? 256u : 16384u;
+            if (T.tlut_addr && (T.tlut_addr & 0x01FFFFFFu) + entries * 2u <= 0x1800000u)
+                tlut = sb_ram_fast(T.tlut_addr);
+            if (!tlut) return 0;                           // no palette → white
         }
         const size_t rgba = (size_t)w * h * 4;
-        if (staging.size() + rgba > TEX_STAGING) { batch_tex[b] = 0; continue; }
+        if (staging.size() + rgba > TEX_STAGING) return 0;
         const size_t off = staging.size();
         staging.resize(off + rgba);
-        sb_tex_decode((uint32_t*)(staging.data() + off), host, w, h, B.fmt, tlut, B.tlut_fmt);
+        sb_tex_decode((uint32_t*)(staging.data() + off), host, w, h, T.fmt, tlut, T.tlut_fmt);
         const int idx = (int)texs.size();
         texs.push_back({w, h, off});
         tex_index[key] = idx;
-        batch_tex[b] = idx;
-    }
+        return idx;
+    };
+    for (size_t b = 0; b < batches.size(); b++)
+        for (int m = 0; m < 8; m++) batch_texidx[b * 8 + m] = decode_bind(batches[b].tex[m]);
     const int ntex = (int)texs.size();
 
     const int W = 640, H = 448;
@@ -167,7 +169,7 @@ int sb_ngx_render(char* outbuf, int cap) {
     std::vector<VkImage> timg(ntex, VK_NULL_HANDLE);
     std::vector<VkDeviceMemory> tmem(ntex, VK_NULL_HANDLE);
     std::vector<VkImageView> tview(ntex, VK_NULL_HANDLE);
-    std::vector<VkDescriptorSet> tset(ntex, VK_NULL_HANDLE);
+    std::vector<VkDescriptorSet> bset(batches.size(), VK_NULL_HANDLE);   // one 8-sampler set per batch
 
     int result = -2;
     VkResult vr = VK_SUCCESS;
@@ -270,19 +272,20 @@ int sb_ngx_render(char* outbuf, int cap) {
 
         VkDescriptorSetLayoutBinding b{};
         b.binding = 0; b.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        b.descriptorCount = 1; b.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        b.descriptorCount = 8; b.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;   // 8 texmaps
         VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
         li.bindingCount = 1; li.pBindings = &b;
         if ((vr = vkCreateDescriptorSetLayout(dev, &li, nullptr, &dsl))) { FAIL("dsl"); goto done; }
 
-        VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, (uint32_t)ntex};
+        const uint32_t nsets = (uint32_t)batches.size();
+        VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, nsets * 8};
         VkDescriptorPoolCreateInfo pci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-        pci.maxSets = (uint32_t)ntex; pci.poolSizeCount = 1; pci.pPoolSizes = &ps;
+        pci.maxSets = nsets; pci.poolSizeCount = 1; pci.pPoolSizes = &ps;
         if ((vr = vkCreateDescriptorPool(dev, &pci, nullptr, &dpool))) { FAIL("dpool"); goto done; }
-        for (int i = 0; i < ntex; i++) {
+        for (uint32_t i = 0; i < nsets; i++) {
             VkDescriptorSetAllocateInfo dai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
             dai.descriptorPool = dpool; dai.descriptorSetCount = 1; dai.pSetLayouts = &dsl;
-            if ((vr = vkAllocateDescriptorSets(dev, &dai, &tset[i]))) { FAIL("dset alloc"); goto done; }
+            if ((vr = vkAllocateDescriptorSets(dev, &dai, &bset[i]))) { FAIL("dset alloc"); goto done; }
         }
 
         VkPushConstantRange pcr{VK_SHADER_STAGE_FRAGMENT_BIT, 0, (uint32_t)sizeof(MatPC)};  // kcolor[4]+tevreg[3]
@@ -371,12 +374,14 @@ int sb_ngx_render(char* outbuf, int cap) {
         if ((vr = vkCreateFence(dev, &fci, nullptr, &fence))) { FAIL("fence"); goto done; }
     }
 
-    // Bind each texture image into its descriptor set.
-    for (int i = 0; i < ntex; i++) {
-        VkDescriptorImageInfo dii{sampler, tview[i], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    // Bind each batch's 8 texmap textures into its descriptor set (array binding 0).
+    for (size_t b = 0; b < batches.size(); b++) {
+        VkDescriptorImageInfo dii[8];
+        for (int m = 0; m < 8; m++)
+            dii[m] = {sampler, tview[batch_texidx[b * 8 + m]], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-        w.dstSet = tset[i]; w.dstBinding = 0; w.descriptorCount = 1;
-        w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w.pImageInfo = &dii;
+        w.dstSet = bset[b]; w.dstBinding = 0; w.dstArrayElement = 0; w.descriptorCount = 8;
+        w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w.pImageInfo = dii;
         vkUpdateDescriptorSets(dev, 1, &w, 0, nullptr);
     }
 
@@ -417,12 +422,11 @@ int sb_ngx_render(char* outbuf, int cap) {
         rbi.clearValueCount = 2; rbi.pClearValues = clear;
         vkCmdBeginRenderPass(cmd, &rbi, VK_SUBPASS_CONTENTS_INLINE);
         VkDeviceSize voff = 0; vkCmdBindVertexBuffers(cmd, 0, 1, &vbuf, &voff);
-        int last_tex = -1, last_pipe = -1;
+        int last_pipe = -1;
         for (size_t b = 0; b < batches.size(); b++) {
             const int pslot = batch_pipe[b] < (int)pipes.size() ? batch_pipe[b] : 0;
             if (pslot != last_pipe) { vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipes[pslot]); last_pipe = pslot; }
-            const int ti = batch_tex[b];
-            if (ti != last_tex) { vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pll, 0, 1, &tset[ti], 0, nullptr); last_tex = ti; }
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pll, 0, 1, &bset[b], 0, nullptr);
             MatPC pc; fill_pc(pc, batches[b].tev_index);
             vkCmdPushConstants(cmd, pll, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof pc, &pc);
             vkCmdDraw(cmd, batches[b].vcount, 1, batches[b].vstart, 0);

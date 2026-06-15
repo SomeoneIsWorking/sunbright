@@ -48,7 +48,7 @@ bool g_enabled = (getenv("SUNBRIGHT_NGX_SHAPE") != nullptr);
 // Latest GX texmap-0 binding (from the GXLoadTexObj tee), associated with shapes
 // drawn after it. Decoded from the GXTexObj's packed registers.
 struct CurTex { u32 addr = 0; u16 w = 0, h = 0; u8 fmt = 0; u32 tlut_addr = 0; u8 tlut_fmt = 0; bool valid = false; };
-CurTex g_curtex;
+CurTex g_curtex[8];   // live binding per GX texmap (0..7)
 
 // TLUT registry: tlut_name (GXTlut, the TMEM slot) → palette guest addr + format,
 // populated by the GXLoadTlut tee. CI texobjs reference a tlut_name (texobj+0x18).
@@ -59,6 +59,23 @@ inline bool valid(u32 a) { return a >= 0x80000000u && a < 0x81800000u; }
 inline u32  r32(u32 a) { return valid(a) ? mem_r32(a) : 0; }
 inline u8   rb(u32 a) { return valid(a) ? (u8)(mem_r32(a) >> 24) : 0; }  // big-endian byte @ word
 inline float rf(u32 a) { u32 u = r32(a); float f; std::memcpy(&f, &u, 4); return f; }
+
+// Decode a GXTexObj's packed registers (image0@0x08 = (w-1)[0:9]/(h-1)[10:19]/
+// fmt&0xF[20:23]; image3@0x0C = (addr>>5)[0:20]; tlutName@0x18 for CI) into a
+// CurTex. Shared by the GXLoadTexObj and GXLoadTexObjPreLoaded tees.
+void decode_texobj(u32 obj, CurTex& t) {
+    const u32 image0 = r32(obj + 0x08), image3 = r32(obj + 0x0C);
+    t.w = (u16)((image0 & 0x3FF) + 1);
+    t.h = (u16)(((image0 >> 10) & 0x3FF) + 1);
+    t.fmt = (u8)((image0 >> 20) & 0xF);
+    t.addr = 0x80000000u | ((image3 & 0x1FFFFFu) << 5);
+    t.tlut_addr = 0; t.tlut_fmt = 0;
+    if (t.fmt == 0x8 || t.fmt == 0x9 || t.fmt == 0xA) {        // CI → resolve TLUT
+        const u32 name = r32(obj + 0x18) & 0xFF;               // texobj.tlutName
+        if (g_tlut[name].valid) { t.tlut_addr = g_tlut[name].addr; t.tlut_fmt = g_tlut[name].fmt; }
+    }
+    t.valid = true;
+}
 
 // ── N6 color-channel LIGHTING (docs/native_port_plan.md §6) ─────────────────────
 // GX rasterizes a lit "channel colour" per vertex (raster colour input to the TEV),
@@ -532,21 +549,28 @@ void transform_eye() {
     // never splits a triangle; on wrap the batch list resets with the buffer).
     if (g_have_proj && !g_indices.empty()) {
         if (g_snap.size() < SNAP_CAP) g_snap.resize(SNAP_CAP);
-        // Texmap-0 binding for this shape. CI formats (C4/C8/C14X2) are now OK iff
-        // their TLUT was resolved; otherwise render flat (tex_addr 0).
-        const bool is_ci = (g_curtex.fmt == 0x8 || g_curtex.fmt == 0x9 || g_curtex.fmt == 0xA);
-        const bool tex_ok = g_curtex.valid && g_curtex.addr && (!is_ci || g_curtex.tlut_addr);
-        const uint32_t taddr = tex_ok ? g_curtex.addr : 0u;
+        // Per-texmap bindings for this shape, from the live g_curtex[8] table. CI
+        // formats (C4/C8/C14X2) are OK iff their TLUT was resolved; else → none.
+        NgxTexBind tb[8] = {};
+        for (int m = 0; m < 8; m++) {
+            const CurTex& c = g_curtex[m];
+            const bool is_ci = (c.fmt == 0x8 || c.fmt == 0x9 || c.fmt == 0xA);
+            if (c.valid && c.addr && (!is_ci || c.tlut_addr)) {
+                tb[m] = NgxTexBind{c.addr, c.w, c.h, c.fmt, c.tlut_fmt, is_ci ? c.tlut_addr : 0u};
+            }
+        }
         for (size_t t = 0; t + 3 <= g_indices.size(); t += 3) {
             if (g_snap_count + 3 > SNAP_CAP) { g_snap_count = 0; g_batches.clear(); }
-            // Open a new batch on texture/material change, after a wrap, or at start.
-            if (g_batches.empty() || g_batches.back().tex_addr != taddr ||
+            // Open a new batch on material/binding change, after a wrap, or at start.
+            const bool tex_diff = g_batches.empty() ||
+                memcmp(g_batches.back().tex, tb, sizeof tb) != 0;
+            if (g_batches.empty() || tex_diff ||
                 g_batches.back().tev_index != g_cur_tev_index ||
                 g_batches.back().vstart + g_batches.back().vcount != (uint32_t)g_snap_count) {
                 if (g_batches.size() >= BATCH_CAP) break;  // bounded
-                g_batches.push_back(NgxRenderBatch{taddr, g_curtex.w, g_curtex.h, g_curtex.fmt,
-                                                   tex_ok ? g_curtex.tlut_addr : 0u, g_curtex.tlut_fmt,
-                                                   (uint32_t)g_snap_count, 0, g_cur_tev_index});
+                NgxRenderBatch nb{}; memcpy(nb.tex, tb, sizeof tb);
+                nb.vstart = (uint32_t)g_snap_count; nb.vcount = 0; nb.tev_index = g_cur_tev_index;
+                g_batches.push_back(nb);
             }
             for (int e = 0; e < 3; e++) {
                 const unsigned vidx = g_indices[t + e];
@@ -652,22 +676,26 @@ SUNBRIGHT_OVERRIDE(ov_gxloadtlut, 0x803601fcu) {
     if (RecompFunc o = recomp_raw(0x803601fcu)) o(cpu); else call_ppc(cpu, cpu.lr);
 }
 
+// Per-texmap GXLoadTexObj + Preloaded histograms (diagnostic).
+unsigned long g_texobj_hist[9] = {0}, g_preload_hist[9] = {0};
+
+// GXLoadTexObjPreLoaded(GXTexObj* obj, GXTexRegion* region, GXTexMapID id) @ 0x8035ffb8.
+SUNBRIGHT_OVERRIDE(ov_gxloadtexobjpreloaded, 0x8035ffb8u) {
+    if (g_enabled) {
+        const u32 id = cpu.gpr[5];
+        g_preload_hist[id < 8 ? id : 8]++;
+        if (id < 8 && valid(cpu.gpr[3])) decode_texobj(cpu.gpr[3], g_curtex[id]);
+    }
+    if (RecompFunc o = recomp_raw(0x8035ffb8u)) o(cpu); else call_ppc(cpu, cpu.lr);
+}
+
+// GXLoadTexObj(GXTexObj* obj, GXTexMapID id) @ 0x80360160 — capture the binding for
+// EVERY texmap (0..7) so per-stage TEV texmap selection samples the right texture.
 SUNBRIGHT_OVERRIDE(ov_gxloadtexobj, 0x80360160u) {
-    if (g_enabled && cpu.gpr[4] == 0) {          // GX_TEXMAP0
-        const u32 obj = cpu.gpr[3];
-        if (valid(obj)) {
-            const u32 image0 = r32(obj + 0x08), image3 = r32(obj + 0x0C);
-            g_curtex.w = (u16)((image0 & 0x3FF) + 1);
-            g_curtex.h = (u16)(((image0 >> 10) & 0x3FF) + 1);
-            g_curtex.fmt = (u8)((image0 >> 20) & 0xF);
-            g_curtex.addr = 0x80000000u | ((image3 & 0x1FFFFFu) << 5);
-            g_curtex.tlut_addr = 0; g_curtex.tlut_fmt = 0;
-            if (g_curtex.fmt == 0x8 || g_curtex.fmt == 0x9 || g_curtex.fmt == 0xA) {  // CI → resolve TLUT
-                const u32 name = r32(obj + 0x18) & 0xFF;   // texobj.tlutName
-                if (g_tlut[name].valid) { g_curtex.tlut_addr = g_tlut[name].addr; g_curtex.tlut_fmt = g_tlut[name].fmt; }
-            }
-            g_curtex.valid = true;
-        }
+    if (g_enabled) {
+        const u32 id = cpu.gpr[4];
+        g_texobj_hist[id < 8 ? id : 8]++;
+        if (id < 8 && valid(cpu.gpr[3])) decode_texobj(cpu.gpr[3], g_curtex[id]);
     }
     if (RecompFunc o = recomp_raw(0x80360160u)) o(cpu); else call_ppc(cpu, cpu.lr);
 }
@@ -802,6 +830,11 @@ int sb_ngx_shape_dump(char* out, int cap) {
             (k % 4 == 0) ? " " : "", g_dbg_cb_raw[k]);
         n += snprintf(out + n, cap - n, "\n");
     }
+    n += snprintf(out + n, cap - n, "    GXLoadTexObj by texmap:");
+    for (int i = 0; i < 9; i++) if (g_texobj_hist[i]) n += snprintf(out + n, cap - n, " [%d]=%lu", i, g_texobj_hist[i]);
+    n += snprintf(out + n, cap - n, "   Preloaded:");
+    for (int i = 0; i < 9; i++) if (g_preload_hist[i]) n += snprintf(out + n, cap - n, " [%d]=%lu", i, g_preload_hist[i]);
+    n += snprintf(out + n, cap - n, "\n");
     n += snprintf(out + n, cap - n, "  num-stages histogram:");
     for (int s = 1; s <= 16; s++) if (g_stage_hist[s])
         n += snprintf(out + n, cap - n, " [%d]=%u", s, g_stage_hist[s]);

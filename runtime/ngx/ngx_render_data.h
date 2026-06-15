@@ -14,15 +14,22 @@ struct NgxRenderVertex {
     float uv[2];     // tex0 coord (S,T)
 };
 
-// A run of vertices sharing one bound GX texture (texmap 0). tex_addr==0 means
-// "no/unsupported texture" → render flat (vertex color only). w/h/fmt are the
-// GXTexObj fields (fmt = GX/SbTexFormat code) for the native decoder.
-struct NgxRenderBatch {
-    uint32_t tex_addr;        // guest address of the tiled texture bytes (0 = none)
+// One bound GX texture (a single texmap). addr==0 means "no/unsupported texture"
+// → sampled as 1×1 white. w/h/fmt/tlut* are the GXTexObj fields the native decoder
+// (tex_decode) needs (fmt = GX/SbTexFormat code).
+struct NgxTexBind {
+    uint32_t addr;            // guest address of the tiled texture bytes (0 = none)
     uint16_t w, h;            // texture dimensions
     uint8_t  fmt;             // GX texture format (SbTexFormat)
-    uint32_t tlut_addr;       // guest palette address for CI formats (0 = none)
     uint8_t  tlut_fmt;        // GX TLUT format (SbTlutFormat) for CI formats
+    uint32_t tlut_addr;       // guest palette address for CI formats (0 = none)
+};
+
+// A run of vertices sharing one material AND the same set of bound texmaps. The
+// TEV stages select which texmap each samples (tex[GX_TEXMAP0..7]); a batch breaks
+// when the material OR any texmap binding changes.
+struct NgxRenderBatch {
+    NgxTexBind tex[8];        // bound texture per GX texmap (0..7)
     uint32_t vstart, vcount;  // [vstart, vstart+vcount) into the vertex list
     int32_t  tev_index;       // index into the TEV-state table (-1 = none/default)
 };

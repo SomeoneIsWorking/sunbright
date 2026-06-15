@@ -389,10 +389,25 @@ decoder; runtime GP-FIFO path on the delete list. Then, on the object-model arch
     real per-draw values (vs a transient global) and that no material double-darkens
     (matSrc=VTX + lighting on a colour that already baked light). Likely the remaining
     darkness is also dominated by the narrow texture coverage below.
-  - **Still first-slice gaps** (lower priority): single bound texmap/texcoord
-    (`/ngxrender` shows few unique textures — widen via per-stage texmap binding +
-    `GXLoadTexObjPreLoaded`), identity TEV swap tables, no alpha test (PE block
-    uncaptured → foliage cutouts show full quads), no indirect stages.
+  - **Still first-slice gaps** (lower priority): identity TEV swap tables, no alpha
+    test (PE block uncaptured → foliage cutouts show full quads), no indirect stages.
+
+- **N6.5 — per-texmap texture capture + per-stage sampling ✅** (this commit) — the
+  producer now captures the binding for ALL 8 GX texmaps (both `GXLoadTexObj`
+  0x80360160 and `GXLoadTexObjPreLoaded` 0x8035ffb8 fire for texmaps 0..7 — verified
+  by the per-texmap histogram in `/ngxshape`), each `NgxRenderBatch` carries an
+  `NgxTexBind[8]`, and the generated TEV shader samples `tex[stage.texmap]` from an
+  8-element `sampler2D` array (one descriptor set of 8 per batch in `vk_mesh`).
+  Replaces the single-texmap-0 binding. Faithful + no regression (0 fails, 100% cov),
+  but **little visible change on the Delfino entry** because the real texture-fidelity
+  blocker is now **TEXCOORD / texgen**, NOT texmap coverage:
+  - **OPEN — texcoord/texgen (the texture frontier).** TEV stages reference a
+    *texcoord* index (`/ngxshape` shows materials with `coord=1`), but the producer
+    feeds only the vertex's texcoord0 UV to every stage → multi-texcoord materials
+    sample at the wrong UVs. Fixing needs: per-stage texcoord selection (pass the
+    used texcoords per vertex) AND GX **texgen** (J3DTexGenBlock — many SMS texcoords
+    are generated from position/normal via a texgen matrix, e.g. env/proj mapping, not
+    raw vertex attributes). This is the next real stage for texture correctness.
 
 **J3DShape DRAW PATH (RE'd 2026-06-14, `reference/sms/.../J3DShape.cpp`) — the live-hook seam.**
 `J3DShape::draw()` does, in order:

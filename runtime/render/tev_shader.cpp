@@ -98,8 +98,8 @@ void write_stage(Buf& o, const NgxTevState& st, int n) {
     const bool tex_used = cc.a==8||cc.a==9||cc.b==8||cc.b==9||cc.c==8||cc.c==9||cc.d==8||cc.d==9
                           || ac.a==4||ac.b==4||ac.c==4||ac.d==4;
     if (tex_used) {
-        if (s.texmap != 0xff) o.w("  textemp = ivec4(round(texture(tex, vUV) * 255.0));\n");
-        else                  o.w("  textemp = ivec4(255,255,255,255);\n");
+        if (s.texmap < 8) o.w("  textemp = ivec4(round(texture(tex[%u], vUV) * 255.0));\n", s.texmap);
+        else              o.w("  textemp = ivec4(255,255,255,255);\n");
     }
 
     // Konst.
@@ -163,7 +163,7 @@ std::string sb_tev_gen_fragment(const NgxTevState& st) {
     o.w("layout(location=0) in vec4 vColor;\n");
     o.w("layout(location=1) in vec2 vUV;\n");
     o.w("layout(location=0) out vec4 o;\n");
-    o.w("layout(set=0, binding=0) uniform sampler2D tex;\n");
+    o.w("layout(set=0, binding=0) uniform sampler2D tex[8];\n");   // one per GX texmap
     o.w("layout(push_constant) uniform Mat { ivec4 kcolor[4]; ivec4 tevreg[3]; } m;\n");
     o.w("int idot(ivec3 a, ivec3 b){ return a.x*b.x + a.y*b.y + a.z*b.z; }\n");
     o.w("void main() {\n");
