@@ -36,12 +36,13 @@ int main() {
 	const uint32_t EVP1_OFF = VTX1_OFF + VTX1_SIZE, EVP1_SIZE = 0x70;
 	const uint32_t DRW1_OFF = EVP1_OFF + EVP1_SIZE, DRW1_SIZE = 0x20;
 	const uint32_t JNT1_OFF = DRW1_OFF + DRW1_SIZE, JNT1_SIZE = 0x60;
-	const uint32_t TOTAL = JNT1_OFF + JNT1_SIZE;
+	const uint32_t SHP1_OFF = JNT1_OFF + JNT1_SIZE, SHP1_SIZE = 0x90;
+	const uint32_t TOTAL = SHP1_OFF + SHP1_SIZE;
 	std::vector<uint8_t> be(TOTAL, 0);
 	put32(be, 0x00, 0x4A334432);          // 'J3D2'
 	put32(be, 0x04, 0x626D6433);          // 'bmd3'
 	put32(be, 0x08, TOTAL);               // fileSize
-	put32(be, 0x0C, 5);                   // blockNum = 5
+	put32(be, 0x0C, 6);                   // blockNum = 6
 	// INF1 block
 	put32(be, INF1_OFF+0x00, 0x494E4631); // 'INF1'
 	put32(be, INF1_OFF+0x04, INF1_SIZE);  // block size
@@ -110,13 +111,65 @@ int main() {
 		putf(be, b+0x34,  1.0f); putf(be, b+0x38,  2.0f); putf(be, b+0x3C,  3.0f); // mMax
 	}
 	put16(be, JNT1_OFF+JNT_IDX, 0x0000);  // mpIndexTable[0]
+	// SHP1 block: shapeNum=1; init@0x2c, idx@0x54, vtxdesc@0x58, mtxtab@0x68,
+	//   dl@0x6c (byte stream, deferred), mtxinit@0x74, drawinit@0x7c.
+	const uint32_t SH_INIT=0x2c, SH_IDX=0x54, SH_VTXD=0x58, SH_MTXT=0x68,
+	               SH_DL=0x6c, SH_MTXI=0x74, SH_DRAWI=0x7c;
+	put32(be, SHP1_OFF+0x00, 0x53485031); // 'SHP1'
+	put32(be, SHP1_OFF+0x04, SHP1_SIZE);
+	put16(be, SHP1_OFF+0x08, 0x0001);     // mShapeNum
+	put32(be, SHP1_OFF+0x0C, SH_INIT);
+	put32(be, SHP1_OFF+0x10, SH_IDX);
+	put32(be, SHP1_OFF+0x14, 0x00000000); // name = 0
+	put32(be, SHP1_OFF+0x18, SH_VTXD);
+	put32(be, SHP1_OFF+0x1C, SH_MTXT);
+	put32(be, SHP1_OFF+0x20, SH_DL);
+	put32(be, SHP1_OFF+0x24, SH_MTXI);
+	put32(be, SHP1_OFF+0x28, SH_DRAWI);
+	{
+		uint32_t b = SHP1_OFF + SH_INIT;
+		be[b+0x00] = 2;                   // mShapeMtxType (u8, no swap)
+		put16(be, b+0x02, 0x0001);        // mMtxGroupNum
+		put16(be, b+0x04, 0x0003);        // mVtxDescListIndex
+		put16(be, b+0x06, 0x0000);        // mMtxInitDataIndex
+		put16(be, b+0x08, 0x0000);        // mDrawInitDataIndex
+		putf(be, b+0x0C, 12.5f);          // mRadius
+		putf(be, b+0x10,-1.f);putf(be,b+0x14,-2.f);putf(be,b+0x18,-3.f); // mMin
+		putf(be, b+0x1C, 1.f);putf(be,b+0x20, 2.f);putf(be,b+0x24, 3.f); // mMax
+	}
+	put16(be, SHP1_OFF+SH_IDX, 0x0000);   // mpIndexTable[0]
+	put32(be, SHP1_OFF+SH_VTXD+0x00, 9); put32(be, SHP1_OFF+SH_VTXD+0x04, 1); // POS desc
+	put32(be, SHP1_OFF+SH_VTXD+0x08, 0xFF); put32(be, SHP1_OFF+SH_VTXD+0x0C, 0); // NULL
+	put16(be, SHP1_OFF+SH_MTXT+0x00, 0x0000); put16(be, SHP1_OFF+SH_MTXT+0x02, 0xFFFF);
+	be[SHP1_OFF+SH_DL+0]=0x90; be[SHP1_OFF+SH_DL+1]=0x00; be[SHP1_OFF+SH_DL+2]=0x03; // DL bytes (left intact)
+	put16(be, SHP1_OFF+SH_MTXI+0x00, 0x0005); put16(be, SHP1_OFF+SH_MTXI+0x02, 0x0002);
+	put32(be, SHP1_OFF+SH_MTXI+0x04, 0x00000007); // mFirstUseMtxIndex
+	put32(be, SHP1_OFF+SH_DRAWI+0x00, 0x00000040); // mDisplayListSize
+	put32(be, SHP1_OFF+SH_DRAWI+0x04, 0x00000000); // mDisplayListIndex
 
 	std::vector<uint8_t> out;
 	BmdSwapResult r = bmd_swap_to_host(be.data(), be.size(), out);
 
 	CK(r.ok, "swap ok");
-	CK(r.block_num == 5, "block_num == 5");
-	CK(r.blocks_covered == 5 && r.all_covered, "INF1+VTX1+EVP1+DRW1+JNT1 covered + all_covered");
+	CK(r.block_num == 6, "block_num == 6");
+	CK(r.blocks_covered == 6 && r.all_covered, "INF1+VTX1+EVP1+DRW1+JNT1+SHP1 covered + all_covered");
+
+	// SHP1: shapeNum + init struct + vtxdesc(u32)/mtxtab(u16)/mtxinit/drawinit
+	// swapped; display-list bytes left intact; mShapeMtxType u8 untouched.
+	CK(h16(out.data()+SHP1_OFF+0x08)==0x0001, "SHP1 mShapeNum");
+	{ uint32_t b=SHP1_OFF+SH_INIT;
+	  CK(out[b+0x00]==2, "SHP1 mShapeMtxType u8 untouched");
+	  CK(h16(out.data()+b+0x02)==0x0001, "SHP1 mMtxGroupNum");
+	  CK(h16(out.data()+b+0x04)==0x0003, "SHP1 mVtxDescListIndex");
+	  float rad; memcpy(&rad,out.data()+b+0x0C,4); CK(rad==12.5f,"SHP1 mRadius");
+	  float maxx; memcpy(&maxx,out.data()+b+0x1C,4); CK(maxx==1.0f,"SHP1 mMax.x"); }
+	CK(h32(out.data()+SHP1_OFF+SH_VTXD+0x00)==9, "SHP1 vtxdesc attr");
+	CK(h32(out.data()+SHP1_OFF+SH_VTXD+0x08)==0xFF, "SHP1 vtxdesc NULL");
+	CK(h16(out.data()+SHP1_OFF+SH_MTXT+0x02)==0xFFFF, "SHP1 mtxtable u16");
+	CK(out[SHP1_OFF+SH_DL+0]==0x90 && out[SHP1_OFF+SH_DL+2]==0x03, "SHP1 display-list bytes intact");
+	CK(h16(out.data()+SHP1_OFF+SH_MTXI+0x00)==0x0005, "SHP1 mtxinit mUseMtxIndex");
+	CK(h32(out.data()+SHP1_OFF+SH_MTXI+0x04)==0x00000007, "SHP1 mtxinit mFirstUseMtxIndex");
+	CK(h32(out.data()+SHP1_OFF+SH_DRAWI+0x00)==0x00000040, "SHP1 drawinit mDisplayListSize");
 
 	// VTX1: fmt-list attr/cnt/type swapped, frac u8 untouched, pos f32 swapped.
 	CK(h32(out.data()+VTX1_OFF+VTX_FMT+0x00)==9, "VTX1 fmt attr");
@@ -149,7 +202,7 @@ int main() {
 	// Header reads host-endian after swap.
 	CK(h32(out.data()+0x00)==0x4A334432, "magic host-readable");
 	CK(h32(out.data()+0x08)==TOTAL,      "fileSize host-readable");
-	CK(h32(out.data()+0x0C)==5,          "blockNum host-readable");
+	CK(h32(out.data()+0x0C)==6,          "blockNum host-readable");
 	CK(h32(out.data()+INF1_OFF)==0x494E4631, "INF1 tag host-readable");
 	CK(h32(out.data()+DRW1_OFF)==0x44525731, "DRW1 tag host-readable");
 

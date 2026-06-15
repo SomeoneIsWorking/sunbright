@@ -290,6 +290,99 @@ static void swap_VTX1(uint8_t* out, const uint8_t* be, uint32_t size) {
 	}
 }
 
+// SHP1 / J3DShapeBlock (J3DShapeFactory.hpp):
+//   +0x08 u16 mShapeNum (+0x0A pad)
+//   +0x0C u32 mpShapeInitData (offset -> J3DShapeInitData[mShapeNum], stride 0x28)
+//   +0x10 u32 mpIndexTable    (offset -> u16[mShapeNum])
+//   +0x14 u32 mpNameTable     (offset -> ResNTAB or 0)
+//   +0x18 u32 mpVtxDescList   (offset -> GXVtxDescList{u32 attr; u32 type}[]...)
+//   +0x1C u32 mpMtxTable      (offset -> u16[])
+//   +0x20 u32 mpDisplayListData (offset -> GX FIFO byte stream)
+//   +0x24 u32 mpMtxInitData   (offset -> J3DShapeMtxInitData{u16;u16;u32}[])
+//   +0x28 u32 mpDrawInitData  (offset -> J3DShapeDrawInitData{u32;u32}[])
+// J3DShapeInitData (stride 0x28): u8 mShapeMtxType@0x00, u16 mMtxGroupNum@0x02,
+//   u16 mVtxDescListIndex@0x04, u16 mMtxInitDataIndex@0x06, u16 mDrawInitDataIndex
+//   @0x08, f32 mRadius@0x0C, Vec mMin@0x10, Vec mMax@0x1C.
+// The mpVtxDescList region is wholly u32 attr/type pairs; mpMtxTable is wholly
+// u16; so each is swapped as a uniform scalar run over [start,nextBoundary).
+// NOTE: the DISPLAY-LIST byte stream interior (BE u16 vertex counts + BE index16
+// values) is NOT swapped here — that requires VCD-driven primitive parsing and is
+// render-time data consumed by the port GX/draw path (not owned yet, GX stubbed).
+// The loader (readShape/setupBBoardInfo) reads only the structural fields above,
+// so this is the correct scope for the loader gate. Display-list interior swapping
+// is deferred to when the port draw path consumes it.
+static void swap_SHP1(uint8_t* out, const uint8_t* be, uint32_t size) {
+	if (size < 0x2C) return;
+	uint16_t shape_num = be16(be + 0x08);
+	uint32_t off_init  = be32(be + 0x0C);
+	uint32_t off_idx   = be32(be + 0x10);
+	uint32_t off_name  = be32(be + 0x14);
+	uint32_t off_vtxd  = be32(be + 0x18);
+	uint32_t off_mtxt  = be32(be + 0x1C);
+	uint32_t off_dl    = be32(be + 0x20);
+	uint32_t off_mtxi  = be32(be + 0x24);
+	uint32_t off_drawi = be32(be + 0x28);
+	sw16(out + 0x08);                              // mShapeNum
+	for (uint32_t o = 0x0C; o <= 0x28; o += 4) sw32(out + o);  // 7 offsets
+
+	if (off_init != 0) {
+		for (uint32_t i = 0; i < shape_num; ++i) {
+			uint32_t b = off_init + i * 0x28;
+			if (b + 0x28 > size) break;
+			// b+0x00 mShapeMtxType u8 (+0x01 pad): no swap
+			sw16(out + b + 0x02);                  // mMtxGroupNum
+			sw16(out + b + 0x04);                  // mVtxDescListIndex
+			sw16(out + b + 0x06);                  // mMtxInitDataIndex
+			sw16(out + b + 0x08);                  // mDrawInitDataIndex
+			// b+0x0A pad
+			sw32(out + b + 0x0C);                  // mRadius
+			sw32(out + b + 0x10); sw32(out + b + 0x14); sw32(out + b + 0x18); // mMin
+			sw32(out + b + 0x1C); sw32(out + b + 0x20); sw32(out + b + 0x24); // mMax
+		}
+	}
+	if (off_idx != 0) {
+		for (uint32_t i = 0; i < shape_num; ++i) {
+			uint32_t o = off_idx + i * 2;
+			if (o + 2 > size) break;
+			sw16(out + o);                         // mpIndexTable[i]
+		}
+	}
+	swap_ResNTAB(out, be, off_name, size);
+
+	// Region boundaries for the uniform-run regions.
+	uint32_t bounds[10]; int nb = 0;
+	auto addb = [&](uint32_t v){ if (v) bounds[nb++] = v; };
+	addb(off_init); addb(off_idx); addb(off_name); addb(off_vtxd);
+	addb(off_mtxt); addb(off_dl); addb(off_mtxi); addb(off_drawi);
+	bounds[nb++] = size;
+	for (int i = 0; i < nb; ++i)
+		for (int j = i + 1; j < nb; ++j)
+			if (bounds[j] < bounds[i]) { uint32_t t = bounds[i]; bounds[i] = bounds[j]; bounds[j] = t; }
+	auto region_end = [&](uint32_t start)->uint32_t {
+		uint32_t end = size;
+		for (int j = 0; j < nb; ++j) if (bounds[j] > start && bounds[j] < end) end = bounds[j];
+		return end;
+	};
+
+	// mpVtxDescList: GXVtxDescList{u32 attr; u32 type} pairs (NULL-terminated per
+	// shape, but the whole region is u32 either way) -> swap every u32.
+	if (off_vtxd != 0) swap_run(out, off_vtxd, region_end(off_vtxd), 4);
+	// mpMtxTable: u16 matrix indices -> swap every u16.
+	if (off_mtxt != 0) swap_run(out, off_mtxt, region_end(off_mtxt), 2);
+	// mpDisplayListData: byte stream -> interior swap deferred (see note above).
+	// mpMtxInitData: J3DShapeMtxInitData{u16 mUseMtxIndex; u16 mUseMtxCount;
+	//   u32 mFirstUseMtxIndex} stride 8.
+	if (off_mtxi != 0) {
+		uint32_t end = region_end(off_mtxi);
+		for (uint32_t o = off_mtxi; o + 8 <= end; o += 8) {
+			sw16(out + o + 0x00); sw16(out + o + 0x02); sw32(out + o + 0x04);
+		}
+	}
+	// mpDrawInitData: J3DShapeDrawInitData{u32 mDisplayListSize; u32
+	//   mDisplayListIndex} stride 8 -> swap every u32.
+	if (off_drawi != 0) swap_run(out, off_drawi, region_end(off_drawi), 4);
+}
+
 // =============================================================================
 BmdSwapResult bmd_swap_to_host(const uint8_t* be_data, size_t len,
                                std::vector<uint8_t>& out) {
@@ -345,9 +438,8 @@ BmdSwapResult bmd_swap_to_host(const uint8_t* be_data, size_t len,
 		case 0x4A4E5431: /* JNT1 */ swap_JNT1(obo, bbo, bsz); break;
 		case 0x45565031: /* EVP1 */ swap_EVP1(obo, bbo, bsz, joint_num); break;
 		case 0x56545831: /* VTX1 */ swap_VTX1(obo, bbo, bsz); break;
+		case 0x53485031: /* SHP1 */ swap_SHP1(obo, bbo, bsz); break;
 		// --- NOT YET IMPLEMENTED (field maps in the header doc) -------------
-		// SHP1: shape descriptors (mtx-type/count u16, display-list offset/size)
-		//   + the GX display lists (byte streams — partial: swap descriptors only).
 		// MAT3: material entries — large; many u16/u8 index tables + color/reg data.
 		// TEX1 (J3DTextureBlock): mTextureNum u16 + offsets; ResTIMG headers
 		//   (format u8, width/height u16, ...) + palette/texel byte streams.
