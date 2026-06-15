@@ -466,7 +466,18 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
     case PPCOp::BCCTR:
         if (i.lk) {                                     // bctrl — indirect call
             line("cpu.lr = 0x%xu;", i.pc + 4);
-            line("call_ppc(cpu, cpu.ctr);");
+            auto vit = ctx.virt_calls.find(i.pc);
+            if (vit != ctx.virt_calls.end()) {
+                // Offset-0 virtual dispatch on an engine handle (r3) routed to the HOST method:
+                // call the generated thunk instead of guest vtable dispatch (which would fault on
+                // the handle's vtable load). Zero-arg void method -> handle from r3, no return.
+                const EmitVirtCall& v = vit->second;
+                line("%s(cpu.gpr[3]);", v.thunk.c_str());
+                if (virt_thunk_seen_.insert(v.thunk).second)
+                    virt_thunks_.push_back(EmitVirtThunk{ v.thunk, v.type, v.method });
+            } else {
+                line("call_ppc(cpu, cpu.ctr);");
+            }
         } else {                                        // bctr — computed/tail branch
             // If this is a jump table into THIS function, dispatch CTR to the in-function case
             // labels instead of handing off to Dolphin's JIT via tail_ppc (which corrupts

@@ -15,11 +15,30 @@
 // Memory accesses go through MEM_R32/MEM_W32 macros from intrinsics.h.
 // All arithmetic is 32-bit unsigned; cast to s32 when needed for signed ops.
 
+// A virtual `bctrl` (offset-0 dispatch on an engine handle) routed to a HOST virtual method
+// (docs/ARCHITECTURE_TARGET.md function-call boundary). main.cpp resolves recognition
+// (type_recovery VCall) against the vtable-slot DB (vtable_db.h) into one of these per routed
+// call site; the emitter replaces `call_ppc(cpu, cpu.ctr)` with a call to the generated thunk.
+// Scope: zero-argument, void-returning virtuals (J3DModel calc/update/entry/viewCalc) — the
+// thunk takes the handle from r3. Signatures with args fall back to call_ppc (not routed).
+struct EmitVirtCall {
+    std::string type;     // host engine type leaf, e.g. "J3DModel"
+    std::string method;   // host method name, e.g. "calc"
+    std::string thunk;    // generated thunk symbol to call, e.g. "sbvirt_J3DModel_2"
+};
+
 struct EmitContext {
     u32 func_addr;
     std::vector<PPCInstr> instrs;
     std::unordered_set<u32> branch_targets;     // within-function jump labels
     std::unordered_set<u32> jumptable_targets;  // bctr jump-table case labels (subset of branch_targets)
+    std::map<u32, EmitVirtCall> virt_calls;     // bctrl pc -> routed host virtual call (empty = none)
+};
+
+// One generated virtual-dispatch thunk to define in the port-world thunk TU (decomp headers,
+// no cpu_state.h): `extern "C" void <thunk>(u32 h){ ((<type>*)sb_eng_host(h))-><method>(); }`.
+struct EmitVirtThunk {
+    std::string thunk, type, method;
 };
 
 class CEmitter {
@@ -39,10 +58,16 @@ public:
     int unhandled_count() const { return unhandled_; }
     const std::vector<std::string>& unhandled_mnemonics() const { return unhandled_ops_; }
 
+    // Virtual-dispatch thunks emitted across all functions (deduped) — main.cpp writes their
+    // definitions into the port-world thunk TU.
+    const std::vector<EmitVirtThunk>& virt_thunks() const { return virt_thunks_; }
+
 private:
     std::ostream& out_;
     int unhandled_ = 0;
     std::vector<std::string> unhandled_ops_;
+    std::vector<EmitVirtThunk> virt_thunks_;
+    std::unordered_set<std::string> virt_thunk_seen_;
 
     void emit_instr(const PPCInstr& i, const EmitContext& ctx);
 

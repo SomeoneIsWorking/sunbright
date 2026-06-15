@@ -399,6 +399,36 @@ int main() {
               "ps_muls/ps_add round their double-exact results to single");
     }
 
+    // ── Offset-0 virtual-dispatch emission ───────────────────────────────────────────────────
+    // A `bctrl` listed in ctx.virt_calls is routed to a host virtual-dispatch thunk instead of
+    // guest CTR dispatch; the thunk is collected (deduped) for the port-world thunk TU.
+    {
+        // mtctr r12 ; bctrl ; blr — the chain's tail (the lwz vtable loads are recognized in
+        // type_recovery; here we test only the EMISSION given a resolved virt_calls entry).
+        const uint32_t mtctr12 = (31u<<26)|(12u<<21)|(0x120u<<11)|(467u<<1);
+        const uint32_t bctrl   = (19u<<26)|(20u<<21)|(528u<<1)|1u;
+        std::vector<uint32_t> w = { mtctr12, bctrl, BLR };
+        std::vector<uint8_t> data(w.size()*4);
+        for (size_t i = 0; i < w.size(); ++i) { uint32_t be = __builtin_bswap32(w[i]); std::memcpy(&data[i*4], &be, 4); }
+        EmitContext ctx; ctx.func_addr = B; ctx.instrs = collect_function(data.data(), B, data.size(), B, B+(uint32_t)w.size()*4, false);
+        ctx.branch_targets = intra_branch_targets(ctx.instrs, B);
+        ctx.virt_calls[B+4] = EmitVirtCall{ "J3DModel", "calc", "sbvirt_J3DModel_2" };
+        std::ostringstream ss; CEmitter em(ss); em.emit_function(ctx);
+        std::string code = ss.str();
+        CHECK(has(code, "sbvirt_J3DModel_2(cpu.gpr[3]);"), "routed bctrl calls the host-dispatch thunk");
+        CHECK(!has(code, "call_ppc(cpu, cpu.ctr)"), "routed bctrl does NOT emit guest CTR dispatch");
+        CHECK(em.virt_thunks().size() == 1 && em.virt_thunks()[0].thunk == "sbvirt_J3DModel_2" &&
+              em.virt_thunks()[0].type == "J3DModel" && em.virt_thunks()[0].method == "calc",
+              "thunk manifest collected with type+method for the port-world TU");
+
+        // A bctrl NOT in virt_calls stays a normal guest CTR dispatch.
+        EmitContext ctx2; ctx2.func_addr = B; ctx2.instrs = ctx.instrs;
+        ctx2.branch_targets = ctx.branch_targets;
+        std::ostringstream ss2; CEmitter em2(ss2); em2.emit_function(ctx2);
+        CHECK(has(ss2.str(), "call_ppc(cpu, cpu.ctr)"), "un-routed bctrl keeps guest CTR dispatch");
+        CHECK(em2.virt_thunks().empty(), "no thunk collected when nothing is routed");
+    }
+
     std::printf("recomp_test: %d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }
