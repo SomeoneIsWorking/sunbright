@@ -121,7 +121,18 @@ AI/behavior fns (perform/movement/think/calcAnim) we must NOT port → recompile
 See memory `actor-model-relationship-recompiler`. Owning stays for pure-engine subsystems; whole-fn
 consumer overrides (SMS_ChangeTextureAll) stay where the consumer is a callable seam.
 
-#### Implementation plan — bridged-getter emission (next recompiler unit, fresh context OK)
+#### Implementation plan — bridged-getter emission ✅ DONE (2026-06-15, commit 27ceadd)
+The 5-step plan below is IMPLEMENTED, unit-tested (recomp_test 75/0), and verified: a
+`SUNBRIGHT_FIELD_TYPES="J3DModelData,J3DMaterial"` regen boots build-j3dvirt PAST the prior
+createModelData/TShimmer::load fault. Gated behind `SUNBRIGHT_FIELD_TYPES` (empty default =
+byte-unchanged). Writes route to a loud `sb_eng_field_write_trap` (no setter yet, fail-loud).
+Engine-INTERNAL methods of a field type are excluded from routing (fe1ba78 rule). **DECISIVE
+follow-on finding:** the next fault is `J3DMaterialFactory::create` (802e55a0) building a GUEST-RAM
+J3DMaterial — J3DMaterial is not exclusively host+handle, so its getters are only runtime-sound once
+J3DMaterial CONSTRUCTION is port-owned. That is NEXT #2 (own the model-data/material loading path),
+the consumer-closure unit this getter emission unblocks. (J3DModelData alone is host+handle → its
+scalar getters are sound now.)
+
 Resurrect the GETTERS-ONLY half of the eng_accessors emission removed in 41aaa69 (recover from
 `git show 41aaa69~1:tools/recompiler/c_emitter.cpp` / `:main.cpp` / `:CMakeLists.txt`). The ANALYSIS
 half SURVIVED (type_recovery EngField, type_db_build, decomp_parse, func_sig). Scope it to READS only;
