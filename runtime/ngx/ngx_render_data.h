@@ -24,9 +24,37 @@ struct NgxRenderBatch {
     uint32_t tlut_addr;       // guest palette address for CI formats (0 = none)
     uint8_t  tlut_fmt;        // GX TLUT format (SbTlutFormat) for CI formats
     uint32_t vstart, vcount;  // [vstart, vstart+vcount) into the vertex list
+    int32_t  tev_index;       // index into the TEV-state table (-1 = none/default)
+};
+
+// ── N5 per-material TEV state (read from the guest J3DMaterial's mTevBlock) ─────
+// One TEV stage = the two GX combiner BP register values plus its order/konst
+// selection. The J3DTevStage 8 bytes ARE the two 24-bit GX combiner registers
+// (color_env = TevStageCombiner::ColorCombiner, alpha_env = AlphaCombiner), so we
+// store them raw and decode the bitfields in the shader generator (tev_shader).
+struct NgxTevStage {
+    uint32_t color_env;   // 24-bit GX color combiner reg (d/c/b/a, bias, op, clamp, scale, dest)
+    uint32_t alpha_env;   // 24-bit GX alpha combiner reg (rswap, tswap, d/c/b/a, bias, op, clamp, scale, dest)
+    uint8_t  texcoord;    // GX_TEXCOORD0.. (0xff = null)
+    uint8_t  texmap;      // GX_TEXMAP0..   (0xff = null)
+    uint8_t  color_chan;  // GX raster color source (GX_COLOR0A0=0 .. GX_COLOR_NULL=0xff)
+    uint8_t  kcsel;       // GX konst color selection (GXTevKColorSel)
+    uint8_t  kasel;       // GX konst alpha selection (GXTevKAlphaSel)
+    uint8_t  pad[3];
+};
+
+// A whole material's TEV combiner state — the cache key for a generated shader.
+struct NgxTevState {
+    uint8_t  num_stages;       // 1..16
+    uint8_t  pad[3];
+    NgxTevStage stage[16];
+    int16_t  tev_color[4][4];  // CPREV/C0/C1/C2 register init values, S10 RGBA (-1024..1023)
+    uint8_t  kcolor[4][4];     // KONST0..3 RGBA, 0..255
+    uint64_t key;              // FNV hash of the above (dedupe / shader-cache key)
 };
 
 // Snapshot accessors (defined in ngx_j3d_shape.cpp; read best-effort from the
 // HTTP/render thread — copy promptly, see ngx_j3d_shape.cpp notes).
 const NgxRenderVertex* ngx_snap_verts(int* nverts);
 const NgxRenderBatch*  ngx_snap_batches(int* nbatches);
+const NgxTevState*     ngx_snap_tevstates(int* nstates);

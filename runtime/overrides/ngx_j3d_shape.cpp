@@ -32,9 +32,11 @@
 #include "../ngx/ngx_mesh.h"
 #include "../ngx/ngx_render_data.h"
 #include <cstdarg>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <unordered_map>
 #include <vector>
 
 namespace {
@@ -56,6 +58,52 @@ inline bool valid(u32 a) { return a >= 0x80000000u && a < 0x81800000u; }
 inline u32  r32(u32 a) { return valid(a) ? mem_r32(a) : 0; }
 inline u8   rb(u32 a) { return valid(a) ? (u8)(mem_r32(a) >> 24) : 0; }  // big-endian byte @ word
 inline float rf(u32 a) { u32 u = r32(a); float f; std::memcpy(&f, &u, 4); return f; }
+
+// ── N5 per-material TEV capture (docs/native_port_plan.md §6) ───────────────────
+// The current material is reachable at J3DShape::draw time via the j3dSys global:
+// J3DMatPacket::draw sets j3dSys.mMatPacket (+0x3C) to the packet whose material
+// it is about to load, then draws that packet's shape packets (→ J3DShape::draw).
+// So mMatPacket+0x38 (J3DMatPacket::unk38) is the live J3DMaterial; +0x28 is its
+// J3DTevBlock. The block's concrete variant (TVB1/2/4/16 — different field
+// offsets) is identified by its vtable pointer (gmse01 addresses; the relative
+// 0x9C spacing/order is from the JP symbol map __vt__*J3DTevBlock*, anchored to
+// TVB1 = 0x803E0BE8 disassembled from __dt__12J3DTevBlock1). Verified at runtime
+// by the /ngxshape vtable histogram.
+constexpr u32 VT_TVB16 = 0x803E0A14u, VT_TVB4 = 0x803E0AB0u,
+              VT_TVB2  = 0x803E0B4Cu, VT_TVB1 = 0x803E0BE8u;
+
+// Per-variant field offsets (from reference/sms J3DTevBlocks.hpp). stage_off and
+// order_off step by 8 / 4 bytes respectively; sentinel 0 = field absent.
+struct TevLayout {
+    u32 stagenum_off;   // mTevStageNum (0 ⇒ implicit 1 stage, TVB1)
+    u32 order_off;      // mTevOrder[0]
+    u32 stage_off;      // mTevStage[0]
+    u32 tevcolor_off;   // mTevColor[0]  (0 ⇒ none, TVB1)
+    u32 kcolor_off;     // mTevKColor[0] (0 ⇒ none)
+    u32 kcsel_off;      // mTevKColorSel[0] (0 ⇒ none)
+    u32 kasel_off;      // mTevKAlphaSel[0] (0 ⇒ none)
+};
+inline bool tev_layout(u32 vt, TevLayout& L) {
+    switch (vt) {
+    case VT_TVB1:  L = {0,      0x06, 0x0A, 0,     0,     0,     0    }; return true;
+    case VT_TVB2:  L = {0x30,   0x08, 0x31, 0x10,  0x41,  0x51,  0x53 }; return true;
+    case VT_TVB4:  L = {0x1C,   0x0C, 0x1D, 0x3E,  0x5E,  0x6E,  0x72 }; return true;
+    case VT_TVB16: L = {0x54,   0x14, 0x55, 0xD6,  0xF6,  0x106, 0x116}; return true;
+    default: return false;
+    }
+}
+
+// The TEV-state table: deduped by key, persistent across the frame (materials are
+// bounded ~ hundreds). Batches reference a state by index. Reset only if it grows
+// past the cap (defensive; not expected to be hit).
+constexpr size_t TEVSTATE_CAP = 4096;
+std::vector<NgxTevState>          g_tevstates;
+std::unordered_map<uint64_t, int> g_tevkey_index;
+int      g_cur_tev_index = -1;     // material index for the shape being captured
+unsigned long g_mat_found = 0, g_mat_novt = 0, g_mat_none = 0;
+u32      g_vt_hist_key[8] = {0};    // distinct vtable values seen
+unsigned g_vt_hist_cnt[8] = {0};
+unsigned g_stage_hist[17] = {0};    // num-stages histogram (0..16)
 
 const unsigned char* resolve(unsigned addr, void*) { return sb_ram_fast(addr); }
 
@@ -157,6 +205,79 @@ std::vector<NgxVertex> g_verts;
 std::vector<unsigned>  g_indices;
 std::vector<float>     g_clip;        // 4 floats/vertex (clip-space), scratch
 
+// Read the current material's TEV block into an NgxTevState, dedupe it into the
+// table, and return its index (-1 if no material / unknown block variant). Reads
+// the guest object straight from RAM (big-endian bytes via sb_ram_fast), object-
+// model — no GX byte-stream decode.
+int capture_material() {
+    const u32 matpacket = r32(J3DSYS + 0x3C);          // j3dSys.mMatPacket
+    if (!valid(matpacket)) { g_mat_none++; return -1; }
+    const u32 material = r32(matpacket + 0x38);        // J3DMatPacket::unk38
+    if (!valid(material)) { g_mat_none++; return -1; }
+    const u32 tevblock = r32(material + 0x28);         // J3DMaterial::mTevBlock
+    if (!valid(tevblock)) { g_mat_none++; return -1; }
+    const u32 vt = r32(tevblock + 0x00);               // J3DTevBlock vtable ptr
+
+    // Vtable histogram (verification) — record up to 8 distinct values.
+    for (int i = 0; i < 8; i++) {
+        if (g_vt_hist_key[i] == vt) { g_vt_hist_cnt[i]++; break; }
+        if (g_vt_hist_key[i] == 0) { g_vt_hist_key[i] = vt; g_vt_hist_cnt[i] = 1; break; }
+    }
+
+    TevLayout L;
+    if (!tev_layout(vt, L)) { g_mat_novt++; return -1; }
+    const u8* B = sb_ram_fast(tevblock);               // raw big-endian bytes
+    if (!B) { g_mat_none++; return -1; }
+    auto rb8  = [&](u32 o) -> u8  { return B[o]; };
+    auto rs16 = [&](u32 o) -> int16_t { return (int16_t)((B[o] << 8) | B[o + 1]); };
+
+    NgxTevState st{};
+    u8 ns = L.stagenum_off ? rb8(L.stagenum_off) : 1;
+    if (ns < 1) ns = 1; if (ns > 16) ns = 16;
+    st.num_stages = ns;
+    for (int s = 0; s < ns; s++) {
+        const u32 so = L.stage_off + s * 8;            // J3DTevStage (8 bytes)
+        // color_env = [mTevColorOp:mTevColorAB:mTevColorCD] (low 24 bits of the BP word)
+        st.stage[s].color_env = ((u32)rb8(so + 1) << 16) | ((u32)rb8(so + 2) << 8) | rb8(so + 3);
+        // alpha_env = [mTevAlphaOp:mTevAlphaAB:mTevSwapModeInfo]
+        st.stage[s].alpha_env = ((u32)rb8(so + 5) << 16) | ((u32)rb8(so + 6) << 8) | rb8(so + 7);
+        const u32 oo = L.order_off + s * 4;            // J3DTevOrder (4 bytes)
+        st.stage[s].texcoord   = rb8(oo + 0);
+        st.stage[s].texmap     = rb8(oo + 1);
+        st.stage[s].color_chan = rb8(oo + 2);
+        st.stage[s].kcsel = L.kcsel_off ? rb8(L.kcsel_off + s) : 0x0C;  // GX_TEV_KCSEL_1 default
+        st.stage[s].kasel = L.kasel_off ? rb8(L.kasel_off + s) : 0x1C;  // GX_TEV_KASEL_1 default
+    }
+    // 4 TEV color registers (CPREV/C0/C1/C2), S10 RGBA — absent on TVB1 (defaults 0).
+    if (L.tevcolor_off)
+        for (int c = 0; c < 4; c++)
+            for (int k = 0; k < 4; k++) st.tev_color[c][k] = rs16(L.tevcolor_off + c * 8 + k * 2);
+    // 4 KONST color registers, u8 RGBA — absent on TVB1 (defaults 255 = white).
+    if (L.kcolor_off) {
+        for (int c = 0; c < 4; c++)
+            for (int k = 0; k < 4; k++) st.kcolor[c][k] = rb8(L.kcolor_off + c * 4 + k);
+    } else {
+        std::memset(st.kcolor, 0xFF, sizeof st.kcolor);
+    }
+
+    // FNV-1a key over the captured state (excluding the key field itself).
+    uint64_t h = 1469598103934665603ull;
+    const u8* p = (const u8*)&st;
+    for (size_t i = 0; i < offsetof(NgxTevState, key); i++) { h ^= p[i]; h *= 1099511628211ull; }
+    st.key = h;
+
+    if (ns <= 16) g_stage_hist[ns]++;
+    g_mat_found++;
+
+    auto it = g_tevkey_index.find(h);
+    if (it != g_tevkey_index.end()) return it->second;
+    if (g_tevstates.size() >= TEVSTATE_CAP) { g_tevstates.clear(); g_tevkey_index.clear(); }
+    const int idx = (int)g_tevstates.size();
+    g_tevstates.push_back(st);
+    g_tevkey_index[h] = idx;
+    return idx;
+}
+
 // Transform this shape's extracted model-space positions by the live modelview
 // matrix (Mtx 3x4 at *j3dSys.mCurrentDrawMtx) and fold into the eye-space stats.
 // This is the native XF stage; the matrix is the same one the recompiled J3D
@@ -213,13 +334,14 @@ void transform_eye() {
         const uint32_t taddr = tex_ok ? g_curtex.addr : 0u;
         for (size_t t = 0; t + 3 <= g_indices.size(); t += 3) {
             if (g_snap_count + 3 > SNAP_CAP) { g_snap_count = 0; g_batches.clear(); }
-            // Open a new batch on texture change, after a wrap, or at the start.
+            // Open a new batch on texture/material change, after a wrap, or at start.
             if (g_batches.empty() || g_batches.back().tex_addr != taddr ||
+                g_batches.back().tev_index != g_cur_tev_index ||
                 g_batches.back().vstart + g_batches.back().vcount != (uint32_t)g_snap_count) {
                 if (g_batches.size() >= BATCH_CAP) break;  // bounded
                 g_batches.push_back(NgxRenderBatch{taddr, g_curtex.w, g_curtex.h, g_curtex.fmt,
                                                    tex_ok ? g_curtex.tlut_addr : 0u, g_curtex.tlut_fmt,
-                                                   (uint32_t)g_snap_count, 0});
+                                                   (uint32_t)g_snap_count, 0, g_cur_tev_index});
             }
             for (int e = 0; e < 3; e++) {
                 const unsigned vidx = g_indices[t + e];
@@ -275,6 +397,7 @@ void capture(u32 sh) {
         g_last_pos[1] = g_verts[0].pos[1];
         g_last_pos[2] = g_verts[0].pos[2];
     }
+    g_cur_tev_index = capture_material();   // N5: current J3DMaterial's TEV state
     transform_eye();   // native XF stage (modelview) + eye-space verification
 }
 
@@ -298,6 +421,10 @@ const NgxRenderVertex* ngx_snap_verts(int* nverts) {
 const NgxRenderBatch* ngx_snap_batches(int* nbatches) {
     *nbatches = (int)g_batches.size();
     return g_batches.empty() ? nullptr : g_batches.data();
+}
+const NgxTevState* ngx_snap_tevstates(int* nstates) {
+    *nstates = (int)g_tevstates.size();
+    return g_tevstates.empty() ? nullptr : g_tevstates.data();
 }
 
 // GXLoadTexObj(GXTexObj* obj, GXTexMapID id) @ 0x80360160 — track the texmap-0
@@ -371,5 +498,30 @@ int sb_ngx_shape_dump(char* out, int cap) {
         g_last_eye[0], g_last_eye[1], g_last_eye[2],
         g_have_proj ? 1 : 0, g_ndc_wpos, g_ndc_total,
         g_ndc_inbox, g_ndc_total ? 100.0 * (double)g_ndc_inbox / (double)g_ndc_total : 0.0);
+
+    // N5 per-material TEV capture stats.
+    n += snprintf(out + n, cap - n,
+        "  TEV material: found=%lu none=%lu unknown_vt=%lu  unique_states=%zu\n"
+        "  TevBlock vtable histogram:\n",
+        g_mat_found, g_mat_none, g_mat_novt, g_tevstates.size());
+    for (int i = 0; i < 8 && g_vt_hist_key[i]; i++) {
+        const u32 vt = g_vt_hist_key[i];
+        const char* nm = vt == VT_TVB1 ? "TVB1" : vt == VT_TVB2 ? "TVB2" :
+                         vt == VT_TVB4 ? "TVB4" : vt == VT_TVB16 ? "TV16" : "????";
+        n += snprintf(out + n, cap - n, "    %08x %-4s  %u\n", vt, nm, g_vt_hist_cnt[i]);
+    }
+    n += snprintf(out + n, cap - n, "  num-stages histogram:");
+    for (int s = 1; s <= 16; s++) if (g_stage_hist[s])
+        n += snprintf(out + n, cap - n, " [%d]=%u", s, g_stage_hist[s]);
+    n += snprintf(out + n, cap - n, "\n");
+    // Dump the first few captured states' stage-0 combiner registers (sanity).
+    int nst = 0; const NgxTevState* sts = ngx_snap_tevstates(&nst);
+    for (int i = 0; i < nst && i < 4; i++) {
+        n += snprintf(out + n, cap - n,
+            "  state[%d]: stages=%u  s0 color_env=%06x alpha_env=%06x map=%u coord=%u chan=%u kc=%02x ka=%02x\n",
+            i, sts[i].num_stages, sts[i].stage[0].color_env, sts[i].stage[0].alpha_env,
+            sts[i].stage[0].texmap, sts[i].stage[0].texcoord, sts[i].stage[0].color_chan,
+            sts[i].stage[0].kcsel, sts[i].stage[0].kasel);
+    }
     return n;
 }
