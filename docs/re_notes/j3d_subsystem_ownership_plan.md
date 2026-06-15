@@ -62,6 +62,19 @@ built with the NON-engine-types generated set).** Options:
   per-field/method bridge thunks (mechanical from the type DB). Engine METHODS are already bridged
   (override at addr), so most "field access" in engine code disappears with the bridge; only genuine
   game-side inline field reads need a generated getter.
+  IMPLEMENTATION DETAIL for (A): the current emission is NAME-based (`((T*)sb_eng_host(h))->member`,
+  c_emitter.cpp emit_eng_field ~L156) — ABI-CORRECT because the HOST COMPILER computes the offset
+  (vtable ptr is 8 bytes on host vs 4 on guest; base-class subobjects; alignment; EBO). Do NOT replace
+  it with numeric host offsets emitted as literals unless the type DB provably models the host ABI
+  exactly (it currently dodges that by using names) — wrong offsets = silent corruption. Instead, have
+  the recompiler EMIT A MANIFEST of needed accessors {type, field, op} + construction sizes, and a
+  port-compiled codegen file define stub thunks `sbget_<T>_<field>(void* h){ return ((T*)h)->member; }`
+  / `sbset_…` / `sbnew_<T>(args){ return new T(args); }` (real host types, ABI-correct). The emitter
+  emits CALLS to those stubs by symbol; the generated TU sees only `extern` decls + handles. For
+  construction without a stub-per-callsite, `sb_eng_alloc_sized(<hostSizeof literal>)` works IF the
+  type DB's host sizeof is trustworthy (verify vs the port `sizeof(T)`); otherwise a port stub
+  `sbsizeof_<T>()`. Keep recomp_test green (it asserts the current `sb_eng_alloc<T>` / `->member`
+  emission — update those expectations to the bridge-call form).
 - (B) Emit standalone POD struct defs from the type DB into a generated header (no decomp headers) —
   fragile for polymorphic/embedded/base-chain layouts; must stay binary-identical to port.
 - (C) Reconcile the type systems via a shim and compile engine-types generated TUs WITH the decomp
