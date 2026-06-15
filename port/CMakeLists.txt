@@ -215,3 +215,15 @@ foreach(rt heap_run os_thread_run decomp_run)
     Threads::Threads)
   add_test(NAME ${rt} COMMAND ${rt})
 endforeach()
+
+# First-flip loader gate: the real J3D model loader on a bmd_swap'd BMD. Also
+# links smsport_assets (for bmd_swap). SKIPs when no *.bmd assets are present.
+add_executable(bmd_load_run tests/bmd_load_run.cpp)
+target_include_directories(bmd_load_run PRIVATE ${SMS_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}/assets")
+target_compile_options(bmd_load_run PRIVATE
+  ${SMS_FORCE_INCLUDE} -fno-strict-aliasing -Wno-multichar)
+target_link_libraries(bmd_load_run PRIVATE
+  -Wl,--start-group smsport_assets smsport_core smsport_pal -Wl,--end-group
+  Threads::Threads)
+add_test(NAME bmd_load_run COMMAND bmd_load_run
+         WORKING_DIRECTORY "${SMS_REPO_ROOT}")
