@@ -164,9 +164,22 @@ EXISTS, which needs construction = Step 0.
      (J3DModel's own remaining accessors mModelData/mMatPackets/mShapePackets/mVertexBuffer are
      pointer fields read by draw-path callers stampModel/entryStaticDrawBuffer* → emitted as
      guest_ptr translations that COMPILE; runtime-correct only once those draw callers are bridged.)
-   (b) **NEXT: offset-0 virtual-dispatch routing** (needed for calc to fire from the game) — then the
-       game-driven matrix comparison becomes reachable. Also: build the SB_FLIP_J3D binary off
-       generated-flip/ and confirm it boots (link + no-regression with the flip + bridge overrides).
+   (b) **Offset-0 virtual-dispatch routing — MECHANISM DONE 2026-06-15** (commits df14c44, ad1aa3d,
+       efe19c1, e174d2a, 1ac4b50). The recompiler can now route `model->calc()`/`viewCalc()`/etc. to a
+       host-dispatch thunk, gated behind `SUNBRIGHT_VIRT_TYPES` (inert by default). Four pieces, all
+       unit + e2e tested: vtable-slot DB (`tools/recompiler/vtable_db.{h,cpp}`, DOL-anchored — reads the
+       real guest vtable; `vtable_db_test`), recognition (`recover_eng_fields` `vcalls` out-param),
+       emission + port-world thunk-gen (`c_emitter` virt_calls/virt_thunks(); main.cpp writes
+       `generated/virt_thunks.{h,cpp}`), and end-to-end dispatch (`runtime/tests/run_virt_dispatch_test.sh`).
+       Scope: zero-arg void virtuals (calc/update/entry/viewCalc — `decomp_parse::simple_virtuals`).
+       **0 calls route yet** — the type lattice doesn't reach a J3DModel base at a virtual site with
+       current seeding; the dominant real pattern is `getModel()->virtual()` (base from a RETURN value,
+       which GNU-v2 mangling omits). **NEXT = RETURN-TYPE SEEDING** (decomp_parse method-return capture →
+       `type_db_build::build_return_types` → `TypeDB::return_types` → `apply()` seeds r3 after a `bl`,
+       like `alloc_types`). THEN CMake-wire `generated/virt_thunks.cpp` under SB_FLIP_J3D (port-world
+       compile, mirror `port/bridge/j3d_bridge.cpp`; the removed eng_accessors object-lib pattern,
+       recoverable from git pre-41aaa69), build the SB_FLIP_J3D binary off generated-virt/, drive headless
+       to a calc, compare host J3DModel node matrices to the DISABLE_RECOMP oracle.
 2. **Animation bridge.** entry/set animators + J3DMtxCalc; verify animated matrices vs oracle.
 3. **GX ownership in port/** (the big one) → bridge entry/draw → first NO-DOLPHIN textured frame
    (the MVP gate). Move runtime/render's GX decode into port/ or write port GX over the same Vulkan.
