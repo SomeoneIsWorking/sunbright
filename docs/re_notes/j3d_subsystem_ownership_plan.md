@@ -172,14 +172,22 @@ EXISTS, which needs construction = Step 0.
        emission + port-world thunk-gen (`c_emitter` virt_calls/virt_thunks(); main.cpp writes
        `generated/virt_thunks.{h,cpp}`), and end-to-end dispatch (`runtime/tests/run_virt_dispatch_test.sh`).
        Scope: zero-arg void virtuals (calc/update/entry/viewCalc — `decomp_parse::simple_virtuals`).
-       **0 calls route yet** — the type lattice doesn't reach a J3DModel base at a virtual site with
-       current seeding; the dominant real pattern is `getModel()->virtual()` (base from a RETURN value,
-       which GNU-v2 mangling omits). **NEXT = RETURN-TYPE SEEDING** (decomp_parse method-return capture →
-       `type_db_build::build_return_types` → `TypeDB::return_types` → `apply()` seeds r3 after a `bl`,
-       like `alloc_types`). THEN CMake-wire `generated/virt_thunks.cpp` under SB_FLIP_J3D (port-world
-       compile, mirror `port/bridge/j3d_bridge.cpp`; the removed eng_accessors object-lib pattern,
-       recoverable from git pre-41aaa69), build the SB_FLIP_J3D binary off generated-virt/, drive headless
-       to a calc, compare host J3DModel node matrices to the DISABLE_RECOMP oracle.
+       **FIRST REAL ROUTED CALLS landed (commit 3de4c6e).** Two findings made it work:
+       (i) **the real CodeWarrior virtual-call form is `mtlr m; bclrl`, NOT `mtctr; bctrl`** (verified on
+       M3UModel::perform 0x80237930) — recognition + emission now handle both; this was why 0 routed at
+       first. (ii) **coverage needs MEMBER-FIELD typing of the holder**: J3DModel's getModel accessors are
+       INLINED (only 1 symbol returns J3DModel*), so signature/return seeding alone find no base; activating
+       the HOLDER (`SUNBRIGHT_VIRT_TYPES="M3UModel,J3DModel"`) types `this->unk8`=J3DModel* so `unk8->calc()`
+       recognizes — 29 routed sites (25 calc/3 entry/1 viewCalc), virt_thunks.cpp defines
+       sbvirt_J3DModel_{1,2,3}=entry/calc/viewCalc (slot indices match the vtable DB). Return-type seeding
+       (`TypeDB::return_types`) was also built (correct + general, for non-inlined returns).
+       **NEXT (the runtime/build integration):** CMake-wire `generated/virt_thunks.cpp` under SB_FLIP_J3D
+       (port-world compile — decomp headers + port/compat shims; mirror `port/bridge/j3d_bridge.cpp`; this is
+       the removed eng_accessors object-lib pattern, recoverable from git pre-41aaa69; sb_eng_host already
+       linked), build the SB_FLIP_J3D binary off generated-virt/, drive headless to a calc, compare host
+       J3DModel node matrices to the DISABLE_RECOMP oracle (j3d_bridge_run proves the bridge; this proves the
+       game reaches it). Also bridge the J3D consumers on the path so the game reaches a calc without
+       faulting on an unbridged J3DModelData/J3DModel deref (overlaps GX/draw ownership).
 2. **Animation bridge.** entry/set animators + J3DMtxCalc; verify animated matrices vs oracle.
 3. **GX ownership in port/** (the big one) → bridge entry/draw → first NO-DOLPHIN textured frame
    (the MVP gate). Move runtime/render's GX decode into port/ or write port GX over the same Vulkan.
