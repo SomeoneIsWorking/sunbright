@@ -192,6 +192,28 @@ std::string normalize_type(std::string t) {
     return trim(out);
 }
 
+// The method name declared by a `virtual ...` line (comments already stripped), or "".
+// Returns the identifier (or "~Name" destructor) immediately before the first '(':
+//   "virtual void calc()"        -> "calc"
+//   "virtual ~J3DModel()"        -> "~J3DModel"
+//   "virtual void calc(J3DModel*) = 0" -> "calc"
+std::string virtual_method_name(const std::string& code) {
+    size_t lp = code.find('(');
+    if (lp == std::string::npos) return "";
+    // walk back over whitespace, then collect an identifier run (and a leading '~').
+    size_t e = lp;
+    while (e > 0 && (code[e - 1] == ' ' || code[e - 1] == '\t')) --e;
+    size_t s = e;
+    while (s > 0 && is_ident_char(code[s - 1])) --s;
+    if (s == e) return "";
+    if (s > 0 && code[s - 1] == '~') --s;          // destructor
+    std::string name = code.substr(s, e - s);
+    // reject operator-call false positives / control keywords
+    if (name == "if" || name == "for" || name == "while" || name == "switch" ||
+        name == "return" || name == "sizeof") return "";
+    return name;
+}
+
 }  // namespace
 
 // Defined below; parses one member declaration line into `f`.
@@ -290,6 +312,19 @@ ParsedType parse_decomp_type(const std::string& text, const std::string& type_na
 
         std::optional<int> ann = (depth == 0) ? extract_offset(raw) : std::nullopt;
         std::string code = strip_comments(raw);
+
+        // Capture a member-level `virtual` method declaration in declaration order (the vtable
+        // slot order). Only at depth 0 (member scope), and only the first such name per line.
+        if (depth == 0) {
+            size_t v = code.find("virtual");
+            bool tok = v != std::string::npos &&
+                       (v == 0 || !is_ident_char(code[v - 1])) &&
+                       (v + 7 >= code.size() || !is_ident_char(code[v + 7]));
+            if (tok) {
+                std::string name = virtual_method_name(code.substr(v + 7));
+                if (!name.empty()) pt.virtuals.push_back(name);
+            }
+        }
 
         // count brace delta for this line (so we can decide membership *before* descending)
         int open = 0, close = 0;

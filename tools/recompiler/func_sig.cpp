@@ -98,6 +98,7 @@ FuncSig demangle_signature(const std::string& mangled) {
         }
     }
     if (split == std::string::npos) return sig;     // not a mangled C++ symbol we handle
+    sig.method_name = mangled.substr(0, split);      // member name (e.g. "calc", "__ct", "__dt")
     size_t pos = split + 2;
 
     if (mangled[pos] != 'F') {                       // method: parse the class scope

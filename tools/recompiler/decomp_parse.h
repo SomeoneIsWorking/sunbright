@@ -42,6 +42,10 @@ struct ParsedType {
     std::string              name;            // the class/struct name requested
     std::string              base;            // first base class ("" if none)
     bool                     polymorphic = false; // declares a `virtual` member
+    std::vector<std::string> virtuals;        // virtual METHOD names in declaration order, e.g.
+                                              // {"update","entry","calc","viewCalc","~J3DModel"}.
+                                              // CodeWarrior lays a class's NEW virtuals into the
+                                              // vtable in this order (after the base chain's).
     std::vector<ParsedField> fields;          // in declaration order
     bool                     found = false;   // the type was located in the text
     bool                     fully_sizable = false; // every field is `sizable` AND no base

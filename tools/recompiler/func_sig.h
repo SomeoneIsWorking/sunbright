@@ -30,6 +30,8 @@ struct SigArg {
 struct FuncSig {
     bool                 ok = false;          // the symbol parsed cleanly
     bool                 is_method = false;   // has a class scope (a `this` in r3)
+    std::string          method_name;         // the member name before "__" (e.g. "calc",
+                                              // "__ct" ctor, "__dt" dtor); "" for free fns
     std::string          class_name;          // qualified `this` type ("" for free functions)
     std::string          class_leaf;          // leaf of class_name
     std::vector<SigArg>  ptr_args;            // pointer/ref-to-class args (incl. `this` at r3)

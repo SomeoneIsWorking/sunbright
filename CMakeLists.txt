@@ -196,6 +196,23 @@ target_compile_options(sunbright-coverage-sweep-test PRIVATE -Wall -Wextra -Wno-
 add_test(NAME coverage_sweep_test COMMAND sunbright-coverage-sweep-test
          WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
+# Vtable-slot DB: offset-0 virtual-dispatch-on-handle routing make-or-break gate (reads the
+# real guest vtable bytes; validates slot order vs the decomp header virtuals). SKIPs w/o DOL.
+add_executable(sunbright-vtable-db-test
+    tools/recompiler/tests/vtable_db_test.cpp
+    tools/recompiler/vtable_db.cpp
+    tools/recompiler/dol_parser.cpp
+    tools/recompiler/ppc_decoder.cpp
+    tools/recompiler/ppc_mnemonic.cpp
+    tools/recompiler/func_sig.cpp
+    tools/recompiler/decomp_parse.cpp
+    tools/recompiler/abi_layout.cpp
+)
+target_include_directories(sunbright-vtable-db-test PRIVATE tools/recompiler runtime)
+target_compile_options(sunbright-vtable-db-test PRIVATE -Wall -Wextra -Wno-unused-parameter)
+add_test(NAME vtable_db_test COMMAND sunbright-vtable-db-test
+         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+
 # Engine-object handle table (the data half of the tailored-recomp boundary).
 add_executable(sunbright-eng-handle-test
     runtime/tests/eng_handle_test.cpp
