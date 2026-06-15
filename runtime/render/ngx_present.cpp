@@ -381,8 +381,14 @@ VkPipeline PresentRenderer::pipeline_for(const NgxTevState& st) {
     VkPipelineViewportStateCreateInfo vps{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
     vps.viewportCount = 1; vps.pViewports = &vp; vps.scissorCount = 1; vps.pScissors = &scr;
     VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
-    rs.polygonMode = VK_POLYGON_MODE_FILL; rs.cullMode = VK_CULL_MODE_NONE;
-    rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE; rs.lineWidth = 1.0f;
+    rs.polygonMode = VK_POLYGON_MODE_FILL;
+    // Backface culling per the material's GXCullMode (color block mCullMode). GXCullMode→VK is
+    // {NONE,FRONT,BACK,FRONT_AND_BACK}; Dolphin's GX render uses frontFace=CLOCKWISE — match it, else
+    // (no cull) translucent surfaces draw both faces (overdraw → too bright) and back faces show through.
+    static const VkCullModeFlags kCull[4] = {
+        VK_CULL_MODE_NONE, VK_CULL_MODE_FRONT_BIT, VK_CULL_MODE_BACK_BIT, VK_CULL_MODE_FRONT_AND_BACK };
+    rs.cullMode = kCull[st.pe.cull & 3];
+    rs.frontFace = VK_FRONT_FACE_CLOCKWISE; rs.lineWidth = 1.0f;
     VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
     ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
     // Depth + blend from the PE block (same mapping as vk_mesh).

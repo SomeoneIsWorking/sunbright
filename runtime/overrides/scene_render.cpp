@@ -47,12 +47,16 @@ bool g_in_hud = false;
 static void ov_gx_projection(CPUState& cpu) {
     const u32 mtx = cpu.gpr[3];
     const u32 type = cpu.gpr[4];
-    // Publish the AUTHORED projection (before the widescreen squeeze below) to the
-    // native renderer's transform-chain verifier (ngx_j3d_shape).
+    // Publish the projection to the native renderer (ngx_j3d_shape). It must match what
+    // Dolphin's GX render uses: in widescreen the GX render gets the SQUEEZED projection
+    // (m00 × 0.75, applied below) and is presented at 16:9, so the ngx capture must apply
+    // the SAME squeeze — else ngx renders a narrower 4:3 FOV that gets stretched to 16:9
+    // (squished geometry + side parts cut off) and won't match the reference.
     extern void ngx_set_projection(const float*, unsigned);
     if (mtx >= 0x80000000u && mtx < 0x81800000u) {
         float pm[16];
         for (int i = 0; i < 16; i++) pm[i] = mem_rf32(mtx + i * 4);
+        if (type == GX_PERSPECTIVE && widescreen_on()) pm[0] *= ws_squeeze_scale();
         ngx_set_projection(pm, type);
     }
     static const bool log = getenv("SUNBRIGHT_RENDERPORT_LOG") != nullptr;

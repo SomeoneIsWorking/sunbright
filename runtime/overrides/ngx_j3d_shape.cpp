@@ -130,6 +130,7 @@ struct ChanInfo {
     u16  color0 = 0, alpha0 = 0;          // J3DColorChan COLOR0 / ALPHA0 ctrl regs
     u8   matColor[4] = {255, 255, 255, 255};
     u8   ambColor[4] = {0, 0, 0, 0};
+    u8   cullMode = 0;                     // GXCullMode (color block mCullMode): NONE/FRONT/BACK/ALL
 };
 ChanInfo g_cur_chan;
 unsigned long g_chan_lit = 0, g_chan_flat = 0;
@@ -231,10 +232,11 @@ void capture_colorchan(u32 material) {
         for (int k = 0; k < 0x44; k++) g_dbg_cb_raw[k] = B[k];
         g_dbg_cb_vt = vt; g_dbg_cb_have = true;
     }
-    u32 chan_off, amb_off = 0;
-    if (vt == VT_CLON)      { chan_off = 0x16; amb_off = 0x0C; }
-    else if (vt == VT_CLOF) { chan_off = 0x0E; }
+    u32 chan_off, amb_off = 0, cull_off;
+    if (vt == VT_CLON)      { chan_off = 0x16; amb_off = 0x0C; cull_off = 0x40; }  // J3DColorBlockLightOn
+    else if (vt == VT_CLOF) { chan_off = 0x0E; cull_off = 0x16; }                  // J3DColorBlockLightOff
     else return;                            // unknown colour-block variant
+    g_cur_chan.cullMode = B[cull_off];      // GXCullMode (0=NONE 1=FRONT 2=BACK 3=ALL)
     for (int k = 0; k < 4; k++) g_cur_chan.matColor[k] = B[0x04 + k];
     // Ambient: LightOn blocks store/load it; LightOff blocks don't, so the ambient
     // is the global hardware register (captured at GXSetChanAmbColor).
@@ -697,6 +699,7 @@ int capture_material() {
     }
 
     capture_pe(material, st);   // N7: PE block (alpha test → shader, blend/zmode → pipeline)
+    st.pe.cull = g_cur_chan.cullMode;   // backface culling (color block) → pipeline cull state
 
     // FNV-1a key over the captured state (excluding the key field itself).
     uint64_t h = 1469598103934665603ull;

@@ -70,7 +70,8 @@ struct NgxPEState {
     uint8_t  z_test;          // depth compareEnable
     uint8_t  z_func;          // GXCompare (== VkCompareOp values)
     uint8_t  z_write;         // depth updateEnable
-    uint8_t  pad[3];
+    uint8_t  cull;            // GXCullMode (color block mCullMode): 0=NONE 1=FRONT 2=BACK 3=ALL
+    uint8_t  pad[2];
 };
 
 // A whole material's TEV combiner state — the cache key for a generated shader.
