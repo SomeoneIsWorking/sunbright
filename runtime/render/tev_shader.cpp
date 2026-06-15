@@ -84,8 +84,8 @@ void write_stage(Buf& o, const NgxTevState& st, int n) {
     o.w("\n  // stage %d\n", n);
 
     // Raster color (channel). GXChannelID: COLOR0=0, COLOR1=1, COLOR0A0=4, COLOR1A1=5,
-    // ZERO=6, COLOR_NULL=0xff. We approximate the lit channel with vertex color0/1
-    // (lighting is a later stage); null/zero → 0.
+    // ZERO=6, COLOR_NULL=0xff. col0 carries the LIT raster colour (N6 native lighting
+    // computed per vertex in the producer); col1 ≈ col0; null/zero → 0.
     const bool ras_used = cc.a==10||cc.a==11||cc.b==10||cc.b==11||cc.c==10||cc.c==11||cc.d==10||cc.d==11
                           || ac.a==5||ac.b==5||ac.c==5||ac.d==5;
     if (ras_used) {

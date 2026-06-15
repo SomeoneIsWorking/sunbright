@@ -7,10 +7,10 @@
 // bind each texture and draw its vertex range (N5: materials/textures).
 #include <cstdint>
 
-// One renderer-ready vertex: clip-space position, vertex color0, tex0 UV.
+// One renderer-ready vertex: clip-space position, lit raster color0, tex0 UV.
 struct NgxRenderVertex {
     float clip[4];   // P·modelview·model (homogeneous clip space)
-    float rgba[4];   // vertex color0, 0..1
+    float rgba[4];   // lit raster color0 (N6 native lighting; = CLR0 when unlit), 0..1
     float uv[2];     // tex0 coord (S,T)
 };
 

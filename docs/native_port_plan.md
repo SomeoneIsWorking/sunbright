@@ -353,16 +353,46 @@ decoder; runtime GP-FIFO path on the delete list. Then, on the object-model arch
      + c0/c1/c2 regs fed via fragment push constants. Verified headless (Delfino):
      11 material shaders + modulate, 0 fails, 97.8% coverage, recognizable plaza,
      no crash/VK errors over 7936 frames.
-  **HONEST STATE / NEXT STAGE = LIGHTING.** The scene renders dark/blue-cast because
-  color-channel LIGHTING is not ported: the raster color input is approximated by raw
-  vertex color0 (faithful to the CLR0 attribute — NOT a brightness fudge). The oracle
-  is bright because Dolphin applies the sun/ambient lighting. **Next: port the
-  J3DColorBlock color channels (J3DColorChan + lights → raster color)** so raster is
-  the lit color, then the scene brightness/colour should match. Also still first-slice:
-  single bound texmap/texcoord (note `/ngxrender` showed "1 unique texture" — texmap
-  capture is narrow; widen via per-stage texmap binding + GXLoadTexObjPreLoaded),
-  identity TEV swap tables, no alpha test (PE block uncaptured → foliage cutouts show
-  full quads), no indirect stages.
+- **N6 — colour-channel LIGHTING ✅** (this commit, `ngx_j3d_shape.cpp`) — the TEV
+  raster colour is now the real GX lit channel colour, not raw CLR0. The full GC
+  per-vertex lighting model is ported natively (`light_vertex`, math re-derived from
+  the GC hardware model / Dolphin VertexShaderGen):
+  - **Inputs captured object-model / via GX tees** (no byte-stream decode): the
+    material's `J3DColorBlock` (variant by vtable — `J3DColorBlockLightOn` 0x803E0CD4,
+    `LightOff` 0x803E0D38, both verified by reading the live vtable's `getType` slot
+    via the probe) gives the channel-control reg (`mColorChan[0]`: matSrc/enable/
+    lightMask/diffuseFn/attnFn/ambSrc) + the per-material material-colour register.
+    The 8 hardware lights are captured at `GXLoadLightObjImm` (0x8035f26c) into an
+    eye-space table (colour@0x0C, cosAtten@0x10, distAtten@0x1C, pos@0x28, dir@0x34 —
+    offsets verified by disasm of GXInitLightPos/Color/Attn/SpecularDir). **The
+    ambient is the GLOBAL hardware register** captured at `GXSetChanAmbColor`
+    (0x8035f3b4) — a `LightOff` block (the ONLY variant SMS Delfino uses) does NOT
+    store/load an ambient, so the per-block read returns 0; the scene sets ambient
+    globally. Reading the block's 0-ambient was the "everything dark" bug.
+  - **Per-vertex evaluation** in `transform_eye`: normal → eye space via
+    `j3dSys.mCurrentNormMtx` (+0x108, Mtx33), position → eye space via the modelview
+    (already done); then `illum = ambient + Σ attn·diff·lightColour` over the masked
+    lights (NONE/SPEC/SPOT attenuation, NONE/SIGN/CLAMP diffuse), `channelColour =
+    matColour · clamp(illum)`. Lighting-off channels reduce to the material source
+    (register or vertex colour) → vertex-lit world materials are unchanged.
+  - **Verified**: light space is correct — the captured sun position SHIFTS with the
+    camera (eye-space). Adding the ambient roughly DOUBLED lit-vertex luminance
+    (0.211→0.432, `/ngxshape` `lit_verts mean_lum`). `/ngxrender` still compiles all
+    materials, 0 fails, 100% coverage, no crash. Diagnostics live behind
+    `SUNBRIGHT_NGX_SHAPE` in `/ngxshape` (per-light col/pos/dir/atten, ambient reg,
+    colour-block vtable histogram, lit/flat luminance, mean diffuse, normal-length +
+    sun-alignment probes).
+  - **OPEN (headed-verification + fidelity, NEXT)**: the headless still is still
+    dim/purple-tinted. The lighting MATH + space are faithful, but fidelity vs the
+    oracle (is the scene as bright/correctly-coloured) needs the headed user — the
+    captured sun colour is sometimes ~0.31 and ambient ~purple; confirm those are the
+    real per-draw values (vs a transient global) and that no material double-darkens
+    (matSrc=VTX + lighting on a colour that already baked light). Likely the remaining
+    darkness is also dominated by the narrow texture coverage below.
+  - **Still first-slice gaps** (lower priority): single bound texmap/texcoord
+    (`/ngxrender` shows few unique textures — widen via per-stage texmap binding +
+    `GXLoadTexObjPreLoaded`), identity TEV swap tables, no alpha test (PE block
+    uncaptured → foliage cutouts show full quads), no indirect stages.
 
 **J3DShape DRAW PATH (RE'd 2026-06-14, `reference/sms/.../J3DShape.cpp`) — the live-hook seam.**
 `J3DShape::draw()` does, in order:

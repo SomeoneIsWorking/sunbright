@@ -232,7 +232,7 @@ std::string handle_repl(const char* path) {
         return std::string(buf, n);
     }
     if (strncmp(path, "/ngxshape", 9) == 0) {  // N4 live J3DShape native-mesh capture stats
-        char rep[1024]; sb_ngx_shape_dump(rep, sizeof rep); app("%s", rep);
+        char rep[4096]; sb_ngx_shape_dump(rep, sizeof rep); app("%s", rep);
         return std::string(buf, n);
     }
     if (strncmp(path, "/ngxrender", 10) == 0) {  // N4 native Vulkan render of captured geometry

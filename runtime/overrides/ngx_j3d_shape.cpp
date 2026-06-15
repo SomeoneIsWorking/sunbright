@@ -31,6 +31,7 @@
 #include "../intrinsics.h"
 #include "../ngx/ngx_mesh.h"
 #include "../ngx/ngx_render_data.h"
+#include <cmath>
 #include <cstdarg>
 #include <cstddef>
 #include <cstdio>
@@ -58,6 +59,181 @@ inline bool valid(u32 a) { return a >= 0x80000000u && a < 0x81800000u; }
 inline u32  r32(u32 a) { return valid(a) ? mem_r32(a) : 0; }
 inline u8   rb(u32 a) { return valid(a) ? (u8)(mem_r32(a) >> 24) : 0; }  // big-endian byte @ word
 inline float rf(u32 a) { u32 u = r32(a); float f; std::memcpy(&f, &u, 4); return f; }
+
+// ── N6 color-channel LIGHTING (docs/native_port_plan.md §6) ─────────────────────
+// GX rasterizes a lit "channel colour" per vertex (raster colour input to the TEV),
+// not the raw CLR0 attribute, whenever a material's colour channel has lighting on
+// (SMS world geometry uses a sun + ambient). We port that stage natively:
+//   • capture the 8 hardware lights at GXLoadLightObjImm (the state the GPU uses,
+//     already transformed into the position-matrix / eye space by the scene), and
+//   • read the material's J3DColorBlock (channel control + material/ambient colour
+//     registers), then evaluate the GX lighting equation per vertex in eye space
+//     (vertex pos via the modelview, normal via j3dSys.mCurrentNormMtx @ +0x108).
+// The result replaces the per-vertex raster colour fed to the TEV shader.
+//
+// GXLightObj packed layout (verified by disasm of GXInitLightPos/Color/Attn/
+// SpecularDir): colour u32@0x0C, cosAtten(a0,a1,a2)@0x10/14/18, distAtten(k0,k1,k2)
+// @0x1C/20/24, position@0x28/2C/30, direction(half-angle)@0x34/38/3C.
+struct LightObj {
+    bool  valid = false;
+    float color[3] = {0, 0, 0};   // RGB 0..1
+    float pos[3]   = {0, 0, 0};    // eye-space position
+    float dir[3]   = {0, 0, 0};    // eye-space (half-angle) direction
+    float cosA[3]  = {0, 0, 0};    // angle attenuation a0,a1,a2
+    float distA[3] = {0, 0, 0};    // distance attenuation k0,k1,k2
+};
+LightObj g_light[8];
+unsigned long g_light_loads = 0;
+
+// Global hardware ambient colour register per colour channel (0,1), captured at
+// GXSetChanAmbColor. J3DColorBlockLightOff blocks do NOT store/load an ambient
+// (only LightOn does) — for them the ambient is whatever the scene set globally,
+// so we must read the hardware register, not the block.
+u8 g_amb_reg[2][4] = {{0,0,0,0}, {0,0,0,0}};
+bool g_amb_have[2] = {false, false};
+unsigned long g_amb_sets = 0;
+
+// J3DColorBlock variants (vtable ptrs, gmse01; from the block ctor/dtor disasm:
+// LightOn sets 0x803E0CD4, LightOff sets 0x803E0D38). Field offsets from
+// J3DColorBlocks.hpp — LightOn: mMatColor@0x04, mAmbColor@0x0C, mColorChan@0x16;
+// LightOff: mMatColor@0x04, mColorChan@0x0E (no ambient / no lights).
+constexpr u32 VT_CLON = 0x803E0CD4u, VT_CLOF = 0x803E0D38u;
+
+// The current material's colour-channel state (set by capture_colorchan, consumed
+// by light_vertex during transform_eye for the shape being captured).
+struct ChanInfo {
+    bool valid = false;
+    u16  color0 = 0, alpha0 = 0;          // J3DColorChan COLOR0 / ALPHA0 ctrl regs
+    u8   matColor[4] = {255, 255, 255, 255};
+    u8   ambColor[4] = {0, 0, 0, 0};
+};
+ChanInfo g_cur_chan;
+unsigned long g_chan_lit = 0, g_chan_flat = 0;
+u8 g_dbg_cb_raw[0x44] = {0}; bool g_dbg_cb_have = false; u32 g_dbg_cb_vt = 0;
+u32 g_cbvt_key[8] = {0}; unsigned g_cbvt_cnt[8] = {0};   // colour-block vtable histogram
+// Flat-path breakdown + brightness diagnostics (per-vertex sums; /ngxshape).
+unsigned long g_flat_reg = 0, g_flat_vtx = 0;
+double g_lit_lum_sum = 0, g_flat_lum_sum = 0;
+double g_diff_sum = 0; unsigned long g_diff_n = 0;   // mean diffuse dot over lit verts/lights
+// Last lit material's decoded state (snapshot for inspection).
+u16 g_dbg_cc = 0; u8 g_dbg_mat[4] = {0}, g_dbg_amb[4] = {0};
+float g_dbg_illum[3] = {0}, g_dbg_out[4] = {0};
+double g_nrm_len_sum = 0; unsigned long g_nrm_n = 0;   // mean eye-normal length (sanity)
+double g_lit_nrm_sum = 0; unsigned long g_lit_nrm_n = 0, g_lit_nrm_zero = 0;  // lit-vert normals
+// Light-0 (sun) diffuse alignment probe: dot(en, ldir0) stats + a last sample.
+double g_sun_ndl_sum = 0; unsigned long g_sun_ndl_n = 0, g_sun_ndl_pos = 0;
+float g_sun_ndl_max = -2.f, g_dbg_en[3] = {0}, g_dbg_ld0[3] = {0};
+
+// Read the material's J3DColorBlock into g_cur_chan (best-effort; valid=false on a
+// missing/unknown block → the consumer falls back to the raw vertex colour).
+void capture_colorchan(u32 material) {
+    g_cur_chan = ChanInfo{};
+    const u32 cb = r32(material + 0x20);   // J3DMaterial::mColorBlock
+    if (!valid(cb)) return;
+    const u32 vt = r32(cb + 0x00);
+    const u8* B = sb_ram_fast(cb);
+    if (!B) return;
+    for (int i = 0; i < 8; i++) {           // colour-block vtable histogram
+        if (g_cbvt_key[i] == vt) { g_cbvt_cnt[i]++; break; }
+        if (g_cbvt_key[i] == 0) { g_cbvt_key[i] = vt; g_cbvt_cnt[i] = 1; break; }
+    }
+    if (!g_dbg_cb_have) {                    // one-shot raw dump of the first block
+        for (int k = 0; k < 0x44; k++) g_dbg_cb_raw[k] = B[k];
+        g_dbg_cb_vt = vt; g_dbg_cb_have = true;
+    }
+    u32 chan_off, amb_off = 0;
+    if (vt == VT_CLON)      { chan_off = 0x16; amb_off = 0x0C; }
+    else if (vt == VT_CLOF) { chan_off = 0x0E; }
+    else return;                            // unknown colour-block variant
+    for (int k = 0; k < 4; k++) g_cur_chan.matColor[k] = B[0x04 + k];
+    // Ambient: LightOn blocks store/load it; LightOff blocks don't, so the ambient
+    // is the global hardware register (captured at GXSetChanAmbColor).
+    if (amb_off)               for (int k = 0; k < 4; k++) g_cur_chan.ambColor[k] = B[amb_off + k];
+    else if (g_amb_have[0])    for (int k = 0; k < 4; k++) g_cur_chan.ambColor[k] = g_amb_reg[0][k];
+    g_cur_chan.color0 = (u16)((B[chan_off + 0] << 8) | B[chan_off + 1]);   // mColorChan[0]
+    g_cur_chan.alpha0 = (u16)((B[chan_off + 2] << 8) | B[chan_off + 3]);   // mColorChan[1]
+    g_cur_chan.valid = true;
+}
+
+// GX per-vertex colour-channel lighting for COLOR0/ALPHA0 (faithful to the GC
+// hardware lighting model; math cross-checked vs Dolphin VertexShaderGen, re-
+// derived). eye = eye-space position, en = eye-space UNIT normal, vcol0 = vertex
+// CLR0 (0..1). Writes the lit RGBA (0..1) to out. With lighting disabled this
+// reduces to the channel's material source (register colour or vertex colour), so
+// the common vertex-lit world materials are unchanged.
+void light_vertex(const float eye[3], const float en[3], const float vcol0[4], float out[4]) {
+    const ChanInfo& C = g_cur_chan;
+    if (!C.valid) { for (int k = 0; k < 4; k++) out[k] = vcol0[k]; return; }
+    const u16 cc = C.color0, ca = C.alpha0;
+    const bool matVtx = (cc >> 0) & 1;      // GXColorSrc: REG=0, VTX=1
+    const bool enable = (cc >> 1) & 1;
+    float mat[3];
+    if (matVtx) { mat[0] = vcol0[0]; mat[1] = vcol0[1]; mat[2] = vcol0[2]; }
+    else { mat[0] = C.matColor[0] / 255.f; mat[1] = C.matColor[1] / 255.f; mat[2] = C.matColor[2] / 255.f; }
+    // Alpha channel source (no full alpha lighting in this slice).
+    out[3] = ((ca >> 0) & 1) ? vcol0[3] : C.matColor[3] / 255.f;
+
+    if (!enable) {
+        out[0] = mat[0]; out[1] = mat[1]; out[2] = mat[2]; g_chan_flat++;
+        if (matVtx) g_flat_vtx++; else g_flat_reg++;
+        g_flat_lum_sum += (out[0] + out[1] + out[2]) / 3.0;
+        return;
+    }
+    g_chan_lit++;
+
+    const bool ambVtx = (cc >> 6) & 1;
+    float illum[3];
+    if (ambVtx) { illum[0] = vcol0[0]; illum[1] = vcol0[1]; illum[2] = vcol0[2]; }
+    else { illum[0] = C.ambColor[0] / 255.f; illum[1] = C.ambColor[1] / 255.f; illum[2] = C.ambColor[2] / 255.f; }
+
+    const int diffFn  = (cc >> 7) & 3;      // GXDiffuseFn: NONE=0 SIGN=1 CLAMP=2
+    const int attnSel = (cc >> 9) & 3;      // 0/2 → NONE, 1 → SPEC, 3 → SPOT (J3DColorChan::getAttnFn)
+    const u8  mask    = (u8)(((cc >> 2) & 0x0F) | (((cc >> 11) & 0x0F) << 4));
+    for (int i = 0; i < 8; i++) {
+        if (!(mask & (1 << i)) || !g_light[i].valid) continue;
+        const LightObj& L = g_light[i];
+        float ld[3] = { L.pos[0] - eye[0], L.pos[1] - eye[1], L.pos[2] - eye[2] };
+        const float dist2 = ld[0]*ld[0] + ld[1]*ld[1] + ld[2]*ld[2];
+        const float dist  = std::sqrt(dist2);
+        if (dist > 1e-6f) { ld[0] /= dist; ld[1] /= dist; ld[2] /= dist; }
+        float attn = 1.f;
+        if (attnSel == 1) {                 // GX_AF_SPEC
+            const float ndl = en[0]*ld[0] + en[1]*ld[1] + en[2]*ld[2];
+            const float ang = ndl >= 0.f ? std::fmax(0.f, en[0]*L.dir[0] + en[1]*L.dir[1] + en[2]*L.dir[2]) : 0.f;
+            const float a = std::fmax(0.f, L.cosA[0] + L.cosA[1]*ang + L.cosA[2]*ang*ang);
+            const float k = L.distA[0] + L.distA[1]*ang + L.distA[2]*ang*ang;
+            attn = (k > 1e-6f) ? a / k : 0.f;
+        } else if (attnSel == 3) {          // GX_AF_SPOT
+            const float c = std::fmax(0.f, ld[0]*L.dir[0] + ld[1]*L.dir[1] + ld[2]*L.dir[2]);
+            const float a = std::fmax(0.f, L.cosA[0] + L.cosA[1]*c + L.cosA[2]*c*c);
+            const float k = L.distA[0] + L.distA[1]*dist + L.distA[2]*dist2;
+            attn = (k > 1e-6f) ? a / k : 0.f;
+        }
+        float diff = 1.f;
+        const float ndl = en[0]*ld[0] + en[1]*ld[1] + en[2]*ld[2];
+        if (diffFn == 1) diff = ndl;                    // SIGN
+        else if (diffFn == 2) diff = std::fmax(0.f, ndl);  // CLAMP
+        const float s = attn * diff;
+        illum[0] += s*L.color[0]; illum[1] += s*L.color[1]; illum[2] += s*L.color[2];
+        g_diff_sum += diff; g_diff_n++;
+        if (i == 0) {   // sun alignment probe
+            g_sun_ndl_sum += ndl; g_sun_ndl_n++;
+            if (ndl > 0.f) g_sun_ndl_pos++;
+            if (ndl > g_sun_ndl_max) {
+                g_sun_ndl_max = ndl;
+                for (int k = 0; k < 3; k++) { g_dbg_en[k] = en[k]; g_dbg_ld0[k] = ld[k]; }
+            }
+        }
+    }
+    for (int k = 0; k < 3; k++) {
+        float v = illum[k]; v = v < 0.f ? 0.f : (v > 1.f ? 1.f : v);
+        out[k] = mat[k] * v;
+    }
+    g_lit_lum_sum += (out[0] + out[1] + out[2]) / 3.0;
+    g_dbg_cc = cc;
+    for (int k = 0; k < 4; k++) { g_dbg_mat[k] = C.matColor[k]; g_dbg_amb[k] = C.ambColor[k]; g_dbg_out[k] = out[k]; }
+    for (int k = 0; k < 3; k++) g_dbg_illum[k] = illum[k];
+}
 
 // ── N5 per-material TEV capture (docs/native_port_plan.md §6) ───────────────────
 // The current material is reachable at J3DShape::draw time via the j3dSys global:
@@ -204,16 +380,19 @@ std::vector<NgxRenderBatch>  g_batches;
 std::vector<NgxVertex> g_verts;
 std::vector<unsigned>  g_indices;
 std::vector<float>     g_clip;        // 4 floats/vertex (clip-space), scratch
+std::vector<float>     g_litrgba;     // 4 floats/vertex (lit raster colour0), scratch
 
 // Read the current material's TEV block into an NgxTevState, dedupe it into the
 // table, and return its index (-1 if no material / unknown block variant). Reads
 // the guest object straight from RAM (big-endian bytes via sb_ram_fast), object-
 // model — no GX byte-stream decode.
 int capture_material() {
+    g_cur_chan = ChanInfo{};                           // reset; stays invalid if no material
     const u32 matpacket = r32(J3DSYS + 0x3C);          // j3dSys.mMatPacket
     if (!valid(matpacket)) { g_mat_none++; return -1; }
     const u32 material = r32(matpacket + 0x38);        // J3DMatPacket::unk38
     if (!valid(material)) { g_mat_none++; return -1; }
+    capture_colorchan(material);                       // N6: colour-channel/lighting state
     const u32 tevblock = r32(material + 0x28);         // J3DMaterial::mTevBlock
     if (!valid(tevblock)) { g_mat_none++; return -1; }
     const u32 vt = r32(tevblock + 0x00);               // J3DTevBlock vtable ptr
@@ -287,15 +466,41 @@ void transform_eye() {
     if (!valid(mp)) { g_xf_nomtx++; return; }
     float m[12];
     for (int i = 0; i < 12; i++) m[i] = rf(mp + i * 4);   // row-major 3x4
+    // Normal matrix (Mtx33, row-major 3x3) for the native lighting stage. Absent →
+    // skip lighting (en stays 0 → only ambient contributes, matched by the math).
+    const u32 nmp = r32(J3DSYS + 0x108);    // mCurrentNormMtx (Mtx33*)
+    const bool have_nm = valid(nmp);
+    float nm[9]; if (have_nm) for (int i = 0; i < 9; i++) nm[i] = rf(nmp + i * 4);
     bool first = (g_xf_total == 0);
     const size_t nv = g_verts.size();
     if (g_have_proj) g_clip.assign(nv * 4, 0.0f);
+    g_litrgba.assign(nv * 4, 0.0f);
     for (size_t vi = 0; vi < nv; vi++) {
         const NgxVertex& v = g_verts[vi];
         const float x = v.pos[0], y = v.pos[1], z = v.pos[2];
         const float ex = m[0]*x + m[1]*y + m[2]*z  + m[3];
         const float ey = m[4]*x + m[5]*y + m[6]*z  + m[7];
         const float ez = m[8]*x + m[9]*y + m[10]*z + m[11];
+
+        // Native colour-channel lighting → per-vertex raster colour0.
+        float en[3] = {0, 0, 0};
+        if (have_nm) {
+            en[0] = nm[0]*v.nrm[0] + nm[1]*v.nrm[1] + nm[2]*v.nrm[2];
+            en[1] = nm[3]*v.nrm[0] + nm[4]*v.nrm[1] + nm[5]*v.nrm[2];
+            en[2] = nm[6]*v.nrm[0] + nm[7]*v.nrm[1] + nm[8]*v.nrm[2];
+            const float l = std::sqrt(en[0]*en[0] + en[1]*en[1] + en[2]*en[2]);
+            if (l > 1e-6f) { en[0]/=l; en[1]/=l; en[2]/=l; }
+            g_nrm_len_sum += l; g_nrm_n++;
+            if (g_cur_chan.valid && ((g_cur_chan.color0 >> 1) & 1)) {
+                g_lit_nrm_sum += l; g_lit_nrm_n++;
+                if (l < 0.1f) g_lit_nrm_zero++;
+            }
+        }
+        const float eye[3] = { ex, ey, ez };
+        const float vcol0[4] = { v.clr[0][0]/255.f, v.clr[0][1]/255.f,
+                                 v.clr[0][2]/255.f, v.clr[0][3]/255.f };
+        light_vertex(eye, en, vcol0, &g_litrgba[vi * 4]);
+
         g_xf_total++;
         if (ez < 0.0f) g_xf_front++;
         if (first) { g_eye_min[0]=g_eye_max[0]=ex; g_eye_min[1]=g_eye_max[1]=ey;
@@ -347,10 +552,10 @@ void transform_eye() {
                 const unsigned vidx = g_indices[t + e];
                 const float* cp = &g_clip[vidx * 4];
                 const NgxVertex& v = g_verts[vidx];
+                const float* lit = &g_litrgba[vidx * 4];
                 NgxRenderVertex& d = g_snap[g_snap_count];
                 d.clip[0]=cp[0]; d.clip[1]=cp[1]; d.clip[2]=cp[2]; d.clip[3]=cp[3];
-                d.rgba[0]=v.clr[0][0]/255.f; d.rgba[1]=v.clr[0][1]/255.f;
-                d.rgba[2]=v.clr[0][2]/255.f; d.rgba[3]=v.clr[0][3]/255.f;
+                d.rgba[0]=lit[0]; d.rgba[1]=lit[1]; d.rgba[2]=lit[2]; d.rgba[3]=lit[3];
                 d.uv[0]=v.tex[0][0]; d.uv[1]=v.tex[0][1];
                 g_snap_count++;
             }
@@ -467,6 +672,45 @@ SUNBRIGHT_OVERRIDE(ov_gxloadtexobj, 0x80360160u) {
     if (RecompFunc o = recomp_raw(0x80360160u)) o(cpu); else call_ppc(cpu, cpu.lr);
 }
 
+// GXLoadLightObjImm(GXLightObj* lit, GXLightID id) @ 0x8035f26c — capture the live
+// hardware light state for the native lighting stage. id is a GXLightID bit mask
+// (GX_LIGHT0=0x01 .. GX_LIGHT7=0x80); a light may be loaded into several slots.
+SUNBRIGHT_OVERRIDE(ov_gxloadlightobjimm, 0x8035f26cu) {
+    if (g_enabled) {
+        const u32 obj = cpu.gpr[3], id = cpu.gpr[4];
+        if (valid(obj)) {
+            LightObj L; L.valid = true;
+            const u32 col = r32(obj + 0x0C);
+            L.color[0] = ((col >> 24) & 0xFF) / 255.f;
+            L.color[1] = ((col >> 16) & 0xFF) / 255.f;
+            L.color[2] = ((col >>  8) & 0xFF) / 255.f;
+            L.cosA[0]  = rf(obj + 0x10); L.cosA[1]  = rf(obj + 0x14); L.cosA[2]  = rf(obj + 0x18);
+            L.distA[0] = rf(obj + 0x1C); L.distA[1] = rf(obj + 0x20); L.distA[2] = rf(obj + 0x24);
+            L.pos[0]   = rf(obj + 0x28); L.pos[1]   = rf(obj + 0x2C); L.pos[2]   = rf(obj + 0x30);
+            L.dir[0]   = rf(obj + 0x34); L.dir[1]   = rf(obj + 0x38); L.dir[2]   = rf(obj + 0x3C);
+            for (int i = 0; i < 8; i++) if (id & (1u << i)) g_light[i] = L;
+            g_light_loads++;
+        }
+    }
+    if (RecompFunc o = recomp_raw(0x8035f26cu)) o(cpu); else call_ppc(cpu, cpu.lr);
+}
+
+// GXSetChanAmbColor(GXChannelID chan, GXColor color) @ 0x8035f3b4 — capture the
+// global hardware ambient register. GXChannelID: COLOR0=0, COLOR1=1, COLOR0A0=4,
+// COLOR1A1=5. color is a 4-byte GXColor passed by value in gpr[4] (R in high byte).
+SUNBRIGHT_OVERRIDE(ov_gxsetchanambcolor, 0x8035f3b4u) {
+    if (g_enabled) {
+        const u32 chan = cpu.gpr[3], c = cpu.gpr[4];
+        const int idx = (chan == 0 || chan == 4) ? 0 : (chan == 1 || chan == 5) ? 1 : -1;
+        if (idx >= 0) {
+            g_amb_reg[idx][0] = (u8)(c >> 24); g_amb_reg[idx][1] = (u8)(c >> 16);
+            g_amb_reg[idx][2] = (u8)(c >> 8);  g_amb_reg[idx][3] = (u8)c;
+            g_amb_have[idx] = true; g_amb_sets++;
+        }
+    }
+    if (RecompFunc o = recomp_raw(0x8035f3b4u)) o(cpu); else call_ppc(cpu, cpu.lr);
+}
+
 SUNBRIGHT_OVERRIDE(ov_j3dshape_draw, 0x802e0390u) {
     const u32 sh = cpu.gpr[3];   // save before the super-call clobbers gpr
     // Run the real draw FIRST: J3DShape::draw is what sets j3dSys's per-view vertex
@@ -509,6 +753,54 @@ int sb_ngx_shape_dump(char* out, int cap) {
         const char* nm = vt == VT_TVB1 ? "TVB1" : vt == VT_TVB2 ? "TVB2" :
                          vt == VT_TVB4 ? "TVB4" : vt == VT_TVB16 ? "TV16" : "????";
         n += snprintf(out + n, cap - n, "    %08x %-4s  %u\n", vt, nm, g_vt_hist_cnt[i]);
+    }
+    // N6 lighting capture stats.
+    n += snprintf(out + n, cap - n,
+        "  lighting: light_loads=%lu  lit_verts=%lu (mean_lum=%.3f, mean_diff=%.3f)\n"
+        "    flat_verts=%lu (reg=%lu vtx=%lu, mean_lum=%.3f)\n"
+        "    last lit: cc=%04x mat=(%u,%u,%u,%u) amb=(%u,%u,%u,%u) illum=(%.2f,%.2f,%.2f) out=(%.2f,%.2f,%.2f,%.2f)\n",
+        g_light_loads, g_chan_lit,
+        g_chan_lit ? g_lit_lum_sum / g_chan_lit : 0.0,
+        g_diff_n ? g_diff_sum / g_diff_n : 0.0,
+        g_chan_flat, g_flat_reg, g_flat_vtx,
+        g_chan_flat ? g_flat_lum_sum / g_chan_flat : 0.0,
+        g_dbg_cc, g_dbg_mat[0], g_dbg_mat[1], g_dbg_mat[2], g_dbg_mat[3],
+        g_dbg_amb[0], g_dbg_amb[1], g_dbg_amb[2], g_dbg_amb[3],
+        g_dbg_illum[0], g_dbg_illum[1], g_dbg_illum[2],
+        g_dbg_out[0], g_dbg_out[1], g_dbg_out[2], g_dbg_out[3]);
+    for (int i = 0; i < 8; i++) if (g_light[i].valid) {
+        const LightObj& L = g_light[i];
+        n += snprintf(out + n, cap - n,
+            "    light[%d] col=(%.2f,%.2f,%.2f) pos=(%.0f,%.0f,%.0f) dir=(%.2f,%.2f,%.2f)\n"
+            "             cosA=(%.3f,%.3f,%.3f) distA=(%.3g,%.3g,%.3g)\n",
+            i, L.color[0], L.color[1], L.color[2], L.pos[0], L.pos[1], L.pos[2],
+            L.dir[0], L.dir[1], L.dir[2],
+            L.cosA[0], L.cosA[1], L.cosA[2], L.distA[0], L.distA[1], L.distA[2]);
+    }
+    n += snprintf(out + n, cap - n,
+        "    mean |normal|=%.3f (n=%lu)  lit-vert |normal|=%.3f  lit-zero-normal=%lu/%lu (%.1f%%)\n",
+        g_nrm_n ? g_nrm_len_sum / g_nrm_n : 0.0, g_nrm_n,
+        g_lit_nrm_n ? g_lit_nrm_sum / g_lit_nrm_n : 0.0,
+        g_lit_nrm_zero, g_lit_nrm_n, g_lit_nrm_n ? 100.0 * g_lit_nrm_zero / g_lit_nrm_n : 0.0);
+    n += snprintf(out + n, cap - n,
+        "    sun dot(en,ldir0): mean=%.3f max=%.3f pos_frac=%.1f%% (n=%lu)\n"
+        "      @max: en=(%.2f,%.2f,%.2f) ld0=(%.2f,%.2f,%.2f)\n",
+        g_sun_ndl_n ? g_sun_ndl_sum / g_sun_ndl_n : 0.0, g_sun_ndl_max,
+        g_sun_ndl_n ? 100.0 * g_sun_ndl_pos / g_sun_ndl_n : 0.0, g_sun_ndl_n,
+        g_dbg_en[0], g_dbg_en[1], g_dbg_en[2], g_dbg_ld0[0], g_dbg_ld0[1], g_dbg_ld0[2]);
+    n += snprintf(out + n, cap - n,
+        "    amb_reg[0]=(%u,%u,%u,%u) have=%d sets=%lu\n",
+        g_amb_reg[0][0], g_amb_reg[0][1], g_amb_reg[0][2], g_amb_reg[0][3],
+        g_amb_have[0], g_amb_sets);
+    n += snprintf(out + n, cap - n, "    colour-block vtables:");
+    for (int i = 0; i < 8 && g_cbvt_key[i]; i++)
+        n += snprintf(out + n, cap - n, " %08x(%u)", g_cbvt_key[i], g_cbvt_cnt[i]);
+    n += snprintf(out + n, cap - n, "\n");
+    if (g_dbg_cb_have) {
+        n += snprintf(out + n, cap - n, "    block vt=%08x raw[0x00..0x23]:", g_dbg_cb_vt);
+        for (int k = 0; k < 0x24; k++) n += snprintf(out + n, cap - n, "%s%02x",
+            (k % 4 == 0) ? " " : "", g_dbg_cb_raw[k]);
+        n += snprintf(out + n, cap - n, "\n");
     }
     n += snprintf(out + n, cap - n, "  num-stages histogram:");
     for (int s = 1; s <= 16; s++) if (g_stage_hist[s])
