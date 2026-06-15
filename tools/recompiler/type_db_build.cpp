@@ -196,7 +196,12 @@ static void add_field(EngineLayout& L, const ParsedField& f,
     EngineLayout sub = embedded_layout(f.type, index, engine_types, seen, unresolved);
     if (!sub.fields.empty())
         for (const auto& [off, fd] : sub.fields)
-            L.fields[f.offset + off] = FieldDesc{ f.name + "." + fd.member, fd.nested_type };
+            // Carry the sub-field's POINTER KIND (nested_type / guest_ptr) forward — an embedded
+            // value type's pointer member is still a pointer (engine handle or guest-data xlate),
+            // never a plain scalar. Dropping guest_ptr here truncated a host pointer to u32 (LP64
+            // precision loss) in the bridged getter; the embedded mVertexData/mDrawMtxData arrays
+            // are exactly this case.
+            L.fields[f.offset + off] = FieldDesc{ f.name + "." + fd.member, fd.nested_type, fd.guest_ptr };
     else
         L.fields[f.offset] = FieldDesc{ f.name, "" };   // best effort; sub-offsets stay gaps
 }

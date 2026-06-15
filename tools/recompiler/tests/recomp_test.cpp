@@ -488,6 +488,76 @@ int main() {
         CHECK(em2.alloc_thunks().empty(), "no construction thunk when nothing is owned");
     }
 
+    // ── Bridged-getter emission for inline engine-field reads (FIELD_TYPES) ───────────────────────
+    // A load/store site listed in ctx.eng_fields (its base reg is an engine HANDLE) routes to a
+    // generated sbget_<T>_<member>(handle) getter (reads) or a loud write-trap (stores), instead of
+    // MEM_* against the 0x9xxxxxxx token. (Recognition is type_recovery's job; here we test EMISSION
+    // given resolved eng_fields entries — docs/re_notes/j3d_subsystem_ownership_plan.md.)
+    auto build1 = [](uint32_t word, EmitContext& ctx) {
+        std::vector<uint32_t> w = { word, BLR };
+        std::vector<uint8_t> data(w.size()*4);
+        for (size_t i = 0; i < w.size(); ++i) { uint32_t be = __builtin_bswap32(w[i]); std::memcpy(&data[i*4], &be, 4); }
+        ctx.func_addr = B; ctx.instrs = collect_function(data.data(), B, data.size(), B, B+(uint32_t)w.size()*4, false);
+        ctx.branch_targets = intra_branch_targets(ctx.instrs, B);
+    };
+    {
+        // SCALAR read: lhz r4, 0x24(r3) -> getMaterialNum (J3DModelData::mMaterialNum, u16).
+        const uint32_t lhz = (40u<<26)|(4u<<21)|(3u<<16)|0x24u;
+        EmitContext ctx; build1(lhz, ctx);
+        ctx.eng_fields[B] = EngField{ "J3DModelData", "mMaterialNum", "", false };
+        std::ostringstream ss; CEmitter em(ss); em.emit_function(ctx);
+        std::string code = ss.str();
+        CHECK(has(code, "cpu.gpr[4] = sbget_J3DModelData_mMaterialNum_lhz_"), "scalar read routes to a getter call");
+        CHECK(!has(code, "MEM_R16"), "scalar read does NOT emit a guest MEM load against the handle");
+        CHECK(em.eng_getters().size()==1 && em.eng_getters()[0].thunk.rfind("sbget_J3DModelData_mMaterialNum_lhz_",0)==0,
+              "scalar getter collected for the port-world TU");
+        CHECK(has(em.eng_getters()[0].def, "(std::uint16_t)(((J3DModelData*)sb_eng_host(h))->mMaterialNum)"),
+              "scalar getter body reads the host member by name with the op's width");
+
+        // The same site NOT in eng_fields stays a normal guest MEM load.
+        EmitContext c2; build1(lhz, c2);
+        std::ostringstream s2; CEmitter e2(s2); e2.emit_function(c2);
+        CHECK(has(s2.str(), "MEM_R16"), "un-routed read keeps the guest MEM load");
+        CHECK(e2.eng_getters().empty(), "no getter collected when nothing is routed");
+    }
+    {
+        // ENGINE-POINTER read: lwz r4, 0x28(r3) -> getMaterialNodePointer base (J3DMaterial* field) ->
+        // the game must hold a HANDLE, so the getter returns sb_eng_handle(host->member).
+        const uint32_t lwz = (32u<<26)|(4u<<21)|(3u<<16)|0x28u;
+        EmitContext ctx; build1(lwz, ctx);
+        ctx.eng_fields[B] = EngField{ "J3DModelData", "mMaterials", "J3DMaterial", false };
+        std::ostringstream ss; CEmitter em(ss); em.emit_function(ctx);
+        CHECK(has(ss.str(), "cpu.gpr[4] = sbget_J3DModelData_mMaterials_lwzp_"), "engine-ptr read routes to a handle getter");
+        CHECK(em.eng_getters().size()==1 &&
+              has(em.eng_getters()[0].def, "return sb_eng_handle((void*)(((J3DModelData*)sb_eng_host(h))->mMaterials));"),
+              "engine-ptr getter returns a handle for the host sub-object");
+    }
+    {
+        // GUEST-DATA-POINTER read: lwz r4, 0x4(r3) of a host JUTTexture::mTexInfo (ResTIMG* into guest
+        // RAM) -> the getter returns the GUEST ea (sb_host_to_guest), not a truncated host pointer.
+        const uint32_t lwz = (32u<<26)|(4u<<21)|(3u<<16)|0x4u;
+        EmitContext ctx; build1(lwz, ctx);
+        EngField gf; gf.type_cname="JUTTexture"; gf.member="mTexInfo"; gf.guest_ptr=true;
+        ctx.eng_fields[B] = gf;
+        std::ostringstream ss; CEmitter em(ss); em.emit_function(ctx);
+        CHECK(has(ss.str(), "cpu.gpr[4] = sbget_JUTTexture_mTexInfo_lwzg_"), "guest-ptr read routes to a guest-xlate getter");
+        CHECK(em.eng_getters().size()==1 &&
+              has(em.eng_getters()[0].def, "return sb_host_to_guest((void*)(((JUTTexture*)sb_eng_host(h))->mTexInfo));"),
+              "guest-ptr getter translates the host pointer to a guest ea");
+    }
+    {
+        // WRITE to a typed engine field: no setter yet -> loud trap, NEVER a silent MEM_W against the
+        // handle. stw r4, 0x10(r3).
+        const uint32_t stw = (36u<<26)|(4u<<21)|(3u<<16)|0x10u;
+        EmitContext ctx; build1(stw, ctx);
+        ctx.eng_fields[B] = EngField{ "J3DModelData", "mFlags", "", false };
+        std::ostringstream ss; CEmitter em(ss); em.emit_function(ctx);
+        CHECK(has(ss.str(), "sb_eng_field_write_trap(\"J3DModelData::mFlags\", cpu.gpr[3]);"),
+              "inline engine-field write routes to the loud trap");
+        CHECK(!has(ss.str(), "MEM_W32"), "inline engine-field write does NOT emit a guest MEM store");
+        CHECK(em.eng_getters().empty(), "a write emits no getter");
+    }
+
     std::printf("recomp_test: %d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

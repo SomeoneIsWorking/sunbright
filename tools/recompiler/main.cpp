@@ -8,6 +8,7 @@
 #include "type_db_build.h"
 #include "vtable_db.h"
 #include "decomp_parse.h"
+#include "func_sig.h"
 
 #include <iostream>
 #include <fstream>
@@ -432,6 +433,17 @@ static int recompile_mode(const DiscLoader& disc, const DOL& dol, const std::str
     // — e.g. M3UModel holds a J3DModel* handle but M3UModel itself is not owned). Default empty.
     std::set<std::string> own_types = parse_type_list(getenv("SUNBRIGHT_OWN_TYPES"));
     for (const auto& t : own_types) virt_types.insert(t);   // owning implies recognition
+    // FIELD types: engine types whose INLINE field READS in game code (getMaterialNum/
+    // getMaterialNodePointer/… inlined into AI/behavior fns we must NOT port) get routed to
+    // bridged getters (sbget_<T>_<member>(handle)) instead of MEM_R* against the handle token —
+    // docs/re_notes/j3d_subsystem_ownership_plan.md "actor-model relationship". Recognition-only
+    // for these (they are not constructed in game code); their layout must be in the type DB so the
+    // read sites get typed. Default empty = no field routing (byte-unchanged recompile).
+    std::set<std::string> field_types = parse_type_list(getenv("SUNBRIGHT_FIELD_TYPES"));
+    // Types the recognition/recompile machinery must build a layout+signature DB for: the union of
+    // virtual-dispatch, owned-construction, and field-read type sets.
+    std::set<std::string> active_types = virt_types;
+    for (const auto& t : field_types) active_types.insert(t);
     // Raw allocators whose result is the constructed object (object_identity.md): the global
     // `operator new(size)` at 0x802c3ba4 (reads the current JKRHeap from SDA r13-0x5f2c). Used only
     // when OWN_TYPES is set, to find owned-type heap-construction sites.
@@ -439,20 +451,45 @@ static int recompile_mode(const DiscLoader& disc, const DOL& dol, const std::str
     TypeDB type_db;
     VTableDB vtbl_db;
     std::map<std::string, std::set<std::string>> simple_virtuals;   // type -> safely-dispatchable methods
-    if (!virt_types.empty()) {
+    std::map<std::string, std::string> type_headers;               // active type -> defining decomp header
+    // Functions that are METHODS OF a FIELD type are that type's OWN engine implementation
+    // (J3DMaterial::initialize / addShape / J3DModelData internals). Their inline accesses to the
+    // type's own fields are ENGINE internals, not game→engine reads — routing them to bridged
+    // getters/setters is wrong (the engine internals stay port-native; the recompiled bodies are
+    // dead/overridden or run on a guest-layout buffer). Excluded from field-routing (fe1ba78).
+    std::unordered_set<u32> field_internal_funcs;
+    if (!active_types.empty()) {
         const std::string inc = "reference/sms/include";
         const std::string syms = "reference/sms_gmse01_funcs.txt";
-        TypeDBBuildResult tdb = build_type_db(virt_types, inc, syms);
+        TypeDBBuildResult tdb = build_type_db(active_types, inc, syms);
         type_db = tdb.db;
-        vtbl_db = build_vtable_db(std::vector<std::string>(virt_types.begin(), virt_types.end()), dol, syms);
+        type_headers = tdb.type_headers;
+        // vtable DB only needed for virtual-dispatch routing (virt_types).
+        if (!virt_types.empty())
+            vtbl_db = build_vtable_db(std::vector<std::string>(virt_types.begin(), virt_types.end()), dol, syms);
         for (const auto& t : virt_types) {
             auto h = tdb.type_headers.find(t);
             if (h == tdb.type_headers.end()) continue;
             ParsedType pt = parse_decomp_file(h->second, t);
             simple_virtuals[t] = pt.simple_virtuals;
         }
-        std::cout << "Virtual-dispatch routing ON for " << virt_types.size()
-                  << " type(s); " << vtbl_db.tables.size() << " vtable(s) read\n";
+        // Flag each function whose owning class is a FIELD type (demangle addr->class from funcs.txt).
+        if (!field_types.empty()) {
+            std::ifstream ff(syms);
+            std::string line;
+            while (std::getline(ff, line)) {
+                std::size_t sp = line.find(' ');
+                if (sp == std::string::npos) continue;
+                u32 a = (u32)strtoul(line.substr(0, sp).c_str(), nullptr, 16);
+                FuncSig sig = demangle_signature(line.substr(sp + 1));
+                if (sig.is_method && field_types.count(sig.class_leaf))
+                    field_internal_funcs.insert(a);
+            }
+        }
+        std::cout << "Type DB built for " << active_types.size() << " type(s)"
+                  << " (virt-dispatch " << virt_types.size() << ", field-read " << field_types.size()
+                  << "); " << vtbl_db.tables.size() << " vtable(s) read; "
+                  << field_internal_funcs.size() << " engine-internal method(s) excluded from field-routing\n";
     }
     // Resolve recognition (VCall) against the vtable + simple-virtual sets into an emitter route.
     // Returns false (no routing) unless the type is active, its vtable names a simple virtual at the
@@ -472,6 +509,7 @@ static int recompile_mode(const DiscLoader& disc, const DOL& dol, const std::str
     };
     std::vector<EmitVirtThunk> all_virt_thunks;                     // aggregated across part files
     std::vector<EmitAllocThunk> all_alloc_thunks;                   // construction->handle thunks
+    std::vector<EmitEngGetter> all_eng_getters;                     // inline-field-read getters
 
     // Functions are emitted in address order so each output file covers one
     // contiguous region of code (≈ one library/module), which keeps related
@@ -488,6 +526,7 @@ static int recompile_mode(const DiscLoader& disc, const DOL& dol, const std::str
              "#include \"../runtime/cpu_state.h\"\n"
              "#include \"../runtime/intrinsics.h\"\n";
         if (!virt_types.empty()) h << "#include \"virt_thunks.h\"\n";  // routed-virtual thunk decls
+        if (!field_types.empty()) h << "#include \"eng_accessors.h\"\n";  // inline-field-read getter decls
         h << "#include <cstdint>\n"
              "#include <cmath>\n\n";
         for (u32 addr : all_funcs)
@@ -539,14 +578,16 @@ static int recompile_mode(const DiscLoader& disc, const DOL& dol, const std::str
             }
             // Recognize offset-0 virtual calls on engine handles and route the dispatchable ones;
             // when OWN_TYPES is set, also recognize owned-type heap allocations and route them to a
-            // host-alloc+handle thunk (construction->handle bridging).
-            if (!virt_types.empty()) {
+            // host-alloc+handle thunk (construction->handle bridging); when FIELD_TYPES is set, route
+            // inline engine-field READS to bridged getters (and WRITES to a loud trap).
+            if (!active_types.empty()) {
                 std::map<u32, VCall> vcalls;
                 std::map<u32, std::string> alloc_sites;
                 const std::unordered_set<u32>* raw_alloc = own_types.empty() ? nullptr : &kRawAllocators;
                 std::map<u32, std::string>* alloc_out = own_types.empty() ? nullptr : &alloc_sites;
-                recover_eng_fields(ctx.instrs, addr, type_db, ctx.branch_targets,
-                                   ctx.jumptable_targets, nullptr, raw_alloc, alloc_out, &vcalls);
+                std::map<u32, EngField> eng = recover_eng_fields(ctx.instrs, addr, type_db,
+                                   ctx.branch_targets, ctx.jumptable_targets, nullptr, raw_alloc,
+                                   alloc_out, &vcalls);
                 for (const auto& [pc, vc] : vcalls) {
                     EmitVirtCall ev;
                     if (resolve_vcall(vc, ev)) ctx.virt_calls[pc] = ev;
@@ -561,11 +602,19 @@ static int recompile_mode(const DiscLoader& disc, const DOL& dol, const std::str
                         !kRawAllocators.count(it->target)) continue;
                     ctx.alloc_sites[pc] = ty;
                 }
+                // Route inline field accesses ONLY for types in FIELD_TYPES (the base register is an
+                // engine handle at the site; the emitter calls sbget_<T>_<member>(handle) for reads,
+                // traps writes). A typed site of a virt-only/owned type that is NOT in field_types is
+                // left as-is (its handle is dispatched/constructed, not field-read in game code).
+                if (!field_types.empty() && !field_internal_funcs.count(addr))
+                    for (const auto& [pc, ef] : eng)
+                        if (field_types.count(ef.type_cname)) ctx.eng_fields[pc] = ef;
             }
             emitter.emit_function(ctx);
         }
         for (const auto& t : emitter.virt_thunks()) all_virt_thunks.push_back(t);
         for (const auto& t : emitter.alloc_thunks()) all_alloc_thunks.push_back(t);
+        for (const auto& t : emitter.eng_getters()) all_eng_getters.push_back(t);
         total_unhandled += emitter.unhandled_count();
         unhandled_ops.insert(emitter.unhandled_mnemonics().begin(),
                              emitter.unhandled_mnemonics().end());
@@ -609,12 +658,7 @@ static int recompile_mode(const DiscLoader& disc, const DOL& dol, const std::str
             h << "std::uint32_t " << sym << "();  // new " << t.type << "() -> host obj + handle\n";
         h << "}\n";
 
-        // Resolve each active type's defining header for the port-world TU's #includes.
-        std::map<std::string, std::string> type_headers;
-        if (!virt_types.empty()) {
-            auto idx = index_headers("reference/sms/include");
-            for (const auto& t : virt_types) if (idx.count(t)) type_headers[t] = idx[t];
-        }
+        // type_headers (built with the DB above) maps each active type -> its defining decomp header.
         std::set<std::string> need_headers;
         for (const auto& [sym, t] : uniq)
             if (type_headers.count(t.type)) need_headers.insert(type_headers[t.type]);
@@ -651,6 +695,51 @@ static int recompile_mode(const DiscLoader& disc, const DOL& dol, const std::str
         if (!uniq.empty() || !uniqA.empty())
             std::cout << "  virt_thunks.cpp (" << uniq.size() << " host-dispatch + "
                       << uniqA.size() << " construction thunks)\n";
+    }
+
+    // ── Bridged getters for inline engine-field reads (SUNBRIGHT_FIELD_TYPES) ──────
+    // Same port-world-compile pattern as virt_thunks: eng_accessors.h = extern "C" decls (#included
+    // by functions.h so the generated game TU can call them); eng_accessors.cpp = the PORT-WORLD
+    // definitions that name the host struct member BY NAME (decomp headers + port shims, NO
+    // cpu_state.h) — compiled into the binary only under the SB_FLIP_J3D build (CMake). Written ONLY
+    // when FIELD_TYPES is set so the default recompile is byte-for-byte unchanged.
+    if (!field_types.empty()) {
+        std::map<std::string, EmitEngGetter> uniqG;   // dedup by symbol (identical bodies dedupe)
+        for (const auto& g : all_eng_getters) uniqG.emplace(g.thunk, g);
+
+        std::ofstream h(out_dir + "/eng_accessors.h");
+        h << "// AUTO-GENERATED by sunbright-recomp — DO NOT EDIT\n#pragma once\n#include <cstdint>\n\n"
+             "// Bridged getters for INLINE engine-field reads (docs/re_notes/"
+             "j3d_subsystem_ownership_plan.md\n// \"actor-model relationship\"): routed game-code reads "
+             "call these; eng_accessors.cpp\n// defines them by NAME on the host engine object "
+             "(sb_eng_host(handle)).\nextern \"C\" {\n";
+        for (const auto& [sym, g] : uniqG) h << g.decl << "\n";
+        h << "}\n";
+
+        // Which active types' headers do the emitted getters need? (Only field types appear, but
+        // resolve via type_headers so a nested/leaf name is handled uniformly.)
+        std::set<std::string> need_headers;
+        for (const auto& t : field_types)
+            if (type_headers.count(t)) need_headers.insert(type_headers[t]);
+
+        std::ofstream c(out_dir + "/eng_accessors.cpp");
+        c << "// AUTO-GENERATED by sunbright-recomp — DO NOT EDIT\n"
+             "// PORT-WORLD TU: host engine headers + by-name field access, NO cpu_state.h\n"
+             "// (the cpu_state<->decomp u64 collision is avoided by keeping this TU separate).\n"
+             "#include <cstdint>\n";
+        const std::string inc_prefix = "reference/sms/include/";
+        for (const auto& hdr : need_headers) {
+            std::string rel = hdr;
+            if (rel.rfind(inc_prefix, 0) == 0) rel = rel.substr(inc_prefix.size());
+            c << "#include \"" << rel << "\"\n";
+        }
+        c << "\n// boundary helpers (C++ linkage, no cpu_state.h): handle table + guest-data ptr xlate.\n"
+             "extern void* sb_eng_host(std::uint32_t);\n"
+             "extern std::uint32_t sb_eng_handle(void*);\n"
+             "extern std::uint32_t sb_host_to_guest(void*);\n\n";
+        for (const auto& [sym, g] : uniqG) c << g.def << "\n";
+
+        std::cout << "  eng_accessors.cpp (" << uniqG.size() << " inline-field-read getters)\n";
     }
 
     std::cout << "Output written to " << out_dir << "/\n"

@@ -91,3 +91,16 @@ void sb_eng_release(void* host) {
     g_index.erase(it);
     g_free.push_back(idx);
 }
+
+// Loud trap for an inline engine-field STORE (see intrinsics.h). The function-call boundary
+// holds engine objects as handles and the recompiler does not yet emit field SETTERS; a guest
+// MEM_W against a handle token would silently corrupt host or guest state. The generated code
+// routes a typed inline store here so the bug surfaces as a named abort, not silent corruption.
+void sb_eng_field_write_trap(const char* what, u32 handle) {
+    std::fprintf(stderr,
+        "FATAL: inline engine-field WRITE has no setter: %s (handle 0x%08x)\n"
+        "  The game wrote a host engine object's field inline. Add a setter for it\n"
+        "  (tools/recompiler/c_emitter.cpp) or bridge the writing function.\n",
+        what ? what : "<unknown>", handle);
+    std::abort();
+}

@@ -229,3 +229,17 @@ extern void  sb_eng_release(void* host);
 // Guest main-RAM effective address -> host pointer (for the SUNBRIGHT_BRIDGE
 // marshalling thunk, runtime/bridge.h). ea==0 -> nullptr. Defined in memory_bridge.cpp.
 extern void* sb_guest_to_host(u32 ea);
+
+// Inverse: a host pointer held in a GUEST-DATA pointer FIELD of a host engine object ->
+// the 32-bit guest address the recompiled game expects. nullptr -> 0; a host pointer
+// outside the guest arena -> 0. Used by the generated bridged-getter (eng_accessors.cpp)
+// when an inline engine-field READ returns a guest-data pointer (so the game sees a guest
+// ea, not a truncated host pointer). Defined in memory_bridge.cpp.
+extern u32 sb_host_to_guest(void* host);
+
+// Loud trap for an inline engine-field STORE: the function-call boundary owns engine
+// objects as handles, and the recompiler does not yet emit field SETTERS. A guest MEM_W
+// against a 0x9xxxxxxx handle token would silently corrupt — so a typed inline store
+// routes here instead and ABORTS with the offending T::member, rather than writing wild.
+// (Add an sbset_ getter-style setter when a real inline write surfaces.) eng_handle.cpp.
+extern void sb_eng_field_write_trap(const char* what, u32 handle);

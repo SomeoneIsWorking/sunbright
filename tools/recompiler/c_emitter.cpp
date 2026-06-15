@@ -30,6 +30,32 @@ static u32 ppc_rotate_mask(u32 mb, u32 me) {
     return m;
 }
 
+// ── Bridged-getter codegen for inline engine-field reads ────────────────────
+// (docs/re_notes/j3d_subsystem_ownership_plan.md "actor-model relationship": the game inlines
+//  engine accessor reads — getMaterialNum/getMaterialNodePointer/… — into AI/behavior fns we must
+//  NOT port. type_recovery already types the base register as an engine HANDLE at the read; here
+//  the emitter routes the inline `MEM_R*(handle+off)` to a generated `sbget_<T>_<member>(handle)`
+//  getter whose port-world body names the host member by NAME. This is the GETTERS-ONLY subset of
+//  the retired field-flip (commit 41aaa69): a function CALL, no host layout in the game TU.)
+
+// Make a C-identifier-safe fragment from a host type/member name (which may contain `::`, `.`,
+// `[`, `]`, `<`, `>`). Used only to build readable symbol prefixes; uniqueness comes from the
+// appended hash, so a lossy sanitization can never alias two different thunks.
+static std::string sanitize_ident(const std::string& s) {
+    std::string r;
+    for (char c : s) r += (std::isalnum((unsigned char)c) || c == '_') ? c : '_';
+    return r;
+}
+// 32-bit FNV-1a over the full accessor signature -> 8 hex digits. Folded into every symbol so two
+// thunks with identical symbols ALWAYS have identical bodies (and dedupe), and two with different
+// bodies NEVER collide — even when sanitize_ident loses information.
+static std::string sig_hash(const std::string& s) {
+    uint32_t h = 2166136261u;
+    for (unsigned char c : s) { h ^= c; h *= 16777619u; }
+    char buf[16]; std::snprintf(buf, sizeof(buf), "%08x", h);
+    return buf;
+}
+
 void CEmitter::line(const char* fmt, ...) {
     char buf[512];
     va_list ap;
@@ -134,7 +160,115 @@ void CEmitter::emit_function(const EmitContext& ctx) {
     out_ << "}\n";
 }
 
+// Build (and record, deduped) the bridged getter for a typed inline-read site, returning its call
+// symbol. The thunk body references the host struct member BY NAME (`((T*)sb_eng_host(h))->member`)
+// so the host C++ compiler resolves offset/width/endianness/pointer-size in the port-world
+// eng_accessors TU — the generated game TU never names the host type. READS only; an unmodeled op
+// returns "" so the caller can fall through / trap.
+std::string CEmitter::eng_get_symbol(const EngField& f, PPCOp op) {
+    const bool is_ptr = !f.ptr_type_cname.empty();
+
+    // op suffix encodes BOTH the access width/sign AND the pointer kind (engine/guest/scalar), so
+    // distinct semantics get distinct thunks.
+    const char* opc = "";
+    switch (op) {
+        case PPCOp::LWZ: opc = is_ptr ? "lwzp" : (f.guest_ptr ? "lwzg" : "lwz"); break;
+        case PPCOp::LBZ: opc = "lbz"; break;
+        case PPCOp::LHZ: opc = "lhz"; break;
+        case PPCOp::LHA: opc = "lha"; break;
+        case PPCOp::LFS: opc = "lfs"; break;
+        default: return "";   // unmodeled read op -> caller traps loudly
+    }
+
+    const std::string sig = f.type_cname + "|" + f.member + "|" + opc + "|" + f.ptr_type_cname +
+                            "|" + (f.guest_ptr ? "g" : "");
+    const std::string sym = "sbget_" + sanitize_ident(f.type_cname) + "_" +
+                            sanitize_ident(f.member) + "_" + opc + "_" + sig_hash(sig);
+
+    if (!eng_getter_seen_.count(sym)) {
+        eng_getter_seen_.insert(sym);
+        const std::string obj = "((" + f.type_cname + "*)sb_eng_host(h))->" + f.member;
+        std::string ret, body;
+        switch (op) {
+            case PPCOp::LWZ:
+                ret = "std::uint32_t";
+                if (is_ptr)            body = "return sb_eng_handle((void*)(" + obj + "));";
+                else if (f.guest_ptr)  body = "return sb_host_to_guest((void*)(" + obj + "));";
+                else                   body = "return (std::uint32_t)(" + obj + ");";
+                break;
+            case PPCOp::LBZ:
+                ret = "std::uint32_t"; body = "return (std::uint32_t)(std::uint8_t)(" + obj + ");"; break;
+            case PPCOp::LHZ:
+                ret = "std::uint32_t"; body = "return (std::uint32_t)(std::uint16_t)(" + obj + ");"; break;
+            case PPCOp::LHA:
+                ret = "std::uint32_t"; body = "return (std::uint32_t)(std::int32_t)(std::int16_t)(" + obj + ");"; break;
+            case PPCOp::LFS:
+                ret = "double"; body = "return (double)(" + obj + ");"; break;
+            default: break;
+        }
+        EmitEngGetter g;
+        g.thunk = sym;
+        g.decl  = "extern \"C\" " + ret + " " + sym + "(std::uint32_t h);";
+        g.def   = "extern \"C\" " + ret + " " + sym + "(std::uint32_t h) { " + body + " }";
+        eng_getters_.push_back(std::move(g));
+    }
+    return sym;
+}
+
+// Route an inline engine-field access registered in ctx.eng_fields. READ -> a generated getter
+// call (host object via sb_eng_host(handle), member by name). WRITE -> a loud runtime trap (the
+// boundary has no field SETTER yet; a guest MEM_W against the 0x9xxxxxxx handle token would
+// silently corrupt). Returns true when handled; false to fall through to the normal MEM emit.
+bool CEmitter::emit_eng_field(const PPCInstr& i, const EmitContext& ctx) {
+    auto it = ctx.eng_fields.find(i.pc);
+    if (it == ctx.eng_fields.end()) return false;
+    const EngField& f = it->second;
+
+    // `__vtbl` is the type DB's sentinel for a polymorphic-subclass appended-vtable slot, NOT a
+    // real host member — it only appears at a CONSTRUCTION store (handled by OWN_TYPES/ctor bridge,
+    // not field reads). Suppress it here so it never emits a broken `->__vtbl` getter.
+    if (f.member == "__vtbl") {
+        line("// FIELD: suppressed __vtbl sentinel access at 0x%08x (construction owns the vtable)", i.pc);
+        return true;
+    }
+
+    const std::string a = "cpu.gpr[" + std::to_string(i.rA) + "]";   // base = engine handle
+
+    switch (i.op) {
+    case PPCOp::LWZ: case PPCOp::LBZ: case PPCOp::LHZ: case PPCOp::LHA: {
+        const std::string sym = eng_get_symbol(f, i.op);
+        if (sym.empty()) {
+            line("// FIELD-UNMODELED: %s read of host %s::%s at 0x%08x",
+                 i.mnemonic().c_str(), f.type_cname.c_str(), f.member.c_str(), i.pc);
+            return false;
+        }
+        line("cpu.gpr[%d] = %s(%s);", i.rD, sym.c_str(), a.c_str());
+        return true;
+    }
+    case PPCOp::LFS: {
+        const std::string sym = eng_get_symbol(f, i.op);
+        if (sym.empty()) return false;
+        line("cpu.fpr[%d].ps0 = %s(%s); cpu.fpr[%d].ps1 = cpu.fpr[%d].ps0;",
+             i.rD, sym.c_str(), a.c_str(), i.rD, i.rD);
+        return true;
+    }
+    case PPCOp::STW: case PPCOp::STB: case PPCOp::STH: case PPCOp::STFS:
+        // No setter yet -> trap loudly rather than MEM_W to the handle token.
+        line("sb_eng_field_write_trap(\"%s::%s\", %s);",
+             f.type_cname.c_str(), f.member.c_str(), a.c_str());
+        return true;
+    default:
+        // Update-form / indexed / other op against a typed handle base: falling through to a guest
+        // MEM access would be WRONG. Make it loud, then fall through (surfaces at run as a handle
+        // fault, naming the site) — add coverage when one actually appears.
+        line("// FIELD-UNMODELED: %s on host %s::%s at 0x%08x (NOT routed)",
+             i.mnemonic().c_str(), f.type_cname.c_str(), f.member.c_str(), i.pc);
+        return false;
+    }
+}
+
 void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
+    if (emit_eng_field(i, ctx)) return;   // bridged inline engine-field access takes precedence
     const std::string d = "cpu.gpr[" + std::to_string(i.rD) + "]";
     const std::string a = "cpu.gpr[" + std::to_string(i.rA) + "]";
     const std::string b = "cpu.gpr[" + std::to_string(i.rB) + "]";

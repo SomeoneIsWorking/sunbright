@@ -281,6 +281,26 @@ if(SB_FLIP_J3D AND SUNBRIGHT_VIRT_THUNKS)
     target_compile_features(sb_virt_thunks PRIVATE cxx_std_17)
 endif()
 
+# ── Bridged inline-field-read getters (SB_FLIP_J3D) ───────────────────────────
+# The FIELD_TYPES recompile (SUNBRIGHT_FIELD_TYPES=…) emits generated*/eng_accessors.cpp: the
+# PORT-WORLD definitions of sbget_<T>_<member>(handle) that read a host engine field by NAME
+# (((T*)sb_eng_host(h))->member). Same port-world-compile pattern as sb_virt_thunks — its own
+# object library so the SHELL:-include port-compat force-includes survive. The generated game TUs
+# call these via extern "C" decls (eng_accessors.h).
+file(GLOB SUNBRIGHT_ENG_ACCESSORS CONFIGURE_DEPENDS ${SUNBRIGHT_GENERATED_DIR}/eng_accessors.cpp)
+if(SB_FLIP_J3D AND SUNBRIGHT_ENG_ACCESSORS)
+    add_library(sb_eng_accessors OBJECT ${SUNBRIGHT_ENG_ACCESSORS})
+    target_include_directories(sb_eng_accessors PRIVATE
+        "${CMAKE_SOURCE_DIR}/port/compat/include"
+        "${CMAKE_SOURCE_DIR}/reference/sms/include"   # the #include is relative to this dir
+        "${CMAKE_SOURCE_DIR}/runtime")
+    target_compile_options(sb_eng_accessors PRIVATE
+        "SHELL:-include ${CMAKE_SOURCE_DIR}/port/compat/intrinsics.h"
+        "SHELL:-include ${CMAKE_SOURCE_DIR}/port/compat/msl_shim.h"
+        -fno-strict-aliasing -Wno-multichar -Wno-register -w)
+    target_compile_features(sb_eng_accessors PRIVATE cxx_std_17)
+endif()
+
 # ── Port engine (PC-native JSystem) — guest slice linked into the hybrid ──────
 # The tailored-recomp boundary: recompiled game logic (built with
 # SUNBRIGHT_ENGINE_TYPES) calls PORT-native engine objects via the bridge. We link
@@ -337,6 +357,9 @@ add_executable(sunbright
 # eng_accessors object lib used).
 if(TARGET sb_virt_thunks)
     target_sources(sunbright PRIVATE $<TARGET_OBJECTS:sb_virt_thunks>)
+endif()
+if(TARGET sb_eng_accessors)
+    target_sources(sunbright PRIVATE $<TARGET_OBJECTS:sb_eng_accessors>)
 endif()
 
 target_include_directories(sunbright PRIVATE
