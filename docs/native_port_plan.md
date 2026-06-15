@@ -327,6 +327,42 @@ decoder; runtime GP-FIFO path on the delete list. Then, on the object-model arch
   Konst/raster/texture inputs + alpha/blend.** Then lighting (normal transform via
   j3dSys.mCurrentNormMtx). Low texture-capture count per chunk also suggests some bindings come via
   GXLoadTexObjPreLoaded / other texmaps — widen capture alongside TEV.
+- **N5 proper — per-material TEV combiner ✅** (this commit, 3 steps) — the real GX
+  TEV combiner now runs, replacing the guessed `texColor*vColor`:
+  1. **Material capture** (`ngx_j3d_shape.cpp`): the live J3DMaterial is found at
+     `J3DShape::draw` time via the j3dSys global — `mMatPacket` (j3dSys+0x3C) →
+     `J3DMatPacket::unk38` (+0x38) → `J3DMaterial::mTevBlock` (+0x28). The concrete
+     J3DTevBlock variant is identified by its vtable (gmse01: TV16 0x803E0A14, TVB4
+     0AB0, TVB2 0B4C, TVB1 0BE8 — anchored to TVB1 disassembled from
+     `__dt__12J3DTevBlock1`, spacing from the JP symbol map). Per-stage 24-bit
+     color/alpha combiner regs (the J3DTevStage 8 bytes ARE the two GX combiner BP
+     values), tev order, konst sel, 4 S10 TEV regs + 4 KONST regs are read straight
+     from guest RAM (object-model) into `NgxTevState`, deduped by FNV key; each
+     `NgxRenderBatch` carries its material index. Verified: found=100% / unknown_vt=0
+     over 562787 draws, 78 unique materials, all 4 vtables correctly named (`/ngxshape`).
+  2. **TEV→GLSL generator** (`runtime/render/tev_shader.{h,cpp}`) — translates an
+     `NgxTevState` to a GLSL 450 fragment shader reproducing the GX integer TEV
+     pipeline faithfully: per-stage `d (±) lerp(a,b,c)` with bias/scale/clamp/dest
+     (CPREV/C0/C1/C2), the 8 compare modes, konst color/alpha sel, raster + texture
+     inputs. Math re-derived from Dolphin PixelShaderGen (not linked). Compiled by our
+     OWN glslang wrapper (`runtime/render/glsl_compile.{h,cpp}`, no Dolphin header
+     injection — renderer-independent). Verified: `/tevshader` compiles
+     GX_MODULATE/REPLACE + every live material, 14/14 0-fail.
+  3. **vk_mesh wiring** — one fragment pipeline per distinct material TEV state
+     (TEV-state→pipeline cache, slot 0 = modulate fallback), bound per batch; konst
+     + c0/c1/c2 regs fed via fragment push constants. Verified headless (Delfino):
+     11 material shaders + modulate, 0 fails, 97.8% coverage, recognizable plaza,
+     no crash/VK errors over 7936 frames.
+  **HONEST STATE / NEXT STAGE = LIGHTING.** The scene renders dark/blue-cast because
+  color-channel LIGHTING is not ported: the raster color input is approximated by raw
+  vertex color0 (faithful to the CLR0 attribute — NOT a brightness fudge). The oracle
+  is bright because Dolphin applies the sun/ambient lighting. **Next: port the
+  J3DColorBlock color channels (J3DColorChan + lights → raster color)** so raster is
+  the lit color, then the scene brightness/colour should match. Also still first-slice:
+  single bound texmap/texcoord (note `/ngxrender` showed "1 unique texture" — texmap
+  capture is narrow; widen via per-stage texmap binding + GXLoadTexObjPreLoaded),
+  identity TEV swap tables, no alpha test (PE block uncaptured → foliage cutouts show
+  full quads), no indirect stages.
 
 **J3DShape DRAW PATH (RE'd 2026-06-14, `reference/sms/.../J3DShape.cpp`) — the live-hook seam.**
 `J3DShape::draw()` does, in order:
