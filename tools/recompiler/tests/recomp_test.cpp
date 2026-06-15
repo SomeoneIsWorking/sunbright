@@ -462,6 +462,32 @@ int main() {
         CHECK(em2.virt_thunks().empty(), "no thunk collected when nothing is routed");
     }
 
+    // ── Construction->handle emission (OWN_TYPES) ────────────────────────────────────────────────
+    // An owned-engine-type heap `operator new` bl listed in ctx.alloc_sites becomes a host-alloc+handle
+    // thunk (cpu.gpr[3] = sbnew_<T>()) instead of guest operator-new; the thunk is collected for the
+    // port-world TU. The out-of-line ctor override then placement-news onto sb_eng_host(handle).
+    {
+        const uint32_t bl_opnew = (18u<<26)|(8u)|1u;   // bl (+8), lk
+        std::vector<uint32_t> w = { bl_opnew, BLR };
+        std::vector<uint8_t> data(w.size()*4);
+        for (size_t i = 0; i < w.size(); ++i) { uint32_t be = __builtin_bswap32(w[i]); std::memcpy(&data[i*4], &be, 4); }
+        EmitContext ctx; ctx.func_addr = B; ctx.instrs = collect_function(data.data(), B, data.size(), B, B+(uint32_t)w.size()*4, false);
+        ctx.branch_targets = intra_branch_targets(ctx.instrs, B);
+        ctx.alloc_sites[B] = "J3DModel";
+        std::ostringstream ss; CEmitter em(ss); em.emit_function(ctx);
+        std::string code = ss.str();
+        CHECK(has(code, "cpu.gpr[3] = sbnew_J3DModel();"), "owned alloc site emits the host-alloc+handle thunk");
+        CHECK(!has(code, "call_ppc(cpu, 0x"), "owned alloc site does NOT emit the guest operator-new call");
+        CHECK(em.alloc_thunks().size() == 1 && em.alloc_thunks()[0].thunk == "sbnew_J3DModel" &&
+              em.alloc_thunks()[0].type == "J3DModel", "construction thunk collected for the port-world TU");
+
+        // The same bl NOT in alloc_sites stays a normal guest call.
+        EmitContext ctx2; ctx2.func_addr = B; ctx2.instrs = ctx.instrs; ctx2.branch_targets = ctx.branch_targets;
+        std::ostringstream ss2; CEmitter em2(ss2); em2.emit_function(ctx2);
+        CHECK(has(ss2.str(), "call_ppc(cpu, 0x"), "un-owned alloc site keeps the guest operator-new call");
+        CHECK(em2.alloc_thunks().empty(), "no construction thunk when nothing is owned");
+    }
+
     std::printf("recomp_test: %d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

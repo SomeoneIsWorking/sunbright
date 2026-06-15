@@ -37,12 +37,23 @@ struct EmitContext {
     std::unordered_set<u32> branch_targets;     // within-function jump labels
     std::unordered_set<u32> jumptable_targets;  // bctr jump-table case labels (subset of branch_targets)
     std::map<u32, EmitVirtCall> virt_calls;     // bctrl pc -> routed host virtual call (empty = none)
+    // pc of an owned-engine-type heap `operator new` bl -> the type to construct as a host object +
+    // handle. The emitter replaces the guest alloc with `cpu.gpr[3] = sbnew_<T>()`; the out-of-line
+    // ctor override then placement-news the host object onto sb_eng_host(handle). Empty = none.
+    std::map<u32, std::string> alloc_sites;
 };
 
 // One generated virtual-dispatch thunk to define in the port-world thunk TU (decomp headers,
 // no cpu_state.h): `extern "C" void <thunk>(u32 h){ ((<type>*)sb_eng_host(h))-><method>(); }`.
 struct EmitVirtThunk {
     std::string thunk, type, method;
+};
+
+// One generated construction thunk: `extern "C" std::uint32_t sbnew_<T>(){ return
+// sb_eng_handle(::operator new(sizeof(T))); }` — a raw host buffer + handle, NO field access.
+// Defined in the port-world thunk TU (it needs the decomp sizeof(T)).
+struct EmitAllocThunk {
+    std::string thunk, type;
 };
 
 class CEmitter {
@@ -66,12 +77,18 @@ public:
     // definitions into the port-world thunk TU.
     const std::vector<EmitVirtThunk>& virt_thunks() const { return virt_thunks_; }
 
+    // Construction thunks emitted across all functions (deduped) — main.cpp writes their
+    // definitions into the port-world thunk TU alongside the virtual-dispatch thunks.
+    const std::vector<EmitAllocThunk>& alloc_thunks() const { return alloc_thunks_; }
+
 private:
     std::ostream& out_;
     int unhandled_ = 0;
     std::vector<std::string> unhandled_ops_;
     std::vector<EmitVirtThunk> virt_thunks_;
     std::unordered_set<std::string> virt_thunk_seen_;
+    std::vector<EmitAllocThunk> alloc_thunks_;
+    std::unordered_set<std::string> alloc_thunk_seen_;
 
     void emit_instr(const PPCInstr& i, const EmitContext& ctx);
 

@@ -408,8 +408,21 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
     case PPCOp::B: {
         bool intra = ctx.branch_targets.count(i.target) > 0;
         if (i.lk) {
-            line("cpu.lr = 0x%xu;", i.pc + 4);
-            line("call_ppc(cpu, 0x%xu);", i.target);          // call, continue inline
+            auto ait = ctx.alloc_sites.find(i.pc);
+            if (ait != ctx.alloc_sites.end()) {
+                // Owned-engine-type heap allocation: produce a host object + 32-bit handle in r3
+                // instead of the guest operator-new buffer (the out-of-line ctor override
+                // placement-news the host object onto sb_eng_host(handle)). The host thunk uses
+                // sizeof(<T>), so the guest size arg in r3 is ignored.
+                const std::string thunk = "sbnew_" + ait->second;
+                line("cpu.gpr[3] = %s();  // host alloc+handle (was operator new -> %s)",
+                     thunk.c_str(), ait->second.c_str());
+                if (alloc_thunk_seen_.insert(thunk).second)
+                    alloc_thunks_.push_back(EmitAllocThunk{ thunk, ait->second });
+            } else {
+                line("cpu.lr = 0x%xu;", i.pc + 4);
+                line("call_ppc(cpu, 0x%xu);", i.target);          // call, continue inline
+            }
         } else if (intra) {
             line("goto lbl_%x;", i.target);
         } else if (i.target != 0) {

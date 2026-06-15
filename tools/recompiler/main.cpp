@@ -416,12 +416,26 @@ static int recompile_mode(const DiscLoader& disc, const DOL& dol, const std::str
     // and the vtable-slot DB (read from the real guest vtable, to map a vtable byte-offset to a host
     // method), then route each recognized `model->virtual()` call to a generated host-dispatch thunk
     // (only zero-arg void virtuals — calc/update/entry/viewCalc). Empty/unset = no routing (default).
-    std::set<std::string> virt_types;
-    if (const char* vt = getenv("SUNBRIGHT_VIRT_TYPES")) {
-        std::string s = vt, cur;
-        for (char c : s) { if (c == ',' || c == ' ' || c == '\t') { if (!cur.empty()) virt_types.insert(cur), cur.clear(); } else cur += c; }
-        if (!cur.empty()) virt_types.insert(cur);
-    }
+    auto parse_type_list = [](const char* env) {
+        std::set<std::string> out;
+        if (!env) return out;
+        std::string s = env, cur;
+        for (char c : s) { if (c == ',' || c == ' ' || c == '\t') { if (!cur.empty()) out.insert(cur), cur.clear(); } else cur += c; }
+        if (!cur.empty()) out.insert(cur);
+        return out;
+    };
+    std::set<std::string> virt_types = parse_type_list(getenv("SUNBRIGHT_VIRT_TYPES"));
+    // OWNED types (subset of virt_types): get host+handle CONSTRUCTION — at a recognized
+    // engine-type `operator new` site the emitter produces a handle (sbnew_<T>) whose host buffer
+    // is placement-new'd by the out-of-line ctor override. Types in virt_types but NOT owned are
+    // recognition-only (typed so their handle FIELDS are seen, but they stay guest-layout gameplay
+    // — e.g. M3UModel holds a J3DModel* handle but M3UModel itself is not owned). Default empty.
+    std::set<std::string> own_types = parse_type_list(getenv("SUNBRIGHT_OWN_TYPES"));
+    for (const auto& t : own_types) virt_types.insert(t);   // owning implies recognition
+    // Raw allocators whose result is the constructed object (object_identity.md): the global
+    // `operator new(size)` at 0x802c3ba4 (reads the current JKRHeap from SDA r13-0x5f2c). Used only
+    // when OWN_TYPES is set, to find owned-type heap-construction sites.
+    static const std::unordered_set<u32> kRawAllocators = { 0x802c3ba4u };
     TypeDB type_db;
     VTableDB vtbl_db;
     std::map<std::string, std::set<std::string>> simple_virtuals;   // type -> safely-dispatchable methods
@@ -457,6 +471,7 @@ static int recompile_mode(const DiscLoader& disc, const DOL& dol, const std::str
         return true;
     };
     std::vector<EmitVirtThunk> all_virt_thunks;                     // aggregated across part files
+    std::vector<EmitAllocThunk> all_alloc_thunks;                   // construction->handle thunks
 
     // Functions are emitted in address order so each output file covers one
     // contiguous region of code (≈ one library/module), which keeps related
@@ -522,19 +537,35 @@ static int recompile_mode(const DiscLoader& disc, const DOL& dol, const std::str
                 ctx.jumptable_targets = jumptable_targets(ctx.instrs, addr, fend, any_word);
                 ctx.branch_targets.insert(ctx.jumptable_targets.begin(), ctx.jumptable_targets.end());
             }
-            // Recognize offset-0 virtual calls on engine handles and route the dispatchable ones.
+            // Recognize offset-0 virtual calls on engine handles and route the dispatchable ones;
+            // when OWN_TYPES is set, also recognize owned-type heap allocations and route them to a
+            // host-alloc+handle thunk (construction->handle bridging).
             if (!virt_types.empty()) {
                 std::map<u32, VCall> vcalls;
+                std::map<u32, std::string> alloc_sites;
+                const std::unordered_set<u32>* raw_alloc = own_types.empty() ? nullptr : &kRawAllocators;
+                std::map<u32, std::string>* alloc_out = own_types.empty() ? nullptr : &alloc_sites;
                 recover_eng_fields(ctx.instrs, addr, type_db, ctx.branch_targets,
-                                   ctx.jumptable_targets, nullptr, nullptr, nullptr, &vcalls);
+                                   ctx.jumptable_targets, nullptr, raw_alloc, alloc_out, &vcalls);
                 for (const auto& [pc, vc] : vcalls) {
                     EmitVirtCall ev;
                     if (resolve_vcall(vc, ev)) ctx.virt_calls[pc] = ev;
+                }
+                // Route only OWNED-type allocations at an actual operator-new `bl` (stack-temp origins
+                // — an interior addi — are NOT heap handles and keep guest layout).
+                for (const auto& [pc, ty] : alloc_sites) {
+                    if (!own_types.count(ty)) continue;
+                    auto it = std::find_if(ctx.instrs.begin(), ctx.instrs.end(),
+                                           [&](const PPCInstr& in){ return in.pc == pc; });
+                    if (it == ctx.instrs.end() || it->op != PPCOp::B || !it->lk ||
+                        !kRawAllocators.count(it->target)) continue;
+                    ctx.alloc_sites[pc] = ty;
                 }
             }
             emitter.emit_function(ctx);
         }
         for (const auto& t : emitter.virt_thunks()) all_virt_thunks.push_back(t);
+        for (const auto& t : emitter.alloc_thunks()) all_alloc_thunks.push_back(t);
         total_unhandled += emitter.unhandled_count();
         unhandled_ops.insert(emitter.unhandled_mnemonics().begin(),
                              emitter.unhandled_mnemonics().end());
@@ -564,6 +595,8 @@ static int recompile_mode(const DiscLoader& disc, const DOL& dol, const std::str
         // dedup by thunk symbol
         std::map<std::string, EmitVirtThunk> uniq;
         for (const auto& t : all_virt_thunks) uniq.emplace(t.thunk, t);
+        std::map<std::string, EmitAllocThunk> uniqA;     // construction->handle thunks
+        for (const auto& t : all_alloc_thunks) uniqA.emplace(t.thunk, t);
 
         std::ofstream h(out_dir + "/virt_thunks.h");
         h << "// AUTO-GENERATED by sunbright-recomp — DO NOT EDIT\n#pragma once\n#include <cstdint>\n\n"
@@ -572,6 +605,8 @@ static int recompile_mode(const DiscLoader& disc, const DOL& dol, const std::str
              "extern \"C\" {\n";
         for (const auto& [sym, t] : uniq)
             h << "void " << sym << "(std::uint32_t handle);  // " << t.type << "::" << t.method << "()\n";
+        for (const auto& [sym, t] : uniqA)
+            h << "std::uint32_t " << sym << "();  // new " << t.type << "() -> host obj + handle\n";
         h << "}\n";
 
         // Resolve each active type's defining header for the port-world TU's #includes.
@@ -583,12 +618,15 @@ static int recompile_mode(const DiscLoader& disc, const DOL& dol, const std::str
         std::set<std::string> need_headers;
         for (const auto& [sym, t] : uniq)
             if (type_headers.count(t.type)) need_headers.insert(type_headers[t.type]);
+        for (const auto& [sym, t] : uniqA)   // alloc thunks need sizeof(<T>) -> the type's header
+            if (type_headers.count(t.type)) need_headers.insert(type_headers[t.type]);
 
         std::ofstream c(out_dir + "/virt_thunks.cpp");
         c << "// AUTO-GENERATED by sunbright-recomp — DO NOT EDIT\n"
              "// PORT-WORLD thunk TU: host engine headers + host virtual dispatch, NO cpu_state.h\n"
              "// (the cpu_state<->decomp u64 collision is avoided by keeping this TU separate).\n"
-             "#include <cstdint>\n";
+             "#include <cstdint>\n"
+             "#include <new>\n";
         // Emit the include RELATIVE to reference/sms/include (matches port/ convention:
         // the thunk object-lib puts reference/sms/include on the include path, like j3d_bridge.cpp
         // uses <JSystem/...>). index_headers returns the full path; strip the include-dir prefix.
@@ -599,13 +637,20 @@ static int recompile_mode(const DiscLoader& disc, const DOL& dol, const std::str
             c << "#include \"" << rel << "\"\n";
         }
         c << "\n// engine-object handle table (runtime/eng_handle.cpp; C++ linkage, no cpu_state.h).\n"
-             "extern void* sb_eng_host(std::uint32_t);\n\n";
+             "extern void* sb_eng_host(std::uint32_t);\n"
+             "extern std::uint32_t sb_eng_handle(void*);\n\n";
         for (const auto& [sym, t] : uniq)
             c << "extern \"C\" void " << sym << "(std::uint32_t h) { ((" << t.type
               << "*)sb_eng_host(h))->" << t.method << "(); }\n";
+        // Construction thunks: a RAW host buffer of sizeof(<T>) + a handle (NO field access, NO ctor
+        // — the out-of-line ctor override placement-news the host object onto sb_eng_host(handle)).
+        for (const auto& [sym, t] : uniqA)
+            c << "extern \"C\" std::uint32_t " << sym << "() { return sb_eng_handle(::operator new(sizeof("
+              << t.type << "))); }\n";
 
-        if (!uniq.empty())
-            std::cout << "  virt_thunks.cpp (" << uniq.size() << " host-dispatch thunks)\n";
+        if (!uniq.empty() || !uniqA.empty())
+            std::cout << "  virt_thunks.cpp (" << uniq.size() << " host-dispatch + "
+                      << uniqA.size() << " construction thunks)\n";
     }
 
     std::cout << "Output written to " << out_dir << "/\n"

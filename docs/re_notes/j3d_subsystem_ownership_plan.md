@@ -10,16 +10,21 @@ Offset-0 virtual-dispatch routing is now BUILT, WIRED, and CORRECT end-to-end (r
   FAULT — `lwz vt,0(handle)` reads the 0x9xxxxxxx token). VCall/EmitVirtCall carry `feeder_pcs`;
   emit_function skips them. Verified in regenerated generated-virt; recomp_test 57/0; e2e PASS.
 
-**Game-driven routed-calc oracle compare is BLOCKED on two unfinished mechanisms (root-caused, not bugs):**
-1. **Construction→handle bridging is MISSING post-field-flip.** No `sbnew_`/`sb_eng_alloc` in
-   generated-virt (removed 41aaa69). `new J3DModel(...)` is plain guest code; the holder stores the
-   operator-new BUFFER (guest ptr), not the ctor return — so a ctor-override-returns-handle is
-   insufficient. Need a flip-free construction→handle emission that intercepts the ALLOCATION (reuse the
-   kept object-identity `find_alloc_sites`). `runtime/overrides/j3d_model_bridge.cpp ov_j3dmodel_ctor`
-   still assumes the removed flip-era handle and is currently incompatible with generated-virt (noted in-file).
-2. **Consumer-closure bridging.** First headless fault under SB_FLIP_J3D: `wild read ea=0x900000cf` in
-   `createModelData__15TMonteMAManager` — an unbridged consumer field-derefs a J3DModelData handle. Every
-   J3DModelData/J3DModel handle consumer on the path to a calc must be bridged (the closure "stretch").
+**Game-driven routed-calc oracle compare is BLOCKED on consumer-closure bridging (root-caused, not a bug).**
+1. **Construction→handle bridging — DONE (2026-06-15, commit pending).** Flip-free: a new
+   `SUNBRIGHT_OWN_TYPES` env (subset of VIRT_TYPES that gets host+handle construction; M3UModel stays
+   guest) drives the emitter to rewrite owned-type heap `operator new` sites (resolved via the kept
+   `find_alloc_sites`, raw_allocator 0x802c3ba4) into `cpu.gpr[3] = sbnew_<T>()` — a port-world thunk
+   `sb_eng_handle(::operator new(sizeof(T)))`. The guest null-check + holder store + `bl __ct__` run on
+   the HANDLE; ov_j3dmodel_ctor placement-news onto sb_eng_host(handle). Verified: recomp_test 62/0;
+   `SUNBRIGHT_OWN_TYPES=J3DModel` regen routes 35 real `new J3DModel` sites + emits sbnew_J3DModel; the
+   ctor→handle→calc runtime chain is already bit-identical (j3d_bridge_run). Only HEAP operator-new `bl`
+   sites are routed (stack-temp origins keep guest layout). ov_j3dmodel_ctor's stale comment corrected.
+2. **Consumer-closure bridging — THE remaining blocker.** First headless fault under
+   `SB_FLIP_J3D + OWN_TYPES=J3DModel`: `wild read ea=0x900000cf` in `createModelData__15TMonteMAManager`
+   (lr=802093b0) — an unbridged consumer field-derefs a **J3DModelData** handle (from the load bridge),
+   BEFORE any J3DModel is constructed. Every J3DModelData/J3DModel handle consumer on the path to a calc
+   must be bridged/handle-aware (the closure "stretch"). This is the next unit.
 
 Decision (user, 2026-06-15): the first real flip is **own the J3D subsystem in `port/` behind a small
 bridged API**, game holds handles. This supersedes the J3DModelData field-access flip, which is the
