@@ -1,5 +1,37 @@
 # Sunbright — THE target architecture (READ THIS FIRST)
 
+## ⛔ CORRECTION (2026-06-15, user) — THE BOUNDARY IS FUNCTION CALLS ONLY. NO FIELD-FLIP.
+The "data / object-field access" boundary described below (§"The game ↔ engine boundary" half 2,
+the DE-RISK sections, `SUNBRIGHT_ENGINE_TYPES`, `recover_eng_fields` field-mapping, `eng_accessors`
+field thunks, `emit_eng_field`/`sbf_`) was a **WRONG TURN** invented by prior sessions. The user
+never asked for it. Verbatim intent: *"I never asked for a flip. I wanted PC native game engine
+running recompiled GameCube game code. The gameplay logic stays in GameCube recomp. PC engine drives
+it."* The no-Dolphin goal STAYS; the field-flip GOES.
+
+**The real architecture:** PC-native engine (`port/`) ON TOP, **driving** recompiled GameCube
+gameplay logic underneath. The boundary is **function calls only**:
+- **Engine = `port/`** — J3D/J2D/JKR/JDrama/JUT/JAudio/renderer/platform, AND any function that
+  manipulates engine-object internals (e.g. `SMS_SettingDrawShape`). Owns the frame loop.
+- **Gameplay = recompiled** — Mario, enemies, NPCs, camera behavior, items, map. Runs on
+  **guest-layout** objects in our arena; it **NEVER field-derefs an engine object**.
+- **Boundary = function calls**: gameplay→engine method calls (bridged override; an engine pointer
+  crosses as a 32-bit **handle**, never as flipped host-layout data), and engine→gameplay callbacks
+  (the engine calls recompiled `perform`/`update`). Construction of an engine object by gameplay
+  routes to a bridged factory (op-new site → host alloc + handle + ctor bridge). Virtual calls on an
+  engine handle route to the host method (a boundary mechanism, not a flip).
+- **Drawing the split:** choose the recomp/port line so gameplay never reads engine fields. Where
+  SMS blurs it, PORT that function (move the line) or add a **bridged getter** (a call) — never a
+  field-flip.
+
+SURVIVES the correction: `port/` engine; `runtime/bridge.h` + handle table (`runtime/eng_handle`) +
+`SB_ENGINE_TYPE` marshalling; the J3D load/ctor/calc/viewCalc bridges + overrides (2026-06-15, all
+function-call bridges); `func_sig`/`decomp_parse` for SIGNATURES (which arg is an engine ptr→handle).
+RETIRED (remove): `SUNBRIGHT_ENGINE_TYPES` field-flip, `emit_eng_field`/`sbf_`, `recover_eng_fields`
+field-mapping, `eng_accessors` field thunks, the engine-internal-method flip exclusion, the
+field-slice de-risk. See memory `no-field-flip-boundary`. **Everything below this banner is the OLD
+(field-flip) framing — kept for history; the function-call half (§1) is still right, the data half
+(§2) is DELETED, not "solved".**
+
 Authoritative as of 2026-06-14. **Supersedes the conflicting framing in
 `docs/native_port_plan.md`, `docs/native_recomp_bridge.md`, and the source-port memory.** If
 those disagree with this doc, this doc wins. Written because the two parallel tracks (`port/`
