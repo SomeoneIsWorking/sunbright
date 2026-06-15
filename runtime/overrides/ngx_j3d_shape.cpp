@@ -48,7 +48,12 @@ bool g_enabled = (getenv("SUNBRIGHT_NGX_SHAPE") != nullptr);
 // Latest GX texmap-0 binding (from the GXLoadTexObj tee), associated with shapes
 // drawn after it. Decoded from the GXTexObj's packed registers.
 struct CurTex { u32 addr = 0; u16 w = 0, h = 0; u8 fmt = 0; u32 tlut_addr = 0; u8 tlut_fmt = 0; bool valid = false; };
-CurTex g_curtex[8];   // live binding per GX texmap (0..7)
+CurTex g_curtex[8];   // live binding per GX texmap (0..7) — GX-tee path (diagnostic only)
+
+// N6.7: the per-material texture binding read OBJECT-MODEL (J3D preloads textures
+// into TMEM upfront, so the GXLoadTexObj tee is stale at draw time — the real
+// per-shape texture is selected by the material). Filled by capture_textures.
+NgxTexBind g_mat_tex[8];
 
 // TLUT registry: tlut_name (GXTlut, the TMEM slot) → palette guest addr + format,
 // populated by the GXLoadTlut tee. CI texobjs reference a tlut_name (texobj+0x18).
@@ -353,6 +358,42 @@ inline bool tev_layout(u32 vt, TevLayout& L) {
     }
 }
 
+// N6.7: read the material's per-texmap texture binding OBJECT-MODEL into g_mat_tex.
+// The TEV block holds mTexNo[]@+0x04 (u16 per texmap, count by variant); j3dSys's
+// J3DTexture (J3DSYS+0x54: mResourceCount u16@0x0, ResTIMG* mResources@0x4) is the
+// model's texture table. ResTIMG (size 0x20): format@0x00, width@0x02, height@0x04,
+// colorFormat(TLUT)@0x09, paletteOffset@0x0C, imageDataOffset@0x1C — both offsets
+// self-relative to the (relocated) header. Image addr = timg + imageDataOffset.
+void capture_textures(u32 tevblock, u32 vt) {
+    for (int m = 0; m < 8; m++) g_mat_tex[m] = NgxTexBind{};
+    const int ntm = vt == VT_TVB16 ? 8 : vt == VT_TVB4 ? 4 : vt == VT_TVB2 ? 2 : 1;
+    const u32 jtex = r32(J3DSYS + 0x54);          // j3dSys.mTexture (J3DTexture*)
+    if (!valid(jtex)) return;
+    const u32 count = (r32(jtex + 0x00) >> 16) & 0xFFFF;   // mResourceCount (u16 @ 0x00)
+    const u32 res = r32(jtex + 0x04);             // ResTIMG* mResources
+    if (!valid(res) || count == 0) return;
+    const u8* tb = sb_ram_fast(tevblock);
+    if (!tb) return;
+    for (int m = 0; m < ntm; m++) {
+        const u16 texNo = (u16)((tb[0x04 + m * 2] << 8) | tb[0x04 + m * 2 + 1]);
+        if (texNo == 0xFFFF || texNo >= count) continue;
+        const u32 timg = res + (u32)texNo * 0x20;
+        const u8* T = sb_ram_fast(timg);
+        if (!T) continue;
+        NgxTexBind& d = g_mat_tex[m];
+        d.fmt = T[0x00];
+        d.w = (u16)((T[0x02] << 8) | T[0x03]);
+        d.h = (u16)((T[0x04] << 8) | T[0x05]);
+        d.tlut_fmt = T[0x09];                     // colorFormat (TLUT fmt for CI)
+        const u32 imgOff = ((u32)T[0x1C] << 24) | ((u32)T[0x1D] << 16) | ((u32)T[0x1E] << 8) | T[0x1F];
+        d.addr = timg + imgOff;
+        if (d.fmt == 0x8 || d.fmt == 0x9 || d.fmt == 0xA) {   // CI → palette
+            const u32 palOff = ((u32)T[0x0C] << 24) | ((u32)T[0x0D] << 16) | ((u32)T[0x0E] << 8) | T[0x0F];
+            d.tlut_addr = timg + palOff;
+        }
+    }
+}
+
 // The TEV-state table: deduped by key, persistent across the frame (materials are
 // bounded ~ hundreds). Batches reference a state by index. Reset only if it grows
 // past the cap (defensive; not expected to be hit).
@@ -474,6 +515,7 @@ std::vector<float>     g_uvs;         // 16 floats/vertex (8 texgen'd UVs), scra
 int capture_material() {
     g_cur_chan = ChanInfo{};                           // reset; stays invalid if no material
     g_cur_texgen = TexGenSet{};                        // reset texgen (num=0 → raw-attr fallback)
+    for (int m = 0; m < 8; m++) g_mat_tex[m] = NgxTexBind{};   // reset textures
     const u32 matpacket = r32(J3DSYS + 0x3C);          // j3dSys.mMatPacket
     if (!valid(matpacket)) { g_mat_none++; return -1; }
     const u32 material = r32(matpacket + 0x38);        // J3DMatPacket::unk38
@@ -489,6 +531,8 @@ int capture_material() {
         if (g_vt_hist_key[i] == vt) { g_vt_hist_cnt[i]++; break; }
         if (g_vt_hist_key[i] == 0) { g_vt_hist_key[i] = vt; g_vt_hist_cnt[i] = 1; break; }
     }
+
+    capture_textures(tevblock, vt);                    // N6.7: object-model per-texmap textures
 
     TevLayout L;
     if (!tev_layout(vt, L)) { g_mat_novt++; return -1; }
@@ -628,15 +672,13 @@ void transform_eye() {
     // never splits a triangle; on wrap the batch list resets with the buffer).
     if (g_have_proj && !g_indices.empty()) {
         if (g_snap.size() < SNAP_CAP) g_snap.resize(SNAP_CAP);
-        // Per-texmap bindings for this shape, from the live g_curtex[8] table. CI
-        // formats (C4/C8/C14X2) are OK iff their TLUT was resolved; else → none.
+        // Per-texmap bindings for this shape's material (object-model, g_mat_tex).
+        // CI formats (C4/C8/C14X2) need a resolved TLUT; else render that texmap flat.
         NgxTexBind tb[8] = {};
         for (int m = 0; m < 8; m++) {
-            const CurTex& c = g_curtex[m];
+            const NgxTexBind& c = g_mat_tex[m];
             const bool is_ci = (c.fmt == 0x8 || c.fmt == 0x9 || c.fmt == 0xA);
-            if (c.valid && c.addr && (!is_ci || c.tlut_addr)) {
-                tb[m] = NgxTexBind{c.addr, c.w, c.h, c.fmt, c.tlut_fmt, is_ci ? c.tlut_addr : 0u};
-            }
+            if (c.addr && c.w && c.h && (!is_ci || c.tlut_addr)) tb[m] = c;
         }
         for (size_t t = 0; t + 3 <= g_indices.size(); t += 3) {
             if (g_snap_count + 3 > SNAP_CAP) { g_snap_count = 0; g_batches.clear(); }
@@ -757,6 +799,13 @@ SUNBRIGHT_OVERRIDE(ov_gxloadtlut, 0x803601fcu) {
 
 // Per-texmap GXLoadTexObj + Preloaded histograms (diagnostic).
 unsigned long g_texobj_hist[9] = {0}, g_preload_hist[9] = {0};
+// Distinct texmap-0 texture addresses ever bound (bounded set) + last-batch stats.
+u32 g_distinct_addr[512]; unsigned g_distinct_n = 0; bool g_distinct_overflow = false;
+void note_addr(u32 a) {
+    if (a == 0) return;
+    for (unsigned i = 0; i < g_distinct_n; i++) if (g_distinct_addr[i] == a) return;
+    if (g_distinct_n < 512) g_distinct_addr[g_distinct_n++] = a; else g_distinct_overflow = true;
+}
 
 // GXLoadTexObjPreLoaded(GXTexObj* obj, GXTexRegion* region, GXTexMapID id) @ 0x8035ffb8.
 SUNBRIGHT_OVERRIDE(ov_gxloadtexobjpreloaded, 0x8035ffb8u) {
@@ -774,7 +823,7 @@ SUNBRIGHT_OVERRIDE(ov_gxloadtexobj, 0x80360160u) {
     if (g_enabled) {
         const u32 id = cpu.gpr[4];
         g_texobj_hist[id < 8 ? id : 8]++;
-        if (id < 8 && valid(cpu.gpr[3])) decode_texobj(cpu.gpr[3], g_curtex[id]);
+        if (id < 8 && valid(cpu.gpr[3])) { decode_texobj(cpu.gpr[3], g_curtex[id]); note_addr(g_curtex[id].addr); }
     }
     if (RecompFunc o = recomp_raw(0x80360160u)) o(cpu); else call_ppc(cpu, cpu.lr);
 }
@@ -908,6 +957,23 @@ int sb_ngx_shape_dump(char* out, int cap) {
         for (int k = 0; k < 0x24; k++) n += snprintf(out + n, cap - n, "%s%02x",
             (k % 4 == 0) ? " " : "", g_dbg_cb_raw[k]);
         n += snprintf(out + n, cap - n, "\n");
+    }
+    {   // batch texture stats: how many batches have a real texmap0 + distinct addrs
+        unsigned tb_tex0 = 0, tb_none = 0, distinct = 0; u32 seen[64];
+        for (const auto& B : g_batches) {
+            if (B.tex[0].addr) {
+                tb_tex0++;
+                bool f = false; for (unsigned i = 0; i < distinct; i++) if (seen[i] == B.tex[0].addr) { f = true; break; }
+                if (!f && distinct < 64) seen[distinct++] = B.tex[0].addr;
+            }
+            bool any = false; for (int m = 0; m < 8; m++) if (B.tex[m].addr) any = true;
+            if (!any) tb_none++;
+        }
+        n += snprintf(out + n, cap - n,
+            "    batches=%zu  with_tex0=%u  untextured=%u  distinct_tex0_addr=%u\n"
+            "    distinct addrs bound to texmap0 (lifetime)=%u%s\n",
+            g_batches.size(), tb_tex0, tb_none, distinct,
+            g_distinct_n, g_distinct_overflow ? "+ (overflow)" : "");
     }
     n += snprintf(out + n, cap - n, "    GXLoadTexObj by texmap:");
     for (int i = 0; i < 9; i++) if (g_texobj_hist[i]) n += snprintf(out + n, cap - n, " [%d]=%lu", i, g_texobj_hist[i]);
