@@ -383,6 +383,45 @@ static void swap_SHP1(uint8_t* out, const uint8_t* be, uint32_t size) {
 	if (off_drawi != 0) swap_run(out, off_drawi, region_end(off_drawi), 4);
 }
 
+// TEX1 / J3DTextureBlock (J3DModelLoader.hpp):
+//   +0x08 u16 mTextureNum (+0x0A pad)
+//   +0x0C u32 mpTextureRes (offset -> ResTIMG[mTextureNum], stride 0x20)
+//   +0x10 u32 mpNameTable  (offset -> ResNTAB)
+// ResTIMG (ResTIMG.hpp, 0x20): u8 format@0x00, u8 alphaEnabled@0x01, u16 width
+//   @0x02, u16 height@0x04, u8 wrapS/wrapT@0x06/07, u8 isIndexTexture@0x08, u8
+//   colorFormat@0x09, u16 numColors@0x0A, u32 paletteOffset@0x0C, u8 fields
+//   @0x10..0x19, s16 lodBias@0x1A, u32 imageDataOffset@0x1C.
+// Only the ResTIMG header scalars are swapped. The palette and texel pixel data
+// (at paletteOffset/imageDataOffset) stay GC-native: GameCube texel/TLUT formats
+// (CMPR/RGB5A3/CI8/...) are decoded by the port texture loader, which interprets
+// their tiling + 16-bit endianness as part of the format decode — pre-swapping
+// here would corrupt that decode. The loader (readTexture) reads only count +
+// the ResTIMG pointer, so this is the correct scope.
+static void swap_TEX1(uint8_t* out, const uint8_t* be, uint32_t size) {
+	if (size < 0x14) return;
+	uint16_t tex_num = be16(be + 0x08);
+	uint32_t off_res  = be32(be + 0x0C);
+	uint32_t off_name = be32(be + 0x10);
+	sw16(out + 0x08);                              // mTextureNum
+	sw32(out + 0x0C); sw32(out + 0x10);            // offsets
+	if (off_res != 0) {
+		for (uint32_t i = 0; i < tex_num; ++i) {
+			uint32_t b = off_res + i * 0x20;
+			if (b + 0x20 > size) break;
+			// b+0x00 format, b+0x01 alphaEnabled: u8 no swap
+			sw16(out + b + 0x02);                  // width
+			sw16(out + b + 0x04);                  // height
+			// b+0x06..0x09 u8 fields: no swap
+			sw16(out + b + 0x0A);                  // numColors
+			sw32(out + b + 0x0C);                  // paletteOffset
+			// b+0x10..0x19 u8 fields: no swap
+			sw16(out + b + 0x1A);                  // lodBias (s16)
+			sw32(out + b + 0x1C);                  // imageDataOffset
+		}
+	}
+	swap_ResNTAB(out, be, off_name, size);
+}
+
 // =============================================================================
 BmdSwapResult bmd_swap_to_host(const uint8_t* be_data, size_t len,
                                std::vector<uint8_t>& out) {
@@ -439,6 +478,7 @@ BmdSwapResult bmd_swap_to_host(const uint8_t* be_data, size_t len,
 		case 0x45565031: /* EVP1 */ swap_EVP1(obo, bbo, bsz, joint_num); break;
 		case 0x56545831: /* VTX1 */ swap_VTX1(obo, bbo, bsz); break;
 		case 0x53485031: /* SHP1 */ swap_SHP1(obo, bbo, bsz); break;
+		case 0x54455831: /* TEX1 */ swap_TEX1(obo, bbo, bsz); break;
 		// --- NOT YET IMPLEMENTED (field maps in the header doc) -------------
 		// MAT3: material entries — large; many u16/u8 index tables + color/reg data.
 		// TEX1 (J3DTextureBlock): mTextureNum u16 + offsets; ResTIMG headers

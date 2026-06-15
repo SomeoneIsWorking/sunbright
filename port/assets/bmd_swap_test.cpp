@@ -37,12 +37,13 @@ int main() {
 	const uint32_t DRW1_OFF = EVP1_OFF + EVP1_SIZE, DRW1_SIZE = 0x20;
 	const uint32_t JNT1_OFF = DRW1_OFF + DRW1_SIZE, JNT1_SIZE = 0x60;
 	const uint32_t SHP1_OFF = JNT1_OFF + JNT1_SIZE, SHP1_SIZE = 0x90;
-	const uint32_t TOTAL = SHP1_OFF + SHP1_SIZE;
+	const uint32_t TEX1_OFF = SHP1_OFF + SHP1_SIZE, TEX1_SIZE = 0x40;
+	const uint32_t TOTAL = TEX1_OFF + TEX1_SIZE;
 	std::vector<uint8_t> be(TOTAL, 0);
 	put32(be, 0x00, 0x4A334432);          // 'J3D2'
 	put32(be, 0x04, 0x626D6433);          // 'bmd3'
 	put32(be, 0x08, TOTAL);               // fileSize
-	put32(be, 0x0C, 6);                   // blockNum = 6
+	put32(be, 0x0C, 7);                   // blockNum = 7
 	// INF1 block
 	put32(be, INF1_OFF+0x00, 0x494E4631); // 'INF1'
 	put32(be, INF1_OFF+0x04, INF1_SIZE);  // block size
@@ -146,13 +147,41 @@ int main() {
 	put32(be, SHP1_OFF+SH_MTXI+0x04, 0x00000007); // mFirstUseMtxIndex
 	put32(be, SHP1_OFF+SH_DRAWI+0x00, 0x00000040); // mDisplayListSize
 	put32(be, SHP1_OFF+SH_DRAWI+0x04, 0x00000000); // mDisplayListIndex
+	// TEX1 block: texNum=1; ResTIMG @0x20 (stride 0x20); texel data follows.
+	const uint32_t TEX_RES=0x20;
+	put32(be, TEX1_OFF+0x00, 0x54455831); // 'TEX1'
+	put32(be, TEX1_OFF+0x04, TEX1_SIZE);
+	put16(be, TEX1_OFF+0x08, 0x0001);     // mTextureNum
+	put32(be, TEX1_OFF+0x0C, TEX_RES);    // mpTextureRes
+	put32(be, TEX1_OFF+0x10, 0x00000000); // mpNameTable = 0
+	{
+		uint32_t b = TEX1_OFF + TEX_RES;
+		be[b+0x00]=14;                    // format=CMPR (u8, no swap)
+		be[b+0x01]=1;                     // alphaEnabled
+		put16(be, b+0x02, 0x0040);        // width=64
+		put16(be, b+0x04, 0x0020);        // height=32
+		be[b+0x06]=0; be[b+0x07]=0;       // wrapS/T
+		put16(be, b+0x0A, 0x0000);        // numColors
+		put32(be, b+0x0C, 0x00000000);    // paletteOffset
+		put16(be, b+0x1A, 0xFFF0);        // lodBias (s16)
+		put32(be, b+0x1C, 0x00000040);    // imageDataOffset
+	}
 
 	std::vector<uint8_t> out;
 	BmdSwapResult r = bmd_swap_to_host(be.data(), be.size(), out);
 
 	CK(r.ok, "swap ok");
-	CK(r.block_num == 6, "block_num == 6");
-	CK(r.blocks_covered == 6 && r.all_covered, "INF1+VTX1+EVP1+DRW1+JNT1+SHP1 covered + all_covered");
+	CK(r.block_num == 7, "block_num == 7");
+	CK(r.blocks_covered == 7 && r.all_covered, "all 7 blocks covered + all_covered");
+
+	// TEX1: ResTIMG header scalars swapped, u8 fields + texel data left intact.
+	CK(h16(out.data()+TEX1_OFF+0x08)==0x0001, "TEX1 mTextureNum");
+	{ uint32_t b=TEX1_OFF+0x20;
+	  CK(out[b+0x00]==14, "TEX1 format u8 untouched");
+	  CK(h16(out.data()+b+0x02)==0x0040, "TEX1 width");
+	  CK(h16(out.data()+b+0x04)==0x0020, "TEX1 height");
+	  CK((int16_t)h16(out.data()+b+0x1A)==(int16_t)0xFFF0, "TEX1 lodBias s16");
+	  CK(h32(out.data()+b+0x1C)==0x00000040, "TEX1 imageDataOffset"); }
 
 	// SHP1: shapeNum + init struct + vtxdesc(u32)/mtxtab(u16)/mtxinit/drawinit
 	// swapped; display-list bytes left intact; mShapeMtxType u8 untouched.
@@ -202,7 +231,7 @@ int main() {
 	// Header reads host-endian after swap.
 	CK(h32(out.data()+0x00)==0x4A334432, "magic host-readable");
 	CK(h32(out.data()+0x08)==TOTAL,      "fileSize host-readable");
-	CK(h32(out.data()+0x0C)==6,          "blockNum host-readable");
+	CK(h32(out.data()+0x0C)==7,          "blockNum host-readable");
 	CK(h32(out.data()+INF1_OFF)==0x494E4631, "INF1 tag host-readable");
 	CK(h32(out.data()+DRW1_OFF)==0x44525731, "DRW1 tag host-readable");
 
