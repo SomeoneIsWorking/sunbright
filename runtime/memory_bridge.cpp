@@ -336,34 +336,6 @@ static inline u8* ram_ptr(u32 ea) {
 #  define MMIO_W(bits, ea, v)  ((void)0)
 #endif
 
-// Guest main-RAM effective address -> host pointer, for the SUNBRIGHT_BRIDGE marshalling thunk
-// (runtime/bridge.h): when recompiled game code calls a host-native engine function, a guest
-// POINTER argument (a game object in main RAM) is translated to a host pointer here. ea==0 maps
-// to nullptr. Only main RAM is valid for a bridged pointer arg; anything else returns nullptr.
-// Defined unconditionally (both MemMap and the standalone test backend provide ram_ptr).
-void* sb_guest_to_host(u32 ea) {
-    return ea ? (void*)ram_ptr(ea) : nullptr;
-}
-
-// Inverse: a host pointer (held in a GUEST-DATA pointer field of a host engine object) -> the
-// 32-bit guest address the recompiled game expects. nullptr -> 0; a host pointer outside the
-// guest main-RAM arena -> 0 (a host engine object's pointer fields point at OTHER host
-// sub-objects, which cross the boundary as handles, not as guest data — only true guest-data
-// pointers translate here). Used by the generated bridged-getter (eng_accessors.cpp) when an
-// inline engine-field READ returns a guest-data pointer.
-u32 sb_host_to_guest(void* host) {
-    if (!host) return 0;
-#ifdef HAVE_DOLPHIN_MEMMAP
-    if (!g_ram_base) { g_ram_base = MEM().GetRAM(); g_l1_base = MEM().GetL1Cache(); }
-    if (!g_ram_base) return 0;
-    uintptr_t off = (uintptr_t)host - (uintptr_t)g_ram_base;
-    return off < (24u * 1024u * 1024u) ? (0x80000000u | (u32)off) : 0;
-#else
-    uintptr_t off = (uintptr_t)host - (uintptr_t)g_ram;
-    return off < sizeof(g_ram) ? (0x80000000u | (u32)off) : 0;
-#endif
-}
-
 // Shared diagnostic: dump the live guest register file and name whichever GPR, plus a
 // small displacement, equals the faulting ea — i.e. the corrupted base pointer. Used by
 // BOTH the wild-read and wild-write traps so a bad store names its base register the same

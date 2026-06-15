@@ -45,6 +45,18 @@ ROM: provided via `$SUNBRIGHT_ROM` (set it in a gitignored `.env` next to `run.s
 Pipeline: RVZ → extract DOL → decode PowerPC → emit C → compile → native .so
 Runtime: Dolphin subsystems (GFX/DSP/Memory/Input) drive the native code via hook layer.
 
+## Architecture direction (2026-06-15, user) — guest-layout native engine, no Dolphin
+**Same GameCube memory layout, everywhere.** Engine objects stay guest-RAM, GC-layout (32-bit
+big-endian pointers, GC offsets) in the shared arena. **PC owns the engine code as native C++
+that operates ON that guest layout** (like `native_jas` / `sms_drawsync_lossproof` /
+`native_card` / the native renderer in `runtime/render/` + `runtime/ngx/`, which read J3D
+objects straight from guest RAM). **Gameplay stays recompiled** on the same memory — `mMaterials[i]`
+is a plain guest load that Just Works. Boundary = plain function-call overrides over shared
+guest memory; NO handles/getters/marshalling. End state: no Dolphin (own GPU/renderer/OS/audio).
+Live frontier = the native renderer (`docs/native_port_plan.md`, N5 per-material TEV combiner).
+⛔ The "flip" / host-layout-engine architecture (handles, tailored getters, `port/` engine,
+`SB_FLIP_J3D`) was tried and **deleted** — see `docs/DO_NOT_REVISIT_FLIP.md`; do not resurrect it.
+
 ## Architecture overview
 
 ```

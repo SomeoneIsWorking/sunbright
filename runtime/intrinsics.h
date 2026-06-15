@@ -2,7 +2,6 @@
 #include "cpu_state.h"
 #include <bit>
 #include <cmath>
-#include <new>
 
 // Memory access — backed by Dolphin's MemMap (memory_bridge.cpp).
 // All addresses are effective (as the game sees them).
@@ -214,32 +213,3 @@ extern void msr_set_raw(u32 v);
 // advances with CoreTiming — code that spins until the TB reaches a target (delay
 // loops, timeouts) actually makes progress. Standalone builds use a fake counter.
 extern u64  tb_get();
-
-// ── Function-call boundary (docs/ARCHITECTURE_TARGET.md) ─────────────────────
-// Engine-object handle table: recompiled game code holds 32-bit HANDLES for the
-// host-native PC-engine objects it calls into. A bridged call marshals an engine
-// pointer ARG via sb_eng_host() and an engine pointer RETURN via sb_eng_handle()
-// (runtime/bridge.h SB_ENGINE_TYPE). Defined in runtime/eng_handle.cpp; full
-// contract in eng_handle.h. (The boundary is function-calls-only; the per-type
-// field-flip that also used these was retired — no field-access in game code.)
-extern u32   sb_eng_handle(void* host);
-extern void* sb_eng_host(u32 handle);
-extern void  sb_eng_release(void* host);
-
-// Guest main-RAM effective address -> host pointer (for the SUNBRIGHT_BRIDGE
-// marshalling thunk, runtime/bridge.h). ea==0 -> nullptr. Defined in memory_bridge.cpp.
-extern void* sb_guest_to_host(u32 ea);
-
-// Inverse: a host pointer held in a GUEST-DATA pointer FIELD of a host engine object ->
-// the 32-bit guest address the recompiled game expects. nullptr -> 0; a host pointer
-// outside the guest arena -> 0. Used by the generated bridged-getter (eng_accessors.cpp)
-// when an inline engine-field READ returns a guest-data pointer (so the game sees a guest
-// ea, not a truncated host pointer). Defined in memory_bridge.cpp.
-extern u32 sb_host_to_guest(void* host);
-
-// Loud trap for an inline engine-field STORE: the function-call boundary owns engine
-// objects as handles, and the recompiler does not yet emit field SETTERS. A guest MEM_W
-// against a 0x9xxxxxxx handle token would silently corrupt — so a typed inline store
-// routes here instead and ABORTS with the offending T::member, rather than writing wild.
-// (Add an sbset_ getter-style setter when a real inline write surfaces.) eng_handle.cpp.
-extern void sb_eng_field_write_trap(const char* what, u32 handle);

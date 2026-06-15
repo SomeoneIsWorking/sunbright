@@ -1,12 +1,13 @@
 # Renderer engineering reference (native GX → Vulkan)
 
-> Subordinate to **`docs/ARCHITECTURE_TARGET.md`** (the one-path target: PC-native engine +
-> tailored-recomp game). This is NOT a competing plan — it is the renderer's engineering
-> reference: the stage breakdown (N0–N8), the GX/VAT vertex-decode spec (§3a), the J3DShape
-> draw-path RE, verification notes, and the progress log. The renderer ultimately lives in the
-> `port/` engine and draws host objects; the current "render over recomp-on-guest-memory" form is
-> transitional. The superseded high-level *plan* sections (definition-of-done, guiding-principles
-> dup, recommended-order) were removed — the architecture lives in ARCHITECTURE_TARGET.md.
+> **This is the live frontier of the project** (architecture direction in `CLAUDE.md` /
+> `docs/DO_NOT_REVISIT_FLIP.md`): a native PC renderer that reads engine objects straight from
+> **guest-layout RAM** (object-model, not GX-byte/FIFO emulation) and draws them with our own
+> Vulkan, no Dolphin. Contents: the stage breakdown (N0–N8), the GX/VAT vertex-decode spec (§3a),
+> the J3DShape draw-path RE, verification notes, and the progress log. The "render over
+> recomp-on-guest-memory" form is NOT transitional — it IS the target (engine objects stay
+> GC-layout; gameplay stays recompiled on the same memory). The earlier "subordinate to
+> ARCHITECTURE_TARGET / draws host objects" framing was part of the retired flip direction.
 
 ## 1. Dolphin dependency surface (what the renderer/platform must replace)
 
@@ -206,7 +207,7 @@ coverage, native water re-issue at N½. Dead ends recorded: blanket direct-XF in
 
 ## 6. Renderer progress log + J3DShape draw-path RE
 
-(The stage ORDER lived here; it was superseded by ARCHITECTURE_TARGET.md and removed. The
+(The stage ORDER lived here; it was trimmed to the progress log below. The
 renderer progress log + the J3DShape draw-path RE below are kept as engineering reference.)
 
 **Progress (2026-06-14):** R1 (Dolphin-free GP-FIFO decoder, 102912f) built+verified, then seam

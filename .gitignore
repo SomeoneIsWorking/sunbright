@@ -1,4 +1,6 @@
 build/
+build-*/
+port/build*/
 generated/
 generated-*/
 *.o
