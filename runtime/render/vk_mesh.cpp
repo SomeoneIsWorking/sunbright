@@ -56,9 +56,38 @@ constexpr size_t TEX_STAGING = 96u * 1024 * 1024;    // total decoded-texel budg
 
 }  // namespace
 
+// Where the ngx mesh is rasterized. Default (view==NULL): the renderer makes its
+// own offscreen RGBA8 target, reads it back for coverage/PPM (the /ngxrender probe).
+// External (view!=NULL): rasterize into a caller-provided color image (e.g. a
+// Dolphin AbstractTexture's VkImageView) at its w/h, leave it in final_layout, and
+// skip the readback — the present path (N7) targets the XFB texture this way.
+struct NgxTarget {
+    VkImageView   view = VK_NULL_HANDLE;
+    VkImage       img  = VK_NULL_HANDLE;
+    int           W = 640, H = 448;
+    VkImageLayout final_layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    bool          readback = true;
+};
+
+static int ngx_render_impl(char* outbuf, int cap, const NgxTarget& tgt);
+
+// /ngxrender probe: own offscreen target + readback (unchanged behaviour).
+int sb_ngx_render(char* outbuf, int cap) { NgxTarget t; return ngx_render_impl(outbuf, cap, t); }
+
+// N7 present: rasterize the ngx mesh into a caller-provided color image (its view +
+// image), at w×h, leaving it in final_layout (no readback). Returns -1 if there is
+// no geometry yet, -2 on a Vulkan failure, 0 on success.
+int sb_ngx_render_into(VkImageView view, VkImage img, int w, int h,
+                       VkImageLayout final_layout, char* outbuf, int cap) {
+    NgxTarget t; t.view = view; t.img = img; t.W = w; t.H = h;
+    t.final_layout = final_layout; t.readback = false;
+    return ngx_render_impl(outbuf, cap, t);
+}
+
 // Render the captured native geometry, textured. Returns covered-pixel count
-// (>=0), -1 if unavailable / no geometry, -2 on a Vulkan failure.
-int sb_ngx_render(char* outbuf, int cap) {
+// (>=0) for the readback path, 0 for the external-target path, -1 if unavailable /
+// no geometry, -2 on a Vulkan failure.
+static int ngx_render_impl(char* outbuf, int cap, const NgxTarget& tgt) {
     Report rep{outbuf, cap};
 
     if (!Vulkan::g_vulkan_context) { rep("ngx_render: no g_vulkan_context (set SUNBRIGHT_NGX_SHAPE=1 + be in a 3D scene)\n"); return -1; }
@@ -67,6 +96,7 @@ int sb_ngx_render(char* outbuf, int cap) {
     const VkQueue queue = Vulkan::g_vulkan_context->GetGraphicsQueue();
     const uint32_t qfam = Vulkan::g_vulkan_context->GetGraphicsQueueFamilyIndex();
     if (dev == VK_NULL_HANDLE) { rep("ngx_render: null device\n"); return -1; }
+    const bool ext = tgt.view != VK_NULL_HANDLE;
 
     // ── Snapshot geometry + batches (copy promptly — emu thread keeps writing).
     int nv = 0, nb = 0;
@@ -142,7 +172,7 @@ int sb_ngx_render(char* outbuf, int cap) {
         for (int m = 0; m < 8; m++) batch_texidx[b * 8 + m] = decode_bind(batches[b].tex[m]);
     const int ntex = (int)texs.size();
 
-    const int W = 640, H = 448;
+    const int W = tgt.W, H = tgt.H;
     const VkDeviceSize img_bytes = (VkDeviceSize)W * H * 4;
 
     // Handles.
@@ -209,7 +239,9 @@ int sb_ngx_render(char* outbuf, int cap) {
         return (vr = vkCreateImageView(dev, &vci, nullptr, &view)) == VK_SUCCESS;
     };
     // ── Resources ───────────────────────────────────────────────────────────────
-    if (!make_dev_image(rt_img, rt_mem, rt_view, VK_FORMAT_R8G8B8A8_UNORM, W, H,
+    // Color target: own offscreen image (readback path) or the caller's (present).
+    if (ext) { rt_img = tgt.img; rt_view = tgt.view; }
+    else if (!make_dev_image(rt_img, rt_mem, rt_view, VK_FORMAT_R8G8B8A8_UNORM, W, H,
         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, VK_IMAGE_ASPECT_COLOR_BIT)) { FAIL("rt image"); goto done; }
     if (!make_dev_image(ds_img, ds_mem, ds_view, VK_FORMAT_D32_SFLOAT, W, H,
         VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_IMAGE_ASPECT_DEPTH_BIT)) { FAIL("ds image"); goto done; }
@@ -302,7 +334,7 @@ int sb_ngx_render(char* outbuf, int cap) {
         at[0].format = VK_FORMAT_R8G8B8A8_UNORM; at[0].samples = VK_SAMPLE_COUNT_1_BIT;
         at[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; at[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
         at[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE; at[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        at[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED; at[0].finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        at[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED; at[0].finalLayout = tgt.final_layout;
         at[1].format = VK_FORMAT_D32_SFLOAT; at[1].samples = VK_SAMPLE_COUNT_1_BIT;
         at[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; at[1].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
         at[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE; at[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
@@ -472,15 +504,25 @@ int sb_ngx_render(char* outbuf, int cap) {
         }
         vkCmdEndRenderPass(cmd);
 
-        VkBufferImageCopy rc{}; rc.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-        rc.imageExtent = {(uint32_t)W, (uint32_t)H, 1};
-        vkCmdCopyImageToBuffer(cmd, rt_img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, rb_buf, 1, &rc);
+        if (tgt.readback) {   // copy our offscreen target → host buffer for coverage/PPM
+            VkBufferImageCopy rc{}; rc.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+            rc.imageExtent = {(uint32_t)W, (uint32_t)H, 1};
+            vkCmdCopyImageToBuffer(cmd, rt_img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, rb_buf, 1, &rc);
+        }
 
         if ((vr = vkEndCommandBuffer(cmd))) { FAIL("end cmd"); goto done; }
         VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
         si.commandBufferCount = 1; si.pCommandBuffers = &cmd;
         if ((vr = vkQueueSubmit(queue, 1, &si, fence))) { FAIL("submit"); goto done; }
         if ((vr = vkWaitForFences(dev, 1, &fence, VK_TRUE, 10'000'000'000ull))) { FAIL("fence wait"); goto done; }
+    }
+
+    // ── External target: no readback; the caller's image now holds the frame ───────
+    if (!tgt.readback) {
+        rep("ngx_render_into: %d verts (%d tris), %d batches, %d unique textures -> %dx%d (no readback)\n",
+            nv, nv / 3, nb, ntex - 1, W, H);
+        result = 0;
+        goto done;
     }
 
     // ── Coverage + PPM dump ───────────────────────────────────────────────────────
@@ -541,18 +583,151 @@ done:
     if (rb_mem) vkFreeMemory(dev, rb_mem, nullptr);
     if (vbuf)   vkDestroyBuffer(dev, vbuf, nullptr);
     if (vmem)   vkFreeMemory(dev, vmem, nullptr);
-    if (rt_view) vkDestroyImageView(dev, rt_view, nullptr);
-    if (rt_img)  vkDestroyImage(dev, rt_img, nullptr);
-    if (rt_mem)  vkFreeMemory(dev, rt_mem, nullptr);
+    if (!ext) {   // the external (present) target is owned by the caller — never free it
+        if (rt_view) vkDestroyImageView(dev, rt_view, nullptr);
+        if (rt_img)  vkDestroyImage(dev, rt_img, nullptr);
+        if (rt_mem)  vkFreeMemory(dev, rt_mem, nullptr);
+    }
     if (ds_view) vkDestroyImageView(dev, ds_view, nullptr);
     if (ds_img)  vkDestroyImage(dev, ds_img, nullptr);
     if (ds_mem)  vkFreeMemory(dev, ds_mem, nullptr);
     return result;
 }
 
+// /ngxpresent self-test — exercises the N7 present primitive (sb_ngx_render_into):
+// rasterize the ngx mesh into an externally-supplied color image (here a self-owned
+// one, so it's safe from the probe thread — Dolphin AbstractTexture interop must run
+// on the video thread), leaving it SHADER_READ as the present seam will, then read it
+// back to confirm a correct frame landed. Proves the renderer can fill a texture the
+// present path will later substitute for the XFB. Returns covered pixels, -1/-2 as ngx.
+int sb_ngx_present_test(char* outbuf, int cap) {
+    Report rep{outbuf, cap};
+    if (!Vulkan::g_vulkan_context) { rep("ngx_present: no g_vulkan_context\n"); return -1; }
+    const VkDevice dev = Vulkan::g_vulkan_context->GetDevice();
+    const VkPhysicalDevice phys = Vulkan::g_vulkan_context->GetPhysicalDevice();
+    const VkQueue queue = Vulkan::g_vulkan_context->GetGraphicsQueue();
+    const uint32_t qfam = Vulkan::g_vulkan_context->GetGraphicsQueueFamilyIndex();
+    const int W = 640, H = 448;
+    const VkDeviceSize img_bytes = (VkDeviceSize)W * H * 4;
+
+    VkImage img = VK_NULL_HANDLE; VkDeviceMemory mem = VK_NULL_HANDLE; VkImageView view = VK_NULL_HANDLE;
+    VkBuffer rb = VK_NULL_HANDLE; VkDeviceMemory rbm = VK_NULL_HANDLE;
+    VkCommandPool cpool = VK_NULL_HANDLE; VkCommandBuffer cmd = VK_NULL_HANDLE; VkFence fence = VK_NULL_HANDLE;
+    int result = -2; VkResult vr = VK_SUCCESS;
+
+    // Color target: SAMPLED (as the XFB texture would be) + TRANSFER_SRC (for readback).
+    {
+        VkImageCreateInfo ici{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+        ici.imageType = VK_IMAGE_TYPE_2D; ici.format = VK_FORMAT_R8G8B8A8_UNORM;
+        ici.extent = {(uint32_t)W, (uint32_t)H, 1}; ici.mipLevels = 1; ici.arrayLayers = 1;
+        ici.samples = VK_SAMPLE_COUNT_1_BIT; ici.tiling = VK_IMAGE_TILING_OPTIMAL;
+        ici.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+        ici.sharingMode = VK_SHARING_MODE_EXCLUSIVE; ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        if ((vr = vkCreateImage(dev, &ici, nullptr, &img))) { rep("ngx_present: image (%d)\n", vr); goto pdone; }
+        VkMemoryRequirements mr; vkGetImageMemoryRequirements(dev, img, &mr);
+        VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO}; ai.allocationSize = mr.size;
+        ai.memoryTypeIndex = find_mem(phys, mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        if ((vr = vkAllocateMemory(dev, &ai, nullptr, &mem))) { rep("ngx_present: mem\n"); goto pdone; }
+        if ((vr = vkBindImageMemory(dev, img, mem, 0))) { rep("ngx_present: bind\n"); goto pdone; }
+        VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+        vci.image = img; vci.viewType = VK_IMAGE_VIEW_TYPE_2D; vci.format = VK_FORMAT_R8G8B8A8_UNORM;
+        vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        if ((vr = vkCreateImageView(dev, &vci, nullptr, &view))) { rep("ngx_present: view\n"); goto pdone; }
+    }
+
+    // Render into it via the present primitive, leaving it SHADER_READ (as the seam will).
+    {
+        char sub[512];
+        const int r = sb_ngx_render_into(view, img, W, H, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, sub, sizeof sub);
+        rep("%s", sub);
+        if (r < 0) { result = r; goto pdone; }
+    }
+
+    // Read it back (SHADER_READ → TRANSFER_SRC) to confirm a correct frame landed.
+    {
+        VkBufferCreateInfo bci{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        bci.size = img_bytes; bci.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT; bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        if ((vr = vkCreateBuffer(dev, &bci, nullptr, &rb))) { rep("ngx_present: rb buf\n"); goto pdone; }
+        VkMemoryRequirements mr; vkGetBufferMemoryRequirements(dev, rb, &mr);
+        VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO}; ai.allocationSize = mr.size;
+        ai.memoryTypeIndex = find_mem(phys, mr.memoryTypeBits,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        if ((vr = vkAllocateMemory(dev, &ai, nullptr, &rbm))) { rep("ngx_present: rb mem\n"); goto pdone; }
+        if ((vr = vkBindBufferMemory(dev, rb, rbm, 0))) { rep("ngx_present: rb bind\n"); goto pdone; }
+
+        VkCommandPoolCreateInfo cpci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+        cpci.queueFamilyIndex = qfam; cpci.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+        if ((vr = vkCreateCommandPool(dev, &cpci, nullptr, &cpool))) { rep("ngx_present: cpool\n"); goto pdone; }
+        VkCommandBufferAllocateInfo cbai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+        cbai.commandPool = cpool; cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; cbai.commandBufferCount = 1;
+        if ((vr = vkAllocateCommandBuffers(dev, &cbai, &cmd))) { rep("ngx_present: cmd\n"); goto pdone; }
+        VkFenceCreateInfo fci{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+        if ((vr = vkCreateFence(dev, &fci, nullptr, &fence))) { rep("ngx_present: fence\n"); goto pdone; }
+
+        VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+        bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        vkBeginCommandBuffer(cmd, &bi);
+        VkImageMemoryBarrier mb{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        mb.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; mb.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        mb.srcQueueFamilyIndex = mb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; mb.image = img;
+        mb.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        mb.srcAccessMask = VK_ACCESS_SHADER_READ_BIT; mb.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &mb);
+        VkBufferImageCopy rc{}; rc.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        rc.imageExtent = {(uint32_t)W, (uint32_t)H, 1};
+        vkCmdCopyImageToBuffer(cmd, img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, rb, 1, &rc);
+        vkEndCommandBuffer(cmd);
+        VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO}; si.commandBufferCount = 1; si.pCommandBuffers = &cmd;
+        if ((vr = vkQueueSubmit(queue, 1, &si, fence))) { rep("ngx_present: submit\n"); goto pdone; }
+        vkWaitForFences(dev, 1, &fence, VK_TRUE, 10'000'000'000ull);
+
+        void* p = nullptr;
+        if ((vr = vkMapMemory(dev, rbm, 0, img_bytes, 0, &p))) { rep("ngx_present: map\n"); goto pdone; }
+        const uint8_t* px = (const uint8_t*)p;
+        const uint8_t bg[3] = {(uint8_t)(0.10f*255+0.5f), (uint8_t)(0.12f*255+0.5f), (uint8_t)(0.18f*255+0.5f)};
+        long covered = 0; double sr = 0, sg = 0, sb2 = 0;
+        for (int i = 0; i < W * H; i++) {
+            const uint8_t* q = px + (size_t)i * 4;
+            if (q[0] != bg[0] || q[1] != bg[1] || q[2] != bg[2]) covered++;
+            sr += q[0]; sg += q[1]; sb2 += q[2];
+        }
+        const char* ppm = "scratch/screenshots/ngx_present.ppm";
+        if (FILE* f = fopen(ppm, "wb")) {
+            fprintf(f, "P6\n%d %d\n255\n", W, H);
+            std::vector<uint8_t> row((size_t)W * 3);
+            for (int y = 0; y < H; y++) {
+                for (int x = 0; x < W; x++) { const uint8_t* q = px + ((size_t)y*W+x)*4; row[x*3]=q[0]; row[x*3+1]=q[1]; row[x*3+2]=q[2]; }
+                fwrite(row.data(), 1, row.size(), f);
+            }
+            fclose(f);
+        }
+        const double n = (double)(W * H);
+        rep("ngx_present: rendered via sb_ngx_render_into -> %dx%d covered=%ld (%.1f%%) meanRGB=(%.0f,%.0f,%.0f)\n",
+            W, H, covered, 100.0 * covered / n, sr/n, sg/n, sb2/n);
+        rep("  PPM: %s  verdict=%s\n", ppm, covered > 0 ? "PIXELS-OK" : "EMPTY");
+        vkUnmapMemory(dev, rbm);
+        result = (int)covered;
+    }
+
+pdone:
+    vkDeviceWaitIdle(dev);
+    if (fence) vkDestroyFence(dev, fence, nullptr);
+    if (cpool) vkDestroyCommandPool(dev, cpool, nullptr);
+    if (rb)    vkDestroyBuffer(dev, rb, nullptr);
+    if (rbm)   vkFreeMemory(dev, rbm, nullptr);
+    if (view)  vkDestroyImageView(dev, view, nullptr);
+    if (img)   vkDestroyImage(dev, img, nullptr);
+    if (mem)   vkFreeMemory(dev, mem, nullptr);
+    return result;
+}
+
 #else
 int sb_ngx_render(char* out, int cap) {
     snprintf(out, cap, "ngx_render: Dolphin/Vulkan unavailable (no HAVE_DOLPHIN_MEMMAP)\n");
+    return -1;
+}
+int sb_ngx_present_test(char* out, int cap) {
+    snprintf(out, cap, "ngx_present: Dolphin/Vulkan unavailable (no HAVE_DOLPHIN_MEMMAP)\n");
     return -1;
 }
 #endif

@@ -82,6 +82,7 @@ int sb_ngx_vertex_selftest(char*, int);                      // runtime/ngx/ngx_
 int sb_ngx_mesh_selftest(char*, int);                        // runtime/ngx/ngx_mesh.cpp
 int sb_ngx_shape_dump(char*, int);                           // runtime/overrides/ngx_j3d_shape.cpp
 int sb_ngx_render(char*, int);                               // runtime/render/vk_mesh.cpp
+int sb_ngx_present_test(char*, int);                         // runtime/render/vk_mesh.cpp
 int sb_tev_shader_selftest(char*, int);                      // runtime/render/tev_shader.cpp
 void gxs_frametime_reset();                                   // runtime/gx_stream.h
 void gxs_frametime_stats(unsigned long*, double*, double*, double*, double*);
@@ -233,6 +234,10 @@ std::string handle_repl(const char* path) {
     }
     if (strncmp(path, "/ngxshape", 9) == 0) {  // N4 live J3DShape native-mesh capture stats
         char rep[4096]; sb_ngx_shape_dump(rep, sizeof rep); app("%s", rep);
+        return std::string(buf, n);
+    }
+    if (strncmp(path, "/ngxpresent", 11) == 0) {  // N7 present primitive: render into an external target
+        char rep[1024]; sb_ngx_present_test(rep, sizeof rep); app("%s", rep);
         return std::string(buf, n);
     }
     if (strncmp(path, "/ngxrender", 10) == 0) {  // N4 native Vulkan render of captured geometry
