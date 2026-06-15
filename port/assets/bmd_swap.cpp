@@ -1,4 +1,5 @@
 #include "bmd_swap.h"
+#include "bmd_blocks.h"  // detail:: block-swapper forwarders shared with bmt_swap
 #include "rarc.h"  // be16/be32 explicit big-endian reads
 
 namespace smsport::assets {
@@ -527,6 +528,18 @@ static void swap_MAT3(uint8_t* out, const uint8_t* be, uint32_t size) {
 	// lightInfo (index 9): undefined layout, empty in all SMS BMDs. Leave bytes;
 	// callers that hit a non-empty lightInfo span need its layout RE'd first.
 }
+
+// Forwarders exposing the MAT3/TEX1 block swappers to the .bmt loader (bmt_swap),
+// which contains the identical material/texture blocks. (swap_MAT3/swap_TEX1 stay
+// file-static; these thin wrappers are the only cross-TU surface.)
+namespace detail {
+void swap_MAT3_block(uint8_t* out, const uint8_t* be, uint32_t size) {
+	swap_MAT3(out, be, size);
+}
+void swap_TEX1_block(uint8_t* out, const uint8_t* be, uint32_t size) {
+	swap_TEX1(out, be, size);
+}
+}  // namespace detail
 
 // =============================================================================
 BmdSwapResult bmd_swap_to_host(const uint8_t* be_data, size_t len,

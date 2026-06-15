@@ -12,21 +12,37 @@ WIDE, real path. So J3DMaterial is NOT exclusively host+handle today: the .bmt l
 J3DMaterials in guest RAM, and the getters (which expect a 0x9 handle) can't serve those.
 
 **This is a self-contained ownership sub-unit (do it BEFORE / alongside the keeper closure below):**
-1. **`bmt_swap`** — a BE→host swapper for .bmt files (J3DMaterialTable: MAT3/MAT2 + TEX1 [+MDL3]
-   blocks), mirroring `port/assets/bmd_swap.{h,cpp}`. The MAT3/TEX1 block swappers overlap bmd_swap
-   (reuse them). NEW vs bmd: the bmt file/block header (`bmt2`/`bmt3` magic). Add a `bmt_swap_test`.
-2. **Bridge `loadMaterialTable` 0x802e7128** like `load` 0x802e6f00 (j3d_loader_bridge.cpp pattern):
-   override → copy+bmt_swap the guest .bmt → port `J3DModelLoaderDataBase::loadMaterialTable`
-   (port/src/J3DModelLoader.cpp:61, ALREADY IMPLEMENTED) → host J3DMaterialTable → `sb_eng_handle`.
-   ⚠ verify it is static-like (no `this`; r3=data, returns table*) by disasm before wiring.
-3. **J3DMaterialTable + J3DMaterial host+handle.** Consumers: `J3DMaterialTable::getMaterialNum/
-   getMaterial`, `J3DModelData::setMaterialTable` 0x802dd2dc, the material animators (TexMtxAnimator/
-   TShimmer). With the table host-built, its J3DMaterials are host objects → the J3DMaterial getters
-   (built 27ceadd) route correctly. Add SB_ENGINE_TYPE/overrides for the table API + setMaterialTable.
-4. Gate harness like `bmd_load_run`: load a real .bmt, assert non-null table + material count.
+1. ✅ **DONE — `bmt_swap`** (`port/assets/bmt_swap.{h,cpp}`). BE→host swapper for .bmt files. ALL real
+   SMS .bmt are `bmt3` with exactly {MAT3, TEX1} (verified: sky/kibako/nozzleitem.bmt from airport0.szs
+   via `scratch/bmt/scan_bmt`). Reuses bmd_swap's MAT3/TEX1 block swappers via `port/assets/bmd_blocks.h`
+   (detail::swap_MAT3_block / swap_TEX1_block forwarders — no duplication). bmt2(MAT2)/MDL3 left
+   uncovered (loud via all_covered==false; none seen). Tests: synthetic `bmt_swap_test` (ctest) + real
+   `bmt_load_run` gate (3 real .bmt → non-null J3DMaterialTable, materials 4/13/2, non-null texture).
+2. ✅ **DONE — bridge `loadMaterialTable` 0x802e7128.** Confirmed static-like by disasm (r3=data,
+   returns table*). port `sbport_j3d_loadMaterialTable` (j3d_bridge.cpp: bmt_swap → port
+   loadMaterialTable → host J3DMaterialTable) + runtime override `ov_j3d_load_material_table`
+   (j3d_loader_bridge.cpp, SB_FLIP_J3D) → `sb_eng_handle`.
+3. ⏩ **LIVE — J3DMaterialTable + J3DMaterial host+handle consumers.** Next runtime fault (below).
+   `sbport_j3dmaterialtable_getMaterialNum` added; still need: getMaterial, `J3DModelData::set-
+   MaterialTable` 0x802dd2dc, the material animators (TexMtxAnimator/TShimmer), and the engine
+   functions called with a J3DModelData/J3DMaterial handle (searchUpdateMaterialID — see below).
+4. ✅ **DONE — gate harness `bmt_load_run`** (mirrors bmd_load_run; SKIPs w/o *.bmt in scratch/bmt).
 NOTE: the engine-internal exclusion already drops J3DMaterial's OWN methods from field-routing; the
 trap fired in J3DMaterialFactory (a different class) — once loadMaterialTable is port-owned, the guest
 factory + create never run.
+
+### ✅ VERIFIED (2026-06-15, .bmt path landed) — boots PAST the J3DMaterialFactory write-trap
+Built build-j3dvirt (SB_FLIP_J3D, generated-virt with FIELD_TYPES) with the .bmt bridge. The prior
+fault `FATAL: inline engine-field WRITE has no setter: J3DMaterial::mColorBlock (handle 0x810b7ecc)` —
+the guest J3DMaterialFactory::create building a GUEST-RAM J3DMaterial — is GONE (the bmt loader is now
+port-owned; the guest factory never runs). NEW fault (scratch/logs/run-bmt1.log): `FATAL wild guest
+read ea=0x0` in **`TShimmer::load` 8019f5ac** (pc 8019f62c), inside the engine fn
+**`searchUpdateMaterialID__19J3DAnmTextureSRTKey(J3DModelData*)` 802e3dd4** (lr=802e3e20). TShimmer::load
+loads a BMD (bridged), `new J3DModel` (OWN_TYPES), then `bl searchUpdateMaterialID(md_handle)` — an
+ENGINE fn (excluded from field-flip) that field-derefs the J3DModelData handle (`lwz r27,0xB4(md)` =
+mMaterialName, then JUTNameTab::getName/getIndex). It must be BRIDGED (override → port-native on
+sb_eng_host(handle)), like SMS_ChangeTextureAll. THIS is the next consumer-closure seam (the run→find-
+deref→bridge loop). r31=0x9000003e at fault confirms it's a handle deref.
 
 ## ⏩⏩ LIVE UNIT (2026-06-15) — NEXT #2: MODEL-INSTANCE + KEEPER subsystem ownership (the J3DModelData consumer closure)
 **Closure breadth PLANNED here FIRST (per handoff). Key reframing finding: the entire consumer

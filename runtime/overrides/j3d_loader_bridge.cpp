@@ -28,6 +28,7 @@
 #include <cstdint>
 
 extern "C" void* sbport_j3d_load(const void* be_bmd, uint32_t flags);
+extern "C" void* sbport_j3d_loadMaterialTable(const void* be_bmt);
 
 #ifdef SB_FLIP_J3D
 // J3DModelLoaderDataBase::load(const void* data, u32 flags) @ 0x802e6f00
@@ -37,6 +38,18 @@ SUNBRIGHT_OVERRIDE(ov_j3d_model_load, 0x802e6f00) {
 	void* host_bmd  = sb_guest_to_host(guest_bmd);
 	void* md        = sbport_j3d_load(host_bmd, flags);
 	cpu.gpr[3] = md ? sb_eng_handle(md) : 0u;
+	call_ppc(cpu, cpu.lr);
+}
+
+// J3DModelLoaderDataBase::loadMaterialTable(const void* data) @ 0x802e7128
+// (static-like: r3=guest .bmt addr, returns J3DMaterialTable* in r3). Routes the
+// standalone material-table load to the PC-native port loader, returning a handle
+// the game holds (its J3DMaterialTable consumers then run host-side).
+SUNBRIGHT_OVERRIDE(ov_j3d_load_material_table, 0x802e7128) {
+	u32   guest_bmt = cpu.gpr[3];
+	void* host_bmt  = sb_guest_to_host(guest_bmt);
+	void* mt        = sbport_j3d_loadMaterialTable(host_bmt);
+	cpu.gpr[3] = mt ? sb_eng_handle(mt) : 0u;
 	call_ppc(cpu, cpu.lr);
 }
 #else

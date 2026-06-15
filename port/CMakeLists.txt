@@ -102,7 +102,7 @@ message(STATUS "smsport_core: ${SMS_CORE_REL} (see core_sources.txt)")
 # format spec, not ports of the struct-overlay decomp code. Portable to
 # x86-64 and arm64 (host-byte-order independent).
 # ---------------------------------------------------------------------------
-add_library(smsport_assets STATIC assets/rarc.cpp assets/bti.cpp assets/bmd_swap.cpp)
+add_library(smsport_assets STATIC assets/rarc.cpp assets/bti.cpp assets/bmd_swap.cpp assets/bmt_swap.cpp)
 target_include_directories(smsport_assets PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/assets")
 target_compile_options(smsport_assets PRIVATE -Wall -Wextra)
 
@@ -213,6 +213,10 @@ add_executable(bmd_swap_test assets/bmd_swap_test.cpp)
 target_link_libraries(bmd_swap_test PRIVATE smsport_assets)
 add_test(NAME bmd_swap_test COMMAND bmd_swap_test)
 
+add_executable(bmt_swap_test assets/bmt_swap_test.cpp)
+target_link_libraries(bmt_swap_test PRIVATE smsport_assets)
+add_test(NAME bmt_swap_test COMMAND bmt_swap_test)
+
 # End-to-end native asset path: RARC -> BTI -> RGBA8 -> PNG.
 add_executable(bti_test assets/bti_test.cpp)
 target_link_libraries(bti_test PRIVATE smsport_assets smsport_texdecode)
@@ -250,6 +254,18 @@ target_link_libraries(bmd_load_run PRIVATE
   -Wl,--start-group smsport_assets smsport_core smsport_pal -Wl,--end-group
   Threads::Threads)
 add_test(NAME bmd_load_run COMMAND bmd_load_run
+         WORKING_DIRECTORY "${SMS_REPO_ROOT}")
+
+# Standalone .bmt material-table loader gate: loadMaterialTable on a bmt_swap'd
+# .bmt. SKIPs when no *.bmt assets are present (scratch/bmt).
+add_executable(bmt_load_run tests/bmt_load_run.cpp)
+target_include_directories(bmt_load_run PRIVATE ${SMS_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}/assets")
+target_compile_options(bmt_load_run PRIVATE
+  ${SMS_FORCE_INCLUDE} -fno-strict-aliasing -Wno-multichar)
+target_link_libraries(bmt_load_run PRIVATE
+  -Wl,--start-group smsport_assets smsport_core smsport_pal -Wl,--end-group
+  Threads::Threads)
+add_test(NAME bmt_load_run COMMAND bmt_load_run
          WORKING_DIRECTORY "${SMS_REPO_ROOT}")
 
 # STEP 1 port foundation: construct a host J3DModel from a loaded model and run

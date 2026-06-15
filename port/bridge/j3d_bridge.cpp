@@ -26,10 +26,12 @@
 // =============================================================================
 #include <JSystem/J3D/J3DGraphLoader/J3DModelLoader.hpp>
 #include <JSystem/J3D/J3DGraphAnimator/J3DModel.hpp>
+#include <JSystem/J3D/J3DGraphAnimator/J3DMaterialAttach.hpp>
 #include <JSystem/JMath.hpp>
 #include <JSystem/ResTIMG.hpp>
 #include <MarioUtil/TexUtil.hpp>
 #include "bmd_swap.h"
+#include "bmt_swap.h"
 
 #include <cstdint>
 #include <vector>
@@ -88,6 +90,43 @@ void* sbport_j3d_load(const void* be_bmd, uint32_t flags) {
 	if (!md)
 		delete host;   // swap copy unused; loader produced nothing
 	return md;
+}
+
+// Load a big-endian guest .bmt (standalone material table) into a host-native
+// J3DMaterialTable. The recompiled game calls J3DModelLoaderDataBase::load-
+// MaterialTable(data) at guest 0x802e7128 (static-like: r3=data, returns table*);
+// the runtime override routes here, then hands the game a handle. Mirrors
+// sbport_j3d_load: byteswap (.bmt = MAT3+TEX1) then run the pristine port loader.
+// Returns the host J3DMaterialTable* (as void*) or nullptr on failure. The swapped
+// copy is held for the table's lifetime (loader references the image in place).
+void* sbport_j3d_loadMaterialTable(const void* be_bmt) {
+	if (!be_bmt)
+		return nullptr;
+
+	sb_j3d_bringup();
+
+	const uint8_t* p = static_cast<const uint8_t*>(be_bmt);
+	uint32_t len = be32(p + 8);             // J3D fileLength
+	if (len < 0x20)
+		return nullptr;
+
+	std::vector<uint8_t>* host = new std::vector<uint8_t>();
+	BmtSwapResult r = bmt_swap_to_host(p, len, *host);
+	if (!r.ok || !r.all_covered) {
+		delete host;
+		return nullptr;
+	}
+
+	J3DMaterialTable* mt = J3DModelLoaderDataBase::loadMaterialTable(host->data());
+	if (!mt)
+		delete host;   // swap copy unused; loader produced nothing
+	return mt;
+}
+
+// J3DMaterialTable accessors (oracle verification + the consumer-closure bridges).
+// `mt` is the host J3DMaterialTable (handle resolved by the runtime override).
+uint16_t sbport_j3dmaterialtable_getMaterialNum(void* mt) {
+	return mt ? static_cast<J3DMaterialTable*>(mt)->getMaterialNum() : 0;
 }
 
 // Field/method accessors for oracle verification of the flipped slice. The
