@@ -445,6 +445,22 @@ decoder; runtime GP-FIFO path on the delete list. Then, on the object-model arch
     J2DTextBox/font (subtitle/dialogue); full counter-row coverage; multiple J2DScreen accumulation
     (snapshot holds the last screen). Then present cache eviction on scene change + peel more VideoCommon.
 
+- **N7 — per-frame double-buffered J3D capture ✅ (fix intermittent black frames)** — the native
+  present intermittently showed a black/partial scene (plaza floor missing, or near-empty — ~1 in 3
+  frames). The J3D capture was a SINGLE live buffer the present read on the video thread while the
+  game thread was still accumulating it (it only reset on a wrap at SNAP_CAP), so a present landing
+  just after a wrap saw a half-refilled buffer. Fix: double-buffer (`g_snap`/`g_batches`/`g_snap_count`
+  → `[2]`); the game thread accumulates into `g_cur`, and at the per-frame boundary the completed
+  buffer is published to `g_front` (atomic) with accumulation flipping to the other buffer — the
+  present always reads a COMPLETE frame. `ngx_snap_verts` latches the front index so
+  `ngx_snap_batches` reads the same frame. **Frame boundary = `J2DScreen::draw`** (`ngx_frame_publish`
+  from the existing scene_render tee): the HUD draws once per frame AFTER all 3D, so the buffer holds
+  a complete 3D frame there, and it aligns the 3D publish with the J2D HUD snapshot. Verified
+  swaps≈dump-frames (~1:1) and dark_frames=0/14 (`/ngxshape frame_swaps`). Boundary choice matters:
+  `GXSetProjection` fires ~5×/frame (publishes tiny sub-passes → WORSE), and a GX HW function like
+  `GXCopyDisp` can't be safely super-called from an override (it skipped the real EFB copy → GPU
+  desync/deadlock) — both ruled out by test.
+
 - **N7-present groundwork ✅ — render into an external color target** — parameterized the
   renderer (`vk_mesh.cpp`): `sb_ngx_render_into(view,img,w,h,final_layout,…)` rasterizes the
   ngx mesh into a caller-supplied color image left in a chosen layout (e.g. SHADER_READ), no
