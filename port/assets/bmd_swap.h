@@ -16,9 +16,11 @@
 //
 // Portable across x86-64 and arm64 (no host-byte-order assumptions).
 //
-// STATUS (2026-06-15): file header + block table + INF1 implemented & verified
-// against a real file (bmd_swap_test). The remaining blocks (VTX1/EVP1/DRW1/JNT1/
-// SHP1/MAT3/TEX1) are stubbed — see bmd_swap.cpp for the per-block field-map plan.
+// STATUS (2026-06-15): file header + block table + INF1 + DRW1 + JNT1 + EVP1
+// implemented & verified (synthetic bmd_swap_test AND real BMDs via
+// scratch/bmd/verify_real). EVP1's inverse-bind matrix count comes from JNT1's
+// joint count via a counts pre-pass. The remaining blocks (VTX1/SHP1/MAT3/TEX1)
+// are stubbed — see bmd_swap.cpp for the per-block field-map plan.
 // Do NOT wire this into the loader bridge until ALL blocks a given test model uses
 // are covered, or the loader will crash on un-swapped interior data.
 // =============================================================================
