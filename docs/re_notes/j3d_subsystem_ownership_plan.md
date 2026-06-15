@@ -114,8 +114,45 @@ be bridged purely as function calls. THREE ways forward (ARCHITECTURE FORK — u
 - **C. Reconsider the tailored-recomp-into-port direction** given pervasive inlined engine access
   (the "unicorn" question the user already answered NO to once — but this is new, quantified evidence).
 
-Until resolved, slice 1 is BLOCKED at TShimmer::load. The SMS_ChangeTextureAll bridge is kept (real
-progress). Recommendation pending user input is A (function-call-shaped, auto-scaling) — see handoff.
+**✅ RESOLVED (user, 2026-06-15): Option A — the recompiler handles the actor↔model relationship.**
+"Owning actors is fine if we don't have to port every single thing like enemy AI, otherwise the
+recompiler should handle the actor-model relationship." The inline reads are pervasively embedded in
+AI/behavior fns (perform/movement/think/calcAnim) we must NOT port → recompiler emits BRIDGED GETTERS.
+See memory `actor-model-relationship-recompiler`. Owning stays for pure-engine subsystems; whole-fn
+consumer overrides (SMS_ChangeTextureAll) stay where the consumer is a callable seam.
+
+#### Implementation plan — bridged-getter emission (next recompiler unit, fresh context OK)
+Resurrect the GETTERS-ONLY half of the eng_accessors emission removed in 41aaa69 (recover from
+`git show 41aaa69~1:tools/recompiler/c_emitter.cpp` / `:main.cpp` / `:CMakeLists.txt`). The ANALYSIS
+half SURVIVED (type_recovery EngField, type_db_build, decomp_parse, func_sig). Scope it to READS only;
+do NOT reintroduce the host-struct-in-game-TU flip (no `((T*)host)->member` in generated code).
+1. **Emitter** (c_emitter): at an inline engine-field READ where recover_eng_fields typed the base,
+   emit `sbget_<T>_<member>(handle)` instead of `MEM_R*(handle+off)`. Out-kind by field type:
+   scalar→value; engine-obj ptr (and `mArr[i]`)→`sb_eng_handle(host->member)` so the game holds a
+   handle; guest-data ptr→`sb_host_to_guest(host->member)`. Collect {T,member,kind} into an accessor
+   manifest (dedup by symbol). Keep WRITES to engine fields out of scope for now (game rarely writes
+   engine fields inline; if hit, add sbset_ later) — fail-LOUD if a needed setter is missing, don't
+   silently MEM_W.
+2. **Accessor TU** (main.cpp): write `generated/eng_accessors.{h,cpp}`; the .cpp #includes the typed
+   decomp headers (type_db_build type_headers) + port compat shims, NO cpu_state.h, and defines each
+   `sbget_<T>_<member>` by NAME (host compiler computes the offset — ABI-correct; never emit numeric
+   host offsets). functions.h #includes eng_accessors.h (extern "C" decls). This is the proven
+   port-world-compile pattern (mirror sb_virt_thunks object lib, gate SB_FLIP_J3D).
+3. **CMake**: build eng_accessors.cpp as its own object lib like sb_virt_thunks (decomp headers + port
+   shims, SHELL: force-includes), gated SB_FLIP_J3D; link into sunbright.
+4. **Gate it** behind the same env that drives recognition (SUNBRIGHT_VIRT_TYPES/a new SUNBRIGHT_
+   FIELD_TYPES) so the default recompile is byte-unchanged. Add recomp_test cases (scalar/engine-ptr/
+   array/guest-ptr getter emission). Then regenerate generated-virt with J3DModelData (+J3DMaterial/
+   J3DShape as the closure needs) typed, rebuild build-j3dvirt, re-run headless: TShimmer::load's
+   inlined getMaterialNum/getMaterialNodePointer now route to the host object → boots past it.
+5. **Closure types**: J3DModelData reads need J3DMaterial/J3DShape handles to flow (getMaterialNode
+   Pointer→J3DMaterial handle; the game then calls J3DMaterial::change/setMaterialAnm via direct bl →
+   add those as whole-fn overrides or they're already engine methods). Add SB_ENGINE_TYPE + the type
+   set incrementally as each new wild-deref surfaces (faithful debug-path loop: run→find deref→type
+   the field/bridge the seam→re-run).
+
+Until this lands, slice 1 is BLOCKED at TShimmer::load (8019f5ac, inlined +0x24/+0x28). The
+SMS_ChangeTextureAll bridge is kept (real progress: boots past 8021d524).
 
 ### Slice 1 step 1 landed (SMS_ChangeTextureAll). Below: the prior virtual-dispatch / construction history.
 
