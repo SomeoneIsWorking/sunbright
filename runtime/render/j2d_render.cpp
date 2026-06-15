@@ -166,7 +166,7 @@ int sb_j2d_render(char* outbuf, int cap) {
         VkDescriptorPoolCreateInfo pci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
         pci.maxSets = (uint32_t)dec.size(); pci.poolSizeCount = 1; pci.pPoolSizes = &ps;
         if ((vr = vkCreateDescriptorPool(dev, &pci, nullptr, &dpool))) { FAIL("dpool"); goto done; }
-        VkPushConstantRange pcr{VK_SHADER_STAGE_VERTEX_BIT, 0, 48};  // rect + misc(target,colorAlpha) + corners
+        VkPushConstantRange pcr{VK_SHADER_STAGE_VERTEX_BIT, 0, 64};  // rect + misc + corners + bw(white,black)
         VkPipelineLayoutCreateInfo plci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
         plci.setLayoutCount = 1; plci.pSetLayouts = &dsl; plci.pushConstantRangeCount = 1; plci.pPushConstantRanges = &pcr;
         if ((vr = vkCreatePipelineLayout(dev, &plci, nullptr, &pll))) { FAIL("pll"); goto done; }
@@ -279,11 +279,12 @@ int sb_j2d_render(char* outbuf, int cap) {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
         for (size_t i = 0; i < dec.size(); i++) {
             const J2dQuad& q = quads[dec[i].idx];
-            // Push constant: vec4 rect | vec4 misc(target.xy, colorAlpha, pad) | uvec4 corners.
-            struct { float rect[4]; float misc[4]; uint32_t corners[4]; } pc;
+            // Push constant: vec4 rect | vec4 misc(target.xy, colorAlpha, pad) | uvec4 corners | uvec4 bw.
+            struct { float rect[4]; float misc[4]; uint32_t corners[4]; uint32_t bw[4]; } pc;
             pc.rect[0] = (float)q.x0; pc.rect[1] = (float)q.y0; pc.rect[2] = (float)q.x1; pc.rect[3] = (float)q.y1;
             pc.misc[0] = (float)sw; pc.misc[1] = (float)sh; pc.misc[2] = q.alpha / 255.0f; pc.misc[3] = 0;
             for (int c = 0; c < 4; c++) pc.corners[c] = q.corner[c];
+            pc.bw[0] = q.white; pc.bw[1] = q.black; pc.bw[2] = 0; pc.bw[3] = 0;
             vkCmdPushConstants(cmd, pll, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof pc, &pc);
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pll, 0, 1, &tex[i].dset, 0, nullptr);
             vkCmdDraw(cmd, 4, 1, 0, 0);

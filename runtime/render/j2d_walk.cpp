@@ -45,6 +45,8 @@ constexpr u32 LINK_DATA     = 0x00;   // JSUPtrLink::mData  (owner pane)
 constexpr u32 LINK_NEXT     = 0x0C;   // JSUPtrLink::mNext  (next sibling link)
 constexpr u32 PIC_TEXTURES  = 0xEC;
 constexpr u32 PIC_TEXNUM    = 0xFC;
+constexpr u32 PIC_WHITE     = 0x13C;  // J2DPicture mWhite (TColor 0xRRGGBBAA)
+constexpr u32 PIC_BLACK     = 0x140;  // J2DPicture mBlack
 constexpr u32 PIC_CORNERCOL = 0x144;  // mCornerColor[4] (header's 0x114 comment is a typo; real
                                       // offset is after mBlack@0x140 → mBlendKonstColor@0x154 ✓)
 // JUTTexture fields
@@ -165,6 +167,7 @@ static int collect_from(u32 root, J2dQuad* out, int max, int* screen_w, int* scr
                 q.data = r32(tex + TEX_DATA);
                 q.tlut = 0; q.tlutfmt = 0;   // palette resolution: later (M+)
                 for (int c = 0; c < 4; c++) q.corner[c] = r32(p + PIC_CORNERCOL + c * 4);
+                q.white = r32(p + PIC_WHITE); q.black = r32(p + PIC_BLACK);
                 if (q.w > 0 && q.h > 0 && valid(q.data)) n++;
             }
         }
