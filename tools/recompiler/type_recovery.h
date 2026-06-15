@@ -84,6 +84,12 @@ struct TypeDB {
     //           and its appended-vtable write stops being a recovery gap.
     std::map<std::string, int>         sizes;
     std::map<std::string, std::string> bases;
+    // Return-type seeding (offset-0 virtual dispatch coverage): guest addr of a function whose
+    // decomp RETURN type is a pointer/ref to an ACTIVE engine type -> that type leaf. After a `bl`
+    // to such a target, r3 holds the returned engine object, so the lattice types it — letting a
+    // `getModel()->virtual()` chain be recognized. (GNU-v2 mangling omits return types, so this
+    // comes from the decomp headers, not the symbol.)
+    std::map<u32, std::string>         return_types;
 };
 
 // Recover eng_fields (load/store pc -> host field access) for ONE function body.

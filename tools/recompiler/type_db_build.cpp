@@ -362,6 +362,45 @@ std::set<std::string> discover_subclasses(const std::set<std::string>& roots,
 
 }  // namespace
 
+std::map<u32, std::string> build_return_types(const std::set<std::string>& active_types,
+                                              const std::map<std::string, std::string>& index,
+                                              const std::string& funcs_txt_path) {
+    std::map<u32, std::string> out;
+    std::ifstream in(funcs_txt_path);
+    if (!in) return out;
+    // The return type as written -> active engine leaf if it is a pointer/ref to one, else "".
+    auto engine_leaf = [&](const std::string& ret) -> std::string {
+        if (ret.find('*') == std::string::npos && ret.find('&') == std::string::npos) return "";
+        std::string r = ret;
+        for (char& c : r) if (c == '*' || c == '&') c = ' ';   // drop pointer/ref markers
+        // strip const/volatile tokens
+        std::string cleaned;
+        std::istringstream ts(r); std::string tk;
+        while (ts >> tk) { if (tk != "const" && tk != "volatile") { if (!cleaned.empty()) cleaned += ' '; cleaned += tk; } }
+        std::string leaf = base_name(cleaned);
+        return active_types.count(leaf) ? leaf : "";
+    };
+    std::map<std::string, ParsedType> cache;                   // class leaf -> parsed (memoize)
+    std::string line;
+    while (std::getline(in, line)) {
+        std::istringstream ls(line);
+        std::string addr_s, name;
+        if (!(ls >> addr_s >> name)) continue;
+        u32 addr; try { addr = (u32)std::stoul(addr_s, nullptr, 16); } catch (...) { continue; }
+        FuncSig sig = demangle_signature(name);
+        if (!sig.ok || !sig.is_method || sig.method_name.empty()) continue;
+        auto it = cache.find(sig.class_leaf);
+        if (it == cache.end()) it = cache.emplace(sig.class_leaf, resolve_parse(sig.class_name, index)).first;
+        const ParsedType& pt = it->second;
+        if (!pt.found) continue;
+        auto mr = pt.method_returns.find(sig.method_name);
+        if (mr == pt.method_returns.end()) continue;
+        std::string leaf = engine_leaf(mr->second);
+        if (!leaf.empty()) out[addr] = leaf;
+    }
+    return out;
+}
+
 TypeDBBuildResult build_type_db(const std::set<std::string>& active_types,
                                 const std::string& include_dir,
                                 const std::string& funcs_txt_path) {
@@ -404,5 +443,6 @@ TypeDBBuildResult build_type_db(const std::set<std::string>& active_types,
         }
     }
     r.db.signatures = build_signatures(funcs_txt_path, active_types);
+    r.db.return_types = build_return_types(all, index, funcs_txt_path);
     return r;
 }

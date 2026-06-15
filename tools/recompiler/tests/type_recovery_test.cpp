@@ -384,6 +384,30 @@ int main() {
         CHECK(vc.empty(), "untyped base -> no virtual-call recognition");
     }
 
+    // 20. RETURN-TYPE seeding: `bl getCam` (a function returning Cam*) types r3, so the following
+    //     virtual-call chain on r3 is recognized — the dominant `getModel()->virtual()` pattern.
+    {
+        const uint32_t GETCAM = 0x80130000u;
+        TypeDB rdb = db;                       // reuse Cam layout
+        rdb.signatures.clear();                // NO signature seed: the type comes only from the return
+        rdb.return_types[GETCAM] = "Cam";
+        std::vector<uint32_t> w = {
+            enc_bl(B+0, GETCAM),     // r3 = getCam()  -> Cam*
+            enc_lwz(12, 3, 0),       // lwz r12,0(r3)      vtable
+            enc_lwz(12, 12, 0x10),   // lwz r12,0x10(r12)  method
+            enc_mtctr(12),
+            BCTRL,
+            BLR,
+        };
+        auto ins = collect(B, w);
+        std::map<u32, VCall> vc;
+        recover_eng_fields(ins, B, rdb, intra_branch_targets(ins, B), {},
+                           nullptr, nullptr, nullptr, &vc);
+        auto it = vc.find(ins[4].pc);
+        CHECK(it != vc.end() && it->second.type == "Cam" && it->second.vtbl_off == 0x10,
+              "return-typed base (getCam()->virtual()) is recognized -> (Cam, 0x10)");
+    }
+
     std::printf("type_recovery_test: %d checks, %d failures\n", g_checks, g_fail);
     return g_fail ? 1 : 0;
 }

@@ -41,6 +41,13 @@ EngineLayout compose_layout(const std::string& type_name,
                             const std::set<std::string>& engine_types,
                             std::vector<std::string>* unresolved = nullptr);
 
+// Build return-type seeds: guest addr -> active engine type leaf, for every symbol in
+// `funcs_txt_path` whose decomp RETURN type is a pointer/ref to a type in `active_types`. Used by
+// the offset-0 virtual-dispatch routing so a `getModel()->virtual()` chain types its base register.
+std::map<u32, std::string> build_return_types(const std::set<std::string>& active_types,
+                                              const std::map<std::string, std::string>& index,
+                                              const std::string& funcs_txt_path);
+
 // Build the full DB for `active_types`: composed layouts + signatures (from `funcs_txt_path`,
 // filtered to the active set).
 TypeDBBuildResult build_type_db(const std::set<std::string>& active_types,

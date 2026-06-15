@@ -1,6 +1,7 @@
 #pragma once
 #include "abi_layout.h"        // FKind, LField
 #include "type_recovery.h"     // EngineLayout
+#include <map>
 #include <optional>
 #include <set>
 #include <string>
@@ -46,6 +47,10 @@ struct ParsedType {
                                               // {"update","entry","calc","viewCalc","~J3DModel"}.
                                               // CodeWarrior lays a class's NEW virtuals into the
                                               // vtable in this order (after the base chain's).
+    std::map<std::string, std::string> method_returns;  // method name -> return type as written
+                                              // ("J3DModel*", "MtxPtr", "void"). Last decl wins on
+                                              // overload. Feeds return-type seeding so a
+                                              // `getModel()->virtual()` typing the result register.
     std::set<std::string>    simple_virtuals; // subset of `virtuals` that are `void name()` —
                                               // void return AND zero args, NOT a destructor.
                                               // ONLY these are safely host-dispatchable as

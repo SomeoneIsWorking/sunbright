@@ -135,9 +135,13 @@ void apply(const PPCInstr& i, State& s, const TypeDB& db,
         break;
 
     default:
-        if (is_call(i))                                        // calls clobber EABI volatiles
+        if (is_call(i)) {                                      // calls clobber EABI volatiles
             for (int r = 3; r <= 12; r++) s.reg[r].clear();
-        else {
+            // Return-type seeding: a `bl` to a function returning an engine object types r3.
+            u32 t = (i.lk && i.op == PPCOp::B) ? i.target : 0;
+            if (t) { auto rt = db.return_types.find(t);
+                     if (rt != db.return_types.end()) s.reg[3] = rt->second; }
+        } else {
             int rc = clobbered_gpr(i);
             if (rc >= 0) s.reg[rc].clear();
         }

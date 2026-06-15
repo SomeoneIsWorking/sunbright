@@ -214,6 +214,39 @@ std::string virtual_method_name(const std::string& code) {
     return name;
 }
 
+// Parse a member METHOD declaration (comments stripped) into its name + return type. Returns
+// false for non-methods, ctors/dtors (no return type), operators, and control statements:
+//   "J3DModel* getModel() { return mModelData; }" -> name "getModel", ret "J3DModel*"
+//   "virtual void calc()"                         -> name "calc",     ret "void"
+//   "void f(int x)"                               -> name "f",        ret "void"
+bool parse_method_signature(const std::string& code, std::string& name, std::string& ret) {
+    size_t lp = code.find('(');
+    if (lp == std::string::npos) return false;
+    // a function-pointer member is `(*name)(...)` — the first '(' is immediately followed by '*'.
+    if (lp + 1 < code.size() && code[lp + 1] == '*') return false;
+    size_t e = lp;
+    while (e > 0 && (code[e - 1] == ' ' || code[e - 1] == '\t')) --e;
+    size_t s = e;
+    while (s > 0 && is_ident_char(code[s - 1])) --s;
+    if (s == e) return false;                           // no name token before '('
+    if (s > 0 && code[s - 1] == '~') return false;      // destructor: no return type
+    name = code.substr(s, e - s);
+    if (name == "if" || name == "for" || name == "while" || name == "switch" ||
+        name == "return" || name == "sizeof" || name == "operator") return false;
+    std::string before = trim(code.substr(0, s));
+    // strip leading specifiers that aren't part of the return type
+    static const char* spec[] = {"static ", "inline ", "virtual ", "explicit ", "friend ",
+                                 "constexpr ", "static\t", "inline\t", "virtual\t"};
+    bool changed = true;
+    while (changed) { changed = false;
+        for (const char* k : spec) { size_t n = std::string(k).size();
+            if (before.compare(0, n, k) == 0) { before = trim(before.substr(n)); changed = true; } } }
+    if (before.empty()) return false;                   // ctor (name==class) or macro: no return type
+    if (before.find('=') != std::string::npos) return false;  // initializer, not a decl
+    ret = before;
+    return true;
+}
+
 }  // namespace
 
 // Defined below; parses one member declaration line into `f`.
@@ -339,6 +372,10 @@ ParsedType parse_decomp_type(const std::string& text, const std::string& type_na
                     }
                 }
             }
+            // Capture the method's return type (any method, virtual or not) for return-type seeding.
+            std::string mname, mret;
+            if (parse_method_signature(code, mname, mret))
+                pt.method_returns[mname] = mret;        // last decl wins on overload
         }
 
         // count brace delta for this line (so we can decide membership *before* descending)
