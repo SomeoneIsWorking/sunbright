@@ -141,6 +141,28 @@ double g_lit_nrm_sum = 0; unsigned long g_lit_nrm_n = 0, g_lit_nrm_zero = 0;  //
 double g_sun_ndl_sum = 0; unsigned long g_sun_ndl_n = 0, g_sun_ndl_pos = 0;
 float g_sun_ndl_max = -2.f, g_dbg_en[3] = {0}, g_dbg_ld0[3] = {0};
 
+// DIAG: scope the texcoord/texgen stage — histogram the per-texcoord texgen src
+// (GX_TG_POS=0/NRM=1/.../TEX0..7=4..11) + type + whether the matrix is identity,
+// read from the material's J3DTexGenBlockBasic (mTexCoord[8] @ block+0x8, each 4 B:
+// type@+0 src@+1 mtx@+2; mTexMtx*[8] @ +0x28). Tells us if texcoords are cheap
+// vertex-attr passthrough (src=TEX*) or need full texgen (src=POS/NRM + matrix).
+unsigned long g_tg_src_hist[24] = {0}, g_tg_type_hist[12] = {0};
+unsigned long g_tg_mtx_id = 0, g_tg_mtx_set = 0, g_tg_n = 0;
+void capture_texgen(u32 material) {
+    const u32 blk = r32(material + 0x24);   // J3DMaterial::mTexGenBlock
+    if (!valid(blk)) return;
+    const u8* B = sb_ram_fast(blk);
+    if (!B) return;
+    u32 num = r32(blk + 0x04); if (num > 8) num = 8;
+    for (u32 i = 0; i < num; i++) {
+        const u8 type = B[0x08 + i * 4], src = B[0x09 + i * 4], mtx = B[0x0A + i * 4];
+        if (src < 24) g_tg_src_hist[src]++;
+        if (type < 12) g_tg_type_hist[type]++;
+        if (mtx == 60) g_tg_mtx_id++; else g_tg_mtx_set++;   // 60 = GX_IDENTITY
+        g_tg_n++;
+    }
+}
+
 // Read the material's J3DColorBlock into g_cur_chan (best-effort; valid=false on a
 // missing/unknown block → the consumer falls back to the raw vertex colour).
 void capture_colorchan(u32 material) {
@@ -410,6 +432,7 @@ int capture_material() {
     const u32 material = r32(matpacket + 0x38);        // J3DMatPacket::unk38
     if (!valid(material)) { g_mat_none++; return -1; }
     capture_colorchan(material);                       // N6: colour-channel/lighting state
+    capture_texgen(material);                          // diag: texgen src/type scope
     const u32 tevblock = r32(material + 0x28);         // J3DMaterial::mTevBlock
     if (!valid(tevblock)) { g_mat_none++; return -1; }
     const u32 vt = r32(tevblock + 0x00);               // J3DTevBlock vtable ptr
@@ -835,6 +858,14 @@ int sb_ngx_shape_dump(char* out, int cap) {
     n += snprintf(out + n, cap - n, "   Preloaded:");
     for (int i = 0; i < 9; i++) if (g_preload_hist[i]) n += snprintf(out + n, cap - n, " [%d]=%lu", i, g_preload_hist[i]);
     n += snprintf(out + n, cap - n, "\n");
+    n += snprintf(out + n, cap - n, "    texgen src hist:");
+    for (int i = 0; i < 24; i++) if (g_tg_src_hist[i]) {
+        const char* nm = i==0?"POS":i==1?"NRM":(i>=4&&i<=11)?"TEX":"?";
+        n += snprintf(out + n, cap - n, " %s%d=%lu", nm, i, g_tg_src_hist[i]);
+    }
+    n += snprintf(out + n, cap - n, "  type:");
+    for (int i = 0; i < 12; i++) if (g_tg_type_hist[i]) n += snprintf(out + n, cap - n, " t%d=%lu", i, g_tg_type_hist[i]);
+    n += snprintf(out + n, cap - n, "  mtx: id=%lu set=%lu (n=%lu)\n", g_tg_mtx_id, g_tg_mtx_set, g_tg_n);
     n += snprintf(out + n, cap - n, "  num-stages histogram:");
     for (int s = 1; s <= 16; s++) if (g_stage_hist[s])
         n += snprintf(out + n, cap - n, " [%d]=%u", s, g_stage_hist[s]);

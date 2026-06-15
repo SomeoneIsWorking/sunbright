@@ -401,13 +401,20 @@ decoder; runtime GP-FIFO path on the delete list. Then, on the object-model arch
   Replaces the single-texmap-0 binding. Faithful + no regression (0 fails, 100% cov),
   but **little visible change on the Delfino entry** because the real texture-fidelity
   blocker is now **TEXCOORD / texgen**, NOT texmap coverage:
-  - **OPEN — texcoord/texgen (the texture frontier).** TEV stages reference a
-    *texcoord* index (`/ngxshape` shows materials with `coord=1`), but the producer
-    feeds only the vertex's texcoord0 UV to every stage → multi-texcoord materials
-    sample at the wrong UVs. Fixing needs: per-stage texcoord selection (pass the
-    used texcoords per vertex) AND GX **texgen** (J3DTexGenBlock — many SMS texcoords
-    are generated from position/normal via a texgen matrix, e.g. env/proj mapping, not
-    raw vertex attributes). This is the next real stage for texture correctness.
+  - **OPEN — texcoord/texgen (the texture frontier, NOW SCOPED).** TEV stages
+    reference a *texcoord* index, but the producer feeds only the vertex's texcoord0
+    UV to every stage → multi-texcoord materials sample at the wrong UVs. Measured the
+    actual texgen usage on Delfino entry (`/ngxshape` texgen histogram, read from
+    `J3DTexGenBlockBasic`: `mTexCoord[8]`@blk+0x8 {type@+0,src@+1,mtx@+2}, `mTexMtx*[8]`
+    @+0x28): src is ~80% `GX_TG_TEX0/1/2` (vertex tex attrs 0/1/2), ~18% `GX_TG_COLOR0`
+    (+ `GX_TG_SRTG` type), small `NRM`/`POS`; type is mostly `MTX2x4`; and **the texgen
+    matrix is NON-identity for ~81% (455k/560k)**. So the dominant case is *vertex tex
+    attribute × a per-material texgen matrix* — even texcoord0 (currently passed raw) is
+    wrong wherever the SRT/texgen matrix isn't identity. The next stage: capture each
+    used texcoord's texgen (type/src/matrix from `mTexMtx[i]` — live `J3DTexMtx`, calc'd
+    per frame), compute `uv = TexMtx · sourceInput` per vertex in the producer, pass the
+    used texcoords per vertex, and select per stage in the TEV shader. (`GX_TG_COLOR0`/
+    `SRTG` + `POS`/`NRM` env/proj mapping are the long tail after the TEX×matrix case.)
 
 **J3DShape DRAW PATH (RE'd 2026-06-14, `reference/sms/.../J3DShape.cpp`) — the live-hook seam.**
 `J3DShape::draw()` does, in order:
