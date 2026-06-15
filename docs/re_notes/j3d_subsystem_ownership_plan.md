@@ -1,5 +1,33 @@
 # Owning J3D as a port/ subsystem — execution plan (2026-06-15, user-chosen Option 1)
 
+## 🔎 RUNTIME EVIDENCE (2026-06-15, post bridged-getter emission 27ceadd) — the .bmt MATERIAL-TABLE path is the live fault
+With `SUNBRIGHT_FIELD_TYPES="J3DModelData,J3DMaterial"` the inlined J3DModelData reads route to host
+getters and the binary boots PAST createModelData/TShimmer::load. The NEXT fault (write-trap) is in
+`J3DMaterialFactory::create` (802e55a0) writing a **GUEST-RAM** J3DMaterial (this=0x810b7ecc). Traced
+the path: it is reached from `J3DModelLoaderDataBase::loadMaterialTable` (0x802e7128) → readMaterialTable
+→ create. That is the **standalone .bmt material-table loader** (loads a `bmt2`/`bmt3` file → a
+J3DMaterialTable), DISTINCT from the .bmd model `load` (0x802e6f00) which IS bridged. It is called from
+MANY managers/actors (TMapObjManager, TElecNokonokoManager, TYumboManager, enemy managers, …) — a
+WIDE, real path. So J3DMaterial is NOT exclusively host+handle today: the .bmt loader builds GUEST
+J3DMaterials in guest RAM, and the getters (which expect a 0x9 handle) can't serve those.
+
+**This is a self-contained ownership sub-unit (do it BEFORE / alongside the keeper closure below):**
+1. **`bmt_swap`** — a BE→host swapper for .bmt files (J3DMaterialTable: MAT3/MAT2 + TEX1 [+MDL3]
+   blocks), mirroring `port/assets/bmd_swap.{h,cpp}`. The MAT3/TEX1 block swappers overlap bmd_swap
+   (reuse them). NEW vs bmd: the bmt file/block header (`bmt2`/`bmt3` magic). Add a `bmt_swap_test`.
+2. **Bridge `loadMaterialTable` 0x802e7128** like `load` 0x802e6f00 (j3d_loader_bridge.cpp pattern):
+   override → copy+bmt_swap the guest .bmt → port `J3DModelLoaderDataBase::loadMaterialTable`
+   (port/src/J3DModelLoader.cpp:61, ALREADY IMPLEMENTED) → host J3DMaterialTable → `sb_eng_handle`.
+   ⚠ verify it is static-like (no `this`; r3=data, returns table*) by disasm before wiring.
+3. **J3DMaterialTable + J3DMaterial host+handle.** Consumers: `J3DMaterialTable::getMaterialNum/
+   getMaterial`, `J3DModelData::setMaterialTable` 0x802dd2dc, the material animators (TexMtxAnimator/
+   TShimmer). With the table host-built, its J3DMaterials are host objects → the J3DMaterial getters
+   (built 27ceadd) route correctly. Add SB_ENGINE_TYPE/overrides for the table API + setMaterialTable.
+4. Gate harness like `bmd_load_run`: load a real .bmt, assert non-null table + material count.
+NOTE: the engine-internal exclusion already drops J3DMaterial's OWN methods from field-routing; the
+trap fired in J3DMaterialFactory (a different class) — once loadMaterialTable is port-owned, the guest
+factory + create never run.
+
 ## ⏩⏩ LIVE UNIT (2026-06-15) — NEXT #2: MODEL-INSTANCE + KEEPER subsystem ownership (the J3DModelData consumer closure)
 **Closure breadth PLANNED here FIRST (per handoff). Key reframing finding: the entire consumer
 closure is ALREADY COMPILED in `port/` (`port/core_sources.txt` lists SDLModel.cpp, ObjModel.cpp,
