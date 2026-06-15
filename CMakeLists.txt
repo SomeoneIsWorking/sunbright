@@ -137,6 +137,8 @@ add_executable(sunbright
     runtime/render/tex_decode_selftest.cpp
     runtime/render/vk_quad.cpp
     runtime/render/vk_mesh.cpp
+    runtime/render/tev_shader.cpp
+    runtime/render/glsl_compile.cpp
     runtime/render/j2d_walk.cpp
     runtime/render/j2d_render.cpp
     runtime/gpfifo_wrap.cpp
@@ -163,6 +165,7 @@ target_include_directories(sunbright PRIVATE
     "${DOLPHIN_DIR}/Source/Core"
     "${CMAKE_BINARY_DIR}/dolphin/Source/Core"
     "${DOLPHIN_DIR}/Externals/fmt/fmt/include"
+    "${DOLPHIN_DIR}/Externals/glslang/glslang"   # N5: own GLSL->SPIR-V (runtime/render/glsl_compile)
 )
 
 # Mirror Dolphin's target-arch define (it sets these via add_definitions) for our target. Must match
@@ -184,6 +187,7 @@ target_compile_definitions(sunbright PRIVATE
 target_link_libraries(sunbright PRIVATE
     core discio uicommon
     videovulkan          # N2: native renderer reuses Dolphin's VkDevice during bring-up
+    glslang SPIRV glslang-default-resource-limits  # N5: own GLSL->SPIR-V (glslang targets)
     SDL2::SDL2
     pthread
 )
