@@ -39,6 +39,7 @@ bool g_probe_enabled = false;
 #include "Core/HW/DSP.h"
 #include "VideoCommon/CommandProcessor.h"
 #include "VideoCommon/FrameDumper.h"
+#include "VideoCommon/Statistics.h"   // g_stats: Dolphin's per-frame GX draw/prim counts
 #include <sys/stat.h>
 #endif
 extern u32 mem_r32(u32 ea);
@@ -231,6 +232,19 @@ std::string handle_repl(const char* path) {
     }
     if (strncmp(path, "/tevshader", 10) == 0) {  // N5 TEV-state -> GLSL generator self-test
         char rep[16384]; sb_tev_shader_selftest(rep, sizeof rep); app("%s", rep);
+        return std::string(buf, n);
+    }
+    if (strncmp(path, "/drawstats", 10) == 0) {  // Dolphin's GX render-pass counts THIS FRAME (for A/B
+        // vs the native ngx capture). Per-frame counters reset each frame; curl repeatedly + take the
+        // max to read a full frame. num_draw_calls = GX draw operations Dolphin renders (all paths,
+        // incl. non-J3DShape). Compare vs /ngxshape (which captures J3DShape only).
+        const auto& f = g_stats.this_frame;
+        app("gxstats(this_frame): draw_calls=%d prims=%d dl_prims=%d drawn_objects=%d "
+            "triangles_drawn=%d triangles_in=%d vertices_loaded=%d efb_peeks=%d efb_pokes=%d "
+            "dlists_called=%d shader_changes=%d\n",
+            f.num_draw_calls, f.num_prims, f.num_dl_prims, f.num_drawn_objects,
+            f.num_triangles_drawn, f.num_triangles_in, f.num_vertices_loaded,
+            f.num_efb_peeks, f.num_efb_pokes, f.num_dlists_called, f.num_shader_changes);
         return std::string(buf, n);
     }
     if (strncmp(path, "/ngxshape", 9) == 0) {  // N4 live J3DShape native-mesh capture stats
