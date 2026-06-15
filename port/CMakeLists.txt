@@ -263,3 +263,24 @@ target_link_libraries(model_calc_run PRIVATE
   Threads::Threads)
 add_test(NAME model_calc_run COMMAND model_calc_run
          WORKING_DIRECTORY "${SMS_REPO_ROOT}")
+
+# STEP 1 end-to-end bridge integration: run the J3DModel construct+calc bridge
+# through the REAL runtime engine-handle table (runtime/eng_handle.cpp), mirroring
+# the override path, and assert bridge==direct node matrices. The runtime handle
+# table is compiled as a SHIM-FREE object (it includes runtime/cpu_state.h, which
+# must NOT see the port force-include shims); the test TU + smsport_bridge use the
+# port shims. SKIPs w/o BMDs.
+add_library(sb_eng_handle_obj OBJECT "${SMS_REPO_ROOT}/runtime/eng_handle.cpp")
+target_include_directories(sb_eng_handle_obj PRIVATE "${SMS_REPO_ROOT}/runtime")
+target_compile_features(sb_eng_handle_obj PRIVATE cxx_std_20)
+
+add_executable(j3d_bridge_run tests/j3d_bridge_run.cpp
+               $<TARGET_OBJECTS:sb_eng_handle_obj>)
+target_include_directories(j3d_bridge_run PRIVATE ${SMS_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}/assets")
+target_compile_options(j3d_bridge_run PRIVATE
+  ${SMS_FORCE_INCLUDE} -fno-strict-aliasing -Wno-multichar)
+target_link_libraries(j3d_bridge_run PRIVATE
+  -Wl,--start-group smsport_bridge smsport_assets smsport_core smsport_pal -Wl,--end-group
+  Threads::Threads)
+add_test(NAME j3d_bridge_run COMMAND j3d_bridge_run
+         WORKING_DIRECTORY "${SMS_REPO_ROOT}")
