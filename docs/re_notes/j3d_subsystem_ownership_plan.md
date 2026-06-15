@@ -1,5 +1,26 @@
 # Owning J3D as a port/ subsystem — execution plan (2026-06-15, user-chosen Option 1)
 
+## UPDATE 2026-06-15 (late) — SB_FLIP_J3D build integration DONE; routed-calc gated on 2 mechanisms
+Offset-0 virtual-dispatch routing is now BUILT, WIRED, and CORRECT end-to-end (recompiler side):
+- **Build integration:** `generated*/virt_thunks.cpp` compiles as its own PORT-WORLD object lib
+  `sb_virt_thunks` (gated `SB_FLIP_J3D`); `-DSUNBRIGHT_GENERATED_DIR=generated-virt` selects the routed
+  recompile. The SB_FLIP_J3D binary LINKS clean. Thunk `#include` is relative to reference/sms/include.
+- **Feeder-load suppression (recompiler correctness fix):** the routed `bclrl` is the host thunk call,
+  and the dead feeder chain `lwz vt,0(handle); lwz m,N(vt); mtlr m` is now ELIDED (it would otherwise
+  FAULT — `lwz vt,0(handle)` reads the 0x9xxxxxxx token). VCall/EmitVirtCall carry `feeder_pcs`;
+  emit_function skips them. Verified in regenerated generated-virt; recomp_test 57/0; e2e PASS.
+
+**Game-driven routed-calc oracle compare is BLOCKED on two unfinished mechanisms (root-caused, not bugs):**
+1. **Construction→handle bridging is MISSING post-field-flip.** No `sbnew_`/`sb_eng_alloc` in
+   generated-virt (removed 41aaa69). `new J3DModel(...)` is plain guest code; the holder stores the
+   operator-new BUFFER (guest ptr), not the ctor return — so a ctor-override-returns-handle is
+   insufficient. Need a flip-free construction→handle emission that intercepts the ALLOCATION (reuse the
+   kept object-identity `find_alloc_sites`). `runtime/overrides/j3d_model_bridge.cpp ov_j3dmodel_ctor`
+   still assumes the removed flip-era handle and is currently incompatible with generated-virt (noted in-file).
+2. **Consumer-closure bridging.** First headless fault under SB_FLIP_J3D: `wild read ea=0x900000cf` in
+   `createModelData__15TMonteMAManager` — an unbridged consumer field-derefs a J3DModelData handle. Every
+   J3DModelData/J3DModel handle consumer on the path to a calc must be bridged (the closure "stretch").
+
 Decision (user, 2026-06-15): the first real flip is **own the J3D subsystem in `port/` behind a small
 bridged API**, game holds handles. This supersedes the J3DModelData field-access flip, which is the
 WRONG tool for a host object graph (`docs/re_notes/j3dmodeldata_flip_closure.md`).

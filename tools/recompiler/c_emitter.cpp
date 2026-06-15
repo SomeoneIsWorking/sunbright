@@ -109,6 +109,13 @@ void CEmitter::emit_function(const EmitContext& ctx) {
     out_ << "\nextern \"C\" void func_" << std::hex << ctx.func_addr
          << "(CPUState& cpu) {\n";
 
+    // Guest vtable/slot loads feeding a routed virtual call are dead once we call the host thunk,
+    // and `lwz vt,0(handle)` would FAULT on the engine handle token (unmapped 0x9xxxxxxx) — skip
+    // emitting them. The terminal branch (recorded as the virt_calls key, NOT a feeder) still emits.
+    std::unordered_set<u32> suppressed;
+    for (const auto& [pc, v] : ctx.virt_calls)
+        for (u32 fp : v.feeder_pcs) suppressed.insert(fp);
+
     for (const auto& i : ctx.instrs) {
         // Emit label if this is a branch target within the function
         if (ctx.branch_targets.count(i.pc))
@@ -117,6 +124,10 @@ void CEmitter::emit_function(const EmitContext& ctx) {
         // Emit a comment with the PC for debugging
         out_ << "    // " << std::hex << i.pc << "\n";
 
+        if (suppressed.count(i.pc)) {
+            out_ << "    // (virtual-dispatch feeder elided — routed to host thunk)\n";
+            continue;
+        }
         emit_instr(i, ctx);
     }
 

@@ -48,6 +48,11 @@ struct EngField {
 struct VCall {
     std::string type;        // engine type leaf of the dispatched-on base register
     int         vtbl_off;    // guest vtable byte-offset of the loaded method slot
+    // PCs of the feeder instructions that load the method address out of the guest vtable
+    // (`lwz vt,0(handle); lwz m,N(vt); mt(lr|ctr) m`). When the terminal branch is routed to a
+    // host-dispatch thunk these are DEAD — and the `lwz vt,0(handle)` would FAULT on the engine
+    // handle token (0x9xxxxxxx is unmapped guest memory). The emitter suppresses them.
+    std::vector<u32> feeder_pcs;
 };
 
 // A field of a host-native engine type at a given guest displacement.

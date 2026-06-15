@@ -25,6 +25,10 @@ struct EmitVirtCall {
     std::string type;     // host engine type leaf, e.g. "J3DModel"
     std::string method;   // host method name, e.g. "calc"
     std::string thunk;    // generated thunk symbol to call, e.g. "sbvirt_J3DModel_2"
+    // PCs of the guest vtable/slot loads + mt(lr|ctr) feeding this call. They are DEAD once routed
+    // to the thunk, and the `lwz vt,0(handle)` would fault on the handle token — emit_function
+    // suppresses them.
+    std::vector<u32> feeder_pcs;
 };
 
 struct EmitContext {

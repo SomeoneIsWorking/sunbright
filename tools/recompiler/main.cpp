@@ -453,6 +453,7 @@ static int recompile_mode(const DiscLoader& disc, const DOL& dol, const std::str
         out.type = vc.type;
         out.method = slot->method;
         out.thunk = "sbvirt_" + vc.type + "_" + std::to_string(slot->slot_index);
+        out.feeder_pcs = vc.feeder_pcs;   // dead guest vtable/slot loads — emitter suppresses them
         return true;
     };
     std::vector<EmitVirtThunk> all_virt_thunks;                     // aggregated across part files
@@ -588,7 +589,15 @@ static int recompile_mode(const DiscLoader& disc, const DOL& dol, const std::str
              "// PORT-WORLD thunk TU: host engine headers + host virtual dispatch, NO cpu_state.h\n"
              "// (the cpu_state<->decomp u64 collision is avoided by keeping this TU separate).\n"
              "#include <cstdint>\n";
-        for (const auto& hdr : need_headers) c << "#include \"" << hdr << "\"\n";
+        // Emit the include RELATIVE to reference/sms/include (matches port/ convention:
+        // the thunk object-lib puts reference/sms/include on the include path, like j3d_bridge.cpp
+        // uses <JSystem/...>). index_headers returns the full path; strip the include-dir prefix.
+        const std::string inc_prefix = "reference/sms/include/";
+        for (const auto& hdr : need_headers) {
+            std::string rel = hdr;
+            if (rel.rfind(inc_prefix, 0) == 0) rel = rel.substr(inc_prefix.size());
+            c << "#include \"" << rel << "\"\n";
+        }
         c << "\n// engine-object handle table (runtime/eng_handle.cpp; C++ linkage, no cpu_state.h).\n"
              "extern void* sb_eng_host(std::uint32_t);\n\n";
         for (const auto& [sym, t] : uniq)

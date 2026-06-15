@@ -241,9 +241,14 @@ file(GLOB SUNBRIGHT_OVERRIDE_SOURCES CONFIGURE_DEPENDS runtime/overrides/*.cpp)
 # shared functions.h and jump_table.cpp) so they compile in parallel. The weak
 # fallback table lets the binary link even before generation; the generated
 # strong symbols win.
+# SUNBRIGHT_GENERATED_DIR selects which recompile output to build against; default
+# `generated`. The SB_FLIP_J3D virtual-dispatch build uses a routed recompile in
+# `generated-virt` (SUNBRIGHT_VIRT_TYPES=…): -DSUNBRIGHT_GENERATED_DIR=generated-virt.
+set(SUNBRIGHT_GENERATED_DIR "generated" CACHE STRING
+    "Directory holding the recompiler output (functions_*.cpp / jump_table.cpp / virt_thunks.cpp)")
 file(GLOB SUNBRIGHT_GENERATED_SOURCES CONFIGURE_DEPENDS
-    generated/functions_*.cpp
-    generated/jump_table.cpp
+    ${SUNBRIGHT_GENERATED_DIR}/functions_*.cpp
+    ${SUNBRIGHT_GENERATED_DIR}/jump_table.cpp
 )
 if(SUNBRIGHT_GENERATED_SOURCES)
     # Generated code benefits from aggressive optimization, but NOT -ffast-math:
@@ -253,6 +258,27 @@ if(SUNBRIGHT_GENERATED_SOURCES)
     # which the emitter handles explicitly via std::fma).
     set_source_files_properties(${SUNBRIGHT_GENERATED_SOURCES}
         PROPERTIES COMPILE_OPTIONS "-O3;-ffp-contract=off")
+endif()
+
+# ── Offset-0 virtual-dispatch thunks (SB_FLIP_J3D) ────────────────────────────
+# The routed recompile (SUNBRIGHT_VIRT_TYPES=…) emits generated*/virt_thunks.cpp: the
+# PORT-WORLD definitions of sbvirt_<T>_<slot>(handle) that dispatch to a host engine
+# virtual method (((T*)sb_eng_host(h))->method()). It MUST be compiled in the port world
+# (decomp headers + port/compat shims, NO runtime/cpu_state.h — the cpu_state<->decomp u64
+# collision) so it gets its OWN object library, mirroring how port/bridge/j3d_bridge.cpp is
+# built. The generated game TUs call these via extern "C" decls (virt_thunks.h).
+file(GLOB SUNBRIGHT_VIRT_THUNKS CONFIGURE_DEPENDS ${SUNBRIGHT_GENERATED_DIR}/virt_thunks.cpp)
+if(SB_FLIP_J3D AND SUNBRIGHT_VIRT_THUNKS)
+    add_library(sb_virt_thunks OBJECT ${SUNBRIGHT_VIRT_THUNKS})
+    target_include_directories(sb_virt_thunks PRIVATE
+        "${CMAKE_SOURCE_DIR}/port/compat/include"
+        "${CMAKE_SOURCE_DIR}/reference/sms/include"   # the #include is relative to this dir
+        "${CMAKE_SOURCE_DIR}/runtime")
+    target_compile_options(sb_virt_thunks PRIVATE
+        "SHELL:-include ${CMAKE_SOURCE_DIR}/port/compat/intrinsics.h"
+        "SHELL:-include ${CMAKE_SOURCE_DIR}/port/compat/msl_shim.h"
+        -fno-strict-aliasing -Wno-multichar -Wno-register -w)
+    target_compile_features(sb_virt_thunks PRIVATE cxx_std_17)
 endif()
 
 # ── Port engine (PC-native JSystem) — guest slice linked into the hybrid ──────
@@ -305,6 +331,13 @@ add_executable(sunbright
     ${SUNBRIGHT_OVERRIDE_SOURCES}
     ${SUNBRIGHT_GENERATED_SOURCES}
 )
+
+# Port-world virtual-dispatch thunks (SB_FLIP_J3D) — its own object library so the
+# SHELL:-include port-compat force-includes survive (same pattern the removed
+# eng_accessors object lib used).
+if(TARGET sb_virt_thunks)
+    target_sources(sunbright PRIVATE $<TARGET_OBJECTS:sb_virt_thunks>)
+endif()
 
 target_include_directories(sunbright PRIVATE
     runtime

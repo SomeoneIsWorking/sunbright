@@ -473,15 +473,23 @@ std::map<u32, EngField> recover_eng_fields(const std::vector<PPCInstr>& instrs,
     std::array<std::string, 32> vt_of;   // reg -> "vtable ptr of type T"
     std::array<std::string, 32> vm_t;    // reg -> "method ptr of type T"
     std::array<int, 32>         vm_n{};   // reg -> vtable byte-offset of that method
+    // Feeder-instruction PCs accumulated along the dispatch chain, carried so the emitter can
+    // suppress the (dead, handle-faulting) guest vtable/slot loads at a routed virtual call.
+    std::array<std::vector<u32>, 32> vt_pcs;  // reg -> pc(s) producing its vtable ptr
+    std::array<std::vector<u32>, 32> vm_pcs;  // reg -> pc(s) producing its method ptr
     std::string                 ctr_t;   // ctr holds method-of-type (bctrl dispatch form)
     int                         ctr_n = 0;
+    std::vector<u32>            ctr_pcs;
     std::string                 lr_t;    // lr  holds method-of-type (mtlr;bclrl form — the
     int                         lr_n = 0;//      CodeWarrior GameCube virtual-call codegen)
+    std::vector<u32>            lr_pcs;
     auto reset_tags = [&]() {
-        for (int r = 0; r < 32; ++r) { vt_of[r].clear(); vm_t[r].clear(); vm_n[r] = 0; }
-        ctr_t.clear(); ctr_n = 0; lr_t.clear(); lr_n = 0;
+        for (int r = 0; r < 32; ++r) { vt_of[r].clear(); vm_t[r].clear(); vm_n[r] = 0;
+                                       vt_pcs[r].clear(); vm_pcs[r].clear(); }
+        ctr_t.clear(); ctr_n = 0; ctr_pcs.clear(); lr_t.clear(); lr_n = 0; lr_pcs.clear();
     };
-    auto clear_reg = [&](int r) { if (r >= 0 && r < 32) { vt_of[r].clear(); vm_t[r].clear(); } };
+    auto clear_reg = [&](int r) { if (r >= 0 && r < 32) { vt_of[r].clear(); vm_t[r].clear();
+                                                          vt_pcs[r].clear(); vm_pcs[r].clear(); } };
 
     for (int k = 0; k < n; ++k) {
         if (!in[k].defined) continue;                          // unreachable: nothing to record
@@ -498,27 +506,31 @@ std::map<u32, EngField> recover_eng_fields(const std::vector<PPCInstr>& instrs,
             case PPCOp::LWZ:
                 if (i.rA != 1 && i.d == 0 && !entry.reg[i.rA].empty()) {
                     clear_reg(i.rD); vt_of[i.rD] = entry.reg[i.rA];     // vtable load off a handle
+                    vt_pcs[i.rD] = { i.pc };
                 } else if (i.rA != 1 && !vt_of[i.rA].empty()) {
                     std::string t = vt_of[i.rA];                       // lwz m,N(vtable)
-                    clear_reg(i.rD); vm_t[i.rD] = t; vm_n[i.rD] = (int)i.d;
+                    std::vector<u32> feed = vt_pcs[i.rA]; feed.push_back(i.pc);
+                    clear_reg(i.rD); vm_t[i.rD] = t; vm_n[i.rD] = (int)i.d; vm_pcs[i.rD] = feed;
                 } else clear_reg(i.rD);
                 break;
             case PPCOp::MTSPR: {
                 u16 spr = decode_spr(i.spr);
                 if (spr == SPR_CTR) {
-                    if (!vm_t[i.rS].empty()) { ctr_t = vm_t[i.rS]; ctr_n = vm_n[i.rS]; }
-                    else { ctr_t.clear(); ctr_n = 0; }
+                    if (!vm_t[i.rS].empty()) { ctr_t = vm_t[i.rS]; ctr_n = vm_n[i.rS];
+                                               ctr_pcs = vm_pcs[i.rS]; ctr_pcs.push_back(i.pc); }
+                    else { ctr_t.clear(); ctr_n = 0; ctr_pcs.clear(); }
                 } else if (spr == SPR_LR) {                    // mtlr m — the CW virtual-call form
-                    if (!vm_t[i.rS].empty()) { lr_t = vm_t[i.rS]; lr_n = vm_n[i.rS]; }
-                    else { lr_t.clear(); lr_n = 0; }
+                    if (!vm_t[i.rS].empty()) { lr_t = vm_t[i.rS]; lr_n = vm_n[i.rS];
+                                               lr_pcs = vm_pcs[i.rS]; lr_pcs.push_back(i.pc); }
+                    else { lr_t.clear(); lr_n = 0; lr_pcs.clear(); }
                 }
                 break;
             }
             case PPCOp::BCCTR:
-                if (i.lk && !ctr_t.empty()) (*vcalls)[i.pc] = VCall{ ctr_t, ctr_n };
+                if (i.lk && !ctr_t.empty()) (*vcalls)[i.pc] = VCall{ ctr_t, ctr_n, ctr_pcs };
                 break;
             case PPCOp::BCLR:
-                if (i.lk && !lr_t.empty()) (*vcalls)[i.pc] = VCall{ lr_t, lr_n };  // bclrl dispatch
+                if (i.lk && !lr_t.empty()) (*vcalls)[i.pc] = VCall{ lr_t, lr_n, lr_pcs };  // bclrl dispatch
                 break;
             default:
                 if (is_call(i)) { for (int r = 3; r <= 12; ++r) clear_reg(r); }

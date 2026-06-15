@@ -434,6 +434,26 @@ int main() {
         CHECK(has(sl.str(), "sbvirt_J3DModel_2(cpu.gpr[3]);"), "routed bclrl (mtlr;bclrl form) calls the thunk");
         CHECK(!has(sl.str(), "call_ppc(cpu, _tgt)"), "routed bclrl does NOT emit the LR call");
 
+        // FEEDER SUPPRESSION: the full guest chain `lwz vt,0(r3); lwz m,16(vt); mtlr m; bclrl`.
+        // The two vtable/slot loads + mtlr are DEAD once routed, and `lwz vt,0(handle)` would FAULT
+        // on the 0x9xxxxxxx handle token — they must NOT be emitted.
+        const uint32_t lwz_vt   = (32u<<26)|(12u<<21)|(3u<<16)|0u;    // lwz r12, 0(r3)
+        const uint32_t lwz_slot = (32u<<26)|(12u<<21)|(12u<<16)|16u;  // lwz r12, 16(r12)
+        std::vector<uint32_t> wf = { lwz_vt, lwz_slot, mtlr12, bclrl, BLR };
+        std::vector<uint8_t> df(wf.size()*4);
+        for (size_t i = 0; i < wf.size(); ++i) { uint32_t be = __builtin_bswap32(wf[i]); std::memcpy(&df[i*4], &be, 4); }
+        EmitContext cf; cf.func_addr = B; cf.instrs = collect_function(df.data(), B, df.size(), B, B+(uint32_t)wf.size()*4, false);
+        cf.branch_targets = intra_branch_targets(cf.instrs, B);
+        EmitVirtCall evf{ "J3DModel", "calc", "sbvirt_J3DModel_2" };
+        evf.feeder_pcs = { B, B+4, B+8 };   // the two lwz + the mtlr
+        cf.virt_calls[B+12] = evf;          // bclrl pc
+        std::ostringstream sf; CEmitter emf(sf); emf.emit_function(cf);
+        std::string cfc = sf.str();
+        CHECK(!has(cfc, "MEM_R32(cpu.gpr[3])"), "routed call SUPPRESSES the vtable load off the handle (no fault)");
+        CHECK(!has(cfc, "MEM_R32(cpu.gpr[12] + 16)"), "routed call SUPPRESSES the dead method-slot load");
+        CHECK(has(cfc, "feeder elided"), "feeder instructions marked elided");
+        CHECK(has(cfc, "sbvirt_J3DModel_2(cpu.gpr[3]);"), "routed call still dispatches to the host thunk");
+
         // A bctrl NOT in virt_calls stays a normal guest CTR dispatch.
         EmitContext ctx2; ctx2.func_addr = B; ctx2.instrs = ctx.instrs;
         ctx2.branch_targets = ctx.branch_targets;

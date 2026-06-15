@@ -8,11 +8,14 @@
 // handle(s) to host pointers, and route to the PC-native port engine
 // (port/bridge/j3d_bridge.cpp) — the host object graph stays inside port/.
 //
-// Construction model (object_identity.md Pattern AV): the recompiler rewrites the
-// game's `new J3DModel(...)` into `sbnew_J3DModel()` (raw host alloc -> handle,
-// vtable UNSET) then a `bl __ct__J3DModel`. ov_j3dmodel_ctor catches that ctor
-// call and PLACEMENT-NEWS the real host object onto the buffer, so the host C++
-// vtable + initialize() + entryModelData() run.
+// ⚠ STALE / INCOMPATIBLE WITH generated-virt (2026-06-15) — see scratch/handoff.md "BLOCKER (b)".
+// This was written for the field-flip era where the recompiler rewrote `new J3DModel(...)` into
+// `sbnew_J3DModel()` (raw host alloc -> handle) so gpr[3] arrived as a HANDLE. That rewrite was
+// REMOVED with the field-flip (41aaa69). In the current (no-flip) generated-virt, `new J3DModel`
+// is plain guest code: operator new -> GUEST RAM ptr -> bl __ct__J3DModel, and the holder stores
+// the operator-new BUFFER (not the ctor return). So `sb_eng_host(gpr[3])` below gets a guest ptr,
+// not a handle, and returns null. FIX REQUIRED: a flip-free construction->handle emission that
+// intercepts the ALLOCATION (object-identity find_alloc_sites), not the ctor return — handoff NEXT #1.
 //
 // This TU includes NO decomp/port headers — the port object is opaque (void*);
 // it references only the extern "C" port seam + the runtime handle table.
