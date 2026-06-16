@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# gp — interactive game-probe CLI for the Sunbright PC port.
+#
+# Drives the RUNNING game headlessly over its HTTP probe REPL (runtime/probe_server.cpp),
+# so an agent can launch once and then send inputs / take screenshots / read render state
+# across many separate calls — without re-launching or running the GUI.
+#
+# Typical session:
+#   tools/gp launch                 # boot headless: native renderer + probe, detached
+#   tools/gp pad start 200          # press Start (e.g. to skip the THP/FMV, advance menus)
+#   tools/gp shot title             # screenshot -> scratch/screenshots/title.png (+ brightness)
+#   tools/gp ngx                    # /ngxshape render/capture stats
+#   tools/gp pad start 200 ; gp shot fsel   # advance to file-select, capture
+#   tools/gp r 8040e190 8           # read 8 guest words at 0x8040e190
+#   tools/gp kill                   # stop the game
+#
+# Notes:
+#  - launch is DETACHED (setsid) so the game survives this shell exiting → stays up between calls.
+#  - You skip the THP/intro movie by pressing Start (tools/gp pad start 200), NOT by fastboot.
+#  - Default render path is the native PC renderer (SUNBRIGHT_NGX_PRESENT). Pass env to override,
+#    e.g.  tools/gp launch SUNBRIGHT_FASTBOOT=1   or   tools/gp launch SUNBRIGHT_NGX_PRESENT=0
+set -uo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PORT="${SUNBRIGHT_PROBE_PORT:-17654}"
+BASE="http://127.0.0.1:$PORT"
+LOG="$HERE/scratch/logs/gp.log"
+BIN="${SUNBRIGHT_BIN:-$HERE/build-j3dvirt/sunbright}"
+
+q() { curl -s --max-time "${GP_TIMEOUT:-8}" "$BASE$1"; }
+up() { curl -s --max-time 2 "$BASE/ngxshape" >/dev/null 2>&1; }
+
+cmd="${1:-help}"; shift || true
+case "$cmd" in
+
+launch)
+    # gp launch [VAR=val ...]  — extra env overrides the defaults below.
+    pkill -x sunbright 2>/dev/null; sleep 1
+    [ -f "$HERE/.env" ] && { set -a; . "$HERE/.env"; set +a; }
+    ROM="${SUNBRIGHT_ROM:-$HERE/rom.rvz}"
+    if [[ ! -x "$BIN" ]]; then echo "no binary: $BIN (build build-j3dvirt)"; exit 1; fi
+    if [[ ! -f "$ROM" ]]; then echo "no ROM: $ROM"; exit 1; fi
+    mkdir -p "$HERE/scratch/logs" "$HERE/scratch/screenshots"
+    # Defaults: headless, native renderer, probe on. Extra args ($@) override (VAR=val).
+    declare -a E=(SUNBRIGHT_HEADLESS=1 SUNBRIGHT_NGX_PRESENT=1 SUNBRIGHT_NGX_SHAPE=1 SUNBRIGHT_PROBE=1)
+    setsid env "${E[@]}" "$@" "$BIN" "$ROM" >"$LOG" 2>&1 < /dev/null &
+    echo "launched pid $! (log: scratch/logs/gp.log) — waiting for probe…"
+    for i in $(seq 1 40); do sleep 2; if up; then echo "probe up (~$((i*2))s)"; exit 0; fi; done
+    echo "probe did NOT come up in 80s — check scratch/logs/gp.log"; tail -5 "$LOG"; exit 1
+    ;;
+
+pad)
+    # gp pad <combo> [ms]   combo = a|b|x|y|z|start|l|r|up|down|left|right joined by '+' (or 'wait')
+    combo="${1:?usage: gp pad <combo> [ms]}"; ms="${2:-200}"
+    q "/pad?do=$combo&ms=$ms"
+    ;;
+
+shot)
+    # gp shot [name] — capture the current presented frame + report path & mean brightness.
+    name="${1:-shot}"
+    q "/screenshot?name=$name"
+    f="$HERE/scratch/screenshots/$name.png"
+    if [[ -f "$f" ]]; then
+        source "$HERE/scratch/venv/bin/activate" 2>/dev/null || true
+        python3 - "$f" <<'PY' 2>/dev/null || true
+import sys,numpy as np
+from PIL import Image
+a=np.asarray(Image.open(sys.argv[1]).convert("RGB")).astype(float)
+print(f"  {sys.argv[1]}  {a.shape[1]}x{a.shape[0]}  meanRGB={a.reshape(-1,3).mean(0).round(0)}  med={np.median(a.reshape(-1,3).mean(1)):.0f}")
+PY
+    fi
+    ;;
+
+ngx)      q "/ngxshape";;
+present)  q "/ngxpresentlive";;
+metrics)  q "/metrics";;
+drawstats) q "/drawstats";;
+r)        a="${1:?usage: gp r <hexaddr> [n]}"; q "/r?a=$a&n=${2:-8}";;
+fn)       q "/fn?a=${1:?usage: gp fn <hexaddr>}";;
+get)      q "${1:?usage: gp get </endpoint?args>}";;     # raw: gp get '/ngxshape'
+help2)    q "/help";;                                     # the live in-binary endpoint list
+
+status)   if up; then echo "running, probe up"; else echo "down (or probe not ready)"; fi;;
+kill)     pkill -x sunbright 2>/dev/null && echo killed || echo "not running";;
+
+*)
+    sed -n '2,40p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    echo
+    echo "commands: launch | pad <combo> [ms] | shot [name] | ngx | present | metrics |"
+    echo "          drawstats | r <hex> [n] | fn <hex> | get </path> | help2 | status | kill"
+    ;;
+esac
