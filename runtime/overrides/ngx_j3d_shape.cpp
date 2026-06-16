@@ -127,6 +127,18 @@ float g_posmtx[64][4] = {{0}};
 bool  g_cur_pnmtx = false;            // current shape uses PNMTXIDX (set in capture)
 unsigned long g_posmtx_loads = 0;
 
+// ── ngx geometry differential vs Dolphin (SUNBRIGHT_NGX_DIFF) ─────────────────
+// The renderer's SUNBRIGHT_DIFF: the title-logo / sun-ray / file-select shear is a
+// multi-matrix (PNMTXIDX) bug — ngx applies g_posmtx[slot], the AUTHORITATIVE matrix
+// is Dolphin's xfmem.posMatrices[slot] (same XF writes the GPU consumes). Instead of
+// eyeballing which of the two "looks less broken", this asserts g_posmtx == xfmem per
+// slot every frame and reports exactly which slots diverge and by how much, so the bug
+// is LOCATED numerically (matrix-capture wrong vs downstream) and a fix MOVES A NUMBER.
+bool g_ngxdiff = sb_env_on("SUNBRIGHT_NGX_DIFF");
+struct GeomDiffSlot { unsigned long n=0, nmiss=0; float maxd=0; float ngx[12]={0}, dol[12]={0}; };
+GeomDiffSlot g_gdiff[64];
+unsigned long g_gdiff_mm_shapes=0, g_gdiff_frames=0;
+
 // Global hardware ambient colour register per colour channel (0,1), captured at
 // GXSetChanAmbColor. J3DColorBlockLightOff blocks do NOT store/load an ambient
 // (only LightOn does) — for them the ambient is whatever the scene set globally,
@@ -925,6 +937,33 @@ void transform_eye() {
     if (g_have_proj) g_clip.assign(nv * 4, 0.0f);
     g_litrgba.assign(nv * 4, 0.0f);
     g_uvs.assign(nv * 16, 0.0f);
+
+    // ngx-vs-Dolphin geometry differential: for every distinct PNMTXIDX slot this
+    // multi-matrix shape references, compare ngx's applied matrix (g_posmtx[slot])
+    // against Dolphin's authoritative XF matrix memory (xfmem.posMatrices[slot]).
+    // Records the worst divergence per slot — this is the oracle the shear is judged
+    // against, in numbers, not by eye.
+    if (g_ngxdiff && g_cur_pnmtx) {
+        g_gdiff_mm_shapes++;
+        bool seen[64] = {false};
+        for (size_t vi = 0; vi < nv; vi++) {
+            const unsigned slot = g_verts[vi].matidx;
+            if (slot + 2 >= 64 || seen[slot]) continue;
+            seen[slot] = true;
+            float ngx[12], dol[12], maxd = 0.0f;
+            for (int r = 0; r < 3; r++) for (int c = 0; c < 4; c++) {
+                const float a = g_posmtx[slot + r][c];
+                const float b = xfmem.posMatrices[(slot + r) * 4 + c];
+                ngx[r*4+c] = a; dol[r*4+c] = b;
+                float d = a - b; if (d < 0) d = -d; if (d > maxd) maxd = d;
+            }
+            GeomDiffSlot& s = g_gdiff[slot];
+            s.n++;
+            if (maxd > 1e-3f) s.nmiss++;
+            if (maxd >= s.maxd) { s.maxd = maxd; for (int i = 0; i < 12; i++) { s.ngx[i]=ngx[i]; s.dol[i]=dol[i]; } }
+        }
+    }
+
     for (size_t vi = 0; vi < nv; vi++) {
         const NgxVertex& v = g_verts[vi];
 
@@ -1251,6 +1290,36 @@ const NgxTevState* ngx_snap_tevstates(int* nstates) {
     *nstates = (int)g_tevstates.size();
     return g_tevstates.empty() ? nullptr : g_tevstates.data();
 }
+// ngx-vs-Dolphin geometry differential report (SUNBRIGHT_NGX_DIFF / probe /ngxgeomdiff).
+// Per PNMTXIDX slot: how many times a shape used it, how many of those diverged from
+// Dolphin's xfmem matrix, the worst Δ, and the two matrices side by side for the worst.
+extern "C" int ngx_geom_diff_report(char* out, int cap) {
+    int p = 0;
+    p += snprintf(out + p, cap - p,
+        "ngx geometry diff vs Dolphin (xfmem.posMatrices)\n"
+        "multi-matrix shapes seen: %lu   enabled: %s\n\n",
+        g_gdiff_mm_shapes, g_ngxdiff ? "yes" : "no (set SUNBRIGHT_NGX_DIFF=1)");
+    int active = 0, diverging = 0;
+    for (int slot = 0; slot < 64 && cap - p > 320; slot++) {
+        const GeomDiffSlot& s = g_gdiff[slot];
+        if (s.n == 0) continue;
+        active++;
+        const bool bad = s.nmiss > 0;
+        if (bad) diverging++;
+        p += snprintf(out + p, cap - p, "slot %2d: n=%lu miss=%lu maxD=%.4f %s\n",
+            slot, s.n, s.nmiss, s.maxd, bad ? "<<< DIVERGES from Dolphin" : "ok");
+        if (bad) {
+            p += snprintf(out + p, cap - p,
+                "   ngx: [%.3f %.3f %.3f %.2f / %.3f %.3f %.3f %.2f / %.3f %.3f %.3f %.2f]\n"
+                "   dol: [%.3f %.3f %.3f %.2f / %.3f %.3f %.3f %.2f / %.3f %.3f %.3f %.2f]\n",
+                s.ngx[0],s.ngx[1],s.ngx[2],s.ngx[3], s.ngx[4],s.ngx[5],s.ngx[6],s.ngx[7], s.ngx[8],s.ngx[9],s.ngx[10],s.ngx[11],
+                s.dol[0],s.dol[1],s.dol[2],s.dol[3], s.dol[4],s.dol[5],s.dol[6],s.dol[7], s.dol[8],s.dol[9],s.dol[10],s.dol[11]);
+        }
+    }
+    p += snprintf(out + p, cap - p, "\n%d/%d active slots DIVERGE from Dolphin\n", diverging, active);
+    return p;
+}
+
 // DBG: colour-channel ctrl for a tev index (0xFFFF = no block) — used by the present's
 // category-debug mode to tint each batch by its material category.
 extern "C" unsigned ngx_tev_cc_dbg(int idx) {

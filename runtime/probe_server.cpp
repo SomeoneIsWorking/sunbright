@@ -83,6 +83,7 @@ int sb_ngx_vertex_selftest(char*, int);                      // runtime/ngx/ngx_
 int sb_ngx_mesh_selftest(char*, int);                        // runtime/ngx/ngx_mesh.cpp
 int sb_ngx_shape_dump(char*, int);                           // runtime/overrides/ngx_j3d_shape.cpp
 int sb_ngx_pixel_batch(float, float, char*, int);            // runtime/overrides/ngx_j3d_shape.cpp
+extern "C" int ngx_geom_diff_report(char* out, int cap);     // runtime/overrides/ngx_j3d_shape.cpp (/ngxgeomdiff)
 extern "C" int sb_ngx_set_onlyti(int);                       // runtime/render/ngx_present.cpp (/ngxonly)
 extern "C" int sb_ngx_set_skipti(int);                       // runtime/render/ngx_present.cpp (/ngxskip)
 int sb_ngx_render(char*, int);                               // runtime/render/vk_mesh.cpp
@@ -243,6 +244,10 @@ std::string handle_repl(const char* path) {
     if (strncmp(path, "/skyshader", 10) == 0) {  // generated TEV GLSL for a material (default sky)
         unsigned ce = 0x09fae8; if (const char* p = strstr(path, "ce=")) ce = strtoul(p+3, nullptr, 16);
         char rep[8192]; int rn = sb_ngx_gen_shader(ce, rep, sizeof rep); app("%.*s", rn, rep);
+        return std::string(buf, n);
+    }
+    if (strncmp(path, "/ngxgeomdiff", 12) == 0) {  // ngx-vs-Dolphin per-slot matrix differential
+        char rep[16384]; int rn = ngx_geom_diff_report(rep, sizeof rep); app("%.*s", rn, rep);
         return std::string(buf, n);
     }
     if (strncmp(path, "/ngxdbg", 7) == 0) {
