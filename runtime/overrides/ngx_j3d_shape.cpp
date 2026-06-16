@@ -1269,10 +1269,11 @@ void capture(u32 sh) {
 // stale perspective one (which would foreshorten/shear the flat logo). The full 4x4
 // is applied (clip = P·eye incl. row 3 → w=1 for ortho, w=-ez for perspective).
 unsigned long g_proj_persp = 0, g_proj_ortho = 0; float g_last_ortho[16] = {0}; unsigned g_last_ortho_type = 0;
+float g_last_persp[16] = {0};   // ngx's last PERSPECTIVE projection — compared to Dolphin's actual
 unsigned g_proj_type = 0;
 void ngx_set_projection(const float* m44, unsigned type) {
     if (type != 0) { g_proj_ortho++; g_last_ortho_type = type; for (int i=0;i<16;i++) g_last_ortho[i]=m44[i]; }
-    else g_proj_persp++;
+    else { g_proj_persp++; for (int i=0;i<16;i++) g_last_persp[i]=m44[i]; }
     g_proj_type = type;
     for (int i = 0; i < 16; i++) g_proj[i] = m44[i];
     g_have_proj = true;
@@ -1321,6 +1322,29 @@ const NgxTevState* ngx_snap_tevstates(int* nstates) {
     *nstates = (int)g_tevstates.size();
     return g_tevstates.empty() ? nullptr : g_tevstates.data();
 }
+// ngx projection vs Dolphin's ACTUAL projection (the real rendering data, captured on the
+// GPU thread in VertexShaderManager::LoadProjectionMatrix — authoritative, not lagged).
+extern "C" const float* sb_get_dolphin_proj(int* type, unsigned long* count);
+extern "C" const float* sb_get_dolphin_persp(unsigned long* count);
+extern "C" int ngx_proj_diff_report(char* out, int cap) {
+    // Compare the PERSPECTIVE projection (the 3D camera) — set once/frame and stable, so ngx's
+    // (CPU) and Dolphin's (GPU) copies ARE comparable despite the async gap. The latest-of-any-type
+    // compare below it is racy (HUD ortho churns); keep it only as a sanity line.
+    unsigned long dpc = 0; const float* dp = sb_get_dolphin_persp(&dpc);
+    const float* gp = g_last_persp;
+    int p = snprintf(out, cap,
+        "ngx PERSPECTIVE projection vs Dolphin's ACTUAL (VertexShaderManager, GPU-thread)\n"
+        "  dolphin persp updates=%lu   ngx persp sets=%lu\n", dpc, g_proj_persp);
+    float maxd = 0;
+    for (int i = 0; i < 16; i++) { float e = gp[i] - dp[i]; if (e < 0) e = -e; if (e > maxd) maxd = e; }
+    p += snprintf(out + p, cap - p, "  max abs element delta: %.5f  %s\n", maxd, maxd < 1e-3f ? "MATCH" : "<<< DIVERGES");
+    for (int r = 0; r < 4; r++)
+        p += snprintf(out + p, cap - p,
+            "    ngx[%d] %10.5f %10.5f %10.5f %10.5f   dol %10.5f %10.5f %10.5f %10.5f\n", r,
+            gp[r*4+0], gp[r*4+1], gp[r*4+2], gp[r*4+3], dp[r*4+0], dp[r*4+1], dp[r*4+2], dp[r*4+3]);
+    return p;
+}
+
 // ngx-vs-Dolphin geometry differential report (SUNBRIGHT_NGX_DIFF / probe /ngxgeomdiff).
 // Per PNMTXIDX slot: how many times a shape used it, how many of those diverged from
 // Dolphin's xfmem matrix, the worst Δ, and the two matrices side by side for the worst.
