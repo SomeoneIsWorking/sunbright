@@ -84,6 +84,28 @@ cross-launch camera drift, and tev_index decoded out of range). Point it at a sk
 that batch's tev_index + bound texmaps + col0; if NO batch covers the sky pixel, it's (A)/(B).
 Also fix the separate hardcoded-clear-color bug (use the game's GXSetCopyClear).
 
+## ★★★ UPDATE 5 (2026-06-16 pm) — THE COMPARISON WAS CONFOUNDED; use a SYNCHRONIZED save-state A/B
+The whole file-select investigation compared TWO SEPARATE processes (ngx vs a live Dolphin-GX oracle)
+driven by `gp pad start`. Those processes reach the file-select at DIFFERENT animation phases (the J2D
+menu sits at different positions; UPDATE 4) — and even the same-named screen renders a different camera
+phase. So the stark "ngx sky white vs oracle blue" was substantially a **state-desync artifact**, not a
+clean 2× render bug.
+
+**The fix for the methodology: `SUNBRIGHT_STATE=<save>` autoloads a deterministic save state** (once the
+core settles, ~1500 VI fields; `SUNBRIGHT_STATE_FIELDS` overrides) in BOTH the ngx and the Dolphin-GX
+oracle → a pixel-perfect SYNCHRONIZED A/B, zero desync. `tools/gp launch both SUNBRIGHT_STATE=scratch/
+delfino.sav SUNBRIGHT_STATE_FIELDS=600` then `gp shot`. Result on the synchronized state (a mushroom-
+house interior): **ngx med=119 vs oracle med=135 — CLOSE, ngx even slightly DARKER, NOT 2× washed.** So
+the dramatic wash framing is largely the confound. The earlier `scratch/delfino.sav` matched-state A/B
+(memory [[ngx-render-fidelity-gap]]) is exactly this tool — USE IT, don't pad-drive two processes.
+
+**Residual real artifact (synchronized, confound-free):** ngx renders a big ORANGE/yellow GLOW BLOB over
+the window/centre where the oracle shows blue sky + characters. The `/pixbatch` probe reports **"NO BATCH
+COVERS"** that region → it is **uncaptured geometry** (drawn by a non-`J3DShape::draw` path, or all its
+triangles are w≤0 / mis-projected) OR a present-composite layer. THIS is the real, tractable next lead:
+find what draws the window/glow (it's not in the J3DShape capture) and tee/port it. Probe the blob with
+`/pixbatch?x=NDC&y=NDC` and the clip dump; cross-check `/drawstats` (GX draws) vs the captured batch count.
+
 ## ⚠️ UPDATE 4 (2026-06-16 pm) — CORRECTION: UPDATE 3's "ti=9" was the TITLE-SCREEN logo (screen mismatch)
 UPDATE 3 concluded the wash is ti=9. That was measured on a **screen mismatch**: `gp pad start ×3`
 advanced the ngx and oracle instances to DIFFERENT screens — ngx was still on the TITLE screen (the
