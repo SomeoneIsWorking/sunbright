@@ -212,6 +212,21 @@ std::string sb_tev_gen_fragment(const NgxTevState& st) {
                "layout(set=0,binding=0) uniform sampler2D tex[8];\n"
                "void main(){ o = texture(tex[0], vUV[0]); }\n";
     }
+    if (dbgm == 5) {   // tex1: sample texmap1 with texcoord1 (the sky/many world mats use map=1)
+        return "#version 450\nlayout(location=0) in vec4 vColor;\n"
+               "layout(location=1) in vec2 vUV[8];\nlayout(location=0) out vec4 o;\n"
+               "layout(set=0,binding=0) uniform sampler2D tex[8];\n"
+               "void main(){ o = texture(tex[1], vUV[1]); }\n";
+    }
+    if (dbgm == 6 || dbgm == 7) {   // uv0/uv1: visualize the texcoord (R=u,G=v, fract) for texgen
+        const char* idx = (dbgm == 6) ? "0" : "1";
+        static std::string s;
+        s = std::string("#version 450\nlayout(location=0) in vec4 vColor;\n"
+            "layout(location=1) in vec2 vUV[8];\nlayout(location=0) out vec4 o;\n"
+            "layout(set=0,binding=0) uniform sampler2D tex[8];\n"
+            "void main(){ o = vec4(fract(vUV[") + idx + "]), 0.0, 1.0); }\n";
+        return s;
+    }
     if (dbgm == 3 || dbgm == 4) {  // output kcolor[0] (category / batch-id)
         return "#version 450\nlayout(location=0) in vec4 vColor;\n"
                "layout(location=1) in vec2 vUV[8];\nlayout(location=0) out vec4 o;\n"

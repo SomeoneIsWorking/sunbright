@@ -131,6 +131,12 @@ unsigned long g_posmtx_loads = 0;
 u8 g_amb_reg[2][4] = {{0,0,0,0}, {0,0,0,0}};
 bool g_amb_have[2] = {false, false};
 unsigned long g_amb_sets = 0;
+// J3D programs the ambient via J3DGDSetChanAmbColor (a GD/XF-direct write), NOT GXSetChanAmbColor
+// — so the GX-function tee misses it. Capture the GD path too (this is the value the GPU actually
+// uses). g_gd_amb is draw-order-current at capture_colorchan time.
+u8 g_gd_amb[2][4] = {{0,0,0,0}, {0,0,0,0}};
+bool g_gd_amb_have[2] = {false, false};
+unsigned long g_gd_amb_sets = 0; u8 g_gd_amb_last[4] = {0,0,0,0};
 // Authoritative per-channel lighting state captured SYNCHRONOUSLY from the GX commands
 // (GXSetChanCtrl / GXSetChanMatColor) — the same LitChannel.hex / matColor Dolphin uses.
 u16  g_gx_cc[2] = {0, 0};            bool g_gx_cc_have[2] = {false, false};
@@ -284,10 +290,16 @@ void capture_colorchan(u32 material) {
     // oracle). The correct per-material ambient is written by J3D directly to XF (xfmem), which
     // LAGS in this capture process — capturing it correctly is an open RE item. Default: 0.
     // (SUNBRIGHT_NGX_AMBGLOBAL=1 = opt-in A/B with the global register.)
-    static const bool amb_global = getenv("SUNBRIGHT_NGX_AMBGLOBAL") && atoi(getenv("SUNBRIGHT_NGX_AMBGLOBAL")) != 0;
+    // CLOF lit materials read the ambient from the global XF ambient register. OPEN PROBLEM:
+    // that register is programmed neither via the J3DColorBlock (CLOF has no ambient field) nor
+    // via the GX/GD ambient tees we capture — J3DGDSetChanAmbColor fires 0× in file-select and
+    // GXSetChanAmbColor reads a wrong ~purple value; neither matches the oracle. So default to 0
+    // (the studied-safe value; gameplay renders correctly with it). Opt-in A/B:
+    // SUNBRIGHT_NGX_AMBGD=1 uses the J3DGDSetChanAmbColor capture (correct in LightOn scenes).
+    static const bool amb_gd = getenv("SUNBRIGHT_NGX_AMBGD") && atoi(getenv("SUNBRIGHT_NGX_AMBGD")) != 0;
     if (amb_off)               for (int k = 0; k < 4; k++) g_cur_chan.ambColor[k] = B[amb_off + k];
-    else if (amb_global && g_amb_have[0])
-                               for (int k = 0; k < 4; k++) g_cur_chan.ambColor[k] = g_amb_reg[0][k];
+    else if (amb_gd && g_gd_amb_have[0])
+                               for (int k = 0; k < 4; k++) g_cur_chan.ambColor[k] = g_gd_amb[0][k];
     else                       for (int k = 0; k < 4; k++) g_cur_chan.ambColor[k] = 0;
     g_cur_chan.valid = true;
 }
@@ -1224,6 +1236,24 @@ SUNBRIGHT_OVERRIDE(ov_gxsetchanambcolor, 0x8035f3b4u) {
     if (RecompFunc o = recomp_raw(0x8035f3b4u)) o(cpu); else call_ppc(cpu, cpu.lr);
 }
 
+// J3DGDSetChanAmbColor(GXChannelID chan, GXColor color) @ 0x802f33a8 — J3D's GD/XF-direct
+// ambient write (the path materials actually use; GXSetChanAmbColor is mostly unused by J3D,
+// which is why the GX-function tee read a stale/wrong value). color is a 4-byte GXColor by
+// value in gpr[4] (R in the high byte). g_gd_amb is draw-order-current at capture time.
+SUNBRIGHT_OVERRIDE(ov_j3dgdsetchanambcolor, 0x802f33a8u) {
+    if (g_enabled) {
+        const u32 chan = cpu.gpr[3], c = cpu.gpr[4];
+        const int idx = (chan == 0 || chan == 4) ? 0 : (chan == 1 || chan == 5) ? 1 : -1;
+        if (idx >= 0) {
+            g_gd_amb[idx][0] = (u8)(c >> 24); g_gd_amb[idx][1] = (u8)(c >> 16);
+            g_gd_amb[idx][2] = (u8)(c >> 8);  g_gd_amb[idx][3] = (u8)c;
+            g_gd_amb_have[idx] = true; g_gd_amb_sets++;
+            for (int k = 0; k < 4; k++) g_gd_amb_last[k] = g_gd_amb[idx][k];
+        }
+    }
+    if (RecompFunc o = recomp_raw(0x802f33a8u)) o(cpu); else call_ppc(cpu, cpu.lr);
+}
+
 // Dump Dolphin's LIVE xfmem lighting/colour state (ground truth). In the pure-Dolphin
 // oracle (NGX_SHAPE off, GX rendered synchronously) xfmem is CURRENT — this is the
 // authoritative ambient/material/channel state the native renderer must reproduce. (In an
@@ -1329,9 +1359,11 @@ int sb_ngx_shape_dump(char* out, int cap) {
         g_sun_ndl_n ? 100.0 * g_sun_ndl_pos / g_sun_ndl_n : 0.0, g_sun_ndl_n,
         g_dbg_en[0], g_dbg_en[1], g_dbg_en[2], g_dbg_ld0[0], g_dbg_ld0[1], g_dbg_ld0[2]);
     n += snprintf(out + n, cap - n,
-        "    amb_reg[0]=(%u,%u,%u,%u) have=%d sets=%lu\n",
+        "    amb_reg[0]=(%u,%u,%u,%u) have=%d sets=%lu  |  GD_amb[0]=(%u,%u,%u,%u) have=%d sets=%lu last=(%u,%u,%u,%u)\n",
         g_amb_reg[0][0], g_amb_reg[0][1], g_amb_reg[0][2], g_amb_reg[0][3],
-        g_amb_have[0], g_amb_sets);
+        g_amb_have[0], g_amb_sets,
+        g_gd_amb[0][0], g_gd_amb[0][1], g_gd_amb[0][2], g_gd_amb[0][3], g_gd_amb_have[0], g_gd_amb_sets,
+        g_gd_amb_last[0], g_gd_amb_last[1], g_gd_amb_last[2], g_gd_amb_last[3]);
     n += snprintf(out + n, cap - n, "    colour-block vtables:");
     for (int i = 0; i < 8 && g_cbvt_key[i]; i++)
         n += snprintf(out + n, cap - n, " %08x(%u)", g_cbvt_key[i], g_cbvt_cnt[i]);

@@ -248,6 +248,9 @@ std::string handle_repl(const char* path) {
             else if (!strncmp(p, "ras", 3))    m = 2;
             else if (!strncmp(p, "cat", 3))    m = 3;
             else if (!strncmp(p, "bid", 3))    m = 4;
+            else if (!strncmp(p, "tex1", 4))   m = 5;
+            else if (!strncmp(p, "uv0", 3))    m = 6;
+            else if (!strncmp(p, "uv1", 3))    m = 7;
             else m = atoi(p);
         }
         sb_ngx_set_dbg(m);
