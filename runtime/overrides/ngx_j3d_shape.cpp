@@ -761,6 +761,9 @@ bool          g_have_proj = false;
 struct SkyXf { bool have=false; float M[12]={0}; float P[16]={0}; float pos0[3]={0};
                float eye0[3]={0}; float clip0[4]={0}; u32 mtxp=0; bool pnmtx=false; size_t nv=0; };
 SkyXf g_skyxf, g_skyxf_pub;
+struct PnmtxDbg { bool have=false; size_t nv=0; unsigned char mi0=0; bool mp_valid=false;
+    float row[12]={0}; float pos0[3]={0}; int n_distinct=0; unsigned char mi_min=255,mi_max=0; };
+PnmtxDbg g_pnmtxdbg, g_pnmtxdbg_pub;
 unsigned long g_ndc_total = 0, g_ndc_wpos = 0, g_ndc_inbox = 0;
 
 // Clip-space triangle SNAPSHOT for the native Vulkan mesh render (vk_mesh.cpp /
@@ -892,6 +895,17 @@ void transform_eye() {
     float nm[9]; if (have_nm) for (int i = 0; i < 9; i++) nm[i] = rf(nmp + i * 4);
     bool first = (g_xf_total == 0);
     const size_t nv = g_verts.size();
+    // DIAG: latch the FIRST multi-matrix (PNMTXIDX) shape that is NOT the big sky dome — the
+    // title logo / sun-rays / clouds are sheared while the single-matrix sky is fine. Capture
+    // vert0's selected matrix (from g_posmtx) so we can see if the per-vertex matrices are stale
+    // (never loaded this draw → identity-ish / leftover) vs a sane modelview.
+    if (!g_pnmtxdbg.have && g_cur_pnmtx && nv >= 12 && nv < 4000) {
+        g_pnmtxdbg.have = true; g_pnmtxdbg.nv = nv; g_pnmtxdbg.mp_valid = valid(mp);
+        const unsigned char mi = g_verts[0].matidx; g_pnmtxdbg.mi0 = mi;
+        for (size_t vi=0; vi<nv; vi++){ unsigned char x=g_verts[vi].matidx; if(x<g_pnmtxdbg.mi_min)g_pnmtxdbg.mi_min=x; if(x>g_pnmtxdbg.mi_max)g_pnmtxdbg.mi_max=x; }
+        if ((unsigned)mi + 2 < 64) for (int r=0;r<3;r++) for(int c=0;c<4;c++) g_pnmtxdbg.row[r*4+c]=xfmem.posMatrices[(mi+r)*4+c];
+        for (int k=0;k<3;k++) g_pnmtxdbg.pos0[k]=g_verts[0].pos[k];
+    }
     // Latch the sky gradient shape's transform (cc==0x0701, the big vtx-color mesh).
     bool latch_skyxf = false;
     if (!g_skyxf.have && g_cur_chan.valid && g_cur_chan.color0 == 0x0701 && nv > 600) {
@@ -907,8 +921,21 @@ void transform_eye() {
         const NgxVertex& v = g_verts[vi];
 
         const float x = v.pos[0], y = v.pos[1], z = v.pos[2];
-        // Multi-matrix (skinned) shapes: select the per-vertex position matrix from the captured
-        // matrix memory by the vertex's PNMTXIDX (row); else the shape's single mCurrentDrawMtx.
+        // Multi-matrix (skinned) shapes: select the per-vertex position matrix by the vertex's
+        // PNMTXIDX (the XF position-matrix-memory ROW). Read the FINAL resolved matrix straight from
+        // Dolphin's XF matrix memory (xfmem.posMatrices) rather than reconstructing it from GX call
+        // hooks — J3D loads these matrices via the INDEXED load (GXLoadPosMtxIndx) and a direct
+        // XF-write fast path that the GXLoadPosMtxImm function hook never sees, so g_posmtx was zero
+        // for them (the title logo / sun-rays / clouds collapsed/sheared). Matrix M occupies
+        // posMatrices[(M+r)*4 + c] (3 rows × 4, row-major). xfmem floats are host-order.
+        // Multi-matrix (skinned/jointed) shapes: per-vertex position matrix selected by PNMTXIDX.
+        // NOTE (2026-06-16): the per-vertex matrices for these (title logo / sun-rays / clouds /
+        // file-select background) are NOT correctly captured yet — J3D loads them via the indexed
+        // path + a direct-XF-write fast path the function hooks miss, and the synchronous source
+        // is still unresolved (see debug_journal/2026-06-16_fileselect_wash.md UPDATE 6). g_posmtx
+        // (populated only by the GXLoadPosMtxImm hook) is the current baseline; reading the lagged
+        // xfmem.posMatrices instead REGRESSED the file-select to radiating garbage. Left at baseline
+        // until the synchronous indexed-matrix capture lands.
         const float* M = m;
         float mm[12];
         if (g_cur_pnmtx && (unsigned)v.matidx + 2 < 64) {
@@ -1127,13 +1154,19 @@ void capture(u32 sh) {
 
 }  // namespace
 
-// Published by the scene_render GXSetProjection tee (0x80362c34) with the
-// authored projection matrix. Only perspective (type 0 = GX_PERSPECTIVE) is kept
-// — the J3D world uses it; 2D HUD uses orthographic which we don't transform here.
+// Published by the scene_render GXSetProjection tee (0x80362c34) with the authored
+// projection matrix. g_proj is the CURRENTLY-ACTIVE projection (perspective OR
+// orthographic) — whichever the game last set, exactly as GX uses it. Each shape's
+// transform_eye consumes the live g_proj, so a J3D shape drawn under an orthographic
+// projection (e.g. the title-logo models) is projected with ITS ortho matrix, not a
+// stale perspective one (which would foreshorten/shear the flat logo). The full 4x4
+// is applied (clip = P·eye incl. row 3 → w=1 for ortho, w=-ez for perspective).
 unsigned long g_proj_persp = 0, g_proj_ortho = 0; float g_last_ortho[16] = {0}; unsigned g_last_ortho_type = 0;
+unsigned g_proj_type = 0;
 void ngx_set_projection(const float* m44, unsigned type) {
-    if (type != 0) { g_proj_ortho++; g_last_ortho_type = type; for (int i=0;i<16;i++) g_last_ortho[i]=m44[i]; return; }
-    g_proj_persp++;
+    if (type != 0) { g_proj_ortho++; g_last_ortho_type = type; for (int i=0;i<16;i++) g_last_ortho[i]=m44[i]; }
+    else g_proj_persp++;
+    g_proj_type = type;
     for (int i = 0; i < 16; i++) g_proj[i] = m44[i];
     g_have_proj = true;
 }
@@ -1157,6 +1190,8 @@ void ngx_frame_publish() {
     g_sky = SkyLatch{};                  // reset for the next frame
     if (g_skyxf.have) g_skyxf_pub = g_skyxf;
     g_skyxf = SkyXf{};
+    if (g_pnmtxdbg.have) g_pnmtxdbg_pub = g_pnmtxdbg;
+    g_pnmtxdbg = PnmtxDbg{};
     g_frame_swaps++;
 }
 
@@ -1287,6 +1322,35 @@ SUNBRIGHT_OVERRIDE(ov_gxloadposmtximm, 0x80362e0cu) {
         }
     }
     if (RecompFunc o = recomp_raw(0x80362e0cu)) o(cpu); else call_ppc(cpu, cpu.lr);
+}
+
+// GXLoadPosMtxIndx(u16 index, GXPosNrmMtx mtxIndex) @ 0x80362e48 — the INDEXED position-matrix
+// load used by J3DShapeMtxMulti / billboards / skinned shapes (via J3DSys::loadPosMtxIndx →
+// loadMtxIndx_*). UNLIKE the immediate form, the matrix is NOT in the call args — it lives in the
+// guest position-matrix array (CPArray::XF_A, bound by GXSetArray) and is referenced by `index`.
+// Hooking only the immediate form left g_posmtx ZERO for these shapes → they transformed by a null
+// matrix (collapsed/sheared) — the title logo / sun-rays / clouds bug. Replicate the indexed read:
+// matrix = XF_A_base + index*stride (12 big-endian floats, 3×4 row-major) → g_posmtx[slot].
+u32 g_pmi_base=0, g_pmi_stride=0, g_pmi_index=0, g_pmi_slot=0, g_pmi_mp=0; unsigned long g_pmi_calls=0;
+SUNBRIGHT_OVERRIDE(ov_gxloadposmtxindx, 0x80362e48u) {
+    if (g_enabled) {
+        const u32 index = cpu.gpr[3] & 0xFFFF, slot = cpu.gpr[4];
+        // The pos-matrix array base (CPArray::XF_A) is set synchronously by J3DShape::draw to
+        // j3dSys.mCurrentDrawMtx (J3DSYS+0x104) — for a multi-matrix shape that field holds the
+        // base of mDrawMtxBuf[view] (the per-joint draw-matrix array). g_main_cp_state lags (it's
+        // updated on Dolphin's GPU thread AFTER we run), so read the live J3D field instead.
+        constexpr u32 J3DSYS_ = 0x804045DCu;
+        u32 base = mem_r32(J3DSYS_ + 0x104);
+        const u32 stride = 48;   // sizeof(Mtx) = 3×4 f32
+        g_pmi_base=base; g_pmi_stride=stride; g_pmi_index=index; g_pmi_slot=slot; g_pmi_calls++;
+        const u32 mp = base + index * stride;
+        g_pmi_mp = mp;
+        // DIAGNOSTIC ONLY (do not write g_posmtx): reading base+index*48 from [J3DSYS+0x104] gave
+        // WRONG matrices (vert0 eye-z behind camera) — the index/base mapping is off. Capturing
+        // the indexed matrices correctly + synchronously is the open work (journal UPDATE 6).
+
+    }
+    if (RecompFunc o = recomp_raw(0x80362e48u)) o(cpu); else call_ppc(cpu, cpu.lr);
 }
 
 // GXSetChanCtrl(chan, enable, amb_src, mat_src, light_mask, diff_fn, attn_fn) @ 0x8035f6d0 —
@@ -1476,6 +1540,17 @@ int sb_ngx_shape_dump(char* out, int cap) {
             s.M[0],s.M[1],s.M[2],s.M[3], s.M[4],s.M[5],s.M[6],s.M[7], s.M[8],s.M[9],s.M[10],s.M[11],
             s.P[0],s.P[1],s.P[2],s.P[3], s.P[4],s.P[5],s.P[6],s.P[7], s.P[8],s.P[9],s.P[10],s.P[11], s.P[12],s.P[13],s.P[14],s.P[15]);
     }
+    if (g_pnmtxdbg_pub.have) { const PnmtxDbg& d = g_pnmtxdbg_pub;
+        n += snprintf(out + n, cap - n,
+            "  PNMTX-DBG (first multi-matrix non-sky shape, nv=%zu mp_valid=%d):\n"
+            "    matidx vert0=%u  range=[%u..%u]  pos0=(%.2f,%.2f,%.2f)\n"
+            "    selected posmtx[%u] 3x4=[%.3f %.3f %.3f %.2f / %.3f %.3f %.3f %.2f / %.3f %.3f %.3f %.2f]\n",
+            d.nv, d.mp_valid, d.mi0, d.mi_min, d.mi_max, d.pos0[0],d.pos0[1],d.pos0[2], d.mi0,
+            d.row[0],d.row[1],d.row[2],d.row[3], d.row[4],d.row[5],d.row[6],d.row[7], d.row[8],d.row[9],d.row[10],d.row[11]);
+    }
+    n += snprintf(out + n, cap - n,
+        "  PosMtxIndx hook: calls=%lu  XF_A base=%08x stride=%u  last index=%u slot=%u mp=%08x\n",
+        g_pmi_calls, g_pmi_base, g_pmi_stride, g_pmi_index, g_pmi_slot, g_pmi_mp);
 
     // N5 per-material TEV capture stats.
     n += snprintf(out + n, cap - n,

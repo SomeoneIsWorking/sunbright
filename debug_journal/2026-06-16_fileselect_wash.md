@@ -229,3 +229,61 @@ Lighting/ambient (above), blend (NOBLEND unchanged), fog (fsel=0), copy-filter (
 palette/CI (sky is RGB5A3 not CI; palette path native), texture DECODE math (RGB5A3/RGB565
 channel-expansion verified faithful), col0 brightness (nolight no-op on the sky), present/sRGB
 (rasters match through the same present).
+
+---
+## UPDATE 6 (2026-06-16, session 4) — THE WASH IS MULTI-MATRIX GEOMETRY, NOT SHADING
+
+User correction (ground truth): "title screen and file select still render garbage." My prior
+"largely a confound" conclusion was wrong as a takeaway — the screens ARE broken. Confirmed with
+fresh headless captures + a settled-state oracle (`oracle_title.png`):
+- **Title:** logo / sun god-rays / clouds render SHEARED + displaced; the base sky GRADIENT
+  (ti=11, single-matrix `mCurrentDrawMtx`) is the ONLY correct 3D element. J2D overlay
+  (©2002 text) is fine.
+- **File-select:** J2D menu (boxes/text/OPTIONS) renders CORRECTLY; the 3D BACKGROUND is
+  garbage colored triangles radiating from screen center.
+
+### ROOT CAUSE (pinned, not a deduction)
+The broken elements are **multi-matrix (PNMTXIDX) shapes**. ngx's `g_posmtx` (the per-vertex
+position-matrix memory consumed by `transform_eye`) was **ZERO** for them — proven by the new
+`/ngxshape` PNMTX-DBG latch: first multi-matrix non-sky shape, `matidx vert0=3`, selected
+`posmtx[3]` = all zeros → those vertices transform by a null matrix → collapse/shear.
+
+WHY g_posmtx was zero: ngx only hooked the IMMEDIATE matrix load `GXLoadPosMtxImm` (0x80362e0c).
+J3DShapeMtxMulti (the logo/billboards/skinned shapes) loads matrices via the **INDEXED** path
+`J3DSys::loadPosMtxIndx` (0x802e07b8) → `GXLoadPosMtxIndx` (0x80362e48) — AND a direct-XF-write
+fast path — neither of which the immediate hook sees. (funcs: `loadMtxIndx_*` 0x802dfaac..,
+`load__16J3DShapeMtxMultiCFv` 0x802dfd3c.)
+
+### DEAD ENDS (do NOT re-walk)
+1. **Ortho-projection hypothesis** (logo drawn under ortho, ngx dropped ortho projections):
+   FALSE for the shear. BUT it exposed a real, separate bug — `ngx_set_projection` DROPPED all
+   `type!=0` (ortho) projections (22722 ortho vs 10907 persp sets/frame). FIXED: track the
+   current projection of EITHER type per-shape (scene_render.cpp publishes the squeezed guest
+   matrix GX packs; ngx_j3d_shape.cpp `ngx_set_projection` stores both, sets `g_proj_type`).
+   This fix is CORRECT and kept, but did not fix the shear.
+2. **`g_main_cp_state.array_bases[CPArray::XF_A]`** (the indexed pos-matrix array base): LAGS —
+   it's updated on Dolphin's async GPU thread AFTER the recomp runs. At the recomp
+   GXLoadPosMtxIndx hook it held a STALE base (a 2D/J2D matrix array, 0.02-scale) → wrong matrix.
+3. **`[J3DSYS+0x104]` (mCurrentDrawMtx) + index*48** as the array base (it IS the XF_A base set
+   by J3DShape::draw's inlined `GXSetArray(GX_POS_MTX_ARRAY=21, base, stride=48)` @0x8035e4c4):
+   read SYNCHRONOUSLY but gave a WRONG matrix (vert0 eye-z **+17307** = behind camera, w<0).
+   The index/base mapping is off in a way I couldn't pin.
+4. **`xfmem.posMatrices[(matidx+r)*4+c]`** (the FINAL resolved XF matrix memory): gave the
+   CORRECT matrix for the latched shape (eye-z **-7308**, in front) → logo elements became
+   recognizable. BUT xfmem LAGS (async GPU thread) so OTHER shapes read stale/wrong-object
+   matrices → the file-select **radiating triangles** + title red wash. A degenerate(all-zero)
+   guard did NOT help (the bad matrices are non-zero stale, not zero).
+
+### THE REMAINING WORK (precise)
+Capture each multi-matrix shape's per-vertex matrices **SYNCHRONOUSLY and CORRECTLY** at
+J3DShape::draw time. Candidate: the fork's `LoadIndexedXF` seam (`sb_slot_xf_indexed`,
+XFStructs.cpp:302) — Dolphin resolves the correct base there (that's why the oracle is right) and
+`LoadIndexedXF(array, index, address, size)` HAS the XF dest `address` (slot = address/4). Extend
+that hook signature to pass `address`, capture array==12 loads into `g_posmtx[address/4]`. Open
+risk: it runs on Dolphin's GPU thread — must confirm the NGX path processes the FIFO
+synchronously w.r.t. the recomp J3DShape::draw capture (else 1-frame lag / data race on g_posmtx;
+double-buffer if needed). Also handle the direct-XF-write matrix path (`sb_slot_xf_reg`).
+
+Current tree state (UNCOMMITTED WIP): projection fix (KEEP), PNMTX-DBG + PosMtxIndx-hook
+diagnostics (KEEP — durable), xfmem multi-matrix read with degenerate guard (REGRESSES
+file-select to radiating triangles — needs the synchronous source above before it's correct).

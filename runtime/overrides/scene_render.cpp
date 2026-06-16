@@ -47,18 +47,13 @@ bool g_in_hud = false;
 static void ov_gx_projection(CPUState& cpu) {
     const u32 mtx = cpu.gpr[3];
     const u32 type = cpu.gpr[4];
-    // Publish the projection to the native renderer (ngx_j3d_shape). It must match what
-    // Dolphin's GX render uses: in widescreen the GX render gets the SQUEEZED projection
-    // (m00 × 0.75, applied below) and is presented at 16:9, so the ngx capture must apply
-    // the SAME squeeze — else ngx renders a narrower 4:3 FOV that gets stretched to 16:9
-    // (squished geometry + side parts cut off) and won't match the reference.
+    // The projection is published to the native renderer (ngx_set_projection) BELOW, after
+    // the widescreen squeeze is applied to the guest matrix — so ngx gets the EXACT matrix
+    // GX packs (perspective AND orthographic, both squeezed identically). Publishing the
+    // pre-squeeze copy here (and dropping ortho) was the title/file-select bug: J3D shapes
+    // drawn under an orthographic projection (the title logo) were projected with a stale
+    // perspective matrix → foreshortened/sheared.
     extern void ngx_set_projection(const float*, unsigned);
-    if (mtx >= 0x80000000u && mtx < 0x81800000u) {
-        float pm[16];
-        for (int i = 0; i < 16; i++) pm[i] = mem_rf32(mtx + i * 4);
-        if (type == GX_PERSPECTIVE && widescreen_on()) pm[0] *= ws_squeeze_scale();
-        ngx_set_projection(pm, type);
-    }
     static const bool log = getenv("SUNBRIGHT_RENDERPORT_LOG") != nullptr;
     if (log) {
         if (g_in_hud) std::fprintf(stderr, "[renderport] GXSetProjection DURING HUD type=%u m00=%.4f m03=%.4f\n",
@@ -103,6 +98,14 @@ static void ov_gx_projection(CPUState& cpu) {
         mem_wf32(mtx + 0x00, m00 * scale);
         if (is2d) { m03 = mem_rf32(mtx + 0x0c); mem_wf32(mtx + 0x0c, m03 * scale); }
         patched = true;
+    }
+    // Publish the (now-squeezed) matrix GX will pack to the native renderer, with its type.
+    // ngx applies whichever projection is current per shape — so ortho-drawn J3D (the title
+    // logo) gets its ortho matrix, not a stale perspective one.
+    if (mtx >= 0x80000000u && mtx < 0x81800000u) {
+        float pm[16];
+        for (int i = 0; i < 16; i++) pm[i] = mem_rf32(mtx + i * 4);
+        ngx_set_projection(pm, type);
     }
     if (RecompFunc orig = recomp_raw(GX_SET_PROJECTION)) orig(cpu);
     else { if (patched) { mem_wf32(mtx + 0x00, m00); if (is2d) mem_wf32(mtx + 0x0c, m03); } call_ppc(cpu, cpu.lr); return; }
