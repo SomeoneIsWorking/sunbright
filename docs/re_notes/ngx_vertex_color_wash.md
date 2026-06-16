@@ -147,6 +147,29 @@ konst/scale darkening is lost. The decisive instruments exist: SUNBRIGHT_DBG_RAS
 SUNBRIGHT_DBG_TEXCOLOR (Dolphin side), SUNBRIGHT_NGX_TEVDBG=tex|ras|cat (ngx side), /ngxshape FULL
 state dump (combiner per stage + konst + tevreg).
 
+## ⭐⭐⭐ UPDATE 5 (2026-06-16): clean decomposition — TWO causes: missing MIPMAPS + lighting saturation
+Matched-state 5-way measurement of the SAME floor tile region (scratch/screenshots: m_gx,
+gx_col0, ngx_norm_m, ngx_ras_m, ngx_tex2):
+  GX:  normal=97  col0=196(0.77)         → impliedTexTerm = 97/0.77 = 126
+  ngx: normal=223 col0=255(SAT) tex=223  → floor = tex×col0 (simple 08f8af modulate)
+So the floor wash = **col0 1.3× too bright (255 vs 196) × texture 1.77× too bright (223 vs 126)**
+= 2.3×. BOTH contribute (my UPDATE-3 "lighting is correct" was imprecise — ngx col0 SATURATES
+to 255 where GX is 0.77).
+
+CAUSE A — TEXTURE = **missing mipmaps**. The floor texture (ti=10) is CMPR 64×64, ngx rawmean=227
+(a genuinely bright tile; decode is faithful). ngx uploads ONE mip level and samples mip0 (sampler
+mipmapMode=NEAREST, no mip chain). GX samples the texture's MIP CHAIN; the floor UV tiles many
+times → heavy minification → GX averages to ~126, while ngx (mip0 + bilinear + REPEAT) ALIASES
+toward the bright tile faces (~227). Depth-dependent (more minified = brighter), matching the data.
+FIX: decode + upload the TIMG's full mip chain (GC TIMGs store mipCount levels) and use a trilinear
+sampler with proper LOD. (ngx_present.cpp make_dev_image/texture_for/sampler; capture_textures reads
+only mip0 today.) This is the dominant fix.
+
+CAUSE B — LIGHTING = col0 saturates (255) vs GX (196, 0.77). ngx illum for the sun-facing floor
+verts exceeds 1.0 (light0 sun + light1 white-no-falloff). GX's illum is 0.77 (not saturated) with
+the SAME lights/ambient/mat (verified). So an input/term still diverges (~1.3×) — secondary; revisit
+after mipmaps. (Earlier per-vertex breakdown: up-facing reg-lit illum avg 0.607, max 1.106.)
+
 ## Next steps
 - Audit the per-shape col0 source for the NOT-PRESENT CLR0 case (12.7M verts) — what should
   col0 be there (matColor? persisted channel?). Likely the dominant remaining white.

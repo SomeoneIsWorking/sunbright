@@ -1413,20 +1413,25 @@ int sb_ngx_shape_dump(char* out, int cap) {
             brs.push_back({area, (float)(sy/cnt), B.tev_index, B.vcount, B.tex[0].addr});
         }
         std::sort(brs.begin(), brs.end(), [](const BR&a,const BR&b){return a.area>b.area;});
-        // Decode the floor batch's texture (ti=10-ish, biggest textured) to check its brightness.
-        for (const auto& BB : bats) if (BB.tex[0].addr && BB.tex[0].w && BB.tex[0].h) {
-            const NgxTexBind& t = BB.tex[0];
+        // Decode the top batches' tex0 raw mean (skip degenerate brs[0]) — the visible floor/
+        // buildings — to check whether ngx's DECODED texture is itself too bright vs GX.
+        int td=0;
+        for (size_t bi = 0; bi < brs.size() && td < 4; bi++) {
+            const NgxRenderBatch* bp = nullptr;
+            for (const auto& BB : bats) if (BB.tev_index == brs[bi].ti && BB.tex[0].addr) { bp = &BB; break; }
+            if (!bp) continue;
+            const NgxTexBind& t = bp->tex[0];
+            if (!t.w || !t.h || t.w > 1024 || t.h > 1024) continue;
             const unsigned char* src = sb_ram_fast(t.addr);
             const unsigned char* tl = t.tlut_addr ? sb_ram_fast(t.tlut_addr) : nullptr;
-            if (src && t.w <= 1024 && t.h <= 1024) {
-                std::vector<uint32_t> px((size_t)t.w*t.h);
-                sb_tex_decode(px.data(), src, t.w, t.h, t.fmt, tl, t.tlut_fmt);
-                double r=0,g=0,b=0; for (uint32_t v:px){r+=v&0xFF;g+=(v>>8)&0xFF;b+=(v>>16)&0xFF;}
-                size_t nn=px.size();
-                n += snprintf(out+n, cap-n, "  TEX0 %08x fmt=%u %ux%u mean=(%.0f,%.0f,%.0f)\n",
-                    t.addr, t.fmt, t.w, t.h, r/nn, g/nn, b/nn);
-            }
-            break;
+            if (!src) continue;
+            std::vector<uint32_t> px((size_t)t.w*t.h);
+            sb_tex_decode(px.data(), src, t.w, t.h, t.fmt, tl, t.tlut_fmt);
+            double r=0,g=0,b=0; for (uint32_t v:px){r+=v&0xFF;g+=(v>>8)&0xFF;b+=(v>>16)&0xFF;}
+            size_t nn=px.size();
+            n += snprintf(out+n, cap-n, "  TEX0[ti=%d area=%.2f] %08x fmt=%u %ux%u rawmean=(%.0f,%.0f,%.0f)=%.0f\n",
+                brs[bi].ti, brs[bi].area, t.addr, t.fmt, t.w, t.h, r/nn, g/nn, b/nn, (r+g+b)/3/nn);
+            td++;
         }
         n += snprintf(out+n, cap-n, "  TOP batches by screen area (ndc):\n");
         for (size_t i = 0; i < brs.size() && i < 8; i++) {
