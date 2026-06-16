@@ -145,7 +145,9 @@ unsigned long g_clr0fmt_hist[8] = {0};  // CLR0 VAT format (0=565,1=888,2=888x,3
 size_t g_bigany_verts = 0; u16 g_bigany_cc = 0; bool g_bigany_hasnrm=false, g_bigany_matvtx=false, g_bigany_en=false;
 unsigned g_bigany_clr0cls=0; u8 g_bigany_vcol[3]={0}; double g_bigany_vcolmean=0; u32 g_bigany_clr0base=0;
 unsigned long g_pnmtx_shapes=0, g_pnmtx_verts=0; unsigned g_pnmtx_maxnelem=0, g_max_nelem=0;
-bool g_bigany_pnmtx=false;
+bool g_bigany_pnmtx=false; u32 g_bigany_vcd=0, g_bigany_posbase=0, g_bigany_posstride=0;
+unsigned long g_pnmtx_applied=0, g_pnmtx_nz=0;
+float g_bigany_pmin[3]={0}, g_bigany_pmax[3]={0}, g_bigany_pos0[3]={0};
 
 // J3DColorBlock variants (vtable ptrs, gmse01; from the block ctor/dtor disasm:
 // LightOn sets 0x803E0CD4, LightOff sets 0x803E0D38). Field offsets from
@@ -829,6 +831,7 @@ void transform_eye() {
         if (g_cur_pnmtx && (unsigned)v.matidx + 2 < 64) {
             for (int r = 0; r < 3; r++) for (int c = 0; c < 4; c++) mm[r*4+c] = g_posmtx[v.matidx + r][c];
             M = mm;
+            g_pnmtx_applied++; if (v.matidx) g_pnmtx_nz++;   // DBG: per-vertex-matrix path firing?
         }
         const float ex = M[0]*x + M[1]*y + M[2]*z  + M[3];
         const float ey = M[4]*x + M[5]*y + M[6]*z  + M[7];
@@ -994,6 +997,11 @@ void capture(u32 sh) {
           g_bigany_vcolmean = s/g_verts.size();
           g_bigany_clr0base = cp.array_base[2];
           g_bigany_pnmtx = (cp.vcd_lo & 1) != 0;
+          g_bigany_vcd = cp.vcd_lo; g_bigany_posbase = cp.array_base[0]; g_bigany_posstride = cp.array_stride[0];
+          // raw model-space position bbox: wild ⇒ bad vertex data; sane ⇒ matrix is the culprit
+          float pmn[3]={1e30f,1e30f,1e30f}, pmx[3]={-1e30f,-1e30f,-1e30f};
+          for (auto&vv:g_verts) for(int k=0;k<3;k++){ if(vv.pos[k]<pmn[k])pmn[k]=vv.pos[k]; if(vv.pos[k]>pmx[k])pmx[k]=vv.pos[k]; }
+          for(int k=0;k<3;k++){ g_bigany_pmin[k]=pmn[k]; g_bigany_pmax[k]=pmx[k]; g_bigany_pos0[k]=g_verts[0].pos[k]; }
       }
     }
     if (!g_verts.empty()) {
@@ -1413,9 +1421,12 @@ int sb_ngx_shape_dump(char* out, int cap) {
         g_colcat_n[3], g_colcat_n[3]?g_colcat_sum[3]/g_colcat_n[3]:0.0,
         g_colcat_n[4], g_colcat_n[4]?g_colcat_sum[4]/g_colcat_n[4]:0.0);
     n += snprintf(out+n, cap-n,
-        "  PNMTXIDX shapes=%lu verts=%lu maxnelem=%u | max nelem=%u | posmtx_loads=%lu | bigShape verts=%zu pnmtx=%d\n",
-        g_pnmtx_shapes, g_pnmtx_verts, g_pnmtx_maxnelem, g_max_nelem, g_posmtx_loads,
-        g_bigany_verts, g_bigany_pnmtx);
+        "  PNMTXIDX shapes=%lu verts=%lu | posmtx_loads=%lu applied=%lu nz=%lu | bigShape verts=%zu pnmtx=%d vcd=%08x posbase=%08x stride=%u\n"
+        "    bigShape model-pos bbox: x[%.1f..%.1f] y[%.1f..%.1f] z[%.1f..%.1f]  pos0=(%.1f,%.1f,%.1f)\n",
+        g_pnmtx_shapes, g_pnmtx_verts, g_posmtx_loads, g_pnmtx_applied, g_pnmtx_nz,
+        g_bigany_verts, g_bigany_pnmtx, g_bigany_vcd, g_bigany_posbase, g_bigany_posstride,
+        g_bigany_pmin[0],g_bigany_pmax[0],g_bigany_pmin[1],g_bigany_pmax[1],g_bigany_pmin[2],g_bigany_pmax[2],
+        g_bigany_pos0[0],g_bigany_pos0[1],g_bigany_pos0[2]);
     n += snprintf(out+n, cap-n,
         "  up-facing reg-lit illum (visible floor/ground): avg=%.3f max=%.3f (n=%lu) @max amb=%.3f ndl=%.3f\n",
         g_uplit_n?g_uplit_sum/g_uplit_n:0.0, g_uplit_max, g_uplit_n, g_uplit_amb, g_uplit_ndl);
