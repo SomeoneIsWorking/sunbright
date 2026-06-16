@@ -84,6 +84,47 @@ cross-launch camera drift, and tev_index decoded out of range). Point it at a sk
 that batch's tev_index + bound texmaps + col0; if NO batch covers the sky pixel, it's (A)/(B).
 Also fix the separate hardcoded-clear-color bug (use the game's GXSetCopyClear).
 
+## ✅ UPDATE 3 (2026-06-16 pm) — THE WASH IS ti=9, A FULLSCREEN ADDITIVE LAYER (not the sky, not lighting)
+Built a reliable **pixel→batch CPU rasterizer probe** (`/pixbatch`, `runtime/overrides/ngx_j3d_shape.cpp`)
+— no AA, no readback, no cross-launch drift — plus a batch **clip-dump** (`/pixbatch?x=-999&y=<ti>`:
+per-vertex clip[4], w-sign split, visible-mean rgb, PE/TEV/texmap/UV), a **sky-XF matrix latch**, and
+`SUNBRIGHT_NGX_ONLYTI`/`SKIPTI` to isolate a material on-screen. These DECISIVELY corrected the diagnosis:
+
+- **The sky shape is ti=11**, a vtx-color gradient mesh. Its vertex colors ARE blue (visible-mean
+  rgb ≈ (0.21,0.58,0.89) = (54,148,227) ≈ the oracle sky). **`SUNBRIGHT_NGX_ONLYTI=11` renders the sky
+  BLUE (69,142,194).** So the sky is captured AND rendered correctly — hypothesis A (uncaptured shape)
+  is FALSE; the lighting/ambient/texture investigations were all chasing the wrong shape. (xfhist never
+  saw blue because the sky's blue is a CLR0 **vertex** attribute, which xfhist doesn't capture — it
+  only logs the lighting state. The whole "no blue anywhere" conclusion was a category error.)
+- **The wash is ti=9**: a single-stage material that MODULATEs texmap0 (`80a83240`, a uniform GRAY
+  ~0.48 I4 8×8 *static* texture — raw bytes 0x7a/0x7b, decodes correctly) by the white vertex colour,
+  drawn at FAR depth over the sky with an **ADDITIVE blend (PE src=GX_BL_ONE=1, dst=INVSRCALPHA=5)**.
+  Additive gray over the blue sky → washes it toward white. **`SUNBRIGHT_NGX_SKIPTI=9` → sky turns
+  BLUE (skyTop 57,162,224 ≈ oracle 40,141,227; med 164 ≈ oracle 158).** That is the proof.
+- GX draw counts match the oracle (233 vs 234, dl_prims 21079 identical) → ngx isn't missing geometry.
+
+### The OPEN root cause (named, not yet fixed): ti=9's geometry is mis-handled near the camera plane
+ti=9 (and the sky ti=11) have HUGE model coords (sky pos0 = (91021,0,0)); the modelview is a valid
+rotation with a tiny translation, so eye coords are ~1e5 and the shapes **straddle the camera** — w
+ranges from −5e4 to +5e4, 76% of ALL scene verts have w<0 (behind), NDC explodes (x up to 2959). On
+the real GPU (oracle) this skybox-scale geometry renders fine; in ngx the additive ti=9 ends up
+covering the whole screen (ONLYTI=9 = 100% coverage) and washes. Why ngx differs from the oracle given
+identical recomp matrices is the open question. Leading hypotheses for next session:
+  1. **Additive OVERDRAW from straddling triangles.** ti=9 alone over the dark clear = (154,173,178)
+     (no saturation); over the bright scene the additive accumulates to white. The mis-projected
+     straddling triangles may overdraw the sky region many times → src=ONE saturates. Test:
+     near-plane CLIP (the faithful GPU behaviour ngx omits) or a near-cull A/B.
+  2. **ngx's modelview/projection for ti=9 differs from the GPU's.** Compare ngx's computed clip vs
+     **xfmem ground truth** (the GPU's actual posMatrix+projection) at ti=9's draw. The sky-XF latch
+     shows ngx's P is a standard GX perspective (w=−ez), so suspect the modelview read timing or a
+     second projection (note: `ngx_set_projection` DROPS non-perspective (ortho) sets — 1865 ortho vs
+     784 persp per frame; if ti=9 is drawn under an ortho/other projection that ngx ignored, it uses
+     the stale perspective → garbage). **CHECK THIS FIRST** — it's the most likely culprit.
+Tooling for next time: `/pixbatch?x=NDC&y=NDC` (which batch wins a pixel, full depth order),
+`/pixbatch?x=-999&y=<ti>` (clip dump + PE/TEV/texmap/UV for a tev_index), `gp ngx` SKY-XF + PROJ-sets
+lines, `SUNBRIGHT_NGX_ONLYTI`/`SKIPTI=<ti>`. Also still TODO: the hardcoded 3D clear colour
+(`ngx_present.cpp:639` = (0.10,0.12,0.18) instead of GXSetCopyClear) — separate, real, unfixed.
+
 ## (superseded) earlier framing — kept for the trail
 ## STILL OPEN — the wash is a WHITE CLOUD over a BLUE BACKGROUND that ngx renders white
 Established this session (all measured, not guessed):

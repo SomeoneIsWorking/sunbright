@@ -756,6 +756,11 @@ float         g_eye_min[3] = {0, 0, 0}, g_eye_max[3] = {0, 0, 0};
 // geometry has clip.w>0 (in front of the near plane) and NDC x,y in [-1,1].
 float         g_proj[16] = {0};
 bool          g_have_proj = false;
+// Sky-shape (cc==0x0701, the vtx-color gradient) transform latch: the modelview + projection
+// + eye/clip of its FIRST vertex, captured at its draw — to diagnose the mis-projection.
+struct SkyXf { bool have=false; float M[12]={0}; float P[16]={0}; float pos0[3]={0};
+               float eye0[3]={0}; float clip0[4]={0}; u32 mtxp=0; bool pnmtx=false; size_t nv=0; };
+SkyXf g_skyxf, g_skyxf_pub;
 unsigned long g_ndc_total = 0, g_ndc_wpos = 0, g_ndc_inbox = 0;
 
 // Clip-space triangle SNAPSHOT for the native Vulkan mesh render (vk_mesh.cpp /
@@ -887,6 +892,14 @@ void transform_eye() {
     float nm[9]; if (have_nm) for (int i = 0; i < 9; i++) nm[i] = rf(nmp + i * 4);
     bool first = (g_xf_total == 0);
     const size_t nv = g_verts.size();
+    // Latch the sky gradient shape's transform (cc==0x0701, the big vtx-color mesh).
+    bool latch_skyxf = false;
+    if (!g_skyxf.have && g_cur_chan.valid && g_cur_chan.color0 == 0x0701 && nv > 600) {
+        g_skyxf.have = true; latch_skyxf = true; g_skyxf.nv = nv; g_skyxf.mtxp = mp; g_skyxf.pnmtx = g_cur_pnmtx;
+        for (int i = 0; i < 12; i++) g_skyxf.M[i] = m[i];
+        for (int i = 0; i < 16; i++) g_skyxf.P[i] = g_proj[i];
+        if (nv) for (int k = 0; k < 3; k++) g_skyxf.pos0[k] = g_verts[0].pos[k];
+    }
     if (g_have_proj) g_clip.assign(nv * 4, 0.0f);
     g_litrgba.assign(nv * 4, 0.0f);
     g_uvs.assign(nv * 16, 0.0f);
@@ -966,6 +979,8 @@ void transform_eye() {
             const float cz = p[8]*ex + p[9]*ey + p[10]*ez + p[11];
             const float cw = p[12]*ex + p[13]*ey + p[14]*ez + p[15];
             float* cp = &g_clip[vi * 4]; cp[0]=cx; cp[1]=cy; cp[2]=cz; cp[3]=cw;
+            if (latch_skyxf && vi == 0) { g_skyxf.eye0[0]=ex; g_skyxf.eye0[1]=ey; g_skyxf.eye0[2]=ez;
+                g_skyxf.clip0[0]=cx; g_skyxf.clip0[1]=cy; g_skyxf.clip0[2]=cz; g_skyxf.clip0[3]=cw; }
             g_ndc_total++;
             if (cw > 0.0f) {
                 g_ndc_wpos++;
@@ -1106,8 +1121,10 @@ void capture(u32 sh) {
 // Published by the scene_render GXSetProjection tee (0x80362c34) with the
 // authored projection matrix. Only perspective (type 0 = GX_PERSPECTIVE) is kept
 // — the J3D world uses it; 2D HUD uses orthographic which we don't transform here.
+unsigned long g_proj_persp = 0, g_proj_ortho = 0; float g_last_ortho[16] = {0}; unsigned g_last_ortho_type = 0;
 void ngx_set_projection(const float* m44, unsigned type) {
-    if (type != 0) return;
+    if (type != 0) { g_proj_ortho++; g_last_ortho_type = type; for (int i=0;i<16;i++) g_last_ortho[i]=m44[i]; return; }
+    g_proj_persp++;
     for (int i = 0; i < 16; i++) g_proj[i] = m44[i];
     g_have_proj = true;
 }
@@ -1129,6 +1146,8 @@ void ngx_frame_publish() {
     g_batches[g_cur].clear();
     if (g_sky.have) g_sky_pub = g_sky;   // publish this frame's sky breakdown
     g_sky = SkyLatch{};                  // reset for the next frame
+    if (g_skyxf.have) g_skyxf_pub = g_skyxf;
+    g_skyxf = SkyXf{};
     g_frame_swaps++;
 }
 
@@ -1430,6 +1449,25 @@ int sb_ngx_shape_dump(char* out, int cap) {
         g_ndc_inbox, g_ndc_total ? 100.0 * (double)g_ndc_inbox / (double)g_ndc_total : 0.0,
         g_frame_swaps);
 
+    // Projection-type accounting + the sky gradient shape's actual transform (mis-projection RE).
+    n += snprintf(out + n, cap - n, "  PROJ sets: perspective=%lu orthographic=%lu (last_ortho_type=%u)\n",
+        g_proj_persp, g_proj_ortho, g_last_ortho_type);
+    if (g_last_ortho_type) n += snprintf(out + n, cap - n,
+        "    last_ortho P=[%.3f %.3f %.3f %.3f / %.3f %.3f %.3f %.3f / %.3f %.3f %.3f %.3f / %.3f %.3f %.3f %.3f]\n",
+        g_last_ortho[0],g_last_ortho[1],g_last_ortho[2],g_last_ortho[3], g_last_ortho[4],g_last_ortho[5],g_last_ortho[6],g_last_ortho[7],
+        g_last_ortho[8],g_last_ortho[9],g_last_ortho[10],g_last_ortho[11], g_last_ortho[12],g_last_ortho[13],g_last_ortho[14],g_last_ortho[15]);
+    if (g_skyxf_pub.have) { const SkyXf& s = g_skyxf_pub;
+        n += snprintf(out + n, cap - n,
+            "  SKY-XF (cc=0701 gradient, nv=%zu pnmtx=%d mtxp=%08x):\n"
+            "    pos0=(%.2f,%.2f,%.2f) eye0=(%.1f,%.1f,%.1f) clip0=(%.1f,%.1f,%.2f,%.4g)\n"
+            "    M(modelview 3x4)=[%.3f %.3f %.3f %.2f / %.3f %.3f %.3f %.2f / %.3f %.3f %.3f %.2f]\n"
+            "    P(proj 4x4)=[%.4f %.4f %.4f %.3f / %.4f %.4f %.4f %.3f / %.4f %.4f %.4f %.3f / %.4f %.4f %.4f %.3f]\n",
+            s.nv, s.pnmtx, s.mtxp, s.pos0[0],s.pos0[1],s.pos0[2], s.eye0[0],s.eye0[1],s.eye0[2],
+            s.clip0[0],s.clip0[1],s.clip0[2],s.clip0[3],
+            s.M[0],s.M[1],s.M[2],s.M[3], s.M[4],s.M[5],s.M[6],s.M[7], s.M[8],s.M[9],s.M[10],s.M[11],
+            s.P[0],s.P[1],s.P[2],s.P[3], s.P[4],s.P[5],s.P[6],s.P[7], s.P[8],s.P[9],s.P[10],s.P[11], s.P[12],s.P[13],s.P[14],s.P[15]);
+    }
+
     // N5 per-material TEV capture stats.
     n += snprintf(out + n, cap - n,
         "  TEV material: found=%lu none=%lu unknown_vt=%lu  unique_states=%zu\n"
@@ -1711,19 +1749,22 @@ int sb_ngx_shape_dump(char* out, int cap) {
                 brs[bi].ti, brs[bi].area, t.addr, t.fmt, t.w, t.h, r/nn, g/nn, b/nn, (r+g+b)/3/nn);
             td++;
         }
-        n += snprintf(out+n, cap-n, "  TOP batches by screen area (ndc):\n");
-        for (size_t i = 0; i < brs.size() && i < 8; i++) {
+        n += snprintf(out+n, cap-n, "  TOP batches by screen area (ndc) [vmean=w>0 visible mean rgb, blend/atest from PE]:\n");
+        for (size_t i = 0; i < brs.size() && i < 16; i++) {
             const BR& b = brs[i];
             const NgxTevState* s = (b.ti>=0 && b.ti<nst) ? &sts[b.ti] : nullptr;
-            // first vertex's col0 (the rgba fed to the shader) for this batch
-            float r=0,g=0,bl=0; for (const auto& B2:bats) if (B2.tev_index==b.ti && B2.vcount){
-                if (B2.vstart<snap.size()){ r=snap[B2.vstart].rgba[0]; g=snap[B2.vstart].rgba[1]; bl=snap[B2.vstart].rgba[2]; } break; }
+            // visible (w>0) mean rgb across ALL batches of this tev_index
+            double vr=0,vg=0,vb=0; unsigned vn=0;
+            for (const auto& B2:bats) if (B2.tev_index==b.ti)
+                for (uint32_t v=B2.vstart; v<B2.vstart+B2.vcount && v<snap.size(); v++)
+                    if (snap[v].clip[3]>1e-4f){ vr+=snap[v].rgba[0]; vg+=snap[v].rgba[1]; vb+=snap[v].rgba[2]; vn++; }
             const u16 bcc = (b.ti>=0 && b.ti<(int)TEVSTATE_CAP) ? g_tev_cc[b.ti] : 0;
             const char* mcat = bcc==0xFFFF ? "noblk" : ((bcc&1)?((bcc&2)?"vtx/lit":"vtx/flat"):((bcc&2)?"reg/lit":"reg/flat"));
-            n += snprintf(out+n, cap-n, "    area=%.3f cy=%+.2f ti=%d vc=%u tex0=%08x col0=(%.2f,%.2f,%.2f) cc=%04x[%s]  %s s0ce=%06x chan=%u stg=%u\n",
-                b.area, b.cy, b.ti, b.vc, b.tex0, r,g,bl, bcc, mcat,
+            n += snprintf(out+n, cap-n, "    area=%.3f cy=%+.2f ti=%d vc=%u tex0=%08x vmean=(%.2f,%.2f,%.2f) cc=%04x[%s] blend=%d atest=%d %s s0ce=%06x stg=%u\n",
+                b.area, b.cy, b.ti, b.vc, b.tex0, vn?vr/vn:0,vn?vg/vn:0,vn?vb/vn:0, bcc, mcat,
+                s?s->pe.blend_mode:0, s?s->pe.alpha_test:0,
                 s?(s->num_stages==1?"1stage":"multi"):"?",
-                s?s->stage[0].color_env:0, s?s->stage[0].color_chan:0, s?s->num_stages:0);
+                s?s->stage[0].color_env:0, s?s->num_stages:0);
         }
         // FULL combiner dump of the BIGGEST batch (the sky) — all stages + konst/tevreg,
         // so we can audit the exact 2-stage combiner vs Dolphin's TEV for the wash.
@@ -1779,6 +1820,162 @@ int sb_ngx_shape_dump(char* out, int cap) {
                 }
             }
         }
+    }
+    return n;
+}
+
+// ── Pixel→batch probe (/pixbatch?x=NDC&y=NDC) ───────────────────────────────────
+// Reliable, deterministic CPU rasterization of ONE pixel against the published
+// clip-space batch list — no GPU readback, no AA, no cross-launch camera drift.
+// Answers "which captured batch covers this screen point, and in what depth order"
+// so we can tell whether the file-select sky pixel is covered by an ngx batch at all
+// (hypothesis A: the blue sky shape is uncaptured) and what that batch's material is.
+// x,y are GL/GX NDC in [-1,+1] (x right, y UP — sky is near y=+0.9; centre = 0,0).
+// We replicate the present's depth contract exactly (mesh.vert.glsl): per-vertex
+// Vulkan depth = clip.z/clip.w + 1 (GC NDC z∈[-1 near,0 far] → [0 near,1 far]),
+// LEQUAL-style z-test from a 1.0 (far) clear, in batch DRAW ORDER.
+int sb_ngx_pixel_batch(float px, float py, char* out, int cap) {
+    const int fb = g_front.load(std::memory_order_acquire);
+    const std::vector<NgxRenderVertex>& snap = g_snap[fb];
+    const std::vector<NgxRenderBatch>&  bats = g_batches[fb];
+    int nst = 0; const NgxTevState* sts = ngx_snap_tevstates(&nst);
+    int n = snprintf(out, cap, "pixbatch NDC=(%.3f,%.3f) fb=%d batches=%zu verts=%zu\n",
+                     px, py, fb, bats.size(), snap.size());
+
+    // Diagnostic mode: px<-900 = "dump a batch's raw clip verts" — py encodes the tev_index
+    // (cast to int). Shows clip[4] + NDC + w-sign breakdown so a mis-projected skybox (huge
+    // NDC from a near-0 / negative w) is visible directly.
+    if (px < -900.f) {
+        const int want_ti = (int)py;
+        n += snprintf(out + n, cap - n, "BATCH CLIP DUMP for ti=%d:\n", want_ti);
+        if (want_ti >= 0 && want_ti < nst) { const NgxTevState& s = sts[want_ti];
+            n += snprintf(out + n, cap - n, "  PE: blend_mode=%u src=%u dst=%u logic=%u | atest=%u comp0=%u ref0=%u aop=%u comp1=%u ref1=%u | z=%u/%u/%u cull=%u\n",
+                s.pe.blend_mode, s.pe.src_factor, s.pe.dst_factor, s.pe.logic_op,
+                s.pe.alpha_test, s.pe.comp0, s.pe.ref0, s.pe.aop, s.pe.comp1, s.pe.ref1,
+                s.pe.z_test, s.pe.z_func, s.pe.z_write, s.pe.cull);
+            for (int st = 0; st < s.num_stages && st < 16; st++)
+                n += snprintf(out + n, cap - n, "  s%d ce=%06x ae=%06x map=%u coord=%u chan=%u kc=%02x ka=%02x\n",
+                    st, s.stage[st].color_env, s.stage[st].alpha_env, s.stage[st].texmap, s.stage[st].texcoord, s.stage[st].color_chan, s.stage[st].kcsel, s.stage[st].kasel);
+            // decode each bound texmap + report the batch's per-texcoord UV bbox
+            const NgxRenderBatch* bp = nullptr;
+            for (const auto& BB : bats) if (BB.tev_index == want_ti) { bp = &BB; break; }
+            if (bp) for (int tm = 0; tm < 8; tm++) { const NgxTexBind& t = bp->tex[tm];
+                if (!t.addr) continue; double r=0,g=0,b=0,a=0; size_t nn=0;
+                if (t.w && t.h && t.w<=1024 && t.h<=1024) { const unsigned char* src = sb_ram_fast(t.addr);
+                    const unsigned char* tl = t.tlut_addr ? sb_ram_fast(t.tlut_addr) : nullptr;
+                    if (src){ std::vector<uint32_t> px((size_t)t.w*t.h); sb_tex_decode(px.data(), src, t.w, t.h, t.fmt, tl, t.tlut_fmt);
+                        for (uint32_t v:px){r+=v&0xFF;g+=(v>>8)&0xFF;b+=(v>>16)&0xFF;a+=(v>>24)&0xFF;} nn=px.size(); } }
+                n += snprintf(out + n, cap - n, "  texmap%d %08x fmt=%u %ux%u mean=(%.0f,%.0f,%.0f) a=%.0f\n",
+                    tm, t.addr, t.fmt, t.w, t.h, nn?r/nn:0, nn?g/nn:0, nn?b/nn:0, nn?a/nn:0);
+            }
+            // UV bbox over the batch's verts (per texcoord 0,1)
+            float u0mn=1e9f,u0mx=-1e9f,v0mn=1e9f,v0mx=-1e9f,u1mn=1e9f,u1mx=-1e9f,v1mn=1e9f,v1mx=-1e9f;
+            for (const auto& BB : bats) if (BB.tev_index == want_ti)
+                for (uint32_t vv=BB.vstart; vv<BB.vstart+BB.vcount && vv<snap.size(); vv++){
+                    const float* uv=snap[vv].uv[0]; if(uv[0]<u0mn)u0mn=uv[0]; if(uv[0]>u0mx)u0mx=uv[0]; if(uv[1]<v0mn)v0mn=uv[1]; if(uv[1]>v0mx)v0mx=uv[1];
+                    const float* uw=snap[vv].uv[1]; if(uw[0]<u1mn)u1mn=uw[0]; if(uw[0]>u1mx)u1mx=uw[0]; if(uw[1]<v1mn)v1mn=uw[1]; if(uw[1]>v1mx)v1mx=uw[1]; }
+            n += snprintf(out + n, cap - n, "  UV0 bbox=[%.2f,%.2f]x[%.2f,%.2f] UV1 bbox=[%.2f,%.2f]x[%.2f,%.2f]\n",
+                u0mn,u0mx,v0mn,v0mx, u1mn,u1mx,v1mn,v1mx);
+        }
+        for (size_t bi = 0; bi < bats.size(); bi++) {
+            if (bats[bi].tev_index != want_ti) continue;
+            const NgxRenderBatch& B = bats[bi];
+            unsigned wneg = 0, wsmall = 0, wok = 0; float wmin = 1e30f, wmax = -1e30f;
+            float nymin = 1e30f, nymax = -1e30f, nxmin = 1e30f, nxmax = -1e30f;
+            double rpos=0,gpos=0,bpos=0, rneg=0,gneg=0,bneg=0;   // mean rgb split by w-sign
+            for (uint32_t v = B.vstart; v < B.vstart + B.vcount && v < snap.size(); v++) {
+                float w = snap[v].clip[3]; const float* rg = snap[v].rgba;
+                if (w < wmin) wmin = w; if (w > wmax) wmax = w;
+                if (w <= 0) { wneg++; rneg+=rg[0]; gneg+=rg[1]; bneg+=rg[2]; }
+                else if (w < 1e-4f) wsmall++; else { wok++; rpos+=rg[0]; gpos+=rg[1]; bpos+=rg[2];
+                    float nx = snap[v].clip[0]/w, ny = snap[v].clip[1]/w;
+                    if(nx<nxmin)nxmin=nx; if(nx>nxmax)nxmax=nx; if(ny<nymin)nymin=ny; if(ny>nymax)nymax=ny; }
+            }
+            n += snprintf(out + n, cap - n, "  draw=%zu vstart=%u vcount=%u w[min=%.4g max=%.4g] wneg=%u wsmall=%u wok=%u  NDC x[%.2f,%.2f] y[%.2f,%.2f]\n",
+                bi, B.vstart, B.vcount, wmin, wmax, wneg, wsmall, wok, nxmin, nxmax, nymin, nymax);
+            n += snprintf(out + n, cap - n, "    mean rgb: w>0(visible)=(%.2f,%.2f,%.2f) w<=0(clipped)=(%.2f,%.2f,%.2f)\n",
+                wok?rpos/wok:0, wok?gpos/wok:0, wok?bpos/wok:0, wneg?rneg/wneg:0, wneg?gneg/wneg:0, wneg?bneg/wneg:0);
+            for (uint32_t v = B.vstart; v < B.vstart + B.vcount && v < B.vstart + 9 && v < snap.size(); v++) {
+                const float* c = snap[v].clip;
+                n += snprintf(out + n, cap - n, "    v%u clip=(%.2f,%.2f,%.2f,%.4g) rgba=(%.2f,%.2f,%.2f,%.2f)\n",
+                    v - B.vstart, c[0], c[1], c[2], c[3], snap[v].rgba[0], snap[v].rgba[1], snap[v].rgba[2], snap[v].rgba[3]);
+            }
+        }
+        return n;
+    }
+
+    struct Frag { int draw; int ti; float depth; uint8_t ztest, zfunc, zwrite, blend, atest;
+                  float rgba[4]; uint32_t tex0; uint16_t cc; };
+    std::vector<Frag> frags;
+
+    auto edge = [](float ax, float ay, float bx, float by, float cx, float cy) {
+        return (cx - ax) * (by - ay) - (cy - ay) * (bx - ax);
+    };
+    for (size_t bi = 0; bi < bats.size(); bi++) {
+        const NgxRenderBatch& B = bats[bi];
+        const NgxTevState* S = (B.tev_index >= 0 && B.tev_index < nst) ? &sts[B.tev_index] : nullptr;
+        for (uint32_t v = B.vstart; v + 2 < B.vstart + B.vcount && v + 2 < snap.size(); v += 3) {
+            const float* c0 = snap[v].clip; const float* c1 = snap[v + 1].clip; const float* c2 = snap[v + 2].clip;
+            if (c0[3] <= 1e-5f || c1[3] <= 1e-5f || c2[3] <= 1e-5f) continue;   // behind eye / clipped
+            const float x0 = c0[0] / c0[3], y0 = c0[1] / c0[3];
+            const float x1 = c1[0] / c1[3], y1 = c1[1] / c1[3];
+            const float x2 = c2[0] / c2[3], y2 = c2[1] / c2[3];
+            const float area = edge(x0, y0, x1, y1, x2, y2);
+            if (area > -1e-12f && area < 1e-12f) continue;                       // degenerate
+            float w0 = edge(x1, y1, x2, y2, px, py);
+            float w1 = edge(x2, y2, x0, y0, px, py);
+            float w2 = edge(x0, y0, x1, y1, px, py);
+            // inside if all same sign as area (covers both winding orders / no cull here)
+            const bool inside = (w0 <= 0 && w1 <= 0 && w2 <= 0) || (w0 >= 0 && w1 >= 0 && w2 >= 0);
+            if (!inside) continue;
+            w0 /= area; w1 /= area; w2 /= area;                                  // screen-space bary
+            const float d0 = c0[2] / c0[3] + 1.f, d1 = c1[2] / c1[3] + 1.f, d2 = c2[2] / c2[3] + 1.f;
+            const float depth = w0 * d0 + w1 * d1 + w2 * d2;                     // screen-linear NDC depth
+            Frag f{}; f.draw = (int)bi; f.ti = B.tev_index; f.depth = depth; f.tex0 = B.tex[0].addr;
+            f.cc = (B.tev_index >= 0 && B.tev_index < (int)TEVSTATE_CAP) ? g_tev_cc[B.tev_index] : 0;
+            if (S) { f.ztest = S->pe.z_test; f.zfunc = S->pe.z_func; f.zwrite = S->pe.z_write;
+                     f.blend = S->pe.blend_mode; f.atest = S->pe.alpha_test; }
+            else   { f.ztest = 1; f.zfunc = 3; f.zwrite = 1; }
+            for (int k = 0; k < 4; k++) f.rgba[k] = w0 * snap[v].rgba[k] + w1 * snap[v + 1].rgba[k] + w2 * snap[v + 2].rgba[k];
+            frags.push_back(f);
+        }
+    }
+    if (frags.empty()) { n += snprintf(out + n, cap - n, "  NO BATCH COVERS THIS PIXEL (uncaptured → hypothesis A)\n"); return n; }
+
+    // Replay the depth contract in DRAW ORDER to find the visible (last-passing) fragment.
+    auto ztest_pass = [](uint8_t func, float frag, float buf) -> bool {
+        switch (func) { case 0: return false; case 1: return frag < buf; case 2: return frag == buf;
+            case 3: return frag <= buf; case 4: return frag > buf; case 5: return frag != buf;
+            case 6: return frag >= buf; default: return true; }   // 7 = ALWAYS
+    };
+    float zbuf = 1.0f; int winner = -1;
+    for (size_t i = 0; i < frags.size(); i++) {                 // frags already in draw order
+        const Frag& f = frags[i];
+        const bool pass = !f.ztest || ztest_pass(f.zfunc, f.depth, zbuf);
+        if (!pass) continue;
+        // NOTE: alpha-test discard is texture-dependent (not simulated); flagged below.
+        winner = (int)i;
+        if (f.zwrite && f.ztest) zbuf = f.depth;
+    }
+
+    // Report front-to-back (sorted by depth) for readability; mark the draw-order winner.
+    std::vector<int> idx(frags.size()); for (size_t i = 0; i < idx.size(); i++) idx[i] = (int)i;
+    std::sort(idx.begin(), idx.end(), [&](int a, int b){ return frags[a].depth < frags[b].depth; });
+    n += snprintf(out + n, cap - n, "  %zu fragments cover the pixel (front->back; *=draw-order winner):\n", frags.size());
+    for (size_t k = 0; k < idx.size() && k < 20; k++) {
+        const Frag& f = frags[idx[k]];
+        const char* mcat = f.cc==0xFFFF ? "noblk" : ((f.cc&1)?((f.cc&2)?"vtx/lit":"vtx/flat"):((f.cc&2)?"reg/lit":"reg/flat"));
+        const char* s0 = "?"; uint32_t s0ce = 0; uint8_t stg = 0;
+        if (f.ti >= 0 && f.ti < nst) { s0ce = sts[f.ti].stage[0].color_env; stg = sts[f.ti].num_stages; s0 = stg==1?"1stage":"multi"; }
+        n += snprintf(out + n, cap - n,
+            "   %c draw=%d ti=%d d=%.4f z=%u/%u/%u blend=%u atest=%u rgba=(%.2f,%.2f,%.2f,%.2f) tex0=%08x cc=%04x[%s] %s s0ce=%06x stg=%u\n",
+            idx[k]==winner?'*':' ', f.draw, f.ti, f.depth, f.ztest, f.zfunc, f.zwrite, f.blend, f.atest,
+            f.rgba[0], f.rgba[1], f.rgba[2], f.rgba[3], f.tex0, f.cc, mcat, s0, s0ce, stg);
+    }
+    if (winner >= 0) {
+        const Frag& f = frags[winner];
+        n += snprintf(out + n, cap - n, "  VISIBLE (draw-order winner): draw=%d ti=%d depth=%.4f rgba=(%.2f,%.2f,%.2f) tex0=%08x atest=%u\n",
+            f.draw, f.ti, f.depth, f.rgba[0], f.rgba[1], f.rgba[2], f.tex0, f.atest);
     }
     return n;
 }

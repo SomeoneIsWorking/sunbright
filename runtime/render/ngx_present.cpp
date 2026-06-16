@@ -649,6 +649,11 @@ AbstractTexture* PresentRenderer::render(int w, int h) {
         // DBG: skip alpha-tested (cloud/foliage) batches to reveal the background behind them.
         static const int skip_alpha = getenv("SUNBRIGHT_NGX_SKIPALPHA") ? atoi(getenv("SUNBRIGHT_NGX_SKIPALPHA")) : 0;
         if (skip_alpha && st.pe.alpha_test) continue;
+        // DBG: render ONLY a specific tev_index (-1=all) to isolate one material's on-screen output.
+        static const int only_ti = getenv("SUNBRIGHT_NGX_ONLYTI") ? atoi(getenv("SUNBRIGHT_NGX_ONLYTI")) : -1;
+        if (only_ti >= 0 && ti != only_ti) continue;
+        static const int skip_ti = getenv("SUNBRIGHT_NGX_SKIPTI") ? atoi(getenv("SUNBRIGHT_NGX_SKIPTI")) : -1;
+        if (skip_ti >= 0 && ti == skip_ti) continue;
         VkPipeline pipe = pipeline_for(st);
         if (pipe == VK_NULL_HANDLE) pipe = pipeline_for(mod);
         if (pipe == VK_NULL_HANDLE) continue;

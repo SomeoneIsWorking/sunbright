@@ -82,6 +82,7 @@ int sb_j2d_render(char*, int);                               // runtime/render/j
 int sb_ngx_vertex_selftest(char*, int);                      // runtime/ngx/ngx_vertex.cpp
 int sb_ngx_mesh_selftest(char*, int);                        // runtime/ngx/ngx_mesh.cpp
 int sb_ngx_shape_dump(char*, int);                           // runtime/overrides/ngx_j3d_shape.cpp
+int sb_ngx_pixel_batch(float, float, char*, int);            // runtime/overrides/ngx_j3d_shape.cpp
 int sb_ngx_render(char*, int);                               // runtime/render/vk_mesh.cpp
 int sb_ngx_present_test(char*, int);                         // runtime/render/vk_mesh.cpp
 extern "C" void sb_ngx_present_stats(unsigned long*, unsigned long*, unsigned long*, int*, int*, int*, unsigned long*);  // ngx_present.cpp
@@ -296,6 +297,13 @@ std::string handle_repl(const char* path) {
     }
     if (strncmp(path, "/ngxshape", 9) == 0) {  // N4 live J3DShape native-mesh capture stats
         static thread_local char rep[16384]; sb_ngx_shape_dump(rep, sizeof rep); app("%s", rep);
+        return std::string(buf, n);
+    }
+    if (strncmp(path, "/pixbatch", 9) == 0) {  // CPU pixel->batch raster probe (which captured batch covers a NDC point)
+        float x = 0.f, y = 0.9f;   // default: a sky point (top-centre, GL NDC y up)
+        if (const char* p = strstr(path, "x=")) x = strtof(p + 2, nullptr);
+        if (const char* p = strstr(path, "y=")) y = strtof(p + 2, nullptr);
+        static thread_local char rep[16384]; sb_ngx_pixel_batch(x, y, rep, sizeof rep); app("%s", rep);
         return std::string(buf, n);
     }
     if (strncmp(path, "/ngxpresentlive", 15) == 0) {  // N7 live present: renderer stats (SUNBRIGHT_NGX_PRESENT)
