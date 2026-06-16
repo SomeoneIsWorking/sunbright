@@ -144,6 +144,7 @@ gx)    # run a subcommand against the gx-oracle port: gp gx <ngx|drawstats|r ...
 
 dbg)      q "${GP_ONLY:-$NGX_PORT}" "/ngxdbg?m=${1:-normal}";;   # flip ngx debug mode LIVE: normal|tex|ras|cat|bid
 xf)       q "${GP_ONLY:-$NGX_PORT}" "/xfdump";;   # live Dolphin xfmem lighting/colour (use on gx oracle for truth)
+xfhist)   q "${GP_ONLY:-$NGX_PORT}" "/xfhist";;   # distinct xfmem (cc,amb,light0) tuples at J3DShape::draw (oracle=truth)
 ngx)      q "${GP_ONLY:-$NGX_PORT}" "/ngxshape";;
 present)  q "${GP_ONLY:-$NGX_PORT}" "/ngxpresentlive";;
 metrics)  q "${GP_ONLY:-$NGX_PORT}" "/metrics";;

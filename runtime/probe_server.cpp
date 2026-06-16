@@ -151,6 +151,8 @@ extern "C" volatile int g_sb_ab_capture;    // /abshot2 arms same-present dual c
 extern "C" int sb_ngx_set_dbg(int);         // /ngxdbg sets the native renderer debug mode
 extern "C" void sb_ngx_set_nolight(int);    // /ngxdbg?nolight= toggles native lighting (capture)
 extern "C" int sb_xfmem_dump(char*, int);   // /xfdump prints live Dolphin xfmem (ngx_j3d_shape.cpp)
+extern "C" int sb_xfmem_hist(char*, int);   // /xfhist prints distinct xfmem draw-tuples (ngx_j3d_shape.cpp)
+extern "C" int sb_ngx_gen_shader(unsigned, char*, int);   // /skyshader dumps generated TEV GLSL (ngx_j3d_shape.cpp)
 
 // REPL request handler. Returns the response body for any /repl path; empty string = not a REPL path.
 std::string handle_repl(const char* path) {
@@ -229,6 +231,15 @@ std::string handle_repl(const char* path) {
     }
     if (strncmp(path, "/xfdump", 7) == 0) {  // live Dolphin xfmem lighting/colour (oracle = truth)
         char rep[2048]; int rn = sb_xfmem_dump(rep, sizeof rep); app("%.*s", rn, rep);
+        return std::string(buf, n);
+    }
+    if (strncmp(path, "/xfhist", 7) == 0) {  // distinct xfmem tuples at J3DShape::draw (oracle = truth)
+        char rep[4096]; int rn = sb_xfmem_hist(rep, sizeof rep); app("%.*s", rn, rep);
+        return std::string(buf, n);
+    }
+    if (strncmp(path, "/skyshader", 10) == 0) {  // generated TEV GLSL for a material (default sky)
+        unsigned ce = 0x09fae8; if (const char* p = strstr(path, "ce=")) ce = strtoul(p+3, nullptr, 16);
+        char rep[8192]; int rn = sb_ngx_gen_shader(ce, rep, sizeof rep); app("%.*s", rn, rep);
         return std::string(buf, n);
     }
     if (strncmp(path, "/ngxdbg", 7) == 0) {

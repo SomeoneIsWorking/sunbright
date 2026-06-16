@@ -45,6 +45,7 @@
 #include "VideoCommon/BPMemory.h"   // ground-truth GX pixel state (fog / blend / etc.)
 #include "VideoCommon/CPMemory.h"   // ground-truth GX vertex array bases (g_main_cp_state)
 #include "../render/tex_decode.h"   // DBG: decode a texture to check its brightness
+#include "../render/tev_shader.h"   // DBG: dump the generated TEV GLSL for a material
 
 namespace {
 
@@ -236,12 +237,23 @@ void capture_texgen(u32 material) {
 }
 
 // Compute the texgen'd UV for one texcoord of one vertex (the GX per-vertex texgen).
-inline void texgen_uv(const TexGen& g, const NgxVertex& v, float out[2]) {
+// litcol0 = the LIT colour-channel result for this vertex (0..1 RGBA) — needed for the
+// GX_TG_SRTG / GX_TG_COLOR0/1 sources (src 19/20), where the texcoord IS the rasterized
+// colour (a ramp/toon-shade technique: e.g. the file-select sky indexes an I4 ramp by the
+// lit intensity). Without this the I4 ramp samples a stale texel → stage saturates → wash.
+inline void texgen_uv(const TexGen& g, const NgxVertex& v, const float litcol0[4], float out[2]) {
+    // GX_TG_SRTG (type 10): texcoord = the colour channel selected by src (COLOR0=19,
+    // COLOR1=20). ngx uses col1==col0, so both map to the lit col0. No texgen matrix.
+    if (g.type == 10 || g.src == 19 || g.src == 20) {
+        out[0] = litcol0 ? litcol0[0] : 0.f;
+        out[1] = litcol0 ? litcol0[1] : 0.f;
+        return;
+    }
     float in4[4];
     if (g.src >= 4 && g.src <= 11) { const int t = g.src - 4; in4[0]=v.tex[t][0]; in4[1]=v.tex[t][1]; in4[2]=1.f; in4[3]=1.f; }
     else if (g.src == 0)           { in4[0]=v.pos[0]; in4[1]=v.pos[1]; in4[2]=v.pos[2]; in4[3]=1.f; }  // POS
     else if (g.src == 1)           { in4[0]=v.nrm[0]; in4[1]=v.nrm[1]; in4[2]=v.nrm[2]; in4[3]=1.f; }  // NRM
-    else                           { in4[0]=v.tex[0][0]; in4[1]=v.tex[0][1]; in4[2]=1.f; in4[3]=1.f; } // COLOR0/SRTG → tex0 fallback
+    else                           { in4[0]=v.tex[0][0]; in4[1]=v.tex[0][1]; in4[2]=1.f; in4[3]=1.f; } // unknown → tex0 fallback
     if (!g.has_mtx) { out[0]=in4[0]; out[1]=in4[1]; return; }   // identity passthrough
     const float* m = g.m;
     float s = m[0]*in4[0]+m[1]*in4[1]+m[2]*in4[2]+m[3]*in4[3];
@@ -318,6 +330,24 @@ extern "C" void sb_ngx_set_nolight(int on) { g_nolight = on != 0; }
 bool g_dbgL_done = false, g_dbgL_active = false; int g_dbgL_n = 0; u16 g_dbgL_cc = 0;
 int g_dbgL_i[8] = {0}; float g_dbgL_attn[8]={0}, g_dbgL_ndl[8]={0}, g_dbgL_dist[8]={0}, g_dbgL_contrib[8]={0};
 float g_dbgL_amb[3]={0}, g_dbgL_illum[3]={0};
+// SKY latch: full per-draw lighting breakdown for the first reg-color LIT vertex whose
+// channel-control == 0x0686 (the file-select sky material). Reset each frame so the static
+// screen always shows fresh values. Captures the EXACT light/ambient state the sky used at
+// its draw (not the end-of-frame g_light snapshot) to settle ambient-vs-light-colour.
+struct SkyLatch {
+    bool have=false; u16 cc=0, ca=0; float matc[4]={0}, ambc[4]={0}, en[3]={0}, illum[3]={0}, out[4]={0};
+    bool hasNrm=false; int nl=0; int li[8]={0}; float lcol[8][3]={{0}}; float lndl[8]={0},
+    lattn[8]={0}, ldiff[8]={0};
+    u8 amb_reg_live[4]={0};   // live GXSetChanAmbColor register value AT sky draw
+    float vcol0[4]={0};       // the sky vertex's raw CLR0 (is it the blue source?)
+    u8 tgnum=0; u8 tgsrc[4]={0}; u8 tgtype[4]={0}; u8 tgmtx[4]={0};  // texgen per coord
+    float tg0m[12]={0};   // tc0 texgen matrix (the sky tex0 sampling — wash suspect)
+    // tc0/tc1 UV bbox over the sky verts (accumulated in the transform loop)
+    float uv0min[2]={1e9f,1e9f}, uv0max[2]={-1e9f,-1e9f};
+    float uv1min[2]={1e9f,1e9f}, uv1max[2]={-1e9f,-1e9f}; unsigned long uvn=0;
+};
+SkyLatch g_sky;       // latched this frame
+SkyLatch g_sky_pub;   // published (kept across the reset for the probe)
 void light_vertex(const float eye[3], const float en[3], const float vcol0[4], float out[4]) {
     const ChanInfo& C = g_cur_chan;
     if (g_nolight || !C.valid) { for (int k = 0; k < 4; k++) out[k] = vcol0[k]; return; }
@@ -346,6 +376,20 @@ void light_vertex(const float eye[3], const float en[3], const float vcol0[4], f
     const int diffFn  = (cc >> 7) & 3;      // GXDiffuseFn: NONE=0 SIGN=1 CLAMP=2
     const int attnSel = (cc >> 9) & 3;      // 0/2 → NONE, 1 → SPEC, 3 → SPOT (J3DColorChan::getAttnFn)
     const u8  mask    = (u8)(((cc >> 2) & 0x0F) | (((cc >> 11) & 0x0F) << 4));
+    // SKY latch: first reg-color lit 0x0686 vertex this frame.
+    const bool sky_latch = (cc == 0x0686) && !matVtx && !g_sky.have;
+    if (sky_latch) {
+        g_sky.have = true; g_sky.cc = cc; g_sky.ca = ca; g_sky.nl = 0;
+        for (int k=0;k<4;k++){ g_sky.matc[k]=C.matColor[k]; g_sky.ambc[k]=C.ambColor[k];
+                               g_sky.amb_reg_live[k]=g_amb_reg[0][k]; }
+        for (int k=0;k<3;k++){ g_sky.en[k]=en[k]; }
+        for (int k=0;k<4;k++){ g_sky.vcol0[k]=vcol0[k]; }
+        g_sky.tgnum = g_cur_texgen.num;
+        for (int k=0;k<4 && k<g_cur_texgen.num;k++){ g_sky.tgsrc[k]=g_cur_texgen.tg[k].src;
+            g_sky.tgtype[k]=g_cur_texgen.tg[k].type; g_sky.tgmtx[k]=g_cur_texgen.tg[k].has_mtx; }
+        if (g_cur_texgen.num > 0) for (int k=0;k<12;k++) g_sky.tg0m[k]=g_cur_texgen.tg[0].m[k];
+        g_sky.hasNrm = (en[0]*en[0]+en[1]*en[1]+en[2]*en[2]) > 1e-6f;
+    }
     // DBG latch: dump the per-light breakdown of the FIRST up-facing reg-color lit vertex.
     if (!g_dbgL_done && !matVtx && !ambVtx && en[1] > 0.85f) {
         g_dbgL_active = true; g_dbgL_n = 0; g_dbgL_done = true; g_dbgL_cc = cc;
@@ -378,6 +422,11 @@ void light_vertex(const float eye[3], const float en[3], const float vcol0[4], f
         const float s = attn * diff;
         illum[0] += s*L.color[0]; illum[1] += s*L.color[1]; illum[2] += s*L.color[2];
         g_diff_sum += diff; g_diff_n++;
+        if (sky_latch && g_sky.nl < 8) {
+            int j = g_sky.nl++;
+            g_sky.li[j] = i; g_sky.lndl[j]=ndl; g_sky.lattn[j]=attn; g_sky.ldiff[j]=diff;
+            g_sky.lcol[j][0]=L.color[0]; g_sky.lcol[j][1]=L.color[1]; g_sky.lcol[j][2]=L.color[2];
+        }
         // DBG: capture per-light breakdown for ONE representative up-facing (floor)
         // vertex of a register-color lit material (matsrc=reg, ambsrc=reg) — wash suspect.
         if (g_dbgL_active && g_dbgL_n < 8) {
@@ -406,6 +455,10 @@ void light_vertex(const float eye[3], const float en[3], const float vcol0[4], f
     for (int k = 0; k < 3; k++) {
         float v = illum[k]; v = v < 0.f ? 0.f : (v > 1.f ? 1.f : v);
         out[k] = mat[k] * v;
+    }
+    if (sky_latch) {
+        for (int k=0;k<3;k++){ g_sky.illum[k]=illum[k]; g_sky.out[k]=out[k]; }
+        g_sky.out[3]=out[3];
     }
     g_lit_lum_sum += (out[0] + out[1] + out[2]) / 3.0;
     g_dbg_cc = cc;
@@ -840,13 +893,6 @@ void transform_eye() {
     for (size_t vi = 0; vi < nv; vi++) {
         const NgxVertex& v = g_verts[vi];
 
-        // GX texgen: compute each texcoord's UV (texgen'd by the per-material matrix).
-        // Texcoords without a texgen def fall back to the raw vertex tex attribute.
-        float* uvp = &g_uvs[vi * 16];
-        for (int m = 0; m < 8; m++) {
-            if (m < g_cur_texgen.num) texgen_uv(g_cur_texgen.tg[m], v, &uvp[m * 2]);
-            else { uvp[m * 2 + 0] = v.tex[m][0]; uvp[m * 2 + 1] = v.tex[m][1]; }
-        }
         const float x = v.pos[0], y = v.pos[1], z = v.pos[2];
         // Multi-matrix (skinned) shapes: select the per-vertex position matrix from the captured
         // matrix memory by the vertex's PNMTXIDX (row); else the shape's single mCurrentDrawMtx.
@@ -879,6 +925,23 @@ void transform_eye() {
         const float vcol0[4] = { v.clr[0][0]/255.f, v.clr[0][1]/255.f,
                                  v.clr[0][2]/255.f, v.clr[0][3]/255.f };
         light_vertex(eye, en, vcol0, &g_litrgba[vi * 4]);
+        // GX texgen: compute each texcoord's UV AFTER lighting so the GX_TG_SRTG sources
+        // (texcoord = the lit colour, e.g. the sky's ramp index) read this vertex's col0.
+        // Texcoords without a texgen def fall back to the raw vertex tex attribute.
+        float* uvp = &g_uvs[vi * 16];
+        for (int m = 0; m < 8; m++) {
+            if (m < g_cur_texgen.num) texgen_uv(g_cur_texgen.tg[m], v, &g_litrgba[vi * 4], &uvp[m * 2]);
+            else { uvp[m * 2 + 0] = v.tex[m][0]; uvp[m * 2 + 1] = v.tex[m][1]; }
+        }
+        // SKY UV bbox: accumulate tc0/tc1 UV extents for the sky material (0x0686) to check
+        // whether ngx samples the deep-blue band of the sky texture (wash diagnosis).
+        if (g_cur_chan.valid && g_cur_chan.color0 == 0x0686) {
+            for (int a=0;a<2;a++){ if(uvp[a]<g_sky.uv0min[a])g_sky.uv0min[a]=uvp[a];
+                                   if(uvp[a]>g_sky.uv0max[a])g_sky.uv0max[a]=uvp[a];
+                                   if(uvp[2+a]<g_sky.uv1min[a])g_sky.uv1min[a]=uvp[2+a];
+                                   if(uvp[2+a]>g_sky.uv1max[a])g_sky.uv1max[a]=uvp[2+a]; }
+            g_sky.uvn++;
+        }
         // DBG: bucket the resulting col0 luminance by category to localize the bright bulk.
         { const float* o = &g_litrgba[vi*4]; double lum=(o[0]+o[1]+o[2])/3.0;
           const bool valid=g_cur_chan.valid; const bool mv=valid&&((g_cur_chan.color0>>0)&1);
@@ -1064,6 +1127,8 @@ void ngx_frame_publish() {
     if (g_snap[g_cur].size() < SNAP_CAP) g_snap[g_cur].resize(SNAP_CAP);
     g_snap_count[g_cur] = 0;
     g_batches[g_cur].clear();
+    if (g_sky.have) g_sky_pub = g_sky;   // publish this frame's sky breakdown
+    g_sky = SkyLatch{};                  // reset for the next frame
     g_frame_swaps++;
 }
 
@@ -1089,6 +1154,22 @@ const NgxTevState* ngx_snap_tevstates(int* nstates) {
 // category-debug mode to tint each batch by its material category.
 extern "C" unsigned ngx_tev_cc_dbg(int idx) {
     return (idx >= 0 && idx < (int)TEVSTATE_CAP) ? g_tev_cc[idx] : 0;
+}
+
+// /skyshader?ce=HEX — dump the generated TEV GLSL for the first captured material whose
+// stage[0].color_env matches (default = the sky 0x09fae8), so we can audit the faithful
+// combiner translation directly (no render, no drift).
+extern "C" int sb_ngx_gen_shader(unsigned want_s0ce, char* out, int cap) {
+    for (const NgxTevState& s : g_tevstates) {
+        if (s.stage[0].color_env == want_s0ce) {
+            std::string g = sb_tev_gen_fragment(s);
+            int n = snprintf(out, cap, "TEV state s0ce=%06x stages=%u kc=%02x ka=%02x:\n",
+                s.stage[0].color_env, s.num_stages, s.stage[0].kcsel, s.stage[0].kasel);
+            n += snprintf(out+n, cap-n, "%.*s", cap-n-1, g.c_str());
+            return n;
+        }
+    }
+    return snprintf(out, cap, "no captured material with s0ce=%06x\n", want_s0ce);
 }
 
 // GXLoadTexObj(GXTexObj* obj, GXTexMapID id) @ 0x80360160 — track the texmap-0
@@ -1280,12 +1361,48 @@ extern "C" int sb_xfmem_dump(char* out, int cap) {
     return n;
 }
 
+// ── Always-on (oracle-usable) xfmem-state histogram at J3DShape::draw ────────────
+// Records the DISTINCT (color0-channel-ctrl, ambColor0, light0-color) tuples the GPU
+// actually sees across a frame. Runs in BOTH the ngx process and the pure-Dolphin
+// oracle (NOT gated on g_enabled) so we get ground truth for which ambient/light the
+// blue sky uses — the function tees miss J3D's inlined GD/XF writes; xfmem does not.
+struct XfTuple { u32 cchex; u32 amb; u32 mat; u8 lcol[4]; unsigned long cnt; };
+XfTuple g_xfhist[64]; int g_xfhist_n = 0;
+void xfmem_draw_observe() {
+    const u32 cchex = (u32)xfmem.color[0].hex;
+    const u32 amb   = xfmem.ambColor[0];
+    const u32 mat   = xfmem.matColor[0];
+    const u8* lc    = xfmem.lights[0].color;
+    for (int i = 0; i < g_xfhist_n; i++)
+        if (g_xfhist[i].cchex == cchex && g_xfhist[i].amb == amb && g_xfhist[i].mat == mat &&
+            g_xfhist[i].lcol[0]==lc[0] && g_xfhist[i].lcol[1]==lc[1] &&
+            g_xfhist[i].lcol[2]==lc[2]) { g_xfhist[i].cnt++; return; }
+    if (g_xfhist_n < 64) {
+        XfTuple& t = g_xfhist[g_xfhist_n++];
+        t.cchex = cchex; t.amb = amb; t.mat = mat;
+        t.lcol[0]=lc[0]; t.lcol[1]=lc[1]; t.lcol[2]=lc[2]; t.lcol[3]=lc[3]; t.cnt = 1;
+    }
+}
+extern "C" int sb_xfmem_hist(char* out, int cap) {
+    int n = snprintf(out, cap, "xfmem draw-observe distinct tuples (n=%d):\n", g_xfhist_n);
+    for (int i = 0; i < g_xfhist_n; i++) {
+        const XfTuple& t = g_xfhist[i];
+        n += snprintf(out+n, cap-n,
+            "  cc=%08x amb=(%u,%u,%u,%u) mat=(%u,%u,%u,%u) light0=(%u,%u,%u) cnt=%lu\n",
+            t.cchex, (t.amb>>24)&0xff,(t.amb>>16)&0xff,(t.amb>>8)&0xff,t.amb&0xff,
+            (t.mat>>24)&0xff,(t.mat>>16)&0xff,(t.mat>>8)&0xff,t.mat&0xff,
+            t.lcol[0],t.lcol[1],t.lcol[2], t.cnt);
+    }
+    return n;
+}
+
 SUNBRIGHT_OVERRIDE(ov_j3dshape_draw, 0x802e0390u) {
     const u32 sh = cpu.gpr[3];   // save before the super-call clobbers gpr
     // Run the real draw FIRST: J3DShape::draw is what sets j3dSys's per-view vertex
     // arrays (loadVtxArray) AND the modelview (setModelDrawMtx) for THIS shape, so
     // we must capture after it for the arrays + matrix to be current.
     if (RecompFunc o = recomp_raw(0x802e0390u)) o(cpu); else call_ppc(cpu, cpu.lr);
+    xfmem_draw_observe();   // always-on (oracle too): ground-truth xfmem at draw
     if (g_enabled) capture(sh);
 }
 
@@ -1364,6 +1481,33 @@ int sb_ngx_shape_dump(char* out, int cap) {
         g_amb_have[0], g_amb_sets,
         g_gd_amb[0][0], g_gd_amb[0][1], g_gd_amb[0][2], g_gd_amb[0][3], g_gd_amb_have[0], g_gd_amb_sets,
         g_gd_amb_last[0], g_gd_amb_last[1], g_gd_amb_last[2], g_gd_amb_last[3]);
+    {   // SKY latch: exact per-draw lighting breakdown of the sky material (cc=0x0686)
+        const SkyLatch& S = g_sky_pub;
+        n += snprintf(out + n, cap - n,
+            "    SKY[cc=%04x have=%d hasNrm=%d] mat=(%.0f,%.0f,%.0f) amb=(%.0f,%.0f,%.0f) "
+            "en=(%.2f,%.2f,%.2f) illum=(%.3f,%.3f,%.3f) out=(%.3f,%.3f,%.3f)\n",
+            S.cc, S.have, S.hasNrm, S.matc[0], S.matc[1], S.matc[2], S.ambc[0], S.ambc[1], S.ambc[2],
+            S.en[0], S.en[1], S.en[2], S.illum[0], S.illum[1], S.illum[2], S.out[0], S.out[1], S.out[2]);
+        n += snprintf(out + n, cap - n, "      ca(alpha0)=%04x aVtx=%d matA=%.0f -> col0.a=%.3f  vcol0=(%.2f,%.2f,%.2f,%.2f) amb_reg_live=(%u,%u,%u,%u)\n",
+            S.ca, S.ca & 1, S.matc[3], S.out[3],
+            S.vcol0[0], S.vcol0[1], S.vcol0[2], S.vcol0[3],
+            S.amb_reg_live[0], S.amb_reg_live[1], S.amb_reg_live[2], S.amb_reg_live[3]);
+        n += snprintf(out + n, cap - n, "      texgen num=%u:", S.tgnum);
+        for (int k=0;k<4 && k<S.tgnum;k++)
+            n += snprintf(out + n, cap - n, " tc%d[src=%u type=%u mtx=%u]", k, S.tgsrc[k], S.tgtype[k], S.tgmtx[k]);
+        n += snprintf(out + n, cap - n, "\n");
+        n += snprintf(out + n, cap - n,
+            "      tc0 mtx=[%.3f %.3f %.3f %.3f / %.3f %.3f %.3f %.3f]\n"
+            "      UV bbox (n=%lu): tc0 s[%.3f..%.3f] t[%.3f..%.3f]  tc1 s[%.3f..%.3f] t[%.3f..%.3f]\n",
+            S.tg0m[0],S.tg0m[1],S.tg0m[2],S.tg0m[3], S.tg0m[4],S.tg0m[5],S.tg0m[6],S.tg0m[7], S.uvn,
+            S.uv0min[0],S.uv0max[0],S.uv0min[1],S.uv0max[1],
+            S.uv1min[0],S.uv1max[0],S.uv1min[1],S.uv1max[1]);
+        for (int j = 0; j < S.nl; j++)
+            n += snprintf(out + n, cap - n,
+                "      light[%d] col=(%.2f,%.2f,%.2f) ndl=%.3f attn=%.3f diff=%.3f s=%.3f\n",
+                S.li[j], S.lcol[j][0], S.lcol[j][1], S.lcol[j][2], S.lndl[j], S.lattn[j], S.ldiff[j],
+                S.lattn[j]*S.ldiff[j]);
+    }
     n += snprintf(out + n, cap - n, "    colour-block vtables:");
     for (int i = 0; i < 8 && g_cbvt_key[i]; i++)
         n += snprintf(out + n, cap - n, " %08x(%u)", g_cbvt_key[i], g_cbvt_cnt[i]);
@@ -1580,6 +1724,60 @@ int sb_ngx_shape_dump(char* out, int cap) {
                 b.area, b.cy, b.ti, b.vc, b.tex0, r,g,bl, bcc, mcat,
                 s?(s->num_stages==1?"1stage":"multi"):"?",
                 s?s->stage[0].color_env:0, s?s->stage[0].color_chan:0, s?s->num_stages:0);
+        }
+        // FULL combiner dump of the BIGGEST batch (the sky) — all stages + konst/tevreg,
+        // so we can audit the exact 2-stage combiner vs Dolphin's TEV for the wash.
+        if (!brs.empty() && brs[0].ti >= 0 && brs[0].ti < nst) {
+            const NgxTevState& s = sts[brs[0].ti];
+            n += snprintf(out+n, cap-n, "  BIGGEST-BATCH TEV [ti=%d] stages=%u pe.alpha=%d blend=%d/%d/%d ztest=%d:\n",
+                brs[0].ti, s.num_stages, s.pe.alpha_test, s.pe.blend_mode, s.pe.src_factor, s.pe.dst_factor, s.pe.z_test);
+            n += snprintf(out+n, cap-n, "    alpha-test: comp0=%u ref0=%u aop=%u comp1=%u ref1=%u (GXCompare 0=NEVER 4=GT 6=GEQ 7=ALWAYS)\n",
+                s.pe.comp0, s.pe.ref0, s.pe.aop, s.pe.comp1, s.pe.ref1);
+            for (int st = 0; st < s.num_stages && st < 16; st++)
+                n += snprintf(out+n, cap-n,
+                    "    s%d ce=%06x ae=%06x map=%u coord=%u chan=%u kc=%02x ka=%02x\n",
+                    st, s.stage[st].color_env, s.stage[st].alpha_env, s.stage[st].texmap,
+                    s.stage[st].texcoord, s.stage[st].color_chan, s.stage[st].kcsel, s.stage[st].kasel);
+            for (int c = 0; c < 4; c++)
+                n += snprintf(out+n, cap-n, "    kcolor[%d]=(%u,%u,%u,%u) tevreg[%d]=(%d,%d,%d,%d)\n",
+                    c, s.kcolor[c][0], s.kcolor[c][1], s.kcolor[c][2], s.kcolor[c][3],
+                    c, s.tev_color[c][0], s.tev_color[c][1], s.tev_color[c][2], s.tev_color[c][3]);
+            // All texmap bindings used by this batch (decoded mean) — the 2-stage sky
+            // samples texmap0 AND texmap1; a mis-bound/mis-decoded texmap1 washes it out.
+            const NgxRenderBatch* bp = nullptr;
+            for (const auto& BB : bats) if (BB.tev_index == brs[0].ti) { bp = &BB; break; }
+            if (bp) for (int tm = 0; tm < 8; tm++) {
+                const NgxTexBind& t = bp->tex[tm];
+                if (!t.addr) continue;
+                double r=0,g=0,b=0,a=0; size_t nn=0; unsigned a_lt128=0, a_ge128=0;
+                if (t.w && t.h && t.w<=1024 && t.h<=1024) {
+                    const unsigned char* src = sb_ram_fast(t.addr);
+                    const unsigned char* tl = t.tlut_addr ? sb_ram_fast(t.tlut_addr) : nullptr;
+                    if (src) { std::vector<uint32_t> px((size_t)t.w*t.h);
+                        sb_tex_decode(px.data(), src, t.w, t.h, t.fmt, tl, t.tlut_fmt);
+                        for (uint32_t v:px){r+=v&0xFF;g+=(v>>8)&0xFF;b+=(v>>16)&0xFF;
+                            unsigned av=(v>>24)&0xFF; a+=av; if(av<128)a_lt128++; else a_ge128++;}
+                        nn=px.size(); }
+                }
+                n += snprintf(out+n, cap-n, "    texmap%d %08x fmt=%u %ux%u mean=(%.0f,%.0f,%.0f) a=%.0f  alpha<128:%u >=128:%u\n",
+                    tm, t.addr, t.fmt, t.w, t.h, nn?r/nn:0, nn?g/nn:0, nn?b/nn:0, nn?a/nn:0, a_lt128, a_ge128);
+                // Also write the decoded texel image to a PPM so we can SEE the gradient.
+                if (nn && t.w && t.h && t.w<=1024 && t.h<=1024) {
+                    const unsigned char* src = sb_ram_fast(t.addr);
+                    const unsigned char* tl = t.tlut_addr ? sb_ram_fast(t.tlut_addr) : nullptr;
+                    if (src) { std::vector<uint32_t> px((size_t)t.w*t.h);
+                        sb_tex_decode(px.data(), src, t.w, t.h, t.fmt, tl, t.tlut_fmt);
+                        char fn[128]; snprintf(fn, sizeof fn, "scratch/screenshots/skytex%d.ppm", tm);
+                        if (FILE* f = fopen(fn, "wb")) {
+                            fprintf(f, "P6\n%u %u\n255\n", t.w, t.h);
+                            for (uint32_t v : px) { unsigned char rgb[3]={(unsigned char)(v&0xFF),
+                                (unsigned char)((v>>8)&0xFF),(unsigned char)((v>>16)&0xFF)};
+                                fwrite(rgb,1,3,f); }
+                            fclose(f);
+                        }
+                    }
+                }
+            }
         }
     }
     return n;
