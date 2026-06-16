@@ -83,6 +83,8 @@ int sb_ngx_vertex_selftest(char*, int);                      // runtime/ngx/ngx_
 int sb_ngx_mesh_selftest(char*, int);                        // runtime/ngx/ngx_mesh.cpp
 int sb_ngx_shape_dump(char*, int);                           // runtime/overrides/ngx_j3d_shape.cpp
 int sb_ngx_pixel_batch(float, float, char*, int);            // runtime/overrides/ngx_j3d_shape.cpp
+extern "C" int sb_ngx_set_onlyti(int);                       // runtime/render/ngx_present.cpp (/ngxonly)
+extern "C" int sb_ngx_set_skipti(int);                       // runtime/render/ngx_present.cpp (/ngxskip)
 int sb_ngx_render(char*, int);                               // runtime/render/vk_mesh.cpp
 int sb_ngx_present_test(char*, int);                         // runtime/render/vk_mesh.cpp
 extern "C" void sb_ngx_present_stats(unsigned long*, unsigned long*, unsigned long*, int*, int*, int*, unsigned long*);  // ngx_present.cpp
@@ -298,6 +300,14 @@ std::string handle_repl(const char* path) {
     if (strncmp(path, "/ngxshape", 9) == 0) {  // N4 live J3DShape native-mesh capture stats
         static thread_local char rep[16384]; sb_ngx_shape_dump(rep, sizeof rep); app("%s", rep);
         return std::string(buf, n);
+    }
+    if (strncmp(path, "/ngxonly", 8) == 0) {   // runtime: render ONLY this tev_index (-2 env, -1 off)
+        int t = -1; if (const char* p = strstr(path, "ti=")) t = atoi(p + 3);
+        sb_ngx_set_onlyti(t); app("ngx only_ti = %d\n", t); return std::string(buf, n);
+    }
+    if (strncmp(path, "/ngxskip", 8) == 0) {   // runtime: SKIP this tev_index (-2 env, -1 off)
+        int t = -1; if (const char* p = strstr(path, "ti=")) t = atoi(p + 3);
+        sb_ngx_set_skipti(t); app("ngx skip_ti = %d\n", t); return std::string(buf, n);
     }
     if (strncmp(path, "/pixbatch", 9) == 0) {  // CPU pixel->batch raster probe (which captured batch covers a NDC point)
         float x = 0.f, y = 0.9f;   // default: a sky point (top-centre, GL NDC y up)

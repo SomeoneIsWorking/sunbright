@@ -24,6 +24,10 @@
 extern "C" unsigned ngx_tev_cc_dbg(int);
 extern "C" int g_ngx_tevdbg;       // render-debug mode (tev_shader.cpp); /ngxdbg sets it
 extern "C" int sb_ngx_tevdbg();
+// Runtime tev_index isolation (/ngxonly, /ngxskip): -2 = use the env var, -1 = off, >=0 = a ti.
+int g_ngx_only_ti = -2, g_ngx_skip_ti = -2;
+extern "C" int sb_ngx_set_onlyti(int t) { g_ngx_only_ti = t; return t; }
+extern "C" int sb_ngx_set_skipti(int t) { g_ngx_skip_ti = t; return t; }
 #include <unordered_map>
 #include <vector>
 
@@ -402,8 +406,10 @@ VkPipeline PresentRenderer::pipeline_for(const NgxTevState& st) {
     // (no cull) translucent surfaces draw both faces (overdraw → too bright) and back faces show through.
     static const VkCullModeFlags kCull[4] = {
         VK_CULL_MODE_NONE, VK_CULL_MODE_FRONT_BIT, VK_CULL_MODE_BACK_BIT, VK_CULL_MODE_FRONT_AND_BACK };
-    rs.cullMode = kCull[st.pe.cull & 3];
-    rs.frontFace = VK_FRONT_FACE_CLOCKWISE; rs.lineWidth = 1.0f;
+    static const int force_cull = getenv("SUNBRIGHT_NGX_FORCECULL") ? atoi(getenv("SUNBRIGHT_NGX_FORCECULL")) : -1;
+    rs.cullMode = force_cull >= 0 ? kCull[force_cull & 3] : kCull[st.pe.cull & 3];
+    static const bool ccw = getenv("SUNBRIGHT_NGX_CCW") && atoi(getenv("SUNBRIGHT_NGX_CCW")) != 0;
+    rs.frontFace = ccw ? VK_FRONT_FACE_COUNTER_CLOCKWISE : VK_FRONT_FACE_CLOCKWISE; rs.lineWidth = 1.0f;
     VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
     ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
     // Depth + blend from the PE block (same mapping as vk_mesh).
@@ -650,9 +656,11 @@ AbstractTexture* PresentRenderer::render(int w, int h) {
         static const int skip_alpha = getenv("SUNBRIGHT_NGX_SKIPALPHA") ? atoi(getenv("SUNBRIGHT_NGX_SKIPALPHA")) : 0;
         if (skip_alpha && st.pe.alpha_test) continue;
         // DBG: render ONLY a specific tev_index (-1=all) to isolate one material's on-screen output.
-        static const int only_ti = getenv("SUNBRIGHT_NGX_ONLYTI") ? atoi(getenv("SUNBRIGHT_NGX_ONLYTI")) : -1;
+        static const int env_only = getenv("SUNBRIGHT_NGX_ONLYTI") ? atoi(getenv("SUNBRIGHT_NGX_ONLYTI")) : -1;
+        const int only_ti = g_ngx_only_ti != -2 ? g_ngx_only_ti : env_only;   // runtime /ngxonly overrides env
         if (only_ti >= 0 && ti != only_ti) continue;
-        static const int skip_ti = getenv("SUNBRIGHT_NGX_SKIPTI") ? atoi(getenv("SUNBRIGHT_NGX_SKIPTI")) : -1;
+        static const int env_skip = getenv("SUNBRIGHT_NGX_SKIPTI") ? atoi(getenv("SUNBRIGHT_NGX_SKIPTI")) : -1;
+        const int skip_ti = g_ngx_skip_ti != -2 ? g_ngx_skip_ti : env_skip;   // runtime /ngxskip overrides env
         if (skip_ti >= 0 && ti == skip_ti) continue;
         VkPipeline pipe = pipeline_for(st);
         if (pipe == VK_NULL_HANDLE) pipe = pipeline_for(mod);

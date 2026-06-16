@@ -84,7 +84,45 @@ cross-launch camera drift, and tev_index decoded out of range). Point it at a sk
 that batch's tev_index + bound texmaps + col0; if NO batch covers the sky pixel, it's (A)/(B).
 Also fix the separate hardcoded-clear-color bug (use the game's GXSetCopyClear).
 
-## ✅ UPDATE 3 (2026-06-16 pm) — THE WASH IS ti=9, A FULLSCREEN ADDITIVE LAYER (not the sky, not lighting)
+## ⚠️ UPDATE 4 (2026-06-16 pm) — CORRECTION: UPDATE 3's "ti=9" was the TITLE-SCREEN logo (screen mismatch)
+UPDATE 3 concluded the wash is ti=9. That was measured on a **screen mismatch**: `gp pad start ×3`
+advanced the ngx and oracle instances to DIFFERENT screens — ngx was still on the TITLE screen (the
+glowing "SUPER MARIO SUNSHINE" logo, whose bloom IS ti=9) while the oracle was on the file-select.
+ti=9 is the title-logo glow, NOT the file-select wash. Lesson: **always verify both instances show the
+"Select data" menu before comparing** (stack the two screenshots and LOOK — `pad start ×5` w/ 2.5s
+settle reaches it more reliably; tev_index numbers are per-frame and differ between scenes).
+
+### On the VERIFIED file-select (both showing the menu), the wash is ti=11, the SKY GRADIENT itself
+- ti=11 = a vtx-colour gradient sky mesh, **untextured**, **screen-blend (PE src=GX_BL_ONE=1,
+  dst=GX_BL_INVSRCCLR=3 → out = src + bg·(1−src), brightens toward white)**, cc=0701 (vtx/flat).
+- The mesh's vertex colours span a **blue→white gradient and are decoded CORRECTLY** (the clip dump
+  shows real blue verts rgba≈(0.01,0.50,0.86) AND white verts ≈(0.9,0.98,0.97) — so it's not a
+  uniform colour-decode error). But across the WHOLE on-screen sky ngx shows the **white** end
+  (skyTop≈245,252,250) while the oracle shows **blue** (≈31,125,169). Because the blend is src=ONE
+  screen, white src ⇒ white out unconditionally — so the question reduces to *why ngx's visible sky
+  src is white where the oracle's is blue*.
+- **Ruled out this session (verified file-select, runtime A/B toggles):** winding/cull (CCW flip or
+  cull=FRONT culls ~everything to the clear → current CW/cull=BACK is correct), near-plane straddle
+  overdraw (`SUNBRIGHT_NGX_NEARCULL` up to 5000 leaves the sky white; 50000 culls all to clear),
+  ti=9 (title logo). The white-top verts have large w (genuinely in front), so it is NOT a near-w
+  projection artifact.
+- **CONFOUND (important):** the ngx and oracle instances are at **different scene/animation states** on
+  the file-select — the J2D menu sits at a different position in each (the intro slide/fade is at a
+  different frame). So the camera/scene may genuinely differ, and the stark whole-sky white-vs-blue may
+  be partly a state-desync artifact rather than a pure render bug. **A trustworthy fix needs a
+  SYNCHRONIZED same-state A/B**, which the capture-freeze (NGX_SHAPE freezes Dolphin GX) currently
+  blocks. Leading hypotheses for next session, in order:
+  1. **Fix the comparison first** — make NGX_SHAPE capture not freeze Dolphin's GX (so `/abshot2`
+     same-process dual capture works), OR drive to a deterministic settled file-select state in both.
+     Without this, every pixel comparison here is suspect.
+  2. **ti=11 modelview/orientation** — the sky is a skybox-scale mesh (model pos ~91021) straddling the
+     camera; if ngx shows the white half of the gradient where the oracle shows the blue half, the
+     modelview/camera ngx reads for this shape differs. Compare ngx's per-shape modelview (sky-XF latch)
+     against ground truth at a synchronized instant.
+New runtime tooling added (no relaunch): `/ngxonly?ti=N` / `/ngxskip?ti=N` (isolate/remove a material
+live), plus env `SUNBRIGHT_NGX_NEARCULL` / `FORCECULL` / `CCW` A/B toggles.
+
+## (superseded — see UPDATE 4) UPDATE 3 (2026-06-16 pm) — "the wash is ti=9" — WRONG (title-screen mismatch)
 Built a reliable **pixel→batch CPU rasterizer probe** (`/pixbatch`, `runtime/overrides/ngx_j3d_shape.cpp`)
 — no AA, no readback, no cross-launch drift — plus a batch **clip-dump** (`/pixbatch?x=-999&y=<ti>`:
 per-vertex clip[4], w-sign split, visible-mean rgb, PE/TEV/texmap/UV), a **sky-XF matrix latch**, and

@@ -1006,7 +1006,16 @@ void transform_eye() {
             const bool is_ci = (c.fmt == 0x8 || c.fmt == 0x9 || c.fmt == 0xA);
             if (c.addr && c.w && c.h && (!is_ci || c.tlut_addr)) tb[m] = c;
         }
+        // A/B diag: drop triangles that touch / cross the near plane (any vertex clip.w <= eps).
+        // Tests whether the file-select wash comes from straddling (camera-crossing) geometry that
+        // ngx doesn't near-plane CLIP. SUNBRIGHT_NGX_NEARCULL=1 uses eps=1.0; =N sets eps=N.
+        static const float nearcull_eps = []{ const char* v = getenv("SUNBRIGHT_NGX_NEARCULL");
+            if (!v) return -1e30f; float e = atof(v); return e == 1.0f ? 1.0f : (e == 0.0f ? -1e30f : e); }();
         for (size_t t = 0; t + 3 <= g_indices.size(); t += 3) {
+            if (nearcull_eps > -1e29f) {
+                const float w0 = g_clip[g_indices[t]*4+3], w1 = g_clip[g_indices[t+1]*4+3], w2 = g_clip[g_indices[t+2]*4+3];
+                if (w0 <= nearcull_eps || w1 <= nearcull_eps || w2 <= nearcull_eps) continue;
+            }
             if (count + 3 > SNAP_CAP) { count = 0; batches.clear(); }  // safety wrap (huge frame)
             // Open a new batch on material/binding change, after a wrap, or at start.
             const bool tex_diff = batches.empty() ||
