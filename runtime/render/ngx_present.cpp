@@ -119,10 +119,10 @@ bool make_buffer(VkDevice dev, VkPhysicalDevice phys, VkBuffer& b, VkDeviceMemor
 }
 
 bool make_dev_image(VkDevice dev, VkPhysicalDevice phys, VkImage& img, VkDeviceMemory& mem, VkImageView& view,
-                    VkFormat fmt, int w, int h, VkImageUsageFlags usage, VkImageAspectFlags asp) {
+                    VkFormat fmt, int w, int h, VkImageUsageFlags usage, VkImageAspectFlags asp, uint32_t mips = 1) {
     VkImageCreateInfo ici{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     ici.imageType = VK_IMAGE_TYPE_2D; ici.format = fmt;
-    ici.extent = {(uint32_t)w, (uint32_t)h, 1}; ici.mipLevels = 1; ici.arrayLayers = 1;
+    ici.extent = {(uint32_t)w, (uint32_t)h, 1}; ici.mipLevels = mips; ici.arrayLayers = 1;
     ici.samples = VK_SAMPLE_COUNT_1_BIT; ici.tiling = VK_IMAGE_TILING_OPTIMAL;
     ici.usage = usage; ici.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -134,7 +134,7 @@ bool make_dev_image(VkDevice dev, VkPhysicalDevice phys, VkImage& img, VkDeviceM
     if (vkBindImageMemory(dev, img, mem, 0)) return false;
     VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     vci.image = img; vci.viewType = VK_IMAGE_VIEW_TYPE_2D; vci.format = fmt;
-    vci.subresourceRange = {asp, 0, 1, 0, 1};
+    vci.subresourceRange = {asp, 0, mips, 0, 1};
     return vkCreateImageView(dev, &vci, nullptr, &view) == VK_SUCCESS;
 }
 
@@ -147,8 +147,10 @@ bool PresentRenderer::init() {
     if (dev == VK_NULL_HANDLE) return false;
 
     VkSamplerCreateInfo sci{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
-    sci.magFilter = sci.minFilter = VK_FILTER_LINEAR; sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    sci.magFilter = sci.minFilter = VK_FILTER_LINEAR; sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
     sci.addressModeU = sci.addressModeV = sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    sci.maxLod = VK_LOD_CLAMP_NONE;   // sample the full mip chain (trilinear); maxLod=0 (default)
+                                      // would force mip0 only → minified tiled textures alias bright
     if (vkCreateSampler(dev, &sci, nullptr, &sampler)) return false;
 
     VkDescriptorSetLayoutBinding b{};
@@ -457,20 +459,49 @@ VkImageView PresentRenderer::texture_for(const NgxTexBind& t, VkCommandBuffer up
     vkUnmapMemory(dev, smem);
     stg_bufs.push_back(sbuf); stg_mems.push_back(smem);
 
+    // Mip chain: GameCube samples a texture's mips; a heavily-tiled/minified surface (e.g. the
+    // plaza floor) averages to a darker value, while a single mip0 + bilinear ALIASES toward the
+    // bright tile faces → washed-out. Generate a box-filtered mip chain (vkCmdBlitImage, linear)
+    // and sample it trilinearly. (GC TIMGs can store mips; box-generated mips approximate them and
+    // fix the aliasing — the dominant cause of the ngx 3D wash.)
+    uint32_t mips = 1; { int m = t.w > t.h ? t.w : t.h; while (m > 1) { m >>= 1; mips++; } }
     TexEntry te{};
     if (!make_dev_image(dev, phys, te.img, te.mem, te.view, VK_FORMAT_R8G8B8A8_UNORM, t.w, t.h,
-        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_IMAGE_ASPECT_COLOR_BIT)) return white_view;
-    auto bar = [&](VkImageLayout f, VkImageLayout to, VkAccessFlags sa, VkAccessFlags da, VkPipelineStageFlags ssf, VkPipelineStageFlags dsf) {
+        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+        VK_IMAGE_ASPECT_COLOR_BIT, mips)) return white_view;
+    auto bar = [&](uint32_t lvl, VkImageLayout f, VkImageLayout to, VkAccessFlags sa, VkAccessFlags da, VkPipelineStageFlags ssf, VkPipelineStageFlags dsf) {
         VkImageMemoryBarrier mb{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER}; mb.oldLayout = f; mb.newLayout = to;
         mb.srcQueueFamilyIndex = mb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; mb.image = te.img;
-        mb.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}; mb.srcAccessMask = sa; mb.dstAccessMask = da;
+        mb.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, lvl, 1, 0, 1}; mb.srcAccessMask = sa; mb.dstAccessMask = da;
         vkCmdPipelineBarrier(up_cmd, ssf, dsf, 0, 0, nullptr, 0, nullptr, 1, &mb);
     };
-    bar(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
+    // Upload mip0.
+    bar(0, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
     VkBufferImageCopy c{}; c.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}; c.imageExtent = {(uint32_t)t.w, (uint32_t)t.h, 1};
     vkCmdCopyBufferToImage(up_cmd, sbuf, te.img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
-    bar(VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+    // Generate mips by successive linear blits (i-1 → i), box-filtering down the chain.
+    int mw = t.w, mh = t.h;
+    for (uint32_t i = 1; i < mips; i++) {
+        bar(i - 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+        bar(i, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
+            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+        int nw = mw > 1 ? mw >> 1 : 1, nh = mh > 1 ? mh >> 1 : 1;
+        VkImageBlit blit{};
+        blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, i - 1, 0, 1};
+        blit.srcOffsets[1] = {mw, mh, 1};
+        blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, i, 0, 1};
+        blit.dstOffsets[1] = {nw, nh, 1};
+        vkCmdBlitImage(up_cmd, te.img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, te.img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                       1, &blit, VK_FILTER_LINEAR);
+        // The just-blitted source level (i-1) is now done → SHADER_READ.
+        bar(i - 1, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+        mw = nw; mh = nh;
+    }
+    // Final (smallest) level is in TRANSFER_DST → SHADER_READ.
+    bar(mips - 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
         VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
     texcache[key] = te; g_tex_decodes++;
     return te.view;
@@ -616,6 +647,8 @@ AbstractTexture* PresentRenderer::render(int w, int h) {
             else if (cc & 1)       { rC=0;   gC=255; bC=(cc&2)?255:0; }  // VTX: green (lit=cyan)
             else                   { rC=255; gC=0;   bC=(cc&2)?255:0; }  // REG: red (lit=magenta)
             pc.kcolor[0][0]=rC; pc.kcolor[0][1]=gC; pc.kcolor[0][2]=bC; pc.kcolor[0][3]=255;
+        } else if (s_dbg && !strcmp(s_dbg, "bid")) {   // encode tev_index as colour (R=lo,G=hi)
+            pc.kcolor[0][0]=ti & 0xFF; pc.kcolor[0][1]=(ti>>8)&0xFF; pc.kcolor[0][2]=0; pc.kcolor[0][3]=255;
         }
         vkCmdPushConstants(cmd, pll, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof pc, &pc);
         vkCmdDraw(cmd, batches[b].vcount, 1, batches[b].vstart, 0);

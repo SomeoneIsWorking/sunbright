@@ -199,7 +199,7 @@ std::string sb_tev_gen_fragment(const NgxTevState& st) {
                "layout(set=0,binding=0) uniform sampler2D tex[8];\n"
                "void main(){ o = texture(tex[0], vUV[0]); }\n";
     }
-    if (dbg && !strcmp(dbg, "cat")) {   // output the per-batch category colour (kcolor[0])
+    if (dbg && (!strcmp(dbg, "cat") || !strcmp(dbg, "bid"))) {  // output kcolor[0] (category / batch-id)
         return "#version 450\nlayout(location=0) in vec4 vColor;\n"
                "layout(location=1) in vec2 vUV[8];\nlayout(location=0) out vec4 o;\n"
                "layout(set=0,binding=0) uniform sampler2D tex[8];\n"

@@ -170,6 +170,26 @@ verts exceeds 1.0 (light0 sun + light1 white-no-falloff). GX's illum is 0.77 (no
 the SAME lights/ambient/mat (verified). So an input/term still diverges (~1.3×) — secondary; revisit
 after mipmaps. (Earlier per-vertex breakdown: up-facing reg-lit illum avg 0.607, max 1.106.)
 
+## UPDATE 6 (2026-06-16): mipmaps added (correct, not the foreground fix) + measurement caveat
+- Added a generated mip chain (vkCmdBlitImage box-filter) + trilinear sampler (maxLod=CLAMP_NONE)
+  in ngx_present.cpp. CORRECT behaviour (GC samples mips; fixes distant minified aliasing) but did
+  NOT fix the foreground wash: at 3× EFB scale the foreground floor samples mip0 anyway. KEEP it.
+- Batch-ID instrument (`SUNBRIGHT_NGX_TEVDBG=bid`: outputs tev_index as RGB) confirms the visible
+  floor is **ti=10 = the 08f8af simple `tex×col0` material** (no combiner darkening room).
+- CMPR decode verified **byte-identical to Dolphin** (DecodeDXTBlock/DXTBlend/Convert5,6To8/index).
+
+⚠ MEASUREMENT CAVEAT (why the numbers don't close): `tev_index` is assigned by per-frame capture
+ORDER and texture guest addresses move per run (heap), so **cross-run correlation is invalid** —
+the "bid" run's ti=10 ≠ the "decode" run's ti=10. The inconsistency (GX floor=88 but tex(227)×
+col0(0.77)=175 for a simple tex×col0 floor) is almost certainly this: the 227-rawmean texture
+measured in one run is NOT the floor's texture in the GX-measured run. To FINISH this cleanly you
+must measure everything in ONE run with stable per-pixel attribution: e.g. in a single NGX_PRESENT+
+PROBE run, use `bid` to map the floor pixel→ti, then decode THAT ti's texture + read its col0/cc,
+all same-run; and on the GX side use SUNBRIGHT_DBG_RASCOLOR/TEXCOLOR same-run. Until then, the two
+firmly-established, in-run facts are: (1) ngx col0 SATURATES to 255 vs GX 196 (~1.3×, lighting) and
+(2) ngx textured output is ~1.7-2× brighter than GX. Both real; both need the single-run harness to
+attribute precisely.
+
 ## Next steps
 - Audit the per-shape col0 source for the NOT-PRESENT CLR0 case (12.7M verts) — what should
   col0 be there (matColor? persisted channel?). Likely the dominant remaining white.
