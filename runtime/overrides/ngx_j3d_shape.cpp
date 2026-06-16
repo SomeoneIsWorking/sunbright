@@ -135,6 +135,7 @@ double g_uplit_sum=0, g_uplit_max=0, g_uplit_amb=0, g_uplit_ndl=0; unsigned long
 unsigned long g_clr0fmt_hist[8] = {0};  // CLR0 VAT format (0=565,1=888,2=888x,3=4444,4=6666,5=8888)
 size_t g_bigany_verts = 0; u16 g_bigany_cc = 0; bool g_bigany_hasnrm=false, g_bigany_matvtx=false, g_bigany_en=false;
 unsigned g_bigany_clr0cls=0; u8 g_bigany_vcol[3]={0}; double g_bigany_vcolmean=0; u32 g_bigany_clr0base=0;
+unsigned long g_pnmtx_shapes=0, g_pnmtx_verts=0; unsigned g_pnmtx_maxnelem=0, g_max_nelem=0;
 
 // J3DColorBlock variants (vtable ptrs, gmse01; from the block ctor/dtor disasm:
 // LightOn sets 0x803E0CD4, LightOff sets 0x803E0D38). Field offsets from
@@ -935,6 +936,12 @@ void capture(u32 sh) {
         if (t < 0) any_fail = true; else tris += t;
     }
 
+    // DBG: per-vertex position-matrix index (PNMTXIDX, vcd_lo bit0) usage. ngx applies a single
+    // mCurrentDrawMtx to the whole shape; shapes with PNMTXIDX are multi-matrix (skinned/jointed,
+    // e.g. the title logo) and TEAR if we don't select the per-vertex matrix.
+    if (cp.vcd_lo & 1) { g_pnmtx_shapes++; g_pnmtx_verts += g_verts.size(); if (nelem > g_pnmtx_maxnelem) g_pnmtx_maxnelem = nelem; }
+    if (nelem > g_max_nelem) g_max_nelem = nelem;
+
     g_meshes++;
     if (any_fail) g_fail++;
     g_total_verts += g_verts.size();
@@ -1370,6 +1377,9 @@ int sb_ngx_shape_dump(char* out, int cap) {
         g_colcat_n[2], g_colcat_n[2]?g_colcat_sum[2]/g_colcat_n[2]:0.0,
         g_colcat_n[3], g_colcat_n[3]?g_colcat_sum[3]/g_colcat_n[3]:0.0,
         g_colcat_n[4], g_colcat_n[4]?g_colcat_sum[4]/g_colcat_n[4]:0.0);
+    n += snprintf(out+n, cap-n,
+        "  PNMTXIDX (multi-matrix) shapes=%lu verts=%lu maxnelem=%u | overall max nelem=%u (1=single-matrix)\n",
+        g_pnmtx_shapes, g_pnmtx_verts, g_pnmtx_maxnelem, g_max_nelem);
     n += snprintf(out+n, cap-n,
         "  up-facing reg-lit illum (visible floor/ground): avg=%.3f max=%.3f (n=%lu) @max amb=%.3f ndl=%.3f\n",
         g_uplit_n?g_uplit_sum/g_uplit_n:0.0, g_uplit_max, g_uplit_n, g_uplit_amb, g_uplit_ndl);
