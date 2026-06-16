@@ -17,6 +17,7 @@
 
 #include "ngx_project.h"
 #include "ngx_clip.h"
+#include "ngx_light.h"
 
 // ── Units under test (self-test entry points defined in their own .cpp) ──────
 extern int sb_ngx_vertex_selftest(char* out, int cap);   // runtime/ngx/ngx_vertex.cpp
@@ -110,12 +111,81 @@ int test_clip(char* rep, int cap) {
     return fails;
 }
 
+// ── lighting unit ────────────────────────────────────────────────────────────
+// GX per-vertex colour-channel lighting (ngx::light_color0). Spec-computed ground
+// truth (hand-derived from the GX model / Dolphin LightingShaderGen): out = mat *
+// clamp(amb + Σ attn·diff·lightcol). A wrong diffuse sign, a missing clamp, a
+// SPOT-attenuation slip, or a mat/amb-source swap goes red. THIS is the function the
+// override ships (ngx_j3d_shape.cpp light_vertex calls it) — not a fork.
+int test_lighting(char* rep, int cap) {
+    int pos = 0, fails = 0;
+    auto fail = [&](const char* m, float g0, float g1, float g2) {
+        fails++; if (pos < cap) pos += snprintf(rep + pos, cap - pos,
+            "FAIL lighting %s got(%.4f,%.4f,%.4f)\n", m, g0, g1, g2); };
+    auto close = [](float a, float b) { float e = a - b; return (e<0?-e:e) <= 1e-4f; };
+    auto chk = [&](const char* m, const float o[3], float e0, float e1, float e2) {
+        if (!close(o[0],e0)||!close(o[1],e1)||!close(o[2],e2)) fail(m, o[0],o[1],o[2]); };
+
+    // Light at the origin; vertex 10 units in front (eye -z). ld = (0,0,1), dist=10.
+    ngx::LightSrc L[8];  // all invalid by default
+    auto mkL = [&](float r,float g,float b){ ngx::LightSrc s; s.valid=true;
+        s.color[0]=r;s.color[1]=g;s.color[2]=b; s.pos[0]=0;s.pos[1]=0;s.pos[2]=0;
+        s.dir[0]=0;s.dir[1]=0;s.dir[2]=1; return s; };
+    const float eye[3]   = {0,0,-10};
+    const float nUp[3]   = {0,0,1};    // faces the light (ndl=+1)
+    const float nAway[3] = {0,0,-1};   // faces away   (ndl=-1)
+    const float white[3] = {1,1,1}, black[3] = {0,0,0};
+    float out[3];
+    auto C = [](bool mv,bool en,bool av,int df,int at,unsigned mask){
+        ngx::ChanCtl c; c.matVtx=mv;c.enable=en;c.ambVtx=av;c.diffFn=df;c.attnSel=at;c.mask=mask; return c; };
+
+    // 1. Lighting DISABLED → out = matColor (no light/ambient touched).
+    { float mat[3]={0.2f,0.4f,0.6f};
+      ngx::light_color0(C(0,0,0,0,0,0), mat, white, L, eye, nUp, black, out);
+      chk("disabled→matColor", out, 0.2f,0.4f,0.6f); }
+
+    // 2. matSource=VTX, disabled → out = vertex colour.
+    { float vc[3]={0.8f,0.1f,0.2f};
+      ngx::light_color0(C(1,0,0,0,0,0), white, white, L, eye, nUp, vc, out);
+      chk("vtx-mat", out, 0.8f,0.1f,0.2f); }
+
+    // 3. Enabled, ambient only (no lights in mask) → out = mat*amb.
+    { float amb[3]={0.3f,0.3f,0.3f};
+      ngx::light_color0(C(0,1,0,2,0,0), white, amb, L, eye, nUp, black, out);
+      chk("ambient-only", out, 0.3f,0.3f,0.3f); }
+
+    // 4. One light, attn NONE, CLAMP diffuse, facing light → mat*(0 + 1·1·0.5)=0.5.
+    { L[0]=mkL(0.5f,0.5f,0.5f);
+      ngx::light_color0(C(0,1,0,2,0,0x01), white, black, L, eye, nUp, black, out);
+      chk("clamp-facing", out, 0.5f,0.5f,0.5f); }
+
+    // 5. Facing AWAY, SIGN diffuse → illum = -0.5 → clamp 0 → black (the dark-surface case).
+    { L[0]=mkL(0.5f,0.5f,0.5f);
+      ngx::light_color0(C(0,1,0,1,0,0x01), white, black, L, eye, nAway, black, out);
+      chk("sign-away→black", out, 0,0,0); }
+
+    // 6. SPOT: cosA=(1,0,0)→a=1, distA=(2,0,0)→k=2, attn=0.5; CLAMP facing → 0.5·1·1=0.5.
+    { ngx::LightSrc s=mkL(1,1,1); s.cosA[0]=1; s.distA[0]=2; L[0]=s;
+      ngx::light_color0(C(0,1,0,2,3,0x01), white, black, L, eye, nUp, black, out);
+      chk("spot-attn", out, 0.5f,0.5f,0.5f); }
+
+    // 7. decode_chanctl: cc=0x068e (the SMS reg/lit world material) → REG mat, lit,
+    //    REG amb, SIGN diffuse, SPOT attn, lights{0,1}. (b2..5=0011=0x3, b11..14=0.)
+    { ngx::ChanCtl c = ngx::decode_chanctl(0x068e);
+      if (c.matVtx||!c.enable||c.ambVtx||c.diffFn!=1||c.attnSel!=3||c.mask!=0x03) {
+          fails++; if (pos<cap) pos += snprintf(rep+pos, cap-pos,
+              "FAIL decode_chanctl(068e) mv=%d en=%d av=%d df=%d at=%d mask=%02x\n",
+              c.matVtx,c.enable,c.ambVtx,c.diffFn,c.attnSel,c.mask); } }
+    return fails;
+}
+
 struct Unit { const char* name; int (*run)(char* rep, int cap); };
 
 const Unit kUnits[] = {
     {"vertex_decode", sb_ngx_vertex_selftest},
     {"projection",    test_projection},
     {"near_clip",     test_clip},
+    {"lighting",      test_lighting},
 };
 
 }  // namespace

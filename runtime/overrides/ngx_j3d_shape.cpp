@@ -33,6 +33,7 @@
 #include "../ngx/ngx_render_data.h"
 #include "../ngx/ngx_project.h"   // pure, unit-tested eye→clip→NDC (sunbright-render-test)
 #include "../ngx/ngx_clip.h"      // pure, unit-tested near-plane triangle clip
+#include "../ngx/ngx_light.h"     // pure, unit-tested GX per-vertex lighting (test_lighting)
 #include <cmath>
 #include <cstdarg>
 #include <cstddef>
@@ -506,9 +507,21 @@ void light_vertex(const float eye[3], const float en[3], const float vcol0[4], f
             g_uplit_amb = (C.ambColor[0]+C.ambColor[1]+C.ambColor[2])/3.0/255.0;
             g_uplit_ndl = en[0]*g_dbg_ld0[0]+en[1]*g_dbg_ld0[1]+en[2]*g_dbg_ld0[2]; }
     }
-    for (int k = 0; k < 3; k++) {
-        float v = illum[k]; v = v < 0.f ? 0.f : (v > 1.f ? 1.f : v);
-        out[k] = mat[k] * v;
+    // SHIPPING colour comes from the extracted, unit-tested ngx::light_color0 (render_test
+    // test_lighting). The illum loop above is the DIAGNOSTIC mirror (per-light breakdown for
+    // the /ngxshape probes); the returned out[] is authoritative from the tested unit so the
+    // test validates the real path, not a fork. Capture-time (not the per-frame hot path).
+    {
+        ngx::ChanCtl CC = ngx::decode_chanctl(cc);
+        ngx::LightSrc ls[8];
+        for (int i = 0; i < 8; i++) {
+            ls[i].valid = g_light[i].valid;
+            for (int k = 0; k < 3; k++) { ls[i].color[k]=g_light[i].color[k]; ls[i].pos[k]=g_light[i].pos[k];
+                ls[i].dir[k]=g_light[i].dir[k]; ls[i].cosA[k]=g_light[i].cosA[k]; ls[i].distA[k]=g_light[i].distA[k]; }
+        }
+        const float matC[3] = { C.matColor[0]/255.f, C.matColor[1]/255.f, C.matColor[2]/255.f };
+        const float ambC[3] = { C.ambColor[0]/255.f, C.ambColor[1]/255.f, C.ambColor[2]/255.f };
+        ngx::light_color0(CC, matC, ambC, ls, eye, en, vcol0, out);
     }
     if (sky_latch) {
         for (int k=0;k<3;k++){ g_sky.illum[k]=illum[k]; g_sky.out[k]=out[k]; }
