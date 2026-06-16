@@ -271,6 +271,28 @@ which says "different" not "why" and has no stable golden when the output is sti
 - **When a unit isn't extractable yet, extract it first.** "Draw the scene and compare" is the
   integration test of LAST resort, after the pure units underneath it are green.
 
+### The pixel oracle — the ONLY valid whole-renderer test vs Dolphin (use this)
+CPU-side Dolphin state (`xfmem`, GP registers) is **async-lagged** and is NOT a valid oracle —
+PROVEN 2026-06-16: `GXLoadPosMtxImm` matrices come straight from the call args (= exactly what
+Dolphin loads) yet 77% disagree with `xfmem` read one instruction after the load. So never build
+a "ngx CPU-state vs xfmem" differential (the retired `SUNBRIGHT_NGX_DIFF`/`/ngxgeomdiff` did,
+and its verdicts are unsound — see memory `xfmem-not-cpu-oracle`). The ONLY trustworthy whole-
+renderer reference is **rendered PIXELS**, captured zero-drift from the SAME present:
+- **`/abshot2`** (probe, needs `SUNBRIGHT_NGX_PRESENT=1`) writes `scratch/screenshots/ab2.gx.ppm`
+  (Dolphin's GX XFB = oracle) **and** `ab2.ngx.ppm` (ngx's native render) from the *identical*
+  present → pixel-perfect camera alignment, one process, no drift. This is the geometry analog of
+  `tex_decode_selftest` (Dolphin rendered live each run; NOT a stored golden — that's why the
+  stored-PNG approach was rejected).
+- **`tools/render/ab_diff.py`** turns the two PPMs into a NUMBER: mean abs pixel delta (overall +
+  4×4 per-region grid, which localizes WHICH part is wrong) + a heatmap. A fix MUST drop this
+  number. Baseline 2026-06-16 (intro gameplay): **40% mean delta** — water missing (black), sky
+  black, dock blown white, HUD garbled. Workflow: run headless w/ `SUNBRIGHT_NGX_PRESENT=1
+  SUNBRIGHT_PROBE=1` to a 3D scene → `curl /abshot2` (check `/ngxpresentlive` shows `frames>0`
+  first, else you capture mid-init) → `python3 tools/render/ab_diff.py --heat out.ppm`.
+- GOTCHA: `pkill` returning nonzero (nothing to kill) aborts a chained `&` launch — launch the
+  game on its own line. And ALWAYS `pkill -9 -f "build/sunbright "` a finished run: a stale
+  instance squats probe port 17654 and silently serves the OLD binary to your curls.
+
 ## Debugging recomp correctness
 - `SUNBRIGHT_DISABLE_RECOMP=1` — run pure Dolphin JIT (same binary). The A/B baseline:
   if a hang reproduces here too it's not our recomp.
