@@ -47,14 +47,17 @@ launch_one() {  # launch_one <role> [extra VAR=val ...]
     [ -x "$BIN" ] || { echo "no binary: $BIN"; return 1; }
     [ -f "$ROM" ] || { echo "no ROM: $ROM"; return 1; }
     mkdir -p "$HERE/scratch/logs" "$SHOTS"
-    local -a E=(SUNBRIGHT_HEADLESS=1 SUNBRIGHT_NGX_SHAPE=1 SUNBRIGHT_PROBE=1)
+    local -a E=(SUNBRIGHT_HEADLESS=1 SUNBRIGHT_PROBE=1)
     local port log
     if [ "$role" = gx ]; then
         port=$GX_PORT; log="$HERE/scratch/logs/gp.gx.log"
+        # PURE-Dolphin LIVE oracle: NGX_PRESENT=0 AND no NGX_SHAPE — the J3D capture path
+        # BYPASSES Dolphin's GX render (freezes its XFB on an early frame), so the oracle must
+        # NOT enable capture. Isolated user dir so its shader cache/config don't clash with ngx.
         E+=(SUNBRIGHT_NGX_PRESENT=0 SUNBRIGHT_PROBE_PORT=$GX_PORT SUNBRIGHT_USERDIR="$HERE/scratch/oracle_userdir")
     else
         port=$NGX_PORT; log="$HERE/scratch/logs/gp.ngx.log"
-        E+=(SUNBRIGHT_NGX_PRESENT=1 SUNBRIGHT_PROBE_PORT=$NGX_PORT)
+        E+=(SUNBRIGHT_NGX_SHAPE=1 SUNBRIGHT_NGX_PRESENT=1 SUNBRIGHT_PROBE_PORT=$NGX_PORT)
     fi
     # Kill any prior instance holding this probe port (else the stale one keeps answering).
     { fuser -k "${port}/tcp" 2>/dev/null || lsof -ti "tcp:${port}" 2>/dev/null | xargs -r kill -9; } ; sleep 1
@@ -116,10 +119,31 @@ shot|compare)   # screenshot every running instance: <name>.<role>.png ; diff if
     [ ${#files[@]} -eq 2 ] && diffimg "$SHOTS/$name.ngx.png" "$SHOTS/$name.gx.png" "$SHOTS/$name.diff.png"
     ;;
 
+abshot)   # ZERO-DRIFT single-process A/B: toggles the present source in the ngx instance to
+          # dump Dolphin's GX render AND the native render for the SAME frame -> <name>.gx.png
+          # + <name>.ngx.png + diff. No oracle process, no fastboot/shader-cache drift. Launch
+          # the ngx instance with debug env to isolate a stage, e.g.:
+          #   gp launch ngx SUNBRIGHT_FASTBOOT=1 SUNBRIGHT_DBG_RASCOLOR=1 SUNBRIGHT_NGX_TEVDBG=ras
+          #   gp abshot lit_iso     # both pngs are lit-raster -> pure lighting A/B
+    name="${1:-ab}"; echo "$(q "$NGX_PORT" "/abshot?name=$name")"
+    g="$SHOTS/$name.gx.png"; nn="$SHOTS/$name.ngx.png"
+    [ -f "$g" ] && [ -f "$nn" ] && { brightness "$nn" "$g"; diffimg "$nn" "$g" "$SHOTS/$name.diff.png"; }
+    ;;
+
+abshot2)  # TRUE zero-drift A/B: same-present dual capture (Dolphin GX XFB + native ngx) -> PPM.
+          # Pixel-perfect camera alignment (no temporal drift). Requires the ngx instance in
+          # NGX_PRESENT mode. Same debug-env usage as abshot for stage isolation.
+    name="${1:-ab2}"; echo "$(q "$NGX_PORT" "/abshot2")"
+    g="$SHOTS/ab2.gx.ppm"; nn="$SHOTS/ab2.ngx.ppm"
+    [ -f "$g" ] && [ -f "$nn" ] && { brightness "$nn" "$g"; diffimg "$nn" "$g" "$SHOTS/$name.diff.png"; }
+    ;;
+
 gx)    # run a subcommand against the gx-oracle port: gp gx <ngx|drawstats|r ...|get /path|shot ..>
     GP_ONLY=$GX_PORT exec "${BASH_SOURCE[0]}" "$@"
     ;;
 
+dbg)      q "${GP_ONLY:-$NGX_PORT}" "/ngxdbg?m=${1:-normal}";;   # flip ngx debug mode LIVE: normal|tex|ras|cat|bid
+xf)       q "${GP_ONLY:-$NGX_PORT}" "/xfdump";;   # live Dolphin xfmem lighting/colour (use on gx oracle for truth)
 ngx)      q "${GP_ONLY:-$NGX_PORT}" "/ngxshape";;
 present)  q "${GP_ONLY:-$NGX_PORT}" "/ngxpresentlive";;
 metrics)  q "${GP_ONLY:-$NGX_PORT}" "/metrics";;

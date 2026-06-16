@@ -22,6 +22,8 @@
 #include <cstdint>
 #include <cstring>
 extern "C" unsigned ngx_tev_cc_dbg(int);
+extern "C" int g_ngx_tevdbg;       // render-debug mode (tev_shader.cpp); /ngxdbg sets it
+extern "C" int sb_ngx_tevdbg();
 #include <unordered_map>
 #include <vector>
 
@@ -89,6 +91,16 @@ struct PresentRenderer {
     struct J2dDraw { VkDescriptorSet dset; float rect[4]; float misc[4]; uint32_t corners[4]; uint32_t bw[4]; float uvrect[4]; };
 
     unsigned long g_frames = 0, g_pipe_builds = 0, g_tex_decodes = 0, g_j2d_quads = 0;
+    int dbg_mode_built = -2;    // tev-debug mode the cached pipelines were built for; mismatch → rebuild
+
+    void clear_pipes() {        // drop all cached shader+pipeline (e.g. when the debug mode flips)
+        vkDeviceWaitIdle(dev);
+        for (auto& kv : pipes) {
+            if (kv.second.pipe) vkDestroyPipeline(dev, kv.second.pipe, nullptr);
+            if (kv.second.mod)  vkDestroyShaderModule(dev, kv.second.mod, nullptr);
+        }
+        pipes.clear();
+    }
 
     bool init();
     bool init_j2d();
@@ -417,6 +429,10 @@ VkPipeline PresentRenderer::pipeline_for(const NgxTevState& st) {
         cba.dstColorBlendFactor = cba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
         cba.colorBlendOp = cba.alphaBlendOp = VK_BLEND_OP_REVERSE_SUBTRACT;
     }
+    // A/B diag: SUNBRIGHT_NGX_NOBLEND=1 forces every material opaque (blend off) — isolates
+    // whether the wash is blend overdraw/accumulation vs the combiner/raster source.
+    static const bool s_noblend = getenv("SUNBRIGHT_NGX_NOBLEND") && atoi(getenv("SUNBRIGHT_NGX_NOBLEND")) != 0;
+    if (s_noblend) cba.blendEnable = VK_FALSE;
     VkPipelineColorBlendStateCreateInfo cb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
     cb.attachmentCount = 1; cb.pAttachments = &cba;
     VkGraphicsPipelineCreateInfo gp{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
@@ -567,6 +583,8 @@ AbstractTexture* PresentRenderer::render(int w, int h) {
     std::vector<NgxTevState> tevstates(stv, stv + (ntev > 0 ? ntev : 0));
 
     if (w < 1 || h < 1) return nullptr;
+    // Render-debug mode changed (via /ngxdbg)? Drop cached pipelines so shaders regenerate.
+    if (int m = sb_ngx_tevdbg(); m != dbg_mode_built) { if (init_ok && dev) clear_pipes(); dbg_mode_built = m; }
     if (!ensure_target(w, h)) return nullptr;
     if (!ensure_vbuf((VkDeviceSize)nv * sizeof(NgxRenderVertex))) return nullptr;
     if (!ensure_dpool((uint32_t)batches.size())) return nullptr;
@@ -639,15 +657,15 @@ AbstractTexture* PresentRenderer::render(int w, int h) {
             for (int c = 0; c < 3; c++) for (int k = 0; k < 4; k++) pc.tevreg[c][k] = st.tev_color[c][k];
         } else for (int c = 0; c < 4; c++) for (int k = 0; k < 4; k++) pc.kcolor[c][k] = 255;
         // DBG cat mode: override kcolor[0] with a category colour (the cat shader outputs it).
-        static const char* s_dbg = getenv("SUNBRIGHT_NGX_TEVDBG");
-        if (s_dbg && !strcmp(s_dbg, "cat")) {
+        const int s_dbg = sb_ngx_tevdbg();
+        if (s_dbg == 3) {
             unsigned cc = ngx_tev_cc_dbg(ti);
             int rC, gC, bC;
             if (cc == 0xFFFF)      { rC=128; gC=128; bC=128; }   // no block = gray
             else if (cc & 1)       { rC=0;   gC=255; bC=(cc&2)?255:0; }  // VTX: green (lit=cyan)
             else                   { rC=255; gC=0;   bC=(cc&2)?255:0; }  // REG: red (lit=magenta)
             pc.kcolor[0][0]=rC; pc.kcolor[0][1]=gC; pc.kcolor[0][2]=bC; pc.kcolor[0][3]=255;
-        } else if (s_dbg && !strcmp(s_dbg, "bid")) {   // encode tev_index as colour (R=lo,G=hi)
+        } else if (s_dbg == 4) {   // encode tev_index as colour (R=lo,G=hi)
             pc.kcolor[0][0]=ti & 0xFF; pc.kcolor[0][1]=(ti>>8)&0xFF; pc.kcolor[0][2]=0; pc.kcolor[0][3]=255;
         }
         vkCmdPushConstants(cmd, pll, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof pc, &pc);
@@ -698,6 +716,11 @@ extern "C" const void* sb_ngx_present_xfb(int w, int h) {
     if (!g_pr.init_ok) return nullptr;
     return g_pr.render(w, h);
 }
+
+// Runtime render-debug toggle (/ngxdbg): set the TEV-debug mode on a LIVE scene; the next
+// frame clears the pipeline cache and regenerates shaders for the new mode. m: 0=normal
+// 1=tex 2=ras 3=cat 4=bid. Returns the mode set.
+extern "C" int sb_ngx_set_dbg(int m) { g_ngx_tevdbg = m; return m; }
 
 // Diagnostics for the /ngxpresentlive probe.
 extern "C" void sb_ngx_present_stats(unsigned long* frames, unsigned long* pipes, unsigned long* texes,

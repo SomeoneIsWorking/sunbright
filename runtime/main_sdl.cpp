@@ -822,6 +822,11 @@ int main(int argc, char* argv[]) {
         sb_ngx_present_xfb_cb = &sb_ngx_present_xfb;
         g_sb_ngx_present = 1;
         fprintf(stderr, "[sunbright] N7 NATIVE PRESENT enabled (ngx frame → XFB)\n");
+    } else if (const char* ns = getenv("SUNBRIGHT_NGX_SHAPE"); ns && atoi(ns) != 0) {
+        // PRESENT off but SHAPE on: keep the ngx renderer callable (the /abshot2 A/B renders
+        // an ngx texture on demand) WITHOUT substituting it for the on-screen XFB — so Dolphin's
+        // GX render stays LIVE and can serve as the in-process oracle. g_sb_ngx_present stays 0.
+        sb_ngx_present_xfb_cb = &sb_ngx_present_xfb;
     }
 
     // SDL — headless still needs the event/timer subsystem for SDL_GetTicks (autostart
@@ -1027,8 +1032,13 @@ int main(int argc, char* argv[]) {
     // whole cached set during boot, so warmed sessions never hitch. The cache self-tailors
     // to SMS as scenes are visited; headless warm-up runs can pre-seed it.
     Config::SetBase(Config::GFX_SHADER_COMPILATION_MODE, ShaderCompilationMode::Synchronous);
-    Config::SetBase(Config::GFX_SHADER_CACHE, true);
-    Config::SetBase(Config::GFX_WAIT_FOR_SHADERS_BEFORE_STARTING, true);
+    // SUNBRIGHT_NO_SHADER_CACHE=1 disables the persistent disk shader cache (measurement
+    // infra): the differential harness runs two instances that share <home>/.cache; a Dolphin
+    // shader-gen edit (e.g. DBG_RASCOLOR) collides by UID with the other instance's cached
+    // shader. Per-instance no-cache lets the gx oracle render a debug variant cleanly.
+    const bool no_shader_cache = getenv("SUNBRIGHT_NO_SHADER_CACHE") && atoi(getenv("SUNBRIGHT_NO_SHADER_CACHE")) != 0;
+    Config::SetBase(Config::GFX_SHADER_CACHE, !no_shader_cache);
+    Config::SetBase(Config::GFX_WAIT_FOR_SHADERS_BEFORE_STARTING, !no_shader_cache);
     // Widescreen — handled NATIVELY in the port (runtime/overrides/scene_render.cpp).
     // We widen the game's own 3D projection aspect at its source (the JDrama camera's
     // JSGSetProjectionAspect) to 16:9, and let Dolphin's per-frame aspect auto-detection

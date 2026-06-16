@@ -146,6 +146,11 @@ u32 qarg_dec(const char* path, const char* key, u32 def) {
 extern "C" void interp_verify_arm(int);
 extern "C" int  interp_verify_report(char*, int);
 extern "C" int  sb_capture_frames;
+extern "C" volatile int g_sb_ngx_present;   // /abshot toggles the present source (Present.cpp)
+extern "C" volatile int g_sb_ab_capture;    // /abshot2 arms same-present dual capture (Present.cpp)
+extern "C" int sb_ngx_set_dbg(int);         // /ngxdbg sets the native renderer debug mode
+extern "C" void sb_ngx_set_nolight(int);    // /ngxdbg?nolight= toggles native lighting (capture)
+extern "C" int sb_xfmem_dump(char*, int);   // /xfdump prints live Dolphin xfmem (ngx_j3d_shape.cpp)
 
 // REPL request handler. Returns the response body for any /repl path; empty string = not a REPL path.
 std::string handle_repl(const char* path) {
@@ -220,6 +225,34 @@ std::string handle_repl(const char* path) {
         char rep[2048];
         sb_vk_quad_selftest(rep, sizeof rep);
         app("%s", rep);
+        return std::string(buf, n);
+    }
+    if (strncmp(path, "/xfdump", 7) == 0) {  // live Dolphin xfmem lighting/colour (oracle = truth)
+        char rep[2048]; int rn = sb_xfmem_dump(rep, sizeof rep); app("%.*s", rn, rep);
+        return std::string(buf, n);
+    }
+    if (strncmp(path, "/ngxdbg", 7) == 0) {
+        // Flip the native renderer's debug mode on a LIVE scene (no relaunch). /ngxdbg?m=MODE
+        // MODE: normal|tex|ras|cat|bid (or 0..4). Clears the pipeline cache → shaders regen.
+        // (Must precede the broad "/ngx" parity handler below.)
+        if (const char* p = strstr(path, "nolight=")) {
+            int on = atoi(p + 8); sb_ngx_set_nolight(on);
+            app("ngx nolight = %d\n", on);
+            return std::string(buf, n);
+        }
+        int m = 0;
+        if (const char* p = strstr(path, "m=")) {
+            p += 2;
+            if      (!strncmp(p, "normal", 6)) m = 0;
+            else if (!strncmp(p, "tex", 3))    m = 1;
+            else if (!strncmp(p, "ras", 3))    m = 2;
+            else if (!strncmp(p, "cat", 3))    m = 3;
+            else if (!strncmp(p, "bid", 3))    m = 4;
+            else m = atoi(p);
+        }
+        sb_ngx_set_dbg(m);
+        static const char* names[5] = {"normal","tex","ras","cat","bid"};
+        app("ngx debug mode = %d (%s)\n", m, (m>=0&&m<=4)?names[m]:"?");
         return std::string(buf, n);
     }
     if (strncmp(path, "/ngxvtx", 7) == 0) {  // N4 native GX vertex-attribute extractor self-test
@@ -495,6 +528,64 @@ std::string handle_repl(const char* path) {
         return std::string(buf, n);
     }
 #ifdef HAVE_DOLPHIN_CORE
+    if (strncmp(path, "/abshot", 7) == 0 && path[7] != '2') {
+        // Zero-drift A/B: in NGX_PRESENT mode Dolphin's GX pipeline still renders the XFB
+        // each frame AND ngx renders its own texture for the SAME frame. Capture BOTH from
+        // ONE process by toggling the present source around two screenshots (~1 frame apart,
+        // identical present/readback path) → foo.gx.png (Dolphin GX render) + foo.ngx.png
+        // (native render). With DBG_RASCOLOR + NGX_TEVDBG=ras set this isolates lighting;
+        // with no debug env it compares the full render. No second process, no fastboot/
+        // shader-cache drift. /abshot?name=foo
+        if (!g_frame_dumper) return std::string("no frame dumper\n");
+        char name[64] = {0};
+        if (const char* p = strstr(path, "name=")) {
+            size_t i = 0; p += 5;
+            while (*p && *p != '&' && *p != ' ' && i + 1 < sizeof name) {
+                char c = *p++; name[i++] = (c=='/'||c=='\\') ? '_' : c;
+            }
+        }
+        if (!name[0]) snprintf(name, sizeof name, "ab_%llu",
+                               (unsigned long long)std::chrono::duration_cast<std::chrono::seconds>(
+                                   std::chrono::system_clock::now().time_since_epoch()).count());
+        mkdir("scratch", 0755); mkdir("scratch/screenshots", 0755);
+        const int saved = g_sb_ngx_present;
+        auto grab = [&](const char* suffix, int present_mode) -> long long {
+            g_sb_ngx_present = present_mode;
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));  // let one present settle the toggle
+            char full[256]; snprintf(full, sizeof full, "scratch/screenshots/%s.%s.png", name, suffix);
+            ::unlink(full);
+            g_frame_dumper->SaveScreenshot(full);
+            struct stat st{};
+            for (int i = 0; i < 300; i++) {
+                if (stat(full, &st) == 0 && st.st_size > 0) return (long long)st.st_size;
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            return -1;
+        };
+        long long gx = grab("gx", 0);     // Dolphin GX XFB
+        long long ng = grab("ngx", 1);    // native ngx texture
+        g_sb_ngx_present = saved;
+        app("abshot %s: gx=%lld ngx=%lld bytes\n", name, gx, ng);
+        return std::string(buf, n);
+    }
+    if (strncmp(path, "/abshot2", 8) == 0) {
+        // TRUE zero-drift A/B: arm a SAME-PRESENT dual capture in Present.cpp. Writes
+        // scratch/screenshots/ab2.gx.ppm (Dolphin GX XFB) + ab2.ngx.ppm (native ngx) from
+        // the identical present → pixel-perfect camera alignment. Requires NGX_PRESENT mode.
+        mkdir("scratch", 0755); mkdir("scratch/screenshots", 0755);
+        ::unlink("scratch/screenshots/ab2.gx.ppm");
+        ::unlink("scratch/screenshots/ab2.ngx.ppm");
+        g_sb_ab_capture = 1;
+        struct stat st1{}, st2{}; bool ok = false;
+        for (int i = 0; i < 400; i++) {  // up to ~4s
+            if (stat("scratch/screenshots/ab2.gx.ppm", &st1) == 0 && st1.st_size > 0 &&
+                stat("scratch/screenshots/ab2.ngx.ppm", &st2) == 0 && st2.st_size > 0) { ok = true; break; }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        app("abshot2 %s: gx=%lld ngx=%lld bytes\n", ok ? "saved" : "TIMEOUT",
+            (long long)st1.st_size, (long long)st2.st_size);
+        return std::string(buf, n);
+    }
     if (strncmp(path, "/screenshot", 11) == 0) {
         // On-demand PNG of the current presented frame (the XFB), serviced on the next
         // present by Dolphin's FrameDumper (works headless — the readback path runs

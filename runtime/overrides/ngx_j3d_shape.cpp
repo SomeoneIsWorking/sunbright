@@ -275,11 +275,20 @@ void capture_colorchan(u32 material) {
     for (int k = 0; k < 4; k++) g_cur_chan.matColor[k] = B[0x04 + k];
     g_cur_chan.color0 = (u16)((B[chan_off + 0] << 8) | B[chan_off + 1]);   // mColorChan[0] (COLOR0)
     g_cur_chan.alpha0 = (u16)((B[chan_off + 2] << 8) | B[chan_off + 3]);   // mColorChan[1] (ALPHA0)
-    // Ambient: LightOn blocks store it (+0x0C). LightOff blocks store NO ambient → it is 0
-    // (xfmem ground truth = 0; the global GXSetChanAmbColor register we used before was a
-    // stale/wrong purple value that washed + tinted lit register-colour surfaces).
-    if (amb_off) for (int k = 0; k < 4; k++) g_cur_chan.ambColor[k] = B[amb_off + k];
-    else         for (int k = 0; k < 4; k++) g_cur_chan.ambColor[k] = 0;
+    // Ambient: LightOn blocks store it in the block (+0x0C). LightOff (CLOF) blocks store NO
+    // ambient field but their channel control can still enable lighting with ambsrc=REG — GX
+    // reads the ambient from the global GXSetChanAmbColor register, which we track live per draw
+    // (g_amb_reg, updated synchronously by the ov_gxsetchanambcolor hook, ~198k sets/scene).
+    // NOTE: the global register value (g_amb_reg) is the WRONG ambient for these materials
+    // (it reads ~purple (128,66,99) and tints CLOF lit surfaces purple — verified vs the live
+    // oracle). The correct per-material ambient is written by J3D directly to XF (xfmem), which
+    // LAGS in this capture process — capturing it correctly is an open RE item. Default: 0.
+    // (SUNBRIGHT_NGX_AMBGLOBAL=1 = opt-in A/B with the global register.)
+    static const bool amb_global = getenv("SUNBRIGHT_NGX_AMBGLOBAL") && atoi(getenv("SUNBRIGHT_NGX_AMBGLOBAL")) != 0;
+    if (amb_off)               for (int k = 0; k < 4; k++) g_cur_chan.ambColor[k] = B[amb_off + k];
+    else if (amb_global && g_amb_have[0])
+                               for (int k = 0; k < 4; k++) g_cur_chan.ambColor[k] = g_amb_reg[0][k];
+    else                       for (int k = 0; k < 4; k++) g_cur_chan.ambColor[k] = 0;
     g_cur_chan.valid = true;
 }
 
@@ -290,6 +299,9 @@ void capture_colorchan(u32 material) {
 // reduces to the channel's material source (register colour or vertex colour), so
 // the common vertex-lit world materials are unchanged.
 bool g_nolight = (getenv("SUNBRIGHT_NGX_NOLIGHT") != nullptr);   // A/B diag: bypass lighting
+// Runtime toggle (via /ngxdbg?nolight=N) so the harness can flip lighting on a LIVE scene —
+// out=raw vertex color (vcol0) when on. Affects subsequently-captured frames.
+extern "C" void sb_ngx_set_nolight(int on) { g_nolight = on != 0; }
 // DBG per-light breakdown for one floor (up-facing, reg-color, lit) vertex.
 bool g_dbgL_done = false, g_dbgL_active = false; int g_dbgL_n = 0; u16 g_dbgL_cc = 0;
 int g_dbgL_i[8] = {0}; float g_dbgL_attn[8]={0}, g_dbgL_ndl[8]={0}, g_dbgL_dist[8]={0}, g_dbgL_contrib[8]={0};
@@ -1212,6 +1224,32 @@ SUNBRIGHT_OVERRIDE(ov_gxsetchanambcolor, 0x8035f3b4u) {
     if (RecompFunc o = recomp_raw(0x8035f3b4u)) o(cpu); else call_ppc(cpu, cpu.lr);
 }
 
+// Dump Dolphin's LIVE xfmem lighting/colour state (ground truth). In the pure-Dolphin
+// oracle (NGX_SHAPE off, GX rendered synchronously) xfmem is CURRENT — this is the
+// authoritative ambient/material/channel state the native renderer must reproduce. (In an
+// ngx-capture process xfmem LAGS behind the GPU thread, so prefer the oracle for truth.)
+extern "C" int sb_xfmem_dump(char* out, int cap) {
+    int n = 0;
+    auto A = [&](const char* fmt, ...) { if (n >= cap) return; va_list ap; va_start(ap, fmt);
+        n += vsnprintf(out + n, cap - n, fmt, ap); va_end(ap); };
+    A("xfmem (live): numChan=%u\n", (unsigned)xfmem.numChan.numColorChans);
+    for (int c = 0; c < 2; c++) {
+        u32 amb = xfmem.ambColor[c], mat = xfmem.matColor[c];
+        A("  chan%d  amb=(%u,%u,%u,%u) mat=(%u,%u,%u,%u)\n", c,
+          (amb>>24)&0xff,(amb>>16)&0xff,(amb>>8)&0xff,amb&0xff,
+          (mat>>24)&0xff,(mat>>16)&0xff,(mat>>8)&0xff,mat&0xff);
+        const LitChannel& lc = xfmem.color[c];
+        A("    color  hex=%08x matsrc=%u enable=%u ambsrc=%u diff=%u attn=%u lightmask=%02x\n",
+          (unsigned)lc.hex, (unsigned)(MatSource)lc.matsource, (unsigned)(bool)lc.enablelighting,
+          (unsigned)(AmbSource)lc.ambsource, (unsigned)(DiffuseFunc)lc.diffusefunc,
+          (unsigned)(AttenuationFunc)lc.attnfunc, (unsigned)(lc.GetFullLightMask()));
+        const LitChannel& la = xfmem.alpha[c];
+        A("    alpha  hex=%08x matsrc=%u enable=%u\n", (unsigned)la.hex,
+          (unsigned)(MatSource)la.matsource, (unsigned)(bool)la.enablelighting);
+    }
+    return n;
+}
+
 SUNBRIGHT_OVERRIDE(ov_j3dshape_draw, 0x802e0390u) {
     const u32 sh = cpu.gpr[3];   // save before the super-call clobbers gpr
     // Run the real draw FIRST: J3DShape::draw is what sets j3dSys's per-view vertex
@@ -1443,6 +1481,12 @@ int sb_ngx_shape_dump(char* out, int cap) {
         (u32)bpmem.fog.c_proj_fsel.fsel.Value(), (u32)bpmem.fog.c_proj_fsel.proj.Value(),
         (u32)bpmem.fog.color.r, (u32)bpmem.fog.color.g, (u32)bpmem.fog.color.b,
         bpmem.fog.GetA(), bpmem.fog.GetC(), bpmem.fog.b_magnitude, bpmem.fog.b_shift);
+    // EFB→XFB copy filter: the XFB-copy deflicker taps; gx renders through this, ngx bypasses it.
+    // combined = prev*c[0..1] + cur*c[2..4] + next*c[5..6], then >>6 (÷64). Sum<64 ⇒ copy darkens
+    // gx but not ngx (a candidate uniform wash factor). dispcopyyscale also affects vertical copy.
+    { auto cf = bpmem.copyfilter.GetCoefficients(); int s=0; for(int i=0;i<7;i++) s+=cf[i];
+      n += snprintf(out+n, cap-n, "  COPY filter coefs=[%u,%u,%u,%u,%u,%u,%u] sum=%d (/64=%.3f) yscale=%u gamma-not-checked-here\n",
+        cf[0],cf[1],cf[2],cf[3],cf[4],cf[5],cf[6], s, s/64.0, bpmem.dispcopyyscale); }
     // DBG floor-vertex lighting breakdown (cc, ambient, per-light contribution, final illum).
     n += snprintf(out+n, cap-n, "  FLOOR-vert lighting: cc=%04x amb=(%.2f,%.2f,%.2f) lights=%d:\n",
         g_dbgL_cc, g_dbgL_amb[0], g_dbgL_amb[1], g_dbgL_amb[2], g_dbgL_n);

@@ -189,24 +189,37 @@ void write_alpha_test(Buf& o, const NgxPEState& pe) {
 }  // namespace
 
 #include <cstdlib>
+// Render-debug mode — a RUNTIME global (settable via /ngxdbg, defaulted from
+// SUNBRIGHT_NGX_TEVDBG at first read) so the harness can flip modes on a LIVE scene
+// without relaunch. 0=normal 1=tex 2=ras 3=cat 4=bid. ngx_present clears its pipeline
+// cache when this changes so shaders regenerate.
+extern "C" int g_ngx_tevdbg = -1;
+extern "C" int sb_ngx_tevdbg() {
+    if (g_ngx_tevdbg < 0) {
+        const char* e = getenv("SUNBRIGHT_NGX_TEVDBG");
+        g_ngx_tevdbg = !e ? 0 : !strcmp(e,"tex") ? 1 : !strcmp(e,"ras") ? 2 :
+                       !strcmp(e,"cat") ? 3 : !strcmp(e,"bid") ? 4 : 0;
+    }
+    return g_ngx_tevdbg;
+}
 std::string sb_tev_gen_fragment(const NgxTevState& st) {
     // Diagnostics (A/B only): TEVDBG=tex → output raw texmap0; =ras → output vColor;
     // =half → normal combiner × 0.5 (test "global 2x" hypothesis).
-    static const char* dbg = getenv("SUNBRIGHT_NGX_TEVDBG");
-    if (dbg && !strcmp(dbg, "tex")) {
+    const int dbgm = sb_ngx_tevdbg();
+    if (dbgm == 1) {
         return "#version 450\nlayout(location=0) in vec4 vColor;\n"
                "layout(location=1) in vec2 vUV[8];\nlayout(location=0) out vec4 o;\n"
                "layout(set=0,binding=0) uniform sampler2D tex[8];\n"
                "void main(){ o = texture(tex[0], vUV[0]); }\n";
     }
-    if (dbg && (!strcmp(dbg, "cat") || !strcmp(dbg, "bid"))) {  // output kcolor[0] (category / batch-id)
+    if (dbgm == 3 || dbgm == 4) {  // output kcolor[0] (category / batch-id)
         return "#version 450\nlayout(location=0) in vec4 vColor;\n"
                "layout(location=1) in vec2 vUV[8];\nlayout(location=0) out vec4 o;\n"
                "layout(set=0,binding=0) uniform sampler2D tex[8];\n"
                "layout(push_constant) uniform Mat { ivec4 kcolor[4]; ivec4 tevreg[3]; } m;\n"
                "void main(){ o = vec4(vec3(m.kcolor[0].rgb)/255.0, 1.0); }\n";
     }
-    if (dbg && !strcmp(dbg, "ras")) {
+    if (dbgm == 2) {
         return "#version 450\nlayout(location=0) in vec4 vColor;\n"
                "layout(location=1) in vec2 vUV[8];\nlayout(location=0) out vec4 o;\n"
                "layout(set=0,binding=0) uniform sampler2D tex[8];\n"
