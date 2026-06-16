@@ -1326,6 +1326,7 @@ const NgxTevState* ngx_snap_tevstates(int* nstates) {
 // GPU thread in VertexShaderManager::LoadProjectionMatrix — authoritative, not lagged).
 extern "C" const float* sb_get_dolphin_proj(int* type, unsigned long* count);
 extern "C" const float* sb_get_dolphin_persp(unsigned long* count);
+extern "C" void sb_get_gx_draw_counts(unsigned long*, unsigned long*, unsigned long*, unsigned long*);
 extern "C" int ngx_proj_diff_report(char* out, int cap) {
     // Compare the PERSPECTIVE projection (the 3D camera) — set once/frame and stable, so ngx's
     // (CPU) and Dolphin's (GPU) copies ARE comparable despite the async gap. The latest-of-any-type
@@ -1342,6 +1343,20 @@ extern "C" int ngx_proj_diff_report(char* out, int cap) {
         p += snprintf(out + p, cap - p,
             "    ngx[%d] %10.5f %10.5f %10.5f %10.5f   dol %10.5f %10.5f %10.5f %10.5f\n", r,
             gp[r*4+0], gp[r*4+1], gp[r*4+2], gp[r*4+3], dp[r*4+0], dp[r*4+1], dp[r*4+2], dp[r*4+3]);
+
+    // Draw coverage: is ngx DROPPING geometry? (black water/sky = missing draws). Dolphin's actual
+    // perspective draws/indices (GPU thread) vs ngx's captured shapes/triangles. num_indices is an
+    // expanded triangle-list, so dolphin-tris = persp_indices/3.
+    unsigned long gd=0, gi=0, gpd=0, gpi=0; sb_get_gx_draw_counts(&gd, &gi, &gpd, &gpi);
+    unsigned long dol_tris = gpi / 3;
+    double cov = dol_tris ? 100.0 * (double)g_total_tris / (double)dol_tris : 0.0;
+    p += snprintf(out + p, cap - p,
+        "\nDRAW COVERAGE (is ngx dropping geometry?)\n"
+        "  Dolphin GX: total_draws=%lu total_idx=%lu | PERSPECTIVE draws=%lu idx=%lu (~%lu tris)\n"
+        "  ngx captured: shapes=%lu verts=%lu tris=%lu\n"
+        "  ngx 3D-triangle coverage vs Dolphin perspective: %.1f%%  %s\n",
+        gd, gi, gpd, gpi, dol_tris, g_calls, g_total_verts, g_total_tris, cov,
+        cov < 80.0 ? "<<< ngx is MISSING geometry" : "(coverage ok — bug is shading/texture)");
     return p;
 }
 
