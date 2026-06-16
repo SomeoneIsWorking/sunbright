@@ -1315,7 +1315,11 @@ void ngx_set_projection(const float* m44, unsigned type) {
 // (the live scene moves between probe calls, which made every reading incomparable). The game
 // keeps running; only the rendered/analysed snapshot is latched.
 std::atomic<bool> g_ngx_frozen{false};
-extern "C" void sb_ngx_set_freeze(int on) { g_ngx_frozen.store(on != 0, std::memory_order_release); }
+extern "C" { extern volatile int g_sb_freeze_gx; }   // Present.cpp: latch the GX oracle XFB
+extern "C" void sb_ngx_set_freeze(int on) {
+    g_ngx_frozen.store(on != 0, std::memory_order_release);
+    g_sb_freeze_gx = on ? 1 /*capture-pending*/ : 0 /*release held oracle*/;
+}
 extern "C" int  sb_ngx_get_freeze() { return g_ngx_frozen.load(std::memory_order_acquire) ? 1 : 0; }
 
 void ngx_frame_publish() {
