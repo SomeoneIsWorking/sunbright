@@ -105,6 +105,28 @@ to Dolphin's computed `lacc` for the SAME vertex (e.g. instrument Dolphin's vert
 back a known floor vertex's rasterized color). The cat/ras/tex TEVDBG modes + up-lit illum probe
 are the instruments.
 
+## ⭐ UPDATE 3 (2026-06-16): GROUND TRUTH overturns the lighting hypothesis — it's the TEXTURE
+Added a Dolphin pixel-shader debug (`SUNBRIGHT_DBG_RASCOLOR`, PixelShaderGen.cpp: forces
+`prev = colors_0`, the rasterized lit channel-0 colour) so a recomp-GX run renders GX's true
+col0/illum. ⚠ Dolphin's on-DISK shader cache (`<home>/.cache/dolphin-emu/Shaders`, GFX_SHADER_CACHE=
+true) serves cached binaries by UID and bypasses generator edits — MOVE IT ASIDE to test
+(verified: red-output test only worked after clearing). GX col0 ground truth (scratch/screenshots/
+gx_col0.png): the floor/buildings/sky col0 is **near-white (~0.77-0.85)** — i.e. GX's lighting
+SATURATES too, and ngx MATCHES it. **So the lighting/illum is NOT the bug.**
+
+The wash is the **TEXTURE term**. Per matched region (GX normal / GX col0 → implied GX texture
+vs ngx raw texture from NGX_TEVDBG=tex):
+  floor: GXtex≈126 vs ngxtex≈223 (1.77×); buildings 105 vs 163 (1.55×); sky 85 vs 188 (2.2×).
+ngx's sampled textures are ~1.6-2.2× brighter than GX's. (Secondary: ngx col0 ~0.95 vs GX 0.77,
+a ~1.2× — minor.) Since the texture DECODE math is faithful vs Dolphin, suspect: (a) sRGB/
+colorspace mismatch on upload/sample (GC textures are gamma-space; if Dolphin samples them one way
+and ngx another — e.g. ngx UNORM raw vs Dolphin sRGB-view, or a decode that gamma-encodes — you
+get a uniform ~1.7× across ALL textures, matching the data), (b) wrong texture/mip bound, (c) a
+multi-stage combiner where a 2nd (darkening) texture/konst is dropped. The uniform ~1.7× across
+floor+buildings+sky most strongly fits a colorspace/decode issue. NEXT: check ngx's texture VkImage
+format + sampler vs Dolphin's TextureCache (sRGB?), and decode a known floor texture to compare
+its mean to both GX-implied (126) and ngx-sampled (223).
+
 ## Next steps
 - Audit the per-shape col0 source for the NOT-PRESENT CLR0 case (12.7M verts) — what should
   col0 be there (matColor? persisted channel?). Likely the dominant remaining white.
