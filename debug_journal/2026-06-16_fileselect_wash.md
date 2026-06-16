@@ -64,12 +64,25 @@ More live tests this session refined it further:
   GXSetCopyClear — a real bug to fix, but not THIS wash.)
 - `dbg ras`/`dbg tex` DO change the sky → it is ngx's own render (not a frozen Dolphin XFB).
 So: a **non-alpha shape outputs white over the whole sky**, while the oracle renders blue there.
-Candidates for the white: (a) a textured sky shape whose texmap ngx fails to bind → falls back
-to the 1×1 `white_view` → solid white; (b) the J2D/present composite drawing white. NEXT: build
-a reliable **pixel→batch probe** (read back the bid/tev_index render at an exact pixel; the
-quick bid-screenshot sampling was unreliable due to AA + camera drift between launches), point
-it at a sky pixel, and dump that batch's tev_index + bound texmaps + col0. Then check the
-white_view fallback (is the sky shape's texmap unbound?) and the composite order.
+- Tested the `white_view` (1×1 unbound-texmap fallback) hypothesis: set that fallback texel to
+  bright GREEN → **sky stayed WHITE.** So the sky is NOT an unbound-texture shape. (Green barely
+  appears anywhere → the fallback is rarely hit; texmap binding is broadly fine.)
+
+So EVERY obvious GX-state source is now ruled out: lighting/ambient, the sky textures (white/
+gray), the alpha cloud, the clear colour, filtering, and the white_view fallback. A white-texture
+× white-raster opaque shape legitimately outputs white — yet the oracle is blue. The blue must
+come from GX state ngx doesn't reproduce. Two remaining hypotheses for the NEXT session:
+  (A) **ngx's J3D capture MISSES the blue sky shape.** If the blue background is drawn by a path
+      other than `J3DShape::draw` (0x802e0390) — a different draw fn, J2D, or a direct-GX skybox
+      — ngx never renders it, so its area shows whatever IS rendered (the white cloud/other).
+      Check: count shapes ngx captures for the sky scene vs the oracle's GX draw count; look for
+      a large sky/skybox draw the tee doesn't see. This is the strongest lead.
+  (B) The **present composite** (J2D-over-3D, or the XFB/swapchain copy) injects the white.
+NEXT TOOLING: a reliable **pixel→batch probe** (render the bid/tev_index pass to an offscreen
+target and read back the exact sky pixel — the screenshot+bid sampling was unreliable: AA +
+cross-launch camera drift, and tev_index decoded out of range). Point it at a sky pixel, dump
+that batch's tev_index + bound texmaps + col0; if NO batch covers the sky pixel, it's (A)/(B).
+Also fix the separate hardcoded-clear-color bug (use the game's GXSetCopyClear).
 
 ## (superseded) earlier framing — kept for the trail
 ## STILL OPEN — the wash is a WHITE CLOUD over a BLUE BACKGROUND that ngx renders white
