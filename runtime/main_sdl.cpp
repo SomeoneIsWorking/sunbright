@@ -815,7 +815,10 @@ int main(int argc, char* argv[]) {
     // N7 native present: substitute the ngx-rendered frame for the XFB on screen (and
     // in the frame dump). Needs the J3DShape capture (SUNBRIGHT_NGX_SHAPE) to feed it.
     // The callback runs on the video thread; the renderer lazily inits once g_gfx is up.
-    if (getenv("SUNBRIGHT_NGX_PRESENT")) {
+    // Honor the VALUE, not mere presence: SUNBRIGHT_NGX_PRESENT=0 must DISABLE it (so a 2nd
+    // recomp-GX "oracle" instance — and `SUNBRIGHT_NGX_PRESENT=0 ./run.sh` — actually use Dolphin's
+    // GX render, not NGX).
+    if (const char* np = getenv("SUNBRIGHT_NGX_PRESENT"); np && atoi(np) != 0) {
         sb_ngx_present_xfb_cb = &sb_ngx_present_xfb;
         g_sb_ngx_present = 1;
         fprintf(stderr, "[sunbright] N7 NATIVE PRESENT enabled (ngx frame → XFB)\n");
@@ -865,7 +868,11 @@ int main(int argc, char* argv[]) {
 
     // Dolphin init
     fprintf(stderr, "[sunbright] UICommon::SetUserDirectory...\n");
-    UICommon::SetUserDirectory("");  // empty → default <home>/.dolphin-emu
+    // SUNBRIGHT_USERDIR isolates config/cache/state/dump per instance — needed to run a 2nd
+    // (oracle) instance concurrently for live render A/B without the two clobbering each other's
+    // Dolphin.ini / shader cache. Empty → default (<home>/.config + <home>/.local/share/dolphin-emu).
+    { const char* ud = getenv("SUNBRIGHT_USERDIR");
+      UICommon::SetUserDirectory(ud ? std::string(ud) : std::string("")); }
     fprintf(stderr, "[sunbright] UICommon::Init...\n");
     UICommon::Init();
     fprintf(stderr, "[sunbright] UICommon::Init done\n");

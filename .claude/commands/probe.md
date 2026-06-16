@@ -4,6 +4,27 @@ Drive and inspect the RUNNING Sunbright PC port **headlessly** over its HTTP pro
 send inputs, take screenshots, read render/guest state — without the GUI and without
 relaunching between actions. Use this instead of ad-hoc one-shot `./run.sh`/dump runs.
 
+⚠ **This skill + `tools/gp` are a LIVING system — EXPAND them whenever you add an endpoint,
+a `gp` subcommand, or a new compare/diagnosis mode.** Proper interactive tooling (esp. live
+render-flow comparison vs the oracle) is a first-class goal, not a side quest. Keep `tools/gp`
+and this file in sync; this file is the durable memory of the probe surface.
+
+## Differential render harness: ngx vs the gx oracle (the key capability)
+Run BOTH renderers concurrently and diff them LIVE to tell real native-renderer bugs from
+faithful rendering (animations, real game state):
+```bash
+tools/gp launch both      # ngx native (port 17654) + gx-oracle = recomp Dolphin-GX (17655, isolated)
+tools/gp pad start 200    # drives BOTH in lockstep (same recomp logic, only the RENDERER differs)
+tools/gp compare logo     # screenshots both -> logo.ngx.png / logo.gx.png + logo.diff.png (side-by-side)
+                          #   prints meanAbsDiff: ~0 = ngx matches oracle (faithful); large = real bug
+```
+The gx oracle is recomp + `SUNBRIGHT_NGX_PRESENT=0` (Dolphin's GX render of the SAME game state).
+⚠ GOTCHA (burned once): `SUNBRIGHT_NGX_PRESENT`/`NGX_SHAPE` are honored by VALUE now (`=0` disables);
+they used to test mere presence, so `=0` still enabled NGX → BOTH instances ran NGX and "compared"
+identical. Verify the oracle is real: only `scratch/logs/gp.ngx.log` should say "NATIVE PRESENT
+enabled". (This was how the title-logo "tearing" was first mis-called faithful — it's a real ngx bug;
+the oracle renders the logo clean.) For pixel-exact compares, load the SAME save state in both.
+
 ## The tool: `tools/gp` (use this first)
 A thin CLI over the probe REPL. The game is launched DETACHED, so it stays up across many
 separate `gp` calls (the interactive loop = launch once, then drive).

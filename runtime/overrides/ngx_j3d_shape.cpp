@@ -49,8 +49,9 @@
 namespace {
 
 constexpr u32 J3DSYS = 0x804045DCu;
-bool g_enabled = (getenv("SUNBRIGHT_NGX_SHAPE") != nullptr) ||
-                 (getenv("SUNBRIGHT_NGX_PRESENT") != nullptr);  // present needs the capture
+// Honor the VALUE (=0 disables) so a recomp-GX oracle with NGX_PRESENT=0 truly runs Dolphin GX.
+static bool sb_env_on(const char* n) { const char* v = getenv(n); return v && atoi(v) != 0; }
+bool g_enabled = sb_env_on("SUNBRIGHT_NGX_SHAPE") || sb_env_on("SUNBRIGHT_NGX_PRESENT");  // present needs capture
 
 // Latest GX texmap-0 binding (from the GXLoadTexObj tee), associated with shapes
 // drawn after it. Decoded from the GXTexObj's packed registers.
