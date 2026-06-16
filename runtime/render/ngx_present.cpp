@@ -646,6 +646,9 @@ AbstractTexture* PresentRenderer::render(int w, int h) {
     for (size_t b = 0; b < batches.size(); b++) {
         const int ti = batches[b].tev_index;
         const NgxTevState& st = (ti >= 0 && ti < (int)tevstates.size()) ? tevstates[ti] : mod;
+        // DBG: skip alpha-tested (cloud/foliage) batches to reveal the background behind them.
+        static const int skip_alpha = getenv("SUNBRIGHT_NGX_SKIPALPHA") ? atoi(getenv("SUNBRIGHT_NGX_SKIPALPHA")) : 0;
+        if (skip_alpha && st.pe.alpha_test) continue;
         VkPipeline pipe = pipeline_for(st);
         if (pipe == VK_NULL_HANDLE) pipe = pipeline_for(mod);
         if (pipe == VK_NULL_HANDLE) continue;

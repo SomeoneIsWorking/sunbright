@@ -52,6 +52,26 @@ attribute — a wrong guess. Now it correctly sets `UV = (litcol0.r, litcol0.g)`
 loop computes lighting (col0) BEFORE texgen. Faithful; no regression (sand matches). Did NOT fix
 the wash (the wash is the alpha test, above). Kept as a correctness fix.
 
+## UPDATE 2 — the white sky is OPAQUE NON-ALPHA geometry (not the cloud, not the clear)
+More live tests this session refined it further:
+- `SUNBRIGHT_NGX_SKIPALPHA=1` (new toggle: skip alpha-tested batches in the present draw loop,
+  ngx_present.cpp) — **no change to the sky.** So the white sky is NOT an alpha-tested shape
+  (so NOT ti=15, the "biggest" cloud — its huge NDC bbox doesn't mean it covers the sky pixels).
+- Texture filter NEAREST vs LINEAR (vk_mesh sampler) — no change. Not a filtering/alpha-smear.
+- **Forced the 3D clear colour to bright RED** (ngx_present.cpp:639) — the sky stayed WHITE,
+  not red. So the sky is covered by OPAQUE WHITE GEOMETRY (or an after-3D composite), NOT the
+  clear colour. (Separately: ngx's clear is HARDCODED `(0.10,0.12,0.18)` instead of the game's
+  GXSetCopyClear — a real bug to fix, but not THIS wash.)
+- `dbg ras`/`dbg tex` DO change the sky → it is ngx's own render (not a frozen Dolphin XFB).
+So: a **non-alpha shape outputs white over the whole sky**, while the oracle renders blue there.
+Candidates for the white: (a) a textured sky shape whose texmap ngx fails to bind → falls back
+to the 1×1 `white_view` → solid white; (b) the J2D/present composite drawing white. NEXT: build
+a reliable **pixel→batch probe** (read back the bid/tev_index render at an exact pixel; the
+quick bid-screenshot sampling was unreliable due to AA + camera drift between launches), point
+it at a sky pixel, and dump that batch's tev_index + bound texmaps + col0. Then check the
+white_view fallback (is the sky shape's texmap unbound?) and the composite order.
+
+## (superseded) earlier framing — kept for the trail
 ## STILL OPEN — the wash is a WHITE CLOUD over a BLUE BACKGROUND that ngx renders white
 Established this session (all measured, not guessed):
 - ti=15 cloud: alpha test = `comp0=GEQUAL ref0=128 AND comp1=LEQUAL ref1=255` (= keep α≥128,
