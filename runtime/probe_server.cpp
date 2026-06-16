@@ -820,6 +820,12 @@ void serve_conn(int fd) {
     // killed between connect and write) must not park the whole probe in recv() forever.
     timeval tv{2, 0};
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    // ...and a client that times out mid-transfer (curl -m / --max-time) and stops reading
+    // must not park the probe in send() forever: with no SO_SNDTIMEO, a large body (/ngxshape
+    // 16KB, /tevshader 64KB) fills the socket send buffer and send() blocks indefinitely once
+    // the peer's window closes, wedging EVERY later probe (this repeatedly cost prior sessions).
+    timeval stv{5, 0};
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &stv, sizeof stv);
     char req[1024] = {0};
     (void)recv(fd, req, sizeof req - 1, 0);
 
