@@ -291,6 +291,11 @@ int sb_tev_shader_selftest(char* out, int cap) {
         char lbl[24]; snprintf(lbl, sizeof lbl, "live[%d]", i);
         check(lbl, sts[i]);
     }
+    // Dump the FULL generated GLSL of the first few live materials (combiner audit).
+    for (int i = 0; i < nst && i < 3; i++) {
+        std::string src = sb_tev_gen_fragment(sts[i]);
+        app("==== live[%d] GLSL (stages=%u) ====\n%s\n", i, sts[i].num_stages, src.c_str());
+    }
     app("verdict=%s (compiled=%d/%d, failed=%d)\n",
         failed == 0 ? "OK" : "FAIL", compiled, attempted, failed);
     return failed;

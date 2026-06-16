@@ -231,7 +231,7 @@ std::string handle_repl(const char* path) {
         return std::string(buf, n);
     }
     if (strncmp(path, "/tevshader", 10) == 0) {  // N5 TEV-state -> GLSL generator self-test
-        char rep[16384]; sb_tev_shader_selftest(rep, sizeof rep); app("%s", rep);
+        static thread_local char rep[65536]; sb_tev_shader_selftest(rep, sizeof rep); app("%s", rep);
         return std::string(buf, n);
     }
     if (strncmp(path, "/drawstats", 10) == 0) {  // Dolphin's GX render-pass counts THIS FRAME (for A/B
