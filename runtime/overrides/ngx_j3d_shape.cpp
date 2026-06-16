@@ -31,6 +31,8 @@
 #include "../intrinsics.h"
 #include "../ngx/ngx_mesh.h"
 #include "../ngx/ngx_render_data.h"
+#include "../ngx/ngx_project.h"   // pure, unit-tested eye→clip→NDC (sunbright-render-test)
+#include "../ngx/ngx_clip.h"      // pure, unit-tested near-plane triangle clip
 #include <cmath>
 #include <cstdarg>
 #include <cstddef>
@@ -762,9 +764,12 @@ struct SkyXf { bool have=false; float M[12]={0}; float P[16]={0}; float pos0[3]=
                float eye0[3]={0}; float clip0[4]={0}; u32 mtxp=0; bool pnmtx=false; size_t nv=0; };
 SkyXf g_skyxf, g_skyxf_pub;
 struct PnmtxDbg { bool have=false; size_t nv=0; unsigned char mi0=0; bool mp_valid=false;
-    float row[12]={0}; float pos0[3]={0}; int n_distinct=0; unsigned char mi_min=255,mi_max=0; };
+    float row[12]={0}; float hook[12]={0}; float pos0[3]={0}; int n_distinct=0; unsigned char mi_min=255,mi_max=0; };
 PnmtxDbg g_pnmtxdbg, g_pnmtxdbg_pub;
 unsigned long g_ndc_total = 0, g_ndc_wpos = 0, g_ndc_inbox = 0;
+// Near-plane clip stats (per frame, reset at publish): tris in, tris dropped wholly-behind,
+// tris clipped (straddling), and the min clip.w among EMITTED verts (spikes ⇒ tiny |min_w|).
+unsigned long g_clip_in=0, g_clip_drop=0, g_clip_cut=0, g_clip_tiny=0; float g_clip_minw=1e30f;
 
 // Clip-space triangle SNAPSHOT for the native Vulkan mesh render (vk_mesh.cpp /
 // ngx_present.cpp): one frame's scene triangles + per-texture draw batches.
@@ -903,7 +908,10 @@ void transform_eye() {
         g_pnmtxdbg.have = true; g_pnmtxdbg.nv = nv; g_pnmtxdbg.mp_valid = valid(mp);
         const unsigned char mi = g_verts[0].matidx; g_pnmtxdbg.mi0 = mi;
         for (size_t vi=0; vi<nv; vi++){ unsigned char x=g_verts[vi].matidx; if(x<g_pnmtxdbg.mi_min)g_pnmtxdbg.mi_min=x; if(x>g_pnmtxdbg.mi_max)g_pnmtxdbg.mi_max=x; }
-        if ((unsigned)mi + 2 < 64) for (int r=0;r<3;r++) for(int c=0;c<4;c++) g_pnmtxdbg.row[r*4+c]=xfmem.posMatrices[(mi+r)*4+c];
+        if ((unsigned)mi + 2 < 64) for (int r=0;r<3;r++) for(int c=0;c<4;c++) {
+            g_pnmtxdbg.row[r*4+c]=xfmem.posMatrices[(mi+r)*4+c];   // GPU ground truth (xfmem)
+            g_pnmtxdbg.hook[r*4+c]=g_posmtx[mi+r][c];              // our indexed-hook capture
+        }
         for (int k=0;k<3;k++) g_pnmtxdbg.pos0[k]=g_verts[0].pos[k];
     }
     // Latch the sky gradient shape's transform (cc==0x0701, the big vtx-color mesh).
@@ -999,19 +1007,18 @@ void transform_eye() {
         g_last_eye[0]=ex; g_last_eye[1]=ey; g_last_eye[2]=ez;
 
         // Native projection: clip = P·(eye,1); NDC = clip.xyz / clip.w.
+        // Pure, unit-tested in sunbright-render-test (test_projection) — keep this
+        // path a thin call so the tested math IS the shipping math.
         if (g_have_proj) {
-            const float* p = g_proj;
-            const float cx = p[0]*ex + p[1]*ey + p[2]*ez + p[3];
-            const float cy = p[4]*ex + p[5]*ey + p[6]*ez + p[7];
-            const float cz = p[8]*ex + p[9]*ey + p[10]*ez + p[11];
-            const float cw = p[12]*ex + p[13]*ey + p[14]*ez + p[15];
-            float* cp = &g_clip[vi * 4]; cp[0]=cx; cp[1]=cy; cp[2]=cz; cp[3]=cw;
+            float* cp = &g_clip[vi * 4];
+            ngx_project_eye(g_proj, ex, ey, ez, cp);
+            const float cx = cp[0], cy = cp[1], cz = cp[2], cw = cp[3];
             if (latch_skyxf && vi == 0) { g_skyxf.eye0[0]=ex; g_skyxf.eye0[1]=ey; g_skyxf.eye0[2]=ez;
                 g_skyxf.clip0[0]=cx; g_skyxf.clip0[1]=cy; g_skyxf.clip0[2]=cz; g_skyxf.clip0[3]=cw; }
             g_ndc_total++;
-            if (cw > 0.0f) {
+            float nx, ny;
+            if (ngx_ndc_xy(cp, nx, ny)) {
                 g_ndc_wpos++;
-                const float nx = cx / cw, ny = cy / cw;
                 if (nx >= -1.0f && nx <= 1.0f && ny >= -1.0f && ny <= 1.0f) g_ndc_inbox++;
             }
         }
@@ -1033,17 +1040,57 @@ void transform_eye() {
             const bool is_ci = (c.fmt == 0x8 || c.fmt == 0x9 || c.fmt == 0xA);
             if (c.addr && c.w && c.h && (!is_ci || c.tlut_addr)) tb[m] = c;
         }
-        // A/B diag: drop triangles that touch / cross the near plane (any vertex clip.w <= eps).
-        // Tests whether the file-select wash comes from straddling (camera-crossing) geometry that
-        // ngx doesn't near-plane CLIP. SUNBRIGHT_NGX_NEARCULL=1 uses eps=1.0; =N sets eps=N.
+        // Near-plane CLIPPING (not culling). A triangle whose vertices straddle the camera/near
+        // plane (some clip.w>0, some ≤0) cannot be drawn raw: the GPU's homogeneous clip lands the
+        // boundary vertices at w≈0, so the perspective divide x/w → ∞ and the triangle explodes
+        // into screen-spanning shears/spikes (the title-logo shear, the map-sun "white rays",
+        // skinned-character blob — multi-matrix geometry that crosses the near plane). We clip in
+        // CLIP SPACE against the GC near plane d = clip.z + clip.w ≥ 0 (= gl_Position.z ≥ 0 in
+        // mesh.vert.glsl, the same plane Vulkan near-clips on), interpolating clip/rgba/uv[8], so
+        // the boundary vertices land exactly on the near plane with a finite, projection-defined w.
+        // Lossless: fully-in-front tris pass through unchanged; fully-behind tris drop; straddlers
+        // become 1–2 properly-clipped tris. (SUNBRIGHT_NGX_NEARCULL still force-DROPS straddlers for
+        // A/B; SUNBRIGHT_NGX_NOCLIP disables clipping to reproduce the raw shear.)
+        static const bool noclip = getenv("SUNBRIGHT_NGX_NOCLIP") != nullptr;
         static const float nearcull_eps = []{ const char* v = getenv("SUNBRIGHT_NGX_NEARCULL");
             if (!v) return -1e30f; float e = atof(v); return e == 1.0f ? 1.0f : (e == 0.0f ? -1e30f : e); }();
+        constexpr int VW = 24;   // floats per vertex: clip[4] + rgba[4] + uv[16]
+        auto gather = [&](unsigned vidx, float* o) {
+            const float* cp = &g_clip[vidx * 4]; const float* lit = &g_litrgba[vidx * 4];
+            const float* uvp = &g_uvs[vidx * 16];
+            o[0]=cp[0]; o[1]=cp[1]; o[2]=cp[2]; o[3]=cp[3];
+            o[4]=lit[0]; o[5]=lit[1]; o[6]=lit[2]; o[7]=lit[3];
+            for (int m = 0; m < 16; m++) o[8+m] = uvp[m];
+        };
+        auto emit_v = [&](const float* v) {
+            if (v[3] < g_clip_minw) g_clip_minw = v[3];
+            if (v[3] > 0.0f && v[3] < 1.0f) g_clip_tiny++;
+            NgxRenderVertex& d = snap[count];
+            d.clip[0]=v[0]; d.clip[1]=v[1]; d.clip[2]=v[2]; d.clip[3]=v[3];
+            d.rgba[0]=v[4]; d.rgba[1]=v[5]; d.rgba[2]=v[6]; d.rgba[3]=v[7];
+            for (int m = 0; m < 8; m++) { d.uv[m][0]=v[8+m*2]; d.uv[m][1]=v[8+m*2+1]; }
+            count++;
+        };
         for (size_t t = 0; t + 3 <= g_indices.size(); t += 3) {
             if (nearcull_eps > -1e29f) {
                 const float w0 = g_clip[g_indices[t]*4+3], w1 = g_clip[g_indices[t+1]*4+3], w2 = g_clip[g_indices[t+2]*4+3];
                 if (w0 <= nearcull_eps || w1 <= nearcull_eps || w2 <= nearcull_eps) continue;
             }
-            if (count + 3 > SNAP_CAP) { count = 0; batches.clear(); }  // safety wrap (huge frame)
+            // Gather + clip the triangle against the near plane d = clip.z + clip.w ≥ 0.
+            float in[3][VW]; for (int e = 0; e < 3; e++) gather(g_indices[t + e], in[e]);
+            float poly[4][VW]; int np = 0;
+            if (noclip) { for (int e = 0; e < 3; e++) { for (int k=0;k<VW;k++) poly[e][k]=in[e][k]; } np = 3; }
+            else {
+                // Pure, unit-tested near-plane clip (sunbright-render-test test_clip).
+                int n_front;
+                np = ngx_clip_near_tri(&in[0][0], VW, &poly[0][0], &n_front);
+                g_clip_in++;
+                if (n_front == 0)      g_clip_drop++;   // wholly behind near → dropped
+                else if (n_front < 3)  g_clip_cut++;    // straddled → clipped
+            }
+            if (np < 3) continue;
+            const int ntri = np - 2;                       // fan-triangulate the clipped polygon
+            if (count + (size_t)ntri * 3 > SNAP_CAP) { count = 0; batches.clear(); }  // safety wrap
             // Open a new batch on material/binding change, after a wrap, or at start.
             const bool tex_diff = batches.empty() ||
                 memcmp(batches.back().tex, tb, sizeof tb) != 0;
@@ -1055,18 +1102,8 @@ void transform_eye() {
                 nb.vstart = (uint32_t)count; nb.vcount = 0; nb.tev_index = g_cur_tev_index;
                 batches.push_back(nb);
             }
-            for (int e = 0; e < 3; e++) {
-                const unsigned vidx = g_indices[t + e];
-                const float* cp = &g_clip[vidx * 4];
-                const float* lit = &g_litrgba[vidx * 4];
-                const float* uvp = &g_uvs[vidx * 16];
-                NgxRenderVertex& d = snap[count];
-                d.clip[0]=cp[0]; d.clip[1]=cp[1]; d.clip[2]=cp[2]; d.clip[3]=cp[3];
-                d.rgba[0]=lit[0]; d.rgba[1]=lit[1]; d.rgba[2]=lit[2]; d.rgba[3]=lit[3];
-                for (int m = 0; m < 8; m++) { d.uv[m][0]=uvp[m*2+0]; d.uv[m][1]=uvp[m*2+1]; }
-                count++;
-            }
-            batches.back().vcount += 3;
+            for (int f = 0; f < ntri; f++) { emit_v(poly[0]); emit_v(poly[f+1]); emit_v(poly[f+2]); }
+            batches.back().vcount += ntri * 3;
         }
     }
 }
@@ -1192,6 +1229,7 @@ void ngx_frame_publish() {
     g_skyxf = SkyXf{};
     if (g_pnmtxdbg.have) g_pnmtxdbg_pub = g_pnmtxdbg;
     g_pnmtxdbg = PnmtxDbg{};
+    g_clip_in=g_clip_drop=g_clip_cut=g_clip_tiny=0; g_clip_minw=1e30f;   // per-frame near-clip stats
     g_frame_swaps++;
 }
 
@@ -1334,21 +1372,35 @@ SUNBRIGHT_OVERRIDE(ov_gxloadposmtximm, 0x80362e0cu) {
 u32 g_pmi_base=0, g_pmi_stride=0, g_pmi_index=0, g_pmi_slot=0, g_pmi_mp=0; unsigned long g_pmi_calls=0;
 SUNBRIGHT_OVERRIDE(ov_gxloadposmtxindx, 0x80362e48u) {
     if (g_enabled) {
+        // Args (GXLoadPosMtxIndx(u16 mtx_indx, u32 id)): gpr[3]=mtx_indx = ARRAY index into the
+        // pos-matrix array; gpr[4]=id = the XF destination slot (= the per-vertex PNMTXIDX byte;
+        // J3DSys::loadPosMtxIndx passes id*3, the loop slot). The matrix is NOT in the args — it
+        // lives at array_base + mtx_indx*stride. The array base (CPArray::XF_A) is set SYNCHRONOUSLY
+        // by J3DShape::draw → setModelDrawMtx (line 230, BEFORE the per-element load loop) to
+        // j3dSys.mCurrentDrawMtx = mDrawMatrices[view] (J3DSYS+0x104), stride sizeof(Mtx)=48. The
+        // entries are already MODELVIEW (object→eye), same space the single-matrix path uses.
+        // This hook fires DURING the real draw (run first by the J3DShape::draw tee) so g_posmtx is
+        // populated before transform_eye reads it — fully synchronous, no GPU-thread/xfmem lag.
         const u32 index = cpu.gpr[3] & 0xFFFF, slot = cpu.gpr[4];
-        // The pos-matrix array base (CPArray::XF_A) is set synchronously by J3DShape::draw to
-        // j3dSys.mCurrentDrawMtx (J3DSYS+0x104) — for a multi-matrix shape that field holds the
-        // base of mDrawMtxBuf[view] (the per-joint draw-matrix array). g_main_cp_state lags (it's
-        // updated on Dolphin's GPU thread AFTER we run), so read the live J3D field instead.
         constexpr u32 J3DSYS_ = 0x804045DCu;
-        u32 base = mem_r32(J3DSYS_ + 0x104);
+        const u32 base = mem_r32(J3DSYS_ + 0x104);
         const u32 stride = 48;   // sizeof(Mtx) = 3×4 f32
-        g_pmi_base=base; g_pmi_stride=stride; g_pmi_index=index; g_pmi_slot=slot; g_pmi_calls++;
         const u32 mp = base + index * stride;
-        g_pmi_mp = mp;
-        // DIAGNOSTIC ONLY (do not write g_posmtx): reading base+index*48 from [J3DSYS+0x104] gave
-        // WRONG matrices (vert0 eye-z behind camera) — the index/base mapping is off. Capturing
-        // the indexed matrices correctly + synchronously is the open work (journal UPDATE 6).
-
+        g_pmi_base=base; g_pmi_stride=stride; g_pmi_index=index; g_pmi_slot=slot; g_pmi_mp=mp; g_pmi_calls++;
+        if (valid(mp) && slot + 2 < 64)
+            for (int r = 0; r < 3; r++)
+                for (int c = 0; c < 4; c++) g_posmtx[slot + r][c] = rf(mp + (r * 4 + c) * 4);
+        if (getenv("SUNBRIGHT_DBG_PMI")) {
+            if (RecompFunc o = recomp_raw(0x80362e48u)) o(cpu); else call_ppc(cpu, cpu.lr);
+            static int k = 0;
+            if (k++ < 24 && slot + 2 < 64)
+                fprintf(stderr, "[pmi] slot=%u index=%u base=%08x tx=%.1f ty=%.1f tz=%.1f | rows=[%.3f %.3f %.3f %.1f / %.3f %.3f %.3f %.1f / %.3f %.3f %.3f %.1f]\n",
+                        slot, index, base, rf(mp+12), rf(mp+28), rf(mp+44),
+                        rf(mp+0), rf(mp+4), rf(mp+8), rf(mp+12),
+                        rf(mp+16), rf(mp+20), rf(mp+24), rf(mp+28),
+                        rf(mp+32), rf(mp+36), rf(mp+40), rf(mp+44));
+            return;
+        }
     }
     if (RecompFunc o = recomp_raw(0x80362e48u)) o(cpu); else call_ppc(cpu, cpu.lr);
 }
@@ -1450,6 +1502,15 @@ extern "C" int sb_xfmem_dump(char* out, int cap) {
         A("    alpha  hex=%08x matsrc=%u enable=%u\n", (unsigned)la.hex,
           (unsigned)(MatSource)la.matsource, (unsigned)(bool)la.enablelighting);
     }
+    // Last-loaded position matrices (XF slots 0/3/6/9) — GPU ground truth. On the oracle
+    // (which processes its FIFO) these are the correct modelview the renderer uses; compare
+    // vs ngx's synchronous guestRAM read (SUNBRIGHT_DBG_PMI) to see if a view-multiply lands
+    // after the indexed-load is issued (→ ngx reads the matrix too early).
+    for (int s = 0; s <= 9; s += 3) {
+        const float* m = &xfmem.posMatrices[s * 4];
+        A("  posMtx[%d] tz=%.1f rows=[%.3f %.3f %.3f %.1f / %.3f %.3f %.3f %.1f / %.3f %.3f %.3f %.1f]\n",
+          s, m[11], m[0],m[1],m[2],m[3], m[4],m[5],m[6],m[7], m[8],m[9],m[10],m[11]);
+    }
     return n;
 }
 
@@ -1508,7 +1569,8 @@ int sb_ngx_shape_dump(char* out, int cap) {
         "  last pos[0]=(%.3f, %.3f, %.3f)  max_verts/shape=%u\n"
         "  native XF (modelview): xf_verts=%lu  in_front(z<0)=%lu (%.1f%%)  no_mtx=%lu\n"
         "  eye bbox: x[%.1f..%.1f] y[%.1f..%.1f] z[%.1f..%.1f]  last_eye=(%.2f, %.2f, %.2f)\n"
-        "  native projection: have_proj=%d  clip.w>0=%lu/%lu  NDC xy in [-1,1]=%lu (%.1f%%)  frame_swaps=%lu\n",
+        "  native projection: have_proj=%d  clip.w>0=%lu/%lu  NDC xy in [-1,1]=%lu (%.1f%%)  frame_swaps=%lu\n"
+        "  near-clip: tris_in=%lu drop_behind=%lu cut_straddle=%lu | emitted tiny_w(0..1)=%lu min_w=%.4f\n",
         g_enabled ? "ON" : "OFF (set SUNBRIGHT_NGX_SHAPE=1)",
         g_calls, g_meshes, g_badcp, g_fail,
         g_total_verts, g_total_tris,
@@ -1520,7 +1582,8 @@ int sb_ngx_shape_dump(char* out, int cap) {
         g_last_eye[0], g_last_eye[1], g_last_eye[2],
         g_have_proj ? 1 : 0, g_ndc_wpos, g_ndc_total,
         g_ndc_inbox, g_ndc_total ? 100.0 * (double)g_ndc_inbox / (double)g_ndc_total : 0.0,
-        g_frame_swaps);
+        g_frame_swaps,
+        g_clip_in, g_clip_drop, g_clip_cut, g_clip_tiny, g_clip_minw);
 
     // Projection-type accounting + the sky gradient shape's actual transform (mis-projection RE).
     n += snprintf(out + n, cap - n, "  PROJ sets: perspective=%lu orthographic=%lu (last_ortho_type=%u)\n",
@@ -1544,9 +1607,12 @@ int sb_ngx_shape_dump(char* out, int cap) {
         n += snprintf(out + n, cap - n,
             "  PNMTX-DBG (first multi-matrix non-sky shape, nv=%zu mp_valid=%d):\n"
             "    matidx vert0=%u  range=[%u..%u]  pos0=(%.2f,%.2f,%.2f)\n"
-            "    selected posmtx[%u] 3x4=[%.3f %.3f %.3f %.2f / %.3f %.3f %.3f %.2f / %.3f %.3f %.3f %.2f]\n",
+            "    xfmem[%u] 3x4=[%.3f %.3f %.3f %.2f / %.3f %.3f %.3f %.2f / %.3f %.3f %.3f %.2f]\n"
+            "    hook [%u] 3x4=[%.3f %.3f %.3f %.2f / %.3f %.3f %.3f %.2f / %.3f %.3f %.3f %.2f]\n",
             d.nv, d.mp_valid, d.mi0, d.mi_min, d.mi_max, d.pos0[0],d.pos0[1],d.pos0[2], d.mi0,
-            d.row[0],d.row[1],d.row[2],d.row[3], d.row[4],d.row[5],d.row[6],d.row[7], d.row[8],d.row[9],d.row[10],d.row[11]);
+            d.row[0],d.row[1],d.row[2],d.row[3], d.row[4],d.row[5],d.row[6],d.row[7], d.row[8],d.row[9],d.row[10],d.row[11],
+            d.mi0,
+            d.hook[0],d.hook[1],d.hook[2],d.hook[3], d.hook[4],d.hook[5],d.hook[6],d.hook[7], d.hook[8],d.hook[9],d.hook[10],d.hook[11]);
     }
     n += snprintf(out + n, cap - n,
         "  PosMtxIndx hook: calls=%lu  XF_A base=%08x stride=%u  last index=%u slot=%u mp=%08x\n",

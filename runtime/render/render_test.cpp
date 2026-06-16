@@ -16,6 +16,7 @@
 #include <cstring>
 
 #include "ngx_project.h"
+#include "ngx_clip.h"
 
 // ── Units under test (self-test entry points defined in their own .cpp) ──────
 extern int sb_ngx_vertex_selftest(char* out, int cap);   // runtime/ngx/ngx_vertex.cpp
@@ -66,11 +67,55 @@ int test_projection(char* rep, int cap) {
     return fails;
 }
 
+// ── near-plane clip unit ─────────────────────────────────────────────────────
+// stride=4 (clip xyzw only) keeps the SH crossing math hand-checkable. Plane is
+// d = z + w ≥ 0. Crossing point = a + s·(b-a), s = da/(da-db), lands on d=0.
+int test_clip(char* rep, int cap) {
+    int pos = 0, fails = 0;
+    auto fail = [&](const char* msg) { fails++; if (pos < cap) pos += snprintf(rep + pos, cap - pos, "FAIL clip %s\n", msg); };
+    auto close = [](float a, float b) { float e = a - b; return (e < 0 ? -e : e) <= 1e-5f; };
+    float out[16]; int nf;
+
+    // A. Wholly in front (all d≥0) → 3, passthrough.
+    { const float in[12] = { 0,0,1,1,  1,0,1,1,  0,1,1,1 };   // d = 2,2,2
+      int n = ngx_clip_near_tri(in, 4, out, &nf);
+      if (n != 3 || nf != 3) fail("A: in-front count");
+      for (int i = 0; i < 12; i++) if (!close(out[i], in[i])) { fail("A: passthrough"); break; } }
+
+    // B. Wholly behind (all d<0) → 0, dropped.
+    { const float in[12] = { 0,0,-2,1,  1,0,-2,1,  0,1,-2,1 };   // d = -1,-1,-1
+      int n = ngx_clip_near_tri(in, 4, out, &nf);
+      if (n != 0 || nf != 0) fail("B: behind drop"); }
+
+    // C. One vertex behind (v2) → 4-vertex polygon. v0=(0,0,1,1)d2 v1=(1,0,1,1)d2 v2=(0,1,-2,1)d-1.
+    //    Crossings on edges v1→v2 (s=2/3 → (1/3,2/3,-1,1)) and v2→v0 (s=1/3 → (0,2/3,-1,1)).
+    { const float in[12] = { 0,0,1,1,  1,0,1,1,  0,1,-2,1 };
+      int n = ngx_clip_near_tri(in, 4, out, &nf);
+      const float exp[16] = { 0,0,1,1,  1,0,1,1,  1.0f/3,2.0f/3,-1,1,  0,2.0f/3,-1,1 };
+      if (n != 4 || nf != 2) fail("C: one-behind count");
+      else for (int i = 0; i < 16; i++) if (!close(out[i], exp[i])) {
+          fail("C: clipped verts"); if (pos < cap) pos += snprintf(rep+pos, cap-pos,
+              "   out[%d]=%.4f exp=%.4f\n", i, out[i], exp[i]); break; } }
+
+    // D. Two vertices behind (v1,v2), v0 front → 3-vertex polygon.
+    //    v0=(0,0,1,1)d2 v1=(1,0,-2,1)d-1 v2=(0,1,-2,1)d-1.
+    //    Crossings v0→v1 (s=2/3 → (2/3,0,-1,1)) and v2→v0 (s=1/3 → (0,2/3,-1,1)).
+    { const float in[12] = { 0,0,1,1,  1,0,-2,1,  0,1,-2,1 };
+      int n = ngx_clip_near_tri(in, 4, out, &nf);
+      const float exp[12] = { 0,0,1,1,  2.0f/3,0,-1,1,  0,2.0f/3,-1,1 };
+      if (n != 3 || nf != 1) fail("D: two-behind count");
+      else for (int i = 0; i < 12; i++) if (!close(out[i], exp[i])) {
+          fail("D: clipped verts"); if (pos < cap) pos += snprintf(rep+pos, cap-pos,
+              "   out[%d]=%.4f exp=%.4f\n", i, out[i], exp[i]); break; } }
+    return fails;
+}
+
 struct Unit { const char* name; int (*run)(char* rep, int cap); };
 
 const Unit kUnits[] = {
     {"vertex_decode", sb_ngx_vertex_selftest},
     {"projection",    test_projection},
+    {"near_clip",     test_clip},
 };
 
 }  // namespace
