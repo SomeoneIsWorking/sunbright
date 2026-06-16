@@ -127,6 +127,26 @@ floor+buildings+sky most strongly fits a colorspace/decode issue. NEXT: check ng
 format + sampler vs Dolphin's TextureCache (sRGB?), and decode a known floor texture to compare
 its mean to both GX-implied (126) and ngx-sampled (223).
 
+## ⭐⭐ UPDATE 4 (2026-06-16): it's the TEV COMBINER dropping a konst/scale darkening
+Decomposed with ground truth (matched delfino.sav): GX normal floor=97, GX col0=196 (0.77) →
+GX *effective* texture term = 97×255/196 = **126**. ngx raw texture (NGX_TEVDBG=tex) = **220**.
+The texture DECODE is faithful (both engines decode the same ~220). So GX's combiner darkens the
+texture by ~0.57 (126/220) that ngx's combiner does NOT apply. ngx's combiner ≈ passes the
+texture (tex_eff ≈ raw 220). (ngx col0 ≈0.94 vs GX 0.77 is a minor secondary ~1.2×.)
+
+The darkening is a **konst / scale / extra TEV stage** the ngx TEV-shader emission drops or
+mis-emits. The dominant material `db9ecf` is a 5-stage **compare-mode** combiner (s0 bias=3) with
+`kcolor[0]=(79,108,97)≈0.35` — exactly a darkening konst. The handoff already flagged "verify the
+compare-combiner output matches Dolphin". So the bug is in `tev_shader.cpp` for the multi-stage /
+compare-mode combiners (e.g. the konst multiply or the compare-mode result not feeding the next
+stage's modulate). LIGHTING and TEXTURE-DECODE are confirmed correct — stop investigating those.
+
+NEXT: dump ngx's generated GLSL for db9ecf and trace it vs Dolphin's PixelShaderGen for the same
+material (or add a Dolphin debug that outputs the TEV result of a specific stage); find where the
+konst/scale darkening is lost. The decisive instruments exist: SUNBRIGHT_DBG_RASCOLOR /
+SUNBRIGHT_DBG_TEXCOLOR (Dolphin side), SUNBRIGHT_NGX_TEVDBG=tex|ras|cat (ngx side), /ngxshape FULL
+state dump (combiner per stage + konst + tevreg).
+
 ## Next steps
 - Audit the per-shape col0 source for the NOT-PRESENT CLR0 case (12.7M verts) — what should
   col0 be there (matColor? persisted channel?). Likely the dominant remaining white.
