@@ -25,6 +25,7 @@ struct NgxVertex {
     float nrm[3];
     unsigned char clr[2][4];   // color0, color1 (RGBA8)
     float tex[8][2];           // tex0..7 (S,T)
+    unsigned char matidx;      // PNMTXIDX: position-matrix-memory row (GX_PNMTX0=0,1=3,…); 0 if absent
 };
 
 // Resolved guest vertex arrays for indexed attributes (host pointers + byte

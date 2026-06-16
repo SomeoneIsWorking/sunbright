@@ -45,6 +45,12 @@ int ngx_assemble_primitive(const NgxCP& cp, unsigned op,
     std::vector<float> f2((size_t)count * 2);
     std::vector<unsigned char> c4((size_t)count * 4);
 
+    // PNMTXIDX (per-vertex position-matrix index, vcd_lo bit0) is the FIRST byte of each vertex
+    // (matrix-index bytes precede the attributes). Capture it for multi-matrix/skinned shapes;
+    // the consumer (transform_eye) selects the matrix per vertex (else they all share one → tear).
+    if (cp.vcd_lo & 1)
+        for (int i = 0; i < count; i++) verts[base + i].matidx = vtx[(size_t)i * vstride + 0];
+
     if (((cp.vcd_lo >> 9) & 3) &&
         ngx_extract_positions(f3.data(), cp, vat, vtx, count, vstride, arr.pos, arr.pos_stride))
         for (int i = 0; i < count; i++) std::memcpy(verts[base + i].pos, &f3[(size_t)i * 3], 12);

@@ -56,6 +56,8 @@ launch_one() {  # launch_one <role> [extra VAR=val ...]
         port=$NGX_PORT; log="$HERE/scratch/logs/gp.ngx.log"
         E+=(SUNBRIGHT_NGX_PRESENT=1 SUNBRIGHT_PROBE_PORT=$NGX_PORT)
     fi
+    # Kill any prior instance holding this probe port (else the stale one keeps answering).
+    { fuser -k "${port}/tcp" 2>/dev/null || lsof -ti "tcp:${port}" 2>/dev/null | xargs -r kill -9; } ; sleep 1
     setsid env "${E[@]}" "$@" "$BIN" "$ROM" >"$log" 2>&1 < /dev/null &
     echo "[$role] launched pid $! (port $port, log: ${log#$HERE/}) — waiting…"
     for i in $(seq 1 40); do sleep 2; if up "$port"; then echo "[$role] probe up (~$((i*2))s)"; return 0; fi; done

@@ -115,6 +115,15 @@ struct LightObj {
 LightObj g_light[8];
 unsigned long g_light_loads = 0;
 
+// GX position-matrix memory (64 rows × 4 floats), captured SYNCHRONOUSLY at GXLoadPosMtxImm so
+// multi-matrix / skinned shapes (PNMTXIDX) can select the per-vertex matrix. The vertex's
+// PNMTXIDX byte is the starting ROW here (GX_PNMTX0=0, _1=3, …); a matrix = rows idx,idx+1,idx+2.
+// Captured on the emu thread (no xfmem GPU-thread lag). Holds the LAST packet's matrices — fine
+// for single-packet multi-matrix shapes (the common case, incl. the title logo).
+float g_posmtx[64][4] = {{0}};
+bool  g_cur_pnmtx = false;            // current shape uses PNMTXIDX (set in capture)
+unsigned long g_posmtx_loads = 0;
+
 // Global hardware ambient colour register per colour channel (0,1), captured at
 // GXSetChanAmbColor. J3DColorBlockLightOff blocks do NOT store/load an ambient
 // (only LightOn does) — for them the ambient is whatever the scene set globally,
@@ -136,6 +145,7 @@ unsigned long g_clr0fmt_hist[8] = {0};  // CLR0 VAT format (0=565,1=888,2=888x,3
 size_t g_bigany_verts = 0; u16 g_bigany_cc = 0; bool g_bigany_hasnrm=false, g_bigany_matvtx=false, g_bigany_en=false;
 unsigned g_bigany_clr0cls=0; u8 g_bigany_vcol[3]={0}; double g_bigany_vcolmean=0; u32 g_bigany_clr0base=0;
 unsigned long g_pnmtx_shapes=0, g_pnmtx_verts=0; unsigned g_pnmtx_maxnelem=0, g_max_nelem=0;
+bool g_bigany_pnmtx=false;
 
 // J3DColorBlock variants (vtable ptrs, gmse01; from the block ctor/dtor disasm:
 // LightOn sets 0x803E0CD4, LightOff sets 0x803E0D38). Field offsets from
@@ -787,10 +797,10 @@ int capture_material() {
 // This is the native XF stage; the matrix is the same one the recompiled J3D
 // computed (the interp60 pos-matrix seam, now consumed natively).
 void transform_eye() {
-    const u32 mp = r32(J3DSYS + 0x104);     // mCurrentDrawMtx (Mtx*)
-    if (!valid(mp)) { g_xf_nomtx++; return; }
-    float m[12];
-    for (int i = 0; i < 12; i++) m[i] = rf(mp + i * 4);   // row-major 3x4
+    const u32 mp = r32(J3DSYS + 0x104);     // mCurrentDrawMtx (Mtx*) — single-matrix shapes
+    float m[12] = {1,0,0,0, 0,1,0,0, 0,0,1,0};   // identity fallback
+    if (valid(mp)) for (int i = 0; i < 12; i++) m[i] = rf(mp + i * 4);   // row-major 3x4
+    else if (!g_cur_pnmtx) { g_xf_nomtx++; return; }   // non-multi-matrix shapes need the draw mtx
     // Normal matrix (Mtx33, row-major 3x3) for the native lighting stage. Absent →
     // skip lighting (en stays 0 → only ambient contributes, matched by the math).
     const u32 nmp = r32(J3DSYS + 0x108);    // mCurrentNormMtx (Mtx33*)
@@ -812,9 +822,17 @@ void transform_eye() {
             else { uvp[m * 2 + 0] = v.tex[m][0]; uvp[m * 2 + 1] = v.tex[m][1]; }
         }
         const float x = v.pos[0], y = v.pos[1], z = v.pos[2];
-        const float ex = m[0]*x + m[1]*y + m[2]*z  + m[3];
-        const float ey = m[4]*x + m[5]*y + m[6]*z  + m[7];
-        const float ez = m[8]*x + m[9]*y + m[10]*z + m[11];
+        // Multi-matrix (skinned) shapes: select the per-vertex position matrix from the captured
+        // matrix memory by the vertex's PNMTXIDX (row); else the shape's single mCurrentDrawMtx.
+        const float* M = m;
+        float mm[12];
+        if (g_cur_pnmtx && (unsigned)v.matidx + 2 < 64) {
+            for (int r = 0; r < 3; r++) for (int c = 0; c < 4; c++) mm[r*4+c] = g_posmtx[v.matidx + r][c];
+            M = mm;
+        }
+        const float ex = M[0]*x + M[1]*y + M[2]*z  + M[3];
+        const float ey = M[4]*x + M[5]*y + M[6]*z  + M[7];
+        const float ez = M[8]*x + M[9]*y + M[10]*z + M[11];
 
         // Native colour-channel lighting → per-vertex raster colour0.
         float en[3] = {0, 0, 0};
@@ -975,6 +993,7 @@ void capture(u32 sh) {
           double s=0; for (auto&vv:g_verts) s+=(vv.clr[0][0]+vv.clr[0][1]+vv.clr[0][2])/3.0;
           g_bigany_vcolmean = s/g_verts.size();
           g_bigany_clr0base = cp.array_base[2];
+          g_bigany_pnmtx = (cp.vcd_lo & 1) != 0;
       }
     }
     if (!g_verts.empty()) {
@@ -983,6 +1002,7 @@ void capture(u32 sh) {
         g_last_pos[2] = g_verts[0].pos[2];
     }
     g_cur_tev_index = capture_material();   // N5: current J3DMaterial's TEV state
+    g_cur_pnmtx = (cp.vcd_lo & 1) != 0;     // multi-matrix shape → per-vertex matrix in transform_eye
     transform_eye();   // native XF stage (modelview) + eye-space verification
 }
 
@@ -1111,6 +1131,21 @@ SUNBRIGHT_OVERRIDE(ov_gxloadlightobjimm, 0x8035f26cu) {
         }
     }
     if (RecompFunc o = recomp_raw(0x8035f26cu)) o(cpu); else call_ppc(cpu, cpu.lr);
+}
+
+// GXLoadPosMtxImm(f32 mtx[3][4], u32 id) @ 0x80362e0c — capture the position-matrix memory for
+// PNMTXIDX (multi-matrix/skinned) shapes. id = the matrix-memory ROW (id*4 = float address);
+// it equals the per-vertex PNMTXIDX byte. mtx is a guest 3×4 row-major matrix (12 floats).
+SUNBRIGHT_OVERRIDE(ov_gxloadposmtximm, 0x80362e0cu) {
+    if (g_enabled) {
+        const u32 mp = cpu.gpr[3], id = cpu.gpr[4];
+        if (valid(mp) && id + 2 < 64) {
+            for (int r = 0; r < 3; r++)
+                for (int c = 0; c < 4; c++) g_posmtx[id + r][c] = rf(mp + (r * 4 + c) * 4);
+            g_posmtx_loads++;
+        }
+    }
+    if (RecompFunc o = recomp_raw(0x80362e0cu)) o(cpu); else call_ppc(cpu, cpu.lr);
 }
 
 // GXSetChanCtrl(chan, enable, amb_src, mat_src, light_mask, diff_fn, attn_fn) @ 0x8035f6d0 —
@@ -1378,8 +1413,9 @@ int sb_ngx_shape_dump(char* out, int cap) {
         g_colcat_n[3], g_colcat_n[3]?g_colcat_sum[3]/g_colcat_n[3]:0.0,
         g_colcat_n[4], g_colcat_n[4]?g_colcat_sum[4]/g_colcat_n[4]:0.0);
     n += snprintf(out+n, cap-n,
-        "  PNMTXIDX (multi-matrix) shapes=%lu verts=%lu maxnelem=%u | overall max nelem=%u (1=single-matrix)\n",
-        g_pnmtx_shapes, g_pnmtx_verts, g_pnmtx_maxnelem, g_max_nelem);
+        "  PNMTXIDX shapes=%lu verts=%lu maxnelem=%u | max nelem=%u | posmtx_loads=%lu | bigShape verts=%zu pnmtx=%d\n",
+        g_pnmtx_shapes, g_pnmtx_verts, g_pnmtx_maxnelem, g_max_nelem, g_posmtx_loads,
+        g_bigany_verts, g_bigany_pnmtx);
     n += snprintf(out+n, cap-n,
         "  up-facing reg-lit illum (visible floor/ground): avg=%.3f max=%.3f (n=%lu) @max amb=%.3f ndl=%.3f\n",
         g_uplit_n?g_uplit_sum/g_uplit_n:0.0, g_uplit_max, g_uplit_n, g_uplit_amb, g_uplit_ndl);
