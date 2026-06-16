@@ -90,6 +90,18 @@ target_compile_options(sunbright-recomp-test PRIVATE -Wall -Wextra -Wno-unused-p
 enable_testing()
 add_test(NAME recomp_test COMMAND sunbright-recomp-test)
 
+# ── Renderer unit tests (sunbright-render-test) ──────────────────────────────
+# Bottom-up TDD for the native renderer: each pure unit asserts spec-computed
+# ground truth (hand-derived expected values), Dolphin-free / no ROM / no GPU.
+add_executable(sunbright-render-test
+    runtime/render/render_test.cpp
+    runtime/ngx/ngx_vertex.cpp
+    runtime/ngx/ngx_decode.cpp
+)
+target_include_directories(sunbright-render-test PRIVATE runtime runtime/ngx runtime/render)
+target_compile_options(sunbright-render-test PRIVATE -Wall -Wextra -Wno-unused-parameter)
+add_test(NAME render_test COMMAND sunbright-render-test)
+
 # ── Launcher executable (SDL2 window + Dolphin Core) ─────────────────────────
 # Everything — launcher, runtime bridge, hand-written overrides, and the
 # statically-recompiled game code — is compiled into one self-contained binary.
