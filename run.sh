@@ -14,10 +14,14 @@
 #   SUNBRIGHT_WIDESCREEN=0 ./run.sh           # 4:3 instead of 16:9 widescreen
 #   SUNBRIGHT_DUMP=1 ./run.sh                 # dump frames to <home>/.local/share/dolphin-emu/Dump/Frames
 #   SUNBRIGHT_AUTOSTART=1 ./run.sh            # auto-press Start/A (headless demo)
+#   SUNBRIGHT_NGX_PRESENT=0 ./run.sh          # Dolphin-GX baseline (disable the native renderer)
+#   SUNBRIGHT_BIN=build/sunbright ./run.sh    # pick a specific binary
 #   (any SUNBRIGHT_* debug var set in your env is passed through)
 #
-# Defaults: Vulkan backend, 3× internal resolution, 16:9 widescreen. The window
-# opens at the output aspect so the game fills it; F11 toggles fullscreen.
+# Defaults: the NATIVE PC renderer (SUNBRIGHT_NGX_PRESENT) is on — the on-screen frame
+# is drawn by our own Vulkan renderer reading the game's J3D objects out of guest RAM
+# (no Dolphin GX in the render path), with the J2D/HUD composited on top. Vulkan only.
+# 3× internal resolution, 16:9 widescreen. F11 toggles fullscreen.
 #
 # Keyboard → GameCube pad (window must be focused):
 #   Enter=Start  Z=A(jump)  X=B  C=X  V=Y  Q=Z  A=L  S=R(spray)  arrows=control stick
@@ -25,15 +29,23 @@
 set -eo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BIN="$HERE/build/sunbright"
+# The native PC renderer lives in the build-j3dvirt build; prefer it, fall back to build/.
+# Override with SUNBRIGHT_BIN=<path> (relative to repo dir or absolute).
+if [[ -n "$SUNBRIGHT_BIN" ]]; then
+    case "$SUNBRIGHT_BIN" in /*) BIN="$SUNBRIGHT_BIN";; *) BIN="$HERE/$SUNBRIGHT_BIN";; esac
+elif [[ -x "$HERE/build-j3dvirt/sunbright" ]]; then
+    BIN="$HERE/build-j3dvirt/sunbright"
+else
+    BIN="$HERE/build/sunbright"
+fi
 # ROM source (no machine-specific path in the tree): explicit arg, else $SUNBRIGHT_ROM (set it in a
 # gitignored .env next to this script, or in your env), else a drop-in rom.rvz in the repo dir.
 [ -f "$HERE/.env" ] && { set -a; . "$HERE/.env"; set +a; }
 ROM="${1:-${SUNBRIGHT_ROM:-$HERE/rom.rvz}}"
 
 if [[ ! -x "$BIN" ]]; then
-    echo "sunbright not built. Build it with:" >&2
-    echo "  cmake --build \"$HERE/build\" --target sunbright -j\$(nproc)" >&2
+    echo "sunbright not built ($BIN). Build it with:" >&2
+    echo "  cmake --build \"$HERE/build-j3dvirt\" --target sunbright -j\$(nproc)" >&2
     exit 1
 fi
 if [[ ! -f "$ROM" ]]; then
@@ -56,6 +68,20 @@ else
     export DISPLAY="${DISPLAY:-:0}"
 fi
 
-echo "[run] SDL_VIDEODRIVER=$SDL_VIDEODRIVER  SUNBRIGHT_BACKEND=$SUNBRIGHT_BACKEND"
+# Native PC renderer (our own Vulkan renderer of the game's J3D scene) is the on-screen
+# image by default. It is Vulkan-only, so force Vulkan when it's enabled.
+export SUNBRIGHT_NGX_PRESENT="${SUNBRIGHT_NGX_PRESENT:-1}"
+if [[ "$SUNBRIGHT_NGX_PRESENT" != "0" ]]; then
+    export SUNBRIGHT_NGX_SHAPE="${SUNBRIGHT_NGX_SHAPE:-1}"   # NGX_PRESENT implies capture; be explicit
+    if [[ "$SUNBRIGHT_BACKEND" != "Vulkan" ]]; then
+        echo "[run] native renderer (SUNBRIGHT_NGX_PRESENT) is Vulkan-only — forcing Vulkan" >&2
+        export SUNBRIGHT_BACKEND="Vulkan"
+    fi
+    RENDER="native (NGX present)"
+else
+    RENDER="Dolphin GX"
+fi
+
+echo "[run] SDL_VIDEODRIVER=$SDL_VIDEODRIVER  SUNBRIGHT_BACKEND=$SUNBRIGHT_BACKEND  render=$RENDER"
 echo "[run] $BIN \"$ROM\""
 exec "$BIN" "$ROM" "${@:2}"
