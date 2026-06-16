@@ -247,6 +247,30 @@ Runtime escape hatches that take precedence over generated code (no regen needed
 Registered at startup in `runtime/overrides/sms_overrides.cpp`. Consulted by both
 `recomp_lookup()` and `SunbrightBridge`, so they apply to JIT-entry, `bl`, and indirect branches.
 
+## Debugging the native renderer — TDD, NOT eyeballing (read this before touching ngx)
+The renderer was built straight to "draw the whole scene and look at it." That has no
+falsifiable test, so fidelity bugs (the projection "wash", dropped ortho) produced a thrash
+of contradictory root-cause claims that each survived multiple commits (`ti=9`→`ti=11`→"it
+was a desync confound"). **A renderer fix MUST move a number in a deterministic test — never
+"it looks better now."** Two confounds make eyeballing worthless: (1) comparing two
+independently pad-driven processes that drift in animation phase; (2) whole-frame PNG diffing,
+which says "different" not "why" and has no stable golden when the output is still broken.
+
+- **`sunbright-render-test` (ctest target `render_test`)** — the renderer's `SUNBRIGHT_DIFF`:
+  bottom-up unit tests over the *pure* renderer units, each asserting **spec-computed** ground
+  truth (hand-derived expected values), Dolphin-free / no ROM / no GPU. Run with
+  `ctest --test-dir build -R render_test` or `./build/sunbright-render-test`. Add a unit:
+  extract the pure function into a header (e.g. `runtime/ngx/ngx_project.h`), write a
+  `test_<unit>` with hand-computed cases, register it in `runtime/render/render_test.cpp`.
+  **The tested function must BE the shipping function** — call it from the override (don't fork
+  a copy), or the test validates dead code. Units so far: `vertex_decode` (GC attr dequant),
+  `projection` (eye→clip→NDC, the dropped-ortho class). Next climb: near-plane clip
+  (Sutherland-Hodgman vs `d=z+w≥0`, currently inline WIP in ngx_j3d_shape.cpp), TEV combiner,
+  color remap. `tex_decode_selftest` (Dolphin-oracle texel parity, via `/tex`) is the same idea
+  for textures.
+- **When a unit isn't extractable yet, extract it first.** "Draw the scene and compare" is the
+  integration test of LAST resort, after the pure units underneath it are green.
+
 ## Debugging recomp correctness
 - `SUNBRIGHT_DISABLE_RECOMP=1` — run pure Dolphin JIT (same binary). The A/B baseline:
   if a hang reproduces here too it's not our recomp.
