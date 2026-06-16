@@ -177,6 +177,10 @@ inline void ngx_postload_cmp(unsigned slot, bool is_imm) {
 u8 g_amb_reg[2][4] = {{0,0,0,0}, {0,0,0,0}};
 bool g_amb_have[2] = {false, false};
 unsigned long g_amb_sets = 0;
+// Diagnostic: use Dolphin's AUTHORITATIVE ambient (xfmem, captured GPU-thread) in light_vertex to
+// confirm the black-materials bug is the ambient. SUNBRIGHT_NGX_DOLAMB=1.
+extern "C" void sb_get_gx_ambient(unsigned* amb0, unsigned* mat0, unsigned long* count);
+bool g_use_dolamb = sb_env_on("SUNBRIGHT_NGX_DOLAMB");
 // J3D programs the ambient via J3DGDSetChanAmbColor (a GD/XF-direct write), NOT GXSetChanAmbColor
 // — so the GX-function tee misses it. Capture the GD path too (this is the value the GPU actually
 // uses). g_gd_amb is draw-order-current at capture_colorchan time.
@@ -417,6 +421,11 @@ void light_vertex(const float eye[3], const float en[3], const float vcol0[4], f
     float illum[3];
     if (ambVtx) { illum[0] = vcol0[0]; illum[1] = vcol0[1]; illum[2] = vcol0[2]; }
     else { illum[0] = C.ambColor[0] / 255.f; illum[1] = C.ambColor[1] / 255.f; illum[2] = C.ambColor[2] / 255.f; }
+    // DIAG: substitute Dolphin's authoritative ambient (xfmem) — confirms the 0-default is the bug.
+    if (g_use_dolamb) {
+        unsigned a=0,m=0; unsigned long c=0; sb_get_gx_ambient(&a,&m,&c);
+        illum[0] = ((a>>24)&0xff)/255.f; illum[1] = ((a>>16)&0xff)/255.f; illum[2] = ((a>>8)&0xff)/255.f;
+    }
 
     const int diffFn  = (cc >> 7) & 3;      // GXDiffuseFn: NONE=0 SIGN=1 CLAMP=2
     const int attnSel = (cc >> 9) & 3;      // 0/2 → NONE, 1 → SPEC, 3 → SPOT (J3DColorChan::getAttnFn)
@@ -1327,6 +1336,7 @@ const NgxTevState* ngx_snap_tevstates(int* nstates) {
 extern "C" const float* sb_get_dolphin_proj(int* type, unsigned long* count);
 extern "C" const float* sb_get_dolphin_persp(unsigned long* count);
 extern "C" void sb_get_gx_draw_counts(unsigned long*, unsigned long*, unsigned long*, unsigned long*);
+extern "C" void sb_get_gx_ambient(unsigned* amb0, unsigned* mat0, unsigned long* count);
 extern "C" int ngx_proj_diff_report(char* out, int cap) {
     // Compare the PERSPECTIVE projection (the 3D camera) — set once/frame and stable, so ngx's
     // (CPU) and Dolphin's (GPU) copies ARE comparable despite the async gap. The latest-of-any-type
@@ -1357,6 +1367,18 @@ extern "C" int ngx_proj_diff_report(char* out, int cap) {
         "  ngx 3D-triangle coverage vs Dolphin perspective: %.1f%%  %s\n",
         gd, gi, gpd, gpi, dol_tris, g_calls, g_total_verts, g_total_tris, cov,
         cov < 80.0 ? "<<< ngx is MISSING geometry" : "(coverage ok — bug is shading/texture)");
+
+    // AMBIENT: ngx defaults block-less ambient to 0 (→ black). Dolphin's actual xfmem ambient is
+    // the authoritative value. If it's nonzero, that's the black bug confirmed.
+    unsigned amb0=0, mat0=0; unsigned long ac=0; sb_get_gx_ambient(&amb0, &mat0, &ac);
+    p += snprintf(out + p, cap - p,
+        "\nAMBIENT (the black-materials bug)\n"
+        "  Dolphin xfmem ambColor[0]=%08x matColor[0]=%08x (persp updates=%lu)\n"
+        "  ngx last g_cur_chan.ambColor=(%u,%u,%u,%u)\n"
+        "  %s\n",
+        amb0, mat0, ac,
+        g_cur_chan.ambColor[0], g_cur_chan.ambColor[1], g_cur_chan.ambColor[2], g_cur_chan.ambColor[3],
+        (amb0 & 0x00ffffff) ? "<<< Dolphin ambient is NONZERO — ngx's 0 default is the black bug" : "ambient ~0 both");
     return p;
 }
 
