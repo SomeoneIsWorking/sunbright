@@ -124,20 +124,51 @@ unsigned long g_light_loads = 0;
 // Captured on the emu thread (no xfmem GPU-thread lag). Holds the LAST packet's matrices — fine
 // for single-packet multi-matrix shapes (the common case, incl. the title logo).
 float g_posmtx[64][4] = {{0}};
+unsigned char g_posmtx_src[64] = {0};   // per-slot load source: 0=none 1=Imm (Dolphin-correct by
+                                        // construction) 2=Indx (ngx reconstructs → suspect)
 bool  g_cur_pnmtx = false;            // current shape uses PNMTXIDX (set in capture)
 unsigned long g_posmtx_loads = 0;
 
-// ── ngx geometry differential vs Dolphin (SUNBRIGHT_NGX_DIFF) ─────────────────
-// The renderer's SUNBRIGHT_DIFF: the title-logo / sun-ray / file-select shear is a
-// multi-matrix (PNMTXIDX) bug — ngx applies g_posmtx[slot], the AUTHORITATIVE matrix
-// is Dolphin's xfmem.posMatrices[slot] (same XF writes the GPU consumes). Instead of
-// eyeballing which of the two "looks less broken", this asserts g_posmtx == xfmem per
-// slot every frame and reports exactly which slots diverge and by how much, so the bug
-// is LOCATED numerically (matrix-capture wrong vs downstream) and a fix MOVES A NUMBER.
+// ── ngx geometry differential vs Dolphin xfmem (SUNBRIGHT_NGX_DIFF) ───────────
+// ⚠ RECORDED DEAD-END (2026-06-16): this compares ngx's g_posmtx against Dolphin's
+// xfmem.posMatrices, but the POST-LOAD synchrony validator below PROVED xfmem is NOT a
+// valid CPU-side oracle in this hybrid: GXLoadPosMtxImm matrices come straight from the
+// call ARGS (= exactly what Dolphin loads), yet 77% of them disagree with xfmem read
+// IMMEDIATELY after the real load runs. Dolphin's GP updates xfmem ASYNCHRONOUSLY, so
+// every CPU-side read of xfmem lags the actual load. ⇒ Do NOT trust this differential's
+// "diverges from Dolphin" verdicts as ground truth; the only trustworthy Dolphin oracle
+// in the hybrid is RENDERED PIXELS (the reason tex_decode_selftest works is it calls
+// Dolphin's decoder DIRECTLY, no async GP between).
+// What DID survive: (a) the synchrony validator (g_pl_imm_*) that proved the above, and
+// (b) the indexed reconstruction (Indx) produces ABSURD matrices (scale ~566, translation
+// ~187802 — garbage independent of any oracle), so ngx's base+index*stride indexed read
+// is reading wrong memory. Kept for those two signals; not as a pass/fail gate.
 bool g_ngxdiff = sb_env_on("SUNBRIGHT_NGX_DIFF");
-struct GeomDiffSlot { unsigned long n=0, nmiss=0; float maxd=0; float ngx[12]={0}, dol[12]={0}; };
+struct GeomDiffSlot { unsigned long n=0, nmiss=0; float maxd=0; unsigned char src=0; float ngx[12]={0}, dol[12]={0}; };
 GeomDiffSlot g_gdiff[64];
 unsigned long g_gdiff_mm_shapes=0, g_gdiff_frames=0;
+// Post-load differential: read xfmem RIGHT AFTER the real GXLoadPosMtx* runs (no tee staleness).
+//  Imm:  g_posmtx (from call ARGS) vs xfmem — MUST match if the load reached xfmem synchronously.
+//        This is the meta-validator: Imm div=0 ⇒ xfmem is a usable CPU-side oracle; Imm div>0 ⇒
+//        xfmem is NOT synchronous at the hook → it can't be the oracle at all (need Dolphin pixels).
+//  Indx: g_posmtx (ngx's base+index*stride RECONSTRUCTION) vs xfmem (Dolphin's actual load) —
+//        if it diverges while Imm is clean, ngx reads the WRONG source: the indexed bug, pinned.
+unsigned long g_pl_imm_n=0, g_pl_imm_div=0;  float g_pl_imm_maxd=0;
+unsigned long g_pl_indx_n=0, g_pl_indx_div=0; float g_pl_indx_maxd=0;
+float g_pl_indx_ngx[12]={0}, g_pl_indx_dol[12]={0};
+// Compare g_posmtx[slot] (just captured) vs xfmem.posMatrices[slot] (what the real load just wrote).
+inline void ngx_postload_cmp(unsigned slot, bool is_imm) {
+    if (!g_ngxdiff || slot + 2 >= 64) return;
+    float md = 0, ng[12], dl[12];
+    for (int r = 0; r < 3; r++) for (int c = 0; c < 4; c++) {
+        const float a = g_posmtx[slot + r][c], b = xfmem.posMatrices[(slot + r) * 4 + c];
+        ng[r*4+c] = a; dl[r*4+c] = b;
+        float d = a - b; if (d < 0) d = -d; if (d > md) md = d;
+    }
+    if (is_imm) { g_pl_imm_n++; if (md > 1e-3f) g_pl_imm_div++; if (md > g_pl_imm_maxd) g_pl_imm_maxd = md; }
+    else { g_pl_indx_n++; if (md > 1e-3f) g_pl_indx_div++;
+           if (md > g_pl_indx_maxd) { g_pl_indx_maxd = md; for (int i=0;i<12;i++){g_pl_indx_ngx[i]=ng[i];g_pl_indx_dol[i]=dl[i];} } }
+}
 
 // Global hardware ambient colour register per colour channel (0,1), captured at
 // GXSetChanAmbColor. J3DColorBlockLightOff blocks do NOT store/load an ambient
@@ -958,7 +989,7 @@ void transform_eye() {
                 float d = a - b; if (d < 0) d = -d; if (d > maxd) maxd = d;
             }
             GeomDiffSlot& s = g_gdiff[slot];
-            s.n++;
+            s.n++; s.src = g_posmtx_src[slot];
             if (maxd > 1e-3f) s.nmiss++;
             if (maxd >= s.maxd) { s.maxd = maxd; for (int i = 0; i < 12; i++) { s.ngx[i]=ngx[i]; s.dol[i]=dol[i]; } }
         }
@@ -1295,19 +1326,47 @@ const NgxTevState* ngx_snap_tevstates(int* nstates) {
 // Dolphin's xfmem matrix, the worst Δ, and the two matrices side by side for the worst.
 extern "C" int ngx_geom_diff_report(char* out, int cap) {
     int p = 0;
+    // The decisive split: Imm-loaded slots are Dolphin-correct BY CONSTRUCTION (matrix is in the
+    // call args). If THOSE diverge from xfmem, then xfmem is stale → not a valid oracle (and the
+    // matrices ngx draws are right). If Imm slots MATCH but Indx slots diverge, xfmem is the oracle
+    // and the indexed reconstruction is the bug. This is what tells me WHERE the bug is, no eyes.
+    int imm_n=0, imm_div=0, indx_n=0, indx_div=0;
+    for (int slot = 0; slot < 64; slot++) {
+        const GeomDiffSlot& s = g_gdiff[slot];
+        if (s.n == 0) continue;
+        if (s.src == 1) { imm_n++; if (s.nmiss) imm_div++; }
+        else if (s.src == 2) { indx_n++; if (s.nmiss) indx_div++; }
+    }
     p += snprintf(out + p, cap - p,
         "ngx geometry diff vs Dolphin (xfmem.posMatrices)\n"
-        "multi-matrix shapes seen: %lu   enabled: %s\n\n",
-        g_gdiff_mm_shapes, g_ngxdiff ? "yes" : "no (set SUNBRIGHT_NGX_DIFF=1)");
+        "multi-matrix shapes seen: %lu   enabled: %s\n\n"
+        "== POST-LOAD compare (read xfmem RIGHT AFTER the real load — no tee staleness) ==\n"
+        "  Imm  (g_posmtx from ARGS vs xfmem): %lu/%lu diverge  maxD=%.4f\n"
+        "  Indx (reconstruction     vs xfmem): %lu/%lu diverge  maxD=%.4f\n"
+        "  READ: Imm diverge>0 => xfmem NOT synchronous at hook => not a CPU-side oracle (need pixels).\n"
+        "        Imm==0 & Indx>0 => xfmem IS the oracle; indexed reconstruction (base+index*stride) is WRONG.\n"
+        "        Imm==0 & Indx==0 => matrices are CORRECT; the bug is downstream (projection/decode/present).\n",
+        g_gdiff_mm_shapes, g_ngxdiff ? "yes" : "no (set SUNBRIGHT_NGX_DIFF=1)",
+        g_pl_imm_div, g_pl_imm_n, g_pl_imm_maxd, g_pl_indx_div, g_pl_indx_n, g_pl_indx_maxd);
+    if (g_pl_indx_maxd > 1e-3f)
+        p += snprintf(out + p, cap - p,
+            "  worst Indx post-load: ngx=[%.3f %.3f %.3f %.2f /...] dol=[%.3f %.3f %.3f %.2f /...]\n",
+            g_pl_indx_ngx[0],g_pl_indx_ngx[1],g_pl_indx_ngx[2],g_pl_indx_ngx[3],
+            g_pl_indx_dol[0],g_pl_indx_dol[1],g_pl_indx_dol[2],g_pl_indx_dol[3]);
+    p += snprintf(out + p, cap - p,
+        "\n== TEE compare (xfmem read at transform_eye — may be stale) ==\n"
+        "  Imm slots %d/%d diverge | Indx slots %d/%d diverge\n\n",
+        imm_div, imm_n, indx_div, indx_n);
     int active = 0, diverging = 0;
-    for (int slot = 0; slot < 64 && cap - p > 320; slot++) {
+    for (int slot = 0; slot < 64 && cap - p > 360; slot++) {
         const GeomDiffSlot& s = g_gdiff[slot];
         if (s.n == 0) continue;
         active++;
         const bool bad = s.nmiss > 0;
         if (bad) diverging++;
-        p += snprintf(out + p, cap - p, "slot %2d: n=%lu miss=%lu maxD=%.4f %s\n",
-            slot, s.n, s.nmiss, s.maxd, bad ? "<<< DIVERGES from Dolphin" : "ok");
+        const char* src = s.src == 1 ? "Imm" : s.src == 2 ? "Indx" : "?";
+        p += snprintf(out + p, cap - p, "slot %2d [%-4s]: n=%lu miss=%lu maxD=%.4f %s\n",
+            slot, src, s.n, s.nmiss, s.maxd, bad ? "<<< DIVERGES" : "ok");
         if (bad) {
             p += snprintf(out + p, cap - p,
                 "   ngx: [%.3f %.3f %.3f %.2f / %.3f %.3f %.3f %.2f / %.3f %.3f %.3f %.2f]\n"
@@ -1420,15 +1479,18 @@ SUNBRIGHT_OVERRIDE(ov_gxloadlightobjimm, 0x8035f26cu) {
 // PNMTXIDX (multi-matrix/skinned) shapes. id = the matrix-memory ROW (id*4 = float address);
 // it equals the per-vertex PNMTXIDX byte. mtx is a guest 3×4 row-major matrix (12 floats).
 SUNBRIGHT_OVERRIDE(ov_gxloadposmtximm, 0x80362e0cu) {
+    u32 cap_id = 0xFFFFFFFFu;   // captured for the post-load xfmem compare (GPRs clobbered by the call)
     if (g_enabled) {
         const u32 mp = cpu.gpr[3], id = cpu.gpr[4];
         if (valid(mp) && id + 2 < 64) {
             for (int r = 0; r < 3; r++)
                 for (int c = 0; c < 4; c++) g_posmtx[id + r][c] = rf(mp + (r * 4 + c) * 4);
-            g_posmtx_loads++;
+            for (int r = 0; r < 3; r++) g_posmtx_src[id + r] = 1;   // Imm = Dolphin-correct by construction
+            g_posmtx_loads++; cap_id = id;
         }
     }
     if (RecompFunc o = recomp_raw(0x80362e0cu)) o(cpu); else call_ppc(cpu, cpu.lr);
+    if (cap_id != 0xFFFFFFFFu) ngx_postload_cmp(cap_id, true);   // synchrony validator
 }
 
 // GXLoadPosMtxIndx(u16 index, GXPosNrmMtx mtxIndex) @ 0x80362e48 — the INDEXED position-matrix
@@ -1440,6 +1502,7 @@ SUNBRIGHT_OVERRIDE(ov_gxloadposmtximm, 0x80362e0cu) {
 // matrix = XF_A_base + index*stride (12 big-endian floats, 3×4 row-major) → g_posmtx[slot].
 u32 g_pmi_base=0, g_pmi_stride=0, g_pmi_index=0, g_pmi_slot=0, g_pmi_mp=0; unsigned long g_pmi_calls=0;
 SUNBRIGHT_OVERRIDE(ov_gxloadposmtxindx, 0x80362e48u) {
+    u32 cap_slot = 0xFFFFFFFFu;   // captured for the post-load xfmem compare
     if (g_enabled) {
         // Args (GXLoadPosMtxIndx(u16 mtx_indx, u32 id)): gpr[3]=mtx_indx = ARRAY index into the
         // pos-matrix array; gpr[4]=id = the XF destination slot (= the per-vertex PNMTXIDX byte;
@@ -1456,9 +1519,12 @@ SUNBRIGHT_OVERRIDE(ov_gxloadposmtxindx, 0x80362e48u) {
         const u32 stride = 48;   // sizeof(Mtx) = 3×4 f32
         const u32 mp = base + index * stride;
         g_pmi_base=base; g_pmi_stride=stride; g_pmi_index=index; g_pmi_slot=slot; g_pmi_mp=mp; g_pmi_calls++;
-        if (valid(mp) && slot + 2 < 64)
+        if (valid(mp) && slot + 2 < 64) {
             for (int r = 0; r < 3; r++)
                 for (int c = 0; c < 4; c++) g_posmtx[slot + r][c] = rf(mp + (r * 4 + c) * 4);
+            for (int r = 0; r < 3; r++) g_posmtx_src[slot + r] = 2;   // Indx = ngx reconstructs → suspect
+            cap_slot = slot;
+        }
         if (getenv("SUNBRIGHT_DBG_PMI")) {
             if (RecompFunc o = recomp_raw(0x80362e48u)) o(cpu); else call_ppc(cpu, cpu.lr);
             static int k = 0;
@@ -1472,6 +1538,7 @@ SUNBRIGHT_OVERRIDE(ov_gxloadposmtxindx, 0x80362e48u) {
         }
     }
     if (RecompFunc o = recomp_raw(0x80362e48u)) o(cpu); else call_ppc(cpu, cpu.lr);
+    if (cap_slot != 0xFFFFFFFFu) ngx_postload_cmp(cap_slot, false);   // reconstruction vs Dolphin's actual load
 }
 
 // GXSetChanCtrl(chan, enable, amb_src, mat_src, light_mask, diff_fn, attn_fn) @ 0x8035f6d0 —
