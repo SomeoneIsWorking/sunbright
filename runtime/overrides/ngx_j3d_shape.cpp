@@ -1309,7 +1309,25 @@ void ngx_set_projection(const float* m44, unsigned type) {
 // frame (dialogue etc.) no-ops, and it aligns the 3D publish with the J2D HUD snapshot
 // (both taken at the same tee → consistent composited frame). NOT GXSetProjection
 // (fires ~5×/frame); NOT a GX HW function (GXCopyDisp can't be safely super-called).
+// /ngxfreeze: when set, STOP advancing the published snapshot — every consumer (present,
+// /abshot2, /pixbatch, the state dump) then reads ONE identical frozen frame, so I can flip
+// debug modes / per-layer isolation / blend on the SAME geometry and the measurements agree
+// (the live scene moves between probe calls, which made every reading incomparable). The game
+// keeps running; only the rendered/analysed snapshot is latched.
+std::atomic<bool> g_ngx_frozen{false};
+extern "C" void sb_ngx_set_freeze(int on) { g_ngx_frozen.store(on != 0, std::memory_order_release); }
+extern "C" int  sb_ngx_get_freeze() { return g_ngx_frozen.load(std::memory_order_acquire) ? 1 : 0; }
+
 void ngx_frame_publish() {
+    if (g_ngx_frozen.load(std::memory_order_acquire)) {
+        // Frozen: don't swap/publish — keep the latched front buffer. But STILL reset the
+        // back buffer so the live capture doesn't accumulate across frames into a giant mess.
+        g_snap_count[g_cur] = 0;
+        g_batches[g_cur].clear();
+        g_sky = SkyLatch{}; g_skyxf = SkyXf{}; g_pnmtxdbg = PnmtxDbg{};
+        g_clip_in=g_clip_drop=g_clip_cut=g_clip_tiny=0; g_clip_minw=1e30f;
+        return;
+    }
     if (g_snap_count[g_cur] == 0 && g_batches[g_cur].empty()) return;  // no 3D this frame: keep last
     g_front.store(g_cur, std::memory_order_release);
     g_cur ^= 1;

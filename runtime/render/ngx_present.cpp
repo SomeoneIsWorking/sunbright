@@ -28,6 +28,13 @@ extern "C" int sb_ngx_tevdbg();
 int g_ngx_only_ti = -2, g_ngx_skip_ti = -2;
 extern "C" int sb_ngx_set_onlyti(int t) { g_ngx_only_ti = t; return t; }
 extern "C" int sb_ngx_set_skipti(int t) { g_ngx_skip_ti = t; return t; }
+// Runtime blend override (/ngxnoblend): -1 = use per-material blend (default), 0 = force
+// every material OPAQUE (blend off), 1 = leave blend on but force-disable depth-test is NOT
+// here. Lets me A/B "is the dark water the annihilating dst=SRCCLR blend?" on a FROZEN frame
+// without a relaunch. Bumps g_ngx_pipe_epoch so cached pipelines regenerate.
+int g_ngx_noblend = -1;
+int g_ngx_pipe_epoch = 0;
+extern "C" int sb_ngx_set_noblend(int v) { if (v != g_ngx_noblend) { g_ngx_noblend = v; g_ngx_pipe_epoch++; } return v; }
 #include <unordered_map>
 #include <vector>
 
@@ -96,6 +103,7 @@ struct PresentRenderer {
 
     unsigned long g_frames = 0, g_pipe_builds = 0, g_tex_decodes = 0, g_j2d_quads = 0;
     int dbg_mode_built = -2;    // tev-debug mode the cached pipelines were built for; mismatch → rebuild
+    int pipe_epoch_built = 0;   // /ngxnoblend (etc.) epoch the cached pipelines were built for
 
     void clear_pipes() {        // drop all cached shader+pipeline (e.g. when the debug mode flips)
         vkDeviceWaitIdle(dev);
@@ -437,8 +445,8 @@ VkPipeline PresentRenderer::pipeline_for(const NgxTevState& st) {
     }
     // A/B diag: SUNBRIGHT_NGX_NOBLEND=1 forces every material opaque (blend off) — isolates
     // whether the wash is blend overdraw/accumulation vs the combiner/raster source.
-    static const bool s_noblend = getenv("SUNBRIGHT_NGX_NOBLEND") && atoi(getenv("SUNBRIGHT_NGX_NOBLEND")) != 0;
-    if (s_noblend) cba.blendEnable = VK_FALSE;
+    static const bool s_noblend_env = getenv("SUNBRIGHT_NGX_NOBLEND") && atoi(getenv("SUNBRIGHT_NGX_NOBLEND")) != 0;
+    if (::g_ngx_noblend == 0 || (::g_ngx_noblend < 0 && s_noblend_env)) cba.blendEnable = VK_FALSE;
     VkPipelineColorBlendStateCreateInfo cb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
     cb.attachmentCount = 1; cb.pAttachments = &cba;
     VkGraphicsPipelineCreateInfo gp{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
@@ -591,6 +599,7 @@ AbstractTexture* PresentRenderer::render(int w, int h) {
     if (w < 1 || h < 1) return nullptr;
     // Render-debug mode changed (via /ngxdbg)? Drop cached pipelines so shaders regenerate.
     if (int m = sb_ngx_tevdbg(); m != dbg_mode_built) { if (init_ok && dev) clear_pipes(); dbg_mode_built = m; }
+    if (::g_ngx_pipe_epoch != pipe_epoch_built) { if (init_ok && dev) clear_pipes(); pipe_epoch_built = ::g_ngx_pipe_epoch; }
     if (!ensure_target(w, h)) return nullptr;
     if (!ensure_vbuf((VkDeviceSize)nv * sizeof(NgxRenderVertex))) return nullptr;
     if (!ensure_dpool((uint32_t)batches.size())) return nullptr;

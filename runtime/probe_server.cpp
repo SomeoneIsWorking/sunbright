@@ -155,6 +155,9 @@ extern "C" volatile int g_sb_ngx_present;   // /abshot toggles the present sourc
 extern "C" volatile int g_sb_ab_capture;    // /abshot2 arms same-present dual capture (Present.cpp)
 extern "C" int sb_ngx_set_dbg(int);         // /ngxdbg sets the native renderer debug mode
 extern "C" void sb_ngx_set_nolight(int);    // /ngxdbg?nolight= toggles native lighting (capture)
+extern "C" void sb_ngx_set_freeze(int);     // /ngxfreeze latches the published snapshot
+extern "C" int  sb_ngx_get_freeze();
+extern "C" int  sb_ngx_set_noblend(int);    // /ngxnoblend forces materials opaque
 extern "C" int sb_xfmem_dump(char*, int);   // /xfdump prints live Dolphin xfmem (ngx_j3d_shape.cpp)
 extern "C" int sb_xfmem_hist(char*, int);   // /xfhist prints distinct xfmem draw-tuples (ngx_j3d_shape.cpp)
 extern "C" int sb_ngx_gen_shader(unsigned, char*, int);   // /skyshader dumps generated TEV GLSL (ngx_j3d_shape.cpp)
@@ -318,6 +321,16 @@ std::string handle_repl(const char* path) {
     if (strncmp(path, "/ngxskip", 8) == 0) {   // runtime: SKIP this tev_index (-2 env, -1 off)
         int t = -1; if (const char* p = strstr(path, "ti=")) t = atoi(p + 3);
         sb_ngx_set_skipti(t); app("ngx skip_ti = %d\n", t); return std::string(buf, n);
+    }
+    if (strncmp(path, "/ngxfreeze", 10) == 0) { // FREEZE the published snapshot (deterministic A/B)
+        int on = 1; if (const char* p = strstr(path, "on=")) on = atoi(p + 3);
+        sb_ngx_set_freeze(on); app("ngx frozen = %d (snapshot latched; tweak modes/layers/blend on this frame)\n", sb_ngx_get_freeze());
+        return std::string(buf, n);
+    }
+    if (strncmp(path, "/ngxnoblend", 11) == 0) {// force every material opaque (-1 per-mat, 0 opaque, 1 keep)
+        int v = 0; if (const char* p = strstr(path, "on=")) v = atoi(p + 3);
+        sb_ngx_set_noblend(v); app("ngx noblend = %d (0=force opaque, -1=per-material)\n", v);
+        return std::string(buf, n);
     }
     if (strncmp(path, "/pixbatch", 9) == 0) {  // CPU pixel->batch raster probe (which captured batch covers a NDC point)
         float x = 0.f, y = 0.9f;   // default: a sky point (top-centre, GL NDC y up)
