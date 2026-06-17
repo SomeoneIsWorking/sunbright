@@ -85,11 +85,15 @@ int sb_ngx_vertex_selftest(char*, int);                      // runtime/ngx/ngx_
 int sb_ngx_mesh_selftest(char*, int);                        // runtime/ngx/ngx_mesh.cpp
 int sb_ngx_shape_dump(char*, int);                           // runtime/overrides/ngx_j3d_shape.cpp
 int sb_ngx_shapes_dump(char*, int);                          // runtime/overrides/ngx_j3d_shape.cpp (/ngxshapes)
+int sb_ngx_efbcopies_dump(char*, int);                       // runtime/overrides/ngx_j3d_shape.cpp (/efbcopies)
 int sb_ngx_pixel_batch(float, float, char*, int);            // runtime/overrides/ngx_j3d_shape.cpp
 extern "C" int ngx_geom_diff_report(char* out, int cap);     // runtime/overrides/ngx_j3d_shape.cpp (/ngxgeomdiff)
 extern "C" int ngx_proj_diff_report(char* out, int cap);     // runtime/overrides/ngx_j3d_shape.cpp (/ngxproj)
 extern "C" int sb_ngx_set_onlyti(int);                       // runtime/render/ngx_present.cpp (/ngxonly)
 extern "C" int sb_ngx_set_skipti(int);                       // runtime/render/ngx_present.cpp (/ngxskip)
+extern "C" int sb_ngx_set_onlyepoch(int);                    // runtime/render/ngx_present.cpp (/ngxepoch)
+extern "C" int sb_ngx_set_dropepoch(int);                    // runtime/render/ngx_present.cpp (/ngxepoch)
+extern "C" int sb_ngx_set_rtfilter(int);                     // runtime/render/ngx_present.cpp (/ngxrtfilter)
 int sb_ngx_render(char*, int);                               // runtime/render/vk_mesh.cpp
 int sb_ngx_present_test(char*, int);                         // runtime/render/vk_mesh.cpp
 extern "C" void sb_ngx_present_stats(unsigned long*, unsigned long*, unsigned long*, int*, int*, int*, unsigned long*);  // ngx_present.cpp
@@ -342,6 +346,10 @@ std::string handle_repl(const char* path) {
         static thread_local char rep[16384]; sb_ngx_shapes_dump(rep, sizeof rep); app("%s", rep);
         return std::string(buf, n);
     }
+    if (strncmp(path, "/efbcopies", 10) == 0) {  // rolling EFB-copy log (display vs offscreen routing)
+        static thread_local char rep[8192]; sb_ngx_efbcopies_dump(rep, sizeof rep); app("%s", rep);
+        return std::string(buf, n);
+    }
     if (strncmp(path, "/ngxshape", 9) == 0) {  // N4 live J3DShape native-mesh capture stats
         static thread_local char rep[16384]; sb_ngx_shape_dump(rep, sizeof rep); app("%s", rep);
         return std::string(buf, n);
@@ -353,6 +361,18 @@ std::string handle_repl(const char* path) {
     if (strncmp(path, "/ngxskip", 8) == 0) {   // runtime: SKIP this tev_index (-2 env, -1 off)
         int t = -1; if (const char* p = strstr(path, "ti=")) t = atoi(p + 3);
         sb_ngx_set_skipti(t); app("ngx skip_ti = %d\n", t); return std::string(buf, n);
+    }
+    if (strncmp(path, "/ngxepoch", 9) == 0) {  // isolate an EFB-copy epoch: keep=N (only) or drop=N
+        int keep = -1, drop = -1;
+        if (const char* p = strstr(path, "keep=")) keep = atoi(p + 5);
+        if (const char* p = strstr(path, "drop=")) drop = atoi(p + 5);
+        sb_ngx_set_onlyepoch(keep); sb_ngx_set_dropepoch(drop);
+        app("ngx epoch filter: keep=%d drop=%d\n", keep, drop); return std::string(buf, n);
+    }
+    if (strncmp(path, "/ngxrtfilter", 12) == 0) {  // render-target-aware present (ghost fix): on=0/1
+        int v = 1; if (const char* p = strstr(path, "on=")) v = atoi(p + 3);
+        sb_ngx_set_rtfilter(v); app("ngx rtfilter = %d (drop auxiliary offscreen epochs)\n", v);
+        return std::string(buf, n);
     }
     if (strncmp(path, "/ngxfreeze", 10) == 0) { // FREEZE the published snapshot (deterministic A/B)
         int on = 1; if (const char* p = strstr(path, "on=")) on = atoi(p + 3);

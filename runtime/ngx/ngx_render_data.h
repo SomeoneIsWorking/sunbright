@@ -34,6 +34,8 @@ struct NgxRenderBatch {
     NgxTexBind tex[8];        // bound texture per GX texmap (0..7)
     uint32_t vstart, vcount;  // [vstart, vstart+vcount) into the vertex list
     int32_t  tev_index;       // index into the TEV-state table (-1 = none/default)
+    uint16_t epoch;           // EFB-copy epoch this batch drew under (render-target awareness)
+    uint16_t pad2;
 };
 
 // ── N5 per-material TEV state (read from the guest J3DMaterial's mTevBlock) ─────
@@ -96,3 +98,4 @@ struct NgxTevState {
 const NgxRenderVertex* ngx_snap_verts(int* nverts);
 const NgxRenderBatch*  ngx_snap_batches(int* nbatches);
 const NgxTevState*     ngx_snap_tevstates(int* nstates);
+int                    ngx_snap_display_epoch(void);   // present skips batches with epoch < this

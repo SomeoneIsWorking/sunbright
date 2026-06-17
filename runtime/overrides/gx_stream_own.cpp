@@ -12,6 +12,8 @@
 #include "../overrides.h"
 #include "../gx_stream.h"
 
+extern void ngx_note_efb_copy(bool is_disp, u32 dest, u32 clear);   // ngx_j3d_shape.cpp: epoch tracking
+
 namespace {
 
 extern "C" void func_8035d8f0(CPUState&);   // GXFlush
@@ -23,7 +25,9 @@ SUNBRIGHT_OVERRIDE(ov_gxs_flush, 0x8035d8f0u) {
 }
 
 SUNBRIGHT_OVERRIDE(ov_gxs_copydisp, 0x8035ececu) {
+    const u32 dd = cpu.gpr[3], dc = cpu.gpr[4];   // GXCopyDisp(dest, clear)
     func_8035ecec(cpu);          // guest body: emits the EFB→XFB copy commands
+    ngx_note_efb_copy(/*is_disp=*/true, dd, dc);   // this epoch's passes went to the DISPLAY
     gxs_arm();
     gxs_frame_boundary();
 }

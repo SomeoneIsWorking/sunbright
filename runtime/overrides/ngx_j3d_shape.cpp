@@ -937,6 +937,24 @@ float         g_proj[16] = {0};
 bool          g_have_proj = false;
 unsigned      g_proj_type = 0;     // 0=perspective, >0=orthographic (the live projection class)
 unsigned      g_proj_pass = 0;     // monotone per-frame projection-pass index (reset at publish; /ngxshapes)
+// EFB-copy "epoch" — render-target awareness for the present. The game renders some passes to an
+// OFFSCREEN texture (GXCopyTex) and others to the DISPLAY (GXCopyDisp). ngx currently composites
+// EVERY captured J3D shape into the present regardless of where the game routed it → the file-select
+// "floating Mario ghost" (Mario drawn in BOTH an offscreen pass and the display pass; GX presents
+// only the display one). g_efb_epoch increments at each EFB copy; each shape/batch records the epoch
+// it drew under; g_epoch_tex[buf][e]=true marks epoch e as closed by a GXCopyTex (offscreen). At
+// present, a batch whose epoch is tex-closed is offscreen and must be discarded.
+constexpr int EPOCH_CAP = 64;
+unsigned      g_efb_epoch = 0;
+bool          g_epoch_tex[2][EPOCH_CAP] = {{false}};   // per-frame: epoch closed by GXCopyTex?
+// Per-published-buffer DISPLAY epoch = the highest tex-closed epoch (the main scene's offscreen
+// render). Geometry in lower epochs is auxiliary (reflections/shadows/file-slot thumbnails) that
+// the game samples as a texture, NOT composites directly — ngx must not draw it into the present
+// (the file-select "floating Mario ghost"). Computed at publish, read by the present filter.
+int           g_display_epoch[2] = {0, 0};
+// Copy-event log (per frame, into g_cur buffer) for the /ngxshapes diagnostic: (kind, epoch, pass).
+struct CopyEvt { unsigned char kind; unsigned epoch; unsigned pass; };  // kind: 0=Tex 1=Disp
+std::vector<CopyEvt> g_copyevt[2];
 // Sky-shape (cc==0x0701, the vtx-color gradient) transform latch: the modelview + projection
 // + eye/clip of its FIRST vertex, captured at its draw — to diagnose the mis-projection.
 struct SkyXf { bool have=false; float M[12]={0}; float P[16]={0}; float pos0[3]={0};
@@ -978,6 +996,7 @@ struct ShapeRec {
     float wmin, wmax; unsigned nfront;  // clip-w range + count of w>eps verts
     float tx, ty, tz, det3;             // single-matrix (pnmtx=0) modelview translation + 3x3 det
     unsigned pass; unsigned char projtype;   // projection-pass index this shape drew under + ortho?
+    unsigned epoch;                     // EFB-copy epoch this shape drew under (offscreen vs display)
 };
 std::vector<ShapeRec> g_shaperec[2];
 int                          g_read_front = 0; // latched by ngx_snap_verts for batches
@@ -1259,6 +1278,7 @@ void transform_eye() {
         rec.tx = m[3]; rec.ty = m[7]; rec.tz = m[11];
         rec.det3 = m[0]*(m[5]*m[10]-m[6]*m[9]) - m[1]*(m[4]*m[10]-m[6]*m[8]) + m[2]*(m[4]*m[9]-m[5]*m[8]);
         rec.pass = g_proj_pass; rec.projtype = (unsigned char)g_proj_type;
+        rec.epoch = g_efb_epoch;
         rec.nxmin = rec.nymin = 1e30f; rec.nxmax = rec.nymax = -1e30f;
         rec.wmin = 1e30f; rec.wmax = -1e30f; rec.nfront = 0;
         for (size_t vi = 0; vi < nv; vi++) {
@@ -1414,6 +1434,7 @@ void transform_eye() {
                 if (batches.size() >= BATCH_CAP) break;  // bounded
                 NgxRenderBatch nb{}; memcpy(nb.tex, tb, sizeof tb);
                 nb.vstart = (uint32_t)count; nb.vcount = 0; nb.tev_index = g_cur_tev_index;
+                nb.epoch = (uint16_t)(g_efb_epoch < EPOCH_CAP ? g_efb_epoch : EPOCH_CAP - 1);
                 batches.push_back(nb);
             }
             for (int f = 0; f < ntri; f++) { emit_v(poly[0]); emit_v(poly[f+1]); emit_v(poly[f+2]); }
@@ -1697,6 +1718,49 @@ void ngx_set_projection(const float* m44, unsigned type) {
     g_have_proj = true;
 }
 
+// Called from the GXCopyTex / GXCopyDisp overrides (gx_stream_own.cpp / efb_native.cpp) — both run
+// on the emu/game thread, serialized with shape capture. Close the current EFB epoch: a GXCopyTex
+// routed the just-drawn passes to an OFFSCREEN texture (mark the epoch tex-closed → discard at
+// present); a GXCopyDisp routed them to the DISPLAY. Then advance the epoch so the next batch of
+// passes is tracked separately.
+// Global rolling copy log (NOT per-buffer, NOT reset at publish) — shows the TRUE per-frame
+// copy sequence regardless of where ngx publishes (J2DScreen, mid-frame). Each entry records
+// kind/dest/clear + how many shapes were captured since the previous copy (the epoch's geometry).
+struct CopyLog { unsigned char kind; unsigned char clear; u32 dest; unsigned pass; unsigned long shapes_since; unsigned long frame; };
+constexpr int COPYLOG_CAP = 64;
+CopyLog g_copylog[COPYLOG_CAP];
+std::atomic<unsigned> g_copylog_head{0};
+unsigned long g_shapes_at_last_copy = 0;   // g_calls (anon-ns, defined above) is visible here in-TU
+
+void ngx_note_efb_copy(bool is_disp, u32 dest, u32 clear) {
+    if (g_efb_epoch < EPOCH_CAP) {
+        if (!is_disp) g_epoch_tex[g_cur][g_efb_epoch] = true;
+        if (g_copyevt[g_cur].size() < 256)
+            g_copyevt[g_cur].push_back({(unsigned char)(is_disp ? 1 : 0), g_efb_epoch, g_proj_pass});
+    }
+    // Rolling global log (diagnostic).
+    unsigned h = g_copylog_head.load(std::memory_order_relaxed) % COPYLOG_CAP;
+    g_copylog[h] = { (unsigned char)(is_disp ? 1 : 0), (unsigned char)(clear & 1), dest,
+                     g_proj_pass, g_calls - g_shapes_at_last_copy, g_frame_swaps };
+    g_shapes_at_last_copy = g_calls;
+    g_copylog_head.fetch_add(1, std::memory_order_relaxed);
+    if (g_efb_epoch < EPOCH_CAP - 1) g_efb_epoch++;
+}
+
+// /efbcopies — dump the rolling copy log in order (oldest→newest), grouped by ngx frame.
+int sb_ngx_efbcopies_dump(char* out, int cap) {
+    unsigned head = g_copylog_head.load(std::memory_order_acquire);
+    unsigned n = head < COPYLOG_CAP ? head : COPYLOG_CAP;
+    int w = snprintf(out, cap, "efbcopies: total=%u (kind: DISP=display, tex=offscreen)\n", head);
+    for (unsigned i = 0; i < n && w < cap - 128; i++) {
+        unsigned idx = (head - n + i) % COPYLOG_CAP;
+        const CopyLog& e = g_copylog[idx];
+        w += snprintf(out + w, cap - w, "  f%-5lu pass=%-3u %s dest=%08x clear=%u shapes_in_epoch=%lu\n",
+            e.frame, e.pass, e.kind ? "DISP" : "tex ", e.dest, e.clear, e.shapes_since);
+    }
+    return w;
+}
+
 // Explicit per-frame boundary, called from the J2DScreen::draw tee (scene_render.cpp):
 // the HUD draws ONCE per frame AFTER all 3D drawing, so the accumulation buffer holds
 // a complete 3D frame at that point. Publish it to the front buffer and flip
@@ -1725,11 +1789,20 @@ void ngx_frame_publish() {
         g_snap_count[g_cur] = 0;
         g_batches[g_cur].clear();
         g_shaperec[g_cur].clear();
+        g_copyevt[g_cur].clear();
+        for (int e = 0; e < EPOCH_CAP; e++) g_epoch_tex[g_cur][e] = false;
+        g_efb_epoch = 0;
         g_sky = SkyLatch{}; g_skyxf = SkyXf{}; g_pnmtxdbg = PnmtxDbg{};
         g_clip_in=g_clip_drop=g_clip_cut=g_clip_tiny=0; g_clip_minw=1e30f;
         return;
     }
     if (g_snap_count[g_cur] == 0 && g_batches[g_cur].empty()) return;  // no 3D this frame: keep last
+    // Display epoch = highest tex-closed epoch (the main scene's offscreen render). Lower-epoch
+    // geometry is auxiliary offscreen (reflections/shadows/thumbnails) and must not be presented.
+    // If NOTHING was tex-copied (a scene drawn straight to the EFB), keep everything (epoch 0).
+    int de = 0;
+    for (int e = EPOCH_CAP - 1; e >= 0; e--) if (g_epoch_tex[g_cur][e]) { de = e; break; }
+    g_display_epoch[g_cur] = de;
     g_front.store(g_cur, std::memory_order_release);
     // Auto-freeze-on-shred: this just-published frame contains a skinned NDC spike → latch it
     // (ngx + GX oracle) so /abshot2 captures the actual spike frame for an A/B with the oracle.
@@ -1743,6 +1816,9 @@ void ngx_frame_publish() {
     g_snap_count[g_cur] = 0;
     g_batches[g_cur].clear();
     g_shaperec[g_cur].clear();
+    g_copyevt[g_cur].clear();
+    for (int e = 0; e < EPOCH_CAP; e++) g_epoch_tex[g_cur][e] = false;
+    g_efb_epoch = 0;
     g_proj_pass = 0;
     if (g_sky.have) g_sky_pub = g_sky;   // publish this frame's sky breakdown
     g_sky = SkyLatch{};                  // reset for the next frame
@@ -1790,6 +1866,9 @@ const NgxRenderBatch* ngx_snap_batches(int* nbatches) {
     *nbatches = (int)g_batches[f].size();
     return g_batches[f].empty() ? nullptr : g_batches[f].data();
 }
+// Display epoch of the latched snapshot (read after ngx_snap_verts latches g_read_front). The
+// present skips batches whose epoch < this (auxiliary offscreen renders — the ghost class).
+int ngx_snap_display_epoch() { return g_display_epoch[g_read_front]; }
 const NgxTevState* ngx_snap_tevstates(int* nstates) {
     *nstates = (int)g_tevstates.size();
     return g_tevstates.empty() ? nullptr : g_tevstates.data();
@@ -2278,6 +2357,19 @@ int sb_ngx_shapes_dump(char* out, int cap) {
     const int f = g_front.load(std::memory_order_acquire);
     const std::vector<ShapeRec>& rs = g_shaperec[f];
     int n = snprintf(out, cap, "ngxshapes: front=%d shapes=%zu (ndc y: -1=top +1=bottom)\n", f, rs.size());
+    // EFB-copy epoch map: which epochs went offscreen (GXCopyTex) vs display (GXCopyDisp).
+    n += snprintf(out + n, cap - n, "  copy-events (epoch routing):");
+    for (const CopyEvt& e : g_copyevt[f])
+        n += snprintf(out + n, cap - n, " [e%u@pass%u=%s]", e.epoch, e.pass, e.kind ? "DISP" : "tex");
+    n += snprintf(out + n, cap - n, "\n  tex-closed epochs:");
+    for (int e = 0; e < EPOCH_CAP; e++) if (g_epoch_tex[f][e]) n += snprintf(out + n, cap - n, " %d", e);
+    // Per-epoch shape + vertex histogram over the BATCHES (the geometry the present actually draws) —
+    // a race-free read of the frozen buffer: shows how the scene distributes across EFB-copy epochs.
+    unsigned long ev[EPOCH_CAP] = {0}; unsigned ec[EPOCH_CAP] = {0};
+    for (const NgxRenderBatch& b : g_batches[f]) { unsigned e = b.epoch < EPOCH_CAP ? b.epoch : EPOCH_CAP-1; ev[e]+=b.vcount; ec[e]++; }
+    n += snprintf(out + n, cap - n, "\n  batch verts/epoch:");
+    for (int e = 0; e < EPOCH_CAP; e++) if (ec[e]) n += snprintf(out + n, cap - n, " e%d=%luv/%ub%s", e, ev[e], ec[e], g_epoch_tex[f][e] ? "(tex)" : "(disp)");
+    n += snprintf(out + n, cap - n, "\n");
     // index sort by nymin ascending (topmost first)
     std::vector<int> idx(rs.size());
     for (size_t i = 0; i < rs.size(); i++) idx[i] = (int)i;
@@ -2287,7 +2379,8 @@ int sb_ngx_shapes_dump(char* out, int cap) {
         if (n >= cap - 256 || shown >= 60) break;
         const ShapeRec& r = rs[i];
         n += snprintf(out + n, cap - n,
-            "  pass=%u%s sh=%08x nv=%-5u cc=%04x tex0=%08x pnmtx=%u sidx=%u  ndc x[%6.2f,%6.2f] y[%6.2f,%6.2f] w[%.1f,%.1f] front=%u  t=(%.0f,%.0f,%.0f) det=%.2f\n",
+            "  e%u%s pass=%u%s sh=%08x nv=%-5u cc=%04x tex0=%08x pnmtx=%u sidx=%u  ndc x[%6.2f,%6.2f] y[%6.2f,%6.2f] w[%.1f,%.1f] front=%u  t=(%.0f,%.0f,%.0f) det=%.2f\n",
+            r.epoch, g_epoch_tex[f][r.epoch < EPOCH_CAP ? r.epoch : 0] ? "X" : "=",
             r.pass, r.projtype ? "o" : "p", r.sh, r.nv, r.cc, r.tex0, r.pnmtx, r.single_idx,
             r.nxmin, r.nxmax, r.nymin, r.nymax, r.wmin, r.wmax, r.nfront, r.tx, r.ty, r.tz, r.det3);
         shown++;

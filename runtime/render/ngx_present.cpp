@@ -29,6 +29,21 @@ extern "C" int sb_ngx_tevdbg();
 int g_ngx_only_ti = -2, g_ngx_skip_ti = -2;
 extern "C" int sb_ngx_set_onlyti(int t) { g_ngx_only_ti = t; return t; }
 extern "C" int sb_ngx_set_skipti(int t) { g_ngx_skip_ti = t; return t; }
+// Runtime EFB-copy epoch isolation (/ngxepoch): -1 = all (default); keep>=0 = only that epoch;
+// drop>=0 = render everything EXCEPT that epoch. Diagnostic for the file-select multi-pass ghost.
+int g_ngx_only_epoch = -1, g_ngx_drop_epoch = -1;
+extern "C" int sb_ngx_set_onlyepoch(int e) { g_ngx_only_epoch = e; return e; }
+extern "C" int sb_ngx_set_dropepoch(int e) { g_ngx_drop_epoch = e; return e; }
+// Render-target-aware present (the FIX): drop batches from auxiliary offscreen EFB-copy epochs
+// (reflections/shadows/file-slot thumbnails) below the display epoch — the file-select ghost-Mario
+// fix. Default ON; SUNBRIGHT_NGX_RTFILTER=0 disables for A/B. /ngxrtfilter?on=N toggles live.
+int g_ngx_rtfilter = -1;
+extern "C" int sb_ngx_set_rtfilter(int v) { g_ngx_rtfilter = v; return v; }
+static bool rtfilter_on() {
+    if (g_ngx_rtfilter >= 0) return g_ngx_rtfilter != 0;        // runtime override
+    const char* e = getenv("SUNBRIGHT_NGX_RTFILTER");
+    return !(e && e[0] == '0' && e[1] == '\0');                  // default ON; only "0" disables
+}
 // Runtime blend override (/ngxnoblend): -1 = use per-material blend (default), 0 = force
 // every material OPAQUE (blend off), 1 = leave blend on but force-disable depth-test is NOT
 // here. Lets me A/B "is the dark water the annihilating dst=SRCCLR blend?" on a FROZEN frame
@@ -612,6 +627,8 @@ AbstractTexture* PresentRenderer::render(int w, int h) {
     std::vector<NgxRenderVertex> verts(sv, sv + nv);
     std::vector<NgxRenderBatch> batches(sb, sb + nb);
     std::vector<NgxTevState> tevstates(stv, stv + (ntev > 0 ? ntev : 0));
+    // Render-target-aware filter: present only the display epoch (main scene) onward.
+    const int display_epoch = rtfilter_on() ? ngx_snap_display_epoch() : 0;
 
     if (w < 1 || h < 1) return nullptr;
     // Render-debug mode changed (via /ngxdbg)? Drop cached pipelines so shaders regenerate.
@@ -689,6 +706,10 @@ AbstractTexture* PresentRenderer::render(int w, int h) {
         static const int env_skip = getenv("SUNBRIGHT_NGX_SKIPTI") ? atoi(getenv("SUNBRIGHT_NGX_SKIPTI")) : -1;
         const int skip_ti = g_ngx_skip_ti != -2 ? g_ngx_skip_ti : env_skip;   // runtime /ngxskip overrides env
         if (skip_ti >= 0 && ti == skip_ti) continue;
+        // EFB-copy epoch isolation (/ngxepoch) — render only / all-but a given offscreen epoch.
+        if (g_ngx_only_epoch >= 0 && (int)batches[b].epoch != g_ngx_only_epoch) continue;
+        if (g_ngx_drop_epoch >= 0 && (int)batches[b].epoch == g_ngx_drop_epoch) continue;
+        if ((int)batches[b].epoch < display_epoch) continue;   // auxiliary offscreen render — not displayed
         VkPipeline pipe = pipeline_for(st);
         if (pipe == VK_NULL_HANDLE) pipe = pipeline_for(mod);
         if (pipe == VK_NULL_HANDLE) continue;
