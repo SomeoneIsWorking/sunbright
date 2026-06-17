@@ -247,6 +247,24 @@ Runtime escape hatches that take precedence over generated code (no regen needed
 Registered at startup in `runtime/overrides/sms_overrides.cpp`. Consulted by both
 `recomp_lookup()` and `SunbrightBridge`, so they apply to JIT-entry, `bl`, and indirect branches.
 
+## Native renderer (ngx) — GROUND RULES (read FIRST, every session)
+These are standing user directives. Stop re-deriving them:
+- **`./run.sh` shows the NATIVE ngx renderer by default** (`SUNBRIGHT_NGX_PRESENT=1`). So any
+  headed visual bug the user screenshots IS an **ngx bug**, not Dolphin GX. The Dolphin-GX baseline
+  is `SUNBRIGHT_NGX_PRESENT=0 ./run.sh` (use it only as the oracle, never as "the output").
+- **It is a NATIVE Super Mario Sunshine renderer, NOT GameCube-rendering emulation.** Never source
+  render data from Dolphin's EMULATED state (`xfmem`, `g_main_cp_state`, GX register hooks) — those
+  are async-lagged AND the wrong layer. Read the game's **J3D object model straight from guest RAM**.
+  Proven pattern: per-vertex array bases come from `j3dSys` — POS=`J3DSYS+0x10C` (unk10C),
+  NRM=`+0x110` (unk110), **CLR0=`+0x114` (unk114)** (the magenta bug was reading CLR0 from
+  `g_main_cp_state` instead — commit 70c5de3). When you need data, RE the J3D path in `reference/sms`
+  and read the object, don't tap Dolphin. Do MORE RE if needed.
+- **FIDELITY WORK ORDER (user directive): make the TITLE screen + FILE-SELECT render correctly
+  BEFORE Delfino gameplay.** Do NOT jump to Delfino/in-game scenes while title/file-select are still
+  wrong. Reproduce title/file-select headless with `SUNBRIGHT_AUTOSTART=1` (+ `tools/gpshot --fs`).
+- OPEN as of 2026-06-17: the **title logo ("SUPER MARIO SUNSHINE") is SHREDDED** — a multi-matrix
+  (PNMTXIDX/skinned) shape torn apart; the Mario-skinning clip fix (eb1e155) did not cover it.
+
 ## Debugging the native renderer — TDD, NOT eyeballing (read this before touching ngx)
 The renderer was built straight to "draw the whole scene and look at it." That has no
 falsifiable test, so fidelity bugs (the projection "wash", dropped ortho) produced a thrash
