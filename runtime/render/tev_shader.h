@@ -21,7 +21,22 @@
 //     (PE block not captured yet), no lighting (raster ≈ vertex color0).
 
 #include "../ngx/ngx_render_data.h"
+#include <cstdint>
 #include <string>
 
 // Build the GLSL fragment-shader source for this material's TEV state.
 std::string sb_tev_gen_fragment(const NgxTevState& st);
+
+// GX TEV swap table → 4-char GLSL swizzle over an rgba vector. A swap-table id
+// (J3DTevSwapModeTable::mIdx) packs four 2-bit channel selectors: r=(id>>6)&3,
+// g=(id>>4)&3, b=(id>>2)&3, a=id&3, with selector 0=R 1=G 2=B 3=A. Each stage
+// applies one table to its raster colour (picked by rswap) and one to its texture
+// colour (picked by tswap) BEFORE the combiner reads them (GX/Dolphin TevStageCombiner
+// swap). Returns e.g. "rgba" (identity id 0x1B), "ggga" (id 0x57). Pure + unit-tested
+// (render_test test_tev_swizzle); inline so the test and the shader generator share
+// the one shipping definition with no link dependency on the GLSL/Vulkan layer.
+inline std::string ngx_tev_swizzle(uint8_t id) {
+    static const char ch[4] = { 'r', 'g', 'b', 'a' };
+    const char s[5] = { ch[(id >> 6) & 3], ch[(id >> 4) & 3], ch[(id >> 2) & 3], ch[id & 3], 0 };
+    return std::string(s);
+}

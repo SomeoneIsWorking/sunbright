@@ -556,13 +556,14 @@ struct TevLayout {
     u32 kcolor_off;     // mTevKColor[0] (0 ⇒ none)
     u32 kcsel_off;      // mTevKColorSel[0] (0 ⇒ none)
     u32 kasel_off;      // mTevKAlphaSel[0] (0 ⇒ none)
+    u32 swaptable_off;  // mTevSwapModeTable[0] (0 ⇒ none ⇒ identity, TVB1)
 };
 inline bool tev_layout(u32 vt, TevLayout& L) {
     switch (vt) {
-    case VT_TVB1:  L = {0,      0x06, 0x0A, 0,     0,     0,     0    }; return true;
-    case VT_TVB2:  L = {0x30,   0x08, 0x31, 0x10,  0x41,  0x51,  0x53 }; return true;
-    case VT_TVB4:  L = {0x1C,   0x0C, 0x1D, 0x3E,  0x5E,  0x6E,  0x72 }; return true;
-    case VT_TVB16: L = {0x54,   0x14, 0x55, 0xD6,  0xF6,  0x106, 0x116}; return true;
+    case VT_TVB1:  L = {0,      0x06, 0x0A, 0,     0,     0,     0,     0    }; return true;
+    case VT_TVB2:  L = {0x30,   0x08, 0x31, 0x10,  0x41,  0x51,  0x53,  0x55 }; return true;
+    case VT_TVB4:  L = {0x1C,   0x0C, 0x1D, 0x3E,  0x5E,  0x6E,  0x72,  0x76 }; return true;
+    case VT_TVB16: L = {0x54,   0x14, 0x55, 0xD6,  0xF6,  0x106, 0x116, 0x126}; return true;
     default: return false;
     }
 }
@@ -925,6 +926,11 @@ int capture_material() {
     } else {
         std::memset(st.kcolor, 0xFF, sizeof st.kcolor);
     }
+    // 4 TEV swap tables (J3DTevSwapModeTable::mIdx, 1 byte each) — absent on TVB1 (identity).
+    if (L.swaptable_off)
+        for (int t = 0; t < 4; t++) st.swap_table[t] = rb8(L.swaptable_off + t);
+    else
+        st.swap_table[0] = st.swap_table[1] = st.swap_table[2] = st.swap_table[3] = 0x1B;  // identity
 
     capture_pe(material, st);   // N7: PE block (alpha test → shader, blend/zmode → pipeline)
     st.pe.cull = g_cur_chan.cullMode;   // backface culling (color block) → pipeline cull state
@@ -2251,8 +2257,14 @@ int sb_ngx_pixel_batch(float px, float py, char* out, int cap) {
                 s.pe.alpha_test, s.pe.comp0, s.pe.ref0, s.pe.aop, s.pe.comp1, s.pe.ref1,
                 s.pe.z_test, s.pe.z_func, s.pe.z_write, s.pe.cull);
             for (int st = 0; st < s.num_stages && st < 16; st++)
-                n += snprintf(out + n, cap - n, "  s%d ce=%06x ae=%06x map=%u coord=%u chan=%u kc=%02x ka=%02x\n",
-                    st, s.stage[st].color_env, s.stage[st].alpha_env, s.stage[st].texmap, s.stage[st].texcoord, s.stage[st].color_chan, s.stage[st].kcsel, s.stage[st].kasel);
+                n += snprintf(out + n, cap - n, "  s%d ce=%06x ae=%06x map=%u coord=%u chan=%u kc=%02x ka=%02x rswap=%u tswap=%u\n",
+                    st, s.stage[st].color_env, s.stage[st].alpha_env, s.stage[st].texmap, s.stage[st].texcoord, s.stage[st].color_chan, s.stage[st].kcsel, s.stage[st].kasel,
+                    s.stage[st].alpha_env & 3, (s.stage[st].alpha_env >> 2) & 3);
+            // 4 swap tables decoded to RGBA channel selectors (0=R 1=G 2=B 3=A); 0,1,2,3 = identity.
+            for (int t = 0; t < 4; t++) { const u8 ix = s.swap_table[t];
+                static const char ch[4] = {'R','G','B','A'};
+                n += snprintf(out + n, cap - n, "  swaptbl[%d] id=%02x -> %c%c%c%c%s\n", t, ix,
+                    ch[(ix>>6)&3], ch[(ix>>4)&3], ch[(ix>>2)&3], ch[ix&3], ix==0x1B?" (identity)":" *NON-IDENTITY*"); }
             // decode each bound texmap + report the batch's per-texcoord UV bbox
             const NgxRenderBatch* bp = nullptr;
             for (const auto& BB : bats) if (BB.tev_index == want_ti) { bp = &BB; break; }

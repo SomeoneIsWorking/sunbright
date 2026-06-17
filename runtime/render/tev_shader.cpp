@@ -84,14 +84,22 @@ void write_stage(Buf& o, const NgxTevState& st, int n) {
     const Comb ac = decode_ac(s.alpha_env);
     o.w("\n  // stage %d\n", n);
 
+    // GX TEV swap (TevStageCombiner): the raster and texture colours are channel-
+    // swizzled by the stage's selected swap tables BEFORE the combiner reads them.
+    // rswap (alpha_env bits 0-1) picks the raster table, tswap (bits 2-3) the texture
+    // table; default id 0x1B = ".rgba" (no-op). SMS uses e.g. id 0x57 = ".ggga" on the
+    // Delfino building material to feed a green-luminance raster into a later stage.
+    const std::string rsw = ngx_tev_swizzle(st.swap_table[s.alpha_env & 3]);
+    const std::string tsw = ngx_tev_swizzle(st.swap_table[(s.alpha_env >> 2) & 3]);
+
     // Raster color (channel). GXChannelID: COLOR0=0, COLOR1=1, COLOR0A0=4, COLOR1A1=5,
     // ZERO=6, COLOR_NULL=0xff. col0 carries the LIT raster colour (N6 native lighting
     // computed per vertex in the producer); col1 ≈ col0; null/zero → 0.
     const bool ras_used = cc.a==10||cc.a==11||cc.b==10||cc.b==11||cc.c==10||cc.c==11||cc.d==10||cc.d==11
                           || ac.a==5||ac.b==5||ac.c==5||ac.d==5;
     if (ras_used) {
-        if (s.color_chan == 0 || s.color_chan == 4)       o.w("  rastemp = col0;\n");
-        else if (s.color_chan == 1 || s.color_chan == 5)  o.w("  rastemp = col1;\n");
+        if (s.color_chan == 0 || s.color_chan == 4)       o.w("  rastemp = col0.%s;\n", rsw.c_str());
+        else if (s.color_chan == 1 || s.color_chan == 5)  o.w("  rastemp = col1.%s;\n", rsw.c_str());
         else                                              o.w("  rastemp = ivec4(0,0,0,0);\n");
     }
 
@@ -100,8 +108,8 @@ void write_stage(Buf& o, const NgxTevState& st, int n) {
                           || ac.a==4||ac.b==4||ac.c==4||ac.d==4;
     if (tex_used) {
         const unsigned tc = s.texcoord < 8 ? s.texcoord : 0;   // GX texcoord (texgen done on CPU)
-        if (s.texmap < 8) o.w("  textemp = ivec4(round(texture(tex[%u], vUV[%u]) * 255.0));\n", s.texmap, tc);
-        else              o.w("  textemp = ivec4(255,255,255,255);\n");
+        if (s.texmap < 8) o.w("  textemp = ivec4(round(texture(tex[%u], vUV[%u]) * 255.0)).%s;\n", s.texmap, tc, tsw.c_str());
+        else              o.w("  textemp = ivec4(255,255,255,255).%s;\n", tsw.c_str());
     }
 
     // Konst.

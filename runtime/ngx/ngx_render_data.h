@@ -81,6 +81,12 @@ struct NgxTevState {
     NgxTevStage stage[16];
     int16_t  tev_color[4][4];  // CPREV/C0/C1/C2 register init values, S10 RGBA (-1024..1023)
     uint8_t  kcolor[4][4];     // KONST0..3 RGBA, 0..255
+    // The 4 GX TEV swap tables (mTevSwapModeTable[4], J3DTevSwapModeTable::mIdx). Each byte
+    // encodes a 4-channel swizzle: r=(idx>>6)&3, g=(idx>>4)&3, b=(idx>>2)&3, a=idx&3, with
+    // selector 0=R 1=G 2=B 3=A. Per stage, rswap (alpha_env bits 0-1) picks the table applied
+    // to the raster colour, tswap (bits 2-3) the table applied to the texture colour. Default
+    // table id = 0x1B (identity). TVB1 has no tables → all identity.
+    uint8_t  swap_table[4];
     NgxPEState pe;             // N7 PE block (alpha test → shader, blend/zmode → pipeline)
     uint64_t key;              // FNV hash of the above (dedupe / shader-cache key)
 };

@@ -18,6 +18,7 @@
 #include "ngx_project.h"
 #include "ngx_clip.h"
 #include "ngx_light.h"
+#include "tev_shader.h"
 
 // ── Units under test (self-test entry points defined in their own .cpp) ──────
 extern int sb_ngx_vertex_selftest(char* out, int cap);   // runtime/ngx/ngx_vertex.cpp
@@ -179,6 +180,29 @@ int test_lighting(char* rep, int cap) {
     return fails;
 }
 
+// ── TEV swap-table unit ──────────────────────────────────────────────────────
+// GX TevStageCombiner channel swap: each swap-table id packs four 2-bit selectors
+// (r=(id>>6)&3, g=(id>>4)&3, b=(id>>2)&3, a=id&3; 0=R 1=G 2=B 3=A) → a GLSL swizzle.
+// Spec-computed truth, hand-decoded. The id 0x57 case is the LIVE Delfino building
+// material (rswap=1 → table id 0x57 = ".ggga"), which ngx previously ignored —
+// feeding the full-colour raster instead of the green-broadcast term = the building
+// colour wash. Identity id 0x1B must stay ".rgba" (no-op) so all-identity materials
+// don't regress.
+int test_tev_swizzle(char* rep, int cap) {
+    int pos = 0, fails = 0;
+    auto chk = [&](uint8_t id, const char* want) {
+        std::string got = ngx_tev_swizzle(id);
+        if (got != want) { fails++; if (pos < cap) pos += snprintf(rep + pos, cap - pos,
+            "FAIL swizzle id=0x%02x got=\"%s\" want=\"%s\"\n", id, got.c_str(), want); } };
+    chk(0x1B, "rgba");   // 0b00_01_10_11 → identity (j3dDefaultTevSwapTableID)
+    chk(0x57, "ggga");   // 0b01_01_01_11 → green broadcast, alpha kept (the building case)
+    chk(0x00, "rrrr");   // 0b00_00_00_00 → red broadcast
+    chk(0xFF, "aaaa");   // 0b11_11_11_11 → alpha broadcast
+    chk(0xE4, "abgr");   // 0b11_10_01_00 → reverse (r=A,g=B,b=G,a=R)
+    chk(0x2D, "rbag");   // 0b00_10_11_01 → r=R,g=B,b=A,a=G
+    return fails;
+}
+
 struct Unit { const char* name; int (*run)(char* rep, int cap); };
 
 const Unit kUnits[] = {
@@ -186,6 +210,7 @@ const Unit kUnits[] = {
     {"projection",    test_projection},
     {"near_clip",     test_clip},
     {"lighting",      test_lighting},
+    {"tev_swizzle",   test_tev_swizzle},
 };
 
 }  // namespace
