@@ -153,6 +153,7 @@ extern "C" int  interp_verify_report(char*, int);
 extern "C" int  sb_capture_frames;
 extern "C" volatile int g_sb_ngx_present;   // /abshot toggles the present source (Present.cpp)
 extern "C" volatile int g_sb_ab_capture;    // /abshot2 arms same-present dual capture (Present.cpp)
+extern "C" unsigned long sb_ngx_front_frame();  // /abshot2 liveness: published ngx snapshot frame id
 extern "C" int sb_ngx_set_dbg(int);         // /ngxdbg sets the native renderer debug mode
 extern "C" void sb_ngx_set_nolight(int);    // /ngxdbg?nolight= toggles native lighting (capture)
 extern "C" void sb_ngx_set_freeze(int);     // /ngxfreeze latches the published snapshot
@@ -637,8 +638,12 @@ std::string handle_repl(const char* path) {
                 stat("scratch/screenshots/ab2.ngx.ppm", &st2) == 0 && st2.st_size > 0) { ok = true; break; }
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
-        app("abshot2 %s: gx=%lld ngx=%lld bytes\n", ok ? "saved" : "TIMEOUT",
-            (long long)st1.st_size, (long long)st2.st_size);
+        // Self-certify: report the published ngx snapshot's frame id. Both PPMs come from ONE
+        // Present.cpp ProcessFrameDumping call (atomic same present); the GX XFB and the ngx
+        // snapshot are the same frame in steady state. If two successive /abshot2 calls show the
+        // SAME ngx_frame, the snapshot is stale (a no-3D frame kept the last buffer) — distrust it.
+        app("abshot2 %s: gx=%lld ngx=%lld bytes  ngx_frame=%lu  (single core, untainted GX oracle, same present)\n",
+            ok ? "saved" : "TIMEOUT", (long long)st1.st_size, (long long)st2.st_size, sb_ngx_front_frame());
         return std::string(buf, n);
     }
     if (strncmp(path, "/screenshot", 11) == 0) {

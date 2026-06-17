@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# gpshot — robust one-shot ZERO-DRIFT A/B capture of the native renderer (ngx) vs the
+# Dolphin-GX oracle, from the IDENTICAL present (/abshot2). Built to survive the Claude
+# sandboxed-Bash constraints that broke `tools/gp`:
+#   * the game binary must run in the FOREGROUND of the call (launching it with `&`
+#     aborts the call); the capturer runs in the background subshell instead.
+#   * NEVER `pkill -f "build/sunbright"` — that substring also matches the driving shell
+#     and kills the whole call. Kill ONLY by exact process name: `pkill -x sunbright`.
+#   * all probe curls + the game launch need the Bash sandbox DISABLED (network + GPU);
+#     run this script with dangerouslyDisableSandbox.
+#
+# Usage:
+#   tools/gpshot [PROBE_PATH ...]      # fastboot Delfino, apply each PROBE_PATH (a probe
+#                                        GET, e.g. '/ngxskip?ti=5') AFTER the scene is ready
+#                                        and BEFORE the freeze+abshot2, then capture + diff.
+# Examples:
+#   tools/gpshot                       # plain A/B
+#   tools/gpshot '/ngxonly?ti=11'      # isolate one tev_index
+#   tools/gpshot '/ngxnoblend?on=0'    # force opaque before capture
+# Output: scratch/screenshots/ab2.{gx,ngx}.png  + per-region delta number.
+set -uo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BIN="$HERE/build/sunbright"; PORT=17654; SHOTS="$HERE/scratch/screenshots"
+[ -f "$HERE/.env" ] && { set -a; . "$HERE/.env"; set +a; }
+ROM="${SUNBRIGHT_ROM:-$HERE/rom.rvz}"
+[ -x "$BIN" ] || { echo "no binary: $BIN"; exit 1; }
+[ -f "$ROM" ] || { echo "no ROM: $ROM"; exit 1; }
+mkdir -p "$SHOTS" "$HERE/scratch/logs"
+
+# Scene mode: default FASTBOOT -> Delfino gameplay. `--fs` (first arg) = AUTOSTART -> the
+# file-select screen (title->file select; the shredded skinned-Mario case). File-select is
+# stable around frame_swaps ~500, so we wait for a higher threshold there.
+MODE=fastboot; THRESH=60
+if [ "${1:-}" = "--fs" ]; then MODE=fs; THRESH=480; shift; fi
+PRE=("$@")   # probe paths to fire before capture
+
+pkill -9 -x sunbright 2>/dev/null; sleep 1
+rm -f "$SHOTS/ab2.gx.ppm" "$SHOTS/ab2.ngx.ppm"
+
+(  # ---- background capturer ----
+  for i in $(seq 1 60); do
+    sleep 3
+    fs=$(curl -s --max-time 3 "http://127.0.0.1:$PORT/ngxshape" 2>/dev/null | grep -o 'frame_swaps=[0-9]*' | head -1)
+    sw=${fs#frame_swaps=}
+    [ -n "$sw" ] && [ "$sw" -ge "$THRESH" ] 2>/dev/null && { echo "CAP ready t=$((i*3))s $fs"; break; }
+    echo "CAP t=$((i*3))s swaps=[$fs]"
+  done
+  for p in "${PRE[@]}"; do echo "CAP pre $p: $(curl -s --max-time 5 "http://127.0.0.1:$PORT$p")"; done
+  echo "CAP freeze: $(curl -s --max-time 5 "http://127.0.0.1:$PORT/ngxfreeze?on=1")"
+  echo "CAP abshot2: $(curl -s --max-time 8 "http://127.0.0.1:$PORT/abshot2")"
+  sleep 1; pkill -9 -x sunbright
+) >"$HERE/scratch/logs/cap.log" 2>&1 &
+
+[ "$MODE" = fs ] && BOOTENV="SUNBRIGHT_AUTOSTART=1" || BOOTENV="SUNBRIGHT_FASTBOOT=1"
+timeout 220 env SUNBRIGHT_HEADLESS=1 SUNBRIGHT_PROBE=1 SUNBRIGHT_PROBE_PORT=$PORT \
+  SUNBRIGHT_NGX_SHAPE=1 SUNBRIGHT_NGX_PRESENT=1 $BOOTENV \
+  "$BIN" "$ROM" >"$HERE/scratch/logs/run.log" 2>&1 </dev/null
+echo "[game rc=$?]"
+cat "$HERE/scratch/logs/cap.log"
+if [ -f "$SHOTS/ab2.gx.ppm" ] && [ -f "$SHOTS/ab2.ngx.ppm" ]; then
+  magick "$SHOTS/ab2.gx.ppm" "$SHOTS/ab2.gx.png" 2>/dev/null
+  magick "$SHOTS/ab2.ngx.ppm" "$SHOTS/ab2.ngx.png" 2>/dev/null
+  python3 "$HERE/tools/render/ab_diff.py" "$SHOTS/ab2.gx.ppm" "$SHOTS/ab2.ngx.ppm" 2>&1 | head -8
+  echo "-> $SHOTS/ab2.gx.png  $SHOTS/ab2.ngx.png"
+else
+  echo "NO CAPTURE — see scratch/logs/run.log"
+fi

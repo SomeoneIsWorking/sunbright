@@ -857,6 +857,7 @@ int                          g_cur = 0;       // accumulation buffer (game threa
 std::atomic<int>             g_front{0};       // published buffer (present reads)
 int                          g_read_front = 0; // latched by ngx_snap_verts for batches
 unsigned long                g_frame_swaps = 0;
+std::atomic<unsigned long>   g_ngx_front_frame{0};   // frame id of the published snapshot (abshot2 liveness)
 
 // Reusable scratch (single emu/render thread serialized by nthr).
 std::vector<NgxVertex> g_verts;
@@ -1352,7 +1353,13 @@ void ngx_frame_publish() {
     g_pnmtxdbg = PnmtxDbg{};
     g_clip_in=g_clip_drop=g_clip_cut=g_clip_tiny=0; g_clip_minw=1e30f;   // per-frame near-clip stats
     g_frame_swaps++;
+    g_ngx_front_frame.store(g_frame_swaps, std::memory_order_release);   // stamp the published snapshot
 }
+
+// Frame-id of the currently PUBLISHED ngx snapshot (the one the present + /abshot2 render from).
+// Lets /abshot2 self-certify same-state: the ngx side renders this frame; a stale snapshot (no 3D
+// that frame → "keep last") shows as a frame id that does NOT advance between live captures.
+extern "C" unsigned long sb_ngx_front_frame() { return g_ngx_front_frame.load(std::memory_order_acquire); }
 
 // Best-effort snapshot accessors for the native Vulkan mesh render (copy promptly
 // — the emu thread keeps writing; a torn read at worst yields a stray triangle).
