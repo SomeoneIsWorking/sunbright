@@ -197,6 +197,13 @@ def scan_lockstep(port, shots, top):
     get(port, "/ngxdrawlimit?n=-1"); time.sleep(0.4)
     txt = get(port, "/ngxdrawlimit?n=-1")
     m = re.search(r"(\d+) shapes", txt); total = int(m[1]) if m else 0
+    # shape# -> material ti map (for annotating divergences)
+    shti = {}
+    for ln in get(port, "/ngxshapeti").splitlines():
+        mm = re.search(r"#(\d+)\.\.#(\d+) ti=(-?\d+)", ln)
+        if mm:
+            for s in range(int(mm[1]), int(mm[2])+1): shti[s] = int(mm[3])
+    def tiof(s): return shti.get(s, -1)
     print(f"[divscan lockstep] per-frame shapes={total}")
     if total <= 0:
         print("  no shapes reported; is a 3D scene up?"); return
@@ -212,7 +219,8 @@ def scan_lockstep(port, shots, top):
         print(f"  N={N:3d} delta={deltas[N]:6.2f}{jump}")
         prev = N
     get(port, "/ngxdrawlimit?n=-1")
-    # the shape that diverges first = first N with a big positive jump from N-1
+    # the shape that diverges first = first N with a big positive jump that DOESN'T recover
+    # (a transient that the next opaque shape overdraws back to ~0 is not the culprit).
     print("\n=== LOCKSTEP: per-shape divergence (delta jump when shape N is added to BOTH engines) ===")
     rows = []
     ks = sorted(deltas)
@@ -221,22 +229,25 @@ def scan_lockstep(port, shots, top):
         d = deltas[N] - deltas[p]
         gd = grids[N] - grids[p]
         rr, cc = np.unravel_index(np.argmax(gd), gd.shape)
-        rows.append((d, N, rr, cc, gd[rr, cc]))
-    first = next((r for r in rows if r[0] >= 3.0), None)
-    for d, N, rr, cc, gv in rows:
-        flag = "  <== FIRST DIVERGENCE" if first and N == first[1] else ""
+        # sustained = the delta stays elevated through the rest of the walk (min of remaining >= here-ish)
+        rest_min = min((deltas[k] for k in ks if k >= N), default=deltas[N])
+        sustained = (rest_min >= deltas[p] + 0.5 * d) and d >= 3.0
+        rows.append((d, N, rr, cc, gd[rr, cc], sustained))
+    first = next((r for r in rows if r[5]), None)
+    for d, N, rr, cc, gv, sus in rows:
+        flag = "  <== FIRST SUSTAINED DIVERGENCE" if first and N == first[1] else ("  (sustained)" if sus else "")
         if abs(d) >= 1.0 or flag:
-            print(f"  shape #{N-1:3d} -> +{d:6.2f} delta  worst region r{rr}c{cc} (+{gv:.1f}){flag}")
+            print(f"  shape #{N-1:3d} (ti={tiof(N-1)}) -> +{d:6.2f} delta  worst region r{rr}c{cc} (+{gv:.1f}){flag}")
     if first:
-        d, N, rr, cc, gv = first
-        print(f"\n  -> SHAPE #{N-1} is the first to diverge (+{d:.1f} delta, region r{rr}c{cc}).")
-        print(f"     It is the {N}th J3DShape drawn. Re-run with the scene frozen + /ngxdrawlimit?n={N}")
-        print(f"     vs n={N-1} and screenshot to SEE it; map to material via /gxstate at that draw.")
+        d, N, rr, cc, gv, sus = first
+        print(f"\n  -> FIRST SUSTAINED DIVERGENCE: shape #{N-1} = material ti={tiof(N-1)} "
+              f"(+{d:.1f} delta, region r{rr}c{cc}, never recovers).")
+        print(f"     WHY: curl /gxstate?ti={tiof(N-1)}   SEE: freeze + /ngxdrawlimit?n={N} vs n={N-1}, screenshot both.")
     else:
-        print("  no single shape jumps the delta past threshold (divergence is distributed)")
+        print("  no single shape sustains a delta jump past threshold (divergence is distributed)")
     print("\n  top jumps:")
-    for d, N, rr, cc, gv in sorted(rows, key=lambda r:-r[0])[:top]:
-        print(f"   shape #{N-1} +{d:.2f} r{rr}c{cc}")
+    for d, N, rr, cc, gv, sus in sorted(rows, key=lambda r:-r[0])[:top]:
+        print(f"   shape #{N-1} (ti={tiof(N-1)}) +{d:.2f} r{rr}c{cc}{'  sustained' if sus else ''}")
 
 def main():
     import numpy as np

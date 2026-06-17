@@ -92,6 +92,7 @@ extern "C" int sb_ngx_set_prefix(int);                       // runtime/render/n
 extern "C" void sb_ngx_set_draw_limit(int);                  // runtime/overrides/ngx_j3d_shape.cpp (/ngxdrawlimit?n=)
 extern "C" int  sb_ngx_get_draw_limit();                     // runtime/overrides/ngx_j3d_shape.cpp
 extern "C" unsigned sb_ngx_frame_shape_count();              // runtime/overrides/ngx_j3d_shape.cpp
+extern "C" int  sb_ngx_shapeti_dump(char*, int);            // runtime/overrides/ngx_j3d_shape.cpp (/ngxshapeti)
 int sb_ngx_efbcopies_dump(char*, int);                       // runtime/overrides/ngx_j3d_shape.cpp (/efbcopies)
 int sb_ngx_pixel_batch(float, float, char*, int);            // runtime/overrides/ngx_j3d_shape.cpp
 int sb_ngx_pixel_blend(float, float, char*, int);            // runtime/overrides/ngx_j3d_shape.cpp (/pixblend)
@@ -363,6 +364,10 @@ std::string handle_repl(const char* path) {
     }
     if (strncmp(path, "/efbcopies", 10) == 0) {  // rolling EFB-copy log (display vs offscreen routing)
         static thread_local char rep[8192]; sb_ngx_efbcopies_dump(rep, sizeof rep); app("%s", rep);
+        return std::string(buf, n);
+    }
+    if (strncmp(path, "/ngxshapeti", 11) == 0) {  // draw#→material ti map (cluster runs) — BEFORE /ngxshape (prefix)
+        static thread_local char rep[16384]; sb_ngx_shapeti_dump(rep, sizeof rep); app("%s", rep);
         return std::string(buf, n);
     }
     if (strncmp(path, "/ngxshape", 9) == 0) {  // N4 live J3DShape native-mesh capture stats

@@ -1918,6 +1918,24 @@ unsigned g_last_frame_shape_count = 0;   // shapes drawn in the last completed f
 extern "C" void sb_ngx_set_draw_limit(int n) { g_gx_draw_limit = n; }
 extern "C" int  sb_ngx_get_draw_limit() { return g_gx_draw_limit; }
 extern "C" unsigned sb_ngx_frame_shape_count() { return g_last_frame_shape_count; }
+// Per-shape ti map (draw order → material tev_index) so the lockstep result maps a diverging
+// shape# to a material for /gxstate. Filled in ov_j3dshape_draw; snapshotted at frame publish.
+constexpr int SHAPETI_CAP = 512;
+int g_frame_shape_ti[SHAPETI_CAP], g_pub_shape_ti[SHAPETI_CAP];
+extern "C" int sb_ngx_shapeti_dump(char* out, int cap) {
+    unsigned nsh = g_last_frame_shape_count; if (nsh > SHAPETI_CAP) nsh = SHAPETI_CAP;
+    int w = snprintf(out, cap, "shapeti: %u shapes (draw order -> material ti); cluster runs:\n", nsh);
+    int run_ti = -999; unsigned run_lo = 0;
+    for (unsigned i = 0; i <= nsh; i++) {
+        int ti = (i < nsh) ? g_pub_shape_ti[i] : -998;
+        if (ti != run_ti) {
+            if (run_ti != -999 && w < cap - 64)
+                w += snprintf(out+w, cap-w, "  #%u..#%u ti=%d (%u shapes)\n", run_lo, i-1, run_ti, i-run_lo);
+            run_ti = ti; run_lo = i;
+        }
+    }
+    return w;
+}
 
 // Published by the scene_render GXSetProjection tee (0x80362c34) with the authored
 // projection matrix. g_proj is the CURRENTLY-ACTIVE projection (perspective OR
@@ -2007,6 +2025,10 @@ extern "C" void sb_ngx_set_freeze(int on) {
 extern "C" int  sb_ngx_get_freeze() { return g_ngx_frozen.load(std::memory_order_acquire) ? 1 : 0; }
 
 void ngx_frame_publish() {
+    if (g_frame_shape_idx > 0) {                     // snapshot the draw#→ti map for /ngxshapeti
+        unsigned c = g_frame_shape_idx < SHAPETI_CAP ? g_frame_shape_idx : SHAPETI_CAP;
+        for (unsigned i = 0; i < c; i++) g_pub_shape_ti[i] = g_frame_shape_ti[i];
+    }
     g_last_frame_shape_count = g_frame_shape_idx;   // how many shapes this frame issued a draw for
     g_frame_shape_idx = 0;                           // reset the lockstep per-frame shape counter
     if (g_ngx_frozen.load(std::memory_order_acquire)) {
@@ -2589,6 +2611,7 @@ SUNBRIGHT_OVERRIDE(ov_j3dshape_draw, 0x802e0390u) {
     if (RecompFunc o = recomp_raw(0x802e0390u)) o(cpu); else call_ppc(cpu, cpu.lr);
     xfmem_draw_observe();   // always-on (oracle too): ground-truth xfmem at draw
     if (g_enabled) capture(sh);
+    if ((int)my_idx < SHAPETI_CAP) g_frame_shape_ti[my_idx] = g_cur_tev_index;   // draw#→material
 }
 
 // /gxstate?ti=N — RENDER-STATE DIFF: the GX command stream (the game's actual GX writes, ground
