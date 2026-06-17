@@ -482,3 +482,66 @@ sides), (b) capture multiple frames, (c) consider that ngx's 3× supersample+dow
 gaps that GX's EFB resolve also does — compare at matched resolution. The "contradiction"
 may partly be a measurement artifact; the CPU REF (deterministic, 1×) is the trustworthy
 faithful baseline and it ≈ ngx, so ngx's render is sound.
+
+---
+## 2026-06-18 (session 6) — ⚠ THE "10× CONTRADICTION" WAS A CAMERA-DRIFT ARTIFACT; real bug = cloud UV FREQUENCY
+
+**The handoff's central premise is FALSIFIED.** Session 5's "GX cloud = 3509 sparse px vs
+ngx 55703 → 10× contradiction → prime suspect per-vertex CLR0 alpha (RASA)" was built on the
+`fs_ti10lockstep.sh` lockstep, which captures n18/n19 WITHOUT `autostop` — i.e. while autostart
+is still pulsing LEFT and the file-select camera/Mario are still settling. The two `/abshot2`
+captures (n18, n19) are ~1.3 s apart, so the GX iso `n19-n18` was contaminated by camera/scene
+motion between them. Re-validated cleanly this session.
+
+### What I did (re-validation, the handoff's #1 task)
+1. **Frozen drift-free full-frame A/B at file-select.** Drove to file-select, `/pad?do=autostop`
+   to HOLD there (autostart's t=28s+ A-press would otherwise load gameplay), then `/ngxfreeze on=1`
+   (latches BOTH the ngx snapshot AND the GX XFB to ONE static frame — Present.cpp g_sb_freeze_gx).
+   `/abshot2` twice → same ngx_frame ⇒ truly frozen, zero drift.
+   - Result: full-frame mean-abs-delta = **38** (LIVE pad-driven was **99**). Upper sky
+     gx=(53,128,192) ngx=(77,135,200) — ngx only +24 red, green/blue ~match. **ngx ≈ GX**, the
+     dramatic "2× wash" was the desync confound (same trap memory `[[ngx-render-fidelity-gap]]`
+     warned about; /abshot2 in LIVE mode shows ngx's snapshot a frame off the GX XFB).
+2. **GX camera is ~static at file-select with autostop** (self-delta over 1–2 s = 3.5–4.5 full,
+   2.4 in the sky). So a drawlimit lockstep done NOW has only ~2.4 noise — VALID, unlike the
+   handoff's no-autostop capture.
+3. **Clean lockstep cloud iso (static camera).** drawlimit n=18 then n=19, `/abshot2` each,
+   iso = n19−n18 = shape #18 = ti=10 (confirmed via `/ngxshapeti`: #18→ti=10, #19→ti=11).
+   In the pure top-sky strip (y<60, ABOVE the menu windows, threshold>8 to clear noise):
+   | source | coverage | mean(where present) | peak |
+   |---|---|---|---|
+   | GX  ti=10 | 9072 px | 47.4 | 152 |
+   | ngx ti=10 | 10681 px | 92.4 | 227 |
+   **Coverage is COMPARABLE (within ~18%), NOT 10× fewer.** The "GX = 3509 sparse" was the
+   drift artifact. The real residual: ngx ~2× brighter where present.
+
+### THE ACTUAL BUG (visualized) — cloud noise tiled at too LOW a spatial frequency
+- `topsky_cloud_iso.png` (GX cloud over ngx cloud, top 70 rows): **GX = fine WISPY vertical
+  streaks** across the central-upper sky; **ngx = mostly black centre with bright bars at the
+  left/right EDGES.** Comparable coverage, different SPATIAL DISTRIBUTION.
+- `ngx_only10_frozen.png` (`/ngxonly ti=10`, frozen, clean): ngx's cloud is a **coarse
+  CHECKERBOARD of big white puffs** — the 8×8 I4 noise tiled at LOW frequency (big tiles) —
+  vs GX's fine wisps. ngx's cloud is too COARSE, hence brighter blobs.
+- Mechanism: combiner (from `/gxstate?ti=10`, authoritative obj-model) is 2 stages:
+  s0 `prev = TEX0·RASC` (scale<<0), s1 `prev = clamp(2·TEX1·CPREV)` (scale<<1). BOTH texmaps =
+  the SAME 8×8 I4 @0x80a83220. tc0 texmtx scale **2.0** (UV0 spans ~7.5 → tiles ~7×, fine),
+  tc1 texmtx scale **0.5** (UV1 spans ~1.66 → tiles ~1.6×, COARSE). The product TEX0·TEX1 is
+  GATED by the coarse TEX1 → big blobs. For GX to be wispy, GX's effective TEX1 frequency must
+  be HIGHER than ngx's 1.6×.
+
+### Frontier (precise, redirected) — verify ngx's cloud texgen UV vs GX's true UV
+The wash is the cloud's **texgen UV scale/frequency** (esp. tc1, scale 0.5), NOT RASA alpha.
+RASA is fine (apex a=0, ring a=1, mean 0.75; ALPHA0 cc=0701 matsrc=VTX → vertex alpha; ngx
+matches). RASC: GX COLOR0 cc=0700 en=0 matsrc=REG → white(255); ngx uses vertex CLR0 rgb — a
+candidate side-issue but it can only DARKEN ngx (vtx≤255), not brighten, so it's not the 2×.
+NEXT: confirm whether ngx's tc1 mTotalMtx (scale 0.5, mtxptr 80e85cf0) is the value GX actually
+uses — xfmem/bpmem/J3DGDLoadTexMtxImm-tee ALL lag for DL-baked materials (handoff gotcha), so
+verify via the RENDERED PIXELS (GX wispy ⇒ GX tiles more) or by RE'ing the cloud's texmtx setup
+(who writes 80e85cf0 / the J3DTexGenBlock load). Suspect: ngx reads/combines mTotalMtx wrong
+(halved scale), or the cloud texmtx is animated and ngx reads a wrong phase/scale.
+
+Tools used: `/ngxfreeze on=1` (+ autostop) = drift-free A/B; `/ngxdrawlimit` (static-camera
+lockstep now valid); `/ngxskip` `/ngxonly` (compose WITH freeze, unlike drawlimit); `/gxstate?ti=10`
+(combiner+texgen+PE, authoritative obj-model); `/ngxverts`; `/ngxshapeti`. Clean data:
+scratch/screenshots/clk_n{18,19}.{gx,ngx}.ppm, topsky_cloud_iso.png, ngx_only10_frozen.png,
+frozen_fs_gx_ngx.png; scratch/logs/rastdata.log refreshed.
