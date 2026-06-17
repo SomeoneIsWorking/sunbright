@@ -830,7 +830,14 @@ constexpr size_t TEVSTATE_CAP = 4096;
 std::vector<NgxTevState>          g_tevstates;
 std::unordered_map<uint64_t, int> g_tevkey_index;
 u16 g_tev_cc[TEVSTATE_CAP] = {0};   // DBG: last colour-channel ctrl per tev index (matVtx/enable)
+// DBG: per-tev colour-channel detail (matColor/ambColor RGBA + alpha0 ctrl) — for the raster
+// source of the file-select sea-haze wash (/pixbatch ti dump). 0 = not yet seen.
+struct TevChan { u16 alpha0; u8 mat[4], amb[4]; bool have; };
+TevChan g_tev_chan[TEVSTATE_CAP] = {};
 int      g_cur_tev_index = -1;     // material index for the shape being captured
+// CLR0 capture state for the shape being captured (for /ngxshapes per-input inspection):
+// VCD class (0=none→white default, 1=direct, 2=idx8, 3=idx16), array base ngx samples, VAT format.
+unsigned g_cur_clr0cls = 0, g_cur_clr0fmt = 0; u32 g_cur_clr0base = 0;
 u32      g_cur_shape = 0;          // address of the shape being captured (for the shred metric)
 unsigned long g_mat_found = 0, g_mat_novt = 0, g_mat_none = 0;
 u32      g_vt_hist_key[8] = {0};    // distinct vtable values seen
@@ -907,6 +914,11 @@ bool build_cp(u32 sh, NgxCP& cp) {
     const u32 clr0 = r32(J3DSYS + 0x114);
     cp.array_base[2] = valid(clr0) ? clr0 : r32(vdata + 0x1C);
     cp.array_stride[2] = 4;
+    // Latch CLR0 capture state for /ngxshapes per-input inspection (the haze-wash probe):
+    // class (0=none→white default), VAT format, and the array base ngx actually samples.
+    g_cur_clr0cls  = (cp.vcd_lo >> 13) & 3;
+    g_cur_clr0fmt  = (cp.vat[0][0] >> 14) & 7;
+    g_cur_clr0base = cp.array_base[2];
     cp.array_base[3] = r32(vdata + 0x20);    cp.array_stride[3] = 4;
     for (int i = 0; i < 8; i++) {
         cp.array_base[4 + i]   = r32(vdata + 0x24 + i * 4);
@@ -997,6 +1009,10 @@ struct ShapeRec {
     float tx, ty, tz, det3;             // single-matrix (pnmtx=0) modelview translation + 3x3 det
     unsigned pass; unsigned char projtype;   // projection-pass index this shape drew under + ortho?
     unsigned epoch;                     // EFB-copy epoch this shape drew under (offscreen vs display)
+    int ti;                             // tev_index (material) — filter haze layers by this
+    unsigned clr0cls, clr0fmt; u32 clr0base;  // CLR0 VCD class / VAT fmt / array base ngx samples
+    unsigned char clr0r, clr0g, clr0b, clr0a; // MEAN decoded per-vertex CLR0 (0..255) — the raster ngx feeds
+    unsigned char clr0min, clr0max;     // min/max per-vertex luminance (0..255) — flat-white vs gradient
 };
 std::vector<ShapeRec> g_shaperec[2];
 int                          g_read_front = 0; // latched by ngx_snap_verts for batches
@@ -1090,13 +1106,16 @@ int capture_material() {
     g_mat_found++;
 
     const u16 dbgcc = g_cur_chan.valid ? g_cur_chan.color0 : 0xFFFF;  // 0xFFFF = no colour block
+    auto stash_chan = [&](int i){ if (i<0||i>=(int)TEVSTATE_CAP||!g_cur_chan.valid) return;
+        g_tev_chan[i].have=true; g_tev_chan[i].alpha0=g_cur_chan.alpha0;
+        for (int k=0;k<4;k++){ g_tev_chan[i].mat[k]=g_cur_chan.matColor[k]; g_tev_chan[i].amb[k]=g_cur_chan.ambColor[k]; } };
     auto it = g_tevkey_index.find(h);
-    if (it != g_tevkey_index.end()) { if (it->second < (int)TEVSTATE_CAP) g_tev_cc[it->second] = dbgcc; return it->second; }
+    if (it != g_tevkey_index.end()) { if (it->second < (int)TEVSTATE_CAP) { g_tev_cc[it->second] = dbgcc; stash_chan(it->second); } return it->second; }
     if (g_tevstates.size() >= TEVSTATE_CAP) { g_tevstates.clear(); g_tevkey_index.clear(); }
     const int idx = (int)g_tevstates.size();
     g_tevstates.push_back(st);
     g_tevkey_index[h] = idx;
-    if (idx < (int)TEVSTATE_CAP) g_tev_cc[idx] = dbgcc;
+    if (idx < (int)TEVSTATE_CAP) { g_tev_cc[idx] = dbgcc; stash_chan(idx); }
     return idx;
 }
 
@@ -1279,6 +1298,17 @@ void transform_eye() {
         rec.det3 = m[0]*(m[5]*m[10]-m[6]*m[9]) - m[1]*(m[4]*m[10]-m[6]*m[8]) + m[2]*(m[4]*m[9]-m[5]*m[8]);
         rec.pass = g_proj_pass; rec.projtype = (unsigned char)g_proj_type;
         rec.epoch = g_efb_epoch;
+        rec.ti = g_cur_tev_index;
+        rec.clr0cls = g_cur_clr0cls; rec.clr0fmt = g_cur_clr0fmt; rec.clr0base = g_cur_clr0base;
+        // MEAN + min/max luminance of the per-vertex CLR0 ngx actually feeds the raster (after
+        // decode/default). Flat-white haze (mean 255, min==max 255) vs a real gradient is the tell.
+        { unsigned long sr=0,sg=0,sb=0,sa=0; unsigned lo=255,hi=0;
+          for (size_t vi=0; vi<nv; vi++) { const unsigned char* c=g_verts[vi].clr[0];
+              sr+=c[0]; sg+=c[1]; sb+=c[2]; sa+=c[3];
+              unsigned l=(c[0]+c[1]+c[2])/3; if(l<lo)lo=l; if(l>hi)hi=l; }
+          if (nv) { rec.clr0r=(unsigned char)(sr/nv); rec.clr0g=(unsigned char)(sg/nv);
+                    rec.clr0b=(unsigned char)(sb/nv); rec.clr0a=(unsigned char)(sa/nv);
+                    rec.clr0min=(unsigned char)lo; rec.clr0max=(unsigned char)hi; } }
         rec.nxmin = rec.nymin = 1e30f; rec.nxmax = rec.nymax = -1e30f;
         rec.wmin = 1e30f; rec.wmax = -1e30f; rec.nfront = 0;
         for (size_t vi = 0; vi < nv; vi++) {
@@ -2379,10 +2409,11 @@ int sb_ngx_shapes_dump(char* out, int cap) {
         if (n >= cap - 256 || shown >= 60) break;
         const ShapeRec& r = rs[i];
         n += snprintf(out + n, cap - n,
-            "  e%u%s pass=%u%s sh=%08x nv=%-5u cc=%04x tex0=%08x pnmtx=%u sidx=%u  ndc x[%6.2f,%6.2f] y[%6.2f,%6.2f] w[%.1f,%.1f] front=%u  t=(%.0f,%.0f,%.0f) det=%.2f\n",
+            "  e%u%s pass=%u%s ti=%-3d sh=%08x nv=%-5u cc=%04x tex0=%08x pnmtx=%u  clr0[cls=%u fmt=%u base=%08x mean=(%u,%u,%u,a%u) lum%u..%u]  ndc x[%6.2f,%6.2f] y[%6.2f,%6.2f] w[%.1f,%.1f]\n",
             r.epoch, g_epoch_tex[f][r.epoch < EPOCH_CAP ? r.epoch : 0] ? "X" : "=",
-            r.pass, r.projtype ? "o" : "p", r.sh, r.nv, r.cc, r.tex0, r.pnmtx, r.single_idx,
-            r.nxmin, r.nxmax, r.nymin, r.nymax, r.wmin, r.wmax, r.nfront, r.tx, r.ty, r.tz, r.det3);
+            r.pass, r.projtype ? "o" : "p", r.ti, r.sh, r.nv, r.cc, r.tex0, r.pnmtx,
+            r.clr0cls, r.clr0fmt, r.clr0base, r.clr0r, r.clr0g, r.clr0b, r.clr0a, r.clr0min, r.clr0max,
+            r.nxmin, r.nxmax, r.nymin, r.nymax, r.wmin, r.wmax);
         shown++;
     }
     return n;
@@ -2851,6 +2882,194 @@ int sb_ngx_shape_dump(char* out, int cap) {
 // We replicate the present's depth contract exactly (mesh.vert.glsl): per-vertex
 // Vulkan depth = clip.z/clip.w + 1 (GC NDC z∈[-1 near,0 far] → [0 near,1 far]),
 // LEQUAL-style z-test from a 1.0 (far) clear, in batch DRAW ORDER.
+// ── Per-pixel CPU full-pipeline blend-stack replay (/pixblend?x=NDC&y=NDC) ──────
+// The doctrinal multi-layer no-oracle instrument (handoff #1 tooling gap): rasterize
+// EVERY captured batch covering one NDC pixel in the present's EXACT draw order +
+// epoch filter, run the GX integer TEV combiner per fragment (mirrors tev_shader.cpp
+// write_regular/write_stage), bilinear-sample each stage's texmap at the texgen'd UV,
+// z-test, then blend (captured src/dst factors) over the game's copy-clear. Prints the
+// per-layer contribution + running accumulator + FINAL = ngx's predicted pixel, so a
+// multi-layer wash is back-solved layer by layer vs the GX abshot2 pixel — deterministic,
+// no GPU readback, no cross-launch drift. (This is a DIAGNOSTIC mirror of the GPU shader,
+// not the shipping path; mismatch CPU-replay-vs-GPU-present localizes a shader/mip bug,
+// mismatch CPU-replay-vs-GX localizes a captured-input bug.)
+namespace {
+inline int sb_clampi(int v, int lo, int hi){ return v<lo?lo:(v>hi?hi:v); }
+
+// GX combiner bitfield decode (matches tev_shader.cpp decode_cc/decode_ac).
+struct PbComb { int a,b,c,d,bias,op,clamp,scale,dest; };
+PbComb dec_cc(uint32_t e){ return {(int)(e>>12)&0xf,(int)(e>>8)&0xf,(int)(e>>4)&0xf,(int)e&0xf,
+    (int)(e>>16)&3,(int)(e>>18)&1,(int)(e>>19)&1,(int)(e>>20)&3,(int)(e>>22)&3}; }
+PbComb dec_ac(uint32_t e){ return {(int)(e>>13)&7,(int)(e>>10)&7,(int)(e>>7)&7,(int)(e>>4)&7,
+    (int)(e>>16)&3,(int)(e>>18)&1,(int)(e>>19)&1,(int)(e>>20)&3,(int)(e>>22)&3}; }
+
+// One regular-combiner component — byte-for-byte the GLSL write_regular() integer math.
+int tev_regular_comp(int a,int b,int c,int d,int bias,int op,int clamp,int scale){
+    static const int bias_v[4]={0,128,-128,0};
+    const int sl = (scale==1)?1:(scale==2)?2:0;            // left shift for scale 0/1/2
+    int dterm = (d + bias_v[bias]) << sl;
+    long lerp = ((long)(a<<8) + (long)(b-a)*(c + (c>>7))) << sl;
+    if (scale != 3) lerp += op ? 127 : 128;
+    lerp >>= 8;
+    int res = op ? (int)(dterm - (int)lerp) : (int)(dterm + (int)lerp);
+    if (scale == 3) res >>= 1;
+    return clamp ? sb_clampi(res,0,255) : sb_clampi(res,-1024,1023);
+}
+// Bilinear REPEAT sample of a texmap's base level → RGBA 0..255. (Base-level only; the
+// GPU samples a trilinear mip chain, so for a heavily-minified surface compare the FINAL
+// against the per-batch texture MEAN reported alongside — a large gap = mip-dependent.)
+struct Tx { unsigned char r,g,b,a; };
+Tx sample_tex(const NgxTexBind& t, float u, float v){
+    Tx z{255,255,255,255};
+    if (!t.addr || !t.w || !t.h || t.w>1024 || t.h>1024) return z;
+    const unsigned char* host = sb_ram_fast(t.addr); if (!host) return z;
+    const unsigned char* tl = t.tlut_addr ? sb_ram_fast(t.tlut_addr) : nullptr;
+    static std::vector<uint32_t> px; px.assign((size_t)t.w*t.h, 0);
+    sb_tex_decode(px.data(), host, t.w, t.h, t.fmt, tl, t.tlut_fmt);
+    auto wrap=[](float c,int n){ float f=c-std::floor(c); int i=(int)(f*n); return (i%n+n)%n; };
+    float fu=u*t.w-0.5f, fv=v*t.h-0.5f;
+    int x0=(int)std::floor(fu), y0=(int)std::floor(fv);
+    float tx=fu-x0, ty=fv-y0;
+    auto at=[&](int x,int y)->uint32_t{ int xx=((x%t.w)+t.w)%t.w, yy=((y%t.h)+t.h)%t.h; return px[(size_t)yy*t.w+xx]; };
+    (void)wrap;
+    uint32_t c00=at(x0,y0),c10=at(x0+1,y0),c01=at(x0,y0+1),c11=at(x0+1,y0+1);
+    auto lerp=[&](int sh)->unsigned char{
+        float a=(float)((c00>>sh)&0xFF),b=(float)((c10>>sh)&0xFF),cc=(float)((c01>>sh)&0xFF),d=(float)((c11>>sh)&0xFF);
+        float top=a+(b-a)*tx, bot=cc+(d-cc)*tx; return (unsigned char)sb_clampi((int)(top+(bot-top)*ty+0.5f),0,255); };
+    return { lerp(0), lerp(8), lerp(16), lerp(24) };
+}
+}  // namespace
+
+int sb_ngx_pixel_blend(float px, float py, char* out, int cap) {
+    const int fb = g_front.load(std::memory_order_acquire);
+    const std::vector<NgxRenderVertex>& snap = g_snap[fb];
+    const std::vector<NgxRenderBatch>&  bats = g_batches[fb];
+    int nst = 0; const NgxTevState* sts = ngx_snap_tevstates(&nst);
+    const int disp = ngx_snap_display_epoch();
+    int n = snprintf(out, cap, "pixblend NDC=(%.3f,%.3f) fb=%d batches=%zu disp_epoch=%d clear=(%.2f,%.2f,%.2f,%.2f)\n",
+                     px, py, fb, bats.size(), disp, g_copy_clear[0],g_copy_clear[1],g_copy_clear[2],g_copy_clear[3]);
+    auto edge=[](float ax,float ay,float bx,float by,float cx,float cy){ return (cx-ax)*(by-ay)-(cy-ay)*(bx-ax); };
+    // Accumulator (framebuffer) in float 0..1, started at the game's copy-clear.
+    float acc[4]={g_copy_clear[0],g_copy_clear[1],g_copy_clear[2],g_copy_clear[3]};
+    float zbuf=1.0f; int layers=0;
+    // GX blend factor → multiplier on (src=fragment, dst=accumulator), per the vk_src/vk_dst map.
+    auto bfac=[&](int f,bool is_src,const float frag[4],float ch_idx)->float{
+        // ch_idx selects the colour channel value for *_COLOR factors; alpha factors use frag/acc[3].
+        switch(f&7){
+            case 0: return 0.f; case 1: return 1.f;
+            case 2: return is_src ? acc[(int)ch_idx] : frag[(int)ch_idx];        // SRC: DST_COLOR / DST: SRC_COLOR
+            case 3: return 1.f-(is_src ? acc[(int)ch_idx] : frag[(int)ch_idx]);  // INV_*_COLOR
+            case 4: return frag[3];        // SRC_ALPHA
+            case 5: return 1.f-frag[3];    // INV_SRC_ALPHA
+            case 6: return acc[3];         // DST_ALPHA
+            default:return 1.f-acc[3];     // INV_DST_ALPHA
+        }
+    };
+    for (size_t b=0; b<bats.size(); b++) {
+        const NgxRenderBatch& B = bats[b];
+        if ((int)B.epoch < disp) continue;                          // present's RT epoch filter
+        const int ti = B.tev_index;
+        const NgxTevState* S = (ti>=0 && ti<nst) ? &sts[ti] : nullptr;
+        if (!S) continue;
+        for (uint32_t vi=B.vstart; vi+2<B.vstart+B.vcount && vi+2<snap.size(); vi+=3) {
+            const float* c0=snap[vi].clip; const float* c1=snap[vi+1].clip; const float* c2=snap[vi+2].clip;
+            if (c0[3]<=1e-5f||c1[3]<=1e-5f||c2[3]<=1e-5f) continue;
+            const float x0=c0[0]/c0[3],y0=c0[1]/c0[3], x1=c1[0]/c1[3],y1=c1[1]/c1[3], x2=c2[0]/c2[3],y2=c2[1]/c2[3];
+            const float area=edge(x0,y0,x1,y1,x2,y2); if (area>-1e-12f && area<1e-12f) continue;
+            float w0=edge(x1,y1,x2,y2,px,py), w1=edge(x2,y2,x0,y0,px,py), w2=edge(x0,y0,x1,y1,px,py);
+            const bool inside=(w0<=0&&w1<=0&&w2<=0)||(w0>=0&&w1>=0&&w2>=0); if(!inside) continue;
+            w0/=area; w1/=area; w2/=area;
+            const float d0=c0[2]/c0[3]+1.f,d1=c1[2]/c1[3]+1.f,d2=c2[2]/c2[3]+1.f;
+            const float depth=w0*d0+w1*d1+w2*d2;
+            // z-test against running zbuf (LEQUAL-style, captured z_func).
+            const int zf=S->pe.z_func&7;
+            bool zp = !S->pe.z_test;
+            if (S->pe.z_test) switch(zf){case 0:zp=false;break;case 1:zp=depth<zbuf;break;case 2:zp=depth==zbuf;break;
+                case 3:zp=depth<=zbuf;break;case 4:zp=depth>zbuf;break;case 5:zp=depth!=zbuf;break;case 6:zp=depth>=zbuf;break;default:zp=true;}
+            // interpolate raster col0 + uv per stage's texcoord
+            auto interp=[&](float a0,float a1,float a2){ return w0*a0+w1*a1+w2*a2; };
+            int col0[4]; for(int k=0;k<4;k++) col0[k]=sb_clampi((int)(interp(snap[vi].rgba[k],snap[vi+1].rgba[k],snap[vi+2].rgba[k])*255.f+0.5f),0,255);
+            // Run the TEV stages (integer), mirroring the shader.
+            int prev[4]={0,0,0,0};
+            int reg[3][4]; for(int c=0;c<3;c++) for(int k=0;k<4;k++) reg[c][k]=S->tev_color[c][k];
+            int nstg=S->num_stages; if(nstg<1)nstg=1; if(nstg>16)nstg=16;
+            char texinfo[96]={0};
+            for (int sgi=0; sgi<nstg; sgi++) {
+                const NgxTevStage& sg=S->stage[sgi];
+                const PbComb cc=dec_cc(sg.color_env); const PbComb ac=dec_ac(sg.alpha_env);
+                int textemp[4]={255,255,255,255}, rastemp[4]={0,0,0,0}, konst[4]={0,0,0,0};
+                // texture sample (this stage's texmap at its texcoord)
+                const int tc = sg.texcoord<8 ? sg.texcoord : 0;
+                const int tm = sg.texmap<8 ? sg.texmap : 0;
+                const float u=interp(snap[vi].uv[tc][0],snap[vi+1].uv[tc][0],snap[vi+2].uv[tc][0]);
+                const float v=interp(snap[vi].uv[tc][1],snap[vi+1].uv[tc][1],snap[vi+2].uv[tc][1]);
+                Tx tx=sample_tex(B.tex[tm],u,v);
+                const u8 tsw=S->swap_table[(sg.alpha_env>>2)&3], rsw=S->swap_table[sg.alpha_env&3];
+                int traw[4]={tx.r,tx.g,tx.b,tx.a};
+                textemp[0]=traw[(tsw>>6)&3];textemp[1]=traw[(tsw>>4)&3];textemp[2]=traw[(tsw>>2)&3];textemp[3]=traw[tsw&3];
+                rastemp[0]=col0[(rsw>>6)&3];rastemp[1]=col0[(rsw>>4)&3];rastemp[2]=col0[(rsw>>2)&3];rastemp[3]=col0[rsw&3];
+                // Konst RGB (GXTevKColorSel) + alpha (GXTevKAlphaSel), faithful to KSEL_C/KSEL_A.
+                { const int ks=sg.kcsel&31; static const int cc8[8]={255,223,191,159,128,96,64,32};
+                  if(ks<8){ konst[0]=konst[1]=konst[2]=cc8[ks]; }
+                  else if(ks<12){ konst[0]=konst[1]=konst[2]=0; }
+                  else if(ks<16){ for(int k=0;k<3;k++) konst[k]=S->kcolor[ks-12][k]; }
+                  else { int comp=(ks-16)/4, reg=(ks-16)&3; for(int k=0;k<3;k++) konst[k]=S->kcolor[reg][comp]; }
+                  const int ka=sg.kasel&31;
+                  if(ka<8) konst[3]=cc8[ka]; else if(ka<16) konst[3]=0;
+                  else { int comp=(ka-16)/4, reg=(ka-16)&3; konst[3]=S->kcolor[reg][comp]; } }
+                if (sgi==0) snprintf(texinfo,sizeof texinfo,"tx%08x(%u,%u,%u,a%u)@uv(%.2f,%.2f)",B.tex[tm].addr,tx.r,tx.g,tx.b,tx.a,u,v);
+                // colour-input selectors (rgb) and alpha-input selectors
+                auto cin=[&](int idx,int ch)->int{ switch(idx){
+                    case 0:return prev[ch];case 1:return prev[3];case 2:return reg[0][ch];case 3:return reg[0][3];
+                    case 4:return reg[1][ch];case 5:return reg[1][3];case 6:return reg[2][ch];case 7:return reg[2][3];
+                    case 8:return textemp[ch];case 9:return textemp[3];case 10:return rastemp[ch];case 11:return rastemp[3];
+                    case 12:return 255;case 13:return 128;case 14:return konst[ch];default:return 0;} };
+                auto ain=[&](int idx)->int{ switch(idx){case 0:return prev[3];case 1:return reg[0][3];case 2:return reg[1][3];
+                    case 3:return reg[2][3];case 4:return textemp[3];case 5:return rastemp[3];case 6:return konst[3];default:return 0;} };
+                int dst_c[3];
+                if (cc.bias!=3) for(int ch=0;ch<3;ch++){
+                    int a=cin(cc.a,ch)&255,bb=cin(cc.b,ch)&255,c=cin(cc.c,ch)&255,d=cin(cc.d,ch);
+                    dst_c[ch]=tev_regular_comp(a,bb,c,d,cc.bias,cc.op,cc.clamp,cc.scale);
+                } else for(int ch=0;ch<3;ch++) dst_c[ch]=cin(cc.d,ch); // compare modes: coarse (haze unaffected)
+                int dst_a;
+                if (ac.bias!=3){ int a=ain(ac.a)&255,bb=ain(ac.b)&255,c=ain(ac.c)&255,d=ain(ac.d);
+                    dst_a=tev_regular_comp(a,bb,c,d,ac.bias,ac.op,ac.clamp,ac.scale);
+                } else dst_a=ain(ac.d);
+                int* cd = cc.dest==0?prev:reg[cc.dest-1];
+                cd[0]=dst_c[0];cd[1]=dst_c[1];cd[2]=dst_c[2];
+                int* ad = ac.dest==0?prev:reg[ac.dest-1];
+                ad[3]=dst_a;
+            }
+            float frag[4]={prev[0]/255.f,prev[1]/255.f,prev[2]/255.f,prev[3]/255.f};
+            // texture mean (for the mip-gap check) of the stage-0 texmap.
+            double tmean=0; { const NgxTexBind& t=B.tex[S->stage[0].texmap<8?S->stage[0].texmap:0];
+                if(t.addr&&t.w&&t.h&&t.w<=1024&&t.h<=1024){const unsigned char* h=sb_ram_fast(t.addr);
+                    if(h){static std::vector<uint32_t> pp; pp.assign((size_t)t.w*t.h,0);
+                        const unsigned char* tl=t.tlut_addr?sb_ram_fast(t.tlut_addr):nullptr;
+                        sb_tex_decode(pp.data(),h,t.w,t.h,t.fmt,tl,t.tlut_fmt);
+                        double s=0; for(uint32_t q:pp) s+=((q&0xFF)+((q>>8)&0xFF)+((q>>16)&0xFF))/3.0; tmean=s/pp.size();}}}
+            if (n < cap-300) n += snprintf(out+n,cap-n,
+                "  L%-2d ti=%-3d ep=%u z=%s(d=%.3f) bm=%u s/d=%u/%u frag=(%.2f,%.2f,%.2f,a%.2f) %s tmean=%.0f",
+                layers, ti, B.epoch, zp?"PASS":"fail", depth, S->pe.blend_mode, S->pe.src_factor, S->pe.dst_factor,
+                frag[0],frag[1],frag[2],frag[3], texinfo, tmean);
+            if (!zp) { if(n<cap-8) n+=snprintf(out+n,cap-n," (z-culled)\n"); continue; }
+            // blend over acc (mode 1 = BLEND with factors; else opaque src=ONE dst=ZERO)
+            if (S->pe.blend_mode==1) {
+                for(int k=0;k<3;k++){ float sf=bfac(S->pe.src_factor,true,frag,(float)k), df=bfac(S->pe.dst_factor,false,frag,(float)k);
+                    acc[k]=sb_clampi((int)((frag[k]*sf+acc[k]*df)*255.f+0.5f),0,255)/255.f; }
+                float saf=bfac(S->pe.src_factor,true,frag,3.f), daf=bfac(S->pe.dst_factor,false,frag,3.f);
+                acc[3]=sb_clampi((int)((frag[3]*saf+acc[3]*daf)*255.f+0.5f),0,255)/255.f;
+            } else if (S->pe.blend_mode==3) { for(int k=0;k<4;k++) acc[k]=sb_clampi((int)((acc[k]-frag[k])*255.f+0.5f),0,255)/255.f; }
+            else { for(int k=0;k<4;k++) acc[k]=frag[k]; }                      // opaque overwrite
+            if (S->pe.z_test && S->pe.z_write) zbuf=depth;
+            layers++;
+            if (n<cap-64) n+=snprintf(out+n,cap-n," -> acc=(%.0f,%.0f,%.0f)\n",acc[0]*255,acc[1]*255,acc[2]*255);
+        }
+    }
+    n += snprintf(out+n,cap-n,"FINAL ngx-predicted = (%.0f,%.0f,%.0f)  layers=%d\n",acc[0]*255,acc[1]*255,acc[2]*255,layers);
+    return n;
+}
+
 int sb_ngx_pixel_batch(float px, float py, char* out, int cap) {
     const int fb = g_front.load(std::memory_order_acquire);
     const std::vector<NgxRenderVertex>& snap = g_snap[fb];
@@ -2874,6 +3093,18 @@ int sb_ngx_pixel_batch(float px, float py, char* out, int cap) {
                 n += snprintf(out + n, cap - n, "  s%d ce=%06x ae=%06x map=%u coord=%u chan=%u kc=%02x ka=%02x rswap=%u tswap=%u\n",
                     st, s.stage[st].color_env, s.stage[st].alpha_env, s.stage[st].texmap, s.stage[st].texcoord, s.stage[st].color_chan, s.stage[st].kcsel, s.stage[st].kasel,
                     s.stage[st].alpha_env & 3, (s.stage[st].alpha_env >> 2) & 3);
+            // Colour-channel detail: matColor/ambColor RGBA + alpha0 ctrl (the RASTER source —
+            // RASC/RASA feed the combiner; a wrong raster alpha is the sea-haze wash suspect).
+            if (want_ti < (int)TEVSTATE_CAP && g_tev_chan[want_ti].have) { const TevChan& ch = g_tev_chan[want_ti];
+                n += snprintf(out + n, cap - n,
+                    "  chan: cc(color0)=%04x alpha0=%04x matVtx=%d aVtx=%d matColor=(%u,%u,%u,a%u) ambColor=(%u,%u,%u,a%u)\n",
+                    g_tev_cc[want_ti], ch.alpha0, g_tev_cc[want_ti]&1, ch.alpha0&1,
+                    ch.mat[0],ch.mat[1],ch.mat[2],ch.mat[3], ch.amb[0],ch.amb[1],ch.amb[2],ch.amb[3]); }
+            // TEV color registers (CPREV/C0/C1/C2 — combiner C-inputs) + konst colours.
+            for (int c = 0; c < 4; c++)
+                n += snprintf(out + n, cap - n, "  tevreg[%d]=(%d,%d,%d,a%d) kcolor[%d]=(%u,%u,%u,a%u)\n",
+                    c, s.tev_color[c][0], s.tev_color[c][1], s.tev_color[c][2], s.tev_color[c][3],
+                    c, s.kcolor[c][0], s.kcolor[c][1], s.kcolor[c][2], s.kcolor[c][3]);
             // 4 swap tables decoded to RGBA channel selectors (0=R 1=G 2=B 3=A); 0,1,2,3 = identity.
             for (int t = 0; t < 4; t++) { const u8 ix = s.swap_table[t];
                 static const char ch[4] = {'R','G','B','A'};
