@@ -266,8 +266,13 @@ These are standing user directives. Stop re-deriving them:
   TEXTURE BLOCK-PADDING. The logo is a single RGB5A3 J2DPicture (w=460); the decode paths padded
   width to a multiple of 8, but RGB5A3 tiles at a 4-wide block → over-stride → diagonal shear. Fix:
   `sb_tex_pad_w/h` (format block dims) inside `texture_for()`; render-test unit `tex_pad`. A textured
-  quad shredding into diagonal slivers ⇒ a tiled-texture width/stride bug, never geometry. (Residual
-  title A/B delta is the background-sky brightness wash — the same lit-raster issue as Delfino.)
+  quad shredding into diagonal slivers ⇒ a tiled-texture width/stride bug, never geometry.
+- FIXED 2026-06-17 (a3d740e): the **file-select sky wash** was the native present **hardcoding its 3D
+  clear** to (0.10,0.12,0.18). The sky base ti=11 is a SCREEN blend (src=ONE dst=INVSRCCLR) so the
+  clear shows through → grey wash. Fix: capture the game's `GXSetCopyClear` (0x8035ea40) and clear to
+  it (= black here). GOTCHA: GXColor is passed BY POINTER in r3 (`[r3]`=packed RGBA8888, r4=clear_z),
+  not by value. Verified: skyM/watR pixel-perfect, skyL red 161→49. RESIDUAL sky wash (ti=10 additive
+  / ti=9 premult white cloud layers) is the multi-layer-blend NO-ORACLE trap below — don't eyeball it.
 
 ## Debugging the native renderer — TDD, NOT eyeballing (read this before touching ngx)
 The renderer was built straight to "draw the whole scene and look at it." That has no
