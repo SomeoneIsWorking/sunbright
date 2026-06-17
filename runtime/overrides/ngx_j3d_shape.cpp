@@ -1021,6 +1021,7 @@ struct ShapeRec {
     unsigned char clr0min, clr0max;     // min/max per-vertex luminance (0..255) — flat-white vs gradient
     float proj[16];                     // the projection matrix this shape drew under (per-pass depth-space)
     float zmin, zmax;                   // NDC-z (clip.z/clip.w) range over w>eps verts (depth ordering)
+    float ezmin, ezmax;                 // eye-space Z range (camera distance; -ve = in front) — depth-source
 };
 std::vector<ShapeRec> g_shaperec[2];
 int                          g_read_front = 0; // latched by ngx_snap_verts for batches
@@ -1308,10 +1309,11 @@ void transform_eye() {
         rec.det3 = m[0]*(m[5]*m[10]-m[6]*m[9]) - m[1]*(m[4]*m[10]-m[6]*m[8]) + m[2]*(m[4]*m[9]-m[5]*m[8]);
         rec.pass = g_proj_pass; rec.projtype = (unsigned char)g_proj_type;
         for (int i = 0; i < 16; i++) rec.proj[i] = g_proj[i];
-        { float zlo = 1e30f, zhi = -1e30f;
+        { float zlo = 1e30f, zhi = -1e30f, ezlo = 1e30f, ezhi = -1e30f;
           for (size_t vi = 0; vi < nv; vi++) { const float* c = &g_clip[vi*4];
-              if (c[3] > 1e-4f) { float z = c[2]/c[3]; if (z<zlo) zlo=z; if (z>zhi) zhi=z; } }
-          rec.zmin = zlo; rec.zmax = zhi; }
+              if (c[3] > 1e-4f) { float z = c[2]/c[3]; if (z<zlo) zlo=z; if (z>zhi) zhi=z; }
+              float ez = s_eye[vi*3+2]; if (ez<ezlo) ezlo=ez; if (ez>ezhi) ezhi=ez; }
+          rec.zmin = zlo; rec.zmax = zhi; rec.ezmin = ezlo; rec.ezmax = ezhi; }
         rec.epoch = g_efb_epoch;
         rec.ti = g_cur_tev_index;
         rec.clr0cls = g_cur_clr0cls; rec.clr0fmt = g_cur_clr0fmt; rec.clr0base = g_cur_clr0base;
@@ -2436,9 +2438,9 @@ int sb_ngx_shapes_dump(char* out, int cap) {
         // z-row, to compare their depth spaces (foam-over-sea ordering = the wash discriminator).
         if ((r.ti == 12 || r.ti == 18) && n < cap - 200)
             n += snprintf(out + n, cap - n,
-                "       ti=%d ndcZ[%.5f,%.5f] proj.zrow=[%.4f %.4f %.4f %.4f] proj[10,11,14,15]=%.4f,%.4f,%.4f,%.4f\n",
-                r.ti, r.zmin, r.zmax,
-                r.proj[8], r.proj[9], r.proj[10], r.proj[11], r.proj[10], r.proj[11], r.proj[14], r.proj[15]);
+                "       ti=%d sh=%08x pnmtx=%u single_idx=%u tz=%.1f eyeZ[%.1f,%.1f] ndcZ[%.5f,%.5f] proj[10,11,14]=%.5f,%.4f,%.4f\n",
+                r.ti, r.sh, r.pnmtx, r.single_idx, r.tz, r.ezmin, r.ezmax, r.zmin, r.zmax,
+                r.proj[10], r.proj[11], r.proj[14]);
         shown++;
     }
     return n;
