@@ -287,3 +287,114 @@ double-buffer if needed). Also handle the direct-XF-write matrix path (`sb_slot_
 Current tree state (UNCOMMITTED WIP): projection fix (KEEP), PNMTX-DBG + PosMtxIndx-hook
 diagnostics (KEEP — durable), xfmem multi-matrix read with degenerate guard (REGRESSES
 file-select to radiating triangles — needs the synchronous source above before it's correct).
+
+---
+
+## 2026-06-17 (session 4) — ti=10 cloud isolated; per-pixel render diverges with ALL inputs faithful
+
+Continued from `scratch/handoff_2026-06-17_cloud_wash_narrowed.md`. Goal: root-cause the
+ti=10 additive-cloud wash. **Decisively isolated ti=10 on BOTH engines** via lockstep
+`/ngxdrawlimit?n=18` vs `n=19` (shape #18 = ti=10), WITHOUT freeze (freeze pins the published
+snapshot so drawlimit no-ops). Tooling: `scratch/fs_ti10lockstep.sh` (CLIPENV/TAG params),
+`fs_ti10cover.sh`, `fs_uvviz.sh` (TEVDBG via `/ngxdbg?m=`), `fs_shape10.sh`.
+
+### What ti=10 IS (sh=80e84c58, nv=40, cc COLOR0=0700 ALPHA0=0701, tex0=80a83220 8x8 I4)
+A coarse **40-vertex camera-enclosing sky DOME** (fan: apex overhead at eye=(-2,39872,-3200)
+→ ndc.y +34 off-top, **alpha=0**; ring at the horizon ndc.y≈-0.232, **alpha=1**). Combiner
+(verified via `/gxstate?ti=10`): COLOR=`clamp(2·TEX0·TEX1·RASC)`, ALPHA=`2·TEX0a·TEX1a·RASA`,
+two octaves (tc0 src=TEX0 scale-2, tc1 src=TEX1 scale-0.5, same noise tex). Blend SRC_ALPHA/ONE.
+So on-screen additive = `clamp(2·t0·t1) · clamp(2·t0·t1·RASA)` (RASA=1 on the ring → `clamp(2t0t1)²`).
+The sky BASE ti=11 (sh=80e84cd4, nv=752) is the SAME dome topology but UN-textured (flat blue
+vtx-color) and renders FINE — so the dome geometry/apex-near-plane is not itself the bug.
+
+### Pixel evidence (lockstep n18→n19, `scratch/screenshots/overlay_rg.png`)
+- **GX cloud**: compact, FINE-detailed puff, centroid (584,195) = entirely RIGHT+lower, faint
+  (+6/255 peak, ~8800 sky px).
+- **ngx cloud**: big soft black/white BLOCKS, centroid (235,123) = LEFT+upper, bright
+  (+50/255, ~65000 sky px) — the milky wash.
+- Same shape #18, **non-overlapping screen regions**, ngx ~9× brighter + ~7× more coverage.
+
+### RULED OUT this session (do NOT re-chase — each verified)
+- **Projection**: `/ngxproj` = ngx perspective matches Dolphin's VertexShaderManager EXACTLY
+  (max elem delta 0.00000). 3D-tri coverage 84.6%. So geometry projects identically.
+- **Clip**: NOCLIP / NEARONLY / NEARCULL=1 ALL give identical cloud coverage (65110/65084/65103).
+- **Cull/winding**: a RED HERRING. `SUNBRIGHT_NGX_CCW=1` → 111 px (clean black sky, wash gone)
+  but ALSO removes the legit cloud; CW≈nocull≈65000. For a camera-INSIDE sky dome, CW (show whole
+  inside) is correct; CCW just deletes the dome. cull=2=GX_CULL_BACK is correctly authored
+  (J3DMaterial.cpp:807 casts mColorBlock cull byte straight to GXCullMode) and applied.
+- **texgen matrix**: scale-2 is CORRECT — J3DTexMtx::load (J3DTevs.cpp:360) loads mTotalMtx@+0x64
+  (exactly what ngx reads) to XF row id*3+0x1e. xfmem's "identity" is the lagged value
+  ([[xfmem-not-cpu-oracle]]). NOTE: the `/texmtxloads` tee reads the SAME +0x64 ngx does, so it's
+  NOT independent validation — but J3DTexMtx::load confirms +0x64 is the loaded field. So OK.
+- **texcoord source**: J3DShape::loadVtxArray (J3DShape.cpp:213) overrides ONLY POS/NRM/CLR0 with
+  j3dSys per-view buffers; TEXCOORD uses the static array (vdata+0x24) = what ngx reads. Correct.
+- **texcoord format/frac decode**: standard VAT bit layout (ngx_vertex.cpp tex_frac etc).
+- **I4 texture decode**: ngx sets texel ALPHA = intensity (`c4to8(v)*0x01010101`), so the
+  `(t0·t1)²` squaring path is intact. Fragment shader DOES output combiner alpha as o.a
+  (tev_shader.cpp:271 `o = clamp(vec4(prev)/255)`).
+- **per-vertex alpha (RASA)**: ngx reads ring=255/apex=0 from CLR0 (cls=3 fmt=5=RGBA8, base
+  80a80e40, mean a191 = 30×255 + 10×0). ALPHA0 ctrl 0701 = matsrc=VTX lighting-off → RASA = vtx
+  CLR0 alpha (light_vertex line 605 honors this). col0 lighting-off → RASC=white.
+- **blend**: present path reads PE block → SRC_ALPHA/ONE correctly (ngx_present.cpp:463).
+- **depth**: z_test/func/write applied from PE block; GC z→Vulkan maps near=0/far=1 correctly.
+
+### TEVDBG viz (`/ngxonly?ti=10` + `/ngxdbg?m=`, `scratch/screenshots/uv_*.png`)
+- m=1 (tex0 raw): FINE detail blobs across the whole upper sky (octave-1 tiles richly). OK-looking.
+- m=5 (tex1@uv1 raw): ONE big soft white blob (octave-2 low-freq). uv1 (m=7) = smooth ~1-tile
+  gradient. Plausible for scale-0.5.
+- Final = `clamp(2t0t1)²` saturates broadly → washed blocks.
+
+### THE OPEN CONTRADICTION (the frontier)
+Projection matches, geometry shared, every per-material INPUT faithful — yet ti=10's per-pixel
+additive is ~9× brighter and covers the whole upper sky in ngx vs GX's faint localized
+right-side cloud. Since math says identical inputs ⇒ identical output, ONE "verified" must
+actually differ. Prime remaining suspects (UNVERIFIED, in priority order):
+1. **The s1 combiner SCALE (<<1 / ×2)** — get the cloud's EXACT generated GLSL (extend
+   sb_ngx_gen_shader / `/skyshader` to match by tev_index or tex0 addr) and confirm the ×2 and
+   clamp. A wrong scale = 4-16× brightness, the leading explanation for the 9×.
+2. **Per-pixel UV vs GX** — the apex (w=3174) vs ring (w=148000) extreme w-ratio makes
+   perspective-correct UV/alpha "stick" near the apex value. Both engines SHOULD do this
+   identically; if GX clips the off-top apex triangles differently the visible w-range (hence
+   UV frequency + alpha) differs. Need GX's actual per-pixel UV/alpha (xfmem lags — use a
+   synchronous tee or a CPU reference raster from the dumped verts).
+3. **Whether ngx's #18 == GX's #18 geometrically** — lockstep gates by draw-call count; if the
+   counters differ, the comparison is invalid. Cross-check the shape pointer on both sides.
+
+Diagnostics built/used: `/ngxdrawlimit` lockstep, `/ngxverts`, `/gxstate?ti=`, `/ngxshapes`
+(per-shape model pos / w-range), `/ngxdbg?m=` (TEVDBG live), `/ngxonly`, `/abshot2`, `/ngxproj`.
+Scripts in `scratch/fs_ti10*.sh`, `fs_uvviz.sh`, `fs_shape10.sh`, `fs_ngxproj.sh`.
+
+### Update (same session, later) — texcoord arrays + texture decode + fog ALSO ruled out
+Added `/gxstate` dumps for tc0/tc1 vertex-array params + GX FOG (bpmem). Findings:
+- **Both texcoord arrays PRESENT and distinct**: tc0 cls=3 base=80a80e80, tc1 cls=3 base=80a80fe0,
+  both S16 (type=3) frac=8. So the 2nd octave (tc1=TEX1) reads real, separate data — NOT garbage.
+- **Texture decode PARITY-OK**: `/tex` self-test 119/119 cases match Dolphin's oracle decoder.
+- **FOG**: `/gxstate` shows fsel=0 (OFF) — BUT bpmem is GP-side and LAGS in the ngx process (same
+  trap as xfmem), so this is NOT authoritative. Argument against fog anyway: fog hits ALL geometry,
+  and the opaque far sky base (ti=11, w→90000) MATCHES GX — if ngx skipped real fog the sky base
+  would mismatch too. To settle definitively, tee GXSetFog (synchronous) — not yet done.
+
+### THE CONTRADICTION IS COMPLETE (and the integer math is exact)
+Hand-ran the faithful GC integer combiner for mean texel 122 (`textemp=122`, RASA=255 ring):
+s0→CPREV=122, s1 COLOR `((122·123)<<1+128)>>8`=117 (clamp); alpha likewise 117. Blend SRC_ALPHA/ONE
+→ out = 117·(117/255) = **+54**. That MATCHES ngx's measured ~+50. GX measures **+6**. Every input
+to this number is verified identical between engines. So either (a) ngx OVERDRAWS the cloud ~9×
+(but it's captured once, drawn once in the lockstep increment), or (b) GX applies a darkening stage
+ngx skips that is NOT fog/blend/combiner (EFB-copy intensity/gamma? a per-draw GXSetBlendMode/
+GXSetTevColor override the material DL's PE block doesn't carry?), or (c) the seawash/lockstep A/B
+is comparing subtly different things. The 9× ratio is suspiciously clean (= overdraw-9 or a ×8-ish
+scale), worth chasing.
+
+### NEXT STEP (decisive) — CPU reference rasterizer
+Build a Dolphin-free CPU raster of ti=10 from the dumped data (40 verts: clip xyzw via ndc+cw,
+uv0+uv1, alpha; the decoded 8×8 I4 texture; the known combiner; perspective-correct interp; the
+GC near/frustum clip; SRC_ALPHA/ONE accumulate). Compare the reference image to BOTH ngx's render
+and GX's render (`/abshot2` PPMs):
+  - reference ≈ GX (faint/localized), ngx ≠ ref  ⇒ ngx's GPU/shader/present path is the bug
+    (overdraw, a scale, or interp), NOT the inputs.
+  - reference ≈ ngx (washed), GX ≠ ref            ⇒ GX applies an extra darkening stage (fog via
+    synchronous GXSetFog tee / EFB-copy intensity) OR the dumped verts/topology are wrong.
+Blocker: need the primitive TOPOLOGY (the 40-vert pattern: apex recurs every 4, positions repeat
+at idx 5,9,13… — likely QUADS or a STRIP; pull the actual op from the display list) and uv1 per
+vertex (extend `/ngxverts` to dump uv1). Also worth: a synchronous GXSetFog/GXSetBlendMode tee to
+get the AUTHORITATIVE fog/blend (bpmem lags in-process).

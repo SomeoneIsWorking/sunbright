@@ -344,6 +344,8 @@ struct GxStateRec {
     NgxTevState tev{}; bool tev_have = false;
     // TexGen (UV generation) + bound textures — for diagnosing tiling/checkerboard sampling
     TexGenSet tg{}; NgxTexBind tex[8]{};
+    // tc0/tc1 VCD class (0=ABSENT) + array base + type/frac (verify 2nd-octave TEX1 decode)
+    u8 tc0cls=0, tc1cls=0, tc0type=0, tc1type=0, tc0frac=0, tc1frac=0; u32 tc0base=0, tc1base=0;
     float tg_xf[8][8] = {{0}}; bool tg_xf_have[8] = {false};   // xfmem texmtx (row0[4]+row1[4]) per coord, at draw
     struct LRec { bool valid=false; float col[3]={0}; float pos[3]={0}; float dir[3]={0};
                   float cosA[3]={0}; float distA[3]={0}; } lights[8];
@@ -950,6 +952,9 @@ int      g_cur_tev_index = -1;     // material index for the shape being capture
 // VCD class (0=none→white default, 1=direct, 2=idx8, 3=idx16), array base ngx samples, VAT format.
 unsigned g_cur_clr0cls = 0, g_cur_clr0fmt = 0; u32 g_cur_clr0base = 0;
 unsigned g_cur_nrmcls = 0;         // NRM VCD class for the shape being captured (lighting sanity)
+// tc0/tc1 VCD class (0=absent) + array base + type/frac — verify the 2nd-octave (tc1=TEX1) decode
+unsigned g_cur_tex0cls = 0, g_cur_tex1cls = 0; u32 g_cur_tex0base = 0, g_cur_tex1base = 0;
+unsigned g_cur_tex0type = 0, g_cur_tex1type = 0, g_cur_tex0frac = 0, g_cur_tex1frac = 0;
 u32      g_cur_shape = 0;          // address of the shape being captured (for the shred metric)
 unsigned long g_mat_found = 0, g_mat_novt = 0, g_mat_none = 0;
 u32      g_vt_hist_key[8] = {0};    // distinct vtable values seen
@@ -1037,6 +1042,10 @@ bool build_cp(u32 sh, NgxCP& cp) {
         cp.array_base[4 + i]   = r32(vdata + 0x24 + i * 4);
         cp.array_stride[4 + i] = (tex_type[i] == 4) ? 8 : 4;
     }
+    g_cur_tex0cls = (cp.vcd_hi >> 0) & 3; g_cur_tex1cls = (cp.vcd_hi >> 2) & 3;
+    g_cur_tex0base = cp.array_base[4]; g_cur_tex1base = cp.array_base[5];
+    g_cur_tex0type = tex_type[0]; g_cur_tex1type = tex_type[1];
+    g_cur_tex0frac = (cp.vat[0][0] >> 25) & 0x1f; g_cur_tex1frac = (cp.vat[0][1] >> 4) & 0x1f;
     return true;
 }
 
@@ -1252,6 +1261,8 @@ int capture_material() {
         R.cb_addr = g_cur_cb_addr; R.cb_vt = g_cur_cb_vt; for (int k=0;k<0x20;k++) R.cb_raw[k]=g_cur_cb_raw[k];
         R.tev = st; R.tev_have = true;
         R.tg = g_cur_texgen; for (int m=0;m<8;m++) R.tex[m] = g_mat_tex[m];
+        R.tc0cls=(u8)g_cur_tex0cls; R.tc1cls=(u8)g_cur_tex1cls; R.tc0base=g_cur_tex0base; R.tc1base=g_cur_tex1base;
+        R.tc0type=(u8)g_cur_tex0type; R.tc1type=(u8)g_cur_tex1type; R.tc0frac=(u8)g_cur_tex0frac; R.tc1frac=(u8)g_cur_tex1frac;
         // Snapshot the GPU's actual texmtx (xfmem matrix memory) for each texgen coord AT this draw
         // (authoritative in oracle mode) → compare vs ngx's object-model mTotalMtx in /gxstate.
         for (int i=0;i<R.tg.num && i<8;i++) { const u8 sel = R.tg.tg[i].mtxsel;
@@ -2814,8 +2825,21 @@ int sb_ngx_gxstate_dump(char* out, int cap) {
             P.blend_mode, (P.src_factor<8?BF[P.src_factor]:"?"), (P.dst_factor<8?BF[P.dst_factor]:"?"),
             P.alpha_test, (P.comp0<8?CMP[P.comp0]:"?"), P.ref0, P.aop, (P.comp1<8?CMP[P.comp1]:"?"), P.ref1,
             P.z_test, (P.z_func<8?CMP[P.z_func]:"?"), P.z_write, P.cull);
+        // GX FOG (bpmem) — unmodeled by ngx; fsel!=0 fades far fragments toward fog color.
+        // The additive cloud dome is FAR (w→148000); GX fog dims it while ngx draws it full = wash suspect.
+        n += snprintf(out+n, cap-n,
+            "  ── FOG (bpmem GX, ngx does NOT model) ──\n"
+            "    fsel=%u(0=OFF) proj=%u color=(%u,%u,%u) A=%.5f C=%.3f b_mag=%u b_shift=%u\n",
+            (u32)bpmem.fog.c_proj_fsel.fsel.Value(), (u32)bpmem.fog.c_proj_fsel.proj.Value(),
+            (u32)bpmem.fog.color.r, (u32)bpmem.fog.color.g, (u32)bpmem.fog.color.b,
+            bpmem.fog.GetA(), bpmem.fog.GetC(), (u32)bpmem.fog.b_magnitude, (u32)bpmem.fog.b_shift);
         // TexGen (UV generation) + bound textures — tiling/checkerboard diagnosis.
         n += snprintf(out+n, cap-n, "  ── TEXGEN (%d coords) + TEXTURES ──\n", R.tg.num);
+        n += snprintf(out+n, cap-n,
+            "    VTX-ARRAY src: tc0 cls=%u(0=ABSENT) base=%08x type=%u frac=%u | tc1 cls=%u base=%08x type=%u frac=%u\n"
+            "      (tc1 src=TEX1 reads the 2nd texcoord array; cls=0 => mesh has NO TEX1 => ngx reads garbage)\n",
+            R.tc0cls, R.tc0base, R.tc0type, R.tc0frac,
+            R.tc1cls, R.tc1base, R.tc1type, R.tc1frac);
         for (int i=0;i<R.tg.num && i<8;i++) {
             const TexGen& g = R.tg.tg[i];
             n += snprintf(out+n, cap-n, "    tc%d: type=%s src=%d has_mtx=%d mtxsel=%d mtxptr=%08x", i,
