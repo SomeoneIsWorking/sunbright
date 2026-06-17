@@ -9,6 +9,30 @@ a `gp` subcommand, or a new compare/diagnosis mode.** Proper interactive tooling
 render-flow comparison vs the oracle) is a first-class goal, not a side quest. Keep `tools/gp`
 and this file in sync; this file is the durable memory of the probe surface.
 
+## ⚡ Fastest loop: `tools/gp scene` (ONE command — no manual kill/launch/wait dance)
+The renderer-fidelity workflow in a single command. It kills any stale instance, launches ngx
+headless with AUTOSTART, **drives to real gameplay** (waits for the HUD to draw — not a random
+title/transition frame), freezes the aligned GX-vs-ngx A/B, captures `/abshot2`, and prints the
+per-region pixel delta:
+```bash
+tools/gp scene                 # Delfino-plaza gameplay A/B baseline (the number to drive down)
+tools/gp scene TITLE           # freeze at the title logo instead (multi-matrix logo case)
+tools/gp png                   # convert ab2.{gx,ngx}.ppm -> .png to LOOK at them (Read tool)
+```
+Then iterate on the FROZEN frame with zero re-launch (gx oracle held, ngx re-renders each toggle):
+```bash
+tools/gp only 12   ; tools/gp ab2     # render ONLY tev_index 12 + re-diff
+tools/gp skip 12   ; tools/gp ab2     # SKIP it
+tools/gp noblend 0 ; tools/gp ab2     # force every material opaque
+tools/gp dbg tex   ; tools/gp ab2     # shader debug mode (tex|ras|normal|uv0|…)
+tools/gp pixbatch 0.5 0.45            # which captured layers cover an NDC pixel (combiner/blend/tex)
+tools/gp freeze 0                     # release (game keeps running)
+```
+The `/abshot2` capture is ZERO-DRIFT (Dolphin GX XFB + ngx native render from the SAME present),
+so the delta moves only for ngx changes. `tools/gp wait [swaps]` / `waitgameplay` poll readiness.
+⚠ `SUNBRIGHT_STATE=<save>` deterministic load is KNOWN-BROKEN on the native path (vi_end_field_event
+stops firing → never reaches the threshold; and State::LoadAs deadlocks the SDL thread). Use AUTOSTART.
+
 ## Differential render harness: ngx vs the gx oracle (the key capability)
 Run BOTH renderers concurrently and diff them LIVE to tell real native-renderer bugs from
 faithful rendering (animations, real game state):

@@ -29,7 +29,7 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BIN="${SUNBRIGHT_BIN:-$HERE/build-j3dvirt/sunbright}"
+BIN="${SUNBRIGHT_BIN:-$HERE/build/sunbright}"   # current single build dir (build-j3dvirt was the retired flip branch)
 NGX_PORT=17654; GX_PORT=17655
 SHOTS="$HERE/scratch/screenshots"
 
@@ -93,8 +93,68 @@ print(f"  meanAbsDiff={mad:.1f}  side-by-side -> {sys.argv[3].split('/')[-1]} (l
 PY
 }
 
+# Poll the ngx instance until the native renderer has captured a real 3D scene
+# (frame_swaps >= target). Returns 0 when reached, 1 on timeout. waitscene [target] [maxsecs]
+waitscene() {
+    local target="${1:-60}" maxs="${2:-160}" p="${GP_ONLY:-$NGX_PORT}"
+    for i in $(seq 1 $((maxs/2))); do
+        local fs; fs=$(q "$p" /ngxshape 2>/dev/null | grep -o 'frame_swaps=[0-9]*' | head -1)
+        fs=${fs#frame_swaps=}; [ -n "$fs" ] && [ "$fs" -ge "$target" ] 2>/dev/null && { echo "[ngx] 3D scene reached (frame_swaps=$fs, ~$((i*2))s)"; return 0; }
+        sleep 2
+    done
+    echo "[ngx] TIMEOUT waiting for frame_swaps>=$target"; return 1
+}
+# Poll until the gameplay HUD is drawing (hud_quads>0 in /ngxpresentlive) — a robust "reached
+# real gameplay" signal (coin/shine counters), unlike a raw frame_swaps count which lands on a
+# nondeterministic title/transition frame. waitgameplay [maxsecs]
+waitgameplay() {
+    local maxs="${1:-200}" p="${GP_ONLY:-$NGX_PORT}"
+    for i in $(seq 1 $((maxs/2))); do
+        local hq; hq=$(q "$p" /ngxpresentlive 2>/dev/null | grep -o 'hud_quads=[0-9]*' | head -1)
+        hq=${hq#hud_quads=}; [ -n "$hq" ] && [ "$hq" -gt 0 ] 2>/dev/null && { echo "[ngx] gameplay HUD up (hud_quads=$hq, ~$((i*2))s)"; return 0; }
+        sleep 2
+    done
+    echo "[ngx] TIMEOUT waiting for gameplay HUD"; return 1
+}
+# Run the per-region pixel-delta number on the latest abshot2 PPMs (the real fidelity metric).
+abdiff() { python3 "$HERE/tools/render/ab_diff.py" "$SHOTS/ab2.gx.ppm" "$SHOTS/ab2.ngx.ppm" 2>&1 | head -8; }
+
 cmd="${1:-help}"; shift || true
 case "$cmd" in
+
+scene)    # ONE-SHOT: kill stale -> launch ngx headless -> reach the scene -> freeze the aligned
+          # GX-vs-ngx A/B -> abshot2 -> per-region delta. Extra args = launch ENV.
+          #   gp scene                          # FASTBOOT to Delfino-plaza GAMEPLAY (DETERMINISTIC, reliable)
+          #   gp scene TITLE                    # AUTOSTART, freeze at the title logo (multi-matrix logo case)
+          #   gp scene SUNBRIGHT_NGX_TEVDBG=ras # pass debug env through
+          # gameplay uses FASTBOOT (straight into File 1 Delfino Plaza) — same spawn every run, so it's
+          # the reproducible A/B. AUTOSTART is unreliable (stalls at file-select). SUNBRIGHT_STATE save-
+          # load is KNOWN-BROKEN on the native path (see main_sdl.cpp).
+    mode=gameplay; rest=()
+    for a in "$@"; do case "$a" in
+        TITLE) mode=title;;
+        SWAPS=*) mode="swaps:${a#SWAPS=}";;
+        *) rest+=("$a");;
+    esac; done
+    pkill -x sunbright 2>/dev/null; sleep 1
+    case "$mode" in
+        gameplay) launch_one ngx SUNBRIGHT_FASTBOOT=1 "${rest[@]}" || exit 1
+                  waitgameplay 200 || { echo "(gameplay HUD not reached — check scratch/logs/gp.ngx.log)"; exit 1; };;
+        title)    launch_one ngx SUNBRIGHT_AUTOSTART=1 "${rest[@]}" || exit 1; waitscene 60 || exit 1;;
+        swaps:*)  launch_one ngx SUNBRIGHT_AUTOSTART=1 "${rest[@]}" || exit 1; waitscene "${mode#swaps:}" 240 || exit 1;;
+    esac
+    echo "[freeze] $(q "$NGX_PORT" '/ngxfreeze?on=1')"
+    echo "[abshot2] $(q "$NGX_PORT" /abshot2)"; abdiff
+    ;;
+
+wait)     waitscene "${1:-60}" "${2:-160}";;
+freeze)   q "${GP_ONLY:-$NGX_PORT}" "/ngxfreeze?on=${1:-1}";;        # 1=latch aligned A/B, 0=release
+only)     q "${GP_ONLY:-$NGX_PORT}" "/ngxonly?ti=${1:--1}";;          # render ONLY this tev_index (-1 off)
+skip)     q "${GP_ONLY:-$NGX_PORT}" "/ngxskip?ti=${1:--1}";;          # SKIP this tev_index (-1 off)
+noblend)  q "${GP_ONLY:-$NGX_PORT}" "/ngxnoblend?on=${1:--1}";;       # 0=force opaque, -1=per-material
+pixbatch) q "${GP_ONLY:-$NGX_PORT}" "/pixbatch?x=${1:?usage: gp pixbatch <ndcx> <ndcy>}&y=${2:?need y}";;
+ab2)      echo "$(q "$NGX_PORT" /abshot2)"; abdiff;;                  # re-capture frozen A/B + delta
+png)      for r in gx ngx; do magick "$SHOTS/ab2.$r.ppm" "$SHOTS/ab2.$r.png" 2>/dev/null && echo "ab2.$r.png"; done;;
 
 launch)
     what="${1:-ngx}"; [ $# -gt 0 ] && shift || true
@@ -158,7 +218,10 @@ status)   for p in $NGX_PORT $GX_PORT; do up "$p" && echo "$(role_of $p): up (po
 kill)     pkill -x sunbright 2>/dev/null && echo killed || echo "not running";;
 
 *)  sed -n '2,40p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
-    echo; echo "commands: launch [ngx|gx|both] [ENV=v..] | pad <combo> [ms] | shot|compare [name] |"
+    echo; echo "ONE-SHOT:  gp scene [SWAPS=N] [ENV=v..]   # launch->wait 3D scene->freeze->A/B delta"
+    echo "commands: launch [ngx|gx|both] [ENV=v..] | scene | wait [swaps] | pad <combo> [ms] |"
+    echo "          freeze [0|1] | only <ti> | skip <ti> | noblend [0|-1] | pixbatch <x> <y> |"
+    echo "          ab2 | png | shot|compare [name] | abshot2 [name] | dbg <mode> |"
     echo "          gx <subcmd> | ngx | present | metrics | drawstats | r <hex> [n] | fn <hex> |"
     echo "          get </path> | help2 | status | kill";;
 esac

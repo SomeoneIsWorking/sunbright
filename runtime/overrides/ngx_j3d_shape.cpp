@@ -1571,6 +1571,21 @@ SUNBRIGHT_OVERRIDE(ov_gxloadlightobjimm, 0x8035f26cu) {
     if (RecompFunc o = recomp_raw(0x8035f26cu)) o(cpu); else call_ppc(cpu, cpu.lr);
 }
 
+// Synchronous PNMTXIDX capture from the fork's LoadIndexedXF seam (interp_capture.cpp's
+// sb_hook_xf_indexed). Records the EXACT pos-matrix Dolphin loads — source = guest RAM at
+// array_base + stride*index (host-order floats), slot = XF dest word offset / 4. Correct base
+// AND correct timing (decoded in GX-stream order on the guest thread, before capture(sh)), unlike
+// the GXLoadPosMtxIndx function-hook reconstruction below (stale base → garbage). This is THE fix
+// for multi-matrix (skinned: Mario/NPCs/logo) shapes collapsing into giant overdraw.
+extern "C" void ngx_capture_indexed_posmtx(unsigned base, unsigned stride, unsigned index, unsigned address) {
+    const unsigned slot = address / 4;
+    if (slot + 2 >= 64) return;
+    const unsigned a = ((base & 0x03FFFFFFu) | 0x80000000u) + stride * index;
+    for (unsigned r = 0; r < 3; r++)
+        for (unsigned c = 0; c < 4; c++) g_posmtx[slot + r][c] = rf(a + (r * 4 + c) * 4);
+    for (unsigned r = 0; r < 3; r++) g_posmtx_src[slot + r] = 3;   // 3 = seam (Dolphin-exact)
+}
+
 // GXLoadPosMtxImm(f32 mtx[3][4], u32 id) @ 0x80362e0c — capture the position-matrix memory for
 // PNMTXIDX (multi-matrix/skinned) shapes. id = the matrix-memory ROW (id*4 = float address);
 // it equals the per-vertex PNMTXIDX byte. mtx is a guest 3×4 row-major matrix (12 floats).
@@ -1603,12 +1618,12 @@ SUNBRIGHT_OVERRIDE(ov_gxloadposmtxindx, 0x80362e48u) {
         // Args (GXLoadPosMtxIndx(u16 mtx_indx, u32 id)): gpr[3]=mtx_indx = ARRAY index into the
         // pos-matrix array; gpr[4]=id = the XF destination slot (= the per-vertex PNMTXIDX byte;
         // J3DSys::loadPosMtxIndx passes id*3, the loop slot). The matrix is NOT in the args — it
-        // lives at array_base + mtx_indx*stride. The array base (CPArray::XF_A) is set SYNCHRONOUSLY
-        // by J3DShape::draw → setModelDrawMtx (line 230, BEFORE the per-element load loop) to
-        // j3dSys.mCurrentDrawMtx = mDrawMatrices[view] (J3DSYS+0x104), stride sizeof(Mtx)=48. The
-        // entries are already MODELVIEW (object→eye), same space the single-matrix path uses.
-        // This hook fires DURING the real draw (run first by the J3DShape::draw tee) so g_posmtx is
-        // populated before transform_eye reads it — fully synchronous, no GPU-thread/xfmem lag.
+        // lives at array_base + mtx_indx*stride. The correct array base (CPArray::XF_A) is set inside
+        // the shape's pre-built display list (GXCallDisplayList), processed by Dolphin's CP via the
+        // FIFO — so it lives in g_main_cp_state, which LAGS on the emu thread (reading it here gave a
+        // stale/freed base → garbage matrices → giant overdraw, WORSE than the wrong-but-finite
+        // J3DSYS+0x104 baseline). Synchronous indexed-matrix capture is handled at the fork's
+        // LoadIndexedXF seam instead (the real Dolphin load); this baseline is left until that lands.
         const u32 index = cpu.gpr[3] & 0xFFFF, slot = cpu.gpr[4];
         constexpr u32 J3DSYS_ = 0x804045DCu;
         const u32 base = mem_r32(J3DSYS_ + 0x104);
