@@ -89,6 +89,26 @@ void decode_dxt(uint32_t* dst, const uint8_t* s, int pitch) {
 
 }  // namespace
 
+// Block (tile) dims per format — MUST match the iteration steps in sb_tex_decode below.
+void sb_tex_block_dims(int fmt, int* bw, int* bh) {
+    int w, h;
+    switch (fmt) {
+    case SB_TF_I4:                  w = 8; h = 8; break;
+    case SB_TF_CMPR:                w = 8; h = 8; break;
+    case SB_TF_C4:                  w = 8; h = 8; break;
+    case SB_TF_I8: case SB_TF_IA4:  w = 8; h = 4; break;
+    case SB_TF_C8:                  w = 8; h = 4; break;
+    case SB_TF_IA8: case SB_TF_RGB565: case SB_TF_RGB5A3:
+    case SB_TF_RGBA8: case SB_TF_C14X2:
+                                    w = 4; h = 4; break;
+    default:                        w = 8; h = 4; break;
+    }
+    if (bw) *bw = w; if (bh) *bh = h;
+}
+
+int sb_tex_pad_w(int w, int fmt) { int bw, bh; sb_tex_block_dims(fmt, &bw, &bh); return (w + bw - 1) / bw * bw; }
+int sb_tex_pad_h(int h, int fmt) { int bw, bh; sb_tex_block_dims(fmt, &bw, &bh); return (h + bh - 1) / bh * bh; }
+
 int sb_tex_size_bytes(int width, int height, int fmt) {
     int nibbles;  // per texel
     switch (fmt) {

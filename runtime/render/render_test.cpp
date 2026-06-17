@@ -19,6 +19,7 @@
 #include "ngx_clip.h"
 #include "ngx_light.h"
 #include "tev_shader.h"
+#include "tex_decode.h"
 
 // ── Units under test (self-test entry points defined in their own .cpp) ──────
 extern int sb_ngx_vertex_selftest(char* out, int cap);   // runtime/ngx/ngx_vertex.cpp
@@ -252,6 +253,56 @@ int test_tev_swizzle(char* rep, int cap) {
     return fails;
 }
 
+// ── texture block-padding / no-shear unit ────────────────────────────────────
+// GC textures tile at the FORMAT's block dims; sb_tex_decode uses `width` as both the
+// tile-iteration bound and the dst row stride, so the caller MUST pad the logical width
+// up to the format's block. Padding to a fixed 8 over-strides the 4-wide formats (a
+// width ≡4 mod 8 reads one extra tile per row → DIAGONAL SHEAR — the title-logo RGB5A3
+// w=460 bug). This test asserts the pad helper AND end-to-end that a 12-wide (≡4 mod 8)
+// RGB5A3 image decodes WITHOUT shear (each tile column is uniform across rows).
+int test_tex_pad(char* rep, int cap) {
+    int pos = 0, fails = 0;
+    auto failf = [&](const char* msg) { fails++; if (pos < cap) pos += snprintf(rep + pos, cap - pos, "%s", msg); };
+
+    // 1. block-aligned pad per format — the mapping whose mistake caused the shear.
+    struct { int w, fmt, exp; const char* n; } pc[] = {
+        {460, SB_TF_RGB5A3, 460, "RGB5A3 460"},   // 4-block: stays 460 (NOT 464)
+        {460, SB_TF_IA4,    464, "IA4 460"},       // 8-block: rounds to 464
+        {12,  SB_TF_RGBA8,  12,  "RGBA8 12"},      // 4-block
+        {12,  SB_TF_I4,     16,  "I4 12"},         // 8-block
+        {225, SB_TF_IA4,    232, "IA4 225"},       // the clean ©2002 case
+        {460, SB_TF_RGB565, 460, "RGB565 460"},
+    };
+    for (auto& c : pc) { int got = sb_tex_pad_w(c.w, c.fmt);
+        if (got != c.exp) { char b[96]; snprintf(b,sizeof b,"FAIL pad_w %s got=%d exp=%d\n", c.n, got, c.exp); failf(b); } }
+
+    // 2. End-to-end no-shear: a 12×4 RGB5A3 image (logical w=12 ≡4 mod 8, 3 tiles wide).
+    // Each 4-wide tile is a SOLID distinct colour. Decoded with the (padded) width the
+    // shipping code computes, every column must be constant down its 4 rows and the three
+    // tiles must be distinct. A fixed-8 pad (→16) would read a 4th (nonexistent) tile and
+    // shift the dst stride → columns no longer constant = shear → this goes red.
+    {
+        const int W = 12, H = 4;
+        // RGB5A3 opaque (top bit set), R5 = 4/8/12 for tiles 0/1/2 → distinct big-endian values.
+        auto v_for = [](int tile) -> uint16_t { return (uint16_t)(0x8000 | ((4 + 4*tile) << 10)); };
+        uint8_t src[3 * 32];   // 3 tiles × 4×4 texels × 2 bytes
+        for (int tile = 0; tile < 3; tile++) {
+            uint16_t V = v_for(tile);
+            uint8_t hi = (uint8_t)(V >> 8), lo = (uint8_t)(V & 0xFF);  // big-endian store (decode bswaps)
+            for (int b = 0; b < 16; b++) { src[tile*32 + b*2] = hi; src[tile*32 + b*2 + 1] = lo; }
+        }
+        const int pw = sb_tex_pad_w(W, SB_TF_RGB5A3);   // shipping pad (must be 12, not 16)
+        uint32_t dst[12 * 4] = {0};
+        sb_tex_decode(dst, src, pw, sb_tex_pad_h(H, SB_TF_RGB5A3), SB_TF_RGB5A3, nullptr, 0);
+        // Each column constant down rows; the three tile-columns distinct.
+        for (int x = 0; x < W; x++)
+            for (int y = 1; y < H; y++)
+                if (dst[y*W + x] != dst[x]) { char b[80]; snprintf(b,sizeof b,"FAIL shear col %d row %d\n", x, y); failf(b); }
+        if (dst[0] == dst[4] || dst[4] == dst[8] || dst[0] == dst[8]) failf("FAIL tiles not distinct (decode collapsed)\n");
+    }
+    return fails;
+}
+
 struct Unit { const char* name; int (*run)(char* rep, int cap); };
 
 const Unit kUnits[] = {
@@ -261,6 +312,7 @@ const Unit kUnits[] = {
     {"frustum_clip",  test_clip_frustum},
     {"lighting",      test_lighting},
     {"tev_swizzle",   test_tev_swizzle},
+    {"tex_pad",       test_tex_pad},
 };
 
 }  // namespace

@@ -191,6 +191,16 @@ float         g_shred_ndc_ebb[6] = {0};       // eye-space bbox of the offending
 unsigned      g_shred_ndc_nv = 0;             // vert count of the offending shape
 int           g_shred_ndc_projtype = -1;      // g_proj_type at capture (0=persp,>0=ortho)
 float         g_shred_ndc_P[16] = {0};        // the projection ngx applied to it
+
+// ALL-SHAPE POST-CLIP NDC-spread shred metric (not gated on g_cur_pnmtx) — catches single-matrix
+// shred like the title logo. NDC edge over the EMITTED (clipped) triangles of EVERY shape, split
+// by projection type, so I can tell whether the visible shred is perspective or ortho geometry
+// and which material (cc/tex0) is exploding.
+float         g_shred_all_max = 0.f; u32 g_shred_all_shape = 0; int g_shred_all_projtype = -1;
+bool          g_shred_all_pnmtx = false; u16 g_shred_all_cc = 0xFFFF; u32 g_shred_all_tex0 = 0;
+float         g_shred_all_ndc[6] = {0}, g_shred_all_triw[3] = {0};   // the offending emitted tri
+unsigned long g_shred_all_n[4] = {0,0,0,0};            // <2,<8,<40,≥40 over ALL emitted tris
+unsigned long g_shred_all_npersp = 0, g_shred_all_northo = 0;   // worst-edge≥40 count by projtype
 // POST-CLIP shred: NDC edge over the geometry ACTUALLY EMITTED to the GPU (after ngx_clip_near_tri
 // + Vulkan will scissor). This is the TRUE visible shred — the pre-clip metric over-reports verts
 // the clipper removes. If post>>0 the emitted triangles really do span the screen = visible spikes.
@@ -1380,6 +1390,32 @@ void transform_eye() {
                         if(d>g_shred_post_max){ g_shred_post_max=d; g_shred_post_shape=g_cur_shape; } }
                 }
             }
+            // ALL-SHAPE post-clip shred metric: same, but for EVERY shape (single-matrix logo
+            // too) — split by projection type. This is the truly-emitted, GPU-rasterized geometry,
+            // so a big edge here = visible on-screen shred (unlike the pre-clip metric which counts
+            // straddlers the clipper removes).
+            {
+                auto ndc=[&](const float* v,float&X,float&Y){ const float w=v[3]; X=(w>1e-6f)?v[0]/w:0.f; Y=(w>1e-6f)?v[1]/w:0.f; };
+                for (int f=0; f<ntri; f++) {
+                    const float* tri[3]={poly[0],poly[f+1],poly[f+2]};
+                    bool ok=true; for(int e=0;e<3;e++) if(tri[e][3]<=1e-6f) ok=false;
+                    if(!ok) continue;
+                    float wmax=0.f;
+                    for(int e=0;e<3;e++){ float x0,y0,x1,y1; ndc(tri[e],x0,y0); ndc(tri[(e+1)%3],x1,y1);
+                        const float d=std::sqrt((x0-x1)*(x0-x1)+(y0-y1)*(y0-y1));
+                        if(d>wmax)wmax=d;
+                        if(d>0.f) g_shred_all_n[d<2.f?0:d<8.f?1:d<40.f?2:3]++;
+                    }
+                    if(wmax>=40.f){ if(g_proj_type)g_shred_all_northo++; else g_shred_all_npersp++; }
+                    if(wmax>g_shred_all_max){ g_shred_all_max=wmax; g_shred_all_shape=g_cur_shape;
+                        g_shred_all_projtype=(int)g_proj_type; g_shred_all_pnmtx=g_cur_pnmtx;
+                        g_shred_all_cc=g_cur_chan.valid?g_cur_chan.color0:0xFFFF;
+                        g_shred_all_tex0=g_mat_tex[0].addr;
+                        for(int e=0;e<3;e++){ float X,Y; ndc(tri[e],X,Y);
+                            g_shred_all_ndc[e*2]=X; g_shred_all_ndc[e*2+1]=Y; g_shred_all_triw[e]=tri[e][3]; }
+                    }
+                }
+            }
         }
     }
 }
@@ -2459,6 +2495,13 @@ int sb_ngx_shape_dump(char* out, int cap) {
         g_shred_ndc_P[0],g_shred_ndc_P[1],g_shred_ndc_P[2],g_shred_ndc_P[3],g_shred_ndc_P[4],g_shred_ndc_P[5],g_shred_ndc_P[6],g_shred_ndc_P[7],
         g_shred_ndc_P[8],g_shred_ndc_P[9],g_shred_ndc_P[10],g_shred_ndc_P[11],g_shred_ndc_P[12],g_shred_ndc_P[13],g_shred_ndc_P[14],g_shred_ndc_P[15],
         g_shred_post_max, g_shred_post_shape, g_shred_post_n[0], g_shred_post_n[1], g_shred_post_n[2], g_shred_post_n[3]);
+    n += snprintf(out+n, cap-n,
+        "  SHRED metric (ALL shapes, POST-CLIP emitted NDC edge): max=%.2f @shape=%08x projtype=%d(0=persp) pnmtx=%d cc=%04x tex0=%08x | buckets <2=%lu <8=%lu <40=%lu >=40=%lu | >=40 by projtype: persp=%lu ortho=%lu\n"
+        "    @max emitted tri: ndc0=(%.2f,%.2f) ndc1=(%.2f,%.2f) ndc2=(%.2f,%.2f)  w=(%.4f,%.4f,%.4f)\n",
+        g_shred_all_max, g_shred_all_shape, g_shred_all_projtype, (int)g_shred_all_pnmtx, g_shred_all_cc, g_shred_all_tex0,
+        g_shred_all_n[0], g_shred_all_n[1], g_shred_all_n[2], g_shred_all_n[3], g_shred_all_npersp, g_shred_all_northo,
+        g_shred_all_ndc[0],g_shred_all_ndc[1],g_shred_all_ndc[2],g_shred_all_ndc[3],g_shred_all_ndc[4],g_shred_all_ndc[5],
+        g_shred_all_triw[0],g_shred_all_triw[1],g_shred_all_triw[2]);
     n += snprintf(out+n, cap-n,
         "  up-facing reg-lit illum (visible floor/ground): avg=%.3f max=%.3f (n=%lu) @max amb=%.3f ndl=%.3f\n",
         g_uplit_n?g_uplit_sum/g_uplit_n:0.0, g_uplit_max, g_uplit_n, g_uplit_amb, g_uplit_ndl);

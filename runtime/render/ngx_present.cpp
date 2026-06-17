@@ -465,6 +465,11 @@ VkPipeline PresentRenderer::pipeline_for(const NgxTevState& st) {
 VkImageView PresentRenderer::texture_for(const NgxTexBind& t, VkCommandBuffer up_cmd,
                                          std::vector<VkBuffer>& stg_bufs, std::vector<VkDeviceMemory>& stg_mems) {
     if (t.addr == 0 || t.w == 0 || t.h == 0) return white_view;
+    // GC textures tile at the FORMAT's block dims and the decode uses width as both the
+    // tile-iteration bound and the dst row stride — so it must run on the block-padded
+    // size (a fixed 8 over-strides the 4-wide formats → diagonal shear; the title-logo
+    // RGB5A3 w=460 bug). Pad here so every caller (3D batches + J2D quads) is correct.
+    const int pw = sb_tex_pad_w(t.w, t.fmt), ph = sb_tex_pad_h(t.h, t.fmt);
     const uint64_t key = ((uint64_t)t.addr << 16) ^ ((uint64_t)t.fmt << 56) ^
                          ((uint64_t)t.w << 40) ^ ((uint64_t)t.h << 28) ^ ((uint64_t)t.tlut_addr << 4);
     auto it = texcache.find(key);
@@ -472,7 +477,7 @@ VkImageView PresentRenderer::texture_for(const NgxTexBind& t, VkCommandBuffer up
 
     const uint8_t* host = sb_ram_fast(t.addr);
     if (!host) return white_view;
-    const int srcbytes = sb_tex_size_bytes(t.w, t.h, t.fmt);
+    const int srcbytes = sb_tex_size_bytes(pw, ph, t.fmt);
     if (srcbytes <= 0 || (t.addr & 0x01FFFFFFu) + (uint32_t)srcbytes > 0x1800000u) return white_view;
     const uint8_t* tlut = nullptr;
     if (t.fmt == SB_TF_C4 || t.fmt == SB_TF_C8 || t.fmt == SB_TF_C14X2) {
@@ -480,12 +485,12 @@ VkImageView PresentRenderer::texture_for(const NgxTexBind& t, VkCommandBuffer up
         if (t.tlut_addr && (t.tlut_addr & 0x01FFFFFFu) + entries * 2u <= 0x1800000u) tlut = sb_ram_fast(t.tlut_addr);
         if (!tlut) return white_view;
     }
-    const size_t rgba = (size_t)t.w * t.h * 4;
+    const size_t rgba = (size_t)pw * ph * 4;
     VkBuffer sbuf; VkDeviceMemory smem;
     if (!make_buffer(dev, phys, sbuf, smem, rgba, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) return white_view;
     void* p = nullptr; vkMapMemory(dev, smem, 0, rgba, 0, &p);
-    sb_tex_decode((uint32_t*)p, host, t.w, t.h, t.fmt, tlut, t.tlut_fmt);
+    sb_tex_decode((uint32_t*)p, host, pw, ph, t.fmt, tlut, t.tlut_fmt);
     vkUnmapMemory(dev, smem);
     stg_bufs.push_back(sbuf); stg_mems.push_back(smem);
 
@@ -494,9 +499,9 @@ VkImageView PresentRenderer::texture_for(const NgxTexBind& t, VkCommandBuffer up
     // bright tile faces → washed-out. Generate a box-filtered mip chain (vkCmdBlitImage, linear)
     // and sample it trilinearly. (GC TIMGs can store mips; box-generated mips approximate them and
     // fix the aliasing — the dominant cause of the ngx 3D wash.)
-    uint32_t mips = 1; { int m = t.w > t.h ? t.w : t.h; while (m > 1) { m >>= 1; mips++; } }
+    uint32_t mips = 1; { int m = pw > ph ? pw : ph; while (m > 1) { m >>= 1; mips++; } }
     TexEntry te{};
-    if (!make_dev_image(dev, phys, te.img, te.mem, te.view, VK_FORMAT_R8G8B8A8_UNORM, t.w, t.h,
+    if (!make_dev_image(dev, phys, te.img, te.mem, te.view, VK_FORMAT_R8G8B8A8_UNORM, pw, ph,
         VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
         VK_IMAGE_ASPECT_COLOR_BIT, mips)) return white_view;
     auto bar = [&](uint32_t lvl, VkImageLayout f, VkImageLayout to, VkAccessFlags sa, VkAccessFlags da, VkPipelineStageFlags ssf, VkPipelineStageFlags dsf) {
@@ -508,10 +513,10 @@ VkImageView PresentRenderer::texture_for(const NgxTexBind& t, VkCommandBuffer up
     // Upload mip0.
     bar(0, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
-    VkBufferImageCopy c{}; c.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}; c.imageExtent = {(uint32_t)t.w, (uint32_t)t.h, 1};
+    VkBufferImageCopy c{}; c.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}; c.imageExtent = {(uint32_t)pw, (uint32_t)ph, 1};
     vkCmdCopyBufferToImage(up_cmd, sbuf, te.img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
     // Generate mips by successive linear blits (i-1 → i), box-filtering down the chain.
-    int mw = t.w, mh = t.h;
+    int mw = pw, mh = ph;
     for (uint32_t i = 1; i < mips; i++) {
         bar(i - 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
             VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
@@ -556,10 +561,10 @@ void PresentRenderer::prepare_j2d(VkCommandBuffer up_cmd, std::vector<VkBuffer>&
         const J2dQuad& q = quads[i];
         if (sb_tex_is_paletted(q.fmt)) continue;
         if (q.x1 <= q.x0 || q.y1 <= q.y0) continue;
-        // GC textures store rows padded to the format's block dims; pad to a multiple
-        // of 8 (the largest block) so the tiled decode never over-runs (same as j2d_render).
+        // Pass the logical texture dims; texture_for() pads to the format's block dims
+        // (a fixed-8 pad over-strides the 4-wide formats → diagonal shear, the logo bug).
         NgxTexBind tb{};
-        tb.addr = q.data; tb.w = (uint16_t)((q.w + 7) & ~7); tb.h = (uint16_t)((q.h + 7) & ~7);
+        tb.addr = q.data; tb.w = (uint16_t)q.w; tb.h = (uint16_t)q.h;
         tb.fmt = (uint8_t)q.fmt; tb.tlut_addr = 0; tb.tlut_fmt = 0;
         VkImageView view = texture_for(tb, up_cmd, stg_bufs, stg_mems);
         if (view == VK_NULL_HANDLE) continue;

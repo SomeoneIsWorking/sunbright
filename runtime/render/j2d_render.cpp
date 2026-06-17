@@ -125,9 +125,9 @@ int sb_j2d_render(char* outbuf, int cap) {
     for (int i = 0; i < nq; i++) {
         const J2dQuad& q = quads[i];
         if (sb_tex_is_paletted(q.fmt)) { rep("  quad %d: SKIP paletted fmt=%d (%dx%d)\n", i, q.fmt, q.w, q.h); continue; }
-        // GC textures are stored padded to the format's block dims; pad to a
-        // multiple of 8 (the largest block) so the tiled decode never over-runs.
-        const int wp = (q.w + 7) & ~7, hp = (q.h + 7) & ~7;
+        // GC textures are stored padded to the FORMAT'S block dims — pad to the actual
+        // block, not a fixed 8 (which over-strides the 4-wide formats → diagonal shear).
+        const int wp = sb_tex_pad_w(q.w, q.fmt), hp = sb_tex_pad_h(q.h, q.fmt);
         const int src_bytes = sb_tex_size_bytes(wp, hp, q.fmt);
         if (src_bytes <= 0 || src_bytes > (8 << 20)) { rep("  quad %d: bad size %d\n", i, src_bytes); continue; }
         std::vector<uint8_t> raw(src_bytes);

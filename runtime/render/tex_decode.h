@@ -47,6 +47,17 @@ enum SbTlutFormat {
     SB_TL_RGB5A3 = 0x2,
 };
 
+// Block (tile) dimensions for `fmt` — the unit the format tiles at. Callers MUST pad
+// the texture's logical width/height UP to these before passing them to sb_tex_decode /
+// sb_tex_size_bytes (the decode iterates whole tiles and uses width as the dst row
+// stride). Padding to a fixed 8 is WRONG for the 4-wide formats (RGB5A3/IA8/RGB565/
+// RGBA8/C14X2): a width ≡4 (mod 8) over-strides the decode → diagonal shear.
+void sb_tex_block_dims(int fmt, int* bw, int* bh);
+
+// Round a logical dimension up to the format's block (convenience over sb_tex_block_dims).
+int sb_tex_pad_w(int w, int fmt);
+int sb_tex_pad_h(int h, int fmt);
+
 // Bytes the source occupies for a (block-padded) width×height image in `fmt`.
 int sb_tex_size_bytes(int width, int height, int fmt);
 

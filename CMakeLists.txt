@@ -97,6 +97,7 @@ add_executable(sunbright-render-test
     runtime/render/render_test.cpp
     runtime/ngx/ngx_vertex.cpp
     runtime/ngx/ngx_decode.cpp
+    runtime/render/tex_decode.cpp
 )
 target_include_directories(sunbright-render-test PRIVATE runtime runtime/ngx runtime/render)
 target_compile_options(sunbright-render-test PRIVATE -Wall -Wextra -Wno-unused-parameter)
