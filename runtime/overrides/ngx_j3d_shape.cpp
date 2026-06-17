@@ -936,6 +936,7 @@ float         g_eye_min[3] = {0, 0, 0}, g_eye_max[3] = {0, 0, 0};
 float         g_proj[16] = {0};
 bool          g_have_proj = false;
 unsigned      g_proj_type = 0;     // 0=perspective, >0=orthographic (the live projection class)
+unsigned      g_proj_pass = 0;     // monotone per-frame projection-pass index (reset at publish; /ngxshapes)
 // Sky-shape (cc==0x0701, the vtx-color gradient) transform latch: the modelview + projection
 // + eye/clip of its FIRST vertex, captured at its draw — to diagnose the mis-projection.
 struct SkyXf { bool have=false; float M[12]={0}; float P[16]={0}; float pos0[3]={0};
@@ -976,6 +977,7 @@ struct ShapeRec {
     float nxmin, nxmax, nymin, nymax;   // NDC bbox over w>eps verts
     float wmin, wmax; unsigned nfront;  // clip-w range + count of w>eps verts
     float tx, ty, tz, det3;             // single-matrix (pnmtx=0) modelview translation + 3x3 det
+    unsigned pass; unsigned char projtype;   // projection-pass index this shape drew under + ortho?
 };
 std::vector<ShapeRec> g_shaperec[2];
 int                          g_read_front = 0; // latched by ngx_snap_verts for batches
@@ -1256,6 +1258,7 @@ void transform_eye() {
         rec.tex0 = g_mat_tex[0].addr; rec.pnmtx = g_cur_pnmtx ? 1 : 0; rec.single_idx = g_single_idx;
         rec.tx = m[3]; rec.ty = m[7]; rec.tz = m[11];
         rec.det3 = m[0]*(m[5]*m[10]-m[6]*m[9]) - m[1]*(m[4]*m[10]-m[6]*m[8]) + m[2]*(m[4]*m[9]-m[5]*m[8]);
+        rec.pass = g_proj_pass; rec.projtype = (unsigned char)g_proj_type;
         rec.nxmin = rec.nymin = 1e30f; rec.nxmax = rec.nymax = -1e30f;
         rec.wmin = 1e30f; rec.wmax = -1e30f; rec.nfront = 0;
         for (size_t vi = 0; vi < nv; vi++) {
@@ -1688,6 +1691,7 @@ float g_last_persp[16] = {0};   // ngx's last PERSPECTIVE projection — compare
 void ngx_set_projection(const float* m44, unsigned type) {
     if (type != 0) { g_proj_ortho++; g_last_ortho_type = type; for (int i=0;i<16;i++) g_last_ortho[i]=m44[i]; }
     else { g_proj_persp++; for (int i=0;i<16;i++) g_last_persp[i]=m44[i]; }
+    g_proj_pass++;
     g_proj_type = type;
     for (int i = 0; i < 16; i++) g_proj[i] = m44[i];
     g_have_proj = true;
@@ -1739,6 +1743,7 @@ void ngx_frame_publish() {
     g_snap_count[g_cur] = 0;
     g_batches[g_cur].clear();
     g_shaperec[g_cur].clear();
+    g_proj_pass = 0;
     if (g_sky.have) g_sky_pub = g_sky;   // publish this frame's sky breakdown
     g_sky = SkyLatch{};                  // reset for the next frame
     if (g_skyxf.have) g_skyxf_pub = g_skyxf;
@@ -2282,8 +2287,8 @@ int sb_ngx_shapes_dump(char* out, int cap) {
         if (n >= cap - 256 || shown >= 60) break;
         const ShapeRec& r = rs[i];
         n += snprintf(out + n, cap - n,
-            "  sh=%08x nv=%-5u cc=%04x tex0=%08x pnmtx=%u sidx=%u  ndc x[%6.2f,%6.2f] y[%6.2f,%6.2f] w[%.1f,%.1f] front=%u  t=(%.0f,%.0f,%.0f) det=%.2f\n",
-            r.sh, r.nv, r.cc, r.tex0, r.pnmtx, r.single_idx,
+            "  pass=%u%s sh=%08x nv=%-5u cc=%04x tex0=%08x pnmtx=%u sidx=%u  ndc x[%6.2f,%6.2f] y[%6.2f,%6.2f] w[%.1f,%.1f] front=%u  t=(%.0f,%.0f,%.0f) det=%.2f\n",
+            r.pass, r.projtype ? "o" : "p", r.sh, r.nv, r.cc, r.tex0, r.pnmtx, r.single_idx,
             r.nxmin, r.nxmax, r.nymin, r.nymax, r.wmin, r.wmax, r.nfront, r.tx, r.ty, r.tz, r.det3);
         shown++;
     }
