@@ -112,6 +112,55 @@ int test_clip(char* rep, int cap) {
     return fails;
 }
 
+// ── full-frustum clip unit ───────────────────────────────────────────────────
+// ngx_clip_frustum_tri clips a triangle against all 6 clip-space planes. The KEY
+// invariant: every output vertex lies inside ALL planes (within tolerance), so no
+// off-screen / behind-camera geometry survives to project as a screen-spanning spike
+// (the title-logo / file-select-transition shred the near-only clip left behind).
+int test_clip_frustum(char* rep, int cap) {
+    int pos = 0, fails = 0;
+    auto fail = [&](const char* msg) { fails++; if (pos < cap) pos += snprintf(rep + pos, cap - pos, "FAIL frustum %s\n", msg); };
+    auto close = [](float a, float b) { float e = a - b; return (e < 0 ? -e : e) <= 1e-4f; };
+    // inside = all 6 half-spaces ≥ -eps: x+w, w-x, y+w, w-y, z+w, -z
+    auto inside_all = [](const float* v) {
+        const float w = v[3];
+        return v[0]+w >= -1e-4f && w-v[0] >= -1e-4f &&
+               v[1]+w >= -1e-4f && w-v[1] >= -1e-4f &&
+               v[2]+w >= -1e-4f &&    -v[2] >= -1e-4f;
+    };
+    float out[9 * 4];
+
+    // A. Wholly inside → 3, passthrough (verify the invariant + count).
+    { const float in[12] = { 0,0,-0.5f,1,  0.3f,0,-0.5f,1,  0,0.3f,-0.5f,1 };
+      int n = ngx_clip_frustum_tri(in, 4, out);
+      if (n != 3) fail("A: inside count");
+      for (int e = 0; e < n; e++) if (!inside_all(&out[e*4])) { fail("A: inside-invariant"); break; }
+      for (int i = 0; i < 12; i++) if (!close(out[i], in[i])) { fail("A: passthrough"); break; } }
+
+    // B. Wholly off to the right (all x > w) → 0 (the off-screen-object case the near-only
+    //    clip would have kept as a sliver).
+    { const float in[12] = { 5,0,-0.5f,1,  6,0,-0.5f,1,  5,1,-0.5f,1 };  // x≫w
+      int n = ngx_clip_frustum_tri(in, 4, out);
+      if (n != 0) fail("B: off-right drop"); }
+
+    // C. The SPIKE case: one vertex straddling the near plane far off-axis (NDC.x huge).
+    //    near-only clip keeps the interpolated near-plane vertex at x≫w (spike); full clip
+    //    must bound EVERY output vertex inside the frustum (no spike survives).
+    { const float in[12] = { 0,0,-1,1,   0.5f,0,-1,1,   30,-12,-0.01f,0.01f };
+      int n = ngx_clip_frustum_tri(in, 4, out);
+      if (n < 3) fail("C: spike fully dropped (expected a clipped poly)");
+      for (int e = 0; e < n; e++) if (!inside_all(&out[e*4])) {
+          fail("C: spike NOT bounded"); if (pos < cap) pos += snprintf(rep+pos, cap-pos,
+              "   out[%d]=(%.3f,%.3f,%.3f,%.3f) x/w=%.1f\n", e, out[e*4],out[e*4+1],out[e*4+2],out[e*4+3],
+              out[e*4+3]>1e-6f?out[e*4]/out[e*4+3]:0); break; } }
+
+    // D. Behind-camera vertex (w<0) → its part is removed; survivors bounded.
+    { const float in[12] = { 0,0,-0.5f,1,  0.2f,0,-0.5f,1,  0,0.2f,5,-1 };  // v2 behind (w=-1)
+      int n = ngx_clip_frustum_tri(in, 4, out);
+      for (int e = 0; e < n; e++) if (!inside_all(&out[e*4])) { fail("D: behind not bounded"); break; } }
+    return fails;
+}
+
 // ── lighting unit ────────────────────────────────────────────────────────────
 // GX per-vertex colour-channel lighting (ngx::light_color0). Spec-computed ground
 // truth (hand-derived from the GX model / Dolphin LightingShaderGen): out = mat *
@@ -209,6 +258,7 @@ const Unit kUnits[] = {
     {"vertex_decode", sb_ngx_vertex_selftest},
     {"projection",    test_projection},
     {"near_clip",     test_clip},
+    {"frustum_clip",  test_clip_frustum},
     {"lighting",      test_lighting},
     {"tev_swizzle",   test_tev_swizzle},
 };

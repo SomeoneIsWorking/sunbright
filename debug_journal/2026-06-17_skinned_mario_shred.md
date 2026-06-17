@@ -73,6 +73,37 @@ NOT yet view-composed at the captured moment for this preview model). NEXT: dump
 shape, the matidx histogram vs the slots the packets actually loaded, and verify a single vertex's
 matidx selects the bone the GX oracle uses. Use `/ngxmtxsrc` live + a new per-shape vertex probe.
 
+## ★ RESOLVED (2026-06-17 pm) — the headed shred was NEAR-ONLY CLIPPING (not matrices)
+The user kept seeing a shredded skinned model HEADED after the matrix fixes, while headless
+file-select looked coherent. Reconciled by building a NUMERIC shred metric (the eye-space metric
+was blind to it) and catching the actual spike frame:
+- **Eye-space max-edge metric** (per skinned shape) stayed clean everywhere (all <500): the bone
+  matrices ARE correct in camera space. Adjacent verts on a bone are close even when the model
+  sits at the camera, so this metric CANNOT see a projection-space explosion.
+- **NDC/screen max-edge metric** (front tris, w>1e-3) caught it: skinned shapes with NDC edges
+  ≥40 (max 130252) during CAMERA TRANSITIONS (title→file-select fly-in). The shred is TRANSIENT
+  (a few frames), which is why 8-frame headless sampling + single screenshots missed it — exactly
+  matching the user catching it in one headed screenshot.
+- **Auto-freeze-on-shred** (`SUNBRIGHT_NGX_SHREDFREEZE=<ndc-thresh>`) latches the snapshot on the
+  first spike frame so /abshot2 captures it. (GOTCHA: the GX oracle XFB lags ngx's geometry
+  publish during fast transitions — the auto-freeze A/B is NOT same-present mid-transition; trust
+  the post-clip NUMBER + steady-state gpshot, not the auto-frozen GX side.)
+- Root cause: the offending shapes are COHERENT (tight eye-bbox, nv=616) objects that straddle
+  the near plane / sit off-screen during the transition. **ngx clipped ONLY the near plane;
+  the GPU clips the full frustum.** The near-only clip interpolates a vertex onto the near plane
+  between an in-front and a behind-camera vertex; that vertex lands far off-axis (NDC.x ≫ 1) and
+  survived as a screen-spanning sliver Vulkan can't fully remove (a behind-camera or off-screen
+  object should be clipped away entirely, like GX does).
+- **FIX**: `ngx_clip_frustum_tri` — full 6-plane Sutherland–Hodgman clip in clip space
+  (left/right/top/bottom/near/far), replacing the near-only clip in the emit loop
+  (`SUNBRIGHT_NGX_NEARONLY` restores near-only for A/B). Unit-tested
+  (`test_clip_frustum`: every output vertex provably inside all 6 planes). VERIFIED by number:
+  **POST-CLIP emitted NDC-edge spikes ≥40 went 649 → 0** (max 135 → 0.35) across 30.9M emitted
+  skinned tris at file-select and 44.7M at Delfino gameplay; steady-state gpshot --fs image clean.
+  This is the title-logo/sun-rays/character "shear" class the journal kept attributing to matrices
+  — it was the missing side-plane clip all along.
+- Metric lives in `/ngxshape` (SHRED eye-space + NDC/screen + POST-CLIP buckets), always on.
+
 ## Tooling built this session (live, no rebuild to USE)
 - `tools/gpshot [--fs]` — robust one-shot zero-drift A/B (survives the sandboxed-Bash constraints;
   see docs/render_ab_harness.md).

@@ -159,6 +159,50 @@ unsigned long g_pkt_applied = 0, g_pkt_fallback = 0;   // CUMULATIVE (never rese
                                                        // /ngxshape read is timing-independent
 unsigned long g_posmtx_loads = 0;
 
+// ── Skinned-shred metric (timing-independent NUMBER for "is a skinned model exploding") ──
+// A coherent skinned character has SMALL eye-space triangle edges (≲ its real size, a few
+// hundred units); a shred scatters verts → an intra-shape edge spanning thousands of units.
+// transform_eye measures, per skinned (PNMTXIDX) shape, the max eye-space edge over the
+// shape's own triangles and keeps the session MAX (+ which shape/packet/matidx produced it)
+// and a histogram of skinned shapes by edge magnitude. Read live via /ngxshape; a shred in
+// ANY captured pose shows as g_shred_max spiking, so it survives the 8-frame sampling that
+// missed it before. (NOT reset across frames — worst-ever pose is what we hunt.)
+float         g_shred_max = 0.f;          // worst eye-space edge over all skinned shapes this run
+u32           g_shred_shape = 0;          // the shape that produced it
+unsigned      g_shred_pkt = 0;            // packet of the offending vertex
+unsigned char g_shred_mi0 = 0, g_shred_mi1 = 0;  // matidx of the two edge endpoints
+unsigned long g_shred_n[4] = {0,0,0,0};   // skinned-shape edge buckets: <500, <2k, <10k, ≥10k
+float         g_shred_last = 0.f;         // worst edge in the MOST RECENT skinned shape (per-frame-ish)
+// SCREEN-space variant: an eye-space-coherent model can still LOOK shredded if the projection/
+// near-clip blows triangles apart on screen. Measure max NDC (post-w-divide) edge over a skinned
+// shape's FRONT-facing triangles (all three verts w>eps, so near-plane straddlers — handled by the
+// clipper — don't count as false shred). A coherent on-screen model keeps NDC edges ≲ ~2 (the whole
+// viewport is [-1,1]); a real screen shred spans many viewport-widths.
+float         g_shred_ndc_max = 0.f;      // worst NDC edge over all skinned shapes this run
+u32           g_shred_ndc_shape = 0;
+unsigned long g_shred_ndc_n[4] = {0,0,0,0};  // skinned-shape NDC-edge buckets: <2, <8, <40, ≥40
+// Diagnostic snapshot of the offending vertex when a new NDC max is recorded.
+float         g_shred_ndc_w = 0.f, g_shred_ndc_eye[3] = {0,0,0};
+unsigned char g_shred_ndc_mi = 0, g_shred_ndc_pkt = 0;
+bool          g_shred_ndc_usepkt = false;
+float         g_shred_ndc_pos[3] = {0,0,0};   // model-space pos of the offending vertex
+float         g_shred_ndc_M[12] = {0};        // the pos matrix applied to it
+float         g_shred_ndc_ebb[6] = {0};       // eye-space bbox of the offending shape: xmin,xmax,ymin,ymax,zmin,zmax
+unsigned      g_shred_ndc_nv = 0;             // vert count of the offending shape
+int           g_shred_ndc_projtype = -1;      // g_proj_type at capture (0=persp,>0=ortho)
+float         g_shred_ndc_P[16] = {0};        // the projection ngx applied to it
+// POST-CLIP shred: NDC edge over the geometry ACTUALLY EMITTED to the GPU (after ngx_clip_near_tri
+// + Vulkan will scissor). This is the TRUE visible shred — the pre-clip metric over-reports verts
+// the clipper removes. If post>>0 the emitted triangles really do span the screen = visible spikes.
+float         g_shred_post_max = 0.f;
+u32           g_shred_post_shape = 0;
+unsigned long g_shred_post_n[4] = {0,0,0,0};  // <2, <8, <40, ≥40
+// Auto-freeze-on-shred: SUNBRIGHT_NGX_SHREDFREEZE=<ndc-thresh> latches the snapshot (ngx+GX
+// oracle) on the FIRST frame a skinned NDC edge exceeds <thresh>, so /abshot2 captures the
+// actual spike frame for an A/B with the oracle (transient shred → can't catch by hand).
+const float   g_shred_freeze_thresh = []{ const char* v=getenv("SUNBRIGHT_NGX_SHREDFREEZE"); return v?(float)atof(v):0.f; }();
+std::atomic<bool> g_shred_pending_freeze{false};
+
 // ── ngx geometry differential vs Dolphin xfmem (SUNBRIGHT_NGX_DIFF) ───────────
 // ⚠ RECORDED DEAD-END (2026-06-16): this compares ngx's g_posmtx against Dolphin's
 // xfmem.posMatrices, but the POST-LOAD synchrony validator below PROVED xfmem is NOT a
@@ -754,6 +798,7 @@ std::vector<NgxTevState>          g_tevstates;
 std::unordered_map<uint64_t, int> g_tevkey_index;
 u16 g_tev_cc[TEVSTATE_CAP] = {0};   // DBG: last colour-channel ctrl per tev index (matVtx/enable)
 int      g_cur_tev_index = -1;     // material index for the shape being captured
+u32      g_cur_shape = 0;          // address of the shape being captured (for the shred metric)
 unsigned long g_mat_found = 0, g_mat_novt = 0, g_mat_none = 0;
 u32      g_vt_hist_key[8] = {0};    // distinct vtable values seen
 unsigned g_vt_hist_cnt[8] = {0};
@@ -853,6 +898,7 @@ float         g_eye_min[3] = {0, 0, 0}, g_eye_max[3] = {0, 0, 0};
 // geometry has clip.w>0 (in front of the near plane) and NDC x,y in [-1,1].
 float         g_proj[16] = {0};
 bool          g_have_proj = false;
+unsigned      g_proj_type = 0;     // 0=perspective, >0=orthographic (the live projection class)
 // Sky-shape (cc==0x0701, the vtx-color gradient) transform latch: the modelview + projection
 // + eye/clip of its FIRST vertex, captured at its draw — to diagnose the mis-projection.
 struct SkyXf { bool have=false; float M[12]={0}; float P[16]={0}; float pos0[3]={0};
@@ -1027,6 +1073,8 @@ void transform_eye() {
     if (g_have_proj) g_clip.assign(nv * 4, 0.0f);
     g_litrgba.assign(nv * 4, 0.0f);
     g_uvs.assign(nv * 16, 0.0f);
+    static std::vector<float> s_eye;          // per-vertex eye pos (x,y,z) for the shred metric
+    s_eye.assign(nv * 3, 0.0f);
 
     // ngx-vs-Dolphin geometry differential: for every distinct PNMTXIDX slot this
     // multi-matrix shape references, compare ngx's applied matrix (g_posmtx[slot])
@@ -1097,6 +1145,7 @@ void transform_eye() {
             }
         }
         const float eye[3] = { ex, ey, ez };
+        s_eye[vi*3+0]=ex; s_eye[vi*3+1]=ey; s_eye[vi*3+2]=ez;
         const float vcol0[4] = { v.clr[0][0]/255.f, v.clr[0][1]/255.f,
                                  v.clr[0][2]/255.f, v.clr[0][3]/255.f };
         light_vertex(eye, en, vcol0, &g_litrgba[vi * 4]);
@@ -1151,6 +1200,64 @@ void transform_eye() {
         }
     }
 
+    // Skinned-shred metric: max eye-space edge over THIS skinned shape's own triangles.
+    // A coherent character keeps every intra-shape edge ≲ its real size; a per-vertex matrix
+    // mistake flings verts apart → a giant edge. Records the session worst (+ where) and a
+    // per-shape bucket histogram. Skip the sky/single-matrix shapes (g_cur_pnmtx gate).
+    if (g_cur_pnmtx && !g_indices.empty()) {
+        float worst = 0.f; unsigned wp = 0; unsigned char wm0 = 0, wm1 = 0;
+        for (size_t t = 0; t + 3 <= g_indices.size(); t += 3) {
+            for (int e = 0; e < 3; e++) {
+                const unsigned a = g_indices[t + e], b = g_indices[t + (e + 1) % 3];
+                if (a >= nv || b >= nv) continue;
+                const float dx = s_eye[a*3]-s_eye[b*3], dy = s_eye[a*3+1]-s_eye[b*3+1], dz = s_eye[a*3+2]-s_eye[b*3+2];
+                const float d = std::sqrt(dx*dx + dy*dy + dz*dz);
+                if (d > worst) { worst = d; wp = g_verts[a].packet; wm0 = g_verts[a].matidx; wm1 = g_verts[b].matidx; }
+            }
+        }
+        g_shred_last = worst;
+        g_shred_n[worst < 500.f ? 0 : worst < 2000.f ? 1 : worst < 10000.f ? 2 : 3]++;
+        if (worst > g_shred_max) { g_shred_max = worst; g_shred_shape = g_cur_shape;
+                                   g_shred_pkt = wp; g_shred_mi0 = wm0; g_shred_mi1 = wm1; }
+        // NDC (screen) edge over front-facing triangles (catches projection/clip-induced shred
+        // that eye-space coherence hides). g_clip holds clip[4] per vertex; NDC = xy/w.
+        if (g_have_proj && !g_clip.empty()) {
+            float nworst = 0.f; unsigned nva = 0;
+            for (size_t t = 0; t + 3 <= g_indices.size(); t += 3) {
+                const unsigned i0=g_indices[t], i1=g_indices[t+1], i2=g_indices[t+2];
+                if (i0>=nv||i1>=nv||i2>=nv) continue;
+                const float w0=g_clip[i0*4+3], w1=g_clip[i1*4+3], w2=g_clip[i2*4+3];
+                if (w0<1e-3f||w1<1e-3f||w2<1e-3f) continue;     // straddler → clipper handles it
+                const unsigned ii[3]={i0,i1,i2};
+                for (int e=0;e<3;e++){ const unsigned a=ii[e], b=ii[(e+1)%3];
+                    const float dx=g_clip[a*4]/g_clip[a*4+3]-g_clip[b*4]/g_clip[b*4+3];
+                    const float dy=g_clip[a*4+1]/g_clip[a*4+3]-g_clip[b*4+1]/g_clip[b*4+3];
+                    const float d=std::sqrt(dx*dx+dy*dy);
+                    if(d>nworst){ nworst=d; nva = (g_clip[a*4+3] < g_clip[b*4+3]) ? a : b; } }
+            }
+            if (nworst>0.f) g_shred_ndc_n[nworst<2.f?0:nworst<8.f?1:nworst<40.f?2:3]++;
+            if (g_shred_freeze_thresh>0.f && nworst>g_shred_freeze_thresh)
+                g_shred_pending_freeze.store(true, std::memory_order_release);
+            if (nworst>g_shred_ndc_max){ g_shred_ndc_max=nworst; g_shred_ndc_shape=g_cur_shape;
+                g_shred_ndc_w = g_clip[nva*4+3];
+                g_shred_ndc_eye[0]=s_eye[nva*3]; g_shred_ndc_eye[1]=s_eye[nva*3+1]; g_shred_ndc_eye[2]=s_eye[nva*3+2];
+                g_shred_ndc_mi = g_verts[nva].matidx; g_shred_ndc_pkt = g_verts[nva].packet;
+                const int slot = g_verts[nva].matidx/3;
+                g_shred_ndc_usepkt = (g_ngx_mtxsrc==0 && g_verts[nva].packet<NGX_MAX_PKT && slot<NGX_MAX_SLOT && g_pkt_have[g_verts[nva].packet][slot]);
+                for (int k=0;k<3;k++) g_shred_ndc_pos[k]=g_verts[nva].pos[k];
+                if (g_shred_ndc_usepkt) for (int k=0;k<12;k++) g_shred_ndc_M[k]=g_pkt_mtx[g_verts[nva].packet][slot][k];
+                else if ((unsigned)g_verts[nva].matidx+2<64) for(int r=0;r<3;r++)for(int c=0;c<4;c++) g_shred_ndc_M[r*4+c]=g_posmtx[g_verts[nva].matidx+r][c];
+                g_shred_ndc_nv = (unsigned)nv;
+                float bb[6]={1e30f,-1e30f,1e30f,-1e30f,1e30f,-1e30f};
+                for (size_t q=0;q<nv;q++){ for(int a=0;a<3;a++){ float e=s_eye[q*3+a];
+                    if(e<bb[a*2])bb[a*2]=e; if(e>bb[a*2+1])bb[a*2+1]=e; } }
+                for(int k=0;k<6;k++) g_shred_ndc_ebb[k]=bb[k];
+                g_shred_ndc_projtype = g_proj_type;
+                for(int k=0;k<16;k++) g_shred_ndc_P[k]=g_proj[k];
+            }
+        }
+    }
+
     // Accumulate this shape's clip-space triangles into the render snapshot,
     // grouped into a per-texture batch (triangle-aligned roll-over so a wrap
     // never splits a triangle; on wrap the batch list resets with the buffer).
@@ -1179,6 +1286,7 @@ void transform_eye() {
         // become 1–2 properly-clipped tris. (SUNBRIGHT_NGX_NEARCULL still force-DROPS straddlers for
         // A/B; SUNBRIGHT_NGX_NOCLIP disables clipping to reproduce the raw shear.)
         static const bool noclip = getenv("SUNBRIGHT_NGX_NOCLIP") != nullptr;
+        static const bool nearonly = getenv("SUNBRIGHT_NGX_NEARONLY") != nullptr;  // A/B: near-plane-only clip
         static const float nearcull_eps = []{ const char* v = getenv("SUNBRIGHT_NGX_NEARCULL");
             if (!v) return -1e30f; float e = atof(v); return e == 1.0f ? 1.0f : (e == 0.0f ? -1e30f : e); }();
         constexpr int VW = 24;   // floats per vertex: clip[4] + rgba[4] + uv[16]
@@ -1203,17 +1311,25 @@ void transform_eye() {
                 const float w0 = g_clip[g_indices[t]*4+3], w1 = g_clip[g_indices[t+1]*4+3], w2 = g_clip[g_indices[t+2]*4+3];
                 if (w0 <= nearcull_eps || w1 <= nearcull_eps || w2 <= nearcull_eps) continue;
             }
-            // Gather + clip the triangle against the near plane d = clip.z + clip.w ≥ 0.
+            // Gather + clip the triangle against the view frustum. The near-ONLY clip left
+            // screen-spanning spikes for off-screen / behind-camera geometry during camera
+            // transitions (it interpolated near-plane verts that land far off-axis). Full
+            // 6-plane frustum clip matches the GPU and removes them. SUNBRIGHT_NGX_NEARONLY
+            // restores the near-only path for A/B (proves the spikes are the side planes).
             float in[3][VW]; for (int e = 0; e < 3; e++) gather(g_indices[t + e], in[e]);
-            float poly[4][VW]; int np = 0;
+            float poly[9][VW]; int np = 0;
             if (noclip) { for (int e = 0; e < 3; e++) { for (int k=0;k<VW;k++) poly[e][k]=in[e][k]; } np = 3; }
-            else {
-                // Pure, unit-tested near-plane clip (sunbright-render-test test_clip).
+            else if (nearonly) {
                 int n_front;
                 np = ngx_clip_near_tri(&in[0][0], VW, &poly[0][0], &n_front);
                 g_clip_in++;
                 if (n_front == 0)      g_clip_drop++;   // wholly behind near → dropped
                 else if (n_front < 3)  g_clip_cut++;    // straddled → clipped
+            } else {
+                // Pure, unit-tested full-frustum clip (sunbright-render-test test_clip_frustum).
+                np = ngx_clip_frustum_tri(&in[0][0], VW, &poly[0][0]);
+                g_clip_in++;
+                if (np == 0) g_clip_drop++; else if (np != 3) g_clip_cut++;
             }
             if (np < 3) continue;
             const int ntri = np - 2;                       // fan-triangulate the clipped polygon
@@ -1231,12 +1347,27 @@ void transform_eye() {
             }
             for (int f = 0; f < ntri; f++) { emit_v(poly[0]); emit_v(poly[f+1]); emit_v(poly[f+2]); }
             batches.back().vcount += ntri * 3;
+            // POST-CLIP shred metric: NDC edge over the EMITTED (clipped) fan triangles, for
+            // skinned shapes. This is the geometry the GPU rasterizes — the true visible shred.
+            if (g_cur_pnmtx) {
+                auto ndc=[&](const float* v,float&X,float&Y){ const float w=v[3]; X=(w>1e-6f)?v[0]/w:0.f; Y=(w>1e-6f)?v[1]/w:0.f; };
+                for (int f=0; f<ntri; f++) {
+                    const float* tri[3]={poly[0],poly[f+1],poly[f+2]};
+                    bool ok=true; for(int e=0;e<3;e++) if(tri[e][3]<=1e-6f) ok=false;
+                    if(!ok) continue;
+                    for(int e=0;e<3;e++){ float x0,y0,x1,y1; ndc(tri[e],x0,y0); ndc(tri[(e+1)%3],x1,y1);
+                        const float d=std::sqrt((x0-x1)*(x0-x1)+(y0-y1)*(y0-y1));
+                        if(d>0.f) g_shred_post_n[d<2.f?0:d<8.f?1:d<40.f?2:3]++;
+                        if(d>g_shred_post_max){ g_shred_post_max=d; g_shred_post_shape=g_cur_shape; } }
+                }
+            }
         }
     }
 }
 
 void capture(u32 sh) {
     g_calls++;
+    g_cur_shape = sh;
     NgxCP cp{};
     if (!build_cp(sh, cp)) { g_badcp++; return; }
 
@@ -1417,7 +1548,6 @@ void capture(u32 sh) {
 // is applied (clip = P·eye incl. row 3 → w=1 for ortho, w=-ez for perspective).
 unsigned long g_proj_persp = 0, g_proj_ortho = 0; float g_last_ortho[16] = {0}; unsigned g_last_ortho_type = 0;
 float g_last_persp[16] = {0};   // ngx's last PERSPECTIVE projection — compared to Dolphin's actual
-unsigned g_proj_type = 0;
 void ngx_set_projection(const float* m44, unsigned type) {
     if (type != 0) { g_proj_ortho++; g_last_ortho_type = type; for (int i=0;i<16;i++) g_last_ortho[i]=m44[i]; }
     else { g_proj_persp++; for (int i=0;i<16;i++) g_last_persp[i]=m44[i]; }
@@ -1459,6 +1589,13 @@ void ngx_frame_publish() {
     }
     if (g_snap_count[g_cur] == 0 && g_batches[g_cur].empty()) return;  // no 3D this frame: keep last
     g_front.store(g_cur, std::memory_order_release);
+    // Auto-freeze-on-shred: this just-published frame contains a skinned NDC spike → latch it
+    // (ngx + GX oracle) so /abshot2 captures the actual spike frame for an A/B with the oracle.
+    if (g_shred_pending_freeze.load(std::memory_order_acquire) && !g_ngx_frozen.load(std::memory_order_acquire)) {
+        g_shred_pending_freeze.store(false, std::memory_order_release);
+        sb_ngx_set_freeze(1);
+        fprintf(stderr, "[shred] auto-froze on skinned NDC spike (max=%.0f shape=%08x)\n", g_shred_ndc_max, g_shred_ndc_shape);
+    }
     g_cur ^= 1;
     if (g_snap[g_cur].size() < SNAP_CAP) g_snap[g_cur].resize(SNAP_CAP);
     g_snap_count[g_cur] = 0;
@@ -2220,6 +2357,27 @@ int sb_ngx_shape_dump(char* out, int cap) {
         g_bigany_verts, g_bigany_pnmtx, g_bigany_vcd, g_bigany_posbase, g_bigany_posstride,
         g_bigany_pmin[0],g_bigany_pmax[0],g_bigany_pmin[1],g_bigany_pmax[1],g_bigany_pmin[2],g_bigany_pmax[2],
         g_bigany_pos0[0],g_bigany_pos0[1],g_bigany_pos0[2]);
+    n += snprintf(out+n, cap-n,
+        "  SHRED metric (eye-space max edge per skinned shape): max=%.1f @shape=%08x pkt=%u mi=%u,%u | last=%.1f | buckets <500=%lu <2k=%lu <10k=%lu >=10k=%lu\n"
+        "  SHRED metric (NDC/screen max edge, front tris): max=%.2f @shape=%08x | buckets <2=%lu <8=%lu <40=%lu >=40=%lu\n"
+        "    NDC-worst vert: w=%.5f eye=(%.2f,%.2f,%.2f) matidx=%u pkt=%u usepkt=%d pos=(%.2f,%.2f,%.2f)\n"
+        "      M row0=[%.4f %.4f %.4f %.2f] row1=[%.4f %.4f %.4f %.2f] row2=[%.4f %.4f %.4f %.2f]\n"
+        "      shape eye-bbox: x[%.1f..%.1f] y[%.1f..%.1f] z[%.1f..%.1f] nv=%u  (z near 0 = at camera)\n"
+        "      ngx proj used: type=%d(0=persp) P=[%.3f %.3f %.3f %.2f / %.3f %.3f %.3f %.2f / %.3f %.3f %.3f %.2f / %.3f %.3f %.3f %.2f]\n"
+        "  SHRED metric (POST-CLIP emitted NDC edge): max=%.2f @shape=%08x | buckets <2=%lu <8=%lu <40=%lu >=40=%lu\n",
+        g_shred_max, g_shred_shape, g_shred_pkt, g_shred_mi0, g_shred_mi1, g_shred_last,
+        g_shred_n[0], g_shred_n[1], g_shred_n[2], g_shred_n[3],
+        g_shred_ndc_max, g_shred_ndc_shape, g_shred_ndc_n[0], g_shred_ndc_n[1], g_shred_ndc_n[2], g_shred_ndc_n[3],
+        g_shred_ndc_w, g_shred_ndc_eye[0], g_shred_ndc_eye[1], g_shred_ndc_eye[2], g_shred_ndc_mi, g_shred_ndc_pkt, (int)g_shred_ndc_usepkt,
+        g_shred_ndc_pos[0], g_shred_ndc_pos[1], g_shred_ndc_pos[2],
+        g_shred_ndc_M[0],g_shred_ndc_M[1],g_shred_ndc_M[2],g_shred_ndc_M[3],
+        g_shred_ndc_M[4],g_shred_ndc_M[5],g_shred_ndc_M[6],g_shred_ndc_M[7],
+        g_shred_ndc_M[8],g_shred_ndc_M[9],g_shred_ndc_M[10],g_shred_ndc_M[11],
+        g_shred_ndc_ebb[0],g_shred_ndc_ebb[1],g_shred_ndc_ebb[2],g_shred_ndc_ebb[3],g_shred_ndc_ebb[4],g_shred_ndc_ebb[5],g_shred_ndc_nv,
+        g_shred_ndc_projtype,
+        g_shred_ndc_P[0],g_shred_ndc_P[1],g_shred_ndc_P[2],g_shred_ndc_P[3],g_shred_ndc_P[4],g_shred_ndc_P[5],g_shred_ndc_P[6],g_shred_ndc_P[7],
+        g_shred_ndc_P[8],g_shred_ndc_P[9],g_shred_ndc_P[10],g_shred_ndc_P[11],g_shred_ndc_P[12],g_shred_ndc_P[13],g_shred_ndc_P[14],g_shred_ndc_P[15],
+        g_shred_post_max, g_shred_post_shape, g_shred_post_n[0], g_shred_post_n[1], g_shred_post_n[2], g_shred_post_n[3]);
     n += snprintf(out+n, cap-n,
         "  up-facing reg-lit illum (visible floor/ground): avg=%.3f max=%.3f (n=%lu) @max amb=%.3f ndl=%.3f\n",
         g_uplit_n?g_uplit_sum/g_uplit_n:0.0, g_uplit_max, g_uplit_n, g_uplit_amb, g_uplit_ndl);
