@@ -1258,6 +1258,16 @@ void capture(u32 sh) {
     // reads matrix m at drawMtxBase + m*48.
     constexpr u32 J3DSYS = 0x804045DCu;
     const u32 drawMtxBase = skinned ? r32(J3DSYS + 0x104) : 0;
+    // RUNNING per-slot matrix state across this shape's packets. GX XF pos-matrix slots PERSIST:
+    // a packet (J3DShapeMtxMulti) reloads only its non-0xffff slots; verts that reference a slot a
+    // LATER packet skipped keep the matrix an EARLIER packet loaded there. So accumulate, and
+    // snapshot the running state into g_pkt_mtx[packet] AFTER each packet's loads. Initialise from
+    // g_posmtx (the cross-shape global XF state) so slot 0 etc. is sane before the first load.
+    float run[NGX_MAX_SLOT][12]; bool runhave[NGX_MAX_SLOT];
+    if (skinned) for (int s = 0; s < NGX_MAX_SLOT; s++) {
+        runhave[s] = (s * 3 + 2 < 64) && g_posmtx_src[s * 3] != 0;
+        if (runhave[s]) for (int r = 0; r < 3; r++) for (int c = 0; c < 4; c++) run[s][r * 4 + c] = g_posmtx[s * 3 + r][c];
+    }
     for (u32 i = 0; i < nelem && i < NGX_MAX_PKT; i++) {
         const u32 dp = r32(draws + i * 4);
         if (!valid(dp)) continue;
@@ -1269,6 +1279,19 @@ void capture(u32 sh) {
         const int t = ngx_build_mesh(cp, host, size, resolve, nullptr, g_verts, g_indices);
         if (t < 0) any_fail = true; else tris += t;
         for (size_t v = v0; v < g_verts.size(); v++) g_verts[v].packet = (unsigned char)i;
+        if (skinned && nelem >= 2 && i < 4 && getenv("SUNBRIGHT_DBG_PKT")) {
+            static int kk = 0;
+            if (kk < 16) { kk++;
+                unsigned mn = 255, mx = 0;
+                for (size_t v = v0; v < g_verts.size(); v++) { unsigned x = g_verts[v].matidx; if (x<mn)mn=x; if (x>mx)mx=x; }
+                const u32 smtx = r32(mtcs + i * 4);
+                const u32 num  = valid(smtx) ? ru16(smtx + 0x08) : 0;
+                const u32 tbl  = valid(smtx) ? r32(smtx + 0x0C) : 0;
+                fprintf(stderr, "[pktv] sh=%08x pkt%u verts=%zu matidx=[%u..%u] num=%u unkC=[%u %u %u %u %u %u]\n",
+                        sh, i, g_verts.size()-v0, mn, mx, num,
+                        ru16(tbl+0), ru16(tbl+2), ru16(tbl+4), ru16(tbl+6), ru16(tbl+8), ru16(tbl+10));
+            }
+        }
         // Resolve THIS packet's per-slot matrices from its J3DShapeMtxMulti useMtxIndexTable (unkC).
         // J3DShapeMtxMulti: unk8=useMtxNum@+0x08, unkC=useMtxIndexTable@+0x0C; slot j (skipped if
         // unkC[j]==0xffff) loads draw-matrix unkC[j] into XF row j*3 → g_pkt_mtx[packet][j].
@@ -1276,13 +1299,17 @@ void capture(u32 sh) {
             const u32 smtx = r32(mtcs + i * 4);    // J3DShapeMtxMulti*
             const u32 num  = valid(smtx) ? ru16(smtx + 0x08) : 0;
             const u32 tbl  = valid(smtx) ? r32(smtx + 0x0C) : 0;
-            for (u32 j = 0; j < num && j < NGX_MAX_SLOT; j++) {
+            for (u32 j = 0; j < num && j < NGX_MAX_SLOT; j++) {   // UPDATE only this packet's loaded slots
                 const u16 m = ru16(tbl + j * 2);
-                if (m == 0xFFFF) continue;          // skipped slot
+                if (m == 0xFFFF) continue;          // skipped slot → keep the running (earlier) matrix
                 const u32 a = drawMtxBase + (u32)m * 48u;   // sizeof(Mtx) = 3x4 f32
                 if (!valid(a)) continue;
-                for (int k = 0; k < 12; k++) g_pkt_mtx[i][j][k] = rf(a + k * 4);
-                g_pkt_have[i][j] = true;
+                for (int k = 0; k < 12; k++) run[j][k] = rf(a + k * 4);
+                runhave[j] = true;
+            }
+            for (int s = 0; s < NGX_MAX_SLOT; s++) {   // snapshot the accumulated state for this packet
+                g_pkt_have[i][s] = runhave[s];
+                if (runhave[s]) for (int k = 0; k < 12; k++) g_pkt_mtx[i][s][k] = run[s][k];
             }
         }
     }

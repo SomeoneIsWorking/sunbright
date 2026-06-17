@@ -31,7 +31,19 @@ beach, sky) renders fine. The Dolphin-GX oracle renders the SAME recomp state wi
   `pkt_applied=1,852,251 fallback=308,382` (86% of skinned verts take the per-packet path).
   The `unkC` tables read perfectly (pkt0=[7 45 44 46], 65535=skip sentinel).
 
-## STILL OPEN — the per-vertex assignment is wrong
+## FIXED (mostly) — slots PERSIST across packets
+The shred persisted even with sane per-packet matrices because GX XF pos-matrix slots are
+CUMULATIVE: a packet (J3DShapeMtxMulti) reloads only its non-0xffff slots; verts that reference a
+slot a later packet SKIPPED keep the matrix an EARLIER packet loaded there. Proven live
+(SUNBRIGHT_DBG_PKT `[pktv]`): pkt1 verts have matidx=[0..27] (slots 0..9) but its unkC skips slots
+0,1,5 — those verts must use packet 0's slot-0/1 matrices. My first cut treated each packet
+independently → those verts fell back to g_posmtx → shred. Fix: maintain a RUNNING per-slot state
+across the shape's packets (init from g_posmtx), update only each packet's loaded slots, snapshot
+into g_pkt_mtx[packet] after each packet's loads. Result: Mario goes from a triangle cloud to a
+COHERENT character (gpshot --fs: bottom-left region 51→36; ngx≈recognizable Mario). Residual minor
+distortion (a few slots / the 308K fallback verts / initial-state slots) — follow-up.
+
+## (was) STILL OPEN — the per-vertex assignment is wrong
 Despite applying sane per-packet matrices to 86% of skinned verts, **Mario still shreds**
 (`tools/gpshot --fs`: 29.5% ≈ baseline; m0 per-packet ≈ m1 g_posmtx, both shred). With ONE matrix
 for all verts (`/ngxmtxsrc?m=2`, modelview) Mario is a COHERENT (squished) blob — so model-space
