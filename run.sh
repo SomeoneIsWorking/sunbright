@@ -29,12 +29,13 @@
 set -eo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# The native PC renderer lives in the build-j3dvirt build; prefer it, fall back to build/.
-# Override with SUNBRIGHT_BIN=<path> (relative to repo dir or absolute).
+# The binary is build/sunbright (the single self-contained build; the native renderer lives
+# in runtime/ and is linked in). Override with SUNBRIGHT_BIN=<path> (relative to repo dir or
+# absolute). NOTE: do NOT auto-prefer build-j3dvirt/ — that was the RETIRED flip-architecture
+# build (docs/DO_NOT_REVISIT_FLIP.md); a stale binary left there silently shadowed every rebuild
+# (the "still-shredded headed Mario" was that stale binary, while build/ rendered correctly).
 if [[ -n "$SUNBRIGHT_BIN" ]]; then
     case "$SUNBRIGHT_BIN" in /*) BIN="$SUNBRIGHT_BIN";; *) BIN="$HERE/$SUNBRIGHT_BIN";; esac
-elif [[ -x "$HERE/build-j3dvirt/sunbright" ]]; then
-    BIN="$HERE/build-j3dvirt/sunbright"
 else
     BIN="$HERE/build/sunbright"
 fi
