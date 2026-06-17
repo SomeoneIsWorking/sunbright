@@ -1051,8 +1051,19 @@ bool          g_epoch_tex[2][EPOCH_CAP] = {{false}};   // per-frame: epoch close
 // (the file-select "floating Mario ghost"). Computed at publish, read by the present filter.
 int           g_display_epoch[2] = {0, 0};
 // Copy-event log (per frame, into g_cur buffer) for the /ngxshapes diagnostic: (kind, epoch, pass).
-struct CopyEvt { unsigned char kind; unsigned epoch; unsigned pass; };  // kind: 0=Tex 1=Disp
+struct CopyEvt { unsigned char kind; unsigned epoch; unsigned pass; unsigned char clear; unsigned gen; };  // kind: 0=Tex 1=Disp
 std::vector<CopyEvt> g_copyevt[2];
+// ── CLEAR-AWARE GENERATION model (handoff gap #3) ───────────────────────────────────────────────
+// The epoch model above splits the EFB at EVERY copy and displays only the highest tex-closed
+// epoch — which DROPS layers GX accumulated. The GPU truth: the EFB accumulates draws and is only
+// wiped by a clearing copy (GXCopyTex/Disp with clear=1). So draws between clears form ONE blend
+// stack ("generation"); a non-clearing copy snapshots but KEEPS the EFB (accumulation continues).
+// g_efb_gen = count of clearing copies so far this frame; shapes/batches record the gen they drew
+// under. The DISPLAYED stack = the generation active at the GXCopyDisp (XFB) — NOT the highest
+// tex-closed epoch. This is a DIAGNOSTIC first (surfaced in /efbcopies + /ngxshapes); the present
+// filter still uses display_epoch until the data confirms the switch.
+unsigned g_efb_gen = 0;          // current generation (reset per frame, ++ AFTER a clearing copy)
+int      g_display_gen[2] = {-1, -1};   // per-published-buffer: gen active at the CopyDisp (XFB)
 // Sky-shape (cc==0x0701, the vtx-color gradient) transform latch: the modelview + projection
 // + eye/clip of its FIRST vertex, captured at its draw — to diagnose the mis-projection.
 struct SkyXf { bool have=false; float M[12]={0}; float P[16]={0}; float pos0[3]={0};
@@ -1095,6 +1106,7 @@ struct ShapeRec {
     float tx, ty, tz, det3;             // single-matrix (pnmtx=0) modelview translation + 3x3 det
     unsigned pass; unsigned char projtype;   // projection-pass index this shape drew under + ortho?
     unsigned epoch;                     // EFB-copy epoch this shape drew under (offscreen vs display)
+    unsigned gen;                       // clear-aware generation (blend-stack) this shape drew under
     int ti;                             // tev_index (material) — filter haze layers by this
     unsigned clr0cls, clr0fmt; u32 clr0base;  // CLR0 VCD class / VAT fmt / array base ngx samples
     float nrm0[3]; unsigned nrmcls;     // first-vertex MODEL normal + NRM VCD class (lighting sanity)
@@ -1424,6 +1436,7 @@ void transform_eye() {
               float ez = s_eye[vi*3+2]; if (ez<ezlo) ezlo=ez; if (ez>ezhi) ezhi=ez; }
           rec.zmin = zlo; rec.zmax = zhi; rec.ezmin = ezlo; rec.ezmax = ezhi; }
         rec.epoch = g_efb_epoch;
+        rec.gen = g_efb_gen;
         rec.ti = g_cur_tev_index;
         rec.clr0cls = g_cur_clr0cls; rec.clr0fmt = g_cur_clr0fmt; rec.clr0base = g_cur_clr0base;
         rec.nrmcls = g_cur_nrmcls;
@@ -1894,8 +1907,13 @@ void ngx_note_efb_copy(bool is_disp, u32 dest, u32 clear) {
     if (g_efb_epoch < EPOCH_CAP) {
         if (!is_disp) g_epoch_tex[g_cur][g_efb_epoch] = true;
         if (g_copyevt[g_cur].size() < 256)
-            g_copyevt[g_cur].push_back({(unsigned char)(is_disp ? 1 : 0), g_efb_epoch, g_proj_pass});
+            g_copyevt[g_cur].push_back({(unsigned char)(is_disp ? 1 : 0), g_efb_epoch, g_proj_pass,
+                                        (unsigned char)(clear & 1), g_efb_gen});
     }
+    // Clear-aware generation: a GXCopyDisp (XFB) displays the CURRENT generation. Record it.
+    if (is_disp) g_display_gen[g_cur] = (int)g_efb_gen;
+    // A clearing copy wipes the EFB → subsequent draws are a NEW generation.
+    if (clear & 1) g_efb_gen++;
     // Rolling global log (diagnostic).
     unsigned h = g_copylog_head.load(std::memory_order_relaxed) % COPYLOG_CAP;
     g_copylog[h] = { (unsigned char)(is_disp ? 1 : 0), (unsigned char)(clear & 1), dest,
@@ -1949,7 +1967,7 @@ void ngx_frame_publish() {
         g_shaperec[g_cur].clear();
         g_copyevt[g_cur].clear();
         for (int e = 0; e < EPOCH_CAP; e++) g_epoch_tex[g_cur][e] = false;
-        g_efb_epoch = 0;
+        g_efb_epoch = 0; g_efb_gen = 0; g_display_gen[g_cur] = -1;
         g_sky = SkyLatch{}; g_skyxf = SkyXf{}; g_pnmtxdbg = PnmtxDbg{};
         if (g_gxstate.have) g_gxstate_pub = g_gxstate; g_gxstate = GxStateRec{};
         g_clip_in=g_clip_drop=g_clip_cut=g_clip_tiny=0; g_clip_minw=1e30f;
@@ -1977,7 +1995,7 @@ void ngx_frame_publish() {
     g_shaperec[g_cur].clear();
     g_copyevt[g_cur].clear();
     for (int e = 0; e < EPOCH_CAP; e++) g_epoch_tex[g_cur][e] = false;
-    g_efb_epoch = 0;
+    g_efb_epoch = 0; g_efb_gen = 0; g_display_gen[g_cur] = -1;
     g_proj_pass = 0;
     if (g_sky.have) g_sky_pub = g_sky;   // publish this frame's sky breakdown
     g_sky = SkyLatch{};                  // reset for the next frame
@@ -2649,9 +2667,19 @@ int sb_ngx_shapes_dump(char* out, int cap) {
     const std::vector<ShapeRec>& rs = g_shaperec[f];
     int n = snprintf(out, cap, "ngxshapes: front=%d shapes=%zu (ndc y: -1=top +1=bottom)\n", f, rs.size());
     // EFB-copy epoch map: which epochs went offscreen (GXCopyTex) vs display (GXCopyDisp).
-    n += snprintf(out + n, cap - n, "  copy-events (epoch routing):");
+    n += snprintf(out + n, cap - n, "  copy-events (epoch/gen routing):");
     for (const CopyEvt& e : g_copyevt[f])
-        n += snprintf(out + n, cap - n, " [e%u@pass%u=%s]", e.epoch, e.pass, e.kind ? "DISP" : "tex");
+        n += snprintf(out + n, cap - n, " [e%u/g%u@pass%u=%s%s]", e.epoch, e.gen, e.pass, e.kind ? "DISP" : "tex", e.clear ? ",CLR" : "");
+    n += snprintf(out + n, cap - n, "\n  CLEAR-AWARE: display_gen=%d (the gen at CopyDisp/XFB = the blend stack GX shows)  [ngx present uses display_epoch=%d]",
+                  g_display_gen[f], g_display_epoch[f]);
+    {   // per-gen shape+vert histogram over batches — which generation holds the visible scene
+        unsigned long gv[8] = {0}; unsigned gc[8] = {0};
+        for (const NgxRenderBatch& b : g_batches[f]) { /* batch has epoch; map via shaperec gen below */ (void)b; }
+        // gen is on ShapeRec; aggregate verts per gen from shaperecs
+        for (const ShapeRec& r : g_shaperec[f]) { unsigned g = r.gen < 8 ? r.gen : 7; gv[g] += r.nv; gc[g]++; }
+        n += snprintf(out + n, cap - n, "\n  shapes/gen:");
+        for (int g = 0; g < 8; g++) if (gc[g]) n += snprintf(out + n, cap - n, " g%d=%luv/%us%s", g, gv[g], gc[g], (g==g_display_gen[f])?"(DISP)":"");
+    }
     n += snprintf(out + n, cap - n, "\n  tex-closed epochs:");
     for (int e = 0; e < EPOCH_CAP; e++) if (g_epoch_tex[f][e]) n += snprintf(out + n, cap - n, " %d", e);
     // Per-epoch shape + vertex histogram over the BATCHES (the geometry the present actually draws) —
