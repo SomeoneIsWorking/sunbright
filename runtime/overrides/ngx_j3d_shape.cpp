@@ -314,6 +314,12 @@ struct TexGen {
     float m[12] = {0};      // mTotalMtx 3x4 (row-major) when has_mtx
     u8   mtxsel = 60;       // raw GXTexMtx selector (30=TEXMTX0,step 3; 60=IDENTITY) → XF row
     u32  mtxptr = 0;        // the J3DTexMtx* ngx read (blk+0x28+idx*4) — match the load tee
+    // LIVE XF-row texmtx (what GX's GPU ACTUALLY uses = last J3DGDLoadTexMtxImm into this row).
+    // Differs from m[]/mtxptr when the material does NOT reload its texmtx per draw (J3D skips
+    // a redundant load) → GX renders with whatever earlier material last wrote the XF row.
+    bool  live_have = false;  float live_ss=0, live_st=0, live_ts=0, live_tt=0;
+    u32   live_self = 0;      unsigned long live_seq = 0;  // src J3DTexMtx + load sequence #
+    float obj_m[12] = {0};    // material's OWN mTotalMtx (diagnostic; m[] is the render matrix)
 };
 struct TexGenSet { u8 num = 0; TexGen tg[8]; };
 
@@ -429,6 +435,29 @@ float g_sun_ndl_max = -2.f, g_dbg_en[3] = {0}, g_dbg_ld0[3] = {0};
 // for both J3D SRT conventions (translation in matrix col2 OR col3, the other = 0).
 TexGenSet g_cur_texgen;   // (TexGen/TexGenSet defined above, near GxStateRec)
 
+// LIVE XF-row texmtx state — the matrix the GPU ACTUALLY has loaded in each GX_TEXMTX row,
+// tracked by teeing the GD load J3D issues. GX state leaks across draws: a material whose
+// texmtx is unchanged is NOT reloaded (J3DTexMtx::load skips it), so the XF row keeps an
+// earlier material's matrix. ngx, reading each material's OWN mTotalMtx, then diverges.
+struct XfTm { bool have=false; float m[12]={0}; u32 self=0; unsigned long seq=0; };
+XfTm g_xfrow_tm[64];
+unsigned long g_xftm_seq = 0;
+// J3DGDLoadTexMtxImm(Mtx mtx, u32 id, GXTexMtxType type) @ 0x802f2d00. r3=mtx(3x4 row-major),
+// r4=id (GX_TEXMTX0=30, step 3 → XF row), r5=type. SYNCHRONOUS — runs on the game thread in
+// draw order, so g_xfrow_tm reflects exactly what GX has when the next shape draws.
+SUNBRIGHT_OVERRIDE(ov_j3dgd_loadtexmtx, 0x802f2d00u) {
+    if (g_enabled) {
+        const u32 mp = cpu.gpr[3], id = cpu.gpr[4];
+        if (id < 64 && valid(mp)) {
+            XfTm& x = g_xfrow_tm[id];
+            x.have = true; x.self = mp;        // mp = &mTotalMtx (= J3DTexMtx self+0x64)
+            for (int k = 0; k < 12; k++) x.m[k] = rf(mp + k * 4);
+            x.seq = ++g_xftm_seq;
+        }
+    }
+    if (RecompFunc o = recomp_raw(0x802f2d00u)) o(cpu); else call_ppc(cpu, cpu.lr);
+}
+
 // Diagnostic histograms (kept).
 unsigned long g_tg_src_hist[24] = {0}, g_tg_type_hist[12] = {0};
 unsigned long g_tg_mtx_id = 0, g_tg_mtx_set = 0, g_tg_n = 0;
@@ -450,7 +479,20 @@ void capture_texgen(u32 material) {
             const u32 idx = (u32)(mtx - 30) / 3;           // → mTexMtx[] slot
             const u32 mp = idx < 8 ? r32(blk + 0x28 + idx * 4) : 0;   // J3DTexMtx*
             g.mtxptr = mp;
-            if (valid(mp)) { for (int k = 0; k < 12; k++) g.m[k] = rf(mp + 0x64 + k * 4); g.has_mtx = true; }
+            // Render with the material's OWN mTotalMtx. J3D bakes this texmtx into the material
+            // DISPLAY LIST (J3DGDLoadTexMtxImm → J3DGDWriteXFCmdHdr writes the GD buffer, NOT
+            // immediate GX) which is replayed via the FIFO every frame, and animated materials
+            // re-patch it to the current mTotalMtx each frame (J3DTexGenBlockBasic::patch). So
+            // mTotalMtx@+0x64 IS what the GPU uses. (Do NOT use the J3DGDLoadTexMtxImm tee's
+            // "live XF row" below — it only sees DIRECT calls, missing the per-frame DL replays,
+            // and xfmem lags the FIFO: both falsely showed identity for the cloud = the xfmem-lag
+            // trap. The cloud genuinely renders with scale-2, matching GX.)
+            if (valid(mp)) { for (int k = 0; k < 12; k++) { g.m[k] = rf(mp + 0x64 + k * 4); g.obj_m[k] = g.m[k]; } g.has_mtx = true; }
+            // Diagnostic only: what DIRECT J3DGDLoadTexMtxImm calls last wrote this XF row (NOT
+            // authoritative — DL replays bypass it). The **LEAK** flag here is a tee artifact.
+            if (mtx < 64 && g_xfrow_tm[mtx].have) { const XfTm& x = g_xfrow_tm[mtx];
+                g.live_have = true; g.live_self = x.self; g.live_seq = x.seq;
+                g.live_ss=x.m[0]; g.live_st=x.m[5]; g.live_ts=x.m[3]; g.live_tt=x.m[7]; }
         }
         // diagnostics
         if (src < 24) g_tg_src_hist[src]++;
@@ -2857,7 +2899,7 @@ int sb_ngx_gxstate_dump(char* out, int cap) {
             n += snprintf(out+n, cap-n, "    tc%d: type=%s src=%d has_mtx=%d mtxsel=%d mtxptr=%08x", i,
                           g.type==0?"MTX3x4":"MTX2x4", g.src, g.has_mtx, g.mtxsel, g.mtxptr);
             if (g.has_mtx) n += snprintf(out+n, cap-n, "\n      ngx(obj mTotalMtx) row0=[%.4f %.4f %.4f %.3f] row1=[%.4f %.4f %.4f %.3f]",
-                          g.m[0],g.m[1],g.m[2],g.m[3], g.m[4],g.m[5],g.m[6],g.m[7]);
+                          g.obj_m[0],g.obj_m[1],g.obj_m[2],g.obj_m[3], g.obj_m[4],g.obj_m[5],g.obj_m[6],g.obj_m[7]);
             // GX ground truth: the texmtx Dolphin's GPU actually loaded (xfmem matrix memory at the
             // selector's XF row; authoritative in the ORACLE run). Scale mismatch here = ngx reads
             // the wrong/stale texmtx → wrong UV tiling = the cloud over-coverage suspect.
@@ -2865,6 +2907,18 @@ int sb_ngx_gxstate_dump(char* out, int cap) {
                 const float* X = R.tg_xf[i];
                 n += snprintf(out+n, cap-n, "\n      xfmem(GPU @draw)  row0=[%.4f %.4f %.4f %.3f] row1=[%.4f %.4f %.4f %.3f]",
                               X[0],X[1],X[2],X[3], X[4],X[5],X[6],X[7]);
+            }
+            // LIVE XF-row (what GX's GPU actually has loaded = last J3DGDLoadTexMtxImm into this
+            // row, draw-ordered & SYNCHRONOUS). If self != mtxptr the material did NOT reload its
+            // texmtx → GX uses the leaked matrix from src 'self', ngx uses mtxptr's = divergence.
+            if (g.live_have) {
+                // DIAGNOSTIC ONLY: last DIRECT J3DGDLoadTexMtxImm call into this XF row. NOT what
+                // GX uses for DL-baked materials (per-frame DL replays bypass this tee). A mismatch
+                // vs mtxptr here is a tee artifact, not the rendered matrix.
+                const bool diff = (g.live_self != g.mtxptr + 0x64);
+                n += snprintf(out+n, cap-n, "\n      direct-XF(diag, non-auth) scale=(%.4f,%.4f) trans=(%.3f,%.3f) src=%08x seq=%lu %s",
+                              g.live_ss, g.live_st, g.live_ts, g.live_tt, g.live_self, g.live_seq,
+                              diff ? "(differs from material — DL-baked, tee can't see replay)" : "(matches material)");
             }
             n += snprintf(out+n, cap-n, "\n");
         }
