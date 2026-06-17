@@ -85,6 +85,8 @@ int sb_ngx_vertex_selftest(char*, int);                      // runtime/ngx/ngx_
 int sb_ngx_mesh_selftest(char*, int);                        // runtime/ngx/ngx_mesh.cpp
 int sb_ngx_shape_dump(char*, int);                           // runtime/overrides/ngx_j3d_shape.cpp
 int sb_ngx_shapes_dump(char*, int);                          // runtime/overrides/ngx_j3d_shape.cpp (/ngxshapes)
+int sb_ngx_gxstate_dump(char*, int);                         // runtime/overrides/ngx_j3d_shape.cpp (/gxstate)
+extern "C" void sb_ngx_set_gxstate_ti(int);                  // runtime/overrides/ngx_j3d_shape.cpp (/gxstate?ti=)
 int sb_ngx_efbcopies_dump(char*, int);                       // runtime/overrides/ngx_j3d_shape.cpp (/efbcopies)
 int sb_ngx_pixel_batch(float, float, char*, int);            // runtime/overrides/ngx_j3d_shape.cpp
 int sb_ngx_pixel_blend(float, float, char*, int);            // runtime/overrides/ngx_j3d_shape.cpp (/pixblend)
@@ -203,7 +205,7 @@ std::string handle_repl(const char* path) {
         if (cnt & 7) app("\n");
         return std::string(buf, n);
     }
-    if (strncmp(path, "/gx", 3) == 0) {     // CP/Fifo internals (dual-core pacing diagnostics)
+    if (strncmp(path, "/gx", 3) == 0 && strncmp(path, "/gxstate", 8) != 0) {     // CP/Fifo internals (dual-core pacing diagnostics)
 #ifdef HAVE_DOLPHIN_CORE
         auto& sys = Core::System::GetInstance();
         auto& cp  = sys.GetCommandProcessor();
@@ -347,6 +349,11 @@ std::string handle_repl(const char* path) {
     }
     if (strncmp(path, "/ngxshapes", 10) == 0) {  // per-shape NDC bbox (localize a misplaced shape)
         static thread_local char rep[16384]; sb_ngx_shapes_dump(rep, sizeof rep); app("%s", rep);
+        return std::string(buf, n);
+    }
+    if (strncmp(path, "/gxstate", 8) == 0) {  // GX-cmd-stream vs ngx-object-model render-state diff
+        if (const char* p = strstr(path, "ti=")) sb_ngx_set_gxstate_ti(atoi(p + 3));
+        static thread_local char rep[8192]; sb_ngx_gxstate_dump(rep, sizeof rep); app("%s", rep);
         return std::string(buf, n);
     }
     if (strncmp(path, "/efbcopies", 10) == 0) {  // rolling EFB-copy log (display vs offscreen routing)

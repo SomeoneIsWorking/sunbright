@@ -303,6 +303,34 @@ inline void xf_amb_write(int idx, u8 r, u8 g, u8 b, u8 a) {
 // (GXSetChanCtrl / GXSetChanMatColor) — the same LitChannel.hex / matColor Dolphin uses.
 u16  g_gx_cc[2] = {0, 0};            bool g_gx_cc_have[2] = {false, false};
 u8   g_gx_matcol[2][4] = {{255,255,255,255},{255,255,255,255}}; bool g_gx_matcol_have[2] = {false,false};
+unsigned long g_gx_cc_sets[2] = {0,0}, g_gx_matcol_sets[2] = {0,0};   // call counters (per-draw liveness)
+
+// ── /gxstate: GX-command-stream vs ngx-object-model render-state diff ───────────────
+// ngx reconstructs the per-material render state from the J3D OBJECT MODEL (the color/tev/PE
+// blocks read straight from guest RAM). The GROUND TRUTH for what the GPU actually got is the
+// GX COMMAND STREAM the game issues — captured SYNCHRONOUSLY at the GX function tees
+// (GXSetChanCtrl/MatColor/AmbColor, GXLoadLightObjImm). They SHOULD agree; where they don't,
+// ngx's reconstruction is wrong at that exact pipeline stage. This snapshots BOTH at a target
+// material's draw so "at which step does the rendering differ" is a deterministic field-level
+// answer (NOT a pixel comparison). Target chosen by tev_index (live /gxstate?ti=N, or env).
+struct GxStateRec {
+    bool have = false; int ti = -1; u32 sh = 0;
+    // colour-channel control / lighting stage
+    u16 obj_cc = 0, obj_ca = 0;            // ngx: block-parsed COLOR0 / ALPHA0 channel control
+    u16 gx_cc = 0; bool gx_cc_have = false; unsigned long gx_cc_sets = 0;  // GX cmd: GXSetChanCtrl-packed COLOR0
+    u8  obj_mat[4] = {0}, gx_mat[4] = {0}; bool gx_mat_have = false; unsigned long gx_mat_sets = 0;
+    u8  obj_amb[4] = {0}, gx_amb[4] = {0}; bool gx_amb_have = false; unsigned long gx_amb_sets = 0;
+    // xfmem: Dolphin's GPU-decoded XF channel state (authoritative in the ORACLE run; lags in
+    // the ngx-present run because the GP is async — read in both and cross-check).
+    u32 xf_cc = 0, xf_mat = 0, xf_amb = 0; bool xf_have = false;
+    // resolved active light state (from the obj_cc mask), captured live at this draw
+    u8  obj_mask = 0, gx_mask = 0;
+    struct LRec { bool valid=false; float col[3]={0}; float pos[3]={0}; float dir[3]={0};
+                  float cosA[3]={0}; float distA[3]={0}; } lights[8];
+};
+std::atomic<int> g_gxstate_ti{ []{ const char* v=getenv("SUNBRIGHT_NGX_GXSTATE"); return v?atoi(v):-1; }() };
+GxStateRec g_gxstate, g_gxstate_pub;
+extern "C" void sb_ngx_set_gxstate_ti(int t) { g_gxstate_ti.store(t); }
 // DBG histograms for the brightness/wash investigation (vert-weighted).
 unsigned long g_clr0cls_hist[4] = {0}, g_matsrc_hist[3] = {0}, g_litcfg_hist[2] = {0};
 size_t g_bigmap_verts = 0; unsigned g_bigmap_clr0cls = 0; bool g_bigmap_matvtx = false, g_bigmap_en = false;
@@ -512,6 +540,9 @@ extern int g_cur_tev_index;   // defined below (material index of the shape bein
 const int g_clrdbg_ti = []{ const char* v=getenv("SUNBRIGHT_NGX_CLRDBG"); return v?atoi(v):-1; }();
 bool g_clrdbg_have=false; u16 g_clrdbg_cc=0; int g_clrdbg_matvtx=0, g_clrdbg_ambvtx=0, g_clrdbg_nl=0;
 float g_clrdbg_vcol[4]={0}, g_clrdbg_illum[3]={0}, g_clrdbg_mat[3]={0}, g_clrdbg_out[4]={0};
+// Per-draw light/ambient breakdown for the CLRDBG material (the per-draw light-state probe):
+// the ambient component (C.ambColor at draw) + the first masked light's color and s=attn·diff.
+float g_clrdbg_amb[3]={0}; int g_clrdbg_l0i=-1; float g_clrdbg_l0col[3]={0}, g_clrdbg_l0s=0, g_clrdbg_l0ndl=0, g_clrdbg_l0attn=0;
 // SKY latch: full per-draw lighting breakdown for the first reg-color LIT vertex whose
 // channel-control == 0x0686 (the file-select sky material). Reset each frame so the static
 // screen always shows fresh values. Captures the EXACT light/ambient state the sky used at
@@ -609,6 +640,12 @@ void light_vertex(const float eye[3], const float en[3], const float vcol0[4], f
         const float s = attn * diff;
         illum[0] += s*L.color[0]; illum[1] += s*L.color[1]; illum[2] += s*L.color[2];
         g_diff_sum += diff; g_diff_n++;
+        // Per-draw light-state probe: record the FIRST masked light's contribution for the
+        // CLRDBG material, captured at ITS draw (so it can't be the global last-writer snapshot).
+        if (g_clrdbg_ti >= 0 && g_cur_tev_index == g_clrdbg_ti && !g_clrdbg_have && g_clrdbg_l0i < 0) {
+            g_clrdbg_l0i = i; g_clrdbg_l0s = s; g_clrdbg_l0ndl = ndl; g_clrdbg_l0attn = attn;
+            for (int k=0;k<3;k++) g_clrdbg_l0col[k] = L.color[k];
+        }
         if (sky_latch && g_sky.nl < 8) {
             int j = g_sky.nl++;
             g_sky.li[j] = i; g_sky.lndl[j]=ndl; g_sky.lattn[j]=attn; g_sky.ldiff[j]=diff;
@@ -659,7 +696,8 @@ void light_vertex(const float eye[3], const float en[3], const float vcol0[4], f
     if (g_clrdbg_ti >= 0 && g_cur_tev_index == g_clrdbg_ti && !g_clrdbg_have) {
         g_clrdbg_have = true; g_clrdbg_cc = cc; g_clrdbg_matvtx = matVtx; g_clrdbg_ambvtx = ambVtx;
         for (int k=0;k<4;k++){ g_clrdbg_vcol[k]=vcol0[k]; g_clrdbg_out[k]=out[k]; }
-        for (int k=0;k<3;k++){ g_clrdbg_illum[k]=illum[k]; g_clrdbg_mat[k]=mat[k]; }
+        for (int k=0;k<3;k++){ g_clrdbg_illum[k]=illum[k]; g_clrdbg_mat[k]=mat[k];
+                               g_clrdbg_amb[k]=ambVtx?vcol0[k]:C.ambColor[k]/255.f; }
         int n=0; for (int i=0;i<8;i++) if ((mask&(1<<i)) && g_light[i].valid) n++;
         g_clrdbg_nl = n;
     }
@@ -1150,6 +1188,25 @@ int capture_material() {
     if (ns <= 16) g_stage_hist[ns]++;
     g_mat_found++;
 
+    // /gxstate: when this material is the target, snapshot the GX-command-stream state (the
+    // game's actual writes, live at this draw) alongside ngx's object-model reconstruction.
+    auto gxstate_snap = [&](int ti){
+        if (g_gxstate_ti.load() != ti || g_gxstate.have || !g_cur_chan.valid) return;
+        GxStateRec& R = g_gxstate; R = GxStateRec{}; R.have = true; R.ti = ti; R.sh = g_cur_shape;
+        R.obj_cc = g_cur_chan.color0; R.obj_ca = g_cur_chan.alpha0;
+        for (int k=0;k<4;k++){ R.obj_mat[k]=g_cur_chan.matColor[k]; R.obj_amb[k]=g_cur_chan.ambColor[k]; }
+        R.gx_cc = g_gx_cc[0]; R.gx_cc_have = g_gx_cc_have[0]; R.gx_cc_sets = g_gx_cc_sets[0];
+        for (int k=0;k<4;k++){ R.gx_mat[k]=g_gx_matcol[0][k]; R.gx_amb[k]=g_amb_reg[0][k]; }
+        R.gx_mat_have = g_gx_matcol_have[0]; R.gx_mat_sets = g_gx_matcol_sets[0];
+        R.gx_amb_have = g_amb_have[0]; R.gx_amb_sets = g_amb_sets;
+        R.xf_cc = (u32)xfmem.color[0].hex; R.xf_mat = xfmem.matColor[0]; R.xf_amb = xfmem.ambColor[0]; R.xf_have = true;
+        R.obj_mask = (u8)(((R.obj_cc >> 2) & 0x0F) | (((R.obj_cc >> 11) & 0x0F) << 4));
+        R.gx_mask  = (u8)(((R.gx_cc  >> 2) & 0x0F) | (((R.gx_cc  >> 11) & 0x0F) << 4));
+        for (int i=0;i<8;i++){ R.lights[i].valid=g_light[i].valid;
+            for (int k=0;k<3;k++){ R.lights[i].col[k]=g_light[i].color[k]; R.lights[i].pos[k]=g_light[i].pos[k];
+                R.lights[i].dir[k]=g_light[i].dir[k]; R.lights[i].cosA[k]=g_light[i].cosA[k]; R.lights[i].distA[k]=g_light[i].distA[k]; } }
+    };
+
     const u16 dbgcc = g_cur_chan.valid ? g_cur_chan.color0 : 0xFFFF;  // 0xFFFF = no colour block
     auto stash_chan = [&](int i){ if (i<0||i>=(int)TEVSTATE_CAP) return;
         g_tev_tb[i]=tevblock; g_tev_vt[i]=vt;
@@ -1157,12 +1214,13 @@ int capture_material() {
         g_tev_chan[i].have=true; g_tev_chan[i].alpha0=g_cur_chan.alpha0;
         for (int k=0;k<4;k++){ g_tev_chan[i].mat[k]=g_cur_chan.matColor[k]; g_tev_chan[i].amb[k]=g_cur_chan.ambColor[k]; } };
     auto it = g_tevkey_index.find(h);
-    if (it != g_tevkey_index.end()) { if (it->second < (int)TEVSTATE_CAP) { g_tev_cc[it->second] = dbgcc; stash_chan(it->second); } return it->second; }
+    if (it != g_tevkey_index.end()) { if (it->second < (int)TEVSTATE_CAP) { g_tev_cc[it->second] = dbgcc; stash_chan(it->second); } gxstate_snap(it->second); return it->second; }
     if (g_tevstates.size() >= TEVSTATE_CAP) { g_tevstates.clear(); g_tevkey_index.clear(); }
     const int idx = (int)g_tevstates.size();
     g_tevstates.push_back(st);
     g_tevkey_index[h] = idx;
     if (idx < (int)TEVSTATE_CAP) { g_tev_cc[idx] = dbgcc; stash_chan(idx); }
+    gxstate_snap(idx);
     return idx;
 }
 
@@ -1881,6 +1939,7 @@ void ngx_frame_publish() {
         for (int e = 0; e < EPOCH_CAP; e++) g_epoch_tex[g_cur][e] = false;
         g_efb_epoch = 0;
         g_sky = SkyLatch{}; g_skyxf = SkyXf{}; g_pnmtxdbg = PnmtxDbg{};
+        if (g_gxstate.have) g_gxstate_pub = g_gxstate; g_gxstate = GxStateRec{};
         g_clip_in=g_clip_drop=g_clip_cut=g_clip_tiny=0; g_clip_minw=1e30f;
         return;
     }
@@ -1914,7 +1973,10 @@ void ngx_frame_publish() {
     g_skyxf = SkyXf{};
     if (g_pnmtxdbg.have) g_pnmtxdbg_pub = g_pnmtxdbg;
     g_pnmtxdbg = PnmtxDbg{};
+    if (g_gxstate.have) g_gxstate_pub = g_gxstate;   // publish this frame's GX-vs-ngx state diff
+    g_gxstate = GxStateRec{};                        // reset for the next frame
     g_clrdbg_have = false;   // re-latch the per-material colour probe each frame
+    g_clrdbg_l0i = -1;
     g_clip_in=g_clip_drop=g_clip_cut=g_clip_tiny=0; g_clip_minw=1e30f;   // per-frame near-clip stats
     g_frame_swaps++;
     g_ngx_front_frame.store(g_frame_swaps, std::memory_order_release);   // stamp the published snapshot
@@ -2303,7 +2365,7 @@ SUNBRIGHT_OVERRIDE(ov_gxsetchanctrl, 0x8035f6d0u) {
         reg |= ((attn_fn != 2) ? 1u : 0u) << 9;              // attn bit 9
         reg |= ((attn_fn != 0) ? 1u : 0u) << 10;             // attn bit 10
         const int idx = (chan == 4) ? 0 : (chan == 5) ? 1 : (chan <= 1 ? (int)chan : -1);
-        if (idx >= 0) { g_gx_cc[idx] = (u16)reg; g_gx_cc_have[idx] = true; }
+        if (idx >= 0) { g_gx_cc[idx] = (u16)reg; g_gx_cc_have[idx] = true; g_gx_cc_sets[idx]++; }
     }
     if (RecompFunc o = recomp_raw(0x8035f6d0u)) o(cpu); else call_ppc(cpu, cpu.lr);
 }
@@ -2316,7 +2378,7 @@ SUNBRIGHT_OVERRIDE(ov_gxsetchanmatcolor, 0x8035f51cu) {
         if (idx >= 0) {
             g_gx_matcol[idx][0] = (u8)(c >> 24); g_gx_matcol[idx][1] = (u8)(c >> 16);
             g_gx_matcol[idx][2] = (u8)(c >> 8);  g_gx_matcol[idx][3] = (u8)c;
-            g_gx_matcol_have[idx] = true;
+            g_gx_matcol_have[idx] = true; g_gx_matcol_sets[idx]++;
         }
     }
     if (RecompFunc o = recomp_raw(0x8035f51cu)) o(cpu); else call_ppc(cpu, cpu.lr);
@@ -2441,6 +2503,84 @@ SUNBRIGHT_OVERRIDE(ov_j3dshape_draw, 0x802e0390u) {
     if (RecompFunc o = recomp_raw(0x802e0390u)) o(cpu); else call_ppc(cpu, cpu.lr);
     xfmem_draw_observe();   // always-on (oracle too): ground-truth xfmem at draw
     if (g_enabled) capture(sh);
+}
+
+// /gxstate?ti=N — RENDER-STATE DIFF: the GX command stream (the game's actual GX writes, ground
+// truth) vs ngx's object-model reconstruction, for material tev_index=N, captured at its draw.
+// Answers "at which pipeline step does the rendering differ" with a per-field PASS/**DIFF** verdict
+// — no pixels involved. Set the target with /gxstate?ti=N (or SUNBRIGHT_NGX_GXSTATE); the record
+// latches on the next frame's draw of that material and is published at the frame boundary.
+int sb_ngx_gxstate_dump(char* out, int cap) {
+    const GxStateRec& R = g_gxstate_pub;
+    int n = snprintf(out, cap, "gxstate: target_ti=%d  have=%d  ti=%d sh=%08x\n",
+                     g_gxstate_ti.load(), (int)R.have, R.ti, R.sh);
+    if (!R.have) {
+        n += snprintf(out+n, cap-n, "  (no snapshot — set /gxstate?ti=N and let one frame draw that material)\n");
+        return n;
+    }
+    // Decode both channel-control words (COLOR0 cc bit layout, see decode_chanctl).
+    auto dec = [](u16 cc, const char** ms, const char** as, const char** df, const char** af){
+        static const char* MS[2]={"REG","VTX"}; static const char* AS[2]={"REG","VTX"};
+        static const char* DF[4]={"NONE","SIGN","CLAMP","?"}; static const char* AF[4]={"NONE","SPEC","NONE2","SPOT"};
+        *ms=MS[cc&1]; *as=AS[(cc>>6)&1]; *df=DF[(cc>>7)&3]; *af=AF[(cc>>9)&3]; };
+    const char *oms,*oas,*odf,*oaf,*gms,*gas,*gdf,*gaf,*xms,*xas,*xdf,*xaf;
+    dec(R.obj_cc,&oms,&oas,&odf,&oaf); dec(R.gx_cc,&gms,&gas,&gdf,&gaf);
+    const u16 xfcc16 = (u16)R.xf_cc; const u8 xf_mask=(u8)(((xfcc16>>2)&0x0F)|(((xfcc16>>11)&0x0F)<<4));
+    dec(xfcc16,&xms,&xas,&xdf,&xaf);
+    auto eq4 = [](const u8 a[4], const u8 b[4]){ return a[0]==b[0]&&a[1]==b[1]&&a[2]==b[2]&&a[3]==b[3]; };
+    // The authoritative reference for "what GX actually used" is xfmem (GPU-decoded), trustworthy
+    // in the oracle. The DIFF verdict compares ngx(obj-block) against xfmem.
+    const bool cc_eq = (R.obj_cc == xfcc16);
+    n += snprintf(out+n, cap-n,
+        "  ── COLOR-CHANNEL CONTROL (COLOR0)  [ngx-obj vs xfmem] ──  %s\n"
+        "    ngx(obj-block)  cc=%04x  en=%d mat=%s amb=%s diff=%s attn=%s mask=%02x\n"
+        "    xfmem(GPU auth) cc=%04x  en=%d mat=%s amb=%s diff=%s attn=%s mask=%02x  [have=%d]\n"
+        "    GX (fn-tee*)    cc=%04x  en=%d mat=%s amb=%s diff=%s attn=%s mask=%02x  [have=%d sets=%lu] (*J3D bypasses fn → stale)\n",
+        cc_eq ? "PASS" : "**DIFF**",
+        R.obj_cc, (R.obj_cc>>1)&1, oms,oas,odf,oaf, R.obj_mask,
+        xfcc16,   (xfcc16>>1)&1,   xms,xas,xdf,xaf, xf_mask, R.xf_have,
+        R.gx_cc,  (R.gx_cc>>1)&1,  gms,gas,gdf,gaf, R.gx_mask, R.gx_cc_have, R.gx_cc_sets);
+    if (!cc_eq) {
+        n += snprintf(out+n, cap-n, "    FIELD DIFFS (ngx vs xfmem):");
+        if (((R.obj_cc>>1)&1)!=((xfcc16>>1)&1)) n += snprintf(out+n,cap-n," enable");
+        if ((R.obj_cc&1)!=(xfcc16&1))           n += snprintf(out+n,cap-n," matsrc");
+        if (((R.obj_cc>>6)&1)!=((xfcc16>>6)&1)) n += snprintf(out+n,cap-n," ambsrc");
+        if (((R.obj_cc>>7)&3)!=((xfcc16>>7)&3)) n += snprintf(out+n,cap-n," diffFn");
+        if (((R.obj_cc>>9)&3)!=((xfcc16>>9)&3)) n += snprintf(out+n,cap-n," attnFn");
+        if (R.obj_mask!=xf_mask)                n += snprintf(out+n,cap-n," lightmask");
+        n += snprintf(out+n,cap-n,"\n");
+    }
+    n += snprintf(out+n, cap-n, "  ── ALPHA0 cc (ngx-block) = %04x ──\n", R.obj_ca);
+    const u8 xfm[4]={(u8)(R.xf_mat>>24),(u8)(R.xf_mat>>16),(u8)(R.xf_mat>>8),(u8)R.xf_mat};
+    const u8 xfa[4]={(u8)(R.xf_amb>>24),(u8)(R.xf_amb>>16),(u8)(R.xf_amb>>8),(u8)R.xf_amb};
+    n += snprintf(out+n, cap-n,
+        "  ── MATERIAL COLOR (COLOR0)  [ngx-obj vs xfmem] ──  %s\n"
+        "    ngx(obj-block)  mat=(%u,%u,%u,%u)\n"
+        "    xfmem(GPU auth) mat=(%u,%u,%u,%u)\n"
+        "    GX (fn-tee*)    mat=(%u,%u,%u,%u)  [have=%d sets=%lu] (*pointer-bytes if J3D bypasses fn)\n",
+        eq4(R.obj_mat,xfm) ? "PASS" : "**DIFF**",
+        R.obj_mat[0],R.obj_mat[1],R.obj_mat[2],R.obj_mat[3],
+        xfm[0],xfm[1],xfm[2],xfm[3],
+        R.gx_mat[0],R.gx_mat[1],R.gx_mat[2],R.gx_mat[3], R.gx_mat_have, R.gx_mat_sets);
+    n += snprintf(out+n, cap-n,
+        "  ── AMBIENT COLOR (COLOR0)  [ngx-uses vs xfmem] ──  %s\n"
+        "    ngx(uses reg)   amb=(%u,%u,%u,%u)\n"
+        "    xfmem(GPU auth) amb=(%u,%u,%u,%u)\n"
+        "    GX (fn-tee)     amb=(%u,%u,%u,%u)  [have=%d sets=%lu]\n",
+        eq4(R.obj_amb,xfa) ? "PASS" : "**DIFF**",
+        R.obj_amb[0],R.obj_amb[1],R.obj_amb[2],R.obj_amb[3],
+        xfa[0],xfa[1],xfa[2],xfa[3],
+        R.gx_amb[0],R.gx_amb[1],R.gx_amb[2],R.gx_amb[3], R.gx_amb_have, R.gx_amb_sets);
+    n += snprintf(out+n, cap-n, "  ── LIGHTS (active per obj mask=%02x) ──\n", R.obj_mask);
+    for (int i=0;i<8;i++) if ((R.obj_mask & (1<<i)) || R.lights[i].valid) {
+        const auto& L = R.lights[i];
+        n += snprintf(out+n, cap-n,
+            "    light[%d]%s valid=%d col=(%.3f,%.3f,%.3f) pos=(%.0f,%.0f,%.0f) dir=(%.2f,%.2f,%.2f) cosA=(%.3f,%.3f,%.3f) distA=(%.3g,%.3g,%.3g)\n",
+            i, (R.obj_mask&(1<<i))?"*":" ", L.valid, L.col[0],L.col[1],L.col[2],
+            L.pos[0],L.pos[1],L.pos[2], L.dir[0],L.dir[1],L.dir[2],
+            L.cosA[0],L.cosA[1],L.cosA[2], L.distA[0],L.distA[1],L.distA[2]);
+    }
+    return n;
 }
 
 // Probe report (/ngxshape).
@@ -2819,6 +2959,12 @@ int sb_ngx_shape_dump(char* out, int cap) {
             g_clrdbg_vcol[0],g_clrdbg_vcol[1],g_clrdbg_vcol[2],g_clrdbg_vcol[3],
             g_clrdbg_illum[0],g_clrdbg_illum[1],g_clrdbg_illum[2], g_clrdbg_mat[0],g_clrdbg_mat[1],g_clrdbg_mat[2],
             g_clrdbg_out[0],g_clrdbg_out[1],g_clrdbg_out[2],g_clrdbg_out[3]);
+    if (g_clrdbg_ti >= 0)
+        n += snprintf(out+n, cap-n,
+            "    CLRDBG light: amb=(%.3f,%.3f,%.3f) l0=#%d col=(%.3f,%.3f,%.3f) ndl=%.3f attn=%.3f s=%.3f  (illum = amb + s*col)\n",
+            g_clrdbg_amb[0],g_clrdbg_amb[1],g_clrdbg_amb[2], g_clrdbg_l0i,
+            g_clrdbg_l0col[0],g_clrdbg_l0col[1],g_clrdbg_l0col[2],
+            g_clrdbg_l0ndl, g_clrdbg_l0attn, g_clrdbg_l0s);
     n += snprintf(out+n, cap-n,
         "  SHRED metric (eye-space max edge per skinned shape): max=%.1f @shape=%08x pkt=%u mi=%u,%u | last=%.1f | buckets <500=%lu <2k=%lu <10k=%lu >=10k=%lu\n"
         "  SHRED metric (NDC/screen max edge, front tris): max=%.2f @shape=%08x | buckets <2=%lu <8=%lu <40=%lu >=40=%lu\n"
