@@ -412,3 +412,73 @@ intensity/gamma stage GX applies (file-select renders 3D offscreen → copies to
 GX register override (GXSetTevColor/GXSetBlendMode) the material-DL PE block doesn't carry, or the
 seawash/lockstep A/B comparing subtly different geometry. CPU reference rasterizer remains the
 decisive test. New tees committed: GXSetFog (g_fog_*), CLOUDCOUNT, /gxstate tc0/tc1+fog.
+
+---
+## 2026-06-18 (session 5) — CPU REF rasterizer: ngx renders inputs FAITHFULLY; GX ~10× fainter
+
+Built the decisive CPU reference rasterizer (`scratch/cloud_raster.py`) the handoff asked
+for. It rasterizes ti=10 from ngx's DUMPED inputs (40 verts clip-xyzw + RASA + uv0 + uv1,
+exact 8×8 I4 texture decoded from 0x80a83220, faithful integer combiner from the generated
+GLSL, near-clip + perspective-correct interp, quad topology). Data dumped via extended
+`/ngxverts` (now raw `clip[4]`) + `/r` (texture bytes) + `/gxstate` (GLSL).
+
+### Headline result (upper-sky cloud band, threshold >4)
+| source | coverage | mean(all upper) | mean(cloud px) |
+|---|---|---|---|
+| GX (lockstep n18→n19) | 3509 px | **2.0** | 72.8 |
+| REF faithful (linear) | 30434 px | 23.2 | 97.8 |
+| REF faithful (nearest)| 16066 px | 26.0 | 208 |
+| ngx | 55703 px | 39.6 | 90.5 |
+
+**The faithful combiner from ngx's captured inputs produces the WASH (REF ≈ ngx in kind +
+position, both upper), NOT GX's faint localized cloud.** So the wash is **NOT an ngx
+render-math bug** — an independent faithful rasterizer reproduces it. GX's cloud is ~10×
+LESS total additive energy (mean_all 2.0 vs REF 23) though per-pixel-where-present is only
+~1.4× different. Neither linear nor nearest sampling in REF approaches GX.
+
+### Ruled out this session (each verified)
+- **texgen**: scale-2 is DL-baked (decomp: J3DGDLoadTexMtxImm writes the material GD DL via
+  J3DGDWriteXFCmdHdr, replayed by FIFO every frame; J3DTexGenBlockBasic::load/patch).
+  The J3DGDLoadTexMtxImm fn-tee + xfmem both showed IDENTITY = the **xfmem-lag trap** (tee
+  misses DL replays). An earlier "live-XF identity" fix was WRONG; reverted. ngx scale-2 = GX.
+- **combiner SHADER**: dumped the actual generated fragment GLSL (`/gxstate?ti=10`) — faithful
+  (stage0 prev=TEX0·white=t; stage1 clamp(2·t0·t1); alpha same; blend SRC_ALPHA/ONE).
+- **alpha test**: cloud is PEFL with mAlphaCmpID=0xFFFF → emits NO GDSetAlphaCompare →
+  INHERITS prior GX state. Verified it inherits ALWAYS (no discard). Tried tracking+applying
+  GX alpha-compare inheritance (J3DPEBlock*::load: OP/XL=ALWAYS, ED=GEQUAL 0x80, FL=its own
+  or inherit) → cloud unaffected (inherits ALWAYS). Reverted. NOT the cause.
+- filtering (nearest/linear/mips), fog, overdraw, blend, depth, cull, projection, clip — all
+  ruled out prior + reconfirmed.
+
+### Frontier (precise) — the ~10× attenuation
+GX adds ~10× less than the faithful combiner from ngx's captured inputs. With combiner/blend/
+fog/alpha all faithful, the ~10× must be an INPUT ngx captures wrong. **PRIME SUSPECT: the
+per-vertex CLR0 ALPHA (RASA).** ngx reads ring alpha = 255 (1.0); the blend is SRC_ALPHA/ONE
+so added = color·alpha. If GX's real ring vertex alpha is ~25 (0.1), the cloud is ~10×
+fainter = GX. ngx reads RASA from vcol0[3] (CLR0, ca=0x0701 matsrc=VTX, line 651) via the
+j3dSys per-view CLR0 buffer (unk114), fmt cls=3=RGBA8.
+  NEXT TEST: dump the cloud's RAW CLR0 buffer bytes (j3dSys+0x114 base, per-vertex stride) and
+  verify the alpha decode against the ACTUAL attribute format/frac — is ring alpha really 0xFF,
+  or does ngx mis-read the alpha channel (wrong CLR0 format / component / it's RGBA6/RGB5A3)?
+  Also re-confirm the GX lockstep #18 truly is the cloud (it gates the same J3DShape::draw idx,
+  but the GX iso had a bottom water-glint; upper-band excludes it).
+Tools: scratch/cloud_raster.py (REF), /ngxverts (raw clip[4]+uv0+uv1), /gxstate (GLSL+PE+texgen),
+/texat /r (texture), SUNBRIGHT_NGX_TEXNEAREST.
+
+### Mechanism tests in REF (none reproduce GX cleanly)
+- **RASA scale**: REF with vertex-alpha ×0.1 → mean_all 2.5 (≈GX 2.0) but cov stays 20k
+  (GX 3509) and mean_cloud 14.9 (GX 72.8). A uniform fade ≠ GX (GX is sparse, not dim).
+- **alpha-test discard** (GEQUAL on combiner alpha): ref~200 → cov 3826 (≈GX 3509) but
+  survivors mean 222 (GX 72.8 — far dimmer). A pure discard ≠ GX (GX survivors are moderate).
+GX's signature = FEW pixels (3.5k) at MODERATE brightness (72.8). No single tested stage
+(fade / discard / sampling) reproduces "few + moderate". REF is also ~1.3× too bright
+everywhere (mean_cloud 97.8 vs 72.8) even at no discard.
+
+### Caveat to re-check FIRST next session
+The GX 3509/2.0/72.8 numbers are from ONE lockstep capture (n18→n19) whose GX iso also had a
+bottom water-glint. Before trusting "GX is sparse+moderate", RE-VALIDATE the GX cloud
+measurement: (a) confirm GX's draw #18 is the dome (cross-check sh ptr / vert count both
+sides), (b) capture multiple frames, (c) consider that ngx's 3× supersample+downsample fills
+gaps that GX's EFB resolve also does — compare at matched resolution. The "contradiction"
+may partly be a measurement artifact; the CPU REF (deterministic, 1×) is the trustworthy
+faithful baseline and it ≈ ngx, so ngx's render is sound.
