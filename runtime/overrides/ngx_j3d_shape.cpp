@@ -1904,6 +1904,21 @@ void capture(u32 sh) {
 
 }  // namespace
 
+// ── LOCKSTEP per-layer A/B (/ngxdrawlimit) ──────────────────────────────────────
+// Render only the first N J3DShape draws THIS frame, on BOTH engines: the GX side
+// (Dolphin) by skipping the real J3DShape::draw super-call past N (so its EFB/XFB
+// holds exactly N shapes), and the ngx side by skipping capture past N (so its
+// snapshot holds the same N shapes). /abshot2 then captures the IDENTICAL prefix on
+// both → a true lockstep layer-by-layer walk: sweep N and the first N at which ngx
+// and GX disagree is the shape that ngx renders wrong. (-1 = no limit = full scene.)
+// g_frame_shape_idx counts shapes within the current frame; reset in ngx_frame_publish.
+int      g_gx_draw_limit = -1;
+unsigned g_frame_shape_idx = 0;
+unsigned g_last_frame_shape_count = 0;   // shapes drawn in the last completed frame (probe)
+extern "C" void sb_ngx_set_draw_limit(int n) { g_gx_draw_limit = n; }
+extern "C" int  sb_ngx_get_draw_limit() { return g_gx_draw_limit; }
+extern "C" unsigned sb_ngx_frame_shape_count() { return g_last_frame_shape_count; }
+
 // Published by the scene_render GXSetProjection tee (0x80362c34) with the authored
 // projection matrix. g_proj is the CURRENTLY-ACTIVE projection (perspective OR
 // orthographic) — whichever the game last set, exactly as GX uses it. Each shape's
@@ -1992,6 +2007,8 @@ extern "C" void sb_ngx_set_freeze(int on) {
 extern "C" int  sb_ngx_get_freeze() { return g_ngx_frozen.load(std::memory_order_acquire) ? 1 : 0; }
 
 void ngx_frame_publish() {
+    g_last_frame_shape_count = g_frame_shape_idx;   // how many shapes this frame issued a draw for
+    g_frame_shape_idx = 0;                           // reset the lockstep per-frame shape counter
     if (g_ngx_frozen.load(std::memory_order_acquire)) {
         // Frozen: don't swap/publish — keep the latched front buffer. But STILL reset the
         // back buffer so the live capture doesn't accumulate across frames into a giant mess.
@@ -2561,6 +2578,10 @@ extern "C" int sb_xfmem_hist(char* out, int cap) {
 
 SUNBRIGHT_OVERRIDE(ov_j3dshape_draw, 0x802e0390u) {
     const u32 sh = cpu.gpr[3];   // save before the super-call clobbers gpr
+    // LOCKSTEP draw limit: skip this shape on BOTH engines once past the limit so the GX
+    // EFB and the ngx snapshot hold the SAME first-N shapes (see /ngxdrawlimit above).
+    const unsigned my_idx = g_frame_shape_idx++;
+    if (g_gx_draw_limit >= 0 && (int)my_idx >= g_gx_draw_limit) return;  // draw nothing (GX) + no capture
     // Run the real draw FIRST: J3DShape::draw is what sets j3dSys's per-view vertex
     // arrays (loadVtxArray) AND the modelview (setModelDrawMtx) for THIS shape, so
     // we must capture after it for the arrays + matrix to be current.

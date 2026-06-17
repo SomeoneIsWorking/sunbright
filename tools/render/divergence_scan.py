@@ -185,6 +185,59 @@ def scan_walk(port, shots, top):
     for idx, b, npx, od, cum, rr, cc in rows[:top]:
         print(f"   #{idx} ti={b['ti']} {b['blend']}:{b['src']}/{b['dst']} owned={npx} Δ={od:.1f} total={npx*od/1000:.0f}k  cc={b['cc']}")
 
+def scan_lockstep(port, shots, top):
+    """TRUE LOCKSTEP per-layer walk: /ngxdrawlimit makes BOTH engines (Dolphin GX + ngx)
+    draw only the first N J3DShapes from the same source, captured by /abshot2 from the
+    identical present. A faithful renderer matches the oracle at EVERY N, so delta(N) stays
+    low; the first N where delta JUMPS is the shape ngx renders wrong — found automatically.
+    Unlike prefix-vs-full (which is dominated by missing content) this compares N-vs-N."""
+    import numpy as np
+    get(port, "/ngxfreeze?on=0"); time.sleep(0.3)        # live: the draw limit must take effect per frame
+    # learn the per-frame shape count
+    get(port, "/ngxdrawlimit?n=-1"); time.sleep(0.4)
+    txt = get(port, "/ngxdrawlimit?n=-1")
+    m = re.search(r"(\d+) shapes", txt); total = int(m[1]) if m else 0
+    print(f"[divscan lockstep] per-frame shapes={total}")
+    if total <= 0:
+        print("  no shapes reported; is a 3D scene up?"); return
+    prev = None; deltas = {}; grids = {}
+    for N in range(0, total + 1):
+        get(port, f"/ngxdrawlimit?n={N}"); time.sleep(0.35)   # let a couple frames render at this limit
+        gxp, ngxp = capture(port, shots)
+        GX = to_np(gxp); NG = to_np(ngxp)
+        if NG.shape != GX.shape: print(f"  N={N}: shape mismatch; skip"); continue
+        diff = np.abs(NG - GX)
+        deltas[N] = float(diff.mean()); grids[N] = region_grid(diff)
+        jump = "" if prev is None else f"  Δ={deltas[N]-deltas[prev]:+.2f}"
+        print(f"  N={N:3d} delta={deltas[N]:6.2f}{jump}")
+        prev = N
+    get(port, "/ngxdrawlimit?n=-1")
+    # the shape that diverges first = first N with a big positive jump from N-1
+    print("\n=== LOCKSTEP: per-shape divergence (delta jump when shape N is added to BOTH engines) ===")
+    rows = []
+    ks = sorted(deltas)
+    for i in range(1, len(ks)):
+        N = ks[i]; p = ks[i-1]
+        d = deltas[N] - deltas[p]
+        gd = grids[N] - grids[p]
+        rr, cc = np.unravel_index(np.argmax(gd), gd.shape)
+        rows.append((d, N, rr, cc, gd[rr, cc]))
+    first = next((r for r in rows if r[0] >= 3.0), None)
+    for d, N, rr, cc, gv in rows:
+        flag = "  <== FIRST DIVERGENCE" if first and N == first[1] else ""
+        if abs(d) >= 1.0 or flag:
+            print(f"  shape #{N-1:3d} -> +{d:6.2f} delta  worst region r{rr}c{cc} (+{gv:.1f}){flag}")
+    if first:
+        d, N, rr, cc, gv = first
+        print(f"\n  -> SHAPE #{N-1} is the first to diverge (+{d:.1f} delta, region r{rr}c{cc}).")
+        print(f"     It is the {N}th J3DShape drawn. Re-run with the scene frozen + /ngxdrawlimit?n={N}")
+        print(f"     vs n={N-1} and screenshot to SEE it; map to material via /gxstate at that draw.")
+    else:
+        print("  no single shape jumps the delta past threshold (divergence is distributed)")
+    print("\n  top jumps:")
+    for d, N, rr, cc, gv in sorted(rows, key=lambda r:-r[0])[:top]:
+        print(f"   shape #{N-1} +{d:.2f} r{rr}c{cc}")
+
 def main():
     import numpy as np
     port = 17654; step = 1; top = 8; mode = "loo"
@@ -197,6 +250,8 @@ def main():
         elif t == "--mode": mode = a[i+1]
         elif t == "--shots": shots = a[i+1]
     shots = os.path.abspath(shots)
+    if mode == "lockstep":
+        scan_lockstep(port, shots, top); return
     get(port, "/ngxfreeze?on=1"); time.sleep(0.8)
     if mode == "loo":
         scan_loo(port, shots, top); return
