@@ -203,6 +203,12 @@ bool PresentRenderer::init() {
     sci.addressModeU = sci.addressModeV = sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
     sci.maxLod = VK_LOD_CLAMP_NONE;   // sample the full mip chain (trilinear); maxLod=0 (default)
                                       // would force mip0 only → minified tiled textures alias bright
+    // A/B diag: SUNBRIGHT_NGX_TEXNEAREST=1 forces point sampling + no mips — tests whether the
+    // cloud wash is LINEAR/mip averaging of the high-contrast noise toward its mean.
+    if (getenv("SUNBRIGHT_NGX_TEXNEAREST") && atoi(getenv("SUNBRIGHT_NGX_TEXNEAREST"))) {
+        sci.magFilter = sci.minFilter = VK_FILTER_NEAREST;
+        sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST; sci.maxLod = 0.25f;
+    }
     if (vkCreateSampler(dev, &sci, nullptr, &sampler)) return false;
 
     VkDescriptorSetLayoutBinding b{};

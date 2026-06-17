@@ -2018,8 +2018,8 @@ extern "C" int sb_ngx_verts_dump(char* out, int cap) {
         "  NDC bbox x[%.3f,%.3f] y[%.3f,%.3f]  alpha[%.3f,%.3f] mean=%.3f\n",
         nxmin,nxmax,nymin,nymax,amin,amax,asum/V.size());
     for (size_t i=0;i<V.size() && w<cap-100;i++){ const auto& r=V[i];
-        w += snprintf(out+w, cap-w, "  v%-3zu ndc=(%+.3f,%+.3f) a=%.3f eye=(%.0f,%.0f,%.1f) cw=%.2f uv0=(%+.2f,%+.2f)\n",
-                      i, r.ndcx, r.ndcy, r.a, r.ex, r.ey, r.ez, r.cw, r.u0, r.v0); }
+        w += snprintf(out+w, cap-w, "  v%-3zu ndc=(%+.4f,%+.4f) a=%.4f cw=%.3f uv0=(%+.4f,%+.4f) uv1=(%+.4f,%+.4f)\n",
+                      i, r.ndcx, r.ndcy, r.a, r.cw, r.u0, r.v0, r.u1, r.v1); }
     return w;
 }
 extern "C" int sb_ngx_shapeti_dump(char* out, int cap) {
@@ -2866,6 +2866,11 @@ int sb_ngx_gxstate_dump(char* out, int cap) {
         for (int c=0;c<4;c++) n += snprintf(out+n,cap-n,"(%d,%d,%d,%d) ", T.tev_color[c][0],T.tev_color[c][1],T.tev_color[c][2],T.tev_color[c][3]);
         n += snprintf(out+n, cap-n, "\n    KONST0..3: ");
         for (int c=0;c<4;c++) n += snprintf(out+n,cap-n,"(%d,%d,%d,%d) ", T.kcolor[c][0],T.kcolor[c][1],T.kcolor[c][2],T.kcolor[c][3]);
+        // The ACTUAL fragment GLSL ngx runs for this material — verifies the combiner
+        // TRANSLATION (scale/clamp/bias), not just the decoded fields. The hand-computed
+        // spec is the oracle; this is what ngx really executes per pixel.
+        { std::string g = sb_tev_gen_fragment(T);
+          n += snprintf(out+n, cap-n, "\n    ── GENERATED FRAGMENT GLSL ──\n%.*s\n", cap-n-64, g.c_str()); }
         const NgxPEState& P = T.pe;
         static const char* BF[8]={"ZERO","ONE","SRCCLR","INVSRCCLR","SRCALPHA","INVSRCALPHA","DSTALPHA","INVDSTALPHA"};
         static const char* CMP[8]={"NEVER","LESS","EQ","LEQ","GREATER","NEQ","GEQ","ALWAYS"};
