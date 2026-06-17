@@ -1495,6 +1495,20 @@ void capture(u32 sh) {
             }
         }
     }
+    // DBG: dump the CLR0 source format + decoded bytes for the magenta-vertex backdrop shape(s),
+    // to split a wrong colour into vertex-color DECODE (format misread) vs real game data.
+    if (getenv("SUNBRIGHT_NGX_MAGDBG")) {
+        static int kk = 0;
+        for (auto& v : g_verts) {
+            if (v.clr[0][0] > 200 && v.clr[0][1] < 70 && v.clr[0][2] > 200) {
+                if (kk++ < 16) fprintf(stderr,
+                    "[mag] sh=%08x clr0=(%u,%u,%u,%u) vcd_lo=%08x vcd_hi=%08x vat0[0]=%08x clr0fmt=%u clr0cls=%u nv=%zu\n",
+                    sh, v.clr[0][0], v.clr[0][1], v.clr[0][2], v.clr[0][3], cp.vcd_lo, cp.vcd_hi,
+                    cp.vat[0][0], (cp.vat[0][0] >> 14) & 7, (cp.vcd_lo >> 13) & 3, g_verts.size());
+                break;
+            }
+        }
+    }
     // DBG: per-vertex position-matrix index (PNMTXIDX, vcd_lo bit0) usage. ngx applies a single
     // mCurrentDrawMtx to the whole shape; shapes with PNMTXIDX are multi-matrix (skinned/jointed,
     // e.g. the title logo) and TEAR if we don't select the per-vertex matrix.
