@@ -877,14 +877,18 @@ bool build_cp(u32 sh, NgxCP& cp) {
     cp.array_base[0] = r32(J3DSYS + 0x10C);  cp.array_stride[0] = (pos_type == 4) ? 12 : 6;
     cp.array_base[1] = nbt ? r32(vdata + 0x18) : r32(J3DSYS + 0x110);
     cp.array_stride[1] = ((nrm_type == 4) ? 12 : 6) * (nbt ? 3 : 1);
-    // CLR0 array: take it from Dolphin's live CP state (the array GXSetArray actually bound
-    // for this shape — g_main_cp_state is updated by the recompiled draw that just ran). The
-    // engine picks per-view LIT colours (j3dSys.unk114) vs the static authored base each frame;
-    // reading unk114 ourselves got the WRONG one (stale null → static bright base → washed-out).
-    // Dolphin stores the address with the 0x8000_0000 region bit masked off → OR it back.
-    const u32 cp_clr0 = g_main_cp_state.array_bases[CPArray::Color0];
-    cp.array_base[2] = cp_clr0 ? (cp_clr0 | 0x80000000u) : r32(vdata + 0x1C);
-    cp.array_stride[2] = g_main_cp_state.array_strides[CPArray::Color0] ?: 4;
+    // CLR0 array — read it from the J3D OBJECT MODEL, not Dolphin's emulated CP state. The
+    // decomp's J3DShape::draw always runs loadVtxArray() → J3DLoadArrayBasePtr(GX_VA_CLR0,
+    // j3dSys.unk114) AFTER GXCallDisplayList replays the static array, so the array GX actually
+    // samples for the draw primitives is j3dSys.unk114 (J3DSYS+0x114) — exactly parallel to POS
+    // (unk10C) and NRM (unk110) above. makeVtxArrayCmd bakes the static authored colours
+    // (mVtxColorArray[0] @ vdata+0x1C, stride 4) as the fallback when unk114 is null.
+    // (Reading g_main_cp_state[Color0] was a GameCube-emulation crutch and returned a STALE,
+    // WRONG array — a texcoord-like base decoding to bright magenta where the real per-view
+    // colours are neutral; verified via [magsrc]: unk114=80b9b600 neutral, cp=80d39c40 magenta.)
+    const u32 clr0 = r32(J3DSYS + 0x114);
+    cp.array_base[2] = valid(clr0) ? clr0 : r32(vdata + 0x1C);
+    cp.array_stride[2] = 4;
     cp.array_base[3] = r32(vdata + 0x20);    cp.array_stride[3] = 4;
     for (int i = 0; i < 8; i++) {
         cp.array_base[4 + i]   = r32(vdata + 0x24 + i * 4);
@@ -1509,6 +1513,13 @@ void capture(u32 sh) {
                     "[mag] sh=%08x clr0=(%u,%u,%u,%u) clr0cls=%u clr0fmt(vat0)=%u | CLR0 arr base=%08x stride=%u bytes[0..11]=%08x %08x %08x | vat0=%08x vat1=%08x vat2=%08x nv=%zu\n",
                     sh, v.clr[0][0], v.clr[0][1], v.clr[0][2], v.clr[0][3], (cp.vcd_lo >> 13) & 3, (cp.vat[0][0] >> 14) & 7,
                     cbase, cstr, b0, b1, b2, cp.vat[0][0], cp.vat[1][0], cp.vat[2][0], g_verts.size());
+                    // Compare CLR0 array sources: object-model unk114 vs Dolphin CP vs static.
+                    const u32 vd = r32(sh + 0x44);
+                    const u32 u114 = r32(J3DSYS + 0x114), stat = valid(vd) ? r32(vd + 0x1C) : 0;
+                    auto at = [&](u32 b, u32 i){ return valid(b) ? mem_r32(b + i*4) : 0; };
+                    fprintf(stderr,
+                    "[magsrc] unk114=%08x stat(vdata+1C)=%08x cp=%08x | unk114[95,265,898]=%08x %08x %08x | stat[95,265,898]=%08x %08x %08x\n",
+                    u114, stat, cbase, at(u114,95), at(u114,265), at(u114,898), at(stat,95), at(stat,265), at(stat,898));
                 }
                 break;
             }
