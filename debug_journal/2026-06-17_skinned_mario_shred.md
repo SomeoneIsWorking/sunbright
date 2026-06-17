@@ -40,8 +40,17 @@ slot a later packet SKIPPED keep the matrix an EARLIER packet loaded there. Prov
 independently → those verts fell back to g_posmtx → shred. Fix: maintain a RUNNING per-slot state
 across the shape's packets (init from g_posmtx), update only each packet's loaded slots, snapshot
 into g_pkt_mtx[packet] after each packet's loads. Result: Mario goes from a triangle cloud to a
-COHERENT character (gpshot --fs: bottom-left region 51→36; ngx≈recognizable Mario). Residual minor
-distortion (a few slots / the 308K fallback verts / initial-state slots) — follow-up.
+COHERENT character (gpshot --fs: bottom-left region 51→36; ngx≈recognizable Mario).
+
+## RESIDUAL (post-fix) — one bone (head/hat) floats
+With the running-slot fix, `fallback=0` (all 2.27M skinned verts resolve a slot) and Mario's BODY
+is coherent and correctly posed (crouch), verified by cropping the dock-Mario region from the SAME
+abshot2 present (scratch/screenshots/mario.{ngx,gx}.png): oracle = head attached; ngx = the red
+hat/head detached and displaced up-left, body fine. So one bone's pos-matrix is wrong (not a global
+shred). Leads: (1) the head may use a slot never loaded by Mario's packets → run[] init from the
+cross-shape g_posmtx is a stale matrix; (2) the floating hat could be a SEPARATE shape/model with
+its own skinning; (3) per-bone NORMAL matrices are still single (J3DSYS+0x108) — lighting only.
+NEXT: identify the head shape/slot and check whether it's shape 80ea09c0 or a separate model.
 
 ## (was) STILL OPEN — the per-vertex assignment is wrong
 Despite applying sane per-packet matrices to 86% of skinned verts, **Mario still shreds**
