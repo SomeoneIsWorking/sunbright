@@ -320,6 +320,7 @@ struct GxStateRec {
     u16 gx_cc = 0; bool gx_cc_have = false; unsigned long gx_cc_sets = 0;  // GX cmd: GXSetChanCtrl-packed COLOR0
     u8  obj_mat[4] = {0}, gx_mat[4] = {0}; bool gx_mat_have = false; unsigned long gx_mat_sets = 0;
     u8  obj_amb[4] = {0}, gx_amb[4] = {0}; bool gx_amb_have = false; unsigned long gx_amb_sets = 0;
+    u8  gd_amb[4] = {0}; bool gd_amb_have = false; unsigned long gd_amb_sets = 0;  // J3DGDSetChanAmbColor (J3D's path)
     // xfmem: Dolphin's GPU-decoded XF channel state (authoritative in the ORACLE run; lags in
     // the ngx-present run because the GP is async — read in both and cross-check).
     u32 xf_cc = 0, xf_mat = 0, xf_amb = 0; bool xf_have = false;
@@ -1207,6 +1208,7 @@ int capture_material() {
         for (int k=0;k<4;k++){ R.gx_mat[k]=g_gx_matcol[0][k]; R.gx_amb[k]=g_amb_reg[0][k]; }
         R.gx_mat_have = g_gx_matcol_have[0]; R.gx_mat_sets = g_gx_matcol_sets[0];
         R.gx_amb_have = g_amb_have[0]; R.gx_amb_sets = g_amb_sets;
+        for (int k=0;k<4;k++) R.gd_amb[k]=g_gd_amb[0][k]; R.gd_amb_have=g_gd_amb_have[0]; R.gd_amb_sets=g_gd_amb_sets;
         R.xf_cc = (u32)xfmem.color[0].hex; R.xf_mat = xfmem.matColor[0]; R.xf_amb = xfmem.ambColor[0]; R.xf_have = true;
         R.cb_addr = g_cur_cb_addr; R.cb_vt = g_cur_cb_vt; for (int k=0;k<0x20;k++) R.cb_raw[k]=g_cur_cb_raw[k];
         R.tev = st; R.tev_have = true;
@@ -2581,11 +2583,13 @@ int sb_ngx_gxstate_dump(char* out, int cap) {
         "  ── AMBIENT COLOR (COLOR0)  [ngx-uses vs xfmem] ──  %s\n"
         "    ngx(uses reg)   amb=(%u,%u,%u,%u)\n"
         "    xfmem(GPU auth) amb=(%u,%u,%u,%u)\n"
-        "    GX (fn-tee)     amb=(%u,%u,%u,%u)  [have=%d sets=%lu]\n",
+        "    GX (fn-tee)     amb=(%u,%u,%u,%u)  [have=%d sets=%lu]\n"
+        "    J3DGD (J3D path) amb=(%u,%u,%u,%u)  [have=%d sets=%lu]  (0 sets => J3D doesn't set amb here => global reg is the source)\n",
         eq4(R.obj_amb,xfa) ? "PASS" : "**DIFF**",
         R.obj_amb[0],R.obj_amb[1],R.obj_amb[2],R.obj_amb[3],
         xfa[0],xfa[1],xfa[2],xfa[3],
-        R.gx_amb[0],R.gx_amb[1],R.gx_amb[2],R.gx_amb[3], R.gx_amb_have, R.gx_amb_sets);
+        R.gx_amb[0],R.gx_amb[1],R.gx_amb[2],R.gx_amb[3], R.gx_amb_have, R.gx_amb_sets,
+        R.gd_amb[0],R.gd_amb[1],R.gd_amb[2],R.gd_amb[3], R.gd_amb_have, R.gd_amb_sets);
     n += snprintf(out+n, cap-n, "  ── LIGHTS (active per obj mask=%02x) ──\n", R.obj_mask);
     for (int i=0;i<8;i++) if ((R.obj_mask & (1<<i)) || R.lights[i].valid) {
         const auto& L = R.lights[i];
