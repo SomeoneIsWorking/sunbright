@@ -25,6 +25,14 @@ struct NgxTexBind {
     uint8_t  fmt;             // GX texture format (SbTexFormat)
     uint8_t  tlut_fmt;        // GX TLUT format (SbTlutFormat) for CI formats
     uint32_t tlut_addr;       // guest palette address for CI formats (0 = none)
+    // GX sampler state (from ResTIMG / GXTexObj). The present must honour these per
+    // texture — a global REPEAT+LINEAR sampler washes a CLAMP/NEAR-sampled noise.
+    uint8_t  wrap_s;          // GX wrap mode (0=CLAMP 1=REPEAT 2=MIRROR)
+    uint8_t  wrap_t;
+    uint8_t  min_filter;      // GXTexFilter (0=NEAR 1=LINEAR 2..6=mip variants)
+    uint8_t  mag_filter;      // GXTexFilter (0=NEAR 1=LINEAR)
+    uint8_t  mipmap;          // mipmapEnabled (0/1)
+    uint8_t  pad_s[3];
 };
 
 // A run of vertices sharing one material AND the same set of bound texmaps. The

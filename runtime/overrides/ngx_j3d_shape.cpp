@@ -352,7 +352,10 @@ extern "C" void sb_ngx_set_gxstate_ti(int t) { g_gxstate_ti.store(t); }
 // texcoords + computed (texgen'd) UVs + the UV bbox over the shape's verts. Pins texgen/UV-tiling
 // divergence (the file-select cloud over-tiling). Published with g_gxstate.
 struct UvDbg { bool have=false; float tex0[2]={0},tex1[2]={0},uv0[2]={0},uv1[2]={0};
-    float u0min[2]={1e9f,1e9f},u0max[2]={-1e9f,-1e9f},u1min[2]={1e9f,1e9f},u1max[2]={-1e9f,-1e9f}; unsigned long nv=0; };
+    float u0min[2]={1e9f,1e9f},u0max[2]={-1e9f,-1e9f},u1min[2]={1e9f,1e9f},u1max[2]={-1e9f,-1e9f}; unsigned long nv=0;
+    // per-vertex CLR0 (RASC/RASA source) range across the shape's verts — pins whether the
+    // additive cloud's alpha (RASA, matsrc=VTX) is a near-zero gradient (GX subtle) or uniform.
+    float ca_min=1e9f, ca_max=-1e9f; float cr_min=1e9f, cr_max=-1e9f; };
 UvDbg g_uvdbg, g_uvdbg_pub;
 // DBG histograms for the brightness/wash investigation (vert-weighted).
 unsigned long g_clr0cls_hist[4] = {0}, g_matsrc_hist[3] = {0}, g_litcfg_hist[2] = {0};
@@ -792,6 +795,9 @@ void capture_textures(u32 tevblock, u32 vt) {
         d.fmt = T[0x00];
         d.w = (u16)((T[0x02] << 8) | T[0x03]);
         d.h = (u16)((T[0x04] << 8) | T[0x05]);
+        d.wrap_s = T[0x06]; d.wrap_t = T[0x07];     // GX wrap mode (0=CLAMP 1=REPEAT 2=MIRROR)
+        d.mipmap = T[0x10];                        // mipmapEnabled
+        d.min_filter = T[0x14]; d.mag_filter = T[0x15];   // GXTexFilter
         d.tlut_fmt = T[0x09];                     // colorFormat (TLUT fmt for CI)
         const u32 imgOff = ((u32)T[0x1C] << 24) | ((u32)T[0x1D] << 16) | ((u32)T[0x1E] << 8) | T[0x1F];
         d.addr = timg + imgOff;
@@ -1405,6 +1411,9 @@ void transform_eye() {
                                    if(uvp[a]>g_uvdbg.u0max[a])g_uvdbg.u0max[a]=uvp[a];
                                    if(uvp[2+a]<g_uvdbg.u1min[a])g_uvdbg.u1min[a]=uvp[2+a];
                                    if(uvp[2+a]>g_uvdbg.u1max[a])g_uvdbg.u1max[a]=uvp[2+a]; }
+            const float ca=vcol0[3], cr=vcol0[0];
+            if(ca<g_uvdbg.ca_min)g_uvdbg.ca_min=ca; if(ca>g_uvdbg.ca_max)g_uvdbg.ca_max=ca;
+            if(cr<g_uvdbg.cr_min)g_uvdbg.cr_min=cr; if(cr>g_uvdbg.cr_max)g_uvdbg.cr_max=cr;
             g_uvdbg.nv++;
         }
         // DBG: bucket the resulting col0 luminance by category to localize the bright bulk.
@@ -2690,18 +2699,23 @@ int sb_ngx_gxstate_dump(char* out, int cap) {
                           g.m[0],g.m[1],g.m[2],g.m[3], g.m[4],g.m[5],g.m[6],g.m[7]);
             n += snprintf(out+n, cap-n, "\n");
         }
+        static const char* WRAP[3]={"CLAMP","REPEAT","MIRROR"};
         for (int m=0;m<8;m++) if (R.tex[m].addr)
-            n += snprintf(out+n, cap-n, "    texmap%d: addr=%08x %ux%u fmt=%u tlut=%08x\n",
-                          m, R.tex[m].addr, R.tex[m].w, R.tex[m].h, R.tex[m].fmt, R.tex[m].tlut_addr);
+            n += snprintf(out+n, cap-n, "    texmap%d: addr=%08x %ux%u fmt=%u tlut=%08x wrapS=%s wrapT=%s minF=%u magF=%u mip=%u\n",
+                          m, R.tex[m].addr, R.tex[m].w, R.tex[m].h, R.tex[m].fmt, R.tex[m].tlut_addr,
+                          R.tex[m].wrap_s<3?WRAP[R.tex[m].wrap_s]:"?", R.tex[m].wrap_t<3?WRAP[R.tex[m].wrap_t]:"?",
+                          R.tex[m].min_filter, R.tex[m].mag_filter, R.tex[m].mipmap);
         const UvDbg& U = g_uvdbg_pub;
         if (U.have) {
             n += snprintf(out+n, cap-n,
                 "  ── PER-VERTEX UV (texgen output, nv=%lu) ──\n"
                 "    v0 rawTEX0=(%.3f,%.3f) rawTEX1=(%.3f,%.3f) -> UV0=(%.3f,%.3f) UV1=(%.3f,%.3f)\n"
                 "    UV0 range x[%.3f,%.3f] y[%.3f,%.3f]  (REPEAT wrap: range>1 => tex tiles that many times)\n"
-                "    UV1 range x[%.3f,%.3f] y[%.3f,%.3f]\n",
+                "    UV1 range x[%.3f,%.3f] y[%.3f,%.3f]\n"
+                "    vtx CLR0: alpha(RASA src) range [%.3f,%.3f]  red(RASC if VTX) range [%.3f,%.3f]\n",
                 U.nv, U.tex0[0],U.tex0[1], U.tex1[0],U.tex1[1], U.uv0[0],U.uv0[1], U.uv1[0],U.uv1[1],
-                U.u0min[0],U.u0max[0],U.u0min[1],U.u0max[1], U.u1min[0],U.u1max[0],U.u1min[1],U.u1max[1]);
+                U.u0min[0],U.u0max[0],U.u0min[1],U.u0max[1], U.u1min[0],U.u1max[0],U.u1min[1],U.u1max[1],
+                U.ca_min,U.ca_max, U.cr_min,U.cr_max);
         }
     }
     return n;
