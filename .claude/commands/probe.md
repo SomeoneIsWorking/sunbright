@@ -26,8 +26,14 @@ tools/gp skip 12   ; tools/gp ab2     # SKIP it
 tools/gp noblend 0 ; tools/gp ab2     # force every material opaque
 tools/gp dbg tex   ; tools/gp ab2     # shader debug mode (tex|ras|normal|uv0|…)
 tools/gp pixbatch 0.5 0.45            # which captured layers cover an NDC pixel (combiner/blend/tex)
+tools/gp pixbatch -901 12             # x=-901 => full BATCH CLIP DUMP for tev_index 12: PE block +
+                                      #   per-stage ce/ae/map/coord/chan/kc/ka + rswap/tswap + the 4
+                                      #   decoded TEV swap tables (id->RGBA swizzle) + texmaps + UV bbox
 tools/gp freeze 0                     # release (game keeps running)
 ```
+⚠ `gp scene`'s `waitgameplay` polls the FLAKY `hud_quads` signal and may never fire even when the
+scene is fine. If it hangs, the instance is still up — just `curl /ngxfreeze?on=1` then `curl
+/abshot2` directly (frame_swaps climbing in `/ngxshape` = scene ready).
 The `/abshot2` capture is ZERO-DRIFT (Dolphin GX XFB + ngx native render from the SAME present),
 so the delta moves only for ngx changes. `tools/gp wait [swaps]` / `waitgameplay` poll readiness.
 ⚠ `SUNBRIGHT_STATE=<save>` deterministic load is KNOWN-BROKEN on the native path (vi_end_field_event
