@@ -84,6 +84,7 @@ int sb_j2d_render(char*, int);                               // runtime/render/j
 int sb_ngx_vertex_selftest(char*, int);                      // runtime/ngx/ngx_vertex.cpp
 int sb_ngx_mesh_selftest(char*, int);                        // runtime/ngx/ngx_mesh.cpp
 int sb_ngx_shape_dump(char*, int);                           // runtime/overrides/ngx_j3d_shape.cpp
+int sb_ngx_shapes_dump(char*, int);                          // runtime/overrides/ngx_j3d_shape.cpp (/ngxshapes)
 int sb_ngx_pixel_batch(float, float, char*, int);            // runtime/overrides/ngx_j3d_shape.cpp
 extern "C" int ngx_geom_diff_report(char* out, int cap);     // runtime/overrides/ngx_j3d_shape.cpp (/ngxgeomdiff)
 extern "C" int ngx_proj_diff_report(char* out, int cap);     // runtime/overrides/ngx_j3d_shape.cpp (/ngxproj)
@@ -335,6 +336,10 @@ std::string handle_repl(const char* path) {
             f.num_draw_calls, f.num_prims, f.num_dl_prims, f.num_drawn_objects,
             f.num_triangles_drawn, f.num_triangles_in, f.num_vertices_loaded,
             f.num_efb_peeks, f.num_efb_pokes, f.num_dlists_called, f.num_shader_changes);
+        return std::string(buf, n);
+    }
+    if (strncmp(path, "/ngxshapes", 10) == 0) {  // per-shape NDC bbox (localize a misplaced shape)
+        static thread_local char rep[16384]; sb_ngx_shapes_dump(rep, sizeof rep); app("%s", rep);
         return std::string(buf, n);
     }
     if (strncmp(path, "/ngxshape", 9) == 0) {  // N4 live J3DShape native-mesh capture stats

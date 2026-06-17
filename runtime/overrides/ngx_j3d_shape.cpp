@@ -967,6 +967,17 @@ size_t                       g_snap_count[2] = {0, 0};
 std::vector<NgxRenderBatch>  g_batches[2];
 int                          g_cur = 0;       // accumulation buffer (game thread only)
 std::atomic<int>             g_front{0};       // published buffer (present reads)
+// Per-shape NDC-bbox record ring (double-buffered like g_snap) — for the /ngxshapes probe that
+// localizes a MISPLACED shape (e.g. the file-select Mario rendered at screen-top): a shape whose
+// NDC bbox sits where it shouldn't is an identified wrong-matrix shape, not a shred. Recorded at
+// the end of transform_eye, cleared/flipped with the snapshot at the frame boundary.
+struct ShapeRec {
+    u32 sh; unsigned nv; u16 cc; u32 tex0; unsigned char pnmtx; unsigned single_idx;
+    float nxmin, nxmax, nymin, nymax;   // NDC bbox over w>eps verts
+    float wmin, wmax; unsigned nfront;  // clip-w range + count of w>eps verts
+    float tx, ty, tz, det3;             // single-matrix (pnmtx=0) modelview translation + 3x3 det
+};
+std::vector<ShapeRec> g_shaperec[2];
 int                          g_read_front = 0; // latched by ngx_snap_verts for batches
 unsigned long                g_frame_swaps = 0;
 std::atomic<unsigned long>   g_ngx_front_frame{0};   // frame id of the published snapshot (abshot2 liveness)
@@ -1235,6 +1246,26 @@ void transform_eye() {
                 if (nx >= -1.0f && nx <= 1.0f && ny >= -1.0f && ny <= 1.0f) g_ndc_inbox++;
             }
         }
+    }
+
+    // Per-shape NDC bbox record (for /ngxshapes — localize a misplaced shape by where it lands).
+    if (g_have_proj && !g_clip.empty()) {
+        ShapeRec rec{};
+        rec.sh = g_cur_shape; rec.nv = (unsigned)nv;
+        rec.cc = g_cur_chan.valid ? g_cur_chan.color0 : 0xFFFF;
+        rec.tex0 = g_mat_tex[0].addr; rec.pnmtx = g_cur_pnmtx ? 1 : 0; rec.single_idx = g_single_idx;
+        rec.tx = m[3]; rec.ty = m[7]; rec.tz = m[11];
+        rec.det3 = m[0]*(m[5]*m[10]-m[6]*m[9]) - m[1]*(m[4]*m[10]-m[6]*m[8]) + m[2]*(m[4]*m[9]-m[5]*m[8]);
+        rec.nxmin = rec.nymin = 1e30f; rec.nxmax = rec.nymax = -1e30f;
+        rec.wmin = 1e30f; rec.wmax = -1e30f; rec.nfront = 0;
+        for (size_t vi = 0; vi < nv; vi++) {
+            const float w = g_clip[vi*4+3]; if (w <= 1e-3f) continue;
+            const float nx = g_clip[vi*4]/w, ny = g_clip[vi*4+1]/w;
+            if (nx<rec.nxmin)rec.nxmin=nx; if(nx>rec.nxmax)rec.nxmax=nx;
+            if (ny<rec.nymin)rec.nymin=ny; if(ny>rec.nymax)rec.nymax=ny;
+            if (w<rec.wmin)rec.wmin=w; if(w>rec.wmax)rec.wmax=w; rec.nfront++;
+        }
+        if (rec.nfront > 0 && g_shaperec[g_cur].size() < 2048) g_shaperec[g_cur].push_back(rec);
     }
 
     // Skinned-shred metric: max eye-space edge over THIS skinned shape's own triangles.
@@ -1689,6 +1720,7 @@ void ngx_frame_publish() {
         // back buffer so the live capture doesn't accumulate across frames into a giant mess.
         g_snap_count[g_cur] = 0;
         g_batches[g_cur].clear();
+        g_shaperec[g_cur].clear();
         g_sky = SkyLatch{}; g_skyxf = SkyXf{}; g_pnmtxdbg = PnmtxDbg{};
         g_clip_in=g_clip_drop=g_clip_cut=g_clip_tiny=0; g_clip_minw=1e30f;
         return;
@@ -1706,6 +1738,7 @@ void ngx_frame_publish() {
     if (g_snap[g_cur].size() < SNAP_CAP) g_snap[g_cur].resize(SNAP_CAP);
     g_snap_count[g_cur] = 0;
     g_batches[g_cur].clear();
+    g_shaperec[g_cur].clear();
     if (g_sky.have) g_sky_pub = g_sky;   // publish this frame's sky breakdown
     g_sky = SkyLatch{};                  // reset for the next frame
     if (g_skyxf.have) g_skyxf_pub = g_skyxf;
@@ -2233,6 +2266,30 @@ SUNBRIGHT_OVERRIDE(ov_j3dshape_draw, 0x802e0390u) {
 }
 
 // Probe report (/ngxshape).
+// /ngxshapes — dump the published frame's per-shape NDC bboxes, sorted so the shapes nearest the
+// TOP of the screen come first. Localizes a misplaced shape (e.g. file-select Mario at screen-top):
+// note ngx NDC is Vulkan-style (y=-1 TOP, +1 BOTTOM), so "top" = small nymin/nymax.
+int sb_ngx_shapes_dump(char* out, int cap) {
+    const int f = g_front.load(std::memory_order_acquire);
+    const std::vector<ShapeRec>& rs = g_shaperec[f];
+    int n = snprintf(out, cap, "ngxshapes: front=%d shapes=%zu (ndc y: -1=top +1=bottom)\n", f, rs.size());
+    // index sort by nymin ascending (topmost first)
+    std::vector<int> idx(rs.size());
+    for (size_t i = 0; i < rs.size(); i++) idx[i] = (int)i;
+    std::sort(idx.begin(), idx.end(), [&](int a, int b){ return rs[a].nymin < rs[b].nymin; });
+    int shown = 0;
+    for (int i : idx) {
+        if (n >= cap - 256 || shown >= 60) break;
+        const ShapeRec& r = rs[i];
+        n += snprintf(out + n, cap - n,
+            "  sh=%08x nv=%-5u cc=%04x tex0=%08x pnmtx=%u sidx=%u  ndc x[%6.2f,%6.2f] y[%6.2f,%6.2f] w[%.1f,%.1f] front=%u  t=(%.0f,%.0f,%.0f) det=%.2f\n",
+            r.sh, r.nv, r.cc, r.tex0, r.pnmtx, r.single_idx,
+            r.nxmin, r.nxmax, r.nymin, r.nymax, r.wmin, r.wmax, r.nfront, r.tx, r.ty, r.tz, r.det3);
+        shown++;
+    }
+    return n;
+}
+
 int sb_ngx_shape_dump(char* out, int cap) {
     int n = snprintf(out, cap,
         "ngx J3DShape capture: %s\n"
