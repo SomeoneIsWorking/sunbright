@@ -500,9 +500,18 @@ VkImageView PresentRenderer::texture_for(const NgxTexBind& t, VkCommandBuffer up
     // bright tile faces → washed-out. Generate a box-filtered mip chain (vkCmdBlitImage, linear)
     // and sample it trilinearly. (GC TIMGs can store mips; box-generated mips approximate them and
     // fix the aliasing — the dominant cause of the ngx 3D wash.)
-    uint32_t mips = 1; { int m = pw > ph ? pw : ph; while (m > 1) { m >>= 1; mips++; } }
+    // The image is the LOGICAL size (t.w×t.h), NOT the block-padded decode size (pw×ph):
+    // GC textures tile at the format's block, so a non-block-multiple texture (e.g. a 20×20
+    // IA4 window-border corner → padded 24×20) has GARBAGE in the padding columns/rows. If
+    // the image were pw×ph, u/v ∈ [0,1] would sample that padding — most visibly the window
+    // 9-slice border edge quads (degenerate U=1.0) land squarely in the white padding → a
+    // white frame instead of blue. Uploading only the w×h region (with bufferRowLength=pw as
+    // the decode stride) makes [0,1] map to the real texels. (UV analog of the title-logo
+    // block-padding fix; without it every non-block-multiple texture leaks padding at u/v≈1.)
+    const int iw = (int)t.w, ih = (int)t.h;
+    uint32_t mips = 1; { int m = iw > ih ? iw : ih; while (m > 1) { m >>= 1; mips++; } }
     TexEntry te{};
-    if (!make_dev_image(dev, phys, te.img, te.mem, te.view, VK_FORMAT_R8G8B8A8_UNORM, pw, ph,
+    if (!make_dev_image(dev, phys, te.img, te.mem, te.view, VK_FORMAT_R8G8B8A8_UNORM, iw, ih,
         VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
         VK_IMAGE_ASPECT_COLOR_BIT, mips)) return white_view;
     auto bar = [&](uint32_t lvl, VkImageLayout f, VkImageLayout to, VkAccessFlags sa, VkAccessFlags da, VkPipelineStageFlags ssf, VkPipelineStageFlags dsf) {
@@ -514,10 +523,12 @@ VkImageView PresentRenderer::texture_for(const NgxTexBind& t, VkCommandBuffer up
     // Upload mip0.
     bar(0, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
-    VkBufferImageCopy c{}; c.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}; c.imageExtent = {(uint32_t)pw, (uint32_t)ph, 1};
+    // Copy only the logical w×h region; bufferRowLength=pw keeps the decode's padded stride.
+    VkBufferImageCopy c{}; c.bufferRowLength = (uint32_t)pw; c.bufferImageHeight = (uint32_t)ph;
+    c.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}; c.imageExtent = {(uint32_t)iw, (uint32_t)ih, 1};
     vkCmdCopyBufferToImage(up_cmd, sbuf, te.img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
     // Generate mips by successive linear blits (i-1 → i), box-filtering down the chain.
-    int mw = pw, mh = ph;
+    int mw = iw, mh = ih;
     for (uint32_t i = 1; i < mips; i++) {
         bar(i - 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
             VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);

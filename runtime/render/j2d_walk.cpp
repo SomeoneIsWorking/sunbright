@@ -21,6 +21,9 @@
 
 #include "../intrinsics.h"     // mem_r32, u32/u8
 #include "j2d_types.h"
+#include "tex_decode.h"        // sb_tex_decode + pad/size helpers (/texat probe)
+#include <cstdint>
+#include <vector>
 #include <atomic>
 #include <cstdarg>
 #include <cstdio>
@@ -94,9 +97,23 @@ constexpr u32 RF_NMAP   = 0x60;
 
 }  // namespace
 
+// Ring of the most-recent distinct J2DScreen roots seen at draw time. Used by the
+// /j2dscreens correlation probe to answer "are there MULTIPLE screens drawn per frame,
+// and which one holds the (visible) menu windows?" — the single-snapshot capture only
+// keeps the LAST root, so if the menu lives in an earlier screen ngx never renders it.
+constexpr int J2D_ROOT_RING = 16;
+static u32      g_root_ring[J2D_ROOT_RING] = {0};
+static unsigned g_root_seq[J2D_ROOT_RING]  = {0};
+static std::atomic<int> g_root_rp{0};
+
 // Published by the J2DScreen::draw tee (runtime/overrides/scene_render.cpp) each
 // frame: the live root J2DScreen*. Kept as the single canonical 2D-draw tee.
-void sb_j2d_set_root(u32 root) { g_root = root; g_draws++; }
+void sb_j2d_set_root(u32 root) {
+    g_root = root; g_draws++;
+    const int i = g_root_rp.load(std::memory_order_relaxed) % J2D_ROOT_RING;
+    g_root_ring[i] = root; g_root_seq[i] = g_draws;
+    g_root_rp.store((i + 1), std::memory_order_relaxed);
+}
 
 // Dump the captured pane tree. Returns the number of panes visited.
 int sb_j2d_dump(char* out, int cap) {
@@ -149,6 +166,132 @@ int sb_j2d_dump(char* out, int cap) {
     }
     app("j2d: %d panes visited%s\n", visited, visited >= 1024 ? " (capped)" : "");
     return visited;
+}
+
+static bool win_tex(u32 texptr, u32& data, int& fmt, int& w, int& h);   // defined below
+
+// Walk one root and tally pane kinds + every WINDOW (total / visible) with its rect and
+// fill colours. A window is "visible" only if it AND every ancestor on its path are
+// vis!=0 (J2DPane::draw prunes an invisible subtree), matching what actually renders.
+static void tally_root(u32 root, char* out, int cap, int* pos) {
+    auto app = [&](const char* fmt, ...) {
+        if (*pos >= cap) return; va_list ap; va_start(ap, fmt);
+        *pos += vsnprintf(out + *pos, cap - *pos, fmt, ap); va_end(ap);
+    };
+    if (!valid(root)) { app("  (invalid root)\n"); return; }
+    struct Item { u32 pane; int vis_chain; };
+    Item stack[256]; int sp = 0, seen = 0;
+    int npic = 0, ntbx = 0, nwin = 0, nwin_vis = 0;
+    stack[sp++] = {root, 1};
+    while (sp > 0 && seen < 1024) {
+        Item it = stack[--sp];
+        const u32 p = it.pane; if (!valid(p)) continue; seen++;
+        const u32 kind = r32(p + PANE_KIND);
+        const int vis_here = it.vis_chain && (rb(p + PANE_VISIBLE) != 0);
+        if (is_picture(kind)) npic++;
+        else if (is_textbox(kind)) ntbx++;
+        else if (is_window(kind)) {
+            nwin++;
+            int gx0 = (int)r32(p + PANE_GBOUNDS + 0), gy0 = (int)r32(p + PANE_GBOUNDS + 4);
+            int gx1 = (int)r32(p + PANE_GBOUNDS + 8), gy1 = (int)r32(p + PANE_GBOUNDS + 12);
+            if (vis_here) nwin_vis++;
+            app("    WIN1 %08x vis=%d(self=%u) [%d,%d %dx%d] a=%u ca=%u TL=%08x TR=%08x BL=%08x BR=%08x\n",
+                p, vis_here, rb(p + PANE_VISIBLE), gx0, gy0, gx1 - gx0, gy1 - gy0,
+                rb(p + PANE_ALPHA), rb8(p + PANE_COLORALPHA),
+                r32(p + WIN_COL_TL), r32(p + WIN_COL_TR), r32(p + WIN_COL_BL), r32(p + WIN_COL_BR));
+            // Border 9-slice texture objects + the white/black remap regs (unk128/unk12C).
+            const char* nm[4] = {"t100", "t104", "t108", "t10C"};
+            for (int b = 0; b < 4; b++) {
+                const u32 tp = r32(p + 0x100 + (u32)b * 4);
+                u32 dd; int ff, ww, hh;
+                if (win_tex(tp, dd, ff, ww, hh))
+                    app("      %s=%08x data=%08x fmt=%d %dx%d\n", nm[b], tp, dd, ff, ww, hh);
+                else
+                    app("      %s=%08x (no/invalid tex)\n", nm[b], tp);
+            }
+            app("      white(0x128)=%08x black(0x12C)=%08x fl(0x114)=%08x tex110(0x110)=%08x\n",
+                r32(p + 0x128), r32(p + 0x12C), r32(p + 0x114), r32(p + 0x110));
+        }
+        u32 kids[64]; int nk = 0;
+        for (u32 link = r32(p + PANE_TREEHEAD); valid(link) && nk < 64; link = r32(link + LINK_NEXT))
+            kids[nk++] = r32(link + LINK_DATA);
+        for (int i = nk - 1; i >= 0 && sp < 256; i--) stack[sp++] = {kids[i], vis_here};
+    }
+    app("    => panes=%d pic=%d tbx=%d win=%d win_visible=%d\n", seen, npic, ntbx, nwin, nwin_vis);
+}
+
+// /texat?a=HEX&fmt=N&w=N&h=N — decode a guest texture exactly as ngx's texture_for does
+// (same block-padding) and report an intensity/alpha grid so we can SEE what the renderer
+// samples (e.g. the white window-border IA4 texture). Pure read; Dolphin-free.
+int sb_tex_at_dump(char* out, int cap, u32 addr, int fmt, int w, int h) {
+    int pos = 0;
+    auto app = [&](const char* fmt2, ...) {
+        if (pos >= cap) return; va_list ap; va_start(ap, fmt2);
+        pos += vsnprintf(out + pos, cap - pos, fmt2, ap); va_end(ap);
+    };
+    if (w <= 0 || h <= 0 || w > 1024 || h > 1024) { app("texat: bad w/h\n"); return 0; }
+    const int pw = sb_tex_pad_w(w, fmt), ph = sb_tex_pad_h(h, fmt);
+    const int srcbytes = sb_tex_size_bytes(pw, ph, fmt);
+    const u8* host = (addr >= 0x80000000u) ? (const u8*)sb_ram_fast(addr) : nullptr;
+    app("texat a=%08x fmt=%d w=%d h=%d pad=%dx%d srcbytes=%d host=%p\n",
+        addr, fmt, w, h, pw, ph, srcbytes, (const void*)host);
+    if (!host || srcbytes <= 0) { app("texat: no host or bad size\n"); return 0; }
+    static std::vector<uint32_t> dec; dec.assign((size_t)pw * ph, 0);
+    sb_tex_decode(dec.data(), host, pw, ph, fmt, nullptr, 0);
+    // overall stats on the logical w×h region
+    int rmin=255,rmax=0,amin=255,amax=0; long rsum=0,asum=0,nn=0;
+    for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) {
+        const uint32_t v = dec[(size_t)y * pw + x];
+        const int r = v & 0xFF, a = (v >> 24) & 0xFF;
+        if (r<rmin)rmin=r; if(r>rmax)rmax=r; if(a<amin)amin=a; if(a>amax)amax=a; rsum+=r; asum+=a; nn++;
+    }
+    app("  R(intensity) min=%d max=%d mean=%ld | A min=%d max=%d mean=%ld\n",
+        rmin, rmax, (nn?rsum/nn:0), amin, amax, (nn?asum/nn:0));
+    // ASCII intensity grid (R channel) downsampled to <=16 cols
+    const int gc = w < 16 ? w : 16, gr = h < 16 ? h : 16;
+    const char* ramp = " .:-=+*#%@";
+    for (int gy = 0; gy < gr; gy++) {
+        char line[40]; int lp = 0;
+        for (int gx = 0; gx < gc; gx++) {
+            const int sx = gx * w / gc, sy = gy * h / gr;
+            const uint32_t v = dec[(size_t)sy * pw + sx];
+            const int r = v & 0xFF;
+            line[lp++] = ramp[r * 9 / 255];
+        }
+        line[lp] = 0; app("  |%s|\n", line);
+    }
+    return 1;
+}
+
+// /j2dscreens — dump every recently-seen J2DScreen root with its window inventory, so we
+// can tell whether the menu windows live in a screen OTHER than the last-captured g_root.
+int sb_j2d_screens_dump(char* out, int cap) {
+    int pos = 0;
+    auto app = [&](const char* fmt, ...) {
+        if (pos >= cap) return; va_list ap; va_start(ap, fmt);
+        pos += vsnprintf(out + pos, cap - pos, fmt, ap); va_end(ap);
+    };
+    {   // screen dims the present uses to map J2D px → framebuffer NDC (snapshot sw/sh).
+        int sw = 0, sh = 0;
+        if (valid(g_root)) {
+            sw = (int)r32(g_root + PANE_GBOUNDS + 8) - (int)r32(g_root + PANE_GBOUNDS + 0);
+            sh = (int)r32(g_root + PANE_GBOUNDS + 12) - (int)r32(g_root + PANE_GBOUNDS + 4);
+        }
+        app("j2dscreens: draws=%u last_root=%08x screen=%dx%d\n", g_draws, g_root, sw, sh);
+    }
+    // Print distinct roots in the ring, most-recent first, dedup by pointer.
+    u32 seen_roots[J2D_ROOT_RING]; int ns = 0;
+    const int rp = g_root_rp.load(std::memory_order_relaxed);
+    for (int k = 1; k <= J2D_ROOT_RING; k++) {
+        const int i = ((rp - k) % J2D_ROOT_RING + J2D_ROOT_RING) % J2D_ROOT_RING;
+        const u32 r = g_root_ring[i]; if (!valid(r)) continue;
+        bool dup = false; for (int j = 0; j < ns; j++) if (seen_roots[j] == r) { dup = true; break; }
+        if (dup) continue; seen_roots[ns++] = r;
+        app("  root=%08x last_seq=%u\n", r, g_root_seq[i]);
+        tally_root(r, out, cap, &pos);
+    }
+    app("j2dscreens: %d distinct roots in last %d draws\n", ns, J2D_ROOT_RING);
+    return ns;
 }
 
 // ── J2DTextBox font rendering (port of JUTResFont getFontCode/loadImage/drawChar) ──

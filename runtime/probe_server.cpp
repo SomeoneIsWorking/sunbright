@@ -78,6 +78,8 @@ void gxs_ngx_parity_stats(unsigned long*, unsigned long*, unsigned long*, const 
 int sb_tex_selftest(char*, int);                             // runtime/render/tex_decode_selftest.cpp
 int sb_vk_quad_selftest(char*, int);                         // runtime/render/vk_quad.cpp
 int sb_j2d_dump(char*, int);                                 // runtime/render/j2d_walk.cpp
+int sb_j2d_screens_dump(char*, int);                         // runtime/render/j2d_walk.cpp (/j2dscreens)
+int sb_tex_at_dump(char*, int, uint32_t, int, int, int);     // runtime/render/j2d_walk.cpp (/texat)
 int sb_j2d_render(char*, int);                               // runtime/render/j2d_render.cpp
 int sb_ngx_vertex_selftest(char*, int);                      // runtime/ngx/ngx_vertex.cpp
 int sb_ngx_mesh_selftest(char*, int);                        // runtime/ngx/ngx_mesh.cpp
@@ -214,7 +216,7 @@ std::string handle_repl(const char* path) {
 #endif
         return std::string(buf, n);
     }
-    if (strncmp(path, "/tex", 4) == 0) {   // N1 native texture decoder parity vs Dolphin oracle
+    if (strncmp(path, "/tex", 4) == 0 && path[4] != 'a') {   // N1 native texture decoder parity vs Dolphin oracle
         char rep[8192];
         int fails = sb_tex_selftest(rep, sizeof rep);
         app("%s", rep);
@@ -224,6 +226,23 @@ std::string handle_repl(const char* path) {
     if (strncmp(path, "/j2drender", 10) == 0) {  // N3 render the HUD natively (offscreen + PPM)
         char rep[8192];
         sb_j2d_render(rep, sizeof rep);
+        app("%s", rep);
+        return std::string(buf, n);
+    }
+    if (strncmp(path, "/texat", 6) == 0) {   // decode a guest texture (addr/fmt/w/h) → intensity grid
+        char rep[4096];
+        auto qv = [&](const char* k, long def) -> long {
+            const char* q = strstr(path, k); if (!q) return def;
+            return strtol(q + strlen(k), nullptr, 0);
+        };
+        sb_tex_at_dump(rep, sizeof rep, (uint32_t)qv("a=", 0), (int)qv("fmt=", 0),
+                       (int)qv("w=", 0), (int)qv("h=", 0));
+        app("%s", rep);
+        return std::string(buf, n);
+    }
+    if (strncmp(path, "/j2dscreens", 11) == 0) {  // correlation: every recent J2DScreen root + window inventory
+        char rep[16384];
+        sb_j2d_screens_dump(rep, sizeof rep);
         app("%s", rep);
         return std::string(buf, n);
     }

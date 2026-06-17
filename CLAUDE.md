@@ -267,6 +267,20 @@ These are standing user directives. Stop re-deriving them:
   width to a multiple of 8, but RGB5A3 tiles at a 4-wide block → over-stride → diagonal shear. Fix:
   `sb_tex_pad_w/h` (format block dims) inside `texture_for()`; render-test unit `tex_pad`. A textured
   quad shredding into diagonal slivers ⇒ a tiled-texture width/stride bug, never geometry.
+- FIXED 2026-06-17: the **file-select menu windows rendering WHITE instead of blue** was a TEXTURE
+  block-padding UV leak (the UV counterpart of the title-logo shear fix). The native present uploaded
+  each decoded texture into a Vulkan image at the format's BLOCK-PADDED size (`pw×ph`, e.g. a 20×20
+  IA4 window-border corner → 24×20), but sampled with `u/v ∈ [0,1]`, so the garbage padding columns
+  (cols 20–23, full-white here) got sampled. The J2DWindow 9-slice border EDGE quads use a degenerate
+  `U=1.0` (`J2DWindow::draw_private`), landing squarely in the white padding → opaque white frame. Fix:
+  `texture_for()` now creates the image at the LOGICAL `t.w×t.h` and copies only that region with
+  `bufferRowLength=pw` (decode keeps the padded stride). Affects every non-block-multiple texture.
+  Verified file-select: borders white(255,255,255)→blue(27,37,252); A/B 21.7%→18.8%. Diagnostics added:
+  `/j2dscreens` (every recent J2DScreen root + per-window visibility/fill/border-tex inventory — proved
+  there's ONE root with 4 VISIBLE blue windows, refuting the stale "all vis=0" handoff claim) and
+  `/texat?a=&fmt=&w=&h=` (decode a guest texture → intensity/alpha grid; showed the IA4 decode is CORRECT
+  and the padding cols are white). RESIDUAL: small-slot border edges read a bit light (the OPEN-#1
+  brightness/blend-over-background class), not white.
 - FIXED 2026-06-17 (a3d740e): the **file-select sky wash** was the native present **hardcoding its 3D
   clear** to (0.10,0.12,0.18). The sky base ti=11 is a SCREEN blend (src=ONE dst=INVSRCCLR) so the
   clear shows through → grey wash. Fix: capture the game's `GXSetCopyClear` (0x8035ea40) and clear to
