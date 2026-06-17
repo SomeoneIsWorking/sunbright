@@ -325,6 +325,8 @@ struct GxStateRec {
     u32 xf_cc = 0, xf_mat = 0, xf_amb = 0; bool xf_have = false;
     // resolved active light state (from the obj_cc mask), captured live at this draw
     u8  obj_mask = 0, gx_mask = 0;
+    // raw color-block bytes ngx parses (to prove the offset/value it reads)
+    u32 cb_addr = 0, cb_vt = 0; u8 cb_raw[0x20] = {0};
     struct LRec { bool valid=false; float col[3]={0}; float pos[3]={0}; float dir[3]={0};
                   float cosA[3]={0}; float distA[3]={0}; } lights[8];
 };
@@ -460,13 +462,17 @@ inline void texgen_uv(const TexGen& g, const NgxVertex& v, const float litcol0[4
 
 // Read the material's J3DColorBlock into g_cur_chan (best-effort; valid=false on a
 // missing/unknown block → the consumer falls back to the raw vertex colour).
+u32 g_cur_cb_addr = 0, g_cur_cb_vt = 0; u8 g_cur_cb_raw[0x20] = {0};   // for /gxstate raw-block dump
 void capture_colorchan(u32 material) {
     g_cur_chan = ChanInfo{};
+    g_cur_cb_addr = 0;
     const u32 cb = r32(material + 0x20);   // J3DMaterial::mColorBlock
     if (!valid(cb)) return;
+    g_cur_cb_addr = cb;
     const u32 vt = r32(cb + 0x00);
     const u8* B = sb_ram_fast(cb);
     if (!B) return;
+    g_cur_cb_vt = vt; for (int k = 0; k < 0x20; k++) g_cur_cb_raw[k] = B[k];
     for (int i = 0; i < 8; i++) {           // colour-block vtable histogram + per-vtable raw capture
         if (g_cbvt_key[i] == vt) { g_cbvt_cnt[i]++; break; }
         if (g_cbvt_key[i] == 0) { g_cbvt_key[i] = vt; g_cbvt_cnt[i] = 1;
@@ -1200,6 +1206,7 @@ int capture_material() {
         R.gx_mat_have = g_gx_matcol_have[0]; R.gx_mat_sets = g_gx_matcol_sets[0];
         R.gx_amb_have = g_amb_have[0]; R.gx_amb_sets = g_amb_sets;
         R.xf_cc = (u32)xfmem.color[0].hex; R.xf_mat = xfmem.matColor[0]; R.xf_amb = xfmem.ambColor[0]; R.xf_have = true;
+        R.cb_addr = g_cur_cb_addr; R.cb_vt = g_cur_cb_vt; for (int k=0;k<0x20;k++) R.cb_raw[k]=g_cur_cb_raw[k];
         R.obj_mask = (u8)(((R.obj_cc >> 2) & 0x0F) | (((R.obj_cc >> 11) & 0x0F) << 4));
         R.gx_mask  = (u8)(((R.gx_cc  >> 2) & 0x0F) | (((R.gx_cc  >> 11) & 0x0F) << 4));
         for (int i=0;i<8;i++){ R.lights[i].valid=g_light[i].valid;
@@ -2551,6 +2558,11 @@ int sb_ngx_gxstate_dump(char* out, int cap) {
         n += snprintf(out+n,cap-n,"\n");
     }
     n += snprintf(out+n, cap-n, "  ── ALPHA0 cc (ngx-block) = %04x ──\n", R.obj_ca);
+    // Raw color-block bytes ngx parses — CLOF layout: matColor@0x04(8B) chanNum@0x0C mColorChan[4]@0x0E cull@0x16.
+    n += snprintf(out+n, cap-n, "  ── RAW color block @%08x vt=%08x ──\n    bytes[00..1f]:", R.cb_addr, R.cb_vt);
+    for (int k=0;k<0x20;k++) n += snprintf(out+n,cap-n," %02x%s", R.cb_raw[k], (k==0x0d)?"[":(k==0x15)?"]":"");
+    n += snprintf(out+n,cap-n,"\n    (mColorChan[0..3]@0x0E = COLOR0,ALPHA0,COLOR1,ALPHA1 = %02x%02x %02x%02x %02x%02x %02x%02x)\n",
+        R.cb_raw[0x0e],R.cb_raw[0x0f], R.cb_raw[0x10],R.cb_raw[0x11], R.cb_raw[0x12],R.cb_raw[0x13], R.cb_raw[0x14],R.cb_raw[0x15]);
     const u8 xfm[4]={(u8)(R.xf_mat>>24),(u8)(R.xf_mat>>16),(u8)(R.xf_mat>>8),(u8)R.xf_mat};
     const u8 xfa[4]={(u8)(R.xf_amb>>24),(u8)(R.xf_amb>>16),(u8)(R.xf_amb>>8),(u8)R.xf_amb};
     n += snprintf(out+n, cap-n,
