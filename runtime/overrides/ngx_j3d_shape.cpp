@@ -348,6 +348,12 @@ struct GxStateRec {
 std::atomic<int> g_gxstate_ti{ []{ const char* v=getenv("SUNBRIGHT_NGX_GXSTATE"); return v?atoi(v):-1; }() };
 GxStateRec g_gxstate, g_gxstate_pub;
 extern "C" void sb_ngx_set_gxstate_ti(int t) { g_gxstate_ti.store(t); }
+// Per-vertex UV capture for the gxstate target ti (filled in transform_eye): first vertex's raw
+// texcoords + computed (texgen'd) UVs + the UV bbox over the shape's verts. Pins texgen/UV-tiling
+// divergence (the file-select cloud over-tiling). Published with g_gxstate.
+struct UvDbg { bool have=false; float tex0[2]={0},tex1[2]={0},uv0[2]={0},uv1[2]={0};
+    float u0min[2]={1e9f,1e9f},u0max[2]={-1e9f,-1e9f},u1min[2]={1e9f,1e9f},u1max[2]={-1e9f,-1e9f}; unsigned long nv=0; };
+UvDbg g_uvdbg, g_uvdbg_pub;
 // DBG histograms for the brightness/wash investigation (vert-weighted).
 unsigned long g_clr0cls_hist[4] = {0}, g_matsrc_hist[3] = {0}, g_litcfg_hist[2] = {0};
 size_t g_bigmap_verts = 0; unsigned g_bigmap_clr0cls = 0; bool g_bigmap_matvtx = false, g_bigmap_en = false;
@@ -1389,6 +1395,18 @@ void transform_eye() {
                                    if(uvp[2+a]>g_sky.uv1max[a])g_sky.uv1max[a]=uvp[2+a]; }
             g_sky.uvn++;
         }
+        // gxstate target UV capture: pin the cloud over-tiling (raw tex + texgen'd UV range).
+        if (g_cur_tev_index == g_gxstate_ti.load()) {
+            if (!g_uvdbg.have) { g_uvdbg.have = true;
+                g_uvdbg.tex0[0]=v.tex[0][0]; g_uvdbg.tex0[1]=v.tex[0][1];
+                g_uvdbg.tex1[0]=v.tex[1][0]; g_uvdbg.tex1[1]=v.tex[1][1];
+                g_uvdbg.uv0[0]=uvp[0]; g_uvdbg.uv0[1]=uvp[1]; g_uvdbg.uv1[0]=uvp[2]; g_uvdbg.uv1[1]=uvp[3]; }
+            for (int a=0;a<2;a++){ if(uvp[a]<g_uvdbg.u0min[a])g_uvdbg.u0min[a]=uvp[a];
+                                   if(uvp[a]>g_uvdbg.u0max[a])g_uvdbg.u0max[a]=uvp[a];
+                                   if(uvp[2+a]<g_uvdbg.u1min[a])g_uvdbg.u1min[a]=uvp[2+a];
+                                   if(uvp[2+a]>g_uvdbg.u1max[a])g_uvdbg.u1max[a]=uvp[2+a]; }
+            g_uvdbg.nv++;
+        }
         // DBG: bucket the resulting col0 luminance by category to localize the bright bulk.
         { const float* o = &g_litrgba[vi*4]; double lum=(o[0]+o[1]+o[2])/3.0;
           const bool valid=g_cur_chan.valid; const bool mv=valid&&((g_cur_chan.color0>>0)&1);
@@ -1976,6 +1994,7 @@ void ngx_frame_publish() {
         g_efb_epoch = 0; g_efb_gen = 0; g_display_gen[g_cur] = -1;
         g_sky = SkyLatch{}; g_skyxf = SkyXf{}; g_pnmtxdbg = PnmtxDbg{};
         if (g_gxstate.have) g_gxstate_pub = g_gxstate; g_gxstate = GxStateRec{};
+        if (g_uvdbg.have) g_uvdbg_pub = g_uvdbg; g_uvdbg = UvDbg{};
         g_clip_in=g_clip_drop=g_clip_cut=g_clip_tiny=0; g_clip_minw=1e30f;
         return;
     }
@@ -2011,6 +2030,7 @@ void ngx_frame_publish() {
     g_pnmtxdbg = PnmtxDbg{};
     if (g_gxstate.have) g_gxstate_pub = g_gxstate;   // publish this frame's GX-vs-ngx state diff
     g_gxstate = GxStateRec{};                        // reset for the next frame
+    if (g_uvdbg.have) g_uvdbg_pub = g_uvdbg; g_uvdbg = UvDbg{};
     g_clrdbg_have = false;   // re-latch the per-material colour probe each frame
     g_clrdbg_l0i = -1;
     g_clip_in=g_clip_drop=g_clip_cut=g_clip_tiny=0; g_clip_minw=1e30f;   // per-frame near-clip stats
@@ -2673,6 +2693,16 @@ int sb_ngx_gxstate_dump(char* out, int cap) {
         for (int m=0;m<8;m++) if (R.tex[m].addr)
             n += snprintf(out+n, cap-n, "    texmap%d: addr=%08x %ux%u fmt=%u tlut=%08x\n",
                           m, R.tex[m].addr, R.tex[m].w, R.tex[m].h, R.tex[m].fmt, R.tex[m].tlut_addr);
+        const UvDbg& U = g_uvdbg_pub;
+        if (U.have) {
+            n += snprintf(out+n, cap-n,
+                "  ── PER-VERTEX UV (texgen output, nv=%lu) ──\n"
+                "    v0 rawTEX0=(%.3f,%.3f) rawTEX1=(%.3f,%.3f) -> UV0=(%.3f,%.3f) UV1=(%.3f,%.3f)\n"
+                "    UV0 range x[%.3f,%.3f] y[%.3f,%.3f]  (REPEAT wrap: range>1 => tex tiles that many times)\n"
+                "    UV1 range x[%.3f,%.3f] y[%.3f,%.3f]\n",
+                U.nv, U.tex0[0],U.tex0[1], U.tex1[0],U.tex1[1], U.uv0[0],U.uv0[1], U.uv1[0],U.uv1[1],
+                U.u0min[0],U.u0max[0],U.u0min[1],U.u0max[1], U.u1min[0],U.u1max[0],U.u1min[1],U.u1max[1]);
+        }
     }
     return n;
 }
