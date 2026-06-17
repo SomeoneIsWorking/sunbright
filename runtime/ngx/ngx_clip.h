@@ -33,6 +33,9 @@
 // (0 if fully clipped, else 3..9 — caller fan-triangulates np-2 triangles). Lossless for
 // fully-inside triangles (they pass through, possibly reordered).
 inline int ngx_clip_frustum_tri(const float* in, int stride, float* out) {
+    // NOTE (2026-06-17): tried reordering near-FIRST (to remove behind-camera w≤0 verts before the
+    // lateral planes, for the camera-enclosing file-select cloud dome) → ZERO effect on the wash
+    // delta. So clip plane order is NOT the cloud-wash cause. Left in canonical order.
     static const float planes[6][4] = {
         { 1, 0, 0, 1}, {-1, 0, 0, 1},   // left, right
         { 0, 1, 0, 1}, { 0,-1, 0, 1},   // bottom, top
