@@ -305,6 +305,16 @@ u16  g_gx_cc[2] = {0, 0};            bool g_gx_cc_have[2] = {false, false};
 u8   g_gx_matcol[2][4] = {{255,255,255,255},{255,255,255,255}}; bool g_gx_matcol_have[2] = {false,false};
 unsigned long g_gx_cc_sets[2] = {0,0}, g_gx_matcol_sets[2] = {0,0};   // call counters (per-draw liveness)
 
+// TexGen (UV-generation) state, defined here so /gxstate's GxStateRec can carry it. The
+// authoritative copy + capture is below (capture_texgen / g_cur_texgen).
+struct TexGen {
+    u8   type = 1;          // GXTexGenType: 0=MTX3x4, 1=MTX2x4
+    u8   src  = 4;          // GXTexGenSrc: 0=POS,1=NRM,4..11=TEX0..7,19=COLOR0
+    bool has_mtx = false;   // a non-identity texgen matrix is set
+    float m[12] = {0};      // mTotalMtx 3x4 (row-major) when has_mtx
+};
+struct TexGenSet { u8 num = 0; TexGen tg[8]; };
+
 // ── /gxstate: GX-command-stream vs ngx-object-model render-state diff ───────────────
 // ngx reconstructs the per-material render state from the J3D OBJECT MODEL (the color/tev/PE
 // blocks read straight from guest RAM). The GROUND TRUTH for what the GPU actually got is the
@@ -330,6 +340,8 @@ struct GxStateRec {
     u32 cb_addr = 0, cb_vt = 0; u8 cb_raw[0x20] = {0};
     // TEV combiner + PE (blend/alpha-test) — the COVERAGE/color stages downstream of lighting
     NgxTevState tev{}; bool tev_have = false;
+    // TexGen (UV generation) + bound textures — for diagnosing tiling/checkerboard sampling
+    TexGenSet tg{}; NgxTexBind tex[8]{};
     struct LRec { bool valid=false; float col[3]={0}; float pos[3]={0}; float dir[3]={0};
                   float cosA[3]={0}; float distA[3]={0}; } lights[8];
 };
@@ -395,14 +407,7 @@ float g_sun_ndl_max = -2.f, g_dbg_en[3] = {0}, g_dbg_ld0[3] = {0};
 // J3DTexMtx::mTotalMtx @ ptr+0x64 (the matrix J3DTexMtx::load feeds GXLoadTexMtxImm),
 // Mtx 3x4 row-major. Input = (s,t,1,1) for TEX src, (x,y,z,1) for POS/NRM. This works
 // for both J3D SRT conventions (translation in matrix col2 OR col3, the other = 0).
-struct TexGen {
-    u8   type = 1;          // GXTexGenType: 0=MTX3x4, 1=MTX2x4
-    u8   src  = 4;          // GXTexGenSrc: 0=POS,1=NRM,4..11=TEX0..7,19=COLOR0
-    bool has_mtx = false;   // a non-identity texgen matrix is set
-    float m[12] = {0};      // mTotalMtx 3x4 (row-major) when has_mtx
-};
-struct TexGenSet { u8 num = 0; TexGen tg[8]; };
-TexGenSet g_cur_texgen;
+TexGenSet g_cur_texgen;   // (TexGen/TexGenSet defined above, near GxStateRec)
 
 // Diagnostic histograms (kept).
 unsigned long g_tg_src_hist[24] = {0}, g_tg_type_hist[12] = {0};
@@ -1224,6 +1229,7 @@ int capture_material() {
         R.xf_cc = (u32)xfmem.color[0].hex; R.xf_mat = xfmem.matColor[0]; R.xf_amb = xfmem.ambColor[0]; R.xf_have = true;
         R.cb_addr = g_cur_cb_addr; R.cb_vt = g_cur_cb_vt; for (int k=0;k<0x20;k++) R.cb_raw[k]=g_cur_cb_raw[k];
         R.tev = st; R.tev_have = true;
+        R.tg = g_cur_texgen; for (int m=0;m<8;m++) R.tex[m] = g_mat_tex[m];
         R.obj_mask = (u8)(((R.obj_cc >> 2) & 0x0F) | (((R.obj_cc >> 11) & 0x0F) << 4));
         R.gx_mask  = (u8)(((R.gx_cc  >> 2) & 0x0F) | (((R.gx_cc  >> 11) & 0x0F) << 4));
         for (int i=0;i<8;i++){ R.lights[i].valid=g_light[i].valid;
@@ -2654,6 +2660,19 @@ int sb_ngx_gxstate_dump(char* out, int cap) {
             P.blend_mode, (P.src_factor<8?BF[P.src_factor]:"?"), (P.dst_factor<8?BF[P.dst_factor]:"?"),
             P.alpha_test, (P.comp0<8?CMP[P.comp0]:"?"), P.ref0, P.aop, (P.comp1<8?CMP[P.comp1]:"?"), P.ref1,
             P.z_test, (P.z_func<8?CMP[P.z_func]:"?"), P.z_write, P.cull);
+        // TexGen (UV generation) + bound textures — tiling/checkerboard diagnosis.
+        n += snprintf(out+n, cap-n, "  ── TEXGEN (%d coords) + TEXTURES ──\n", R.tg.num);
+        for (int i=0;i<R.tg.num && i<8;i++) {
+            const TexGen& g = R.tg.tg[i];
+            n += snprintf(out+n, cap-n, "    tc%d: type=%s src=%d has_mtx=%d", i,
+                          g.type==0?"MTX3x4":"MTX2x4", g.src, g.has_mtx);
+            if (g.has_mtx) n += snprintf(out+n, cap-n, " M=[%.3f %.3f %.3f %.2f / %.3f %.3f %.3f %.2f]",
+                          g.m[0],g.m[1],g.m[2],g.m[3], g.m[4],g.m[5],g.m[6],g.m[7]);
+            n += snprintf(out+n, cap-n, "\n");
+        }
+        for (int m=0;m<8;m++) if (R.tex[m].addr)
+            n += snprintf(out+n, cap-n, "    texmap%d: addr=%08x %ux%u fmt=%u tlut=%08x\n",
+                          m, R.tex[m].addr, R.tex[m].w, R.tex[m].h, R.tex[m].fmt, R.tex[m].tlut_addr);
     }
     return n;
 }
