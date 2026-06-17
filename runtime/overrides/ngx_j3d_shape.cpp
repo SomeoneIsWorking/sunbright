@@ -327,6 +327,8 @@ struct GxStateRec {
     u8  obj_mask = 0, gx_mask = 0;
     // raw color-block bytes ngx parses (to prove the offset/value it reads)
     u32 cb_addr = 0, cb_vt = 0; u8 cb_raw[0x20] = {0};
+    // TEV combiner + PE (blend/alpha-test) — the COVERAGE/color stages downstream of lighting
+    NgxTevState tev{}; bool tev_have = false;
     struct LRec { bool valid=false; float col[3]={0}; float pos[3]={0}; float dir[3]={0};
                   float cosA[3]={0}; float distA[3]={0}; } lights[8];
 };
@@ -1207,6 +1209,7 @@ int capture_material() {
         R.gx_amb_have = g_amb_have[0]; R.gx_amb_sets = g_amb_sets;
         R.xf_cc = (u32)xfmem.color[0].hex; R.xf_mat = xfmem.matColor[0]; R.xf_amb = xfmem.ambColor[0]; R.xf_have = true;
         R.cb_addr = g_cur_cb_addr; R.cb_vt = g_cur_cb_vt; for (int k=0;k<0x20;k++) R.cb_raw[k]=g_cur_cb_raw[k];
+        R.tev = st; R.tev_have = true;
         R.obj_mask = (u8)(((R.obj_cc >> 2) & 0x0F) | (((R.obj_cc >> 11) & 0x0F) << 4));
         R.gx_mask  = (u8)(((R.gx_cc  >> 2) & 0x0F) | (((R.gx_cc  >> 11) & 0x0F) << 4));
         for (int i=0;i<8;i++){ R.lights[i].valid=g_light[i].valid;
@@ -2591,6 +2594,44 @@ int sb_ngx_gxstate_dump(char* out, int cap) {
             i, (R.obj_mask&(1<<i))?"*":" ", L.valid, L.col[0],L.col[1],L.col[2],
             L.pos[0],L.pos[1],L.pos[2], L.dir[0],L.dir[1],L.dir[2],
             L.cosA[0],L.cosA[1],L.cosA[2], L.distA[0],L.distA[1],L.distA[2]);
+    }
+    // ── TEV combiner + PE/blend (coverage stages downstream of lighting) ──
+    if (R.tev_have) {
+        const NgxTevState& T = R.tev;
+        static const char* CIN[16]={"CPREV","APREV","C0","A0","C1","A1","C2","A2","TEXC","TEXA","RASC","RASA","ONE","HALF","KONST","ZERO"};
+        static const char* AIN[8] ={"APREV","A0","A1","A2","TEXA","RASA","KONST","ZERO"};
+        static const char* DST[4] ={"PREV","C0","C1","C2"};
+        n += snprintf(out+n, cap-n, "  ── TEV COMBINER (ngx obj-model) num_stages=%d ──\n", T.num_stages);
+        for (int s=0;s<T.num_stages && s<16;s++) {
+            const NgxTevStage& st = T.stage[s];
+            const u32 ce=st.color_env, ae=st.alpha_env;
+            const int ca=(ce>>12)&0xF, cb=(ce>>8)&0xF, cc=(ce>>4)&0xF, cd=ce&0xF;
+            const int cbias=(ce>>16)&3, csub=(ce>>18)&1, cscl=(ce>>20)&3, cdst=(ce>>22)&3;
+            const int aa=(ae>>13)&7, ab=(ae>>10)&7, ac=(ae>>7)&7, ad=(ae>>4)&7;
+            const int abias=(ae>>16)&3, asub=(ae>>18)&1, ascl=(ae>>20)&3, adst=(ae>>22)&3;
+            n += snprintf(out+n, cap-n,
+                "    s%d tex=map%d/coord%d rasChan=%d kc=%02x ka=%02x\n"
+                "       COLOR: %s(d=%s,a=%s,b=%s,c=%s) bias=%d scale<<%d clamp? -> %s\n"
+                "       ALPHA: %s(d=%s,a=%s,b=%s,c=%s) bias=%d scale<<%d -> %s\n",
+                s, (int8_t)st.texmap, (int8_t)st.texcoord, (int8_t)st.color_chan, st.kcsel, st.kasel,
+                csub?"SUB":"ADD", CIN[cd],CIN[ca],CIN[cb],CIN[cc], cbias, cscl, DST[cdst],
+                asub?"SUB":"ADD", AIN[ad],AIN[aa],AIN[ab],AIN[ac], abias, ascl, DST[adst]);
+        }
+        n += snprintf(out+n, cap-n, "    TEVreg CPREV/C0/C1/C2 (S10): ");
+        for (int c=0;c<4;c++) n += snprintf(out+n,cap-n,"(%d,%d,%d,%d) ", T.tev_color[c][0],T.tev_color[c][1],T.tev_color[c][2],T.tev_color[c][3]);
+        n += snprintf(out+n, cap-n, "\n    KONST0..3: ");
+        for (int c=0;c<4;c++) n += snprintf(out+n,cap-n,"(%d,%d,%d,%d) ", T.kcolor[c][0],T.kcolor[c][1],T.kcolor[c][2],T.kcolor[c][3]);
+        const NgxPEState& P = T.pe;
+        static const char* BF[8]={"ZERO","ONE","SRCCLR","INVSRCCLR","SRCALPHA","INVSRCALPHA","DSTALPHA","INVDSTALPHA"};
+        static const char* CMP[8]={"NEVER","LESS","EQ","LEQ","GREATER","NEQ","GEQ","ALWAYS"};
+        n += snprintf(out+n, cap-n,
+            "\n  ── PE / BLEND (ngx obj-model) ──\n"
+            "    blend mode=%d src=%s dst=%s   (foam coverage: out = frag*src + dst*dst_factor)\n"
+            "    alpha_test=%d comp0=%s ref0=%d aop=%d comp1=%s ref1=%d\n"
+            "    zmode test=%d func=%s write=%d  cull=%d\n",
+            P.blend_mode, (P.src_factor<8?BF[P.src_factor]:"?"), (P.dst_factor<8?BF[P.dst_factor]:"?"),
+            P.alpha_test, (P.comp0<8?CMP[P.comp0]:"?"), P.ref0, P.aop, (P.comp1<8?CMP[P.comp1]:"?"), P.ref1,
+            P.z_test, (P.z_func<8?CMP[P.z_func]:"?"), P.z_write, P.cull);
     }
     return n;
 }
