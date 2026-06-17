@@ -453,6 +453,13 @@ extern "C" void sb_ngx_set_nolight(int on) { g_nolight = on != 0; }
 bool g_dbgL_done = false, g_dbgL_active = false; int g_dbgL_n = 0; u16 g_dbgL_cc = 0;
 int g_dbgL_i[8] = {0}; float g_dbgL_attn[8]={0}, g_dbgL_ndl[8]={0}, g_dbgL_dist[8]={0}, g_dbgL_contrib[8]={0};
 float g_dbgL_amb[3]={0}, g_dbgL_illum[3]={0};
+// Per-material colour probe (SUNBRIGHT_NGX_CLRDBG=<tev_index>): latch the FIRST vertex of that
+// material's RAW vcol0 (pre-lighting), the illum (ambient+lights), mat source, and final out — so
+// a wrong on-screen colour can be split into DECODE (raw vcol0 wrong) vs LIGHTING (illum wrong).
+extern int g_cur_tev_index;   // defined below (material index of the shape being captured)
+const int g_clrdbg_ti = []{ const char* v=getenv("SUNBRIGHT_NGX_CLRDBG"); return v?atoi(v):-1; }();
+bool g_clrdbg_have=false; u16 g_clrdbg_cc=0; int g_clrdbg_matvtx=0, g_clrdbg_ambvtx=0, g_clrdbg_nl=0;
+float g_clrdbg_vcol[4]={0}, g_clrdbg_illum[3]={0}, g_clrdbg_mat[3]={0}, g_clrdbg_out[4]={0};
 // SKY latch: full per-draw lighting breakdown for the first reg-color LIT vertex whose
 // channel-control == 0x0686 (the file-select sky material). Reset each frame so the static
 // screen always shows fresh values. Captures the EXACT light/ambient state the sky used at
@@ -595,6 +602,14 @@ void light_vertex(const float eye[3], const float en[3], const float vcol0[4], f
         const float matC[3] = { C.matColor[0]/255.f, C.matColor[1]/255.f, C.matColor[2]/255.f };
         const float ambC[3] = { C.ambColor[0]/255.f, C.ambColor[1]/255.f, C.ambColor[2]/255.f };
         ngx::light_color0(CC, matC, ambC, ls, eye, en, vcol0, out);
+    }
+    // Per-material colour probe: latch raw vcol0 vs illum vs out for the target tev_index.
+    if (g_clrdbg_ti >= 0 && g_cur_tev_index == g_clrdbg_ti && !g_clrdbg_have) {
+        g_clrdbg_have = true; g_clrdbg_cc = cc; g_clrdbg_matvtx = matVtx; g_clrdbg_ambvtx = ambVtx;
+        for (int k=0;k<4;k++){ g_clrdbg_vcol[k]=vcol0[k]; g_clrdbg_out[k]=out[k]; }
+        for (int k=0;k<3;k++){ g_clrdbg_illum[k]=illum[k]; g_clrdbg_mat[k]=mat[k]; }
+        int n=0; for (int i=0;i<8;i++) if ((mask&(1<<i)) && g_light[i].valid) n++;
+        g_clrdbg_nl = n;
     }
     if (sky_latch) {
         for (int k=0;k<3;k++){ g_sky.illum[k]=illum[k]; g_sky.out[k]=out[k]; }
@@ -1606,6 +1621,7 @@ void ngx_frame_publish() {
     g_skyxf = SkyXf{};
     if (g_pnmtxdbg.have) g_pnmtxdbg_pub = g_pnmtxdbg;
     g_pnmtxdbg = PnmtxDbg{};
+    g_clrdbg_have = false;   // re-latch the per-material colour probe each frame
     g_clip_in=g_clip_drop=g_clip_cut=g_clip_tiny=0; g_clip_minw=1e30f;   // per-frame near-clip stats
     g_frame_swaps++;
     g_ngx_front_frame.store(g_frame_swaps, std::memory_order_release);   // stamp the published snapshot
@@ -2357,6 +2373,13 @@ int sb_ngx_shape_dump(char* out, int cap) {
         g_bigany_verts, g_bigany_pnmtx, g_bigany_vcd, g_bigany_posbase, g_bigany_posstride,
         g_bigany_pmin[0],g_bigany_pmax[0],g_bigany_pmin[1],g_bigany_pmax[1],g_bigany_pmin[2],g_bigany_pmax[2],
         g_bigany_pos0[0],g_bigany_pos0[1],g_bigany_pos0[2]);
+    if (g_clrdbg_ti >= 0)
+        n += snprintf(out+n, cap-n,
+            "  CLRDBG ti=%d have=%d cc=%04x matVtx=%d ambVtx=%d nlights=%d | RAW vcol0=(%.3f,%.3f,%.3f,%.3f) | illum=(%.3f,%.3f,%.3f) mat=(%.3f,%.3f,%.3f) | OUT=(%.3f,%.3f,%.3f,%.3f)\n",
+            g_clrdbg_ti, (int)g_clrdbg_have, g_clrdbg_cc, g_clrdbg_matvtx, g_clrdbg_ambvtx, g_clrdbg_nl,
+            g_clrdbg_vcol[0],g_clrdbg_vcol[1],g_clrdbg_vcol[2],g_clrdbg_vcol[3],
+            g_clrdbg_illum[0],g_clrdbg_illum[1],g_clrdbg_illum[2], g_clrdbg_mat[0],g_clrdbg_mat[1],g_clrdbg_mat[2],
+            g_clrdbg_out[0],g_clrdbg_out[1],g_clrdbg_out[2],g_clrdbg_out[3]);
     n += snprintf(out+n, cap-n,
         "  SHRED metric (eye-space max edge per skinned shape): max=%.1f @shape=%08x pkt=%u mi=%u,%u | last=%.1f | buckets <500=%lu <2k=%lu <10k=%lu >=10k=%lu\n"
         "  SHRED metric (NDC/screen max edge, front tris): max=%.2f @shape=%08x | buckets <2=%lu <8=%lu <40=%lu >=40=%lu\n"
