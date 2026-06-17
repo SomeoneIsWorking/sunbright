@@ -26,6 +26,10 @@ struct NgxVertex {
     unsigned char clr[2][4];   // color0, color1 (RGBA8)
     float tex[8][2];           // tex0..7 (S,T)
     unsigned char matidx;      // PNMTXIDX: position-matrix-memory row (GX_PNMTX0=0,1=3,…); 0 if absent
+    unsigned char packet;      // which J3DShape matrix-packet (mMatrices[i]) drew this vertex; set by
+                               // the capture loop. Skinned shapes draw in N packets, each reloading the
+                               // pos-matrix slots with its OWN unkC table → the per-vertex matrix must
+                               // be resolved against THIS packet's table, not a global last-writer.
 };
 
 // Resolved guest vertex arrays for indexed attributes (host pointers + byte

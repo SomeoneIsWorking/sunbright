@@ -154,6 +154,7 @@ extern "C" int  sb_capture_frames;
 extern "C" volatile int g_sb_ngx_present;   // /abshot toggles the present source (Present.cpp)
 extern "C" volatile int g_sb_ab_capture;    // /abshot2 arms same-present dual capture (Present.cpp)
 extern "C" unsigned long sb_ngx_front_frame();  // /abshot2 liveness: published ngx snapshot frame id
+extern "C" int sb_ngx_set_mtxsrc(int);          // /ngxmtxsrc live skinned-matrix source A/B
 extern "C" int sb_ngx_set_dbg(int);         // /ngxdbg sets the native renderer debug mode
 extern "C" void sb_ngx_set_nolight(int);    // /ngxdbg?nolight= toggles native lighting (capture)
 extern "C" void sb_ngx_set_freeze(int);     // /ngxfreeze latches the published snapshot
@@ -249,6 +250,12 @@ std::string handle_repl(const char* path) {
     if (strncmp(path, "/skyshader", 10) == 0) {  // generated TEV GLSL for a material (default sky)
         unsigned ce = 0x09fae8; if (const char* p = strstr(path, "ce=")) ce = strtoul(p+3, nullptr, 16);
         char rep[8192]; int rn = sb_ngx_gen_shader(ce, rep, sizeof rep); app("%.*s", rn, rep);
+        return std::string(buf, n);
+    }
+    if (strncmp(path, "/ngxmtxsrc", 10) == 0) {  // LIVE skinned-matrix source A/B (no rebuild)
+        int m = 0; if (const char* p = strstr(path, "m=")) m = atoi(p + 2);
+        app("ngx skinned matrix src = %d  (0=per-packet object-model, 1=g_posmtx, 2=modelview)\n",
+            sb_ngx_set_mtxsrc(m));
         return std::string(buf, n);
     }
     if (strncmp(path, "/ngxproj", 8) == 0) {  // ngx projection vs Dolphin's ACTUAL projection

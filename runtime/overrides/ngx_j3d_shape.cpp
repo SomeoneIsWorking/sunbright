@@ -128,6 +128,30 @@ float g_posmtx[64][4] = {{0}};
 unsigned char g_posmtx_src[64] = {0};   // per-slot load source: 0=none 1=Imm (Dolphin-correct by
                                         // construction) 2=Indx (ngx reconstructs → suspect)
 bool  g_cur_pnmtx = false;            // current shape uses PNMTXIDX (set in capture)
+// Per-PACKET resolved pos-matrices for the shape currently being captured. A skinned J3DShape draws
+// in mElementCount packets, each (a J3DShapeMtxMulti) reloading XF pos slots 0,3,6,… from its OWN
+// useMtxIndexTable (unkC). g_posmtx alone holds only the LAST packet → every earlier packet's verts
+// transform by the wrong matrix (Mario shredded). capture() resolves each packet's slots here from
+// the model draw-matrix buffer (seam base/stride) and transform_eye picks by (vertex.packet, slot).
+constexpr int NGX_MAX_PKT = 64, NGX_MAX_SLOT = 11;   // slot = matidx/3 (XF rows 0,3,…,30)
+float g_pkt_mtx[NGX_MAX_PKT][NGX_MAX_SLOT][12];
+bool  g_pkt_have[NGX_MAX_PKT][NGX_MAX_SLOT];
+unsigned g_seam_base = 0, g_seam_stride = 0;   // last Dolphin-correct draw-matrix array base/stride,
+                                               // recorded by the LoadIndexedXF seam (ngx_capture_indexed_posmtx)
+// Ordered log of the pos-matrix loads the seam resolves during ONE J3DShape::draw super-call. Each
+// entry is a slot (XF row = id*3) + the matrix the seam read with ITS OWN per-load base (always
+// correct, unlike the global g_seam_base which is the last writer across shapes). Reset before the
+// super-call (ov_j3dshape_draw); capture() partitions it by packet (each packet loads its non-0xffff
+// useMtxIndexTable entries, in order) → the true per-packet matrices.
+struct SeamLoad { unsigned slot; float m[12]; };
+SeamLoad g_seam_log[512];
+int      g_seam_log_n = 0;
+// LIVE skinned-matrix source toggle (/ngxmtxsrc?m=): 0=per-packet object-model (new, correct),
+// 1=g_posmtx global last-writer (old), 2=single modelview m (no skinning). Lets me A/B the skinned
+// transform on the running game with no rebuild. Counters report how many verts took each path.
+int g_ngx_mtxsrc = 0;
+unsigned long g_pkt_applied = 0, g_pkt_fallback = 0;   // CUMULATIVE (never reset) so the live
+                                                       // /ngxshape read is timing-independent
 unsigned long g_posmtx_loads = 0;
 
 // ── ngx geometry differential vs Dolphin xfmem (SUNBRIGHT_NGX_DIFF) ───────────
@@ -1029,25 +1053,23 @@ void transform_eye() {
 
         const float x = v.pos[0], y = v.pos[1], z = v.pos[2];
         // Multi-matrix (skinned) shapes: select the per-vertex position matrix by the vertex's
-        // PNMTXIDX (the XF position-matrix-memory ROW). Read the FINAL resolved matrix straight from
-        // Dolphin's XF matrix memory (xfmem.posMatrices) rather than reconstructing it from GX call
-        // hooks — J3D loads these matrices via the INDEXED load (GXLoadPosMtxIndx) and a direct
-        // XF-write fast path that the GXLoadPosMtxImm function hook never sees, so g_posmtx was zero
-        // for them (the title logo / sun-rays / clouds collapsed/sheared). Matrix M occupies
-        // posMatrices[(M+r)*4 + c] (3 rows × 4, row-major). xfmem floats are host-order.
-        // Multi-matrix (skinned/jointed) shapes: per-vertex position matrix selected by PNMTXIDX.
-        // NOTE (2026-06-16): the per-vertex matrices for these (title logo / sun-rays / clouds /
-        // file-select background) are NOT correctly captured yet — J3D loads them via the indexed
-        // path + a direct-XF-write fast path the function hooks miss, and the synchronous source
-        // is still unresolved (see debug_journal/2026-06-16_fileselect_wash.md UPDATE 6). g_posmtx
-        // (populated only by the GXLoadPosMtxImm hook) is the current baseline; reading the lagged
-        // xfmem.posMatrices instead REGRESSED the file-select to radiating garbage. Left at baseline
-        // until the synchronous indexed-matrix capture lands.
+        // PNMTXIDX (XF row = slot*3) AND the packet that drew it. A skinned shape draws in N packets,
+        // each reloading XF slots 0,3,… from its own useMtxIndexTable, so the correct matrix is
+        // g_pkt_mtx[vertex.packet][slot] (resolved per packet in capture()). g_posmtx (global
+        // last-writer) and live xfmem.posMatrices[mi] are BOTH wrong for any but the last packet
+        // (proven 2026-06-17: using either shreds Mario / radiates garbage). Fall back to g_posmtx
+        // only if a packet slot wasn't resolved (e.g. non-Multi PNMTXIDX shape).
         const float* M = m;
         float mm[12];
-        if (g_cur_pnmtx && (unsigned)v.matidx + 2 < 64) {
-            for (int r = 0; r < 3; r++) for (int c = 0; c < 4; c++) mm[r*4+c] = g_posmtx[v.matidx + r][c];
-            M = mm;
+        if (g_cur_pnmtx && (unsigned)v.matidx + 2 < 64 && g_ngx_mtxsrc != 2) {
+            const int slot = v.matidx / 3;
+            const bool use_pkt = g_ngx_mtxsrc == 0 && v.packet < NGX_MAX_PKT &&
+                                 slot < NGX_MAX_SLOT && g_pkt_have[v.packet][slot];
+            if (use_pkt) { M = g_pkt_mtx[v.packet][slot]; g_pkt_applied++; }
+            else {
+                for (int r = 0; r < 3; r++) for (int c = 0; c < 4; c++) mm[r*4+c] = g_posmtx[v.matidx + r][c];
+                M = mm; g_pkt_fallback++;
+            }
             g_pnmtx_applied++; if (v.matidx) g_pnmtx_nz++;   // DBG: per-vertex-matrix path firing?
         }
         const float ex = M[0]*x + M[1]*y + M[2]*z  + M[3];
@@ -1220,17 +1242,66 @@ void capture(u32 sh) {
     g_indices.clear();
     int tris = 0;
     bool any_fail = false;
-    for (u32 i = 0; i < nelem && i < 64; i++) {
+    const bool skinned = (cp.vcd_lo & 1) != 0;     // PNMTXIDX → multi-matrix; needs per-packet matrices
+    const u32 mtcs = r32(sh + 0x34);               // J3DShapeMtx** mMatrices (mElementCount entries)
+    if (skinned) std::memset(g_pkt_have, 0, sizeof g_pkt_have);
+    // big-endian u16 at byte address a (unkC is a u16 table in guest RAM).
+    auto ru16 = [](u32 a) -> u16 {
+        if (!valid(a)) return 0;
+        const u32 w = mem_r32(a & ~3u);
+        return (u16)((w >> ((a & 2) ? 0 : 16)) & 0xFFFF);
+    };
+    // Draw-matrix array base = j3dSys.mCurrentDrawMtx (J3DSYS+0x104). J3DSys::setModelDrawMtx stores
+    // it there AND binds it as GX_POS_MTX_ARRAY (stride = sizeof(Mtx) = 48), synchronously during the
+    // model's draw — so it is current and authoritative at capture() time (unlike the LoadIndexedXF
+    // seam, which fires ASYNC after the super-call → seam_log empty here). GXLoadPosMtxIndx(m, dest)
+    // reads matrix m at drawMtxBase + m*48.
+    constexpr u32 J3DSYS = 0x804045DCu;
+    const u32 drawMtxBase = skinned ? r32(J3DSYS + 0x104) : 0;
+    for (u32 i = 0; i < nelem && i < NGX_MAX_PKT; i++) {
         const u32 dp = r32(draws + i * 4);
         if (!valid(dp)) continue;
         const u32 size = r32(dp + 4);              // mDisplayListSize (vtable@0)
         const u32 list = r32(dp + 8);              // mDisplayList
         const unsigned char* host = sb_ram_fast(list);
         if (!host || size == 0 || size > 0x200000) continue;
+        const size_t v0 = g_verts.size();
         const int t = ngx_build_mesh(cp, host, size, resolve, nullptr, g_verts, g_indices);
         if (t < 0) any_fail = true; else tris += t;
+        for (size_t v = v0; v < g_verts.size(); v++) g_verts[v].packet = (unsigned char)i;
+        // Resolve THIS packet's per-slot matrices from its J3DShapeMtxMulti useMtxIndexTable (unkC).
+        // J3DShapeMtxMulti: unk8=useMtxNum@+0x08, unkC=useMtxIndexTable@+0x0C; slot j (skipped if
+        // unkC[j]==0xffff) loads draw-matrix unkC[j] into XF row j*3 → g_pkt_mtx[packet][j].
+        if (skinned && valid(mtcs) && valid(drawMtxBase)) {
+            const u32 smtx = r32(mtcs + i * 4);    // J3DShapeMtxMulti*
+            const u32 num  = valid(smtx) ? ru16(smtx + 0x08) : 0;
+            const u32 tbl  = valid(smtx) ? r32(smtx + 0x0C) : 0;
+            for (u32 j = 0; j < num && j < NGX_MAX_SLOT; j++) {
+                const u16 m = ru16(tbl + j * 2);
+                if (m == 0xFFFF) continue;          // skipped slot
+                const u32 a = drawMtxBase + (u32)m * 48u;   // sizeof(Mtx) = 3x4 f32
+                if (!valid(a)) continue;
+                for (int k = 0; k < 12; k++) g_pkt_mtx[i][j][k] = rf(a + k * 4);
+                g_pkt_have[i][j] = true;
+            }
+        }
     }
 
+    if (skinned && nelem >= 2 && getenv("SUNBRIGHT_DBG_PKT")) {
+        static int k = 0;
+        if (k++ < 8) {
+            fprintf(stderr, "[pkt] sh=%08x nelem=%u mMatrices=%08x seam_base=%08x stride=%u seam_log_n=%d\n",
+                    sh, nelem, mtcs, g_seam_base, g_seam_stride, g_seam_log_n);
+            for (u32 i = 0; i < nelem && i < 4; i++) {
+                const u32 smtx = r32(mtcs + i * 4);
+                const u32 num = valid(smtx) ? ru16(smtx + 0x08) : 0;
+                const u32 tbl = valid(smtx) ? r32(smtx + 0x0C) : 0;
+                fprintf(stderr, "   pkt%u smtx=%08x num=%u tbl=%08x unkC=[%u %u %u %u] m00[0..3]=%.3f %.3f %.3f %.2f have00=%d\n",
+                        i, smtx, num, tbl, ru16(tbl+0), ru16(tbl+2), ru16(tbl+4), ru16(tbl+6),
+                        g_pkt_mtx[i][0][0], g_pkt_mtx[i][0][1], g_pkt_mtx[i][0][2], g_pkt_mtx[i][0][3], (int)g_pkt_have[i][0]);
+            }
+        }
+    }
     // DBG: per-vertex position-matrix index (PNMTXIDX, vcd_lo bit0) usage. ngx applies a single
     // mCurrentDrawMtx to the whole shape; shapes with PNMTXIDX are multi-matrix (skinned/jointed,
     // e.g. the title logo) and TEAR if we don't select the per-vertex matrix.
@@ -1360,6 +1431,10 @@ void ngx_frame_publish() {
 // Lets /abshot2 self-certify same-state: the ngx side renders this frame; a stale snapshot (no 3D
 // that frame → "keep last") shows as a frame id that does NOT advance between live captures.
 extern "C" unsigned long sb_ngx_front_frame() { return g_ngx_front_frame.load(std::memory_order_acquire); }
+
+// /ngxmtxsrc?m=N — LIVE skinned-matrix source: 0=per-packet object-model, 1=g_posmtx, 2=modelview.
+// Takes effect on the next captured (live) frame. Returns the mode set.
+extern "C" int sb_ngx_set_mtxsrc(int m) { if (m >= 0 && m <= 2) g_ngx_mtxsrc = m; return g_ngx_mtxsrc; }
 
 // Best-effort snapshot accessors for the native Vulkan mesh render (copy promptly
 // — the emu thread keeps writing; a torn read at worst yields a stray triangle).
@@ -1591,12 +1666,20 @@ SUNBRIGHT_OVERRIDE(ov_gxloadlightobjimm, 0x8035f26cu) {
 // the GXLoadPosMtxIndx function-hook reconstruction below (stale base → garbage). This is THE fix
 // for multi-matrix (skinned: Mario/NPCs/logo) shapes collapsing into giant overdraw.
 extern "C" void ngx_capture_indexed_posmtx(unsigned base, unsigned stride, unsigned index, unsigned address) {
+    g_seam_base = base; g_seam_stride = stride;
     const unsigned slot = address / 4;
     if (slot + 2 >= 64) return;
     const unsigned a = ((base & 0x03FFFFFFu) | 0x80000000u) + stride * index;
+    float m[12];
+    for (int k = 0; k < 12; k++) m[k] = rf(a + k * 4);
     for (unsigned r = 0; r < 3; r++)
-        for (unsigned c = 0; c < 4; c++) g_posmtx[slot + r][c] = rf(a + (r * 4 + c) * 4);
+        for (unsigned c = 0; c < 4; c++) g_posmtx[slot + r][c] = m[r * 4 + c];
     for (unsigned r = 0; r < 3; r++) g_posmtx_src[slot + r] = 3;   // 3 = seam (Dolphin-exact)
+    // Ordered per-shape log (capture() partitions by packet → true per-packet matrices).
+    if (g_seam_log_n < (int)(sizeof g_seam_log / sizeof g_seam_log[0])) {
+        SeamLoad& s = g_seam_log[g_seam_log_n++];
+        s.slot = slot; for (int k = 0; k < 12; k++) s.m[k] = m[k];
+    }
 }
 
 // GXLoadPosMtxImm(f32 mtx[3][4], u32 id) @ 0x80362e0c — capture the position-matrix memory for
@@ -1814,6 +1897,7 @@ SUNBRIGHT_OVERRIDE(ov_j3dshape_draw, 0x802e0390u) {
     // Run the real draw FIRST: J3DShape::draw is what sets j3dSys's per-view vertex
     // arrays (loadVtxArray) AND the modelview (setModelDrawMtx) for THIS shape, so
     // we must capture after it for the arrays + matrix to be current.
+    g_seam_log_n = 0;   // collect THIS shape's indexed pos-matrix loads in stream order
     if (RecompFunc o = recomp_raw(0x802e0390u)) o(cpu); else call_ppc(cpu, cpu.lr);
     xfmem_draw_observe();   // always-on (oracle too): ground-truth xfmem at draw
     if (g_enabled) capture(sh);
@@ -2083,9 +2167,9 @@ int sb_ngx_shape_dump(char* out, int cap) {
         g_colcat_n[3], g_colcat_n[3]?g_colcat_sum[3]/g_colcat_n[3]:0.0,
         g_colcat_n[4], g_colcat_n[4]?g_colcat_sum[4]/g_colcat_n[4]:0.0);
     n += snprintf(out+n, cap-n,
-        "  PNMTXIDX shapes=%lu verts=%lu | posmtx_loads=%lu applied=%lu nz=%lu | bigShape verts=%zu pnmtx=%d vcd=%08x posbase=%08x stride=%u\n"
+        "  PNMTXIDX shapes=%lu verts=%lu maxnelem=%u | mtxsrc=%d(0=pkt,1=posmtx,2=mv) pkt_applied=%lu fallback=%lu | posmtx_loads=%lu applied=%lu nz=%lu | bigShape verts=%zu pnmtx=%d vcd=%08x posbase=%08x stride=%u\n"
         "    bigShape model-pos bbox: x[%.1f..%.1f] y[%.1f..%.1f] z[%.1f..%.1f]  pos0=(%.1f,%.1f,%.1f)\n",
-        g_pnmtx_shapes, g_pnmtx_verts, g_posmtx_loads, g_pnmtx_applied, g_pnmtx_nz,
+        g_pnmtx_shapes, g_pnmtx_verts, g_pnmtx_maxnelem, g_ngx_mtxsrc, g_pkt_applied, g_pkt_fallback, g_posmtx_loads, g_pnmtx_applied, g_pnmtx_nz,
         g_bigany_verts, g_bigany_pnmtx, g_bigany_vcd, g_bigany_posbase, g_bigany_posstride,
         g_bigany_pmin[0],g_bigany_pmax[0],g_bigany_pmin[1],g_bigany_pmax[1],g_bigany_pmin[2],g_bigany_pmax[2],
         g_bigany_pos0[0],g_bigany_pos0[1],g_bigany_pos0[2]);
