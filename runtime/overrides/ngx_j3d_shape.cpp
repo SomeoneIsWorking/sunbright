@@ -279,6 +279,26 @@ bool g_use_dolamb = sb_env_on("SUNBRIGHT_NGX_DOLAMB");
 u8 g_gd_amb[2][4] = {{0,0,0,0}, {0,0,0,0}};
 bool g_gd_amb_have[2] = {false, false};
 unsigned long g_gd_amb_sets = 0; u8 g_gd_amb_last[4] = {0,0,0,0};
+// Persistent global XF ambient register (per colour channel). GX's ambient register is global
+// hardware state: a J3DColorBlockLightOn material loads its block ambient INTO this register, and
+// every later material with ambSource=REG (incl. LightOff blocks, which carry NO ambient field of
+// their own) reads it back — last-writer-wins. The previous code read each material's OWN block
+// ambient (0 for LightOff) and defaulted REG-source ambients to 0, dropping the scene's ambient
+// floor (the "everything too dark" class). Now: writers = LightOn block load, GXSetChanAmbColor,
+// J3DGDSetChanAmbColor; readers = any ambSrc=REG material. A small value histogram lets the probe
+// confirm the live register matches Dolphin's xfmem ground truth without tapping xfmem at runtime.
+u8 g_xf_amb[2][4] = {{0,0,0,0}, {0,0,0,0}};
+bool g_xf_amb_have[2] = {false, false};
+unsigned long g_xf_amb_writes = 0;
+u32 g_xf_amb_hist_key[8] = {0}; unsigned long g_xf_amb_hist_cnt[8] = {0};
+inline void xf_amb_write(int idx, u8 r, u8 g, u8 b, u8 a) {
+    if (idx < 0 || idx > 1) return;
+    g_xf_amb[idx][0]=r; g_xf_amb[idx][1]=g; g_xf_amb[idx][2]=b; g_xf_amb[idx][3]=a;
+    g_xf_amb_have[idx]=true; g_xf_amb_writes++;
+    if (idx == 0) { const u32 key = ((u32)r<<24)|((u32)g<<16)|((u32)b<<8)|a;
+        for (int i=0;i<8;i++){ if(g_xf_amb_hist_key[i]==key){g_xf_amb_hist_cnt[i]++;break;}
+                               if(g_xf_amb_hist_cnt[i]==0){g_xf_amb_hist_key[i]=key;g_xf_amb_hist_cnt[i]=1;break;} } }
+}
 // Authoritative per-channel lighting state captured SYNCHRONOUSLY from the GX commands
 // (GXSetChanCtrl / GXSetChanMatColor) — the same LitChannel.hex / matColor Dolphin uses.
 u16  g_gx_cc[2] = {0, 0};            bool g_gx_cc_have[2] = {false, false};
@@ -449,11 +469,13 @@ void capture_colorchan(u32 material) {
     // GXSetChanAmbColor reads a wrong ~purple value; neither matches the oracle. So default to 0
     // (the studied-safe value; gameplay renders correctly with it). Opt-in A/B:
     // SUNBRIGHT_NGX_AMBGD=1 uses the J3DGDSetChanAmbColor capture (correct in LightOn scenes).
-    static const bool amb_gd = getenv("SUNBRIGHT_NGX_AMBGD") && atoi(getenv("SUNBRIGHT_NGX_AMBGD")) != 0;
-    if (amb_off)               for (int k = 0; k < 4; k++) g_cur_chan.ambColor[k] = B[amb_off + k];
-    else if (amb_gd && g_gd_amb_have[0])
-                               for (int k = 0; k < 4; k++) g_cur_chan.ambColor[k] = g_gd_amb[0][k];
-    else                       for (int k = 0; k < 4; k++) g_cur_chan.ambColor[k] = 0;
+    // NOTE: amb_off=0x0C is NOT the ambient colour for these blocks — it reads a J3D heap POINTER
+    // (0x8042xxxx → the "purple (128,66,1xx)" garbage). The real per-material ambient/matColor reach
+    // XF via the material's packed display-list (raw XF register loads), which we don't yet capture.
+    // Until the correct source is found, default REG-source ambients to 0 (studied-safe; the scene's
+    // brightness is built across passes, not from a single ambient register). g_xf_amb infra below
+    // stays for diagnosis only.
+    for (int k = 0; k < 4; k++) g_cur_chan.ambColor[k] = 0;
     g_cur_chan.valid = true;
 }
 
@@ -1022,6 +1044,8 @@ struct ShapeRec {
     float proj[16];                     // the projection matrix this shape drew under (per-pass depth-space)
     float zmin, zmax;                   // NDC-z (clip.z/clip.w) range over w>eps verts (depth ordering)
     float ezmin, ezmax;                 // eye-space Z range (camera distance; -ve = in front) — depth-source
+    float mv[12];                       // full single-matrix modelview (drawMtx[single_idx], row-major 3x4)
+    float mp0[3], mp1[3];               // model-space positions of vert0/vert1 (pre-transform) — foam vs sea cmp
 };
 std::vector<ShapeRec> g_shaperec[2];
 int                          g_read_front = 0; // latched by ngx_snap_verts for batches
@@ -1307,6 +1331,9 @@ void transform_eye() {
         rec.tex0 = g_mat_tex[0].addr; rec.pnmtx = g_cur_pnmtx ? 1 : 0; rec.single_idx = g_single_idx;
         rec.tx = m[3]; rec.ty = m[7]; rec.tz = m[11];
         rec.det3 = m[0]*(m[5]*m[10]-m[6]*m[9]) - m[1]*(m[4]*m[10]-m[6]*m[8]) + m[2]*(m[4]*m[9]-m[5]*m[8]);
+        for (int i = 0; i < 12; i++) rec.mv[i] = m[i];
+        rec.mp0[0]=nv?g_verts[0].pos[0]:0; rec.mp0[1]=nv?g_verts[0].pos[1]:0; rec.mp0[2]=nv?g_verts[0].pos[2]:0;
+        rec.mp1[0]=nv>1?g_verts[1].pos[0]:0; rec.mp1[1]=nv>1?g_verts[1].pos[1]:0; rec.mp1[2]=nv>1?g_verts[1].pos[2]:0;
         rec.pass = g_proj_pass; rec.projtype = (unsigned char)g_proj_type;
         for (int i = 0; i < 16; i++) rec.proj[i] = g_proj[i];
         { float zlo = 1e30f, zhi = -1e30f, ezlo = 1e30f, ezhi = -1e30f;
@@ -2294,6 +2321,7 @@ SUNBRIGHT_OVERRIDE(ov_gxsetchanambcolor, 0x8035f3b4u) {
             g_amb_reg[idx][0] = (u8)(c >> 24); g_amb_reg[idx][1] = (u8)(c >> 16);
             g_amb_reg[idx][2] = (u8)(c >> 8);  g_amb_reg[idx][3] = (u8)c;
             g_amb_have[idx] = true; g_amb_sets++;
+            xf_amb_write(idx, (u8)(c>>24), (u8)(c>>16), (u8)(c>>8), (u8)c);
         }
     }
     if (RecompFunc o = recomp_raw(0x8035f3b4u)) o(cpu); else call_ppc(cpu, cpu.lr);
@@ -2311,6 +2339,7 @@ SUNBRIGHT_OVERRIDE(ov_j3dgdsetchanambcolor, 0x802f33a8u) {
             g_gd_amb[idx][0] = (u8)(c >> 24); g_gd_amb[idx][1] = (u8)(c >> 16);
             g_gd_amb[idx][2] = (u8)(c >> 8);  g_gd_amb[idx][3] = (u8)c;
             g_gd_amb_have[idx] = true; g_gd_amb_sets++;
+            xf_amb_write(idx, (u8)(c>>24), (u8)(c>>16), (u8)(c>>8), (u8)c);
             for (int k = 0; k < 4; k++) g_gd_amb_last[k] = g_gd_amb[idx][k];
         }
     }
@@ -2436,11 +2465,17 @@ int sb_ngx_shapes_dump(char* out, int cap) {
             r.nxmin, r.nxmax, r.nymin, r.nymax, r.wmin, r.wmax);
         // For the sea (ti=12) and foam (ti=18): dump NDC-z range + the per-pass projection's
         // z-row, to compare their depth spaces (foam-over-sea ordering = the wash discriminator).
-        if ((r.ti == 12 || r.ti == 18) && n < cap - 200)
+        if ((r.ti == 12 || r.ti == 18) && n < cap - 400) {
             n += snprintf(out + n, cap - n,
                 "       ti=%d sh=%08x pnmtx=%u single_idx=%u tz=%.1f eyeZ[%.1f,%.1f] ndcZ[%.5f,%.5f] proj[10,11,14]=%.5f,%.4f,%.4f\n",
                 r.ti, r.sh, r.pnmtx, r.single_idx, r.tz, r.ezmin, r.ezmax, r.zmin, r.zmax,
                 r.proj[10], r.proj[11], r.proj[14]);
+            n += snprintf(out + n, cap - n,
+                "         mv row0=[%.3f %.3f %.3f %.2f] row1=[%.3f %.3f %.3f %.2f] row2=[%.3f %.3f %.3f %.2f]\n"
+                "         model p0=(%.1f,%.1f,%.1f) p1=(%.1f,%.1f,%.1f)\n",
+                r.mv[0],r.mv[1],r.mv[2],r.mv[3], r.mv[4],r.mv[5],r.mv[6],r.mv[7], r.mv[8],r.mv[9],r.mv[10],r.mv[11],
+                r.mp0[0],r.mp0[1],r.mp0[2], r.mp1[0],r.mp1[1],r.mp1[2]);
+        }
         shown++;
     }
     return n;
@@ -2555,6 +2590,12 @@ int sb_ngx_shape_dump(char* out, int cap) {
         g_amb_have[0], g_amb_sets,
         g_gd_amb[0][0], g_gd_amb[0][1], g_gd_amb[0][2], g_gd_amb[0][3], g_gd_amb_have[0], g_gd_amb_sets,
         g_gd_amb_last[0], g_gd_amb_last[1], g_gd_amb_last[2], g_gd_amb_last[3]);
+    n += snprintf(out + n, cap - n,
+        "    XF_AMB[0]=(%u,%u,%u,%u) have=%d writes=%lu | hist:",
+        g_xf_amb[0][0], g_xf_amb[0][1], g_xf_amb[0][2], g_xf_amb[0][3], g_xf_amb_have[0], g_xf_amb_writes);
+    for (int i=0;i<8 && g_xf_amb_hist_cnt[i];i++)
+        n += snprintf(out+n, cap-n, " %08x×%lu", g_xf_amb_hist_key[i], g_xf_amb_hist_cnt[i]);
+    n += snprintf(out + n, cap - n, "\n");
     {   // SKY latch: exact per-draw lighting breakdown of the sky material (cc=0x0686)
         const SkyLatch& S = g_sky_pub;
         n += snprintf(out + n, cap - n,
@@ -3021,6 +3062,8 @@ int sb_ngx_pixel_blend(float px, float py, char* out, int cap) {
             int reg[3][4]; for(int c=0;c<3;c++) for(int k=0;k<4;k++) reg[c][k]=S->tev_color[c][k];
             int nstg=S->num_stages; if(nstg<1)nstg=1; if(nstg>16)nstg=16;
             char texinfo[96]={0};
+            char stgtr[256]={0}; int stgn=0;   // per-stage prev trace (RASC over-bright probe)
+            stgn += snprintf(stgtr+stgn,sizeof stgtr-stgn," | RASC(col0)=(%d,%d,%d,a%d)",col0[0],col0[1],col0[2],col0[3]);
             for (int sgi=0; sgi<nstg; sgi++) {
                 const NgxTevStage& sg=S->stage[sgi];
                 const PbComb cc=dec_cc(sg.color_env); const PbComb ac=dec_ac(sg.alpha_env);
@@ -3066,6 +3109,9 @@ int sb_ngx_pixel_blend(float px, float py, char* out, int cap) {
                 cd[0]=dst_c[0];cd[1]=dst_c[1];cd[2]=dst_c[2];
                 int* ad = ac.dest==0?prev:reg[ac.dest-1];
                 ad[3]=dst_a;
+                if (stgn < (int)sizeof stgtr - 48)
+                    stgn += snprintf(stgtr+stgn,sizeof stgtr-stgn," s%d->prev=(%d,%d,%d,a%d)[scl%d]",
+                        sgi, prev[0],prev[1],prev[2],prev[3], cc.scale);
             }
             float frag[4]={prev[0]/255.f,prev[1]/255.f,prev[2]/255.f,prev[3]/255.f};
             // texture mean (for the mip-gap check) of the stage-0 texmap.
@@ -3079,6 +3125,7 @@ int sb_ngx_pixel_blend(float px, float py, char* out, int cap) {
                 "  L%-2d ti=%-3d ep=%u z=%s(d=%.3f) bm=%u s/d=%u/%u frag=(%.2f,%.2f,%.2f,a%.2f) %s tmean=%.0f",
                 layers, ti, B.epoch, zp?"PASS":"fail", depth, S->pe.blend_mode, S->pe.src_factor, S->pe.dst_factor,
                 frag[0],frag[1],frag[2],frag[3], texinfo, tmean);
+            if (n < cap-260 && (ti==18||ti==12)) n += snprintf(out+n,cap-n,"%s",stgtr);
             if (!zp) { if(n<cap-8) n+=snprintf(out+n,cap-n," (z-culled)\n"); continue; }
             // blend over acc (mode 1 = BLEND with factors; else opaque src=ONE dst=ZERO)
             if (S->pe.blend_mode==1) {
