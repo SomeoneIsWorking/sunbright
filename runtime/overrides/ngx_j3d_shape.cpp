@@ -336,6 +336,10 @@ ChanInfo g_cur_chan;
 unsigned long g_chan_lit = 0, g_chan_flat = 0;
 u8 g_dbg_cb_raw[0x44] = {0}; bool g_dbg_cb_have = false; u32 g_dbg_cb_vt = 0;
 u32 g_cbvt_key[8] = {0}; unsigned g_cbvt_cnt[8] = {0};   // colour-block vtable histogram
+// Per-distinct-vtable raw block bytes (for RE'ing the real J3DColorBlock layout: where the true
+// matColor=ffffff / ambColor / chan-ctrl live, vs the pointer-garbage the old offsets read).
+u8 g_cbvt_raw[8][0x48] = {{0}}; u32 g_cbvt_blkaddr[8] = {0};
+u32 g_cbvt_matpkt[8] = {0}; u8 g_cbvt_pktraw[8][0x40] = {{0}};   // J3DMatPacket bytes (to find its DL)
 // Flat-path breakdown + brightness diagnostics (per-vertex sums; /ngxshape).
 unsigned long g_flat_reg = 0, g_flat_vtx = 0;
 double g_lit_lum_sum = 0, g_flat_lum_sum = 0;
@@ -435,9 +439,14 @@ void capture_colorchan(u32 material) {
     const u32 vt = r32(cb + 0x00);
     const u8* B = sb_ram_fast(cb);
     if (!B) return;
-    for (int i = 0; i < 8; i++) {           // colour-block vtable histogram
+    for (int i = 0; i < 8; i++) {           // colour-block vtable histogram + per-vtable raw capture
         if (g_cbvt_key[i] == vt) { g_cbvt_cnt[i]++; break; }
-        if (g_cbvt_key[i] == 0) { g_cbvt_key[i] = vt; g_cbvt_cnt[i] = 1; break; }
+        if (g_cbvt_key[i] == 0) { g_cbvt_key[i] = vt; g_cbvt_cnt[i] = 1;
+            g_cbvt_blkaddr[i] = cb;
+            for (int k = 0; k < 0x48; k++) g_cbvt_raw[i][k] = B[k];
+            const u32 pkt = r32(J3DSYS + 0x3C); g_cbvt_matpkt[i] = pkt;     // live J3DMatPacket
+            if (const u8* P = sb_ram_fast(pkt)) for (int k = 0; k < 0x40; k++) g_cbvt_pktraw[i][k] = P[k];
+            break; }
     }
     if (!g_dbg_cb_have) {                    // one-shot raw dump of the first block
         for (int k = 0; k < 0x44; k++) g_dbg_cb_raw[k] = B[k];
@@ -469,13 +478,16 @@ void capture_colorchan(u32 material) {
     // GXSetChanAmbColor reads a wrong ~purple value; neither matches the oracle. So default to 0
     // (the studied-safe value; gameplay renders correctly with it). Opt-in A/B:
     // SUNBRIGHT_NGX_AMBGD=1 uses the J3DGDSetChanAmbColor capture (correct in LightOn scenes).
-    // NOTE: amb_off=0x0C is NOT the ambient colour for these blocks — it reads a J3D heap POINTER
-    // (0x8042xxxx → the "purple (128,66,1xx)" garbage). The real per-material ambient/matColor reach
-    // XF via the material's packed display-list (raw XF register loads), which we don't yet capture.
-    // Until the correct source is found, default REG-source ambients to 0 (studied-safe; the scene's
-    // brightness is built across passes, not from a single ambient register). g_xf_amb infra below
-    // stays for diagnosis only.
-    for (int k = 0; k < 4; k++) g_cur_chan.ambColor[k] = 0;
+    // Ambient: the faithful per-draw ambient is the global XF ambient register the game programs via
+    // GXSetChanAmbColor, read LIVE here at the material's draw. (The per-material display list loads
+    // matColor XF 0x100C/D but NOT ambient — RE'd via the MatPacket DL walker in /ngxshape; the
+    // ambient is a separate GXSetChanAmbColor write that varies per draw-group: grey 808080 for the
+    // 3D scene, 0/white for others.) The earlier "purple" was a by-VALUE read of the GXColor POINTER
+    // arg — now fixed (ov_gxsetchanambcolor derefs gpr[4]). ambSrc=VTX materials ignore this
+    // (light_vertex substitutes the vertex colour). A/B: SUNBRIGHT_NGX_AMB0=1 forces the old 0.
+    static const bool amb_zero = sb_env_on("SUNBRIGHT_NGX_AMB0");
+    if (!amb_zero && g_amb_have[0]) for (int k = 0; k < 4; k++) g_cur_chan.ambColor[k] = g_amb_reg[0][k];
+    else                            for (int k = 0; k < 4; k++) g_cur_chan.ambColor[k] = 0;
     g_cur_chan.valid = true;
 }
 
@@ -2315,7 +2327,11 @@ SUNBRIGHT_OVERRIDE(ov_gxsetchanmatcolor, 0x8035f51cu) {
 // COLOR1A1=5. color is a 4-byte GXColor passed by value in gpr[4] (R in high byte).
 SUNBRIGHT_OVERRIDE(ov_gxsetchanambcolor, 0x8035f3b4u) {
     if (g_enabled) {
-        const u32 chan = cpu.gpr[3], c = cpu.gpr[4];
+        // GXColor is passed BY POINTER in gpr[4] (like GXSetCopyClear's r3) — gpr[4] reads as a
+        // guest pointer (0x804263xx), so [gpr[4]] = the packed RGBA8888. The old by-value read
+        // captured the pointer bytes (the "purple (128,66,99)" garbage). Deref when it's a pointer.
+        const u32 chan = cpu.gpr[3], r4 = cpu.gpr[4];
+        const u32 c = valid(r4) ? r32(r4) : r4;
         const int idx = (chan == 0 || chan == 4) ? 0 : (chan == 1 || chan == 5) ? 1 : -1;
         if (idx >= 0) {
             g_amb_reg[idx][0] = (u8)(c >> 24); g_amb_reg[idx][1] = (u8)(c >> 16);
@@ -2627,6 +2643,46 @@ int sb_ngx_shape_dump(char* out, int cap) {
     for (int i = 0; i < 8 && g_cbvt_key[i]; i++)
         n += snprintf(out + n, cap - n, " %08x(%u)", g_cbvt_key[i], g_cbvt_cnt[i]);
     n += snprintf(out + n, cap - n, "\n");
+    // Per-distinct-vtable RAW J3DColorBlock bytes — RE the real matColor/ambColor/chan-ctrl offsets.
+    for (int i = 0; i < 8 && g_cbvt_key[i] && n < cap - 360; i++) {
+        n += snprintf(out + n, cap - n, "    CB vt=%08x @%08x:", g_cbvt_key[i], g_cbvt_blkaddr[i]);
+        for (int k = 0; k < 0x48; k++) {
+            if ((k & 3) == 0) n += snprintf(out + n, cap - n, " ");
+            n += snprintf(out + n, cap - n, "%02x", g_cbvt_raw[i][k]);
+        }
+        n += snprintf(out + n, cap - n, "\n      MatPkt @%08x:", g_cbvt_matpkt[i]);
+        for (int k = 0; k < 0x40; k++) {
+            if ((k & 3) == 0) n += snprintf(out + n, cap - n, " ");
+            n += snprintf(out + n, cap - n, "%02x", g_cbvt_pktraw[i][k]);
+        }
+        // Walk the material's GX display list (ptr@+0x20, len@+0x24) and extract the XF register
+        // loads — the FAITHFUL per-material ambient (XF 0x100A/B) / matColor (0x100C/D) / light
+        // (0x0600+) the game programs. This is the game's OWN data, the native source of GX state.
+        const u8* pk = g_cbvt_pktraw[i];
+        const u32 dlp = ((u32)pk[0x20]<<24)|((u32)pk[0x21]<<16)|((u32)pk[0x22]<<8)|pk[0x23];
+        const u32 dll = ((u32)pk[0x24]<<24)|((u32)pk[0x25]<<16)|((u32)pk[0x26]<<8)|pk[0x27];
+        n += snprintf(out + n, cap - n, "\n      DL @%08x len=%u XFloads:", dlp, dll);
+        if (const u8* D = (dll && dll < 0x4000) ? sb_ram_fast(dlp) : nullptr) {
+            u32 p = 0;
+            while (p < dll && n < cap - 120) {
+                const u8 op = D[p];
+                if (op == 0x00) { p++; continue; }                       // NOP
+                if (op == 0x10) {                                         // XF load
+                    const u32 cnt = (((u32)D[p+1]<<8)|D[p+2]) + 1;
+                    const u32 reg = ((u32)D[p+3]<<8)|D[p+4];
+                    if (reg == 0x100A || reg == 0x100B || reg == 0x100C || reg == 0x100D) {
+                        const u8* d = D + p + 5;
+                        n += snprintf(out+n, cap-n, " [%04x=%02x%02x%02x%02x]", reg, d[0],d[1],d[2],d[3]);
+                    }
+                    p += 5 + cnt*4; continue;
+                }
+                if (op == 0x61) { p += 5; continue; }                     // BP load
+                if (op == 0x08) { p += 5; continue; }                     // CP load
+                break;   // primitive / unknown → stop
+            }
+        }
+        n += snprintf(out + n, cap - n, "\n");
+    }
     if (g_dbg_cb_have) {
         n += snprintf(out + n, cap - n, "    block vt=%08x raw[0x00..0x23]:", g_dbg_cb_vt);
         for (int k = 0; k < 0x24; k++) n += snprintf(out + n, cap - n, "%s%02x",
