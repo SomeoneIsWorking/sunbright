@@ -29,6 +29,12 @@ extern "C" int sb_ngx_tevdbg();
 int g_ngx_only_ti = -2, g_ngx_skip_ti = -2;
 extern "C" int sb_ngx_set_onlyti(int t) { g_ngx_only_ti = t; return t; }
 extern "C" int sb_ngx_set_skipti(int t) { g_ngx_skip_ti = t; return t; }
+// Multi-ti skip SET (/ngxskipset?ti=9,10,18) — skip several tev_indices at once, to test the
+// combined removal of a multi-layer blend stack (e.g. the file-select haze layers) in one capture.
+int g_ngx_skip_set[32]; int g_ngx_skip_set_n = 0;
+extern "C" void sb_ngx_skipset_clear() { g_ngx_skip_set_n = 0; }
+extern "C" void sb_ngx_skipset_add(int t) { if (g_ngx_skip_set_n < 32) g_ngx_skip_set[g_ngx_skip_set_n++] = t; }
+static bool in_skipset(int ti) { for (int i = 0; i < g_ngx_skip_set_n; i++) if (g_ngx_skip_set[i] == ti) return true; return false; }
 // Runtime EFB-copy epoch isolation (/ngxepoch): -1 = all (default); keep>=0 = only that epoch;
 // drop>=0 = render everything EXCEPT that epoch. Diagnostic for the file-select multi-pass ghost.
 int g_ngx_only_epoch = -1, g_ngx_drop_epoch = -1;
@@ -706,6 +712,7 @@ AbstractTexture* PresentRenderer::render(int w, int h) {
         static const int env_skip = getenv("SUNBRIGHT_NGX_SKIPTI") ? atoi(getenv("SUNBRIGHT_NGX_SKIPTI")) : -1;
         const int skip_ti = g_ngx_skip_ti != -2 ? g_ngx_skip_ti : env_skip;   // runtime /ngxskip overrides env
         if (skip_ti >= 0 && ti == skip_ti) continue;
+        if (g_ngx_skip_set_n && in_skipset(ti)) continue;   // /ngxskipset multi-ti removal
         // EFB-copy epoch isolation (/ngxepoch) — render only / all-but a given offscreen epoch.
         if (g_ngx_only_epoch >= 0 && (int)batches[b].epoch != g_ngx_only_epoch) continue;
         if (g_ngx_drop_epoch >= 0 && (int)batches[b].epoch == g_ngx_drop_epoch) continue;

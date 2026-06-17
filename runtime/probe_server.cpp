@@ -94,6 +94,8 @@ extern "C" int sb_ngx_set_skipti(int);                       // runtime/render/n
 extern "C" int sb_ngx_set_onlyepoch(int);                    // runtime/render/ngx_present.cpp (/ngxepoch)
 extern "C" int sb_ngx_set_dropepoch(int);                    // runtime/render/ngx_present.cpp (/ngxepoch)
 extern "C" int sb_ngx_set_rtfilter(int);                     // runtime/render/ngx_present.cpp (/ngxrtfilter)
+extern "C" void sb_ngx_skipset_clear();                      // runtime/render/ngx_present.cpp (/ngxskipset)
+extern "C" void sb_ngx_skipset_add(int);                     // runtime/render/ngx_present.cpp (/ngxskipset)
 int sb_ngx_render(char*, int);                               // runtime/render/vk_mesh.cpp
 int sb_ngx_present_test(char*, int);                         // runtime/render/vk_mesh.cpp
 extern "C" void sb_ngx_present_stats(unsigned long*, unsigned long*, unsigned long*, int*, int*, int*, unsigned long*);  // ngx_present.cpp
@@ -358,9 +360,16 @@ std::string handle_repl(const char* path) {
         int t = -1; if (const char* p = strstr(path, "ti=")) t = atoi(p + 3);
         sb_ngx_set_onlyti(t); app("ngx only_ti = %d\n", t); return std::string(buf, n);
     }
-    if (strncmp(path, "/ngxskip", 8) == 0) {   // runtime: SKIP this tev_index (-2 env, -1 off)
+    if (strncmp(path, "/ngxskip", 8) == 0 && path[8] != 's') {   // SKIP this tev_index (NOT /ngxskipset)
         int t = -1; if (const char* p = strstr(path, "ti=")) t = atoi(p + 3);
         sb_ngx_set_skipti(t); app("ngx skip_ti = %d\n", t); return std::string(buf, n);
+    }
+    if (strncmp(path, "/ngxskipset", 11) == 0) {  // skip a SET of tev_indices: ti=9,10,18 (empty = clear)
+        sb_ngx_skipset_clear();
+        if (const char* p = strstr(path, "ti=")) {
+            p += 3; while (*p && *p != '&') { sb_ngx_skipset_add(atoi(p)); while (*p && *p!=',' && *p!='&') p++; if (*p==',') p++; }
+        }
+        app("ngx skipset updated\n"); return std::string(buf, n);
     }
     if (strncmp(path, "/ngxepoch", 9) == 0) {  // isolate an EFB-copy epoch: keep=N (only) or drop=N
         int keep = -1, drop = -1;
