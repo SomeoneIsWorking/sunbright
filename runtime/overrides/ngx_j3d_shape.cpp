@@ -312,6 +312,8 @@ struct TexGen {
     u8   src  = 4;          // GXTexGenSrc: 0=POS,1=NRM,4..11=TEX0..7,19=COLOR0
     bool has_mtx = false;   // a non-identity texgen matrix is set
     float m[12] = {0};      // mTotalMtx 3x4 (row-major) when has_mtx
+    u8   mtxsel = 60;       // raw GXTexMtx selector (30=TEXMTX0,step 3; 60=IDENTITY) → XF row
+    u32  mtxptr = 0;        // the J3DTexMtx* ngx read (blk+0x28+idx*4) — match the load tee
 };
 struct TexGenSet { u8 num = 0; TexGen tg[8]; };
 
@@ -342,6 +344,7 @@ struct GxStateRec {
     NgxTevState tev{}; bool tev_have = false;
     // TexGen (UV generation) + bound textures — for diagnosing tiling/checkerboard sampling
     TexGenSet tg{}; NgxTexBind tex[8]{};
+    float tg_xf[8][8] = {{0}}; bool tg_xf_have[8] = {false};   // xfmem texmtx (row0[4]+row1[4]) per coord, at draw
     struct LRec { bool valid=false; float col[3]={0}; float pos[3]={0}; float dir[3]={0};
                   float cosA[3]={0}; float distA[3]={0}; } lights[8];
 };
@@ -357,6 +360,12 @@ struct UvDbg { bool have=false; float tex0[2]={0},tex1[2]={0},uv0[2]={0},uv1[2]=
     // additive cloud's alpha (RASA, matsrc=VTX) is a near-zero gradient (GX subtle) or uniform.
     float ca_min=1e9f, ca_max=-1e9f; float cr_min=1e9f, cr_max=-1e9f; };
 UvDbg g_uvdbg, g_uvdbg_pub;
+// Per-vertex dump for the gxstate target ti (NDC x,y + RASA alpha + tc0/tc1 UV). Pins whether
+// the additive cloud's coverage is gated by geometry (NDC spread), per-vertex alpha, or noise UV.
+struct VtxRec { float ndcx, ndcy, a, u0, v0, u1, v1; float ex, ey, ez, cw; };
+std::vector<VtxRec> g_vtxdump, g_vtxdump_pub;
+unsigned char g_vtxdump_projtype = 0, g_vtxdump_projtype_pub = 0;   // 0=persp 1+=ortho (g_proj_type at the shape)
+float g_vtxdump_mv[12] = {0}, g_vtxdump_mv_pub[12] = {0};           // the shape's modelview
 // DBG histograms for the brightness/wash investigation (vert-weighted).
 unsigned long g_clr0cls_hist[4] = {0}, g_matsrc_hist[3] = {0}, g_litcfg_hist[2] = {0};
 size_t g_bigmap_verts = 0; unsigned g_bigmap_clr0cls = 0; bool g_bigmap_matvtx = false, g_bigmap_en = false;
@@ -433,11 +442,12 @@ void capture_texgen(u32 material) {
     for (u32 i = 0; i < num; i++) {
         const u8 type = B[0x08 + i * 4], src = B[0x09 + i * 4], mtx = B[0x0A + i * 4];
         TexGen& g = g_cur_texgen.tg[i];
-        g.type = type; g.src = src;
+        g.type = type; g.src = src; g.mtxsel = mtx;
         // Matrix selector: GX_TEXMTX0=30, step 3; GX_IDENTITY=60 → none.
         if (mtx >= 30 && mtx < 60) {
             const u32 idx = (u32)(mtx - 30) / 3;           // → mTexMtx[] slot
             const u32 mp = idx < 8 ? r32(blk + 0x28 + idx * 4) : 0;   // J3DTexMtx*
+            g.mtxptr = mp;
             if (valid(mp)) { for (int k = 0; k < 12; k++) g.m[k] = rf(mp + 0x64 + k * 4); g.has_mtx = true; }
         }
         // diagnostics
@@ -1242,6 +1252,11 @@ int capture_material() {
         R.cb_addr = g_cur_cb_addr; R.cb_vt = g_cur_cb_vt; for (int k=0;k<0x20;k++) R.cb_raw[k]=g_cur_cb_raw[k];
         R.tev = st; R.tev_have = true;
         R.tg = g_cur_texgen; for (int m=0;m<8;m++) R.tex[m] = g_mat_tex[m];
+        // Snapshot the GPU's actual texmtx (xfmem matrix memory) for each texgen coord AT this draw
+        // (authoritative in oracle mode) → compare vs ngx's object-model mTotalMtx in /gxstate.
+        for (int i=0;i<R.tg.num && i<8;i++) { const u8 sel = R.tg.tg[i].mtxsel;
+            if (sel >= 30 && sel < 60) { const float* X = &xfmem.posMatrices[sel*4];
+                for (int k=0;k<8;k++) R.tg_xf[i][k] = X[k]; R.tg_xf_have[i] = true; } }
         R.obj_mask = (u8)(((R.obj_cc >> 2) & 0x0F) | (((R.obj_cc >> 11) & 0x0F) << 4));
         R.gx_mask  = (u8)(((R.gx_cc  >> 2) & 0x0F) | (((R.gx_cc  >> 11) & 0x0F) << 4));
         for (int i=0;i<8;i++){ R.lights[i].valid=g_light[i].valid;
@@ -1308,6 +1323,9 @@ void transform_eye() {
     if (g_have_proj) g_clip.assign(nv * 4, 0.0f);
     g_litrgba.assign(nv * 4, 0.0f);
     g_uvs.assign(nv * 16, 0.0f);
+    const bool vtxdump_this = (g_cur_tev_index == g_gxstate_ti.load());
+    if (vtxdump_this) { g_vtxdump.clear(); g_vtxdump_projtype = (unsigned char)g_proj_type;
+                        for (int i=0;i<12;i++) g_vtxdump_mv[i]=m[i]; }
     static std::vector<float> s_eye;          // per-vertex eye pos (x,y,z) for the shred metric
     s_eye.assign(nv * 3, 0.0f);
 
@@ -1446,6 +1464,12 @@ void transform_eye() {
             if (ngx_ndc_xy(cp, nx, ny)) {
                 g_ndc_wpos++;
                 if (nx >= -1.0f && nx <= 1.0f && ny >= -1.0f && ny <= 1.0f) g_ndc_inbox++;
+            }
+            if (vtxdump_this && g_vtxdump.size() < 4096) {
+                const float* uvp = &g_uvs[vi * 16];
+                g_vtxdump.push_back({cw>1e-6f?cx/cw:0.f, cw>1e-6f?cy/cw:0.f,
+                                     g_litrgba[vi*4+3], uvp[0], uvp[1], uvp[2], uvp[3],
+                                     ex, ey, ez, cw});
             }
         }
     }
@@ -1922,6 +1946,29 @@ extern "C" unsigned sb_ngx_frame_shape_count() { return g_last_frame_shape_count
 // shape# to a material for /gxstate. Filled in ov_j3dshape_draw; snapshotted at frame publish.
 constexpr int SHAPETI_CAP = 512;
 int g_frame_shape_ti[SHAPETI_CAP], g_pub_shape_ti[SHAPETI_CAP];
+// /ngxverts — per-vertex dump of the /gxstate target ti's shape: NDC (x,y), RASA alpha, tc0/tc1
+// UV. Answers whether the additive cloud's screen coverage is set by geometry (NDC spread), the
+// per-vertex alpha gradient, or the noise UV. Set the target with /gxstate?ti=N first.
+extern "C" int sb_ngx_verts_dump(char* out, int cap) {
+    const auto& V = g_vtxdump_pub;
+    const float* M = g_vtxdump_mv_pub;
+    int w = snprintf(out, cap, "ngxverts: target_ti=%d  nverts=%zu  projtype=%u(0=PERSP,1+=ORTHO)\n"
+                     "  modelview=[%.3f %.3f %.3f %.1f / %.3f %.3f %.3f %.1f / %.3f %.3f %.3f %.1f]\n"
+                     "  (NDC x,y in [-1,1]; a=RASA; ez=eye-z (persp w=-ez); cw=clip.w; cw~0 => near-plane blowup)\n",
+                     g_gxstate_ti.load(), V.size(), g_vtxdump_projtype_pub,
+                     M[0],M[1],M[2],M[3], M[4],M[5],M[6],M[7], M[8],M[9],M[10],M[11]);
+    float nxmin=1e9f,nxmax=-1e9f,nymin=1e9f,nymax=-1e9f,amin=1e9f,amax=-1e9f; double asum=0;
+    for (auto& r : V) { nxmin=std::min(nxmin,r.ndcx); nxmax=std::max(nxmax,r.ndcx);
+        nymin=std::min(nymin,r.ndcy); nymax=std::max(nymax,r.ndcy);
+        amin=std::min(amin,r.a); amax=std::max(amax,r.a); asum+=r.a; }
+    if (!V.empty()) w += snprintf(out+w, cap-w,
+        "  NDC bbox x[%.3f,%.3f] y[%.3f,%.3f]  alpha[%.3f,%.3f] mean=%.3f\n",
+        nxmin,nxmax,nymin,nymax,amin,amax,asum/V.size());
+    for (size_t i=0;i<V.size() && w<cap-100;i++){ const auto& r=V[i];
+        w += snprintf(out+w, cap-w, "  v%-3zu ndc=(%+.3f,%+.3f) a=%.3f eye=(%.0f,%.0f,%.1f) cw=%.2f uv0=(%+.2f,%+.2f)\n",
+                      i, r.ndcx, r.ndcy, r.a, r.ex, r.ey, r.ez, r.cw, r.u0, r.v0); }
+    return w;
+}
 extern "C" int sb_ngx_shapeti_dump(char* out, int cap) {
     unsigned nsh = g_last_frame_shape_count; if (nsh > SHAPETI_CAP) nsh = SHAPETI_CAP;
     int w = snprintf(out, cap, "shapeti: %u shapes (draw order -> material ti); cluster runs:\n", nsh);
@@ -2043,6 +2090,8 @@ void ngx_frame_publish() {
         g_sky = SkyLatch{}; g_skyxf = SkyXf{}; g_pnmtxdbg = PnmtxDbg{};
         if (g_gxstate.have) g_gxstate_pub = g_gxstate; g_gxstate = GxStateRec{};
         if (g_uvdbg.have) g_uvdbg_pub = g_uvdbg; g_uvdbg = UvDbg{};
+        if (!g_vtxdump.empty()) { g_vtxdump_pub = g_vtxdump; g_vtxdump_projtype_pub = g_vtxdump_projtype;
+                              for (int i=0;i<12;i++) g_vtxdump_mv_pub[i]=g_vtxdump_mv[i]; }
         g_clip_in=g_clip_drop=g_clip_cut=g_clip_tiny=0; g_clip_minw=1e30f;
         return;
     }
@@ -2079,6 +2128,8 @@ void ngx_frame_publish() {
     if (g_gxstate.have) g_gxstate_pub = g_gxstate;   // publish this frame's GX-vs-ngx state diff
     g_gxstate = GxStateRec{};                        // reset for the next frame
     if (g_uvdbg.have) g_uvdbg_pub = g_uvdbg; g_uvdbg = UvDbg{};
+    if (!g_vtxdump.empty()) { g_vtxdump_pub = g_vtxdump; g_vtxdump_projtype_pub = g_vtxdump_projtype;
+                              for (int i=0;i<12;i++) g_vtxdump_mv_pub[i]=g_vtxdump_mv[i]; }
     g_clrdbg_have = false;   // re-latch the per-material colour probe each frame
     g_clrdbg_l0i = -1;
     g_clip_in=g_clip_drop=g_clip_cut=g_clip_tiny=0; g_clip_minw=1e30f;   // per-frame near-clip stats
@@ -2256,6 +2307,36 @@ extern "C" int sb_ngx_gen_shader(unsigned want_s0ce, char* out, int cap) {
         }
     }
     return snprintf(out, cap, "no captured material with s0ce=%06x\n", want_s0ce);
+}
+
+// J3DTexMtx::load(id) @ 0x802ee9d4 — SYNCHRONOUS ground truth of what texmtx J3D actually
+// feeds GX (J3DGDLoadTexMtxImm of mTotalMtx into XF row id*3+30), unlike async-lagged xfmem.
+// Captures per distinct J3DTexMtx* its loaded scale/translate → match against the cloud's
+// mTexMtx ptr (/gxstate tcN mtxptr) to settle "ngx reads scale-2 but xfmem shows identity".
+struct TexMtxLoad { u32 self; u32 id; float m0, m3, m5, m7; unsigned long cnt; };
+TexMtxLoad g_tml[16]; int g_tml_n = 0; unsigned long g_tml_total = 0;
+SUNBRIGHT_OVERRIDE(ov_j3dtexmtx_load, 0x802ee9d4u) {
+    if (g_enabled) {
+        const u32 self = cpu.gpr[3], id = cpu.gpr[4];
+        g_tml_total++;
+        const float m0 = rf(self + 0x64 + 0*4), m3 = rf(self + 0x64 + 3*4);
+        const float m5 = rf(self + 0x64 + 5*4), m7 = rf(self + 0x64 + 7*4);
+        int slot = -1;
+        for (int i = 0; i < g_tml_n; i++) if (g_tml[i].self == self) { slot = i; break; }
+        if (slot < 0 && g_tml_n < 16) { slot = g_tml_n++; g_tml[slot] = {self,id,0,0,0,0,0}; }
+        if (slot >= 0) { g_tml[slot].id=id; g_tml[slot].m0=m0; g_tml[slot].m3=m3;
+                         g_tml[slot].m5=m5; g_tml[slot].m7=m7; g_tml[slot].cnt++; }
+    }
+    if (RecompFunc o = recomp_raw(0x802ee9d4u)) o(cpu); else call_ppc(cpu, cpu.lr);
+}
+extern "C" int sb_ngx_texmtxloads_dump(char* out, int cap) {
+    int w = snprintf(out, cap, "texmtxloads: total=%lu distinct=%d (what J3D ACTUALLY loads to GX, sync)\n"
+                     "  (match 'self' to /gxstate tcN mtxptr; m0=scale_s m5=scale_t m3/m7=translate)\n",
+                     g_tml_total, g_tml_n);
+    for (int i = 0; i < g_tml_n; i++) { const auto& t = g_tml[i];
+        w += snprintf(out+w, cap-w, "  self=%08x id=%u xfrow=%u  scale=(%.4f,%.4f) trans=(%.3f,%.3f) cnt=%lu\n",
+                      t.self, t.id, t.id*3+30, t.m0, t.m5, t.m3, t.m7, t.cnt); }
+    return w;
 }
 
 // GXLoadTexObj(GXTexObj* obj, GXTexMapID id) @ 0x80360160 — track the texmap-0
@@ -2737,10 +2818,18 @@ int sb_ngx_gxstate_dump(char* out, int cap) {
         n += snprintf(out+n, cap-n, "  ── TEXGEN (%d coords) + TEXTURES ──\n", R.tg.num);
         for (int i=0;i<R.tg.num && i<8;i++) {
             const TexGen& g = R.tg.tg[i];
-            n += snprintf(out+n, cap-n, "    tc%d: type=%s src=%d has_mtx=%d", i,
-                          g.type==0?"MTX3x4":"MTX2x4", g.src, g.has_mtx);
-            if (g.has_mtx) n += snprintf(out+n, cap-n, " M=[%.3f %.3f %.3f %.2f / %.3f %.3f %.3f %.2f]",
+            n += snprintf(out+n, cap-n, "    tc%d: type=%s src=%d has_mtx=%d mtxsel=%d mtxptr=%08x", i,
+                          g.type==0?"MTX3x4":"MTX2x4", g.src, g.has_mtx, g.mtxsel, g.mtxptr);
+            if (g.has_mtx) n += snprintf(out+n, cap-n, "\n      ngx(obj mTotalMtx) row0=[%.4f %.4f %.4f %.3f] row1=[%.4f %.4f %.4f %.3f]",
                           g.m[0],g.m[1],g.m[2],g.m[3], g.m[4],g.m[5],g.m[6],g.m[7]);
+            // GX ground truth: the texmtx Dolphin's GPU actually loaded (xfmem matrix memory at the
+            // selector's XF row; authoritative in the ORACLE run). Scale mismatch here = ngx reads
+            // the wrong/stale texmtx → wrong UV tiling = the cloud over-coverage suspect.
+            if (R.tg_xf_have[i]) {
+                const float* X = R.tg_xf[i];
+                n += snprintf(out+n, cap-n, "\n      xfmem(GPU @draw)  row0=[%.4f %.4f %.4f %.3f] row1=[%.4f %.4f %.4f %.3f]",
+                              X[0],X[1],X[2],X[3], X[4],X[5],X[6],X[7]);
+            }
             n += snprintf(out+n, cap-n, "\n");
         }
         static const char* WRAP[3]={"CLAMP","REPEAT","MIRROR"};

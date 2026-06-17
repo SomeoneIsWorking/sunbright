@@ -93,6 +93,8 @@ extern "C" void sb_ngx_set_draw_limit(int);                  // runtime/override
 extern "C" int  sb_ngx_get_draw_limit();                     // runtime/overrides/ngx_j3d_shape.cpp
 extern "C" unsigned sb_ngx_frame_shape_count();              // runtime/overrides/ngx_j3d_shape.cpp
 extern "C" int  sb_ngx_shapeti_dump(char*, int);            // runtime/overrides/ngx_j3d_shape.cpp (/ngxshapeti)
+extern "C" int  sb_ngx_verts_dump(char*, int);              // runtime/overrides/ngx_j3d_shape.cpp (/ngxverts)
+extern "C" int  sb_ngx_texmtxloads_dump(char*, int);        // runtime/overrides/ngx_j3d_shape.cpp (/texmtxloads)
 int sb_ngx_efbcopies_dump(char*, int);                       // runtime/overrides/ngx_j3d_shape.cpp (/efbcopies)
 int sb_ngx_pixel_batch(float, float, char*, int);            // runtime/overrides/ngx_j3d_shape.cpp
 int sb_ngx_pixel_blend(float, float, char*, int);            // runtime/overrides/ngx_j3d_shape.cpp (/pixblend)
@@ -232,7 +234,7 @@ std::string handle_repl(const char* path) {
 #endif
         return std::string(buf, n);
     }
-    if (strncmp(path, "/tex", 4) == 0 && path[4] != 'a') {   // N1 native texture decoder parity vs Dolphin oracle
+    if (strncmp(path, "/tex", 4) == 0 && path[4] != 'a' && path[4] != 'm') {   // N1 native texture decoder parity vs Dolphin oracle
         char rep[8192];
         int fails = sb_tex_selftest(rep, sizeof rep);
         app("%s", rep);
@@ -368,6 +370,14 @@ std::string handle_repl(const char* path) {
     }
     if (strncmp(path, "/ngxshapeti", 11) == 0) {  // draw#→material ti map (cluster runs) — BEFORE /ngxshape (prefix)
         static thread_local char rep[16384]; sb_ngx_shapeti_dump(rep, sizeof rep); app("%s", rep);
+        return std::string(buf, n);
+    }
+    if (strncmp(path, "/ngxverts", 9) == 0) {  // per-vertex NDC+alpha+UV of the /gxstate target ti shape
+        static thread_local char rep[65536]; sb_ngx_verts_dump(rep, sizeof rep); app("%s", rep);
+        return std::string(buf, n);
+    }
+    if (strncmp(path, "/texmtxloads", 12) == 0) {  // what J3DTexMtx::load actually feeds GX (sync truth)
+        static thread_local char rep[8192]; sb_ngx_texmtxloads_dump(rep, sizeof rep); app("%s", rep);
         return std::string(buf, n);
     }
     if (strncmp(path, "/ngxshape", 9) == 0) {  // N4 live J3DShape native-mesh capture stats
