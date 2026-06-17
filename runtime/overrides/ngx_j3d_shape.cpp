@@ -1567,6 +1567,23 @@ void capture(u32 sh) {
         g_last_pos[2] = g_verts[0].pos[2];
     }
     g_cur_tev_index = capture_material();   // N5: current J3DMaterial's TEV state
+    // DBG: for a magenta-vertex shape, dump its material's texture binding to see WHY tex0=0.
+    if (getenv("SUNBRIGHT_NGX_MAGDBG")) {
+        bool mag = false; for (auto& v : g_verts) if (v.clr[0][0]>200 && v.clr[0][1]<70 && v.clr[0][2]>200) { mag=true; break; }
+        if (mag) { static int kt=0; if (kt++ < 12) {
+            const u32 matpacket = r32(0x804045DCu + 0x3C);
+            const u32 material  = valid(matpacket) ? r32(matpacket + 0x38) : 0;
+            const u32 tevblock  = valid(material) ? r32(material + 0x28) : 0;
+            const u32 vt        = valid(tevblock) ? r32(tevblock + 0x00) : 0;
+            const u8* tb = valid(tevblock) ? sb_ram_fast(tevblock) : nullptr;
+            const u16 texNo0 = tb ? (u16)((tb[0x04]<<8)|tb[0x05]) : 0xFFFF;
+            const u32 jtex = r32(0x804045DCu + 0x54);
+            const u32 jcount = valid(jtex) ? ((r32(jtex)>>16)&0xFFFF) : 0;
+            fprintf(stderr, "[magtex] sh=%08x ti=%d mat=%08x tev=%08x vt=%08x texNo0=%04x | jtex=%08x count=%u | g_mat_tex0 addr=%08x fmt=%u %ux%u\n",
+                sh, g_cur_tev_index, material, tevblock, vt, texNo0, jtex, jcount,
+                g_mat_tex[0].addr, g_mat_tex[0].fmt, g_mat_tex[0].w, g_mat_tex[0].h);
+        }}
+    }
     g_cur_pnmtx = (cp.vcd_lo & 1) != 0;     // multi-matrix shape → per-vertex matrix in transform_eye
     transform_eye();   // native XF stage (modelview) + eye-space verification
 }
