@@ -1501,10 +1501,15 @@ void capture(u32 sh) {
         static int kk = 0;
         for (auto& v : g_verts) {
             if (v.clr[0][0] > 200 && v.clr[0][1] < 70 && v.clr[0][2] > 200) {
-                if (kk++ < 16) fprintf(stderr,
-                    "[mag] sh=%08x clr0=(%u,%u,%u,%u) vcd_lo=%08x vcd_hi=%08x vat0[0]=%08x clr0fmt=%u clr0cls=%u nv=%zu\n",
-                    sh, v.clr[0][0], v.clr[0][1], v.clr[0][2], v.clr[0][3], cp.vcd_lo, cp.vcd_hi,
-                    cp.vat[0][0], (cp.vat[0][0] >> 14) & 7, (cp.vcd_lo >> 13) & 3, g_verts.size());
+                if (kk++ < 16) {
+                    const u32 cbase = cp.array_base[2]; const u32 cstr = cp.array_stride[2];
+                    const u32 b0 = valid(cbase) ? mem_r32(cbase) : 0, b1 = valid(cbase) ? mem_r32(cbase+4) : 0;
+                    const u32 b2 = valid(cbase) ? mem_r32(cbase+8) : 0;
+                    fprintf(stderr,
+                    "[mag] sh=%08x clr0=(%u,%u,%u,%u) clr0cls=%u clr0fmt(vat0)=%u | CLR0 arr base=%08x stride=%u bytes[0..11]=%08x %08x %08x | vat0=%08x vat1=%08x vat2=%08x nv=%zu\n",
+                    sh, v.clr[0][0], v.clr[0][1], v.clr[0][2], v.clr[0][3], (cp.vcd_lo >> 13) & 3, (cp.vat[0][0] >> 14) & 7,
+                    cbase, cstr, b0, b1, b2, cp.vat[0][0], cp.vat[1][0], cp.vat[2][0], g_verts.size());
+                }
                 break;
             }
         }
