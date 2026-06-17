@@ -2658,6 +2658,31 @@ int sb_ngx_gxstate_dump(char* out, int cap) {
     return n;
 }
 
+// /ngxorder — the displayed batches in DRAW order (the order the present emits them), with ti,
+// vcount, epoch, and the material's cc/blend. Maps a /ngxprefix?n=N step to the exact layer it
+// adds, so the prefix sweep's delta jump can be attributed to a specific pass/material.
+int sb_ngx_order_dump(char* out, int cap) {
+    const int f = g_front.load(std::memory_order_acquire);
+    const std::vector<NgxRenderBatch>& bs = g_batches[f];
+    const int de = g_display_epoch[f];
+    int n = snprintf(out, cap, "ngxorder: front=%d total_batches=%zu display_epoch=%d (only drawn ones counted in prefix)\n", f, bs.size(), de);
+    int drawn = 0;
+    for (size_t b = 0; b < bs.size(); b++) {
+        if ((int)bs[b].epoch < de) continue;   // matches the present's display filter
+        const int ti = bs[b].tev_index;
+        u16 cc = (ti >= 0 && ti < (int)TEVSTATE_CAP) ? g_tev_cc[ti] : 0xFFFF;
+        u8 bm=0,sf=0,df=0,at=0; const NgxTevState* T=nullptr;
+        { int nstate=0; const NgxTevState* ts=ngx_snap_tevstates(&nstate); if (ti>=0 && ti<nstate) T=&ts[ti]; }
+        if (T) { bm=T->pe.blend_mode; sf=T->pe.src_factor; df=T->pe.dst_factor; at=T->pe.alpha_test; }
+        if (n < cap - 160)
+            n += snprintf(out+n, cap-n, "  [%3d] ti=%-3d nv=%-5u epoch=%u cc=%04x blend=%u src=%u dst=%u atest=%u\n",
+                          drawn, ti, bs[b].vcount, bs[b].epoch, cc, bm, sf, df, at);
+        drawn++;
+    }
+    n += snprintf(out+n, cap-n, "  (drawn=%d — /ngxprefix?n=K renders the first K of these)\n", drawn);
+    return n;
+}
+
 // Probe report (/ngxshape).
 // /ngxshapes — dump the published frame's per-shape NDC bboxes, sorted so the shapes nearest the
 // TOP of the screen come first. Localizes a misplaced shape (e.g. file-select Mario at screen-top):

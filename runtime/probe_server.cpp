@@ -87,6 +87,8 @@ int sb_ngx_shape_dump(char*, int);                           // runtime/override
 int sb_ngx_shapes_dump(char*, int);                          // runtime/overrides/ngx_j3d_shape.cpp (/ngxshapes)
 int sb_ngx_gxstate_dump(char*, int);                         // runtime/overrides/ngx_j3d_shape.cpp (/gxstate)
 extern "C" void sb_ngx_set_gxstate_ti(int);                  // runtime/overrides/ngx_j3d_shape.cpp (/gxstate?ti=)
+int sb_ngx_order_dump(char*, int);                           // runtime/overrides/ngx_j3d_shape.cpp (/ngxorder)
+extern "C" int sb_ngx_set_prefix(int);                       // runtime/render/ngx_present.cpp (/ngxprefix?n=)
 int sb_ngx_efbcopies_dump(char*, int);                       // runtime/overrides/ngx_j3d_shape.cpp (/efbcopies)
 int sb_ngx_pixel_batch(float, float, char*, int);            // runtime/overrides/ngx_j3d_shape.cpp
 int sb_ngx_pixel_blend(float, float, char*, int);            // runtime/overrides/ngx_j3d_shape.cpp (/pixblend)
@@ -363,6 +365,14 @@ std::string handle_repl(const char* path) {
     if (strncmp(path, "/ngxshape", 9) == 0) {  // N4 live J3DShape native-mesh capture stats
         static thread_local char rep[16384]; sb_ngx_shape_dump(rep, sizeof rep); app("%s", rep);
         return std::string(buf, n);
+    }
+    if (strncmp(path, "/ngxorder", 9) == 0) {  // displayed batches in DRAW order (ti + vcount) — maps prefix N -> layer
+        static thread_local char rep[16384]; sb_ngx_order_dump(rep, sizeof rep); app("%s", rep);
+        return std::string(buf, n);
+    }
+    if (strncmp(path, "/ngxprefix", 10) == 0) {  // render only first N batches (draw order) then present
+        int v = -1; if (const char* p = strstr(path, "n=")) v = atoi(p + 2);
+        sb_ngx_set_prefix(v); app("ngx prefix_n = %d\n", v); return std::string(buf, n);
     }
     if (strncmp(path, "/ngxonly", 8) == 0) {   // runtime: render ONLY this tev_index (-2 env, -1 off)
         int t = -1; if (const char* p = strstr(path, "ti=")) t = atoi(p + 3);

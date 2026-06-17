@@ -40,6 +40,12 @@ static bool in_skipset(int ti) { for (int i = 0; i < g_ngx_skip_set_n; i++) if (
 int g_ngx_only_epoch = -1, g_ngx_drop_epoch = -1;
 extern "C" int sb_ngx_set_onlyepoch(int e) { g_ngx_only_epoch = e; return e; }
 extern "C" int sb_ngx_set_dropepoch(int e) { g_ngx_drop_epoch = e; return e; }
+// DRAW-ORDER PREFIX (/ngxprefix?n=N): render only the first N batches actually drawn (in draw
+// order, within the displayed epoch), then present. Sweeping N captures the composite building
+// up pass-by-pass — the "in-between layer compare" so a divergence can be pinned to the exact
+// pass that introduces it. -1 = render all (off).
+int g_ngx_prefix_n = -1;
+extern "C" int sb_ngx_set_prefix(int n) { g_ngx_prefix_n = n; return n; }
 // Render-target-aware present (the FIX): drop batches from auxiliary offscreen EFB-copy epochs
 // (reflections/shadows/file-slot thumbnails) below the display epoch — the file-select ghost-Mario
 // fix. Default ON; SUNBRIGHT_NGX_RTFILTER=0 disables for A/B. /ngxrtfilter?on=N toggles live.
@@ -699,7 +705,9 @@ AbstractTexture* PresentRenderer::render(int w, int h) {
     vkCmdBeginRenderPass(cmd, &rbi, VK_SUBPASS_CONTENTS_INLINE);
     VkDeviceSize voff = 0; vkCmdBindVertexBuffers(cmd, 0, 1, &vbuf, &voff);
     VkPipeline last = VK_NULL_HANDLE;
+    int drawn = 0;   // count of batches actually emitted (for the /ngxprefix draw-order limit)
     for (size_t b = 0; b < batches.size(); b++) {
+        if (g_ngx_prefix_n >= 0 && drawn >= g_ngx_prefix_n) break;   // draw-order prefix: stop after N
         const int ti = batches[b].tev_index;
         const NgxTevState& st = (ti >= 0 && ti < (int)tevstates.size()) ? tevstates[ti] : mod;
         // DBG: skip alpha-tested (cloud/foliage) batches to reveal the background behind them.
@@ -741,6 +749,7 @@ AbstractTexture* PresentRenderer::render(int w, int h) {
         }
         vkCmdPushConstants(cmd, pll, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof pc, &pc);
         vkCmdDraw(cmd, batches[b].vcount, 1, batches[b].vstart, 0);
+        drawn++;
     }
 
     // HUD/J2D overlay over the 3D scene (alpha-blended, depth off, dynamic viewport).
