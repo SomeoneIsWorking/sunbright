@@ -1672,6 +1672,17 @@ void ngx_frame_publish() {
     g_clip_in=g_clip_drop=g_clip_cut=g_clip_tiny=0; g_clip_minw=1e30f;   // per-frame near-clip stats
     g_frame_swaps++;
     g_ngx_front_frame.store(g_frame_swaps, std::memory_order_release);   // stamp the published snapshot
+    // SUNBRIGHT_NGX_FREEZE_AT=<N>: deterministically latch the published snapshot at content-frame N.
+    // g_frame_swaps counts only frames WITH 3D content (the no-3D early-return above skips it), so a
+    // fixed N reliably lands on the same scene every boot (boot is deterministic) — the robust way to
+    // capture a TRANSIENT screen (e.g. the title logo ≈ frame 525, before the attract demo) without
+    // racing a polled threshold. The just-published front buffer holds frame N's geometry.
+    static long s_freeze_at = -2;
+    if (s_freeze_at == -2) { const char* e = getenv("SUNBRIGHT_NGX_FREEZE_AT"); s_freeze_at = e ? atol(e) : -1; }
+    if (s_freeze_at > 0 && (long)g_frame_swaps >= s_freeze_at && !g_ngx_frozen.load(std::memory_order_acquire)) {
+        sb_ngx_set_freeze(1);
+        fprintf(stderr, "[freeze-at] auto-froze at content frame_swaps=%lu (target %ld)\n", g_frame_swaps, s_freeze_at);
+    }
 }
 
 // Frame-id of the currently PUBLISHED ngx snapshot (the one the present + /abshot2 render from).
