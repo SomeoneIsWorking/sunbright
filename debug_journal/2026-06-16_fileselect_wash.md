@@ -515,33 +515,56 @@ motion between them. Re-validated cleanly this session.
    **Coverage is COMPARABLE (within ~18%), NOT 10× fewer.** The "GX = 3509 sparse" was the
    drift artifact. The real residual: ngx ~2× brighter where present.
 
-### THE ACTUAL BUG (visualized) — cloud noise tiled at too LOW a spatial frequency
-- `topsky_cloud_iso.png` (GX cloud over ngx cloud, top 70 rows): **GX = fine WISPY vertical
-  streaks** across the central-upper sky; **ngx = mostly black centre with bright bars at the
-  left/right EDGES.** Comparable coverage, different SPATIAL DISTRIBUTION.
-- `ngx_only10_frozen.png` (`/ngxonly ti=10`, frozen, clean): ngx's cloud is a **coarse
-  CHECKERBOARD of big white puffs** — the 8×8 I4 noise tiled at LOW frequency (big tiles) —
-  vs GX's fine wisps. ngx's cloud is too COARSE, hence brighter blobs.
-- Mechanism: combiner (from `/gxstate?ti=10`, authoritative obj-model) is 2 stages:
-  s0 `prev = TEX0·RASC` (scale<<0), s1 `prev = clamp(2·TEX1·CPREV)` (scale<<1). BOTH texmaps =
-  the SAME 8×8 I4 @0x80a83220. tc0 texmtx scale **2.0** (UV0 spans ~7.5 → tiles ~7×, fine),
-  tc1 texmtx scale **0.5** (UV1 spans ~1.66 → tiles ~1.6×, COARSE). The product TEX0·TEX1 is
-  GATED by the coarse TEX1 → big blobs. For GX to be wispy, GX's effective TEX1 frequency must
-  be HIGHER than ngx's 1.6×.
+### ⚠ RETRACTION — the "coarse-vs-wispy frequency" claim was a contaminated single-shot
+My first read ("GX = fine wisps, ngx = coarse blobs → tc1 UV-frequency bug") came from a SINGLE
+n18/n19 lockstep iso, which at file-select is contaminated by menu/water animation. The
+**median-of-6 burst iso** (noise-suppressed) shows BOTH engines render the same coarse blob
+texture — frequency is NOT the bug. Do not chase tc1 UV scale. (tc1 scale 0.5 is genuinely in
+guest RAM @80e85cf0+0x64 = the DL-baked mTotalMtx; ngx reads it faithfully; GX uses the same.)
 
-### Frontier (precise, redirected) — verify ngx's cloud texgen UV vs GX's true UV
-The wash is the cloud's **texgen UV scale/frequency** (esp. tc1, scale 0.5), NOT RASA alpha.
-RASA is fine (apex a=0, ring a=1, mean 0.75; ALPHA0 cc=0701 matsrc=VTX → vertex alpha; ngx
-matches). RASC: GX COLOR0 cc=0700 en=0 matsrc=REG → white(255); ngx uses vertex CLR0 rgb — a
-candidate side-issue but it can only DARKEN ngx (vtx≤255), not brighten, so it's not the 2×.
-NEXT: confirm whether ngx's tc1 mTotalMtx (scale 0.5, mtxptr 80e85cf0) is the value GX actually
-uses — xfmem/bpmem/J3DGDLoadTexMtxImm-tee ALL lag for DL-baked materials (handoff gotcha), so
-verify via the RENDERED PIXELS (GX wispy ⇒ GX tiles more) or by RE'ing the cloud's texmtx setup
-(who writes 80e85cf0 / the J3DTexGenBlock load). Suspect: ngx reads/combines mTotalMtx wrong
-(halved scale), or the cloud texmtx is animated and ngx reads a wrong phase/scale.
+### THE ACTUAL DIVERGENCE (airtight) — ngx OVER-COVERS the TOP SKY with the cloud dome
+Measurement at file-select must use INSTANT single-frame isos (menu/water animate → median
+washes the scrolling cloud; the only stable region is the pure top sky, GX self-noise 0). Key
+data (`burst19_*` frames):
+- **GX's top sky (y<90) is PERFECTLY STATIC** — self-delta across 6 frames = `0.0,0.0,0.0,...`
+  GX renders **ZERO** ti=10 cloud there (instant iso cov>8 = **0**).
+- **ngx's top sky SCROLLS** (self-delta 0,2.7,5.4,8.0,10.6,13.2 — the animated texmtx) and is
+  BRIGHT: instant iso cov>8 = **32071**, mean **93.5**.
+So ngx draws a bright, scrolling cloud across the top sky where GX draws none. THIS (not a 2×
+brightness, not frequency) is the real divergence, and it accounts for the frozen full-frame
+sky residual (+24 red).
+- WHY: the cloud is a **360° dome around the camera**. From `/ngxverts` (40 verts): the apex
+  (RASA alpha **0**) is overhead, clip.w=**+4332**, NDCy=**+25** (off-screen top); the ring
+  (alpha **1**) is the horizon, clip.w spanning **±150000** (both signs → front AND behind the
+  camera, a w-sign-crossing the near plane). The dome's apex→horizon triangles geometrically
+  cover the whole top sky; correct rendering relies on the alpha fading apex(0)→ring(1) so the
+  top sky → ~0.
+- CULL IS INVOLVED: `SUNBRIGHT_NGX_FORCECULL=1` (cull FRONT instead of the material's
+  cull=2=BACK) **removes most of the cloud body, leaving only a thin bright top strip**
+  (`fc1_only10.png` vs default `ngx_only10_frozen.png`). So the cloud body is front-facing
+  (both engines draw it); the surviving top strip is back-facing geometry — a winding/cull or
+  near-clip edge case on the w-crossing apex triangles.
 
-Tools used: `/ngxfreeze on=1` (+ autostop) = drift-free A/B; `/ngxdrawlimit` (static-camera
-lockstep now valid); `/ngxskip` `/ngxonly` (compose WITH freeze, unlike drawlimit); `/gxstate?ti=10`
-(combiner+texgen+PE, authoritative obj-model); `/ngxverts`; `/ngxshapeti`. Clean data:
-scratch/screenshots/clk_n{18,19}.{gx,ngx}.ppm, topsky_cloud_iso.png, ngx_only10_frozen.png,
-frozen_fs_gx_ngx.png; scratch/logs/rastdata.log refreshed.
+### Frontier (precise, redirected AGAIN) — the top-sky over-coverage on the w-crossing dome
+NOT RASA (handoff), NOT frequency (my retracted claim). It is the apex-spanning dome triangles
+(apex w=+4332/alpha0 → horizon w=±150000/alpha1, crossing the near plane) being rasterized
+across the top sky in ngx where GX renders none. Candidate mechanisms to TEST empirically next
+session (clean methodology below — autostop+freeze, INSTANT isos, top-sky region only):
+  1. **Near-clip / frustum-clip of w-sign-crossing triangles** (`ngx_clip_frustum_tri`, and the
+     `SUNBRIGHT_NGX_NEARCULL` eps @ ngx_j3d_shape.cpp:1667): does ngx's clip emit a top-sky
+     polygon GX discards? The apex at NDCy+25 needs proper top-plane (y≤w) clipping; verify the
+     CLIPPED-vertex alpha is interpolated in homogeneous clip space.
+  2. **Backface cull winding** on the back hemisphere overhead tris (FORCECULL=1 already shows
+     cull matters — is the thin top strip back-facing geometry GX culls but ngx's CLOCKWISE
+     front-face mis-keeps?).
+  3. **Alpha interp persp-vs-linear**: CPU REF test showed screen-linear top-sky alpha 0.228 vs
+     perspective-correct 0.098 (2.3×) — GPU is persp-correct by default, but verify ngx isn't
+     passing alpha in a screen-linear way / that the clip didn't break it.
+
+Clean methodology (REUSE — don't rediscover): drive to file-select, `/pad?do=autostop` to HOLD,
+`/ngxfreeze on=1` for drift-free A/B (ngxonly/ngxskip compose with freeze, drawlimit does NOT);
+for GX cloud isolation use INSTANT single-frame n18/n19 isos in the top-sky region ONLY
+(GX there is static; menu/water lower-half contaminate). Tools: `/gxstate?ti=10`, `/ngxverts`
+(raw clip[4]+alpha), `/ngxshapeti` (#18=ti10), `SUNBRIGHT_NGX_FORCECULL`, `SUNBRIGHT_NGX_NEARCULL`.
+Data: scratch/screenshots/{burst18,burst19}_*.{gx,ngx}.ppm, burstiso_{gx,ngx}.png,
+ngx_only10_frozen.png, fc1_only10.png, frozen_fs_gx_ngx.png; scratch/logs/rastdata.log.
