@@ -262,8 +262,12 @@ These are standing user directives. Stop re-deriving them:
 - **FIDELITY WORK ORDER (user directive): make the TITLE screen + FILE-SELECT render correctly
   BEFORE Delfino gameplay.** Do NOT jump to Delfino/in-game scenes while title/file-select are still
   wrong. Reproduce title/file-select headless with `SUNBRIGHT_AUTOSTART=1` (+ `tools/gpshot --fs`).
-- OPEN as of 2026-06-17: the **title logo ("SUPER MARIO SUNSHINE") is SHREDDED** — a multi-matrix
-  (PNMTXIDX/skinned) shape torn apart; the Mario-skinning clip fix (eb1e155) did not cover it.
+- FIXED 2026-06-17 (e1dbe76): the **title logo shred** was NOT geometry/matrices/clip — it was
+  TEXTURE BLOCK-PADDING. The logo is a single RGB5A3 J2DPicture (w=460); the decode paths padded
+  width to a multiple of 8, but RGB5A3 tiles at a 4-wide block → over-stride → diagonal shear. Fix:
+  `sb_tex_pad_w/h` (format block dims) inside `texture_for()`; render-test unit `tex_pad`. A textured
+  quad shredding into diagonal slivers ⇒ a tiled-texture width/stride bug, never geometry. (Residual
+  title A/B delta is the background-sky brightness wash — the same lit-raster issue as Delfino.)
 
 ## Debugging the native renderer — TDD, NOT eyeballing (read this before touching ngx)
 The renderer was built straight to "draw the whole scene and look at it." That has no
