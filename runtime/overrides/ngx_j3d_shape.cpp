@@ -834,6 +834,9 @@ u16 g_tev_cc[TEVSTATE_CAP] = {0};   // DBG: last colour-channel ctrl per tev ind
 // source of the file-select sea-haze wash (/pixbatch ti dump). 0 = not yet seen.
 struct TevChan { u16 alpha0; u8 mat[4], amb[4]; bool have; };
 TevChan g_tev_chan[TEVSTATE_CAP] = {};
+// Per-tev-index TevBlock address + vtable (for raw-byte inspection of a material's combiner).
+u32 g_tev_tb[TEVSTATE_CAP] = {};
+u32 g_tev_vt[TEVSTATE_CAP] = {};
 int      g_cur_tev_index = -1;     // material index for the shape being captured
 // CLR0 capture state for the shape being captured (for /ngxshapes per-input inspection):
 // VCD class (0=none→white default, 1=direct, 2=idx8, 3=idx16), array base ngx samples, VAT format.
@@ -1016,6 +1019,8 @@ struct ShapeRec {
     float nrm0[3]; unsigned nrmcls;     // first-vertex MODEL normal + NRM VCD class (lighting sanity)
     unsigned char clr0r, clr0g, clr0b, clr0a; // MEAN decoded per-vertex CLR0 (0..255) — the raster ngx feeds
     unsigned char clr0min, clr0max;     // min/max per-vertex luminance (0..255) — flat-white vs gradient
+    float proj[16];                     // the projection matrix this shape drew under (per-pass depth-space)
+    float zmin, zmax;                   // NDC-z (clip.z/clip.w) range over w>eps verts (depth ordering)
 };
 std::vector<ShapeRec> g_shaperec[2];
 int                          g_read_front = 0; // latched by ngx_snap_verts for batches
@@ -1109,7 +1114,9 @@ int capture_material() {
     g_mat_found++;
 
     const u16 dbgcc = g_cur_chan.valid ? g_cur_chan.color0 : 0xFFFF;  // 0xFFFF = no colour block
-    auto stash_chan = [&](int i){ if (i<0||i>=(int)TEVSTATE_CAP||!g_cur_chan.valid) return;
+    auto stash_chan = [&](int i){ if (i<0||i>=(int)TEVSTATE_CAP) return;
+        g_tev_tb[i]=tevblock; g_tev_vt[i]=vt;
+        if (!g_cur_chan.valid) return;
         g_tev_chan[i].have=true; g_tev_chan[i].alpha0=g_cur_chan.alpha0;
         for (int k=0;k<4;k++){ g_tev_chan[i].mat[k]=g_cur_chan.matColor[k]; g_tev_chan[i].amb[k]=g_cur_chan.ambColor[k]; } };
     auto it = g_tevkey_index.find(h);
@@ -1300,6 +1307,11 @@ void transform_eye() {
         rec.tx = m[3]; rec.ty = m[7]; rec.tz = m[11];
         rec.det3 = m[0]*(m[5]*m[10]-m[6]*m[9]) - m[1]*(m[4]*m[10]-m[6]*m[8]) + m[2]*(m[4]*m[9]-m[5]*m[8]);
         rec.pass = g_proj_pass; rec.projtype = (unsigned char)g_proj_type;
+        for (int i = 0; i < 16; i++) rec.proj[i] = g_proj[i];
+        { float zlo = 1e30f, zhi = -1e30f;
+          for (size_t vi = 0; vi < nv; vi++) { const float* c = &g_clip[vi*4];
+              if (c[3] > 1e-4f) { float z = c[2]/c[3]; if (z<zlo) zlo=z; if (z>zhi) zhi=z; } }
+          rec.zmin = zlo; rec.zmax = zhi; }
         rec.epoch = g_efb_epoch;
         rec.ti = g_cur_tev_index;
         rec.clr0cls = g_cur_clr0cls; rec.clr0fmt = g_cur_clr0fmt; rec.clr0base = g_cur_clr0base;
@@ -2420,6 +2432,13 @@ int sb_ngx_shapes_dump(char* out, int cap) {
             r.clr0cls, r.clr0fmt, r.clr0base, r.clr0r, r.clr0g, r.clr0b, r.clr0a, r.clr0min, r.clr0max,
             r.nrmcls, r.nrm0[0], r.nrm0[1], r.nrm0[2],
             r.nxmin, r.nxmax, r.nymin, r.nymax, r.wmin, r.wmax);
+        // For the sea (ti=12) and foam (ti=18): dump NDC-z range + the per-pass projection's
+        // z-row, to compare their depth spaces (foam-over-sea ordering = the wash discriminator).
+        if ((r.ti == 12 || r.ti == 18) && n < cap - 200)
+            n += snprintf(out + n, cap - n,
+                "       ti=%d ndcZ[%.5f,%.5f] proj.zrow=[%.4f %.4f %.4f %.4f] proj[10,11,14,15]=%.4f,%.4f,%.4f,%.4f\n",
+                r.ti, r.zmin, r.zmax,
+                r.proj[8], r.proj[9], r.proj[10], r.proj[11], r.proj[10], r.proj[11], r.proj[14], r.proj[15]);
         shown++;
     }
     return n;
@@ -3090,6 +3109,16 @@ int sb_ngx_pixel_batch(float px, float py, char* out, int cap) {
     if (px < -900.f) {
         const int want_ti = (int)py;
         n += snprintf(out + n, cap - n, "BATCH CLIP DUMP for ti=%d:\n", want_ti);
+        if (want_ti >= 0 && want_ti < (int)TEVSTATE_CAP && g_tev_tb[want_ti]) {
+            const u32 tb = g_tev_tb[want_ti], vt = g_tev_vt[want_ti];
+            n += snprintf(out + n, cap - n, "  TevBlock=%08x vt=%08x raw[0..0x80]:\n", tb, vt);
+            const u8* B = sb_ram_fast(tb);
+            if (B) for (int row = 0; row < 0x80; row += 16) {
+                n += snprintf(out + n, cap - n, "    %03x:", row);
+                for (int c = 0; c < 16; c++) n += snprintf(out + n, cap - n, " %02x", B[row + c]);
+                n += snprintf(out + n, cap - n, "\n");
+            }
+        }
         if (want_ti >= 0 && want_ti < nst) { const NgxTevState& s = sts[want_ti];
             n += snprintf(out + n, cap - n, "  PE: blend_mode=%u src=%u dst=%u logic=%u | atest=%u comp0=%u ref0=%u aop=%u comp1=%u ref1=%u | z=%u/%u/%u cull=%u\n",
                 s.pe.blend_mode, s.pe.src_factor, s.pe.dst_factor, s.pe.logic_op,
