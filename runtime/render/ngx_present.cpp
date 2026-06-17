@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <cstring>
 extern "C" unsigned ngx_tev_cc_dbg(int);
+extern "C" void sb_ngx_get_clear(float out[4]);   // game's GXSetCopyClear colour (ngx_j3d_shape.cpp)
 extern "C" int g_ngx_tevdbg;       // render-debug mode (tev_shader.cpp); /ngxdbg sets it
 extern "C" int sb_ngx_tevdbg();
 // Runtime tev_index isolation (/ngxonly, /ngxskip): -2 = use the env var, -1 = off, >=0 = a ti.
@@ -656,7 +657,8 @@ AbstractTexture* PresentRenderer::render(int w, int h) {
     std::vector<J2dDraw> j2d;
     prepare_j2d(cmd, stg_bufs, stg_mems, j2d);
 
-    VkClearValue clear[2]{}; clear[0].color = {{0.10f, 0.12f, 0.18f, 1.f}}; clear[1].depthStencil = {1.0f, 0};
+    float cc[4]; sb_ngx_get_clear(cc);   // the game's EFB copy-clear (screen-blend sky depends on it)
+    VkClearValue clear[2]{}; clear[0].color = {{cc[0], cc[1], cc[2], cc[3]}}; clear[1].depthStencil = {1.0f, 0};
     VkRenderPassBeginInfo rbi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
     rbi.renderPass = rpass; rbi.framebuffer = fbo; rbi.renderArea = {{0, 0}, {(uint32_t)w, (uint32_t)h}};
     rbi.clearValueCount = 2; rbi.pClearValues = clear;

@@ -119,6 +119,14 @@ struct LightObj {
 LightObj g_light[8];
 unsigned long g_light_loads = 0;
 
+// The game's EFB copy-clear colour (GXSetCopyClear). The native present must clear the 3D
+// target to THIS, not a hardcoded constant — the sky base is a screen-blend (dst=INVSRCCLR)
+// layer, so a wrong background washes the whole sky toward grey. Default = black (GX's
+// typical 3D clear) until the first GXSetCopyClear is observed.
+float g_copy_clear[4] = {0.f, 0.f, 0.f, 1.f};
+unsigned long g_copy_clear_sets = 0;
+u32 g_copy_clear_arg = 0, g_copy_clear_arg4 = 0, g_copy_clear_deref = 0;
+
 // GX position-matrix memory (64 rows × 4 floats), captured SYNCHRONOUSLY at GXLoadPosMtxImm so
 // multi-matrix / skinned shapes (PNMTXIDX) can select the per-vertex matrix. The vertex's
 // PNMTXIDX byte is the starting ROW here (GX_PNMTX0=0, _1=3, …); a matrix = rows idx,idx+1,idx+2.
@@ -1953,6 +1961,33 @@ SUNBRIGHT_OVERRIDE(ov_gxloadlightobjimm, 0x8035f26cu) {
     if (RecompFunc o = recomp_raw(0x8035f26cu)) o(cpu); else call_ppc(cpu, cpu.lr);
 }
 
+// GXSetCopyClear(GXColor clr, u32 clear_z) @ 0x8035ea40 — capture the EFB copy-clear colour
+// the game requests. GXColor/JUtility::TColor is a 4-byte struct passed by value in gpr[3]
+// as a big-endian packed word: r=MSB. The native present clears the 3D target to this (see
+// g_copy_clear); a hardcoded clear washed the screen-blend sky (ti=11 dst=INVSRCCLR).
+SUNBRIGHT_OVERRIDE(ov_gxsetcopyclear, 0x8035ea40u) {
+    if (g_enabled) {
+        // GXColor is passed BY POINTER in r3 (verified: r3 is a RAM ptr, [r3] = the packed
+        // RGBA8888 colour = black here, matching the GPU's bpmem clear; r4 = clear_z 0xffffff).
+        // If r3 isn't a valid pointer, fall back to the by-value packed-word interpretation.
+        const u32 r3 = cpu.gpr[3];
+        const u32 col = valid(r3) ? r32(r3) : r3;
+        g_copy_clear[0] = ((col >> 24) & 0xFF) / 255.f;
+        g_copy_clear[1] = ((col >> 16) & 0xFF) / 255.f;
+        g_copy_clear[2] = ((col >>  8) & 0xFF) / 255.f;
+        g_copy_clear[3] = 1.f;   // backdrop is opaque for the present (EFB clear alpha unused on screen)
+        g_copy_clear_arg = r3; g_copy_clear_arg4 = cpu.gpr[4]; g_copy_clear_deref = col;
+        g_copy_clear_sets++;
+    }
+    if (RecompFunc o = recomp_raw(0x8035ea40u)) o(cpu); else call_ppc(cpu, cpu.lr);
+}
+
+// Accessor for the native present (runtime/render/ngx_present.cpp).
+extern "C" void sb_ngx_get_clear(float out[4]) {
+    out[0] = g_copy_clear[0]; out[1] = g_copy_clear[1];
+    out[2] = g_copy_clear[2]; out[3] = g_copy_clear[3];
+}
+
 // Synchronous PNMTXIDX capture from the fork's LoadIndexedXF seam (interp_capture.cpp's
 // sb_hook_xf_indexed). Records the EXACT pos-matrix Dolphin loads — source = guest RAM at
 // array_base + stride*index (host-order floats), slot = XF dest word offset / 4. Correct base
@@ -2513,6 +2548,10 @@ int sb_ngx_shape_dump(char* out, int cap) {
         if (valid(ca)) for (int i = 0; i < 6; i++) n += snprintf(out+n, cap-n, " %08x", r32(ca + i*4));
         n += snprintf(out+n, cap-n, "\n");
     }
+    // EFB copy-clear: ours (captured GXSetCopyClear, latest) vs Dolphin bpmem (GPU ground truth).
+    n += snprintf(out+n, cap-n, "  COPY-CLEAR: ngx=(%.0f,%.0f,%.0f,%.0f) r3=%08x r4=%08x [r3]=%08x sets=%lu | bpmem AR=%08x GB=%08x\n",
+        g_copy_clear[0]*255, g_copy_clear[1]*255, g_copy_clear[2]*255, g_copy_clear[3]*255,
+        g_copy_clear_arg, g_copy_clear_arg4, g_copy_clear_deref, g_copy_clear_sets, bpmem.clearcolorAR, bpmem.clearcolorGB);
     // GX fog state (bpmem) — prime suspect for a global darkening ngx skips.
     n += snprintf(out+n, cap-n, "  FOG (bpmem): fsel=%u proj=%u color(rgb)=(%u,%u,%u) A=%.4f C=%.2f b_mag=%u b_shift=%u\n",
         (u32)bpmem.fog.c_proj_fsel.fsel.Value(), (u32)bpmem.fog.c_proj_fsel.proj.Value(),
