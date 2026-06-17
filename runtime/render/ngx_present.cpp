@@ -706,6 +706,9 @@ AbstractTexture* PresentRenderer::render(int w, int h) {
     VkDeviceSize voff = 0; vkCmdBindVertexBuffers(cmd, 0, 1, &vbuf, &voff);
     VkPipeline last = VK_NULL_HANDLE;
     int drawn = 0;   // count of batches actually emitted (for the /ngxprefix draw-order limit)
+    // DBG: count drawn batches + total verts for a target tev_index (overdraw check for the cloud wash).
+    static const int s_cloudcount = getenv("SUNBRIGHT_NGX_CLOUDCOUNT") ? atoi(getenv("SUNBRIGHT_NGX_CLOUDCOUNT")) : -1;
+    int cc_batches = 0; long cc_verts = 0; static unsigned cc_frame = 0;
     for (size_t b = 0; b < batches.size(); b++) {
         if (g_ngx_prefix_n >= 0 && drawn >= g_ngx_prefix_n) break;   // draw-order prefix: stop after N
         const int ti = batches[b].tev_index;
@@ -750,7 +753,11 @@ AbstractTexture* PresentRenderer::render(int w, int h) {
         vkCmdPushConstants(cmd, pll, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof pc, &pc);
         vkCmdDraw(cmd, batches[b].vcount, 1, batches[b].vstart, 0);
         drawn++;
+        if (s_cloudcount >= 0 && ti == s_cloudcount) { cc_batches++; cc_verts += batches[b].vcount; }
     }
+    if (s_cloudcount >= 0 && (cc_frame++ % 120) == 0)
+        fprintf(stderr, "[cloudcount] ti=%d DRAWN batches=%d verts=%ld (overdraw if batches>>1)\n",
+                s_cloudcount, cc_batches, cc_verts);
 
     // HUD/J2D overlay over the 3D scene (alpha-blended, depth off, dynamic viewport).
     if (j2d_pipe != VK_NULL_HANDLE && !j2d.empty()) {

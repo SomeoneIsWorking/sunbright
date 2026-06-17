@@ -398,3 +398,17 @@ Blocker: need the primitive TOPOLOGY (the 40-vert pattern: apex recurs every 4, 
 at idx 5,9,13… — likely QUADS or a STRIP; pull the actual op from the display list) and uv1 per
 vertex (extend `/ngxverts` to dump uv1). Also worth: a synchronous GXSetFog/GXSetBlendMode tee to
 get the AUTHORITATIVE fog/blend (bpmem lags in-process).
+
+### Update 2 — OVERDRAW and FOG both conclusively ruled out (cheap tests done)
+- **Overdraw RULED OUT**: `SUNBRIGHT_NGX_CLOUDCOUNT=10` (new) → the present draws ti=10 exactly
+  ONCE per frame (`[cloudcount] ti=10 DRAWN batches=1 verts=30`). So one faithful ngx draw = +50,
+  one GX draw = +6. Not accumulation. (Note: present/cloudcount only runs under /abshot2 in headless.)
+- **FOG RULED OUT (authoritative)**: new SYNCHRONOUS tee on GXSetFog @0x80361b20 → type=0
+  (GX_FOG_NONE), 18157 calls. NOT the lagged bpmem — the real value. Fog is off.
+
+So fog/overdraw/blend/combiner/texture/UV/alpha/projection/clip/cull/depth are ALL eliminated.
+The 9× (ngx +50 vs GX +6, one draw each, same inputs) now points hard at either an EFB-copy
+intensity/gamma stage GX applies (file-select renders 3D offscreen → copies to XFB), or a per-draw
+GX register override (GXSetTevColor/GXSetBlendMode) the material-DL PE block doesn't carry, or the
+seawash/lockstep A/B comparing subtly different geometry. CPU reference rasterizer remains the
+decisive test. New tees committed: GXSetFog (g_fog_*), CLOUDCOUNT, /gxstate tc0/tc1+fog.

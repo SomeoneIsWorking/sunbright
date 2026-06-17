@@ -2320,6 +2320,16 @@ extern "C" int sb_ngx_gen_shader(unsigned want_s0ce, char* out, int cap) {
     return snprintf(out, cap, "no captured material with s0ce=%06x\n", want_s0ce);
 }
 
+// GXSetFog(type, startz, endz, nearz, farz, GXColor color) @ 0x80361b20 — SYNCHRONOUS ground
+// truth of the fog state (bpmem.fog LAGS in the ngx process). type=GX_FOG_NONE(0) => fog OFF.
+// If type!=0 the far additive cloud is fogged in GX (dimmed) but ngx skips fog = the wash suspect.
+u32 g_fog_type = 0xffffffff, g_fog_color = 0; float g_fog_startz = 0, g_fog_endz = 0; unsigned long g_fog_calls = 0;
+SUNBRIGHT_OVERRIDE(ov_gxsetfog, 0x80361b20u) {
+    if (g_enabled) { g_fog_calls++; g_fog_type = cpu.gpr[3]; g_fog_color = cpu.gpr[4];
+        g_fog_startz = (float)cpu.fpr[1].ps0; g_fog_endz = (float)cpu.fpr[2].ps0; }
+    if (RecompFunc o = recomp_raw(0x80361b20u)) o(cpu); else call_ppc(cpu, cpu.lr);
+}
+
 // J3DTexMtx::load(id) @ 0x802ee9d4 — SYNCHRONOUS ground truth of what texmtx J3D actually
 // feeds GX (J3DGDLoadTexMtxImm of mTotalMtx into XF row id*3+30), unlike async-lagged xfmem.
 // Captures per distinct J3DTexMtx* its loaded scale/translate → match against the cloud's
@@ -2828,11 +2838,13 @@ int sb_ngx_gxstate_dump(char* out, int cap) {
         // GX FOG (bpmem) — unmodeled by ngx; fsel!=0 fades far fragments toward fog color.
         // The additive cloud dome is FAR (w→148000); GX fog dims it while ngx draws it full = wash suspect.
         n += snprintf(out+n, cap-n,
-            "  ── FOG (bpmem GX, ngx does NOT model) ──\n"
-            "    fsel=%u(0=OFF) proj=%u color=(%u,%u,%u) A=%.5f C=%.3f b_mag=%u b_shift=%u\n",
+            "  ── FOG (ngx does NOT model) ──\n"
+            "    GXSetFog TEE (SYNC, authoritative): type=%u(0=GX_FOG_NONE) color=%08x startz=%.1f endz=%.1f calls=%lu\n"
+            "    bpmem (LAGS):  fsel=%u proj=%u color=(%u,%u,%u) A=%.5f C=%.3f\n",
+            g_fog_type, g_fog_color, g_fog_startz, g_fog_endz, g_fog_calls,
             (u32)bpmem.fog.c_proj_fsel.fsel.Value(), (u32)bpmem.fog.c_proj_fsel.proj.Value(),
             (u32)bpmem.fog.color.r, (u32)bpmem.fog.color.g, (u32)bpmem.fog.color.b,
-            bpmem.fog.GetA(), bpmem.fog.GetC(), (u32)bpmem.fog.b_magnitude, (u32)bpmem.fog.b_shift);
+            bpmem.fog.GetA(), bpmem.fog.GetC());
         // TexGen (UV generation) + bound textures — tiling/checkerboard diagnosis.
         n += snprintf(out+n, cap-n, "  ── TEXGEN (%d coords) + TEXTURES ──\n", R.tg.num);
         n += snprintf(out+n, cap-n,
