@@ -838,6 +838,7 @@ int      g_cur_tev_index = -1;     // material index for the shape being capture
 // CLR0 capture state for the shape being captured (for /ngxshapes per-input inspection):
 // VCD class (0=none→white default, 1=direct, 2=idx8, 3=idx16), array base ngx samples, VAT format.
 unsigned g_cur_clr0cls = 0, g_cur_clr0fmt = 0; u32 g_cur_clr0base = 0;
+unsigned g_cur_nrmcls = 0;         // NRM VCD class for the shape being captured (lighting sanity)
 u32      g_cur_shape = 0;          // address of the shape being captured (for the shred metric)
 unsigned long g_mat_found = 0, g_mat_novt = 0, g_mat_none = 0;
 u32      g_vt_hist_key[8] = {0};    // distinct vtable values seen
@@ -919,6 +920,7 @@ bool build_cp(u32 sh, NgxCP& cp) {
     g_cur_clr0cls  = (cp.vcd_lo >> 13) & 3;
     g_cur_clr0fmt  = (cp.vat[0][0] >> 14) & 7;
     g_cur_clr0base = cp.array_base[2];
+    g_cur_nrmcls   = (cp.vcd_lo >> 11) & 3;
     cp.array_base[3] = r32(vdata + 0x20);    cp.array_stride[3] = 4;
     for (int i = 0; i < 8; i++) {
         cp.array_base[4 + i]   = r32(vdata + 0x24 + i * 4);
@@ -1011,6 +1013,7 @@ struct ShapeRec {
     unsigned epoch;                     // EFB-copy epoch this shape drew under (offscreen vs display)
     int ti;                             // tev_index (material) — filter haze layers by this
     unsigned clr0cls, clr0fmt; u32 clr0base;  // CLR0 VCD class / VAT fmt / array base ngx samples
+    float nrm0[3]; unsigned nrmcls;     // first-vertex MODEL normal + NRM VCD class (lighting sanity)
     unsigned char clr0r, clr0g, clr0b, clr0a; // MEAN decoded per-vertex CLR0 (0..255) — the raster ngx feeds
     unsigned char clr0min, clr0max;     // min/max per-vertex luminance (0..255) — flat-white vs gradient
 };
@@ -1300,6 +1303,8 @@ void transform_eye() {
         rec.epoch = g_efb_epoch;
         rec.ti = g_cur_tev_index;
         rec.clr0cls = g_cur_clr0cls; rec.clr0fmt = g_cur_clr0fmt; rec.clr0base = g_cur_clr0base;
+        rec.nrmcls = g_cur_nrmcls;
+        rec.nrm0[0] = nv ? g_verts[0].nrm[0] : 0; rec.nrm0[1] = nv ? g_verts[0].nrm[1] : 0; rec.nrm0[2] = nv ? g_verts[0].nrm[2] : 0;
         // MEAN + min/max luminance of the per-vertex CLR0 ngx actually feeds the raster (after
         // decode/default). Flat-white haze (mean 255, min==max 255) vs a real gradient is the tell.
         { unsigned long sr=0,sg=0,sb=0,sa=0; unsigned lo=255,hi=0;
@@ -2409,10 +2414,11 @@ int sb_ngx_shapes_dump(char* out, int cap) {
         if (n >= cap - 256 || shown >= 60) break;
         const ShapeRec& r = rs[i];
         n += snprintf(out + n, cap - n,
-            "  e%u%s pass=%u%s ti=%-3d sh=%08x nv=%-5u cc=%04x tex0=%08x pnmtx=%u  clr0[cls=%u fmt=%u base=%08x mean=(%u,%u,%u,a%u) lum%u..%u]  ndc x[%6.2f,%6.2f] y[%6.2f,%6.2f] w[%.1f,%.1f]\n",
+            "  e%u%s pass=%u%s ti=%-3d sh=%08x nv=%-5u cc=%04x tex0=%08x pnmtx=%u  clr0[cls=%u fmt=%u base=%08x mean=(%u,%u,%u,a%u) lum%u..%u] nrm[cls=%u v0=(%.2f,%.2f,%.2f)]  ndc x[%6.2f,%6.2f] y[%6.2f,%6.2f] w[%.1f,%.1f]\n",
             r.epoch, g_epoch_tex[f][r.epoch < EPOCH_CAP ? r.epoch : 0] ? "X" : "=",
             r.pass, r.projtype ? "o" : "p", r.ti, r.sh, r.nv, r.cc, r.tex0, r.pnmtx,
             r.clr0cls, r.clr0fmt, r.clr0base, r.clr0r, r.clr0g, r.clr0b, r.clr0a, r.clr0min, r.clr0max,
+            r.nrmcls, r.nrm0[0], r.nrm0[1], r.nrm0[2],
             r.nxmin, r.nxmax, r.nymin, r.nymax, r.wmin, r.wmax);
         shown++;
     }
