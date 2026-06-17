@@ -370,7 +370,7 @@ struct UvDbg { bool have=false; float tex0[2]={0},tex1[2]={0},uv0[2]={0},uv1[2]=
 UvDbg g_uvdbg, g_uvdbg_pub;
 // Per-vertex dump for the gxstate target ti (NDC x,y + RASA alpha + tc0/tc1 UV). Pins whether
 // the additive cloud's coverage is gated by geometry (NDC spread), per-vertex alpha, or noise UV.
-struct VtxRec { float ndcx, ndcy, a, u0, v0, u1, v1; float ex, ey, ez, cw; };
+struct VtxRec { float ndcx, ndcy, a, u0, v0, u1, v1; float ex, ey, ez, cw; float cx, cy, cz; };
 std::vector<VtxRec> g_vtxdump, g_vtxdump_pub;
 unsigned char g_vtxdump_projtype = 0, g_vtxdump_projtype_pub = 0;   // 0=persp 1+=ortho (g_proj_type at the shape)
 float g_vtxdump_mv[12] = {0}, g_vtxdump_mv_pub[12] = {0};           // the shape's modelview
@@ -952,6 +952,11 @@ void capture_pe(u32 material, NgxTevState& st) {
         if (B) {
             const u16 acid = (u16)((B[0x08] << 8) | B[0x09]);    // mAlphaComp.mAlphaCmpID
             const u8 ref0 = B[0x0A], ref1 = B[0x0B];
+            // NOTE: acid==0xFFFF means J3DAlphaComp::load emits NO GDSetAlphaCompare, so the
+            // material INHERITS the prior GX alpha-compare state. Tried tracking+applying that
+            // live state (the file-select cloud is PEFL id=0xFFFF) — but the cloud inherits
+            // ALWAYS (verified: the material before it sets no discard), so it does NOT explain
+            // the wash. Reverted. (Dead end: alpha-compare inheritance is not the cloud cause.)
             if (acid != 0xFFFF) {
                 const int comp0 = (acid >> 5) & 7, aop = (acid >> 3) & 3, comp1 = acid & 7;
                 if (!alpha_always_pass(comp0, aop, comp1)) {
@@ -1522,7 +1527,7 @@ void transform_eye() {
                 const float* uvp = &g_uvs[vi * 16];
                 g_vtxdump.push_back({cw>1e-6f?cx/cw:0.f, cw>1e-6f?cy/cw:0.f,
                                      g_litrgba[vi*4+3], uvp[0], uvp[1], uvp[2], uvp[3],
-                                     ex, ey, ez, cw});
+                                     ex, ey, ez, cw, cx, cy, cz});
             }
         }
     }
@@ -2018,8 +2023,8 @@ extern "C" int sb_ngx_verts_dump(char* out, int cap) {
         "  NDC bbox x[%.3f,%.3f] y[%.3f,%.3f]  alpha[%.3f,%.3f] mean=%.3f\n",
         nxmin,nxmax,nymin,nymax,amin,amax,asum/V.size());
     for (size_t i=0;i<V.size() && w<cap-100;i++){ const auto& r=V[i];
-        w += snprintf(out+w, cap-w, "  v%-3zu ndc=(%+.4f,%+.4f) a=%.4f cw=%.3f uv0=(%+.4f,%+.4f) uv1=(%+.4f,%+.4f)\n",
-                      i, r.ndcx, r.ndcy, r.a, r.cw, r.u0, r.v0, r.u1, r.v1); }
+        w += snprintf(out+w, cap-w, "  v%-3zu clip=(%.2f,%.2f,%.2f,%.2f) a=%.4f uv0=(%+.4f,%+.4f) uv1=(%+.4f,%+.4f)\n",
+                      i, r.cx, r.cy, r.cz, r.cw, r.a, r.u0, r.v0, r.u1, r.v1); }
     return w;
 }
 extern "C" int sb_ngx_shapeti_dump(char* out, int cap) {
