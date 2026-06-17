@@ -150,6 +150,11 @@ int      g_seam_log_n = 0;
 // 1=g_posmtx global last-writer (old), 2=single modelview m (no skinning). Lets me A/B the skinned
 // transform on the running game with no rebuild. Counters report how many verts took each path.
 int g_ngx_mtxsrc = 0;
+// For a NON-skinned (single J3DShapeMtx) shape, the matrix used is drawMtx[unk4] — J3DShapeMtx::load
+// does GXLoadPosMtxIndx(unk4, 0), loading draw-matrix unk4 into XF slot 0. ngx must index by unk4,
+// NOT drawMtx[0] (mCurrentDrawMtx[0]); else a rigid sub-shape on a non-root joint (Mario's hat on
+// the head joint) renders at the root and floats. Set per shape in capture(), used in transform_eye.
+unsigned g_single_idx = 0;
 unsigned long g_pkt_applied = 0, g_pkt_fallback = 0;   // CUMULATIVE (never reset) so the live
                                                        // /ngxshape read is timing-independent
 unsigned long g_posmtx_loads = 0;
@@ -985,9 +990,10 @@ int capture_material() {
 // This is the native XF stage; the matrix is the same one the recompiled J3D
 // computed (the interp60 pos-matrix seam, now consumed natively).
 void transform_eye() {
-    const u32 mp = r32(J3DSYS + 0x104);     // mCurrentDrawMtx (Mtx*) — single-matrix shapes
+    const u32 mp = r32(J3DSYS + 0x104);     // mCurrentDrawMtx = draw-matrix ARRAY base
     float m[12] = {1,0,0,0, 0,1,0,0, 0,0,1,0};   // identity fallback
-    if (valid(mp)) for (int i = 0; i < 12; i++) m[i] = rf(mp + i * 4);   // row-major 3x4
+    // Single-matrix shape: draw-matrix index = the shape's J3DShapeMtx.unk4 (g_single_idx), NOT 0.
+    if (valid(mp)) for (int i = 0; i < 12; i++) m[i] = rf(mp + g_single_idx * 48u + i * 4);
     else if (!g_cur_pnmtx) { g_xf_nomtx++; return; }   // non-multi-matrix shapes need the draw mtx
     // Normal matrix (Mtx33, row-major 3x3) for the native lighting stage. Absent →
     // skip lighting (en stays 0 → only ambient contributes, matched by the math).
@@ -1258,6 +1264,10 @@ void capture(u32 sh) {
     // reads matrix m at drawMtxBase + m*48.
     constexpr u32 J3DSYS = 0x804045DCu;
     const u32 drawMtxBase = skinned ? r32(J3DSYS + 0x104) : 0;
+    // Non-skinned shape: the single matrix is drawMtx[mMatrices[0].unk4] (J3DShapeMtx.unk4 @ +0x04),
+    // not drawMtx[0]. (transform_eye reads mCurrentDrawMtx as the array base + g_single_idx*48.)
+    g_single_idx = 0;
+    if (!skinned && valid(mtcs)) { const u32 s0 = r32(mtcs); if (valid(s0)) g_single_idx = ru16(s0 + 0x04); }
     // RUNNING per-slot matrix state across this shape's packets. GX XF pos-matrix slots PERSIST:
     // a packet (J3DShapeMtxMulti) reloads only its non-0xffff slots; verts that reference a slot a
     // LATER packet skipped keep the matrix an EARLIER packet loaded there. So accumulate, and
@@ -1281,7 +1291,7 @@ void capture(u32 sh) {
         for (size_t v = v0; v < g_verts.size(); v++) g_verts[v].packet = (unsigned char)i;
         if (skinned && nelem >= 2 && i < 4 && getenv("SUNBRIGHT_DBG_PKT")) {
             static int kk = 0;
-            if (kk < 16) { kk++;
+            if (kk < 240) { kk++;
                 unsigned mn = 255, mx = 0;
                 for (size_t v = v0; v < g_verts.size(); v++) { unsigned x = g_verts[v].matidx; if (x<mn)mn=x; if (x>mx)mx=x; }
                 const u32 smtx = r32(mtcs + i * 4);
@@ -1310,6 +1320,16 @@ void capture(u32 sh) {
             for (int s = 0; s < NGX_MAX_SLOT; s++) {   // snapshot the accumulated state for this packet
                 g_pkt_have[i][s] = runhave[s];
                 if (runhave[s]) for (int k = 0; k < 12; k++) g_pkt_mtx[i][s][k] = run[s][k];
+            }
+            if (nelem >= 2 && i < 4 && getenv("SUNBRIGHT_DBG_PKT")) {
+                static int kt = 0;
+                if (kt < 40) { kt++;
+                    char b[256]; int o = 0;
+                    for (int s = 0; s < (int)num && s < NGX_MAX_SLOT; s++)
+                        o += snprintf(b+o, sizeof b-o, " s%d=%u(%.0f,%.0f,%.0f)", s, ru16(tbl+s*2),
+                                      run[s][3], run[s][7], run[s][11]);
+                    fprintf(stderr, "[pktt] sh=%08x pkt%u drawBase=%08x%s\n", sh, i, drawMtxBase, b);
+                }
             }
         }
     }

@@ -42,7 +42,16 @@ across the shape's packets (init from g_posmtx), update only each packet's loade
 into g_pkt_mtx[packet] after each packet's loads. Result: Mario goes from a triangle cloud to a
 COHERENT character (gpshot --fs: bottom-left region 51→36; ngx≈recognizable Mario).
 
-## RESIDUAL (post-fix) — one bone (head/hat) floats
+## FIXED — the floating head/hat was a SINGLE-MATRIX sub-shape bug
+The hat is a rigid (non-skinned) sub-shape of the model on the HEAD joint. `J3DShapeMtx::load()`
+does `GXLoadPosMtxIndx(unk4, 0)` — it loads draw-matrix `unk4` (the shape's joint index) into XF
+slot 0. ngx's single-matrix path used `mCurrentDrawMtx[0]` = draw-matrix INDEX 0 (the root), so the
+hat rendered at the root and floated. Fix: for non-skinned shapes read `mMatrices[0].unk4`
+(J3DShapeMtx.unk4 @ +0x04) and use `drawMtx[unk4]` (= mCurrentDrawMtx base + unk4*48). Map geometry
+has unk4=0 so it's unchanged. Result: hat snaps onto the head; Mario fully matches the GX oracle
+(gpshot --fs: 29.3%→26.1% overall, Mario region clean). **Skinned characters now render correctly.**
+
+## (history) RESIDUAL (pre-hat-fix) — one bone (head/hat) floats
 With the running-slot fix, `fallback=0` (all 2.27M skinned verts resolve a slot) and Mario's BODY
 is coherent and correctly posed (crouch), verified by cropping the dock-Mario region from the SAME
 abshot2 present (scratch/screenshots/mario.{ngx,gx}.png): oracle = head attached; ngx = the red
