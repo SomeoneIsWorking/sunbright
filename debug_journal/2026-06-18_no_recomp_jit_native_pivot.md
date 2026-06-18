@@ -409,6 +409,44 @@ NEXT: Phase C — stop linking generated/, drop tools/recompiler from the BUILD 
 model, make JIT-native the default. (TGCConsole2::perform can also adopt the primitive if it needs
 observe-around, but it already runs naturally under JIT when not marked purejit-safe.)
 
+## ★★ PHASE C READINESS — VALIDATED (2026-06-18, session 11)
+Before any destructive build change, confirmed the JIT-native mode is a COMPLETE substrate, not just
+fastboot-into-Delfino:
+- **Normal boot under pure JIT (no fastboot) reaches gameplay.** `SUNBRIGHT_PUREJIT=1 AUTOSTART=1
+  NGX_PRESENT=1 BACKEND=Vulkan` (headless): boots logo → (AUTOSTART) title → `data/scene/option.szs`
+  (file-select) → `data/scene/dolpic5.szs` (Delfino) + the entrance THP — all under pure Dolphin JIT,
+  **recomp calls = 0**, stable at **1.0×** for 100s+, no crash/fatal (only a benign IPL font warning).
+  frame_swaps climb ~30/s (1 per VI field). So menus + file-select + scene-load + gameplay all work
+  under pure JIT, refuting the journal's earlier "AUTOSTART flaky, needs fastboot" worry.
+- **Render fidelity is the SAME as recomp** (both use ngx on the same guest J3D objects; gameplay
+  logic runs on Dolphin JIT — which is MORE correct than our recomp's known FP/edge bugs). The ~45%
+  black in the AUTOSTART shot was the THP entrance MOVIE region (ngx doesn't composite THP video) +
+  transition — a pre-existing ngx gap identical in recomp mode, NOT a purejit regression. fastboot →
+  Delfino renders nearly full under purejit (the plaza/Mario/NPCs/HUD shot).
+- **CONCLUSION: JIT-native (purejit) is render-equivalent and execution-superior to recomp.** Phase C
+  is sound; making it the default does not regress fidelity.
+
+### Phase C scope (read before starting — it's COUPLED, not three independent edits)
+"Stop linking generated/" + "make JIT-native default" + "drop recomp call model" are interdependent:
+once generated/ is unlinked, JIT-native is the ONLY working mode, so EVERY wrapping override that
+super-calls `recomp_raw(addr) ? o(cpu) : call_ppc(cpu, cpu.lr)` must FIRST work under JIT-native.
+- Build linkage (CMakeLists.txt:123): `SUNBRIGHT_GENERATED_SOURCES` globs generated/functions_*.cpp
+  + jump_table.cpp into the sunbright binary; a weak `g_recomp_table` fallback lets it link empty.
+  Unlinking = drop that glob from add_executable; g_recomp_table empties → recomp_lookup always
+  misses. The recomp CALL MODEL (call_ppc/recomp_raw/dolphin_hook.cpp) stays linked but serves null.
+- The ~10 recomp_raw super-call overrides (memory no-recomp-jit-native-direction): render path is
+  DONE (scene_render = return-true + the new reentrant primitive; ngx_j3d_shape = g_native_draw).
+  REMAINING to assess one-by-one under purejit: hud.cpp (ov_quad/ov_water_posmtx), water_native,
+  sunmodel_widescreen / screenfx_widescreen / efbtex, scene_id, native_gx, fastboot helpers. Each is
+  currently NOT purejit-safe → inert under purejit (runs naturally under JIT). Decide per override:
+  is "natural JIT, no wrapper" correct (the wrapper only did a widescreen tweak ngx now owns), or does
+  it need a return-true native replacement / the reentrant primitive? Validate each headless.
+- SAFE ORDER: (1) per-override: confirm each recomp_raw site is correct-or-converted under purejit;
+  (2) flip the default to JIT-native behind an opt-OUT flag (keep recomp for A/B) + re-validate the
+  whole game; (3) only AFTER soak, the irreversible cut: drop SUNBRIGHT_GENERATED_SOURCES + the
+  sunbright-recomp build target (keep it as offline static-analysis tooling per the user directive).
+  Don't do (3) before (1)+(2) — that removes the A/B fallback the journal's whole method relies on.
+
 ## Files
 - runtime/jit_hook.cpp — `sb_hook_jit_trampoline` runs `run_prehook` then normal dispatch (step 2).
 - runtime/overrides.h / overrides.cpp — `sunbright_purejit_mode()` accessor + pre-hook table;
