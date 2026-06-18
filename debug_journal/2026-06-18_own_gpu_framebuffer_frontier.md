@@ -80,6 +80,67 @@ TSunMgr::perform 0x8002e2d0); if not, the fix is to deliver the guest's drawsync
 Also: the sun may simply be off-screen/inactive in the default fastboot plaza camera — verify in a
 sun-facing view before concluding the callback is dead.
 
+## SLICE-1 BLOCKER FALSIFIED + SLICES REORDERED (2026-06-18, session 2) — READ THIS
+The previous session's "blocker" (GX-drawsync-callback delivery is dead under ngx) is **WRONG**.
+Instrumented the chain headless (fastboot Delfino, ngx present; observers in efb_readback_native.cpp
+gated on SUNBRIGHT_DBG_EFB, run-original-around so the real path still runs):
+- **TSunMgr::drawSyncCallback (0x8002e270) FIRES every frame** (1000+/run), unk14=1. TSunMgr::perform
+  fires too. So the TDrawSyncManager token mechanism DOES deliver guest drawsync callbacks under ngx.
+- **GXPeekZ still logs 0** — not because the callback is dead, but because TSunModel::getZBufValue
+  skips every GXPeekZ: all 17 sun sample points (gpSunModel+0xB4, the s16 screen positions) are
+  **(-1,-1)**. calcDispRatioAndScreenPos_ DOES run (the +0xF8 float positions are perturbed off the
+  init (10000,10000)), but CLBCalc2DFPos projects the sun center to the off-screen sentinel
+  (10000,10000) → CLBScreenFPosToSPos clamps to (-1,-1). **The sun is simply off-screen** in the
+  default fastboot plaza camera, and camera yaw (cright ×8) does NOT bring it into frame (it's high in
+  the sky; the plaza cam won't tilt up). gpSunModel ptr is always at the fixed SDA slot [0x8040d0c8].
+  ⇒ GXPeekZ (sun occlusion) is the WORST verification target headless. Slice-1 primitive is built +
+  verified at the readback level (below) but its consumer can't be exercised in fastboot plaza.
+- **Dolphin's EFB IS empty under ngx present — CONFIRMED** (not just assumed): /abshot2 GX side
+  (ab2.gx.ppm = Dolphin's GX XFB) is **100% black (mean 0.0, all 286720 px)** while ngx is a real
+  image (mean 103). So the premise of this whole frontier holds; EFB-readback consumers read black.
+- **Depth readback PRIMITIVE VERIFIED working**: forced it armed every present under DBG_EFB +
+  histogram (ngx_present.cpp). Captures 640×448 depth, real hyperbolic perspective spread
+  (min 0.9785, max 1.0, geometry crammed in [0.9,1.0] as expected for near≈1/far≈300000 GC proj;
+  1576 px exactly 1.0 = true-far sky). GPU→CPU copy + publish path is sound.
+
+### THE LIVE CONSUMERS (what actually fires in the default plaza — the real targets)
+- **GXPeekARGB (0x8035dccc) FIRES every frame** at screen-center (~320,224) from TMario::
+  drawSyncCallback. BUT it reads the **ALPHA** byte: `(argb & 0xff000000)==0x10000000` → Mario tagged
+  alpha 0x10 == not-occluded (MARIO_FLAG_OCCLUDED). Serving it needs ngx's framebuffer ALPHA to carry
+  the GC 0x10 Mario tag — i.e. ngx must faithfully output Mario's TEV alpha. Verify what ngx alpha is
+  at (320,224) before assuming a color readback suffices.
+- **GXCopyTex (0x8035ee5c) FIRES ~2189×/22s** — by far the most active; mix of clear=0/clear=1, dsts in
+  MEM1 (0x80xxxxxx) and some low (0x01xxxxxx — classify these). The mirror/bathwater/mist/manta/
+  heat-haze family. Reads back COLOR (clean — ngx has color, no alpha-tag subtlety). Most impactful.
+
+### REVISED slice order (was GXPeekZ→ARGB→CopyTex): build the COLOR readback next (foundational for
+both ARGB and CopyTex), probe ngx's framebuffer ARGB at (320,224) to see if Mario's 0x10 alpha is
+present. If yes → GXPeekARGB is the cleanest live end-to-end slice. Then GXCopyTex (the big one).
+GXPeekZ stays built/dormant (correct + safe; just unexercised until a sun-facing scene).
+
+## COLOR READBACK BUILT + GXPeekARGB BLOCKED ON ALPHA FIDELITY (2026-06-18, session 2)
+Built the COLOR readback (ngx_present.cpp, mirror of the depth one): after the render pass, barrier
+the present color target SHADER_READ_ONLY→TRANSFER_SRC, vkCmdCopyImageToBuffer → host staging, barrier
+back; publish packed ARGB8888 to g_efb_color[] (mutex, 1-frame lag). extern "C"
+sb_ngx_efb_request_color() / sb_ngx_efb_peek_color(gx,gy,&argb). Forced-armed under DBG_EFB + an
+ARGB/alpha histogram. Builds, runs, **0 Vulkan validation errors**.
+- center(320,224)=ffd0cdd9, (160,150)=ff10c710 — real scene color, RGB faithful.
+- **ALPHA across the whole 640×448: =0x10: 0 px, =0xff: 119464, other: 167256.** ngx's framebuffer
+  alpha NEVER equals 0x10. TMario::drawSyncCallback's occlusion test is `(argb&0xff000000)==0x10000000`
+  (Mario tagged alpha 0x10). ngx does NOT reproduce the GC EFB alpha-tag convention → **GXPeekARGB
+  occlusion cannot be served by a plain color/alpha readback.** It needs ngx to faithfully output
+  Mario's TEV/PE alpha (0x10) into the present alpha channel — a separate ngx-alpha-fidelity task.
+  ⇒ GXPeekARGB stays diagnostic-only (do NOT wire it to the color readback — would force always-
+  occluded). Owning ngx EFB-alpha is its own frontier item.
+
+## ⇒ NEXT: GXCopyTex (0x8035ee5c) is THE viable live slice — reads back COLOR (ngx RGB is faithful),
+2189×/22s in the plaza, the mirror/bathwater/mist/manta/heat-haze family. The color readback primitive
+(g_efb_color + sb_ngx_efb_peek_color) is the foundation. Remaining work: classify the calls (clear=0
+= the real EFB→texture readbacks; clear=1 = clears), honor GXSetTexCopySrc(rect)/GXSetTexCopyDst
+(fmt,dst), and write ngx color into the guest texture as GC-tiled texels — OR the ngx-internal
+render-to-texture aliasing (capture the copy-dst, have ngx sample its own color target when that tex is
+later bound; avoids the guest-RAM round-trip). Verify: the mirror/water surface shows the ngx scene.
+
 ## TOOL NOTE: --xref/--callees find DIRECT branches only (not vtable/indirect/function-pointer calls).
 Virtual methods (perform/drawSyncCallback/draw) show 0 or only-the-thunk. For indirect dispatch, find
 the vtable or the registration site instead. (Possible future tool: scan for the function's address as

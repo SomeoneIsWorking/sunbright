@@ -103,8 +103,10 @@ struct MatPC { int32_t kcolor[4][4]; int32_t tevreg[3][4]; };
 // Lazily enabled: a GXPeekZ call sets g_efb_want; the present does the readback only while >0.
 std::mutex g_efb_mtx;
 std::vector<float> g_efb_depth;          // w*h, depth in [0,1] (1 = far / nothing drawn)
-int g_efb_dw = 0, g_efb_dh = 0;          // dims of the readback
-std::atomic<int> g_efb_want{0};          // frames of readback remaining (decays; re-armed per request)
+std::vector<uint32_t> g_efb_color;       // w*h, packed ARGB8888 (the ngx scene color, for GXPeekARGB/CopyTex)
+int g_efb_dw = 0, g_efb_dh = 0;          // dims of the readback (depth + color share dims)
+std::atomic<int> g_efb_want{0};          // frames of DEPTH readback remaining (decays; re-armed per request)
+std::atomic<int> g_efb_want_color{0};    // frames of COLOR readback remaining
 
 struct PresentRenderer {
     bool init_tried = false, init_ok = false;
@@ -127,6 +129,8 @@ struct PresentRenderer {
     // EFB-readback (own-the-framebuffer): host-visible staging for the depth target → CPU, so the
     // guest's GXPeekZ (sun occlusion) reads ngx's scene depth. Lazily filled only when requested.
     VkBuffer depth_stg_buf = VK_NULL_HANDLE; VkDeviceMemory depth_stg_mem = VK_NULL_HANDLE; VkDeviceSize depth_stg_cap = 0;
+    // …and for the COLOR target (GXPeekARGB / GXCopyTex serve from ngx scene color).
+    VkBuffer color_stg_buf = VK_NULL_HANDLE; VkDeviceMemory color_stg_mem = VK_NULL_HANDLE; VkDeviceSize color_stg_cap = 0;
 
     struct PipeEntry { VkShaderModule mod; VkPipeline pipe; };
     std::unordered_map<uint64_t, PipeEntry> pipes;        // NgxTevState.key → shader+pipeline
@@ -565,6 +569,18 @@ bool PresentRenderer::ensure_target(int w, int h) {
                             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
                 depth_stg_cap = need;
             else { depth_stg_buf = VK_NULL_HANDLE; depth_stg_mem = VK_NULL_HANDLE; depth_stg_cap = 0; }
+        }
+    }
+    // (re)size the host-visible COLOR readback staging buffer (RGBA8 = 4 B/px).
+    {
+        VkDeviceSize need = (VkDeviceSize)w * h * 4;
+        if (color_stg_cap < need) {
+            if (color_stg_buf) { vkDestroyBuffer(dev, color_stg_buf, nullptr); color_stg_buf = VK_NULL_HANDLE; }
+            if (color_stg_mem) { vkFreeMemory(dev, color_stg_mem, nullptr); color_stg_mem = VK_NULL_HANDLE; }
+            if (make_buffer(dev, phys, color_stg_buf, color_stg_mem, need, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
+                color_stg_cap = need;
+            else { color_stg_buf = VK_NULL_HANDLE; color_stg_mem = VK_NULL_HANDLE; color_stg_cap = 0; }
         }
     }
     VkImageView views[2] = {static_cast<Vulkan::VKTexture*>(target.get())->GetView(), depth_view};
@@ -1023,7 +1039,12 @@ AbstractTexture* PresentRenderer::render(int w, int h) {
 
     // EFB-readback (own-the-framebuffer): copy the scene depth → host staging when a guest GXPeekZ
     // requested it. depth is in DEPTH_STENCIL_ATTACHMENT_OPTIMAL (render-pass finalLayout) → TRANSFER_SRC.
+    // DBG: force the readback armed every frame so the GPU→CPU depth path is exercised even when no
+    // guest GXPeekZ fires (e.g. the sun is off-screen). Lets us verify the depth spread headlessly.
+    static const bool s_efb_dbg = getenv("SUNBRIGHT_DBG_EFB") != nullptr;
+    if (s_efb_dbg) { if (g_efb_want.load() == 0) g_efb_want.store(1); if (g_efb_want_color.load() == 0) g_efb_want_color.store(1); }
     const bool efb_rb = g_efb_want.load() > 0 && depth_stg_buf != VK_NULL_HANDLE;
+    const bool efb_rb_c = g_efb_want_color.load() > 0 && color_stg_buf != VK_NULL_HANDLE;
     if (efb_rb) {
         VkImageMemoryBarrier db{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
         db.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
@@ -1039,6 +1060,28 @@ AbstractTexture* PresentRenderer::render(int w, int h) {
         bic.imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1};
         bic.imageExtent = {(uint32_t)w, (uint32_t)h, 1};
         vkCmdCopyImageToBuffer(cmd, depth_img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, depth_stg_buf, 1, &bic);
+    }
+
+    // COLOR readback: the present color target is in SHADER_READ_ONLY (render-pass finalLayout).
+    // Barrier → TRANSFER_SRC, copy to host staging, barrier back to SHADER_READ_ONLY (Dolphin's
+    // presenter samples it after this) so the OverrideImageLayout(SHADER_READ_ONLY) below stays valid.
+    VkImage color_img = static_cast<Vulkan::VKTexture*>(target.get())->GetImage();
+    if (efb_rb_c) {
+        VkImageMemoryBarrier cb{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        cb.srcAccessMask = VK_ACCESS_SHADER_READ_BIT; cb.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        cb.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; cb.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        cb.srcQueueFamilyIndex = cb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        cb.image = color_img; cb.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             0, 0, nullptr, 0, nullptr, 1, &cb);
+        VkBufferImageCopy bic{};
+        bic.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        bic.imageExtent = {(uint32_t)w, (uint32_t)h, 1};
+        vkCmdCopyImageToBuffer(cmd, color_img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, color_stg_buf, 1, &bic);
+        cb.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT; cb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        cb.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL; cb.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                             0, 0, nullptr, 0, nullptr, 1, &cb);
     }
 
     vkEndCommandBuffer(cmd);
@@ -1059,6 +1102,46 @@ AbstractTexture* PresentRenderer::render(int w, int h) {
             vkUnmapMemory(dev, depth_stg_mem);
         }
         g_efb_want.fetch_sub(1);
+        // DBG: depth histogram — confirms the readback has a real near/far spread (geometry vs sky).
+        if (s_efb_dbg && (g_frames % 60) == 0 && !g_efb_depth.empty()) {
+            int bins[10] = {0}; size_t nfar = 0; float dmin = 1e9f, dmax = -1e9f;
+            for (float d : g_efb_depth) {
+                if (d < dmin) dmin = d; if (d > dmax) dmax = d;
+                if (d >= 0.99999f) nfar++;
+                int b = (int)(d * 10.0f); if (b < 0) b = 0; if (b > 9) b = 9; bins[b]++;
+            }
+            fprintf(stderr, "[efb] depth %dx%d n=%zu far(=1)=%zu min=%.4f max=%.4f bins[0..9]=",
+                    g_efb_dw, g_efb_dh, g_efb_depth.size(), nfar, dmin, dmax);
+            for (int i = 0; i < 10; i++) fprintf(stderr, "%d ", bins[i]);
+            fprintf(stderr, "\n");
+        }
+    }
+
+    // Publish the COLOR readback (packed ARGB8888). Vulkan RGBA8 staging is byte order R,G,B,A.
+    if (efb_rb_c) {
+        void* p = nullptr;
+        if (vkMapMemory(dev, color_stg_mem, 0, (VkDeviceSize)w * h * 4, 0, &p) == VK_SUCCESS && p) {
+            const uint8_t* src = (const uint8_t*)p;
+            std::lock_guard<std::mutex> lk(g_efb_mtx);
+            g_efb_color.resize((size_t)w * h);
+            for (size_t i = 0; i < (size_t)w * h; i++) {
+                uint8_t r = src[i*4+0], g = src[i*4+1], b = src[i*4+2], a = src[i*4+3];
+                g_efb_color[i] = ((uint32_t)a << 24) | ((uint32_t)r << 16) | ((uint32_t)g << 8) | b;
+            }
+            g_efb_dw = w; g_efb_dh = h;
+            vkUnmapMemory(dev, color_stg_mem);
+        }
+        g_efb_want_color.fetch_sub(1);
+        // DBG: ARGB at screen-center (TMario::drawSyncCallback peeks here; checks alpha==0x10).
+        if (s_efb_dbg && (g_frames % 60) == 0 && !g_efb_color.empty()) {
+            auto at = [&](int gx, int gy) { long rx = (long)gx*g_efb_dw/640, ry=(long)gy*g_efb_dh/448;
+                return g_efb_color[(size_t)ry*g_efb_dw+rx]; };
+            // alpha histogram across the frame (is 0x10 a present value?)
+            size_t a10 = 0, aff = 0, a00 = 0, aother = 0;
+            for (uint32_t c : g_efb_color) { uint8_t a = c>>24; if (a==0x10) a10++; else if (a==0xff) aff++; else if (a==0) a00++; else aother++; }
+            fprintf(stderr, "[efb] color %dx%d center(320,224)=%08x (160,150)=%08x  alpha: =0x10:%zu =0xff:%zu =0:%zu other:%zu\n",
+                    g_efb_dw, g_efb_dh, at(320,224), at(160,150), a10, aff, a00, aother);
+        }
     }
 
     // Dolphin's tracked layout now matches the render pass's final layout.
@@ -1073,6 +1156,16 @@ AbstractTexture* PresentRenderer::render(int w, int h) {
 // A guest EFB-read override calls request() to arm the depth readback, then peek_depth() to sample
 // ngx's last-rendered scene depth at guest EFB coords. Returns 0 (and far) until a frame is published.
 extern "C" void sb_ngx_efb_request_readback() { g_efb_want.store(8); }   // keep alive ~8 frames/request
+extern "C" void sb_ngx_efb_request_color() { g_efb_want_color.store(8); }
+extern "C" int sb_ngx_efb_peek_color(int gx, int gy, uint32_t* out) {    // packed ARGB8888
+    std::lock_guard<std::mutex> lk(g_efb_mtx);
+    if (g_efb_color.empty() || g_efb_dw <= 0 || g_efb_dh <= 0) return 0;
+    long rx = (long)gx * g_efb_dw / 640, ry = (long)gy * g_efb_dh / 448;
+    if (rx < 0) rx = 0; if (rx >= g_efb_dw) rx = g_efb_dw - 1;
+    if (ry < 0) ry = 0; if (ry >= g_efb_dh) ry = g_efb_dh - 1;
+    *out = g_efb_color[(size_t)ry * g_efb_dw + rx];
+    return 1;
+}
 extern "C" int sb_ngx_efb_peek_depth(int gx, int gy, float* out) {
     std::lock_guard<std::mutex> lk(g_efb_mtx);
     if (g_efb_depth.empty() || g_efb_dw <= 0 || g_efb_dh <= 0) return 0;
