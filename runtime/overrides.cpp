@@ -101,6 +101,11 @@ PreHookFn prehook_lookup(u32 addr) {
 
 bool prehooks_registered() { return !prehook_table().empty(); }
 
+bool sunbright_purejit_mode() {
+    static const bool on = std::getenv("SUNBRIGHT_PUREJIT") != nullptr;
+    return on;
+}
+
 void force_jit(u32 addr) { jit_ranges().emplace_back(addr, addr + 4); }
 
 void force_jit_range(u32 lo, u32 hi) { jit_ranges().emplace_back(lo, hi); }

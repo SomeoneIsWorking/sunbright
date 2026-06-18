@@ -91,6 +91,9 @@ bool dolphin_hook_install(const char*) { recomp_build_dispatch(); return true; }
 void dolphin_hook_uninstall() { delete[] g_dispatch; g_dispatch = nullptr; }
 
 RecompFunc recomp_lookup(u32 address) {
+    // No-recomp / pure-JIT mode: serve no recomp body. With recomp off, all guest code runs under
+    // Dolphin's JIT, which re-consults the trampoline (and thus pre-hooks) at every block boundary.
+    if (sunbright_purejit_mode()) return nullptr;
     // Forced-JIT and hand-written overrides are rare; skip both lookups entirely
     // unless something was actually registered.
     if (g_have_jit_forced && is_jit_forced(address)) return nullptr;
@@ -106,6 +109,10 @@ RecompFunc recomp_lookup(u32 address) {
 // of the "own the object model, keep Dolphin's GPU" render port (e.g. hook J2DScreen::draw, fix the
 // 2D layout, then run the original draw). Returns nullptr if `address` isn't recompiled.
 RecompFunc recomp_raw(u32 address) {
+    // No-recomp / pure-JIT mode: there is no recomp body to super-call. Returning null routes every
+    // wrapping override's super-call into its fallback; those overrides must instead be converted to
+    // PRE-HOOKS (observe + let Dolphin JIT the original) — see overrides.h sunbright_purejit_mode.
+    if (sunbright_purejit_mode()) return nullptr;
     if (address >= g_dispatch_lo && address < g_dispatch_hi && !(address & 3))
         return g_dispatch[(address - g_dispatch_lo) >> 2];
     return nullptr;

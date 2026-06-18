@@ -51,6 +51,22 @@ PreHookFn  prehook_lookup(u32 addr);      // nullptr if none
 void       register_prehook(u32 addr, PreHookFn fn);
 bool       prehooks_registered();
 
+// ── True no-recomp execution mode (SUNBRIGHT_PUREJIT) ─────────────────────────
+// The target architecture (debug_journal/2026-06-18_no_recomp_jit_native_pivot.md): the static
+// recompiler is OFF entirely — recomp_lookup/recomp_raw serve null, native_os (the nthr scheduler)
+// is off, and the hybrid-era EXEC-MODEL overrides (VI pacing / GX-FIFO drawsync / host-clock
+// governor) are off. Gameplay runs under Dolphin's own JIT (which owns OS/threading/pacing — proven
+// by the DISABLE_RECOMP boot), and the PC-native ENGINE intercepts via PRE-HOOKS consulted in the
+// JIT trampoline (observe guest state, then let Dolphin JIT the original block). This is the real
+// form of what was the throwaway PUREJIT validation switch. Distinct from SUNBRIGHT_NO_RECOMP, the
+// Phase-A half-measure that only flips the top-level JIT entry while recomp still dominates.
+//
+// Engine overrides cannot dispatch via Run() under this mode: nearly all of them carry a default-OFF
+// super-call fallback (recomp_raw / call_ppc(cpu.lr)) that, with recomp gone, would route the caller
+// continuation through the interpreter (which bypasses overrides). So the engine seam is pre-hooks
+// only; full-replacement overrides are converted/re-grounded as purejit-aware seams per-override.
+bool sunbright_purejit_mode();
+
 bool is_jit_forced(u32 addr);
 void force_jit(u32 addr);                 // single address
 void force_jit_range(u32 lo, u32 hi);     // [lo, hi)

@@ -756,6 +756,24 @@ static void sunbright_load_dotenv() {
 
 int main(int argc, char* argv[]) {
     sunbright_load_dotenv();   // make $SUNBRIGHT_* from .env available without manual sourcing
+
+    // ── True no-recomp / pure-JIT engine mode (SUNBRIGHT_PUREJIT) ─────────────
+    // The PC-native target architecture runs on the SAME pure-Dolphin-JIT substrate as
+    // SUNBRIGHT_DISABLE_RECOMP (which boots cleanly and lets Dolphin own OS/threading/pacing). On top
+    // of that substrate, the engine intercepts via PRE-HOOKS in the JIT trampoline. The hybrid-era
+    // WRAP-level hooks (audio Mixer/AID capture, MMIO/gather-pipe routing, GX-FIFO drawsync, the
+    // host-clock governor) are tuned for the recomp call model and STALL a pure-JIT boot; they are
+    // already correctly inerted by the DISABLE_RECOMP guard sprinkled through the runtime. So PUREJIT
+    // IMPLIES the DISABLE_RECOMP substrate — set it here (before any getenv-cached gate is read) so
+    // PUREJIT is a complete single-flag mode rather than requiring both. Verified: PUREJIT-alone
+    // stalls right after data/nintendo.szs; with the substrate it reaches Delfino (dolpic5.szs) at
+    // 1.0× and the engine pre-hook seams fire. (Engine overrides re-grounded per-override in step 3.)
+    if (getenv("SUNBRIGHT_PUREJIT") && !getenv("SUNBRIGHT_DISABLE_RECOMP")) {
+        setenv("SUNBRIGHT_DISABLE_RECOMP", "1", 1);
+        fprintf(stderr, "[purejit] no-recomp engine mode: implying SUNBRIGHT_DISABLE_RECOMP "
+                        "(pure Dolphin-JIT substrate + engine pre-hooks)\n");
+    }
+
     sb_install_hooks();        // point the Dolphin-fork hook slots at our runtime hooks (replaces
                                // the old linker --wrap interception, except JitTrampoline)
 

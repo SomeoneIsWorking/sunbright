@@ -33,22 +33,13 @@ static void dbg_tramp_init() {
     g_dbg_tramp = true;
 }
 
-// ── Phase-B validation: SUNBRIGHT_PUREJIT=1 ──────────────────────────────────
-// Proves the crystallized target architecture (DISABLE_RECOMP + engine observe-hooks, no recomp /
-// native_os / exec-model overrides) BEFORE building the full pre-hook machinery. When set,
-// IsRecompiled returns false for everything (pure Dolphin JIT — Dolphin owns OS/threading/pacing,
-// exactly the boot that already works), but here in the trampoline we run an OBSERVE pre-hook on a
-// few engine draw addresses, then still return false so Dolphin JITs the original block. If boot
-// reaches gameplay AND the hooks fire, "pure JIT + observe-hook" is viable and the wrapping engine
-// overrides can be converted to pre-hooks (Phase B step 2). Observation only — no state change.
-static bool purejit_enabled() {
-    static const bool on = getenv("SUNBRIGHT_PUREJIT") != nullptr;
-    return on;
-}
-
-// Run any pre-hook registered for this block, then let Dolphin JIT the original (caller returns
-// false). The pre-hook OBSERVES off a CPUState mirrored from Dolphin's live PPC state. Returns true
-// iff a pre-hook ran (purely informational; control still falls through to Dolphin's JIT).
+// ── Engine pre-hook seam (no-recomp / pure-JIT mode) ─────────────────────────
+// A pre-hook OBSERVES a guest block (reads args / guest RAM to feed the PC-native engine, e.g. ngx
+// J3D capture) off a CPUState mirrored from Dolphin's live PPC state, then control falls through so
+// Dolphin JITs the ORIGINAL block (whose sub-calls re-consult the trampoline naturally). This is the
+// engine seam under SUNBRIGHT_PUREJIT, where recomp is off and overrides can't dispatch via Run()
+// (see overrides.h sunbright_purejit_mode). Cheap-rejected to zero cost when no pre-hook is
+// registered (the recomp path). Observation only — a pre-hook must not change control flow.
 static bool run_prehook(u32 em_address) {
     static const bool any = prehooks_registered();   // skip the lookup entirely when none registered
     if (!any) return false;
@@ -64,8 +55,7 @@ static bool run_prehook(u32 em_address) {
 // The fork hook body. jit is JitBase* (opaque here — we never need it; non-recomp returns false
 // and the fork's JitTrampoline calls jit.Jit() itself). Returns true iff we ran a recompiled block.
 extern "C" bool sb_hook_jit_trampoline(void* /*jit*/, u32 em_address) {
-    // Pure-JIT no-recomp seam: observe via pre-hooks, then Dolphin JITs the original block.
-    if (purejit_enabled()) { run_prehook(em_address); return false; }
+    run_prehook(em_address);   // engine observe seam (no-op when no pre-hook registered)
     const bool rc = SunbrightBridge::IsRecompiled(em_address);
     static const bool tramp_inited = (dbg_tramp_init(), true);
     (void)tramp_inited;

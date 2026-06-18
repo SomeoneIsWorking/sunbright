@@ -1,6 +1,7 @@
 #include "native_os.h"
 #include "dolphin_hook.h"      // nthrt_spawn_guest / nthrt_make_ready / nthrt_block_current
 #include "native_threads.h"    // nthr::ready_count
+#include "overrides.h"         // sunbright_purejit_mode (no-recomp: Dolphin owns threading)
 
 #include <algorithm>
 #include <cstdio>
@@ -98,6 +99,11 @@ void native_os_register(u32 addr, NativeOSFn fn) {
 }
 
 NativeOSFn native_os_lookup(u32 addr) {
+    // No-recomp / pure-JIT mode: the nthr native scheduler exists only to support the recomp call
+    // model (it parks guest threads on tokens the recomp grants). Under pure Dolphin JIT, Dolphin
+    // owns OS/threading correctly (the DISABLE_RECOMP boot proves it); nthr here only deadlocks boot.
+    // One chokepoint disables native_os on all three consult paths (IsRecompiled / Run / call_ppc).
+    if (sunbright_purejit_mode()) return nullptr;
     if (addr < g_os_lo || addr >= g_os_hi) return nullptr;   // cheap reject (hot path)
     auto it = g_native_os.find(addr);
     return it == g_native_os.end() ? nullptr : it->second;

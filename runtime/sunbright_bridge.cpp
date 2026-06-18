@@ -81,6 +81,12 @@ bool IsRecompiled(uint32_t pc) {
     // a control to isolate recomp-handoff bugs from launcher/Dolphin issues.
     static const bool disabled = getenv("SUNBRIGHT_DISABLE_RECOMP") != nullptr;
     if (disabled) return false;
+    // True no-recomp / pure-JIT engine mode: recomp is OFF (recomp_lookup/recomp_raw serve null,
+    // native_os off). Nothing routes to Run() here — the PC-native engine intercepts via PRE-HOOKS
+    // consulted in the JIT trampoline (observe-then-let-Dolphin-JIT-the-original), not via recomp
+    // dispatch. Full-replacement engine overrides are re-grounded as purejit-aware seams per-override
+    // (Phase B step 3); until then every block falls to Dolphin's JIT. See overrides.h.
+    if (sunbright_purejit_mode()) return false;
     if (is_jit_forced(pc)) return false;            // routed to Dolphin's JIT
     // NO_RECOMP boot-hang bisection (2026-06-18): SUNBRIGHT_NORECOMP_NOOV=1 skips ALL native
     // overrides + native-OS under no_recomp → should behave like DISABLE_RECOMP and boot, proving

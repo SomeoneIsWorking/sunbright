@@ -262,9 +262,30 @@ getting fastboot (an engine override) working in the pure-JIT mode — i.e. Phas
    observe pre-hooks on J3DShape::draw + J2DScreen::drawSelf (gated on SUNBRIGHT_PUREJIT); under
    DISABLE_RECOMP+PUREJIT the `[purejit] pre-hook seams hit` line fires and boot stays at 1.0×. The
    probe + PUREJIT switch are throwaway scaffolding for the real engine pre-hooks (steps 2-3).
-2. **A real no-recomp execution mode** where recomp_lookup/recomp_raw return null (no recomp bodies),
-   native_os off, exec-model overrides (VI/drawsync/governor/charge_guest_time) off — i.e. pure
-   Dolphin JIT + pre-hooks. Distinct from today's half-measure SUNBRIGHT_NO_RECOMP.
+2. **[DONE 2026-06-18, session 10]** A real no-recomp execution mode — `SUNBRIGHT_PUREJIT` is now a
+   complete SINGLE-FLAG mode (folded in the throwaway trampoline short-circuit + scaffolding):
+   - `recomp_lookup`/`recomp_raw` return null under purejit (dolphin_hook.cpp) — no recomp bodies, no
+     super-call bodies.
+   - `native_os_lookup` returns null under purejit (native_os.cpp) — ONE chokepoint disables the nthr
+     scheduler on all three consult paths (IsRecompiled / Run / call_ppc); Dolphin owns threading.
+   - `IsRecompiled` returns false under purejit (sunbright_bridge.cpp) — nothing routes to Run(); the
+     engine seam is PRE-HOOKS only (trampoline runs run_prehook unconditionally, cheap-rejected to
+     zero when none registered, then normal dispatch).
+   - Centralized `bool sunbright_purejit_mode()` (overrides.h/.cpp) — the single mode accessor.
+   - **★ KEY FINDING: PUREJIT requires the DISABLE_RECOMP substrate.** PUREJIT-ALONE stalls right
+     after `data/nintendo.szs` (3.76× uncapped, core_running, recomp=0 — not a race/crawl, a genuine
+     early stall). Cause: the hybrid-era NON-OVERRIDE WRAP hooks (audio Mixer/AID capture, MMIO/
+     gather-pipe routing, GX-FIFO drawsync, host-clock governor) stay active and are tuned for the
+     recomp call model — they were never grounded for a pure-JIT boot. DISABLE_RECOMP already inerts
+     ALL of them via its guard sprinkled through the runtime. So `main()` now sets
+     `SUNBRIGHT_DISABLE_RECOMP` when `SUNBRIGHT_PUREJIT` is set (before any getenv-cached gate reads
+     it). This refines the handoff: gating recomp_lookup/native_os/exec-model-OVERRIDES is NOT
+     sufficient — there's a whole wrap-hook layer underneath, and DISABLE_RECOMP is the lever for it.
+   - VERIFIED (single flag `SUNBRIGHT_PUREJIT=1 AUTOSTART BACKEND=OGL`, headless): boot PROGRESSES to
+     Delfino (`data/scene/dolpic5.szs`, sequence.arc, Entrance.thp) at **1.0×**, recomp calls **0**,
+     and the engine pre-hook seam fires (`[purejit] pre-hook seams hit: J3DShape::draw=1`). Default
+     recomp path unaffected (smoke: 1.06×, 60M recomp calls, frame_swaps=443, ngx capturing).
+   - NOTE: sustained 3D hits not yet reached — AUTOSTART cycles attract/THP; needs fastboot (step 3).
 3. **Convert class-(B) engine overrides to pre-hooks**, starting with fastboot (to reach gameplay
    headlessly) and the ngx capture seams (J3DShape/J2DScreen/scene_render). Each: observe guest state
    for ngx, return-false so Dolphin runs the original. Full native replacements (ngx g_native_draw)
@@ -272,9 +293,14 @@ getting fastboot (an engine override) working in the pure-JIT mode — i.e. Phas
 4. Then validate sustained Delfino render under pure JIT + ngx present; A/B pixels vs the recomp path.
 
 ## Files
-- runtime/jit_hook.cpp — SUNBRIGHT_PUREJIT observe-hook validation (Phase B step 4).
-- runtime/overrides.h / overrides.cpp — register_override → register_override_impl(group); NORECOMP_SKIP/ONLY.
-- runtime/sunbright_bridge.cpp — `IsRecompiled` no_recomp branch (Phase A) + `norecomp_skip_native_os` (NONOS A/B).
+- runtime/jit_hook.cpp — `sb_hook_jit_trampoline` runs `run_prehook` then normal dispatch (step 2).
+- runtime/overrides.h / overrides.cpp — `sunbright_purejit_mode()` accessor + pre-hook table;
+  register_override → register_override_impl(group); NORECOMP_SKIP/ONLY.
+- runtime/native_os.cpp — `native_os_lookup` returns null under purejit (the native_os chokepoint).
+- runtime/dolphin_hook.cpp — `recomp_lookup`/`recomp_raw` return null under purejit; SUNBRIGHT_DBG_CPBT.
+- runtime/main_sdl.cpp — `SUNBRIGHT_PUREJIT` implies `SUNBRIGHT_DISABLE_RECOMP` substrate (top of main).
+- runtime/overrides/purejit_probe.cpp — observe pre-hooks on J3DShape/J2DScreen (step-3 placeholder).
+- runtime/sunbright_bridge.cpp — `IsRecompiled` purejit branch (step 2) + no_recomp branch (Phase A).
 - scratch/norecomp_bisect.sh — boot-hang bisection harness.
 - runtime/overrides/ngx_j3d_shape.cpp — `g_native_draw` + ov_j3dshape_draw native per-view setup.
 - runtime/overrides.h — SUNBRIGHT_OVERRIDE_IF (conditional registration).
