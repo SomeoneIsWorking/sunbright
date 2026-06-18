@@ -3022,6 +3022,23 @@ int sb_ngx_gxstate_dump(char* out, int cap) {
         for (int c=0;c<4;c++) n += snprintf(out+n,cap-n,"(%d,%d,%d,%d) ", T.tev_color[c][0],T.tev_color[c][1],T.tev_color[c][2],T.tev_color[c][3]);
         n += snprintf(out+n, cap-n, "\n    KONST0..3: ");
         for (int c=0;c<4;c++) n += snprintf(out+n,cap-n,"(%d,%d,%d,%d) ", T.kcolor[c][0],T.kcolor[c][1],T.kcolor[c][2],T.kcolor[c][3]);
+        // ── GX-AUTHORITATIVE combiner (Dolphin bpmem) — the actual BP regs the game programmed via
+        // GXSetTevColorIn/Op/etc. Compare ngx's obj-model color_env/alpha_env per stage against these
+        // to find a COMBINER divergence (the floor-wash class) at the STATE level, not output pixels.
+        n += snprintf(out+n, cap-n, "\n    ── GX (bpmem) combiner vs ngx ── (CAVEAT: bpmem is GP-thread"
+                                    " state, ASYNC-LAGGED — a DIFF may be the wrong material's regs,"
+                                    " not an ngx bug; corroborate with the rendered image)\n");
+        for (int s=0;s<T.num_stages && s<16;s++) {
+            const u32 gce = bpmem.combiners[s].colorC.hex & 0xFFFFFF, gae = bpmem.combiners[s].alphaC.hex & 0xFFFFFF;
+            const u32 nce = T.stage[s].color_env & 0xFFFFFF, nae = T.stage[s].alpha_env & 0xFFFFFF;
+            n += snprintf(out+n, cap-n, "    s%d color_env ngx=%06x gx=%06x %s   alpha_env ngx=%06x gx=%06x %s\n",
+                s, nce, gce, nce==gce?"PASS":"**DIFF**", nae, gae, nae==gae?"PASS":"**DIFF**");
+        }
+        // GX TEV color/konst registers (S11 per channel; tevregs[0]=CPREV,1..3=C0..C2). The wash can
+        // hide here: a too-bright TEV const/konst that the combiner adds/modulates.
+        n += snprintf(out+n, cap-n, "    GX tevregs RA/BG raw: ");
+        for (int c=0;c<4;c++) n += snprintf(out+n,cap-n,"[%08x %08x] ",
+            bpmem.tevregs[c].ra.hex, bpmem.tevregs[c].bg.hex);
         // The ACTUAL fragment GLSL ngx runs for this material — verifies the combiner
         // TRANSLATION (scale/clamp/bias), not just the decoded fields. The hand-computed
         // spec is the oracle; this is what ngx really executes per pixel.
