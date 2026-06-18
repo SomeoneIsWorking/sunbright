@@ -105,6 +105,18 @@ bool jit_forced_registered();             // any forced-JIT range registered?
         (register_override((addr), &name), true);                               \
     static void name(CPUState& cpu)
 
+// ENGINE variant — register AND mark purejit-safe, so the override is ACTIVE under no-recomp
+// (dispatched via Run(): runs native, returns to lr; Dolphin's JIT then continues the caller).
+// Use for FULL-REPLACEMENT engine seams where the native subsystem fully owns the behavior. The
+// body MUST NOT lean on a recomp body to continue the caller — for guest-helper calls use
+// call_ppc(cpu, helper_addr) (leaf helpers, runs under the interpreter) or sb_run_original_around
+// (when the original's subtree must keep hitting overrides, e.g. it calls another overridden fn).
+#define SUNBRIGHT_OVERRIDE_NATIVE(name, addr)                                   \
+    static void name(CPUState& cpu);                                            \
+    static const bool name##_registered =                                       \
+        (register_override((addr), &name), mark_override_purejit_safe((addr)), true); \
+    static void name(CPUState& cpu)
+
 // Conditional variant — register the override ONLY when `cond` is true at static-init time.
 // For FEATURE/observer overrides (interp60, debug tracers): when the feature is off they would
 // otherwise just super-call the recompiled body, which under the no-recomp pivot needlessly forces

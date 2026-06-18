@@ -73,6 +73,15 @@ static bool njas_enabled() {
     return !disabled;
 }
 
+// Run the guest original of an njas tee under Dolphin's JIT (no-recomp). Used for the FALLBACK
+// path of a purejit-safe (SUNBRIGHT_OVERRIDE_NATIVE) tee — i.e. a sound id the engine doesn't own
+// (stream / unhandled), or SUNBRIGHT_NO_NJAS A/B. The recomp body is gone, and call_ppc(cpu,addr)
+// would run it under the interpreter (bypassing overrides in its subtree); the reentrant primitive
+// runs it under Dolphin's JIT so any nested overridden call (e.g. it funnels into another tee) still
+// intercepts, and the guest's own audio engine plays it (njas-handled ids never take this path, so
+// no double output). Must be the override's last action (it threads through the dispatcher).
+static void run_guest(CPUState& cpu, u32 addr) { sb_run_original_around(cpu, addr, nullptr, 0); }
+
 static bool dbg() {
     static int v = -1;
     if (v < 0) { const char* e = getenv("SUNBRIGHT_DBG_NJAS"); v = (e && *e && *e != '0') ? 1 : 0; }
@@ -176,11 +185,11 @@ SUNBRIGHT_OVERRIDE(ov_startSoundActor, 0x80301e80u) {
 
 // JAIBasic::startSoundBasic(this r3, id r4, JAISound** r5, JAIActor* r6, param r7,
 // flag r8, info r9). Audio M4: handled ids never run the guest body.
-SUNBRIGHT_OVERRIDE(ov_startSoundBasic, 0x803020acu) {
+SUNBRIGHT_OVERRIDE_NATIVE(ov_startSoundBasic, 0x803020acu) {
     const uint32_t id = cpu.gpr[4], slot = cpu.gpr[5], actor = cpu.gpr[6];
     const uint32_t param = cpu.gpr[7], info = cpu.gpr[9];
     njas_set_jaibasic(cpu.gpr[3]);   // live JAIBasic* — category-mute config source
-    if (!njas_enabled() || !handled_id(id)) { func_803020ac(cpu); return; }
+    if (!njas_enabled() || !handled_id(id)) { run_guest(cpu, 0x803020acu); return; }
 
     uint32_t swbit = 0;
     uint8_t prio = is_seq_id(id) ? 0x40 : 0, seqTrack = 0;
@@ -228,10 +237,10 @@ SUNBRIGHT_OVERRIDE(ov_startSoundBasic, 0x803020acu) {
 
 // Camera input for the native 3D layer: JAIBasic::setCameraInfo(this, pos Vec* r4,
 // dir Vec* r5, view Mtx* r6, cam id r7). SMS runs audioCameraMax == 1.
-SUNBRIGHT_OVERRIDE(ov_setCameraInfo, 0x80300ce4u) {
+SUNBRIGHT_OVERRIDE_NATIVE(ov_setCameraInfo, 0x80300ce4u) {
     if (njas_enabled() && cpu.gpr[7] == 0)
         njas_set_camera(cpu.gpr[4], cpu.gpr[6]);
-    func_80300ce4(cpu);
+    run_guest(cpu, 0x80300ce4u);
 }
 SUNBRIGHT_OVERRIDE(ov_startSoundDirectID, 0x80301fc4u) {
     if (dbg()) fprintf(stderr, "[se_native] startSoundDirectID id=%08x\n", cpu.gpr[4]);
@@ -245,13 +254,13 @@ SUNBRIGHT_OVERRIDE(ov_startSoundIndirectID, 0x80302034u) {
 // JAIBasic::stopSoundHandle(this, JAISound* r4, fade r5). Pool handles are native-only;
 // fade==0 releases the handle immediately (guest releaseSeRegist → clearMainSoundPPointer),
 // fade>0 keeps it until the engine reports the instance dead (frame tick reclaims).
-SUNBRIGHT_OVERRIDE(ov_stopSoundHandle, 0x80302224u) {
+SUNBRIGHT_OVERRIDE_NATIVE(ov_stopSoundHandle, 0x80302224u) {
     const uint32_t snd = cpu.gpr[4], fade = cpu.gpr[5];
     std::unique_lock<std::mutex> lk(g_pool_mtx);
     const int pi = pool_index(snd);
     if (!njas_enabled() || pi < 0 || !g_pool[pi].used) {
         lk.unlock();
-        func_80302224(cpu);                         // streams / oracle / stale handle
+        run_guest(cpu, 0x80302224u);                // streams / oracle / stale handle
         return;
     }
     if (dbg()) fprintf(stderr, "[se_native] stopSoundHandle id=%08x fade=%u pos=%08x\n",
@@ -262,8 +271,8 @@ SUNBRIGHT_OVERRIDE(ov_stopSoundHandle, 0x80302224u) {
 
 // JAIBasic::stopAllSe(this, category r4): the guest body walks the (now always empty)
 // registry — the category sweep is native.
-SUNBRIGHT_OVERRIDE(ov_stopAllSe, 0x8030241cu) {
-    if (!njas_enabled()) { func_8030241c(cpu); return; }
+SUNBRIGHT_OVERRIDE_NATIVE(ov_stopAllSe, 0x8030241cu) {
+    if (!njas_enabled()) { run_guest(cpu, 0x8030241cu); return; }
     const uint8_t cat = (uint8_t)cpu.gpr[4];
     if (dbg()) fprintf(stderr, "[se_native] stopAllSe cat=%u\n", cat);
     njas_se_stop_category(cat);
@@ -275,8 +284,8 @@ SUNBRIGHT_OVERRIDE(ov_stopAllSe, 0x8030241cu) {
 
 // MSoundSE::checkMonoSound (0x80017ddc) — mono-flag (swbit 0x4000) enforcement walks the
 // guest registry (empty under the pool). Owned natively at dispatch (native_jas.cpp).
-SUNBRIGHT_OVERRIDE(ov_checkMonoSound, 0x80017ddcu) {
-    if (!njas_enabled()) { if (RecompFunc o = recomp_raw(0x80017ddcu)) o(cpu); else call_ppc(cpu, cpu.lr); return; }
+SUNBRIGHT_OVERRIDE_NATIVE(ov_checkMonoSound, 0x80017ddcu) {
+    if (!njas_enabled()) { run_guest(cpu, 0x80017ddcu); return; }
     cpu.gpr[3] = 1;   // bool true, like the guest
 }
 
@@ -284,8 +293,8 @@ SUNBRIGHT_OVERRIDE(ov_checkMonoSound, 0x80017ddcu) {
 // run (audio M4). Its seat is now the handle pool's reclaim tick: entries whose engine
 // instance has died get their actor handle variable cleared (clearMainSoundPPointer)
 // and return to the pool.
-SUNBRIGHT_OVERRIDE(ov_checkNextFrameSe, 0x80305204u) {
-    if (!njas_enabled()) { if (RecompFunc o = recomp_raw(0x80305204u)) o(cpu); else call_ppc(cpu, cpu.lr); return; }
+SUNBRIGHT_OVERRIDE_NATIVE(ov_checkNextFrameSe, 0x80305204u) {
+    if (!njas_enabled()) { run_guest(cpu, 0x80305204u); return; }
     std::lock_guard<std::mutex> lk(g_pool_mtx);
     for (int i = 0; i < kPoolN; i++)
         if (g_pool[i].used && !g_pool[i].pinned
@@ -300,21 +309,21 @@ SUNBRIGHT_OVERRIDE(ov_checkNextFrameSe, 0x80305204u) {
 // per-sound move params — is owned by the engine (MovePara), so it does not run.
 // The other per-frame walkers in processFrameWork stay guest: they iterate registry
 // lists that are simply empty now, and checkStream is the LIVE stream path.
-SUNBRIGHT_OVERRIDE(ov_checkSeMovePara, 0x80305fbcu) {
-    if (!njas_enabled()) { if (RecompFunc o = recomp_raw(0x80305fbcu)) o(cpu); else call_ppc(cpu, cpu.lr); }
+SUNBRIGHT_OVERRIDE_NATIVE(ov_checkSeMovePara, 0x80305fbcu) {
+    if (!njas_enabled()) { run_guest(cpu, 0x80305fbcu); }
 }
 
 // MSBgm::setStageBgmYoshiPercussion(bool) — Yoshi mount/dismount gates the stage BGM's
 // percussion layer (track 15, muted at open by the synccpu-0 callback).
-SUNBRIGHT_OVERRIDE(ov_setStageBgmYoshiPercussion, 0x80016548u) {
+SUNBRIGHT_OVERRIDE_NATIVE(ov_setStageBgmYoshiPercussion, 0x80016548u) {
     if (dbg()) fprintf(stderr, "[se_native] setStageBgmYoshiPercussion(%u)\n", cpu.gpr[3] & 1);
     if (njas_enabled()) njas_bgm_yoshi_percussion((int)(cpu.gpr[3] & 1));
-    if (RecompFunc o = recomp_raw(0x80016548u)) o(cpu); else call_ppc(cpu, cpu.lr);
+    run_guest(cpu, 0x80016548u);
 }
 
-SUNBRIGHT_OVERRIDE(ov_setSeCategoryVolume, 0x803029a4u) {
+SUNBRIGHT_OVERRIDE_NATIVE(ov_setSeCategoryVolume, 0x803029a4u) {
     if (njas_enabled()) njas_se_category_volume((uint8_t)cpu.gpr[4], (uint8_t)cpu.gpr[5]);
-    func_803029a4(cpu);
+    run_guest(cpu, 0x803029a4u);
 }
 // Resident wave-scene switch. NOTE: JAIBasic::loadGroupWave is VIRTUAL and SMS
 // overrides it (MSound::loadGroupWave, not in the symbol map; its wScene path loads
@@ -322,17 +331,17 @@ SUNBRIGHT_OVERRIDE(ov_setSeCategoryVolume, 0x803029a4u) {
 // covering entry points instead:
 //   JAIBasic::loadSceneWave(this=r3, wsys=r4, scene=r5) — all stage wave loads
 //   WaveBankMgr::loadWave(wsys=r3, scene=r4)            — init stay groups + directs
-SUNBRIGHT_OVERRIDE(ov_loadSceneWave, 0x803017b0u) {
+SUNBRIGHT_OVERRIDE_NATIVE(ov_loadSceneWave, 0x803017b0u) {
     if (dbg()) fprintf(stderr, "[se_native] loadSceneWave wsys=%d scene=%d\n",
                        (int)cpu.gpr[4], (int)cpu.gpr[5]);
     if (njas_enabled()) njas_set_wave_scene((int)cpu.gpr[4], (int)cpu.gpr[5]);
-    func_803017b0(cpu);
+    run_guest(cpu, 0x803017b0u);
 }
-SUNBRIGHT_OVERRIDE(ov_wavebank_loadWave, 0x80310994u) {
+SUNBRIGHT_OVERRIDE_NATIVE(ov_wavebank_loadWave, 0x80310994u) {
     if (dbg()) fprintf(stderr, "[se_native] WaveBankMgr::loadWave wsys=%d scene=%d\n",
                        (int)cpu.gpr[3], (int)cpu.gpr[4]);
     if (njas_enabled()) njas_set_wave_scene((int)cpu.gpr[3], (int)cpu.gpr[4]);
-    func_80310994(cpu);
+    run_guest(cpu, 0x80310994u);
 }
 
 // Outer JAISound::setVolume/setPan/setPitch (this=r3, f1=value, r4=time, r5=slot).
@@ -345,9 +354,9 @@ static bool outer_param(CPUState& cpu, int kind) {
     njas_se_param(id, kind, (uint8_t)cpu.gpr[5], (float)cpu.fpr[1].ps0, cpu.gpr[4]);
     return true;
 }
-SUNBRIGHT_OVERRIDE(ov_jaisound_setVolume, 0x8030a57cu) { if (!outer_param(cpu, 0)) func_8030a57c(cpu); }
-SUNBRIGHT_OVERRIDE(ov_jaisound_setPan,    0x8030a604u) { if (!outer_param(cpu, 1)) func_8030a604(cpu); }
-SUNBRIGHT_OVERRIDE(ov_jaisound_setPitch,  0x8030a68cu) { if (!outer_param(cpu, 2)) func_8030a68c(cpu); }
+SUNBRIGHT_OVERRIDE_NATIVE(ov_jaisound_setVolume, 0x8030a57cu) { if (!outer_param(cpu, 0)) run_guest(cpu, 0x8030a57cu); }
+SUNBRIGHT_OVERRIDE_NATIVE(ov_jaisound_setPan,    0x8030a604u) { if (!outer_param(cpu, 1)) run_guest(cpu, 0x8030a604u); }
+SUNBRIGHT_OVERRIDE_NATIVE(ov_jaisound_setPitch,  0x8030a68cu) { if (!outer_param(cpu, 2)) run_guest(cpu, 0x8030a68cu); }
 
 // Seq (BGM) inter setters (this=r3, slot=r4, f1=value, time=r5): MSBgmXFade fades the
 // outgoing BGM through setSeqInterVolume (NOT stopSoundHandle).
@@ -357,34 +366,34 @@ static bool inner_param_r4slot(CPUState& cpu, int kind) {
     njas_se_param(id, kind, (uint8_t)cpu.gpr[4], (float)cpu.fpr[1].ps0, cpu.gpr[5]);
     return true;
 }
-SUNBRIGHT_OVERRIDE(ov_setSeqInterVolume, 0x8030ad44u) { if (!inner_param_r4slot(cpu, 0)) func_8030ad44(cpu); }
-SUNBRIGHT_OVERRIDE(ov_setSeqInterPan,    0x8030ae44u) { if (!inner_param_r4slot(cpu, 1)) func_8030ae44(cpu); }
-SUNBRIGHT_OVERRIDE(ov_setSeqInterPitch,  0x8030af44u) { if (!inner_param_r4slot(cpu, 2)) func_8030af44(cpu); }
+SUNBRIGHT_OVERRIDE_NATIVE(ov_setSeqInterVolume, 0x8030ad44u) { if (!inner_param_r4slot(cpu, 0)) run_guest(cpu, 0x8030ad44u); }
+SUNBRIGHT_OVERRIDE_NATIVE(ov_setSeqInterPan,    0x8030ae44u) { if (!inner_param_r4slot(cpu, 1)) run_guest(cpu, 0x8030ae44u); }
+SUNBRIGHT_OVERRIDE_NATIVE(ov_setSeqInterPitch,  0x8030af44u) { if (!inner_param_r4slot(cpu, 2)) run_guest(cpu, 0x8030af44u); }
 
 // Seq port writes — the game→BMS data channel (Yoshi-drum track gate etc.): the BMS
 // reads these ports to mute/scale its tracks.
-SUNBRIGHT_OVERRIDE(ov_setSeqPortData, 0x8030b330u) {
+SUNBRIGHT_OVERRIDE_NATIVE(ov_setSeqPortData, 0x8030b330u) {
     uint32_t id;
     if (njas_enabled() && pool_id_of(cpu.gpr[3], id)) {
         njas_seq_port(id, 0xFF, (uint8_t)cpu.gpr[4], (uint16_t)cpu.gpr[5]);
         return;
     }
-    func_8030b330(cpu);
+    run_guest(cpu, 0x8030b330u);
 }
-SUNBRIGHT_OVERRIDE(ov_setTrackPortData, 0x8030b5e0u) {
+SUNBRIGHT_OVERRIDE_NATIVE(ov_setTrackPortData, 0x8030b5e0u) {
     uint32_t id;
     if (njas_enabled() && pool_id_of(cpu.gpr[3], id)) {
         njas_seq_port(id, (uint8_t)cpu.gpr[4], (uint8_t)cpu.gpr[5], (uint16_t)cpu.gpr[6]);
         return;
     }
-    func_8030b5e0(cpu);
+    run_guest(cpu, 0x8030b5e0u);
 }
 
 // Inner SE setters (this=r3, slot=r4, f1=value, time=r5): the funnel for BOTH the
 // public API and the per-frame distance attenuation (M2.5). Same r4-slot ABI as the
 // seq inter setters; kinds 3/4 = fxmix/dolby.
-SUNBRIGHT_OVERRIDE(ov_setSeInterVolume, 0x8030b700u) { if (!inner_param_r4slot(cpu, 0)) func_8030b700(cpu); }
-SUNBRIGHT_OVERRIDE(ov_setSeInterPan,    0x8030b8c8u) { if (!inner_param_r4slot(cpu, 1)) func_8030b8c8(cpu); }
-SUNBRIGHT_OVERRIDE(ov_setSeInterPitch,  0x8030be20u) { if (!inner_param_r4slot(cpu, 2)) func_8030be20(cpu); }
-SUNBRIGHT_OVERRIDE(ov_setSeInterFxmix,  0x8030ba90u) { if (!inner_param_r4slot(cpu, 3)) func_8030ba90(cpu); }
-SUNBRIGHT_OVERRIDE(ov_setSeInterDolby,  0x8030bc58u) { if (!inner_param_r4slot(cpu, 4)) func_8030bc58(cpu); }
+SUNBRIGHT_OVERRIDE_NATIVE(ov_setSeInterVolume, 0x8030b700u) { if (!inner_param_r4slot(cpu, 0)) run_guest(cpu, 0x8030b700u); }
+SUNBRIGHT_OVERRIDE_NATIVE(ov_setSeInterPan,    0x8030b8c8u) { if (!inner_param_r4slot(cpu, 1)) run_guest(cpu, 0x8030b8c8u); }
+SUNBRIGHT_OVERRIDE_NATIVE(ov_setSeInterPitch,  0x8030be20u) { if (!inner_param_r4slot(cpu, 2)) run_guest(cpu, 0x8030be20u); }
+SUNBRIGHT_OVERRIDE_NATIVE(ov_setSeInterFxmix,  0x8030ba90u) { if (!inner_param_r4slot(cpu, 3)) run_guest(cpu, 0x8030ba90u); }
+SUNBRIGHT_OVERRIDE_NATIVE(ov_setSeInterDolby,  0x8030bc58u) { if (!inner_param_r4slot(cpu, 4)) run_guest(cpu, 0x8030bc58u); }
