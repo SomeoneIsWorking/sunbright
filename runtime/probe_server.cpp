@@ -35,6 +35,8 @@ bool g_probe_enabled = false;
 #  include <atomic>
 #ifdef HAVE_DOLPHIN_CORE
 #include "Core/System.h"
+#include "Core/State.h"               // State::LoadAs/SaveAs — the deterministic-scene oracle
+#include "Core/Core.h"                // Core::RunOnCPUThread — load on the CPU thread (no main-thread deadlock)
 #include "Core/HW/ProcessorInterface.h"
 #include "Core/HW/DSP.h"
 #include "VideoCommon/CommandProcessor.h"
@@ -784,6 +786,33 @@ std::string handle_repl(const char* path) {
         long long ng = grab("ngx", 1);    // native ngx texture
         g_sb_ngx_present = saved;
         app("abshot %s: gx=%lld ngx=%lld bytes\n", name, gx, ng);
+        return std::string(buf, n);
+    }
+    if (strncmp(path, "/loadstate", 10) == 0) {
+        // Load a Dolphin save state on demand → a DETERMINISTIC scene for the pixel oracle.
+        // This is the save-state half of tools/render/ab_oracle.sh: launch one process per
+        // renderer (NGX_PRESENT=0 = Dolphin-GX oracle, =1 = ngx), /loadstate the SAME .sav in
+        // both, then /abshot2 each → byte-identical guest RAM ⇒ frame-exact A/B (only the
+        // renderer differs). Reaches scenes fastboot can't (sun occlusion / sphere sky).
+        //   /loadstate?f=<path>
+        // WHY the CPU thread: State::LoadAs from the SDL main thread DEADLOCKS against the
+        // governor-parked CPU thread (the SUNBRIGHT_STATE path's known break). The probe runs on
+        // its own thread, so Core::RunOnCPUThread PauseAndLocks the CPU, queues LoadAs, and the
+        // CPU thread runs it on resume — the sanctioned cross-thread state-load path.
+        char file[256] = {0};
+        if (const char* p = strstr(path, "f=")) {
+            size_t i = 0; p += 2;
+            while (*p && *p != '&' && *p != ' ' && i + 1 < sizeof file) file[i++] = *p++;
+        }
+        if (!file[0]) return std::string("usage: /loadstate?f=<save.sav>\n");
+        struct stat fst{};
+        if (stat(file, &fst) != 0 || fst.st_size == 0)
+            return std::string("loadstate: file not found or empty: ") + file + "\n";
+        std::string fcopy(file);
+        Core::RunOnCPUThread(
+            Core::System::GetInstance(),
+            [fcopy] { State::LoadAs(Core::System::GetInstance(), fcopy); });
+        app("loadstate: requested %s (%lld bytes) on CPU thread\n", file, (long long)fst.st_size);
         return std::string(buf, n);
     }
     if (strncmp(path, "/abshot2", 8) == 0) {

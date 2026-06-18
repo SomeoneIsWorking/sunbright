@@ -1309,13 +1309,17 @@ int main(int argc, char* argv[]) {
             // right threshold is in GAME progress (VI fields), not wall time — wall time is fooled by
             // the frame-dump throttle. ~1500 fields ≈ 25 s of game-time ≈ the title screen.
             // SUNBRIGHT_STATE_FIELDS overrides the threshold; F3 loads manually any time.
-            // ⚠ KNOWN-BROKEN on the NGX/native path (do NOT rely on SUNBRIGHT_STATE for headless
+            // ⚠ KNOWN-BROKEN on the NGX/native path (do NOT rely on this auto-load path for headless
             // deterministic scenes): (1) vi_end_field_event STOPS firing once native present takes
             // over (~field 1450) so g_present_fields never reaches 1500; (2) even when it does cross
             // the threshold, State::LoadAs run from THIS (SDL main) thread DEADLOCKS the main loop
-            // against the governor-parked CPU thread. Proper fix = run the load on the CPU thread
-            // (Core::RunOnCPUThread) once the native VI/threading model supports it. Use AUTOSTART +
-            // the zero-drift abshot2 A/B (tools/gp scene) for now.
+            // against the governor-parked CPU thread.
+            // ✅ WORKING ALTERNATIVE (2026-06-19): the probe /loadstate?f=<save> endpoint loads on the
+            // CPU thread via Core::RunOnCPUThread (no deadlock) — that is the deterministic-scene oracle
+            // (tools/render/ab_oracle.sh). NOTE: a save state restores only Dolphin RAM+PPCState, NOT the
+            // native engine bookkeeping; STALE saves (pre-no-recomp-pivot) load with a corrupted guest SP
+            // and crash. Only saves made under the CURRENT build round-trip cleanly. This auto-load path
+            // is left as-is (still broken) — use /loadstate, not SUNBRIGHT_STATE, for the A/B oracle.
             static bool loaded = false;
             static const uint64_t need = getenv("SUNBRIGHT_STATE_FIELDS")
                 ? (uint64_t)atoll(getenv("SUNBRIGHT_STATE_FIELDS")) : 1500;

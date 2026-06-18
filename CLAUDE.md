@@ -360,29 +360,34 @@ Dolphin loads) yet 77% disagree with `xfmem` read one instruction after the load
 a "ngx CPU-state vs xfmem" differential (the retired `SUNBRIGHT_NGX_DIFF`/`/ngxgeomdiff` did,
 and its verdicts are unsound — see memory `xfmem-not-cpu-oracle`). The ONLY trustworthy whole-
 renderer reference is **rendered PIXELS**, captured zero-drift from the SAME present:
-- **`/abshot2`** (probe, needs `SUNBRIGHT_NGX_PRESENT=1`) writes `scratch/screenshots/ab2.gx.ppm`
-  (Dolphin's GX XFB = oracle) **and** `ab2.ngx.ppm` (ngx's native render) from the *identical*
-  present → pixel-perfect camera alignment, one process, no drift. This is the geometry analog of
-  `tex_decode_selftest` (Dolphin rendered live each run; NOT a stored golden — that's why the
-  stored-PNG approach was rejected).
-- ⚠ **BROKEN under the no-recomp pivot (verified 2026-06-19): the `/abshot2` GX oracle (`ab2.gx.ppm`)
-  comes back ALL-BLACK** — under `NGX_PRESENT` Dolphin no longer renders the guest GX draws (ngx
-  replaces them; "Dolphin EFB confirmed empty"), so there is no GX XFB to capture. A diff against a
-  black oracle silently reports a meaningless ~40% — almost cited as a real regression this session.
-  **The "Baseline 2026-06-16: 40% mean delta — water/sky black" below was very likely this same
-  empty-oracle artifact, not a true ngx gap.** `ab_diff.py` now REFUSES an empty/black frame (exit 3).
-  For a real GX oracle, capture it from a SEPARATE `SUNBRIGHT_NGX_PRESENT=0` (Dolphin-GX baseline) run,
-  frame-matched via `SUNBRIGHT_STATE=<save>` (memory `ngx-render-fidelity-gap`) — single-present
-  `/abshot2` cannot produce both halves anymore.
+**THE WORKING ORACLE IS A TWO-PROCESS A/B (2026-06-19).** Single-present `/abshot2` is DEAD under
+no-recomp: in `NGX_PRESENT=1` Dolphin no longer renders the guest GX draws (ngx replaced them,
+"Dolphin EFB confirmed empty"), so `ab2.gx.ppm` comes back ALL-BLACK and a diff vs black silently
+reports a bogus ~40% (the "Baseline 2026-06-16: 40% mean delta" figure was very likely this same
+artifact, not a real ngx gap). The fix is to capture the GX oracle from a SEPARATE
+`SUNBRIGHT_NGX_PRESENT=0` process (= the sanctioned Dolphin-GX baseline; engine overrides are inert
+there, so it's the unmodified Dolphin render path) and ngx from a `=1` process, then diff. Two scripts
+do this, both VERIFIED on real plaza data (~18% mean delta, <0.6% cross-run drift — deterministic):
+- **`tools/render/ab_oracle.sh <save.sav> [settle_s]`** — SAVE-STATE oracle (preferred; reaches ANY
+  saved scene incl. sun-occlusion/sphere-sky that fastboot can't). Each process fastboots to a running
+  core, then loads the SAME save via the `/loadstate?f=<path>` probe endpoint (which runs `State::LoadAs`
+  on the CPU thread via `Core::RunOnCPUThread` — loading from the SDL main thread DEADLOCKS the
+  governor). Identical restored RAM ⇒ frame-exact A/B. ⚠ A save restores only Dolphin RAM+PPCState, NOT
+  the native engine bookkeeping — **STALE saves (pre-no-recomp-pivot, e.g. the Jun-3 `scratch/*.sav`)
+  load with a corrupted guest SP and CRASH**. Only saves made under the CURRENT build round-trip
+  cleanly. Make one with `SUNBRIGHT_SAVE_STATE=<f> SUNBRIGHT_SAVE_AT=<sec>` (or `SUNBRIGHT_SAVE_ON_HUD`
+  — but the HUD counter only ticks under `NGX_PRESENT=1`). `scratch/fresh_plaza.sav` is a known-good one.
+- **`tools/render/oracle_ab.sh [emu_secs]`** — FASTBOOT oracle (plaza only): syncs two fastboot
+  processes on EMULATED time (`emu_secs`), capturing via `/abshot2` (which still writes `ab2.gx.ppm`
+  from Dolphin's XFB in the `=0` process). No save needed; idle plaza is deterministic. Both oracles
+  agree at ~18% on plaza, cross-validating each other.
 - **`tools/render/ab_diff.py`** turns the two PPMs into a NUMBER: mean abs pixel delta (overall +
-  4×4 per-region grid, which localizes WHICH part is wrong) + a heatmap. A fix MUST drop this
-  number. (Historical) Baseline 2026-06-16 (intro gameplay): **40% mean delta** — but see the ⚠ above:
-  treat that figure as suspect (probable empty-oracle artifact). Workflow: run headless w/
-  `SUNBRIGHT_NGX_PRESENT=1 SUNBRIGHT_PROBE=1` to a 3D scene → `curl /abshot2` (check `/ngxpresentlive`
-  shows `frames>0` first) → `python3 tools/render/ab_diff.py --heat out.ppm` (exit 3 = empty oracle).
-- GOTCHA: `pkill` returning nonzero (nothing to kill) aborts a chained `&` launch — launch the
-  game on its own line. And ALWAYS `pkill -9 -f "build/sunbright "` a finished run: a stale
-  instance squats probe port 17654 and silently serves the OLD binary to your curls.
+  4×4 per-region grid, which localizes WHICH part is wrong) + a heatmap. A fix MUST drop this number.
+  It REFUSES an empty/black frame (exit 3) so it can never report a meaningless number vs a dead oracle.
+- GOTCHA: `pkill` returning nonzero (nothing to kill) aborts a chained `&` launch — launch the game on
+  its own line. ALWAYS `pkill -9 -x sunbright` a finished run: a stale instance squats probe port 17654
+  and silently serves the OLD binary. Build is `build-freshtest/` (the scripts auto-pick the newest
+  `build*/sunbright`; a stale `build/sunbright` lacking `/loadstate` would fail with "unknown path").
 
 ## Debugging recomp correctness
 - `SUNBRIGHT_DISABLE_RECOMP=1` — run pure Dolphin JIT (same binary). The A/B baseline:
