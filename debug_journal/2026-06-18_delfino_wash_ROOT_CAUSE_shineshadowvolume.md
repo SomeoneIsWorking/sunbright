@@ -55,5 +55,19 @@ target's ALPHA channel as the EFB-alpha scratch:
     (reconstruct world pos from depth, ray-sphere chord) — but the literal passes are the faithful port.
 Also TODO (smaller): TMapObjWave::initDraw multiply (326) for the residual.
 
+## PORTED ✅ (session 15c, ngx_present.cpp + pollution shaders)
+Implemented the native sphere-volume pass (capture tee on 0x8027c67c → live params + view matrix;
+3 passes into the present colour-alpha+depth target: clear EFB-alpha, sphere volume front/back z-test
+GREATER+write add/reverse-subtract saturating alpha inside the clean dome, final INVDSTALPHA/DSTALPHA
+dark-blue blend). RESULT oracle_ab 14: mean delta **89.4 → 45.6**; floor rows ~120-137 → ~30-70;
+floor-left 250 → 129 (oracle 101). Floor now dark blue-grey with a sunlit centre, matching the oracle.
+Gotchas learned: sphere mesh winding made the cull inverted (sky net-subtracted → pure tint); FIX was
+depthWrite TRUE on the volume passes (game uses ZMode GREATER,WRITE) so inside-dome saturates to
+A=1 (bright) — sky-top went 0,20,40 → 59,57,55 (preserved). A/B envs: SUNBRIGHT_NGX_NOPOLLUTION=1
+(disable), SUNBRIGHT_NGX_POLL_NOVOL=1 (clear+final only, no sphere).
+RESIDUAL (delta 45, not 0): (1) dome-edge softness — 1 sphere vs the game's 5 concentric (radius span
+only 100 so minor); (2) the SKY region (separate sky-wash issue + framing); (3) TMapObjWave::initDraw
+multiply (326, the other /gxblend darkening caller) — port next for the floor 129→~101 residual.
+
 ## Tools (committed)
 /shapeat?x=&y= · /gxblend (+ darkening caller LRs) · SUNBRIGHT_KILL_SHINESHADOW=1 · oracle_ab.sh 14.
