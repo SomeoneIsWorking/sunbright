@@ -1035,6 +1035,11 @@ AbstractTexture* PresentRenderer::render(int w, int h) {
     prepare_j2d(cmd, stg_bufs, stg_mems, j2d);
 
     float cc[4]; sb_ngx_get_clear(cc);   // the game's EFB copy-clear (screen-blend sky depends on it)
+    // DBG (SUNBRIGHT_NGX_CLEARA=NN): override the render-pass clear ALPHA with a sentinel to probe
+    // whether the 3D scene writes alpha at all (clear shows through) vs forces it (alpha frontier).
+    if (const char* e = getenv("SUNBRIGHT_NGX_CLEARA")) cc[3] = (float)atoi(e) / 255.f;
+    if (getenv("SUNBRIGHT_DBG_EFB") && (g_frames % 120) == 0)
+        fprintf(stderr, "[imm] clearcolor=(%.3f,%.3f,%.3f,a=%.3f)\n", cc[0], cc[1], cc[2], cc[3]);
     VkClearValue clear[2]{}; clear[0].color = {{cc[0], cc[1], cc[2], cc[3]}}; clear[1].depthStencil = {1.0f, 0};
     VkRenderPassBeginInfo rbi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
     rbi.renderPass = rpass; rbi.framebuffer = fbo; rbi.renderArea = {{0, 0}, {(uint32_t)w, (uint32_t)h}};
@@ -1232,6 +1237,12 @@ AbstractTexture* PresentRenderer::render(int w, int h) {
             for (uint32_t c : g_efb_color) { uint8_t a = c>>24; if (a==0x10) a10++; else if (a==0xff) aff++; else if (a==0) a00++; else aother++; }
             fprintf(stderr, "[efb] color %dx%d center(320,224)=%08x (160,150)=%08x  alpha: =0x10:%zu =0xff:%zu =0:%zu other:%zu\n",
                     g_efb_dw, g_efb_dh, at(320,224), at(160,150), a10, aff, a00, aother);
+            // DBG: alpha distribution at PURE-RED pixels (the IMM_SHOW cube) — does the cube's own
+            // fragment alpha land where its RGB demonstrably did?
+            { size_t nred=0; long asum=0; uint8_t amin=255,amax=0;
+              for (uint32_t c : g_efb_color) { uint8_t r=(c>>16)&0xff,g=(c>>8)&0xff,b=c&0xff,a=c>>24;
+                  if (r>200 && g<40 && b<40) { nred++; asum+=a; if(a<amin)amin=a; if(a>amax)amax=a; } }
+              if (nred) fprintf(stderr, "[efb] cube red px=%zu  alpha[min=%u max=%u mean=%ld]\n", nred, amin, amax, asum/(long)nred); }
         }
     }
 

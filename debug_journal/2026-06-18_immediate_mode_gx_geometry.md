@@ -55,12 +55,34 @@ that, ngx's framebuffer alpha at the box pixels must read 0x10.
   vertex upload (in_range, nv=203k > vstart=140k), interp60 (off → unchanged), pollution (returns early
   in plaza, no fullscreen alpha clear), epoch filter (cube epoch 0 = display_epoch). draw_pollution's
   fullscreen "clear EFB alpha" pass does NOT run when pollution is inactive (plaza).
-- ⇒ NEXT SESSION: the alpha-channel of the ngx present colour target / Dolphin XFB is being managed/
-  reset to opaque (render-pass clear alpha = GXCopyClear alpha, or Dolphin's EFB→XFB copy forcing
-  alpha=1, or the storeOp/finalLayout path). This is the **"own ngx EFB-alpha" frontier** the prior
-  handoff flagged as a separate item. The colour readback (RGB) is faithful; only ALPHA is lost. Until
-  it's owned, GXPeekARGB must NOT be wired to the colour readback (it'd force always-occluded) — it
-  stays diagnostic. The const dst-alpha is plumbed correctly for when the alpha channel is owned.
+### SHARPENED DIAGNOSIS (session 2) — the 3D render pass writes NO alpha to the readback
+Pinned it precisely with targeted probes (all gated on SUNBRIGHT_DBG_EFB, kept in-tree):
+- `[efb] cube red px=N alpha[min/max/mean]` — the alpha at the cube's OWN pure-red pixels (IMM_SHOW).
+  Result: **13k red px, alpha = 255 (min=max=mean) — every one.** So at the exact pixels the cube's
+  RGB demonstrably landed, the alpha is the clear value, NOT the fragment's. Forcing the cube vertex
+  alpha to 0.5 (0x80) → still 255. So the cube's alpha write is dropped at the target.
+- The cube PIPELINE is built with **colorWriteMask = 0xf (RGBA), blendEnable = FALSE** (confirmed by a
+  one-shot print), and alphaToOne is OFF (ms zero-init). So per Vulkan state the alpha MUST be written
+  — yet it isn't.
+- `/ngxprefix?n=0` (draw ZERO 3D batches) gives the **IDENTICAL** alpha histogram as the full render
+  (=0xff:119464 =0:0 other:167256, byte-for-byte). ⇒ the 3D batches contribute NOTHING to the readback
+  alpha. The readback alpha = clear + the J2D/HUD pass only. (RGB still differs — 3D RGB lands.)
+- `SUNBRIGHT_NGX_CLEARA=0x55` (force the render-pass clear alpha to a sentinel) does NOT change the
+  histogram either → the clear alpha doesn't "show through" — every pixel's alpha is set by *something*,
+  just never the 3D fragments. The HUD is small corner quads (not fullscreen), so it's not a HUD clobber.
+
+⇒ **The ngx 3D render target's ALPHA channel is not captured by the colour readback** even though RGB
+is faithful and the pipeline state says write-RGBA. This is below the TEV/PE/mask layer — a
+render-target / framebuffer / Dolphin-VKTexture-or-render-pass property. Likely culprits to check with
+RenderDoc or by reading Dolphin's VKTexture/framebuffer creation: the RGBA8 render-target image's
+actual format/usage, whether the colour view/attachment drops alpha, or whether the EFB→present copy
+path resolves alpha to 1. The colour readback's RGB is correct (GXCopyTex writeback is byte-verified),
+so this is specifically an ALPHA-channel-of-the-3D-target issue.
+
+This is the **"own ngx EFB-alpha" frontier** (prior handoff flagged it). Until it's owned, GXPeekARGB
+must NOT be wired to the colour readback (it'd force always-occluded) — it stays diagnostic. The const
+dst-alpha is plumbed correctly (the cube's fragment outputs 0x10) for when the target alpha is owned.
+Probes kept for the next session: `[efb] cube red px … alpha`, `[efb] clearcolor`, SUNBRIGHT_NGX_CLEARA.
 
 ## Tools / env added
 - SUNBRIGHT_IMM_SHOW=1 — force the cube visible (red) for the geometry verify. (Kept; the falsifiable
