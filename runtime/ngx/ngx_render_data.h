@@ -84,7 +84,14 @@ struct NgxPEState {
     uint8_t  z_func;          // GXCompare (== VkCompareOp values)
     uint8_t  z_write;         // depth updateEnable
     uint8_t  cull;            // GXCullMode (color block mCullMode): 0=NONE 1=FRONT 2=BACK 3=ALL
-    uint8_t  pad[2];
+    // ── framebuffer write masks (GXSetColorUpdate / GXSetAlphaUpdate / GXSetDstAlpha) ─────
+    // Default 0 ⇒ write RGB+A, no forced dst-alpha (every J3D batch behaves as before — capture_pe
+    // leaves these zero). Set ONLY by the immediate-mode GXDrawCube capture (the Mario occlusion
+    // probe writes a constant dst-alpha 0x10 with colour writes masked OFF). The pipeline turns
+    // these into the Vulkan colorWriteMask; the const dst-alpha is fed via the vertex alpha
+    // (PASSCLR) so no shader-generator change is needed.
+    uint8_t  color_mask_off;  // 1 = do NOT write RGB (GXSetColorUpdate(FALSE))
+    uint8_t  alpha_mask_off;  // 1 = do NOT write A   (GXSetAlphaUpdate(FALSE))
 };
 
 // A whole material's TEV combiner state — the cache key for a generated shader.

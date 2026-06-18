@@ -34,6 +34,7 @@
 #include "../ngx/ngx_project.h"   // pure, unit-tested eye→clip→NDC (sunbright-render-test)
 #include "../ngx/ngx_clip.h"      // pure, unit-tested near-plane triangle clip
 #include "../ngx/ngx_light.h"     // pure, unit-tested GX per-vertex lighting (test_lighting)
+#include "../ngx/ngx_imm_geom.h"  // pure, unit-tested immediate-mode GX geometry (GXDrawCube)
 #include <cmath>
 #include <cstdarg>
 #include <cstddef>
@@ -2360,6 +2361,133 @@ extern "C" unsigned long sb_ngx_front_frame() { return g_ngx_front_frame.load(st
 // /ngxmtxsrc?m=N — LIVE skinned-matrix source: 0=per-packet object-model, 1=g_posmtx, 2=modelview.
 // Takes effect on the next captured (live) frame. Returns the mode set.
 extern "C" int sb_ngx_set_mtxsrc(int m) { if (m >= 0 && m <= 2) g_ngx_mtxsrc = m; return g_ngx_mtxsrc; }
+
+// ── Immediate-mode GX geometry capture (GXDrawCube) ──────────────────────────────────────────────
+// ngx renders from the J3D object model; the game's immediate-mode GX draws (GXDrawCube /
+// GXDrawSphere, reference/sms GXDraw.c) have no J3D object, so the J3DShape path misses them. The
+// Mario occlusion probe (MarioMain.cpp ~195) is a GXDrawCube at Mario writing ONLY a constant
+// dst-alpha 0x10 (GXSetColorUpdate(FALSE)+GXSetDstAlpha(ENABLE,0x10)+z-test) — its result is read
+// back by GXPeekARGB → MARIO_FLAG_OCCLUDED. Under ngx that cube was never drawn, so the EFB alpha
+// is never 0x10. Here we capture it into the SAME clip-space batch pipeline as the J3D shapes, with
+// the colour-write mask OFF and the const dst-alpha fed via the PASSCLR vertex alpha — so it writes
+// alpha 0x10 (depth-tested against the live scene, so it occludes correctly) WITHOUT painting a
+// visible box. Geometry from the pure, unit-tested ngx_imm (render_test `imm_cube`).
+//
+// The model→eye matrix is the current GX_PNMTX0 (boxDrawPrepare loads viewMtx×scale×translate into
+// PNMTX0 via GXLoadPosMtxImm, captured synchronously in g_posmtx[0..2]) and GXSetCurrentMtx(PNMTX0)
+// selects it for the cube's GX_DIRECT vertices.
+// Counters for the deterministic verify (no eyeballing): cubes captured + emitted tris.
+unsigned long g_imm_cube_calls = 0, g_imm_cube_tris = 0, g_imm_cube_onscreen = 0;
+extern "C" void ngx_emit_imm_cube(int color_off, int alpha_off,
+                                  int dst_alpha_en, int dst_alpha_val) {
+    if (!g_enabled || !g_have_proj) return;
+    g_imm_cube_calls++;
+    float mtx[12]; for (int r = 0; r < 3; r++) for (int c = 0; c < 4; c++) mtx[r*4+c] = g_posmtx[r][c];
+
+    // 24 model-space corners → eye (mtx) → clip (g_proj). Reuse the unit-tested projection.
+    float corners[24][3]; ngx_imm::cube_corners(corners);
+    float clip[24][4];
+    int onscreen = 0;
+    for (int i = 0; i < 24; i++) {
+        const float x = corners[i][0], y = corners[i][1], z = corners[i][2];
+        const float ex = mtx[0]*x + mtx[1]*y + mtx[2]*z  + mtx[3];
+        const float ey = mtx[4]*x + mtx[5]*y + mtx[6]*z  + mtx[7];
+        const float ez = mtx[8]*x + mtx[9]*y + mtx[10]*z + mtx[11];
+        ngx_project_eye(g_proj, ex, ey, ez, clip[i]);
+        const float w = clip[i][3];
+        if (w > 1e-4f) { const float nx = clip[i][0]/w, ny = clip[i][1]/w;
+            if (nx >= -1.f && nx <= 1.f && ny >= -1.f && ny <= 1.f) onscreen++; }
+    }
+    if (onscreen > 0) g_imm_cube_onscreen++;
+
+    // Synthetic PASSCLR material: out colour = raster (white), out alpha = raster alpha. The const
+    // dst-alpha rides the vertex alpha (GX forces the framebuffer alpha to the constant; with the
+    // colour mask off, only alpha lands). PE: depth-test LEQUAL no-write (boxDrawPrepare), back-cull,
+    // no blend, colour/alpha write masks from the live GXSetColorUpdate/AlphaUpdate state.
+    NgxTevState st{}; st.num_stages = 1;
+    // GX_PASSCLR: cc out = RASC(10) (a=b=c=ZERO(15), d=RASC), clamp, dest=prev.
+    st.stage[0].color_env = (15u<<12)|(15u<<8)|(15u<<4)|10u | (1u<<19);
+    // ac out = RASA(5) (a=b=c=ZERO(7), d=RASA), clamp, dest=prev.
+    st.stage[0].alpha_env = (7u<<13)|(7u<<10)|(7u<<7)|(5u<<4) | (1u<<19);
+    st.stage[0].texmap = 0xff; st.stage[0].texcoord = 0xff; st.stage[0].color_chan = 0;  // COLOR0A0
+    // TEV swap tables MUST default to identity 0x1B ("rgba"); a zeroed table decodes to "rrrr"
+    // (R broadcast) — which clobbers the raster ALPHA with R, so the const dst-alpha never lands.
+    for (int i = 0; i < 4; i++) st.swap_table[i] = 0x1B;
+    st.pe.z_test = 1; st.pe.z_func = 3 /*GX_LEQUAL*/; st.pe.z_write = 0;   // boxDrawPrepare's z-mode
+    st.pe.blend_mode = 0; st.pe.cull = 2 /*GX_CULL_BACK*/;
+    st.pe.color_mask_off = (uint8_t)(color_off ? 1 : 0);
+    st.pe.alpha_mask_off = (uint8_t)(alpha_off ? 1 : 0);
+    // DBG (SUNBRIGHT_IMM_SHOW=1): force the cube VISIBLE (write RGB+A, opaque red). The deterministic
+    // check that immediate-mode geometry/transform/clip/cull render — with SHOW the cube paints a red
+    // box on Mario (~13k px); without it the colour-masked occlusion box is invisible (scene
+    // unchanged). This IS the falsifiable test for the port (vs eyeballing).
+    const bool imm_show = getenv("SUNBRIGHT_IMM_SHOW") != nullptr;
+    if (imm_show) { st.pe.color_mask_off = 0; st.pe.alpha_mask_off = 0; }
+    // FNV-1a key (so identical cube materials dedupe into one tev_index / one pipeline).
+    uint64_t h = 1469598103934665603ull; const u8* p = (const u8*)&st;
+    for (size_t i = 0; i < offsetof(NgxTevState, key); i++) { h ^= p[i]; h *= 1099511628211ull; }
+    st.key = h;
+    int ti;
+    auto it = g_tevkey_index.find(h);
+    if (it != g_tevkey_index.end()) ti = it->second;
+    else {
+        if (g_tevstates.size() >= TEVSTATE_CAP) { g_tevstates.clear(); g_tevkey_index.clear(); }
+        ti = (int)g_tevstates.size(); g_tevstates.push_back(st); g_tevkey_index[h] = ti;
+    }
+
+    // Raster colour: white (red under IMM_SHOW), alpha = the forced const dst-alpha (PASSCLR carries
+    // it to the framebuffer alpha). GXSetDstAlpha replaces the EFB alpha with the constant; we feed
+    // that constant as the vertex alpha through the PASSCLR combiner (so no shader-gen change).
+    const float a = dst_alpha_en ? (float)(dst_alpha_val & 0xff) / 255.f : 1.f;
+    const float cr = 1.f, cg = imm_show ? 0.f : 1.f, cb = imm_show ? 0.f : 1.f;  // red when shown
+
+    std::vector<NgxRenderVertex>& snap = g_snap[g_cur];
+    std::vector<NgxRenderBatch>&  batches = g_batches[g_cur];
+    size_t& count = g_snap_count[g_cur];
+    if (snap.size() < SNAP_CAP) snap.resize(SNAP_CAP);
+
+    constexpr int VW = 24;   // clip[4] + rgba[4] + uv[16]
+    auto gather = [&](int vi, float* o) {
+        o[0]=clip[vi][0]; o[1]=clip[vi][1]; o[2]=clip[vi][2]; o[3]=clip[vi][3];
+        o[4]=cr; o[5]=cg; o[6]=cb; o[7]=a;
+        for (int m = 0; m < 16; m++) o[8+m] = 0.f;
+    };
+    auto emit_v = [&](const float* v) {
+        NgxRenderVertex& d = snap[count];
+        d.clip[0]=v[0]; d.clip[1]=v[1]; d.clip[2]=v[2]; d.clip[3]=v[3];
+        d.rgba[0]=v[4]; d.rgba[1]=v[5]; d.rgba[2]=v[6]; d.rgba[3]=v[7];
+        for (int m = 0; m < 8; m++) { d.uv[m][0]=v[8+m*2]; d.uv[m][1]=v[8+m*2+1]; }
+        count++;
+    };
+    // Open one batch for the whole cube (single material/binding).
+    if (batches.size() >= BATCH_CAP) return;
+    NgxRenderBatch nb{};   // no textures bound (1×1 white sampled), tev_index = synthetic cube
+    nb.vstart = (uint32_t)count; nb.vcount = 0; nb.tev_index = ti;
+    nb.epoch = (uint16_t)(g_efb_epoch < EPOCH_CAP ? g_efb_epoch : EPOCH_CAP - 1);
+    batches.push_back(nb);
+    unsigned idx[36]; ngx_imm::cube_tri_indices(idx);
+    for (int t = 0; t < 12; t++) {
+        float in[3][VW]; for (int e = 0; e < 3; e++) gather((int)idx[t*3+e], in[e]);
+        float poly[9][VW]; int np = ngx_clip_frustum_tri(&in[0][0], VW, &poly[0][0]);
+        if (np < 3) continue;
+        const int ntri = np - 2;
+        if (count + (size_t)ntri * 3 > SNAP_CAP) break;
+        for (int f = 0; f < ntri; f++) { emit_v(poly[0]); emit_v(poly[f+1]); emit_v(poly[f+2]); }
+        batches.back().vcount += ntri * 3;
+        g_imm_cube_tris += ntri;
+    }
+    if (batches.back().vcount == 0) batches.pop_back();   // wholly off-screen → no empty batch
+    if (getenv("SUNBRIGHT_DBG_EFB")) {
+        static unsigned long n = 0;
+        if ((n++ % 240) == 0) {
+            float xn=1e9f,xx=-1e9f,yn=1e9f,yx=-1e9f;
+            for (int i=0;i<24;i++){ const float w=clip[i][3]; if(w>1e-4f){ float nx=clip[i][0]/w,ny=clip[i][1]/w;
+                if(nx<xn)xn=nx; if(nx>xx)xx=nx; if(ny<yn)yn=ny; if(ny>yx)yx=ny; } }
+            fprintf(stderr, "[imm] cube #%lu onscreen=%d/24 tris=%lu NDC[x %.2f..%.2f y %.2f..%.2f] colorOff=%d dstA=%d/%#x\n",
+                    n, onscreen, g_imm_cube_tris, xn, xx, yn, yx, color_off, dst_alpha_en, dst_alpha_val);
+        }
+    }
+}
 
 // Best-effort snapshot accessors for the native Vulkan mesh render (copy promptly
 // — the emu thread keeps writing; a torn read at worst yields a stray triangle).

@@ -418,7 +418,13 @@ static int ngx_render_impl(char* outbuf, int cap, const NgxTarget& tgt) {
             dss.depthTestEnable  = pe.z_test  ? VK_TRUE : VK_FALSE;
             dss.depthWriteEnable = pe.z_write ? VK_TRUE : VK_FALSE;
             dss.depthCompareOp   = (VkCompareOp)(pe.z_func & 7);
-            cba.blendEnable = VK_FALSE; cba.colorWriteMask = 0xF;
+            cba.blendEnable = VK_FALSE;
+            // Framebuffer write masks (GXSetColorUpdate / GXSetAlphaUpdate). Default (both 0) =
+            // write RGBA. The Mario occlusion probe masks RGB off and writes only the const
+            // dst-alpha — rendering it un-masked would paint a visible box on Mario.
+            cba.colorWriteMask =
+                (pe.color_mask_off ? 0 : (VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT)) |
+                (pe.alpha_mask_off ? 0 : VK_COLOR_COMPONENT_A_BIT);
             if (pe.blend_mode == 1) {                 // GX_BM_BLEND: src*sf + dst*df
                 cba.blendEnable = VK_TRUE;
                 cba.srcColorBlendFactor = cba.srcAlphaBlendFactor = vk_src(pe.src_factor);

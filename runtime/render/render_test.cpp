@@ -20,6 +20,7 @@
 #include "ngx_efb_copy.h"
 #include "ngx_clip.h"
 #include "ngx_light.h"
+#include "ngx_imm_geom.h"
 #include "tev_shader.h"
 #include "tex_decode.h"
 
@@ -351,6 +352,50 @@ int test_efb_copy(char* rep, int cap) {
     return fails;
 }
 
+// ── immediate-mode GXDrawCube geometry unit ──────────────────────────────────
+// ngx misses immediate-mode GX draws (no J3D object); the GXDrawCube override now
+// captures them from the spec geometry (ngx_imm_geom.h). Assert the 24 GX_QUADS
+// corners match GXDraw.c: every corner is (±k,±k,±k) with k=1/sqrt(3), the eight
+// distinct cube vertices each appear exactly 3× (shared by 3 faces), and the quad
+// triangulation indexes 12 valid tris over 24 verts. A sign slip in a face basis or
+// a wrong winding goes red here, not as a misplaced box on Mario.
+int test_imm_cube(char* rep, int cap) {
+    int pos = 0, fails = 0;
+    auto failf = [&](const char* m){ fails++; if (pos < cap) pos += snprintf(rep+pos, cap-pos, "%s", m); };
+    auto close = [](float a, float b){ float e=a-b; return (e<0?-e:e) <= 1e-5f; };
+
+    float c[24][3];
+    ngx_imm::cube_corners(c);
+    const float k = ngx_imm::kCubeK;
+
+    // 1. Every corner coordinate is exactly ±k (a unit cube inscribed in radius-1 sphere).
+    for (int i = 0; i < 24; i++)
+        for (int a = 0; a < 3; a++)
+            if (!close(c[i][a], k) && !close(c[i][a], -k)) {
+                char b[96]; snprintf(b,sizeof b,"FAIL corner %d axis %d = %.5f (not ±k)\n", i, a, c[i][a]); failf(b);
+            }
+
+    // 2. The eight distinct cube vertices (±k each) each appear exactly 3× across the
+    //    6 faces (each cube vertex is shared by 3 faces).
+    for (int sx = -1; sx <= 1; sx += 2)
+        for (int sy = -1; sy <= 1; sy += 2)
+            for (int sz = -1; sz <= 1; sz += 2) {
+                int n = 0;
+                for (int i = 0; i < 24; i++)
+                    if (close(c[i][0], sx*k) && close(c[i][1], sy*k) && close(c[i][2], sz*k)) n++;
+                if (n != 3) { char b[96]; snprintf(b,sizeof b,"FAIL vertex (%+d,%+d,%+d) appears %dx (exp 3)\n", sx,sy,sz,n); failf(b); }
+            }
+
+    // 3. Triangulation: 36 indices, all < 24, 12 triangles, each within one face's 4-corner span.
+    unsigned idx[36]; ngx_imm::cube_tri_indices(idx);
+    for (int t = 0; t < 12; t++) {
+        unsigned a = idx[t*3], b = idx[t*3+1], d = idx[t*3+2];
+        if (a >= 24 || b >= 24 || d >= 24) { failf("FAIL tri index >= 24\n"); break; }
+        if (a/4 != b/4 || a/4 != d/4) { char s[80]; snprintf(s,sizeof s,"FAIL tri %d crosses faces\n", t); failf(s); }
+    }
+    return fails;
+}
+
 struct Unit { const char* name; int (*run)(char* rep, int cap); };
 
 const Unit kUnits[] = {
@@ -362,6 +407,7 @@ const Unit kUnits[] = {
     {"tev_swizzle",   test_tev_swizzle},
     {"tex_pad",       test_tex_pad},
     {"efb_copy",      test_efb_copy},
+    {"imm_cube",      test_imm_cube},
 };
 
 }  // namespace

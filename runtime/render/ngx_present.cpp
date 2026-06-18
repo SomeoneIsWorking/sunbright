@@ -693,7 +693,13 @@ VkPipeline PresentRenderer::pipeline_for(const NgxTevState& st) {
     dss.depthTestEnable = st.pe.z_test ? VK_TRUE : VK_FALSE;
     dss.depthWriteEnable = st.pe.z_write ? VK_TRUE : VK_FALSE;
     dss.depthCompareOp = (VkCompareOp)(st.pe.z_func & 7);
-    VkPipelineColorBlendAttachmentState cba{}; cba.colorWriteMask = 0xF; cba.blendEnable = VK_FALSE;
+    VkPipelineColorBlendAttachmentState cba{}; cba.blendEnable = VK_FALSE;
+    // Framebuffer write masks (GXSetColorUpdate / GXSetAlphaUpdate). Default (both 0) = write RGBA.
+    // The Mario occlusion-probe cube (imm_geom_native.cpp) masks RGB off and writes only the const
+    // dst-alpha — un-masked it would paint a visible box on Mario.
+    cba.colorWriteMask =
+        (st.pe.color_mask_off ? 0 : (VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT)) |
+        (st.pe.alpha_mask_off ? 0 : VK_COLOR_COMPONENT_A_BIT);
     if (st.pe.blend_mode == 1) {
         cba.blendEnable = VK_TRUE;
         cba.srcColorBlendFactor = cba.srcAlphaBlendFactor = vk_src(st.pe.src_factor);
@@ -1040,10 +1046,14 @@ AbstractTexture* PresentRenderer::render(int w, int h) {
     // DBG: count drawn batches + total verts for a target tev_index (overdraw check for the cloud wash).
     static const int s_cloudcount = getenv("SUNBRIGHT_NGX_CLOUDCOUNT") ? atoi(getenv("SUNBRIGHT_NGX_CLOUDCOUNT")) : -1;
     int cc_batches = 0; long cc_verts = 0; static unsigned cc_frame = 0;
+    int imm_seen = 0, imm_drawn = 0;   // DBG_EFB: immediate-mode (color-mask-off) cube batches
     for (size_t b = 0; b < batches.size(); b++) {
         if (g_ngx_prefix_n >= 0 && drawn >= g_ngx_prefix_n) break;   // draw-order prefix: stop after N
         const int ti = batches[b].tev_index;
         const NgxTevState& st = (ti >= 0 && ti < (int)tevstates.size()) ? tevstates[ti] : mod;
+        // Cube = synthetic PASSCLR (1 stage, texmap NULL, COLOR0A0) — the immediate-mode geometry.
+        const bool is_imm = st.num_stages == 1 && st.stage[0].texmap == 0xff && st.stage[0].color_chan == 0;
+        if (is_imm) imm_seen++;
         // DBG: skip alpha-tested (cloud/foliage) batches to reveal the background behind them.
         static const int skip_alpha = getenv("SUNBRIGHT_NGX_SKIPALPHA") ? atoi(getenv("SUNBRIGHT_NGX_SKIPALPHA")) : 0;
         if (skip_alpha && st.pe.alpha_test) continue;
@@ -1084,8 +1094,12 @@ AbstractTexture* PresentRenderer::render(int w, int h) {
         vkCmdPushConstants(cmd, pll, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof pc, &pc);
         vkCmdDraw(cmd, batches[b].vcount, 1, batches[b].vstart, 0);
         drawn++;
+        if (is_imm) imm_drawn++;
         if (s_cloudcount >= 0 && ti == s_cloudcount) { cc_batches++; cc_verts += batches[b].vcount; }
     }
+    if (getenv("SUNBRIGHT_DBG_EFB") && (g_frames % 60) == 0)
+        fprintf(stderr, "[imm] present: cube batches seen=%d drawn=%d (display_epoch=%d) total_batches=%zu\n",
+                imm_seen, imm_drawn, display_epoch, batches.size());
     if (s_cloudcount >= 0 && (cc_frame++ % 120) == 0)
         fprintf(stderr, "[cloudcount] ti=%d DRAWN batches=%d verts=%ld (overdraw if batches>>1)\n",
                 s_cloudcount, cc_batches, cc_verts);

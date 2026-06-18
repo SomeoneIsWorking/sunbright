@@ -1,0 +1,69 @@
+# Immediate-mode GX geometry in ngx — GXDrawCube (Mario occlusion probe)
+
+2026-06-18, "keep porting." ngx renders from the J3D object model; the game's immediate-mode GX
+primitives (GXDraw.c: GXDrawCube / GXDrawSphere) have NO J3D object, so the J3DShape capture path
+misses them entirely. First member ported: **GXDrawCube** (0x803627fc), which fires ~1470×/run in
+fastboot plaza from TMario::draw — the Mario occlusion probe (MarioMain.cpp ~195).
+
+## What was built (committed)
+- `runtime/ngx/ngx_imm_geom.h` — pure model-space geometry for GXDrawCube: the 24 GX_QUADS corners
+  (each (±k,±k,±k), k=1/√3) per GXDrawCubeFace, + quad→triangle indices. render_test unit `imm_cube`
+  asserts it against the GXDraw.c spec (9/9 units pass). This IS the shipping geometry (the override
+  calls it).
+- `runtime/overrides/imm_geom_native.cpp` — taps GXSetColorUpdate(0x80361ed4)/GXSetAlphaUpdate
+  (0x80361f14)/GXSetDstAlpha(0x8036215c) for the live write-mask state, and overrides GXDrawCube
+  (0x803627fc): hands the masks to ngx, runs the original (Dolphin GP consistency). Gated on
+  SUNBRIGHT_NGX_PRESENT (under the Dolphin-GX baseline the real cube draws). First slice handles the
+  alpha-only OCCLUSION PROBE (colour writes off); the visible silhouette (MarioMain ~219, a non-white
+  matColor + dst-alpha blend) is left un-emitted (no regression — it was never drawn) for a follow-up.
+- `ngx_emit_imm_cube` (ngx_j3d_shape.cpp) — builds the 24 corners, transforms by the current GX_PNMTX0
+  (= boxDrawPrepare's viewMtx×scale×translate, captured synchronously in g_posmtx[0..2] at
+  GXLoadPosMtxImm), projects via g_proj, frustum-clips, and emits ONE batch into the same snap/batch
+  pipeline as J3D shapes, with a synthetic PASSCLR TEV state.
+- NgxPEState gained `color_mask_off` / `alpha_mask_off` (default 0 = write RGBA → every J3D batch
+  unchanged). vk_mesh.cpp AND ngx_present.cpp pipeline builders turn them into the Vulkan
+  colorWriteMask. The const dst-alpha rides the PASSCLR vertex alpha (no shader-gen change needed).
+
+## VERIFIED (deterministic, not eyeballed)
+- `SUNBRIGHT_IMM_SHOW=1` forces the cube VISIBLE (opaque red) → it paints a ~13.5k-px red box on
+  Mario near screen centre (geometry + current-matrix transform + projection + frustum clip + back-cull
+  all correct). Without SHOW the colour-masked occlusion box is INVISIBLE (default red ≈ baseline ~300
+  px → no regression). This is the falsifiable test for the port.
+- render_test `imm_cube` green (spec-checked corners/winding).
+
+## ⚠ THE SWAP-TABLE BUG (cost ~a dozen iterations — record so it never recurs)
+A synthetic `NgxTevState st{}` leaves `swap_table[4] = {0,0,0,0}`. TEV swap id **0 decodes to "rrrr"**
+(R broadcast), NOT identity. So the PASSCLR raster read `col0.rrrr` clobbered ALPHA with R — the const
+dst-alpha never landed, and under IMM_SHOW the "red" rendered as WHITE (so it looked like nothing
+rasterized; I chased depth/cull/pipeline/upload for hours). **Any hand-built NgxTevState MUST set
+`swap_table[i] = 0x1B` (identity "rgba").** Default GX/J3D table id is 0x1B; only a real material that
+sets it gets non-identity. (Fixed: ngx_emit_imm_cube sets all four to 0x1B.)
+
+## OPEN — alpha 0x10 does NOT survive into the readback (the GXPeekARGB blocker, as the handoff predicted)
+The occlusion box writes a constant framebuffer ALPHA 0x10 (GXSetDstAlpha(ENABLE,0x10)); TMario::
+drawSyncCallback then GXPeekARGB's Mario's centre and tests `(argb&0xff000000)==0x10000000`. To serve
+that, ngx's framebuffer alpha at the box pixels must read 0x10.
+- The cube's PASSCLR FRAGMENT SHADER is **verified correct** (dumped the GLSL): `prev.a = rastemp.a =
+  col0.a = round(0.0627*255) = 16`, `o.a = 16/255` → fragment alpha = 0x10. Geometry renders (the red
+  box proves the fragment runs). colorWriteMask includes A; blend off.
+- YET the readback (g_efb_color, captured from the present colour target inside PresentRenderer::render
+  after the 3D pass) shows **alpha = 0xFF across the whole 3D region, 0x10:0 always** — even under
+  IMM_SHOW where the cube's RED survives at ~13.5k px, the ALPHA at those exact pixels is 0xFF, and the
+  0-alpha box's alpha 0 doesn't land either (=0:0). So the fragment writes 0x10 but the **alpha channel
+  of the present target reads 0xFF in the 3D region regardless of what the fragment writes**.
+- Ruled out: shader (verified), masks (verified), depth/cull (visible box at default cull/depth),
+  vertex upload (in_range, nv=203k > vstart=140k), interp60 (off → unchanged), pollution (returns early
+  in plaza, no fullscreen alpha clear), epoch filter (cube epoch 0 = display_epoch). draw_pollution's
+  fullscreen "clear EFB alpha" pass does NOT run when pollution is inactive (plaza).
+- ⇒ NEXT SESSION: the alpha-channel of the ngx present colour target / Dolphin XFB is being managed/
+  reset to opaque (render-pass clear alpha = GXCopyClear alpha, or Dolphin's EFB→XFB copy forcing
+  alpha=1, or the storeOp/finalLayout path). This is the **"own ngx EFB-alpha" frontier** the prior
+  handoff flagged as a separate item. The colour readback (RGB) is faithful; only ALPHA is lost. Until
+  it's owned, GXPeekARGB must NOT be wired to the colour readback (it'd force always-occluded) — it
+  stays diagnostic. The const dst-alpha is plumbed correctly for when the alpha channel is owned.
+
+## Tools / env added
+- SUNBRIGHT_IMM_SHOW=1 — force the cube visible (red) for the geometry verify. (Kept; the falsifiable
+  test.) SUNBRIGHT_DBG_EFB prints `[imm] cube …` (emit: onscreen corners, tris, NDC bbox, masks) and
+  `[imm] present: cube batches seen/drawn`.
+- GXDrawSphere (0x80362268) stays a diagnostic counter only (0 calls in plaza; sky is J3D here).
