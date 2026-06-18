@@ -169,15 +169,29 @@ VERIFIED byte-correct (round-trip self-check, hand-checked vs the shipping tex_d
 Both copies were ALL-BLACK before (Dolphin empty EFB); now hold the ngx scene. 0 Vulkan validation
 errors, no crash. The COLOR readback primitive (g_efb_color + sb_ngx_efb_copy_region) is the foundation.
 
-### ⚠ NOT yet end-to-end VISUAL — the open risk = ngx texcache eviction
-Texel-level writeback is correct, but whether the EFFECT surface shows the scene depends on ngx's
-texture_for()/texcache RE-UPLOADING the EFB-copy texture each frame (it changes at a FIXED guest
-address every frame). If the texcache keys by address only with no dirty/content tracking, it serves
-the STALE (first, black) upload → the effect stays black despite correct guest RAM. NEXT: check the
-texcache keying in ngx_present.cpp (memory note ngx-n7-pe-block lists "present cache eviction" as a
-known TODO) — likely the last link for end-to-end. Then: identify the sampling surface to eyeball-
-confirm, and add other formats (RGBA8/I8/IA8/CMPR) if other scenes need them + a proper extracted
-tiling-encode unit test (render_test) per the TDD rule.
+### END-TO-END WIRED — texcache invalidation done (2026-06-18, session 2)
+The texcache DID key by address with NO dirty tracking (texture_for line ~730 returns the cached view
+immediately) AND never evicted (grew unbounded) — so an EFB-copy texture at a fixed address that
+changes every frame would serve the stale first/black decode. FIXED: TexEntry gains `addr`; the
+GXCopyTex override calls sb_ngx_efb_invalidate_tex(ea) after writing; render() at frame start swaps
+out the dirty MEM1-offset set and evicts (destroy img/mem/view + erase) the matching texcache entries
+so texture_for re-decodes them from the freshly-written guest RAM. Eviction at frame start is safe
+(prior frame's fence already waited → its images are free).
+VERIFIED: "[efb] texcache evict: 2 dirty, 1 entries re-decoded" — a ngx-rendered surface samples the
+EFB-copy texture and now re-decodes the LIVE scene each frame (was the stale black upload). 0 Vulkan
+validation errors, no crash, stable 21s. The full chain is closed: ngx color readback → box-downsample
+→ RGB565/RGB5A3 GC-tile → guest RAM → invalidate → re-decode → sampled by the effect surface.
+(Only 1 of the 2 dirty addrs is in the texcache → only one EFB-copy effect's surface is ngx-captured
+right now; the other's sampling surface isn't bound/captured this scene — expected, not a bug.)
+
+### Remaining (not blocking):
+- Visual ID of which effect this is (mirror/mist/heat-haze) to eyeball-confirm — deferred (the data
+  chain is verified; identifying the surface is the eyeballing-trap-prone part).
+- Other copy formats (RGBA8 fmt=6 / I8 / IA8 / CMPR) if other scenes use them — RGB565+RGB5A3 are the
+  only live plaza formats; others fall through to original-only (no regression).
+- Extract the tiling+encode into a header + a render_test unit (TDD rule) — currently hand-verified
+  byte-exact (RGB565 cdc8da→0xCE5B, RGB5A3 fb8e00→0xFE20, 656d3e→0xB1A7) but no regression test yet.
+- GXPeekZ (sun, off-screen in fastboot) + GXPeekARGB (needs ngx alpha-tag fidelity) still dormant.
 
 ## ⇒ NEXT: GXCopyTex (0x8035ee5c) is THE viable live slice — reads back COLOR (ngx RGB is faithful),
 2189×/22s in the plaza, the mirror/bathwater/mist/manta/heat-haze family. The color readback primitive

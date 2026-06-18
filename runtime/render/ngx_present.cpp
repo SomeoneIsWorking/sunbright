@@ -65,6 +65,7 @@ int g_ngx_noblend = -1;
 int g_ngx_pipe_epoch = 0;
 extern "C" int sb_ngx_set_noblend(int v) { if (v != g_ngx_noblend) { g_ngx_noblend = v; g_ngx_pipe_epoch++; } return v; }
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <mutex>
 #include <atomic>
@@ -107,6 +108,12 @@ std::vector<uint32_t> g_efb_color;       // w*h, packed ARGB8888 (the ngx scene 
 int g_efb_dw = 0, g_efb_dh = 0;          // dims of the readback (depth + color share dims)
 std::atomic<int> g_efb_want{0};          // frames of DEPTH readback remaining (decays; re-armed per request)
 std::atomic<int> g_efb_want_color{0};    // frames of COLOR readback remaining
+// EFB-copy texcache invalidation: GXCopyTex overwrites a guest texture at a FIXED address every frame
+// (sb_ngx_efb_invalidate_tex), but the texcache keys by address with no dirty tracking → it would
+// serve the stale first decode. The override marks the dst MEM1 offset dirty; render() evicts the
+// matching cache entries at frame start so they re-decode from the freshly-written guest RAM.
+std::mutex g_efb_dirty_mtx;
+std::unordered_set<uint32_t> g_efb_dirty;   // MEM1 offsets (addr & 0x01FFFFFF) written since last present
 
 struct PresentRenderer {
     bool init_tried = false, init_ok = false;
@@ -134,7 +141,7 @@ struct PresentRenderer {
 
     struct PipeEntry { VkShaderModule mod; VkPipeline pipe; };
     std::unordered_map<uint64_t, PipeEntry> pipes;        // NgxTevState.key → shader+pipeline
-    struct TexEntry { VkImage img; VkDeviceMemory mem; VkImageView view; };
+    struct TexEntry { VkImage img; VkDeviceMemory mem; VkImageView view; uint32_t addr; };
     std::unordered_map<uint64_t, TexEntry> texcache;      // tex key → GPU image
     VkImageView white_view = VK_NULL_HANDLE;              // 1×1 white fallback (texmap unused)
     VkImage white_img = VK_NULL_HANDLE; VkDeviceMemory white_mem = VK_NULL_HANDLE;
@@ -763,7 +770,7 @@ VkImageView PresentRenderer::texture_for(const NgxTexBind& t, VkCommandBuffer up
     // block-padding fix; without it every non-block-multiple texture leaks padding at u/v≈1.)
     const int iw = (int)t.w, ih = (int)t.h;
     uint32_t mips = 1; { int m = iw > ih ? iw : ih; while (m > 1) { m >>= 1; mips++; } }
-    TexEntry te{};
+    TexEntry te{}; te.addr = t.addr;
     if (!make_dev_image(dev, phys, te.img, te.mem, te.view, VK_FORMAT_R8G8B8A8_UNORM, iw, ih,
         VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
         VK_IMAGE_ASPECT_COLOR_BIT, mips)) return white_view;
@@ -865,6 +872,31 @@ AbstractTexture* PresentRenderer::render(int w, int h) {
     std::vector<NgxRenderVertex> verts(sv, sv + nv);
     std::vector<NgxRenderBatch> batches(sb, sb + nb);
     std::vector<NgxTevState> tevstates(stv, stv + (ntev > 0 ? ntev : 0));
+
+    // EFB-copy invalidation: evict texcache entries whose guest texture was overwritten by GXCopyTex
+    // since the last present, so texture_for re-decodes them from the freshly-written guest RAM (else
+    // the effect samples the stale first/black decode). Safe here: the previous frame's GPU work
+    // completed (its fence was waited at the end of the prior render()), so its images are free.
+    {
+        std::unordered_set<uint32_t> dirty;
+        { std::lock_guard<std::mutex> lk(g_efb_dirty_mtx); dirty.swap(g_efb_dirty); }
+        int evicted = 0;
+        if (!dirty.empty())
+            for (auto it = texcache.begin(); it != texcache.end(); ) {
+                if (dirty.count(it->second.addr & 0x01FFFFFFu)) {
+                    if (it->second.view) vkDestroyImageView(dev, it->second.view, nullptr);
+                    if (it->second.img)  vkDestroyImage(dev, it->second.img, nullptr);
+                    if (it->second.mem)  vkFreeMemory(dev, it->second.mem, nullptr);
+                    it = texcache.erase(it); evicted++;
+                } else ++it;
+            }
+        static const bool s_efb_dbg = getenv("SUNBRIGHT_DBG_EFB") != nullptr;
+        if (s_efb_dbg && !dirty.empty()) {
+            static int n = 0;
+            if ((n++ % 60) == 0) fprintf(stderr, "[efb] texcache evict: %d dirty, %d entries re-decoded\n",
+                                         (int)dirty.size(), evicted);
+        }
+    }
 
     // ── interp60 (PC-native frame interpolation) ─────────────────────────────────────────────
     // On an in-between field (the driver set interp mode 1), present a clip-space lerp of the
@@ -1157,6 +1189,10 @@ AbstractTexture* PresentRenderer::render(int w, int h) {
 // ngx's last-rendered scene depth at guest EFB coords. Returns 0 (and far) until a frame is published.
 extern "C" void sb_ngx_efb_request_readback() { g_efb_want.store(8); }   // keep alive ~8 frames/request
 extern "C" void sb_ngx_efb_request_color() { g_efb_want_color.store(8); }
+// Mark a GXCopyTex dst (any region alias) dirty so render() re-decodes its texcache entry next frame.
+extern "C" void sb_ngx_efb_invalidate_tex(uint32_t ea) {
+    std::lock_guard<std::mutex> lk(g_efb_dirty_mtx); g_efb_dirty.insert(ea & 0x01FFFFFFu);
+}
 extern "C" int sb_ngx_efb_peek_color(int gx, int gy, uint32_t* out) {    // packed ARGB8888
     std::lock_guard<std::mutex> lk(g_efb_mtx);
     if (g_efb_color.empty() || g_efb_dw <= 0 || g_efb_dh <= 0) return 0;

@@ -90,6 +90,7 @@ SUNBRIGHT_OVERRIDE_IF_NATIVE(ov_gxpeekargb_dbg, 0x8035dcccu, s_efb_dbg) {
 // We run the original (keeps Dolphin GP state consistent) then OVERWRITE dest with ngx's scene color,
 // box-downsampled to the dst dims and GC-tiled in the dst format. Active only under ngx present.
 extern "C" int sb_ngx_efb_copy_region(int sx, int sy, int sw, int sh, int dw, int dh, uint32_t* out);
+extern "C" void sb_ngx_efb_invalidate_tex(uint32_t ea);
 static const bool s_ngx_present = getenv("SUNBRIGHT_NGX_PRESENT") != nullptr;
 
 namespace {
@@ -129,6 +130,7 @@ void copytex_writeback(u32 /*cookie*/) {
             u32 off = tile * 32 + (u32)(dy & 3) * 8 + (u32)(dx & 3) * 2;
             mem_w16(ea + off, argb_to_tex16(buf[(size_t)dy * dw + dx], fmt));   // BE u16
         }
+    sb_ngx_efb_invalidate_tex(ea);     // force ngx to re-decode this texture from the fresh guest RAM
     if (s_efb_dbg) {
         static unsigned long n4 = 0, n5 = 0;
         unsigned long& nn = (fmt == 5) ? n5 : n4;
