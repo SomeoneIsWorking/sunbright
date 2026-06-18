@@ -154,6 +154,31 @@ DETERMINISTIC VERIFY (no eyeballing): 0x81037bc0 goes all-zero → non-zero texe
 decoder round-trips them back to the scene. Honor doClear (clear=1 path stays Dolphin/no-op as now).
 Generalize formats later (RGB5A3/RGBA8/I8/IA8) — RGB565 is the only one live in plaza.
 
+## GXCopyTex WRITEBACK BUILT + VERIFIED BYTE-CORRECT (2026-06-18, session 2)
+runtime/overrides/efb_readback_native.cpp — real overrides (gated on SUNBRIGHT_NGX_PRESENT) on
+GXSetTexCopySrc (0x8035e388) / GXSetTexCopyDst (0x8035e48c) / GXCopyTex (0x8035ee5c). Capture the
+src rect + dst dims/fmt; on GXCopyTex run the original (sb_run_original_around, keeps Dolphin GP
+consistent) then in the after-callback OVERWRITE the dst texture with ngx scene color:
+sb_ngx_efb_copy_region (ngx_present.cpp) box-downsamples g_efb_color (640×448) → dst dims; the
+override GC-tiles it (4×4 BE u16) + pixel-encodes per dst fmt, writes to (phys&0x3FFFFFFF)|0x80000000.
+Served formats: **GX_TF_RGB565 (4)** + **GX_TF_RGB5A3 (5)** — the two live plaza copy formats; others
+fall through to original-only (no regression). 1-frame lag (inherent — guest peeks mid-frame).
+VERIFIED byte-correct (round-trip self-check, hand-checked vs the shipping tex_decode.cpp inverse):
+  RGB565  ea=81037bc0 320×224 (full screen): src cdc8da → stored 0xCE5B ✓, nz≈71655/71680
+  RGB5A3  ea=810f5380 256×256:               src fb8e00 → stored 0xFE20 ✓, 656d3e → 0xB1A7 ✓, nz≈65409/65536
+Both copies were ALL-BLACK before (Dolphin empty EFB); now hold the ngx scene. 0 Vulkan validation
+errors, no crash. The COLOR readback primitive (g_efb_color + sb_ngx_efb_copy_region) is the foundation.
+
+### ⚠ NOT yet end-to-end VISUAL — the open risk = ngx texcache eviction
+Texel-level writeback is correct, but whether the EFFECT surface shows the scene depends on ngx's
+texture_for()/texcache RE-UPLOADING the EFB-copy texture each frame (it changes at a FIXED guest
+address every frame). If the texcache keys by address only with no dirty/content tracking, it serves
+the STALE (first, black) upload → the effect stays black despite correct guest RAM. NEXT: check the
+texcache keying in ngx_present.cpp (memory note ngx-n7-pe-block lists "present cache eviction" as a
+known TODO) — likely the last link for end-to-end. Then: identify the sampling surface to eyeball-
+confirm, and add other formats (RGBA8/I8/IA8/CMPR) if other scenes need them + a proper extracted
+tiling-encode unit test (render_test) per the TDD rule.
+
 ## ⇒ NEXT: GXCopyTex (0x8035ee5c) is THE viable live slice — reads back COLOR (ngx RGB is faithful),
 2189×/22s in the plaza, the mirror/bathwater/mist/manta/heat-haze family. The color readback primitive
 (g_efb_color + sb_ngx_efb_peek_color) is the foundation. Remaining work: classify the calls (clear=0

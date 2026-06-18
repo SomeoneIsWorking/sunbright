@@ -1166,6 +1166,33 @@ extern "C" int sb_ngx_efb_peek_color(int gx, int gy, uint32_t* out) {    // pack
     *out = g_efb_color[(size_t)ry * g_efb_dw + rx];
     return 1;
 }
+// GXCopyTex: box-downsample ngx's last scene color from guest EFB src rect [sx,sy,sw,sh] (640×448
+// space) into out[dw*dh] (packed ARGB8888). One mutex lock; 1-frame lag. Returns 1 if served. The
+// caller (efb_readback_native.cpp) GC-tiles/encodes out[] into the guest texture. Arms the next frame.
+extern "C" int sb_ngx_efb_copy_region(int sx, int sy, int sw, int sh, int dw, int dh, uint32_t* out) {
+    g_efb_want_color.store(8);                              // keep the color readback alive
+    std::lock_guard<std::mutex> lk(g_efb_mtx);
+    if (g_efb_color.empty() || g_efb_dw <= 0 || g_efb_dh <= 0 || dw <= 0 || dh <= 0) return 0;
+    for (int dy = 0; dy < dh; dy++)
+        for (int dx = 0; dx < dw; dx++) {
+            // src block in guest-EFB (640×448) coords for this dst texel, mapped to readback dims.
+            long gx0 = sx + (long)dx * sw / dw, gx1 = sx + (long)(dx + 1) * sw / dw;
+            long gy0 = sy + (long)dy * sh / dh, gy1 = sy + (long)(dy + 1) * sh / dh;
+            if (gx1 <= gx0) gx1 = gx0 + 1; if (gy1 <= gy0) gy1 = gy0 + 1;
+            unsigned ar = 0, ag = 0, ab = 0, cnt = 0;
+            for (long gy = gy0; gy < gy1; gy++)
+                for (long gx = gx0; gx < gx1; gx++) {
+                    long rx = gx * g_efb_dw / 640, ry = gy * g_efb_dh / 448;
+                    if (rx < 0) rx = 0; if (rx >= g_efb_dw) rx = g_efb_dw - 1;
+                    if (ry < 0) ry = 0; if (ry >= g_efb_dh) ry = g_efb_dh - 1;
+                    uint32_t c = g_efb_color[(size_t)ry * g_efb_dw + rx];
+                    ar += (c >> 16) & 0xFF; ag += (c >> 8) & 0xFF; ab += c & 0xFF; cnt++;
+                }
+            if (!cnt) cnt = 1;
+            out[(size_t)dy * dw + dx] = (0xFFu << 24) | ((ar / cnt) << 16) | ((ag / cnt) << 8) | (ab / cnt);
+        }
+    return 1;
+}
 extern "C" int sb_ngx_efb_peek_depth(int gx, int gy, float* out) {
     std::lock_guard<std::mutex> lk(g_efb_mtx);
     if (g_efb_depth.empty() || g_efb_dw <= 0 || g_efb_dh <= 0) return 0;
