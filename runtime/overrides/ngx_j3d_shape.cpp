@@ -610,9 +610,20 @@ void capture_colorchan(u32 material) {
     // 3D scene, 0/white for others.) The earlier "purple" was a by-VALUE read of the GXColor POINTER
     // arg — now fixed (ov_gxsetchanambcolor derefs gpr[4]). ambSrc=VTX materials ignore this
     // (light_vertex substitutes the vertex colour). A/B: SUNBRIGHT_NGX_AMB0=1 forces the old 0.
-    static const bool amb_zero = sb_env_on("SUNBRIGHT_NGX_AMB0");
-    if (!amb_zero && g_amb_have[0]) for (int k = 0; k < 4; k++) g_cur_chan.ambColor[k] = g_amb_reg[0][k];
-    else                            for (int k = 0; k < 4; k++) g_cur_chan.ambColor[k] = 0;
+    // PER-MATERIAL ambient (the wash fix, 2026-06-18): a J3DColorBlockLightOn block carries its own
+    // ambient color in the block at +0x0C (right after matColor@0x04), exactly like matColor. The old
+    // code computed amb_off but then IGNORED it and used the GLOBAL GXSetChanAmbColor register
+    // (g_amb_reg) for every material — that register reads grey (128,128,128) while the GPU's true
+    // per-material ambient (xfmem) is 0, so every lit surface got +0.5 grey ambient → the Delfino
+    // floor rendered ~2.2x too bright (/gxstate: ngx amb 128 vs xfmem 0 on every material). Read the
+    // block's own ambient for LightOn materials (matches xfmem); LightOff blocks have no ambient field
+    // → fall back to the global register (or 0). A/B: SUNBRIGHT_NGX_AMBGLOBAL=1 forces the old global
+    // register for all; SUNBRIGHT_NGX_AMB0=1 forces 0.
+    static const bool amb_global = sb_env_on("SUNBRIGHT_NGX_AMBGLOBAL");  // A/B: force the old global reg
+    if (amb_global && g_amb_have[0])
+                       for (int k = 0; k < 4; k++) g_cur_chan.ambColor[k] = g_amb_reg[0][k];
+    else if (amb_off)  for (int k = 0; k < 4; k++) g_cur_chan.ambColor[k] = B[amb_off + k];  // CLON: per-material block
+    else               for (int k = 0; k < 4; k++) g_cur_chan.ambColor[k] = 0;               // CLOF: 0 (matches xfmem)
     g_cur_chan.valid = true;
 }
 
