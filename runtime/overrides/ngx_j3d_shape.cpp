@@ -56,6 +56,11 @@ constexpr u32 J3DSYS = 0x804045DCu;
 // Honor the VALUE (=0 disables) so a recomp-GX oracle with NGX_PRESENT=0 truly runs Dolphin GX.
 static bool sb_env_on(const char* n) { const char* v = getenv(n); return v && atoi(v) != 0; }
 bool g_enabled = sb_env_on("SUNBRIGHT_NGX_SHAPE") || sb_env_on("SUNBRIGHT_NGX_PRESENT");  // present needs capture
+// FULL-PC-ENGINE: ngx owns the J3DShape draw (no super-call into the recompiled draw). On when
+// explicitly requested, or implied by NO_RECOMP while ngx presents (Dolphin GX output is discarded
+// then anyway). See ov_j3dshape_draw for the native per-view j3dSys setup that replaces the draw.
+bool g_native_draw = sb_env_on("SUNBRIGHT_NGX_NATIVE_DRAW") ||
+                     (sb_env_on("SUNBRIGHT_NO_RECOMP") && sb_env_on("SUNBRIGHT_NGX_PRESENT"));
 
 // Latest GX texmap-0 binding (from the GXLoadTexObj tee), associated with shapes
 // drawn after it. Decoded from the GXTexObj's packed registers.
@@ -2757,7 +2762,27 @@ SUNBRIGHT_OVERRIDE(ov_j3dshape_draw, 0x802e0390u) {
     // arrays (loadVtxArray) AND the modelview (setModelDrawMtx) for THIS shape, so
     // we must capture after it for the arrays + matrix to be current.
     g_seam_log_n = 0;   // collect THIS shape's indexed pos-matrix loads in stream order
-    if (RecompFunc o = recomp_raw(0x802e0390u)) o(cpu); else call_ppc(cpu, cpu.lr);
+    // FULL-PC-ENGINE path (SUNBRIGHT_NGX_NATIVE_DRAW=1, or implied by SUNBRIGHT_NO_RECOMP when ngx
+    // presents): ngx OWNS the shape draw — do NOT super-call the recompiled J3DShape::draw. The
+    // original draw's only outputs are (a) GX commands (VCD/VAT load, mMatrices[i]->load to XF,
+    // mDraws[i]->draw FIFO) which are DISCARDED when ngx is the presented frame, and (b) the
+    // per-view j3dSys state ngx's capture() reads: mCurrentDrawMtx/mCurrentNormMtx (set by
+    // setModelDrawMtx/setModelNrmMtx). We reproduce ONLY (b) natively, reading the shape's guest
+    // fields (J3DShape: mDrawMatrices@0x50, mNormMatrices@0x54, mCurrentViewNo@0x58; J3DSys:
+    // mCurrentDrawMtx@0x104, mCurrentNormMtx@0x108 — decomp J3DShape.cpp/J3DSys.hpp). The vertex
+    // array bases (j3dSys.unk10C/110/114) are model-level state set BEFORE shape draws, and ngx
+    // reads VCD/VAT + per-element matrices straight from the guest objects — so nothing else from
+    // the original draw is needed. This removes the largest recomp consumer from the render path.
+    if (g_native_draw) {
+        const u32 viewp = r32(sh + 0x58);                 // J3DShape::mCurrentViewNo (u32*)
+        const u32 view  = valid(viewp) ? r32(viewp) : 0;  // *mCurrentViewNo
+        const u32 dmArr = r32(sh + 0x50);                 // mDrawMatrices (Mtx**)
+        const u32 nmArr = r32(sh + 0x54);                 // mNormMatrices (Mtx33**)
+        if (valid(dmArr)) { const u32 m = r32(dmArr + view * 4); mem_w32(J3DSYS + 0x104, m); }
+        if (valid(nmArr)) { const u32 m = r32(nmArr + view * 4); mem_w32(J3DSYS + 0x108, m); }
+    } else {
+        if (RecompFunc o = recomp_raw(0x802e0390u)) o(cpu); else call_ppc(cpu, cpu.lr);
+    }
     xfmem_draw_observe();   // always-on (oracle too): ground-truth xfmem at draw
     if (g_enabled) capture(sh);
     if ((int)my_idx < SHAPETI_CAP) g_frame_shape_ti[my_idx] = g_cur_tev_index;   // draw#→material
