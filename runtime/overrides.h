@@ -128,3 +128,11 @@ bool jit_forced_registered();             // any forced-JIT range registered?
     static const bool name##_registered =                                       \
         ((cond) ? (register_override((addr), &name), true) : false);           \
     static void name(CPUState& cpu)
+
+// Conditional ENGINE variant — register AND mark purejit-safe when `cond` (so it is ACTIVE under
+// no-recomp). For full-replacement engine seams that should only exist when a feature is on.
+#define SUNBRIGHT_OVERRIDE_IF_NATIVE(name, addr, cond)                          \
+    static void name(CPUState& cpu);                                            \
+    static const bool name##_registered =                                       \
+        ((cond) ? (register_override((addr), &name), mark_override_purejit_safe((addr)), true) : false); \
+    static void name(CPUState& cpu)

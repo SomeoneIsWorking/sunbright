@@ -645,6 +645,34 @@ AbstractTexture* PresentRenderer::render(int w, int h) {
     std::vector<NgxRenderVertex> verts(sv, sv + nv);
     std::vector<NgxRenderBatch> batches(sb, sb + nb);
     std::vector<NgxTevState> tevstates(stv, stv + (ntev > 0 ? ntev : 0));
+
+    // ── interp60 (PC-native frame interpolation) ─────────────────────────────────────────────
+    // On an in-between field (the driver set interp mode 1), present a clip-space lerp of the
+    // previous frame (N-1) toward this one (N) instead of N itself — doubling distinct frames to
+    // 60fps from the 30Hz game, entirely from ngx's own object-model snapshots (no GX replay). The
+    // lerp is valid only when N-1 and N share topology (same vertex count + per-batch structure), so
+    // vertex i in N corresponds to vertex i in N-1 (a model moving → same shapes, same vert order,
+    // different transforms). If a shape spawned/despawned or the draw order changed, correspondence
+    // breaks → fall back to presenting N unblended (interpolation can never corrupt the frame).
+    if (ngx_interp60_enabled() && ngx_interp_mode() == 1) {
+        int npv = 0, npb = 0;
+        const NgxRenderVertex* pv = ngx_snap_verts_prev(&npv);
+        const NgxRenderBatch*  pb = ngx_snap_batches_prev(&npb);
+        bool match = pv && pb && npv == nv && npb == nb;
+        for (int b = 0; match && b < nb; b++)
+            match = pb[b].vstart == batches[b].vstart && pb[b].vcount == batches[b].vcount &&
+                    pb[b].tev_index == batches[b].tev_index && pb[b].epoch == batches[b].epoch;
+        if (match) {
+            const float a = sb_ngx_interp_alpha();
+            for (int i = 0; i < nv; i++) {
+                const NgxRenderVertex& A = pv[i]; NgxRenderVertex& B = verts[i];
+                for (int k = 0; k < 4; k++) B.clip[k] = A.clip[k] + (B.clip[k] - A.clip[k]) * a;
+                for (int k = 0; k < 4; k++) B.rgba[k] = A.rgba[k] + (B.rgba[k] - A.rgba[k]) * a;
+                for (int t = 0; t < 8; t++) for (int k = 0; k < 2; k++)
+                    B.uv[t][k] = A.uv[t][k] + (B.uv[t][k] - A.uv[t][k]) * a;
+            }
+        }
+    }
     // Render-target-aware filter: present only the display epoch (main scene) onward.
     const int display_epoch = rtfilter_on() ? ngx_snap_display_epoch() : 0;
 
@@ -804,10 +832,34 @@ AbstractTexture* PresentRenderer::render(int w, int h) {
 // Called on the video thread by the fork's Presenter when SUNBRIGHT_NGX_PRESENT is on.
 // Returns the AbstractTexture holding the freshly-rendered ngx frame at w×h (the XFB
 // dims), or nullptr if not ready / no geometry (caller keeps the real XFB).
+// interp60 present cadence: the fork's VI presents once per FIELD (~60/s) while the 30 Hz game
+// publishes a new ngx snapshot once per frame (~30/s) — so every other present is a "repeat" field
+// showing the same frame id. On a repeat field we render the N-1↔N blend (interp mode 1) instead of
+// re-showing N → 60 fps from the engine's own snapshots, no guest driver, no GX replay. Counters
+// feed /interp60.
+extern "C" unsigned long sb_ngx_front_frame();      // ngx_j3d_shape.cpp — published snapshot frame id
+extern "C" { extern volatile int g_sb_ab_capture; } // Present.cpp — /abshot2 wants a stable (non-blend) frame
+unsigned long g_interp_presents = 0, g_interp_blends = 0;
 extern "C" const void* sb_ngx_present_xfb(int w, int h) {
     if (!g_pr.init_tried) { g_pr.init_tried = true; g_pr.init_ok = g_pr.init(); }
     if (!g_pr.init_ok) return nullptr;
+    if (ngx_interp60_enabled() && !g_sb_ab_capture) {
+        static unsigned long s_last_ff = ~0ul;
+        const unsigned long ff = sb_ngx_front_frame();
+        const bool repeat = (ff == s_last_ff);
+        s_last_ff = ff;
+        g_interp_presents++;
+        // New frame → present it (mode 0). Repeat field → present the in-between blend (mode 1).
+        sb_ngx_set_interp_mode(repeat ? 1 : 0);
+        if (repeat) g_interp_blends++;
+    } else {
+        sb_ngx_set_interp_mode(0);
+    }
     return g_pr.render(w, h);
+}
+
+extern "C" void sb_ngx_interp_stats(unsigned long* presents, unsigned long* blends) {
+    *presents = g_interp_presents; *blends = g_interp_blends;
 }
 
 // Runtime render-debug toggle (/ngxdbg): set the TEV-debug mode on a LIVE scene; the next

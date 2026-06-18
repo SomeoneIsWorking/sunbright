@@ -110,6 +110,10 @@ extern "C" void sb_ngx_skipset_add(int);                     // runtime/render/n
 int sb_ngx_render(char*, int);                               // runtime/render/vk_mesh.cpp
 int sb_ngx_present_test(char*, int);                         // runtime/render/vk_mesh.cpp
 extern "C" void sb_ngx_present_stats(unsigned long*, unsigned long*, unsigned long*, int*, int*, int*, unsigned long*);  // ngx_present.cpp
+extern "C" void  sb_ngx_interp_stats(unsigned long*, unsigned long*);  // ngx_present.cpp — interp60 cadence
+extern "C" int   sb_ngx_interp60_enabled();                            // ngx_j3d_shape.cpp
+extern "C" float sb_ngx_interp_alpha();                                // ngx_j3d_shape.cpp
+extern "C" void  sb_ngx_set_interp_alpha(float);                       // ngx_j3d_shape.cpp
 int sb_tev_shader_selftest(char*, int);                      // runtime/render/tev_shader.cpp
 void gxs_frametime_reset();                                   // runtime/gx_stream.h
 void gxs_frametime_stats(unsigned long*, double*, double*, double*, double*);
@@ -454,6 +458,14 @@ std::string handle_repl(const char* path) {
         sb_ngx_present_stats(&fr, &pi, &tx, &w, &h, &ok, &jq);
         app("ngx_present_live: init_ok=%d frames=%lu pipelines_built=%lu textures_decoded=%lu target=%dx%d hud_quads=%lu\n",
             ok, fr, pi, tx, w, h, jq);
+        return std::string(buf, n);
+    }
+    if (strncmp(path, "/interp60", 9) == 0) {  // PC-native interp60 cadence: presents + in-between blends
+        unsigned long pr = 0, bl = 0; sb_ngx_interp_stats(&pr, &bl);
+        // /interp60?a=<0..1> sets the blend alpha live.
+        if (const char* q = strstr(path, "a=")) sb_ngx_set_interp_alpha((float)atof(q + 2));
+        app("interp60: enabled=%d alpha=%.2f presents=%lu blends(in-between)=%lu blend_frac=%.2f\n",
+            sb_ngx_interp60_enabled(), sb_ngx_interp_alpha(), pr, bl, pr ? (double)bl / pr : 0.0);
         return std::string(buf, n);
     }
     if (strncmp(path, "/ngxpresent", 11) == 0) {  // N7 present primitive: render into an external target

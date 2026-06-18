@@ -1198,6 +1198,17 @@ size_t                       g_snap_count[2] = {0, 0};
 std::vector<NgxRenderBatch>  g_batches[2];
 int                          g_cur = 0;       // accumulation buffer (game thread only)
 std::atomic<int>             g_front{0};       // published buffer (present reads)
+// interp60 (PC-native frame interpolation): the displaced frame (N-1) preserved at publish so the
+// present can render an in-between (clip-space lerp N-1↔N). Double-buffered + atomic-indexed for the
+// CPU(publish)→video(present) handoff; copied only when interp60 is on.
+std::vector<NgxRenderVertex> g_snap_prev[2];
+std::vector<NgxRenderBatch>  g_batches_prev[2];
+size_t                       g_snap_prev_count[2] = {0, 0};
+std::atomic<int>             g_prev_front{-1};       // published prev buffer (-1 = none yet)
+int                          g_prev_cur = 0;         // prev accumulation index (publish thread)
+int                          g_prev_read_front = -1; // latched by ngx_snap_verts_prev
+std::atomic<int>             g_ngx_interp_mode{0};   // 0 = render front (real), 1 = render N-1↔N blend
+std::atomic<int>             g_ngx_interp_alpha_milli{500};  // blend alpha ×1000 (default 0.5)
 // Per-shape NDC-bbox record ring (double-buffered like g_snap) — for the /ngxshapes probe that
 // localizes a MISPLACED shape (e.g. the file-select Mario rendered at screen-top): a shape whose
 // NDC bbox sits where it shouldn't is an identified wrong-matrix shape, not a shred. Recorded at
@@ -2202,6 +2213,20 @@ void ngx_frame_publish() {
         fprintf(stderr, "[shred] auto-froze on skinned NDC spike (max=%.0f shape=%08x)\n", g_shred_ndc_max, g_shred_ndc_shape);
     }
     g_cur ^= 1;
+    // interp60: g_cur now indexes the just-displaced frame (N-1, about to be recycled for the next
+    // accumulation). Preserve its used portion so the present can interpolate N-1↔N. Double-buffered
+    // so the buffer the present is reading isn't overwritten for two more publishes (SPSC, no tear).
+    if (ngx_interp60_enabled()) {
+        const size_t pc = g_snap_count[g_cur];
+        std::vector<NgxRenderVertex>& pv = g_snap_prev[g_prev_cur];
+        if (pc > 0 && pc <= g_snap[g_cur].size()) {
+            pv.assign(g_snap[g_cur].begin(), g_snap[g_cur].begin() + pc);
+            g_batches_prev[g_prev_cur] = g_batches[g_cur];
+            g_snap_prev_count[g_prev_cur] = pc;
+            g_prev_front.store(g_prev_cur, std::memory_order_release);
+            g_prev_cur ^= 1;
+        }
+    }
     if (g_snap[g_cur].size() < SNAP_CAP) g_snap[g_cur].resize(SNAP_CAP);
     g_snap_count[g_cur] = 0;
     g_batches[g_cur].clear();
@@ -2261,6 +2286,38 @@ const NgxRenderBatch* ngx_snap_batches(int* nbatches) {
     const int f = g_read_front;
     *nbatches = (int)g_batches[f].size();
     return g_batches[f].empty() ? nullptr : g_batches[f].data();
+}
+// interp60: the preserved previous frame (N-1) for the in-between blend. Latch the prev buffer index
+// in ngx_snap_verts_prev so ngx_snap_batches_prev reads the SAME prev frame.
+const NgxRenderVertex* ngx_snap_verts_prev(int* nverts) {
+    const int f = g_prev_front.load(std::memory_order_acquire);
+    g_prev_read_front = f;
+    if (f < 0) { *nverts = 0; return nullptr; }
+    *nverts = (int)g_snap_prev_count[f];
+    return g_snap_prev[f].empty() ? nullptr : g_snap_prev[f].data();
+}
+const NgxRenderBatch* ngx_snap_batches_prev(int* nbatches) {
+    const int f = g_prev_read_front;
+    if (f < 0) { *nbatches = 0; return nullptr; }
+    *nbatches = (int)g_batches_prev[f].size();
+    return g_batches_prev[f].empty() ? nullptr : g_batches_prev[f].data();
+}
+bool ngx_interp60_enabled() {
+    static int v = -1;
+    if (v < 0) {
+        const char* e = getenv("SUNBRIGHT_INTERP60");
+        // Default ON when ngx capture is active (the PC-native engine showcase); opt out with =0.
+        v = e ? (atoi(e) != 0) : (ngx_capture_active() ? 1 : 0);
+    }
+    return v != 0;
+}
+int  ngx_interp_mode() { return g_ngx_interp_mode.load(std::memory_order_acquire); }
+extern "C" void  sb_ngx_set_interp_mode(int m) { g_ngx_interp_mode.store(m, std::memory_order_release); }
+extern "C" int   sb_ngx_interp60_enabled() { return ngx_interp60_enabled() ? 1 : 0; }
+extern "C" float sb_ngx_interp_alpha() { return g_ngx_interp_alpha_milli.load(std::memory_order_acquire) / 1000.0f; }
+extern "C" void  sb_ngx_set_interp_alpha(float a) {
+    if (a < 0.f) a = 0.f; if (a > 1.f) a = 1.f;
+    g_ngx_interp_alpha_milli.store((int)(a * 1000.f + 0.5f), std::memory_order_release);
 }
 // Display epoch of the latched snapshot (read after ngx_snap_verts latches g_read_front). The
 // present skips batches whose epoch < this (auxiliary offscreen renders — the ghost class).

@@ -107,3 +107,17 @@ const NgxRenderVertex* ngx_snap_verts(int* nverts);
 const NgxRenderBatch*  ngx_snap_batches(int* nbatches);
 const NgxTevState*     ngx_snap_tevstates(int* nstates);
 int                    ngx_snap_display_epoch(void);   // present skips batches with epoch < this
+
+// ── interp60 (PC-native frame interpolation) ─────────────────────────────────
+// The PREVIOUS published snapshot (frame N-1) kept alongside the front (N) so the present can
+// render an in-between field: a clip-space lerp of N-1↔N (NgxRenderVertex.clip/rgba/uv), valid only
+// when the two frames share topology (same vertex count + batch structure) — else the present falls
+// back to N (interpolation can never break rendering). prev = nullptr until two frames have
+// published. ngx_snap_verts_prev MUST be called before ngx_snap_batches_prev (it latches the buffer).
+const NgxRenderVertex* ngx_snap_verts_prev(int* nverts);
+const NgxRenderBatch*  ngx_snap_batches_prev(int* nbatches);
+bool ngx_interp60_enabled();           // default ON under ngx capture; SUNBRIGHT_INTERP60=0 disables
+int  ngx_interp_mode();                // 0 = render front (real frame), 1 = render the N-1↔N blend
+extern "C" void  sb_ngx_set_interp_mode(int m);   // interp driver sets before each present
+extern "C" float sb_ngx_interp_alpha();           // live blend alpha (default 0.5; /interp60 tunable)
+extern "C" void  sb_ngx_set_interp_alpha(float a);

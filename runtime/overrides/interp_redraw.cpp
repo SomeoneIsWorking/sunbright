@@ -126,7 +126,7 @@ extern "C" void func_802a4e28(CPUState&);   // TPerformList::perform
 u8  g_gfx_snap[0x100];
 bool g_gfx_valid = false;
 
-SUNBRIGHT_OVERRIDE_IF(ov_interp_perform_snap, 0x802a4e28u, (getenv("SUNBRIGHT_INTERP60") || getenv("SUNBRIGHT_INTERP60_REPLAY"))) {
+SUNBRIGHT_OVERRIDE_IF(ov_interp_perform_snap, 0x802a4e28u, getenv("SUNBRIGHT_INTERP60_REPLAY")) {
     if ((sunbright_interp60() || sunbright_interp60_replay()) && g_mardir && cpu.gpr[3] == MEM_R32(g_mardir + 0x1C) && cpu.gpr[5] >= 0x80000000u) {
         for (u32 i = 0; i < 0x100; i++) g_gfx_snap[i] = MEM_R8(cpu.gpr[5] + i);
         g_gfx_valid = true;
@@ -138,7 +138,7 @@ SUNBRIGHT_OVERRIDE_IF(ov_interp_perform_snap, 0x802a4e28u, (getenv("SUNBRIGHT_IN
 // how often it runs during the redraw — if 0, the view-blend never reaches j3dSys
 // and camera interp can't work via this path (would need a direct j3dSys write).
 extern "C" void func_80296a50(CPUState&);
-SUNBRIGHT_OVERRIDE_IF(ov_interp_setviewmtx, 0x80296a50u, (getenv("SUNBRIGHT_INTERP60") || getenv("SUNBRIGHT_INTERP60_REPLAY"))) {
+SUNBRIGHT_OVERRIDE_IF(ov_interp_setviewmtx, 0x80296a50u, getenv("SUNBRIGHT_INTERP60_REPLAY")) {
     if (g_interp60_in_redraw) g_i60.setviewmtx_calls++;
     func_80296a50(cpu);
 }
@@ -152,7 +152,7 @@ SUNBRIGHT_OVERRIDE_IF(ov_interp_setviewmtx, 0x80296a50u, (getenv("SUNBRIGHT_INTE
 // real flicker is that effects toggle/​differ per field — not a clean reuse problem. Real fix is
 // being designed from docs/re_notes/ (which effects draw in which perform list/phase).
 extern "C" void func_802f8bac(CPUState&);   // JDrama::TEfbCtrlTex::perform(u32 flags, TGraphics*)
-SUNBRIGHT_OVERRIDE_IF(ov_efbctrltex_perform, 0x802f8bacu, (getenv("SUNBRIGHT_INTERP60") || getenv("SUNBRIGHT_INTERP60_REPLAY"))) {
+SUNBRIGHT_OVERRIDE_IF(ov_efbctrltex_perform, 0x802f8bacu, getenv("SUNBRIGHT_INTERP60_REPLAY")) {
     if (g_interp60_in_redraw && g_i60.skip_efbcopy) {
         g_i60.efbcopy_skipped++;
         cpu.gpr[4] &= ~0x8u;          // drop the EFB->screen-texture copy; keep setup
@@ -164,7 +164,7 @@ SUNBRIGHT_OVERRIDE_IF(ov_efbctrltex_perform, 0x802f8bacu, (getenv("SUNBRIGHT_INT
 // draw-asymmetry blink (fires on one field, not the other) from a position-detach blink (fires
 // on both, but its gpMarioPos-projected center is at tick N while the body interpolates).
 extern "C" void func_80227914(CPUState&);   // TSilhouette::perform(u32 flags, TGraphics*)
-SUNBRIGHT_OVERRIDE_IF(ov_silhouette_perform, 0x80227914u, (getenv("SUNBRIGHT_INTERP60") || getenv("SUNBRIGHT_INTERP60_REPLAY"))) {
+SUNBRIGHT_OVERRIDE_IF(ov_silhouette_perform, 0x80227914u, getenv("SUNBRIGHT_INTERP60_REPLAY")) {
     const u32 param = cpu.gpr[4];
     if (g_interp60_in_redraw) {
         g_i60.sil_perf_redraw++; g_i60.sil_lastparam_redraw = param;
@@ -181,12 +181,12 @@ SUNBRIGHT_OVERRIDE_IF(ov_silhouette_perform, 0x80227914u, (getenv("SUNBRIGHT_INT
 // root cause in docs/interp60_efb_handoff.md). Captured on REAL-field perform calls only.
 u32 g_water_mgr = 0;
 extern "C" void func_8027beb0(CPUState&);   // TModelWaterManager::perform
-SUNBRIGHT_OVERRIDE_IF(ov_water_perform_cache, WATER_PERFORM, (getenv("SUNBRIGHT_INTERP60") || getenv("SUNBRIGHT_INTERP60_REPLAY"))) {
+SUNBRIGHT_OVERRIDE_IF(ov_water_perform_cache, WATER_PERFORM, getenv("SUNBRIGHT_INTERP60_REPLAY")) {
     if (!g_interp60_in_redraw) g_water_mgr = cpu.gpr[3];
     func_8027beb0(cpu);
 }
 
-SUNBRIGHT_OVERRIDE_IF(ov_interp_mardir_direct, MARDIR_DIRECT, (getenv("SUNBRIGHT_INTERP60") || getenv("SUNBRIGHT_INTERP60_REPLAY"))) {
+SUNBRIGHT_OVERRIDE_IF(ov_interp_mardir_direct, MARDIR_DIRECT, getenv("SUNBRIGHT_INTERP60_REPLAY")) {
     g_mardir = cpu.gpr[3];
     g_water_mgr = 0;                                   // re-cached by this frame's water perform (if any)
     if (g_i60.mode == 3) interp60_registry_clear();   // start a fresh model registry
@@ -199,7 +199,7 @@ SUNBRIGHT_OVERRIDE_IF(ov_interp_mardir_direct, MARDIR_DIRECT, (getenv("SUNBRIGHT
 // Storage lives in videocommon (Present.cpp) so the offline tools link; we just bump it.
 extern "C" volatile unsigned long g_sb_game_seq;
 
-SUNBRIGHT_OVERRIDE_IF(ov_interp_endRendering, DISPLAY_END_RENDER, (getenv("SUNBRIGHT_INTERP60") || getenv("SUNBRIGHT_INTERP60_REPLAY"))) {
+SUNBRIGHT_OVERRIDE_IF(ov_interp_endRendering, DISPLAY_END_RENDER, getenv("SUNBRIGHT_INTERP60_REPLAY")) {
     g_sb_game_seq = g_sb_game_seq + 1;
     const u32 display = cpu.gpr[3];
     const bool fresh = g_direct_stamp != g_consumed_stamp;
