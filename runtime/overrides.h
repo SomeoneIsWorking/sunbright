@@ -61,11 +61,16 @@ bool       prehooks_registered();
 // form of what was the throwaway PUREJIT validation switch. Distinct from SUNBRIGHT_NO_RECOMP, the
 // Phase-A half-measure that only flips the top-level JIT entry while recomp still dominates.
 //
-// Engine overrides cannot dispatch via Run() under this mode: nearly all of them carry a default-OFF
+// Most engine overrides cannot dispatch via Run() under this mode: nearly all carry a default-OFF
 // super-call fallback (recomp_raw / call_ppc(cpu.lr)) that, with recomp gone, would route the caller
-// continuation through the interpreter (which bypasses overrides). So the engine seam is pre-hooks
-// only; full-replacement overrides are converted/re-grounded as purejit-aware seams per-override.
+// continuation through the interpreter (which bypasses overrides). So the default engine seam is
+// pre-hooks. A FULL-REPLACEMENT override that runs to completion and returns to lr (it does not lean
+// on a recomp body to continue the caller) CAN still dispatch via Run() — mark it purejit-safe so
+// IsRecompiled lets it through under purejit. Use this for control-flow replacements (fastboot's
+// app-state returns) and full native draws (ngx g_native_draw), NOT for observe-then-run wrappers.
 bool sunbright_purejit_mode();
+void mark_override_purejit_safe(u32 addr);   // call after register_override for a full-replacement
+bool override_is_purejit_safe(u32 addr);     // consulted by IsRecompiled under purejit
 
 bool is_jit_forced(u32 addr);
 void force_jit(u32 addr);                 // single address

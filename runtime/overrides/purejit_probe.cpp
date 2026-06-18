@@ -1,10 +1,13 @@
-// Pure-JIT pre-hook validation probe (SUNBRIGHT_PUREJIT=1).
+// Pure-JIT pre-hook probe (SUNBRIGHT_PUREJIT=1).
 //
-// Registers OBSERVE pre-hooks on the two ngx capture seams to prove the pre-hook table + trampoline
-// wiring work end-to-end: under pure Dolphin JIT (no recomp / native_os / exec-model overrides), the
-// trampoline runs these pre-hooks and then lets Dolphin JIT the original block. If boot progresses
-// and the liveness line prints, the no-recomp engine-seam mechanism is real (Phase B step 1). This
-// file is throwaway scaffolding for the real engine pre-hooks (ngx capture, fastboot) — replace it.
+// Registers OBSERVE pre-hooks on the two ngx capture seams. ⚠ FINDING (2026-06-18, session 10): a
+// pre-hook (observe + return-false-so-Dolphin-JITs-the-original) fires only ONCE per block — the
+// fork's JitTrampoline runs on the dispatcher's CACHE-MISS/COMPILE path, so once Dolphin compiles a
+// passthrough block at the address, every later dispatch runs the cached block WITHOUT re-entering
+// our hook. This probe printing "J3DShape::draw=1" after a whole scene of rendering IS that bug, not
+// success. Pre-hooks are therefore useless for PER-CALL engine capture; the ngx capture seams must
+// instead be purejit-safe RETURN-TRUE overrides (full native replacement — see the journal). Kept as
+// a diagnostic that demonstrates the once-per-compile limitation; do NOT build capture on it.
 
 #include "../overrides.h"
 #include <cstdio>

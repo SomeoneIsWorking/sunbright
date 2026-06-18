@@ -278,6 +278,21 @@ SUNBRIGHT_OVERRIDE(ov_fb_gclogo_direct, GCLOGO_DIRECT) {
 // One-shot: in the boot attract-movie state (proc runs it with mAppState DONE, falling
 // through to the MOVIE case), perform the ported file-select transition and return
 // GAMEPLAY. Later movie directors (shine intros etc.) pass through untouched.
+// Under the no-recomp pure-JIT mode (sunbright_purejit_mode) fastboot's two overrides must still
+// dispatch via Run() — they are control-flow REPLACEMENTS (return DONE/GAMEPLAY, skip the original
+// director), not observe-then-run wrappers, so a pre-hook can't express them. Mark them purejit-safe
+// ONLY when fastboot is enabled (otherwise, under purejit-without-fastboot, the directors must fall
+// to Dolphin's JIT, not get dispatched and interp-super-called). The helper super-calls inside
+// do_transition (FlagManager + OS thread sync) run under Dolphin's interpreter via call_ppc — those
+// are boot-time leaf functions that need no engine interception.
+static const bool ov_fb_purejit_marked = [] {
+    if (fastboot_enabled()) {
+        mark_override_purejit_safe(GCLOGO_DIRECT);
+        mark_override_purejit_safe(MOVIE_DIRECT);
+    }
+    return true;
+}();
+
 SUNBRIGHT_OVERRIDE(ov_fb_movie_direct, MOVIE_DIRECT) {
     if (fastboot_enabled() && !g_done) {
         u32 st = mem_r8(GPAPPLICATION + 0x08);

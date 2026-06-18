@@ -286,11 +286,41 @@ getting fastboot (an engine override) working in the pure-JIT mode — i.e. Phas
      and the engine pre-hook seam fires (`[purejit] pre-hook seams hit: J3DShape::draw=1`). Default
      recomp path unaffected (smoke: 1.06×, 60M recomp calls, frame_swaps=443, ngx capturing).
    - NOTE: sustained 3D hits not yet reached — AUTOSTART cycles attract/THP; needs fastboot (step 3).
-3. **Convert class-(B) engine overrides to pre-hooks**, starting with fastboot (to reach gameplay
-   headlessly) and the ngx capture seams (J3DShape/J2DScreen/scene_render). Each: observe guest state
-   for ngx, return-false so Dolphin runs the original. Full native replacements (ngx g_native_draw)
-   need no original.
-4. Then validate sustained Delfino render under pure JIT + ngx present; A/B pixels vs the recomp path.
+3. **[STARTED 2026-06-18, session 10 — fastboot DONE; pre-hook premise FALSIFIED]**
+   - **fastboot under purejit DONE.** fastboot's two overrides (TGCLogoDir::direct,
+     TMovieDirector::direct) are control-flow REPLACEMENTS (return DONE/GAMEPLAY, skip the original),
+     not observe-then-run — so they CANNOT be pre-hooks. Added a `mark_override_purejit_safe(addr)` /
+     `override_is_purejit_safe(addr)` mechanism (overrides.h/.cpp): a full-replacement override stays
+     dispatchable via Run() under purejit. fastboot marks its two addresses safe (only when
+     SUNBRIGHT_FASTBOOT is set). IsRecompiled's purejit branch now returns `override_is_purejit_safe(pc)`.
+     **Found+fixed an ordering bug:** purejit sets DISABLE_RECOMP for the substrate, and IsRecompiled's
+     `if (disabled) return false` was BEFORE the purejit branch → pre-empted the safe-override dispatch.
+     Moved the purejit branch FIRST. VERIFIED: `SUNBRIGHT_PUREJIT=1 SUNBRIGHT_FASTBOOT=1` →
+     `[fastboot] loaded save File 1 → Delfino Plaza (episode 5)` fires, boot at 1.0×, framedump
+     (scratch/pjdump) shows **Delfino Plaza fully rendered via Dolphin GX** (Mario/NPCs/plaza/HUD/
+     subtitle). fastboot's helper super-calls (FlagManager + OS thread join) run under Dolphin's
+     interpreter via call_ppc and work (no step-budget abort) — acceptable for boot-time leaf funcs.
+   - **★★★ MAJOR FINDING — the PRE-HOOK (observe + return-false) premise is FALSIFIED for per-call
+     capture.** Over 60 s of rendering Delfino, the J3DShape::draw pre-hook fired exactly **ONCE**.
+     Root cause: `JitTrampoline` (externals/dolphin/.../JitCommon/JitBase.cpp:101) is invoked from the
+     dispatcher's CACHE-MISS/compile path (Jit64/JitAsm.cpp:214), NOT every dispatch. So:
+       • **return false** (pre-hook) → Dolphin COMPILES + CACHES a passthrough block at that address;
+         every later dispatch runs the cached block directly, never re-entering our hook → the
+         pre-hook fires ONCE per block compile, never per call. **Useless for per-draw observation.**
+       • **return true** (recomp / purejit-safe override) → we never let Dolphin cache a block there,
+         so the trampoline is re-consulted on EVERY dispatch (that is why recomp + fastboot work).
+     The journal's earlier "[purejit] seam hits / step-1 DONE" validation only ever saw 1 hit and
+     misread it as success; the handoff's whole "convert wrapping overrides to observe-then-return-
+     false pre-hooks" plan does NOT achieve per-call engine capture. CONSEQUENCE: the ngx capture
+     seams must become purejit-safe **return-TRUE** seams (full native replacement that reads the
+     guest-layout J3D object and draws natively, skipping Dolphin's draw — ngx already reads guest RAM,
+     and ngx_j3d_shape::g_native_draw is exactly such a replacement), OR use a reentrant run-under-JIT
+     primitive (journal approach #2) for the few seams that must run the original AND observe. Pre-
+     hooks remain valid only for ONE-SHOT interception (patch-once-at-first-compile), not capture.
+4. **NEXT (revised):** convert the ngx capture seams to purejit-safe return-TRUE overrides (start with
+   ngx_j3d_shape g_native_draw — full native draw, no original needed; then the projection/clear/HUD
+   captures, deciding per-seam whether native-replace or reentrant-run-original). Then validate
+   sustained Delfino render under pure JIT + ngx present; A/B pixels vs the recomp path.
 
 ## Files
 - runtime/jit_hook.cpp — `sb_hook_jit_trampoline` runs `run_prehook` then normal dispatch (step 2).

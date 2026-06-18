@@ -1,6 +1,7 @@
 #include "overrides.h"
 #undef register_override                 // we DEFINE register_override_impl here; keep the name clean
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <utility>
 #include <string>
@@ -105,6 +106,14 @@ bool sunbright_purejit_mode() {
     static const bool on = std::getenv("SUNBRIGHT_PUREJIT") != nullptr;
     return on;
 }
+
+// Full-replacement overrides that remain dispatchable via Run() under purejit (see overrides.h).
+static std::unordered_set<u32>& purejit_safe_set() {
+    static std::unordered_set<u32> s;
+    return s;
+}
+void mark_override_purejit_safe(u32 addr) { purejit_safe_set().insert(addr); }
+bool override_is_purejit_safe(u32 addr)   { return purejit_safe_set().count(addr) != 0; }
 
 void force_jit(u32 addr) { jit_ranges().emplace_back(addr, addr + 4); }
 
