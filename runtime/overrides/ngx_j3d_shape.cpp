@@ -64,6 +64,19 @@ bool g_native_draw = sb_env_on("SUNBRIGHT_NGX_NATIVE_DRAW") ||
                      sunbright_purejit_mode();   // pure-JIT no-recomp: ngx always owns the draw (no
                                                  // recomp body to super-call; ngx draws natively)
 
+// Run the original GX/J3D function after an ngx capture tee — EXCEPT under the pure-JIT no-recomp
+// mode, where ngx OWNS rendering: there is no recomp body to super-call, the GX side effect (XF/BP
+// register / FIFO write) is DISCARDED (ngx reads the guest J3D object model and presents its own
+// frame), and call_ppc(cpu, cpu.lr) would route the JIT caller's continuation through the
+// interpreter (which bypasses every override — forbidden). So under purejit each tee captures and
+// returns to lr (the override's C return commits that). These are write-only GX setters; the game
+// never reads their effect back for logic, so skipping the original is safe. Each tee'd address is
+// marked purejit-safe (below) so it dispatches per-call via Run() rather than firing once at compile.
+static void ngx_super(CPUState& cpu, u32 addr) {
+    if (sunbright_purejit_mode()) return;   // capture-only; ngx owns the draw
+    if (RecompFunc o = recomp_raw(addr)) o(cpu); else call_ppc(cpu, cpu.lr);
+}
+
 // Latest GX texmap-0 binding (from the GXLoadTexObj tee), associated with shapes
 // drawn after it. Decoded from the GXTexObj's packed registers.
 struct CurTex { u32 addr = 0; u16 w = 0, h = 0; u8 fmt = 0; u32 tlut_addr = 0; u8 tlut_fmt = 0; bool valid = false; };
@@ -462,7 +475,7 @@ SUNBRIGHT_OVERRIDE(ov_j3dgd_loadtexmtx, 0x802f2d00u) {
             x.seq = ++g_xftm_seq;
         }
     }
-    if (RecompFunc o = recomp_raw(0x802f2d00u)) o(cpu); else call_ppc(cpu, cpu.lr);
+    ngx_super(cpu, 0x802f2d00u);
 }
 
 // Diagnostic histograms (kept).
@@ -2381,7 +2394,7 @@ u32 g_fog_type = 0xffffffff, g_fog_color = 0; float g_fog_startz = 0, g_fog_endz
 SUNBRIGHT_OVERRIDE(ov_gxsetfog, 0x80361b20u) {
     if (g_enabled) { g_fog_calls++; g_fog_type = cpu.gpr[3]; g_fog_color = cpu.gpr[4];
         g_fog_startz = (float)cpu.fpr[1].ps0; g_fog_endz = (float)cpu.fpr[2].ps0; }
-    if (RecompFunc o = recomp_raw(0x80361b20u)) o(cpu); else call_ppc(cpu, cpu.lr);
+    ngx_super(cpu, 0x80361b20u);
 }
 
 // J3DTexMtx::load(id) @ 0x802ee9d4 — SYNCHRONOUS ground truth of what texmtx J3D actually
@@ -2402,7 +2415,7 @@ SUNBRIGHT_OVERRIDE(ov_j3dtexmtx_load, 0x802ee9d4u) {
         if (slot >= 0) { g_tml[slot].id=id; g_tml[slot].m0=m0; g_tml[slot].m3=m3;
                          g_tml[slot].m5=m5; g_tml[slot].m7=m7; g_tml[slot].cnt++; }
     }
-    if (RecompFunc o = recomp_raw(0x802ee9d4u)) o(cpu); else call_ppc(cpu, cpu.lr);
+    ngx_super(cpu, 0x802ee9d4u);
 }
 extern "C" int sb_ngx_texmtxloads_dump(char* out, int cap) {
     int w = snprintf(out, cap, "texmtxloads: total=%lu distinct=%d (what J3D ACTUALLY loads to GX, sync)\n"
@@ -2431,7 +2444,7 @@ SUNBRIGHT_OVERRIDE(ov_gxloadtlut, 0x803601fcu) {
             g_tlut[name].valid = true;
         }
     }
-    if (RecompFunc o = recomp_raw(0x803601fcu)) o(cpu); else call_ppc(cpu, cpu.lr);
+    ngx_super(cpu, 0x803601fcu);
 }
 
 // Per-texmap GXLoadTexObj + Preloaded histograms (diagnostic).
@@ -2451,7 +2464,7 @@ SUNBRIGHT_OVERRIDE(ov_gxloadtexobjpreloaded, 0x8035ffb8u) {
         g_preload_hist[id < 8 ? id : 8]++;
         if (id < 8 && valid(cpu.gpr[3])) decode_texobj(cpu.gpr[3], g_curtex[id]);
     }
-    if (RecompFunc o = recomp_raw(0x8035ffb8u)) o(cpu); else call_ppc(cpu, cpu.lr);
+    ngx_super(cpu, 0x8035ffb8u);
 }
 
 // GXLoadTexObj(GXTexObj* obj, GXTexMapID id) @ 0x80360160 — capture the binding for
@@ -2462,7 +2475,7 @@ SUNBRIGHT_OVERRIDE(ov_gxloadtexobj, 0x80360160u) {
         g_texobj_hist[id < 8 ? id : 8]++;
         if (id < 8 && valid(cpu.gpr[3])) { decode_texobj(cpu.gpr[3], g_curtex[id]); note_addr(g_curtex[id].addr); }
     }
-    if (RecompFunc o = recomp_raw(0x80360160u)) o(cpu); else call_ppc(cpu, cpu.lr);
+    ngx_super(cpu, 0x80360160u);
 }
 
 // GXLoadLightObjImm(GXLightObj* lit, GXLightID id) @ 0x8035f26c — capture the live
@@ -2485,7 +2498,7 @@ SUNBRIGHT_OVERRIDE(ov_gxloadlightobjimm, 0x8035f26cu) {
             g_light_loads++;
         }
     }
-    if (RecompFunc o = recomp_raw(0x8035f26cu)) o(cpu); else call_ppc(cpu, cpu.lr);
+    ngx_super(cpu, 0x8035f26cu);
 }
 
 // GXSetCopyClear(GXColor clr, u32 clear_z) @ 0x8035ea40 — capture the EFB copy-clear colour
@@ -2506,7 +2519,7 @@ SUNBRIGHT_OVERRIDE(ov_gxsetcopyclear, 0x8035ea40u) {
         g_copy_clear_arg = r3; g_copy_clear_arg4 = cpu.gpr[4]; g_copy_clear_deref = col;
         g_copy_clear_sets++;
     }
-    if (RecompFunc o = recomp_raw(0x8035ea40u)) o(cpu); else call_ppc(cpu, cpu.lr);
+    ngx_super(cpu, 0x8035ea40u);
 }
 
 // Accessor for the native present (runtime/render/ngx_present.cpp).
@@ -2552,7 +2565,7 @@ SUNBRIGHT_OVERRIDE(ov_gxloadposmtximm, 0x80362e0cu) {
             g_posmtx_loads++; cap_id = id;
         }
     }
-    if (RecompFunc o = recomp_raw(0x80362e0cu)) o(cpu); else call_ppc(cpu, cpu.lr);
+    ngx_super(cpu, 0x80362e0cu);
     if (cap_id != 0xFFFFFFFFu) ngx_postload_cmp(cap_id, true);   // synchrony validator
 }
 
@@ -2589,7 +2602,7 @@ SUNBRIGHT_OVERRIDE(ov_gxloadposmtxindx, 0x80362e48u) {
             cap_slot = slot;
         }
         if (getenv("SUNBRIGHT_DBG_PMI")) {
-            if (RecompFunc o = recomp_raw(0x80362e48u)) o(cpu); else call_ppc(cpu, cpu.lr);
+            ngx_super(cpu, 0x80362e48u);
             static int k = 0;
             if (k++ < 24 && slot + 2 < 64)
                 fprintf(stderr, "[pmi] slot=%u index=%u base=%08x tx=%.1f ty=%.1f tz=%.1f | rows=[%.3f %.3f %.3f %.1f / %.3f %.3f %.3f %.1f / %.3f %.3f %.3f %.1f]\n",
@@ -2600,7 +2613,7 @@ SUNBRIGHT_OVERRIDE(ov_gxloadposmtxindx, 0x80362e48u) {
             return;
         }
     }
-    if (RecompFunc o = recomp_raw(0x80362e48u)) o(cpu); else call_ppc(cpu, cpu.lr);
+    ngx_super(cpu, 0x80362e48u);
     if (cap_slot != 0xFFFFFFFFu) ngx_postload_cmp(cap_slot, false);   // reconstruction vs Dolphin's actual load
 }
 
@@ -2627,7 +2640,7 @@ SUNBRIGHT_OVERRIDE(ov_gxsetchanctrl, 0x8035f6d0u) {
         const int idx = (chan == 4) ? 0 : (chan == 5) ? 1 : (chan <= 1 ? (int)chan : -1);
         if (idx >= 0) { g_gx_cc[idx] = (u16)reg; g_gx_cc_have[idx] = true; g_gx_cc_sets[idx]++; }
     }
-    if (RecompFunc o = recomp_raw(0x8035f6d0u)) o(cpu); else call_ppc(cpu, cpu.lr);
+    ngx_super(cpu, 0x8035f6d0u);
 }
 
 // GXSetChanMatColor(GXChannelID chan, GXColor color) @ 0x8035f51c — material colour register.
@@ -2641,7 +2654,7 @@ SUNBRIGHT_OVERRIDE(ov_gxsetchanmatcolor, 0x8035f51cu) {
             g_gx_matcol_have[idx] = true; g_gx_matcol_sets[idx]++;
         }
     }
-    if (RecompFunc o = recomp_raw(0x8035f51cu)) o(cpu); else call_ppc(cpu, cpu.lr);
+    ngx_super(cpu, 0x8035f51cu);
 }
 
 // GXSetChanAmbColor(GXChannelID chan, GXColor color) @ 0x8035f3b4 — capture the
@@ -2662,7 +2675,7 @@ SUNBRIGHT_OVERRIDE(ov_gxsetchanambcolor, 0x8035f3b4u) {
             xf_amb_write(idx, (u8)(c>>24), (u8)(c>>16), (u8)(c>>8), (u8)c);
         }
     }
-    if (RecompFunc o = recomp_raw(0x8035f3b4u)) o(cpu); else call_ppc(cpu, cpu.lr);
+    ngx_super(cpu, 0x8035f3b4u);
 }
 
 // J3DGDSetChanAmbColor(GXChannelID chan, GXColor color) @ 0x802f33a8 — J3D's GD/XF-direct
@@ -2681,7 +2694,7 @@ SUNBRIGHT_OVERRIDE(ov_j3dgdsetchanambcolor, 0x802f33a8u) {
             for (int k = 0; k < 4; k++) g_gd_amb_last[k] = g_gd_amb[idx][k];
         }
     }
-    if (RecompFunc o = recomp_raw(0x802f33a8u)) o(cpu); else call_ppc(cpu, cpu.lr);
+    ngx_super(cpu, 0x802f33a8u);
 }
 
 // Dump Dolphin's LIVE xfmem lighting/colour state (ground truth). In the pure-Dolphin
@@ -2783,7 +2796,7 @@ SUNBRIGHT_OVERRIDE(ov_j3dshape_draw, 0x802e0390u) {
         if (valid(dmArr)) { const u32 m = r32(dmArr + view * 4); mem_w32(J3DSYS + 0x104, m); }
         if (valid(nmArr)) { const u32 m = r32(nmArr + view * 4); mem_w32(J3DSYS + 0x108, m); }
     } else {
-        if (RecompFunc o = recomp_raw(0x802e0390u)) o(cpu); else call_ppc(cpu, cpu.lr);
+        ngx_super(cpu, 0x802e0390u);
     }
     xfmem_draw_observe();   // always-on (oracle too): ground-truth xfmem at draw
     if (g_enabled) capture(sh);
@@ -2796,7 +2809,27 @@ SUNBRIGHT_OVERRIDE(ov_j3dshape_draw, 0x802e0390u) {
 // every dispatch (g_native_draw is forced on above, so it never super-calls), then returns to lr so
 // Dolphin JIT continues. Marked only when ngx capture is active.
 static const bool ov_j3dshape_draw_pj = [] {
-    if (g_enabled) mark_override_purejit_safe(0x802e0390u);
+    if (!g_enabled) return true;
+    // The draw seam + every GX/J3D capture tee must fire PER-CALL under purejit (return-true), not
+    // once-at-compile (a pre-hook). Mark each tee'd address purejit-safe so IsRecompiled dispatches
+    // it via Run() every dispatch; ngx_super() makes the body capture-only under purejit. Keep this
+    // list in sync with the ngx_super(cpu, ADDR) call sites above.
+    for (u32 a : { 0x802e0390u,   // J3DShape::draw
+                   0x802f2d00u,   // J3DGDLoadTexMtx
+                   0x80361b20u,   // GXSetFog
+                   0x802ee9d4u,   // J3DTexMtx::load
+                   0x803601fcu,   // GXLoadTlut
+                   0x8035ffb8u,   // GXLoadTexObjPreLoaded
+                   0x80360160u,   // GXLoadTexObj
+                   0x8035f26cu,   // GXLoadLightObjImm
+                   0x8035ea40u,   // GXSetCopyClear
+                   0x80362e0cu,   // GXLoadPosMtxImm
+                   0x80362e48u,   // GXLoadPosMtxIndx
+                   0x8035f6d0u,   // GXSetChanCtrl
+                   0x8035f51cu,   // GXSetChanMatColor
+                   0x8035f3b4u,   // GXSetChanAmbColor
+                   0x802f33a8u }) // J3DGDSetChanAmbColor
+        mark_override_purejit_safe(a);
     return true;
 }();
 
