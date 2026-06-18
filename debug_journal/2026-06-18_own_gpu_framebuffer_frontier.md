@@ -208,6 +208,20 @@ DBG_EFB consumer-scan (3D + J2D) + evict-addr log.
   for RGB565+RGB5A3 within quantization + a tile_offset16 spec-check. 8/8 render_test units pass.
 - GXPeekZ (sun, off-screen in fastboot) + GXPeekARGB (needs ngx alpha-tag fidelity) still dormant.
 
+## NEXT PORT SCOPED: immediate-mode GX geometry in ngx (2026-06-18, "keep porting")
+ngx renders from the J3D object model; immediate-mode GX draws have no J3D object → ngx MISSES them.
+Confirmed LIVE + verifiable in fastboot plaza: **GXDrawCube (0x803627fc) fires ~1470×/run** from two
+TMario call sites (lr=8024d8fc, 8024d96c = the Mario occlusion-probe boxes, MarioMain.cpp ~199/212).
+GXDrawSphere (0x80362268) = 0 calls in plaza (sky is J3D here). So the port IS verifiable via Mario
+occlusion (not an off-screen-sun dead end). GXDrawCube = GXBegin(GX_QUADS, VTXFMT3, 24): 24 fixed
+unit-cube corners (GXPosition3f32, ×0.577) transformed by the current pos matrix (boxDrawPrepare puts
+it at Mario). The occlusion box writes ONLY alpha: GXSetColorUpdate(FALSE)+GXSetAlphaUpdate(TRUE)+
+GXSetDstAlpha(ENABLE,0x10)+z-test. So ngx must render the cube HONORING the color/alpha write masks +
+constant dst-alpha (else it'd paint a visible box on Mario). Chain unblocked by this: GXDrawCube→alpha
+0x10 in ngx fb→GXPeekARGB (served from ngx color readback)→MARIO_FLAG_OCCLUDED→silhouette (also
+GXDrawCube). Slice plan + approach in scratch/handoff_2026-06-18_immediate_mode_gx_geometry.md.
+DBG_EFB now also counts GXDrawCube/Sphere ([imm] lines).
+
 ## ⇒ NEXT: GXCopyTex (0x8035ee5c) is THE viable live slice — reads back COLOR (ngx RGB is faithful),
 2189×/22s in the plaza, the mirror/bathwater/mist/manta/heat-haze family. The color readback primitive
 (g_efb_color + sb_ngx_efb_peek_color) is the foundation. Remaining work: classify the calls (clear=0

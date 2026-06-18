@@ -138,6 +138,17 @@ void copytex_writeback(u32 /*cookie*/) {
 }
 }  // namespace
 
+// DIAGNOSTIC: do immediate-mode GX draws (GXDrawCube/Sphere) fire in fastboot plaza? Decides whether
+// the immediate-mode-geometry-in-ngx port is verifiable there (vs another off-screen-sun dead end).
+SUNBRIGHT_OVERRIDE_IF_NATIVE(ov_gxdrawcube_dbg, 0x803627fcu, s_efb_dbg) {
+    static unsigned long n = 0; if ((n++ % 30) == 0) fprintf(stderr, "[imm] GXDrawCube #%lu lr=%08x\n", n, cpu.lr);
+    sb_run_original_around(cpu, 0x803627fcu, nullptr, 0);
+}
+SUNBRIGHT_OVERRIDE_IF_NATIVE(ov_gxdrawsphere_dbg, 0x80362268u, s_efb_dbg) {
+    static unsigned long n = 0; if ((n++ % 30) == 0) fprintf(stderr, "[imm] GXDrawSphere #%lu lr=%08x\n", n, cpu.lr);
+    sb_run_original_around(cpu, 0x80362268u, nullptr, 0);
+}
+
 SUNBRIGHT_OVERRIDE_IF_NATIVE(ov_gxsetcopysrc, 0x8035e388u, s_ngx_present) {
     g_src_l = cpu.gpr[3] & 0xFFFF; g_src_t = cpu.gpr[4] & 0xFFFF;
     g_src_w = cpu.gpr[5] & 0xFFFF; g_src_h = cpu.gpr[6] & 0xFFFF;
