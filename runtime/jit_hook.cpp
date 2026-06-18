@@ -31,9 +31,40 @@ static void dbg_tramp_init() {
     g_dbg_tramp = true;
 }
 
+// ── Phase-B validation: SUNBRIGHT_PUREJIT=1 ──────────────────────────────────
+// Proves the crystallized target architecture (DISABLE_RECOMP + engine observe-hooks, no recomp /
+// native_os / exec-model overrides) BEFORE building the full pre-hook machinery. When set,
+// IsRecompiled returns false for everything (pure Dolphin JIT — Dolphin owns OS/threading/pacing,
+// exactly the boot that already works), but here in the trampoline we run an OBSERVE pre-hook on a
+// few engine draw addresses, then still return false so Dolphin JITs the original block. If boot
+// reaches gameplay AND the hooks fire, "pure JIT + observe-hook" is viable and the wrapping engine
+// overrides can be converted to pre-hooks (Phase B step 2). Observation only — no state change.
+static bool purejit_enabled() {
+    static const bool on = getenv("SUNBRIGHT_PUREJIT") != nullptr;
+    return on;
+}
+static void purejit_observe(u32 em_address) {
+    // The two ngx capture seams (J3DShape::draw, J2DScreen::draw). Count + log first hits so we can
+    // confirm pure-JIT dispatch reaches them (so a real pre-hook registered here would fire).
+    static unsigned long n_shape = 0, n_screen = 0;
+    switch (em_address) {
+        case 0x802e0390u: ++n_shape;  break;   // J3DShape::draw
+        case 0x802d01c8u: ++n_screen; break;   // J2DScreen::drawSelf
+        default: return;
+    }
+    static unsigned long last = 0, total = 0;
+    if (total == 0 || (++total - last) >= 2000) {   // first hit + periodic liveness (sustained dispatch)
+        if (total == 0) ++total;
+        last = total;
+        fprintf(stderr, "[purejit] engine seams hit: J3DShape::draw=%lu J2DScreen::drawSelf=%lu\n",
+                n_shape, n_screen);
+    }
+}
+
 // The fork hook body. jit is JitBase* (opaque here — we never need it; non-recomp returns false
 // and the fork's JitTrampoline calls jit.Jit() itself). Returns true iff we ran a recompiled block.
 extern "C" bool sb_hook_jit_trampoline(void* /*jit*/, u32 em_address) {
+    if (purejit_enabled()) { purejit_observe(em_address); return false; }
     const bool rc = SunbrightBridge::IsRecompiled(em_address);
     static const bool tramp_inited = (dbg_tramp_init(), true);
     (void)tramp_inited;

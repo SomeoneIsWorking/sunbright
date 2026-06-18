@@ -233,7 +233,42 @@ Overrides split into two classes; the pivot must treat them differently:
    otherwise-DISABLE_RECOMP boot; confirm it boots AND the pre-hook fires (proves "pure JIT + observe
    hook, no recomp/native_os/exec-overrides" is viable) before converting all of class (B).
 
+## ★★ PHASE B STEP 4 — TARGET ARCHITECTURE VALIDATED (2026-06-18, session 9)
+Added `SUNBRIGHT_PUREJIT=1` (jit_hook.cpp): a fully-additive validation mode. In
+`sb_hook_jit_trampoline` it runs an OBSERVE pre-hook on the ngx draw seams (J3DShape::draw
+0x802e0390, J2DScreen::drawSelf 0x802d01c8), then ALWAYS returns false → Dolphin JITs the original
+block. Ran it atop the known-good oracle: `SUNBRIGHT_DISABLE_RECOMP=1 SUNBRIGHT_PUREJIT=1
+SUNBRIGHT_AUTOSTART=1 SUNBRIGHT_BACKEND=OGL` headless.
+
+RESULT (PROVES the crystallized architecture):
+- Boot PROGRESSES cleanly at **1.0× speed** — loads dolpic5.szs (Delfino), sequence.arc, THP movies.
+  NO hang, NO 448× race, NO 0.0078× crawl. The pure-Dolphin-JIT boot owns OS/threading/pacing fine.
+- Both engine observe-hooks FIRE: `[purejit] J3DShape::draw hit` and `J2DScreen::drawSelf hit`. So
+  pure-JIT block dispatch (block-linking off) reaches the engine draw addresses → a pre-hook
+  registered there WILL fire, with ZERO recomp / native_os / exec-model overrides.
+
+=> The two boot-killers are 100% attributable to the hybrid-era exec-model overrides + native_os.
+   Remove them (pure JIT) and the engine seams stay interceptable. Phase B is de-risked.
+NOTE: SUSTAINED hits (heavy 3D) weren't reached in the 50 s window — the oracle can't FASTBOOT
+(fastboot is an engine override, skipped by DISABLE_RECOMP) and AUTOSTART navigation into gameplay is
+flaky/slow. Reaching sustained gameplay-render under pure JIT is the next validation, and depends on
+getting fastboot (an engine override) working in the pure-JIT mode — i.e. Phase B step 2 proper.
+
+### Phase B — concrete remaining work (in order)
+1. **Build the real pre-hook table** consulted in the trampoline before the IsRecompiled decision:
+   `register_prehook(addr, fn)`; when in pure-JIT mode, run matching pre-hooks then return false so
+   Dolphin JITs the original. (PUREJIT's hardcoded switch is the throwaway prototype of this.)
+2. **A real no-recomp execution mode** where recomp_lookup/recomp_raw return null (no recomp bodies),
+   native_os off, exec-model overrides (VI/drawsync/governor/charge_guest_time) off — i.e. pure
+   Dolphin JIT + pre-hooks. Distinct from today's half-measure SUNBRIGHT_NO_RECOMP.
+3. **Convert class-(B) engine overrides to pre-hooks**, starting with fastboot (to reach gameplay
+   headlessly) and the ngx capture seams (J3DShape/J2DScreen/scene_render). Each: observe guest state
+   for ngx, return-false so Dolphin runs the original. Full native replacements (ngx g_native_draw)
+   need no original.
+4. Then validate sustained Delfino render under pure JIT + ngx present; A/B pixels vs the recomp path.
+
 ## Files
+- runtime/jit_hook.cpp — SUNBRIGHT_PUREJIT observe-hook validation (Phase B step 4).
 - runtime/overrides.h / overrides.cpp — register_override → register_override_impl(group); NORECOMP_SKIP/ONLY.
 - runtime/sunbright_bridge.cpp — `IsRecompiled` no_recomp branch (Phase A) + `norecomp_skip_native_os` (NONOS A/B).
 - scratch/norecomp_bisect.sh — boot-hang bisection harness.
