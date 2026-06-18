@@ -130,6 +130,12 @@ pace=0ms, frame_swaps=0, recomp ~0). Narrowed:
   specific charge_guest_time/CoreTiming pacing). They have never run on top of a pure Dolphin-JIT
   boot and several evidently break/spin it.
 
+CONFIRMED (2026-06-18): SUNBRIGHT_NORECOMP_NOOV=1 (skip ALL overrides + native_os under no_recomp)
+→ the boot NO LONGER spins (log shows normal asset loading: data/nintendo.szs, zelda ucode — not the
+[vi-perf] field flood). frame_swaps stays 0 only because ngx capture + FASTBOOT are themselves
+overrides (skipped under NOOV). So the engine overrides ARE the cause, proven. Next = per-GROUP
+bisection.
+
 NEXT (fresh session): BISECT which override group hangs the Dolphin-JIT boot. Method: under
 SUNBRIGHT_NO_RECOMP, selectively disable override groups (the registration is now gateable via
 SUNBRIGHT_OVERRIDE_IF; add a group kill-switch env, or temporarily skip override_lookup in

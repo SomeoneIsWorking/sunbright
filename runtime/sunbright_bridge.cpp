@@ -70,6 +70,11 @@ bool IsRecompiled(uint32_t pc) {
     static const bool disabled = getenv("SUNBRIGHT_DISABLE_RECOMP") != nullptr;
     if (disabled) return false;
     if (is_jit_forced(pc)) return false;            // routed to Dolphin's JIT
+    // NO_RECOMP boot-hang bisection (2026-06-18): SUNBRIGHT_NORECOMP_NOOV=1 skips ALL native
+    // overrides + native-OS under no_recomp → should behave like DISABLE_RECOMP and boot, proving
+    // the hang is in the (hybrid-era) engine overrides. Refine to a group/range kill-switch next.
+    static const bool no_overrides = getenv("SUNBRIGHT_NORECOMP_NOOV") != nullptr;
+    if (no_overrides) return false;
     if (override_lookup(pc)) return true;           // hand-written native override
     if (native_os_lookup(pc)) return true;          // native-OS primitive (nthr scheduler) — MUST
         // intercept on the JIT-entry path too, else JIT'd code (e.g. mountStageArchive) calling
