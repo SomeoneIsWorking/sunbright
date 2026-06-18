@@ -333,12 +333,27 @@ getting fastboot (an engine override) working in the pure-JIT mode — i.e. Phas
      GX function; under purejit they must dispatch per-call (return-true) and either native-replace the
      GX side effect (ngx reads guest objects, so most GX writes are discardable when ngx presents) or,
      where the original's side effect is genuinely needed, use a reentrant run-original primitive.
-   - Then validate sustained Delfino render under pure JIT + **ngx present**. OPEN QUESTION: NGX_PRESENT
-     needs Vulkan, but the purejit substrate is DISABLE_RECOMP, and "Vulkan oracle dies at 3D entry"
-     (VK_ERROR_OUT_OF_DEVICE_MEMORY) is a known DISABLE_RECOMP gotcha — must determine whether that
-     crash reproduces under purejit+present and fix it, or the present validation is blocked. Capture
-     itself is proven on OGL (above), so the renderer can be validated headless via /ngxshape +
-     render-test before tackling present.
+   - **ALL GX-tee capture seams DONE (commit e7521f4).** ngx_super(cpu,addr) helper: no-op under
+     purejit (capture-only; ngx owns rendering, GX side effect discarded), super-call under recomp.
+     All 16 tees routed through it + marked purejit-safe. Verified full breadth under purejit: 91
+     material states, 75k light loads / 65M lit verts, per-texmap textures (54 distinct), PE FL=566k,
+     copy-clear 4829 sets.
+   - **★★★ DELFINO RENDERS NATIVELY UNDER PURE JIT (commit 3a58518).** GXSetProjection + the J2DScreen
+     frame-publish boundary converted to purejit-safe per-call (scene_render.cpp). RESULT:
+     `SUNBRIGHT_PUREJIT=1 FASTBOOT=1 NGX_PRESENT=1 BACKEND=Vulkan` renders Delfino Plaza via the
+     PC-native ngx renderer with ZERO recomp — ngx_present_live init_ok=1 frames=1014 pipelines=92
+     textures=180; framedump (scratch/pjpresent) shows Mario/NPCs/palms/plaza/buildings. **The
+     Vulkan-under-DISABLE_RECOMP "dies at 3D entry" gotcha did NOT reproduce under purejit** — Vulkan
+     present works. This is the full PC-native engine rendering SMS gameplay under pure Dolphin JIT.
+   - **REMAINING (the reentrant primitive):** the HUD/2D overlay is missing under purejit because
+     J2DScreen::draw (and TGCConsole2::perform) are LOGIC functions that BUILD the J2D pane tree
+     (mGlobalBounds) ngx's overlay reads — they cannot just skip the original. Running the original
+     under pure JIT needs a **reentrant run-original-under-Dolphin-JIT primitive** (journal approach
+     #2): inside Run(), JIT+execute the original block at em_address and return, so the override can
+     observe AROUND it. This is the one genuinely-missing mechanism; once it exists, J2DScreen/perform
+     become observe-around-original (HUD overlay returns) and any other "needs the original's side
+     effect" seam is unblocked. Then A/B pixels (tools/render/ab_diff.py) vs the recomp path, then
+     Phase C (unlink generated/, drop the recompiler from the build, JIT-native default).
 
 ## Files
 - runtime/jit_hook.cpp — `sb_hook_jit_trampoline` runs `run_prehook` then normal dispatch (step 2).
