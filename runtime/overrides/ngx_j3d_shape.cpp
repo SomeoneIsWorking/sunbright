@@ -60,7 +60,9 @@ bool g_enabled = sb_env_on("SUNBRIGHT_NGX_SHAPE") || sb_env_on("SUNBRIGHT_NGX_PR
 // explicitly requested, or implied by NO_RECOMP while ngx presents (Dolphin GX output is discarded
 // then anyway). See ov_j3dshape_draw for the native per-view j3dSys setup that replaces the draw.
 bool g_native_draw = sb_env_on("SUNBRIGHT_NGX_NATIVE_DRAW") ||
-                     (sb_env_on("SUNBRIGHT_NO_RECOMP") && sb_env_on("SUNBRIGHT_NGX_PRESENT"));
+                     (sb_env_on("SUNBRIGHT_NO_RECOMP") && sb_env_on("SUNBRIGHT_NGX_PRESENT")) ||
+                     sunbright_purejit_mode();   // pure-JIT no-recomp: ngx always owns the draw (no
+                                                 // recomp body to super-call; ngx draws natively)
 
 // Latest GX texmap-0 binding (from the GXLoadTexObj tee), associated with shapes
 // drawn after it. Decoded from the GXTexObj's packed registers.
@@ -2787,6 +2789,16 @@ SUNBRIGHT_OVERRIDE(ov_j3dshape_draw, 0x802e0390u) {
     if (g_enabled) capture(sh);
     if ((int)my_idx < SHAPETI_CAP) g_frame_shape_ti[my_idx] = g_cur_tev_index;   // draw#→material
 }
+
+// Pure-JIT no-recomp: the draw seam must fire PER-CALL. A pre-hook (return-false) would fire only
+// once (Dolphin caches a passthrough block — see purejit_probe), so the capture seam is instead a
+// purejit-safe RETURN-TRUE override: IsRecompiled returns true, Run() dispatches ov_j3dshape_draw
+// every dispatch (g_native_draw is forced on above, so it never super-calls), then returns to lr so
+// Dolphin JIT continues. Marked only when ngx capture is active.
+static const bool ov_j3dshape_draw_pj = [] {
+    if (g_enabled) mark_override_purejit_safe(0x802e0390u);
+    return true;
+}();
 
 // /gxstate?ti=N — RENDER-STATE DIFF: the GX command stream (the game's actual GX writes, ground
 // truth) vs ngx's object-model reconstruction, for material tev_index=N, captured at its draw.

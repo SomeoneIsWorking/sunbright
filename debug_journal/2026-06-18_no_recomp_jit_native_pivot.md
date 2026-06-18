@@ -317,10 +317,28 @@ getting fastboot (an engine override) working in the pure-JIT mode — i.e. Phas
      and ngx_j3d_shape::g_native_draw is exactly such a replacement), OR use a reentrant run-under-JIT
      primitive (journal approach #2) for the few seams that must run the original AND observe. Pre-
      hooks remain valid only for ONE-SHOT interception (patch-once-at-first-compile), not capture.
-4. **NEXT (revised):** convert the ngx capture seams to purejit-safe return-TRUE overrides (start with
-   ngx_j3d_shape g_native_draw — full native draw, no original needed; then the projection/clear/HUD
-   captures, deciding per-seam whether native-replace or reentrant-run-original). Then validate
-   sustained Delfino render under pure JIT + ngx present; A/B pixels vs the recomp path.
+4. **[STARTED 2026-06-18, session 10 — DRAW seam DONE]** Convert the ngx capture seams to purejit-safe
+   return-TRUE overrides.
+   - **J3DShape::draw (0x802e0390) DONE + VERIFIED.** g_native_draw forced on under purejit (no recomp
+     body to super-call; ngx draws natively); the override marked purejit-safe when ngx capture active.
+     RESULT: under `SUNBRIGHT_PUREJIT=1 SUNBRIGHT_FASTBOOT=1 SUNBRIGHT_NGX_SHAPE=1 BACKEND=OGL`, the
+     draw seam fires PER-CALL — /ngxshape calls=569684, meshes_built=569684, verts=178M, tris=106M
+     over ~45 s. This PROVES the return-true full-replacement seam captures every shape under pure JIT
+     (vs the once-per-compile pre-hook). The biggest recomp consumer is now a native draw under JIT.
+   - REMAINING capture seams (same return-true pattern, decide native-replace vs run-original per seam):
+     the GX-tee captures in ngx_j3d_shape.cpp — ov_gxsetcopyclear (0x8035ea40, clear color ngx needs),
+     ov_gxsetfog, ov_gxload{tlut,texobj,texobjpreloaded,lightobjimm}, ov_gxsetchan{ctrl,matcolor,
+     ambcolor}, ov_gxloadposmtx{imm,indx}, ov_j3dtexmtx_load, ov_j3dgd* — plus scene_render
+     (GXSetProjection, J2DScreen draw) and hud. Each currently OBSERVES then super-calls the original
+     GX function; under purejit they must dispatch per-call (return-true) and either native-replace the
+     GX side effect (ngx reads guest objects, so most GX writes are discardable when ngx presents) or,
+     where the original's side effect is genuinely needed, use a reentrant run-original primitive.
+   - Then validate sustained Delfino render under pure JIT + **ngx present**. OPEN QUESTION: NGX_PRESENT
+     needs Vulkan, but the purejit substrate is DISABLE_RECOMP, and "Vulkan oracle dies at 3D entry"
+     (VK_ERROR_OUT_OF_DEVICE_MEMORY) is a known DISABLE_RECOMP gotcha — must determine whether that
+     crash reproduces under purejit+present and fix it, or the present validation is blocked. Capture
+     itself is proven on OGL (above), so the renderer can be validated headless via /ngxshape +
+     render-test before tackling present.
 
 ## Files
 - runtime/jit_hook.cpp — `sb_hook_jit_trampoline` runs `run_prehook` then normal dispatch (step 2).
