@@ -568,3 +568,35 @@ for GX cloud isolation use INSTANT single-frame n18/n19 isos in the top-sky regi
 (raw clip[4]+alpha), `/ngxshapeti` (#18=ti10), `SUNBRIGHT_NGX_FORCECULL`, `SUNBRIGHT_NGX_NEARCULL`.
 Data: scratch/screenshots/{burst18,burst19}_*.{gx,ngx}.ppm, burstiso_{gx,ngx}.png,
 ngx_only10_frozen.png, fc1_only10.png, frozen_fs_gx_ngx.png; scratch/logs/rastdata.log.
+
+### ⚠ CORRECTION (same session, later) — the per-layer iso is INVALID; it's the BLEND STACK + RE of TSky
+After RE'ing the actual source (`reference/sms/src/Map/Sky.cpp`), the per-layer mechanisms above
+(cull/clip/alpha on ti=10 alone) are the WRONG framing — I re-fell into the documented
+multi-layer-blend NO-ORACLE trap (CLAUDE.md). The file-select sky is **`TSky`** drawing
+`/scene/map/map/sky.bmd` (`unk44->perform()`) — a 3-layer BLEND STACK over a backdrop:
+  - ti=9  premult  (blend src=ONE dst=INVSRCALPHA), ti=10 additive (src=SRCALPHA dst=ONE),
+    ti=11 SCREEN (src=ONE dst=INVSRCCLR). ALL have zmode write=0 (no depth write).
+  - Then `TSky::perform` draws **`GXDrawSphere(8,0x10)`** — an IMMEDIATE-mode deep-blue
+    (matColor 0,0x12,0xEE) far backdrop (scale 100000, GX_PASSCLR, opaque). **ngx does NOT
+    capture immediate-mode GX draws** (it only hooks `J3DShape::draw`) → `GXDrawSphere`
+    @0x800ACB88(GMSJ01) is MISSED. So ngx's sky layers composite over a DIFFERENT background
+    than GX's → the dst-reading blends (INVSRCCLR/INVSRCALPHA) diverge.
+PER-LAYER ISO IS INVALID for these: each layer's visible delta depends on the accumulated
+framebuffer. The `n20-n19` "ti=11 = 167px vs GX 263106px" is NOT "ngx drops ti=11" — ti=11 is
+a SCREEN blend that adds ~nothing once ngx's earlier layers already saturated the sky (ngx
+renders ti=11 ALONE fine = 51124px). So the wash is the COMPOSITE, not a dropped layer.
+
+VERIFIED FAITHFUL (so NOT the cause): per-material inputs (transform = game's own
+mCurrentDrawMtx@j3dSys+0x104; combiner GLSL; blend-factor GX→VK map @ngx_present.cpp:458-463
+incl. INVSRCCLR→ONE_MINUS_SRC_COLOR); render target = **R8G8B8A8_UNORM** (clamps per layer like
+the GC EFB, so it's NOT a float-accumulation blow-up); draw order (matches capture order).
+
+### REAL frontier (matches prior memory `gxstate-render-state-tool` gap#3 = EFB blend-stack)
+The wash is the multi-layer sky COMPOSITING, and the leading concrete cause is the **missing
+`GXDrawSphere` backdrop** changing the background the dst-reading sky blends read. NEXT (a real
+PORT, owns a pipeline gap): capture immediate-mode GX draws (start with `GXDrawSphere` — RE the
+0x37C generator or just synthesize the blue far-sphere natively as an ngx shape) so the sky
+layers composite over the correct backdrop. THEN re-judge the sky with a TIME-AVERAGED (multi-
+frame) full-frame A/B (the cloud animates → single frozen frames catch different scroll phases;
+every single-frame metric this whole investigation has been unreliable for that reason).
+GMSE01 (our ROM) GXDrawSphere addr ≠ the GMSJ01 0x800ACB88 — resolve it from our symbols first.
