@@ -106,8 +106,57 @@ More tests (gated SUNBRIGHT_DBG_EFB / SUNBRIGHT_NGX_NOHUD):
   walls), it's reasonable to PARK GXPeekARGB and move to the next port (GXDrawSphere for sky scenes, or
   another engine subsystem). The immediate-mode GEOMETRY port (the milestone) is complete + committed.
 
+## ⛔ SESSION 3 (2026-06-19) — THE SESSION-2b CONCLUSION ABOVE IS FALSIFIED. True root cause found.
+The "colour-readback ALPHA does not reflect the rendered frame / render-target alpha not stored"
+conclusion (session 2/2b, and the prior handoff's whole "own ngx EFB-alpha" framing) is **WRONG**. The
+readback alpha is FAITHFUL. Two things misled it:
+
+1. **Diagnostic bug — `atoi("0x77")` returns 0.** The `SUNBRIGHT_NGX_CLEARA=NN` override parsed with
+   `atoi`, which does NOT read hex → every CLEARA test (0x55, 0x77…) silently set clear-alpha to **0**,
+   so they all looked like "no change → alpha is static." Fixed to `strtol(e,0,0)` (base 0). With the
+   fix: clear-alpha **0x00→0x00, 0x10→0x10, 0x40→0x40, 0x80→0x80, 0xff→0xff** uniformly in the readback
+   (n=0, NOHUD). The alpha channel reflects exactly what's written. **The readback was never broken.**
+   (Dolphin's RGBA8 RenderTarget is `VK_FORMAT_R8G8B8A8_UNORM`, identity swizzle, COLOR-aspect copy —
+   it stores + reads alpha. The format/copy suspects were all dead ends.)
+2. **The "2-group spatial pattern" / "cube red px alpha=255"** were just the clear-alpha=0 artifact plus
+   the real cause below. Vertex-alpha sweep proves the draw path is linear+faithful: forcing the cube
+   vertex alpha to N/255 → readback alpha = N exactly (8→8, 16→16, 64→64, 128→128, 200→200).
+
+### TRUE ROOT CAUSE — the batch model collapses a mid-frame read-after-write (MarioMain.cpp)
+The Mario occlusion probe (`TMario::draw`) draws the cube **colour-off TWICE** in different draw layers:
+  - `param_1 & 0x02000000`: `GXSetDstAlpha(GX_ENABLE, 0x10)` → stamps framebuffer alpha **0x10**.
+  - `param_1 & 0x00800000`: `GXSetDstAlpha(GX_ENABLE, 0)`   → stamps alpha **0** (a later layer).
+  - `TMario::drawSyncCallback` does `GXPeekARGB(MarioScreenPos)` and tests `(argb&0xff000000)==0x10000000`.
+    The DrawSyncManager fires that callback at a token **between** the 0x10 stamp and the 0 stamp.
+On hardware the peek samples the EFB mid-stream → reads 0x10. **ngx batches the whole frame and presents
+once**, so (a) the 0-stamp cube overwrites the 0x10 stamp, and worse (b) in the full scene every later
+opaque batch overwrites the cube's alpha-only stamp. The single end-of-frame colour readback therefore
+never carries 0x10 at Mario's pixel → GXPeekARGB (if wired) reads 0xff → **always-occluded**. Pinned with
+`[immbatch]` (logs each cube batch's uploaded vertex alpha): two ti=30 batches/frame, vAlpha 0.0627 and
+0.0000 — the second (drawn later, depth-LEQUAL equal → passes) wins.
+
+### Fixes tried, both rejected (kept honest):
+- **Skip the 0-stamp reset cube** (emit only nonzero dst-alpha): makes the 0x10 survive the *immediate*
+  reset clobber (verified: cube red px alpha 0→16 under /ngxonly). But in the FULL scene the later world
+  geometry still overwrites the alpha-only stamp → 0x10:0. Reverted.
+- **Defer the imm cubes to draw LAST** (so nothing overwrites their alpha): **breaks the z-test context**
+  — the cube is then tested against the *complete* end-of-frame depth instead of scene-before-Mario, so
+  it is z-rejected by geometry drawn after its real position (IMM_SHOW red px 22437→15438; alpha 0x10:0).
+  Not faithful. Reverted.
+
+### Verdict — PARKED (per the handoff's explicit authorization). What it actually needs:
+Serving GXPeekARGB faithfully needs the occlusion alpha at the cube's *inline* z-context, surviving to a
+read — i.e. **a dedicated occlusion-alpha buffer** (an alpha-only render target the occlusion cube writes
+inline, z-tested vs scene depth, read back separately; later draws don't touch it), OR a **native
+depth-based occlusion in `TMario::drawSyncCallback`** (compare `g_efb_depth` at MarioScreenPos vs the
+cube's centre/front depth — we have both). Both are real work for a MINOR effect (Mario silhouette through
+walls). Not shipped: I can't verify a silhouette headlessly, so no unverifiable heuristic. GXPeekARGB
+stays a pure diagnostic (runs the original). The geometry-capture milestone is done; this is the *query*.
+
 ## Tools / env added
 - SUNBRIGHT_IMM_SHOW=1 — force the cube visible (red) for the geometry verify. (Kept; the falsifiable
-  test.) SUNBRIGHT_DBG_EFB prints `[imm] cube …` (emit: onscreen corners, tris, NDC bbox, masks) and
-  `[imm] present: cube batches seen/drawn`.
+  test.) SUNBRIGHT_DBG_EFB prints `[imm] cube …`, `[imm] present: cube batches seen/drawn`, and (session 3)
+  `[immbatch]` = per-cube-batch uploaded vertex alpha in the present (the tool that pinned the 2-cube race).
+- SUNBRIGHT_NGX_CLEARA=NN — now `strtol` base-0 (hex ok). Forces the render-pass clear alpha — the readback
+  faithfulness probe (n=0 → alpha == NN uniformly).
 - GXDrawSphere (0x80362268) stays a diagnostic counter only (0 calls in plaza; sky is J3D here).

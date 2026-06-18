@@ -1037,7 +1037,7 @@ AbstractTexture* PresentRenderer::render(int w, int h) {
     float cc[4]; sb_ngx_get_clear(cc);   // the game's EFB copy-clear (screen-blend sky depends on it)
     // DBG (SUNBRIGHT_NGX_CLEARA=NN): override the render-pass clear ALPHA with a sentinel to probe
     // whether the 3D scene writes alpha at all (clear shows through) vs forces it (alpha frontier).
-    if (const char* e = getenv("SUNBRIGHT_NGX_CLEARA")) cc[3] = (float)atoi(e) / 255.f;
+    if (const char* e = getenv("SUNBRIGHT_NGX_CLEARA")) cc[3] = (float)strtol(e, nullptr, 0) / 255.f;  // base 0 → hex ok
     if (getenv("SUNBRIGHT_DBG_EFB") && (g_frames % 120) == 0)
         fprintf(stderr, "[imm] clearcolor=(%.3f,%.3f,%.3f,a=%.3f)\n", cc[0], cc[1], cc[2], cc[3]);
     VkClearValue clear[2]{}; clear[0].color = {{cc[0], cc[1], cc[2], cc[3]}}; clear[1].depthStencil = {1.0f, 0};
@@ -1052,13 +1052,49 @@ AbstractTexture* PresentRenderer::render(int w, int h) {
     static const int s_cloudcount = getenv("SUNBRIGHT_NGX_CLOUDCOUNT") ? atoi(getenv("SUNBRIGHT_NGX_CLOUDCOUNT")) : -1;
     int cc_batches = 0; long cc_verts = 0; static unsigned cc_frame = 0;
     int imm_seen = 0, imm_drawn = 0;   // DBG_EFB: immediate-mode (color-mask-off) cube batches
+    auto draw_one = [&](size_t b) {
+        const int ti = batches[b].tev_index;
+        const NgxTevState& st = (ti >= 0 && ti < (int)tevstates.size()) ? tevstates[ti] : mod;
+        VkPipeline pipe = pipeline_for(st);
+        if (pipe == VK_NULL_HANDLE) pipe = pipeline_for(mod);
+        if (pipe == VK_NULL_HANDLE) return;
+        if (pipe != last) { vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe); last = pipe; }
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pll, 0, 1, &bset[b], 0, nullptr);
+        MatPC pc; std::memset(&pc, 0, sizeof pc);
+        if (ti >= 0 && ti < (int)tevstates.size()) {
+            for (int c = 0; c < 4; c++) for (int k = 0; k < 4; k++) pc.kcolor[c][k] = st.kcolor[c][k];
+            for (int c = 0; c < 3; c++) for (int k = 0; k < 4; k++) pc.tevreg[c][k] = st.tev_color[c][k];
+        } else for (int c = 0; c < 4; c++) for (int k = 0; k < 4; k++) pc.kcolor[c][k] = 255;
+        const int s_dbg = sb_ngx_tevdbg();
+        if (s_dbg == 3) {
+            unsigned cc = ngx_tev_cc_dbg(ti);
+            int rC, gC, bC;
+            if (cc == 0xFFFF)      { rC=128; gC=128; bC=128; }   // no block = gray
+            else if (cc & 1)       { rC=0;   gC=255; bC=(cc&2)?255:0; }  // VTX: green (lit=cyan)
+            else                   { rC=255; gC=0;   bC=(cc&2)?255:0; }  // REG: red (lit=magenta)
+            pc.kcolor[0][0]=rC; pc.kcolor[0][1]=gC; pc.kcolor[0][2]=bC; pc.kcolor[0][3]=255;
+        } else if (s_dbg == 4) {   // encode tev_index as colour (R=lo,G=hi)
+            pc.kcolor[0][0]=ti & 0xFF; pc.kcolor[0][1]=(ti>>8)&0xFF; pc.kcolor[0][2]=0; pc.kcolor[0][3]=255;
+        }
+        vkCmdPushConstants(cmd, pll, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof pc, &pc);
+        vkCmdDraw(cmd, batches[b].vcount, 1, batches[b].vstart, 0);
+        drawn++;
+        if (s_cloudcount >= 0 && ti == s_cloudcount) { cc_batches++; cc_verts += batches[b].vcount; }
+    };
     for (size_t b = 0; b < batches.size(); b++) {
         if (g_ngx_prefix_n >= 0 && drawn >= g_ngx_prefix_n) break;   // draw-order prefix: stop after N
         const int ti = batches[b].tev_index;
         const NgxTevState& st = (ti >= 0 && ti < (int)tevstates.size()) ? tevstates[ti] : mod;
         // Cube = synthetic PASSCLR (1 stage, texmap NULL, COLOR0A0) — the immediate-mode geometry.
         const bool is_imm = st.num_stages == 1 && st.stage[0].texmap == 0xff && st.stage[0].color_chan == 0;
-        if (is_imm) imm_seen++;
+        if (is_imm) { imm_seen++;
+            if (getenv("SUNBRIGHT_DBG_EFB") && (g_frames % 60) == 0) {
+                const NgxRenderVertex& fv = verts[batches[b].vstart];
+                fprintf(stderr, "[immbatch] b=%zu ti=%d vstart=%u vcount=%u epoch=%u vAlpha=%.4f rgb=(%.2f,%.2f,%.2f) maskoff(c=%d,a=%d) blend=%d\n",
+                    b, ti, batches[b].vstart, batches[b].vcount, batches[b].epoch, fv.rgba[3],
+                    fv.rgba[0], fv.rgba[1], fv.rgba[2], st.pe.color_mask_off, st.pe.alpha_mask_off, st.pe.blend_mode);
+            }
+        }
         // DBG: skip alpha-tested (cloud/foliage) batches to reveal the background behind them.
         static const int skip_alpha = getenv("SUNBRIGHT_NGX_SKIPALPHA") ? atoi(getenv("SUNBRIGHT_NGX_SKIPALPHA")) : 0;
         if (skip_alpha && st.pe.alpha_test) continue;
@@ -1074,33 +1110,8 @@ AbstractTexture* PresentRenderer::render(int w, int h) {
         if (g_ngx_only_epoch >= 0 && (int)batches[b].epoch != g_ngx_only_epoch) continue;
         if (g_ngx_drop_epoch >= 0 && (int)batches[b].epoch == g_ngx_drop_epoch) continue;
         if ((int)batches[b].epoch < display_epoch) continue;   // auxiliary offscreen render — not displayed
-        VkPipeline pipe = pipeline_for(st);
-        if (pipe == VK_NULL_HANDLE) pipe = pipeline_for(mod);
-        if (pipe == VK_NULL_HANDLE) continue;
-        if (pipe != last) { vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe); last = pipe; }
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pll, 0, 1, &bset[b], 0, nullptr);
-        MatPC pc; std::memset(&pc, 0, sizeof pc);
-        if (ti >= 0 && ti < (int)tevstates.size()) {
-            for (int c = 0; c < 4; c++) for (int k = 0; k < 4; k++) pc.kcolor[c][k] = st.kcolor[c][k];
-            for (int c = 0; c < 3; c++) for (int k = 0; k < 4; k++) pc.tevreg[c][k] = st.tev_color[c][k];
-        } else for (int c = 0; c < 4; c++) for (int k = 0; k < 4; k++) pc.kcolor[c][k] = 255;
-        // DBG cat mode: override kcolor[0] with a category colour (the cat shader outputs it).
-        const int s_dbg = sb_ngx_tevdbg();
-        if (s_dbg == 3) {
-            unsigned cc = ngx_tev_cc_dbg(ti);
-            int rC, gC, bC;
-            if (cc == 0xFFFF)      { rC=128; gC=128; bC=128; }   // no block = gray
-            else if (cc & 1)       { rC=0;   gC=255; bC=(cc&2)?255:0; }  // VTX: green (lit=cyan)
-            else                   { rC=255; gC=0;   bC=(cc&2)?255:0; }  // REG: red (lit=magenta)
-            pc.kcolor[0][0]=rC; pc.kcolor[0][1]=gC; pc.kcolor[0][2]=bC; pc.kcolor[0][3]=255;
-        } else if (s_dbg == 4) {   // encode tev_index as colour (R=lo,G=hi)
-            pc.kcolor[0][0]=ti & 0xFF; pc.kcolor[0][1]=(ti>>8)&0xFF; pc.kcolor[0][2]=0; pc.kcolor[0][3]=255;
-        }
-        vkCmdPushConstants(cmd, pll, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof pc, &pc);
-        vkCmdDraw(cmd, batches[b].vcount, 1, batches[b].vstart, 0);
-        drawn++;
+        draw_one(b);
         if (is_imm) imm_drawn++;
-        if (s_cloudcount >= 0 && ti == s_cloudcount) { cc_batches++; cc_verts += batches[b].vcount; }
     }
     if (getenv("SUNBRIGHT_DBG_EFB") && (g_frames % 60) == 0)
         fprintf(stderr, "[imm] present: cube batches seen=%d drawn=%d (display_epoch=%d) total_batches=%zu\n",

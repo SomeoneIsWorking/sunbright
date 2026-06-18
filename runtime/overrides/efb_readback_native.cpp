@@ -74,10 +74,12 @@ SUNBRIGHT_OVERRIDE_IF_NATIVE(ov_getzbuf, 0x8002ea70u, s_efb_dbg) {
     sb_run_original_around(cpu, 0x8002ea70u, nullptr, 0);
 }
 
-// DIAGNOSTIC: which OTHER EFB-readback consumers fire in the default plaza? GXPeekARGB (Mario color
-// sample, always on-screen) + GXCopyTex (mirror/bathwater/mist/manta/heat-haze). Log call counts +
-// args so we know where the live verification targets are. Run the original (empty-EFB result for
-// now — we only care that they fire + with what rects).
+// DIAGNOSTIC: GXPeekARGB (Mario occlusion probe, always on-screen) + GXCopyTex. Log call counts +
+// args. We run the original (empty-EFB result) — GXPeekARGB is NOT yet served from ngx: the Mario
+// occlusion alpha (0x10) is an alpha-only z-tested stamp that a later batch overwrites in ngx's
+// single end-of-frame colour readback, so it never survives to the readback (root cause pinned
+// 2026-06-19, see debug_journal/2026-06-18_immediate_mode_gx_geometry.md). Serving it needs a
+// dedicated occlusion-alpha buffer or a native depth-based occlusion in drawSyncCallback.
 SUNBRIGHT_OVERRIDE_IF_NATIVE(ov_gxpeekargb_dbg, 0x8035dcccu, s_efb_dbg) {
     static unsigned long n = 0;
     if ((n++ % 60) == 0)
