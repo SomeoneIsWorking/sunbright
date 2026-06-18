@@ -66,6 +66,8 @@ int g_ngx_pipe_epoch = 0;
 extern "C" int sb_ngx_set_noblend(int v) { if (v != g_ngx_noblend) { g_ngx_noblend = v; g_ngx_pipe_epoch++; } return v; }
 #include <unordered_map>
 #include <vector>
+#include <mutex>
+#include <atomic>
 
 #ifdef HAVE_DOLPHIN_MEMMAP
 #include "VideoBackends/Vulkan/VulkanLoader.h"
@@ -95,6 +97,15 @@ uint32_t find_mem(VkPhysicalDevice phys, uint32_t type_bits, VkMemoryPropertyFla
 // Matches MatPC in vk_mesh / the tev_shader push_constant block.
 struct MatPC { int32_t kcolor[4][4]; int32_t tevreg[3][4]; };
 
+// ── EFB-readback (own-the-framebuffer): ngx's last-rendered scene DEPTH, read back to CPU so the
+// guest's GXPeekZ (sun-occlusion lens flare) reads ngx geometry instead of Dolphin's empty EFB.
+// Filled on the video thread at present; read on the guest thread (1-frame lag — fine for occlusion).
+// Lazily enabled: a GXPeekZ call sets g_efb_want; the present does the readback only while >0.
+std::mutex g_efb_mtx;
+std::vector<float> g_efb_depth;          // w*h, depth in [0,1] (1 = far / nothing drawn)
+int g_efb_dw = 0, g_efb_dh = 0;          // dims of the readback
+std::atomic<int> g_efb_want{0};          // frames of readback remaining (decays; re-armed per request)
+
 struct PresentRenderer {
     bool init_tried = false, init_ok = false;
     VkDevice dev = VK_NULL_HANDLE; VkPhysicalDevice phys = VK_NULL_HANDLE;
@@ -113,6 +124,9 @@ struct PresentRenderer {
     std::unique_ptr<AbstractTexture> target;
     VkImage depth_img = VK_NULL_HANDLE; VkDeviceMemory depth_mem = VK_NULL_HANDLE; VkImageView depth_view = VK_NULL_HANDLE;
     VkFramebuffer fbo = VK_NULL_HANDLE;
+    // EFB-readback (own-the-framebuffer): host-visible staging for the depth target → CPU, so the
+    // guest's GXPeekZ (sun occlusion) reads ngx's scene depth. Lazily filled only when requested.
+    VkBuffer depth_stg_buf = VK_NULL_HANDLE; VkDeviceMemory depth_stg_mem = VK_NULL_HANDLE; VkDeviceSize depth_stg_cap = 0;
 
     struct PipeEntry { VkShaderModule mod; VkPipeline pipe; };
     std::unordered_map<uint64_t, PipeEntry> pipes;        // NgxTevState.key → shader+pipeline
@@ -537,8 +551,22 @@ bool PresentRenderer::ensure_target(int w, int h) {
                       AbstractTextureFlag_RenderTarget, AbstractTextureType::Texture_2DArray),
         "ngx_present");
     if (!target) return false;
+    // depth: + TRANSFER_SRC so it can be copied to the EFB-readback staging buffer (GXPeekZ).
     if (!make_dev_image(dev, phys, depth_img, depth_mem, depth_view, VK_FORMAT_D32_SFLOAT, w, h,
-        VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_IMAGE_ASPECT_DEPTH_BIT)) return false;
+        VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+        VK_IMAGE_ASPECT_DEPTH_BIT)) return false;
+    // (re)size the host-visible EFB-readback staging buffer to the depth target (D32 = 4 B/px).
+    {
+        VkDeviceSize need = (VkDeviceSize)w * h * 4;
+        if (depth_stg_cap < need) {
+            if (depth_stg_buf) { vkDestroyBuffer(dev, depth_stg_buf, nullptr); depth_stg_buf = VK_NULL_HANDLE; }
+            if (depth_stg_mem) { vkFreeMemory(dev, depth_stg_mem, nullptr); depth_stg_mem = VK_NULL_HANDLE; }
+            if (make_buffer(dev, phys, depth_stg_buf, depth_stg_mem, need, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
+                depth_stg_cap = need;
+            else { depth_stg_buf = VK_NULL_HANDLE; depth_stg_mem = VK_NULL_HANDLE; depth_stg_cap = 0; }
+        }
+    }
     VkImageView views[2] = {static_cast<Vulkan::VKTexture*>(target.get())->GetView(), depth_view};
     VkFramebufferCreateInfo fci{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
     fci.renderPass = rpass; fci.attachmentCount = 2; fci.pAttachments = views;
@@ -992,6 +1020,27 @@ AbstractTexture* PresentRenderer::render(int w, int h) {
     }
 
     vkCmdEndRenderPass(cmd);   // target now SHADER_READ_ONLY (render-pass finalLayout)
+
+    // EFB-readback (own-the-framebuffer): copy the scene depth → host staging when a guest GXPeekZ
+    // requested it. depth is in DEPTH_STENCIL_ATTACHMENT_OPTIMAL (render-pass finalLayout) → TRANSFER_SRC.
+    const bool efb_rb = g_efb_want.load() > 0 && depth_stg_buf != VK_NULL_HANDLE;
+    if (efb_rb) {
+        VkImageMemoryBarrier db{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        db.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        db.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        db.oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        db.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        db.srcQueueFamilyIndex = db.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        db.image = depth_img;
+        db.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             0, 0, nullptr, 0, nullptr, 1, &db);
+        VkBufferImageCopy bic{};
+        bic.imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1};
+        bic.imageExtent = {(uint32_t)w, (uint32_t)h, 1};
+        vkCmdCopyImageToBuffer(cmd, depth_img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, depth_stg_buf, 1, &bic);
+    }
+
     vkEndCommandBuffer(cmd);
 
     VkSubmitInfo su{VK_STRUCTURE_TYPE_SUBMIT_INFO}; su.commandBufferCount = 1; su.pCommandBuffers = &cmd;
@@ -1000,6 +1049,18 @@ AbstractTexture* PresentRenderer::render(int w, int h) {
     vkWaitForFences(dev, 1, &fence, VK_TRUE, 10'000'000'000ull);
     for (size_t i = 0; i < stg_bufs.size(); i++) { vkDestroyBuffer(dev, stg_bufs[i], nullptr); vkFreeMemory(dev, stg_mems[i], nullptr); }
 
+    // Publish the depth readback to the guest-thread accessor (GXPeekZ). 1-frame lag.
+    if (efb_rb) {
+        void* p = nullptr;
+        if (vkMapMemory(dev, depth_stg_mem, 0, (VkDeviceSize)w * h * 4, 0, &p) == VK_SUCCESS && p) {
+            std::lock_guard<std::mutex> lk(g_efb_mtx);
+            g_efb_depth.assign((const float*)p, (const float*)p + (size_t)w * h);
+            g_efb_dw = w; g_efb_dh = h;
+            vkUnmapMemory(dev, depth_stg_mem);
+        }
+        g_efb_want.fetch_sub(1);
+    }
+
     // Dolphin's tracked layout now matches the render pass's final layout.
     static_cast<Vulkan::VKTexture*>(target.get())->OverrideImageLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     g_frames++;
@@ -1007,6 +1068,21 @@ AbstractTexture* PresentRenderer::render(int w, int h) {
 }
 
 }  // namespace
+
+// ── EFB-readback accessors (guest thread) — own-the-framebuffer GXPeekZ et al. ──
+// A guest EFB-read override calls request() to arm the depth readback, then peek_depth() to sample
+// ngx's last-rendered scene depth at guest EFB coords. Returns 0 (and far) until a frame is published.
+extern "C" void sb_ngx_efb_request_readback() { g_efb_want.store(8); }   // keep alive ~8 frames/request
+extern "C" int sb_ngx_efb_peek_depth(int gx, int gy, float* out) {
+    std::lock_guard<std::mutex> lk(g_efb_mtx);
+    if (g_efb_depth.empty() || g_efb_dw <= 0 || g_efb_dh <= 0) return 0;
+    // Guest EFB is the SMS 640×448 framebuffer; the ngx readback is res-scaled (g_efb_dw×g_efb_dh).
+    long rx = (long)gx * g_efb_dw / 640, ry = (long)gy * g_efb_dh / 448;
+    if (rx < 0) rx = 0; if (rx >= g_efb_dw) rx = g_efb_dw - 1;
+    if (ry < 0) ry = 0; if (ry >= g_efb_dh) ry = g_efb_dh - 1;
+    *out = g_efb_depth[(size_t)ry * g_efb_dw + rx];
+    return 1;
+}
 
 // Called on the video thread by the fork's Presenter when SUNBRIGHT_NGX_PRESENT is on.
 // Returns the AbstractTexture holding the freshly-rendered ngx frame at w×h (the XFB
