@@ -107,13 +107,22 @@ static void ov_gx_projection(CPUState& cpu) {
         for (int i = 0; i < 16; i++) pm[i] = mem_rf32(mtx + i * 4);
         ngx_set_projection(pm, type);
     }
-    if (RecompFunc orig = recomp_raw(GX_SET_PROJECTION)) orig(cpu);
-    else { if (patched) { mem_wf32(mtx + 0x00, m00); if (is2d) mem_wf32(mtx + 0x0c, m03); } call_ppc(cpu, cpu.lr); return; }
+    // Run the original GXSetProjection (packs the squeezed matrix into Dolphin's GX). Under the
+    // pure-JIT no-recomp mode ngx OWNS rendering: ngx already has the squeezed matrix (published
+    // above), the Dolphin GX pack is discarded, and there is no recomp body — so skip it (and never
+    // call_ppc(cpu.lr), which would interp the JIT caller). Then restore the guest matrix either way.
+    if (!sunbright_purejit_mode()) {
+        if (RecompFunc orig = recomp_raw(GX_SET_PROJECTION)) orig(cpu);
+        else { if (patched) { mem_wf32(mtx + 0x00, m00); if (is2d) mem_wf32(mtx + 0x0c, m03); } call_ppc(cpu, cpu.lr); return; }
+    }
     if (patched) { mem_wf32(mtx + 0x00, m00); if (is2d) mem_wf32(mtx + 0x0c, m03); }   // restore
 }
 
 static const bool s_proj_registered = [] {
     register_override(GX_SET_PROJECTION, &ov_gx_projection);
+    // Per-call under purejit (return-true): ngx needs the projection published at EVERY GXSetProjection,
+    // not once at block compile. ov_gx_projection captures + (purejit) skips the original.
+    mark_override_purejit_safe(GX_SET_PROJECTION);
     std::fprintf(stderr, "[renderport] native widescreen: hooked GXSetProjection @ %08x\n",
                  GX_SET_PROJECTION);
     return true;
@@ -199,7 +208,7 @@ static void ov_j2dscreen_draw(CPUState& cpu) {
     // so the 3D capture buffer holds a complete frame here. Publish it as the explicit
     // per-frame boundary for the native present (so it reads a whole frame, not a
     // half-accumulated one) — aligned with the J2D HUD snapshot taken just below.
-    ngx_frame_publish();
+    ngx_frame_publish();           // per-frame boundary: publish the complete 3D snapshot for present
     sb_j2d_set_root(root);         // publish the live root J2DScreen* (the /j2d diagnostic probes read it)
     static const bool log = getenv("SUNBRIGHT_RENDERPORT_LOG") != nullptr;
     if (log) {
@@ -208,6 +217,12 @@ static void ov_j2dscreen_draw(CPUState& cpu) {
             std::fprintf(stderr, "[renderport] J2DScreen::draw screen=%08x grafctx=%08x\n",
                          cpu.gpr[3], cpu.gpr[6]);
     }
+    // Pure-JIT no-recomp: J2DScreen::draw is a LOGIC function that BUILDS the 2D pane tree (computes
+    // mGlobalBounds) that sb_j2d_capture reads for the ngx HUD overlay. We cannot run that original
+    // here (no recomp body; call_ppc(cpu.lr) would interp the JIT caller) — running it needs a
+    // reentrant run-original-under-JIT primitive (TODO). For now publish the 3D frame (above) so the
+    // native present shows the 3D world, and skip the 2D capture (HUD overlay pends the primitive).
+    if (sunbright_purejit_mode()) return;
     if (RecompFunc orig = recomp_raw(J2DSCREEN_DRAW)) orig(cpu);
     else call_ppc(cpu, cpu.lr);
     // Capture AFTER the draw: mGlobalBounds/mColorAlpha are now consistently computed
@@ -221,6 +236,8 @@ static void ov_j2dscreen_draw(CPUState& cpu) {
 // J2D renderer. The renderport logging inside stays env-gated.
 static const bool s_renderport_registered = [] {
     register_override(J2DSCREEN_DRAW, &ov_j2dscreen_draw);
+    // Per-call under purejit: the frame-publish boundary must fire EVERY frame (not once at compile).
+    mark_override_purejit_safe(J2DSCREEN_DRAW);
     return true;
 }();
 
