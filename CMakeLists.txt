@@ -42,6 +42,21 @@ include_directories(BEFORE
     "${DOLPHIN_DIR}/Externals/Vulkan-Headers/include"
 )
 
+# Use Dolphin's BUNDLED glslang (compiled from Externals/glslang) on every platform. A SYSTEM glslang
+# (Dolphin's USE_SYSTEM_LIBS=AUTO picks one when found — e.g. Homebrew on macOS) gives CMake
+# targets/headers whose names vary by version and often aren't linkable from our scope → the macOS
+# `ld: library 'glslang' not found`. The bundled copy always exports the plain targets glslang/SPIRV/
+# glslang-default-resource-limits + headers, and keeps Dolphin's own glslang the SAME copy (no
+# duplicate-symbol clash). NOTE: switching an already-configured build dir from system→bundled trips
+# Dolphin's "selection changed" cache guard — a FRESH build dir is required (run.sh handles/instructs).
+set(USE_SYSTEM_GLSLANG OFF)
+# Use BUNDLED fmt too. We add Dolphin's bundled fmt include path explicitly below (for our own TUs),
+# so our code compiles against bundled fmt (e.g. v12). If Dolphin picks a SYSTEM fmt (different
+# version, e.g. v11) for its `common` lib, the fmt namespace in mangled names diverges and
+# Common::MsgAlertFmtImpl(... fmt::vNN ...) goes UNDEFINED at link (the fresh-dir build break). Forcing
+# bundled keeps our TUs and Dolphin's libs on the SAME fmt. (Same fresh-build-dir caveat as glslang.)
+set(USE_SYSTEM_FMT OFF)
+
 add_subdirectory("${DOLPHIN_DIR}" dolphin EXCLUDE_FROM_ALL)
 
 # glslang link targets vary by glslang version / system-vs-bundled: older/bundled glslang exports
@@ -205,6 +220,8 @@ target_compile_definitions(sunbright PRIVATE
 
 target_link_libraries(sunbright PRIVATE
     core discio uicommon
+    common               # MsgAlertFmtImpl etc. — link explicitly (transitive pull is fragile across
+                         # glslang/link-order changes; a fresh build dir otherwise misses it)
     videovulkan          # N2: native renderer reuses Dolphin's VkDevice during bring-up
     ${SB_GLSLANG_LIBS}   # N5: own GLSL->SPIR-V (plain or namespaced glslang targets, detected above)
     SDL2::SDL2

@@ -59,8 +59,17 @@ if [[ "$BIN" == "$HERE/build/sunbright" ]]; then
     fi
     if [[ "$NEEDS_BUILD" == "1" ]]; then
         echo "[run] building build/sunbright (this can take a while the first time) ..." >&2
-        cmake -B "$HERE/build" -DCMAKE_BUILD_TYPE=Release -DENABLE_VULKAN=ON >&2 \
-            || { echo "[run] cmake configure FAILED" >&2; exit 1; }
+        if ! cmake -B "$HERE/build" -DCMAKE_BUILD_TYPE=Release -DENABLE_VULKAN=ON >&2; then
+            # A stale CMake cache can't always be reconfigured in place — e.g. switching to the
+            # bundled fmt/glslang (needed so our TUs and Dolphin agree on versions; see CMakeLists)
+            # trips Dolphin's system-vs-bundled "selection changed" guard. Self-heal: move the old
+            # build dir aside (kept as build.stale.* — no data lost) and configure fresh.
+            STALE="$HERE/build.stale.$(date +%s)"
+            echo "[run] configure failed (likely a stale cache) — moving build/ to $(basename "$STALE") and configuring fresh" >&2
+            mv "$HERE/build" "$STALE" 2>/dev/null || true
+            cmake -B "$HERE/build" -DCMAKE_BUILD_TYPE=Release -DENABLE_VULKAN=ON >&2 \
+                || { echo "[run] cmake configure FAILED (even fresh)" >&2; exit 1; }
+        fi
         cmake --build "$HERE/build" -j"$NCPU" --target sunbright >&2 \
             || { echo "[run] build FAILED" >&2; exit 1; }
     fi
