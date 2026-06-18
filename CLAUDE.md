@@ -350,12 +350,21 @@ renderer reference is **rendered PIXELS**, captured zero-drift from the SAME pre
   present → pixel-perfect camera alignment, one process, no drift. This is the geometry analog of
   `tex_decode_selftest` (Dolphin rendered live each run; NOT a stored golden — that's why the
   stored-PNG approach was rejected).
+- ⚠ **BROKEN under the no-recomp pivot (verified 2026-06-19): the `/abshot2` GX oracle (`ab2.gx.ppm`)
+  comes back ALL-BLACK** — under `NGX_PRESENT` Dolphin no longer renders the guest GX draws (ngx
+  replaces them; "Dolphin EFB confirmed empty"), so there is no GX XFB to capture. A diff against a
+  black oracle silently reports a meaningless ~40% — almost cited as a real regression this session.
+  **The "Baseline 2026-06-16: 40% mean delta — water/sky black" below was very likely this same
+  empty-oracle artifact, not a true ngx gap.** `ab_diff.py` now REFUSES an empty/black frame (exit 3).
+  For a real GX oracle, capture it from a SEPARATE `SUNBRIGHT_NGX_PRESENT=0` (Dolphin-GX baseline) run,
+  frame-matched via `SUNBRIGHT_STATE=<save>` (memory `ngx-render-fidelity-gap`) — single-present
+  `/abshot2` cannot produce both halves anymore.
 - **`tools/render/ab_diff.py`** turns the two PPMs into a NUMBER: mean abs pixel delta (overall +
   4×4 per-region grid, which localizes WHICH part is wrong) + a heatmap. A fix MUST drop this
-  number. Baseline 2026-06-16 (intro gameplay): **40% mean delta** — water missing (black), sky
-  black, dock blown white, HUD garbled. Workflow: run headless w/ `SUNBRIGHT_NGX_PRESENT=1
-  SUNBRIGHT_PROBE=1` to a 3D scene → `curl /abshot2` (check `/ngxpresentlive` shows `frames>0`
-  first, else you capture mid-init) → `python3 tools/render/ab_diff.py --heat out.ppm`.
+  number. (Historical) Baseline 2026-06-16 (intro gameplay): **40% mean delta** — but see the ⚠ above:
+  treat that figure as suspect (probable empty-oracle artifact). Workflow: run headless w/
+  `SUNBRIGHT_NGX_PRESENT=1 SUNBRIGHT_PROBE=1` to a 3D scene → `curl /abshot2` (check `/ngxpresentlive`
+  shows `frames>0` first) → `python3 tools/render/ab_diff.py --heat out.ppm` (exit 3 = empty oracle).
 - GOTCHA: `pkill` returning nonzero (nothing to kill) aborts a chained `&` launch — launch the
   game on its own line. And ALWAYS `pkill -9 -f "build/sunbright "` a finished run: a stale
   instance squats probe port 17654 and silently serves the OLD binary to your curls.

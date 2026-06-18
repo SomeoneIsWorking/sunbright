@@ -54,6 +54,29 @@ def main():
     w, h = gw, gh
     n = w * h
 
+    # Degenerate-input guard. Under the no-recomp NGX_PRESENT architecture Dolphin does NOT render
+    # the guest GX draws (ngx replaces them), so /abshot2's "GX oracle" comes back all-black — and a
+    # diff against a black oracle silently reports a meaningless ~40% (it nearly got read as a real
+    # regression, 2026-06-19). Refuse it loudly instead. For a real GX oracle run a SEPARATE process
+    # with SUNBRIGHT_NGX_PRESENT=0 (Dolphin-GX baseline), ideally frame-matched via SUNBRIGHT_STATE.
+    def frame_stats(px):
+        s = 0; nb = 0
+        for i in range(0, len(px), 3):
+            t = px[i] + px[i+1] + px[i+2]
+            s += t
+            if t > 30: nb += 1
+        return s / max(1, len(px)), nb / max(1, len(px)//3)
+    gmean, gnb = frame_stats(gp)
+    nmean, nnb = frame_stats(np_)
+    for label, path, mean, nb in (("oracle/GX", gx, gmean, gnb), ("ngx", ng, nmean, nnb)):
+        if nb < 0.01:
+            print(f"EMPTY FRAME: {label} ({path}) is ~all black (mean={mean:.2f}, nonblack={nb*100:.2f}%).")
+            if label.startswith("oracle"):
+                print("  The GX oracle is empty — under no-recomp NGX_PRESENT Dolphin renders no GX XFB.")
+                print("  Capture the oracle from a SEPARATE SUNBRIGHT_NGX_PRESENT=0 run (frame-match via SUNBRIGHT_STATE).")
+            print("  Refusing to report a meaningless delta against an empty frame.")
+            return 3
+
     # overall + per-region (4x4 grid) mean abs delta, 0..255 per channel averaged
     GRID = 4
     reg_sum = [0]*(GRID*GRID); reg_cnt = [0]*(GRID*GRID)
