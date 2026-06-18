@@ -39,6 +39,7 @@
 #include <glob.h>
 
 #include "../native_os.h"
+#include "../overrides.h"      // register_override + mark_override_purejit_safe (no-recomp seam)
 #include "Core/System.h"
 #include "Core/HW/Memmap.h"
 
@@ -46,10 +47,13 @@ extern u32 mem_r32(u32 ea);
 extern void mem_w32(u32 ea, u32 v);
 extern void mem_w16(u32 ea, u16 v);
 extern void mem_w8(u32 ea, u8 v);
-extern "C" void func_8035796c(CPUState&);   // __CARDVerify   (recompiled, pure-RAM)
-extern "C" void func_8035532c(CPUState&);   // __CARDPutControlBlock (recompiled)
-extern "C" void func_80347798(CPUState&);   // __OSLockSramEx (recompiled)
-extern "C" void func_80347b20(CPUState&);   // __OSUnlockSramEx (recompiled)
+// GC SDK leaf helpers we still defer to the guest for (no-recomp: run under the interpreter via
+// call_ppc — value-returning, and their subtrees touch no engine overrides; sync-mount wakes hit an
+// empty queue so no context switch escapes the budget). The recomp bodies were eradicated.
+constexpr u32 CARD_VERIFY        = 0x8035796cu;   // __CARDVerify(card) — dir/FAT checksum, r3=result
+constexpr u32 CARD_PUTCTRLBLOCK  = 0x8035532cu;   // __CARDPutControlBlock(card, result)
+constexpr u32 OS_LOCK_SRAM_EX    = 0x80347798u;   // __OSLockSramEx() → r3 = OSSramEx*
+constexpr u32 OS_UNLOCK_SRAM_EX  = 0x80347b20u;   // __OSUnlockSramEx(flush)
 
 namespace {
 
@@ -176,7 +180,7 @@ void native_card_mount_async(CPUState& cpu) {
     {
         static const u8 kFlashID[12] = {'S','U','N','B','R','I','G','H','T','C','R','D'};
         CPUState c = cpu;
-        func_80347798(c);                              // __OSLockSramEx() → r3 = OSSramEx*
+        call_ppc(c, OS_LOCK_SRAM_EX);                  // __OSLockSramEx() → r3 = OSSramEx*
         const u32 sram = c.gpr[3];
         if (sram >= 0x80000000u) {
             u8 sum = 0;
@@ -186,7 +190,7 @@ void native_card_mount_async(CPUState& cpu) {
         }
         CPUState u = cpu;
         u.gpr[3] = 1;                                  // unlock(TRUE) — mark SRAM dirty/flush
-        func_80347b20(u);                              // __OSUnlockSramEx
+        call_ppc(u, OS_UNLOCK_SRAM_EX);                // __OSUnlockSramEx
     }
 
     // System area (5 blocks) → workArea, then the recompiled verifier.
@@ -198,8 +202,7 @@ void native_card_mount_async(CPUState& cpu) {
     if (result == R_READY) {
         CPUState c = cpu;
         c.gpr[3] = card;
-        c.lr = 0;                       // recomp body returns via C return
-        func_8035796c(c);               // __CARDVerify(card) — dir/FAT checksum check
+        call_ppc(c, CARD_VERIFY);       // __CARDVerify(card) under interp — dir/FAT checksum check
         result = (s32)c.gpr[3];
     }
 
@@ -207,7 +210,7 @@ void native_card_mount_async(CPUState& cpu) {
         CPUState c = cpu;
         c.gpr[3] = card;
         c.gpr[4] = (u32)result;
-        func_8035532c(c);
+        call_ppc(c, CARD_PUTCTRLBLOCK);
     }
     // __CARDMountCallback's final phase: consume + run the api callback (sync mounts pass
     // __CARDSyncCallback, whose wake hits an empty queue — nobody sleeps, result is already set).
@@ -274,14 +277,27 @@ void native_card_erase_sector(CPUState& cpu) {
 int native_card_image_fd() { return card_fd(); }
 
 void native_card_register() {
-    native_os_register(PROBE_EX,     native_card_probe_ex);
-    native_os_register(MOUNT_ASYNC,  native_card_mount_async);
-    native_os_register(READ_SEGMENT, native_card_read_segment);
-    native_os_register(WRITE_PAGE,   native_card_write_page);
-    native_os_register(ERASE_SECTOR, native_card_erase_sector);
+    // No-recomp: register as purejit-safe full-replacement OVERRIDES (dispatched per-call via the JIT
+    // trampoline → Run), NOT native_os primitives (native_os_lookup returns null under purejit, which
+    // left the native card INERT → Dolphin's EXI served it). This makes the card service PC-native.
+    // Idempotent: under the eradicated build native_os_init() is never called, so the registration is
+    // driven by the static initializer below; the legacy native_os.cpp call site is harmless if it
+    // ever runs.
+    static bool done = false;
+    if (done) return;
+    done = true;
+    auto seam = [](u32 addr, RecompFunc fn) { register_override(addr, fn); mark_override_purejit_safe(addr); };
+    seam(PROBE_EX,     native_card_probe_ex);
+    seam(MOUNT_ASYNC,  native_card_mount_async);
+    seam(READ_SEGMENT, native_card_read_segment);
+    seam(WRITE_PAGE,   native_card_write_page);
+    seam(ERASE_SECTOR, native_card_erase_sector);
     fprintf(stderr, "[native_card] registered native memory-card service "
-                    "(probe/mount/read/write/erase — no EXI, no DSP unlock)\n");
+                    "(probe/mount/read/write/erase — purejit-safe, no EXI, no DSP unlock)\n");
 }
+// Static-init self-registration: the only registration path that runs under the eradicated no-recomp
+// build (recomp_build_dispatch/native_os_init are gone). Mirrors SUNBRIGHT_OVERRIDE_NATIVE.
+static const bool s_native_card_autoreg = (native_card_register(), true);
 #else
 int native_card_image_fd() { return -1; }
 void native_card_register() {}
