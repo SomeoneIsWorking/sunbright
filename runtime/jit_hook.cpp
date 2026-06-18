@@ -13,6 +13,8 @@
 #include "Core/PowerPC/PowerPC.h"
 #include "Core/System.h"
 #include "sunbright_bridge.h"
+#include "overrides.h"
+#include "dolphin_hook.h"   // dolphin_state_to_cpu
 
 // SUNBRIGHT_DBG_TRAMP=LO-HI (hex): log every Dolphin-JIT block dispatch whose address falls in
 // [LO,HI), with the engine it routes to (recomp vs Dolphin JIT) and the live guest regs. Block-
@@ -43,28 +45,27 @@ static bool purejit_enabled() {
     static const bool on = getenv("SUNBRIGHT_PUREJIT") != nullptr;
     return on;
 }
-static void purejit_observe(u32 em_address) {
-    // The two ngx capture seams (J3DShape::draw, J2DScreen::draw). Count + log first hits so we can
-    // confirm pure-JIT dispatch reaches them (so a real pre-hook registered here would fire).
-    static unsigned long n_shape = 0, n_screen = 0;
-    switch (em_address) {
-        case 0x802e0390u: ++n_shape;  break;   // J3DShape::draw
-        case 0x802d01c8u: ++n_screen; break;   // J2DScreen::drawSelf
-        default: return;
-    }
-    static unsigned long last = 0, total = 0;
-    if (total == 0 || (++total - last) >= 2000) {   // first hit + periodic liveness (sustained dispatch)
-        if (total == 0) ++total;
-        last = total;
-        fprintf(stderr, "[purejit] engine seams hit: J3DShape::draw=%lu J2DScreen::drawSelf=%lu\n",
-                n_shape, n_screen);
-    }
+
+// Run any pre-hook registered for this block, then let Dolphin JIT the original (caller returns
+// false). The pre-hook OBSERVES off a CPUState mirrored from Dolphin's live PPC state. Returns true
+// iff a pre-hook ran (purely informational; control still falls through to Dolphin's JIT).
+static bool run_prehook(u32 em_address) {
+    static const bool any = prehooks_registered();   // skip the lookup entirely when none registered
+    if (!any) return false;
+    PreHookFn fn = prehook_lookup(em_address);
+    if (!fn) return false;
+    CPUState cpu;
+    dolphin_state_to_cpu(Core::System::GetInstance().GetPPCState(), cpu);
+    cpu.pc = em_address;
+    fn(cpu);
+    return true;
 }
 
 // The fork hook body. jit is JitBase* (opaque here — we never need it; non-recomp returns false
 // and the fork's JitTrampoline calls jit.Jit() itself). Returns true iff we ran a recompiled block.
 extern "C" bool sb_hook_jit_trampoline(void* /*jit*/, u32 em_address) {
-    if (purejit_enabled()) { purejit_observe(em_address); return false; }
+    // Pure-JIT no-recomp seam: observe via pre-hooks, then Dolphin JITs the original block.
+    if (purejit_enabled()) { run_prehook(em_address); return false; }
     const bool rc = SunbrightBridge::IsRecompiled(em_address);
     static const bool tramp_inited = (dbg_tramp_init(), true);
     (void)tramp_inited;

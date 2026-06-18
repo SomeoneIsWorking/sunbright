@@ -255,9 +255,13 @@ flaky/slow. Reaching sustained gameplay-render under pure JIT is the next valida
 getting fastboot (an engine override) working in the pure-JIT mode — i.e. Phase B step 2 proper.
 
 ### Phase B — concrete remaining work (in order)
-1. **Build the real pre-hook table** consulted in the trampoline before the IsRecompiled decision:
-   `register_prehook(addr, fn)`; when in pure-JIT mode, run matching pre-hooks then return false so
-   Dolphin JITs the original. (PUREJIT's hardcoded switch is the throwaway prototype of this.)
+1. **[DONE 2026-06-18]** Real pre-hook table consulted in the trampoline before the IsRecompiled
+   decision: `register_prehook(addr, fn)` / `prehook_lookup` (overrides.h/.cpp). `run_prehook` in
+   sb_hook_jit_trampoline builds a CPUState from live PPC state, runs the pre-hook, returns false so
+   Dolphin JITs the original. Verified end-to-end: runtime/overrides/purejit_probe.cpp registers
+   observe pre-hooks on J3DShape::draw + J2DScreen::drawSelf (gated on SUNBRIGHT_PUREJIT); under
+   DISABLE_RECOMP+PUREJIT the `[purejit] pre-hook seams hit` line fires and boot stays at 1.0×. The
+   probe + PUREJIT switch are throwaway scaffolding for the real engine pre-hooks (steps 2-3).
 2. **A real no-recomp execution mode** where recomp_lookup/recomp_raw return null (no recomp bodies),
    native_os off, exec-model overrides (VI/drawsync/governor/charge_guest_time) off — i.e. pure
    Dolphin JIT + pre-hooks. Distinct from today's half-measure SUNBRIGHT_NO_RECOMP.

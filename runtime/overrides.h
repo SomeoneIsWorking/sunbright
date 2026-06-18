@@ -39,6 +39,18 @@ void       register_override_impl(u32 addr, RecompFunc fn, const char* group);
 // after fixing 2D layout, capture transforms, etc.). nullptr if `addr` isn't recompiled.
 RecompFunc recomp_raw(u32 addr);
 
+// ── Pre-hooks (no-recomp / pure-JIT engine seam) ─────────────────────────────
+// A pre-hook OBSERVES a guest function (reads its args/guest RAM to feed the native engine, e.g. ngx
+// J3D capture) WITHOUT replacing it. Under the pure-JIT no-recomp mode the trampoline runs the
+// pre-hook, then lets Dolphin JIT the ORIGINAL block (returns false). This is the conversion target
+// for the WRAPPING overrides that today super-call recomp_raw — once recomp is gone there is no body
+// to super-call, so they become observe-then-let-Dolphin-run-the-original. Observation only: the
+// pre-hook must NOT change control flow or guest state it isn't deliberately patching.
+using PreHookFn = void (*)(CPUState&);
+PreHookFn  prehook_lookup(u32 addr);      // nullptr if none
+void       register_prehook(u32 addr, PreHookFn fn);
+bool       prehooks_registered();
+
 bool is_jit_forced(u32 addr);
 void force_jit(u32 addr);                 // single address
 void force_jit_range(u32 lo, u32 hi);     // [lo, hi)

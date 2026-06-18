@@ -79,6 +79,28 @@ RecompFunc override_lookup(u32 addr) {
     return it == t.end() ? nullptr : it->second;
 }
 
+// ── Pre-hook table (observe-then-Dolphin-JITs-original; no-recomp engine seam) ─
+static std::unordered_map<u32, PreHookFn>& prehook_table() {
+    static std::unordered_map<u32, PreHookFn> t;
+    return t;
+}
+static u32 g_ph_lo = 0xFFFFFFFFu, g_ph_hi = 0;   // [lo,hi) cheap reject (trampoline hot path)
+
+void register_prehook(u32 addr, PreHookFn fn) {
+    prehook_table()[addr] = fn;
+    if (addr < g_ph_lo) g_ph_lo = addr;
+    if (addr + 4 > g_ph_hi) g_ph_hi = addr + 4;
+}
+
+PreHookFn prehook_lookup(u32 addr) {
+    if (addr < g_ph_lo || addr >= g_ph_hi) return nullptr;
+    auto& t = prehook_table();
+    auto it = t.find(addr);
+    return it == t.end() ? nullptr : it->second;
+}
+
+bool prehooks_registered() { return !prehook_table().empty(); }
+
 void force_jit(u32 addr) { jit_ranges().emplace_back(addr, addr + 4); }
 
 void force_jit_range(u32 lo, u32 hi) { jit_ranges().emplace_back(lo, hi); }
