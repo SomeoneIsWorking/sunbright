@@ -529,6 +529,52 @@ REMAINING (follow-ups, NOT blockers — system is correct as-is):
   flare occlusion, pollution goop-coverage triggers, mirror, dash-blur) read an empty EFB because ngx
   skips the GX draw — the broader "own the GPU" frontier.
 
+## ★★★ POST-ERADICATION: THE ENGINE IS RENDERER-ONLY — re-grounding plan (2026-06-18, session 12)
+USER (ground truth, ran ./run.sh): "the game is NOT running under a PC native engine." CONFIRMED.
+Eradicating recomp didn't just remove recomp — it left the native engine as the **renderer only**.
+Diagnosis (verified): under no-recomp an override runs ONLY if marked purejit-safe, and the ONLY
+purejit-safe overrides are fastboot + the ngx render seams (GX_SET_PROJECTION, J2DSCREEN_DRAW, the
+ngx GX/J2D tee list). Every other native subsystem is INERT → Dolphin does that work:
+- native_jas AUDIO ENGINE — dormant (audio = Dolphin DSP HLE into the native sink, which IS active
+  via the Mixer WRAP). se_native/bgm intake tees are plain overrides → inert.
+- native_card — registers via native_os_register → native_os_lookup returns null under purejit → inert
+  → Dolphin's own EXI/card serves it (works; fastboot loads the save).
+- sms_drawsync, native_os/nthr, native_gx, water/efb/sun widescreen, native_math — all inert.
+USER DIRECTIVE on scope: **"Game engine entirely PC native."** So re-ground ALL owned engine
+subsystems to run under no-recomp (NOT the recomp-bugfix overrides — those are correctly dead because
+Dolphin's JIT executes the guest correctly where our recomp mistranslated; e.g. native_math/fres
+refiners are unneeded under Dolphin JIT).
+
+### THE LINCHPIN BLOCKER (why this is multi-session, not a flag flip)
+Native engine subsystems CALL GUEST HELPER FUNCTIONS and need the result INLINE:
+- native_card → func_8035796c (__CARDVerify, reads c.gpr[3] back), func_8035532c, callbacks via
+  call_ppc; se_native → func_803020ac (guest startSoundBasic) for ids njas doesn't handle; etc.
+- Those `func_XXXXXXXX` recomp bodies are GONE (now recomp_dead_stubs.cpp → abort). `call_ppc(cpu,
+  addr)` under no-recomp would run the guest under the INTERPRETER, which BYPASSES overrides
+  (forbidden) and is slow.
+- The existing reentrant primitive `sb_run_original_around` does NOT solve this: it runs the original
+  of the OVERRIDDEN function via dispatcher-threading (return-from-override → Dolphin JITs it → trap
+  back), NOT a synchronous value-returning nested call from inside native C.
+TWO STRATEGIC PATHS to "entire engine native" (pick per subsystem; A unblocks broadly):
+- **(A) Build a synchronous nested guest-call primitive** `sb_call_guest(cpu, addr)` that runs a guest
+  function at addr under Dolphin's OWN JIT and returns with results in cpu — sub-calls still hitting
+  overrides. Then native subsystems keep their guest-helper-calls (re-point func_/call_ppc at it) AND
+  IsRecompiled can dispatch all engine overrides. This is the nested-enter_code the prior author
+  avoided as "risky (ProtectStack/UnprotectStack + BLR-RAS sentinel)" — but it is the general enabler
+  and the reentrant primitive proves dispatcher-threaded nested exec works; a value-returning blocking
+  variant is the build. HIGH LEVERAGE.
+- **(B) Fully port each subsystem + ITS helpers natively** (RE __CARDVerify etc.), no guest calls —
+  the project's faithful methodology, but enormous per subsystem. native_jas already is ~full port
+  (synthesizes everything); audio mostly needs (A) only for the unhandled-id fallback + double-audio
+  suppression (guest audio now PLAYS under Dolphin, so njas must suppress the Dolphin path to avoid
+  doubling).
+RECOMMENDATION: build (A) — it is the one mechanism that re-grounds the whole engine; then per
+subsystem, mark seams purejit-safe + re-point guest-helper-calls at sb_call_guest, validating no boot
+stall (the old "stall a pure-JIT boot" risk lives in the TIMING subsystems: governor/AID/Mixer/
+drawsync — Dolphin owns timing under no-recomp, so those stay Dolphin unless/until ported with care).
+Tasks: #5 audio, #6 card, #7 drawsync, #8 inventory+remaining. Per-subsystem validate headless +
+commit; never leave a subsystem half-re-grounded (partial audio is worse than Dolphin-HLE audio).
+
 ## Files
 - runtime/jit_hook.cpp — `sb_hook_jit_trampoline` runs `run_prehook` then normal dispatch (step 2).
 - runtime/overrides.h / overrides.cpp — `sunbright_purejit_mode()` accessor + pre-hook table;
