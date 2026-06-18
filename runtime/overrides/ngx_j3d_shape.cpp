@@ -555,6 +555,7 @@ inline void texgen_uv(const TexGen& g, const NgxVertex& v, const float litcol0[4
 // missing/unknown block → the consumer falls back to the raw vertex colour).
 u32 g_cur_cb_addr = 0, g_cur_cb_vt = 0; u8 g_cur_cb_raw[0x20] = {0};   // for /gxstate raw-block dump
 u32 g_cur_material = 0;   // the J3DMaterial whose block we captured (for /shapeat fresh re-read)
+u32 g_cur_matpkt = 0;     // the live J3DMatPacket (its baked DL @+0x20/len@+0x24 = what GX replays)
 void capture_colorchan(u32 material) {
     g_cur_chan = ChanInfo{};
     g_cur_cb_addr = 0;
@@ -1249,7 +1250,7 @@ struct ShapeRec {
     float ezmin, ezmax;                 // eye-space Z range (camera distance; -ve = in front) — depth-source
     float mv[12];                       // full single-matrix modelview (drawMtx[single_idx], row-major 3x4)
     float mp0[3], mp1[3];               // model-space positions of vert0/vert1 (pre-transform) — foam vs sea cmp
-    u32 material, cb_addr, cb_vt;        // J3DMaterial / its colorBlock addr+vtable (for /shapeat fresh re-read)
+    u32 material, cb_addr, cb_vt, matpkt;  // J3DMaterial / colorBlock addr+vtable / live MatPacket (baked DL)
     u16 alpha0;                          // captured ALPHA0 chanctrl
     unsigned char mat[4], amb[4];        // captured COLOR0 matColor / ambColor (the lighting inputs)
 };
@@ -1275,6 +1276,7 @@ int capture_material() {
     for (int m = 0; m < 8; m++) g_mat_tex[m] = NgxTexBind{};   // reset textures
     const u32 matpacket = r32(J3DSYS + 0x3C);          // j3dSys.mMatPacket
     if (!valid(matpacket)) { g_mat_none++; return -1; }
+    g_cur_matpkt = matpacket;                           // for /shapeat baked-DL walk (DL@+0x20, len@+0x24)
     const u32 material = r32(matpacket + 0x38);        // J3DMatPacket::unk38
     if (!valid(material)) { g_mat_none++; return -1; }
     capture_colorchan(material);                       // N6: colour-channel/lighting state
@@ -1606,6 +1608,7 @@ void transform_eye() {
         rec.gen = g_efb_gen;
         rec.ti = g_cur_tev_index;
         rec.material = g_cur_material; rec.cb_addr = g_cur_cb_addr; rec.cb_vt = g_cur_cb_vt;
+        rec.matpkt = g_cur_matpkt;
         rec.alpha0 = g_cur_chan.valid ? g_cur_chan.alpha0 : 0xFFFF;
         for (int k=0;k<4;k++){ rec.mat[k]=g_cur_chan.matColor[k]; rec.amb[k]=g_cur_chan.ambColor[k]; }
         rec.clr0cls = g_cur_clr0cls; rec.clr0fmt = g_cur_clr0fmt; rec.clr0base = g_cur_clr0base;
@@ -3271,6 +3274,45 @@ int sb_ngx_shapeat_dump(char* out, int cap, float qx, float qy) {
             r.cc, capb, r.mat[0],r.mat[1],r.mat[2], r.amb[0],r.amb[1],r.amb[2], r.cb_addr, r.cb_vt,
             r.material, fresh_cb, fresh_vt, fresh_c0, frb, fmat[0],fmat[1],fmat[2],
             race ? "*** CAPTURE RACE (fresh != captured) ***" : "(fresh == captured)");
+        // Walk the material's BAKED display list (matpkt@+0x20=DL ptr, +0x24=len) and dump the channel
+        // XF loads (numColors 0x1009, ambient 0x100A/B, matColor 0x100C/D, CHANCTRL 0x100E-0x1011) +
+        // lights 0x0600-067F. This is the AUTHORITATIVE state GX replays. A DL chanctrl (0x100E) whose
+        // en bit (bit1) differs from the block field above = the floor is LIT in GX though the block
+        // reads unlit (stale-DL / DL-built-from-different-data bug) — the wash smoking gun.
+        const u32 dlp = valid(r.matpkt) ? r32(r.matpkt + 0x20) : 0;
+        const u32 dll = valid(r.matpkt) ? r32(r.matpkt + 0x24) : 0;
+        n += snprintf(out + n, cap - n, "    BAKED DL @%08x len=%u (matpkt=%08x) XF:", dlp, dll, r.matpkt);
+        if (const u8* D = (dll && dll < 0x4000 && valid(dlp)) ? sb_ram_fast(dlp) : nullptr) {
+            u32 p = 0;
+            while (p < dll && n < cap - 80) {
+                const u8 op = D[p];
+                if (op == 0x00) { p++; continue; }
+                if (op == 0x10) {                                   // XF load: op, cnt-1 (u16), reg (u16), data
+                    const u32 cnt = (((u32)D[p+1]<<8)|D[p+2]) + 1;
+                    const u32 reg = ((u32)D[p+3]<<8)|D[p+4];
+                    for (u32 rr = reg, j = 0; j < cnt && j < 16; j++, rr++) {
+                        const bool want = (rr==0x1009)||(rr>=0x100A&&rr<=0x1011)||(rr>=0x0600&&rr<=0x067F);
+                        if (want && n < cap - 40) { const u8* d = D + p + 5 + j*4;
+                            n += snprintf(out+n, cap-n, " [%04x=%02x%02x%02x%02x]", rr, d[0],d[1],d[2],d[3]); }
+                    }
+                    p += 5 + cnt*4; continue;
+                }
+                if (op == 0x61) {                                   // BP load: op, reg(u8), value(u24)
+                    const u8 reg = D[p+1];
+                    const u32 val = ((u32)D[p+2]<<16)|((u32)D[p+3]<<8)|D[p+4];
+                    // TEV color/alpha env (0xC0-0xDF), genMode/numTEV (0x00), TEV konst sel (0xF6-0xF9),
+                    // TEV color regs (0xE0-0xE7), blend/PE cmode0 (0x41) — the per-fragment combine GX uses.
+                    if ((reg >= 0xC0 && reg <= 0xDF) || reg == 0x00 || reg == 0x41 ||
+                        (reg >= 0xE0 && reg <= 0xE7) || (reg >= 0xF6 && reg <= 0xF9)) {
+                        if (n < cap - 24) n += snprintf(out+n, cap-n, " bp%02x=%06x", reg, val);
+                    }
+                    p += 5; continue;
+                }
+                if (op == 0x08) { p += 5; continue; }               // CP load
+                break;                                              // primitive/unknown → stop
+            }
+        }
+        n += snprintf(out + n, cap - n, "\n");
         shown++;
     }
     return n;
@@ -3449,9 +3491,13 @@ int sb_ngx_shape_dump(char* out, int cap) {
                 if (op == 0x10) {                                         // XF load
                     const u32 cnt = (((u32)D[p+1]<<8)|D[p+2]) + 1;
                     const u32 reg = ((u32)D[p+3]<<8)|D[p+4];
-                    if (reg == 0x100A || reg == 0x100B || reg == 0x100C || reg == 0x100D) {
-                        const u8* d = D + p + 5;
-                        n += snprintf(out+n, cap-n, " [%04x=%02x%02x%02x%02x]", reg, d[0],d[1],d[2],d[3]);
+                    // numColors(0x1009), ambient(0x100A/B), matColor(0x100C/D), CHANCTRL(0x100E-0x1011),
+                    // and lights(0x0600-0x067F) — the FAITHFUL baked GX channel/lighting state GX replays.
+                    // A DL chanctrl (0x100E) that differs from the block field ngx reads = stale-DL bug.
+                    for (u32 r = reg, j = 0; j < cnt && j < 16; j++, r++) {
+                        const bool want = (r == 0x1009) || (r >= 0x100A && r <= 0x1011) || (r >= 0x0600 && r <= 0x067F);
+                        if (want) { const u8* d = D + p + 5 + j*4;
+                            n += snprintf(out+n, cap-n, " [%04x=%02x%02x%02x%02x]", r, d[0],d[1],d[2],d[3]); }
                     }
                     p += 5 + cnt*4; continue;
                 }
