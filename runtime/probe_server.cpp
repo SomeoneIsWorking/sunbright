@@ -40,6 +40,8 @@ bool g_probe_enabled = false;
 #include "VideoCommon/CommandProcessor.h"
 #include "VideoCommon/FrameDumper.h"
 #include "VideoCommon/Statistics.h"   // g_stats: Dolphin's per-frame GX draw/prim counts
+#include "VideoCommon/EFBInterface.h" // g_efb_interface: peek the EFB (pre-copy) for pipeline-stage A/B
+#include "VideoCommon/VideoConfig.h"  // g_ActiveConfig.bEFBAccessEnable (peek needs it on)
 #include <sys/stat.h>
 #endif
 extern u32 mem_r32(u32 ea);
@@ -357,6 +359,25 @@ std::string handle_repl(const char* path) {
             f.num_draw_calls, f.num_prims, f.num_dl_prims, f.num_drawn_objects,
             f.num_triangles_drawn, f.num_triangles_in, f.num_vertices_loaded,
             f.num_efb_peeks, f.num_efb_pokes, f.num_dlists_called, f.num_shader_changes);
+        return std::string(buf, n);
+    }
+    if (strncmp(path, "/efbpeek", 8) == 0) {  // peek Dolphin's EFB (PRE-copy) at native EFB pixel (x,y).
+        // Pipeline-stage A/B: splits "ngx too bright" into PER-FRAGMENT (EFB already that value) vs
+        // POST-FRAGMENT copy/present (EFB bright but XFB dark). Native EFB coords: x 0..639, y 0..527.
+        // Run under SUNBRIGHT_NGX_PRESENT=0 (GX path fills the real EFB). Returns ARGB + RGB.
+        // FLAKY: PeekColor uses AsyncRequests::PushBlockingEvent (waits on the video thread); in our
+        // paced headless setup the video thread isn't pumped reliably, so only the FIRST peek per
+        // process returns dependably — later ones can hang the curl. HARDEN by peeking from the
+        // GXCopyDisp tee (gx_stream_own.cpp, runs at copy time with the GPU active) or pumping the
+        // GPU between peeks. One reliable peek per run is still enough to localize a stage.
+        int x = 320, y = 400;
+        if (const char* p = strstr(path, "x=")) x = atoi(p + 2);
+        if (const char* p = strstr(path, "y=")) y = atoi(p + 2);
+        g_ActiveConfig.bEFBAccessEnable = true;           // peek is a NOP (returns 0) unless this is on
+        if (!g_efb_interface) { app("efbpeek: no g_efb_interface\n"); return std::string(buf, n); }
+        const uint32_t c = g_efb_interface->PeekColor((uint16_t)x, (uint16_t)y);  // 0xAARRGGBB (LE'd by Dolphin)
+        app("efbpeek (%d,%d) EFB pre-copy: argb=%08x  RGB=(%u,%u,%u) A=%u\n",
+            x, y, c, (c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF, (c >> 24) & 0xFF);
         return std::string(buf, n);
     }
     if (strncmp(path, "/ngxshapes", 10) == 0) {  // per-shape NDC bbox (localize a misplaced shape)
