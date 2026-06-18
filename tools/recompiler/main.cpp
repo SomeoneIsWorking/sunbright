@@ -61,6 +61,9 @@ static void print_usage(const char* prog) {
               << "  " << prog << " <disc.rvz|disc.iso> --output <dir>    # Recompile\n"
               << "  " << prog << " <disc.rvz|disc.iso> --analyze-only     # Analyze\n"
               << "  " << prog << " <disc.rvz|disc.iso> --dump-dol --output <path>\n"
+              << "  " << prog << " <disc> --disasm <hexaddr> [count]      # Disassemble\n"
+              << "  " << prog << " <disc> --xref <hexaddr> [--funcs f]    # Who calls/branches to ADDR\n"
+              << "  " << prog << " <disc> --callees <hexaddr> [--funcs f] # What the fn at ADDR calls\n"
               << "  " << prog << " --version\n";
 }
 
@@ -510,6 +513,10 @@ int main(int argc, char** argv) {
     bool do_disasm    = false;
     u32  disasm_addr  = 0;
     int  disasm_count = 64;
+    bool do_xref      = false;   // --xref ADDR  : who directly branches to ADDR
+    bool do_callees   = false;   // --callees ADDR : what the function at ADDR directly calls
+    u32  xref_addr    = 0;
+    std::string funcs_path = "reference/sms_gmse01_funcs.txt";
     std::string out_dir;
 
     for (int i = 2; i < argc; i++) {
@@ -522,6 +529,13 @@ int main(int argc, char** argv) {
             disasm_addr = (u32)strtoul(argv[++i], nullptr, 16);
             if (i + 1 < argc && argv[i+1][0] != '-') disasm_count = atoi(argv[++i]);
         }
+        if (strcmp(argv[i], "--xref") == 0 && i+1 < argc) {
+            do_xref = true; xref_addr = (u32)strtoul(argv[++i], nullptr, 16);
+        }
+        if (strcmp(argv[i], "--callees") == 0 && i+1 < argc) {
+            do_callees = true; xref_addr = (u32)strtoul(argv[++i], nullptr, 16);
+        }
+        if (strcmp(argv[i], "--funcs") == 0 && i+1 < argc) funcs_path = argv[++i];
     }
 
     std::cout << "Loading disc: " << disc_path << "\n";
@@ -564,6 +578,94 @@ int main(int argc, char** argv) {
         }
         std::cerr << "address not in any text section\n";
         return 1;
+    }
+
+    // ── Static cross-reference (durable RE tool) ────────────────────────────────────────────
+    // --xref ADDR    : every direct branch (bl / b / bc) in the DOL whose target == ADDR, named by
+    //                  the function that CONTAINS the call site (FuncName+0xNN). Answers "who calls X
+    //                  / what gates X" without hand-decoding branch displacements.
+    // --callees ADDR : every direct branch OUT of the function at ADDR (to its next-func boundary),
+    //                  named by target. Answers "what does this function call".
+    // Names come from --funcs (default reference/sms_gmse01_funcs.txt): "<hexaddr> <symbol>" per line.
+    if (do_xref || do_callees) {
+        std::vector<std::pair<u32, std::string>> syms;   // sorted by addr
+        {
+            std::ifstream f(funcs_path);
+            if (!f) { std::cerr << "could not open funcs file: " << funcs_path << "\n"; return 1; }
+            std::string line;
+            while (std::getline(f, line)) {
+                if (line.empty()) continue;
+                char* end = nullptr;
+                u32 a = (u32)strtoul(line.c_str(), &end, 16);
+                if (end == line.c_str()) continue;
+                while (*end == ' ' || *end == '\t') end++;
+                syms.emplace_back(a, std::string(end));
+            }
+            std::sort(syms.begin(), syms.end());
+        }
+        // Largest symbol addr <= a → "name+0xNN" (or raw hex if before the first symbol).
+        auto name_of = [&](u32 a) -> std::string {
+            auto it = std::upper_bound(syms.begin(), syms.end(), a,
+                        [](u32 v, const std::pair<u32,std::string>& p){ return v < p.first; });
+            char buf[160];
+            if (it == syms.begin()) { std::snprintf(buf, sizeof buf, "%08x", a); return buf; }
+            --it;
+            if (it->first == a) std::snprintf(buf, sizeof buf, "%s", it->second.c_str());
+            else                std::snprintf(buf, sizeof buf, "%s+0x%x", it->second.c_str(), a - it->first);
+            return buf;
+        };
+        auto is_direct_branch = [](const PPCInstr& i) {
+            return i.op == PPCOp::B || i.op == PPCOp::BC;   // bl/b/ba/bla = B(+lk); bc family = BC
+        };
+        if (do_xref) {
+            std::printf("xref: callers of %08x (%s)\n", xref_addr, name_of(xref_addr).c_str());
+            int n = 0;
+            for (const auto& [base, data] : dol.text_sections()) {
+                for (size_t off = 0; off + 4 <= data.size(); off += 4) {
+                    u32 w_be; std::memcpy(&w_be, data.data() + off, 4);
+                    u32 a = base + (u32)off;
+                    PPCInstr ins = decode(__builtin_bswap32(w_be), a);
+                    if (is_direct_branch(ins) && ins.target == xref_addr) {
+                        std::printf("  %08x  %-4s  in %s\n", a,
+                                    ins.lk ? (ins.op == PPCOp::BC ? "bcl" : "bl")
+                                           : (ins.op == PPCOp::BC ? "bc"  : "b"),
+                                    name_of(a).c_str());
+                        n++;
+                    }
+                }
+            }
+            std::printf("  (%d caller%s)\n", n, n == 1 ? "" : "s");
+            return 0;
+        }
+        // --callees: scan [xref_addr, next-symbol) for direct branches out, named by target.
+        u32 end_addr = 0xFFFFFFFFu;
+        {
+            auto it = std::upper_bound(syms.begin(), syms.end(), xref_addr,
+                        [](u32 v, const std::pair<u32,std::string>& p){ return v < p.first; });
+            if (it != syms.end()) end_addr = it->first;
+        }
+        std::printf("callees: direct branches out of %s  [%08x,%08x)\n",
+                    name_of(xref_addr).c_str(), xref_addr, end_addr);
+        int n = 0;
+        for (const auto& [base, data] : dol.text_sections()) {
+            if (xref_addr < base || xref_addr >= base + data.size()) continue;
+            for (u32 a = xref_addr; a < end_addr; a += 4) {
+                u32 off = a - base;
+                if (off + 4 > data.size()) break;
+                u32 w_be; std::memcpy(&w_be, data.data() + off, 4);
+                PPCInstr ins = decode(__builtin_bswap32(w_be), a);
+                if (is_direct_branch(ins)) {
+                    std::printf("  %08x  %-4s -> %s\n", a,
+                                ins.lk ? (ins.op == PPCOp::BC ? "bcl" : "bl")
+                                       : (ins.op == PPCOp::BC ? "bc"  : "b"),
+                                name_of(ins.target).c_str());
+                    n++;
+                }
+            }
+            break;
+        }
+        std::printf("  (%d branch%s)\n", n, n == 1 ? "" : "es");
+        return 0;
     }
 
     if (dump_funcs) {
