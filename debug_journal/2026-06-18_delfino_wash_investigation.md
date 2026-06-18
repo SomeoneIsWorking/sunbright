@@ -46,3 +46,22 @@ GX render-state, not output pixels.
 ## Done this session
 - Ambient state-divergence fixed (6bd521f). /gxstate bpmem combiner diff tool + caveat (4ce02ac).
 - Wash root-caused to the TEV combiner (ambient/lighting/scale ruled out), reliable-path plan above.
+
+## ORACLE RESTORED (2026-06-18, commit d20acbd) + frame-exact findings
+tools/render/oracle_ab.sh: frame-EXACT Dolphin-GX-vs-ngx A/B by running two deterministic processes
+synced on EMU_SECS (not wall time — the wall-synced compare drifted because GX-off runs ~0.38x and
+ngx ~0.9x, landing them in different game states; THAT was the "drift" all along, not a broken
+oracle). NGX_PRESENT=0 = sanctioned Dolphin-GX oracle (overrides inert). Diff via ab_diff.py.
+Frame-exact @ emu_secs 14 (idle Delfino): MEAN 35%, region grid floor rows 114-137 vs top 42-66.
+
+FRAME-EXACT findings (real, not drift — the user was right it's not just brightness):
+1. FLOOR WASH ~2.2x — region rows 3-4. NOT lighting: SUNBRIGHT_NGX_NOLIGHT leaves the floor delta
+   unchanged (119-137). => the wash is the TEXTURE/COMBINER path, not the lighting/ambient.
+2. MISSING: Mario's ground SHADOW (oracle has the dark marukage blob under Mario; ngx has none) —
+   an EFB/silhouette effect ngx doesn't render.
+3. MISSING/WRONG: the FLUDD "WATER" gauge icon (bottom-right) is a GREY BOX in ngx (missing texture).
+
+NEXT (now that the oracle is reliable): bisect the floor combiner vs the oracle — texture decode first
+(tex_decode_selftest / the floor tile, reliable), then the per-stage combiner math / TEV konst+reg
+values (ngx's combiner regs are reliable J3D-object reads; the generated GLSL is in /gxstate). Then
+the missing shadow + water icon. Drive every fix with oracle_ab.sh (the number must drop).
