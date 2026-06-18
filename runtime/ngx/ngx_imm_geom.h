@@ -1,4 +1,5 @@
 #pragma once
+#include <cmath>
 // ngx_imm_geom — pure model-space geometry for the GameCube immediate-mode GX
 // primitives that ngx must capture (they have no J3D object, so the J3DShape
 // capture path misses them). First member: GXDrawCube (reference/sms GXDraw.c).
@@ -50,6 +51,56 @@ inline void cube_tri_indices(unsigned idx[36]) {
         const unsigned a = f*4, b = f*4+1, c = f*4+2, d = f*4+3;
         idx[o++] = a; idx[o++] = b; idx[o++] = c;
         idx[o++] = a; idx[o++] = c; idx[o++] = d;
+    }
+}
+
+// ── GXDrawSphere geometry (reference/sms GXDraw.c:46) ────────────────────────
+// GXDrawSphere(numMajor, numMinor) tessellates a unit (radius-1) sphere as numMajor
+// latitude bands, each a GX_TRIANGLESTRIP of (numMinor+1)*2 verts. For band i it
+// walks j=0..numMinor emitting the OUTER (b) ring vertex then the INNER (a) ring:
+//   a=i·π/numMajor, b=a+π/numMajor;  c=j·2π/numMinor;  x=cos c, y=sin c
+//   v_out=(x·sin b, y·sin b, cos b)   v_in=(x·sin a, y·sin a, cos a)
+// (GXDraw.c emits POS+NRM; the normal == position for a unit sphere, unused here.)
+// TSky::perform (Map/Sky.cpp:88) draws GXDrawSphere(8,0x10) as a flat-matColor skybox
+// dome — PNMTX0 = scale(100000), so it's a huge camera-centred backdrop, CULL_FRONT
+// (seen from inside). MODEL space; the caller transforms by PNMTX0 + projection.
+// This is the SHIPPING geometry (ngx_emit_imm_sphere calls it); render_test unit
+// `imm_sphere` asserts it against the spec.
+
+inline int sphere_vert_count(int numMajor, int numMinor) { return numMajor * (numMinor + 1) * 2; }
+inline int sphere_tri_count (int numMajor, int numMinor) { return numMajor * (numMinor * 2); }
+
+// Fill out[sphere_vert_count][3] with the unit-sphere strip verts, in GXDraw.c order
+// (per band, per j: outer ring then inner ring).
+inline void sphere_verts(int numMajor, int numMinor, float (*out)[3]) {
+    const float majorStep = 3.1415927f / (float)numMajor;
+    const float minorStep = 6.2831855f / (float)numMinor;
+    int o = 0;
+    for (int i = 0; i < numMajor; i++) {
+        const float a = i * majorStep, b = a + majorStep;
+        const float r0 = std::sin(a), r1 = std::sin(b), z0 = std::cos(a), z1 = std::cos(b);
+        for (int j = 0; j <= numMinor; j++) {
+            const float c = j * minorStep, x = std::cos(c), y = std::sin(c);
+            out[o][0] = x*r1; out[o][1] = y*r1; out[o][2] = z1; o++;   // outer (b) ring — emitted 1st
+            out[o][0] = x*r0; out[o][1] = y*r0; out[o][2] = z0; o++;   // inner (a) ring — emitted 2nd
+        }
+    }
+}
+
+// Per-band triangle-strip indices, winding-preserving. Each band's strip of
+// S=(numMinor+1)*2 verts begins at base=i·S; strip vert k yields triangle (k,k+1,k+2)
+// with GX's alternating strip winding (odd k swaps the first two so the facing stays
+// consistent). Fill idx[3*sphere_tri_count].
+inline void sphere_tri_indices(int numMajor, int numMinor, unsigned* idx) {
+    const int S = (numMinor + 1) * 2;
+    int o = 0;
+    for (int i = 0; i < numMajor; i++) {
+        const unsigned base = (unsigned)(i * S);
+        for (int k = 0; k + 2 < S; k++) {
+            const unsigned v0 = base + k, v1 = base + k + 1, v2 = base + k + 2;
+            if (k & 1) { idx[o++] = v1; idx[o++] = v0; idx[o++] = v2; }
+            else       { idx[o++] = v0; idx[o++] = v1; idx[o++] = v2; }
+        }
     }
 }
 

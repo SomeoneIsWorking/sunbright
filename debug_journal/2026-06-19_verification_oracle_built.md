@@ -53,3 +53,45 @@ a totally independent sync method). render_test still 1/1 (10/10 internal).
 ## Next (was gated on this, now open)
 Drive+save fresh states at the sun-occlusion / sphere-sky scenes → `ab_oracle.sh` them → port those
 EFB-readback effects with a real number to move. The Delfino floor "wash" is still PARKED per user.
+
+---
+
+# 2026-06-19 (cont.) — GXDrawSphere capture: geometry VERIFIED, end-to-end UNVERIFIABLE (hard-rule STOP)
+
+Continuing ("keep going"), I used the new oracle to pick a non-parked engine gap. The documented
+candidate was "ngx misses immediate-mode GXDrawSphere" (the `Map/Sky.cpp:88` skybox dome). I ported it
+the same way as the existing GXDrawCube capture:
+- `ngx_imm_geom.h`: `sphere_verts` / `sphere_tri_indices` / counts — faithful to `GXDraw.c:46`
+  (numMajor latitude bands, each a `(numMinor+1)*2` triangle-strip; outer-then-inner ring order).
+  **VERIFIED** by a new `render_test` unit `imm_sphere` (counts, unit-sphere, north-pole + first-ring
+  spec positions, per-band index spans). render_test now 11/11.
+- `ngx_emit_imm_sphere` (ngx_j3d_shape.cpp): rebuilds the dome in clip space (PNMTX0 + projection),
+  flat PASSCLR = captured matColor, sky PE state (z-test LEQUAL + z-write, opaque ONE/ZERO, CULL_FRONT).
+- Capture in `imm_geom_native.cpp`: GXDrawSphere @ 0x80362268 (numMajor=r3, numMinor=r4) +
+  GXSetChanMatColor @ 0x8035f51c. The matColor ABI is **VERIFIED by disasm**: `lbz r,0..2(r4)` ⇒ GXColor
+  passed BY POINTER in r4 (R@0,G@1,B@2,A@3) — see memory `gx-color-args-by-pointer`. Removed the old
+  duplicate debug stub at 0x80362268 in efb_readback_native.cpp.
+
+## The hard-rule wall (this is the real finding)
+**GXDrawSphere fires 0 times in EVERY reachable scene** — fastboot plaza, title, AND file-select (DBG_EFB,
+direct grep; GXDrawCube @ 0x803627fc fires fine right next to it, so the hook is correct — it's simply
+not called). The shipping game uses textured `sky.bmd` skies everywhere reachable; the GXDrawSphere dome
+is unused in these scenes. So:
+- The oracle DISPROVED my hypothesis: the plaza sky-region delta is NOT a missing sphere (the GX oracle's
+  top region is greenish terrain/textured-sky, not the dome's blue `0,12,EE`). The dominant plaza deltas
+  are the floor center/bottom = the **PARKED wash**, not the sky.
+- Per the TOOLING/VERIFICATION-FIRST hard rule ("Do not port effects you cannot verify"), I CANNOT
+  declare this port done — there is no reachable scene to verify the end-to-end render.
+
+## Status of the GXDrawSphere change (committed, but honestly labeled)
+- VERIFIED: geometry (`render_test imm_sphere`), matColor ABI (disasm).
+- UNVERIFIED: the end-to-end dome render (no reachable scene calls GXDrawSphere).
+- CONFIRMED INERT / NO REGRESSION: with the change in, plaza ab_oracle is still 18.4% (unchanged) —
+  the capture is gated on ngx-present AND only fires on an actual GXDrawSphere call, of which there are
+  none in reachable scenes. So it cannot regress any currently-working scene; at worst it would render a
+  dome (right or wrong) in a scene that is currently *also* missing it.
+- PARKED pending a scene that actually draws the sky dome (unknown which stage; `mMap==15` only adds the
+  rotation, not the draw). Don't re-assert "sky sphere = the plaza sky gap" — it is NOT (falsified here).
+
+Lesson reinforced: check effect REACHABILITY (does the call even fire in a scene I can reach?) BEFORE
+porting — that is the reachability half of the tooling-first rule, and it would have caught this earlier.

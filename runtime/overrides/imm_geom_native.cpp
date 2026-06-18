@@ -25,10 +25,16 @@
 
 extern void sb_run_original_around(CPUState& cpu, u32 addr, void (*after)(u32), u32 cookie);
 extern "C" void ngx_emit_imm_cube(int color_off, int alpha_off, int dst_alpha_en, int dst_alpha_val);
+extern "C" void ngx_emit_imm_sphere(int numMajor, int numMinor, int r, int g, int b, int a);
+extern u8 mem_r8(u32 ea);
 
 namespace {
 
 static const bool s_ngx_present = getenv("SUNBRIGHT_NGX_PRESENT") != nullptr;
+
+// Live COLOR0A0 material colour (GXSetChanMatColor). The GXDrawSphere skybox dome uses PASSCLR with
+// the channel disabled → fragment == matColor. GX power-on default is white.
+thread_local int g_matcolor0[4] = {255, 255, 255, 255};
 
 // Live GX framebuffer write-mask state (the box draw sets these immediately before GXDrawCube).
 // GX power-on defaults: colour update ON, alpha update OFF, dst-alpha disabled.
@@ -66,6 +72,34 @@ SUNBRIGHT_OVERRIDE_IF_NATIVE(ov_imm_drawcube, 0x803627fcu, s_ngx_present) {
                     n, color_off, g_alpha_update, g_dst_alpha_en, g_dst_alpha_val, color_off);
     }
     sb_run_original_around(cpu, 0x803627fcu, nullptr, 0);
+}
+
+// GXSetChanMatColor(GXChannelID chan, GXColor* mat_color) @ 0x8035f51c. The SDK passes GXColor BY
+// POINTER in r4 (disasm: lbz r,0(r4)/1(r4)/2(r4) = R,G,B; A@3) — see memory gx-color-args-by-pointer.
+// Capture the COLOR0/COLOR0A0 slot (matColor[0]) for the immediate-mode sphere's flat colour.
+SUNBRIGHT_OVERRIDE_IF_NATIVE(ov_imm_chanmatcolor, 0x8035f51cu, s_ngx_present) {
+    const u32 chan = cpu.gpr[3];
+    const u32 p    = cpu.gpr[4];
+    if ((chan == 0u /*GX_COLOR0*/ || chan == 4u /*GX_COLOR0A0*/) && p >= 0x80000000u) {
+        g_matcolor0[0] = mem_r8(p + 0); g_matcolor0[1] = mem_r8(p + 1);
+        g_matcolor0[2] = mem_r8(p + 2); g_matcolor0[3] = mem_r8(p + 3);
+    }
+    sb_run_original_around(cpu, 0x8035f51cu, nullptr, 0);
+}
+
+// GXDrawSphere(u8 numMajor, u8 numMinor) @ 0x80362268 — the TSky skybox dome. Capture into ngx with
+// the live COLOR0A0 matColor, then run the original (keeps Dolphin GP consistent).
+SUNBRIGHT_OVERRIDE_IF_NATIVE(ov_imm_drawsphere, 0x80362268u, s_ngx_present) {
+    const int numMajor = (int)(cpu.gpr[3] & 0xFF);
+    const int numMinor = (int)(cpu.gpr[4] & 0xFF);
+    ngx_emit_imm_sphere(numMajor, numMinor, g_matcolor0[0], g_matcolor0[1], g_matcolor0[2], g_matcolor0[3]);
+    if (getenv("SUNBRIGHT_DBG_EFB")) {
+        static unsigned long n = 0;
+        if ((n++ % 60) == 0)
+            fprintf(stderr, "[imm] GXDrawSphere #%lu (%d,%d) matColor0=(%d,%d,%d,%d)\n",
+                    n, numMajor, numMinor, g_matcolor0[0], g_matcolor0[1], g_matcolor0[2], g_matcolor0[3]);
+    }
+    sb_run_original_around(cpu, 0x80362268u, nullptr, 0);
 }
 
 }  // namespace

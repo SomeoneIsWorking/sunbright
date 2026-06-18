@@ -158,11 +158,8 @@ void copytex_writeback(u32 /*cookie*/) {
 }
 }  // namespace
 
-// DIAGNOSTIC: GXDrawSphere immediate-mode draws (GXDrawCube is now CAPTURED in imm_geom_native.cpp).
-SUNBRIGHT_OVERRIDE_IF_NATIVE(ov_gxdrawsphere_dbg, 0x80362268u, s_efb_dbg) {
-    static unsigned long n = 0; if ((n++ % 30) == 0) fprintf(stderr, "[imm] GXDrawSphere #%lu lr=%08x\n", n, cpu.lr);
-    sb_run_original_around(cpu, 0x80362268u, nullptr, 0);
-}
+// GXDrawSphere (0x80362268) is now CAPTURED into ngx in imm_geom_native.cpp (the TSky skybox dome),
+// alongside GXDrawCube. (The old diagnostic stub here was removed to avoid a duplicate override.)
 
 SUNBRIGHT_OVERRIDE_IF_NATIVE(ov_gxsetcopysrc, 0x8035e388u, s_ngx_present) {
     g_src_l = cpu.gpr[3] & 0xFFFF; g_src_t = cpu.gpr[4] & 0xFFFF;

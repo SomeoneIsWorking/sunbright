@@ -2378,6 +2378,7 @@ extern "C" int sb_ngx_set_mtxsrc(int m) { if (m >= 0 && m <= 2) g_ngx_mtxsrc = m
 // selects it for the cube's GX_DIRECT vertices.
 // Counters for the deterministic verify (no eyeballing): cubes captured + emitted tris.
 unsigned long g_imm_cube_calls = 0, g_imm_cube_tris = 0, g_imm_cube_onscreen = 0;
+unsigned long g_imm_sphere_calls = 0, g_imm_sphere_tris = 0;   // GXDrawSphere skybox dome capture
 // The Mario occlusion cube's nearest (front-face) Vulkan depth this frame, for the native
 // GXPeekARGB occlusion query (efb_readback_native.cpp). 1e9 = unknown/far (not occluding).
 std::atomic<float> g_imm_occ_front_depth{1e9f};
@@ -2499,6 +2500,108 @@ extern "C" void ngx_emit_imm_cube(int color_off, int alpha_off,
             fprintf(stderr, "[imm] cube #%lu onscreen=%d/24 tris=%lu NDC[x %.2f..%.2f y %.2f..%.2f] colorOff=%d dstA=%d/%#x\n",
                     n, onscreen, g_imm_cube_tris, xn, xx, yn, yx, color_off, dst_alpha_en, dst_alpha_val);
         }
+    }
+}
+
+// ── GXDrawSphere capture (TSky::perform skybox dome, Map/Sky.cpp:88) ──────────
+// The plaza sky draws a flat-matColor GXDrawSphere(8,0x10) as a huge camera-centred
+// backdrop dome (PNMTX0 = scale(100000), CULL_FRONT = seen from inside). It has no
+// J3D object, so the shape-capture path misses it → the sky region reads the clear
+// colour instead of the dome's blue. We rebuild the unit-tested sphere geometry in
+// clip space (current PNMTX0 + projection) and emit it with a flat PASSCLR material
+// = the captured matColor (the channel is disabled → fragment == matColor), the sky's
+// PE state (z-test LEQUAL + z-write, opaque ONE/ZERO, GX_CULL_FRONT, colour writes ON).
+// matColor (r,g,b,a 0..255) is captured live from GXSetChanMatColor (imm_geom_native.cpp).
+extern "C" void ngx_emit_imm_sphere(int numMajor, int numMinor, int r, int g, int b, int a) {
+    if (!g_enabled || !g_have_proj) return;
+    if (numMajor < 1 || numMinor < 2) return;
+    const int vc = ngx_imm::sphere_vert_count(numMajor, numMinor);
+    const int tc = ngx_imm::sphere_tri_count(numMajor, numMinor);
+    if (vc > 512 || tc > 512) return;   // defensive cap; Sky uses (8,16) = 272 verts / 256 tris
+    g_imm_sphere_calls++;
+
+    float mtx[12]; for (int rr = 0; rr < 3; rr++) for (int cc = 0; cc < 4; cc++) mtx[rr*4+cc] = g_posmtx[rr][cc];
+
+    static float verts[512][3];
+    static float clip[512][4];
+    ngx_imm::sphere_verts(numMajor, numMinor, verts);
+    int onscreen = 0;
+    for (int i = 0; i < vc; i++) {
+        const float x = verts[i][0], y = verts[i][1], z = verts[i][2];
+        const float ex = mtx[0]*x + mtx[1]*y + mtx[2]*z  + mtx[3];
+        const float ey = mtx[4]*x + mtx[5]*y + mtx[6]*z  + mtx[7];
+        const float ez = mtx[8]*x + mtx[9]*y + mtx[10]*z + mtx[11];
+        ngx_project_eye(g_proj, ex, ey, ez, clip[i]);
+        const float w = clip[i][3];
+        if (w > 1e-4f) { const float nx = clip[i][0]/w, ny = clip[i][1]/w;
+            if (nx >= -1.f && nx <= 1.f && ny >= -1.f && ny <= 1.f) onscreen++; }
+    }
+
+    // Flat PASSCLR material carrying the matColor (channel disabled ⇒ fragment = matColor).
+    NgxTevState st{}; st.num_stages = 1;
+    st.stage[0].color_env = (15u<<12)|(15u<<8)|(15u<<4)|10u | (1u<<19);   // cc out = RASC
+    st.stage[0].alpha_env = (7u<<13)|(7u<<10)|(7u<<7)|(5u<<4) | (1u<<19);  // ac out = RASA
+    st.stage[0].texmap = 0xff; st.stage[0].texcoord = 0xff; st.stage[0].color_chan = 0;  // COLOR0A0
+    for (int i = 0; i < 4; i++) st.swap_table[i] = 0x1B;                   // identity (NOT 0 → "rrrr")
+    // Sky.cpp PE: GXSetZMode(TRUE, LEQUAL, TRUE), GXSetBlendMode(BLEND, ONE, ZERO) = opaque,
+    // GXSetCullMode(GX_CULL_FRONT). Colour + alpha writes ON (visible backdrop).
+    st.pe.z_test = 1; st.pe.z_func = 3 /*GX_LEQUAL*/; st.pe.z_write = 1;
+    st.pe.blend_mode = 0; st.pe.cull = 1 /*GX_CULL_FRONT*/;
+    st.pe.color_mask_off = 0; st.pe.alpha_mask_off = 0;
+    uint64_t h = 1469598103934665603ull; const u8* p = (const u8*)&st;
+    for (size_t i = 0; i < offsetof(NgxTevState, key); i++) { h ^= p[i]; h *= 1099511628211ull; }
+    st.key = h;
+    int ti;
+    auto it = g_tevkey_index.find(h);
+    if (it != g_tevkey_index.end()) ti = it->second;
+    else {
+        if (g_tevstates.size() >= TEVSTATE_CAP) { g_tevstates.clear(); g_tevkey_index.clear(); }
+        ti = (int)g_tevstates.size(); g_tevstates.push_back(st); g_tevkey_index[h] = ti;
+    }
+
+    const float cr = (float)(r & 0xff)/255.f, cg = (float)(g & 0xff)/255.f,
+                cb = (float)(b & 0xff)/255.f, ca = (float)(a & 0xff)/255.f;
+
+    std::vector<NgxRenderVertex>& snap = g_snap[g_cur];
+    std::vector<NgxRenderBatch>&  batches = g_batches[g_cur];
+    size_t& count = g_snap_count[g_cur];
+    if (snap.size() < SNAP_CAP) snap.resize(SNAP_CAP);
+
+    constexpr int VW = 24;   // clip[4] + rgba[4] + uv[16]
+    auto gather = [&](int vi, float* o) {
+        o[0]=clip[vi][0]; o[1]=clip[vi][1]; o[2]=clip[vi][2]; o[3]=clip[vi][3];
+        o[4]=cr; o[5]=cg; o[6]=cb; o[7]=ca;
+        for (int m = 0; m < 16; m++) o[8+m] = 0.f;
+    };
+    auto emit_v = [&](const float* v) {
+        NgxRenderVertex& d = snap[count];
+        d.clip[0]=v[0]; d.clip[1]=v[1]; d.clip[2]=v[2]; d.clip[3]=v[3];
+        d.rgba[0]=v[4]; d.rgba[1]=v[5]; d.rgba[2]=v[6]; d.rgba[3]=v[7];
+        for (int m = 0; m < 8; m++) { d.uv[m][0]=v[8+m*2]; d.uv[m][1]=v[8+m*2+1]; }
+        count++;
+    };
+    if (batches.size() >= BATCH_CAP) return;
+    NgxRenderBatch nb{};
+    nb.vstart = (uint32_t)count; nb.vcount = 0; nb.tev_index = ti;
+    nb.epoch = (uint16_t)(g_efb_epoch < EPOCH_CAP ? g_efb_epoch : EPOCH_CAP - 1);
+    batches.push_back(nb);
+    static unsigned idx[512*3]; ngx_imm::sphere_tri_indices(numMajor, numMinor, idx);
+    for (int t = 0; t < tc; t++) {
+        float in[3][VW]; for (int e = 0; e < 3; e++) gather((int)idx[t*3+e], in[e]);
+        float poly[9][VW]; int np = ngx_clip_frustum_tri(&in[0][0], VW, &poly[0][0]);
+        if (np < 3) continue;
+        const int ntri = np - 2;
+        if (count + (size_t)ntri * 3 > SNAP_CAP) break;
+        for (int f = 0; f < ntri; f++) { emit_v(poly[0]); emit_v(poly[f+1]); emit_v(poly[f+2]); }
+        batches.back().vcount += ntri * 3;
+        g_imm_sphere_tris += ntri;
+    }
+    if (batches.back().vcount == 0) batches.pop_back();
+    if (getenv("SUNBRIGHT_DBG_EFB")) {
+        static unsigned long n = 0;
+        if ((n++ % 120) == 0)
+            fprintf(stderr, "[imm] sphere #%lu (%d,%d) onscreen=%d/%d tris=%lu matColor=(%d,%d,%d,%d)\n",
+                    n, numMajor, numMinor, onscreen, vc, g_imm_sphere_tris, r&0xff,g&0xff,b&0xff,a&0xff);
     }
 }
 

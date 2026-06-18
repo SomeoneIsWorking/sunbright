@@ -431,6 +431,47 @@ int test_imm_occlusion(char* rep, int cap) {
     return fails;
 }
 
+// ── immediate-mode GXDrawSphere geometry unit ────────────────────────────────
+// The plaza sky has a flat-matColor GXDrawSphere(8,0x10) backdrop dome (Map/Sky.cpp)
+// that ngx must capture (no J3D object). Assert the tessellation matches GXDraw.c:46:
+// the right vert/tri counts, every vert on the unit sphere, the spec north-pole +
+// first-outer-ring positions, and indices that stay within each band's strip span
+// (a wrong major/minor step, ring order, or winding slip goes red here).
+int test_imm_sphere(char* rep, int cap) {
+    int pos = 0, fails = 0;
+    auto failf = [&](const char* m){ fails++; if (pos < cap) pos += snprintf(rep+pos, cap-pos, "%s", m); };
+    auto close = [](float a, float b){ float e=a-b; return (e<0?-e:e) <= 1e-4f; };
+    const int NM = 8, Nm = 16;
+
+    // 1. counts match the spec (numMajor·(numMinor+1)·2 verts, numMajor·2·numMinor tris).
+    const int vc = ngx_imm::sphere_vert_count(NM, Nm), tc = ngx_imm::sphere_tri_count(NM, Nm);
+    if (vc != 272) { char b[64]; snprintf(b,sizeof b,"FAIL vert count %d (exp 272)\n", vc); failf(b); }
+    if (tc != 256) { char b[64]; snprintf(b,sizeof b,"FAIL tri count %d (exp 256)\n", tc); failf(b); }
+
+    static float v[272][3]; ngx_imm::sphere_verts(NM, Nm, v);
+    // 2. every vertex on the unit sphere.
+    for (int i = 0; i < vc; i++) {
+        const float m2 = v[i][0]*v[i][0] + v[i][1]*v[i][1] + v[i][2]*v[i][2];
+        if (!close(m2, 1.0f)) { char b[80]; snprintf(b,sizeof b,"FAIL vert %d |v|^2=%.5f (not unit)\n", i, m2); failf(b); break; }
+    }
+    // 3. spec spot-checks: v[0] = outer ring i=0,j=0 = (sin(π/8),0,cos(π/8)); v[1] = inner = north pole.
+    if (!close(v[0][0], 0.38268f) || !close(v[0][1], 0.f) || !close(v[0][2], 0.92388f))
+        { char b[96]; snprintf(b,sizeof b,"FAIL v0=(%.5f,%.5f,%.5f) exp (0.38268,0,0.92388)\n", v[0][0],v[0][1],v[0][2]); failf(b); }
+    if (!close(v[1][0], 0.f) || !close(v[1][1], 0.f) || !close(v[1][2], 1.0f))
+        { char b[96]; snprintf(b,sizeof b,"FAIL v1=(%.5f,%.5f,%.5f) exp north pole (0,0,1)\n", v[1][0],v[1][1],v[1][2]); failf(b); }
+
+    // 4. indices: 3·tc, all < vert count, each triangle inside its band's strip span [base,base+S).
+    static unsigned idx[256*3]; ngx_imm::sphere_tri_indices(NM, Nm, idx);
+    const int S = (Nm + 1) * 2;
+    for (int t = 0; t < tc; t++) {
+        const unsigned a = idx[t*3], b = idx[t*3+1], c = idx[t*3+2];
+        if (a >= (unsigned)vc || b >= (unsigned)vc || c >= (unsigned)vc) { failf("FAIL sphere tri index out of range\n"); break; }
+        const unsigned band = a / (unsigned)S;
+        if (b/(unsigned)S != band || c/(unsigned)S != band) { char s[80]; snprintf(s,sizeof s,"FAIL sphere tri %d crosses bands\n", t); failf(s); break; }
+    }
+    return fails;
+}
+
 struct Unit { const char* name; int (*run)(char* rep, int cap); };
 
 const Unit kUnits[] = {
@@ -444,6 +485,7 @@ const Unit kUnits[] = {
     {"efb_copy",      test_efb_copy},
     {"imm_cube",      test_imm_cube},
     {"imm_occlusion", test_imm_occlusion},
+    {"imm_sphere",    test_imm_sphere},
 };
 
 }  // namespace
