@@ -600,6 +600,26 @@ guest-JAS-path overrides (cmdnoteon/oscillator/dsp_update/ttrack/aid/syncdsp/zel
 under no-recomp = **renderer (ngx) + audio (native_jas)**. NEXT: card (#6 — __CARDVerify via call_ppc,
 switch native_os_register→OVERRIDE_NATIVE), drawsync (#7), inventory the rest (#8).
 
+## ★★ PROOF: rendering + XFB ARE PC-native under no-recomp (2026-06-18, session 12)
+User doubted ./run.sh is full PC-native rendering/XFB. MEASURED via /abshot2 (Present.cpp captures
+Dolphin's GX XFB and the ngx frame from the SAME present):
+- **Dolphin GX XFB = 100% BLACK** (avg (0,0,0), 0.000 non-black) — the guest 3D draws are skipped
+  (ngx_super returns under purejit), so Dolphin's GX renders nothing.
+- **ngx frame = the full scene** (avg (130,134,125), 0.894 non-black).
+Airtight logic: you SEE the game in ./run.sh, but Dolphin's GX XFB is black → the on-screen image is
+necessarily the ngx native frame (the fork Presenter substitutes ngx's texture for the XFB via
+sb_ngx_present_xfb; else "keeps the real XFB" = black). Rendering AND XFB are native.
+
+interp60 FINDING: the live interp60 (interp_redraw.cpp) is GX-COMMAND-STREAM REPLAY — gxs_cur_frame()
++ gxs_replay_frame() re-render the captured GX FIFO twice through Dolphin's OpcodeDecoder into
+Dolphin's EFB, present Dolphin XFB phys addrs (sb_present_xfb). Under no-recomp+ngx the GX stream is
+empty (draws skipped) → interp60's replay has nothing → it CANNOT run on ngx as-is (same fact as the
+black GX XFB). "interp60 on the native engine" = REIMPLEMENT on ngx's object model: in-between field
+blends per-model draw matrices (the object-model ov_j3d_viewCalc_blend mode-3 path, not GX replay),
+re-issue the perform-list draw so ngx captures the blended matrices, present NGX's frame twice (real +
+blended) instead of sb_present_xfb of a guest XFB. Task #9. Gated by SUNBRIGHT_INTERP60 (safe to
+default). This is a real focused build, not a flag flip.
+
 ## Files
 - runtime/jit_hook.cpp — `sb_hook_jit_trampoline` runs `run_prehook` then normal dispatch (step 2).
 - runtime/overrides.h / overrides.cpp — `sunbright_purejit_mode()` accessor + pre-hook table;
