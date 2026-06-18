@@ -14,8 +14,10 @@
 
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
 
 #include "ngx_project.h"
+#include "ngx_efb_copy.h"
 #include "ngx_clip.h"
 #include "ngx_light.h"
 #include "tev_shader.h"
@@ -303,6 +305,52 @@ int test_tex_pad(char* rep, int cap) {
     return fails;
 }
 
+// ── EFB-copy encode + tiling unit (own-the-framebuffer GXCopyTex writeback) ───────────────────────
+// Round-trip the SHIPPING encode+tiling (ngx_efb_copy.h, used by copytex_writeback) through the
+// SHIPPING decoder (sb_tex_decode): build an ARGB image, GC-tile-encode it exactly as the override
+// does (BE u16 at tile_offset16), decode it, and assert it matches within the format's quantization.
+// Catches a tiling-offset slip, a wrong pixel pack, or an endianness flip — the bandaid-prone parts.
+int test_efb_copy(char* rep, int cap) {
+    int pos = 0, fails = 0;
+    auto failf = [&](const char* m){ fails++; if (pos < cap) pos += snprintf(rep+pos, cap-pos, "%s", m); };
+
+    for (int fmt = 4; fmt <= 5; fmt++) {            // RGB565, RGB5A3
+        const int W = 8, H = 8;                     // 2×2 tiles (exercises the tiling, not a single tile)
+        uint32_t img[W*H];
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++)              // a non-trivial gradient so neighbours differ
+                img[y*W+x] = 0xFF000000u | ((uint32_t)(x*32) << 16) | ((uint32_t)(y*32) << 8) | (uint32_t)((x+y)*16);
+        // Encode exactly as copytex_writeback: BE u16 at tile_offset16.
+        uint8_t enc[W*H*2] = {0};
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++) {
+                uint16_t v = ngx_efb::argb_to_tex16(img[y*W+x], fmt);
+                uint32_t off = ngx_efb::tile_offset16(x, y, W);
+                enc[off] = (uint8_t)(v >> 8); enc[off+1] = (uint8_t)(v & 0xFF);   // big-endian
+            }
+        // Decode with the shipping decoder and compare within quantization (5/6/5 or 5/5/5 truncation).
+        uint32_t dec[W*H] = {0};
+        sb_tex_decode(dec, enc, W, H, fmt == 5 ? SB_TF_RGB5A3 : SB_TF_RGB565, nullptr, 0);
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++) {
+                uint32_t o = img[y*W+x], d = dec[y*W+x];
+                int or_ = (o>>16)&0xFF, og=(o>>8)&0xFF, ob=o&0xFF;
+                int dr = d&0xFF, dg=(d>>8)&0xFF, db=(d>>16)&0xFF;   // decoder packs r|g<<8|b<<16
+                int gb = fmt == 5 ? 7 : 7, gg = fmt == 5 ? 7 : 3;   // max |error| from bit truncation
+                if (abs(dr-or_) > gb || abs(dg-og) > gg || abs(db-ob) > gb) {
+                    char b[128]; snprintf(b,sizeof b,"FAIL fmt=%d (%d,%d) enc->dec rgb(%d,%d,%d) vs (%d,%d,%d)\n",
+                                          fmt,x,y,dr,dg,db,or_,og,ob); failf(b);
+                }
+            }
+    }
+    // Tiling offset spec-check: texel (5,3) in a width-8 image → tile (0,1), iy=3, j=1 →
+    // tile_index = (3/4)*(8/4) + (5/4) = 0*2 + 1 = 1; off = 1*32 + 3*8 + 1*2 = 58.
+    if (ngx_efb::tile_offset16(5, 3, 8) != 58u) {
+        char b[80]; snprintf(b,sizeof b,"FAIL tile_offset16(5,3,8)=%u exp 58\n", ngx_efb::tile_offset16(5,3,8)); failf(b);
+    }
+    return fails;
+}
+
 struct Unit { const char* name; int (*run)(char* rep, int cap); };
 
 const Unit kUnits[] = {
@@ -313,6 +361,7 @@ const Unit kUnits[] = {
     {"lighting",      test_lighting},
     {"tev_swizzle",   test_tev_swizzle},
     {"tex_pad",       test_tex_pad},
+    {"efb_copy",      test_efb_copy},
 };
 
 }  // namespace

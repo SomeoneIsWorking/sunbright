@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
+#include "../render/ngx_efb_copy.h"   // pure encode + GC tiling (unit-tested in render_test)
 extern void mem_w32(u32 ea, u32 v);
 extern void mem_w16(u32 ea, u16 v);
 extern u8   mem_r8(u32 ea);
@@ -98,16 +99,7 @@ thread_local int g_src_l = 0, g_src_t = 0, g_src_w = 0, g_src_h = 0;   // GXSetT
 thread_local int g_dst_w = 0, g_dst_h = 0, g_dst_fmt = -1;             // GXSetTexCopyDst dims/fmt
 thread_local u32 g_copy_dst_ea = 0;                                    // GXCopyTex dest (this copy)
 
-inline u16 argb_to_rgb565(u32 c) {
-    u32 r = (c >> 16) & 0xFF, g = (c >> 8) & 0xFF, b = c & 0xFF;
-    return (u16)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
-}
-// ngx scene color is opaque → use the RGB5A3 opaque (top-bit-set, RGB555) form. (decode: px_RGB5A3.)
-inline u16 argb_to_rgb5a3(u32 c) {
-    u32 r = (c >> 16) & 0xFF, g = (c >> 8) & 0xFF, b = c & 0xFF;
-    return (u16)(0x8000u | ((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3));
-}
-inline u16 argb_to_tex16(u32 c, int fmt) { return fmt == 5 ? argb_to_rgb5a3(c) : argb_to_rgb565(c); }
+using ngx_efb::argb_to_tex16;   // pure encode lives in render/ngx_efb_copy.h (unit-tested)
 
 // Runs AFTER the original GXCopyTex (via sb_run_original_around): overwrite the dst texture with ngx
 // scene color in the captured format. Only RGB565 (fmt=4) is encoded for now (the only live plaza
@@ -127,20 +119,16 @@ void copytex_writeback(u32 /*cookie*/) {
     if (!sb_ngx_efb_copy_region(g_src_l, g_src_t, sw, sh, dw, dh, buf.data())) return;  // no frame yet
     // RGB565/RGB5A3 4×4 GC tiling: tile (y,x) row-major; within tile iy-major, each row 4 BE u16. Byte
     // offset = ((y/4)*(dw/4) + x/4)*32 + (y%4)*8 + (x%4)*2. (matches runtime/render/tex_decode.cpp.)
-    const int tiles_per_row = dw / 4;
     for (int dy = 0; dy < dh; dy++)
-        for (int dx = 0; dx < dw; dx++) {
-            u32 tile = (u32)(dy >> 2) * tiles_per_row + (dx >> 2);
-            u32 off = tile * 32 + (u32)(dy & 3) * 8 + (u32)(dx & 3) * 2;
-            mem_w16(ea + off, argb_to_tex16(buf[(size_t)dy * dw + dx], fmt));   // BE u16
-        }
+        for (int dx = 0; dx < dw; dx++)
+            mem_w16(ea + ngx_efb::tile_offset16(dx, dy, dw),
+                    argb_to_tex16(buf[(size_t)dy * dw + dx], fmt));   // BE u16
     if (s_efb_dbg) {
         static unsigned long n4 = 0, n5 = 0;
         unsigned long& nn = (fmt == 5) ? n5 : n4;
         if ((nn++ % 60) == 0) {
             int cx = dw / 2, cy = dh / 2;
-            u32 toff = ((u32)(cy >> 2) * tiles_per_row + (cx >> 2)) * 32 + (u32)(cy & 3) * 8 + (u32)(cx & 3) * 2;
-            u16 stored = mem_r16(ea + toff);          // re-read what we wrote (BE u16 → host)
+            u16 stored = mem_r16(ea + ngx_efb::tile_offset16(cx, cy, dw));   // re-read what we wrote (BE u16 → host)
             u32 srcc = buf[(size_t)cy * dw + cx];
             size_t nz = 0; for (u32 c : buf) if ((c & 0xFFFFFF) != 0) nz++;
             fprintf(stderr, "[efb] CopyTex served ea=%08x %dx%d fmt=%d center src=%06x stored=%04x nz=%zu/%zu\n",

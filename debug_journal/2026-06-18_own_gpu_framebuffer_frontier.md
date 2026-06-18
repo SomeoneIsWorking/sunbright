@@ -203,8 +203,9 @@ DBG_EFB consumer-scan (3D + J2D) + evict-addr log.
 ### Remaining (not blocking):
 - Other copy formats (RGBA8 fmt=6 / I8 / IA8 / CMPR) if other scenes use them — RGB565+RGB5A3 are the
   only live plaza formats; others fall through to original-only (no regression).
-- Extract the tiling+encode into a header + a render_test unit (TDD rule) — currently hand-verified
-  byte-exact (RGB565 cdc8da→0xCE5B, RGB5A3 fb8e00→0xFE20, 656d3e→0xB1A7) but no regression test yet.
+- DONE: extracted the tiling+encode into runtime/render/ngx_efb_copy.h (the SHIPPING functions
+  copytex_writeback calls) + a render_test unit `efb_copy` — round-trips encode→GC-tile→sb_tex_decode
+  for RGB565+RGB5A3 within quantization + a tile_offset16 spec-check. 8/8 render_test units pass.
 - GXPeekZ (sun, off-screen in fastboot) + GXPeekARGB (needs ngx alpha-tag fidelity) still dormant.
 
 ## ⇒ NEXT: GXCopyTex (0x8035ee5c) is THE viable live slice — reads back COLOR (ngx RGB is faithful),
