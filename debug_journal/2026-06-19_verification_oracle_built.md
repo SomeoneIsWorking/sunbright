@@ -133,3 +133,45 @@ native sun-occlusion vs the Dolphin-GX baseline), and/or transition into a fog-a
 separate, non-trivial driving/RE task (and may be easier from a headed session where the user can drive
 to a good spot and `/savestate` it). Per the tooling-first hard rule I did NOT port further effects I
 can't verify. The reachable plaza divergence remains the PARKED wash — not chasing it per the directive.
+
+---
+
+# 2026-06-19 (cont.) — Drove it live; reached controllable free-roam; effects are all STATE-GATED
+
+User: "I'm not available. try to drive it live." Did so, headless.
+
+## Live-driving recipe (WORKS — verified)
+`SUNBRIGHT_FASTBOOT=1 SUNBRIGHT_SKIP_THP=1 SUNBRIGHT_NGX_PRESENT=1` → fastboot loads Delfino, then
+SKIP_THP auto-skips the Entrance.thp (THP state 2→3) → **controllable free-roam**. Proven: after the
+skip, driving `right`/`left`/`up` via `/pad` changes the frame by mean-diff ~87 vs a ~0.2 self-animation
+baseline (before the skip it was byte-identical = the cutscene). Camera C-stick combos (cup/cleft/cright)
+work too. WITHOUT SKIP_THP the game idles in the entrance movie and never reaches free-roam (that was the
+earlier "not controllable" result). NOTE: letting fastboot+skip run to free-roam on its own leaves ngx
+present uninitialized (frames=0) — instead `/loadstate` a rendering save first, then it renders + drives.
+
+## Artifact: `scratch/freeroam_plaza.sav` (gitignored) — a VERIFIED controllable free-roam plaza save
+Made with `/savestate` mid-free-roam. Reloads in a fresh process directly into controllable free-roam
+(drive LEFT → mean-diff 87, no crash). This is the reusable scene for future camera-driven verification
+(replaces the crashing stale Jun-3 saves and the mid-entrance fresh_plaza.sav).
+
+## Why effect verification still didn't happen — every effect is STATE-GATED (the real finding)
+With a controllable camera I tried to activate the dormant effects; each is gated on a game state not
+reachable by simple free-roam driving:
+- **Sun occlusion (GXPeekZ)**: it's the **Noki Bay sun-WARP** sun. `TSunMgr` sets `unk15|=1` (which
+  computes the sun's on-screen sample points) ONLY when `unk14 && getCurrentMap()==1 && TFlagManager
+  getBool(0x50004)` (sunmgr.cpp:62) — a story-flag-gated warp. drawSyncCallback fires with unk14=1 but
+  unk15=0, so the sample points stay (-1,-1) and GXPeekZ never runs. Needs that story flag + the sun
+  framed in-camera.
+- **Mario occlusion (GXPeekARGB)**: the probe cube IS drawn (GXDrawCube fires, onscreen=24/24) but
+  `GXPeekARGB` is NOT called in free-roam (0 occ-branch logs) — TMario::drawSyncCallback's peek is
+  itself conditional (only some Mario states/camera relationships). The earlier "occluded=0 verified"
+  was a different (entrance) state.
+- **GXDrawSphere / fog**: uncalled / disabled in all reachable scenes (prior sections).
+
+## Conclusion
+Live-driving + the full save/load tooling are DONE and proven. But the EFFECTS are each locked behind
+specific game states (story flags, warp mechanics, conditional Mario states) that need targeted driving
+or play to trigger — a much larger task than a free-roam drive, and not a "quick verify." I stopped here
+rather than open-endedly grind toward those states or port anything unverifiable (hard rule). Next: if a
+specific effect must be verified, drive/script to ITS trigger state (e.g. for the sun warp: set/await
+flag 0x50004 and approach the sun-warp point), `/savestate` it, then ab_oracle / DBG_EFB it.
