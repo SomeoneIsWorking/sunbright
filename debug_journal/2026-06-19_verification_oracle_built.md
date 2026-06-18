@@ -95,3 +95,41 @@ is unused in these scenes. So:
 
 Lesson reinforced: check effect REACHABILITY (does the call even fire in a scene I can reach?) BEFORE
 porting — that is the reachability half of the tooling-first rule, and it would have caught this earlier.
+
+---
+
+# 2026-06-19 (cont.) — /savestate + the reachability wall (effect verification is gated on scene-reaching)
+
+Continuing, I built the rest of the drive→save→load→verify loop and probed the next verifiable effects.
+The consistent finding: **every reachable-now divergence is the PARKED wash; the non-parked effects
+don't fire in any state I can produce.**
+
+## Shipped (committed 7559c84)
+- **`/savestate?f=<path>`** probe endpoint (symmetric with `/loadstate`, `State::SaveAs` via
+  `Core::RunOnCPUThread`). VERIFIED round-trip: writes 27 MB on demand, `/loadstate` reloads it, process
+  stays alive. Completes the `/loadstate` + `/savestate` + `/pad` scripted loop.
+
+## Reachability findings (all checked on real data — these are the value of this round)
+- **Plaza fog is OFF**: `/gxstate` GXSetFog TEE = `type=0 (GX_FOG_NONE)`, fsel=0 (called 6940× but always
+  NONE — gd-reinit-gx disables it each frame). So the plaza center over-brightness is NOT fog; porting GX
+  fog would be another unreachable-effect trap. (ngx captures fog state but doesn't apply it — correct to
+  leave unmodeled until a fog-active scene is reachable.)
+- **Sun occlusion is dormant, sun off-screen**: `TSunMgr::drawSyncCallback` fires (unk14=1, sun model
+  loaded) but `TSunModel::getZBufValue` (sunmodel.cpp:265) runs GXPeekZ only for sample points that
+  project ON-screen (`it->x != -1`); the sun is off-screen in fastboot plaza so all 17 points are
+  (-1,-1) → GXPeekZ fires 0×. The native GXPeekZ override (`ov_gxpeekz`, reads ngx depth) is BUILT and
+  correct but can't be exercised until the sun is in view. C-stick combos (cup/cdown/cleft/cright) exist
+  for camera aiming.
+- **fastboot Delfino = the Entrance.thp cutscene, NOT controllable free-roam**: drove RIGHT 3 s from the
+  loaded state → before/after screenshots byte-identical (md5 match) → Mario isn't controllable there.
+  `scratch/fresh_plaza.sav` (emu 70 s) and `scratch/freeroam_plaza.sav` are both in/near the entrance;
+  neither is a free-roam camera-drivable state. (Don't rely on them for camera driving.)
+
+## Where this leaves it (the honest next frontier)
+The verification TOOLING is complete and proven (oracle / loadstate / savestate / ab_oracle.sh). USING it
+to verify NEW effects is gated on **game-state reachability**: get to a controllable free-roam scene
+(past the entrance cutscene), aim the camera to bring the sun into view (→ GXPeekZ activates → verify the
+native sun-occlusion vs the Dolphin-GX baseline), and/or transition into a fog-active level. That is a
+separate, non-trivial driving/RE task (and may be easier from a headed session where the user can drive
+to a good spot and `/savestate` it). Per the tooling-first hard rule I did NOT port further effects I
+can't verify. The reachable plaza divergence remains the PARKED wash — not chasing it per the directive.
