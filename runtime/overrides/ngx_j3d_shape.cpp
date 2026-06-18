@@ -2925,7 +2925,9 @@ static const bool ov_j3dshape_draw_pj = [] {
                    0x8035f6d0u,   // GXSetChanCtrl
                    0x8035f51cu,   // GXSetChanMatColor
                    0x8035f3b4u,   // GXSetChanAmbColor
-                   0x802f33a8u }) // J3DGDSetChanAmbColor
+                   0x802f33a8u,   // J3DGDSetChanAmbColor
+                   0x80361dd0u,   // GXSetBlendMode  (gx_stream_own.cpp /gxblend darkening-pass hunt)
+                   0x8035ecd0u }) // GXSetDispCopyGamma (gx_stream_own.cpp /gxblend copy-gamma)
         mark_override_purejit_safe(a);
     return true;
 }();
