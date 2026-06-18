@@ -21,6 +21,8 @@ extern u16  mem_r16(u32 ea);
 extern void sb_run_original_around(CPUState& cpu, u32 addr, void (*after)(u32), u32 cookie);
 extern "C" void sb_ngx_efb_request_readback();
 extern "C" int  sb_ngx_efb_peek_depth(int gx, int gy, float* out);   // ngx_present.cpp
+extern "C" int  sb_ngx_imm_occ_depth(float* out);                    // ngx_j3d_shape.cpp (cube front depth)
+#include "../ngx/ngx_imm_geom.h"                                     // ngx_imm::imm_occluded (unit-tested)
 
 namespace {
 
@@ -74,17 +76,33 @@ SUNBRIGHT_OVERRIDE_IF_NATIVE(ov_getzbuf, 0x8002ea70u, s_efb_dbg) {
     sb_run_original_around(cpu, 0x8002ea70u, nullptr, 0);
 }
 
-// DIAGNOSTIC: GXPeekARGB (Mario occlusion probe, always on-screen) + GXCopyTex. Log call counts +
-// args. We run the original (empty-EFB result) — GXPeekARGB is NOT yet served from ngx: the Mario
-// occlusion alpha (0x10) is an alpha-only z-tested stamp that a later batch overwrites in ngx's
-// single end-of-frame colour readback, so it never survives to the readback (root cause pinned
-// 2026-06-19, see debug_journal/2026-06-18_immediate_mode_gx_geometry.md). Serving it needs a
-// dedicated occlusion-alpha buffer or a native depth-based occlusion in drawSyncCallback.
-SUNBRIGHT_OVERRIDE_IF_NATIVE(ov_gxpeekargb_dbg, 0x8035dcccu, s_efb_dbg) {
-    static unsigned long n = 0;
-    if ((n++ % 60) == 0)
-        fprintf(stderr, "[efb] GXPeekARGB #%lu (x=%u y=%u)\n", n, cpu.gpr[3] & 0xFFFF, cpu.gpr[4] & 0xFFFF);
-    sb_run_original_around(cpu, 0x8035dcccu, nullptr, 0);
+// GXPeekARGB(u16 x, u16 y, u32* color) @ 0x8035dccc — the Mario occlusion probe
+// (TMario::drawSyncCallback tests (color & 0xff000000) == 0x10000000 ⇒ NOT occluded). The game's
+// trick is a z-tested cube that stamps framebuffer alpha 0x10 where Mario is in front of the scene;
+// ngx can't serve that mid-frame read-after-write from one end-of-frame readback (root cause pinned
+// 2026-06-19, see debug_journal/2026-06-18_immediate_mode_gx_geometry.md). We answer the query
+// DIRECTLY from depth instead: Mario is occluded iff the ngx scene depth at his pixel is nearer than
+// the occlusion cube's front face (the cube encloses Mario → his body never self-occludes). Then we
+// synthesize the GXColor the game expects: alpha 0x10 when visible, 0 when occluded. Only the alpha
+// byte is read by the game. Under the Dolphin-GX baseline (no ngx present) the real GXPeekARGB runs.
+static const bool s_ngx_present_occ = getenv("SUNBRIGHT_NGX_PRESENT") != nullptr;
+SUNBRIGHT_OVERRIDE_IF_NATIVE(ov_gxpeekargb, 0x8035dcccu, s_ngx_present_occ) {
+    const int x = (int)(cpu.gpr[3] & 0xFFFF), y = (int)(cpu.gpr[4] & 0xFFFF);
+    const u32 outp = cpu.gpr[5];
+    sb_ngx_efb_request_readback();                 // keep the depth readback armed
+    float scene_depth = -1.f, cube_front = 1e9f;
+    const bool have_d = sb_ngx_efb_peek_depth(x, y, &scene_depth);
+    const bool have_c = sb_ngx_imm_occ_depth(&cube_front);
+    if (outp >= 0x80000000u && have_d && have_c) {
+        static float eps = []{ const char* e = getenv("SUNBRIGHT_NGX_OCC_EPS"); return e ? (float)atof(e) : 0.0f; }();
+        const bool occluded = ngx_imm::imm_occluded(scene_depth, cube_front, eps);
+        mem_w32(outp, occluded ? 0x00000000u : 0x10000000u);   // alpha in the high byte (game reads only that)
+        if (s_efb_dbg) { static unsigned long n = 0;
+            if ((n++ % 60) == 0) fprintf(stderr, "[efb] GXPeekARGB(occ) #%lu (x=%d y=%d) scene_d=%.5f cube_front=%.5f -> occluded=%d\n",
+                n, x, y, scene_depth, cube_front, occluded); }
+        return;
+    }
+    sb_run_original_around(cpu, 0x8035dcccu, nullptr, 0);   // no readback/cube yet → original
 }
 // ── GXCopyTex: serve EFB→texture copies from ngx's scene color (own-the-framebuffer slice 3) ─────
 // GXSetTexCopySrc(left,top,wd,ht) + GXSetTexCopyDst(wd,ht,fmt,mip) set the EFB src rect + dst tex

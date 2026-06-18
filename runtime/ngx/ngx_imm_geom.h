@@ -53,4 +53,40 @@ inline void cube_tri_indices(unsigned idx[36]) {
     }
 }
 
+// ── Mario occlusion query (native, depth-based) ──────────────────────────────
+// The game's GXDrawCube occlusion probe stamps framebuffer alpha 0x10 where a unit
+// cube at Mario passes a z-test against the scene, then GXPeekARGB(MarioScreenPos)
+// reads it: alpha==0x10 ⇒ Mario NOT occluded. ngx can't serve that mid-frame
+// read-after-write from its single end-of-frame readback (the alpha stamp is
+// overwritten by later draws). Instead we answer the query DIRECTLY from depth:
+// Mario is occluded iff the scene depth at his screen pixel is nearer than the
+// occlusion cube's front face. The cube encloses Mario, so its front face is nearer
+// than Mario's own body → his body never self-occludes; only real geometry in front
+// of the cube does. (Depths are Vulkan-convention: 0=near, 1=far, matching g_efb_depth.)
+
+// The cube's nearest (front-face) Vulkan depth over its projected corners. clip[i] is
+// homogeneous clip space (pre-divide); the mesh vertex shader maps z' = clip_z + clip_w
+// then Vulkan depth = z'/w = (clip_z + clip_w)/clip_w. Returns 1e9 if no corner is in
+// front of the eye (w>0) — i.e. "unknown / far" (treated as not-occluding).
+inline float cube_front_depth_vk(const float (*clip)[4], int n) {
+    float best = 1e9f;
+    for (int i = 0; i < n; i++) {
+        const float w = clip[i][3];
+        if (w > 1e-4f) {
+            const float d = (clip[i][2] + w) / w;   // Vulkan depth, 0=near 1=far
+            if (d < best) best = d;
+        }
+    }
+    return best;
+}
+
+// Occlusion decision: Mario is occluded iff scene geometry at his pixel is nearer
+// (smaller depth) than the cube's front face by more than eps. A negative/invalid
+// scene depth (no readback yet) or a far cube (≥1e8) → not occluded.
+inline bool imm_occluded(float scene_depth, float cube_front_depth, float eps) {
+    if (cube_front_depth >= 1e8f) return false;
+    if (scene_depth < 0.f) return false;
+    return scene_depth < cube_front_depth - eps;
+}
+
 }  // namespace ngx_imm

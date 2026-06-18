@@ -396,6 +396,41 @@ int test_imm_cube(char* rep, int cap) {
     return fails;
 }
 
+// The native Mario occlusion query (ngx_imm::cube_front_depth_vk + imm_occluded), the shipping
+// functions used by GXPeekARGB (efb_readback_native.cpp). Asserts: (a) the cube front depth is the
+// nearest corner in Vulkan convention z'=(clip_z+w)/w, ignoring behind-eye corners; (b) the occluded
+// decision — scene nearer than the cube front ⇒ occluded; Mario's own body (between front and back)
+// ⇒ NOT occluded; an occluder wall in front ⇒ occluded; far/invalid inputs ⇒ not occluded.
+int test_imm_occlusion(char* rep, int cap) {
+    int pos = 0, fails = 0;
+    auto failf = [&](const char* m){ fails++; if (pos < cap) pos += snprintf(rep+pos, cap-pos, "%s", m); };
+    auto close = [](float a, float b){ float e=a-b; return (e<0?-e:e) <= 1e-5f; };
+
+    // (a) front depth = min (clip_z+w)/w over w>0 corners. Build 3 corners: near (d=0.20),
+    //     far (d=0.60), and one behind the eye (w<=0, must be ignored).
+    float clip[3][4] = {
+        {0.f, 0.f, /*z*/ -0.8f, /*w*/ 1.0f},   // (z+w)/w = 0.2
+        {0.f, 0.f, /*z*/ -0.4f, /*w*/ 1.0f},   // (z+w)/w = 0.6
+        {0.f, 0.f, /*z*/  0.5f, /*w*/ -0.5f},  // behind eye → ignored
+    };
+    float front = ngx_imm::cube_front_depth_vk(clip, 3);
+    if (!close(front, 0.2f)) { char b[80]; snprintf(b,sizeof b,"FAIL front depth %.4f (exp 0.20)\n", front); failf(b); }
+
+    // (b) decisions with cube front=0.20 (near), back≈0.60. eps=0.
+    //   Mario body (between front/back, e.g. 0.40) → NOT occluded (his body never self-occludes).
+    if (ngx_imm::imm_occluded(0.40f, 0.20f, 0.0f)) failf("FAIL Mario body self-occluded\n");
+    //   Wall in front (0.05 < 0.20) → occluded.
+    if (!ngx_imm::imm_occluded(0.05f, 0.20f, 0.0f)) failf("FAIL occluder not detected\n");
+    //   Scene exactly at the front → not occluded (LEQUAL-ish; strict <).
+    if (ngx_imm::imm_occluded(0.20f, 0.20f, 0.0f)) failf("FAIL equal-depth reported occluded\n");
+    //   eps tolerance: scene just barely nearer but within eps → not occluded.
+    if (ngx_imm::imm_occluded(0.19f, 0.20f, 0.02f)) failf("FAIL eps not applied\n");
+    //   Invalid scene depth (no readback) / far cube → not occluded.
+    if (ngx_imm::imm_occluded(-1.0f, 0.20f, 0.0f)) failf("FAIL invalid scene depth occluded\n");
+    if (ngx_imm::imm_occluded(0.05f, 1e9f,  0.0f)) failf("FAIL far cube occluded\n");
+    return fails;
+}
+
 struct Unit { const char* name; int (*run)(char* rep, int cap); };
 
 const Unit kUnits[] = {
@@ -408,6 +443,7 @@ const Unit kUnits[] = {
     {"tex_pad",       test_tex_pad},
     {"efb_copy",      test_efb_copy},
     {"imm_cube",      test_imm_cube},
+    {"imm_occlusion", test_imm_occlusion},
 };
 
 }  // namespace

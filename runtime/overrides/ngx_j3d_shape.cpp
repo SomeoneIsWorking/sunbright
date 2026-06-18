@@ -2378,6 +2378,14 @@ extern "C" int sb_ngx_set_mtxsrc(int m) { if (m >= 0 && m <= 2) g_ngx_mtxsrc = m
 // selects it for the cube's GX_DIRECT vertices.
 // Counters for the deterministic verify (no eyeballing): cubes captured + emitted tris.
 unsigned long g_imm_cube_calls = 0, g_imm_cube_tris = 0, g_imm_cube_onscreen = 0;
+// The Mario occlusion cube's nearest (front-face) Vulkan depth this frame, for the native
+// GXPeekARGB occlusion query (efb_readback_native.cpp). 1e9 = unknown/far (not occluding).
+std::atomic<float> g_imm_occ_front_depth{1e9f};
+extern "C" int sb_ngx_imm_occ_depth(float* out) {
+    float d = g_imm_occ_front_depth.load(std::memory_order_relaxed);
+    if (d >= 1e8f) return 0;
+    *out = d; return 1;
+}
 extern "C" void ngx_emit_imm_cube(int color_off, int alpha_off,
                                   int dst_alpha_en, int dst_alpha_val) {
     if (!g_enabled || !g_have_proj) return;
@@ -2399,6 +2407,11 @@ extern "C" void ngx_emit_imm_cube(int color_off, int alpha_off,
             if (nx >= -1.f && nx <= 1.f && ny >= -1.f && ny <= 1.f) onscreen++; }
     }
     if (onscreen > 0) g_imm_cube_onscreen++;
+    // Record the cube's front-face depth for the native occlusion query (GXPeekARGB). All occlusion
+    // cubes are at Mario's position → same depth; the colour-off probe (dst_alpha_en) is the one the
+    // peek reads, so store on those. (ngx_imm::cube_front_depth_vk is the unit-tested shipping fn.)
+    if (dst_alpha_en && onscreen > 0)
+        g_imm_occ_front_depth.store(ngx_imm::cube_front_depth_vk(clip, 24), std::memory_order_relaxed);
 
     // Synthetic PASSCLR material: out colour = raster (white), out alpha = raster alpha. The const
     // dst-alpha rides the vertex alpha (GX forces the framebuffer alpha to the constant; with the

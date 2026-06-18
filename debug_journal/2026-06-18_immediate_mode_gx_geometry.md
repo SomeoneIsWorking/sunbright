@@ -144,14 +144,27 @@ never carries 0x10 at Mario's pixel → GXPeekARGB (if wired) reads 0xff → **a
   it is z-rejected by geometry drawn after its real position (IMM_SHOW red px 22437→15438; alpha 0x10:0).
   Not faithful. Reverted.
 
-### Verdict — PARKED (per the handoff's explicit authorization). What it actually needs:
-Serving GXPeekARGB faithfully needs the occlusion alpha at the cube's *inline* z-context, surviving to a
-read — i.e. **a dedicated occlusion-alpha buffer** (an alpha-only render target the occlusion cube writes
-inline, z-tested vs scene depth, read back separately; later draws don't touch it), OR a **native
-depth-based occlusion in `TMario::drawSyncCallback`** (compare `g_efb_depth` at MarioScreenPos vs the
-cube's centre/front depth — we have both). Both are real work for a MINOR effect (Mario silhouette through
-walls). Not shipped: I can't verify a silhouette headlessly, so no unverifiable heuristic. GXPeekARGB
-stays a pure diagnostic (runs the original). The geometry-capture milestone is done; this is the *query*.
+### RESOLVED — native depth-based occlusion (the alpha stamp was never the point; the QUERY is).
+Rather than fight the batch model to make the alpha 0x10 survive, answer the occlusion query DIRECTLY
+from depth (the cube's z-test IS a depth occlusion). `GXPeekARGB` (the probe's only caller is
+`TMario::drawSyncCallback`, decomp-verified) is overridden under ngx present:
+  occluded ⟺ ngx scene depth at MarioScreenPos is nearer than the occlusion cube's front face.
+The cube encloses Mario, so his own body (between the cube front and back) never self-occludes; only real
+geometry in front of the cube does. We synthesize the GXColor the game reads: alpha 0x10 visible / 0
+occluded (the game tests only `&0xff000000`). Pieces:
+  - `ngx_imm::cube_front_depth_vk` + `ngx_imm::imm_occluded` — pure, **unit-tested** (`render_test`
+    `imm_occlusion`): front depth = min `(clip_z+w)/w` over on-screen corners; decision = scene < front−eps,
+    with Mario-body / equal-depth / occluder / invalid / far cases asserted.
+  - `g_imm_occ_front_depth` recorded in `ngx_emit_imm_cube` (the colour-off probe), read via
+    `sb_ngx_imm_occ_depth`; scene depth via `sb_ngx_efb_peek_depth` (the existing GXPeekZ readback path).
+  - `SUNBRIGHT_NGX_OCC_EPS` tunes the threshold (default 0).
+VERIFIED: render_test 10/10. Live fastboot plaza → occluded=0 (Mario in the open; matches the Dolphin-GX
+baseline where he renders normally), scene_d 0.99953 > cube_front 0.98278, stable across frames. Forced
+occluded (eps=−0.1) → decision flips, renderer healthy (no crash, 168 textures). NOT verifiable headless:
+the actual silhouette when Mario walks behind geometry (needs input + eyes) — the decision logic is
+unit-tested + the wiring is live-verified, so this is the bounded residual. Under the Dolphin-GX baseline
+(no ngx present) the real GXPeekARGB runs unchanged. The dedicated-occlusion-alpha-buffer alternative was
+not needed (it'd reproduce the same depth answer with far more plumbing).
 
 ## Tools / env added
 - SUNBRIGHT_IMM_SHOW=1 — force the cube visible (red) for the geometry verify. (Kept; the falsifiable
