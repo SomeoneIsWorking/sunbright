@@ -375,8 +375,11 @@ do this, both VERIFIED on real plaza data (~18% mean delta, <0.6% cross-run drif
   governor). Identical restored RAM ⇒ frame-exact A/B. ⚠ A save restores only Dolphin RAM+PPCState, NOT
   the native engine bookkeeping — **STALE saves (pre-no-recomp-pivot, e.g. the Jun-3 `scratch/*.sav`)
   load with a corrupted guest SP and CRASH**. Only saves made under the CURRENT build round-trip
-  cleanly. Make one with `SUNBRIGHT_SAVE_STATE=<f> SUNBRIGHT_SAVE_AT=<sec>` (or `SUNBRIGHT_SAVE_ON_HUD`
-  — but the HUD counter only ticks under `NGX_PRESENT=1`). `scratch/fresh_plaza.sav` is a known-good one.
+  cleanly. Make one with the `/savestate?f=<path>` probe endpoint (on-demand, runs `State::SaveAs` on
+  the CPU thread — pairs with `/loadstate` + `/pad` for a scripted drive→save→load→verify loop), or
+  `SUNBRIGHT_SAVE_STATE=<f> SUNBRIGHT_SAVE_AT=<sec>` / `SUNBRIGHT_SAVE_ON_HUD` (HUD counter only ticks
+  under `NGX_PRESENT=1`). `scratch/fresh_plaza.sav` is a known-good one (but mid-entrance = camera
+  locked; for camera-driving an effect into view, save a free-roam state past the entrance cutscene).
 - **`tools/render/oracle_ab.sh [emu_secs]`** — FASTBOOT oracle (plaza only): syncs two fastboot
   processes on EMULATED time (`emu_secs`), capturing via `/abshot2` (which still writes `ab2.gx.ppm`
   from Dolphin's XFB in the `=0` process). No save needed; idle plaza is deterministic. Both oracles

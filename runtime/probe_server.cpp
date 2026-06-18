@@ -815,6 +815,31 @@ std::string handle_repl(const char* path) {
         app("loadstate: requested %s (%lld bytes) on CPU thread\n", file, (long long)fst.st_size);
         return std::string(buf, n);
     }
+    if (strncmp(path, "/savestate", 10) == 0) {
+        // Save a Dolphin save state on demand → snapshot a scene reached by scripted /pad driving
+        // (the drive→save→load→verify loop with /loadstate + ab_oracle.sh). Run on the CPU thread
+        // (Core::RunOnCPUThread) for the same reason /loadstate does. NOTE: only states saved under
+        // the CURRENT build round-trip cleanly (a save restores Dolphin RAM+PPCState, not the native
+        // engine bookkeeping). /savestate?f=<path>
+        char file[256] = {0};
+        if (const char* p = strstr(path, "f=")) {
+            size_t i = 0; p += 2;
+            while (*p && *p != '&' && *p != ' ' && i + 1 < sizeof file) file[i++] = *p++;
+        }
+        if (!file[0]) return std::string("usage: /savestate?f=<save.sav>\n");
+        std::string fcopy(file);
+        Core::RunOnCPUThread(
+            Core::System::GetInstance(),
+            [fcopy] { State::SaveAs(Core::System::GetInstance(), fcopy); });
+        // Wait briefly for the file to materialize (SaveAs is async on the state thread).
+        struct stat st{}; bool ok = false;
+        for (int i = 0; i < 300; i++) {
+            if (stat(file, &st) == 0 && st.st_size > 0) { ok = true; break; }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        app("savestate: %s %s (%lld bytes)\n", ok ? "saved" : "PENDING", file, (long long)st.st_size);
+        return std::string(buf, n);
+    }
     if (strncmp(path, "/abshot2", 8) == 0) {
         // TRUE zero-drift A/B: arm a SAME-PRESENT dual capture in Present.cpp. Writes
         // scratch/screenshots/ab2.gx.ppm (Dolphin GX XFB) + ab2.ngx.ppm (native ngx) from
