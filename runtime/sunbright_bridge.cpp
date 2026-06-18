@@ -77,48 +77,19 @@ bool Init(const char* /*unused*/) {
 }
 
 bool IsRecompiled(uint32_t pc) {
-    // SUNBRIGHT_DISABLE_RECOMP=1 forces everything through Dolphin's JIT —
-    // a control to isolate recomp-handoff bugs from launcher/Dolphin issues.
-    // True no-recomp / pure-JIT engine mode — checked FIRST, because it sets SUNBRIGHT_DISABLE_RECOMP
-    // for the pure-JIT substrate (see main_sdl.cpp) and the plain `disabled` branch below must NOT
-    // pre-empt it. Recomp is OFF (recomp_lookup/recomp_raw serve null, native_os off); the PC-native
-    // engine mostly intercepts via PRE-HOOKS in the JIT trampoline (observe-then-let-Dolphin-JIT-the-
-    // original). The exception is FULL-REPLACEMENT overrides explicitly marked purejit-safe (fastboot
-    // app-state returns, ngx native draw): those still dispatch via Run() (run native, return to lr —
-    // Dolphin JIT continues). Everything else falls to Dolphin's JIT. See overrides.h.
-    if (sunbright_purejit_mode()) {
-        // Reentrant run-original primitive: a wrapping override armed a one-shot bypass so Dolphin
-        // JITs the ORIGINAL at this addr (instead of re-dispatching the override → infinite loop).
-        if (sb_bypass_once_check(pc)) return false;
-        return override_is_purejit_safe(pc);
-    }
-    static const bool disabled = getenv("SUNBRIGHT_DISABLE_RECOMP") != nullptr;
-    if (disabled) return false;
-    if (is_jit_forced(pc)) return false;            // routed to Dolphin's JIT
-    // NO_RECOMP boot-hang bisection (2026-06-18): SUNBRIGHT_NORECOMP_NOOV=1 skips ALL native
-    // overrides + native-OS under no_recomp → should behave like DISABLE_RECOMP and boot, proving
-    // the hang is in the (hybrid-era) engine overrides. Refine to a group/range kill-switch next.
-    static const bool no_overrides = getenv("SUNBRIGHT_NORECOMP_NOOV") != nullptr;
-    if (no_overrides) return false;
-    if (override_lookup(pc)) return true;           // hand-written native override
-    // NO_RECOMP: native-OS (nthr scheduler) is an EXECUTION-MODEL override built for the recomp
-    // hybrid. Under pure Dolphin JIT it deadlocks boot — nthr parks every guest thread waiting for
-    // tokens the recomp call model used to grant, then the idle driver spins forever (no thread
-    // runnable). Under no_recomp Dolphin must own threading (exactly as DISABLE_RECOMP does, which
-    // boots). SUNBRIGHT_NORECOMP_KEEPOS=1 forces the old behavior for A/B.
-    if (!norecomp_skip_native_os() && native_os_lookup(pc)) return true;  // native-OS primitive — MUST
-        // intercept on the JIT-entry path too, else JIT'd code (e.g. mountStageArchive) calling
-        // OSSleepThread links straight to the recompiled GC scheduler, bypassing nthr → two
-        // schedulers over one context → corrupted thread state (the mountFixed null-this crash).
-    // NO-RECOMP / JIT-native mode (2026-06-18 arch pivot, memory no-recomp-jit-native-direction):
-    // the static recompiler is being removed from the game — gameplay logic runs under Dolphin's
-    // JIT while the PC-native ENGINE (overrides + native-OS above) still intercepts. Distinct from
-    // DISABLE_RECOMP, which returns false BEFORE the override/native-OS checks (pure-Dolphin
-    // oracle, no native engine). The recomp table is still LINKED in this phase so override
-    // super-calls (recomp_raw) keep working until the super-call seam is converted (Phase B).
-    static const bool no_recomp = getenv("SUNBRIGHT_NO_RECOMP") != nullptr;
-    if (no_recomp) return false;                    // gameplay → Dolphin JIT
-    return g_inited && g_table.count(pc);
+    // ONE execution mode (2026-06-18, Phase C — the static recompiler is eradicated from the game,
+    // sunbright_purejit_mode() is unconditionally true): gameplay runs under Dolphin's JIT, the
+    // PC-native engine intercepts. recomp_lookup/recomp_raw serve null; native_os is off (Dolphin
+    // owns threading). A function is "recompiled" (→ dispatched via Run() instead of Dolphin's JIT)
+    // ONLY when it is a FULL-REPLACEMENT override marked purejit-safe — fastboot app-state returns,
+    // the ngx native draw + its per-call GX/J2D capture tees (run native, return to lr; Dolphin JIT
+    // then continues). Everything else falls to Dolphin's JIT.
+    //
+    // The one exception is the reentrant run-original primitive: a wrapping override (e.g. the
+    // J2DScreen capture-around) arms a one-shot bypass so Dolphin JITs the ORIGINAL at this addr
+    // instead of re-dispatching the override (which would infinite-loop). See dolphin_hook.cpp.
+    if (sb_bypass_once_check(pc)) return false;
+    return override_is_purejit_safe(pc);
 }
 
 #ifdef HAVE_DOLPHIN_CORE
