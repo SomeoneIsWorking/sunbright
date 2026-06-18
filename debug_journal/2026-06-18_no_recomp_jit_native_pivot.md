@@ -62,6 +62,34 @@ Candidate Phase-B approaches (pick after deciding):
 Then Phase C: stop linking generated/, delete tools/recompiler from the build + the recomp call
 model, make JIT-native the default; keep offline static-analysis tooling.
 
+## Phase B progress + census findings (2026-06-18)
+- **ngx owns J3DShape::draw natively** (committed) — SUNBRIGHT_NGX_NATIVE_DRAW, auto under
+  NO_RECOMP+NGX_PRESENT. Verified faithful (static geometry delta 0-2; only Mario band differs by
+  animation phase). Cut only ~8% of recomp → the draw super-call was NOT the dominant consumer.
+- **Where the ~2M recomp calls/s actually come from** (SUNBRIGHT_CALL_CENSUS=1, /census →
+  scratch/logs/call_census.tsv, under NO_RECOMP+NGX_PRESENT in Delfino). Top call_ppc targets:
+  checkDistance (2.0M), TViewObj::testPerform (1.5M), sinf (1.2M), PSMTXCopy (1.0M),
+  TLiveActor::perform, OSGetTick, OSYieldThread, GXSetTev* cluster. These are the GAMEPLAY +
+  SCENE-GRAPH + GX tree.
+- **KEY MECHANISM FINDING:** `recomp_lookup` (used by `call_ppc`) and `recomp_raw` (super-calls) do
+  NOT honor `no_recomp` — they still return the recomp body. So the moment ANY native override
+  either super-calls OR `call_ppc`s into guest code, the whole recompiled subtree (scene graph,
+  math, GX) runs as recomp. That is the 2M/s. The math overrides themselves are fully native (they
+  only super-call under the SUNBRIGHT_MATH_SHADOW diagnostic); the recomp is reached transitively.
+- So removing recomp is NOT a matter of editing 22 override files one by one — it needs the
+  **central seam**: under no_recomp, `call_ppc`/super-call must run the original under Dolphin (so
+  it keeps consulting overrides) instead of the recomp body. The ONLY override-preserving substrate
+  is Dolphin JIT (the interpreter bypasses overrides — confirmed). 
+
+## REVISED Phase B recommendation (after the deeper dig)
+Approach #2 (reentrant JIT-run-until-return) is the risky/no-precedent path. Approach #1 (fork
+pre/post-hook: trampoline runs the observe-hook, returns FALSE so Dolphin JITs the ORIGINAL block;
+sub-calls then re-consult overrides) is Dolphin's OWN HLE pattern (run C, return to dispatcher) and
+needs NO reentrancy. The census shows the wrapping overrides are mostly observe-then-super-call
+(interp_redraw perform hooks [INTERP60-gated, off by default], ngx GX tees, scene_render projection)
+— a good fit for pre-hooks; a post-hook variant covers the few that do after-work. Lean #1.
+
 ## Files
 - runtime/sunbright_bridge.cpp — `IsRecompiled` no_recomp branch (Phase A).
+- runtime/overrides/ngx_j3d_shape.cpp — `g_native_draw` + ov_j3dshape_draw native per-view setup.
 - Memory: no-recomp-jit-native-direction.
