@@ -63,6 +63,21 @@ PC-native port of that behavior — understand what the original does, port it, 
 Symptom-gone ≠ fixed. If a real fix is genuinely too big right now, do NOT silently patch —
 name the proper fix and let the user decide; never slip a hack in as if it were a fix.
 
+## 🔧 TOOLING / VERIFICATION FIRST (HARD RULE — user directive 2026-06-19)
+**If the harness that would verify a change is missing or broken, FIX/BUILD THE HARNESS BEFORE the
+change. No exceptions.** This is not a judgment call — it is a hard precondition, the same standing as
+the debugging-path rule above.
+- Before working a bug/fidelity/effect change, confirm the verification path actually works on real
+  data RIGHT NOW. A green-looking tool that silently compares against garbage is worse than no tool —
+  it manufactures false conclusions (e.g. `/abshot2`'s GX oracle was all-black under NGX_PRESENT, so
+  `ab_diff` reported a bogus ~40% that nearly got cited as a regression; memory `abshot2-gx-oracle-empty`).
+- When a tool can be fed a degenerate/empty/stale input, it MUST detect and refuse it loudly, never
+  emit a number anyway. Guard the harness, don't trust it blindly.
+- "I can't cheaply verify this in a reachable scene" is a STOP: build the reachability/oracle tooling
+  first (or pick a target that IS verifiable). Do not port effects you cannot verify — that violates
+  "verify before you declare done."
+- This generalizes the TDD-renderer section below: tooling is the prerequisite, the fix is second.
+
 ## What this project is
 Static recompiler for Super Mario Sunshine (GameCube/PowerPC) → native PC binary.
 ROM: provided via `$SUNBRIGHT_ROM` (set it in a gitignored `.env` next to `run.sh`, or drop a
