@@ -21,6 +21,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <cmath>
 extern "C" unsigned ngx_tev_cc_dbg(int);
 extern "C" void sb_ngx_get_clear(float out[4]);   // game's GXSetCopyClear colour (ngx_j3d_shape.cpp)
 extern "C" int g_ngx_tevdbg;       // render-debug mode (tev_shader.cpp); /ngxdbg sets it
@@ -75,6 +76,9 @@ extern "C" int sb_ngx_set_noblend(int v) { if (v != g_ngx_noblend) { g_ngx_noble
 #include "render/shaders/mesh_vert_spv.h"
 #include "render/shaders/quad_ortho_vert_spv.h"
 #include "render/shaders/quad_modulate_frag_spv.h"
+#include "render/shaders/quad_vert_spv.h"
+#include "render/shaders/pollution_sphere_vert_spv.h"
+#include "render/shaders/pollution_frag_spv.h"
 #include "../intrinsics.h"
 
 namespace {
@@ -129,6 +133,20 @@ struct PresentRenderer {
     // One prepared HUD quad draw (descriptor + push-constant payload).
     struct J2dDraw { VkDescriptorSet dset; float rect[4]; float misc[4]; uint32_t corners[4]; uint32_t bw[4]; float uvrect[4]; };
 
+    // ── Delfino plaza POLLUTION darkening (TModelWaterManager::drawShineShadowVolume port) ──
+    // A sphere-volume pass into the present colour-alpha + depth target: clear EFB-alpha, build a
+    // volume coverage mask in alpha (sphere front-ADD / back-SUBTRACT, z-test GREATER vs scene depth),
+    // then blend a dark-blue tint masked by it. Reproduces the unported plaza pollution darkening
+    // (debug_journal/2026-06-18_delfino_wash_ROOT_CAUSE_shineshadowvolume.md).
+    VkPipelineLayout poll_pll = VK_NULL_HANDLE;        // push: { mat4 mvp; vec4 color }
+    VkShaderModule poll_vs = VK_NULL_HANDLE, poll_fs = VK_NULL_HANDLE, poll_qvs = VK_NULL_HANDLE;
+    VkPipeline poll_clearA = VK_NULL_HANDLE, poll_volAdd = VK_NULL_HANDLE,
+               poll_volSub = VK_NULL_HANDLE, poll_final = VK_NULL_HANDLE;
+    VkBuffer sphere_vbuf = VK_NULL_HANDLE; VkDeviceMemory sphere_vmem = VK_NULL_HANDLE;
+    uint32_t sphere_vcount = 0;
+    bool poll_init_ok = false;
+    struct PollPC { float mvp[16]; float color[4]; };
+
     unsigned long g_frames = 0, g_pipe_builds = 0, g_tex_decodes = 0, g_j2d_quads = 0;
     int dbg_mode_built = -2;    // tev-debug mode the cached pipelines were built for; mismatch → rebuild
     int pipe_epoch_built = 0;   // /ngxnoblend (etc.) epoch the cached pipelines were built for
@@ -144,6 +162,8 @@ struct PresentRenderer {
 
     bool init();
     bool init_j2d();
+    bool init_pollution();
+    void draw_pollution(VkCommandBuffer cmd, int w, int h);
     bool ensure_target(int w, int h);
     bool ensure_vbuf(VkDeviceSize bytes);
     bool ensure_dpool(uint32_t nsets);
@@ -282,6 +302,7 @@ bool PresentRenderer::init() {
         vkDestroyBuffer(dev, sbuf, nullptr); vkFreeMemory(dev, smem, nullptr);
     }
     if (!init_j2d()) return false;
+    poll_init_ok = init_pollution();   // pollution darkening (best-effort; off if it fails)
     return true;
 }
 
@@ -346,6 +367,155 @@ bool PresentRenderer::init_j2d() {
     gp.pDepthStencilState = &dss; gp.pColorBlendState = &cb; gp.pDynamicState = &ds;
     gp.layout = j2d_pll; gp.renderPass = rpass; gp.subpass = 0;
     return vkCreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, nullptr, &j2d_pipe) == VK_SUCCESS;
+}
+
+extern "C" int sb_ngx_get_pollution(float center[3], float* radius, float color[3], float* clearAlpha);
+extern "C" int sb_ngx_get_proj(float out[16]);
+
+// Build the four pollution pipelines + the unit-sphere vbuf. Faithful to drawShineShadowVolume:
+// clear EFB alpha, sphere volume (front-ADD/back-SUBTRACT in alpha, z-test GREATER vs scene depth),
+// dark-tint masked blend. One sphere with alpha 1.0 saturates inside (the 5 game spheres only soften
+// the edge; net inside = bright, outside = clearAlpha → darkened). See the journal for the derivation.
+bool PresentRenderer::init_pollution() {
+    // 1) unit-sphere mesh (positions only), CCW outward triangles (UV-sphere).
+    const int STK = 12, SLI = 18; const float PI = 3.14159265358979f;
+    std::vector<float> pos;
+    auto vtx = [&](int st, int sl) {
+        float th = (float)st / STK * PI, ph = (float)sl / SLI * 2.f * PI;
+        pos.push_back(std::sin(th) * std::cos(ph));
+        pos.push_back(std::cos(th));
+        pos.push_back(std::sin(th) * std::sin(ph));
+    };
+    for (int st = 0; st < STK; st++) for (int sl = 0; sl < SLI; sl++) {
+        vtx(st, sl); vtx(st + 1, sl); vtx(st, sl + 1);          // CCW outward
+        vtx(st, sl + 1); vtx(st + 1, sl); vtx(st + 1, sl + 1);
+    }
+    sphere_vcount = (uint32_t)(pos.size() / 3);
+    VkDeviceSize bytes = (VkDeviceSize)pos.size() * sizeof(float);
+    if (!make_buffer(dev, phys, sphere_vbuf, sphere_vmem, bytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) return false;
+    { void* p = nullptr; vkMapMemory(dev, sphere_vmem, 0, bytes, 0, &p);
+      memcpy(p, pos.data(), (size_t)bytes); vkUnmapMemory(dev, sphere_vmem); }
+
+    // 2) pipeline layout: one push range (mat4 mvp + vec4 color), no descriptor sets.
+    VkPushConstantRange pcr{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PollPC)};
+    VkPipelineLayoutCreateInfo plci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    plci.pushConstantRangeCount = 1; plci.pPushConstantRanges = &pcr;
+    if (vkCreatePipelineLayout(dev, &plci, nullptr, &poll_pll)) return false;
+
+    auto mkmod = [&](const uint32_t* code, size_t len) -> VkShaderModule {
+        VkShaderModuleCreateInfo si{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+        si.codeSize = len; si.pCode = code; VkShaderModule m = VK_NULL_HANDLE;
+        vkCreateShaderModule(dev, &si, nullptr, &m); return m;
+    };
+    poll_qvs = mkmod(kQuadVertSpv, sizeof kQuadVertSpv);
+    poll_vs  = mkmod(kPollutionSphereVertSpv, sizeof kPollutionSphereVertSpv);
+    poll_fs  = mkmod(kPollutionFragSpv, sizeof kPollutionFragSpv);
+    if (!poll_qvs || !poll_vs || !poll_fs) return false;
+
+    VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+    ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    VkPipelineViewportStateCreateInfo vp{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+    vp.viewportCount = 1; vp.scissorCount = 1;
+    VkDynamicState dyns[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+    ds.dynamicStateCount = 2; ds.pDynamicStates = dyns;
+    VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+    ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+    auto build = [&](VkShaderModule vsm, bool hasVtx, VkCullModeFlags cull, VkBool32 depthTest,
+                     VkBool32 depthWrite, VkCompareOp dop, VkColorComponentFlags wmask, VkBool32 blend,
+                     VkBlendFactor sc, VkBlendFactor dc, VkBlendOp cop,
+                     VkBlendFactor sa, VkBlendFactor da, VkBlendOp aop, VkPipeline& out) -> bool {
+        VkPipelineShaderStageCreateInfo ss[2]{};
+        ss[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO}; ss[0].stage = VK_SHADER_STAGE_VERTEX_BIT;   ss[0].module = vsm;     ss[0].pName = "main";
+        ss[1] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO}; ss[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; ss[1].module = poll_fs; ss[1].pName = "main";
+        VkVertexInputBindingDescription vib{0, 3 * sizeof(float), VK_VERTEX_INPUT_RATE_VERTEX};
+        VkVertexInputAttributeDescription via{0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0};
+        VkPipelineVertexInputStateCreateInfo vi{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+        if (hasVtx) { vi.vertexBindingDescriptionCount = 1; vi.pVertexBindingDescriptions = &vib;
+                      vi.vertexAttributeDescriptionCount = 1; vi.pVertexAttributeDescriptions = &via; }
+        VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+        rs.polygonMode = VK_POLYGON_MODE_FILL; rs.cullMode = cull;
+        rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE; rs.lineWidth = 1.f;
+        VkPipelineDepthStencilStateCreateInfo dss{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+        dss.depthTestEnable = depthTest; dss.depthWriteEnable = depthWrite; dss.depthCompareOp = dop;
+        VkPipelineColorBlendAttachmentState cba{}; cba.colorWriteMask = wmask; cba.blendEnable = blend;
+        cba.srcColorBlendFactor = sc; cba.dstColorBlendFactor = dc; cba.colorBlendOp = cop;
+        cba.srcAlphaBlendFactor = sa; cba.dstAlphaBlendFactor = da; cba.alphaBlendOp = aop;
+        VkPipelineColorBlendStateCreateInfo cb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+        cb.attachmentCount = 1; cb.pAttachments = &cba;
+        VkGraphicsPipelineCreateInfo gp{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+        gp.stageCount = 2; gp.pStages = ss; gp.pVertexInputState = &vi; gp.pInputAssemblyState = &ia;
+        gp.pViewportState = &vp; gp.pRasterizationState = &rs; gp.pMultisampleState = &ms;
+        gp.pDepthStencilState = &dss; gp.pColorBlendState = &cb; gp.pDynamicState = &ds;
+        gp.layout = poll_pll; gp.renderPass = rpass; gp.subpass = 0;
+        return vkCreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, nullptr, &out) == VK_SUCCESS;
+    };
+    const VkColorComponentFlags A = VK_COLOR_COMPONENT_A_BIT;
+    const VkColorComponentFlags RGB = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT;
+    using F = VkBlendFactor; const VkBlendOp ADD = VK_BLEND_OP_ADD;
+    // clear alpha (fullscreen): write A, no blend (replace), no depth, no cull.
+    if (!build(poll_qvs, false, VK_CULL_MODE_NONE, VK_FALSE, VK_FALSE, VK_COMPARE_OP_ALWAYS, A, VK_FALSE,
+               VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ZERO, ADD, VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ZERO, ADD, poll_clearA)) return false;
+    // volume ADD (back faces): write A + DEPTH (game uses ZMode GREATER,WRITE), z-test GREATER, ONE/ONE.
+    if (!build(poll_vs, true, VK_CULL_MODE_BACK_BIT, VK_TRUE, VK_TRUE, VK_COMPARE_OP_GREATER, A, VK_TRUE,
+               VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ZERO, ADD, VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ONE, ADD, poll_volAdd)) return false;
+    // volume SUBTRACT (front faces): cull FRONT, alpha dst - src (REVERSE_SUBTRACT), z-test GREATER + write.
+    if (!build(poll_vs, true, VK_CULL_MODE_FRONT_BIT, VK_TRUE, VK_TRUE, VK_COMPARE_OP_GREATER, A, VK_TRUE,
+               VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ZERO, ADD, VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ONE, VK_BLEND_OP_REVERSE_SUBTRACT, poll_volSub)) return false;
+    // final masked dark blend (fullscreen): write RGB, INVDSTALPHA/DSTALPHA.
+    if (!build(poll_qvs, false, VK_CULL_MODE_NONE, VK_FALSE, VK_FALSE, VK_COMPARE_OP_ALWAYS, RGB, VK_TRUE,
+               VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA, VK_BLEND_FACTOR_DST_ALPHA, ADD, VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ZERO, ADD, poll_final)) return false;
+    return true;
+}
+
+// Draw the pollution darkening inside the present render pass, after the 3D scene (depth valid),
+// before the HUD. Reads the live captured params (recede as the plaza is cleaned). Env A/B:
+// SUNBRIGHT_NGX_NOPOLLUTION=1 disables it.
+void PresentRenderer::draw_pollution(VkCommandBuffer cmd, int w, int h) {
+    if (!poll_init_ok) return;
+    static const bool off = getenv("SUNBRIGHT_NGX_NOPOLLUTION") != nullptr;
+    if (off) return;
+    float center[3], radius, color[3], clearA;
+    if (!sb_ngx_get_pollution(center, &radius, color, &clearA)) return;   // not active this frame
+    float P[16]; if (!sb_ngx_get_proj(P)) return;
+    // model (unit->eye), row-major: translate(center) * scale(radius).
+    const float M[16] = { radius,0,0,center[0],  0,radius,0,center[1],  0,0,radius,center[2],  0,0,0,1 };
+    float MVP[16];
+    for (int r = 0; r < 4; r++) for (int c = 0; c < 4; c++) {
+        float s = 0; for (int k = 0; k < 4; k++) s += P[r*4+k] * M[k*4+c]; MVP[r*4+c] = s;
+    }
+    PollPC pc{};
+    for (int r = 0; r < 4; r++) for (int c = 0; c < 4; c++) pc.mvp[c*4+r] = MVP[r*4+c];  // → GLSL column-major
+
+    VkViewport vpv{0, 0, (float)w, (float)h, 0, 1}; vkCmdSetViewport(cmd, 0, 1, &vpv);
+    VkRect2D scr{{0, 0}, {(uint32_t)w, (uint32_t)h}}; vkCmdSetScissor(cmd, 0, 1, &scr);
+    const VkShaderStageFlags SS = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    // pass 1: clear EFB alpha to clearAlpha (fullscreen).
+    pc.color[0] = pc.color[1] = pc.color[2] = 0.f; pc.color[3] = clearA;
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, poll_clearA);
+    vkCmdPushConstants(cmd, poll_pll, SS, 0, sizeof(pc), &pc);
+    vkCmdDraw(cmd, 3, 1, 0, 0);
+
+    // pass 2: sphere volume → alpha saturates inside the clean dome.
+    static const bool novol = getenv("SUNBRIGHT_NGX_POLL_NOVOL") != nullptr;   // DBG: skip the spheres
+    if (!novol) {
+    pc.color[3] = 1.0f;
+    VkDeviceSize voff = 0; vkCmdBindVertexBuffers(cmd, 0, 1, &sphere_vbuf, &voff);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, poll_volAdd);
+    vkCmdPushConstants(cmd, poll_pll, SS, 0, sizeof(pc), &pc);
+    vkCmdDraw(cmd, sphere_vcount, 1, 0, 0);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, poll_volSub);
+    vkCmdDraw(cmd, sphere_vcount, 1, 0, 0);
+    }
+
+    // pass 3: blend the dark tint where alpha is low (outside the dome).
+    pc.color[0] = color[0]; pc.color[1] = color[1]; pc.color[2] = color[2]; pc.color[3] = 1.0f;
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, poll_final);
+    vkCmdPushConstants(cmd, poll_pll, SS, 0, sizeof(pc), &pc);
+    vkCmdDraw(cmd, 3, 1, 0, 0);
 }
 
 bool PresentRenderer::ensure_target(int w, int h) {
@@ -792,6 +962,9 @@ AbstractTexture* PresentRenderer::render(int w, int h) {
     if (s_cloudcount >= 0 && (cc_frame++ % 120) == 0)
         fprintf(stderr, "[cloudcount] ti=%d DRAWN batches=%d verts=%ld (overdraw if batches>>1)\n",
                 s_cloudcount, cc_batches, cc_verts);
+
+    // Delfino plaza pollution darkening — over the 3D scene (depth valid), before the HUD.
+    draw_pollution(cmd, w, h);
 
     // HUD/J2D overlay over the 3D scene (alpha-blended, depth off, dynamic viewport).
     if (j2d_pipe != VK_NULL_HANDLE && !j2d.empty()) {

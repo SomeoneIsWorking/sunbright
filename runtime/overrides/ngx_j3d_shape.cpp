@@ -478,6 +478,61 @@ SUNBRIGHT_OVERRIDE(ov_j3dgd_loadtexmtx, 0x802f2d00u) {
     ngx_super(cpu, 0x802f2d00u);
 }
 
+// ── Delfino plaza POLLUTION darkening capture (TModelWaterManager::drawShineShadowVolume) ──────────
+// The plaza pollution darkening (map 1 only; recedes as cleanliness flag 0x40000 rises). The guest
+// draws concentric sphere volumes into the EFB alpha channel then blends a dark-blue colour masked by
+// it — a darkening ngx never rendered (THE Delfino "wash"; debug_journal/2026-06-18_delfino_wash_
+// ROOT_CAUSE_shineshadowvolume.md). We TEE the function to capture its live params + view matrix, then
+// ngx_present reproduces it natively (sphere-volume pass into the present colour-alpha+depth target).
+// Tee fires per-call under purejit (marked safe below) only when ngx capture is on; the GX body is
+// discarded (ngx owns rendering). Sphere center (model) = (0,3600,-7458); eye center = viewMtx*center.
+extern float g_proj[16]; extern bool g_have_proj;   // defined below (~line 1200); used by sb_ngx_get_proj
+struct PollutionParams {
+    bool  active = false;
+    float center[3] = {0,0,0};   // EYE-space sphere centre (viewMtx * world (0,3600,-7458))
+    float radius = 0;            // outer sphere radius (unk5E0C + unk5E40)
+    float color[3] = {0,0,0};    // dark tint (unk5E47/48/49) 0..1
+    float clearAlpha = 0;        // unk5E45 / 255  (outside-dome alpha => darken weight = 1-clearAlpha)
+};
+PollutionParams g_pollution, g_pollution_pub;
+SUNBRIGHT_OVERRIDE(ov_shineshadowvol, 0x8027c67cu) {
+    if (g_enabled) {
+        const u32 self = cpu.gpr[3], vm = cpu.gpr[4];      // this (TModelWaterManager), param_1 (viewMtx)
+        if (valid(self) && valid(vm)) {
+            const float rad  = rf(self + 0x5E0C);          // unk5E0C base radius (grows w/ cleanliness)
+            const float span = rf(self + 0x5E40);          // unk5E40 radius span
+            // viewMtx is a 3x4 row-major Mtx; eye = vm * (0,3600,-7458,1).
+            float m[12]; for (int k = 0; k < 12; k++) m[k] = rf(vm + k * 4);
+            const float wx = 0.0f, wy = 3600.0f, wz = -7458.0f;
+            g_pollution.center[0] = m[0]*wx + m[1]*wy + m[2] *wz + m[3];
+            g_pollution.center[1] = m[4]*wx + m[5]*wy + m[6] *wz + m[7];
+            g_pollution.center[2] = m[8]*wx + m[9]*wy + m[10]*wz + m[11];
+            g_pollution.radius     = rad + span;
+            // bytes: r32 is big-endian word. self+0x5E44 = [5E44 5E45 5E46 5E47], +0x5E48 = [5E48 5E49 ..].
+            const u32 w0 = r32(self + 0x5E44), w1 = r32(self + 0x5E48);
+            g_pollution.clearAlpha = ((w0 >> 16) & 0xFF) / 255.f;   // unk5E45
+            g_pollution.color[0]   = ( w0        & 0xFF) / 255.f;   // unk5E47
+            g_pollution.color[1]   = ((w1 >> 24) & 0xFF) / 255.f;   // unk5E48
+            g_pollution.color[2]   = ((w1 >> 16) & 0xFF) / 255.f;   // unk5E49
+            g_pollution.active     = true;
+        }
+    }
+    ngx_super(cpu, 0x8027c67cu);
+}
+// Accessors for ngx_present (the native pollution pass) — published frame state + the projection.
+extern "C" int sb_ngx_get_pollution(float center[3], float* radius, float color[3], float* clearAlpha) {
+    const PollutionParams& p = g_pollution_pub;
+    if (!p.active) return 0;
+    for (int k = 0; k < 3; k++) { center[k] = p.center[k]; color[k] = p.color[k]; }
+    *radius = p.radius; *clearAlpha = p.clearAlpha;
+    return 1;
+}
+extern "C" int sb_ngx_get_proj(float out[16]) {
+    if (!g_have_proj) return 0;
+    for (int i = 0; i < 16; i++) out[i] = g_proj[i];
+    return 1;
+}
+
 // Diagnostic histograms (kept).
 unsigned long g_tg_src_hist[24] = {0}, g_tg_type_hist[12] = {0};
 unsigned long g_tg_mtx_id = 0, g_tg_mtx_set = 0, g_tg_n = 0;
@@ -2219,6 +2274,7 @@ void ngx_frame_publish() {
         g_sky = SkyLatch{}; g_skyxf = SkyXf{}; g_pnmtxdbg = PnmtxDbg{};
         if (g_gxstate.have) g_gxstate_pub = g_gxstate; g_gxstate = GxStateRec{};
         if (g_uvdbg.have) g_uvdbg_pub = g_uvdbg; g_uvdbg = UvDbg{};
+        g_pollution_pub = g_pollution; g_pollution.active = false;   // plaza pollution darkening params
         if (!g_vtxdump.empty()) { g_vtxdump_pub = g_vtxdump; g_vtxdump_projtype_pub = g_vtxdump_projtype;
                               for (int i=0;i<12;i++) g_vtxdump_mv_pub[i]=g_vtxdump_mv[i]; }
         g_clip_in=g_clip_drop=g_clip_cut=g_clip_tiny=0; g_clip_minw=1e30f;
@@ -2270,6 +2326,7 @@ void ngx_frame_publish() {
     g_pnmtxdbg = PnmtxDbg{};
     if (g_gxstate.have) g_gxstate_pub = g_gxstate;   // publish this frame's GX-vs-ngx state diff
     g_gxstate = GxStateRec{};                        // reset for the next frame
+    g_pollution_pub = g_pollution; g_pollution.active = false;   // plaza pollution darkening params
     if (g_uvdbg.have) g_uvdbg_pub = g_uvdbg; g_uvdbg = UvDbg{};
     if (!g_vtxdump.empty()) { g_vtxdump_pub = g_vtxdump; g_vtxdump_projtype_pub = g_vtxdump_projtype;
                               for (int i=0;i<12;i++) g_vtxdump_mv_pub[i]=g_vtxdump_mv[i]; }
@@ -2927,7 +2984,8 @@ static const bool ov_j3dshape_draw_pj = [] {
                    0x8035f3b4u,   // GXSetChanAmbColor
                    0x802f33a8u,   // J3DGDSetChanAmbColor
                    0x80361dd0u,   // GXSetBlendMode  (gx_stream_own.cpp /gxblend darkening-pass hunt)
-                   0x8035ecd0u }) // GXSetDispCopyGamma (gx_stream_own.cpp /gxblend copy-gamma)
+                   0x8035ecd0u,   // GXSetDispCopyGamma (gx_stream_own.cpp /gxblend copy-gamma)
+                   0x8027c67cu }) // TModelWaterManager::drawShineShadowVolume (plaza pollution capture)
         mark_override_purejit_safe(a);
     return true;
 }();
