@@ -75,6 +75,14 @@ bool IsRecompiled(uint32_t pc) {
         // intercept on the JIT-entry path too, else JIT'd code (e.g. mountStageArchive) calling
         // OSSleepThread links straight to the recompiled GC scheduler, bypassing nthr → two
         // schedulers over one context → corrupted thread state (the mountFixed null-this crash).
+    // NO-RECOMP / JIT-native mode (2026-06-18 arch pivot, memory no-recomp-jit-native-direction):
+    // the static recompiler is being removed from the game — gameplay logic runs under Dolphin's
+    // JIT while the PC-native ENGINE (overrides + native-OS above) still intercepts. Distinct from
+    // DISABLE_RECOMP, which returns false BEFORE the override/native-OS checks (pure-Dolphin
+    // oracle, no native engine). The recomp table is still LINKED in this phase so override
+    // super-calls (recomp_raw) keep working until the super-call seam is converted (Phase B).
+    static const bool no_recomp = getenv("SUNBRIGHT_NO_RECOMP") != nullptr;
+    if (no_recomp) return false;                    // gameplay → Dolphin JIT
     return g_inited && g_table.count(pc);
 }
 
