@@ -103,8 +103,14 @@ PreHookFn prehook_lookup(u32 addr) {
 bool prehooks_registered() { return !prehook_table().empty(); }
 
 bool sunbright_purejit_mode() {
-    static const bool on = std::getenv("SUNBRIGHT_PUREJIT") != nullptr;
-    return on;
+    // Phase C (2026-06-18): the static recompiler is ERADICATED from the game (user directive
+    // no-recomp-jit-native-direction). There is exactly ONE execution mode — gameplay runs on
+    // Dolphin's JIT, the engine runs as native overrides — so this is unconditionally true. It is
+    // kept as a named predicate (rather than deleted) because it documents the no-recomp seams
+    // (recomp_lookup/recomp_raw serve null, native_os off, IsRecompiled returns the override-is-
+    // purejit-safe verdict). It is NOT the same as "ngx owns rendering": render-ownership gates on
+    // ngx_capture_active() so the Dolphin-GX baseline still works with the ngx capture off.
+    return true;
 }
 
 // Full-replacement overrides that remain dispatchable via Run() under purejit (see overrides.h).

@@ -768,10 +768,17 @@ int main(int argc, char* argv[]) {
     // PUREJIT is a complete single-flag mode rather than requiring both. Verified: PUREJIT-alone
     // stalls right after data/nintendo.szs; with the substrate it reaches Delfino (dolpic5.szs) at
     // 1.0× and the engine pre-hook seams fire. (Engine overrides re-grounded per-override in step 3.)
-    if (getenv("SUNBRIGHT_PUREJIT") && !getenv("SUNBRIGHT_DISABLE_RECOMP")) {
+    // Phase C (2026-06-18): recomp is ERADICATED — there is only the pure-Dolphin-JIT substrate +
+    // native engine overrides (sunbright_purejit_mode() is unconditionally true). The hybrid-era
+    // WRAP hooks (audio Mixer/AID capture, MMIO/gather-pipe routing, GX-FIFO drawsync, host-clock
+    // governor) were tuned for the recomp call model and stall a pure-JIT boot; they stay inerted by
+    // the DISABLE_RECOMP guard, so set it unconditionally. (DISABLE_RECOMP no longer means "oracle vs
+    // recomp" — recomp is gone — it is simply the substrate. The ngx-vs-Dolphin-GX baseline is now
+    // selected by turning ngx capture off: run without SUNBRIGHT_NGX_PRESENT / SUNBRIGHT_NGX_SHAPE.)
+    if (!getenv("SUNBRIGHT_DISABLE_RECOMP")) {
         setenv("SUNBRIGHT_DISABLE_RECOMP", "1", 1);
-        fprintf(stderr, "[purejit] no-recomp engine mode: implying SUNBRIGHT_DISABLE_RECOMP "
-                        "(pure Dolphin-JIT substrate + engine pre-hooks)\n");
+        fprintf(stderr, "[no-recomp] pure Dolphin-JIT substrate + native engine overrides "
+                        "(static recompiler eradicated from the game)\n");
     }
 
     sb_install_hooks();        // point the Dolphin-fork hook slots at our runtime hooks (replaces

@@ -111,7 +111,11 @@ static void ov_gx_projection(CPUState& cpu) {
     // pure-JIT no-recomp mode ngx OWNS rendering: ngx already has the squeezed matrix (published
     // above), the Dolphin GX pack is discarded, and there is no recomp body — so skip it (and never
     // call_ppc(cpu.lr), which would interp the JIT caller). Then restore the guest matrix either way.
-    if (!sunbright_purejit_mode()) {
+    // When ngx owns the frame, ngx already has the squeezed matrix (published above) and Dolphin's
+    // GX pack is discarded — skip the original (and never call_ppc(cpu.lr), which would interp the
+    // JIT caller). When ngx capture is OFF (Dolphin-GX baseline), this override is not purejit-safe so
+    // it is never dispatched — Dolphin's JIT runs the real GXSetProjection itself.
+    if (!ngx_capture_active()) {
         if (RecompFunc orig = recomp_raw(GX_SET_PROJECTION)) orig(cpu);
         else { if (patched) { mem_wf32(mtx + 0x00, m00); if (is2d) mem_wf32(mtx + 0x0c, m03); } call_ppc(cpu, cpu.lr); return; }
     }
@@ -120,9 +124,10 @@ static void ov_gx_projection(CPUState& cpu) {
 
 static const bool s_proj_registered = [] {
     register_override(GX_SET_PROJECTION, &ov_gx_projection);
-    // Per-call under purejit (return-true): ngx needs the projection published at EVERY GXSetProjection,
-    // not once at block compile. ov_gx_projection captures + (purejit) skips the original.
-    mark_override_purejit_safe(GX_SET_PROJECTION);
+    // Per-call (return-true): ngx needs the projection published at EVERY GXSetProjection, not once at
+    // block compile. Only purejit-safe when ngx capture is active — with ngx off, leave it inert so
+    // Dolphin's JIT runs the real GXSetProjection (the Dolphin-GX baseline).
+    if (ngx_capture_active()) mark_override_purejit_safe(GX_SET_PROJECTION);
     std::fprintf(stderr, "[renderport] native widescreen: hooked GXSetProjection @ %08x\n",
                  GX_SET_PROJECTION);
     return true;
@@ -224,7 +229,10 @@ static void ov_j2dscreen_draw(CPUState& cpu) {
     // Dolphin's JIT (its sub-draws keep hitting overrides), then runs sb_j2d_capture(root) once the
     // original returns, then resumes the real caller. (before-work above already published the 3D
     // frame + live root.)
-    if (sunbright_purejit_mode()) { sb_run_original_around(cpu, J2DSCREEN_DRAW, &sb_j2d_capture, root); return; }
+    // ngx active: run the original under Dolphin's JIT via the reentrant primitive, then capture the
+    // built pane tree for the ngx HUD overlay. ngx off: not purejit-safe → never dispatched → Dolphin
+    // JIT draws the 2D itself (the Dolphin-GX baseline); the recomp_raw path is dead (recomp gone).
+    if (ngx_capture_active()) { sb_run_original_around(cpu, J2DSCREEN_DRAW, &sb_j2d_capture, root); return; }
     if (RecompFunc orig = recomp_raw(J2DSCREEN_DRAW)) orig(cpu);
     else call_ppc(cpu, cpu.lr);
     // Capture AFTER the draw: mGlobalBounds/mColorAlpha are now consistently computed
@@ -238,8 +246,9 @@ static void ov_j2dscreen_draw(CPUState& cpu) {
 // J2D renderer. The renderport logging inside stays env-gated.
 static const bool s_renderport_registered = [] {
     register_override(J2DSCREEN_DRAW, &ov_j2dscreen_draw);
-    // Per-call under purejit: the frame-publish boundary must fire EVERY frame (not once at compile).
-    mark_override_purejit_safe(J2DSCREEN_DRAW);
+    // Per-call: the frame-publish boundary must fire EVERY frame (not once at compile). Only when ngx
+    // capture is active — with ngx off, inert so Dolphin's JIT draws the 2D (the Dolphin-GX baseline).
+    if (ngx_capture_active()) mark_override_purejit_safe(J2DSCREEN_DRAW);
     return true;
 }();
 

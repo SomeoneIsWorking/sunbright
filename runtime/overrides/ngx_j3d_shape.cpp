@@ -2006,6 +2006,19 @@ void capture(u32 sh) {
 
 }  // namespace
 
+// Is the ngx native capture/render active (SUNBRIGHT_NGX_SHAPE / NGX_PRESENT)? Render-ownership
+// seams in other TUs (scene_render's GXSetProjection + J2DScreen capture) gate on THIS, not on
+// sunbright_purejit_mode() — so with recomp eradicated (purejit always on) but ngx capture OFF, the
+// guest GX/J2D draws still run under Dolphin's JIT and Dolphin's GX output is the on-screen image
+// (the ngx-vs-Dolphin-GX baseline). With ngx on, those seams skip the original (ngx owns the frame).
+// Computed from the env via a function-local static (NOT g_enabled) so it is immune to cross-TU
+// static-initialization order — other TUs' static override-registrars call this before g_enabled's
+// dynamic initializer may have run.
+bool ngx_capture_active() {
+    static const bool on = sb_env_on("SUNBRIGHT_NGX_SHAPE") || sb_env_on("SUNBRIGHT_NGX_PRESENT");
+    return on;
+}
+
 // ── LOCKSTEP per-layer A/B (/ngxdrawlimit) ──────────────────────────────────────
 // Render only the first N J3DShape draws THIS frame, on BOTH engines: the GX side
 // (Dolphin) by skipping the real J3DShape::draw super-call past N (so its EFB/XFB

@@ -447,6 +447,43 @@ super-calls `recomp_raw(addr) ? o(cpu) : call_ppc(cpu, cpu.lr)` must FIRST work 
   sunbright-recomp build target (keep it as offline static-analysis tooling per the user directive).
   Don't do (3) before (1)+(2) — that removes the A/B fallback the journal's whole method relies on.
 
+## ★★ PHASE C — STEP 1 ASSESSED (2026-06-18, session 12): NO conversions needed
+Assessed every `recomp_raw` super-call WRAPPING override under purejit (headless fastboot Delfino +
+abshot2 A/B vs recomp-path ngx). **All of them correctly fall to "natural JIT, no wrapper" (decision
+(a)) — none changes the ngx-presented output, so none needs converting to return-true / the reentrant
+primitive.** They stay LIVE in recomp mode (the A/B fallback through Step 2), inert+harmless under
+purejit (registered but never dispatched — IsRecompiled returns override_is_purejit_safe()==false).
+
+WHY they're all dead-or-irrelevant under purejit (the unifying principle):
+- **ngx reads the OBJECT MODEL, not Dolphin GX.** The J2D HUD overlay reads pane `mGlobalBounds`@0x24
+  (raw 0..640 screen space, j2d_walk.cpp), NOT the draw-time position matrices these overrides poke.
+  PROVEN: purejit (anchoring inert) vs recomp-path (anchoring active) Delfino HUD shots are pixel-
+  identical at the corners → hud.cpp ov_quad/ov_water_posmtx have ZERO effect on ngx output.
+- **The widescreen tweaks only matter for the Dolphin-GX raster path.** ov_gx_projection IS purejit-
+  safe and publishes the squeezed PERSPECTIVE to ngx (3D widescreen FOV ✓). The 2D-squeeze / HUD
+  edge-anchor / water-lookup-m00 / sun-occlusion-reproject all only fix where geometry lands in
+  Dolphin's EFB — which ngx discards. At base aspect (4:3) water_native is a literal no-op
+  (`if (s==1.0f) return`); sunmodel/screenfx/efbtex are EFB-roundtrip effects.
+- **EFB-readback effects are a PRE-EXISTING ngx-owns-present gap, NOT a Phase C regression.** Under
+  purejit `ngx_super` skips the original GX draw (ngx_j3d_shape.cpp:75) → Dolphin's EFB is not
+  populated for 3D → guest `GXPeekZ` (sun occlusion glow/lens flare), `GXReadPixMetric` (pollution
+  goop-coverage % → episode triggers), the mirror pre-render, and TAfterEffect dash-blur all read an
+  empty/stale EFB. This is identical under recomp+NO_RECOMP+NGX_PRESENT (g_native_draw on there too)
+  and is the broader "cut Dolphin's GPU tie" frontier — flagged, out of Phase C scope. NOTE: the
+  current DEFAULT (recomp + NGX_PRESENT, no no_recomp) does NOT skip the GX draw (g_native_draw off)
+  → Dolphin EFB stays real → these effects work today. So flipping the default to purejit DOES regress
+  EFB-readback effects vs the headed default — surfaced to the user before the flip.
+- **Diagnostics / opt-in / feature-gated** are inert by design: scene_id (SUNBRIGHT_2DID off),
+  native_gx (SUNBRIGHT_NATIVE_GX off), hud_probe/beam_diag/jas_rate_diag/seqparser_diag/dbg_thp_psq;
+  native_si/native_exi/native_mi/native_math/se_native/ttrack/sms_jkrthread run the guest body when
+  their feature is off → under purejit Dolphin JIT runs the guest function faithfully.
+- fastboot helpers + render seams already purejit-safe (GCLOGO/MOVIE_DIRECT, GX_SET_PROJECTION,
+  J2DSCREEN_DRAW, the ngx GX-tee list). Nothing to do.
+OPEN for Step 2 validation (not a wrapping-override, so not Step-1): AUDIO under purejit. The native
+audio engine intake (se_native/njas) is NOT purejit-safe → inert → audio falls to the guest JAS path
+running under Dolphin JIT + Dolphin DSP HLE (and the native_audio Mixer WRAP sink is inerted by the
+DISABLE_RECOMP substrate purejit implies). Must verify headless with SUNBRIGHT_DUMP_AUDIO in Step 2.
+
 ## Files
 - runtime/jit_hook.cpp — `sb_hook_jit_trampoline` runs `run_prehook` then normal dispatch (step 2).
 - runtime/overrides.h / overrides.cpp — `sunbright_purejit_mode()` accessor + pre-hook table;
