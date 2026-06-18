@@ -44,6 +44,22 @@ include_directories(BEFORE
 
 add_subdirectory("${DOLPHIN_DIR}" dolphin EXCLUDE_FROM_ALL)
 
+# glslang link targets vary by glslang version / system-vs-bundled: older/bundled glslang exports
+# PLAIN targets (glslang, SPIRV, glslang-default-resource-limits); newer (Homebrew on macOS, glslang
+# 14+) exports NAMESPACED ones (glslang::glslang, glslang::SPIRV, …). Linking a name that isn't a
+# CMake target makes the linker try -l<name> → "library 'glslang' not found" (the macOS build break).
+# Detect what exists and link those (their INTERFACE includes propagate the headers either way).
+# Prefer the NAMESPACED targets when they exist (modern/Homebrew glslang on macOS exports
+# glslang::glslang etc. carrying the full library path — required because Homebrew's libdir is not on
+# the default linker search path, so plain `-lglslang` fails = the macOS build break). Otherwise fall
+# back to the plain names, which on Linux resolve either as bundled CMake targets OR as system -l libs
+# in the default search path (how this has always linked here).
+if(TARGET glslang::glslang)
+    set(SB_GLSLANG_LIBS glslang::glslang glslang::SPIRV glslang::glslang-default-resource-limits)
+else()
+    set(SB_GLSLANG_LIBS glslang SPIRV glslang-default-resource-limits)
+endif()
+
 # ── Recompiler tool ───────────────────────────────────────────────────────────
 file(GLOB_RECURSE RECOMP_SOURCES CONFIGURE_DEPENDS tools/recompiler/*.cpp)
 list(FILTER RECOMP_SOURCES EXCLUDE REGEX "tools/recompiler/tests/")   # tests have their own main()
@@ -190,7 +206,7 @@ target_compile_definitions(sunbright PRIVATE
 target_link_libraries(sunbright PRIVATE
     core discio uicommon
     videovulkan          # N2: native renderer reuses Dolphin's VkDevice during bring-up
-    glslang SPIRV glslang-default-resource-limits  # N5: own GLSL->SPIR-V (glslang targets)
+    ${SB_GLSLANG_LIBS}   # N5: own GLSL->SPIR-V (plain or namespaced glslang targets, detected above)
     SDL2::SDL2
     pthread
 )

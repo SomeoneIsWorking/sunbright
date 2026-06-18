@@ -44,9 +44,31 @@ fi
 [ -f "$HERE/.env" ] && { set -a; . "$HERE/.env"; set +a; }
 ROM="${1:-${SUNBRIGHT_ROM:-$HERE/rom.rvz}}"
 
+# Portable core count (macOS has no nproc).
+NCPU="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
+
+# Auto-build the default binary when it's missing OR stale (a source changed since the last build).
+# Only for the default build/ — a custom SUNBRIGHT_BIN is the caller's responsibility.
+if [[ "$BIN" == "$HERE/build/sunbright" ]]; then
+    NEEDS_BUILD=0
+    if [[ ! -x "$BIN" ]]; then
+        NEEDS_BUILD=1
+    elif [[ -n "$(find "$HERE/runtime" "$HERE/CMakeLists.txt" "$HERE/run.sh" -newer "$BIN" -print -quit 2>/dev/null)" ]]; then
+        echo "[run] sources changed since the last build — rebuilding build/sunbright" >&2
+        NEEDS_BUILD=1
+    fi
+    if [[ "$NEEDS_BUILD" == "1" ]]; then
+        echo "[run] building build/sunbright (this can take a while the first time) ..." >&2
+        cmake -B "$HERE/build" -DCMAKE_BUILD_TYPE=Release -DENABLE_VULKAN=ON >&2 \
+            || { echo "[run] cmake configure FAILED" >&2; exit 1; }
+        cmake --build "$HERE/build" -j"$NCPU" --target sunbright >&2 \
+            || { echo "[run] build FAILED" >&2; exit 1; }
+    fi
+fi
+
 if [[ ! -x "$BIN" ]]; then
     echo "sunbright not built ($BIN). Build it with:" >&2
-    echo "  cmake -B \"$HERE/build\" -DCMAKE_BUILD_TYPE=Release -DENABLE_VULKAN=ON && cmake --build \"$HERE/build\" -j\$(nproc)" >&2
+    echo "  cmake -B \"$HERE/build\" -DCMAKE_BUILD_TYPE=Release -DENABLE_VULKAN=ON && cmake --build \"$HERE/build\" -j$NCPU" >&2
     exit 1
 fi
 # Sanity: refuse a STALE / non-native binary. The PC-native engine (no static recompiler in the game)
@@ -54,8 +76,8 @@ fi
 # one is the "I see the Dolphin game, not the native render" trap (memory runsh-stale-j3dvirt-binary).
 if ! strings -n 16 "$BIN" 2>/dev/null | grep -q "static recompiler eradicated"; then
     echo "[run] REFUSING $BIN — it is NOT the PC-native engine build (no no-recomp banner; likely the" >&2
-    echo "      retired recomp build_j3dvirt/ or a stale binary). Rebuild build/ and unset SUNBRIGHT_BIN:" >&2
-    echo "      cmake --build \"$HERE/build\" -j\$(nproc)   # then: ./run.sh" >&2
+    echo "      retired recomp build-j3dvirt/ or a stale binary). Rebuild build/ and unset SUNBRIGHT_BIN:" >&2
+    echo "      cmake --build \"$HERE/build\" -j$NCPU   # then: ./run.sh" >&2
     exit 1
 fi
 if [[ ! -f "$ROM" ]]; then
