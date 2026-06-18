@@ -1,5 +1,21 @@
 # Sunbright — GameCube Static Recompiler
 
+## ⚡ ARCHITECTURE NOW: NO RECOMPILER IN THE GAME (2026-06-18, Phase C — read FIRST)
+The static recompiler is **ERADICATED from the game binary**. There is ONE execution mode:
+**gameplay runs under Dolphin's JIT; the engine runs as PC-native overrides.** `generated/` is no
+longer linked into `sunbright` (`sunbright_purejit_mode()` is unconditionally true; "Linked 0
+recompiled functions"). The `sunbright-recomp` tool is KEPT as **offline static-analysis tooling
+only** (ROM decode / PPC disasm) — it does not feed the game. `./run.sh` is the JIT-native experience
+(ngx native renderer on by default); the **Dolphin-GX baseline** = run with ngx capture OFF (no
+`SUNBRIGHT_NGX_PRESENT`/`NGX_SHAPE`) → guest GX/J2D draws run under Dolphin's JIT.
+Consequences for the rules below: the debugging-path "fix the recompiler / mistranslation" branches
+are **dead** — every bug is now own-it-natively (RE + PC-native override) or a Dolphin-JIT issue.
+Many CLAUDE.md sections below still describe the recomp era (call model, hybrid execution, recomp
+correctness harness) — treat those as HISTORICAL. Live detail: `debug_journal/
+2026-06-18_no_recomp_jit_native_pivot.md` + memory `no-recomp-jit-native-direction`. Known no-recomp
+gaps to own next: native_jas audio engine is dormant under no-recomp (Dolphin DSP HLE for now);
+EFB-readback effects (sun occlusion, pollution coverage, mirror, dash-blur) read an empty EFB.
+
 ## 🛑 THE ONLY ALLOWED DEBUGGING PATH (user directive — never deviate, never propose alternatives)
 When you face a **bug / crash / hang**, follow this exact path. The user is tired of
 reiterating it — do NOT propose any other kind of solution (no env-gated fallback "to keep it

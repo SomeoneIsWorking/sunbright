@@ -484,6 +484,51 @@ audio engine intake (se_native/njas) is NOT purejit-safe → inert → audio fal
 running under Dolphin JIT + Dolphin DSP HLE (and the native_audio Mixer WRAP sink is inerted by the
 DISABLE_RECOMP substrate purejit implies). Must verify headless with SUNBRIGHT_DUMP_AUDIO in Step 2.
 
+## ★★★ PHASE C DONE — RECOMP ERADICATED FROM THE GAME (2026-06-18, session 12)
+User reordered the plan: "recomp should be ERADICATED FIRST then the flip" + "too many flags" (so NO
+SUNBRIGHT_USE_RECOMP opt-out) + "previous flip attempts failed but those were recomp-related so be
+careful still". Executed as three validated, pushed commits (recomp=0 throughout; generated/ now
+reports "Linked 0 recompiled functions"):
+
+- **C-A (01ecee5) — runtime eradication.** `sunbright_purejit_mode()` is unconditionally true (one
+  execution mode: gameplay on Dolphin JIT, engine as native overrides). main_sdl sets the
+  DISABLE_RECOMP substrate unconditionally. **Decoupled render-ownership from purejit** via new
+  `ngx_capture_active()` (env-computed, static-init-order-safe — NOT g_enabled, which other TUs'
+  static registrars race): scene_render's GXSetProjection publish-and-skip + its purejit-safe mark,
+  and the J2DScreen reentrant-around + its mark, now gate on ngx_capture_active(). So **the Dolphin-GX
+  baseline survives recomp eradication**: run with ngx capture OFF (no NGX_PRESENT/NGX_SHAPE) →
+  guest GX/J2D draws run under Dolphin's JIT → Dolphin's GX output is on-screen (the ngx oracle).
+- **C-B (0fa949c) — the build cut (irreversible).** Dropped `${SUNBRIGHT_GENERATED_SOURCES}` from the
+  `sunbright` add_executable; recomp_table_weak.cpp's weak-empty g_recomp_table is the only table.
+  Binary 104MB→76MB. `sunbright-recomp` tool KEPT as offline static-analysis tooling. LINK FIX =
+  `runtime/recomp_dead_stubs.cpp`: ~23 recomp-era override/diagnostic files still NAME generated
+  bodies directly (super-call-via-direct-`func_XXXXXXXX`-symbol). All such calls are in paths INERT
+  under no-recomp (the override isn't purejit-safe → never dispatched → Dolphin JIT runs the
+  original). 72 weak abort-stubs satisfy the linker for that dead code; verified-unreachable, so a
+  stub aborts loudly naming itself if the deadness analysis is ever wrong. TRANSITIONAL — the stubs
+  go as the dead super-call/diagnostic code is deleted.
+- **(17fa6ac) — collapse IsRecompiled** to the single no-recomp path (the whole recomp-dispatch tail
+  was dead). A function is "recompiled" iff it's a full-replacement override marked purejit-safe,
+  except the reentrant primitive's one-shot bypass.
+
+VALIDATION (headless, eradicated build): fastboot Delfino renders identically to the prior purejit
+baseline (plaza/Mario/NPCs/HUD, hud_quads=15, init_ok=1); NORMAL boot (no fastboot, AUTOSTART) goes
+logo→file-select(option.szs)→Delfino(dolpic5.szs)→gameplay at ~1.0×; ngx-off baseline boots to
+Delfino under pure Dolphin JIT — all recomp=0, no fatal, no dead-stub abort. `./run.sh` (NGX_PRESENT
+default) is now the JIT-native experience with no flags.
+
+REMAINING (follow-ups, NOT blockers — system is correct as-is):
+- Dead-code deletion: delete the inert recomp-era super-call/diagnostic override files + their dead
+  stubs (the C-B link fix is transitional scaffolding). Careful/incremental.
+- Vestigial mode-flag reads (SUNBRIGHT_PUREJIT / NO_RECOMP / NGX_NATIVE_DRAW / NORECOMP_*): now
+  no-ops or redundant; prune for the "too many flags" goal.
+- ★ KNOWN no-recomp GAPS (surfaced to user, accepted to address later — see Step-1 section above):
+  (1) the native_jas AUDIO ENGINE is DORMANT under no-recomp (its tees aren't purejit-safe → audio
+  routes guest-JAS-under-Dolphin-JIT → Dolphin DSP HLE → native sink; underruns observed). To honor
+  the "full PC engine" goal it must be made purejit-safe. (2) EFB-readback effects (sun-glow/lens-
+  flare occlusion, pollution goop-coverage triggers, mirror, dash-blur) read an empty EFB because ngx
+  skips the GX draw — the broader "own the GPU" frontier.
+
 ## Files
 - runtime/jit_hook.cpp — `sb_hook_jit_trampoline` runs `run_prehook` then normal dispatch (step 2).
 - runtime/overrides.h / overrides.cpp — `sunbright_purejit_mode()` accessor + pre-hook table;
