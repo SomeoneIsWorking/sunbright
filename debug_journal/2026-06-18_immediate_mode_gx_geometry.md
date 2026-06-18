@@ -82,7 +82,29 @@ so this is specifically an ALPHA-channel-of-the-3D-target issue.
 This is the **"own ngx EFB-alpha" frontier** (prior handoff flagged it). Until it's owned, GXPeekARGB
 must NOT be wired to the colour readback (it'd force always-occluded) — it stays diagnostic. The const
 dst-alpha is plumbed correctly (the cube's fragment outputs 0x10) for when the target alpha is owned.
-Probes kept for the next session: `[efb] cube red px … alpha`, `[efb] clearcolor`, SUNBRIGHT_NGX_CLEARA.
+Probes kept for the next session: `[efb] cube red px … alpha`, `[efb] clearcolor`, SUNBRIGHT_NGX_CLEARA,
+SUNBRIGHT_NGX_NOHUD, `[imm] j2d quad` rect log.
+
+### SESSION-2b NARROWED FURTHER — the colour-readback ALPHA does not reflect the rendered frame
+More tests (gated SUNBRIGHT_DBG_EFB / SUNBRIGHT_NGX_NOHUD):
+- The HUD/J2D quads are all SMALL (logged: counters at corners/top, biggest ~200×22; NO fullscreen
+  quad) → not an alpha clobber. `SUNBRIGHT_NGX_NOHUD=1` (skip the HUD entirely) → cube alpha STILL
+  0x10:0.
+- **NOHUD + `/ngxprefix?n=0` (clear only, zero 3D) vs NOHUD + full 3D → byte-IDENTICAL alpha histogram**
+  (=0xff:113251 other:173469). But a single VkClearValue cannot produce a 2-group spatial alpha
+  pattern, and the 3D RGB clearly renders (scene visible) — so the readback's ALPHA is a FIXED pattern
+  independent of both 3D content AND the clear. ⇒ the colour-readback's alpha CHANNEL is not reflecting
+  the rendered attachment at all (RGB is; alpha isn't).
+- ⇒ NEXT (5-min test to confirm): clear the render pass to a KNOWN alpha (SUNBRIGHT_NGX_CLEARA=0x77),
+  draw nothing, read back — if g_efb_color alpha != 0x77, the readback's alpha is broken/static
+  (format/copy issue), NOT a draw problem. Then inspect: the AbstractTexture RGBA8 render-target image
+  (PresentRenderer::ensure_target, `g_gfx->CreateTexture(...RGBA8, RenderTarget, Texture_2DArray)`) —
+  does Dolphin back it with a format that stores alpha? the framebuffer view? the vkCmdCopyImageToBuffer
+  in the COLOR readback (line ~1157) — is it copying the right aspect/all 4 bytes? Suspect the render
+  target's alpha plane isn't written/stored, so the readback's 4th byte is static.
+- If this turns into a deep Dolphin-VKTexture plumbing fix for a MINOR effect (Mario silhouette through
+  walls), it's reasonable to PARK GXPeekARGB and move to the next port (GXDrawSphere for sky scenes, or
+  another engine subsystem). The immediate-mode GEOMETRY port (the milestone) is complete + committed.
 
 ## Tools / env added
 - SUNBRIGHT_IMM_SHOW=1 — force the cube visible (red) for the geometry verify. (Kept; the falsifiable

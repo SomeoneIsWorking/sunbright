@@ -1112,8 +1112,15 @@ AbstractTexture* PresentRenderer::render(int w, int h) {
     // Delfino plaza pollution darkening — over the 3D scene (depth valid), before the HUD.
     draw_pollution(cmd, w, h);
 
+    // DBG: log j2d quad rects (find a fullscreen alpha-clobbering quad) + SUNBRIGHT_NGX_NOHUD skip.
+    static const bool s_nohud = getenv("SUNBRIGHT_NGX_NOHUD") != nullptr;
+    if (getenv("SUNBRIGHT_DBG_EFB") && (g_frames % 120) == 0 && !j2d.empty()) {
+        for (size_t i = 0; i < j2d.size() && i < 24; i++)
+            fprintf(stderr, "[imm] j2d quad %zu rect=[%.0f,%.0f,%.0f,%.0f] a=%.2f\n",
+                    i, j2d[i].rect[0], j2d[i].rect[1], j2d[i].rect[2], j2d[i].rect[3], j2d[i].misc[2]);
+    }
     // HUD/J2D overlay over the 3D scene (alpha-blended, depth off, dynamic viewport).
-    if (j2d_pipe != VK_NULL_HANDLE && !j2d.empty()) {
+    if (!s_nohud && j2d_pipe != VK_NULL_HANDLE && !j2d.empty()) {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, j2d_pipe);
         VkViewport vp{0, 0, (float)w, (float)h, 0, 1};
         VkRect2D scr{{0, 0}, {(uint32_t)w, (uint32_t)h}};
