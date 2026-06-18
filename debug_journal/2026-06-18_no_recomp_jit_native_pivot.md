@@ -146,8 +146,97 @@ hybrid-era engine overrides" is viable, or whether the full-PC-engine end state 
 overrides re-grounded for a JIT (non-recomp) host. Compare against the working DISABLE_RECOMP boot to
 see what each override changes. Handoff brief: scratch/handoff_2026-06-18_norecomp_boot_hang.md.
 
+## ★★ BLOCKER ROOT-CAUSED (2026-06-18, session 9): TWO independent boot-killers + reconfirmed seam
+Built a group-bisection kill-switch and gdb-traced each failure mode. The NO_RECOMP boot hang is
+NOT one bug — it is the hybrid-era engine colliding with a pure-Dolphin-JIT host in (at least) two
+independent ways, plus the still-unsolved central seam underneath both.
+
+### Tooling added this session
+- **Override-group kill-switch** (overrides.h/overrides.cpp): every `register_override(...)` call now
+  captures its `__FILE__` via a function-like macro → `register_override_impl(addr, fn, group)`.
+  Under SUNBRIGHT_NO_RECOMP:
+  - `SUNBRIGHT_NORECOMP_SKIP=substr,substr` — do NOT register overrides whose file matches (blacklist).
+  - `SUNBRIGHT_NORECOMP_ONLY=substr,substr` — register ONLY matching files (whitelist; `__none__`
+    skips ALL overrides while keeping native_os).
+  - `SUNBRIGHT_NORECOMP_DBG=1` — log each skipped override.
+- **native_os A/B gate** (sunbright_bridge.cpp `norecomp_skip_native_os`): `SUNBRIGHT_NORECOMP_NONOS=1`
+  skips nthr at the JIT-entry seam. OPT-IN (see incoherence note below).
+- **Harness**: scratch/norecomp_bisect.sh `<tag> [ENV=val...]` — 25 s headless boot, reports
+  /ngxshape frame_swaps + /metrics speed + log tail.
+
+### The matrix (all SUNBRIGHT_NO_RECOMP + FASTBOOT, headless, ~24 s)
+| config | native_os | overrides | speed | state |
+|---|---|---|---|---|
+| NOOV (NORECOMP_NOOV=1) | off | off | 3.54× | PROGRESSES (loads nintendo.szs, zelda ucode) |
+| full (default no_recomp) | on | on | 448× | RACE — VI free-runs, frame_swaps=0 |
+| allov_off (ONLY=__none__) | on | off | 0.0078× | CRAWL — nthr idle deadlock |
+| nonos (NONOS=1) | off* | on | 0.0073× | CRAWL — two-scheduler conflict |
+| paced (PACED_BOOT=1) | on | on | 1.0× | race gone, still no draws (have_proj=1, frame_swaps=0) |
+\* incoherent: recomp_lookup still routes recomp OS code into nthr — see below.
+
+### Boot-killer #1 — VI-pacing governor race (overrides on)
+gdb (full): EmuThread spins `JitTrampoline → Run → ov_VIWaitForRetrace → sunbright_wait_vi_field →
+CoreTiming::Advance` forever. `wait_vi_field` advances one VI field per call bounded by
+`sb_time_ahead()`; the governor only engages after the first audio push / first visual (na_ever_pushed
+/ sb_visual_live). Under pure JIT the boot is stuck in a VI-wait loop BEFORE any audio/visual, so the
+governor never engages → every call advances a full field → emulated time races at 448× while the
+game makes no progress. PACED_BOOT=1 forces the governor on → race→1.0×, but boot still doesn't draw.
+The governor's engage-on-first-audio model is recomp-boot-tuned and wrong for a JIT host.
+
+### Boot-killer #2 — nthr idle deadlock (native_os on, overrides off)
+gdb (allov_off): every guest host-thread ("CPU-GPU thread") is parked in `cond_wait` inside
+`sunbright_run_recomp_tree`; the one live thread runs `nthr_idle_driver → idle_run` forever. nthr put
+ALL guest threads to sleep waiting for tokens the recomp call model used to grant, and nothing wakes
+them → idle driver spins (0.0078×). Dolphin's own scheduler (which boots fine under DISABLE_RECOMP)
+is shadowed by nthr.
+
+### The reconfirmed CENTRAL SEAM (why the gates are half-measures)
+gdb (nonos): even with native_os gated off at the JIT entry, the spin stack is
+`func_80346258 → nthrt_block_current → nthr_idle_driver` — i.e. **RECOMPILED OS code is still
+running** and calling native_os. Because `recomp_lookup` (call_ppc/tail_ppc) and `recomp_raw`
+(super-calls) do NOT honor no_recomp (dolphin_hook.cpp:93/108) — they always return the recomp body.
+So the moment any override super-calls or `call_ppc`s, the whole recompiled subtree (incl. the GC OS
+scheduler) runs as recomp, which then calls native_os. Gating native_os only at the top-level entry
+therefore creates TWO schedulers over one context (the exact corruption the IsRecompiled comment
+warns about) → the nonos crawl. Hence NONOS is opt-in, not default.
+
+CONCLUSION: `SUNBRIGHT_NO_RECOMP` today only flips the TOP-LEVEL JIT entry; recomp still dominates
+(~2.16M calls/s, Phase A census). "Gameplay under JIT" is not real yet. Both boot-killers AND the
+gates are downstream of the unsolved seam.
+
+### CRYSTALLIZED TARGET ARCHITECTURE (the decision)
+The end state is **DISABLE_RECOMP (pure Dolphin JIT — boots cleanly today) + ENGINE overrides only.**
+Overrides split into two classes; the pivot must treat them differently:
+- **(A) Execution-model / pacing / OS overrides** — native_os(nthr), VI pacing (sms_vi_native /
+  sms_frame_sync), GX-FIFO drawsync (sms_drawsync_lossproof / gx_stream_own / gxdrawdone), the
+  host-clock governor + charge_guest_time + poll_yield device service. These exist ONLY to support
+  the recomp hybrid. Under pure JIT Dolphin already does all of it correctly (proof: DISABLE_RECOMP
+  boots). They must be OFF under no_recomp.
+- **(B) Engine overrides** — ngx render capture (ngx_j3d_shape, scene_render, scene_id, hud), native
+  audio (native_jas/se/bgm), native_card. KEEP these.
+
+### PHASE B PLAN (concrete, the real next work)
+1. **Make the seam honor no_recomp.** Under no_recomp, `recomp_lookup`/`recomp_raw` must NOT serve
+   recomp bodies. With recomp off, ALL guest code runs under Dolphin JIT, which already consults
+   overrides at every block boundary via the trampoline (block-linking off) — so engine overrides
+   keep intercepting for free. (Interpreter stays off-limits: it bypasses overrides.)
+2. **Convert class-(B) wrapping overrides from super-call to PRE-HOOK** (the journal's approach #1):
+   the override OBSERVES (captures guest J3D/J2D state for ngx) then signals "run the original under
+   Dolphin JIT" instead of `recomp_raw`. Mechanism: a pre-hook table consulted in
+   `sb_hook_jit_trampoline` BEFORE the IsRecompiled decision; run the pre-hook, then return FALSE so
+   Dolphin JITs the original block (its sub-calls re-consult overrides naturally — no reentrancy, no
+   super-call). Full native-replacement overrides (e.g. ngx_j3d_shape g_native_draw) need no original
+   and just return true.
+3. **Turn class-(A) overrides OFF under no_recomp** (native_os via NONOS made default-on-OFF once the
+   seam lands; VI/drawsync/governor via SUNBRIGHT_OVERRIDE_IF gated on "recomp-mode only").
+4. Cheap validation BEFORE the big conversion: add a minimal pre-hook on ONE address atop an
+   otherwise-DISABLE_RECOMP boot; confirm it boots AND the pre-hook fires (proves "pure JIT + observe
+   hook, no recomp/native_os/exec-overrides" is viable) before converting all of class (B).
+
 ## Files
-- runtime/sunbright_bridge.cpp — `IsRecompiled` no_recomp branch (Phase A).
+- runtime/overrides.h / overrides.cpp — register_override → register_override_impl(group); NORECOMP_SKIP/ONLY.
+- runtime/sunbright_bridge.cpp — `IsRecompiled` no_recomp branch (Phase A) + `norecomp_skip_native_os` (NONOS A/B).
+- scratch/norecomp_bisect.sh — boot-hang bisection harness.
 - runtime/overrides/ngx_j3d_shape.cpp — `g_native_draw` + ov_j3dshape_draw native per-view setup.
 - runtime/overrides.h — SUNBRIGHT_OVERRIDE_IF (conditional registration).
 - runtime/overrides/{dbg_logo,interp_redraw,interp_capture}.cpp — feature-gated registration.

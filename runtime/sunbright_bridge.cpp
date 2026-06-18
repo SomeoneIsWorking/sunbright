@@ -44,6 +44,18 @@ extern "C" const size_t    g_recomp_table_size;
 static std::unordered_map<uint32_t, RecompFunc> g_table;
 static bool g_inited = false;
 
+// A/B switch (diagnostic): SUNBRIGHT_NORECOMP_NONOS=1 skips the nthr native scheduler (native_os) at
+// the JIT-entry seam under no_recomp, to test letting Dolphin own threading. NOTE: this is INCOHERENT
+// while recomp still runs (the unsolved Phase-B seam): recomp_lookup does NOT honor no_recomp, so
+// recompiled OS code (reached via call_ppc super-calls) still calls native_os even with this set —
+// the result is two schedulers over one context (the deadlock the IsRecompiled comment warns about).
+// Keep it OPT-IN until recomp_lookup/recomp_raw honor no_recomp; default = native_os stays on.
+static bool norecomp_skip_native_os() {
+    static const bool no_recomp = getenv("SUNBRIGHT_NO_RECOMP") != nullptr;
+    static const bool nonos     = getenv("SUNBRIGHT_NORECOMP_NONOS") != nullptr;
+    return no_recomp && nonos;
+}
+
 namespace SunbrightBridge {
 
 bool Init(const char* /*unused*/) {
@@ -76,7 +88,12 @@ bool IsRecompiled(uint32_t pc) {
     static const bool no_overrides = getenv("SUNBRIGHT_NORECOMP_NOOV") != nullptr;
     if (no_overrides) return false;
     if (override_lookup(pc)) return true;           // hand-written native override
-    if (native_os_lookup(pc)) return true;          // native-OS primitive (nthr scheduler) — MUST
+    // NO_RECOMP: native-OS (nthr scheduler) is an EXECUTION-MODEL override built for the recomp
+    // hybrid. Under pure Dolphin JIT it deadlocks boot — nthr parks every guest thread waiting for
+    // tokens the recomp call model used to grant, then the idle driver spins forever (no thread
+    // runnable). Under no_recomp Dolphin must own threading (exactly as DISABLE_RECOMP does, which
+    // boots). SUNBRIGHT_NORECOMP_KEEPOS=1 forces the old behavior for A/B.
+    if (!norecomp_skip_native_os() && native_os_lookup(pc)) return true;  // native-OS primitive — MUST
         // intercept on the JIT-entry path too, else JIT'd code (e.g. mountStageArchive) calling
         // OSSleepThread links straight to the recompiled GC scheduler, bypassing nthr → two
         // schedulers over one context → corrupted thread state (the mountFixed null-this crash).
@@ -368,7 +385,7 @@ bool Run(uint32_t pc) {
     // Native-OS / PC-native subsystem override takes precedence even at a top-level JIT entry, so
     // the seam is universal (call_ppc + run_jit_sync interpreter + here). Runs and returns to lr.
 #ifdef HAVE_DOLPHIN_CORE
-    if (NativeOSFn nf = native_os_lookup(pc)) {
+    if (NativeOSFn nf = norecomp_skip_native_os() ? nullptr : native_os_lookup(pc)) {
         CPUState cpu; dolphin_state_to_cpu(Core::System::GetInstance().GetPPCState(), cpu); cpu.pc = pc;
         nf(cpu);
         auto& ppc = Core::System::GetInstance().GetPPCState();

@@ -22,7 +22,17 @@
 using RecompFunc = void (*)(CPUState&);
 
 RecompFunc override_lookup(u32 addr);     // nullptr if none
-void       register_override(u32 addr, RecompFunc fn);
+
+// Register a native override. `group` is the source file the override lives in (filled in
+// automatically by the macro below). Under the NO_RECOMP bisection envs the group lets whole
+// override files be skipped (routed to Dolphin JIT) without touching code:
+//   SUNBRIGHT_NORECOMP_SKIP=substr1,substr2  → do NOT register overrides whose file matches
+//   SUNBRIGHT_NORECOMP_ONLY=substr1,substr2  → register ONLY overrides whose file matches
+// Both are honored only when SUNBRIGHT_NO_RECOMP is set; matching is by filename substring.
+void       register_override_impl(u32 addr, RecompFunc fn, const char* group);
+// Function-like macro so EVERY call site (the SUNBRIGHT_OVERRIDE macro AND the direct
+// register_override(...) calls scattered through runtime/overrides/) captures its __FILE__.
+#define register_override(addr, fn) register_override_impl((addr), (fn), __FILE__)
 
 // Super-call: the original generated body for `addr`, bypassing the override registered on it.
 // Lets an override run the real function after observing/adjusting state (run the original draw
