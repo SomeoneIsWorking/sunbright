@@ -849,9 +849,12 @@ extern "C" const void* sb_ngx_present_xfb(int w, int h) {
         const bool repeat = (ff == s_last_ff);
         s_last_ff = ff;
         g_interp_presents++;
-        // New frame → present it (mode 0). Repeat field → present the in-between blend (mode 1).
-        sb_ngx_set_interp_mode(repeat ? 1 : 0);
-        if (repeat) g_interp_blends++;
+        // PHASE: at frame N (just published) we have N-1 and N. For MONOTONIC motion the in-between
+        // (N-1↔N midpoint) must be shown BEFORE N, not after — so the NEW-frame field shows the
+        // blend (=N-0.5) and the following REPEAT field shows N. That gives display positions
+        // 0.5,1.0,1.5,2.0,… (smooth). The reverse (N then blend) is a sawtooth judder = the bug.
+        sb_ngx_set_interp_mode(repeat ? 0 : 1);
+        if (!repeat) g_interp_blends++;
     } else {
         sb_ngx_set_interp_mode(0);
     }

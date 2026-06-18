@@ -46,7 +46,16 @@ ROM="${1:-${SUNBRIGHT_ROM:-$HERE/rom.rvz}}"
 
 if [[ ! -x "$BIN" ]]; then
     echo "sunbright not built ($BIN). Build it with:" >&2
-    echo "  cmake --build \"$HERE/build-j3dvirt\" --target sunbright -j\$(nproc)" >&2
+    echo "  cmake -B \"$HERE/build\" -DCMAKE_BUILD_TYPE=Release -DENABLE_VULKAN=ON && cmake --build \"$HERE/build\" -j\$(nproc)" >&2
+    exit 1
+fi
+# Sanity: refuse a STALE / non-native binary. The PC-native engine (no static recompiler in the game)
+# carries this banner string; the retired recomp build (build-j3dvirt/) does NOT. Running the stale
+# one is the "I see the Dolphin game, not the native render" trap (memory runsh-stale-j3dvirt-binary).
+if ! strings -n 16 "$BIN" 2>/dev/null | grep -q "static recompiler eradicated"; then
+    echo "[run] REFUSING $BIN — it is NOT the PC-native engine build (no no-recomp banner; likely the" >&2
+    echo "      retired recomp build_j3dvirt/ or a stale binary). Rebuild build/ and unset SUNBRIGHT_BIN:" >&2
+    echo "      cmake --build \"$HERE/build\" -j\$(nproc)   # then: ./run.sh" >&2
     exit 1
 fi
 if [[ ! -f "$ROM" ]]; then
