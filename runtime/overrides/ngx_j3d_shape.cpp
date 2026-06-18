@@ -883,6 +883,11 @@ void capture_textures(u32 tevblock, u32 vt) {
         d.wrap_s = T[0x06]; d.wrap_t = T[0x07];     // GX wrap mode (0=CLAMP 1=REPEAT 2=MIRROR)
         d.mipmap = T[0x10];                        // mipmapEnabled
         d.min_filter = T[0x14]; d.mag_filter = T[0x15];   // GXTexFilter
+        // ResTIMG mipmapCount @ 0x18: number of stored mip levels. Used ONLY when the GX min
+        // filter is a mip variant (>=2 = *_MIP_*); else the game samples level 0 only. The
+        // authored high mips can differ wildly from level 0 (e.g. the Delfino floor's distant
+        // levels are dark blue), so honouring them is required for correct minified surfaces.
+        d.mip_count = (d.min_filter >= 2 && T[0x18] > 1) ? T[0x18] : 1;
         d.tlut_fmt = T[0x09];                     // colorFormat (TLUT fmt for CI)
         const u32 imgOff = ((u32)T[0x1C] << 24) | ((u32)T[0x1D] << 16) | ((u32)T[0x1E] << 8) | T[0x1F];
         d.addr = timg + imgOff;
@@ -3102,10 +3107,10 @@ int sb_ngx_gxstate_dump(char* out, int cap) {
         }
         static const char* WRAP[3]={"CLAMP","REPEAT","MIRROR"};
         for (int m=0;m<8;m++) if (R.tex[m].addr)
-            n += snprintf(out+n, cap-n, "    texmap%d: addr=%08x %ux%u fmt=%u tlut=%08x wrapS=%s wrapT=%s minF=%u magF=%u mip=%u\n",
+            n += snprintf(out+n, cap-n, "    texmap%d: addr=%08x %ux%u fmt=%u tlut=%08x wrapS=%s wrapT=%s minF=%u magF=%u mip=%u mipCnt=%u\n",
                           m, R.tex[m].addr, R.tex[m].w, R.tex[m].h, R.tex[m].fmt, R.tex[m].tlut_addr,
                           R.tex[m].wrap_s<3?WRAP[R.tex[m].wrap_s]:"?", R.tex[m].wrap_t<3?WRAP[R.tex[m].wrap_t]:"?",
-                          R.tex[m].min_filter, R.tex[m].mag_filter, R.tex[m].mipmap);
+                          R.tex[m].min_filter, R.tex[m].mag_filter, R.tex[m].mipmap, R.tex[m].mip_count);
         const UvDbg& U = g_uvdbg_pub;
         if (U.have) {
             n += snprintf(out+n, cap-n,

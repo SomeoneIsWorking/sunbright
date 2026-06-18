@@ -32,7 +32,10 @@ struct NgxTexBind {
     uint8_t  min_filter;      // GXTexFilter (0=NEAR 1=LINEAR 2..6=mip variants)
     uint8_t  mag_filter;      // GXTexFilter (0=NEAR 1=LINEAR)
     uint8_t  mipmap;          // mipmapEnabled (0/1)
-    uint8_t  pad_s[3];
+    uint8_t  mip_count;       // ResTIMG mipmapCount (number of stored mip levels; >=1). The
+                              // floor texture's authored high mips are dark — sampling only
+                              // level 0 renders minified tiled surfaces ~2x too bright.
+    uint8_t  pad_s[2];
 };
 
 // A run of vertices sharing one material AND the same set of bound texmaps. The
