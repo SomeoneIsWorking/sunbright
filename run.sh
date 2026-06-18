@@ -56,6 +56,13 @@ if [[ "$BIN" == "$HERE/build/sunbright" ]]; then
     elif [[ -n "$(find "$HERE/runtime" "$HERE/CMakeLists.txt" "$HERE/run.sh" -newer "$BIN" -print -quit 2>/dev/null)" ]]; then
         echo "[run] sources changed since the last build — rebuilding build/sunbright" >&2
         NEEDS_BUILD=1
+    elif ! strings -n 16 "$BIN" 2>/dev/null | grep -q "static recompiler eradicated"; then
+        # Stale in CONTENT but not mtime: an old pre-no-recomp binary that is *newer* than the
+        # (unchanged, e.g. "git pull: already up to date") source, so the -newer test above misses it.
+        # The no-recomp banner is the ground truth for "is this the PC-native engine build" — if it's
+        # absent, rebuild rather than dead-ending on the refusal below.
+        echo "[run] build/sunbright lacks the no-recomp banner (stale pre-pivot binary) — rebuilding" >&2
+        NEEDS_BUILD=1
     fi
     if [[ "$NEEDS_BUILD" == "1" ]]; then
         echo "[run] building build/sunbright (this can take a while the first time) ..." >&2
@@ -84,9 +91,17 @@ fi
 # carries this banner string; the retired recomp build (build-j3dvirt/) does NOT. Running the stale
 # one is the "I see the Dolphin game, not the native render" trap (memory runsh-stale-j3dvirt-binary).
 if ! strings -n 16 "$BIN" 2>/dev/null | grep -q "static recompiler eradicated"; then
-    echo "[run] REFUSING $BIN — it is NOT the PC-native engine build (no no-recomp banner; likely the" >&2
-    echo "      retired recomp build-j3dvirt/ or a stale binary). Rebuild build/ and unset SUNBRIGHT_BIN:" >&2
-    echo "      cmake --build \"$HERE/build\" -j$NCPU   # then: ./run.sh" >&2
+    if [[ "$BIN" == "$HERE/build/sunbright" ]]; then
+        # We already tried to (re)build the default binary above and it STILL lacks the banner —
+        # a genuine build problem, not just a stale artifact.
+        echo "[run] REFUSING $BIN — rebuilt but the no-recomp banner is still absent. The build is" >&2
+        echo "      broken or incomplete. Reconfigure + rebuild from clean and check for errors:" >&2
+        echo "      cmake -B \"$HERE/build\" -DCMAKE_BUILD_TYPE=Release -DENABLE_VULKAN=ON && cmake --build \"$HERE/build\" -j$NCPU" >&2
+    else
+        echo "[run] REFUSING $BIN — it is NOT the PC-native engine build (no no-recomp banner; likely the" >&2
+        echo "      retired recomp build-j3dvirt/ or a stale binary). Unset SUNBRIGHT_BIN to use build/, or" >&2
+        echo "      rebuild that path:  cmake --build \"$(dirname "$BIN")/..\" -j$NCPU" >&2
+    fi
     exit 1
 fi
 if [[ ! -f "$ROM" ]]; then
