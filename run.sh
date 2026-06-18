@@ -47,6 +47,12 @@ ROM="${1:-${SUNBRIGHT_ROM:-$HERE/rom.rvz}}"
 # Portable core count (macOS has no nproc).
 NCPU="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
 
+# Does the binary carry the no-recomp banner (ground truth for "PC-native engine build")?
+# Use `grep -qa` directly on the binary, NOT `strings`: macOS `strings` does not scan a linked
+# Mach-O the way GNU strings does and silently misses the banner, falsely flagging a good build as
+# stale. `grep -qa` (treat-as-text) finds it on both GNU and BSD grep.
+has_banner() { LC_ALL=C grep -qa "static recompiler eradicated" "$1" 2>/dev/null; }
+
 # Auto-build the default binary when it's missing OR stale (a source changed since the last build).
 # Only for the default build/ — a custom SUNBRIGHT_BIN is the caller's responsibility.
 if [[ "$BIN" == "$HERE/build/sunbright" ]]; then
@@ -56,7 +62,7 @@ if [[ "$BIN" == "$HERE/build/sunbright" ]]; then
     elif [[ -n "$(find "$HERE/runtime" "$HERE/CMakeLists.txt" "$HERE/run.sh" -newer "$BIN" -print -quit 2>/dev/null)" ]]; then
         echo "[run] sources changed since the last build — rebuilding build/sunbright" >&2
         NEEDS_BUILD=1
-    elif ! strings -n 16 "$BIN" 2>/dev/null | grep -q "static recompiler eradicated"; then
+    elif ! has_banner "$BIN"; then
         # Stale in CONTENT but not mtime: an old pre-no-recomp binary that is *newer* than the
         # (unchanged, e.g. "git pull: already up to date") source, so the -newer test above misses it.
         # The no-recomp banner is the ground truth for "is this the PC-native engine build" — if it's
@@ -90,7 +96,7 @@ fi
 # Sanity: refuse a STALE / non-native binary. The PC-native engine (no static recompiler in the game)
 # carries this banner string; the retired recomp build (build-j3dvirt/) does NOT. Running the stale
 # one is the "I see the Dolphin game, not the native render" trap (memory runsh-stale-j3dvirt-binary).
-if ! strings -n 16 "$BIN" 2>/dev/null | grep -q "static recompiler eradicated"; then
+if ! has_banner "$BIN"; then
     if [[ "$BIN" == "$HERE/build/sunbright" ]]; then
         # We already tried to (re)build the default binary above and it STILL lacks the banner —
         # a genuine build problem, not just a stale artifact.
