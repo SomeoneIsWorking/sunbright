@@ -575,6 +575,31 @@ drawsync — Dolphin owns timing under no-recomp, so those stay Dolphin unless/u
 Tasks: #5 audio, #6 card, #7 drawsync, #8 inventory+remaining. Per-subsystem validate headless +
 commit; never leave a subsystem half-re-grounded (partial audio is worse than Dolphin-HLE audio).
 
+## ★★ RE-GROUNDING PATTERN ESTABLISHED + AUDIO DONE (2026-06-18, session 12, commit bc67e00)
+The re-grounding recipe (proven on audio; applies to every engine subsystem):
+- **`SUNBRIGHT_OVERRIDE_NATIVE(name, addr)`** (overrides.h) = register + mark purejit-safe in one →
+  the seam DISPATCHES under no-recomp (runs native, returns to lr). Use for FULL-REPLACEMENT seams.
+- **Fallback / guest-original needed** (a sound id the engine doesn't own, a stream, an A/B-disable):
+  `run_guest(cpu, addr)` = `sb_run_original_around(cpu, addr, nullptr, 0)` — runs the guest original
+  under Dolphin's JIT so nested overridden calls still intercept (interp would bypass them). Must be
+  the override's LAST action.
+- **Leaf guest helper whose RESULT is needed inline** (e.g. __CARDVerify → r3): `call_ppc(cpu, addr)`
+  runs it under the interpreter and returns inline. OK only when the helper's subtree has no
+  override-relevant calls (else use run_guest, which keeps interception but isn't value-returning).
+- **Pure observe-then-super-call wrappers** that just funnel into another overridden fn: LEAVE INERT
+  — the guest runs them under JIT and the nested call hits the override (e.g. startSoundActor/
+  startSoundDirectID → startSoundBasic).
+- **No double-output rule**: a full-replacement intake (skips the guest body) means the guest engine
+  never gets those voices → its Dolphin output is silent for them → the native engine is the sole
+  source automatically (no suppression needed). PROVEN for audio: sink RMS ≈ njas-only (ratio 0.98).
+
+AUDIO (native_jas) RE-GROUNDED + verified: se_native tees → OVERRIDE_NATIVE; njas synthesizes SE/BGM
+natively under no-recomp (recomp=0, 1.0×, no boot stall), real smooth audio, no doubling. The
+guest-JAS-path overrides (cmdnoteon/oscillator/dsp_update/ttrack/aid/syncdsp/zelda_ucode) stay INERT
+— they're for the guest audio path njas bypasses; Dolphin owns DSP/mailbox timing. Engine now native
+under no-recomp = **renderer (ngx) + audio (native_jas)**. NEXT: card (#6 — __CARDVerify via call_ppc,
+switch native_os_register→OVERRIDE_NATIVE), drawsync (#7), inventory the rest (#8).
+
 ## Files
 - runtime/jit_hook.cpp — `sb_hook_jit_trampoline` runs `run_prehook` then normal dispatch (step 2).
 - runtime/overrides.h / overrides.cpp — `sunbright_purejit_mode()` accessor + pre-hook table;
