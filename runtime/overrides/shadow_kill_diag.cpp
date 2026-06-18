@@ -33,6 +33,17 @@ static bool kill_shineshadow_on() {
     return v == 1;
 }
 
+// SUNBRIGHT_KILL_MAPOBJWAVE=1 — no-op TMapObjWave::perform (the Delfino plaza water/wave draw, "波の表現").
+// /gxblend named its initDraw (0x801dd720) as the BLEND src=SRCALPHA dst=SRCCLR (multiply-ish) darkening
+// caller (cnt 326). HYPOTHESIS: the wave draws a multiply-darkening over the plaza ground that ngx misses
+// (the residual floor gap: ngx 129 vs oracle 101, after the pollution port). TEST: kill it in the ORACLE
+// — if the floor brightens toward ngx (129), the wave IS the residual darkening; then port it natively.
+static bool kill_mapobjwave_on() {
+    static int v = -1;
+    if (v < 0) v = getenv("SUNBRIGHT_KILL_MAPOBJWAVE") ? 1 : 0;
+    return v == 1;
+}
+
 namespace {
 // drawShadowGD__19TMBindShadowManagerFUlPQ26JDrama9TGraphics — the EFB stencil stamp + composite.
 SUNBRIGHT_OVERRIDE_IF_NATIVE(ov_kill_drawShadowGD, 0x8022fa40u, kill_shadow_on()) {
@@ -45,6 +56,10 @@ SUNBRIGHT_OVERRIDE_IF_NATIVE(ov_kill_drawShadow, 0x8022f014u, kill_shadow_on()) 
 // drawShineShadowVolume__18TModelWaterManager — the Delfino plaza pollution darkening.
 SUNBRIGHT_OVERRIDE_IF_NATIVE(ov_kill_shineshadow, 0x8027c67cu, kill_shineshadow_on()) {
     (void)cpu;  // no-op: skip the shine-shadow-volume pollution darkening entirely.
+}
+// perform__11TMapObjWave — the plaza wave/water draw (calls initDraw + draw). No-op skips both.
+SUNBRIGHT_OVERRIDE_IF_NATIVE(ov_kill_mapobjwave, 0x801dcdd8u, kill_mapobjwave_on()) {
+    (void)cpu;  // no-op: skip the wave draw entirely.
 }
 }  // namespace
 

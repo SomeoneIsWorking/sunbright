@@ -496,6 +496,10 @@ struct PollutionParams {
 };
 PollutionParams g_pollution, g_pollution_pub;
 SUNBRIGHT_OVERRIDE(ov_shineshadowvol, 0x8027c67cu) {
+    if (getenv("SUNBRIGHT_DBG_POLL")) {
+        static unsigned long c = 0;
+        if ((c++ % 60) == 0) fprintf(stderr, "[poll-tee] drawShineShadowVolume fired #%lu g_enabled=%d\n", c, (int)g_enabled);
+    }
     if (g_enabled) {
         const u32 self = cpu.gpr[3], vm = cpu.gpr[4];      // this (TModelWaterManager), param_1 (viewMtx)
         if (valid(self) && valid(vm)) {
@@ -2962,6 +2966,12 @@ SUNBRIGHT_OVERRIDE(ov_j3dshape_draw, 0x802e0390u) {
 // purejit-safe RETURN-TRUE override: IsRecompiled returns true, Run() dispatches ov_j3dshape_draw
 // every dispatch (g_native_draw is forced on above, so it never super-calls), then returns to lr so
 // Dolphin JIT continues. Marked only when ngx capture is active.
+static const bool ov_poll_dbg_mark = [] {
+    // diag: force the shineshadow tee purejit-safe even when ngx capture is off (g_enabled false),
+    // so SUNBRIGHT_DBG_POLL can observe whether the GAME calls drawShineShadowVolume in NGX_PRESENT=0.
+    if (getenv("SUNBRIGHT_DBG_POLL")) mark_override_purejit_safe(0x8027c67cu);
+    return true;
+}();
 static const bool ov_j3dshape_draw_pj = [] {
     if (!g_enabled) return true;
     // The draw seam + every GX/J3D capture tee must fire PER-CALL under purejit (return-true), not

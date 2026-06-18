@@ -480,6 +480,12 @@ void PresentRenderer::draw_pollution(VkCommandBuffer cmd, int w, int h) {
     float center[3], radius, color[3], clearA;
     if (!sb_ngx_get_pollution(center, &radius, color, &clearA)) return;   // not active this frame
     float P[16]; if (!sb_ngx_get_proj(P)) return;
+    if (getenv("SUNBRIGHT_DBG_POLL")) {
+        static int n = 0;
+        if (n++ % 60 == 0)
+            fprintf(stderr, "[poll] eyeCenter=(%.1f,%.1f,%.1f) radius=%.1f clearA=%.3f color=(%.3f,%.3f,%.3f)\n",
+                    center[0], center[1], center[2], radius, clearA, color[0], color[1], color[2]);
+    }
     // model (unit->eye), row-major: translate(center) * scale(radius).
     const float M[16] = { radius,0,0,center[0],  0,radius,0,center[1],  0,0,radius,center[2],  0,0,0,1 };
     float MVP[16];
