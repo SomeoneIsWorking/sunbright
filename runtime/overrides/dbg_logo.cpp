@@ -25,7 +25,7 @@ static void logo_log(const char* tag, u32 self, u32 state, u32 dir, u32 phase) {
 }
 
 // 802a6398: director-creator. Trace state-in (byte [this+8]) and director [this+4] each call.
-SUNBRIGHT_OVERRIDE(dbg_logo_creator, 0x802a6398u) {
+SUNBRIGHT_OVERRIDE_IF(dbg_logo_creator, 0x802a6398u, getenv("SUNBRIGHT_DBG_LOGO")) {
     const u32 self = cpu.gpr[3];
     if (on()) logo_log("creat.in", self, mem_r32(self + 8), mem_r32(self + 4), mem_r32(0x8040e190));
     func_802a6398(cpu);
@@ -33,7 +33,7 @@ SUNBRIGHT_OVERRIDE(dbg_logo_creator, 0x802a6398u) {
 }
 
 // 802a5f50: per-iteration driver. r3 in = this; r3 out = next state. Trace in/out + director + phase.
-SUNBRIGHT_OVERRIDE(dbg_logo_driver, 0x802a5f50u) {
+SUNBRIGHT_OVERRIDE_IF(dbg_logo_driver, 0x802a5f50u, getenv("SUNBRIGHT_DBG_LOGO")) {
     const u32 self = cpu.gpr[3];
     const u32 st_in = mem_r32(self + 8), dir = mem_r32(self + 4), ph = mem_r32(0x8040e190);
     if (on()) logo_log("drv.in", self, st_in, dir, ph);

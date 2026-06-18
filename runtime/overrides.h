@@ -48,3 +48,15 @@ bool jit_forced_registered();             // any forced-JIT range registered?
     static const bool name##_registered =                                       \
         (register_override((addr), &name), true);                               \
     static void name(CPUState& cpu)
+
+// Conditional variant — register the override ONLY when `cond` is true at static-init time.
+// For FEATURE/observer overrides (interp60, debug tracers): when the feature is off they would
+// otherwise just super-call the recompiled body, which under the no-recomp pivot needlessly forces
+// the whole subtree (frame loop / director / scene graph) through recomp instead of letting Dolphin
+// JIT the original. Not registering them when off routes the original to the JIT. (`cond` is
+// evaluated once; getenv-based gates are fine at static init.)
+#define SUNBRIGHT_OVERRIDE_IF(name, addr, cond)                                 \
+    static void name(CPUState& cpu);                                            \
+    static const bool name##_registered =                                       \
+        ((cond) ? (register_override((addr), &name), true) : false);           \
+    static void name(CPUState& cpu)

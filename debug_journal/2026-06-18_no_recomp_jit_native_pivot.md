@@ -89,7 +89,38 @@ needs NO reentrancy. The census shows the wrapping overrides are mostly observe-
 (interp_redraw perform hooks [INTERP60-gated, off by default], ngx GX tees, scene_render projection)
 — a good fit for pre-hooks; a post-hook variant covers the few that do after-work. Lean #1.
 
+## ★ MAJOR FINDING (2026-06-18): Phase A "JIT gameplay" was PARTLY ILLUSORY
+Traced the recomp root under NO_RECOMP via SUNBRIGHT_DBG_CPBT=<addr> (one-shot host backtrace in
+call_ppc). The chain rooting the whole game tree:
+```
+JitTrampoline → Run → dbg_logo_creator/driver (dbg_logo.cpp, override on the TApplication boot/frame
+   state machine func_802a6398/802a5f50) → [super-call recomp] → ov_interp_mardir_direct
+   (interp_redraw.cpp, override on TMarDirector::direct 0x80299838) → [super-call recomp] →
+   the ENTIRE scene-graph tree (TObjHitCheck → checkDistance, perform, draws) AS RECOMP.
+```
+So under NO_RECOMP the FRAME LOOP itself ran as RECOMP (via dbg_logo's unconditional super-call),
+with Dolphin JIT only filling the gaps. The 2M recomp/s WAS the game running as recomp. "Gameplay
+under JIT" was not actually happening.
+
+These overrides are FEATURE/observer hooks registered UNCONDITIONALLY that only super-call when their
+feature is off: dbg_logo (SUNBRIGHT_DBG_LOGO, off), all interp_redraw + interp_capture overrides
+(INTERP60, off — incl. a DUPLICATE override on J3DShape::draw 0x802e0390 that conflicted with ngx's).
+FIX: SUNBRIGHT_OVERRIDE_IF macro — register only when the feature env is set. Gated dbg_logo on
+DBG_LOGO, interp_* on INTERP60/REPLAY.
+
+RESULT: default recomp path still boots+renders (fs advancing) — gating is SAFE. But NO_RECOMP now
+**HANGS** (4.7M VI fields, pace=0ms, frame_swaps=0, recomp ~0): with the frame-loop super-call gone,
+the app loop must run under Dolphin JIT and DOES NOT PROGRESS. So the REAL Phase-B blocker is exposed:
+**the game does not actually run under Dolphin JIT in NO_RECOMP mode** — it spins very early. Likely
+the native_os (nthr) scheduler ↔ Dolphin-JIT thread-driving interaction (pure DISABLE_RECOMP boots,
+but that has NO native_os either). NEXT: debug why Dolphin-JIT + native_os hangs the boot/frame loop
+under NO_RECOMP (compare DISABLE_RECOMP which works; the delta is overrides + native_os). This is the
+true "make gameplay run under JIT" task — everything else (deleting recomp) depends on it.
+
 ## Files
 - runtime/sunbright_bridge.cpp — `IsRecompiled` no_recomp branch (Phase A).
 - runtime/overrides/ngx_j3d_shape.cpp — `g_native_draw` + ov_j3dshape_draw native per-view setup.
+- runtime/overrides.h — SUNBRIGHT_OVERRIDE_IF (conditional registration).
+- runtime/overrides/{dbg_logo,interp_redraw,interp_capture}.cpp — feature-gated registration.
+- runtime/dolphin_hook.cpp — SUNBRIGHT_DBG_CPBT (call_ppc one-shot host backtrace).
 - Memory: no-recomp-jit-native-direction.

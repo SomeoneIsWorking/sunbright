@@ -476,6 +476,20 @@ void call_ppc(CPUState& cpu, u32 address) {
 #ifdef HAVE_DOLPHIN_CORE
     if (sb_is_wild_branch_target(address)) sb_fatal_wild_branch(address, cpu);
     charge_guest_time();
+    // SUNBRIGHT_DBG_CPBT=<hexaddr>: one-shot host backtrace the first time call_ppc dispatches that
+    // guest address — names the recomp C-function chain (func_XXXXXXXX) that reached it, i.e. the
+    // top-level override super-call rooting the recomp tree (no-recomp pivot diagnostic).
+    {
+        static const u32 cpbt = getenv("SUNBRIGHT_DBG_CPBT")
+                                ? (u32)strtoul(getenv("SUNBRIGHT_DBG_CPBT"), nullptr, 16) : 0;
+        static bool done = false;
+        if (cpbt && address == cpbt && !done) {
+            done = true;
+            void* bt[40]; int nb = backtrace(bt, 40);
+            fprintf(stderr, "[cpbt] call_ppc(%08x) host backtrace (lr=%08x):\n", address, cpu.lr);
+            backtrace_symbols_fd(bt, nb, 2);
+        }
+    }
 #endif
     if (g_census_on && address >= 0x80000000u && address < 0x81800000u)
         __atomic_fetch_add(&g_census[(address - 0x80000000u) >> 2], 1, __ATOMIC_RELAXED);

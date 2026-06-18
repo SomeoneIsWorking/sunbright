@@ -377,7 +377,7 @@ void interp60_take_motion() {
 
 namespace {
 
-SUNBRIGHT_OVERRIDE(ov_j3d_viewCalc_blend, 0x802deeb8u) {
+SUNBRIGHT_OVERRIDE_IF(ov_j3d_viewCalc_blend, 0x802deeb8u, (getenv("SUNBRIGHT_INTERP60") || getenv("SUNBRIGHT_INTERP60_REPLAY"))) {
     if (g_interp60_in_redraw) {
         g_i60.vc_calls++;
         if (g_i60.cur_list >= 0 && g_i60.cur_list < 8) g_i60.vc_per_list[g_i60.cur_list]++;
@@ -416,7 +416,7 @@ SUNBRIGHT_OVERRIDE(ov_j3d_viewCalc_blend, 0x802deeb8u) {
 // blend_model handles it identically. The world judders because this is a SEPARATE
 // class from J3DModel::viewCalc, so the registry missed it. Register it too.
 extern "C" void func_8023d36c(CPUState&);
-SUNBRIGHT_OVERRIDE(ov_sdl_viewCalcSimple, 0x8023d36cu) {
+SUNBRIGHT_OVERRIDE_IF(ov_sdl_viewCalcSimple, 0x8023d36cu, (getenv("SUNBRIGHT_INTERP60") || getenv("SUNBRIGHT_INTERP60_REPLAY"))) {
     if (g_interp60_in_redraw) {
         if (g_i60.mode == 3) return;   // registry pre-blended it; skip recompute (= frame N). No
                                        // viewCalc here (it would mutate mCurrentViewNo); unprepared
@@ -442,7 +442,7 @@ SUNBRIGHT_OVERRIDE(ov_sdl_viewCalcSimple, 0x8023d36cu) {
 // just SKIP this shape's draw on the in-between; a brand-new object absent for one interpolated field
 // is invisible, and the next real field draws it normally. Read-only: no game memory is modified.
 extern "C" void func_802e0390(CPUState&);   // J3DShape::draw
-SUNBRIGHT_OVERRIDE(ov_j3dshape_draw_guard, 0x802e0390u) {
+SUNBRIGHT_OVERRIDE_IF(ov_j3dshape_draw_guard, 0x802e0390u, (getenv("SUNBRIGHT_INTERP60") || getenv("SUNBRIGHT_INTERP60_REPLAY"))) {
     if (g_interp60_in_redraw) {
         const u32 shape = cpu.gpr[3];
         if (shape >= 0x80000000u) {
