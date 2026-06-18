@@ -175,3 +175,44 @@ or play to trigger — a much larger task than a free-roam drive, and not a "qui
 rather than open-endedly grind toward those states or port anything unverifiable (hard rule). Next: if a
 specific effect must be verified, drive/script to ITS trigger state (e.g. for the sun warp: set/await
 flag 0x50004 and approach the sun-warp point), `/savestate` it, then ab_oracle / DBG_EFB it.
+
+---
+
+# 2026-06-19 (cont.) — Plaza "wash" diagnosed with the oracle (ruled out 4 suspects; pinned to post-raster)
+
+Used the oracle on `scratch/freeroam_plaza.sav` (a real controllable gameplay view) + the live probes to
+attack the long-parked Delfino floor "wash" as an engineering problem. Real, oracle-backed narrowing:
+
+## The measurement
+ngx is uniformly ~1.4× brighter than the Dolphin-GX oracle across surfaces at different normals (floor
+GX gray ~99 → ngx ~136; right-side buildings GX ~99 → ngx ~178). Uniform across normals ⇒ NOT per-normal
+diffuse alone. Plus a magenta NPC (Pianta) blob on the right = a separate colour bug.
+
+## Ruled OUT (each checked, not guessed)
+- **Copy gamma**: game uses `GX_GM_1_0` (JDRDisplay.cpp:14) — no gamma. Not it.
+- **EFB copy filter**: live `/ngxshape` → `COPY filter coefs=[8,8,10,12,10,8,8] sum=64 (/64=1.000)` —
+  brightness-preserving. Not it.
+- **Ambient**: floor material (cc=068e) `amb=(0,0,0)` live, matches xfmem (the 2026-06-18 per-material
+  ambient fix holds). Not the floor's cause.
+- **Lighting MATH**: `ngx::light_color0` is unit-tested faithful to Dolphin's LightingShaderGen
+  (render_test test_lighting). Light colours captured correctly at GXLoadLightObjImm (color@0x0C; the
+  sun really is white (1,1,1) — TLight::load reads it from scene data via GXInitLightColor). Normals are
+  unit-length (sky en |n|≈0.99).
+
+## Where it points
+The floor (cc=068e) has FAITHFUL inputs (mat=white, amb=0, lights=(1,1,1)) AND faithful lighting math,
+yet renders ~1.4× too bright → the divergence is **post-raster: the TEV combiner / texture-modulation
+stage** (matches the older /gxstate verdict "wash is COMPOSITING, not per-material shading"), or a
+runtime light-mask/normal mismatch at the actual draw. Next: `/gxstate` the floor material's combiner +
+compare its evaluated output to GX; check the floor TEXTURE brightness ngx vs GX (isolates tex vs raster).
+
+## Separate concrete bug found (a clean fix lead)
+The XFMEM-vs-OURS diff showed a material `cc=0500` with ngx `mat=(128,66,112)` while xfmem `mat=ffffffff`.
+(128,66,112)=0x804270.. = guest-RAM POINTER bytes — the by-pointer-vs-by-value misread signature (memory
+gx-color-args-by-pointer). This is almost certainly the **magenta NPC blob**: that material class reads its
+matColor from the wrong offset/source → pointer garbage → magenta. Concrete, fixable, verifiable next.
+
+Status: NOT yet fixed — but the wash is now precisely narrowed (4 suspects eliminated with the oracle, a
+parked problem genuinely advanced) and there's a concrete magenta-material bug lead. No magic-scale
+bandaid was added (would violate no-bandaids). Fix proceeds from here: TEV/texture compositing for the
+wash; the matColor-source misread for the magenta material.
