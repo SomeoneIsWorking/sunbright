@@ -639,3 +639,33 @@ default). This is a real focused build, not a flag flip.
 - runtime/sunbright_bridge.cpp — IsRecompiled purejit branch consults sb_bypass_once_check first.
 - runtime/overrides/scene_render.cpp — ov_j2dscreen_draw uses the primitive under purejit.
 - Memory: no-recomp-jit-native-direction.
+
+## ★★ RE-GROUNDING INVENTORY COMPLETE (task #8) + native_card DONE (2026-06-18, later session)
+native_card RE-GROUNDED (commit pushed): the 5 SDK seams (Probe/Mount/ReadSegment/WritePage/Erase)
+now register as purejit-safe full-replacement overrides via a STATIC INITIALIZER (the native_os_init
+path is dead under the eradicated build — recomp_build_dispatch is never called); the 4 guest leaf
+helpers whose recomp bodies were eradicated (__CARDVerify/__CARDPutControlBlock/__OS(Un)LockSramEx)
+run via call_ppc. VERIFIED: AUTOSTART → CARDMountAsync dispatches → mount verify=0 → file-select loads.
+
+INVENTORY of every still-inert override under no-recomp (the `--xref`/`--callees` + grep census):
+there is NO genuine game-engine (class-B) subsystem left to re-ground. Engine now PC-native for the
+three subsystems that matter: **renderer (ngx), audio (native_jas), memory-card (native_card)**.
+Everything else inert under no-recomp falls into:
+- **Recomp-correctness fixes** (matrix_native, native_math fres/frsqrte, etc.): correctly DEAD —
+  Dolphin's JIT executes the guest math correctly, so our recomp-era refiners are unneeded.
+- **Class-A OS/HW/pacing** (native_os/nthr threading, native_si/exi/mi, sms_os_intr/memprotect,
+  sms_lc, sms_drawsync_lossproof, VI/governor): Dolphin owns these correctly under pure JIT. Moving
+  them native is the journal's risky path and needs sb_call_guest; NO functional gain (drawsync
+  specifically would re-introduce the hybrid token-ordering machinery → risks the Delfino freeze).
+- **EFB/widescreen** (water/efb/screenfx/sunmodel/cull/fillrect/fader _widescreen, efbtex): ngx owns
+  the projection; the rest only positioned geometry in Dolphin's EFB, which ngx discards.
+- **Diagnostics / opt-in / guest-JAS-path** (native_gx, dbg_*, oscillator/dsp_update/cmdnoteon for
+  the guest audio path njas bypasses): inert by design.
+
+CONCLUSION: the "re-ground owned subsystems" phase is COMPLETE. The two remaining native-engine
+frontiers are both major multi-session builds: (1) **sb_call_guest** (value-returning nested
+guest-call under Dolphin JIT) to re-ground class-A threading/timing native — speculative, no current
+consumer, risky; (2) **own-the-GPU / EFB** so ngx populates a readable EFB → the missing EFB-readback
+effects work (sun-glow/lens-flare occlusion, pollution darkening [the parked "wash"], mirror,
+dash-blur) AND THP movie video composites into the ngx present (the ~45% black entrance). Frontier (2)
+is the real remaining "engine" gap with VISIBLE missing features.
