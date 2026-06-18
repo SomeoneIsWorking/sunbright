@@ -115,24 +115,13 @@ find_package(SDL2 REQUIRED)
 # widescreen fixes 26556fa never ran; the "fixed" smear shipped broken).
 file(GLOB SUNBRIGHT_OVERRIDE_SOURCES CONFIGURE_DEPENDS runtime/overrides/*.cpp)
 
-# Generated game code (present after /recompile). The recompiler splits function
-# bodies across many address-bucketed generated/functions_*.cpp files (plus a
-# shared functions.h and jump_table.cpp) so they compile in parallel. The weak
-# fallback table lets the binary link even before generation; the generated
-# strong symbols win.
-file(GLOB SUNBRIGHT_GENERATED_SOURCES CONFIGURE_DEPENDS
-    generated/functions_*.cpp
-    generated/jump_table.cpp
-)
-if(SUNBRIGHT_GENERATED_SOURCES)
-    # Generated code benefits from aggressive optimization, but NOT -ffast-math:
-    # that uses reciprocal approximations for divides and reassociates, diverging
-    # from the GameCube's IEEE FP. -ffp-contract=off stops the compiler fusing a
-    # separate fmul+fadd into an FMA (Gekko rounds those twice; only fmadd is fused,
-    # which the emitter handles explicitly via std::fma).
-    set_source_files_properties(${SUNBRIGHT_GENERATED_SOURCES}
-        PROPERTIES COMPILE_OPTIONS "-O3;-ffp-contract=off")
-endif()
+# The static recompiler is ERADICATED from the game binary (2026-06-18, Phase C, user
+# directive no-recomp-jit-native-direction): gameplay runs on Dolphin's JIT and the engine
+# runs as native overrides. The generated/functions_*.cpp + jump_table.cpp are therefore NO
+# LONGER LINKED into `sunbright` — recomp_table_weak.cpp's weak-empty g_recomp_table is the
+# only table, so recomp_lookup/recomp_raw always miss (they already return null at runtime).
+# The `sunbright-recomp` tool target below is KEPT as OFFLINE static-analysis tooling (decode
+# the ROM / disassemble PPC); it just no longer feeds the game.
 
 add_executable(sunbright
     runtime/main_sdl.cpp
@@ -170,8 +159,8 @@ add_executable(sunbright
     runtime/native_jas.cpp
     runtime/vpb_trace.cpp
     runtime/recomp_table_weak.cpp
+    runtime/recomp_dead_stubs.cpp
     ${SUNBRIGHT_OVERRIDE_SOURCES}
-    ${SUNBRIGHT_GENERATED_SOURCES}
 )
 
 target_include_directories(sunbright PRIVATE
