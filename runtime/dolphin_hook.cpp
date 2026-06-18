@@ -40,6 +40,7 @@
 #  include "VideoCommon/CommandProcessor.h"
 #  include "Core/PowerPC/MMU.h"
 #  include "Core/PowerPC/PPCSymbolDB.h"
+#  include "Core/PowerPC/JitInterface.h"
 #endif
 
 extern void mem_w32(u32 ea, u32 v);   // from memory_bridge
@@ -2286,6 +2287,92 @@ static inline bool sb_guest_sp_ok(u32 sp) {
     abort();
 }
 
+// ── Reentrant run-original-under-Dolphin-JIT primitive (purejit engine seam) ─────────────────────
+// A purejit-safe WRAPPING override (return-true, dispatched per call via Run()) cannot run the
+// ORIGINAL guest function inline: under purejit there is no recomp body to super-call, and
+// call_ppc → the interpreter would BYPASS overrides (and try to interp the JIT caller). This is the
+// "one genuinely-missing mechanism" (debug_journal/2026-06-18, Phase B): it lets such an override
+// observe AROUND the original under Dolphin's OWN JIT, so the original's sub-calls keep re-consulting
+// overrides at every block boundary (block-linking is off, so every block returns to the dispatcher):
+//
+//   ov(cpu):  <before-work>;  sb_run_original_around(cpu, addr, after, cookie);  return;
+//
+// We are inside Run() ← JitTrampoline ← Dolphin's dispatcher. The primitive threads back through the
+// dispatcher rather than nesting a second CPU loop (no reentrant enter_code, no longjmp):
+//   1. Arm a ONE-SHOT bypass for `addr` so IsRecompiled(addr) returns false on the NEXT dispatch —
+//      Dolphin then JITs+runs the ORIGINAL block instead of re-dispatching this override (infinite
+//      loop). The bypass is keyed to `addr` (consumed exactly when the dispatcher reaches it).
+//   2. Set the guest LR to a TRAP sentinel and request the dispatcher resume at `addr` (Run's
+//      epilogue commits spr[LR]=TRAP, pc=addr — see sb_consume_explicit_next_pc below).
+//   3. The original runs at full JIT speed; its sub-calls hit the trampoline (overrides intercept,
+//      since purejit-safe overrides are never cached). Its final blr mispredicts back to the
+//      dispatcher with pc = its restored entry LR = TRAP.
+//   4. TRAP is a purejit-safe override (sb_around_trap): it INVALIDATES addr's freshly-JIT'd entry
+//      block (so cache-miss → trampoline → this override is consulted again next call, not the
+//      cached passthrough), runs `after(cookie)` (the "after" work, e.g. ngx J2D capture), and
+//      resumes the real caller (LR/pc = the saved real return address).
+// Thread-local: J2DScreen::draw / perform run on the CPU(emu) thread; a small stack supports nesting.
+namespace {
+struct AroundFrame { u32 addr; u32 real_ret; void (*after)(u32); u32 cookie; };
+thread_local std::vector<AroundFrame> g_around_stack;
+thread_local u32  g_bypass_once_addr   = 0;      // IsRecompiled returns false once for this addr
+thread_local u32  g_explicit_next_pc   = 0;      // Run epilogue resumes here instead of cpu.lr…
+thread_local bool g_explicit_next_pc_armed = false;  // …when armed (one-shot)
+}
+// 0x80002FF0: unused low-mem gap between the exception vectors (≤0x80001800) and the DOL text
+// (≥0x80003100), 8 bytes below the idle spin (0x80002FF8). We never JIT it (IsRecompiled → true →
+// the trampoline runs sb_around_trap, so no instruction at this address is ever fetched/decoded).
+static constexpr u32 SB_AROUND_TRAP = 0x80002FF0u;
+
+// Consulted by IsRecompiled (sunbright_bridge.cpp): one-shot "run the original at this addr under
+// Dolphin JIT, skip the override". Fires exactly when the dispatcher reaches the armed addr.
+bool sb_bypass_once_check(u32 pc) {
+    if (g_bypass_once_addr && pc == g_bypass_once_addr) { g_bypass_once_addr = 0; return true; }
+    return false;
+}
+// Consulted by sunbright_run_recomp_tree's epilogue: when armed, the override's continuation pc is
+// `addr` (the original) rather than cpu.lr (which we repurposed as the TRAP return). One-shot.
+bool sb_consume_explicit_next_pc(u32& pc_out) {
+    if (!g_explicit_next_pc_armed) return false;
+    g_explicit_next_pc_armed = false;
+    pc_out = g_explicit_next_pc;
+    return true;
+}
+
+static void sb_around_trap(CPUState& cpu) {
+    if (g_around_stack.empty()) return;   // unreachable (armed only by sb_run_original_around)
+    AroundFrame f = g_around_stack.back();
+    g_around_stack.pop_back();
+#ifdef HAVE_DOLPHIN_CORE
+    // Drop the original's freshly-cached entry block so the wrapping override is consulted again on
+    // the next call (cache-miss → trampoline → IsRecompiled==true) instead of Dolphin running the
+    // now-cached passthrough directly. Only addr's entry block is dropped; its subtree stays cached.
+    Core::System::GetInstance().GetJitInterface().InvalidateICache(f.addr, 4, /*forced=*/true);
+#endif
+    if (f.after) f.after(f.cookie);
+    cpu.lr = f.real_ret;   // Run epilogue: spr[LR]=pc=the real caller's return address
+}
+
+void sb_run_original_around(CPUState& cpu, u32 addr, void (*after)(u32), u32 cookie) {
+    g_around_stack.push_back({addr, cpu.lr, after, cookie});
+    g_bypass_once_addr = addr;          // next dispatch of addr → Dolphin JITs the original
+    cpu.lr = SB_AROUND_TRAP;            // …whose blr returns to the trap
+    g_explicit_next_pc = addr;          // …and the dispatcher resumes at the original, not cpu.lr
+    g_explicit_next_pc_armed = true;
+}
+
+// Register the trap as a purejit-safe override (reached only when the primitive arms it). Gated on
+// purejit: the sentinel address is far below every real override, so registering it in recomp mode
+// would widen override_lookup's [lo,hi) cheap-reject window and force a hashmap probe on the hot
+// call_ppc/blr path for the whole low-text range. Under purejit recomp is off, so that range is moot.
+static const bool s_around_trap_registered = [] {
+    if (sunbright_purejit_mode()) {
+        register_override(SB_AROUND_TRAP, &sb_around_trap);
+        mark_override_purejit_safe(SB_AROUND_TRAP);
+    }
+    return true;
+}();
+
 void sunbright_run_recomp_tree(CPUState& cpu, void (*fn)(CPUState&)) {
     if (!sb_guest_sp_ok(cpu.gpr[1])) sb_fatal_bad_entry_sp(cpu);
     sigjmp_buf jb;
@@ -2297,7 +2384,11 @@ void sunbright_run_recomp_tree(CPUState& cpu, void (*fn)(CPUState&)) {
         // Normal C return (top-level blr): commit our state and continue at the return addr.
         auto& ppc = Core::System::GetInstance().GetPPCState();
         cpu_to_dolphin_state(cpu, ppc);
-        ppc.pc = ppc.npc = cpu.lr;
+        // Reentrant run-original primitive: a purejit wrapping override armed an explicit resume pc
+        // (the original guest fn) distinct from cpu.lr (which it repurposed as the TRAP return). When
+        // unarmed (the universal case) this is a single TLS-bool test → pc = cpu.lr as before.
+        u32 next_pc;
+        ppc.pc = ppc.npc = sb_consume_explicit_next_pc(next_pc) ? next_pc : cpu.lr;
     }
     // else: a tail-branch into non-recomp code siglongjmp'd back, having already committed ppc.
     sunbright_set_tail_jmp(prev);

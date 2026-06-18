@@ -355,6 +355,60 @@ getting fastboot (an engine override) working in the pure-JIT mode — i.e. Phas
      effect" seam is unblocked. Then A/B pixels (tools/render/ab_diff.py) vs the recomp path, then
      Phase C (unlink generated/, drop the recompiler from the build, JIT-native default).
 
+## ★★★ PHASE B STEP 5 — THE REENTRANT RUN-ORIGINAL PRIMITIVE — DONE + VERIFIED (2026-06-18, session 11)
+The one genuinely-missing mechanism is BUILT. **The HUD/2D overlay now renders under pure Dolphin
+JIT with ZERO recomp** (coin counter + FLUDD gauge visible in the ngx present; hud_quads 0→6).
+
+### Mechanism — `sb_run_original_around(cpu, addr, after, cookie)` (overrides.h / dolphin_hook.cpp)
+A purejit-safe WRAPPING override (return-true, dispatched per call via Run()) cannot run the ORIGINAL
+inline (no recomp body to super-call; call_ppc → interp would BYPASS overrides). The primitive runs
+the original under Dolphin's OWN JIT by THREADING BACK THROUGH the dispatcher — NOT by nesting a
+second enter_code or longjmp-ing across one (both rejected as risky: ProtectStack/UnprotectStack +
+the BLR-RAS sentinel). We are inside Run() ← JitTrampoline ← dispatcher; the override calls the
+primitive and returns, then:
+  1. **One-shot bypass** (g_bypass_once_addr, thread-local): IsRecompiled(addr) returns FALSE on the
+     NEXT dispatch only → Dolphin JITs+runs the ORIGINAL block instead of re-dispatching the override
+     (the infinite loop). Keyed to addr → consumed exactly when the dispatcher reaches it.
+  2. **Explicit-next-pc** (thread-local, consumed in sunbright_run_recomp_tree's epilogue): the
+     override's continuation pc is `addr` (the original) while its guest LR is set to a TRAP sentinel
+     (0x80002FF0, the low-mem gap). So the original runs with entry-LR=TRAP; the dispatcher resumes at
+     addr, not at cpu.lr. (Unarmed = the universal case = a single TLS-bool test → pc=cpu.lr as before.)
+  3. The original runs at full JIT speed; its sub-calls hit the trampoline (block-linking is off →
+     every block returns to the dispatcher) so the GX-tee / draw overrides keep intercepting. Its
+     final blr mispredicts (no RAS entry — entered via dispatcher JMP) back to the dispatcher with
+     pc = restored entry-LR = TRAP.
+  4. **TRAP** is a purejit-safe override (sb_around_trap): it **InvalidateICache(addr,4,forced)** —
+     drops the original's freshly-cached entry block so the WRAPPING override is consulted again next
+     call (cache-miss → trampoline → IsRecompiled==true) instead of Dolphin running the now-cached
+     passthrough directly — then runs `after(cookie)` (the "after" work, e.g. sb_j2d_capture), then
+     resumes the real caller (cpu.lr = the saved real return). The block invalidation is THE key
+     subtlety: without it the bypass would permanently defeat interception (Dolphin caches the block).
+GATING: the TRAP override is registered ONLY under purejit (its sentinel addr is far below every real
+override; registering it in recomp mode would widen override_lookup's [lo,hi) cheap-reject window and
+force a hashmap probe on the hot call_ppc/blr path). Inert under recomp — the primitive is purejit-only.
+
+### Wiring + verification
+- `ov_j2dscreen_draw` (scene_render.cpp) under purejit: before-work (ngx_frame_publish + set_root) as
+  before, then `sb_run_original_around(cpu, J2DSCREEN_DRAW, &sb_j2d_capture, root)` instead of the
+  old `return` (which skipped the original → empty pane tree).
+- VERIFIED (`SUNBRIGHT_PUREJIT=1 FASTBOOT=1 NGX_PRESENT=1 BACKEND=Vulkan`, headless): `/j2d` shows a
+  POPULATED pane tree (draws=4836, PIC1 panes with real mGlobalBounds — proof the original ran);
+  `/abshot2` → init_ok=1, **hud_quads=6**; the ngx frame (scratch/screenshots/ab2.ngx.png) shows
+  Delfino Plaza + the HUD coin counter and green FLUDD gauge composited over it. recomp calls = 0.
+  Stable to 1.4M+ J3D draws / 4836 J2D draws, no crash, speed ~0.56× headless.
+- DEFAULT recomp path still GREEN (gating inert): speed 1.20×, recomp 11.5M calls, hud_quads=14.
+- GOTCHA learned: headless WITHOUT SUNBRIGHT_DUMP never drives the Presenter, so /ngxpresentlive
+  reads init_ok=0/frames=0 — use `/abshot2` (on-demand ngx render) to force a present + read stats.
+  And the GX XFB is NOT a valid oracle under purejit (ngx replaced the 3D draws → Dolphin GX is
+  missing them; ab_diff vs gx = meaningless). A/B fidelity must be purejit-ngx vs recomp-path.
+- LIMITATION (documented in code): the primitive needs the original to RETURN (blr to TRAP). A
+  function that tail-branches away and never returns would leak the around-frame + never run `after`.
+  Fine for J2DScreen::draw / perform (normal returning functions).
+
+NEXT: Phase C — stop linking generated/, drop tools/recompiler from the BUILD + the recomp call
+model, make JIT-native the default. (TGCConsole2::perform can also adopt the primitive if it needs
+observe-around, but it already runs naturally under JIT when not marked purejit-safe.)
+
 ## Files
 - runtime/jit_hook.cpp — `sb_hook_jit_trampoline` runs `run_prehook` then normal dispatch (step 2).
 - runtime/overrides.h / overrides.cpp — `sunbright_purejit_mode()` accessor + pre-hook table;
@@ -368,5 +422,9 @@ getting fastboot (an engine override) working in the pure-JIT mode — i.e. Phas
 - runtime/overrides/ngx_j3d_shape.cpp — `g_native_draw` + ov_j3dshape_draw native per-view setup.
 - runtime/overrides.h — SUNBRIGHT_OVERRIDE_IF (conditional registration).
 - runtime/overrides/{dbg_logo,interp_redraw,interp_capture}.cpp — feature-gated registration.
-- runtime/dolphin_hook.cpp — SUNBRIGHT_DBG_CPBT (call_ppc one-shot host backtrace).
+- runtime/dolphin_hook.cpp — SUNBRIGHT_DBG_CPBT (call_ppc one-shot host backtrace); ★ the reentrant
+  primitive: `sb_run_original_around` + `sb_around_trap` + `sb_bypass_once_check` +
+  `sb_consume_explicit_next_pc` (explicit-next-pc consumed in sunbright_run_recomp_tree's epilogue).
+- runtime/sunbright_bridge.cpp — IsRecompiled purejit branch consults sb_bypass_once_check first.
+- runtime/overrides/scene_render.cpp — ov_j2dscreen_draw uses the primitive under purejit.
 - Memory: no-recomp-jit-native-direction.

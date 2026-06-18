@@ -86,7 +86,12 @@ bool IsRecompiled(uint32_t pc) {
     // original). The exception is FULL-REPLACEMENT overrides explicitly marked purejit-safe (fastboot
     // app-state returns, ngx native draw): those still dispatch via Run() (run native, return to lr —
     // Dolphin JIT continues). Everything else falls to Dolphin's JIT. See overrides.h.
-    if (sunbright_purejit_mode()) return override_is_purejit_safe(pc);
+    if (sunbright_purejit_mode()) {
+        // Reentrant run-original primitive: a wrapping override armed a one-shot bypass so Dolphin
+        // JITs the ORIGINAL at this addr (instead of re-dispatching the override → infinite loop).
+        if (sb_bypass_once_check(pc)) return false;
+        return override_is_purejit_safe(pc);
+    }
     static const bool disabled = getenv("SUNBRIGHT_DISABLE_RECOMP") != nullptr;
     if (disabled) return false;
     if (is_jit_forced(pc)) return false;            // routed to Dolphin's JIT

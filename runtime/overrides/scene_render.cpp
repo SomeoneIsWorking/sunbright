@@ -218,11 +218,13 @@ static void ov_j2dscreen_draw(CPUState& cpu) {
                          cpu.gpr[3], cpu.gpr[6]);
     }
     // Pure-JIT no-recomp: J2DScreen::draw is a LOGIC function that BUILDS the 2D pane tree (computes
-    // mGlobalBounds) that sb_j2d_capture reads for the ngx HUD overlay. We cannot run that original
-    // here (no recomp body; call_ppc(cpu.lr) would interp the JIT caller) — running it needs a
-    // reentrant run-original-under-JIT primitive (TODO). For now publish the 3D frame (above) so the
-    // native present shows the 3D world, and skip the 2D capture (HUD overlay pends the primitive).
-    if (sunbright_purejit_mode()) return;
+    // mGlobalBounds) that sb_j2d_capture reads for the ngx HUD overlay — it cannot just be skipped.
+    // There is no recomp body to super-call, and call_ppc(cpu.lr) would interp the JIT caller, so we
+    // use the reentrant run-original-under-Dolphin-JIT primitive: it runs the ORIGINAL draw under
+    // Dolphin's JIT (its sub-draws keep hitting overrides), then runs sb_j2d_capture(root) once the
+    // original returns, then resumes the real caller. (before-work above already published the 3D
+    // frame + live root.)
+    if (sunbright_purejit_mode()) { sb_run_original_around(cpu, J2DSCREEN_DRAW, &sb_j2d_capture, root); return; }
     if (RecompFunc orig = recomp_raw(J2DSCREEN_DRAW)) orig(cpu);
     else call_ppc(cpu, cpu.lr);
     // Capture AFTER the draw: mGlobalBounds/mColorAlpha are now consistently computed

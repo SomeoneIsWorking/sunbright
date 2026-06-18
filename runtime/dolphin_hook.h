@@ -49,6 +49,12 @@ void sunbright_adopt_all_gc_threads();
 // both use the identical tail-jmp logic. `fn` is the recomp body for `cpu.pc`.
 void sunbright_run_recomp_tree(CPUState& cpu, void (*fn)(CPUState&));
 
+// Reentrant run-original-under-Dolphin-JIT primitive (purejit engine seam — see dolphin_hook.cpp).
+// sb_bypass_once_check: consulted by IsRecompiled — one-shot "JIT the original at this addr".
+// sb_consume_explicit_next_pc: consulted by the Run epilogue — resume at the original, not cpu.lr.
+bool sb_bypass_once_check(u32 pc);
+bool sb_consume_explicit_next_pc(u32& pc_out);
+
 // Native-threading runtime (host-thread guest threads + guest↔host mapping). Called by the
 // native OS primitives in native_os.cpp. See dolphin_hook.cpp.
 void nthrt_spawn_guest(u32 os_thread, u32 entry, u32 param, u32 stack, int prio);  // OSCreateThread

@@ -72,6 +72,16 @@ bool sunbright_purejit_mode();
 void mark_override_purejit_safe(u32 addr);   // call after register_override for a full-replacement
 bool override_is_purejit_safe(u32 addr);     // consulted by IsRecompiled under purejit
 
+// ── Reentrant run-original-under-Dolphin-JIT (purejit observe-AROUND seam) ────
+// Call from inside a purejit-safe WRAPPING override, AFTER its "before" work, to run the ORIGINAL
+// guest function at `addr` (the address this override is registered on) under Dolphin's own JIT —
+// its sub-calls keep re-consulting overrides — then run `after(cookie)` (the "after" work, e.g. ngx
+// J2D capture) once the original returns, before resuming the real caller. The mechanism (one-shot
+// bypass + TRAP return + block invalidation) lives in dolphin_hook.cpp. This is the seam for LOGIC
+// functions that BUILD object-model state ngx reads (J2DScreen::draw → mGlobalBounds) and so cannot
+// be skipped. Only meaningful under purejit; in recomp mode an override should super-call recomp_raw.
+void sb_run_original_around(CPUState& cpu, u32 addr, void (*after)(u32), u32 cookie);
+
 bool is_jit_forced(u32 addr);
 void force_jit(u32 addr);                 // single address
 void force_jit_range(u32 lo, u32 hi);     // [lo, hi)
