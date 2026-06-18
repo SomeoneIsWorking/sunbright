@@ -22,6 +22,17 @@ static bool kill_shadow_on() {
     return v == 1;
 }
 
+// SUNBRIGHT_KILL_SHINESHADOW=1 — no-op TModelWaterManager::drawShineShadowVolume (the Delfino-plaza
+// POLLUTION darkening: concentric sphere volumes building an EFB-alpha mask, then a dark-blue (0,20,40)
+// masked blend over the ground; map 1 only, recedes as flag 0x40000 rises). /gxblend named it as the
+// SUBTRACT (cnt~1635) darkening pass. TEST: kill it in the ORACLE — if the floor goes bright (==ngx),
+// it is THE ground wash. Then port it natively into ngx (own-it-natively); this probe is NOT the fix.
+static bool kill_shineshadow_on() {
+    static int v = -1;
+    if (v < 0) v = getenv("SUNBRIGHT_KILL_SHINESHADOW") ? 1 : 0;
+    return v == 1;
+}
+
 namespace {
 // drawShadowGD__19TMBindShadowManagerFUlPQ26JDrama9TGraphics — the EFB stencil stamp + composite.
 SUNBRIGHT_OVERRIDE_IF_NATIVE(ov_kill_drawShadowGD, 0x8022fa40u, kill_shadow_on()) {
@@ -30,6 +41,10 @@ SUNBRIGHT_OVERRIDE_IF_NATIVE(ov_kill_drawShadowGD, 0x8022fa40u, kill_shadow_on()
 // drawShadow__19TMBindShadowManagerFUlPQ26JDrama9TGraphics — the non-GD variant of the same.
 SUNBRIGHT_OVERRIDE_IF_NATIVE(ov_kill_drawShadow, 0x8022f014u, kill_shadow_on()) {
     (void)cpu;
+}
+// drawShineShadowVolume__18TModelWaterManager — the Delfino plaza pollution darkening.
+SUNBRIGHT_OVERRIDE_IF_NATIVE(ov_kill_shineshadow, 0x8027c67cu, kill_shineshadow_on()) {
+    (void)cpu;  // no-op: skip the shine-shadow-volume pollution darkening entirely.
 }
 }  // namespace
 
