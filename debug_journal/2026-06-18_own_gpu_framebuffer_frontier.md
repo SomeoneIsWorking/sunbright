@@ -184,9 +184,23 @@ validation errors, no crash, stable 21s. The full chain is closed: ngx color rea
 (Only 1 of the 2 dirty addrs is in the texcache → only one EFB-copy effect's surface is ngx-captured
 right now; the other's sampling surface isn't bound/captured this scene — expected, not a bug.)
 
+### CONSUMER IDENTIFIED + VERIFIED END-TO-END (2026-06-18, session 2, user: "finish the consumer")
+The screenspace effect consuming the full-screen RGB565 capture (0x01037bc0) is **3D batch 155,
+texmap1** — a 159-vertex near-full-screen mesh (NDC x[-1,1] y[-1,0.75]) sampling the framebuffer
+capture on the SECOND texture unit = a **screenspace refraction** (the plaza WATER surface sampling
+the scene behind it; texmap0 = its distortion/base, texmap1 = the EFB capture). NOT a J2D quad — found
+via a batch-scan diagnostic (texture_for is also called from prepare_j2d, but the consumer is 3D).
+The 256×256 RGB5A3 capture (0x010f5380) has no live consumer in the default plaza view (mirror, likely
+off-screen) — invalidated but unsampled, harmless.
+VERIFIED end-to-end with a single-process A/B: `/efbcopy?on=0|1` toggles the writeback at runtime
+(g_sb_efb_copy_on; OFF still invalidates so the effect re-decodes the original's black). Diff ngx(ON)
+vs ngx(OFF): sky/HUD band (rows 0..56) = 0.0 (unaffected), change localized to **rows 264..294**
+(NDC y ≈ -0.18..-0.31, lower-center) = exactly the water surface. The writeback changes the image ONLY
+where the water is → the screenspace refraction now consumes the LIVE scene (was black). Modest delta
+(~8/px) because water refraction is a translucent blend, as expected. Tools kept: /efbcopy A/B toggle,
+DBG_EFB consumer-scan (3D + J2D) + evict-addr log.
+
 ### Remaining (not blocking):
-- Visual ID of which effect this is (mirror/mist/heat-haze) to eyeball-confirm — deferred (the data
-  chain is verified; identifying the surface is the eyeballing-trap-prone part).
 - Other copy formats (RGBA8 fmt=6 / I8 / IA8 / CMPR) if other scenes use them — RGB565+RGB5A3 are the
   only live plaza formats; others fall through to original-only (no regression).
 - Extract the tiling+encode into a header + a render_test unit (TDD rule) — currently hand-verified

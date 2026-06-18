@@ -113,7 +113,8 @@ std::atomic<int> g_efb_want_color{0};    // frames of COLOR readback remaining
 // serve the stale first decode. The override marks the dst MEM1 offset dirty; render() evicts the
 // matching cache entries at frame start so they re-decode from the freshly-written guest RAM.
 std::mutex g_efb_dirty_mtx;
-std::unordered_set<uint32_t> g_efb_dirty;   // MEM1 offsets (addr & 0x01FFFFFF) written since last present
+std::unordered_set<uint32_t> g_efb_dirty;       // MEM1 offsets (addr & 0x01FFFFFF) written since last present
+std::unordered_set<uint32_t> g_efb_copy_addrs;  // persistent (diagnostic): every EFB-copy MEM1 offset ever written
 
 struct PresentRenderer {
     bool init_tried = false, init_ok = false;
@@ -829,6 +830,19 @@ void PresentRenderer::prepare_j2d(VkCommandBuffer up_cmd, std::vector<VkBuffer>&
     if (sh <= 0 || sh > 4096) sh = 480;
     if (!ensure_j2d_dpool((uint32_t)nq)) return;
 
+    static const bool s_efb_dbg3 = getenv("SUNBRIGHT_DBG_EFB") != nullptr;
+    if (s_efb_dbg3) {
+        std::unordered_set<uint32_t> copyaddrs;
+        { std::lock_guard<std::mutex> lk(g_efb_dirty_mtx); copyaddrs = g_efb_copy_addrs; }
+        static std::unordered_set<uint32_t> seenj2d;
+        if (!copyaddrs.empty())
+            for (int i = 0; i < nq; i++)
+                if (quads[i].data && copyaddrs.count(quads[i].data & 0x01FFFFFFu) && seenj2d.insert(quads[i].data & 0x01FFFFFFu).second)
+                    fprintf(stderr, "[efb] J2D CONSUMER quad %d addr=%08x %dx%d fmt=%d rect[%d,%d..%d,%d] alpha=%u u[%.2f,%.2f..%.2f,%.2f]\n",
+                            i, quads[i].data, quads[i].w, quads[i].h, quads[i].fmt,
+                            quads[i].x0, quads[i].y0, quads[i].x1, quads[i].y1, quads[i].alpha,
+                            quads[i].u0, quads[i].v0, quads[i].u1, quads[i].v1);
+    }
     for (int i = 0; i < nq; i++) {
         const J2dQuad& q = quads[i];
         if (sb_tex_is_paletted(q.fmt)) continue;
@@ -884,6 +898,9 @@ AbstractTexture* PresentRenderer::render(int w, int h) {
         if (!dirty.empty())
             for (auto it = texcache.begin(); it != texcache.end(); ) {
                 if (dirty.count(it->second.addr & 0x01FFFFFFu)) {
+                    if (getenv("SUNBRIGHT_DBG_EFB")) { static std::unordered_set<uint32_t> se;
+                        if (se.insert(it->second.addr & 0x01FFFFFFu).second)
+                            fprintf(stderr, "[efb] evicting cached EFB-copy tex addr=%08x (a consumer DID decode it)\n", it->second.addr); }
                     if (it->second.view) vkDestroyImageView(dev, it->second.view, nullptr);
                     if (it->second.img)  vkDestroyImage(dev, it->second.img, nullptr);
                     if (it->second.mem)  vkFreeMemory(dev, it->second.mem, nullptr);
@@ -893,8 +910,11 @@ AbstractTexture* PresentRenderer::render(int w, int h) {
         static const bool s_efb_dbg = getenv("SUNBRIGHT_DBG_EFB") != nullptr;
         if (s_efb_dbg && !dirty.empty()) {
             static int n = 0;
-            if ((n++ % 60) == 0) fprintf(stderr, "[efb] texcache evict: %d dirty, %d entries re-decoded\n",
-                                         (int)dirty.size(), evicted);
+            if ((n++ % 60) == 0) {
+                char db[256]; int p = 0;
+                for (uint32_t a : dirty) p += snprintf(db+p, sizeof(db)-p, "%07x ", a);
+                fprintf(stderr, "[efb] texcache evict: %d dirty {%s}, %d re-decoded\n", (int)dirty.size(), db, evicted);
+            }
         }
     }
 
@@ -966,6 +986,31 @@ AbstractTexture* PresentRenderer::render(int w, int h) {
     std::vector<VkImageView> bviews(batches.size() * 8, white_view);
     for (size_t b = 0; b < batches.size(); b++)
         for (int m = 0; m < 8; m++) bviews[b * 8 + m] = texture_for(batches[b].tex[m], cmd, stg_bufs, stg_mems);
+
+    // DBG: identify the screenspace EFB-readback CONSUMER — which batch samples an EFB-copy texture,
+    // and its screen extent (full-screen quad?) + TEV index. Names the effect that consumes GXCopyTex.
+    static const bool s_efb_dbg2 = getenv("SUNBRIGHT_DBG_EFB") != nullptr;
+    if (s_efb_dbg2) {
+        std::unordered_set<uint32_t> copyaddrs;
+        { std::lock_guard<std::mutex> lk(g_efb_dirty_mtx); copyaddrs = g_efb_copy_addrs; }
+        static std::unordered_set<uint32_t> seen3d;
+        if (!copyaddrs.empty())
+            for (size_t b = 0; b < batches.size(); b++)
+                for (int m = 0; m < 8; m++) {
+                    uint32_t a = batches[b].tex[m].addr;
+                    if (a && copyaddrs.count(a & 0x01FFFFFFu) && seen3d.insert(a & 0x01FFFFFFu).second) {
+                        float xn = 1e9f, xx = -1e9f, yn = 1e9f, yx = -1e9f;
+                        for (uint32_t v = batches[b].vstart; v < batches[b].vstart + batches[b].vcount && v < verts.size(); v++) {
+                            float w = verts[v].clip[3]; if (w == 0) w = 1e-6f;
+                            float nx = verts[v].clip[0]/w, ny = verts[v].clip[1]/w;
+                            xn = std::min(xn, nx); xx = std::max(xx, nx); yn = std::min(yn, ny); yx = std::max(yx, ny);
+                        }
+                        fprintf(stderr, "[efb] CONSUMER batch %zu texmap%d addr=%08x %dx%d fmt=%d vcount=%u tev=%d NDC[x %.2f..%.2f y %.2f..%.2f]\n",
+                                b, m, a, batches[b].tex[m].w, batches[b].tex[m].h, batches[b].tex[m].fmt,
+                                batches[b].vcount, batches[b].tev_index, xn, xx, yn, yx);
+                    }
+                }
+    }
     for (size_t b = 0; b < batches.size(); b++) {
         VkDescriptorSetAllocateInfo dai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
         dai.descriptorPool = dpool; dai.descriptorSetCount = 1; dai.pSetLayouts = &dsl;
@@ -1191,7 +1236,8 @@ extern "C" void sb_ngx_efb_request_readback() { g_efb_want.store(8); }   // keep
 extern "C" void sb_ngx_efb_request_color() { g_efb_want_color.store(8); }
 // Mark a GXCopyTex dst (any region alias) dirty so render() re-decodes its texcache entry next frame.
 extern "C" void sb_ngx_efb_invalidate_tex(uint32_t ea) {
-    std::lock_guard<std::mutex> lk(g_efb_dirty_mtx); g_efb_dirty.insert(ea & 0x01FFFFFFu);
+    std::lock_guard<std::mutex> lk(g_efb_dirty_mtx);
+    g_efb_dirty.insert(ea & 0x01FFFFFFu); g_efb_copy_addrs.insert(ea & 0x01FFFFFFu);
 }
 extern "C" int sb_ngx_efb_peek_color(int gx, int gy, uint32_t* out) {    // packed ARGB8888
     std::lock_guard<std::mutex> lk(g_efb_mtx);

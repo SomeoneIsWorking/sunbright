@@ -179,6 +179,7 @@ u32 qarg_dec(const char* path, const char* key, u32 def) {
 extern "C" void interp_verify_arm(int);
 extern "C" int  interp_verify_report(char*, int);
 extern "C" int  sb_capture_frames;
+extern "C" volatile int g_sb_efb_copy_on;   // /efbcopy?on=N — A/B toggle the EFB-copy writeback
 extern "C" volatile int g_sb_ngx_present;   // /abshot toggles the present source (Present.cpp)
 extern "C" volatile int g_sb_ab_capture;    // /abshot2 arms same-present dual capture (Present.cpp)
 extern "C" unsigned long sb_ngx_front_frame();  // /abshot2 liveness: published ngx snapshot frame id
@@ -296,6 +297,11 @@ std::string handle_repl(const char* path) {
     if (strncmp(path, "/skyshader", 10) == 0) {  // generated TEV GLSL for a material (default sky)
         unsigned ce = 0x09fae8; if (const char* p = strstr(path, "ce=")) ce = strtoul(p+3, nullptr, 16);
         char rep[8192]; int rn = sb_ngx_gen_shader(ce, rep, sizeof rep); app("%.*s", rn, rep);
+        return std::string(buf, n);
+    }
+    if (strncmp(path, "/efbcopy", 8) == 0) {  // LIVE A/B: EFB-copy writeback on/off (effect samples scene vs black)
+        if (const char* p = strstr(path, "on=")) g_sb_efb_copy_on = atoi(p + 3) != 0;
+        app("efb-copy writeback = %d\n", g_sb_efb_copy_on);
         return std::string(buf, n);
     }
     if (strncmp(path, "/ngxmtxsrc", 10) == 0) {  // LIVE skinned-matrix source A/B (no rebuild)

@@ -112,11 +112,15 @@ inline u16 argb_to_tex16(u32 c, int fmt) { return fmt == 5 ? argb_to_rgb5a3(c) :
 // Runs AFTER the original GXCopyTex (via sb_run_original_around): overwrite the dst texture with ngx
 // scene color in the captured format. Only RGB565 (fmt=4) is encoded for now (the only live plaza
 // copy); other formats leave the original (black) untouched — no regression, just not-yet-served.
+extern "C" volatile int g_sb_efb_copy_on = 1;   // /efbcopy?on=N — A/B toggle for the EFB-copy writeback
+
 void copytex_writeback(u32 /*cookie*/) {
     const int dw = g_dst_w, dh = g_dst_h, fmt = g_dst_fmt;
     if (g_copy_dst_ea == 0 || dw <= 0 || dh <= 0) return;
     if (fmt != 4 && fmt != 5) return;             // GX_TF_RGB565 / RGB5A3 (both 4×4 BE u16) — v1
     const u32 ea = (g_copy_dst_ea & 0x3FFFFFFF) | 0x80000000u;         // phys → cached MEM1 virtual
+    sb_ngx_efb_invalidate_tex(ea);     // always re-decode this tex (ON: ngx scene below; OFF: original's black)
+    if (!g_sb_efb_copy_on) return;                // A/B off → effect samples the original's (black) copy
     static thread_local std::vector<u32> buf;
     buf.resize((size_t)dw * dh);
     int sw = g_src_w > 0 ? g_src_w : 640, sh = g_src_h > 0 ? g_src_h : 448;
@@ -130,7 +134,6 @@ void copytex_writeback(u32 /*cookie*/) {
             u32 off = tile * 32 + (u32)(dy & 3) * 8 + (u32)(dx & 3) * 2;
             mem_w16(ea + off, argb_to_tex16(buf[(size_t)dy * dw + dx], fmt));   // BE u16
         }
-    sb_ngx_efb_invalidate_tex(ea);     // force ngx to re-decode this texture from the fresh guest RAM
     if (s_efb_dbg) {
         static unsigned long n4 = 0, n5 = 0;
         unsigned long& nn = (fmt == 5) ? n5 : n4;
