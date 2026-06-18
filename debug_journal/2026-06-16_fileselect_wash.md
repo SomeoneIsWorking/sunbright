@@ -600,3 +600,35 @@ layers composite over the correct backdrop. THEN re-judge the sky with a TIME-AV
 frame) full-frame A/B (the cloud animates → single frozen frames catch different scroll phases;
 every single-frame metric this whole investigation has been unreliable for that reason).
 GMSE01 (our ROM) GXDrawSphere addr ≠ the GMSJ01 0x800ACB88 — resolve it from our symbols first.
+
+### ✅ FINAL, RELIABLE CONCLUSION (session 6) — the "wash" was measurement artifacts; render is CLOSE
+⚠ First, RETRACT the "ngx ti=11 = 167px / sky-base z-rejected / composites over wrong background"
+evidence from the CORRECTION block above: it was captured on a `SUNBRIGHT_NGX_FORCECULL=1`
+instance (left over from the cull experiment). Front-culling removes the front-facing sky dome →
+ngx renders near-black → bogus. On a CLEAN default-cull instance ngx draws ti=11 at **246109 px**
+(≈ GX's 269192) — the sky base is NOT dropped. (The source RE — GXDrawSphere is immediate-mode and
+ngx misses it — is still a true code fact, but it does NOT cause a visible blue deficit: ngx has
+MORE deep-blue than GX, 27304 vs 11269.)
+
+**The reliable metric is a TIME-AVERAGED full-frame A/B** (10 frames, default cull, autostop —
+averages out the scrolling cloud that made every single-frame measurement lie). Result:
+  full-frame mean GX=(121,169,199) ngx=(150,171,202), **delta = 36**; sky delta = 34.5.
+  The residual is a **modest ngx +29 RED tint** (green/blue match), concentrated in the top-LEFT
+  sky corner (+65) and the whole BOTTOM (water/beach/menu, +45..66); centre + top-right match.
+`timeavg_clean.png` shows the two renders are essentially the same scene (palms, beach, sky, blue
+menu, Mario) — ngx just slightly warmer. **There is NO dramatic file-select wash.**
+
+**So the entire multi-session "file-select cloud wash / 10× / RASA / UV-frequency / apex-dome /
+blend-stack" saga was chasing MEASUREMENT ARTIFACTS:** (a) camera drift in the no-autostop
+lockstep, (b) the cloud's texmtx SCROLL making single frozen frames catch different phases,
+(c) per-layer image-subtraction being invalid for a multi-layer blend stack, (d) a stray
+FORCECULL=1 env. When measured correctly (time-averaged, default cull, autostop) the file-select
+sky renders within ~36/255 of GX — a minor warm tint, not a wash. The renderer is faithful here.
+
+**Genuine residual leads (minor, for whoever wants them):** the +red is in the top-left sky
+corner and the bottom water/beach — likely the WATER/sea material rendering slightly warm, and a
+small sky-corner difference, NOT the cloud dome. Real ownership gap (orthogonal): ngx misses
+immediate-mode GX draws (GXDrawSphere etc.) — worth porting for completeness, but it is not the
+cause of any visible file-select defect. Recommend: STOP chasing the file-select sky; if pursuing
+fidelity, use the time-averaged A/B and look at the water material, and verify against this
+honest ~36 baseline (don't trust single-frame deltas).
