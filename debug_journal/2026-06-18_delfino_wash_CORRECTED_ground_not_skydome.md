@@ -63,6 +63,31 @@ colour, and BOTH engines read the same bright array → they MUST agree. Yet GX 
 2.2× too bright on KNOWN-lit geometry → ngx illum/light-colour IS too high), and the floor being
 secretly lit would fold it into the same over-lighting.
 
+## SESSION 15b UPDATE — built `/shapeat`, lead (A) is DEAD
+New probe `/shapeat?x=&y=` (runtime/overrides/ngx_j3d_shape.cpp `sb_ngx_shapeat_dump`): for every
+published shape whose NDC bbox covers (x,y), front→back, it prints the CAPTURED COLOR0 chanctrl +
+matColor/ambColor AND RE-READS the guest J3DMaterial→colorBlock(+0x20) chanctrl FRESH at query time,
+flagging any mismatch as a capture race.
+
+RESULT at floor-center NDC(0,0.558): **`fresh == captured` for ALL 28 covering shapes.** The opaque
+floor (ti=10) shapes are ALL `cc=0701 en=0 matVTX amb=REG, matColor=(255,255,255)`, fresh-verified in
+guest RAM, clr0mean (155,171,198)…(227,233,240) bright. So:
+  - **Lead (A) is DEAD** — no capture race; the floor is genuinely UNLIT en=0 matVTX in guest RAM,
+    same block both engines. ngx renders the unlit bright floor correctly *per its inputs*.
+  - The only ti=3/ti=87/ti=2 LIT shapes covering center are far buildings (cc=068e en=1, behind).
+Combined with: copy ruled out (sky 1.2× vs ground 0.43× can't both come from a uniform copy), and
+per-material TEV exonerated (object-model read = tex×rasColor, KONST=255, scale ×1) ⇒ the ground
+darkening is EXTERNAL to the floor material. **Lead (B): a darkening pass GX draws that ngx misses.**
+
+NEW SUSPECT (RE'd this session): `J3DShapePacket::draw` (J3DPacket.cpp:145) calls a per-packet
+callback `unk10(this,0)` BEFORE setting `j3dSys.unk114 = unk2C` (the CLR0 base) and `unk10(this,1)`
+after `unk14->draw()`. `loadVtxArray()` then loads CLR0 from `j3dSys.unk114`. ngx reads unk114 and
+gets the STATIC bright array (80b9b600) — so for the floor unk2C == the static baked array (NOT a
+dynamically-shaded buffer), confirming the floor colours really are bright in both. So the darkening
+is NOT a per-vertex shaded-colour override either. → it is a SEPARATE draw (immediate-mode GXDraw /
+J2D / the map's light-shadow pass / an EFB effect) over the ground, OR a global TEV/exposure the world
+draw applies that ngx's per-material capture doesn't see.
+
 ## DECISIVE NEXT STEP (build this, don't eyeball)
 Add a probe that, given a J3DShape ADDRESS (not the shared tev_index), reads its material→colorBlock
 chanctrl directly, for the EXACT shape covering floor-center. That settles en=0 vs en=1 for the floor:

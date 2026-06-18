@@ -554,9 +554,11 @@ inline void texgen_uv(const TexGen& g, const NgxVertex& v, const float litcol0[4
 // Read the material's J3DColorBlock into g_cur_chan (best-effort; valid=false on a
 // missing/unknown block → the consumer falls back to the raw vertex colour).
 u32 g_cur_cb_addr = 0, g_cur_cb_vt = 0; u8 g_cur_cb_raw[0x20] = {0};   // for /gxstate raw-block dump
+u32 g_cur_material = 0;   // the J3DMaterial whose block we captured (for /shapeat fresh re-read)
 void capture_colorchan(u32 material) {
     g_cur_chan = ChanInfo{};
     g_cur_cb_addr = 0;
+    g_cur_material = material;
     const u32 cb = r32(material + 0x20);   // J3DMaterial::mColorBlock
     if (!valid(cb)) return;
     g_cur_cb_addr = cb;
@@ -1247,6 +1249,9 @@ struct ShapeRec {
     float ezmin, ezmax;                 // eye-space Z range (camera distance; -ve = in front) — depth-source
     float mv[12];                       // full single-matrix modelview (drawMtx[single_idx], row-major 3x4)
     float mp0[3], mp1[3];               // model-space positions of vert0/vert1 (pre-transform) — foam vs sea cmp
+    u32 material, cb_addr, cb_vt;        // J3DMaterial / its colorBlock addr+vtable (for /shapeat fresh re-read)
+    u16 alpha0;                          // captured ALPHA0 chanctrl
+    unsigned char mat[4], amb[4];        // captured COLOR0 matColor / ambColor (the lighting inputs)
 };
 std::vector<ShapeRec> g_shaperec[2];
 int                          g_read_front = 0; // latched by ngx_snap_verts for batches
@@ -1600,6 +1605,9 @@ void transform_eye() {
         rec.epoch = g_efb_epoch;
         rec.gen = g_efb_gen;
         rec.ti = g_cur_tev_index;
+        rec.material = g_cur_material; rec.cb_addr = g_cur_cb_addr; rec.cb_vt = g_cur_cb_vt;
+        rec.alpha0 = g_cur_chan.valid ? g_cur_chan.alpha0 : 0xFFFF;
+        for (int k=0;k<4;k++){ rec.mat[k]=g_cur_chan.matColor[k]; rec.amb[k]=g_cur_chan.ambColor[k]; }
         rec.clr0cls = g_cur_clr0cls; rec.clr0fmt = g_cur_clr0fmt; rec.clr0base = g_cur_clr0base;
         rec.nrmcls = g_cur_nrmcls;
         rec.nrm0[0] = nv ? g_verts[0].nrm[0] : 0; rec.nrm0[1] = nv ? g_verts[0].nrm[1] : 0; rec.nrm0[2] = nv ? g_verts[0].nrm[2] : 0;
@@ -3211,6 +3219,58 @@ int sb_ngx_shapes_dump(char* out, int cap) {
                 r.mv[0],r.mv[1],r.mv[2],r.mv[3], r.mv[4],r.mv[5],r.mv[6],r.mv[7], r.mv[8],r.mv[9],r.mv[10],r.mv[11],
                 r.mp0[0],r.mp0[1],r.mp0[2], r.mp1[0],r.mp1[1],r.mp1[2]);
         }
+        shown++;
+    }
+    return n;
+}
+
+// /shapeat?x=&y= — for every published shape whose NDC bbox covers (x,y), front-to-back by NDC-z,
+// report the captured COLOR0 chanctrl + matColor/ambColor AND RE-READ the guest J3DMaterial→colorBlock
+// chanctrl FRESH (authoritative guest RAM, on the probe thread). This settles the wash paradox:
+//   • fresh COLOR0 en bit = is the floor LIT (en=1) or UNLIT (en=0) in guest RAM? (lit ⇒ ngx must light)
+//   • captured-cc vs fresh-cc mismatch = ngx's per-shape material capture races (wrong block) — lead (A)
+//   • material→+0x20 re-read = did the colorBlock pointer change since capture?
+// CLOF (vtable 0x803e0d38): chanNum@0x0C, mColorChan[0]=COLOR0@0x0E (u16 BE), matColor@0x04.
+// CLON (0x803e0cd4): mColorChan[0]@0x16, matColor@0x04, ambColor@0x0C.
+int sb_ngx_shapeat_dump(char* out, int cap, float qx, float qy) {
+    const int f = g_front.load(std::memory_order_acquire);
+    const std::vector<ShapeRec>& rs = g_shaperec[f];
+    int n = snprintf(out, cap, "shapeat NDC=(%.3f,%.3f) front=%d shapes=%zu  (ndc y:-1=top +1=bottom)\n",
+                     qx, qy, f, rs.size());
+    std::vector<int> idx;
+    for (size_t i = 0; i < rs.size(); i++) {
+        const ShapeRec& r = rs[i];
+        if (qx >= r.nxmin && qx <= r.nxmax && qy >= r.nymin && qy <= r.nymax) idx.push_back((int)i);
+    }
+    // front-to-back: smaller NDC-z = nearer (GC depth, LEQ test)
+    std::sort(idx.begin(), idx.end(), [&](int a, int b){ return rs[a].zmin < rs[b].zmin; });
+    n += snprintf(out + n, cap - n, "  %zu shapes cover the point (front->back):\n", idx.size());
+    auto dec = [](u16 cc, char* b){ snprintf(b, 48, "en=%u mat=%s amb=%s mask=%02x",
+        (cc>>1)&1, ((cc>>0)&1)?"VTX":"REG", ((cc>>6)&1)?"VTX":"REG",
+        (unsigned)(((cc>>2)&0xF)|(((cc>>11)&0xF)<<4))); };
+    int shown = 0;
+    for (int i : idx) {
+        if (n >= cap - 400 || shown >= 24) break;
+        const ShapeRec& r = rs[i];
+        // FRESH guest re-read: material@+0x20 → colorBlock; its vtable picks the chan offset.
+        u32 fresh_cb = valid(r.material) ? r32(r.material + 0x20) : 0;
+        u32 fresh_vt = valid(fresh_cb) ? r32(fresh_cb) : 0;
+        u16 fresh_c0 = 0xFFFF; u8 fmat[4] = {0};
+        if (const u8* B = valid(fresh_cb) ? sb_ram_fast(fresh_cb) : nullptr) {
+            u32 chan_off = (fresh_vt == VT_CLON) ? 0x16 : 0x0E;   // CLON vs CLOF (default)
+            fresh_c0 = (u16)((B[chan_off] << 8) | B[chan_off + 1]);
+            for (int k = 0; k < 4; k++) fmat[k] = B[0x04 + k];
+        }
+        char capb[48], frb[48]; dec(r.cc, capb); dec(fresh_c0, frb);
+        const bool race = (fresh_cb != r.cb_addr) || (fresh_c0 != r.cc);
+        n += snprintf(out + n, cap - n,
+            "  sh=%08x ti=%-3d nv=%-5u zmin=%.5f ezmax=%.1f nrmcls=%u clr0mean=(%u,%u,%u)\n"
+            "    CAPTURED: cc=%04x [%s] matColor=(%u,%u,%u) ambColor=(%u,%u,%u) cb=%08x vt=%08x\n"
+            "    FRESH(guest): material=%08x->cb=%08x vt=%08x  cc=%04x [%s] matColor=(%u,%u,%u)  %s\n",
+            r.sh, r.ti, r.nv, r.zmin, r.ezmax, r.nrmcls, r.clr0r, r.clr0g, r.clr0b,
+            r.cc, capb, r.mat[0],r.mat[1],r.mat[2], r.amb[0],r.amb[1],r.amb[2], r.cb_addr, r.cb_vt,
+            r.material, fresh_cb, fresh_vt, fresh_c0, frb, fmat[0],fmat[1],fmat[2],
+            race ? "*** CAPTURE RACE (fresh != captured) ***" : "(fresh == captured)");
         shown++;
     }
     return n;

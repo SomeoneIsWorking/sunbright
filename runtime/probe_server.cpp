@@ -87,6 +87,7 @@ int sb_ngx_vertex_selftest(char*, int);                      // runtime/ngx/ngx_
 int sb_ngx_mesh_selftest(char*, int);                        // runtime/ngx/ngx_mesh.cpp
 int sb_ngx_shape_dump(char*, int);                           // runtime/overrides/ngx_j3d_shape.cpp
 int sb_ngx_shapes_dump(char*, int);                          // runtime/overrides/ngx_j3d_shape.cpp (/ngxshapes)
+int sb_ngx_shapeat_dump(char*, int, float, float);           // runtime/overrides/ngx_j3d_shape.cpp (/shapeat?x=&y=)
 int sb_ngx_gxstate_dump(char*, int);                         // runtime/overrides/ngx_j3d_shape.cpp (/gxstate)
 extern "C" void sb_ngx_set_gxstate_ti(int);                  // runtime/overrides/ngx_j3d_shape.cpp (/gxstate?ti=)
 int sb_ngx_order_dump(char*, int);                           // runtime/overrides/ngx_j3d_shape.cpp (/ngxorder)
@@ -382,6 +383,13 @@ std::string handle_repl(const char* path) {
     }
     if (strncmp(path, "/ngxshapes", 10) == 0) {  // per-shape NDC bbox (localize a misplaced shape)
         static thread_local char rep[16384]; sb_ngx_shapes_dump(rep, sizeof rep); app("%s", rep);
+        return std::string(buf, n);
+    }
+    if (strncmp(path, "/shapeat", 8) == 0) {  // shapes covering NDC (x,y): captured vs FRESH guest colorBlock
+        float qx = 0.f, qy = 0.f;
+        if (const char* p = strstr(path, "x=")) qx = (float)atof(p + 2);
+        if (const char* p = strstr(path, "y=")) qy = (float)atof(p + 2);
+        static thread_local char rep[16384]; sb_ngx_shapeat_dump(rep, sizeof rep, qx, qy); app("%s", rep);
         return std::string(buf, n);
     }
     if (strncmp(path, "/gxstate", 8) == 0) {  // GX-cmd-stream vs ngx-object-model render-state diff
