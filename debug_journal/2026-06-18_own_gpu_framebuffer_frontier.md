@@ -133,6 +133,27 @@ ARGB/alpha histogram. Builds, runs, **0 Vulkan validation errors**.
   ⇒ GXPeekARGB stays diagnostic-only (do NOT wire it to the color readback — would force always-
   occluded). Owning ngx EFB-alpha is its own frontier item.
 
+## GXCopyTex RE — the EXACT plaza target (2026-06-18, session 2)
+TEfbCtrlTex::perform (JDREfbCtrl.cpp) is the canonical EFB→texture copy: GXSetTexCopySrc(rect) +
+GXSetTexCopyDst(w,h,fmt,mip) + GXCopyTex(mImagePtr, doClear). mImagePtr = the guest texture data ptr
+of a GXTexObj later bound by a J3D material → that surface samples the captured framebuffer.
+Instrumented the live plaza (GXSetTexCopySrc 0x8035e388 / GXSetTexCopyDst 0x8035e48c / GXCopyTex
+0x8035ee5c, stash+join). In default fastboot Delfino there is **exactly ONE** clear=0 readback geometry,
+recurring ~per-frame (~19/s):
+  **src rect [l=0 t=0 w=640 h=448] (full screen) → dst tex 320×224 fmt=4 (GX_TF_RGB565), dst=0x01037bc0**
+dst 0x01037bc0 is a PHYSICAL addr → guest virtual **0x81037bc0** (MEM1; |0x80000000). Read it live: it
+is **ALL ZEROS** — GXCopyTex reads Dolphin's empty EFB and writes BLACK into the effect's texture
+(the bug, concretely). (A full-screen→half-res RGB565 per-frame capture = a full-screen post effect;
+which surface samples 0x01037bc0 not yet pinned, but irrelevant to the writeback correctness.)
+
+### The slice (writeback approach — self-contained, reuses ngx's existing decoder):
+GXCopyTex override (purejit-safe, clear=0): take ngx's published color (g_efb_color 640×448),
+box-downsample to dst_w×dst_h, encode GC-tiled in dst fmt (RGB565 = 4×4 tiles, BE u16), write to
+phys|0x80000000. ngx's texture_for() then decodes it from guest RAM as usual for the sampling surface.
+DETERMINISTIC VERIFY (no eyeballing): 0x81037bc0 goes all-zero → non-zero texels; ngx's own RGB565
+decoder round-trips them back to the scene. Honor doClear (clear=1 path stays Dolphin/no-op as now).
+Generalize formats later (RGB5A3/RGBA8/I8/IA8) — RGB565 is the only one live in plaza.
+
 ## ⇒ NEXT: GXCopyTex (0x8035ee5c) is THE viable live slice — reads back COLOR (ngx RGB is faithful),
 2189×/22s in the plaza, the mirror/bathwater/mist/manta/heat-haze family. The color readback primitive
 (g_efb_color + sb_ngx_efb_peek_color) is the foundation. Remaining work: classify the calls (clear=0

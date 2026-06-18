@@ -81,11 +81,29 @@ SUNBRIGHT_OVERRIDE_IF_NATIVE(ov_gxpeekargb_dbg, 0x8035dcccu, s_efb_dbg) {
         fprintf(stderr, "[efb] GXPeekARGB #%lu (x=%u y=%u)\n", n, cpu.gpr[3] & 0xFFFF, cpu.gpr[4] & 0xFFFF);
     sb_run_original_around(cpu, 0x8035dcccu, nullptr, 0);
 }
+// Capture the copy geometry: GXSetTexCopySrc(left,top,wd,ht) + GXSetTexCopyDst(wd,ht,fmt,mip) set the
+// EFB src rect + dst tex dims/format; GXCopyTex(dest,clear) does the copy. Stash src/dst and log the
+// joined record per clear=0 copy (the real EFB→texture readbacks) so we know exactly what to serve.
+namespace { thread_local u16 g_src[4] = {0,0,0,0}; thread_local u32 g_dst_w=0,g_dst_h=0,g_dst_fmt=0; }
+SUNBRIGHT_OVERRIDE_IF_NATIVE(ov_gxsetcopysrc_dbg, 0x8035e388u, s_efb_dbg) {
+    g_src[0]=cpu.gpr[3]&0xFFFF; g_src[1]=cpu.gpr[4]&0xFFFF; g_src[2]=cpu.gpr[5]&0xFFFF; g_src[3]=cpu.gpr[6]&0xFFFF;
+    sb_run_original_around(cpu, 0x8035e388u, nullptr, 0);
+}
+SUNBRIGHT_OVERRIDE_IF_NATIVE(ov_gxsetcopydst_dbg, 0x8035e48cu, s_efb_dbg) {
+    g_dst_w=cpu.gpr[3]&0xFFFF; g_dst_h=cpu.gpr[4]&0xFFFF; g_dst_fmt=cpu.gpr[5];
+    sb_run_original_around(cpu, 0x8035e48cu, nullptr, 0);
+}
 SUNBRIGHT_OVERRIDE_IF_NATIVE(ov_gxcopytex_dbg, 0x8035ee5cu, s_efb_dbg) {
     static unsigned long n = 0, nclear0 = 0;
-    if ((cpu.gpr[4] & 1) == 0) nclear0++;          // clear=0 = the EFB→texture readbacks (the effects)
+    const bool readback = (cpu.gpr[4] & 1) == 0;   // clear=0 = the EFB→texture readbacks (the effects)
+    if (readback) {
+        nclear0++;
+        if ((nclear0 % 60) == 1)
+            fprintf(stderr, "[efb] CopyTex readback #%lu dst=%08x src[l=%u t=%u w=%u h=%u] dstTex[%ux%u fmt=%u]\n",
+                    nclear0, cpu.gpr[3], g_src[0], g_src[1], g_src[2], g_src[3], g_dst_w, g_dst_h, g_dst_fmt);
+    }
     if ((n++ % 240) == 0)
-        fprintf(stderr, "[efb] GXCopyTex #%lu (dst=%08x clear=%u)  readbacks(clear=0)=%lu\n",
+        fprintf(stderr, "[efb] GXCopyTex #%lu (dst=%08x clear=%u) readbacks(clear=0)=%lu\n",
                 n, cpu.gpr[3], cpu.gpr[4], nclear0);
     sb_run_original_around(cpu, 0x8035ee5cu, nullptr, 0);
 }
