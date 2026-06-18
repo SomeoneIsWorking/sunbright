@@ -117,6 +117,29 @@ but that has NO native_os either). NEXT: debug why Dolphin-JIT + native_os hangs
 under NO_RECOMP (compare DISABLE_RECOMP which works; the delta is overrides + native_os). This is the
 true "make gameplay run under JIT" task — everything else (deleting recomp) depends on it.
 
+## ★ BLOCKER NARROWED (2026-06-18): NO_RECOMP hangs at BOOT — engine-overrides ↔ Dolphin-JIT
+After gating the feature overrides, NO_RECOMP hangs at the very start (millions of VI fields,
+pace=0ms, frame_swaps=0, recomp ~0). Narrowed:
+- NOT native_os: gating native_os_lookup off under no_recomp (let Dolphin own threading) did NOT
+  fix the hang (reverted that experiment).
+- NOT fastboot: NO_RECOMP + AUTOSTART (no fastboot) hangs identically.
+- Pure SUNBRIGHT_DISABLE_RECOMP (no overrides, no native_os) BOOTS. NO_RECOMP (native ENGINE
+  overrides active + Dolphin JIT) HANGS. → The cause is the **native engine overrides interacting
+  with a pure Dolphin-JIT boot**. Those overrides (audio, GX FIFO/drawsync, memory bridge, GX init,
+  etc.) were ALL built/tuned for the RECOMP HYBRID (recomp call model + native_os scheduler +
+  specific charge_guest_time/CoreTiming pacing). They have never run on top of a pure Dolphin-JIT
+  boot and several evidently break/spin it.
+
+NEXT (fresh session): BISECT which override group hangs the Dolphin-JIT boot. Method: under
+SUNBRIGHT_NO_RECOMP, selectively disable override groups (the registration is now gateable via
+SUNBRIGHT_OVERRIDE_IF; add a group kill-switch env, or temporarily skip override_lookup in
+IsRecompiled for ranges) until boot progresses, then re-add to pin the offender(s). Likely suspects:
+the GX FIFO / drawsync natives (sms_drawsync_lossproof, gx_stream) and the audio/AID natives, which
+assume the recomp pacing/poll_yield. STRATEGIC QUESTION to resolve: whether "Dolphin-JIT + existing
+hybrid-era engine overrides" is viable, or whether the full-PC-engine end state needs the engine
+overrides re-grounded for a JIT (non-recomp) host. Compare against the working DISABLE_RECOMP boot to
+see what each override changes. Handoff brief: scratch/handoff_2026-06-18_norecomp_boot_hang.md.
+
 ## Files
 - runtime/sunbright_bridge.cpp — `IsRecompiled` no_recomp branch (Phase A).
 - runtime/overrides/ngx_j3d_shape.cpp — `g_native_draw` + ov_j3dshape_draw native per-view setup.
