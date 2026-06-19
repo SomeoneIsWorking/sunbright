@@ -189,11 +189,36 @@ Pure math (jpa_dir_basis / jpa_directional_corners / jpa_dirbb_offsets) is in ng
 renders sanely. NOTE: the per-pixel orientation vs GX is NOT isolated (parked wash + HUD drift confound
 the whole-frame number) — correctness rests on the unit-tested decomp-faithful math + no-regression.
 
-### NEXT (step 4 cont.): **t6 StripeCross (~549, the biggest non-t2)** — a RIBBON system, not per-particle
-billboards: it's an EMITTER-level visitor (JPADraw.unk4[], JPADrawExecStripe/StripeCross in
-JPADrawVisitor.cpp) that connects consecutive particles into a continuous textured strip. Needs a
-separate emit path (not the per-particle quad loop). Likely the FLUDD water-jet ribbon. Then: Rotation
-(t7/t8), YBillBoard (t10), per-particle texanim (unk3A), colour/alpha anim, child particles.
+### NEXT (step 4 cont.): **t6 StripeCross (~549, the biggest non-t2)** — RIBBON, fully RE'd below
+EMITTER-level visitor (runs ONCE per emitter over the whole particle list, NOT per particle).
+JPADrawExecStripe (t5) @ JPADrawVisitor.cpp L1117 / StripeCross (t6) @ L1193. Plan: do it in the
+SAME drawParticle override but as a RIBBON branch (skip the per-particle quad loop). Reuse
+ngx_emit_particle_quad PER SEGMENT (one quad between consecutive particles) so all the
+texture/TEV/blend machinery is reused — no new emit function needed.
+
+Per-particle ribbon edge (both edges of the strip), for particle i:
+- elems = emitter particle-list count (emitter+0xF4 list; need ≥2). Iterate first→last, or last→first
+  if (mBaseShape.mFlags & 1) (mFlags @ baseShape+0x7C). v-coord fVar2 runs 0→1 (step 1/(elems-1)),
+  or 1→0 reversed.
+- sin/cos = JMASSin/Cos(params.unk34)  [unk34 @ drawParams+0x34, the rotation angle, u16 fixed].
+- width: x = -unk10*(u4x+ucx), y = +unk10*(u4x-ucx)  [NOTE: u4.x for BOTH; ribbon uses unk4.x only].
+  v1 = (x*sin, x*cos, 0), v2 = (y*sin, y*cos, 0).
+- dir = mDirTypeFunc(particle) (vel/localpos per mDirType); if zero → (0,1,0); else normalize.
+- side = cross(unk0, dir); if zero → (0,1,0); else normalize. unk0 = cross(dir, side); normalize.
+  (unk0 = drawParams+0x0, already settled by the original guest draw — READ only.)
+- basis M = columns [unk0 | side | dir]; world edge = pt0 + M·v1 (left) and pt0 + M·v2 (right).
+  (rows: u1=(unk0.x,side.x,dir.x) etc; vertex.x = pt0.x + v.dot(u1), .y +v.dot(u2), .z +v.dot(u3).)
+- eye = mViewMtx · world edge. texcoord left=(0,fVar2) right=(1,fVar2).
+Emit a quad per segment i→i+1: corners [Li,Ri,Ri+1,Li+1], uv [(0,vi),(1,vi),(1,vi+1),(0,vi+1)].
+StripeCross (t6) draws a SECOND perpendicular ribbon (L1270): width from unk14 (not unk10),
+sin=-JMASSin / cos=JMASCos, dir = particle.mVelocity DIRECTLY (not mDirTypeFunc); ⚠ fVar2 is NOT
+reset between the two ribbons in the decomp (it keeps incrementing → 2nd ribbon's v is offset) —
+replicate that (don't reset) for fidelity, or test both.
+COLOUR for stripe is EMITTER-level (RegisterColorEmitter*, sets one TEVREG0), not per-particle
+RegisterPrmColorAnm — use cb.mPrmColor (epr..epa, already read) as C0 and cb.mEnvColor as C1; alpha
+from the emitter prm. (Per-particle prm/alpha is NOT applied by the stripe path.)
+Unit-test the pure ribbon-edge math (basis + M·v + segment quad winding) in render_test before wiring.
+Then: Rotation (t7/t8), YBillBoard (t10), per-particle texanim (unk3A), colour/alpha anim, children.
 
 ### (historical) NEXT — step 3: particle TEXTURE + the shape's full TEV (the big visual win)
 Flat PASSCLR dots ≠ water. Add: decode the particle texture (JPABaseShape → texture index → JPA
