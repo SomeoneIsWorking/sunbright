@@ -843,3 +843,34 @@ This confirms: GX EFB is bright == GX XFB (copy neutral, as the sum=64 filter sa
 is the ~0.6× darker one. The wash IS in ngx's render, now diff-able against true GX EFB pixels.
 NEXT: clean GX-EFB-vs-ngx per-region diff (align EFB top-448 to ngx 640×448) to localize the blended-
 accumulation deficit with reliable ground truth — no longer blocked.
+
+## UPDATE (2026-06-19 latest+15) — ★ GROUND TRUTH UNBLOCKED; wash localized to an ngx RENDER bug on ti=9
+Built the per-stage GX-EFB ground-truth tooling that was "blocked" (it wasn't — the wall was config
+timing). Working tools (committed):
+- /efbgrabnext — RELIABLE full-frame GX EFB grab at GXCopyDisp (EFB full, before clear) via
+  sb_run_original_around; SUNBRIGHT_EFB_GRAB + SUNBRIGHT_EFB_PEEK, NGX_PRESENT=0.
+- /efbgrabpass?p=N — GX cumulative EFB after projection-pass N (GXSetProjection hook).
+- sb_efb_grab_grid (CPU-thread EFB peek→PPM, shared).
+
+LOCALIZATION with this ground truth (file-select sky):
+- GX sky is bright (44,146,227) from pass 2 — drawn bright in ONE pass (the sky base ti=9), not accumulated.
+- ngx renders the SAME sky base DARK (29,88,138).
+- ti=9 vertex colors: ngx DECODE is CORRECT — raw array @80a80e40 = 0380dcff=(3,128,220), 0071bcff=
+  (0,113,188), 97c0ffff=(151,192,255); ngx /ngxverts decodes these exactly. So GX uses the same bytes.
+- ti=9 TEV = passthrough (COLOR ADD a=RASC); cc=0701 en=0 (no lighting); blend screen over a near-BLACK
+  clear (prefix n=0 = (0,10,19)).
+- ⇒ ngx renders ti=9's fragment at G=88/B=138, BELOW the shape's own vertex-color min (G=113,B=188).
+  That is IMPOSSIBLE for a passthrough shader + barycentric/perspective interpolation + blend-over-dark.
+  So there is a ~0.65x DARKENING in ngx's render of ti=9 that is NOT in the vertex data.
+- RULED OUT this session (each tested): decode (correct vs raw bytes), near-clip (NOCLIP/NEARCULL no
+  change), blend (blend-off no change), present/capture transform (SbWritePPM reads the raw UNORM RT;
+  sand is pixel-EXACT through the same path), copy-filter (sum=64), gamma (1.0), lighting (en=0 + toggle
+  no-op). Sand (opaque, normal-w, foreground) is EXACT — the darkening hits the backdrop/screen-blend
+  materials (ti=9 sky/sea, extreme/negative clip.w) specifically.
+
+REMAINING SUSPECT (next session, now ground-truthed & cheap to check): the ACTUAL COMPILED ti=9
+pipeline/shader vs the /gxstate-printed GLSL may differ (e.g. pipeline_for falling back to `mod`
+modulate, a konst/tevreg multiply, or a vertex-attribute upload scaling g_litrgba). Dump the real
+compiled shader/pipeline used for ti=9 and the exact MatPC push-constants, and the uploaded
+NgxRenderVertex.rgba bytes for a sky vertex, vs the rendered pixel. The decode/clip/blend/present are
+all CLEARED — the bug is between the (correct) fed vertex color and the rasterized fragment.

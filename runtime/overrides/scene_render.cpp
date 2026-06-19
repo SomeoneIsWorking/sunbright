@@ -66,12 +66,8 @@ static void ov_gx_projection(CPUState& cpu) {
     if (s_efb_grab_mode && sunbright_purejit_mode() && !ngx_capture_active()) {
         // GX baseline: grab the EFB (prior passes accumulated) at the armed pass, then run the REAL
         // GXSetProjection (no widescreen squeeze — Dolphin's GFX_WIDESCREEN_HACK handles the baseline).
-        if (g_proj_grab_pass.load() >= 0) std::fprintf(stderr,
-            "[efbpass] armed=%d pass_count=%u type=%u %s\n", g_proj_grab_pass.load(), g_gx_pass_count, type,
-            (g_proj_grab_pass.load() == (int)g_gx_pass_count) ? "MATCH-GRABBING" : "");
         if (g_proj_grab_pass.load() == (int)g_gx_pass_count) {
-            int ok = sb_efb_grab_grid(g_proj_grab_w, g_proj_grab_h, "scratch/screenshots/efbpass.ppm");
-            std::fprintf(stderr, "[efbpass] grab pass=%u ok=%d\n", g_gx_pass_count, ok);
+            sb_efb_grab_grid(g_proj_grab_w, g_proj_grab_h, "scratch/screenshots/efbpass.ppm");
             g_proj_grab_pass.store(-1);   // one-shot
         }
         g_gx_pass_count++;
