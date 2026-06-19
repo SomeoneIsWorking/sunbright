@@ -117,6 +117,8 @@ int sb_ngx_render(char*, int);                               // runtime/render/v
 int sb_ngx_present_test(char*, int);                         // runtime/render/vk_mesh.cpp
 extern "C" void sb_ngx_present_stats(unsigned long*, unsigned long*, unsigned long*, int*, int*, int*, unsigned long*);  // ngx_present.cpp
 extern "C" unsigned long sb_ngx_mip_textures();  // ngx_present.cpp — count of authored-mip textures decoded
+extern "C" void sb_ngx_particle_stats(unsigned long*, unsigned long*);  // ngx_j3d_shape.cpp — N7 JPA counters
+extern "C" int sb_ngx_last_particle_ti();  // ngx_j3d_shape.cpp — tev_index of the last emitted particle batch
 extern "C" void  sb_ngx_interp_stats(unsigned long*, unsigned long*);  // ngx_present.cpp — interp60 cadence
 extern "C" int   sb_ngx_interp60_enabled();                            // ngx_j3d_shape.cpp
 extern "C" float sb_ngx_interp_alpha();                                // ngx_j3d_shape.cpp
@@ -502,6 +504,8 @@ std::string handle_repl(const char* path) {
         sb_ngx_present_stats(&fr, &pi, &tx, &w, &h, &ok, &jq);
         app("ngx_present_live: init_ok=%d frames=%lu pipelines_built=%lu textures_decoded=%lu mip_textures=%lu target=%dx%d hud_quads=%lu\n",
             ok, fr, pi, tx, sb_ngx_mip_textures(), w, h, jq);
+        { unsigned long pq = 0, pt = 0; sb_ngx_particle_stats(&pq, &pt);
+          app("ngx_particles: emitted_quads=%lu emitted_tris=%lu last_ti=%d\n", pq, pt, sb_ngx_last_particle_ti()); }
         return std::string(buf, n);
     }
     if (strncmp(path, "/interp60", 9) == 0) {  // PC-native interp60 cadence: presents + in-between blends

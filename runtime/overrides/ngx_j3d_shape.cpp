@@ -2513,6 +2513,13 @@ extern "C" int sb_ngx_set_mtxsrc(int m) { if (m >= 0 && m <= 2) g_ngx_mtxsrc = m
 // Counters for the deterministic verify (no eyeballing): cubes captured + emitted tris.
 unsigned long g_imm_cube_calls = 0, g_imm_cube_tris = 0, g_imm_cube_onscreen = 0;
 unsigned long g_imm_sphere_calls = 0, g_imm_sphere_tris = 0;   // GXDrawSphere skybox dome capture
+unsigned long g_particle_quads = 0, g_particle_tris = 0;       // N7 JPA particle billboard capture
+int g_last_particle_ti = -1;
+extern "C" void sb_ngx_particle_stats(unsigned long* quads, unsigned long* tris) {
+    if (quads) *quads = g_particle_quads;
+    if (tris)  *tris  = g_particle_tris;
+}
+extern "C" int sb_ngx_last_particle_ti() { return g_last_particle_ti; }
 // The Mario occlusion cube's nearest (front-face) Vulkan depth this frame, for the native
 // GXPeekARGB occlusion query (efb_readback_native.cpp). 1e9 = unknown/far (not occluding).
 std::atomic<float> g_imm_occ_front_depth{1e9f};
@@ -2739,6 +2746,86 @@ extern "C" void ngx_emit_imm_sphere(int numMajor, int numMinor, int r, int g, in
             fprintf(stderr, "[imm] sphere #%lu (%d,%d) onscreen=%d/%d tris=%lu matColor=(%d,%d,%d,%d)\n",
                     n, numMajor, numMinor, onscreen, vc, g_imm_sphere_tris, r&0xff,g&0xff,b&0xff,a&0xff);
     }
+}
+
+// ── N7 particle billboard capture (JPA) ────────────────────────────────────────
+// JPA particles draw as immediate-mode GX_QUADS billboards (JPADrawVisitor.cpp) with no J3D
+// object, so the J3DShape-capture path misses them → every FLUDD spray / effect particle is
+// dropped under ngx present. jpa_particle_native.cpp walks the live emitter/particle object model
+// (after the guest setParticleClipBoard populates JPADraw::cb) and hands each particle's quad here.
+// The 4 corners arrive ALREADY in eye/view space: the billboard exec (JPADrawExecBillBoard) maps
+// the particle global position through the camera matrix, then adds the screen-aligned half-extent
+// offsets in eye X/Y at a constant eye Z. So we only project (g_proj) + frustum-clip + emit — no
+// model matrix. Flat slice: PASSCLR fragment = vertex colour (the per-particle prm colour); the
+// particle texture + the shape's TEV come in step 3. blend/zmode come from the shape.
+extern "C" void ngx_emit_particle_quad_eye(const float eye[4][3], float r, float g, float b, float a,
+                                           int blend_mode, int src_factor, int dst_factor,
+                                           int z_test, int z_write, int z_func) {
+    if (!g_enabled || !g_have_proj) return;
+    g_particle_quads++;
+
+    float clip[4][4];
+    for (int i = 0; i < 4; i++)
+        ngx_project_eye(g_proj, eye[i][0], eye[i][1], eye[i][2], clip[i]);
+
+    // Synthetic PASSCLR material: cc out = RASC (vertex colour), ac out = RASA (vertex alpha).
+    NgxTevState st{}; st.num_stages = 1;
+    st.stage[0].color_env = (15u<<12)|(15u<<8)|(15u<<4)|10u | (1u<<19);
+    st.stage[0].alpha_env = (7u<<13)|(7u<<10)|(7u<<7)|(5u<<4) | (1u<<19);
+    st.stage[0].texmap = 0xff; st.stage[0].texcoord = 0xff; st.stage[0].color_chan = 0;  // COLOR0A0
+    for (int i = 0; i < 4; i++) st.swap_table[i] = 0x1B;                   // identity (NOT 0 → "rrrr")
+    st.pe.z_test = (uint8_t)(z_test ? 1 : 0); st.pe.z_func = (uint8_t)z_func;
+    st.pe.z_write = (uint8_t)(z_write ? 1 : 0);
+    st.pe.blend_mode = (uint8_t)blend_mode; st.pe.src_factor = (uint8_t)src_factor;
+    st.pe.dst_factor = (uint8_t)dst_factor; st.pe.cull = 0 /*GX_CULL_NONE*/;  // billboards are 2-sided
+    uint64_t h = 1469598103934665603ull; const u8* p = (const u8*)&st;
+    for (size_t i = 0; i < offsetof(NgxTevState, key); i++) { h ^= p[i]; h *= 1099511628211ull; }
+    st.key = h;
+    int ti;
+    auto it = g_tevkey_index.find(h);
+    if (it != g_tevkey_index.end()) ti = it->second;
+    else {
+        if (g_tevstates.size() >= TEVSTATE_CAP) { g_tevstates.clear(); g_tevkey_index.clear(); }
+        ti = (int)g_tevstates.size(); g_tevstates.push_back(st); g_tevkey_index[h] = ti;
+    }
+    g_last_particle_ti = ti;
+
+    std::vector<NgxRenderVertex>& snap = g_snap[g_cur];
+    std::vector<NgxRenderBatch>&  batches = g_batches[g_cur];
+    size_t& count = g_snap_count[g_cur];
+    if (snap.size() < SNAP_CAP) snap.resize(SNAP_CAP);
+
+    constexpr int VW = 24;   // clip[4] + rgba[4] + uv[16]
+    auto gather = [&](int vi, float* o) {
+        o[0]=clip[vi][0]; o[1]=clip[vi][1]; o[2]=clip[vi][2]; o[3]=clip[vi][3];
+        o[4]=r; o[5]=g; o[6]=b; o[7]=a;
+        for (int m = 0; m < 16; m++) o[8+m] = 0.f;
+    };
+    auto emit_v = [&](const float* v) {
+        NgxRenderVertex& d = snap[count];
+        d.clip[0]=v[0]; d.clip[1]=v[1]; d.clip[2]=v[2]; d.clip[3]=v[3];
+        d.rgba[0]=v[4]; d.rgba[1]=v[5]; d.rgba[2]=v[6]; d.rgba[3]=v[7];
+        d.rgba1[0]=v[4]; d.rgba1[1]=v[5]; d.rgba1[2]=v[6]; d.rgba1[3]=v[7];
+        for (int m = 0; m < 8; m++) { d.uv[m][0]=v[8+m*2]; d.uv[m][1]=v[8+m*2+1]; }
+        count++;
+    };
+    if (batches.size() >= BATCH_CAP) return;
+    NgxRenderBatch nb{};
+    nb.vstart = (uint32_t)count; nb.vcount = 0; nb.tev_index = ti;
+    nb.epoch = (uint16_t)(g_efb_epoch < EPOCH_CAP ? g_efb_epoch : EPOCH_CAP - 1);
+    batches.push_back(nb);
+    static const int tri[2][3] = {{0,1,2},{0,2,3}};   // GX_QUADS → 2 tris
+    for (int t = 0; t < 2; t++) {
+        float in[3][VW]; for (int e = 0; e < 3; e++) gather(tri[t][e], in[e]);
+        float poly[9][VW]; int np = ngx_clip_frustum_tri(&in[0][0], VW, &poly[0][0]);
+        if (np < 3) continue;
+        const int ntri = np - 2;
+        if (count + (size_t)ntri * 3 > SNAP_CAP) break;
+        for (int f = 0; f < ntri; f++) { emit_v(poly[0]); emit_v(poly[f+1]); emit_v(poly[f+2]); }
+        batches.back().vcount += ntri * 3;
+        g_particle_tris += ntri;
+    }
+    if (batches.back().vcount == 0) batches.pop_back();
 }
 
 // Best-effort snapshot accessors for the native Vulkan mesh render (copy promptly

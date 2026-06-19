@@ -21,6 +21,7 @@
 #include "ngx_clip.h"
 #include "ngx_light.h"
 #include "ngx_imm_geom.h"
+#include "ngx_jpa_billboard.h"
 #include "ngx_indirect.h"
 #include "tev_shader.h"
 #include "tev_eval.h"
@@ -567,6 +568,37 @@ int test_tev_eval(char* rep, int cap) {
     return fails;
 }
 
+// ── JPA screen-aligned billboard corner math (ngx_jpa_billboard.h) ───────────────
+// The N7 particle port builds each particle's camera-facing quad with this; pin the offset/corner
+// derivation (JPADrawExecBillBoard) against hand-computed values so a sign/order slip is caught.
+int test_jpa_billboard(char* rep, int cap) {
+    int pos = 0, fails = 0;
+    auto failf = [&](const char* m){ fails++; if (pos < cap) pos += snprintf(rep+pos, cap-pos, "%s", m); };
+    auto close = [](float a, float b){ float e=a-b; return (e<0?-e:e) <= 1e-4f; };
+
+    // Centred pivot (uc=0): x0=x1=sx·u4x, y0=y1=sy·u4y. sx=2,sy=3,u4=(10,20),pt=(100,200,-700).
+    // half-x = 2·10 = 20, half-y = 3·20 = 60. corners {(-20,60),(20,60),(20,-60),(-20,-60)}+pt.
+    float c[4][3];
+    ngx_jpa::billboard_corners(2.f, 3.f, 10.f, 20.f, 0.f, 0.f, 100.f, 200.f, -700.f, c);
+    const float exp0[4][3] = {{80,260,-700},{120,260,-700},{120,140,-700},{80,140,-700}};
+    for (int i = 0; i < 4; i++) for (int k = 0; k < 3; k++)
+        if (!close(c[i][k], exp0[i][k])) { char b[96];
+            snprintf(b,sizeof b,"FAIL centred corner %d[%d]=%.3f exp %.3f\n", i,k,c[i][k],exp0[i][k]); failf(b); }
+
+    // Off-centre pivot (uc=(2,4)): x1=sx·(u4x−ucx)=1·(10−2)=8, x0=1·(10+2)=12,
+    // y0=1·(20+4)=24, y1=1·(20−4)=16. corners {(-12,24),(8,24),(8,-16),(-12,-16)}+pt(0,0,-1).
+    float d[4][3];
+    ngx_jpa::billboard_corners(1.f, 1.f, 10.f, 20.f, 2.f, 4.f, 0.f, 0.f, -1.f, d);
+    const float exp1[4][3] = {{-12,24,-1},{8,24,-1},{8,-16,-1},{-12,-16,-1}};
+    for (int i = 0; i < 4; i++) for (int k = 0; k < 3; k++)
+        if (!close(d[i][k], exp1[i][k])) { char b[96];
+            snprintf(b,sizeof b,"FAIL pivot corner %d[%d]=%.3f exp %.3f\n", i,k,d[i][k],exp1[i][k]); failf(b); }
+
+    // All four corners share the particle's eye Z (screen-aligned, constant depth).
+    for (int i = 0; i < 4; i++) if (!close(c[i][2], -700.f)) { failf("FAIL billboard corner Z not constant\n"); break; }
+    return fails;
+}
+
 struct Unit { const char* name; int (*run)(char* rep, int cap); };
 
 const Unit kUnits[] = {
@@ -583,6 +615,7 @@ const Unit kUnits[] = {
     {"imm_sphere",    test_imm_sphere},
     {"indirect",      test_indirect},
     {"tev_eval",      test_tev_eval},
+    {"jpa_billboard", test_jpa_billboard},
 };
 
 }  // namespace
