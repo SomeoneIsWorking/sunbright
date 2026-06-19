@@ -967,3 +967,16 @@ rasterized fragment — localize THAT, don't re-chase clip/blend/haze/overlay (a
 Then ti=7 haze (likely fine once the base is right; re-verify with ab_oracle).
 NOTE: comparing /ngxonly-ti9 (over black) vs GX-FINAL is slightly unfair (GX's ti=9 screen-blends over a
 bright prior layer); but the below-hull G=81<113 anomaly holds regardless of background.
+
+## UPDATE (2026-06-19 latest+19) — ti=9 below-hull is NOT the TEV: it's the raster/vertex-color the GPU reads
+/ngxdbg?m=ras (output the raw RASTER colour, TEV bypassed) renders ti=9-only IDENTICALLY dark:
+m=normal (13,81,135) == m=ras (13,81,135) (m=tex = flat grey, no texture). So the below-hull value is
+in the RASTER (interpolated vertex) colour itself, NOT the TEV combiner / generated shader. Combined
+with: the CPU pixbatch (affine, reads the SAME g_snap) gives the correct bright (0.14,0.56,0.89), and
+perspective interpolation of all-positive-w verts is provably within-hull ⇒ **the GPU is interpolating
+DIFFERENT (darker) vertex data than the g_snap snapshot the dump/pixbatch read.** A buffer/upload or
+double-buffer discrepancy between what pixbatch reads (g_snap[g_front]) and what the present's VkBuffer
+holds. NEXT (narrow, fresh-context): read back the actual ngx vertex VkBuffer (or the per-vertex rgba in
+vk_mesh's uploaded `verts`) for the ti=9 batch and compare byte-for-byte to g_snap[g_front]; also verify
+freeze latches the SAME buffer index the present renders. The bug is the vertex-colour data path, not
+TEV/blend/clip/lighting/haze (all ruled out latest+17/+18).
