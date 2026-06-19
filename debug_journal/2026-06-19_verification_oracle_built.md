@@ -254,3 +254,25 @@ wash; the matColor-source misread for the magenta material.
   tev/combiner unit) with the floor's actual 5-stage pattern (the s0..s4 ops + bias/scale/compare/konst
   from /gxstate ti=2) and hand-computed expected outputs, find the generator bug deterministically,
   fix the GLSL generator, then confirm the ab_oracle number drops. Substantial, not a one-liner.
+
+## Even deeper — TEV inputs ALSO proven faithful; converges on the parked "missing darkening" answer
+- **TevBlock offsets verified vs decomp** (J3DTevBlocks.hpp): ngx's TVB16 layout (mTevColor@0xD6,
+  mTevKColor@0xF6, mTevKColorSel@0x106, mTevKAlphaSel@0x116, mTevSwapModeTable@0x126, stagenum@0x54,
+  stage@0x55, order@0x14) and TVB2 (0x10/0x41/0x51/0x53/0x55…) ALL MATCH. So ngx reads tevreg/kcolor
+  from the correct object-model offsets (synchronous, not the stale GX fn-tee). tevreg/kcolor faithful.
+- **TEV generator verified** (tev_shader.cpp): faithful to Dolphin PixelShaderGen — KSEL_C/A konst
+  tables, swap tables, regular integer scale-lerp+round, compare modes, final prev/255. Unit-tested.
+- **Blend**: floor (ti=2) + buildings (ti=3) are blend=SRCALPHA/INVSRCALPHA, but the floor's final
+  alpha = RASA = matColor.a = 255 (ALPHA0 reg, lighting off) ⇒ srcAlpha≈1 ⇒ effectively OPAQUE ⇒ the
+  floor shows its combiner output directly (blend/compositing is NOT diluting it).
+- ⇒ With EVERY per-material input + the generator + the blend all faithful, an effectively-opaque floor
+  that is still 1.4× too bright means GX's FINAL framebuffer is DARKER via a step ngx doesn't do:
+  **a missing EFB-readback-gated DARKENING pass** (the long-parked `delfino-lighting-wash` conclusion,
+  now independently CONFIRMED by exhaustively ruling out the shading pipeline). The pollution port
+  (drawShineShadowVolume) was already falsified as the specific effect (never called); the open RE is
+  WHICH EFB-readback pass darkens the plaza floor. (Residual possibility: a subtle 5-stage combiner-gen
+  bug not covered by the current unit — settle by the render_test buildout above; but the evidence now
+  points to a missing darkening effect, matching the user's "missing effect" call.)
+- This is the parked frontier. Per the user directive it stays PARKED as a fidelity chase; the value
+  here is the PROOF that it is a missing-effect/compositing problem, NOT a per-material shading bug —
+  so no future session should re-audit lighting/textures/combiner/offsets (all proven faithful).
