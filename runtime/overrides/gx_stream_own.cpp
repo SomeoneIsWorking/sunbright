@@ -14,6 +14,7 @@
 #include <cstdio>
 
 extern void ngx_note_efb_copy(bool is_disp, u32 dest, u32 clear);   // ngx_j3d_shape.cpp: epoch tracking
+extern u8 mem_r8(u32 ea);   // memory_bridge.cpp
 
 // ── Blend-mode + copy-gamma capture (Delfino-wash hunt: find a darkening pass / settle copy gamma) ──
 // The Delfino ground renders ~0.45x too bright in ngx; per-fragment material state is proven identical
@@ -79,6 +80,27 @@ SUNBRIGHT_OVERRIDE(ov_gx_blendmode, 0x80361dd0u) {
 SUNBRIGHT_OVERRIDE(ov_gx_copygamma, 0x8035ecd0u) {
     g_copy_gamma = (unsigned char)cpu.gpr[3]; g_copy_gamma_sets++;
     gx_super(cpu, 0x8035ecd0u);
+}
+
+// GXSetCopyFilter(GXBool aa, u8 sample_pattern[12][2], GXBool vf, const u8 vfilter[7])  @0x8035eaa8
+// The EFB->XFB copy applies the 7 vertical-tap vfilter: (sum of taps)>>6. Taps summing to >64 BRIGHTEN
+// the copy. ngx presents its RT directly (no copy filter), so a >64 sum = ngx is darker by 64/sum.
+// Capture vfilter[7] + sum to test the "wash = missing copy-filter brightening" hypothesis (0.80=64/80).
+namespace { unsigned char g_vfilter[7] = {0}; unsigned g_vfilter_sum = 0; unsigned char g_vf_on = 0; unsigned long g_vf_sets = 0; }
+extern "C" int sb_gx_copyfilter_dump(char* out, int cap) {
+    return snprintf(out, cap, "copyfilter: vf=%u sets=%lu vfilter=[%u %u %u %u %u %u %u] sum=%u (==64 no change; >64 brightens by sum/64=%.3f)\n",
+        g_vf_on, g_vf_sets, g_vfilter[0],g_vfilter[1],g_vfilter[2],g_vfilter[3],g_vfilter[4],g_vfilter[5],g_vfilter[6],
+        g_vfilter_sum, g_vfilter_sum/64.0);
+}
+SUNBRIGHT_OVERRIDE(ov_gx_copyfilter, 0x8035eaa8u) {
+    g_vf_on = (unsigned char)cpu.gpr[5]; g_vf_sets++;
+    const u32 vfp = cpu.gpr[6];
+    if (vfp >= 0x80000000u && vfp < 0x81800000u) {
+        unsigned s = 0;
+        for (int i = 0; i < 7; i++) { g_vfilter[i] = mem_r8(vfp + i); s += g_vfilter[i]; }
+        g_vfilter_sum = s;
+    }
+    gx_super(cpu, 0x8035eaa8u);
 }
 
 SUNBRIGHT_OVERRIDE(ov_gxs_flush, 0x8035d8f0u) {

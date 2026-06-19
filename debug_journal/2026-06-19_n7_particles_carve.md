@@ -781,3 +781,32 @@ STATE OF BUG 2 (the file-select/Delfino-class wash), after the full data-diverge
 NEXT (if pursued): wire the tailored GX frontend's render target into Dolphin's EFB-access (PeekColor /
 FramebufferManager) so /efbgrab returns the real EFB — then diff EFB vs XFB vs ngx to split render-gap
 vs copy/present-gap. That's the one tool that cracks it; it's a frontend-integration build.
+
+## UPDATE (2026-06-19 latest+12) — copy-filter & cull falsified; tools /copyfilter; refined pattern
+More data-divergence on the wash (built /copyfilter capture: hooks GXSetCopyFilter 0x8035eaa8, dumps the
+7 vfilter taps + sum):
+- **Copy filter FALSIFIED**: SMS file-select vfilter=[8,8,10,12,10,8,8] sum=64 = brightness-NEUTRAL
+  (>64 would brighten). copyGamma=1.0. So the EFB->XFB copy does NOT brighten => GX XFB ~= GX EFB, the
+  ~0.8x is in the RENDER, not the copy/present.
+- **Cull/overdraw FALSIFIED**: SUNBRIGHT_NGX_FORCECULL='' vs 0 give IDENTICAL ngx luma (116.7) -> not
+  translucent double-draw.
+- Refined pattern (per-element GX/ngx ratio): OPAQUE bright (sand) = 1.0x EXACT; SCREEN-BLEND/translucent
+  (sky ~1.6x, lit blocks ~1.65x) = ngx ~0.6x of GX. So the deficit is specifically in BLENDED elements'
+  accumulation, opaque is fine.
+- drawstats GX vs ngx are INCONCLUSIVE (ngx handles J3DShape DLs natively, so GX's higher dl_prims is
+  expected, not proof of missing draws).
+
+FALSIFIED THIS SESSION (all with real data): gamma, copy-filter, lighting, blend-factor-map, vertex
+decode, single-layer (attribution), cull/overdraw, sky-base gradient. CONFIRMED: real static ~21%
+(time-avg), opaque-exact / blended-~0.6x.
+
+WORKING ROOT HYPOTHESIS (best-supported, unfalsified): the multi-layer screen-blend accumulation is
+SHORT in ngx — either ngx misses some brightening draws (immediate-mode / non-J3DShape GX draws it
+doesn't capture) or a blend-space subtlety in the screen-blend stack. Opaque draws are exact because
+they don't depend on accumulation.
+HARD BLOCKER (unchanged): can't get per-stage GX EFB ground truth — the tailored GX frontend doesn't
+populate Dolphin's peekable EFB (/efbgrab = black), GX-side /ngxdrawlimit is dead, xfmem/bpmem lag. The
+ONE tool that cracks it: wire the tailored frontend's render target into Dolphin's EFB-access (PeekColor)
+so /efbgrab returns real pixels, then diff EFB-vs-XFB-vs-ngx per layer. That's a frontend-integration
+build. Tools delivered: by-shape /gxstate, /ngxverts rgb+clip, viewport capture, /ngxdroppass,
+layer-attribution, /efbgrab, /copyfilter.

@@ -3526,6 +3526,7 @@ static const bool ov_j3dshape_draw_pj = [] {
                    0x802f33a8u,   // J3DGDSetChanAmbColor
                    0x80361dd0u,   // GXSetBlendMode  (gx_stream_own.cpp /gxblend darkening-pass hunt)
                    0x8035ecd0u,   // GXSetDispCopyGamma (gx_stream_own.cpp /gxblend copy-gamma)
+                   0x8035eaa8u,   // GXSetCopyFilter (gx_stream_own.cpp /copyfilter — copy brightening hunt)
                    0x803630c8u,   // GXSetViewport (per-pass screen sub-rect — file-select panel previews)
                    0x80363138u,   // GXSetScissor
                    0x8027c67cu }) // TModelWaterManager::drawShineShadowVolume (plaza pollution capture)
