@@ -648,3 +648,33 @@ pixel oracle + the layer-isolation probes (/ngxonly /ngxskip /ngxprefix /ngxdrop
 NEXT (a dedicated pixel-oracle campaign, fresh context): bisect the screen-blend stack layer-by-layer
 with /ngxprefix on the frozen file-select frame, find which layer's compositing diverges from GX, fix
 the blend/coverage there, verify each step drops the ab_oracle number. Don't trust gxstate DIFFs here.
+
+## UPDATE (2026-06-19 latest+7) — BUG 2 narrowed via data-divergence to LIT-material under-brightness
+USER directive: a wrong on-screen value IS engine work; find the data divergence, narrow, RE/port/tool.
+Did exactly that on the file-select wash (frame-exact ab_oracle scratch/fileselect.sav, 22.5%):
+
+METHOD: /ngxprefix layer-bisect on the GPU (pixblend's CPU rasterizer is UNRELIABLE — affine vs GPU
+perspective-correct interp; it predicted white where the GPU renders dark — do NOT trust its FINAL).
+
+FINDINGS (sampling abo_oracle.ppm[GX] vs abo_ngx.ppm[ngx] at fixed pixels):
+- **UNLIT elements are PIXEL-EXACT**: sand (239,213,189)==(239,213,189).
+- **LIT (en=1) elements render ~0.5x too dark**: A/B/C blocks (cc=0686) GX=(80,198,226) ngx=(37,107,131)
+  ratio ~0.5; options text GX=(123,59,0) ngx=(49,24,0).
+- **Translucent windows inherit the dark bg behind them**: corrupt/new panels GX=(98,102,254)
+  ngx=(28,30,233) — R,G crushed because the sky/sea behind is dark in ngx (BUG 3 = consequence of BUG 2).
+- The SKY per-pixel is CONFOUNDED by cloud texmtx animation (the sky pixel varied 28,88,138 vs 55,102,141
+  across runs from the SAME save — the documented cloud-scroll). Use the static UI (lit blocks) as the
+  clean signal, NOT the animated sky. The whole-frame MEAN (22.5%) is still robust.
+- A specific foliage batch (ti=10 cc=070e OPAQUE) blackens the sea-left (0,65,89)->(42,30,8): also a
+  lit/en material rendering dark.
+
+ROOT-CAUSE LEAD (named, not yet fixed): ngx's per-vertex lighting (light_vertex, cc en=1 path) is
+UNDER-BRIGHT by ~2x for the file-select lit materials → every lit element (blocks, foliage) is ~0.5x,
+and the dark 3D bg bleeds through the translucent menu windows. Unlit (sand, vertex-color passthrough)
+is exact, which is why the wash looked "global" but spares the sand. NEXT: compare light_vertex's
+ambient+diffuse sum for a lit block (cc=0686) vs the GX result; the deficit is likely the ambient
+source/scale or a missing light contribution (the N6 lighting model). Verify any fix with ab_oracle.
+
+TOOLING NOTE: GX-side /ngxdrawlimit lockstep is UNRELIABLE under no-recomp (the GX XFB shows the last
+complete frame regardless of the limit — it's only re-copied at GXCopyDisp), so per-layer GX gating
+doesn't work; the ngx side gates fine. For GX ground truth use the full-frame two-process oracle.
