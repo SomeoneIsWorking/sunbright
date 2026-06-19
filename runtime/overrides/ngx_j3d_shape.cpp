@@ -36,6 +36,7 @@
 #include "../ngx/ngx_light.h"     // pure, unit-tested GX per-vertex lighting (test_lighting)
 #include "../ngx/ngx_imm_geom.h"  // pure, unit-tested immediate-mode GX geometry (GXDrawCube)
 #include "../ngx/ngx_indirect.h"  // pure, unit-tested GX indirect-texturing mantissa/decode
+#include "../ngx/ngx_jpa_billboard.h"  // pure JPA billboard corners + TEV combiner (test_jpa_billboard)
 #include <cmath>
 #include <cstdarg>
 #include <cstddef>
@@ -2756,28 +2757,34 @@ extern "C" void ngx_emit_imm_sphere(int numMajor, int numMinor, int r, int g, in
 // The 4 corners arrive ALREADY in eye/view space: the billboard exec (JPADrawExecBillBoard) maps
 // the particle global position through the camera matrix, then adds the screen-aligned half-extent
 // offsets in eye X/Y at a constant eye Z. So we only project (g_proj) + frustum-clip + emit — no
-// model matrix. Flat slice: PASSCLR fragment = vertex colour (the per-particle prm colour); the
-// particle texture + the shape's TEV come in step 3. blend/zmode come from the shape.
-extern "C" void ngx_emit_particle_quad_eye(const float eye[4][3], float r, float g, float b, float a,
-                                           int blend_mode, int src_factor, int dst_factor,
-                                           int z_test, int z_write, int z_func) {
+// model matrix. The quad carries its texmap0 binding + per-corner GX texcoords + the resolved TEV
+// combiner (the shape's colour-input type, tex×prm) + the prm/env TEV colour registers + the live
+// blend/zmode (JPADrawSetupTev.cpp / JPADraw::draw). Faithful to the GX particle pipeline.
+extern "C" void ngx_emit_particle_quad(const ngx_jpa::NgxParticleQuad* q) {
     if (!g_enabled || !g_have_proj) return;
     g_particle_quads++;
 
     float clip[4][4];
     for (int i = 0; i < 4; i++)
-        ngx_project_eye(g_proj, eye[i][0], eye[i][1], eye[i][2], clip[i]);
+        ngx_project_eye(g_proj, q->eye[i][0], q->eye[i][1], q->eye[i][2], clip[i]);
 
-    // Synthetic PASSCLR material: cc out = RASC (vertex colour), ac out = RASA (vertex alpha).
+    // The shape's resolved 1-stage TEV combiner: cc/ac from JPADrawSetupTev, C0=prm, C1=env.
     NgxTevState st{}; st.num_stages = 1;
-    st.stage[0].color_env = (15u<<12)|(15u<<8)|(15u<<4)|10u | (1u<<19);
-    st.stage[0].alpha_env = (7u<<13)|(7u<<10)|(7u<<7)|(5u<<4) | (1u<<19);
-    st.stage[0].texmap = 0xff; st.stage[0].texcoord = 0xff; st.stage[0].color_chan = 0;  // COLOR0A0
-    for (int i = 0; i < 4; i++) st.swap_table[i] = 0x1B;                   // identity (NOT 0 → "rrrr")
-    st.pe.z_test = (uint8_t)(z_test ? 1 : 0); st.pe.z_func = (uint8_t)z_func;
-    st.pe.z_write = (uint8_t)(z_write ? 1 : 0);
-    st.pe.blend_mode = (uint8_t)blend_mode; st.pe.src_factor = (uint8_t)src_factor;
-    st.pe.dst_factor = (uint8_t)dst_factor; st.pe.cull = 0 /*GX_CULL_NONE*/;  // billboards are 2-sided
+    st.stage[0].color_env = q->color_env;
+    st.stage[0].alpha_env = q->alpha_env;
+    st.stage[0].texmap = (uint8_t)(q->tex_addr ? 0 : 0xff);   // GX_TEXMAP0 (or null → 1×1 white)
+    st.stage[0].texcoord = (uint8_t)(q->tex_addr ? 0 : 0xff); // GX_TEXCOORD0
+    st.stage[0].color_chan = 0xff;                            // GX_COLOR_NULL (JPA: GXSetNumChans(0))
+    st.stage[0].kcsel = 0x0C; st.stage[0].kasel = 0x1C;       // unused (no konst); J3D defaults
+    for (int c = 0; c < 4; c++) {
+        st.tev_color[1][c] = q->c0[c];   // C0/A0 = prm
+        st.tev_color[2][c] = q->c1[c];   // C1    = env
+    }
+    for (int i = 0; i < 4; i++) st.swap_table[i] = 0x1B;      // identity (NOT 0 → "rrrr")
+    st.pe.z_test = (uint8_t)(q->z_test ? 1 : 0); st.pe.z_func = q->z_func;
+    st.pe.z_write = (uint8_t)(q->z_write ? 1 : 0);
+    st.pe.blend_mode = q->blend_mode; st.pe.src_factor = q->src_factor;
+    st.pe.dst_factor = q->dst_factor; st.pe.cull = 0 /*GX_CULL_NONE*/;  // billboards are 2-sided
     uint64_t h = 1469598103934665603ull; const u8* p = (const u8*)&st;
     for (size_t i = 0; i < offsetof(NgxTevState, key); i++) { h ^= p[i]; h *= 1099511628211ull; }
     st.key = h;
@@ -2795,11 +2802,12 @@ extern "C" void ngx_emit_particle_quad_eye(const float eye[4][3], float r, float
     size_t& count = g_snap_count[g_cur];
     if (snap.size() < SNAP_CAP) snap.resize(SNAP_CAP);
 
-    constexpr int VW = 24;   // clip[4] + rgba[4] + uv[16]
+    constexpr int VW = 24;   // clip[4] + rgba[4] + uv[16] (uv[0]=GX_TEXCOORD0, rest 0)
     auto gather = [&](int vi, float* o) {
         o[0]=clip[vi][0]; o[1]=clip[vi][1]; o[2]=clip[vi][2]; o[3]=clip[vi][3];
-        o[4]=r; o[5]=g; o[6]=b; o[7]=a;
+        o[4]=1.f; o[5]=1.f; o[6]=1.f; o[7]=1.f;                // raster unused (color_chan=NULL)
         for (int m = 0; m < 16; m++) o[8+m] = 0.f;
+        o[8]=q->uv[vi][0]; o[9]=q->uv[vi][1];                  // GX_TEXCOORD0
     };
     auto emit_v = [&](const float* v) {
         NgxRenderVertex& d = snap[count];
@@ -2811,6 +2819,14 @@ extern "C" void ngx_emit_particle_quad_eye(const float eye[4][3], float r, float
     };
     if (batches.size() >= BATCH_CAP) return;
     NgxRenderBatch nb{};
+    if (q->tex_addr) {
+        NgxTexBind& tb = nb.tex[0];
+        tb.addr = q->tex_addr; tb.w = q->tex_w; tb.h = q->tex_h; tb.fmt = q->tex_fmt;
+        tb.tlut_addr = q->tlut_addr; tb.tlut_fmt = q->tlut_fmt;
+        tb.wrap_s = q->wrap_s; tb.wrap_t = q->wrap_t;
+        tb.min_filter = q->min_filter; tb.mag_filter = q->mag_filter;
+        tb.mipmap = 0; tb.mip_count = 1;
+    }
     nb.vstart = (uint32_t)count; nb.vcount = 0; nb.tev_index = ti;
     nb.epoch = (uint16_t)(g_efb_epoch < EPOCH_CAP ? g_efb_epoch : EPOCH_CAP - 1);
     batches.push_back(nb);

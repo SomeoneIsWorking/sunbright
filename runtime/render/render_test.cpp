@@ -596,6 +596,22 @@ int test_jpa_billboard(char* rep, int cap) {
 
     // All four corners share the particle's eye Z (screen-aligned, constant depth).
     for (int i = 0; i < 4; i++) if (!close(c[i][2], -700.f)) { failf("FAIL billboard corner Z not constant\n"); break; }
+
+    // TEV combiner encoding (jpa_color_env / jpa_alpha_env vs the shader's decode_cc/decode_ac bit
+    // layout). Pin the MODULATE case (type 1: a=ZERO15,b=C0(2),c=TEXC(8),d=ZERO15) → out = C0·TEXC.
+    {
+        uint32_t ce = ngx_jpa::jpa_color_env(15, 2, 8, 15);
+        int a=(ce>>12)&0xf, b=(ce>>8)&0xf, c2=(ce>>4)&0xf, d=ce&0xf, clamp=(ce>>19)&1;
+        int bias=(ce>>16)&3, op=(ce>>18)&1, scale=(ce>>20)&3, dest=(ce>>22)&3;
+        if (a!=15||b!=2||c2!=8||d!=15) failf("FAIL jpa color_env abcd\n");
+        if (!clamp||bias!=0||op!=0||scale!=0||dest!=0) failf("FAIL jpa color_env op/bias/clamp/scale/dest\n");
+        // alpha: a=ZERO7,b=TEXA4,c=A0(1),d=ZERO7 → out = TEXA·A0; rswap=tswap=0 (identity).
+        uint32_t ae = ngx_jpa::jpa_alpha_env();
+        int aa=(ae>>13)&7, ab=(ae>>10)&7, ac=(ae>>7)&7, ad=(ae>>4)&7, aclamp=(ae>>19)&1;
+        int rswap=ae&3, tswap=(ae>>2)&3;
+        if (aa!=7||ab!=4||ac!=1||ad!=7) failf("FAIL jpa alpha_env abcd\n");
+        if (!aclamp||rswap!=0||tswap!=0) failf("FAIL jpa alpha_env clamp/swap\n");
+    }
     return fails;
 }
 

@@ -114,7 +114,56 @@ scene in the ground-ring save (weak spray). With the forward-spray save it rende
 varies per emitter/manager (some use a distant camera, Z-trans ~-13581 → eye.z ~-15k, tiny/off-screen);
 that's REAL (multiple JPA cameras), not a bug — gameplay-camera emitters place correctly.
 
-### NEXT — step 3: particle TEXTURE + the shape's full TEV (the big visual win)
+## UPDATE (2026-06-19 late) — STEP 3 DONE & verified (particle TEXTURE + full TEV)
+
+Implemented the particle texture + the shape's real TEV combiner + the 4 quad texcoords. The
+emit (`ngx_emit_particle_quad`, ngx_j3d_shape.cpp) now takes a `ngx_jpa::NgxParticleQuad` (shared
+header) carrying eye corners + uv[4] + color_env/alpha_env + C0(prm)/C1(env) TEV registers + the
+texmap0 binding + live blend/zmode. render_test `jpa_billboard` now also pins the combiner encoding
+(jpa_color_env/jpa_alpha_env vs the shader's decode_cc/decode_ac) — 14/14 PASS.
+
+### Object-model chain (ALL disasm/dump-verified live)
+- **Texture**: `JPADraw.mDrawCtx` @ jpadraw+0x90; mBaseShape @ +0x94, mTexResource @ +0xAC.
+  texid = getMainTextureID(0) (disasm 8032c700): texanim(unk80@baseShape+0x80) → table[0]
+  (mTextureIndices u8* @ baseShape+0x08), else baseShape.mTextureIndex @ +0x7F.
+  **JPATextureResource.unk2C @ +0x2C is a `JPATexture**` POINTER — deref FIRST, then index**
+  (the bug that gave 17792x32922/fmt=128 garbage was indexing texRes+0x2C directly). jtex =
+  *(table + texid*4); ResTIMG = *(jtex + 0x8 /*JUTTexture*/ + 0x20 /*mTexInfo*/). Decode the
+  ResTIMG like capture_textures (fmt@0,w@2,h@4,wrap@6/7,filter@0x14/15,tlutfmt@9,imgOff@0x1C,
+  palOff@0xC). Plaza spray = one shared 64×64 IA8 (fmt 3), texcoords (0,0)(1,0)(1,1)(0,1).
+- **Combiner**: JPABaseShape.TevArgs @ baseShape+0x48 (4 × GXTevColorArg s32 = the GX_CC_* a/b/c/d
+  baked from data[0x30] colour-input type). Alpha combiner is fixed TEXA·A0. C0 = prm
+  (RegisterPrmColorAnm, per-particle), C1 = env (per-particle), computed via JPA_U8_THRE.
+- **Blend/zmode**: live from the GXSetBlendMode/GXSetZMode tees (blend is set per-shape in
+  JPADraw::draw before drawParticle; the normal path sets GXSetAlphaCompare(ALWAYS) → NO alpha
+  test, so none is applied — faithful).
+
+### Verified (the texture pipeline WORKS)
+- `SUNBRIGHT_JPA_TEXSHOW=1` (textured, opaque, out=TEXC) + `JPA_ZFUNC=7` shows the SPRAY TEXTURE
+  applied (soft water streaks, vs flat magenta under JPA_SHOW) → texture decode + UV + sampling all
+  correct. The texture chain resolves to a valid 64×64 IA8 (DBG_JPA confirms addr/fmt/w/h sane).
+- **DRIFT-FREE A/B (new tool `/ngxnojpa?v=`)**: one process, capture WITH then toggle JPA off and
+  capture WITHOUT → 2.6% delta, a particle cluster AT MARIO (the FLUDD spray location) in the diff,
+  plus expected HUD-trail drift at the counters. So the textured particles RENDER, visible, in the
+  normal LEQUAL view (not fully occluded). (Two-PROCESS WITH/WITHOUT is unreliable here — the HUD
+  counter motion-trails drift between processes and swamp the small particle delta; use /ngxnojpa.)
+- Whole-frame vs GX (spray_fwd) ≈ 51 both with/without ⇒ INCONCLUSIVE: the parked Delfino wash +
+  low particle alpha + partial depth-occlusion dominate; particles blend over an already-wrong
+  (washed) ngx background so a whole-frame number can't isolate them (the multi-layer no-oracle
+  trap). Verdict rests on TEXSHOW (texture renders) + the drift-free cluster-at-Mario.
+
+### Diagnostics added (kept)
+- `SUNBRIGHT_JPA_TEXSHOW=1` = textured + opaque (no blend) — isolates texture from blend/alpha.
+- `/ngxnojpa?v=1` (sb_jpa_set_disable) = runtime JPA-emission toggle for the drift-free A/B.
+- DBG_JPA now prints tex addr/w/h/fmt, the cc(a/b/c/d), the per-particle al (mAlpha) + resolved A0.
+
+### Step 4 backlog (unchanged): billboard-type variants (Y/dir/rot/stripe — unk34[]/unk70[]),
+per-particle texanim (unk3A), colour/alpha animation, ext/extra shapes, child particles. Also: the
+spray reads SUBTLE under LEQUAL (low alpha + depth) — if a more-visible plume is wanted, revisit
+the depth-occlusion (handoff's "depth gotcha"; was declared understood/not-a-bug, but a clearer
+forward-spray save or a depth re-check may be the real next visual win).
+
+### (historical) NEXT — step 3: particle TEXTURE + the shape's full TEV (the big visual win)
 Flat PASSCLR dots ≠ water. Add: decode the particle texture (JPABaseShape → texture index → JPA
 resource JUTTexture → ResTIMG → reuse N1 sb_tex_decode → bind), the 4 quad texcoords
 (cb.mTexCoords[4] @ cb+0x14, 8 bytes each), and the shape's TEV (GXSetTevColor TEVREG0=prm/TEVREG1=env

@@ -96,6 +96,7 @@ extern "C" void sb_ngx_set_gxstate_ti(int);                  // runtime/override
 int sb_ngx_order_dump(char*, int);                           // runtime/overrides/ngx_j3d_shape.cpp (/ngxorder)
 extern "C" int sb_ngx_set_prefix(int);                       // runtime/render/ngx_present.cpp (/ngxprefix?n=)
 extern "C" void sb_ngx_set_draw_limit(int);                  // runtime/overrides/ngx_j3d_shape.cpp (/ngxdrawlimit?n=)
+extern "C" void sb_jpa_set_disable(int);                     // runtime/overrides/jpa_particle_native.cpp (/ngxnojpa?v=)
 extern "C" int  sb_ngx_get_draw_limit();                     // runtime/overrides/ngx_j3d_shape.cpp
 extern "C" unsigned sb_ngx_frame_shape_count();              // runtime/overrides/ngx_j3d_shape.cpp
 extern "C" int  sb_ngx_shapeti_dump(char*, int);            // runtime/overrides/ngx_j3d_shape.cpp (/ngxshapeti)
@@ -446,6 +447,12 @@ std::string handle_repl(const char* path) {
         int v = -1; if (const char* p = strstr(path, "n=")) v = atoi(p + 2);
         sb_ngx_set_draw_limit(v);
         app("ngx draw_limit = %d  (last frame had %u shapes)\n", v, sb_ngx_frame_shape_count());
+        return std::string(buf, n);
+    }
+    if (strncmp(path, "/ngxnojpa", 9) == 0) {  // DRIFT-FREE A/B: toggle JPA particle emission live
+        int v = -1; if (const char* p = strstr(path, "v=")) v = atoi(p + 2);
+        sb_jpa_set_disable(v);
+        app("jpa_disable = %d  (-1=env, 0=ON, 1=OFF)\n", v);
         return std::string(buf, n);
     }
     if (strncmp(path, "/ngxonly", 8) == 0) {   // runtime: render ONLY this tev_index (-2 env, -1 off)
