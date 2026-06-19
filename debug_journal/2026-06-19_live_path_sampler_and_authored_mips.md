@@ -49,6 +49,49 @@ live path had TWO real texture-feature gaps, not one.
   baseline (within cross-run drift). Per the directive I did NOT chase the wash; this is a coverage
   step, and it neither moved nor hurt the delta measurably.
 
+---
+
+# 2026-06-19 (cont.) — COLOR1A1 channel computed correctly (NOT an alias) — and it does NOT fix the wash
+
+Gap #2 from the handoff. ngx computed only COLOR0 and the generated TEV shader hardcoded `col1 = col0`
+(`tev_shader.cpp:264`), so any combiner stage reading rasChan=COLOR1/ALPHA1 (floor s4, buildings s1)
+got the wrong (col0) raster. Prior ATTEMPT 1 (reverted) implemented the plumbing but fed COLOR1
+**ambient=0** → whole scene black. This redo feeds COLOR1's REAL material/ambient.
+
+## What I ported (faithful, verified vs decomp)
+- **Capture** (`capture_colorchan`): COLOR1 ctrl = `mColorChan[2]` @ `chan_off+4`, ALPHA1 = `[3]` @
+  `chan_off+6`; material colour = `mMatColor[1]` @ 0x08; ambient = `mAmbColor[1]` @ 0x10 (CLON; CLOF
+  has no ambient field → 0). EXACTLY symmetric to COLOR0 (`mMatColor[0]@0x04`, `mAmbColor[0]@0x0C`),
+  verified against `J3DColorBlocks.hpp` (mMatColor[2]@0x04, mAmbColor[2]@0x0C, mColorChan[4]@0x16 for
+  LightOn / @0x0E for LightOff) and `J3DColorChan` = a u16 mChanCtrl. THE prior attempt's bug was
+  ambient=0 for ALL channel-1; the real ambient is the block's own mAmbColor[1].
+- **light_vertex**: computes a 2nd raster via the SAME unit-tested `ngx::light_color0` with channel-1's
+  ctrl/matColor1/ambColor1 (channel-1 VTX sources read the vertex CLR1 = `v.clr[1]`). out1 alpha from
+  the ALPHA1 ctrl src bit.
+- **Vertex pipeline**: `NgxRenderVertex.rgba1[4]` appended (uv offsets unchanged); the main packing
+  carries lit col1 through frustum clipping (VW 24→28); imm geometry sets rgba1=rgba (no distinct
+  channel). Vertex attr loc10 added in BOTH the live present (`ngx_present.cpp`) and the selftest
+  (`vk_mesh.cpp`). `mesh.vert.glsl`: `color1` in loc10 → `vColor1` out loc9; `tev_shader.cpp`:
+  `col1 = round(vColor1*255)`.
+- **CRITICAL gotcha that re-created the "black scene" symptom**: `ngx_clip.h ngx_clip_frustum_tri`
+  had fixed internal buffers `bufA/bufB[9*24]` + a `if (stride>24) return 0` guard ("24 = max VW").
+  With VW=28 the guard dropped EVERY triangle → 3D scene black (HUD only, textures_decoded=5,
+  min_w stuck at 1e30). Bumped both to 28. (Was NOT the col1 ambient — that was correct; this was the
+  clip-stride guard.) Lesson: changing VW means auditing every fixed-stride consumer of the vertex.
+
+## Verification
+- render_test 1/1. Live `freeroam_plaza.sav`: renders faithfully (floor/buildings/Mario/HUD, no
+  garble, no black). `ngxshape` COLOR1A1 counter: **5,605,757 of 10,430,818 lit verts have col1≠col0**
+  — the 2nd channel is genuinely distinct, so this is a real feature, NOT an inert alias / dead code.
+- **No regression AND the wash did NOT move**: `ab_oracle` = **18.3%** (= the 18.4% baseline, per-region
+  grid identical). ⇒ **The journal's earlier "CORRECTION — the wash IS a shading bug: ngx never
+  computes COLOR1" hypothesis is FALSIFIED.** Computing COLOR1 correctly does not change the washed
+  floor/buildings; the `col1=col0` alias was already ~right for THOSE materials. COLOR1 is now correct
+  for the millions of verts where it differs, but it is NOT the wash. (The wash remains PARKED; do not
+  re-assert col1 as its cause.)
+
+---
+
 ## Next gaps (per handoff, unchanged order)
 - COLOR1A1 channel done RIGHT (feed COLOR1's real ambient `g_amb_reg[1]`, not 0 — the reverted
   ATTEMPT 1 went black using amb=0). Indirect texturing, magenta NPC matColor source, fog (OFF in

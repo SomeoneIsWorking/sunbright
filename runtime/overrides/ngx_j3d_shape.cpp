@@ -420,12 +420,18 @@ constexpr u32 VT_CLON = 0x803E0CD4u, VT_CLOF = 0x803E0D38u;
 struct ChanInfo {
     bool valid = false;
     u16  color0 = 0, alpha0 = 0;          // J3DColorChan COLOR0 / ALPHA0 ctrl regs
+    u16  color1 = 0, alpha1 = 0;          // J3DColorChan COLOR1 / ALPHA1 ctrl regs (mColorChan[2..3])
     u8   matColor[4] = {255, 255, 255, 255};
     u8   ambColor[4] = {0, 0, 0, 0};
+    u8   matColor1[4] = {255, 255, 255, 255};   // mMatColor[1] (COLOR1's material colour)
+    u8   ambColor1[4] = {0, 0, 0, 0};           // mAmbColor[1] (COLOR1's ambient; CLON only, else 0)
     u8   cullMode = 0;                     // GXCullMode (color block mCullMode): NONE/FRONT/BACK/ALL
 };
 ChanInfo g_cur_chan;
 unsigned long g_chan_lit = 0, g_chan_flat = 0;
+// COLOR1 liveness: count verts where the computed COLOR1A1 raster differs meaningfully from
+// COLOR0 (proves the 2nd channel is genuinely distinct, not an inert col1==col0 alias).
+unsigned long g_col1_verts = 0, g_col1_diff_verts = 0;
 u8 g_dbg_cb_raw[0x44] = {0}; bool g_dbg_cb_have = false; u32 g_dbg_cb_vt = 0;
 u32 g_cbvt_key[8] = {0}; unsigned g_cbvt_cnt[8] = {0};   // colour-block vtable histogram
 // Per-distinct-vtable raw block bytes (for RE'ing the real J3DColorBlock layout: where the true
@@ -687,6 +693,18 @@ void capture_colorchan(u32 material) {
                        for (int k = 0; k < 4; k++) g_cur_chan.ambColor[k] = g_amb_reg[0][k];
     else if (amb_off)  for (int k = 0; k < 4; k++) g_cur_chan.ambColor[k] = B[amb_off + k];  // CLON: per-material block
     else               for (int k = 0; k < 4; k++) g_cur_chan.ambColor[k] = 0;               // CLOF: 0 (matches xfmem)
+    // COLOR1A1 (mColorChan[2]=COLOR1@chan_off+4, [3]=ALPHA1@chan_off+6) — the 2nd GX colour
+    // channel. Materials whose TEV reads rasChan=COLOR1/ALPHA1 (floor s4, buildings s1) need a
+    // DISTINCT channel-1 raster; ngx used to alias col1=col0 (→ over-bright). Its material colour
+    // is mMatColor[1]@0x08 and ambient mAmbColor[1]@0x10 — EXACTLY symmetric to COLOR0
+    // (matColor[0]@0x04, ambColor[0]@0x0C), verified vs J3DColorBlocks.hpp. CLOF blocks have no
+    // ambient field → 0 (same as COLOR0). Earlier attempt used ambient=0 for ALL channel-1 →
+    // scene went black; the real ambient is the block's own mAmbColor[1].
+    g_cur_chan.color1 = (u16)((B[chan_off + 4] << 8) | B[chan_off + 5]);   // mColorChan[2] (COLOR1)
+    g_cur_chan.alpha1 = (u16)((B[chan_off + 6] << 8) | B[chan_off + 7]);   // mColorChan[3] (ALPHA1)
+    for (int k = 0; k < 4; k++) g_cur_chan.matColor1[k] = B[0x08 + k];     // mMatColor[1]
+    if (amb_off) for (int k = 0; k < 4; k++) g_cur_chan.ambColor1[k] = B[0x10 + k];  // CLON: mAmbColor[1]
+    else         for (int k = 0; k < 4; k++) g_cur_chan.ambColor1[k] = 0;            // CLOF: 0
     g_cur_chan.valid = true;
 }
 
@@ -732,9 +750,10 @@ struct SkyLatch {
 };
 SkyLatch g_sky;       // latched this frame
 SkyLatch g_sky_pub;   // published (kept across the reset for the probe)
-void light_vertex(const float eye[3], const float en[3], const float vcol0[4], float out[4]) {
+void light_vertex(const float eye[3], const float en[3], const float vcol0[4], const float vcol1[4],
+                  float out[4], float out1[4]) {
     const ChanInfo& C = g_cur_chan;
-    if (g_nolight || !C.valid) { for (int k = 0; k < 4; k++) out[k] = vcol0[k]; return; }
+    if (g_nolight || !C.valid) { for (int k = 0; k < 4; k++) { out[k] = vcol0[k]; out1[k] = vcol1[k]; } return; }
     const u16 cc = C.color0, ca = C.alpha0;
     const bool matVtx = (cc >> 0) & 1;      // GXColorSrc: REG=0, VTX=1
     const bool enable = (cc >> 1) & 1;
@@ -880,6 +899,28 @@ void light_vertex(const float eye[3], const float en[3], const float vcol0[4], f
     g_dbg_cc = cc;
     for (int k = 0; k < 4; k++) { g_dbg_mat[k] = C.matColor[k]; g_dbg_amb[k] = C.ambColor[k]; g_dbg_out[k] = out[k]; }
     for (int k = 0; k < 3; k++) g_dbg_illum[k] = illum[k];
+
+    // COLOR1A1: the 2nd raster channel, computed exactly like COLOR0 (same ngx::light_color0
+    // unit) but with channel-1's control reg + its own material colour (mMatColor[1]) and ambient
+    // (mAmbColor[1]). Channel-1 VTX sources read the vertex's CLR1 (vcol1). A TEV stage reading
+    // rasChan=COLOR1/ALPHA1 uses this; materials with no distinct channel 1 still get a correct
+    // value (≈ col0 when they share material/ambient/lights).
+    {
+        ngx::ChanCtl CC1 = ngx::decode_chanctl(C.color1);
+        ngx::LightSrc ls[8];
+        for (int i = 0; i < 8; i++) {
+            ls[i].valid = g_light[i].valid;
+            for (int k = 0; k < 3; k++) { ls[i].color[k]=g_light[i].color[k]; ls[i].pos[k]=g_light[i].pos[k];
+                ls[i].dir[k]=g_light[i].dir[k]; ls[i].cosA[k]=g_light[i].cosA[k]; ls[i].distA[k]=g_light[i].distA[k]; }
+        }
+        const float matC1[3] = { C.matColor1[0]/255.f, C.matColor1[1]/255.f, C.matColor1[2]/255.f };
+        const float ambC1[3] = { C.ambColor1[0]/255.f, C.ambColor1[1]/255.f, C.ambColor1[2]/255.f };
+        ngx::light_color0(CC1, matC1, ambC1, ls, eye, en, vcol1, out1);
+        out1[3] = ((C.alpha1 >> 0) & 1) ? vcol1[3] : C.matColor1[3]/255.f;   // ALPHA1 src: VTX/REG
+        g_col1_verts++;
+        if (std::fabs(out1[0]-out[0]) + std::fabs(out1[1]-out[1]) + std::fabs(out1[2]-out[2]) > 0.02f)
+            g_col1_diff_verts++;
+    }
 }
 
 // ── N5 per-material TEV capture (docs/native_port_plan.md §6) ───────────────────
@@ -1324,6 +1365,7 @@ std::vector<NgxVertex> g_verts;
 std::vector<unsigned>  g_indices;
 std::vector<float>     g_clip;        // 4 floats/vertex (clip-space), scratch
 std::vector<float>     g_litrgba;     // 4 floats/vertex (lit raster colour0), scratch
+std::vector<float>     g_litrgba1;    // 4 floats/vertex (lit raster COLOR1A1), scratch
 std::vector<float>     g_uvs;         // 16 floats/vertex (8 texgen'd UVs), scratch
 
 // Read the current material's TEV block into an NgxTevState, dedupe it into the
@@ -1494,6 +1536,7 @@ void transform_eye() {
     }
     if (g_have_proj) g_clip.assign(nv * 4, 0.0f);
     g_litrgba.assign(nv * 4, 0.0f);
+    g_litrgba1.assign(nv * 4, 0.0f);
     g_uvs.assign(nv * 16, 0.0f);
     const bool vtxdump_this = (g_cur_tev_index == g_gxstate_ti.load());
     if (vtxdump_this) { g_vtxdump.clear(); g_vtxdump_projtype = (unsigned char)g_proj_type;
@@ -1573,7 +1616,9 @@ void transform_eye() {
         s_eye[vi*3+0]=ex; s_eye[vi*3+1]=ey; s_eye[vi*3+2]=ez;
         const float vcol0[4] = { v.clr[0][0]/255.f, v.clr[0][1]/255.f,
                                  v.clr[0][2]/255.f, v.clr[0][3]/255.f };
-        light_vertex(eye, en, vcol0, &g_litrgba[vi * 4]);
+        const float vcol1[4] = { v.clr[1][0]/255.f, v.clr[1][1]/255.f,
+                                 v.clr[1][2]/255.f, v.clr[1][3]/255.f };
+        light_vertex(eye, en, vcol0, vcol1, &g_litrgba[vi * 4], &g_litrgba1[vi * 4]);
         // GX texgen: compute each texcoord's UV AFTER lighting so the GX_TG_SRTG sources
         // (texcoord = the lit colour, e.g. the sky's ramp index) read this vertex's col0.
         // Texcoords without a texgen def fall back to the raw vertex tex attribute.
@@ -1784,13 +1829,14 @@ void transform_eye() {
         static const bool nearonly = getenv("SUNBRIGHT_NGX_NEARONLY") != nullptr;  // A/B: near-plane-only clip
         static const float nearcull_eps = []{ const char* v = getenv("SUNBRIGHT_NGX_NEARCULL");
             if (!v) return -1e30f; float e = atof(v); return e == 1.0f ? 1.0f : (e == 0.0f ? -1e30f : e); }();
-        constexpr int VW = 24;   // floats per vertex: clip[4] + rgba[4] + uv[16]
+        constexpr int VW = 28;   // floats per vertex: clip[4] + rgba[4] + rgba1[4] + uv[16]
         auto gather = [&](unsigned vidx, float* o) {
             const float* cp = &g_clip[vidx * 4]; const float* lit = &g_litrgba[vidx * 4];
-            const float* uvp = &g_uvs[vidx * 16];
+            const float* lit1 = &g_litrgba1[vidx * 4]; const float* uvp = &g_uvs[vidx * 16];
             o[0]=cp[0]; o[1]=cp[1]; o[2]=cp[2]; o[3]=cp[3];
             o[4]=lit[0]; o[5]=lit[1]; o[6]=lit[2]; o[7]=lit[3];
-            for (int m = 0; m < 16; m++) o[8+m] = uvp[m];
+            o[8]=lit1[0]; o[9]=lit1[1]; o[10]=lit1[2]; o[11]=lit1[3];   // COLOR1A1 (clip-interpolated)
+            for (int m = 0; m < 16; m++) o[12+m] = uvp[m];
         };
         auto emit_v = [&](const float* v) {
             if (v[3] < g_clip_minw) g_clip_minw = v[3];
@@ -1798,7 +1844,8 @@ void transform_eye() {
             NgxRenderVertex& d = snap[count];
             d.clip[0]=v[0]; d.clip[1]=v[1]; d.clip[2]=v[2]; d.clip[3]=v[3];
             d.rgba[0]=v[4]; d.rgba[1]=v[5]; d.rgba[2]=v[6]; d.rgba[3]=v[7];
-            for (int m = 0; m < 8; m++) { d.uv[m][0]=v[8+m*2]; d.uv[m][1]=v[8+m*2+1]; }
+            d.rgba1[0]=v[8]; d.rgba1[1]=v[9]; d.rgba1[2]=v[10]; d.rgba1[3]=v[11];
+            for (int m = 0; m < 8; m++) { d.uv[m][0]=v[12+m*2]; d.uv[m][1]=v[12+m*2+1]; }
             count++;
         };
         for (size_t t = 0; t + 3 <= g_indices.size(); t += 3) {
@@ -2470,6 +2517,7 @@ extern "C" void ngx_emit_imm_cube(int color_off, int alpha_off,
         NgxRenderVertex& d = snap[count];
         d.clip[0]=v[0]; d.clip[1]=v[1]; d.clip[2]=v[2]; d.clip[3]=v[3];
         d.rgba[0]=v[4]; d.rgba[1]=v[5]; d.rgba[2]=v[6]; d.rgba[3]=v[7];
+        d.rgba1[0]=v[4]; d.rgba1[1]=v[5]; d.rgba1[2]=v[6]; d.rgba1[3]=v[7];   // imm geometry: col1 = col0
         for (int m = 0; m < 8; m++) { d.uv[m][0]=v[8+m*2]; d.uv[m][1]=v[8+m*2+1]; }
         count++;
     };
@@ -2577,6 +2625,7 @@ extern "C" void ngx_emit_imm_sphere(int numMajor, int numMinor, int r, int g, in
         NgxRenderVertex& d = snap[count];
         d.clip[0]=v[0]; d.clip[1]=v[1]; d.clip[2]=v[2]; d.clip[3]=v[3];
         d.rgba[0]=v[4]; d.rgba[1]=v[5]; d.rgba[2]=v[6]; d.rgba[3]=v[7];
+        d.rgba1[0]=v[4]; d.rgba1[1]=v[5]; d.rgba1[2]=v[6]; d.rgba1[3]=v[7];   // imm geometry: col1 = col0
         for (int m = 0; m < 8; m++) { d.uv[m][0]=v[8+m*2]; d.uv[m][1]=v[8+m*2+1]; }
         count++;
     };
@@ -3637,6 +3686,7 @@ int sb_ngx_shape_dump(char* out, int cap) {
         "ngx J3DShape capture: %s\n"
         "  calls=%lu  meshes_built=%lu  badcp=%lu  framing_fail=%lu\n"
         "  cumulative: verts=%lu tris=%lu\n"
+        "  COLOR1A1: lit verts=%lu, col1!=col0 verts=%lu (2nd channel distinct ⇒ not an inert alias)\n"
         "  last shape: verts=%u tris=%u vstride=%u vcd_lo=%08x vcd_hi=%08x\n"
         "  last pos[0]=(%.3f, %.3f, %.3f)  max_verts/shape=%u\n"
         "  native XF (modelview): xf_verts=%lu  in_front(z<0)=%lu (%.1f%%)  no_mtx=%lu\n"
@@ -3646,6 +3696,7 @@ int sb_ngx_shape_dump(char* out, int cap) {
         g_enabled ? "ON" : "OFF (set SUNBRIGHT_NGX_SHAPE=1)",
         g_calls, g_meshes, g_badcp, g_fail,
         g_total_verts, g_total_tris,
+        g_col1_verts, g_col1_diff_verts,
         g_last_verts, g_last_tris, g_last_vstride, g_last_vcdlo, g_last_vcdhi,
         g_last_pos[0], g_last_pos[1], g_last_pos[2], g_max_verts,
         g_xf_total, g_xf_front, g_xf_total ? 100.0 * (double)g_xf_front / (double)g_xf_total : 0.0,

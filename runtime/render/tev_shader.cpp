@@ -252,6 +252,7 @@ std::string sb_tev_gen_fragment(const NgxTevState& st) {
     o.w("#version 450\n");
     o.w("layout(location=0) in vec4 vColor;\n");
     o.w("layout(location=1) in vec2 vUV[8];\n");   // per-texcoord UV (GX texgen on CPU)
+    o.w("layout(location=9) in vec4 vColor1;\n");  // lit raster COLOR1A1 (2nd GX colour channel)
     o.w("layout(location=0) out vec4 o;\n");
     o.w("layout(set=0, binding=0) uniform sampler2D tex[8];\n");   // one per GX texmap
     o.w("layout(push_constant) uniform Mat { ivec4 kcolor[4]; ivec4 tevreg[3]; } m;\n");
@@ -261,7 +262,7 @@ std::string sb_tev_gen_fragment(const NgxTevState& st) {
     o.w("  ivec4 prev = ivec4(0,0,0,0);\n");                  // PREV register default
     o.w("  ivec4 c0 = m.tevreg[0], c1 = m.tevreg[1], c2 = m.tevreg[2];\n");
     o.w("  ivec4 col0 = ivec4(round(vColor * 255.0));\n");
-    o.w("  ivec4 col1 = col0;\n");                            // 2nd raster channel ≈ color0
+    o.w("  ivec4 col1 = ivec4(round(vColor1 * 255.0));\n");   // COLOR1A1: distinct 2nd raster channel
     o.w("  ivec4 textemp = ivec4(255), rastemp = ivec4(0), konsttemp = ivec4(0);\n");
     o.w("  ivec4 tevin_a, tevin_b, tevin_c, tevin_d;\n");
     int ns = st.num_stages; if (ns < 1) ns = 1; if (ns > 16) ns = 16;

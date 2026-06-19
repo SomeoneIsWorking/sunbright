@@ -660,13 +660,14 @@ VkPipeline PresentRenderer::pipeline_for(const NgxTevState& st) {
     ss[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; ss[1].module = fs; ss[1].pName = "main";
 
     VkVertexInputBindingDescription vib{0, sizeof(NgxRenderVertex), VK_VERTEX_INPUT_RATE_VERTEX};
-    VkVertexInputAttributeDescription via[10] = {
+    VkVertexInputAttributeDescription via[11] = {
         {0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 0}, {1, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 4 * sizeof(float)},
     };
     for (uint32_t m = 0; m < 8; m++) via[2 + m] = {2 + m, 0, VK_FORMAT_R32G32_SFLOAT, (uint32_t)((8 + m * 2) * sizeof(float))};
+    via[10] = {10, 0, VK_FORMAT_R32G32B32A32_SFLOAT, (uint32_t)offsetof(NgxRenderVertex, rgba1)};   // COLOR1A1
     VkPipelineVertexInputStateCreateInfo vi{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
     vi.vertexBindingDescriptionCount = 1; vi.pVertexBindingDescriptions = &vib;
-    vi.vertexAttributeDescriptionCount = 10; vi.pVertexAttributeDescriptions = via;
+    vi.vertexAttributeDescriptionCount = 11; vi.pVertexAttributeDescriptions = via;
     VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
     ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
     VkViewport vp{0, 0, (float)tw, (float)th, 0, 1};

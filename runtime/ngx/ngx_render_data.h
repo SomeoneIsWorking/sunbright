@@ -14,6 +14,9 @@ struct NgxRenderVertex {
     float clip[4];    // P·modelview·model (homogeneous clip space)
     float rgba[4];    // lit raster color0 (N6 native lighting; = CLR0 when unlit), 0..1
     float uv[8][2];   // texgen'd UV per GX texcoord 0..7
+    float rgba1[4];   // lit raster COLOR1A1 (2nd GX colour channel; = color0 when the material
+                      // has no distinct channel 1). A TEV stage with rasChan∈{COLOR1,ALPHA1}
+                      // reads this; appended at the END so uv[] offsets are unchanged.
 };
 
 // One bound GX texture (a single texmap). addr==0 means "no/unsupported texture"

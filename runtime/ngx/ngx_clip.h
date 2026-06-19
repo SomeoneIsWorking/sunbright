@@ -42,8 +42,8 @@ inline int ngx_clip_frustum_tri(const float* in, int stride, float* out) {
         { 0, 0, 1, 1}, { 0, 0,-1, 0},   // near (z+w≥0), far (-z≥0)
     };
     // Two ping-pong polygon buffers, max 9 verts each.
-    float bufA[9 * 24], bufB[9 * 24];   // 24 = max stride used by the mesh path (VW)
-    if (stride > 24) return 0;          // guard: buffers sized for the mesh vertex
+    float bufA[9 * 28], bufB[9 * 28];   // 28 = max stride used by the mesh path (VW: clip+rgba+rgba1+uv)
+    if (stride > 28) return 0;          // guard: buffers sized for the mesh vertex
     float* cur = bufA; float* nxt = bufB;
     int np = 3;
     for (int i = 0; i < 3 * stride; i++) cur[i] = in[i];
