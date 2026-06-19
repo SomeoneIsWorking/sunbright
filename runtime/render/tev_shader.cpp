@@ -105,7 +105,9 @@ bool emit_indirect_warp(Buf& o, const NgxTevState& st, int n, unsigned regcoord,
     o.w("  vec2 idim%d = vec2(textureSize(tex[%u], 0)) * 128.0;\n", n, indmap);
     o.w("  ivec2 itc%d = ivec2(vUV[%u] * idim%d);\n", n, indcoord, n);
     o.w("  itc%d = ivec2(itc%d.x >> %d, itc%d.y >> %d);\n", n, n, ss, n, ts);
-    o.w("  ivec3 iind%d = ivec3(round(texture(tex[%u], vec2(itc%d) / idim%d) * 255.0)).abg;\n",
+    // .abg picks the indirect texel's (alpha,blue,green) channels (GX/Dolphin sampleTexture→int4.abg);
+    // construct ivec4 BEFORE swizzling — an ivec3 has no .a component (was "swizzle out of range").
+    o.w("  ivec3 iind%d = ivec4(round(texture(tex[%u], vec2(itc%d) / idim%d) * 255.0)).abg;\n",
         n, indmap, n, n);
     o.w("  ivec3 icrd%d = iind%d >> %d;\n", n, n, fmt_shift);
     // bias add per bias_sel (GX_ITB: 0 NONE,1 S,2 T,3 ST,4 U,5 SU,6 TU,7 STU)
