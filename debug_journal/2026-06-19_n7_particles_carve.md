@@ -874,3 +874,25 @@ modulate, a konst/tevreg multiply, or a vertex-attribute upload scaling g_litrgb
 compiled shader/pipeline used for ti=9 and the exact MatPC push-constants, and the uploaded
 NgxRenderVertex.rgba bytes for a sky vertex, vs the rendered pixel. The decode/clip/blend/present are
 all CLEARED — the bug is between the (correct) fed vertex color and the rasterized fragment.
+
+## UPDATE (2026-06-19 latest+16) — ★★ WASH ROOT FOUND: grey overlay quads sprawl over the scene (mis-projection)
+The "sky-base renders dark" thread (latest+15) was a FALSE TRAIL caused by tev_index instability:
+/ngxonly?ti=9 hit a DIFFERENT material in the only-frame (ti renumbers per frame). pixbatch at the sky
+pixel (draw-ORDER winner, not first fragment) shows the truth:
+- ti=9 sky-base fragment IS BRIGHT (3,128,220) — correct.
+- The VISIBLE draw-order WINNER is **ti=1309 rgba=(0.85,0.85,0.85) tex0=80a65ce0** — a GREY overlay quad
+  (sh=80d39xxx family) drawn LAST (draw=39), covering the sky → the GPU pixel = grey (29,88,138).
+- Per-pass GX EFB (ground truth): GX's sky stays bright (36,142,227) through ALL passes 2..11. So GX's
+  overlay quads DO NOT cover/darken the sky. ngx's DO.
+⇒ ROOT: ngx MIS-PROJECTS the file-select overlay quads (sh=80d39xxx, ti=13xx, tex 80a5/80a6xxx, grey
+raster ~0.85, blended) so they SPRAWL over the whole screen (clip.w 28k-64k, ndc x to +3.16, thin y) and
+grey-blend the scene; GX confines them. This is the SAME family flagged at latest+5 (the "ghost/overlay"
+quads) — now CONFIRMED as the wash via draw-order winner + GX-EFB ground truth.
+
+NEXT (the fix): these quads draw under pass 8 and /ngxshapes tags them "pass=8p" (PERSPECTIVE). A 2D
+overlay quad with clip.w ~30000 means a PERSPECTIVE projection is applied where GX likely uses ORTHO (or
+a different matrix) → sprawl. Check sh=80d390e0 / sh=80d39254 projtype + the pass-8 projection matrix
+(ngx_set_projection capture) vs GX. Likely the projection TYPE/matrix for these quads is captured/applied
+wrong (the J2D-over-3D or an EFB-tex-pass ortho). Fix the projection → quads confine → wash gone.
+GOTCHAS BURNED: (1) tev_index renumbers per frame — NEVER use /ngxonly?ti for isolation across frames;
+target by sh= or use pixbatch's draw-ORDER WINNER. (2) /pixbatch "first fragment" != visible; read WINNER.
