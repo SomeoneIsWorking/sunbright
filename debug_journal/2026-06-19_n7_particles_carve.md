@@ -577,3 +577,51 @@ in ngx; windows close (slightly more saturated). Artifacts saved: scratch/screen
 tools/render/fs_oracle.sh + img_avg.py (time-averaged FS oracle). For FRAME-EXACT use ab_oracle.sh with
 scratch/fileselect.sav (preferred — no drift). USER DIRECTIVE this session: file-select before Delfino;
 stop asking, use the oracle + build tools, just fix it.
+
+## UPDATE (2026-06-19 latest+5) — BUG 1 (ghost Mario) FIXED; BUG 2 (wash) re-diagnosed frame-exact
+
+Continued the file-select bug work (handoff scratch/handoff_next.md). Built per-shape/per-batch
+GXSetViewport(0x803630c8)/GXSetScissor(0x80363138) capture (vp/sc now in /ngxshapes), + /ngxdroppass
+/ngxonlypass probes (NgxRenderBatch gained pass + vp_w/vp_h).
+
+### BUG 1 — GHOST MARIO = uncomposited OFFSCREEN render-to-texture pass. FIXED (b46dfb3).
+The "ghost Mario at top" is the file-panel 3D PREVIEW. GX renders it into a **256×256 OFFSCREEN
+viewport** (GXSetViewport vp=0,0,256,256), GXCopyTex's it to a texture, composites it into the panel
+(small/hidden for these slots). ngx has no RTT path → drew that geometry DIRECTLY full-frame at the
+top = the ghost. PROVEN: on a frozen frame, the ONLY pass with vp=256×256 is the ghost; /ngxdroppass
+on it removes the ghost and keeps the correct bottom menu Mario (pass-8, full vp).
+Why the existing epoch/gen render-target model didn't catch it: the EFB-copy tracking overrides
+(ov_efb_native_copytex 0x8035ee5c, ov_gxs_copydisp 0x8035ecec) are plain SUNBRIGHT_OVERRIDE — NOT
+purejit-safe — so under no-recomp they fire ONCE (Dolphin caches passthrough); ngx_note_efb_copy never
+runs per-frame → efbcopies=0, display_epoch model inert. (Don't make GXCopyDisp purejit-safe: a HW
+override of it DEADLOCKS — memory ngx-n7-pe-block.)
+FIX (principled, reads the game's own viewport state — NOT a magic constant): present drops any batch
+rendered into a SUB-DISPLAY viewport (vp area < the frame's largest = main-scene display viewport).
+A sub-display viewport IS the game's render-target extent for an offscreen RTT pass ngx can't
+composite. Gated by rtfilter (default on). Verified frame-exact (ab_oracle scratch/fileselect.sav):
+ghost gone, bottom Mario intact. No Delfino regression (fresh_plaza.sav 18.6%). render_test 16/16.
+
+### BUG 2 — BACKGROUND WASH: NOT an artifact, NOT coupled to #1. It's mis-rendered cloud/overlay quads.
+Fixing #1 did NOT fix #2 (delta still 22.6%; they're separate roots). pixbatch/pixblend at the sky
+(NDC -0.7,-0.7) and sea/sand localize it CONCRETELY (refutes the old "wash=artifact" note, memory
+fileselect-cloud-wash-drift-artifact, for the FRAME-EXACT case):
+- The draw-order WINNER over the sky/sand is a big GREY overlay quad (this frame ti=1318 tex0=80a61ce0
+  and ti=1321 tex0=80a65ce0, shapes sh=80d39254 / sh=80d390e0 — the sh=80d39xxx cluster). These quads
+  have ENORMOUS NDC extents (x[-1.74,3.16], y[-0.75,2.09]) and HUGE clip-w (28307..64334 vs normal
+  ~900) → they SPRAWL across the whole screen in ngx. In GX they're confined → ngx MIS-PROJECTS /
+  OVER-COVERS them. (Matches the prior divergence-scan finding "ti=10 covers 62% screen vs GX puff".)
+- The ti=10 cloud layers render bm=0 (OPAQUE) greenish (frag≈0.50,0.73,0.60 from a warm-white texture
+  tx80a70780 (239,214,198) modulated by a greenish vtx color clr0≈(122,216,194)) → opaque greenish
+  clouds replace the blue sky. GX clouds are WHITE sparse puffs. So per-material TEV color is ALSO off.
+- The overlay textures are REAL ROM cloud textures (texat 80a65ce0 fmt=2 → sparse IA, intensity 0..85
+  mean 16), NOT EFB-copies. So the fix is NOT "drop them" (BUG-1 style) — it's correct per-material
+  TEV + projection. ⚠ pixblend's CPU "FINAL predicted" (white) does NOT match the GPU render (grey) —
+  the CPU rasterizer doesn't model the real Vulkan blend; trust per-layer frag/tex/uv, not its FINAL.
+
+### TOOLING GAP for BUG 2 (build this next): tev_index is UNSTABLE across frames (the per-frame
+tevstate table is rebuilt → ti shifts, e.g. 1279↔1316↔1318 for the same material), so /gxstate?ti=N
+and /ngxskipset?ti= only work on a FROZEN frame and can't be scripted across frames. Need /gxstate +
+TEV/projection dump keyed by SHAPE ADDRESS (sh=80d39xxx is stable). Then pin the cloud quad's
+projection (why huge-w/sprawl) and TEV (why greenish/opaque) vs GX, and fix per-material.
+NEXT: with by-shape tooling, RE the file-select cloud/overlay draw (sh=80d39xxx) projection + TEV,
+verify each fix with ab_oracle scratch/fileselect.sav (drop the 22.6%).
