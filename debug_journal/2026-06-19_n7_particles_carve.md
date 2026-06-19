@@ -731,3 +731,28 @@ GX-side /ngxdrawlimit lockstep is DEAD under no-recomp (XFB only re-copies at GX
 make a GX-faithful CPU compositor (perspective-correct + exact GX blend math + exact order/z) to predict
 the net from the faithful inputs and diff vs the GPU; (b) capture GX's intermediate EFB at each layer.
 Until then the per-layer contribution can't be ground-truthed. Method fully demonstrated end-to-end.
+
+## UPDATE (2026-06-19 latest+10) — BUG 2 layer-attribution: NO single culprit; ngx MISSING brightening
+Built a layer-attribution tool (skip each ti in ngx, diff the full frame vs the GX oracle — the layer
+whose removal most REDUCES the delta is the wash source). Result on scratch/fileselect.sav:
+  baseline 22.5% | skip ti7 23.2 | ti8 22.8 | ti9 27.5 | ti10 28.6 | ti2 22.5 | ti3 22.5
+=> NO layer removal improves it; every layer either helps (ti7/8/9/10) or is neutral. So the wash is
+NOT an over-contributing layer to remove — ngx is *under-brightening* (MISSING contribution), not adding
+a bad layer. Consistent with the prefix sweep: at the upper sky, ngx's brightening haze layers (ti=7
+covers y[-0.23..93]=LOWER half, ti=8) do NOT cover the pixel, so it stays at the dark gradient base; GX
+is brighter there. The sky/sea is a far plane whose gradient verts extend far above-screen (ndc.y to
+-2.8) with extreme clip-w (44k..91k) -> perspective-correct interpolation of the gradient is sensitive
+to the exact projection/w and vertex set.
+
+NET (after a very thorough data-divergence pass): file-select inputs (decode/cc/matColor/TEV/blend-map/
+clear/order/cull) are all FAITHFUL (verified by-shape); gamma=1.0, lighting toggle no-op, no single
+layer culprit. The residual ~21% (time-avg) is a DISTRIBUTED under-brightening: the multi-layer screen-
+blend haze stack that brightens the sky/sea in GX accumulates LESS in ngx (coverage of the brightening
+layers + perspective interp of the far gradient), and translucent UI inherits the darker bg.
+
+HONEST WALL: to localize further I need PER-STAGE/PER-LAYER GX ground truth (what GX's EFB holds after
+each layer), which the no-recomp setup can't give (GX-side /ngxdrawlimit is dead — XFB only re-copies at
+GXCopyDisp; xfmem/bpmem async-lag). The next real tool is a Dolphin-EFB capture in the GX process
+(hook the GX-process pipeline to snapshot the EFB after N draws), OR a GX-faithful CPU compositor fed
+the verified-faithful inputs. Both are substantial. Method fully demonstrated; BUG 1 shipped; tooling
+built (by-shape /gxstate, /ngxverts rgb+clip, viewport capture, /ngxdroppass, layer-attribution).
