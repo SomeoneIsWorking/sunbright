@@ -933,3 +933,37 @@ green where GX's leaf gaps show sea); menu-window band still the biggest delta. 
 distributed gap and/or the menu windows.
 GOTCHA recorded: a frozen frame latches captured per-vertex col0 — capture-time A/B toggles (nolight,
 ambient) need a LIVE frame to re-capture; freeze is only for present-time toggles (/ngxskip, /ngxonly).
+
+## UPDATE (2026-06-19 latest+18) — sky-grey residual GROUND-TRUTHED; pinned to ti=9 rendering BELOW its vertex hull
+After the CLOF-ambient fix (latest+17, file-select 22.6→20.6%), worked the remaining sky-grey wash with
+GX-EFB ground truth (efbgrabnext/efbgrabpass, GX baseline EFB_GRAB+EFB_PEEK NGX_PRESENT=0) + GPU-side
+layer isolation (/ngxonly /ngxskipset on a FROZEN frame). Refuted the latest+16 "overlay quads" framing
+AND the multi-layer-haze framing; pinned a concrete impossible-value bug, but did NOT yet root-cause it.
+
+GROUND TRUTH (clean sky corner, no menu/palm confound):
+- GX top sky (efbgrab) = (24,138,227) bright blue, STABLE across passes 5..11 (haze does NOT grey it).
+- ngx full top sky = (122,136,150) GREY. Two contributors, isolated on the GPU (reliable):
+  • ti=9 (sky/sea gradient base, cc=0701 en=0 passthrough RASC, screen-blend src=ONE dst=INVSRCCLR):
+    /ngxonly ti=9 renders the top at (13,81,135) — vertical profile ~0.6× GX everywhere.
+  • ti=7 (8×8 I4 glow haze, blend src=ONE dst=INVSRCALPHA) adds grey on top → (122,136,150).
+- RULED OUT for ti=9 (each tested): near-clip (NEARCULL=1 no change → not a mixed/near-zero-w straddle),
+  blend (noblend identical), the clear (clear-only = (0,10,19) black), decode, lighting (en=0).
+
+THE PINNED ANOMALY (impossible value): /ngxonly ti=9 renders G=81 at the top, but ti=9's per-vertex
+COLOR0 range is G[113,215] B[188,255] (no vertex below G=113) — and the EMITTED post-clip batch (pixbatch
+-901 dump) is clean: 426 verts, ALL w∈[44k,91k] (uniform, ~2× ratio), mean rgb (0.26,0.61,0.91) bright,
+no neg/small w. A passthrough shader + screen-blend-over-black + barycentric/perspective interpolation
+CANNOT produce a value below the vertex hull (perspective interp of all-positive-w is a convex combo).
+The CPU pixbatch (AFFINE) interp gives (0.14,0.56,0.89)=correct; the GPU gives (13,81,135). ⇒ the GPU is
+NOT rendering what the snapshot says. Vertex binding is correct (rgba float@off16; sand=opaque renders
+pixel-EXACT through the same path/present, so it's NOT a global present/gamma/format issue).
+
+NEXT (the concrete root-cause step, not yet done): this matches latest+15's open suspect — the ACTUAL
+COMPILED pipeline/shader for ti=9 may differ from the /gxstate-printed GLSL (a cache fallback to mod /
+a konst·tevreg multiply / a wrong vertex-attribute). Dump the REAL compiled shader (SPIR-V / the
+pipeline cache key) used for the ti=9 draw and/or add a shader debug that writes raw vColor to a corner,
+and compare to the snapshot rgba. The bug is between the (correct, bright) emitted vertex rgba and the
+rasterized fragment — localize THAT, don't re-chase clip/blend/haze/overlay (all ruled out).
+Then ti=7 haze (likely fine once the base is right; re-verify with ab_oracle).
+NOTE: comparing /ngxonly-ti9 (over black) vs GX-FINAL is slightly unfair (GX's ti=9 screen-blends over a
+bright prior layer); but the below-hull G=81<113 anomaly holds regardless of background.
