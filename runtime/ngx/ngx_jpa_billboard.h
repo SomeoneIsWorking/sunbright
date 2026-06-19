@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <cmath>
 // Pure JPA screen-aligned billboard corner math (JPADrawExecBillBoard, JPADrawVisitor.cpp ~L317).
 // The particle is a camera-facing quad: its global position is transformed to EYE space (pt), then
 // four screen-aligned half-extent offsets are added in eye X/Y at the constant eye Z (pt.z). The
@@ -25,6 +26,61 @@ inline void billboard_corners(float scaleX, float scaleY,
     out[1][0] =  x1 + ptx; out[1][1] =  y0 + pty; out[1][2] = ptz;
     out[2][0] =  x1 + ptx; out[2][1] = -y1 + pty; out[2][2] = ptz;
     out[3][0] = -x0 + ptx; out[3][1] = -y1 + pty; out[3][2] = ptz;
+}
+
+// ── JPA directional particle orientation (JPADrawExecDirectional, JPADrawVisitor.cpp L602) ──────
+// A directional particle's quad is oriented in WORLD space by a basis built from the particle's
+// stored axis (params.unk0) and a direction vector (velocity / local-pos / emitter-dir, per
+// mDirType). Gram-Schmidt: side = unk0 × dir (normalize), then axis = dir × side (normalize); the
+// 3×3 column basis is [axis | dir | side]. Local quad offsets (z=0) are rotated by this basis to
+// world space; the caller then adds the particle's world position and transforms by the view
+// matrix. Returns false if the basis is degenerate (dir≈0 or unk0∥dir) — the game skips that
+// particle. dir MUST already be non-zero & normalized by the caller (matches local_BC.normalize()).
+inline void cross3(const float a[3], const float b[3], float o[3]) {
+    o[0]=a[1]*b[2]-a[2]*b[1]; o[1]=a[2]*b[0]-a[0]*b[2]; o[2]=a[0]*b[1]-a[1]*b[0];
+}
+inline bool norm3(float v[3]) {
+    float n=v[0]*v[0]+v[1]*v[1]+v[2]*v[2];
+    if (n < 1e-12f) return false;
+    n = 1.0f / sqrtf(n); v[0]*=n; v[1]*=n; v[2]*=n; return true;
+}
+// Build the world orientation basis. unk0/dir are read-only here (the game writes the
+// orthonormalised vectors back to the particle; the original guest draw — run first under the
+// override — already did that, so we only READ the settled values). outR[r][c]: col0=axis,
+// col1=dir, col2=side. Returns false on degeneracy (caller skips the particle, like the game).
+inline bool jpa_dir_basis(const float unk0[3], const float dir[3], float outR[3][3]) {
+    float side[3]; cross3(unk0, dir, side);
+    if (!norm3(side)) return false;
+    float axis[3]; cross3(dir, side, axis);
+    if (!norm3(axis)) return false;
+    outR[0][0]=axis[0]; outR[0][1]=dir[0]; outR[0][2]=side[0];
+    outR[1][0]=axis[1]; outR[1][1]=dir[1]; outR[1][2]=side[1];
+    outR[2][0]=axis[2]; outR[2][1]=dir[2]; outR[2][2]=side[2];
+    return true;
+}
+// Directional quad corners in WORLD space (offset z=0): out[i] = R·local_offs[i] + pt_world.
+// local offsets (JPADrawExecDirectional): x0=-sx(u4x+ucx), y0=+sy(u4y+ucy), x1=+sx(u4x-ucx),
+// y1=-sy(u4y-ucy); corners {(x0,y0),(x1,y0),(x1,y1),(x0,y1)}.
+inline void jpa_directional_corners(float sx, float sy, float u4x, float u4y, float ucx, float ucy,
+                                    const float R[3][3], const float ptw[3], float out[4][3]) {
+    const float x0=-sx*(u4x+ucx), y0=+sy*(u4y+ucy), x1=+sx*(u4x-ucx), y1=-sy*(u4y-ucy);
+    const float lo[4][2] = {{x0,y0},{x1,y0},{x1,y1},{x0,y1}};
+    for (int i=0;i<4;i++) {
+        const float lx=lo[i][0], ly=lo[i][1];   // local z = 0
+        out[i][0] = R[0][0]*lx + R[0][1]*ly + ptw[0];
+        out[i][1] = R[1][0]*lx + R[1][1]*ly + ptw[1];
+        out[i][2] = R[2][0]*lx + R[2][1]*ly + ptw[2];
+    }
+}
+// DirBillBoard (JPADrawExecDirBillBoard, L918): a SCREEN-aligned quad rotated in the view plane to
+// follow the particle's direction. The eye-space direction is (ex,ey) = the normalized
+// (dir × cameraUp) rotated into eye space; the 2D offsets are rotated by the complex factor (ex+i·ey).
+// Offsets here: x0=-sx(u4x-ucx), y0=+sy(u4y-ucy), x1=+sx(u4x+ucx), y1=-sy(u4y+ucy).
+inline void jpa_dirbb_offsets(float sx, float sy, float u4x, float u4y, float ucx, float ucy,
+                              float ex, float ey, float out[4][2]) {
+    const float x0=-sx*(u4x-ucx), y0=+sy*(u4y-ucy), x1=+sx*(u4x+ucx), y1=-sy*(u4y+ucy);
+    const float o[4][2] = {{x0,y0},{x1,y0},{x1,y1},{x0,y1}};
+    for (int i=0;i<4;i++) { out[i][0]=ex*o[i][0]-ey*o[i][1]; out[i][1]=ex*o[i][1]+ey*o[i][0]; }
 }
 
 // ── JPA TEV combiner encoding (JPADrawSetupTev::setupTev, JPADrawSetupTev.cpp:13-19) ─────

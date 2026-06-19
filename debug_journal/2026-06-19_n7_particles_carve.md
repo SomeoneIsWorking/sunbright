@@ -163,6 +163,38 @@ spray reads SUBTLE under LEQUAL (low alpha + depth) — if a more-visible plume 
 the depth-occlusion (handoff's "depth gotcha"; was declared understood/not-a-bug, but a clearer
 forward-spray save or a depth re-check may be the real next visual win).
 
+## UPDATE (2026-06-19 later) — STEP 4 partial: billboard-TYPE variants (Directional t3 + DirBillBoard t9)
+
+Reachability mapped via a type histogram (DBG_JPA `[jpa-types]`): plaza spray uses 4 draw types —
+**t2 BillBoard (~1574, was the only one handled), t3 Directional (~188), t6 StripeCross (~549),
+t9 DirBillBoard (~90)**. The non-t2 types were being mis-rendered as screen-aligned billboards.
+
+Ported t3 + t9 (the per-particle oriented quads; share my eye-space emit). Type = `mBaseShape->getType()`
+@ baseShape+0x69 (selector in setDrawExecVisitorsAfterCB: 0 Point,1 Line,2 BillBoard,3 Directional,
+4 DirCross,5 Stripe,6 StripeCross,7 Rotation,8 RotCross,9 DirBillBoard,10 YBillBoard).
+- **DirBillBoard (t9)** — eye-space: dir × cameraUp(mViewMtx col1), normalize, rotate into eye (mViewMtx
+  3×3) → (ex,ey); the 2D offsets are rotated by the complex factor (ex+i·ey). Same eye pt as billboard.
+- **Directional (t3)** — WORLD-space: Gram-Schmidt basis [axis|dir|side] from params.unk0 (axis) and
+  the dir vector; local offsets rotated to world, + world pos, then mViewMtx → eye per corner.
+- **dir vector (mDirType @ baseShape+0x6A)**: 0=mVelocity(+0x38), 1=mLocalPosition(+0x20), 2=−localpos.
+  Types 3 (emitter dir) / 4 (prev particle) → fall back to billboard (uncommon; not yet ported).
+- Particle offsets: mVelocity@+0x38, mLocalPosition@+0x20, mGlobalPosition@+0x2C, FLAG@+0x10 (INVIS 0x8),
+  drawParams@+0xA0 (unk0/axis@+0, scaleX@+0x10, scaleY@+0x14, mAlpha@+0x20, prm@+0x2C, env@+0x30).
+- IMPORTANT: the original guest drawParticle (run first under the override) already orthonormalises &
+  writes back params.unk0, so we READ the settled axis — no write-back from the port.
+
+Pure math (jpa_dir_basis / jpa_directional_corners / jpa_dirbb_offsets) is in ngx_jpa_billboard.h and
+**render_test-verified** (basis orthonormality, degeneracy rejection, corner + 2D-rotation cases) —
+14/14. Integration: no crash, t2 unbroken, TEXSHOW+ZFUNC=7 shows the spray (incl. oriented quads)
+renders sanely. NOTE: the per-pixel orientation vs GX is NOT isolated (parked wash + HUD drift confound
+the whole-frame number) — correctness rests on the unit-tested decomp-faithful math + no-regression.
+
+### NEXT (step 4 cont.): **t6 StripeCross (~549, the biggest non-t2)** — a RIBBON system, not per-particle
+billboards: it's an EMITTER-level visitor (JPADraw.unk4[], JPADrawExecStripe/StripeCross in
+JPADrawVisitor.cpp) that connects consecutive particles into a continuous textured strip. Needs a
+separate emit path (not the per-particle quad loop). Likely the FLUDD water-jet ribbon. Then: Rotation
+(t7/t8), YBillBoard (t10), per-particle texanim (unk3A), colour/alpha anim, child particles.
+
 ### (historical) NEXT — step 3: particle TEXTURE + the shape's full TEV (the big visual win)
 Flat PASSCLR dots ≠ water. Add: decode the particle texture (JPABaseShape → texture index → JPA
 resource JUTTexture → ResTIMG → reuse N1 sb_tex_decode → bind), the 4 quad texcoords

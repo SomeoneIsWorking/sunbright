@@ -612,6 +612,32 @@ int test_jpa_billboard(char* rep, int cap) {
         if (aa!=7||ab!=4||ac!=1||ad!=7) failf("FAIL jpa alpha_env abcd\n");
         if (!aclamp||rswap!=0||tswap!=0) failf("FAIL jpa alpha_env clamp/swap\n");
     }
+
+    // Directional orientation basis (jpa_dir_basis): axis=+Y, dir=+X → side = axis×dir = +Y×+X = -Z,
+    // normalized; then axis' = dir×side = +X×(-Z) = +Y. Basis cols [axis|dir|side] = [+Y|+X|-Z].
+    {
+        float unk0[3]={0,1,0}, dir[3]={1,0,0}, R[3][3];
+        if (!ngx_jpa::jpa_dir_basis(unk0, dir, R)) failf("FAIL dir_basis degenerate\n");
+        // expected cols: axis=(0,1,0) dir=(1,0,0) side=(0,0,-1)
+        const float ex[3][3]={{0,1,0},{1,0,0},{0,0,-1}};
+        for(int r=0;r<3;r++)for(int c=0;c<3;c++) if(!close(R[r][c],ex[r][c])) failf("FAIL dir_basis R\n");
+        // degenerate: dir parallel to unk0 → side zero → false
+        float p[3]={0,2,0}; float R2[3][3];
+        if (ngx_jpa::jpa_dir_basis(unk0, p, R2)) failf("FAIL dir_basis should reject parallel\n");
+        // directional corners: R=identity-ish basis [+Y|+X|-Z], sx=sy=1,u4=(1,1),uc=0,pt=(10,20,30).
+        // local x0=-1,y0=+1,x1=+1,y1=-1; corner0 local (x0,y0)=(-1,1): world = R·(-1,1,0)+pt
+        //   = axis·(-1)+dir·1+pt = (0,-1,0)+(1,0,0)+(10,20,30) = (11,19,30).
+        float Rid[3][3]={{0,1,0},{1,0,0},{0,0,-1}}, ptw[3]={10,20,30}, cc[4][3];
+        ngx_jpa::jpa_directional_corners(1,1,1,1,0,0,Rid,ptw,cc);
+        if(!close(cc[0][0],11)||!close(cc[0][1],19)||!close(cc[0][2],30)) failf("FAIL directional_corners c0\n");
+        // dirbb 2D rotation: ex=1,ey=0 (identity) → offsets unchanged. sx=sy=1,u4=(2,3),uc=0.
+        // x0=-(1*(2-0))=-2, y0=+(1*(3-0))=3, x1=+(1*(2+0))=2, y1=-(1*(3+0))=-3. corner0=(x0,y0)=(-2,3).
+        float off[4][2]; ngx_jpa::jpa_dirbb_offsets(1,1,2,3,0,0, 1,0, off);
+        if(!close(off[0][0],-2)||!close(off[0][1],3)) failf("FAIL dirbb identity\n");
+        // ex=0,ey=1 (90° rot): o'=(−oy, ox). corner0 (-2,3) → (−3,−2).
+        ngx_jpa::jpa_dirbb_offsets(1,1,2,3,0,0, 0,1, off);
+        if(!close(off[0][0],-3)||!close(off[0][1],-2)) failf("FAIL dirbb 90deg\n");
+    }
     return fails;
 }
 

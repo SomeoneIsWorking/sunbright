@@ -74,6 +74,11 @@ constexpr u32 P_SCALEY   = 0xA0 + 0x14;   // mDrawParams.unk14
 constexpr u32 P_ALPHA    = 0xA0 + 0x20;   // mDrawParams.mAlpha
 constexpr u32 P_PRM      = 0xA0 + 0x2C;   // mDrawParams.mPrmColor GXColor (r@+0 g@+1 b@+2 a@+3)
 constexpr u32 P_ENV      = 0xA0 + 0x30;   // mDrawParams.mEnvColor GXColor
+constexpr u32 P_AXIS     = 0xA0 + 0x00;   // mDrawParams.unk0 (TVec3 orientation axis, dir variants)
+constexpr u32 P_LOCALPOS = 0x20;          // JPABaseParticle.mLocalPosition (dirType 1/2)
+constexpr u32 P_VELOCITY = 0x38;          // JPABaseParticle.mVelocity      (dirType 0)
+constexpr u32 BS_DIRTYPE = 0x6A;          // JPABaseShape.mDirType (0=Vel 1=Pos 2=PosInv 3=EmtrDir 4=PrevPtcl)
+constexpr u32 BS_TYPE    = 0x69;          // JPABaseShape.mType (draw-exec selector)
 
 // JPADraw (this) layout (JPADraw.hpp): mDrawCtx @ +0x90 (JPADrawContext), then unkC0 @ +0xC0.
 // JPADrawContext fields: mBaseShape @ +0x04, mTexResource @ +0x1C.
@@ -184,6 +189,22 @@ SUNBRIGHT_OVERRIDE_IF_NATIVE(ov_jpa_drawparticle, 0x8032bd10u, s_ngx_present) {
 
     // The shape's colour combiner (JPADrawSetupTev): a/b/c/d = JPABaseShape.TevArgs (GX_CC_*).
     const u32 baseShape = mem_r32(jpadraw + D_BASESHAPE);
+    // JPABaseShape.mType @ +0x69 selects the draw exec (setDrawExecVisitorsAfterCB): 0=Point 1=Line
+    // 2=BillBoard 3=Directional 4=DirCross 5=Stripe 6=StripeCross 7=Rotation 8=RotCross 9=DirBillBoard
+    // 10=YBillBoard. We currently emit all as screen-aligned BillBoard (type 2); other types need
+    // their own offset math (step 4). Histogram which types a scene actually uses (reachability).
+    const int shapeType = gvalid(baseShape) ? mem_r8(baseShape + BS_TYPE) : -1;
+    const int dirType   = gvalid(baseShape) ? mem_r8(baseShape + BS_DIRTYPE) : 0;
+    if (getenv("SUNBRIGHT_DBG_JPA") && shapeType >= 0 && shapeType < 16) {
+        static unsigned long type_hist[16] = {0};
+        type_hist[shapeType]++;
+        static unsigned long tn = 0;
+        if ((tn++ % 600) == 0) {
+            fprintf(stderr, "[jpa-types]");
+            for (int t = 0; t < 16; t++) if (type_hist[t]) fprintf(stderr, " t%d=%lu", t, type_hist[t]);
+            fprintf(stderr, "\n");
+        }
+    }
     int ta = 15/*ZERO*/, tb_ = 2/*C0*/, tc = 8/*TEXC*/, td = 15/*ZERO*/;   // default = MODULATE (type 1)
     if (gvalid(baseShape)) {
         ta = rs32(baseShape + BS_TEVARG0 + 0); tb_ = rs32(baseShape + BS_TEVARG0 + 4);
@@ -230,8 +251,49 @@ SUNBRIGHT_OVERRIDE_IF_NATIVE(ov_jpa_drawparticle, 0x8032bd10u, s_ngx_present) {
             const float pty = m[1][0]*gx + m[1][1]*gy + m[1][2]*gz + m[1][3];
             const float ptz = m[2][0]*gx + m[2][1]*gy + m[2][2]*gz + m[2][3];
 
-            // JPADrawExecBillBoard half-extents (screen-aligned) — shared pure math (render_test:jpa_billboard).
-            ngx_jpa::billboard_corners(sx, sy, u4x, u4y, ucx, ucy, ptx, pty, ptz, tq.eye);
+            // Per-type quad geometry (JPADraw setDrawExecVisitorsAfterCB selects by mType). t2 BillBoard
+            // (screen-aligned), t9 DirBillBoard (screen quad rotated to follow the dir), t3 Directional
+            // (world quad oriented by the dir+axis basis). The direction vector (mDirType): 0=velocity,
+            // 1=localPos, 2=-localPos. Other dir types (emitter/prev-particle) → fall back to billboard.
+            bool emitted_special = false;
+            if ((shapeType == 9 || shapeType == 3) && dirType <= 2) {
+                float dir[3];
+                if (dirType == 0)      { dir[0]=rf(particle+P_VELOCITY); dir[1]=rf(particle+P_VELOCITY+4); dir[2]=rf(particle+P_VELOCITY+8); }
+                else                   { dir[0]=rf(particle+P_LOCALPOS); dir[1]=rf(particle+P_LOCALPOS+4); dir[2]=rf(particle+P_LOCALPOS+8);
+                                         if (dirType == 2) { dir[0]=-dir[0]; dir[1]=-dir[1]; dir[2]=-dir[2]; } }
+                float dn[3] = {dir[0],dir[1],dir[2]};
+                if (ngx_jpa::norm3(dn)) {
+                    if (shapeType == 9) {   // DirBillBoard: eye-space, rotate offsets by screen-dir
+                        const float up[3] = {m[0][1], m[1][1], m[2][1]};   // camera up = mViewMtx col 1
+                        float s[3]; ngx_jpa::cross3(dn, up, s);
+                        if (ngx_jpa::norm3(s)) {
+                            // rotate s into eye (SR = 3x3 of mViewMtx)
+                            const float ex = m[0][0]*s[0]+m[0][1]*s[1]+m[0][2]*s[2];
+                            const float ey = m[1][0]*s[0]+m[1][1]*s[1]+m[1][2]*s[2];
+                            float off[4][2]; ngx_jpa::jpa_dirbb_offsets(sx, sy, u4x, u4y, ucx, ucy, ex, ey, off);
+                            for (int i=0;i<4;i++){ tq.eye[i][0]=off[i][0]+ptx; tq.eye[i][1]=off[i][1]+pty; tq.eye[i][2]=ptz; }
+                            emitted_special = true;
+                        }
+                    } else {                // Directional: world quad → eye via mViewMtx per corner
+                        float axis[3] = {rf(particle+P_AXIS), rf(particle+P_AXIS+4), rf(particle+P_AXIS+8)};
+                        float R[3][3];
+                        if (ngx_jpa::jpa_dir_basis(axis, dn, R)) {
+                            const float ptw[3] = {gx, gy, gz};
+                            float wc[4][3]; ngx_jpa::jpa_directional_corners(sx, sy, u4x, u4y, ucx, ucy, R, ptw, wc);
+                            for (int i=0;i<4;i++){
+                                const float wx=wc[i][0], wy=wc[i][1], wz=wc[i][2];
+                                tq.eye[i][0]=m[0][0]*wx+m[0][1]*wy+m[0][2]*wz+m[0][3];
+                                tq.eye[i][1]=m[1][0]*wx+m[1][1]*wy+m[1][2]*wz+m[1][3];
+                                tq.eye[i][2]=m[2][0]*wx+m[2][1]*wy+m[2][2]*wz+m[2][3];
+                            }
+                            emitted_special = true;
+                        }
+                    }
+                }
+                if (!emitted_special && dn[0]==0.f && dn[1]==0.f && dn[2]==0.f) { link = next; continue; }  // game skips zero-dir
+            }
+            if (!emitted_special)   // BillBoard (t2) + fallback — shared pure math (render_test:jpa_billboard)
+                ngx_jpa::billboard_corners(sx, sy, u4x, u4y, ucx, ucy, ptx, pty, ptz, tq.eye);
             for (int i = 0; i < 4; i++) { tq.uv[i][0] = uv[i][0]; tq.uv[i][1] = uv[i][1]; }
 
             // TEV colour registers: C0 = prm (RegisterPrmColorAnm), C1 = env (RegisterEnvColorAnm).
