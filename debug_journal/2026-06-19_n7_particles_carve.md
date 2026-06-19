@@ -71,3 +71,60 @@ plan + RE for the JPA port. Verification tooling is PROVEN (below) — TOOLING-F
 - Build build-freshtest; ab_oracle: SUNBRIGHT_BIN="$PWD/build-freshtest/sunbright"
   tools/render/ab_oracle.sh scratch/spray_plaza.sav 6. render_test: ./build-freshtest/sunbright-render-test.
 - ngx emit pattern to copy: runtime/overrides/imm_geom_native.cpp (GXDrawCube/Sphere → ngx batch).
+
+---
+
+## UPDATE (2026-06-19 pm) — steps 1+2 DONE & committed (d975f1a). Read this before step 3.
+
+Implemented the JPA particle capture. Files: `runtime/overrides/jpa_particle_native.cpp`,
+`runtime/ngx/ngx_jpa_billboard.h` (pure billboard corner math + render_test `jpa_billboard`),
+`ngx_emit_particle_quad_eye` in `runtime/overrides/ngx_j3d_shape.cpp`. render_test 14/14.
+
+### Seam + offsets (ALL verified via disasm — don't re-verify)
+- Seam = **JPADraw::drawParticle @ 0x8032bd10** (NOT setParticleClipBoard, NOT the manager). Per
+  emitter; run original first (populates cb + per-shape GXSetZMode/GXSetBlendMode + draws to dropped
+  EFB), then walk + emit. drawChild() runs only AFTER drawParticle returns ⇒ cb/z/blend are the
+  PARENT's. emitter = gpr3(JPADraw*) − 0x30.
+- **JPADraw::cb = 0x8040C110** (static JPADrawClipBoard). unk4.x@+0x14, unk4.y@+0x18, unkC.x@+0x1C,
+  unkC.y@+0x20, mViewMtx@+0x34 (MtxPtr), mPrmColor@+0x98 (GXColor RGBA bytes).
+- JPABaseEmitter: mDraw@+0x30, mParticleList(JSUList mHead)@+0xF4. JSULink: mData@+0, mNext@+0xC
+  (link addr == particle addr, both at particle+0). JPABaseParticle: flags@+0x10 (INVISIBLE 0x8),
+  mGlobalPosition@+0x2C. JPAParticle.mDrawParams@+0xA0: scaleX(unk10)@+0xB0, scaleY(unk14)@+0xB4,
+  mAlpha@+0xC0, mPrmColor@+0xCC.
+- Billboard (JPADrawExecBillBoard, exec @ 0x8033025c): pt = mViewMtx·globalPos (eye space), corners
+  add screen-aligned half-extents in eye X/Y at constant eye Z. Half: x1=sx·(u4x−ucx), x0=sx·(u4x+ucx),
+  y0=sy·(u4y+ucy), y1=sy·(u4y−ucy); {(−x0,y0),(x1,y0),(x1,−y1),(−x0,−y1)}.
+- GXSetZMode @ 0x80361f54 (r3=enable,r4=func,r5=update), GXSetBlendMode @ 0x80361dd0
+  (r3=type,r4=src,r5=dst). Tapped live. Plaza spray shapes: z(test=1, func=LEQUAL, write=0),
+  blend (BLEND, SRCALPHA, INVSRCALPHA) or (BLEND, SRCALPHA, ONE). zmode is FAITHFUL, not hardcoded.
+
+### What's verified
+- Geometry/transform/colour CORRECT: SUNBRIGHT_JPA_SHOW (opaque magenta, z-off) renders the spray
+  cloud exactly where it belongs. eye.z matches the J3D scene eye-space (same projection + values).
+- With the real shape zmode the particles render clustered at Mario + the spray impact; the rest are
+  correctly depth-occluded. On scratch/spray_fwd.sav (forward-spray) particles move ngx TOWARD the
+  GX oracle (51.45→51.22 full-frame, 17123 px changed).
+
+### Depth gotcha (understood, NOT a bug to chase)
+The projection z-row at particle time is [0,0,-0.00003,-10] (near≈10, far≈huge) → depths squish to
+vulkanZ≈0.98-0.99; the mesh.vert shader does z+w (GC ndc [-1(near),0(far)] → Vk [0,1]). Scene AND
+particles share this projection, so depth IS consistent. SUNBRIGHT_JPA_ZFUNC=7(ALWAYS)/6(GEQUAL) made
+the SHOW cloud appear, LEQUAL(3) occluded it — i.e. the SHOW cloud is genuinely mostly BEHIND the
+scene in the ground-ring save (weak spray). With the forward-spray save it renders. NOTE: cb.mViewMtx
+varies per emitter/manager (some use a distant camera, Z-trans ~-13581 → eye.z ~-15k, tiny/off-screen);
+that's REAL (multiple JPA cameras), not a bug — gameplay-camera emitters place correctly.
+
+### NEXT — step 3: particle TEXTURE + the shape's full TEV (the big visual win)
+Flat PASSCLR dots ≠ water. Add: decode the particle texture (JPABaseShape → texture index → JPA
+resource JUTTexture → ResTIMG → reuse N1 sb_tex_decode → bind), the 4 quad texcoords
+(cb.mTexCoords[4] @ cb+0x14, 8 bytes each), and the shape's TEV (GXSetTevColor TEVREG0=prm/TEVREG1=env
+per emitter, JPADrawVisitor RegisterPrm*). The texture is what makes the spray read as soft water.
+JPADrawExecLoadTexture (JPADrawVisitor.cpp L175/L311) shows the texture-resource load path; the
+texcoords are already in cb.mTexCoords (set per shape). Then re-verify spray_fwd vs GX oracle.
+
+### Verify recipe (this session)
+- Make a forward-spray save: load scratch/freeroam_plaza.sav, /pad?do=r (spray), /savestate. Done:
+  scratch/spray_fwd.sav.
+- 3-way: capture ngx (NGX_PRESENT=1), ngx NO_JPA (baseline), GX (NGX_PRESENT=0) all via /loadstate of
+  the same save; diff WITH vs WITHOUT (particle px) and each vs GX (should move toward GX).
+- /ngxpresentlive reports ngx_particles: emitted_quads/tris + last_ti.
