@@ -229,6 +229,14 @@ Ported the Stripe (t5) + StripeCross (t6) ribbon path. Files: `ngx_jpa_billboard
 YBillBoard (t10), per-particle texanim (unk3A), colour/alpha animation, child particles, ext/extra
 shapes. (DirCross t4 / RotDirCross also unported but unseen in plaza.) Same verify recipe below.
 
+## ASIDE (2026-06-19 night) — fixed a pre-existing ngx shader-gen bug found while verifying particles
+`tev_shader.cpp:108` (indirect-texcoord warp) emitted `ivec3(round(texture(...)*255)).abg` — a `.abg`
+swizzle (component 3 = alpha) on an ivec3 (only .rgb) → GLSL "swizzle out of range" → the WHOLE pixel
+shader failed to compile (3×/run in plaza; those indirect materials fell back). Fixed: `ivec3(`→`ivec4(`
+so `.abg` operates on a 4-component vector, matching Dolphin sampleTexture→int4 then `.abg`. Verified
+plaza shader-compile errors 3→0, render_test 15/15, ab_oracle fresh_plaza 18.7% (baseline, no regress).
+Committed 89e5e23. (Not particle-related — a renderer correctness fix.)
+
 ## UPDATE (2026-06-19 night, 2) — STEP 4 cont DONE: child particles (drawChild, FLUDD splash/mist)
 
 Ported `JPADraw::drawChild` (the separate child-particle seam). Override @ **0x8032bf70** in
