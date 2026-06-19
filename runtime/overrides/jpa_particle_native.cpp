@@ -210,11 +210,19 @@ SUNBRIGHT_OVERRIDE_IF_NATIVE(ov_jpa_drawparticle, 0x8032bd10u, s_ngx_present) {
     if (getenv("SUNBRIGHT_DBG_JPA") && shapeType >= 0 && shapeType < 16) {
         static unsigned long type_hist[16] = {0};
         type_hist[shapeType]++;
+        // Reachability of the remaining step-4 work in THIS scene: child particles (drawChild,
+        // gated on mSweepShape != null) and per-particle texanim (BS_TEXANIM flag → unk3A index).
+        static unsigned long sweep_em = 0, child_parts = 0, texanim_em = 0;
+        const u32 sweep = mem_r32(jpadraw + 0x9C);          // JPADrawContext.mSweepShape (JPADraw+0x9C)
+        if (gvalid(sweep)) { sweep_em++; child_parts += mem_r32(emitter + 0x108 /*childList count*/); }
+        if (gvalid(baseShape) && mem_r8(baseShape + BS_TEXANIM)) texanim_em++;
         static unsigned long tn = 0;
         if ((tn++ % 600) == 0) {
             fprintf(stderr, "[jpa-types]");
             for (int t = 0; t < 16; t++) if (type_hist[t]) fprintf(stderr, " t%d=%lu", t, type_hist[t]);
-            fprintf(stderr, "\n");
+            fprintf(stderr, "  sweepEm=%lu childParts=%lu texanimEm=%lu (last-window)\n",
+                    sweep_em, child_parts, texanim_em);
+            sweep_em = child_parts = texanim_em = 0;   // per-window so a saved state shows LIVE counts
         }
     }
     int ta = 15/*ZERO*/, tb_ = 2/*C0*/, tc = 8/*TEXC*/, td = 15/*ZERO*/;   // default = MODULATE (type 1)

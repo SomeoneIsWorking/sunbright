@@ -229,6 +229,31 @@ Ported the Stripe (t5) + StripeCross (t6) ribbon path. Files: `ngx_jpa_billboard
 YBillBoard (t10), per-particle texanim (unk3A), colour/alpha animation, child particles, ext/extra
 shapes. (DirCross t4 / RotDirCross also unported but unseen in plaza.) Same verify recipe below.
 
+### REACHABILITY of the step-4 long tail (measured 2026-06-19 night — read BEFORE porting more)
+Added a per-window reachability probe to DBG_JPA: `[jpa-types] … sweepEm=N childParts=N texanimEm=N`
+(`sweepEm` = emitters with a SweepShape, i.e. drawChild candidates; `childParts` = LIVE child-particle
+count; `texanimEm` = emitters in per-particle texanim mode). Measured in the plaza:
+- **Idle plaza & spray_fwd.sav**: `childParts=0 texanimEm=0`; only t2/t3/t6/t9, no t4/t7/t8/t10. ⇒ ALL
+  the step-4 long-tail types (Rotation/YBillBoard/DirCross/texanim) are **UNREACHABLE in plaza** —
+  per the tooling-first rule, do NOT port them until a scene that uses them is found & verifiable.
+- **Child particles (drawChild, the FLUDD splash/mist)**: reachable ONLY while ACTIVELY spraying at a
+  surface (drive freeroam_plaza + hold /pad do=r → `childParts≈122` live). They are **very transient**
+  (die <1s after the spray stops) and **do NOT survive a static save** (saved mid-spray, a 0.3–0.7s
+  reload already shows `childParts=0`) — so the frame-exact save A/B can't catch them. ⇒ drawChild is
+  verifiable only by LIVE continuous-spray TEXSHOW + DBG, not ab_oracle. It is also a sizeable sub-port
+  (own clipboard `setChildClipBoard` @ JPADraw.cpp:854: child scale 25·sweepScale·emitter.unk174, a
+  MODEL matrix cb.unk68 via GXLoadPosMtxImm — NOT pre-transformed to eye space like the parent path —
+  sweepShape-driven types/dir/rot funcs, RegisterColorChildPE colour from sweepShape prm/env, child
+  list @ emitter+0x100). Offsets gathered: mSweepShape @ JPADraw+0x9C, childList mHead@+0x100 count@+0x108.
+- The deterministic spray_fwd ab_oracle = 20.5% but **uniform across all 16 regions** (62/62/60/55…) =
+  the PARKED background wash, not a particle gap (spray_fwd is Mario AIMING, no dominant stream). The
+  save A/B cannot isolate particle fidelity here — re-confirmed; rely on unit tests + TEXSHOW + /ngxnojpa.
+
+NEXT-SESSION PLAN for drawChild: either (a) build a live continuous-spray verification harness (inject
+held /pad, capture TEXSHOW each frame, confirm child mist geometry + DBG child-quad count, no t-regress),
+or (b) find a scene with a PERSISTENT child-particle emitter (save-stable) before porting. Don't port
+it blind — verify-before-done.
+
 ### NEXT (historical, DONE above): **t6 StripeCross (~549, the biggest non-t2)** — RIBBON, fully RE'd below
 EMITTER-level visitor (runs ONCE per emitter over the whole particle list, NOT per particle).
 JPADrawExecStripe (t5) @ JPADrawVisitor.cpp L1117 / StripeCross (t6) @ L1193. Plan: do it in the
