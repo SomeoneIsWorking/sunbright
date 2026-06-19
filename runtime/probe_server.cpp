@@ -92,6 +92,7 @@ int sb_ngx_shapes_dump(char*, int);                          // runtime/override
 int sb_ngx_shapeat_dump(char*, int, float, float);           // runtime/overrides/ngx_j3d_shape.cpp (/shapeat?x=&y=)
 extern "C" int sb_gx_blend_dump(char*, int);                 // runtime/overrides/gx_stream_own.cpp (/gxblend)
 extern "C" int sb_gx_copyfilter_dump(char*, int);            // runtime/overrides/gx_stream_own.cpp (/copyfilter)
+extern "C" void sb_efb_grab_arm(int gw, int gh);             // runtime/overrides/gx_stream_own.cpp (/efbgrabnext)
 int sb_ngx_gxstate_dump(char*, int);                         // runtime/overrides/ngx_j3d_shape.cpp (/gxstate)
 extern "C" void sb_ngx_set_gxstate_ti(int);                  // runtime/overrides/ngx_j3d_shape.cpp (/gxstate?ti=)
 extern "C" void sb_ngx_set_gxstate_sh(unsigned);             // runtime/overrides/ngx_j3d_shape.cpp (/gxstate?sh=)
@@ -202,6 +203,31 @@ extern "C" int  sb_ngx_set_noblend(int);    // /ngxnoblend forces materials opaq
 extern "C" int sb_xfmem_dump(char*, int);   // /xfdump prints live Dolphin xfmem (ngx_j3d_shape.cpp)
 extern "C" int sb_xfmem_hist(char*, int);   // /xfhist prints distinct xfmem draw-tuples (ngx_j3d_shape.cpp)
 extern "C" int sb_ngx_gen_shader(unsigned, char*, int);   // /skyshader dumps generated TEV GLSL (ngx_j3d_shape.cpp)
+
+// Peek a GW×GH grid of Dolphin's EFB (RGB) and write a PPM. MUST be called on the CPU thread (the
+// PeekColor blocking event hangs otherwise) with bEFBAccessEnable on. EFB native = 640×528. Shared by
+// the flaky frame-boundary /efbgrab (wrapped in RunOnCPUThread) and the reliable GXCopyDisp-time grab
+// (gx_stream_own.cpp, already on the CPU thread). Returns 1 on success.
+extern "C" int sb_efb_grab_grid(int GW, int GH, const char* path) {
+    if (GW < 1) GW = 1; if (GW > 640) GW = 640; if (GH < 1) GH = 1; if (GH > 528) GH = 528;
+    if (!g_efb_interface) return 0;
+    g_ActiveConfig.bEFBAccessEnable = true;
+    std::vector<unsigned char> rgb((size_t)GW * GH * 3, 0);
+    for (int j = 0; j < GH; j++) {
+        int ey = (int)((j + 0.5f) / GH * 528.0f);
+        for (int i = 0; i < GW; i++) {
+            int ex = (int)((i + 0.5f) / GW * 640.0f);
+            uint32_t c = g_efb_interface->PeekColor((uint16_t)ex, (uint16_t)ey);  // 0xAARRGGBB
+            size_t o = ((size_t)j * GW + i) * 3;
+            rgb[o] = (c >> 16) & 0xFF; rgb[o + 1] = (c >> 8) & 0xFF; rgb[o + 2] = c & 0xFF;
+        }
+    }
+    FILE* f = fopen(path, "wb");
+    if (!f) return 0;
+    fprintf(f, "P6\n%d %d\n255\n", GW, GH);
+    fwrite(rgb.data(), 1, rgb.size(), f); fclose(f);
+    return 1;
+}
 
 // REPL request handler. Returns the response body for any /repl path; empty string = not a REPL path.
 std::string handle_repl(const char* path) {
@@ -400,37 +426,29 @@ std::string handle_repl(const char* path) {
         return std::string(buf, n);
     }
     if (strncmp(path, "/efbgrab", 8) == 0) {
-        // Ground-truth GX EFB dump (PRE-copy): peek a GW×GH grid of Dolphin's EFB on the CPU thread
-        // (Core::RunOnCPUThread — the HTTP-thread PeekColor hangs in single-core; the CPU-thread one
-        // services the GPU). Writes scratch/screenshots/efbgrab.ppm. Run under NGX_PRESENT=0 (the GX
-        // baseline fills the real EFB). This is the only NON-async-lagged GX reference: diff it vs the
-        // presented XFB (ab2.gx.ppm) to find a copy/present darkening, or vs ngx to find a render gap.
-        // EFB native is 640×528 (RES_SCALE=1). Default grid 160×132 (every 4th px) → fast enough.
+        // Ground-truth GX EFB dump: peek a GW×GH grid of Dolphin's EFB → scratch/screenshots/efbgrab.ppm.
+        // ⚠ This frame-boundary grab (RunOnCPUThread) is FLAKY — it pauses at a varying point, often
+        // AFTER the EFB was cleared for the next frame → black. For a RELIABLE grab use the GXCopyDisp-
+        // time grab (/efbgrabnext, gx_stream_own.cpp) which captures the EFB while it's FULL.
+        // Requires SUNBRIGHT_EFB_PEEK=1 at startup (bEFBAccessEnable must be on BEFORE the frame renders).
         int GW = 160, GH = 132;
         if (const char* p = strstr(path, "gw=")) GW = atoi(p + 3);
         if (const char* p = strstr(path, "gh=")) GH = atoi(p + 3);
-        if (GW < 1) GW = 1; if (GW > 640) GW = 640; if (GH < 1) GH = 1; if (GH > 528) GH = 528;
         g_ActiveConfig.bEFBAccessEnable = true;
         if (!g_efb_interface) { app("efbgrab: no g_efb_interface\n"); return std::string(buf, n); }
-        std::vector<unsigned char> rgb((size_t)GW * GH * 3, 0);
-        const int W = GW, H = GH;
-        Core::RunOnCPUThread(Core::System::GetInstance(), [&] {
-            for (int j = 0; j < H; j++) {
-                int ey = (int)((j + 0.5f) / H * 528.0f);
-                for (int i = 0; i < W; i++) {
-                    int ex = (int)((i + 0.5f) / W * 640.0f);
-                    uint32_t c = g_efb_interface->PeekColor((uint16_t)ex, (uint16_t)ey);  // 0xAARRGGBB
-                    size_t o = ((size_t)j * W + i) * 3;
-                    rgb[o] = (c >> 16) & 0xFF; rgb[o + 1] = (c >> 8) & 0xFF; rgb[o + 2] = c & 0xFF;
-                }
-            }
-        });
         const char* outp = "scratch/screenshots/efbgrab.ppm";
-        if (FILE* f = fopen(outp, "wb")) {
-            fprintf(f, "P6\n%d %d\n255\n", W, H);
-            fwrite(rgb.data(), 1, rgb.size(), f); fclose(f);
-            app("efbgrab: wrote %s (%dx%d EFB peek grid, pre-copy GX ground truth)\n", outp, W, H);
-        } else app("efbgrab: cannot write %s\n", outp);
+        int ok = 0;
+        Core::RunOnCPUThread(Core::System::GetInstance(), [&] { ok = sb_efb_grab_grid(GW, GH, outp); });
+        app("efbgrab: %s (%dx%d, frame-boundary — FLAKY; prefer /efbgrabnext)\n", ok ? "wrote" : "FAILED", GW, GH);
+        return std::string(buf, n);
+    }
+    if (strncmp(path, "/efbgrabnext", 12) == 0) {  // arm a RELIABLE EFB grab at the next GXCopyDisp (EFB full)
+        int GW = 160, GH = 132;
+        if (const char* p = strstr(path, "gw=")) GW = atoi(p + 3);
+        if (const char* p = strstr(path, "gh=")) GH = atoi(p + 3);
+        g_ActiveConfig.bEFBAccessEnable = true;
+        sb_efb_grab_arm(GW, GH);                    // gx_stream_own.cpp grabs at the next GXCopyDisp after()
+        app("efbgrab: armed %dx%d grab at next GXCopyDisp (SUNBRIGHT_EFB_GRAB must be set; NGX_PRESENT=0)\n", GW, GH);
         return std::string(buf, n);
     }
     if (strncmp(path, "/ngxshapes", 10) == 0) {  // per-shape NDC bbox (localize a misplaced shape)

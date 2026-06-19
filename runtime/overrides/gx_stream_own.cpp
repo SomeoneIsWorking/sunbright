@@ -12,6 +12,8 @@
 #include "../overrides.h"
 #include "../gx_stream.h"
 #include <cstdio>
+#include <cstdlib>
+#include <atomic>
 
 extern void ngx_note_efb_copy(bool is_disp, u32 dest, u32 clear);   // ngx_j3d_shape.cpp: epoch tracking
 extern u8 mem_r8(u32 ea);   // memory_bridge.cpp
@@ -108,12 +110,38 @@ SUNBRIGHT_OVERRIDE(ov_gxs_flush, 0x8035d8f0u) {
     gxs_flush("gxflush");
 }
 
+// ── Reliable GX-EFB ground-truth grab at GXCopyDisp time ─────────────────────────────────────────
+// The frame-boundary /efbgrab (probe_server RunOnCPUThread) is flaky — it pauses at a varying point,
+// often after the EFB was cleared. GXCopyDisp is the deterministic moment the EFB holds the FULL
+// rendered scene (about to be copied to XFB). In the GX baseline (SUNBRIGHT_EFB_GRAB, NGX_PRESENT=0)
+// this override fires purejit-safe: it peeks the EFB grid NOW (EFB full, on the CPU thread = peek
+// works), then runs the REAL GXCopyDisp via sb_run_original_around (so the XFB/frame cycle is intact;
+// the copy may clear the EFB, which is why we grab first). /efbgrabnext arms it. This is the
+// non-async-lagged per-frame GX reference for diffing ngx's render (no copy/present confound).
+namespace { std::atomic<int> g_efb_grab_w{0}, g_efb_grab_h{0}; }
+extern "C" int sb_efb_grab_grid(int, int, const char*);   // probe_server.cpp (CPU-thread peek+write)
+extern "C" void sb_efb_grab_arm(int gw, int gh) { g_efb_grab_w.store(gw); g_efb_grab_h.store(gh); }
+namespace {
+static const bool s_efb_grab_mode = getenv("SUNBRIGHT_EFB_GRAB") != nullptr;
+}
+
 SUNBRIGHT_OVERRIDE(ov_gxs_copydisp, 0x8035ececu) {
+    if (s_efb_grab_mode && sunbright_purejit_mode()) {
+        int w = g_efb_grab_w.exchange(0), h = g_efb_grab_h.exchange(0);
+        if (w > 0 && h > 0) sb_efb_grab_grid(w, h, "scratch/screenshots/efbgrab.ppm");  // EFB full NOW
+        sb_run_original_around(cpu, 0x8035ececu, nullptr, 0);   // run the REAL copy (keep XFB/frame cycle)
+        return;
+    }
     const u32 dd = cpu.gpr[3], dc = cpu.gpr[4];   // GXCopyDisp(dest, clear)
     func_8035ecec(cpu);          // guest body: emits the EFB→XFB copy commands
     ngx_note_efb_copy(/*is_disp=*/true, dd, dc);   // this epoch's passes went to the DISPLAY
     gxs_arm();
     gxs_frame_boundary();
 }
+
+static const bool s_efb_grab_pj = [] {
+    if (s_efb_grab_mode) mark_override_purejit_safe(0x8035ececu);   // fire per-GXCopyDisp in the GX baseline
+    return true;
+}();
 
 }  // namespace
