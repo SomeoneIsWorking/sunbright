@@ -216,3 +216,41 @@ Status: NOT yet fixed — but the wash is now precisely narrowed (4 suspects eli
 parked problem genuinely advanced) and there's a concrete magenta-material bug lead. No magic-scale
 bandaid was added (would violate no-bandaids). Fix proceeds from here: TEV/texture compositing for the
 wash; the matColor-source misread for the magenta material.
+
+## Deeper dive (same session) — eliminated 2 more suspects; pinned to per-material lighting/combiner
+- The "magenta cc=0500 mat=(128,66,112)" is a DIAGNOSTIC ARTIFACT, not the shipping render: /gxstate on
+  the floor (ti=2) shows the GX **fn-tee** is stale (J3D bypasses the GX fns → the fn-tee captures
+  pointer bytes), while ngx's OBJECT-MODEL decode PASSes vs xfmem (cc=068e, mat=ffffffff white,
+  amb=0). So matColor/cc/amb are all faithful. (The on-screen magenta NPC is a separate, rarer material
+  not captured here — low priority, one NPC.)
+- **Texture decode**: `/tex` selftest = PARITY-OK (119/119 vs Dolphin). Textures are faithful.
+- **Colorspace/present**: all ngx Vulkan targets are `VK_FORMAT_R8G8B8A8_UNORM` (linear, no sRGB);
+  no gamma in present. No UNORM↔sRGB mismatch.
+- **It is PER-MATERIAL, not a global multiplier**: floor ~1.4× bright, buildings ~1.8× — different
+  ratios ⇒ the wash is in the per-material LIGHTING RASTER and/or the TEV COMBINER evaluation, varying
+  by material. The floor (ti=2) is a 5-stage detail-map combiner (compares, KONST, bias=SUBHALF/ADDHALF,
+  scale<<1) with diff=SIGN/attn=SPOT lighting (mask=03, sun+local). Object-model decode of all of this
+  PASSes vs xfmem; the divergence is in the EVALUATION (generated GLSL combiner math or the live lit
+  raster value), which has NO CPU oracle (bpmem/xfmem async-lagged) — only the pixel oracle verifies.
+- **Normals**: ngx transforms normals by the game's OWN normal matrix (j3dSys+0x108 mCurrentNormMtx,
+  the inverse-transpose GX uses), then normalizes (ngx_j3d_shape.cpp:1560-1565). Faithful — not the
+  modelview-instead-of-normal-matrix bug.
+- CONCLUSION: the ENTIRE upstream pipeline is now proven faithful — pos+normal matrices, normal
+  normalization, cc/matColor/ambient/lights (PASS vs xfmem), lighting math (unit-tested), texture decode
+  (parity-OK), colorspace (all UNORM, no sRGB/gamma). The per-material wash (floor 1.4×, walls 1.8×) is
+  therefore in exactly ONE of two places, both needing focused follow-up (neither a one-liner, no CPU
+  oracle — only the pixel oracle verifies): (1) the generated TEV-combiner GLSL EVALUATION for these
+  specific multi-stage detail-map materials (bias/scale/clamp/compare/konst interplay — the one thing
+  not yet unit-covered for 5-stage combiners), or (2) a measurement/config delta between the
+  NGX_PRESENT=0 and =1 runs (resolution / Dolphin post). No bandaid added; the upstream eliminations
+  mean the next session must NOT re-chase gamma/ambient/lighting/normals/textures.
+- **Candidate (2) ELIMINATED**: `SUNBRIGHT_NGX_PRESENT` (main_sdl.cpp:846) only swaps the present
+  callback + sets g_sb_ngx_present — it changes NO Dolphin GFX config (EFB scale/res/post are applied
+  identically). So the two-process compare is fair and the 1.4× is a REAL renderer difference, not a
+  config artifact. ⇒ The wash is the **TEV-combiner GLSL EVALUATION** (or the tevreg/konst inputs to
+  it) for these multi-stage detail-map materials — the sole remaining suspect after everything else is
+  proven faithful.
+- THE FIX PATH (mandated TDD, no CPU oracle exists for the combiner): extend `render_test` (the
+  tev/combiner unit) with the floor's actual 5-stage pattern (the s0..s4 ops + bias/scale/compare/konst
+  from /gxstate ti=2) and hand-computed expected outputs, find the generator bug deterministically,
+  fix the GLSL generator, then confirm the ab_oracle number drops. Substantial, not a one-liner.
