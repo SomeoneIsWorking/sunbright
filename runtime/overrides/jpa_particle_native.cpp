@@ -91,6 +91,17 @@ constexpr u32 EM_DIR     = 0x210;         // JPABaseEmitter.mEmitterDirection (d
 constexpr u32 D_UNK14    = 0x90 + 0x14;   // JPADrawContext.unk14 → JPADraw* (== this)
 constexpr u32 JD_EMPRM   = 0xB8;          // JPADraw.mPrmColor
 constexpr u32 JD_EMENV   = 0xBC;          // JPADraw.mEnvColor
+// Child particle path (drawChild @ 0x8032bf70): child list + SweepShape (the child shape descriptor).
+constexpr u32 D_SWEEP        = 0x90 + 0x0C;   // JPADrawContext.mSweepShape (JPADraw+0x9C)
+constexpr u32 D_TEXINDICES   = 0x90 + 0x20;   // JPADrawContext.mTexIndices (u16*, JPADraw+0xB0)
+constexpr u32 EM_CHILD_LIST  = 0x100;         // JPABaseEmitter.mChildParticleList mHead
+constexpr u32 EM_UNK174      = 0x174;         // JPABaseEmitter.unk174 (TVec3 emitter scale)
+constexpr u32 CB_UNK68       = CB + 0x68;     // JPADrawClipBoard.unk68 (Mtx 3x4, child PNMTX0 model mtx)
+constexpr u32 SW_SCALEY  = 0x10, SW_SCALEX = 0x14;   // JPASweepShape mScaleY/mScaleX
+constexpr u32 SW_PRM     = 0x38, SW_ENV    = 0x3C;   // JPASweepShape mPrmColor/mEnvColor
+constexpr u32 SW_TYPE    = 0x44, SW_DIRTYPE = 0x45;  // JPASweepShape mType/mDirType
+constexpr u32 SW_ALPHAOUT= 0x4B, SW_TEXIDX = 0x4C, SW_INHERIT = 0x4E;  // unk4B / mTextureIndex / unk4E
+constexpr u32 BS_BASESIZEY = 0x10, BS_BASESIZEX = 0x14;  // JPABaseShape mBaseSizeY/mBaseSizeX
 
 // JPADraw (this) layout (JPADraw.hpp): mDrawCtx @ +0x90 (JPADrawContext), then unkC0 @ +0xC0.
 // JPADrawContext fields: mBaseShape @ +0x04, mTexResource @ +0x1C.
@@ -115,26 +126,15 @@ static inline u32 thre(u32 a, u32 b) { return ((a * (b + 1)) * 0x10000u) >> 24; 
 static inline int rs32(u32 ea) { return (int)mem_r32(ea); }   // GXTevColorArg is a small enum
 static inline bool gvalid(u32 a) { return a >= 0x80000000u && a < 0x81800000u; }
 
-// Resolve the emitter's texmap0 binding from the object model and fill the quad's texture fields.
-// Chain: JPADraw.mTexResource → JPATextureResource.unk2C[texid] (JPATexture*) → +0x8 JUTTexture
-// → +0x20 ResTIMG*. Decode the ResTIMG exactly like ngx_j3d_shape.cpp capture_textures
-// (fmt@0,w@2,h@4,wrap@6/7,mipEnable@0x10,filter@0x14/15,tlutfmt@0x09,imgOff@0x1C,palOff@0x0C).
-// texid = getMainTextureID(0) (disasm 8032c700): texanim → table[0], else baseShape.mTextureIndex.
-static void resolve_texture(u32 jpadraw, ngx_jpa::NgxParticleQuad& q) {
+// Decode a JPATextureResource table entry (unk2C[texid]) into the quad's texture fields.
+// Chain: JPATextureResource.unk2C[texid] (JPATexture*) → +0x8 JUTTexture → +0x20 ResTIMG*. Decode the
+// ResTIMG exactly like ngx_j3d_shape.cpp capture_textures (fmt@0,w@2,h@4,wrap@6/7,filter@0x14/15,
+// tlutfmt@0x09,imgOff@0x1C,palOff@0x0C). texid is the resolved unk2C index (parent: getMainTextureID;
+// child: mTexIndices[sweepShape.getTextureIndex()]).
+static void decode_jpa_texid(u32 texRes, int texid, ngx_jpa::NgxParticleQuad& q) {
     q.tex_addr = q.tlut_addr = 0; q.tex_w = q.tex_h = 0; q.tex_fmt = q.tlut_fmt = 0;
     q.wrap_s = q.wrap_t = 0 /*CLAMP*/; q.min_filter = q.mag_filter = 1 /*LINEAR*/;
-    const u32 baseShape = mem_r32(jpadraw + D_BASESHAPE);
-    const u32 texRes    = mem_r32(jpadraw + D_TEXRES);
-    if (!gvalid(baseShape) || !gvalid(texRes)) return;
-    int texid;
-    if (mem_r8(baseShape + BS_TEXANIM)) {                 // texanim: table[0] (per-particle = step 4)
-        const u32 tbl = mem_r32(baseShape + BS_TEXIDX_TBL);
-        if (!gvalid(tbl) || mem_r8(baseShape + BS_ANMKEYNUM) == 0) return;
-        texid = mem_r8(tbl);
-    } else {
-        texid = mem_r8(baseShape + BS_TEXIDX);
-    }
-    if (texid < 0 || texid > 255) return;
+    if (!gvalid(texRes) || texid < 0 || texid > 255) return;
     const u32 table = mem_r32(texRes + TR_TABLE);                   // unk2C = JPATexture** (deref!)
     if (!gvalid(table)) return;
     const u32 jtex = mem_r32(table + (u32)texid * 4);               // unk2C[texid] (JPATexture*)
@@ -154,6 +154,35 @@ static void resolve_texture(u32 jpadraw, ngx_jpa::NgxParticleQuad& q) {
         q.tlut_addr = timg + palOff;
     }
     if (!gvalid(q.tex_addr)) { q.tex_addr = 0; q.tex_w = q.tex_h = 0; }
+}
+
+// Parent texmap0: texid = getMainTextureID(0) (disasm 8032c700): texanim → table[0], else
+// baseShape.mTextureIndex; then decode unk2C[texid].
+static void resolve_texture(u32 jpadraw, ngx_jpa::NgxParticleQuad& q) {
+    q.tex_addr = 0; q.tex_w = q.tex_h = 0;
+    const u32 baseShape = mem_r32(jpadraw + D_BASESHAPE);
+    const u32 texRes    = mem_r32(jpadraw + D_TEXRES);
+    if (!gvalid(baseShape) || !gvalid(texRes)) return;
+    int texid;
+    if (mem_r8(baseShape + BS_TEXANIM)) {                 // texanim: table[0] (per-particle = step 4)
+        const u32 tbl = mem_r32(baseShape + BS_TEXIDX_TBL);
+        if (!gvalid(tbl) || mem_r8(baseShape + BS_ANMKEYNUM) == 0) return;
+        texid = mem_r8(tbl);
+    } else {
+        texid = mem_r8(baseShape + BS_TEXIDX);
+    }
+    decode_jpa_texid(texRes, texid, q);
+}
+
+// Child texmap0 (drawChild): id = mTexIndices[sweepShape.getTextureIndex()] → decode unk2C[id].
+static void resolve_child_texture(u32 jpadraw, u32 sweep, ngx_jpa::NgxParticleQuad& q) {
+    q.tex_addr = 0; q.tex_w = q.tex_h = 0;
+    const u32 texRes = mem_r32(jpadraw + D_TEXRES);
+    const u32 idxTbl = mem_r32(jpadraw + D_TEXINDICES);   // JPADrawContext.mTexIndices (u16*)
+    if (!gvalid(texRes) || !gvalid(idxTbl) || !gvalid(sweep)) return;
+    const int sweepIdx = mem_r8(sweep + SW_TEXIDX);
+    const int texid = (int)(u16)((mem_r8(idxTbl + sweepIdx*2) << 8) | mem_r8(idxTbl + sweepIdx*2 + 1));
+    decode_jpa_texid(texRes, texid, q);
 }
 
 // ── GX state tees (capture live z/blend the shape set; run the original) ────────
@@ -213,16 +242,24 @@ SUNBRIGHT_OVERRIDE_IF_NATIVE(ov_jpa_drawparticle, 0x8032bd10u, s_ngx_present) {
         // Reachability of the remaining step-4 work in THIS scene: child particles (drawChild,
         // gated on mSweepShape != null) and per-particle texanim (BS_TEXANIM flag → unk3A index).
         static unsigned long sweep_em = 0, child_parts = 0, texanim_em = 0;
+        static int ck_ptype = -1, ck_stype = -1, ck_sdir = -1;   // config of a window's child emitter
         const u32 sweep = mem_r32(jpadraw + 0x9C);          // JPADrawContext.mSweepShape (JPADraw+0x9C)
-        if (gvalid(sweep)) { sweep_em++; child_parts += mem_r32(emitter + 0x108 /*childList count*/); }
+        if (gvalid(sweep)) {
+            sweep_em++;
+            const u32 cc = mem_r32(emitter + 0x108 /*childList count*/);
+            child_parts += cc;
+            if (cc > 0) {   // record the LIVE child config (parent type + sweepShape type/dir)
+                ck_ptype = shapeType; ck_stype = mem_r8(sweep + 0x44); ck_sdir = mem_r8(sweep + 0x45);
+            }
+        }
         if (gvalid(baseShape) && mem_r8(baseShape + BS_TEXANIM)) texanim_em++;
         static unsigned long tn = 0;
         if ((tn++ % 600) == 0) {
             fprintf(stderr, "[jpa-types]");
             for (int t = 0; t < 16; t++) if (type_hist[t]) fprintf(stderr, " t%d=%lu", t, type_hist[t]);
-            fprintf(stderr, "  sweepEm=%lu childParts=%lu texanimEm=%lu (last-window)\n",
-                    sweep_em, child_parts, texanim_em);
-            sweep_em = child_parts = texanim_em = 0;   // per-window so a saved state shows LIVE counts
+            fprintf(stderr, "  sweepEm=%lu childParts=%lu texanimEm=%lu  child[ptype=%d stype=%d sdir=%d] (last-window)\n",
+                    sweep_em, child_parts, texanim_em, ck_ptype, ck_stype, ck_sdir);
+            sweep_em = child_parts = texanim_em = 0; ck_ptype = ck_stype = ck_sdir = -1;  // per-window
         }
     }
     int ta = 15/*ZERO*/, tb_ = 2/*C0*/, tc = 8/*TEXC*/, td = 15/*ZERO*/;   // default = MODULATE (type 1)
@@ -439,6 +476,119 @@ SUNBRIGHT_OVERRIDE_IF_NATIVE(ov_jpa_drawparticle, 0x8032bd10u, s_ngx_present) {
                     "prm=(%u,%u,%u,%u) al=%.3f A0=%d uv0=(%.2f,%.2f) z(t=%d f=%d w=%d) bl(%d,%d,%d)\n",
                     emitter, total, drawn, tq.tex_addr, tq.tex_w, tq.tex_h, tq.tex_fmt,
                     ta, tb_, tc, td, epr, epg, epb, epa, dbg_al, dbg_pa, uv[0][0], uv[0][1], zt, zf, zw, bm, bs, bd);
+    }
+}
+
+// ── JPADraw::drawChild (0x8032bf70): child particles (the FLUDD splash/mist) ───────────────────────
+// A separate seam from drawParticle: draw() calls drawChild() only when the emitter has a SweepShape
+// (the child descriptor). setChildClipBoard re-fills the static cb with the CHILD clipboard (its own
+// size cb.unk4 = 25·sweepScale·emitter.scale, pivot cb.unkC=0, fixed unit texcoords, and a PNMTX0
+// MODEL matrix cb.unk68 — identity when the parent baseShape is BillBoard/DirBillBoard, else a copy of
+// the view matrix), then issues child GXSetZMode/BlendMode and draws all child particles. We run the
+// original (cb + GX state populated, draws to the dropped EFB), then walk the child list and emit each
+// billboard — same machinery as the parent path, reading the CHILD cb. The child exec is the SAME
+// JPADrawExec* objects as the parent (selected by the SweepShape type); the reachable plaza spray uses
+// SweepShape type 2 = BillBoard, so we emit screen-aligned billboards (other child types share the
+// per-type math the parent path already has, addable later). Faithful to JPADraw.cpp:1003 drawChild.
+SUNBRIGHT_OVERRIDE_IF_NATIVE(ov_jpa_drawchild, 0x8032bf70u, s_ngx_present) {
+    const u32 jpadraw = cpu.gpr[3];
+    sb_run_original_around(cpu, 0x8032bf70u, nullptr, 0);   // setChildClipBoard + child GX state + draws
+    const bool no_jpa = g_jpa_disable >= 0 ? (g_jpa_disable != 0) : s_no_jpa_env;
+    if (no_jpa) return;
+
+    const u32 emitter   = jpadraw - DRAW_IN_EMITTER;
+    const u32 sweep     = mem_r32(jpadraw + D_SWEEP);
+    const u32 baseShape = mem_r32(jpadraw + D_BASESHAPE);
+    if (!gvalid(sweep)) return;
+
+    // Child clipboard (just computed by setChildClipBoard): size cb.unk4, pivot cb.unkC(=0), view mtx,
+    // and the cb.unk68 PNMTX0 model matrix the child positions pass through on the GPU.
+    const float u4x = rf(CB_UNK4_X), u4y = rf(CB_UNK4_Y);
+    const float ucx = rf(CB_UNKC_X), ucy = rf(CB_UNKC_Y);
+    const u32   vm  = mem_r32(CB_VIEWMTX);
+    if (vm < 0x80000000u) return;
+    float m[3][4], M68[3][4];
+    for (int r = 0; r < 3; r++) for (int c = 0; c < 4; c++) m[r][c]   = rf(vm + (u32)(r*4+c)*4);
+    for (int r = 0; r < 3; r++) for (int c = 0; c < 4; c++) M68[r][c] = rf(CB_UNK68 + (u32)(r*4+c)*4);
+    float uv[4][2];
+    for (int i = 0; i < 4; i++) { uv[i][0] = rf(CB_TEXCOORD0 + i*8); uv[i][1] = rf(CB_TEXCOORD0 + i*8 + 4); }
+    const u32 cbprm = mem_r32(CB_PRM), cbenv = mem_r32(CB_ENV);
+    const u32 epr=(cbprm>>24)&0xff, epg=(cbprm>>16)&0xff, epb=(cbprm>>8)&0xff, epa=cbprm&0xff;
+    const u32 eer=(cbenv>>24)&0xff, eeg=(cbenv>>16)&0xff, eeb=(cbenv>>8)&0xff;
+
+    ngx_jpa::NgxParticleQuad tq{};
+    resolve_child_texture(jpadraw, sweep, tq);
+
+    // Combiner = parent baseShape TevArgs (drawChild keeps the shape's combiner; setupTev ran in draw()).
+    int ta = 15, tb_ = 2, tc = 8, td = 15;
+    if (gvalid(baseShape)) {
+        ta = rs32(baseShape + BS_TEVARG0 + 0); tb_ = rs32(baseShape + BS_TEVARG0 + 4);
+        tc = rs32(baseShape + BS_TEVARG0 + 8); td = rs32(baseShape + BS_TEVARG0 + 0xC);
+    }
+    tq.color_env = ngx_jpa::jpa_color_env(ta, tb_, tc, td);
+    tq.alpha_env = ngx_jpa::jpa_alpha_env();
+
+    int zt = g_z_test, zf = g_z_func, zw = g_z_write, bm = g_bl_mode, bs = g_bl_src, bd = g_bl_dst;
+    { const char* e = getenv("SUNBRIGHT_JPA_ZTEST"); if (e) zt = atoi(e);
+      const char* f = getenv("SUNBRIGHT_JPA_ZFUNC"); if (f) zf = atoi(f); }
+    if (s_jpa_show)                         { tq.color_env = ngx_jpa::jpa_color_env(15,15,15,2); tq.tex_addr=0; bm=0; bs=1; bd=0; }
+    else if (getenv("SUNBRIGHT_JPA_TEXSHOW")) { tq.color_env = ngx_jpa::jpa_color_env(15,15,15,8); bm=0; bs=1; bd=0; }
+    tq.z_test=(u8)zt; tq.z_func=(u8)zf; tq.z_write=(u8)zw;
+    tq.blend_mode=(u8)bm; tq.src_factor=(u8)bs; tq.dst_factor=(u8)bd;
+
+    // Child colour: emitter-level RegisterColorChildPE (sweepShape prm/env) UNLESS the sweep enables
+    // alpha-out / inherited alpha / inherited RGB → then per-particle RegisterPrmCEnv (child drawParams).
+    const bool perPart = mem_r8(sweep + SW_ALPHAOUT) || (mem_r8(sweep + SW_INHERIT) & 0x6u);
+    if (!perPart && !s_jpa_show) {   // emitter-level child colour (compute once)
+        const u32 sp = mem_r32(sweep + SW_PRM), se = mem_r32(sweep + SW_ENV);
+        tq.c0[0]=(int16_t)thre((sp>>24)&0xff,epr); tq.c0[1]=(int16_t)thre((sp>>16)&0xff,epg);
+        tq.c0[2]=(int16_t)thre((sp>>8)&0xff,epb);  tq.c0[3]=(int16_t)thre(sp&0xff,epa);
+        tq.c1[0]=(int16_t)thre((se>>24)&0xff,eer); tq.c1[1]=(int16_t)thre((se>>16)&0xff,eeg);
+        tq.c1[2]=(int16_t)thre((se>>8)&0xff,eeb);  tq.c1[3]=255;
+    } else if (s_jpa_show) { tq.c0[0]=255; tq.c0[1]=0; tq.c0[2]=255; tq.c0[3]=255; tq.c1[0]=tq.c1[1]=tq.c1[2]=tq.c1[3]=0; }
+
+    unsigned drawn = 0, total = 0;
+    u32 link = mem_r32(emitter + EM_CHILD_LIST);
+    for (int guard = 0; link >= 0x80000000u && guard < 100000; guard++) {
+        const u32 particle = mem_r32(link + 0);
+        const u32 next     = mem_r32(link + LINK_NEXT);
+        if (particle < 0x80000000u) break;
+        total++;
+        if (!(mem_r32(particle + P_FLAGS) & 0x8u)) {   // skip FLAG_INVISIBLE
+            const float gx = rf(particle+P_GLOBALX), gy = rf(particle+P_GLOBALX+4), gz = rf(particle+P_GLOBALX+8);
+            const float sx = rf(particle+P_SCALEX), sy = rf(particle+P_SCALEY);
+            const float ptx = m[0][0]*gx+m[0][1]*gy+m[0][2]*gz+m[0][3];
+            const float pty = m[1][0]*gx+m[1][1]*gy+m[1][2]*gz+m[1][3];
+            const float ptz = m[2][0]*gx+m[2][1]*gy+m[2][2]*gz+m[2][3];
+            float bc[4][3];
+            ngx_jpa::billboard_corners(sx, sy, u4x, u4y, ucx, ucy, ptx, pty, ptz, bc);
+            for (int i = 0; i < 4; i++) {   // apply the cb.unk68 PNMTX0 model matrix (identity for t2 parents)
+                const float x=bc[i][0], y=bc[i][1], z=bc[i][2];
+                tq.eye[i][0]=M68[0][0]*x+M68[0][1]*y+M68[0][2]*z+M68[0][3];
+                tq.eye[i][1]=M68[1][0]*x+M68[1][1]*y+M68[1][2]*z+M68[1][3];
+                tq.eye[i][2]=M68[2][0]*x+M68[2][1]*y+M68[2][2]*z+M68[2][3];
+                tq.uv[i][0]=uv[i][0]; tq.uv[i][1]=uv[i][1];
+            }
+            if (perPart && !s_jpa_show) {   // per-particle child colour (RegisterPrmCEnv)
+                const u32 pp = mem_r32(particle+P_PRM), pe = mem_r32(particle+P_ENV);
+                const float al = rf(particle+P_ALPHA);
+                int pa = (int)(al * (float)thre(pp&0xff, epa)); if (pa<0) pa=0; else if (pa>255) pa=255;
+                tq.c0[0]=(int16_t)thre((pp>>24)&0xff,epr); tq.c0[1]=(int16_t)thre((pp>>16)&0xff,epg);
+                tq.c0[2]=(int16_t)thre((pp>>8)&0xff,epb);  tq.c0[3]=(int16_t)pa;
+                tq.c1[0]=(int16_t)thre((pe>>24)&0xff,eer); tq.c1[1]=(int16_t)thre((pe>>16)&0xff,eeg);
+                tq.c1[2]=(int16_t)thre((pe>>8)&0xff,eeb);  tq.c1[3]=255;
+            }
+            ngx_emit_particle_quad(&tq);
+            drawn++;
+        }
+        link = next;
+    }
+    if (getenv("SUNBRIGHT_DBG_JPA") && total > 0) {   // print only when child particles are actually live
+        static unsigned long n = 0;
+        if ((n++ % 30) == 0)
+            fprintf(stderr, "[jpa-child] em %#x stype=%d listCount=%u walked=%u drawn=%u tex=%#x %ux%u perPart=%d\n",
+                    emitter, mem_r8(sweep + SW_TYPE), mem_r32(emitter + 0x108), total, drawn,
+                    tq.tex_addr, tq.tex_w, tq.tex_h, perPart);
     }
 }
 

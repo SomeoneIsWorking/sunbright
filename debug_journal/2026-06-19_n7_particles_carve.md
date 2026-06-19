@@ -229,6 +229,42 @@ Ported the Stripe (t5) + StripeCross (t6) ribbon path. Files: `ngx_jpa_billboard
 YBillBoard (t10), per-particle texanim (unk3A), colour/alpha animation, child particles, ext/extra
 shapes. (DirCross t4 / RotDirCross also unported but unseen in plaza.) Same verify recipe below.
 
+## UPDATE (2026-06-19 night, 2) — STEP 4 cont DONE: child particles (drawChild, FLUDD splash/mist)
+
+Ported `JPADraw::drawChild` (the separate child-particle seam). Override @ **0x8032bf70** in
+`jpa_particle_native.cpp`, mirrors the drawParticle override: run-original-first lets the guest
+`setChildClipBoard` re-fill the static `cb` with the CHILD clipboard (own size cb.unk4, pivot cb.unkC=0,
+fixed unit texcoords, the PNMTX0 model matrix cb.unk68) + child GX z/blend; then I walk the child list
+(`emitter+0x100`) and emit billboards reading the CHILD cb. Reuses `billboard_corners` (render_test'd).
+
+### Decomp-faithful details (offsets confirmed live)
+- Child list = JPABaseEmitter.mChildParticleList @ **emitter+0x100** (mHead+0x100, count+0x108). VERIFIED:
+  the list-walk count == the stored mLinkCount in every sample (walked==listCount, 1/1 & 2/2).
+- Child uses the SAME JPADrawExec* as the parent, selected by **SweepShape type** (mSweepShape @
+  JPADraw+0x9C; type@+0x44 dir@+0x45 texIdx@+0x4C scaleY@+0x10 scaleX@+0x14 prm@+0x38 env@+0x3C
+  alphaOut@+0x4B inherit@+0x4E). Reachable plaza spray children = SweepShape type 2 (BillBoard) → emit
+  screen-aligned billboards (other child types share the parent per-type math, addable later).
+- PNMTX0 model matrix cb.unk68 @ cb+0x68 (Mtx 3x4): identity when the PARENT baseShape is BillBoard(2)/
+  DirBillBoard(9), a viewMtx copy otherwise, YBB for type 10. I read it and apply it to every corner
+  generally (identity for the reachable t2-parent case) so it's correct for all parent types.
+- Child texture: `id = mTexIndices[sweepShape.getTextureIndex()]` (mTexIndices u16* @ JPADraw+0xB0), then
+  decode unk2C[id] — refactored `decode_jpa_texid` shared with the parent's getMainTextureID path.
+- Child colour: emitter-level RegisterColorChildPE (sweepShape prm/env THRE'd vs cb.prm/env) UNLESS the
+  sweep enables alphaOut / inheritedAlpha(0x2) / inheritedRGB(0x4) → then per-particle RegisterPrmCEnv
+  (child drawParams prm/env, a=mAlpha·THRE). Both implemented, keyed on the sweep flags (perPart).
+- TEV combiner = the parent baseShape TevArgs (drawChild keeps the shape's combiner from draw()).
+
+### Verified (live-spray, since children are FLUDD-transient — can't save them, see reachability below)
+- Drive freeroam_plaza + hold /pad do=r → `[jpa-child] stype=2 listCount=2 walked=2 drawn=2 tex=32x32
+  perPart=1`: override fires, walks the child list correctly, emits all, resolves the child texture.
+- render_test 15/15 (the reused billboard math). Parent path UNREGRESSED (still tex 64x64). No crash, no
+  NEW shader errors. NOTE: a pre-existing ngx TEV shader-gen bug (`'abg' swizzle out of range`, 3×/run)
+  is present with OR without this change — a separate rare-combiner issue, not particle-related.
+- Child count is sparse at this spray angle (1–2 live); the visual contribution is modest but correct.
+
+### Step-4 remaining: Rotation (t7/t8), YBillBoard (t10), DirCross (t4), per-particle texanim, ext/extra
+shapes, non-t2 CHILD types — all UNREACHABLE in plaza (need a scene that uses them; verify-first).
+
 ### REACHABILITY of the step-4 long tail (measured 2026-06-19 night — read BEFORE porting more)
 Added a per-window reachability probe to DBG_JPA: `[jpa-types] … sweepEm=N childParts=N texanimEm=N`
 (`sweepEm` = emitters with a SweepShape, i.e. drawChild candidates; `childParts` = LIVE child-particle
