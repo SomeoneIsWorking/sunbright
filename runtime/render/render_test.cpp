@@ -641,6 +641,44 @@ int test_jpa_billboard(char* rep, int cap) {
     return fails;
 }
 
+// ── JPA stripe/ribbon edge math (ngx_jpa_billboard.h jpa_stripe_basis / jpa_stripe_corners) ──────
+// The N7 StripeCross ribbon (FLUDD water-jet) connects consecutive particles with segment quads
+// built from these two rail points; pin the orientation basis + rail derivation (JPADrawExecStripe).
+int test_jpa_stripe(char* rep, int cap) {
+    int pos = 0, fails = 0;
+    auto failf = [&](const char* m){ fails++; if (pos < cap) pos += snprintf(rep+pos, cap-pos, "%s", m); };
+    auto close = [](float a, float b){ float e=a-b; return (e<0?-e:e) <= 1e-4f; };
+
+    // Basis: axis=unk0=(1,0,0), dir=(0,0,1). side = axis×dir = (1,0,0)×(0,0,1) = (0·1−0·0, 0·0−1·1,
+    // 1·0−0·0) = (0,-1,0); axis' = dir×side = (0,0,1)×(0,-1,0) = (0·0−1·(−1), 1·0−0·0, 0·(−1)−0·0) =
+    // (1,0,0). Cols M = [axis'|side|dir] = [(1,0,0)|(0,-1,0)|(0,0,1)].
+    {
+        float axis[3]={1,0,0}, dir[3]={0,0,1}, M[3][3];
+        ngx_jpa::jpa_stripe_basis(axis, dir, M);
+        const float ex[3][3]={{1,0,0},{0,-1,0},{0,0,1}};
+        for(int r=0;r<3;r++)for(int c=0;c<3;c++) if(!close(M[r][c],ex[r][c])) failf("FAIL stripe_basis M\n");
+    }
+    // Degenerate dir (zero) → local_BC fallback (0,1,0): then side = axis×(0,1,0) = (1,0,0)×(0,1,0) =
+    // (0,0,1); axis' = (0,1,0)×(0,0,1) = (1,0,0). Cols = [(1,0,0)|(0,0,1)|(0,1,0)]. (No NaNs.)
+    {
+        float axis[3]={1,0,0}, dir[3]={0,0,0}, M[3][3];
+        ngx_jpa::jpa_stripe_basis(axis, dir, M);
+        const float ex[3][3]={{1,0,0},{0,0,1},{0,1,0}};
+        for(int r=0;r<3;r++)for(int c=0;c<3;c++) if(!close(M[r][c],ex[r][c])) failf("FAIL stripe_basis zero-dir\n");
+    }
+    // Rails: width=2, u4x=10, ucx=0 (centred), angle 0 → sin=0,cos=1. x=−2·10=−20, y=+2·10=+20.
+    // v1=(0,−20,0), v2=(0,+20,0). With M=[(1,0,0)|(0,-1,0)|(0,0,1)] (axis=+X,dir=+Z):
+    //   M·v1 = (0, (−1)·(−20), 0) = (0,20,0); M·v2 = (0,−20,0). pt0=(100,200,300).
+    //   left=(100,220,300) right=(100,180,300) — a 40-unit-wide rail pair along Y.
+    {
+        float axis[3]={1,0,0}, dir[3]={0,0,1}, pt0[3]={100,200,300}, L[3], R[3];
+        ngx_jpa::jpa_stripe_corners(2.f, 10.f, 0.f, 0.f, 1.f, axis, dir, pt0, L, R);
+        const float exL[3]={100,220,300}, exR[3]={100,180,300};
+        for(int k=0;k<3;k++) if(!close(L[k],exL[k])||!close(R[k],exR[k])) failf("FAIL stripe_corners\n");
+    }
+    return fails;
+}
+
 struct Unit { const char* name; int (*run)(char* rep, int cap); };
 
 const Unit kUnits[] = {
@@ -658,6 +696,7 @@ const Unit kUnits[] = {
     {"indirect",      test_indirect},
     {"tev_eval",      test_tev_eval},
     {"jpa_billboard", test_jpa_billboard},
+    {"jpa_stripe",    test_jpa_stripe},
 };
 
 }  // namespace

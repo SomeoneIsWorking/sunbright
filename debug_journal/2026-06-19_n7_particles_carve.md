@@ -189,7 +189,47 @@ Pure math (jpa_dir_basis / jpa_directional_corners / jpa_dirbb_offsets) is in ng
 renders sanely. NOTE: the per-pixel orientation vs GX is NOT isolated (parked wash + HUD drift confound
 the whole-frame number) — correctness rests on the unit-tested decomp-faithful math + no-regression.
 
-### NEXT (step 4 cont.): **t6 StripeCross (~549, the biggest non-t2)** — RIBBON, fully RE'd below
+## UPDATE (2026-06-19 night) — STEP 4 cont DONE & verified: t5/t6 Stripe/StripeCross RIBBON
+
+Ported the Stripe (t5) + StripeCross (t6) ribbon path. Files: `ngx_jpa_billboard.h`
+(`jpa_stripe_basis` / `jpa_stripe_corners`, render_test `jpa_stripe`), ribbon branch in
+`jpa_particle_native.cpp` `ov_jpa_drawparticle`. render_test 15/15.
+
+### What landed (all decomp-faithful, offsets confirmed live)
+- Stripe is an EMITTER-level visitor (one ribbon over the whole particle list, NOT per particle).
+  Implemented as a RIBBON branch in the same drawParticle override (skips the per-particle quad loop
+  when `shapeType==5||6`), emitting ONE quad per consecutive-particle SEGMENT, reusing
+  `ngx_emit_particle_quad` (all texture/TEV/blend reused — no new emit fn). The GX_TRIANGLESTRIP
+  [L0,R0,L1,R1,…] = segment quads [Li,Ri,Ri+1,Li+1]; the strip's two triangulations cover the same
+  quad (cull=NONE so winding is moot) → mFlags reverse only flips per-particle v, which I handle.
+- Per-particle rail math (`jpa_stripe_corners`): basis M=[axis|side|dir] (Gram-Schmidt from
+  params.unk0 settled-axis + dir; **column order differs from jpa_dir_basis** which is [axis|dir|side]).
+  rails v1=(x·sin,x·cos,0) v2=(y·sin,y·cos,0), x=−w(u4x+ucx) y=+w(u4x−ucx) [unk4.x for BOTH], w=unk10;
+  edge = pt0 + M·v; eye = mViewMtx·edge; uv=(0/1, fVar2 running 0→1 step 1/(elems−1)).
+- StripeCross 2nd ribbon: w=unk14, sin=−JMASSin/cos=JMASCos, dir = mVelocity DIRECTLY (not
+  mDirTypeFunc), **fVar2 NOT reset** (carries from ribbon 1 → 2nd ribbon v≈1→2; replicated).
+- COLOUR emitter-level (RegisterColorEmitterPE): C0=THRE(emitter.prm, cb.prm), C1=THRE(emitter.env,
+  cb.env). emitter prm/env = JPADraw.mPrmColor@+0xB8/mEnvColor@+0xBC via JPADrawContext.unk14@JPADraw+0xA4.
+- dirType (mDirTypeFunc) 0=vel(+0x38) 1=localpos(+0x20) 2=−localpos 3=emitter.mEmitterDirection(+0x210)
+  4=prevParticle.globalpos−this (prev = embedded link mPrev @ particle+8; no-prev → 0→(0,1,0) fallback).
+- New offsets: BS_FLAGS@baseShape+0x7C(bit0=reverse), list mTail@em+0xF8/mLinkCount@em+0xFC,
+  JSULink mPrev@+8, P_UNK34@drawParams+0x34(u16, read as mem_r32>>16). JMASSin/Cos table ≈ sinf/cosf of
+  u16·2π/65536 (faithful to the table's intent).
+
+### Verified (the bar: unit tests + TEXSHOW geometry + no-regression, NOT whole-frame which is wash-confounded)
+- render_test `jpa_stripe` PASS (basis orthonormality + column order + zero-dir fallback + rail point).
+- DBG_JPA on spray_fwd: `[jpa-stripe] type=6 dir=0 elems=20 segs=38 tex=64x64 cc(C1,C0,TEXC,ZERO)=
+  lerp(env,white,tex) c0=(255,255,255,255)` — branch fires, segs = 2 ribbons × (elems−1), texture
+  resolves, faithful combiner. Type histogram still t2/t3/t6/t9 → no regression to the other types.
+- TEXSHOW+ZFUNC=7 (scratch/screenshots/stripe_texshow.png): the spray renders the StripeCross as
+  CONNECTED curved water-arc ribbons (not scattered dots). Drift-free /ngxnojpa A/B: particles
+  contribute 3.7% (LEQUAL) / 13.8% (TEXSHOW) at the spray location. 130 s run, no crash/NaN.
+
+### NEXT (step 4 long tail): Rotation (t7) / RotCross (t8) / RotBillBoard / RotDirectional variants,
+YBillBoard (t10), per-particle texanim (unk3A), colour/alpha animation, child particles, ext/extra
+shapes. (DirCross t4 / RotDirCross also unported but unseen in plaza.) Same verify recipe below.
+
+### NEXT (historical, DONE above): **t6 StripeCross (~549, the biggest non-t2)** — RIBBON, fully RE'd below
 EMITTER-level visitor (runs ONCE per emitter over the whole particle list, NOT per particle).
 JPADrawExecStripe (t5) @ JPADrawVisitor.cpp L1117 / StripeCross (t6) @ L1193. Plan: do it in the
 SAME drawParticle override but as a RIBBON branch (skip the per-particle quad loop). Reuse

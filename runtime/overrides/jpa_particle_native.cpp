@@ -79,6 +79,18 @@ constexpr u32 P_LOCALPOS = 0x20;          // JPABaseParticle.mLocalPosition (dir
 constexpr u32 P_VELOCITY = 0x38;          // JPABaseParticle.mVelocity      (dirType 0)
 constexpr u32 BS_DIRTYPE = 0x6A;          // JPABaseShape.mDirType (0=Vel 1=Pos 2=PosInv 3=EmtrDir 4=PrevPtcl)
 constexpr u32 BS_TYPE    = 0x69;          // JPABaseShape.mType (draw-exec selector)
+constexpr u32 BS_FLAGS   = 0x7C;          // JPABaseShape.mFlags (bit0 = stripe traversal reversed)
+constexpr u32 P_UNK34    = 0xA0 + 0x34;   // mDrawParams.unk34 (u16 rotation angle, JMASSin/Cos)
+// Stripe is an EMITTER-level visitor → it walks the WHOLE particle list (JSUList @ emitter+0xF4):
+constexpr u32 EM_LIST_TAIL  = 0xF8;       // JSUPtrList.mTail
+constexpr u32 EM_LIST_COUNT = 0xFC;       // JSUPtrList.mLinkCount (getNumLinks)
+constexpr u32 LINK_PREV  = 0x08;          // JSUPtrLink.mPrev (reverse traversal / dirTypePrevPtcl)
+constexpr u32 EM_DIR     = 0x210;         // JPABaseEmitter.mEmitterDirection (dirType 3)
+// JPADraw (this) emitter base colours (set in JPADraw::draw): mPrmColor @ +0xB8, mEnvColor @ +0xBC;
+// the stripe colour is EMITTER-level (RegisterColorEmitterPE), THRE'd vs cb.mPrmColor/mEnvColor.
+constexpr u32 D_UNK14    = 0x90 + 0x14;   // JPADrawContext.unk14 → JPADraw* (== this)
+constexpr u32 JD_EMPRM   = 0xB8;          // JPADraw.mPrmColor
+constexpr u32 JD_EMENV   = 0xBC;          // JPADraw.mEnvColor
 
 // JPADraw (this) layout (JPADraw.hpp): mDrawCtx @ +0x90 (JPADrawContext), then unkC0 @ +0xC0.
 // JPADrawContext fields: mBaseShape @ +0x04, mTexResource @ +0x1C.
@@ -226,6 +238,102 @@ SUNBRIGHT_OVERRIDE_IF_NATIVE(ov_jpa_drawparticle, 0x8032bd10u, s_ngx_present) {
     }
     tq.z_test = (u8)zt; tq.z_func = (u8)zf; tq.z_write = (u8)zw;
     tq.blend_mode = (u8)bm; tq.src_factor = (u8)bs; tq.dst_factor = (u8)bd;
+
+    // ── Stripe / StripeCross (t5/t6): the RIBBON path (the FLUDD water-jet) ────────────────────────
+    // JPADrawExecStripe/StripeCross are EMITTER-level visitors (run once over the whole particle list,
+    // not per particle): they connect ALL particles into one continuous textured ribbon. We emit one
+    // quad per consecutive-particle segment, reusing ngx_emit_particle_quad (all texture/TEV/blend
+    // machinery shared). The colour is EMITTER-level (RegisterColorEmitterPE): C0 = THRE(emitter.prm,
+    // cb.prm), C1 = THRE(emitter.env, cb.env) — NOT the per-particle prm/env of the billboard path.
+    if (shapeType == 5 || shapeType == 6) {
+        const u32 elems = mem_r32(emitter + EM_LIST_COUNT);
+        if (elems < 2) return;
+        const bool reverse = gvalid(baseShape) && (mem_r32(baseShape + BS_FLAGS) & 0x1u);
+        const float step = (reverse ? -1.f : 1.f) / (float)(elems - 1);
+
+        // Emitter-level TEV colours (RegisterColorEmitterPE). emitter base prm/env (JPADraw.mPrmColor/
+        // mEnvColor via unk14) THRE'd against the per-frame-animated cb.prm/env (epr.. / eer..).
+        const u32 unk14 = mem_r32(jpadraw + D_UNK14);
+        u32 emPrm = 0xffffffffu, emEnv = 0xffffffffu;
+        if (gvalid(unk14)) { emPrm = mem_r32(unk14 + JD_EMPRM); emEnv = mem_r32(unk14 + JD_EMENV); }
+        tq.c0[0]=(int16_t)thre((emPrm>>24)&0xff, epr); tq.c0[1]=(int16_t)thre((emPrm>>16)&0xff, epg);
+        tq.c0[2]=(int16_t)thre((emPrm>>8)&0xff, epb);  tq.c0[3]=(int16_t)thre(emPrm&0xff, epa);
+        tq.c1[0]=(int16_t)thre((emEnv>>24)&0xff, eer); tq.c1[1]=(int16_t)thre((emEnv>>16)&0xff, eeg);
+        tq.c1[2]=(int16_t)thre((emEnv>>8)&0xff, eeb);  tq.c1[3]=255;
+        if (s_jpa_show) { tq.c0[0]=255; tq.c0[1]=0; tq.c0[2]=255; tq.c0[3]=255; }
+
+        auto to_eye = [&](const float w[3], float e[3]) {
+            e[0]=m[0][0]*w[0]+m[0][1]*w[1]+m[0][2]*w[2]+m[0][3];
+            e[1]=m[1][0]*w[0]+m[1][1]*w[1]+m[1][2]*w[2]+m[1][3];
+            e[2]=m[2][0]*w[0]+m[2][1]*w[1]+m[2][2]*w[2]+m[2][3];
+        };
+        // mDirTypeFunc(particle): 0=velocity 1=localPos 2=-localPos 3=emitterDir 4=prev-ptcl→this.
+        auto dir_for = [&](u32 particle, float d[3]) {
+            switch (dirType) {
+                default:
+                case 0: d[0]=rf(particle+P_VELOCITY); d[1]=rf(particle+P_VELOCITY+4); d[2]=rf(particle+P_VELOCITY+8); break;
+                case 1: d[0]=rf(particle+P_LOCALPOS); d[1]=rf(particle+P_LOCALPOS+4); d[2]=rf(particle+P_LOCALPOS+8); break;
+                case 2: d[0]=-rf(particle+P_LOCALPOS); d[1]=-rf(particle+P_LOCALPOS+4); d[2]=-rf(particle+P_LOCALPOS+8); break;
+                case 3: d[0]=rf(emitter+EM_DIR); d[1]=rf(emitter+EM_DIR+4); d[2]=rf(emitter+EM_DIR+8); break;
+                case 4: { const u32 prev = mem_r32(particle + LINK_PREV);   // embedded link @ particle+0
+                          if (gvalid(prev)) { const u32 pp = mem_r32(prev + 0);
+                              if (gvalid(pp)) { d[0]=rf(pp+P_GLOBALX)-rf(particle+P_GLOBALX);
+                                                d[1]=rf(pp+P_GLOBALX+4)-rf(particle+P_GLOBALX+4);
+                                                d[2]=rf(pp+P_GLOBALX+8)-rf(particle+P_GLOBALX+8); break; } }
+                          d[0]=d[1]=d[2]=0.f; break; }   // no prev → (0,1,0) basis fallback
+            }
+        };
+
+        unsigned segs = 0;
+        // run one ribbon; fVar2 carries across both StripeCross ribbons (decomp does NOT reset it).
+        float fVar2;
+        auto run_ribbon = [&](bool cross2) {
+            const u32 start = reverse ? mem_r32(emitter + EM_LIST_TAIL) : mem_r32(emitter + EM_PARTICLE_LIST);
+            bool have_prev = false; float pL[3], pR[3], pv = 0.f;
+            u32 link = start;
+            for (int guard = 0; link >= 0x80000000u && guard < 100000; guard++) {
+                const u32 particle = mem_r32(link + 0);
+                if (particle < 0x80000000u) break;
+                const float ang = (float)(u16)(mem_r32(particle + P_UNK34) >> 16) * (6.28318530718f / 65536.f);
+                float sn, cs;
+                if (!cross2) { sn = sinf(ang);  cs = cosf(ang); }
+                else         { cs = cosf(ang);  sn = -sinf(ang); }       // StripeCross 2nd ribbon
+                const float width = cross2 ? rf(particle + P_SCALEY) : rf(particle + P_SCALEX);  // unk14 / unk10
+                float dir[3];
+                if (cross2) { dir[0]=rf(particle+P_VELOCITY); dir[1]=rf(particle+P_VELOCITY+4); dir[2]=rf(particle+P_VELOCITY+8); }
+                else dir_for(particle, dir);
+                const float axis[3] = {rf(particle+P_AXIS), rf(particle+P_AXIS+4), rf(particle+P_AXIS+8)};
+                const float pt0[3]  = {rf(particle+P_GLOBALX), rf(particle+P_GLOBALX+4), rf(particle+P_GLOBALX+8)};
+                float Lw[3], Rw[3];
+                ngx_jpa::jpa_stripe_corners(width, u4x, ucx, sn, cs, axis, dir, pt0, Lw, Rw);
+                float eL[3], eR[3]; to_eye(Lw, eL); to_eye(Rw, eR);
+                const float curv = fVar2;
+                if (have_prev) {   // segment quad [Li,Ri,Ri+1,Li+1] (= the strip's two tris)
+                    for (int k=0;k<3;k++){ tq.eye[0][k]=pL[k]; tq.eye[1][k]=pR[k]; tq.eye[2][k]=eR[k]; tq.eye[3][k]=eL[k]; }
+                    tq.uv[0][0]=0; tq.uv[0][1]=pv;  tq.uv[1][0]=1; tq.uv[1][1]=pv;
+                    tq.uv[2][0]=1; tq.uv[2][1]=curv; tq.uv[3][0]=0; tq.uv[3][1]=curv;
+                    ngx_emit_particle_quad(&tq);
+                    segs++;
+                }
+                for (int k=0;k<3;k++){ pL[k]=eL[k]; pR[k]=eR[k]; } pv = curv; have_prev = true;
+                fVar2 += step;
+                link = reverse ? mem_r32(link + LINK_PREV) : mem_r32(link + LINK_NEXT);
+            }
+        };
+        fVar2 = reverse ? 1.f : 0.f;
+        run_ribbon(false);
+        if (shapeType == 6) run_ribbon(true);   // StripeCross: 2nd perpendicular ribbon (fVar2 carries)
+
+        if (getenv("SUNBRIGHT_DBG_JPA")) {
+            static unsigned long n = 0;
+            if ((n++ % 120) == 0)
+                fprintf(stderr, "[jpa-stripe] em %#x type=%d dir=%d elems=%u segs=%u rev=%d tex=%#x %ux%u "
+                        "cc(a%d b%d c%d d%d) c0=(%d,%d,%d,%d)\n", emitter, shapeType, dirType, elems, segs,
+                        reverse, tq.tex_addr, tq.tex_w, tq.tex_h, ta, tb_, tc, td,
+                        tq.c0[0], tq.c0[1], tq.c0[2], tq.c0[3]);
+        }
+        return;
+    }
 
     unsigned drawn = 0, total = 0;
     float dbg_al = -1.f; int dbg_pa = -1;   // last particle's mAlpha + resolved A0 (DBG_JPA)

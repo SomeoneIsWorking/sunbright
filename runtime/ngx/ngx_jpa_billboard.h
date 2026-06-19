@@ -83,6 +83,45 @@ inline void jpa_dirbb_offsets(float sx, float sy, float u4x, float u4y, float uc
     for (int i=0;i<4;i++) { out[i][0]=ex*o[i][0]-ey*o[i][1]; out[i][1]=ex*o[i][1]+ey*o[i][0]; }
 }
 
+// ── JPA stripe/ribbon edge math (JPADrawExecStripe / StripeCross, JPADrawVisitor.cpp L1117/L1193) ──
+// A stripe is an EMITTER-level visitor: it connects ALL the emitter's particles into one continuous
+// ribbon (a GX_TRIANGLESTRIP, not per-particle quads). For each particle it computes TWO edge points
+// (the left/right rails of the ribbon at that particle) and connects consecutive particles into
+// segment quads. The two rails come from the particle's width (params.unk10), rotation (params.unk34
+// → sin/cos), and the orientation basis built from the particle's stored axis (params.unk0, settled)
+// and a direction vector (velocity / local-pos / …, per mDirType). The basis is the SAME Gram-Schmidt
+// as the directional billboard but the column ORDER differs: here M = [axis | side | dir] (the decomp
+// rows u1=(unk0.x,side.x,dir.x) etc → those are M's ROWS, so the columns are axis,side,dir). The two
+// rail offsets are v1=(x·sin, x·cos, 0) and v2=(y·sin, y·cos, 0) with x=−w(u4x+ucx), y=+w(u4x−ucx);
+// each rail = pt0 + M·v. Extracted so the override + render_test (jpa_stripe) share the function.
+inline void jpa_stripe_basis(const float axis_in[3], const float dir_in[3], float M[3][3]) {
+    float bc[3] = {dir_in[0], dir_in[1], dir_in[2]};
+    if (!norm3(bc)) { bc[0]=0; bc[1]=1; bc[2]=0; }          // local_BC.isZero() → (0,1,0)
+    float side[3]; cross3(axis_in, bc, side);               // f29 = unk0 × local_BC
+    if (!norm3(side)) { side[0]=0; side[1]=1; side[2]=0; }
+    float axis[3]; cross3(bc, side, axis); norm3(axis);     // unk0 = local_BC × f29 (re-derive; settled)
+    M[0][0]=axis[0]; M[0][1]=side[0]; M[0][2]=bc[0];        // cols: [axis | side | dir]
+    M[1][0]=axis[1]; M[1][1]=side[1]; M[1][2]=bc[1];
+    M[2][0]=axis[2]; M[2][1]=side[2]; M[2][2]=bc[2];
+}
+// Compute one particle's two ribbon rail points (world space). width = params.unk10 (primary ribbon)
+// or params.unk14 (StripeCross's perpendicular 2nd ribbon). sinA/cosA = JMASSin/Cos(unk34) (the 2nd
+// cross ribbon passes sin=-JMASSin, cos=JMASCos). axis_in = params.unk0 (read-only, settled). dir_in
+// = the (un-normalized) direction vector; normalized here with the game's zero→(0,1,0) fallback.
+inline void jpa_stripe_corners(float width, float u4x, float ucx, float sinA, float cosA,
+                               const float axis_in[3], const float dir_in[3], const float pt0[3],
+                               float left[3], float right[3]) {
+    float M[3][3]; jpa_stripe_basis(axis_in, dir_in, M);
+    const float x = -width * (u4x + ucx);
+    const float y = +width * (u4x - ucx);
+    const float v1[3] = {x*sinA, x*cosA, 0.f};
+    const float v2[3] = {y*sinA, y*cosA, 0.f};
+    for (int r = 0; r < 3; r++) {
+        left[r]  = pt0[r] + M[r][0]*v1[0] + M[r][1]*v1[1] + M[r][2]*v1[2];
+        right[r] = pt0[r] + M[r][0]*v2[0] + M[r][1]*v2[1] + M[r][2]*v2[2];
+    }
+}
+
 // ── JPA TEV combiner encoding (JPADrawSetupTev::setupTev, JPADrawSetupTev.cpp:13-19) ─────
 // The single-stage particle combiner. The COLOUR inputs (a,b,c,d) are the GX_CC_* selectors
 // the loader baked from JPABaseShape data[0x30] (the "colour input type"); the four cases:
