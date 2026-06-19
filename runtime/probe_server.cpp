@@ -116,6 +116,7 @@ extern "C" void sb_ngx_skipset_add(int);                     // runtime/render/n
 int sb_ngx_render(char*, int);                               // runtime/render/vk_mesh.cpp
 int sb_ngx_present_test(char*, int);                         // runtime/render/vk_mesh.cpp
 extern "C" void sb_ngx_present_stats(unsigned long*, unsigned long*, unsigned long*, int*, int*, int*, unsigned long*);  // ngx_present.cpp
+extern "C" unsigned long sb_ngx_mip_textures();  // ngx_present.cpp — count of authored-mip textures decoded
 extern "C" void  sb_ngx_interp_stats(unsigned long*, unsigned long*);  // ngx_present.cpp — interp60 cadence
 extern "C" int   sb_ngx_interp60_enabled();                            // ngx_j3d_shape.cpp
 extern "C" float sb_ngx_interp_alpha();                                // ngx_j3d_shape.cpp
@@ -499,8 +500,8 @@ std::string handle_repl(const char* path) {
     if (strncmp(path, "/ngxpresentlive", 15) == 0) {  // N7 live present: renderer stats (SUNBRIGHT_NGX_PRESENT)
         unsigned long fr = 0, pi = 0, tx = 0, jq = 0; int w = 0, h = 0, ok = 0;
         sb_ngx_present_stats(&fr, &pi, &tx, &w, &h, &ok, &jq);
-        app("ngx_present_live: init_ok=%d frames=%lu pipelines_built=%lu textures_decoded=%lu target=%dx%d hud_quads=%lu\n",
-            ok, fr, pi, tx, w, h, jq);
+        app("ngx_present_live: init_ok=%d frames=%lu pipelines_built=%lu textures_decoded=%lu mip_textures=%lu target=%dx%d hud_quads=%lu\n",
+            ok, fr, pi, tx, sb_ngx_mip_textures(), w, h, jq);
         return std::string(buf, n);
     }
     if (strncmp(path, "/interp60", 9) == 0) {  // PC-native interp60 cadence: presents + in-between blends

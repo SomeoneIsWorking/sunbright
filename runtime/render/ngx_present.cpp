@@ -142,8 +142,9 @@ struct PresentRenderer {
 
     struct PipeEntry { VkShaderModule mod; VkPipeline pipe; };
     std::unordered_map<uint64_t, PipeEntry> pipes;        // NgxTevState.key → shader+pipeline
-    struct TexEntry { VkImage img; VkDeviceMemory mem; VkImageView view; uint32_t addr; };
+    struct TexEntry { VkImage img; VkDeviceMemory mem; VkImageView view; uint32_t addr; VkSampler sampler; };
     std::unordered_map<uint64_t, TexEntry> texcache;      // tex key → GPU image
+    std::unordered_map<uint32_t, VkSampler> samp_cache;   // GX sampler-state key → VkSampler (per-texture wrap/filter)
     VkImageView white_view = VK_NULL_HANDLE;              // 1×1 white fallback (texmap unused)
     VkImage white_img = VK_NULL_HANDLE; VkDeviceMemory white_mem = VK_NULL_HANDLE;
 
@@ -174,6 +175,7 @@ struct PresentRenderer {
     struct PollPC { float mvp[16]; float color[4]; };
 
     unsigned long g_frames = 0, g_pipe_builds = 0, g_tex_decodes = 0, g_j2d_quads = 0;
+    unsigned long g_mip_textures = 0;   // textures decoded WITH authored mip levels (mip_count>1)
     int dbg_mode_built = -2;    // tev-debug mode the cached pipelines were built for; mismatch → rebuild
     int pipe_epoch_built = 0;   // /ngxnoblend (etc.) epoch the cached pipelines were built for
 
@@ -195,8 +197,10 @@ struct PresentRenderer {
     bool ensure_dpool(uint32_t nsets);
     bool ensure_j2d_dpool(uint32_t nsets);
     VkPipeline pipeline_for(const NgxTevState& st);
+    VkSampler sampler_for(const NgxTexBind& t);   // per-texture sampler from GX wrap/filter/mip state
     VkImageView texture_for(const NgxTexBind& t, VkCommandBuffer up_cmd,
-                            std::vector<VkBuffer>& stg_bufs, std::vector<VkDeviceMemory>& stg_mems);
+                            std::vector<VkBuffer>& stg_bufs, std::vector<VkDeviceMemory>& stg_mems,
+                            VkSampler& out_samp);
     void prepare_j2d(VkCommandBuffer up_cmd, std::vector<VkBuffer>& stg_bufs,
                      std::vector<VkDeviceMemory>& stg_mems, std::vector<J2dDraw>& out);
     AbstractTexture* render(int w, int h);
@@ -730,43 +734,72 @@ VkPipeline PresentRenderer::pipeline_for(const NgxTevState& st) {
 // Decode + cache a texture; on a cache miss, decode into a transient staging buffer
 // (recorded into up_cmd, freed after the frame's fence). Returns the white view if
 // the binding is empty/unsupported.
+// One VkSampler per distinct GX sampler state (wrap mode + texel/mip filter), cached.
+// The 3D draw path previously bound ONE global REPEAT+LINEAR sampler for every texture,
+// ignoring the per-texture wrap_s/wrap_t/min_filter/mag_filter NgxTexBind captures — so a
+// CLAMP texture wrapped its edge garbage and a NEAREST texture got smoothed. Mirrors the
+// mapping already used by the /ngxrender selftest (vk_mesh.cpp), with mip handling added.
+VkSampler PresentRenderer::sampler_for(const NgxTexBind& t) {
+    // GX wrap: 0=CLAMP→CLAMP_TO_EDGE, 1=REPEAT, 2=MIRROR→MIRRORED_REPEAT.
+    // GXTexFilter min: 0 NEAR, 1 LINEAR, 2 NEAR_MIP_NEAR, 3 LIN_MIP_NEAR, 4 NEAR_MIP_LIN,
+    //   5 LIN_MIP_LIN. The texel filter is the LSB (even=NEAREST, odd=LINEAR); the mip mode
+    //   is LINEAR for the *_MIP_LIN variants (≥4), else NEAREST. mag: 0 NEAR, 1 LINEAR.
+    // mip_count already encodes "how many authored levels to honour" (capture set it to 1
+    // unless the min filter is a mip variant AND the TIMG stores >1 level), so has_mips ⇔
+    // mip_count>1 and maxLod = mip_count-1 (clamp sampling to the authored levels).
+    const bool has_mips = t.mip_count > 1;
+    const uint32_t key = (uint32_t)t.wrap_s | ((uint32_t)t.wrap_t << 2) |
+                         ((uint32_t)t.min_filter << 4) | ((uint32_t)t.mag_filter << 8) |
+                         ((uint32_t)t.mip_count << 12);
+    auto it = samp_cache.find(key);
+    if (it != samp_cache.end()) return it->second;
+    auto gx_wrap = [](uint8_t w) {
+        return w == 1 ? VK_SAMPLER_ADDRESS_MODE_REPEAT
+             : w == 2 ? VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT
+                      : VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;   // 0 = CLAMP
+    };
+    VkSamplerCreateInfo sci{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+    sci.magFilter = t.mag_filter == 0 ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
+    sci.minFilter = (t.min_filter & 1) ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
+    sci.mipmapMode = t.min_filter >= 4 ? VK_SAMPLER_MIPMAP_MODE_LINEAR : VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    sci.addressModeU = gx_wrap(t.wrap_s);
+    sci.addressModeV = gx_wrap(t.wrap_t);
+    sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sci.minLod = 0.f;
+    sci.maxLod = has_mips ? (float)(t.mip_count - 1) : 0.f;   // sample only the authored levels
+    VkSampler s = VK_NULL_HANDLE;
+    if (vkCreateSampler(dev, &sci, nullptr, &s)) return sampler;   // fall back to the global sampler
+    samp_cache[key] = s;
+    return s;
+}
+
 VkImageView PresentRenderer::texture_for(const NgxTexBind& t, VkCommandBuffer up_cmd,
-                                         std::vector<VkBuffer>& stg_bufs, std::vector<VkDeviceMemory>& stg_mems) {
+                                         std::vector<VkBuffer>& stg_bufs, std::vector<VkDeviceMemory>& stg_mems,
+                                         VkSampler& out_samp) {
+    out_samp = sampler;   // default (global REPEAT/LINEAR) for the white fallback / early returns
     if (t.addr == 0 || t.w == 0 || t.h == 0) return white_view;
     // GC textures tile at the FORMAT's block dims and the decode uses width as both the
     // tile-iteration bound and the dst row stride — so it must run on the block-padded
     // size (a fixed 8 over-strides the 4-wide formats → diagonal shear; the title-logo
     // RGB5A3 w=460 bug). Pad here so every caller (3D batches + J2D quads) is correct.
     const int pw = sb_tex_pad_w(t.w, t.fmt), ph = sb_tex_pad_h(t.h, t.fmt);
+    // mip_count is part of the key: the cached image's uploaded mip-level count depends on it,
+    // so a texture decoded by the J2D path (mip_count=0 → 1 level) must NOT be reused by a 3D
+    // mip-sampled draw of the same address (which needs the authored levels) and vice-versa.
     const uint64_t key = ((uint64_t)t.addr << 16) ^ ((uint64_t)t.fmt << 56) ^
-                         ((uint64_t)t.w << 40) ^ ((uint64_t)t.h << 28) ^ ((uint64_t)t.tlut_addr << 4);
-    auto it = texcache.find(key);
-    if (it != texcache.end()) return it->second.view;
+                         ((uint64_t)t.w << 40) ^ ((uint64_t)t.h << 28) ^ ((uint64_t)t.tlut_addr << 4) ^
+                         ((uint64_t)t.mip_count << 1);
+    auto cit = texcache.find(key);
+    if (cit != texcache.end()) { out_samp = cit->second.sampler; return cit->second.view; }
 
     const uint8_t* host = sb_ram_fast(t.addr);
     if (!host) return white_view;
-    const int srcbytes = sb_tex_size_bytes(pw, ph, t.fmt);
-    if (srcbytes <= 0 || (t.addr & 0x01FFFFFFu) + (uint32_t)srcbytes > 0x1800000u) return white_view;
     const uint8_t* tlut = nullptr;
     if (t.fmt == SB_TF_C4 || t.fmt == SB_TF_C8 || t.fmt == SB_TF_C14X2) {
         const uint32_t entries = t.fmt == SB_TF_C4 ? 16u : t.fmt == SB_TF_C8 ? 256u : 16384u;
         if (t.tlut_addr && (t.tlut_addr & 0x01FFFFFFu) + entries * 2u <= 0x1800000u) tlut = sb_ram_fast(t.tlut_addr);
         if (!tlut) return white_view;
     }
-    const size_t rgba = (size_t)pw * ph * 4;
-    VkBuffer sbuf; VkDeviceMemory smem;
-    if (!make_buffer(dev, phys, sbuf, smem, rgba, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) return white_view;
-    void* p = nullptr; vkMapMemory(dev, smem, 0, rgba, 0, &p);
-    sb_tex_decode((uint32_t*)p, host, pw, ph, t.fmt, tlut, t.tlut_fmt);
-    vkUnmapMemory(dev, smem);
-    stg_bufs.push_back(sbuf); stg_mems.push_back(smem);
-
-    // Mip chain: GameCube samples a texture's mips; a heavily-tiled/minified surface (e.g. the
-    // plaza floor) averages to a darker value, while a single mip0 + bilinear ALIASES toward the
-    // bright tile faces → washed-out. Generate a box-filtered mip chain (vkCmdBlitImage, linear)
-    // and sample it trilinearly. (GC TIMGs can store mips; box-generated mips approximate them and
-    // fix the aliasing — the dominant cause of the ngx 3D wash.)
     // The image is the LOGICAL size (t.w×t.h), NOT the block-padded decode size (pw×ph):
     // GC textures tile at the format's block, so a non-block-multiple texture (e.g. a 20×20
     // IA4 window-border corner → padded 24×20) has GARBAGE in the padding columns/rows. If
@@ -775,11 +808,29 @@ VkImageView PresentRenderer::texture_for(const NgxTexBind& t, VkCommandBuffer up
     // white frame instead of blue. Uploading only the w×h region (with bufferRowLength=pw as
     // the decode stride) makes [0,1] map to the real texels. (UV analog of the title-logo
     // block-padding fix; without it every non-block-multiple texture leaks padding at u/v≈1.)
+    //
+    // Authored mipmaps: a GC TIMG stores its mip levels consecutively after level 0 (level k
+    // at max(1,w>>k)×max(1,h>>k), tiled/block-padded). SMS AUTHORS its high-mip levels (the
+    // distant plaza floor's are darker than level 0), so a minified surface must sample those
+    // authored levels — box-generating mips from level 0 cannot reproduce them. We decode each
+    // authored level natively and upload it to the matching VK mip. (Honoured only when the
+    // material's GX min filter is a mip variant: capture set mip_count>1 exactly then.)
     const int iw = (int)t.w, ih = (int)t.h;
-    uint32_t mips = 1; { int m = iw > ih ? iw : ih; while (m > 1) { m >>= 1; mips++; } }
-    TexEntry te{}; te.addr = t.addr;
+    const uint32_t mips = t.mip_count >= 1 ? t.mip_count : 1;
+    // Bounds-check the full mip pyramid's source extent before touching guest RAM.
+    {
+        uint32_t total = 0;
+        for (uint32_t k = 0; k < mips; k++) {
+            const int lw = iw >> k > 1 ? iw >> k : 1, lh = ih >> k > 1 ? ih >> k : 1;
+            const int sz = sb_tex_size_bytes(sb_tex_pad_w(lw, t.fmt), sb_tex_pad_h(lh, t.fmt), t.fmt);
+            if (sz <= 0) return white_view;
+            total += (uint32_t)sz;
+        }
+        if ((t.addr & 0x01FFFFFFu) + total > 0x1800000u) return white_view;
+    }
+    TexEntry te{}; te.addr = t.addr; te.sampler = sampler_for(t);
     if (!make_dev_image(dev, phys, te.img, te.mem, te.view, VK_FORMAT_R8G8B8A8_UNORM, iw, ih,
-        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
         VK_IMAGE_ASPECT_COLOR_BIT, mips)) return white_view;
     auto bar = [&](uint32_t lvl, VkImageLayout f, VkImageLayout to, VkAccessFlags sa, VkAccessFlags da, VkPipelineStageFlags ssf, VkPipelineStageFlags dsf) {
         VkImageMemoryBarrier mb{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER}; mb.oldLayout = f; mb.newLayout = to;
@@ -787,37 +838,32 @@ VkImageView PresentRenderer::texture_for(const NgxTexBind& t, VkCommandBuffer up
         mb.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, lvl, 1, 0, 1}; mb.srcAccessMask = sa; mb.dstAccessMask = da;
         vkCmdPipelineBarrier(up_cmd, ssf, dsf, 0, 0, nullptr, 0, nullptr, 1, &mb);
     };
-    // Upload mip0.
-    bar(0, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
-        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
-    // Copy only the logical w×h region; bufferRowLength=pw keeps the decode's padded stride.
-    VkBufferImageCopy c{}; c.bufferRowLength = (uint32_t)pw; c.bufferImageHeight = (uint32_t)ph;
-    c.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}; c.imageExtent = {(uint32_t)iw, (uint32_t)ih, 1};
-    vkCmdCopyBufferToImage(up_cmd, sbuf, te.img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
-    // Generate mips by successive linear blits (i-1 → i), box-filtering down the chain.
-    int mw = iw, mh = ih;
-    for (uint32_t i = 1; i < mips; i++) {
-        bar(i - 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
-        bar(i, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
+    uint32_t srcoff = 0;
+    for (uint32_t k = 0; k < mips; k++) {
+        const int lw = iw >> k > 1 ? iw >> k : 1, lh = ih >> k > 1 ? ih >> k : 1;
+        const int pwk = sb_tex_pad_w(lw, t.fmt), phk = sb_tex_pad_h(lh, t.fmt);
+        const size_t rgba = (size_t)pwk * phk * 4;
+        VkBuffer sbuf; VkDeviceMemory smem;
+        if (!make_buffer(dev, phys, sbuf, smem, rgba, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) return white_view;
+        void* p = nullptr; vkMapMemory(dev, smem, 0, rgba, 0, &p);
+        sb_tex_decode((uint32_t*)p, host + srcoff, pwk, phk, t.fmt, tlut, t.tlut_fmt);
+        vkUnmapMemory(dev, smem);
+        stg_bufs.push_back(sbuf); stg_mems.push_back(smem);
+        srcoff += (uint32_t)sb_tex_size_bytes(pwk, phk, t.fmt);
+
+        bar(k, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
             VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
-        int nw = mw > 1 ? mw >> 1 : 1, nh = mh > 1 ? mh >> 1 : 1;
-        VkImageBlit blit{};
-        blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, i - 1, 0, 1};
-        blit.srcOffsets[1] = {mw, mh, 1};
-        blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, i, 0, 1};
-        blit.dstOffsets[1] = {nw, nh, 1};
-        vkCmdBlitImage(up_cmd, te.img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, te.img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                       1, &blit, VK_FILTER_LINEAR);
-        // The just-blitted source level (i-1) is now done → SHADER_READ.
-        bar(i - 1, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
-        mw = nw; mh = nh;
+        // Copy only the logical lw×lh region; bufferRowLength=pwk keeps the decode's padded stride.
+        VkBufferImageCopy c{}; c.bufferRowLength = (uint32_t)pwk; c.bufferImageHeight = (uint32_t)phk;
+        c.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, k, 0, 1}; c.imageExtent = {(uint32_t)lw, (uint32_t)lh, 1};
+        vkCmdCopyBufferToImage(up_cmd, sbuf, te.img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
+        bar(k, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
     }
-    // Final (smallest) level is in TRANSFER_DST → SHADER_READ.
-    bar(mips - 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-        VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
     texcache[key] = te; g_tex_decodes++;
+    if (mips > 1) g_mip_textures++;
+    out_samp = te.sampler;
     return te.view;
 }
 
@@ -858,7 +904,8 @@ void PresentRenderer::prepare_j2d(VkCommandBuffer up_cmd, std::vector<VkBuffer>&
         NgxTexBind tb{};
         tb.addr = q.data; tb.w = (uint16_t)q.w; tb.h = (uint16_t)q.h;
         tb.fmt = (uint8_t)q.fmt; tb.tlut_addr = 0; tb.tlut_fmt = 0;
-        VkImageView view = texture_for(tb, up_cmd, stg_bufs, stg_mems);
+        VkSampler unused_samp = j2d_sampler;   // HUD quads always use the dedicated clamp sampler
+        VkImageView view = texture_for(tb, up_cmd, stg_bufs, stg_mems, unused_samp);
         if (view == VK_NULL_HANDLE) continue;
 
         VkDescriptorSetAllocateInfo dai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
@@ -990,8 +1037,9 @@ AbstractTexture* PresentRenderer::render(int w, int h) {
     // Per-batch descriptor sets (8 texmaps each) — resolved/uploaded as needed.
     std::vector<VkDescriptorSet> bset(batches.size(), VK_NULL_HANDLE);
     std::vector<VkImageView> bviews(batches.size() * 8, white_view);
+    std::vector<VkSampler> bsamplers(batches.size() * 8, sampler);   // per-texture GX sampler state
     for (size_t b = 0; b < batches.size(); b++)
-        for (int m = 0; m < 8; m++) bviews[b * 8 + m] = texture_for(batches[b].tex[m], cmd, stg_bufs, stg_mems);
+        for (int m = 0; m < 8; m++) bviews[b * 8 + m] = texture_for(batches[b].tex[m], cmd, stg_bufs, stg_mems, bsamplers[b * 8 + m]);
 
     // DBG: identify the screenspace EFB-readback CONSUMER — which batch samples an EFB-copy texture,
     // and its screen extent (full-screen quad?) + TEV index. Names the effect that consumes GXCopyTex.
@@ -1022,7 +1070,7 @@ AbstractTexture* PresentRenderer::render(int w, int h) {
         dai.descriptorPool = dpool; dai.descriptorSetCount = 1; dai.pSetLayouts = &dsl;
         if (vkAllocateDescriptorSets(dev, &dai, &bset[b])) return nullptr;
         VkDescriptorImageInfo dii[8];
-        for (int m = 0; m < 8; m++) dii[m] = {sampler, bviews[b * 8 + m], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        for (int m = 0; m < 8; m++) dii[m] = {bsamplers[b * 8 + m], bviews[b * 8 + m], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         VkWriteDescriptorSet wr{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
         wr.dstSet = bset[b]; wr.dstBinding = 0; wr.descriptorCount = 8;
         wr.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; wr.pImageInfo = dii;
@@ -1376,10 +1424,14 @@ extern "C" void sb_ngx_present_stats(unsigned long* frames, unsigned long* pipes
     *frames = g_pr.g_frames; *pipes = g_pr.g_pipe_builds; *texes = g_pr.g_tex_decodes;
     *w = g_pr.tw; *h = g_pr.th; *ok = g_pr.init_ok ? 1 : 0; *j2d_quads = g_pr.g_j2d_quads;
 }
+// Count of decoded textures that carried authored mip levels (mip_count>1) — confirms the
+// authored-mip upload path is exercised in a scene (vs dead code).
+extern "C" unsigned long sb_ngx_mip_textures() { return g_pr.g_mip_textures; }
 
 #else
 extern "C" const void* sb_ngx_present_xfb(int, int) { return nullptr; }
 extern "C" void sb_ngx_present_stats(unsigned long* f, unsigned long* p, unsigned long* t, int* w, int* h, int* ok, unsigned long* j2d) {
     *f = *p = *t = 0; *w = *h = 0; *ok = 0; *j2d = 0;
 }
+extern "C" unsigned long sb_ngx_mip_textures() { return 0; }
 #endif
