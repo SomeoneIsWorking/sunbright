@@ -460,3 +460,45 @@ texcoords are already in cb.mTexCoords (set per shape). Then re-verify spray_fwd
 - 3-way: capture ngx (NGX_PRESENT=1), ngx NO_JPA (baseline), GX (NGX_PRESENT=0) all via /loadstate of
   the same save; diff WITH vs WITHOUT (particle px) and each vs GX (should move toward GX).
 - /ngxpresentlive reports ngx_particles: emitted_quads/tris + last_ti.
+
+## UPDATE (2026-06-19 latest+2) — ★★★ DATA-VERIFIED: t7/t8 Rotation are DEAD CODE in SMS (quest closed)
+
+The previous handoff asked the next session to "reach a scene that uses t7/t8 (Rotation), verify it
+appears, then port the Rotation family." Instead of an open-ended scene hunt (which had already failed
+across ~30 stage indices/scenarios), I closed the question from DATA with a new verify-first tool:
+
+**`tools/render/jpa_shapetype_census.py`** decodes the global `/data/particle.szs` (Yaz0→RARC, 268
+emitters) AND all 108 `/data/scene/*.szs` archives, finds every `BSP1` block, and counts the shapeType
+byte (`mType = data[0x24]` from the 'BSP1' magic — JPABaseShape.cpp:102). Run:
+`python3 tools/render/jpa_shapetype_census.py <rom.rvz>` (or `--dir scratch/scenes` on an extracted tree;
+extract with `sunbright-jingle <rom> --extract /data/scene/ <dir>`).
+
+**GAME-WIDE census (particle.szs + all 108 scenes):**
+```
+  t0  Point          : 8       t5  Stripe         : 17
+  t1  Line           : 8       t6  StripeCross    : 66
+  t2  BillBoard      : 935     t7  Rotation       : 0   <-- ZERO, game-wide
+  t3  Direction      : 679     t8  RotationCross  : 0   <-- ZERO, game-wide
+  t4  DirectionCross : 63      t9  DirBillBoard   : 154
+                               t10 YBillBoard     : 11
+```
+
+### Consequences (do NOT re-chase Rotation)
+- **t7 Rotation / t8 RotationCross occur ZERO times anywhere in the shipped game.** They are dead code in
+  the SMS JPADrawVisitor dispatch. No reachable OR unreachable scene uses them — there is nothing to
+  reach, and porting them would be unverifiable dead code. The multi-session "Rotation" frontier is
+  CLOSED by data. Candidates the handoff suggested (Corona lava, Pianta fire, Pinna fireworks, bosses)
+  were all chasing a type that does not exist in the data — abandoned correctly.
+- **t4 DirectionCross (63 emitters) DOES exist and is still UNPORTED** — and crucially it is present in
+  `dolpic5.szs` (the DEFAULT Delfino Plaza, t4=2) plus mamma/mare/ricco/pinnaBeach/pinnaParco6/bosses.
+  But it does NOT actively draw at fastboot or in general plaza play (the earlier sweep saw t2/t3/t5/t6/t9
+  only). So t4 is present-in-archive but OBJECT/EVENT-gated: porting it needs a way to make a t4 emitter
+  fire + DBG_JPA confirm it (verify-first). Same gameplay-automation gap as before, now for a type that
+  is real (not a phantom) — 63 emitters across many levels, worth doing once triggering tooling exists.
+- t0 Point (pinnaParco only) and t1 Line (mamma only) are rare and also event/scene-specific.
+
+### Bounded-hunt verdict + pivot
+Per the handoff's own ALTERNATIVE clause: the Rotation hunt is now a PROVEN dead end (data, not just a
+failed sweep). Pivoting to the OTHER ngx gap the prior session flagged: **non-plaza levels render large
+WHITE BLOBS under ngx (Bianco etc.), present with AND without particles** = a non-particle wash/texture/
+sky gap (ngx's first time rendering a level). Verifying that observation myself next, then diagnosing.
