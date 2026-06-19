@@ -405,7 +405,7 @@ struct UvDbg { bool have=false; float tex0[2]={0},tex1[2]={0},uv0[2]={0},uv1[2]=
 UvDbg g_uvdbg, g_uvdbg_pub;
 // Per-vertex dump for the gxstate target ti (NDC x,y + RASA alpha + tc0/tc1 UV). Pins whether
 // the additive cloud's coverage is gated by geometry (NDC spread), per-vertex alpha, or noise UV.
-struct VtxRec { float ndcx, ndcy, a, u0, v0, u1, v1; float ex, ey, ez, cw; float cx, cy, cz; };
+struct VtxRec { float ndcx, ndcy, a, u0, v0, u1, v1; float ex, ey, ez, cw; float cx, cy, cz; float lr, lg, lb; };
 std::vector<VtxRec> g_vtxdump, g_vtxdump_pub;
 unsigned char g_vtxdump_projtype = 0, g_vtxdump_projtype_pub = 0;   // 0=persp 1+=ortho (g_proj_type at the shape)
 float g_vtxdump_mv[12] = {0}, g_vtxdump_mv_pub[12] = {0};           // the shape's modelview
@@ -1794,7 +1794,8 @@ void transform_eye() {
                 const float* uvp = &g_uvs[vi * 16];
                 g_vtxdump.push_back({cw>1e-6f?cx/cw:0.f, cw>1e-6f?cy/cw:0.f,
                                      g_litrgba[vi*4+3], uvp[0], uvp[1], uvp[2], uvp[3],
-                                     ex, ey, ez, cw, cx, cy, cz});
+                                     ex, ey, ez, cw, cx, cy, cz,
+                                     g_litrgba[vi*4+0], g_litrgba[vi*4+1], g_litrgba[vi*4+2]});
             }
         }
     }
@@ -2303,15 +2304,21 @@ extern "C" int sb_ngx_verts_dump(char* out, int cap) {
                      g_gxstate_ti.load(), V.size(), g_vtxdump_projtype_pub,
                      M[0],M[1],M[2],M[3], M[4],M[5],M[6],M[7], M[8],M[9],M[10],M[11]);
     float nxmin=1e9f,nxmax=-1e9f,nymin=1e9f,nymax=-1e9f,amin=1e9f,amax=-1e9f; double asum=0;
+    float wmin=1e30f,wmax=-1e30f; float crmin=1e9f,crmax=-1e9f,cgmin=1e9f,cgmax=-1e9f,cbmin=1e9f,cbmax=-1e9f;
     for (auto& r : V) { nxmin=std::min(nxmin,r.ndcx); nxmax=std::max(nxmax,r.ndcx);
         nymin=std::min(nymin,r.ndcy); nymax=std::max(nymax,r.ndcy);
-        amin=std::min(amin,r.a); amax=std::max(amax,r.a); asum+=r.a; }
+        amin=std::min(amin,r.a); amax=std::max(amax,r.a); asum+=r.a;
+        wmin=std::min(wmin,r.cw); wmax=std::max(wmax,r.cw);
+        crmin=std::min(crmin,r.lr); crmax=std::max(crmax,r.lr); cgmin=std::min(cgmin,r.lg); cgmax=std::max(cgmax,r.lg);
+        cbmin=std::min(cbmin,r.lb); cbmax=std::max(cbmax,r.lb); }
     if (!V.empty()) w += snprintf(out+w, cap-w,
-        "  NDC bbox x[%.3f,%.3f] y[%.3f,%.3f]  alpha[%.3f,%.3f] mean=%.3f\n",
-        nxmin,nxmax,nymin,nymax,amin,amax,asum/V.size());
-    for (size_t i=0;i<V.size() && w<cap-100;i++){ const auto& r=V[i];
-        w += snprintf(out+w, cap-w, "  v%-3zu clip=(%.2f,%.2f,%.2f,%.2f) a=%.4f uv0=(%+.4f,%+.4f) uv1=(%+.4f,%+.4f)\n",
-                      i, r.cx, r.cy, r.cz, r.cw, r.a, r.u0, r.v0, r.u1, r.v1); }
+        "  NDC bbox x[%.3f,%.3f] y[%.3f,%.3f]  clip.w[%.1f,%.1f] alpha[%.3f,%.3f] mean=%.3f\n"
+        "  COLOR0 range R[%.0f,%.0f] G[%.0f,%.0f] B[%.0f,%.0f] (0..255, the per-vertex raster ngx feeds the GPU)\n",
+        nxmin,nxmax,nymin,nymax,wmin,wmax,amin,amax,asum/V.size(),
+        crmin*255,crmax*255,cgmin*255,cgmax*255,cbmin*255,cbmax*255);
+    for (size_t i=0;i<V.size() && w<cap-120;i++){ const auto& r=V[i];
+        w += snprintf(out+w, cap-w, "  v%-3zu clip=(%.1f,%.1f,%.1f,%.1f) ndc=(%+.3f,%+.3f) rgb=(%.0f,%.0f,%.0f) a=%.3f uv0=(%+.3f,%+.3f)\n",
+                      i, r.cx, r.cy, r.cz, r.cw, r.ndcx, r.ndcy, r.lr*255, r.lg*255, r.lb*255, r.a, r.u0, r.v0); }
     return w;
 }
 extern "C" int sb_ngx_shapeti_dump(char* out, int cap) {

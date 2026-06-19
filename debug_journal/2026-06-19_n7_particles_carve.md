@@ -702,3 +702,32 @@ GX-side /ngxdrawlimit is dead under no-recomp). Build a per-vertex clip-space du
 reconcile with the GX-faithful J3D object transform; then check whether ngx's projection gives the
 ti=9 plane the same w-profile GX uses. This is where the wash root lives. (Method demonstrated end to
 end this session: oracle delta → prefix-bisect → per-pixel/per-layer → falsify hypotheses → root.)
+
+## UPDATE (2026-06-19 latest+9) — BUG 2 = multi-layer haze compositing; sky base FAITHFUL; tool: /ngxverts rgb
+Built per-vertex COLOR+clip dump (/ngxverts now prints rgb + clip.w range + color range; gxstate?sh= targets).
+Used it + GPU-side layer isolation (reliable, unlike the CPU pixblend which does AFFINE interp and disagrees
+with the GPU on color/coverage/additive-buildup — do NOT trust pixblend's FINAL).
+
+DEFINITIVE (time-averaged fs_oracle = 21.0%, animation-canceled, so the wash is REAL static, not cloud drift):
+- **Sky/sea BASE plane (ti=9) is FAITHFUL**: /ngxverts shows a proper 2-row gradient ((151,192,255) near
+  horizon -> (3,128,220) higher, R->0 at top), correct decoded colors, sane clip (far plane, w 44k-91k).
+  The GPU renders it via perspective-correct interp (the CPU pixblend's affine interp is what made it look
+  "0.6x wrong" — that was a TOOL artifact, not a bug).
+- **SAND is pixel-EXACT** (239,216,189). The wash spares near-white, hits mid-tones -> NOT gamma
+  (copyGamma=1.0, falsified) and NOT a global multiply.
+- **The wash is the multi-layer HAZE/CLOUD compositing.** GPU-side /ngxskip (reliable):
+  - skip ti=10 -> SEA brightens (42,30,8)->(64,127,151)~GX: ti=10 (opaque foliage/palm) OVER-COVERS/over-darkens the sea-left.
+  - skip ti=7 -> SKY darkens: ti=7 is a brightening haze layer (ngx draws it, but net sky is GREY: R too
+    high 111 vs GX 43, B too low 149 vs GX 227 -> a grey/warm wash, not just dark).
+  - skip ti=8 (ADD src=SRCALPHA dst=ONE) -> sky loses ~(15,8,2): ti=8 adds a small warm-grey wash.
+- FALSIFIED this session: lighting (toggle no-op), gamma (1.0), blend-factor-map, sky-base decode, the
+  "lit-material ~0.5x" framing (latest+7), and the cloud-anim-only framing (time-avg still 21%).
+
+ROOT (named): the file-select haze/cloud stack (ti=7 bright haze + ti=8 additive + ti=10 foliage over a
+screen-blended sky/sea) composites to a grey wash in ngx vs GX. Per-material INPUTS are faithful; the net
+is off -> a per-layer COMPOSITING fidelity gap (each layer's blend contribution amount).
+HONEST BLOCKER / NEXT TOOL: need PER-LAYER GX ground truth to know each layer's correct contribution.
+GX-side /ngxdrawlimit lockstep is DEAD under no-recomp (XFB only re-copies at GXCopyDisp). Options: (a)
+make a GX-faithful CPU compositor (perspective-correct + exact GX blend math + exact order/z) to predict
+the net from the faithful inputs and diff vs the GPU; (b) capture GX's intermediate EFB at each layer.
+Until then the per-layer contribution can't be ground-truthed. Method fully demonstrated end-to-end.
