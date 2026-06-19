@@ -74,3 +74,33 @@ Open hypotheses for WHY ngx samples a magenta texel where GX gets grey (NEXT SES
   (b) **mip level** (GX samples a coarse averaged mip → grey; ngx samples base level → magenta speck),
   (c) **c1.a should be > 0** on GX (then s6 lerps toward prev=(255,255,255)/grey, not C2).
 DON'T re-chase the registers (fixed) — chase the texmap3 sample (UV/mip) and c1.a.
+
+---
+
+## UPDATE 2026-06-19 (cont): magenta = GENUINE texmap3 + sharp c1.a threshold; it's a SAMPLING-PARITY gap
+Drove the trace all the way down (new probes: `/pixblend` now prints per-stage `tcN@uv(..)tex=(..)prev=(..)`;
+`/pixbatch?x=-999&y=<ti>` now dumps per-coord UV bbox 0..7 AND the texgen config per coord). Findings,
+all from the live freeroam_plaza.sav winner draw=122 ti=64:
+
+1. **texmap3 (CMPR 32×32) is GENUINELY, heavily magenta** — 283/1024 texels are (R>180,G<120,B>150);
+   decoded coherent magenta blobs (scratch/screenshots/tex3.ppm). The "grey mean (170,174,173)" just
+   averages magenta+dark; texat's R-only ASCII hid the colour. **Our CMPR decoder is byte-for-byte
+   Dolphin-identical (`/tex` = 119 cases PARITY-OK)** — so Dolphin's GX sees the SAME magenta texmap3.
+   The decoder is NOT the bug.
+2. s4 samples texmap3 at **coord3 UV(0.20,0.73) → texel(6,23) = (255,89,247) magenta** → C2 = texel·(1−K3.g/255)
+   = (125,43,121). s6 = `lerp(C2, prev=grey255, c1.a)`. **c1.a = clamp((texmap5.a − 255)·4, 0, 255)** — a
+   HARD threshold: c1.a=0 (→ magenta C2) everywhere EXCEPT where texmap5.a hits 255 (→ grey prev). At
+   this pixel texmap5(coord5)=169 → c1.a=0 → magenta.
+3. **texgen is faithful IN KIND**: all 6 coords are type=1 (GX MTX2x4), src=4 (TEX0), each with its own
+   2×4 matrix (tg0/1/2 = V·0.3+0.03; tg3 = tex0+0.112; tg4 = ·1.043+(0.74,0.63); tg5 = ·0.91+0.045).
+   ngx's texgen_uv implements exactly this. So the magenta is internally self-consistent in ngx.
+
+**CONCLUSION: not registers, not the CMPR decoder, not an unimplemented texgen type.** The oracle has
+34 magenta px, ngx 146 — ngx OVER-produces magenta over a slightly larger/shifted region. Because the
+grey-vs-magenta decision is a SHARP threshold on texmap5's sampled alpha (c1.a), tiny sub-texel
+differences in the coord5/coord3 sample (texgen-matrix parity, bilinear-vs-GX filtering, or the
+mTotalMtx-vs-stale-XF-row texmtx subtlety noted at ngx_j3d_shape.cpp ~L467) flip pixels magenta↔grey.
+This is a sub-texel SAMPLING-PARITY gap in a threshold combiner — hard to verify without GX's per-vertex
+texgen UV as ground truth, and low-value (a ~146px speck). PARKED per "can't cheaply verify = STOP / no
+guess-patch". NEXT (if resumed): get GX's coord5/coord3 UV ground truth (or A/B mTotalMtx vs the live
+XF-row texmtx), and check texmap5 filter/mip parity; do NOT tweak the c1.a threshold (that's a bandaid).

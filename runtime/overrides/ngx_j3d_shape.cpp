@@ -1191,6 +1191,9 @@ TevChan g_tev_chan[TEVSTATE_CAP] = {};
 // Per-tev-index TevBlock address + vtable (for raw-byte inspection of a material's combiner).
 u32 g_tev_tb[TEVSTATE_CAP] = {};
 u32 g_tev_vt[TEVSTATE_CAP] = {};
+// Per-tev-index texgen config (the UV generation per texcoord — the magenta-on-ti=64 suspect:
+// which texgen src/type/matrix feeds coord3/coord5). Snapshotted at capture in stash_chan.
+TexGenSet g_tev_tg[TEVSTATE_CAP] = {};
 int      g_cur_tev_index = -1;     // material index for the shape being captured
 // CLR0 capture state for the shape being captured (for /ngxshapes per-input inspection):
 // VCD class (0=none→white default, 1=direct, 2=idx8, 3=idx16), array base ngx samples, VAT format.
@@ -1564,7 +1567,7 @@ int capture_material() {
 
     const u16 dbgcc = g_cur_chan.valid ? g_cur_chan.color0 : 0xFFFF;  // 0xFFFF = no colour block
     auto stash_chan = [&](int i){ if (i<0||i>=(int)TEVSTATE_CAP) return;
-        g_tev_tb[i]=tevblock; g_tev_vt[i]=vt;
+        g_tev_tb[i]=tevblock; g_tev_vt[i]=vt; g_tev_tg[i]=g_cur_texgen;
         if (!g_cur_chan.valid) return;
         g_tev_chan[i].have=true; g_tev_chan[i].alpha0=g_cur_chan.alpha0;
         for (int k=0;k<4;k++){ g_tev_chan[i].mat[k]=g_cur_chan.matColor[k]; g_tev_chan[i].amb[k]=g_cur_chan.ambColor[k]; } };
@@ -4397,12 +4400,14 @@ int sb_ngx_pixel_blend(float px, float py, char* out, int cap) {
                 const std::vector<NgxRenderVertex>* snap; const NgxRenderBatch* B;
                 uint32_t vi; float w0,w1,w2;
                 mutable Tx s0tx{255,255,255,255}; mutable float s0u=0,s0v=0; mutable uint32_t s0addr=0;
+                mutable float su[16]={0}, sv[16]={0}; mutable uint8_t stc[16]={0};   // per-stage sampled UV + texcoord
                 bool sample(int stage,int tm,int tc,int out[4]) const override {
                     const auto& sn=*snap;
                     const float u=w0*sn[vi].uv[tc][0]+w1*sn[vi+1].uv[tc][0]+w2*sn[vi+2].uv[tc][0];
                     const float v=w0*sn[vi].uv[tc][1]+w1*sn[vi+1].uv[tc][1]+w2*sn[vi+2].uv[tc][1];
                     Tx tx=sample_tex(B->tex[tm],u,v);
                     out[0]=tx.r;out[1]=tx.g;out[2]=tx.b;out[3]=tx.a;
+                    if(stage>=0&&stage<16){ su[stage]=u; sv[stage]=v; stc[stage]=(uint8_t)tc; }
                     if(stage==0){ s0tx=tx; s0u=u; s0v=v; s0addr=B->tex[tm].addr; }
                     return true;
                 }
@@ -4414,13 +4419,14 @@ int sb_ngx_pixel_blend(float px, float py, char* out, int cap) {
                      src.s0addr,src.s0tx.r,src.s0tx.g,src.s0tx.b,src.s0tx.a,src.s0u,src.s0v);
             // Per-stage prev+textemp trace (the alpha-divergence probe — prev.a feeds the
             // later stages; a wrong texture alpha or a register mismap shows up here).
-            char stgtr[512]={0}; int stgn=0;
+            char stgtr[896]={0}; int stgn=0;
             stgn += snprintf(stgtr+stgn,sizeof stgtr-stgn," | RASC(col0)=(%d,%d,%d,a%d)",col0[0],col0[1],col0[2],col0[3]);
             { int nstg=S->num_stages; if(nstg<1)nstg=1; if(nstg>16)nstg=16;
-              for(int sgi=0;sgi<nstg && stgn<(int)sizeof stgtr-72;sgi++)
-                stgn += snprintf(stgtr+stgn,sizeof stgtr-stgn," s%d:prev=(%d,%d,%d,a%d)tex=(%d,%d,%d,a%d)",
-                    sgi, tr[sgi].prev[0],tr[sgi].prev[1],tr[sgi].prev[2],tr[sgi].prev[3],
-                    tr[sgi].textemp[0],tr[sgi].textemp[1],tr[sgi].textemp[2],tr[sgi].textemp[3]); }
+              for(int sgi=0;sgi<nstg && stgn<(int)sizeof stgtr-96;sgi++)
+                stgn += snprintf(stgtr+stgn,sizeof stgtr-stgn," s%d:tc%u@uv(%.2f,%.2f)tex=(%d,%d,%d,a%d)prev=(%d,%d,%d,a%d)",
+                    sgi, src.stc[sgi], src.su[sgi], src.sv[sgi],
+                    tr[sgi].textemp[0],tr[sgi].textemp[1],tr[sgi].textemp[2],tr[sgi].textemp[3],
+                    tr[sgi].prev[0],tr[sgi].prev[1],tr[sgi].prev[2],tr[sgi].prev[3]); }
             float frag[4]={outc[0]/255.f,outc[1]/255.f,outc[2]/255.f,outc[3]/255.f};
             // texture mean (for the mip-gap check) of the stage-0 texmap.
             double tmean=0; { const NgxTexBind& t=B.tex[S->stage[0].texmap<8?S->stage[0].texmap:0];
@@ -4433,7 +4439,7 @@ int sb_ngx_pixel_blend(float px, float py, char* out, int cap) {
                 "  L%-2d ti=%-3d ep=%u z=%s(d=%.3f) bm=%u s/d=%u/%u frag=(%.2f,%.2f,%.2f,a%.2f) %s tmean=%.0f",
                 layers, ti, B.epoch, zp?"PASS":"fail", depth, S->pe.blend_mode, S->pe.src_factor, S->pe.dst_factor,
                 frag[0],frag[1],frag[2],frag[3], texinfo, tmean);
-            if (n < cap-560 && S->num_stages>1) n += snprintf(out+n,cap-n,"%s",stgtr);
+            if (n < cap-960 && S->num_stages>1) n += snprintf(out+n,cap-n,"%s",stgtr);
             if (!zp) { if(n<cap-8) n+=snprintf(out+n,cap-n," (z-culled)\n"); continue; }
             // blend over acc (mode 1 = BLEND with factors; else opaque src=ONE dst=ZERO)
             if (S->pe.blend_mode==1) {
@@ -4514,14 +4520,30 @@ int sb_ngx_pixel_batch(float px, float py, char* out, int cap) {
                 n += snprintf(out + n, cap - n, "  texmap%d %08x fmt=%u %ux%u mean=(%.0f,%.0f,%.0f) a=%.0f\n",
                     tm, t.addr, t.fmt, t.w, t.h, nn?r/nn:0, nn?g/nn:0, nn?b/nn:0, nn?a/nn:0);
             }
-            // UV bbox over the batch's verts (per texcoord 0,1)
-            float u0mn=1e9f,u0mx=-1e9f,v0mn=1e9f,v0mx=-1e9f,u1mn=1e9f,u1mx=-1e9f,v1mn=1e9f,v1mx=-1e9f;
+            // UV bbox over the batch's verts, per texcoord 0..7 (so the higher texgen'd
+            // coords — e.g. coord3/coord5 on ti=64 — are visible; a degenerate/zero bbox =
+            // a texgen the producer didn't compute → that stage samples a stale/garbage UV).
+            float umn[8],umx[8],vmn[8],vmx[8];
+            for(int c=0;c<8;c++){umn[c]=vmn[c]=1e9f;umx[c]=vmx[c]=-1e9f;}
             for (const auto& BB : bats) if (BB.tev_index == want_ti)
-                for (uint32_t vv=BB.vstart; vv<BB.vstart+BB.vcount && vv<snap.size(); vv++){
-                    const float* uv=snap[vv].uv[0]; if(uv[0]<u0mn)u0mn=uv[0]; if(uv[0]>u0mx)u0mx=uv[0]; if(uv[1]<v0mn)v0mn=uv[1]; if(uv[1]>v0mx)v0mx=uv[1];
-                    const float* uw=snap[vv].uv[1]; if(uw[0]<u1mn)u1mn=uw[0]; if(uw[0]>u1mx)u1mx=uw[0]; if(uw[1]<v1mn)v1mn=uw[1]; if(uw[1]>v1mx)v1mx=uw[1]; }
-            n += snprintf(out + n, cap - n, "  UV0 bbox=[%.2f,%.2f]x[%.2f,%.2f] UV1 bbox=[%.2f,%.2f]x[%.2f,%.2f]\n",
-                u0mn,u0mx,v0mn,v0mx, u1mn,u1mx,v1mn,v1mx);
+                for (uint32_t vv=BB.vstart; vv<BB.vstart+BB.vcount && vv<snap.size(); vv++)
+                    for(int c=0;c<8;c++){ const float* uv=snap[vv].uv[c];
+                        if(uv[0]<umn[c])umn[c]=uv[0]; if(uv[0]>umx[c])umx[c]=uv[0];
+                        if(uv[1]<vmn[c])vmn[c]=uv[1]; if(uv[1]>vmx[c])vmx[c]=uv[1]; }
+            for(int c=0;c<8;c++) n += snprintf(out + n, cap - n,
+                "  UV%d bbox=[%.3f,%.3f]x[%.3f,%.3f]\n", c, umn[c],umx[c],vmn[c],vmx[c]);
+            // TexGen config per coord (the UV-generation: GXTexGenType / GXTexGenSrc / matrix) —
+            // shows whether coord3/coord5 use the texgen ngx implements (POS/NRM/TEX/SRTG) or a
+            // type we fall through (the magenta-sample suspect). src: 0=POS 1=NRM 4..11=TEX0..7 19=COL0.
+            if (want_ti < (int)TEVSTATE_CAP) { const TexGenSet& T = g_tev_tg[want_ti];
+                n += snprintf(out + n, cap - n, "  texgen num=%u\n", T.num);
+                for (int c=0;c<T.num && c<8;c++){ const TexGen& g=T.tg[c];
+                    n += snprintf(out + n, cap - n, "    tg%d type=%u src=%u has_mtx=%d mtxsel=%u",
+                        c, g.type, g.src, g.has_mtx?1:0, g.mtxsel);
+                    if (g.has_mtx) n += snprintf(out + n, cap - n, " m=[%.3f %.3f %.3f %.3f / %.3f %.3f %.3f %.3f]",
+                        g.m[0],g.m[1],g.m[2],g.m[3], g.m[4],g.m[5],g.m[6],g.m[7]);
+                    n += snprintf(out + n, cap - n, "\n"); }
+            }
         }
         for (size_t bi = 0; bi < bats.size(); bi++) {
             if (bats[bi].tev_index != want_ti) continue;
