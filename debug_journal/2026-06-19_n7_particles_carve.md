@@ -810,3 +810,21 @@ ONE tool that cracks it: wire the tailored frontend's render target into Dolphin
 so /efbgrab returns real pixels, then diff EFB-vs-XFB-vs-ngx per layer. That's a frontend-integration
 build. Tools delivered: by-shape /gxstate, /ngxverts rgb+clip, viewport capture, /ngxdroppass,
 layer-attribution, /efbgrab, /copyfilter.
+
+## UPDATE (2026-06-19 latest+13) — concrete lead: brightening backdrop/haze layers straddle the NEAR plane
+Checked the brightening layers' geometry via /ngxverts (gxstate?sh=):
+- ti=8 (sh=80e84c58, ADD layer, src=SRCALPHA dst=ONE): vtx color all WHITE (255), vtx alpha [0,1] mean
+  0.75, TEV = TEX*RAS passthrough. Geometry is a HUGE plane: ndc x to +2.1, y to +25, and
+  **clip.w ∈ [-148488, +150429] — MIXED SIGN (verts straddle the camera/near plane, w<0 = behind camera).**
+  /ngxshapes hid this (it filters to w>eps verts, showing only the positive range).
+- Such mixed-sign-w triangles REQUIRE near-plane clipping; without robust clipping they rasterize with
+  wrong coverage/interpolation, so the additive brightening is lost across much of the frame.
+=> CONCRETE LEAD for the "blended ~0.6x / opaque exact" wash: the brightening haze/backdrop planes
+(ti=7/ti=8 and likely the sky/sea screen layers) are far backdrops straddling the near plane; ngx's
+near-clip (ngx_clip_frustum_tri) may mishandle them -> their additive/screen contribution is short ->
+the scene composites darker. Opaque foreground (sand) doesn't straddle the near plane -> exact.
+NEXT: audit ngx_clip_frustum_tri on mixed-sign-w backdrop planes (render_test unit with a straddling
+triangle + spec-computed coverage); compare ngx's clipped output for ti=7/8 to the expected. Also the
+upper sky has NO brightening layer covering it in ngx (prefix sweep) yet GX is bright there -> check if a
+brightening layer is being dropped by the clip (all verts culled) or not captured. Verification still
+needs the GX-EFB ground-truth wiring for the final A/B, but the clip audit is unit-testable offline.
