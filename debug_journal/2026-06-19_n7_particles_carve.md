@@ -388,10 +388,32 @@ case 10. The quad stays vertically upright but tilts in the camera Y/Z plane. De
   no wild-span transform artifact. (Per-pixel t10-vs-GX not isolated — same wash/no-oracle trap; rests on
   the unit-tested decomp-faithful math + no-regression + renders, the established bar.)
 
-### STILL UNREACHED parent types: Rotation (t7/t8), DirCross (t4), per-particle texanim — not in plaza
-OR Bianco. NEXT: sweep other stages (SUNBRIGHT_STAGE=3..N) with DBG_JPA to find t4/t7/t8, then port the
-Rotation family (RotBillBoard L353 / RotYBillBoard L428 / Rotation L973 / RotationCross L1014; the rotType
-matrices rotTypeY/X/Z/XYZ/YJiggle at L507-600) and DirectionalCross (L744).
+### COMPREHENSIVE reachability sweep (2026-06-19, SUNBRIGHT_STAGE=2..11 + active play) — READ before more
+Swept stages 2-11 (scenario 0) with DBG_JPA, plus active driving/spraying/jumping in Bianco (stage 2)
+and Delfino. **The complete set of JPA draw types that occur in any cheaply-reachable scene:**
+- Parents: **t2 BillBoard, t3 Directional, t5 Stripe, t6 StripeCross, t9 DirBillBoard, t10 YBillBoard**
+  — ALL PORTED & verified. (Per-stage: s2 Bianco=t2/t3/t6/t10; s5=t2/t3; s7=t2/t6; s8=t2/t6; s9=t2/t3/t9;
+  s3/s4/s6/s10/s11=t2-mostly. Delfino plaza=t2/t3/t5/t6/t9.)
+- Children: **stype=2 BillBoard, stype=6 StripeCross ribbon** — ALL PORTED & verified. (Combos seen:
+  ptype2/stype2, ptype6/stype6, ptype6/stype2.)
+- **NEVER seen anywhere cheaply: t4 DirCross, t7 Rotation, t8 RotCross, per-particle texanim (unk3A=0
+  everywhere), ext/extra shapes.** These are EVENT-GATED (boss fights / fireworks / specific objects/
+  cutscenes), NOT used in normal level traversal. Per verify-first they stay UNPORTED until a scene that
+  uses them is reachable.
+
+### NEXT (the remaining N7 long-tail is gated behind GAMEPLAY-EVENT reachability tooling)
+To port t4/t7/t8 you must first REACH a scene that uses them (verify-first). Candidates + the tooling gap:
+- **Boss fights** (Petey/Gooper/Wiggler/etc.) — likely Rotation (goop bursts, splatter). Reaching one
+  headless = drive into the arena trigger (precise multi-step nav + maybe combat). Try boss-EPISODE
+  scenarios (SUNBRIGHT_STAGE=2 SUNBRIGHT_SCENARIO=<petey-ep>) — may drop nearer the arena, but the
+  fight still needs a trigger. NEEDS: a scripted-navigation / Mario-teleport(write *(0x8040E10C)+0) harness.
+- **Pinna Park fireworks** (event-timed) — classic Rotation source.
+- When reached, port the Rotation family the SAME way as t10: RotBillBoard (JPADrawVisitor L353) /
+  RotYBillBoard (L428) / Rotation (L973) / RotationCross (L1014); the rotType matrices rotTypeY/X/Z/XYZ/
+  YJiggle at L507-600; DirectionalCross (L744). render_test unit FIRST, then wire into ov_jpa_drawparticle.
+- ⚠ This is a SIZEABLE tooling effort (gameplay automation) for visually-minor types — weigh against
+  other ngx work. Mario obj ptr = *(0x8040E10C); position = that ptr +0 (TVec3 f32); SMS_GetMarioPos =
+  lwz r3,-0x60B4(r13), r13=0x804141c0. SUNBRIGHT_STAGE/SCENARIO fastboots into any stage (the unlock).
 
 ### NEXT (historical, DONE above): **t6 StripeCross (~549, the biggest non-t2)** — RIBBON, fully RE'd below
 EMITTER-level visitor (runs ONCE per emitter over the whole particle list, NOT per particle).
