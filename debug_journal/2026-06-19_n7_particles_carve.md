@@ -298,6 +298,63 @@ held /pad, capture TEXSHOW each frame, confirm child mist geometry + DBG child-q
 or (b) find a scene with a PERSISTENT child-particle emitter (save-stable) before porting. Don't port
 it blind — verify-before-done.
 
+## UPDATE (2026-06-19 latest) — STEP 4 cont DONE: stype=6 StripeCross CHILD ribbon + parent-longtail dead-end
+
+This session: per the respawn brief ("find a verifiable scene FIRST, then port what you can verify"),
+did a thorough live reachability sweep of the plaza, then ported the ONE newly-verifiable long-tail item.
+
+### Reachability sweep (live-driven, DBG_JPA `[jpa-types]` histogram) — measured, don't re-walk
+Drove Mario all over the plaza via /pad (located Mario obj ptr = *(0x8040E10C); SMS_GetMarioPos =
+`lwz r3,-0x60B4(r13)`, r13=0x804141c0; position @ that ptr +0 = TVec3, e.g. (-1556,300,4366) at the
+freeroam_plaza spawn). Drove forward/turn/jump sweeps, into the lower water area (y 300→-78), past
+coins/NPCs/buildings. **Result: the ONLY parent draw types that EVER occur in plaza are t2/t3/t5/t6/t9
+(all ported); the ONLY child SweepShape types are stype=2 (done) and stype=6 (newly found, see below).**
+**t4 (DirCross), t7 (Rotation), t8 (RotCross), t10 (YBillBoard), and per-particle texanim (texanimEm)
+NEVER appear** — re-confirmed UNREACHABLE in plaza despite extensive driving (coins/water/jumping did
+NOT spawn any). Per the tooling-first hard rule, they stay UNPORTED until a stage that uses them is
+reachable+verifiable (would need a save made after driving into a level; fastboot only reaches plaza).
+**DEAD END for cheap verification — documented, not ported blind.**
+
+### NEW reachable + verified: stype=6 StripeCross CHILD ribbon (a persistent water-feature emitter)
+While driving the lower plaza (around (-3434,-80,6150) / (-3918,300,5876), a water feature), found a
+**persistent** child-particle emitter: `childParts≈120 child[ptype=6 stype=6]` SUSTAINED while idle
+(unlike the FLUDD-spray children which are spray-transient). ⚠ It still does NOT survive a static save
+(`water_children.sav` reloads with childParts=0 — the live emitter doesn't respawn its children on
+reload; a loadstate of it also hit the known OS backpressure wedge, pc=idle 80002ff0, unrelated to my
+code). ⇒ verify it LIVE: load freeroam_plaza.sav, drive the up/left/down/right×2 sweep → childParts>0.
+
+The old drawChild override drew ALL children as per-particle billboards, but stype=5/6 children are an
+EMITTER-LEVEL RIBBON (JPADrawExecStripe/StripeCross run in the drawChild `unk18` loop; the per-particle
+`unk70` set is empty for ribbons — JPADraw.cpp:1040-1059). Ported it:
+- **Extracted a shared `emit_stripe_ribbon(...)` helper** (jpa_particle_native.cpp) used by BOTH the
+  parent ribbon (drawParticle) AND the child ribbon (drawChild) — the JPADrawExec is identical, only
+  the clipboard/list/transform differ. Parent passes viewMtx + parent list + baseShape dirType; child
+  passes **cb.unk68 (the PNMTX0, = a viewMtx copy for stripe/default parents per setChildClipBoard
+  JPADraw.cpp:856-867)** + child list (emitter+0x100/0x104/0x108) + **sweepShape dirType (sweep+0x45)**.
+  Faithful: using cb.unk68 = exactly the GPU PNMTX0 the child exec's world coords pass through.
+- Child ribbon colour = emitter-level RegisterColorChildPE (sweep prm/env THRE cb prm/env — already in
+  the override; recomputed inside the ribbon branch for the perPart case so it's never left black).
+- The child Stripe exec reads the SAME per-particle fields (unk34 rot, unk10/unk14 width, unk0 axis,
+  velocity) and clipboard unk4.x/unkC.x — confirmed identical to the parent exec (JPADrawVisitor.cpp
+  L1117/L1193 vs setChildClipBoard).
+
+### Verified (the bar: render_test + live DBG + no-regression + no-artifact, NOT whole-frame wash)
+- **render_test 15/15** (reuses `jpa_stripe` — the corner math is unchanged/shared).
+- **Live**: `[jpa-child-ribbon] stype=6 dir=0 elems=2 segs=2 tex=0x809bb3e0 32x32` — the NEW branch
+  fires, resolves the child texture (valid 32×32), emits segments, the old `[jpa-child]` billboard path
+  no longer handles stype=6. **No crash** over the run.
+- **No-regression**: parent `[jpa-stripe] type=6 … segs=38` unchanged after the helper refactor; the
+  type histogram still t2/t3/t5/t6/t9.
+- **No transform artifact**: a TEXSHOW (opaque) ngx capture renders the plaza cleanly with NO wild-span
+  streaks across the frame (a broken child M68 transform would streak the opaque ribbon). The children
+  are sparse here (elems=2 → small water mist), so not prominent in a full-frame shot, but the geometry
+  path is the SAME helper already TEXSHOW-verified to draw curved water-arc ribbons for the parent.
+
+### STILL UNREACHABLE/UNPORTED (need a non-plaza scene; verify-first before porting):
+Rotation (t7/t8), YBillBoard (t10), DirCross (t4), per-particle texanim (unk3A), ext/extra shapes,
+non-{2,6} child types. To reach: drive into a level (Bianco/Ricco/etc.) and /savestate there — hard
+headless (precise portal navigation). Sparkle/coin/star effects are the likely t7/t10 sources.
+
 ### NEXT (historical, DONE above): **t6 StripeCross (~549, the biggest non-t2)** — RIBBON, fully RE'd below
 EMITTER-level visitor (runs ONCE per emitter over the whole particle list, NOT per particle).
 JPADrawExecStripe (t5) @ JPADrawVisitor.cpp L1117 / StripeCross (t6) @ L1193. Plan: do it in the

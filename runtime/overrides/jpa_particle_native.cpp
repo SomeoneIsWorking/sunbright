@@ -95,6 +95,8 @@ constexpr u32 JD_EMENV   = 0xBC;          // JPADraw.mEnvColor
 constexpr u32 D_SWEEP        = 0x90 + 0x0C;   // JPADrawContext.mSweepShape (JPADraw+0x9C)
 constexpr u32 D_TEXINDICES   = 0x90 + 0x20;   // JPADrawContext.mTexIndices (u16*, JPADraw+0xB0)
 constexpr u32 EM_CHILD_LIST  = 0x100;         // JPABaseEmitter.mChildParticleList mHead
+constexpr u32 EM_CHILD_TAIL  = 0x104;         //   mTail (reverse traversal)
+constexpr u32 EM_CHILD_COUNT = 0x108;         //   mLinkCount (getNumLinks)
 constexpr u32 EM_UNK174      = 0x174;         // JPABaseEmitter.unk174 (TVec3 emitter scale)
 constexpr u32 CB_UNK68       = CB + 0x68;     // JPADrawClipBoard.unk68 (Mtx 3x4, child PNMTX0 model mtx)
 constexpr u32 SW_SCALEY  = 0x10, SW_SCALEX = 0x14;   // JPASweepShape mScaleY/mScaleX
@@ -183,6 +185,75 @@ static void resolve_child_texture(u32 jpadraw, u32 sweep, ngx_jpa::NgxParticleQu
     const int sweepIdx = mem_r8(sweep + SW_TEXIDX);
     const int texid = (int)(u16)((mem_r8(idxTbl + sweepIdx*2) << 8) | mem_r8(idxTbl + sweepIdx*2 + 1));
     decode_jpa_texid(texRes, texid, q);
+}
+
+// Shared Stripe/StripeCross RIBBON emitter (JPADrawExecStripe/StripeCross, JPADrawVisitor.cpp
+// L1117/L1193). Connects a particle list into one continuous textured ribbon: one quad per
+// consecutive-particle segment, reusing ngx_emit_particle_quad. Used by BOTH the parent path
+// (drawParticle: parent list, viewMtx PNMTX0, baseShape dirType) and the child path (drawChild:
+// child list, cb.unk68 PNMTX0, sweepShape dirType) — the JPADrawExec is identical, only the
+// clipboard/list/transform differ. M = world→eye (the loaded PNMTX0). u4x/ucx = clipboard
+// unk4.x/unkC.x. step = ±1/(elems-1). tq carries texture/TEV/colour/blend (set up by the caller).
+// cross=true emits the 2nd perpendicular ribbon (StripeCross); fVar2 carries (NOT reset between the
+// two ribbons, per the decomp). Returns the number of segment quads emitted.
+static unsigned emit_stripe_ribbon(bool cross, bool reverse, int dirType,
+                                   u32 emitter, u32 head, u32 tail,
+                                   float u4x, float ucx, const float M[3][4],
+                                   float step, float& fVar2, ngx_jpa::NgxParticleQuad& tq) {
+    auto to_eye = [&](const float w[3], float e[3]) {
+        e[0]=M[0][0]*w[0]+M[0][1]*w[1]+M[0][2]*w[2]+M[0][3];
+        e[1]=M[1][0]*w[0]+M[1][1]*w[1]+M[1][2]*w[2]+M[1][3];
+        e[2]=M[2][0]*w[0]+M[2][1]*w[1]+M[2][2]*w[2]+M[2][3];
+    };
+    // mDirTypeFunc(particle): 0=velocity 1=localPos 2=-localPos 3=emitterDir 4=prev-ptcl→this.
+    auto dir_for = [&](u32 particle, float d[3]) {
+        switch (dirType) {
+            default:
+            case 0: d[0]=rf(particle+P_VELOCITY); d[1]=rf(particle+P_VELOCITY+4); d[2]=rf(particle+P_VELOCITY+8); break;
+            case 1: d[0]=rf(particle+P_LOCALPOS); d[1]=rf(particle+P_LOCALPOS+4); d[2]=rf(particle+P_LOCALPOS+8); break;
+            case 2: d[0]=-rf(particle+P_LOCALPOS); d[1]=-rf(particle+P_LOCALPOS+4); d[2]=-rf(particle+P_LOCALPOS+8); break;
+            case 3: d[0]=rf(emitter+EM_DIR); d[1]=rf(emitter+EM_DIR+4); d[2]=rf(emitter+EM_DIR+8); break;
+            case 4: { const u32 prev = mem_r32(particle + LINK_PREV);   // embedded link @ particle+0
+                      if (gvalid(prev)) { const u32 pp = mem_r32(prev + 0);
+                          if (gvalid(pp)) { d[0]=rf(pp+P_GLOBALX)-rf(particle+P_GLOBALX);
+                                            d[1]=rf(pp+P_GLOBALX+4)-rf(particle+P_GLOBALX+4);
+                                            d[2]=rf(pp+P_GLOBALX+8)-rf(particle+P_GLOBALX+8); break; } }
+                      d[0]=d[1]=d[2]=0.f; break; }   // no prev → (0,1,0) basis fallback
+        }
+    };
+    unsigned segs = 0;
+    const u32 start = reverse ? tail : head;
+    bool have_prev = false; float pL[3], pR[3], pv = 0.f;
+    u32 link = start;
+    for (int guard = 0; link >= 0x80000000u && guard < 100000; guard++) {
+        const u32 particle = mem_r32(link + 0);
+        if (particle < 0x80000000u) break;
+        const float ang = (float)(u16)(mem_r32(particle + P_UNK34) >> 16) * (6.28318530718f / 65536.f);
+        float sn, cs;
+        if (!cross) { sn = sinf(ang);  cs = cosf(ang); }
+        else        { cs = cosf(ang);  sn = -sinf(ang); }       // StripeCross 2nd ribbon
+        const float width = cross ? rf(particle + P_SCALEY) : rf(particle + P_SCALEX);  // unk14 / unk10
+        float dir[3];
+        if (cross) { dir[0]=rf(particle+P_VELOCITY); dir[1]=rf(particle+P_VELOCITY+4); dir[2]=rf(particle+P_VELOCITY+8); }
+        else dir_for(particle, dir);
+        const float axis[3] = {rf(particle+P_AXIS), rf(particle+P_AXIS+4), rf(particle+P_AXIS+8)};
+        const float pt0[3]  = {rf(particle+P_GLOBALX), rf(particle+P_GLOBALX+4), rf(particle+P_GLOBALX+8)};
+        float Lw[3], Rw[3];
+        ngx_jpa::jpa_stripe_corners(width, u4x, ucx, sn, cs, axis, dir, pt0, Lw, Rw);
+        float eL[3], eR[3]; to_eye(Lw, eL); to_eye(Rw, eR);
+        const float curv = fVar2;
+        if (have_prev) {   // segment quad [Li,Ri,Ri+1,Li+1] (= the strip's two tris)
+            for (int k=0;k<3;k++){ tq.eye[0][k]=pL[k]; tq.eye[1][k]=pR[k]; tq.eye[2][k]=eR[k]; tq.eye[3][k]=eL[k]; }
+            tq.uv[0][0]=0; tq.uv[0][1]=pv;  tq.uv[1][0]=1; tq.uv[1][1]=pv;
+            tq.uv[2][0]=1; tq.uv[2][1]=curv; tq.uv[3][0]=0; tq.uv[3][1]=curv;
+            ngx_emit_particle_quad(&tq);
+            segs++;
+        }
+        for (int k=0;k<3;k++){ pL[k]=eL[k]; pR[k]=eR[k]; } pv = curv; have_prev = true;
+        fVar2 += step;
+        link = reverse ? mem_r32(link + LINK_PREV) : mem_r32(link + LINK_NEXT);
+    }
+    return segs;
 }
 
 // ── GX state tees (capture live z/blend the shape set; run the original) ────────
@@ -307,67 +378,12 @@ SUNBRIGHT_OVERRIDE_IF_NATIVE(ov_jpa_drawparticle, 0x8032bd10u, s_ngx_present) {
         tq.c1[2]=(int16_t)thre((emEnv>>8)&0xff, eeb);  tq.c1[3]=255;
         if (s_jpa_show) { tq.c0[0]=255; tq.c0[1]=0; tq.c0[2]=255; tq.c0[3]=255; }
 
-        auto to_eye = [&](const float w[3], float e[3]) {
-            e[0]=m[0][0]*w[0]+m[0][1]*w[1]+m[0][2]*w[2]+m[0][3];
-            e[1]=m[1][0]*w[0]+m[1][1]*w[1]+m[1][2]*w[2]+m[1][3];
-            e[2]=m[2][0]*w[0]+m[2][1]*w[1]+m[2][2]*w[2]+m[2][3];
-        };
-        // mDirTypeFunc(particle): 0=velocity 1=localPos 2=-localPos 3=emitterDir 4=prev-ptcl→this.
-        auto dir_for = [&](u32 particle, float d[3]) {
-            switch (dirType) {
-                default:
-                case 0: d[0]=rf(particle+P_VELOCITY); d[1]=rf(particle+P_VELOCITY+4); d[2]=rf(particle+P_VELOCITY+8); break;
-                case 1: d[0]=rf(particle+P_LOCALPOS); d[1]=rf(particle+P_LOCALPOS+4); d[2]=rf(particle+P_LOCALPOS+8); break;
-                case 2: d[0]=-rf(particle+P_LOCALPOS); d[1]=-rf(particle+P_LOCALPOS+4); d[2]=-rf(particle+P_LOCALPOS+8); break;
-                case 3: d[0]=rf(emitter+EM_DIR); d[1]=rf(emitter+EM_DIR+4); d[2]=rf(emitter+EM_DIR+8); break;
-                case 4: { const u32 prev = mem_r32(particle + LINK_PREV);   // embedded link @ particle+0
-                          if (gvalid(prev)) { const u32 pp = mem_r32(prev + 0);
-                              if (gvalid(pp)) { d[0]=rf(pp+P_GLOBALX)-rf(particle+P_GLOBALX);
-                                                d[1]=rf(pp+P_GLOBALX+4)-rf(particle+P_GLOBALX+4);
-                                                d[2]=rf(pp+P_GLOBALX+8)-rf(particle+P_GLOBALX+8); break; } }
-                          d[0]=d[1]=d[2]=0.f; break; }   // no prev → (0,1,0) basis fallback
-            }
-        };
-
-        unsigned segs = 0;
-        // run one ribbon; fVar2 carries across both StripeCross ribbons (decomp does NOT reset it).
-        float fVar2;
-        auto run_ribbon = [&](bool cross2) {
-            const u32 start = reverse ? mem_r32(emitter + EM_LIST_TAIL) : mem_r32(emitter + EM_PARTICLE_LIST);
-            bool have_prev = false; float pL[3], pR[3], pv = 0.f;
-            u32 link = start;
-            for (int guard = 0; link >= 0x80000000u && guard < 100000; guard++) {
-                const u32 particle = mem_r32(link + 0);
-                if (particle < 0x80000000u) break;
-                const float ang = (float)(u16)(mem_r32(particle + P_UNK34) >> 16) * (6.28318530718f / 65536.f);
-                float sn, cs;
-                if (!cross2) { sn = sinf(ang);  cs = cosf(ang); }
-                else         { cs = cosf(ang);  sn = -sinf(ang); }       // StripeCross 2nd ribbon
-                const float width = cross2 ? rf(particle + P_SCALEY) : rf(particle + P_SCALEX);  // unk14 / unk10
-                float dir[3];
-                if (cross2) { dir[0]=rf(particle+P_VELOCITY); dir[1]=rf(particle+P_VELOCITY+4); dir[2]=rf(particle+P_VELOCITY+8); }
-                else dir_for(particle, dir);
-                const float axis[3] = {rf(particle+P_AXIS), rf(particle+P_AXIS+4), rf(particle+P_AXIS+8)};
-                const float pt0[3]  = {rf(particle+P_GLOBALX), rf(particle+P_GLOBALX+4), rf(particle+P_GLOBALX+8)};
-                float Lw[3], Rw[3];
-                ngx_jpa::jpa_stripe_corners(width, u4x, ucx, sn, cs, axis, dir, pt0, Lw, Rw);
-                float eL[3], eR[3]; to_eye(Lw, eL); to_eye(Rw, eR);
-                const float curv = fVar2;
-                if (have_prev) {   // segment quad [Li,Ri,Ri+1,Li+1] (= the strip's two tris)
-                    for (int k=0;k<3;k++){ tq.eye[0][k]=pL[k]; tq.eye[1][k]=pR[k]; tq.eye[2][k]=eR[k]; tq.eye[3][k]=eL[k]; }
-                    tq.uv[0][0]=0; tq.uv[0][1]=pv;  tq.uv[1][0]=1; tq.uv[1][1]=pv;
-                    tq.uv[2][0]=1; tq.uv[2][1]=curv; tq.uv[3][0]=0; tq.uv[3][1]=curv;
-                    ngx_emit_particle_quad(&tq);
-                    segs++;
-                }
-                for (int k=0;k<3;k++){ pL[k]=eL[k]; pR[k]=eR[k]; } pv = curv; have_prev = true;
-                fVar2 += step;
-                link = reverse ? mem_r32(link + LINK_PREV) : mem_r32(link + LINK_NEXT);
-            }
-        };
-        fVar2 = reverse ? 1.f : 0.f;
-        run_ribbon(false);
-        if (shapeType == 6) run_ribbon(true);   // StripeCross: 2nd perpendicular ribbon (fVar2 carries)
+        // fVar2 carries across both StripeCross ribbons (decomp does NOT reset it between them).
+        const u32 head = mem_r32(emitter + EM_PARTICLE_LIST), tail = mem_r32(emitter + EM_LIST_TAIL);
+        float fVar2 = reverse ? 1.f : 0.f;
+        unsigned segs = emit_stripe_ribbon(false, reverse, dirType, emitter, head, tail, u4x, ucx, m, step, fVar2, tq);
+        if (shapeType == 6)   // StripeCross: 2nd perpendicular ribbon (fVar2 carries)
+            segs += emit_stripe_ribbon(true, reverse, dirType, emitter, head, tail, u4x, ucx, m, step, fVar2, tq);
 
         if (getenv("SUNBRIGHT_DBG_JPA")) {
             static unsigned long n = 0;
@@ -546,6 +562,40 @@ SUNBRIGHT_OVERRIDE_IF_NATIVE(ov_jpa_drawchild, 0x8032bf70u, s_ngx_present) {
         tq.c1[0]=(int16_t)thre((se>>24)&0xff,eer); tq.c1[1]=(int16_t)thre((se>>16)&0xff,eeg);
         tq.c1[2]=(int16_t)thre((se>>8)&0xff,eeb);  tq.c1[3]=255;
     } else if (s_jpa_show) { tq.c0[0]=255; tq.c0[1]=0; tq.c0[2]=255; tq.c0[3]=255; tq.c1[0]=tq.c1[1]=tq.c1[2]=tq.c1[3]=0; }
+
+    // SweepShape type 5/6 children draw as a RIBBON over the child list (JPADrawExecStripe/StripeCross
+    // in the emitter-level unk18 loop), NOT per-particle billboards (unk70 is empty for ribbons). Same
+    // exec/math as the parent ribbon; child clipboard (u4x/ucx above), child list (emitter+0x100), the
+    // PNMTX0 = cb.unk68 (M68 — a viewMtx copy for the default/stripe parent types), dirType from the
+    // sweepShape. The ribbon colour is emitter-level RegisterColorChildPE (set above when !perPart; for
+    // a perPart sweep the decomp draws with stale TEV regs — approximate with the same child colour).
+    const int stype = gvalid(sweep) ? mem_r8(sweep + SW_TYPE) : -1;
+    if (stype == 5 || stype == 6) {
+        const u32 cnt = mem_r32(emitter + EM_CHILD_COUNT);
+        if (cnt < 2) return;
+        if (perPart && !s_jpa_show) {   // ribbon colour is always the emitter-level child colour
+            const u32 sp = mem_r32(sweep + SW_PRM), se = mem_r32(sweep + SW_ENV);
+            tq.c0[0]=(int16_t)thre((sp>>24)&0xff,epr); tq.c0[1]=(int16_t)thre((sp>>16)&0xff,epg);
+            tq.c0[2]=(int16_t)thre((sp>>8)&0xff,epb);  tq.c0[3]=(int16_t)thre(sp&0xff,epa);
+            tq.c1[0]=(int16_t)thre((se>>24)&0xff,eer); tq.c1[1]=(int16_t)thre((se>>16)&0xff,eeg);
+            tq.c1[2]=(int16_t)thre((se>>8)&0xff,eeb);  tq.c1[3]=255;
+        }
+        const bool reverse = gvalid(baseShape) && (mem_r32(baseShape + BS_FLAGS) & 0x1u);
+        const float step = (reverse ? -1.f : 1.f) / (float)(cnt - 1);
+        const int sdir = mem_r8(sweep + SW_DIRTYPE);
+        const u32 head = mem_r32(emitter + EM_CHILD_LIST), tail = mem_r32(emitter + EM_CHILD_TAIL);
+        float fVar2 = reverse ? 1.f : 0.f;
+        unsigned segs = emit_stripe_ribbon(false, reverse, sdir, emitter, head, tail, u4x, ucx, M68, step, fVar2, tq);
+        if (stype == 6)
+            segs += emit_stripe_ribbon(true, reverse, sdir, emitter, head, tail, u4x, ucx, M68, step, fVar2, tq);
+        if (getenv("SUNBRIGHT_DBG_JPA")) {
+            static unsigned long n = 0;
+            if ((n++ % 60) == 0)
+                fprintf(stderr, "[jpa-child-ribbon] em %#x stype=%d dir=%d elems=%u segs=%u tex=%#x %ux%u\n",
+                        emitter, stype, sdir, cnt, segs, tq.tex_addr, tq.tex_w, tq.tex_h);
+        }
+        return;
+    }
 
     unsigned drawn = 0, total = 0;
     u32 link = mem_r32(emitter + EM_CHILD_LIST);
