@@ -28,6 +28,34 @@ inline void billboard_corners(float scaleX, float scaleY,
     out[3][0] = -x0 + ptx; out[3][1] = -y1 + pty; out[3][2] = ptz;
 }
 
+// ── JPA Y-axis billboard (JPADrawExecYBillBoard, JPADrawVisitor.cpp L391) ────────────────────────
+// A YBillBoard quad stays vertically upright but tilts in the camera's Y/Z plane (it billboards only
+// about the world Y axis). The position is the standard eye-space transform pt = viewMtx·globalPos
+// (PNMTX0 = identity here, set by loadYBBMtx). Each local corner offs (z=0) is rotated by the YBB
+// matrix unk38 = rows [1,0,0],[0,vy,-vz],[0,vz,vy] with (vy,vz) = normalize(viewMtx[1][1],[2][1]),
+// then added to pt. Since offs.z=0 the rotation collapses to corner = (pt.x+offs.x, pt.y+vy·offs.y,
+// pt.z+vz·offs.y). vyz = the pre-normalized (viewMtx[1][1], viewMtx[2][1]) pair (caller passes raw;
+// this normalizes). Offsets match billboard_corners' layout {(-x0,+y0),(+x1,+y0),(+x1,-y1),(-x0,-y1)}.
+inline void jpa_ybillboard_corners(float scaleX, float scaleY,
+                                   float u4x, float u4y, float ucx, float ucy,
+                                   float ptx, float pty, float ptz,
+                                   float vm11, float vm21, float out[4][3]) {
+    const float x1 = scaleX * (u4x - ucx);
+    const float x0 = scaleX * (u4x + ucx);
+    const float y0 = scaleY * (u4y + ucy);
+    const float y1 = scaleY * (u4y - ucy);
+    float vy = vm11, vz = vm21;
+    float n = vy*vy + vz*vz;
+    if (n > 1e-12f) { n = 1.0f / sqrtf(n); vy *= n; vz *= n; }   // loadYBBMtx normalizes (0,m11,m21)
+    const float ox[4] = { -x0, +x1, +x1, -x0 };
+    const float oy[4] = { +y0, +y0, -y1, -y1 };
+    for (int i = 0; i < 4; i++) {
+        out[i][0] = ptx + ox[i];
+        out[i][1] = pty + vy * oy[i];
+        out[i][2] = ptz + vz * oy[i];
+    }
+}
+
 // ── JPA directional particle orientation (JPADrawExecDirectional, JPADrawVisitor.cpp L602) ──────
 // A directional particle's quad is oriented in WORLD space by a basis built from the particle's
 // stored axis (params.unk0) and a direction vector (velocity / local-pos / emitter-dir, per

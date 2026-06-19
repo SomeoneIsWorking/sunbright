@@ -461,6 +461,10 @@ SUNBRIGHT_OVERRIDE_IF_NATIVE(ov_jpa_drawparticle, 0x8032bd10u, s_ngx_present) {
                 }
                 if (!emitted_special && dn[0]==0.f && dn[1]==0.f && dn[2]==0.f) { link = next; continue; }  // game skips zero-dir
             }
+            if (!emitted_special && shapeType == 10) {   // YBillBoard: eye-space pos + YBB-tilted offsets
+                ngx_jpa::jpa_ybillboard_corners(sx, sy, u4x, u4y, ucx, ucy, ptx, pty, ptz, m[1][1], m[2][1], tq.eye);
+                emitted_special = true;
+            }
             if (!emitted_special)   // BillBoard (t2) + fallback — shared pure math (render_test:jpa_billboard)
                 ngx_jpa::billboard_corners(sx, sy, u4x, u4y, ucx, ucy, ptx, pty, ptz, tq.eye);
             for (int i = 0; i < 4; i++) { tq.uv[i][0] = uv[i][0]; tq.uv[i][1] = uv[i][1]; }

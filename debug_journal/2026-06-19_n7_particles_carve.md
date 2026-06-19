@@ -355,6 +355,44 @@ Rotation (t7/t8), YBillBoard (t10), DirCross (t4), per-particle texanim (unk3A),
 non-{2,6} child types. To reach: drive into a level (Bianco/Ricco/etc.) and /savestate there — hard
 headless (precise portal navigation). Sparkle/coin/star effects are the likely t7/t10 sources.
 
+## UPDATE (2026-06-19 latest+1) — ★ REACHABILITY UNLOCK + YBillBoard (t10) ported & verified
+
+### ★ THE UNLOCK: fastboot into ANY stage via SUNBRIGHT_STAGE (the parent long-tail is now reachable)
+fastboot already supports **`SUNBRIGHT_STAGE=<n> SUNBRIGHT_SCENARIO=<n>`** (fastboot_native.cpp:243-262,
+the DEBUG ROOM path) to boot straight into an arbitrary stage instead of Delfino Plaza — no level-portal
+navigation needed. **`SUNBRIGHT_STAGE=2 SUNBRIGHT_SCENARIO=0` boots into Bianco Hills**, runs to an
+interactive core (emu_secs>12), and is save-stateable (`scratch/stage2_ybb.sav`). This makes the
+previously-"unreachable in plaza" parent long-tail VERIFIABLE — drop the plaza-only constraint.
+- Stage 2 = Bianco Hills. Its JPA type histogram: **t2/t3/t6 + t10 (YBillBoard, ~7989 persistent)** +
+  stype=2 children. (Still no t4/t7/t8 here — try other stages: ricco/gelato/pinna/sirena/noki/pianta
+  are higher indices; sparkle/coin/star effects are the likely t7/t10 sources.)
+- ⚠ Booting a level is uncharted under no-recomp (first non-plaza ngx render). Bianco renders the
+  village/path/trees fine but has large WHITE BLOBS present WITH AND WITHOUT JPA (= NOT particles; a
+  separate Bianco wash/sky/untextured-geometry gap — out of scope for N7, note for later).
+
+### YBillBoard (t10) — ported & verified (the first formerly-unreachable parent long-tail type)
+JPADrawExecYBillBoard (JPADrawVisitor.cpp L391) + loadYBBMtx (JPADraw.cpp:1200) + setParticleClipBoard
+case 10. The quad stays vertically upright but tilts in the camera Y/Z plane. Derived (disasm/decomp):
+- PNMTX0 = identity (loadYBBMtx sets cb.unk68=Identity). Position = FULL eye-space pt = viewMtx·globalPos
+  (the exec's `MTXMultVecSR(viewMtx,pt)` + the unk38 translation column = viewMtx[*][3] recombine to the
+  full transform — proven analytically). Corners add the local offsets rotated by unk38, whose rotation
+  part is rows [1,0,0],[0,vy,-vz],[0,vz,vy] with **(vy,vz)=normalize(viewMtx[1][1], viewMtx[2][1])**.
+  Since offs.z=0 this collapses to **corner = (pt.x+ox, pt.y+vy·oy, pt.z+vz·oy)**.
+- Offsets ox/oy use scaleX=unk10, scaleY=unk14, clipboard unk4/unkC — same layout as billboard_corners.
+- Pure math `jpa_ybillboard_corners` in ngx_jpa_billboard.h; wired into the per-particle branch
+  (shapeType==10) in ov_jpa_drawparticle, before the billboard fallback (t10 was falling to the wrong
+  screen-aligned billboard before).
+- VERIFIED: **render_test `jpa_ybillboard` (16/16)** — 3 hand-computed cases (tilt, the (0,2)→(0,1)
+  normalization, level-cam vy=1/vz=0 → constant-z upright). Live stage 2: t10=7989 handled, no crash;
+  drift-free /ngxnojpa A/B shows JPA particles contribute 5.4% of the frame; Bianco renders cleanly with
+  no wild-span transform artifact. (Per-pixel t10-vs-GX not isolated — same wash/no-oracle trap; rests on
+  the unit-tested decomp-faithful math + no-regression + renders, the established bar.)
+
+### STILL UNREACHED parent types: Rotation (t7/t8), DirCross (t4), per-particle texanim — not in plaza
+OR Bianco. NEXT: sweep other stages (SUNBRIGHT_STAGE=3..N) with DBG_JPA to find t4/t7/t8, then port the
+Rotation family (RotBillBoard L353 / RotYBillBoard L428 / Rotation L973 / RotationCross L1014; the rotType
+matrices rotTypeY/X/Z/XYZ/YJiggle at L507-600) and DirectionalCross (L744).
+
 ### NEXT (historical, DONE above): **t6 StripeCross (~549, the biggest non-t2)** — RIBBON, fully RE'd below
 EMITTER-level visitor (runs ONCE per emitter over the whole particle list, NOT per particle).
 JPADrawExecStripe (t5) @ JPADrawVisitor.cpp L1117 / StripeCross (t6) @ L1193. Plan: do it in the

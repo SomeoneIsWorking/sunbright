@@ -679,6 +679,35 @@ int test_jpa_stripe(char* rep, int cap) {
     return fails;
 }
 
+// ── JPA Y-axis billboard corner math (ngx_jpa_billboard.h jpa_ybillboard_corners) ────────────────
+// YBillBoard (t10): eye-space pos + local corners tilted in the camera Y/Z plane by the YBB matrix
+// (loadYBBMtx). Pin corner = (pt.x+ox, pt.y+vy·oy, pt.z+vz·oy), (vy,vz)=normalize(vm11,vm21).
+int test_jpa_ybillboard(char* rep, int cap) {
+    int pos = 0, fails = 0;
+    auto failf = [&](const char* m){ fails++; if (pos < cap) pos += snprintf(rep+pos, cap-pos, "%s", m); };
+    auto close = [](float a, float b){ float e=a-b; return (e<0?-e:e) <= 1e-4f; };
+
+    // sx=2,sy=3,u4=(10,20),uc=0,pt=(100,200,-700). x0=x1=20, y0=y1=60. ox={-20,20,20,-20} oy={60,60,-60,-60}.
+    // vm=(0.6,0.8) already unit → vy=0.6,vz=0.8. corner=(pt.x+ox, 200+0.6·oy, -700+0.8·oy).
+    float c[4][3];
+    ngx_jpa::jpa_ybillboard_corners(2.f,3.f, 10.f,20.f, 0.f,0.f, 100.f,200.f,-700.f, 0.6f,0.8f, c);
+    const float ex[4][3] = {{80,236,-652},{120,236,-652},{120,164,-748},{80,164,-748}};
+    for (int i=0;i<4;i++) for (int k=0;k<3;k++)
+        if (!close(c[i][k], ex[i][k])) { char b[96];
+            snprintf(b,sizeof b,"FAIL ybb corner %d[%d]=%.3f exp %.3f\n", i,k,c[i][k],ex[i][k]); failf(b); }
+
+    // Normalization: vm=(0,2) → (vy,vz)=(0,1). sx=sy=1,u4=(1,1),uc=0,pt=0. ox0=-1,oy0=+1 → (-1, 0, 1).
+    float d[4][3];
+    ngx_jpa::jpa_ybillboard_corners(1.f,1.f, 1.f,1.f, 0.f,0.f, 0.f,0.f,0.f, 0.f,2.f, d);
+    if (!close(d[0][0],-1)||!close(d[0][1],0)||!close(d[0][2],1)) failf("FAIL ybb normalization\n");
+
+    // Level camera (vm=(1,0)): no z-tilt → upright screen billboard (corner.z == pt.z).
+    float e[4][3];
+    ngx_jpa::jpa_ybillboard_corners(1.f,1.f, 5.f,5.f, 0.f,0.f, 0.f,0.f,-9.f, 1.f,0.f, e);
+    for (int i=0;i<4;i++) if (!close(e[i][2],-9.f)) { failf("FAIL ybb level-cam z not constant\n"); break; }
+    return fails;
+}
+
 struct Unit { const char* name; int (*run)(char* rep, int cap); };
 
 const Unit kUnits[] = {
@@ -697,6 +726,7 @@ const Unit kUnits[] = {
     {"tev_eval",      test_tev_eval},
     {"jpa_billboard", test_jpa_billboard},
     {"jpa_stripe",    test_jpa_stripe},
+    {"jpa_ybillboard", test_jpa_ybillboard},
 };
 
 }  // namespace
