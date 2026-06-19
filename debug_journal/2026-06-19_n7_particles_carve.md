@@ -538,3 +538,42 @@ Concrete issues, ranked:
 NEXT (needs user steer on which is THE "serious" one, given this screen's thrash history): (2) window
 offset and (3) extra Mario are concrete/tractable; (1) is the blend-stack trap. Use fs_oracle.sh for any
 fix's verdict (it's the trustworthy number now).
+
+## UPDATE (2026-06-19 latest+4) — FRAME-EXACT file-select oracle: all 3 bugs CONFIRMED REAL
+
+Made a file-select save (scratch/fileselect.sav, CURRENT build) and ran the EXISTING frame-exact
+ab_oracle.sh with it (`SUNBRIGHT_BIN=build-freshtest/sunbright ./tools/render/ab_oracle.sh
+scratch/fileselect.sav 4`) — both processes loadstate the IDENTICAL save → camera/clouds/water/Mario
+byte-exact, NO drift confound. Result: **MEAN delta 22.7% (640x448), persists frame-exact** → the
+file-select differences are REAL renderer bugs, not the documented animation-phase artifact. Per-region
+grid: window rows dominate (68–102), top sky ~40–57, bottom-right (OPTIONS) 66.
+
+Frame-exact spot samples (trustworthy now): sand PIXEL-IDENTICAL (235,203,174); but sky
+(29,139,225→116,133,149), sea (130,183,242→69,105,145), palm-trunk (→near-black) all dark/desaturated
+in ngx; windows close (slightly more saturated). Artifacts saved: scratch/screenshots/abo_oracle.png
+(GX), abo_ngx.png (ngx), abo_wash.png (heatmap).
+
+### THREE confirmed file-select bugs (fix these; verify each with ab_oracle.sh scratch/fileselect.sav)
+1. **GHOST MARIO (extra Mario at TOP).** PRECISELY LOCALIZED: the file-select frame has 3 projection
+   passes (g_proj_pass: 6=16 shapes, 7=17 [sky/sea bg], 8=26). The SAME Mario shapes (e.g. sh=80ea09c0
+   nv=616, sh=80ea0fb8, sh=80ea0cd0 …) are drawn under BOTH pass=6 (ndc y~+0.7 BOTTOM = correct, matches
+   GX) AND pass=8 (ndc y~-0.8 TOP = the ghost). The pass=8 copies are LISTED TWICE in /ngxshapes (a
+   capture/publish buffering duplication); pass=6 once. GX with identical RAM shows ONLY the bottom Mario.
+   efbcopies=0 → NOT an EFB-copy auxiliary epoch (so RTFILTER can't catch it; it's a different cause).
+   → Investigate ngx_j3d_shape.cpp capture/publish (rec.pass set @~1793, g_proj_pass++ @~2323, double-
+   buffer publish at J2DScreen::draw boundary). Hypothesis: stale/duplicated pass-8 geometry from the
+   prior frame's buffer is published into this frame. FIX = don't emit the duplicated pass-8 Mario.
+2. **BACKGROUND DARKENING (sky/sea/palm ~0.8×).** Real (frame-exact). Sky = TEVC×RASC (CMPR tex, tiled
+   ~69×, screen-blend src=ONE dst=INVSRCCLR); sea = RASC passthrough, screen-blend. RULED OUT with probe
+   evidence: blend (force-opaque still dark), lighting (no normals→would blacken), fog (GXSetFog tee
+   type=0 OFF), shader (clean passthrough), blend-factor map (INVSRCCLR→ONE_MINUS_SRC_COLOR correct),
+   texture decode (/tex PARITY-OK 119/119), draw-order/camera-drift (frame-exact). REMAINING: the
+   multi-layer screen-blend STACK composites darker — likely coupled to the multi-pass (6/7/8) issue
+   (pass-7 bg drawn between two Mario passes; draw-order/pass interaction). Suspect the same pass/buffer
+   bug as #1 corrupts the screen-blend accumulation. Investigate after #1 (may fix both).
+3. **Windows slightly off** (minor; largely a consequence of #2 — translucent over dark bg).
+
+### Tools built this session (committed): tools/render/jpa_shapetype_census.py (t7/t8 dead-code proof),
+tools/render/fs_oracle.sh + img_avg.py (time-averaged FS oracle). For FRAME-EXACT use ab_oracle.sh with
+scratch/fileselect.sav (preferred — no drift). USER DIRECTIVE this session: file-select before Delfino;
+stop asking, use the oracle + build tools, just fix it.
