@@ -980,3 +980,21 @@ holds. NEXT (narrow, fresh-context): read back the actual ngx vertex VkBuffer (o
 vk_mesh's uploaded `verts`) for the ti=9 batch and compare byte-for-byte to g_snap[g_front]; also verify
 freeze latches the SAME buffer index the present renders. The bug is the vertex-colour data path, not
 TEV/blend/clip/lighting/haze (all ruled out latest+17/+18).
+
+## UPDATE (2026-06-19 latest+20) — HONESTY CAVEAT on the "below-hull" claim + buffer ruled same
+Self-correction before the next session chases a possibly-wrong premise:
+- The present's GPU vertex source (ngx_snap_verts → g_snap[g_front]) and pixbatch's read (g_snap[g_front])
+  are the SAME buffer (verified in code) — so it is NOT a double-buffer / upload discrepancy. The GPU and
+  pixbatch see identical vertex data. (This WEAKENS the latest+19 "GPU reads different data" hypothesis.)
+- The "(13,81,135) is BELOW the vertex hull (G=81<113)" claim rests on a COLOR0 G-range of [113,215] that
+  came from an EARLIER-frame /ngxverts (different modelview). The ti=9 mesh is sky+SEA; the SEA verts may
+  be darker (G~81). If so, (13,81,135) is WITHIN hull and the ti=9 render may be CORRECT — and the apparent
+  darkness is the UNFAIR comparison (ngxonly-ti9 over BLACK vs GX-final where ti=9 screen-blends over a
+  bright prior layer). FIRST next step: on ONE frozen frame, dump the ti=9 covering-triangle's 3 vertex
+  rgba (extend pixbatch to print them) and the full current-frame COLOR0 min — confirm or kill "below-hull"
+  BEFORE any fix. If within-hull: the residual sky-grey is the screen-blend STACK accumulation (compare
+  ngx FULL sky-stack vs GX-EFB per-pass, not ngxonly-vs-final), i.e. back to the multi-layer haze — but now
+  with the CLOF-ambient fix landed and the lit-material confound removed.
+What IS solid this session: the CLOF-ambient fix (latest+17, bush green, file-select 22.6→20.6%, no
+Delfino regression, render_test pass) — shipped. The sky-grey residual is NOT yet root-caused; ras==normal
+shows it's the raster (not TEV) path; everything else above is leads + caveats, not conclusions.
