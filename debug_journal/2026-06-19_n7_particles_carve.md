@@ -678,3 +678,27 @@ source/scale or a missing light contribution (the N6 lighting model). Verify any
 TOOLING NOTE: GX-side /ngxdrawlimit lockstep is UNRELIABLE under no-recomp (the GX XFB shows the last
 complete frame regardless of the limit — it's only re-copied at GXCopyDisp), so per-layer GX gating
 doesn't work; the ngx side gates fine. For GX ground truth use the full-frame two-process oracle.
+
+## UPDATE (2026-06-19 latest+8) — BUG 2 driven to root candidate; lit+cloud hypotheses FALSIFIED
+Continued the data-divergence narrowing (verify-each-hypothesis, not park):
+- **Lighting hypothesis FALSIFIED**: /ngxdbg?nolight=0 vs =1 changes the dark elements by 0 — they are
+  NOT lit-path. So "lit materials ~0.5x dark" (latest+7) is WRONG as a root.
+- **Cloud-anim** confounds the sky per-pixel (varies run-to-run from the same save) — use static elements.
+- The dark elements (sea/sky base, the A/B/C-block area) are **ti=9** — the sea/sky GRADIENT plane
+  (cc=0701, UNLIT, 1-stage RASC passthrough). Its decoded per-vertex color is correct (mean matches GX).
+- ROOT CANDIDATE (named): ngx's GPU render of ti=9 is DARKER than its own CPU-rasterizer/decode value,
+  AND rendering ti=9 alone over a BLACK clear gives (24,86,137) — BELOW its own fragment, which a screen
+  blend (src=ONE dst=INVSRCCLR) mathematically CANNOT do over black. So it's not the blend and not a
+  later layer. The CPU rasterizer (affine interp) and the GPU (perspective-correct interp) DISAGREE on
+  the SAME g_snap vertex data — because the sea/sky plane has EXTREME clip-w variation (w∈[35,64982],
+  near-camera ground verts to horizon). Perspective-correct interpolation of the vertex-color gradient
+  is dominated by the near (small-w) verts. So ngx's gradient interpolates to a different (darker) color
+  than GX at the same screen pixel ⇒ the divergence is in the per-vertex CLIP-SPACE (projection/w) or
+  the per-vertex gradient colors of the ti=9 plane, NOT in shading/blend/lighting/coverage.
+
+NEXT TOOLING NEEDED (the honest blocker): a RELIABLE per-vertex ground-truth for the ti=9 plane to
+compare ngx's clip.w / vertex colors against GX (xfmem is async-lagged; the CPU rasterizer is affine;
+GX-side /ngxdrawlimit is dead under no-recomp). Build a per-vertex clip-space dump for a shape-addr and
+reconcile with the GX-faithful J3D object transform; then check whether ngx's projection gives the
+ti=9 plane the same w-profile GX uses. This is where the wash root lives. (Method demonstrated end to
+end this session: oracle delta → prefix-bisect → per-pixel/per-layer → falsify hypotheses → root.)
