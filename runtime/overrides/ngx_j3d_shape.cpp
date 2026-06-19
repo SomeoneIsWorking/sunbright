@@ -1328,6 +1328,13 @@ float         g_proj[16] = {0};
 bool          g_have_proj = false;
 unsigned      g_proj_type = 0;     // 0=perspective, >0=orthographic (the live projection class)
 unsigned      g_proj_pass = 0;     // monotone per-frame projection-pass index (reset at publish; /ngxshapes)
+// Live GXSetViewport / GXSetScissor — the screen sub-rect the current pass renders into. ngx
+// projects every shape to NDC and rasterizes full-screen, ignoring these; but the file-select
+// renders its file-panel 3D previews into SMALL viewports (the menu Mario at top is a panel
+// preview meant for a tiny rect, sprawling full-frame in ngx = the "ghost Mario"). Captured here,
+// recorded per-shape, and (for the present) applied as a Vulkan scissor so off-panel pixels clip.
+float    g_cur_vp[4]   = {0,0,640,448};   // x,y,w,h (px)
+unsigned g_cur_scis[4] = {0,0,640,448};   // x,y,w,h (px)
 // EFB-copy "epoch" — render-target awareness for the present. The game renders some passes to an
 // OFFSCREEN texture (GXCopyTex) and others to the DISPLAY (GXCopyDisp). ngx currently composites
 // EVERY captured J3D shape into the present regardless of where the game routed it → the file-select
@@ -1424,6 +1431,8 @@ struct ShapeRec {
     u32 material, cb_addr, cb_vt, matpkt;  // J3DMaterial / colorBlock addr+vtable / live MatPacket (baked DL)
     u16 alpha0;                          // captured ALPHA0 chanctrl
     unsigned char mat[4], amb[4];        // captured COLOR0 matColor / ambColor (the lighting inputs)
+    float vp[4];                         // GXSetViewport x,y,w,h this shape drew under (screen px)
+    unsigned scis[4];                    // GXSetScissor   x,y,w,h this shape drew under (screen px)
 };
 std::vector<ShapeRec> g_shaperec[2];
 int                          g_read_front = 0; // latched by ngx_snap_verts for batches
@@ -1802,6 +1811,7 @@ void transform_eye() {
         rec.ti = g_cur_tev_index;
         rec.material = g_cur_material; rec.cb_addr = g_cur_cb_addr; rec.cb_vt = g_cur_cb_vt;
         rec.matpkt = g_cur_matpkt;
+        for (int k=0;k<4;k++){ rec.vp[k]=g_cur_vp[k]; rec.scis[k]=g_cur_scis[k]; }
         rec.alpha0 = g_cur_chan.valid ? g_cur_chan.alpha0 : 0xFFFF;
         for (int k=0;k<4;k++){ rec.mat[k]=g_cur_chan.matColor[k]; rec.amb[k]=g_cur_chan.ambColor[k]; }
         rec.clr0cls = g_cur_clr0cls; rec.clr0fmt = g_cur_clr0fmt; rec.clr0base = g_cur_clr0base;
@@ -1973,7 +1983,7 @@ void transform_eye() {
                 if (batches.size() >= BATCH_CAP) break;  // bounded
                 NgxRenderBatch nb{}; memcpy(nb.tex, tb, sizeof tb);
                 nb.vstart = (uint32_t)count; nb.vcount = 0; nb.tev_index = g_cur_tev_index;
-                nb.epoch = (uint16_t)(g_efb_epoch < EPOCH_CAP ? g_efb_epoch : EPOCH_CAP - 1);
+                nb.epoch = (uint16_t)(g_efb_epoch < EPOCH_CAP ? g_efb_epoch : EPOCH_CAP - 1); nb.pass = (uint16_t)g_proj_pass; nb.vp_w = (uint16_t)g_cur_vp[2]; nb.vp_h = (uint16_t)g_cur_vp[3];
                 batches.push_back(nb);
             }
             for (int f = 0; f < ntri; f++) { emit_v(poly[0]); emit_v(poly[f+1]); emit_v(poly[f+2]); }
@@ -2326,6 +2336,26 @@ void ngx_set_projection(const float* m44, unsigned type) {
     g_have_proj = true;
 }
 
+// GXSetViewport(xOrig,yOrig,wd,ht,nearZ,farZ) @ 0x803630c8 — float args in FPRs. Capture x/y/w/h.
+SUNBRIGHT_OVERRIDE(ov_gxsetviewport, 0x803630c8u) {
+    if (g_enabled) {
+        g_cur_vp[0]=(float)cpu.fpr[1].ps0; g_cur_vp[1]=(float)cpu.fpr[2].ps0;
+        g_cur_vp[2]=(float)cpu.fpr[3].ps0; g_cur_vp[3]=(float)cpu.fpr[4].ps0;
+        if (getenv("SUNBRIGHT_DBG_VP")) std::fprintf(stderr,"[vp] pass=%u vp=%.1f,%.1f,%.1f,%.1f\n",
+            g_proj_pass, g_cur_vp[0],g_cur_vp[1],g_cur_vp[2],g_cur_vp[3]);
+    }
+    ngx_super(cpu, 0x803630c8u);
+}
+// GXSetScissor(xOrig,yOrig,wd,ht) @ 0x80363138 — u32 args in GPRs.
+SUNBRIGHT_OVERRIDE(ov_gxsetscissor, 0x80363138u) {
+    if (g_enabled) {
+        g_cur_scis[0]=cpu.gpr[3]; g_cur_scis[1]=cpu.gpr[4]; g_cur_scis[2]=cpu.gpr[5]; g_cur_scis[3]=cpu.gpr[6];
+        if (getenv("SUNBRIGHT_DBG_VP")) std::fprintf(stderr,"[scis] pass=%u scis=%u,%u,%u,%u\n",
+            g_proj_pass, g_cur_scis[0],g_cur_scis[1],g_cur_scis[2],g_cur_scis[3]);
+    }
+    ngx_super(cpu, 0x80363138u);
+}
+
 // Called from the GXCopyTex / GXCopyDisp overrides (gx_stream_own.cpp / efb_native.cpp) — both run
 // on the emu/game thread, serialized with shape capture. Close the current EFB epoch: a GXCopyTex
 // routed the just-drawn passes to an OFFSCREEN texture (mark the epoch tex-closed → discard at
@@ -2620,7 +2650,7 @@ extern "C" void ngx_emit_imm_cube(int color_off, int alpha_off,
     if (batches.size() >= BATCH_CAP) return;
     NgxRenderBatch nb{};   // no textures bound (1×1 white sampled), tev_index = synthetic cube
     nb.vstart = (uint32_t)count; nb.vcount = 0; nb.tev_index = ti;
-    nb.epoch = (uint16_t)(g_efb_epoch < EPOCH_CAP ? g_efb_epoch : EPOCH_CAP - 1);
+    nb.epoch = (uint16_t)(g_efb_epoch < EPOCH_CAP ? g_efb_epoch : EPOCH_CAP - 1); nb.pass = (uint16_t)g_proj_pass; nb.vp_w = (uint16_t)g_cur_vp[2]; nb.vp_h = (uint16_t)g_cur_vp[3];
     batches.push_back(nb);
     unsigned idx[36]; ngx_imm::cube_tri_indices(idx);
     for (int t = 0; t < 12; t++) {
@@ -2727,7 +2757,7 @@ extern "C" void ngx_emit_imm_sphere(int numMajor, int numMinor, int r, int g, in
     if (batches.size() >= BATCH_CAP) return;
     NgxRenderBatch nb{};
     nb.vstart = (uint32_t)count; nb.vcount = 0; nb.tev_index = ti;
-    nb.epoch = (uint16_t)(g_efb_epoch < EPOCH_CAP ? g_efb_epoch : EPOCH_CAP - 1);
+    nb.epoch = (uint16_t)(g_efb_epoch < EPOCH_CAP ? g_efb_epoch : EPOCH_CAP - 1); nb.pass = (uint16_t)g_proj_pass; nb.vp_w = (uint16_t)g_cur_vp[2]; nb.vp_h = (uint16_t)g_cur_vp[3];
     batches.push_back(nb);
     static unsigned idx[512*3]; ngx_imm::sphere_tri_indices(numMajor, numMinor, idx);
     for (int t = 0; t < tc; t++) {
@@ -2828,7 +2858,7 @@ extern "C" void ngx_emit_particle_quad(const ngx_jpa::NgxParticleQuad* q) {
         tb.mipmap = 0; tb.mip_count = 1;
     }
     nb.vstart = (uint32_t)count; nb.vcount = 0; nb.tev_index = ti;
-    nb.epoch = (uint16_t)(g_efb_epoch < EPOCH_CAP ? g_efb_epoch : EPOCH_CAP - 1);
+    nb.epoch = (uint16_t)(g_efb_epoch < EPOCH_CAP ? g_efb_epoch : EPOCH_CAP - 1); nb.pass = (uint16_t)g_proj_pass; nb.vp_w = (uint16_t)g_cur_vp[2]; nb.vp_h = (uint16_t)g_cur_vp[3];
     batches.push_back(nb);
     static const int tri[2][3] = {{0,1,2},{0,2,3}};   // GX_QUADS → 2 tris
     for (int t = 0; t < 2; t++) {
@@ -3478,6 +3508,8 @@ static const bool ov_j3dshape_draw_pj = [] {
                    0x802f33a8u,   // J3DGDSetChanAmbColor
                    0x80361dd0u,   // GXSetBlendMode  (gx_stream_own.cpp /gxblend darkening-pass hunt)
                    0x8035ecd0u,   // GXSetDispCopyGamma (gx_stream_own.cpp /gxblend copy-gamma)
+                   0x803630c8u,   // GXSetViewport (per-pass screen sub-rect — file-select panel previews)
+                   0x80363138u,   // GXSetScissor
                    0x8027c67cu }) // TModelWaterManager::drawShineShadowVolume (plaza pollution capture)
         mark_override_purejit_safe(a);
     return true;
@@ -3756,12 +3788,13 @@ int sb_ngx_shapes_dump(char* out, int cap) {
         if (n >= cap - 256 || shown >= 60) break;
         const ShapeRec& r = rs[i];
         n += snprintf(out + n, cap - n,
-            "  e%u%s pass=%u%s ti=%-3d sh=%08x nv=%-5u cc=%04x tex0=%08x pnmtx=%u  clr0[cls=%u fmt=%u base=%08x mean=(%u,%u,%u,a%u) lum%u..%u] nrm[cls=%u v0=(%.2f,%.2f,%.2f)]  ndc x[%6.2f,%6.2f] y[%6.2f,%6.2f] w[%.1f,%.1f]\n",
+            "  e%u%s pass=%u%s ti=%-3d sh=%08x nv=%-5u cc=%04x tex0=%08x pnmtx=%u  clr0[cls=%u fmt=%u base=%08x mean=(%u,%u,%u,a%u) lum%u..%u] nrm[cls=%u v0=(%.2f,%.2f,%.2f)]  ndc x[%6.2f,%6.2f] y[%6.2f,%6.2f] w[%.1f,%.1f] vp=%.0f,%.0f,%.0f,%.0f sc=%u,%u,%u,%u\n",
             r.epoch, g_epoch_tex[f][r.epoch < EPOCH_CAP ? r.epoch : 0] ? "X" : "=",
             r.pass, r.projtype ? "o" : "p", r.ti, r.sh, r.nv, r.cc, r.tex0, r.pnmtx,
             r.clr0cls, r.clr0fmt, r.clr0base, r.clr0r, r.clr0g, r.clr0b, r.clr0a, r.clr0min, r.clr0max,
             r.nrmcls, r.nrm0[0], r.nrm0[1], r.nrm0[2],
-            r.nxmin, r.nxmax, r.nymin, r.nymax, r.wmin, r.wmax);
+            r.nxmin, r.nxmax, r.nymin, r.nymax, r.wmin, r.wmax,
+            r.vp[0],r.vp[1],r.vp[2],r.vp[3], r.scis[0],r.scis[1],r.scis[2],r.scis[3]);
         // For the sea (ti=12) and foam (ti=18): dump NDC-z range + the per-pass projection's
         // z-row, to compare their depth spaces (foam-over-sea ordering = the wash discriminator).
         if ((r.ti == 12 || r.ti == 18) && n < cap - 400) {

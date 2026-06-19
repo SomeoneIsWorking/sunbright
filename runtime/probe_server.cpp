@@ -111,6 +111,8 @@ extern "C" int sb_ngx_set_onlyti(int);                       // runtime/render/n
 extern "C" int sb_ngx_set_skipti(int);                       // runtime/render/ngx_present.cpp (/ngxskip)
 extern "C" int sb_ngx_set_onlyepoch(int);                    // runtime/render/ngx_present.cpp (/ngxepoch)
 extern "C" int sb_ngx_set_dropepoch(int);                    // runtime/render/ngx_present.cpp (/ngxepoch)
+extern "C" int sb_ngx_set_onlypass(int);                     // runtime/render/ngx_present.cpp (/ngxonlypass)
+extern "C" int sb_ngx_set_droppass(int);                     // runtime/render/ngx_present.cpp (/ngxdroppass)
 extern "C" int sb_ngx_set_rtfilter(int);                     // runtime/render/ngx_present.cpp (/ngxrtfilter)
 extern "C" void sb_ngx_skipset_clear();                      // runtime/render/ngx_present.cpp (/ngxskipset)
 extern "C" void sb_ngx_skipset_add(int);                     // runtime/render/ngx_present.cpp (/ngxskipset)
@@ -476,6 +478,14 @@ std::string handle_repl(const char* path) {
         if (const char* p = strstr(path, "drop=")) drop = atoi(p + 5);
         sb_ngx_set_onlyepoch(keep); sb_ngx_set_dropepoch(drop);
         app("ngx epoch filter: keep=%d drop=%d\n", keep, drop); return std::string(buf, n);
+    }
+    if (strncmp(path, "/ngxonlypass", 12) == 0) {  // render ONLY this projection pass (-1 off)
+        int p = -1; if (const char* q = strstr(path, "p=")) p = atoi(q + 2);
+        sb_ngx_set_onlypass(p); app("ngx only_pass = %d\n", p); return std::string(buf, n);
+    }
+    if (strncmp(path, "/ngxdroppass", 12) == 0) {  // drop this projection pass (file-select ghost: -1 off)
+        int p = -1; if (const char* q = strstr(path, "p=")) p = atoi(q + 2);
+        sb_ngx_set_droppass(p); app("ngx drop_pass = %d\n", p); return std::string(buf, n);
     }
     if (strncmp(path, "/ngxrtfilter", 12) == 0) {  // render-target-aware present (ghost fix): on=0/1
         int v = 1; if (const char* p = strstr(path, "on=")) v = atoi(p + 3);

@@ -41,6 +41,13 @@ static bool in_skipset(int ti) { for (int i = 0; i < g_ngx_skip_set_n; i++) if (
 int g_ngx_only_epoch = -1, g_ngx_drop_epoch = -1;
 extern "C" int sb_ngx_set_onlyepoch(int e) { g_ngx_only_epoch = e; return e; }
 extern "C" int sb_ngx_set_dropepoch(int e) { g_ngx_drop_epoch = e; return e; }
+// Projection-pass isolation (/ngxonlypass, /ngxdroppass) — the file-select renders its file-panel
+// 3D previews under their OWN projection passes (offscreen render-to-texture in GX); ngx composites
+// them directly = the "ghost Mario". Diagnostic to confirm WHICH pass is the ghost; then the fix
+// drops the offscreen pass(es) permanently. -1 = inactive.
+int g_ngx_only_pass = -1, g_ngx_drop_pass = -1;
+extern "C" int sb_ngx_set_onlypass(int p) { g_ngx_only_pass = p; return p; }
+extern "C" int sb_ngx_set_droppass(int p) { g_ngx_drop_pass = p; return p; }
 // DRAW-ORDER PREFIX (/ngxprefix?n=N): render only the first N batches actually drawn (in draw
 // order, within the displayed epoch), then present. Sweeping N captures the composite building
 // up pass-by-pass — the "in-between layer compare" so a divergence can be pinned to the exact
@@ -1001,6 +1008,15 @@ AbstractTexture* PresentRenderer::render(int w, int h) {
     }
     // Render-target-aware filter: present only the display epoch (main scene) onward.
     const int display_epoch = rtfilter_on() ? ngx_snap_display_epoch() : 0;
+    // Offscreen render-to-texture filter (the file-select ghost-Mario fix): the game renders its
+    // file-panel 3D previews (and the mirror/pollution effects) into a SUB-DISPLAY viewport via
+    // GXSetViewport, then GXCopyTex's the result into a texture composited elsewhere. ngx can't do
+    // render-to-texture, so it wrongly draws that geometry directly full-frame (= the ghost). The
+    // display viewport is the largest one the frame uses (the main scene); any batch rendered into a
+    // smaller viewport is an offscreen pass and must not be composited directly. Gated by rtfilter.
+    uint32_t disp_vp_area = 0;
+    if (rtfilter_on())
+        for (const auto& bb : batches) { uint32_t a = (uint32_t)bb.vp_w * bb.vp_h; if (a > disp_vp_area) disp_vp_area = a; }
 
     if (w < 1 || h < 1) return nullptr;
     // Render-debug mode changed (via /ngxdbg)? Drop cached pipelines so shaders regenerate.
@@ -1158,7 +1174,12 @@ AbstractTexture* PresentRenderer::render(int w, int h) {
         // EFB-copy epoch isolation (/ngxepoch) — render only / all-but a given offscreen epoch.
         if (g_ngx_only_epoch >= 0 && (int)batches[b].epoch != g_ngx_only_epoch) continue;
         if (g_ngx_drop_epoch >= 0 && (int)batches[b].epoch == g_ngx_drop_epoch) continue;
+        if (g_ngx_only_pass >= 0 && (int)batches[b].pass != g_ngx_only_pass) continue;
+        if (g_ngx_drop_pass >= 0 && (int)batches[b].pass == g_ngx_drop_pass) continue;
         if ((int)batches[b].epoch < display_epoch) continue;   // auxiliary offscreen render — not displayed
+        // Offscreen render-to-texture pass (sub-display viewport) — ngx can't composite it, drop it
+        // (the file-select file-panel-preview "ghost Mario").
+        if (disp_vp_area && (uint32_t)batches[b].vp_w * batches[b].vp_h < disp_vp_area) continue;
         draw_one(b);
         if (is_imm) imm_drawn++;
     }

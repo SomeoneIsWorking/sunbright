@@ -49,7 +49,10 @@ struct NgxRenderBatch {
     uint32_t vstart, vcount;  // [vstart, vstart+vcount) into the vertex list
     int32_t  tev_index;       // index into the TEV-state table (-1 = none/default)
     uint16_t epoch;           // EFB-copy epoch this batch drew under (render-target awareness)
-    uint16_t pad2;
+    uint16_t pass;            // projection-pass index this batch drew under (offscreen-pass filtering)
+    uint16_t vp_w, vp_h;      // GXSetViewport extent this batch drew under (px). A sub-display
+                              // viewport = an offscreen render-to-texture pass (file-panel preview,
+                              // mirror, pollution) ngx cannot composite — the present drops it.
 };
 
 // ── N5 per-material TEV state (read from the guest J3DMaterial's mTevBlock) ─────
