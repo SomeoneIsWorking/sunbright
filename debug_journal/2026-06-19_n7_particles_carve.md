@@ -896,3 +896,40 @@ a different matrix) → sprawl. Check sh=80d390e0 / sh=80d39254 projtype + the p
 wrong (the J2D-over-3D or an EFB-tex-pass ortho). Fix the projection → quads confine → wash gone.
 GOTCHAS BURNED: (1) tev_index renumbers per frame — NEVER use /ngxonly?ti for isolation across frames;
 target by sh= or use pixbatch's draw-ORDER WINNER. (2) /pixbatch "first fragment" != visible; read WINNER.
+
+## UPDATE (2026-06-19 latest+17) — ★★ WASH ROOT (the REAL one): CLOF-lit ambient defaulted to 0 → black. FIXED
+latest+16's "grey overlay quads sprawl over the scene" was ANOTHER false trail (the sh=80d39xxx quads
+are thin bands / don't cover the sky; /ngxskipset of ti=1408-1411,7,10 leaves the sky unchanged). The
+prior threads kept getting confounded by: (1) the J2D blue MENU WINDOWS, which composite over the 3D
+bg regardless of /ngxonly (so center-column "sky" samples at y≈84-112 were hitting a blue window, not
+sky — "clear-only ti=99999" already shows those blue patches); (2) /ngxonly?ti and pixbatch CPU raster
+being unreliable. The disciplined path that worked: full ab_oracle (GX vs ngx) → LOOK at the images →
+zoom the worst region.
+
+ROOT (verified, frame-exact ab_oracle scratch/fileselect.sav):
+- The OPTIONS-sign green BUSH renders **fully BLACK** in ngx (and the gold save-icon frames render dark
+  brown; sea slightly dark). These are LIT foliage/lit materials (cc=070e / cc=0686).
+- nolight A/B (on a LIVE frame — NOTE: freezing LATCHES captured col0, so /ngxdbg?nolight only takes
+  effect on a re-captured frame, NOT a frozen one): nolight=1 → bush correct GREEN (196,217,147);
+  nolight=0 → BLACK (0,0,0). ⇒ ngx's per-vertex lighting drives it black.
+- Why: the foliage uses a **J3DColorBlockLightOff (CLOF, vt=803e0d38)** but with lighting ENABLED
+  (cc=070e, ambSrc=REG). A CLOF block carries NO ambient field, so GX keeps the last-programmed global
+  XF ambient register (~grey 128,128,128 in file-select). ngx DEFAULTED CLOF ambient to 0 → diffuse-only;
+  back-faces clamp (DF_CLAMP, N·L<0) to BLACK. With a 0.5 ambient floor the whole bush stays lit.
+
+FIX (ngx_j3d_shape.cpp capture_colorchan, principled — reads the register the GPU actually uses, not a
+constant): CLOF-lit materials now read the live unified ambient register g_xf_amb[0] (last-writer-wins
+across the GXSetChanAmbColor + J3DGDSetChanAmbColor tees) instead of 0. CLON blocks STILL use their own
+block ambient (so the old "global ambient → Delfino 2.2× too bright" does NOT recur — that was applying
+the register to CLON too). Escapes: SUNBRIGHT_NGX_AMB0=1 forces CLOF→0; AMBGLOBAL=1 forces register for all.
+
+VERIFIED:
+- file-select ab_oracle: 22.6% → **20.6%** (bush green, icon frames lit, bottom-right region 101.9→83.4).
+- Delfino regression (fresh_plaza.sav): AMB0=18.6% vs fix=18.7% — within run drift, NO regression.
+- render_test 1/1 pass.
+RESIDUAL file-select (20.6%, separate roots, NOT this lighting fix): top sky rows ~50 unchanged (the
+real sky gap, still distributed-blend); the bush has a CMPR 1-bit-alpha cutout gap (ngx draws opaque
+green where GX's leaf gaps show sea); menu-window band still the biggest delta. NEXT: the sky-top
+distributed gap and/or the menu windows.
+GOTCHA recorded: a frozen frame latches captured per-vertex col0 — capture-time A/B toggles (nolight,
+ambient) need a LIVE frame to re-capture; freeze is only for present-time toggles (/ngxskip, /ngxonly).

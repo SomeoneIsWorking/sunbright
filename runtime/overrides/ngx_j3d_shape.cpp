@@ -703,10 +703,20 @@ void capture_colorchan(u32 material) {
     // → fall back to the global register (or 0). A/B: SUNBRIGHT_NGX_AMBGLOBAL=1 forces the old global
     // register for all; SUNBRIGHT_NGX_AMB0=1 forces 0.
     static const bool amb_global = sb_env_on("SUNBRIGHT_NGX_AMBGLOBAL");  // A/B: force the old global reg
+    static const bool amb_zero   = sb_env_on("SUNBRIGHT_NGX_AMB0");       // A/B: force CLOF ambient back to 0
     if (amb_global && g_amb_have[0])
                        for (int k = 0; k < 4; k++) g_cur_chan.ambColor[k] = g_amb_reg[0][k];
     else if (amb_off)  for (int k = 0; k < 4; k++) g_cur_chan.ambColor[k] = B[amb_off + k];  // CLON: per-material block
-    else               for (int k = 0; k < 4; k++) g_cur_chan.ambColor[k] = 0;               // CLOF: 0 (matches xfmem)
+    else if (!amb_zero && g_xf_amb_have[0])
+        // CLOF lit (LightOff block, ambSrc=REG, lighting enabled): the block carries NO ambient field,
+        // so GX keeps the last-programmed global XF ambient register (last-writer-wins across
+        // GXSetChanAmbColor + J3DGDSetChanAmbColor, both tee'd into g_xf_amb). Defaulting to 0 dropped
+        // the ambient floor → diffuse-only back-faces clamp to BLACK (the file-select bush / icon-frame
+        // wash). Reading the live register is the faithful GC behaviour, not a constant. (CLON blocks
+        // already use their own block ambient above, so this does NOT re-introduce the old Delfino
+        // over-bright — that was applying the register to CLON materials too.)
+                       for (int k = 0; k < 4; k++) g_cur_chan.ambColor[k] = g_xf_amb[0][k];
+    else               for (int k = 0; k < 4; k++) g_cur_chan.ambColor[k] = 0;               // CLOF, no register yet
     // COLOR1A1 (mColorChan[2]=COLOR1@chan_off+4, [3]=ALPHA1@chan_off+6) — the 2nd GX colour
     // channel. Materials whose TEV reads rasChan=COLOR1/ALPHA1 (floor s4, buildings s1) need a
     // DISTINCT channel-1 raster; ngx used to alias col1=col0 (→ over-bright). Its material colour
