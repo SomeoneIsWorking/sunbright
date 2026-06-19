@@ -50,6 +50,7 @@
 #include "VideoCommon/BPMemory.h"   // ground-truth GX pixel state (fog / blend / etc.)
 #include "VideoCommon/CPMemory.h"   // ground-truth GX vertex array bases (g_main_cp_state)
 #include "../render/tex_decode.h"   // DBG: decode a texture to check its brightness
+#include "../render/tev_eval.h"     // shared pure GX TEV combiner evaluator (pixblend/render_test)
 #include "../render/tev_shader.h"   // DBG: dump the generated TEV GLSL for a material
 
 namespace {
@@ -4309,25 +4310,8 @@ int sb_ngx_shape_dump(char* out, int cap) {
 namespace {
 inline int sb_clampi(int v, int lo, int hi){ return v<lo?lo:(v>hi?hi:v); }
 
-// GX combiner bitfield decode (matches tev_shader.cpp decode_cc/decode_ac).
-struct PbComb { int a,b,c,d,bias,op,clamp,scale,dest; };
-PbComb dec_cc(uint32_t e){ return {(int)(e>>12)&0xf,(int)(e>>8)&0xf,(int)(e>>4)&0xf,(int)e&0xf,
-    (int)(e>>16)&3,(int)(e>>18)&1,(int)(e>>19)&1,(int)(e>>20)&3,(int)(e>>22)&3}; }
-PbComb dec_ac(uint32_t e){ return {(int)(e>>13)&7,(int)(e>>10)&7,(int)(e>>7)&7,(int)(e>>4)&7,
-    (int)(e>>16)&3,(int)(e>>18)&1,(int)(e>>19)&1,(int)(e>>20)&3,(int)(e>>22)&3}; }
-
-// One regular-combiner component — byte-for-byte the GLSL write_regular() integer math.
-int tev_regular_comp(int a,int b,int c,int d,int bias,int op,int clamp,int scale){
-    static const int bias_v[4]={0,128,-128,0};
-    const int sl = (scale==1)?1:(scale==2)?2:0;            // left shift for scale 0/1/2
-    int dterm = (d + bias_v[bias]) << sl;
-    long lerp = ((long)(a<<8) + (long)(b-a)*(c + (c>>7))) << sl;
-    if (scale != 3) lerp += op ? 127 : 128;
-    lerp >>= 8;
-    int res = op ? (int)(dterm - (int)lerp) : (int)(dterm + (int)lerp);
-    if (scale == 3) res >>= 1;
-    return clamp ? sb_clampi(res,0,255) : sb_clampi(res,-1024,1023);
-}
+// The GX combiner bitfield decode + per-stage integer math now live in the shared
+// pure evaluator runtime/render/tev_eval.h (used by /pixblend AND render_test).
 // Bilinear REPEAT sample of a texmap's base level → RGBA 0..255. (Base-level only; the
 // GPU samples a trilinear mip chain, so for a heavily-minified surface compare the FINAL
 // against the per-batch texture MEAN reported alongside — a large gap = mip-dependent.)
@@ -4399,66 +4383,45 @@ int sb_ngx_pixel_blend(float px, float py, char* out, int cap) {
             bool zp = !S->pe.z_test;
             if (S->pe.z_test) switch(zf){case 0:zp=false;break;case 1:zp=depth<zbuf;break;case 2:zp=depth==zbuf;break;
                 case 3:zp=depth<=zbuf;break;case 4:zp=depth>zbuf;break;case 5:zp=depth!=zbuf;break;case 6:zp=depth>=zbuf;break;default:zp=true;}
-            // interpolate raster col0 + uv per stage's texcoord
+            // interpolate the two raster channels (col0/col1)
             auto interp=[&](float a0,float a1,float a2){ return w0*a0+w1*a1+w2*a2; };
-            int col0[4]; for(int k=0;k<4;k++) col0[k]=sb_clampi((int)(interp(snap[vi].rgba[k],snap[vi+1].rgba[k],snap[vi+2].rgba[k])*255.f+0.5f),0,255);
-            // Run the TEV stages (integer), mirroring the shader.
-            int prev[4]={0,0,0,0};
-            int reg[3][4]; for(int c=0;c<3;c++) for(int k=0;k<4;k++) reg[c][k]=S->tev_color[c][k];
-            int nstg=S->num_stages; if(nstg<1)nstg=1; if(nstg>16)nstg=16;
-            char texinfo[96]={0};
-            char stgtr[256]={0}; int stgn=0;   // per-stage prev trace (RASC over-bright probe)
-            stgn += snprintf(stgtr+stgn,sizeof stgtr-stgn," | RASC(col0)=(%d,%d,%d,a%d)",col0[0],col0[1],col0[2],col0[3]);
-            for (int sgi=0; sgi<nstg; sgi++) {
-                const NgxTevStage& sg=S->stage[sgi];
-                const PbComb cc=dec_cc(sg.color_env); const PbComb ac=dec_ac(sg.alpha_env);
-                int textemp[4]={255,255,255,255}, rastemp[4]={0,0,0,0}, konst[4]={0,0,0,0};
-                // texture sample (this stage's texmap at its texcoord)
-                const int tc = sg.texcoord<8 ? sg.texcoord : 0;
-                const int tm = sg.texmap<8 ? sg.texmap : 0;
-                const float u=interp(snap[vi].uv[tc][0],snap[vi+1].uv[tc][0],snap[vi+2].uv[tc][0]);
-                const float v=interp(snap[vi].uv[tc][1],snap[vi+1].uv[tc][1],snap[vi+2].uv[tc][1]);
-                Tx tx=sample_tex(B.tex[tm],u,v);
-                const u8 tsw=S->swap_table[(sg.alpha_env>>2)&3], rsw=S->swap_table[sg.alpha_env&3];
-                int traw[4]={tx.r,tx.g,tx.b,tx.a};
-                textemp[0]=traw[(tsw>>6)&3];textemp[1]=traw[(tsw>>4)&3];textemp[2]=traw[(tsw>>2)&3];textemp[3]=traw[tsw&3];
-                rastemp[0]=col0[(rsw>>6)&3];rastemp[1]=col0[(rsw>>4)&3];rastemp[2]=col0[(rsw>>2)&3];rastemp[3]=col0[rsw&3];
-                // Konst RGB (GXTevKColorSel) + alpha (GXTevKAlphaSel), faithful to KSEL_C/KSEL_A.
-                { const int ks=sg.kcsel&31; static const int cc8[8]={255,223,191,159,128,96,64,32};
-                  if(ks<8){ konst[0]=konst[1]=konst[2]=cc8[ks]; }
-                  else if(ks<12){ konst[0]=konst[1]=konst[2]=0; }
-                  else if(ks<16){ for(int k=0;k<3;k++) konst[k]=S->kcolor[ks-12][k]; }
-                  else { int comp=(ks-16)/4, reg=(ks-16)&3; for(int k=0;k<3;k++) konst[k]=S->kcolor[reg][comp]; }
-                  const int ka=sg.kasel&31;
-                  if(ka<8) konst[3]=cc8[ka]; else if(ka<16) konst[3]=0;
-                  else { int comp=(ka-16)/4, reg=(ka-16)&3; konst[3]=S->kcolor[reg][comp]; } }
-                if (sgi==0) snprintf(texinfo,sizeof texinfo,"tx%08x(%u,%u,%u,a%u)@uv(%.2f,%.2f)",B.tex[tm].addr,tx.r,tx.g,tx.b,tx.a,u,v);
-                // colour-input selectors (rgb) and alpha-input selectors
-                auto cin=[&](int idx,int ch)->int{ switch(idx){
-                    case 0:return prev[ch];case 1:return prev[3];case 2:return reg[0][ch];case 3:return reg[0][3];
-                    case 4:return reg[1][ch];case 5:return reg[1][3];case 6:return reg[2][ch];case 7:return reg[2][3];
-                    case 8:return textemp[ch];case 9:return textemp[3];case 10:return rastemp[ch];case 11:return rastemp[3];
-                    case 12:return 255;case 13:return 128;case 14:return konst[ch];default:return 0;} };
-                auto ain=[&](int idx)->int{ switch(idx){case 0:return prev[3];case 1:return reg[0][3];case 2:return reg[1][3];
-                    case 3:return reg[2][3];case 4:return textemp[3];case 5:return rastemp[3];case 6:return konst[3];default:return 0;} };
-                int dst_c[3];
-                if (cc.bias!=3) for(int ch=0;ch<3;ch++){
-                    int a=cin(cc.a,ch)&255,bb=cin(cc.b,ch)&255,c=cin(cc.c,ch)&255,d=cin(cc.d,ch);
-                    dst_c[ch]=tev_regular_comp(a,bb,c,d,cc.bias,cc.op,cc.clamp,cc.scale);
-                } else for(int ch=0;ch<3;ch++) dst_c[ch]=cin(cc.d,ch); // compare modes: coarse (haze unaffected)
-                int dst_a;
-                if (ac.bias!=3){ int a=ain(ac.a)&255,bb=ain(ac.b)&255,c=ain(ac.c)&255,d=ain(ac.d);
-                    dst_a=tev_regular_comp(a,bb,c,d,ac.bias,ac.op,ac.clamp,ac.scale);
-                } else dst_a=ain(ac.d);
-                int* cd = cc.dest==0?prev:reg[cc.dest-1];
-                cd[0]=dst_c[0];cd[1]=dst_c[1];cd[2]=dst_c[2];
-                int* ad = ac.dest==0?prev:reg[ac.dest-1];
-                ad[3]=dst_a;
-                if (stgn < (int)sizeof stgtr - 48)
-                    stgn += snprintf(stgtr+stgn,sizeof stgtr-stgn," s%d->prev=(%d,%d,%d,a%d)[scl%d]",
-                        sgi, prev[0],prev[1],prev[2],prev[3], cc.scale);
+            int col0[4], col1[4];
+            for(int k=0;k<4;k++){
+                col0[k]=sb_clampi((int)(interp(snap[vi].rgba[k],snap[vi+1].rgba[k],snap[vi+2].rgba[k])*255.f+0.5f),0,255);
+                col1[k]=sb_clampi((int)(interp(snap[vi].rgba1[k],snap[vi+1].rgba1[k],snap[vi+2].rgba1[k])*255.f+0.5f),0,255);
             }
-            float frag[4]={prev[0]/255.f,prev[1]/255.f,prev[2]/255.f,prev[3]/255.f};
+            // Run the GX TEV combiner via the SHARED evaluator (tev_eval.h) — identical
+            // register mapping (prev=CPREV, c0/c1/c2=tev_color[1..3]) + per-stage integer
+            // math as the shipping shader. Texels sampled at the per-stage interpolated UV.
+            struct Src : tev_eval::TexelSource {
+                const std::vector<NgxRenderVertex>* snap; const NgxRenderBatch* B;
+                uint32_t vi; float w0,w1,w2;
+                mutable Tx s0tx{255,255,255,255}; mutable float s0u=0,s0v=0; mutable uint32_t s0addr=0;
+                bool sample(int stage,int tm,int tc,int out[4]) const override {
+                    const auto& sn=*snap;
+                    const float u=w0*sn[vi].uv[tc][0]+w1*sn[vi+1].uv[tc][0]+w2*sn[vi+2].uv[tc][0];
+                    const float v=w0*sn[vi].uv[tc][1]+w1*sn[vi+1].uv[tc][1]+w2*sn[vi+2].uv[tc][1];
+                    Tx tx=sample_tex(B->tex[tm],u,v);
+                    out[0]=tx.r;out[1]=tx.g;out[2]=tx.b;out[3]=tx.a;
+                    if(stage==0){ s0tx=tx; s0u=u; s0v=v; s0addr=B->tex[tm].addr; }
+                    return true;
+                }
+            } src; src.snap=&snap; src.B=&B; src.vi=vi; src.w0=w0; src.w1=w1; src.w2=w2;
+            tev_eval::StageTrace tr[16];
+            int outc[4]; tev_eval::eval(*S, col0, col1, src, outc, tr);
+            char texinfo[96];
+            snprintf(texinfo,sizeof texinfo,"tx%08x(%u,%u,%u,a%u)@uv(%.2f,%.2f)",
+                     src.s0addr,src.s0tx.r,src.s0tx.g,src.s0tx.b,src.s0tx.a,src.s0u,src.s0v);
+            // Per-stage prev+textemp trace (the alpha-divergence probe — prev.a feeds the
+            // later stages; a wrong texture alpha or a register mismap shows up here).
+            char stgtr[512]={0}; int stgn=0;
+            stgn += snprintf(stgtr+stgn,sizeof stgtr-stgn," | RASC(col0)=(%d,%d,%d,a%d)",col0[0],col0[1],col0[2],col0[3]);
+            { int nstg=S->num_stages; if(nstg<1)nstg=1; if(nstg>16)nstg=16;
+              for(int sgi=0;sgi<nstg && stgn<(int)sizeof stgtr-72;sgi++)
+                stgn += snprintf(stgtr+stgn,sizeof stgtr-stgn," s%d:prev=(%d,%d,%d,a%d)tex=(%d,%d,%d,a%d)",
+                    sgi, tr[sgi].prev[0],tr[sgi].prev[1],tr[sgi].prev[2],tr[sgi].prev[3],
+                    tr[sgi].textemp[0],tr[sgi].textemp[1],tr[sgi].textemp[2],tr[sgi].textemp[3]); }
+            float frag[4]={outc[0]/255.f,outc[1]/255.f,outc[2]/255.f,outc[3]/255.f};
             // texture mean (for the mip-gap check) of the stage-0 texmap.
             double tmean=0; { const NgxTexBind& t=B.tex[S->stage[0].texmap<8?S->stage[0].texmap:0];
                 if(t.addr&&t.w&&t.h&&t.w<=1024&&t.h<=1024){const unsigned char* h=sb_ram_fast(t.addr);
@@ -4470,7 +4433,7 @@ int sb_ngx_pixel_blend(float px, float py, char* out, int cap) {
                 "  L%-2d ti=%-3d ep=%u z=%s(d=%.3f) bm=%u s/d=%u/%u frag=(%.2f,%.2f,%.2f,a%.2f) %s tmean=%.0f",
                 layers, ti, B.epoch, zp?"PASS":"fail", depth, S->pe.blend_mode, S->pe.src_factor, S->pe.dst_factor,
                 frag[0],frag[1],frag[2],frag[3], texinfo, tmean);
-            if (n < cap-260 && (ti==18||ti==12)) n += snprintf(out+n,cap-n,"%s",stgtr);
+            if (n < cap-560 && S->num_stages>1) n += snprintf(out+n,cap-n,"%s",stgtr);
             if (!zp) { if(n<cap-8) n+=snprintf(out+n,cap-n," (z-culled)\n"); continue; }
             // blend over acc (mode 1 = BLEND with factors; else opaque src=ONE dst=ZERO)
             if (S->pe.blend_mode==1) {

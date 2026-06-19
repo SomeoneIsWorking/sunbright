@@ -113,14 +113,17 @@ static int ngx_render_impl(char* outbuf, int cap, const NgxTarget& tgt) {
     std::vector<NgxTevState> tevstates(stv, stv + (ntev > 0 ? ntev : 0));
 
     // Material push constants the generated TEV shaders consume (kcolor 0..255,
-    // tevreg c0/c1/c2 as S10) — must match the push_constant block in tev_shader.
-    struct MatPC { int32_t kcolor[4][4]; int32_t tevreg[3][4]; };
+    // tevreg = the 4 GX TEV colour registers [TEVPREV/CPREV, C0, C1, C2] as S10) —
+    // must match the push_constant block in tev_shader. The shader inits prev from
+    // tevreg[0] (CPREV) and reads combiner inputs c0/c1/c2 from tevreg[1..3]
+    // (Dolphin PixelShaderGen: c0=COLORS[1], c1=COLORS[2], c2=COLORS[3], prev=COLORS[0]).
+    struct MatPC { int32_t kcolor[4][4]; int32_t tevreg[4][4]; };
     auto fill_pc = [&](MatPC& pc, int tev_index) {
         std::memset(&pc, 0, sizeof pc);
         if (tev_index >= 0 && tev_index < (int)tevstates.size()) {
             const NgxTevState& s = tevstates[tev_index];
             for (int c = 0; c < 4; c++) for (int k = 0; k < 4; k++) pc.kcolor[c][k] = s.kcolor[c][k];
-            for (int c = 0; c < 3; c++) for (int k = 0; k < 4; k++) pc.tevreg[c][k] = s.tev_color[c][k];
+            for (int c = 0; c < 4; c++) for (int k = 0; k < 4; k++) pc.tevreg[c][k] = s.tev_color[c][k];
         } else {  // fallback (modulate): white konst, zero tev regs
             for (int c = 0; c < 4; c++) for (int k = 0; k < 4; k++) pc.kcolor[c][k] = 255;
         }

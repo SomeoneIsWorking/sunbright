@@ -300,7 +300,7 @@ std::string sb_tev_gen_fragment(const NgxTevState& st) {
         return "#version 450\nlayout(location=0) in vec4 vColor;\n"
                "layout(location=1) in vec2 vUV[8];\nlayout(location=0) out vec4 o;\n"
                "layout(set=0,binding=0) uniform sampler2D tex[8];\n"
-               "layout(push_constant) uniform Mat { ivec4 kcolor[4]; ivec4 tevreg[3]; } m;\n"
+               "layout(push_constant) uniform Mat { ivec4 kcolor[4]; ivec4 tevreg[4]; } m;\n"
                "void main(){ o = vec4(vec3(m.kcolor[0].rgb)/255.0, 1.0); }\n";
     }
     if (dbgm == 2) {
@@ -316,12 +316,15 @@ std::string sb_tev_gen_fragment(const NgxTevState& st) {
     o.w("layout(location=9) in vec4 vColor1;\n");  // lit raster COLOR1A1 (2nd GX colour channel)
     o.w("layout(location=0) out vec4 o;\n");
     o.w("layout(set=0, binding=0) uniform sampler2D tex[8];\n");   // one per GX texmap
-    o.w("layout(push_constant) uniform Mat { ivec4 kcolor[4]; ivec4 tevreg[3]; } m;\n");
+    o.w("layout(push_constant) uniform Mat { ivec4 kcolor[4]; ivec4 tevreg[4]; } m;\n");
     o.w("int idot(ivec3 a, ivec3 b){ return a.x*b.x + a.y*b.y + a.z*b.z; }\n");
     o.w("void main() {\n");
     o.w("  ivec3 comp16 = ivec3(1,256,0), comp24 = ivec3(1,256,256*256);\n");
-    o.w("  ivec4 prev = ivec4(0,0,0,0);\n");                  // PREV register default
-    o.w("  ivec4 c0 = m.tevreg[0], c1 = m.tevreg[1], c2 = m.tevreg[2];\n");
+    // GX TEV colour registers: tevreg[0]=TEVPREV/CPREV (the PREV init), tevreg[1..3]=
+    // C0/C1/C2 (the combiner c0/c1/c2 inputs). Faithful to Dolphin PixelShaderGen
+    // (int4 c0=COLORS[1], c1=COLORS[2], c2=COLORS[3], prev=COLORS[0]).
+    o.w("  ivec4 prev = m.tevreg[0];\n");                     // PREV register init = CPREV
+    o.w("  ivec4 c0 = m.tevreg[1], c1 = m.tevreg[2], c2 = m.tevreg[3];\n");
     o.w("  ivec4 col0 = ivec4(round(vColor * 255.0));\n");
     o.w("  ivec4 col1 = ivec4(round(vColor1 * 255.0));\n");   // COLOR1A1: distinct 2nd raster channel
     o.w("  ivec4 textemp = ivec4(255), rastemp = ivec4(0), konsttemp = ivec4(0);\n");

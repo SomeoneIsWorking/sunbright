@@ -23,6 +23,7 @@
 #include "ngx_imm_geom.h"
 #include "ngx_indirect.h"
 #include "tev_shader.h"
+#include "tev_eval.h"
 #include "tex_decode.h"
 
 // ── Units under test (self-test entry points defined in their own .cpp) ──────
@@ -518,6 +519,54 @@ int test_imm_sphere(char* rep, int cap) {
     return fails;
 }
 
+// ── TEV combiner evaluator unit (tev_eval.h) ─────────────────────────────────
+// Pins the GX TEV colour-register mapping (the ti=64 plaza-magenta off-by-one bug):
+// the combiner's c0/c1/c2 inputs read tev_color[1..3] (TEVREG0/1/2) and `prev` is
+// initialised from tev_color[0] (CPREV) — Dolphin PixelShaderGen
+// `c0=COLORS[1],c1=COLORS[2],c2=COLORS[3],prev=COLORS[0]`. A mismap turns CPREV into
+// c0 (the actual bug) and goes red here. Also checks the regular-combiner integer math.
+int test_tev_eval(char* rep, int cap) {
+    int pos = 0, fails = 0;
+    auto failf = [&](const char* m){ fails++; if (pos < cap) pos += snprintf(rep+pos, cap-pos, "%s", m); };
+
+    // A single-stage combiner builder. dest=prev, clamp on, bias/op/scale 0.
+    auto mk = [](int cc_a,int cc_b,int cc_c,int cc_d, int ca_a,int ca_b,int ca_c,int ca_d){
+        NgxTevState s{}; s.num_stages = 1;
+        s.stage[0].color_env = ((uint32_t)cc_a<<12)|((uint32_t)cc_b<<8)|((uint32_t)cc_c<<4)|(uint32_t)cc_d | (1u<<19);
+        s.stage[0].alpha_env = ((uint32_t)ca_a<<13)|((uint32_t)ca_b<<10)|((uint32_t)ca_c<<7)|((uint32_t)ca_d<<4) | (1u<<19);
+        s.stage[0].texmap = 0xff; s.stage[0].texcoord = 0xff; s.stage[0].color_chan = 0xff;
+        for (auto& t : s.swap_table) t = 0x1B;   // identity swaps
+        // CPREV / C0 / C1 / C2 distinct so a wrong index is unambiguous.
+        const int16_t regs[4][4] = {{10,20,30,40},{200,201,202,203},{1,2,3,4},{5,6,7,8}};
+        for (int c=0;c<4;c++) for (int k=0;k<4;k++) s.tev_color[c][k] = regs[c][k];
+        return s;
+    };
+    struct NoTex : tev_eval::TexelSource { bool sample(int,int,int,int o[4]) const override { o[0]=o[1]=o[2]=o[3]=255; return true; } } notex;
+    const int white[4] = {255,255,255,255};
+    auto run = [&](const NgxTevState& s, int out[4]){ tev_eval::eval(s, white, white, notex, out, nullptr); };
+
+    // 1. combiner c0 input (cc index 2 / ca index 1) must read TEVREG0 = tev_color[1] = (200,201,202,a203),
+    //    NOT CPREV = tev_color[0]. out = d-term with d=c0. a=b=c=ZERO.
+    { NgxTevState s = mk(15,15,15,2, 7,7,7,1); int o[4]; run(s, o);
+      if (o[0]!=200||o[1]!=201||o[2]!=202||o[3]!=203) { char b[96];
+        snprintf(b,sizeof b,"FAIL c0 maps wrong: got(%d,%d,%d,a%d) exp(200,201,202,a203) [CPREV leak=%s]\n",
+                 o[0],o[1],o[2],o[3], (o[0]==10)?"YES":"no"); failf(b); } }
+    // 2. combiner c1 = tev_color[2] = (1,2,3,a4); c2 = tev_color[3] = (5,6,7,a8).
+    { NgxTevState s = mk(15,15,15,4, 7,7,7,2); int o[4]; run(s, o);
+      if (o[0]!=1||o[1]!=2||o[2]!=3||o[3]!=4) { char b[80]; snprintf(b,sizeof b,"FAIL c1 got(%d,%d,%d,a%d) exp(1,2,3,a4)\n",o[0],o[1],o[2],o[3]); failf(b); } }
+    { NgxTevState s = mk(15,15,15,6, 7,7,7,3); int o[4]; run(s, o);
+      if (o[0]!=5||o[1]!=6||o[2]!=7||o[3]!=8) { char b[80]; snprintf(b,sizeof b,"FAIL c2 got(%d,%d,%d,a%d) exp(5,6,7,a8)\n",o[0],o[1],o[2],o[3]); failf(b); } }
+    // 3. prev register initialised from CPREV = tev_color[0] = (10,20,30,a40): stage 0 with d=prev passes it through.
+    { NgxTevState s = mk(15,15,15,0, 7,7,7,0); int o[4]; run(s, o);
+      if (o[0]!=10||o[1]!=20||o[2]!=30||o[3]!=40) { char b[96];
+        snprintf(b,sizeof b,"FAIL prev-init not CPREV: got(%d,%d,%d,a%d) exp(10,20,30,a40)\n",o[0],o[1],o[2],o[3]); failf(b); } }
+    // 4. regular-combiner integer math, d=ZERO a=ZERO b=ONE(255) c=HALF(128):
+    //    spec = d + ((a<<8 + (b-a)*(c+(c>>7)) + 128) >> 8) = (255*129 + 128) >> 8 = 33023>>8 = 128.
+    { NgxTevState s = mk(15,12,13,15, 7,7,7,7); int o[4]; run(s, o);   // a=ZERO,b=ONE,c=HALF,d=ZERO
+      if (o[0]!=128) { char b[80]; snprintf(b,sizeof b,"FAIL regular math lerp(0,255,128)=%d exp 128\n",o[0]); failf(b); } }
+    return fails;
+}
+
 struct Unit { const char* name; int (*run)(char* rep, int cap); };
 
 const Unit kUnits[] = {
@@ -533,6 +582,7 @@ const Unit kUnits[] = {
     {"imm_occlusion", test_imm_occlusion},
     {"imm_sphere",    test_imm_sphere},
     {"indirect",      test_indirect},
+    {"tev_eval",      test_tev_eval},
 };
 
 }  // namespace

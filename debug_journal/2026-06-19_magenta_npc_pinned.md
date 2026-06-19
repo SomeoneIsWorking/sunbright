@@ -45,3 +45,32 @@ defect. Do NOT guess-patch the combiner. (Also found while reading the GLSL: the
 any material that reads CPREV in stage 0; fix separately + count exercised materials first.)
 
 Repro: load freeroam_plaza.sav, `/pixbatch?x=0.887&y=0.308`, `/gxstate?ti=64`, `/ngxskipset?ti=64`.
+
+---
+
+## UPDATE 2026-06-19 (next session): trace built; register off-by-one FIXED; magenta = C2/texmap3, NOT registers
+Built the per-pixel TEV trace (extended `/pixblend` to dump per-stage prev+textemp for any
+multi-stage material; factored the combiner into the **shared pure header `runtime/render/tev_eval.h`**
+used by /pixblend AND the new `render_test` unit `tev_eval`). The trace IMMEDIATELY exposed a real
+defect AND falsified the "registers cause the magenta" theory:
+
+**REAL BUG FIXED (faithful, Dolphin-confirmed): the GX TEV colour registers were off-by-one.**
+`NgxTevState::tev_color[]` is `[CPREV,C0,C1,C2]`, but vk_mesh pushed `tevreg[0..2]=tev_color[0..2]`
+and the shader read `c0=tevreg[0]` + `prev=ivec4(0)`. So combiner `c0←CPREV`, `c1←C0`, `c2←C1`,
+real C2 dropped, prev-init lost. Dolphin PixelShaderGen is unambiguous: `int4 c0=COLORS[1],
+c1=COLORS[2], c2=COLORS[3], prev=COLORS[0]`. Fixed in vk_mesh (`tevreg[4]`, copy all 4), tev_shader
+(`prev=m.tevreg[0]; c0=m.tevreg[1]..c2=m.tevreg[3]`), and the /pixblend replay (via tev_eval.h).
+This SUBSUMES latent bug #4 (CPREV-init). render_test `tev_eval` unit guards the mapping. ab_oracle
+plaza = 17.1% before AND after (no regression; magenta cluster too small to move the global number).
+
+**But the magenta PERSISTS (real GPU post-fix ≈ (125,43,121) at the speck; oracle ≈ (51,58,78)).**
+The trace (now trustworthy, mirrors the shader) shows WHY: the final pixel ≈ the **C2 register**,
+because s6 = `lerp(c2, prev, c1.a)` with **c1.a ≈ 0**. C2 is written by **s4 = s4_texel·(1−K3.g/255)**,
+and s4 samples **texmap3 (fmt=14 CMPR, 32×32, grey mean (170,174,173)) → a magenta texel (255,92,219)**.
+So the magenta originates in the texmap3 CMPR sample at s4's coord3 UV. The CMPR DECODER itself looks
+correct (standard GC big-endian variant; a global CMPR bug would wash many surfaces, not one speck).
+Open hypotheses for WHY ngx samples a magenta texel where GX gets grey (NEXT SESSION — pick with data):
+  (a) wrong **texgen/UV for coord3** (sampling the wrong texel of texmap3),
+  (b) **mip level** (GX samples a coarse averaged mip → grey; ngx samples base level → magenta speck),
+  (c) **c1.a should be > 0** on GX (then s6 lerps toward prev=(255,255,255)/grey, not C2).
+DON'T re-chase the registers (fixed) — chase the texmap3 sample (UV/mip) and c1.a.
