@@ -828,3 +828,18 @@ triangle + spec-computed coverage); compare ngx's clipped output for ti=7/8 to t
 upper sky has NO brightening layer covering it in ngx (prefix sweep) yet GX is bright there -> check if a
 brightening layer is being dropped by the clip (all verts culled) or not captured. Verification still
 needs the GX-EFB ground-truth wiring for the final A/B, but the clip audit is unit-testable offline.
+
+## UPDATE (2026-06-19 latest+14) — ★ EFB-GRAB WALL WAS A FALSE ALARM: /efbgrab works (SUNBRIGHT_EFB_PEEK=1)
+The "/efbgrab returns black → tailored frontend doesn't populate Dolphin's EFB → architectural wall"
+(latest+11) was WRONG. The black was just bEFBAccessEnable not set BEFORE the frame renders (Dolphin
+only retains the EFB when access is enabled at render time; the probe set it too late). With
+**SUNBRIGHT_EFB_PEEK=1** at startup, /efbgrab returns GX's REAL EFB — the bright file-select scene
+(mean 90, sky/sea/palm/A-B-C blocks all present, top ~448 rows; bottom ~80 black/unused).
+
+⇒ PER-FRAGMENT GX GROUND TRUTH IS NOW AVAILABLE (no copy/present confound). Recipe:
+  GX process: SUNBRIGHT_EFB_PEEK=1 SUNBRIGHT_NGX_PRESENT=0 ... loadstate ... curl /efbgrab?gw=160&gh=132
+  → scratch/screenshots/efbgrab.ppm (640×528 EFB; 3D scene in top 448 rows). Diff vs ngx render.
+This confirms: GX EFB is bright == GX XFB (copy neutral, as the sum=64 filter said), and ngx's render
+is the ~0.6× darker one. The wash IS in ngx's render, now diff-able against true GX EFB pixels.
+NEXT: clean GX-EFB-vs-ngx per-region diff (align EFB top-448 to ngx 640×448) to localize the blended-
+accumulation deficit with reliable ground truth — no longer blocked.
