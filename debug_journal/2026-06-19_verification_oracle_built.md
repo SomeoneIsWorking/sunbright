@@ -290,3 +290,17 @@ FIX: read mColorChan[2]/[3] (COLOR1/ALPHA1 @ chan_off+4/+6), compute a second pe
 light_color0 with the COLOR1 chanctl, add a col1 vertex attribute, and use it in the shader where
 rasChan∈{1,5}. (Supersedes the "missing external effect" conclusion for these LIT materials; the emu14
 cc=0701 UNLIT floor may still be a separate case.)
+
+### ATTEMPT 1 (reverted) — confirmed col1 IS the brightness lever, but my COLOR1 was too DARK
+Implemented the full fix (ChanInfo color1/alpha1; compute_color1 via ngx::light_color0; rgba1 added to
+NgxRenderVertex + vk_mesh vertex layout loc10 + mesh.vert out loc9 + tev_shader col1=vColor1 + interp60
+lerp; rebuilt mesh_vert_spv.h). Result on the oracle: WORSE — 18.1%→31.2%, the whole 3D scene rendered
+near-BLACK. Reverted (git checkout; back to b622451, binary rebuilt to the 18% baseline).
+WHY (the useful finding): the scene going black when col1 dropped PROVES many materials' combiners depend
+heavily on col1 (rasChan=5) — so COLOR1 is genuinely the wash lever (col0 too bright, my col1 too dark,
+TRUTH is between). My compute_color1 was too dark because I used **ambient=0** and white matColor for
+COLOR1; COLOR1A1 has its OWN ambient register (the GXSetChanAmbColor hook already tracks it as
+`g_amb_reg[1]` — I used 0 instead) and possibly its own matColor (GXSetChanMatColor(GX_COLOR1A1)).
+NEXT ATTEMPT: feed COLOR1's real ambient (g_amb_reg[1], or the J3D-programmed XF ambient for channel 1)
+and COLOR1's matColor; re-test against the oracle. This is the same ambient-source RE problem that COLOR0
+had — solve it for channel 1. (Do NOT just retry col1 with amb=0 — that's the reverted regression.)
