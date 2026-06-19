@@ -35,6 +35,7 @@
 #include "../ngx/ngx_clip.h"      // pure, unit-tested near-plane triangle clip
 #include "../ngx/ngx_light.h"     // pure, unit-tested GX per-vertex lighting (test_lighting)
 #include "../ngx/ngx_imm_geom.h"  // pure, unit-tested immediate-mode GX geometry (GXDrawCube)
+#include "../ngx/ngx_indirect.h"  // pure, unit-tested GX indirect-texturing mantissa/decode
 #include <cmath>
 #include <cstdarg>
 #include <cstddef>
@@ -947,13 +948,14 @@ struct TevLayout {
     u32 kcsel_off;      // mTevKColorSel[0] (0 ⇒ none)
     u32 kasel_off;      // mTevKAlphaSel[0] (0 ⇒ none)
     u32 swaptable_off;  // mTevSwapModeTable[0] (0 ⇒ none ⇒ identity, TVB1)
+    u32 indtev_off;     // mIndTevStage[0] (J3DIndTevStage, 0xC bytes each)
 };
 inline bool tev_layout(u32 vt, TevLayout& L) {
     switch (vt) {
-    case VT_TVB1:  L = {0,      0x06, 0x0A, 0,     0,     0,     0,     0    }; return true;
-    case VT_TVB2:  L = {0x30,   0x08, 0x31, 0x10,  0x41,  0x51,  0x53,  0x55 }; return true;
-    case VT_TVB4:  L = {0x1C,   0x0C, 0x1D, 0x3E,  0x5E,  0x6E,  0x72,  0x76 }; return true;
-    case VT_TVB16: L = {0x54,   0x14, 0x55, 0xD6,  0xF6,  0x106, 0x116, 0x126}; return true;
+    case VT_TVB1:  L = {0,      0x06, 0x0A, 0,     0,     0,     0,     0,     0x12 }; return true;
+    case VT_TVB2:  L = {0x30,   0x08, 0x31, 0x10,  0x41,  0x51,  0x53,  0x55,  0x59 }; return true;
+    case VT_TVB4:  L = {0x1C,   0x0C, 0x1D, 0x3E,  0x5E,  0x6E,  0x72,  0x76,  0x7A }; return true;
+    case VT_TVB16: L = {0x54,   0x14, 0x55, 0xD6,  0xF6,  0x106, 0x116, 0x126, 0x12A}; return true;
     default: return false;
     }
 }
@@ -1012,6 +1014,8 @@ void capture_textures(u32 tevblock, u32 vt) {
 // / J3DZMode IDs decode as a plain bitfield — that IS what makeAlphaCmpTable /
 // makeZModeTable build (J3DTevs.cpp): alphaID=(comp0<<5)|(op<<3)|comp1,
 // zID=(cmpEn<<4)|(func<<1)|updEn.
+// J3DIndBlock getType FourCCs: 'IBLF' = full (has indirect fields), 'IBLN' = null (none).
+constexpr u32 IND_FULL = 0x49424C46u /*'IBLF'*/, IND_NULL = 0x49424C4Eu /*'IBLN'*/;
 constexpr u32 PE_OP = 0x50454F50u /*'PEOP'*/, PE_ED = 0x50454544u /*'PEED'*/,
               PE_XL = 0x5045584Cu /*'PEXL'*/, PE_FL = 0x5045464Cu /*'PEFL'*/;
 
@@ -1049,6 +1053,58 @@ inline bool alpha_always_pass(int comp0, int aop, int comp1) {
     case 2:  return (t0 && f1) || (f0 && t1);   // XOR
     default: return (t0 && t1) || (f0 && f1);   // XNOR
     }
+}
+
+// ── Indirect texturing capture (mIndBlock + mIndTevStage) ───────────────────────
+// Read the material's indirect state into st.ind. mIndBlock @ material+0x2C holds the
+// stage count, per-stage tex order (which texcoord/texmap feeds the indirect lookup),
+// the 3 indirect offset matrices, and the per-stage coord scale; mIndTevStage[] (in the
+// TevBlock, variant offset L.indtev_off) holds the per-regular-TEV-stage config. The
+// float offset matrices are quantized to GX's S2.10 mantissas (ngx_ind_mtx_mantissa) so
+// the generated shader can mirror Dolphin's integer math bit-for-bit.
+// Tallied here for /ngxshape: how many materials actually emit an active indirect stage.
+unsigned long g_ind_applied = 0;       // materials with >=1 enabled indirect TEV stage (Indirect mtx)
+unsigned long g_ind_st_skipped = 0;    // enabled stages using an S/T matrix variant (not yet in shader)
+void capture_indirect(u32 material, u32 tevblock, const TevLayout& L, NgxTevState& st) {
+    st.ind = NgxIndirect{};
+    const u32 indb = r32(material + 0x2C);                 // J3DMaterial::mIndBlock
+    if (!valid(indb)) return;
+    if (pe_block_type(r32(indb + 0x00)) != IND_FULL) return;   // IBLN / unknown → no indirect
+    const u8* IB = sb_ram_fast(indb);
+    if (!IB) return;
+    const u8 nstg = IB[0x04];                             // mIndTexStageNum
+    if (nstg == 0 || nstg > 4) return;
+    st.ind.num_stages = nstg;
+    for (int i = 0; i < nstg; i++) {
+        st.ind.order_coord[i] = IB[0x05 + i * 4 + 0];     // J3DIndTexOrder.mCoord
+        st.ind.order_map[i]   = IB[0x05 + i * 4 + 1];     // J3DIndTexOrder.mMap
+        st.ind.scale_s[i]     = IB[0x6C + i * 4 + 0];     // IndTexCoordScale.mScaleS
+        st.ind.scale_t[i]     = IB[0x6C + i * 4 + 1];     // IndTexCoordScale.mScaleT
+    }
+    for (int m = 0; m < 3; m++) {                         // 3 IndTexMtx (0x1C bytes each)
+        const u32 mo = indb + 0x18 + (u32)m * 0x1C;
+        for (int r = 0; r < 2; r++)
+            for (int c = 0; c < 3; c++)
+                st.ind.mtx[m][r][c] = ngx::ngx_ind_mtx_mantissa(rf(mo + (u32)(r * 3 + c) * 4));
+        st.ind.mtx_exp[m] = (int8_t)IB[(0x18 + m * 0x1C) + 0x18];   // mScaleExp (s8)
+    }
+    // Per regular TEV stage indirect config (J3DIndTevStage, 0xC bytes).
+    const u8* TB = sb_ram_fast(tevblock);
+    if (!TB || !L.indtev_off) return;
+    bool any = false, st_used = false;
+    for (int s = 0; s < st.num_stages; s++) {
+        const u32 io = L.indtev_off + (u32)s * 0xC;
+        NgxIndTevStage& d = st.ind.stage[s];
+        d.ind_stage = TB[io + 0]; d.format   = TB[io + 1]; d.bias_sel = TB[io + 2];
+        d.mtx_sel   = TB[io + 3]; d.wrap_s   = TB[io + 4]; d.wrap_t   = TB[io + 5];
+        d.add_prev  = TB[io + 6]; d.alpha_sel = TB[io + 8];
+        int mi, kind;
+        const bool on = ngx::ngx_ind_mtx_decode(d.mtx_sel, &mi, &kind) && d.ind_stage < nstg;
+        d.enabled = on ? 1 : 0;
+        if (on) { any = true; if (kind != ngx::NGX_ITM_INDIRECT) st_used = true; }
+    }
+    if (any) g_ind_applied++;
+    if (st_used) g_ind_st_skipped++;
 }
 
 // Read the material's PE block into st.pe. Default (no/unknown block) = opaque:
@@ -1147,6 +1203,15 @@ unsigned long g_mat_found = 0, g_mat_novt = 0, g_mat_none = 0;
 u32      g_vt_hist_key[8] = {0};    // distinct vtable values seen
 unsigned g_vt_hist_cnt[8] = {0};
 unsigned g_stage_hist[17] = {0};    // num-stages histogram (0..16)
+
+// ── Indirect-texturing reachability instrumentation (tooling-first gate) ─────────
+// Before porting mIndTevStage, confirm reachable-scene materials actually USE it.
+// J3DMaterial::mIndBlock @ +0x2C is J3DIndBlockFull ('IBLF', mIndTexStageNum @ +0x04)
+// or J3DIndBlockNull ('IBLN', 0 stages). getType is virtual slot 2 (vtable+0x10),
+// decoded by pe_block_type (a generic getType-FourCC reader). IND_FULL/IND_NULL above.
+unsigned long g_ind_full = 0, g_ind_null = 0, g_ind_none = 0, g_ind_unk = 0;
+unsigned g_ind_stage_hist[5] = {0};    // mIndTexStageNum histogram (0..4)
+unsigned g_ind_stages_max = 0;
 
 const unsigned char* resolve(unsigned addr, void*) { return sb_ram_fast(addr); }
 
@@ -1395,6 +1460,23 @@ int capture_material() {
 
     capture_textures(tevblock, vt);                    // N6.7: object-model per-texmap textures
 
+    // Indirect-texturing reachability probe (tooling-first gate before porting it).
+    {
+        const u32 indb = r32(material + 0x2C);         // J3DMaterial::mIndBlock
+        if (!valid(indb)) { g_ind_none++; }
+        else {
+            const u32 itag = pe_block_type(r32(indb + 0x00));   // getType FourCC at vtable+0x10
+            if (itag == IND_FULL) {
+                const u8* IB = sb_ram_fast(indb);
+                const u8 nstg = IB ? IB[0x04] : 0;     // mIndTexStageNum
+                g_ind_full++;
+                if (nstg <= 4) g_ind_stage_hist[nstg]++;
+                if (nstg > g_ind_stages_max) g_ind_stages_max = nstg;
+            } else if (itag == IND_NULL) { g_ind_null++; }
+            else { g_ind_unk++; }
+        }
+    }
+
     TevLayout L;
     if (!tev_layout(vt, L)) { g_mat_novt++; return -1; }
     const u8* B = sb_ram_fast(tevblock);               // raw big-endian bytes
@@ -1438,6 +1520,7 @@ int capture_material() {
 
     capture_pe(material, st);   // N7: PE block (alpha test → shader, blend/zmode → pipeline)
     st.pe.cull = g_cur_chan.cullMode;   // backface culling (color block) → pipeline cull state
+    capture_indirect(material, tevblock, L, st);   // indirect texturing (texcoord warp)
 
     // FNV-1a key over the captured state (excluding the key field itself).
     uint64_t h = 1469598103934665603ull;
@@ -3752,6 +3835,16 @@ int sb_ngx_shape_dump(char* out, int cap) {
                          vt == VT_TVB4 ? "TVB4" : vt == VT_TVB16 ? "TV16" : "????";
         n += snprintf(out + n, cap - n, "    %08x %-4s  %u\n", vt, nm, g_vt_hist_cnt[i]);
     }
+    // Indirect-texturing reachability: how many captured materials carry an IBLF block
+    // with >0 indirect stages (the feature gate before porting mIndTevStage).
+    n += snprintf(out + n, cap - n,
+        "  IndBlock: full(IBLF)=%lu null(IBLN)=%lu none=%lu unk=%lu  max_stages=%u\n"
+        "    IndTexStageNum histogram [0..4]: %u %u %u %u %u\n"
+        "    indirect applied (shader-active)=%lu  S/T-matrix stages skipped=%lu\n",
+        g_ind_full, g_ind_null, g_ind_none, g_ind_unk, g_ind_stages_max,
+        g_ind_stage_hist[0], g_ind_stage_hist[1], g_ind_stage_hist[2],
+        g_ind_stage_hist[3], g_ind_stage_hist[4],
+        g_ind_applied, g_ind_st_skipped);
     // N6 lighting capture stats.
     n += snprintf(out + n, cap - n,
         "  lighting: light_loads=%lu  lit_verts=%lu (mean_lum=%.3f, mean_diff=%.3f)\n"

@@ -21,6 +21,7 @@
 #include "ngx_clip.h"
 #include "ngx_light.h"
 #include "ngx_imm_geom.h"
+#include "ngx_indirect.h"
 #include "tev_shader.h"
 #include "tex_decode.h"
 
@@ -256,6 +257,51 @@ int test_tev_swizzle(char* rep, int cap) {
     return fails;
 }
 
+// ── GX indirect-texturing pure helpers ───────────────────────────────────────
+// Locks the IndTexMtx float→S2.10-mantissa quantization (GXBump.c GXSetIndTexMtx:
+// (int)(1024*offset)&0x7FF, sign-extended 11-bit) and the GXIndTexMtxID decode that
+// the shader generator + capture rely on. Hand-computed against GX semantics.
+int test_indirect(char* rep, int cap) {
+    int pos = 0, fails = 0;
+    auto failf = [&](const char* fmt, int a, int b) {
+        fails++; if (pos < cap) pos += snprintf(rep + pos, cap - pos, fmt, a, b); };
+
+    struct { float in; int want; } mc[] = {
+        {0.0f, 0}, {0.25f, 256}, {0.5f, 512}, {0.999f, 1022},   // 1024*0.999=1022.976 → trunc 1022
+        {1.0f, -1024},    // 0x400 sets sign bit → wraps to -1024 (S2.10 overflow, as on HW)
+        {-0.25f, -256}, {-0.5f, -512}, {-1.0f, -1024},
+    };
+    for (auto& c : mc) {
+        int got = ngx::ngx_ind_mtx_mantissa(c.in);
+        if (got != c.want) failf("FAIL mantissa got=%d want=%d\n", got, c.want);
+    }
+
+    // matrix-id decode: idx (0-based) + kind, or disabled.
+    struct { uint8_t sel; bool on; int idx; int kind; } dc[] = {
+        {0,  false, 0, 0},
+        {1,  true,  0, ngx::NGX_ITM_INDIRECT}, {3, true, 2, ngx::NGX_ITM_INDIRECT},
+        {5,  true,  0, ngx::NGX_ITM_S},        {7, true, 2, ngx::NGX_ITM_S},
+        {9,  true,  0, ngx::NGX_ITM_T},        {11, true, 2, ngx::NGX_ITM_T},
+        {4,  false, 0, 0}, {8, false, 0, 0}, {12, false, 0, 0},
+    };
+    for (auto& c : dc) {
+        int idx = -9, kind = -9;
+        bool on = ngx::ngx_ind_mtx_decode(c.sel, &idx, &kind);
+        if (on != c.on) failf("FAIL decode sel got_on=%d want_on=%d\n", on, c.on);
+        if (on && (idx != c.idx || kind != c.kind)) failf("FAIL decode idx/kind got=%d want=%d\n",
+            idx * 10 + kind, c.idx * 10 + c.kind);
+    }
+
+    // format shift + bias.
+    const int fs[4] = {0, 3, 4, 5};
+    for (int f = 0; f < 4; f++) {
+        if (ngx::ngx_ind_fmt_shift((uint8_t)f) != fs[f]) failf("FAIL fmt_shift f=%d got=%d\n", f, ngx::ngx_ind_fmt_shift((uint8_t)f));
+        int want_bias = f == 0 ? -128 : 1;
+        if (ngx::ngx_ind_bias_add((uint8_t)f) != want_bias) failf("FAIL bias f=%d got=%d\n", f, ngx::ngx_ind_bias_add((uint8_t)f));
+    }
+    return fails;
+}
+
 // ── texture block-padding / no-shear unit ────────────────────────────────────
 // GC textures tile at the FORMAT's block dims; sb_tex_decode uses `width` as both the
 // tile-iteration bound and the dst row stride, so the caller MUST pad the logical width
@@ -486,6 +532,7 @@ const Unit kUnits[] = {
     {"imm_cube",      test_imm_cube},
     {"imm_occlusion", test_imm_occlusion},
     {"imm_sphere",    test_imm_sphere},
+    {"indirect",      test_indirect},
 };
 
 }  // namespace

@@ -78,6 +78,62 @@ void write_regular(Buf& o, const char* comp, const Comb& k) {
     o.w(")%s", scale_r[k.scale]);
 }
 
+// Emit the GX indirect-texture coord warp for regular TEV stage `n`, returning the name
+// of a `vec2` GLSL var holding the warped (normalized) UV to sample the stage's texmap.
+// Faithful to GX hardware (mirrors Dolphin PixelShaderGen; all math in fixpoint =
+// uv*texsize*128). Only the Indirect matrix kind (GX_ITM_0..2) is emitted — S/T variants
+// fall back to the unwarped coord (counted as ind_st_skipped at capture). Returns false
+// (no var emitted) when this stage has no active indirect warp.
+bool emit_indirect_warp(Buf& o, const NgxTevState& st, int n, unsigned regcoord, unsigned regmap) {
+    if (n >= st.ind.num_stages) return false;
+    const NgxIndTevStage& d = st.ind.stage[n];
+    if (!d.enabled) return false;
+    // Decode the matrix selection; only the Indirect kind (1..3) is handled in-shader.
+    int mtx_sel = d.mtx_sel;
+    if (!(mtx_sel >= 1 && mtx_sel <= 3)) return false;      // S/T variants: skip (fallback)
+    const int mi = mtx_sel - 1;
+    const int is = d.ind_stage;
+    if (is >= st.ind.num_stages) return false;
+    const unsigned indcoord = st.ind.order_coord[is] < 8 ? st.ind.order_coord[is] : 0;
+    const unsigned indmap   = st.ind.order_map[is]   < 8 ? st.ind.order_map[is]   : 0;
+    const int fmt_shift = (d.format & 3) == 0 ? 0 : (d.format & 3) == 1 ? 3 : (d.format & 3) == 2 ? 4 : 5;
+    const int bias_add  = (d.format & 3) == 0 ? -128 : 1;
+    const int scale_exp = st.ind.mtx_exp[mi];               // net: trans <<exp (exp>0) or >>-exp (exp<0)
+    const int ss = st.ind.scale_s[is] & 31, ts = st.ind.scale_t[is] & 31;
+
+    o.w("  // indirect warp (stage %d via ind stage %d, ITM_%d)\n", n, is, mi);
+    o.w("  vec2 idim%d = vec2(textureSize(tex[%u], 0)) * 128.0;\n", n, indmap);
+    o.w("  ivec2 itc%d = ivec2(vUV[%u] * idim%d);\n", n, indcoord, n);
+    o.w("  itc%d = ivec2(itc%d.x >> %d, itc%d.y >> %d);\n", n, n, ss, n, ts);
+    o.w("  ivec3 iind%d = ivec3(round(texture(tex[%u], vec2(itc%d) / idim%d) * 255.0)).abg;\n",
+        n, indmap, n, n);
+    o.w("  ivec3 icrd%d = iind%d >> %d;\n", n, n, fmt_shift);
+    // bias add per bias_sel (GX_ITB: 0 NONE,1 S,2 T,3 ST,4 U,5 SU,6 TU,7 STU)
+    static const char* bf[8] = { "", "x", "y", "xy", "z", "xz", "yz", "xyz" };
+    if (d.bias_sel & 7) o.w("  icrd%d.%s += %d;\n", n, bf[d.bias_sel & 7], bias_add);
+    // indtevtrans = (M * icrd) >> 3, then scale by 2^scale_exp.
+    const int16_t (*M)[3] = st.ind.mtx[mi];
+    o.w("  ivec2 itr%d = ivec2(%d*icrd%d.x + %d*icrd%d.y + %d*icrd%d.z, "
+        "%d*icrd%d.x + %d*icrd%d.y + %d*icrd%d.z) >> 3;\n",
+        n, M[0][0], n, M[0][1], n, M[0][2], n, M[1][0], n, M[1][1], n, M[1][2], n);
+    if (scale_exp > 0)      o.w("  itr%d = itr%d << %d;\n", n, n, scale_exp);
+    else if (scale_exp < 0) o.w("  itr%d = itr%d >> %d;\n", n, n, -scale_exp);
+    // wrap the regular coord (in its texmap's fixpoint), then add the offset.
+    o.w("  vec2 rdim%d = vec2(textureSize(tex[%u], 0)) * 128.0;\n", n, regmap);
+    o.w("  ivec2 rfix%d = ivec2(vUV[%u] * rdim%d);\n", n, regcoord, n);
+    static const int wrap_texels[6] = { 0, 256, 128, 64, 32, 16 };   // index = GX_ITW (1..5)
+    auto wrap = [&](char comp, int w) {
+        if (w == 0) o.w("  int wc%d_%c = rfix%d.%c;\n", n, comp, n, comp);            // ITW_OFF
+        else if (w >= 6) o.w("  int wc%d_%c = 0;\n", n, comp);                         // ITW_0/invalid
+        else o.w("  int wc%d_%c = rfix%d.%c & (%d - 1);\n", n, comp, n, comp, wrap_texels[w] << 7);
+    };
+    wrap('x', d.wrap_s); wrap('y', d.wrap_t);
+    o.w("  ivec2 tcc%d = ivec2(wc%d_x, wc%d_y) + itr%d;\n", n, n, n, n);
+    o.w("  tcc%d = (tcc%d << 8) >> 8;\n", n, n);             // emulate s24 overflow
+    o.w("  vec2 induv%d = vec2(tcc%d) / rdim%d;\n", n, n, n);
+    return true;
+}
+
 void write_stage(Buf& o, const NgxTevState& st, int n) {
     const NgxTevStage& s = st.stage[n];
     const Comb cc = decode_cc(s.color_env);
@@ -108,8 +164,13 @@ void write_stage(Buf& o, const NgxTevState& st, int n) {
                           || ac.a==4||ac.b==4||ac.c==4||ac.d==4;
     if (tex_used) {
         const unsigned tc = s.texcoord < 8 ? s.texcoord : 0;   // GX texcoord (texgen done on CPU)
-        if (s.texmap < 8) o.w("  textemp = ivec4(round(texture(tex[%u], vUV[%u]) * 255.0)).%s;\n", s.texmap, tc, tsw.c_str());
-        else              o.w("  textemp = ivec4(255,255,255,255).%s;\n", tsw.c_str());
+        if (s.texmap < 8) {
+            // GX indirect texturing: warp this stage's texcoord by an offset sampled from
+            // an indirect texture (water/heat-haze distortion), else sample at vUV[tc].
+            const bool warped = emit_indirect_warp(o, st, n, tc, s.texmap);
+            if (warped) o.w("  textemp = ivec4(round(texture(tex[%u], induv%d) * 255.0)).%s;\n", s.texmap, n, tsw.c_str());
+            else        o.w("  textemp = ivec4(round(texture(tex[%u], vUV[%u]) * 255.0)).%s;\n", s.texmap, tc, tsw.c_str());
+        } else            o.w("  textemp = ivec4(255,255,255,255).%s;\n", tsw.c_str());
     }
 
     // Konst.

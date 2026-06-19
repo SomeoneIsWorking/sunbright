@@ -97,6 +97,35 @@ struct NgxPEState {
     uint8_t  alpha_mask_off;  // 1 = do NOT write A   (GXSetAlphaUpdate(FALSE))
 };
 
+// ── Indirect texturing (mIndBlock + mIndTevStage) ───────────────────────────────
+// GX indirect texturing warps a regular TEV stage's texcoord by an offset sampled
+// from an "indirect" texture. Faithful to GX hardware (mirrors Dolphin's
+// PixelShaderGen / GXBump.c GXSetIndTexMtx): all coords are fixpoint = uv*texsize*128.
+// See debug_journal/2026-06-19_indirect_texturing_re.md for the full derivation.
+struct NgxIndTevStage {       // per regular-TEV-stage indirect config (J3DIndTevStage)
+    uint8_t enabled;          // 1 = this stage applies an indirect warp (has stage AND mtx_sel != OFF)
+    uint8_t ind_stage;        // mIndStage  (which indirect stage's lookup feeds this TEV stage)
+    uint8_t format;           // mIndFormat (GX_ITF_8/5/4/3 = 0..3)
+    uint8_t bias_sel;         // mBiasSel   (GX_ITB_*  0..7: 0=NONE,1=S,2=T,3=ST,4=U,5=SU,6=TU,7=STU)
+    uint8_t mtx_sel;          // mMtxSel    (GXIndTexMtxID: 0=OFF,1-3=ITM_0..2,5-7=S0..2,9-11=T0..2)
+    uint8_t wrap_s, wrap_t;   // mWrapS/T   (GX_ITW_*  0=OFF,1=256,2=128,3=64,4=32,5=16,6=ITW_0)
+    uint8_t add_prev;         // mPrev      (fb_addprev: add to previous tevcoord)
+    uint8_t alpha_sel;        // mAlphaSel  (bump-alpha select; captured — applied only if simple)
+    uint8_t pad_i[3];
+};
+struct NgxIndirect {
+    uint8_t  num_stages;          // mIndTexStageNum (0 = material uses no indirect texturing)
+    uint8_t  pad0[3];
+    uint8_t  order_coord[4];      // per ind stage: J3DIndTexOrder.mCoord (GX_TEXCOORD)
+    uint8_t  order_map[4];        // per ind stage: J3DIndTexOrder.mMap   (GX_TEXMAP)
+    uint8_t  scale_s[4];          // per ind stage: IndTexCoordScale.mScaleS (GX_ITS_* = log2 shift)
+    uint8_t  scale_t[4];          // per ind stage: IndTexCoordScale.mScaleT
+    int16_t  mtx[3][2][3];        // 3 IndTexMtx: 11-bit signed mantissas (round(1024*mOffsetMtx))
+    int8_t   mtx_exp[3];          // per matrix: mScaleExp (s8)
+    uint8_t  pad1;
+    NgxIndTevStage stage[16];     // per regular TEV stage
+};
+
 // A whole material's TEV combiner state — the cache key for a generated shader.
 struct NgxTevState {
     uint8_t  num_stages;       // 1..16
@@ -111,6 +140,7 @@ struct NgxTevState {
     // table id = 0x1B (identity). TVB1 has no tables → all identity.
     uint8_t  swap_table[4];
     NgxPEState pe;             // N7 PE block (alpha test → shader, blend/zmode → pipeline)
+    NgxIndirect ind;           // indirect texturing (texcoord warp); ind.num_stages==0 ⇒ none
     uint64_t key;              // FNV hash of the above (dedupe / shader-cache key)
 };
 
