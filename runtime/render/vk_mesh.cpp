@@ -130,13 +130,15 @@ static int ngx_render_impl(char* outbuf, int cap, const NgxTarget& tgt) {
     // Each batch binds up to 8 texmaps; a TEV stage samples tex[its texmap]. We
     // dedupe decoded textures across ALL texmaps of ALL batches, and record each
     // batch's per-texmap texs index (0 = 1×1 white for unused/unsupported).
-    struct TexEntry { int w, h; size_t off; };           // off = byte offset in staging
+    // off = byte offset in staging; wrap/filter = GX sampler state (honoured per-texture, N: a global
+    // REPEAT+LINEAR sampler wraps a CLAMP texture's edge garbage / smooths a NEAREST one).
+    struct TexEntry { int w, h; size_t off; uint8_t wrap_s, wrap_t, min_f, mag_f; };
     std::vector<TexEntry> texs;                           // index 0 = white
     std::unordered_map<uint64_t, int> tex_index;          // key(addr,fmt,w,h,tlut) → texs index
     std::vector<uint8_t> staging;                         // concatenated RGBA8
     auto white_off = staging.size();
     { uint32_t w = 0xFFFFFFFFu; staging.insert(staging.end(), (uint8_t*)&w, (uint8_t*)&w + 4); }
-    texs.push_back({1, 1, white_off});                    // index 0: 1×1 white
+    texs.push_back({1, 1, white_off, 0, 0, 1, 1});        // index 0: 1×1 white (clamp, linear)
     std::vector<int> batch_texidx(batches.size() * 8, 0); // [b*8+texmap] → texs index
 
     auto decode_bind = [&](const NgxTexBind& T) -> int {
@@ -164,7 +166,7 @@ static int ngx_render_impl(char* outbuf, int cap, const NgxTarget& tgt) {
         staging.resize(off + rgba);
         sb_tex_decode((uint32_t*)(staging.data() + off), host, w, h, T.fmt, tlut, T.tlut_fmt);
         const int idx = (int)texs.size();
-        texs.push_back({w, h, off});
+        texs.push_back({w, h, off, T.wrap_s, T.wrap_t, T.min_filter, T.mag_filter});
         tex_index[key] = idx;
         return idx;
     };
@@ -200,6 +202,7 @@ static int ngx_render_impl(char* outbuf, int cap, const NgxTarget& tgt) {
     std::vector<VkImage> timg(ntex, VK_NULL_HANDLE);
     std::vector<VkDeviceMemory> tmem(ntex, VK_NULL_HANDLE);
     std::vector<VkImageView> tview(ntex, VK_NULL_HANDLE);
+    std::vector<VkSampler>   tsamp(ntex, VK_NULL_HANDLE);   // per-texture sampler (GX wrap/filter)
     std::vector<VkDescriptorSet> bset(batches.size(), VK_NULL_HANDLE);   // one 8-sampler set per batch
 
     int result = -2;
@@ -296,6 +299,26 @@ static int ngx_render_impl(char* outbuf, int cap, const NgxTarget& tgt) {
     for (int i = 0; i < ntex; i++)
         if (!make_dev_image(timg[i], tmem[i], tview[i], VK_FORMAT_R8G8B8A8_UNORM, texs[i].w, texs[i].h,
             VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_IMAGE_ASPECT_COLOR_BIT)) { FAIL("tex image"); goto done; }
+
+    // Per-texture sampler honouring the GX wrap mode + filter (NgxTexBind). GX wrap: 0=CLAMP 1=REPEAT
+    // 2=MIRROR; GX filter: 0=NEAR 1=LINEAR (min 2..6 = mip variants → LINEAR until mips are uploaded).
+    {
+        auto gx_wrap = [](uint8_t w) {
+            return w == 1 ? VK_SAMPLER_ADDRESS_MODE_REPEAT
+                 : w == 2 ? VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT
+                          : VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;   // 0 = CLAMP
+        };
+        for (int i = 0; i < ntex; i++) {
+            VkSamplerCreateInfo sci{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+            sci.magFilter = texs[i].mag_f == 0 ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
+            sci.minFilter = texs[i].min_f == 0 ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
+            sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;   // no mips uploaded yet (level 0 only)
+            sci.addressModeU = gx_wrap(texs[i].wrap_s);
+            sci.addressModeV = gx_wrap(texs[i].wrap_t);
+            sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+            if ((vr = vkCreateSampler(dev, &sci, nullptr, &tsamp[i]))) { FAIL("tex sampler"); goto done; }
+        }
+    }
 
     {
         VkSamplerCreateInfo sci{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
@@ -455,7 +478,7 @@ static int ngx_render_impl(char* outbuf, int cap, const NgxTarget& tgt) {
     for (size_t b = 0; b < batches.size(); b++) {
         VkDescriptorImageInfo dii[8];
         for (int m = 0; m < 8; m++)
-            dii[m] = {sampler, tview[batch_texidx[b * 8 + m]], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+            dii[m] = {tsamp[batch_texidx[b * 8 + m]], tview[batch_texidx[b * 8 + m]], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
         w.dstSet = bset[b]; w.dstBinding = 0; w.dstArrayElement = 0; w.descriptorCount = 8;
         w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w.pImageInfo = dii;
@@ -577,6 +600,7 @@ done:
     if (dsl)    vkDestroyDescriptorSetLayout(dev, dsl, nullptr);
     if (sampler) vkDestroySampler(dev, sampler, nullptr);
     for (int i = 0; i < ntex; i++) {
+        if (tsamp[i]) vkDestroySampler(dev, tsamp[i], nullptr);
         if (tview[i]) vkDestroyImageView(dev, tview[i], nullptr);
         if (timg[i])  vkDestroyImage(dev, timg[i], nullptr);
         if (tmem[i])  vkFreeMemory(dev, tmem[i], nullptr);
