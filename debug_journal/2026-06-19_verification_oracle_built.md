@@ -276,3 +276,17 @@ wash; the matColor-source misread for the magenta material.
 - This is the parked frontier. Per the user directive it stays PARKED as a fidelity chase; the value
   here is the PROOF that it is a missing-effect/compositing problem, NOT a per-material shading bug —
   so no future session should re-audit lighting/textures/combiner/offsets (all proven faithful).
+
+## CORRECTION — the wash IS a shading bug: ngx never computes the COLOR1 channel (aliases col1=col0)
+The "everything faithful → missing external effect" claim above was WRONG: I overlooked the SECOND
+colour channel. The floor (ti=2) combiner stage s4 and the buildings (ti=3) s1 read **rasChan=5 =
+GX_COLOR1A1**, but ngx computes ONLY COLOR0 and the generated shader hardcodes `col1 = col0`
+(tev_shader.cpp:264; comment ngx_j3d_shape.cpp:592 "ngx uses col1==col0"). COLOR1 is a DISTINCT channel:
+floor COLOR1 cc=0x0212 = enable, mask=light2 ONLY, diffFn=NONE (diffuse=1), attn=SPEC — i.e. amb(0) +
+light2·spec-attn, which is much DARKER than COLOR0 (sun, SIGN, lights0+1, ~0.87). Feeding the bright
+COLOR0 where the combiner wants the dark COLOR1 over-brightens exactly the materials that use rasChan=5
+(floor + buildings = the washed surfaces). THIS is the wash (or the bulk of it), a real renderer bug.
+FIX: read mColorChan[2]/[3] (COLOR1/ALPHA1 @ chan_off+4/+6), compute a second per-vertex raster via
+light_color0 with the COLOR1 chanctl, add a col1 vertex attribute, and use it in the shader where
+rasChan∈{1,5}. (Supersedes the "missing external effect" conclusion for these LIT materials; the emu14
+cc=0701 UNLIT floor may still be a separate case.)
