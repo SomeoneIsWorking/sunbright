@@ -120,6 +120,7 @@ SUNBRIGHT_OVERRIDE(ov_gxs_flush, 0x8035d8f0u) {
 // non-async-lagged per-frame GX reference for diffing ngx's render (no copy/present confound).
 namespace { std::atomic<int> g_efb_grab_w{0}, g_efb_grab_h{0}; }
 extern "C" int sb_efb_grab_grid(int, int, const char*);   // probe_server.cpp (CPU-thread peek+write)
+extern "C" void sb_efb_grab_frame_reset();                // scene_render.cpp (reset per-pass counter)
 extern "C" void sb_efb_grab_arm(int gw, int gh) { g_efb_grab_w.store(gw); g_efb_grab_h.store(gh); }
 namespace {
 static const bool s_efb_grab_mode = getenv("SUNBRIGHT_EFB_GRAB") != nullptr;
@@ -129,6 +130,7 @@ SUNBRIGHT_OVERRIDE(ov_gxs_copydisp, 0x8035ececu) {
     if (s_efb_grab_mode && sunbright_purejit_mode()) {
         int w = g_efb_grab_w.exchange(0), h = g_efb_grab_h.exchange(0);
         if (w > 0 && h > 0) sb_efb_grab_grid(w, h, "scratch/screenshots/efbgrab.ppm");  // EFB full NOW
+        sb_efb_grab_frame_reset();             // GXCopyDisp = frame end → reset the per-pass counter
         sb_run_original_around(cpu, 0x8035ececu, nullptr, 0);   // run the REAL copy (keep XFB/frame cycle)
         return;
     }

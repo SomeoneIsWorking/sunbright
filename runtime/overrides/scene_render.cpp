@@ -44,9 +44,40 @@ static bool widescreen_on() {
 // Global (not static) so call_ppc can log every function called during the HUD (find element draws).
 bool g_in_hud = false;
 
+// ── Per-pass GX-EFB ground-truth grab (wash localization) ────────────────────────────────────────
+// In the GX baseline (SUNBRIGHT_EFB_GRAB, NGX_PRESENT=0) grab the EFB at the armed projection-pass
+// boundary: GXSetProjection marks a pass START, so grabbing there captures the EFB ACCUMULATED by all
+// PRIOR passes. Sweeping the armed pass gives GX's cumulative EFB after each pass — diff vs ngx's
+// /ngxprefix at the matching point to find WHICH pass's compositing diverges (the wash). Frame pass
+// counter reset at GXCopyDisp (sb_efb_grab_frame_reset, called from gx_stream_own).
+extern "C" int sb_efb_grab_grid(int, int, const char*);   // probe_server.cpp
+static const bool s_efb_grab_mode = getenv("SUNBRIGHT_EFB_GRAB") != nullptr;
+static unsigned g_gx_pass_count = 0;
+static std::atomic<int> g_proj_grab_pass{-1};   // armed pass (-1 = disarmed)
+static int g_proj_grab_w = 160, g_proj_grab_h = 132;
+extern "C" void sb_efb_grab_pass_arm(int pass, int gw, int gh) {
+    g_proj_grab_w = gw > 0 ? gw : 160; g_proj_grab_h = gh > 0 ? gh : 132; g_proj_grab_pass.store(pass);
+}
+extern "C" void sb_efb_grab_frame_reset() { g_gx_pass_count = 0; }   // called at GXCopyDisp (frame end)
+
 static void ov_gx_projection(CPUState& cpu) {
     const u32 mtx = cpu.gpr[3];
     const u32 type = cpu.gpr[4];
+    if (s_efb_grab_mode && sunbright_purejit_mode() && !ngx_capture_active()) {
+        // GX baseline: grab the EFB (prior passes accumulated) at the armed pass, then run the REAL
+        // GXSetProjection (no widescreen squeeze — Dolphin's GFX_WIDESCREEN_HACK handles the baseline).
+        if (g_proj_grab_pass.load() >= 0) std::fprintf(stderr,
+            "[efbpass] armed=%d pass_count=%u type=%u %s\n", g_proj_grab_pass.load(), g_gx_pass_count, type,
+            (g_proj_grab_pass.load() == (int)g_gx_pass_count) ? "MATCH-GRABBING" : "");
+        if (g_proj_grab_pass.load() == (int)g_gx_pass_count) {
+            int ok = sb_efb_grab_grid(g_proj_grab_w, g_proj_grab_h, "scratch/screenshots/efbpass.ppm");
+            std::fprintf(stderr, "[efbpass] grab pass=%u ok=%d\n", g_gx_pass_count, ok);
+            g_proj_grab_pass.store(-1);   // one-shot
+        }
+        g_gx_pass_count++;
+        sb_run_original_around(cpu, GX_SET_PROJECTION, nullptr, 0);
+        return;
+    }
     // The projection is published to the native renderer (ngx_set_projection) BELOW, after
     // the widescreen squeeze is applied to the guest matrix — so ngx gets the EXACT matrix
     // GX packs (perspective AND orthographic, both squeezed identically). Publishing the
@@ -127,7 +158,7 @@ static const bool s_proj_registered = [] {
     // Per-call (return-true): ngx needs the projection published at EVERY GXSetProjection, not once at
     // block compile. Only purejit-safe when ngx capture is active — with ngx off, leave it inert so
     // Dolphin's JIT runs the real GXSetProjection (the Dolphin-GX baseline).
-    if (ngx_capture_active()) mark_override_purejit_safe(GX_SET_PROJECTION);
+    if (ngx_capture_active() || s_efb_grab_mode) mark_override_purejit_safe(GX_SET_PROJECTION);
     std::fprintf(stderr, "[renderport] native widescreen: hooked GXSetProjection @ %08x\n",
                  GX_SET_PROJECTION);
     return true;

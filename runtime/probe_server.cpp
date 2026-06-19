@@ -93,6 +93,7 @@ int sb_ngx_shapeat_dump(char*, int, float, float);           // runtime/override
 extern "C" int sb_gx_blend_dump(char*, int);                 // runtime/overrides/gx_stream_own.cpp (/gxblend)
 extern "C" int sb_gx_copyfilter_dump(char*, int);            // runtime/overrides/gx_stream_own.cpp (/copyfilter)
 extern "C" void sb_efb_grab_arm(int gw, int gh);             // runtime/overrides/gx_stream_own.cpp (/efbgrabnext)
+extern "C" void sb_efb_grab_pass_arm(int pass, int gw, int gh); // runtime/overrides/scene_render.cpp (/efbgrabpass)
 int sb_ngx_gxstate_dump(char*, int);                         // runtime/overrides/ngx_j3d_shape.cpp (/gxstate)
 extern "C" void sb_ngx_set_gxstate_ti(int);                  // runtime/overrides/ngx_j3d_shape.cpp (/gxstate?ti=)
 extern "C" void sb_ngx_set_gxstate_sh(unsigned);             // runtime/overrides/ngx_j3d_shape.cpp (/gxstate?sh=)
@@ -425,23 +426,7 @@ std::string handle_repl(const char* path) {
             x, y, c, (c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF, (c >> 24) & 0xFF);
         return std::string(buf, n);
     }
-    if (strncmp(path, "/efbgrab", 8) == 0) {
-        // Ground-truth GX EFB dump: peek a GW×GH grid of Dolphin's EFB → scratch/screenshots/efbgrab.ppm.
-        // ⚠ This frame-boundary grab (RunOnCPUThread) is FLAKY — it pauses at a varying point, often
-        // AFTER the EFB was cleared for the next frame → black. For a RELIABLE grab use the GXCopyDisp-
-        // time grab (/efbgrabnext, gx_stream_own.cpp) which captures the EFB while it's FULL.
-        // Requires SUNBRIGHT_EFB_PEEK=1 at startup (bEFBAccessEnable must be on BEFORE the frame renders).
-        int GW = 160, GH = 132;
-        if (const char* p = strstr(path, "gw=")) GW = atoi(p + 3);
-        if (const char* p = strstr(path, "gh=")) GH = atoi(p + 3);
-        g_ActiveConfig.bEFBAccessEnable = true;
-        if (!g_efb_interface) { app("efbgrab: no g_efb_interface\n"); return std::string(buf, n); }
-        const char* outp = "scratch/screenshots/efbgrab.ppm";
-        int ok = 0;
-        Core::RunOnCPUThread(Core::System::GetInstance(), [&] { ok = sb_efb_grab_grid(GW, GH, outp); });
-        app("efbgrab: %s (%dx%d, frame-boundary — FLAKY; prefer /efbgrabnext)\n", ok ? "wrote" : "FAILED", GW, GH);
-        return std::string(buf, n);
-    }
+    // NOTE: check /efbgrabnext and /efbgrabpass BEFORE /efbgrab (which is an 8-char prefix of both).
     if (strncmp(path, "/efbgrabnext", 12) == 0) {  // arm a RELIABLE EFB grab at the next GXCopyDisp (EFB full)
         int GW = 160, GH = 132;
         if (const char* p = strstr(path, "gw=")) GW = atoi(p + 3);
@@ -449,6 +434,27 @@ std::string handle_repl(const char* path) {
         g_ActiveConfig.bEFBAccessEnable = true;
         sb_efb_grab_arm(GW, GH);                    // gx_stream_own.cpp grabs at the next GXCopyDisp after()
         app("efbgrab: armed %dx%d grab at next GXCopyDisp (SUNBRIGHT_EFB_GRAB must be set; NGX_PRESENT=0)\n", GW, GH);
+        return std::string(buf, n);
+    }
+    if (strncmp(path, "/efbgrabpass", 12) == 0) {  // grab GX EFB at projection-pass P (cumulative prior passes)
+        int p = 0, GW = 160, GH = 132;
+        if (const char* q = strstr(path, "p=")) p = atoi(q + 2);
+        if (const char* q = strstr(path, "gw=")) GW = atoi(q + 3);
+        if (const char* q = strstr(path, "gh=")) GH = atoi(q + 3);
+        g_ActiveConfig.bEFBAccessEnable = true;
+        sb_efb_grab_pass_arm(p, GW, GH);            // scene_render.cpp grabs at GXSetProjection #p -> efbpass.ppm
+        app("efbgrab: armed %dx%d grab at projection-pass %d (EFB after prior passes); needs SUNBRIGHT_EFB_GRAB, NGX_PRESENT=0\n", GW, GH, p);
+        return std::string(buf, n);
+    }
+    if (strncmp(path, "/efbgrab", 8) == 0) {   // FLAKY frame-boundary grab (prefer /efbgrabnext); 8-char prefix — keep LAST
+        int GW = 160, GH = 132;
+        if (const char* p = strstr(path, "gw=")) GW = atoi(p + 3);
+        if (const char* p = strstr(path, "gh=")) GH = atoi(p + 3);
+        g_ActiveConfig.bEFBAccessEnable = true;
+        if (!g_efb_interface) { app("efbgrab: no g_efb_interface\n"); return std::string(buf, n); }
+        int ok = 0;
+        Core::RunOnCPUThread(Core::System::GetInstance(), [&] { ok = sb_efb_grab_grid(GW, GH, "scratch/screenshots/efbgrab.ppm"); });
+        app("efbgrab: %s (%dx%d, frame-boundary — FLAKY; prefer /efbgrabnext)\n", ok ? "wrote" : "FAILED", GW, GH);
         return std::string(buf, n);
     }
     if (strncmp(path, "/ngxshapes", 10) == 0) {  // per-shape NDC bbox (localize a misplaced shape)
