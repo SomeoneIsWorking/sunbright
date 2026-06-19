@@ -502,3 +502,39 @@ Per the handoff's own ALTERNATIVE clause: the Rotation hunt is now a PROVEN dead
 failed sweep). Pivoting to the OTHER ngx gap the prior session flagged: **non-plaza levels render large
 WHITE BLOBS under ngx (Bianco etc.), present with AND without particles** = a non-particle wash/texture/
 sky gap (ngx's first time rendering a level). Verifying that observation myself next, then diagnosing.
+
+## UPDATE (2026-06-19 latest+3) — file-select oracle tool + evidence-based diagnosis (user redirect)
+
+User redirected off levels back to FILE-SELECT (work-order: title+file-select before Delfino) and said
+"build tools to do oracle compare." Built it:
+- **`tools/render/fs_oracle.sh` + `tools/render/img_avg.py`** (commit 4529c5f). Captures N frames each of
+  ngx (NGX_PRESENT=1) and the Dolphin-GX baseline (NGX_PRESENT=0), both held at file-select via
+  `/pad?do=autostop`, TIME-AVERAGES each side to cancel animation phase (clouds/water/running Mario =
+  the documented artifact, memory fileselect-cloud-wash-drift-artifact), then per-region diff+heatmap via
+  ab_diff.py. img_avg refuses an all-black average. Pinned to build-freshtest (SUNBRIGHT_BIN overrides).
+
+### What the phase-robust oracle proves (NOT artifact — the prior "faithful here" note is WRONG now)
+Time-averaged whole-frame mean RGB: **GX (108,155,190) vs ngx (89,120,154)** — a real, systematic ~0.8×
+darkening, dominated by the sky/sea/far background. Heatmap also shows doubled text/windows = a 2D offset.
+Concrete issues, ranked:
+1. **Background (sky/sea/palm-tree, all FAR vertex-colored materials) ~0.8× too dark.** **Sand is
+   PIXEL-IDENTICAL (235,202,174)** → NOT a global gamma/multiply; specific to the far materials.
+   Ruled OUT with evidence (via /shapeat + /gxstate?ti=11 on the sea shape sh=80e84cd4):
+   - NOT the blend: force-opaque (/ngxnoblend?on=0) leaves sea dark (49,97,141) vs GX (89,165,235).
+   - NOT lighting: sea has nrmcls=0 (no normals); enabling lighting would BLACKEN, not brighten.
+   - NOT fog: GXSetFog SYNC tee = type 0 (GX_FOG_NONE). Fog is OFF in this scene.
+   - NOT the shader: generated GLSL is a clean RASC passthrough (COLOR ADD a=RASC, b/c/d=ZERO → vtx color).
+   - NOT the blend-factor mapping: ngx vk_dst maps GX INVSRCCLR→ONE_MINUS_SRC_COLOR correctly (ngx_present.cpp:694).
+   - REMAINING cause: the sea/sky draw with **src=ONE dst=INVSRCCLR (screen blend)** so result =
+     frag + bg·(1−frag); the LOWER layers of the multi-layer blend stack are darker in ngx, propagating
+     up. This is the documented multi-layer-blend NO-ORACLE trap — needs layer-by-layer isolation of the
+     bottom sky layer / clear. ⚠ xfmem claims COLOR0 en=1 mask=03 for the sea but the J3D object block
+     says en=0 (faithful) — that's the async-lag liar (memory xfmem-not-cpu-oracle), do NOT chase it.
+2. **J2D window vertical offset ~11px** (window top: GX y=58 vs ngx y=69) + left-edge/corner differs.
+   A 2D ortho/viewport positioning bug — independent of the blend stack, more tractable.
+3. **Extra Mario at the TOP of the frame** in ngx (persists through time-averaging → a real consistently-
+   drawn model, not a jump); GX has only the bottom running Mario.
+
+NEXT (needs user steer on which is THE "serious" one, given this screen's thrash history): (2) window
+offset and (3) extra Mario are concrete/tractable; (1) is the blend-stack trap. Use fs_oracle.sh for any
+fix's verdict (it's the trustworthy number now).
