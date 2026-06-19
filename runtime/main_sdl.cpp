@@ -1049,6 +1049,12 @@ int main(int argc, char* argv[]) {
         fprintf(stderr, "[sunbright] Internal resolution scale: %d× (%d×%d internal)\n",
                 scale, 640 * scale, 528 * scale);
     }
+    // EFB access (peek) — opt-in via SUNBRIGHT_EFB_PEEK. Enables Dolphin to RETAIN the EFB each frame
+    // so /efbpeek + /efbgrab can read it. NOTE (2026-06-19): under our TAILORED GX frontend the peek
+    // returns BLACK even in the NGX_PRESENT=0 baseline — the frontend doesn't populate Dolphin's
+    // standard peekable EFB. So this is currently INERT for ground truth; kept for if the frontend's
+    // EFB lifecycle is wired up later. Off by default (per-frame retain cost; doesn't help today).
+    if (getenv("SUNBRIGHT_EFB_PEEK")) Config::SetBase(Config::GFX_HACK_EFB_ACCESS_ENABLE, true);
     // Shader compilation (user-directed: NO ubershaders): synchronous specialized shaders +
     // persistent per-game pipeline cache + boot-time precompile of every cached pipeline.
     // The map-open/level-entry whole-game freezes were first-seen-material pipeline compiles

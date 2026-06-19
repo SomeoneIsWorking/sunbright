@@ -756,3 +756,28 @@ GXCopyDisp; xfmem/bpmem async-lag). The next real tool is a Dolphin-EFB capture 
 (hook the GX-process pipeline to snapshot the EFB after N draws), OR a GX-faithful CPU compositor fed
 the verified-faithful inputs. Both are substantial. Method fully demonstrated; BUG 1 shipped; tooling
 built (by-shape /gxstate, /ngxverts rgb+clip, viewport capture, /ngxdroppass, layer-attribution).
+
+## UPDATE (2026-06-19 latest+11) — built /efbgrab GX-EFB ground-truth tool; EFB peek is BLACK (arch wall)
+To get the per-stage GX ground truth the wash needs, built /efbgrab: peeks a GW×GH grid of Dolphin's
+EFB on the CPU thread (Core::RunOnCPUThread — the HTTP-thread g_efb_interface->PeekColor HANGS in
+single-core; the CPU-thread one services the GPU) → scratch/screenshots/efbgrab.ppm. Gated EFB-access on
+SUNBRIGHT_EFB_PEEK (Config::GFX_HACK_EFB_ACCESS_ENABLE — must be on BEFORE the frame renders).
+
+RESULT: in the NGX_PRESENT=0 GX baseline, /efbgrab returns ALL BLACK even though the XFB (presented
+oracle) has the full bright scene. ROOT: our "tailored GX frontend (single-core, no CP ring)" is active
+in BOTH modes and does NOT populate Dolphin's STANDARD peekable EFB, so PeekColor reads black. ⇒
+**per-stage GX ground truth via EFB peek is NOT obtainable** without wiring our frontend's framebuffer
+into Dolphin's EFB-access path (deep frontend work). This also re-confirms why GX-side /ngxdrawlimit
+lockstep is dead. The /efbgrab tool is kept (works once the frontend EFB lifecycle is wired, or in
+other contexts); the SUNBRIGHT_EFB_PEEK flag is INERT for ground truth today.
+
+STATE OF BUG 2 (the file-select/Delfino-class wash), after the full data-divergence pass:
+- CONFIRMED real static ~21% (time-averaged), ngx ~0.8× luma, mid-tones dark+grey, sand pixel-exact.
+- ALL per-material INPUTS faithful (by-shape /gxstate); gamma=1.0; lighting toggle no-op; blend-map
+  correct; sky-base gradient faithful (/ngxverts); NO single layer is the culprit (layer-attribution).
+- It's a DISTRIBUTED under-brightening: the multi-layer screen-blend haze stack accumulates less than GX.
+- BLOCKER: localizing the missing brightness needs per-stage GX ground truth, which this architecture
+  can't provide (tailored frontend → no peekable EFB; XFB-only re-copy; xfmem/bpmem async-lag).
+NEXT (if pursued): wire the tailored GX frontend's render target into Dolphin's EFB-access (PeekColor /
+FramebufferManager) so /efbgrab returns the real EFB — then diff EFB vs XFB vs ngx to split render-gap
+vs copy/present-gap. That's the one tool that cracks it; it's a frontend-integration build.

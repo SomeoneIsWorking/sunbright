@@ -398,6 +398,40 @@ std::string handle_repl(const char* path) {
             x, y, c, (c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF, (c >> 24) & 0xFF);
         return std::string(buf, n);
     }
+    if (strncmp(path, "/efbgrab", 8) == 0) {
+        // Ground-truth GX EFB dump (PRE-copy): peek a GW×GH grid of Dolphin's EFB on the CPU thread
+        // (Core::RunOnCPUThread — the HTTP-thread PeekColor hangs in single-core; the CPU-thread one
+        // services the GPU). Writes scratch/screenshots/efbgrab.ppm. Run under NGX_PRESENT=0 (the GX
+        // baseline fills the real EFB). This is the only NON-async-lagged GX reference: diff it vs the
+        // presented XFB (ab2.gx.ppm) to find a copy/present darkening, or vs ngx to find a render gap.
+        // EFB native is 640×528 (RES_SCALE=1). Default grid 160×132 (every 4th px) → fast enough.
+        int GW = 160, GH = 132;
+        if (const char* p = strstr(path, "gw=")) GW = atoi(p + 3);
+        if (const char* p = strstr(path, "gh=")) GH = atoi(p + 3);
+        if (GW < 1) GW = 1; if (GW > 640) GW = 640; if (GH < 1) GH = 1; if (GH > 528) GH = 528;
+        g_ActiveConfig.bEFBAccessEnable = true;
+        if (!g_efb_interface) { app("efbgrab: no g_efb_interface\n"); return std::string(buf, n); }
+        std::vector<unsigned char> rgb((size_t)GW * GH * 3, 0);
+        const int W = GW, H = GH;
+        Core::RunOnCPUThread(Core::System::GetInstance(), [&] {
+            for (int j = 0; j < H; j++) {
+                int ey = (int)((j + 0.5f) / H * 528.0f);
+                for (int i = 0; i < W; i++) {
+                    int ex = (int)((i + 0.5f) / W * 640.0f);
+                    uint32_t c = g_efb_interface->PeekColor((uint16_t)ex, (uint16_t)ey);  // 0xAARRGGBB
+                    size_t o = ((size_t)j * W + i) * 3;
+                    rgb[o] = (c >> 16) & 0xFF; rgb[o + 1] = (c >> 8) & 0xFF; rgb[o + 2] = c & 0xFF;
+                }
+            }
+        });
+        const char* outp = "scratch/screenshots/efbgrab.ppm";
+        if (FILE* f = fopen(outp, "wb")) {
+            fprintf(f, "P6\n%d %d\n255\n", W, H);
+            fwrite(rgb.data(), 1, rgb.size(), f); fclose(f);
+            app("efbgrab: wrote %s (%dx%d EFB peek grid, pre-copy GX ground truth)\n", outp, W, H);
+        } else app("efbgrab: cannot write %s\n", outp);
+        return std::string(buf, n);
+    }
     if (strncmp(path, "/ngxshapes", 10) == 0) {  // per-shape NDC bbox (localize a misplaced shape)
         static thread_local char rep[16384]; sb_ngx_shapes_dump(rep, sizeof rep); app("%s", rep);
         return std::string(buf, n);
