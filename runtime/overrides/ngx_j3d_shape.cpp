@@ -381,8 +381,19 @@ struct GxStateRec {
                   float cosA[3]={0}; float distA[3]={0}; } lights[8];
 };
 std::atomic<int> g_gxstate_ti{ []{ const char* v=getenv("SUNBRIGHT_NGX_GXSTATE"); return v?atoi(v):-1; }() };
+// /gxstateat?sh=ADDR — target the gxstate snapshot by SHAPE ADDRESS (stable across frames, unlike
+// tev_index which the per-frame TEV table renumbers). 0 = inactive (use ti). The cloud/overlay wash
+// quads sh=80d39xxx need this to be analyzed across frames.
+std::atomic<u32> g_gxstate_sh{0};
 GxStateRec g_gxstate, g_gxstate_pub;
 extern "C" void sb_ngx_set_gxstate_ti(int t) { g_gxstate_ti.store(t); }
+extern "C" void sb_ngx_set_gxstate_sh(unsigned a) { g_gxstate_sh.store(a); }
+extern u32 g_cur_shape;   // defined below (the shape being captured)
+// True when THIS draw is the gxstate target — by shape addr if set, else by tev_index.
+static inline bool gxstate_is_target(int ti) {
+    if (u32 s = g_gxstate_sh.load()) return g_cur_shape == s;
+    return g_gxstate_ti.load() == ti;
+}
 // Per-vertex UV capture for the gxstate target ti (filled in transform_eye): first vertex's raw
 // texcoords + computed (texgen'd) UVs + the UV bbox over the shape's verts. Pins texgen/UV-tiling
 // divergence (the file-select cloud over-tiling). Published with g_gxstate.
@@ -1548,7 +1559,7 @@ int capture_material() {
     // /gxstate: when this material is the target, snapshot the GX-command-stream state (the
     // game's actual writes, live at this draw) alongside ngx's object-model reconstruction.
     auto gxstate_snap = [&](int ti){
-        if (g_gxstate_ti.load() != ti || g_gxstate.have || !g_cur_chan.valid) return;
+        if (!gxstate_is_target(ti) || g_gxstate.have || !g_cur_chan.valid) return;
         GxStateRec& R = g_gxstate; R = GxStateRec{}; R.have = true; R.ti = ti; R.sh = g_cur_shape;
         R.obj_cc = g_cur_chan.color0; R.obj_ca = g_cur_chan.alpha0;
         for (int k=0;k<4;k++){ R.obj_mat[k]=g_cur_chan.matColor[k]; R.obj_amb[k]=g_cur_chan.ambColor[k]; }
@@ -1635,7 +1646,7 @@ void transform_eye() {
     g_litrgba.assign(nv * 4, 0.0f);
     g_litrgba1.assign(nv * 4, 0.0f);
     g_uvs.assign(nv * 16, 0.0f);
-    const bool vtxdump_this = (g_cur_tev_index == g_gxstate_ti.load());
+    const bool vtxdump_this = gxstate_is_target(g_cur_tev_index);
     if (vtxdump_this) { g_vtxdump.clear(); g_vtxdump_projtype = (unsigned char)g_proj_type;
                         for (int i=0;i<12;i++) g_vtxdump_mv[i]=m[i]; }
     static std::vector<float> s_eye;          // per-vertex eye pos (x,y,z) for the shred metric
@@ -1734,7 +1745,7 @@ void transform_eye() {
             g_sky.uvn++;
         }
         // gxstate target UV capture: pin the cloud over-tiling (raw tex + texgen'd UV range).
-        if (g_cur_tev_index == g_gxstate_ti.load()) {
+        if (gxstate_is_target(g_cur_tev_index)) {
             if (!g_uvdbg.have) { g_uvdbg.have = true;
                 g_uvdbg.tex0[0]=v.tex[0][0]; g_uvdbg.tex0[1]=v.tex[0][1];
                 g_uvdbg.tex1[0]=v.tex[1][0]; g_uvdbg.tex1[1]=v.tex[1][1];

@@ -93,6 +93,7 @@ int sb_ngx_shapeat_dump(char*, int, float, float);           // runtime/override
 extern "C" int sb_gx_blend_dump(char*, int);                 // runtime/overrides/gx_stream_own.cpp (/gxblend)
 int sb_ngx_gxstate_dump(char*, int);                         // runtime/overrides/ngx_j3d_shape.cpp (/gxstate)
 extern "C" void sb_ngx_set_gxstate_ti(int);                  // runtime/overrides/ngx_j3d_shape.cpp (/gxstate?ti=)
+extern "C" void sb_ngx_set_gxstate_sh(unsigned);             // runtime/overrides/ngx_j3d_shape.cpp (/gxstate?sh=)
 int sb_ngx_order_dump(char*, int);                           // runtime/overrides/ngx_j3d_shape.cpp (/ngxorder)
 extern "C" int sb_ngx_set_prefix(int);                       // runtime/render/ngx_present.cpp (/ngxprefix?n=)
 extern "C" void sb_ngx_set_draw_limit(int);                  // runtime/overrides/ngx_j3d_shape.cpp (/ngxdrawlimit?n=)
@@ -413,7 +414,10 @@ std::string handle_repl(const char* path) {
         return std::string(buf, n);
     }
     if (strncmp(path, "/gxstate", 8) == 0) {  // GX-cmd-stream vs ngx-object-model render-state diff
-        if (const char* p = strstr(path, "ti=")) sb_ngx_set_gxstate_ti(atoi(p + 3));
+        // sh=ADDR targets by SHAPE ADDRESS (stable; tev_index renumbers per frame). ti= targets by
+        // tev_index AND clears the sh target. (sh=0 also clears it.)
+        if (const char* p = strstr(path, "sh=")) sb_ngx_set_gxstate_sh((unsigned)strtoul(p + 3, nullptr, 16));
+        if (const char* p = strstr(path, "ti=")) { sb_ngx_set_gxstate_ti(atoi(p + 3)); sb_ngx_set_gxstate_sh(0); }
         static thread_local char rep[8192]; sb_ngx_gxstate_dump(rep, sizeof rep); app("%s", rep);
         return std::string(buf, n);
     }

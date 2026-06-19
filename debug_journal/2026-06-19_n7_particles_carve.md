@@ -625,3 +625,26 @@ TEV/projection dump keyed by SHAPE ADDRESS (sh=80d39xxx is stable). Then pin the
 projection (why huge-w/sprawl) and TEV (why greenish/opaque) vs GX, and fix per-material.
 NEXT: with by-shape tooling, RE the file-select cloud/overlay draw (sh=80d39xxx) projection + TEV,
 verify each fix with ab_oracle scratch/fileselect.sav (drop the 22.6%).
+
+## UPDATE (2026-06-19 latest+6) — BUG 2 tooling (by-shape /gxstate) + status: it's COMPOSITING
+
+Built by-SHAPE-ADDRESS /gxstate targeting (`/gxstate?sh=ADDR`, `sb_ngx_set_gxstate_sh`) so a material
+can be analyzed ACROSS frames despite tev_index renumbering (the blocker noted in latest+5). Shape
+addrs are stable for a given save (80d39254/80d390e0/80d391d8/80d392d0 = the file-select wash quads).
+
+Analyzed the biggest wash quad sh=80d39254 (nv=545, tex 80a61ce0 64x128 fmt=5, the file-select water):
+TEV = modulate (TEXC*RASC), alpha-test GEQ 128, blend mode=0 (opaque), zmode LEQ, UV0 in [0,1] (NOT
+heavily tiled — the "tiled 69x" is a DIFFERENT shape). The gxstate DIFFs (ngx cc=0706/mat=REG vs xfmem
+070f/VTX; ngx color_env 08f8af vs bpmem 08afff) are the **async-lag liars** (memory xfmem-not-cpu-oracle;
+the tool itself caveats bpmem is GP-thread-lagged). ngx's OBJECT-MODEL reads are faithful — re-confirming
+the prior session's "all per-material INPUTS faithful → COVERAGE/COMPOSITING bug".
+
+⇒ BUG 2 is a multi-layer COMPOSITING/coverage emergent issue, NOT a per-material input bug. The only
+valid oracle is final PIXELS (ab_oracle), NOT gxstate/xfmem/bpmem diffs. Per-region ab_oracle delta
+(scratch/fileselect.sav) shows the WORST error is the WINDOW/PANEL band (mid rows 60-102), not the sky
+(40-57); sand is near-exact (14-26). So "background darkening" is only part of it; windows/panels dominate.
+This is the documented multi-layer-blend no-pure-oracle trap — but now attackable with the frame-exact
+pixel oracle + the layer-isolation probes (/ngxonly /ngxskip /ngxprefix /ngxdroppass + freeze).
+NEXT (a dedicated pixel-oracle campaign, fresh context): bisect the screen-blend stack layer-by-layer
+with /ngxprefix on the frozen file-select frame, find which layer's compositing diverges from GX, fix
+the blend/coverage there, verify each step drops the ab_oracle number. Don't trust gxstate DIFFs here.
