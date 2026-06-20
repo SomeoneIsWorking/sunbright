@@ -4688,8 +4688,10 @@ int sb_ngx_pixel_batch(float px, float py, char* out, int cap) {
                     const unsigned char* tl = t.tlut_addr ? sb_ram_fast(t.tlut_addr) : nullptr;
                     if (src){ std::vector<uint32_t> px((size_t)t.w*t.h); sb_tex_decode(px.data(), src, t.w, t.h, t.fmt, tl, t.tlut_fmt);
                         for (uint32_t v:px){r+=v&0xFF;g+=(v>>8)&0xFF;b+=(v>>16)&0xFF;a+=(v>>24)&0xFF;} nn=px.size(); } }
-                n += snprintf(out + n, cap - n, "  texmap%d %08x fmt=%u %ux%u mean=(%.0f,%.0f,%.0f) a=%.0f\n",
-                    tm, t.addr, t.fmt, t.w, t.h, nn?r/nn:0, nn?g/nn:0, nn?b/nn:0, nn?a/nn:0);
+                static const char* WM[3] = {"CLAMP","REPEAT","MIRROR"};
+                n += snprintf(out + n, cap - n, "  texmap%d %08x fmt=%u %ux%u mean=(%.0f,%.0f,%.0f) a=%.0f wrap_s=%s wrap_t=%s minf=%u magf=%u mip=%u/%u\n",
+                    tm, t.addr, t.fmt, t.w, t.h, nn?r/nn:0, nn?g/nn:0, nn?b/nn:0, nn?a/nn:0,
+                    t.wrap_s<3?WM[t.wrap_s]:"?", t.wrap_t<3?WM[t.wrap_t]:"?", t.min_filter, t.mag_filter, t.mipmap, t.mip_count);
             }
             // UV bbox over the batch's verts, per texcoord 0..7 (so the higher texgen'd
             // coords — e.g. coord3/coord5 on ti=64 — are visible; a degenerate/zero bbox =

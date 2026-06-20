@@ -104,3 +104,43 @@ This is a sub-texel SAMPLING-PARITY gap in a threshold combiner — hard to veri
 texgen UV as ground truth, and low-value (a ~146px speck). PARKED per "can't cheaply verify = STOP / no
 guess-patch". NEXT (if resumed): get GX's coord5/coord3 UV ground truth (or A/B mTotalMtx vs the live
 XF-row texmtx), and check texmap5 filter/mip parity; do NOT tweak the c1.a threshold (that's a bandaid).
+
+## UPDATE 2026-06-20 — NO ENGINE DIFF FOUND; GX RENDERS THE MAGENTA TOO (it's a real feature)
+User directive: chase ENGINE diffs, not pixel diffs. Built the tooling to do this self-consistently
+and verified every engine input for the magenta material — result: ngx is FAITHFUL here, and the
+"ngx-only magenta" premise is FALSIFIED.
+
+Tooling built/fixed this session (all committed):
+- **freeze now holds the tevstate table** (gate capture() on !g_ngx_frozen). Root of the whole
+  ti-instability mess: tev_index is a content-hash-deduped index into a SHARED g_tevstates table that
+  capture() kept growing/clearing during /ngxfreeze, reassigning slots out from under the latched front
+  buffer. Now /pixblend and /pixbatch agree on a frozen frame. THIS is why earlier sessions' ti-based
+  cross-frame claims drifted.
+- **/magmat**: locates the magenta NPC material in a frozen frame by CMPR-magenta texmap signature →
+  ti + NDC bbox + covered centre. Decouples from pixel-hunting a walking Pianta.
+- **/pixbatch -901 texmap line now prints wrap_s/wrap_t/min/mag/mip**; /pixblend buffer 16k→64k.
+
+Engine-input verification (frozen, self-consistent, material ti=64):
+- magenta originates in **texmap3** (CMPR 32×32), a genuinely MULTI-COLOURED texture (cyan AND magenta
+  regions). Decoder is byte-for-byte Dolphin-identical (/tex 119 PARITY-OK).
+- coord3 (tg3 src=TEX0, m adds +0.975) has UV bbox **[0.98,1.64]×[0.98,1.98]** — in [1,2]. texmap3 wrap
+  = **REPEAT/REPEAT**, so UV[1,2] wraps to [0,1] = the magenta region. ngx wraps EXACTLY as GX does.
+- texmap5 (I8 64×64, mean α 70): wrap=CLAMP but UV5 ∈ [0,1] (moot). **Mip hypothesis FALSIFIED**: I8
+  mean α 70 — minification averages toward 70, can NEVER reach the ~255 the grey threshold needs.
+- texgen matrices = the material's mTotalMtx = the DL-replay matrices GX uses. minf/magf = LINEAR. None
+  of: binding, wrap, filter, decoder, matrix, mip diverges from the engine.
+- **GX (oracle, NGX_PRESENT=0) RENDERS MAGENTA TOO**: full-frame scan of abo_oracle.ppm = 105–136
+  magenta px (bbox centre-screen) every run; abo_ngx = 367–443 px. So the magenta is a REAL game
+  feature both renderers draw — it is NOT invented by ngx.
+
+Why the counts differ (367 vs 105) and prior "146 vs 34": the NPC is at a DIFFERENT screen
+position/pose in the two processes (loadstate-into-a-running-core is NOT frame-exact for a walking
+NPC; centroids 40px apart even at settle=1; settle=0 captures nothing). So the count/position delta is
+the **moving-NPC measurement confound** — the SAME artifact class as the file-select "wash" and the
+ti=9 "below-hull" premises this session. Cannot claim residual over-production without a frame-matched
+capture, which the current save path can't provide for a moving NPC.
+
+CONCLUSION: no demonstrable engine-data divergence for the magenta. It's a faithful render of a real
+feature; the "magenta NPC bug" rested on un-matched frames. To revisit a possible residual
+over-production you'd need a STATIONARY-NPC scene (or a frame-exact dual capture) — verify-first says
+don't port/tweak until then. DON'T re-chase registers/decoder/mip/wrap/matrix (all faithful).
