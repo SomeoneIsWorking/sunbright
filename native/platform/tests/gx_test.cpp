@@ -7,6 +7,7 @@
 #include <dolphin/gx.h>
 #include "gx_state.h"
 #include "ngx_light.h"   // decode_chanctl — the renderer's decoder; cross-check the packing
+#include "gx_tev_bridge.h"  // GXState.tev -> NgxTevState (the GX-tee -> renderer path)
 #include <cstdio>
 #include <cmath>
 
@@ -168,12 +169,52 @@ static void test_lighting_state() {
     chkf(g.light[2].cosAtt[0], 1.f, "light2 cosAtt0");
 }
 
+// SLICE 4: TEV combiner setters. Driving GXSetTevOp(GX_MODULATE) + GXSetTevOrder
+// through the seam must produce EXACTLY the NgxTevState that the renderer's tev_test
+// already proved renders the spec pixel (101,50,25) — closing the GX-tee -> renderer loop.
+static void test_tev_state() {
+    auto& g = sb::platform::gx::state();
+    g.tev = sb::platform::gx::GXState::TevBlock{};   // reset (swapTable defaults to identity)
+
+    GXSetNumTevStages(1);
+    GXSetTevOp(GX_TEVSTAGE0, GX_MODULATE);
+    GXSetTevOrder(GX_TEVSTAGE0, GX_TEXCOORD0, GX_TEXMAP0, GX_COLOR0A0);
+
+    NgxTevState st = sb::platform::gx::ngx_tevstate_from_gx(g);
+    chki(st.num_stages, 1, "tev num_stages");
+    // GX_MODULATE color: a=ZERO(15) b=TEXC(8) c=RASC(10) d=ZERO(15), op ADD, clamp, dest PREV.
+    chki((long)st.stage[0].color_env, (long)((15u<<12)|(8u<<8)|(10u<<4)|15u|(1u<<19)),
+         "MODULATE color_env packs to the rendering encoding");
+    chki((long)st.stage[0].alpha_env, (long)((7u<<13)|(4u<<10)|(5u<<7)|(7u<<4)|(1u<<19)),
+         "MODULATE alpha_env packs to the rendering encoding");
+    chki(st.stage[0].texmap, 0, "tev order texmap0");
+    chki(st.stage[0].texcoord, 0, "tev order texcoord0");
+    chki(st.stage[0].color_chan, GX_COLOR0A0, "tev order raster channel");
+    chki(st.swap_table[0], 0x1B, "swap table 0 defaults to identity (no rrrr)");
+
+    // GXSetTevSwapModeTable round-trips into the NgxTevState swizzle byte.
+    GXSetTevSwapModeTable(GX_TEV_SWAP1, GX_CH_GREEN, GX_CH_GREEN, GX_CH_GREEN, GX_CH_ALPHA);
+    NgxTevState st2 = sb::platform::gx::ngx_tevstate_from_gx(g);
+    chki(st2.swap_table[1], 0x57, "swap table 1 = ggga (0x57)");
+
+    // Konst + TEV register colours capture.
+    GXColor k = { 10, 20, 30, 40 };
+    GXSetTevKColor(GX_KCOLOR0, k);
+    GXColor tc = { 1, 2, 3, 4 };
+    GXSetTevColor(GX_TEVREG1, tc);   // GX_TEVREG1 == register index 2 (CPREV=0,REG0=1,REG1=2)
+    NgxTevState st3 = sb::platform::gx::ngx_tevstate_from_gx(g);
+    chki(st3.kcolor[0][0], 10, "kcolor0 r");
+    chki(st3.kcolor[0][3], 40, "kcolor0 a");
+    chki(st3.tev_color[2][1], 2, "tevreg1 (=C1, index 2) g");
+}
+
 int main() {
     std::printf("== GX seam (transform + pipeline slices) unit tests ==\n");
     test_state_roundtrip();
     test_project_ortho();
     test_pipeline_state();
     test_lighting_state();
+    test_tev_state();
     std::printf("%d checks, %d failures\n", g_checks, g_fail);
     return g_fail ? 1 : 0;
 }

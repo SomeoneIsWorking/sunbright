@@ -71,6 +71,28 @@ struct GXState {
         f32  cosAtt[3];    // angle attenuation a0,a1,a2
         f32  distAtt[3];   // distance attenuation k0,k1,k2
     } light[8];
+
+    // --- TEV combiner state (GXSetTev*/GXSetTevColor/GXSetTevKColor*) ---
+    // Captured in the SAME bit layout the GameCube BP TEV registers use — which is
+    // exactly NgxTevState.color_env/alpha_env (the J3D path stores those registers raw),
+    // so the renderer's tev_shader decodes this directly (ngx_tevstate_from_gx bridges
+    // GXState -> NgxTevState). colorEnv/alphaEnv per stage are gx->tevc/teva; kcsel/kasel
+    // and swap selection are kept UNPACKED (NgxTevStage form) for the shader.
+    struct TevBlock {
+        u32 colorEnv[16];   // per stage: a@12 b@8 c@4 d@0, op@18, scale@20/bias@16, clamp@19, dest@22
+        u32 alphaEnv[16];   // per stage: a@13 b@10 c@7 d@4, op@18, ..., dest@22, rasSwap@0, texSwap@2
+        u8  kcsel[16];      // GXTevKColorSel per stage
+        u8  kasel[16];      // GXTevKAlphaSel per stage
+        u8  texcoord[16];   // GX_TEXCOORD0.. (0xff = none)
+        u8  texmap[16];     // GX_TEXMAP0..   (0xff = none)
+        u8  colorChan[16];  // GXChannelID raster source
+        // The 4 swap tables (NgxTevState swizzle byte: r=(b>>6)&3 g=(b>>4)&3 b=(b>>2)&3 a=b&3).
+        // Default to identity 0x1B (what GXInit programs table 0); a 0 would swizzle "rrrr".
+        u8  swapTable[4] = { 0x1B, 0x1B, 0x1B, 0x1B };
+        s16 tevColor[4][4]; // GXSetTevColor[S10] CPREV/C0/C1/C2 RGBA (S10)
+        u8  kColor[4][4];   // GXSetTevKColor KONST0..3 RGBA (0..255)
+        u8  numIndStages;   // GXSetNumIndStages
+    } tev;
 };
 
 // The single live GX state the seam writes and the renderer reads.

@@ -232,4 +232,101 @@ void GXGetLightColor(const GXLightObj* lt, GXColor* color) {
     color->b = (u8)(o.color[2]*255.f + 0.5f); color->a = (u8)(o.color[3]*255.f + 0.5f);
 }
 
+// --- SLICE 4: TEV combiner state (GXSetTev*) --------------------------------
+// Ported from the decomp GXTev.c, but writing into GXState.tev (the BP-register bit
+// layout = NgxTevState.color_env/alpha_env) instead of the GC FIFO. The renderer's
+// tev_shader decodes this directly (see gx_tev_bridge.h ngx_tevstate_from_gx).
+namespace {
+// GXTev.c SET_REG_FIELD(reg, size, shift, val): replace `size` bits at `shift`.
+inline void set_field(u32& reg, int size, int shift, u32 val) {
+    const u32 mask = ((1u << size) - 1u) << shift;
+    reg = (reg & ~mask) | ((val << shift) & mask);
+}
+} // namespace
+
+void GXSetTevColorIn(GXTevStageID stage, GXTevColorArg a, GXTevColorArg b,
+                     GXTevColorArg c, GXTevColorArg d) {
+    u32& r = state().tev.colorEnv[stage];
+    set_field(r, 4, 12, a); set_field(r, 4, 8, b); set_field(r, 4, 4, c); set_field(r, 4, 0, d);
+}
+void GXSetTevAlphaIn(GXTevStageID stage, GXTevAlphaArg a, GXTevAlphaArg b,
+                     GXTevAlphaArg c, GXTevAlphaArg d) {
+    u32& r = state().tev.alphaEnv[stage];
+    set_field(r, 3, 13, a); set_field(r, 3, 10, b); set_field(r, 3, 7, c); set_field(r, 3, 4, d);
+}
+void GXSetTevColorOp(GXTevStageID stage, GXTevOp op, GXTevBias bias, GXTevScale scale,
+                     GXBool clamp, GXTevRegID out_reg) {
+    u32& r = state().tev.colorEnv[stage];
+    set_field(r, 1, 18, op & 1);
+    if (op <= 1) { set_field(r, 2, 20, scale); set_field(r, 2, 16, bias); }
+    else         { set_field(r, 2, 20, (op >> 1) & 3); set_field(r, 2, 16, 3); }
+    set_field(r, 1, 19, clamp & 0xFF); set_field(r, 2, 22, out_reg);
+}
+void GXSetTevAlphaOp(GXTevStageID stage, GXTevOp op, GXTevBias bias, GXTevScale scale,
+                     GXBool clamp, GXTevRegID out_reg) {
+    u32& r = state().tev.alphaEnv[stage];
+    set_field(r, 1, 18, op & 1);
+    if (op <= 1) { set_field(r, 2, 20, scale); set_field(r, 2, 16, bias); }
+    else         { set_field(r, 2, 20, (op >> 1) & 3); set_field(r, 2, 16, 3); }
+    set_field(r, 1, 19, clamp & 0xFF); set_field(r, 2, 22, out_reg);
+}
+void GXSetTevOp(GXTevStageID id, GXTevMode mode) {
+    GXTevColorArg carg = (id != GX_TEVSTAGE0) ? GX_CC_CPREV : GX_CC_RASC;
+    GXTevAlphaArg aarg = (id != GX_TEVSTAGE0) ? GX_CA_APREV : GX_CA_RASA;
+    switch (mode) {
+    case GX_MODULATE:
+        GXSetTevColorIn(id, GX_CC_ZERO, GX_CC_TEXC, carg, GX_CC_ZERO);
+        GXSetTevAlphaIn(id, GX_CA_ZERO, GX_CA_TEXA, aarg, GX_CA_ZERO); break;
+    case GX_DECAL:
+        GXSetTevColorIn(id, carg, GX_CC_TEXC, GX_CC_TEXA, GX_CC_ZERO);
+        GXSetTevAlphaIn(id, GX_CA_ZERO, GX_CA_ZERO, GX_CA_ZERO, aarg); break;
+    case GX_BLEND:
+        GXSetTevColorIn(id, carg, GX_CC_ONE, GX_CC_TEXC, GX_CC_ZERO);
+        GXSetTevAlphaIn(id, GX_CA_ZERO, GX_CA_TEXA, aarg, GX_CA_ZERO); break;
+    case GX_REPLACE:
+        GXSetTevColorIn(id, GX_CC_ZERO, GX_CC_ZERO, GX_CC_ZERO, GX_CC_TEXC);
+        GXSetTevAlphaIn(id, GX_CA_ZERO, GX_CA_ZERO, GX_CA_ZERO, GX_CA_TEXA); break;
+    case GX_PASSCLR:
+        GXSetTevColorIn(id, GX_CC_ZERO, GX_CC_ZERO, GX_CC_ZERO, carg);
+        GXSetTevAlphaIn(id, GX_CA_ZERO, GX_CA_ZERO, GX_CA_ZERO, aarg); break;
+    default: break;
+    }
+    GXSetTevColorOp(id, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVPREV);
+    GXSetTevAlphaOp(id, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVPREV);
+}
+void GXSetTevOrder(GXTevStageID stage, GXTexCoordID coord, GXTexMapID map, GXChannelID color) {
+    auto& t = state().tev;
+    u32 tmap = map & ~0x100;
+    t.texmap[stage]   = (tmap >= GX_MAX_TEXMAP) ? 0xff : (u8)tmap;
+    t.texcoord[stage] = (coord >= GX_MAX_TEXCOORD) ? 0xff : (u8)coord;
+    t.colorChan[stage] = (u8)color;     // raw GXChannelID (shader maps COLOR0/COLOR1)
+}
+void GXSetTevColor(GXTevRegID id, GXColor color) {
+    auto& c = state().tev.tevColor[id];
+    c[0] = color.r; c[1] = color.g; c[2] = color.b; c[3] = color.a;
+}
+void GXSetTevColorS10(GXTevRegID id, GXColorS10 color) {
+    auto& c = state().tev.tevColor[id];
+    c[0] = color.r; c[1] = color.g; c[2] = color.b; c[3] = color.a;
+}
+void GXSetTevKColor(GXTevKColorID id, GXColor color) {
+    auto& k = state().tev.kColor[id];
+    k[0] = color.r; k[1] = color.g; k[2] = color.b; k[3] = color.a;
+}
+void GXSetTevKColorSel(GXTevStageID stage, GXTevKColorSel sel) { state().tev.kcsel[stage] = (u8)sel; }
+void GXSetTevKAlphaSel(GXTevStageID stage, GXTevKAlphaSel sel) { state().tev.kasel[stage] = (u8)sel; }
+void GXSetTevSwapMode(GXTevStageID stage, GXTevSwapSel ras_sel, GXTevSwapSel tex_sel) {
+    // The renderer reads swap_table[alphaEnv&3] (raster) and [(alphaEnv>>2)&3] (texture).
+    u32& r = state().tev.alphaEnv[stage];
+    set_field(r, 2, 0, ras_sel); set_field(r, 2, 2, tex_sel);
+}
+void GXSetTevSwapModeTable(GXTevSwapSel table, GXTevColorChan red, GXTevColorChan green,
+                           GXTevColorChan blue, GXTevColorChan alpha) {
+    // NgxTevState swizzle byte: r=(b>>6)&3 g=(b>>4)&3 b=(b>>2)&3 a=b&3.
+    state().tev.swapTable[table] = (u8)(((red & 3) << 6) | ((green & 3) << 4) |
+                                        ((blue & 3) << 2) | (alpha & 3));
+}
+void GXSetTevDirect(GXTevStageID /*stage*/) { /* no indirect captured: stage is direct */ }
+void GXSetNumIndStages(u8 n) { state().tev.numIndStages = n; }
+
 } // extern "C"
