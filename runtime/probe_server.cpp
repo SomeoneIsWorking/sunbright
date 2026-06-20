@@ -109,6 +109,7 @@ extern "C" int  sb_ngx_texmtxloads_dump(char*, int);        // runtime/overrides
 int sb_ngx_efbcopies_dump(char*, int);                       // runtime/overrides/ngx_j3d_shape.cpp (/efbcopies)
 int sb_ngx_pixel_batch(float, float, char*, int);            // runtime/overrides/ngx_j3d_shape.cpp
 int sb_ngx_pixel_blend(float, float, char*, int);            // runtime/overrides/ngx_j3d_shape.cpp (/pixblend)
+int sb_ngx_find_magenta(char*, int);                         // runtime/overrides/ngx_j3d_shape.cpp (/magmat)
 extern "C" int ngx_geom_diff_report(char* out, int cap);     // runtime/overrides/ngx_j3d_shape.cpp (/ngxgeomdiff)
 extern "C" int ngx_proj_diff_report(char* out, int cap);     // runtime/overrides/ngx_j3d_shape.cpp (/ngxproj)
 extern "C" int sb_ngx_set_onlyti(int);                       // runtime/render/ngx_present.cpp (/ngxonly)
@@ -569,11 +570,15 @@ std::string handle_repl(const char* path) {
         sb_ngx_set_noblend(v); app("ngx noblend = %d (0=force opaque, -1=per-material)\n", v);
         return std::string(buf, n);
     }
+    if (strncmp(path, "/magmat", 7) == 0) {  // locate the CMPR-magenta NPC material in the frozen frame
+        static thread_local char rep[4096]; sb_ngx_find_magenta(rep, sizeof rep); app("%s", rep);
+        return std::string(buf, n);
+    }
     if (strncmp(path, "/pixblend", 9) == 0) {  // CPU full-pipeline blend-stack replay (per-layer TEV+blend over the clear)
         float x = 0.f, y = -0.6f;
         if (const char* p = strstr(path, "x=")) x = strtof(p + 2, nullptr);
         if (const char* p = strstr(path, "y=")) y = strtof(p + 2, nullptr);
-        static thread_local char rep[16384]; sb_ngx_pixel_blend(x, y, rep, sizeof rep); app("%s", rep);
+        static thread_local char rep[65536]; sb_ngx_pixel_blend(x, y, rep, sizeof rep); app("%s", rep);
         return std::string(buf, n);
     }
     if (strncmp(path, "/pixbatch", 9) == 0) {  // CPU pixel->batch raster probe (which captured batch covers a NDC point)

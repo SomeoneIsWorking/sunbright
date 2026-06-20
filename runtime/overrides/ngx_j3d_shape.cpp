@@ -4827,3 +4827,48 @@ int sb_ngx_pixel_batch(float px, float py, char* out, int cap) {
     }
     return n;
 }
+
+// ── Locate a material in the frozen frame by a CMPR-magenta texmap signature ─────
+// The magenta-NPC bug lives on a WALKING Pianta — pixel-hunting it is flaky. This scans
+// the frozen snapshot's batches for the one whose texmaps include a CMPR (fmt 14) texture
+// that decodes mostly magenta (R>180,G<120,B>150), and reports its tev_index + on-screen
+// NDC bbox + a covered centre point, so /pixblend can frame it deterministically. Use on a
+// FROZEN frame (the tevstate table + batches are then self-consistent — see the freeze fix).
+int sb_ngx_find_magenta(char* out, int cap) {
+    const int fb = g_front.load(std::memory_order_acquire);
+    const std::vector<NgxRenderVertex>& snap = g_snap[fb];
+    const std::vector<NgxRenderBatch>&  bats = g_batches[fb];
+    int n = snprintf(out, cap, "magmat fb=%d frozen=%d batches=%zu\n", fb, sb_ngx_get_freeze(), bats.size());
+    int best_b = -1, best_tm = -1; double best_frac = 0.0; uint32_t best_addr = 0;
+    for (size_t bi = 0; bi < bats.size(); bi++) {
+        const NgxRenderBatch& B = bats[bi];
+        for (int tm = 0; tm < 8; tm++) {
+            const NgxTexBind& t = B.tex[tm];
+            if (t.fmt != 14 /*CMPR*/ || !t.addr || !t.w || !t.h || t.w > 256 || t.h > 256) continue;
+            const unsigned char* host = sb_ram_fast(t.addr); if (!host) continue;
+            std::vector<uint32_t> px((size_t)t.w * t.h);
+            sb_tex_decode(px.data(), host, t.w, t.h, t.fmt, nullptr, 0);
+            size_t mag = 0; for (uint32_t v : px) { int r=v&0xFF,g=(v>>8)&0xFF,b=(v>>16)&0xFF;
+                if (r>180 && g<120 && b>150) mag++; }
+            const double frac = px.empty() ? 0.0 : (double)mag / px.size();
+            if (frac > best_frac) { best_frac = frac; best_b = (int)bi; best_tm = tm; best_addr = t.addr; }
+        }
+    }
+    if (best_b < 0) { n += snprintf(out+n, cap-n, "  no CMPR-magenta texmap in this frozen frame (NPC off-screen?)\n"); return n; }
+    const NgxRenderBatch& B = bats[best_b];
+    // NDC bbox of the matching batch (visible verts) + a covered centre point.
+    float nxmn=1e9f,nxmx=-1e9f,nymn=1e9f,nymx=-1e9f; double cx=0,cy=0; int nv=0;
+    for (uint32_t v=B.vstart; v<B.vstart+B.vcount && v<snap.size(); v++) {
+        float w=snap[v].clip[3]; if (w<=1e-5f) continue;
+        float x=snap[v].clip[0]/w, y=snap[v].clip[1]/w;
+        if(x<nxmn)nxmn=x; if(x>nxmx)nxmx=x; if(y<nymn)nymn=y; if(y>nymx)nymx=y; cx+=x; cy+=y; nv++;
+    }
+    n += snprintf(out+n, cap-n,
+        "  FOUND batch=%d ti=%d texmap%d=%08x CMPR magenta_frac=%.2f%% (%ux%u)\n"
+        "  NDC bbox x[%.3f,%.3f] y[%.3f,%.3f] centre=(%.3f,%.3f) vis_verts=%d\n"
+        "  -> probe with: /pixblend?x=%.3f&y=%.3f   /pixbatch?x=-901&y=%d\n",
+        best_b, B.tev_index, best_tm, best_addr, best_frac*100.0, B.tex[best_tm].w, B.tex[best_tm].h,
+        nxmn,nxmx,nymn,nymx, nv?cx/nv:0, nv?cy/nv:0, nv,
+        nv?cx/nv:0.0, nv?cy/nv:0.0, B.tev_index);
+    return n;
+}
