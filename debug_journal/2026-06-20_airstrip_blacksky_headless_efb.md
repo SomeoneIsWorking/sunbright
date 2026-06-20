@@ -43,3 +43,22 @@ dark-windows is the separate residual wash. The missing HUD counter is a separat
 
 Tooling added: /pixbatch -901 prints per-texmap wrap/filter/mip; [efb-wb] copytex_writeback return-reason
 debug (SUNBRIGHT_DBG_EFB); /magmat; freeze-table fix. SUNBRIGHT_STAGE=0 = airstrip repro.
+
+## CORRECTION (same day) — it is NOT just a headless artifact; the EFB readback reads DARK data
+Built the harness fix (Present.cpp: drive the ngx present+readback every headless frame). Verified it
+works: /ngxpresentlive frames now INCREMENTS in headless (was stuck 0), the 80f94fe0 EFB copy is now
+SERVED every frame, plaza renders unchanged. BUT the airstrip sky is STILL BLACK with the fix → so it is
+NOT merely the headless on-demand-present artifact. Since headless now behaves like headed and it's still
+black, the black sky is REAL HEADED TOO.
+
+New root (narrowed, the real bug): the served EFB copy reads `center src=000a13` (near-black) CONSISTENTLY
+— but the actual rendered screenshot (same ngx render) shows a BRIGHT white platform at screen center.
+So ngx's EFB COLOR READBACK (g_efb_color, filled in ngx_present.cpp's render fn; consumed by
+sb_ngx_efb_copy_region) reads DARK/WRONG data that does NOT match the rendered frame. The ocean reflection
+(ti=42) then samples this dark copy → blends black over the (correct) blue sky base → black sky.
+NEXT (fresh investigation): in ngx_present.cpp, find WHICH target g_efb_color is read from and WHEN, vs
+the target the screenshot/present writes. They disagree (dark vs bright) → the readback samples the wrong
+image or the wrong time (e.g. a cleared/pre-geometry target, or before tone-map/composite, or a layout/
+format mismatch). Fix so g_efb_color == the rendered scene; then the reflection samples bright → sky
+correct. The headless-present-driver fix is committed and is a prerequisite (EFB effects now verifiable
+headless). The ti=42 alpha (a0.72) is the blend weight; the darkness is the copy CONTENT, not the alpha.
