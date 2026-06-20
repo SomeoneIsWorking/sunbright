@@ -98,7 +98,62 @@ Dolphin kept ONLY as the diff-oracle. On this path the goo/EFB-readback "GameCub
 engine code.
 
 To continue: native compile check per file =
-`g++ -std=c++17 -m64 -w -fsyntax-only <f> -include native/shim/gekko_intrinsics.h -Inative/shim -Ireference/sms/include`
+`g++ -std=c++17 -m64 -w -Wno-narrowing -fsyntax-only <f> -include native/shim/gekko_intrinsics.h -Inative/shim -Ireference/sms/include`
+(`-Wno-narrowing` added — see below. Sweep script: `scratch/native_sweep.sh`.)
+
+## ✅ PHASE-1 COMPLETE (2026-06-20, session 2) — 573/573 non-asm .cpp compile-clean
+Finished the phase-1 tail (474 → **573/573**). Every non-asm decomp .cpp now passes
+`-fsyntax-only` on a 64-bit host with the shims force-included. The 32 `asm`-token files
+(`dolphin/`, `TRK_MINNOW_DOLPHIN/`, `PowerPC_EABI_Support/`) are GC OS/CRT/HW the platform
+replaces — not game logic, intentionally excluded.
+
+What the tail was (root cause → fix, all committed; submodule advanced ac450d8 → 2278631,
+gitlink bumped each milestone; parent pushed, submodule is LOCAL-ONLY — see caveat):
+- **EOF macro leak (+11):** decomp has `enum EIoState { GOOD=0, EOF=1 }` and uses `EOF` as
+  that enumerator. MSL `<stdio.h>` defines no EOF (only MSL `<ctype.h>` does); our shims
+  pulled glibc's `#define EOF (-1)` via cstdio/stdio → `(-1)=1`. Fix: `printf.h` forwards to
+  the `stdio.h` shim; `stdio.h` `#undef EOF` after the glibc include (mirrors MSL).
+- **getResSize / render-height return types (+ part of +22):** `long`==32-bit on GC; base
+  `JKRFileLoader::getResSize` returned `long` (64-bit LP64) vs `s32` override.
+  `SMSGetGameRender{Height,Width}` had s16/u16/int variants → ambiguating redecl. Unify s32/u16.
+- **`unsigned long`→u32 (+15):** GC `unsigned long`==32-bit; header `perform(unsigned long,…)`
+  no longer matched base pure virtual `perform(u32,…)` → derived classes stayed ABSTRACT
+  (`new` failed). Swept 14 game headers + 4 .cpp; mirror `long`→s32 for the non-`unsigned`
+  variants (group A: changeMode/setLightNum/setAmbNum/entryGrassGroup/setBalloonMessage/
+  loadHideObjInfo/ToolData GetValue/startDemoCamera/dvd.h callbacks/emitAnd* family).
+- **MSL math macros (+5):** `native/shim/math.h` shadow adds DEG_TO_RAD/RAD_TO_DEG/TAU/HALF_PI/…
+  and M_PI-as-float (MSL `<math.h>` had them; glibc doesn't).
+- **`-Wno-narrowing` (+18):** Metrowerks didn't enforce C++11 narrowing-in-aggregate-init;
+  the flag matches it. It silences brace-init narrowing ONLY — pointer truncation still errors
+  as `loses precision`. Also JUTConsole `-sizeof` → `-(int)sizeof` (size_t is 64-bit on host).
+- **GCC two-phase template lookup (+7):** forward-declare `CLBTwoDegreeGeneralInbetween`;
+  `this->` qualify inherited dependent-base members (`TVec4::set`, JSUList append/prepend/…).
+- **C++17 strictness / GEKKO-gated SDK (group D):** `fake_tgmath.h` defers float sqrt/fabs/floor
+  to host `<cmath>` under the new `SUNBRIGHT_NATIVE_HOST` marker (in `gekko_intrinsics.h`);
+  drop `register` (os.h); add portable `OSf32tos8` (was psq_st asm, GEKKO-gated — RUNTIME
+  LANDMINE: quantize rounding); brace switch cases over var inits; hoist `r31` past `goto bail`;
+  `void main`→`int main`; `#include <cctype>` for `std::tolower`.
+- **const-correctness (group C):** GCC enforces what MWcc skipped — rvalue→non-const-ref,
+  volatile fakematch, const Vec*/char*/TBGCheckData* into not-const-correct sinks. Proper const
+  where the data is genuinely const (mFileName, wrapName); explicit casts where the SDK API
+  isn't const-correct (MTXMultVec src, strstr-of-const, SMS_GetMarioGrPlane).
+
+### ⚠ CAVEAT: the submodule fork is LOCAL-ONLY (cannot push)
+`reference/sms` `origin` is read-only upstream `doldecomp/sms` (push → 403). The ENTIRE
+native-port submodule history (`17074e3..2278631`, both sessions) is committed LOCALLY and
+referenced by the pushed parent gitlink — but the submodule objects live only on this machine.
+A fresh clone / other PC would fail to fetch the gitlink target. To make it portable, add a
+writable fork remote (e.g. `SomeoneIsWorking/sms`) and `git push` it — needs the user to create
+the fork (outward-facing; not done unprompted). Until then this work does NOT travel with the repo.
+
+### NEXT: phase-2 (the real work) — stand up `sms-native` and implement the platform seams
+Per `native/platform/README.md`: critical path **E1 OS → E3 DVD → E5 VI → E6 GX** (audio E7 &
+input E8 parallel; MTX E2 & CARD E4 early wins). Create the `sms-native` CMake target (library
+first, `-std=c++17 -Wno-narrowing`, force-include `native/shim/gekko_intrinsics.h`,
+`-Inative/shim -Ireference/sms/include`), grow the compiled set from leaf clusters, link the
+seams, boot `TApplication`/`TMarDirector`, fill the ~970 stubs scene-by-scene, Dolphin as oracle.
+Runtime landmines to fix when implementing: `J3DMaterial.hpp` `(ptr<0xC0000000)` host-address
+heuristic; `fireStartDemoCamera`/`operator new(u32)` 32-bit userdata/size; `OSf32tos8` rounding.
 
 ## Don't re-chase
 - `port/` (flip) is dead — do not revive.
