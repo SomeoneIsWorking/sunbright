@@ -314,7 +314,68 @@ GXState`. Present (ngx_present.cpp) taps Dolphin's Vulkan device at one point (l
   must wait for the harness; a bare interface stub that resolves symbols but can't be
   exercised is NOT done.
 
+## ✅ SESSION 4 (2026-06-20) — renderer TEV + lighting + GX TEV-setter seam (3 milestones)
+Continued the native renderer from handoff steps 1-2. All verify-first (pixel/round-trip,
+bit-exact on RADV GPU AND lavapipe), committed + pushed. **15/15 ctest green.**
+
+**Architecture answer locked: runtime GLSL->SPIR-V via glslang — and the shipping ngx
+renderer ALREADY does it** (`runtime/render/glsl_compile.cpp`). So the handoff's "decision
+required" was moot: REUSE `glsl_compile.cpp` + `tev_shader.cpp` unchanged. System glslang
+links via `find_package(glslang CONFIG)` -> `glslang::SPIRV/glslang/...` (Fedora glslang-devel;
+static libs + headers present). `ngx_native_glue.cpp` supplies the one capture accessor
+(`ngx_snap_tevstates`, empty until the engine boots).
+
+1. **TEV combiner (71995ee).** nvk TEV path: `NvkTevVertex` (NDC pos + 2 raster channels +
+   8 texgen'd UVs), `tev.vert` embedded VS, runtime-compiled TEV fragment shader, 8-sampler
+   descriptor array (white default for unbound texmaps), push constants (kcolor[4]+tevreg[4]).
+   `setTevFragment`/`setTevTexture`/`renderTevTriangles`. Test `tev`: GX_MODULATE tex(200,100,50)
+   x ras(128) -> SPEC pixel (101,50,25,255) bit-exact. ⚠ Hit + dodged the swap_table=0 "rrrr"
+   trap (identity 0x1B required for a synthetic NgxTevState).
+2. **Lighting (c58ac03).** GX seam SLICE 3 (gx_state.h/gx_impl.cpp): GXSetChanCtrl/Mat/AmbColor
+   + GXInitLight*/GXLoadLightObjImm/GXGetLightColor. The opaque 64-byte GXLightObj is owned
+   natively (`NativeLightObj` overlay = 16 floats: color4/pos3/dir3/cosAtt3/distAtt3).
+   GXSetChanCtrl packs into EXACTLY the layout `ngx_light.decode_chanctl()` consumes — gx_test
+   cross-checks through that decoder. Render test `lighting`: shipping `ngx_light.light_color0`
+   computes lit COLOR0 -> PASSCLR TEV -> nvk; directional white light: normal toward=255,
+   60deg=128 (n.l=0.5), away=0, lighting-off=255. All spec-computed.
+3. **GX TEV setters (5eba9fb).** GX seam SLICE 4: the GXSetTev* family (Op/ColorIn/AlphaIn/
+   ColorOp/AlphaOp/Order/Color/ColorS10/KColor/KColorSel/KAlphaSel/SwapMode/SwapModeTable/
+   Direct/NumIndStages) -> GXState.tev, ported from decomp GXTev.c but writing the BP-register
+   bits into GXState (= NgxTevState.color_env/alpha_env layout). `gx_tev_bridge.h
+   ngx_tevstate_from_gx` is a direct field copy. gx_test: GXSetTevOp(GX_MODULATE)+Order ->
+   EXACTLY the NgxTevState tev_test proved renders (101,50,25). KEY FACT: NgxTevState.color_env
+   IS the gx->tevc BP register (J3D stores it raw), so faithful GXSetTev* packing = a valid
+   combiner the shader decodes with no translation. GX_TEVREG1 == register index 2 (CPREV=0,
+   REG0=1,REG1=2,REG2=3); tev_color/tevreg push order = CPREV/C0/C1/C2.
+
+**Symbol resolution (recompute right!):** undefined `nm ... | awk '$1=="U"{print $2}'`;
+defined `nm ... | awk 'NF>=3 && $2<home>/^[A-Za-z]$/ && $2!="U"{print $3}'` (DON'T `print $2` —
+defined lines have the addr in $1 so the type is $2 and NAME is $3; undefined lines have no
+addr so name is $2 — the two need different field numbers, a bug that gave a bogus 4084).
+`comm -23 u_native d_all`. **Unresolved 634->464.** Remaining SDK C: GX **79**, THP 16, GD 16,
+CARD 14, AI 10 (OS/DVD/VI/PAD/AR/MTX done). Plus **273 game C++ stubs** (scene-by-scene).
+`sms-platform` is a CLOSED set (only libc/libstdc++/pthread unresolved) -> links + runs standalone.
+
+### NEXT (handoff step 3 — the big one, needs engine boot to VERIFY)
+The renderer now has ALL consumer pieces: geometry decode, MVP transform, depth, textures,
+TEV combiner, lighting, + the GX state-capture tees. What's missing for a REAL frame is the
+**producer**: reading a J3DShape's display-list + material + matrices from NATIVE struct
+fields and feeding these consumers. That needs the game's J3D data populated at runtime =
+booting more engine (PlatformInit -> game main()), which is ALSO the only way to VERIFY it on
+real data (verify-first hard rule: don't port the J3D reader / GX draw-copy-present verbs
+against fabricated data). So step 3 interleaves with the engine boot (handoff step 5). The
+remaining GX 79 are mostly the draw/copy/present/peek verbs (GXBegin/CallDisplayList/CopyDisp/
+CopyTex/PeekARGB/PeekZ/Draw*) + the vtx-desc/matrix-load/texobj setters — the draw verbs want
+the renderer wired to native structs (the big GX subtask). Cheap remaining state setters
+(GXInitTexObj/Tlut, GXSetVtxDesc/AttrFmt, GXLoadPosMtxImm, GXSetFog/Dither/etc.) can grow the
+seam round-trip-tested, but are SHALLOW without the draw consumer. Recommend: start the engine
+boot (a native main() -> PlatformInit -> game main()) to surface the true critical-path stub
+set + give step 3 a verification target. catalogue: `scratch/native_unresolved.txt`.
+
 ## Don't re-chase
 - `port/` (flip) is dead — do not revive.
-- A blanket host-libc prelude — it conflicts with MSL; shadow MSL instead.
+- A blanket host-libc prelude — it conflicts with MSL; shadow MSL instead (`native/shim/host_prelude.h`
+  is a leftover sketch of this dead idea, untracked; do NOT wire it in).
 - `-fpermissive` to silence pointer-truncation — corrupts pointers under LP64; fix or go 32-bit.
+- The TEV runtime-shader "architecture decision" — DONE: glslang lib (glsl_compile.cpp ships it).
+- The swap_table=0 "rrrr" trap — a synthetic NgxTevState MUST set swap_table to identity 0x1B.
