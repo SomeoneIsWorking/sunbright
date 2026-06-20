@@ -1055,6 +1055,13 @@ int main(int argc, char* argv[]) {
     // standard peekable EFB. So this is currently INERT for ground truth; kept for if the frontend's
     // EFB lifecycle is wired up later. Off by default (per-frame retain cost; doesn't help today).
     if (getenv("SUNBRIGHT_EFB_PEEK")) Config::SetBase(Config::GFX_HACK_EFB_ACCESS_ENABLE, true);
+    // SUNBRIGHT_DUMP_TEX=1 — ground-truth tool (baseline only): dump Dolphin's decoded textures +
+    // force EFB copies to RAM so EFB-copy targets (e.g. the pollution coverage R8 copy) are dumped.
+    // Lets us SEE the real coverage texture Dolphin produces. Off by default.
+    if (getenv("SUNBRIGHT_DUMP_TEX")) {
+        Config::SetBase(Config::GFX_DUMP_TEXTURES, true);
+        Config::SetBase(Config::GFX_HACK_SKIP_EFB_COPY_TO_RAM, false);
+    }
     // Shader compilation (user-directed: NO ubershaders): synchronous specialized shaders +
     // persistent per-game pipeline cache + boot-time precompile of every cached pipeline.
     // The map-open/level-entry whole-game freezes were first-seen-material pipeline compiles

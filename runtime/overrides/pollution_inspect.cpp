@@ -49,6 +49,58 @@ constexpr u32 L_unk58 = 0x58;   // ResTIMG*
 // TPollutionTexStamp (0x14 bytes): unk0 type, unk4 ResTIMG*, unk8 task count, unk10 task array
 constexpr u32 TS_stride = 0x14;
 
+// GC-tiled depth-map index (TPollutionPos::index): 8x4 blocks, row stride 1<<(unk8) cols.
+inline u32 pp_index(int x, int y, int unk8) {
+    return (u32)((y & 3) * 8 + (((x >> 3) + ((y >> 2) << (unk8 - 3))) * 0x20) + (x & 7));
+}
+
+// One-shot: de-tile the layer's pollution depth map (unk5C.mMap) → scratch PGM, so we can SEE the
+// polluted region shape and compare it to the goo. unk5C is at layer+0x5C; mMap at unk5C+0x1C.
+void dump_depthmap(u32 lay, int idx) {
+    u32 pos   = lay + 0x5C;
+    int w     = (int)mem_r32(pos + 0x0);
+    int h     = (int)mem_r32(pos + 0x4);
+    int unk8  = (int)mem_r32(pos + 0x8);
+    u32 mMap  = mem_r32(pos + 0x1C);
+    fprintf(stderr, "[poll] depthmap layer[%d] %dx%d unk8=%d mMap=%08x\n", idx, w, h, unk8, mMap);
+    if (!mMap || w <= 0 || h <= 0 || w > 2048 || h > 2048) return;
+    int nz = 0, nprohib = 0;
+    char path[128]; snprintf(path, sizeof path, "scratch/bin/pollution_depth_%d.pgm", idx);
+    FILE* f = fopen(path, "wb");
+    if (f) fprintf(f, "P5\n%d %d\n255\n", w, h);
+    for (int y = 0; y < h; y++)
+        for (int x = 0; x < w; x++) {
+            u8 d = mem_r8(mMap + pp_index(x, y, unk8));
+            if (d != 0 && d != 0xff) nz++;
+            if (d == 0xff) nprohib++;
+            if (f) fputc(d, f);
+        }
+    if (f) fclose(f);
+    fprintf(stderr, "[poll] depthmap[%d] polluted(0<d<255)=%d prohibit(255)=%d → %s\n", idx, nz, nprohib, path);
+}
+
+// Dump the live coverage (unk54, I8, same 8x4 tiling as the depth map) → PGM, to compare vs depth.
+void dump_coverage(u32 lay, int idx) {
+    u32 pos   = lay + 0x5C;
+    int w     = (int)mem_r32(pos + 0x0);
+    int h     = (int)mem_r32(pos + 0x4);
+    int unk8  = (int)mem_r32(pos + 0x8);
+    u32 cov   = mem_r32(lay + L_unk54);
+    if (!cov || w <= 0 || h <= 0 || w > 2048 || h > 2048) return;
+    int nz = 0; long sum = 0;
+    char path[128]; snprintf(path, sizeof path, "scratch/bin/pollution_cov_%d.pgm", idx);
+    FILE* f = fopen(path, "wb");
+    if (f) fprintf(f, "P5\n%d %d\n255\n", w, h);
+    for (int y = 0; y < h; y++)
+        for (int x = 0; x < w; x++) {
+            u8 d = mem_r8(cov + pp_index(x, y, unk8));
+            if (d) { nz++; sum += d; }
+            if (f) fputc(d, f);
+        }
+    if (f) fclose(f);
+    fprintf(stderr, "[poll] coverage[%d] nonzero=%d mean=%ld → %s\n", idx, nz, nz ? sum/nz : 0, path);
+}
+
 void dump(u32 cl) {
     u32 gp   = cl - 0x70;
     int n    = (int)mem_r32(cl + CL_unk8);
@@ -115,8 +167,30 @@ SUNBRIGHT_OVERRIDE_IF_NATIVE(ov_poll_inspect, 0x8019b3a0u, dbg() || force()) {
     u32 cl  = cpu.gpr[3];
     u32 idx = cpu.gpr[4];
     // Snapshot once per ~120 layer-0 calls (≈ once a couple seconds at 60 Hz, one frame's full state).
-    if (dbg() && idx == 0 && (calls++ % 120) == 0)
+    // Per-frame task-activity watch (catch the brief seed): log whenever ANY task queue is non-empty,
+    // or for the first 8 frames. unk8 of each tex-stamp (live task count) is the real signal.
+    if (dbg() && idx == 0) {
+        u32 ts = mem_r32(cl + CL_unk1C);
+        u32 tcnt = mem_r16(cl + CL_unk1A);
+        u32 jcnt = mem_r16(cl + CL_unkD4), rcnt = mem_r16(cl + CL_unk22), mcnt = mem_r16(cl + CL_unk28);
+        u32 texact = 0; for (u32 i = 0; ts && i < tcnt && i < 8; i++) texact += mem_r32(ts + i*TS_stride + 8);
+        if (calls < 8 || jcnt || rcnt || mcnt || texact)
+            fprintf(stderr, "[poll-f%llu] joint=%u texact=%u revival=%u model=%u\n",
+                    (unsigned long long)calls, jcnt, texact, rcnt, mcnt);
+    }
+    if (dbg() && idx == 0 && (calls++ % 120) == 0) {
         dump(cl);
+        static bool once = false;
+        if (!once) {
+            once = true;
+            u32 director = mem_r32(cpu.gpr[13] - 0x6048u);
+            u8  mapno    = director ? mem_r8(director + 0x7C) : 0xFF;
+            fprintf(stderr, "[poll] gpMarDirector=%08x mMap=%u (map9 ⇒ initTexImage depth-seeds unk54)\n", director, mapno);
+            int n = (int)mem_r32(cl + CL_unk8);
+            u32 arr = mem_r32(cl + CL_unk14);
+            for (int i = 0; i < n; i++) { u32 lay = mem_r32(arr + 4u * i); if (lay) { dump_depthmap(lay, i); dump_coverage(lay, i); } }
+        }
+    }
     if (force() && idx == 0)
         force_full_coverage(cl);
     sb_run_original_around(cpu, 0x8019b3a0u, nullptr, 0);

@@ -49,6 +49,30 @@ and `TPollutionManager::stamp` (0x8019de84, callers incl. TBossManta::moveObject
 "force coverage ONCE at frame 0, does it persist?" experiment (feedback lossless ⇒ seed+run-feedback;
 lossy ⇒ re-stamp every frame).
 
+## GROUND TRUTH obtained (decisive tooling: SUNBRIGHT_DUMP_TEX)
+`SUNBRIGHT_DUMP_TEX=1` (main_sdl.cpp) sets `GFX_HACK_SKIP_EFB_COPY_TO_RAM=false` so Dolphin writes
+EFB-copies back to RAM (+ `GFX_DUMP_TEXTURES`). Run the **baseline** (NGX_PRESENT=0) with it and the
+real coverage lands in `unk54` RAM — readable via `/r?a=80c72780` and dumped de-tiled to PGM by the
+inspect override (`dump_coverage`/`dump_depthmap`, gated on SUNBRIGHT_DBG_POLL).
+
+Findings (`scratch/bin/pollution_{cov,depth}_0.png`):
+- Sirena Manta-Storm is **mMap=6** (NOT 9) → `initTexImage` zeros unk54, so the goo is NOT depth-seeded.
+- Real coverage: **nonzero=47875 texels, mean=244** (saturated ~0xff where present), a specific
+  connected goo blob — NOT the full depth-polluted region (201005 texels). So coverage ≠ f(depth).
+- unk54 (I8 512×512) uses the SAME 8×4 GC tiling as the depth map (`TPollutionPos::index`).
+- **No per-frame stamps** (joint/tex/revival/model = 0 every frame, from the first countTexDegree
+  call). The feedback TEV (`initGXforPollutionLayer`, type=4) is **bistable**: coverage ≥ ~50 stays,
+  < ~50 decays to 0 (verified: edges read 8/7/2, interior 0xff). So the goo blob is a ONE-TIME SEED
+  established at episode load, then sustained forever by feedback with zero per-frame input.
+
+## Remaining unknown that gates the native port: THE SEED
+Where the one-time goo blob is written at episode load (queues empty ⇒ not via countTexDegree's task
+queues at steady state). The decomp STUBS the candidates (`TPollutionLayer::action` 0x8019a2e4,
+`::stamp` 0x801a1440, init), so this needs binary RE (disasm). Once the seed is known, the native
+port = seed the side buffer once + run the (simple, derived) feedback each frame in the override.
+NOTE: `SUNBRIGHT_DUMP_TEX` does NOT help under present (Dolphin doesn't render the graffito pass
+under ngx present — gx_super discards it), so it's a baseline-only ground-truth/oracle tool.
+
 ## Don't re-chase
 - "unk54 RAM holds the coverage" — NO, zeros in both modes; it's Dolphin VRAM-only.
 - "Capture the goo draws into the graffito epoch" — they're WGPIPE immediate-mode = FIFO decode (out).
