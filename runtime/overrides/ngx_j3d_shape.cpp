@@ -4716,16 +4716,25 @@ int sb_ngx_pixel_batch(float px, float py, char* out, int cap) {
             unsigned wneg = 0, wsmall = 0, wok = 0; float wmin = 1e30f, wmax = -1e30f;
             float nymin = 1e30f, nymax = -1e30f, nxmin = 1e30f, nxmax = -1e30f;
             double rpos=0,gpos=0,bpos=0, rneg=0,gneg=0,bneg=0;   // mean rgb split by w-sign
+            // COLOR0 (rgba) hull over the VISIBLE (w>0) verts — the "below-hull" re-confirm: a
+            // passthrough+perspective-interp fragment can never fall below this per-channel min.
+            // Values 0..1; ×255 to compare the journal's G[113,215] range.
+            float rmn=1e30f,rmx=-1e30f,gmn=1e30f,gmx=-1e30f,bmn=1e30f,bmx=-1e30f;
             for (uint32_t v = B.vstart; v < B.vstart + B.vcount && v < snap.size(); v++) {
                 float w = snap[v].clip[3]; const float* rg = snap[v].rgba;
                 if (w < wmin) wmin = w; if (w > wmax) wmax = w;
                 if (w <= 0) { wneg++; rneg+=rg[0]; gneg+=rg[1]; bneg+=rg[2]; }
                 else if (w < 1e-4f) wsmall++; else { wok++; rpos+=rg[0]; gpos+=rg[1]; bpos+=rg[2];
+                    if(rg[0]<rmn)rmn=rg[0]; if(rg[0]>rmx)rmx=rg[0];
+                    if(rg[1]<gmn)gmn=rg[1]; if(rg[1]>gmx)gmx=rg[1];
+                    if(rg[2]<bmn)bmn=rg[2]; if(rg[2]>bmx)bmx=rg[2];
                     float nx = snap[v].clip[0]/w, ny = snap[v].clip[1]/w;
                     if(nx<nxmin)nxmin=nx; if(nx>nxmax)nxmax=nx; if(ny<nymin)nymin=ny; if(ny>nymax)nymax=ny; }
             }
             n += snprintf(out + n, cap - n, "  draw=%zu vstart=%u vcount=%u w[min=%.4g max=%.4g] wneg=%u wsmall=%u wok=%u  NDC x[%.2f,%.2f] y[%.2f,%.2f]\n",
                 bi, B.vstart, B.vcount, wmin, wmax, wneg, wsmall, wok, nxmin, nxmax, nymin, nymax);
+            n += snprintf(out + n, cap - n, "    COLOR0 hull (w>0): R[%.0f,%.0f] G[%.0f,%.0f] B[%.0f,%.0f] (x255)\n",
+                rmn*255,rmx*255, gmn*255,gmx*255, bmn*255,bmx*255);
             n += snprintf(out + n, cap - n, "    mean rgb: w>0(visible)=(%.2f,%.2f,%.2f) w<=0(clipped)=(%.2f,%.2f,%.2f)\n",
                 wok?rpos/wok:0, wok?gpos/wok:0, wok?bpos/wok:0, wneg?rneg/wneg:0, wneg?gneg/wneg:0, wneg?bneg/wneg:0);
             for (uint32_t v = B.vstart; v < B.vstart + B.vcount && v < B.vstart + 9 && v < snap.size(); v++) {

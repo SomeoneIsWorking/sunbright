@@ -998,3 +998,20 @@ Self-correction before the next session chases a possibly-wrong premise:
 What IS solid this session: the CLOF-ambient fix (latest+17, bush green, file-select 22.6→20.6%, no
 Delfino regression, render_test pass) — shipped. The sky-grey residual is NOT yet root-caused; ras==normal
 shows it's the raster (not TEV) path; everything else above is leads + caveats, not conclusions.
+
+## UPDATE (2026-06-20) — "below-hull" thread FALSIFIED: `ti` is not a stable material id
+Did the caveat's "confirm-or-kill BEFORE any fix" step. Extended `/pixbatch?x=-901` to print the
+per-channel **COLOR0 hull (w>0)** over the whole batch, rebuilt, loaded `scratch/freeroam_plaza.sav`
+frozen, and measured ti=9 in ONE frame:
+- ti=9 here = a **white-vertex** (COLOR0 hull R/G/B all [255,255]) 8×8 grey-texture (mean 123) screen-
+  blend quad (blend src=1 dst=5) in the **top-LEFT corner** (NDC x[-1,-0.62] y[0.48,1.0]), 18 verts.
+- That is NOT the journal's "ti=9 sky/sea gradient base, COLOR0 G[113,215]". The earlier COLOR0 range,
+  the `/ngxonly ti=9` render, and the `/ngxverts` dump that fed the "G=81 < G=113" claim each came from
+  a DIFFERENT frame/scene where capture-order index 9 mapped to a DIFFERENT material.
+**`ti` = per-frame capture ORDINAL, not a durable material identifier.** Chaining numbers across frames
+by ti is invalid. The whole "GPU renders below its own vertex hull → vertex-data/upload bug" premise
+rests on that invalid chaining → **FALSIFIED**, no isolated GPU vertex-data bug to chase. (Confirms the
+latest+20 caveat's suspicion — worse than stale, the index isn't even comparable.)
+Residual sky-grey is therefore back to what it always was: the **multi-layer screen-blend STACK** — the
+PARKED wash (memory `delfino-lighting-wash`, user directive: do NOT chase, port feature gaps instead).
+The CLOF-ambient fix (latest+17) remains the one solid shipped wash-related win. STOP chasing ti=9.
