@@ -234,6 +234,7 @@ if(SB_VULKAN_LIB AND SB_VULKAN_INC AND SB_GLSLANG)
     file(GLOB SB_RENDER_TESTS CONFIGURE_DEPENDS
          "${SMS_NATIVE_REPO_ROOT}/native/render/tests/*_test.cpp")
     list(FILTER SB_RENDER_TESTS EXCLUDE REGEX "/j3dload_test\\.cpp$")
+    list(FILTER SB_RENDER_TESTS EXCLUDE REGEX "/j3dmesh_test\\.cpp$")
     foreach(rt ${SB_RENDER_TESTS})
         get_filename_component(rt_name "${rt}" NAME_WE)
         add_executable(sms-${rt_name} "${rt}")
@@ -242,6 +243,29 @@ if(SB_VULKAN_LIB AND SB_VULKAN_INC AND SB_GLSLANG)
         target_link_libraries(sms-${rt_name} PRIVATE sms-render sms-platform)
         add_test(NAME render_${rt_name} COMMAND sms-${rt_name})
     endforeach()
+
+    # j3dmesh_test — render a REAL BMD shape (loaded via the game's J3D loader) through
+    # nvk. Needs the full loader (sms-native/gd/assets) AND the renderer (sms-render).
+    add_executable(sms-j3dmesh_test
+        "${SMS_NATIVE_REPO_ROOT}/native/render/tests/j3dmesh_test.cpp")
+    set_target_properties(sms-j3dmesh_test PROPERTIES
+        CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+    target_include_directories(sms-j3dmesh_test PRIVATE
+        "${SMS_NATIVE_REPO_ROOT}/native/shim"
+        "${SMS_NATIVE_REPO_ROOT}/reference/sms/include"
+        "${SMS_NATIVE_REPO_ROOT}/native/assets"
+        "${SMS_NATIVE_REPO_ROOT}/native/render"
+        "${SMS_NATIVE_REPO_ROOT}/runtime/ngx"
+        "${SMS_NATIVE_REPO_ROOT}/runtime/render")
+    target_compile_options(sms-j3dmesh_test PRIVATE
+        -include "${SMS_NATIVE_REPO_ROOT}/native/shim/gekko_intrinsics.h"
+        -w -Wno-narrowing -fcommon)
+    target_link_libraries(sms-j3dmesh_test PRIVATE
+        sms-render
+        "$<LINK_GROUP:RESCAN,sms-native,sms-gd,sms-assets,sms-platform>"
+        Threads::Threads)
+    add_test(NAME native_j3dmesh_test COMMAND sms-j3dmesh_test
+             WORKING_DIRECTORY "${SMS_NATIVE_REPO_ROOT}")
 else()
     message(STATUS "sms-render: Vulkan/glslang not found; skipping native renderer")
 endif()
