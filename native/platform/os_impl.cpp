@@ -30,6 +30,7 @@
 #include <dolphin/os/OSMessage.h>
 #include <dolphin/os/OSStopwatch.h>
 #include <dolphin/os/OSAlloc.h>
+#include <dolphin/os/OSCache.h>
 
 #include <atomic>
 #include <chrono>
@@ -573,6 +574,28 @@ char* OSGetFontTexture(char* str, void** image, s32* x, s32* y, s32* width) {
 char* OSGetFontWidth(char* str, s32* width) {
     if (width) *width = 0;
     return str && *str ? str + 1 : str;
+}
+
+// ---- cache ops (OSCache.h) ------------------------------------------------
+// On GameCube these flush/invalidate the L1 data/instruction cache so the GPU
+// (which reads main RAM directly, bypassing the CPU cache) sees CPU writes — and
+// vice versa. On the native host there is ONE coherent address space and no
+// separate GX FIFO DMA engine reading stale RAM, so flush/store/invalidate are
+// no-ops. DCZeroRange is a real memset (callers use it to zero a buffer); it
+// operates on whole 32-byte cache blocks, matching dcbz granularity.
+void DCInvalidateRange(void*, u32) {}
+void DCFlushRange(void*, u32) {}
+void DCStoreRange(void*, u32) {}
+void DCFlushRangeNoSync(void*, u32) {}
+void DCStoreRangeNoSync(void*, u32) {}
+void DCTouchRange(void*, u32) {}
+void ICInvalidateRange(void*, u32) {}
+void DCZeroRange(void* addr, u32 nBytes) {
+    if (!addr || !nBytes) return;
+    // Round to the 32-byte cache-block span the HW would clear.
+    uintptr_t lo = (uintptr_t)addr & ~uintptr_t(31);
+    uintptr_t hi = ((uintptr_t)addr + nBytes + 31u) & ~uintptr_t(31);
+    std::memset((void*)lo, 0, hi - lo);
 }
 
 } // extern "C"

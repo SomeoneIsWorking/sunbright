@@ -88,6 +88,31 @@ target_compile_options(sms-platform PRIVATE -Wall -Wextra
     -fcommon)
 target_link_libraries(sms-platform PUBLIC Threads::Threads)
 
+# ---------------------------------------------------------------------------
+# sms-gd — the GameCube GD (GX Display-list builder) library, compiled from the
+# REAL decomp source (reference/sms/src/dolphin/gd/*.c), NOT reimplemented. GD is
+# pure big-endian byte-building into a memory buffer (no hardware), so it ports
+# verbatim. The J3D loader uses it at load time to bake each shape's VCD/VAT
+# command buffer (J3DShape::makeVcdVatCmd) and material display lists. Compiled
+# like sms-native (shim force-included, -w, -fcommon) since it is decomp source.
+# Its only external dep is DCFlushRange (cache no-op in os_impl.cpp).
+# ---------------------------------------------------------------------------
+file(GLOB SMS_GD_SOURCES CONFIGURE_DEPENDS
+     "${SMS_NATIVE_REPO_ROOT}/reference/sms/src/dolphin/gd/*.c")
+add_library(sms-gd STATIC ${SMS_GD_SOURCES})
+set_target_properties(sms-gd PROPERTIES
+    CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF
+    # .c decomp sources are GC C; compile them as C++ (the shim + headers assume it).
+    LINKER_LANGUAGE CXX)
+set_source_files_properties(${SMS_GD_SOURCES} PROPERTIES LANGUAGE CXX)
+target_include_directories(sms-gd PUBLIC
+    "${SMS_NATIVE_REPO_ROOT}/native/shim"
+    "${SMS_NATIVE_REPO_ROOT}/reference/sms/include")
+target_compile_options(sms-gd PRIVATE
+    -include "${SMS_NATIVE_REPO_ROOT}/native/shim/gekko_intrinsics.h"
+    -w -Wno-narrowing -fcommon)
+target_link_libraries(sms-gd PUBLIC sms-platform)
+
 # Seam unit tests (TDD: assert spec-computed truth; the tested function IS the
 # shipping seam function). Each native/platform/tests/*_test.cpp is its own
 # assert-main executable, registered with ctest as platform_<name>.
@@ -232,6 +257,8 @@ foreach(test_src ${SMS_PLATFORM_TESTS})
         # GXSetChanCtrl packing against decode_chanctl().
         "${SMS_NATIVE_REPO_ROOT}/runtime/ngx")
     target_compile_options(sms-${test_name} PRIVATE -fcommon)
-    target_link_libraries(sms-${test_name} PRIVATE sms-platform)
+    # sms-gd (GD display-list builder, decomp source) is referenced by gd_test;
+    # a static lib contributes nothing to tests that don't reference it.
+    target_link_libraries(sms-${test_name} PRIVATE sms-platform sms-gd)
     add_test(NAME platform_${test_name} COMMAND sms-${test_name})
 endforeach()
