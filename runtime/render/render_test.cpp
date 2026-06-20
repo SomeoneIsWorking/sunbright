@@ -25,6 +25,7 @@
 #include "ngx_indirect.h"
 #include "ngx_display_gen.h"
 #include "ngx_per_epoch.h"
+#include "ngx_pollution.h"
 #include "tev_shader.h"
 #include "tev_eval.h"
 #include "tex_decode.h"
@@ -791,6 +792,45 @@ static int test_per_epoch(char* rep, int cap) {
     return fails;
 }
 
+// ── pollution coverage feedback unit ─────────────────────────────────────────
+// Spec-computed truth for sb_pollution::feedback_step (the countTexDegree per-texel TEV) and the
+// GC-tiled coverage index. Manta-Storm is type=4,flags=0,C0=8,C1=128 → DECAY-below-128/hold; type==7
+// GROWS; flags&2 SUBs by 2. A wrong branch or clamp goes red.
+int test_pollution(char* rep, int cap) {
+    int pos = 0, fails = 0;
+    auto failf = [&](const char* fmt, int a, int b) {
+        fails++; if (pos < cap) pos += snprintf(rep + pos, cap - pos, fmt, a, b); };
+
+    // type=4 (Manta Storm): new = prev - (128>prev ? 8 : 0), clamp ≥0.
+    struct { uint8_t prev; uint16_t type, flags; uint8_t c0, c1; int want; } fc[] = {
+        {254, 4, 0, 8, 128, 254},   // saturated holds (254 ≥ 128)
+        {128, 4, 0, 8, 128, 128},   // exactly at threshold holds (128 not < 128)
+        {127, 4, 0, 8, 128, 119},   // below threshold erodes by 8
+        {5,   4, 0, 8, 128, 0},     // clamps at 0 (5-8 = -3 → 0)
+        {0,   4, 0, 8, 128, 0},     // empty stays empty (no seed, no growth)
+        // type==7 GROW: new = prev + (prev>C1 ? C0 : 0)
+        {200, 7, 0, 0xA0, 0x80, 200 + 0xA0 > 255 ? 255 : 200 + 0xA0},  // 200>128 → +160 → clamp 255
+        {100, 7, 0, 0xA0, 0x80, 100},   // 100 not > 128 → hold
+        // flags&2 SUB by 2
+        {50,  3, 2, 8, 50, 48},
+        {1,   3, 2, 8, 50, 0},      // clamp at 0 (1-2 → 0)
+    };
+    for (auto& c : fc) {
+        int got = sb_pollution::feedback_step(c.prev, c.type, c.flags, c.c0, c.c1);
+        if (got != c.want) failf("FAIL feedback got=%d want=%d\n", got, c.want);
+    }
+
+    // GC 8×4-block tiling (width=512 → unk8=9, blocksPerRow=64). Compare to the standard I8 layout.
+    struct { int x, y; } pc[] = {{0,0},{7,3},{8,0},{0,4},{511,511},{13,5}};
+    for (auto& c : pc) {
+        int bx = c.x >> 3, by = c.y >> 2;
+        uint32_t want = (uint32_t)((by * 64 + bx) * 32 + (c.y & 3) * 8 + (c.x & 7));
+        uint32_t got  = sb_pollution::tiled_index(c.x, c.y, 9);
+        if (got != want) failf("FAIL tiled_index got=%d want=%d\n", (int)got, (int)want);
+    }
+    return fails;
+}
+
 struct Unit { const char* name; int (*run)(char* rep, int cap); };
 
 const Unit kUnits[] = {
@@ -812,6 +852,7 @@ const Unit kUnits[] = {
     {"jpa_ybillboard", test_jpa_ybillboard},
     {"display_gen",    test_display_gen},
     {"per_epoch",      test_per_epoch},
+    {"pollution",      test_pollution},
 };
 
 }  // namespace
