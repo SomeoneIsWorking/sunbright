@@ -57,3 +57,41 @@ target_compile_options(sms-native PRIVATE
     # as 'loses precision'. -w hides the rest of the noise (warnings, not errors).
     -w
     -Wno-narrowing)
+
+# ---------------------------------------------------------------------------
+# sms-platform — the native PC implementations of the GameCube SDK seams the
+# game links (#include <dolphin/...>). Phase-2 work (native/platform/README.md).
+# Grows seam by seam; each <sub>_impl.cpp defines the unresolved SDK symbols for
+# one subsystem (MTX/OS/DVD/VI/GX/...). Built clean (-Wall -Wextra), real C++ —
+# these are NEW native code, not decomp, so they get full warnings.
+# ---------------------------------------------------------------------------
+file(GLOB SMS_PLATFORM_SOURCES CONFIGURE_DEPENDS
+     "${SMS_NATIVE_REPO_ROOT}/native/platform/*_impl.cpp")
+
+add_library(sms-platform STATIC ${SMS_PLATFORM_SOURCES})
+set_target_properties(sms-platform PROPERTIES
+    CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+target_include_directories(sms-platform PUBLIC
+    "${SMS_NATIVE_REPO_ROOT}/native/platform"
+    "${SMS_NATIVE_REPO_ROOT}/native/shim"
+    "${SMS_NATIVE_REPO_ROOT}/reference/sms/include")
+target_compile_options(sms-platform PRIVATE -Wall -Wextra)
+
+# Seam unit tests (TDD: assert spec-computed truth; the tested function IS the
+# shipping seam function). Each native/platform/tests/*_test.cpp is its own
+# assert-main executable, registered with ctest as platform_<name>.
+enable_testing()
+file(GLOB SMS_PLATFORM_TESTS CONFIGURE_DEPENDS
+     "${SMS_NATIVE_REPO_ROOT}/native/platform/tests/*_test.cpp")
+foreach(test_src ${SMS_PLATFORM_TESTS})
+    get_filename_component(test_name "${test_src}" NAME_WE)
+    add_executable(sms-${test_name} "${test_src}")
+    set_target_properties(sms-${test_name} PROPERTIES
+        CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+    target_include_directories(sms-${test_name} PRIVATE
+        "${SMS_NATIVE_REPO_ROOT}/native/platform"
+        "${SMS_NATIVE_REPO_ROOT}/native/shim"
+        "${SMS_NATIVE_REPO_ROOT}/reference/sms/include")
+    target_link_libraries(sms-${test_name} PRIVATE sms-platform)
+    add_test(NAME platform_${test_name} COMMAND sms-${test_name})
+endforeach()
