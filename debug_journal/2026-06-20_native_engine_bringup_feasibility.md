@@ -232,10 +232,11 @@ console but the empty host expansion made every TU emit a colliding `.bss` def.
 the linker merges them to one (zero-init; OS seam sets real values at init). `-fcommon`
 added to all native targets defensively. This unblocks the eventual 577-TU full link.
 
-### PROGRESS UPDATE (session 3 cont.): 135/634, 8/8 suites green. Added the PC
-integration layer (PlatformInit + PC-native GCM disc reader) + GX slice 1 (transform).
+### PROGRESS UPDATE (session 3 cont.): 145/634, 8/8 suites green. Added the PC
+integration layer (PlatformInit + PC-native GCM disc reader) + GX slices 1-2 (transform
++ core pixel pipeline: blend/Z/cull/alpha-compare/copy-clear/counts, clean GXState fields).
 
-### NEXT (remaining SDK C-symbols): GX ~114 (slice 1 done), THP 16, GD 16, CARD 14, AI 10.
+### NEXT (remaining SDK C-symbols): GX ~104 (slices 1-2 = 17/121 done), THP 16, GD 16, CARD 14, AI 10.
 - **GX is now unblocked to continue slice-by-slice** on the `GXState` foundation
   (`gx_state.h`): add the state-capture setters (TEV/blend/Z/cull/tex/chan/fog/copy-clear)
   — each grows GXState + is round-trip testable. BUT pure state-capture is shallow without
