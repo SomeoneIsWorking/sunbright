@@ -4,4 +4,5 @@
 	branch = sunbright
 [submodule "reference/sms"]
 	path = reference/sms
-	url = https://github.com/doldecomp/sms.git
+	url = https://github.com/SomeoneIsWorking/sms.git
+	branch = sunbright
