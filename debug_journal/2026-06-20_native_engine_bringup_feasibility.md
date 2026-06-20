@@ -248,6 +248,28 @@ project world pts → screen px → NDC → pixels land where GXProject says). V
 in scratch/screenshots/nvk_*.png. THIS is the renderer foundation the full SMS path
 plugs into. Toolchain confirmed available: /usr/include/vulkan, libvulkan, glslangValidator/glslc.
 
+### ★ GC-GEOMETRY → NATIVE-FRAME slice (session 3): the real asset→pixels path, no Dolphin.
+Reused the PURE ngx geometry decoders (`runtime/ngx/ngx_decode.cpp` + `ngx_vertex.cpp` +
+`ngx_mesh.cpp` — the SHIPPING `ngx_assemble_primitive`/`ngx_build_mesh`, NOT a fork) by
+pulling them into `sms-render`, compiled Dolphin-free via a minimal **`gx_parse.h` shadow**
+(`native/render/shim/`, gives ngx_decode just `GxFrameInfo`+int typedefs; the real one drags
+in cpu_state.h + Dolphin OpcodeDecoder). `geometry_test`: a GC GX_TRIANGLES display-list prim
+(BE-float XYZ + RGBA8) → decode (round-trips pos+color) → native verts → nvk renders a Gouraud
+gradient triangle → pixel-verified. 10/10 suites green. **This IS the renderer re-pointing,
+started from the geometry decoder — the proven way forward.** scratch/screenshots/nvk_geometry.png.
+
+### NEXT on the renderer (precise, verifiable increments):
+1. **MVP transform in the vertex path**: game geometry is MODEL-space; transform via a
+   model-view matrix (MTX seam) + GXState projection → clip/NDC before nvk (today the test
+   feeds NDC directly). Verify: a known model point under a known MVP lands at expected NDC.
+2. **`ngx_build_mesh` full display-list walk** with INDEXED vertex arrays + a host resolver
+   (the real J3D format) — exercises more of the decoder; verifiable with synthetic indexed data.
+3. **J3D shape path against NATIVE structs**: read a J3DShape's display list + material +
+   matrices from native struct fields (not guest RAM). Needs the game's J3D data populated at
+   runtime → interleaves with booting more engine. The ~150 mem_r32 sites in ngx_j3d_shape.cpp
+   become native-struct reads; the ~15 GX-command tees write `sb::platform::gx::GXState`.
+4. nvk: depth buffer + texturing + the TEV→GLSL path (tev_shader.cpp) when textured geometry lands.
+
 ### ngx re-pointing MAP (from a scout of runtime/render+runtime/ngx, ~8400 LOC):
 ngx is a PURE DATA CONSUMER reading (1) the J3D object model from GUEST RAM via `mem_r32`/
 `sb_r32` (~150 sites in runtime/overrides/ngx_j3d_shape.cpp — capture_material @~1477,
