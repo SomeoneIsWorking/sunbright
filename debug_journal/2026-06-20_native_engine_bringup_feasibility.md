@@ -211,6 +211,19 @@ Landed & verified — **6 seams, 128/634 symbols resolved, all unit-tested (259 
   advances the retrace counter, alternates field, fires pre/post callbacks, paces to
   1/60s on the GC timebase, invokes the present hook (`vi_present.h`). 13 checks. The
   actual swapchain present is the integration layer's job via the hook.
+- **Platform bring-up** (`platform_impl.cpp`) — the PC game's startup, replacing GC
+  `__start`: `sb::platform::PlatformInit()` allocates the 64MB arena (OSInitAlloc/heap),
+  opens the disc, VIInit, PADInit, so the game's main() can run as a PC program.
+  **PC-native disc reader** `sb_platform_open_gcm` (dvd_disc.h): a plain GCM/ISO via host
+  fopen — NO Dolphin — installs the DVD backend + loads the FST. 10 checks incl. the full
+  real disc path (write synth GCM -> open -> boot header -> FST -> DVDOpen+Read). Replaces
+  the vestigial namespaced-API sketch (platform_stub.cpp is now a pure header canary; the
+  shipping seams DEFINE THE SDK C SYMBOLS directly — that's the source of truth).
+- **E6 GX SLICE 1** (`gx_impl.cpp`, `gx_state.h`, 7 fns) — GX as a PC renderer NOT a FIFO
+  emulator: GXSet* capture into a native `GXState` (the decomp's `gx` struct reborn as host
+  state); the FIFO/XF-register writes are DROPPED (the renderer reads GXState). Transform
+  block: GXSetProjection/Viewport/Jitter/Scissor + GXGetProjectionv/Viewportv + GXProject
+  (verbatim eye->screen math). 14 checks (state round-trip + ortho projection).
 
 **Full-link blocker FIXED along the way:** GC fixed-address globals (`__OSBusClock`,
 `__VIRegs`, `__gCurrentThread`…) declared via `AT_ADDRESS` had ONE HW location on
@@ -219,17 +232,22 @@ console but the empty host expansion made every TU emit a colliding `.bss` def.
 the linker merges them to one (zero-init; OS seam sets real values at init). `-fcommon`
 added to all native targets defensively. This unblocks the eventual 577-TU full link.
 
-### NEXT seams (remaining SDK C-symbols, by count): GX 121, THP 16, GD 16, CARD 14,
-AI 10. ALL of these are either integration-coupled or need a design call — which is why
-the session stopped here (every remaining seam needs the integration harness or a
-decision, a distinct large unit; the 6 standalone-verifiable seams are DONE):
-- **The next concrete step is the INTEGRATION HARNESS**: a native `main()` + a
-  `PlatformInit()` (boot order in `native/platform/README.md`: os→dvd→card→audio→vi→
-  gx→pad→thp) that links `sms-native` + `sms-platform` into an executable. Attempting
-  the link reveals the real remaining surface (the 273 game C++ stubs + un-impl'd
-  seams) and is the prerequisite to verifying GX/AI/THP end-to-end (they route to
-  `runtime/render`+`runtime/ngx` / `runtime/native_jas` and CAN'T be unit-tested
-  standalone). Wire VI's present hook + PAD's input feed here.
+### PROGRESS UPDATE (session 3 cont.): 135/634, 8/8 suites green. Added the PC
+integration layer (PlatformInit + PC-native GCM disc reader) + GX slice 1 (transform).
+
+### NEXT (remaining SDK C-symbols): GX ~114 (slice 1 done), THP 16, GD 16, CARD 14, AI 10.
+- **GX is now unblocked to continue slice-by-slice** on the `GXState` foundation
+  (`gx_state.h`): add the state-capture setters (TEV/blend/Z/cull/tex/chan/fog/copy-clear)
+  — each grows GXState + is round-trip testable. BUT pure state-capture is shallow without
+  a consumer; the high-value verification is the **ngx renderer reading GXState + the J3D
+  object model** (the draw/copy/peek/present verbs). That needs the native renderer wired
+  into the build (it lives in `runtime/render`+`runtime/ngx`, currently coupled to Dolphin/
+  guest-RAM) — re-pointing ngx at native structs + GXState is the big GX subtask.
+- **The other prerequisite: a linkable executable** — a native `main()` (native/src/) that
+  calls PlatformInit then the game's main(). It won't link until the 273 game C++ stubs +
+  remaining seams resolve, but attempting it reveals the true critical-path stub set to
+  fill scene-by-scene. PlatformInit already brings up os/dvd/vi/pad; wire GX present + PAD
+  feed there as they land.
 - **GX (121)** is the big one — re-point ngx at native structs (state setters → native
   GX context; draw verbs → ngx batches; framebuffer/EFB-copy/present). Split internally.
   **GD (16)** is the GX display-list builder (`GDOverflowed`/`GDInit*`/`GD*` write the
