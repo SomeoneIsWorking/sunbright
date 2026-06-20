@@ -119,12 +119,21 @@ if(SB_VULKAN_LIB AND SB_VULKAN_INC AND SB_GLSLANG)
 
     add_library(sms-render STATIC
         "${SMS_NATIVE_REPO_ROOT}/native/render/nvk.cpp"
+        # Reused PURE ngx geometry decoders (NOT forked — these ARE the shipping
+        # renderer's GC display-list -> native-mesh path), compiled Dolphin-free via
+        # the gx_parse.h shadow below.
+        "${SMS_NATIVE_REPO_ROOT}/runtime/ngx/ngx_decode.cpp"
+        "${SMS_NATIVE_REPO_ROOT}/runtime/ngx/ngx_vertex.cpp"
+        "${SMS_NATIVE_REPO_ROOT}/runtime/ngx/ngx_mesh.cpp"
         "${SB_SHADER_GEN}/tri_vert_spv.h"
         "${SB_SHADER_GEN}/tri_frag_spv.h")
     set_target_properties(sms-render PROPERTIES
         CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
     target_include_directories(sms-render PUBLIC
+        # shim/ FIRST so ngx_decode's #include "gx_parse.h" gets the Dolphin-free shadow.
+        "${SMS_NATIVE_REPO_ROOT}/native/render/shim"
         "${SMS_NATIVE_REPO_ROOT}/native/render"
+        "${SMS_NATIVE_REPO_ROOT}/runtime/ngx"
         "${SB_SHADER_GEN}" "${SB_VULKAN_INC}")
     target_link_libraries(sms-render PUBLIC "${SB_VULKAN_LIB}")
     target_compile_options(sms-render PRIVATE -Wall -Wextra)
