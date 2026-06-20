@@ -171,6 +171,52 @@ seams, boot `TApplication`/`TMarDirector`, fill the ~970 stubs scene-by-scene, D
 Runtime landmines to fix when implementing: `J3DMaterial.hpp` `(ptr<0xC0000000)` host-address
 heuristic; `fireStartDemoCamera`/`operator new(u32)` 32-bit userdata/size; `OSf32tos8` rounding.
 
+## ✅ PHASE-2 STARTED (2026-06-20, session 3) — platform seams, TDD, 3 landed
+The real work began. Grounded the phase-2 surface in the ACTUAL unresolved symbols of
+`libsms-native.a` (not the naive API-count estimates): **634 truly-unresolved** =
+~310 SDK C-functions (the platform seams) + 273 game C++ method stubs (fill scene-by-
+scene). Compute it with: `nm libsms-native.a | awk '/U /{print $2}' | sort -u` minus the
+defined set (`[TtWwVvBbDdRr]`) → `scratch/native_unresolved.txt`.
+
+**Phase-2 pattern (PROVEN, follow it):** each seam = `native/platform/<sub>_impl.cpp`
+defining the unresolved SDK C symbols (extern "C", match the `<dolphin/...>` header
+signatures EXACTLY) + `native/platform/tests/<sub>_test.cpp` (assert SPEC-COMPUTED
+truth; the tested fn IS the shipping fn). CMake auto-globs both (`sms-platform` lib,
+`-Wall -Wextra`; per-test `sms-<name>` ctest exes). A seam is DONE when: unit tests
+green AND `nm`-diff shows it RESOLVES its unresolved refs (both checked each commit).
+Build: `cmake -S native -B build-native ...; cmake --build build-native --target sms-platform`;
+`ctest --test-dir build-native`.
+
+Landed & verified (102/634 symbols resolved):
+- **E2 MTX/VEC** (`mtx_impl.cpp`, 28 fns) — PSMTX*/PSVEC*/C_MTX*; C_* bodies ported
+  verbatim from the decomp, asm-only ops from standard GC MTX semantics. 154 checks.
+- **E1 OS** (`os_impl.cpp`, 61 fns) — THE foundation. std::thread side-table backing,
+  recursive mutex/cond, FIFO message queue, interrupts=recursive global lock,
+  40.5MHz time + calendar, OSAlloc(malloc-backed)+arena, stopwatch, HW-vestigial misc.
+  33 checks. Threading model = preemptive host threads + fat global interrupt-lock
+  (option A). DEFERRED gap (honest): GC fixed-PRIORITY scheduling + cooperative
+  non-preemption unverified until boot; escalate to fibers if a priority dep surfaces.
+- **E3 DVD** (`dvd_impl.cpp`, 13 fns) — GC FST parse + path/open/read over a PLUGGABLE
+  disc backend (`dvd_disc.h`), async=synchronous-completion. 29 checks vs a synthetic
+  in-memory disc. SCOPE: raw IO + FST only (Yaz0/RARC/BE-swap are game-side JKRArchive,
+  not the seam). DEFERRED: real GCM/RVZ disc backend (interface ready).
+
+**Full-link blocker FIXED along the way:** GC fixed-address globals (`__OSBusClock`,
+`__VIRegs`, `__gCurrentThread`…) declared via `AT_ADDRESS` had ONE HW location on
+console but the empty host expansion made every TU emit a colliding `.bss` def.
+`native/shim/dolphin/types.h` now expands `AT_ADDRESS` to `__attribute__((weak))` so
+the linker merges them to one (zero-init; OS seam sets real values at init). `-fcommon`
+added to all native targets defensively. This unblocks the eventual 577-TU full link.
+
+### NEXT seams (remaining SDK C-symbols, by count): GX 121, THP 16, GD 16, CARD 14,
+VI 10, AI 10, PAD 8, AR 6, DSP 2. Critical path continues **VI → GX** (→ ngx renderer,
+NOT FIFO emu). CARD needs a design call first: implement the full public API natively
+vs un-exclude `src/dolphin/card/` and only stub the EXI hardware layer (the card FS
+decomp source exists but is currently excluded as "platform"). PAD (host input) + AR/DSP
+(inert mailbox) are small. GX/Audio route to the existing `runtime/render`+`runtime/ngx`
+/ `runtime/native_jas` and aren't standalone-unit-testable → they need the integration
+harness (a native `main()` + PlatformInit) before they're verifiable end-to-end.
+
 ## Don't re-chase
 - `port/` (flip) is dead — do not revive.
 - A blanket host-libc prelude — it conflicts with MSL; shadow MSL instead.
