@@ -200,6 +200,23 @@ else()
     message(STATUS "sms-render: Vulkan/glslang not found; skipping native renderer")
 endif()
 
+# ---------------------------------------------------------------------------
+# sms-boot — the native bring-up executable: PlatformInit (--wrap=main) -> the game's
+# own main() (TApplication). Won't LINK until the remaining seams + game C++ stubs
+# resolve; the link failure reveals the true critical-path stub set. Opt-in (it is
+# EXPECTED to fail-link today) so it never breaks the default build/ctest.
+# ---------------------------------------------------------------------------
+option(SMS_BUILD_BOOT "Build the native bring-up exe (expected to fail-link until stubs land)" OFF)
+if(SMS_BUILD_BOOT)
+    add_executable(sms-boot "${SMS_NATIVE_REPO_ROOT}/native/src/boot.cpp")
+    set_target_properties(sms-boot PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+    target_include_directories(sms-boot PRIVATE
+        "${SMS_NATIVE_REPO_ROOT}/native/platform" "${SMS_NATIVE_REPO_ROOT}/native/shim"
+        "${SMS_NATIVE_REPO_ROOT}/reference/sms/include")
+    target_link_options(sms-boot PRIVATE -Wl,--wrap=main)
+    target_link_libraries(sms-boot PRIVATE sms-native sms-platform)
+endif()
+
 file(GLOB SMS_PLATFORM_TESTS CONFIGURE_DEPENDS
      "${SMS_NATIVE_REPO_ROOT}/native/platform/tests/*_test.cpp")
 foreach(test_src ${SMS_PLATFORM_TESTS})

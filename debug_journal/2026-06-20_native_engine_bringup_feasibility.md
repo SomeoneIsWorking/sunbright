@@ -368,9 +368,20 @@ remaining GX 79 are mostly the draw/copy/present/peek verbs (GXBegin/CallDisplay
 CopyTex/PeekARGB/PeekZ/Draw*) + the vtx-desc/matrix-load/texobj setters — the draw verbs want
 the renderer wired to native structs (the big GX subtask). Cheap remaining state setters
 (GXInitTexObj/Tlut, GXSetVtxDesc/AttrFmt, GXLoadPosMtxImm, GXSetFog/Dither/etc.) can grow the
-seam round-trip-tested, but are SHALLOW without the draw consumer. Recommend: start the engine
-boot (a native main() -> PlatformInit -> game main()) to surface the true critical-path stub
-set + give step 3 a verification target. catalogue: `scratch/native_unresolved.txt`.
+seam round-trip-tested, but are SHALLOW without the draw consumer. catalogue: `scratch/native_unresolved.txt`.
+
+### ✅ Boot FOUNDATION laid (sms-boot target, opt-in) — the engine-boot critical path is catalogued
+`native/src/boot.cpp` + CMake `-DSMS_BUILD_BOOT=ON` (default OFF; it is EXPECTED to fail-link
+today so it never breaks the default build/ctest). Uses linker `--wrap=main` (same technique as
+the recomp JitTrampoline hook) so `sb::platform::PlatformInit` runs before the game's own
+`int main()` (reference/sms/src/main.cpp = `gpApplication.initialize/proc/finalize`, TApplication).
+Links sms-native + sms-platform. The link attempt yields the TRUE boot critical path:
+**458 distinct undefined refs = 184 SDK-C seam verbs (GX 79, THP 16, GD 15, CARD 14, AI 10 —
+OS/MTX/DVD/VI/PAD/AR already done) + 274 game C++ methods** (the empty-decomp-body stubs +
+TApplication's transitive object graph). That's the stub-filling marathon to boot the game.
+Catalogue: `scratch/boot_undef.txt` (gitignored; regenerate: build sms-boot, grep "undefined
+reference"). NEXT SESSION = fill toward a first booted frame; the renderer (nvk TEV+lighting+
+texture+depth) is the verification target once a J3DModel is populated.
 
 ## Don't re-chase
 - `port/` (flip) is dead — do not revive.
