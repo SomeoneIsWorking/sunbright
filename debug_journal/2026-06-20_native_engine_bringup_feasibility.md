@@ -495,6 +495,54 @@ is verified independently.
    model-vs-Dolphin-render harness, or accept they're verifiable only once a scene boots). Then: boot more
    engine (sms-boot) so a real J3DModel populates from a scene, not a hand-loaded BMD.
 
+### ✅ SESSION 7 — PHASE-2 SDK seams completed (GX framebuffer half + AI + THP + CARD + GD)
+Knocked out the remaining SDK-seam undefs on the `sms-boot` critical path. **Boot undef count
+380 → 270**; the FIVE GameCube SDK groups **GX / THP / CARD / AI / GD are now 0 remaining**.
+ctest **18 → 22** (added platform card/ai/thp + gxfb). Commits `461af68` (CARD) + `eb9959d`
+(GX/AI/THP/GD), pushed to main. Method: fanned the independent seam groups out to parallel
+subagents (CARD/AI/THP), did GX + GD myself; one unified verify-first build + ctest gate before commit.
+- **GX seam SLICE 6** (`gx_fb_impl.cpp` + `gx_state.h` slice-6 fields + `gx_impl.cpp` texobj funcs;
+  `gxfb_test.cpp`). The framebuffer/management half: display & tex copy config, `GXSetFog`,
+  pixel-format, dst-alpha, z-texture, ind-tex order, `GXSetVtxAttrFmtv`, `GXInitTexObjCI/LOD` +
+  `GXGetTexObj{Width,Height,All}`, `GXInitTlutObj/GXLoadTlut`, `GXSetDrawSyncCallback` (prev-swap),
+  `GXInit`, `GXNtsc480Int` data, imm-draw verbs, peek/metrics. **Pure-math ported VERBATIM from the
+  decomp + unit-tested against hand-computed truth**: `GXGetTexBufferSize` (tile-shift sizing),
+  `GXGetNumXfbLines`/`GXGetYScaleFactor`/`GXSetDispCopyYScale` (`__GXGetNumXfbLines` XFB formula).
+  The verify-first oracle caught MY OWN bad test expectation (I8 40×20 = 5·5·32 = **800**, I'd
+  written 4000) — impl was right.
+- **AI seam** (`ai_impl.cpp`): Audio-Interface contract as host state (callback swap-and-return,
+  DMA params, DSP/stream rates, vols, play state). Real audio stays in `native_audio.cpp`.
+- **THP seam** (`thp_impl.cpp`): full `THPPlayer` state machine ported from `THPPlayer.c`; frame
+  DECODE + GX YUV draw are documented no-ops (no FIFO/codec in this lib). State values 0..5.
+- **GD (16 syms): pure LINK gap** — all defined in `sms-gd`; `sms-boot` now links the full RESCAN
+  closure `(sms-native,sms-gd,sms-assets,sms-platform)` like `j3dload_test` (was sms-native+platform).
+- **★ REUSABLE: small opaque GC obj on LP64 can't hold a host pointer.** `GXTlutObj` is 12 bytes —
+  too small for an 8-byte host `lut` ptr + metadata (alignment rounds to 16). FIX = the obj carries
+  `{magic, registry-slot}`; the pointer + fields live in a fixed side-registry (round-robin, bounded),
+  `GXLoadTlut` copies the registered descriptor into the renderer-read slot. EXPECT to repeat for any
+  ≤12-byte opaque SDK object that must stash a host pointer. (`GXTexObj` is 32 bytes → fits the overlay.)
+- **★ REUSABLE: CARD blank-marker must NOT collide with the FAT checksum slot.** `fat_recompute_checksum`
+  writes the XOR checksum to `FAT[1]`; keying CARDMount's blank-detect on `FAT[1]==0xFFFF` false-BROKENs
+  a card whose data makes the checksum 0xFFFF. Detect via `FAT[0]` (format sets it 0, blank=0xFFFF) or the
+  header-sector magic. (Found independently by me + the CARD subagent.)
+- **★ PROCESS lesson: fan-out subagents per independent file group, but isolate them.** I omitted
+  `isolation: "worktree"`, so the 3 agents wrote into the SHARED tree and their in-progress files
+  transiently broke each other's (and my) GLOB build (`sms-platform` globs `*_impl.cpp`). It converged
+  (each agent only edits its own file; mine compiled clean so it never blocked them) and the unified
+  gate caught everything, but NEXT TIME either pass `isolation: worktree` OR tell agents "write files,
+  don't build — I verify centrally." The CARD agent also auto-committed (global commit-on-milestone),
+  so its work landed as a separate commit ahead of mine — expected, not a problem.
+
+### NEXT (session 8) — the remaining 270 boot undefs are the GAME C++ CLOSURE (the boot marathon)
+The SDK seam layer is DONE. `scratch/boot_undef_after.txt` (270) is now almost entirely game classes:
+`TMapObjBase` (12), vtables/typeinfo (~22: TSunShine/TFence/TMarioGamePad/…), and ctors for the
+MarNameRefGen actor catalogue (TGenerator/TGuide/TPauseMenu2/TAreaCylinder/…) + globals
+(`gpConductor`,`gpMapObjWave`,…). These are the game-object stubs the handoff named — booting needs
+them filled (or stubbed enough to reach `PlatformInit → game main → a scene populates a J3DModel`),
+which is the only path to a Dolphin-oracle-verifiable COLOR frame. Likely wants the GX/VI integration
+harness stood up first. Re-measure: `cmake -B build-native -DSMS_BUILD_BOOT=ON && build sms-boot`,
+`grep undefined`. (The other parked frontier, envelope skinning shape-7 overflow 260.74→0, is still open.)
+
 ## Don't re-chase
 - `port/` (flip) is dead — do not revive. (But its `assets/` BE→host swappers ARE reused — recovered
   into native/assets/ as sms-assets. Recovering more from there via `git show d45a0c3^:port/...` is fair.)
