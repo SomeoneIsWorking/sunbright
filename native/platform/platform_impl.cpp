@@ -16,6 +16,7 @@
 #include <dolphin/dvd.h>
 #include <dolphin/vi.h>
 #include <dolphin/pad.h>
+#include <JSystem/JKernel/JKRExpHeap.hpp>
 
 #include <cstdio>
 #include <cstdlib>
@@ -59,6 +60,15 @@ bool PlatformInit(int argc, char** argv) {
     OSSetArenaLo(lo);
     OSSetArenaHi(hi);
     OSCreateHeap(lo, hi);
+
+    // Create the JKR root heap NOW. The decomp's global operator new is JKRHeap::
+    // alloc(sCurrentHeap), so EVERY C++ allocation (incl. std::vector in the platform
+    // seams below, e.g. the DVD FST read) routes through it. The game would otherwise
+    // not create the root heap until TApplication::initialize (long after PlatformInit),
+    // leaving sCurrentHeap null -> operator new returns null -> SEGV. createRoot sets
+    // sRootHeap/sCurrentHeap; the game's later createRoot(1,false) finds sRootHeap set
+    // and returns this same root (a no-op). Args match Application.cpp:204.
+    JKRExpHeap::createRoot(1, false);
 
     // --- dvd: open the disc image if one was given (argv[1] or $SUNBRIGHT_DISC /
     // $SUNBRIGHT_ROM). Plain GCM only here; an RVZ needs the decompressing reader.
