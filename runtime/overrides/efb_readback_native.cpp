@@ -107,9 +107,10 @@ SUNBRIGHT_OVERRIDE_IF_NATIVE(ov_gxpeekargb, 0x8035dcccu, s_ngx_present_occ) {
 // ── GXCopyTex: serve EFB→texture copies from ngx's scene color (own-the-framebuffer slice 3) ─────
 // GXSetTexCopySrc(left,top,wd,ht) + GXSetTexCopyDst(wd,ht,fmt,mip) set the EFB src rect + dst tex
 // dims/format; GXCopyTex(dest,clear) copies EFB→dest texture (clear also clears the EFB — irrelevant
-// to us). Under ngx present Dolphin's EFB is empty → the copy writes BLACK into the effect's texture.
-// We run the original (keeps Dolphin GP state consistent) then OVERWRITE dest with ngx's scene color,
-// box-downsampled to the dst dims and GC-tiled in the dst format. Active only under ngx present.
+// to us). Under ngx present Dolphin's EFB is empty → its copy writes BLACK. ngx OWNS the served formats
+// (RGB565/RGB5A3): copytex_writeback fills ngx's side buffer (texture_for reads it) and the guest
+// original is SKIPPED entirely (it only does the async empty-EFB stomp + unused GP work). Active only
+// under ngx present.
 extern "C" int sb_ngx_efb_copy_region(int sx, int sy, int sw, int sh, int dw, int dh, uint32_t* out);
 extern "C" void sb_ngx_efb_invalidate_tex(uint32_t ea);
 extern "C" void sb_ngx_efb_store_copy(uint32_t ea, int w, int h, const uint32_t* argb);
@@ -182,6 +183,12 @@ SUNBRIGHT_OVERRIDE_IF_NATIVE(ov_gxcopytex, 0x8035ee5cu, s_ngx_present) {
                     n, cpu.gpr[3], cpu.gpr[4], g_src_l, g_src_t, g_src_w, g_src_h,
                     g_dst_w, g_dst_h, g_dst_fmt, (g_dst_fmt == 4 || g_dst_fmt == 5) ? " ←served" : "");
     }
+    // Own the copy. For the formats ngx fully serves (RGB565/RGB5A3), the side buffer supplies the
+    // content texture_for reads, so the guest GXCopyTex original is pure overhead under ngx present:
+    // it only triggers Dolphin's async EFB→RAM copy of the empty EFB (the zero-stomp we bypass) and
+    // GP work nothing consumes. SKIP it — ngx owns these copies end to end. Other formats (not yet
+    // served, e.g. the 512² shadow/Z copy) still run the original until ngx serves them too.
+    if (g_dst_fmt == 4 || g_dst_fmt == 5) { copytex_writeback(0); return; }
     sb_run_original_around(cpu, 0x8035ee5cu, &copytex_writeback, 0);
 }
 
