@@ -128,15 +128,15 @@ extern "C" volatile int g_sb_efb_copy_on = 1;   // /efbcopy?on=N — A/B toggle 
 
 void copytex_writeback(u32 /*cookie*/) {
     const int dw = g_dst_w, dh = g_dst_h, fmt = g_dst_fmt;
-    if (g_copy_dst_ea == 0 || dw <= 0 || dh <= 0) return;
-    if (fmt != 4 && fmt != 5) return;             // GX_TF_RGB565 / RGB5A3 (both 4×4 BE u16) — v1
+    if (g_copy_dst_ea == 0 || dw <= 0 || dh <= 0) { if (s_efb_dbg){static unsigned long z=0; if((z++%240)==0) fprintf(stderr,"[efb-wb] skip: ea/dim ea=%08x %dx%d\n",g_copy_dst_ea,dw,dh);} return; }
+    if (fmt != 4 && fmt != 5) { if (s_efb_dbg){static unsigned long z=0; if((z++%240)==0) fprintf(stderr,"[efb-wb] skip: fmt=%d (%dx%d)\n",fmt,dw,dh);} return; }
     const u32 ea = (g_copy_dst_ea & 0x3FFFFFFF) | 0x80000000u;         // phys → cached MEM1 virtual
     sb_ngx_efb_invalidate_tex(ea);     // always re-decode this tex (ON: ngx scene below; OFF: original's black)
     if (!g_sb_efb_copy_on) return;                // A/B off → effect samples the original's (black) copy
     static thread_local std::vector<u32> buf;
     buf.resize((size_t)dw * dh);
     int sw = g_src_w > 0 ? g_src_w : 640, sh = g_src_h > 0 ? g_src_h : 448;
-    if (!sb_ngx_efb_copy_region(g_src_l, g_src_t, sw, sh, dw, dh, buf.data())) return;  // no frame yet
+    if (!sb_ngx_efb_copy_region(g_src_l, g_src_t, sw, sh, dw, dh, buf.data())) { if (s_efb_dbg){static unsigned long z=0; if((z++%120)==0) fprintf(stderr,"[efb-wb] NO FRAME (efb_copy_region failed) ea=%08x %dx%d fmt=%d\n",ea,dw,dh,fmt);} return; }  // no frame yet
     // RGB565/RGB5A3 4×4 GC tiling: tile (y,x) row-major; within tile iy-major, each row 4 BE u16. Byte
     // offset = ((y/4)*(dw/4) + x/4)*32 + (y%4)*8 + (x%4)*2. (matches runtime/render/tex_decode.cpp.)
     for (int dy = 0; dy < dh; dy++)
