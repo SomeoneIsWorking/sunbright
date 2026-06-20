@@ -92,6 +92,59 @@ target_link_libraries(sms-platform PUBLIC Threads::Threads)
 # shipping seam function). Each native/platform/tests/*_test.cpp is its own
 # assert-main executable, registered with ctest as platform_<name>.
 enable_testing()
+
+# ---------------------------------------------------------------------------
+# sms-render — the standalone native Vulkan renderer (no Dolphin, headless offscreen).
+# Compiles GLSL shaders to embedded SPIR-V headers (glslangValidator --vn) and builds
+# the from-scratch Vulkan core (nvk.cpp). This is the foundation the full native SMS
+# renderer (J3D meshes + GXState) plugs into. Skipped if Vulkan/glslang is unavailable.
+# ---------------------------------------------------------------------------
+find_library(SB_VULKAN_LIB NAMES vulkan)
+find_path(SB_VULKAN_INC NAMES vulkan/vulkan.h)
+find_program(SB_GLSLANG NAMES glslangValidator)
+if(SB_VULKAN_LIB AND SB_VULKAN_INC AND SB_GLSLANG)
+    set(SB_SHADER_GEN "${CMAKE_BINARY_DIR}/gen_shaders")
+    file(MAKE_DIRECTORY "${SB_SHADER_GEN}")
+    set(SB_SHADER_DIR "${SMS_NATIVE_REPO_ROOT}/native/render/shaders")
+    add_custom_command(
+        OUTPUT "${SB_SHADER_GEN}/tri_vert_spv.h"
+        COMMAND "${SB_GLSLANG}" -V --vn tri_vert_spv "${SB_SHADER_DIR}/tri.vert"
+                -o "${SB_SHADER_GEN}/tri_vert_spv.h"
+        DEPENDS "${SB_SHADER_DIR}/tri.vert" VERBATIM)
+    add_custom_command(
+        OUTPUT "${SB_SHADER_GEN}/tri_frag_spv.h"
+        COMMAND "${SB_GLSLANG}" -V --vn tri_frag_spv "${SB_SHADER_DIR}/tri.frag"
+                -o "${SB_SHADER_GEN}/tri_frag_spv.h"
+        DEPENDS "${SB_SHADER_DIR}/tri.frag" VERBATIM)
+
+    add_library(sms-render STATIC
+        "${SMS_NATIVE_REPO_ROOT}/native/render/nvk.cpp"
+        "${SB_SHADER_GEN}/tri_vert_spv.h"
+        "${SB_SHADER_GEN}/tri_frag_spv.h")
+    set_target_properties(sms-render PROPERTIES
+        CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+    target_include_directories(sms-render PUBLIC
+        "${SMS_NATIVE_REPO_ROOT}/native/render"
+        "${SB_SHADER_GEN}" "${SB_VULKAN_INC}")
+    target_link_libraries(sms-render PUBLIC "${SB_VULKAN_LIB}")
+    target_compile_options(sms-render PRIVATE -Wall -Wextra)
+
+    # Render tests (e.g. tests/render/*_test.cpp) link sms-render. Headless; a frame
+    # render+readback is verified by pixel checks (lavapipe works with no GPU).
+    file(GLOB SB_RENDER_TESTS CONFIGURE_DEPENDS
+         "${SMS_NATIVE_REPO_ROOT}/native/render/tests/*_test.cpp")
+    foreach(rt ${SB_RENDER_TESTS})
+        get_filename_component(rt_name "${rt}" NAME_WE)
+        add_executable(sms-${rt_name} "${rt}")
+        set_target_properties(sms-${rt_name} PROPERTIES
+            CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+        target_link_libraries(sms-${rt_name} PRIVATE sms-render sms-platform)
+        add_test(NAME render_${rt_name} COMMAND sms-${rt_name})
+    endforeach()
+else()
+    message(STATUS "sms-render: Vulkan/glslang not found; skipping native renderer")
+endif()
+
 file(GLOB SMS_PLATFORM_TESTS CONFIGURE_DEPENDS
      "${SMS_NATIVE_REPO_ROOT}/native/platform/tests/*_test.cpp")
 foreach(test_src ${SMS_PLATFORM_TESTS})
