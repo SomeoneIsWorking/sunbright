@@ -64,10 +64,53 @@ static void test_project_ortho() {
     chkf(sy, 180.0f, "offcenter sy");
 }
 
+static void chki(long got, long want, const char* what) {
+    ++g_checks;
+    if (got != want) { ++g_fail; std::printf("  FAIL: %s got=%ld want=%ld\n", what, got, want); }
+}
+
+static void test_pipeline_state() {
+    auto& g = sb::platform::gx::state();
+    GXSetBlendMode(GX_BM_BLEND, GX_BL_SRCALPHA, GX_BL_INVSRCALPHA, GX_LO_CLEAR);
+    chki(g.blendType, GX_BM_BLEND, "blend type");
+    chki(g.blendSrc, GX_BL_SRCALPHA, "blend src");
+    chki(g.blendDst, GX_BL_INVSRCALPHA, "blend dst");
+
+    GXSetZMode(GX_TRUE, GX_LEQUAL, GX_TRUE);
+    chki(g.zCompare, GX_TRUE, "z compare");
+    chki(g.zFunc, GX_LEQUAL, "z func");
+    chki(g.zUpdate, GX_TRUE, "z update");
+
+    GXSetCullMode(GX_CULL_BACK);
+    chki(g.cullMode, GX_CULL_BACK, "cull mode");
+    GXSetColorUpdate(GX_FALSE);
+    chki(g.colorUpdate, GX_FALSE, "color update");
+    GXSetZCompLoc(GX_TRUE);
+    chki(g.zCompLocBeforeTex, GX_TRUE, "zcomploc");
+
+    GXSetAlphaCompare(GX_GREATER, 128, GX_AOP_AND, GX_ALWAYS, 0);
+    chki(g.alphaComp0, GX_GREATER, "alpha comp0");
+    chki(g.alphaRef0, 128, "alpha ref0");
+    chki(g.alphaOp, GX_AOP_AND, "alpha op");
+
+    GXColor clr = { 10, 20, 30, 255 };
+    GXSetCopyClear(clr, 0xFFFFFF);
+    chki(g.copyClearColor.r, 10, "clear r");
+    chki(g.copyClearColor.g, 20, "clear g");
+    chki(g.copyClearColor.b, 30, "clear b");
+    chki((long)g.copyClearZ, 0xFFFFFF, "clear z");
+
+    GXSetNumChans(2); GXSetNumTexGens(3); GXSetNumTevStages(4);
+    chki(g.numChans, 2, "num chans");
+    chki(g.numTexGens, 3, "num texgens");
+    chki(g.numTevStages, 4, "num tev stages");
+}
+
 int main() {
-    std::printf("== GX seam (transform slice) unit tests ==\n");
+    std::printf("== GX seam (transform + pipeline slices) unit tests ==\n");
     test_state_roundtrip();
     test_project_ortho();
+    test_pipeline_state();
     std::printf("%d checks, %d failures\n", g_checks, g_fail);
     return g_fail ? 1 : 0;
 }

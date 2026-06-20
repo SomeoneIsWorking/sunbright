@@ -25,6 +25,28 @@ struct GXState {
 
     // --- transform: scissor rect ---
     u32 scLeft, scTop, scWd, scHt;
+
+    // --- pixel pipeline (clean semantic fields, NOT GC BP register packing) ---
+    // blend
+    GXBlendMode   blendType;
+    GXBlendFactor blendSrc, blendDst;
+    GXLogicOp     blendLogicOp;
+    // z-buffer
+    GXBool   zCompare, zUpdate;
+    GXCompare zFunc;
+    GXBool   zCompLocBeforeTex;   // GXSetZCompLoc
+    // cull / framebuffer update
+    GXCullMode cullMode;
+    GXBool     colorUpdate;
+    // alpha compare
+    GXCompare alphaComp0, alphaComp1;
+    u8        alphaRef0, alphaRef1;
+    GXAlphaOp alphaOp;
+    // copy clear
+    GXColor copyClearColor;
+    u32     copyClearZ;
+    // pipeline counts
+    u8 numChans, numTexGens, numTevStages;
 };
 
 // The single live GX state the seam writes and the renderer reads.

@@ -93,4 +93,33 @@ void GXSetScissor(u32 left, u32 top, u32 wd, u32 ht) {
     g.scLeft = left; g.scTop = top; g.scWd = wd; g.scHt = ht;
 }
 
+// --- SLICE 2: core pixel-pipeline state -----------------------------------
+// Capture clean semantic values into GXState (no GC BP register bit-packing) — the
+// native renderer maps these to its pipeline directly.
+void GXSetBlendMode(GXBlendMode type, GXBlendFactor src, GXBlendFactor dst, GXLogicOp op) {
+    auto& g = state();
+    g.blendType = type; g.blendSrc = src; g.blendDst = dst; g.blendLogicOp = op;
+}
+void GXSetZMode(GXBool compare, GXCompare func, GXBool update) {
+    auto& g = state();
+    g.zCompare = compare; g.zFunc = func; g.zUpdate = update;
+}
+void GXSetZCompLoc(GXBool beforeTex) { state().zCompLocBeforeTex = beforeTex; }
+void GXSetCullMode(GXCullMode mode) { state().cullMode = mode; }
+void GXSetColorUpdate(GXBool enable) { state().colorUpdate = enable; }
+void GXSetAlphaCompare(GXCompare comp0, u8 ref0, GXAlphaOp op, GXCompare comp1, u8 ref1) {
+    auto& g = state();
+    g.alphaComp0 = comp0; g.alphaRef0 = ref0; g.alphaOp = op;
+    g.alphaComp1 = comp1; g.alphaRef1 = ref1;
+}
+// GXColor passed BY VALUE per the SDK header — the native compiler handles the ABI
+// (the "GXColor by pointer" caveat was a RECOMP/MWcc artifact, irrelevant here).
+void GXSetCopyClear(GXColor clear, u32 z) {
+    auto& g = state();
+    g.copyClearColor = clear; g.copyClearZ = z;
+}
+void GXSetNumChans(u8 n)     { state().numChans = n; }
+void GXSetNumTexGens(u8 n)   { state().numTexGens = n; }
+void GXSetNumTevStages(u8 n) { state().numTevStages = n; }
+
 } // extern "C"
