@@ -178,6 +178,19 @@ SUNBRIGHT_OVERRIDE_IF_NATIVE(ov_poll_inspect, 0x8019b3a0u, dbg() || force()) {
             fprintf(stderr, "[poll-f%llu] joint=%u texact=%u revival=%u model=%u\n",
                     (unsigned long long)calls, jcnt, texact, rcnt, mcnt);
     }
+    if (dbg() && idx == 0 && (calls % 30) == 0) {
+        // coverage mean every 30 frames → localize the seed in time
+        int n = (int)mem_r32(cl + CL_unk8);
+        u32 arr = mem_r32(cl + CL_unk14);
+        for (int i = 0; i < n; i++) {
+            u32 lay = mem_r32(arr + 4u * i); if (!lay) continue;
+            u32 cov = mem_r32(lay + L_unk54);
+            long sum = 0; int nz = 0;
+            for (int k = 0; k < 4096; k++) { u8 d = mem_r8(cov + (u32)k * 64); if (d) { nz++; sum += d; } }
+            fprintf(stderr, "[poll-cov f%llu] layer[%d] sampled nz=%d mean=%ld\n",
+                    (unsigned long long)calls, i, nz, nz ? sum/nz : 0);
+        }
+    }
     if (dbg() && idx == 0 && (calls++ % 120) == 0) {
         dump(cl);
         static bool once = false;
