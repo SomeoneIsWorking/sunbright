@@ -187,7 +187,8 @@ green AND `nm`-diff shows it RESOLVES its unresolved refs (both checked each com
 Build: `cmake -S native -B build-native ...; cmake --build build-native --target sms-platform`;
 `ctest --test-dir build-native`.
 
-Landed & verified (102/634 symbols resolved):
+Landed & verified — **6 seams, 128/634 symbols resolved, all unit-tested (259 checks,
+6/6 ctest suites green):**
 - **E2 MTX/VEC** (`mtx_impl.cpp`, 28 fns) — PSMTX*/PSVEC*/C_MTX*; C_* bodies ported
   verbatim from the decomp, asm-only ops from standard GC MTX semantics. 154 checks.
 - **E1 OS** (`os_impl.cpp`, 61 fns) — THE foundation. std::thread side-table backing,
@@ -200,6 +201,16 @@ Landed & verified (102/634 symbols resolved):
   disc backend (`dvd_disc.h`), async=synchronous-completion. 29 checks vs a synthetic
   in-memory disc. SCOPE: raw IO + FST only (Yaz0/RARC/BE-swap are game-side JKRArchive,
   not the seam). DEFERRED: real GCM/RVZ disc backend (interface ready).
+- **E8 PAD** (`pad_impl.cpp`, 8 fns) — host-input feed (`pad_input.h`, fed at VI
+  cadence) + PADRead/connected-mask + REAL GC stick/trigger clamp (Padclamp.c verbatim).
+  13 checks.
+- **AR/DSP** (`ar_dsp_impl.cpp`, 8 fns) — INERT under native_jas: ARAM bump allocator
+  (32-aligned), ARQ instant-completion, DSP no-mail. 7 checks. LANDMINE: ARQ/DMA take
+  32-bit addrs (the 32-bit-userdata class) — harmless while inert.
+- **E5 VI** (`vi_impl.cpp`, 10 fns) — the 60Hz frame heartbeat: VIWaitForRetrace
+  advances the retrace counter, alternates field, fires pre/post callbacks, paces to
+  1/60s on the GC timebase, invokes the present hook (`vi_present.h`). 13 checks. The
+  actual swapchain present is the integration layer's job via the hook.
 
 **Full-link blocker FIXED along the way:** GC fixed-address globals (`__OSBusClock`,
 `__VIRegs`, `__gCurrentThread`…) declared via `AT_ADDRESS` had ONE HW location on
@@ -209,13 +220,29 @@ the linker merges them to one (zero-init; OS seam sets real values at init). `-f
 added to all native targets defensively. This unblocks the eventual 577-TU full link.
 
 ### NEXT seams (remaining SDK C-symbols, by count): GX 121, THP 16, GD 16, CARD 14,
-VI 10, AI 10, PAD 8, AR 6, DSP 2. Critical path continues **VI → GX** (→ ngx renderer,
-NOT FIFO emu). CARD needs a design call first: implement the full public API natively
-vs un-exclude `src/dolphin/card/` and only stub the EXI hardware layer (the card FS
-decomp source exists but is currently excluded as "platform"). PAD (host input) + AR/DSP
-(inert mailbox) are small. GX/Audio route to the existing `runtime/render`+`runtime/ngx`
-/ `runtime/native_jas` and aren't standalone-unit-testable → they need the integration
-harness (a native `main()` + PlatformInit) before they're verifiable end-to-end.
+AI 10. ALL of these are either integration-coupled or need a design call — which is why
+the session stopped here (every remaining seam needs the integration harness or a
+decision, a distinct large unit; the 6 standalone-verifiable seams are DONE):
+- **The next concrete step is the INTEGRATION HARNESS**: a native `main()` + a
+  `PlatformInit()` (boot order in `native/platform/README.md`: os→dvd→card→audio→vi→
+  gx→pad→thp) that links `sms-native` + `sms-platform` into an executable. Attempting
+  the link reveals the real remaining surface (the 273 game C++ stubs + un-impl'd
+  seams) and is the prerequisite to verifying GX/AI/THP end-to-end (they route to
+  `runtime/render`+`runtime/ngx` / `runtime/native_jas` and CAN'T be unit-tested
+  standalone). Wire VI's present hook + PAD's input feed here.
+- **GX (121)** is the big one — re-point ngx at native structs (state setters → native
+  GX context; draw verbs → ngx batches; framebuffer/EFB-copy/present). Split internally.
+  **GD (16)** is the GX display-list builder (`GDOverflowed`/`GDInit*`/`GD*` write the
+  DL); pairs with GX. **AI (10)** → host audio device + DTK (native_audio). **THP (16)**
+  → FMV DCT decode (reuse recomp THP). 
+- **CARD (14) needs a design call:** implement the full public CARD API natively, OR
+  un-exclude `reference/sms/src/dolphin/card/` from the sms-native glob (the FS decomp
+  source exists) and only stub the low-level EXI hardware layer (cleaner/faithful IF it
+  compiles natively — verify first). Port `runtime/overrides/native_card.cpp` semantics
+  (host-image backend, synchronous completions).
+- DON'T ship an unverifiable seam as "done" (CLAUDE.md verify-first rule): GX/AI/THP
+  must wait for the harness; a bare interface stub that resolves symbols but can't be
+  exercised is NOT done.
 
 ## Don't re-chase
 - `port/` (flip) is dead — do not revive.
