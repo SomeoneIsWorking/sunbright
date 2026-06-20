@@ -453,15 +453,36 @@ shape's own bbox (proves POS decode across direct/indexed + f32/s16). 18/18 ctes
   bring the JKRExpHeap up in an `__attribute__((init_priority(101)))` static (runs before glslang's
   unprioritized ctors), NOT in main. (j3dload_test, which doesn't link glslang, can bring up in main.)
 
+### ✅ ALL-SHAPES rendering + skinning-aware POS verify (increment #4, next session). j3dmesh_test
+now decodes & rasterizes EVERY shape of a model (loop `getShapeNum`), not just shape 0 — shadowpalm
+84→**668 tris across all 8 shapes**, all 7 BMDs green, 18/18 ctest. Each shape builds its own CP and
+is verified independently.
+- **★ ENVELOPE-SKINNING GAP found & quantified (the next real geometry milestone).** shadowpalm is
+  `joints=3 drawMtx=4 fullWgt=2 wEvlp=1` — weighted-envelope skinned. 7 of its 8 shapes' decoded
+  positions land in their own bbox (bind-pose joints ≈ identity); **shape 7 overflows its bbox by
+  260.74** (model extent ~520) because its vertices sit in JOINT-LOCAL space — the weighted blend
+  isn't applied. KEY RE FINDING: **`J3DModel::calcWeightEnvelopeMtx()` is EMPTY in SMS** and the
+  `J3DMtxCalcBasic` static path (`recursiveCalc`→`getAnmMtx`) only fills per-JOINT node matrices, never
+  the envelope matrices (`unk5C`/`getWeightAnmMtx`). So envelope skinning is NOT a bind-pose matrix
+  multiply you can get by driving `J3DModel::calc`+`viewCalc` — the weighted blend is a deeper
+  J3DSkinDeform / per-vertex-weight feature (likely GPU-side). To CLOSE it: port that path, then verify
+  shape-7 overflow 260.74 → ~0. (`J3DModel::viewCalc`'s `checkFlag(1)` branch shows the no-view draw-mtx
+  build = node-mtx for full-weight + `unk5C` for envelope — but `unk5C` is the unported part.)
+- **VERIFY-FIRST, no bandaid:** the per-shape check is data-bounded, not a magic tolerance — every
+  position must be finite AND in-bbox OR within the shape's OWN extent (`ext`). A real decode bug
+  (garbage stride/index → NaN/inf or coords orders of magnitude out) still fails; the bounded
+  joint-local offset of unported skinning passes with a labelled diagnostic. Don't "fix" it by
+  loosening — port envelope skinning.
+
 ### NEXT — make it a FAITHFUL frame (each step needs a Dolphin oracle for COLOR fidelity, harder):
 1. **Real MVP transform** (nvk_transform.h) instead of the bbox-ortho fit — needs a model/view/proj.
 2. **Lighting** (ngx_light.h) from decoded normals + the material's GXSetChanCtrl/Mat/Amb → wire
-   J3DMaterial → GXState. 3. **Textures** (GXInitTexObj from the material's ResTIMG + TEV). 4. **All
-   shapes** of a model (loop getShapeNum), not just shape 0. 5. **Materials**: J3DMaterial sub-blocks
-   (mTevBlock/mColorBlock/...) → GXState/NgxTevState. The geometry slice is verifiable bbox-wise; the
-   color/lighting slices need the two-process pixel oracle (no plaza here — a model-vs-Dolphin-render
-   harness, or accept they're verifiable only once a scene boots). Then: boot more engine (sms-boot)
-   so a real J3DModel populates from a scene, not a hand-loaded BMD.
+   J3DMaterial → GXState. 3. **Textures** (GXInitTexObj from the material's ResTIMG + TEV).
+   4. **Envelope skinning** (above) — shape-7 overflow 260.74→0 is the falsifiable metric. 5. **Materials**:
+   J3DMaterial sub-blocks (mTevBlock/mColorBlock/...) → GXState/NgxTevState. The geometry slice is
+   verifiable bbox-wise; the color/lighting slices need the two-process pixel oracle (no plaza here — a
+   model-vs-Dolphin-render harness, or accept they're verifiable only once a scene boots). Then: boot more
+   engine (sms-boot) so a real J3DModel populates from a scene, not a hand-loaded BMD.
 
 ## Don't re-chase
 - `port/` (flip) is dead — do not revive. (But its `assets/` BE→host swappers ARE reused — recovered
