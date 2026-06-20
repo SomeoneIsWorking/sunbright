@@ -398,6 +398,11 @@ int test_efb_copy(char* rep, int cap) {
     if (ngx_efb::tile_offset16(5, 3, 8) != 58u) {
         char b[80]; snprintf(b,sizeof b,"FAIL tile_offset16(5,3,8)=%u exp 58\n", ngx_efb::tile_offset16(5,3,8)); failf(b);
     }
+    // GXCopyTex format ownership split: ngx owns the standard COLOUR formats (0..0xF); the CTF/Z
+    // copy-only formats (>= 0x10, e.g. GX_CTF_R8 0x28 graffito-check, Z copies) stay on Dolphin.
+    for (int f : {0,1,2,3,4,5,6,8,9,10,14}) if (!ngx_efb::is_ngx_owned_copy_format(f)) failf("FAIL colour fmt not owned\n");
+    for (int f : {0x10,0x11,0x28,0x30}) if (ngx_efb::is_ngx_owned_copy_format(f)) failf("FAIL CTF/Z fmt wrongly owned\n");
+    if (ngx_efb::is_ngx_owned_copy_format(-1)) failf("FAIL fmt=-1 wrongly owned\n");
     return fails;
 }
 

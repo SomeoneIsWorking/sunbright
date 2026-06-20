@@ -132,7 +132,10 @@ extern "C" volatile int g_sb_efb_copy_on = 1;   // /efbcopy?on=N — A/B toggle 
 void copytex_writeback(u32 /*cookie*/) {
     const int dw = g_dst_w, dh = g_dst_h, fmt = g_dst_fmt;
     if (g_copy_dst_ea == 0 || dw <= 0 || dh <= 0) { if (s_efb_dbg){static unsigned long z=0; if((z++%240)==0) fprintf(stderr,"[efb-wb] skip: ea/dim ea=%08x %dx%d\n",g_copy_dst_ea,dw,dh);} return; }
-    if (fmt != 4 && fmt != 5) { if (s_efb_dbg){static unsigned long z=0; if((z++%240)==0) fprintf(stderr,"[efb-wb] skip: fmt=%d (%dx%d)\n",fmt,dw,dh);} return; }
+    // ngx owns every standard COLOUR copy format (serves it from the scene color), not just RGB565/
+    // RGB5A3 — the side buffer is format-agnostic (texture_for uploads ARGB as RGBA8). CTF/Z copy
+    // formats (>= 0x10, e.g. the R8 graffito-check the game reads as data) stay on Dolphin's copy.
+    if (!ngx_efb::is_ngx_owned_copy_format(fmt)) { if (s_efb_dbg){static unsigned long z=0; if((z++%240)==0) fprintf(stderr,"[efb-wb] skip: fmt=%d (CTF/Z, %dx%d)\n",fmt,dw,dh);} return; }
     const u32 ea = (g_copy_dst_ea & 0x3FFFFFFF) | 0x80000000u;         // phys → cached MEM1 virtual
     sb_ngx_efb_invalidate_tex(ea);     // always re-decode this tex (ON: ngx scene below; OFF: original's black)
     if (!g_sb_efb_copy_on) return;                // A/B off → effect samples the original's (black) copy
@@ -141,9 +144,12 @@ void copytex_writeback(u32 /*cookie*/) {
     int sw = g_src_w > 0 ? g_src_w : 640, sh = g_src_h > 0 ? g_src_h : 448;
     if (!sb_ngx_efb_copy_region(g_src_l, g_src_t, sw, sh, dw, dh, buf.data())) { if (s_efb_dbg){static unsigned long z=0; if((z++%120)==0) fprintf(stderr,"[efb-wb] NO FRAME (efb_copy_region failed) ea=%08x %dx%d fmt=%d\n",ea,dw,dh,fmt);} return; }  // no frame yet
     // Store in ngx's side buffer (texture_for reads THIS, immune to Dolphin's async EFB→RAM stomp).
+    // This is what makes ngx render the copy correctly for ALL colour formats.
     sb_ngx_efb_store_copy(ea, dw, dh, buf.data());
-    // RGB565/RGB5A3 4×4 GC tiling: tile (y,x) row-major; within tile iy-major, each row 4 BE u16. Byte
-    // offset = ((y/4)*(dw/4) + x/4)*32 + (y%4)*8 + (x%4)*2. (matches runtime/render/tex_decode.cpp.)
+    // ALSO GC-tile the bytes into guest RAM for the 16-bit formats we encode (RGB565/RGB5A3), so a
+    // guest path that reads the texture RAM directly sees the scene too. Other colour formats are
+    // served purely from the side buffer (texture_for reads it first), so no guest-RAM write needed.
+    if (fmt == 4 || fmt == 5)
     for (int dy = 0; dy < dh; dy++)
         for (int dx = 0; dx < dw; dx++)
             mem_w16(ea + ngx_efb::tile_offset16(dx, dy, dw),
@@ -182,7 +188,7 @@ SUNBRIGHT_OVERRIDE_IF_NATIVE(ov_gxcopytex, 0x8035ee5cu, s_ngx_present) {
         if ((n++ % 240) == 0)
             fprintf(stderr, "[efb] GXCopyTex #%lu dst=%08x clear=%u src[%d,%d,%d,%d] dstTex[%dx%d fmt=%d]%s\n",
                     n, cpu.gpr[3], cpu.gpr[4], g_src_l, g_src_t, g_src_w, g_src_h,
-                    g_dst_w, g_dst_h, g_dst_fmt, (g_dst_fmt == 4 || g_dst_fmt == 5) ? " ←served" : "");
+                    g_dst_w, g_dst_h, g_dst_fmt, ngx_efb::is_ngx_owned_copy_format(g_dst_fmt) ? " ←served" : "");
     }
     // Own the EFB-copy epoch boundary NATIVELY: this GXCopyTex routed the passes drawn since the last
     // copy to an OFFSCREEN texture (mirror view / graffiti-check / reflection), closing that epoch so
@@ -190,12 +196,12 @@ SUNBRIGHT_OVERRIDE_IF_NATIVE(ov_gxcopytex, 0x8035ee5cu, s_ngx_present) {
     // leaning on Dolphin's GP state. (Was previously only fed by GXCopyDisp; the GXCopyTex path here
     // was the gap that left every offscreen pass lumped into the display epoch.)
     ngx_note_efb_copy(/*is_disp=*/false, cpu.gpr[3], cpu.gpr[4]);
-    // Own the copy. For the formats ngx fully serves (RGB565/RGB5A3), the side buffer supplies the
-    // content texture_for reads, so the guest GXCopyTex original is pure overhead under ngx present:
-    // it only triggers Dolphin's async EFB→RAM copy of the empty EFB (the zero-stomp we bypass) and
-    // GP work nothing consumes. SKIP it — ngx owns these copies end to end. Other formats (not yet
-    // served, e.g. the 512² shadow/Z copy) still run the original until ngx serves them too.
-    if (g_dst_fmt == 4 || g_dst_fmt == 5) { copytex_writeback(0); return; }
+    // Own the copy. For every standard COLOUR format ngx serves, the side buffer supplies the content
+    // texture_for reads, so the guest GXCopyTex original is pure overhead under ngx present: it only
+    // triggers Dolphin's async EFB→RAM copy of the empty EFB (the zero-stomp we bypass) and GP work
+    // nothing consumes. SKIP it — ngx owns these copies end to end. The CTF/Z copy formats (R8
+    // graffito-check the game reads as data, Z copies) ngx does NOT render, so let Dolphin do them.
+    if (ngx_efb::is_ngx_owned_copy_format(g_dst_fmt)) { copytex_writeback(0); return; }
     sb_run_original_around(cpu, 0x8035ee5cu, &copytex_writeback, 0);
 }
 
