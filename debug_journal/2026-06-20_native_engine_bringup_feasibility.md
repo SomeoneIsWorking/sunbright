@@ -54,6 +54,52 @@ the `sms-native` CMake target; get the leaf clusters (JGeometry/MarioUtil/JMath/
 VI→present. 5. Boot the game's main loop (TApplication/TMarDirector) natively against those seams,
 Dolphin kept ONLY as the diff-oracle. 6. Fill stubs as reached; verify scene-by-scene vs the oracle.
 
+## PROGRESS (2026-06-20, end of session) — phase-1 at 474/573 (83%) compile-clean
+Decision locked: **64-bit, architecture-independent (x86-64 AND arm64), fix the source** (uintptr_t /
+widened fields), memory-emulation only as fallback. See memory `native-engine-arch-independent`.
+
+Done (committed; parent `main` + submodule `reference/sms` fork, gitlink bumped each step):
+- Shims (`native/shim/`): fixed-width `dolphin/types.h`; portable Gekko intrinsics; 5 case-fix
+  forwarders; MSL libc shadow (`printf.h`, `stdio.h` via `#include_next`).
+- Pointer-cast campaign COMPLETE: 0 `loses precision` sites in non-asm files (128 mechanical →uintptr_t
+  across 47 files; 130 event/SPC-VM sites via a `TSpcSlice` pointer accessor + a `TSpcBinary`
+  side-table that preserves the serialized symbol stride; OSRoundUp/Down32B macro).
+- 19 inline-PPC-`asm` engine files reimplemented in portable C (MathUtil, J3DTransform 8 matrix
+  kernels, J3DAnimation Hermite, JUTException, JKRHeap dispose).
+- **The single biggest lever:** `MActorData.hpp` `sortByFileNameRaw((void**)unkC)` — one cast in a
+  template fixed ~131 instantiations (388→474).
+- Platform-seam architecture + 14 scaffold headers + tiered phase-2 work-breakdown
+  (`native/platform/`, `README.md`, `api_surface.md`).
+
+Process that worked: parallel subagents on DISJOINT trees (submodule vs native/shim vs native/platform),
+each verifying with `g++ -m64 -fsyntax-only`, the LEAD committing parent + bumping gitlink. Submodule
+editors run ONE AT A TIME (shared git index). Progress metric = compile-clean count + cast-site count
+(NOT "files clean per fix" — that lags until a file's LAST blocker clears).
+
+## NEXT — phase-1 tail (~99 files), then phase-2 (the real work)
+Phase-1 tail, by first-error frequency (all small, high-leverage):
+- 15 `getResSize` conflicting return type (JKRArchive vtable override mismatch — one header).
+- 8 narrowing `long unsigned`→`int`; 5 abstract-class `new` (TViewport/TLightMap — likely a
+  not-yet-overridden pure virtual / decomp incompleteness); 4 `DEG_TO_RAD`/`RAD_TO_DEG` undeclared
+  (one macro/const header); 3 `SMSGetGameRenderHeight` ambiguating decl; then a tail of one-off
+  `no declaration matches` (per-function .cpp-vs-header signature mismatches).
+- The 19-asm grep also matched ~32 GC OS/CRT/HW files (`dolphin/`, `TRK_MINNOW_DOLPHIN/`,
+  `PowerPC_EABI_Support/`) — those are the platform's job, NOT compiled as game logic.
+RUNTIME landmines noted for phase-2 (compile-fine, semantics-wrong on 64-bit): `J3DMaterial.hpp`
+`(ptr < 0xC0000000)` GC-address-range heuristic; `fireStartDemoCamera` u32 userdata (knowing trunc);
+`operator new(u32)` should be `size_t` on host.
+
+Phase-2 (months, parallel — see `native/platform/README.md`): implement seams along the critical path
+**OS → DVD → VI → GX**, audio + input on parallel tracks. Tier0 OS (blocks all) + MTX (pure); Tier1
+DVD (assets: FST+Yaz0/RARC + BE→native swap) + CARD (port `runtime/overrides/native_card.cpp`); Tier2
+VI then GX (→ ngx renderer, NOT FIFO emu) + Audio (→ native_jas); Tier3 PAD/THP/EXI. Then link the
+`sms-native` target, boot `TApplication`/`TMarDirector`, fill the ~970 stubs scene-by-scene, with
+Dolphin kept ONLY as the diff-oracle. On this path the goo/EFB-readback "GameCube stuff" becomes plain
+engine code.
+
+To continue: native compile check per file =
+`g++ -std=c++17 -m64 -w -fsyntax-only <f> -include native/shim/gekko_intrinsics.h -Inative/shim -Ireference/sms/include`
+
 ## Don't re-chase
 - `port/` (flip) is dead — do not revive.
 - A blanket host-libc prelude — it conflicts with MSL; shadow MSL instead.
