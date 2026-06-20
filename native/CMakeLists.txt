@@ -116,6 +116,16 @@ if(SB_VULKAN_LIB AND SB_VULKAN_INC AND SB_GLSLANG)
         COMMAND "${SB_GLSLANG}" -V --vn tri_frag_spv "${SB_SHADER_DIR}/tri.frag"
                 -o "${SB_SHADER_GEN}/tri_frag_spv.h"
         DEPENDS "${SB_SHADER_DIR}/tri.frag" VERBATIM)
+    add_custom_command(
+        OUTPUT "${SB_SHADER_GEN}/tex_vert_spv.h"
+        COMMAND "${SB_GLSLANG}" -V --vn tex_vert_spv "${SB_SHADER_DIR}/tex.vert"
+                -o "${SB_SHADER_GEN}/tex_vert_spv.h"
+        DEPENDS "${SB_SHADER_DIR}/tex.vert" VERBATIM)
+    add_custom_command(
+        OUTPUT "${SB_SHADER_GEN}/tex_frag_spv.h"
+        COMMAND "${SB_GLSLANG}" -V --vn tex_frag_spv "${SB_SHADER_DIR}/tex.frag"
+                -o "${SB_SHADER_GEN}/tex_frag_spv.h"
+        DEPENDS "${SB_SHADER_DIR}/tex.frag" VERBATIM)
 
     add_library(sms-render STATIC
         "${SMS_NATIVE_REPO_ROOT}/native/render/nvk.cpp"
@@ -125,8 +135,11 @@ if(SB_VULKAN_LIB AND SB_VULKAN_INC AND SB_GLSLANG)
         "${SMS_NATIVE_REPO_ROOT}/runtime/ngx/ngx_decode.cpp"
         "${SMS_NATIVE_REPO_ROOT}/runtime/ngx/ngx_vertex.cpp"
         "${SMS_NATIVE_REPO_ROOT}/runtime/ngx/ngx_mesh.cpp"
+        "${SMS_NATIVE_REPO_ROOT}/runtime/render/tex_decode.cpp"
         "${SB_SHADER_GEN}/tri_vert_spv.h"
-        "${SB_SHADER_GEN}/tri_frag_spv.h")
+        "${SB_SHADER_GEN}/tri_frag_spv.h"
+        "${SB_SHADER_GEN}/tex_vert_spv.h"
+        "${SB_SHADER_GEN}/tex_frag_spv.h")
     set_target_properties(sms-render PROPERTIES
         CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
     target_include_directories(sms-render PUBLIC
@@ -134,6 +147,7 @@ if(SB_VULKAN_LIB AND SB_VULKAN_INC AND SB_GLSLANG)
         "${SMS_NATIVE_REPO_ROOT}/native/render/shim"
         "${SMS_NATIVE_REPO_ROOT}/native/render"
         "${SMS_NATIVE_REPO_ROOT}/runtime/ngx"
+        "${SMS_NATIVE_REPO_ROOT}/runtime/render"
         "${SB_SHADER_GEN}" "${SB_VULKAN_INC}")
     target_link_libraries(sms-render PUBLIC "${SB_VULKAN_LIB}")
     target_compile_options(sms-render PRIVATE -Wall -Wextra)

@@ -10,6 +10,8 @@
 // glslangValidator --vn; the generated dir is on the include path).
 #include "tri_vert_spv.h"
 #include "tri_frag_spv.h"
+#include "tex_vert_spv.h"
+#include "tex_frag_spv.h"
 
 namespace sb::render {
 
@@ -46,6 +48,21 @@ struct Nvk::Impl {
     VkBuffer vbuf = VK_NULL_HANDLE;
     VkDeviceMemory vbufMem = VK_NULL_HANDLE;
     VkDeviceSize vbufCap = 0;
+
+    // textured draw path
+    VkShaderModule texVs = VK_NULL_HANDLE, texFs = VK_NULL_HANDLE;
+    VkDescriptorSetLayout dsl = VK_NULL_HANDLE;
+    VkDescriptorPool dpool = VK_NULL_HANDLE;
+    VkDescriptorSet dset = VK_NULL_HANDLE;
+    VkPipelineLayout texPipeLayout = VK_NULL_HANDLE;
+    VkPipeline texPipeline = VK_NULL_HANDLE;
+    VkSampler sampler = VK_NULL_HANDLE;
+    VkImage tex = VK_NULL_HANDLE;
+    VkDeviceMemory texMem = VK_NULL_HANDLE;
+    VkImageView texView = VK_NULL_HANDLE;
+    VkBuffer texVbuf = VK_NULL_HANDLE;
+    VkDeviceMemory texVbufMem = VK_NULL_HANDLE;
+    VkDeviceSize texVbufCap = 0;
 
     uint32_t w = 0, h = 0;
 
@@ -310,6 +327,61 @@ bool Nvk::init(uint32_t width, uint32_t height, bool preferCpu) {
                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                       &d->readback, &d->readbackMem))
         return false;
+
+    // --- textured pipeline (combined image sampler at binding 0) ---
+    if (!mkShader(tex_vert_spv, sizeof(tex_vert_spv), &d->texVs)) return false;
+    if (!mkShader(tex_frag_spv, sizeof(tex_frag_spv), &d->texFs)) return false;
+
+    VkSamplerCreateInfo smp{};
+    smp.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    smp.magFilter = VK_FILTER_NEAREST; smp.minFilter = VK_FILTER_NEAREST;
+    smp.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    smp.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    smp.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    VKCHECK(vkCreateSampler(d->device, &smp, nullptr, &d->sampler));
+
+    VkDescriptorSetLayoutBinding dslb{};
+    dslb.binding = 0; dslb.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    dslb.descriptorCount = 1; dslb.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    VkDescriptorSetLayoutCreateInfo dslc{};
+    dslc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    dslc.bindingCount = 1; dslc.pBindings = &dslb;
+    VKCHECK(vkCreateDescriptorSetLayout(d->device, &dslc, nullptr, &d->dsl));
+
+    VkDescriptorPoolSize dps{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1 };
+    VkDescriptorPoolCreateInfo dpc{};
+    dpc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    dpc.maxSets = 1; dpc.poolSizeCount = 1; dpc.pPoolSizes = &dps;
+    VKCHECK(vkCreateDescriptorPool(d->device, &dpc, nullptr, &d->dpool));
+    VkDescriptorSetAllocateInfo dsa{};
+    dsa.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    dsa.descriptorPool = d->dpool; dsa.descriptorSetCount = 1; dsa.pSetLayouts = &d->dsl;
+    VKCHECK(vkAllocateDescriptorSets(d->device, &dsa, &d->dset));
+
+    VkPipelineShaderStageCreateInfo tstages[2]{};
+    tstages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    tstages[0].stage = VK_SHADER_STAGE_VERTEX_BIT; tstages[0].module = d->texVs; tstages[0].pName = "main";
+    tstages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    tstages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; tstages[1].module = d->texFs; tstages[1].pName = "main";
+
+    VkVertexInputBindingDescription tbind{ 0, sizeof(NvkTexVertex), VK_VERTEX_INPUT_RATE_VERTEX };
+    VkVertexInputAttributeDescription tattrs[2]{};
+    tattrs[0] = { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0 };                       // pos xyz
+    tattrs[1] = { 1, 0, VK_FORMAT_R32G32_SFLOAT, (uint32_t)(3 * sizeof(float)) }; // uv
+    VkPipelineVertexInputStateCreateInfo tvi{};
+    tvi.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    tvi.vertexBindingDescriptionCount = 1; tvi.pVertexBindingDescriptions = &tbind;
+    tvi.vertexAttributeDescriptionCount = 2; tvi.pVertexAttributeDescriptions = tattrs;
+
+    VkPipelineLayoutCreateInfo tpl{};
+    tpl.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    tpl.setLayoutCount = 1; tpl.pSetLayouts = &d->dsl;
+    VKCHECK(vkCreatePipelineLayout(d->device, &tpl, nullptr, &d->texPipeLayout));
+
+    VkGraphicsPipelineCreateInfo tgp = gp;   // reuse ia/vps/rs/ms/cb/ds from above
+    tgp.pStages = tstages; tgp.pVertexInputState = &tvi; tgp.layout = d->texPipeLayout;
+    VKCHECK(vkCreateGraphicsPipelines(d->device, VK_NULL_HANDLE, 1, &tgp, nullptr, &d->texPipeline));
+
     return true;
 }
 
@@ -381,6 +453,147 @@ bool Nvk::renderTriangles(const std::vector<NvkVertex>& verts, NvkClear clear) {
     return true;
 }
 
+bool Nvk::setTexture(const uint8_t* rgba, uint32_t tw, uint32_t th) {
+    Impl* d = d_;
+    if (!d || !d->device) return false;
+    if (d->tex) { vkDestroyImageView(d->device, d->texView, nullptr);
+                  vkDestroyImage(d->device, d->tex, nullptr);
+                  vkFreeMemory(d->device, d->texMem, nullptr);
+                  d->tex = VK_NULL_HANDLE; }
+
+    VkImageCreateInfo ic{};
+    ic.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    ic.imageType = VK_IMAGE_TYPE_2D; ic.format = VK_FORMAT_R8G8B8A8_UNORM;
+    ic.extent = { tw, th, 1 }; ic.mipLevels = 1; ic.arrayLayers = 1;
+    ic.samples = VK_SAMPLE_COUNT_1_BIT; ic.tiling = VK_IMAGE_TILING_OPTIMAL;
+    ic.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    ic.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VKCHECK(vkCreateImage(d->device, &ic, nullptr, &d->tex));
+    VkMemoryRequirements req; vkGetImageMemoryRequirements(d->device, d->tex, &req);
+    int mt = d->findMemType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (mt < 0) return false;
+    VkMemoryAllocateInfo ai{};
+    ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    ai.allocationSize = req.size; ai.memoryTypeIndex = (uint32_t)mt;
+    VKCHECK(vkAllocateMemory(d->device, &ai, nullptr, &d->texMem));
+    VKCHECK(vkBindImageMemory(d->device, d->tex, d->texMem, 0));
+
+    // staging buffer with the texel data
+    VkBuffer stage; VkDeviceMemory stageMem;
+    VkDeviceSize bytes = (VkDeviceSize)tw * th * 4;
+    if (!d->createBuffer(bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+            &stage, &stageMem)) return false;
+    void* p = nullptr;
+    VKCHECK(vkMapMemory(d->device, stageMem, 0, bytes, 0, &p));
+    std::memcpy(p, rgba, bytes);
+    vkUnmapMemory(d->device, stageMem);
+
+    // upload: UNDEFINED -> TRANSFER_DST -> copy -> SHADER_READ_ONLY
+    VKCHECK(vkResetCommandBuffer(d->cmd, 0));
+    VkCommandBufferBeginInfo bi{}; bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    VKCHECK(vkBeginCommandBuffer(d->cmd, &bi));
+    auto barrier = [&](VkImageLayout from, VkImageLayout to, VkAccessFlags sa, VkAccessFlags da,
+                       VkPipelineStageFlags ss, VkPipelineStageFlags ds_) {
+        VkImageMemoryBarrier b{}; b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        b.oldLayout = from; b.newLayout = to; b.image = d->tex;
+        b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        b.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        b.srcAccessMask = sa; b.dstAccessMask = da;
+        vkCmdPipelineBarrier(d->cmd, ss, ds_, 0, 0, nullptr, 0, nullptr, 1, &b);
+    };
+    barrier(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            0, VK_ACCESS_TRANSFER_WRITE_BIT,
+            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    VkBufferImageCopy cp{};
+    cp.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+    cp.imageExtent = { tw, th, 1 };
+    vkCmdCopyBufferToImage(d->cmd, stage, d->tex, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &cp);
+    barrier(VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    VKCHECK(vkEndCommandBuffer(d->cmd));
+    VKCHECK(vkResetFences(d->device, 1, &d->fence));
+    VkSubmitInfo si{}; si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    si.commandBufferCount = 1; si.pCommandBuffers = &d->cmd;
+    VKCHECK(vkQueueSubmit(d->queue, 1, &si, d->fence));
+    VKCHECK(vkWaitForFences(d->device, 1, &d->fence, VK_TRUE, UINT64_MAX));
+    vkDestroyBuffer(d->device, stage, nullptr);
+    vkFreeMemory(d->device, stageMem, nullptr);
+
+    // image view + descriptor
+    VkImageViewCreateInfo iv{};
+    iv.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    iv.image = d->tex; iv.viewType = VK_IMAGE_VIEW_TYPE_2D; iv.format = VK_FORMAT_R8G8B8A8_UNORM;
+    iv.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+    VKCHECK(vkCreateImageView(d->device, &iv, nullptr, &d->texView));
+    VkDescriptorImageInfo dii{ d->sampler, d->texView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+    VkWriteDescriptorSet w{}; w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    w.dstSet = d->dset; w.dstBinding = 0; w.descriptorCount = 1;
+    w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w.pImageInfo = &dii;
+    vkUpdateDescriptorSets(d->device, 1, &w, 0, nullptr);
+    return true;
+}
+
+bool Nvk::renderTexturedTriangles(const std::vector<NvkTexVertex>& verts, NvkClear clear) {
+    Impl* d = d_;
+    if (!d || !d->device || !d->tex) return false;
+    const uint32_t vcount = (uint32_t)verts.size();
+    VkDeviceSize need = vcount ? vcount * sizeof(NvkTexVertex) : sizeof(NvkTexVertex);
+    if (need > d->texVbufCap) {
+        if (d->texVbuf) { vkDestroyBuffer(d->device, d->texVbuf, nullptr); vkFreeMemory(d->device, d->texVbufMem, nullptr); }
+        if (!d->createBuffer(need, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                &d->texVbuf, &d->texVbufMem)) return false;
+        d->texVbufCap = need;
+    }
+    if (vcount) {
+        void* p = nullptr;
+        VKCHECK(vkMapMemory(d->device, d->texVbufMem, 0, need, 0, &p));
+        std::memcpy(p, verts.data(), vcount * sizeof(NvkTexVertex));
+        vkUnmapMemory(d->device, d->texVbufMem);
+    }
+    VKCHECK(vkResetCommandBuffer(d->cmd, 0));
+    VkCommandBufferBeginInfo bi{}; bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    VKCHECK(vkBeginCommandBuffer(d->cmd, &bi));
+    VkClearValue cv[2]{};
+    cv[0].color = { { clear.r, clear.g, clear.b, clear.a } };
+    cv[1].depthStencil = { 1.0f, 0 };
+    VkRenderPassBeginInfo rpb{};
+    rpb.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    rpb.renderPass = d->renderPass; rpb.framebuffer = d->framebuffer;
+    rpb.renderArea = { {0, 0}, {d->w, d->h} };
+    rpb.clearValueCount = 2; rpb.pClearValues = cv;
+    vkCmdBeginRenderPass(d->cmd, &rpb, VK_SUBPASS_CONTENTS_INLINE);
+    if (vcount) {
+        vkCmdBindPipeline(d->cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, d->texPipeline);
+        vkCmdBindDescriptorSets(d->cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, d->texPipeLayout,
+                                0, 1, &d->dset, 0, nullptr);
+        VkDeviceSize off = 0;
+        vkCmdBindVertexBuffers(d->cmd, 0, 1, &d->texVbuf, &off);
+        vkCmdDraw(d->cmd, vcount, 1, 0, 0);
+    }
+    vkCmdEndRenderPass(d->cmd);
+    VkBufferImageCopy region{};
+    region.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+    region.imageExtent = { d->w, d->h, 1 };
+    vkCmdCopyImageToBuffer(d->cmd, d->color, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           d->readback, 1, &region);
+    VKCHECK(vkEndCommandBuffer(d->cmd));
+    VKCHECK(vkResetFences(d->device, 1, &d->fence));
+    VkSubmitInfo si{}; si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    si.commandBufferCount = 1; si.pCommandBuffers = &d->cmd;
+    VKCHECK(vkQueueSubmit(d->queue, 1, &si, d->fence));
+    VKCHECK(vkWaitForFences(d->device, 1, &d->fence, VK_TRUE, UINT64_MAX));
+    void* mapped = nullptr;
+    VKCHECK(vkMapMemory(d->device, d->readbackMem, 0, (VkDeviceSize)d->w * d->h * 4, 0, &mapped));
+    std::memcpy(pixels_.data(), mapped, (size_t)d->w * d->h * 4);
+    vkUnmapMemory(d->device, d->readbackMem);
+    return true;
+}
+
 void Nvk::shutdown() {
     if (!d_) return;
     Impl* d = d_;
@@ -388,6 +601,18 @@ void Nvk::shutdown() {
         vkDeviceWaitIdle(d->device);
         if (d->vbuf) vkDestroyBuffer(d->device, d->vbuf, nullptr);
         if (d->vbufMem) vkFreeMemory(d->device, d->vbufMem, nullptr);
+        if (d->texVbuf) vkDestroyBuffer(d->device, d->texVbuf, nullptr);
+        if (d->texVbufMem) vkFreeMemory(d->device, d->texVbufMem, nullptr);
+        if (d->texView) vkDestroyImageView(d->device, d->texView, nullptr);
+        if (d->tex) vkDestroyImage(d->device, d->tex, nullptr);
+        if (d->texMem) vkFreeMemory(d->device, d->texMem, nullptr);
+        if (d->sampler) vkDestroySampler(d->device, d->sampler, nullptr);
+        if (d->dpool) vkDestroyDescriptorPool(d->device, d->dpool, nullptr);
+        if (d->dsl) vkDestroyDescriptorSetLayout(d->device, d->dsl, nullptr);
+        if (d->texPipeline) vkDestroyPipeline(d->device, d->texPipeline, nullptr);
+        if (d->texPipeLayout) vkDestroyPipelineLayout(d->device, d->texPipeLayout, nullptr);
+        if (d->texVs) vkDestroyShaderModule(d->device, d->texVs, nullptr);
+        if (d->texFs) vkDestroyShaderModule(d->device, d->texFs, nullptr);
         if (d->readback) vkDestroyBuffer(d->device, d->readback, nullptr);
         if (d->readbackMem) vkFreeMemory(d->device, d->readbackMem, nullptr);
         if (d->fence) vkDestroyFence(d->device, d->fence, nullptr);

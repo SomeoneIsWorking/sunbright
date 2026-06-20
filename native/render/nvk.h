@@ -22,6 +22,12 @@ struct NvkVertex {
     float r, g, b, a;
 };
 
+// A textured vertex: NDC xyz + UV. Used by the textured draw path.
+struct NvkTexVertex {
+    float x, y, z;
+    float u, v;
+};
+
 struct NvkClear { float r, g, b, a; };
 
 class Nvk {
@@ -36,6 +42,14 @@ public:
     // result back into rgba() as tightly-packed RGBA8 (width*height*4). Returns false
     // on a device error.
     bool renderTriangles(const std::vector<NvkVertex>& verts, NvkClear clear);
+
+    // Upload an RGBA8 texture (row-major, w*h*4 bytes) for the textured draw path.
+    // Replaces any previous texture. Returns false on error.
+    bool setTexture(const uint8_t* rgba, uint32_t w, uint32_t h);
+
+    // Render a textured triangle list (3N verts) sampling the uploaded texture.
+    // setTexture must have been called first. Reads pixels back like renderTriangles.
+    bool renderTexturedTriangles(const std::vector<NvkTexVertex>& verts, NvkClear clear);
 
     const std::vector<uint8_t>& rgba() const { return pixels_; }
     uint32_t width() const  { return width_; }
