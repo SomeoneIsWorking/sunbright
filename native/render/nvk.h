@@ -12,6 +12,7 @@
 #pragma once
 #include <cstdint>
 #include <vector>
+#include <string>
 
 namespace sb::render {
 
@@ -26,6 +27,24 @@ struct NvkVertex {
 struct NvkTexVertex {
     float x, y, z;
     float u, v;
+};
+
+// A TEV vertex: NDC xyz + both GX raster colour channels + the 8 GX texcoord UVs
+// (texgen already applied on the CPU). Matches the inputs the TEV fragment shader
+// (sb_tev_gen_fragment) consumes: vColor (color0), vColor1 (COLOR1A1), vUV[0..7].
+struct NvkTevVertex {
+    float x, y, z;        // NDC position (z = depth)
+    float rgba[4];        // raster color0 (0..1)
+    float rgba1[4];       // raster COLOR1A1 (0..1)
+    float uv[8][2];       // per GX texcoord 0..7
+};
+
+// Push constants the generated TEV shader reads: GX TEV konst colours (0..255) and
+// the S10 TEV colour registers (CPREV/C0/C1/C2). Matches the GLSL
+// `layout(push_constant) Mat { ivec4 kcolor[4]; ivec4 tevreg[4]; }`.
+struct NvkTevPush {
+    int32_t kcolor[4][4];   // KONST0..3 RGBA
+    int32_t tevreg[4][4];   // CPREV/C0/C1/C2 RGBA (S10)
 };
 
 struct NvkClear { float r, g, b, a; };
@@ -50,6 +69,21 @@ public:
     // Render a textured triangle list (3N verts) sampling the uploaded texture.
     // setTexture must have been called first. Reads pixels back like renderTriangles.
     bool renderTexturedTriangles(const std::vector<NvkTexVertex>& verts, NvkClear clear);
+
+    // --- TEV combiner path: a generated per-material fragment shader (tev_shader) ---
+    // Compile a complete GLSL 450 fragment shader (from sb_tev_gen_fragment) and build
+    // the TEV pipeline from it. Must be called before renderTevTriangles; recompiles
+    // when the material's TEV state changes. Returns false on a compile/build error.
+    bool setTevFragment(const std::string& glslFragment);
+
+    // Upload an RGBA8 texture into GX texmap `slot` (0..7) for the TEV path. Slots not
+    // uploaded sample a 1x1 white default. Returns false on error.
+    bool setTevTexture(int slot, const uint8_t* rgba, uint32_t w, uint32_t h);
+
+    // Render a TEV triangle list (3N verts) through the generated fragment shader with
+    // the given push constants. setTevFragment must have been called. Reads pixels back.
+    bool renderTevTriangles(const std::vector<NvkTevVertex>& verts,
+                            const NvkTevPush& push, NvkClear clear);
 
     const std::vector<uint8_t>& rgba() const { return pixels_; }
     uint32_t width() const  { return width_; }

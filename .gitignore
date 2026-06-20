@@ -28,3 +28,6 @@ scratch/
 *.iso
 *.gcm
 rom.rvz
+
+# native render-test frame dumps (written to cwd)
+*.ppm

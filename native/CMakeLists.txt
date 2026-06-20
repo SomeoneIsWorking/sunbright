@@ -126,9 +126,34 @@ if(SB_VULKAN_LIB AND SB_VULKAN_INC AND SB_GLSLANG)
         COMMAND "${SB_GLSLANG}" -V --vn tex_frag_spv "${SB_SHADER_DIR}/tex.frag"
                 -o "${SB_SHADER_GEN}/tex_frag_spv.h"
         DEPENDS "${SB_SHADER_DIR}/tex.frag" VERBATIM)
+    # TEV path: a fixed vertex shader (embedded) feeds the runtime-generated TEV
+    # fragment shader (tev_shader.cpp -> glsl_compile.cpp, compiled per material).
+    add_custom_command(
+        OUTPUT "${SB_SHADER_GEN}/tev_vert_spv.h"
+        COMMAND "${SB_GLSLANG}" -V --vn tev_vert_spv "${SB_SHADER_DIR}/tev.vert"
+                -o "${SB_SHADER_GEN}/tev_vert_spv.h"
+        DEPENDS "${SB_SHADER_DIR}/tev.vert" VERBATIM)
+
+    # System glslang for the RUNTIME GLSL->SPIR-V compiler (glsl_compile.cpp). This is
+    # the same shipping wrapper the Dolphin build uses; here it links the standalone
+    # system glslang (Fedora glslang-devel). Prefer the CONFIG package (namespaced
+    # targets, transitive deps); fall back to plain -l names.
+    find_package(glslang CONFIG QUIET)
+    if(TARGET glslang::SPIRV)
+        set(SB_NATIVE_GLSLANG_LIBS glslang::SPIRV glslang::glslang
+            glslang::glslang-default-resource-limits)
+    else()
+        set(SB_NATIVE_GLSLANG_LIBS glslang glslang-default-resource-limits SPIRV
+            SPIRV-Tools-opt SPIRV-Tools)
+    endif()
 
     add_library(sms-render STATIC
         "${SMS_NATIVE_REPO_ROOT}/native/render/nvk.cpp"
+        "${SMS_NATIVE_REPO_ROOT}/native/render/ngx_native_glue.cpp"
+        # Reused SHIPPING TEV combiner generator + runtime GLSL->SPIR-V compiler (NOT
+        # forked) — the same code the ngx renderer uses, Dolphin-free here.
+        "${SMS_NATIVE_REPO_ROOT}/runtime/render/tev_shader.cpp"
+        "${SMS_NATIVE_REPO_ROOT}/runtime/render/glsl_compile.cpp"
         # Reused PURE ngx geometry decoders (NOT forked — these ARE the shipping
         # renderer's GC display-list -> native-mesh path), compiled Dolphin-free via
         # the gx_parse.h shadow below.
@@ -139,7 +164,8 @@ if(SB_VULKAN_LIB AND SB_VULKAN_INC AND SB_GLSLANG)
         "${SB_SHADER_GEN}/tri_vert_spv.h"
         "${SB_SHADER_GEN}/tri_frag_spv.h"
         "${SB_SHADER_GEN}/tex_vert_spv.h"
-        "${SB_SHADER_GEN}/tex_frag_spv.h")
+        "${SB_SHADER_GEN}/tex_frag_spv.h"
+        "${SB_SHADER_GEN}/tev_vert_spv.h")
     set_target_properties(sms-render PROPERTIES
         CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
     target_include_directories(sms-render PUBLIC
@@ -149,8 +175,14 @@ if(SB_VULKAN_LIB AND SB_VULKAN_INC AND SB_GLSLANG)
         "${SMS_NATIVE_REPO_ROOT}/runtime/ngx"
         "${SMS_NATIVE_REPO_ROOT}/runtime/render"
         "${SB_SHADER_GEN}" "${SB_VULKAN_INC}")
-    target_link_libraries(sms-render PUBLIC "${SB_VULKAN_LIB}")
+    target_link_libraries(sms-render PUBLIC "${SB_VULKAN_LIB}" ${SB_NATIVE_GLSLANG_LIBS})
+    # tev_shader.cpp / glsl_compile.cpp are SHIPPING ngx code (predates strict warnings);
+    # -Wall -Wextra applies to the new nvk code, but keep the reused TUs from erroring.
     target_compile_options(sms-render PRIVATE -Wall -Wextra)
+    set_source_files_properties(
+        "${SMS_NATIVE_REPO_ROOT}/runtime/render/tev_shader.cpp"
+        "${SMS_NATIVE_REPO_ROOT}/runtime/render/glsl_compile.cpp"
+        PROPERTIES COMPILE_OPTIONS "-w")
 
     # Render tests (e.g. tests/render/*_test.cpp) link sms-render. Headless; a frame
     # render+readback is verified by pixel checks (lavapipe works with no GPU).
