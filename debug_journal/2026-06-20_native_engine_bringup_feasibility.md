@@ -435,14 +435,33 @@ heap as the FIRST statement of main** (before any C++ alloc) or std::vector gets
 createRoot's initArena reads GC physical-0 (unsafe natively) → construct JKRExpHeap directly on a
 malloc'd block (the ctor sets sCurrentHeap).
 
-### NEXT (the remaining half of step 3): render the loaded J3DShape's geometry → pixels.
-The producer (J3DModelData with shapes) is up; the consumers (ngx decode/transform/depth/TEV/
-lighting/nvk) are up. The join: extract shape[0]'s CP descriptor (from J3DShape unk2C GXVtxDescList
-+ VAT) + display-list bytes (J3DShapeDraw mDisplayList/size) + vertex arrays (J3DModelData
-mVertexData) from NATIVE struct fields, feed `ngx_assemble_primitive` (see geometry_test.cpp for the
-NgxCP+DL→NgxVertex→nvk pattern), render, pixel-verify. This is "re-point ngx at native structs" —
-port the ~150 mem_r32 reads in runtime/overrides/ngx_j3d_shape.cpp to native J3DShape/J3DVertexData
-field reads. shadowcube (1 shape) is the simplest first target.
+### ✅ STEP 3 DONE — a REAL BMD shape renders natively (af9dc29). The full vertical slice:
+real BMD → native J3D loader → native CP build → ngx decode → nvk raster → pixels, no Dolphin.
+`native/render/tests/j3dmesh_test.cpp` (target `sms-j3dmesh_test`): `build_native_cp` ports the
+recomp `ngx_j3d_shape.cpp build_cp` to read VCD (J3DShape::getVtxDesc unk2C) + VAT
+(J3DVertexData::getVtxAttrFmtList) + array bases (J3DVertexData arrays) from NATIVE struct fields;
+each J3DShapeDraw DL walked through the shipping `ngx_build_mesh`. VERIFIED on 7 real BMDs (RADV +
+lavapipe): cube=12 tris, sphere=160, quad=2, skinned palm=84 — EVERY decoded position inside the
+shape's own bbox (proves POS decode across direct/indexed + f32/s16). 18/18 ctest.
+- **★ ENDIANNESS RULE:** bmd_swap swaps STRUCTURAL data to host-endian (so the decomp loader reads
+  it) → VCD/VAT/array-base POINTERS read natively. But the ngx vertex/DL decoders expect GUEST
+  BIG-ENDIAN (they byteswap on read), and bmd_swap DEFERS the SHP1 display-list interior → resolve
+  vertex-array DATA + the DL stream against the ORIGINAL BE buffer (same offsets, raw BE). Got this
+  right via an offset-based resolver (array_base = host_ptr − swapped_base; resolver = be_base + off).
+- **★ HEAP/static-init GOTCHA:** glslang (linked via sms-render) allocates in STATIC INITIALIZERS
+  (KeywordMap) via the decomp's global operator new (JKRHeap) BEFORE main() → null heap → crash. Fix:
+  bring the JKRExpHeap up in an `__attribute__((init_priority(101)))` static (runs before glslang's
+  unprioritized ctors), NOT in main. (j3dload_test, which doesn't link glslang, can bring up in main.)
+
+### NEXT — make it a FAITHFUL frame (each step needs a Dolphin oracle for COLOR fidelity, harder):
+1. **Real MVP transform** (nvk_transform.h) instead of the bbox-ortho fit — needs a model/view/proj.
+2. **Lighting** (ngx_light.h) from decoded normals + the material's GXSetChanCtrl/Mat/Amb → wire
+   J3DMaterial → GXState. 3. **Textures** (GXInitTexObj from the material's ResTIMG + TEV). 4. **All
+   shapes** of a model (loop getShapeNum), not just shape 0. 5. **Materials**: J3DMaterial sub-blocks
+   (mTevBlock/mColorBlock/...) → GXState/NgxTevState. The geometry slice is verifiable bbox-wise; the
+   color/lighting slices need the two-process pixel oracle (no plaza here — a model-vs-Dolphin-render
+   harness, or accept they're verifiable only once a scene boots). Then: boot more engine (sms-boot)
+   so a real J3DModel populates from a scene, not a hand-loaded BMD.
 
 ## Don't re-chase
 - `port/` (flip) is dead — do not revive. (But its `assets/` BE→host swappers ARE reused — recovered
