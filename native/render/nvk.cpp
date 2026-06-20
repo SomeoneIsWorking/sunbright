@@ -26,6 +26,9 @@ struct Nvk::Impl {
     VkImage color = VK_NULL_HANDLE;
     VkDeviceMemory colorMem = VK_NULL_HANDLE;
     VkImageView colorView = VK_NULL_HANDLE;
+    VkImage depth = VK_NULL_HANDLE;
+    VkDeviceMemory depthMem = VK_NULL_HANDLE;
+    VkImageView depthView = VK_NULL_HANDLE;
     VkRenderPass renderPass = VK_NULL_HANDLE;
     VkFramebuffer framebuffer = VK_NULL_HANDLE;
 
@@ -161,29 +164,60 @@ bool Nvk::init(uint32_t width, uint32_t height, bool preferCpu) {
     iv.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
     VKCHECK(vkCreateImageView(d->device, &iv, nullptr, &d->colorView));
 
-    // --- render pass (clear -> store, end as TRANSFER_SRC for the readback copy) ---
-    VkAttachmentDescription att{};
-    att.format = VK_FORMAT_R8G8B8A8_UNORM;
-    att.samples = VK_SAMPLE_COUNT_1_BIT;
-    att.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    att.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    att.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    att.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    att.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    att.finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    // --- depth image (D32_SFLOAT) for 3D depth testing ---
+    VkImageCreateInfo dimg = img;
+    dimg.format = VK_FORMAT_D32_SFLOAT;
+    dimg.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    VKCHECK(vkCreateImage(d->device, &dimg, nullptr, &d->depth));
+    VkMemoryRequirements dreq; vkGetImageMemoryRequirements(d->device, d->depth, &dreq);
+    int dmt = d->findMemType(dreq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (dmt < 0) return false;
+    VkMemoryAllocateInfo dai{};
+    dai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    dai.allocationSize = dreq.size; dai.memoryTypeIndex = (uint32_t)dmt;
+    VKCHECK(vkAllocateMemory(d->device, &dai, nullptr, &d->depthMem));
+    VKCHECK(vkBindImageMemory(d->device, d->depth, d->depthMem, 0));
+    VkImageViewCreateInfo div{};
+    div.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    div.image = d->depth; div.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    div.format = VK_FORMAT_D32_SFLOAT;
+    div.subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 };
+    VKCHECK(vkCreateImageView(d->device, &div, nullptr, &d->depthView));
+
+    // --- render pass: color (clear->store, end TRANSFER_SRC) + depth (clear) ---
+    VkAttachmentDescription att[2]{};
+    att[0].format = VK_FORMAT_R8G8B8A8_UNORM;
+    att[0].samples = VK_SAMPLE_COUNT_1_BIT;
+    att[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    att[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    att[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    att[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    att[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    att[0].finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    att[1].format = VK_FORMAT_D32_SFLOAT;
+    att[1].samples = VK_SAMPLE_COUNT_1_BIT;
+    att[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    att[1].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    att[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    att[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    att[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    att[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     VkAttachmentReference ref{ 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+    VkAttachmentReference dref{ 1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL };
     VkSubpassDescription sub{};
     sub.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
     sub.colorAttachmentCount = 1; sub.pColorAttachments = &ref;
+    sub.pDepthStencilAttachment = &dref;
     VkRenderPassCreateInfo rp{};
     rp.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-    rp.attachmentCount = 1; rp.pAttachments = &att;
+    rp.attachmentCount = 2; rp.pAttachments = att;
     rp.subpassCount = 1; rp.pSubpasses = &sub;
     VKCHECK(vkCreateRenderPass(d->device, &rp, nullptr, &d->renderPass));
 
+    VkImageView fbViews[2] = { d->colorView, d->depthView };
     VkFramebufferCreateInfo fb{};
     fb.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-    fb.renderPass = d->renderPass; fb.attachmentCount = 1; fb.pAttachments = &d->colorView;
+    fb.renderPass = d->renderPass; fb.attachmentCount = 2; fb.pAttachments = fbViews;
     fb.width = width; fb.height = height; fb.layers = 1;
     VKCHECK(vkCreateFramebuffer(d->device, &fb, nullptr, &d->framebuffer));
 
@@ -206,8 +240,8 @@ bool Nvk::init(uint32_t width, uint32_t height, bool preferCpu) {
 
     VkVertexInputBindingDescription bind{ 0, sizeof(NvkVertex), VK_VERTEX_INPUT_RATE_VERTEX };
     VkVertexInputAttributeDescription attrs[2]{};
-    attrs[0] = { 0, 0, VK_FORMAT_R32G32_SFLOAT, 0 };                       // pos
-    attrs[1] = { 1, 0, VK_FORMAT_R32G32B32A32_SFLOAT, (uint32_t)(2 * sizeof(float)) }; // color
+    attrs[0] = { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0 };                    // pos xyz
+    attrs[1] = { 1, 0, VK_FORMAT_R32G32B32A32_SFLOAT, (uint32_t)(3 * sizeof(float)) }; // color
     VkPipelineVertexInputStateCreateInfo vi{};
     vi.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
     vi.vertexBindingDescriptionCount = 1; vi.pVertexBindingDescriptions = &bind;
@@ -232,6 +266,11 @@ bool Nvk::init(uint32_t width, uint32_t height, bool preferCpu) {
     ms.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
     ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 
+    VkPipelineDepthStencilStateCreateInfo ds{};
+    ds.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    ds.depthTestEnable = VK_TRUE; ds.depthWriteEnable = VK_TRUE;
+    ds.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;  // smaller z = nearer
+
     VkPipelineColorBlendAttachmentState cba{};
     cba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
                          VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
@@ -249,7 +288,7 @@ bool Nvk::init(uint32_t width, uint32_t height, bool preferCpu) {
     gp.stageCount = 2; gp.pStages = stages;
     gp.pVertexInputState = &vi; gp.pInputAssemblyState = &ia;
     gp.pViewportState = &vps; gp.pRasterizationState = &rs;
-    gp.pMultisampleState = &ms; gp.pColorBlendState = &cb;
+    gp.pMultisampleState = &ms; gp.pColorBlendState = &cb; gp.pDepthStencilState = &ds;
     gp.layout = d->pipeLayout; gp.renderPass = d->renderPass; gp.subpass = 0;
     VKCHECK(vkCreateGraphicsPipelines(d->device, VK_NULL_HANDLE, 1, &gp, nullptr, &d->pipeline));
 
@@ -302,12 +341,14 @@ bool Nvk::renderTriangles(const std::vector<NvkVertex>& verts, NvkClear clear) {
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     VKCHECK(vkBeginCommandBuffer(d->cmd, &bi));
 
-    VkClearValue cv{}; cv.color = { { clear.r, clear.g, clear.b, clear.a } };
+    VkClearValue cv[2]{};
+    cv[0].color = { { clear.r, clear.g, clear.b, clear.a } };
+    cv[1].depthStencil = { 1.0f, 0 };   // far plane
     VkRenderPassBeginInfo rpb{};
     rpb.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     rpb.renderPass = d->renderPass; rpb.framebuffer = d->framebuffer;
     rpb.renderArea = { {0, 0}, {d->w, d->h} };
-    rpb.clearValueCount = 1; rpb.pClearValues = &cv;
+    rpb.clearValueCount = 2; rpb.pClearValues = cv;
     vkCmdBeginRenderPass(d->cmd, &rpb, VK_SUBPASS_CONTENTS_INLINE);
     if (vcount) {
         vkCmdBindPipeline(d->cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, d->pipeline);
@@ -360,6 +401,9 @@ void Nvk::shutdown() {
         if (d->colorView) vkDestroyImageView(d->device, d->colorView, nullptr);
         if (d->color) vkDestroyImage(d->device, d->color, nullptr);
         if (d->colorMem) vkFreeMemory(d->device, d->colorMem, nullptr);
+        if (d->depthView) vkDestroyImageView(d->device, d->depthView, nullptr);
+        if (d->depth) vkDestroyImage(d->device, d->depth, nullptr);
+        if (d->depthMem) vkFreeMemory(d->device, d->depthMem, nullptr);
         vkDestroyDevice(d->device, nullptr);
     }
     if (d->instance) vkDestroyInstance(d->instance, nullptr);

@@ -91,7 +91,7 @@ int main() {
     std::vector<NvkVertex> tri;
     for (unsigned i : idx) {
         const NgxVertex& s = nv[i];
-        tri.push_back({ s.pos[0], s.pos[1],
+        tri.push_back({ s.pos[0], s.pos[1], 0.f,
                         s.clr[0][0] / 255.f, s.clr[0][1] / 255.f,
                         s.clr[0][2] / 255.f, s.clr[0][3] / 255.f });
     }

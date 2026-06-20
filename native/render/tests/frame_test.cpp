@@ -38,9 +38,9 @@ static Nvk g_nvk;
 static void test_direct_triangle() {
     // Triangle covering screen center, red; clear blue.
     std::vector<NvkVertex> tri = {
-        { -0.5f, -0.5f, 1, 0, 0, 1 },
-        {  0.5f, -0.5f, 1, 0, 0, 1 },
-        {  0.0f,  0.5f, 1, 0, 0, 1 },
+        { -0.5f, -0.5f, 0, 1, 0, 0, 1 },
+        {  0.5f, -0.5f, 0, 1, 0, 0, 1 },
+        {  0.0f,  0.5f, 0, 1, 0, 0, 1 },
     };
     chk(g_nvk.renderTriangles(tri, { 0, 0, 1, 1 }), "render direct triangle");
     std::printf("  device: %s  %ux%u\n", g_nvk.deviceName(), g_nvk.width(), g_nvk.height());
@@ -74,7 +74,7 @@ static void test_gxproject_triangle() {
         // screen pixels -> Vulkan NDC ([-1,1], y down both ways)
         f32 nx = (sx / (f32)W) * 2.0f - 1.0f;
         f32 ny = (sy / (f32)H) * 2.0f - 1.0f;
-        tri.push_back({ nx, ny, 0, 1, 0, 1 });  // green
+        tri.push_back({ nx, ny, 0, 0, 1, 0, 1 });  // green
         cx += sx / 3.0f; cy += sy / 3.0f;
     }
     chk(g_nvk.renderTriangles(tri, { 0, 0, 0, 1 }), "render GXProject triangle");

@@ -15,9 +15,10 @@
 
 namespace sb::render {
 
-// A vertex the native engine produces itself: NDC xy + RGBA (0..1).
+// A vertex the native engine produces itself: NDC xyz + RGBA (0..1). z is the NDC
+// depth ([0,1] in Vulkan) used for depth testing; 2D content sets z=0.
 struct NvkVertex {
-    float x, y;          // clip/NDC
+    float x, y, z;       // clip/NDC (z = depth)
     float r, g, b, a;
 };
 
