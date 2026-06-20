@@ -58,6 +58,16 @@ SEPARATE sub-display-**viewport** filter (untouched).
 
 `/ngxorder` now prints `display_gen` + per-batch `gen` (kept consistent with the present filter).
 
+## Post-fix stage sweep (verification — all main scenes render)
+Swept `SUNBRIGHT_STAGE=2..9 SCENARIO=0` (fastboot, ngx). ALL render correctly:
+2 Bianco, 3 Ricco, 4 Gelato, 5 Pinna, 7 Delfino, 8 Pianta Village, 9 Noki Bay (display_gen=10, many
+generations — validates the gen model at scale). `display_gen == display_epoch` on all of them — the
+two only diverge in the Sirena offscreen-composite pattern, so the gen change is targeted/safe.
+⚠ **Pianta Village "black" was a FALSE ALARM** — the sweep captured it mid intro title-card WIPE
+(letterbox fade); at 40s settled it renders fine (green bamboo/bridge, matches GX baseline). When
+sweeping, always settle PAST the ~30 s level-intro wipe before judging "black". Don't re-chase
+Pianta-black.
+
 ## NOT done / next
 - The Sirena green **pollution goop** overlay is still missing (parked EFB-readback class). The
   Sirena **hotel mirror** (`TEfbCtrlTex 鏡描画ステージ`) is inside the hotel lobby (navigate from the
