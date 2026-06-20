@@ -3498,7 +3498,13 @@ SUNBRIGHT_OVERRIDE(ov_j3dshape_draw, 0x802e0390u) {
         ngx_super(cpu, 0x802e0390u);
     }
     xfmem_draw_observe();   // always-on (oracle too): ground-truth xfmem at draw
-    if (g_enabled) capture(sh);
+    // When FROZEN, do NOT capture: capture_material() grows/clears the SHARED persistent
+    // g_tevstates table (content-hash deduped, cleared at TEVSTATE_CAP), which would reassign
+    // tev_index slots out from under the latched front buffer — making the frozen batches'
+    // tev_index point at a DIFFERENT material than they were captured with (the ti-instability
+    // that made /pixblend and /pixbatch disagree on the same frozen frame). Freeze must hold the
+    // tevstate table too, so a frozen snapshot is fully self-consistent for diagnosis.
+    if (g_enabled && !g_ngx_frozen.load(std::memory_order_acquire)) capture(sh);
     if ((int)my_idx < SHAPETI_CAP) g_frame_shape_ti[my_idx] = g_cur_tev_index;   // draw#→material
 }
 
