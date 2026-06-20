@@ -14,7 +14,12 @@ typedef char* Ptr;
 typedef int BOOL;
 #define FALSE 0
 #define TRUE  1
-#define AT_ADDRESS(addr)
+// GC fixed-address globals (`u32 __OSBusClock AT_ADDRESS(...)`) had ONE physical
+// location at a hardware address via the linker script. On host there's no such
+// placement, and the empty expansion made every including TU emit its own .bss
+// definition -> "multiple definition" at link. Mark them WEAK so the linker merges
+// all definitions to one (zero-initialized; the OS seam sets real values at init).
+#define AT_ADDRESS(addr) __attribute__((weak))
 #ifdef __cplusplus
 typedef bool   __bool;
 #endif

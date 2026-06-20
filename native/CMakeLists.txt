@@ -56,7 +56,11 @@ target_compile_options(sms-native PRIVATE
     # This silences brace-init narrowing ONLY; pointer truncation still errors
     # as 'loses precision'. -w hides the rest of the noise (warnings, not errors).
     -w
-    -Wno-narrowing)
+    -Wno-narrowing
+    # SDK headers declare OS/HW globals as tentative defs without extern; -fcommon
+    # merges them (Metrowerks behavior) so the eventual full link doesn't hit
+    # -fno-common multiple-definition errors across the 577 TUs.
+    -fcommon)
 
 # ---------------------------------------------------------------------------
 # sms-platform — the native PC implementations of the GameCube SDK seams the
@@ -68,6 +72,8 @@ target_compile_options(sms-native PRIVATE
 file(GLOB SMS_PLATFORM_SOURCES CONFIGURE_DEPENDS
      "${SMS_NATIVE_REPO_ROOT}/native/platform/*_impl.cpp")
 
+find_package(Threads REQUIRED)
+
 add_library(sms-platform STATIC ${SMS_PLATFORM_SOURCES})
 set_target_properties(sms-platform PROPERTIES
     CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
@@ -75,7 +81,12 @@ target_include_directories(sms-platform PUBLIC
     "${SMS_NATIVE_REPO_ROOT}/native/platform"
     "${SMS_NATIVE_REPO_ROOT}/native/shim"
     "${SMS_NATIVE_REPO_ROOT}/reference/sms/include")
-target_compile_options(sms-platform PRIVATE -Wall -Wextra)
+target_compile_options(sms-platform PRIVATE -Wall -Wextra
+    # The SDK headers declare HW-register/OS globals (__VIRegs, __OSBusClock, ...)
+    # as tentative definitions WITHOUT extern; -fcommon merges them (Metrowerks
+    # common-symbol behavior) instead of -fno-common's multiple-definition error.
+    -fcommon)
+target_link_libraries(sms-platform PUBLIC Threads::Threads)
 
 # Seam unit tests (TDD: assert spec-computed truth; the tested function IS the
 # shipping seam function). Each native/platform/tests/*_test.cpp is its own
@@ -92,6 +103,7 @@ foreach(test_src ${SMS_PLATFORM_TESTS})
         "${SMS_NATIVE_REPO_ROOT}/native/platform"
         "${SMS_NATIVE_REPO_ROOT}/native/shim"
         "${SMS_NATIVE_REPO_ROOT}/reference/sms/include")
+    target_compile_options(sms-${test_name} PRIVATE -fcommon)
     target_link_libraries(sms-${test_name} PRIVATE sms-platform)
     add_test(NAME platform_${test_name} COMMAND sms-${test_name})
 endforeach()
