@@ -546,8 +546,8 @@ harness stood up first. Re-measure: `cmake -B build-native -DSMS_BUILD_BOOT=ON &
 ## Don't re-chase
 - `port/` (flip) is dead — do not revive. (But its `assets/` BE→host swappers ARE reused — recovered
   into native/assets/ as sms-assets. Recovering more from there via `git show d45a0c3^:port/...` is fair.)
-- A blanket host-libc prelude — it conflicts with MSL; shadow MSL instead (`native/shim/host_prelude.h`
-  is a leftover sketch of this dead idea, untracked; do NOT wire it in).
+- A blanket host-libc prelude — it conflicts with MSL; shadow MSL instead. (`native/shim/host_prelude.h`
+  was a leftover sketch of this dead idea; deleted session 7 — do NOT recreate it.)
 - `-fpermissive` to silence pointer-truncation — corrupts pointers under LP64; fix or go 32-bit.
 - The TEV runtime-shader "architecture decision" — DONE: glslang lib (glsl_compile.cpp ships it).
 - The swap_table=0 "rrrr" trap — a synthetic NgxTevState MUST set swap_table to identity 0x1B.
