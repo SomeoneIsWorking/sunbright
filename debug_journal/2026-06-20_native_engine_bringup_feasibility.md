@@ -383,8 +383,70 @@ Catalogue: `scratch/boot_undef.txt` (gitignored; regenerate: build sms-boot, gre
 reference"). NEXT SESSION = fill toward a first booted frame; the renderer (nvk TEV+lighting+
 texture+depth) is the verification target once a J3DModel is populated.
 
+## ✅ SESSION 5 (2026-06-20) — a REAL BMD model loads natively (the PRODUCER milestone)
+Continued from handoff step 3. Instead of booting the whole TApplication graph (458 undefs),
+scoped a far smaller, verify-first target: **load one real BMD through the game's OWN J3D loader.**
+A link probe (`scratch/j3dload_probe.cpp`) showed the load+walk path needs only **39 SDK-C symbols**
+(vs 458 for full boot). All landed, all on real data:
+
+1. **GD seam (sms-gd, d341860)** — the GD display-list builder. GD is pure big-endian GX-command
+   byte-building (no HW), so port it from the REAL decomp source (`reference/sms/src/dolphin/gd/*.c`),
+   NOT reimplement: new `sms-gd` lib globs the .c, compiled like sms-native. Only fixes: 2 LP64
+   pointer casts in GDBase.c (`(u8*)`/`(uintptr_t)`). Its dep `DCFlushRange`/`DCStoreRange` + rest of
+   OSCache.h → cache no-ops in os_impl.cpp (host memory is coherent; DCZeroRange = real memset).
+   gd_test asserts spec-computed DL bytes for GDSetVtxDescv byte-for-byte (CP VCD_LO/HI + XF
+   INVTXSPEC). ⚠ GDPadCurr32 aligns the ABSOLUTE pointer to 32 → the test buffer must be alignas(32)
+   (GC DL buffers always are). Resolves 18 of the 39.
+
+2. **GX seam SLICE 5 + 4 J2D verbs (gx_impl.cpp/gx_state.h, 4a20f9b)** — the 21 per-draw GX setters
+   the J3D *draw* path references (GXSetVtxAttrFmt/GXSetArray, XF matrix-memory loads, GXInitTexObj/
+   GXLoadTexObj w/ a NativeTexObj overlay, texcoord-gen, indirect, pipeline flags) + 4 J2D
+   immediate-mode verbs → GXState captures. NOT exercised by the LOADER (only block-parsing), only
+   needed to LINK the loader's transitive closure (vtables pull J2DGrafContext). The draw path will
+   verify them. ⚠ Full-exe link of sms-native pulls a WIDE closure (vtables) — use CMake
+   `$<LINK_GROUP:RESCAN,...>` for the cyclic sms-native↔sms-gd/platform archives.
+
+3. **sms-assets — BE→host swapper recovered** — `bmd_swap.cpp` (full 8-block J3D2 BE→host swapper)
+   + `rarc.cpp` (Yaz0/RARC), recovered via `git show d45a0c3^:port/assets/...` from the RETIRED port/
+   flip tree (memory `field-flip-removed` flagged them reusable). Plain portable C++, no shim. "Swap
+   the asset to host-endian ONCE at load" so the pristine decomp loader reads it correctly.
+
+4. **★★★ THE LP64 FILE-OVERLAY LANDMINE (submodule a8d860a) — the real blocker, now a known pattern.**
+   The j3dload harness CRASHED in readDraw deref'ing `mpDrawMtxFlag=0x1000000000016`. ROOT CAUSE: the
+   J3D2 block-header structs (INF1/VTX1/EVP1/DRW1/SHP1/JNT1/MAT3/TEX1 + v21) OVERLAY raw file bytes,
+   where every "pointer" field is a **32-bit FILE OFFSET** the decomp typed `void*`/`T*` (on 32-bit GC,
+   void*==u32). On 64-bit: (a) the 8-byte field BLOATS the struct so it no longer matches the 4-byte
+   on-disk layout (the offset comments `/* 0x0C */` lie — the compiler puts the field at 0x10 after
+   alignment), and (b) it selects the `JSUConvertOffsetToPtr(const void*)` overload (LP64 campaign
+   added it) which adds the full 8-byte garbage instead of a 32-bit offset. FIX = narrow these
+   offset fields to **u32** so the struct matches the file AND the u32 offset overload is used. This is
+   the phase-1 "compile-clean ≠ correct-on-64-bit" runtime landmine the bring-up journal predicted;
+   the model loader is the FIRST path to hit it. **EXPECT to repeat this for every file-overlay struct
+   in the asset-loading code (J2D, animation .bck/.btk, JPA particles, .bti textures…).** Rule of
+   thumb: a struct cast from raw file bytes (derives from JUTDataBlockHeader, or `*Block`/`*InitData`
+   read via JSUConvertOffsetToPtr) with a pointer field → that field is a u32 offset, narrow it.
+
+**RESULT (verified):** `sms-j3dload_test` swaps a real BE BMD → JKRExpHeap bringup → the REAL
+`J3DModelLoaderDataBase::load` → walks shapes/materials/joints. **10 real BMDs load** with counts
+matching an independent oracle (raw BE block-header counts): default 2/2/3, shadowpalm 8/8/3, etc.
+17/17 ctest. GOTCHA: the decomp's global `operator new` (JKRHeap::alloc) replaces the standard one
+for the WHOLE exe — the test's own std::vector allocates from the current JKRHeap, so **bring up the
+heap as the FIRST statement of main** (before any C++ alloc) or std::vector gets null. JKRExpHeap::
+createRoot's initArena reads GC physical-0 (unsafe natively) → construct JKRExpHeap directly on a
+malloc'd block (the ctor sets sCurrentHeap).
+
+### NEXT (the remaining half of step 3): render the loaded J3DShape's geometry → pixels.
+The producer (J3DModelData with shapes) is up; the consumers (ngx decode/transform/depth/TEV/
+lighting/nvk) are up. The join: extract shape[0]'s CP descriptor (from J3DShape unk2C GXVtxDescList
++ VAT) + display-list bytes (J3DShapeDraw mDisplayList/size) + vertex arrays (J3DModelData
+mVertexData) from NATIVE struct fields, feed `ngx_assemble_primitive` (see geometry_test.cpp for the
+NgxCP+DL→NgxVertex→nvk pattern), render, pixel-verify. This is "re-point ngx at native structs" —
+port the ~150 mem_r32 reads in runtime/overrides/ngx_j3d_shape.cpp to native J3DShape/J3DVertexData
+field reads. shadowcube (1 shape) is the simplest first target.
+
 ## Don't re-chase
-- `port/` (flip) is dead — do not revive.
+- `port/` (flip) is dead — do not revive. (But its `assets/` BE→host swappers ARE reused — recovered
+  into native/assets/ as sms-assets. Recovering more from there via `git show d45a0c3^:port/...` is fair.)
 - A blanket host-libc prelude — it conflicts with MSL; shadow MSL instead (`native/shim/host_prelude.h`
   is a leftover sketch of this dead idea, untracked; do NOT wire it in).
 - `-fpermissive` to silence pointer-truncation — corrupts pointers under LP64; fix or go 32-bit.
