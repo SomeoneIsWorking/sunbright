@@ -1,14 +1,19 @@
-// platform_stub.cpp — compile-canary for the seam headers.
+// platform_stub.cpp — header compile-canary ONLY (not built into any target).
 //
-// This file exists ONLY to prove every seam header is self-contained and compiles
-// (each is #included below). It is NOT the implementation — phase-2 replaces the
-// per-subsystem TODO bodies with real native code in dedicated translation units
-// (os_seam.cpp, gx_seam.cpp, ...). The PlatformInit/Shutdown/PumpFrame bodies here
-// are minimal stubs returning sensible defaults so the platform layer links during
-// scaffolding; they call into the (not-yet-implemented) seams' Init in boot order.
+// The REAL platform bring-up is platform_impl.cpp (sb::platform::PlatformInit /
+// Shutdown / PumpFrame). This file just #includes every seam header so they stay
+// self-contained and parseable; it defines NO symbols (so it never conflicts with
+// platform_impl.cpp).
+//
+// ARCHITECTURE NOTE: the per-subsystem *_seam.h headers below declare a parallel
+// `sb::platform::<sub>::` C++ API that was an early design sketch. The shipping seams
+// took the simpler, correct route instead: they DEFINE THE SDK C SYMBOLS the game
+// actually links (OSCreateThread, DVDOpen, VIWaitForRetrace, PADRead, ...) directly,
+// in <sub>_impl.cpp, matching the <dolphin/...> header signatures. So the namespaced
+// declarations here are DESIGN NOTES (boot order, threading-model rationale, the
+// GXColor-by-pointer caveat), not the implemented interface. Treat *_impl.cpp +
+// dvd_disc.h / vi_present.h / pad_input.h as the source of truth.
 #include "platform.h"
-
-// Include every seam header so a build of this TU type-checks the whole surface.
 #include "platform_types.h"
 #include "os_seam.h"
 #include "mtx_seam.h"
@@ -20,23 +25,3 @@
 #include "pad_seam.h"
 #include "thp_seam.h"
 #include "exi_seam.h"
-
-namespace sb::platform {
-
-bool PlatformInit(int /*argc*/, char** /*argv*/) {
-    // Boot order (see README.md "Boot order"). Real bodies land in phase-2; for now
-    // this is the call sequence the integration glue will use.
-    // os::Init(); dvd::Init(); card::Init(); audio::Init();
-    // vi::Init(); gx::Init(); pad::Init(); thp::Init();
-    return true;   // sensible default while seams are unimplemented
-}
-
-void PlatformShutdown() {
-    // Reverse order; audio::Shutdown() etc. land in phase-2.
-}
-
-void PlatformPumpFrame() {
-    // Pump host events + advance host-clock-driven seams (phase-2).
-}
-
-} // namespace sb::platform

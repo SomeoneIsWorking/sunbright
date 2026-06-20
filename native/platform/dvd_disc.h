@@ -28,4 +28,10 @@ void sb_dvd_set_fst(const void* fstData, u32 fstSize);
 // DVDInit when a disc source is present.
 bool sb_dvd_init_from_disc(void);
 
+// Open a PLAIN GameCube disc image (.gcm/.iso, uncompressed) as the disc backend via
+// host fopen — pure PC, no Dolphin. Installs the disc source + loads the FST. Returns
+// false if the file can't be opened. (RVZ/compressed images are NOT handled here — a
+// separate decompressing reader plugs into the same DiscReadFn when needed.)
+bool sb_platform_open_gcm(const char* path);
+
 } // extern "C"
