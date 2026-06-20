@@ -349,6 +349,16 @@ void OSWakeupThread(OSThreadQueue* q) {
     w->cv.notify_all();
 }
 
+// Block the calling thread on `q` until a matching OSWakeupThread. Capture the
+// wake generation under the lock before waiting so a wakeup racing in between
+// qwait() and wait() is not lost.
+void OSSleepThread(OSThreadQueue* q) {
+    QWait* w = qwait(q);
+    std::unique_lock<std::mutex> lk(w->m);
+    int g = w->gen;
+    w->cv.wait(lk, [w, g] { return w->gen != g; });
+}
+
 // ===========================================================================
 // Mutex (recursive) / Cond
 // ===========================================================================
