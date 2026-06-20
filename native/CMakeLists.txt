@@ -313,11 +313,32 @@ if(SMS_BUILD_BOOT)
         "${SMS_NATIVE_REPO_ROOT}/native/platform" "${SMS_NATIVE_REPO_ROOT}/native/shim"
         "${SMS_NATIVE_REPO_ROOT}/reference/sms/include")
     target_link_options(sms-boot PRIVATE -Wl,--wrap=main)
+    # boot_stubs/ — SCAFFOLD-to-link layer: faithful-signature stub definitions for the
+    # game-class roster the decomp left undefined (actor ctors/vtables/nerves/globals the
+    # MarNameRefGen catalogue references but that aren't on the boot->scene hot path).
+    # Compiled into a lib in the RESCAN closure; replaced with faithful ports as the
+    # runtime actually exercises each class.
+    file(GLOB SMS_BOOT_STUBS CONFIGURE_DEPENDS
+         "${SMS_NATIVE_REPO_ROOT}/native/boot_stubs/*.cpp"
+         "${SMS_NATIVE_REPO_ROOT}/native/boot_stubs/*.S")
+    if(SMS_BOOT_STUBS)
+        enable_language(ASM)
+        add_library(sms-bootstubs STATIC ${SMS_BOOT_STUBS})
+        set_target_properties(sms-bootstubs PROPERTIES
+            CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+        target_include_directories(sms-bootstubs PRIVATE
+            "${SMS_NATIVE_REPO_ROOT}/native/shim"
+            "${SMS_NATIVE_REPO_ROOT}/reference/sms/include")
+        # The C++ force-include must NOT reach the .S stub (assembler can't use <cstring>).
+        target_compile_options(sms-bootstubs PRIVATE
+            "$<$<COMPILE_LANGUAGE:CXX>:-include;${SMS_NATIVE_REPO_ROOT}/native/shim/gekko_intrinsics.h;-Wno-narrowing>"
+            -w)
+    endif()
     # Same cyclic closure as the j3dload test — boot pulls the GD display-list builder
     # (sms-gd) and the BE->host asset swappers (sms-assets) through the game's vtables,
     # so link the full RESCAN group (not just sms-native+sms-platform).
     target_link_libraries(sms-boot PRIVATE
-        "$<LINK_GROUP:RESCAN,sms-native,sms-gd,sms-assets,sms-platform>"
+        "$<LINK_GROUP:RESCAN,sms-native,sms-gd,sms-assets,sms-platform,$<TARGET_NAME_IF_EXISTS:sms-bootstubs>>"
         Threads::Threads)
 endif()
 
