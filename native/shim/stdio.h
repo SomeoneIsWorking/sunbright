@@ -21,4 +21,16 @@
 #include_next <stdio.h>
 #include <cstdarg>
 
+// Mirror MSL: the GameCube MSL <stdio.h> does NOT define the EOF macro (only
+// MSL <ctype.h> does, as `-1L`, and no JSU-stream TU pulls ctype.h). The decomp
+// relies on that: JSUStreamEnum.hpp declares `enum EIoState { GOOD=0, EOF=1 }`
+// and game code uses `EOF` as that enumerator (e.g. setState(EOF)) -- never as
+// the C stdio sentinel. glibc's <stdio.h> DOES `#define EOF (-1)`, which would
+// expand inside the enum to `(-1)=1` ("expected identifier before '('") in
+// every TU that includes <stdio.h> ahead of a JSU stream header. Drop it to
+// match MSL; nothing in the decomp consumes stdio's EOF value.
+#ifdef EOF
+#undef EOF
+#endif
+
 #endif // SUNBRIGHT_SHIM_STDIO_H
