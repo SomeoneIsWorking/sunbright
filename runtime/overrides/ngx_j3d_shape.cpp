@@ -2005,7 +2005,7 @@ void transform_eye() {
                 if (batches.size() >= BATCH_CAP) break;  // bounded
                 NgxRenderBatch nb{}; memcpy(nb.tex, tb, sizeof tb);
                 nb.vstart = (uint32_t)count; nb.vcount = 0; nb.tev_index = g_cur_tev_index;
-                nb.epoch = (uint16_t)(g_efb_epoch < EPOCH_CAP ? g_efb_epoch : EPOCH_CAP - 1); nb.pass = (uint16_t)g_proj_pass; nb.vp_w = (uint16_t)g_cur_vp[2]; nb.vp_h = (uint16_t)g_cur_vp[3];
+                nb.epoch = (uint16_t)(g_efb_epoch < EPOCH_CAP ? g_efb_epoch : EPOCH_CAP - 1); nb.gen = (uint16_t)g_efb_gen; nb.pass = (uint16_t)g_proj_pass; nb.vp_w = (uint16_t)g_cur_vp[2]; nb.vp_h = (uint16_t)g_cur_vp[3];
                 batches.push_back(nb);
             }
             for (int f = 0; f < ntri; f++) { emit_v(poly[0]); emit_v(poly[f+1]); emit_v(poly[f+2]); }
@@ -2485,6 +2485,13 @@ void ngx_frame_publish() {
     int de = 0;
     for (int e = EPOCH_CAP - 1; e >= 0; e--) if (g_epoch_tex[g_cur][e]) { de = e; break; }
     g_display_epoch[g_cur] = de;
+    // Clear-aware display generation = the frame's FINAL generation (g_efb_gen only ever increments,
+    // ++ after a CLEARING copy). This is what GX's last CopyDisp captures: the EFB accumulates all
+    // draws since the last clear. Recording it HERE at publish (rather than relying on the CopyDisp
+    // override firing, which ngx publishes BEFORE — at J2DScreen::draw) makes it timing-robust. The
+    // present filters to batches with gen == this (see ngx_present.cpp), so a later small offscreen
+    // GXCopyTex (Sirena pass14) can't demote the main scene's generation out of the display.
+    g_display_gen[g_cur] = (int)g_efb_gen;
     g_front.store(g_cur, std::memory_order_release);
     // Auto-freeze-on-shred: this just-published frame contains a skinned NDC spike → latch it
     // (ngx + GX oracle) so /abshot2 captures the actual spike frame for an A/B with the oracle.
@@ -2678,7 +2685,7 @@ extern "C" void ngx_emit_imm_cube(int color_off, int alpha_off,
     if (batches.size() >= BATCH_CAP) return;
     NgxRenderBatch nb{};   // no textures bound (1×1 white sampled), tev_index = synthetic cube
     nb.vstart = (uint32_t)count; nb.vcount = 0; nb.tev_index = ti;
-    nb.epoch = (uint16_t)(g_efb_epoch < EPOCH_CAP ? g_efb_epoch : EPOCH_CAP - 1); nb.pass = (uint16_t)g_proj_pass; nb.vp_w = (uint16_t)g_cur_vp[2]; nb.vp_h = (uint16_t)g_cur_vp[3];
+    nb.epoch = (uint16_t)(g_efb_epoch < EPOCH_CAP ? g_efb_epoch : EPOCH_CAP - 1); nb.gen = (uint16_t)g_efb_gen; nb.pass = (uint16_t)g_proj_pass; nb.vp_w = (uint16_t)g_cur_vp[2]; nb.vp_h = (uint16_t)g_cur_vp[3];
     batches.push_back(nb);
     unsigned idx[36]; ngx_imm::cube_tri_indices(idx);
     for (int t = 0; t < 12; t++) {
@@ -2785,7 +2792,7 @@ extern "C" void ngx_emit_imm_sphere(int numMajor, int numMinor, int r, int g, in
     if (batches.size() >= BATCH_CAP) return;
     NgxRenderBatch nb{};
     nb.vstart = (uint32_t)count; nb.vcount = 0; nb.tev_index = ti;
-    nb.epoch = (uint16_t)(g_efb_epoch < EPOCH_CAP ? g_efb_epoch : EPOCH_CAP - 1); nb.pass = (uint16_t)g_proj_pass; nb.vp_w = (uint16_t)g_cur_vp[2]; nb.vp_h = (uint16_t)g_cur_vp[3];
+    nb.epoch = (uint16_t)(g_efb_epoch < EPOCH_CAP ? g_efb_epoch : EPOCH_CAP - 1); nb.gen = (uint16_t)g_efb_gen; nb.pass = (uint16_t)g_proj_pass; nb.vp_w = (uint16_t)g_cur_vp[2]; nb.vp_h = (uint16_t)g_cur_vp[3];
     batches.push_back(nb);
     static unsigned idx[512*3]; ngx_imm::sphere_tri_indices(numMajor, numMinor, idx);
     for (int t = 0; t < tc; t++) {
@@ -2886,7 +2893,7 @@ extern "C" void ngx_emit_particle_quad(const ngx_jpa::NgxParticleQuad* q) {
         tb.mipmap = 0; tb.mip_count = 1;
     }
     nb.vstart = (uint32_t)count; nb.vcount = 0; nb.tev_index = ti;
-    nb.epoch = (uint16_t)(g_efb_epoch < EPOCH_CAP ? g_efb_epoch : EPOCH_CAP - 1); nb.pass = (uint16_t)g_proj_pass; nb.vp_w = (uint16_t)g_cur_vp[2]; nb.vp_h = (uint16_t)g_cur_vp[3];
+    nb.epoch = (uint16_t)(g_efb_epoch < EPOCH_CAP ? g_efb_epoch : EPOCH_CAP - 1); nb.gen = (uint16_t)g_efb_gen; nb.pass = (uint16_t)g_proj_pass; nb.vp_w = (uint16_t)g_cur_vp[2]; nb.vp_h = (uint16_t)g_cur_vp[3];
     batches.push_back(nb);
     static const int tri[2][3] = {{0,1,2},{0,2,3}};   // GX_QUADS → 2 tris
     for (int t = 0; t < 2; t++) {
@@ -2951,6 +2958,9 @@ extern "C" void  sb_ngx_set_interp_alpha(float a) {
 // Display epoch of the latched snapshot (read after ngx_snap_verts latches g_read_front). The
 // present skips batches whose epoch < this (auxiliary offscreen renders — the ghost class).
 int ngx_snap_display_epoch() { return g_display_epoch[g_read_front]; }
+// Clear-aware display generation of the latched snapshot. The present shows ONLY batches with
+// gen == this (the EFB content GX's final CopyDisp captures). -1 = no info → show all.
+int ngx_snap_display_gen() { return g_display_gen[g_read_front]; }
 const NgxTevState* ngx_snap_tevstates(int* nstates) {
     *nstates = (int)g_tevstates.size();
     return g_tevstates.empty() ? nullptr : g_tevstates.data();
@@ -3765,18 +3775,19 @@ int sb_ngx_order_dump(char* out, int cap) {
     const int f = g_front.load(std::memory_order_acquire);
     const std::vector<NgxRenderBatch>& bs = g_batches[f];
     const int de = g_display_epoch[f];
-    int n = snprintf(out, cap, "ngxorder: front=%d total_batches=%zu display_epoch=%d (only drawn ones counted in prefix)\n", f, bs.size(), de);
+    const int dg = g_display_gen[f];
+    int n = snprintf(out, cap, "ngxorder: front=%d total_batches=%zu display_gen=%d display_epoch=%d (only displayed-gen ones counted in prefix)\n", f, bs.size(), dg, de);
     int drawn = 0;
     for (size_t b = 0; b < bs.size(); b++) {
-        if ((int)bs[b].epoch < de) continue;   // matches the present's display filter
+        if (dg >= 0 && (int)bs[b].gen != dg) continue;   // matches the present's clear-aware display filter
         const int ti = bs[b].tev_index;
         u16 cc = (ti >= 0 && ti < (int)TEVSTATE_CAP) ? g_tev_cc[ti] : 0xFFFF;
         u8 bm=0,sf=0,df=0,at=0; const NgxTevState* T=nullptr;
         { int nstate=0; const NgxTevState* ts=ngx_snap_tevstates(&nstate); if (ti>=0 && ti<nstate) T=&ts[ti]; }
         if (T) { bm=T->pe.blend_mode; sf=T->pe.src_factor; df=T->pe.dst_factor; at=T->pe.alpha_test; }
         if (n < cap - 160)
-            n += snprintf(out+n, cap-n, "  [%3d] ti=%-3d nv=%-5u epoch=%u cc=%04x blend=%u src=%u dst=%u atest=%u\n",
-                          drawn, ti, bs[b].vcount, bs[b].epoch, cc, bm, sf, df, at);
+            n += snprintf(out+n, cap-n, "  [%3d] ti=%-3d nv=%-5u gen=%u epoch=%u cc=%04x blend=%u src=%u dst=%u atest=%u\n",
+                          drawn, ti, bs[b].vcount, bs[b].gen, bs[b].epoch, cc, bm, sf, df, at);
         drawn++;
     }
     n += snprintf(out+n, cap-n, "  (drawn=%d — /ngxprefix?n=K renders the first K of these)\n", drawn);

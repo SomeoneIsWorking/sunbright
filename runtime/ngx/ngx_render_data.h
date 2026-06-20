@@ -49,6 +49,12 @@ struct NgxRenderBatch {
     uint32_t vstart, vcount;  // [vstart, vstart+vcount) into the vertex list
     int32_t  tev_index;       // index into the TEV-state table (-1 = none/default)
     uint16_t epoch;           // EFB-copy epoch this batch drew under (render-target awareness)
+    uint16_t gen;             // clear-aware EFB generation this batch drew under (++ after a CLEARING
+                              // copy). The present shows only the display generation (= the final
+                              // gen, what GX's last CopyDisp captured) — GPU truth: the EFB accumulates
+                              // across non-clearing copies and is reset ONLY by a clear, so a later
+                              // small GXCopyTex must NOT demote the main scene (the Sirena-beach black
+                              // bug the old highest-tex-closed-epoch heuristic caused).
     uint16_t pass;            // projection-pass index this batch drew under (offscreen-pass filtering)
     uint16_t vp_w, vp_h;      // GXSetViewport extent this batch drew under (px). A sub-display
                               // viewport = an offscreen render-to-texture pass (file-panel preview,
@@ -153,6 +159,7 @@ const NgxRenderVertex* ngx_snap_verts(int* nverts);
 const NgxRenderBatch*  ngx_snap_batches(int* nbatches);
 const NgxTevState*     ngx_snap_tevstates(int* nstates);
 int                    ngx_snap_display_epoch(void);   // present skips batches with epoch < this
+int                    ngx_snap_display_gen(void);     // clear-aware: present shows only batches whose gen == this (the display generation; -1 = show all)
 
 // ── interp60 (PC-native frame interpolation) ─────────────────────────────────
 // The PREVIOUS published snapshot (frame N-1) kept alongside the front (N) so the present can

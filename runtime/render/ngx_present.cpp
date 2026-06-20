@@ -18,6 +18,7 @@
 #include "glsl_compile.h"
 #include "j2d_types.h"
 #include "../ngx/ngx_render_data.h"
+#include "../ngx/ngx_display_gen.h"   // clear-aware display-generation filter (unit-tested)
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -1063,6 +1064,12 @@ AbstractTexture* PresentRenderer::render(int w, int h) {
     }
     // Render-target-aware filter: present only the display epoch (main scene) onward.
     const int display_epoch = rtfilter_on() ? ngx_snap_display_epoch() : 0;
+    // Clear-aware display generation (the GPU-truth replacement for the epoch filter below). The EFB
+    // accumulates draws and is reset ONLY by a clearing copy; the displayed scene is everything since
+    // the last clear = the FINAL generation. Filtering by gen (not "epoch >= highest-tex-closed") keeps
+    // the main scene when a LATER small offscreen GXCopyTex closes a higher epoch (Sirena beach: the
+    // 171-shape scene at gen 2 was dropped because pass14 closed epoch 3). -1 = no info → show all.
+    const int display_gen = rtfilter_on() ? ngx_snap_display_gen() : -1;
     // Offscreen render-to-texture filter (the file-select ghost-Mario fix): the game renders its
     // file-panel 3D previews (and the mirror/pollution effects) into a SUB-DISPLAY viewport via
     // GXSetViewport, then GXCopyTex's the result into a texture composited elsewhere. ngx can't do
@@ -1231,7 +1238,11 @@ AbstractTexture* PresentRenderer::render(int w, int h) {
         if (g_ngx_drop_epoch >= 0 && (int)batches[b].epoch == g_ngx_drop_epoch) continue;
         if (g_ngx_only_pass >= 0 && (int)batches[b].pass != g_ngx_only_pass) continue;
         if (g_ngx_drop_pass >= 0 && (int)batches[b].pass == g_ngx_drop_pass) continue;
-        if ((int)batches[b].epoch < display_epoch) continue;   // auxiliary offscreen render — not displayed
+        // Clear-aware display filter (GPU truth, ngx_display_gen.h): show only the final generation =
+        // the EFB content GX's last CopyDisp captures. Supersedes the old "epoch < display_epoch"
+        // heuristic, which wrongly demoted the main scene when a later small offscreen copy raised the
+        // display epoch (the Sirena-beach black-screen bug).
+        if (!ngx_batch_displayed((int)batches[b].gen, display_gen)) continue;   // earlier generation (cleared away / offscreen)
         // Offscreen render-to-texture pass (sub-display viewport) — ngx can't composite it, drop it
         // (the file-select file-panel-preview "ghost Mario").
         if (disp_vp_area && (uint32_t)batches[b].vp_w * batches[b].vp_h < disp_vp_area) continue;

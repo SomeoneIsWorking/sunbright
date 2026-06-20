@@ -23,6 +23,7 @@
 #include "ngx_imm_geom.h"
 #include "ngx_jpa_billboard.h"
 #include "ngx_indirect.h"
+#include "ngx_display_gen.h"
 #include "tev_shader.h"
 #include "tev_eval.h"
 #include "tex_decode.h"
@@ -708,6 +709,43 @@ int test_jpa_ybillboard(char* rep, int cap) {
     return fails;
 }
 
+// ── clear-aware display-generation unit (ngx_display_gen.h) ───────────────────
+// The Sirena-beach black-screen bug: the 171-shape main scene was dropped because a
+// LATER small offscreen GXCopyTex closed a higher epoch and the old "show epoch >=
+// highest-tex-closed" heuristic demoted the scene. The clear-aware model tracks the
+// EFB generation (++ after each CLEARING copy) and shows only the final generation —
+// a non-clearing copy never changes the generation, so the later small copy can't
+// demote the scene. Spec-computed ground truth from the real per-frame copy sequences.
+static int test_display_gen(char* rep, int cap) {
+    int pos = 0, fails = 0;
+    auto failf = [&](const char* msg) { if (pos < cap) pos += snprintf(rep+pos, cap-pos, "%s", msg); fails++; };
+
+    // Sirena beach per-frame copies: pass7 clear, pass8 clear, pass12 NO-clear (the 171-shape scene
+    // grab), pass14 NO-clear (an 8-shape overlay grab). Final generation = #clears = 2.
+    const bool sirena[] = { true, true, false, false };
+    int dg_sirena = ngx_display_gen_for(sirena, 4);
+    if (dg_sirena != 2) failf("FAIL sirena display_gen != 2\n");
+    // The main scene drew under gen 2 (after the 2nd clear); the earlier 16-shape pass under gen 1.
+    if (!ngx_batch_displayed(2, dg_sirena)) failf("FAIL sirena main scene (gen 2) not displayed\n");
+    if ( ngx_batch_displayed(1, dg_sirena)) failf("FAIL sirena cleared-away gen 1 wrongly displayed\n");
+    // The 8-shape overlay (pass13/14) also drew under gen 2 (pass12 did NOT clear) → displayed too.
+    if (!ngx_batch_displayed(2, dg_sirena)) failf("FAIL sirena overlay (gen 2) not displayed\n");
+
+    // Plaza per-frame copies: pass7/8/9 clear, pass13 NO-clear (469-shape scene grab). Gen = 3.
+    const bool plaza[] = { true, true, true, false };
+    int dg_plaza = ngx_display_gen_for(plaza, 4);
+    if (dg_plaza != 3) failf("FAIL plaza display_gen != 3\n");
+    if (!ngx_batch_displayed(3, dg_plaza)) failf("FAIL plaza main scene (gen 3) not displayed\n");
+    if ( ngx_batch_displayed(2, dg_plaza)) failf("FAIL plaza cleared-away gen 2 wrongly displayed\n");
+
+    // No copies at all (scene drawn straight to the EFB): final gen 0, everything shown. And a
+    // display_gen of -1 (no info) shows all batches regardless of their gen.
+    if (ngx_display_gen_for(nullptr, 0) != 0) failf("FAIL no-copy display_gen != 0\n");
+    if (!ngx_batch_displayed(0, 0))  failf("FAIL no-copy gen 0 not displayed\n");
+    if (!ngx_batch_displayed(5, -1)) failf("FAIL display_gen=-1 must show all\n");
+    return fails;
+}
+
 struct Unit { const char* name; int (*run)(char* rep, int cap); };
 
 const Unit kUnits[] = {
@@ -727,6 +765,7 @@ const Unit kUnits[] = {
     {"jpa_billboard", test_jpa_billboard},
     {"jpa_stripe",    test_jpa_stripe},
     {"jpa_ybillboard", test_jpa_ybillboard},
+    {"display_gen",    test_display_gen},
 };
 
 }  // namespace
