@@ -232,9 +232,31 @@ console but the empty host expansion made every TU emit a colliding `.bss` def.
 the linker merges them to one (zero-init; OS seam sets real values at init). `-fcommon`
 added to all native targets defensively. This unblocks the eventual 577-TU full link.
 
-### PROGRESS UPDATE (session 3 cont.): 145/634, 8/8 suites green. Added the PC
+### PROGRESS UPDATE (session 3 cont.): 145/634, 9/9 suites green. Added the PC
 integration layer (PlatformInit + PC-native GCM disc reader) + GX slices 1-2 (transform
 + core pixel pipeline: blend/Z/cull/alpha-compare/copy-clear/counts, clean GXState fields).
+
+### ★ NATIVE FRAME milestone (session 3, user picked "go straight for a native frame"):
+**`native/render/nvk.{h,cpp}` — a standalone headless Vulkan renderer with ZERO Dolphin.**
+Creates its OWN instance/device/queue (not Dolphin's g_vulkan_context), renders to an
+offscreen RGBA8 target, reads pixels back. GLSL→embedded SPIR-V via `glslangValidator
+--vn` (CMake custom cmd, `native/render/shaders/`). New `sms-render` lib + render tests;
+skipped if Vulkan/glslang absent; works via **lavapipe (software, no GPU)** and on the
+real GPU. `frame_test` (5 checks): a direct-NDC triangle (center==tri, corner==clear)
+AND a triangle placed by the engine's own **GXProject** transform (set proj+viewport →
+project world pts → screen px → NDC → pixels land where GXProject says). Verified images
+in scratch/screenshots/nvk_*.png. THIS is the renderer foundation the full SMS path
+plugs into. Toolchain confirmed available: /usr/include/vulkan, libvulkan, glslangValidator/glslc.
+
+### ngx re-pointing MAP (from a scout of runtime/render+runtime/ngx, ~8400 LOC):
+ngx is a PURE DATA CONSUMER reading (1) the J3D object model from GUEST RAM via `mem_r32`/
+`sb_r32` (~150 sites in runtime/overrides/ngx_j3d_shape.cpp — capture_material @~1477,
+J3DSYS offsets +0x3C/+0x104/+0x108, J3DMaterial +0x20/+0x28/+0x30 blocks, display-list
+walk) and (2) GX state it captures into its OWN structs via ~15 GX-command tees
+(g_light[]/g_copy_clear[]/g_proj_mtx[]…). Both are localized + mechanical to re-point:
+guest-RAM reads → native J3D struct reads; the GX-state tees → write `sb::platform::gx::
+GXState`. Present (ngx_present.cpp) taps Dolphin's Vulkan device at one point (lines
+~269-274) → replace with nvk. xfmem/g_main_cp_state reads are diagnostic-only (delete).
 
 ### NEXT (remaining SDK C-symbols): GX ~104 (slices 1-2 = 17/121 done), THP 16, GD 16, CARD 14, AI 10.
 - **GX is now unblocked to continue slice-by-slice** on the `GXState` foundation
