@@ -8,6 +8,12 @@
 #define SB_GEKKO_INTRINSICS_H
 #include <cstring>
 
+// Marker that we are building the decomp as a native host engine. Headers that
+// provide GC-specific approximations which collide with the host C++ library
+// (e.g. fake_tgmath.h's float sqrt/fabs/floor overloads, which libstdc++ already
+// supplies) key off this to defer to the host instead.
+#define SUNBRIGHT_NATIVE_HOST 1
+
 #ifndef __declspec
 #define __declspec(x)
 #endif
