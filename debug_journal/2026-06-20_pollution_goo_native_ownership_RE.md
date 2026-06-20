@@ -51,6 +51,24 @@ The coverage = "where the goo shapes are". Produce it in-engine:
    PC-engine state-based approach) — but the INITIAL Manta-Storm goo placement must be found (where
    the beach-wide goo is stamped at episode start; not initTexImage for Sirena).
 
+## Refinement (capture seam) — the goo IS the fastboot-verifiable consumer for task #1
+ngx captures geometry via a tee on **J3DShape::draw (0x802e0390)** (ngx_j3d_shape.cpp ov_j3dshape_draw).
+So BOTH are already captured as ngx batches: (a) the **TPollutionLayer plane** in the display epoch —
+captured but TRANSPARENT because its coverage texture (unk54) is empty; (b) the **graffiti-group goo
+shapes** in the offscreen "graffito" epoch — captured but they render as an invisible coverage MASK
+(the final goo colour comes from the layer material modulating coverage, not from the mask shapes), so
+rtfilter-off shows neither. ⇒ The fix is **per-epoch offscreen CONTENT (handoff task #1)** specialised
+to the graffito pass:
+  1. Render the graffito epoch's batches (the goo mask shapes) into an R8/alpha coverage target.
+  2. Store it in `g_efb_side` keyed by the layer's coverage EA (the fmt-0x28 GXCopyTex dst, e.g.
+     Sirena 80c72780) and make ngx SERVE that EA from the side buffer (the R8 path is currently
+     Dolphin-only — add it to the served set + stop Dolphin stomping that EA).
+  3. The display-epoch pollution-layer plane then samples real coverage → goo appears.
+This gives task #1 a FASTBOOT-REACHABLE, VISIBLE consumer (the Sirena goo) — no hotel-mirror lobby
+needed. Implement the generic per-epoch render in ngx_present.cpp render() (render a chosen epoch's
+batches into a scratch target, read back, store keyed by that copy's dest EA), driven by the published
+copy-event list (epoch→dest/dims/srcrect). Verify: fresh fastboot STAGE=6, goo appears on the beach.
+
 ## Reachability / tooling
 - Fresh fastboot: SUNBRIGHT_STAGE=6 SCENARIO=0 (Sirena), settle PAST the ~35 s intro title-card wipe
   before judging. GX baseline (the real goo) = SUNBRIGHT_NGX_PRESENT=0 (Dolphin renders it).
