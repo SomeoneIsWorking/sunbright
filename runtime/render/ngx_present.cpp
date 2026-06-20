@@ -123,6 +123,18 @@ std::mutex g_efb_dirty_mtx;
 std::unordered_set<uint32_t> g_efb_dirty;       // MEM1 offsets (addr & 0x01FFFFFF) written since last present
 std::unordered_set<uint32_t> g_efb_copy_addrs;  // persistent (diagnostic): every EFB-copy MEM1 offset ever written
 
+// EFB-copy SIDE BUFFER (own-the-framebuffer): the ngx scene color we serve for an EFB→texture copy,
+// kept in a buffer ngx owns rather than read back from guest RAM. WHY: under ngx present Dolphin's EFB
+// is empty, and the guest's *original* GXCopyTex performs its EFB→RAM copy ASYNCHRONOUSLY on Dolphin's
+// video thread — that copy of the empty EFB lands AFTER copytex_writeback's guest-thread write and
+// STOMPS our content with zeros (airstrip black-sky: the ti=42 ocean reflection sampled 80f94fe0 = all
+// zeros even though the writeback verified stored=bright). texture_for reads the copy texel from HERE,
+// so the async Dolphin copy can no longer corrupt it. Keyed by MEM1 offset (addr & 0x01FFFFFF); ARGB8888
+// at the copy's logical dst dims. (The guest-RAM write is still done for any non-ngx consumer.)
+std::mutex g_efb_side_mtx;
+struct EfbSideCopy { int w = 0, h = 0; std::vector<uint32_t> argb; };  // ARGB8888, w*h
+std::unordered_map<uint32_t, EfbSideCopy> g_efb_side;
+
 struct PresentRenderer {
     bool init_tried = false, init_ok = false;
     VkDevice dev = VK_NULL_HANDLE; VkPhysicalDevice phys = VK_NULL_HANDLE;
@@ -800,6 +812,49 @@ VkImageView PresentRenderer::texture_for(const NgxTexBind& t, VkCommandBuffer up
     auto cit = texcache.find(key);
     if (cit != texcache.end()) { out_samp = cit->second.sampler; return cit->second.view; }
 
+    // EFB-copy SIDE BUFFER: if ngx served this address as an EFB→texture copy, decode from the buffer
+    // ngx owns (see g_efb_side) instead of guest RAM, which Dolphin's async EFB→RAM copy stomps with
+    // zeros. Single mip, ARGB8888 → VK_FORMAT_R8G8B8A8_UNORM. Only when the bind dims match the copy's
+    // (a sub-rect/mismatched bind falls through to the guest-RAM path).
+    {
+        std::lock_guard<std::mutex> lk(g_efb_side_mtx);
+        auto sit = g_efb_side.find(t.addr & 0x01FFFFFFu);
+        if (sit != g_efb_side.end() && sit->second.w == (int)t.w && sit->second.h == (int)t.h &&
+            sit->second.argb.size() == (size_t)t.w * t.h) {
+            const int sw = (int)t.w, sh = (int)t.h;
+            TexEntry te{}; te.addr = t.addr; te.sampler = sampler_for(t);
+            if (!make_dev_image(dev, phys, te.img, te.mem, te.view, VK_FORMAT_R8G8B8A8_UNORM, sw, sh,
+                    VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_IMAGE_ASPECT_COLOR_BIT, 1))
+                return white_view;
+            const size_t rgba = (size_t)sw * sh * 4;
+            VkBuffer sbuf; VkDeviceMemory smem;
+            if (!make_buffer(dev, phys, sbuf, smem, rgba, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) return white_view;
+            void* p = nullptr; vkMapMemory(dev, smem, 0, rgba, 0, &p);
+            uint8_t* d = (uint8_t*)p;
+            for (size_t i = 0; i < (size_t)sw * sh; i++) {
+                uint32_t c = sit->second.argb[i];      // packed ARGB → byte R,G,B,A
+                d[i*4+0] = (c >> 16) & 0xFF; d[i*4+1] = (c >> 8) & 0xFF; d[i*4+2] = c & 0xFF; d[i*4+3] = (c >> 24) & 0xFF;
+            }
+            vkUnmapMemory(dev, smem);
+            stg_bufs.push_back(sbuf); stg_mems.push_back(smem);
+            VkImageMemoryBarrier mb{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+            mb.srcQueueFamilyIndex = mb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; mb.image = te.img;
+            mb.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+            mb.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED; mb.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            mb.srcAccessMask = 0; mb.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            vkCmdPipelineBarrier(up_cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &mb);
+            VkBufferImageCopy c{}; c.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}; c.imageExtent = {(uint32_t)sw, (uint32_t)sh, 1};
+            vkCmdCopyBufferToImage(up_cmd, sbuf, te.img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
+            mb.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL; mb.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            mb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; mb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            vkCmdPipelineBarrier(up_cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &mb);
+            texcache[key] = te; g_tex_decodes++;
+            out_samp = te.sampler;
+            return te.view;
+        }
+    }
+
     const uint8_t* host = sb_ram_fast(t.addr);
     if (!host) return white_view;
     const uint8_t* tlut = nullptr;
@@ -1360,6 +1415,15 @@ extern "C" int sb_ngx_efb_peek_color(int gx, int gy, uint32_t* out) {    // pack
     if (ry < 0) ry = 0; if (ry >= g_efb_dh) ry = g_efb_dh - 1;
     *out = g_efb_color[(size_t)ry * g_efb_dw + rx];
     return 1;
+}
+// Store an EFB→texture copy ngx served (ARGB8888, w*h) into the side buffer keyed by MEM1 offset, so
+// texture_for reads it instead of guest RAM (which Dolphin's async EFB copy stomps). Called by
+// copytex_writeback after it fills its ARGB buffer.
+extern "C" void sb_ngx_efb_store_copy(uint32_t ea, int w, int h, const uint32_t* argb) {
+    if (w <= 0 || h <= 0 || !argb) return;
+    std::lock_guard<std::mutex> lk(g_efb_side_mtx);
+    EfbSideCopy& c = g_efb_side[ea & 0x01FFFFFFu];
+    c.w = w; c.h = h; c.argb.assign(argb, argb + (size_t)w * h);
 }
 // GXCopyTex: box-downsample ngx's last scene color from guest EFB src rect [sx,sy,sw,sh] (640×448
 // space) into out[dw*dh] (packed ARGB8888). One mutex lock; 1-frame lag. Returns 1 if served. The

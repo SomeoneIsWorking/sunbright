@@ -112,6 +112,7 @@ SUNBRIGHT_OVERRIDE_IF_NATIVE(ov_gxpeekargb, 0x8035dcccu, s_ngx_present_occ) {
 // box-downsampled to the dst dims and GC-tiled in the dst format. Active only under ngx present.
 extern "C" int sb_ngx_efb_copy_region(int sx, int sy, int sw, int sh, int dw, int dh, uint32_t* out);
 extern "C" void sb_ngx_efb_invalidate_tex(uint32_t ea);
+extern "C" void sb_ngx_efb_store_copy(uint32_t ea, int w, int h, const uint32_t* argb);
 static const bool s_ngx_present = getenv("SUNBRIGHT_NGX_PRESENT") != nullptr;
 
 namespace {
@@ -137,6 +138,8 @@ void copytex_writeback(u32 /*cookie*/) {
     buf.resize((size_t)dw * dh);
     int sw = g_src_w > 0 ? g_src_w : 640, sh = g_src_h > 0 ? g_src_h : 448;
     if (!sb_ngx_efb_copy_region(g_src_l, g_src_t, sw, sh, dw, dh, buf.data())) { if (s_efb_dbg){static unsigned long z=0; if((z++%120)==0) fprintf(stderr,"[efb-wb] NO FRAME (efb_copy_region failed) ea=%08x %dx%d fmt=%d\n",ea,dw,dh,fmt);} return; }  // no frame yet
+    // Store in ngx's side buffer (texture_for reads THIS, immune to Dolphin's async EFB→RAM stomp).
+    sb_ngx_efb_store_copy(ea, dw, dh, buf.data());
     // RGB565/RGB5A3 4×4 GC tiling: tile (y,x) row-major; within tile iy-major, each row 4 BE u16. Byte
     // offset = ((y/4)*(dw/4) + x/4)*32 + (y%4)*8 + (x%4)*2. (matches runtime/render/tex_decode.cpp.)
     for (int dy = 0; dy < dh; dy++)
