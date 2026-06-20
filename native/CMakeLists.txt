@@ -210,7 +210,10 @@ foreach(test_src ${SMS_PLATFORM_TESTS})
     target_include_directories(sms-${test_name} PRIVATE
         "${SMS_NATIVE_REPO_ROOT}/native/platform"
         "${SMS_NATIVE_REPO_ROOT}/native/shim"
-        "${SMS_NATIVE_REPO_ROOT}/reference/sms/include")
+        "${SMS_NATIVE_REPO_ROOT}/reference/sms/include"
+        # The renderer's pure lighting decoder (ngx_light.h) — gx_test cross-checks the
+        # GXSetChanCtrl packing against decode_chanctl().
+        "${SMS_NATIVE_REPO_ROOT}/runtime/ngx")
     target_compile_options(sms-${test_name} PRIVATE -fcommon)
     target_link_libraries(sms-${test_name} PRIVATE sms-platform)
     add_test(NAME platform_${test_name} COMMAND sms-${test_name})

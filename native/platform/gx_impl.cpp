@@ -122,4 +122,114 @@ void GXSetNumChans(u8 n)     { state().numChans = n; }
 void GXSetNumTexGens(u8 n)   { state().numTexGens = n; }
 void GXSetNumTevStages(u8 n) { state().numTevStages = n; }
 
+// --- SLICE 3: lighting (chan-ctrl/material/ambient + light objects) ---------
+// GXSet* capture into GXState; the native renderer (ngx_light) consumes them per
+// vertex. "Rebuild as a PC game": the GXLightObj is OPAQUE on hardware (16 HW
+// register words), so we own its packing — overlaying it with a friendly float
+// layout that GXLoadLightObjImm copies into GXState. No FIFO/XF register writes.
+
+namespace {
+// Map a GXChannelID to the two GXState.chan slots it writes. COLOR/ALPHA channels
+// write one slot; the combined COLOR0A0/COLOR1A1 write the colour+alpha pair.
+// Returns the count (1 or 2) and fills idx[0..count-1].
+int chan_slots(GXChannelID chan, int idx[2]) {
+    switch (chan) {
+    case GX_COLOR0:   idx[0] = 0; return 1;
+    case GX_COLOR1:   idx[0] = 1; return 1;
+    case GX_ALPHA0:   idx[0] = 2; return 1;
+    case GX_ALPHA1:   idx[0] = 3; return 1;
+    case GX_COLOR0A0: idx[0] = 0; idx[1] = 2; return 2;
+    case GX_COLOR1A1: idx[0] = 1; idx[1] = 3; return 2;
+    default:          idx[0] = 0; return 1;
+    }
+}
+
+// GXLightID is a single-bit mask (GX_LIGHT0=0x1 .. GX_LIGHT7=0x80) -> 0..7 index.
+int light_index(GXLightID id) {
+    unsigned m = (unsigned)id;
+    for (int i = 0; i < 8; ++i) if (m & (1u << i)) return i;
+    return 0;
+}
+
+// The native overlay of the opaque 64-byte GXLightObj (16 words = 16 floats).
+struct NativeLightObj {
+    f32 color[4];     // 16
+    f32 pos[3];       // 12
+    f32 dir[3];       // 12
+    f32 cosAtt[3];    // 12  angle attenuation a0,a1,a2
+    f32 distAtt[3];   // 12  distance attenuation k0,k1,k2
+};
+static_assert(sizeof(NativeLightObj) <= sizeof(GXLightObj), "light obj overlay fits");
+NativeLightObj& obj(GXLightObj* o) { return *reinterpret_cast<NativeLightObj*>(o); }
+} // namespace
+
+void GXSetChanCtrl(GXChannelID chan, GXBool enable, GXColorSrc amb_src, GXColorSrc mat_src,
+                   u32 light_mask, GXDiffuseFn diff_fn, GXAttnFn attn_fn) {
+    // Pack into the decode_chanctl() layout (b0 matSrc, b1 enable, b2-5 mask lo,
+    // b6 ambSrc, b7-8 diffFn, b9-10 attnFn, b11-14 mask hi). attnFn packs as the GC
+    // 2-bit field: NONE->0, SPEC->1 (enable, select=spec), SPOT->3 (enable, select=spot).
+    u32 attn = (attn_fn == GX_AF_SPEC) ? 1u : (attn_fn == GX_AF_SPOT) ? 3u : 0u;
+    u32 cc = ((u32)(mat_src & 1) << 0) | ((u32)(enable & 1) << 1)
+           | (((u32)light_mask & 0x0F) << 2) | ((u32)(amb_src & 1) << 6)
+           | (((u32)diff_fn & 3) << 7) | (attn << 9)
+           | ((((u32)light_mask >> 4) & 0x0F) << 11);
+    auto& g = state();
+    int idx[2]; int n = chan_slots(chan, idx);
+    for (int i = 0; i < n; ++i) g.chan[idx[i]].ctrl = cc;
+}
+
+void GXSetChanMatColor(GXChannelID chan, GXColor mat_color) {
+    auto& g = state();
+    int idx[2]; int n = chan_slots(chan, idx);
+    for (int i = 0; i < n; ++i) g.chan[idx[i]].matColor = mat_color;
+}
+
+void GXSetChanAmbColor(GXChannelID chan, GXColor amb_color) {
+    auto& g = state();
+    int idx[2]; int n = chan_slots(chan, idx);
+    for (int i = 0; i < n; ++i) g.chan[idx[i]].ambColor = amb_color;
+}
+
+void GXInitLightColor(GXLightObj* lt, GXColor color) {
+    auto& o = obj(lt);
+    o.color[0] = color.r / 255.f; o.color[1] = color.g / 255.f;
+    o.color[2] = color.b / 255.f; o.color[3] = color.a / 255.f;
+}
+void GXInitLightPos(GXLightObj* lt, f32 x, f32 y, f32 z) {
+    auto& o = obj(lt); o.pos[0] = x; o.pos[1] = y; o.pos[2] = z;
+}
+void GXInitLightDir(GXLightObj* lt, f32 nx, f32 ny, f32 nz) {
+    // GX stores the NEGATED direction (light-to-vertex); the decomp/HW negate here.
+    auto& o = obj(lt); o.dir[0] = -nx; o.dir[1] = -ny; o.dir[2] = -nz;
+}
+void GXInitSpecularDir(GXLightObj* lt, f32 nx, f32 ny, f32 nz) {
+    auto& o = obj(lt); o.dir[0] = nx; o.dir[1] = ny; o.dir[2] = nz;
+}
+void GXInitLightAttn(GXLightObj* lt, f32 a0, f32 a1, f32 a2, f32 k0, f32 k1, f32 k2) {
+    auto& o = obj(lt);
+    o.cosAtt[0]=a0; o.cosAtt[1]=a1; o.cosAtt[2]=a2;
+    o.distAtt[0]=k0; o.distAtt[1]=k1; o.distAtt[2]=k2;
+}
+void GXInitLightAttnA(GXLightObj* lt, f32 a0, f32 a1, f32 a2) {
+    auto& o = obj(lt); o.cosAtt[0]=a0; o.cosAtt[1]=a1; o.cosAtt[2]=a2;
+}
+void GXInitLightAttnK(GXLightObj* lt, f32 k0, f32 k1, f32 k2) {
+    auto& o = obj(lt); o.distAtt[0]=k0; o.distAtt[1]=k1; o.distAtt[2]=k2;
+}
+
+void GXLoadLightObjImm(GXLightObj* lt, GXLightID light) {
+    auto& o = obj(lt);
+    auto& L = state().light[light_index(light)];
+    L.valid = true;
+    for (int i = 0; i < 4; ++i) L.color[i] = o.color[i];
+    for (int i = 0; i < 3; ++i) { L.pos[i]=o.pos[i]; L.dir[i]=o.dir[i];
+                                  L.cosAtt[i]=o.cosAtt[i]; L.distAtt[i]=o.distAtt[i]; }
+}
+
+void GXGetLightColor(const GXLightObj* lt, GXColor* color) {
+    const auto& o = obj(const_cast<GXLightObj*>(lt));
+    color->r = (u8)(o.color[0]*255.f + 0.5f); color->g = (u8)(o.color[1]*255.f + 0.5f);
+    color->b = (u8)(o.color[2]*255.f + 0.5f); color->a = (u8)(o.color[3]*255.f + 0.5f);
+}
+
 } // extern "C"

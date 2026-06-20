@@ -6,6 +6,7 @@
 
 #include <dolphin/gx.h>
 #include "gx_state.h"
+#include "ngx_light.h"   // decode_chanctl — the renderer's decoder; cross-check the packing
 #include <cstdio>
 #include <cmath>
 
@@ -106,11 +107,73 @@ static void test_pipeline_state() {
     chki(g.numTevStages, 4, "num tev stages");
 }
 
+// SLICE 3: lighting capture (GXSetChanCtrl/Mat/AmbColor + light objects). The
+// packed chan-ctrl MUST decode back through the renderer's decode_chanctl(), so the
+// seam and the shader's lighting decoder agree by construction.
+static void test_lighting_state() {
+    auto& g = sb::platform::gx::state();
+
+    // Channel control: enabled, REG sources, light0 only, CLAMP diffuse, SPOT attn.
+    GXSetChanCtrl(GX_COLOR0, GX_TRUE, GX_SRC_REG, GX_SRC_REG, /*mask*/0x01,
+                  GX_DF_CLAMP, GX_AF_SPOT);
+    ngx::ChanCtl c = ngx::decode_chanctl(g.chan[0].ctrl);
+    chki(c.enable, 1, "chanctl enable decodes");
+    chki(c.matVtx, 0, "chanctl matSrc=REG decodes");
+    chki(c.ambVtx, 0, "chanctl ambSrc=REG decodes");
+    chki(c.diffFn, 2, "chanctl diffFn=CLAMP decodes");
+    chki(c.attnSel, 3, "chanctl attnFn=SPOT decodes");
+    chki((long)c.mask, 0x01, "chanctl lightMask decodes");
+
+    // A high light bit (light5) must survive the split lo/hi mask packing.
+    GXSetChanCtrl(GX_COLOR1, GX_TRUE, GX_SRC_VTX, GX_SRC_VTX, 0x20 /*light5*/,
+                  GX_DF_SIGN, GX_AF_SPEC);
+    ngx::ChanCtl c1 = ngx::decode_chanctl(g.chan[1].ctrl);
+    chki((long)c1.mask, 0x20, "chanctl high-bit lightMask decodes");
+    chki(c1.matVtx, 1, "chanctl matSrc=VTX decodes");
+    chki(c1.diffFn, 1, "chanctl diffFn=SIGN decodes");
+    chki(c1.attnSel, 1, "chanctl attnFn=SPEC decodes");
+
+    // Material/ambient colours.
+    GXColor mc = { 100, 150, 200, 255 };
+    GXColor ac = { 20, 30, 40, 255 };
+    GXSetChanMatColor(GX_COLOR0, mc);
+    GXSetChanAmbColor(GX_COLOR0, ac);
+    chki(g.chan[0].matColor.r, 100, "matColor r captured");
+    chki(g.chan[0].matColor.b, 200, "matColor b captured");
+    chki(g.chan[0].ambColor.g, 30, "ambColor g captured");
+
+    // COLOR0A0 writes the colour AND alpha slot (idx 0 and 2).
+    GXColor pair = { 9, 9, 9, 200 };
+    GXSetChanMatColor(GX_COLOR0A0, pair);
+    chki(g.chan[0].matColor.r, 9, "COLOR0A0 sets colour slot");
+    chki(g.chan[2].matColor.a, 200, "COLOR0A0 sets alpha slot");
+
+    // Light object: build, load into slot 2, verify the native float state.
+    GXLightObj lt;
+    GXColor lcol = { 255, 128, 0, 255 };
+    GXInitLightColor(&lt, lcol);
+    GXInitLightPos(&lt, 10.f, 20.f, 30.f);
+    GXInitLightDir(&lt, 0.f, 0.f, 1.f);          // stored negated
+    GXInitLightAttn(&lt, 1.f, 0.f, 0.f, 1.f, 0.f, 0.f);
+    GXColor back; GXGetLightColor(&lt, &back);
+    chki(back.r, 255, "GXGetLightColor r round-trips");
+    chki(back.g, 128, "GXGetLightColor g round-trips");
+
+    GXLoadLightObjImm(&lt, GX_LIGHT2);
+    chki(g.light[2].valid ? 1 : 0, 1, "light2 loaded valid");
+    chkf(g.light[2].color[0], 1.0f, "light2 color.r = 1.0");
+    chkf(g.light[2].color[1], 128.f/255.f, "light2 color.g");
+    chkf(g.light[2].pos[1], 20.f, "light2 pos.y");
+    chkf(g.light[2].dir[2], -1.f, "light2 dir.z negated (GXInitLightDir)");
+    chkf(g.light[2].cosAtt[0], 1.f, "light2 cosAtt0");
+}
+
 int main() {
     std::printf("== GX seam (transform + pipeline slices) unit tests ==\n");
     test_state_roundtrip();
     test_project_ortho();
     test_pipeline_state();
+    test_lighting_state();
     std::printf("%d checks, %d failures\n", g_checks, g_fail);
     return g_fail ? 1 : 0;
 }

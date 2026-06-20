@@ -47,6 +47,30 @@ struct GXState {
     u32     copyClearZ;
     // pipeline counts
     u8 numChans, numTexGens, numTevStages;
+
+    // --- lighting (GXSetChanCtrl/GXSetChanMatColor/GXSetChanAmbColor) ---
+    // Per colour channel, indexed by GXChannelID (GX_COLOR0=0, GX_COLOR1=1,
+    // GX_ALPHA0=2, GX_ALPHA1=3; GX_COLOR0A0/COLOR1A1 set the colour+alpha pair).
+    // `ctrl` is packed in the layout ngx_light's decode_chanctl() consumes:
+    //   b0 matSrc(REG=0/VTX=1)  b1 enable  b2..b5 lightMask[0..3]  b6 ambSrc
+    //   b7..b8 diffuseFn  b9..b10 attnFn(0/2=NONE,1=SPEC,3=SPOT)  b11..b14 lightMask[4..7]
+    struct ChanState {
+        u32     ctrl;
+        GXColor matColor;
+        GXColor ambColor;
+    } chan[4];
+
+    // --- light objects (GXInitLight*/GXLoadLightObjImm) in a native layout ---
+    // The opaque GXLightObj is owned natively (see gx_impl.cpp NativeLightObj), so the
+    // loaded state is a friendly float form the renderer turns into ngx::LightSrc.
+    struct LightState {
+        bool valid;
+        f32  color[4];     // RGBA 0..1
+        f32  pos[3];       // eye/world-space position
+        f32  dir[3];       // (half-angle) direction
+        f32  cosAtt[3];    // angle attenuation a0,a1,a2
+        f32  distAtt[3];   // distance attenuation k0,k1,k2
+    } light[8];
 };
 
 // The single live GX state the seam writes and the renderer reads.
