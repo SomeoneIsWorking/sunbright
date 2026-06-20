@@ -24,7 +24,7 @@ static void test_aram() {
 }
 
 static int g_cb_fired = 0;
-static void arq_cb(u32) { ++g_cb_fired; }
+static void arq_cb(ARQRequestRef) { ++g_cb_fired; }
 static void test_arq() {
     ARQInit();
     ARQRequest req;

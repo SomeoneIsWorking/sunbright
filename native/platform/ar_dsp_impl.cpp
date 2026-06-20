@@ -56,8 +56,9 @@ void ARQPostRequest(struct ARQRequest* request, u32 /*owner*/, u32 /*type*/,
                     ARQCallback callback) {
     // No ARAM hardware: model the DMA as instantly complete. Fire the completion
     // callback synchronously (most callbacks just post an OSMessage / set a flag).
-    // The u32 arg is the GC ARQRequest pointer; pass the low 32 bits (landmine above).
-    if (callback) callback((u32)(uintptr_t)request);
+    // ARQRequestRef is pointer-width natively, so the request pointer round-trips
+    // losslessly (JKRAramPiece::doneDMA casts it back to JKRAMCommand*).
+    if (callback) callback((ARQRequestRef)request);
 }
 
 // ---- DSP mailbox ----------------------------------------------------------
