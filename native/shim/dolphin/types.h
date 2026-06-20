@@ -20,6 +20,10 @@ typedef int BOOL;
 // definition -> "multiple definition" at link. Mark them WEAK so the linker merges
 // all definitions to one (zero-initialized; the OS seam sets real values at init).
 #define AT_ADDRESS(addr) __attribute__((weak))
+// Marker: this is the native PC build (the host shim is on the include path). Game
+// code that genuinely depends on GC hardware (e.g. reads of physical low-memory at
+// OSPhysicalToCached(0)) guards on this to take the host-native path instead.
+#define SMS_NATIVE_PLATFORM 1
 #ifdef __cplusplus
 typedef bool   __bool;
 #endif

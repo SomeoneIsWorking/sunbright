@@ -60,7 +60,18 @@ target_compile_options(sms-native PRIVATE
     # SDK headers declare OS/HW globals as tentative defs without extern; -fcommon
     # merges them (Metrowerks behavior) so the eventual full link doesn't hit
     # -fno-common multiple-definition errors across the 577 TUs.
-    -fcommon)
+    -fcommon
+    # The decomp is full of MWERKS-ism: value-returning functions that fall off
+    # the end without a `return` (e.g. JUTGamePad::read returns u32 but has no
+    # return; the value is unused). MWERKS compiled these benignly (the function
+    # returns normally with a garbage result). GCC's -O2 hot/cold block
+    # PARTITIONING moves such a function's cold path into a separate `.cold`
+    # section, laid out adjacent to the NEXT function's `.cold` — so a missing-
+    # return fall-through runs straight into a foreign cleanup landing pad
+    # (_Unwind_Resume) and crashes. Disabling the partition keeps every block
+    # inside its own function, so a fall-through hits that function's own
+    # epilogue/ret (the original benign behavior) instead of foreign code.
+    -fno-reorder-blocks-and-partition)
 
 # ---------------------------------------------------------------------------
 # sms-platform — the native PC implementations of the GameCube SDK seams the

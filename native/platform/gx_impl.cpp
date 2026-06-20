@@ -12,6 +12,12 @@
 #include <dolphin/gx.h>
 #include "gx_state.h"
 
+// Host sink for the GameCube write-gather pipe. The decomp's inline GX FIFO writers
+// (GXVert.h: GXCmd*/GXPosition*/...) target this 32-byte bit-bucket natively instead
+// of the nonexistent 0xCC008000 MMIO — the native renderer reads the object model, so
+// the command stream is dead output. (See the SMS_NATIVE_PLATFORM redirect in GXVert.h.)
+volatile unsigned char sb_gx_wgfifo_sink[32];
+
 namespace sb::platform::gx {
 GXState& state() { static GXState g_gx{}; return g_gx; }
 }
