@@ -533,7 +533,30 @@ subagents (CARD/AI/THP), did GX + GD myself; one unified verify-first build + ct
   don't build — I verify centrally." The CARD agent also auto-committed (global commit-on-milestone),
   so its work landed as a separate commit ahead of mine — expected, not a problem.
 
-### NEXT (session 8) — the remaining 270 boot undefs are the GAME C++ CLOSURE (the boot marathon)
+### ✅ SESSION 8 (started) — boot-closure RING-1 stubs (commit a821d49)
+Scaffolded the 270 game-class boot undefs with faithful-signature stubs in `native/boot_stubs/`
+(movebg 93 / enemy 37 / ui_map 39 via worktree subagents + unresolved 101 = nerves/Hx_/DSP/PPC/globals
+by me, audio template-dtors by mangled name in `unresolved_stubs_asm.S`). Compiled into `sms-bootstubs`
+(opt-in; default build + 22/22 ctest unaffected). **Linking sms-boot now pulls the FULL closure** and
+reaches the SECOND ring. CASCADE confirmed: stubbing ring-1 ctors pulls the vtables they set → **~136
+ring-2 undefs** (mostly `vtable for X` where X's ctor was ring-1-stubbed but its key virtual still needs a
+body; + new classes like TBathWaterPreprocessor/THorizontalViking pulled transitively). Expect it to
+bottom out in ~1-2 more rounds at bases that ARE in sms-native (TMapObjBase/TLiveActor/JDrama::TViewObj).
+- **★ BLOCKER for the final link — pre-existing sms-native DUP-DEFS (decomp bug, NOT our stubs).** 4+
+  symbols defined in multiple TUs: `cSunVolumeName`/`cSunsetVolumeName` (`extern const char* x = "..."`
+  DEFINED in `Camera/SunModel.hpp` → 4 TUs), `cNpcPartsNameRootJoint` (NpcAnm.cpp + NpcParts.cpp both
+  define it), `gpMapWireManager` (tentative .bss in 3 TUs). j3dload/j3dmesh don't pull these .o's
+  together so they never surfaced; boot does. PROPER FIX = make them `inline`/single-def IN THE SUBMODULE
+  (reference/sms) — but the submodule has NO WRITABLE REMOTE (origin read-only doldecomp), so a gitlink
+  bump would point at an unpushable commit. STOPGAP (acknowledged, not yet applied): `gpMapWireManager`
+  → `-fcommon` on sms-native (merges tentative .bss); the initialized ones need `inline` (submodule) or
+  `-Wl,--allow-multiple-definition` on the boot link (safe — identical values). DECISION PENDING (user):
+  set up a writable submodule fork for the proper fix vs. accept the linker stopgap.
+- Round-2 plan: subagent-partition the ~136 ring-2 undefs (`scratch/boot_undef_round2.txt`), same
+  header-driven vtable-stub pattern (define the class's key virtual). Then ring-3 if any. Then resolve
+  dup-defs → sms-boot LINKS → run it → replace hot-path stubs with faithful ports.
+
+### (historical) the remaining 270 boot undefs were the GAME C++ CLOSURE (the boot marathon)
 The SDK seam layer is DONE. `scratch/boot_undef_after.txt` (270) is now almost entirely game classes:
 `TMapObjBase` (12), vtables/typeinfo (~22: TSunShine/TFence/TMarioGamePad/…), and ctors for the
 MarNameRefGen actor catalogue (TGenerator/TGuide/TPauseMenu2/TAreaCylinder/…) + globals
