@@ -313,7 +313,12 @@ if(SMS_BUILD_BOOT)
         "${SMS_NATIVE_REPO_ROOT}/native/platform" "${SMS_NATIVE_REPO_ROOT}/native/shim"
         "${SMS_NATIVE_REPO_ROOT}/reference/sms/include")
     target_link_options(sms-boot PRIVATE -Wl,--wrap=main)
-    target_link_libraries(sms-boot PRIVATE sms-native sms-platform)
+    # Same cyclic closure as the j3dload test — boot pulls the GD display-list builder
+    # (sms-gd) and the BE->host asset swappers (sms-assets) through the game's vtables,
+    # so link the full RESCAN group (not just sms-native+sms-platform).
+    target_link_libraries(sms-boot PRIVATE
+        "$<LINK_GROUP:RESCAN,sms-native,sms-gd,sms-assets,sms-platform>"
+        Threads::Threads)
 endif()
 
 file(GLOB SMS_PLATFORM_TESTS CONFIGURE_DEPENDS

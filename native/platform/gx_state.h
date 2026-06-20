@@ -10,6 +10,7 @@
 #pragma once
 #include <dolphin/types.h>
 #include <dolphin/gx/GXEnum.h>
+#include <dolphin/gx/GXManage.h>   // GXDrawSyncCallback
 
 namespace sb::platform::gx {
 
@@ -129,6 +130,54 @@ struct GXState {
     // GXLoadTexObj the bound descriptor for each texmap is recorded here for the
     // renderer. (NativeTexObj overlay defined in gx_impl.cpp.)
     struct BoundTex { bool valid; const void* image; u16 w, h; u8 fmt, wrapS, wrapT, mipmap; } boundTex[8];
+
+    // --- slice 6: framebuffer copy / pixel-format / fog / draw-sync / palettes ---
+    // The display/management half of GX. "Rebuild as a PC game": these capture clean
+    // semantic state (no GC BP-register packing, no FIFO). The pure-math helpers
+    // (GXGetTexBufferSize, the XFB-line / yscale formulas) are ported verbatim from the
+    // decomp (GXTexture.c / GXFrameBuf.c) and unit-tested; the rest record state the
+    // native present path consults, or are documented no-ops where the GameCube hardware
+    // concept has no native counterpart.
+
+    // GXSetFog: clean semantic params (the decomp packs FP exponents into HW regs).
+    struct Fog { GXFogType type; f32 startz, endz, nearz, farz; GXColor color; } fog;
+
+    // GXSetDispCopySrc/Dst/Gamma/Frame2Field/YScale + GXSetCopyFilter/Clamp + GXCopyDisp.
+    struct DispCopy {
+        u16 srcLeft, srcTop, srcWd, srcHt;   // GXSetDispCopySrc
+        u16 dstWd, dstHt;                     // GXSetDispCopyDst (xfb stride/height)
+        GXGamma gamma;                        // GXSetDispCopyGamma
+        GXCopyMode frame2field;               // GXSetDispCopyFrame2Field
+        GXBool aa, vf;                        // GXSetCopyFilter enables
+        GXFBClamp clamp;                      // GXSetCopyClamp
+        f32 yScale;                           // last GXSetDispCopyYScale arg
+        u32 yScaleLines;                      // its computed XFB-line return
+        const void* lastDest;                 // last GXCopyDisp destination
+    } dispCopy;
+
+    // GXSetTexCopySrc/Dst + GXCopyTex: EFB->texture copy region.
+    struct TexCopy {
+        u16 srcLeft, srcTop, srcWd, srcHt, dstWd, dstHt;
+        GXTexFmt fmt; GXBool mipmap;
+        const void* lastDest;
+    } texCopy;
+
+    // GXSetPixelFmt / GXSetFieldMode / GXSetAlphaUpdate / GXSetDstAlpha / GXSetZTexture.
+    GXPixelFmt pixFmt;  GXZFmt16 zFmt;
+    GXBool fieldMode, halfAspect;
+    GXBool alphaUpdate;
+    GXBool dstAlphaEnable;  u8 dstAlpha;
+    struct ZTex { GXZTexOp op; GXTexFmt fmt; u32 bias; } zTex;
+
+    // GXSetIndTexOrder: per indirect stage, its texcoord + texmap (0xff = none).
+    struct IndOrder { u8 texCoord, texMap; } indOrder[4];
+
+    // GXSetDrawSync / GXSetDrawSyncCallback: the last token + the registered callback.
+    u16 drawSyncToken;
+    GXDrawSyncCallback drawSyncCb;
+
+    // GXInitTlutObj/GXLoadTlut: bound palettes by tlut_name (GX_TLUT0..15 = 0..19).
+    struct Tlut { const void* lut; u16 nEntries; u8 fmt; bool valid; } tlut[20];
 };
 
 // The single live GX state the seam writes and the renderer reads.

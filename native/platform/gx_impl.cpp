@@ -399,8 +399,11 @@ struct NativeTexObj {
     const void* image;   // 8 bytes on a 64-bit host (GXTexObj is 32 -> fits)
     u16 w, h;
     u8  fmt, wrapS, wrapT, mipmap;
+    u32 tlutName;        // GXInitTexObjCI: bound palette name (0 for non-CI)
+    u8  minFilt, magFilt;// GXInitTexObjLOD
     u32 magic;           // tag so GXLoadTexObj knows it's our overlay
 };
+static_assert(sizeof(NativeTexObj) <= sizeof(GXTexObj), "tex obj overlay fits");
 static const u32 kTexObjMagic = 0x4E545830; // 'NTX0'
 void GXInitTexObj(GXTexObj* obj, void* image_ptr, u16 width, u16 height,
                   GXTexFmt format, GXTexWrapMode wrap_s, GXTexWrapMode wrap_t,
@@ -408,7 +411,45 @@ void GXInitTexObj(GXTexObj* obj, void* image_ptr, u16 width, u16 height,
     NativeTexObj* n = reinterpret_cast<NativeTexObj*>(obj);
     n->image = image_ptr; n->w = width; n->h = height;
     n->fmt = (u8)format; n->wrapS = (u8)wrap_s; n->wrapT = (u8)wrap_t;
-    n->mipmap = mipmap; n->magic = kTexObjMagic;
+    n->mipmap = mipmap; n->tlutName = 0;
+    n->minFilt = (u8)GX_LINEAR; n->magFilt = (u8)GX_LINEAR;
+    n->magic = kTexObjMagic;
+}
+// Color-index texture: same overlay as GXInitTexObj plus the bound TLUT name. The
+// decomp (GXTexture.c) clears the non-CI flag and stores tlutName; our native overlay
+// records the CI format (GX_TF_C4/C8/C14X2) in `fmt` and the palette name in tlutName.
+void GXInitTexObjCI(GXTexObj* obj, void* image_ptr, u16 width, u16 height,
+                    GXCITexFmt format, GXTexWrapMode wrap_s, GXTexWrapMode wrap_t,
+                    u8 mipmap, u32 tlut_name) {
+    GXInitTexObj(obj, image_ptr, width, height, (GXTexFmt)format, wrap_s, wrap_t, mipmap);
+    reinterpret_cast<NativeTexObj*>(obj)->tlutName = tlut_name;
+}
+// LOD/filtering: the native sampler honours min/mag filter; the GC LOD-bias/aniso/
+// edge-LOD knobs have no native mip pipeline yet -> recorded-but-unused (filters used).
+void GXInitTexObjLOD(GXTexObj* obj, GXTexFilter min_filt, GXTexFilter mag_filt,
+                     f32 /*min_lod*/, f32 /*max_lod*/, f32 /*lod_bias*/,
+                     GXBool /*bias_clamp*/, GXBool /*do_edge_lod*/, GXAnisotropy /*aniso*/) {
+    NativeTexObj* n = reinterpret_cast<NativeTexObj*>(obj);
+    if (n->magic != kTexObjMagic) return;
+    n->minFilt = (u8)min_filt; n->magFilt = (u8)mag_filt;
+}
+u16  GXGetTexObjWidth(const GXTexObj* to) {
+    return reinterpret_cast<const NativeTexObj*>(to)->w;
+}
+u16  GXGetTexObjHeight(const GXTexObj* to) {
+    return reinterpret_cast<const NativeTexObj*>(to)->h;
+}
+void GXGetTexObjAll(const GXTexObj* obj, void** image_ptr, u16* width, u16* height,
+                    GXTexFmt* format, GXTexWrapMode* wrap_s, GXTexWrapMode* wrap_t,
+                    u8* mipmap) {
+    const NativeTexObj* n = reinterpret_cast<const NativeTexObj*>(obj);
+    if (image_ptr) *image_ptr = const_cast<void*>(n->image);
+    if (width)  *width  = n->w;
+    if (height) *height = n->h;
+    if (format) *format = (GXTexFmt)n->fmt;
+    if (wrap_s) *wrap_s = (GXTexWrapMode)n->wrapS;
+    if (wrap_t) *wrap_t = (GXTexWrapMode)n->wrapT;
+    if (mipmap) *mipmap = n->mipmap;
 }
 void GXLoadTexObj(GXTexObj* obj, GXTexMapID id) {
     if ((u32)id >= 8) return;
