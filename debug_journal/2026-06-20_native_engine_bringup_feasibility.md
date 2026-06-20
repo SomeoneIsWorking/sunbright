@@ -556,6 +556,32 @@ bottom out in ~1-2 more rounds at bases that ARE in sms-native (TMapObjBase/TLiv
   header-driven vtable-stub pattern (define the class's key virtual). Then ring-3 if any. Then resolve
   dup-defs → sms-boot LINKS → run it → replace hot-path stubs with faithful ports.
 
+### ✅✅ SESSION 8 — sms-boot LINKS AND RUNS (commits 38bf99a → 1a13fb9)
+**The native boot exe links with 0 undefs / 0 multiple-definition errors** (was 380). The closure cascade
+closed in rings — each emitted vtable references ALL its slots, pulling the next ring:
+  - ring-1 (270): ctors/globals/nerves (4 buckets, worktree subagents).
+  - **dup-defs fixed at source** (submodule 07dbd12, gitlink-bumped): SunModel.hpp `extern…=`→`inline`,
+    MapWireManager.hpp tentative-def→`extern`+1 def, NpcParts.cpp dedupe. → 0 multiple-definition.
+  - nerves (63): `theNerve()` static needs the vtable → added `execute()` bodies (all T=TLiveActor).
+  - ring-2 (66): class vtables — define each class's KEY virtual (first non-inline) so GCC emits it.
+  - ring-3 (177): the OTHER vtable slots. **★ KEY TECHNIQUE: take the arg list VERBATIM from the linker's
+    demangled undef** (`scratch/gen_ring3.py`) — the mangling is derived from the real types so the
+    definition's mangled name is an EXACT match (no header arg-parsing → no "no declaration matches");
+    only the RETURN TYPE needs a header lookup (line-based, not multiline-greedy — that bug captured
+    `public:`). dup-safe vs `reference/sms/src`.
+  - ring-4 (4): last misc slots.
+  - **★ subagent vtable task: one agent HUNG** (134-byte transcript, 14 min idle) — TaskStop + relaunch
+    fresh worked. My own scripted attempt at ring-2 got 19/66 (header arg-parsing mismatches) — the agent
+    does per-class signatures better; but ring-3's verbatim-from-undef trick beat both.
+- **★★ FIRST RUNTIME REQUIREMENT (next task):** `./build-native/sms-boot` runs then SEGV in
+  `TApplication::initialize → JKRExpHeap::createRoot → JKRHeap::initArena` — initArena reads GC physical-0
+  RAM that doesn't exist natively (the handoff-flagged heap landmine). FIX: `boot.cpp`'s PlatformInit must
+  construct the JKRExpHeap DIRECTLY on a host buffer (as j3dmesh/j3dload tests already do) BEFORE the
+  game's `main()`, bypassing createRoot/initArena. Then re-run → next requirement. The scaffold stubs are
+  acknowledged no-ops; replace each with a faithful port as the runtime actually exercises it.
+- Build/run boot: `cmake -B build-native -DSMS_BUILD_BOOT=ON && cmake --build build-native --target sms-boot`,
+  `./build-native/sms-boot`. Default build keeps boot OFF (22/22 ctest unaffected).
+
 ### (historical) the remaining 270 boot undefs were the GAME C++ CLOSURE (the boot marathon)
 The SDK seam layer is DONE. `scratch/boot_undef_after.txt` (270) is now almost entirely game classes:
 `TMapObjBase` (12), vtables/typeinfo (~22: TSunShine/TFence/TMarioGamePad/…), and ctors for the
