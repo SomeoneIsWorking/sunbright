@@ -258,12 +258,19 @@ in cpu_state.h + Dolphin OpcodeDecoder). `geometry_test`: a GC GX_TRIANGLES disp
 gradient triangle → pixel-verified. 10/10 suites green. **This IS the renderer re-pointing,
 started from the geometry decoder — the proven way forward.** scratch/screenshots/nvk_geometry.png.
 
+### RENDERER PROGRESS (session 3): DONE ✅ — (1) MVP transform (nvk_transform.h: model→NDC
+via MTX model-view + GXProject), (2) indexed-array `ngx_build_mesh` walk (POS_INDEX16 +
+resolver), (3) **depth buffer** (D32 + LEQUAL; NvkVertex now 3D). Capstone: `cube_test`
+renders a correctly depth-occluded 3D cube from the REAL indexed J3D vertex format
+(scratch/screenshots/nvk_cube.png — 3 faces, no back-face bleed). 12/12 suites green.
+Pipeline now: indexed GC geometry decode → MTX model-view → GX perspective → depth-buffered
+native Vulkan, no Dolphin.
+
 ### NEXT on the renderer (precise, verifiable increments):
-1. **MVP transform in the vertex path**: game geometry is MODEL-space; transform via a
-   model-view matrix (MTX seam) + GXState projection → clip/NDC before nvk (today the test
-   feeds NDC directly). Verify: a known model point under a known MVP lands at expected NDC.
-2. **`ngx_build_mesh` full display-list walk** with INDEXED vertex arrays + a host resolver
-   (the real J3D format) — exercises more of the decoder; verifiable with synthetic indexed data.
+1. **Textures**: decode a GC texture (reuse runtime/render/tex_decode) → upload as a Vulkan
+   sampled image → sample in the fragment shader (a textured quad). Verify sampled texels.
+   Then the TEV→GLSL combiner (runtime/render/tev_shader.cpp) consuming GXState TEV stages.
+2. **Lighting** (ngx_light.h) consuming GXState chan-ctrl/material/ambient.
 3. **J3D shape path against NATIVE structs**: read a J3DShape's display list + material +
    matrices from native struct fields (not guest RAM). Needs the game's J3D data populated at
    runtime → interleaves with booting more engine. The ~150 mem_r32 sites in ngx_j3d_shape.cpp
