@@ -473,6 +473,17 @@ is verified independently.
   (garbage stride/index → NaN/inf or coords orders of magnitude out) still fails; the bounded
   joint-local offset of unported skinning passes with a labelled diagnostic. Don't "fix" it by
   loosening — port envelope skinning.
+- **★ NRM-decode finding (the oracle caught a FALSE bug — do not re-chase).** Added a normal-decode
+  check; it initially asserted unit length and FAILED on shadowpalm (all normals length **exactly
+  2.0**, `unit_err=1.0`) while 5 other BMDs were unit. Investigated before "fixing": shadowpalm's
+  GXVtxAttrFmtList stores **NRM frac=15** vs whiteball's **frac=14** (same s16 fmt=3). BUT Dolphin's
+  `VertexLoader_Normal::FracAdjust` (the GC-hardware oracle) dequants normals at a **FIXED** scale by
+  type — s16/u16 → `/2^14`, s8/u8 → `/2^6` — **IGNORING the attr-list frac for normals**. So hardware
+  decodes shadowpalm's normals to length 2.0 too; ngx's fixed `/16384` is **FAITHFUL**. The attr frac
+  for NRM is vestigial. ⇒ Unit length is NOT a universal normal invariant. The check now asserts the
+  faithful invariant (finite + within the format's representable range), with `unit_err` kept as a
+  diagnostic. **DO NOT** "fix" `read_nrm_comp` to honor the NRM frac — that would diverge from
+  hardware/Dolphin.
 
 ### NEXT — make it a FAITHFUL frame (each step needs a Dolphin oracle for COLOR fidelity, harder):
 1. **Real MVP transform** (nvk_transform.h) instead of the bbox-ortho fit — needs a model/view/proj.
@@ -492,3 +503,5 @@ is verified independently.
 - `-fpermissive` to silence pointer-truncation — corrupts pointers under LP64; fix or go 32-bit.
 - The TEV runtime-shader "architecture decision" — DONE: glslang lib (glsl_compile.cpp ships it).
 - The swap_table=0 "rrrr" trap — a synthetic NgxTevState MUST set swap_table to identity 0x1B.
+- NRM frac: GC s16 normals dequant at a FIXED `/2^14` (Dolphin FracAdjust), NOT the attr-list frac —
+  shadowpalm (frac=15) decodes to length 2.0 faithfully. Don't "fix" ngx to honor the NRM frac.

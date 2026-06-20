@@ -221,15 +221,40 @@ int main(int argc, char** argv) {
             for (u32 i = 0; m && i < m->getUseMtxNum(); ++i)
                 if (m->getUseMtxIndex(i) >= fullWgt) { envelope = true; break; }
         }
-        std::printf("  shape %u: tris=%d %s bbox min(%.2f,%.2f,%.2f) max(%.2f,%.2f,%.2f) overflow=%.2f%s\n",
+        // NRM decode sanity. GC normals dequant at a FIXED frac per format (Dolphin
+        // FracAdjust: s16/u16 -> /2^14, s8/u8 -> /2^6; the GXVtxAttrFmtList frac is
+        // IGNORED by hardware for normals — proven by shadowpalm, which stores frac=15
+        // and so its normals decode to length 2.0, faithfully). So unit length is NOT a
+        // universal invariant. The faithful invariants are: every component finite, and
+        // bounded by the format's representable range (a stride/offset/format-size bug
+        // reads past the range or yields NaN/inf). |unit-error| is printed as a diagnostic
+        // (most models are unit; shadowpalm's 2.0 is the fixed-frac quirk above).
+        const unsigned nfmt = (cp.vat[0][0] >> 10) & 7;
+        const float nrm_bound = (nfmt == 4) ? 8.0f : 2.001f;  // f32 vs fixed-point [-2,2]
+        const bool has_nrm = ((cp.vcd_lo >> 11) & 3) != 0;
+        int nrm_checked = 0; float nrm_unit_err = 0.f; bool nrm_ok = true;
+        if (has_nrm) {
+            for (size_t k = v0; k < verts.size(); ++k) {
+                const float* n = verts[k].nrm;
+                for (int c = 0; c < 3; ++c)
+                    if (!std::isfinite(n[c]) || std::fabs(n[c]) > nrm_bound) nrm_ok = false;
+                float len = std::sqrt(n[0]*n[0] + n[1]*n[1] + n[2]*n[2]);
+                if (len < 1e-4f) continue;           // unset/degenerate vertex — skip
+                nrm_unit_err = std::max(nrm_unit_err, std::fabs(len - 1.0f));
+                ++nrm_checked;
+            }
+        }
+        std::printf("  shape %u: tris=%d %s bbox min(%.2f,%.2f,%.2f) max(%.2f,%.2f,%.2f) overflow=%.2f nrm(%d,unit_err=%.4f)%s\n",
                     si, stris, envelope ? "envelope" : "rigid",
-                    mn.x, mn.y, mn.z, mx.x, mx.y, mx.z, worst,
+                    mn.x, mn.y, mn.z, mx.x, mx.y, mx.z, worst, nrm_checked, nrm_unit_err,
                     (!inbox && worst > 0) ? "  (unskinned envelope offset — see journal)" : "");
         chk(stris > 0, "shape decoded > 0 triangles");
         chk(finite, "all decoded positions finite");
         // Strong check where it holds; otherwise the unskinned offset must stay within the
         // shape's own scale (a real decode regression blows past this).
         chk(inbox || worst < ext, "decoded positions sane (in-bbox or within shape extent)");
+        if (has_nrm)
+            chk(nrm_ok, "decoded normals finite and within format range");
 
         umn.x = std::min(umn.x, mn.x); umn.y = std::min(umn.y, mn.y); umn.z = std::min(umn.z, mn.z);
         umx.x = std::max(umx.x, mx.x); umx.y = std::max(umx.y, mx.y); umx.z = std::max(umx.z, mx.z);
