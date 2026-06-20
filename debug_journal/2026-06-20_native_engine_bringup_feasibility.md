@@ -146,7 +146,23 @@ A fresh clone / other PC would fail to fetch the gitlink target. To make it port
 writable fork remote (e.g. `SomeoneIsWorking/sms`) and `git push` it — needs the user to create
 the fork (outward-facing; not done unprompted). Until then this work does NOT travel with the repo.
 
-### NEXT: phase-2 (the real work) — stand up `sms-native` and implement the platform seams
+## ✅ `sms-native` CMake TARGET LANDED (2026-06-20, session 2) — game logic builds as a library
+Beyond syntax-only: the whole game-logic set now compiles to OBJECTS and ARCHIVES via CMake.
+- `native/CMakeLists.txt` defines `sms-native` STATIC: globs `reference/sms/src/**.cpp` minus the
+  GC SDK/CRT dirs (`dolphin/`, `PowerPC_EABI_Support/`, `TRK_MINNOW_DOLPHIN/` — platform-replaced).
+  **577 .cpp → libsms-native.a, 16009 defined symbols, 14 MB.** No Dolphin, no PPC, GC-free.
+- Build (standalone, no Dolphin needed): `cmake -S native -B build-native -DCMAKE_BUILD_TYPE=Release
+  && cmake --build build-native -j$(nproc) --target sms-native`.
+- The full `-c` codegen build caught what `-fsyntax-only` missed: **`CXX_EXTENSIONS OFF` is
+  REQUIRED** — CMake defaults to `-std=gnu++17` where `typeof` is a keyword, but the decomp uses
+  `typeof()` as a method name (`Strategic/spcinterp.hpp`). Also fixed JKRHeap `operator new(u32)`
+  → `size_t` (the documented landmine) and folded in 4 more game files whose `asm` is dead under
+  `#ifdef __MWERKS__` (MathUtil/WaterGun/J3DAnimation/JKRHeap) — they were false-excluded by the
+  `\basm\b` grep. Only 2 genuine platform-CRT files stay out (`__ppc_eabi_init`,
+  `__init_cpp_exceptions`). SDK symbols in the archive are UNRESOLVED by design until the
+  native/platform seams + an engine main() link against it.
+
+### NEXT: phase-2 (the real work) — implement the platform seams, link & boot
 Per `native/platform/README.md`: critical path **E1 OS → E3 DVD → E5 VI → E6 GX** (audio E7 &
 input E8 parallel; MTX E2 & CARD E4 early wins). Create the `sms-native` CMake target (library
 first, `-std=c++17 -Wno-narrowing`, force-include `native/shim/gekko_intrinsics.h`,
