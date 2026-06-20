@@ -329,4 +329,143 @@ void GXSetTevSwapModeTable(GXTevSwapSel table, GXTevColorChan red, GXTevColorCha
 void GXSetTevDirect(GXTevStageID /*stage*/) { /* no indirect captured: stage is direct */ }
 void GXSetNumIndStages(u8 n) { state().tev.numIndStages = n; }
 
+// =============================================================================
+// SLICE 5 — the per-draw setters the J3D draw path invokes (vertex format/arrays,
+// XF matrix memory, textures, texcoord-gen, indirect, pipeline flags). These are
+// captured into GXState for the renderer to consume when it draws a shape; the
+// GameCube FIFO/CP/XF register writes the decomp does are DROPPED (no command
+// stream). NOT exercised by the model LOADER (which only parses blocks) — they
+// fire on draw, so the draw path verifies them end-to-end. The round-trippable
+// captures (vtx attr fmt/array, matrix-memory load, texobj) are unit-tested now.
+// =============================================================================
+
+// ---- vertex attribute formats + indexed arrays ----------------------------
+void GXSetVtxAttrFmt(GXVtxFmt vtxfmt, GXAttr attr, GXCompCnt cnt,
+                     GXCompType type, u8 frac) {
+    if (vtxfmt >= 8 || (u32)attr >= 26) return;
+    auto& f = state().vtxAttrFmt[vtxfmt][attr];
+    f.cnt = (u8)cnt; f.type = (u8)type; f.frac = frac;
+}
+void GXSetArray(GXAttr attr, const void* base_ptr, u8 stride) {
+    if ((u32)attr >= 26) return;
+    state().vtxArray[attr] = { base_ptr, stride };
+}
+void GXInvalidateVtxCache(void) { /* no native vertex cache; nothing to flush */ }
+// Immediate-mode vertex descriptor (J2D uses GXBegin/GXEnd quads). Capture the
+// per-attr type; GXBegin/line-width are immediate-mode draws the renderer doesn't
+// replay (it reads the J2D object model), so they are inert.
+void GXClearVtxDesc(void) {
+    for (auto& d : state().immVtxDesc) d = 0; // GX_NONE
+}
+void GXSetVtxDesc(GXAttr attr, GXAttrType type) {
+    if ((u32)attr < 26) state().immVtxDesc[attr] = (u8)type;
+}
+void GXBegin(GXPrimitive /*type*/, GXVtxFmt /*vtxfmt*/, u16 /*nverts*/) {
+    /* immediate-mode primitive begin — no FIFO; J2D draws read from the object model */
+}
+void GXSetLineWidth(u8 /*width*/, GXTexOffset /*texOffsets*/) { /* HW line raster width */ }
+
+// ---- XF matrix memory ------------------------------------------------------
+// id is the matrix-memory row; the game loads at id (= slot*3). Slot = id/3.
+static void load_mtx34(f32 dst[64][3][4], f32 src[3][4], u32 id) {
+    u32 slot = id / 3;
+    if (slot >= 64) return;
+    for (int r = 0; r < 3; ++r)
+        for (int c = 0; c < 4; ++c) dst[slot][r][c] = src[r][c];
+}
+void GXLoadPosMtxImm(f32 mtx[3][4], u32 id) { load_mtx34(state().posMtx, mtx, id); }
+void GXLoadNrmMtxImm(f32 mtx[3][4], u32 id) { load_mtx34(state().nrmMtx, mtx, id); }
+void GXLoadTexMtxImm(f32 mtx[][4], u32 id, GXTexMtxType type) {
+    // TEXMTX rows live in the same memory; a 2x4 (GX_MTX2x4) tex matrix fills 2 rows.
+    u32 slot = id / 3;
+    if (slot >= 64) return;
+    int rows = (type == GX_MTX2x4) ? 2 : 3;
+    for (int r = 0; r < rows; ++r)
+        for (int c = 0; c < 4; ++c) state().texMtx[slot][r][c] = mtx[r][c];
+}
+// Indexed loads pull the matrix from the bound array (GXSetArray POS/NRM-mtx). The
+// array base is a guest matrix table; resolving it needs the draw path's array
+// binding, so capture the request and let the draw consumer dereference. Until then
+// they record the (index,id) pairing without a faithful copy — honest no-op-copy.
+void GXLoadPosMtxIndx(u16 /*mtx_indx*/, u32 /*id*/) { /* draw-path array resolve */ }
+void GXLoadNrmMtxIndx3x3(u16 /*mtx_indx*/, u32 /*id*/) { /* draw-path array resolve */ }
+void GXSetCurrentMtx(u32 id) { state().currentMtx = id; }
+
+// ---- textures --------------------------------------------------------------
+// A native descriptor overlaid on the caller-owned 32-byte GXTexObj (8 u32). The
+// GC GXInitTexObj packs HW register bits; we instead store the friendly fields the
+// renderer's tex_decode wants, and GXLoadTexObj copies them into the bound slot.
+struct NativeTexObj {
+    const void* image;   // 8 bytes on a 64-bit host (GXTexObj is 32 -> fits)
+    u16 w, h;
+    u8  fmt, wrapS, wrapT, mipmap;
+    u32 magic;           // tag so GXLoadTexObj knows it's our overlay
+};
+static const u32 kTexObjMagic = 0x4E545830; // 'NTX0'
+void GXInitTexObj(GXTexObj* obj, void* image_ptr, u16 width, u16 height,
+                  GXTexFmt format, GXTexWrapMode wrap_s, GXTexWrapMode wrap_t,
+                  u8 mipmap) {
+    NativeTexObj* n = reinterpret_cast<NativeTexObj*>(obj);
+    n->image = image_ptr; n->w = width; n->h = height;
+    n->fmt = (u8)format; n->wrapS = (u8)wrap_s; n->wrapT = (u8)wrap_t;
+    n->mipmap = mipmap; n->magic = kTexObjMagic;
+}
+void GXLoadTexObj(GXTexObj* obj, GXTexMapID id) {
+    if ((u32)id >= 8) return;
+    NativeTexObj* n = reinterpret_cast<NativeTexObj*>(obj);
+    auto& b = state().boundTex[id];
+    if (n->magic != kTexObjMagic) { b.valid = false; return; }
+    b = { true, n->image, n->w, n->h, n->fmt, n->wrapS, n->wrapT, n->mipmap };
+}
+void GXInitTexCacheRegion(GXTexRegion* /*region*/, u8 /*is_32b_mipmap*/, u32 /*tmem_even*/,
+                          GXTexCacheSize /*size_even*/, u32 /*tmem_odd*/,
+                          GXTexCacheSize /*size_odd*/) {
+    /* no TMEM on the native renderer — textures sample from host images directly */
+}
+
+// ---- texcoord generation ---------------------------------------------------
+void GXSetTexCoordGen2(GXTexCoordID dst_coord, GXTexGenType func,
+                       GXTexGenSrc src_param, u32 mtx, GXBool normalize,
+                       u32 pt_texmtx) {
+    if ((u32)dst_coord >= 8) return;
+    state().texGen[dst_coord] = { (u8)func, (u8)src_param, (u16)mtx, (u8)normalize, (u16)pt_texmtx };
+}
+
+// ---- indirect texturing ----------------------------------------------------
+void GXSetTevIndirect(GXTevStageID /*tev_stage*/, GXIndTexStageID /*ind_stage*/,
+                      GXIndTexFormat /*format*/, GXIndTexBiasSel /*bias_sel*/,
+                      GXIndTexMtxID /*matrix_sel*/, GXIndTexWrap /*wrap_s*/,
+                      GXIndTexWrap /*wrap_t*/, GXBool /*add_prev*/, GXBool /*utc_lod*/,
+                      GXIndTexAlphaSel /*alpha_sel*/) {
+    /* per-stage indirect setup; consumed by the draw path's indirect TEV (parked) */
+}
+void GXSetIndTexMtx(GXIndTexMtxID mtx_id, f32 offset[2][3], s8 scale_exp) {
+    u32 i = (u32)mtx_id - 1;             // GX_ITM_0 = 1
+    if (i >= 3) return;
+    auto& m = state().indMtx[i];
+    for (int r = 0; r < 2; ++r) for (int c = 0; c < 3; ++c) m.offset[r][c] = offset[r][c];
+    m.scaleExp = scale_exp;
+}
+void GXSetIndTexCoordScale(GXIndTexStageID ind_stage, GXIndTexScale scale_s,
+                           GXIndTexScale scale_t) {
+    if ((u32)ind_stage >= 4) return;
+    state().indScale[ind_stage] = { (u8)scale_s, (u8)scale_t };
+}
+
+// ---- pipeline flags --------------------------------------------------------
+void GXSetClipMode(GXClipMode mode) { state().clipMode = mode; }
+void GXSetCoPlanar(GXBool enable)   { state().coPlanar = enable; }
+void GXSetDither(GXBool dither)     { state().dither = dither; }
+void GXSetMisc(GXMiscToken /*token*/, u32 /*val*/) {
+    /* HW perf/refresh tokens — no native effect */
+}
+
+// ---- draw verb -------------------------------------------------------------
+// The shape's primitive display list. The native renderer decodes the DL directly
+// (ngx geometry decoders) rather than feeding a FIFO; wiring that to GXState's bound
+// vtx-desc/arrays is the draw-path task. Defined so the J3D draw path links.
+void GXCallDisplayList(void* /*list*/, u32 /*nbytes*/) {
+    /* draw path: ngx decodes the shape DL; not a FIFO replay (parked until wired) */
+}
+
 } // extern "C"

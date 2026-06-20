@@ -93,6 +93,42 @@ struct GXState {
         u8  kColor[4][4];   // GXSetTevKColor KONST0..3 RGBA (0..255)
         u8  numIndStages;   // GXSetNumIndStages
     } tev;
+
+    // --- slice 5: vertex format / arrays / matrix memory / textures / texgen ---
+    // These are the per-draw setters the J3D draw path invokes; the renderer reads
+    // them when it consumes a shape. Captured as plain native fields (no FIFO).
+
+    // GXSetVtxAttrFmt: per (vtxfmt 0..7, attr) component count/type/frac.
+    struct VtxAttrFmt { u8 cnt; u8 type; u8 frac; } vtxAttrFmt[8][26];
+    // GXSetArray: per attr the indexed-array base pointer + stride (POS/NRM/CLR/TEX).
+    struct VtxArray { const void* base; u8 stride; } vtxArray[26];
+    // GXSetVtxDesc/GXClearVtxDesc: immediate-mode vertex descriptor (NONE/DIRECT/INDEX*).
+    u8 immVtxDesc[26];   // GXAttrType per attr (0=GX_NONE)
+
+    // XF matrix memory. id in GXLoad*MtxImm is the matrix-memory ROW (the game uses
+    // id = slot*3 for pos/nrm, slot*3 for tex). 64 slots of 3x4 covers GX_PNMTX0..63.
+    f32  posMtx[64][3][4];   // GXLoadPosMtxImm / GXLoadPosMtxIndx (by row id/3)
+    f32  nrmMtx[64][3][4];   // GXLoadNrmMtxImm / GXLoadNrmMtxIndx3x3 (3x3 in 3x4)
+    f32  texMtx[64][3][4];   // GXLoadTexMtxImm
+    u32  currentMtx;         // GXSetCurrentMtx (default pos/nrm matrix id)
+
+    // GXSetTexCoordGen2: per dst texcoord, how it's generated.
+    struct TexGen { u8 func; u8 src; u16 mtx; u8 normalize; u16 ptMtx; } texGen[8];
+
+    // GXSetIndTexMtx: indirect-texture matrices (3 of them, GX_ITM_0..2).
+    struct IndMtx { f32 offset[2][3]; s8 scaleExp; } indMtx[3];
+    // GXSetIndTexCoordScale: per indirect stage, the S/T coord downscale.
+    struct IndScale { u8 scaleS, scaleT; } indScale[4];
+
+    // GXSetClipMode / GXSetCoPlanar / GXSetDither — pipeline flags.
+    GXClipMode clipMode;
+    GXBool     coPlanar;
+    GXBool     dither;
+
+    // GXInitTexObj writes a native descriptor into the caller-owned GXTexObj; on
+    // GXLoadTexObj the bound descriptor for each texmap is recorded here for the
+    // renderer. (NativeTexObj overlay defined in gx_impl.cpp.)
+    struct BoundTex { bool valid; const void* image; u16 w, h; u8 fmt, wrapS, wrapT, mipmap; } boundTex[8];
 };
 
 // The single live GX state the seam writes and the renderer reads.

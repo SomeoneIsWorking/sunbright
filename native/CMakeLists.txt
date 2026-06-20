@@ -113,6 +113,24 @@ target_compile_options(sms-gd PRIVATE
     -w -Wno-narrowing -fcommon)
 target_link_libraries(sms-gd PUBLIC sms-platform)
 
+# ---------------------------------------------------------------------------
+# sms-assets — the native BE->host asset byteswap layer. GameCube on-disk assets
+# are big-endian; the decomp loaders read multibyte fields by casting raw file
+# bytes to C structs, which misreads on a little-endian host. This layer produces
+# a HOST-ENDIAN copy of a BMD/BDL model ("swap at load"), so the pristine decomp
+# J3DModelLoader reads it correctly. Recovered from the retired port/ tree (memory
+# `field-flip-removed` flagged it reusable); plain portable C++, no shim, no decomp
+# headers. Includes the Yaz0/RARC reader (rarc.cpp) for archive extraction.
+# ---------------------------------------------------------------------------
+add_library(sms-assets STATIC
+    "${SMS_NATIVE_REPO_ROOT}/native/assets/bmd_swap.cpp"
+    "${SMS_NATIVE_REPO_ROOT}/native/assets/rarc.cpp")
+set_target_properties(sms-assets PROPERTIES
+    CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+target_include_directories(sms-assets PUBLIC
+    "${SMS_NATIVE_REPO_ROOT}/native/assets")
+target_compile_options(sms-assets PRIVATE -Wall -Wextra)
+
 # Seam unit tests (TDD: assert spec-computed truth; the tested function IS the
 # shipping seam function). Each native/platform/tests/*_test.cpp is its own
 # assert-main executable, registered with ctest as platform_<name>.
@@ -211,8 +229,11 @@ if(SB_VULKAN_LIB AND SB_VULKAN_INC AND SB_GLSLANG)
 
     # Render tests (e.g. tests/render/*_test.cpp) link sms-render. Headless; a frame
     # render+readback is verified by pixel checks (lavapipe works with no GPU).
+    # j3dload_test is handled separately below (it links the full game-logic loader,
+    # not sms-render, and must build even without Vulkan).
     file(GLOB SB_RENDER_TESTS CONFIGURE_DEPENDS
          "${SMS_NATIVE_REPO_ROOT}/native/render/tests/*_test.cpp")
+    list(FILTER SB_RENDER_TESTS EXCLUDE REGEX "/j3dload_test\\.cpp$")
     foreach(rt ${SB_RENDER_TESTS})
         get_filename_component(rt_name "${rt}" NAME_WE)
         add_executable(sms-${rt_name} "${rt}")
@@ -224,6 +245,35 @@ if(SB_VULKAN_LIB AND SB_VULKAN_INC AND SB_GLSLANG)
 else()
     message(STATUS "sms-render: Vulkan/glslang not found; skipping native renderer")
 endif()
+
+# ---------------------------------------------------------------------------
+# j3dload_test — the PRODUCER milestone: load a REAL BMD through the game's OWN
+# J3D loader against native structs (no Dolphin/PPC/GC), verify shape/material/
+# joint counts. Links the full game-logic loader (sms-native) + GD display-list
+# builder (sms-gd) + BE->host asset swapper (sms-assets) + platform seams. Builds
+# even without Vulkan (no GPU needed — this verifies the producer, not pixels).
+# SKIP-passes when the copyrighted BMD asset is absent (gitignored scratch/bmd/).
+# ---------------------------------------------------------------------------
+add_executable(sms-j3dload_test
+    "${SMS_NATIVE_REPO_ROOT}/native/render/tests/j3dload_test.cpp")
+set_target_properties(sms-j3dload_test PROPERTIES
+    CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+target_include_directories(sms-j3dload_test PRIVATE
+    "${SMS_NATIVE_REPO_ROOT}/native/shim"
+    "${SMS_NATIVE_REPO_ROOT}/reference/sms/include"
+    "${SMS_NATIVE_REPO_ROOT}/native/assets")
+target_compile_options(sms-j3dload_test PRIVATE
+    -include "${SMS_NATIVE_REPO_ROOT}/native/shim/gekko_intrinsics.h"
+    -w -Wno-narrowing -fcommon)
+# sms-native <-> sms-gd/sms-platform have cyclic cross-references (game code calls
+# seams; nothing the reverse, but vtables pull a wide closure) — RESCAN groups the
+# archives so the linker iterates until all refs resolve, regardless of order.
+target_link_libraries(sms-j3dload_test PRIVATE
+    "$<LINK_GROUP:RESCAN,sms-native,sms-gd,sms-assets,sms-platform>"
+    Threads::Threads)
+# Run from the repo root so the default scratch/bmd/ asset path resolves.
+add_test(NAME native_j3dload_test COMMAND sms-j3dload_test
+         WORKING_DIRECTORY "${SMS_NATIVE_REPO_ROOT}")
 
 # ---------------------------------------------------------------------------
 # sms-boot — the native bring-up executable: PlatformInit (--wrap=main) -> the game's
