@@ -1371,9 +1371,11 @@ bool          g_epoch_tex[2][EPOCH_CAP] = {{false}};   // per-frame: epoch close
 // the game samples as a texture, NOT composites directly — ngx must not draw it into the present
 // (the file-select "floating Mario ghost"). Computed at publish, read by the present filter.
 int           g_display_epoch[2] = {0, 0};
-// Copy-event log (per frame, into g_cur buffer) for the /ngxshapes diagnostic: (kind, epoch, pass).
-struct CopyEvt { unsigned char kind; unsigned epoch; unsigned pass; unsigned char clear; unsigned gen; };  // kind: 0=Tex 1=Disp
-std::vector<CopyEvt> g_copyevt[2];
+// Copy-event log (per frame, into g_cur buffer): kind/epoch/pass/clear/gen PLUS the dest EA + dims +
+// EFB src rect + format (attached by ngx_set_last_copy_geom from the GXCopyTex override). Published
+// to the present (ngx_snap_copyevts) so it can RE-RENDER an offscreen epoch's batches into the copy's
+// texture (the Sirena graffito R8 coverage / goo). See NgxCopyEvent in ngx_render_data.h.
+std::vector<NgxCopyEvent> g_copyevt[2];
 // ── CLEAR-AWARE GENERATION model (handoff gap #3) ───────────────────────────────────────────────
 // The epoch model above splits the EFB at EVERY copy and displays only the highest tex-closed
 // epoch — which DROPS layers GX accumulated. The GPU truth: the EFB accumulates draws and is only
@@ -2401,9 +2403,13 @@ unsigned long g_shapes_at_last_copy = 0;   // g_calls (anon-ns, defined above) i
 void ngx_note_efb_copy(bool is_disp, u32 dest, u32 clear) {
     if (g_efb_epoch < EPOCH_CAP) {
         if (!is_disp) g_epoch_tex[g_cur][g_efb_epoch] = true;
-        if (g_copyevt[g_cur].size() < 256)
-            g_copyevt[g_cur].push_back({(unsigned char)(is_disp ? 1 : 0), g_efb_epoch, g_proj_pass,
-                                        (unsigned char)(clear & 1), g_efb_gen});
+        if (g_copyevt[g_cur].size() < 256) {
+            NgxCopyEvent ev{};
+            ev.kind = is_disp ? 1 : 0; ev.clear = clear & 1;
+            ev.epoch = (uint16_t)g_efb_epoch; ev.gen = (uint16_t)g_efb_gen; ev.pass = (uint16_t)g_proj_pass;
+            ev.dest = dest; ev.fmt = -1;   // geom (dims/fmt/src rect) attached by ngx_set_last_copy_geom
+            g_copyevt[g_cur].push_back(ev);
+        }
     }
     // Clear-aware generation: a GXCopyDisp (XFB) displays the CURRENT generation. Record it.
     if (is_disp) g_display_gen[g_cur] = (int)g_efb_gen;
@@ -2416,6 +2422,18 @@ void ngx_note_efb_copy(bool is_disp, u32 dest, u32 clear) {
     g_shapes_at_last_copy = g_calls;
     g_copylog_head.fetch_add(1, std::memory_order_relaxed);
     if (g_efb_epoch < EPOCH_CAP - 1) g_efb_epoch++;
+}
+
+// Attach the GXCopyTex dst dims/format + EFB src rect to the copy event ngx_note_efb_copy just
+// pushed (called from the GXCopyTex override, which holds GXSetTexCopyDst/Src state). Lets the
+// present re-render that copy's offscreen epoch into the dst texture (per-epoch content). NOTE:
+// ngx_note_efb_copy ++'d g_efb_epoch, so the just-pushed event is the LAST element regardless.
+void ngx_set_last_copy_geom(int dw, int dh, int fmt, int sl, int st, int sw, int sh) {
+    auto& v = g_copyevt[g_cur];
+    if (v.empty()) return;
+    NgxCopyEvent& e = v.back();
+    e.dst_w = dw; e.dst_h = dh; e.fmt = fmt;
+    e.src_l = sl; e.src_t = st; e.src_w = sw; e.src_h = sh;
 }
 
 // /efbcopies — dump the rolling copy log in order (oldest→newest), grouped by ngx frame.
@@ -2961,6 +2979,12 @@ int ngx_snap_display_epoch() { return g_display_epoch[g_read_front]; }
 // Clear-aware display generation of the latched snapshot. The present shows ONLY batches with
 // gen == this (the EFB content GX's final CopyDisp captures). -1 = no info → show all.
 int ngx_snap_display_gen() { return g_display_gen[g_read_front]; }
+// Published EFB-copy events of the latched snapshot (per-epoch offscreen content; see NgxCopyEvent).
+const NgxCopyEvent* ngx_snap_copyevts(int* ncopies) {
+    const std::vector<NgxCopyEvent>& v = g_copyevt[g_read_front];
+    *ncopies = (int)v.size();
+    return v.empty() ? nullptr : v.data();
+}
 const NgxTevState* ngx_snap_tevstates(int* nstates) {
     *nstates = (int)g_tevstates.size();
     return g_tevstates.empty() ? nullptr : g_tevstates.data();
@@ -3804,8 +3828,9 @@ int sb_ngx_shapes_dump(char* out, int cap) {
     int n = snprintf(out, cap, "ngxshapes: front=%d shapes=%zu (ndc y: -1=top +1=bottom)\n", f, rs.size());
     // EFB-copy epoch map: which epochs went offscreen (GXCopyTex) vs display (GXCopyDisp).
     n += snprintf(out + n, cap - n, "  copy-events (epoch/gen routing):");
-    for (const CopyEvt& e : g_copyevt[f])
-        n += snprintf(out + n, cap - n, " [e%u/g%u@pass%u=%s%s]", e.epoch, e.gen, e.pass, e.kind ? "DISP" : "tex", e.clear ? ",CLR" : "");
+    for (const NgxCopyEvent& e : g_copyevt[f])
+        n += snprintf(out + n, cap - n, " [e%u/g%u@pass%u=%s%s dst=%08x %dx%d fmt=%d]", e.epoch, e.gen, e.pass,
+                      e.kind ? "DISP" : "tex", e.clear ? ",CLR" : "", e.dest, e.dst_w, e.dst_h, e.fmt);
     n += snprintf(out + n, cap - n, "\n  CLEAR-AWARE: display_gen=%d (the gen at CopyDisp/XFB = the blend stack GX shows)  [ngx present uses display_epoch=%d]",
                   g_display_gen[f], g_display_epoch[f]);
     {   // per-gen shape+vert histogram over batches — which generation holds the visible scene

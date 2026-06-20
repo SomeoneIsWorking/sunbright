@@ -23,6 +23,7 @@ extern "C" void sb_ngx_efb_request_readback();
 extern "C" int  sb_ngx_efb_peek_depth(int gx, int gy, float* out);   // ngx_present.cpp
 extern "C" int  sb_ngx_imm_occ_depth(float* out);                    // ngx_j3d_shape.cpp (cube front depth)
 extern void ngx_note_efb_copy(bool is_disp, u32 dest, u32 clear);    // ngx_j3d_shape.cpp: native EFB-copy epoch tracking
+extern void ngx_set_last_copy_geom(int dw, int dh, int fmt, int sl, int st, int sw, int sh);  // attach dims/fmt/srcrect
 #include "../ngx/ngx_imm_geom.h"                                     // ngx_imm::imm_occluded (unit-tested)
 
 namespace {
@@ -196,6 +197,9 @@ SUNBRIGHT_OVERRIDE_IF_NATIVE(ov_gxcopytex, 0x8035ee5cu, s_ngx_present) {
     // leaning on Dolphin's GP state. (Was previously only fed by GXCopyDisp; the GXCopyTex path here
     // was the gap that left every offscreen pass lumped into the display epoch.)
     ngx_note_efb_copy(/*is_disp=*/false, cpu.gpr[3], cpu.gpr[4]);
+    // Attach dst dims/fmt + EFB src rect so the present can re-render this offscreen epoch into the
+    // copy's texture (per-epoch content; the Sirena graffito R8 coverage → goo).
+    ngx_set_last_copy_geom(g_dst_w, g_dst_h, g_dst_fmt, g_src_l, g_src_t, g_src_w, g_src_h);
     // Own the copy. For every standard COLOUR format ngx serves, the side buffer supplies the content
     // texture_for reads, so the guest GXCopyTex original is pure overhead under ngx present: it only
     // triggers Dolphin's async EFB→RAM copy of the empty EFB (the zero-stomp we bypass) and GP work

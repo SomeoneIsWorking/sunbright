@@ -153,6 +153,26 @@ struct NgxTevState {
     uint64_t key;              // FNV hash of the above (dedupe / shader-cache key)
 };
 
+// ── EFB-copy event (per-frame, published) — drives the present's per-epoch offscreen content ────
+// Some GXCopyTex copies grab an OFFSCREEN epoch (geometry drawn into the EFB, then copied into a
+// texture the displayed scene samples) — e.g. the Sirena "graffito check" that copies the goo mask
+// shapes into a per-layer R8 COVERAGE texture (fmt 0x28), which the TPollutionLayer plane then
+// samples. Under ngx present Dolphin's EFB is empty, so that copy grabs black ⇒ no coverage ⇒ the
+// goo is invisible. The present fixes it by RE-RENDERING just that epoch's batches (batch.epoch ==
+// event.epoch) into the copy's texture (own-the-framebuffer, per-epoch content). For that it needs
+// the copy's dest EA + dims + EFB src rect + format alongside the epoch — published here.
+struct NgxCopyEvent {
+    uint8_t  kind;      // 0 = offscreen GXCopyTex, 1 = display GXCopyDisp
+    uint8_t  clear;     // copy also cleared the EFB
+    uint16_t epoch;     // EFB-copy epoch this copy captured (batches with batch.epoch == this drew into it)
+    uint16_t gen;       // clear-aware generation
+    uint16_t pass;      // projection-pass index this copy happened under
+    uint32_t dest;      // GXCopyTex dest texture guest EA (0 for display)
+    int32_t  dst_w, dst_h;                 // dst texture dims
+    int32_t  src_l, src_t, src_w, src_h;   // EFB src rect (640×448 space; 0 = whole EFB)
+    int32_t  fmt;       // GX copy format (GXTexFmt / CTF code; 0x28 = R8 graffito coverage)
+};
+
 // Snapshot accessors (defined in ngx_j3d_shape.cpp; read best-effort from the
 // HTTP/render thread — copy promptly, see ngx_j3d_shape.cpp notes).
 const NgxRenderVertex* ngx_snap_verts(int* nverts);
@@ -160,6 +180,7 @@ const NgxRenderBatch*  ngx_snap_batches(int* nbatches);
 const NgxTevState*     ngx_snap_tevstates(int* nstates);
 int                    ngx_snap_display_epoch(void);   // present skips batches with epoch < this
 int                    ngx_snap_display_gen(void);     // clear-aware: present shows only batches whose gen == this (the display generation; -1 = show all)
+const NgxCopyEvent*    ngx_snap_copyevts(int* ncopies);// published per-frame EFB-copy events (per-epoch offscreen content)
 
 // ── interp60 (PC-native frame interpolation) ─────────────────────────────────
 // The PREVIOUS published snapshot (frame N-1) kept alongside the front (N) so the present can

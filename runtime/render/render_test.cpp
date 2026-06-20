@@ -24,6 +24,7 @@
 #include "ngx_jpa_billboard.h"
 #include "ngx_indirect.h"
 #include "ngx_display_gen.h"
+#include "ngx_per_epoch.h"
 #include "tev_shader.h"
 #include "tev_eval.h"
 #include "tex_decode.h"
@@ -751,6 +752,45 @@ static int test_display_gen(char* rep, int cap) {
     return fails;
 }
 
+// ── per-epoch offscreen content selection (ngx_per_epoch.h) ───────────────────
+// The Sirena goo: a GX_CTF_R8 (fmt 0x28) offscreen GXCopyTex grabs the goo mask shapes (drawn in an
+// offscreen epoch) into a per-layer R8 coverage texture. The present must (a) pick that copy event
+// for per-epoch content, (b) select the batches that drew into its epoch, and (c) convert each
+// rendered pixel to the R8 coverage scalar (the red channel, replicated). Color reflection copies
+// (RGB565) and the display copy must NOT be picked (they're served elsewhere / are the frame).
+static int test_per_epoch(char* rep, int cap) {
+    using namespace ngx_perepoch;
+    int pos = 0, fails = 0;
+    auto failf = [&](const char* msg) { if (pos < cap) pos += snprintf(rep+pos, cap-pos, "%s", msg); fails++; };
+
+    // The Sirena graffito copy: offscreen R8 into 80c72780, 512×512, captured under epoch 2.
+    NgxCopyEvent graffito{};
+    graffito.kind = 0; graffito.fmt = 0x28; graffito.dest = 0x80c72780; graffito.dst_w = 512; graffito.dst_h = 512;
+    graffito.epoch = 2;
+    if (!wants_offscreen_content(graffito)) failf("FAIL graffito R8 copy not selected\n");
+
+    // A standard RGB565 reflection copy (fmt 4) is served by the display-scene path → not per-epoch.
+    NgxCopyEvent refl = graffito; refl.fmt = 4;
+    if (wants_offscreen_content(refl)) failf("FAIL RGB565 reflection wrongly selected\n");
+    // The display copy (kind 1) is the on-screen frame, never offscreen content.
+    NgxCopyEvent disp = graffito; disp.kind = 1;
+    if (wants_offscreen_content(disp)) failf("FAIL display copy wrongly selected\n");
+    // A copy with no dest / zero dims is not renderable.
+    NgxCopyEvent nodst = graffito; nodst.dest = 0;
+    if (wants_offscreen_content(nodst)) failf("FAIL dest=0 copy wrongly selected\n");
+
+    // Batch selection: only batches drawn under the copy's epoch (2) belong to it.
+    if (!batch_in_copy(2, graffito)) failf("FAIL epoch-2 batch not in copy\n");
+    if ( batch_in_copy(0, graffito)) failf("FAIL display-epoch batch wrongly in copy\n");
+    if ( batch_in_copy(3, graffito)) failf("FAIL epoch-3 batch wrongly in copy\n");
+
+    // R8 coverage = the RED channel replicated to all four channels (I8/R8 sample → (cov,cov,cov,cov)).
+    if (argb_to_r8_coverage(0xFF8040C0u) != 0x80808080u) failf("FAIL R8 coverage != replicated red\n");
+    if (argb_to_r8_coverage(0x00000000u) != 0x00000000u) failf("FAIL R8 coverage of black != 0\n");
+    if (argb_to_r8_coverage(0xFFFF0000u) != 0xFFFFFFFFu) failf("FAIL R8 coverage of red != full\n");
+    return fails;
+}
+
 struct Unit { const char* name; int (*run)(char* rep, int cap); };
 
 const Unit kUnits[] = {
@@ -771,6 +811,7 @@ const Unit kUnits[] = {
     {"jpa_stripe",    test_jpa_stripe},
     {"jpa_ybillboard", test_jpa_ybillboard},
     {"display_gen",    test_display_gen},
+    {"per_epoch",      test_per_epoch},
 };
 
 }  // namespace

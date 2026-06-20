@@ -19,6 +19,7 @@
 #include "j2d_types.h"
 #include "../ngx/ngx_render_data.h"
 #include "../ngx/ngx_display_gen.h"   // clear-aware display-generation filter (unit-tested)
+#include "../ngx/ngx_per_epoch.h"     // per-epoch offscreen-content selection (unit-tested)
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -135,6 +136,11 @@ std::unordered_set<uint32_t> g_efb_copy_addrs;  // persistent (diagnostic): ever
 std::mutex g_efb_side_mtx;
 struct EfbSideCopy { int w = 0, h = 0; std::vector<uint32_t> argb; };  // ARGB8888, w*h
 std::unordered_map<uint32_t, EfbSideCopy> g_efb_side;
+
+// Defined later in this file (extern "C"); forward-declared so render()'s per-epoch pass can store
+// the rendered offscreen coverage into the side buffer + invalidate the dst tex.
+extern "C" void sb_ngx_efb_store_copy(uint32_t ea, int w, int h, const uint32_t* argb);
+extern "C" void sb_ngx_efb_invalidate_tex(uint32_t ea);
 
 struct PresentRenderer {
     bool init_tried = false, init_ok = false;
@@ -1156,29 +1162,13 @@ AbstractTexture* PresentRenderer::render(int w, int h) {
         vkUpdateDescriptorSets(dev, 1, &wr, 0, nullptr);
     }
 
-    // Prepare the HUD/J2D overlay (texture uploads recorded into `cmd`) BEFORE the
-    // render pass; the quads are drawn over the 3D scene inside it.
-    std::vector<J2dDraw> j2d;
-    prepare_j2d(cmd, stg_bufs, stg_mems, j2d);
-
-    float cc[4]; sb_ngx_get_clear(cc);   // the game's EFB copy-clear (screen-blend sky depends on it)
-    // DBG (SUNBRIGHT_NGX_CLEARA=NN): override the render-pass clear ALPHA with a sentinel to probe
-    // whether the 3D scene writes alpha at all (clear shows through) vs forces it (alpha frontier).
-    if (const char* e = getenv("SUNBRIGHT_NGX_CLEARA")) cc[3] = (float)strtol(e, nullptr, 0) / 255.f;  // base 0 → hex ok
-    if (getenv("SUNBRIGHT_DBG_EFB") && (g_frames % 120) == 0)
-        fprintf(stderr, "[imm] clearcolor=(%.3f,%.3f,%.3f,a=%.3f)\n", cc[0], cc[1], cc[2], cc[3]);
-    VkClearValue clear[2]{}; clear[0].color = {{cc[0], cc[1], cc[2], cc[3]}}; clear[1].depthStencil = {1.0f, 0};
-    VkRenderPassBeginInfo rbi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
-    rbi.renderPass = rpass; rbi.framebuffer = fbo; rbi.renderArea = {{0, 0}, {(uint32_t)w, (uint32_t)h}};
-    rbi.clearValueCount = 2; rbi.pClearValues = clear;
-    vkCmdBeginRenderPass(cmd, &rbi, VK_SUBPASS_CONTENTS_INLINE);
-    VkDeviceSize voff = 0; vkCmdBindVertexBuffers(cmd, 0, 1, &vbuf, &voff);
     VkPipeline last = VK_NULL_HANDLE;
     int drawn = 0;   // count of batches actually emitted (for the /ngxprefix draw-order limit)
     // DBG: count drawn batches + total verts for a target tev_index (overdraw check for the cloud wash).
     static const int s_cloudcount = getenv("SUNBRIGHT_NGX_CLOUDCOUNT") ? atoi(getenv("SUNBRIGHT_NGX_CLOUDCOUNT")) : -1;
     int cc_batches = 0; long cc_verts = 0; static unsigned cc_frame = 0;
     int imm_seen = 0, imm_drawn = 0;   // DBG_EFB: immediate-mode (color-mask-off) cube batches
+    VkDeviceSize voff = 0;
     auto draw_one = [&](size_t b) {
         const int ti = batches[b].tev_index;
         const NgxTevState& st = (ti >= 0 && ti < (int)tevstates.size()) ? tevstates[ti] : mod;
@@ -1208,6 +1198,82 @@ AbstractTexture* PresentRenderer::render(int w, int h) {
         drawn++;
         if (s_cloudcount >= 0 && ti == s_cloudcount) { cc_batches++; cc_verts += batches[b].vcount; }
     };
+    VkImage color_img = static_cast<Vulkan::VKTexture*>(target.get())->GetImage();
+
+    // ── Per-epoch OFFSCREEN CONTENT (own-the-framebuffer): the Sirena goo coverage ──────────────
+    // A GXCopyTex can grab an OFFSCREEN epoch (geometry drawn into the EFB, then copied into a texture
+    // the displayed scene samples) in a format the display-scene path doesn't serve — the R8 "graffito
+    // check" that copies the goo mask shapes into a per-layer coverage texture (TPollutionLayer.unk54).
+    // Under ngx present Dolphin's EFB is empty → that copy grabs black → no coverage → invisible goo.
+    // Here we RE-RENDER just that copy's epoch (batch.epoch == event.epoch) into the SAME target, read
+    // it back, and store it in ngx's EFB side buffer keyed by the dst EA (texture_for serves it next
+    // frame). Each such copy gets its own staging buffer; the readback + store happens after the submit.
+    struct PendingPerEpoch { uint32_t ea; int dw, dh, sl, st, sw, sh; VkBuffer stg; VkDeviceMemory mem; };
+    std::vector<PendingPerEpoch> pe_pending;
+    static const bool s_no_perepoch = getenv("SUNBRIGHT_NGX_NOPEREPOCH") != nullptr;
+    if (!s_no_perepoch) {
+        int nce = 0; const NgxCopyEvent* ce = ngx_snap_copyevts(&nce);
+        for (int i = 0; i < nce && ce && (int)pe_pending.size() < 8; i++) {
+            const NgxCopyEvent& ev = ce[i];
+            if (!ngx_perepoch::wants_offscreen_content(ev)) continue;
+            // Any batches drew under this copy's epoch? (else nothing to render → leave coverage empty)
+            bool any = false;
+            for (int b = 0; b < nb && !any; b++) any = ngx_perepoch::batch_in_copy(batches[b].epoch, ev);
+            if (!any) continue;
+            const uint32_t ea = (ev.dest & 0x3FFFFFFF) | 0x80000000u;   // phys → cached MEM1 virtual
+            const size_t need = (size_t)w * h * 4;
+            VkBuffer sbuf; VkDeviceMemory smem;
+            if (!make_buffer(dev, phys, sbuf, smem, need, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) continue;
+            // Render this epoch's batches into `target` (coverage starts EMPTY = transparent black).
+            VkClearValue pclr[2]{}; pclr[0].color = {{0, 0, 0, 0}}; pclr[1].depthStencil = {1.0f, 0};
+            VkRenderPassBeginInfo prbi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+            prbi.renderPass = rpass; prbi.framebuffer = fbo; prbi.renderArea = {{0, 0}, {(uint32_t)w, (uint32_t)h}};
+            prbi.clearValueCount = 2; prbi.pClearValues = pclr;
+            vkCmdBeginRenderPass(cmd, &prbi, VK_SUBPASS_CONTENTS_INLINE);
+            vkCmdBindVertexBuffers(cmd, 0, 1, &vbuf, &voff);
+            last = VK_NULL_HANDLE;
+            for (int b = 0; b < nb; b++) if (ngx_perepoch::batch_in_copy(batches[b].epoch, ev)) draw_one((size_t)b);
+            vkCmdEndRenderPass(cmd);   // target now SHADER_READ_ONLY (rpass finalLayout)
+            // Copy the rendered color → host staging. (Next render pass uses initialLayout UNDEFINED, so
+            // leaving the image in TRANSFER_SRC is fine — its contents are discarded/cleared anyway.)
+            VkImageMemoryBarrier cb{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+            cb.srcAccessMask = VK_ACCESS_SHADER_READ_BIT; cb.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+            cb.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; cb.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+            cb.srcQueueFamilyIndex = cb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            cb.image = color_img; cb.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                 0, 0, nullptr, 0, nullptr, 1, &cb);
+            VkBufferImageCopy bic{}; bic.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+            bic.imageExtent = {(uint32_t)w, (uint32_t)h, 1};
+            vkCmdCopyImageToBuffer(cmd, color_img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, sbuf, 1, &bic);
+            pe_pending.push_back({ea, ev.dst_w, ev.dst_h,
+                                  ev.src_l, ev.src_t, ev.src_w > 0 ? ev.src_w : 640, ev.src_h > 0 ? ev.src_h : 448,
+                                  sbuf, smem});
+            if (getenv("SUNBRIGHT_DBG_EFB"))
+                fprintf(stderr, "[perepoch] queued ea=%08x dst=%dx%d epoch=%u src[%d,%d,%d,%d]\n",
+                        ea, ev.dst_w, ev.dst_h, ev.epoch, ev.src_l, ev.src_t, ev.src_w, ev.src_h);
+        }
+    }
+
+    // Prepare the HUD/J2D overlay (texture uploads recorded into `cmd`) BEFORE the
+    // render pass; the quads are drawn over the 3D scene inside it.
+    std::vector<J2dDraw> j2d;
+    prepare_j2d(cmd, stg_bufs, stg_mems, j2d);
+
+    float cc[4]; sb_ngx_get_clear(cc);   // the game's EFB copy-clear (screen-blend sky depends on it)
+    // DBG (SUNBRIGHT_NGX_CLEARA=NN): override the render-pass clear ALPHA with a sentinel to probe
+    // whether the 3D scene writes alpha at all (clear shows through) vs forces it (alpha frontier).
+    if (const char* e = getenv("SUNBRIGHT_NGX_CLEARA")) cc[3] = (float)strtol(e, nullptr, 0) / 255.f;  // base 0 → hex ok
+    if (getenv("SUNBRIGHT_DBG_EFB") && (g_frames % 120) == 0)
+        fprintf(stderr, "[imm] clearcolor=(%.3f,%.3f,%.3f,a=%.3f)\n", cc[0], cc[1], cc[2], cc[3]);
+    VkClearValue clear[2]{}; clear[0].color = {{cc[0], cc[1], cc[2], cc[3]}}; clear[1].depthStencil = {1.0f, 0};
+    VkRenderPassBeginInfo rbi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+    rbi.renderPass = rpass; rbi.framebuffer = fbo; rbi.renderArea = {{0, 0}, {(uint32_t)w, (uint32_t)h}};
+    rbi.clearValueCount = 2; rbi.pClearValues = clear;
+    vkCmdBeginRenderPass(cmd, &rbi, VK_SUBPASS_CONTENTS_INLINE);
+    vkCmdBindVertexBuffers(cmd, 0, 1, &vbuf, &voff);
+    last = VK_NULL_HANDLE; drawn = 0;   // reset after the per-epoch passes (they used last/drawn)
     for (size_t b = 0; b < batches.size(); b++) {
         if (g_ngx_prefix_n >= 0 && drawn >= g_ngx_prefix_n) break;   // draw-order prefix: stop after N
         const int ti = batches[b].tev_index;
@@ -1315,7 +1381,7 @@ AbstractTexture* PresentRenderer::render(int w, int h) {
     // COLOR readback: the present color target is in SHADER_READ_ONLY (render-pass finalLayout).
     // Barrier → TRANSFER_SRC, copy to host staging, barrier back to SHADER_READ_ONLY (Dolphin's
     // presenter samples it after this) so the OverrideImageLayout(SHADER_READ_ONLY) below stays valid.
-    VkImage color_img = static_cast<Vulkan::VKTexture*>(target.get())->GetImage();
+    // (color_img captured above, before the per-epoch passes.)
     if (efb_rb_c) {
         VkImageMemoryBarrier cb{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
         cb.srcAccessMask = VK_ACCESS_SHADER_READ_BIT; cb.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
@@ -1338,9 +1404,49 @@ AbstractTexture* PresentRenderer::render(int w, int h) {
 
     VkSubmitInfo su{VK_STRUCTURE_TYPE_SUBMIT_INFO}; su.commandBufferCount = 1; su.pCommandBuffers = &cmd;
     vkResetFences(dev, 1, &fence);
-    if (vkQueueSubmit(queue, 1, &su, fence)) { for (size_t i = 0; i < stg_bufs.size(); i++) { vkDestroyBuffer(dev, stg_bufs[i], nullptr); vkFreeMemory(dev, stg_mems[i], nullptr); } return nullptr; }
+    if (vkQueueSubmit(queue, 1, &su, fence)) {
+        for (size_t i = 0; i < stg_bufs.size(); i++) { vkDestroyBuffer(dev, stg_bufs[i], nullptr); vkFreeMemory(dev, stg_mems[i], nullptr); }
+        for (auto& p : pe_pending) { vkDestroyBuffer(dev, p.stg, nullptr); vkFreeMemory(dev, p.mem, nullptr); }
+        return nullptr;
+    }
     vkWaitForFences(dev, 1, &fence, VK_TRUE, 10'000'000'000ull);
     for (size_t i = 0; i < stg_bufs.size(); i++) { vkDestroyBuffer(dev, stg_bufs[i], nullptr); vkFreeMemory(dev, stg_mems[i], nullptr); }
+
+    // ── Per-epoch offscreen content: box-downsample each rendered epoch's readback into the copy's
+    // dst texture, convert to the R8 coverage scalar, and store it in the side buffer (texture_for
+    // serves it next frame; we also mark the dst EA dirty so the texcache re-decodes). The Sirena goo.
+    for (auto& pp : pe_pending) {
+        void* p = nullptr;
+        if (vkMapMemory(dev, pp.mem, 0, (VkDeviceSize)w * h * 4, 0, &p) == VK_SUCCESS && p) {
+            const uint8_t* src = (const uint8_t*)p;   // RGBA8 byte order R,G,B,A; row 0 = top
+            std::vector<uint32_t> cov((size_t)pp.dw * pp.dh);
+            for (int dy = 0; dy < pp.dh; dy++)
+                for (int dx = 0; dx < pp.dw; dx++) {
+                    // EFB(640×448) src block for this dst texel → present-readback (w×h) pixel block.
+                    long ex0 = pp.sl + (long)dx * pp.sw / pp.dw, ex1 = pp.sl + (long)(dx + 1) * pp.sw / pp.dw;
+                    long ey0 = pp.st + (long)dy * pp.sh / pp.dh, ey1 = pp.st + (long)(dy + 1) * pp.sh / pp.dh;
+                    long px0 = ex0 * w / 640, px1 = ex1 * w / 640, py0 = ey0 * h / 448, py1 = ey1 * h / 448;
+                    if (px1 <= px0) px1 = px0 + 1; if (py1 <= py0) py1 = py0 + 1;
+                    long rsum = 0, n = 0;
+                    for (long py = py0; py < py1 && py < h; py++)
+                        for (long px = px0; px < px1 && px < w; px++) {
+                            if (px < 0 || py < 0) continue;
+                            rsum += src[(py * w + px) * 4 + 0];   // RED channel = GX_CTF_R8 grab
+                            n++;
+                        }
+                    uint32_t r = n ? (uint32_t)(rsum / n) : 0;
+                    cov[(size_t)dy * pp.dw + dx] = ngx_perepoch::argb_to_r8_coverage(0xFF000000u | (r << 16));
+                }
+            vkUnmapMemory(dev, pp.mem);
+            sb_ngx_efb_store_copy(pp.ea, pp.dw, pp.dh, cov.data());
+            sb_ngx_efb_invalidate_tex(pp.ea);   // re-decode from the updated side buffer next frame
+            if (getenv("SUNBRIGHT_DBG_EFB")) {
+                size_t nz = 0; for (uint32_t c : cov) if ((c & 0xFF) != 0) nz++;
+                fprintf(stderr, "[perepoch] stored ea=%08x %dx%d coverage nz=%zu/%zu\n", pp.ea, pp.dw, pp.dh, nz, cov.size());
+            }
+        }
+        vkDestroyBuffer(dev, pp.stg, nullptr); vkFreeMemory(dev, pp.mem, nullptr);
+    }
 
     // Publish the depth readback to the guest-thread accessor (GXPeekZ). 1-frame lag.
     if (efb_rb) {
