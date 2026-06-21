@@ -107,8 +107,39 @@ is a correct keeper.
   a struct over-inflated?). This is the gate to both observing the literal THP state->3 and
   to the first stage J3DModel (renderer SLICE 3). It is a SEPARATE frontier from THP.
 
+### Gameplay-load cascade — fixes landed this session (the LP64 heap/asset bring-up)
+Working the crash forward (each is a real bug; the crash moves to the next stage):
+1. **JKRSolidHeap header reservation** (`JPAEmitterManager`): `+0x80` was the GC 32-bit
+   `expHeapSize`; on LP64 the JKRSolidHeap object is 0xf0, so the data region was short →
+   last alloc near-null. Now `+ ALIGN_NEXT(sizeof(JKRSolidHeap),0x10)`.
+2. **Particle element size** (`JPAEmitterManager`): the loop allocates `new JPAParticle`
+   (264 B) but the heap was budgeted with `sizeof(JPABaseParticle)` (128 B) — under-sized.
+   Now `sizeof(JPAParticle)`. (Emitters/fields allocate their base type → unchanged.)
+   → crash moved JPAParticle → `JKRMemArchive::open`/`sb_rarc_swap_to_host`.
+3. **RARC host side-array alloc** (`sb_rarc_swap_to_host`): the host-only 0x18-stride
+   file-entry side array is alloc'd from the archive buffer's own (GC-sized, no-slack)
+   heap → fails for tight per-resource heaps. The root heap is no help: a "claim the rest
+   of the arena" gameplay solid heap (size scales with the arena: 56 MB at 64 MB arena,
+   246 MB at 256 MB) drains root to 0. FIX: fall back to `getCurrentHeap()` (that big
+   gameplay heap, which has room), then root; frees via `findFromRoot(nullptr)`.
+   → crash moved to `JPAResourceManager::load` → `loadParticleMario` (next stage:
+   JKRGetResource/JPAEmitterLoaderDataBase on the loaded .jpa).
+- **Arena 64→256 MB** (`platform_impl.cpp`): the gameplay load needs more than the GC
+  24 MB+ARAM budget on LP64 (bigger structs + the "claim the rest" heap). Lets more of the
+  load run. NOT a fix for the cascade — the per-stage LP64/BE bugs are.
+- Diagnostics (env `SB_JKR_DBG`, committed): `[jpa] EmitterMgr` sizes, `[jkr]
+  SolidHeap::create`, `[rarc] swap` (heap/root-free/side-ptr).
+- ⚠ Observed a NONDETERMINISTIC `terminate called without an active exception` in some
+  plain (non-gdb) runs — the concurrent setup-thread gameplay load + THP threads on real
+  preemptive host threads expose threading fragility (os_impl note: host threads are
+  preempted, GC was single-core cooperative). Watch for this; may need cooperative gating.
+
 ## NEXT
-1. Fix the `JKRSolidHeap` alloc-returns-~8 bug (LP64?) so the gameplay preload succeeds →
+1. Continue the gameplay-load cascade from `JPAResourceManager::load` (JKRGetResource /
+   JPAEmitterLoaderDataBase on the .jpa resources). It is a SYSTEMIC LP64/BE asset+heap
+   bring-up — each gameplay subsystem needs its 64-bit pass. This is the path to both
+   observing THP state→3 (the movie completes once the concurrent load stops crashing) and
+   the first stage J3DModel (renderer SLICE 3). The earlier (now historical) NEXT:
    the movie completes → observe state→3 → decideNextMode → GAMEPLAY, and progress toward
    the first stage J3DModel (renderer SLICE 3).
 2. STAGE B: port the THP video codec (THPDec.c paired-single IDCT) + THPPlayerDrawCurrentFrame

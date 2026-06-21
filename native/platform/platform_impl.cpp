@@ -27,14 +27,11 @@ namespace {
 // The game's memory arena. On GC this was the 24 MB main RAM handed to the OS; here
 // it's one native block the game's JKR heaps sub-allocate. 64 MB is comfortable for
 // the host (SMS used ~24 MB + 16 MB ARAM).
-// NOTE (next frontier): the gameplay-stage particle setup (TMarDirector::loadResource
-// -> JPAEmitterManager) requests heaps sized `count * sizeof(JPABase*)`, and those
-// structs are LARGER on LP64 (embedded pointers 4->8 B): the emitter heap alone is
-// ~56 MB. Bumping this to 512 MB moves the crash PAST the JPAParticle near-null alloc
-// to a later JKRExpHeap::alloc OSPanic — i.e. the gameplay heap-sizing is an LP64
-// cascade to work through, not one bug. Left at 64 MB (the known/committed state)
-// pending that investigation.
-constexpr size_t kArenaSize = 64u << 20;
+// The gameplay-stage load needs much more than the GC 24 MB+16 MB ARAM budget on the
+// 64-bit host: the engine structs are ~2x (embedded pointers 4->8 B) AND the particle
+// subsystem reserves a large solid heap (~56 MB) plus 2 MB archive buffers. 64 MB ran
+// out mid-load (RARC swap alloc returned near-null). 256 MB gives the LP64 load room.
+constexpr size_t kArenaSize = 256u << 20;
 void* g_arena = nullptr;
 
 // PC-native disc backend: a plain GCM/ISO read. The engine reads the disc from
