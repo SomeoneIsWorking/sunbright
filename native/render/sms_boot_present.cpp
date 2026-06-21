@@ -11,6 +11,7 @@
 // exe. We only do GPU work while dumping is enabled and under the frame cap, so a normal
 // run isn't slowed by per-frame lavapipe rasterization.
 #include "nvk.h"
+#include "gx_imm_xform.h"   // SbImmVtx (== NvkVertex layout)
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -18,14 +19,21 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
+using namespace sb::render;
+
 extern "C" {
 // vi_present.h (declared here to avoid pulling the platform include dir into sms-render)
 void sb_vi_set_present_hook(void (*fn)(void*, void*), void* user);
 // gx_impl.cpp bridge: captured copy-clear colour as floats (0..1).
 void sb_gx_get_clear_color(float* rgba);
+// gx_imm_impl.cpp bridge: the frame's captured immediate-mode triangle list (Vulkan
+// NDC + RGBA). Returns the vertex count (multiple of 3); marks the buffer consumed.
+int sb_gx_imm_take(const SbImmVtx** out);
 }
 
-using namespace sb::render;
+// The capture vertex and the renderer vertex must be byte-identical so the present can
+// hand the captured triangles straight to nvk with no per-vertex copy/conversion.
+static_assert(sizeof(SbImmVtx) == sizeof(NvkVertex), "SbImmVtx/NvkVertex layout");
 
 namespace {
 
@@ -68,16 +76,21 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
     float c[4] = {0, 0, 0, 1};
     sb_gx_get_clear_color(c);
 
-    // SLICE 1: no captured geometry yet — render just the clear colour.
-    std::vector<NvkVertex> empty;
-    g_nvk.renderTriangles(empty, NvkClear{c[0], c[1], c[2], c[3]});
+    // SLICE 2: clear to the captured GXSetCopyClear colour, then draw the frame's
+    // captured immediate-mode 2D (the fader overlay / GC-logo / J2D HUD quads).
+    const SbImmVtx* imm = nullptr;
+    int nimm = sb_gx_imm_take(&imm);
+    std::vector<NvkVertex> verts(nimm);
+    if (nimm)
+        std::memcpy(verts.data(), imm, (size_t)nimm * sizeof(NvkVertex));
+    g_nvk.renderTriangles(verts, NvkClear{c[0], c[1], c[2], c[3]});
 
     char path[160];
     std::snprintf(path, sizeof path, "scratch/frames/boot_%04d.ppm", g_frame);
     write_ppm(path);
     if (g_frame == 0 || (g_frame % 30) == 0)
-        std::printf("[present] frame %d clear=(%.2f,%.2f,%.2f,%.2f) -> %s\n",
-                    g_frame, c[0], c[1], c[2], c[3], path);
+        std::printf("[present] frame %d clear=(%.2f,%.2f,%.2f,%.2f) imm_tris=%d -> %s\n",
+                    g_frame, c[0], c[1], c[2], c[3], nimm / 3, path);
     ++g_frame;
 }
 

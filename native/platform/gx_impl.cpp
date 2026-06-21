@@ -366,17 +366,19 @@ void GXSetArray(GXAttr attr, const void* base_ptr, u8 stride) {
     state().vtxArray[attr] = { base_ptr, stride };
 }
 void GXInvalidateVtxCache(void) { /* no native vertex cache; nothing to flush */ }
-// Immediate-mode vertex descriptor (J2D uses GXBegin/GXEnd quads). Capture the
-// per-attr type; GXBegin/line-width are immediate-mode draws the renderer doesn't
-// replay (it reads the J2D object model), so they are inert.
+// Immediate-mode vertex descriptor (J2D / fader use GXBegin/GXEnd quads). Capture the
+// per-attr type. GXBegin opens an immediate primitive captured by the gx_imm seam
+// (gx_imm_impl.cpp): the writers (GXVert.h) stream verts to sb_gx_imm_*, the present
+// layer projects + renders them. (SLICE 2 of renderer-attach.)
 void GXClearVtxDesc(void) {
     for (auto& d : state().immVtxDesc) d = 0; // GX_NONE
 }
 void GXSetVtxDesc(GXAttr attr, GXAttrType type) {
     if ((u32)attr < 26) state().immVtxDesc[attr] = (u8)type;
 }
-void GXBegin(GXPrimitive /*type*/, GXVtxFmt /*vtxfmt*/, u16 /*nverts*/) {
-    /* immediate-mode primitive begin — no FIFO; J2D draws read from the object model */
+extern void sb_gx_imm_begin(int prim);   // gx_imm_impl.cpp
+void GXBegin(GXPrimitive type, GXVtxFmt /*vtxfmt*/, u16 /*nverts*/) {
+    sb_gx_imm_begin((int)type);
 }
 void GXSetLineWidth(u8 /*width*/, GXTexOffset /*texOffsets*/) { /* HW line raster width */ }
 

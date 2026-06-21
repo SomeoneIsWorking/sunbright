@@ -91,6 +91,7 @@ set_target_properties(sms-platform PROPERTIES
 target_include_directories(sms-platform PUBLIC
     "${SMS_NATIVE_REPO_ROOT}/native/platform"
     "${SMS_NATIVE_REPO_ROOT}/native/shim"
+    "${SMS_NATIVE_REPO_ROOT}/native/render"   # gx_imm_xform.h (immediate-mode capture)
     "${SMS_NATIVE_REPO_ROOT}/reference/sms/include")
 target_compile_options(sms-platform PRIVATE -Wall -Wextra
     # The SDK headers declare HW-register/OS globals (__VIRegs, __OSBusClock, ...)
