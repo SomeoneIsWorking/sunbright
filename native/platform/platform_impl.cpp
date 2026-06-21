@@ -20,6 +20,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <unistd.h>     // pread, fileno (thread-safe positioned disc reads)
 
 namespace {
 
@@ -29,21 +30,36 @@ namespace {
 constexpr size_t kArenaSize = 64u << 20;
 void* g_arena = nullptr;
 
-// PC-native disc backend: a plain GCM/ISO read through host stdio.
+// PC-native disc backend: a plain GCM/ISO read. The engine reads the disc from
+// MULTIPLE threads concurrently (THP streams the movie on its Reader thread while a
+// stage's loadResource runs on the setup thread, plus JKRDvdRipper workers), so the
+// backend MUST be thread-safe. fseek+fread on a shared FILE* is NOT (interleaved
+// seeks corrupt each other's reads -> garbage data -> downstream heap/size corruption).
+// Use pread(): a positioned, atomic read that does not touch any shared file offset,
+// so concurrent reads are independent and lock-free.
 FILE* g_disc_fp = nullptr;
+int   g_disc_fd = -1;
 
 bool gcm_read(void* dst, u32 length, u32 offset, void* /*user*/) {
-    if (!g_disc_fp) return false;
-    if (std::fseek(g_disc_fp, (long)offset, SEEK_SET) != 0) return false;
-    return std::fread(dst, 1, length, g_disc_fp) == length;
+    if (g_disc_fd < 0) return false;
+    u8* p = (u8*)dst;
+    size_t remaining = length;
+    off_t pos = (off_t)offset;
+    while (remaining > 0) {
+        ssize_t n = pread(g_disc_fd, p, remaining, pos);
+        if (n <= 0) return false;          // EOF or error -> short read is a failure
+        p += n; pos += n; remaining -= (size_t)n;
+    }
+    return true;
 }
 
 } // namespace
 
 extern "C" bool sb_platform_open_gcm(const char* path) {
-    if (g_disc_fp) { std::fclose(g_disc_fp); g_disc_fp = nullptr; }
+    if (g_disc_fp) { std::fclose(g_disc_fp); g_disc_fp = nullptr; g_disc_fd = -1; }
     g_disc_fp = std::fopen(path, "rb");
     if (!g_disc_fp) return false;
+    g_disc_fd = fileno(g_disc_fp);   // pread() on this fd is thread-safe (no shared offset)
     sb_dvd_set_disc_source(gcm_read, nullptr);
     return sb_dvd_init_from_disc();
 }
@@ -94,7 +110,7 @@ bool PlatformInit(int argc, char** argv) {
 }
 
 void PlatformShutdown() {
-    if (g_disc_fp) { std::fclose(g_disc_fp); g_disc_fp = nullptr; }
+    if (g_disc_fp) { std::fclose(g_disc_fp); g_disc_fp = nullptr; g_disc_fd = -1; }
     if (g_arena) { std::free(g_arena); g_arena = nullptr; }
 }
 

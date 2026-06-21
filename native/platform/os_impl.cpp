@@ -269,13 +269,37 @@ int OSCreateThread(OSThread* thread, void* (*func)(void*), void* param,
 long OSResumeThread(OSThread* thread) {
     NativeThread* n = backing(thread);
     if (!n) return 0;
+    std::lock_guard<std::mutex> lk(n->m);
     long prev = thread->suspend;
     if (thread->suspend > 0) thread->suspend--;
     if (thread->suspend == 0) {
-        std::lock_guard<std::mutex> lk(n->m);
-        if (!n->resumed) { n->resumed = true; n->cv.notify_all(); }
+        // Releases BOTH the initial creation-suspend (start gate, n->resumed) AND a
+        // runtime self-suspend (OSSuspendThread's cv.wait predicate, suspend<=0).
+        n->resumed = true;
         if (thread->state == OS_THREAD_STATE_READY)
             thread->state = OS_THREAD_STATE_RUNNING;
+        n->cv.notify_all();
+    }
+    return prev;
+}
+
+// OSSuspendThread — raise a thread's suspend count; if it is the CURRENT thread,
+// block here until OSResumeThread (or OSCancelThread) releases it. The GC SDK can
+// suspend any thread at a safe point; the THP pipeline only ever self-suspends
+// (Reader/VideoDecoder/AudioDecoder halt themselves at movie end), so a non-self
+// suspend just bumps the count (best-effort — the target has no injected checkpoint).
+// LANDMINE: faithful cross-thread mid-flight suspension needs the cooperative-fiber
+// backend; self-suspend (the only path SMS exercises) is exact.
+s32 OSSuspendThread(OSThread* thread) {
+    NativeThread* n = backing(thread);
+    if (!n) return -1;
+    std::unique_lock<std::mutex> lk(n->m);
+    s32 prev = (s32)thread->suspend;
+    thread->suspend++;
+    if (thread == t_current) {
+        thread->state = OS_THREAD_STATE_READY;  // suspended-but-runnable
+        n->cv.wait(lk, [n, thread]{ return thread->suspend <= 0 || n->cancel; });
+        if (!n->cancel) thread->state = OS_THREAD_STATE_RUNNING;
     }
     return prev;
 }
@@ -325,7 +349,8 @@ void OSCancelThread(OSThread* thread) {
     std::lock_guard<std::mutex> lk(n->m);
     n->cancel = true;
     thread->state = OS_THREAD_STATE_MORIBUND;
-    if (!n->resumed) { n->resumed = true; n->cv.notify_all(); }
+    n->resumed = true;
+    n->cv.notify_all();  // wake the start gate AND any runtime self-suspend wait
 }
 
 long OSGetThreadPriority(OSThread* thread) { return thread->priority; }
