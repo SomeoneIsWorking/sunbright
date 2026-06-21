@@ -56,7 +56,10 @@ set_target_properties(sms-native PROPERTIES
 
 target_include_directories(sms-native PUBLIC
     "${SMS_NATIVE_REPO_ROOT}/native/shim"
-    "${SMS_NATIVE_REPO_ROOT}/reference/sms/include")
+    "${SMS_NATIVE_REPO_ROOT}/reference/sms/include"
+    # BE->host asset byteswap layer (bmd_swap_to_host), wired into the BMD/BDL
+    # model load path for swap-at-load. Symbols come from sms-assets at link.
+    "${SMS_NATIVE_REPO_ROOT}/native/assets")
 
 target_compile_options(sms-native PRIVATE
     # Force-include the portable Gekko intrinsics + fixed-width types shim.
