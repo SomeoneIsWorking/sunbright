@@ -29,6 +29,10 @@ void sb_gx_get_clear_color(float* rgba);
 // gx_imm_impl.cpp bridge: the frame's captured immediate-mode triangle list (Vulkan
 // NDC + RGBA). Returns the vertex count (multiple of 3); marks the buffer consumed.
 int sb_gx_imm_take(const SbImmVtx** out);
+// SLICE 3a: the frame's captured live J3D scene triangles (Vulkan NDC + RGBA), same
+// shape as sb_gx_imm_take. WEAK — when the capture TU (sms_boot_j3d_capture.cpp) isn't
+// linked, this is null and the present skips the 3D concat. NvkVertex layout (==SbImmVtx).
+int sb_boot_capture_j3d_take(const NvkVertex** out) __attribute__((weak));
 }
 
 // The capture vertex and the renderer vertex must be byte-identical so the present can
@@ -80,21 +84,25 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
     float c[4] = {0, 0, 0, 1};
     sb_gx_get_clear_color(c);
 
-    // SLICE 2: clear to the captured GXSetCopyClear colour, then draw the frame's
-    // captured immediate-mode 2D (the fader overlay / GC-logo / J2D HUD quads).
+    // SLICE 3a: draw the frame's captured live J3D scene FIRST (so the 2D HUD composites
+    // over it), then SLICE 2's captured immediate-mode 2D (fader / GC-logo / J2D quads).
+    const NvkVertex* scene = nullptr;
+    int nscene = (&sb_boot_capture_j3d_take) ? sb_boot_capture_j3d_take(&scene) : 0;
     const SbImmVtx* imm = nullptr;
     int nimm = sb_gx_imm_take(&imm);
-    std::vector<NvkVertex> verts(nimm);
+    std::vector<NvkVertex> verts((size_t)nscene + nimm);
+    if (nscene)
+        std::memcpy(verts.data(), scene, (size_t)nscene * sizeof(NvkVertex));
     if (nimm)
-        std::memcpy(verts.data(), imm, (size_t)nimm * sizeof(NvkVertex));
+        std::memcpy(verts.data() + nscene, imm, (size_t)nimm * sizeof(NvkVertex));
     g_nvk.renderTriangles(verts, NvkClear{c[0], c[1], c[2], c[3]});
 
     char path[160];
     std::snprintf(path, sizeof path, "scratch/frames/boot_%04d.ppm", g_frame);
     write_ppm(path);
     if (g_frame == 0 || (g_frame % 30) == 0)
-        std::printf("[present] frame %d clear=(%.2f,%.2f,%.2f,%.2f) imm_tris=%d -> %s\n",
-                    g_frame, c[0], c[1], c[2], c[3], nimm / 3, path);
+        std::printf("[present] frame %d clear=(%.2f,%.2f,%.2f,%.2f) scene_tris=%d imm_tris=%d -> %s\n",
+                    g_frame, c[0], c[1], c[2], c[3], nscene / 3, nimm / 3, path);
     ++g_frame;
 }
 

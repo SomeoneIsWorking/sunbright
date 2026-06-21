@@ -133,6 +133,21 @@ extern "C" void sb_gx_get_clear_color(float* rgba) {
     rgba[0] = c.r / 255.0f; rgba[1] = c.g / 255.0f;
     rgba[2] = c.b / 255.0f; rgba[3] = c.a / 255.0f;
 }
+
+// SLICE 3 bridge: the captured projection + viewport for the J3D scene-capture path
+// (native/render/sms_boot_j3d_capture.cpp), laid out exactly as imm_project()/GXProject
+// want — type, proj[0..5] = GXState.projMtx, vp[0..5] = {l,t,w,h,nearz,farz}. Mirrors
+// GXGetProjectionv/GXGetViewportv but as a clean extern "C" the Vulkan-only render lib
+// can call without pulling in dolphin/gx headers.
+extern "C" void sb_gx_get_projection(int* type, float proj[6], float vp[6]) {
+    auto& g = state();
+    if (type) *type = (int)g.projType;
+    if (proj) for (int i = 0; i < 6; ++i) proj[i] = g.projMtx[i];
+    if (vp) {
+        vp[0] = g.vpLeft; vp[1] = g.vpTop;  vp[2] = g.vpWd;
+        vp[3] = g.vpHt;   vp[4] = g.vpNearz; vp[5] = g.vpFarz;
+    }
+}
 void GXSetNumChans(u8 n)     { state().numChans = n; }
 void GXSetNumTexGens(u8 n)   { state().numTexGens = n; }
 void GXSetNumTevStages(u8 n) { state().numTevStages = n; }

@@ -351,7 +351,22 @@ if(SMS_BUILD_BOOT)
         # Headless scripted controller input (SB_PAD_SCRIPT / SB_PAD_DRIVE).
         "${SMS_NATIVE_REPO_ROOT}/native/src/pad_driver.cpp"
         # Early heap for glslang static-init allocs (runs before main / PlatformInit).
-        "${SMS_NATIVE_REPO_ROOT}/native/src/boot_heap_bringup.cpp")
+        "${SMS_NATIVE_REPO_ROOT}/native/src/boot_heap_bringup.cpp"
+        # SLICE 3a renderer-attach: live J3D scene capture (J3DShape::draw -> NDC tris,
+        # drained by the present hook). Needs BOTH the J3D headers (reference/sms/include +
+        # gekko force-include, like the loader tests) AND the render headers (nvk/ngx, via
+        # the gx_parse shim) — only sms-boot has both include sets, so it is compiled here
+        # rather than in sms-render. Provides the weak sb_boot_capture_j3d{,_take} symbols.
+        "${SMS_NATIVE_REPO_ROOT}/native/render/sms_boot_j3d_capture.cpp")
+    set_source_files_properties(
+        "${SMS_NATIVE_REPO_ROOT}/native/render/sms_boot_j3d_capture.cpp" PROPERTIES
+        # ORDER MATTERS: native/render/shim FIRST so ngx_decode's #include "gx_parse.h"
+        # gets the Dolphin-free shadow; native/shim BEFORE reference/sms/include so
+        # <dolphin/types.h> resolves to the host shadow (u32=uint32_t) and NOT the GC SDK
+        # header (u32=unsigned long) — otherwise the gx_parse shim's u32=uint32_t conflicts.
+        INCLUDE_DIRECTORIES
+            "${SMS_NATIVE_REPO_ROOT}/native/render/shim;${SMS_NATIVE_REPO_ROOT}/native/render;${SMS_NATIVE_REPO_ROOT}/runtime/ngx;${SMS_NATIVE_REPO_ROOT}/runtime/render;${SMS_NATIVE_REPO_ROOT}/native/shim;${SMS_NATIVE_REPO_ROOT}/reference/sms/include"
+        COMPILE_OPTIONS "-include;${SMS_NATIVE_REPO_ROOT}/native/shim/gekko_intrinsics.h;-Wno-narrowing;-fcommon;-w")
     set_target_properties(sms-boot PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
     target_include_directories(sms-boot PRIVATE
         "${SMS_NATIVE_REPO_ROOT}/native/platform" "${SMS_NATIVE_REPO_ROOT}/native/shim"
