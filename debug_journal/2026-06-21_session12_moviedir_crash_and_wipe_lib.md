@@ -111,7 +111,27 @@ with the user (port-blind vs attach the native renderer to sms-boot first vs rer
 The phase machine *can* be ported faithfully (it's timer/data-driven); the question is
 whether to do so without a verification surface.
 
+## USER DECISION + RENDERER-ATTACH SLICE 1 (committed a618d56)
+User chose **"Attach native renderer to sms-boot first"** (over blind-porting the wipe lib),
+so the movie/wipe/scenes become verifiable AND we approach the color-frame goal directly.
+SLICE 1 landed: `native/render/sms_boot_present.cpp` installs the VI per-retrace present hook
+(boot.cpp, gated SMS_HAVE_RENDER) → lazily `Nvk::init` (lavapipe CPU fallback) → renders the
+captured `GXSetCopyClear` colour (new `sb_gx_get_clear_color` bridge in gx_impl.cpp) → dumps
+`scratch/frames/boot_NNNN.ppm` (env `SB_FRAME_DUMP=1`, `SB_FRAME_DUMP_MAX` def 120; GPU work
+only while dumping so normal runs aren't slowed). sms-render(+glslang) now links into sms-boot.
+LANDMINE fixed: glslang's static-init `operator new` runs BEFORE main → needs a heap →
+`native/src/boot_heap_bringup.cpp` brings a JKRExpHeap up at `init_priority(101)` (the
+j3dmesh_test pattern); the game's createRoot still owns the real heap. VERIFIED: 640x480 PPMs,
+black (faithful — movie stalled at fade-in from black); GXSetCopyClear confirmed firing (live
+capture, not a default). ctest 21/21; non-dump boot reaches the gameLoop unchanged.
+Full slice plan: **scratch/handoff_renderer_attach.md**. NEXT = SLICE 2 (immediate-mode 2D
+capture: the GX vertex writers are inline macros to the FIFO sink in dolphin/gx/GXVert.h →
+under SMS_NATIVE_PLATFORM make GXBegin/GXPosition3s16/GXColor1u32/GXEnd capture into a native
+imm buffer; present converts via the 2D ortho) → then port the Hx_ wipe (now visible) → SLICE 3
+J3D scene = first color frame.
+
 ## State banked
 - FIX 1 committed+pushed (submodule fork `sunbright` 39977e7 + parent gitlink).
 - ppcdis.py + SB_MOVIE_DBG committed+pushed (parent main).
 - Full Hx_ wipe-library RE captured above (durable; the hard part is done).
+- Renderer-attach SLICE 1 committed+pushed (a618d56).
