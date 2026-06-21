@@ -348,6 +348,8 @@ option(SMS_BUILD_BOOT "Build the native bring-up exe (expected to fail-link unti
 if(SMS_BUILD_BOOT)
     add_executable(sms-boot
         "${SMS_NATIVE_REPO_ROOT}/native/src/boot.cpp"
+        # Headless scripted controller input (SB_PAD_SCRIPT / SB_PAD_DRIVE).
+        "${SMS_NATIVE_REPO_ROOT}/native/src/pad_driver.cpp"
         # Early heap for glslang static-init allocs (runs before main / PlatformInit).
         "${SMS_NATIVE_REPO_ROOT}/native/src/boot_heap_bringup.cpp")
     set_target_properties(sms-boot PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)

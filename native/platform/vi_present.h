@@ -17,4 +17,10 @@ void* sb_vi_current_framebuffer(void);
 // with the current framebuffer — the integration layer pushes it to the swapchain.
 typedef void (*ViPresentFn)(void* framebuffer, void* user);
 void sb_vi_set_present_hook(ViPresentFn fn, void* user);
+
+// Install a lightweight tick hook called once per retrace (before the present hook)
+// with the running retrace count. Independent of the renderer — used by the headless
+// pad driver (pad_driver.cpp) to inject scripted controller input each frame.
+typedef void (*ViTickFn)(u32 retrace_count, void* user);
+void sb_vi_set_tick_hook(ViTickFn fn, void* user);
 }

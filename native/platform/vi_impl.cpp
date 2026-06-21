@@ -39,6 +39,8 @@ bool g_pacing = true;
 long long g_last_retrace_time = 0;
 ViPresentFn g_present = nullptr;
 void* g_present_user = nullptr;
+ViTickFn g_tick = nullptr;
+void* g_tick_user = nullptr;
 }
 
 extern "C" {
@@ -47,6 +49,7 @@ extern "C" {
 void  sb_vi_set_pacing(bool on) { g_pacing = on; }
 void* sb_vi_current_framebuffer(void) { return g_fb; }
 void  sb_vi_set_present_hook(ViPresentFn fn, void* user) { g_present = fn; g_present_user = user; }
+void  sb_vi_set_tick_hook(ViTickFn fn, void* user) { g_tick = fn; g_tick_user = user; }
 
 // ---- SDK VI ---------------------------------------------------------------
 void VIInit(void) {
@@ -87,6 +90,7 @@ void VIWaitForRetrace(void) {
 
     u32 count = ++g_retrace;
     g_field ^= 1u;
+    if (g_tick) g_tick(count, g_tick_user);
     if (g_pre) g_pre(count);
     if (g_post) g_post(count);
     if (g_present) g_present(g_fb, g_present_user);
