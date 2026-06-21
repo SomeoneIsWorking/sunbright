@@ -1,6 +1,10 @@
 // ring3_stubs.cpp — RING-3 SCAFFOLD: remaining vtable-slot virtuals (args verbatim
 // from the linker undef => exact match; return types from headers; minimal bodies).
 
+#include <dolphin/os.h>
+#include <System/Application.hpp>
+#include <System/MarDirector.hpp>
+#include <JSystem/JKernel/JKRMemArchive.hpp>
 #include <Animal/AnimalBase.hpp>
 #include <Enemy/AreaCylinder.hpp>
 #include <Enemy/Conductor.hpp>
@@ -199,7 +203,21 @@ void TViking::loadAfter() {}
 void TWireBell::control() {}
 void TWireBell::loadAfter() {}
 // (emit vtable for TGuide)
-void TGuide::load(JSUMemoryInputStream& stream) {}
+//
+// The real TGuide::load (Guide.cpp, undecompiled) FIRST mounts the "guide" 2D archive
+// — guide.arc, streamed into ARAM as gArBkGuide by TApplication::setupThreadFuncLogo —
+// into the director's shared 2D-archive object (unkD8) as the JKRFileLoader volume
+// "guide", THEN builds its UI panes from it. TGuide loads in the scene-common nameref
+// tree immediately BEFORE TConsoleStr, whose load() does SMSSwitch2DArchive("guide",
+// gArBkConsole): getVolume("guide") -> unmount -> remount with the console (game_6)
+// data. So the "guide" volume MUST exist before that switch. We port the mount (the
+// 2D/ARAM archive subsystem step the whole stage-15/file-select load was blocked on);
+// TGuide's own pane build + perform() remain unported stubs (it draws nothing yet),
+// which is fine — the console graphics come from game_6 via TConsoleStr.
+void TGuide::load(JSUMemoryInputStream& stream)
+{
+	SMSMountAramArchive(gpMarDirector->unkD8, gArBkGuide);
+}
 // (emit vtable for TMBindShadowManager)
 void TMBindShadowManager::load(JSUMemoryInputStream& stream) {}
 // (emit vtable for TPauseMenu2)
