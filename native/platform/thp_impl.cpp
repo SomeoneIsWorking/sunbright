@@ -395,6 +395,9 @@ extern "C" {
 
 BOOL THPPlayerInit()
 {
+    if (std::getenv("SB_MOVIE_DBG"))
+        std::printf("[thp] THPPlayerInit (memset ActivePlayer; prev state=%d)\n",
+                    (int)ActivePlayer.state);
     memset(&ActivePlayer, 0, sizeof(THPPlayer));
     OSInitMessageQueue(&UsedTextureSetQueue, UsedTextureSetMessage, 3);
     // GC: LCEnable (locked L1 cache for the IDCT scratch) + THPInit() + initAudio()
@@ -662,6 +665,9 @@ BOOL THPPlayerPlay()
 
 void THPPlayerStop()
 {
+    if (std::getenv("SB_MOVIE_DBG"))
+        std::printf("[thp] THPPlayerStop (state=%d open=%d)\n",
+                    (int)ActivePlayer.state, (int)ActivePlayer.open);
     if (ActivePlayer.open && ActivePlayer.state != 0) {
         ActivePlayer.internalState = 0;
         ActivePlayer.state         = 0;
