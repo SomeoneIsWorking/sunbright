@@ -1,10 +1,14 @@
 // os_test.cpp — TDD harness for the OS kernel seam (native/platform/os_impl.cpp).
 //
-// Verifies the PRIMITIVE CONTRACTS (not GC priority-scheduling fidelity, which is
-// deferred to boot — see os_impl.cpp header): mutual exclusion + recursive relock,
-// FIFO message passing with blocking + jam, cond wait/signal, thread
-// create/resume/join/exit/detach, time monotonicity, heap alloc/free/referent-size,
-// stopwatch accumulation. Each tested function IS the shipping extern "C" seam fn.
+// Verifies the PRIMITIVE CONTRACTS of the COOPERATIVE single-runner scheduler
+// (os_impl.cpp option B): create/resume/join/exit, recursive mutex lock/relock,
+// FIFO message passing with blocking back-pressure + jam, cond wait/signal driven
+// by an explicit yield, critical-section accounting, time monotonicity, heap
+// alloc/free/referent-size, stopwatch accumulation. Each tested function IS the
+// shipping extern "C" seam fn. NOTE: because exactly one thread runs at a time,
+// "mutual exclusion" holds trivially — the counter tests confirm no lost updates
+// (the cooperative invariant), and the message-queue/cond tests confirm that
+// blocking primitives correctly hand the baton on and resume.
 
 #include <dolphin/os.h>
 #include <dolphin/os/OSThread.h>
@@ -163,8 +167,11 @@ static void test_cond() {
     static char sw[8192];
     OSCreateThread(&w, waiter, nullptr, sw + sizeof(sw), sizeof(sw), 16, 0);
     OSResumeThread(&w);
-    // Give the waiter time to block on the cond.
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    // Cooperative model: only one thread runs at a time, so we YIELD the baton to
+    // let the waiter run and park inside OSWaitCond (a sleep would not let it run —
+    // the main thread would just hold the baton). It hands the baton back when it
+    // blocks on the cond.
+    OSYieldThread();
     chk(g_signalled.load() == 0, "cond-blocks-before-signal");
     OSSignalCond(&g_cond);
     OSJoinThread(&w, nullptr);

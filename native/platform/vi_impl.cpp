@@ -20,6 +20,11 @@
 
 // OSGetTime from the OS seam — same lib; pace on the GC timebase for consistency.
 extern "C" long long OSGetTime(void);
+// Cooperative scheduler drive (os_impl.cpp): run async-resource workers (THP decode,
+// DVD, audio) to idle before each retrace — the native stand-in for "main blocks on
+// the VI interrupt while lower-priority worker threads run".
+extern "C" void sb_sched_drain_until_idle(void);
+extern "C" void sb_watchdog_kick(void);  // forward-progress heartbeat (watchdog_impl.cpp)
 static const long long kTBClock = 40500000LL;       // GC timebase 40.5 MHz
 static const long long kRetraceTicks = kTBClock / 60; // one NTSC field
 
@@ -60,6 +65,12 @@ VIRetraceCallback VISetPostRetraceCallback(VIRetraceCallback cb) {
 }
 
 void VIWaitForRetrace(void) {
+    // Run the async-resource worker threads (THP decode, DVD, audio) until the
+    // system is idle, then proceed with the retrace. Cooperatively serial: only
+    // one thread runs at a time, so this is where the workers get to make progress.
+    sb_sched_drain_until_idle();
+    sb_watchdog_kick();
+
     // Pace to the next ~1/60s field boundary on the host clock (the engine's
     // frame heartbeat). Tests disable pacing so they don't sleep.
     if (g_pacing) {

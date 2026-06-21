@@ -345,7 +345,9 @@ if(SMS_BUILD_BOOT)
     set_source_files_properties(
         "${SMS_NATIVE_REPO_ROOT}/native/src/boot_heap_bringup.cpp" PROPERTIES
         COMPILE_OPTIONS "-include;${SMS_NATIVE_REPO_ROOT}/native/shim/gekko_intrinsics.h;-Wno-narrowing;-fcommon")
-    target_link_options(sms-boot PRIVATE -Wl,--wrap=main)
+    # -rdynamic: export symbols into the dynamic table so the watchdog's backtrace
+    # (backtrace_symbols_fd) prints function names, not bare addresses.
+    target_link_options(sms-boot PRIVATE -Wl,--wrap=main -rdynamic)
     # boot_stubs/ — SCAFFOLD-to-link layer: faithful-signature stub definitions for the
     # game-class roster the decomp left undefined (actor ctors/vtables/nerves/globals the
     # MarNameRefGen catalogue references but that aren't on the boot->scene hot path).

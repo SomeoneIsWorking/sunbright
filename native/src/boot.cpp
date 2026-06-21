@@ -11,6 +11,7 @@
 namespace sb::platform { bool PlatformInit(int argc, char** argv); void PlatformShutdown(); }
 
 extern "C" int __real_main(int argc, char** argv);
+extern "C" void sb_watchdog_init(void);  // stuck-process watchdog (watchdog_impl.cpp)
 
 #ifdef SMS_HAVE_RENDER
 // native/render/sms_boot_present.cpp — installs the VI present hook (nvk render + frame dump).
@@ -26,6 +27,7 @@ extern "C" int __wrap_main(int argc, char** argv) {
 #ifdef SMS_HAVE_RENDER
     sb_boot_present_install();
 #endif
+    sb_watchdog_init();  // arm the stuck-process watchdog (SB_WATCHDOG_SECS, 0=off)
     std::printf("[boot] PlatformInit OK -> game main()\n");
     int rc = __real_main(argc, argv);
     sb::platform::PlatformShutdown();

@@ -3,26 +3,40 @@
 // Implements the 61 unresolved OS* symbols the game logic references (grounded in
 // scratch/native_unresolved.txt). The game embeds the SDK structs (OSThread,
 // OSMutex, OSMessageQueue, OSCond, OSStopwatch) directly in its objects, so we
-// KEEP their SDK layouts and carry native backing state (std::thread, condvars)
-// in a side-table keyed by the SDK-struct pointer.
+// KEEP their SDK layouts and carry native backing state in a side-table keyed by
+// the SDK-struct pointer.
 //
-// THREADING MODEL (option A from native/platform/README.md / os_seam.h):
-//   - Real host std::thread per OSThread (created suspended; OSResumeThread starts).
-//   - Mutex (recursive — GC OSMutex IS recursive, carries a count), Cond, and the
-//     bounded message queue use std::mutex/condition_variable for blocking with
-//     correct FIFO / signal semantics.
-//   - Interrupts (OSDisableInterrupts/Restore/Enable) map to a recursive GLOBAL
-//     lock so a "disabled-interrupts" critical section is mutually exclusive with
-//     every other game thread — standing in for the GC's single-core atomicity.
+// THREADING MODEL (option B — COOPERATIVE single-runner, condvar substrate):
+//   The game does not use threads for gameplay; its OSThreads are async-resource
+//   workers (THP decode, JKRAram/JAS DVD, the movie setup/loadResource thread).
+//   Running them as real preemptive host threads caused nondeterministic heap
+//   corruption / races. So we make ALL threading SYNCHRONOUS: exactly one thread
+//   executes game code at a time. Each OSThread is still carried by a host
+//   std::thread, but the threads NEVER run concurrently — a single "baton"
+//   (g_current) is handed off only at explicit cooperative points (a GC BLOCKING
+//   primitive, OSYieldThread, or the VI retrace drain). No preemption => no data
+//   races, deterministic, "synchronous". (ucontext/swapcontext are banned; the
+//   hand-off is done with one mutex + a per-thread condition_variable.)
 //
-// VERIFIED: the primitive CONTRACTS are unit-tested in tests/os_test.cpp (mutual
-// exclusion, recursive relock, FIFO message passing + blocking, cond wait/signal,
-// thread create/resume/join/exit, time monotonicity, heap alloc/free/referent-size).
-// NOT YET VERIFIED (deferred to boot, honest gap): GC fixed-PRIORITY scheduling
-// order and true cooperative non-preemption — host threads are preempted by the
-// kernel scheduler, not picked by OS priority. The global interrupt-lock covers the
-// critical-section races; if a priority-ordering dependency surfaces at boot,
-// escalate to the cooperative-fiber backend (option B). LANDMINEs flagged inline.
+//   Scheduler invariants (all protected by the single g_sched mutex):
+//     - g_current holds the baton; only it runs game code.
+//     - A thread BLOCKS by marking itself not-runnable, parking on an object
+//       (wait_obj) and handing the baton to the highest-priority runnable thread
+//       (round-robin among equals). It wakes only when a WAKER marks it runnable
+//       (sched_wake on the matching object) and the baton later returns to it.
+//     - VIWaitForRetrace drains all lower-priority workers to idle, then proceeds
+//       (sb_sched_drain_until_idle) — the native stand-in for "main sleeps on the
+//       VI interrupt while workers run".
+//   GC fixed-priority order is approximated (pick lowest priority number first);
+//   true mid-flight preemption is unneeded because there is no concurrency.
+//
+// Host bookkeeping (NativeThread, the thread table) is MALLOC-backed (class
+// operator new + a malloc allocator) so it survives the game's JKRHeap freeAll/
+// destroy on scene transitions — it must never live on a wiped game heap.
+//
+// VERIFIED: primitive CONTRACTS in tests/os_test.cpp (cooperative create/resume/
+// join/exit, FIFO message passing with blocking back-pressure, mutex recursion,
+// cond wait/signal, yield-driven progress, time/heap/stopwatch).
 
 #include <dolphin/os.h>
 #include <dolphin/os/OSThread.h>
@@ -34,14 +48,30 @@
 
 #include <atomic>
 #include <chrono>
+#include <climits>
 #include <condition_variable>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <new>
 #include <thread>
 #include <unordered_map>
+#include <vector>
+
+// Stuck-process watchdog (watchdog_impl.cpp): heartbeat kicked at every scheduler
+// hand-off; the running fiber is recorded so a stall can be backtraced.
+extern "C" void sb_watchdog_kick(void);
+extern "C" void sb_watchdog_set_running(void);
+
+// Host-allocation gate: route plain `new` to host malloc while raised. Used around
+// std::thread construction so the carrier's internal state is malloc-backed (it must
+// survive the game's JKRHeap teardown on scene transitions). The real (strong)
+// definitions live in JKRHeap.cpp (sms-native); these WEAK no-ops let the platform
+// unit tests — which do not link sms-native / the JKR heap — resolve the symbols.
+extern "C" __attribute__((weak)) void sb_host_alloc_push(void) {}
+extern "C" __attribute__((weak)) void sb_host_alloc_pop(void) {}
 
 namespace {
 
@@ -58,38 +88,166 @@ long long now_ticks() {
     return (long long)((__int128)ns * kTBClock / 1000000000LL);
 }
 
+// ---- malloc-backed allocator (host bookkeeping must NOT live on a game heap) --
+template <class T>
+struct MallocAlloc {
+    using value_type = T;
+    MallocAlloc() noexcept {}
+    template <class U> MallocAlloc(const MallocAlloc<U>&) noexcept {}
+    T* allocate(std::size_t n) {
+        if (n > SIZE_MAX / sizeof(T)) throw std::bad_alloc();
+        void* p = std::malloc(n * sizeof(T));
+        if (!p) throw std::bad_alloc();
+        return static_cast<T*>(p);
+    }
+    void deallocate(T* p, std::size_t) noexcept { std::free(p); }
+};
+template <class A, class B>
+bool operator==(const MallocAlloc<A>&, const MallocAlloc<B>&) noexcept { return true; }
+template <class A, class B>
+bool operator!=(const MallocAlloc<A>&, const MallocAlloc<B>&) noexcept { return false; }
+
 // ---- thread backing -------------------------------------------------------
 struct NativeThread {
-    std::thread th;
+    std::thread th;                  // host carrier; empty for the bootstrap/main fiber
     void* (*func)(void*) = nullptr;
     void* param = nullptr;
     OSThread* os = nullptr;
-    std::mutex m;
-    std::condition_variable cv;       // gates start (resume) and join-wakeups
-    bool resumed = false;
+    std::condition_variable cv;      // signalled when this thread becomes g_current
+    bool runnable = false;           // eligible to be scheduled
     bool finished = false;
+    bool started  = false;
     bool detached = false;
-    bool cancel = false;
+    bool cancel   = false;
+    bool is_main  = false;
+    s32  priority = 16;
+    const void* wait_obj = nullptr;  // object this thread is parked on (targeted wake)
     void* retval = nullptr;
+
+    // Host-malloc backed so a NativeThread survives the game's JKRHeap teardown.
+    static void* operator new(std::size_t n) {
+        void* p = std::malloc(n);
+        if (!p) throw std::bad_alloc();
+        return p;
+    }
+    static void operator delete(void* p) noexcept { std::free(p); }
 };
 
-// Internal sentinel thrown by OSExitThread / OSCancelThread to unwind the thread
-// body (GC OSExitThread is noreturn; we unwind to the wrapper).
+// Internal sentinel thrown by OSExitThread / OSCancelThread to unwind a thread
+// body (GC OSExitThread is noreturn; we unwind to the trampoline wrapper).
 struct ThreadExit { void* val; };
 
-std::mutex g_table_mu;
-std::unordered_map<OSThread*, NativeThread*> g_threads;
+// ---- the cooperative scheduler (single g_sched protects all of this) -------
+std::mutex g_sched;
+NativeThread* g_current = nullptr;       // holds the baton
+NativeThread* g_idle_waiter = nullptr;   // thread in the VI retrace drain
+std::unordered_map<OSThread*, NativeThread*, std::hash<OSThread*>,
+                   std::equal_to<OSThread*>,
+                   MallocAlloc<std::pair<OSThread* const, NativeThread*>>> g_threads;
+std::vector<NativeThread*, MallocAlloc<NativeThread*>> g_all;  // creation order (round-robin)
+
+// Pending wakeups for OSSleepThread/OSWakeupThread (ad-hoc queues) so a wake that
+// races ahead of the sleep is not lost (the SDK's generation-counter role).
+std::vector<const void*, MallocAlloc<const void*>> g_pending_wakes;
+
+thread_local NativeThread* t_self = nullptr;
 thread_local OSThread* t_current = nullptr;
+thread_local int t_intr_depth = 0;
+OSThread g_main_os;   // backing OSThread storage for the bootstrap/main fiber
 
 NativeThread* backing(OSThread* t) {
-    std::lock_guard<std::mutex> lk(g_table_mu);
     auto it = g_threads.find(t);
     return it == g_threads.end() ? nullptr : it->second;
 }
 
-// ---- global interrupt lock (critical-section mutual exclusion) ------------
-std::recursive_mutex g_intr;
-thread_local int t_intr_depth = 0;
+// Register the calling host thread (one that did NOT come through OSCreateThread —
+// the bootstrap/main) as a cooperative fiber. Idempotent. Caller holds g_sched.
+NativeThread* cur_self_locked() {
+    if (t_self) return t_self;
+    NativeThread* n = new NativeThread();
+    n->is_main = true; n->runnable = true; n->started = true; n->priority = 16;
+    n->os = &g_main_os;
+    std::memset(&g_main_os, 0, sizeof(g_main_os));
+    g_main_os.state = OS_THREAD_STATE_RUNNING;
+    g_main_os.priority = 16; g_main_os.base = 16;
+    g_threads[n->os] = n;
+    g_all.push_back(n);
+    t_self = n; t_current = n->os;
+    if (!g_current) g_current = n;
+    return n;
+}
+
+int index_of(NativeThread* n) {
+    for (size_t i = 0; i < g_all.size(); ++i)
+        if (g_all[i] == n) return (int)i;
+    return -1;
+}
+
+bool schedulable(NativeThread* n) {
+    return n->runnable && !n->finished && n->os->suspend <= 0 && n != g_idle_waiter;
+}
+
+// Highest priority (lowest number) schedulable thread, round-robin among equals
+// starting after g_current. Caller holds g_sched.
+NativeThread* pick_next() {
+    int best = INT_MAX;
+    for (NativeThread* n : g_all)
+        if (schedulable(n) && n->priority < best) best = n->priority;
+    if (best == INT_MAX) return nullptr;
+    int start = index_of(g_current);
+    if (start < 0) start = 0;
+    int cnt = (int)g_all.size();
+    for (int k = 1; k <= cnt; ++k) {
+        NativeThread* n = g_all[(start + k) % cnt];
+        if (schedulable(n) && n->priority == best) return n;
+    }
+    return nullptr;
+}
+
+[[noreturn]] void sched_deadlock() {
+    std::fprintf(stderr, "OSPanic: os_impl scheduler DEADLOCK — no runnable thread "
+                 "(current=%p)\n", (void*)g_current);
+    std::fflush(stderr);
+    std::abort();
+}
+
+// Give the baton to the next runnable thread. `self` must have its runnable flag
+// already set as desired (false to block, true to yield). Caller holds g_sched.
+void hand_baton(NativeThread* self) {
+    sb_watchdog_kick();                // forward-progress heartbeat
+    NativeThread* next = pick_next();
+    if (next == self) return;          // nobody better — keep the baton
+    if (!next) next = g_idle_waiter;   // system idle — resume the VI retrace drain
+    if (!next) sched_deadlock();
+    g_current = next;
+    next->cv.notify_all();
+}
+
+void wait_my_turn(NativeThread* self, std::unique_lock<std::mutex>& lk) {
+    self->cv.wait(lk, [self] { return g_current == self; });
+    sb_watchdog_set_running();         // this fiber now holds the baton
+}
+
+// Mark every thread parked on `obj` runnable. Caller holds g_sched.
+void sched_wake(const void* obj) {
+    for (NativeThread* n : g_all)
+        if (!n->finished && n->wait_obj == obj) {
+            n->wait_obj = nullptr;
+            n->runnable = true;
+        }
+}
+
+// Block the current thread on `obj`, hand the baton on, and wait until woken and
+// rescheduled. Throws ThreadExit if the thread was cancelled while parked.
+void park_on(const void* obj, std::unique_lock<std::mutex>& lk) {
+    NativeThread* self = cur_self_locked();
+    self->wait_obj = obj;
+    self->runnable = false;
+    hand_baton(self);
+    wait_my_turn(self, lk);
+    self->wait_obj = nullptr;
+    if (self->cancel) throw ThreadExit{ self->os ? self->os->val : nullptr };
+}
 
 // ---- heap / arena ---------------------------------------------------------
 std::mutex g_heap_mu;
@@ -174,23 +332,26 @@ void OSTicksToCalendarTime(OSTime ticks, OSCalendarTime* td) {
 }
 
 // ===========================================================================
-// Interrupts (global recursive critical-section lock)
+// Interrupts — vestigial under the cooperative single-runner.
+//   Only ONE thread runs at a time and reschedules happen only at explicit
+//   block/yield/drain points, so a "disabled interrupts" critical section is
+//   already atomic (no other game thread can run in the middle). We keep a
+//   per-thread depth so OSYieldThread defers any reschedule inside a critical
+//   section, and so the enable/restore return values match the SDK contract.
 // ===========================================================================
 BOOL OSDisableInterrupts(void) {
     BOOL wasEnabled = (t_intr_depth == 0) ? TRUE : FALSE;
-    g_intr.lock();
     ++t_intr_depth;
     return wasEnabled;
 }
 BOOL OSRestoreInterrupts(BOOL /*level*/) {
-    // Paired 1:1 with a prior OSDisableInterrupts (the universal game idiom).
     BOOL wasEnabled = (t_intr_depth == 0) ? TRUE : FALSE;
-    if (t_intr_depth > 0) { --t_intr_depth; g_intr.unlock(); }
+    if (t_intr_depth > 0) --t_intr_depth;
     return wasEnabled;
 }
 BOOL OSEnableInterrupts(void) {
     BOOL wasEnabled = (t_intr_depth == 0) ? TRUE : FALSE;
-    if (t_intr_depth > 0) { --t_intr_depth; g_intr.unlock(); }
+    if (t_intr_depth > 0) --t_intr_depth;
     return wasEnabled;
 }
 
@@ -202,15 +363,20 @@ void OSInitThreadQueue(OSThreadQueue* q) { q->head = nullptr; q->tail = nullptr;
 OSThread* OSGetCurrentThread(void) { return t_current; }
 
 BOOL OSIsThreadTerminated(OSThread* t) {
+    std::lock_guard<std::mutex> lk(g_sched);
     NativeThread* n = backing(t);
     return (n && n->finished) ? TRUE : FALSE;
 }
 
 static void thread_trampoline(NativeThread* n) {
-    t_current = n->os;
-    {  // wait until resumed
-        std::unique_lock<std::mutex> lk(n->m);
-        n->cv.wait(lk, [n]{ return n->resumed; });
+    {
+        std::unique_lock<std::mutex> lk(g_sched);
+        t_self = n;
+        t_current = n->os;
+        n->started = true;
+        // Wait until resumed (runnable) or cancelled, AND holding the baton.
+        n->cv.wait(lk, [n] { return (n->runnable || n->cancel) && g_current == n; });
+        sb_watchdog_set_running();
     }
     void* rv = nullptr;
     if (!n->cancel) {
@@ -221,167 +387,194 @@ static void thread_trampoline(NativeThread* n) {
             rv = e.val;
         }
     }
-    bool detached;
-    {
-        std::lock_guard<std::mutex> lk(n->m);
-        n->retval = rv;
-        n->finished = true;
-        n->os->state = OS_THREAD_STATE_MORIBUND;
-        n->os->val = rv;
-        detached = n->detached;
-        n->cv.notify_all();  // wake joiners
-    }
+    std::unique_lock<std::mutex> lk(g_sched);
+    n->retval = rv;
+    n->finished = true;
+    n->runnable = false;
+    n->os->state = OS_THREAD_STATE_MORIBUND;
+    n->os->val = rv;
+    sched_wake(n->os);            // wake joiners parked on this OSThread*
+    bool detached = n->detached;
+    hand_baton(n);                // pass control on; this host thread exits next
     if (detached) {
-        // No joiner will collect us; self-clean.
-        std::thread::id myid = std::this_thread::get_id();
-        (void)myid;
-        std::lock_guard<std::mutex> tlk(g_table_mu);
+        // No joiner will reap us — self-clean.
         g_threads.erase(n->os);
+        int idx = index_of(n);
+        if (idx >= 0) g_all.erase(g_all.begin() + idx);
         n->th.detach();
+        lk.unlock();
         delete n;
+        return;
     }
+    // Non-detached: a future OSJoinThread will th.join()+delete us.
 }
 
 int OSCreateThread(OSThread* thread, void* (*func)(void*), void* param,
                    void* stack, u32 stackSize, s32 priority, u16 attr) {
     (void)stack; (void)stackSize;
+    // NativeThread uses a class operator new (malloc), so this allocation does NOT
+    // go through the JKR heap / OSLockMutex.
     NativeThread* n = new NativeThread();
-    n->func = func; n->param = param; n->os = thread;
+    n->func = func; n->param = param; n->os = thread; n->priority = priority;
     n->detached = (attr & OS_THREAD_ATTR_DETACH) != 0;
+    n->runnable = false;  // created suspended (GC contract)
 
     std::memset(thread, 0, sizeof(*thread));
     thread->state = OS_THREAD_STATE_READY;
     thread->attr = attr;
     thread->priority = priority;
     thread->base = priority;
-    thread->suspend = 1;  // created suspended (GC contract)
+    thread->suspend = 1;  // created suspended
     thread->val = (void*)-1;
     OSInitThreadQueue(&thread->queueJoin);
 
     {
-        std::lock_guard<std::mutex> lk(g_table_mu);
+        std::unique_lock<std::mutex> lk(g_sched);
+        cur_self_locked();   // ensure the bootstrap/main fiber is registered
         g_threads[thread] = n;
+        g_all.push_back(n);
     }
+    // Spawn the carrier OUTSIDE g_sched: std::thread's internal state is allocated
+    // via the GLOBAL operator new, which routes through the JKR heap -> OSLockMutex
+    // -> g_sched. Holding g_sched here would self-deadlock (it is non-recursive).
+    // The trampoline locks g_sched on entry and parks on its start gate until
+    // OSResumeThread + the scheduler hand it the baton; n is created suspended so
+    // pick_next never selects it before then.
+    //
+    // Raise the host-allocation gate so std::thread's internal _State_impl goes to
+    // host malloc, not the JKR heap — otherwise a scene transition's freeAll/destroy
+    // wipes the carrier and the thread crashes on next use.
+    sb_host_alloc_push();
     n->th = std::thread(thread_trampoline, n);
+    sb_host_alloc_pop();
     return 1;
 }
 
 long OSResumeThread(OSThread* thread) {
+    std::unique_lock<std::mutex> lk(g_sched);
     NativeThread* n = backing(thread);
     if (!n) return 0;
-    std::lock_guard<std::mutex> lk(n->m);
     long prev = thread->suspend;
     if (thread->suspend > 0) thread->suspend--;
     if (thread->suspend == 0) {
-        // Releases BOTH the initial creation-suspend (start gate, n->resumed) AND a
-        // runtime self-suspend (OSSuspendThread's cv.wait predicate, suspend<=0).
-        n->resumed = true;
+        // Releases the creation-suspend (start gate) AND a runtime self-suspend.
+        n->runnable = true;
         if (thread->state == OS_THREAD_STATE_READY)
             thread->state = OS_THREAD_STATE_RUNNING;
-        n->cv.notify_all();
+        // Cooperative: do NOT switch now; it runs at the next scheduling point.
     }
     return prev;
 }
 
-// OSSuspendThread — raise a thread's suspend count; if it is the CURRENT thread,
-// block here until OSResumeThread (or OSCancelThread) releases it. The GC SDK can
-// suspend any thread at a safe point; the THP pipeline only ever self-suspends
-// (Reader/VideoDecoder/AudioDecoder halt themselves at movie end), so a non-self
-// suspend just bumps the count (best-effort — the target has no injected checkpoint).
-// LANDMINE: faithful cross-thread mid-flight suspension needs the cooperative-fiber
-// backend; self-suspend (the only path SMS exercises) is exact.
+// OSSuspendThread — raise the suspend count. A SELF-suspend parks here until
+// OSResumeThread (or OSCancelThread) releases it; a cross-thread suspend just bumps
+// the count, which pick_next honours (the target stops being scheduled). SMS only
+// ever self-suspends its workers (THP Reader/Video/Audio halt themselves at movie
+// end), so this is exact for the paths the game exercises.
 s32 OSSuspendThread(OSThread* thread) {
+    std::unique_lock<std::mutex> lk(g_sched);
     NativeThread* n = backing(thread);
     if (!n) return -1;
-    std::unique_lock<std::mutex> lk(n->m);
+    NativeThread* self = cur_self_locked();
     s32 prev = (s32)thread->suspend;
     thread->suspend++;
-    if (thread == t_current) {
-        thread->state = OS_THREAD_STATE_READY;  // suspended-but-runnable
-        n->cv.wait(lk, [n, thread]{ return thread->suspend <= 0 || n->cancel; });
-        if (!n->cancel) thread->state = OS_THREAD_STATE_RUNNING;
+    if (n == self) {
+        thread->state = OS_THREAD_STATE_READY;
+        while (thread->suspend > 0 && !n->cancel) {
+            n->runnable = false;
+            hand_baton(n);
+            wait_my_turn(n, lk);
+        }
+        if (n->cancel) throw ThreadExit{ thread->val };
+        n->runnable = true;
+        thread->state = OS_THREAD_STATE_RUNNING;
     }
     return prev;
 }
 
 void OSExitThread(OSThread* thread) {
-    // GC OSExitThread is noreturn; the exit value is the thread's ->val. The decomp
-    // calls OSExitThread(self). We unwind to the trampoline via throw (caught there).
+    // GC OSExitThread is noreturn; the exit value is the thread's ->val. Unwind to
+    // the trampoline via throw (caught there).
     void* rv = thread ? thread->val : (t_current ? t_current->val : nullptr);
     throw ThreadExit{ rv };
 }
 
 int OSJoinThread(OSThread* thread, void* val) {
+    std::unique_lock<std::mutex> lk(g_sched);
     NativeThread* n = backing(thread);
     if (!n) return 0;
-    void* rv;
-    {
-        std::unique_lock<std::mutex> lk(n->m);
-        n->cv.wait(lk, [n]{ return n->finished; });
-        rv = n->retval;
-    }
+    cur_self_locked();
+    while (!n->finished)
+        park_on(thread, lk);   // parked on the target OSThread* (woken on finish)
+    void* rv = n->retval;
     if (val) *(void**)val = rv;
-    // Reap.
+    // Reap: remove from the tables, then join + delete the carrier outside the lock.
+    g_threads.erase(thread);
+    int idx = index_of(n);
+    if (idx >= 0) g_all.erase(g_all.begin() + idx);
+    lk.unlock();
     if (n->th.joinable()) n->th.join();
-    {
-        std::lock_guard<std::mutex> tlk(g_table_mu);
-        g_threads.erase(thread);
-    }
     delete n;
     return 1;
 }
 
 void OSDetachThread(OSThread* thread) {
+    std::lock_guard<std::mutex> lk(g_sched);
     NativeThread* n = backing(thread);
     if (!n) return;
     thread->attr |= OS_THREAD_ATTR_DETACH;
-    std::lock_guard<std::mutex> lk(n->m);
     n->detached = true;
 }
 
 void OSCancelThread(OSThread* thread) {
-    // Best-effort cooperative cancel: if the thread hasn't started running yet,
-    // flag it so its trampoline skips the body; a running thread cannot be safely
-    // force-killed (no async unwind), so it runs to completion. LANDMINE: faithful
-    // mid-flight cancellation needs the cooperative-fiber backend.
+    // Cooperative cancel: flag the thread and make it schedulable so it unwinds
+    // (throws ThreadExit out of park_on / the start gate) the next time it runs.
+    std::lock_guard<std::mutex> lk(g_sched);
     NativeThread* n = backing(thread);
     if (!n) return;
-    std::lock_guard<std::mutex> lk(n->m);
     n->cancel = true;
     thread->state = OS_THREAD_STATE_MORIBUND;
-    n->resumed = true;
-    n->cv.notify_all();  // wake the start gate AND any runtime self-suspend wait
+    thread->suspend = 0;
+    n->runnable = true;
+    n->wait_obj = nullptr;
 }
 
 long OSGetThreadPriority(OSThread* thread) { return thread->priority; }
 
-void OSYieldThread(void) { std::this_thread::yield(); }
-
-s32 OSEnableScheduler(void) { return 0; }  // no explicit scheduler to gate
-
-// ThreadQueue sleep/wake — used for ad-hoc wait queues. We back the queue with a
-// process-global condvar keyed by the queue pointer (queues are caller-owned SDK
-// structs; a side map gives them wait/notify without changing layout).
-namespace { struct QWait { std::mutex m; std::condition_variable cv; int gen = 0; };
-std::mutex g_qmu; std::unordered_map<OSThreadQueue*, QWait*> g_qwaits;
-QWait* qwait(OSThreadQueue* q){ std::lock_guard<std::mutex> lk(g_qmu);
-    auto& p = g_qwaits[q]; if(!p) p = new QWait(); return p; } }
-
-void OSWakeupThread(OSThreadQueue* q) {
-    QWait* w = qwait(q);
-    std::lock_guard<std::mutex> lk(w->m);
-    ++w->gen;
-    w->cv.notify_all();
+void OSYieldThread(void) {
+    std::unique_lock<std::mutex> lk(g_sched);
+    NativeThread* self = cur_self_locked();
+    if (t_intr_depth > 0) return;     // defer reschedule inside a critical section
+    NativeThread* next = pick_next(); // self is runnable, so it is a candidate
+    if (!next || next == self) return;
+    g_current = next;
+    next->cv.notify_all();
+    wait_my_turn(self, lk);
 }
 
-// Block the calling thread on `q` until a matching OSWakeupThread. Capture the
-// wake generation under the lock before waiting so a wakeup racing in between
-// qwait() and wait() is not lost.
+s32 OSEnableScheduler(void) { return 0; }  // no explicit scheduler gate to toggle
+
+// ThreadQueue sleep/wake — ad-hoc wait queues (caller-owned SDK structs). Backed by
+// the cooperative park/wake on the queue pointer, with a pending-wake list so a
+// wakeup that races ahead of the sleep is not lost (the SDK generation-counter role).
+void OSWakeupThread(OSThreadQueue* q) {
+    std::lock_guard<std::mutex> lk(g_sched);
+    bool any = false;
+    for (NativeThread* n : g_all)
+        if (!n->finished && n->wait_obj == q) any = true;
+    sched_wake(q);
+    if (!any) g_pending_wakes.push_back(q);  // remember for a sleeper not yet parked
+}
+
 void OSSleepThread(OSThreadQueue* q) {
-    QWait* w = qwait(q);
-    std::unique_lock<std::mutex> lk(w->m);
-    int g = w->gen;
-    w->cv.wait(lk, [w, g] { return w->gen != g; });
+    std::unique_lock<std::mutex> lk(g_sched);
+    cur_self_locked();
+    for (size_t i = 0; i < g_pending_wakes.size(); ++i)
+        if (g_pending_wakes[i] == q) {        // a wake already arrived — consume it
+            g_pending_wakes.erase(g_pending_wakes.begin() + i);
+            return;
+        }
+    park_on(q, lk);
 }
 
 // ===========================================================================
@@ -394,73 +587,52 @@ void OSInitMutex(OSMutex* m) {
     m->link.next = m->link.prev = nullptr;
 }
 
-// One global recursive mutex protects mutex bookkeeping AND provides the actual
-// blocking. Each OSMutex carries its owner+count in the SDK fields. We use a single
-// monitor lock + condvar to serialize; correct, if not maximally parallel.
-namespace { std::mutex g_mtx_mon; std::condition_variable g_mtx_cv; }
-
 void OSLockMutex(OSMutex* m) {
-    OSThread* self = t_current;
-    std::unique_lock<std::mutex> lk(g_mtx_mon);
-    if (m->thread == self && m->count > 0) { m->count++; return; }   // recursive
-    g_mtx_cv.wait(lk, [m]{ return m->thread == nullptr; });
+    std::unique_lock<std::mutex> lk(g_sched);
+    OSThread* self = cur_self_locked()->os;
+    if (m->thread == self) { m->count++; return; }   // recursive relock
+    while (m->thread != nullptr) park_on(m, lk);
     m->thread = self;
     m->count = 1;
 }
 
 BOOL OSTryLockMutex(OSMutex* m) {
-    OSThread* self = t_current;
-    std::lock_guard<std::mutex> lk(g_mtx_mon);
-    if (m->thread == self && m->count > 0) { m->count++; return TRUE; }
+    std::unique_lock<std::mutex> lk(g_sched);
+    OSThread* self = cur_self_locked()->os;
+    if (m->thread == self) { m->count++; return TRUE; }
     if (m->thread == nullptr) { m->thread = self; m->count = 1; return TRUE; }
     return FALSE;
 }
 
 void OSUnlockMutex(OSMutex* m) {
-    std::lock_guard<std::mutex> lk(g_mtx_mon);
+    std::lock_guard<std::mutex> lk(g_sched);
     if (m->count > 0 && --m->count == 0) {
         m->thread = nullptr;
-        g_mtx_cv.notify_all();
+        sched_wake(m);
     }
 }
 
 void OSInitCond(OSCond* c) { c->queue.head = c->queue.tail = nullptr; }
 
 void OSWaitCond(OSCond* c, OSMutex* m) {
-    // Release the mutex (fully — recursive count), wait, reacquire to same count.
-    OSThread* self = t_current;
-    int saved;
-    {
-        std::lock_guard<std::mutex> lk(g_mtx_mon);
-        saved = m->count;
-        m->count = 0; m->thread = nullptr;
-        g_mtx_cv.notify_all();
-    }
-    {
-        QWait* w = qwait(&c->queue);
-        std::unique_lock<std::mutex> lk(w->m);
-        int g = w->gen;
-        w->cv.wait(lk, [w, g]{ return w->gen != g; });
-    }
-    {  // reacquire
-        std::unique_lock<std::mutex> lk(g_mtx_mon);
-        g_mtx_cv.wait(lk, [m]{ return m->thread == nullptr; });
-        m->thread = self; m->count = saved;
-    }
+    std::unique_lock<std::mutex> lk(g_sched);
+    OSThread* self = cur_self_locked()->os;
+    int saved = m->count;
+    m->count = 0; m->thread = nullptr;   // fully release the (recursive) mutex
+    sched_wake(m);
+    park_on(c, lk);                       // wait for OSSignalCond
+    while (m->thread != nullptr) park_on(m, lk);  // reacquire
+    m->thread = self; m->count = saved;
 }
 
 void OSSignalCond(OSCond* c) {
-    QWait* w = qwait(&c->queue);
-    std::lock_guard<std::mutex> lk(w->m);
-    ++w->gen;
-    w->cv.notify_all();
+    std::lock_guard<std::mutex> lk(g_sched);
+    sched_wake(c);
 }
 
 // ===========================================================================
 // Message queue (bounded ring, FIFO, blocking + nonblocking + jam)
 // ===========================================================================
-namespace { std::mutex g_mq_mon; std::condition_variable g_mq_cv; }
-
 void OSInitMessageQueue(OSMessageQueue* mq, void* msgArray, long msgCount) {
     mq->queueSend.head = mq->queueSend.tail = nullptr;
     mq->queueReceive.head = mq->queueReceive.tail = nullptr;
@@ -471,42 +643,70 @@ void OSInitMessageQueue(OSMessageQueue* mq, void* msgArray, long msgCount) {
 }
 
 int OSSendMessage(OSMessageQueue* mq, void* msg, long flags) {
-    std::unique_lock<std::mutex> lk(g_mq_mon);
+    std::unique_lock<std::mutex> lk(g_sched);
+    cur_self_locked();
     if (mq->usedCount >= mq->msgCount) {
         if (flags == OS_MESSAGE_NOBLOCK) return FALSE;
-        g_mq_cv.wait(lk, [mq]{ return mq->usedCount < mq->msgCount; });
+        while (mq->usedCount >= mq->msgCount) park_on(&mq->queueSend, lk);
     }
     long idx = (mq->firstIndex + mq->usedCount) % mq->msgCount;
     ((OSMessage*)mq->msgArray)[idx] = msg;
     mq->usedCount++;
-    g_mq_cv.notify_all();
+    sched_wake(&mq->queueReceive);
     return TRUE;
 }
 
 int OSJamMessage(OSMessageQueue* mq, void* msg, long flags) {
-    std::unique_lock<std::mutex> lk(g_mq_mon);
+    std::unique_lock<std::mutex> lk(g_sched);
+    cur_self_locked();
     if (mq->usedCount >= mq->msgCount) {
         if (flags == OS_MESSAGE_NOBLOCK) return FALSE;
-        g_mq_cv.wait(lk, [mq]{ return mq->usedCount < mq->msgCount; });
+        while (mq->usedCount >= mq->msgCount) park_on(&mq->queueSend, lk);
     }
     mq->firstIndex = (mq->firstIndex + mq->msgCount - 1) % mq->msgCount;
     ((OSMessage*)mq->msgArray)[mq->firstIndex] = msg;
     mq->usedCount++;
-    g_mq_cv.notify_all();
+    sched_wake(&mq->queueReceive);
     return TRUE;
 }
 
 int OSReceiveMessage(OSMessageQueue* mq, void* msg, long flags) {
-    std::unique_lock<std::mutex> lk(g_mq_mon);
+    std::unique_lock<std::mutex> lk(g_sched);
+    cur_self_locked();
     if (mq->usedCount == 0) {
         if (flags == OS_MESSAGE_NOBLOCK) return FALSE;
-        g_mq_cv.wait(lk, [mq]{ return mq->usedCount > 0; });
+        while (mq->usedCount == 0) park_on(&mq->queueReceive, lk);
     }
     if (msg) *(OSMessage*)msg = ((OSMessage*)mq->msgArray)[mq->firstIndex];
     mq->firstIndex = (mq->firstIndex + 1) % mq->msgCount;
     mq->usedCount--;
-    g_mq_cv.notify_all();
+    sched_wake(&mq->queueSend);
     return TRUE;
+}
+
+// ===========================================================================
+// Scheduler drive — VIWaitForRetrace runs the workers until the system is idle,
+// then proceeds with the retrace. This is the native stand-in for "main blocks on
+// the VI interrupt while lower-priority workers run". Called from vi_impl.cpp.
+// ===========================================================================
+void sb_sched_drain_until_idle(void) {
+    std::unique_lock<std::mutex> lk(g_sched);
+    NativeThread* self = cur_self_locked();
+    NativeThread* prev = g_idle_waiter;
+    g_idle_waiter = self;
+    for (;;) {
+        bool other = false;
+        for (NativeThread* n : g_all)
+            if (n != self && n->runnable && !n->finished && n->os->suspend <= 0) {
+                other = true; break;
+            }
+        if (!other) break;
+        self->runnable = false;     // step out so a worker (and only a worker) runs
+        hand_baton(self);
+        wait_my_turn(self, lk);     // a worker handed the baton back when it blocked
+        self->runnable = true;
+    }
+    g_idle_waiter = prev;
 }
 
 // ===========================================================================
@@ -517,6 +717,8 @@ int OSReceiveMessage(OSMessageQueue* mq, void* msg, long flags) {
 //   fall within [OSGetArenaLo, OSGetArenaHi]; if the game ever assumes that, switch
 //   to an arena bump/free-list allocator over the g_arena block.
 // ===========================================================================
+} // extern "C"
+
 namespace {
 void* aligned_alloc32(unsigned long size) {
     void* p = nullptr;
@@ -525,6 +727,8 @@ void* aligned_alloc32(unsigned long size) {
     return p;
 }
 }
+
+extern "C" {
 
 void* OSInitAlloc(void* arenaStart, void* arenaEnd, int /*maxHeaps*/) {
     g_arena_lo = arenaStart;

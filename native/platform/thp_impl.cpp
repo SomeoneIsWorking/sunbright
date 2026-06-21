@@ -96,37 +96,29 @@ static inline f32 rd_bef32(const void* p) {
 }
 
 // ---------------------------------------------------------------------------
-// Native audio-clock pump (stand-in for the AI DMA interrupt; see file header).
+// Native audio clock (stand-in for the AI DMA interrupt; see file header).
+//
+// SYNCHRONOUS model: there are no real worker threads — everything runs on one
+// cooperative thread (os_impl.cpp). The audio is therefore pulled once per VI
+// retrace from PlayControl (audio_tick), feeding one NTSC field's worth of samples
+// (32 kHz / 60 Hz, with the fractional remainder carried). Because both the audio
+// drain AND the video frame advance happen per-retrace, the A/V end-of-movie gate
+// stays in lockstep regardless of wall-clock pacing — so SB_THP_FAST (uncapped
+// retrace) reaches end-of-movie quickly without desyncing audio from video.
 // ---------------------------------------------------------------------------
-static std::thread g_audio_pump;
-static std::atomic<bool> g_pump_run{false};
+static constexpr s32 kAudioSampleRate = 32000;  // THP audio device rate
+static s32 g_audio_acc = 0;                      // fractional-sample carry (per field)
 static s16* audioCallbackWithMSound(s32 p1);
 
-static bool thp_fast_mode() {
-    const char* e = std::getenv("SB_THP_FAST");
-    return e && *e && *e != '0';
-}
+static void audio_clock_reset() { g_audio_acc = 0; }
 
-static void audio_pump_main() {
-    const bool fast = thp_fast_mode();
-    const s32 block = 512;  // samples per pull (stereo frames)
-    while (g_pump_run.load(std::memory_order_relaxed)) {
-        audioCallbackWithMSound(block);  // NULL when not playing; drains+advances when playing
-        if (fast)
-            std::this_thread::yield();
-        else
-            std::this_thread::sleep_for(
-                std::chrono::microseconds((long long)block * 1000000LL / 32000LL));
-    }
-}
-
-static void audio_pump_start() {
-    if (g_pump_run.exchange(true)) return;
-    g_audio_pump = std::thread(audio_pump_main);
-}
-static void audio_pump_stop() {
-    if (!g_pump_run.exchange(false)) return;
-    if (g_audio_pump.joinable()) g_audio_pump.join();
+// Pull one VI field's worth of audio (advances curAudioNumber as buffers drain).
+static void audio_tick() {
+    if (!ActivePlayer.audioExist) return;
+    g_audio_acc += kAudioSampleRate;
+    s32 n = g_audio_acc / 60;   // ~533 stereo frames/field on average
+    g_audio_acc %= 60;
+    if (n > 0) audioCallbackWithMSound(n);  // NULL when not playing; drains when playing
 }
 
 // ---------------------------------------------------------------------------
@@ -307,6 +299,9 @@ static void PlayControl(u32 retraceCnt)
 
     decodedTexture = (THPTextureSet*)-1;
     if (ActivePlayer.open && ActivePlayer.state == 2) {
+        // Pull this field's audio (advances curAudioNumber) — the AI-DMA stand-in.
+        audio_tick();
+
         if (ActivePlayer.dvdError || ActivePlayer.videoError) {
             ActivePlayer.internalState = 5;
             ActivePlayer.state         = 5;
@@ -413,7 +408,6 @@ BOOL THPPlayerInit()
 
 void THPPlayerQuit()
 {
-    audio_pump_stop();
     Initialized = FALSE;
 }
 
@@ -647,10 +641,9 @@ BOOL THPPlayerPrepare(s32 frame, u8 flag, s32 audioTrack)
 
     OldVIPostCallback = VISetPostRetraceCallback(PlayControl);
 
-    // Native: start the audio-clock pump that drives MixAudio (the AI-interrupt
-    // stand-in). On GC this is the registered JASDriver mix callback.
-    if (ActivePlayer.audioExist)
-        audio_pump_start();
+    // Native: audio is pulled per-retrace from PlayControl (audio_tick); reset the
+    // fractional-sample carry. On GC this is the registered JASDriver mix callback.
+    audio_clock_reset();
 
     return TRUE;
 }
@@ -673,7 +666,6 @@ void THPPlayerStop()
         ActivePlayer.internalState = 0;
         ActivePlayer.state         = 0;
         VISetPostRetraceCallback(OldVIPostCallback);
-        audio_pump_stop();
         if (ActivePlayer.onMemory == 0) {
             ReadThreadCancel();
         }
