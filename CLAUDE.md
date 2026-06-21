@@ -63,6 +63,24 @@ PC-native port of that behavior — understand what the original does, port it, 
 Symptom-gone ≠ fixed. If a real fix is genuinely too big right now, do NOT silently patch —
 name the proper fix and let the user decide; never slip a hack in as if it were a fix.
 
+## 💥 FAIL FAST — a parse/contract failure must CRASH at the root cause, never return nil (HARD RULE — user directive 2026-06-21)
+**When something is wrong — a bad magic, an unparseable header, a precondition violated, an
+unexpected null, an out-of-range value — CRASH RIGHT THERE with a clear message, do NOT return
+nil/0/empty and let it propagate.** A swallowed failure defers the crash to a confusing
+downstream null-deref far from the real cause and wastes a whole debugging session
+re-discovering where it actually broke (e.g. the JPA1 `.jpa` loader returned nil on a
+big-endian magic mismatch → SEGV three frames away in `JPAResourceManager::load`; replacing
+the `else return nullptr` with an `OSPanic` that prints the bytes named the exact spot AND
+proved the BE issue instantly). This applies to EVERYTHING — asset/format parsers, seams,
+overrides, the recompiler, tools, native ports.
+- The crash message MUST name the location and dump the offending value(s) (magic bytes, the
+  bad size, the null pointer's origin) so the root cause is readable from the panic alone.
+- This is the run-time counterpart of "TOOLING/VERIFICATION FIRST" and "NO BANDAIDS": a silent
+  nil-return is a bandaid that hides the bug. Use `OSPanic`/assert (native: guard with
+  `SMS_NATIVE_PLATFORM` so the original decomp behavior is preserved off-platform).
+- An honest "this isn't implemented yet" stub may return a sentinel ONLY if it is loudly
+  logged/asserted and the caller is known to tolerate it — never a silent nil on a real failure.
+
 ## 🔧 TOOLING / VERIFICATION FIRST (HARD RULE — user directive 2026-06-19)
 **If the harness that would verify a change is missing or broken, FIX/BUILD THE HARNESS BEFORE the
 change. No exceptions.** This is not a judgment call — it is a hard precondition, the same standing as

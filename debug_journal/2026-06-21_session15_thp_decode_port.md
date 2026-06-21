@@ -146,6 +146,21 @@ Working the crash forward (each is a real bug; the crash moves to the next stage
        per-stage LP64/BE asset cascade (JPAResourceManager::load -> JPAEmitterLoaderDataBase
        parsing -> later stages -> stage BMD models).
   SB_JKR_DBG `[jpa] load` diag added to JPAResourceManager::load(void*) for the next step.
+- ⮕ CLASSIFIED the JPAResourceManager::load crash (via `[jpa] load` diag, 1 GB arena to
+  rule out memory): `jpaData` is VALID (the .jpa resource is found) but
+  `JPAEmitterLoaderDataBase::load` returns NIL — a `.jpa` PARSE failure, not memory.
+  Root: `JPAEmitterLoaderDataBase::load` (JPAEmitterLoader.cpp:13) gates on
+  `header->unk0 == 'JEFF' && header->unk4 == 'jpa1'` — a host-endian u32 compare against
+  BIG-ENDIAN `.jpa` file bytes, so it never matches -> nullptr. The whole JPA1/'JEFF'
+  particle format is BE (nested emitter/particle/texture/field/key blocks), so it needs a
+  **native BE->host swap layer** (analogous to `sb_rarc_swap_to_host` / `bmd_swap`) OR a
+  BE-aware parser. THIS is the next bounded task in the cascade.
+- FAIL-FAST (user directive: "a parse failure should crash, not return nil"): the
+  magic-check `else return nullptr` swallowed the failure and deferred the crash to a
+  downstream null-deref. Replaced with an `OSPanic` (native-only) that names the spot and
+  prints the bytes — confirmed `bad JPA magic 4646454a 3161706a` (= 'JEFF'/'jpa1'
+  byte-reversed). GENERAL PRINCIPLE for the rest of the cascade: don't return nil on a
+  parse failure; crash at the real cause.
 
 ## NEXT
 1. Continue the gameplay-load cascade from `JPAResourceManager::load` (JKRGetResource /
