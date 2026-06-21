@@ -129,10 +129,23 @@ Working the crash forward (each is a real bug; the crash moves to the next stage
   load run. NOT a fix for the cascade — the per-stage LP64/BE bugs are.
 - Diagnostics (env `SB_JKR_DBG`, committed): `[jpa] EmitterMgr` sizes, `[jkr]
   SolidHeap::create`, `[rarc] swap` (heap/root-free/side-ptr).
-- ⚠ Observed a NONDETERMINISTIC `terminate called without an active exception` in some
-  plain (non-gdb) runs — the concurrent setup-thread gameplay load + THP threads on real
-  preemptive host threads expose threading fragility (os_impl note: host threads are
-  preempted, GC was single-core cooperative). Watch for this; may need cooperative gating.
+- ⚠ NONDETERMINISTIC `terminate called without an active exception` (and SIGABRT) —
+  ROOT CAUSE FOUND: it is `std::terminate` from `OSCreateThread.cold` (e.g.
+  `JASystem::AudioThread::start` -> `MSound::MSound`), i.e. **std::thread creation
+  failing**. NOT thread-count (peak 13 vs ulimit -u 63184). It's HEAP EXHAUSTION: the
+  decomp's global `operator new` is overridden to `JKRHeap::alloc` (JKRHeap.cpp), so
+  os_impl's `new NativeThread` AND libstdc++'s std::thread/mutex internal allocations all
+  route through the GAME heap. The "claim the rest of the arena" gameplay solid heap
+  drains the ROOT heap to 0 (seen: `[rarc] rootFree=0x0`), so any later root allocation
+  (incl. host-runtime objects) returns null -> std::thread ctor breaks -> terminate; or a
+  null game alloc -> SEGV. Two coupled architectural issues to fix next:
+    1. host-runtime allocations (NativeThread, std::thread internals) must NOT come from
+       the JKR game heap — give os_impl a malloc-backed allocator / stop the global
+       operator-new override from capturing them.
+    2. the LP64 gameplay load over-consumes; once host allocs are isolated, continue the
+       per-stage LP64/BE asset cascade (JPAResourceManager::load -> JPAEmitterLoaderDataBase
+       parsing -> later stages -> stage BMD models).
+  SB_JKR_DBG `[jpa] load` diag added to JPAResourceManager::load(void*) for the next step.
 
 ## NEXT
 1. Continue the gameplay-load cascade from `JPAResourceManager::load` (JKRGetResource /
