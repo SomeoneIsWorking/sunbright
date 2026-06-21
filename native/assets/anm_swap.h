@@ -42,6 +42,7 @@ struct AnmSwapResult {
 	bool        all_covered    = false;  // every present block had a real (non-stub) swapper
 	uint32_t    block_num      = 0;
 	uint32_t    blocks_covered = 0;      // count with a real swapper
+	uint32_t    first_uncovered_tag = 0; // big-endian fourcc of first unhandled block (0 = none)
 	const char* error          = nullptr;
 };
 
