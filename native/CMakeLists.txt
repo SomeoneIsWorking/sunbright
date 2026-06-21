@@ -71,7 +71,19 @@ target_compile_options(sms-native PRIVATE
     # (_Unwind_Resume) and crashes. Disabling the partition keeps every block
     # inside its own function, so a fall-through hits that function's own
     # epilogue/ret (the original benign behavior) instead of foreign code.
-    -fno-reorder-blocks-and-partition)
+    -fno-reorder-blocks-and-partition
+    # The decomp source is UTF-8, but the GameCube assets store Japanese names
+    # in Shift-JIS (the original game was compiled from Shift-JIS source). The
+    # JDrama NameRef tree is searched by node NAME (e.g. TApplication::unk30 =
+    # search("ステージ毎シナリオアーカイブ名群")): calcKeyCode + strcmp compare a
+    # source string literal against the SJIS asset bytes, so a UTF-8 literal
+    # never matches (search returns null -> null-deref). Emit narrow string
+    # literals as Shift-JIS so they match the assets, exactly as the original
+    # build did. ASCII is identical in SJIS, so type strings / printf formats
+    # are unaffected. (-finput-charset names the source encoding for the
+    # conversion.)
+    -finput-charset=UTF-8
+    -fexec-charset=SHIFT_JIS)
 
 # ---------------------------------------------------------------------------
 # sms-platform — the native PC implementations of the GameCube SDK seams the
