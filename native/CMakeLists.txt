@@ -33,6 +33,15 @@ file(GLOB_RECURSE SMS_NATIVE_SOURCES CONFIGURE_DEPENDS
 list(FILTER SMS_NATIVE_SOURCES EXCLUDE REGEX
      "/reference/sms/src/(dolphin|PowerPC_EABI_Support|TRK_MINNOW_DOLPHIN)/")
 
+# The decomp's JASystem::Vload sequence loader is the DEAD path for SMS (it needs
+# JaiArcS.hed, which is not on the disc FST). Replace it with a native BARC-backed
+# loader (native/src/sms_boot_audio.cpp) that sources sequences from mSound.aaf +
+# sequence.arc, so JAIBasic::loadArcSeqData succeeds at stage entry.
+list(FILTER SMS_NATIVE_SOURCES EXCLUDE REGEX
+     "/reference/sms/src/JSystem/JAudio/JASystem/JASVload\\.cpp$")
+list(APPEND SMS_NATIVE_SOURCES
+     "${SMS_NATIVE_REPO_ROOT}/native/src/sms_boot_audio.cpp")
+
 add_library(sms-native STATIC ${SMS_NATIVE_SOURCES})
 
 # C++17 specifically (the decomp is C++17; the top-level sunbright build is C++23,
