@@ -16,6 +16,7 @@
 //     this base lib exactly like GXBegin — the ngx layer captures geometry separately.
 
 #include <dolphin/gx.h>
+#include <dolphin/os.h>   // OSPanic (fail-fast on a divide-by-zero copy scale)
 #include "gx_state.h"
 
 using sb::platform::gx::state;
@@ -47,6 +48,14 @@ void GetTexTileShift(u32 fmt, u32* rowTileS, u32* colTileS) {
 // GXFrameBuf.c __GXGetNumXfbLines — verbatim. Given EFB height + the 0x1FF copy scale,
 // returns the number of XFB lines produced (clamped to 0x400).
 u32 GetNumXfbLines(u32 height, u32 scale) {
+#ifdef SMS_NATIVE_PLATFORM
+    // Verbatim decomp divides by `scale`; scale==0 (a degenerate render mode whose
+    // efbHeight is 0 or whose xfbHeight/efbHeight > 256) would SIGFPE. Name the cause.
+    if (scale == 0)
+        OSPanic(__FILE__, __LINE__,
+                "GetNumXfbLines: copy scale==0 (height=%u) — degenerate render mode "
+                "(efbHeight 0 or xfbHeight>>efbHeight upstream)", height);
+#endif
     u32 numLines = (height - 1) * 0x100;
     u32 actualHeight = (numLines / scale) + 1;
     u32 newScale = scale;
@@ -93,6 +102,12 @@ u16 GXGetNumXfbLines(u16 efbHeight, f32 yScale) {
 
 // GXFrameBuf.c GXGetYScaleFactor — verbatim binary-search for the exact XFB fit.
 f32 GXGetYScaleFactor(u16 efbHeight, u16 xfbHeight) {
+#ifdef SMS_NATIVE_PLATFORM
+    if (efbHeight == 0)
+        OSPanic(__FILE__, __LINE__,
+                "GXGetYScaleFactor: efbHeight==0 (xfbHeight=%u) — render mode object "
+                "is zero/uninitialized at the copy-disp site", (u32)xfbHeight);
+#endif
     u32 height1 = xfbHeight;
     f32 scale1  = (f32)xfbHeight / (f32)efbHeight;
     u32 scale   = (u32)(256.0f / scale1) & 0x1FF;
