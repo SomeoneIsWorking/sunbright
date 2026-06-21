@@ -216,12 +216,16 @@ void TWireBell::loadAfter() {}
 // which is fine — the console graphics come from game_6 via TConsoleStr.
 void TGuide::load(JSUMemoryInputStream& stream)
 {
+	JDrama::TViewObj::load(stream); // read NameRef header so search("ガイド画面") finds it
 	SMSMountAramArchive(gpMarDirector->unkD8, gArBkGuide);
 }
 // (emit vtable for TMBindShadowManager)
 void TMBindShadowManager::load(JSUMemoryInputStream& stream) {}
 // (emit vtable for TPauseMenu2)
-void TPauseMenu2::load(JSUMemoryInputStream&) {}
+void TPauseMenu2::load(JSUMemoryInputStream& stream)
+{
+	JDrama::TViewObj::load(stream); // read NameRef header so search("ポーズメニュー") finds it
+}
 
 // ring-4: last vtable-slot virtuals for the 3 misc classes (perform/loadAfter).
 void TGuide::perform(unsigned int, JDrama::TGraphics*) {}

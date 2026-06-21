@@ -75,7 +75,14 @@ void TPauseMenu2::setDrawEnd() {}
 void TPauseMenu2::setDrawStart() {}
 
 // TSunGlass — inherits JDrama::TViewObj; has 3 non-inline virtuals.
-void TSunGlass::load(JSUMemoryInputStream&) {}
+// Must read the NameRef header (keyCode + name) so the object is findable by
+// JDrama::TNameRefGen::search; setup2 looks it up by name ("サングラスフェーダ")
+// and derefs the result. An empty stub left mName at the ctor default -> search
+// returned null -> null deref in setup2.
+void TSunGlass::load(JSUMemoryInputStream& stream)
+{
+	JDrama::TViewObj::load(stream);
+}
 void TSunGlass::loadAfter() {}
 void TSunGlass::perform(u32, JDrama::TGraphics*) {}
 
@@ -88,7 +95,10 @@ TTalk2D2::TTalk2D2(const char* name)
     : JDrama::TViewObj(name)
 {
 }
-void TTalk2D2::load(JSUMemoryInputStream&) {}
+void TTalk2D2::load(JSUMemoryInputStream& stream)
+{
+	JDrama::TViewObj::load(stream); // read NameRef header so search() finds it
+}
 void TTalk2D2::loadAfter() {}
 void TTalk2D2::perform(u32, JDrama::TGraphics*) {}
 void TTalk2D2::forceCloseTalk() {}
