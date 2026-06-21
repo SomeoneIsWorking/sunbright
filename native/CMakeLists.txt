@@ -204,6 +204,8 @@ if(SB_VULKAN_LIB AND SB_VULKAN_INC AND SB_GLSLANG)
     add_library(sms-render STATIC
         "${SMS_NATIVE_REPO_ROOT}/native/render/nvk.cpp"
         "${SMS_NATIVE_REPO_ROOT}/native/render/ngx_native_glue.cpp"
+        # SLICE 1 of the renderer-attach: the sms-boot VI present hook (nvk render + dump).
+        "${SMS_NATIVE_REPO_ROOT}/native/render/sms_boot_present.cpp"
         # Reused SHIPPING TEV combiner generator + runtime GLSL->SPIR-V compiler (NOT
         # forked) — the same code the ngx renderer uses, Dolphin-free here.
         "${SMS_NATIVE_REPO_ROOT}/runtime/render/tev_shader.cpp"
@@ -318,11 +320,18 @@ add_test(NAME native_j3dload_test COMMAND sms-j3dload_test
 # ---------------------------------------------------------------------------
 option(SMS_BUILD_BOOT "Build the native bring-up exe (expected to fail-link until stubs land)" OFF)
 if(SMS_BUILD_BOOT)
-    add_executable(sms-boot "${SMS_NATIVE_REPO_ROOT}/native/src/boot.cpp")
+    add_executable(sms-boot
+        "${SMS_NATIVE_REPO_ROOT}/native/src/boot.cpp"
+        # Early heap for glslang static-init allocs (runs before main / PlatformInit).
+        "${SMS_NATIVE_REPO_ROOT}/native/src/boot_heap_bringup.cpp")
     set_target_properties(sms-boot PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
     target_include_directories(sms-boot PRIVATE
         "${SMS_NATIVE_REPO_ROOT}/native/platform" "${SMS_NATIVE_REPO_ROOT}/native/shim"
         "${SMS_NATIVE_REPO_ROOT}/reference/sms/include")
+    # boot_heap_bringup.cpp pulls JSystem headers — needs the gekko intrinsics force-include.
+    set_source_files_properties(
+        "${SMS_NATIVE_REPO_ROOT}/native/src/boot_heap_bringup.cpp" PROPERTIES
+        COMPILE_OPTIONS "-include;${SMS_NATIVE_REPO_ROOT}/native/shim/gekko_intrinsics.h;-Wno-narrowing;-fcommon")
     target_link_options(sms-boot PRIVATE -Wl,--wrap=main)
     # boot_stubs/ — SCAFFOLD-to-link layer: faithful-signature stub definitions for the
     # game-class roster the decomp left undefined (actor ctors/vtables/nerves/globals the
@@ -351,6 +360,12 @@ if(SMS_BUILD_BOOT)
     target_link_libraries(sms-boot PRIVATE
         "$<LINK_GROUP:RESCAN,sms-native,sms-gd,sms-assets,sms-platform,$<TARGET_NAME_IF_EXISTS:sms-bootstubs>>"
         Threads::Threads)
+    # Attach the native renderer (slice 1: VI present hook -> nvk -> frame dump) when the
+    # Vulkan renderer lib was built. SMS_HAVE_RENDER gates the call in boot.cpp.
+    if(TARGET sms-render)
+        target_link_libraries(sms-boot PRIVATE sms-render)
+        target_compile_definitions(sms-boot PRIVATE SMS_HAVE_RENDER)
+    endif()
 endif()
 
 file(GLOB SMS_PLATFORM_TESTS CONFIGURE_DEPENDS

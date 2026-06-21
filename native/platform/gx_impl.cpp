@@ -124,6 +124,15 @@ void GXSetCopyClear(GXColor clear, u32 z) {
     auto& g = state();
     g.copyClearColor = clear; g.copyClearZ = z;
 }
+
+// Bridge for the renderer-attach present layer (native/render/sms_boot_present.cpp),
+// which lives in the Vulkan-only sms-render lib and must not pull in the dolphin/gx
+// headers. Hands the captured copy-clear colour back as floats (0..1).
+extern "C" void sb_gx_get_clear_color(float* rgba) {
+    const GXColor c = state().copyClearColor;
+    rgba[0] = c.r / 255.0f; rgba[1] = c.g / 255.0f;
+    rgba[2] = c.b / 255.0f; rgba[3] = c.a / 255.0f;
+}
 void GXSetNumChans(u8 n)     { state().numChans = n; }
 void GXSetNumTexGens(u8 n)   { state().numTexGens = n; }
 void GXSetNumTevStages(u8 n) { state().numTevStages = n; }
