@@ -160,6 +160,7 @@ target_link_libraries(sms-gd PUBLIC sms-platform)
 # ---------------------------------------------------------------------------
 add_library(sms-assets STATIC
     "${SMS_NATIVE_REPO_ROOT}/native/assets/bmd_swap.cpp"
+    "${SMS_NATIVE_REPO_ROOT}/native/assets/anm_swap.cpp"
     "${SMS_NATIVE_REPO_ROOT}/native/assets/rarc.cpp")
 set_target_properties(sms-assets PROPERTIES
     CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
@@ -411,7 +412,9 @@ foreach(test_src ${SMS_PLATFORM_TESTS})
         "${SMS_NATIVE_REPO_ROOT}/runtime/ngx")
     target_compile_options(sms-${test_name} PRIVATE -fcommon)
     # sms-gd (GD display-list builder, decomp source) is referenced by gd_test;
-    # a static lib contributes nothing to tests that don't reference it.
-    target_link_libraries(sms-${test_name} PRIVATE sms-platform sms-gd)
+    # sms-assets (BE->host asset swappers) by anm_swap_test/bmd swaps; a static lib
+    # contributes nothing to tests that don't reference it (its PUBLIC include dir
+    # also makes "anm_swap.h" resolvable).
+    target_link_libraries(sms-${test_name} PRIVATE sms-platform sms-gd sms-assets)
     add_test(NAME platform_${test_name} COMMAND sms-${test_name})
 endforeach()
