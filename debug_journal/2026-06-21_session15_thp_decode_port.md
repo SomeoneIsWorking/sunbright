@@ -68,6 +68,45 @@ This is the gameplay-stage resource load (TMarDirector = the stage director, the
 thread-safety fix did NOT change it (crash is deterministic, not a disc race) — but that fix
 is a correct keeper.
 
+### JKRSolidHeap crash — investigation so far (for the next session)
+- The crash is in the gameplay-stage particle setup: `TMarDirector::loadResource` ->
+  `JPAEmitterManager` (called twice in `MarDirectorLoadResource.cpp:37,39`) -> three
+  `JKRCreateSolidHeap` (particles/emitters/fields) -> `new (solidHeap,0) JPABaseParticle`
+  where the solid-heap alloc returns ~8 (near-null) -> empty ctor writes vtable to `*8`.
+- `JKRExpHeap::alloc` (the root/parent) DOES `lock()/unlock()` (per-heap OSMutex, native
+  OSLockMutex works), so concurrent allocs from one heap are serialized — not a missing-lock.
+- `JKRSolidHeap::create`/`allocFromHead` (JKRSolidHeap.cpp) are LP64-clean on inspection
+  (uintptr_t + char* arithmetic). So the bad base must come from `create()`'s
+  `ptr = JKRHeap::alloc(...)` (parent) returning a bad/near-null block, or the object being
+  corrupted after construction.
+- gdb (`break JKRSolidHeap::create; finish; x/24xg $rax`): the first two solid heaps
+  (created on the MAIN thread) are clean; the **third, created on Thread 17 (the
+  TMarDirector setup thread), has garbage in several object fields** (`0x8ff95d0e…`,
+  `0x29e2550b…`, `0xd2daedbe…`) where the main-thread heaps read zero — i.e. either stale
+  uninitialised block contents OR live corruption of the setup-thread's heap. Suspect a
+  threading/cooperative-non-preemption assumption (os_impl note: host threads are
+  preempted, GC was single-core) or a shared-global (sCurrentHeap?) race during the
+  concurrent setup-thread + main-thread bring-up. Crash is DETERMINISTIC (same
+  curAudio≈2772 every run), which argues against a pure data race.
+- DIAGNOSTIC added (env `SB_JKR_DBG`, committed to the fork): prints in
+  `JKRSolidHeap::create` (size/parent/ptr/dataPtr/expHeapSize) and in `allocFromHead`
+  when it returns a degenerate (<0x10000) pointer. Output: the JPAEmitterManager creates
+  three solid heaps with sizes **0x151800 (particles), 0x361ad2c (~56 MB emitters!),
+  0x2f60 (fields)** — i.e. `0x100 * sizeof(JPABaseEmitter)` ≈ 56 MB (~221 KB/emitter),
+  an LP64-inflated heap-sizing. The degenerate-`allocFromHead` print NEVER fired, so the
+  `this=8` is NOT a normal solid-heap alloc return — suspect a corrupted vtable/struct on
+  a heap whose backing was clobbered, OR the ~56 MB request exhausting the 64 MB arena.
+- ARENA TEST (decisive): bumping `kArenaSize` 64 MB -> 512 MB **moves the crash PAST the
+  JPAParticle near-null alloc** to a later `JKRExpHeap::alloc -> OSPanic` on the MAIN
+  thread. So memory exhaustion IS implicated, but the gameplay heap-sizing is an LP64
+  CASCADE (fix one OOM, hit the next), not a single bug. Reverted to 64 MB (known state)
+  pending a proper pass over the JPA/JKR heap-sizing under LP64.
+- NEXT: work the gameplay-load heap-sizing as its own task — either (a) right-size the
+  arena AND chase each subsequent JKRExpHeap panic, or (b) audit JPABaseParticle/Emitter/
+  Field sizeof under LP64 (are the ~221 KB/emitter and the heap-sizing math correct, or is
+  a struct over-inflated?). This is the gate to both observing the literal THP state->3 and
+  to the first stage J3DModel (renderer SLICE 3). It is a SEPARATE frontier from THP.
+
 ## NEXT
 1. Fix the `JKRSolidHeap` alloc-returns-~8 bug (LP64?) so the gameplay preload succeeds →
    the movie completes → observe state→3 → decideNextMode → GAMEPLAY, and progress toward
