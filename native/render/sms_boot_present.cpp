@@ -42,6 +42,7 @@ bool g_init_tried = false;
 bool g_init_ok = false;
 int g_frame = 0;
 int g_max_dump = 0;   // 0 = dumping disabled
+int g_start_dump = 0; // first VI-retrace frame to begin dumping (SB_FRAME_DUMP_START)
 
 constexpr uint32_t kW = 640, kH = 480;
 
@@ -59,8 +60,11 @@ void write_ppm(const char* path) {
 
 void present_hook(void* /*framebuffer*/, void* /*user*/) {
     // Only do GPU work while we're still dumping frames (keeps normal runs fast).
-    if (g_max_dump && g_frame >= g_max_dump) return;
     if (!g_max_dump) return;
+    // Skip retraces before the requested start frame (cheaply, no GPU work) so a
+    // gameplay-era frame can be captured without rasterizing thousands of boot frames.
+    if (g_frame < g_start_dump) { ++g_frame; return; }
+    if (g_frame >= g_start_dump + g_max_dump) return;
 
     if (!g_init_tried) {
         g_init_tried = true;
@@ -104,6 +108,8 @@ extern "C" void sb_boot_present_install() {
             const char* m = std::getenv("SB_FRAME_DUMP_MAX");
             g_max_dump = m ? std::atoi(m) : 120;
             if (g_max_dump <= 0) g_max_dump = 120;
+            if (const char* s = std::getenv("SB_FRAME_DUMP_START"))
+                g_start_dump = std::atoi(s) > 0 ? std::atoi(s) : 0;
             ::mkdir("scratch", 0755);
             ::mkdir("scratch/frames", 0755);
         }
