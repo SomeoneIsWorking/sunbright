@@ -88,15 +88,8 @@ const TNerveOilBallStay& TNerveOilBallStay::theNerve() { static TNerveOilBallSta
 const TNerveSBH_Fall& TNerveSBH_Fall::theNerve() { static TNerveSBH_Fall n; return n; }
 const TNerveSBH_SleepContinue& TNerveSBH_SleepContinue::theNerve() { static TNerveSBH_SleepContinue n; return n; }
 
-// ---- movie-wipe (GC2D/hx_wiper.h) ----
-void Hx_StartWipe(int, int) {}
-void Hx_ResetWipe(u32, u32) {}
-u32  Hx_UpdateWipe(f32) { return 0; }
-int  Hx_GetWipeType(int) { return 0; }
-int  Hx_MovieStartSyncEx() { return 0; }
-void Hx_ProvideResource(void*, int) {}
-void Hx_ProvideResourceEx(void*) {}
-void Hx_RemoveResource() {}
+// ---- movie-wipe (GC2D/hx_wiper.h): the 8 referenced Hx_ symbols are now a faithful
+//      native port in native/platform/hx_wipe_impl.cpp (was stubbed here). ----
 
 // ---- low-level DSP/audio (JSystem/dspproc.h, dsptask.h) ----
 void DSPReleaseHalt() {}
