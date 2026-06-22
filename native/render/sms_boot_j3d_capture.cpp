@@ -407,32 +407,68 @@ extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
                                       R.tv.uv[u][1] = A.tv.uv[u][1] + t*(B.tv.uv[u][1]-A.tv.uv[u][1]); }
         return R;
     };
+    // NDC-space vertex (projected) interpolation, for the side-plane clip below.
+    auto lerp_ndc = [](const NvkTevVertex& A, const NvkTevVertex& B, float t) -> NvkTevVertex {
+        NvkTevVertex R;
+        R.x = A.x + t*(B.x-A.x); R.y = A.y + t*(B.y-A.y); R.z = A.z + t*(B.z-A.z);
+        for (int k = 0; k < 4; ++k) { R.rgba[k]  = A.rgba[k]  + t*(B.rgba[k]-A.rgba[k]);
+                                      R.rgba1[k] = A.rgba1[k] + t*(B.rgba1[k]-A.rgba1[k]); }
+        for (int u = 0; u < 8; ++u) { R.uv[u][0] = A.uv[u][0] + t*(B.uv[u][0]-A.uv[u][0]);
+                                      R.uv[u][1] = A.uv[u][1] + t*(B.uv[u][1]-A.uv[u][1]); }
+        return R;
+    };
+    // Sutherland-Hodgman clip a convex NDC polygon against one axis-aligned half-space.
+    // axis 0=x,1=y; sign +1 keeps coord<=lim, -1 keeps coord>=lim. Returns the new vertex count.
+    auto clip_axis = [&](NvkTevVertex* in, int n, int axis, float sign, float lim, NvkTevVertex* out) -> int {
+        int m = 0;
+        for (int i = 0; i < n; ++i) {
+            const NvkTevVertex& A = in[i]; const NvkTevVertex& B = in[(i+1) % n];
+            const float av = (axis ? A.y : A.x), bv = (axis ? B.y : B.x);
+            const bool ina = av * sign <= lim * sign, inb = bv * sign <= lim * sign;
+            if (ina) out[m++] = A;
+            if (ina != inb) { const float t = (lim - av) / (bv - av); out[m++] = lerp_ndc(A, B, t); }
+        }
+        return m;
+    };
     int dbg_onscreen = 0; float dbg_ymin = 1e9f, dbg_ymax = -1e9f; float dbg_lastcol[3] = {0,0,0};
-    auto emit_cv = [&](const ClipVtx& cv) {
+    auto project_cv = [&](const ClipVtx& cv) -> NvkTevVertex {
         SbImmVtx p = imm_project_eye(cv.ex, cv.ey, cv.ez, projType, proj, vp);
         NvkTevVertex tv = cv.tv; tv.x = p.x; tv.y = p.y; tv.z = p.z;
-        if (p.x >= -1.f && p.x <= 1.f && p.y >= -1.f && p.y <= 1.f && p.z >= 0.f && p.z <= 1.f) ++dbg_onscreen;
-        if (p.y < dbg_ymin) dbg_ymin = p.y;
-        if (p.y > dbg_ymax) dbg_ymax = p.y;
-        dbg_lastcol[0]=tv.rgba[0]; dbg_lastcol[1]=tv.rgba[1]; dbg_lastcol[2]=tv.rgba[2];
-        g_verts.push_back(tv);
+        return tv;
     };
-    // ngx_build_mesh emits a TRIANGLE LIST (idx in triples). Clip each triangle against the near
-    // plane ez <= -kNear (kNear small, just in front of the camera to dodge the w=1/-ez singularity
-    // at ez=0); the front frustum (ez<=-realNear) is then handled by Vulkan's depth clip.
+    // ngx_build_mesh emits a TRIANGLE LIST (idx in triples). For each triangle: (1) near-clip in
+    // EYE space against ez<=-kNear (kNear small, dodges the w=1/-ez singularity + drops behind-
+    // camera verts that the perspective divide would garble); (2) project the survivors; (3) clip
+    // the projected polygon against the NDC side planes x,y∈[-1,1] so the huge (95000-radius) sky
+    // dome's triangles don't reach extreme NDC and get dropped by Vulkan's guard band.
     const float kNear = 1.0f;
     for (size_t k = 0; k + 2 < idx.size(); k += 3) {
         const ClipVtx tri[3] = { make_cv(verts[idx[k]]), make_cv(verts[idx[k+1]]), make_cv(verts[idx[k+2]]) };
-        ClipVtx poly[6]; int np = 0;
+        ClipVtx ep[6]; int np = 0;
         for (int e = 0; e < 3; ++e) {
             const ClipVtx& A = tri[e]; const ClipVtx& B = tri[(e+1) % 3];
             const bool ai = A.ez <= -kNear, bi = B.ez <= -kNear;
-            if (ai) poly[np++] = A;
-            if (ai != bi) { const float t = (-kNear - A.ez) / (B.ez - A.ez); poly[np++] = lerp_cv(A, B, t); }
+            if (ai) ep[np++] = A;
+            if (ai != bi) { const float t = (-kNear - A.ez) / (B.ez - A.ez); ep[np++] = lerp_cv(A, B, t); }
         }
         if (np < 3) continue;
-        emit_cv(poly[0]); emit_cv(poly[1]); emit_cv(poly[2]);
-        if (np == 4) { emit_cv(poly[0]); emit_cv(poly[2]); emit_cv(poly[3]); }
+        // Project the near-clipped eye polygon, then clip against the 4 NDC side planes.
+        NvkTevVertex pa[8], pb[8];
+        int pn = 0; for (int i = 0; i < np; ++i) pa[pn++] = project_cv(ep[i]);
+        pn = clip_axis(pa, pn, 0, +1.f, 1.f, pb);   if (pn < 3) continue;   // x <= 1
+        pn = clip_axis(pb, pn, 0, -1.f, -1.f, pa);  if (pn < 3) continue;   // x >= -1
+        pn = clip_axis(pa, pn, 1, +1.f, 1.f, pb);   if (pn < 3) continue;   // y <= 1
+        pn = clip_axis(pb, pn, 1, -1.f, -1.f, pa);  if (pn < 3) continue;   // y >= -1
+        for (int i = 1; i + 1 < pn; ++i) {           // fan-triangulate the clipped polygon
+            const NvkTevVertex* poly3[3] = { &pa[0], &pa[i], &pa[i+1] };
+            for (int v = 0; v < 3; ++v) {
+                const NvkTevVertex& tv = *poly3[v];
+                if (tv.x>=-1.f&&tv.x<=1.f&&tv.y>=-1.f&&tv.y<=1.f&&tv.z>=0.f&&tv.z<=1.f) ++dbg_onscreen;
+                if (tv.y<dbg_ymin) dbg_ymin=tv.y; if (tv.y>dbg_ymax) dbg_ymax=tv.y;
+                dbg_lastcol[0]=tv.rgba[0]; dbg_lastcol[1]=tv.rgba[1]; dbg_lastcol[2]=tv.rgba[2];
+                g_verts.push_back(tv);
+            }
+        }
     }
     const uint32_t vcount = (uint32_t)g_verts.size() - vstart;
     if (dbg_enabled()) {   // per-shape on-screen coverage probe (first 24 shapes = the sky, drawn first)
