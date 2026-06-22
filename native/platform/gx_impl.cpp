@@ -185,6 +185,25 @@ extern "C" void sb_gx_get_projection(int* type, float proj[6], float vp[6]) {
         }
     }
 }
+// Export the live hardware lights for the native scene capture's per-vertex lighting. Each
+// row: [valid, r,g,b, px,py,pz, dx,dy,dz, a0,a1,a2, k0,k1,k2] (view-space pos/dir, 0..1 colour,
+// matching ngx::LightSrc). Returns the count of VALID lights (0 ⇒ no light pipeline yet).
+extern "C" int sb_gx_get_lights(float out[8][16]) {
+    auto& g = state();
+    int n = 0;
+    for (int i = 0; i < 8; ++i) {
+        const auto& L = g.light[i];
+        float* o = out[i];
+        o[0] = L.valid ? 1.f : 0.f;
+        o[1]=L.color[0]; o[2]=L.color[1]; o[3]=L.color[2];
+        o[4]=L.pos[0];   o[5]=L.pos[1];   o[6]=L.pos[2];
+        o[7]=L.dir[0];   o[8]=L.dir[1];   o[9]=L.dir[2];
+        o[10]=L.cosAtt[0];  o[11]=L.cosAtt[1];  o[12]=L.cosAtt[2];
+        o[13]=L.distAtt[0]; o[14]=L.distAtt[1]; o[15]=L.distAtt[2];
+        if (L.valid) ++n;
+    }
+    return n;
+}
 void GXSetNumChans(u8 n)     { state().numChans = n; }
 void GXSetNumTexGens(u8 n)   { state().numTexGens = n; }
 void GXSetNumTevStages(u8 n) { state().numTevStages = n; }

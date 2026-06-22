@@ -28,6 +28,8 @@
 #include <JSystem/J3D/J3DGraphBase/J3DMaterial.hpp>
 #include <JSystem/J3D/J3DGraphBase/Blocks/J3DColorBlocks.hpp>
 #include <JSystem/J3D/J3DGraphBase/Components/J3DColorChan.hpp>
+#include <JSystem/J3D/J3DGraphBase/Components/J3DLightObj.hpp>  // J3DLightObj (material-bound lights)
+#include <JSystem/J3D/J3DGraphBase/J3DStruct.hpp>               // J3DLightInfo
 #include <JSystem/J3D/J3DGraphAnimator/J3DModel.hpp>
 
 #include "nvk.h"               // NvkTevVertex, Nvk::NvkTevBatch, NvkTevPush
@@ -36,6 +38,8 @@
 #include "ngx_render_data.h"   // NgxTevState
 #include "tev_shader.h"        // sb_tev_gen_fragment
 #include "sms_boot_material.h" // sb_build_tev_state, sb_resolve_textures, SbTexImage
+#include "sms_boot_lighting.h" // sb_light_vertex_color0 (pure, unit-tested)
+#include "ngx_light.h"         // ngx::LightSrc
 
 #include <cmath>
 #include <cstdint>
@@ -49,6 +53,7 @@
 using namespace sb::render;
 
 extern "C" void sb_gx_get_projection(int* type, float proj[6], float vp[6]);
+extern "C" int  sb_gx_get_lights(float out[8][16]);
 extern "C" void sb_host_alloc_push(void);
 extern "C" void sb_host_alloc_pop(void);
 
@@ -84,6 +89,12 @@ struct MatEntry {
     // white/tint) modulates the texture so the scene isn't black (lighting is next stage).
     uint8_t matColor[2][4] = {{255,255,255,255},{255,255,255,255}};
     bool    matSrcVtx[2] = {false, false};   // channel sources from the vertex colour attr
+    // Per-channel GX colour-channel control + ambient, for per-vertex lighting. chanCtrl is
+    // J3DColorChan::mChanCtrl (== ngx::decode_chanctl layout); ambColor is the ambient register
+    // (0..255). `lit` = any channel enables lighting (a J3DColorBlockLightOn material).
+    uint16_t chanCtrl[2] = {0, 0};
+    uint8_t  ambColor[2][4] = {{0,0,0,255},{0,0,0,255}};
+    bool     lit = false;
 };
 std::unordered_map<J3DMaterial*, MatEntry> g_matcache;
 
@@ -120,13 +131,42 @@ const MatEntry* get_mat_entry(J3DMaterial* mat) {
                     e.matColor[c][0] = mc->color.r; e.matColor[c][1] = mc->color.g;
                     e.matColor[c][2] = mc->color.b; e.matColor[c][3] = mc->color.a;
                 }
+                if (J3DGXColor* ac = cb->getAmbColor(c)) {   // null for LightOff blocks
+                    e.ambColor[c][0] = ac->color.r; e.ambColor[c][1] = ac->color.g;
+                    e.ambColor[c][2] = ac->color.b; e.ambColor[c][3] = ac->color.a;
+                }
                 if (c < nchan) {
-                    if (J3DColorChan* ch = cb->getColorChan(c))
+                    if (J3DColorChan* ch = cb->getColorChan(c)) {
                         e.matSrcVtx[c] = (ch->getMatSrc() == GX_SRC_VTX);
+                        e.chanCtrl[c]  = ch->mChanCtrl;
+                        if (ch->getEnable()) e.lit = true;
+                    }
                 }
             }
         }
         e.ok = true;
+        // One-shot probe on the FIRST lit material: where do its lights live (bound objects?),
+        // and what does each colour channel control say. Decides the light-source port.
+        if (dbg_enabled() && e.lit) {
+            static int s_litprobe = 0;
+            if (s_litprobe < 4) { ++s_litprobe;
+                J3DColorBlock* cb = mat->getColorBlock();
+                std::fprintf(stderr, "[litprobe] cb=%p type=%c%c%c%c nchan=%d cc0=%04x cc1=%04x amb0=%u,%u,%u\n",
+                    (void*)cb,
+                    cb?(char)(cb->getType()>>24):'?', cb?(char)(cb->getType()>>16):'?',
+                    cb?(char)(cb->getType()>>8):'?', cb?(char)(cb->getType()):'?',
+                    cb?cb->getColorChanNum():-1, e.chanCtrl[0], e.chanCtrl[1],
+                    e.ambColor[0][0],e.ambColor[0][1],e.ambColor[0][2]);
+                if (cb) for (int li = 0; li < 8; ++li) {
+                    J3DLightObj* lo = cb->getLight(li);
+                    if (!lo) continue;
+                    const J3DLightInfo* in = static_cast<const J3DLightInfo*>(lo);
+                    std::fprintf(stderr, "  [matlight] slot=%d pos=(%.1f,%.1f,%.1f) col=%u,%u,%u\n",
+                                 li, in->mLightPosition.x, in->mLightPosition.y, in->mLightPosition.z,
+                                 in->mColor.r, in->mColor.g, in->mColor.b);
+                }
+            }
+        }
         if (dbg_enabled()) {
             static int s_matdbg = 0;
             if (s_matdbg < 16) {
@@ -286,6 +326,33 @@ extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
         }
     }
 
+    // The live hardware lights (view-space), populated by J3DColorBlockLightOn::load ->
+    // J3DLightObj::load -> GXLoadLightObjImm during the scene draw. Lighting only engages when
+    // the material enables it AND at least one light exists; otherwise the raster stays the
+    // full-bright material colour (the light pipeline is the next thing to own if nlights==0).
+    ngx::LightSrc lsrc[8];
+    float lraw[8][16];
+    const int nlights = sb_gx_get_lights(lraw);
+    for (int i = 0; i < 8; ++i) {
+        ngx::LightSrc& L = lsrc[i];
+        L.valid = lraw[i][0] != 0.f;
+        L.color[0]=lraw[i][1]; L.color[1]=lraw[i][2]; L.color[2]=lraw[i][3];
+        L.pos[0]=lraw[i][4];   L.pos[1]=lraw[i][5];   L.pos[2]=lraw[i][6];
+        L.dir[0]=lraw[i][7];   L.dir[1]=lraw[i][8];   L.dir[2]=lraw[i][9];
+        L.cosA[0]=lraw[i][10]; L.cosA[1]=lraw[i][11]; L.cosA[2]=lraw[i][12];
+        L.distA[0]=lraw[i][13];L.distA[1]=lraw[i][14];L.distA[2]=lraw[i][15];
+    }
+    const bool do_light = me->lit && nlights > 0;
+    if (dbg_enabled()) {
+        static int s_ld = 0;
+        if (s_ld < 8) { ++s_ld;
+            std::fprintf(stderr, "[light] nlights=%d do_light=%d cc0=%04x amb0=%u,%u,%u L0(valid=%d c=%.2f,%.2f,%.2f p=%.0f,%.0f,%.0f)\n",
+                         nlights, (int)do_light, me->chanCtrl[0],
+                         me->ambColor[0][0], me->ambColor[0][1], me->ambColor[0][2],
+                         (int)lsrc[0].valid, lsrc[0].color[0],lsrc[0].color[1],lsrc[0].color[2],
+                         lsrc[0].pos[0],lsrc[0].pos[1],lsrc[0].pos[2]); }
+    }
+
     if (g_consumed) { g_verts.clear(); g_batches.clear(); g_last_mat = nullptr; g_consumed = false; }
     if (g_verts.size() > 6u * 1024 * 1024) return true;   // OOM guard for an undrained config
 
@@ -298,11 +365,21 @@ extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
         NvkTevVertex tv{};
         tv.x = p.x; tv.y = p.y; tv.z = p.z;
         // Raster base per channel: vertex colour if the channel sources from the vertex,
-        // else the material colour register (UNLIT first slice — lighting is next stage).
+        // else the material colour register. COLOR0 RGB is per-vertex LIT (GX view-space
+        // lighting via the shipping ngx unit) when the material enables lighting and lights
+        // exist; alpha + COLOR1 keep the material/vertex base (lighting drives surface RGB).
         const unsigned char* c0 = me->matSrcVtx[0] ? s.clr[0] : me->matColor[0];
         const unsigned char* c1 = me->matSrcVtx[1] ? s.clr[1] : me->matColor[1];
         tv.rgba[0]  = c0[0]/255.f; tv.rgba[1]  = c0[1]/255.f; tv.rgba[2]  = c0[2]/255.f; tv.rgba[3]  = c0[3]/255.f;
         tv.rgba1[0] = c1[0]/255.f; tv.rgba1[1] = c1[1]/255.f; tv.rgba1[2] = c1[2]/255.f; tv.rgba1[3] = c1[3]/255.f;
+        if (do_light) {
+            const float matc0[3] = { me->matColor[0][0]/255.f, me->matColor[0][1]/255.f, me->matColor[0][2]/255.f };
+            const float ambc0[3] = { me->ambColor[0][0]/255.f, me->ambColor[0][1]/255.f, me->ambColor[0][2]/255.f };
+            const float vcol0[3] = { s.clr[0][0]/255.f, s.clr[0][1]/255.f, s.clr[0][2]/255.f };
+            float lit[3];
+            sb_light_vertex_color0(me->chanCtrl[0], matc0, ambc0, lsrc, posMtx, s.pos, s.nrm, vcol0, lit);
+            tv.rgba[0] = lit[0]; tv.rgba[1] = lit[1]; tv.rgba[2] = lit[2];
+        }
         for (int t = 0; t < 8; ++t) { tv.uv[t][0] = s.tex[t][0]; tv.uv[t][1] = s.tex[t][1]; }
         g_verts.push_back(tv);
     }

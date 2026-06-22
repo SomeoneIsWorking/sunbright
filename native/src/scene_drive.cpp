@@ -20,6 +20,7 @@
 #include <System/MarDirector.hpp>                       // gpMarDirector
 #include <JSystem/JDrama/JDRNameRefGen.hpp>             // TNameRefGen::search
 #include <JSystem/JDrama/JDRSmJ3DScn.hpp>               // TSmJ3DScn
+#include <JSystem/JDrama/JDRLighting.hpp>               // TLightMap (light probe)
 #include <JSystem/JDrama/JDRGraphics.hpp>               // TGraphics
 #include <Camera/Camera.hpp>                            // gpCamera (CPolarSubCamera)
 #include <dolphin/mtx.h>
@@ -87,6 +88,18 @@ extern "C" bool sb_boot_drive_scene() {
 			// Latch the perspective for the capture's clip-space project (robust against the
 			// HUD's ortho overwriting the live GX projection between now and the shape tap).
 			sb_gx_latch_proj44(g_graphics.mProjMtx.mMtx[0]);
+		}
+	}
+
+	if (dbg()) {   // one-shot: is the scene's light map present + resolved?
+		static bool once = false;
+		if (!once) { once = true;
+			JDrama::TLightMap* lm = scene->mLightMap;
+			std::fprintf(stderr, "[scene-light] mLightMap=%p count=%d\n",
+			             (void*)lm, lm ? lm->mLightInfoCount : -1);
+			if (lm) for (int i = 0; i < lm->mLightInfoCount && i < 8; ++i)
+				std::fprintf(stderr, "  light[%d] slot=%u obj=%p\n",
+				             i, lm->mLightInfos[i].unk0, (void*)lm->mLightInfos[i].unk4);
 		}
 	}
 
