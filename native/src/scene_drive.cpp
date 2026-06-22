@@ -21,6 +21,9 @@
 #include <JSystem/JDrama/JDRNameRefGen.hpp>             // TNameRefGen::search
 #include <JSystem/JDrama/JDRSmJ3DScn.hpp>               // TSmJ3DScn
 #include <JSystem/JDrama/JDRLighting.hpp>               // TLightMap (light probe)
+#include <JSystem/JDrama/JDRDrawBufObj.hpp>             // TDrawBufObj (sky draw buffers)
+#include <JSystem/J3D/J3DGraphBase/J3DSys.hpp>          // j3dSys
+#include <JSystem/J3D/J3DGraphBase/J3DDrawBuffer.hpp>   // J3DDrawBuffer
 #include <JSystem/JDrama/JDRGraphics.hpp>               // TGraphics
 #include <Camera/Camera.hpp>                            // gpCamera (CPolarSubCamera)
 #include <dolphin/mtx.h>
@@ -53,6 +56,38 @@ void init_graphics() {
 	g_graphics.mScissorRect.set(0, 0, w, h);
 	g_graphics.mNearPlane = 1.0f;
 	g_graphics.mFarPlane  = 100000.0f;
+}
+
+// Drive the sky group's draw into its dedicated buffers (the perform-list path never draws them).
+// Mirrors TSmJ3DScn::perform's buffer mechanics (frameInit -> set active -> entry -> draw).
+void drive_sky() {
+	JDrama::TViewObj* skyGroup =
+	    JDrama::TNameRefGen::search<JDrama::TViewObj>("空グループ");
+	JDrama::TDrawBufObj* skyOpa =
+	    JDrama::TNameRefGen::search<JDrama::TDrawBufObj>("DrawBuf Sky Opa");
+	JDrama::TDrawBufObj* skyXlu =
+	    JDrama::TNameRefGen::search<JDrama::TDrawBufObj>("DrawBuf Sky Xlu");
+	if (dbg()) { static bool once=false; if(!once){once=true;
+		std::fprintf(stderr, "[sky-drive] group=%p opa=%p xlu=%p\n",
+		             (void*)skyGroup, (void*)skyOpa, (void*)skyXlu); } }
+	if (!skyGroup || !skyOpa || !skyXlu) return;
+	J3DDrawBuffer* b0 = skyOpa->getDrawBuffer();
+	J3DDrawBuffer* b1 = skyXlu->getDrawBuffer();
+	if (!b0 || !b1) return;
+
+	MTXCopy(g_graphics.mViewMtx.mMtx, j3dSys.getViewMtx());
+	j3dSys.drawInit();
+	b0->frameInit();
+	b1->frameInit();
+	j3dSys.setDrawBuffer(b0, 0);
+	j3dSys.setDrawBuffer(b1, 1);
+	// flag 0x206 = bit0x2 (TSky::setBaseTRMtx — positions the dome relative to the camera; the
+	// missing piece: without it viewCalc builds draw = view*0 and the whole sky collapses to one
+	// off-screen point) | bit0x4 (MActor::viewCalc) | bit0x200 (MActor::entry). bit0x8 also makes
+	// TSky draw its procedural GXDrawSphere backdrop dome.
+	skyGroup->perform(0x20E, &g_graphics);
+	j3dSys.setUnk4C(3); b0->draw();
+	j3dSys.setUnk4C(4); b1->draw();
 }
 } // namespace
 
@@ -185,6 +220,19 @@ extern "C" bool sb_boot_drive_scene() {
 			GXSetChanAmbColor(GX_COLOR0A0, amb);
 		}
 	}
+
+	// OWN THE SKY DRAW. The sky model ("空グループ" / Sky Group) is NOT a child of 通常シーン;
+	// the GC renders it through dedicated draw buffers ("DrawBuf Sky Opa/Xlu") sequenced by the
+	// master GX perform list (MarDirectorPreEntry.cpp): set the sky buffers active → entry the
+	// sky group (flag 0x204) → draw the buffers. But that perform-list draw never happens in
+	// sms-boot: TPerformList AND's the call flag with each entry's stored flag, and the sky
+	// buffers' stored flag is 0x480 (frameInit|setDrawBuffer) with NO draw bit (0x8) — the same
+	// data-driven dispatch that drops bit 0x8 from 通常シーン (the blackbox scene_drive bypasses).
+	// So the sky group is entered into its buffers but the buffers are never drawn → top half
+	// stays at the black clear. We drive the full frameInit→entry→draw ourselves, exactly like
+	// TSmJ3DScn::perform does for its own buffers (JDRSmJ3DScn.cpp), with our known-good view.
+	// Done BEFORE the scene so sky batches land behind the map (capture order = present order).
+	drive_sky();
 
 	scene->perform(0x8, &g_graphics);
 
