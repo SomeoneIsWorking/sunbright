@@ -364,10 +364,14 @@ extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
 
     const uint32_t vstart = (uint32_t)g_verts.size();
     g_verts.reserve(g_verts.size() + idx.size());
+    int dbg_onscreen = 0; float dbg_ymin = 1e9f, dbg_ymax = -1e9f; float dbg_lastcol[3] = {0,0,0};
     for (unsigned i : idx) {
         const NgxVertex& s = verts[i];
         SbImmRawVtx raw{ s.pos[0], s.pos[1], s.pos[2], 0, 0, 0, 0 };
         SbImmVtx p = imm_project(raw, projType, proj, posMtx, vp);
+        if (p.x >= -1.f && p.x <= 1.f && p.y >= -1.f && p.y <= 1.f && p.z >= 0.f && p.z <= 1.f) ++dbg_onscreen;
+        if (p.y < dbg_ymin) dbg_ymin = p.y;
+        if (p.y > dbg_ymax) dbg_ymax = p.y;
         NvkTevVertex tv{};
         tv.x = p.x; tv.y = p.y; tv.z = p.z;
         // Raster base per channel: vertex colour if the channel sources from the vertex,
@@ -393,9 +397,17 @@ extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
             tv.rgba[0] = lit[0]; tv.rgba[1] = lit[1]; tv.rgba[2] = lit[2];
         }
         for (int t = 0; t < 8; ++t) { tv.uv[t][0] = s.tex[t][0]; tv.uv[t][1] = s.tex[t][1]; }
+        dbg_lastcol[0]=tv.rgba[0]; dbg_lastcol[1]=tv.rgba[1]; dbg_lastcol[2]=tv.rgba[2];
         g_verts.push_back(tv);
     }
     const uint32_t vcount = (uint32_t)g_verts.size() - vstart;
+    if (dbg_enabled()) {   // per-shape on-screen coverage probe (first 24 shapes = the sky, drawn first)
+        static int s_cov = 0;
+        if (s_cov < 24) { ++s_cov;
+            std::fprintf(stderr, "[cov] shape#%d verts=%u onscreen=%d ndcY[%.2f..%.2f] lit=%d cc0=%04x col=%.2f,%.2f,%.2f ntex=%zu\n",
+                         s_cov, (unsigned)idx.size(), dbg_onscreen, dbg_ymin, dbg_ymax,
+                         (int)do_light, me->chanCtrl[0], dbg_lastcol[0],dbg_lastcol[1],dbg_lastcol[2], me->tex.size()); }
+    }
 
     // Merge into the previous batch if the same material drew the immediately-preceding
     // shape (J3DMatPacket draws all its shapes consecutively); else open a new batch.

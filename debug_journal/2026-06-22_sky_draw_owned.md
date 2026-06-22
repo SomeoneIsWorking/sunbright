@@ -103,3 +103,27 @@ not just shape[0]) and compare the equator ring's screen position to the ocean-h
 is a thin band vs full hemisphere matters. The fix lives in how the dome's base matrix relates to the
 view (re-derive `setBaseTRMtx` against our `g_graphics` view, OR the sky may want its OWN render with a
 view that strips translation). The `GXDrawSphere` stub (`gx_fb_impl.cpp:296`) is still a parallel gap.
+
+## FINAL ROOT CAUSE (s28c) — missing NEAR-PLANE CLIPPING (dome surrounds the camera)
+By hand: `setBaseTRMtx[i][3] = eye[i]` (the formula reduces to the eye position), identity rotation ⇒
+`draw = view·translate(eye)` ⇒ eye-space = `R·v` (pure rotation, NO translation). So the sky dome is
+centered AT the camera (correct — that's how sky domes work); half its verts are in front (eye z<0),
+half behind. The nvk raster is `VK_CULL_MODE_NONE` (double-sided) so culling isn't it. Built a per-
+shape coverage probe (`[cov]`, capture loop): on-screen vert count + ndcY bounds + final colour. MEASURED
+the sky shapes (drawn first, cc0=0700/0701, lit=0):
+- shape#4 = the BLUE sky (col 0.01,0.50,0.86, 1800 verts, ntex=0) has **105 on-screen** verts but ndcY
+  spans **[-31 .. +136]** — verts with |ndc|≫1 are the **near-plane-crossing (w≈0) / behind-camera
+  (w<0)** artifacts. shapes #1/#2 (white, clouds) similarly span ndcY[-359..+9].
+The dome SURROUNDS the camera, so its triangles straddle the near plane. The capture's `imm_project`
+does the perspective divide BEFORE handing NDC to nvk, so behind-camera verts become garbage NDC that
+Vulkan can no longer clip, and those triangles are discarded → black. The scene (palm/ground) renders
+fine because it is entirely IN FRONT of the camera (no wrap, all w>0).
+
+**FIX (the real next task): near-plane clipping for the capture path.** Either (a) pass CLIP-space
+coords (x,y,z,w) to nvk and let Vulkan's near-plane clip handle it (stop pre-dividing in `imm_project`),
+or (b) Sutherland-Hodgman clip each triangle against `w+z≥0` in the capture before the divide (the
+`ngx_j3d_shape.cpp` WIP referenced in CLAUDE.md is exactly this for the recomp-era ngx path — port it
+to the sms-boot capture). This is a general renderer capability: ANY geometry that crosses/surrounds the
+near plane (sky, interiors, anything the camera is inside) needs it. Verify via `[cov]` (on-screen sky
+verts should then RASTER blue) + the frame dump. Camera + far + dome-position are all PROVEN correct;
+this is the sole remaining blocker for a visible sky.
