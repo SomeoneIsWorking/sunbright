@@ -45,8 +45,33 @@ blocker flagged across prior sessions (memory `gameplay-perform-loop-2-ub-fixes`
 gets ctrl bit 0x1 so its real view/proj aren't the live ones). Also possible: the dome scale (100000)
 exceeds the camera far plane → z-clip at z=1.0.
 
-NEXT (the gate for the sky AND a faithful camera): resolve the camera matrix source — make
-`gpCamera->unk1EC` / the live view consistent with what we render, OR derive `g_graphics.mViewMtx`
-FROM `gpCamera->unk1EC` so `setBaseTRMtx` and the render view agree. Do NOT fudge the dome position
-(NO BANDAIDS) — fix the shared camera source. ctest 28/28; no regression (scene unchanged, sky verts
-render off-screen).
+## DEAD-END tried (recorded so the next session doesn't repeat it)
+Hypothesis: `unk1EC` is stale (the `param_1 & 1` block that computes it via `C_MTXLookAt` never runs
+— MEASURED `[cam-perform] ctrl(b0)=0`), so `setBaseTRMtx` positions the dome from a stale matrix.
+Tried: write our live view into it each frame — `C_MTXLookAt(gpCamera->getUnk1EC(), &pos,&up,&target)`
+(the exact same call cameragc.cpp:989 uses). **RESULT: ZERO visible change** — the frame is byte-for-
+byte the same black-top sky. So either `unk1EC` was already that value, or `setBaseTRMtx` isn't the
+determinant. REVERTED (unverifiable change → not committed). The dome position is NOT gated on `unk1EC`.
+
+## Refined diagnosis (the real residual)
+The dome IS positioned (centered at the camera eye, per `setBaseTRMtx` extracting the eye from the
+camera matrix). Its horizon ring (a y=0 dome vert, e.g. model (94839,0,-47295)) projects to **ndc
+y≈1.237** — just above the top edge — at **z=1.0** (the far plane, but z=1.0 is IN-frustum, not
+clipped). Working back: ndc_y = tan(pitch)/tan(fovy/2); with fovy=50 that puts the camera pitch at
+**~30° down**. So with the current camera, the sky horizon sits just off the top and the visible sky
+is a thin off-frame sliver → black top. Either (a) the camera's pitch/up is genuinely this steep for
+the fastboot frame (then the sky really is mostly above-frame and the fix is elsewhere — e.g. the
+GXDrawSphere backdrop should fill behind it), or (b) the camera view we build (`C_MTXLookAt` from
+`JSGGetView*`) has a wrong pitch/up — the UNVERIFIED shared **camera-source blocker** (the camera
+never gets ctrl bit 0x1, so its authoritative view/proj aren't proven faithful).
+
+NEXT — needs a CAMERA ORACLE before more blind 5-min iterations (TOOLING-FIRST): capture the GC
+camera view/proj from the Dolphin-hybrid (recomp) build at the same frame and diff against our
+`C_MTXLookAt`/`C_MTXPerspective`, to settle whether our camera pitch/up/fovy/far are faithful. If
+faithful → the sky positioning is correct and the black top is genuine for this angle (own the
+GXDrawSphere backdrop or accept it). If not → fix the camera source (the long-open blocker), which
+also unblocks faithful geometry placement generally. Do NOT fudge the dome (NO BANDAIDS).
+
+ctest 28/28; no regression (scene unchanged, sky verts render off-screen for now). Committed state =
+the sky-draw-ownership infrastructure (faithful `TSky` flag decode + buffer drive); visibility is
+gated on the camera oracle above.
