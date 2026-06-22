@@ -42,6 +42,18 @@ extern "C" void sb_boot_latch_camera() {
     Mtx view;
     C_MTXLookAt(view, &pos, &up, &target);
     j3dSys.setViewMtx(view);
+    {
+        static int dbg = -1;
+        if (dbg < 0) { const char* e = getenv("SB_J3D_DBG"); dbg = (e && e[0] && e[0] != '0') ? 1 : 0; }
+        static long m = 0;
+        if (dbg && ((++m % 600) == 0 || m <= 3))
+            fprintf(stderr, "[cam] PUBLISH m=%ld fovy=%.2f aspect=%.3f pos=(%.1f %.1f %.1f) "
+                    "tgt=(%.1f %.1f %.1f) view=[%.3f %.3f %.3f %.1f / %.3f %.3f %.3f %.1f / %.3f %.3f %.3f %.1f]\n",
+                    m, fovy, aspect, pos.x, pos.y, pos.z, target.x, target.y, target.z,
+                    view[0][0],view[0][1],view[0][2],view[0][3],
+                    view[1][0],view[1][1],view[1][2],view[1][3],
+                    view[2][0],view[2][1],view[2][2],view[2][3]);
+    }
 
     Mtx44 proj;
     C_MTXPerspective(proj, fovy, aspect, gpCamera->getNear(), gpCamera->getFar());
