@@ -1,44 +1,54 @@
-// sms_boot_j3d_capture.cpp — the native scene-geometry capture (ONE owned path).
+// sms_boot_j3d_capture.cpp — the native scene-geometry + MATERIAL capture (ONE owned path).
 //
 // In sms-boot the renderer is PC-native and fully owned: native/src/scene_drive.cpp drives the
 // real GC draw flow (TSmJ3DScn::perform(8)) each frame, which runs entry()+viewCalc on only the
 // ACTIVE scene models and draws the draw buffers. The draw bottoms out in J3DShape::draw(), whose
-// GX issue is a no-op natively — so this TU taps J3DShape::draw and captures the shape's geometry
-// into a frame-global NDC triangle buffer that the present hook (sms_boot_present.cpp) drains and
-// rasterizes via nvk. There is no env gate and no second path: every active shape the engine draws
-// is captured here, transformed by its faithful per-vertex draw matrix + the camera projection.
+// GX issue is a no-op natively — so this TU taps J3DShape::draw and captures, per shape:
+//   • geometry: decoded + transformed to Vulkan NDC (imm_project: per-shape draw matrix + the
+//     live GX projection + viewport), as NvkTevVertex (pos + raster color0/1 + 8 texgen UVs);
+//   • material: the shape's J3DMaterial → a TEV combiner fragment shader + decoded textures +
+//     konst/reg push constants + depth/blend state (sms_boot_material.cpp).
+// These group into per-material BATCHES (consecutive same-material shapes merge) that the present
+// hook (sms_boot_present.cpp) draws through nvk's multi-material TEV frame (renderTevFrame).
+//
+// FIRST-SLICE LIMITS (documented, staged — not bandaids):
+//   • raster colour = vertex CLR0/CLR1 (NO per-vertex lighting yet; lighting is the next stage);
+//   • texgen = pass-through (uv[i] = the vertex's tex[i]); GX texgen matrices/modes are next;
+//   • backface cull deferred (rendered double-sided; depth handles overdraw).
 //
 // ENDIANNESS (the #1 risk): the ngx vertex/DL decoders read BIG-ENDIAN. In the live host BMD
 // buffer the SHP1 display-list stays BE (bmd_swap defers it) and swap_VTX1 leaves the vertex
-// arrays BE too (the ngx contract) — so the decoder reads both directly. If geometry comes back
-// as garbage (positions outside the bbox / NaN), the swap_VTX1 BE contract was violated upstream;
-// fix it at the source, do not re-swap here (that would fork the decoder and hide the bug).
+// arrays BE too (the ngx contract); texel bytes stay BE (swap_TEX1 swaps only the ResTIMG header).
+// If geometry/textures come back garbage, the BE contract was violated UPSTREAM — fix it there.
 
 #include <JSystem/J3D/J3DGraphBase/J3DShape.hpp>
 #include <JSystem/J3D/J3DGraphBase/J3DVertex.hpp>
-#include <JSystem/J3D/J3DGraphBase/J3DSys.hpp>   // j3dSys.getModel() — the active model being drawn
-#include <JSystem/J3D/J3DGraphAnimator/J3DModel.hpp>      // J3DModel + J3DModelData
+#include <JSystem/J3D/J3DGraphBase/J3DSys.hpp>   // j3dSys.getModel()/getMatPacket() — active draw state
+#include <JSystem/J3D/J3DGraphBase/J3DPacket.hpp>
+#include <JSystem/J3D/J3DGraphBase/J3DMaterial.hpp>
+#include <JSystem/J3D/J3DGraphBase/Blocks/J3DColorBlocks.hpp>
+#include <JSystem/J3D/J3DGraphBase/Components/J3DColorChan.hpp>
+#include <JSystem/J3D/J3DGraphAnimator/J3DModel.hpp>
 
-#include "nvk.h"            // NvkVertex
-#include "gx_imm_xform.h"   // SbImmRawVtx / SbImmVtx / imm_project (model->view->proj->NDC)
-#include "ngx_mesh.h"       // NgxCP, NgxVertex, ngx_build_mesh
+#include "nvk.h"               // NvkTevVertex, Nvk::NvkTevBatch, NvkTevPush
+#include "gx_imm_xform.h"      // SbImmRawVtx / SbImmVtx / imm_project
+#include "ngx_mesh.h"          // NgxCP, NgxVertex, ngx_build_mesh
+#include "ngx_render_data.h"   // NgxTevState
+#include "tev_shader.h"        // sb_tev_gen_fragment
+#include "sms_boot_material.h" // sb_build_tev_state, sb_resolve_textures, SbTexImage
 
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
+#include <string>
 #include <vector>
+#include <unordered_map>
 
 using namespace sb::render;
 
-// Live GX projection (type + 6 packed floats) + viewport for imm_project. The perspective is set
-// by GXSetProjection in the camera perform (runs before scene_drive's draw each frame).
 extern "C" void sb_gx_get_projection(int* type, float proj[6], float vp[6]);
-
-// Host-allocation gate (JKRHeap.cpp): the capture's std::vectors are HOST renderer data; routing
-// them to host malloc keeps them off the game's JKR heap. (Memory is now bounded — tag+free — so
-// this is hygiene, not the OOM fix.) RAII guard below.
 extern "C" void sb_host_alloc_push(void);
 extern "C" void sb_host_alloc_pop(void);
 
@@ -52,13 +62,106 @@ bool dbg_enabled() {
     return v != 0;
 }
 
-// Frame-global capture buffer of transformed NDC triangle verts (3N). Clear-on-first-append-
-// after-consume (the present drains via _take, which sets g_consumed; the next append clears).
-std::vector<NvkVertex> g_tris;
-bool g_consumed = true;
+uint64_t fnv64(const char* s) {
+    uint64_t h = 1469598103934665603ull;
+    for (; *s; ++s) { h ^= (uint8_t)*s; h *= 1099511628211ull; }
+    return h;
+}
 
-// ---- build_native_cp: reads NATIVE J3DShape + J3DVertexData struct fields (host-endian, 64-bit
-// ptrs). Array bases become OFFSETS relative to `base` (the model buffer start) for the BE resolver.
+// Per-material render state, built ONCE per J3DMaterial* and reused across frames (materials
+// are stable objects; texture/animation changes are a later stage). Owns the GLSL + decoded
+// textures so the present's NvkTevBatch pointers stay valid frame-to-frame.
+struct MatEntry {
+    bool ok = false;
+    std::string frag;
+    uint64_t key = 0;
+    NvkTevPush push{};
+    uint8_t z_test = 1, z_func = 3, z_write = 1, blend_mode = 0, src_factor = 1, dst_factor = 0;
+    std::vector<SbTexImage> tex;
+    // Per colour-channel raster BASE colour (first slice = UNLIT): the material colour
+    // register, used as the GX raster colour unless the channel sources from the vertex.
+    // SMS world geometry is matSource=REG + lit; without lighting yet, matColor (usually
+    // white/tint) modulates the texture so the scene isn't black (lighting is next stage).
+    uint8_t matColor[2][4] = {{255,255,255,255},{255,255,255,255}};
+    bool    matSrcVtx[2] = {false, false};   // channel sources from the vertex colour attr
+};
+std::unordered_map<J3DMaterial*, MatEntry> g_matcache;
+
+// Frame-global output: the present-ready vertex list + per-material batches. Cleared on the
+// first append after the present consumed them (take sets g_consumed).
+std::vector<NvkTevVertex>   g_verts;
+std::vector<Nvk::NvkTevBatch> g_batches;
+bool g_consumed = true;
+J3DMaterial* g_last_mat = nullptr;   // for consecutive-shape batch merging within a frame
+
+const MatEntry* get_mat_entry(J3DMaterial* mat) {
+    auto it = g_matcache.find(mat);
+    if (it != g_matcache.end()) return &it->second;
+    MatEntry e;
+    NgxTevState st{};
+    if (sb_build_tev_state(mat, st)) {
+        e.frag = sb_tev_gen_fragment(st);
+        e.key  = fnv64(e.frag.c_str());
+        for (int c = 0; c < 4; ++c) for (int k = 0; k < 4; ++k) {
+            e.push.kcolor[c][k] = st.kcolor[c][k];
+            e.push.tevreg[c][k] = st.tev_color[c][k];
+        }
+        e.z_test = st.pe.z_test; e.z_func = st.pe.z_func; e.z_write = st.pe.z_write;
+        e.blend_mode = st.pe.blend_mode; e.src_factor = st.pe.src_factor; e.dst_factor = st.pe.dst_factor;
+        // Bisection: SB_TEV_NOBLEND forces every batch opaque (no blend) to test whether
+        // blend-over-the-black-clear is what's blanking the scene.
+        static const bool noblend = [](){ const char* v = std::getenv("SB_TEV_NOBLEND"); return v && v[0] && v[0] != '0'; }();
+        if (noblend) e.blend_mode = 0;
+        sb_resolve_textures(mat, j3dSys.getTexture(), e.tex);
+        if (J3DColorBlock* cb = mat->getColorBlock()) {
+            int nchan = cb->getColorChanNum();
+            for (int c = 0; c < 2; ++c) {
+                if (J3DGXColor* mc = cb->getMatColor(c)) {
+                    e.matColor[c][0] = mc->color.r; e.matColor[c][1] = mc->color.g;
+                    e.matColor[c][2] = mc->color.b; e.matColor[c][3] = mc->color.a;
+                }
+                if (c < nchan) {
+                    if (J3DColorChan* ch = cb->getColorChan(c))
+                        e.matSrcVtx[c] = (ch->getMatSrc() == GX_SRC_VTX);
+                }
+            }
+        }
+        e.ok = true;
+        if (dbg_enabled()) {
+            static int s_matdbg = 0;
+            if (s_matdbg < 16) {
+                ++s_matdbg;
+                uint32_t ce = st.stage[0].color_env;
+                std::fprintf(stderr, "[mat] ns=%d ce=%06x a=%u b=%u c=%u d=%u cchan=%u tmap=%u "
+                             "at=%u bm=%u msv0=%d matc0=%u,%u,%u,%u ntex=%zu key=%llx\n",
+                             st.num_stages, ce, (ce>>12)&0xf,(ce>>8)&0xf,(ce>>4)&0xf,ce&0xf,
+                             st.stage[0].color_chan, st.stage[0].texmap, st.pe.alpha_test,
+                             (st.pe.blend_mode | (st.pe.src_factor<<4) | (st.pe.dst_factor<<8)), (int)e.matSrcVtx[0],
+                             e.matColor[0][0],e.matColor[0][1],e.matColor[0][2],e.matColor[0][3],
+                             e.tex.size(), (unsigned long long)e.key);
+                if (s_matdbg <= 3) {
+                    char pth[96]; std::snprintf(pth,sizeof pth,"scratch/frames/mat_glsl_%d.txt",s_matdbg);
+                    if (FILE* f = std::fopen(pth,"w")) { std::fputs(e.frag.c_str(), f); std::fclose(f); }
+                }
+            }
+        }
+    }
+    auto res = g_matcache.emplace(mat, std::move(e));
+    return &res.first->second;
+}
+
+// Fill an NvkTevBatch's tex[] slots + push/state from a MatEntry (called when opening a batch).
+void fill_batch_material(Nvk::NvkTevBatch& b, const MatEntry& e) {
+    b.push = e.push; b.shaderKey = e.key; b.fragGlsl = e.frag.c_str();
+    b.z_test = e.z_test; b.z_func = e.z_func; b.z_write = e.z_write;
+    b.blend_mode = e.blend_mode; b.src_factor = e.src_factor; b.dst_factor = e.dst_factor;
+    for (const SbTexImage& t : e.tex) {
+        if (t.slot < 0 || t.slot >= 8 || t.rgba.empty()) continue;
+        b.tex[t.slot].rgba = (const uint8_t*)t.rgba.data();
+        b.tex[t.slot].w = t.w; b.tex[t.slot].h = t.h; b.tex[t.slot].linear = t.linear ? 1 : 0;
+    }
+}
+
 bool build_native_cp(J3DShape* shape, J3DVertexData& vd, const uint8_t* base, NgxCP& cp) {
     GXVtxDescList* desc = shape->getVtxDesc();
     GXVtxAttrFmtList* fmt = vd.getVtxAttrFmtList();
@@ -97,7 +200,11 @@ bool build_native_cp(J3DShape* shape, J3DVertexData& vd, const uint8_t* base, Ng
         }
     }
 
-    auto off = [&](const void* p) -> u32 { return p ? (u32)((const uint8_t*)p - base) : 0; };
+    // base IS the POS array, so POS lives at offset 0 — a VALID offset. Mark genuinely
+    // ABSENT arrays with a sentinel (0xFFFFFFFF) so the resolver can tell "offset 0" (the
+    // POS array) from "no array". (The old `0` for null collapsed POS → null → every
+    // vertex decoded to (0,0,0) → the whole scene projected to one off-screen point.)
+    auto off = [&](const void* p) -> u32 { return p ? (u32)((const uint8_t*)p - base) : 0xFFFFFFFFu; };
     cp.array_base[0] = off(vd.getVtxPosArray());     cp.array_stride[0] = (pos_type == 4) ? 12 : 6;
     cp.array_base[1] = off(vd.getVtxNormArray());    cp.array_stride[1] = (nrm_type == 4) ? 12 : 6;
     cp.array_base[2] = off(vd.getVtxColorArray(0));  cp.array_stride[2] = 4;
@@ -109,41 +216,38 @@ bool build_native_cp(J3DShape* shape, J3DVertexData& vd, const uint8_t* base, Ng
     return true;
 }
 
-// Resolver: array_base holds an offset into the model buffer (relative to `base`); the array bytes
-// are BIG-ENDIAN — ngx byteswaps them on read.
 struct ResolveCtx { const uint8_t* base; size_t size; };
 const unsigned char* resolve_native(unsigned off, void* user) {
     auto* c = (ResolveCtx*)user;
-    if (off == 0 || (c->size && off >= c->size)) return nullptr;
+    if (off == 0xFFFFFFFFu || (c->size && off >= c->size)) return nullptr;   // 0xFFFFFFFF = absent
     return c->base + off;
 }
 
 } // namespace
 
 // ============================ THE CAPTURE (single owned path) =============================
-// Tapped at the top of J3DShape::draw() during the native-driven scene draw (scene_drive.cpp).
-// The shape is an ACTIVE, entry()'d shape; j3dSys.getModel() is its model (viewCalc'd this frame).
-// Decode the shape geometry and transform each vertex by its faithful per-vertex draw matrix
-// (model->getDrawMtx) -> the latched perspective 4x4 -> clip-space frustum clip -> Vulkan NDC.
-// Returns true (captured) so J3DShape::draw skips the no-op GX issue.
 extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
     if (!shape) return false;
-    HostAllocScope _hostalloc;   // capture std::vectors -> host malloc, off the JKR heap
+    HostAllocScope _hostalloc;
 
     J3DModel* model = j3dSys.getModel();
-    if (!model) return true;
-    J3DModelData* md = model->getModelData();
-    if (!md) return true;
+    if (!model || !model->getModelData()) return true;
 
     J3DVertexData* vd = shape->unk44;
     if (!vd) return true;
     const uint8_t* base = (const uint8_t*)vd->getVtxPosArray();
     if (!base) return true;
 
+    // The material being drawn (set by J3DMatPacket::draw before its shapes).
+    J3DMatPacket* mp = j3dSys.getMatPacket();
+    J3DMaterial* mat = mp ? mp->getMaterial() : nullptr;
+    if (!mat) return true;
+    const MatEntry* me = get_mat_entry(mat);
+    if (!me || !me->ok) return true;
+
     NgxCP cp{};
     if (!build_native_cp(shape, *vd, base, cp)) return true;
 
-    // Decode every matrix group's DL into native verts + tri indices (BE DL stream).
     ResolveCtx rc{ base, 0 };
     std::vector<NgxVertex> verts;
     std::vector<unsigned> idx;
@@ -155,10 +259,6 @@ extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
     }
     if (idx.empty()) return true;
 
-    // Per-shape draw matrix (model->view): mDrawMatrices[viewNo][0] is the rigid matrix the
-    // packet draw set up — the same one J3DShape::draw feeds j3dSys.setModelDrawMtx. imm_project
-    // applies it then the live GX projection + viewport to reach Vulkan NDC (nvk does raster-time
-    // clipping, so no clip-space stage needed here — the proven drive-path transform).
     int projType; float proj[6]; float vp[6];
     sb_gx_get_projection(&projType, proj, vp);
     float ident[3][4] = {{1,0,0,0},{0,1,0,0},{0,0,1,0}};
@@ -167,31 +267,76 @@ extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
     if (drawTbl) std::memcpy(posMtx, &drawTbl[0][0], sizeof(posMtx));
     else         std::memcpy(posMtx, ident, sizeof(posMtx));
 
-    if (g_consumed) { g_tris.clear(); g_consumed = false; }
-    if (g_tris.size() > 6u * 1024 * 1024) return true;   // OOM guard for an undrained config
-    g_tris.reserve(g_tris.size() + idx.size());
+    if (dbg_enabled()) {
+        static int s_tx = 0;
+        if (s_tx < 6 && !idx.empty()) {
+            ++s_tx;
+            const NgxVertex& s0 = verts[idx[0]];
+            SbImmVtx q = imm_project(SbImmRawVtx{ s0.pos[0],s0.pos[1],s0.pos[2],0,0,0,0 },
+                                     projType, proj, posMtx, vp);
+            std::fprintf(stderr, "[xform] pt=%d proj[%.2f,%.2f,%.2f,%.2f,%.2f,%.2f] vp[%.1f,%.1f,%.1f,%.1f,%.1f,%.1f]\n"
+                         "        pos0=(%.1f,%.1f,%.1f) -> ndc(%.3f,%.3f,%.3f)\n"
+                         "        posMtx r0[%.3f,%.3f,%.3f,%.3f] r1[%.3f,%.3f,%.3f,%.3f] r2[%.3f,%.3f,%.3f,%.3f]\n",
+                         projType, proj[0],proj[1],proj[2],proj[3],proj[4],proj[5],
+                         vp[0],vp[1],vp[2],vp[3],vp[4],vp[5],
+                         s0.pos[0],s0.pos[1],s0.pos[2], q.x,q.y,q.z,
+                         posMtx[0][0],posMtx[0][1],posMtx[0][2],posMtx[0][3],
+                         posMtx[1][0],posMtx[1][1],posMtx[1][2],posMtx[1][3],
+                         posMtx[2][0],posMtx[2][1],posMtx[2][2],posMtx[2][3]);
+        }
+    }
 
-    static long s_shapes = 0, s_tris = 0;
-    if (dbg_enabled()) { ++s_shapes; s_tris += (long)idx.size();
-        if ((s_shapes % 4000) == 0)
-            std::fprintf(stderr, "[j3dcap] shapes=%ld tris=%ld gtris=%zu\n", s_shapes, s_tris, g_tris.size()); }
+    if (g_consumed) { g_verts.clear(); g_batches.clear(); g_last_mat = nullptr; g_consumed = false; }
+    if (g_verts.size() > 6u * 1024 * 1024) return true;   // OOM guard for an undrained config
 
+    const uint32_t vstart = (uint32_t)g_verts.size();
+    g_verts.reserve(g_verts.size() + idx.size());
     for (unsigned i : idx) {
         const NgxVertex& s = verts[i];
-        SbImmRawVtx raw{ s.pos[0], s.pos[1], s.pos[2],
-                         s.clr[0][0]/255.f, s.clr[0][1]/255.f, s.clr[0][2]/255.f, s.clr[0][3]/255.f };
-        if ((s.clr[0][0]|s.clr[0][1]|s.clr[0][2]) == 0) { raw.r = raw.g = raw.b = 0.86f; }
+        SbImmRawVtx raw{ s.pos[0], s.pos[1], s.pos[2], 0, 0, 0, 0 };
         SbImmVtx p = imm_project(raw, projType, proj, posMtx, vp);
-        g_tris.push_back(NvkVertex{ p.x, p.y, p.z, p.r, p.g, p.b, p.a });
+        NvkTevVertex tv{};
+        tv.x = p.x; tv.y = p.y; tv.z = p.z;
+        // Raster base per channel: vertex colour if the channel sources from the vertex,
+        // else the material colour register (UNLIT first slice — lighting is next stage).
+        const unsigned char* c0 = me->matSrcVtx[0] ? s.clr[0] : me->matColor[0];
+        const unsigned char* c1 = me->matSrcVtx[1] ? s.clr[1] : me->matColor[1];
+        tv.rgba[0]  = c0[0]/255.f; tv.rgba[1]  = c0[1]/255.f; tv.rgba[2]  = c0[2]/255.f; tv.rgba[3]  = c0[3]/255.f;
+        tv.rgba1[0] = c1[0]/255.f; tv.rgba1[1] = c1[1]/255.f; tv.rgba1[2] = c1[2]/255.f; tv.rgba1[3] = c1[3]/255.f;
+        for (int t = 0; t < 8; ++t) { tv.uv[t][0] = s.tex[t][0]; tv.uv[t][1] = s.tex[t][1]; }
+        g_verts.push_back(tv);
     }
+    const uint32_t vcount = (uint32_t)g_verts.size() - vstart;
+
+    // Merge into the previous batch if the same material drew the immediately-preceding
+    // shape (J3DMatPacket draws all its shapes consecutively); else open a new batch.
+    if (mat == g_last_mat && !g_batches.empty()) {
+        g_batches.back().vcount += vcount;
+    } else {
+        Nvk::NvkTevBatch b{};
+        b.vstart = vstart; b.vcount = vcount;
+        fill_batch_material(b, *me);
+        g_batches.push_back(b);
+        g_last_mat = mat;
+    }
+
+    static long s_shapes = 0;
+    if (dbg_enabled()) { ++s_shapes;
+        if ((s_shapes % 4000) == 0)
+            std::fprintf(stderr, "[j3dcap] shapes=%ld verts=%zu batches=%zu materials=%zu\n",
+                         s_shapes, g_verts.size(), g_batches.size(), g_matcache.size()); }
     return true;
 }
 
-// Present drains the frame's captured scene tris (mirrors sb_gx_imm_take's signature). Returns the
-// vertex count (multiple of 3); marks the buffer consumed so the next append clears it.
-extern "C" int sb_boot_capture_j3d_take(const NvkVertex** out) {
-    if (out) *out = g_tris.empty() ? nullptr : g_tris.data();
-    int n = (int)g_tris.size();
+// Present drains the frame's captured scene: the vertex list + per-material batches. Returns the
+// vertex count; *batches/*nbatches point at the batch list. Marks the buffers consumed (next
+// append clears). The NvkTevBatch fragGlsl/tex pointers stay valid (owned by g_matcache).
+int sb_boot_capture_tev_take(const NvkTevVertex** verts,
+                             const Nvk::NvkTevBatch** batches, int* nbatches) {
+    if (verts)    *verts    = g_verts.empty() ? nullptr : g_verts.data();
+    if (batches)  *batches  = g_batches.empty() ? nullptr : g_batches.data();
+    if (nbatches) *nbatches = (int)g_batches.size();
+    int n = (int)g_verts.size();
     g_consumed = true;
     return n;
 }

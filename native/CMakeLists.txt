@@ -361,9 +361,13 @@ if(SMS_BUILD_BOOT)
         # gekko force-include, like the loader tests) AND the render headers (nvk/ngx, via
         # the gx_parse shim) — only sms-boot has both include sets, so it is compiled here
         # rather than in sms-render. Provides the weak sb_boot_capture_j3d{,_take} symbols.
-        "${SMS_NATIVE_REPO_ROOT}/native/render/sms_boot_j3d_capture.cpp")
+        "${SMS_NATIVE_REPO_ROOT}/native/render/sms_boot_j3d_capture.cpp"
+        # Material/TEV/texture extraction from the captured shape's J3DMaterial (same J3D +
+        # render include sets as the capture).
+        "${SMS_NATIVE_REPO_ROOT}/native/render/sms_boot_material.cpp")
     set_source_files_properties(
-        "${SMS_NATIVE_REPO_ROOT}/native/render/sms_boot_j3d_capture.cpp" PROPERTIES
+        "${SMS_NATIVE_REPO_ROOT}/native/render/sms_boot_j3d_capture.cpp"
+        "${SMS_NATIVE_REPO_ROOT}/native/render/sms_boot_material.cpp" PROPERTIES
         # ORDER MATTERS: native/render/shim FIRST so ngx_decode's #include "gx_parse.h"
         # gets the Dolphin-free shadow; native/shim BEFORE reference/sms/include so
         # <dolphin/types.h> resolves to the host shadow (u32=uint32_t) and NOT the GC SDK

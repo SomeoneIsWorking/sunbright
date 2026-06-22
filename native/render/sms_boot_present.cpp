@@ -1,20 +1,25 @@
-// sms_boot_present.cpp — SLICE 1 of attaching the native renderer to sms-boot.
+// sms_boot_present.cpp — the native present hook (the DISPLAY) for sms-boot.
 //
-// The VI seam (native/platform/vi_impl.cpp) calls a present hook once per retrace. Here
-// we install that hook: lazily bring up the headless Vulkan rasterizer (nvk), render the
-// frame the engine asked for, and (env-gated) dump it to scratch/frames/ as a PPM so the
-// boot's on-screen output is VERIFIABLE headlessly — the foundation later slices grow on
-// (slice 2: immediate-mode 2D / fader; slice 3: live J3D scene capture).
+// The VI seam (native/platform/vi_impl.cpp) calls this once per retrace. It brings up the
+// headless Vulkan rasterizer (nvk), draws the frame the engine produced, and (env-gated)
+// dumps it to scratch/frames/ as a PPM so the boot's on-screen output is VERIFIABLE headlessly.
 //
-// SLICE 1 content: the captured GXSetCopyClear colour rendered as a full-frame clear.
-// That alone proves init -> capture -> render -> present -> dump end-to-end in the boot
-// exe. We only do GPU work while dumping is enabled and under the frame cap, so a normal
-// run isn't slowed by per-frame lavapipe rasterization.
+// The frame is the live J3D scene, captured per-material by sms_boot_j3d_capture.cpp as
+// NvkTevVertex batches (each = a generated TEV combiner shader + textures + push constants +
+// depth/blend state), composited via nvk's multi-material TEV frame (renderTevFrame). The
+// immediate-mode 2D (fader / HUD) is drained as flat-colour verts and appended as one extra
+// passthrough (out = rasterColor) batch drawn last, depth-test off, over the 3D scene.
+//
+// We only do GPU work while dumping is enabled and under the frame cap, so a normal run isn't
+// slowed by per-frame lavapipe rasterization.
 #include "nvk.h"
-#include "gx_imm_xform.h"   // SbImmVtx (== NvkVertex layout)
+#include "gx_imm_xform.h"      // SbImmVtx (== NvkVertex layout)
+#include "ngx_render_data.h"   // NgxTevState (for the 2D passthrough shader)
+#include "tev_shader.h"        // sb_tev_gen_fragment
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 #include <vector>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -22,22 +27,14 @@
 using namespace sb::render;
 
 extern "C" {
-// vi_present.h (declared here to avoid pulling the platform include dir into sms-render)
 void sb_vi_set_present_hook(void (*fn)(void*, void*), void* user);
-// gx_impl.cpp bridge: captured copy-clear colour as floats (0..1).
 void sb_gx_get_clear_color(float* rgba);
-// gx_imm_impl.cpp bridge: the frame's captured immediate-mode triangle list (Vulkan
-// NDC + RGBA). Returns the vertex count (multiple of 3); marks the buffer consumed.
-int sb_gx_imm_take(const SbImmVtx** out);
-// SLICE 3a: the frame's captured live J3D scene triangles (Vulkan NDC + RGBA), same
-// shape as sb_gx_imm_take. WEAK — when the capture TU (sms_boot_j3d_capture.cpp) isn't
-// linked, this is null and the present skips the 3D concat. NvkVertex layout (==SbImmVtx).
-int sb_boot_capture_j3d_take(const NvkVertex** out) __attribute__((weak));
+int  sb_gx_imm_take(const SbImmVtx** out);
 }
-
-// The capture vertex and the renderer vertex must be byte-identical so the present can
-// hand the captured triangles straight to nvk with no per-vertex copy/conversion.
-static_assert(sizeof(SbImmVtx) == sizeof(NvkVertex), "SbImmVtx/NvkVertex layout");
+// The frame's captured live J3D scene: vertex list + per-material TEV batches. WEAK — null when
+// the capture TU (sms_boot_j3d_capture.cpp) isn't linked, in which case the present draws only 2D.
+int sb_boot_capture_tev_take(const NvkTevVertex** verts,
+                             const Nvk::NvkTevBatch** batches, int* nbatches) __attribute__((weak));
 
 namespace {
 
@@ -45,13 +42,35 @@ Nvk g_nvk;
 bool g_init_tried = false;
 bool g_init_ok = false;
 int g_frame = 0;
-int g_max_dump = 0;   // 0 = dumping disabled
-int g_start_dump = 0; // first VI-retrace frame to begin dumping (SB_FRAME_DUMP_START)
-int g_dumped = 0;     // frames actually dumped so far
-bool g_on_scene = false;     // SB_FRAME_DUMP_ON_SCENE: dump from the first frame with 3D geometry
-bool g_dump_started = false; // (on-scene mode) the scene-geometry trigger has fired
+int g_max_dump = 0;
+int g_start_dump = 0;
+int g_dumped = 0;
+bool g_on_scene = false;
+bool g_dump_started = false;
+
+// The 2D-overlay passthrough TEV shader (out = rasterColor), generated once.
+std::string g_pass_frag;
+uint64_t    g_pass_key = 0;
 
 constexpr uint32_t kW = 640, kH = 480;
+
+uint64_t fnv64(const char* s) {
+    uint64_t h = 1469598103934665603ull;
+    for (; *s; ++s) { h ^= (uint8_t)*s; h *= 1099511628211ull; }
+    return h;
+}
+
+void ensure_pass_shader() {
+    if (!g_pass_frag.empty()) return;
+    NgxTevState st{};
+    st.num_stages = 1;
+    st.stage[0].color_env = (15u<<12)|(15u<<8)|(15u<<4)|10u | (1u<<19);  // cc out = RASC
+    st.stage[0].alpha_env = (7u<<13)|(7u<<10)|(7u<<7)|(5u<<4) | (1u<<19); // ac out = RASA
+    st.stage[0].texmap = 0xff; st.stage[0].texcoord = 0xff; st.stage[0].color_chan = 0; // COLOR0A0
+    for (int i = 0; i < 4; ++i) st.swap_table[i] = 0x1B;                  // identity (NOT 0 → "rrrr")
+    g_pass_frag = sb_tev_gen_fragment(st);
+    g_pass_key  = fnv64(g_pass_frag.c_str());
+}
 
 void write_ppm(const char* path) {
     FILE* f = std::fopen(path, "wb");
@@ -66,19 +85,36 @@ void write_ppm(const char* path) {
 }
 
 void present_hook(void* /*framebuffer*/, void* /*user*/) {
+    // SB_BBOX_TRACE: map the captured scene's NDC bbox across frames (no GPU, no dump) to
+    // see whether/when the camera brings geometry in-view.
+    static const bool bbtrace = [](){ const char* v = std::getenv("SB_BBOX_TRACE"); return v && v[0] && v[0] != '0'; }();
+    if (bbtrace) {
+        const NvkTevVertex* sv = nullptr; const Nvk::NvkTevBatch* sb = nullptr; int nb = 0;
+        int n = (&sb_boot_capture_tev_take) ? sb_boot_capture_tev_take(&sv, &sb, &nb) : 0;
+        static int s_bt = 0; static int s_f = 0; ++s_f;
+        if (n > 0 && s_bt < 80 && (s_f % 8) == 0) {
+            ++s_bt;
+            float mnx=1e30f,mxx=-1e30f,mny=1e30f,mxy=-1e30f,mnz=1e30f,mxz=-1e30f;
+            for (int i = 0; i < n; ++i) {
+                if (sv[i].x<mnx)mnx=sv[i].x; if (sv[i].x>mxx)mxx=sv[i].x;
+                if (sv[i].y<mny)mny=sv[i].y; if (sv[i].y>mxy)mxy=sv[i].y;
+                if (sv[i].z<mnz)mnz=sv[i].z; if (sv[i].z>mxz)mxz=sv[i].z;
+            }
+            std::fprintf(stderr, "[bbtrace] f=%d nscene=%d nb=%d x[%.2f,%.2f] y[%.2f,%.2f] z[%.2f,%.2f]\n",
+                         s_f, n, nb, mnx,mxx,mny,mxy,mnz,mxz);
+        }
+        return;
+    }
     if (!g_max_dump || g_dumped >= g_max_dump) return;
 
-    // Drain the frame's captured live J3D scene + immediate-mode 2D EVERY frame (cheap —
-    // just hands back the buffers and marks them consumed, so the capture is per-frame, not
-    // accumulated). We only rasterize/dump frames that qualify (below).
-    const NvkVertex* scene = nullptr;
-    int nscene = (&sb_boot_capture_j3d_take) ? sb_boot_capture_j3d_take(&scene) : 0;
+    // Drain the captured scene + 2D imm EVERY frame (cheap; marks them consumed).
+    const NvkTevVertex* scene = nullptr;
+    const Nvk::NvkTevBatch* sbatches = nullptr;
+    int nsbatch = 0;
+    int nscene = (&sb_boot_capture_tev_take) ? sb_boot_capture_tev_take(&scene, &sbatches, &nsbatch) : 0;
     const SbImmVtx* imm = nullptr;
     int nimm = sb_gx_imm_take(&imm);
 
-    // Decide whether to dump this frame. SB_FRAME_DUMP_ON_SCENE waits for the first frame
-    // with actual 3D geometry (the scene loads after the HUD, so a fixed start-frame catches
-    // a black-but-HUD frame). Otherwise use the fixed start-frame window.
     bool dumpThis;
     if (g_on_scene) {
         if (!g_dump_started && nscene > 0) g_dump_started = true;
@@ -94,36 +130,76 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
         g_init_tried = true;
         g_init_ok = g_nvk.init(kW, kH) || g_nvk.init(kW, kH, true);
         if (!g_init_ok)
-            std::fprintf(stderr, "[present] no Vulkan device (slice 1 dump disabled)\n");
+            std::fprintf(stderr, "[present] no Vulkan device (dump disabled)\n");
         else
             std::printf("[present] nvk up (%ux%u) — dumping %d frames to scratch/frames/\n",
                         kW, kH, g_max_dump);
     }
     if (!g_init_ok) { g_max_dump = 0; return; }
+    ensure_pass_shader();
 
     float c[4] = {0, 0, 0, 1};
     sb_gx_get_clear_color(c);
 
-    // SLICE 3a: draw the J3D scene FIRST (so the 2D HUD composites over it), then the 2D.
-    std::vector<NvkVertex> verts((size_t)nscene + nimm);
-    if (nscene)
-        std::memcpy(verts.data(), scene, (size_t)nscene * sizeof(NvkVertex));
-    if (nimm)
-        std::memcpy(verts.data() + nscene, imm, (size_t)nimm * sizeof(NvkVertex));
-    g_nvk.renderTriangles(verts, NvkClear{c[0], c[1], c[2], c[3]});
+    // Combined vertex list: scene verts first (batch vstarts are already 0-based into the scene
+    // list), then the 2D imm verts appended after.
+    std::vector<NvkTevVertex> verts((size_t)nscene + nimm);
+    if (nscene) std::memcpy(verts.data(), scene, (size_t)nscene * sizeof(NvkTevVertex));
+    for (int i = 0; i < nimm; ++i) {
+        NvkTevVertex& tv = verts[(size_t)nscene + i];
+        tv = NvkTevVertex{};
+        tv.x = imm[i].x; tv.y = imm[i].y; tv.z = imm[i].z;
+        tv.rgba[0] = imm[i].r; tv.rgba[1] = imm[i].g; tv.rgba[2] = imm[i].b; tv.rgba[3] = imm[i].a;
+        tv.rgba1[0] = imm[i].r; tv.rgba1[1] = imm[i].g; tv.rgba1[2] = imm[i].b; tv.rgba1[3] = imm[i].a;
+    }
+
+    // SB_TEV_SOLID: force scene batches through the passthrough shader (out = rasterColor,
+    // ignore textures/combiner) — isolates geometry+raster from the combiner/texture path.
+    static const bool solid = [](){ const char* v = std::getenv("SB_TEV_SOLID"); return v && v[0] && v[0] != '0'; }();
+    std::vector<Nvk::NvkTevBatch> batches;
+    batches.reserve((size_t)nsbatch + 1);
+    for (int i = 0; i < nsbatch; ++i) {
+        Nvk::NvkTevBatch b = sbatches[i];
+        if (solid) { b.fragGlsl = g_pass_frag.c_str(); b.shaderKey = g_pass_key; b.blend_mode = 0;
+                     b.z_test = 0; b.z_write = 0; }
+        batches.push_back(b);
+    }
+    if (nimm) {
+        Nvk::NvkTevBatch b{};
+        b.vstart = (uint32_t)nscene; b.vcount = (uint32_t)nimm;
+        b.fragGlsl = g_pass_frag.c_str(); b.shaderKey = g_pass_key;
+        std::memset(b.push.kcolor, 0xFF, sizeof b.push.kcolor);
+        b.z_test = 0; b.z_write = 0;                 // HUD draws on top, no depth
+        b.blend_mode = 1; b.src_factor = 4; b.dst_factor = 5;  // SRCALPHA / INVSRCALPHA
+        batches.push_back(b);
+    }
+
+    static int s_bbox = 0;
+    if (s_bbox < 2 && nscene > 0) {
+        ++s_bbox;
+        float mnx=1e30f,mxx=-1e30f,mny=1e30f,mxy=-1e30f,mnz=1e30f,mxz=-1e30f;
+        for (int i = 0; i < nscene; ++i) {
+            const NvkTevVertex& v = verts[i];
+            if (v.x<mnx)mnx=v.x; if (v.x>mxx)mxx=v.x; if (v.y<mny)mny=v.y; if (v.y>mxy)mxy=v.y;
+            if (v.z<mnz)mnz=v.z; if (v.z>mxz)mxz=v.z;
+        }
+        std::fprintf(stderr, "[bbox] scene NDC x[%.3f,%.3f] y[%.3f,%.3f] z[%.3f,%.3f] nbatch=%d b0(vs=%u vc=%u rgba=%.2f,%.2f,%.2f,%.2f)\n",
+                     mnx,mxx,mny,mxy,mnz,mxz, nsbatch,
+                     batches[0].vstart, batches[0].vcount,
+                     verts[0].rgba[0],verts[0].rgba[1],verts[0].rgba[2],verts[0].rgba[3]);
+    }
+    g_nvk.renderTevFrame(verts, batches, NvkClear{c[0], c[1], c[2], c[3]});
 
     char path[160];
     std::snprintf(path, sizeof path, "scratch/frames/boot_%04d.ppm", g_frame);
     write_ppm(path);
-    std::printf("[present] frame %d clear=(%.2f,%.2f,%.2f,%.2f) scene_tris=%d imm_tris=%d -> %s\n",
-                g_frame, c[0], c[1], c[2], c[3], nscene / 3, nimm / 3, path);
+    std::printf("[present] frame %d clear=(%.2f,%.2f,%.2f,%.2f) scene_verts=%d scene_batches=%d imm_tris=%d -> %s\n",
+                g_frame, c[0], c[1], c[2], c[3], nscene, nsbatch, nimm / 3, path);
     ++g_dumped;
 }
 
 } // namespace
 
-// Called from boot.cpp after PlatformInit. SB_FRAME_DUMP=1 enables PPM dumping;
-// SB_FRAME_DUMP_MAX overrides the frame cap (default 120).
 extern "C" void sb_boot_present_install() {
     if (const char* e = std::getenv("SB_FRAME_DUMP")) {
         if (e[0] && e[0] != '0') {

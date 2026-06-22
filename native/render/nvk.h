@@ -85,6 +85,23 @@ public:
     bool renderTevTriangles(const std::vector<NvkTevVertex>& verts,
                             const NvkTevPush& push, NvkClear clear);
 
+    // ── Multi-material TEV frame: clear ONCE, draw many material batches into the same
+    // color+depth target (the real scene path), read back ONCE. Each batch carries its
+    // own generated fragment shader, textures, push constants and depth/blend state.
+    // Shaders + pipelines are cached across frames (keyed by NvkTevBatch::shaderKey and
+    // the pipeline state); per-batch textures + descriptor sets are transient.
+    struct NvkTevBatch {
+        uint32_t vstart = 0, vcount = 0;
+        NvkTevPush push{};
+        const char* fragGlsl = nullptr;   // sb_tev_gen_fragment(...) source (owned by caller)
+        uint64_t shaderKey = 0;           // unique per distinct fragGlsl (shader/pipeline cache key)
+        struct Tex { const uint8_t* rgba = nullptr; uint32_t w = 0, h = 0; uint8_t linear = 0; } tex[8];
+        uint8_t z_test = 1, z_func = 3 /*GX_LEQUAL*/, z_write = 1;
+        uint8_t blend_mode = 0, src_factor = 1, dst_factor = 0;   // GX blend (0=none)
+    };
+    bool renderTevFrame(const std::vector<NvkTevVertex>& verts,
+                        const std::vector<NvkTevBatch>& batches, NvkClear clear);
+
     const std::vector<uint8_t>& rgba() const { return pixels_; }
     uint32_t width() const  { return width_; }
     uint32_t height() const { return height_; }

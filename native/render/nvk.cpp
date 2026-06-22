@@ -7,6 +7,9 @@
 #include <cstdio>
 #include <cstddef>
 #include <string>
+#include <vector>
+#include <array>
+#include <unordered_map>
 
 #include "glsl_compile.h"   // runtime GLSL 450 -> SPIR-V (shipping ngx wrapper, glslang)
 
@@ -83,6 +86,13 @@ struct Nvk::Impl {
     VkImageView tevWhiteView = VK_NULL_HANDLE;
     VkBuffer tevVbuf = VK_NULL_HANDLE; VkDeviceMemory tevVbufMem = VK_NULL_HANDLE;
     VkDeviceSize tevVbufCap = 0;
+
+    // Multi-material TEV frame (renderTevFrame): a LINEAR sampler alongside tevSampler
+    // (NEAREST), and caches keyed by NvkTevBatch::shaderKey / pipeline-state so shaders
+    // and pipelines survive across frames (compiling GLSL per frame would be too slow).
+    VkSampler tevSamplerLinear = VK_NULL_HANDLE;
+    std::unordered_map<uint64_t, VkShaderModule> tevFragCache;   // by shaderKey
+    std::unordered_map<uint64_t, VkPipeline>     tevPipeCache;   // by (shaderKey + state)
 
     uint32_t w = 0, h = 0;
 
@@ -493,6 +503,8 @@ bool Nvk::init(uint32_t width, uint32_t height, bool preferCpu) {
     tsmp.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
     tsmp.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
     VKCHECK(vkCreateSampler(d->device, &tsmp, nullptr, &d->tevSampler));
+    tsmp.magFilter = VK_FILTER_LINEAR; tsmp.minFilter = VK_FILTER_LINEAR;
+    VKCHECK(vkCreateSampler(d->device, &tsmp, nullptr, &d->tevSamplerLinear));
 
     // 1x1 white default for unbound texmaps (all 8 descriptor elements must be valid).
     const uint8_t white[4] = { 255, 255, 255, 255 };
@@ -691,6 +703,259 @@ bool Nvk::renderTevTriangles(const std::vector<NvkTevVertex>& verts,
     VKCHECK(vkMapMemory(d->device, d->readbackMem, 0, (VkDeviceSize)d->w * d->h * 4, 0, &mapped));
     std::memcpy(pixels_.data(), mapped, (size_t)d->w * d->h * 4);
     vkUnmapMemory(d->device, d->readbackMem);
+    return true;
+}
+
+// GX blend factor (GXBlendFactor) → Vulkan blend factor. `isSrc` picks the SRCCLR/DSTCLR
+// reading (GX_BL_SRCCLR=2 as a SOURCE factor means dst colour, as a DEST factor means src
+// colour — the GX cross-naming; mirrors Dolphin's BlendingState).
+static VkBlendFactor gx_blend_factor(uint8_t f, bool isSrc) {
+    switch (f) {
+        case 0: return VK_BLEND_FACTOR_ZERO;                       // GX_BL_ZERO
+        case 1: return VK_BLEND_FACTOR_ONE;                        // GX_BL_ONE
+        case 2: return isSrc ? VK_BLEND_FACTOR_DST_COLOR : VK_BLEND_FACTOR_SRC_COLOR;
+        case 3: return isSrc ? VK_BLEND_FACTOR_ONE_MINUS_DST_COLOR : VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR;
+        case 4: return VK_BLEND_FACTOR_SRC_ALPHA;                  // GX_BL_SRCALPHA
+        case 5: return VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;        // GX_BL_INVSRCALPHA
+        case 6: return VK_BLEND_FACTOR_DST_ALPHA;                  // GX_BL_DSTALPHA
+        case 7: return VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA;        // GX_BL_INVDSTALPHA
+        default: return isSrc ? VK_BLEND_FACTOR_ONE : VK_BLEND_FACTOR_ZERO;
+    }
+}
+
+// Build a TEV pipeline for the given shader module + depth/blend state. Mirrors
+// setTevFragment's pipeline state but parameterized (free function — takes explicit
+// handles so it never touches the private Impl). Returns VK_NULL_HANDLE on failure.
+static VkPipeline build_tev_pipeline(VkDevice device, VkShaderModule vs, VkShaderModule frag,
+                                     VkPipelineLayout layout, VkRenderPass rp,
+                                     uint32_t W, uint32_t H,
+                                     uint8_t z_test, uint8_t z_func, uint8_t z_write,
+                                     uint8_t blend_mode, uint8_t src_factor, uint8_t dst_factor) {
+    VkPipelineShaderStageCreateInfo stages[2]{};
+    stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT; stages[0].module = vs; stages[0].pName = "main";
+    stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; stages[1].module = frag; stages[1].pName = "main";
+
+    VkVertexInputBindingDescription bind{ 0, sizeof(NvkTevVertex), VK_VERTEX_INPUT_RATE_VERTEX };
+    VkVertexInputAttributeDescription a[7]{};
+    a[0] = { 0, 0, VK_FORMAT_R32G32B32_SFLOAT,    (uint32_t)offsetof(NvkTevVertex, x) };
+    a[1] = { 1, 0, VK_FORMAT_R32G32B32A32_SFLOAT, (uint32_t)offsetof(NvkTevVertex, rgba) };
+    a[2] = { 2, 0, VK_FORMAT_R32G32B32A32_SFLOAT, (uint32_t)offsetof(NvkTevVertex, rgba1) };
+    a[3] = { 3, 0, VK_FORMAT_R32G32B32A32_SFLOAT, (uint32_t)offsetof(NvkTevVertex, uv[0]) };
+    a[4] = { 4, 0, VK_FORMAT_R32G32B32A32_SFLOAT, (uint32_t)offsetof(NvkTevVertex, uv[2]) };
+    a[5] = { 5, 0, VK_FORMAT_R32G32B32A32_SFLOAT, (uint32_t)offsetof(NvkTevVertex, uv[4]) };
+    a[6] = { 6, 0, VK_FORMAT_R32G32B32A32_SFLOAT, (uint32_t)offsetof(NvkTevVertex, uv[6]) };
+    VkPipelineVertexInputStateCreateInfo vi{};
+    vi.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    vi.vertexBindingDescriptionCount = 1; vi.pVertexBindingDescriptions = &bind;
+    vi.vertexAttributeDescriptionCount = 7; vi.pVertexAttributeDescriptions = a;
+
+    VkPipelineInputAssemblyStateCreateInfo ia{};
+    ia.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    VkViewport vp{ 0, 0, (float)W, (float)H, 0.0f, 1.0f };
+    VkRect2D sc{ {0, 0}, {W, H} };
+    VkPipelineViewportStateCreateInfo vps{};
+    vps.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    vps.viewportCount = 1; vps.pViewports = &vp; vps.scissorCount = 1; vps.pScissors = &sc;
+    VkPipelineRasterizationStateCreateInfo rs{};
+    rs.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rs.polygonMode = VK_POLYGON_MODE_FILL; rs.cullMode = VK_CULL_MODE_NONE;  // cull deferred
+    rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE; rs.lineWidth = 1.0f;
+    VkPipelineMultisampleStateCreateInfo ms{};
+    ms.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    VkPipelineDepthStencilStateCreateInfo ds{};
+    ds.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    ds.depthTestEnable = z_test ? VK_TRUE : VK_FALSE;
+    ds.depthWriteEnable = z_write ? VK_TRUE : VK_FALSE;
+    // GX compare (0=NEVER..7=ALWAYS) maps 1:1 to VkCompareOp.
+    ds.depthCompareOp = (VkCompareOp)(z_func <= 7 ? z_func : 3);
+    VkPipelineColorBlendAttachmentState cba{};
+    cba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                         VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    if (blend_mode == 1 /*GX_BM_BLEND*/) {
+        cba.blendEnable = VK_TRUE;
+        cba.srcColorBlendFactor = gx_blend_factor(src_factor, true);
+        cba.dstColorBlendFactor = gx_blend_factor(dst_factor, false);
+        cba.colorBlendOp = VK_BLEND_OP_ADD;
+        cba.srcAlphaBlendFactor = cba.srcColorBlendFactor;
+        cba.dstAlphaBlendFactor = cba.dstColorBlendFactor;
+        cba.alphaBlendOp = VK_BLEND_OP_ADD;
+    } else {
+        cba.blendEnable = VK_FALSE;
+    }
+    VkPipelineColorBlendStateCreateInfo cb{};
+    cb.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    cb.attachmentCount = 1; cb.pAttachments = &cba;
+
+    VkGraphicsPipelineCreateInfo gp{};
+    gp.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    gp.stageCount = 2; gp.pStages = stages;
+    gp.pVertexInputState = &vi; gp.pInputAssemblyState = &ia;
+    gp.pViewportState = &vps; gp.pRasterizationState = &rs;
+    gp.pMultisampleState = &ms; gp.pColorBlendState = &cb; gp.pDepthStencilState = &ds;
+    gp.layout = layout; gp.renderPass = rp; gp.subpass = 0;
+    VkPipeline pipe = VK_NULL_HANDLE;
+    if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &gp, nullptr, &pipe) != VK_SUCCESS)
+        return VK_NULL_HANDLE;
+    return pipe;
+}
+
+bool Nvk::renderTevFrame(const std::vector<NvkTevVertex>& verts,
+                         const std::vector<NvkTevBatch>& batches, NvkClear clear) {
+    Impl* d = d_;
+    if (!d || !d->device) return false;
+    const uint32_t vcount = (uint32_t)verts.size();
+
+    // --- vertex buffer (the whole frame's verts) ---
+    VkDeviceSize need = vcount ? (VkDeviceSize)vcount * sizeof(NvkTevVertex) : sizeof(NvkTevVertex);
+    if (need > d->tevVbufCap) {
+        if (d->tevVbuf) { vkDestroyBuffer(d->device, d->tevVbuf, nullptr); vkFreeMemory(d->device, d->tevVbufMem, nullptr); }
+        if (!d->createBuffer(need, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                &d->tevVbuf, &d->tevVbufMem)) return false;
+        d->tevVbufCap = need;
+    }
+    if (vcount) {
+        void* p = nullptr;
+        VKCHECK(vkMapMemory(d->device, d->tevVbufMem, 0, need, 0, &p));
+        std::memcpy(p, verts.data(), (size_t)vcount * sizeof(NvkTevVertex));
+        vkUnmapMemory(d->device, d->tevVbufMem);
+    }
+
+    // --- per-batch shaders + pipelines (cached across frames) ---
+    std::vector<VkPipeline> batchPipe(batches.size(), VK_NULL_HANDLE);
+    for (size_t i = 0; i < batches.size(); ++i) {
+        const NvkTevBatch& b = batches[i];
+        if (!b.vcount || !b.fragGlsl) continue;
+        // shader module by shaderKey
+        VkShaderModule frag = VK_NULL_HANDLE;
+        auto fit = d->tevFragCache.find(b.shaderKey);
+        if (fit != d->tevFragCache.end()) frag = fit->second;
+        else {
+            std::vector<uint32_t> spv = sb_compile_fragment_glsl(b.fragGlsl);
+            if (spv.empty()) { std::fprintf(stderr, "[nvk] TEV frag compile failed (key=%llx)\n",
+                                            (unsigned long long)b.shaderKey); continue; }
+            VkShaderModuleCreateInfo si{}; si.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+            si.codeSize = spv.size() * sizeof(uint32_t); si.pCode = spv.data();
+            if (vkCreateShaderModule(d->device, &si, nullptr, &frag) != VK_SUCCESS) continue;
+            d->tevFragCache[b.shaderKey] = frag;
+        }
+        // pipeline by (shaderKey + depth/blend state)
+        uint64_t pk = b.shaderKey * 1099511628211ull
+                    ^ ((uint64_t)b.z_test | ((uint64_t)b.z_func << 1) | ((uint64_t)b.z_write << 4)
+                       | ((uint64_t)b.blend_mode << 5) | ((uint64_t)b.src_factor << 7)
+                       | ((uint64_t)b.dst_factor << 12));
+        auto pit = d->tevPipeCache.find(pk);
+        if (pit != d->tevPipeCache.end()) batchPipe[i] = pit->second;
+        else {
+            VkPipeline pipe = build_tev_pipeline(d->device, d->tevVs, frag, d->tevPipeLayout,
+                                                 d->renderPass, d->w, d->h,
+                                                 b.z_test, b.z_func, b.z_write,
+                                                 b.blend_mode, b.src_factor, b.dst_factor);
+            if (pipe == VK_NULL_HANDLE) continue;
+            d->tevPipeCache[pk] = pipe; batchPipe[i] = pipe;
+        }
+    }
+
+    // --- per-batch textures (transient, this frame only) ---
+    struct TexHandles { VkImage img; VkDeviceMemory mem; VkImageView view; };
+    std::vector<TexHandles> transient;
+    // For each batch, 8 image views (default = white) to write into its descriptor set.
+    std::vector<std::array<VkImageView, 8>> batchViews(batches.size());
+    std::vector<std::array<uint8_t, 8>>     batchLinear(batches.size());
+    for (size_t i = 0; i < batches.size(); ++i) {
+        for (int s = 0; s < 8; ++s) { batchViews[i][s] = d->tevWhiteView; batchLinear[i][s] = 0; }
+        const NvkTevBatch& b = batches[i];
+        for (int s = 0; s < 8; ++s) {
+            if (!b.tex[s].rgba || !b.tex[s].w || !b.tex[s].h) continue;
+            TexHandles t{};
+            if (!d->makeTexture(b.tex[s].rgba, b.tex[s].w, b.tex[s].h, &t.img, &t.mem, &t.view))
+                continue;
+            transient.push_back(t);
+            batchViews[i][s] = t.view; batchLinear[i][s] = b.tex[s].linear;
+        }
+    }
+
+    // --- one descriptor set per batch (transient pool) ---
+    const uint32_t nsets = (uint32_t)batches.size();
+    VkDescriptorPool pool = VK_NULL_HANDLE;
+    std::vector<VkDescriptorSet> sets(nsets, VK_NULL_HANDLE);
+    if (nsets) {
+        VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 8 * nsets };
+        VkDescriptorPoolCreateInfo pc{};
+        pc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        pc.maxSets = nsets; pc.poolSizeCount = 1; pc.pPoolSizes = &ps;
+        VKCHECK(vkCreateDescriptorPool(d->device, &pc, nullptr, &pool));
+        std::vector<VkDescriptorSetLayout> layouts(nsets, d->tevDsl);
+        VkDescriptorSetAllocateInfo ai{};
+        ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        ai.descriptorPool = pool; ai.descriptorSetCount = nsets; ai.pSetLayouts = layouts.data();
+        VKCHECK(vkAllocateDescriptorSets(d->device, &ai, sets.data()));
+        for (uint32_t i = 0; i < nsets; ++i) {
+            VkDescriptorImageInfo dii[8];
+            for (int s = 0; s < 8; ++s)
+                dii[s] = { batchLinear[i][s] ? d->tevSamplerLinear : d->tevSampler,
+                           batchViews[i][s], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+            VkWriteDescriptorSet w{}; w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w.dstSet = sets[i]; w.dstBinding = 0; w.dstArrayElement = 0; w.descriptorCount = 8;
+            w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w.pImageInfo = dii;
+            vkUpdateDescriptorSets(d->device, 1, &w, 0, nullptr);
+        }
+    }
+
+    // --- record: clear once, draw each batch, copy back once ---
+    VKCHECK(vkResetCommandBuffer(d->cmd, 0));
+    VkCommandBufferBeginInfo bi{}; bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    VKCHECK(vkBeginCommandBuffer(d->cmd, &bi));
+    VkClearValue cv[2]{};
+    cv[0].color = { { clear.r, clear.g, clear.b, clear.a } };
+    cv[1].depthStencil = { 1.0f, 0 };
+    VkRenderPassBeginInfo rpb{};
+    rpb.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    rpb.renderPass = d->renderPass; rpb.framebuffer = d->framebuffer;
+    rpb.renderArea = { {0, 0}, {d->w, d->h} };
+    rpb.clearValueCount = 2; rpb.pClearValues = cv;
+    vkCmdBeginRenderPass(d->cmd, &rpb, VK_SUBPASS_CONTENTS_INLINE);
+    VkDeviceSize voff = 0;
+    vkCmdBindVertexBuffers(d->cmd, 0, 1, &d->tevVbuf, &voff);
+    for (size_t i = 0; i < batches.size(); ++i) {
+        const NvkTevBatch& b = batches[i];
+        if (!b.vcount || batchPipe[i] == VK_NULL_HANDLE) continue;
+        vkCmdBindPipeline(d->cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, batchPipe[i]);
+        vkCmdBindDescriptorSets(d->cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, d->tevPipeLayout,
+                                0, 1, &sets[i], 0, nullptr);
+        vkCmdPushConstants(d->cmd, d->tevPipeLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
+                           0, (uint32_t)sizeof(NvkTevPush), &b.push);
+        vkCmdDraw(d->cmd, b.vcount, 1, b.vstart, 0);
+    }
+    vkCmdEndRenderPass(d->cmd);
+    VkBufferImageCopy region{};
+    region.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+    region.imageExtent = { d->w, d->h, 1 };
+    vkCmdCopyImageToBuffer(d->cmd, d->color, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           d->readback, 1, &region);
+    VKCHECK(vkEndCommandBuffer(d->cmd));
+    VKCHECK(vkResetFences(d->device, 1, &d->fence));
+    VkSubmitInfo si{}; si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    si.commandBufferCount = 1; si.pCommandBuffers = &d->cmd;
+    VKCHECK(vkQueueSubmit(d->queue, 1, &si, d->fence));
+    VKCHECK(vkWaitForFences(d->device, 1, &d->fence, VK_TRUE, UINT64_MAX));
+    void* mapped = nullptr;
+    VKCHECK(vkMapMemory(d->device, d->readbackMem, 0, (VkDeviceSize)d->w * d->h * 4, 0, &mapped));
+    std::memcpy(pixels_.data(), mapped, (size_t)d->w * d->h * 4);
+    vkUnmapMemory(d->device, d->readbackMem);
+
+    // --- free transient textures + descriptor pool (caches keep shaders/pipelines) ---
+    for (auto& t : transient) {
+        vkDestroyImageView(d->device, t.view, nullptr);
+        vkDestroyImage(d->device, t.img, nullptr);
+        vkFreeMemory(d->device, t.mem, nullptr);
+    }
+    if (pool) vkDestroyDescriptorPool(d->device, pool, nullptr);
     return true;
 }
 
