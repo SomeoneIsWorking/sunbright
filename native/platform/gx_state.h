@@ -32,6 +32,7 @@ struct GXState {
     GXProjectionType proj3dType;
     f32 proj3dMtx[6];
     f32 proj3dVp[6];
+    f32 proj3dM44[16];   // the full row-major 4x4 (C_MTXPerspective) — for clip-space project
     bool proj3dValid;
 
     // --- transform: scissor rect ---

@@ -23,6 +23,10 @@
 
 extern "C" {
 
+#ifdef SMS_NATIVE_PLATFORM
+void sb_gx_latch_proj44(const float[16]);   // gx_impl.cpp — latch camera perspective
+#endif
+
 // ===========================================================================
 // MTX — 3x4 affine matrices, row-major (Mtx[row][col]).
 // ===========================================================================
@@ -286,6 +290,12 @@ void C_MTXPerspective(Mtx44 m, f32 fovY, f32 aspect, f32 n, f32 f) {
     tmp = 1.0f / (f - n);
     m[2][2] = -n*tmp; m[2][3] = tmp*-(f*n);
     m[3][0] = 0; m[3][1] = 0; m[3][2] = -1; m[3][3] = 0;
+#ifdef SMS_NATIVE_PLATFORM
+    // Latch this perspective for the native scene render. In sms-boot the camera's
+    // GXSetProjection call (the GC draw phase) doesn't fire, so this is the only seam the
+    // perspective projection reaches the renderer through.
+    sb_gx_latch_proj44(&m[0][0]);
+#endif
 }
 
 void C_MTXOrtho(Mtx44 m, f32 t, f32 b, f32 l, f32 r, f32 n, f32 f) {

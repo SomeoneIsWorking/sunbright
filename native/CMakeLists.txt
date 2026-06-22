@@ -40,7 +40,9 @@ list(FILTER SMS_NATIVE_SOURCES EXCLUDE REGEX
 list(FILTER SMS_NATIVE_SOURCES EXCLUDE REGEX
      "/reference/sms/src/JSystem/JAudio/JASystem/JASVload\\.cpp$")
 list(APPEND SMS_NATIVE_SOURCES
-     "${SMS_NATIVE_REPO_ROOT}/native/src/sms_boot_audio.cpp")
+     "${SMS_NATIVE_REPO_ROOT}/native/src/sms_boot_audio.cpp"
+     # Owns the active-camera transform for the native scene render (gpCamera -> view+proj).
+     "${SMS_NATIVE_REPO_ROOT}/native/src/camera_latch.cpp")
 
 add_library(sms-native STATIC ${SMS_NATIVE_SOURCES})
 

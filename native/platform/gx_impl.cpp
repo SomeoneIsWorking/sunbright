@@ -67,6 +67,8 @@ void GXSetProjection(f32 mtx[4][4], GXProjectionType type) {
     // render — the HUD overwrites the live projection with an ortho before model calc().
     if (type == GX_PERSPECTIVE) {
         for (int i = 0; i < 6; ++i) g.proj3dMtx[i] = g.projMtx[i];
+        // Full row-major 4x4 (C_MTXPerspective authored it) for the clip-space scene project.
+        for (int r = 0; r < 4; ++r) for (int c = 0; c < 4; ++c) g.proj3dM44[r*4+c] = mtx[r][c];
         g.proj3dType = type;
         g.proj3dVp[0] = g.vpLeft; g.proj3dVp[1] = g.vpTop;  g.proj3dVp[2] = g.vpWd;
         g.proj3dVp[3] = g.vpHt;   g.proj3dVp[4] = g.vpNearz; g.proj3dVp[5] = g.vpFarz;
@@ -148,6 +150,25 @@ extern "C" void sb_gx_get_clear_color(float* rgba) {
 // want — type, proj[0..5] = GXState.projMtx, vp[0..5] = {l,t,w,h,nearz,farz}. Mirrors
 // GXGetProjectionv/GXGetViewportv but as a clean extern "C" the Vulkan-only render lib
 // can call without pulling in dolphin/gx headers.
+// Latch the perspective 4x4 from C_MTXPerspective (mtx_impl.cpp). The camera computes its
+// perspective every frame but only calls GXSetProjection when its perform flag has bit 0x10
+// (the GC draw phase, which doesn't run in sms-boot) — so the projection reaches GX only via
+// this seam. Row-major 16 floats. Stores into the same slot GXSetProjection's latch uses.
+extern "C" void sb_gx_latch_proj44(const float m[16]) {
+    auto& g = state();
+    for (int i = 0; i < 16; ++i) g.proj3dM44[i] = m[i];
+    g.proj3dValid = true;
+}
+
+// The latched PERSPECTIVE 4x4 (row-major) for the native scene render's clip-space project
+// (ngx_project_eye). Returns 1 if a perspective projection has been seen, else 0 (identity).
+extern "C" int sb_gx_get_proj44(float m[16]) {
+    auto& g = state();
+    if (g.proj3dValid) { for (int i = 0; i < 16; ++i) m[i] = g.proj3dM44[i]; return 1; }
+    for (int i = 0; i < 16; ++i) m[i] = (i % 5 == 0) ? 1.0f : 0.0f;
+    return 0;
+}
+
 extern "C" void sb_gx_get_projection(int* type, float proj[6], float vp[6]) {
     auto& g = state();
     // Prefer the latched PERSPECTIVE projection (the 3D scene matrix); the live projMtx
