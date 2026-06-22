@@ -100,6 +100,32 @@ extern "C" bool sb_boot_drive_scene() {
 			if (lm) for (int i = 0; i < lm->mLightInfoCount && i < 8; ++i)
 				std::fprintf(stderr, "  light[%d] slot=%u obj=%p\n",
 				             i, lm->mLightInfos[i].unk0, (void*)lm->mLightInfos[i].unk4);
+
+			// PROBE the REAL stage-light data source: TLightCommon::loadAfter searches the
+			// NameRef tree for "Light Group" (TLightAry) + "Ambient Group" (TAmbAry). Those
+			// hold the loaded lights (each TLight's GXLightObj already has its color/pos from
+			// TLight::load). The stubbed TLightCommon never reads them -> nlights==0. Confirm
+			// the data is present before porting the loader.
+			JDrama::TLightAry* la =
+			    JDrama::TNameRefGen::search<JDrama::TLightAry>("Light Group");
+			std::fprintf(stderr, "[stage-light] LightGroup=%p count=%d\n",
+			             (void*)la, la ? la->mLightCount : -1);
+			if (la) for (int i = 0; i < la->mLightCount && i < 8; ++i) {
+				GXColor c; GXGetLightColor(&la->mLights[i].unk24, &c);
+				const JGeometry::TVec3<f32>& p = la->mLights[i].getPosition();
+				std::fprintf(stderr,
+				    "  L[%d] idx=%u col=%u,%u,%u,%u pos=%.1f,%.1f,%.1f\n",
+				    i, la->mLights[i].unk68, c.r, c.g, c.b, c.a, p.x, p.y, p.z);
+			}
+			JDrama::TAmbAry* aa =
+			    JDrama::TNameRefGen::search<JDrama::TAmbAry>("Ambient Group");
+			std::fprintf(stderr, "[stage-light] AmbGroup=%p count=%d\n",
+			             (void*)aa, aa ? aa->mAmbColorCount : -1);
+			if (aa) for (int i = 0; i < aa->mAmbColorCount && i < 8; ++i) {
+				const JUtility::TColor& m = aa->mAmbColors[i].mColor;
+				std::fprintf(stderr, "  A[%d] amb=%u,%u,%u,%u\n",
+				             i, m.r, m.g, m.b, m.a);
+			}
 		}
 	}
 
