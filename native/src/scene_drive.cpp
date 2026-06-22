@@ -29,6 +29,7 @@
 #include <dolphin/mtx.h>
 #include <dolphin/gx.h>                                 // GXRenderModeObj, GXNtsc480Int
 #include <cstdio>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 
@@ -39,6 +40,11 @@ namespace {
 bool dbg() {
 	static int v = -1;
 	if (v < 0) { const char* e = std::getenv("SB_J3D_DBG"); v = (e && e[0] && e[0] != '0') ? 1 : 0; }
+	return v != 0;
+}
+bool dbg_cam() {
+	static int v = -1;
+	if (v < 0) { const char* e = std::getenv("SB_CAM_DBG"); v = (e && e[0] && e[0] != '0') ? 1 : 0; }
 	return v != 0;
 }
 JDrama::TGraphics g_graphics;
@@ -109,6 +115,16 @@ extern "C" bool sb_boot_drive_scene() {
 	// Install the live camera view + perspective. TSmJ3DScn::perform copies g.mViewMtx -> j3dSys
 	// before entry(), so this is the view every model is drawn with.
 	if (gpCamera) {
+		// DRIVE THE CAMERA CONTROL. CPolarSubCamera::perform's `param_1 & 1` block (cameragc.cpp:
+		// 966-990) is what runs ctrlGameCamera_ -> calcFinalPosAndAt_ (updates mPosition/mTarget to
+		// FOLLOW MARIO) and computes unk1EC/unk16C. In sms-boot the perform-list never delivers ctrl
+		// bit 0x1 to the camera (MEASURED [cam-perform] ctrl(b0)=0), so the camera is FROZEN at stale
+		// init pos/target (target.y=827, never updated) — the camera-source blocker. Drive it here so
+		// the camera tracks gameplay and its own matrices are live. unk0=0: run the control + matrix
+		// build, skip the snapshot (bit0) / demo (bit1) sub-passes.
+		g_graphics.unk0 = 0;
+		gpCamera->perform(0x1, &g_graphics);
+
 		const f32 fovy = gpCamera->getFovy(), aspect = gpCamera->getAspect();
 		if (fovy > 1.0f && fovy < 179.0f && aspect > 0.01f) {
 			Vec pos, up, target;
@@ -123,6 +139,30 @@ extern "C" bool sb_boot_drive_scene() {
 			// Latch the perspective for the capture's clip-space project (robust against the
 			// HUD's ortho overwriting the live GX projection between now and the shape tap).
 			sb_gx_latch_proj44(g_graphics.mProjMtx.mMtx[0]);
+
+			// CAMERA ORACLE (SB_CAM_DBG): dump the full camera state so we can verify it
+			// numerically instead of eyeballing. The sky-dome positioning question reduces to
+			// "is the camera pitch right?": a camera-centered sky dome's equator projects to
+			// ndc_y = tan(pitch)/tan(fovy/2). pitch = angle of the look vector (target-pos) below
+			// the horizontal plane. If pitch is steep (~30°) the dome equator lands above the
+			// top edge (matches the observed black top) and the camera is plausibly faithful;
+			// if pitch is gentle the dome should be visible and the camera/transform is wrong.
+			if (dbg_cam()) { static bool once=false; if(!once){once=true;
+				const Vec look = { target.x-pos.x, target.y-pos.y, target.z-pos.z };
+				const float horiz = std::sqrt(look.x*look.x + look.z*look.z);
+				const float pitch_deg = std::atan2(-look.y, horiz) * 57.29578f;  // + = looking down
+				const float halffov = fovy * 0.5f * 0.01745329f;
+				const float eq_ndc_y = std::tan(pitch_deg * 0.01745329f) / std::tan(halffov);
+				std::fprintf(stderr,
+				    "[cam-oracle] pos=%.1f,%.1f,%.1f target=%.1f,%.1f,%.1f up=%.2f,%.2f,%.2f\n"
+				    "             fovy=%.2f aspect=%.3f near=%.1f far=%.1f pitch=%.1fdeg(down+) "
+				    "dome_equator_ndc_y=%.3f\n"
+				    "             view r0[%.3f,%.3f,%.3f,%.1f] r1[%.3f,%.3f,%.3f,%.1f] r2[%.3f,%.3f,%.3f,%.1f]\n",
+				    pos.x,pos.y,pos.z, target.x,target.y,target.z, up.x,up.y,up.z,
+				    fovy, aspect, gpCamera->getNear(), gpCamera->getFar(), pitch_deg, eq_ndc_y,
+				    g_graphics.mViewMtx.mMtx[0][0],g_graphics.mViewMtx.mMtx[0][1],g_graphics.mViewMtx.mMtx[0][2],g_graphics.mViewMtx.mMtx[0][3],
+				    g_graphics.mViewMtx.mMtx[1][0],g_graphics.mViewMtx.mMtx[1][1],g_graphics.mViewMtx.mMtx[1][2],g_graphics.mViewMtx.mMtx[1][3],
+				    g_graphics.mViewMtx.mMtx[2][0],g_graphics.mViewMtx.mMtx[2][1],g_graphics.mViewMtx.mMtx[2][2],g_graphics.mViewMtx.mMtx[2][3]); } }
 		}
 	}
 

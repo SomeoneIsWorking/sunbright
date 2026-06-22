@@ -75,3 +75,31 @@ also unblocks faithful geometry placement generally. Do NOT fudge the dome (NO B
 ctest 28/28; no regression (scene unchanged, sky verts render off-screen for now). Committed state =
 the sky-draw-ownership infrastructure (faithful `TSky` flag decode + buffer drive); visibility is
 gated on the camera oracle above.
+
+## UPDATE — camera oracle built (SB_CAM_DBG) + the camera-source blocker FIXED
+Built a camera-state dump (`SB_CAM_DBG`, `scene_drive.cpp`): pos/target/up, fovy/aspect/near/far,
+derived pitch + dome-equator ndc, and the view matrix rows. MEASURED at the plaza frame:
+- `pos=(1095,328,-13) target=(267,828,239) up=(0,1,0) fovy=40 near=10 far=300000 pitch≈30°`.
+- **`far=300000` ⇒ the sky dome (radius ~95000) is NOT far-clipped** (kills that hypothesis; the
+  earlier "z=1.0" was just the dome being far vs near=10, in-frustum).
+- The view matrix is self-consistent (forward = −row2 = (−0.83,+0.50,+0.25), looks up ~30°). The
+  ground still shows at the bottom because world-origin geometry is far in −x = inside the fovy cone.
+
+**Camera-source blocker ROOT-CAUSED + fixed**: `JSGGetViewPosition/Target` return the live
+`mPosition`/`mTarget`, but the camera's CONTROL (`ctrlGameCamera_` → `calcFinalPosAndAt_`, which
+UPDATES mPosition/mTarget + builds `unk1EC`/`unk16C`) is **entirely inside `CPolarSubCamera::perform`'s
+`param_1 & 1` block** — and the perform-list never delivers ctrl bit 0x1 to the camera (MEASURED
+`[cam-perform] ctrl(b0)=0`). So the camera was FROZEN. FIX: `scene_drive` now calls
+`gpCamera->perform(0x1, &g_graphics)` each frame so the control runs (VERIFIED: fovy now updates
+50→40, the control-computed value; no crash; scene unchanged). This is the long-open camera-source
+blocker resolved — the camera tracks gameplay instead of being frozen.
+
+## Sky residual now isolated (camera proven to run, far proven adequate)
+With the camera running and far=300000, the sky dome STILL projects above the top (sampled sky verts
+ndc y ≈ +1.2 … +4.1). So the residual is purely the **dome's vertical placement**: `setBaseTRMtx`
+centers it at the eye, but its equator lands at/above the top edge instead of at the horizon, so the
+upper hemisphere is off-screen → black. NEXT: instrument the dome's full projected ndc bounds (min/max,
+not just shape[0]) and compare the equator ring's screen position to the ocean-horizon's; if the dome
+is a thin band vs full hemisphere matters. The fix lives in how the dome's base matrix relates to the
+view (re-derive `setBaseTRMtx` against our `g_graphics` view, OR the sky may want its OWN render with a
+view that strips translation). The `GXDrawSphere` stub (`gx_fb_impl.cpp:296`) is still a parallel gap.
