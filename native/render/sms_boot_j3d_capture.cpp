@@ -54,6 +54,7 @@ using namespace sb::render;
 
 extern "C" void sb_gx_get_projection(int* type, float proj[6], float vp[6]);
 extern "C" int  sb_gx_get_lights(float out[8][16]);
+extern "C" unsigned long sb_gx_light_load_count(void);
 extern "C" void sb_host_alloc_push(void);
 extern "C" void sb_host_alloc_pop(void);
 
@@ -346,8 +347,8 @@ extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
     if (dbg_enabled()) {
         static int s_ld = 0;
         if (s_ld < 8) { ++s_ld;
-            std::fprintf(stderr, "[light] nlights=%d do_light=%d cc0=%04x amb0=%u,%u,%u L0(valid=%d c=%.2f,%.2f,%.2f p=%.0f,%.0f,%.0f)\n",
-                         nlights, (int)do_light, me->chanCtrl[0],
+            std::fprintf(stderr, "[light] nlights=%d loads=%lu do_light=%d cc0=%04x amb0=%u,%u,%u L0(valid=%d c=%.2f,%.2f,%.2f p=%.0f,%.0f,%.0f)\n",
+                         nlights, sb_gx_light_load_count(), (int)do_light, me->chanCtrl[0],
                          me->ambColor[0][0], me->ambColor[0][1], me->ambColor[0][2],
                          (int)lsrc[0].valid, lsrc[0].color[0],lsrc[0].color[1],lsrc[0].color[2],
                          lsrc[0].pos[0],lsrc[0].pos[1],lsrc[0].pos[2]); }

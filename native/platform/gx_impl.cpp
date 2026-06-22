@@ -303,7 +303,10 @@ void GXInitLightAttnK(GXLightObj* lt, f32 k0, f32 k1, f32 k2) {
     auto& o = obj(lt); o.distAtt[0]=k0; o.distAtt[1]=k1; o.distAtt[2]=k2;
 }
 
+unsigned long g_light_load_count = 0;   // s26 diag: does ANY code path load a GX light natively?
+extern "C" unsigned long sb_gx_light_load_count() { return g_light_load_count; }
 void GXLoadLightObjImm(GXLightObj* lt, GXLightID light) {
+    ++g_light_load_count;
     auto& o = obj(lt);
     auto& L = state().light[light_index(light)];
     L.valid = true;
