@@ -24,6 +24,16 @@ struct GXState {
     // --- transform: viewport (raw args as the game set them) ---
     f32 vpLeft, vpTop, vpWd, vpHt, vpNearz, vpFarz;
 
+    // Latched PERSPECTIVE projection + the viewport that was live when it was set. The
+    // native scene render (sms_boot_j3d_capture.cpp) reads these: GXSetProjection's live
+    // projMtx is overwritten every frame by the 2D HUD's ortho before the model calc()
+    // reads it, so the live value is the wrong (ortho) projection for the 3D scene. We
+    // snapshot the last GX_PERSPECTIVE set so the scene render always has the 3D matrix.
+    GXProjectionType proj3dType;
+    f32 proj3dMtx[6];
+    f32 proj3dVp[6];
+    bool proj3dValid;
+
     // --- transform: scissor rect ---
     u32 scLeft, scTop, scWd, scHt;
 

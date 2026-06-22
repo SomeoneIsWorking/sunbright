@@ -267,28 +267,16 @@ static void swap_VTX1(uint8_t* out, const uint8_t* be, uint32_t size) {
 		}
 	}
 
-	// Each array runs from its offset to the next region boundary. Build the
-	// sorted boundary set (fmt list start + all array starts + block end).
-	uint32_t bounds[16]; int nb = 0;
-	if (fmt_off != 0) bounds[nb++] = fmt_off;
-	for (int i = 0; i < na; ++i) bounds[nb++] = arrs[i].off;
-	bounds[nb++] = size;
-	for (int i = 0; i < nb; ++i)                   // insertion sort (tiny)
-		for (int j = i + 1; j < nb; ++j)
-			if (bounds[j] < bounds[i]) { uint32_t t = bounds[i]; bounds[i] = bounds[j]; bounds[j] = t; }
-
-	for (int i = 0; i < na; ++i) {
-		uint32_t start = arrs[i].off;
-		uint32_t end   = size;
-		for (int j = 0; j < nb; ++j)
-			if (bounds[j] > start && bounds[j] < end) end = bounds[j];
-		bool found;
-		uint32_t type = vtx_fmt_type(be, fmt_off, size, arrs[i].attr, &found);
-		uint32_t unit = arrs[i].color ? color_unit(type) : numeric_unit(type);
-		// No fmt entry found -> default float (POS/NRM/TEX are f32 by default).
-		if (!found && !arrs[i].color) unit = 4;
-		swap_run(out, start, end, unit);
-	}
+	// The VTX1 array DATA (POS/NRM/CLR/TEX scalar streams) is LEFT BIG-ENDIAN — it is NOT
+	// byteswapped to host-endian. The decoder contract is big-endian: the native renderer's
+	// ngx vertex/DL decoders (runtime/ngx) read these arrays AND the shape display-list
+	// stream as big-endian and byteswap on every read, exactly mirroring the GC GP. Swapping
+	// the arrays here (as an earlier version did) made ngx decode host-endian data through a
+	// BE reader = garbage geometry. The structural fields (header offsets, fmt list) ARE
+	// swapped above because they're read host-endian by J3DModelLoader; only the bulk vertex
+	// scalar arrays stay BE. Native GX is stubbed, so nothing reads array scalars host-endian.
+	// (Matches J3DModelLoader.cpp's "leaves vertex arrays big-endian" contract.)
+	(void)na; (void)arrs;
 }
 
 // SHP1 / J3DShapeBlock (J3DShapeFactory.hpp):

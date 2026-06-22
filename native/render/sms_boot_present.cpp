@@ -47,6 +47,9 @@ bool g_init_ok = false;
 int g_frame = 0;
 int g_max_dump = 0;   // 0 = dumping disabled
 int g_start_dump = 0; // first VI-retrace frame to begin dumping (SB_FRAME_DUMP_START)
+int g_dumped = 0;     // frames actually dumped so far
+bool g_on_scene = false;     // SB_FRAME_DUMP_ON_SCENE: dump from the first frame with 3D geometry
+bool g_dump_started = false; // (on-scene mode) the scene-geometry trigger has fired
 
 constexpr uint32_t kW = 640, kH = 480;
 
@@ -63,12 +66,29 @@ void write_ppm(const char* path) {
 }
 
 void present_hook(void* /*framebuffer*/, void* /*user*/) {
-    // Only do GPU work while we're still dumping frames (keeps normal runs fast).
-    if (!g_max_dump) return;
-    // Skip retraces before the requested start frame (cheaply, no GPU work) so a
-    // gameplay-era frame can be captured without rasterizing thousands of boot frames.
-    if (g_frame < g_start_dump) { ++g_frame; return; }
-    if (g_frame >= g_start_dump + g_max_dump) return;
+    if (!g_max_dump || g_dumped >= g_max_dump) return;
+
+    // Drain the frame's captured live J3D scene + immediate-mode 2D EVERY frame (cheap —
+    // just hands back the buffers and marks them consumed, so the capture is per-frame, not
+    // accumulated). We only rasterize/dump frames that qualify (below).
+    const NvkVertex* scene = nullptr;
+    int nscene = (&sb_boot_capture_j3d_take) ? sb_boot_capture_j3d_take(&scene) : 0;
+    const SbImmVtx* imm = nullptr;
+    int nimm = sb_gx_imm_take(&imm);
+
+    // Decide whether to dump this frame. SB_FRAME_DUMP_ON_SCENE waits for the first frame
+    // with actual 3D geometry (the scene loads after the HUD, so a fixed start-frame catches
+    // a black-but-HUD frame). Otherwise use the fixed start-frame window.
+    bool dumpThis;
+    if (g_on_scene) {
+        if (!g_dump_started && nscene > 0) g_dump_started = true;
+        dumpThis = g_dump_started;
+    } else {
+        if (g_frame < g_start_dump) { ++g_frame; return; }
+        dumpThis = (g_frame < g_start_dump + g_max_dump);
+    }
+    ++g_frame;
+    if (!dumpThis) return;
 
     if (!g_init_tried) {
         g_init_tried = true;
@@ -76,7 +96,7 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
         if (!g_init_ok)
             std::fprintf(stderr, "[present] no Vulkan device (slice 1 dump disabled)\n");
         else
-            std::printf("[present] nvk up (%ux%u) — dumping first %d frames to scratch/frames/\n",
+            std::printf("[present] nvk up (%ux%u) — dumping %d frames to scratch/frames/\n",
                         kW, kH, g_max_dump);
     }
     if (!g_init_ok) { g_max_dump = 0; return; }
@@ -84,12 +104,7 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
     float c[4] = {0, 0, 0, 1};
     sb_gx_get_clear_color(c);
 
-    // SLICE 3a: draw the frame's captured live J3D scene FIRST (so the 2D HUD composites
-    // over it), then SLICE 2's captured immediate-mode 2D (fader / GC-logo / J2D quads).
-    const NvkVertex* scene = nullptr;
-    int nscene = (&sb_boot_capture_j3d_take) ? sb_boot_capture_j3d_take(&scene) : 0;
-    const SbImmVtx* imm = nullptr;
-    int nimm = sb_gx_imm_take(&imm);
+    // SLICE 3a: draw the J3D scene FIRST (so the 2D HUD composites over it), then the 2D.
     std::vector<NvkVertex> verts((size_t)nscene + nimm);
     if (nscene)
         std::memcpy(verts.data(), scene, (size_t)nscene * sizeof(NvkVertex));
@@ -100,10 +115,9 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
     char path[160];
     std::snprintf(path, sizeof path, "scratch/frames/boot_%04d.ppm", g_frame);
     write_ppm(path);
-    if (g_frame == 0 || (g_frame % 30) == 0)
-        std::printf("[present] frame %d clear=(%.2f,%.2f,%.2f,%.2f) scene_tris=%d imm_tris=%d -> %s\n",
-                    g_frame, c[0], c[1], c[2], c[3], nscene / 3, nimm / 3, path);
-    ++g_frame;
+    std::printf("[present] frame %d clear=(%.2f,%.2f,%.2f,%.2f) scene_tris=%d imm_tris=%d -> %s\n",
+                g_frame, c[0], c[1], c[2], c[3], nscene / 3, nimm / 3, path);
+    ++g_dumped;
 }
 
 } // namespace
@@ -118,6 +132,8 @@ extern "C" void sb_boot_present_install() {
             if (g_max_dump <= 0) g_max_dump = 120;
             if (const char* s = std::getenv("SB_FRAME_DUMP_START"))
                 g_start_dump = std::atoi(s) > 0 ? std::atoi(s) : 0;
+            if (const char* o = std::getenv("SB_FRAME_DUMP_ON_SCENE"))
+                g_on_scene = (o[0] && o[0] != '0');
             ::mkdir("scratch", 0755);
             ::mkdir("scratch/frames", 0755);
         }

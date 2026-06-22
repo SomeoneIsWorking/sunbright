@@ -56,6 +56,7 @@
 #include <JSystem/J3D/J3DGraphBase/J3DShape.hpp>
 #include <JSystem/J3D/J3DGraphBase/J3DVertex.hpp>
 #include <JSystem/J3D/J3DGraphBase/J3DSys.hpp>   // j3dSys (live array-base overrides + view mtx)
+#include <JSystem/J3D/J3DGraphAnimator/J3DModel.hpp>      // J3DModel + J3DModelData (shape enum)
 
 #include "nvk.h"            // NvkVertex
 #include "gx_imm_xform.h"   // imm_project, SbImmRawVtx, SbImmVtx (pure transform)
@@ -77,7 +78,17 @@ using namespace sb::render;
 //   vp[0..5]   = {left, top, width, height, nearz, farz}
 extern "C" void sb_gx_get_projection(int* type, float proj[6], float vp[6]);
 
+// Host-allocation gate (JKRHeap.cpp): while raised, plain operator new routes to host
+// malloc instead of the game's JKR heap. The capture's std::vectors (g_tris + per-shape
+// verts/idx) are HOST renderer data — without this gate they drain the game heap every
+// frame and OOM it at scene setup (the JKRHeap:694 abort). RAII guard below.
+extern "C" void sb_host_alloc_push(void);
+extern "C" void sb_host_alloc_pop(void);
+
 namespace {
+
+struct HostAllocScope { HostAllocScope() { sb_host_alloc_push(); } ~HostAllocScope() { sb_host_alloc_pop(); } };
+
 
 bool capture_enabled() {
     static int v = -1;
@@ -271,6 +282,80 @@ extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
         g_tris.push_back(NvkVertex{ nx, ny, 0.5f, r/255.f, g/255.f, b/255.f, 1.f });
     }
     return true;
+}
+
+// ============================ MODEL-LEVEL CAPTURE (PC-native draw) =======================
+// Called from J3DModel::calc() under SMS_NATIVE_PLATFORM. In sms-boot the GC draw phase
+// (camera + model->entry() + draw-buffer drawHead + J3DShape::draw + GXCallDisplayList)
+// does NOT run — only the per-frame calc() does (verified: calc fires, entry never does).
+// So instead of relying on that GC pipeline, we render each model DIRECTLY here, the
+// PC-native way: run the view-matrix concat (viewCalc, using the camera view j3dSys already
+// holds) to get each shape's MODEL->VIEW draw matrix, decode the shape geometry, and project
+// to NDC with the latched PERSPECTIVE projection. This drops the entire GC draw-buffer/
+// packet/display-list machinery. Gated on SB_J3D_CAPTURE.
+//
+// 3a scope: rigid shapes via draw-matrix 0 (correct for single-joint map pieces; multi-
+// joint/skinned use the wrong matrix — refined later). Proves the scene reaches the frame.
+extern "C" void sb_boot_capture_model(J3DModel* model) {
+    if (!capture_enabled() || !model) return;
+    HostAllocScope _hostalloc;   // all std::vector growth below is host-malloc, not JKR heap
+    static int dbg = -1;
+    if (dbg < 0) { const char* e = std::getenv("SB_J3D_DBG"); dbg = (e && e[0] && e[0] != '0') ? 1 : 0; }
+    static long s_calls = 0, s_shapes = 0, s_tris = 0, s_nomd = 0, s_drop = 0;
+    ++s_calls;
+    if (dbg && (s_calls % 200) == 0)
+        std::fprintf(stderr, "[capmodel] calls=%ld shapes=%ld tris=%ld | nomd=%ld dropshape=%ld gtris=%zu\n",
+                     s_calls, s_shapes, s_tris, s_nomd, s_drop, g_tris.size());
+    if (g_consumed) { g_tris.clear(); g_consumed = false; }
+    if (g_tris.size() > 6u * 1024 * 1024) return;
+
+    J3DModelData* md = model->getModelData();
+    if (!md) { ++s_nomd; return; }
+
+    // Compute the view-space draw matrices for this frame (camera view from j3dSys).
+    model->viewCalc();
+
+    int projType; float proj[6]; float vp[6];
+    sb_gx_get_projection(&projType, proj, vp);
+
+    // Per-shape draw matrix (3a: draw-matrix 0 = the model root in view space).
+    float posMtx[3][4];
+    std::memcpy(posMtx, &model->getDrawMtx(0)[0][0], sizeof(posMtx));
+
+    const u16 shapeNum = md->getShapeNum();
+    for (u16 si = 0; si < shapeNum; ++si) {
+        J3DShape* shape = md->getShapeNodePointer(si);
+        if (!shape) { ++s_drop; continue; }
+        J3DVertexData* vd = shape->unk44;
+        if (!vd) { ++s_drop; continue; }
+        const uint8_t* base = (const uint8_t*)vd->getVtxPosArray();
+        if (!base) { ++s_drop; continue; }
+
+        NgxCP cp{};
+        if (!build_native_cp(shape, *vd, base, cp)) { ++s_drop; continue; }
+
+        ResolveCtx rc{ base, 0 };
+        std::vector<NgxVertex> verts;
+        std::vector<unsigned> idx;
+        for (u16 e = 0; e < shape->getMtxGroupNum(); ++e) {
+            J3DShapeDraw* dp = shape->getShapeDraw(e);
+            if (!dp || !dp->getDisplayList()) continue;
+            ngx_build_mesh(cp, dp->getDisplayList(), dp->getDisplayListSize(),
+                           resolve_native, &rc, verts, idx);
+        }
+        if (idx.empty()) { ++s_drop; continue; }
+        ++s_shapes; s_tris += (long)idx.size();
+
+        g_tris.reserve(g_tris.size() + idx.size());
+        for (unsigned i : idx) {
+            const NgxVertex& s = verts[i];
+            SbImmRawVtx raw{ s.pos[0], s.pos[1], s.pos[2],
+                             s.clr[0][0]/255.f, s.clr[0][1]/255.f, s.clr[0][2]/255.f, s.clr[0][3]/255.f };
+            if ((s.clr[0][0]|s.clr[0][1]|s.clr[0][2]) == 0) { raw.r = raw.g = raw.b = 0.80f; }
+            SbImmVtx p = imm_project(raw, projType, proj, posMtx, vp);
+            g_tris.push_back(NvkVertex{ p.x, p.y, p.z, p.r, p.g, p.b, p.a });
+        }
+    }
 }
 
 // Present drains the frame's captured scene tris (mirrors sb_gx_imm_take's signature).

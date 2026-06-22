@@ -63,6 +63,15 @@ void GXSetProjection(f32 mtx[4][4], GXProjectionType type) {
         g.projMtx[1] = mtx[0][2];
         g.projMtx[3] = mtx[1][2];
     }
+    // Latch the last PERSPECTIVE projection (+ the live viewport) for the native scene
+    // render — the HUD overwrites the live projection with an ortho before model calc().
+    if (type == GX_PERSPECTIVE) {
+        for (int i = 0; i < 6; ++i) g.proj3dMtx[i] = g.projMtx[i];
+        g.proj3dType = type;
+        g.proj3dVp[0] = g.vpLeft; g.proj3dVp[1] = g.vpTop;  g.proj3dVp[2] = g.vpWd;
+        g.proj3dVp[3] = g.vpHt;   g.proj3dVp[4] = g.vpNearz; g.proj3dVp[5] = g.vpFarz;
+        g.proj3dValid = true;
+    }
 }
 
 void GXGetProjectionv(f32* ptr) {
@@ -141,11 +150,18 @@ extern "C" void sb_gx_get_clear_color(float* rgba) {
 // can call without pulling in dolphin/gx headers.
 extern "C" void sb_gx_get_projection(int* type, float proj[6], float vp[6]) {
     auto& g = state();
-    if (type) *type = (int)g.projType;
-    if (proj) for (int i = 0; i < 6; ++i) proj[i] = g.projMtx[i];
+    // Prefer the latched PERSPECTIVE projection (the 3D scene matrix); the live projMtx
+    // is the HUD ortho by the time the scene render reads it. Fall back to live if no
+    // perspective has been set yet.
+    const bool p3 = g.proj3dValid;
+    if (type) *type = (int)(p3 ? g.proj3dType : g.projType);
+    if (proj) for (int i = 0; i < 6; ++i) proj[i] = p3 ? g.proj3dMtx[i] : g.projMtx[i];
     if (vp) {
-        vp[0] = g.vpLeft; vp[1] = g.vpTop;  vp[2] = g.vpWd;
-        vp[3] = g.vpHt;   vp[4] = g.vpNearz; vp[5] = g.vpFarz;
+        if (p3) { for (int i = 0; i < 6; ++i) vp[i] = g.proj3dVp[i]; }
+        else {
+            vp[0] = g.vpLeft; vp[1] = g.vpTop;  vp[2] = g.vpWd;
+            vp[3] = g.vpHt;   vp[4] = g.vpNearz; vp[5] = g.vpFarz;
+        }
     }
 }
 void GXSetNumChans(u8 n)     { state().numChans = n; }
