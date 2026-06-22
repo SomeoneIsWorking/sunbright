@@ -29,13 +29,9 @@
 #include <cstring>
 
 extern "C" GXRenderModeObj GXNtsc480Int;                // gx_fb_impl.cpp (640x480 NTSC mode)
+extern "C" void sb_gx_latch_proj44(const float m[16]);  // gx_impl.cpp — latch the scene perspective
 
 namespace {
-bool drive_enabled() {
-	static int v = -1;
-	if (v < 0) { const char* e = std::getenv("SB_DRIVE_SCENE"); v = (e && e[0] && e[0] != '0') ? 1 : 0; }
-	return v != 0;
-}
 bool dbg() {
 	static int v = -1;
 	if (v < 0) { const char* e = std::getenv("SB_J3D_DBG"); v = (e && e[0] && e[0] != '0') ? 1 : 0; }
@@ -59,9 +55,9 @@ void init_graphics() {
 }
 } // namespace
 
-// Returns true if it drove a scene this frame. Called once per frame from a native hook.
+// Drives the scene draw once per frame (the single owned render path). Returns true if a scene
+// was driven. Called unconditionally from TMarDirector::direct (no env gate).
 extern "C" bool sb_boot_drive_scene() {
-	if (!drive_enabled()) return false;
 	init_graphics();
 
 	// Plain literal: sms-native compiles with -fexec-charset=SHIFT_JIS, so this matches the
@@ -88,6 +84,9 @@ extern "C" bool sb_boot_drive_scene() {
 			                 gpCamera->getNear(), gpCamera->getFar());
 			g_graphics.mNearPlane = gpCamera->getNear();
 			g_graphics.mFarPlane  = gpCamera->getFar();
+			// Latch the perspective for the capture's clip-space project (robust against the
+			// HUD's ortho overwriting the live GX projection between now and the shape tap).
+			sb_gx_latch_proj44(g_graphics.mProjMtx.mMtx[0]);
 		}
 	}
 
