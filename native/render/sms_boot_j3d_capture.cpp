@@ -364,30 +364,29 @@ extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
 
     const uint32_t vstart = (uint32_t)g_verts.size();
     g_verts.reserve(g_verts.size() + idx.size());
-    int dbg_onscreen = 0; float dbg_ymin = 1e9f, dbg_ymax = -1e9f; float dbg_lastcol[3] = {0,0,0};
-    for (unsigned i : idx) {
-        const NgxVertex& s = verts[i];
-        SbImmRawVtx raw{ s.pos[0], s.pos[1], s.pos[2], 0, 0, 0, 0 };
-        SbImmVtx p = imm_project(raw, projType, proj, posMtx, vp);
-        if (p.x >= -1.f && p.x <= 1.f && p.y >= -1.f && p.y <= 1.f && p.z >= 0.f && p.z <= 1.f) ++dbg_onscreen;
-        if (p.y < dbg_ymin) dbg_ymin = p.y;
-        if (p.y > dbg_ymax) dbg_ymax = p.y;
-        NvkTevVertex tv{};
-        tv.x = p.x; tv.y = p.y; tv.z = p.z;
-        // Raster base per channel: vertex colour if the channel sources from the vertex,
-        // else the material colour register. COLOR0 RGB is per-vertex LIT (GX view-space
-        // lighting via the shipping ngx unit) when the material enables lighting and lights
-        // exist; alpha + COLOR1 keep the material/vertex base (lighting drives surface RGB).
+
+    // Eye-space vertex + final shaded attributes (NDC filled in after the near-plane clip).
+    // GX geometry that SURROUNDS the camera (the sky dome) has triangles straddling ez=0; the
+    // perspective divide (w = 1/-ez in imm_project_eye) flips/explodes behind-camera verts into
+    // garbage NDC, so those triangles get dropped -> black sky. We clip each triangle against the
+    // near plane in EYE space (Sutherland-Hodgman), then project the survivors.
+    struct ClipVtx { float ex, ey, ez; NvkTevVertex tv; };
+    auto make_cv = [&](const NgxVertex& s) -> ClipVtx {
+        ClipVtx cv;
+        cv.ex = posMtx[0][3] + posMtx[0][0]*s.pos[0] + posMtx[0][1]*s.pos[1] + posMtx[0][2]*s.pos[2];
+        cv.ey = posMtx[1][3] + posMtx[1][0]*s.pos[0] + posMtx[1][1]*s.pos[1] + posMtx[1][2]*s.pos[2];
+        cv.ez = posMtx[2][3] + posMtx[2][0]*s.pos[0] + posMtx[2][1]*s.pos[1] + posMtx[2][2]*s.pos[2];
+        NvkTevVertex& tv = cv.tv; tv = NvkTevVertex{};
+        // Raster base per channel: vertex colour if the channel sources from the vertex, else the
+        // material colour register. COLOR0 RGB is per-vertex LIT when the material enables lighting.
         const unsigned char* c0 = me->matSrcVtx[0] ? s.clr[0] : me->matColor[0];
         const unsigned char* c1 = me->matSrcVtx[1] ? s.clr[1] : me->matColor[1];
         tv.rgba[0]  = c0[0]/255.f; tv.rgba[1]  = c0[1]/255.f; tv.rgba[2]  = c0[2]/255.f; tv.rgba[3]  = c0[3]/255.f;
         tv.rgba1[0] = c1[0]/255.f; tv.rgba1[1] = c1[1]/255.f; tv.rgba1[2] = c1[2]/255.f; tv.rgba1[3] = c1[3]/255.f;
         if (do_light) {
             const float matc0[3] = { me->matColor[0][0]/255.f, me->matColor[0][1]/255.f, me->matColor[0][2]/255.f };
-            // Ambient: the material's own block if it has one, else the global GX ambient
-            // register (= "Ambient Group", set by the stage light loader). GX uses the register
-            // when ambSrc=register (cc0 bit6=0); without this, ambient-block-less CLOF materials
-            // would light against ambient 0 → SIGN-diffuse back faces clamp to pure black.
+            // Ambient: the material's own block if it has one, else the global GX ambient register
+            // (= "Ambient Group", set by the stage light loader; GX uses it when ambSrc=register).
             float ambc0[3];
             if (me->hasAmb[0]) { ambc0[0]=me->ambColor[0][0]/255.f; ambc0[1]=me->ambColor[0][1]/255.f; ambc0[2]=me->ambColor[0][2]/255.f; }
             else               { sb_gx_get_chan_amb(0, ambc0); }
@@ -397,15 +396,50 @@ extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
             tv.rgba[0] = lit[0]; tv.rgba[1] = lit[1]; tv.rgba[2] = lit[2];
         }
         for (int t = 0; t < 8; ++t) { tv.uv[t][0] = s.tex[t][0]; tv.uv[t][1] = s.tex[t][1]; }
+        return cv;
+    };
+    auto lerp_cv = [](const ClipVtx& A, const ClipVtx& B, float t) -> ClipVtx {
+        ClipVtx R;
+        R.ex = A.ex + t*(B.ex-A.ex); R.ey = A.ey + t*(B.ey-A.ey); R.ez = A.ez + t*(B.ez-A.ez);
+        for (int k = 0; k < 4; ++k) { R.tv.rgba[k]  = A.tv.rgba[k]  + t*(B.tv.rgba[k]-A.tv.rgba[k]);
+                                      R.tv.rgba1[k] = A.tv.rgba1[k] + t*(B.tv.rgba1[k]-A.tv.rgba1[k]); }
+        for (int u = 0; u < 8; ++u) { R.tv.uv[u][0] = A.tv.uv[u][0] + t*(B.tv.uv[u][0]-A.tv.uv[u][0]);
+                                      R.tv.uv[u][1] = A.tv.uv[u][1] + t*(B.tv.uv[u][1]-A.tv.uv[u][1]); }
+        return R;
+    };
+    int dbg_onscreen = 0; float dbg_ymin = 1e9f, dbg_ymax = -1e9f; float dbg_lastcol[3] = {0,0,0};
+    auto emit_cv = [&](const ClipVtx& cv) {
+        SbImmVtx p = imm_project_eye(cv.ex, cv.ey, cv.ez, projType, proj, vp);
+        NvkTevVertex tv = cv.tv; tv.x = p.x; tv.y = p.y; tv.z = p.z;
+        if (p.x >= -1.f && p.x <= 1.f && p.y >= -1.f && p.y <= 1.f && p.z >= 0.f && p.z <= 1.f) ++dbg_onscreen;
+        if (p.y < dbg_ymin) dbg_ymin = p.y;
+        if (p.y > dbg_ymax) dbg_ymax = p.y;
         dbg_lastcol[0]=tv.rgba[0]; dbg_lastcol[1]=tv.rgba[1]; dbg_lastcol[2]=tv.rgba[2];
         g_verts.push_back(tv);
+    };
+    // ngx_build_mesh emits a TRIANGLE LIST (idx in triples). Clip each triangle against the near
+    // plane ez <= -kNear (kNear small, just in front of the camera to dodge the w=1/-ez singularity
+    // at ez=0); the front frustum (ez<=-realNear) is then handled by Vulkan's depth clip.
+    const float kNear = 1.0f;
+    for (size_t k = 0; k + 2 < idx.size(); k += 3) {
+        const ClipVtx tri[3] = { make_cv(verts[idx[k]]), make_cv(verts[idx[k+1]]), make_cv(verts[idx[k+2]]) };
+        ClipVtx poly[6]; int np = 0;
+        for (int e = 0; e < 3; ++e) {
+            const ClipVtx& A = tri[e]; const ClipVtx& B = tri[(e+1) % 3];
+            const bool ai = A.ez <= -kNear, bi = B.ez <= -kNear;
+            if (ai) poly[np++] = A;
+            if (ai != bi) { const float t = (-kNear - A.ez) / (B.ez - A.ez); poly[np++] = lerp_cv(A, B, t); }
+        }
+        if (np < 3) continue;
+        emit_cv(poly[0]); emit_cv(poly[1]); emit_cv(poly[2]);
+        if (np == 4) { emit_cv(poly[0]); emit_cv(poly[2]); emit_cv(poly[3]); }
     }
     const uint32_t vcount = (uint32_t)g_verts.size() - vstart;
     if (dbg_enabled()) {   // per-shape on-screen coverage probe (first 24 shapes = the sky, drawn first)
         static int s_cov = 0;
         if (s_cov < 24) { ++s_cov;
-            std::fprintf(stderr, "[cov] shape#%d verts=%u onscreen=%d ndcY[%.2f..%.2f] lit=%d cc0=%04x col=%.2f,%.2f,%.2f ntex=%zu\n",
-                         s_cov, (unsigned)idx.size(), dbg_onscreen, dbg_ymin, dbg_ymax,
+            std::fprintf(stderr, "[cov] shape#%d srcverts=%u emit=%u onscreen=%d ndcY[%.2f..%.2f] lit=%d cc0=%04x col=%.2f,%.2f,%.2f ntex=%zu\n",
+                         s_cov, (unsigned)idx.size(), vcount, dbg_onscreen, dbg_ymin, dbg_ymax,
                          (int)do_light, me->chanCtrl[0], dbg_lastcol[0],dbg_lastcol[1],dbg_lastcol[2], me->tex.size()); }
     }
 

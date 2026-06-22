@@ -43,6 +43,35 @@ enum {
 //   projMtx[0..5] = the decomp's gx->projMtx (= GXProject's pm[1..6]).
 //   posMtx       = current 3x4 position matrix.
 //   vp[0..5]     = viewport {left, top, width, height, nearz, farz} (GXGetViewportv).
+// Eye-space position -> Vulkan NDC (the second half of imm_project, split out so callers
+// that clip in EYE space against the near plane — sky / camera-surrounding geometry whose
+// triangles straddle ez=0 — can project the clipped eye-space verts directly).
+inline SbImmVtx imm_project_eye(float ex, float ey, float ez, int projType,
+                                const float projMtx[6], const float vp[6]) {
+    // eye -> clip (pm[1..6] == projMtx[0..5]; mirrors GXProject's gx_impl.cpp port)
+    float xc, yc, zc, wc;
+    if (projType == 0) {               // perspective (GX_PERSPECTIVE == 0)
+        xc = ex*projMtx[0] + ez*projMtx[1];
+        yc = ey*projMtx[2] + ez*projMtx[3];
+        zc = projMtx[5] + ez*projMtx[4];
+        wc = 1.0f / -ez;
+    } else {                            // orthographic
+        xc = projMtx[1] + ex*projMtx[0];
+        yc = projMtx[3] + ey*projMtx[2];
+        zc = projMtx[5] + ez*projMtx[4];
+        wc = 1.0f;
+    }
+    const float sx = vp[2]/2.0f + vp[0] + wc * (xc * vp[2]/2.0f);
+    const float sy = vp[3]/2.0f + vp[1] + wc * (-yc * vp[3]/2.0f);
+    const float sz = vp[5] + wc * (zc * (vp[5] - vp[4]));
+    SbImmVtx o;
+    o.x = (vp[2] != 0.0f) ? (2.0f * sx / vp[2] - 1.0f) : 0.0f;
+    o.y = (vp[3] != 0.0f) ? (2.0f * sy / vp[3] - 1.0f) : 0.0f;
+    o.z = sz;
+    o.r = o.g = o.b = o.a = 0.0f;
+    return o;
+}
+
 inline SbImmVtx imm_project(const SbImmRawVtx& v, int projType, const float projMtx[6],
                             const float posMtx[3][4], const float vp[6]) {
     // model -> eye (current position matrix, 3x4)
