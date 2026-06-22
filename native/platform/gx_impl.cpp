@@ -204,6 +204,15 @@ extern "C" int sb_gx_get_lights(float out[8][16]) {
     }
     return n;
 }
+// Export a colour channel's ambient REGISTER (set by GXSetChanAmbColor) as floats 0..1 for
+// the native scene capture's per-vertex lighting. When a J3D material carries no ambient block,
+// GX semantics (ambSrc=register) say the lit ambient comes from this register — which the stage
+// light loader populates from "Ambient Group". slot: 0=COLOR0, 1=COLOR1.
+extern "C" void sb_gx_get_chan_amb(int slot, float rgb[3]) {
+    const GXColor c = state().chan[slot & 1].ambColor;
+    rgb[0] = c.r / 255.f; rgb[1] = c.g / 255.f; rgb[2] = c.b / 255.f;
+}
+
 void GXSetNumChans(u8 n)     { state().numChans = n; }
 void GXSetNumTexGens(u8 n)   { state().numTexGens = n; }
 void GXSetNumTevStages(u8 n) { state().numTevStages = n; }

@@ -129,6 +129,63 @@ extern "C" bool sb_boot_drive_scene() {
 		}
 	}
 
+	// OWN THE STAGE-LIGHT LOAD (port of the stubbed TLightCommon path).
+	// The stage's diffuse sun lives in the "Light Group" (TLightAry) scene object — each
+	// TIdxLight already carries a fully-loaded GXLightObj (colour via TLight::load) + a
+	// world-space position (TPlacement::mPosition). The decomp's TLightCommon::setLight /
+	// ::perform would view-transform that position and GXLoadLightObjImm it into GX_LIGHT0/1
+	// (the slots the stage CLOF materials' cc0=0x68e enable), but those methods are EMPTY
+	// STUBS in reference/sms (community decomp never implemented them) → nothing ever loads a
+	// GX light → the (wired+tested) per-vertex lighting consumer is inert (nlights==0).
+	// We drive that load ourselves here, faithfully: GX light i ← Light Group light[i], its
+	// position transformed by the live view matrix (GX lighting runs in view space), colour
+	// from the loaded GXLightObj, flat attenuation (matching the TLight ctor's
+	// GXInitLightAttn(1,0,0,1,0,0)). Done every frame because the view matrix moves with the
+	// camera. This must run BEFORE perform(0x8): the j3d capture reads sb_gx_get_lights()
+	// during the shape draw inside perform.
+	//
+	// NOTE on index→slot mapping: we use the setLight model (GX_LIGHTi ← getLightColor(i) =
+	// light[i]), NOT perform's "same obj in all 3 slots", to avoid double-counting light[0].
+	// On the Delfino data the palette is L0=white, L1=black, so this yields a single white
+	// diffuse light (L1 contributes nothing) — clean and unambiguous. The 2×-white ambiguity
+	// the RE flagged (scratch/light_re_spec.md §5, handoff open-Q) is thereby moot here.
+	// NOTE on position: every Light Group entry loads at world-origin (0,0,0) — the data is a
+	// colour palette at the origin, with no runtime sun-direction setter on this path (grep
+	// GXInitLightDir → none stage-specific). So this is faithfully a point light at the world
+	// origin (radial shading), NOT a directional sun. If the look is wrong, the real sun dir
+	// is applied elsewhere (JStage during cutscenes) — investigate THAT, do not fudge positions.
+	{
+		JDrama::TLightAry* la =
+		    JDrama::TNameRefGen::search<JDrama::TLightAry>("Light Group");
+		if (la && la->mLights) {
+			const int n = la->mLightCount < 8 ? la->mLightCount : 8;
+			for (int i = 0; i < n; ++i) {
+				const JDrama::TIdxLight& src = la->mLights[i];
+				GXColor col; GXGetLightColor(&src.unk24, &col);   // loaded by TLight::load
+				const JGeometry::TVec3<f32>& wp = src.getPosition();
+				Vec mp = { wp.x, wp.y, wp.z }, vp;                // world -> view space
+				PSMTXMultVec(g_graphics.mViewMtx.mMtx, &mp, &vp);
+
+				GXLightObj obj;
+				GXInitLightPos(&obj, vp.x, vp.y, vp.z);
+				GXInitLightColor(&obj, col);
+				GXInitLightAttn(&obj, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f);  // flat (TLight ctor)
+				GXLoadLightObjImm(&obj, (GXLightID)(GX_LIGHT0 << i));
+			}
+		}
+		// Ambient: GXSetChanAmbColor(GX_COLOR0A0, AmbGroup[0]) — faithful to the original.
+		// (The per-vertex consumer currently sources ambient from the J3D material block,
+		// which in J3D is the same value that loads this register, so this owns the register
+		// for parity / a future GX-ambient consumer rather than changing the current output.)
+		JDrama::TAmbAry* aa =
+		    JDrama::TNameRefGen::search<JDrama::TAmbAry>("Ambient Group");
+		if (aa && aa->mAmbColors && aa->mAmbColorCount > 0) {
+			const JUtility::TColor& a = aa->mAmbColors[0].mColor;
+			GXColor amb = { a.r, a.g, a.b, a.a };
+			GXSetChanAmbColor(GX_COLOR0A0, amb);
+		}
+	}
+
 	scene->perform(0x8, &g_graphics);
 
 	if (dbg()) {

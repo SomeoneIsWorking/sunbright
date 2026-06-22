@@ -54,6 +54,7 @@ using namespace sb::render;
 
 extern "C" void sb_gx_get_projection(int* type, float proj[6], float vp[6]);
 extern "C" int  sb_gx_get_lights(float out[8][16]);
+extern "C" void sb_gx_get_chan_amb(int slot, float rgb[3]);
 extern "C" unsigned long sb_gx_light_load_count(void);
 extern "C" void sb_host_alloc_push(void);
 extern "C" void sb_host_alloc_pop(void);
@@ -95,6 +96,9 @@ struct MatEntry {
     // (0..255). `lit` = any channel enables lighting (a J3DColorBlockLightOn material).
     uint16_t chanCtrl[2] = {0, 0};
     uint8_t  ambColor[2][4] = {{0,0,0,255},{0,0,0,255}};
+    bool     hasAmb[2] = {false, false};   // material carries its own ambient block (else use the
+                                           // global GX ambient register — the AmbGroup the light
+                                           // loader set; faithful to ambSrc=register semantics)
     bool     lit = false;
 };
 std::unordered_map<J3DMaterial*, MatEntry> g_matcache;
@@ -135,6 +139,7 @@ const MatEntry* get_mat_entry(J3DMaterial* mat) {
                 if (J3DGXColor* ac = cb->getAmbColor(c)) {   // null for LightOff blocks
                     e.ambColor[c][0] = ac->color.r; e.ambColor[c][1] = ac->color.g;
                     e.ambColor[c][2] = ac->color.b; e.ambColor[c][3] = ac->color.a;
+                    e.hasAmb[c] = true;
                 }
                 if (c < nchan) {
                     if (J3DColorChan* ch = cb->getColorChan(c)) {
@@ -375,7 +380,13 @@ extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
         tv.rgba1[0] = c1[0]/255.f; tv.rgba1[1] = c1[1]/255.f; tv.rgba1[2] = c1[2]/255.f; tv.rgba1[3] = c1[3]/255.f;
         if (do_light) {
             const float matc0[3] = { me->matColor[0][0]/255.f, me->matColor[0][1]/255.f, me->matColor[0][2]/255.f };
-            const float ambc0[3] = { me->ambColor[0][0]/255.f, me->ambColor[0][1]/255.f, me->ambColor[0][2]/255.f };
+            // Ambient: the material's own block if it has one, else the global GX ambient
+            // register (= "Ambient Group", set by the stage light loader). GX uses the register
+            // when ambSrc=register (cc0 bit6=0); without this, ambient-block-less CLOF materials
+            // would light against ambient 0 → SIGN-diffuse back faces clamp to pure black.
+            float ambc0[3];
+            if (me->hasAmb[0]) { ambc0[0]=me->ambColor[0][0]/255.f; ambc0[1]=me->ambColor[0][1]/255.f; ambc0[2]=me->ambColor[0][2]/255.f; }
+            else               { sb_gx_get_chan_amb(0, ambc0); }
             const float vcol0[3] = { s.clr[0][0]/255.f, s.clr[0][1]/255.f, s.clr[0][2]/255.f };
             float lit[3];
             sb_light_vertex_color0(me->chanCtrl[0], matc0, ambc0, lsrc, posMtx, s.pos, s.nrm, vcol0, lit);
