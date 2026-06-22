@@ -302,6 +302,12 @@ extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
 // joint/skinned use the wrong matrix — refined later). Proves the scene reaches the frame.
 extern "C" void sb_boot_capture_model(J3DModel* model) {
     if (!capture_enabled() || !model) return;
+    // When SB_DRIVE_SCENE owns the draw (drives TSmJ3DScn::perform(8) -> entry() -> the
+    // J3DShape::draw tap captures only ACTIVE scene models), the per-model calc() hook must
+    // NOT also capture, or it double-fills g_tris with every (incl. inactive/NaN) model.
+    static int drive = -1;
+    if (drive < 0) { const char* e = std::getenv("SB_DRIVE_SCENE"); drive = (e && e[0] && e[0] != '0') ? 1 : 0; }
+    if (drive) return;
     HostAllocScope _hostalloc;   // all std::vector growth below is host-malloc, not JKR heap
     static int dbg = -1;
     if (dbg < 0) { const char* e = std::getenv("SB_J3D_DBG"); dbg = (e && e[0] && e[0] != '0') ? 1 : 0; }
