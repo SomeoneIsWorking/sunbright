@@ -124,23 +124,11 @@ extern "C" bool sb_boot_drive_scene() {
 	// Install the live camera view + perspective. TSmJ3DScn::perform copies g.mViewMtx -> j3dSys
 	// before entry(), so this is the view every model is drawn with.
 	if (gpCamera) {
-		// DRIVE THE CAMERA CONTROL. CPolarSubCamera::perform's `param_1 & 1` block (cameragc.cpp:
-		// 966-990) is what runs ctrlGameCamera_ -> calcFinalPosAndAt_ (updates mPosition/mTarget to
-		// FOLLOW MARIO) and computes unk1EC/unk16C. In sms-boot the perform-list never delivers ctrl
-		// bit 0x1 to the camera (MEASURED [cam-perform] ctrl(b0)=0), so the camera is FROZEN at stale
-		// init pos/target (target.y=827, never updated) — the camera-source blocker. Drive it here so
-		// the camera tracks gameplay and its own matrices are live. unk0=0: run the control + matrix
-		// build, skip the snapshot (bit0) / demo (bit1) sub-passes.
-		// TGraphics::unk0 = the camera-perform request flags (RE'd from cameragc.cpp:967): bit0
-		// (0x1) requests the camera SNAPSHOT (unk13C/unk160/unk1AC/unk21C copies), bit1 (0x2)
-		// requests the DEMO-camera update. The real director (MarDirectorDirect) passes 0 — it
-		// never sets local_140.unk0 — so we do the same. (Verified: setting 0x3 did NOT change the
-		// camera target; the demo path is not what aims it. The target tracks Mario:
-		// mTarget = gpCameraMario position — so a wrong view = wrong Mario placement, not unk0.)
-		enum { CAM_SNAPSHOT = 0x1, CAM_DEMO = 0x2 };
-		g_graphics.unk0 = 0;   // = the real director's value
-		gpCamera->perform(0x1, &g_graphics);
-
+		// DO NOT drive gpCamera->perform(1) here. That runs ctrlGameCamera_ which RECOMPUTES the
+		// camera — and MEASURED via the vanilla oracle (/ngxproj: guest GXSetProjection), the real
+		// plaza projection is fovy=50; driving perform(1) changed sms-boot's camera from its correct
+		// loaded fovy=50 to a wrong 40. The camera's LOADED state (from the map/TCameraMapTool) is
+		// the right establishing shot; we just read it, we don't re-run the control over it.
 		const f32 fovy = gpCamera->getFovy(), aspect = gpCamera->getAspect();
 		if (fovy > 1.0f && fovy < 179.0f && aspect > 0.01f) {
 			Vec pos, up, target;
