@@ -50,6 +50,7 @@ int g_start_dump = 0;
 int g_dumped = 0;
 bool g_on_scene = false;
 bool g_dump_started = false;
+int g_request_dump = 0;  // event-triggered dump request (next N presented frames)
 
 // The 2D-overlay passthrough TEV shader (out = rasterColor), generated once.
 std::string g_pass_frag;
@@ -131,9 +132,12 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
         }
         return;
     }
-    if (!g_max_dump || g_dumped >= g_max_dump) return;
-
-    // Drain the captured scene + 2D imm EVERY frame (cheap; marks them consumed).
+    // Drain the captured scene + 2D imm EVERY present (cheap; marks them consumed). This MUST run
+    // before any early-return: the scene/imm capture buffers are append-only across the frame and
+    // are only reset by being "taken" here. If we skip the drain on non-dumping frames the buffers
+    // grow without bound (observed: 31304 batches / 30288 textures accumulated over ~1714 frames at
+    // the file-select), which both leaks host memory and makes a later event-dump try to render
+    // every accumulated frame at once (30k Vulkan texture submits → GPU wedge / watchdog kill).
     const NvkTevVertex* scene = nullptr;
     const Nvk::NvkTevBatch* sbatches = nullptr;
     int nsbatch = 0;
@@ -143,15 +147,24 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
     int nibatch = 0;
     int nimm = sb_gx_imm_take_batches(&imm, &ibatches, &nibatch);
 
+    if (g_request_dump <= 0 && (!g_max_dump || g_dumped >= g_max_dump)) return;
+
     bool dumpThis;
-    if (g_on_scene) {
+    if (g_request_dump > 0) {
+        // Event-triggered dump (e.g. TCardLoad reaching mState 0): capture the next N
+        // presented frames regardless of the start/max window.
+        dumpThis = true;
+        --g_request_dump;
+        ++g_frame;
+    } else if (g_on_scene) {
         if (!g_dump_started && nscene > 0) g_dump_started = true;
         dumpThis = g_dump_started;
+        ++g_frame;
     } else {
         if (g_frame < g_start_dump) { ++g_frame; return; }
         dumpThis = (g_frame < g_start_dump + g_max_dump);
+        ++g_frame;
     }
-    ++g_frame;
     if (!dumpThis) return;
 
     if (!g_init_tried) {
@@ -305,4 +318,15 @@ extern "C" void sb_boot_present_install() {
         }
     }
     sb_vi_set_present_hook(present_hook, nullptr);
+}
+
+// Event-triggered frame dump: request the next N presented frames be written to
+// scratch/frames/ regardless of the SB_FRAME_DUMP_START window. Used to capture a
+// specific game state (e.g. TCardLoad reaching the file-select mState 0) whose present
+// frame number isn't known ahead of time.
+extern "C" void sb_boot_request_dump(int n) {
+    if (n <= 0) return;
+    ::mkdir("scratch", 0755);
+    ::mkdir("scratch/frames", 0755);
+    g_request_dump = n;
 }

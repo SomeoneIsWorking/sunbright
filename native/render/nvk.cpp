@@ -808,6 +808,14 @@ bool Nvk::renderTevFrame(const std::vector<NvkTevVertex>& verts,
     Impl* d = d_;
     if (!d || !d->device) return false;
     const uint32_t vcount = (uint32_t)verts.size();
+    if (std::getenv("SB_TEVFRAME_DBG")) {
+        size_t ntex = 0;
+        for (const auto& b : batches)
+            for (int s = 0; s < 8; ++s)
+                if (b.tex[s].rgba && b.tex[s].w && b.tex[s].h) ++ntex;
+        std::fprintf(stderr, "[tevframe] verts=%u batches=%zu textures=%zu\n",
+                     vcount, batches.size(), ntex);
+    }
 
     // --- vertex buffer (the whole frame's verts) ---
     VkDeviceSize need = vcount ? (VkDeviceSize)vcount * sizeof(NvkTevVertex) : sizeof(NvkTevVertex);
@@ -871,6 +879,20 @@ bool Nvk::renderTevFrame(const std::vector<NvkTevVertex>& verts,
         const NvkTevBatch& b = batches[i];
         for (int s = 0; s < 8; ++s) {
             if (!b.tex[s].rgba || !b.tex[s].w || !b.tex[s].h) continue;
+            // Fail-fast guard: GC textures are at most 1024x1024. A garbage (huge) w/h would make
+            // makeTexture's staging memcpy read gigabytes out of the small decoded source buffer —
+            // observed as a multi-second "hang" inside makeTexture (watchdog kill) at the
+            // file-select. Print the offending value and skip rather than read OOB. (Capturing
+            // the bad dimension is the diagnostic; the real fix is upstream in the texture capture.)
+            if (b.tex[s].w > 4096 || b.tex[s].h > 4096) {
+                static int s_warned = 0;
+                if (s_warned < 32) {
+                    ++s_warned;
+                    std::fprintf(stderr, "[nvk] SKIP bogus texture batch=%zu slot=%d w=%u h=%u rgba=%p\n",
+                                 i, s, b.tex[s].w, b.tex[s].h, (const void*)b.tex[s].rgba);
+                }
+                continue;
+            }
             TexHandles t{};
             if (!d->makeTexture(b.tex[s].rgba, b.tex[s].w, b.tex[s].h, &t.img, &t.mem, &t.view))
                 continue;
