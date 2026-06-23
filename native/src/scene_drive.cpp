@@ -180,6 +180,11 @@ extern "C" bool sb_boot_drive_scene() {
 			// top edge (matches the observed black top) and the camera is plausibly faithful;
 			// if pitch is gentle the dome should be visible and the camera/transform is wrong.
 			if (dbg_cam()) { static bool once=false; if(!once){once=true;
+				// The camera target tracks Mario (cameragc: mTarget = gpCameraMario pos). Dump
+				// Mario's actual position to see if a wrong view = wrong Mario placement.
+				if (gpMarioPos) std::fprintf(stderr, "[cam-mario] gpMarioPos=%.1f,%.1f,%.1f\n",
+				                             gpMarioPos->x, gpMarioPos->y, gpMarioPos->z);
+				else std::fprintf(stderr, "[cam-mario] gpMarioPos=NULL (Mario not spawned!)\n");
 				const Vec look = { target.x-pos.x, target.y-pos.y, target.z-pos.z };
 				const float horiz = std::sqrt(look.x*look.x + look.z*look.z);
 				const float pitch_deg = std::atan2(-look.y, horiz) * 57.29578f;  // + = looking down
