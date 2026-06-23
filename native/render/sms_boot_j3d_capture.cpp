@@ -113,7 +113,7 @@ std::vector<Nvk::NvkTevBatch> g_batches;
 bool g_consumed = true;
 J3DMaterial* g_last_mat = nullptr;   // for consecutive-shape batch merging within a frame
 
-const MatEntry* get_mat_entry(J3DMaterial* mat) {
+const MatEntry* get_mat_entry(J3DMaterial* mat, J3DTexture* modelTex) {
     auto it = g_matcache.find(mat);
     if (it != g_matcache.end()) return &it->second;
     MatEntry e;
@@ -131,7 +131,13 @@ const MatEntry* get_mat_entry(J3DMaterial* mat) {
         // blend-over-the-black-clear is what's blanking the scene.
         static const bool noblend = [](){ const char* v = std::getenv("SB_TEV_NOBLEND"); return v && v[0] && v[0] != '0'; }();
         if (noblend) e.blend_mode = 0;
-        sb_resolve_textures(mat, j3dSys.getTexture(), e.tex);
+        // Resolve textures against the MODEL'S OWN texture table (J3DModel::unkAC,
+        // the swapped-at-load TEX1), not the GLOBAL j3dSys.getTexture(): the global
+        // reflects whichever model last bound it, so any model whose draw didn't set
+        // it (or set a different table) read another model's/an unswapped table here
+        // -> byte-swapped ResTIMG dims (32768 == 0x8000 <-> real 128) and garbage
+        // imageDataOffset -> every map texmap REJECTed -> white buildings.
+        sb_resolve_textures(mat, modelTex ? (void*)modelTex : j3dSys.getTexture(), e.tex);
         if (J3DColorBlock* cb = mat->getColorBlock()) {
             int nchan = cb->getColorChanNum();
             for (int c = 0; c < 2; ++c) {
@@ -291,7 +297,7 @@ extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
     J3DMatPacket* mp = j3dSys.getMatPacket();
     J3DMaterial* mat = mp ? mp->getMaterial() : nullptr;
     if (!mat) return true;
-    const MatEntry* me = get_mat_entry(mat);
+    const MatEntry* me = get_mat_entry(mat, model->getModelData()->getTexture());
     if (!me || !me->ok) return true;
 
     NgxCP cp{};
