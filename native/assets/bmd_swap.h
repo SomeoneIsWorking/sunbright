@@ -62,6 +62,14 @@ struct BmdSwapResult {
 BmdSwapResult bmd_swap_to_host(const uint8_t* be_data, size_t len,
                                std::vector<uint8_t>& out);
 
+// Swap a big-endian J3D2 BMT (.bmt material table — a J3D2 container holding the
+// same MAT3 + TEX1 blocks a BMD does, just no geometry) into a host-endian copy
+// `out`. Reuses the BMD MAT3/TEX1 block swappers. Same contract as
+// bmd_swap_to_host: check .all_covered before feeding `out` to
+// J3DModelLoaderDataBase::loadMaterialTable.
+BmdSwapResult bmt_swap_to_host(const uint8_t* be_data, size_t len,
+                               std::vector<uint8_t>& out);
+
 }  // namespace smsport::assets
 
 #endif  // SMSPORT_ASSETS_BMD_SWAP_H

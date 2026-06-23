@@ -164,6 +164,7 @@ target_link_libraries(sms-gd PUBLIC sms-platform)
 # ---------------------------------------------------------------------------
 add_library(sms-assets STATIC
     "${SMS_NATIVE_REPO_ROOT}/native/assets/bmd_swap.cpp"
+    "${SMS_NATIVE_REPO_ROOT}/native/assets/bmt_swap.cpp"
     "${SMS_NATIVE_REPO_ROOT}/native/assets/anm_swap.cpp"
     "${SMS_NATIVE_REPO_ROOT}/native/assets/rarc.cpp")
 set_target_properties(sms-assets PROPERTIES
