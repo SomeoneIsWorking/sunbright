@@ -65,21 +65,22 @@ void init_graphics() {
 	g_graphics.mFarPlane  = 100000.0f;
 }
 
-// Drive the sky group's draw into its dedicated buffers (the perform-list path never draws them).
-// Mirrors TSmJ3DScn::perform's buffer mechanics (frameInit -> set active -> entry -> draw).
-void drive_sky() {
-	JDrama::TViewObj* skyGroup =
-	    JDrama::TNameRefGen::search<JDrama::TViewObj>("空グループ");
-	JDrama::TDrawBufObj* skyOpa =
-	    JDrama::TNameRefGen::search<JDrama::TDrawBufObj>("DrawBuf Sky Opa");
-	JDrama::TDrawBufObj* skyXlu =
-	    JDrama::TNameRefGen::search<JDrama::TDrawBufObj>("DrawBuf Sky Xlu");
-	if (dbg()) { static bool once=false; if(!once){once=true;
-		std::fprintf(stderr, "[sky-drive] group=%p opa=%p xlu=%p\n",
-		             (void*)skyGroup, (void*)skyOpa, (void*)skyXlu); } }
-	if (!skyGroup || !skyOpa || !skyXlu) return;
-	J3DDrawBuffer* b0 = skyOpa->getDrawBuffer();
-	J3DDrawBuffer* b1 = skyXlu->getDrawBuffer();
+// Drive a named group's draw into its dedicated opa/xlu draw buffers (the GC perform-list path
+// enters models into these buffers but masks off the draw bit, so they never draw — see
+// CLAUDE.md sky/map notes). Mirrors TSmJ3DScn::perform's buffer mechanics: copy view -> drawInit
+// -> frameInit -> set the two buffers active -> group->perform(flag) (entry) -> draw both buffers.
+// `flag` is the per-group entry flag from MarDirectorPreEntry.cpp (sky 0x20E incl. TSky bits; map
+// 0x204 = viewCalc|entry). Called BEFORE the scene so layers composite back-to-front.
+void drive_group(const char* groupName, const char* opaName, const char* xluName, u32 flag) {
+	JDrama::TViewObj*    group = JDrama::TNameRefGen::search<JDrama::TViewObj>(groupName);
+	JDrama::TDrawBufObj* opa   = JDrama::TNameRefGen::search<JDrama::TDrawBufObj>(opaName);
+	JDrama::TDrawBufObj* xlu   = JDrama::TNameRefGen::search<JDrama::TDrawBufObj>(xluName);
+	if (dbg()) { static int n=0; if(n<4){++n;
+		std::fprintf(stderr, "[drive-group] '%s' group=%p opa=%p xlu=%p\n",
+		             groupName, (void*)group, (void*)opa, (void*)xlu); } }
+	if (!group || !opa || !xlu) return;
+	J3DDrawBuffer* b0 = opa->getDrawBuffer();
+	J3DDrawBuffer* b1 = xlu->getDrawBuffer();
 	if (!b0 || !b1) return;
 
 	MTXCopy(g_graphics.mViewMtx.mMtx, j3dSys.getViewMtx());
@@ -88,14 +89,21 @@ void drive_sky() {
 	b1->frameInit();
 	j3dSys.setDrawBuffer(b0, 0);
 	j3dSys.setDrawBuffer(b1, 1);
-	// flag 0x206 = bit0x2 (TSky::setBaseTRMtx — positions the dome relative to the camera; the
-	// missing piece: without it viewCalc builds draw = view*0 and the whole sky collapses to one
-	// off-screen point) | bit0x4 (MActor::viewCalc) | bit0x200 (MActor::entry). bit0x8 also makes
-	// TSky draw its procedural GXDrawSphere backdrop dome.
-	skyGroup->perform(0x20E, &g_graphics);
+	group->perform(flag, &g_graphics);
 	j3dSys.setUnk4C(3); b0->draw();
 	j3dSys.setUnk4C(4); b1->draw();
 }
+
+// Sky group → DrawBuf Sky Opa/Xlu. flag 0x20E = bit0x2 (TSky::setBaseTRMtx — positions the dome at
+// the camera; without it viewCalc builds draw=view*0 and the sky collapses to one point) | 0x4
+// (MActor::viewCalc) | 0x8 (TSky GXDrawSphere backdrop) | 0x200 (MActor::entry).
+void drive_sky() { drive_group("空グループ", "DrawBuf Sky Opa", "DrawBuf Sky Xlu", 0x20E); }
+
+// Map group (the plaza BUILDINGS = TMapModel actors) → DrawBuf MapOpa/MapXlu. The perform-list
+// (MarDirectorPreEntry.cpp) enters マップグループ with 0x204 (= MActor::viewCalc 0x4 | entry 0x200)
+// then never draws the buffers — so the whole map was missing (oracle: vanilla shows a full plaza,
+// sms-boot shows only a palm). Drive it like the sky.
+void drive_map() { drive_group("マップグループ", "DrawBuf MapOpa", "DrawBuf MapXlu", 0x204); }
 } // namespace
 
 // Drives the scene draw once per frame (the single owned render path). Returns true if a scene
@@ -290,6 +298,7 @@ extern "C" bool sb_boot_drive_scene() {
 	// TSmJ3DScn::perform does for its own buffers (JDRSmJ3DScn.cpp), with our known-good view.
 	// Done BEFORE the scene so sky batches land behind the map (capture order = present order).
 	drive_sky();
+	drive_map();   // the plaza buildings (was entirely missing — vanilla oracle revealed it)
 
 	scene->perform(0x8, &g_graphics);
 
