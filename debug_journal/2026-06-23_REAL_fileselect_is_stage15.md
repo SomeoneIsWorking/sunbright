@@ -52,3 +52,18 @@ long-standing mislabel. Recorded here so it is NOT re-discovered.
     # add SB_PAD_SCRIPT="620:START 626:-" to drive into the file-select (currently → SolidHeap OOM).
     # List the scene arcs: ./build-freshtest/sunbright-jingle scratch/disc/sms.iso --extract \
     #   /data/option.szs scratch/arc ; then tools/jingle rarc_files (see this session's commands).
+
+## UPDATE (same day) — file-select now REACHABLE (camera-calc fix)
+The title→file-select transition was unblocked (parent 2af26b0). Root cause: TCardLoad::perform
+case 3 gates the second Start (→file-select) on `gpCameraOption->mIntroChaseTimer == 0`, which only
+decrements inside CPolarSubCamera::ctrlOptionCamera_(), which runs from the camera's perform CALC
+pass (param_1 & 1). sms-boot's GC perform-list dispatch never delivers that calc flag to the camera
+(trace: CPolarSubCamera::perform only ever called with draw flags, ctrl(b0)=0 — the same blackbox
+that drops the scene draw bit, owned in scene_drive.cpp). So mIntroChaseTimer stayed pinned at 300.
+FIX (scene_drive.cpp, commit 9da6b7f): when SMS_isOptionMap(), drive `gpCamera->perform(0x1)` —
+runs the OPTION camera control (ctrlOptionCamera_), NOT ctrlGameCamera_, so the gameplay-fovy
+concern (why we don't drive perform(1) for the game camera) does not apply. Verified: Start advances
+TCardLoad mState 3→8 (moveToLoadFromTitle, camera pans to the file blocks) → 0 (file/score select),
+and the card manager engages to read the save files. Also named the unks RE'd along the way
+(TCameraOption fully: 1315368; TCardLoad unk14→mState, unk38→mGamePad: 10e8683). NEXT: make the
+file-select state (mState==0) functional — see scratch/handoff_fileselect_stage15.md.
