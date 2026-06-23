@@ -405,9 +405,13 @@ extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
     const uint32_t vcount = (uint32_t)g_verts.size() - vstart;
     if (dbg_enabled()) {   // per-shape coverage probe (first 24 shapes = the sky, drawn first)
         static int s_cov = 0;
-        if (s_cov < 24) { ++s_cov;
-            std::fprintf(stderr, "[cov] shape#%d srcverts=%u emit=%u lit=%d cc0=%04x ntex=%zu\n",
-                         s_cov, (unsigned)idx.size(), vcount, (int)do_light, me->chanCtrl[0], me->tex.size()); }
+        if (s_cov < 24 && !idx.empty()) { ++s_cov;
+            // where does shape's first vert land? eye-space (ez>0 = BEHIND camera) + raw NDC.
+            const SbClipEyeVtx c = make_cv(verts[idx[0]]);
+            SbImmVtx p = imm_project_eye(c.ex, c.ey, c.ez, projType, proj, vp);
+            std::fprintf(stderr, "[cov] shape#%d src=%u emit=%u cc0=%04x  eye(%.0f,%.0f,%.0f) ndc(%.2f,%.2f,%.2f)%s\n",
+                         s_cov, (unsigned)idx.size(), vcount, me->chanCtrl[0],
+                         c.ex, c.ey, c.ez, p.x, p.y, p.z, c.ez > 0 ? " BEHIND" : ""); }
     }
 
     // Merge into the previous batch if the same material drew the immediately-preceding

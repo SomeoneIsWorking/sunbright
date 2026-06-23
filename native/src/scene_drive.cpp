@@ -135,6 +135,11 @@ extern "C" bool sb_boot_drive_scene() {
 			gpCamera->JSGGetViewPosition(&pos);
 			gpCamera->JSGGetViewUpVector(&up);
 			gpCamera->JSGGetViewTargetPosition(&target);
+			// The eye (y=328) is BELOW the target (y=828) so the camera looks UP ~30deg and the
+			// plaza buildings (eye-space ey~-780, below) fall off the bottom (ndc.y~2.2). An
+			// establishing shot should look DOWN at the plaza. (Ruled out: a simple eye/target
+			// swap projects them even further off — ndc.y~7. The loaded camera target itself is
+			// wrong/too-high. NEXT: read vanilla's gpCamera eye/target for ground truth.)
 			C_MTXLookAt(g_graphics.mViewMtx.mMtx, &pos, &up, &target);
 			C_MTXPerspective(g_graphics.mProjMtx.mMtx, fovy, aspect,
 			                 gpCamera->getNear(), gpCamera->getFar());
