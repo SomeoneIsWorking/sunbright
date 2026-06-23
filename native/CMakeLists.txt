@@ -166,6 +166,7 @@ add_library(sms-assets STATIC
     "${SMS_NATIVE_REPO_ROOT}/native/assets/bmd_swap.cpp"
     "${SMS_NATIVE_REPO_ROOT}/native/assets/bmt_swap.cpp"
     "${SMS_NATIVE_REPO_ROOT}/native/assets/anm_swap.cpp"
+    "${SMS_NATIVE_REPO_ROOT}/native/assets/timg_swap.cpp"
     "${SMS_NATIVE_REPO_ROOT}/native/assets/rarc.cpp")
 set_target_properties(sms-assets PROPERTIES
     CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)

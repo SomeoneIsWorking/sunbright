@@ -17,12 +17,28 @@
 
 namespace sb::render {
 
-// A captured immediate-mode vertex BEFORE transform: model-space position + RGBA(0..1).
-struct SbImmRawVtx { float x, y, z; float r, g, b, a; };
+// A captured immediate-mode vertex BEFORE transform: model-space position + RGBA(0..1)
+// + texcoord0 UV (0 when the prim is untextured; J2D textured panes set it).
+struct SbImmRawVtx { float x, y, z; float r, g, b, a; float u, v; };
 
-// A transformed vertex: Vulkan NDC position + RGBA(0..1). Byte-identical layout to
-// NvkVertex (asserted where the two meet) so the present layer can render it directly.
-struct SbImmVtx { float x, y, z; float r, g, b, a; };
+// A transformed vertex: Vulkan NDC position + RGBA(0..1) + texcoord0 UV. The present
+// layer renders it directly (the 3D/2D NvkTevVertex carries the same fields).
+struct SbImmVtx { float x, y, z; float r, g, b, a; float u, v; };
+
+// A captured 2D draw batch: a run of triangles (into the flat list sb_gx_imm_take_batches
+// returns) that share one bound texture, or none. `textured` panes carry the resolved GX
+// texture descriptor (snapshotted from the bound texmap-0 at GXBegin) so the present layer
+// can decode it with sb_tex_decode and bind it; untextured prims (gradient, solid window
+// fill) are a colour-only batch.
+struct SbImmBatch {
+    unsigned vstart, vcount;        // [vstart, vstart+vcount) into the flat vertex list
+    bool     textured;
+    const void* image;              // GX image data ptr (valid iff textured)
+    unsigned short w, h;            // logical texture dims
+    unsigned char  fmt, wrapS, wrapT, linear;
+    const void* tlut;               // palette ptr for CI formats (nullptr otherwise)
+    int tlutfmt;                    // SbTlutFormat for the palette
+};
 
 // GX primitive ids (GXEnum.h) — only the ones immediate mode emits.
 enum {
@@ -69,6 +85,7 @@ inline SbImmVtx imm_project_eye(float ex, float ey, float ez, int projType,
     o.y = (vp[3] != 0.0f) ? (2.0f * sy / vp[3] - 1.0f) : 0.0f;
     o.z = sz;
     o.r = o.g = o.b = o.a = 0.0f;
+    o.u = o.v = 0.0f;
     return o;
 }
 
@@ -104,7 +121,26 @@ inline SbImmVtx imm_project(const SbImmRawVtx& v, int projType, const float proj
     o.y = (vp[3] != 0.0f) ? (2.0f * sy / vp[3] - 1.0f) : 0.0f;
     o.z = sz;                            // GXProject already maps to [nearz, farz] (0..1)
     o.r = v.r; o.g = v.g; o.b = v.b; o.a = v.a;
+    o.u = v.u; o.v = v.v;
     return o;
+}
+
+// Scale a raw fixed-point/integer immediate texcoord component to a normalized UV using
+// the bound TEX0 vertex-attr format (GXSetVtxAttrFmt: component type + frac bits). This
+// is the exact GX dequant the GP applies: fixed types divide by 2^frac (signed types
+// sign-extend their bit width first); F32 components arrive pre-normalized (see the float
+// hooks). `bits` is the raw value the GXTexCoord* writer pushed, zero-extended; `type` is
+// GXCompType (0=U8 1=S8 2=U16 3=S16 4=F32); `width` is 8 or 16. Pure + unit-tested.
+//
+// J2D's default TEX0 fmt is (GX_U16, frac 15) (J2DGrafContext): so GXTexCoord1s16(0x8000)
+// -> 32768/2^15 = 1.0 and 0x0000 -> 0.0, exactly the corner UVs J2DPicture/J2DWindow emit.
+inline float imm_texcoord_scale(unsigned bits, int type, int frac, int width) {
+    long v;
+    if (type == 1 /*S8*/  && (bits & 0x80))   v = (long)bits - 0x100;
+    else if (type == 3 /*S16*/ && (bits & 0x8000)) v = (long)bits - 0x10000;
+    else v = (long)bits;
+    (void)width;
+    return (float)v / (float)(1u << (frac & 31));
 }
 
 // Triangulate a captured primitive's NDC verts into a triangle list, appended to out.

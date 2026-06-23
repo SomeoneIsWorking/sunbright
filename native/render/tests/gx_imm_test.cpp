@@ -63,6 +63,16 @@ int main() {
     chk(feq(ce.x,  0) && feq(ce.y,  0), "pixel (320,240) -> NDC (0,0) center");
     chk(feq(tl.r, 1) && feq(tl.g, 0) && feq(tl.b, 0), "colour passthrough");
 
+    // --- texcoord dequant (imm_texcoord_scale): the bound TEX0 vtx-attr fmt drives it. ---
+    // J2D default is (GX_U16, frac 15): GXTexCoord1s16(0x8000) -> 1.0, 0x0000 -> 0.0 — the
+    // corner UVs J2DPicture/J2DWindow emit (handoff RE). (type 2 = GX_U16, 3 = GX_S16.)
+    chk(feq(imm_texcoord_scale(0x8000, 2, 15, 16), 1.0f), "U16 frac15 0x8000 -> 1.0");
+    chk(feq(imm_texcoord_scale(0x0000, 2, 15, 16), 0.0f), "U16 frac15 0x0000 -> 0.0");
+    chk(feq(imm_texcoord_scale(0x4000, 2, 15, 16), 0.5f), "U16 frac15 0x4000 -> 0.5");
+    // S16 sign-extends: 0x8000 = -32768 -> -1.0 (not 1.0) — proves type, not writer, decides.
+    chk(feq(imm_texcoord_scale(0x8000, 3, 15, 16), -1.0f), "S16 frac15 0x8000 -> -1.0");
+    chk(feq(imm_texcoord_scale(0x0100, 0, 8, 16), 1.0f), "U8 frac8 0x100 -> 1.0");
+
     // --- triangulation: one GX_QUADS quad -> 2 tris (0,1,2)(0,2,3) ---
     SbImmVtx quad[4] = {
         {-1,-1,0, 1,0,0,1}, {1,-1,0, 1,0,0,1}, {1,1,0, 1,0,0,1}, {-1,1,0, 1,0,0,1}

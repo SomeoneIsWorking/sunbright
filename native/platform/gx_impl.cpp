@@ -482,9 +482,9 @@ void GXClearVtxDesc(void) {
 void GXSetVtxDesc(GXAttr attr, GXAttrType type) {
     if ((u32)attr < 26) state().immVtxDesc[attr] = (u8)type;
 }
-extern void sb_gx_imm_begin(int prim);   // gx_imm_impl.cpp
-void GXBegin(GXPrimitive type, GXVtxFmt /*vtxfmt*/, u16 /*nverts*/) {
-    sb_gx_imm_begin((int)type);
+extern void sb_gx_imm_begin(int prim, int vtxfmt);   // gx_imm_impl.cpp
+void GXBegin(GXPrimitive type, GXVtxFmt vtxfmt, u16 /*nverts*/) {
+    sb_gx_imm_begin((int)type, (int)vtxfmt);
 }
 void GXSetLineWidth(u8 /*width*/, GXTexOffset /*texOffsets*/) { /* HW line raster width */ }
 
@@ -579,7 +579,8 @@ void GXLoadTexObj(GXTexObj* obj, GXTexMapID id) {
     NativeTexObj* n = reinterpret_cast<NativeTexObj*>(obj);
     auto& b = state().boundTex[id];
     if (n->magic != kTexObjMagic) { b.valid = false; return; }
-    b = { true, n->image, n->w, n->h, n->fmt, n->wrapS, n->wrapT, n->mipmap };
+    b = { true, n->image, n->w, n->h, n->fmt, n->wrapS, n->wrapT, n->mipmap,
+          n->magFilt, n->tlutName };
 }
 void GXInitTexCacheRegion(GXTexRegion* /*region*/, u8 /*is_32b_mipmap*/, u32 /*tmem_even*/,
                           GXTexCacheSize /*size_even*/, u32 /*tmem_odd*/,

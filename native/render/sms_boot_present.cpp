@@ -13,13 +13,15 @@
 // We only do GPU work while dumping is enabled and under the frame cap, so a normal run isn't
 // slowed by per-frame lavapipe rasterization.
 #include "nvk.h"
-#include "gx_imm_xform.h"      // SbImmVtx (== NvkVertex layout)
-#include "ngx_render_data.h"   // NgxTevState (for the 2D passthrough shader)
+#include "gx_imm_xform.h"      // SbImmVtx / SbImmBatch (immediate-mode capture)
+#include "ngx_render_data.h"   // NgxTevState (for the 2D passthrough / modulate shaders)
 #include "tev_shader.h"        // sb_tev_gen_fragment
+#include "tex_decode.h"        // sb_tex_decode (J2D textured-pane decode)
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <unordered_map>
 #include <vector>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -30,6 +32,7 @@ extern "C" {
 void sb_vi_set_present_hook(void (*fn)(void*, void*), void* user);
 void sb_gx_get_clear_color(float* rgba);
 int  sb_gx_imm_take(const SbImmVtx** out);
+int  sb_gx_imm_take_batches(const SbImmVtx** verts, const SbImmBatch** batches, int* nbatch);
 }
 // The frame's captured live J3D scene: vertex list + per-material TEV batches. WEAK — null when
 // the capture TU (sms_boot_j3d_capture.cpp) isn't linked, in which case the present draws only 2D.
@@ -52,6 +55,12 @@ bool g_dump_started = false;
 std::string g_pass_frag;
 uint64_t    g_pass_key = 0;
 
+// The 2D textured TEV shader (out = texmap0 × rasterColor, GX_MODULATE), generated once.
+// J2D textured panes (window borders, picture digits/marks, glyphs) modulate the bound
+// texture by the per-vertex corner colour, then alpha-blend over the scene.
+std::string g_tex_frag;
+uint64_t    g_tex_key = 0;
+
 constexpr uint32_t kW = 640, kH = 480;
 
 uint64_t fnv64(const char* s) {
@@ -70,6 +79,23 @@ void ensure_pass_shader() {
     for (int i = 0; i < 4; ++i) st.swap_table[i] = 0x1B;                  // identity (NOT 0 → "rrrr")
     g_pass_frag = sb_tev_gen_fragment(st);
     g_pass_key  = fnv64(g_pass_frag.c_str());
+}
+
+void ensure_tex_shader() {
+    if (!g_tex_frag.empty()) return;
+    NgxTevState st{};
+    st.num_stages = 1;
+    // GX_MODULATE: cprev = lerp(ZERO, TEXC, RASC) = TEXC*RASC (color), TEXA*RASA (alpha).
+    // color_env bits: a(>>12) b(>>8) c(>>4) d(>>0), clamp(bit19). a=ZERO(15) b=TEXC(8)
+    // c=RASC(10) d=ZERO(15).
+    st.stage[0].color_env = (15u<<12)|(8u<<8)|(10u<<4)|15u | (1u<<19);
+    // alpha_env bits: a(>>13) b(>>10) c(>>7) d(>>4), clamp(bit19). a=ZERO(7) b=TEXA(4)
+    // c=RASA(5) d=ZERO(7).
+    st.stage[0].alpha_env = (7u<<13)|(4u<<10)|(5u<<7)|(7u<<4) | (1u<<19);
+    st.stage[0].texmap = 0; st.stage[0].texcoord = 0; st.stage[0].color_chan = 0; // COLOR0
+    for (int i = 0; i < 4; ++i) st.swap_table[i] = 0x1B;                          // identity
+    g_tex_frag = sb_tev_gen_fragment(st);
+    g_tex_key  = fnv64(g_tex_frag.c_str());
 }
 
 void write_ppm(const char* path) {
@@ -113,7 +139,9 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
     int nsbatch = 0;
     int nscene = (&sb_boot_capture_tev_take) ? sb_boot_capture_tev_take(&scene, &sbatches, &nsbatch) : 0;
     const SbImmVtx* imm = nullptr;
-    int nimm = sb_gx_imm_take(&imm);
+    const SbImmBatch* ibatches = nullptr;
+    int nibatch = 0;
+    int nimm = sb_gx_imm_take_batches(&imm, &ibatches, &nibatch);
 
     bool dumpThis;
     if (g_on_scene) {
@@ -137,6 +165,7 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
     }
     if (!g_init_ok) { g_max_dump = 0; return; }
     ensure_pass_shader();
+    ensure_tex_shader();
 
     float c[4] = {0, 0, 0, 1};
     sb_gx_get_clear_color(c);
@@ -151,6 +180,7 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
         tv.x = imm[i].x; tv.y = imm[i].y; tv.z = imm[i].z;
         tv.rgba[0] = imm[i].r; tv.rgba[1] = imm[i].g; tv.rgba[2] = imm[i].b; tv.rgba[3] = imm[i].a;
         tv.rgba1[0] = imm[i].r; tv.rgba1[1] = imm[i].g; tv.rgba1[2] = imm[i].b; tv.rgba1[3] = imm[i].a;
+        tv.uv[0][0] = imm[i].u; tv.uv[0][1] = imm[i].v;   // texcoord0 for textured 2D panes
     }
 
     // SB_TEV_SOLID: force scene batches through the passthrough shader (out = rasterColor,
@@ -164,13 +194,71 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
                      b.z_test = 0; b.z_write = 0; }
         batches.push_back(b);
     }
-    if (nimm) {
+    // 2D immediate batches: each is either a colour-only run (gradient, solid window fill →
+    // passthrough shader) or a textured pane (window border, picture digit, glyph → decode
+    // the bound GX texture once, MODULATE by vertex colour). Decoded textures are cached by
+    // image ptr for this present (4 window-corner draws share one border texture). Storage
+    // outlives renderTevFrame below (the batch's tex.rgba points into it).
+    std::vector<std::vector<uint32_t>> tex_storage;
+    std::unordered_map<const void*, int> tex_cache;   // image ptr → tex_storage index
+    int n_tex_batches = 0;
+    for (int bi = 0; bi < nibatch; ++bi) {
+        const SbImmBatch& ib = ibatches[bi];
         Nvk::NvkTevBatch b{};
-        b.vstart = (uint32_t)nscene; b.vcount = (uint32_t)nimm;
-        b.fragGlsl = g_pass_frag.c_str(); b.shaderKey = g_pass_key;
+        b.vstart = (uint32_t)nscene + ib.vstart;
+        b.vcount = ib.vcount;
         std::memset(b.push.kcolor, 0xFF, sizeof b.push.kcolor);
-        b.z_test = 0; b.z_write = 0;                 // HUD draws on top, no depth
+        b.z_test = 0; b.z_write = 0;                 // 2D draws on top, no depth
         b.blend_mode = 1; b.src_factor = 4; b.dst_factor = 5;  // SRCALPHA / INVSRCALPHA
+
+        // Gate the bound texture before decoding (cf. sb_resolve_textures): a bad fmt,
+        // absurd dims, or a paletted format with no loaded TLUT would send the tiled
+        // decoder reading wild memory (a SEGV). An unrenderable texmap falls back to the
+        // colour-only (passthrough) batch — not a silent nil, it's the GX white default.
+        auto fmt_ok = [](int f){ return f==0||f==1||f==2||f==3||f==4||f==5||f==6||f==8||f==9||f==0xA||f==0xE; };
+        auto paletted = [](int f){ return f==8||f==9||f==0xA; };
+        bool decodable = ib.textured && ib.image && fmt_ok(ib.fmt) &&
+                         ib.w > 0 && ib.h > 0 && ib.w <= 4096 && ib.h <= 4096 &&
+                         (!paletted(ib.fmt) || ib.tlut);
+        if (ib.textured && !decodable) {
+            static long s_rej = 0;
+            if (s_rej < 20) { ++s_rej;
+                std::fprintf(stderr, "[imm-tex] REJECT fmt=0x%x %dx%d img=%p tlut=%p — colour-only\n",
+                             ib.fmt, ib.w, ib.h, ib.image, ib.tlut); }
+        }
+        if (decodable) {
+            int idx;
+            auto it = tex_cache.find(ib.image);
+            if (it != tex_cache.end()) {
+                idx = it->second;
+            } else {
+                // Decode at block-padded dims, then copy the logical w×h sub-rect into a
+                // tightly-packed buffer (avoids the padding-column UV leak — the white-window
+                // class fixed for the old ngx renderer; nvk uploads packed at logical dims).
+                const int pw = sb_tex_pad_w(ib.w, ib.fmt), ph = sb_tex_pad_h(ib.h, ib.fmt);
+                static const bool dbg = [](){ const char* v = std::getenv("SB_J3D_DBG"); return v && v[0] && v[0] != '0'; }();
+                static long s_dbg = 0;
+                if (dbg && s_dbg < 32) { ++s_dbg;
+                    std::fprintf(stderr, "[imm-tex] decode fmt=0x%x %dx%d (pad %dx%d) img=%p tlut=%p linear=%d\n",
+                                 ib.fmt, ib.w, ib.h, pw, ph, ib.image, ib.tlut, ib.linear); }
+                std::vector<uint32_t> padded((size_t)pw * ph);
+                sb_tex_decode(padded.data(), (const uint8_t*)ib.image, pw, ph, ib.fmt,
+                              (const uint8_t*)ib.tlut, ib.tlutfmt);
+                std::vector<uint32_t> packed((size_t)ib.w * ib.h);
+                for (int y = 0; y < ib.h; ++y)
+                    std::memcpy(&packed[(size_t)y * ib.w], &padded[(size_t)y * pw],
+                                (size_t)ib.w * 4);
+                idx = (int)tex_storage.size();
+                tex_storage.push_back(std::move(packed));
+                tex_cache.emplace(ib.image, idx);
+            }
+            b.fragGlsl = g_tex_frag.c_str(); b.shaderKey = g_tex_key;
+            b.tex[0].rgba = (const uint8_t*)tex_storage[idx].data();
+            b.tex[0].w = ib.w; b.tex[0].h = ib.h; b.tex[0].linear = ib.linear;
+            ++n_tex_batches;
+        } else {
+            b.fragGlsl = g_pass_frag.c_str(); b.shaderKey = g_pass_key;
+        }
         batches.push_back(b);
     }
 
@@ -193,8 +281,10 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
     char path[160];
     std::snprintf(path, sizeof path, "scratch/frames/boot_%04d.ppm", g_frame);
     write_ppm(path);
-    std::printf("[present] frame %d clear=(%.2f,%.2f,%.2f,%.2f) scene_verts=%d scene_batches=%d imm_tris=%d -> %s\n",
-                g_frame, c[0], c[1], c[2], c[3], nscene, nsbatch, nimm / 3, path);
+    std::printf("[present] frame %d clear=(%.2f,%.2f,%.2f,%.2f) scene_verts=%d scene_batches=%d "
+                "imm_tris=%d imm_batches=%d (textured=%d) -> %s\n",
+                g_frame, c[0], c[1], c[2], c[3], nscene, nsbatch, nimm / 3, nibatch,
+                n_tex_batches, path);
     ++g_dumped;
 }
 

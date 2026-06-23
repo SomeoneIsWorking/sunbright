@@ -1,24 +1,29 @@
 // gx_imm_impl.cpp — native GX IMMEDIATE-MODE capture (SLICE 2 of renderer-attach).
 //
-// The GameCube immediate-mode draw API (GXBegin / GXPosition* / GXColor* / GXEnd)
-// streams vertices into the write-gather FIFO. The native renderer has no FIFO and
+// The GameCube immediate-mode draw API (GXBegin / GXPosition* / GXColor* / GXTexCoord* /
+// GXEnd) streams vertices into the write-gather FIFO. The native renderer has no FIFO and
 // reads the J3D OBJECT MODEL for scene geometry — but 2D/HUD content (the fader, the
-// GC-logo overlay, J2D windows, font glyphs) is drawn ONLY through this immediate API,
-// so the object-model path misses it. We capture it here instead: GXVert.h routes the
-// immediate writers to the sb_gx_imm_* hooks below (under SMS_NATIVE_PLATFORM), which
-// build native vertices, transform them through the captured GXState projection +
-// position matrix (gx_imm_xform.h, a pure unit-tested function), triangulate, and hand
-// the resulting Vulkan-NDC triangle list to the present layer (sms_boot_present.cpp).
+// GC-logo overlay, J2D windows, font glyphs, file-select panes) is drawn ONLY through this
+// immediate API, so the object-model path misses it. We capture it here instead: GXVert.h
+// routes the immediate writers to the sb_gx_imm_* hooks below (under SMS_NATIVE_PLATFORM),
+// which build native vertices, transform them through the captured GXState projection +
+// position matrix (gx_imm_xform.h, a pure unit-tested function), triangulate, and hand the
+// resulting Vulkan-NDC triangle list — grouped into per-texture BATCHES — to the present
+// layer (sms_boot_present.cpp).
+//
+// Textured 2D (file-select windows/pictures/text): a primitive is TEXTURED iff it emitted
+// texcoords AND a texmap-0 was bound (GXLoadTexObj) at GXBegin. We snapshot the bound GX
+// texture descriptor (gx_state boundTex[0]) into the batch; the present layer decodes it
+// (sb_tex_decode) and samples it × the vertex colour (GX_MODULATE). Untextured prims (the
+// gradient, the solid window fill) form a colour-only batch (texture==none).
 //
 // This is NOT a FIFO emulator: it captures the game's drawn quads at the API seam and
-// re-projects them, the sanctioned "rebuild as a PC game" path (see CLAUDE.md ground
-// rules + memory ngx-imm-geometry-and-swaptable).
+// re-projects them, the sanctioned "rebuild as a PC game" path (see CLAUDE.md ground rules).
 //
-// Threading: the engine draws and presents on ONE thread (VIWaitForRetrace -> present
-// fires synchronously at frame end, after the gameLoop's draws). So no locking: the
-// frame triangle list accumulates during the frame and the present consumes it. We
-// clear lazily on the first GXBegin AFTER a present consumed, so several presents within
-// one frame (waitForRetrace loops) all render the same accumulated frame.
+// Threading: the engine draws and presents on ONE thread (VIWaitForRetrace -> present fires
+// synchronously at frame end). No locking: the frame accumulates during the frame; present
+// consumes it. We clear lazily on the first GXBegin AFTER a present consumed, so several
+// presents within one frame (waitForRetrace loops) render the same accumulated frame.
 
 #include <dolphin/gx.h>      // GXColor etc. (gx_state.h uses them)
 #include "gx_state.h"
@@ -29,17 +34,29 @@
 using sb::platform::gx::state;
 using sb::render::SbImmVtx;
 using sb::render::SbImmRawVtx;
+using sb::render::SbImmBatch;
 
 namespace {
 
-// --- accumulated triangle list for the current frame (consumed by present) ---
-std::vector<SbImmVtx> g_frame_tris;
-bool g_consumed = true;   // start true so the first GXBegin clears the (empty) buffer
+// GX enum constants used here (avoid pulling the whole header dependency in).
+constexpr int kVA_CLR0 = 11;   // GX_VA_CLR0
+constexpr int kVA_TEX0 = 13;   // GX_VA_TEX0
+constexpr int kAttrDirect = 1; // GX_DIRECT
+
+// GX color-index (paletted) formats need a TLUT: C4(0x8) C8(0x9) C14X2(0xA).
+inline bool fmt_is_paletted(int fmt) { return fmt == 0x8 || fmt == 0x9 || fmt == 0xA; }
+
+// --- accumulated frame: flat triangle list + per-texture batches (consumed by present) ---
+std::vector<SbImmVtx>   g_frame_tris;
+std::vector<SbImmBatch> g_batches;
+bool g_consumed = true;        // start true so the first GXBegin clears the (empty) buffer
 
 // --- in-progress primitive (between GXBegin and GXEnd) ---
 bool  g_in_begin = false;
 int   g_prim = 0;
 std::vector<SbImmVtx> g_prim_verts;
+bool  g_prim_has_uv = false;   // a GXTexCoord* fired this prim
+int   g_tc_phase = 0;          // 1-component texcoord pairing: 0 = expecting S, 1 = T
 
 // projection/position/viewport snapshot taken at GXBegin (state is set before the draw).
 int   g_projType = 1;
@@ -47,11 +64,13 @@ float g_projMtx[6] = {0};
 float g_posMtx[3][4] = {{0}};
 float g_vp[6] = {0, 0, 640, 480, 0, 1};
 
-// current immediate-mode colour (GXColor* sets it; applied to the next/last vertex).
+// bound TEX0 vertex-attr fmt (for integer texcoord dequant) + bound texmap-0 descriptor.
+int   g_tcType = 2 /*GX_U16*/, g_tcFrac = 15;   // J2D default (J2DGrafContext)
+SbImmBatch g_texSnap;          // bound texture for the current prim (textured iff .textured)
+
+// current immediate-mode colour (GXColor*/GXParam sets it; applied to the last vertex).
 float g_cr = 1, g_cg = 1, g_cb = 1, g_ca = 1;
 
-// SB_GX_IMM_DBG=1: dump the first few captured verts (proj/viewport/NDC) once, to verify
-// the transform against the live engine state. One-shot (g_dbg_left), then silent.
 const bool g_dbg = [] { const char* e = std::getenv("SB_GX_IMM_DBG"); return e && e[0] && e[0] != '0'; }();
 int g_dbg_left = 12;
 
@@ -66,36 +85,82 @@ void snapshot_state() {
     g_vp[4] = g.vpNearz; g_vp[5] = g.vpFarz;
 }
 
+// Snapshot the bound texmap-0 into g_texSnap. textured = TEX0 is a DIRECT attr (texcoords
+// expected) AND a texture object is bound. Resolve the palette for CI formats from the GX
+// TLUT table. The actual textured/untextured decision is finalized at GXEnd (needs the
+// "did this prim emit texcoords" signal too, so a stale binding can't textured-ize the
+// gradient, which sets TEX0=GX_NONE and never calls GXTexCoord).
+void snapshot_texture(int vtxfmt) {
+    auto& g = state();
+    if (vtxfmt >= 0 && vtxfmt < 8) {
+        const auto& f = g.vtxAttrFmt[vtxfmt][kVA_TEX0];
+        g_tcType = f.type; g_tcFrac = f.frac;
+    }
+    g_texSnap = SbImmBatch{};
+    const auto& bt = g.boundTex[0];
+    const bool tex0direct = g.immVtxDesc[kVA_TEX0] == kAttrDirect;
+    if (!tex0direct || !bt.valid || !bt.image) return;
+    g_texSnap.textured = true;
+    g_texSnap.image = bt.image;
+    g_texSnap.w = bt.w; g_texSnap.h = bt.h;
+    g_texSnap.fmt = bt.fmt; g_texSnap.wrapS = bt.wrapS; g_texSnap.wrapT = bt.wrapT;
+    g_texSnap.linear = (bt.magFilt == 1 /*GX_LINEAR*/) ? 1 : 0;
+    g_texSnap.tlut = nullptr; g_texSnap.tlutfmt = 0;
+    if (fmt_is_paletted(bt.fmt) && bt.tlutName < 20) {
+        const auto& tl = g.tlut[bt.tlutName];
+        if (tl.valid) { g_texSnap.tlut = tl.lut; g_texSnap.tlutfmt = tl.fmt; }
+    }
+}
+
+// Append the just-triangulated verts as a batch; coalesce with the previous batch when it
+// shares the same texture binding (4 window-corner quads → one batch per border texture).
+void push_batch(unsigned start, unsigned count, const SbImmBatch& tex) {
+    if (!count) return;
+    if (!g_batches.empty()) {
+        SbImmBatch& last = g_batches.back();
+        const bool sameTex = (last.textured == tex.textured) &&
+                             (!tex.textured || (last.image == tex.image && last.w == tex.w &&
+                                                last.h == tex.h && last.fmt == tex.fmt));
+        if (sameTex && last.vstart + last.vcount == start) { last.vcount += count; return; }
+    }
+    SbImmBatch b = tex;
+    b.vstart = start; b.vcount = count;
+    g_batches.push_back(b);
+}
+
 } // namespace
 
 extern "C" {
 
 // ---- capture hooks (called from GXVert.h immediate writers) ----------------
-void sb_gx_imm_begin(int prim) {
-    if (g_consumed) { g_frame_tris.clear(); g_consumed = false; }
+void sb_gx_imm_begin(int prim, int vtxfmt) {
+    if (g_consumed) { g_frame_tris.clear(); g_batches.clear(); g_consumed = false; }
     g_in_begin = true;
     g_prim = prim;
     g_prim_verts.clear();
+    g_prim_has_uv = false;
+    g_tc_phase = 0;
     snapshot_state();
+    snapshot_texture(vtxfmt);
 }
 
 void sb_gx_imm_pos(float x, float y, float z) {
     if (!g_in_begin) return;
-    SbImmRawVtx raw{ x, y, z, g_cr, g_cg, g_cb, g_ca };
+    SbImmRawVtx raw{ x, y, z, g_cr, g_cg, g_cb, g_ca, 0.0f, 0.0f };
     SbImmVtx p = sb::render::imm_project(raw, g_projType, g_projMtx, g_posMtx, g_vp);
     g_prim_verts.push_back(p);
+    g_tc_phase = 0;   // each new vertex restarts 1-component (S,T) pairing
     if (g_dbg && g_dbg_left > 0) {
         --g_dbg_left;
         std::fprintf(stderr, "[gx_imm] prim=%#x pos(%.1f,%.1f,%.1f) -> ndc(%.3f,%.3f,%.3f) "
-                     "proj=%d pm[%.4f,%.4f,%.4f,%.4f] vp[%.0f,%.0f,%.0f,%.0f]\n",
-                     g_prim, x, y, z, p.x, p.y, p.z, g_projType,
-                     g_projMtx[0], g_projMtx[1], g_projMtx[2], g_projMtx[3],
-                     g_vp[0], g_vp[1], g_vp[2], g_vp[3]);
+                     "tex=%d fmt=0x%x %dx%d proj=%d\n",
+                     g_prim, x, y, z, p.x, p.y, p.z, g_texSnap.textured,
+                     g_texSnap.fmt, g_texSnap.w, g_texSnap.h, g_projType);
     }
 }
 
-// GXColor* sets the colour for the vertex JUST submitted (GX order is pos then colour)
-// and becomes the running colour for any subsequent position with no colour of its own.
+// GXColor* sets the colour for the vertex JUST submitted (GX order is pos then colour) and
+// becomes the running colour for any subsequent position with no colour of its own.
 void sb_gx_imm_color_rgba(unsigned r, unsigned g, unsigned b, unsigned a) {
     g_cr = r / 255.0f; g_cg = g / 255.0f; g_cb = b / 255.0f; g_ca = a / 255.0f;
     if (g_in_begin && !g_prim_verts.empty()) {
@@ -106,20 +171,61 @@ void sb_gx_imm_color_rgba(unsigned r, unsigned g, unsigned b, unsigned a) {
 void sb_gx_imm_color_u32(unsigned c) {   // packed 0xRRGGBBAA
     sb_gx_imm_color_rgba((c >> 24) & 0xff, (c >> 16) & 0xff, (c >> 8) & 0xff, c & 0xff);
 }
+// J2DWindow border edges write the vertex colour via GXParam1s32(-1) (= 0xFFFFFFFF white).
+// Inside a GXBegin that's the DIRECT CLR0 attribute; elsewhere it's a raw FIFO word (ignored).
+void sb_gx_imm_param_color_s32(int v) {
+    if (g_in_begin && state().immVtxDesc[kVA_CLR0] == kAttrDirect)
+        sb_gx_imm_color_u32((unsigned)v);
+}
+
+// ---- texcoord hooks --------------------------------------------------------
+static void set_uv(float u, float v) {
+    if (!g_in_begin || g_prim_verts.empty()) return;
+    g_prim_verts.back().u = u; g_prim_verts.back().v = v;
+    g_prim_has_uv = true;
+}
+void sb_gx_imm_texcoord_f2(float s, float t) { set_uv(s, t); }
+void sb_gx_imm_texcoord_i2(unsigned s, unsigned t) {
+    set_uv(sb::render::imm_texcoord_scale(s, g_tcType, g_tcFrac, 16),
+           sb::render::imm_texcoord_scale(t, g_tcType, g_tcFrac, 16));
+}
+void sb_gx_imm_texcoord_f1(float val) {
+    if (!g_in_begin || g_prim_verts.empty()) return;
+    if (g_tc_phase == 0) { g_prim_verts.back().u = val; g_tc_phase = 1; }
+    else                 { g_prim_verts.back().v = val; g_tc_phase = 0; }
+    g_prim_has_uv = true;
+}
+void sb_gx_imm_texcoord_i1(unsigned bits) {
+    sb_gx_imm_texcoord_f1(sb::render::imm_texcoord_scale(bits, g_tcType, g_tcFrac, 16));
+}
 
 void sb_gx_imm_end(void) {
     if (!g_in_begin) return;
     g_in_begin = false;
+    const unsigned start = (unsigned)g_frame_tris.size();
     sb::render::imm_triangulate(g_prim, g_prim_verts.data(),
                                 (int)g_prim_verts.size(), g_frame_tris);
+    const unsigned count = (unsigned)g_frame_tris.size() - start;
+    // Textured only if the prim actually emitted texcoords AND a texture was bound: a
+    // stale boundTex from an earlier window can't texture-ize the (texcoord-less) gradient.
+    SbImmBatch tex = (g_prim_has_uv && g_texSnap.textured) ? g_texSnap : SbImmBatch{};
+    push_batch(start, count, tex);
 }
 
 // ---- present bridge --------------------------------------------------------
-// Hand the present layer the current frame's triangle list (Vulkan NDC + RGBA). Marks
-// the buffer consumed so the next GXBegin starts a fresh frame. Returns the vertex
-// count (multiple of 3); *out points at SbImmVtx[count] (== NvkVertex layout).
+// Legacy flat take: the whole frame as one untextured triangle list (Vulkan NDC + RGBA).
 int sb_gx_imm_take(const SbImmVtx** out) {
     if (out) *out = g_frame_tris.data();
+    g_consumed = true;
+    return (int)g_frame_tris.size();
+}
+
+// Batch take: the flat vertex list + per-texture batches. Marks the buffer consumed so the
+// next GXBegin starts a fresh frame. Returns the vertex count; *verts -> SbImmVtx[count].
+int sb_gx_imm_take_batches(const SbImmVtx** verts, const SbImmBatch** batches, int* nbatch) {
+    if (verts)   *verts = g_frame_tris.data();
+    if (batches) *batches = g_batches.data();
+    if (nbatch)  *nbatch = (int)g_batches.size();
     g_consumed = true;
     return (int)g_frame_tris.size();
 }

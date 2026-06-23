@@ -140,7 +140,8 @@ struct GXState {
     // GXInitTexObj writes a native descriptor into the caller-owned GXTexObj; on
     // GXLoadTexObj the bound descriptor for each texmap is recorded here for the
     // renderer. (NativeTexObj overlay defined in gx_impl.cpp.)
-    struct BoundTex { bool valid; const void* image; u16 w, h; u8 fmt, wrapS, wrapT, mipmap; } boundTex[8];
+    struct BoundTex { bool valid; const void* image; u16 w, h; u8 fmt, wrapS, wrapT, mipmap;
+                      u8 magFilt; u32 tlutName; } boundTex[8];
 
     // --- slice 6: framebuffer copy / pixel-format / fog / draw-sync / palettes ---
     // The display/management half of GX. "Rebuild as a PC game": these capture clean
