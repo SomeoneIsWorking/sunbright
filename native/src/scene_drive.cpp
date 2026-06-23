@@ -35,6 +35,7 @@
 
 extern "C" GXRenderModeObj GXNtsc480Int;                // gx_fb_impl.cpp (640x480 NTSC mode)
 extern "C" void sb_gx_latch_proj44(const float m[16]);  // gx_impl.cpp — latch the scene perspective
+extern "C" void sb_gx_get_projection(int* type, float proj[6], float vp[6]);  // what the capture uses
 
 namespace {
 bool dbg() {
@@ -139,6 +140,22 @@ extern "C" bool sb_boot_drive_scene() {
 			// Latch the perspective for the capture's clip-space project (robust against the
 			// HUD's ortho overwriting the live GX projection between now and the shape tap).
 			sb_gx_latch_proj44(g_graphics.mProjMtx.mMtx[0]);
+
+			// PROJECTION DIVERGENCE DETECTOR (value-based, not visual). The reference is the
+			// camera's own C_MTXPerspective (6-element GX form); the actual is what the capture
+			// reads via sb_gx_get_projection. Any per-element gap means the capture is using a
+			// stale/wrong projection (it was — a stale GXSetProjection with fovy 50 + a degenerate
+			// z-row). Logs the worst-diverging element so a regression is caught as a NUMBER.
+			if (dbg_cam()) {
+				const float* P = g_graphics.mProjMtx.mMtx[0];   // row-major 4x4
+				const float ref[6] = { P[0], P[2], P[5], P[6], P[10], P[11] };
+				int aty; float act[6], avp[6]; sb_gx_get_projection(&aty, act, avp);
+				int worst = -1; float wd = 0.f;
+				for (int i = 0; i < 6; ++i) { float d = std::fabs(ref[i]-act[i]); if (d > wd) { wd = d; worst = i; } }
+				std::fprintf(stderr, "[proj-diverge] worst elem=%d |ref-act|=%.5f  ref[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f] act[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f] type ref=0 act=%d\n",
+				             worst, wd, ref[0],ref[1],ref[2],ref[3],ref[4],ref[5],
+				             act[0],act[1],act[2],act[3],act[4],act[5], aty);
+			}
 
 			// CAMERA ORACLE (SB_CAM_DBG): dump the full camera state so we can verify it
 			// numerically instead of eyeballing. The sky-dome positioning question reduces to

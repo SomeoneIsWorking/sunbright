@@ -289,11 +289,17 @@ void GXSetTexCoordCylWrap(GXTexCoordID /*coord*/, u8 /*s*/, u8 /*t*/) {}
 void GXSetTexCoordScaleManually(GXTexCoordID /*coord*/, u8 /*enable*/, u16 /*ss*/, u16 /*ts*/) {}
 
 // ===========================================================================
-// Immediate-mode draw verbs — inert in this base lib (like GXBegin). The ngx layer
-// captures GXDrawCube/Sphere into its batch pipeline through separate overrides.
+// Immediate-mode draw verbs. GXDrawSphere is the TSky procedural backdrop dome — route it to the
+// native scene capture (sms_boot_j3d_capture.cpp), which replicates the sphere, transforms it by
+// the current pos matrix, colours it with the matColor, clips, and emits a depth-tested batch.
+// WEAK so the base lib still links where the capture TU isn't present (tests). GXDrawCube (the
+// Mario occlusion probe) stays inert here — handled natively via depth-occlusion, not geometry.
 // ===========================================================================
+extern "C" void sb_boot_capture_sphere(int numMajor, int numMinor) __attribute__((weak));
 void GXDrawCube(void) {}
-void GXDrawSphere(u8 /*numMajor*/, u8 /*numMinor*/) {}
+void GXDrawSphere(u8 numMajor, u8 numMinor) {
+    if (&sb_boot_capture_sphere) sb_boot_capture_sphere((int)numMajor, (int)numMinor);
+}
 
 // ===========================================================================
 // GXInit — create the native GX context (defaults already in GXState's ctor) and hand

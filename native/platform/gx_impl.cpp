@@ -157,6 +157,13 @@ extern "C" void sb_gx_get_clear_color(float* rgba) {
 extern "C" void sb_gx_latch_proj44(const float m[16]) {
     auto& g = state();
     for (int i = 0; i < 16; ++i) g.proj3dM44[i] = m[i];
+    // ALSO populate the 6-element GX form (proj3dMtx) that sb_gx_get_projection returns — the
+    // capture/imm_project reads THAT, not the 4x4. Without this it kept a STALE GXSetProjection
+    // (e.g. fovy 50 + a degenerate z-row) that diverged from the live camera projection. The GX
+    // perspective 6-tuple = {m00, m02, m11, m12, m22, m23} (row-major 4x4 indices 0,2,5,6,10,11).
+    g.proj3dMtx[0] = m[0];  g.proj3dMtx[1] = m[2];  g.proj3dMtx[2] = m[5];
+    g.proj3dMtx[3] = m[6];  g.proj3dMtx[4] = m[10]; g.proj3dMtx[5] = m[11];
+    g.proj3dType = GX_PERSPECTIVE;
     g.proj3dValid = true;
 }
 
@@ -211,6 +218,22 @@ extern "C" int sb_gx_get_lights(float out[8][16]) {
 extern "C" void sb_gx_get_chan_amb(int slot, float rgb[3]) {
     const GXColor c = state().chan[slot & 1].ambColor;
     rgb[0] = c.r / 255.f; rgb[1] = c.g / 255.f; rgb[2] = c.b / 255.f;
+}
+
+// A colour channel's MATERIAL colour register (set by GXSetChanMatColor), as floats 0..1 — the
+// raster colour for PASSCLR draws like TSky's GXDrawSphere backdrop (slot 0=COLOR0, 1=COLOR1).
+extern "C" void sb_gx_get_chan_matcolor(int slot, float rgba[4]) {
+    const GXColor c = state().chan[slot & 1].matColor;
+    rgba[0] = c.r / 255.f; rgba[1] = c.g / 255.f; rgba[2] = c.b / 255.f; rgba[3] = c.a / 255.f;
+}
+
+// The CURRENT GX position matrix (GX_PNMTX selected by GXSetCurrentMtx, loaded by
+// GXLoadPosMtxImm) as a 3x4 — the modelview an immediate-mode draw (GXDrawSphere) uses.
+extern "C" void sb_gx_get_cur_posmtx(float m[3][4]) {
+    auto& g = state();
+    const u32 slot = g.currentMtx / 3;
+    const auto& pm = g.posMtx[slot < 64 ? slot : 0];
+    for (int r = 0; r < 3; ++r) for (int c = 0; c < 4; ++c) m[r][c] = pm[r][c];
 }
 
 void GXSetNumChans(u8 n)     { state().numChans = n; }
