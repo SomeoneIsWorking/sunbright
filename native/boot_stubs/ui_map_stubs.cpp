@@ -167,13 +167,8 @@ TMarioGamePad::~TMarioGamePad() {}
 
 // (TMarioGamePad::mResetFlag is defined in MarioGamePad.cpp — not stubbed, was over-reach.)
 
-// TSelectDir — inherits JDrama::TDirector.
-TSelectDir::TSelectDir()
-    : JDrama::TDirector("<TSelectDir>")
-{
-}
-int TSelectDir::direct() { return 0; }
-void TSelectDir::setup(JDrama::TDisplay*, TMarioGamePad*, unsigned char) {}
+// TSelectDir is now faithfully reconstructed in reference/sms/src/GC2D/SelectDir.cpp
+// (file-select port). The stub here is removed so the real implementation links.
 
 // ─── MarioUtil / Shadow ───────────────────────────────────────────────────────
 
