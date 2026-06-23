@@ -131,7 +131,14 @@ extern "C" bool sb_boot_drive_scene() {
 		// init pos/target (target.y=827, never updated) — the camera-source blocker. Drive it here so
 		// the camera tracks gameplay and its own matrices are live. unk0=0: run the control + matrix
 		// build, skip the snapshot (bit0) / demo (bit1) sub-passes.
-		g_graphics.unk0 = 0;
+		// TGraphics::unk0 = the camera-perform request flags (RE'd from cameragc.cpp:967): bit0
+		// (0x1) requests the camera SNAPSHOT (unk13C/unk160/unk1AC/unk21C copies), bit1 (0x2)
+		// requests the DEMO-camera update. The real director (MarDirectorDirect) passes 0 — it
+		// never sets local_140.unk0 — so we do the same. (Verified: setting 0x3 did NOT change the
+		// camera target; the demo path is not what aims it. The target tracks Mario:
+		// mTarget = gpCameraMario position — so a wrong view = wrong Mario placement, not unk0.)
+		enum { CAM_SNAPSHOT = 0x1, CAM_DEMO = 0x2 };
+		g_graphics.unk0 = 0;   // = the real director's value
 		gpCamera->perform(0x1, &g_graphics);
 
 		const f32 fovy = gpCamera->getFovy(), aspect = gpCamera->getAspect();
