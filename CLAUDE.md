@@ -96,6 +96,33 @@ the debugging-path rule above.
   "verify before you declare done."
 - This generalizes the TDD-renderer section below: tooling is the prerequisite, the fix is second.
 
+## 🔁 THE "continue" PORTING LOOP (HARD RULE — user directive 2026-06-23, never deviate)
+When the user says **"continue"** / "keep going" (or you finish a unit and there's more to port), do
+NOT stop to ask "which path?" and do NOT punt the decision back to the user. Run this loop yourself
+and KEEP PORTING. Picking between two good paths is NOT a user decision — choose the one that
+advances OWNERSHIP and go. Full workflow: `docs/porting_workflow.md`.
+
+1. **Is the TOOLING enough?** Can I SEE and VERIFY the current divergence as a value (not by
+   eyeballing a frame)? If NO → **build more tooling first** (the value-divergence detector, the
+   verification harness, the oracle). Compare values, never pixels-by-eye. (Ties to TOOLING-FIRST above.)
+2. **Is the RE enough?** Do I actually understand the ORIGINAL behavior — the data, the exact code
+   path, the values it produces? If NO → **do more RE** (disassemble with sunbright-recomp, read the
+   `reference/sms` decomp, MEASURE the live values).
+3. **Is the OWNERSHIP enough?** Is the behavior ported to a PC-native path that produces the CORRECT
+   values? If NO → **more RE + port it** (own the path; no blackbox, no bandaid).
+
+**THERE IS (ESSENTIALLY) NO SUCH THING AS BLOCKED (user directive 2026-06-23).** A genuine blocker is
+only something CATASTROPHIC and external — the ROM file is gone, the disk is dead, the repo is
+deleted. Everything else is NOT a blocker, it is the next task. When you catch yourself thinking
+"I'm blocked / I need the user to decide / I can't verify this / sync is too hard / two viable paths"
+→ that is the signal to **DO WHATEVER IS NEEDED TO UNBLOCK YOURSELF**: build the missing tool, RE the
+unknown, find the address, write the harness, pick a path and go. Never stop to ask, never punt the
+decision back. "It's big / only live-verifiable / I'm not 100% sure / I'd need to build X first" are
+all *instructions to build X and continue*, not reasons to halt. The ONLY allowed stop is a real
+external catastrophe (ROM deleted) — and even then, say what's needed to restore it and proceed on
+everything else. This is the SAME spirit as the global "urge to stop = continue" and TOOLING-FIRST
+rules; the default response to "continue" is: tooling → RE → ownership, loop, unblock yourself, keep porting.
+
 ## What this project is
 Static recompiler for Super Mario Sunshine (GameCube/PowerPC) → native PC binary.
 ROM: provided via `$SUNBRIGHT_ROM` (set it in a gitignored `.env` next to `run.sh`, or drop a
