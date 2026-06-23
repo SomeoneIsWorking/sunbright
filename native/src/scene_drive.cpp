@@ -18,6 +18,7 @@
 //
 // (Native-only TU; only built into sms-native, so no platform guard needed.)
 #include <System/MarDirector.hpp>                       // gpMarDirector
+#include <System/StageUtil.hpp>                         // SMS_isOptionMap
 #include <JSystem/JDrama/JDRNameRefGen.hpp>             // TNameRefGen::search
 #include <JSystem/JDrama/JDRSmJ3DScn.hpp>               // TSmJ3DScn
 #include <JSystem/JDrama/JDRLighting.hpp>               // TLightMap (light probe)
@@ -124,11 +125,23 @@ extern "C" bool sb_boot_drive_scene() {
 	// Install the live camera view + perspective. TSmJ3DScn::perform copies g.mViewMtx -> j3dSys
 	// before entry(), so this is the view every model is drawn with.
 	if (gpCamera) {
-		// DO NOT drive gpCamera->perform(1) here. That runs ctrlGameCamera_ which RECOMPUTES the
-		// camera — and MEASURED via the vanilla oracle (/ngxproj: guest GXSetProjection), the real
-		// plaza projection is fovy=50; driving perform(1) changed sms-boot's camera from its correct
-		// loaded fovy=50 to a wrong 40. The camera's LOADED state (from the map/TCameraMapTool) is
-		// the right establishing shot; we just read it, we don't re-run the control over it.
+		// DO NOT drive gpCamera->perform(1) for the GAMEPLAY camera. That runs ctrlGameCamera_
+		// which RECOMPUTES the camera — and MEASURED via the vanilla oracle (/ngxproj: guest
+		// GXSetProjection), the real plaza projection is fovy=50; driving perform(1) changed
+		// sms-boot's camera from its correct loaded fovy=50 to a wrong 40. The camera's LOADED
+		// state (from the map/TCameraMapTool) is the right establishing shot; we just read it.
+		//
+		// EXCEPTION — the OPTION/TITLE map (stage 15): here the camera MUST get its calc pass.
+		// The title→file-select transition (TCardLoad::perform case 3) is gated on
+		// gpCameraOption->mIntroChaseTimer == 0, and that only counts down inside CPolarSubCamera::
+		// ctrlOptionCamera_(), which runs from perform(0x1) when SMS_isOptionMap(). sms-boot's
+		// GC perform-list dispatch drops the camera's calc flag (the same blackbox that drops the
+		// scene draw bit, owned above), so unkA stays pinned at 300 and the file-select is
+		// unreachable. Drive the option-camera calc ourselves — it runs ctrlOptionCamera_ (NOT
+		// ctrlGameCamera_), so the gameplay-fovy concern above does not apply.
+		if (SMS_isOptionMap())
+			gpCamera->perform(0x1, &g_graphics);
+
 		const f32 fovy = gpCamera->getFovy(), aspect = gpCamera->getAspect();
 		if (fovy > 1.0f && fovy < 179.0f && aspect > 0.01f) {
 			Vec pos, up, target;
