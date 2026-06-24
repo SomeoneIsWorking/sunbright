@@ -27,6 +27,7 @@
 #include <JSystem/J3D/J3DGraphBase/J3DDrawBuffer.hpp>   // J3DDrawBuffer
 #include <JSystem/JDrama/JDRGraphics.hpp>               // TGraphics
 #include <Camera/Camera.hpp>                            // gpCamera (CPolarSubCamera)
+#include <Camera/CameraOption.hpp>                       // gpCameraOption (title/load pan state)
 #include <dolphin/mtx.h>
 #include <dolphin/gx.h>                                 // GXRenderModeObj, GXNtsc480Int
 #include <cstdio>
@@ -195,7 +196,16 @@ extern "C" bool sb_boot_drive_scene() {
 			// the horizontal plane. If pitch is steep (~30°) the dome equator lands above the
 			// top edge (matches the observed black top) and the camera is plausibly faithful;
 			// if pitch is gentle the dome should be visible and the camera/transform is wrong.
-			if (dbg_cam()) { static bool once=false; if(!once){once=true;
+			if (dbg_cam()) { static long cn=0; if((cn++ % 60)==0){
+				// Dump the option-camera state machine (intro pan / load pan / flags) so we can
+				// see which phase the SETTLED file-select camera is in. gpCameraOption holds the
+				// timers that gate title→load transition (CameraOption.cpp).
+				if (gpCameraOption) std::fprintf(stderr,
+				    "[cam-opt] n=%ld intro=%d loadPan=%d cubePan=%d upDown=%d flags=0x%x fovy=%.1f\n",
+				    cn, gpCameraOption->mIntroChaseTimer, gpCameraOption->mLoadPanTimer,
+				    gpCameraOption->mCubePanTimer, gpCameraOption->mUpDownPanTimer,
+				    gpCameraOption->mFlags, gpCameraOption->mFovy);
+				else std::fprintf(stderr, "[cam-opt] n=%ld gpCameraOption=NULL\n", cn);
 				// The camera target tracks Mario (cameragc: mTarget = gpCameraMario pos). Dump
 				// Mario's actual position to see if a wrong view = wrong Mario placement.
 				if (gpMarioPos) std::fprintf(stderr, "[cam-mario] gpMarioPos=%.1f,%.1f,%.1f\n",
