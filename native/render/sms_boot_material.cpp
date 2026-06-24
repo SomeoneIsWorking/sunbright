@@ -12,6 +12,28 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <unistd.h>
+
+// Signal-safe host-memory readability probe. A ResTIMG shared between models via
+// J3DTexture::setResTIMG carries imageDataOffset/paletteOffset as a 32-bit POINTER DELTA
+// (source timg − dest copy), which on a 32-bit GC wraps in u32 space but on our LP64 host is
+// a truncated, frequently NEGATIVE value (e.g. Mario's cap copies body texNo=0 → 0xffdd93a4).
+// The faithful read is therefore (char*)t + (int32_t)offset (sign-extended). We can't bound
+// such a delta by magnitude, so to stay SEGV-safe we directly probe that the computed source
+// span is readable before the tiled decoder walks it: write() returns EFAULT on a bad address
+// instead of faulting. Returns true only when both ends of [p, p+n) are mapped.
+static bool host_readable(const void* p, size_t n) {
+    if (!p || n == 0) return false;
+    static int fds[2] = {-1, -1};
+    if (fds[1] < 0 && pipe(fds) != 0) return true;   // can't probe → don't block the read
+    const uint8_t* ends[2] = { (const uint8_t*)p, (const uint8_t*)p + n - 1 };
+    for (const uint8_t* q : ends) {
+        ssize_t r = write(fds[1], q, 1);
+        if (r < 0) return false;                      // EFAULT → unreadable
+        char drain; if (read(fds[0], &drain, 1) < 0) { /* keep pipe drained */ }
+    }
+    return true;
+}
 
 // GX TEV konst-selection defaults when the block carries no per-stage konst sel
 // (TVB1 / J3DTevBlock1 has no konst storage): GX_TEV_KCSEL_1 / GX_TEV_KASEL_1.
@@ -129,15 +151,29 @@ void sb_resolve_textures(J3DMaterial* mat, void* j3dTexturePtr, std::vector<SbTe
         const int fmt = t->format;
         const int lw = t->width, lh = t->height;
 
-        // Sanity-gate the ResTIMG before decoding: a garbage/unswapped header (absurd
-        // dims, unknown format, or an image offset outside any sane range) would send the
-        // tiled decoder reading wild memory (a CMPR SEGV). Skip that texmap → 1×1 white,
-        // and LOUDLY dump the offending fields once so the root cause is visible (a
-        // systematic byte-swap shows up as byte-swapped dims here). Not a silent nil:
-        // an unrenderable texmap legitimately falls back to white in a GX renderer.
+        // Sanity-gate the ResTIMG before decoding: a garbage/unswapped header (absurd dims or
+        // unknown format) or an offset pointing at unmapped memory would send the tiled decoder
+        // reading wild memory (a CMPR SEGV). Skip such a texmap → 1×1 white, and LOUDLY dump the
+        // offending fields once. Not a silent nil: an unrenderable texmap legitimately falls back
+        // to white in a GX renderer.
+        //
+        // imageDataOffset/paletteOffset are SIGN-EXTENDED: a setResTIMG-shared texture stores them
+        // as a 32-bit pointer delta that is frequently negative on LP64 (see host_readable above).
+        const int pw = sb_tex_pad_w(lw, fmt), ph = sb_tex_pad_h(lh, fmt);
+        const auto*  base = reinterpret_cast<const uint8_t*>(t);
+        const uint8_t* src = base + (intptr_t)(int32_t)t->imageDataOffset;
+        const size_t srcbytes = (size_t)sb_tex_size_bytes(pw, ph, fmt);
+
+        const uint8_t* tlut = nullptr; int tlutfmt = 0;
+        if (sb_tex_is_paletted(fmt)) {
+            tlut = base + (intptr_t)(int32_t)t->paletteOffset;
+            tlutfmt = t->colorFormat;
+        }
+
         bool fmtok = (fmt==0||fmt==1||fmt==2||fmt==3||fmt==4||fmt==5||fmt==6||fmt==8||fmt==9||fmt==0xA||fmt==0xE);
         bool dimok = (lw > 0 && lh > 0 && lw <= 4096 && lh <= 4096);
-        bool offok = (t->imageDataOffset >= 0x20u && t->imageDataOffset < 0x4000000u);
+        // TLUT: at most 256 entries × 2 bytes (RGB5A3/IA8/RGB565) = 0x200.
+        bool offok = host_readable(src, srcbytes) && (!tlut || host_readable(tlut, 0x200));
         static long s_dbg = 0;
         const char* dbg = std::getenv("SB_J3D_DBG");
         if ((dbg && dbg[0] && dbg[0] != '0') && s_dbg < 40) {
@@ -150,17 +186,9 @@ void sb_resolve_textures(J3DMaterial* mat, void* j3dTexturePtr, std::vector<SbTe
         if (!fmtok || !dimok || !offok) {
             static long s_rej = 0;
             if (s_rej < 20) { ++s_rej;
-                std::fprintf(stderr, "[texres] REJECT texNo=%u fmt=0x%x %dx%d imgOff=0x%x — skipping (white)\n",
-                             texNo, fmt, lw, lh, t->imageDataOffset); }
+                std::fprintf(stderr, "[texres] REJECT texNo=%u fmt=0x%x %dx%d imgOff=0x%x (src=%p readable=%d) — skipping (white)\n",
+                             texNo, fmt, lw, lh, t->imageDataOffset, (const void*)src, (int)host_readable(src, srcbytes)); }
             continue;
-        }
-        const int pw = sb_tex_pad_w(lw, fmt), ph = sb_tex_pad_h(lh, fmt);
-
-        const uint8_t* src = reinterpret_cast<const uint8_t*>(t) + t->imageDataOffset;
-        const uint8_t* tlut = nullptr; int tlutfmt = 0;
-        if (sb_tex_is_paletted(fmt)) {
-            tlut = reinterpret_cast<const uint8_t*>(t) + t->paletteOffset;
-            tlutfmt = t->colorFormat;
         }
 
         // Decode at block-padded dims, then copy the logical lw×lh sub-rect into a
