@@ -63,3 +63,26 @@ Frame: `scratch/frames/boot_0044.png` (dumped via the new UNK13 trigger). Commit
   → start gameplay. Drive a file pick (A on a block) and own the next crash/render gaps.
 - **Proper banner/icon load:** run the `/card/*.bti` resource load (Application.cpp:414 path)
   under the stage jump so save files get a real GC-BIOS banner (cosmetic, low priority).
+
+## Navigation probe (later this session) — scene IS navigable, selection needs telemetry
+Added diag (sub `a8dfad1`): `TFileLoadBlock::pushed`/`touchPlayer` traces (SB_SEL_DBG) +
+`SB_SEL_DUMP_N` to set the UNK13 dump-window length. Drove headless movement+jump after UNK13
+(`SB_PAD_SCRIPT` UP+A sweep) and dumped 200 frames:
+- **Mario IS present & the scene responds:** `scene_verts` jumps 1866 (static) → 4803 during
+  movement (≈3000 verts = Mario's model); the camera pans as input drives it.
+- File selection = **Mario head-butts a floating block** (`touchPlayer`→`marioHeadAttack()`→
+  `pushed()`→`gpCardLoad->setSelected(unk138)`), exactly like hitting a ? block. `setSelected`
+  (CardLoad.cpp:2168) sets `unkB0` → `selectBookmark` case 2 advances (unkB0 != -1).
+- **My blind UP went the WRONG way** — toward the **OPTIONS wooden signpost** (visible in 3D at
+  `boot_0190.png`), the opposite side from the file blocks. `touchPlayer` never fired.
+- **Conclusion:** driving file-selection needs POSITION TELEMETRY (Mario world coords + the 3
+  `unk278` block coords `unk144`), not blind input. Build a probe that prints Mario's pos and the
+  block positions, then script movement toward a block + jump. THAT is the next porting unit
+  (file-selection → `selectFunction` → `setNextArea` → gameplay), and it wants a fresh context.
+
+## Open fidelity items seen in the frames (separate from the card path, NOT crashes)
+- **Title-logo letters linger** (chunky outlined "S.M.S." letters scattered around the blocks,
+  e.g. `boot_0100.png` "T O O B A"): the title→file-select transition doesn't fly the 3D logo
+  letters off / hide the title-logo object. RE the title-logo flyout.
+- **Striped rendering artifact** bottom-left in `boot_0190.png` (beach sand under the moved
+  camera) — possible z-fight / bad normal / texgen; investigate with the ngx tooling.
