@@ -65,6 +65,15 @@ Side-by-side `scratch/oracle/sbs_0300.png` (left=truth, right=sms-boot).
 1. **Sky gradient (b4)** — RE sky.bmd's gradient: why doesn't it cover down to the horizon / why is
    it flatter than truth? Capture b4's geometry extent + per-vtx colors; compare vs truth gradient
    (147→185 toward horizon). The backdrop b0 is correct; the fix is making the gradient cover it.
+   **LEAD (untested z-fight hypothesis):** b0 (backdrop sphere) reports z=0.99990 and b4 (gradient
+   model) reports z=0.99982–0.99992 — essentially CO-PLANAR. In drive_sky the sphere (GXDrawSphere,
+   immediate during group->perform) draws BEFORE the buffered gradient model (b0->draw()), and the
+   blend uses GX_LEQUAL — so where they share z, the already-drawn sphere wins and the gradient can't
+   overwrite it → deep blue shows. In the real game the 100000-scaled sphere is FAR and the gradient
+   model is NEARER (smaller), so the gradient wins. Check whether the sky.bmd model's base matrix /
+   scale in sms-boot wrongly pushes it to the far plane (co-planar with the sphere). Measure b4 eye-z
+   vs b0 eye-z via SB_J3D_DBG; if co-planar, the bug is the gradient model's transform/scale, NOT a
+   missing layer. (Deep blue at screen y240–280 = ndcY 0.0–0.167 is exactly the gap.)
 2. **Beach texture** — bind the sand texture (untextured→white). Diagnose like the cap-texture fix.
 3. **File-block cubes/labels + banner text** — find the hidden/dummy panes.
 4. **Mario** — confirm whether he draws at all in the option scene now.
