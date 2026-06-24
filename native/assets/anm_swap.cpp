@@ -58,6 +58,16 @@ static void sort_bounds(uint32_t* b, int n) {
 //   +0x20 s32 mTransOffset (-> f32[])
 // J3DAnmTransformKeyTable = 3x J3DAnmKeyTableBase{u16 mMaxFrame; u16 mOffset; u16
 // mType} = NINE u16, stride 0x12, fully homogeneous -> swap as a u16 run.
+//
+// **TRACK COUNT CORRECTION** (2026-06-24): the header's `count` (field_0xc) is the
+// JOINT count, but the table has **3 entries per joint** (one for each X/Y/Z axis —
+// J3DAnmTransformKey::calcTransform reads `mAnmTable[idx*3+{0,1,2}]`). So the table
+// occupies `count * 3 * 0x12` bytes, not `count * 0x12`. Underswapping the table by 3×
+// leaves entries idx>=count/3 in raw BE — produces NaN-ish joint matrices once the
+// skeleton recursion reaches those entries (verified at file-select with Mario's body
+// model, 29 joints: j9 reads entries 27/28/29 → entry 29 was unswapped → garbage scale,
+// NaN-translate propagation, fail-fast panic at the head joint). See debug_journal/
+// 2026-06-24_nan_joints_calc_data_divergence.md.
 static void swap_ANK1(uint8_t* out, const uint8_t* be, uint32_t size) {
 	if (size < 0x24) return;
 	uint16_t count     = be16(be + 0x0C);
@@ -69,10 +79,13 @@ static void swap_ANK1(uint8_t* out, const uint8_t* be, uint32_t size) {
 	sw16(out + 0x0C);                 // field_0xc (count)
 	sw32(out + 0x10);                 // field_0x10
 	sw32(out + 0x14); sw32(out + 0x18); sw32(out + 0x1C); sw32(out + 0x20);
-	// Transform key table: count entries x 9 u16 (stride 0x12), homogeneous.
-	if (off_tab != 0)
-		swap_run(out, off_tab, off_tab + (uint32_t)count * 0x12 <= size
-		                           ? off_tab + (uint32_t)count * 0x12 : size, 2);
+	// Transform key table: (count * 3) entries x 9 u16 (stride 0x12), homogeneous.
+	// 3 entries per joint (XYZ axes); see header note above.
+	if (off_tab != 0) {
+		uint32_t end = off_tab + (uint32_t)count * 3u * 0x12u;
+		if (end > size) end = size;
+		swap_run(out, off_tab, end, 2);
+	}
 	// Value arrays sized by region boundary (count of keys is not in the header).
 	uint32_t bounds[5]; int nb = 0;
 	if (off_tab)   bounds[nb++] = off_tab;
