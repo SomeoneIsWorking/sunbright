@@ -108,6 +108,41 @@ void drive_sky() { drive_group("空グループ", "DrawBuf Sky Opa", "DrawBuf Sk
 // Kept for reference / future re-enable: the scene's own perform(0x8) now draws the map, so this
 // is no longer called (driving it duplicated every map surface → z-fight dither). See drive_scene.
 [[maybe_unused]] void drive_map() { drive_group("マップグループ", "DrawBuf MapOpa", "DrawBuf MapXlu", 0x204); }
+
+// Character/object draw buffers → DrawBuf ChrOpa/ChrXlu. The master perform list
+// (MarDirectorPreEntry.cpp lines 44-46, 62-65) enters the MANAGER group (マネージャーグループ,
+// which holds the map-object manager → the file-select A/B/C TFileLoadBlock cubes) AND the PLAYER
+// group (プレーヤーグループ → Mario) into these two buffers with flag 0x204 (MActor::viewCalc|entry),
+// then — like the sky/map groups — never sets the draw bit, so the Chr buffers are filled but never
+// drawn (the same blackbox dispatch scene_drive bypasses). Result: the cubes and Mario are loaded
+// and correctly positioned (SB_SEL_POS confirms blocks at (840/1080/1320,300,-1000), Mario at
+// (950,100,-1000)) yet invisible. Drive the full frameInit→entry(both groups)→draw ourselves,
+// AFTER the map so characters composite on top. Multiple groups feed ONE buffer pair, so this
+// generalizes drive_group to enter two groups before the single draw.
+void drive_chr() {
+	JDrama::TDrawBufObj* opa = JDrama::TNameRefGen::search<JDrama::TDrawBufObj>("DrawBuf ChrOpa");
+	JDrama::TDrawBufObj* xlu = JDrama::TNameRefGen::search<JDrama::TDrawBufObj>("DrawBuf ChrXlu");
+	JDrama::TViewObj* mgr = JDrama::TNameRefGen::search<JDrama::TViewObj>("マネージャーグループ");
+	JDrama::TViewObj* ply = JDrama::TNameRefGen::search<JDrama::TViewObj>("プレーヤーグループ");
+	if (dbg()) { static int n=0; if(n<4){++n;
+		std::fprintf(stderr, "[drive-chr] opa=%p xlu=%p mgr=%p ply=%p\n",
+		             (void*)opa, (void*)xlu, (void*)mgr, (void*)ply); } }
+	if (!opa || !xlu) return;
+	J3DDrawBuffer* b0 = opa->getDrawBuffer();
+	J3DDrawBuffer* b1 = xlu->getDrawBuffer();
+	if (!b0 || !b1) return;
+
+	MTXCopy(g_graphics.mViewMtx.mMtx, j3dSys.getViewMtx());
+	j3dSys.drawInit();
+	b0->frameInit();
+	b1->frameInit();
+	j3dSys.setDrawBuffer(b0, 0);
+	j3dSys.setDrawBuffer(b1, 1);
+	if (mgr) mgr->perform(0x204, &g_graphics);
+	if (ply) ply->perform(0x204, &g_graphics);
+	j3dSys.setUnk4C(3); b0->draw();
+	j3dSys.setUnk4C(4); b1->draw();
+}
 } // namespace
 
 // Drives the scene draw once per frame (the single owned render path). Returns true if a scene
@@ -348,6 +383,16 @@ extern "C" bool sb_boot_drive_scene() {
 	drive_sky();
 
 	scene->perform(0x8, &g_graphics);
+
+	// Characters/objects (file-select A/B/C cubes via the manager group, Mario via the player
+	// group) draw into DrawBuf ChrOpa/ChrXlu — never driven by the perform list (see drive_chr).
+	// GATED OFF by default: the naive マネージャーグループ+プレーヤーグループ perform(0x204) drive
+	// RE-ENTERS map geometry (SB_BATCH_DBG showed b31..b45 duplicating the building atlas batches
+	// b5..b19 — same material key c539bdd2, vc, uv, shifted) → duplicate/z-fight, NOT clean cube/
+	// Mario draw. Needs a more specific group/flag (just the file-block + Mario, not the whole
+	// manager tree) and likely a calc pass. Enable with SB_DRIVE_CHR=1 to iterate. See handoff.
+	if (const char* e = getenv("SB_DRIVE_CHR"); e && e[0] && e[0] != '0')
+		drive_chr();
 
 	if (dbg()) {
 		static long n = 0;
