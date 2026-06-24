@@ -104,7 +104,9 @@ void drive_sky() { drive_group("空グループ", "DrawBuf Sky Opa", "DrawBuf Sk
 // (MarDirectorPreEntry.cpp) enters マップグループ with 0x204 (= MActor::viewCalc 0x4 | entry 0x200)
 // then never draws the buffers — so the whole map was missing (oracle: vanilla shows a full plaza,
 // sms-boot shows only a palm). Drive it like the sky.
-void drive_map() { drive_group("マップグループ", "DrawBuf MapOpa", "DrawBuf MapXlu", 0x204); }
+// Kept for reference / future re-enable: the scene's own perform(0x8) now draws the map, so this
+// is no longer called (driving it duplicated every map surface → z-fight dither). See drive_scene.
+[[maybe_unused]] void drive_map() { drive_group("マップグループ", "DrawBuf MapOpa", "DrawBuf MapXlu", 0x204); }
 } // namespace
 
 // Drives the scene draw once per frame (the single owned render path). Returns true if a scene
@@ -323,8 +325,17 @@ extern "C" bool sb_boot_drive_scene() {
 	// stays at the black clear. We drive the full frameInit→entry→draw ourselves, exactly like
 	// TSmJ3DScn::perform does for its own buffers (JDRSmJ3DScn.cpp), with our known-good view.
 	// Done BEFORE the scene so sky batches land behind the map (capture order = present order).
+	// Own the SKY backdrop only (see drive_sky). The map group is NOT driven here: the scene's
+	// own perform(0x8) below draws the full map (ground/sea/buildings) — it didn't when drive_map
+	// was first added (the map appeared empty), but the option-camera calc pass (gpCamera->
+	// perform(0x1) above) and the POS-array sentinel fix made TSmJ3DScn::perform draw the complete
+	// map. Driving drive_map() too then drew every map surface TWICE: two identical opaque
+	// surfaces (z_write=1, GX_LEQUAL) at equal depth z-fight per pixel — measured (SB_BATCH_DBG)
+	// as duplicate batches (sea/white/ground keys appearing 2×) and seen as the diagonal blue/white
+	// dither over the sea+beach. perform(0x8) is the faithful single draw; drive_map was a now-stale
+	// workaround. drive_sky stays — perform does NOT draw the sky backdrop (no vc=228 full-screen
+	// blue batch in a perform-only capture).
 	drive_sky();
-	drive_map();   // the plaza buildings / the option-scene ground (was entirely missing — vanilla oracle revealed it)
 
 	scene->perform(0x8, &g_graphics);
 
