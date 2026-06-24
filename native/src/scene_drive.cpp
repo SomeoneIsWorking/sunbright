@@ -29,6 +29,8 @@
 #include <Camera/Camera.hpp>                            // gpCamera (CPolarSubCamera)
 #include <Camera/CameraOption.hpp>                       // gpCameraOption (title/load pan state)
 #include <MoveBG/MapObjOption.hpp>                        // TFileLoadBlock
+#include <Player/Mario.hpp>                               // gpMarioOriginal (file-select Mario)
+#include <M3DUtil/M3UModelMario.hpp>                      // M3UModelMario::getModel (Mario body J3DModel)
 #include <M3DUtil/MActor.hpp>                             // MActor::getModel
 #include <Strategic/ObjModel.hpp>                         // TMActorKeeper
 #include <JSystem/J3D/J3DGraphAnimator/J3DModel.hpp>      // J3DModel / J3DModelData
@@ -177,6 +179,47 @@ void drive_chr() {
 		}
 		m->entry();
 	}
+
+	// Mario (front-center in the oracle, absent in sms-boot) is a プレーヤーグループ object whose
+	// body model enters the SAME shared DrawBuf ChrOpa/Xlu as the cubes. The perform list runs his
+	// skeletal calc every frame (SB_MARIO_DBG: calcAnim baseTR=(950,0,-1000), head joint matrix valid
+	// — the ANK1-underswap NaN-skeleton bug is fixed), so his node matrices for this frame are valid —
+	// but drive_chr's frameInit() above wiped the buffer he was entered into. So re-enter his body
+	// model here. We enter ONLY the body J3DModel (mModel->getModel()), NOT TMario::perform(0x200)/
+	// entryModels: that path also runs mYoshi->entry() and unk390->entryDrawShadow() (the bind-shadow
+	// re-enters the ground/map mesh → measured as the building-atlas dup batches b31..b45, the same
+	// symptom the manager-group 0x204 attempt produced). viewCalc rebuilds the per-shape draw matrices
+	// against the live view, show() un-hides the (default-hidden) shape packets, entry adds them to b0/b1.
+	//
+	// VERIFIED (SB_MARIO_XF, settled frame 270): his body decodes + transforms correctly — view-space
+	// z≈-967 (in front of the camera), projecting to ndcX≈-0.2 (centre) ndcY≈0.89(head)..1.10(feet).
+	// RESIDUAL (root-caused, NOT a render bug): vs the GX oracle Mario sits ~0.35 ndcY TOO LOW — his
+	// feet are at world y≈0 but should be ~y≈46+. Cause is the SAME as the death-plane issue
+	// (memory fileselect-selection-to-setnextstage): the option-scene floor collision isn't placed, so
+	// Mario falls to y≈0 instead of standing on the beach. Fix lives in his placement, not here.
+	// SB_NO_DRIVE_MARIO opts out (A/B bisection).
+	if (gpMarioOriginal && gpMarioOriginal->mModel &&
+	    !(std::getenv("SB_NO_DRIVE_MARIO") && std::getenv("SB_NO_DRIVE_MARIO")[0] != '0')) {
+		J3DModel* bm = gpMarioOriginal->mModel->getModel();
+		if (bm) {
+			if (std::getenv("SB_MARIO_DBG")) {
+				static int mn = 0;
+				if (mn < 3) { ++mn;
+					J3DModelData* md = bm->getModelData();
+					std::fprintf(stderr, "[drive-mario] gpMario=%p mModel=%p bm=%p shapeNum=%d\n",
+					             (void*)gpMarioOriginal, (void*)gpMarioOriginal->mModel,
+					             (void*)bm, md ? (int)md->getShapeNum() : -1);
+				}
+			}
+			bm->viewCalc();
+			if (bm->getModelData()) {
+				int ns = (int)bm->getModelData()->getShapeNum();
+				for (int s = 0; s < ns; ++s) bm->getShapePacket((u16)s)->show();
+			}
+			bm->entry();
+		}
+	}
+
 	j3dSys.setUnk4C(3); b0->draw();
 	j3dSys.setUnk4C(4); b1->draw();
 }

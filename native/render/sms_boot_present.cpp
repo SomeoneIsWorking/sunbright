@@ -111,6 +111,12 @@ void write_ppm(const char* path) {
     std::fclose(f);
 }
 
+// Exported accessor for the current present frame (anonymous-namespace g_frame is TU-local,
+// but reachable from this same TU). Other TUs use it for settled-frame-gated diagnostics.
+} // namespace
+extern "C" int sb_present_frame() { return g_frame; }
+namespace {
+
 void present_hook(void* /*framebuffer*/, void* /*user*/) {
     // SB_BBOX_TRACE: map the captured scene's NDC bbox across frames (no GPU, no dump) to
     // see whether/when the camera brings geometry in-view.

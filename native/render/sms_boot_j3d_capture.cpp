@@ -54,6 +54,7 @@
 
 using namespace sb::render;
 
+extern "C" int  sb_present_frame(void);   // sms_boot_present.cpp — settled-frame gating
 extern "C" void sb_gx_get_projection(int* type, float proj[6], float vp[6]);
 extern "C" int  sb_gx_get_lights(float out[8][16]);
 extern "C" void sb_gx_get_chan_amb(int slot, float rgb[3]);
@@ -339,6 +340,21 @@ extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
     if (drawTbl) std::memcpy(posMtx, &drawTbl[0][0], sizeof(posMtx));
     else         std::memcpy(posMtx, ident, sizeof(posMtx));
 
+    // SB_MARIO_XF: dump every captured shape's first vertex world pos + projected ndc + which
+    // texture table was chosen. Gated to a SETTLED frame window (the early frames are the intro
+    // camera pan, where everything projects off-screen). Locates Mario's 11 body shapes and shows
+    // whether their textures resolve against Mario's own table or a stale (map building-atlas) one.
+    if (std::getenv("SB_MARIO_XF") && !idx.empty() && sb_present_frame() >= 270 && sb_present_frame() <= 276) {
+        const NgxVertex& s0 = verts[idx[0]];
+        SbImmVtx q = imm_project(SbImmRawVtx{ s0.pos[0],s0.pos[1],s0.pos[2],0,0,0,0 },
+                                 projType, proj, posMtx, vp);
+        std::fprintf(stderr, "[marioxf] f%d model=%p mat=%p nidx=%zu ntex=%zu key=%llx pkt=%u mdl=%u pos0=(%.1f,%.1f,%.1f) ndc=(%.3f,%.3f,%.3f) pmt=(%.1f,%.1f,%.1f)\n",
+                     sb_present_frame(), (void*)model, (void*)mat, idx.size(), me->tex.size(),
+                     (unsigned long long)me->key, packetTex?packetTex->getNum():0,
+                     modelDataTex?modelDataTex->getNum():0,
+                     s0.pos[0],s0.pos[1],s0.pos[2], q.x,q.y,q.z,
+                     posMtx[0][3],posMtx[1][3],posMtx[2][3]);
+    }
     if (dbg_enabled()) {
         static int s_tx = 0;
         if (s_tx < 6 && !idx.empty()) {
