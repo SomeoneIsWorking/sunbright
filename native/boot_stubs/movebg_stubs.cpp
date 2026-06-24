@@ -241,8 +241,8 @@ TMapObjWaterSpray::TMapObjWaterSpray(const char* name) : TMapObjBase(name) {}
 // TMapObjWave
 // ============================================================
 TMapObjWave::TMapObjWave(const char* name) : JDrama::TViewObj(name) {}
-f32 TMapObjWave::getHeight(float, float, float) const { return 0.0f; }
-f32 TMapObjWave::getWaveHeight(float, float) const { return 0.0f; }
+// getHeight / getWaveHeight are now ported faithfully in
+// reference/sms/src/MoveBG/MapObjWave.cpp (no longer stubbed here).
 
 // ============================================================
 // TMareCork
