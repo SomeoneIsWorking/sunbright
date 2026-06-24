@@ -48,6 +48,22 @@ void bt_handler(int /*sig*/) {
     _exit(134);
 }
 
+// SIGSEGV/SIGABRT/SIGBUS handler — prints a backtrace of the faulting stack then
+// hard-exits. Async-signal-safe output only. Installed by sb_watchdog_init so any
+// native-boot crash names its own site instead of dying silently under headless run.
+void crash_handler(int sig) {
+    void* frames[80];
+    int n = backtrace(frames, 80);
+    char hdr[96];
+    int len = std::snprintf(hdr, sizeof(hdr),
+        "\n=== CRASH: fatal signal %d — faulting-thread backtrace ===\n", sig);
+    ssize_t w = write(2, hdr, len); (void)w;
+    backtrace_symbols_fd(frames, n, 2);
+    static const char ftr[] = "=== CRASH: exiting (139) ===\n";
+    w = write(2, ftr, sizeof(ftr) - 1); (void)w;
+    _exit(139);
+}
+
 void monitor_main() {
     unsigned long long last = g_heartbeat.load();
     int stalled = 0;
@@ -91,10 +107,29 @@ void sb_watchdog_kick(void) {
 // holding g_sched (it constructs a std::thread whose alloc routes through the heap).
 void sb_watchdog_init(void) {
     if (g_started.exchange(true)) return;
+
+    // Fatal-signal backtrace handler (SEGV/ABRT/BUS/FPE) — runs on its own small
+    // altstack so a stack-overflow fault can still print. Installed unconditionally
+    // (independent of the watchdog timeout), so any native-boot crash names its own
+    // site instead of dying silently under a headless run.
+    static char s_sigstk[131072];  // fixed (glibc SIGSTKSZ is no longer a constant)
+    stack_t ss; std::memset(&ss, 0, sizeof(ss));
+    ss.ss_sp = s_sigstk; ss.ss_size = sizeof(s_sigstk); ss.ss_flags = 0;
+    sigaltstack(&ss, nullptr);
+    struct sigaction ca;
+    std::memset(&ca, 0, sizeof(ca));
+    ca.sa_handler = crash_handler;
+    sigemptyset(&ca.sa_mask);
+    ca.sa_flags = SA_ONSTACK;
+    sigaction(SIGSEGV, &ca, nullptr);
+    sigaction(SIGBUS,  &ca, nullptr);
+    sigaction(SIGFPE,  &ca, nullptr);
+    sigaction(SIGABRT, &ca, nullptr);
+
     const char* e = std::getenv("SB_WATCHDOG_SECS");
     if (e && *e) {
         int v = std::atoi(e);
-        if (v <= 0) return;          // SB_WATCHDOG_SECS=0 (or invalid) disables
+        if (v <= 0) return;          // SB_WATCHDOG_SECS=0 (or invalid) disables monitor
         g_timeout_secs = v;
     }
     struct sigaction sa;
@@ -103,6 +138,7 @@ void sb_watchdog_init(void) {
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = SA_RESTART;
     sigaction(SIGUSR1, &sa, nullptr);
+
     sb_watchdog_set_running();       // assume the caller (boot main) is running now
     std::thread(monitor_main).detach();
     std::fprintf(stderr, "[watchdog] armed (timeout %ds)\n", g_timeout_secs);
