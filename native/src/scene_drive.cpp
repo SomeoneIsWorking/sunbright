@@ -109,8 +109,16 @@ void drive_map() { drive_group("マップグループ", "DrawBuf MapOpa", "DrawB
 
 // Drives the scene draw once per frame (the single owned render path). Returns true if a scene
 // was driven. Called unconditionally from TMarDirector::direct (no env gate).
+extern "C" void sb_boot_capture_frame_begin();   // native/render/sms_boot_j3d_capture.cpp
+
 extern "C" bool sb_boot_drive_scene() {
 	init_graphics();
+
+	// Start a fresh capture frame: one drawn scene == one captured frame. direct() can run
+	// multiple times between two VI presents (logic loop > retrace under TURBO); without this
+	// reset the duplicate scene copies accumulate and interleave at the horizon (the dithered
+	// sky/sea band). See sb_boot_capture_frame_begin in sms_boot_j3d_capture.cpp.
+	sb_boot_capture_frame_begin();
 
 	// Plain literal: sms-native compiles with -fexec-charset=SHIFT_JIS, so this matches the
 	// registered Shift-JIS name (same as MarDirectorSetupObjects.cpp's search).
@@ -316,7 +324,7 @@ extern "C" bool sb_boot_drive_scene() {
 	// TSmJ3DScn::perform does for its own buffers (JDRSmJ3DScn.cpp), with our known-good view.
 	// Done BEFORE the scene so sky batches land behind the map (capture order = present order).
 	drive_sky();
-	drive_map();   // the plaza buildings (was entirely missing — vanilla oracle revealed it)
+	drive_map();   // the plaza buildings / the option-scene ground (was entirely missing — vanilla oracle revealed it)
 
 	scene->perform(0x8, &g_graphics);
 

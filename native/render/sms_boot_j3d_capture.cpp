@@ -539,6 +539,19 @@ extern "C" void sb_boot_capture_sphere(int numMajor, int numMinor) {
     }
 }
 
+// Begin a fresh scene-capture frame. scene_drive calls this at the very start of each
+// scene draw (before drive_sky/drive_map/scene->perform), so one captured frame == one
+// drawn scene. Without it, multiple TMarDirector::direct() calls between two VI presents
+// (the logic loop can run faster than retrace under TURBO) accumulate 2-3 duplicate scene
+// copies into the same buffer — they interleave at the horizon (sky/sea/white-overlay
+// triangles from different copies covering the same pixels) and composite blended layers
+// N×, producing the dithered horizon band. Resetting per scene draw keeps only the latest
+// full frame; the present then drains exactly one scene. (Same g_consumed mechanism as a
+// take, so the next append clears — but here the reset is keyed to the draw, not the present.)
+extern "C" void sb_boot_capture_frame_begin() {
+    g_consumed = true;
+}
+
 // Present drains the frame's captured scene: the vertex list + per-material batches. Returns the
 // vertex count; *batches/*nbatches point at the batch list. Marks the buffers consumed (next
 // append clears). The NvkTevBatch fragGlsl/tex pointers stay valid (owned by g_matcache).

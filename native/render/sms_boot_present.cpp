@@ -289,6 +289,35 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
                      batches[0].vstart, batches[0].vcount,
                      verts[0].rgba[0],verts[0].rgba[1],verts[0].rgba[2],verts[0].rgba[3]);
     }
+    // SB_BATCH_DBG: per-scene-batch NDC-z + screen-y span + depth/blend state, printed once.
+    // Localizes which surfaces overlap in depth (the horizon z-fight class).
+    static const int batchdbg = [](){ const char* v = std::getenv("SB_BATCH_DBG"); return v && v[0] ? std::atoi(v) : 0; }();
+    static bool s_batchdone = false;
+    // SB_BATCH_DBG=1 → first scene frame; SB_BATCH_DBG=N>1 → fire once at present frame >= N.
+    if (batchdbg && !s_batchdone && nscene > 0 && (batchdbg <= 1 || g_frame >= batchdbg)) {
+        s_batchdone = true;
+        for (int bi = 0; bi < nsbatch; ++bi) {
+            const Nvk::NvkTevBatch& b = batches[bi];
+            float zmn=1e30f,zmx=-1e30f,zsum=0; float ymn=1e30f,ymx=-1e30f,xmn=1e30f,xmx=-1e30f;
+            double rr=0,gg=0,bb=0,r2=0,g2=0,b2=0; uint32_t cnt=0;
+            for (uint32_t i = b.vstart; i < b.vstart + b.vcount && i < verts.size(); ++i) {
+                const NvkTevVertex& v = verts[i];
+                if (v.z<zmn)zmn=v.z; if (v.z>zmx)zmx=v.z; zsum+=v.z;
+                if (v.y<ymn)ymn=v.y; if (v.y>ymx)ymx=v.y;
+                if (v.x<xmn)xmn=v.x; if (v.x>xmx)xmx=v.x;
+                rr+=v.rgba[0]; gg+=v.rgba[1]; bb+=v.rgba[2];
+                r2+=v.rgba[0]*v.rgba[0]; g2+=v.rgba[1]*v.rgba[1]; b2+=v.rgba[2]*v.rgba[2]; ++cnt;
+            }
+            if (!cnt) continue;
+            double mr=rr/cnt,mg=gg/cnt,mb=bb/cnt;
+            double var=(r2/cnt-mr*mr)+(g2/cnt-mg*mg)+(b2/cnt-mb*mb);  // color variance (rainbow letters高い)
+            std::fprintf(stderr, "[batchdbg] b%d vc=%u z[%.5f,%.5f]m%.5f ndcX[%.3f,%.3f] ndcY[%.3f,%.3f] "
+                         "zt=%u zf=%u zw=%u bm=%u/%u/%u rgb=%.2f,%.2f,%.2f cvar=%.3f key=%llx\n",
+                         bi, b.vcount, zmn, zmx, zsum/cnt, xmn, xmx, ymn, ymx,
+                         b.z_test, b.z_func, b.z_write, b.blend_mode, b.src_factor, b.dst_factor,
+                         mr, mg, mb, var, (unsigned long long)b.shaderKey);
+        }
+    }
     g_nvk.renderTevFrame(verts, batches, NvkClear{c[0], c[1], c[2], c[3]});
 
     char path[160];
