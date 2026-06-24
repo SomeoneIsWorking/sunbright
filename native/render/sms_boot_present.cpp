@@ -311,11 +311,15 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
             if (!cnt) continue;
             double mr=rr/cnt,mg=gg/cnt,mb=bb/cnt;
             double var=(r2/cnt-mr*mr)+(g2/cnt-mg*mg)+(b2/cnt-mb*mb);  // color variance (rainbow letters高い)
+            // Bound-texture inventory: count non-null samplers + first tex dims (white-untextured triage).
+            int ntex=0; char texinfo[64]="-"; for (int t=0;t<8;++t) if (b.tex[t].rgba) { if(!ntex) std::snprintf(texinfo,sizeof texinfo,"t%d=%ux%u",t,b.tex[t].w,b.tex[t].h); ++ntex; }
+            // mean UV span over the batch's first texcoord set (degenerate UV → untextured-looking).
+            float umn=1e30f,umx=-1e30f,vmn=1e30f,vmx=-1e30f; for (uint32_t i=b.vstart;i<b.vstart+b.vcount&&i<verts.size();++i){const NvkTevVertex&v=verts[i]; float u=v.uv[0][0],w2=v.uv[0][1]; if(u<umn)umn=u; if(u>umx)umx=u; if(w2<vmn)vmn=w2; if(w2>vmx)vmx=w2;}
             std::fprintf(stderr, "[batchdbg] b%d vc=%u z[%.5f,%.5f]m%.5f ndcX[%.3f,%.3f] ndcY[%.3f,%.3f] "
-                         "zt=%u zf=%u zw=%u bm=%u/%u/%u rgb=%.2f,%.2f,%.2f cvar=%.3f key=%llx\n",
+                         "zt=%u zf=%u zw=%u bm=%u/%u/%u rgb=%.2f,%.2f,%.2f cvar=%.3f ntex=%d %s uv[%.2f,%.2f;%.2f,%.2f] key=%llx\n",
                          bi, b.vcount, zmn, zmx, zsum/cnt, xmn, xmx, ymn, ymx,
                          b.z_test, b.z_func, b.z_write, b.blend_mode, b.src_factor, b.dst_factor,
-                         mr, mg, mb, var, (unsigned long long)b.shaderKey);
+                         mr, mg, mb, var, ntex, texinfo, umn,umx,vmn,vmx, (unsigned long long)b.shaderKey);
         }
     }
     g_nvk.renderTevFrame(verts, batches, NvkClear{c[0], c[1], c[2], c[3]});

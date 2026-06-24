@@ -144,9 +144,26 @@ void sb_resolve_textures(J3DMaterial* mat, void* j3dTexturePtr, std::vector<SbTe
         done[m] = true;
 
         uint16_t texNo = tb->getTexNo(m);
-        if (texNo >= tx->getNum()) continue;
+        const char* dbg0 = std::getenv("SB_J3D_DBG");
+        const bool wantdbg = dbg0 && dbg0[0] && dbg0[0] != '0';
+        if (texNo >= tx->getNum()) {
+            // Material declares a texmap (texcoords are generated) but its texNo is out of range
+            // for the bound texture table → no sampler → the surface renders flat/white (the beach
+            // sand bug). Not silent: surface the offending indices.
+            static long s_oob = 0;
+            if (wantdbg && s_oob < 40) { ++s_oob;
+                std::fprintf(stderr, "[texres] OOB stage%d texmap%d texNo=%u >= num=%u — no sampler (white)\n",
+                             s, m, texNo, tx->getNum()); }
+            continue;
+        }
         ResTIMG* t = tx->getResTIMG(texNo);
-        if (!t) continue;
+        if (!t) {
+            static long s_null = 0;
+            if (wantdbg && s_null < 40) { ++s_null;
+                std::fprintf(stderr, "[texres] NULL stage%d texmap%d texNo=%u getResTIMG=null — no sampler (white)\n",
+                             s, m, texNo); }
+            continue;
+        }
 
         const int fmt = t->format;
         const int lw = t->width, lh = t->height;

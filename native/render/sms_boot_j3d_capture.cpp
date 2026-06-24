@@ -39,6 +39,7 @@
 #include "ngx_render_data.h"   // NgxTevState
 #include "tev_shader.h"        // sb_tev_gen_fragment
 #include "sms_boot_material.h" // sb_build_tev_state, sb_resolve_textures, SbTexImage
+#include <JSystem/J3D/J3DGraphBase/J3DTexture.hpp> // J3DTexture::getNum (table-size probe)
 #include "sms_boot_lighting.h" // sb_light_vertex_color0 (pure, unit-tested)
 #include "ngx_light.h"         // ngx::LightSrc
 
@@ -131,12 +132,11 @@ const MatEntry* get_mat_entry(J3DMaterial* mat, J3DTexture* modelTex) {
         // blend-over-the-black-clear is what's blanking the scene.
         static const bool noblend = [](){ const char* v = std::getenv("SB_TEV_NOBLEND"); return v && v[0] && v[0] != '0'; }();
         if (noblend) e.blend_mode = 0;
-        // Resolve textures against the MODEL'S OWN texture table (J3DModel::unkAC,
-        // the swapped-at-load TEX1), not the GLOBAL j3dSys.getTexture(): the global
-        // reflects whichever model last bound it, so any model whose draw didn't set
-        // it (or set a different table) read another model's/an unswapped table here
-        // -> byte-swapped ResTIMG dims (32768 == 0x8000 <-> real 128) and garbage
-        // imageDataOffset -> every map texmap REJECTed -> white buildings.
+        // Resolve textures against the table chosen by the caller (the PER-PACKET
+        // J3DMatPacket::mTexture — see the call site). NOT modelData->getTexture(): that is the
+        // static embedded TEX1, which a shared-material-table model (map.bmd uses setMaterialTable)
+        // does NOT render with — its materials index a 59-entry shared table while the embedded one
+        // holds 4, so every map/beach texmap went OOB → no sampler → flat-white sand/buildings.
         sb_resolve_textures(mat, modelTex ? (void*)modelTex : j3dSys.getTexture(), e.tex);
         if (J3DColorBlock* cb = mat->getColorBlock()) {
             int nchan = cb->getColorChanNum();
@@ -297,7 +297,22 @@ extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
     J3DMatPacket* mp = j3dSys.getMatPacket();
     J3DMaterial* mat = mp ? mp->getMaterial() : nullptr;
     if (!mat) return true;
-    const MatEntry* me = get_mat_entry(mat, model->getModelData()->getTexture());
+    // Texture table: prefer the PER-PACKET table (J3DMatPacket::mTexture, set per material
+    // packet at DL build — line J3DModelData.cpp:558). The global j3dSys model/table can be
+    // stale (a different model bound it last), and modelData->getTexture() is the static
+    // embedded TEX1 which a shared-material-table model (setMaterialTable) does NOT use.
+    J3DTexture* packetTex   = mp ? mp->mTexture : nullptr;
+    J3DTexture* modelDataTex = model->getModelData()->getTexture();
+    J3DTexture* texTbl = packetTex ? packetTex : modelDataTex;
+    if (dbg_enabled()) {   // one-shot per material: which candidate table is large enough?
+        static std::unordered_map<J3DMaterial*, char> seen;
+        if (seen.find(mat) == seen.end() && seen.size() < 64) { seen[mat] = 1;
+            J3DTexture* sysTex = j3dSys.getTexture();
+            std::fprintf(stderr, "[textbl] mat=%p packet=%u modelData=%u sys=%u\n", (void*)mat,
+                packetTex?packetTex->getNum():0, modelDataTex?modelDataTex->getNum():0,
+                sysTex?sysTex->getNum():0); }
+    }
+    const MatEntry* me = get_mat_entry(mat, texTbl);
     if (!me || !me->ok) return true;
 
     NgxCP cp{};
