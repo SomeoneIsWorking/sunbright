@@ -214,6 +214,8 @@ void fill_batch_material(Nvk::NvkTevBatch& b, const MatEntry& e) {
         if (t.slot < 0 || t.slot >= 8 || t.rgba.empty()) continue;
         b.tex[t.slot].rgba = (const uint8_t*)t.rgba.data();
         b.tex[t.slot].w = t.w; b.tex[t.slot].h = t.h; b.tex[t.slot].linear = t.linear ? 1 : 0;
+        b.tex[t.slot].min_filter = t.min_filter; b.tex[t.slot].max_aniso = t.max_aniso;
+        b.tex[t.slot].wrap_s = t.wrap_s; b.tex[t.slot].wrap_t = t.wrap_t;
     }
 }
 

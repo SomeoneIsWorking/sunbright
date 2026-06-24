@@ -95,7 +95,11 @@ public:
         NvkTevPush push{};
         const char* fragGlsl = nullptr;   // sb_tev_gen_fragment(...) source (owned by caller)
         uint64_t shaderKey = 0;           // unique per distinct fragGlsl (shader/pipeline cache key)
-        struct Tex { const uint8_t* rgba = nullptr; uint32_t w = 0, h = 0; uint8_t linear = 0; } tex[8];
+        struct Tex { const uint8_t* rgba = nullptr; uint32_t w = 0, h = 0;
+                     uint8_t linear = 0;      // MAG filter linear (else nearest)
+                     uint8_t min_filter = 1;  // GX min filter (encodes mip mode)
+                     uint8_t max_aniso = 0;   // GX_ANISO_1/2/4 = 0/1/2
+                     uint8_t wrap_s = 1, wrap_t = 1; } tex[8];
         uint8_t z_test = 1, z_func = 3 /*GX_LEQUAL*/, z_write = 1;
         uint8_t blend_mode = 0, src_factor = 1, dst_factor = 0;   // GX blend (0=none)
     };

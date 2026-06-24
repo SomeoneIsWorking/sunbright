@@ -29,7 +29,9 @@ struct SbTexImage {
     uint32_t w = 0, h = 0;       // logical dims
     std::vector<uint32_t> rgba;  // decoded RGBA8, row-major, w*h texels
     uint8_t  wrap_s = 1, wrap_t = 1;  // GX wrap (0=CLAMP 1=REPEAT 2=MIRROR)
-    bool     linear = false;     // mag/min filter is LINEAR (else NEAREST)
+    bool     linear = false;     // MAG filter is LINEAR (else NEAREST)
+    uint8_t  min_filter = 1;     // GX min filter (0 NEAR,1 LIN,2 NEAR_MIP_NEAR,3 LIN_MIP_NEAR,4 NEAR_MIP_LIN,5 LIN_MIP_LIN)
+    uint8_t  max_aniso = 0;      // GX_ANISO_1=0, _2=1, _4=2
 };
 
 // Resolve+decode every texmap the material's TEV stages reference. `tex` is the model's

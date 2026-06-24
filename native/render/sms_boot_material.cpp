@@ -196,8 +196,10 @@ void sb_resolve_textures(J3DMaterial* mat, void* j3dTexturePtr, std::vector<SbTe
         if ((dbg && dbg[0] && dbg[0] != '0') && s_dbg < 40) {
             ++s_dbg;
             std::fprintf(stderr, "[texres] stage%d texmap%d texNo=%u fmt=0x%x %dx%d "
-                         "imgOff=0x%x palOff=0x%x mip=%d %s\n", s, m, texNo, fmt, lw, lh,
+                         "imgOff=0x%x palOff=0x%x mip=%d minF=%u magF=%u mipEn=%u aniso=%u %s\n",
+                         s, m, texNo, fmt, lw, lh,
                          t->imageDataOffset, t->paletteOffset, t->mipmapCount,
+                         t->minFilter, t->magFilter, t->mipmapEnabled, t->maxAnisotropy,
                          (fmtok&&dimok&&offok) ? "ok" : "REJECT");
         }
         if (!fmtok || !dimok || !offok) {
@@ -216,7 +218,12 @@ void sb_resolve_textures(J3DMaterial* mat, void* j3dTexturePtr, std::vector<SbTe
         SbTexImage img;
         img.slot = m; img.w = (uint32_t)lw; img.h = (uint32_t)lh;
         img.wrap_s = t->wrapS; img.wrap_t = t->wrapT;
-        img.linear = (t->magFilter == 1);   // GX_LINEAR
+        img.linear = (t->magFilter == 1);   // GX_LINEAR (MAG only)
+        // GC tracks the minification filter SEPARATELY (and it encodes the mip mode). The
+        // renderer previously reused magFilter for both, so a ground texture authored with
+        // GX_LIN_MIP_LIN minification got point-sampled at grazing angles → shoreline moire.
+        img.min_filter = t->minFilter;
+        img.max_aniso  = t->maxAnisotropy;
         img.rgba.resize((size_t)lw * lh);
         for (int y = 0; y < lh; ++y)
             std::memcpy(&img.rgba[(size_t)y * lw], &padded[(size_t)y * pw], (size_t)lw * 4);
