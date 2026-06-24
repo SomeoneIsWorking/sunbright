@@ -508,8 +508,18 @@ extern "C" void sb_boot_capture_sphere(int numMajor, int numMinor) {
     // boundary, which the GPU rejects. Pin it just inside the far plane so it passes depth-clip +
     // the LEQUAL test while every nearer surface (the scene at z<1) still draws over it. This is
     // the standard "skybox at max depth" technique, not a fudge of the geometry.
+    //
+    // The pin MUST sit strictly BEHIND the sky.bmd gradient dome (the "空グループ" model, drawn
+    // immediately after this sphere). That gradient is a FINITE dome whose far rim projects to
+    // z≈0.99992 — genuinely nearer than this radius-100000 backdrop, so it must always win LEQUAL
+    // and cover the backdrop completely (the real game shows only the gradient, never the deep-blue
+    // dome). A 0.9999 pin under-stated the backdrop's depth: it landed NEARER than the gradient's
+    // far rim (0.99992 > 0.9999), so the gradient lost LEQUAL at the horizon band and the deep-blue
+    // sphere bled through as a "dome" (the file-select sky bug). Pin to 0.99997 — safely behind the
+    // gradient rim, still inside the far plane.
+    constexpr float kBackdropZ = 0.99997f;
     for (uint32_t i = vstart; i < g_verts.size(); ++i)
-        if (g_verts[i].z >= 0.9999f) g_verts[i].z = 0.9999f;
+        if (g_verts[i].z >= kBackdropZ) g_verts[i].z = kBackdropZ;
 
     const uint32_t vcount = (uint32_t)g_verts.size() - vstart;
     if (!vcount) return;
