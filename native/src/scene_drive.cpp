@@ -28,6 +28,11 @@
 #include <JSystem/JDrama/JDRGraphics.hpp>               // TGraphics
 #include <Camera/Camera.hpp>                            // gpCamera (CPolarSubCamera)
 #include <Camera/CameraOption.hpp>                       // gpCameraOption (title/load pan state)
+#include <MoveBG/MapObjOption.hpp>                        // TFileLoadBlock
+#include <M3DUtil/MActor.hpp>                             // MActor::getModel
+#include <Strategic/ObjModel.hpp>                         // TMActorKeeper
+#include <JSystem/J3D/J3DGraphAnimator/J3DModel.hpp>      // J3DModel / J3DModelData
+#include <JSystem/J3D/J3DGraphBase/J3DPacket.hpp>         // J3DMatPacket / J3DShapePacket
 #include <dolphin/mtx.h>
 #include <dolphin/gx.h>                                 // GXRenderModeObj, GXNtsc480Int
 #include <cstdio>
@@ -109,24 +114,26 @@ void drive_sky() { drive_group("空グループ", "DrawBuf Sky Opa", "DrawBuf Sk
 // is no longer called (driving it duplicated every map surface → z-fight dither). See drive_scene.
 [[maybe_unused]] void drive_map() { drive_group("マップグループ", "DrawBuf MapOpa", "DrawBuf MapXlu", 0x204); }
 
-// Character/object draw buffers → DrawBuf ChrOpa/ChrXlu. The master perform list
-// (MarDirectorPreEntry.cpp lines 44-46, 62-65) enters the MANAGER group (マネージャーグループ,
-// which holds the map-object manager → the file-select A/B/C TFileLoadBlock cubes) AND the PLAYER
-// group (プレーヤーグループ → Mario) into these two buffers with flag 0x204 (MActor::viewCalc|entry),
-// then — like the sky/map groups — never sets the draw bit, so the Chr buffers are filled but never
-// drawn (the same blackbox dispatch scene_drive bypasses). Result: the cubes and Mario are loaded
-// and correctly positioned (SB_SEL_POS confirms blocks at (840/1080/1320,300,-1000), Mario at
-// (950,100,-1000)) yet invisible. Drive the full frameInit→entry(both groups)→draw ourselves,
-// AFTER the map so characters composite on top. Multiple groups feed ONE buffer pair, so this
-// generalizes drive_group to enter two groups before the single draw.
+// File-select A/B/C cubes → DrawBuf ChrOpa/ChrXlu. The master perform list
+// (MarDirectorPreEntry.cpp lines 44-46) fills the Chr buffers via the MANAGER group
+// (マネージャーグループ → map-object manager → the 3 TFileLoadBlock cubes) at flag 0x204 but, like
+// the sky/map groups, never sets the draw bit — so the cubes are loaded + correctly positioned
+// (840/1080/1320,300,-1000) yet never drawn. Entering the WHOLE manager group re-draws the entire
+// map (building-atlas dup / z-fight), so instead we enter ONLY the 3 file-block cube models.
+//
+// Each cube is a TMapObjBase whose perform() is EMPTY (map objects don't draw via perform; their
+// model is drawn from a draw buffer), and whose calc never runs in sms-boot (the calc-anim perform
+// list calls that same empty perform), so the model has degenerate draw matrices. We reproduce the
+// minimal draw setup ourselves per cube: calcRootMatrix (seed base TR from mPosition) + a unit base
+// scale (mScaling/mInitialScaling are 0 — the scale-setting startAnim/makeObjAppeared are empty
+// decomp stubs) → calc (joint matrices) → viewCalc (per-view draw matrices) → show the shape
+// packets (default hidden, unk30=0) → entry into the Chr buffer → draw. Mario (player group) is a
+// separate TODO via this same mechanism.
 void drive_chr() {
 	JDrama::TDrawBufObj* opa = JDrama::TNameRefGen::search<JDrama::TDrawBufObj>("DrawBuf ChrOpa");
 	JDrama::TDrawBufObj* xlu = JDrama::TNameRefGen::search<JDrama::TDrawBufObj>("DrawBuf ChrXlu");
-	JDrama::TViewObj* mgr = JDrama::TNameRefGen::search<JDrama::TViewObj>("マネージャーグループ");
-	JDrama::TViewObj* ply = JDrama::TNameRefGen::search<JDrama::TViewObj>("プレーヤーグループ");
 	if (dbg()) { static int n=0; if(n<4){++n;
-		std::fprintf(stderr, "[drive-chr] opa=%p xlu=%p mgr=%p ply=%p\n",
-		             (void*)opa, (void*)xlu, (void*)mgr, (void*)ply); } }
+		std::fprintf(stderr, "[drive-chr] opa=%p xlu=%p\n", (void*)opa, (void*)xlu); } }
 	if (!opa || !xlu) return;
 	J3DDrawBuffer* b0 = opa->getDrawBuffer();
 	J3DDrawBuffer* b1 = xlu->getDrawBuffer();
@@ -138,8 +145,38 @@ void drive_chr() {
 	b1->frameInit();
 	j3dSys.setDrawBuffer(b0, 0);
 	j3dSys.setDrawBuffer(b1, 1);
-	if (mgr) mgr->perform(0x204, &g_graphics);
-	if (ply) ply->perform(0x204, &g_graphics);
+	// Each block's primary MActor (anim variant 0) is the A/B/C cube (2 shapes / 2 mats, verified
+	// by SB_BLK_PROBE — variants 1/2 are the rock/no-card models).
+	const char* names[3] = { "ロードブロックＡ", "ロードブロックＢ", "ロードブロックＣ" };
+	for (int i = 0; i < 3; ++i) {
+		TFileLoadBlock* b = JDrama::TNameRefGen::search<TFileLoadBlock>(names[i]);
+		if (!b) continue;
+		MActor* ma = b->getMActor();
+		if (!ma || !ma->getModel()) continue;
+		J3DModel* m = ma->getModel();
+		// The block's calc never runs (TMapObjBase::perform is empty AND the calc-anim perform list
+		// calls that same empty perform for map objects), so the model's draw matrices are
+		// degenerate → the cube collapses to one NDC point. Reproduce TLiveActor::perform's calc
+		// path: calcRootMatrix() seeds the base TR from mPosition (840/1080/1320,300,-1000), then
+		// the MActor calc propagates the joints, viewCalc builds the per-view draw matrices.
+		// Both mScaling AND mInitialScaling are 0 for these blocks: the scale-setting paths are
+		// empty decomp stubs — TMapObjBase::startAnim() (called by makeBlockNormal to play the
+		// "appear" BCK that scales the cube 0→1) and makeObjAppeared() are both `{ }`. So the cube
+		// never gets a non-zero scale and collapses to a point. The blocks are unit-scale in the
+		// game; 1.0 is the appeared/settled scale shown on the (static) file-select screen. The
+		// pop-in scale-up animation itself is a decomp gap (the BCK isn't driven) — left for later.
+		b->calcRootMatrix();
+		{ Vec bs = { 1.0f, 1.0f, 1.0f }; m->setBaseScale(bs); }
+		ma->calc();
+		ma->viewCalc();
+		// The cube shape packets default to HIDDEN (unk30=0) until the normal draw path shows them;
+		// our manual entry skips that, so show them so J3DMatPacket::draw won't checkThing-skip them.
+		if (m->getModelData()) {
+			int ns = (int)m->getModelData()->getShapeNum();
+			for (int s = 0; s < ns; ++s) m->getShapePacket((u16)s)->show();
+		}
+		m->entry();
+	}
 	j3dSys.setUnk4C(3); b0->draw();
 	j3dSys.setUnk4C(4); b1->draw();
 }
@@ -149,8 +186,17 @@ void drive_chr() {
 // was driven. Called unconditionally from TMarDirector::direct (no env gate).
 extern "C" void sb_boot_capture_frame_begin();   // native/render/sms_boot_j3d_capture.cpp
 
+// SB_BLK_PROBE=1: one-shot inventory of the 3 file-select TFileLoadBlock cubes — found?, mState,
+// the active MActor's J3DModel + its modelData shape count + first model-space vertex (tells cube
+// vs shared-map model), and the MActorKeeper's MActor count (cube models are anim variants 0/1/2).
+extern "C" void sb_blk_probe();
+
 extern "C" bool sb_boot_drive_scene() {
 	init_graphics();
+	if (const char* e = getenv("SB_BLK_PROBE"); e && e[0] && e[0] != '0') {
+		static int n = 0;
+		if (n < 3) { ++n; sb_blk_probe(); }
+	}
 
 	// Start a fresh capture frame: one drawn scene == one captured frame. direct() can run
 	// multiple times between two VI presents (logic loop > retrace under TURBO); without this
@@ -384,14 +430,13 @@ extern "C" bool sb_boot_drive_scene() {
 
 	scene->perform(0x8, &g_graphics);
 
-	// Characters/objects (file-select A/B/C cubes via the manager group, Mario via the player
-	// group) draw into DrawBuf ChrOpa/ChrXlu — never driven by the perform list (see drive_chr).
-	// GATED OFF by default: the naive マネージャーグループ+プレーヤーグループ perform(0x204) drive
-	// RE-ENTERS map geometry (SB_BATCH_DBG showed b31..b45 duplicating the building atlas batches
-	// b5..b19 — same material key c539bdd2, vc, uv, shifted) → duplicate/z-fight, NOT clean cube/
-	// Mario draw. Needs a more specific group/flag (just the file-block + Mario, not the whole
-	// manager tree) and likely a calc pass. Enable with SB_DRIVE_CHR=1 to iterate. See handoff.
-	if (const char* e = getenv("SB_DRIVE_CHR"); e && e[0] && e[0] != '0')
+	// File-select A/B/C cubes (TFileLoadBlock) draw into DrawBuf ChrOpa/ChrXlu, which the perform
+	// list fills but never draws (the same dropped-draw-bit class as sky/map). drive_chr drives
+	// the 3 cubes' models directly (calc → viewCalc → entry → draw). ON by default (SB_NO_DRIVE_CHR
+	// opts out). NOTE the old naive マネージャーグループ perform(0x204) re-drew the whole map (b31..b45
+	// building-atlas dup) — drive_chr now enters ONLY the 3 file blocks. Mario (player group) is a
+	// separate TODO via this same path.
+	if (const char* e = getenv("SB_NO_DRIVE_CHR"); !(e && e[0] && e[0] != '0'))
 		drive_chr();
 
 	if (dbg()) {
@@ -400,4 +445,45 @@ extern "C" bool sb_boot_drive_scene() {
 			std::fprintf(stderr, "[scene-drive] n=%ld drove '通常シーン'->perform(8)\n", n);
 	}
 	return true;
+}
+
+// ── SB_BLK_PROBE: file-select TFileLoadBlock cube inventory (diagnostic) ───────────────────────
+// Answers: did each block's own cube model (FileLoadBlockA/B/C.bmd) load, or is getMActor()
+// returning the shared option-map model? Prints, per block: mState, the actor-keeper MActor count
+// and EACH MActor's J3DModel + modelData shape/material counts (a cube bmd has few shapes; the
+// option map has hundreds — the discriminator).
+extern "C" void sb_blk_probe() {
+	const char* names[3] = { "ロードブロックＡ", "ロードブロックＢ", "ロードブロックＣ" };
+	for (int i = 0; i < 3; ++i) {
+		TFileLoadBlock* b = JDrama::TNameRefGen::search<TFileLoadBlock>(names[i]);
+		if (!b) { std::fprintf(stderr, "[blkprobe] block%d NOT FOUND\n", i); continue; }
+		TMActorKeeper* k = b->getActorKeeper();
+		MActor* pm = b->getMActor();
+		J3DModel* pmodel = pm ? pm->getModel() : nullptr;
+		std::fprintf(stderr, "[blkprobe] block%d state=%d primaryMActor=%p model=%p keeper=%p actorNum=%d\n",
+		             i, (int)b->mState, (void*)pm, (void*)pmodel, (void*)k, k ? (int)k->mActorNum : -1);
+		if (k && k->mActors) {
+			for (int a = 0; a < (int)k->mActorNum; ++a) {
+				MActor* ma = k->mActors[a];
+				J3DModel* m = ma ? ma->getModel() : nullptr;
+				J3DModelData* md = m ? m->getModelData() : nullptr;
+				std::fprintf(stderr, "[blkprobe]   mactor[%d]=%p model=%p modelData=%p shapes=%d mats=%d\n",
+				             a, (void*)ma, (void*)m, (void*)md,
+				             md ? (int)md->getShapeNum() : -1, md ? (int)md->getMaterialNum() : -1);
+				// Mat-packet → shape-packet linkage + shape-packet draw gate (J3DMatPacket::draw
+				// only draws when unk34 chain has a packet with unk30!=0; J3DShapePacket::draw
+				// also gates on unk14!=0 && unk30!=0). This tells whether the cube models carry
+				// drawable draw-packets at all.
+				if (a == 0 && m && md) {
+					int nm = (int)md->getMaterialNum();
+					for (int mi = 0; mi < nm && mi < 4; ++mi) {
+						J3DMatPacket* mpk = m->getMatPacket((u16)mi);
+						J3DShapePacket* sp = mpk ? mpk->getShapePacket() : nullptr;
+						std::fprintf(stderr, "[blkprobe]     matpkt[%d]=%p shapePkt(unk34)=%p\n",
+						             mi, (void*)mpk, (void*)sp);
+					}
+				}
+			}
+		}
+	}
 }
