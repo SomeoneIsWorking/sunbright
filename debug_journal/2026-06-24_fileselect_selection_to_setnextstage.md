@@ -64,6 +64,62 @@ Confirm by watching `[dir-state]` stay at 4 (not 7) and `[movestage] FIRED`.
       SB_PAD_SCRIPT="$S" ./build-native/sms-boot > scratch/frames/fs.log 2>&1
     grep -a "prog unk1C\|dir-state\|movestage\|selpick" scratch/frames/fs.log
 
+## UPDATE — GAME_OVER fully root-caused: Mario stands off the beach collision
+Traced the GAME_OVER chain end-to-end (env `SB_DEATH_DBG`). The death-plane theory was
+WRONG. Actual chain:
+- `TMario::perform`→`playerControl`→`thinkSituation` runs the oob-kill EVERY frame: when
+  `isTouchGround4cm() && mGroundPlane->isIllegalData()`, it accumulates `mOobKillTimer` and
+  after `mIllegalPlaneTime` calls `decHP(mHpMax=8)` → HP 8→0 → `loserExec` → GAME_OVER.
+  (Confirmed: `[hp]` health 8→0, `[oobkill] touch4cm=1 illegal=1 optionMap=1`.)
+- `mGroundPlane->isIllegalData()` is true because Mario sits on the **illegal sentinel plane**
+  (`mIllegalCheckData`, MapCollisionData.cpp:121) — `checkGround` finds **no triangle** under him.
+- The option-scene map collision DOES load (`[mapcol]` numTri alloc=12000, **added=616**,
+  gridExtent ±20480; `/scene/map/map.col` via TMapCollisionStatic, full BE/LP64 handling in
+  TMapCollisionBase::init). The 616 triangles are VALID (e.g. p1(3622,60,-1575)… ground
+  normals (0,1,0)) and ARE linked into grid cells (`[addgrid]` gga=1, cells computed).
+- **THE MISMATCH:** the beach ground triangles are at **x≈3622-5484, z≈-1848..107** (grid
+  cells x23-25). But Mario is clamped (`SMS_isOptionMap` path, MarioMove.cpp:2054-2059) to
+  **x∈[846,2000], z=-1000** = `mOptionParams` (mZ,mXMin,mXMax). Those are the **PARAM_INIT
+  placeholder defaults** (MarioInit.cpp:965-967: -1000/846/2000). The collision transform
+  `unk20` is IDENTITY (raw vtx already world coords), so the collision really is at x≥3622 —
+  Mario at x=846 is ~2776 off it → illegal ground → death.
+- **ROOT CAUSE: `/Mario/Option.prm` is not overriding the default mZ/mXMin/mXMax**, so Mario's
+  rail doesn't match the beach collision. NEXT: verify Option.prm loads (TParams("/Mario/
+  Option.prm")) and that the real rail values (≈x3622-5484, matching the beach) get applied —
+  cf. the `TParamT::load .prm BE swap` class. Once Mario's rail sits on the collision, no
+  oob-kill → STATE stays 4 → `moveStage` fires → gameplay. Quick A/B sanity: if you force
+  mXMin≈3622/mZ≈-700 (or skip the oob-kill in the option map) Mario should survive and the
+  transition should fire — use only to confirm the diagnosis, the real fix is Option.prm.
+
+## UPDATE 2 — the real blocker is BROKEN GROUND COLLISION (2 bugs found)
+The Option.prm theory was also a red herring. `checkGround` at the EXACT centroid of a
+known-valid ground triangle (4863,100,-636) returns 9999999 (NO ground). So the collision
+LOOKUP is broken, not Mario's position. Two distinct bugs:
+
+1. **FIXED — `checkGround` read the wrong grid list.** `TMapCollisionData::checkGround`
+   (MapCheck.cpp) fetched `getGridRoot{14,18}(...).getRoofList()` — i.e. `unk0[1]` (roof) —
+   to look up GROUND. Ground triangles are linked into `unk0[0]` (getListRoot planeType 0).
+   The decomp had no `getGroundList()`; someone pasted `getRoofList()`. CONFIRMED against the
+   DOL (checkGround__17TMapCollisionData 0x8018c18c reads `root+4` = `unk0[0].getNext()`).
+   Fix: added `getGroundList()` (`unk0[0].getNext()`) and used it in checkGround.
+
+2. **OPEN — most `.col` triangles load with GARBAGE vertices.** Even after fix #1, the
+   centroid still finds no ground. `[gndlink]` shows the first ~2 triangles are valid
+   (triX[3915..5191]) but the rest have wild coords (triX spanning -48917..60983, -3992
+   recurring). So the collision vertex/index parse in the `/scene/map/map.col` loader
+   (TMapCollisionBase::init BE-swap/relayout + initAllCheckData/setCheckData via the s16
+   index arrays; vtxCount=392 so it takes the `thing|=4` raw-`&unk14->x` path) corrupts most
+   triangles. NEXT: dump/verify the per-group index arrays (thing->unk8) and the vertex array
+   after the BE swap — the indices or vertex stride go wrong after the first group. This is
+   the true fix for ground collision (affects EVERY stage, not just file-select); once
+   triangles load clean, checkGround finds ground → Mario survives file-select → moveStage
+   fires → gameplay. (added=616 triangles total; 12000 is just the scene's pre-alloc cap.)
+
+Diagnostics added for this: `SB_DEATH_DBG` now also drives `[mapcol]` (grid extent, tri
+dump, centroid checkGround), `[gndlink]` (ground link tests vs linked), and `SB_OPT_FIX`
+(force Mario onto the beach — does NOT revive him, consistent with bug #2 being lookup/data,
+not position).
+
 ## New env-gated diagnostics (committed)
 - `SB_SEL_PICK=<0|1|2>` — deterministic faithful head-butt injection (Mario is in scripted
   `waitingStart`, not freely controllable headless). Fires `unk278[idx]->pushed()` once when
