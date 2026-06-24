@@ -120,6 +120,27 @@ dump, centroid checkGround), `[gndlink]` (ground link tests vs linked), and `SB_
 (force Mario onto the beach — does NOT revive him, consistent with bug #2 being lookup/data,
 not position).
 
+## RESOLVED — file-select is spatially correct + the transition fires (2026-06-24)
+The GAME_OVER blocker is FULLY FIXED. It was NOT Option.prm and NOT a death plane. Two bugs:
+1. **Ground collision was 100% broken** (checkGround read the roof list via getRoofList, and
+   checkGroundList's not-found sentinel was 9999999 instead of -32767 so the MAX always picked
+   "not found"). Both DOL-confirmed and fixed → checkGround now finds the y=100 option floor.
+2. **THE KEYSTONE: TPlacement::load never byteswapped mPosition** (raw stream.read of BE floats
+   → every real value like 100.0 became a ~0 denormal). EVERY scene object loaded at ~(0,0,0).
+   Fixed (byteswap) → file blocks load at (840/1080/1320, 300, -1000) on Mario's rail; Mario
+   loads with his real Y, settles on the y=100 floor at (950,100,-1000) instead of falling.
+
+Verified end-to-end: Mario survives file-select, the director stays STATE_UNK4, and
+SB_SEL_PICK=0 (deterministic head-butt) drives PROGRESS_UNK13 → UNK1B → UNK29 → setNextStage →
+**dir-state 4 -> 9 (moveStage FIRED)**. The crash after that is the DELFINO STAGE LOAD (out of
+scope per the "perfect boot->file-select before Delfino" directive). Ground truth for the disc
+data: option.szs (entry 133) map.col = flat y=100 floor over the whole rail; Option.prm =
+mXMin 846/mXMax 1800/mZ -1000 (rail is correct). Extractor: scratch/extract_optioncol.py.
+
+REMAINING for "perfect file-select" (fidelity, not crashes): the 110 masked missing score-panel
+panes (sh0a..sh6j / st_0..st_6 / n_Xc — surfaced by the J2DScreen fail-loud change), lingering
+title-logo letters, striped beach artifact, hx_wipe type 10.
+
 ## New env-gated diagnostics (committed)
 - `SB_SEL_PICK=<0|1|2>` — deterministic faithful head-butt injection (Mario is in scripted
   `waitingStart`, not freely controllable headless). Fires `unk278[idx]->pushed()` once when
