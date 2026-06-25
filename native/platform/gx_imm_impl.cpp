@@ -166,7 +166,8 @@ const int g_prim_dbg_at = [] { const char* e = std::getenv("SB_IMM_PRIM_DBG"); r
 bool g_prim_dbg_done = false;
 struct PrimRec { int prim, nv; bool textured; int fmt, w, h; int bt, bs, bd;
                  float xmn, xmx, ymn, ymx, umn, umx, vmn, vmx;
-                 const void* image; const void* tlut; int tlutfmt; };
+                 const void* image; const void* tlut; int tlutfmt;
+                 int projType; float pm0, pm1, pm2, pm3; float tx, ty, tz; };
 std::vector<PrimRec> g_prim_recs;
 
 void snapshot_state() {
@@ -264,6 +265,9 @@ static void finalize_prim(void) {
         r.fmt = g_texSnap.fmt; r.w = g_texSnap.w; r.h = g_texSnap.h;
         r.image = g_texSnap.image; r.tlut = g_texSnap.tlut; r.tlutfmt = g_texSnap.tlutfmt;
         r.bt = g_blendType; r.bs = g_blendSrc; r.bd = g_blendDst;
+        r.projType = g_projType;
+        r.pm0 = g_projMtx[0]; r.pm1 = g_projMtx[1]; r.pm2 = g_projMtx[2]; r.pm3 = g_projMtx[3];
+        r.tx = g_posMtx[0][3]; r.ty = g_posMtx[1][3]; r.tz = g_posMtx[2][3];
         r.xmn = r.ymn = r.umn = r.vmn = 1e30f; r.xmx = r.ymx = r.umx = r.vmx = -1e30f;
         for (auto& v : g_prim_verts) {
             r.xmn = std::min(r.xmn, v.x); r.xmx = std::max(r.xmx, v.x);
@@ -459,6 +463,8 @@ int sb_gx_imm_take_batches(const SbImmVtx** verts, const SbImmBatch** batches, i
                          "ndcX[%.3f,%.3f] ndcY[%.3f,%.3f] uv[%.3f,%.3f;%.3f,%.3f] img=%p\n",
                          i, r.prim, r.nv, r.textured, r.fmt, r.w, r.h, r.bt, r.bs, r.bd,
                          r.xmn, r.xmx, r.ymn, r.ymx, r.umn, r.umx, r.vmn, r.vmx, r.image);
+            std::fprintf(stderr, "       projT=%d pm[%.4f,%.4f,%.4f,%.4f] pos_t=(%.1f,%.1f,%.1f)\n",
+                         r.projType, r.pm0, r.pm1, r.pm2, r.pm3, r.tx, r.ty, r.tz);
             // Decode each textured prim to a PPM so the actual sprite content is visible
             // (the slot-row "@" starbursts: SEE whether it's a sun/sparkle/cursor, not guess).
             if (r.textured && r.image && r.w > 0 && r.h > 0 && r.w <= 1024 && r.h <= 1024) {
