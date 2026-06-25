@@ -567,7 +567,16 @@ extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
     if (g_verts.size() > 6u * 1024 * 1024) return true;   // OOM guard for an undrained config
 
     const uint32_t vstart = (uint32_t)g_verts.size();
-    g_verts.reserve(g_verts.size() + idx.size());
+    // Reserve room for this shape's vertices, but PRESERVE geometric growth: a bare
+    // reserve(size()+idx.size()) pins capacity to exactly the new size every shape, so each
+    // subsequent shape reallocates and memmoves the WHOLE accumulated buffer -> O(n^2). On a
+    // big scene (the full NPC population, millions of verts toward the 6M guard) that is tens
+    // of GB of copying = the frame never completes (the SB_NPC_ON livelock: gdb showed 100% of
+    // time in this vector's element copy with capacity==size). Grow at least 2x so push_back's
+    // amortized O(1) is restored while still guaranteeing this batch fits without re-realloc.
+    const size_t need = g_verts.size() + idx.size();
+    if (g_verts.capacity() < need)
+        g_verts.reserve(std::max(need, g_verts.capacity() * 2));
 
     // PER-VERTEX SKINNING: select the vertex's draw matrix the way GX/J3D does. A vertex's
     // PNMTXIDX (s.matidx) is the GX position-matrix-memory ROW; the slot = matidx/3. The packet's
