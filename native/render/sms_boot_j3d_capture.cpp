@@ -421,16 +421,24 @@ extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
     for (u16 e = 0; e < shape->getMtxGroupNum(); ++e) {
         J3DShapeDraw* dp = shape->getShapeDraw(e);
         if (!dp || !dp->getDisplayList()) continue;
+        const size_t v0 = verts.size();
         ngx_build_mesh(cp, dp->getDisplayList(), dp->getDisplayListSize(),
                        resolve_native, &rc, verts, idx);
+        // Tag each vertex with the matrix-PACKET (mtx group) that drew it, so the per-vertex
+        // skinning matrix resolves against THIS packet's J3DShapeMtx table (getUseMtxIndex),
+        // not a global last-writer — a skinned shape draws in N packets each reloading the slots.
+        for (size_t vi = v0; vi < verts.size(); ++vi) verts[vi].packet = (unsigned char)e;
     }
     if (idx.empty()) return true;
 
     int projType; float proj[6]; float vp[6];
     sb_gx_get_projection(&projType, proj, vp);
     float ident[3][4] = {{1,0,0,0},{0,1,0,0},{0,0,1,0}};
-    float posMtx[3][4];
+    // The shape's draw-matrix table (model->VIEW/eye space, computed by the model's viewCalc) for
+    // the current view. Each entry is a Mtx (f32[3][4]). Per-vertex skinning selects WHICH entry.
     Mtx* drawTbl = shape->mDrawMatrices ? shape->mDrawMatrices[*shape->mCurrentViewNo] : nullptr;
+    const int drawMtxNum = model->getModelData() ? (int)model->getModelData()->getDrawMtxNum() : 0;
+    float posMtx[3][4];   // matrix 0 — for the debug probes below only (real geometry skins per-vertex)
     if (drawTbl) std::memcpy(posMtx, &drawTbl[0][0], sizeof(posMtx));
     else         std::memcpy(posMtx, ident, sizeof(posMtx));
 
@@ -506,11 +514,30 @@ extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
     const uint32_t vstart = (uint32_t)g_verts.size();
     g_verts.reserve(g_verts.size() + idx.size());
 
-    // model -> eye (the per-shape draw matrix). Shared by the vertex builder and the debug probes.
+    // PER-VERTEX SKINNING: select the vertex's draw matrix the way GX/J3D does. A vertex's
+    // PNMTXIDX (s.matidx) is the GX position-matrix-memory ROW; the slot = matidx/3. The packet's
+    // J3DShapeMtx maps that slot to a draw-matrix-table index (J3DShapeMtxMulti::getUseMtxIndex →
+    // unkC[slot]; single J3DShapeMtx → unk4). So posMtx = drawTbl[ getUseMtxIndex(matidx/3) ].
+    // Using drawTbl[0] flat (the old code) collapsed every vertex of a multi-matrix SKINNED shape
+    // (Mario) onto joint 0 → the mesh deformed (the "skinning slab"). Returns the 3x4 (Mtx).
+    static const bool no_skin = [](){ const char* v = std::getenv("SB_NO_SKIN"); return v && v[0] && v[0] != '0'; }();
+    auto mtx_for = [&](const NgxVertex& s) -> const float (*)[4] {
+        if (!drawTbl) return ident;
+        int drawIdx = 0;
+        if (!no_skin && s.packet < shape->getMtxGroupNum()) {
+            if (J3DShapeMtx* sm = shape->getShapeMtx(s.packet)) {
+                const u16 di = sm->getUseMtxIndex((u16)(s.matidx / 3));
+                if (di != 0xffff && (int)di < drawMtxNum) drawIdx = (int)di;
+            }
+        }
+        return drawTbl[drawIdx];
+    };
+    // model -> eye via the per-vertex draw matrix. Shared by the vertex builder and the debug probes.
     auto eye_of = [&](const NgxVertex& s, float& ex, float& ey, float& ez) {
-        ex = posMtx[0][3] + posMtx[0][0]*s.pos[0] + posMtx[0][1]*s.pos[1] + posMtx[0][2]*s.pos[2];
-        ey = posMtx[1][3] + posMtx[1][0]*s.pos[0] + posMtx[1][1]*s.pos[1] + posMtx[1][2]*s.pos[2];
-        ez = posMtx[2][3] + posMtx[2][0]*s.pos[0] + posMtx[2][1]*s.pos[1] + posMtx[2][2]*s.pos[2];
+        const float (*m)[4] = mtx_for(s);
+        ex = m[0][3] + m[0][0]*s.pos[0] + m[0][1]*s.pos[1] + m[0][2]*s.pos[2];
+        ey = m[1][3] + m[1][0]*s.pos[0] + m[1][1]*s.pos[1] + m[1][2]*s.pos[2];
+        ez = m[2][3] + m[2][0]*s.pos[0] + m[2][1]*s.pos[1] + m[2][2]*s.pos[2];
     };
     // Build ONE shaded vertex carrying CLIP-space xyzw (the GPU divides → perspective-correct UV/
     // colour interpolation + hardware near/side clipping). No CPU perspective divide, no hand-rolled
@@ -535,7 +562,9 @@ extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
             else               { sb_gx_get_chan_amb(0, ambc0); }
             const float vcol0[3] = { s.clr[0][0]/255.f, s.clr[0][1]/255.f, s.clr[0][2]/255.f };
             float lit[3];
-            sb_light_vertex_color0(me->chanCtrl[0], matc0, ambc0, lsrc, posMtx, s.pos, s.nrm, vcol0, lit);
+            // Use the vertex's OWN skinning matrix so the normal transforms with the right joint.
+            float skin[3][4]; const float (*m)[4] = mtx_for(s); std::memcpy(skin, m, sizeof skin);
+            sb_light_vertex_color0(me->chanCtrl[0], matc0, ambc0, lsrc, skin, s.pos, s.nrm, vcol0, lit);
             tv.rgba[0] = lit[0]; tv.rgba[1] = lit[1]; tv.rgba[2] = lit[2];
         }
         // Per-texgen UV: apply the material's GX texgen (matrix/source) so uv[i] = texgen i's
@@ -555,6 +584,33 @@ extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
         g_verts.push_back(make_v(verts[idx[k+2]]));
     }
     const uint32_t vcount = (uint32_t)g_verts.size() - vstart;
+    // SB_SKIN_DBG=1: for SKINNED shapes (any mtx group with >1 used matrix), dump the count of
+    // DISTINCT draw matrices the vertices selected + the eye-space AABB. A skinned shape should
+    // span many matrices and a body-sized AABB; the old flat drawTbl[0] would show 1 matrix + a
+    // collapsed AABB. This is the move-a-number proof that per-vertex skinning spreads the mesh.
+    if (std::getenv("SB_SKIN_DBG") && sb_present_frame() > 200) {
+        int maxUse = 0;
+        for (u16 e = 0; e < shape->getMtxGroupNum(); ++e)
+            if (J3DShapeMtx* sm = shape->getShapeMtx(e)) maxUse = std::max(maxUse, (int)sm->getUseMtxNum());
+        static int s_skin = 0;
+        if (maxUse > 1 && s_skin < 24) { ++s_skin;
+            std::unordered_map<int,char> seen;
+            float ex,ey,ez, mnx=1e30f,mxx=-1e30f,mny=1e30f,mxy=-1e30f,mnz=1e30f,mxz=-1e30f;
+            for (const unsigned ii : idx) { const NgxVertex& s = verts[ii];
+                int di = 0; if (s.packet < shape->getMtxGroupNum()) if (J3DShapeMtx* sm = shape->getShapeMtx(s.packet)) { u16 d=sm->getUseMtxIndex((u16)(s.matidx/3)); if(d!=0xffff)di=d; }
+                seen[di] = 1;
+                eye_of(s, ex, ey, ez);
+                mnx=std::fmin(mnx,ex);mxx=std::fmax(mxx,ex);mny=std::fmin(mny,ey);mxy=std::fmax(mxy,ey);mnz=std::fmin(mnz,ez);mxz=std::fmax(mxz,ez);
+            }
+            std::fprintf(stderr, "[skin] model=%p mat=%p maxUse=%d distinctDrawMtx=%zu nv=%zu eyeAABB x[%.0f,%.0f] y[%.0f,%.0f] z[%.0f,%.0f] (extent %.0f,%.0f,%.0f)\n",
+                         (void*)model, (void*)mat, maxUse, seen.size(), idx.size(), mnx,mxx,mny,mxy,mnz,mxz, mxx-mnx,mxy-mny,mxz-mnz);
+            // For each distinct draw matrix this shape used, print its translation — a world-scale
+            // (|t|~thousands) translation means that entry is model->WORLD (viewCalc didn't run for it).
+            for (auto& kv : seen) { int di = kv.first; if (di>=0 && di<drawMtxNum) {
+                const float (*dm)[4] = drawTbl[di];
+                std::fprintf(stderr, "      drawMtx[%d].t=(%.0f,%.0f,%.0f)\n", di, dm[0][3],dm[1][3],dm[2][3]); } }
+        }
+    }
     if (dbg_enabled()) {   // per-shape coverage probe (first 24 shapes = the sky, drawn first)
         static int s_cov = 0;
         if (s_cov < 24 && !idx.empty()) { ++s_cov;

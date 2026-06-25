@@ -286,6 +286,16 @@ void drive_chr() {
 	// SB_NO_DRIVE_MARIO=1 opts out (A/B bisection).
 	if (gpMarioOriginal && gpMarioOriginal->mModel && !SMS_isOptionMap() &&
 	    !(std::getenv("SB_NO_DRIVE_MARIO") && std::getenv("SB_NO_DRIVE_MARIO")[0] != '0')) {
+		// POSE THE SKELETON. calcView builds the per-view draw matrices FROM the J3D node
+		// matrices, but in sms-boot the perform-list never delivers bit 0x1 to Mario, so
+		// calcAnim never runs and the node matrices sit at the rest/bind pose (an unposed
+		// T-pose-ish mesh). Drive the faithful skeleton pass first — exactly TMario::perform's
+		// 0x1 branch does (MarioMain.cpp:118): calcAnim(2) = calcBaseMtx -> considerWaist ->
+		// mModel->perform(2) (the skeleton calc) -> pose hands + cap. This updates the node
+		// matrices so calcView's draw matrices reflect the current animation pose. We do NOT run
+		// playerControl (input/physics) — just the pose. SB_NO_MARIO_ANIM=1 opts out (A/B).
+		if (!(std::getenv("SB_NO_MARIO_ANIM") && std::getenv("SB_NO_MARIO_ANIM")[0] != '0'))
+			gpMarioOriginal->calcAnim(2, &g_graphics);
 		gpMarioOriginal->calcView(&g_graphics);
 		gpMarioOriginal->entryModels(&g_graphics);
 		if (const char* e = getenv("SB_MARIO_DBG"); e && e[0] && e[0] != '0') {
@@ -299,6 +309,30 @@ void drive_chr() {
 				             gpMarioOriginal->mPosition.x, gpMarioOriginal->mPosition.y,
 				             gpMarioOriginal->mPosition.z, (int)gpMarioOriginal->mStatus, (void*)bm,
 				             md ? (int)md->getShapeNum() : -1, dm[0][3], dm[1][3], dm[2][3]);
+			}
+		}
+		// SB_MARIO_GEOM=1: per-frame geometry dump of the POSED skeleton — every joint's
+		// node-matrix translation + a checksum over the full 3x4 set. Two uses: (1) self-check
+		// across frames — a STATIC checksum means the animation frame is FROZEN (calcAnim poses
+		// from a non-advancing anim controller); (2) joined to the oracle's same dump (real game
+		// via the probe) for a value-level pose compare (NOT eyeballing the overbright frame).
+		if (const char* e = getenv("SB_MARIO_GEOM"); e && e[0] && e[0] != '0') {
+			static int gn = 0;
+			if (sb_present_frame() > 0 && gn < 30) { ++gn;
+				J3DModel* bm = gpMarioOriginal->mModel->getModel();
+				J3DModelData* md = bm ? bm->getModelData() : nullptr;
+				int nj = md ? (int)md->getJointNum() : 0;
+				double cs = 0; int anim = (int)gpMarioOriginal->mAnimationId;
+				for (int j = 0; j < nj; ++j) {
+					MtxPtr m = bm->getAnmMtx(j);
+					for (int r = 0; r < 3; ++r) for (int c = 0; c < 4; ++c) cs += (double)m[r][c] * (1.0 + 0.001*(r*4+c));
+				}
+				std::fprintf(stderr, "[mario-geom] f=%d anim=%d njoint=%d cksum=%.4f", sb_present_frame(), anim, nj, cs);
+				const int probe[5] = {0, 26 /*head*/, 28 /*mhead*/, nj>10?10:0, nj>20?20:0};
+				for (int pi = 0; pi < 5; ++pi) { int j = probe[pi]; if (j<0||j>=nj) continue;
+					MtxPtr m = bm->getAnmMtx(j);
+					std::fprintf(stderr, " j%d=(%.1f,%.1f,%.1f)", j, m[0][3], m[1][3], m[2][3]); }
+				std::fprintf(stderr, "\n");
 			}
 		}
 	}
