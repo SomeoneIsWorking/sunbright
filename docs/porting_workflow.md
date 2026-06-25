@@ -58,6 +58,33 @@ path that advances ownership, go. Never punt the decision to the user.
    async/emulated layer.
 4. Add a value detector and VERIFY the ported values match the reference. Commit + push the milestone.
 
+## THE PARITY LOOP — RE → PORT → IMPLEMENT → TDD → FIX (user directive 2026-06-26)
+The named, proven cycle. Run it continuously, one divergence at a time, until parity is GREAT.
+Respawn (`cci respawn -f scratch/handoff_keep_working.md`) when context degrades — never stop.
+
+1. **RE** — find WHERE the divergence comes from and name the exact mechanism. Backtrace the live
+   draw/value (e.g. `SB_IMM_TRACE_SOLID` printed `SMS_FillScreenAlpha <- TModelWaterManager::
+   drawWaterVolume`), then read the decomp (`reference/sms/...`) + disassemble the US DOL to confirm
+   the precise semantics (e.g. `GXSetColorUpdate(GX_FALSE)` => writes NO colour). No fix until named.
+2. **PORT** — transcribe the original behaviour faithfully (control flow / state / GX semantics)
+   from the decomp + DOL. STAGE A may stub pure-rendering helpers, but the CONTROL/STATE is exact
+   (e.g. Hx_Circle's timer->done machine; the dst-alpha write-mask + forced-alpha rules).
+3. **IMPLEMENT** — wire it into the native path (the SDL3-GPU pipeline, the imm capture, an override).
+4. **TDD** — BEFORE trusting it, write a spec-truth test that FAILS if it's wrong: a parity test
+   (`native/render/tests/parity/*_test.cpp`, assert readback pixels vs hand-computed GX truth) for
+   renderer behaviour, or a game-behaviour test (`platform_*_test`, assert the exact state sequence /
+   frame counts from the disassembly) for logic. Prove SENSITIVITY (a wrong constant fails it).
+   Never "see-then-assert"; never eyeball.
+5. **FIX / VERIFY** — make the test green, then confirm the live divergence (the value/number) moved
+   the right way. Commit + push the milestone. If the proper fix is too big now, land an in-code
+   `STOPGAP:` (honest absent-effect, never a faked value) and record the proper fix. Loop to next.
+
+Reference instance (read when unsure): the Delfino plaza "white wash" -> RE pinned
+`SMS_FillScreenAlpha`'s `GXSetColorUpdate(FALSE)` -> ported PE write-mask + dst-alpha semantics ->
+implemented in `gx_sdlgpu` pipeline + imm capture -> `dst_alpha_test` parity rung (masked composite,
+pixel-exact, sensitive) -> wash gone, plaza clean; the unportable mask-geometry piece is a marked
+`STOPGAP`. Commits c39a523..93e5293.
+
 ## Record findings durably
 In-repo (`debug_journal/`, this file, `CLAUDE.md`) for project-critical facts (travels with the
 repo); `<home>/.claude` memory for cross-session/cross-machine pointers. Record dead ends too.
