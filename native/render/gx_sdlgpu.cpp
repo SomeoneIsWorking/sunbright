@@ -180,34 +180,47 @@ SDL_GPUGraphicsPipeline* ensure_pipeline(const sb::render::Nvk::NvkTevBatch& b) 
 }
 
 SDL_GPUSampler* get_sampler(const sb::render::Nvk::NvkTevBatch::Tex& t) {
-    bool magLin = t.linear != 0;
-    bool minLin = (t.min_filter == 1 || t.min_filter == 3 || t.min_filter == 5);
+    // Mirror nvk getSampler: GX min-filter enum (0 NEAR,1 LINEAR,2 NEAR_MIP_NEAR,3 LIN_MIP_NEAR,
+    // 4 NEAR_MIP_LIN,5 LIN_MIP_LIN). useMips = anything but pure GX_NEAR — SMS authors most ground/
+    // water as GX_LINEAR with no mip chain, so we generate one ourselves (upload_texture) and treat
+    // GX_LINEAR min as trilinear so the grazing shoreline minifies smoothly (vs the bilinear moire).
+    bool magLin   = t.linear != 0;
+    bool minLin   = (t.min_filter == 1 || t.min_filter == 3 || t.min_filter == 5);
+    bool useMips  = (t.min_filter != 0);
+    bool mipLin   = (t.min_filter == 1 || t.min_filter == 4 || t.min_filter == 5);
     auto toAddr = [](uint8_t w) {
         switch (w) { case 0: return SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
                      case 2: return SDL_GPU_SAMPLERADDRESSMODE_MIRRORED_REPEAT;
                      default: return SDL_GPU_SAMPLERADDRESSMODE_REPEAT; }
     };
-    uint32_t key = (uint32_t)magLin | ((uint32_t)minLin << 1)
-                 | ((uint32_t)(t.wrap_s & 3) << 2) | ((uint32_t)(t.wrap_t & 3) << 4);
+    uint32_t key = (uint32_t)magLin | ((uint32_t)minLin << 1) | ((uint32_t)useMips << 2)
+                 | ((uint32_t)mipLin << 3) | ((uint32_t)(t.wrap_s & 3) << 4) | ((uint32_t)(t.wrap_t & 3) << 6);
     auto it = g_samp_cache.find(key);
     if (it != g_samp_cache.end()) return it->second;
     SDL_GPUSamplerCreateInfo sci{};
     sci.mag_filter = magLin ? SDL_GPU_FILTER_LINEAR : SDL_GPU_FILTER_NEAREST;
     sci.min_filter = minLin ? SDL_GPU_FILTER_LINEAR : SDL_GPU_FILTER_NEAREST;
-    sci.mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_NEAREST;   // P3: no generated mip chain yet (P4)
+    sci.mipmap_mode = mipLin ? SDL_GPU_SAMPLERMIPMAPMODE_LINEAR : SDL_GPU_SAMPLERMIPMAPMODE_NEAREST;
     sci.address_mode_u = toAddr(t.wrap_s);
     sci.address_mode_v = toAddr(t.wrap_t);
     sci.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
+    sci.min_lod = 0.0f;
+    sci.max_lod = useMips ? 1000.0f : 0.0f;   // unbounded LOD when mipped (else level-0 only)
     SDL_GPUSampler* s = SDL_CreateGPUSampler(g_dev, &sci);
     g_samp_cache.emplace(key, s);
     return s;
 }
 
 SDL_GPUTexture* upload_texture(const uint8_t* rgba, Uint32 w, Uint32 h) {
+    // Full mip chain (nvk makeTexture parity): SMS ground/water is GX_LINEAR with no mip chain, so
+    // a heavily-tiled grazing surface minifies many texels/pixel → bilinear moire. Generate mips
+    // (GPU 2x linear downscale) so trilinear sampling smooths it.
+    Uint32 levels = 1; for (Uint32 m = (w > h ? w : h); m > 1; m >>= 1) ++levels;
     SDL_GPUTextureCreateInfo tci{};
     tci.type = SDL_GPU_TEXTURETYPE_2D; tci.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
-    tci.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER; tci.width = w; tci.height = h;
-    tci.layer_count_or_depth = 1; tci.num_levels = 1; tci.sample_count = SDL_GPU_SAMPLECOUNT_1;
+    tci.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER | (levels > 1 ? SDL_GPU_TEXTUREUSAGE_COLOR_TARGET : 0);
+    tci.width = w; tci.height = h; tci.layer_count_or_depth = 1; tci.num_levels = levels;
+    tci.sample_count = SDL_GPU_SAMPLECOUNT_1;
     SDL_GPUTexture* tex = SDL_CreateGPUTexture(g_dev, &tci);
     if (!tex) return nullptr;
     SDL_GPUTransferBufferCreateInfo tbci{}; tbci.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD; tbci.size = w * h * 4;
@@ -218,8 +231,9 @@ SDL_GPUTexture* upload_texture(const uint8_t* rgba, Uint32 w, Uint32 h) {
     SDL_GPUCopyPass* cp = SDL_BeginGPUCopyPass(g_cmd);
     SDL_GPUTextureTransferInfo src{}; src.transfer_buffer = tb; src.pixels_per_row = w; src.rows_per_layer = h;
     SDL_GPUTextureRegion dst{}; dst.texture = tex; dst.w = w; dst.h = h; dst.d = 1;
-    SDL_UploadToGPUTexture(cp, &src, &dst, false);
+    SDL_UploadToGPUTexture(cp, &src, &dst, false);   // level 0
     SDL_EndGPUCopyPass(cp);
+    if (levels > 1) SDL_GenerateMipmapsForGPUTexture(g_cmd, tex);   // must be outside any pass
     SDL_ReleaseGPUTransferBuffer(g_dev, tb);
     return tex;
 }
