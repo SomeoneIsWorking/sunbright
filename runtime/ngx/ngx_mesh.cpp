@@ -54,11 +54,18 @@ int ngx_assemble_primitive(const NgxCP& cp, unsigned op,
     }
 
     // Extract each present attribute across all vertices, then scatter into the
-    // interleaved native vertices. Temp buffers are stack-friendly for typical
-    // packet sizes; std::vector keeps it correct for large strips.
-    std::vector<float> f3((size_t)count * 3);
-    std::vector<float> f2((size_t)count * 2);
-    std::vector<unsigned char> c4((size_t)count * 4);
+    // interleaved native vertices. These scratch buffers are REUSED across primitives
+    // (thread_local + resize keeps capacity): a fresh std::vector per primitive malloc/
+    // free'd on every DRAW, which dominated the NPC-scene render (thousands of prims/
+    // frame). resize() amortizes to O(1) after warmup; correctness is unchanged (each
+    // call overwrites [0,count) before reading). thread_local keeps it safe if the
+    // capture ever runs off more than one thread.
+    static thread_local std::vector<float> f3;
+    static thread_local std::vector<float> f2;
+    static thread_local std::vector<unsigned char> c4;
+    f3.resize((size_t)count * 3);
+    f2.resize((size_t)count * 2);
+    c4.resize((size_t)count * 4);
 
     // PNMTXIDX (per-vertex position-matrix index, vcd_lo bit0) is the FIRST byte of each vertex
     // (matrix-index bytes precede the attributes). Capture it for multi-matrix/skinned shapes;

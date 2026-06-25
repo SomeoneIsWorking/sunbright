@@ -156,6 +156,11 @@ bool g_consumed = true;
 bool g_locked = false;          // when true, sb_boot_capture_j3d/sphere skip (interval already done)
 bool g_want_capture = true;     // re-armed by the present consuming the buffer
 J3DMaterial* g_last_mat = nullptr;   // for consecutive-shape batch merging within a frame
+// SB_CAP_COUNT diagnostic: per-present shape/triangle accounting (reset in begin_scene, dumped in
+// end_scene) — measures whether the gameplay scene over-emits (the ~6M-vert OOM-ceiling question).
+long g_present_shapes = 0;       // shapes captured this present (idx non-empty)
+long g_present_idx    = 0;       // summed idx (≈ vertices triangulated) this present
+long g_present_skipped = 0;      // shapes skipped by the OOM/runaway guards this present
 
 const MatEntry* get_mat_entry(J3DMaterial* mat, J3DTexture* modelTex) {
     auto it = g_matcache.find(mat);
@@ -483,8 +488,11 @@ extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
             std::fprintf(stderr, "[capture] SKIP mis-parsed shape: model=%p mat=%p idx=%zu verts=%zu "
                          "mtxGroups=%u — NPC vertex-format mis-parse (see fail-fast note)\n",
                          (void*)model, (void*)mat, idx.size(), verts.size(), mtxGroupNum); }
+        ++g_present_skipped;
         return true;
     }
+    g_present_shapes += 1;
+    g_present_idx    += (long)idx.size();
 
     int projType; float proj[6]; float vp[6];
     sb_gx_get_projection(&projType, proj, vp);
@@ -855,12 +863,21 @@ extern "C" int sb_boot_capture_begin_scene() {
     g_want_capture = false;
     g_locked = false;
     g_consumed = true;   // discard anything captured earlier this interval; next draw clears
+    g_present_shapes = g_present_idx = g_present_skipped = 0;
     return 1;
 }
 
 // Called by drive_scene after its draws — relock so the rest of the interval's draws are skipped.
 extern "C" void sb_boot_capture_end_scene() {
     g_locked = true;
+    if (const char* e = std::getenv("SB_CAP_COUNT"); e && e[0] && e[0] != '0') {
+        static long n = 0; ++n;
+        std::fprintf(stderr, "[capcount] present-walk #%ld: shapes=%ld idx_sum=%ld (~%ld tris) "
+                     "g_verts=%zu skipped=%ld\n",
+                     n, g_present_shapes, g_present_idx, g_present_idx / 3,
+                     g_verts.size(), g_present_skipped);
+        std::fflush(stderr);
+    }
 }
 
 // Present drains the frame's captured scene: the vertex list + per-material batches. Returns the

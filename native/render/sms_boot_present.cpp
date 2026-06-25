@@ -447,6 +447,8 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
                 "imm_tris=%d imm_batches=%d (textured=%d) -> %s\n",
                 g_frame, c[0], c[1], c[2], c[3], nscene, nsbatch, nimm / 3, nibatch,
                 n_tex_batches, path);
+    std::fflush(stdout);   // survive a SIGKILL'd headless run — the per-present batch count is
+                           // our parity progress metric; block-buffered stdout would otherwise drop it
     ++g_dumped;
 
     // VALUE-TRACK parity dump (SB_PARITY_DUMP=path): one JSON line per dumped frame with the
