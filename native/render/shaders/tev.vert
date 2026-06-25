@@ -13,11 +13,13 @@ layout(location = 6) in vec4 inUV67;
 layout(location = 0) out vec4 vColor;
 layout(location = 1) out vec2 vUV[8];
 layout(location = 9) out vec4 vColor1;
+layout(location = 10) out float vEyeZ;   // clip.w == eye-space distance (-ez); for GX fog (perspective-correct)
 
 void main() {
     gl_Position = inPos;
     vColor  = inColor0;
     vColor1 = inColor1;
+    vEyeZ   = inPos.w;
     vUV[0] = inUV01.xy; vUV[1] = inUV01.zw;
     vUV[2] = inUV23.xy; vUV[3] = inUV23.zw;
     vUV[4] = inUV45.xy; vUV[5] = inUV45.zw;

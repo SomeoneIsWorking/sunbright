@@ -245,6 +245,30 @@ const char* alpha_cmp(int comp, int ref, char* b, size_t n) {
 
 // Emit the per-material alpha test as a discard (GX PE block). The two compares
 // are combined by the alpha op (AND/OR/XOR/XNOR); a failing pixel is discarded.
+// GX fog (J3DFog → GXSetFog), applied to the final combiner colour. The GX pixel engine
+// reconstructs eye-space z from the window depth using the projection near/far, then blends
+// the pixel toward the fog colour over a curve. We have the TRUE eye-space distance directly
+// (vEyeZ == clip.w == -ez, perspective-correctly interpolated), so the near/far cancel and the
+// linear ramp is exactly clamp((ze - startz)/(endz - startz)). The curve is selected by the low
+// 3 bits of GXFogType (2=LIN, 4=EXP, 5=EXP2, 6=REVEXP, 7=REVEXP2), faithful to Dolphin's
+// PixelShaderGen WriteFog. Fog affects RGB only. `o` (vec4) must already hold the final colour.
+void write_fog(Buf& o, const NgxPEState& pe) {
+    if (!pe.fog_type) return;
+    const float start = pe.fog_startz, end = pe.fog_endz;
+    const float cr = pe.fog_color[0] / 255.0f, cg = pe.fog_color[1] / 255.0f, cb = pe.fog_color[2] / 255.0f;
+    o.w("  {\n");
+    o.w("    float _fr = clamp((vEyeZ - %.9g) / (%.9g), 0.0, 1.0);\n", start, (end - start));
+    switch (pe.fog_type & 7) {
+        case 4:  o.w("    float _ff = 1.0 - exp2(-8.0 * _fr);\n"); break;            // EXP
+        case 5:  o.w("    float _ff = 1.0 - exp2(-8.0 * _fr * _fr);\n"); break;      // EXP2
+        case 6:  o.w("    float _ff = exp2(-8.0 * (1.0 - _fr));\n"); break;          // REVEXP
+        case 7:  o.w("    float _fv = 1.0 - _fr; float _ff = exp2(-8.0 * _fv * _fv);\n"); break; // REVEXP2
+        default: o.w("    float _ff = _fr;\n"); break;                              // LIN (type 2)
+    }
+    o.w("    o.rgb = mix(o.rgb, vec3(%.9g, %.9g, %.9g), _ff);\n", cr, cg, cb);
+    o.w("  }\n");
+}
+
 void write_alpha_test(Buf& o, const NgxPEState& pe) {
     if (!pe.alpha_test) return;
     char b0[64], b1[64];
@@ -316,6 +340,7 @@ std::string sb_tev_gen_fragment(const NgxTevState& st) {
     o.w("layout(location=0) in vec4 vColor;\n");
     o.w("layout(location=1) in vec2 vUV[8];\n");   // per-texcoord UV (GX texgen on CPU)
     o.w("layout(location=9) in vec4 vColor1;\n");  // lit raster COLOR1A1 (2nd GX colour channel)
+    if (st.pe.fog_type) o.w("layout(location=10) in float vEyeZ;\n");  // eye-space distance for GX fog
     o.w("layout(location=0) out vec4 o;\n");
     o.w("layout(set=0, binding=0) uniform sampler2D tex[8];\n");   // one per GX texmap
     o.w("layout(push_constant) uniform Mat { ivec4 kcolor[4]; ivec4 tevreg[4]; } m;\n");
@@ -336,6 +361,7 @@ std::string sb_tev_gen_fragment(const NgxTevState& st) {
     o.w("\n");
     write_alpha_test(o, st.pe);   // N7: GX PE-block alpha test (discard)
     o.w("  o = clamp(vec4(prev) / 255.0, 0.0, 1.0);\n");
+    write_fog(o, st.pe);          // GX fog: blend final colour toward fog colour over the eye-z ramp
     o.w("}\n");
     return o.s;
 }

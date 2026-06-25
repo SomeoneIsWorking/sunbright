@@ -118,6 +118,9 @@ struct MatEntry {
     };
     int     ntexgen = 0;
     TexGenG tg[8];
+    // GX fog (captured into st.pe for the shader); mirrored here only for the SB_FOG_DBG eye-z probe.
+    uint8_t fog_type = 0;
+    float   fog_startz = 0.f, fog_endz = 0.f;
 };
 std::unordered_map<J3DMaterial*, MatEntry> g_matcache;
 
@@ -174,6 +177,7 @@ const MatEntry* get_mat_entry(J3DMaterial* mat, J3DTexture* modelTex) {
             e.push.kcolor[c][k] = st.kcolor[c][k];
             e.push.tevreg[c][k] = st.tev_color[c][k];
         }
+        e.fog_type = st.pe.fog_type; e.fog_startz = st.pe.fog_startz; e.fog_endz = st.pe.fog_endz;
         e.z_test = st.pe.z_test; e.z_func = st.pe.z_func; e.z_write = st.pe.z_write;
         e.blend_mode = st.pe.blend_mode; e.src_factor = st.pe.src_factor; e.dst_factor = st.pe.dst_factor;
         // Bisection: SB_TEV_NOBLEND forces every batch opaque (no blend) to test whether
@@ -656,6 +660,21 @@ extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
         g_verts.push_back(make_v(verts[idx[k+2]]));
     }
     const uint32_t vcount = (uint32_t)g_verts.size() - vstart;
+    // SB_FOG_DBG eye-z probe: for a fogged material, report this shape's eye-distance (clip.w) range
+    // vs its fog ramp — proves whether the geometry actually reaches the fog band (fog_factor>0) or
+    // sits entirely below fog_startz (then zero fog is the FAITHFUL result, matching GX).
+    if (me->fog_type && std::getenv("SB_FOG_DBG")) {
+        float wmn = 1e30f, wmx = -1e30f;
+        for (uint32_t i = vstart; i < (uint32_t)g_verts.size(); ++i) {
+            float w = g_verts[i].w; if (w < wmn) wmn = w; if (w > wmx) wmx = w;
+        }
+        static int s_fz = 0;
+        if (s_fz < 24) { ++s_fz;
+            std::fprintf(stderr, "[fogz] type=%u ramp=[%.1f,%.1f] shape eyeZ=[%.1f,%.1f] vc=%u -> %s\n",
+                         me->fog_type, me->fog_startz, me->fog_endz, wmn, wmx, vcount,
+                         (wmx >= me->fog_startz) ? "REACHES FOG" : "below ramp (no fog, faithful)");
+        }
+    }
     // SB_SKIN_DBG=1: for SKINNED shapes (any mtx group with >1 used matrix), dump the count of
     // DISTINCT draw matrices the vertices selected + the eye-space AABB. A skinned shape should
     // span many matrices and a body-sized AABB; the old flat drawTbl[0] would show 1 matrix + a

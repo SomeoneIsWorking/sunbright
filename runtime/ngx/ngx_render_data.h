@@ -104,6 +104,17 @@ struct NgxPEState {
     // (PASSCLR) so no shader-generator change is needed.
     uint8_t  color_mask_off;  // 1 = do NOT write RGB (GXSetColorUpdate(FALSE))
     uint8_t  alpha_mask_off;  // 1 = do NOT write A   (GXSetAlphaUpdate(FALSE))
+    // ── GX fog (J3DFog block → GXSetFog) ──────────────────────────────────────────────
+    // Captured per-material from pe->getFog(). fog_type 0 (GX_FOG_NONE) ⇒ no fog emitted.
+    // The fragment reconstructs eye-space z from clip.w (vEyeZ, perspective-correct) and blends
+    // the combiner colour toward fog_color over the ramp. For PERSP_LIN the factor is
+    // clamp((ze - startz)/(endz - startz), 0, 1); the projection near/far CANCEL out of the
+    // eye-space linear factor (GXSetFog's A/B reconstruct ze from window-z using the same near/far,
+    // so feeding the true eye-z is exact — only start/end/colour/type are needed). GX applies fog
+    // to colour only, never alpha.
+    uint8_t  fog_type;        // GXFogType (J3DFog mType): 0=NONE 2=PERSP_LIN 4/5/6/7 exp variants
+    uint8_t  fog_color[3];    // RGB 0..255
+    float    fog_startz, fog_endz;
 };
 
 // ── Indirect texturing (mIndBlock + mIndTevStage) ───────────────────────────────

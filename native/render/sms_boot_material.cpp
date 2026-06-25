@@ -120,6 +120,22 @@ bool sb_build_tev_state(J3DMaterial* mat, NgxTevState& st) {
             st.pe.dst_factor = bl->mDstFactor;
             st.pe.logic_op   = bl->mLogicOp;
         }
+        // GX fog (J3DFog → GXSetFog). Capture the per-material fog so the fragment can blend the
+        // combiner output toward the fog colour over the eye-space-z ramp. A fog block with type
+        // GX_FOG_NONE (0), or a degenerate ramp (startz==endz, which GXSetFog maps to a no-op
+        // A=0/B=0.5/C=0 → zero fog factor), means no fog — leave fog_type 0.
+        // SB_NO_FOG: A/B control — skip fog capture entirely to isolate fog's visual contribution.
+        static const bool no_fog = [](){ const char* v = std::getenv("SB_NO_FOG"); return v && v[0] && v[0] != '0'; }();
+        if (J3DFog* fog = no_fog ? nullptr : pe->getFog()) {
+            if (fog->mType != 0 /*GX_FOG_NONE*/ && fog->mEndZ != fog->mStartZ) {
+                st.pe.fog_type     = fog->mType;
+                st.pe.fog_startz   = fog->mStartZ;
+                st.pe.fog_endz     = fog->mEndZ;
+                st.pe.fog_color[0] = fog->mColor.r;
+                st.pe.fog_color[1] = fog->mColor.g;
+                st.pe.fog_color[2] = fog->mColor.b;
+            }
+        }
         // SB_FOG_DBG: one-shot dump of each material's J3D fog block + blend, to verify whether the
         // additive sky/ray materials carry an enabled GX fog (mType != GX_FOG_NONE). GX applies fog
         // AFTER the TEV combiner; our native renderer implements no fog, so a far additive layer the
@@ -141,10 +157,15 @@ bool sb_build_tev_state(J3DMaterial* mat, NgxTevState& st) {
                 uint32_t aenv = st.num_stages ? st.stage[0].alpha_env : 0;
                 int tmap = st.num_stages ? st.stage[0].texmap : -1;
                 int tchan = st.num_stages ? st.stage[0].color_chan : -1;
-                std::fprintf(stderr, "[fogdbg] blend=%u/%u/%u fogType=%u nstg=%u chan0Ctrl=0x%x matC0=%d,%d,%d,%d nchan=%d "
+                std::fprintf(stderr, "[fogdbg] blend=%u/%u/%u fogType=%u start=%.1f end=%.1f near=%.1f far=%.1f col=%u,%u,%u "
+                             "nstg=%u chan0Ctrl=0x%x matC0=%d,%d,%d,%d nchan=%d "
                              "s0.tmap=%d s0.chan=%d s0.cenv=0x%06x s0.aenv=0x%06x\n",
                              st.pe.blend_mode, st.pe.src_factor, st.pe.dst_factor,
-                             fog ? fog->mType : 0xFF, st.num_stages, cc, mc[0],mc[1],mc[2],mc[3], nchan,
+                             fog ? fog->mType : 0xFF,
+                             fog ? fog->mStartZ : 0.f, fog ? fog->mEndZ : 0.f,
+                             fog ? fog->mNearZ : 0.f, fog ? fog->mFarZ : 0.f,
+                             fog ? fog->mColor.r : 0, fog ? fog->mColor.g : 0, fog ? fog->mColor.b : 0,
+                             st.num_stages, cc, mc[0],mc[1],mc[2],mc[3], nchan,
                              tmap, tchan, cenv, aenv);
             }
         }
