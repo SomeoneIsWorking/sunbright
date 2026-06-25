@@ -356,7 +356,7 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
                          mr, mg, mb, ma, amn, amx, var, ntex, texinfo, umn,umx,vmn,vmx, (unsigned long long)b.shaderKey);
             // Dump each small textured batch's tex0 (RGB ppm + alpha as grayscale ppm) so a
             // wash/ray layer's texture content + alpha falloff is visible, not guessed.
-            if (b.tex[0].rgba && b.tex[0].w>0 && b.tex[0].h>0 && b.tex[0].w<=64 && b.tex[0].h<=64) {
+            if (b.tex[0].rgba && b.tex[0].w>0 && b.tex[0].h>0 && b.tex[0].w<=256 && b.tex[0].h<=256) {
                 uint32_t w=b.tex[0].w,h=b.tex[0].h; const uint8_t* px=b.tex[0].rgba;
                 char p0[128],p1[128];
                 std::snprintf(p0,sizeof p0,"scratch/frames/btex_%02d_rgb.ppm",bi);
