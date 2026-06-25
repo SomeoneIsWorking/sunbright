@@ -60,6 +60,19 @@ of raylib's "fork sb_tev_gen_fragment for GL330" — but only the binding decora
   grazing-tiled minification/shoreline moire), lighting/fog/indirect/texgen edge cases. Then make
   `SB_SDLGPU` the DEFAULT and RETIRE nvk + ngx + the raylib path (`gx_raylib.cpp`, FetchContent raylib).
 
+## Parity-focused renderer TDD (user directive, 2026-06-25)
+The old render tests (nvk-based) were REMOVED: they only proved two of our own renderers agreed,
+not that the output is CORRECT. The new suite is **faithfulness/parity TDD, small scope → large
+scope**: render a KNOWN input through `sb::gxsdl` (the SDL3 GPU renderer) and assert the readback
+pixels against **spec-computed ground truth** (GX semantics) — eventually the Dolphin-GX oracle for
+larger scenes. Tests live in `native/render/tests/parity/*_test.cpp` (auto-globbed → ctest
+`parity_<name>`, env `SDL_VIDEODRIVER=offscreen`). Ladder:
+1. ✅ `raster_basic_test` — clear colour exact; one solid triangle's coverage + interpolated colour.
+2. textured quad: a known NxN texture sampled at known UVs → exact texels (filter/wrap faithfulness).
+3. per-TEV-stage combiner: one stage (modulate/add/sub, konst, tev regs) → GX TEV math ground truth.
+4. blend modes + alpha; depth test/func/write; cull-none.
+5. multi-batch small scene; then full-frame vs the Dolphin-GX oracle.
+
 ## Verification (unchanged discipline)
 Per-frame dump (`SB_FRAME_DUMP` → `scratch/frames/boot_NNNN.ppm`) + `scratch/frames/abppm.py`
 (overall + 4x4-region mean-abs-delta) vs the nvk reference (drop SB_SDLGPU). Never eyeball-only.

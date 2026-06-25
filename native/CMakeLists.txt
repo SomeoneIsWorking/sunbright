@@ -246,10 +246,9 @@ if(SB_VULKAN_LIB AND SB_VULKAN_INC AND SB_GLSLANG)
     endif()
 
     add_library(sms-render STATIC
-        "${SMS_NATIVE_REPO_ROOT}/native/render/nvk.cpp"
         "${SMS_NATIVE_REPO_ROOT}/native/render/ngx_native_glue.cpp"
         "${SMS_NATIVE_REPO_ROOT}/native/render/gx_sdlgpu.cpp"
-        # SLICE 1 of the renderer-attach: the sms-boot VI present hook (nvk render + dump).
+        # The sms-boot VI present hook (SDL3 GPU render + frame dump).
         "${SMS_NATIVE_REPO_ROOT}/native/render/sms_boot_present.cpp"
         # Reused SHIPPING TEV combiner generator + runtime GLSL->SPIR-V compiler (NOT
         # forked) — the same code the ngx renderer uses, Dolphin-free here.
@@ -285,45 +284,23 @@ if(SB_VULKAN_LIB AND SB_VULKAN_INC AND SB_GLSLANG)
         "${SMS_NATIVE_REPO_ROOT}/runtime/render/glsl_compile.cpp"
         PROPERTIES COMPILE_OPTIONS "-w")
 
-    # Render tests (e.g. tests/render/*_test.cpp) link sms-render. Headless; a frame
-    # render+readback is verified by pixel checks (lavapipe works with no GPU).
-    # j3dload_test is handled separately below (it links the full game-logic loader,
-    # not sms-render, and must build even without Vulkan).
-    file(GLOB SB_RENDER_TESTS CONFIGURE_DEPENDS
-         "${SMS_NATIVE_REPO_ROOT}/native/render/tests/*_test.cpp")
-    list(FILTER SB_RENDER_TESTS EXCLUDE REGEX "/j3dload_test\\.cpp$")
-    list(FILTER SB_RENDER_TESTS EXCLUDE REGEX "/j3dmesh_test\\.cpp$")
-    foreach(rt ${SB_RENDER_TESTS})
-        get_filename_component(rt_name "${rt}" NAME_WE)
-        add_executable(sms-${rt_name} "${rt}")
-        set_target_properties(sms-${rt_name} PROPERTIES
+    # ── Parity-focused renderer TDD (native/render/tests/parity/*_test.cpp) ────────────────
+    # Faithfulness tests: render a KNOWN input through the SDL3 GPU renderer (sb::gxsdl) and
+    # assert the readback pixels against SPEC-computed ground truth (GX semantics), built from
+    # small scope (clear, single triangle, single textured quad, one TEV stage, blend, depth)
+    # up to larger scenes. The old render tests (nvk-based, self-consistency only) were removed:
+    # they didn't prove correctness. See docs/gx_sdlgpu_switch.md ("Parity-focused TDD").
+    file(GLOB SB_PARITY_TESTS CONFIGURE_DEPENDS
+         "${SMS_NATIVE_REPO_ROOT}/native/render/tests/parity/*_test.cpp")
+    foreach(pt ${SB_PARITY_TESTS})
+        get_filename_component(pt_name "${pt}" NAME_WE)
+        add_executable(sms-${pt_name} "${pt}")
+        set_target_properties(sms-${pt_name} PROPERTIES
             CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
-        target_link_libraries(sms-${rt_name} PRIVATE sms-render sms-platform)
-        add_test(NAME render_${rt_name} COMMAND sms-${rt_name})
+        target_link_libraries(sms-${pt_name} PRIVATE sms-render sms-platform)
+        add_test(NAME parity_${pt_name} COMMAND sms-${pt_name})
+        set_tests_properties(parity_${pt_name} PROPERTIES ENVIRONMENT "SDL_VIDEODRIVER=offscreen")
     endforeach()
-
-    # j3dmesh_test — render a REAL BMD shape (loaded via the game's J3D loader) through
-    # nvk. Needs the full loader (sms-native/gd/assets) AND the renderer (sms-render).
-    add_executable(sms-j3dmesh_test
-        "${SMS_NATIVE_REPO_ROOT}/native/render/tests/j3dmesh_test.cpp")
-    set_target_properties(sms-j3dmesh_test PROPERTIES
-        CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
-    target_include_directories(sms-j3dmesh_test PRIVATE
-        "${SMS_NATIVE_REPO_ROOT}/native/shim"
-        "${SMS_NATIVE_REPO_ROOT}/reference/sms/include"
-        "${SMS_NATIVE_REPO_ROOT}/native/assets"
-        "${SMS_NATIVE_REPO_ROOT}/native/render"
-        "${SMS_NATIVE_REPO_ROOT}/runtime/ngx"
-        "${SMS_NATIVE_REPO_ROOT}/runtime/render")
-    target_compile_options(sms-j3dmesh_test PRIVATE
-        -include "${SMS_NATIVE_REPO_ROOT}/native/shim/gekko_intrinsics.h"
-        -w -Wno-narrowing -fcommon)
-    target_link_libraries(sms-j3dmesh_test PRIVATE
-        sms-render
-        "$<LINK_GROUP:RESCAN,sms-native,sms-gd,sms-assets,sms-platform>"
-        Threads::Threads)
-    add_test(NAME native_j3dmesh_test COMMAND sms-j3dmesh_test
-             WORKING_DIRECTORY "${SMS_NATIVE_REPO_ROOT}")
 else()
     message(STATUS "sms-render: Vulkan/glslang not found; skipping native renderer")
 endif()
