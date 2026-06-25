@@ -1,8 +1,8 @@
-// gx_sdlgpu.h — SDL3 GPU backend for the GX seam (the GX→SDL3-GPU switch, supersedes raylib).
+// gx_sdlgpu.h — SDL3 GPU backend for the GX seam (the GX→SDL3-GPU switch).
 //
-// Per the user directive (2026-06-25, "raylib was a bad call, SDL3 GPU is better"), the GameCube GX
-// API's PC-native renderer moves onto the SDL3 GPU API (SDL_gpu.h), replacing the bespoke nvk Vulkan
-// rasterizer. SDL3 GPU's Vulkan backend consumes SPIR-V, so the existing TEV shader pipeline
+// Per the user directive (2026-06-25), the GameCube GX API's PC-native renderer runs on the SDL3 GPU
+// API (SDL_gpu.h), replacing the bespoke nvk Vulkan rasterizer. It is now the sole renderer.
+// SDL3 GPU's Vulkan backend consumes SPIR-V, so the existing TEV shader pipeline
 // (sb_tev_gen_fragment + glslang + tev_vert_spv) plugs in, and its NDC matches Vulkan so nvk's
 // clip-space NvkTevVertex feeds as-is. See docs/gx_sdlgpu_switch.md.
 //

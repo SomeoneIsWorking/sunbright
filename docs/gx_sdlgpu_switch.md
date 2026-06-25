@@ -1,19 +1,17 @@
 # GX → SDL3 GPU switch — design & phasing
 
-**Directive (user, 2026-06-25, supersedes the raylib switch):** "raylib was a bad call, SDL3 GPU is
-better." The GX seam's PC-native renderer moves onto the **SDL3 GPU API** (`SDL_gpu.h`), replacing
-both the bespoke `nvk` Vulkan rasterizer AND the abandoned raylib/rlgl attempt.
+**Directive (user, 2026-06-25):** "SDL3 GPU is better." The GX seam's PC-native renderer runs on the
+**SDL3 GPU API** (`SDL_gpu.h`), replacing the bespoke `nvk` Vulkan rasterizer. It is now the sole
+renderer.
 
-## Why SDL3 GPU over raylib (the reasons the pivot is right)
+## Why SDL3 GPU (the reasons the pivot is right)
 - **SPIR-V shaders.** SDL3 GPU's Vulkan backend consumes SPIR-V, so the EXISTING TEV pipeline
   (`sb_tev_gen_fragment` GLSL 450 + `runtime/render/glsl_compile.cpp` glslang→SPIR-V + the
-  precompiled `tev_vert_spv.h`) plugs in almost as-is. raylib/rlgl forced a GLSL-330 fork and a
-  modulate-only default (its R2/P4). With SDL3 GPU the real TEV combiner comes essentially for free.
+  precompiled `tev_vert_spv.h`) plugs in almost as-is. The real TEV combiner comes essentially free.
 - **Vulkan-style NDC.** SDL3 GPU clip space matches Vulkan (Y-down, depth [0,1]) — exactly what
   `NvkTevVertex` already carries. No Y-flip, no `2z-w` depth remap, no immediate-mode w-loss.
-- **Explicit pipeline state objects** map 1:1 onto GX render state (blend / depth / cull). No fighting
-  rlgl's immediate-mode batch system (the cull-default + flush-unbinds-VAO friction P3 hit).
-- **Truly headless.** `SDL_VIDEODRIVER=offscreen` → no DISPLAY needed at all (raylib needed `:0`).
+- **Explicit pipeline state objects** map 1:1 onto GX render state (blend / depth / cull).
+- **Truly headless.** `SDL_VIDEODRIVER=offscreen` → no DISPLAY needed at all.
 
 ## Foundation — PROVEN (P0, 2026-06-25): `scratch/sdlgpu_smoke/`
 Headless SDL3 GPU works: `SDL_Init(SDL_INIT_VIDEO)` (REQUIRED even windowless) + `SDL_CreateGPUDevice
@@ -40,8 +38,8 @@ SDL3 GPU mandates fixed SPIR-V descriptor sets per the spec:
 So the TEV **fragment** GLSL must declare `layout(set=2,binding=0..7) uniform sampler2D` and replace
 `layout(push_constant)` with `layout(set=3,binding=0) uniform`. Push the 128-byte block via
 `SDL_PushGPUFragmentUniformData(cmd, 0, &push, 128)`. `tev.vert` needs no change (no samplers/UBO;
-plain location in/out + gl_Position) — reuse `tev_vert_spv.h` directly. This is the SDL3-GPU analog
-of raylib's "fork sb_tev_gen_fragment for GL330" — but only the binding decorations differ.
+plain location in/out + gl_Position) — reuse `tev_vert_spv.h` directly. Only the binding decorations
+differ from the original generated GLSL.
 
 ## Phasing (each phase = a frame-dump-verifiable milestone, A/B vs nvk; SB_SDLGPU env selects it)
 - **P0 ✅** headless device + offscreen color target + clear + readback (`scratch/sdlgpu_smoke`).
@@ -55,10 +53,10 @@ of raylib's "fork sb_tev_gen_fragment for GL330" — but only the binding decora
 - **P3 ✅ (commit e00e1e9)** real per-material TEV: reuse each batch's `fragGlsl`, remap bindings
   (samplers set=2 individual, push_constant→set=3 uniform), glslang→SPIR-V, per-batch pipeline
   (blend/depth from GX state, cull NONE), NvkTevPush fragment uniform, 8 samplers. Verified vs nvk:
-  scene-only **3.14** (beats raylib's 5.07), FULL frame incl. 2D white fade **0.27** — pixel-identical.
+  scene-only **3.14**, FULL frame incl. 2D white fade **0.27** — pixel-identical.
 - **P4 (NEXT)** remaining fidelity: generated mip chains (nvk's makeTexture trilinear+aniso — the
   grazing-tiled minification/shoreline moire), lighting/fog/indirect/texgen edge cases. Then make
-  `SB_SDLGPU` the DEFAULT and RETIRE nvk + ngx + the raylib path (`gx_raylib.cpp`, FetchContent raylib).
+  `SB_SDLGPU` the DEFAULT and RETIRE nvk + ngx.
 
 ## Parity-focused renderer TDD (user directive, 2026-06-25)
 The old render tests (nvk-based) were REMOVED: they only proved two of our own renderers agreed,
@@ -80,20 +78,18 @@ larger scenes. Tests live in `native/render/tests/parity/*_test.cpp` (auto-globb
 Per-frame dump (`SB_FRAME_DUMP` → `scratch/frames/boot_NNNN.ppm`) + `scratch/frames/abppm.py`
 (overall + 4x4-region mean-abs-delta) vs the nvk reference (drop SB_SDLGPU). Never eyeball-only.
 
-## What the raylib P3 attempt proved (knowledge that transfers)
-The geometry contract is: feed 4-component clip-space and **cull NONE** (nvk uses `VK_CULL_MODE_NONE`).
-raylib's "starburst + black disc" was NOT a clip-approximation (the handoff's R1 theory was wrong) —
-it was rlgl enabling `GL_CULL_FACE` by default while the Y-flip reversed winding, culling the sky
-sphere's inward faces. With cull disabled + true 4-component clip-space, raylib P3 matched nvk at
-scene-only mean-abs-delta 5.07. SDL3 GPU avoids the whole class: Vulkan NDC + explicit cull-none.
+## Geometry contract (the rule that makes the scene match)
+Feed **4-component clip-space** and use **cull NONE** (nvk used `VK_CULL_MODE_NONE`; SDL3 GPU sets
+`SDL_GPU_CULLMODE_NONE`). The sky sphere is drawn from its INWARD faces, so any back-face culling
+combined with the Y-down clip (which reverses winding) drops it — explicit cull-none avoids the whole
+class. SDL3 GPU's Vulkan NDC matches `NvkTevVertex` directly, so there's no clip-space remap.
 
 ## Status
 - **P0–P3 ✅ DONE.** SB_SDLGPU renders the plaza at near-perfect nvk parity (scene 3.14 / full 0.27),
   headless Vulkan, no DISPLAY (`SDL_VIDEODRIVER=offscreen`). The TEV combiner + per-batch blend/depth
-  work; the 2D white fade (raylib's never-solved R2) renders correctly.
+  work; the 2D white fade renders correctly.
 - **P4 is NEXT:** mip-chain generation (nvk `makeTexture` parity — the only known fidelity gap),
-  then flip SB_SDLGPU on by default and retire nvk/ngx/raylib.
-- raylib `gx_raylib.cpp` is FROZEN/superseded — retire in P4.
+  then flip SB_SDLGPU on by default and retire nvk/ngx.
 
 ### Repro (headless, no DISPLAY)
 ```

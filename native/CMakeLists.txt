@@ -237,7 +237,7 @@ if(SB_VULKAN_LIB AND SB_VULKAN_INC AND SB_GLSLANG)
 
     # ── SDL3 GPU (GX→SDL3-GPU switch, docs/gx_sdlgpu_switch.md) ─────────────────────────────
     # System SDL3 (sdl3-devel / pkg-config sdl3). gx_sdlgpu.cpp is the SDL3 GPU backend — the GX
-    # seam's renderer. (Replaced the abandoned raylib/rlgl attempt: "raylib was a bad call".)
+    # seam's renderer, and now the sole renderer (the bespoke nvk Vulkan rasterizer was retired).
     find_package(SDL3 QUIET)
     if(NOT TARGET SDL3::SDL3)
         find_package(PkgConfig REQUIRED)

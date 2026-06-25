@@ -120,7 +120,7 @@ const char* imm_tev_fragment(const NgxTevState& st, uint64_t& keyOut) {
 }
 
 
-// Write a PPM from a tightly-packed RGBA buffer (top-left origin) — the raylib backend's readback.
+// Write a PPM from a tightly-packed RGBA buffer (top-left origin) — the SDL3 GPU backend's readback.
 void write_ppm_buf(const char* path, const uint8_t* rgba, uint32_t w, uint32_t h) {
     FILE* f = std::fopen(path, "wb");
     if (!f) return;
