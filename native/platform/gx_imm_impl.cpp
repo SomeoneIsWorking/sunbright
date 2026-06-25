@@ -54,6 +54,7 @@ bool g_consumed = true;        // start true so the first GXBegin clears the (em
 // --- in-progress primitive (between GXBegin and GXEnd) ---
 bool  g_in_begin = false;
 int   g_prim = 0;
+int   g_prim_nverts = 0;       // GXBegin's declared vertex count (0 = unknown → rely on GXEnd)
 std::vector<SbImmVtx> g_prim_verts;
 bool  g_prim_has_uv = false;   // a GXTexCoord* fired this prim
 int   g_tc_phase = 0;          // 1-component texcoord pairing: 0 = expecting S, 1 = T
@@ -133,10 +134,30 @@ void push_batch(unsigned start, unsigned count, const SbImmBatch& tex) {
 extern "C" {
 
 // ---- capture hooks (called from GXVert.h immediate writers) ----------------
-void sb_gx_imm_begin(int prim, int vtxfmt) {
+// Finalize the in-progress primitive: triangulate, classify textured, push the batch.
+// Called by GXEnd, OR auto-fired once the primitive has received its full GXBegin vertex
+// count. On real GC hardware a primitive auto-terminates after `nverts` (GXEnd is a no-op),
+// so some draws (JUTResFont glyph quads) legitimately never call GXEnd — without the
+// vertex-count auto-flush their batch would be silently dropped (the file-select banner /
+// "Select data" + slot-label glyphs were invisible for exactly this reason).
+static void finalize_prim(void) {
+    if (!g_in_begin) return;
+    g_in_begin = false;
+    const unsigned start = (unsigned)g_frame_tris.size();
+    sb::render::imm_triangulate(g_prim, g_prim_verts.data(),
+                                (int)g_prim_verts.size(), g_frame_tris);
+    const unsigned count = (unsigned)g_frame_tris.size() - start;
+    // Textured only if the prim actually emitted texcoords AND a texture was bound: a
+    // stale boundTex from an earlier window can't texture-ize the (texcoord-less) gradient.
+    SbImmBatch tex = (g_prim_has_uv && g_texSnap.textured) ? g_texSnap : SbImmBatch{};
+    push_batch(start, count, tex);
+}
+
+void sb_gx_imm_begin(int prim, int vtxfmt, int nverts) {
     if (g_consumed) { g_frame_tris.clear(); g_batches.clear(); g_consumed = false; }
     g_in_begin = true;
     g_prim = prim;
+    g_prim_nverts = nverts;
     g_prim_verts.clear();
     g_prim_has_uv = false;
     g_tc_phase = 0;
@@ -157,6 +178,11 @@ void sb_gx_imm_pos(float x, float y, float z) {
                      g_prim, x, y, z, p.x, p.y, p.z, g_texSnap.textured,
                      g_texSnap.fmt, g_texSnap.w, g_texSnap.h, g_projType);
     }
+    // GC-faithful auto-terminate: a primitive completes once it has received the vertex
+    // count declared at GXBegin. Draws that omit the (HW no-op) GXEnd — e.g. JUTResFont
+    // glyph quads — are flushed here instead of being lost.
+    if (g_prim_nverts > 0 && (int)g_prim_verts.size() >= g_prim_nverts)
+        finalize_prim();
 }
 
 // GXColor* sets the colour for the vertex JUST submitted (GX order is pos then colour) and
@@ -200,16 +226,8 @@ void sb_gx_imm_texcoord_i1(unsigned bits) {
 }
 
 void sb_gx_imm_end(void) {
-    if (!g_in_begin) return;
-    g_in_begin = false;
-    const unsigned start = (unsigned)g_frame_tris.size();
-    sb::render::imm_triangulate(g_prim, g_prim_verts.data(),
-                                (int)g_prim_verts.size(), g_frame_tris);
-    const unsigned count = (unsigned)g_frame_tris.size() - start;
-    // Textured only if the prim actually emitted texcoords AND a texture was bound: a
-    // stale boundTex from an earlier window can't texture-ize the (texcoord-less) gradient.
-    SbImmBatch tex = (g_prim_has_uv && g_texSnap.textured) ? g_texSnap : SbImmBatch{};
-    push_batch(start, count, tex);
+    // No-op if the primitive already auto-finalized at its declared vertex count.
+    finalize_prim();
 }
 
 // ---- present bridge --------------------------------------------------------

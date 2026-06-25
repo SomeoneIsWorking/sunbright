@@ -482,9 +482,11 @@ void GXClearVtxDesc(void) {
 void GXSetVtxDesc(GXAttr attr, GXAttrType type) {
     if ((u32)attr < 26) state().immVtxDesc[attr] = (u8)type;
 }
-extern void sb_gx_imm_begin(int prim, int vtxfmt);   // gx_imm_impl.cpp
-void GXBegin(GXPrimitive type, GXVtxFmt vtxfmt, u16 /*nverts*/) {
-    sb_gx_imm_begin((int)type, (int)vtxfmt);
+extern void sb_gx_imm_begin(int prim, int vtxfmt, int nverts);   // gx_imm_impl.cpp
+void GXBegin(GXPrimitive type, GXVtxFmt vtxfmt, u16 nverts) {
+    // nverts lets the imm seam auto-terminate the primitive (GC HW behaviour) so draws
+    // that skip the no-op GXEnd (JUTResFont glyphs) still flush their batch.
+    sb_gx_imm_begin((int)type, (int)vtxfmt, (int)nverts);
 }
 void GXSetLineWidth(u8 /*width*/, GXTexOffset /*texOffsets*/) { /* HW line raster width */ }
 
