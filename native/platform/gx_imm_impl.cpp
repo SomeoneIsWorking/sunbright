@@ -60,8 +60,18 @@ std::vector<SbImmBatch> g_batches;
 // it. A vector OF unique_ptr (not a deque/vector-of-value) so (a) the default ctor allocates
 // NOTHING at static-init time — a std::deque allocates its map in its ctor and that ran
 // before the game OS/heap was up, faulting; and (b) push_back never invalidates the held
-// pointers (each NgxTevState is its own heap node). Cleared with the frame at consume.
+// pointers (each NgxTevState is its own heap node).
+//
+// POOL, not clear()+new each frame: a global operator-new override routes these into the JKR
+// solid scene heap, whose free() is a NO-OP (solid heaps reclaim only via freeAll). So
+// g_tevstore.clear() + a fresh `new NgxTevState` per GXBegin LEAKED one node per imm draw per
+// frame into the solid heap — it filled over time and, once the NPC population had already
+// saturated the scene heap, EVERY per-frame draw OOM'd → host-overflow flood (859k lines) and
+// the plaza map collapsed. Instead keep the allocated nodes and reuse them: reset g_tevstore_used
+// to 0 each frame and overwrite existing nodes; only `new` when the high-water mark grows. This
+// caps NgxTevState allocations at the per-frame peak (no per-frame leak); pointers stay stable.
 std::vector<std::unique_ptr<NgxTevState>> g_tevstore;
+size_t g_tevstore_used = 0;     // nodes handed out this frame (pool high-water reuse)
 NgxTevState g_tevSnap;          // the TEV captured at the current GXBegin
 bool g_consumed = true;        // start true so the first GXBegin clears the (empty) buffer
 
@@ -277,15 +287,21 @@ static void finalize_prim(void) {
     // Carry the full TEV combiner captured at this prim's GXBegin (store in the per-frame
     // deque so the pointer is stable until present consumes). The present layer generates
     // the real combiner fragment from it (honors J2DPicture's black/white intensity ramp).
-    g_tevstore.push_back(std::unique_ptr<NgxTevState>(new NgxTevState(g_tevSnap)));
-    tex.tev = g_tevstore.back().get();
+    // Reuse a pooled node (no per-frame solid-heap leak — see g_tevstore decl). Grow only at
+    // the high-water mark; otherwise overwrite the existing node in place (pointer stays stable).
+    if (g_tevstore_used >= g_tevstore.size())
+        g_tevstore.push_back(std::unique_ptr<NgxTevState>(new NgxTevState(g_tevSnap)));
+    else
+        *g_tevstore[g_tevstore_used] = g_tevSnap;
+    tex.tev = g_tevstore[g_tevstore_used].get();
+    ++g_tevstore_used;
     push_batch(start, count, tex);
 }
 
 void sb_gx_imm_begin(int prim, int vtxfmt, int nverts) {
     static const bool s_trace = [](){ const char* v = std::getenv("SB_IMM_TRACE"); return v && v[0] && v[0] != '0'; }();
     if (s_trace) g_imm_caller_n = backtrace(g_imm_caller, 6);
-    if (g_consumed) { g_frame_tris.clear(); g_batches.clear(); g_tevstore.clear(); g_consumed = false; }
+    if (g_consumed) { g_frame_tris.clear(); g_batches.clear(); g_tevstore_used = 0; g_consumed = false; }
     // A previous primitive that omitted the (HW no-op) GXEnd — e.g. JUTResFont glyph quads —
     // is flushed HERE, at the next GXBegin, with ALL its vertex attributes intact. (Finalizing
     // at the nverts-th GXPosition was wrong: on GC a vertex carries pos THEN colour THEN
