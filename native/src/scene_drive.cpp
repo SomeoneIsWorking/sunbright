@@ -34,6 +34,7 @@
 #include <M3DUtil/MActor.hpp>                             // MActor::getModel
 #include <Map/Sky.hpp>                                    // TSky (sky anim probe)
 #include <Strategic/ObjModel.hpp>                         // TMActorKeeper
+#include <Enemy/Conductor.hpp>                             // gpConductor (NPC calc pass)
 #include <JSystem/J3D/J3DGraphAnimator/J3DModel.hpp>      // J3DModel / J3DModelData
 #include <JSystem/J3D/J3DGraphBase/J3DPacket.hpp>         // J3DMatPacket / J3DShapePacket
 #include <dolphin/mtx.h>
@@ -632,6 +633,18 @@ extern "C" bool sb_boot_drive_scene() {
 	// capture. (SB_NO_DRIVE_SCENE returns earlier, never locking, so its real-path-only mode is intact.)
 	if (sb_boot_capture_begin_scene()) {
 		drive_sky();
+
+		// NPC CALC PASS (opt-in, WIP — SB_NPC_CALC=1). The conductor's live actors (NPCs) set their
+		// base TR matrix from mPosition only in TLiveActor::perform's calc branch (bit 0x2 →
+		// calcRootMatrix). On real HW that runs every frame via mPerformListCalcAnim BEFORE the draw
+		// list; sms-boot only drives the draw (scene->perform(0x8) = flags 0x20C, no 0x2), so the NPCs
+		// are entered+drawn with an unset/identity root matrix → projected to extreme NDC (x[±239008]).
+		// Driving the conductor calc here (0x2) sets the matrices BUT TLiveManager::perform(0x2) also
+		// runs clipActors → NPCs get clipped out (batches 210→66) and some still project extreme. So a
+		// bare calc drive is NOT yet correct — the faithful fix is the full perform-list calc+camera+
+		// clip flow (the "own the perform-list dispatch" task). Left opt-in for that next investigation.
+		if (gpConductor && getenv("SB_NPC_CALC"))
+			gpConductor->perform(0x2, &g_graphics);
 
 		scene->perform(0x8, &g_graphics);
 
