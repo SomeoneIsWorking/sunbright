@@ -13,7 +13,6 @@
 // We only do GPU work while dumping is enabled and under the frame cap, so a normal run isn't
 // slowed by per-frame lavapipe rasterization.
 #include "nvk.h"
-#include "gx_raylib.h"         // raylib/rlgl GX backend (the GX→raylib switch, behind SB_RAYLIB)
 #include "gx_sdlgpu.h"         // SDL3 GPU GX backend (the GX→SDL3-GPU switch, behind SB_SDLGPU)
 #include "gx_imm_xform.h"      // SbImmVtx / SbImmBatch (immediate-mode capture)
 #include "ngx_render_data.h"   // NgxTevState (for the 2D passthrough / modulate shaders)
@@ -484,27 +483,6 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
             write_ppm_buf(spath, sdlpix.data(), kW, kH);
         std::printf("[present-sdlgpu] frame %d clear=(%.2f,%.2f,%.2f,%.2f) scene_batches=%d -> %s\n",
                     df, c[0], c[1], c[2], c[3], nsbatch, spath);
-        std::fflush(stdout);
-        ++g_dumped;
-        return;
-    }
-
-    // ── GX→raylib switch (SB_RAYLIB): render the frame through raylib/rlgl instead of nvk. ──
-    // P1: context + clear-to-GX-copy-clear + readback (draws stubbed → frame is the clear colour).
-    // P2+ will replay the scene + 2D imm batches as rlgl immediate-mode geometry here. See
-    // docs/gx_raylib_switch.md. Until then this proves the context/readback/dump plumbing end-to-end.
-    if (sb::gxray::enabled() && sb::gxray::init((int)kW, (int)kH)) {
-        sb::gxray::frame_begin(c[0], c[1], c[2], c[3]);
-        // P2: replay the captured scene + 2D imm batches as rlgl immediate-mode triangles.
-        sb::gxray::draw_tev(verts.data(), (int)verts.size(), batches.data(), (int)batches.size());
-        sb::gxray::frame_end();
-        static std::vector<uint8_t> rlpix((size_t)kW * kH * 4);
-        char rpath[160];
-        std::snprintf(rpath, sizeof rpath, "scratch/frames/boot_%04d.ppm", df);
-        if (sb::gxray::readback(rlpix.data(), (int)kW, (int)kH))
-            write_ppm_buf(rpath, rlpix.data(), kW, kH);
-        std::printf("[present-raylib] frame %d clear=(%.2f,%.2f,%.2f,%.2f) scene_batches=%d -> %s\n",
-                    df, c[0], c[1], c[2], c[3], nsbatch, rpath);
         std::fflush(stdout);
         ++g_dumped;
         return;
