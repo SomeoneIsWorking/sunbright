@@ -171,8 +171,8 @@ void drive_sky() {
 // minimal draw setup ourselves per cube: calcRootMatrix (seed base TR from mPosition) + a unit base
 // scale (mScaling/mInitialScaling are 0 — the scale-setting startAnim/makeObjAppeared are empty
 // decomp stubs) → calc (joint matrices) → viewCalc (per-view draw matrices) → show the shape
-// packets (default hidden, unk30=0) → entry into the Chr buffer → draw. Mario (player group) is a
-// separate TODO via this same mechanism.
+// packets (default hidden, unk30=0) → entry into the Chr buffer → draw. The gameplay player Mario
+// (gpMarioOriginal) is entered via this same Chr buffer just below (faithful calcView/entryModels).
 void drive_chr() {
 	JDrama::TDrawBufObj* opa = JDrama::TNameRefGen::search<JDrama::TDrawBufObj>("DrawBuf ChrOpa");
 	JDrama::TDrawBufObj* xlu = JDrama::TNameRefGen::search<JDrama::TDrawBufObj>("DrawBuf ChrXlu");
@@ -269,6 +269,37 @@ void drive_chr() {
 				for (int s = 0; s < ns; ++s) bm->getShapePacket((u16)s)->show();
 			}
 			bm->entry();
+		}
+	}
+
+	// OWN THE GAMEPLAY PLAYER DRAW. In the GAMEPLAY map (not the option/file-select map) the
+	// player Mario (gpMarioOriginal) is spawned and his logic runs (gpMarioPos updates), but his
+	// MODEL is never entered into a draw buffer: the GC sequences TMario::entryModels through the
+	// Chr draw buffers via the master perform list, and sms-boot's data-driven perform-list
+	// dispatch drops the draw bit (the same blackbox that drops the scene/sky/map draw bits, owned
+	// elsewhere in this file). So the protagonist is invisible. We drive the FAITHFUL entry here,
+	// exactly as TMarDirector would: with ChrOpa/ChrXlu set as the active draw buffers (done above),
+	// calcView() builds the per-view draw matrices (body + hands + cap), then entryModels() enters
+	// the body (mModel->perform(0x200)) + hands + cap into the buffers, which b0/b1->draw() below
+	// then render. This is distinct from the file-select "ghost" path above: that fired in the
+	// OPTION map where a separate display-Mario already drew; the gameplay map has no such Mario.
+	// SB_NO_DRIVE_MARIO=1 opts out (A/B bisection).
+	if (gpMarioOriginal && gpMarioOriginal->mModel && !SMS_isOptionMap() &&
+	    !(std::getenv("SB_NO_DRIVE_MARIO") && std::getenv("SB_NO_DRIVE_MARIO")[0] != '0')) {
+		gpMarioOriginal->calcView(&g_graphics);
+		gpMarioOriginal->entryModels(&g_graphics);
+		if (const char* e = getenv("SB_MARIO_DBG"); e && e[0] && e[0] != '0') {
+			static int mn = 0;
+			if (sb_present_frame() > 0 && mn < 6) { ++mn;
+				J3DModel* bm = gpMarioOriginal->mModel->getModel();
+				J3DModelData* md = bm ? bm->getModelData() : nullptr;
+				Mtx& dm = bm->getDrawMtx(0);
+				std::fprintf(stderr, "[mario-dbg] pos=(%.1f,%.1f,%.1f) status=%d model=%p shapes=%d "
+				             "drawMtx.t=(%.1f,%.1f,%.1f)\n",
+				             gpMarioOriginal->mPosition.x, gpMarioOriginal->mPosition.y,
+				             gpMarioOriginal->mPosition.z, (int)gpMarioOriginal->mStatus, (void*)bm,
+				             md ? (int)md->getShapeNum() : -1, dm[0][3], dm[1][3], dm[2][3]);
+			}
 		}
 	}
 
@@ -556,8 +587,8 @@ extern "C" bool sb_boot_drive_scene() {
 	// list fills but never draws (the same dropped-draw-bit class as sky/map). drive_chr drives
 	// the 3 cubes' models directly (calc → viewCalc → entry → draw). ON by default (SB_NO_DRIVE_CHR
 	// opts out). NOTE the old naive マネージャーグループ perform(0x204) re-drew the whole map (b31..b45
-	// building-atlas dup) — drive_chr now enters ONLY the 3 file blocks. Mario (player group) is a
-	// separate TODO via this same path.
+	// building-atlas dup) — drive_chr now enters ONLY the 3 file blocks (file-select) plus, in the
+	// gameplay map, the player Mario (gpMarioOriginal) via the faithful TMario::calcView/entryModels.
 	if (const char* e = getenv("SB_NO_DRIVE_CHR"); !(e && e[0] && e[0] != '0'))
 		drive_chr();
 
