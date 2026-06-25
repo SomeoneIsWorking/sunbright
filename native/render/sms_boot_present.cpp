@@ -349,6 +349,18 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
                          bi, b.vcount, zmn, zmx, zsum/cnt, xmn, xmx, ymn, ymx,
                          b.z_test, b.z_func, b.z_write, b.blend_mode, b.src_factor, b.dst_factor,
                          mr, mg, mb, ma, amn, amx, var, ntex, texinfo, umn,umx,vmn,vmx, (unsigned long long)b.shaderKey);
+            // Dump each small textured batch's tex0 (RGB ppm + alpha as grayscale ppm) so a
+            // wash/ray layer's texture content + alpha falloff is visible, not guessed.
+            if (b.tex[0].rgba && b.tex[0].w>0 && b.tex[0].h>0 && b.tex[0].w<=64 && b.tex[0].h<=64) {
+                uint32_t w=b.tex[0].w,h=b.tex[0].h; const uint8_t* px=b.tex[0].rgba;
+                char p0[128],p1[128];
+                std::snprintf(p0,sizeof p0,"scratch/frames/btex_%02d_rgb.ppm",bi);
+                std::snprintf(p1,sizeof p1,"scratch/frames/btex_%02d_a.ppm",bi);
+                if (FILE* f=fopen(p0,"wb")){ fprintf(f,"P6\n%u %u\n255\n",w,h);
+                    for(uint32_t i=0;i<w*h;++i) fwrite(px+i*4,1,3,f); fclose(f); }
+                if (FILE* f=fopen(p1,"wb")){ fprintf(f,"P6\n%u %u\n255\n",w,h);
+                    for(uint32_t i=0;i<w*h;++i){ uint8_t a=px[i*4+3]; uint8_t t[3]={a,a,a}; fwrite(t,1,3,f);} fclose(f); }
+            }
         }
     }
     g_nvk.renderTevFrame(verts, batches, NvkClear{c[0], c[1], c[2], c[3]});
