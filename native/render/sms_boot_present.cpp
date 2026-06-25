@@ -17,6 +17,7 @@
 #include "ngx_render_data.h"   // NgxTevState (for the 2D passthrough / modulate shaders)
 #include "tev_shader.h"        // sb_tev_gen_fragment
 #include "tex_decode.h"        // sb_tex_decode (J2D textured-pane decode)
+#include "sb_parity_dump.h"    // sb_parity_emit (value-track parity sweep)
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -33,6 +34,10 @@ void sb_vi_set_present_hook(void (*fn)(void*, void*), void* user);
 void sb_gx_get_clear_color(float* rgba);
 int  sb_gx_imm_take(const SbImmVtx** out);
 int  sb_gx_imm_take_batches(const SbImmVtx** verts, const SbImmBatch** batches, int* nbatch);
+// Live GX state for the value-track parity dump (defined in the GX seam / capture TU).
+int  sb_gx_get_lights(float out[8][16]) __attribute__((weak));
+void sb_gx_get_chan_amb(int slot, float rgb[3]) __attribute__((weak));
+void sb_gx_get_chan_matcolor(int slot, float rgba[4]) __attribute__((weak));
 }
 // The frame's captured live J3D scene: vertex list + per-material TEV batches. WEAK — null when
 // the capture TU (sms_boot_j3d_capture.cpp) isn't linked, in which case the present draws only 2D.
@@ -442,6 +447,29 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
                 g_frame, c[0], c[1], c[2], c[3], nscene, nsbatch, nimm / 3, nibatch,
                 n_tex_batches, path);
     ++g_dumped;
+
+    // VALUE-TRACK parity dump (SB_PARITY_DUMP=path): one JSON line per dumped frame with the
+    // scene geometry (per-batch NDC AABB / checksum / bad-vertex count), lighting, and XFB region
+    // grid — consumed by tools/render/parity_sweep.py (check / diff). Pairs 1:1 with the PPM.
+    static std::FILE* s_parity = [](){ const char* p = std::getenv("SB_PARITY_DUMP");
+        return (p && p[0]) ? std::fopen(p, "w") : nullptr; }();
+    if (s_parity) {
+        SbParityLights L{};
+        if (sb_gx_get_lights) {
+            float lraw[8][16]; const int nl = sb_gx_get_lights(lraw);
+            for (int i = 0; i < nl && i < 8; ++i) {
+                if (lraw[i][0] == 0.f) continue;
+                L.col[L.n][0]=lraw[i][1]; L.col[L.n][1]=lraw[i][2]; L.col[L.n][2]=lraw[i][3];
+                L.pos[L.n][0]=lraw[i][4]; L.pos[L.n][1]=lraw[i][5]; L.pos[L.n][2]=lraw[i][6];
+                ++L.n;
+            }
+        }
+        if (sb_gx_get_chan_amb)      sb_gx_get_chan_amb(0, L.amb);
+        if (sb_gx_get_chan_matcolor) sb_gx_get_chan_matcolor(0, L.matc);
+        sb_parity_emit(s_parity, g_frame, c, verts.data(), (int)verts.size(),
+                       batches.data(), (int)batches.size(), L,
+                       g_nvk.rgba().data(), (int)g_nvk.width(), (int)g_nvk.height());
+    }
 }
 
 } // namespace

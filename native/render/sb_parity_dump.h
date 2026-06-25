@@ -1,0 +1,106 @@
+// sb_parity_dump.h — VALUE-TRACK parity dump for the native renderer's per-frame state.
+//
+// Part of the Dolphin-GX vs PC-native parity SWEEP. Two tracks, by design:
+//   • PIXEL track (vs the Dolphin-GX oracle): the FINAL frame is the only trustworthy
+//     reference, because Dolphin's CPU-side intermediate state (xfmem/GP regs) is
+//     async-lagged (project rule). Compared per-region by tools/render/parity_sweep.py
+//     `image` mode over the dumped PPM/PNG frames.
+//   • VALUE track (THIS file): the native engine's own per-frame GEOMETRY + LIGHTING +
+//     XFB-region state, emitted as one JSON line per frame. Verified two ways by
+//     parity_sweep.py: `check` (invariants — NaN / world-coord leak / degenerate AABB /
+//     missing lights / black-or-white XFB) and `diff` (A/B between two runs — regression
+//     detection, e.g. before/after a renderer change at the same frame index). The oracle
+//     for the value track is the SPEC + self-consistency, not Dolphin's lagged state.
+//
+// Schema is intentionally compact (one JSONL object/frame). Pure formatting over the data
+// the present already has; no Vulkan/GX calls of its own (caller passes the readback).
+#pragma once
+#include "nvk.h"
+#include <cstdio>
+#include <cstdint>
+#include <cmath>
+#include <vector>
+
+namespace sb::render {
+
+// Per-light + channel state the caller fills from the GX accessors (sb_gx_get_lights /
+// _chan_amb / _chan_matcolor) — passed in so this header stays GX-free + unit-testable.
+struct SbParityLights {
+    int   n = 0;
+    float pos[8][3] = {};
+    float col[8][3] = {};
+    float amb[3]    = {0,0,0};
+    float matc[4]   = {1,1,1,1};
+};
+
+// Emit one JSON line describing this frame. `verts` are CLIP-space (xyzw); NDC = xyz/w.
+// `fb` is the RGBA8 readback (fbw*fbh*4) — the XFB whose region stats we summarise.
+inline void sb_parity_emit(std::FILE* f, int frame, const float clear[4],
+                           const NvkTevVertex* verts, int nverts,
+                           const Nvk::NvkTevBatch* batches, int nbatch,
+                           const SbParityLights& L,
+                           const uint8_t* fb, int fbw, int fbh) {
+    if (!f) return;
+    std::fprintf(f, "{\"frame\":%d,\"clear\":[%.3f,%.3f,%.3f,%.3f],\"nverts\":%d,\"nbatch\":%d",
+                 frame, clear[0], clear[1], clear[2], clear[3], nverts, nbatch);
+
+    // Lighting.
+    std::fprintf(f, ",\"lights\":{\"n\":%d,\"l\":[", L.n);
+    for (int i = 0; i < L.n && i < 8; ++i)
+        std::fprintf(f, "%s{\"p\":[%.1f,%.1f,%.1f],\"c\":[%.3f,%.3f,%.3f]}", i ? "," : "",
+                     L.pos[i][0], L.pos[i][1], L.pos[i][2], L.col[i][0], L.col[i][1], L.col[i][2]);
+    std::fprintf(f, "]},\"amb\":[%.3f,%.3f,%.3f],\"matc\":[%.3f,%.3f,%.3f,%.3f]",
+                 L.amb[0], L.amb[1], L.amb[2], L.matc[0], L.matc[1], L.matc[2], L.matc[3]);
+
+    // Per-batch geometry. We dump CLIP-space AABB (pre-divide, ALWAYS finite — NDC/post-divide
+    // is meaningless near w=0 where the GPU clips, and the capture now emits unclipped geometry),
+    // an on-screen vertex count (w>0 and |ndc|<=1 on all axes — the visible fraction), a checksum,
+    // and a "bad" count = NaN/inf ONLY (the one unambiguous corruption signal; large clip coords
+    // are normal for distant/near-plane geometry and must NOT be flagged).
+    std::fprintf(f, ",\"batches\":[");
+    for (int bi = 0; bi < nbatch; ++bi) {
+        const Nvk::NvkTevBatch& b = batches[bi];
+        float cxmn=1e30f,cxmx=-1e30f,cymn=1e30f,cymx=-1e30f,czmn=1e30f,czmx=-1e30f,cwmn=1e30f,cwmx=-1e30f;
+        double cks = 0; int bad = 0; uint32_t cnt = 0, onscr = 0;
+        for (uint32_t i = b.vstart; i < b.vstart + b.vcount && (int)i < nverts; ++i) {
+            const NvkTevVertex& v = verts[i];
+            if (!(std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z) && std::isfinite(v.w))) { ++bad; continue; }
+            cks += (double)v.x*1.0 + (double)v.y*1.1 + (double)v.z*1.2 + (double)v.w*1.3;
+            if (v.x<cxmn)cxmn=v.x; if (v.x>cxmx)cxmx=v.x; if (v.y<cymn)cymn=v.y; if (v.y>cymx)cymx=v.y;
+            if (v.z<czmn)czmn=v.z; if (v.z>czmx)czmx=v.z; if (v.w<cwmn)cwmn=v.w; if (v.w>cwmx)cwmx=v.w;
+            if (v.w > 1e-5f) { const float nx=v.x/v.w, ny=v.y/v.w, nz=v.z/v.w;
+                if (nx>=-1.f&&nx<=1.f&&ny>=-1.f&&ny<=1.f&&nz>=0.f&&nz<=1.f) ++onscr; }
+            ++cnt;
+        }
+        if (!cnt) { cxmn=cxmx=cymn=cymx=czmn=czmx=cwmn=cwmx=0.f; }
+        std::fprintf(f, "%s{\"k\":\"%llx\",\"vc\":%u,\"onscr\":%u,\"z\":[%u,%u,%u],\"bm\":[%u,%u,%u],\"ntex\":%d,"
+                     "\"clip\":[%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.3f,%.3f],\"cks\":%.3f,\"bad\":%d}",
+                     bi ? "," : "", (unsigned long long)b.shaderKey, b.vcount, onscr,
+                     b.z_test, b.z_func, b.z_write, b.blend_mode, b.src_factor, b.dst_factor,
+                     [&]{ int n=0; for(int t=0;t<8;++t) if(b.tex[t].rgba)++n; return n; }(),
+                     cxmn,cxmx,cymn,cymx,czmn,czmx,cwmn,cwmx, cks, bad);
+    }
+    std::fprintf(f, "]");
+
+    // XFB region summary: a 4x4 grid of mean RGB + overall brightness (the value-track
+    // proxy for the final image; the PIXEL track does the real per-region image diff).
+    if (fb && fbw > 0 && fbh > 0) {
+        double allsum = 0; std::fprintf(f, ",\"xfb\":{\"grid\":[");
+        for (int gy = 0; gy < 4; ++gy) for (int gx = 0; gx < 4; ++gx) {
+            const int x0 = gx*fbw/4, x1 = (gx+1)*fbw/4, y0 = gy*fbh/4, y1 = (gy+1)*fbh/4;
+            double r=0,g=0,bl=0; uint32_t n=0;
+            for (int y=y0;y<y1;++y) for (int x=x0;x<x1;++x) {
+                const uint8_t* p = fb + ((size_t)y*fbw + x)*4;
+                r+=p[0]; g+=p[1]; bl+=p[2]; ++n;
+            }
+            if (!n) n=1;
+            std::fprintf(f, "%s[%.1f,%.1f,%.1f]", (gx||gy)?",":"", r/n, g/n, bl/n);
+            allsum += (r+g+bl)/(3.0*n);
+        }
+        std::fprintf(f, "],\"bright\":%.2f}", allsum/16.0);
+    }
+    std::fprintf(f, "}\n");
+    std::fflush(f);
+}
+
+} // namespace sb::render
