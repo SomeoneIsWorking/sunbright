@@ -68,8 +68,11 @@ pixels against **spec-computed ground truth** (GX semantics) — eventually the 
 larger scenes. Tests live in `native/render/tests/parity/*_test.cpp` (auto-globbed → ctest
 `parity_<name>`, env `SDL_VIDEODRIVER=offscreen`). Ladder:
 1. ✅ `raster_basic_test` — clear colour exact; one solid triangle's coverage + interpolated colour.
-2. textured quad: a known NxN texture sampled at known UVs → exact texels (filter/wrap faithfulness).
-3. per-TEV-stage combiner: one stage (modulate/add/sub, konst, tev regs) → GX TEV math ground truth.
+2. ✅ `texture_basic_test` — a known 2x2 texture sampled at known UVs → exact texels (filter/wrap).
+3. ✅ `tev_combiner_test` — one TEV stage (REPLACE / MODULATE / KONST-MODULATE / ADD-with-clamp)
+   through the SHIPPING `sb_tev_gen_fragment`, asserted PIXEL-EXACT (tol 0) vs hand-computed GX
+   integer-combiner truth. Proves combiner math + push-constant (kcolor/tevreg) + raster + texture
+   plumbing + clamp. Sensitivity verified: a 1-unit expectation error fails 784/784 px.
 4. blend modes + alpha; depth test/func/write; cull-none.
 5. multi-batch small scene; then full-frame vs the Dolphin-GX oracle.
 
