@@ -55,6 +55,7 @@
 using namespace sb::render;
 
 extern "C" int  sb_present_frame(void);   // sms_boot_present.cpp — settled-frame gating
+extern "C" int  sb_camera_view_settled(void);   // scene_drive.cpp — view matrix stationary
 extern "C" void sb_gx_get_projection(int* type, float proj[6], float vp[6]);
 extern "C" int  sb_gx_get_lights(float out[8][16]);
 extern "C" void sb_gx_get_chan_amb(int slot, float rgb[3]);
@@ -344,7 +345,12 @@ extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
     // texture table was chosen. Gated to a SETTLED frame window (the early frames are the intro
     // camera pan, where everything projects off-screen). Locates Mario's 11 body shapes and shows
     // whether their textures resolve against Mario's own table or a stale (map building-atlas) one.
-    if (std::getenv("SB_MARIO_XF") && !idx.empty() && sb_present_frame() >= 270 && sb_present_frame() <= 276) {
+    // Gate on the camera having SETTLED (robust; the choice-state settle is ~frame 1690+, far past
+    // the old fixed 270-276 window) and cap the per-shape spam so one settled frame's shapes dump
+    // once. This locates Mario's body shape(s) AND any duplicate/ghost entry (the double-enter).
+    static int s_marioxf_n = 0;
+    if (std::getenv("SB_MARIO_XF") && !idx.empty() && sb_camera_view_settled() && s_marioxf_n < 60) {
+        ++s_marioxf_n;
         const NgxVertex& s0 = verts[idx[0]];
         SbImmVtx q = imm_project(SbImmRawVtx{ s0.pos[0],s0.pos[1],s0.pos[2],0,0,0,0 },
                                  projType, proj, posMtx, vp);
