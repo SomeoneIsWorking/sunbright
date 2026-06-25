@@ -129,7 +129,13 @@ void drive_group(const char* groupName, const char* opaName, const char* xluName
 // Sky group → DrawBuf Sky Opa/Xlu. flag 0x20E = bit0x2 (TSky::setBaseTRMtx — positions the dome at
 // the camera; without it viewCalc builds draw=view*0 and the sky collapses to one point) | 0x4
 // (MActor::viewCalc) | 0x8 (TSky GXDrawSphere backdrop) | 0x200 (MActor::entry).
-void drive_sky() { drive_group("空グループ", "DrawBuf Sky Opa", "DrawBuf Sky Xlu", 0x20E); }
+void drive_sky() {
+	// SB_SKY_FLAG=hex overrides the sky-group entry flag for A/B testing (real perform-list flag is
+	// 0x204 per MarDirectorPreEntry.cpp; 0x20E adds 0x2 setBaseTRMtx + 0x8 GXDrawSphere backdrop).
+	u32 f = 0x20E;
+	if (const char* e = std::getenv("SB_SKY_FLAG"); e && e[0]) f = (u32)std::strtoul(e, nullptr, 16);
+	drive_group("空グループ", "DrawBuf Sky Opa", "DrawBuf Sky Xlu", f);
+}
 
 // Map group (the plaza BUILDINGS = TMapModel actors) → DrawBuf MapOpa/MapXlu. The perform-list
 // (MarDirectorPreEntry.cpp) enters マップグループ with 0x204 (= MActor::viewCalc 0x4 | entry 0x200)
