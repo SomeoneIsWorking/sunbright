@@ -87,6 +87,13 @@ larger scenes. Tests live in `native/render/tests/parity/*_test.cpp` (auto-globb
      dst-alpha 0), set it over a region (colour OFF, alpha ON), composite via DST_ALPHA/INV_DST_ALPHA
      → colour ONLY in the masked region, pixel-exact. Sensitive to ignoring the colour write mask or
      dst-alpha. This is the GX pixel-engine path the water-volume / silhouette composites use.
+   - ✅ `fog_test` — GX fog (J3DFog→GXSetFog), commit e712fa1. Strips at known eye distances bracketing
+     the linear ramp (below start→clamp 0, two interior knees, at/above end→clamp 1); each asserted
+     pixel-exact vs the hand-computed mix(base, fogColor, clamp((ze-start)/(end-start))) + a near/far
+     spread sensitivity check. The fragment reconstructs eye-z from clip.w (vEyeZ, perspective-correct);
+     near/far cancel out so start/end/colour suffice. LIVE: the plaza fogType=2 material's ramp is parked
+     at [199999,200000] (geometry at eyeZ 610-737) ⇒ zero fog is the faithful result (A/B vs SB_NO_FOG
+     = 0.00). The port serves any scene with a triggering ramp (Noki haze, Corona, underwater).
 6. **OPEN (capstone): full-frame vs the Dolphin-GX oracle.** The remaining rung. It needs a LIVE
    two-process A/B (the same plaza frame rendered by sms-boot SB_SDLGPU and by a Dolphin-GX reference)
    — there is no committed golden frame (a rendered SMS frame is copyrighted game imagery; never
@@ -163,7 +170,7 @@ class. SDL3 GPU's Vulkan NDC matches `NvkTevVertex` directly, so there's no clip
   plaza headless (Vulkan, no DISPLAY), with TEV combiner + per-batch blend/depth + mip chains; the 2D
   white fade renders correctly. Scene parity reached 0.07 mean-abs-delta vs the old nvk reference
   before nvk was deleted.
-- **Parity TDD:** ladder rungs 1-5 + `tev_advanced_test` + `texture_filter_test` are GREEN (7 ctest
+- **Parity TDD:** ladder rungs 1-5 + `tev_advanced_test` + `texture_filter_test` are GREEN (9 ctest
   `parity_*` targets, all spec-truth, pixel-exact where the GX math is integer). Rung 6 (live
   Dolphin-GX full-frame oracle) is the open capstone — see the ladder above.
 
