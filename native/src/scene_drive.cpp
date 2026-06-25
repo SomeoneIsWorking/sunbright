@@ -46,6 +46,7 @@
 extern "C" GXRenderModeObj GXNtsc480Int;                // gx_fb_impl.cpp (640x480 NTSC mode)
 extern "C" void sb_gx_latch_proj44(const float m[16]);  // gx_impl.cpp — latch the scene perspective
 extern "C" void sb_gx_get_projection(int* type, float proj[6], float vp[6]);  // what the capture uses
+extern "C" void sb_fi_watch_register(J3DDrawBuffer* opa, J3DDrawBuffer* xlu);  // J3DDrawBuffer.cpp (SB_FI_TRACE)
 
 namespace {
 bool dbg() {
@@ -400,6 +401,10 @@ extern "C" bool sb_boot_drive_scene() {
 		return false;
 	}
 
+	// SB_FI_TRACE: register the scene's draw buffers so J3DDrawBuffer::frameInit backtraces any
+	// reset of them (finding what clears the map mid-conductor-walk).
+	sb_fi_watch_register(scene->mDrawBuffers[0], scene->mDrawBuffers[1]);
+
 	// Install the live camera view + perspective. TSmJ3DScn::perform copies g.mViewMtx -> j3dSys
 	// before entry(), so this is the view every model is drawn with.
 	if (gpCamera) {
@@ -629,6 +634,32 @@ extern "C" bool sb_boot_drive_scene() {
 		drive_sky();
 
 		scene->perform(0x8, &g_graphics);
+
+		// SB_SCENE_BUF=1: one-shot — count packets entered into the scene's own draw buffers
+		// (mDrawBuffers[0]=opa, [1]=xlu) after the children walk. Discriminates "map never
+		// entered into the buffer" (entry/child-walk problem) from "buffer populated but draws
+		// nothing" (draw/capture problem). Chains persist after perform until the next frameInit.
+		if (const char* e = getenv("SB_SCENE_BUF"); e && e[0] && e[0] != '0') {
+			static int once = 0;
+			if (once < 4) { ++once;
+				for (int bi = 0; bi < scene->mDrawBufferCount; ++bi) {
+					J3DDrawBuffer* b = scene->mDrawBuffers[bi];
+					long heads = 0, packets = 0;
+					if (b && b->mBuffer)
+						for (u32 s = 0; s < b->mSize; ++s) {
+							J3DPacket* p = b->mBuffer[s];
+							if (p) ++heads;
+							for (; p; p = p->getNextPacket()) ++packets;
+						}
+					std::fprintf(stderr, "[scene-buf] frame#%d buf[%d]=%p size=%u heads=%ld packets=%ld\n",
+					             once, bi, (void*)b, b ? b->mSize : 0, heads, packets);
+				}
+				// Also dump the scene's direct children (gpConductor, gpLightManager, ...).
+				long ci = 0;
+				for (auto it = scene->getChildren().begin(); it != scene->getChildren().end(); ++it, ++ci)
+					std::fprintf(stderr, "[scene-child] #%ld %s\n", ci, it->getName());
+			}
+		}
 
 		// File-select A/B/C cubes (TFileLoadBlock) draw into DrawBuf ChrOpa/ChrXlu, which the perform
 		// list fills but never draws (the same dropped-draw-bit class as sky/map). drive_chr drives
