@@ -54,9 +54,11 @@ differ from the original generated GLSL.
   (samplers set=2 individual, push_constant→set=3 uniform), glslang→SPIR-V, per-batch pipeline
   (blend/depth from GX state, cull NONE), NvkTevPush fragment uniform, 8 samplers. Verified vs nvk:
   scene-only **3.14**, FULL frame incl. 2D white fade **0.27** — pixel-identical.
-- **P4 (NEXT)** remaining fidelity: generated mip chains (nvk's makeTexture trilinear+aniso — the
-  grazing-tiled minification/shoreline moire), lighting/fog/indirect/texgen edge cases. Then make
-  `SB_SDLGPU` the DEFAULT and RETIRE nvk + ngx.
+- **P4 ✅ DONE** generated mip chains (`SDL_GenerateMipmapsForGPUTexture` + trilinear sampler →
+  scene-only 0.07, pixel-identical to nvk); `SB_SDLGPU` made the DEFAULT; **nvk DELETED entirely**
+  (geometry types extracted to `gx_geom.h`). The raylib path was retired earlier. SDL3 GPU is the
+  sole renderer. Remaining fidelity (lighting/fog/indirect/texgen edge cases) is now driven by the
+  parity ladder below, not A/B-vs-nvk (there is no nvk).
 
 ## Parity-focused renderer TDD (user directive, 2026-06-25)
 The old render tests (nvk-based) were REMOVED: they only proved two of our own renderers agreed,
@@ -71,12 +73,30 @@ larger scenes. Tests live in `native/render/tests/parity/*_test.cpp` (auto-globb
    through the SHIPPING `sb_tev_gen_fragment`, asserted PIXEL-EXACT (tol 0) vs hand-computed GX
    integer-combiner truth. Proves combiner math + push-constant (kcolor/tevreg) + raster + texture
    plumbing + clamp. Sensitivity verified: a 1-unit expectation error fails 784/784 px.
-4. blend modes + alpha; depth test/func/write; cull-none.
-5. multi-batch small scene; then full-frame vs the Dolphin-GX oracle.
+4. ✅ `blend_depth_test` — additive + alpha-over blend, two depth-test orderings (order-independent
+   sort) via a passthrough shader. Sensitivity verified (disable z_test → far quad bleeds through).
+5. ✅ `multibatch_scene_test` — four batches (REPLACE bg, MODULATE centre, alpha-over fg, a
+   depth-REJECTED quad) composited into one frame, asserted per region vs hand-computed truth.
+   Proves batch ordering + per-batch pipeline switching + cross-batch depth/blend.
+   PLUS two coverage-deepening tests off the same generator:
+   - ✅ `tev_advanced_test` — multi-stage TEV (stage1 reads stage0's PREV), the SCALE shift, and the
+     PE-block ALPHA TEST discard (pass + discard). All pixel-exact.
+   - ✅ `texture_filter_test` — sampler WRAP modes (REPEAT/MIRROR/CLAMP) exact + bilinear MAG (centre
+     is a genuine blend, endpoints clamp). Sensitivity verified vs NEAREST.
+6. **OPEN (capstone): full-frame vs the Dolphin-GX oracle.** The remaining rung. It needs a LIVE
+   two-process A/B (the same plaza frame rendered by sms-boot SB_SDLGPU and by a Dolphin-GX reference)
+   — there is no committed golden frame (a rendered SMS frame is copyrighted game imagery; never
+   commit one). The hard part is cross-engine determinism: sms-boot runs the engine PC-native while
+   the Dolphin-GX oracle runs under Dolphin's JIT, so reaching a frame-exact identical scene needs a
+   sync point. Until that harness exists, the spec-truth unit rungs above (1-5 + advanced/filter) are
+   the falsifiable coverage; the per-frame `SB_FRAME_DUMP` + `abppm.py` path is a manual regression
+   check, NOT an automated correctness oracle.
 
 ## Verification (unchanged discipline)
 Per-frame dump (`SB_FRAME_DUMP` → `scratch/frames/boot_NNNN.ppm`) + `scratch/frames/abppm.py`
-(overall + 4x4-region mean-abs-delta) vs the nvk reference (drop SB_SDLGPU). Never eyeball-only.
+(overall + 4x4-region mean-abs-delta). This is a manual regression aid (compare two of YOUR OWN runs
+for drift); it is NOT a correctness oracle — correctness comes from the spec-truth parity ladder
+above, and (rung 6, open) a live Dolphin-GX A/B. Never eyeball-only.
 
 ## Geometry contract (the rule that makes the scene match)
 Feed **4-component clip-space** and use **cull NONE** (nvk used `VK_CULL_MODE_NONE`; SDL3 GPU sets
@@ -85,11 +105,13 @@ combined with the Y-down clip (which reverses winding) drops it — explicit cul
 class. SDL3 GPU's Vulkan NDC matches `NvkTevVertex` directly, so there's no clip-space remap.
 
 ## Status
-- **P0–P3 ✅ DONE.** SB_SDLGPU renders the plaza at near-perfect nvk parity (scene 3.14 / full 0.27),
-  headless Vulkan, no DISPLAY (`SDL_VIDEODRIVER=offscreen`). The TEV combiner + per-batch blend/depth
-  work; the 2D white fade renders correctly.
-- **P4 is NEXT:** mip-chain generation (nvk `makeTexture` parity — the only known fidelity gap),
-  then flip SB_SDLGPU on by default and retire nvk/ngx.
+- **P0–P4 ✅ DONE.** SB_SDLGPU is the sole renderer (nvk + raylib retired/deleted). It renders the
+  plaza headless (Vulkan, no DISPLAY), with TEV combiner + per-batch blend/depth + mip chains; the 2D
+  white fade renders correctly. Scene parity reached 0.07 mean-abs-delta vs the old nvk reference
+  before nvk was deleted.
+- **Parity TDD:** ladder rungs 1-5 + `tev_advanced_test` + `texture_filter_test` are GREEN (7 ctest
+  `parity_*` targets, all spec-truth, pixel-exact where the GX math is integer). Rung 6 (live
+  Dolphin-GX full-frame oracle) is the open capstone — see the ladder above.
 
 ### Repro (headless, no DISPLAY)
 ```
