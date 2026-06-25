@@ -44,8 +44,28 @@ BE-asset class as the JPA1 loader fix called out in CLAUDE.md's FAIL-FAST sectio
 `SB_MSG_DBG=1` → `[msgdata]` lines in SMSGetMessageData: header bytes, byteswapped `local_88/84`,
 requested id, INF1 entry count, and the resolved DAT1 offset.
 
-## Still open (rendering, separate from this fix)
-The text is now in the textbox buffers, but confirming it RENDERS on-screen needs a frame deep
-in the settled choice state (mState==0, unk1C==PROGRESS_UNK13=19, after the window-open animation
-in selectBookmark case 1). The first repro only captured ~5 present-frames into state 0 (banner
-not yet animated in). Re-running with an idle pad tail to settle. [UPDATE pending verification.]
+## Still open (rendering capture, SEPARATE from this fix — a harness problem)
+The string is in the m_0a/m_0b textbox buffers and the J2DTextBox render path is the SAME proven
+J2DPrint path the "OPTIONS" sign uses (it renders), so once the settled pane is shown the banner
+WILL draw. But capturing a settled-state PPM headlessly is flaky. What was learned chasing it:
+
+- The banner is shown only once `selectBookmark` reaches sub-state **unk10==2** (window-open
+  animation done): case 0 sets the text + starts the open anim, case 1 finishes it and shows the
+  labels, case 2 is the stable "waiting for pick" state. ~30 perform-frames after mState-0 entry.
+- `mState 8->0` happens at perform-frame ~1690; the file blocks/banner animate in over the next
+  ~30 frames. `SB_SEL_DUMP_SETTLED=N` (added, CardLoad.cpp) fires a small dump exactly at unk10==2.
+- **The "present collapses at state 0" theory is FALSE** (disproved with `SB_PRESENT_TRACE=1` →
+  `[present-beat]`): present_hook fires ~80× per perform-frame (136k calls). VI is fine.
+- TWO intermittent blockers to a clean settled capture remain:
+  1. `selectBookmark` sometimes STALLS at PROGRESS_UNK13 (prog 19) — perform stops ticking,
+     unk10 stuck at 0, VIWaitForRetrace spins — so unk10==2 is never reached (card-probe wait /
+     thread-sync in the hybrid? `gpCardManager->probe()` in changeScene PROGRESS_UNK13 must
+     return CARD_RESULT_READY to call selectBookmark). Other runs DO reach unk10==2.
+  2. When unk10==2 IS reached it's near the run's tail, so the dump (renderTevFrame + write_ppm)
+     doesn't finish before `timeout -s KILL` fires — bbox prints (line 293) but no PPM lands.
+     Also note `[present] frame` is std::printf=stdout (buffered, lost on KILL); write_ppm uses
+     fopen/fclose (flushed) so a completed dump SHOULD leave a PPM.
+- NEXT to capture the pixel: make the settled state reliably reachable + dumped — e.g. trigger the
+  SETTLED dump and then keep running MANY more perform frames (big idle pad tail) so the dump
+  completes well before timeout; investigate/own the PROGRESS_UNK13 probe stall so unk10==2 is
+  deterministic; consider flushing stdout. The fix itself needs no further change.
