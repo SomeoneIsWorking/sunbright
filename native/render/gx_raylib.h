@@ -27,12 +27,14 @@ bool init(int w, int h);
 void frame_begin(float r, float g, float b, float a);
 void frame_end();
 
-// P2: replay the captured combined geometry (scene 3D + 2D imm batches, the same `verts`/
-// `batches` the nvk path consumes) as rlgl immediate-mode triangles into the bound offscreen
-// target. Must be called between frame_begin and frame_end. The verts are Vulkan clip-space
-// (y-down, depth [0,1]); this converts to GL-NDC and feeds rlBegin/rlVertex3f/rlColor4ub/
-// rlTexCoord2f with identity matrices, the default modulate shader, per-batch texture/blend/
-// depth. (Per-material TEV combiner shaders are P4; perspective-correct 3D interp is P4.)
+// P3: replay the captured combined geometry (scene 3D + 2D imm batches, the same `verts`/
+// `batches` the nvk path consumes) into the bound offscreen target through a custom rlgl vertex
+// buffer + GLSL-330 program. Must be called between frame_begin and frame_end. The verts are
+// Vulkan clip-space (y-down, depth [0,1]); this uploads them as a 4-COMPONENT clip-space position
+// (converted to GL clip-space: x, -y, 2z-w, w) so the GPU does native near/side clipping +
+// perspective-correct interpolation — exactly nvk's contract (replacing P2's CPU-approximate
+// near-clip, which left a sky starburst + black foreground disc). FS = texture0 * vertexColor
+// (GX_MODULATE), per-batch texture/blend/depth. (Per-material TEV combiner shaders are P4.)
 void draw_tev(const sb::render::NvkTevVertex* verts, int nverts,
               const sb::render::Nvk::NvkTevBatch* batches, int nbatch);
 

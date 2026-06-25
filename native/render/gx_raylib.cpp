@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
+#include <cstddef>
 #include <vector>
 #include <unordered_map>
 
@@ -65,44 +66,66 @@ int gx_blend_factor(uint8_t f, bool isSrc) {
     }
 }
 
-// A clip-space vertex carrying the attributes rlgl immediate mode can replay (pos colour uv0).
-struct ClipV { float x, y, z, w, r, g, b, a, u, v; };
-inline ClipV clipv_of(const sb::render::NvkTevVertex& t) {
-    return ClipV{ t.x, t.y, t.z, (t.w != 0.0f ? t.w : 1.0f),
-                  t.rgba[0], t.rgba[1], t.rgba[2], t.rgba[3], t.uv[0][0], t.uv[0][1] };
+// GL type enum fed straight to rlSetVertexAttribute (raylib hides its GL loader from consumers).
+enum { GL_FLOAT_ = 0x1406 };
+
+// One interleaved GL vertex: a 4-COMPONENT clip-space position so TRUE homogeneous xyzw rides to
+// the vertex shader and the GPU performs native near/side clipping + perspective-correct interp —
+// exactly nvk's Vulkan contract. (P2's immediate-mode path could only carry a 3-component position,
+// forcing a CPU-approximate near-clip that left a sky starburst + a black foreground disc.)
+struct RlClipVtx { float pos[4]; float uv[2]; float col[4]; };   // 40 bytes; locations 0 / 1 / 3
+
+// Custom GLSL-330 program. VS passes the true clip-space xyzw straight to gl_Position (no rlgl
+// MVP at all); FS = texture0 * vertexColor — the GX_MODULATE default. Per-material TEV combiner
+// shaders are P4 (R2). Attribute locations match rlgl's convention (pos=0, texcoord=1, color=3).
+const char* kClipVS =
+    "#version 330\n"
+    "layout(location=0) in vec4 vertexPosition;\n"   // GL clip-space xyzw
+    "layout(location=1) in vec2 vertexTexCoord;\n"
+    "layout(location=3) in vec4 vertexColor;\n"
+    "out vec2 fragTexCoord;\n"
+    "out vec4 fragColor;\n"
+    "void main(){ fragTexCoord = vertexTexCoord; fragColor = vertexColor; gl_Position = vertexPosition; }\n";
+const char* kClipFS =
+    "#version 330\n"
+    "in vec2 fragTexCoord;\n"
+    "in vec4 fragColor;\n"
+    "out vec4 finalColor;\n"
+    "uniform sampler2D texture0;\n"
+    "void main(){ finalColor = texture(texture0, fragTexCoord) * fragColor; }\n";
+
+unsigned g_prog = 0; int g_loc_tex0 = -1; bool g_prog_tried = false;
+unsigned g_vao = 0, g_vbo = 0; size_t g_vbo_cap = 0;   // VBO capacity in bytes
+std::vector<RlClipVtx> g_scratch;
+
+// Build the clip-space program once. Returns false if compile/link failed.
+bool ensure_program() {
+    if (g_prog_tried) return g_prog != 0;
+    g_prog_tried = true;
+    g_prog = rlLoadShaderCode(kClipVS, kClipFS);
+    if (g_prog) g_loc_tex0 = rlGetLocationUniform(g_prog, "texture0");
+    else std::fprintf(stderr, "[gxray] clip-space shader failed to compile/link\n");
+    return g_prog != 0;
 }
-inline ClipV clipv_lerp(const ClipV& A, const ClipV& B, float t) {
-    return ClipV{ A.x+t*(B.x-A.x), A.y+t*(B.y-A.y), A.z+t*(B.z-A.z), A.w+t*(B.w-A.w),
-                  A.r+t*(B.r-A.r), A.g+t*(B.g-A.g), A.b+t*(B.b-A.b), A.a+t*(B.a-A.a),
-                  A.u+t*(B.u-A.u), A.v+t*(B.v-A.v) };
-}
-// Emit one clipped vertex (w>0 guaranteed): perspective divide → Vulkan NDC, then to GL-NDC
-// (flip Y: Vulkan +Y down → GL +Y up; remap depth [0,1] → [-1,1]).
-inline void emit_clipv(const ClipV& v) {
-    float w = v.w;
-    rlColor4ub((unsigned char)(v.r * 255.0f + 0.5f), (unsigned char)(v.g * 255.0f + 0.5f),
-               (unsigned char)(v.b * 255.0f + 0.5f), (unsigned char)(v.a * 255.0f + 0.5f));
-    rlTexCoord2f(v.u, v.v);
-    rlVertex3f(v.x / w, -v.y / w, (v.z / w) * 2.0f - 1.0f);
-}
-// Replay one triangle, Sutherland-Hodgman clipped against the near/behind-camera plane in
-// HOMOGENEOUS clip space (w >= eps). This is the catastrophic case: a CPU divide of a vertex
-// with w<=0 (geometry surrounding the camera — the sky/backdrop dome) flips/explodes it into a
-// full-screen smear. Clipping in clip space (interpolating attributes by the same t) removes it
-// perspective-correctly; the GPU rasteriser handles the side/viewport clipping after divide.
-inline void emit_tri_clipped(const sb::render::NvkTevVertex& a, const sb::render::NvkTevVertex& b,
-                             const sb::render::NvkTevVertex& c) {
-    ClipV in[3] = { clipv_of(a), clipv_of(b), clipv_of(c) };
-    const float eps = 1e-4f;
-    ClipV out[5]; int m = 0;
-    for (int i = 0; i < 3; ++i) {
-        const ClipV& A = in[i]; const ClipV& B = in[(i + 1) % 3];
-        bool ina = A.w >= eps, inb = B.w >= eps;
-        if (ina) out[m++] = A;
-        if (ina != inb) out[m++] = clipv_lerp(A, B, (eps - A.w) / (B.w - A.w));
-    }
-    if (m < 3) return;
-    for (int i = 1; i + 1 < m; ++i) { emit_clipv(out[0]); emit_clipv(out[i]); emit_clipv(out[i + 1]); }
+
+// (Re)allocate the VAO+VBO to hold at least `bytes`, baking the 3 vertex attributes into the VAO.
+// glVertexAttribPointer records into the bound VAO referencing the bound VBO, so this must run with
+// both bound (rlLoadVertexBuffer leaves the new VBO bound to GL_ARRAY_BUFFER).
+void ensure_vbo(size_t bytes) {
+    if (g_vbo && g_vbo_cap >= bytes) return;
+    if (g_vbo) { rlUnloadVertexBuffer(g_vbo); g_vbo = 0; }
+    if (!g_vao) g_vao = rlLoadVertexArray();
+    rlEnableVertexArray(g_vao);
+    g_vbo = rlLoadVertexBuffer(nullptr, (int)bytes, true);   // dynamic, sized; data uploaded per frame
+    g_vbo_cap = bytes;
+    const int stride = (int)sizeof(RlClipVtx);
+    rlSetVertexAttribute(0, 4, GL_FLOAT_, false, stride, (int)offsetof(RlClipVtx, pos));
+    rlEnableVertexAttribute(0);
+    rlSetVertexAttribute(1, 2, GL_FLOAT_, false, stride, (int)offsetof(RlClipVtx, uv));
+    rlEnableVertexAttribute(1);
+    rlSetVertexAttribute(3, 4, GL_FLOAT_, false, stride, (int)offsetof(RlClipVtx, col));
+    rlEnableVertexAttribute(3);
+    rlDisableVertexArray();
 }
 
 // Upload (and cache) one RGBA8 texture, returning its GL id.
@@ -170,17 +193,41 @@ void draw_tev(const sb::render::NvkTevVertex* verts, int nverts,
               const sb::render::Nvk::NvkTevBatch* batches, int nbatch) {
     if (!g_ctx_ok || !g_in_frame || !verts || !batches) return;
     HostAllocScope _hs;
+    if (!ensure_program()) return;
 
     // The present layer's decoded texels are per-frame (their pointers are reused next frame),
     // so the GL upload cache only keys validly WITHIN one draw_tev. Drop last frame's uploads.
     for (auto& kv : g_tex_cache) if (kv.second) rlUnloadTexture(kv.second);
     g_tex_cache.clear();
 
-    // We feed GL-NDC directly, so neutralise rlgl's matrices (BeginTextureMode leaves a
-    // pixel-space ortho). gl_Position = identity * vec4(ndc,1).
+    // Take over GL state from rlgl: flush any pending immediate geometry first.
     rlDrawRenderBatchActive();
-    rlMatrixMode(RL_PROJECTION); rlPushMatrix(); rlLoadIdentity();
-    rlMatrixMode(RL_MODELVIEW);  rlPushMatrix(); rlLoadIdentity();
+
+    // nvk rasterizes with VK_CULL_MODE_NONE; rlgl's rlglInit enables GL_CULL_FACE(GL_BACK). With
+    // our Y-flip reversing winding, that culls the inward faces of the sky/backdrop sphere (camera
+    // INSIDE it) → radial slivers + a black back hemisphere. Disable culling to match nvk exactly.
+    rlDisableBackfaceCulling();
+
+    // Convert the WHOLE captured array to interleaved GL clip-space once, then draw each batch by
+    // (vstart,vcount). Vulkan clip-space (y-down, depth [0,1]) → GL clip-space (y-up, depth
+    // [-1,1]): pos = (x, -y, 2z - w, w). The VS passes this through; the GPU divides by w and
+    // clips against all 6 frustum planes (near plane vk_z>=0 ⇔ GL 2z-w>=-w; far vk_z<=w preserved).
+    if (nverts < 0) nverts = 0;
+    g_scratch.resize((size_t)nverts);
+    for (int i = 0; i < nverts; ++i) {
+        const auto& t = verts[i];
+        float w = (t.w != 0.0f) ? t.w : 1.0f;
+        RlClipVtx& o = g_scratch[(size_t)i];
+        o.pos[0] = t.x; o.pos[1] = -t.y; o.pos[2] = 2.0f * t.z - w; o.pos[3] = w;
+        o.uv[0] = t.uv[0][0]; o.uv[1] = t.uv[0][1];
+        o.col[0] = t.rgba[0]; o.col[1] = t.rgba[1]; o.col[2] = t.rgba[2]; o.col[3] = t.rgba[3];
+    }
+    if (nverts > 0) {
+        size_t bytes = (size_t)nverts * sizeof(RlClipVtx);
+        ensure_vbo(bytes);
+        rlEnableVertexBuffer(g_vbo);
+        rlUpdateVertexBuffer(g_vbo, g_scratch.data(), (int)bytes, 0);
+    }
 
     // Bisection diagnostics (value-first; never eyeball): SB_RAYLIB_MAXBATCH=N draws only
     // the first N batches (find which batch washes the frame); SB_RAYLIB_NODEPTH=1 forces
@@ -188,19 +235,21 @@ void draw_tev(const sb::render::NvkTevVertex* verts, int nverts,
     static const int maxbatch = [](){ const char* v = std::getenv("SB_RAYLIB_MAXBATCH"); return v && v[0] ? std::atoi(v) : -1; }();
     static const bool nodepth = [](){ const char* v = std::getenv("SB_RAYLIB_NODEPTH"); return v && v[0] && v[0] != '0'; }();
 
-    for (int bi = 0; bi < nbatch; ++bi) {
+    for (int bi = 0; bi < nbatch && nverts > 0; ++bi) {
         if (maxbatch >= 0 && bi >= maxbatch) break;
         const auto& b = batches[bi];
-        if (b.vcount == 0) continue;
+        if (b.vcount == 0 || b.vstart >= (uint32_t)nverts) continue;
+        uint32_t count = b.vcount;
+        if (b.vstart + count > (uint32_t)nverts) count = (uint32_t)nverts - b.vstart;
 
-        // Bind the batch texture (1x1 white default → modulate = raster colour only).
         unsigned texid = (b.tex[0].rgba && b.tex[0].w && b.tex[0].h)
                              ? tex_for(b.tex[0]) : rlGetTextureIdDefault();
-        rlSetTexture(texid);
 
-        // Per-batch GL state. rlgl applies blend/depth at FLUSH time and does NOT track them
-        // per draw-call, so each batch is flushed independently (below) with its own state.
+        // Set blend/depth BEFORE binding our program+VAO: rlSetBlendMode may internally flush
+        // rlgl's batch (which unbinds VAO + shader). rlEnable/DisableColorBlend + depth-test are
+        // direct glEnable/glDisable. Each batch carries its own GX blend (mirrors nvk).
         if (b.blend_mode == 1 /*GX_BM_BLEND*/) {
+            rlEnableColorBlend();
             rlSetBlendFactors(gx_blend_factor(b.src_factor, true),
                               gx_blend_factor(b.dst_factor, false), GL_FUNC_ADD_);
             rlSetBlendMode(RL_BLEND_CUSTOM);
@@ -210,22 +259,22 @@ void draw_tev(const sb::render::NvkTevVertex* verts, int nverts,
         }
         if (b.z_test && !nodepth) rlEnableDepthTest(); else rlDisableDepthTest();
 
-        rlBegin(RL_TRIANGLES);
-        // Batches are triangle lists (3N verts). Clip each tri against the near plane in clip
-        // space, then emit the divided GL-NDC verts.
-        uint32_t end = b.vstart + b.vcount;
-        if (end > (uint32_t)nverts) end = (uint32_t)nverts;
-        for (uint32_t i = b.vstart; i + 3 <= end; i += 3) {
-            emit_tri_clipped(verts[i], verts[i + 1], verts[i + 2]);
-        }
-        rlEnd();
-        rlDrawRenderBatchActive();   // flush THIS batch with its own blend/depth state
-        rlEnableColorBlend();
+        // Bind our clip-space program + texture (unit 0) + VAO, then a raw indexed-free draw.
+        rlEnableShader(g_prog);
+        rlActiveTextureSlot(0); rlEnableTexture(texid);
+        int unit = 0; if (g_loc_tex0 >= 0) rlSetUniform(g_loc_tex0, &unit, RL_SHADER_UNIFORM_INT, 1);
+        rlEnableVertexArray(g_vao);
+        rlDrawVertexArray((int)b.vstart, (int)count);
     }
 
-    rlMatrixMode(RL_PROJECTION); rlPopMatrix();
-    rlMatrixMode(RL_MODELVIEW);  rlPopMatrix();
+    // Restore a clean rlgl state for frame_end's batch flush.
+    rlDisableVertexArray();
+    rlDisableShader();
+    rlActiveTextureSlot(0); rlEnableTexture(0);
+    rlSetBlendMode(RL_BLEND_ALPHA);
+    rlEnableColorBlend();
     rlEnableDepthTest();
+    rlEnableBackfaceCulling();
 }
 
 bool readback(uint8_t* rgba, int w, int h) {
