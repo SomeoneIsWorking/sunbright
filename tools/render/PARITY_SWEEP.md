@@ -31,9 +31,15 @@ Implemented in `native/render/sb_parity_dump.h` (`sb_parity_emit`), called from 
 ## Run the sweep — `tools/render/parity_sweep.py`
 
 ```
-parity_sweep.py check  parity.jsonl              # invariants on one native run
-parity_sweep.py diff   a.jsonl b.jsonl           # A/B between two native runs (regression localiser)
-parity_sweep.py image  native.ppm oracle.ppm     # per-region pixel diff vs a Dolphin-GX frame
+parity_sweep.py check  parity.jsonl                       # invariants on one native run
+parity_sweep.py diff   a.jsonl b.jsonl                    # A/B between two native runs (regression localiser)
+parity_sweep.py image  native.ppm oracle.ppm [heat.png]   # per-region pixel diff vs a Dolphin-GX frame (+heatmap)
+```
+
+One-command gate (fastboot → dump → check, optional diff vs a baseline):
+```
+tools/render/parity_run.sh                 # run + check
+tools/render/parity_run.sh baseline.jsonl  # run + check + diff vs baseline
 ```
 
 - **check** — hard FAIL on: NaN/inf verts, empty scene, nothing on-screen (broken projection),
@@ -44,9 +50,10 @@ parity_sweep.py image  native.ppm oracle.ppm     # per-region pixel diff vs a Do
   on-screen-count / clip-AABB drift above thresholds, localising *which batch* a change moved.
   (Demonstrated: toggling `SB_NO_SKIN` flags exactly Mario's batches `c539bdd263592117`.)
 - **image** — overall + per-region (`sky / mid / floor / center / hud_top / hud_bot`) mean |Δ|.
-  Pair a native PPM with a Dolphin-GX oracle PPM of the same fastboot/save state. (For the
-  main `sunbright` build, the Dolphin-GX oracle frame = a `SUNBRIGHT_NGX_PRESENT=0` run; see
-  `tools/render/ab_oracle.sh`.)
+  Pair a native PPM with a Dolphin-GX oracle PPM of the same fastboot/save state. A 4th arg
+  writes a grayscale **heatmap PNG** (brightness = per-pixel |Δ|) to localise the divergence.
+  (For the main `sunbright` build, the Dolphin-GX oracle frame = a `SUNBRIGHT_NGX_PRESENT=0`
+  run; see `tools/render/ab_oracle.sh`.)
 
 ## Typical loop
 

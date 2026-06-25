@@ -171,8 +171,9 @@ def _region_delta(w, h, A, B, box):
             n += 3
     return (s/n) if n else 0.0
 
-def image(pa, pb):
-    """Per-region mean |Δ| between native (pa) and Dolphin-GX oracle (pb). Refuses a dead frame."""
+def image(pa, pb, heatmap=None):
+    """Per-region mean |Δ| between native (pa) and Dolphin-GX oracle (pb). Refuses a dead frame.
+    Optional `heatmap` writes a PNG where brightness = per-pixel |Δ| (localises divergence)."""
     wa, ha, A = _read_ppm(pa)
     wb, hb, B = _read_ppm(pb)
     if (wa, ha) != (wb, hb):
@@ -185,6 +186,15 @@ def image(pa, pb):
         d = _region_delta(wa, ha, A, B, box)
         bar = "#" * int(min(d, 60))
         print(f"  {name:10s} {d:6.2f}  {bar}")
+    if heatmap:
+        from PIL import Image
+        out = bytearray(wa*ha)
+        for i in range(wa*ha):
+            p = i*3
+            d = abs(A[p]-B[p]) + abs(A[p+1]-B[p+1]) + abs(A[p+2]-B[p+2])
+            out[i] = min(255, d)   # sum of channel deltas, clamped
+        Image.frombytes("L", (wa, ha), bytes(out)).save(heatmap)
+        print(f"  heatmap -> {heatmap}")
     return 0
 
 def main():
@@ -193,7 +203,9 @@ def main():
     mode = sys.argv[1]
     if mode == "check":  return check(sys.argv[2])
     if mode == "diff":   return diff(sys.argv[2], sys.argv[3])
-    if mode == "image":  return image(sys.argv[2], sys.argv[3])
+    if mode == "image":
+        hm = sys.argv[4] if len(sys.argv) > 4 else None
+        return image(sys.argv[2], sys.argv[3], hm)
     print(__doc__); return 2
 
 if __name__ == "__main__":

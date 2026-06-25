@@ -31,3 +31,7 @@ rom.rvz
 
 # native render-test frame dumps (written to cwd)
 *.ppm
+
+# Python bytecode
+__pycache__/
+*.pyc
