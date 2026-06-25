@@ -455,12 +455,17 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
     }
     g_nvk.renderTevFrame(verts, batches, NvkClear{c[0], c[1], c[2], c[3]});
 
+    // g_frame was already incremented above in every branch, so the frame number that actually
+    // satisfied the dump window is g_frame-1. Name the file by THAT so SB_FRAME_DUMP_START=240
+    // writes boot_0240.ppm (not boot_0241): the off-by-one made every START=N run leave the
+    // boot_000N.ppm STALE while writing boot_000(N+1), so analysis read a leftover frame.
+    const int df = g_frame - 1;
     char path[160];
-    std::snprintf(path, sizeof path, "scratch/frames/boot_%04d.ppm", g_frame);
+    std::snprintf(path, sizeof path, "scratch/frames/boot_%04d.ppm", df);
     write_ppm(path);
     std::printf("[present] frame %d clear=(%.2f,%.2f,%.2f,%.2f) scene_verts=%d scene_batches=%d "
                 "imm_tris=%d imm_batches=%d (textured=%d) -> %s\n",
-                g_frame, c[0], c[1], c[2], c[3], nscene, nsbatch, nimm / 3, nibatch,
+                df, c[0], c[1], c[2], c[3], nscene, nsbatch, nimm / 3, nibatch,
                 n_tex_batches, path);
     std::fflush(stdout);   // survive a SIGKILL'd headless run — the per-present batch count is
                            // our parity progress metric; block-buffered stdout would otherwise drop it
@@ -486,7 +491,7 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
         if (sb_gx_get_chan_matcolor) sb_gx_get_chan_matcolor(0, L.matc);
         SbParityProj P{};
         if (sb_gx_get_projection) sb_gx_get_projection(&P.type, P.proj, P.vp);
-        sb_parity_emit(s_parity, g_frame, c, verts.data(), (int)verts.size(),
+        sb_parity_emit(s_parity, df, c, verts.data(), (int)verts.size(),
                        batches.data(), (int)batches.size(), L, P,
                        g_nvk.rgba().data(), (int)g_nvk.width(), (int)g_nvk.height());
     }
