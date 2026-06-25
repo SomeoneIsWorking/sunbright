@@ -75,6 +75,18 @@ float g_cr = 1, g_cg = 1, g_cb = 1, g_ca = 1;
 const bool g_dbg = [] { const char* e = std::getenv("SB_GX_IMM_DBG"); return e && e[0] && e[0] != '0'; }();
 int g_dbg_left = 12;
 
+// SB_IMM_PRIM_DBG=N: dump EVERY finalized primitive of the FIRST frame whose prim count >= N —
+// prim type, vert count, textured fmt+dims, NDC bbox, UV bbox. The way to find a mis-shaped 2D
+// draw (e.g. the slot-row "@" starbursts: a stray vertex makes the NDC/UV bbox blow out, the
+// radiating-spike signature). The settled file-select has the most prims (banner + 3 slots +
+// glyphs + window borders), so a threshold ~50 fires on it, not on a sparse early frame. Per-prim
+// records accumulate during the frame; printed once (then disabled) + cleared at take.
+const int g_prim_dbg_at = [] { const char* e = std::getenv("SB_IMM_PRIM_DBG"); return e && e[0] ? std::atoi(e) : 0; }();
+bool g_prim_dbg_done = false;
+struct PrimRec { int prim, nv; bool textured; int fmt, w, h;
+                 float xmn, xmx, ymn, ymx, umn, umx, vmn, vmx; };
+std::vector<PrimRec> g_prim_recs;
+
 void snapshot_state() {
     auto& g = state();
     g_projType = (int)g.projType;
@@ -143,6 +155,19 @@ extern "C" {
 static void finalize_prim(void) {
     if (!g_in_begin) return;
     g_in_begin = false;
+    if (g_prim_dbg_at && !g_prim_dbg_done && !g_prim_verts.empty()) {
+        PrimRec r{}; r.prim = g_prim; r.nv = (int)g_prim_verts.size();
+        r.textured = (g_prim_has_uv && g_texSnap.textured);
+        r.fmt = g_texSnap.fmt; r.w = g_texSnap.w; r.h = g_texSnap.h;
+        r.xmn = r.ymn = r.umn = r.vmn = 1e30f; r.xmx = r.ymx = r.umx = r.vmx = -1e30f;
+        for (auto& v : g_prim_verts) {
+            if (v.x<r.xmn)r.xmn=v.x; if (v.x>r.xmx)r.xmx=v.x;
+            if (v.y<r.ymn)r.ymn=v.y; if (v.y>r.ymx)r.ymx=v.y;
+            if (v.u<r.umn)r.umn=v.u; if (v.u>r.umx)r.umx=v.u;
+            if (v.v<r.vmn)r.vmn=v.v; if (v.v>r.vmx)r.vmx=v.v;
+        }
+        g_prim_recs.push_back(r);
+    }
     const unsigned start = (unsigned)g_frame_tris.size();
     sb::render::imm_triangulate(g_prim, g_prim_verts.data(),
                                 (int)g_prim_verts.size(), g_frame_tris);
@@ -250,6 +275,18 @@ int sb_gx_imm_take(const SbImmVtx** out) {
 // next GXBegin starts a fresh frame. Returns the vertex count; *verts -> SbImmVtx[count].
 int sb_gx_imm_take_batches(const SbImmVtx** verts, const SbImmBatch** batches, int* nbatch) {
     if (g_in_begin) finalize_prim();   // flush a trailing GXEnd-less prim (last glyph of frame)
+    if (g_prim_dbg_at && !g_prim_dbg_done && (int)g_prim_recs.size() >= g_prim_dbg_at) {
+        g_prim_dbg_done = true;
+        std::fprintf(stderr, "[imm-prim] frame with %zu prims (>= %d):\n", g_prim_recs.size(), g_prim_dbg_at);
+        for (size_t i = 0; i < g_prim_recs.size(); ++i) {
+            const PrimRec& r = g_prim_recs[i];
+            std::fprintf(stderr, "  p%zu prim=%#x nv=%d tex=%d fmt=0x%x %dx%d ndcX[%.3f,%.3f] "
+                         "ndcY[%.3f,%.3f] uv[%.3f,%.3f;%.3f,%.3f]\n",
+                         i, r.prim, r.nv, r.textured, r.fmt, r.w, r.h,
+                         r.xmn, r.xmx, r.ymn, r.ymx, r.umn, r.umx, r.vmn, r.vmx);
+        }
+    }
+    if (g_prim_dbg_at) g_prim_recs.clear();
     if (verts)   *verts = g_frame_tris.data();
     if (batches) *batches = g_batches.data();
     if (nbatch)  *nbatch = (int)g_batches.size();
