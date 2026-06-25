@@ -11,6 +11,7 @@
 // thread); the context is created lazily on first use from that thread.
 #pragma once
 #include <cstdint>
+#include "nvk.h"   // NvkTevVertex / Nvk::NvkTevBatch (the captured scene + 2D imm geometry)
 
 namespace sb::gxray {
 
@@ -25,6 +26,15 @@ bool init(int w, int h);
 // given GX copy-clear colour (0..1). Draws (P2+) happen between these.
 void frame_begin(float r, float g, float b, float a);
 void frame_end();
+
+// P2: replay the captured combined geometry (scene 3D + 2D imm batches, the same `verts`/
+// `batches` the nvk path consumes) as rlgl immediate-mode triangles into the bound offscreen
+// target. Must be called between frame_begin and frame_end. The verts are Vulkan clip-space
+// (y-down, depth [0,1]); this converts to GL-NDC and feeds rlBegin/rlVertex3f/rlColor4ub/
+// rlTexCoord2f with identity matrices, the default modulate shader, per-batch texture/blend/
+// depth. (Per-material TEV combiner shaders are P4; perspective-correct 3D interp is P4.)
+void draw_tev(const sb::render::NvkTevVertex* verts, int nverts,
+              const sb::render::Nvk::NvkTevBatch* batches, int nbatch);
 
 // Read the offscreen target back into `rgba` (w*h*4 bytes, top-left origin). Returns false if the
 // target isn't the requested size or no context. Used by the present/dump path.

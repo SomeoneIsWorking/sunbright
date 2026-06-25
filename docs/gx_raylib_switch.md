@@ -59,13 +59,35 @@ Xvfb is the fallback if `:0` is ever absent. So raylib can be the GL layer with 
    less faithful to "GX→raylib" but far less work; (a) is the true switch. Decide at P3.
 
 ## Phasing (each phase = a verifiable milestone via the frame dump)
-- **P1** Add raylib to the build (FetchContent in `native/CMakeLists.txt`); `gx_raylib.cpp`:
-  GXInit→context+offscreen; GXCopyDisp→readback into the existing present/dump. All draws stubbed.
-  Verify: a dump frame appears at the captured GXSetCopyClear color. Behind `SB_RAYLIB=1`.
-- **P2** Immediate-mode 2D: GXBegin/Position/Color/TexCoord/End + matrices + textures (default
-  modulate shader). Verify: file-select 2D panes/fader/glyphs render through raylib.
-- **P3** J3D scene (chosen route) → rlgl verts. Verify: plaza/beach geometry renders.
-- **P4** Per-material TEV shaders (GLSL-330 from TEV state) + PE alpha test + blend/zmode fidelity.
+- **P1 ✅ DONE (commits 27fecd9 + 760f927/3f885d5)** raylib in the build; `gx_raylib.cpp` context+
+  offscreen+readback; SB_RAYLIB present branch dumps the GX copy-clear colour. The two integration
+  blockers (radeonsi LLVM SIGSEGV; raylib/Mesa JKR SolidHeap OOM) are fixed by the **foreign-thread
+  alloc isolation**: a thread-local game-thread flag (JKRHeap.cpp) routes any plain `new` from a
+  non-game thread (Mesa/LLVM driver workers) to host malloc, and the raylib entry points raise the
+  host-alloc gate so synchronous driver allocs on the present (game) thread also bypass the JKR heap.
+  Default GL3.3 now runs SB_RAYLIB with no crash / no OOM (zink workaround retired).
+- **P2 ✅ DONE (immediate-mode replay)** `draw_tev()` in gx_raylib.cpp replays the captured combined
+  `verts`/`batches` (scene + 2D imm) as rlBegin/rlVertex3f/rlColor4ub/rlTexCoord2f, identity matrices,
+  per-batch texture (rlLoadTexture cache) + GX→GL blend (`gx_blend_factor`, mirrors nvk) + depth.
+  Verified: the Delfino plaza renders through rlgl — buildings/umbrella/water/Mario at the SAME
+  positions/orientation/winding as the nvk reference (frame 240, scene-only A/B). **Two residuals,
+  each owned by a later phase (NOT bandaids — the proper fix is named):**
+  - **R1 → P3:** 3D near/side clipping is CPU-approximate (a clip-space `w>=eps` Sutherland-Hodgman
+    in `emit_tri_clipped`) because rlgl IMMEDIATE mode carries only a 3-component position (and
+    `rlNormal3f` normalises, so `w` can't ride the normal). This leaves a sky-dome starburst + a
+    black foreground disc where the hardware near-clip nvk relies on would clip cleanly. **Proper
+    fix:** a custom rlgl vertex buffer (rlLoadVertexArray/Buffer) with a 4-component position + a
+    custom GLSL-330 VS `gl_Position = vec4(clip.xyz, clip.w)`, feeding TRUE clip-space xyzw so the
+    GPU does native near/side clipping + perspective-correct interpolation — exactly nvk's contract.
+  - **R2 → P4:** colours are darker/desaturated vs nvk because `draw_tev` uses rlgl's DEFAULT modulate
+    shader (texture × vertexColor) and ignores each batch's captured TEV combiner (`fragGlsl`). The
+    frame-240 white FADE overlay is invisible for the same reason: its raster alpha is 0 and its white
+    output comes entirely from the TEV combiner (`ib0 c0env=0008fffa`). **Proper fix = P4.**
+  - Diagnostics: `SB_RAYLIB_MAXBATCH=N` (draw first N batches), `SB_RAYLIB_NODEPTH=1` (painter's order).
+- **P3** True clip-space scene via custom VBO + GLSL-330 VS (R1 above). Verify: plaza/beach geometry
+  renders with no starburst/black-disc, matching nvk geometry.
+- **P4** Per-material TEV shaders (GLSL-330 from TEV state, fork `sb_tev_gen_fragment` / `imm_tev_fragment`)
+  + PE alpha test + blend/zmode fidelity (R2 above). Verify: scene + 2D fade colours match nvk.
 - **P5** lighting / fog / indirect / texgen fidelity. Then make `SB_RAYLIB` the default and retire
   `nvk` + the `ngx` Vulkan path.
 

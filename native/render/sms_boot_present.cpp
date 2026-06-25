@@ -475,7 +475,8 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
     // docs/gx_raylib_switch.md. Until then this proves the context/readback/dump plumbing end-to-end.
     if (sb::gxray::enabled() && sb::gxray::init((int)kW, (int)kH)) {
         sb::gxray::frame_begin(c[0], c[1], c[2], c[3]);
-        // TODO(P2): replay `verts`/`batches` (scene) + 2D imm as rlBegin/rlVertex/rlColor/rlEnd.
+        // P2: replay the captured scene + 2D imm batches as rlgl immediate-mode triangles.
+        sb::gxray::draw_tev(verts.data(), (int)verts.size(), batches.data(), (int)batches.size());
         sb::gxray::frame_end();
         static std::vector<uint8_t> rlpix((size_t)kW * kH * 4);
         char rpath[160];
