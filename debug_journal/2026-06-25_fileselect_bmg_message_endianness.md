@@ -69,3 +69,15 @@ WILL draw. But capturing a settled-state PPM headlessly is flaky. What was learn
   SETTLED dump and then keep running MANY more perform frames (big idle pad tail) so the dump
   completes well before timeout; investigate/own the PROGRESS_UNK13 probe stall so unk10==2 is
   deterministic; consider flushing stdout. The fix itself needs no further change.
+
+## UPDATE — settled capture WORKS but banner text STILL not visible (new finding)
+Recipe that captured the settled state: `SB_SEL_DUMP_SETTLED=6` + huge idle pad tail (`... 6000:-`)
++ long `timeout 420` → 6 PPMs (boot_0001..0006) dumped at unk10==2 (`scratch/frames/banner_settled.png`).
+RESULT: at the settled choice state the camera is zoomed IN close (the top banner bar is pushed up
+near/off the screen top, A/B/C cubes at the very top edge) and there is STILL no "Select data" banner
+text and no Corrupt/New/New labels. So blocker (a) BMG-resolve is fixed but (b) remains: either the
+m_0a/m_0b/m_1a/m_1b J2DTextBox panes aren't visible/walked, OR the choice-state (up-down-pan) camera
+differs from the oracle and pushes the banner off-screen. NEXT (tooling-first): add a load.blo (unk28)
+pane-tree dump in TCardLoad (like the SB_SEL_DBG dump in SelectMenu.cpp) printing each J2DTextBox's
+resolved string + isVisible + global bounds at unk10==2, AND compare the choice-state camera
+(gpCameraOption up-down pan) to the oracle. The settled capture tooling is now proven, so iterate fast.
