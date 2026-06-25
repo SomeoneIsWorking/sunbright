@@ -27,6 +27,7 @@
 
 #include <execinfo.h>        // backtrace / backtrace_symbols (SB_IMM_TRACE)
 #include <cstdlib>           // free
+#include <algorithm>         // std::min/max (imm bbox)
 #include <dolphin/gx.h>      // GXColor etc. (gx_state.h uses them)
 #include "gx_state.h"
 #include "gx_imm_xform.h"
@@ -103,6 +104,21 @@ inline void snapshot_tev() {
     // ALWAYS, so the default (no discard) is correct here.
     st.pe = NgxPEState{};
     st.pe.z_test = 0; st.pe.z_write = 0;
+    if (const char* d = std::getenv("SB_IMM_CHAN_DBG"); d && d[0] && d[0] != '0') {
+        static long s_n = 0;
+        if (s_n < 40) { ++s_n;
+            int cc = g.tev.colorChan[0] & 1;
+            const auto& ch = g.chan[cc];
+            bool clr0_direct = g.immVtxDesc[kVA_CLR0] == kAttrDirect;
+            std::fprintf(stderr,
+                "[imm-chan] c0env=%08x colorChan=%u clr0_direct=%d ctrl=%08x matSrc=%d en=%d "
+                "matColor=(%u,%u,%u,%u) ambColor=(%u,%u,%u,%u)\n",
+                g.tev.colorEnv[0], g.tev.colorChan[0], clr0_direct, ch.ctrl, (int)(ch.ctrl & 1),
+                (int)((ch.ctrl >> 1) & 1),
+                ch.matColor.r, ch.matColor.g, ch.matColor.b, ch.matColor.a,
+                ch.ambColor.r, ch.ambColor.g, ch.ambColor.b, ch.ambColor.a);
+        }
+    }
     // st.key is left 0: the present layer keys the pipeline by the hash of the generated
     // fragment string (matching the J3D path), so no struct hash is needed here.
 }
@@ -239,10 +255,10 @@ static void finalize_prim(void) {
         r.bt = g_blendType; r.bs = g_blendSrc; r.bd = g_blendDst;
         r.xmn = r.ymn = r.umn = r.vmn = 1e30f; r.xmx = r.ymx = r.umx = r.vmx = -1e30f;
         for (auto& v : g_prim_verts) {
-            if (v.x<r.xmn)r.xmn=v.x; if (v.x>r.xmx)r.xmx=v.x;
-            if (v.y<r.ymn)r.ymn=v.y; if (v.y>r.ymx)r.ymx=v.y;
-            if (v.u<r.umn)r.umn=v.u; if (v.u>r.umx)r.umx=v.u;
-            if (v.v<r.vmn)r.vmn=v.v; if (v.v>r.vmx)r.vmx=v.v;
+            r.xmn = std::min(r.xmn, v.x); r.xmx = std::max(r.xmx, v.x);
+            r.ymn = std::min(r.ymn, v.y); r.ymx = std::max(r.ymx, v.y);
+            r.umn = std::min(r.umn, v.u); r.umx = std::max(r.umx, v.u);
+            r.vmn = std::min(r.vmn, v.v); r.vmx = std::max(r.vmx, v.v);
         }
         g_prim_recs.push_back(r);
     }

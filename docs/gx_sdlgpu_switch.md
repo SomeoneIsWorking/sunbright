@@ -92,6 +92,36 @@ larger scenes. Tests live in `native/render/tests/parity/*_test.cpp` (auto-globb
    the falsifiable coverage; the per-frame `SB_FRAME_DUMP` + `abppm.py` path is a manual regression
    check, NOT an automated correctness oracle.
 
+   **Session 2026-06-26 — capstone harness built + root-caused why the live A/B can't run yet:**
+   - **`tools/render/sb_oracle_diff.py`** is the rung-6 oracle diff (TOOLING-FIRST): loads a sms-boot
+     SDL3-GPU `.ppm` and a Dolphin-GX `.ppm`, crops NDC letterbox bars, normalizes to a 256×192 grid
+     (handles 640×480 vs 640×448), and reports overall + 4×4-region mean-abs-delta. It REFUSES a
+     degenerate frame (exit 3): all-black, washed-white, or near-uniform (lum stddev < 12) — so it can
+     never emit a meaningless number against a non-scene. Verified: refuses the washed sms-boot plaza
+     (lum 254, sd 6), passes the Dolphin scene (lum 72, sd 44).
+   - **Two hard facts established.** (a) **sms-boot is host-native (LP64, host-malloc arena, 8-byte
+     pointers) — NOT GC guest-RAM layout** (`native/platform/platform_impl.cpp` kArenaSize). A Dolphin
+     GC savestate's MEM1 therefore cannot be injected into sms-boot; the two engines share NO state, so
+     a *frame-exact* cross-engine oracle is architecturally infeasible. Don't chase MEM1 injection.
+     (b) **The 3D renderer is FAITHFUL**: `SB_SKIP_IMM=1` renders a correct, fully-coloured Delfino
+     plaza (lum 175, sd 66 — buildings/sky/ocean/Mario), structurally matching the Dolphin scene.
+   - **Why the full-frame A/B can't run yet (NOT a renderer bug):** sms-boot wedges in the
+     scene-ENTRY wipe. At frames 1200→2400(+) it shows a half-drawn circular iris (black/white curved
+     boundary) over the correct scene, frame-deterministically (identical with and without SB_TURBO →
+     not a pacing artifact). Root cause: `[hx_wipe] UNIMPLEMENTED wipe type 1`. `native/platform/
+     hx_wipe_impl.cpp` ports only wipe **type 12** (opening m-mark); the Delfino scene-entry wipe is
+     **type 1 → `Hx_Circle`** (RE journal `table1[1,2]→Hx_Circle`, `debug_journal/
+     2026-06-21_session12_moviedir_crash_and_wipe_lib.md`), whose callback is a stderr-warn stub. The
+     transition state never advances to DONE → the fader never reaches FADED_IN → the iris stays
+     half-applied and the game never reaches clean interactive gameplay.
+   - **NEXT (the unblock):** RE + port `Hx_Circle` (table1[1]) into `hx_wipe_impl.cpp::run_callback`,
+     mirroring the type-12 `mmark_callback` pattern. Once the scene-entry wipe completes, sms-boot
+     reaches a clean plaza and `sb_oracle_diff.py` can score a real (deterministic-boot, settled-scene)
+     two-process A/B vs the Dolphin-GX capture — the honest form of rung 6 (close-scene, not
+     frame-exact). Diagnostic added: `SB_IMM_CHAN_DBG` dumps each imm draw's colour-channel state
+     (colorChan / matSrc / matColor / ambColor) — it PROVED the white fade quad's RASC=white is a
+     faithful capture (matSrc=VTX, vertex colour white), not a renderer error.
+
 ## Verification (unchanged discipline)
 Per-frame dump (`SB_FRAME_DUMP` → `scratch/frames/boot_NNNN.ppm`) + `scratch/frames/abppm.py`
 (overall + 4x4-region mean-abs-delta). This is a manual regression aid (compare two of YOUR OWN runs
