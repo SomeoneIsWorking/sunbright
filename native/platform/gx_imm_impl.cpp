@@ -145,6 +145,7 @@ SbImmBatch g_texSnap;          // bound texture for the current prim (textured i
 // the present layer's old hardcoded SRCALPHA/INVSRCALPHA (which drew alpha-less RGB565 sprites,
 // e.g. the file-select shine sparkles, as opaque squares).
 signed char g_blendType = 1, g_blendSrc = 4, g_blendDst = 5;  // GX_BM_BLEND/SRCALPHA/INVSRCALPHA
+bool g_colorUpdate = true;  // GXSetColorUpdate: false = write no colour (alpha-plane-only pass)
 
 // current immediate-mode colour (GXColor*/GXParam sets it; applied to the last vertex).
 float g_cr = 1, g_cg = 1, g_cb = 1, g_ca = 1;
@@ -177,6 +178,7 @@ void snapshot_state() {
     g_blendType = (signed char)g.blendType;
     g_blendSrc  = (signed char)g.blendSrc;
     g_blendDst  = (signed char)g.blendDst;
+    g_colorUpdate = (g.colorUpdate != 0);
 }
 
 // Snapshot the bound texmap-0 into g_texSnap. textured = TEX0 is a DIRECT attr (texcoords
@@ -222,7 +224,8 @@ void push_batch(unsigned start, unsigned count, const SbImmBatch& tex) {
         const bool sameTev = last.tev == tex.tev ||
             (last.tev && tex.tev &&
              std::memcmp(last.tev, tex.tev, sizeof(NgxTevState)) == 0);
-        if (sameTex && sameBlend && sameTev && last.vstart + last.vcount == start) { last.vcount += count; return; }
+        if (sameTex && sameBlend && sameTev && last.colorUpdate == tex.colorUpdate &&
+            last.vstart + last.vcount == start) { last.vcount += count; return; }
     }
     SbImmBatch b = tex;
     b.vstart = start; b.vcount = count;
@@ -292,6 +295,25 @@ static void finalize_prim(void) {
             }
         }
     }
+    // SB_IMM_TRACE_SOLID: backtrace the native caller of a FULLSCREEN UNTEXTURED ADDITIVE
+    // quad (ib0 signature: the white ONE/ONE wash that covers the plaza). Catches the
+    // persistent 2D overlay the wipe doesn't account for.
+    static bool s_traced_solid = false;
+    if (!s_traced_solid && std::getenv("SB_IMM_TRACE_SOLID") && !g_prim_has_uv &&
+        g_blendType == 1 && g_blendSrc == 1 && g_blendDst == 1 && !g_prim_verts.empty()) {
+        float xmn=1e30f,xmx=-1e30f,ymn=1e30f,ymx=-1e30f;
+        for (auto& v : g_prim_verts){ if(v.x<xmn)xmn=v.x; if(v.x>xmx)xmx=v.x; if(v.y<ymn)ymn=v.y; if(v.y>ymx)ymx=v.y; }
+        if (xmn < -1.0f && xmx > 1.0f && ymn < -1.0f && ymx > 1.0f) {
+            s_traced_solid = true;
+            std::fprintf(stderr, "[imm-trace] SOLID additive fullscreen prim nv=%d x[%.2f,%.2f] y[%.2f,%.2f] "
+                         "rgba=(%.2f,%.2f,%.2f,%.2f) blend=%d/%d/%d caller:\n",
+                         (int)g_prim_verts.size(), xmn,xmx,ymn,ymx,
+                         g_prim_verts[0].r,g_prim_verts[0].g,g_prim_verts[0].b,g_prim_verts[0].a,
+                         g_blendType,g_blendSrc,g_blendDst);
+            char** syms = backtrace_symbols(g_imm_caller, g_imm_caller_n);
+            if (syms) { for (int i=0;i<g_imm_caller_n;++i) std::fprintf(stderr, "    %s\n", syms[i]); free(syms); }
+        }
+    }
     const unsigned start = (unsigned)g_frame_tris.size();
     sb::render::imm_triangulate(g_prim, g_prim_verts.data(),
                                 (int)g_prim_verts.size(), g_frame_tris);
@@ -300,6 +322,7 @@ static void finalize_prim(void) {
     // stale boundTex from an earlier window can't texture-ize the (texcoord-less) gradient.
     SbImmBatch tex = (g_prim_has_uv && g_texSnap.textured) ? g_texSnap : SbImmBatch{};
     tex.blendType = g_blendType; tex.blendSrc = g_blendSrc; tex.blendDst = g_blendDst;
+    tex.colorUpdate = g_colorUpdate;
     // Carry the full TEV combiner captured at this prim's GXBegin (store in the per-frame
     // deque so the pointer is stable until present consumes). The present layer generates
     // the real combiner fragment from it (honors J2DPicture's black/white intensity ramp).
@@ -315,7 +338,9 @@ static void finalize_prim(void) {
 }
 
 void sb_gx_imm_begin(int prim, int vtxfmt, int nverts) {
-    static const bool s_trace = [](){ const char* v = std::getenv("SB_IMM_TRACE"); return v && v[0] && v[0] != '0'; }();
+    static const bool s_trace = [](){
+        const char* a = std::getenv("SB_IMM_TRACE"); const char* b = std::getenv("SB_IMM_TRACE_SOLID");
+        return (a && a[0] && a[0] != '0') || (b && b[0] && b[0] != '0'); }();
     if (s_trace) g_imm_caller_n = backtrace(g_imm_caller, 6);
     if (g_consumed) { g_frame_tris.clear(); g_batches.clear(); g_tevstore_used = 0; g_consumed = false; }
     // A previous primitive that omitted the (HW no-op) GXEnd — e.g. JUTResFont glyph quads —

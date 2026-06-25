@@ -272,6 +272,13 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
         if (skipImm) break;
         if (bi == skipImmIdx) continue;
         const SbImmBatch& ib = ibatches[bi];
+        // GXSetColorUpdate(GX_FALSE): the draw writes NO colour — it only sets up the
+        // destination-alpha plane (SMS_FillScreenAlpha / TModelWaterManager water-volume &
+        // silhouette masks). In GX it is INVISIBLE; we have no dst-alpha plane, so faithfully
+        // dropping its colour is correct (and kills the Delfino fullscreen white wash these
+        // fill-screen passes caused). The masked water-volume TINT it would feed is a
+        // separate dst-alpha effect we don't yet implement — absent, not washed.
+        if (!ib.colorUpdate) continue;
         NvkTevBatch b{};
         b.vstart = (uint32_t)nscene + ib.vstart;
         b.vcount = ib.vcount;

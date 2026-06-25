@@ -46,6 +46,11 @@ struct SbImmBatch {
     // src/dst. -1 = "not captured, use the present-layer default" (so existing colour-only
     // paths and tests that don't set these keep the old SRCALPHA/INVSRCALPHA behaviour).
     signed char blendType, blendSrc, blendDst;
+    // GXSetColorUpdate: false = the draw writes NO colour (an alpha-plane-only pass, e.g.
+    // SMS_FillScreenAlpha / the TModelWaterManager dst-alpha mask setup). The present layer
+    // drops its colour contribution — otherwise the invisible fullscreen quad washes the
+    // scene (the Delfino "white wash"). True for every ordinary draw.
+    bool colorUpdate = true;
     // The FULL GX TEV combiner captured at GXBegin (state().tev → NgxTevState). When set
     // (num_stages>0), the present layer generates the real per-stage combiner fragment and
     // honors it — instead of the legacy texture-modulate/passthrough approximations, which
