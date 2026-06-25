@@ -25,13 +25,18 @@
 // consumes it. We clear lazily on the first GXBegin AFTER a present consumed, so several
 // presents within one frame (waitForRetrace loops) render the same accumulated frame.
 
+#include <execinfo.h>        // backtrace / backtrace_symbols (SB_IMM_TRACE)
+#include <cstdlib>           // free
 #include <dolphin/gx.h>      // GXColor etc. (gx_state.h uses them)
 #include "gx_state.h"
 #include "gx_imm_xform.h"
 #include "tex_decode.h"      // sb_tex_decode / sb_tex_pad_* (SB_IMM_PRIM_DBG texture dump)
+#include "ngx_render_data.h" // NgxTevState — the full TEV combiner carried per imm batch
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <vector>
+#include <memory>
 
 using sb::platform::gx::state;
 using sb::render::SbImmVtx;
@@ -51,7 +56,46 @@ inline bool fmt_is_paletted(int fmt) { return fmt == 0x8 || fmt == 0x9 || fmt ==
 // --- accumulated frame: flat triangle list + per-texture batches (consumed by present) ---
 std::vector<SbImmVtx>   g_frame_tris;
 std::vector<SbImmBatch> g_batches;
+// Per-frame TEV-combiner store. One NgxTevState per distinct imm draw; batches point into
+// it. A vector OF unique_ptr (not a deque/vector-of-value) so (a) the default ctor allocates
+// NOTHING at static-init time — a std::deque allocates its map in its ctor and that ran
+// before the game OS/heap was up, faulting; and (b) push_back never invalidates the held
+// pointers (each NgxTevState is its own heap node). Cleared with the frame at consume.
+std::vector<std::unique_ptr<NgxTevState>> g_tevstore;
+NgxTevState g_tevSnap;          // the TEV captured at the current GXBegin
 bool g_consumed = true;        // start true so the first GXBegin clears the (empty) buffer
+
+// Build an NgxTevState from the live GX TEV registers (state().tev). The GXState TEV block
+// is stored in the SAME bit layout NgxTevStage consumes (see gx_state.h), so this is a
+// near-direct field copy — the immediate-mode counterpart of sb_build_tev_state (J3D path).
+inline void snapshot_tev() {
+    auto& g = state();
+    NgxTevState& st = g_tevSnap;
+    st = NgxTevState{};
+    int ns = g.numTevStages; if (ns < 1) ns = 1; if (ns > 16) ns = 16;
+    st.num_stages = (uint8_t)ns;
+    for (int s = 0; s < ns; ++s) {
+        st.stage[s].color_env  = g.tev.colorEnv[s];
+        st.stage[s].alpha_env  = g.tev.alphaEnv[s];
+        st.stage[s].texcoord   = g.tev.texcoord[s];
+        st.stage[s].texmap     = g.tev.texmap[s];
+        st.stage[s].color_chan = g.tev.colorChan[s];
+        st.stage[s].kcsel      = g.tev.kcsel[s];
+        st.stage[s].kasel      = g.tev.kasel[s];
+    }
+    for (int c = 0; c < 4; ++c) for (int k = 0; k < 4; ++k) {
+        st.tev_color[c][k] = g.tev.tevColor[c][k];
+        st.kcolor[c][k]    = g.tev.kColor[c][k];
+    }
+    for (int t = 0; t < 4; ++t) st.swap_table[t] = g.tev.swapTable[t];
+    // 2D overlays: depth off (drawn on top), faithful blend is carried separately on the
+    // batch. The PE alpha-test still matters (J2DPicture's alpha path), but J2D leaves it
+    // ALWAYS, so the default (no discard) is correct here.
+    st.pe = NgxPEState{};
+    st.pe.z_test = 0; st.pe.z_write = 0;
+    // st.key is left 0: the present layer keys the pipeline by the hash of the generated
+    // fragment string (matching the J3D path), so no struct hash is needed here.
+}
 
 // --- in-progress primitive (between GXBegin and GXEnd) ---
 bool  g_in_begin = false;
@@ -147,7 +191,12 @@ void push_batch(unsigned start, unsigned count, const SbImmBatch& tex) {
                                                 last.h == tex.h && last.fmt == tex.fmt));
         const bool sameBlend = last.blendType == tex.blendType &&
                                last.blendSrc == tex.blendSrc && last.blendDst == tex.blendDst;
-        if (sameTex && sameBlend && last.vstart + last.vcount == start) { last.vcount += count; return; }
+        // Only coalesce prims that share the SAME combiner — two same-texture draws with
+        // different TEV (e.g. a ramp picture then a plain modulate) must stay separate.
+        const bool sameTev = last.tev == tex.tev ||
+            (last.tev && tex.tev &&
+             std::memcmp(last.tev, tex.tev, sizeof(NgxTevState)) == 0);
+        if (sameTex && sameBlend && sameTev && last.vstart + last.vcount == start) { last.vcount += count; return; }
     }
     SbImmBatch b = tex;
     b.vstart = start; b.vcount = count;
@@ -165,6 +214,10 @@ extern "C" {
 // so some draws (JUTResFont glyph quads) legitimately never call GXEnd — without the
 // vertex-count auto-flush their batch would be silently dropped (the file-select banner /
 // "Select data" + slot-label glyphs were invisible for exactly this reason).
+// SB_IMM_TRACE: backtrace the native caller of each GXBegin (see sb_gx_imm_begin).
+static void* g_imm_caller[6];
+static int   g_imm_caller_n = 0;
+
 static void finalize_prim(void) {
     if (!g_in_begin) return;
     g_in_begin = false;
@@ -183,6 +236,36 @@ static void finalize_prim(void) {
         }
         g_prim_recs.push_back(r);
     }
+    // SB_IMM_TRACE: report the native caller of a full-width screen-edge textured quad
+    // (the white letterbox-bar signature: textured, |x|~1, |y|>=~0.7), once.
+    static bool s_traced = false;
+    if (!s_traced && std::getenv("SB_IMM_TRACE") && (g_prim_has_uv && g_texSnap.textured) && !g_prim_verts.empty()) {
+        float xmn=1e30f,xmx=-1e30f,ymn=1e30f,ymx=-1e30f;
+        for (auto& v : g_prim_verts){ if(v.x<xmn)xmn=v.x; if(v.x>xmx)xmx=v.x; if(v.y<ymn)ymn=v.y; if(v.y>ymx)ymx=v.y; }
+        if (xmn < -0.95f && xmx > 0.95f && (ymn < -0.7f || ymx > 0.7f) && (ymx-ymn) < 0.6f) {
+            s_traced = true;
+            std::fprintf(stderr, "[imm-trace] BAR prim nv=%d x[%.2f,%.2f] y[%.2f,%.2f] tex=%dx%d fmt=0x%x blend=%d/%d/%d caller:\n",
+                         (int)g_prim_verts.size(), xmn,xmx,ymn,ymx, g_texSnap.w,g_texSnap.h,g_texSnap.fmt,
+                         g_blendType,g_blendSrc,g_blendDst);
+            char** syms = backtrace_symbols(g_imm_caller, g_imm_caller_n);
+            if (syms) { for (int i=0;i<g_imm_caller_n;++i) std::fprintf(stderr, "    %s\n", syms[i]); free(syms); }
+            auto& gs = state();
+            std::fprintf(stderr, "    TEV nstages: tevColor C0(black)=%d,%d,%d,%d C1(white)=%d,%d,%d,%d CPREV=%d,%d,%d,%d\n",
+                gs.tev.tevColor[1][0],gs.tev.tevColor[1][1],gs.tev.tevColor[1][2],gs.tev.tevColor[1][3],
+                gs.tev.tevColor[2][0],gs.tev.tevColor[2][1],gs.tev.tevColor[2][2],gs.tev.tevColor[2][3],
+                gs.tev.tevColor[0][0],gs.tev.tevColor[0][1],gs.tev.tevColor[0][2],gs.tev.tevColor[0][3]);
+            for (int st=0; st<4; ++st)
+                std::fprintf(stderr, "    stage%d colorEnv=%08x alphaEnv=%08x texmap=%u chan=%u kc=%u\n",
+                    st, gs.tev.colorEnv[st], gs.tev.alphaEnv[st], gs.tev.texmap[st], gs.tev.colorChan[st], gs.tev.kcsel[st]);
+            // 8x8 texture content (intensity) via the snapshot.
+            if (g_texSnap.image && g_texSnap.w<=16 && g_texSnap.h<=16) {
+                std::fprintf(stderr, "    tex %dx%d fmt=0x%x first bytes:", g_texSnap.w,g_texSnap.h,g_texSnap.fmt);
+                const uint8_t* p=(const uint8_t*)g_texSnap.image;
+                for (int k=0;k<16;++k) std::fprintf(stderr, " %02x", p[k]);
+                std::fprintf(stderr, "\n");
+            }
+        }
+    }
     const unsigned start = (unsigned)g_frame_tris.size();
     sb::render::imm_triangulate(g_prim, g_prim_verts.data(),
                                 (int)g_prim_verts.size(), g_frame_tris);
@@ -191,11 +274,18 @@ static void finalize_prim(void) {
     // stale boundTex from an earlier window can't texture-ize the (texcoord-less) gradient.
     SbImmBatch tex = (g_prim_has_uv && g_texSnap.textured) ? g_texSnap : SbImmBatch{};
     tex.blendType = g_blendType; tex.blendSrc = g_blendSrc; tex.blendDst = g_blendDst;
+    // Carry the full TEV combiner captured at this prim's GXBegin (store in the per-frame
+    // deque so the pointer is stable until present consumes). The present layer generates
+    // the real combiner fragment from it (honors J2DPicture's black/white intensity ramp).
+    g_tevstore.push_back(std::unique_ptr<NgxTevState>(new NgxTevState(g_tevSnap)));
+    tex.tev = g_tevstore.back().get();
     push_batch(start, count, tex);
 }
 
 void sb_gx_imm_begin(int prim, int vtxfmt, int nverts) {
-    if (g_consumed) { g_frame_tris.clear(); g_batches.clear(); g_consumed = false; }
+    static const bool s_trace = [](){ const char* v = std::getenv("SB_IMM_TRACE"); return v && v[0] && v[0] != '0'; }();
+    if (s_trace) g_imm_caller_n = backtrace(g_imm_caller, 6);
+    if (g_consumed) { g_frame_tris.clear(); g_batches.clear(); g_tevstore.clear(); g_consumed = false; }
     // A previous primitive that omitted the (HW no-op) GXEnd — e.g. JUTResFont glyph quads —
     // is flushed HERE, at the next GXBegin, with ALL its vertex attributes intact. (Finalizing
     // at the nverts-th GXPosition was wrong: on GC a vertex carries pos THEN colour THEN
@@ -212,6 +302,7 @@ void sb_gx_imm_begin(int prim, int vtxfmt, int nverts) {
     g_tc_phase = 0;
     snapshot_state();
     snapshot_texture(vtxfmt);
+    snapshot_tev();
 }
 
 void sb_gx_imm_pos(float x, float y, float z) {

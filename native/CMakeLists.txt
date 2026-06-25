@@ -121,6 +121,7 @@ target_include_directories(sms-platform PUBLIC
     "${SMS_NATIVE_REPO_ROOT}/native/shim"
     "${SMS_NATIVE_REPO_ROOT}/native/render"   # gx_imm_xform.h (immediate-mode capture)
     "${SMS_NATIVE_REPO_ROOT}/runtime/render"  # tex_decode.h (SB_IMM_PRIM_DBG sprite dump)
+    "${SMS_NATIVE_REPO_ROOT}/runtime/ngx"     # ngx_render_data.h (NgxTevState per imm batch)
     "${SMS_NATIVE_REPO_ROOT}/reference/sms/include")
 target_compile_options(sms-platform PRIVATE -Wall -Wextra
     # The SDK headers declare HW-register/OS globals (__VIRegs, __OSBusClock, ...)

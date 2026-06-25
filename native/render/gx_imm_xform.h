@@ -15,6 +15,10 @@
 // to Vulkan [0,1] via *0.5+0.5 (2D overlays use z=0 -> 0.5; depth test is usually off).
 #include <vector>
 
+// Forward-declared so the pure transform/triangulation unit (and its tests) need no
+// renderer headers; the present layer dereferences it (sms_boot_present.cpp).
+struct NgxTevState;
+
 namespace sb::render {
 
 // A captured immediate-mode vertex BEFORE transform: model-space position + RGBA(0..1)
@@ -42,6 +46,13 @@ struct SbImmBatch {
     // src/dst. -1 = "not captured, use the present-layer default" (so existing colour-only
     // paths and tests that don't set these keep the old SRCALPHA/INVSRCALPHA behaviour).
     signed char blendType, blendSrc, blendDst;
+    // The FULL GX TEV combiner captured at GXBegin (state().tev → NgxTevState). When set
+    // (num_stages>0), the present layer generates the real per-stage combiner fragment and
+    // honors it — instead of the legacy texture-modulate/passthrough approximations, which
+    // are wrong for J2DPicture's intensity→black/white ramp (the white-letterbox-bar bug).
+    // nullptr / num_stages==0 ⇒ fall back to the legacy modulate/passthrough path. Points
+    // into a per-frame store owned by gx_imm_impl.cpp (stable until the present consumes).
+    const NgxTevState* tev = nullptr;
 };
 
 // GX primitive ids (GXEnum.h) — only the ones immediate mode emits.

@@ -99,6 +99,20 @@ void ensure_tex_shader() {
     g_tex_key  = fnv64(g_tex_frag.c_str());
 }
 
+// Generate (and cache) the real GX combiner fragment for an immediate-mode batch's captured
+// TEV state. Cached by the fragment-string hash so distinct combiners each compile once and
+// the returned const char* outlives renderTevFrame (the map is static). Mirrors the J3D path
+// (which keys batches by fnv64 of the generated fragment).
+const char* imm_tev_fragment(const NgxTevState& st, uint64_t& keyOut) {
+    static std::unordered_map<uint64_t, std::string> s_cache;
+    std::string frag = sb_tev_gen_fragment(st);
+    uint64_t key = fnv64(frag.c_str());
+    auto it = s_cache.find(key);
+    if (it == s_cache.end()) it = s_cache.emplace(key, std::move(frag)).first;
+    keyOut = key;
+    return it->second.c_str();
+}
+
 void write_ppm(const char* path) {
     FILE* f = std::fopen(path, "wb");
     if (!f) return;
@@ -298,14 +312,59 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
                 tex_storage.push_back(std::move(packed));
                 tex_cache.emplace(ib.image, idx);
             }
-            b.fragGlsl = g_tex_frag.c_str(); b.shaderKey = g_tex_key;
             b.tex[0].rgba = (const uint8_t*)tex_storage[idx].data();
             b.tex[0].w = ib.w; b.tex[0].h = ib.h; b.tex[0].linear = ib.linear;
             ++n_tex_batches;
+            // Honor the REAL captured combiner (J2DPicture's intensity→black/white ramp +
+            // corner-colour modulate) instead of the texture-modulate approximation, which
+            // rendered the black cinematic letterbox bars (ramp output = black) as white.
+            // SB_IMM_MODULATE forces the old hardcoded modulate for A/B bisection.
+            static const bool forceMod = [](){ const char* v = std::getenv("SB_IMM_MODULATE"); return v && v[0] && v[0] != '0'; }();
+            if (!forceMod && ib.tev && ib.tev->num_stages > 0) {
+                uint64_t key; b.fragGlsl = imm_tev_fragment(*ib.tev, key); b.shaderKey = key;
+                for (int c = 0; c < 4; ++c) for (int k = 0; k < 4; ++k) {
+                    b.push.tevreg[c][k] = ib.tev->tev_color[c][k];
+                    b.push.kcolor[c][k] = ib.tev->kcolor[c][k];
+                }
+            } else {
+                b.fragGlsl = g_tex_frag.c_str(); b.shaderKey = g_tex_key;
+            }
         } else {
             b.fragGlsl = g_pass_frag.c_str(); b.shaderKey = g_pass_key;
         }
         batches.push_back(b);
+    }
+
+    // SB_IMM_DBG: per-immediate-batch screen coverage + mean colour + textured/blend state.
+    // The 2D imm path is NOT filtered by SB_SKIP_KEY, so this localizes a HUD/fader/letterbox
+    // quad (e.g. the pure-white bottom band that survives a scene-key skip).
+    static const int immdbg = [](){ const char* v = std::getenv("SB_IMM_DBG"); return v && v[0] ? std::atoi(v) : 0; }();
+    static bool s_immdone = false;
+    if (immdbg && !s_immdone && nimm > 0 && (immdbg == 1 || g_frame >= immdbg)) {
+        s_immdone = true;
+        for (int bi = 0; bi < nibatch; ++bi) {
+            const SbImmBatch& ib = ibatches[bi];
+            float xmn=1e30f,xmx=-1e30f,ymn=1e30f,ymx=-1e30f; double r=0,g=0,bl=0,a=0; uint32_t n=0;
+            for (uint32_t i = ib.vstart; i < ib.vstart + ib.vcount && (int)i < nimm; ++i) {
+                const SbImmVtx& v = imm[i];
+                if (v.x<xmn)xmn=v.x; if (v.x>xmx)xmx=v.x; if (v.y<ymn)ymn=v.y; if (v.y>ymx)ymx=v.y;
+                r+=v.r; g+=v.g; bl+=v.b; a+=v.a; ++n;
+            }
+            if (!n) continue;
+            std::fprintf(stderr, "[immdbg] ib%d vc=%u x[%.3f,%.3f] y[%.3f,%.3f] rgb=%.2f,%.2f,%.2f a=%.2f "
+                         "tex=%d fmt=0x%x %dx%d blend=%d/%d/%d tev_ns=%d c0env=%08x C1=%d,%d,%d,%d\n",
+                         bi, ib.vcount, xmn,xmx,ymn,ymx, r/n,g/n,bl/n,a/n,
+                         (int)ib.textured, ib.fmt, ib.w, ib.h, ib.blendType, ib.blendSrc, ib.blendDst,
+                         ib.tev ? ib.tev->num_stages : -1,
+                         ib.tev ? ib.tev->stage[0].color_env : 0u,
+                         ib.tev?ib.tev->tev_color[2][0]:0, ib.tev?ib.tev->tev_color[2][1]:0,
+                         ib.tev?ib.tev->tev_color[2][2]:0, ib.tev?ib.tev->tev_color[2][3]:0);
+            if (ib.vcount <= 24) for (uint32_t i = ib.vstart; i < ib.vstart + ib.vcount && (int)i < nimm; ++i) {
+                const SbImmVtx& v = imm[i];
+                std::fprintf(stderr, "        v%u (%.3f,%.3f,%.3f) uv(%.2f,%.2f) rgba=%.2f,%.2f,%.2f,%.2f\n",
+                             i-ib.vstart, v.x,v.y,v.z, v.u,v.v, v.r,v.g,v.b,v.a);
+            }
+        }
     }
 
     static int s_bbox = 0;
