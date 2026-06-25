@@ -66,8 +66,13 @@ direction of a robust PC-native engine rather than bug-for-bug GC emulation.
 ## Verification
 - Before: every gameplay run → watchdog "no forward progress" in `drawHead` within 20s.
 - After: 45s continuous run, reached `APP_STATE_GAMEPLAY`, **0** hang/cycle/abort markers
-  even with the opt-in `SB_DRAWBUF_CHECK=1` tripwire enabled; present frames advance
-  (201→208 under `SB_FRAME_DUMP`).
+  even with the opt-in `SB_DRAWBUF_CHECK=1` tripwire enabled.
+- **The fix unblocked actual gameplay rendering**: the native engine now renders **Delfino
+  Plaza** — buildings, beach, teal sea, parasol, market stalls (`scratch/frames/gp_best.png`,
+  ~frame 260). `scene_verts` is 17907 on ~60% of frames; the 0-vert frames are interspersed
+  empty captures (TURBO drives `direct()` multiple times per present and
+  `sb_boot_capture_frame_begin` resets between drive and present — a timing artifact, not the
+  hang). Pick a populated frame to view.
 
 ## Tooling added (env-gated, OFF by default)
 - `SB_DRAWBUF_CHECK=1` — Floyd cycle tripwire in `drawHead` (aborts naming buffer+packet
