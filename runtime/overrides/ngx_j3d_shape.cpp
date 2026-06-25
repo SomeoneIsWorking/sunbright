@@ -32,6 +32,7 @@
 #include "../ngx/ngx_mesh.h"
 #include "../ngx/ngx_render_data.h"
 #include "../ngx/ngx_project.h"   // pure, unit-tested eye→clip→NDC (sunbright-render-test)
+#include "../ngx/ngx_display_gen.h"   // ngx_batch_displayed (parity dump: count only displayed verts)
 #include "../ngx/ngx_clip.h"      // pure, unit-tested near-plane triangle clip
 #include "../ngx/ngx_light.h"     // pure, unit-tested GX per-vertex lighting (test_lighting)
 #include "../ngx/ngx_imm_geom.h"  // pure, unit-tested immediate-mode GX geometry (GXDrawCube)
@@ -2525,26 +2526,39 @@ void ngx_frame_publish() {
         static long s_pfn = 0;
         if (s_pf) {
             const NgxRenderVertex* sv = g_snap[g_cur].data();
-            const size_t nv = g_snap_count[g_cur];
+            const std::vector<NgxRenderBatch>& bv = g_batches[g_cur];
+            // Count only DISPLAYED geometry — the same filter the present applies (ngx_present.cpp):
+            // (1) display GENERATION (drop earlier/cleared-away + offscreen EFB-copy passes) and
+            // (2) sub-display VIEWPORT (drop render-to-texture passes: reflections/shadows/previews).
+            // Without this we'd over-count by every offscreen pass the capture accumulates — the cause
+            // of the oracle's ~10x on-screen-vert inflation vs sms-boot's single main-display pass.
+            const int display_gen = g_display_gen[g_cur];
+            uint32_t disp_vp_area = 0;
+            for (const auto& b : bv) { uint32_t a = (uint32_t)b.vp_w * b.vp_h; if (a > disp_vp_area) disp_vp_area = a; }
             float xmn=1e30f,xmx=-1e30f,ymn=1e30f,ymx=-1e30f,zmn=1e30f,zmx=-1e30f;
-            double cks=0, col=0; int on=0, nan=0;
-            for (size_t i = 0; i < nv; ++i) {
-                const NgxRenderVertex& v = sv[i];
-                const float w = v.clip[3];
-                if (!(std::isfinite(v.clip[0])&&std::isfinite(v.clip[1])&&std::isfinite(v.clip[2])&&std::isfinite(w))) { ++nan; continue; }
-                // On-screen = w>0 and screen X,Y in [-1,1]; NDC Z excluded (range differs across
-                // engines → not cross-engine comparable). Matches sms-boot's sb_parity_emit.
-                if (w > 1e-5f) { const float nx=v.clip[0]/w, ny=v.clip[1]/w, nz=v.clip[2]/w;
-                    if (nx>=-1.f&&nx<=1.f&&ny>=-1.f&&ny<=1.f) { ++on;
-                        if(nx<xmn)xmn=nx; if(nx>xmx)xmx=nx; if(ny<ymn)ymn=ny; if(ny>ymx)ymx=ny;
-                        if(nz<zmn)zmn=nz; if(nz>zmx)zmx=nz;
-                        cks += (double)nx*1.0+(double)ny*1.1;
-                        col += (double)v.rgba[0]+(double)v.rgba[1]*1.1+(double)v.rgba[2]*1.2; } }
+            double cks=0, col=0; int on=0, nan=0, ndbatch=0; long nv = 0;
+            for (const NgxRenderBatch& b : bv) {
+                if (!ngx_batch_displayed((int)b.gen, display_gen)) continue;
+                if (disp_vp_area && (uint32_t)b.vp_w * b.vp_h < disp_vp_area) continue;
+                ++ndbatch;
+                for (uint32_t i = b.vstart; i < b.vstart + b.vcount && i < g_snap_count[g_cur]; ++i) {
+                    const NgxRenderVertex& v = sv[i]; ++nv;
+                    const float w = v.clip[3];
+                    if (!(std::isfinite(v.clip[0])&&std::isfinite(v.clip[1])&&std::isfinite(v.clip[2])&&std::isfinite(w))) { ++nan; continue; }
+                    // On-screen = w>0 and screen X,Y in [-1,1]; NDC Z excluded (range differs across
+                    // engines → not cross-engine comparable). Matches sms-boot's sb_parity_emit.
+                    if (w > 1e-5f) { const float nx=v.clip[0]/w, ny=v.clip[1]/w, nz=v.clip[2]/w;
+                        if (nx>=-1.f&&nx<=1.f&&ny>=-1.f&&ny<=1.f) { ++on;
+                            if(nx<xmn)xmn=nx; if(nx>xmx)xmx=nx; if(ny<ymn)ymn=ny; if(ny>ymx)ymx=ny;
+                            if(nz<zmn)zmn=nz; if(nz>zmx)zmx=nz;
+                            cks += (double)nx*1.0+(double)ny*1.1;
+                            col += (double)v.rgba[0]+(double)v.rgba[1]*1.1+(double)v.rgba[2]*1.2; } }
+                }
             }
             if (!on) { xmn=xmx=ymn=ymx=zmn=zmx=0.f; }
-            std::fprintf(s_pf, "{\"frame\":%ld,\"nverts\":%d,\"geom\":{\"onscr\":%d,\"nan\":%d,"
+            std::fprintf(s_pf, "{\"frame\":%ld,\"nverts\":%ld,\"nbatch\":%d,\"geom\":{\"onscr\":%d,\"nan\":%d,"
                          "\"ndc\":[%.4f,%.4f,%.4f,%.4f,%.4f,%.4f],\"cks\":%.3f,\"colcks\":%.3f}}\n",
-                         s_pfn++, (int)nv, on, nan, xmn,xmx,ymn,ymx,zmn,zmx, cks, col);
+                         s_pfn++, nv, ndbatch, on, nan, xmn,xmx,ymn,ymx,zmn,zmx, cks, col);
             std::fflush(s_pf);
         }
     }

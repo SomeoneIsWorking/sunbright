@@ -92,6 +92,12 @@ def diff(pa, pb, ndc_tol=0.02, bright_tol=8.0):
     A, B = load_jsonl(pa), load_jsonl(pb)
     if not A or not B:
         print("FAIL: empty dump(s)"); return 1
+    # Cross-engine (one dump is the geometry-only pure-Dolphin oracle: no `proj` field) → window
+    # summary, NOT per-frame: the two engines number frames independently, so a shared index is
+    # different game-time on each side. Per-frame is for native A/B (same engine, same frame).
+    cross = not any("proj" in f for f in A) or not any("proj" in f for f in B)
+    if cross:
+        return _diff_summary(A, B, pa, pb)
     byf_b = {fr.get("frame"): fr for fr in B}
     div = 0; matched = 0
     def relmax(va, vb):
@@ -164,31 +170,37 @@ def _median(xs):
     return 0 if not n else (xs[n//2] if n % 2 else 0.5*(xs[n//2-1]+xs[n//2]))
 
 def _summarize(frames):
-    """Convention-robust window summary: median total verts, on-screen count, and on-screen
-    screen-XY extent (width=xmax-xmin, height=ymax-ymin — sign-independent)."""
-    nv, on, w, h = [], [], [], []
+    """Convention-robust window summary: median DISPLAYED BATCH count (the robust cross-engine
+    geometry signal — independent of clip methodology), total verts, on-screen count, and
+    on-screen screen-XY extent."""
+    nb, nv, on, w, h = [], [], [], [], []
     for f in frames:
         g = f.get("geom", {})
         if g.get("onscr", 0) <= 0:   # skip blank/transition frames
             continue
-        nv.append(f.get("nverts", 0)); on.append(g.get("onscr", 0))
+        nb.append(f.get("nbatch", 0)); nv.append(f.get("nverts", 0)); on.append(g.get("onscr", 0))
         nd = g.get("ndc", [0,0,0,0,0,0])
         w.append(nd[1]-nd[0]); h.append(nd[3]-nd[2])
-    return {"frames": len(nv), "nverts": _median(nv), "onscr": _median(on),
+    return {"frames": len(nv), "nbatch": _median(nb), "nverts": _median(nv), "onscr": _median(on),
             "xw": _median(w), "yh": _median(h)}
 
 def _diff_summary(A, B, pa, pb):
     sa, sb = _summarize(A), _summarize(B)
     print(f"cross-engine summary (no shared frame indices):")
-    print(f"  {'metric':10s} {'oracle('+pa.split('/')[-1]+')':>22s} {'native('+pb.split('/')[-1]+')':>22s}   relΔ")
+    print(f"  {'metric':12s} {'oracle':>14s} {'native':>14s}   relΔ")
     div = 0
-    for k, tol, label in [("nverts", 0.10, "total verts"), ("onscr", 0.10, "on-screen verts"),
-                          ("xw", 0.05, "screen width"), ("yh", 0.05, "screen height")]:
+    # nbatch is the PRIMARY (robust) signal: displayed batch/material count is independent of clip
+    # methodology. on-screen verts is SECONDARY (confounded — sms-boot emits unclipped, the GX
+    # capture near-clips, so the in-[-1,1] count differs for near/edge geometry even at parity).
+    rows = [("nbatch", 0.10, "batches*"), ("nverts", 0.15, "total verts"),
+            ("onscr", 0.25, "on-screen v~"), ("xw", 0.05, "screen width"), ("yh", 0.05, "screen height")]
+    for k, tol, label in rows:
         va, vb = sa[k], sb[k]
         rel = abs(va-vb) / max(1.0, abs(va), abs(vb))
         flag = "  <-- DIVERGE" if rel > tol else ""
         if rel > tol: div += 1
-        print(f"  {label:10s} {va:22.2f} {vb:22.2f}   {rel:5.2f}{flag}")
+        print(f"  {label:12s} {va:14.1f} {vb:14.1f}   {rel:5.2f}{flag}")
+    print(f"  (* batches = robust signal; ~ on-screen verts confounded by clip methodology)")
     if sa["frames"] == 0 or sb["frames"] == 0:
         print(f"  WARN: a dump has 0 non-blank frames (oracle {sa['frames']}, native {sb['frames']})")
     print(f"summary: {div} metric(s) diverge beyond tolerance")
