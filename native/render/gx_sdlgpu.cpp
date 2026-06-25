@@ -259,8 +259,11 @@ void ensure_vbuf(size_t bytes) {
 }
 
 bool enabled() {
+    // DEFAULT ON: SDL3 GPU is the GX seam's renderer (full nvk parity, P4). SB_SDLGPU=0 forces the
+    // nvk path (the A/B oracle). If init() later fails in some context, the present layer falls back
+    // to nvk anyway, so default-on is safe.
     static int v = -1;
-    if (v < 0) { const char* e = std::getenv("SB_SDLGPU"); v = (e && e[0] && e[0] != '0') ? 1 : 0; }
+    if (v < 0) { const char* e = std::getenv("SB_SDLGPU"); v = (e && e[0] == '0') ? 0 : 1; }
     return v == 1;
 }
 
