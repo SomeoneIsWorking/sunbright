@@ -2511,6 +2511,43 @@ void ngx_frame_publish() {
     // GXCopyTex (Sirena pass14) can't demote the main scene's generation out of the display.
     g_display_gen[g_cur] = (int)g_efb_gen;
     g_front.store(g_cur, std::memory_order_release);
+
+    // PARITY ORACLE DUMP (SUNBRIGHT_PARITY_DUMP=path): emit the SAME renderer-neutral geometry
+    // aggregate sms-boot's SB_PARITY_DUMP emits (tools/render/PARITY_SWEEP.md) so the two engines'
+    // rendering can be diffed value-level. Runs here at the per-frame publish (capture/NGX_SHAPE,
+    // independent of present) so it works under PURE Dolphin render (NGX_PRESENT=0). The captured
+    // verts (g_snap[g_cur], clip-space) are the SAME J3D geometry Dolphin draws via GX, so this is
+    // a faithful oracle. Geometry only (no proj/light form-matching): on-screen NDC count + AABB +
+    // position checksum + a colour checksum. The diff tool aligns frames offline by the checksum.
+    {
+        static std::FILE* s_pf = [](){ const char* p = std::getenv("SUNBRIGHT_PARITY_DUMP");
+            return (p && p[0]) ? std::fopen(p, "w") : nullptr; }();
+        static long s_pfn = 0;
+        if (s_pf) {
+            const NgxRenderVertex* sv = g_snap[g_cur].data();
+            const size_t nv = g_snap_count[g_cur];
+            float xmn=1e30f,xmx=-1e30f,ymn=1e30f,ymx=-1e30f,zmn=1e30f,zmx=-1e30f;
+            double cks=0, col=0; int on=0, nan=0;
+            for (size_t i = 0; i < nv; ++i) {
+                const NgxRenderVertex& v = sv[i];
+                const float w = v.clip[3];
+                if (!(std::isfinite(v.clip[0])&&std::isfinite(v.clip[1])&&std::isfinite(v.clip[2])&&std::isfinite(w))) { ++nan; continue; }
+                // On-screen = w>0 and screen X,Y in [-1,1]; NDC Z excluded (range differs across
+                // engines → not cross-engine comparable). Matches sms-boot's sb_parity_emit.
+                if (w > 1e-5f) { const float nx=v.clip[0]/w, ny=v.clip[1]/w, nz=v.clip[2]/w;
+                    if (nx>=-1.f&&nx<=1.f&&ny>=-1.f&&ny<=1.f) { ++on;
+                        if(nx<xmn)xmn=nx; if(nx>xmx)xmx=nx; if(ny<ymn)ymn=ny; if(ny>ymx)ymx=ny;
+                        if(nz<zmn)zmn=nz; if(nz>zmx)zmx=nz;
+                        cks += (double)nx*1.0+(double)ny*1.1;
+                        col += (double)v.rgba[0]+(double)v.rgba[1]*1.1+(double)v.rgba[2]*1.2; } }
+            }
+            if (!on) { xmn=xmx=ymn=ymx=zmn=zmx=0.f; }
+            std::fprintf(s_pf, "{\"frame\":%ld,\"nverts\":%d,\"geom\":{\"onscr\":%d,\"nan\":%d,"
+                         "\"ndc\":[%.4f,%.4f,%.4f,%.4f,%.4f,%.4f],\"cks\":%.3f,\"colcks\":%.3f}}\n",
+                         s_pfn++, (int)nv, on, nan, xmn,xmx,ymn,ymx,zmn,zmx, cks, col);
+            std::fflush(s_pf);
+        }
+    }
     // Auto-freeze-on-shred: this just-published frame contains a skinned NDC spike → latch it
     // (ngx + GX oracle) so /abshot2 captures the actual spike frame for an A/B with the oracle.
     if (g_shred_pending_freeze.load(std::memory_order_acquire) && !g_ngx_frozen.load(std::memory_order_acquire)) {

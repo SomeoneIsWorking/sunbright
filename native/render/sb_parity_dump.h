@@ -65,18 +65,22 @@ inline void sb_parity_emit(std::FILE* f, int frame, const float clear[4],
     // divergence signal (a skinning/pose/camera bug moves these).
     {
         float gxmn=1e30f,gxmx=-1e30f,gymn=1e30f,gymx=-1e30f,gzmn=1e30f,gzmx=-1e30f;
-        double gcks = 0; int gon = 0, gnan = 0;
+        double gcks = 0, gcol = 0; int gon = 0, gnan = 0;
         for (int i = 0; i < nverts; ++i) {
             const NvkTevVertex& v = verts[i];
             if (!(std::isfinite(v.x)&&std::isfinite(v.y)&&std::isfinite(v.z)&&std::isfinite(v.w))) { ++gnan; continue; }
+            // On-screen = w>0 and screen X,Y in [-1,1]. NDC Z is NOT in the test: its range
+            // differs across engines (sms-boot remaps to Vulkan [0,1], the GX path keeps raw
+            // clip z), so it is not cross-engine comparable; we report it but never gate on it.
             if (v.w > 1e-5f) { const float nx=v.x/v.w, ny=v.y/v.w, nz=v.z/v.w;
-                if (nx>=-1.f&&nx<=1.f&&ny>=-1.f&&ny<=1.f&&nz>=0.f&&nz<=1.f) { ++gon;
+                if (nx>=-1.f&&nx<=1.f&&ny>=-1.f&&ny<=1.f) { ++gon;
                     if(nx<gxmn)gxmn=nx; if(nx>gxmx)gxmx=nx; if(ny<gymn)gymn=ny; if(ny>gymx)gymx=ny;
-                    if(nz<gzmn)gzmn=nz; if(nz>gzmx)gzmx=nz; gcks += (double)nx*1.0+(double)ny*1.1+(double)nz*1.2; } }
+                    if(nz<gzmn)gzmn=nz; if(nz>gzmx)gzmx=nz; gcks += (double)nx*1.0+(double)ny*1.1;
+                    gcol += (double)v.rgba[0]+(double)v.rgba[1]*1.1+(double)v.rgba[2]*1.2; } }
         }
         if (!gon) { gxmn=gxmx=gymn=gymx=gzmn=gzmx=0.f; }
-        std::fprintf(f, ",\"geom\":{\"onscr\":%d,\"nan\":%d,\"ndc\":[%.4f,%.4f,%.4f,%.4f,%.4f,%.4f],\"cks\":%.3f}",
-                     gon, gnan, gxmn,gxmx,gymn,gymx,gzmn,gzmx, gcks);
+        std::fprintf(f, ",\"geom\":{\"onscr\":%d,\"nan\":%d,\"ndc\":[%.4f,%.4f,%.4f,%.4f,%.4f,%.4f],\"cks\":%.3f,\"colcks\":%.3f}",
+                     gon, gnan, gxmn,gxmx,gymn,gymx,gzmn,gzmx, gcks, gcol);
     }
 
     // Lighting.

@@ -102,18 +102,21 @@ def diff(pa, pb, ndc_tol=0.02, bright_tol=8.0):
         if fb is None:
             continue
         matched += 1
-        # Projection + viewport (must match exactly — same game state).
-        if fa.get("projType") != fb.get("projType"):
-            print(f"  f{fi}: projType {fa.get('projType')} -> {fb.get('projType')}"); div += 1
+        # Only compare a field present in BOTH dumps — the pure-Dolphin oracle dump is geometry-only
+        # (no proj/lights/material form-matching), so those are skipped cross-engine, not flagged.
+        # Projection + viewport (exact game state; native A/B only).
+        if fa.get("projType") is not None and fb.get("projType") is not None and fa["projType"] != fb["projType"]:
+            print(f"  f{fi}: projType {fa['projType']} -> {fb['projType']}"); div += 1
         for k in ("proj", "vp"):
-            va, vb = fa.get(k, []), fb.get(k, [])
+            va, vb = fa.get(k), fb.get(k)
             if va and vb and relmax(va, vb) > ndc_tol:
                 print(f"  f{fi}: {k} differs (rel Δ{relmax(va,vb):.3f})  {va} -> {vb}"); div += 1
-        # Lighting.
-        if fa.get("lights", {}).get("n") != fb.get("lights", {}).get("n"):
-            print(f"  f{fi}: light count {fa.get('lights',{}).get('n')} -> {fb.get('lights',{}).get('n')}"); div += 1
+        # Lighting (native A/B only).
+        la, lb = fa.get("lights"), fb.get("lights")
+        if la and lb and la.get("n") != lb.get("n"):
+            print(f"  f{fi}: light count {la.get('n')} -> {lb.get('n')}"); div += 1
         for k in ("amb", "matc"):
-            va, vb = fa.get(k, []), fb.get(k, [])
+            va, vb = fa.get(k), fb.get(k)
             if va and vb and any(abs(x-y) > 0.02 for x, y in zip(va, vb)):
                 print(f"  f{fi}: {k} {va} -> {vb}"); div += 1
         # Frame geometry aggregate (the renderer-neutral cross-engine geometry signal).
@@ -125,9 +128,12 @@ def diff(pa, pb, ndc_tol=0.02, bright_tol=8.0):
             if abs(oa-ob) > max(16, 0.05*max(oa, ob, 1)):
                 print(f"  f{fi}: on-screen verts {oa} -> {ob} (Δ{ob-oa:+d})"); div += 1
             na, nb = ga.get("ndc", []), gb.get("ndc", [])
-            if na and nb and max((abs(x-y) for x, y in zip(na, nb)), default=0) > ndc_tol:
-                d = max(abs(x-y) for x, y in zip(na, nb))
-                print(f"  f{fi}: frame NDC AABB moved (max Δ{d:.3f})  {na} -> {nb}"); div += 1
+            # NDC z range differs across engines (Vulkan [0,1] vs raw GX clip z) — compare X,Y only
+            # cross-engine; compare Z too only for native A/B (both carry the `proj` field).
+            ncmp = 6 if (fa.get("proj") and fb.get("proj")) else 4
+            if na and nb and max((abs(na[i]-nb[i]) for i in range(min(ncmp, len(na), len(nb)))), default=0) > ndc_tol:
+                d = max(abs(na[i]-nb[i]) for i in range(min(ncmp, len(na), len(nb))))
+                print(f"  f{fi}: frame NDC {'XY' if ncmp==4 else 'XYZ'} AABB moved (max Δ{d:.3f})  {na[:ncmp]} -> {nb[:ncmp]}"); div += 1
         # XFB brightness (native dumps only; harmless if absent).
         ba, bb = fa.get("xfb", {}).get("bright"), fb.get("xfb", {}).get("bright")
         if ba is not None and bb is not None and abs(ba-bb) > bright_tol:
@@ -143,8 +149,49 @@ def diff(pa, pb, ndc_tol=0.02, bright_tol=8.0):
                 if ca and cb and relmax(ca, cb) > ndc_tol:
                     print(f"  f{fi} b{i}({xa.get('k')}): clip AABB moved (rel Δ{relmax(ca,cb):.3f})"); div += 1
     if matched == 0:
-        print(f"FAIL: no overlapping frame indices between {pa} and {pb} (align the dump windows)"); return 1
+        # CROSS-ENGINE: the two engines number frames independently (pure Dolphin 0..N vs sms-boot's
+        # present-frame window), so there are no shared indices. Both fastboot the same idle Delfino,
+        # which is near-static frame-to-frame, so compare WINDOW SUMMARIES of the convention-robust
+        # signals: total verts, on-screen count, and the on-screen screen-XY extent (width/height —
+        # sign-independent, so Y-up/Y-down and Z-range differences don't matter). A gross divergence
+        # (missing geometry, a smear blowing the screen extent, a collapse) shows here.
+        return _diff_summary(A, B, pa, pb)
     print(f"diff {pa} vs {pb}: {matched} frames matched, {div} divergences (rel {ndc_tol}, bright {bright_tol})")
+    return 1 if div else 0
+
+def _median(xs):
+    xs = sorted(xs); n = len(xs)
+    return 0 if not n else (xs[n//2] if n % 2 else 0.5*(xs[n//2-1]+xs[n//2]))
+
+def _summarize(frames):
+    """Convention-robust window summary: median total verts, on-screen count, and on-screen
+    screen-XY extent (width=xmax-xmin, height=ymax-ymin — sign-independent)."""
+    nv, on, w, h = [], [], [], []
+    for f in frames:
+        g = f.get("geom", {})
+        if g.get("onscr", 0) <= 0:   # skip blank/transition frames
+            continue
+        nv.append(f.get("nverts", 0)); on.append(g.get("onscr", 0))
+        nd = g.get("ndc", [0,0,0,0,0,0])
+        w.append(nd[1]-nd[0]); h.append(nd[3]-nd[2])
+    return {"frames": len(nv), "nverts": _median(nv), "onscr": _median(on),
+            "xw": _median(w), "yh": _median(h)}
+
+def _diff_summary(A, B, pa, pb):
+    sa, sb = _summarize(A), _summarize(B)
+    print(f"cross-engine summary (no shared frame indices):")
+    print(f"  {'metric':10s} {'oracle('+pa.split('/')[-1]+')':>22s} {'native('+pb.split('/')[-1]+')':>22s}   relΔ")
+    div = 0
+    for k, tol, label in [("nverts", 0.10, "total verts"), ("onscr", 0.10, "on-screen verts"),
+                          ("xw", 0.05, "screen width"), ("yh", 0.05, "screen height")]:
+        va, vb = sa[k], sb[k]
+        rel = abs(va-vb) / max(1.0, abs(va), abs(vb))
+        flag = "  <-- DIVERGE" if rel > tol else ""
+        if rel > tol: div += 1
+        print(f"  {label:10s} {va:22.2f} {vb:22.2f}   {rel:5.2f}{flag}")
+    if sa["frames"] == 0 or sb["frames"] == 0:
+        print(f"  WARN: a dump has 0 non-blank frames (oracle {sa['frames']}, native {sb['frames']})")
+    print(f"summary: {div} metric(s) diverge beyond tolerance")
     return 1 if div else 0
 
 # ---------------------------------------------------------------------------------------

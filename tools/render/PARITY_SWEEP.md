@@ -21,14 +21,27 @@ faithful native engine must match the oracle exactly:
 We do NOT compare Dolphin's read-back `xfmem` / GP registers (async-lagged → not a valid oracle)
 and we do NOT pixel-diff. The GX *call args* / J3D objects are the valid source on both sides.
 
-## Emitters (both write the same JSONL schema, one line per dumped frame)
+## Emitters (both write the same JSONL `geom` schema, one line per frame)
 
-- **sms-boot** — `SB_PARITY_DUMP=path` (`native/render/sb_parity_dump.h`, from the present).
-- **pure Dolphin** — `tools/render/dolphin_j3d_probe.py` *(oracle side; reads the same J3D state
-  from the running main build — WIP)*.
+- **sms-boot (native)** — `SB_PARITY_DUMP=path` (`native/render/sb_parity_dump.h`, from the present):
+  ```
+  SB_FRAME_DUMP=1 SB_FRAME_DUMP_START=240 SB_FRAME_DUMP_MAX=30 SB_PARITY_DUMP=scratch/frames/native.jsonl \
+    setarch -R env SUNBRIGHT_DISC=scratch/disc/sms.iso SB_THP_FAST=1 SB_TURBO=1 ./build-native/sms-boot
+  ```
+- **pure Dolphin (oracle)** — `SUNBRIGHT_PARITY_DUMP=path` (emitted from `ngx_frame_publish` in
+  `runtime/overrides/ngx_j3d_shape.cpp`, reading the captured J3D geometry). Run Dolphin-GX render
+  with capture on (capture is diagnostic-only; it does not change the on-screen image):
+  ```
+  SDL_VIDEODRIVER=x11 SUNBRIGHT_FASTBOOT=1 SUNBRIGHT_NGX_SHAPE=1 SUNBRIGHT_TURBO=1 \
+    SUNBRIGHT_PARITY_DUMP=scratch/frames/oracle.jsonl ./build/sunbright
+  ```
 
-Both fastboot the same Delfino state; dumps pair by frame index (deterministic fastboot ⇒ matched
-game state at the same frame number).
+The engines number frames independently, so cross-engine `diff` either matches on shared frame
+indices (when the windows overlap) or falls back to a **window summary** (median verts / on-screen
+count / screen-XY extent) — convention-robust (Y-up/down and NDC-Z range don't matter).
+
+Compared cross-engine: total verts, on-screen count (w>0 ∧ |x/w|,|y/w| ≤ 1 — Z excluded, its range
+differs), screen-XY AABB. NOT compared cross-engine: projection form, lights, NDC-Z, pixels.
 
 ## Sweep — `tools/render/parity_sweep.py`
 
