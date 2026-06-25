@@ -60,6 +60,24 @@ bool dbg_cam() {
 	if (v < 0) { const char* e = std::getenv("SB_CAM_DBG"); v = (e && e[0] && e[0] != '0') ? 1 : 0; }
 	return v != 0;
 }
+} // namespace
+
+// SB_OWN_GXLIST=1: the OWNED single draw path. Instead of hand-driving the scene
+// (drive_sky/scene->perform(0x8)/drive_chr), capture the REAL GC master GX perform-list render
+// (MarDirectorDirect.cpp else-branch: mPerformListGX/Silhouette/GXPost) once per VI present. That
+// path draws the FULL scene the way the game does (measured 2026-06-25: 140 displayed batches vs the
+// hand-driven 60, oracle 155 — see debug_journal/2026-06-25_own_gxlist_draw.md). scene_drive still
+// runs its per-frame SETUP (camera / projection latch / stage-light load / option-camera calc /
+// camera-settle), because the real path leaves TLightCommon::setLight a stub (no GX light load) and
+// needs the option-camera calc to advance the file-select transition. Opt-in while it is verified
+// at the value level (the scene renders overbright-white, so eyeballing is invalid — parity only).
+extern "C" int sb_own_gxlist() {
+	static int v = -1;
+	if (v < 0) { const char* e = std::getenv("SB_OWN_GXLIST"); v = (e && e[0] && e[0] != '0') ? 1 : 0; }
+	return v;
+}
+
+namespace {
 JDrama::TGraphics g_graphics;
 bool g_graphics_init = false;
 
@@ -631,6 +649,16 @@ extern "C" bool sb_boot_drive_scene() {
 	// real-path draws — is skipped. The camera + light setup above still runs every direct() (cheap;
 	// keeps the file-select option-camera timer + view matrix current). The present re-arms the next
 	// capture. (SB_NO_DRIVE_SCENE returns earlier, never locking, so its real-path-only mode is intact.)
+	// SB_OWN_GXLIST: the real GX perform-list render (driven from TMarDirector::direct) is the
+	// owned draw path and is captured there (bracketed by begin/end_scene). scene_drive then runs
+	// SETUP ONLY (camera/proj/lights above) and skips the hand-driven draw — so the capture holds
+	// the full perform-list scene, not the partial hand-wired subset. Must NOT call begin_scene here
+	// (it would consume the once-per-present capture arm before the real render runs).
+	if (sb_own_gxlist()) {
+		if (dbg()) { static long n=0; if((++n%200)==0||n<=2)
+			std::fprintf(stderr, "[scene-drive] SB_OWN_GXLIST: setup-only (real GX perform list owns the draw)\n"); }
+		return true;
+	}
 	if (sb_boot_capture_begin_scene()) {
 		drive_sky();
 
