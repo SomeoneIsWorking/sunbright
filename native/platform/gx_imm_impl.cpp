@@ -69,6 +69,11 @@ float g_vp[6] = {0, 0, 640, 480, 0, 1};
 int   g_tcType = 2 /*GX_U16*/, g_tcFrac = 15;   // J2D default (J2DGrafContext)
 SbImmBatch g_texSnap;          // bound texture for the current prim (textured iff .textured)
 
+// blend state (GXSetBlendMode) captured live at GXBegin — faithful per-prim blend instead of
+// the present layer's old hardcoded SRCALPHA/INVSRCALPHA (which drew alpha-less RGB565 sprites,
+// e.g. the file-select shine sparkles, as opaque squares).
+signed char g_blendType = 1, g_blendSrc = 4, g_blendDst = 5;  // GX_BM_BLEND/SRCALPHA/INVSRCALPHA
+
 // current immediate-mode colour (GXColor*/GXParam sets it; applied to the last vertex).
 float g_cr = 1, g_cg = 1, g_cb = 1, g_ca = 1;
 
@@ -83,7 +88,7 @@ int g_dbg_left = 12;
 // records accumulate during the frame; printed once (then disabled) + cleared at take.
 const int g_prim_dbg_at = [] { const char* e = std::getenv("SB_IMM_PRIM_DBG"); return e && e[0] ? std::atoi(e) : 0; }();
 bool g_prim_dbg_done = false;
-struct PrimRec { int prim, nv; bool textured; int fmt, w, h;
+struct PrimRec { int prim, nv; bool textured; int fmt, w, h; int bt, bs, bd;
                  float xmn, xmx, ymn, ymx, umn, umx, vmn, vmx; };
 std::vector<PrimRec> g_prim_recs;
 
@@ -96,6 +101,9 @@ void snapshot_state() {
     for (int r = 0; r < 3; ++r) for (int c = 0; c < 4; ++c) g_posMtx[r][c] = m[r][c];
     g_vp[0] = g.vpLeft; g_vp[1] = g.vpTop; g_vp[2] = g.vpWd; g_vp[3] = g.vpHt;
     g_vp[4] = g.vpNearz; g_vp[5] = g.vpFarz;
+    g_blendType = (signed char)g.blendType;
+    g_blendSrc  = (signed char)g.blendSrc;
+    g_blendDst  = (signed char)g.blendDst;
 }
 
 // Snapshot the bound texmap-0 into g_texSnap. textured = TEX0 is a DIRECT attr (texcoords
@@ -134,7 +142,9 @@ void push_batch(unsigned start, unsigned count, const SbImmBatch& tex) {
         const bool sameTex = (last.textured == tex.textured) &&
                              (!tex.textured || (last.image == tex.image && last.w == tex.w &&
                                                 last.h == tex.h && last.fmt == tex.fmt));
-        if (sameTex && last.vstart + last.vcount == start) { last.vcount += count; return; }
+        const bool sameBlend = last.blendType == tex.blendType &&
+                               last.blendSrc == tex.blendSrc && last.blendDst == tex.blendDst;
+        if (sameTex && sameBlend && last.vstart + last.vcount == start) { last.vcount += count; return; }
     }
     SbImmBatch b = tex;
     b.vstart = start; b.vcount = count;
@@ -159,6 +169,7 @@ static void finalize_prim(void) {
         PrimRec r{}; r.prim = g_prim; r.nv = (int)g_prim_verts.size();
         r.textured = (g_prim_has_uv && g_texSnap.textured);
         r.fmt = g_texSnap.fmt; r.w = g_texSnap.w; r.h = g_texSnap.h;
+        r.bt = g_blendType; r.bs = g_blendSrc; r.bd = g_blendDst;
         r.xmn = r.ymn = r.umn = r.vmn = 1e30f; r.xmx = r.ymx = r.umx = r.vmx = -1e30f;
         for (auto& v : g_prim_verts) {
             if (v.x<r.xmn)r.xmn=v.x; if (v.x>r.xmx)r.xmx=v.x;
@@ -175,6 +186,7 @@ static void finalize_prim(void) {
     // Textured only if the prim actually emitted texcoords AND a texture was bound: a
     // stale boundTex from an earlier window can't texture-ize the (texcoord-less) gradient.
     SbImmBatch tex = (g_prim_has_uv && g_texSnap.textured) ? g_texSnap : SbImmBatch{};
+    tex.blendType = g_blendType; tex.blendSrc = g_blendSrc; tex.blendDst = g_blendDst;
     push_batch(start, count, tex);
 }
 
@@ -280,9 +292,9 @@ int sb_gx_imm_take_batches(const SbImmVtx** verts, const SbImmBatch** batches, i
         std::fprintf(stderr, "[imm-prim] frame with %zu prims (>= %d):\n", g_prim_recs.size(), g_prim_dbg_at);
         for (size_t i = 0; i < g_prim_recs.size(); ++i) {
             const PrimRec& r = g_prim_recs[i];
-            std::fprintf(stderr, "  p%zu prim=%#x nv=%d tex=%d fmt=0x%x %dx%d ndcX[%.3f,%.3f] "
-                         "ndcY[%.3f,%.3f] uv[%.3f,%.3f;%.3f,%.3f]\n",
-                         i, r.prim, r.nv, r.textured, r.fmt, r.w, r.h,
+            std::fprintf(stderr, "  p%zu prim=%#x nv=%d tex=%d fmt=0x%x %dx%d blend=%d/%d/%d "
+                         "ndcX[%.3f,%.3f] ndcY[%.3f,%.3f] uv[%.3f,%.3f;%.3f,%.3f]\n",
+                         i, r.prim, r.nv, r.textured, r.fmt, r.w, r.h, r.bt, r.bs, r.bd,
                          r.xmn, r.xmx, r.ymn, r.ymx, r.umn, r.umx, r.vmn, r.vmx);
         }
     }

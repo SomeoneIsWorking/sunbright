@@ -239,7 +239,18 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
         b.vcount = ib.vcount;
         std::memset(b.push.kcolor, 0xFF, sizeof b.push.kcolor);
         b.z_test = 0; b.z_write = 0;                 // 2D draws on top, no depth
-        b.blend_mode = 1; b.src_factor = 4; b.dst_factor = 5;  // SRCALPHA / INVSRCALPHA
+        // Faithful per-prim blend captured at GXBegin (GXSetBlendMode). Default to
+        // GX_BM_BLEND SRCALPHA/INVSRCALPHA when the seam didn't capture (older paths / tests).
+        // GX_BM_BLEND==1 -> blend on; factors are GXBlendFactor values (ZERO=0..INVSRCALPHA=5).
+        // SB_NO_IMM_BLEND forces the old hardcode for A/B bisection.
+        static const bool noimmblend = [](){ const char* v = std::getenv("SB_NO_IMM_BLEND"); return v && v[0] && v[0] != '0'; }();
+        if (noimmblend || (ib.blendType == 0 && ib.blendSrc == 0 && ib.blendDst == 0)) {
+            b.blend_mode = 1; b.src_factor = 4; b.dst_factor = 5;  // SRCALPHA / INVSRCALPHA
+        } else {
+            b.blend_mode = (ib.blendType == 1 /*GX_BM_BLEND*/) ? 1 : 0;
+            b.src_factor = (uint8_t)ib.blendSrc;
+            b.dst_factor = (uint8_t)ib.blendDst;
+        }
 
         // Gate the bound texture before decoding (cf. sb_resolve_textures): a bad fmt,
         // absurd dims, or a paletted format with no loaded TLUT would send the tiled

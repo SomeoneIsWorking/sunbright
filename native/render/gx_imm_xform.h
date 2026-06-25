@@ -38,6 +38,10 @@ struct SbImmBatch {
     unsigned char  fmt, wrapS, wrapT, linear;
     const void* tlut;               // palette ptr for CI formats (nullptr otherwise)
     int tlutfmt;                    // SbTlutFormat for the palette
+    // Blend state captured live at GXBegin (GXSetBlendMode): GX_BM_* type + GXBlendFactor
+    // src/dst. -1 = "not captured, use the present-layer default" (so existing colour-only
+    // paths and tests that don't set these keep the old SRCALPHA/INVSRCALPHA behaviour).
+    signed char blendType, blendSrc, blendDst;
 };
 
 // GX primitive ids (GXEnum.h) — only the ones immediate mode emits.
