@@ -240,11 +240,15 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
     // SB_SKIP_KEY=hex: drop every scene batch whose shaderKey high-32 matches (bisect which batch
     // owns an artifact — e.g. eb5c8e74 = the file-select sea foam).
     static const unsigned skipKey = [](){ const char* v = std::getenv("SB_SKIP_KEY"); return v && v[0] ? (unsigned)std::strtoul(v,nullptr,16) : 0u; }();
+    // SB_OPAQUE_ONLY=1: draw only opaque scene batches (blend_mode 0) — isolate whether the
+    // translucent/additive passes are blowing the scene to white (overbright diagnosis).
+    static const bool opaqueOnly = [](){ const char* v = std::getenv("SB_OPAQUE_ONLY"); return v && v[0] && v[0] != '0'; }();
     std::vector<Nvk::NvkTevBatch> batches;
     batches.reserve((size_t)nsbatch + 1);
     for (int i = 0; i < nsbatch; ++i) {
         Nvk::NvkTevBatch b = sbatches[i];
         if (skipKey && (unsigned)(b.shaderKey >> 32) == skipKey) continue;
+        if (opaqueOnly && b.blend_mode != 0) continue;
         if (solid) { b.fragGlsl = g_pass_frag.c_str(); b.shaderKey = g_pass_key; b.blend_mode = 0;
                      b.z_test = 0; b.z_write = 0; }
         batches.push_back(b);
@@ -257,7 +261,14 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
     std::vector<std::vector<uint32_t>> tex_storage;
     std::unordered_map<const void*, int> tex_cache;   // image ptr → tex_storage index
     int n_tex_batches = 0;
+    // SB_SKIP_IMM=1: drop ALL 2D immediate batches (isolate the 3D scene from the 2D overlay/
+    // fader/wipe — diagnose a fullscreen cover hiding the scene). SB_SKIP_IMM_IDX=N: drop only
+    // imm batch N (bisect which 2D quad covers the screen).
+    static const bool skipImm = [](){ const char* v = std::getenv("SB_SKIP_IMM"); return v && v[0] && v[0] != '0'; }();
+    static const int skipImmIdx = [](){ const char* v = std::getenv("SB_SKIP_IMM_IDX"); return v && v[0] ? std::atoi(v) : -1; }();
     for (int bi = 0; bi < nibatch; ++bi) {
+        if (skipImm) break;
+        if (bi == skipImmIdx) continue;
         const SbImmBatch& ib = ibatches[bi];
         Nvk::NvkTevBatch b{};
         b.vstart = (uint32_t)nscene + ib.vstart;
