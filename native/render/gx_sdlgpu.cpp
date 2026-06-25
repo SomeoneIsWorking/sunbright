@@ -114,7 +114,7 @@ SDL_GPUShader* ensure_frag(uint64_t shaderKey, const char* glsl) {
     return sh;
 }
 
-SDL_GPUGraphicsPipeline* ensure_pipeline(const sb::render::Nvk::NvkTevBatch& b) {
+SDL_GPUGraphicsPipeline* ensure_pipeline(const sb::render::NvkTevBatch& b) {
     uint32_t state = (uint32_t)(b.blend_mode & 1)
                    | ((uint32_t)(b.src_factor & 15) << 1)
                    | ((uint32_t)(b.dst_factor & 15) << 5)
@@ -179,7 +179,7 @@ SDL_GPUGraphicsPipeline* ensure_pipeline(const sb::render::Nvk::NvkTevBatch& b) 
     return pipe;
 }
 
-SDL_GPUSampler* get_sampler(const sb::render::Nvk::NvkTevBatch::Tex& t) {
+SDL_GPUSampler* get_sampler(const sb::render::NvkTevBatch::Tex& t) {
     // Mirror nvk getSampler: GX min-filter enum (0 NEAR,1 LINEAR,2 NEAR_MIP_NEAR,3 LIN_MIP_NEAR,
     // 4 NEAR_MIP_LIN,5 LIN_MIP_LIN). useMips = anything but pure GX_NEAR — SMS authors most ground/
     // water as GX_LINEAR with no mip chain, so we generate one ourselves (upload_texture) and treat
@@ -238,7 +238,7 @@ SDL_GPUTexture* upload_texture(const uint8_t* rgba, Uint32 w, Uint32 h) {
     return tex;
 }
 
-SDL_GPUTexture* tex_for(const sb::render::Nvk::NvkTevBatch::Tex& t) {
+SDL_GPUTexture* tex_for(const sb::render::NvkTevBatch::Tex& t) {
     auto it = g_tex_cache.find(t.rgba);
     if (it != g_tex_cache.end()) return it->second;
     SDL_GPUTexture* tex = upload_texture(t.rgba, t.w, t.h);
@@ -325,7 +325,7 @@ void frame_begin(float r, float g, float b, float a) {
 }
 
 void draw_tev(const sb::render::NvkTevVertex* verts, int nverts,
-              const sb::render::Nvk::NvkTevBatch* batches, int nbatch) {
+              const sb::render::NvkTevBatch* batches, int nbatch) {
     if (!g_ok || !g_in_frame || !g_cmd) return;
 
     for (auto& kv : g_tex_cache) if (kv.second) SDL_ReleaseGPUTexture(g_dev, kv.second);

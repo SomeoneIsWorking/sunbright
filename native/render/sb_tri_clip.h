@@ -13,7 +13,7 @@
 // invisible for near-uniform sky colour; for textured geometry that straddles a side plane it can
 // smear UVs at the very edge. Acceptable for now; a clip-space (pre-divide) clip would fix it.
 #pragma once
-#include "nvk.h"
+#include "gx_geom.h"
 #include "gx_imm_xform.h"
 #include <vector>
 

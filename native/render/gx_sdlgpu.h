@@ -10,7 +10,7 @@
 // no-DISPLAY GPU device (proven in scratch/sdlgpu_smoke). All calls happen on the present thread.
 #pragma once
 #include <cstdint>
-#include "nvk.h"   // NvkTevVertex / Nvk::NvkTevBatch (the captured scene + 2D imm geometry)
+#include "gx_geom.h"   // NvkTevVertex / NvkTevBatch (the captured scene + 2D imm geometry contract)
 
 namespace sb::gxsdl {
 
@@ -30,7 +30,7 @@ void frame_end();
 // P2+: render the captured combined geometry (scene 3D + 2D imm batches — the same verts/batches the
 // nvk path consumes) into the bound offscreen target. Must be called between frame_begin/frame_end.
 void draw_tev(const sb::render::NvkTevVertex* verts, int nverts,
-              const sb::render::Nvk::NvkTevBatch* batches, int nbatch);
+              const sb::render::NvkTevBatch* batches, int nbatch);
 
 // Read the last frame back into rgba (w*h*4, top-left origin). False if size mismatch / no device.
 bool readback(uint8_t* rgba, int w, int h);

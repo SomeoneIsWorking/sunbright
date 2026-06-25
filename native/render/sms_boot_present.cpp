@@ -12,7 +12,7 @@
 //
 // We only do GPU work while dumping is enabled and under the frame cap, so a normal run isn't
 // slowed by per-frame lavapipe rasterization.
-#include "nvk.h"
+#include "gx_geom.h"
 #include "gx_sdlgpu.h"         // SDL3 GPU GX backend (the GX→SDL3-GPU switch, behind SB_SDLGPU)
 #include "gx_imm_xform.h"      // SbImmVtx / SbImmBatch (immediate-mode capture)
 #include "ngx_render_data.h"   // NgxTevState (for the 2D passthrough / modulate shaders)
@@ -44,11 +44,10 @@ void sb_gx_get_projection(int* type, float proj[6], float vp[6]) __attribute__((
 // The frame's captured live J3D scene: vertex list + per-material TEV batches. WEAK — null when
 // the capture TU (sms_boot_j3d_capture.cpp) isn't linked, in which case the present draws only 2D.
 int sb_boot_capture_tev_take(const NvkTevVertex** verts,
-                             const Nvk::NvkTevBatch** batches, int* nbatches) __attribute__((weak));
+                             const NvkTevBatch** batches, int* nbatches) __attribute__((weak));
 
 namespace {
 
-Nvk g_nvk;
 bool g_init_tried = false;
 bool g_init_ok = false;
 int g_frame = 0;
@@ -120,17 +119,6 @@ const char* imm_tev_fragment(const NgxTevState& st, uint64_t& keyOut) {
     return it->second.c_str();
 }
 
-void write_ppm(const char* path) {
-    FILE* f = std::fopen(path, "wb");
-    if (!f) return;
-    std::fprintf(f, "P6\n%u %u\n255\n", g_nvk.width(), g_nvk.height());
-    for (uint32_t y = 0; y < g_nvk.height(); ++y)
-        for (uint32_t x = 0; x < g_nvk.width(); ++x) {
-            const uint8_t* p = g_nvk.at(x, y);
-            std::fputc(p[0], f); std::fputc(p[1], f); std::fputc(p[2], f);
-        }
-    std::fclose(f);
-}
 
 // Write a PPM from a tightly-packed RGBA buffer (top-left origin) — the raylib backend's readback.
 void write_ppm_buf(const char* path, const uint8_t* rgba, uint32_t w, uint32_t h) {
@@ -164,7 +152,7 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
     // see whether/when the camera brings geometry in-view.
     static const bool bbtrace = [](){ const char* v = std::getenv("SB_BBOX_TRACE"); return v && v[0] && v[0] != '0'; }();
     if (bbtrace) {
-        const NvkTevVertex* sv = nullptr; const Nvk::NvkTevBatch* sb = nullptr; int nb = 0;
+        const NvkTevVertex* sv = nullptr; const NvkTevBatch* sb = nullptr; int nb = 0;
         int n = (&sb_boot_capture_tev_take) ? sb_boot_capture_tev_take(&sv, &sb, &nb) : 0;
         static int s_bt = 0; static int s_f = 0; ++s_f;
         if (n > 0 && s_bt < 80 && (s_f % 8) == 0) {
@@ -187,7 +175,7 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
     // the file-select), which both leaks host memory and makes a later event-dump try to render
     // every accumulated frame at once (30k Vulkan texture submits → GPU wedge / watchdog kill).
     const NvkTevVertex* scene = nullptr;
-    const Nvk::NvkTevBatch* sbatches = nullptr;
+    const NvkTevBatch* sbatches = nullptr;
     int nsbatch = 0;
     int nscene = (&sb_boot_capture_tev_take) ? sb_boot_capture_tev_take(&scene, &sbatches, &nsbatch) : 0;
     const SbImmVtx* imm = nullptr;
@@ -217,11 +205,11 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
 
     if (!g_init_tried) {
         g_init_tried = true;
-        g_init_ok = g_nvk.init(kW, kH) || g_nvk.init(kW, kH, true);
+        g_init_ok = sb::gxsdl::init((int)kW, (int)kH);   // SDL3 GPU is the GX seam's only renderer
         if (!g_init_ok)
-            std::fprintf(stderr, "[present] no Vulkan device (dump disabled)\n");
+            std::fprintf(stderr, "[present] SDL3 GPU init failed (dump disabled)\n");
         else
-            std::printf("[present] nvk up (%ux%u) — dumping %d frames to scratch/frames/\n",
+            std::printf("[present] SDL3 GPU up (%ux%u) — dumping %d frames to scratch/frames/\n",
                         kW, kH, g_max_dump);
     }
     if (!g_init_ok) { g_max_dump = 0; return; }
@@ -254,10 +242,10 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
     // translucent/additive passes are blowing the scene to white (overbright diagnosis).
     static const bool opaqueOnly = [](){ const char* v = std::getenv("SB_OPAQUE_ONLY"); return v && v[0] && v[0] != '0'; }();
     static const bool texturedOnly = [](){ const char* v = std::getenv("SB_TEXTURED_ONLY"); return v && v[0] && v[0] != '0'; }();
-    std::vector<Nvk::NvkTevBatch> batches;
+    std::vector<NvkTevBatch> batches;
     batches.reserve((size_t)nsbatch + 1);
     for (int i = 0; i < nsbatch; ++i) {
-        Nvk::NvkTevBatch b = sbatches[i];
+        NvkTevBatch b = sbatches[i];
         if (skipKey && (unsigned)(b.shaderKey >> 32) == skipKey) continue;
         if (opaqueOnly && b.blend_mode != 0) continue;
         // SB_TEXTURED_ONLY=1: draw only scene batches that have a bound texmap0 — isolate the
@@ -284,7 +272,7 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
         if (skipImm) break;
         if (bi == skipImmIdx) continue;
         const SbImmBatch& ib = ibatches[bi];
-        Nvk::NvkTevBatch b{};
+        NvkTevBatch b{};
         b.vstart = (uint32_t)nscene + ib.vstart;
         b.vcount = ib.vcount;
         std::memset(b.push.kcolor, 0xFF, sizeof b.push.kcolor);
@@ -424,7 +412,7 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
     if (batchdbg && !s_batchdone && nscene > 0 && (batchdbg == 1 || (batchdbg > 1 && g_frame >= batchdbg) || settle_trig)) {
         s_batchdone = true;
         for (int bi = 0; bi < nsbatch; ++bi) {
-            const Nvk::NvkTevBatch& b = batches[bi];
+            const NvkTevBatch& b = batches[bi];
             float zmn=1e30f,zmx=-1e30f,zsum=0; float ymn=1e30f,ymx=-1e30f,xmn=1e30f,xmx=-1e30f;
             double rr=0,gg=0,bb=0,aa=0,amn=1e30,amx=-1e30,r2=0,g2=0,b2=0; uint32_t cnt=0;
             for (uint32_t i = b.vstart; i < b.vstart + b.vcount && i < verts.size(); ++i) {
@@ -469,30 +457,18 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
     // boot_000N.ppm STALE while writing boot_000(N+1), so analysis read a leftover frame.
     const int df = g_frame - 1;
 
-    // ── GX→SDL3-GPU switch (SB_SDLGPU): render the frame through the SDL3 GPU backend instead of
-    // nvk. Supersedes raylib (docs/gx_sdlgpu_switch.md); takes precedence when both are set.
-    // P1: device + clear-to-GX-copy-clear + readback (draws stubbed → frame is the clear colour).
-    if (sb::gxsdl::enabled() && sb::gxsdl::init((int)kW, (int)kH)) {
-        sb::gxsdl::frame_begin(c[0], c[1], c[2], c[3]);
-        sb::gxsdl::draw_tev(verts.data(), (int)verts.size(), batches.data(), (int)batches.size());
-        sb::gxsdl::frame_end();
-        static std::vector<uint8_t> sdlpix((size_t)kW * kH * 4);
-        char spath[160];
-        std::snprintf(spath, sizeof spath, "scratch/frames/boot_%04d.ppm", df);
-        if (sb::gxsdl::readback(sdlpix.data(), (int)kW, (int)kH))
-            write_ppm_buf(spath, sdlpix.data(), kW, kH);
-        std::printf("[present-sdlgpu] frame %d clear=(%.2f,%.2f,%.2f,%.2f) scene_batches=%d -> %s\n",
-                    df, c[0], c[1], c[2], c[3], nsbatch, spath);
-        std::fflush(stdout);
-        ++g_dumped;
-        return;
-    }
-
-    g_nvk.renderTevFrame(verts, batches, NvkClear{c[0], c[1], c[2], c[3]});
+    // ── Render the frame through the SDL3 GPU backend — the GX seam's ONLY renderer (the nvk
+    // Vulkan rasterizer was retired; docs/gx_sdlgpu_switch.md). ──
+    sb::gxsdl::frame_begin(c[0], c[1], c[2], c[3]);
+    sb::gxsdl::draw_tev(verts.data(), (int)verts.size(), batches.data(), (int)batches.size());
+    sb::gxsdl::frame_end();
+    static std::vector<uint8_t> present_pix;
+    present_pix.assign((size_t)kW * kH * 4, 0);
+    sb::gxsdl::readback(present_pix.data(), (int)kW, (int)kH);
 
     char path[160];
     std::snprintf(path, sizeof path, "scratch/frames/boot_%04d.ppm", df);
-    write_ppm(path);
+    write_ppm_buf(path, present_pix.data(), kW, kH);
     std::printf("[present] frame %d clear=(%.2f,%.2f,%.2f,%.2f) scene_verts=%d scene_batches=%d "
                 "imm_tris=%d imm_batches=%d (textured=%d) -> %s\n",
                 df, c[0], c[1], c[2], c[3], nscene, nsbatch, nimm / 3, nibatch,
@@ -523,7 +499,7 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
         if (sb_gx_get_projection) sb_gx_get_projection(&P.type, P.proj, P.vp);
         sb_parity_emit(s_parity, df, c, verts.data(), (int)verts.size(),
                        batches.data(), (int)batches.size(), L, P,
-                       g_nvk.rgba().data(), (int)g_nvk.width(), (int)g_nvk.height());
+                       present_pix.data(), (int)kW, (int)kH);
     }
 }
 

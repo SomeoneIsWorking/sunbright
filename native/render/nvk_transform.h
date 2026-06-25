@@ -7,7 +7,7 @@
 // assuming the viewport fills the render target. Pure + unit-testable.
 #pragma once
 #include "ngx_mesh.h"   // NgxVertex
-#include "nvk.h"        // NvkVertex
+#include "gx_geom.h"        // NvkVertex
 #include <dolphin/gx.h> // GXProject
 
 namespace sb::render {

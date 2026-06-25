@@ -13,43 +13,11 @@
 #include <cstdint>
 #include <vector>
 #include <string>
+#include "gx_geom.h"   // the geometry types (NvkVertex/NvkTexVertex/NvkTevVertex/NvkTevPush/
+                       // NvkClear/NvkTevBatch) now live here, renderer-agnostic. This header keeps
+                       // ONLY the retired Nvk Vulkan renderer class, used by the render-test suite.
 
 namespace sb::render {
-
-// A vertex the native engine produces itself: NDC xyz + RGBA (0..1). z is the NDC
-// depth ([0,1] in Vulkan) used for depth testing; 2D content sets z=0.
-struct NvkVertex {
-    float x, y, z;       // clip/NDC (z = depth)
-    float r, g, b, a;
-};
-
-// A textured vertex: NDC xyz + UV. Used by the textured draw path.
-struct NvkTexVertex {
-    float x, y, z;
-    float u, v;
-};
-
-// A TEV vertex: NDC xyz + both GX raster colour channels + the 8 GX texcoord UVs
-// (texgen already applied on the CPU). Matches the inputs the TEV fragment shader
-// (sb_tev_gen_fragment) consumes: vColor (color0), vColor1 (COLOR1A1), vUV[0..7].
-struct NvkTevVertex {
-    float x, y, z;        // CLIP-space position (the GPU divides; depth = z/w)
-    float w = 1.0f;       // CLIP-space w. 3D J3D verts carry the real perspective w (perspective-
-                          // correct interp + HW clipping); 2D/imm content is already-NDC → w=1.
-    float rgba[4];        // raster color0 (0..1)
-    float rgba1[4];       // raster COLOR1A1 (0..1)
-    float uv[8][2];       // per GX texcoord 0..7
-};
-
-// Push constants the generated TEV shader reads: GX TEV konst colours (0..255) and
-// the S10 TEV colour registers (CPREV/C0/C1/C2). Matches the GLSL
-// `layout(push_constant) Mat { ivec4 kcolor[4]; ivec4 tevreg[4]; }`.
-struct NvkTevPush {
-    int32_t kcolor[4][4];   // KONST0..3 RGBA
-    int32_t tevreg[4][4];   // CPREV/C0/C1/C2 RGBA (S10)
-};
-
-struct NvkClear { float r, g, b, a; };
 
 class Nvk {
 public:
@@ -92,19 +60,7 @@ public:
     // own generated fragment shader, textures, push constants and depth/blend state.
     // Shaders + pipelines are cached across frames (keyed by NvkTevBatch::shaderKey and
     // the pipeline state); per-batch textures + descriptor sets are transient.
-    struct NvkTevBatch {
-        uint32_t vstart = 0, vcount = 0;
-        NvkTevPush push{};
-        const char* fragGlsl = nullptr;   // sb_tev_gen_fragment(...) source (owned by caller)
-        uint64_t shaderKey = 0;           // unique per distinct fragGlsl (shader/pipeline cache key)
-        struct Tex { const uint8_t* rgba = nullptr; uint32_t w = 0, h = 0;
-                     uint8_t linear = 0;      // MAG filter linear (else nearest)
-                     uint8_t min_filter = 1;  // GX min filter (encodes mip mode)
-                     uint8_t max_aniso = 0;   // GX_ANISO_1/2/4 = 0/1/2
-                     uint8_t wrap_s = 1, wrap_t = 1; } tex[8];
-        uint8_t z_test = 1, z_func = 3 /*GX_LEQUAL*/, z_write = 1;
-        uint8_t blend_mode = 0, src_factor = 1, dst_factor = 0;   // GX blend (0=none)
-    };
+    using NvkTevBatch = sb::render::NvkTevBatch;   // the type moved to gx_geom.h; alias for callers
     bool renderTevFrame(const std::vector<NvkTevVertex>& verts,
                         const std::vector<NvkTevBatch>& batches, NvkClear clear);
 

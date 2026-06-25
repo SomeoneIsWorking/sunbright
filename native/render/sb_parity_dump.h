@@ -15,7 +15,7 @@
 // Schema is intentionally compact (one JSONL object/frame). Pure formatting over the data
 // the present already has; no Vulkan/GX calls of its own (caller passes the readback).
 #pragma once
-#include "nvk.h"
+#include "gx_geom.h"
 #include <cstdio>
 #include <cstdint>
 #include <cmath>
@@ -48,7 +48,7 @@ struct SbParityProj {
 // `fb` is the RGBA8 readback (fbw*fbh*4) — the XFB whose region stats we summarise.
 inline void sb_parity_emit(std::FILE* f, int frame, const float clear[4],
                            const NvkTevVertex* verts, int nverts,
-                           const Nvk::NvkTevBatch* batches, int nbatch,
+                           const NvkTevBatch* batches, int nbatch,
                            const SbParityLights& L, const SbParityProj& P,
                            const uint8_t* fb, int fbw, int fbh) {
     if (!f) return;
@@ -98,7 +98,7 @@ inline void sb_parity_emit(std::FILE* f, int frame, const float clear[4],
     // are normal for distant/near-plane geometry and must NOT be flagged).
     std::fprintf(f, ",\"batches\":[");
     for (int bi = 0; bi < nbatch; ++bi) {
-        const Nvk::NvkTevBatch& b = batches[bi];
+        const NvkTevBatch& b = batches[bi];
         float cxmn=1e30f,cxmx=-1e30f,cymn=1e30f,cymx=-1e30f,czmn=1e30f,czmx=-1e30f,cwmn=1e30f,cwmx=-1e30f;
         double cks = 0; int bad = 0; uint32_t cnt = 0, onscr = 0;
         for (uint32_t i = b.vstart; i < b.vstart + b.vcount && (int)i < nverts; ++i) {

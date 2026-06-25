@@ -32,7 +32,7 @@
 #include <JSystem/J3D/J3DGraphBase/J3DStruct.hpp>               // J3DLightInfo
 #include <JSystem/J3D/J3DGraphAnimator/J3DModel.hpp>
 
-#include "nvk.h"               // NvkTevVertex, Nvk::NvkTevBatch, NvkTevPush
+#include "gx_geom.h"               // NvkTevVertex, NvkTevBatch, NvkTevPush
 #include "gx_imm_xform.h"      // SbImmRawVtx / SbImmVtx / imm_project / imm_project_eye_clip
 #include "ngx_mesh.h"          // NgxCP, NgxVertex, ngx_build_mesh
 #include "ngx_render_data.h"   // NgxTevState
@@ -150,7 +150,7 @@ inline void sb_texgen_uv(const MatEntry::TexGenG& g, const NgxVertex& v,
 // Frame-global output: the present-ready vertex list + per-material batches. Cleared on the
 // first append after the present consumed them (take sets g_consumed).
 std::vector<NvkTevVertex>   g_verts;
-std::vector<Nvk::NvkTevBatch> g_batches;
+std::vector<NvkTevBatch> g_batches;
 bool g_consumed = true;
 // Capture-once-per-present lock (see sb_boot_capture_begin_scene / _end_scene below).
 bool g_locked = false;          // when true, sb_boot_capture_j3d/sphere skip (interval already done)
@@ -292,7 +292,7 @@ const MatEntry* get_mat_entry(J3DMaterial* mat, J3DTexture* modelTex) {
 }
 
 // Fill an NvkTevBatch's tex[] slots + push/state from a MatEntry (called when opening a batch).
-void fill_batch_material(Nvk::NvkTevBatch& b, const MatEntry& e) {
+void fill_batch_material(NvkTevBatch& b, const MatEntry& e) {
     b.push = e.push; b.shaderKey = e.key; b.fragGlsl = e.frag.c_str();
     b.z_test = e.z_test; b.z_func = e.z_func; b.z_write = e.z_write;
     b.blend_mode = e.blend_mode; b.src_factor = e.src_factor; b.dst_factor = e.dst_factor;
@@ -701,7 +701,7 @@ extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
     if (mat == g_last_mat && !g_batches.empty()) {
         g_batches.back().vcount += vcount;
     } else {
-        Nvk::NvkTevBatch b{};
+        NvkTevBatch b{};
         b.vstart = vstart; b.vcount = vcount;
         fill_batch_material(b, *me);
         g_batches.push_back(b);
@@ -804,7 +804,7 @@ extern "C" void sb_boot_capture_sphere(int numMajor, int numMinor) {
     const uint32_t vcount = (uint32_t)g_verts.size() - vstart;
     if (!vcount) return;
 
-    Nvk::NvkTevBatch b{};
+    NvkTevBatch b{};
     b.vstart = vstart; b.vcount = vcount;
     b.fragGlsl = pass_fragment().c_str(); b.shaderKey = fnv64(pass_fragment().c_str());
     std::memset(b.push.kcolor, 0xFF, sizeof b.push.kcolor);   // konst=1 (identity) — the passthrough
@@ -884,7 +884,7 @@ extern "C" void sb_boot_capture_end_scene() {
 // vertex count; *batches/*nbatches point at the batch list. Marks the buffers consumed (next
 // append clears). The NvkTevBatch fragGlsl/tex pointers stay valid (owned by g_matcache).
 int sb_boot_capture_tev_take(const NvkTevVertex** verts,
-                             const Nvk::NvkTevBatch** batches, int* nbatches) {
+                             const NvkTevBatch** batches, int* nbatches) {
     if (verts)    *verts    = g_verts.empty() ? nullptr : g_verts.data();
     if (batches)  *batches  = g_batches.empty() ? nullptr : g_batches.data();
     if (nbatches) *nbatches = (int)g_batches.size();
