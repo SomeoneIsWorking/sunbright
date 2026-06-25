@@ -255,9 +255,56 @@ L_fb28:  // phase 8 — done
 	return;
 }
 
+// Pure-rendering helpers Hx_Circle calls (the iris effect).  STAGE A: no-ops — the
+// phase/timer/state machine is the only control flow (every phase advance is driven by
+// Hx_TimerCountDown, NOT pixel feedback), so the wipe COMPLETES without them; STAGE B
+// will draw the iris (Hx_FrBufferMorf morphs the captured framebuffer; Hxs1/2_Circle draw
+// the expanding rings) once the immediate-mode draws are wired through.
+inline void Hx_FrBufferMorf_(f32 /*t*/) {}
+inline void Hx_SetVFilter_(f32 /*v*/) {}
+inline f32  Hx_MotionUpdate_circle() { return 0.0f; }   // returns G_var (render-only)
+inline void Hxs1_Circle_(f32 /*r*/) {}
+inline void Hxs2_Circle_(f32 /*a*/, f32 /*b*/, int /*alpha*/) {}
+
+// ---------------------------------------------------------------------------
+// Hx_Circle 0x80181ab4 — the iris/circle wipe (table1[1] type 1, table1[2] type 2).
+// Transcribed from the DOL: G.phase dispatch (phase 0 init / phase 1 run / phase>=2 done).
+//   phase 0: Hx_MotionSet(wipeType consts); timer = (wipeType==1 ? 30 : 25); phase->1; FALL
+//            INTO phase 1 (the original's init block falls through to the run block).
+//   phase 1: render the iris (stubbed); Hx_TimerCountDown; when it reaches 0 -> phase->2 AND
+//            G.state = 3 (DONE).  This is the gate that releases the scene-entry transition.
+//   phase>=2 (or <0): G.state = 3 (DONE).
+// The H / G_var / halfword-counter updates in the original feed ONLY the rendering helpers
+// (Hx_FrBufferMorf / Hxs1_Circle / Hxs2_Circle), not the phase advance, so STAGE A omits
+// them. Both wipeType 0 (type 2) and 1 (type 1) reach the same timer-countdown gate.
+void circle_callback() {
+	u32 phase = G.phase;
+	if (phase >= 2) {                  // phase 2 (done) or any out-of-range
+		G.state = 3;
+		return;
+	}
+	if (phase == 0) {                  // init, then fall into the phase-1 run body
+		Hx_MotionSet_(0, 0, 0, 0);     // wipeType-specific motion consts (render-only)
+		G.timer = (G.wipeType == 1) ? 0x1e /*30*/ : 0x19 /*25*/;
+		G.phase = 1;
+	}
+	// phase 1 run body (also reached by fall-through from phase 0):
+	f32 var = Hx_MotionUpdate_circle();  // render arg only
+	Hx_MotionUpdate_();
+	Hx_FrBufferMorf_(0.0f);
+	Hx_SetVFilter_(0.0f);
+	Hxs1_Circle_(var);                 // iris rings (stubbed)
+	if (hx_timer_countdown() == 0) {
+		G.phase += 1;                  // 1 -> 2
+		G.state = 3;                   // DONE — releases the wipe
+	}
+}
+
 // per-type wipe callback dispatch (original: table1[type] fn-ptr stored at G[0x20]).
 void run_callback() {
 	switch (G.type) {
+	case 1:
+	case 2:  circle_callback(); break;
 	case 12: mmark_callback(); break;
 	default:
 		// Only type 12 (the opening-movie m-mark wipe) is on the current boot path.
