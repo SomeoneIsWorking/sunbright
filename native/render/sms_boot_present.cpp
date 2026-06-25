@@ -13,6 +13,7 @@
 // We only do GPU work while dumping is enabled and under the frame cap, so a normal run isn't
 // slowed by per-frame lavapipe rasterization.
 #include "nvk.h"
+#include "gx_raylib.h"         // raylib/rlgl GX backend (the GX→raylib switch, behind SB_RAYLIB)
 #include "gx_imm_xform.h"      // SbImmVtx / SbImmBatch (immediate-mode capture)
 #include "ngx_render_data.h"   // NgxTevState (for the 2D passthrough / modulate shaders)
 #include "tev_shader.h"        // sb_tev_gen_fragment
@@ -128,6 +129,15 @@ void write_ppm(const char* path) {
             const uint8_t* p = g_nvk.at(x, y);
             std::fputc(p[0], f); std::fputc(p[1], f); std::fputc(p[2], f);
         }
+    std::fclose(f);
+}
+
+// Write a PPM from a tightly-packed RGBA buffer (top-left origin) — the raylib backend's readback.
+void write_ppm_buf(const char* path, const uint8_t* rgba, uint32_t w, uint32_t h) {
+    FILE* f = std::fopen(path, "wb");
+    if (!f) return;
+    std::fprintf(f, "P6\n%u %u\n255\n", w, h);
+    for (uint32_t i = 0; i < w * h; ++i) std::fwrite(rgba + i * 4, 1, 3, f);
     std::fclose(f);
 }
 
@@ -453,13 +463,34 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
             }
         }
     }
-    g_nvk.renderTevFrame(verts, batches, NvkClear{c[0], c[1], c[2], c[3]});
-
     // g_frame was already incremented above in every branch, so the frame number that actually
     // satisfied the dump window is g_frame-1. Name the file by THAT so SB_FRAME_DUMP_START=240
     // writes boot_0240.ppm (not boot_0241): the off-by-one made every START=N run leave the
     // boot_000N.ppm STALE while writing boot_000(N+1), so analysis read a leftover frame.
     const int df = g_frame - 1;
+
+    // ── GX→raylib switch (SB_RAYLIB): render the frame through raylib/rlgl instead of nvk. ──
+    // P1: context + clear-to-GX-copy-clear + readback (draws stubbed → frame is the clear colour).
+    // P2+ will replay the scene + 2D imm batches as rlgl immediate-mode geometry here. See
+    // docs/gx_raylib_switch.md. Until then this proves the context/readback/dump plumbing end-to-end.
+    if (sb::gxray::enabled() && sb::gxray::init((int)kW, (int)kH)) {
+        sb::gxray::frame_begin(c[0], c[1], c[2], c[3]);
+        // TODO(P2): replay `verts`/`batches` (scene) + 2D imm as rlBegin/rlVertex/rlColor/rlEnd.
+        sb::gxray::frame_end();
+        static std::vector<uint8_t> rlpix((size_t)kW * kH * 4);
+        char rpath[160];
+        std::snprintf(rpath, sizeof rpath, "scratch/frames/boot_%04d.ppm", df);
+        if (sb::gxray::readback(rlpix.data(), (int)kW, (int)kH))
+            write_ppm_buf(rpath, rlpix.data(), kW, kH);
+        std::printf("[present-raylib] frame %d clear=(%.2f,%.2f,%.2f,%.2f) scene_batches=%d -> %s\n",
+                    df, c[0], c[1], c[2], c[3], nsbatch, rpath);
+        std::fflush(stdout);
+        ++g_dumped;
+        return;
+    }
+
+    g_nvk.renderTevFrame(verts, batches, NvkClear{c[0], c[1], c[2], c[3]});
+
     char path[160];
     std::snprintf(path, sizeof path, "scratch/frames/boot_%04d.ppm", df);
     write_ppm(path);

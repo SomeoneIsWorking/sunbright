@@ -235,9 +235,22 @@ if(SB_VULKAN_LIB AND SB_VULKAN_INC AND SB_GLSLANG)
             SPIRV-Tools-opt SPIRV-Tools)
     endif()
 
+    # ── raylib (GX→raylib switch, docs/gx_raylib_switch.md) ────────────────────────────────
+    # Vendored via FetchContent (no system raylib). raylib bundles its own GLFW; a hidden
+    # window on DISPLAY=:0 gives a headless GL context. gx_raylib.cpp is the rlgl GX backend.
+    include(FetchContent)
+    set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(BUILD_GAMES    OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(raylib
+        GIT_REPOSITORY https://github.com/raysan5/raylib.git
+        GIT_TAG 5.5
+        GIT_SHALLOW TRUE)
+    FetchContent_MakeAvailable(raylib)
+
     add_library(sms-render STATIC
         "${SMS_NATIVE_REPO_ROOT}/native/render/nvk.cpp"
         "${SMS_NATIVE_REPO_ROOT}/native/render/ngx_native_glue.cpp"
+        "${SMS_NATIVE_REPO_ROOT}/native/render/gx_raylib.cpp"
         # SLICE 1 of the renderer-attach: the sms-boot VI present hook (nvk render + dump).
         "${SMS_NATIVE_REPO_ROOT}/native/render/sms_boot_present.cpp"
         # Reused SHIPPING TEV combiner generator + runtime GLSL->SPIR-V compiler (NOT
@@ -265,7 +278,7 @@ if(SB_VULKAN_LIB AND SB_VULKAN_INC AND SB_GLSLANG)
         "${SMS_NATIVE_REPO_ROOT}/runtime/ngx"
         "${SMS_NATIVE_REPO_ROOT}/runtime/render"
         "${SB_SHADER_GEN}" "${SB_VULKAN_INC}")
-    target_link_libraries(sms-render PUBLIC "${SB_VULKAN_LIB}" ${SB_NATIVE_GLSLANG_LIBS})
+    target_link_libraries(sms-render PUBLIC "${SB_VULKAN_LIB}" ${SB_NATIVE_GLSLANG_LIBS} raylib)
     # tev_shader.cpp / glsl_compile.cpp are SHIPPING ngx code (predates strict warnings);
     # -Wall -Wextra applies to the new nvk code, but keep the reused TUs from erroring.
     target_compile_options(sms-render PRIVATE -Wall -Wextra)
