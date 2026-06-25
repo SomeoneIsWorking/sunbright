@@ -73,6 +73,12 @@ extern "C" void sb_watchdog_set_running(void);
 extern "C" __attribute__((weak)) void sb_host_alloc_push(void) {}
 extern "C" __attribute__((weak)) void sb_host_alloc_pop(void) {}
 
+// Mark the calling host thread as a game thread (its plain `new` may use the JKR heap).
+// Called at every OSCreateThread carrier's entry; the bootstrap/main fiber is marked in
+// boot_heap_bringup. Default-FALSE so foreign GL-driver worker threads fall back to host
+// malloc (see JKRHeap.cpp). Weak no-op for the platform unit tests (no JKR heap linked).
+extern "C" __attribute__((weak)) void sb_mark_game_thread(void) {}
+
 namespace {
 
 // GC time base = bus clock / 4 = 162 MHz / 4 = 40.5 MHz.
@@ -369,6 +375,7 @@ BOOL OSIsThreadTerminated(OSThread* t) {
 }
 
 static void thread_trampoline(NativeThread* n) {
+    sb_mark_game_thread();   // this carrier may run game code that allocs on the JKR heap
     {
         std::unique_lock<std::mutex> lk(g_sched);
         t_self = n;

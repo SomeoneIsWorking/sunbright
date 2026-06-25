@@ -13,6 +13,13 @@
 #include <cstring>
 #include <new>
 
+// Mark the calling host thread (the main fiber) as a game thread so its plain `new`
+// allocations route onto the JKR heap — the default is FALSE so foreign GL-driver
+// threads fall back to host malloc (JKRHeap.cpp). This MUST run before any game
+// allocation on the main thread; the init_priority below guarantees that (it runs
+// before glslang's unprioritized static-init allocations).
+extern "C" void sb_mark_game_thread(void);
+
 namespace {
 void bringup_heap(size_t bytes) {
     void* block = nullptr;
@@ -21,6 +28,6 @@ void bringup_heap(size_t bytes) {
     u32 ehSize = (u32)((sizeof(JKRExpHeap) + 0xF) & ~0xFu);
     new (block) JKRExpHeap((u8*)block + ehSize, (u32)bytes - ehSize, nullptr, false);
 }
-struct HeapBringup { HeapBringup() { bringup_heap(64u * 1024 * 1024); } };
+struct HeapBringup { HeapBringup() { sb_mark_game_thread(); bringup_heap(64u * 1024 * 1024); } };
 HeapBringup g_heap_bringup __attribute__((init_priority(101)));
 } // namespace

@@ -11,6 +11,15 @@
 #include <cstring>
 #include <vector>
 
+// Host-allocation gate (JKRHeap.cpp): while raised on this thread, every plain `new`
+// routes to host malloc instead of the non-thread-safe JKR heap. The present thread is a
+// GAME thread, so a GL call here would otherwise drive Mesa's SYNCHRONOUS C++ allocations
+// onto the JKR heap (filling the solid heap -> "SolidHeap OUT OF MEMORY"). Raising the
+// gate around every raylib/rlgl entry point keeps all driver allocations on malloc.
+// (Concurrent Mesa worker threads are handled by the game-thread default in JKRHeap.cpp.)
+extern "C" void sb_host_alloc_push(void);
+extern "C" void sb_host_alloc_pop(void);
+
 namespace sb::gxray {
 
 namespace {
@@ -19,6 +28,10 @@ bool  g_ctx_ok     = false;
 int   g_w = 0, g_h = 0;
 RenderTexture2D g_rt{};        // offscreen target (EFB-sized)
 bool  g_in_frame = false;
+
+// RAII: route driver/library allocations on this thread to host malloc for the duration
+// of a raylib/rlgl call (see the note above).
+struct HostAllocScope { HostAllocScope() { sb_host_alloc_push(); } ~HostAllocScope() { sb_host_alloc_pop(); } };
 }
 
 bool enabled() {
@@ -30,6 +43,7 @@ bool enabled() {
 bool init(int w, int h) {
     if (g_init_tried) return g_ctx_ok && g_w == w && g_h == h;
     g_init_tried = true;
+    HostAllocScope _hs;   // keep driver init allocations off the JKR heap
 
     // Hidden window → offscreen GL context (no visible surface). Proven headless on DISPLAY=:0.
     SetConfigFlags(FLAG_WINDOW_HIDDEN);
@@ -49,6 +63,7 @@ bool init(int w, int h) {
 
 void frame_begin(float r, float g, float b, float a) {
     if (!g_ctx_ok || g_in_frame) return;
+    HostAllocScope _hs;
     BeginTextureMode(g_rt);
     unsigned char cr = (unsigned char)(r * 255.0f + 0.5f), cg = (unsigned char)(g * 255.0f + 0.5f);
     unsigned char cb = (unsigned char)(b * 255.0f + 0.5f), ca = (unsigned char)(a * 255.0f + 0.5f);
@@ -58,6 +73,7 @@ void frame_begin(float r, float g, float b, float a) {
 
 void frame_end() {
     if (!g_ctx_ok || !g_in_frame) return;
+    HostAllocScope _hs;
     rlDrawRenderBatchActive();   // flush any pending rlgl immediate-mode geometry
     EndTextureMode();
     g_in_frame = false;
@@ -65,6 +81,7 @@ void frame_end() {
 
 bool readback(uint8_t* rgba, int w, int h) {
     if (!g_ctx_ok || w != g_w || h != g_h || !rgba) return false;
+    HostAllocScope _hs;
     // RenderTexture is bottom-left origin; flip to top-left to match the PPM/nvk convention.
     Image img = LoadImageFromTexture(g_rt.texture);   // RGBA8
     ImageFlipVertical(&img);
