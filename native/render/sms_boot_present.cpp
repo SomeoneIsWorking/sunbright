@@ -243,12 +243,16 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
     // SB_OPAQUE_ONLY=1: draw only opaque scene batches (blend_mode 0) — isolate whether the
     // translucent/additive passes are blowing the scene to white (overbright diagnosis).
     static const bool opaqueOnly = [](){ const char* v = std::getenv("SB_OPAQUE_ONLY"); return v && v[0] && v[0] != '0'; }();
+    static const bool texturedOnly = [](){ const char* v = std::getenv("SB_TEXTURED_ONLY"); return v && v[0] && v[0] != '0'; }();
     std::vector<Nvk::NvkTevBatch> batches;
     batches.reserve((size_t)nsbatch + 1);
     for (int i = 0; i < nsbatch; ++i) {
         Nvk::NvkTevBatch b = sbatches[i];
         if (skipKey && (unsigned)(b.shaderKey >> 32) == skipKey) continue;
         if (opaqueOnly && b.blend_mode != 0) continue;
+        // SB_TEXTURED_ONLY=1: draw only scene batches that have a bound texmap0 — isolate the
+        // textured map surfaces from untextured (sky/gradient) batches (so TEVDBG=tex is meaningful).
+        if (texturedOnly && !(b.tex[0].rgba && b.tex[0].w && b.tex[0].h)) continue;
         if (solid) { b.fragGlsl = g_pass_frag.c_str(); b.shaderKey = g_pass_key; b.blend_mode = 0;
                      b.z_test = 0; b.z_write = 0; }
         batches.push_back(b);
