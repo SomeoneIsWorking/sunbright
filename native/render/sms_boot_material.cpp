@@ -120,6 +120,34 @@ bool sb_build_tev_state(J3DMaterial* mat, NgxTevState& st) {
             st.pe.dst_factor = bl->mDstFactor;
             st.pe.logic_op   = bl->mLogicOp;
         }
+        // SB_FOG_DBG: one-shot dump of each material's J3D fog block + blend, to verify whether the
+        // additive sky/ray materials carry an enabled GX fog (mType != GX_FOG_NONE). GX applies fog
+        // AFTER the TEV combiner; our native renderer implements no fog, so a far additive layer the
+        // game fogs to near-invisible stays full-bright in ours. This dump is the value-proof BEFORE
+        // implementing fog.
+        if (const char* fd = std::getenv("SB_FOG_DBG"); fd && fd[0] && fd[0] != '0') {
+            static long s_fog = 0;
+            if (s_fog < 80) { ++s_fog;
+                J3DFog* fog = pe->getFog();
+                // Resolve chan0 matColor + chanCtrl (raster CLR0 source) for this material.
+                int mc[4] = {-1,-1,-1,-1}; int cc = -1; int nchan = -1;
+                if (J3DColorBlock* cb = mat->getColorBlock()) {
+                    nchan = cb->getColorChanNum();
+                    if (J3DGXColor* m0 = cb->getMatColor(0)) { mc[0]=m0->color.r; mc[1]=m0->color.g; mc[2]=m0->color.b; mc[3]=m0->color.a; }
+                    if (J3DColorChan* ch = cb->getColorChan(0)) cc = ch->mChanCtrl;
+                }
+                // stage0 combiner envs + tev order (texmap/colorchan).
+                uint32_t cenv = st.num_stages ? st.stage[0].color_env : 0;
+                uint32_t aenv = st.num_stages ? st.stage[0].alpha_env : 0;
+                int tmap = st.num_stages ? st.stage[0].texmap : -1;
+                int tchan = st.num_stages ? st.stage[0].color_chan : -1;
+                std::fprintf(stderr, "[fogdbg] blend=%u/%u/%u fogType=%u nstg=%u chan0Ctrl=0x%x matC0=%d,%d,%d,%d nchan=%d "
+                             "s0.tmap=%d s0.chan=%d s0.cenv=0x%06x s0.aenv=0x%06x\n",
+                             st.pe.blend_mode, st.pe.src_factor, st.pe.dst_factor,
+                             fog ? fog->mType : 0xFF, st.num_stages, cc, mc[0],mc[1],mc[2],mc[3], nchan,
+                             tmap, tchan, cenv, aenv);
+            }
+        }
     }
     if (J3DColorBlock* cb = mat->getColorBlock())
         st.pe.cull = cb->getCullMode();
