@@ -327,27 +327,28 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
         for (int bi = 0; bi < nsbatch; ++bi) {
             const Nvk::NvkTevBatch& b = batches[bi];
             float zmn=1e30f,zmx=-1e30f,zsum=0; float ymn=1e30f,ymx=-1e30f,xmn=1e30f,xmx=-1e30f;
-            double rr=0,gg=0,bb=0,r2=0,g2=0,b2=0; uint32_t cnt=0;
+            double rr=0,gg=0,bb=0,aa=0,amn=1e30,amx=-1e30,r2=0,g2=0,b2=0; uint32_t cnt=0;
             for (uint32_t i = b.vstart; i < b.vstart + b.vcount && i < verts.size(); ++i) {
                 const NvkTevVertex& v = verts[i];
                 if (v.z<zmn)zmn=v.z; if (v.z>zmx)zmx=v.z; zsum+=v.z;
                 if (v.y<ymn)ymn=v.y; if (v.y>ymx)ymx=v.y;
                 if (v.x<xmn)xmn=v.x; if (v.x>xmx)xmx=v.x;
                 rr+=v.rgba[0]; gg+=v.rgba[1]; bb+=v.rgba[2];
+                aa+=v.rgba[3]; if(v.rgba[3]<amn)amn=v.rgba[3]; if(v.rgba[3]>amx)amx=v.rgba[3];
                 r2+=v.rgba[0]*v.rgba[0]; g2+=v.rgba[1]*v.rgba[1]; b2+=v.rgba[2]*v.rgba[2]; ++cnt;
             }
             if (!cnt) continue;
-            double mr=rr/cnt,mg=gg/cnt,mb=bb/cnt;
+            double mr=rr/cnt,mg=gg/cnt,mb=bb/cnt,ma=aa/cnt;
             double var=(r2/cnt-mr*mr)+(g2/cnt-mg*mg)+(b2/cnt-mb*mb);  // color variance (rainbow letters高い)
             // Bound-texture inventory: count non-null samplers + first tex dims (white-untextured triage).
             int ntex=0; char texinfo[64]="-"; for (int t=0;t<8;++t) if (b.tex[t].rgba) { if(!ntex) std::snprintf(texinfo,sizeof texinfo,"t%d=%ux%u",t,b.tex[t].w,b.tex[t].h); ++ntex; }
             // mean UV span over the batch's first texcoord set (degenerate UV → untextured-looking).
             float umn=1e30f,umx=-1e30f,vmn=1e30f,vmx=-1e30f; for (uint32_t i=b.vstart;i<b.vstart+b.vcount&&i<verts.size();++i){const NvkTevVertex&v=verts[i]; float u=v.uv[0][0],w2=v.uv[0][1]; if(u<umn)umn=u; if(u>umx)umx=u; if(w2<vmn)vmn=w2; if(w2>vmx)vmx=w2;}
             std::fprintf(stderr, "[batchdbg] b%d vc=%u z[%.5f,%.5f]m%.5f ndcX[%.3f,%.3f] ndcY[%.3f,%.3f] "
-                         "zt=%u zf=%u zw=%u bm=%u/%u/%u rgb=%.2f,%.2f,%.2f cvar=%.3f ntex=%d %s uv[%.2f,%.2f;%.2f,%.2f] key=%llx\n",
+                         "zt=%u zf=%u zw=%u bm=%u/%u/%u rgb=%.2f,%.2f,%.2f a=%.2f[%.2f,%.2f] cvar=%.3f ntex=%d %s uv[%.2f,%.2f;%.2f,%.2f] key=%llx\n",
                          bi, b.vcount, zmn, zmx, zsum/cnt, xmn, xmx, ymn, ymx,
                          b.z_test, b.z_func, b.z_write, b.blend_mode, b.src_factor, b.dst_factor,
-                         mr, mg, mb, var, ntex, texinfo, umn,umx,vmn,vmx, (unsigned long long)b.shaderKey);
+                         mr, mg, mb, ma, amn, amx, var, ntex, texinfo, umn,umx,vmn,vmx, (unsigned long long)b.shaderKey);
         }
     }
     g_nvk.renderTevFrame(verts, batches, NvkClear{c[0], c[1], c[2], c[3]});
