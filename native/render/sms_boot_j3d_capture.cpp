@@ -266,10 +266,11 @@ const MatEntry* get_mat_entry(J3DMaterial* mat, J3DTexture* modelTex) {
                 ++s_matdbg;
                 uint32_t ce = st.stage[0].color_env;
                 std::fprintf(stderr, "[mat] ns=%d ce=%06x a=%u b=%u c=%u d=%u cchan=%u tmap=%u "
-                             "at=%u bm=%u msv0=%d matc0=%u,%u,%u,%u ntex=%zu key=%llx\n",
+                             "at=%u bm=%u msv0=%d msv1=%d cc0=%04x cc1=%04x matc0=%u,%u,%u,%u ntex=%zu key=%llx\n",
                              st.num_stages, ce, (ce>>12)&0xf,(ce>>8)&0xf,(ce>>4)&0xf,ce&0xf,
                              st.stage[0].color_chan, st.stage[0].texmap, st.pe.alpha_test,
                              (st.pe.blend_mode | (st.pe.src_factor<<4) | (st.pe.dst_factor<<8)), (int)e.matSrcVtx[0],
+                             (int)e.matSrcVtx[1], e.chanCtrl[0], e.chanCtrl[1],
                              e.matColor[0][0],e.matColor[0][1],e.matColor[0][2],e.matColor[0][3],
                              e.tex.size(), (unsigned long long)e.key);
                 if (s_matdbg <= 3) {
@@ -394,6 +395,23 @@ extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
     }
     const MatEntry* me = get_mat_entry(mat, texTbl);
     if (!me || !me->ok) return true;
+    if (dbg_enabled() && (unsigned)(me->key >> 32) == 0x7bc0841du) {  // raw colorblock for the ray mat
+        static int rn = 0;
+        if (rn < 2) { ++rn;
+            J3DColorBlock* cb = mat->getColorBlock();
+            J3DColorBlock* mdcb = nullptr;
+            // also read the modelData base material's colorblock for the same material index
+            std::fprintf(stderr, "[rawcc] mat=%p cb=%p nchan=%d cc[0..3]=%04x,%04x,%04x,%04x matc0=%u,%u,%u,%u\n",
+                (void*)mat, (void*)cb, cb?cb->getColorChanNum():-1,
+                cb&&cb->getColorChan(0)?cb->getColorChan(0)->mChanCtrl:0xDEAD,
+                cb&&cb->getColorChan(1)?cb->getColorChan(1)->mChanCtrl:0xDEAD,
+                cb&&cb->getColorChan(2)?cb->getColorChan(2)->mChanCtrl:0xDEAD,
+                cb&&cb->getColorChan(3)?cb->getColorChan(3)->mChanCtrl:0xDEAD,
+                cb&&cb->getMatColor(0)?cb->getMatColor(0)->color.r:0, cb&&cb->getMatColor(0)?cb->getMatColor(0)->color.g:0,
+                cb&&cb->getMatColor(0)?cb->getMatColor(0)->color.b:0, cb&&cb->getMatColor(0)?cb->getMatColor(0)->color.a:0);
+            (void)mdcb;
+        }
+    }
 
     NgxCP cp{};
     if (!build_native_cp(shape, *vd, base, cp)) return true;
@@ -536,8 +554,10 @@ extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
             // where does shape's first vert land? eye-space (ez>0 = BEHIND camera) + raw NDC.
             const SbClipEyeVtx c = make_cv(verts[idx[0]]);
             SbImmVtx p = imm_project_eye(c.ex, c.ey, c.ez, projType, proj, vp);
-            std::fprintf(stderr, "[cov] shape#%d src=%u emit=%u cc0=%04x  eye(%.0f,%.0f,%.0f) ndc(%.2f,%.2f,%.2f)%s\n",
-                         s_cov, (unsigned)idx.size(), vcount, me->chanCtrl[0],
+            const auto& sv = verts[idx[0]];
+            std::fprintf(stderr, "[cov] shape#%d src=%u emit=%u cc0=%04x key=%llx vclr0=%u,%u,%u,%u  eye(%.0f,%.0f,%.0f) ndc(%.2f,%.2f,%.2f)%s\n",
+                         s_cov, (unsigned)idx.size(), vcount, me->chanCtrl[0], (unsigned long long)me->key,
+                         sv.clr[0][0], sv.clr[0][1], sv.clr[0][2], sv.clr[0][3],
                          c.ex, c.ey, c.ez, p.x, p.y, p.z, c.ez > 0 ? " BEHIND" : ""); }
     }
 

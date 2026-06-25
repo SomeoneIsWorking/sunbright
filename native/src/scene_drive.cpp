@@ -32,6 +32,7 @@
 #include <Player/Mario.hpp>                               // gpMarioOriginal (file-select Mario)
 #include <M3DUtil/M3UModelMario.hpp>                      // M3UModelMario::getModel (Mario body J3DModel)
 #include <M3DUtil/MActor.hpp>                             // MActor::getModel
+#include <Map/Sky.hpp>                                    // TSky (sky anim probe)
 #include <Strategic/ObjModel.hpp>                         // TMActorKeeper
 #include <JSystem/J3D/J3DGraphAnimator/J3DModel.hpp>      // J3DModel / J3DModelData
 #include <JSystem/J3D/J3DGraphBase/J3DPacket.hpp>         // J3DMatPacket / J3DShapePacket
@@ -134,6 +135,18 @@ void drive_sky() {
 	// 0x204 per MarDirectorPreEntry.cpp; 0x20E adds 0x2 setBaseTRMtx + 0x8 GXDrawSphere backdrop).
 	u32 f = 0x20E;
 	if (const char* e = std::getenv("SB_SKY_FLAG"); e && e[0]) f = (u32)std::strtoul(e, nullptr, 16);
+	if (const char* e = std::getenv("SB_SKY_ANM_PROBE"); e && e[0] && e[0] != '0') {
+		static int pn = 0;
+		if (pn < 2) { ++pn;
+			TSky* sky = JDrama::TNameRefGen::search<TSky>("空");
+			MActor* ma = sky ? sky->unk44 : nullptr;
+			std::fprintf(stderr, "[sky-anm] sky=%p mactor=%p bck=%p bckList=%p bpk=%p btp=%p btk=%p brk=%p\n",
+			             (void*)sky, (void*)ma,
+			             ma?(void*)ma->unkC:nullptr, ma?(void*)ma->unk10:nullptr,
+			             ma?(void*)ma->unk14:nullptr, ma?(void*)ma->unk18:nullptr,
+			             ma?(void*)ma->unk1C:nullptr, ma?(void*)ma->unk20:nullptr);
+		}
+	}
 	drive_group("空グループ", "DrawBuf Sky Opa", "DrawBuf Sky Xlu", f);
 }
 
