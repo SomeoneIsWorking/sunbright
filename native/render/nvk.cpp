@@ -140,11 +140,21 @@ struct Nvk::Impl {
         s.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
         s.minLod = 0.0f;
         s.maxLod = useMips ? VK_LOD_CLAMP_NONE : 0.0f;
+        // SB_LOD_BIAS=f: experiment — bias the mip LOD (positive = blurrier) to test whether the
+        // file-select sea grazing-angle stripes are a too-low-LOD selection artifact.
+        static const float lodBias = [](){ const char* v = std::getenv("SB_LOD_BIAS"); return v && v[0] ? (float)std::atof(v) : 0.f; }();
+        if (useMips) s.mipLodBias = lodBias;
         // Anisotropy (when the texture requests it AND the device supports it). On this scene's
         // shoreline the trilinear mip chain above already removes ~58% of the moire energy;
         // measured anisotropy on top gave no further still-frame improvement here, so we respect
         // the GC request (aniso=0 for SMS ground) rather than force a non-faithful floor.
         float reqAniso = (float)(1u << (aniso & 3));   // GX_ANISO_1/2/4 → 1/2/4×
+        // SB_FORCE_ANISO=N: experiment — floor the anisotropy on every mipped/linear texture to N×
+        // (the oracle renders at 2× internal res + Dolphin AF, which smooths grazing tiled water the
+        // GC-faithful isotropic trilinear cannot). Test whether the file-select sea-foam moire is a
+        // grazing-angle aliasing artifact resolvable by AF before committing any policy.
+        static const float forceAniso = [](){ const char* v = std::getenv("SB_FORCE_ANISO"); return v && v[0] ? (float)std::atof(v) : 0.f; }();
+        if (forceAniso > 1.0f && reqAniso < forceAniso) reqAniso = forceAniso;
         if (useMips && minLinear && devMaxAniso > 1.0f && reqAniso > 1.0f) {
             s.anisotropyEnable = VK_TRUE;
             s.maxAnisotropy = reqAniso < devMaxAniso ? reqAniso : devMaxAniso;

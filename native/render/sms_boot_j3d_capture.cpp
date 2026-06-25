@@ -106,8 +106,47 @@ struct MatEntry {
                                            // global GX ambient register — the AmbGroup the light
                                            // loader set; faithful to ambSrc=register semantics)
     bool     lit = false;
+    // GX texgen per texcoord-gen slot (i = texgen index, NOT the vertex attribute index). The
+    // capture must apply these to the raw vertex source coord — pass-through (uv=raw tex) drops the
+    // GX texture-coordinate transform (the file-select sea-foam stripes were the foam material's two
+    // TEXMTX-scaled texgens, both sourcing TEX0, rendered with no matrix → wrong asymmetric tiling).
+    struct TexGenG {
+        uint8_t type = 1;        // GXTexGenType: 0=MTX3x4, 1=MTX2x4, 10=SRTG
+        uint8_t src  = 4;        // GXTexGenSrc: 0=POS 1=NRM 4..11=TEX0..7 19/20=COLOR0/1
+        uint8_t mtxsel = 60;     // GX_TEXMTX0=30 step3, GX_IDENTITY=60
+        bool    has_mtx = false;
+        float   m[12] = {1,0,0,0, 0,1,0,0, 0,0,1,0};   // mTotalMtx (3x4)
+    };
+    int     ntexgen = 0;
+    TexGenG tg[8];
 };
 std::unordered_map<J3DMaterial*, MatEntry> g_matcache;
+
+// GX per-vertex texgen (mirrors runtime/overrides/ngx_j3d_shape.cpp texgen_uv — the proven
+// convention: TEXn input = (s,t,1,1); MTX2x4 → s'=row0·in, t'=row1·in; MTX3x4 → divide by row2·in;
+// SRTG/COLOR src → the lit colour channel). litcol0 = this vertex's lit RGBA (0..1).
+inline void sb_texgen_uv(const MatEntry::TexGenG& g, const NgxVertex& v,
+                         const float litcol0[4], float out[2]) {
+    if (g.type == 10 || g.src == 19 || g.src == 20) {
+        out[0] = litcol0 ? litcol0[0] : 0.f;
+        out[1] = litcol0 ? litcol0[1] : 0.f;
+        return;
+    }
+    float in4[4];
+    if (g.src >= 4 && g.src <= 11) { const int t = g.src - 4; in4[0]=v.tex[t][0]; in4[1]=v.tex[t][1]; in4[2]=1.f; in4[3]=1.f; }
+    else if (g.src == 0)           { in4[0]=v.pos[0]; in4[1]=v.pos[1]; in4[2]=v.pos[2]; in4[3]=1.f; }
+    else if (g.src == 1)           { in4[0]=v.nrm[0]; in4[1]=v.nrm[1]; in4[2]=v.nrm[2]; in4[3]=1.f; }
+    else                           { in4[0]=v.tex[0][0]; in4[1]=v.tex[0][1]; in4[2]=1.f; in4[3]=1.f; }
+    if (!g.has_mtx) { out[0]=in4[0]; out[1]=in4[1]; return; }
+    const float* m = g.m;
+    float s = m[0]*in4[0]+m[1]*in4[1]+m[2]*in4[2]+m[3]*in4[3];
+    float t = m[4]*in4[0]+m[5]*in4[1]+m[6]*in4[2]+m[7]*in4[3];
+    if (g.type == 0) {
+        const float q = m[8]*in4[0]+m[9]*in4[1]+m[10]*in4[2]+m[11]*in4[3];
+        if (q > 1e-6f || q < -1e-6f) { s /= q; t /= q; }
+    }
+    out[0]=s; out[1]=t;
+}
 
 // Frame-global output: the present-ready vertex list + per-material batches. Cleared on the
 // first append after the present consumed them (take sets g_consumed).
@@ -162,6 +201,43 @@ const MatEntry* get_mat_entry(J3DMaterial* mat, J3DTexture* modelTex) {
             }
         }
         e.ok = true;
+        // Capture the GX texgen block: per texgen slot, the type/src/mtx-sel + the material's OWN
+        // mTotalMtx (@J3DTexMtx+0x64 — the matrix J3D bakes into the per-frame DL replay; animated
+        // materials re-patch it each frame, so it is exactly what the GPU uses). Applied per-vertex
+        // below to produce uv[i] (replaces the old pass-through that dropped the transform).
+        if (J3DTexGenBlock* tgb = mat->getTexGenBlock()) {
+            int ntg = (int)tgb->getTexGenNum(); if (ntg > 8) ntg = 8; if (ntg < 0) ntg = 0;
+            e.ntexgen = ntg;
+            for (int i = 0; i < ntg; ++i) {
+                MatEntry::TexGenG& g = e.tg[i];
+                if (J3DTexCoord* tc = tgb->getTexCoord(i)) {
+                    g.type = (uint8_t)tc->getTexGenType();
+                    g.src  = (uint8_t)tc->getTexGenSrc();
+                    g.mtxsel = tc->getTexGenMtx();
+                }
+                if (J3DTexMtx* tm = tgb->getTexMtx(i)) {
+                    const Mtx& m = tm->mTotalMtx;
+                    for (int r = 0; r < 3; ++r) for (int c = 0; c < 4; ++c) g.m[r*4+c] = m[r][c];
+                    g.has_mtx = true;
+                }
+            }
+        }
+        // SB_MAT_DUMP_ALL: write every material's generated TEV fragment to scratch/frames/mat_<key>.txt
+        // (the foam key eb5c8e74 needs its combiner inspected — the first-3 mat_glsl dump misses it).
+        if (std::getenv("SB_MAT_DUMP_ALL")) {
+            char pth[96]; std::snprintf(pth,sizeof pth,"scratch/frames/mat_%llx.txt",(unsigned long long)e.key);
+            if (FILE* f = std::fopen(pth,"w")) { std::fputs(e.frag.c_str(), f); std::fclose(f); }
+        }
+        if (std::getenv("SB_TEXGEN_DBG")) {
+            std::fprintf(stderr, "[texgen] key=%llx ntex=%zu ntg=%d\n",
+                         (unsigned long long)e.key, e.tex.size(), e.ntexgen);
+            for (int i = 0; i < e.ntexgen; ++i) {
+                const MatEntry::TexGenG& g = e.tg[i];
+                std::fprintf(stderr, "   tg%d type=%u src=%u mtx=%u has_mtx=%d m=[%.3f %.3f %.3f %.3f / %.3f %.3f %.3f %.3f]\n",
+                             i, g.type, g.src, g.mtxsel, (int)g.has_mtx,
+                             g.m[0],g.m[1],g.m[2],g.m[3], g.m[4],g.m[5],g.m[6],g.m[7]);
+            }
+        }
         // One-shot probe on the FIRST lit material: where do its lights live (bound objects?),
         // and what does each colour channel control say. Decides the light-source port.
         if (dbg_enabled() && e.lit) {
@@ -438,7 +514,13 @@ extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
             sb_light_vertex_color0(me->chanCtrl[0], matc0, ambc0, lsrc, posMtx, s.pos, s.nrm, vcol0, lit);
             tv.rgba[0] = lit[0]; tv.rgba[1] = lit[1]; tv.rgba[2] = lit[2];
         }
-        for (int t = 0; t < 8; ++t) { tv.uv[t][0] = s.tex[t][0]; tv.uv[t][1] = s.tex[t][1]; }
+        // Per-texgen UV: apply the material's GX texgen (matrix/source) so uv[i] = texgen i's
+        // output, NOT the raw vertex attribute. The TEV stage samples uv[stage.texcoord]. Slots
+        // beyond the texgen count keep the raw attribute (unused — harmless).
+        for (int t = 0; t < 8; ++t) {
+            if (t < me->ntexgen) sb_texgen_uv(me->tg[t], s, tv.rgba, &tv.uv[t][0]);
+            else { tv.uv[t][0] = s.tex[t][0]; tv.uv[t][1] = s.tex[t][1]; }
+        }
         return cv;
     };
     // ngx_build_mesh emits a TRIANGLE LIST (idx in triples); the shared clipper (sb_tri_clip.h)

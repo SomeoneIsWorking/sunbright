@@ -217,10 +217,14 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
     // SB_TEV_SOLID: force scene batches through the passthrough shader (out = rasterColor,
     // ignore textures/combiner) — isolates geometry+raster from the combiner/texture path.
     static const bool solid = [](){ const char* v = std::getenv("SB_TEV_SOLID"); return v && v[0] && v[0] != '0'; }();
+    // SB_SKIP_KEY=hex: drop every scene batch whose shaderKey high-32 matches (bisect which batch
+    // owns an artifact — e.g. eb5c8e74 = the file-select sea foam).
+    static const unsigned skipKey = [](){ const char* v = std::getenv("SB_SKIP_KEY"); return v && v[0] ? (unsigned)std::strtoul(v,nullptr,16) : 0u; }();
     std::vector<Nvk::NvkTevBatch> batches;
     batches.reserve((size_t)nsbatch + 1);
     for (int i = 0; i < nsbatch; ++i) {
         Nvk::NvkTevBatch b = sbatches[i];
+        if (skipKey && (unsigned)(b.shaderKey >> 32) == skipKey) continue;
         if (solid) { b.fragGlsl = g_pass_frag.c_str(); b.shaderKey = g_pass_key; b.blend_mode = 0;
                      b.z_test = 0; b.z_write = 0; }
         batches.push_back(b);
@@ -346,7 +350,7 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
             double mr=rr/cnt,mg=gg/cnt,mb=bb/cnt,ma=aa/cnt;
             double var=(r2/cnt-mr*mr)+(g2/cnt-mg*mg)+(b2/cnt-mb*mb);  // color variance (rainbow letters高い)
             // Bound-texture inventory: count non-null samplers + first tex dims (white-untextured triage).
-            int ntex=0; char texinfo[64]="-"; for (int t=0;t<8;++t) if (b.tex[t].rgba) { if(!ntex) std::snprintf(texinfo,sizeof texinfo,"t%d=%ux%u",t,b.tex[t].w,b.tex[t].h); ++ntex; }
+            int ntex=0; char texinfo[96]="-"; for (int t=0;t<8;++t) if (b.tex[t].rgba) { if(!ntex) std::snprintf(texinfo,sizeof texinfo,"t%d=%ux%u minF=%u mag=%u wrap=%u/%u",t,b.tex[t].w,b.tex[t].h,b.tex[t].min_filter,b.tex[t].linear,b.tex[t].wrap_s,b.tex[t].wrap_t); ++ntex; }
             // mean UV span over the batch's first texcoord set (degenerate UV → untextured-looking).
             float umn=1e30f,umx=-1e30f,vmn=1e30f,vmx=-1e30f; for (uint32_t i=b.vstart;i<b.vstart+b.vcount&&i<verts.size();++i){const NvkTevVertex&v=verts[i]; float u=v.uv[0][0],w2=v.uv[0][1]; if(u<umn)umn=u; if(u>umx)umx=u; if(w2<vmn)vmn=w2; if(w2>vmx)vmx=w2;}
             std::fprintf(stderr, "[batchdbg] b%d vc=%u z[%.5f,%.5f]m%.5f ndcX[%.3f,%.3f] ndcY[%.3f,%.3f] "
@@ -356,11 +360,12 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
                          mr, mg, mb, ma, amn, amx, var, ntex, texinfo, umn,umx,vmn,vmx, (unsigned long long)b.shaderKey);
             // Dump each small textured batch's tex0 (RGB ppm + alpha as grayscale ppm) so a
             // wash/ray layer's texture content + alpha falloff is visible, not guessed.
-            if (b.tex[0].rgba && b.tex[0].w>0 && b.tex[0].h>0 && b.tex[0].w<=256 && b.tex[0].h<=256) {
-                uint32_t w=b.tex[0].w,h=b.tex[0].h; const uint8_t* px=b.tex[0].rgba;
+            for (int ti=0; ti<8; ++ti) {
+                if (!(b.tex[ti].rgba && b.tex[ti].w>0 && b.tex[ti].h>0 && b.tex[ti].w<=256 && b.tex[ti].h<=256)) continue;
+                uint32_t w=b.tex[ti].w,h=b.tex[ti].h; const uint8_t* px=b.tex[ti].rgba;
                 char p0[128],p1[128];
-                std::snprintf(p0,sizeof p0,"scratch/frames/btex_%02d_rgb.ppm",bi);
-                std::snprintf(p1,sizeof p1,"scratch/frames/btex_%02d_a.ppm",bi);
+                std::snprintf(p0,sizeof p0,"scratch/frames/btex_%02d_t%d_rgb.ppm",bi,ti);
+                std::snprintf(p1,sizeof p1,"scratch/frames/btex_%02d_t%d_a.ppm",bi,ti);
                 if (FILE* f=fopen(p0,"wb")){ fprintf(f,"P6\n%u %u\n255\n",w,h);
                     for(uint32_t i=0;i<w*h;++i) fwrite(px+i*4,1,3,f); fclose(f); }
                 if (FILE* f=fopen(p1,"wb")){ fprintf(f,"P6\n%u %u\n255\n",w,h);
