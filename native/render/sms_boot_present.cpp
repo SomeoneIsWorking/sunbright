@@ -118,6 +118,17 @@ extern "C" int sb_present_frame() { return g_frame; }
 namespace {
 
 void present_hook(void* /*framebuffer*/, void* /*user*/) {
+    // SB_PRESENT_TRACE: unconditional VI-present heartbeat — counts EVERY present_hook call
+    // (i.e. every VIWaitForRetrace), independent of dumping, so we can measure whether the
+    // VI/present rate collapses during a scene (the file-select state-0 stall: the capture
+    // buffer accumulates 30k+ batches because present stops ticking → the eventual dump
+    // render wedges the GPU). Interleave with [cardload] frame~ lines (both stderr) to see
+    // how many presents happen per N perform frames.
+    static const bool ptrace = [](){ const char* v = std::getenv("SB_PRESENT_TRACE"); return v && v[0] && v[0] != '0'; }();
+    if (ptrace) {
+        static long s_pc = 0; ++s_pc;
+        if ((s_pc % 60) == 0) std::fprintf(stderr, "[present-beat] calls=%ld\n", s_pc);
+    }
     // SB_BBOX_TRACE: map the captured scene's NDC bbox across frames (no GPU, no dump) to
     // see whether/when the camera brings geometry in-view.
     static const bool bbtrace = [](){ const char* v = std::getenv("SB_BBOX_TRACE"); return v && v[0] && v[0] != '0'; }();
