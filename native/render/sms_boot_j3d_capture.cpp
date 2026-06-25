@@ -56,7 +56,34 @@ using namespace sb::render;
 extern "C" int  sb_present_frame(void);   // sms_boot_present.cpp — settled-frame gating
 extern "C" int  sb_camera_view_settled(void);   // scene_drive.cpp — view matrix stationary
 extern "C" void sb_gx_get_projection(int* type, float proj[6], float vp[6]);
+extern "C" int  sb_gx_get_proj44(float m[16]);
 extern "C" int  sb_gx_get_lights(float out[8][16]);
+extern "C" int  sb_boot_get_scene_camera(float view[12], float proj[16]) __attribute__((weak));
+
+// sb_boot_dump_camera — write the EXACT view+projection the native renderer composited the 3D
+// scene with this frame, so the Dolphin-GX oracle can be transplanted to the SAME viewpoint (the
+// rung-6 "camera transplant": static plaza geometry then overlaps and the per-region diff measures
+// RENDERER divergence, not camera/moment misalignment). Source is the SCENE camera (g_graphics in
+// scene_drive.cpp) — NOT j3dSys.mViewMtx at present time, which holds whatever the LAST (often 2D/
+// HUD) draw set. Both are engine-agnostic matrices, so injection into Dolphin needs no struct field
+// offsets. Format: a `view` line of 12 floats (GC Mtx, row-major 3x4) then a `proj` line of 16 (4x4).
+extern "C" void sb_boot_dump_camera(int frame) {
+    float view[12] = {0}, proj[16] = {0};
+    int have = (&sb_boot_get_scene_camera) ? sb_boot_get_scene_camera(view, proj) : 0;
+    char path[160];
+    std::snprintf(path, sizeof path, "scratch/frames/cam_%04d.txt", frame);
+    FILE* f = std::fopen(path, "w");
+    if (!f) { std::fprintf(stderr, "[cam-dump] cannot open %s\n", path); return; }
+    std::fprintf(f, "# sms-boot camera transplant: view(3x4 row-major) + proj(4x4). frame=%d\n", frame);
+    std::fprintf(f, "view");
+    for (int i = 0; i < 12; ++i) std::fprintf(f, " %.9g", view[i]);
+    std::fprintf(f, "\nproj");
+    for (int i = 0; i < 16; ++i) std::fprintf(f, " %.9g", proj[i]);
+    std::fprintf(f, "\nview_valid %d\n", have);
+    std::fclose(f);
+    std::fprintf(stderr, "[cam-dump] frame %d -> %s (view[0]=%.3f %.3f %.3f %.1f valid=%d)\n",
+                 frame, path, view[0], view[1], view[2], view[3], have);
+}
 extern "C" void sb_gx_get_chan_amb(int slot, float rgb[3]);
 extern "C" void sb_gx_get_chan_matcolor(int slot, float rgba[4]);
 extern "C" void sb_gx_get_cur_posmtx(float m[3][4]);

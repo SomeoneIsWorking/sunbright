@@ -107,6 +107,16 @@ extern "C" void sb_boot_capture_end_scene();
 // expose sb_camera_view_settled(): true once the view has been ~stationary for several frames.
 namespace { int g_cam_stable = 0; float g_prev_view[12] = {0}; bool g_prev_view_valid = false; }
 extern "C" int sb_camera_view_settled() { return g_cam_stable >= 8; }
+
+// sb_boot_get_scene_camera — expose the REAL scene view+proj (g_graphics), the matrices the 3D
+// draw is composited with this frame. This is the authoritative camera for the rung-6 transplant
+// (the present-time j3dSys.mViewMtx is whatever the LAST draw set — often a 2D/HUD matrix — so it
+// is NOT a reliable camera source). Returns 1 if a valid (settle-tracked) scene view is published.
+extern "C" int sb_boot_get_scene_camera(float view[12], float proj[16]) {
+	if (view) for (int i = 0; i < 12; ++i) view[i] = g_graphics.mViewMtx.mMtx[0][i];
+	if (proj) for (int i = 0; i < 16; ++i) proj[i] = g_graphics.mProjMtx.mMtx[0][i];
+	return g_prev_view_valid ? 1 : 0;
+}
 static void sb_track_camera_settle(const Mtx view) {
 	float d = 0.f;
 	const float* v = &view[0][0];

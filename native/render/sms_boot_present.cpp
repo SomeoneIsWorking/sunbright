@@ -40,6 +40,7 @@ int  sb_gx_get_lights(float out[8][16]) __attribute__((weak));
 void sb_gx_get_chan_amb(int slot, float rgb[3]) __attribute__((weak));
 void sb_gx_get_chan_matcolor(int slot, float rgba[4]) __attribute__((weak));
 void sb_gx_get_projection(int* type, float proj[6], float vp[6]) __attribute__((weak));
+void sb_boot_dump_camera(int frame) __attribute__((weak));
 }
 // The frame's captured live J3D scene: vertex list + per-material TEV batches. WEAK — null when
 // the capture TU (sms_boot_j3d_capture.cpp) isn't linked, in which case the present draws only 2D.
@@ -490,6 +491,11 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
     char path[160];
     std::snprintf(path, sizeof path, "scratch/frames/boot_%04d.ppm", df);
     write_ppm_buf(path, present_pix.data(), kW, kH);
+
+    // SB_CAM_DUMP: alongside the PPM, write the exact view+proj the renderer used (cam_NNNN.txt)
+    // so the Dolphin-GX oracle can be transplanted to the SAME viewpoint (rung-6 camera align).
+    static const bool camDump = [](){ const char* v = std::getenv("SB_CAM_DUMP"); return v && v[0] && v[0] != '0'; }();
+    if (camDump && (&sb_boot_dump_camera)) sb_boot_dump_camera(df);
     std::printf("[present] frame %d clear=(%.2f,%.2f,%.2f,%.2f) scene_verts=%d scene_batches=%d "
                 "imm_tris=%d imm_batches=%d (textured=%d) -> %s\n",
                 df, c[0], c[1], c[2], c[3], nscene, nsbatch, nimm / 3, nibatch,
