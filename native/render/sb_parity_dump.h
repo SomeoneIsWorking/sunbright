@@ -33,16 +33,51 @@ struct SbParityLights {
     float matc[4]   = {1,1,1,1};
 };
 
+// The CROSS-ENGINE comparable state (pure Dolphin vs sms-boot): renderer-independent game
+// output. projType + proj[6] (GXSetProjection) + viewport[6] (GXSetViewport) are exact game
+// state; both engines set them identically. The frame geometry AGGREGATE (on-screen vert count,
+// NDC AABB, position checksum) is the renderer-neutral geometry signal — the batch/shape grouping
+// differs between engines, but the projected on-screen geometry must match if both are faithful.
+struct SbParityProj {
+    int   type = 0;     // 0 = perspective, 1 = ortho
+    float proj[6] = {};
+    float vp[6]   = {};
+};
+
 // Emit one JSON line describing this frame. `verts` are CLIP-space (xyzw); NDC = xyz/w.
 // `fb` is the RGBA8 readback (fbw*fbh*4) — the XFB whose region stats we summarise.
 inline void sb_parity_emit(std::FILE* f, int frame, const float clear[4],
                            const NvkTevVertex* verts, int nverts,
                            const Nvk::NvkTevBatch* batches, int nbatch,
-                           const SbParityLights& L,
+                           const SbParityLights& L, const SbParityProj& P,
                            const uint8_t* fb, int fbw, int fbh) {
     if (!f) return;
     std::fprintf(f, "{\"frame\":%d,\"clear\":[%.3f,%.3f,%.3f,%.3f],\"nverts\":%d,\"nbatch\":%d",
                  frame, clear[0], clear[1], clear[2], clear[3], nverts, nbatch);
+
+    // Projection + viewport (exact cross-engine game state).
+    std::fprintf(f, ",\"projType\":%d,\"proj\":[%.5f,%.5f,%.5f,%.5f,%.5f,%.5f],\"vp\":[%.1f,%.1f,%.1f,%.1f,%.4f,%.4f]",
+                 P.type, P.proj[0],P.proj[1],P.proj[2],P.proj[3],P.proj[4],P.proj[5],
+                 P.vp[0],P.vp[1],P.vp[2],P.vp[3],P.vp[4],P.vp[5]);
+
+    // Frame geometry aggregate (renderer-neutral): on-screen vert count, NDC AABB over the
+    // on-screen verts, and a position checksum over ALL finite verts. The cross-engine geometry
+    // divergence signal (a skinning/pose/camera bug moves these).
+    {
+        float gxmn=1e30f,gxmx=-1e30f,gymn=1e30f,gymx=-1e30f,gzmn=1e30f,gzmx=-1e30f;
+        double gcks = 0; int gon = 0, gnan = 0;
+        for (int i = 0; i < nverts; ++i) {
+            const NvkTevVertex& v = verts[i];
+            if (!(std::isfinite(v.x)&&std::isfinite(v.y)&&std::isfinite(v.z)&&std::isfinite(v.w))) { ++gnan; continue; }
+            if (v.w > 1e-5f) { const float nx=v.x/v.w, ny=v.y/v.w, nz=v.z/v.w;
+                if (nx>=-1.f&&nx<=1.f&&ny>=-1.f&&ny<=1.f&&nz>=0.f&&nz<=1.f) { ++gon;
+                    if(nx<gxmn)gxmn=nx; if(nx>gxmx)gxmx=nx; if(ny<gymn)gymn=ny; if(ny>gymx)gymx=ny;
+                    if(nz<gzmn)gzmn=nz; if(nz>gzmx)gzmx=nz; gcks += (double)nx*1.0+(double)ny*1.1+(double)nz*1.2; } }
+        }
+        if (!gon) { gxmn=gxmx=gymn=gymx=gzmn=gzmx=0.f; }
+        std::fprintf(f, ",\"geom\":{\"onscr\":%d,\"nan\":%d,\"ndc\":[%.4f,%.4f,%.4f,%.4f,%.4f,%.4f],\"cks\":%.3f}",
+                     gon, gnan, gxmn,gxmx,gymn,gymx,gzmn,gzmx, gcks);
+    }
 
     // Lighting.
     std::fprintf(f, ",\"lights\":{\"n\":%d,\"l\":[", L.n);

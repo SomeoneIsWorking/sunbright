@@ -1,70 +1,56 @@
-# Dolphin-GX vs PC-native parity sweep
+# Pure-Dolphin vs sms-boot parity sweep
 
-Tools to verify the PC-native renderer against the GameCube/Dolphin-GX behaviour across
-**geometry, lighting, and the XFB / final image** — at the VALUE level (not by eyeballing an
-overbright frame).
+Find rendering divergences between the **oracle (pure Dolphin** — the real game under Dolphin's
+JIT + GX) and the **PC-native engine (sms-boot)**, at the VALUE level. No pixel diffing.
 
-## Two tracks (this split is forced by a hard project rule)
+There is ONE PC-native engine (sms-boot) and ONE oracle (pure Dolphin). The Dolphin-ngx renderer
+is not a parity target.
 
-Dolphin's CPU-side intermediate state (`xfmem`, GP registers) is **async-lagged and is NOT a
-valid oracle** (see CLAUDE.md / memory `xfmem-not-cpu-oracle`). So:
+## What is compared (and why)
 
-- **VALUE track** — the native engine's own per-frame geometry+lighting+XFB-grid state, dumped
-  as JSONL. Verified against the SPEC + self-consistency (`check`) and against another native
-  run (`diff`), *not* against Dolphin's lagged state. This is the track that caught the
-  per-vertex-skinning collapse and the weighted-envelope bug.
-- **PIXEL track** — the only trustworthy comparison vs Dolphin-GX is the **rendered frame**.
-  `image` does a per-region pixel diff of the native frame against a Dolphin-GX oracle frame of
-  the same state, and refuses an all-black/empty frame so it can't report a number vs a dead oracle.
+Only **renderer-independent game state** — what both engines compute from the same J3D data, so a
+faithful native engine must match the oracle exactly:
 
-## Emit the value-track dump (native engine)
+- **projection / viewport** — `GXSetProjection` / `GXSetViewport` args (exact game state).
+- **lights** — count, position, colour; ambient + material-colour registers.
+- **frame geometry aggregate** — on-screen vertex count, NDC AABB over the on-screen verts, and a
+  position checksum. The batch/shape *grouping* differs between engines, but the projected
+  on-screen geometry must match if both transform/skin faithfully. A skinning/pose/camera bug
+  moves these.
+
+We do NOT compare Dolphin's read-back `xfmem` / GP registers (async-lagged → not a valid oracle)
+and we do NOT pixel-diff. The GX *call args* / J3D objects are the valid source on both sides.
+
+## Emitters (both write the same JSONL schema, one line per dumped frame)
+
+- **sms-boot** — `SB_PARITY_DUMP=path` (`native/render/sb_parity_dump.h`, from the present).
+- **pure Dolphin** — `tools/render/dolphin_j3d_probe.py` *(oracle side; reads the same J3D state
+  from the running main build — WIP)*.
+
+Both fastboot the same Delfino state; dumps pair by frame index (deterministic fastboot ⇒ matched
+game state at the same frame number).
+
+## Sweep — `tools/render/parity_sweep.py`
 
 ```
-SB_PARITY_DUMP=scratch/frames/parity.jsonl  ... ./build-native/sms-boot
-```
-Writes one JSON line per **dumped** frame (pairs 1:1 with the `SB_FRAME_DUMP` PPMs), holding:
-per-batch `{shaderKey, vcount, on-screen count, clip-space AABB (xyzw, pre-divide → always
-finite), z/blend state, ntex, checksum, NaN/inf count}`, the light state (count / pos / colour),
-ambient + material-colour registers, and a 4×4 XFB region grid + overall brightness.
-Implemented in `native/render/sb_parity_dump.h` (`sb_parity_emit`), called from the present.
-
-## Run the sweep — `tools/render/parity_sweep.py`
-
-```
-parity_sweep.py check  parity.jsonl                       # invariants on one native run
-parity_sweep.py diff   a.jsonl b.jsonl                    # A/B between two native runs (regression localiser)
-parity_sweep.py image  native.ppm oracle.ppm [heat.png]   # per-region pixel diff vs a Dolphin-GX frame (+heatmap)
-```
-
-One-command gate (fastboot → dump → check, optional diff vs a baseline):
-```
-tools/render/parity_run.sh                 # run + check
-tools/render/parity_run.sh baseline.jsonl  # run + check + diff vs baseline
+parity_sweep.py check dump.jsonl                 # invariants on one dump
+parity_sweep.py diff  oracle.jsonl native.jsonl  # divergences: pure Dolphin vs sms-boot
 ```
 
 - **check** — hard FAIL on: NaN/inf verts, empty scene, nothing on-screen (broken projection),
-  an ON-SCREEN point-collapse, near-black / blown-white XFB. Reports off-screen collapses as
-  **warnings** (real degeneracies — often a parked/hidden model — but non-blocking). rc=1 on any
-  hard fail, so it doubles as a CI/regression gate.
-- **diff** — matches frames by index and batches by order; reports lighting / XFB-brightness /
-  on-screen-count / clip-AABB drift above thresholds, localising *which batch* a change moved.
-  (Demonstrated: toggling `SB_NO_SKIN` flags exactly Mario's batches `c539bdd263592117`.)
-- **image** — overall + per-region (`sky / mid / floor / center / hud_top / hud_bot`) mean |Δ|.
-  Pair a native PPM with a Dolphin-GX oracle PPM of the same fastboot/save state. A 4th arg
-  writes a grayscale **heatmap PNG** (brightness = per-pixel |Δ|) to localise the divergence.
-  (For the main `sunbright` build, the Dolphin-GX oracle frame = a `SUNBRIGHT_NGX_PRESENT=0`
-  run; see `tools/render/ab_oracle.sh`.)
+  an ON-SCREEN point-collapse, near-black / blown-white XFB. Off-screen point-collapse = warning.
+  rc=1 on any hard fail ⇒ doubles as a regression gate. (`parity_run.sh` runs fastboot+check.)
+- **diff** — matches frames by index; reports divergence in projType/proj/viewport, light
+  count/ambient/material, and the frame geometry aggregate (on-screen count, NDC AABB, NaN). When
+  both dumps share the same batch grouping (native A/B), also reports per-batch clip-AABB drift.
+  Fails loudly if the dump windows don't overlap. (Demonstrated native A/B: `SB_NO_SKIN` flags
+  Mario's batches `c539bdd263592117`.)
 
-## Typical loop
+## Loop
 
 ```
-# value track — did my renderer change regress geometry/lighting anywhere?
-SB_PARITY_DUMP=scratch/frames/before.jsonl ... ./build-native/sms-boot   # baseline
-#  ... make the change, rebuild ...
-SB_PARITY_DUMP=scratch/frames/after.jsonl  ... ./build-native/sms-boot
-parity_sweep.py check after.jsonl            # no new hard fails?
-parity_sweep.py diff  before.jsonl after.jsonl   # only the batches I intended moved?
-
-# pixel track — does the final image match Dolphin-GX?
-parity_sweep.py image native.ppm oracle.ppm
+# regenerate the native dump (one-command gate)
+tools/render/parity_run.sh                                  # run sms-boot + check
+# vs the oracle
+parity_sweep.py diff oracle.jsonl scratch/frames/parity.jsonl
 ```

@@ -1,21 +1,18 @@
 #!/usr/bin/env python3
-"""parity_sweep.py — Dolphin-GX vs PC-native parity sweep (geometry / lighting / XFB).
+"""parity_sweep.py — pure-Dolphin (oracle) vs sms-boot (PC-native) divergence detection.
 
-TWO TRACKS, by design (see sb_parity_dump.h):
-  • VALUE track: the native engine's per-frame geometry+lighting+XFB-grid state, dumped as
-    JSONL by SB_PARITY_DUMP. Verified by `check` (invariants — the oracle is the SPEC +
-    self-consistency, since Dolphin's CPU-side intermediate state is async-lagged and is NOT
-    a valid value oracle) and `diff` (A/B between two native runs at matched frame indices —
-    regression detection across a renderer change).
-  • PIXEL track: the FINAL frame is the only trustworthy reference vs Dolphin-GX. `image`
-    does a per-region pixel comparison of two frames (PPM/PNG): the native render and a
-    Dolphin-GX oracle render of the SAME state. Refuses an all-black/empty frame so it can
-    never report a meaningless number against a dead oracle.
+VALUE-LEVEL only: compares the renderer-INDEPENDENT game state both engines compute from the
+same J3D data — projection/viewport, GX light state, and per-model joint/draw matrices. (The
+GX call args / J3D objects are the valid oracle; Dolphin's read-back xfmem is async-lagged, so
+we never compare that, and we don't pixel-diff.) Both engines fastboot the same Delfino state
+and dump the same JSONL schema; if either renders wrong, the matrices diverge here first.
 
-Usage:
-  parity_sweep.py check  dump.jsonl                 # invariants on one native run
-  parity_sweep.py diff   a.jsonl b.jsonl            # A/B between two native runs
-  parity_sweep.py image  native.ppm oracle.ppm      # per-region pixel diff vs Dolphin-GX
+  parity_sweep.py check dump.jsonl          # invariants on one dump (NaN/empty/off-screen/...)
+  parity_sweep.py diff  oracle.jsonl native.jsonl   # find divergences (pure-Dolphin vs sms-boot)
+
+Dump emitters:
+  • sms-boot:      SB_PARITY_DUMP=path  (native/render/sb_parity_dump.h)
+  • pure Dolphin:  tools/render/dolphin_j3d_probe.py  (reads guest J3D state via the probe)
 """
 import sys, json, math
 
@@ -87,125 +84,78 @@ def _batch_key(b):
     return (b.get("k"), b.get("vc"))
 
 def diff(pa, pb, ndc_tol=0.02, bright_tol=8.0):
-    """A/B two native dumps frame-by-frame; report per-batch NDC-AABB / checksum / lighting /
-    XFB divergence above thresholds. Use to confirm a change is inert where it should be, or to
-    localise where it moved geometry."""
+    """Find divergences between two dumps (pure Dolphin oracle `pa` vs sms-boot native `pb`, OR
+    two native A/B runs) frame-by-frame. Compares the CROSS-ENGINE comparable game state:
+    projection/viewport, lights, ambient/material, and the frame geometry aggregate (on-screen
+    count, NDC AABB, checksum). Per-batch clip-AABB drift is ALSO reported when both dumps share
+    the same batch grouping (native A/B); it's skipped cross-engine (batch grouping differs)."""
     A, B = load_jsonl(pa), load_jsonl(pb)
     if not A or not B:
         print("FAIL: empty dump(s)"); return 1
     byf_b = {fr.get("frame"): fr for fr in B}
-    div = 0
+    div = 0; matched = 0
+    def relmax(va, vb):
+        return max((abs(x-y) / max(1.0, abs(x), abs(y)) for x, y in zip(va, vb)), default=0.0)
     for fa in A:
         fi = fa.get("frame")
         fb = byf_b.get(fi)
         if fb is None:
             continue
+        matched += 1
+        # Projection + viewport (must match exactly — same game state).
+        if fa.get("projType") != fb.get("projType"):
+            print(f"  f{fi}: projType {fa.get('projType')} -> {fb.get('projType')}"); div += 1
+        for k in ("proj", "vp"):
+            va, vb = fa.get(k, []), fb.get(k, [])
+            if va and vb and relmax(va, vb) > ndc_tol:
+                print(f"  f{fi}: {k} differs (rel Δ{relmax(va,vb):.3f})  {va} -> {vb}"); div += 1
         # Lighting.
         if fa.get("lights", {}).get("n") != fb.get("lights", {}).get("n"):
-            print(f"  f{fi}: light count {fa['lights']['n']} -> {fb['lights']['n']}"); div += 1
+            print(f"  f{fi}: light count {fa.get('lights',{}).get('n')} -> {fb.get('lights',{}).get('n')}"); div += 1
         for k in ("amb", "matc"):
             va, vb = fa.get(k, []), fb.get(k, [])
-            if any(abs(x-y) > 0.02 for x, y in zip(va, vb)):
+            if va and vb and any(abs(x-y) > 0.02 for x, y in zip(va, vb)):
                 print(f"  f{fi}: {k} {va} -> {vb}"); div += 1
-        # XFB brightness.
+        # Frame geometry aggregate (the renderer-neutral cross-engine geometry signal).
+        ga, gb = fa.get("geom"), fb.get("geom")
+        if ga and gb:
+            if gb.get("nan", 0) > ga.get("nan", 0):
+                print(f"  f{fi}: NaN verts {ga.get('nan')} -> {gb.get('nan')}"); div += 1
+            oa, ob = ga.get("onscr", 0), gb.get("onscr", 0)
+            if abs(oa-ob) > max(16, 0.05*max(oa, ob, 1)):
+                print(f"  f{fi}: on-screen verts {oa} -> {ob} (Δ{ob-oa:+d})"); div += 1
+            na, nb = ga.get("ndc", []), gb.get("ndc", [])
+            if na and nb and max((abs(x-y) for x, y in zip(na, nb)), default=0) > ndc_tol:
+                d = max(abs(x-y) for x, y in zip(na, nb))
+                print(f"  f{fi}: frame NDC AABB moved (max Δ{d:.3f})  {na} -> {nb}"); div += 1
+        # XFB brightness (native dumps only; harmless if absent).
         ba, bb = fa.get("xfb", {}).get("bright"), fb.get("xfb", {}).get("bright")
         if ba is not None and bb is not None and abs(ba-bb) > bright_tol:
             print(f"  f{fi}: XFB bright {ba:.1f} -> {bb:.1f} (Δ{bb-ba:+.1f})"); div += 1
-        # Per-batch geometry (match by index): on-screen count, NaN/inf, and clip-AABB drift.
+        # Per-batch clip-AABB drift — ONLY when batch grouping matches (native A/B, not cross-engine).
         Ba, Bb = fa.get("batches", []), fb.get("batches", [])
-        for i, (xa, xb) in enumerate(zip(Ba, Bb)):
-            if xa.get("bad", 0) != xb.get("bad", 0):
-                print(f"  f{fi} b{i}({xa.get('k')}): NaN/inf {xa.get('bad')} -> {xb.get('bad')}"); div += 1
-            if abs(xa.get("onscr", 0) - xb.get("onscr", 0)) > max(4, 0.02*xa.get("vc", 0)):
-                print(f"  f{fi} b{i}({xa.get('k')}): on-screen {xa.get('onscr')} -> {xb.get('onscr')}"); div += 1
-            ca, cb = xa.get("clip", []), xb.get("clip", [])
-            # relative drift so far geometry (large clip) isn't over-flagged.
-            if ca and cb:
-                worst = max((abs(x-y) / max(1.0, abs(x), abs(y)) for x, y in zip(ca, cb)), default=0)
-                if worst > ndc_tol:
-                    print(f"  f{fi} b{i}({xa.get('k')}): clip AABB moved (rel Δ{worst:.3f})"); div += 1
-    print(f"diff {pa} vs {pb}: {div} divergences above tol (rel {ndc_tol}, bright {bright_tol})")
+        same_grouping = len(Ba) == len(Bb) and all(x.get("k") == y.get("k") for x, y in zip(Ba, Bb))
+        if same_grouping:
+            for i, (xa, xb) in enumerate(zip(Ba, Bb)):
+                if xa.get("bad", 0) != xb.get("bad", 0):
+                    print(f"  f{fi} b{i}({xa.get('k')}): NaN/inf {xa.get('bad')} -> {xb.get('bad')}"); div += 1
+                ca, cb = xa.get("clip", []), xb.get("clip", [])
+                if ca and cb and relmax(ca, cb) > ndc_tol:
+                    print(f"  f{fi} b{i}({xa.get('k')}): clip AABB moved (rel Δ{relmax(ca,cb):.3f})"); div += 1
+    if matched == 0:
+        print(f"FAIL: no overlapping frame indices between {pa} and {pb} (align the dump windows)"); return 1
+    print(f"diff {pa} vs {pb}: {matched} frames matched, {div} divergences (rel {ndc_tol}, bright {bright_tol})")
     return 1 if div else 0
 
 # ---------------------------------------------------------------------------------------
 # PIXEL track (vs Dolphin-GX oracle)
 # ---------------------------------------------------------------------------------------
-def _read_ppm(path):
-    if path.lower().endswith(".png"):
-        from PIL import Image
-        im = Image.open(path).convert("RGB")
-        return im.width, im.height, list(im.tobytes())
-    with open(path, "rb") as f:
-        data = f.read()
-    assert data[:2] == b"P6", f"{path} is not a binary PPM"
-    # parse header: P6 W H MAXVAL\n<data>
-    idx, tok = 2, []
-    while len(tok) < 3:
-        while idx < len(data) and data[idx] in b" \t\n\r":
-            idx += 1
-        s = idx
-        while idx < len(data) and data[idx] not in b" \t\n\r":
-            idx += 1
-        tok.append(int(data[s:idx]))
-    idx += 1  # single whitespace after maxval
-    w, h, _mx = tok
-    return w, h, list(data[idx:idx + w*h*3])
-
-REGIONS = {  # named 1/9 grid + meaningful bands for SMS framing (sky top, character center, HUD)
-    "sky":       (0.0, 0.0, 1.0, 0.33),
-    "mid":       (0.0, 0.33, 1.0, 0.66),
-    "floor":     (0.0, 0.66, 1.0, 1.0),
-    "center":    (0.33, 0.33, 0.66, 0.80),   # where the player usually is
-    "hud_top":   (0.0, 0.0, 1.0, 0.12),
-    "hud_bot":   (0.0, 0.88, 1.0, 1.0),
-}
-
-def _region_delta(w, h, A, B, box):
-    x0, y0, x1, y1 = int(box[0]*w), int(box[1]*h), int(box[2]*w), int(box[3]*h)
-    s = 0.0; n = 0
-    for y in range(y0, y1):
-        row = (y*w)*3
-        for x in range(x0, x1):
-            p = row + x*3
-            s += abs(A[p]-B[p]) + abs(A[p+1]-B[p+1]) + abs(A[p+2]-B[p+2])
-            n += 3
-    return (s/n) if n else 0.0
-
-def image(pa, pb, heatmap=None):
-    """Per-region mean |Δ| between native (pa) and Dolphin-GX oracle (pb). Refuses a dead frame.
-    Optional `heatmap` writes a PNG where brightness = per-pixel |Δ| (localises divergence)."""
-    wa, ha, A = _read_ppm(pa)
-    wb, hb, B = _read_ppm(pb)
-    if (wa, ha) != (wb, hb):
-        print(f"FAIL: size mismatch {wa}x{ha} vs {wb}x{hb}"); return 3
-    if max(A) < 4 or max(B) < 4:
-        print(f"FAIL: a frame is all-black (dead oracle?) maxA={max(A)} maxB={max(B)}"); return 3
-    overall = _region_delta(wa, ha, A, B, (0, 0, 1, 1))
-    print(f"image {pa} vs {pb} ({wa}x{ha}): overall mean |Δ| = {overall:.2f} / 255")
-    for name, box in REGIONS.items():
-        d = _region_delta(wa, ha, A, B, box)
-        bar = "#" * int(min(d, 60))
-        print(f"  {name:10s} {d:6.2f}  {bar}")
-    if heatmap:
-        from PIL import Image
-        out = bytearray(wa*ha)
-        for i in range(wa*ha):
-            p = i*3
-            d = abs(A[p]-B[p]) + abs(A[p+1]-B[p+1]) + abs(A[p+2]-B[p+2])
-            out[i] = min(255, d)   # sum of channel deltas, clamped
-        Image.frombytes("L", (wa, ha), bytes(out)).save(heatmap)
-        print(f"  heatmap -> {heatmap}")
-    return 0
-
 def main():
     if len(sys.argv) < 3:
         print(__doc__); return 2
     mode = sys.argv[1]
     if mode == "check":  return check(sys.argv[2])
     if mode == "diff":   return diff(sys.argv[2], sys.argv[3])
-    if mode == "image":
-        hm = sys.argv[4] if len(sys.argv) > 4 else None
-        return image(sys.argv[2], sys.argv[3], hm)
     print(__doc__); return 2
 
 if __name__ == "__main__":

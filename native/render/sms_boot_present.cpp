@@ -38,6 +38,7 @@ int  sb_gx_imm_take_batches(const SbImmVtx** verts, const SbImmBatch** batches, 
 int  sb_gx_get_lights(float out[8][16]) __attribute__((weak));
 void sb_gx_get_chan_amb(int slot, float rgb[3]) __attribute__((weak));
 void sb_gx_get_chan_matcolor(int slot, float rgba[4]) __attribute__((weak));
+void sb_gx_get_projection(int* type, float proj[6], float vp[6]) __attribute__((weak));
 }
 // The frame's captured live J3D scene: vertex list + per-material TEV batches. WEAK — null when
 // the capture TU (sms_boot_j3d_capture.cpp) isn't linked, in which case the present draws only 2D.
@@ -466,8 +467,10 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
         }
         if (sb_gx_get_chan_amb)      sb_gx_get_chan_amb(0, L.amb);
         if (sb_gx_get_chan_matcolor) sb_gx_get_chan_matcolor(0, L.matc);
+        SbParityProj P{};
+        if (sb_gx_get_projection) sb_gx_get_projection(&P.type, P.proj, P.vp);
         sb_parity_emit(s_parity, g_frame, c, verts.data(), (int)verts.size(),
-                       batches.data(), (int)batches.size(), L,
+                       batches.data(), (int)batches.size(), L, P,
                        g_nvk.rgba().data(), (int)g_nvk.width(), (int)g_nvk.height());
     }
 }
