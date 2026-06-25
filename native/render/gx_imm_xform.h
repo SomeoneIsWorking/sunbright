@@ -104,6 +104,34 @@ inline SbImmVtx imm_project_eye(float ex, float ey, float ez, int projType,
     return o;
 }
 
+// Clip-space (homogeneous, PRE-divide) position. gl_Position = vec4(x,y,z,w); the GPU does
+// the perspective divide → perspective-correct attribute interpolation AND hardware near/side
+// clipping for free. By construction (x/w, y/w, z/w) == imm_project_eye(...).{x,y,z} (the NDC
+// the old CPU-divide path produced), so depth and on-screen position are bit-for-bit the same;
+// only the WRONG affine (w=1) interpolation + the hand-rolled NDC clipper are removed.
+struct SbImmClip { float x, y, z, w; };
+
+inline SbImmClip imm_project_eye_clip(float ex, float ey, float ez, int projType,
+                                      const float projMtx[6], const float vp[6]) {
+    SbImmClip o;
+    if (projType == 0) {               // perspective (GX_PERSPECTIVE == 0)
+        const float xc = ex*projMtx[0] + ez*projMtx[1];
+        const float yc = ey*projMtx[2] + ez*projMtx[3];
+        const float zc = projMtx[5] + ez*projMtx[4];
+        const float w  = -ez;          // clip w (>0 in front of camera; the GPU near-clips w→0)
+        const float ox = (vp[2] != 0.0f) ? 2.0f*vp[0]/vp[2] : 0.0f;   // viewport x-offset (NDC)
+        const float oy = (vp[3] != 0.0f) ? 2.0f*vp[1]/vp[3] : 0.0f;   // viewport y-offset (NDC)
+        o.x =  xc + ox*w;              // x/w = 2*vp0/vp2 + xc/(-ez)  == imm_project_eye ndc_x
+        o.y = -yc + oy*w;              // y/w = 2*vp1/vp3 - yc/(-ez)  == imm_project_eye ndc_y (Y down)
+        o.z = vp[5]*w + zc*(vp[5]-vp[4]); // z/w = vp5 + zc*(vp5-vp4)/(-ez) == ndc_z (Vulkan [0,1])
+        o.w =  w;
+    } else {                            // orthographic — wc already 1, NDC == clip
+        SbImmVtx p = imm_project_eye(ex, ey, ez, projType, projMtx, vp);
+        o.x = p.x; o.y = p.y; o.z = p.z; o.w = 1.0f;
+    }
+    return o;
+}
+
 inline SbImmVtx imm_project(const SbImmRawVtx& v, int projType, const float projMtx[6],
                             const float posMtx[3][4], const float vp[6]) {
     // model -> eye (current position matrix, 3x4)

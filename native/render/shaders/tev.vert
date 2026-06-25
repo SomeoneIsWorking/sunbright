@@ -2,7 +2,7 @@
 // TEV vertex shader: pass the engine-computed clip/NDC position, both GX raster
 // colour channels, and the 8 texgen'd UVs through to the generated TEV fragment
 // shader (sb_tev_gen_fragment). The UVs arrive packed two-per-vec4 attribute.
-layout(location = 0) in vec3 inPos;
+layout(location = 0) in vec4 inPos;   // CLIP-space xyzw (the GPU divides → perspective-correct)
 layout(location = 1) in vec4 inColor0;
 layout(location = 2) in vec4 inColor1;
 layout(location = 3) in vec4 inUV01;   // (uv0.xy, uv1.xy)
@@ -15,7 +15,7 @@ layout(location = 1) out vec2 vUV[8];
 layout(location = 9) out vec4 vColor1;
 
 void main() {
-    gl_Position = vec4(inPos, 1.0);
+    gl_Position = inPos;
     vColor  = inColor0;
     vColor1 = inColor1;
     vUV[0] = inUV01.xy; vUV[1] = inUV01.zw;

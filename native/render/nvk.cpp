@@ -684,7 +684,7 @@ bool Nvk::setTevFragment(const std::string& glslFragment) {
     // Vertex input: pos, color0, color1, then the 8 UVs packed as 4 vec4 attributes.
     VkVertexInputBindingDescription bind{ 0, sizeof(NvkTevVertex), VK_VERTEX_INPUT_RATE_VERTEX };
     VkVertexInputAttributeDescription a[7]{};
-    a[0] = { 0, 0, VK_FORMAT_R32G32B32_SFLOAT,    (uint32_t)offsetof(NvkTevVertex, x) };
+    a[0] = { 0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, (uint32_t)offsetof(NvkTevVertex, x) }; // clip xyzw
     a[1] = { 1, 0, VK_FORMAT_R32G32B32A32_SFLOAT, (uint32_t)offsetof(NvkTevVertex, rgba) };
     a[2] = { 2, 0, VK_FORMAT_R32G32B32A32_SFLOAT, (uint32_t)offsetof(NvkTevVertex, rgba1) };
     a[3] = { 3, 0, VK_FORMAT_R32G32B32A32_SFLOAT, (uint32_t)offsetof(NvkTevVertex, uv[0]) };
@@ -849,7 +849,7 @@ static VkPipeline build_tev_pipeline(VkDevice device, VkShaderModule vs, VkShade
 
     VkVertexInputBindingDescription bind{ 0, sizeof(NvkTevVertex), VK_VERTEX_INPUT_RATE_VERTEX };
     VkVertexInputAttributeDescription a[7]{};
-    a[0] = { 0, 0, VK_FORMAT_R32G32B32_SFLOAT,    (uint32_t)offsetof(NvkTevVertex, x) };
+    a[0] = { 0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, (uint32_t)offsetof(NvkTevVertex, x) }; // clip xyzw
     a[1] = { 1, 0, VK_FORMAT_R32G32B32A32_SFLOAT, (uint32_t)offsetof(NvkTevVertex, rgba) };
     a[2] = { 2, 0, VK_FORMAT_R32G32B32A32_SFLOAT, (uint32_t)offsetof(NvkTevVertex, rgba1) };
     a[3] = { 3, 0, VK_FORMAT_R32G32B32A32_SFLOAT, (uint32_t)offsetof(NvkTevVertex, uv[0]) };

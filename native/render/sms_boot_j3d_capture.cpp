@@ -33,8 +33,7 @@
 #include <JSystem/J3D/J3DGraphAnimator/J3DModel.hpp>
 
 #include "nvk.h"               // NvkTevVertex, Nvk::NvkTevBatch, NvkTevPush
-#include "gx_imm_xform.h"      // SbImmRawVtx / SbImmVtx / imm_project
-#include "sb_tri_clip.h"       // SbClipEyeVtx / sb_clip_emit_tri (shared near+side clipper)
+#include "gx_imm_xform.h"      // SbImmRawVtx / SbImmVtx / imm_project / imm_project_eye_clip
 #include "ngx_mesh.h"          // NgxCP, NgxVertex, ngx_build_mesh
 #include "ngx_render_data.h"   // NgxTevState
 #include "tev_shader.h"        // sb_tev_gen_fragment
@@ -507,13 +506,20 @@ extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
     const uint32_t vstart = (uint32_t)g_verts.size();
     g_verts.reserve(g_verts.size() + idx.size());
 
-    // Build one eye-space + shaded vertex (NDC filled by the clipper at projection time).
-    auto make_cv = [&](const NgxVertex& s) -> SbClipEyeVtx {
-        SbClipEyeVtx cv;
-        cv.ex = posMtx[0][3] + posMtx[0][0]*s.pos[0] + posMtx[0][1]*s.pos[1] + posMtx[0][2]*s.pos[2];
-        cv.ey = posMtx[1][3] + posMtx[1][0]*s.pos[0] + posMtx[1][1]*s.pos[1] + posMtx[1][2]*s.pos[2];
-        cv.ez = posMtx[2][3] + posMtx[2][0]*s.pos[0] + posMtx[2][1]*s.pos[1] + posMtx[2][2]*s.pos[2];
-        NvkTevVertex& tv = cv.tv; tv = NvkTevVertex{};
+    // model -> eye (the per-shape draw matrix). Shared by the vertex builder and the debug probes.
+    auto eye_of = [&](const NgxVertex& s, float& ex, float& ey, float& ez) {
+        ex = posMtx[0][3] + posMtx[0][0]*s.pos[0] + posMtx[0][1]*s.pos[1] + posMtx[0][2]*s.pos[2];
+        ey = posMtx[1][3] + posMtx[1][0]*s.pos[0] + posMtx[1][1]*s.pos[1] + posMtx[1][2]*s.pos[2];
+        ez = posMtx[2][3] + posMtx[2][0]*s.pos[0] + posMtx[2][1]*s.pos[1] + posMtx[2][2]*s.pos[2];
+    };
+    // Build ONE shaded vertex carrying CLIP-space xyzw (the GPU divides → perspective-correct UV/
+    // colour interpolation + hardware near/side clipping). No CPU perspective divide, no hand-rolled
+    // clipper — that re-derivation was the floor texture-warp (w=1 affine) and near-plane slab.
+    auto make_v = [&](const NgxVertex& s) -> NvkTevVertex {
+        NvkTevVertex tv{};
+        float ex, ey, ez; eye_of(s, ex, ey, ez);
+        SbImmClip c = imm_project_eye_clip(ex, ey, ez, projType, proj, vp);
+        tv.x = c.x; tv.y = c.y; tv.z = c.z; tv.w = c.w;
         // Raster base per channel: vertex colour if the channel sources from the vertex, else the
         // material colour register. COLOR0 RGB is per-vertex LIT when the material enables lighting.
         const unsigned char* c0 = me->matSrcVtx[0] ? s.clr[0] : me->matColor[0];
@@ -539,26 +545,27 @@ extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
             if (t < me->ntexgen) sb_texgen_uv(me->tg[t], s, tv.rgba, &tv.uv[t][0]);
             else { tv.uv[t][0] = s.tex[t][0]; tv.uv[t][1] = s.tex[t][1]; }
         }
-        return cv;
+        return tv;
     };
-    // ngx_build_mesh emits a TRIANGLE LIST (idx in triples); the shared clipper (sb_tri_clip.h)
-    // near-clips in eye space, projects, side-clips against the NDC box, and appends to g_verts.
+    // ngx_build_mesh emits a TRIANGLE LIST (idx in triples). Emit clip-space verts straight through;
+    // the GPU does the divide, perspective-correct interpolation, and frustum/guard-band clipping.
     for (size_t k = 0; k + 2 < idx.size(); k += 3) {
-        const SbClipEyeVtx tri[3] = { make_cv(verts[idx[k]]), make_cv(verts[idx[k+1]]), make_cv(verts[idx[k+2]]) };
-        sb_clip_emit_tri(tri, projType, proj, vp, g_verts);
+        g_verts.push_back(make_v(verts[idx[k]]));
+        g_verts.push_back(make_v(verts[idx[k+1]]));
+        g_verts.push_back(make_v(verts[idx[k+2]]));
     }
     const uint32_t vcount = (uint32_t)g_verts.size() - vstart;
     if (dbg_enabled()) {   // per-shape coverage probe (first 24 shapes = the sky, drawn first)
         static int s_cov = 0;
         if (s_cov < 24 && !idx.empty()) { ++s_cov;
             // where does shape's first vert land? eye-space (ez>0 = BEHIND camera) + raw NDC.
-            const SbClipEyeVtx c = make_cv(verts[idx[0]]);
-            SbImmVtx p = imm_project_eye(c.ex, c.ey, c.ez, projType, proj, vp);
+            float ex, ey, ez; eye_of(verts[idx[0]], ex, ey, ez);
+            SbImmVtx p = imm_project_eye(ex, ey, ez, projType, proj, vp);
             const auto& sv = verts[idx[0]];
             std::fprintf(stderr, "[cov] shape#%d src=%u emit=%u cc0=%04x key=%llx vclr0=%u,%u,%u,%u  eye(%.0f,%.0f,%.0f) ndc(%.2f,%.2f,%.2f)%s\n",
                          s_cov, (unsigned)idx.size(), vcount, me->chanCtrl[0], (unsigned long long)me->key,
                          sv.clr[0][0], sv.clr[0][1], sv.clr[0][2], sv.clr[0][3],
-                         c.ex, c.ey, c.ez, p.x, p.y, p.z, c.ez > 0 ? " BEHIND" : ""); }
+                         ex, ey, ez, p.x, p.y, p.z, ez > 0 ? " BEHIND" : ""); }
     }
 
     // Merge into the previous batch if the same material drew the immediately-preceding
@@ -619,12 +626,14 @@ extern "C" void sb_boot_capture_sphere(int numMajor, int numMinor) {
     NvkTevVertex base{};
     base.rgba[0]=mc[0]; base.rgba[1]=mc[1]; base.rgba[2]=mc[2]; base.rgba[3]=mc[3];
     base.rgba1[0]=mc[0]; base.rgba1[1]=mc[1]; base.rgba1[2]=mc[2]; base.rgba1[3]=mc[3];
-    auto to_eye = [&](float mx, float my, float mz) -> SbClipEyeVtx {
-        SbClipEyeVtx o;
-        o.ex = posMtx[0][3] + posMtx[0][0]*mx + posMtx[0][1]*my + posMtx[0][2]*mz;
-        o.ey = posMtx[1][3] + posMtx[1][0]*mx + posMtx[1][1]*my + posMtx[1][2]*mz;
-        o.ez = posMtx[2][3] + posMtx[2][0]*mx + posMtx[2][1]*my + posMtx[2][2]*mz;
-        o.tv = base; return o;
+    // model -> eye (camera-centred pos matrix) -> CLIP-space xyzw (GPU divides + near-clips the
+    // triangles that straddle ez=0 — the dome surrounds the camera). Same PC-way path as the scene.
+    auto to_clip = [&](float mx, float my, float mz) -> NvkTevVertex {
+        const float ex = posMtx[0][3] + posMtx[0][0]*mx + posMtx[0][1]*my + posMtx[0][2]*mz;
+        const float ey = posMtx[1][3] + posMtx[1][0]*mx + posMtx[1][1]*my + posMtx[1][2]*mz;
+        const float ez = posMtx[2][3] + posMtx[2][0]*mx + posMtx[2][1]*my + posMtx[2][2]*mz;
+        SbImmClip c = imm_project_eye_clip(ex, ey, ez, projType, proj, vp);
+        NvkTevVertex tv = base; tv.x = c.x; tv.y = c.y; tv.z = c.z; tv.w = c.w; return tv;
     };
 
     const uint32_t vstart = (uint32_t)g_verts.size();
@@ -632,17 +641,16 @@ extern "C" void sb_boot_capture_sphere(int numMajor, int numMinor) {
     for (int i = 0; i < numMajor; ++i) {           // GXDraw.c GXDrawSphere, unit radius
         const float a = i*majorStep, b = a + majorStep;
         const float r0 = std::sin(a), r1 = std::sin(b), z0 = std::cos(a), z1 = std::cos(b);
-        SbClipEyeVtx strip[2*256 + 2];             // (numMinor+1)*2 verts; numMinor is small (<=256)
+        NvkTevVertex strip[2*256 + 2];             // (numMinor+1)*2 verts; numMinor is small (<=256)
         int sn = 0;
         const int nm = numMinor < 255 ? numMinor : 255;
         for (int j = 0; j <= nm; ++j) {
             const float c = j*minorStep, x = std::cos(c), y = std::sin(c);
-            strip[sn++] = to_eye(x*r1, y*r1, z1);
-            strip[sn++] = to_eye(x*r0, y*r0, z0);
+            strip[sn++] = to_clip(x*r1, y*r1, z1);
+            strip[sn++] = to_clip(x*r0, y*r0, z0);
         }
         for (int j = 0; j + 2 < sn; ++j) {         // triangle strip -> triangles (cull-none)
-            const SbClipEyeVtx tri[3] = { strip[j], strip[j+1], strip[j+2] };
-            sb_clip_emit_tri(tri, projType, proj, vp, g_verts);
+            g_verts.push_back(strip[j]); g_verts.push_back(strip[j+1]); g_verts.push_back(strip[j+2]);
         }
     }
     // Backdrop depth: the sphere (radius 100000) projects to NDC z==1.0 EXACTLY — the far-clip
@@ -658,9 +666,11 @@ extern "C" void sb_boot_capture_sphere(int numMajor, int numMinor) {
     // far rim (0.99992 > 0.9999), so the gradient lost LEQUAL at the horizon band and the deep-blue
     // sphere bled through as a "dome" (the file-select sky bug). Pin to 0.99997 — safely behind the
     // gradient rim, still inside the far plane.
-    constexpr float kBackdropZ = 0.99997f;
-    for (uint32_t i = vstart; i < g_verts.size(); ++i)
-        if (g_verts[i].z >= kBackdropZ) g_verts[i].z = kBackdropZ;
+    constexpr float kBackdropZ = 0.99997f;   // NDC depth (= clip_z/clip_w); pin clip_z to kBackdropZ*w
+    for (uint32_t i = vstart; i < g_verts.size(); ++i) {
+        NvkTevVertex& v = g_verts[i];
+        if (v.w > 0.f && v.z >= kBackdropZ * v.w) v.z = kBackdropZ * v.w;
+    }
 
     const uint32_t vcount = (uint32_t)g_verts.size() - vstart;
     if (!vcount) return;

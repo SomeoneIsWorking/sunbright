@@ -33,7 +33,9 @@ struct NvkTexVertex {
 // (texgen already applied on the CPU). Matches the inputs the TEV fragment shader
 // (sb_tev_gen_fragment) consumes: vColor (color0), vColor1 (COLOR1A1), vUV[0..7].
 struct NvkTevVertex {
-    float x, y, z;        // NDC position (z = depth)
+    float x, y, z;        // CLIP-space position (the GPU divides; depth = z/w)
+    float w = 1.0f;       // CLIP-space w. 3D J3D verts carry the real perspective w (perspective-
+                          // correct interp + HW clipping); 2D/imm content is already-NDC → w=1.
     float rgba[4];        // raster color0 (0..1)
     float rgba1[4];       // raster COLOR1A1 (0..1)
     float uv[8][2];       // per GX texcoord 0..7
