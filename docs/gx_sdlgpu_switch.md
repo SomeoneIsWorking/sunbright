@@ -45,17 +45,20 @@ of raylib's "fork sb_tev_gen_fragment for GL330" — but only the binding decora
 
 ## Phasing (each phase = a frame-dump-verifiable milestone, A/B vs nvk; SB_SDLGPU env selects it)
 - **P0 ✅** headless device + offscreen color target + clear + readback (`scratch/sdlgpu_smoke`).
-- **P1** `gx_sdlgpu.cpp` in the build (system SDL3): device + offscreen color+depth targets (EFB size)
-  + `frame_begin` clear to the GX copy-clear colour + `readback`, wired into `sms_boot_present.cpp`
-  behind `SB_SDLGPU`. Verify: the clear colour dumps (like raylib P1).
-- **P2** vertex buffer upload + ONE minimal modulate pipeline (tiny GLSL 450 VS/FS via glsl_compile,
-  cull NONE) drawing all batches. Verify: plaza/beach geometry matches nvk (no Y-flip/remap needed),
-  no starburst (GPU clips; cull-none like nvk). Scene-only A/B mean-abs-delta small.
-- **P3** real TEV: reuse `tev_vert_spv` + remapped `sb_tev_gen_fragment` SPIR-V + per-batch
-  fragment uniform (NvkTevPush) + 8 samplers + per-batch pipeline (blend/depth from GX state).
-  Verify: scene + 2D fade colours match nvk (this subsumes raylib's P2+P3+P4 in one).
-- **P4** lighting/fog/indirect/texgen fidelity, then make SB_SDLGPU the default and RETIRE nvk + ngx +
-  the raylib path (`gx_raylib.cpp`, the FetchContent raylib).
+- **P1 ✅ (commit 5100605)** `gx_sdlgpu.cpp` in the build (system SDL3): device + offscreen color
+  target + `frame_begin` clear + `readback`, wired into `sms_boot_present.cpp` behind `SB_SDLGPU`.
+  Verified headless: frame 240 dumps the GX copy-clear (all-black).
+- **P2 ✅ (commit b1e0a3d)** vertex buffer upload + one modulate pipeline (reused `tev_vert_spv` VS +
+  minimal GLSL-450 texture*color FS, cull NONE) drawing all batches. NvkTevVertex feeds RAW (no
+  Y-flip/depth-remap). One real fix: SDL3 GPU's clip→framebuffer Y is inverted vs raw Vulkan → flip
+  rows on readback. Verified scene-only A/B vs nvk 71.6→16.6 (geometry matches; residual = no TEV/blend).
+- **P3 ✅ (commit e00e1e9)** real per-material TEV: reuse each batch's `fragGlsl`, remap bindings
+  (samplers set=2 individual, push_constant→set=3 uniform), glslang→SPIR-V, per-batch pipeline
+  (blend/depth from GX state, cull NONE), NvkTevPush fragment uniform, 8 samplers. Verified vs nvk:
+  scene-only **3.14** (beats raylib's 5.07), FULL frame incl. 2D white fade **0.27** — pixel-identical.
+- **P4 (NEXT)** remaining fidelity: generated mip chains (nvk's makeTexture trilinear+aniso — the
+  grazing-tiled minification/shoreline moire), lighting/fog/indirect/texgen edge cases. Then make
+  `SB_SDLGPU` the DEFAULT and RETIRE nvk + ngx + the raylib path (`gx_raylib.cpp`, FetchContent raylib).
 
 ## Verification (unchanged discipline)
 Per-frame dump (`SB_FRAME_DUMP` → `scratch/frames/boot_NNNN.ppm`) + `scratch/frames/abppm.py`
@@ -69,5 +72,20 @@ sphere's inward faces. With cull disabled + true 4-component clip-space, raylib 
 scene-only mean-abs-delta 5.07. SDL3 GPU avoids the whole class: Vulkan NDC + explicit cull-none.
 
 ## Status
-- P0 ✅ proven (`scratch/sdlgpu_smoke/smoke.c`, PASS headless + on :0).
-- raylib `gx_raylib.cpp` is FROZEN (kept building until SDL3 GPU reaches P2/P3, then retired).
+- **P0–P3 ✅ DONE.** SB_SDLGPU renders the plaza at near-perfect nvk parity (scene 3.14 / full 0.27),
+  headless Vulkan, no DISPLAY (`SDL_VIDEODRIVER=offscreen`). The TEV combiner + per-batch blend/depth
+  work; the 2D white fade (raylib's never-solved R2) renders correctly.
+- **P4 is NEXT:** mip-chain generation (nvk `makeTexture` parity — the only known fidelity gap),
+  then flip SB_SDLGPU on by default and retire nvk/ngx/raylib.
+- raylib `gx_raylib.cpp` is FROZEN/superseded — retire in P4.
+
+### Repro (headless, no DISPLAY)
+```
+cmake --build build-native --target sms-boot -j$(nproc)
+rm -f scratch/frames/boot_0240.ppm; pkill -9 -x sms-boot; sleep 1
+timeout -s KILL 70 setarch -R env SDL_VIDEODRIVER=offscreen SUNBRIGHT_DISC=scratch/disc/sms.iso \
+  SB_SDLGPU=1 SB_THP_FAST=1 SB_TURBO=1 SB_HOST_ALLOC_CAP_MB=3072 SB_FRAME_DUMP=1 \
+  SB_FRAME_DUMP_START=240 SB_FRAME_DUMP_MAX=1 ./build-native/sms-boot
+# boot_0240.ppm = the SDL3 GPU frame. Drop SB_SDLGPU for the nvk reference. SB_SKIP_IMM=1 = scene-only.
+# A/B: python3 scratch/frames/abppm.py <a.ppm> <b.ppm>   (overall + 4x4-region mean-abs-delta)
+```
