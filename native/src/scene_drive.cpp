@@ -74,6 +74,29 @@ void init_graphics() {
 	g_graphics.mFarPlane  = 100000.0f;
 }
 
+extern "C" int sb_present_frame();   // native/render/sms_boot_present.cpp (settled-frame gate)
+
+// Camera-settle detector. The option camera (CPolarSubCamera) SMOOTHLY lerps toward its target
+// over ~130 present frames AFTER the file-select choice state (unk10==2) is entered, so a frame
+// captured AT unk10==2 catches the camera mid-pan (scene pitched down, cubes shoved to the top —
+// these are NOT render bugs, just a premature capture). A faithful "settled file-select" capture
+// must wait until the view matrix stops moving. We track the per-frame view-matrix delta here and
+// expose sb_camera_view_settled(): true once the view has been ~stationary for several frames.
+namespace { int g_cam_stable = 0; float g_prev_view[12] = {0}; bool g_prev_view_valid = false; }
+extern "C" int sb_camera_view_settled() { return g_cam_stable >= 8; }
+static void sb_track_camera_settle(const Mtx view) {
+	float d = 0.f;
+	const float* v = &view[0][0];
+	if (g_prev_view_valid)
+		for (int i = 0; i < 12; ++i) { float e = std::fabs(v[i] - g_prev_view[i]); if (e > d) d = e; }
+	for (int i = 0; i < 12; ++i) g_prev_view[i] = v[i];
+	g_prev_view_valid = true;
+	// Rotation elems are ~[-1,1]; translation elems are ~hundreds. Use a relative-ish threshold:
+	// the largest per-element move below 0.30 (covers a ≤0.3-unit translation creep / tiny rotation)
+	// counts as "still". The settle is asymptotic, so a small floor avoids never-settling.
+	if (d < 0.30f) { if (g_cam_stable < 1000) ++g_cam_stable; } else g_cam_stable = 0;
+}
+
 // Drive a named group's draw into its dedicated opa/xlu draw buffers (the GC perform-list path
 // enters models into these buffers but masks off the draw bit, so they never draw — see
 // CLAUDE.md sky/map notes). Mirrors TSmJ3DScn::perform's buffer mechanics: copy view -> drawInit
@@ -171,6 +194,31 @@ void drive_chr() {
 		{ Vec bs = { 1.0f, 1.0f, 1.0f }; m->setBaseScale(bs); }
 		ma->calc();
 		ma->viewCalc();
+		// SB_CHR_DBG: dump the cube's actual DRAWN position. baseTR = the model's base TR matrix
+		// (world transform from calcRootMatrix: mPosition.y - mYOffset). anm0 = joint-0 world matrix
+		// after calc. drawMtx[0] = viewMtx*anm0 = the cube's VIEW-SPACE position. j3dSysView = the view
+		// viewCalc multiplied by. This is what PROVED the "cube too high" was the option camera mid-pan
+		// (drawMtx vy swung +252 mid-pan → −99 once settled), NOT a cube placement/render bug. Pair with
+		// the camera-settle gate on the dump (sb_camera_view_settled) for a clean settled read.
+		if (const char* e = getenv("SB_CHR_DBG"); e && e[0] && e[0] != '0') {
+			static int cn = 0;
+			if (sb_present_frame() > 0 && cn < 9) { ++cn;
+				MtxPtr btr = m->getBaseTRMtx();
+				const JGeometry::TVec3<f32>& bp = b->getPosition();
+				Mtx& dm = m->getDrawMtx(0);
+				MtxPtr anm0 = m->getAnmMtx(0);  // joint-0 world matrix after calc (baseTR*jointLocal)
+				MtxPtr jv = j3dSys.getViewMtx();   // the view matrix viewCalc actually multiplied by
+				std::fprintf(stderr, "[chr-dbg] j3dSysView r0[%.3f,%.3f,%.3f,%.1f] r1[%.3f,%.3f,%.3f,%.1f] r2[%.3f,%.3f,%.3f,%.1f]\n",
+				             jv[0][0],jv[0][1],jv[0][2],jv[0][3], jv[1][0],jv[1][1],jv[1][2],jv[1][3], jv[2][0],jv[2][1],jv[2][2],jv[2][3]);
+				std::fprintf(stderr, "[chr-dbg] cube%d pos=(%.1f,%.1f,%.1f) baseTR.t=(%.1f,%.1f,%.1f) "
+				             "anm0.t=(%.1f,%.1f,%.1f) drawMtx.t=(%.1f,%.1f,%.1f) joints=%d\n",
+				             i, bp.x, bp.y, bp.z,
+				             btr[0][3], btr[1][3], btr[2][3],
+				             anm0 ? anm0[0][3] : 0.f, anm0 ? anm0[1][3] : 0.f, anm0 ? anm0[2][3] : 0.f,
+				             dm[0][3], dm[1][3], dm[2][3],
+				             m->getModelData() ? (int)m->getModelData()->getJointNum() : -1);
+			}
+		}
 		// The cube shape packets default to HIDDEN (unk30=0) until the normal draw path shows them;
 		// our manual entry skips that, so show them so J3DMatPacket::draw won't checkThing-skip them.
 		if (m->getModelData()) {
@@ -296,6 +344,9 @@ extern "C" bool sb_boot_drive_scene() {
 			// Latch the perspective for the capture's clip-space project (robust against the
 			// HUD's ortho overwriting the live GX projection between now and the shape tap).
 			sb_gx_latch_proj44(g_graphics.mProjMtx.mMtx[0]);
+
+			// Feed the camera-settle detector (the view the scene/cubes will draw with this frame).
+			sb_track_camera_settle(g_graphics.mViewMtx.mMtx);
 
 			// PROJECTION DIVERGENCE DETECTOR (value-based, not visual). The reference is the
 			// camera's own C_MTXPerspective (6-element GX form); the actual is what the capture

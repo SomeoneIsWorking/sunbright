@@ -28,8 +28,10 @@
 #include <dolphin/gx.h>      // GXColor etc. (gx_state.h uses them)
 #include "gx_state.h"
 #include "gx_imm_xform.h"
+#include "tex_decode.h"      // sb_tex_decode / sb_tex_pad_* (SB_IMM_PRIM_DBG texture dump)
 #include <cstdio>
 #include <cstdlib>
+#include <vector>
 
 using sb::platform::gx::state;
 using sb::render::SbImmVtx;
@@ -89,7 +91,8 @@ int g_dbg_left = 12;
 const int g_prim_dbg_at = [] { const char* e = std::getenv("SB_IMM_PRIM_DBG"); return e && e[0] ? std::atoi(e) : 0; }();
 bool g_prim_dbg_done = false;
 struct PrimRec { int prim, nv; bool textured; int fmt, w, h; int bt, bs, bd;
-                 float xmn, xmx, ymn, ymx, umn, umx, vmn, vmx; };
+                 float xmn, xmx, ymn, ymx, umn, umx, vmn, vmx;
+                 const void* image; const void* tlut; int tlutfmt; };
 std::vector<PrimRec> g_prim_recs;
 
 void snapshot_state() {
@@ -169,6 +172,7 @@ static void finalize_prim(void) {
         PrimRec r{}; r.prim = g_prim; r.nv = (int)g_prim_verts.size();
         r.textured = (g_prim_has_uv && g_texSnap.textured);
         r.fmt = g_texSnap.fmt; r.w = g_texSnap.w; r.h = g_texSnap.h;
+        r.image = g_texSnap.image; r.tlut = g_texSnap.tlut; r.tlutfmt = g_texSnap.tlutfmt;
         r.bt = g_blendType; r.bs = g_blendSrc; r.bd = g_blendDst;
         r.xmn = r.ymn = r.umn = r.vmn = 1e30f; r.xmx = r.ymx = r.umx = r.vmx = -1e30f;
         for (auto& v : g_prim_verts) {
@@ -293,9 +297,32 @@ int sb_gx_imm_take_batches(const SbImmVtx** verts, const SbImmBatch** batches, i
         for (size_t i = 0; i < g_prim_recs.size(); ++i) {
             const PrimRec& r = g_prim_recs[i];
             std::fprintf(stderr, "  p%zu prim=%#x nv=%d tex=%d fmt=0x%x %dx%d blend=%d/%d/%d "
-                         "ndcX[%.3f,%.3f] ndcY[%.3f,%.3f] uv[%.3f,%.3f;%.3f,%.3f]\n",
+                         "ndcX[%.3f,%.3f] ndcY[%.3f,%.3f] uv[%.3f,%.3f;%.3f,%.3f] img=%p\n",
                          i, r.prim, r.nv, r.textured, r.fmt, r.w, r.h, r.bt, r.bs, r.bd,
-                         r.xmn, r.xmx, r.ymn, r.ymx, r.umn, r.umx, r.vmn, r.vmx);
+                         r.xmn, r.xmx, r.ymn, r.ymx, r.umn, r.umx, r.vmn, r.vmx, r.image);
+            // Decode each textured prim to a PPM so the actual sprite content is visible
+            // (the slot-row "@" starbursts: SEE whether it's a sun/sparkle/cursor, not guess).
+            if (r.textured && r.image && r.w > 0 && r.h > 0 && r.w <= 1024 && r.h <= 1024) {
+                const int pw = sb_tex_pad_w(r.w, r.fmt), ph = sb_tex_pad_h(r.h, r.fmt);
+                std::vector<uint32_t> rgba((size_t)pw * ph);
+                sb_tex_decode(rgba.data(), (const uint8_t*)r.image, pw, ph, r.fmt,
+                              (const uint8_t*)r.tlut, r.tlutfmt);
+                char path[256];
+                std::snprintf(path, sizeof path, "scratch/frames/prim_%02zu.ppm", i);
+                if (FILE* f = std::fopen(path, "wb")) {
+                    std::fprintf(f, "P6\n%d %d\n255\n", r.w, r.h);
+                    for (int y = 0; y < r.h; ++y)
+                        for (int x = 0; x < r.w; ++x) {
+                            uint32_t px = rgba[(size_t)y * pw + x];
+                            unsigned char rgb[3] = {(unsigned char)(px & 0xff),
+                                                    (unsigned char)((px >> 8) & 0xff),
+                                                    (unsigned char)((px >> 16) & 0xff)};
+                            std::fwrite(rgb, 1, 3, f);
+                        }
+                    std::fclose(f);
+                    std::fprintf(stderr, "    -> wrote %s (%dx%d fmt=0x%x)\n", path, r.w, r.h, r.fmt);
+                }
+            }
         }
     }
     if (g_prim_dbg_at) g_prim_recs.clear();
