@@ -83,6 +83,10 @@ larger scenes. Tests live in `native/render/tests/parity/*_test.cpp` (auto-globb
      PE-block ALPHA TEST discard (pass + discard). All pixel-exact.
    - ✅ `texture_filter_test` — sampler WRAP modes (REPEAT/MIRROR/CLAMP) exact + bilinear MAG (centre
      is a genuine blend, endpoints clamp). Sensitivity verified vs NEAREST.
+   - ✅ `dst_alpha_test` — the destination-alpha plane: clear the alpha mask to 0 (colour OFF, force
+     dst-alpha 0), set it over a region (colour OFF, alpha ON), composite via DST_ALPHA/INV_DST_ALPHA
+     → colour ONLY in the masked region, pixel-exact. Sensitive to ignoring the colour write mask or
+     dst-alpha. This is the GX pixel-engine path the water-volume / silhouette composites use.
 6. **OPEN (capstone): full-frame vs the Dolphin-GX oracle.** The remaining rung. It needs a LIVE
    two-process A/B (the same plaza frame rendered by sms-boot SB_SDLGPU and by a Dolphin-GX reference)
    — there is no committed golden frame (a rendered SMS frame is copyrighted game imagery; never
@@ -121,6 +125,26 @@ larger scenes. Tests live in `native/render/tests/parity/*_test.cpp` (auto-globb
      frame-exact). Diagnostic added: `SB_IMM_CHAN_DBG` dumps each imm draw's colour-channel state
      (colorChan / matSrc / matColor / ambColor) — it PROVED the white fade quad's RASC=white is a
      faithful capture (matSrc=VTX, vertex colour white), not a renderer error.
+
+   **Session 2026-06-26 (cont.) — dst-alpha plane + clean plaza + oracle functional (commits to fdee7e5):**
+   - ✅ Ported **Hx_Circle** (the wedge) + **game-behaviour TDD** (`platform_hx_wipe_test`: exact 30/25
+     frame completion + sensitivity).
+   - ✅ Fixed the **white wash** (honor `GXSetColorUpdate(FALSE)` — `SMS_FillScreenAlpha` writes only
+     dst-alpha). Then traced the residual **black-left** to the water-volume/silhouette dst-alpha
+     composites.
+   - ✅ **Destination-alpha plane** implemented + parity-tested: `NvkTevBatch` color/alpha write masks +
+     forced dst-alpha (`GXSetDstAlpha`); `dst_alpha_test` (parity rung) asserts a DST_ALPHA-masked
+     composite pixel-exact (red only in the masked half). 8 parity + hx_wipe tests green.
+   - ✅ **Plaza now renders CLEAN** (full-frame lum 155/sd76 == scene-only). STOPGAP (marked in-code):
+     the live water-volume mask is written by J3D shape draws (SMS_DrawShape/SMS_DrawCube) the
+     immediate path doesn't capture, so the live dst-alpha composite has no mask → it's skipped
+     (effect absent) rather than rendered black. **Proper fix = route the mask shapes to the alpha
+     plane** to render the real water tint.
+   - ✅ **Rung 6 oracle is FUNCTIONAL**: `sb_oracle_diff.py boot_1500.ppm dolphin_gx_plaza.ppm` →
+     both pass the degenerate guard, overall ~98 mean-delta. The number is dominated by CAMERA/moment
+     misalignment (sms-boot faces the shine tower; Dolphin fastboot faces the buildings + HUD), NOT
+     renderer error — cross-engine scene alignment is the remaining limit. The spec-truth parity
+     ladder (now incl. `dst_alpha`) stays the tight correctness coverage.
 
 ## Verification (unchanged discipline)
 Per-frame dump (`SB_FRAME_DUMP` → `scratch/frames/boot_NNNN.ppm`) + `scratch/frames/abppm.py`
