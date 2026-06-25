@@ -76,6 +76,8 @@ void init_graphics() {
 }
 
 extern "C" int sb_present_frame();   // native/render/sms_boot_present.cpp (settled-frame gate)
+extern "C" int  sb_boot_capture_begin_scene();  // sms_boot_j3d_capture.cpp — capture-once-per-present
+extern "C" void sb_boot_capture_end_scene();
 
 // Camera-settle detector. The option camera (CPolarSubCamera) SMOOTHLY lerps toward its target
 // over ~130 present frames AFTER the file-select choice state (unk10==2) is entered, so a frame
@@ -613,18 +615,32 @@ extern "C" bool sb_boot_drive_scene() {
 	// dither over the sea+beach. perform(0x8) is the faithful single draw; drive_map was a now-stale
 	// workaround. drive_sky stays — perform does NOT draw the sky backdrop (no vc=228 full-screen
 	// blue batch in a perform-only capture).
-	drive_sky();
+	// CAPTURE ONCE PER PRESENT. The expensive scene/sky/chr walk (J3DShape::draw -> the native
+	// capture) only needs to land in the buffer once per shown frame. Under TURBO direct() runs many
+	// times per VI present, and the capture also taps the game's own real perform-list draw — so the
+	// scene was being walked O(shapes) several times per shown frame (fatal once the NPC population
+	// inflates the shape count: a frame never finished). begin_scene returns 1 only on the first
+	// drive_scene of each present interval (it resets the buffer + unlocks the capture); end_scene
+	// re-locks so every other capture this interval — the redundant repeats AND the always-discarded
+	// real-path draws — is skipped. The camera + light setup above still runs every direct() (cheap;
+	// keeps the file-select option-camera timer + view matrix current). The present re-arms the next
+	// capture. (SB_NO_DRIVE_SCENE returns earlier, never locking, so its real-path-only mode is intact.)
+	if (sb_boot_capture_begin_scene()) {
+		drive_sky();
 
-	scene->perform(0x8, &g_graphics);
+		scene->perform(0x8, &g_graphics);
 
-	// File-select A/B/C cubes (TFileLoadBlock) draw into DrawBuf ChrOpa/ChrXlu, which the perform
-	// list fills but never draws (the same dropped-draw-bit class as sky/map). drive_chr drives
-	// the 3 cubes' models directly (calc → viewCalc → entry → draw). ON by default (SB_NO_DRIVE_CHR
-	// opts out). NOTE the old naive マネージャーグループ perform(0x204) re-drew the whole map (b31..b45
-	// building-atlas dup) — drive_chr now enters ONLY the 3 file blocks (file-select) plus, in the
-	// gameplay map, the player Mario (gpMarioOriginal) via the faithful TMario::calcView/entryModels.
-	if (const char* e = getenv("SB_NO_DRIVE_CHR"); !(e && e[0] && e[0] != '0'))
-		drive_chr();
+		// File-select A/B/C cubes (TFileLoadBlock) draw into DrawBuf ChrOpa/ChrXlu, which the perform
+		// list fills but never draws (the same dropped-draw-bit class as sky/map). drive_chr drives
+		// the 3 cubes' models directly (calc → viewCalc → entry → draw). ON by default (SB_NO_DRIVE_CHR
+		// opts out). NOTE the old naive マネージャーグループ perform(0x204) re-drew the whole map (b31..b45
+		// building-atlas dup) — drive_chr now enters ONLY the 3 file blocks (file-select) plus, in the
+		// gameplay map, the player Mario (gpMarioOriginal) via the faithful TMario::calcView/entryModels.
+		if (const char* e = getenv("SB_NO_DRIVE_CHR"); !(e && e[0] && e[0] != '0'))
+			drive_chr();
+
+		sb_boot_capture_end_scene();
+	}
 
 	if (dbg()) {
 		static long n = 0;

@@ -152,6 +152,9 @@ inline void sb_texgen_uv(const MatEntry::TexGenG& g, const NgxVertex& v,
 std::vector<NvkTevVertex>   g_verts;
 std::vector<Nvk::NvkTevBatch> g_batches;
 bool g_consumed = true;
+// Capture-once-per-present lock (see sb_boot_capture_begin_scene / _end_scene below).
+bool g_locked = false;          // when true, sb_boot_capture_j3d/sphere skip (interval already done)
+bool g_want_capture = true;     // re-armed by the present consuming the buffer
 J3DMaterial* g_last_mat = nullptr;   // for consecutive-shape batch merging within a frame
 
 const MatEntry* get_mat_entry(J3DMaterial* mat, J3DTexture* modelTex) {
@@ -362,6 +365,7 @@ const unsigned char* resolve_native(unsigned off, void* user) {
 
 // ============================ THE CAPTURE (single owned path) =============================
 extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
+    if (g_locked) return true;   // capture-once-per-present: this interval already captured
     if (!shape) return false;
     HostAllocScope _hostalloc;
 
@@ -439,14 +443,48 @@ extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
                 std::fflush(stderr);
             }
         }
-        ngx_build_mesh(cp, dp->getDisplayList(), dp->getDisplayListSize(),
-                       resolve_native, &rc, verts, idx);
+        // FAIL-FAST bound BEFORE the parse. A real J3D shape display list is at most tens of KB; a
+        // multi-hundred-KB+ size here means the capture mis-read this shape (build_native_cp / the
+        // J3DShapeDraw fields don't match the real model layout) — seen on NPC parts/body models
+        // (same root as their 32768x32768 garbage texture dims). ngx_build_mesh trusts dl_size as the
+        // primitive-bound ceiling, so a garbage-huge size lets it append millions of 112-B NgxVertex
+        // entries → the vector reallocs into a multi-GB livelock that never returns (the frame hangs).
+        // Skip + log so the frame completes and the mis-parse stays visible; PROPER FIX = read the
+        // NPC models' vertex/CP/texture data correctly in the capture.
+        const u32 dlSize = dp->getDisplayListSize();
+        if (dlSize > 256u * 1024) {
+            static int s_rr = 0;
+            if (s_rr < 20) { ++s_rr;
+                std::fprintf(stderr, "[capture] SKIP runaway shape: model=%p mat=%p group=%u/%u "
+                             "dlSize=%u — NPC vertex-format mis-parse (fail-fast)\n",
+                             (void*)model, (void*)mat, e, mtxGroupNum, dlSize); }
+            continue;
+        }
+        ngx_build_mesh(cp, dp->getDisplayList(), dlSize, resolve_native, &rc, verts, idx);
         // Tag each vertex with the matrix-PACKET (mtx group) that drew it, so the per-vertex
         // skinning matrix resolves against THIS packet's J3DShapeMtx table (getUseMtxIndex),
         // not a global last-writer — a skinned shape draws in N packets each reloading the slots.
         for (size_t vi = v0; vi < verts.size(); ++vi) verts[vi].packet = (unsigned char)e;
     }
     if (idx.empty()) return true;
+
+    // FAIL-FAST bound: a single legit J3D shape's display list emits at most a few thousand
+    // triangles. A runaway count here means the native capture MIS-PARSED this shape's vertex
+    // format (ngx_build_mesh read a garbage primitive vertex count) — observed on the NPC parts/
+    // body models (same root as their 32768x32768 garbage texture dims): the model data the NPC
+    // managers load via SDLModel/the keeper isn't being read correctly by the capture's CP/vtx-desc
+    // setup. Feeding a runaway idx into g_verts reallocates a multi-GB vector and livelocks the
+    // frame (the once-per-present gate alone can't help: it's ONE shape). Skip + log loudly so the
+    // frame completes and the mis-parse is visible; the PROPER FIX is to read NPC J3D vertex/texture
+    // data correctly in the capture (build_native_cp / ngx_build_mesh for these models).
+    if (idx.size() > 200000) {
+        static int s_runaway = 0;
+        if (s_runaway < 20) { ++s_runaway;
+            std::fprintf(stderr, "[capture] SKIP mis-parsed shape: model=%p mat=%p idx=%zu verts=%zu "
+                         "mtxGroups=%u — NPC vertex-format mis-parse (see fail-fast note)\n",
+                         (void*)model, (void*)mat, idx.size(), verts.size(), mtxGroupNum); }
+        return true;
+    }
 
     int projType; float proj[6]; float vp[6];
     sb_gx_get_projection(&projType, proj, vp);
@@ -686,6 +724,7 @@ static const std::string& pass_fragment() {
 // matColor, and run it through the SAME near+side clipper as the scene (it surrounds the
 // camera, so it needs the near-clip), emitting a depth-tested PASSCLR batch BEHIND the scene.
 extern "C" void sb_boot_capture_sphere(int numMajor, int numMinor) {
+    if (g_locked) return;   // capture-once-per-present (see sb_boot_capture_begin_scene)
     if (numMajor < 1 || numMinor < 1) return;
     HostAllocScope _hostalloc;
     if (g_consumed) { g_verts.clear(); g_batches.clear(); g_last_mat = nullptr; g_consumed = false; }
@@ -786,6 +825,35 @@ extern "C" void sb_boot_capture_frame_begin() {
     g_consumed = true;
 }
 
+// ── Capture-once-per-present lock ──────────────────────────────────────────────────────────────
+// The capture taps J3DShape::draw, so BOTH the game's real perform-list draw (TMarDirector::direct's
+// render branch: PerformList GX / the conductor / etc.) AND the hand-driven sb_boot_drive_scene walk
+// feed it — and under TURBO direct() fires MANY times per VI present. The real-path captures were
+// always discarded (drive_scene's capture_frame_begin reset the buffer), so re-walking the whole
+// scene every direct() (and twice: real-path + drive_scene) was pure waste — fatal once the scene
+// holds the NPC population (thousands of shapes -> a frame never finished).
+// Now drive_scene captures the authoritative scene EXACTLY ONCE per present, bracketed by
+// begin/end_scene, and the capture is LOCKED (every sb_boot_capture_j3d/sphere returns early) the
+// rest of the interval — so the redundant real-path and repeat-direct() captures are skipped.
+// g_locked starts false so the SB_NO_DRIVE_SCENE bisection mode (drive_scene returns before
+// begin_scene, never locks) still captures the real path. g_want_capture is re-armed by the present
+// consuming the buffer, so exactly one drive_scene walk lands per shown frame.
+//
+// Called by drive_scene before its sky/scene/chr draws. Returns 1 if this is the first drive_scene
+// of a new present interval (capture now), 0 to skip. On 1 it resets the buffer and unlocks capture.
+extern "C" int sb_boot_capture_begin_scene() {
+    if (!g_want_capture) return 0;
+    g_want_capture = false;
+    g_locked = false;
+    g_consumed = true;   // discard anything captured earlier this interval; next draw clears
+    return 1;
+}
+
+// Called by drive_scene after its draws — relock so the rest of the interval's draws are skipped.
+extern "C" void sb_boot_capture_end_scene() {
+    g_locked = true;
+}
+
 // Present drains the frame's captured scene: the vertex list + per-material batches. Returns the
 // vertex count; *batches/*nbatches point at the batch list. Marks the buffers consumed (next
 // append clears). The NvkTevBatch fragGlsl/tex pointers stay valid (owned by g_matcache).
@@ -796,5 +864,6 @@ int sb_boot_capture_tev_take(const NvkTevVertex** verts,
     if (nbatches) *nbatches = (int)g_batches.size();
     int n = (int)g_verts.size();
     g_consumed = true;
+    g_want_capture = true;   // re-arm: the next drive_scene captures a fresh frame for this present
     return n;
 }

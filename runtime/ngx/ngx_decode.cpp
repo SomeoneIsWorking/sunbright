@@ -164,7 +164,16 @@ u32 run_command(const u8* d, u32 avail, NgxCP& cp, GxFrameInfo& out, u32 offset,
         const u32 vat = op & 0x07;
         const u32 vsize = ngx_vertex_size(cp, vat);
         const u16 nv = be16(d + 1);
-        if (avail < 3 + (u32)nv * vsize) return 0;
+        // A draw primitive's per-vertex stride must be sane: at least a position, and at most ~a few
+        // hundred bytes (pos+nrm+2 colors+8 texcoords, all direct = ~100B). vsize==0 OR a garbage-
+        // huge vsize means the CP/VAT for this shape was mis-read (e.g. an NPC model whose vertex
+        // descriptor the capture doesn't set up correctly). Both defeat the size guard below:
+        // vsize==0 makes it `avail < 3` (false), and a huge vsize makes `nv*vsize` OVERFLOW u32 and
+        // wrap small (false) — either way the walk advances a tiny amount yet "emits" up to 65535
+        // vertices per step, a multi-million-vertex runaway that reallocs the output vector into a
+        // multi-GB livelock. Treat a nonsensical stride as a framing failure (stop the stream).
+        if (vsize == 0 || vsize > 4096) { unknown = true; return 1; }
+        if ((unsigned long long)avail < 3ull + (unsigned long long)nv * vsize) return 0;
         out.prims++;
         if (cb) { NgxPrim pr{op, (int)nv, d + 3}; cb(pr, user); }
         return 3 + (u32)nv * vsize;

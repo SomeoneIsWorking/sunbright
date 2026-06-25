@@ -25,6 +25,21 @@ int ngx_assemble_primitive(const NgxCP& cp, unsigned op,
     const unsigned vstride = ngx_vertex_size(cp, vat);
     const unsigned base    = (unsigned)verts.size();
 
+    // Hard cap on the assembled-vertex total. One shape's display list legitimately yields at most a
+    // few thousand vertices; reaching ~1M means the capture mis-read this shape (bad CP/vtx-desc or
+    // DL bounds — NPC models) and the parse is running away. Bail instead of resizing into a
+    // multi-GB allocation that livelocks the frame (in the parse AND later in the allocator's
+    // munmap). Diagnostic prints the values that drove it so the mis-parse is debuggable.
+    if ((size_t)base + (size_t)count > 1000000u) {
+        static int s_cap = 0;
+        if (s_cap < 20) { ++s_cap;
+            std::fprintf(stderr, "[ngxmesh] CAP runaway primitive: base=%u count=%d op=0x%x vat=%u "
+                         "vstride=%u — vertex-format mis-parse (capture)\n",
+                         base, count, op, vat, vstride);
+        }
+        return 0;
+    }
+
     // Append `count` zeroed vertices (color alpha defaults to opaque).
     verts.resize(base + (size_t)count);
     for (int i = 0; i < count; i++) {
