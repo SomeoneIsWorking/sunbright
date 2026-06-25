@@ -155,6 +155,14 @@ static void finalize_prim(void) {
 
 void sb_gx_imm_begin(int prim, int vtxfmt, int nverts) {
     if (g_consumed) { g_frame_tris.clear(); g_batches.clear(); g_consumed = false; }
+    // A previous primitive that omitted the (HW no-op) GXEnd — e.g. JUTResFont glyph quads —
+    // is flushed HERE, at the next GXBegin, with ALL its vertex attributes intact. (Finalizing
+    // at the nverts-th GXPosition was wrong: on GC a vertex carries pos THEN colour THEN
+    // texcoord, so the last vertex's colour/texcoord arrive AFTER its position — flushing on
+    // the position dropped the glyph's top-left corner colour+UV → uv=(0,0), half-smeared
+    // glyphs that read as faint. The primitive completes after nverts whole vertices, not
+    // nverts positions, so we defer the flush to the next prim/end/present.)
+    if (g_in_begin) finalize_prim();
     g_in_begin = true;
     g_prim = prim;
     g_prim_nverts = nverts;
@@ -178,11 +186,10 @@ void sb_gx_imm_pos(float x, float y, float z) {
                      g_prim, x, y, z, p.x, p.y, p.z, g_texSnap.textured,
                      g_texSnap.fmt, g_texSnap.w, g_texSnap.h, g_projType);
     }
-    // GC-faithful auto-terminate: a primitive completes once it has received the vertex
-    // count declared at GXBegin. Draws that omit the (HW no-op) GXEnd — e.g. JUTResFont
-    // glyph quads — are flushed here instead of being lost.
-    if (g_prim_nverts > 0 && (int)g_prim_verts.size() >= g_prim_nverts)
-        finalize_prim();
+    // NOTE: no auto-terminate here. A primitive that omits GXEnd is flushed at the next
+    // GXBegin / GXEnd / present-take, AFTER its final vertex's colour+texcoord arrive (the
+    // GC vertex order is pos→colour→texcoord). Flushing on the nverts-th position dropped the
+    // last vertex's attributes (the faint-glyph bug).
 }
 
 // GXColor* sets the colour for the vertex JUST submitted (GX order is pos then colour) and
@@ -233,6 +240,7 @@ void sb_gx_imm_end(void) {
 // ---- present bridge --------------------------------------------------------
 // Legacy flat take: the whole frame as one untextured triangle list (Vulkan NDC + RGBA).
 int sb_gx_imm_take(const SbImmVtx** out) {
+    if (g_in_begin) finalize_prim();   // flush a trailing GXEnd-less prim (last glyph of frame)
     if (out) *out = g_frame_tris.data();
     g_consumed = true;
     return (int)g_frame_tris.size();
@@ -241,6 +249,7 @@ int sb_gx_imm_take(const SbImmVtx** out) {
 // Batch take: the flat vertex list + per-texture batches. Marks the buffer consumed so the
 // next GXBegin starts a fresh frame. Returns the vertex count; *verts -> SbImmVtx[count].
 int sb_gx_imm_take_batches(const SbImmVtx** verts, const SbImmBatch** batches, int* nbatch) {
+    if (g_in_begin) finalize_prim();   // flush a trailing GXEnd-less prim (last glyph of frame)
     if (verts)   *verts = g_frame_tris.data();
     if (batches) *batches = g_batches.data();
     if (nbatch)  *nbatch = (int)g_batches.size();
