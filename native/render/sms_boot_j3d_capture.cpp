@@ -418,10 +418,27 @@ extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
     ResolveCtx rc{ base, 0 };
     std::vector<NgxVertex> verts;
     std::vector<unsigned> idx;
-    for (u16 e = 0; e < shape->getMtxGroupNum(); ++e) {
+    const u16 mtxGroupNum = shape->getMtxGroupNum();
+    if (const char* ev = std::getenv("SB_CAP_DBG"); ev && ev[0] && ev[0] != '0') {
+        static int cdn = 0;
+        if (cdn < 200) { ++cdn;
+            std::fprintf(stderr, "[cap] shape=%p model=%p mtxGroups=%u\n",
+                         (void*)shape, (void*)model, mtxGroupNum);
+            std::fflush(stderr);
+        }
+    }
+    for (u16 e = 0; e < mtxGroupNum; ++e) {
         J3DShapeDraw* dp = shape->getShapeDraw(e);
         if (!dp || !dp->getDisplayList()) continue;
         const size_t v0 = verts.size();
+        if (const char* ev = std::getenv("SB_CAP_DBG"); ev && ev[0] && ev[0] != '0') {
+            static int cdn2 = 0;
+            if (cdn2 < 400) { ++cdn2;
+                std::fprintf(stderr, "[cap]   group %u dl=%p dlSize=%u\n",
+                             e, (void*)dp->getDisplayList(), (unsigned)dp->getDisplayListSize());
+                std::fflush(stderr);
+            }
+        }
         ngx_build_mesh(cp, dp->getDisplayList(), dp->getDisplayListSize(),
                        resolve_native, &rc, verts, idx);
         // Tag each vertex with the matrix-PACKET (mtx group) that drew it, so the per-vertex
