@@ -115,6 +115,7 @@ void write_ppm(const char* path) {
 // but reachable from this same TU). Other TUs use it for settled-frame-gated diagnostics.
 } // namespace
 extern "C" int sb_present_frame() { return g_frame; }
+extern "C" int sb_camera_view_settled();   // scene_drive.cpp — view matrix stationary
 namespace {
 
 void present_hook(void* /*framebuffer*/, void* /*user*/) {
@@ -321,8 +322,12 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
     // Localizes which surfaces overlap in depth (the horizon z-fight class).
     static const int batchdbg = [](){ const char* v = std::getenv("SB_BATCH_DBG"); return v && v[0] ? std::atoi(v) : 0; }();
     static bool s_batchdone = false;
-    // SB_BATCH_DBG=1 → first scene frame; SB_BATCH_DBG=N>1 → fire once at present frame >= N.
-    if (batchdbg && !s_batchdone && nscene > 0 && (batchdbg <= 1 || g_frame >= batchdbg)) {
+    // SB_BATCH_DBG=1 → first scene frame; SB_BATCH_DBG=N>1 → fire once at present frame >= N;
+    // SB_BATCH_DBG=-1 → fire once the camera has SETTLED (the choice-state scene, ~frame 1690 —
+    // the only way to catch the settled sea/foam batches, since the present-frame number at settle
+    // isn't known ahead of time). The intro pan never "settles", so this can't fire early.
+    const bool settle_trig = (batchdbg < 0 && sb_camera_view_settled());
+    if (batchdbg && !s_batchdone && nscene > 0 && (batchdbg == 1 || (batchdbg > 1 && g_frame >= batchdbg) || settle_trig)) {
         s_batchdone = true;
         for (int bi = 0; bi < nsbatch; ++bi) {
             const Nvk::NvkTevBatch& b = batches[bi];
