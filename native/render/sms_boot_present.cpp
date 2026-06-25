@@ -14,6 +14,7 @@
 // slowed by per-frame lavapipe rasterization.
 #include "nvk.h"
 #include "gx_raylib.h"         // raylib/rlgl GX backend (the GX→raylib switch, behind SB_RAYLIB)
+#include "gx_sdlgpu.h"         // SDL3 GPU GX backend (the GX→SDL3-GPU switch, behind SB_SDLGPU)
 #include "gx_imm_xform.h"      // SbImmVtx / SbImmBatch (immediate-mode capture)
 #include "ngx_render_data.h"   // NgxTevState (for the 2D passthrough / modulate shaders)
 #include "tev_shader.h"        // sb_tev_gen_fragment
@@ -468,6 +469,25 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
     // writes boot_0240.ppm (not boot_0241): the off-by-one made every START=N run leave the
     // boot_000N.ppm STALE while writing boot_000(N+1), so analysis read a leftover frame.
     const int df = g_frame - 1;
+
+    // ── GX→SDL3-GPU switch (SB_SDLGPU): render the frame through the SDL3 GPU backend instead of
+    // nvk. Supersedes raylib (docs/gx_sdlgpu_switch.md); takes precedence when both are set.
+    // P1: device + clear-to-GX-copy-clear + readback (draws stubbed → frame is the clear colour).
+    if (sb::gxsdl::enabled() && sb::gxsdl::init((int)kW, (int)kH)) {
+        sb::gxsdl::frame_begin(c[0], c[1], c[2], c[3]);
+        sb::gxsdl::draw_tev(verts.data(), (int)verts.size(), batches.data(), (int)batches.size());
+        sb::gxsdl::frame_end();
+        static std::vector<uint8_t> sdlpix((size_t)kW * kH * 4);
+        char spath[160];
+        std::snprintf(spath, sizeof spath, "scratch/frames/boot_%04d.ppm", df);
+        if (sb::gxsdl::readback(sdlpix.data(), (int)kW, (int)kH))
+            write_ppm_buf(spath, sdlpix.data(), kW, kH);
+        std::printf("[present-sdlgpu] frame %d clear=(%.2f,%.2f,%.2f,%.2f) scene_batches=%d -> %s\n",
+                    df, c[0], c[1], c[2], c[3], nsbatch, spath);
+        std::fflush(stdout);
+        ++g_dumped;
+        return;
+    }
 
     // ── GX→raylib switch (SB_RAYLIB): render the frame through raylib/rlgl instead of nvk. ──
     // P1: context + clear-to-GX-copy-clear + readback (draws stubbed → frame is the clear colour).
