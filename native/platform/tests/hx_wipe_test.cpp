@@ -68,6 +68,44 @@ static void test_mmark_wipe_completes() {
 	CHECK(Hx_MovieStartSyncEx() == 0, "post-DONE MovieStartSyncEx==0 (gates consumed)");
 }
 
+// Hx_Circle (the Delfino scene-ENTRY iris wipe, type 1 / type 2) behaviour TDD.
+// Spec-truth from the DOL disassembly of Hx_Circle 0x80181ab4: phase 0 arms the timer
+// (li 0x1e=30 for wipeType==1 (type 1), li 0x19=25 for wipeType==0 (type 2)) then falls
+// straight into the phase-1 run body, which Hx_TimerCountDowns once per Hx_UpdateWipe and
+// flips state 2->3 (DONE) exactly when the timer hits 0. So the completion frame count is
+// EXACT and falsifiable — a wrong timer constant or a missed/extra countdown moves it.
+static void drive_circle(int type, int& frames, bool& done, u32& phaseAtDone) {
+	Hx_ResetWipe(640, 480);
+	Hx_StartWipe(type, 0);
+	done = false; phaseAtDone = 0xffffffff;
+	for (frames = 1; frames <= 4000; ++frames) {
+		u32 st = Hx_UpdateWipe(1.0f);
+		if (st == 3) { done = true; break; }
+	}
+}
+
+static void test_circle_wipe_completes() {
+	// type 1 -> wipeType 1 -> timer 30 -> DONE on the 30th Hx_UpdateWipe.
+	int  frames; bool done; u32 phaseDone;
+	drive_circle(1, frames, done, phaseDone);
+	CHECK(done, "type-1 Hx_Circle wipe reaches state DONE (3)");
+	CHECK(frames == 30, "type-1 iris completes in EXACTLY 30 frames (li 0x1e)");
+	CHECK(Hx_UpdateWipe(1.0f) == 3, "type-1 post-DONE Hx_UpdateWipe stays 3");
+
+	// type 2 -> wipeType 0 -> timer 25 -> DONE on the 25th Hx_UpdateWipe.
+	drive_circle(2, frames, done, phaseDone);
+	CHECK(done, "type-2 Hx_Circle wipe reaches state DONE (3)");
+	CHECK(frames == 25, "type-2 iris completes in EXACTLY 25 frames (li 0x19)");
+
+	// Sensitivity: an UNSTARTED circle is idle (0), never a phantom DONE. And the wipe must
+	// NOT complete in a single frame (the wedge bug was the opposite — it never completed;
+	// an instant fake-complete would be the equally-wrong other failure).
+	Hx_ResetWipe(640, 480);
+	CHECK(Hx_UpdateWipe(1.0f) == 0, "unstarted circle is idle (0), not a phantom DONE");
+	Hx_StartWipe(1, 0);
+	CHECK(Hx_UpdateWipe(1.0f) == 2, "type-1 is RUNNING (2) after frame 1, not instant-DONE");
+}
+
 // A second wipe must work after a reset (state machine is re-entrant).
 static void test_restart() {
 	Hx_ResetWipe(640, 480);
@@ -83,6 +121,7 @@ static void test_restart() {
 int main() {
 	test_get_wipe_type();
 	test_mmark_wipe_completes();
+	test_circle_wipe_completes();
 	test_restart();
 	if (g_fail) { std::fprintf(stderr, "hx_wipe_test: FAILURES\n"); return 1; }
 	std::fprintf(stderr, "hx_wipe_test: all passed\n");
