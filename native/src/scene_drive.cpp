@@ -286,7 +286,31 @@ extern "C" void sb_boot_capture_frame_begin();   // native/render/sms_boot_j3d_c
 // vs shared-map model), and the MActorKeeper's MActor count (cube models are anim variants 0/1/2).
 extern "C" void sb_blk_probe();
 
+// SB_DRAWBUF_INV=1: one-shot inventory — print each named TDrawBufObj's J3DDrawBuffer
+// pointer so a cyclic buf=<ptr> (J3DDrawBuffer::drawHead) can be attributed to a name.
+static void sb_drawbuf_inventory() {
+	static const char* names[] = {
+		"DrawBuf ChrOpa", "DrawBuf ChrXlu", "DrawBuf Graffito", "DrawBuf Indirect",
+		"DrawBuf LensFlare", "DrawBuf MapOpa", "DrawBuf MapXlu",
+		"DrawBuf Map 半透明優先2 (opa)", "DrawBuf Map 半透明優先2 (xlu)",
+		"DrawBuf Map 半透明優先 (opa)", "DrawBuf Map 半透明優先 (xlu)",
+		"DrawBuf Sky Opa", "DrawBuf Sky Xlu",
+	};
+	for (const char* nm : names) {
+		JDrama::TDrawBufObj* o = JDrama::TNameRefGen::search<JDrama::TDrawBufObj>(nm);
+		J3DDrawBuffer* b = o ? o->getDrawBuffer() : nullptr;
+		std::fprintf(stderr, "[drawbuf-inv] %-32s obj=%p buf=%p\n", nm, (void*)o, (void*)b);
+	}
+}
+
 extern "C" bool sb_boot_drive_scene() {
+	if (const char* e = getenv("SB_DRAWBUF_INV"); e && e[0] && e[0] != '0') {
+		static int n = 0; if (n < 1) { ++n; sb_drawbuf_inventory(); }
+	}
+	// SB_NO_DRIVE_SCENE=1: bisection gate — skip the entire native scene drive so the
+	// only draw path is the real GC perform list. Used to attribute draw-buffer cycles.
+	if (const char* e = getenv("SB_NO_DRIVE_SCENE"); e && e[0] && e[0] != '0')
+		return false;
 	init_graphics();
 	if (const char* e = getenv("SB_BLK_PROBE"); e && e[0] && e[0] != '0') {
 		static int n = 0;
