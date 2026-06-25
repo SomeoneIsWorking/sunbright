@@ -146,6 +146,9 @@ SbImmBatch g_texSnap;          // bound texture for the current prim (textured i
 // e.g. the file-select shine sparkles, as opaque squares).
 signed char g_blendType = 1, g_blendSrc = 4, g_blendDst = 5;  // GX_BM_BLEND/SRCALPHA/INVSRCALPHA
 bool g_colorUpdate = true;  // GXSetColorUpdate: false = write no colour (alpha-plane-only pass)
+bool g_alphaUpdate = true;  // GXSetAlphaUpdate: false = write no dst-alpha
+bool g_dstAlphaForce = false;  // GXSetDstAlpha enable: force the written alpha to a constant
+unsigned char g_dstAlphaVal = 0;  // the forced constant (SMS only ever forces 0)
 
 // current immediate-mode colour (GXColor*/GXParam sets it; applied to the last vertex).
 float g_cr = 1, g_cg = 1, g_cb = 1, g_ca = 1;
@@ -179,6 +182,9 @@ void snapshot_state() {
     g_blendSrc  = (signed char)g.blendSrc;
     g_blendDst  = (signed char)g.blendDst;
     g_colorUpdate = (g.colorUpdate != 0);
+    g_alphaUpdate = (g.alphaUpdate != 0);
+    g_dstAlphaForce = (g.dstAlphaEnable != 0);
+    g_dstAlphaVal = g.dstAlpha;
 }
 
 // Snapshot the bound texmap-0 into g_texSnap. textured = TEX0 is a DIRECT attr (texcoords
@@ -225,6 +231,8 @@ void push_batch(unsigned start, unsigned count, const SbImmBatch& tex) {
             (last.tev && tex.tev &&
              std::memcmp(last.tev, tex.tev, sizeof(NgxTevState)) == 0);
         if (sameTex && sameBlend && sameTev && last.colorUpdate == tex.colorUpdate &&
+            last.alphaUpdate == tex.alphaUpdate && last.dstAlphaForce == tex.dstAlphaForce &&
+            last.dstAlphaVal == tex.dstAlphaVal &&
             last.vstart + last.vcount == start) { last.vcount += count; return; }
     }
     SbImmBatch b = tex;
@@ -323,6 +331,9 @@ static void finalize_prim(void) {
     SbImmBatch tex = (g_prim_has_uv && g_texSnap.textured) ? g_texSnap : SbImmBatch{};
     tex.blendType = g_blendType; tex.blendSrc = g_blendSrc; tex.blendDst = g_blendDst;
     tex.colorUpdate = g_colorUpdate;
+    tex.alphaUpdate = g_alphaUpdate;
+    tex.dstAlphaForce = g_dstAlphaForce;
+    tex.dstAlphaVal = g_dstAlphaVal;
     // Carry the full TEV combiner captured at this prim's GXBegin (store in the per-frame
     // deque so the pointer is stable until present consumes). The present layer generates
     // the real combiner fragment from it (honors J2DPicture's black/white intensity ramp).

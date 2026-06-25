@@ -120,8 +120,11 @@ SDL_GPUGraphicsPipeline* ensure_pipeline(const sb::render::NvkTevBatch& b) {
                    | ((uint32_t)(b.dst_factor & 15) << 5)
                    | ((uint32_t)(b.z_test & 1) << 9)
                    | ((uint32_t)(b.z_func & 7) << 10)
-                   | ((uint32_t)(b.z_write & 1) << 13);
-    uint64_t key = b.shaderKey * 1099511628211ull ^ state;
+                   | ((uint32_t)(b.z_write & 1) << 13)
+                   | ((uint32_t)(b.color_update & 1) << 14)
+                   | ((uint32_t)(b.alpha_update & 1) << 15)
+                   | ((uint32_t)(b.dst_alpha_force & 1) << 16);
+    uint64_t key = b.shaderKey * 1099511628211ull ^ state ^ ((uint64_t)b.dst_alpha_val << 40);
     auto it = g_pipe_cache.find(key);
     if (it != g_pipe_cache.end()) return it->second;
 
@@ -143,14 +146,32 @@ SDL_GPUGraphicsPipeline* ensure_pipeline(const sb::render::NvkTevBatch& b) {
 
     SDL_GPUColorTargetDescription ctd{};
     ctd.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
-    if (b.blend_mode == 1 /*GX_BM_BLEND*/) {
-        auto& bs = ctd.blend_state;
+    auto& bs = ctd.blend_state;
+    // GXSetColorUpdate / GXSetAlphaUpdate → per-channel write mask. color_update gates RGB,
+    // alpha_update gates the destination ALPHA plane (the water-volume mask).
+    bs.enable_color_write_mask = true;
+    bs.color_write_mask = (SDL_GPUColorComponentFlags)
+        ((b.color_update ? (SDL_GPU_COLORCOMPONENT_R | SDL_GPU_COLORCOMPONENT_G | SDL_GPU_COLORCOMPONENT_B) : 0)
+       | (b.alpha_update ? SDL_GPU_COLORCOMPONENT_A : 0));
+    if (b.blend_mode == 1 /*GX_BM_BLEND*/ || b.dst_alpha_force) {
         bs.enable_blend = true;
         bs.src_color_blendfactor = sdl_blend_factor(b.src_factor, true);
         bs.dst_color_blendfactor = sdl_blend_factor(b.dst_factor, false);
         bs.color_blend_op = SDL_GPU_BLENDOP_ADD;
-        bs.src_alpha_blendfactor = bs.src_color_blendfactor;
-        bs.dst_alpha_blendfactor = bs.dst_color_blendfactor;
+        if (b.dst_alpha_force) {
+            // GXSetDstAlpha(GX_TRUE, val): the framebuffer alpha is FORCED to the constant,
+            // bypassing the TEV/blend. SMS_FillScreenAlpha only ever forces 0 (clears the mask);
+            // ZERO/ZERO writes 0 exactly. (A nonzero forced value would need a blend constant —
+            // it does not occur on the SMS paths; assert visibility if it ever does.)
+            bs.src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ZERO;
+            bs.dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ZERO;
+            if (b.dst_alpha_val != 0)
+                std::fprintf(stderr, "[gxsdl] WARN forced dst-alpha=%u unsupported (only 0); wrote 0\n",
+                             b.dst_alpha_val);
+        } else {
+            bs.src_alpha_blendfactor = bs.src_color_blendfactor;
+            bs.dst_alpha_blendfactor = bs.dst_color_blendfactor;
+        }
         bs.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
     }
 

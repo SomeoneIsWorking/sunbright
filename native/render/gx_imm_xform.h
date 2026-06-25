@@ -51,6 +51,12 @@ struct SbImmBatch {
     // drops its colour contribution — otherwise the invisible fullscreen quad washes the
     // scene (the Delfino "white wash"). True for every ordinary draw.
     bool colorUpdate = true;
+    // GXSetAlphaUpdate (write the dst-alpha mask) + GXSetDstAlpha (force the written alpha to a
+    // constant — SMS_FillScreenAlpha forces 0 to clear the water-volume mask). With the
+    // DST_ALPHA/INV_DST_ALPHA blend factors this is the destination-alpha masking path.
+    bool alphaUpdate = true;
+    bool dstAlphaForce = false;
+    unsigned char dstAlphaVal = 0;
     // The FULL GX TEV combiner captured at GXBegin (state().tev → NgxTevState). When set
     // (num_stages>0), the present layer generates the real per-stage combiner fragment and
     // honors it — instead of the legacy texture-modulate/passthrough approximations, which

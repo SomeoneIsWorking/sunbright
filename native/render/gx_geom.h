@@ -52,6 +52,14 @@ struct NvkTevBatch {
                  uint8_t wrap_s = 1, wrap_t = 1; } tex[8];
     uint8_t z_test = 1, z_func = 3 /*GX_LEQUAL*/, z_write = 1;
     uint8_t blend_mode = 0, src_factor = 1, dst_factor = 0;   // GX blend (0=none)
+    // Pixel-engine write enables + destination-alpha (GXSetColorUpdate / GXSetAlphaUpdate /
+    // GXSetDstAlpha). color_update=0 ⇒ write no RGB (alpha-plane-only pass); alpha_update=0 ⇒
+    // write no A. dst_alpha_force=1 ⇒ the framebuffer ALPHA written is forced to the constant
+    // dst_alpha_val (GX bypasses the TEV alpha) — SMS_FillScreenAlpha uses force=0 to clear the
+    // water-volume mask. With the DST_ALPHA/INV_DST_ALPHA blend factors this is the destination-
+    // alpha masking the water-volume / silhouette composites depend on.
+    uint8_t color_update = 1, alpha_update = 1;
+    uint8_t dst_alpha_force = 0, dst_alpha_val = 0;
 };
 
 } // namespace sb::render
