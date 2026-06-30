@@ -89,6 +89,7 @@ extern "C" void sb_gx_get_chan_matcolor(int slot, float rgba[4]);
 extern "C" void sb_gx_get_cur_posmtx(float m[3][4]);
 extern "C" void sb_gx_get_color_alpha_update(int* color_update, int* alpha_update);
 extern "C" void sb_gx_colupd_history(long* calls, long* last_false);  // b76 overbright drill
+extern "C" void sb_gx_colupd_ring(int out[16]);                       // b76 overbright drill
 extern "C" unsigned long sb_gx_light_load_count(void);
 extern "C" void sb_host_alloc_push(void);
 extern "C" void sb_host_alloc_pop(void);
@@ -786,9 +787,11 @@ extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
             && (unsigned)(me->key) == 0xc39d96b8u /* low32 of eb5c8e74c39d96b8 */) {
             int cu = 1, au = 1; sb_gx_get_color_alpha_update(&cu, &au);
             long calls = 0, lastFalse = -1; sb_gx_colupd_history(&calls, &lastFalse);
-            std::fprintf(stderr, "[b76] phase=%d drawbuf=\"%s\" liveCU=%d liveAU=%d colupd_calls=%ld last_false@%ld (delta=%ld) model=%p modelData=%p mat=%p key=%llx vc=%u\n",
+            int ring[16]; sb_gx_colupd_ring(ring);
+            char rb[40]; for (int i = 0; i < 16; ++i) rb[i] = ring[i] ? '1' : '0'; rb[16] = 0;
+            std::fprintf(stderr, "[b76] phase=%d drawbuf=\"%s\" liveCU=%d liveAU=%d colupd_calls=%ld last_false@%ld (delta=%ld) ring=%s model=%p modelData=%p mat=%p key=%llx vc=%u\n",
                          g_capture_phase, g_capture_drawbuf ? g_capture_drawbuf : "(none)",
-                         cu, au, calls, lastFalse, calls - lastFalse,
+                         cu, au, calls, lastFalse, calls - lastFalse, rb,
                          (void*)model, (void*)model->getModelData(), (void*)mat,
                          (unsigned long long)me->key, vcount);
         }

@@ -132,9 +132,14 @@ void GXSetCullMode(GXCullMode mode) { state().cullMode = mode; }
 // OUTSIDE the GC colorUpdate=FALSE window (the structural pass-routing divergence).
 long g_colupd_calls = 0;
 long g_colupd_last_false = -1;   // call index of the last GXSetColorUpdate(GX_FALSE)
+// Ring of the last 16 GXSetColorUpdate values (b76 drill: see what restores cU=TRUE before the mask draw).
+unsigned char g_colupd_ring[16] = {0};
+int           g_colupd_ring_pos = 0;
 void GXSetColorUpdate(GXBool enable) {
     ++g_colupd_calls;
     if (!enable) g_colupd_last_false = g_colupd_calls;
+    g_colupd_ring[g_colupd_ring_pos & 15] = enable ? 1 : 0;
+    g_colupd_ring_pos++;
     if (const char* d = std::getenv("SB_DBG_COLUPD"); d && d[0] && d[0] != '0') {
         static long n0 = 0, n1 = 0; if (enable) ++n1; else ++n0;
         if ((n0 + n1) <= 8 || ((n0 + n1) % 256) == 0)
@@ -146,6 +151,10 @@ void GXSetColorUpdate(GXBool enable) {
 extern "C" void sb_gx_colupd_history(long* calls, long* last_false) {
     if (calls)      *calls      = g_colupd_calls;
     if (last_false) *last_false = g_colupd_last_false;
+}
+// Fill `out` (size 16) with the last 16 GXSetColorUpdate values, OLDEST-first.
+extern "C" void sb_gx_colupd_ring(int out[16]) {
+    for (int i = 0; i < 16; ++i) out[i] = g_colupd_ring[(g_colupd_ring_pos + i) & 15];
 }
 
 // Live GXSetColorUpdate / GXSetAlphaUpdate state, for the J3D capture (the J3DMaterial PE block has
