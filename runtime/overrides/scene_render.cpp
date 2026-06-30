@@ -63,7 +63,7 @@ extern "C" void sb_efb_grab_frame_reset() { g_gx_pass_count = 0; }   // called a
 static void ov_gx_projection(CPUState& cpu) {
     const u32 mtx = cpu.gpr[3];
     const u32 type = cpu.gpr[4];
-    if (s_efb_grab_mode && sunbright_purejit_mode() && !ngx_capture_active()) {
+    if (s_efb_grab_mode && sunbright_purejit_mode()) {
         // GX baseline: grab the EFB (prior passes accumulated) at the armed pass, then run the REAL
         // GXSetProjection (no widescreen squeeze — Dolphin's GFX_WIDESCREEN_HACK handles the baseline).
         if (g_proj_grab_pass.load() == (int)g_gx_pass_count) {
@@ -74,13 +74,6 @@ static void ov_gx_projection(CPUState& cpu) {
         sb_run_original_around(cpu, GX_SET_PROJECTION, nullptr, 0);
         return;
     }
-    // The projection is published to the native renderer (ngx_set_projection) BELOW, after
-    // the widescreen squeeze is applied to the guest matrix — so ngx gets the EXACT matrix
-    // GX packs (perspective AND orthographic, both squeezed identically). Publishing the
-    // pre-squeeze copy here (and dropping ortho) was the title/file-select bug: J3D shapes
-    // drawn under an orthographic projection (the title logo) were projected with a stale
-    // perspective matrix → foreshortened/sheared.
-    extern void ngx_set_projection(const float*, unsigned);
     static const bool log = getenv("SUNBRIGHT_RENDERPORT_LOG") != nullptr;
     if (log) {
         if (g_in_hud) std::fprintf(stderr, "[renderport] GXSetProjection DURING HUD type=%u m00=%.4f m03=%.4f\n",
@@ -126,35 +119,20 @@ static void ov_gx_projection(CPUState& cpu) {
         if (is2d) { m03 = mem_rf32(mtx + 0x0c); mem_wf32(mtx + 0x0c, m03 * scale); }
         patched = true;
     }
-    // Publish the (now-squeezed) matrix GX will pack to the native renderer, with its type.
-    // ngx applies whichever projection is current per shape — so ortho-drawn J3D (the title
-    // logo) gets its ortho matrix, not a stale perspective one.
-    if (mtx >= 0x80000000u && mtx < 0x81800000u) {
-        float pm[16];
-        for (int i = 0; i < 16; i++) pm[i] = mem_rf32(mtx + i * 4);
-        ngx_set_projection(pm, type);
-    }
-    // Run the original GXSetProjection (packs the squeezed matrix into Dolphin's GX). Under the
-    // pure-JIT no-recomp mode ngx OWNS rendering: ngx already has the squeezed matrix (published
-    // above), the Dolphin GX pack is discarded, and there is no recomp body — so skip it (and never
-    // call_ppc(cpu.lr), which would interp the JIT caller). Then restore the guest matrix either way.
-    // When ngx owns the frame, ngx already has the squeezed matrix (published above) and Dolphin's
-    // GX pack is discarded — skip the original (and never call_ppc(cpu.lr), which would interp the
-    // JIT caller). When ngx capture is OFF (Dolphin-GX baseline), this override is not purejit-safe so
-    // it is never dispatched — Dolphin's JIT runs the real GXSetProjection itself.
-    if (!ngx_capture_active()) {
-        if (RecompFunc orig = recomp_raw(GX_SET_PROJECTION)) orig(cpu);
-        else { if (patched) { mem_wf32(mtx + 0x00, m00); if (is2d) mem_wf32(mtx + 0x0c, m03); } call_ppc(cpu, cpu.lr); return; }
-    }
+    // Run the original GXSetProjection (packs the squeezed matrix into Dolphin's GX), then restore
+    // the guest matrix. Normally this override is NOT purejit-safe (registered only for the EFB_GRAB
+    // diagnostic), so it is not dispatched and Dolphin's JIT runs the real GXSetProjection itself with
+    // its own GFX_WIDESCREEN_HACK — the squeeze above is exercised only under the diagnostic path.
+    if (RecompFunc orig = recomp_raw(GX_SET_PROJECTION)) orig(cpu);
+    else { if (patched) { mem_wf32(mtx + 0x00, m00); if (is2d) mem_wf32(mtx + 0x0c, m03); } call_ppc(cpu, cpu.lr); return; }
     if (patched) { mem_wf32(mtx + 0x00, m00); if (is2d) mem_wf32(mtx + 0x0c, m03); }   // restore
 }
 
 static const bool s_proj_registered = [] {
     register_override(GX_SET_PROJECTION, &ov_gx_projection);
-    // Per-call (return-true): ngx needs the projection published at EVERY GXSetProjection, not once at
-    // block compile. Only purejit-safe when ngx capture is active — with ngx off, leave it inert so
-    // Dolphin's JIT runs the real GXSetProjection (the Dolphin-GX baseline).
-    if (ngx_capture_active() || s_efb_grab_mode) mark_override_purejit_safe(GX_SET_PROJECTION);
+    // Only purejit-safe for the EFB_GRAB diagnostic; otherwise inert so Dolphin's JIT runs the real
+    // GXSetProjection (the Dolphin-GX baseline, with Dolphin's own GFX_WIDESCREEN_HACK).
+    if (s_efb_grab_mode) mark_override_purejit_safe(GX_SET_PROJECTION);
     std::fprintf(stderr, "[renderport] native widescreen: hooked GXSetProjection @ %08x\n",
                  GX_SET_PROJECTION);
     return true;
@@ -230,18 +208,7 @@ static const bool s_fade_probes = [] {
 // log dumps the GrafContext for RE. Off unless SUNBRIGHT_RENDERPORT is set.
 static constexpr u32 J2DSCREEN_DRAW = 0x802cfda8u;
 
-void sb_j2d_set_root(u32 root);   // runtime/render/j2d_walk.cpp — publishes the live root for /j2d
-void sb_j2d_capture(u32 root);    // runtime/render/j2d_walk.cpp — snapshots the post-draw pane tree
-void ngx_frame_publish();         // runtime/overrides/ngx_j3d_shape.cpp — publish the 3D frame snapshot
-
 static void ov_j2dscreen_draw(CPUState& cpu) {
-    const u32 root = cpu.gpr[3];
-    // J2DScreen::draw runs once per frame AFTER all 3D drawing (the HUD draws on top),
-    // so the 3D capture buffer holds a complete frame here. Publish it as the explicit
-    // per-frame boundary for the native present (so it reads a whole frame, not a
-    // half-accumulated one) — aligned with the J2D HUD snapshot taken just below.
-    ngx_frame_publish();           // per-frame boundary: publish the complete 3D snapshot for present
-    sb_j2d_set_root(root);         // publish the live root J2DScreen* (the /j2d diagnostic probes read it)
     static const bool log = getenv("SUNBRIGHT_RENDERPORT_LOG") != nullptr;
     if (log) {
         static unsigned long n = 0;
@@ -249,33 +216,15 @@ static void ov_j2dscreen_draw(CPUState& cpu) {
             std::fprintf(stderr, "[renderport] J2DScreen::draw screen=%08x grafctx=%08x\n",
                          cpu.gpr[3], cpu.gpr[6]);
     }
-    // Pure-JIT no-recomp: J2DScreen::draw is a LOGIC function that BUILDS the 2D pane tree (computes
-    // mGlobalBounds) that sb_j2d_capture reads for the ngx HUD overlay — it cannot just be skipped.
-    // There is no recomp body to super-call, and call_ppc(cpu.lr) would interp the JIT caller, so we
-    // use the reentrant run-original-under-Dolphin-JIT primitive: it runs the ORIGINAL draw under
-    // Dolphin's JIT (its sub-draws keep hitting overrides), then runs sb_j2d_capture(root) once the
-    // original returns, then resumes the real caller. (before-work above already published the 3D
-    // frame + live root.)
-    // ngx active: run the original under Dolphin's JIT via the reentrant primitive, then capture the
-    // built pane tree for the ngx HUD overlay. ngx off: not purejit-safe → never dispatched → Dolphin
-    // JIT draws the 2D itself (the Dolphin-GX baseline); the recomp_raw path is dead (recomp gone).
-    if (ngx_capture_active()) { sb_run_original_around(cpu, J2DSCREEN_DRAW, &sb_j2d_capture, root); return; }
+    // Behavior-neutral super-call. This override is not purejit-safe (the NGX J2D capture it used to
+    // feed is eradicated), so it is never dispatched in the no-recomp build — Dolphin's JIT draws the
+    // 2D itself (the Dolphin-GX baseline). Kept as an env-gated RE log hook only.
     if (RecompFunc orig = recomp_raw(J2DSCREEN_DRAW)) orig(cpu);
     else call_ppc(cpu, cpu.lr);
-    // Capture AFTER the draw: mGlobalBounds/mColorAlpha are now consistently computed
-    // for every visible pane. The native present (video thread) reads this snapshot —
-    // a live cross-thread walk would catch the tree mid-update (the HUD-smear bug).
-    sb_j2d_capture(root);
 }
 
-// Registered unconditionally now: the tee is behavior-neutral (it super-calls the
-// original draw) and is the canonical capture of the live 2D root for the native
-// J2D renderer. The renderport logging inside stays env-gated.
 static const bool s_renderport_registered = [] {
     register_override(J2DSCREEN_DRAW, &ov_j2dscreen_draw);
-    // Per-call: the frame-publish boundary must fire EVERY frame (not once at compile). Only when ngx
-    // capture is active — with ngx off, inert so Dolphin's JIT draws the 2D (the Dolphin-GX baseline).
-    if (ngx_capture_active()) mark_override_purejit_safe(J2DSCREEN_DRAW);
     return true;
 }();
 

@@ -264,6 +264,18 @@ def _diff_summary(A, B, pa, pb):
 
     if sa["frames"] == 0 or sb["frames"] == 0:
         print(f"  WARN: a dump has 0 non-blank frames (oracle {sa['frames']}, native {sb['frames']})")
+    # HONESTY CAVEAT (do not draw conclusions past what these signals actually measure):
+    #  • RELIABLE cross-engine: light COUNT (both sides load GX lights at 3D-scene draw time).
+    #  • CONFOUNDED — ambient / material col / projType are sampled at frame PUBLISH (after the 2D
+    #    HUD/logo draw), so they reflect the LAST 2D register, not the 3D scene; a mismatch here can
+    #    be pure sampling phase, NOT a real divergence. (To make these reliable, snapshot lighting at
+    #    3D-scene draw time in BOTH emitters — see debug_journal/2026-06-30_title_parity_confounds.md.)
+    #  • CONFOUNDED — nbatch / nverts / onscr have different capture SCOPE per engine (the native
+    #    parity dump is J3D-3D-only and EXCLUDES the 2D imm logo/HUD; the oracle ngx capture groups +
+    #    filters differently), so absolute counts are not directly comparable. Screen W/H extent is
+    #    the most robust geometry signal (both ~2.0 = full-screen here).
+    print(f"  NOTE: only light-count is reliable cross-engine; ambient/matc/projType are publish-phase")
+    print(f"        sampled and nbatch/nverts/onscr are capture-scope confounded (see caveat in source).")
     print(f"summary: {div} metric(s) diverge beyond tolerance")
     return 1 if div else 0
 

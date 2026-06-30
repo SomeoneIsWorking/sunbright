@@ -413,18 +413,7 @@ int sb_tev_shader_selftest(char* out, int cap) {
     app("tev_shader self-test:\n");
     check("modulate", make_modulate());
     check("replace",  make_replace());
-
-    int nst = 0; const NgxTevState* sts = ngx_snap_tevstates(&nst);
-    app("  live captured materials: %d\n", nst);
-    for (int i = 0; i < nst && i < 12; i++) {
-        char lbl[24]; snprintf(lbl, sizeof lbl, "live[%d]", i);
-        check(lbl, sts[i]);
-    }
-    // Dump the FULL generated GLSL of the first few live materials (combiner audit).
-    for (int i = 0; i < nst && i < 3; i++) {
-        std::string src = sb_tev_gen_fragment(sts[i]);
-        app("==== live[%d] GLSL (stages=%u) ====\n%s\n", i, sts[i].num_stages, src.c_str());
-    }
+    // (The live-captured-materials audit was part of the NGX renderer — eradicated.)
     app("verdict=%s (compiled=%d/%d, failed=%d)\n",
         failed == 0 ? "OK" : "FAIL", compiled, attempted, failed);
     return failed;

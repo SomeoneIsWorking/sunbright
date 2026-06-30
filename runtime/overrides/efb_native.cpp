@@ -57,7 +57,6 @@
 
 extern "C" void func_8035ee5c(CPUState&);   // GXCopyTex(void* dest, GXBool clear)
 extern "C" void func_8035ffb8(CPUState&);   // GXLoadTexObjPreLoaded(GXTexObj*, GXTexRegion*, GXTexMapID)
-extern void ngx_note_efb_copy(bool is_disp, u32 dest, u32 clear);   // ngx_j3d_shape.cpp: epoch tracking
 
 namespace {
 
@@ -178,7 +177,6 @@ SUNBRIGHT_OVERRIDE(ov_efb_native_copytex, GX_COPY_TEX) {
             }
         }
     }
-    ngx_note_efb_copy(/*is_disp=*/false, cpu.gpr[3], cpu.gpr[4]);   // → OFFSCREEN texture
     func_8035ee5c(cpu);
 }
 

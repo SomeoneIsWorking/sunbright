@@ -15,7 +15,6 @@
 #include <cstdlib>
 #include <atomic>
 
-extern void ngx_note_efb_copy(bool is_disp, u32 dest, u32 clear);   // ngx_j3d_shape.cpp: epoch tracking
 extern u8 mem_r8(u32 ea);   // memory_bridge.cpp
 
 // ── Blend-mode + copy-gamma capture (Delfino-wash hunt: find a darkening pass / settle copy gamma) ──
@@ -134,9 +133,7 @@ SUNBRIGHT_OVERRIDE(ov_gxs_copydisp, 0x8035ececu) {
         sb_run_original_around(cpu, 0x8035ececu, nullptr, 0);   // run the REAL copy (keep XFB/frame cycle)
         return;
     }
-    const u32 dd = cpu.gpr[3], dc = cpu.gpr[4];   // GXCopyDisp(dest, clear)
     func_8035ecec(cpu);          // guest body: emits the EFB→XFB copy commands
-    ngx_note_efb_copy(/*is_disp=*/true, dd, dc);   // this epoch's passes went to the DISPLAY
     gxs_arm();
     gxs_frame_boundary();
 }

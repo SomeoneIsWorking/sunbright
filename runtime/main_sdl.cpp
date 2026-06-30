@@ -70,10 +70,6 @@
 #include <string_view>
 
 extern "C" bool na_start(bool muted);   // PC-native audio sink (runtime/native_audio.cpp)
-// N7 native present hooks (Present.cpp fork + runtime/render/ngx_present.cpp).
-extern "C" volatile int g_sb_ngx_present;
-extern "C" const void* (*sb_ngx_present_xfb_cb)(int, int);
-extern "C" const void* sb_ngx_present_xfb(int, int);
 
 // ── Globals ───────────────────────────────────────────────────────────────────
 static SDL_Window* g_window  = nullptr;
@@ -837,22 +833,10 @@ int main(int argc, char* argv[]) {
     // SUNBRIGHT_TURBO=1 to unthrottle (faster repro of timing-INdependent bugs).
     const bool turbo    = getenv("SUNBRIGHT_TURBO") != nullptr;
 
-    // N7 native present: substitute the ngx-rendered frame for the XFB on screen (and
-    // in the frame dump). Needs the J3DShape capture (SUNBRIGHT_NGX_SHAPE) to feed it.
-    // The callback runs on the video thread; the renderer lazily inits once g_gfx is up.
-    // Honor the VALUE, not mere presence: SUNBRIGHT_NGX_PRESENT=0 must DISABLE it (so a 2nd
-    // recomp-GX "oracle" instance — and `SUNBRIGHT_NGX_PRESENT=0 ./run.sh` — actually use Dolphin's
-    // GX render, not NGX).
-    if (const char* np = getenv("SUNBRIGHT_NGX_PRESENT"); np && atoi(np) != 0) {
-        sb_ngx_present_xfb_cb = &sb_ngx_present_xfb;
-        g_sb_ngx_present = 1;
-        fprintf(stderr, "[sunbright] N7 NATIVE PRESENT enabled (ngx frame → XFB)\n");
-    } else if (const char* ns = getenv("SUNBRIGHT_NGX_SHAPE"); ns && atoi(ns) != 0) {
-        // PRESENT off but SHAPE on: keep the ngx renderer callable (the /abshot2 A/B renders
-        // an ngx texture on demand) WITHOUT substituting it for the on-screen XFB — so Dolphin's
-        // GX render stays LIVE and can serve as the in-process oracle. g_sb_ngx_present stays 0.
-        sb_ngx_present_xfb_cb = &sb_ngx_present_xfb;
-    }
+    // NGX (the native-capture renderer) has been eradicated: build/sunbright is now PURE
+    // Dolphin-GX, the clean oracle. There is no on-screen present substitution anymore —
+    // Dolphin always presents its own GX XFB. (The GX command stream, runtime/gx_stream.cpp,
+    // is the geometry/lighting oracle source — see runtime/gx_parse.h.)
 
     // SDL — headless still needs the event/timer subsystem for SDL_GetTicks (autostart
     // timing) but no video device (which would require a display).

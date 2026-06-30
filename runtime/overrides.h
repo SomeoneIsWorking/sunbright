@@ -71,9 +71,6 @@ bool       prehooks_registered();
 bool sunbright_purejit_mode();
 void mark_override_purejit_safe(u32 addr);   // call after register_override for a full-replacement
 bool override_is_purejit_safe(u32 addr);     // consulted by IsRecompiled under purejit
-// True when the ngx native renderer's capture is active (SUNBRIGHT_NGX_SHAPE/NGX_PRESENT). Render-
-// ownership seams gate on this (NOT purejit) so the Dolphin-GX baseline survives with ngx off.
-bool ngx_capture_active();   // runtime/overrides/ngx_j3d_shape.cpp
 
 // ── Reentrant run-original-under-Dolphin-JIT (purejit observe-AROUND seam) ────
 // Call from inside a purejit-safe WRAPPING override, AFTER its "before" work, to run the ORIGINAL

@@ -278,16 +278,8 @@ extern "C" void interp60_xfmap_set_alpha(float alpha) { g_xf_alpha = alpha; }
 // projected shadows/decals load via other arrays — if they appear here, the same seam can
 // interpolate them. Read via /interp60.
 unsigned long g_xf_array_hist[16] = {0};
-extern "C" void ngx_capture_indexed_posmtx(u32 base, u32 stride, u32 index, u32 address);  // ngx_j3d_shape.cpp
 extern "C" bool sb_hook_xf_indexed(u32 array, u32 base, u32 stride, u32 index, u32 size, u32 address, u32* out) {
     if (g_xf_active && array < 16) g_xf_array_hist[array]++;
-    // Native-renderer (ngx) PNMTXIDX capture — runs ALWAYS (not just interp60). This is the only
-    // SYNCHRONOUS, CORRECT source for multi-matrix (skinned: Mario/NPCs) pos matrices: in sync_mode
-    // the GX stream is decoded on the guest thread in stream order, so when LoadIndexedXF fires here
-    // the array base (set in the shape's display list earlier in the same draw) is already decoded —
-    // unlike the GXLoadPosMtxIndx function hook, which reads g_main_cp_state BEFORE that decode and
-    // gets a stale/garbage base. Captured before J3DShape::draw's capture(sh) reads it.
-    if (array == 12 && size >= 12) ngx_capture_indexed_posmtx(base, stride, index, address);
     if (!g_xf_active || array != 12) return false;
     static const int dbg = getenv("SUNBRIGHT_DBG_XF") ? 1 : 0;   // cached: hook is hot (per load)
     if (dbg) {   // first few hook bases — confirm parser base == load base

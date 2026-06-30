@@ -80,57 +80,12 @@ int interp60_probe(char* out, int cap, const char* query);   // runtime/interp60
 extern "C" int native_vi_probe(char* out, int cap, const char* query);  // native_vi2.cpp
 void gxs_ngx_parity_stats(unsigned long*, unsigned long*, unsigned long*, const char**);  // gx_stream.h
 int sb_tex_selftest(char*, int);                             // runtime/render/tex_decode_selftest.cpp
-int sb_vk_quad_selftest(char*, int);                         // runtime/render/vk_quad.cpp
-int sb_j2d_dump(char*, int);                                 // runtime/render/j2d_walk.cpp
-int sb_j2d_screens_dump(char*, int);                         // runtime/render/j2d_walk.cpp (/j2dscreens)
-int sb_tex_at_dump(char*, int, uint32_t, int, int, int);     // runtime/render/j2d_walk.cpp (/texat)
-int sb_j2d_render(char*, int);                               // runtime/render/j2d_render.cpp
 int sb_ngx_vertex_selftest(char*, int);                      // runtime/ngx/ngx_vertex.cpp
 int sb_ngx_mesh_selftest(char*, int);                        // runtime/ngx/ngx_mesh.cpp
-int sb_ngx_shape_dump(char*, int);                           // runtime/overrides/ngx_j3d_shape.cpp
-int sb_ngx_shapes_dump(char*, int);                          // runtime/overrides/ngx_j3d_shape.cpp (/ngxshapes)
-int sb_ngx_shapeat_dump(char*, int, float, float);           // runtime/overrides/ngx_j3d_shape.cpp (/shapeat?x=&y=)
 extern "C" int sb_gx_blend_dump(char*, int);                 // runtime/overrides/gx_stream_own.cpp (/gxblend)
 extern "C" int sb_gx_copyfilter_dump(char*, int);            // runtime/overrides/gx_stream_own.cpp (/copyfilter)
 extern "C" void sb_efb_grab_arm(int gw, int gh);             // runtime/overrides/gx_stream_own.cpp (/efbgrabnext)
 extern "C" void sb_efb_grab_pass_arm(int pass, int gw, int gh); // runtime/overrides/scene_render.cpp (/efbgrabpass)
-int sb_ngx_gxstate_dump(char*, int);                         // runtime/overrides/ngx_j3d_shape.cpp (/gxstate)
-extern "C" void sb_ngx_set_gxstate_ti(int);                  // runtime/overrides/ngx_j3d_shape.cpp (/gxstate?ti=)
-extern "C" void sb_ngx_set_gxstate_sh(unsigned);             // runtime/overrides/ngx_j3d_shape.cpp (/gxstate?sh=)
-int sb_ngx_order_dump(char*, int);                           // runtime/overrides/ngx_j3d_shape.cpp (/ngxorder)
-extern "C" int sb_ngx_set_prefix(int);                       // runtime/render/ngx_present.cpp (/ngxprefix?n=)
-extern "C" void sb_ngx_set_draw_limit(int);                  // runtime/overrides/ngx_j3d_shape.cpp (/ngxdrawlimit?n=)
-extern "C" void sb_jpa_set_disable(int);                     // runtime/overrides/jpa_particle_native.cpp (/ngxnojpa?v=)
-extern "C" int  sb_ngx_get_draw_limit();                     // runtime/overrides/ngx_j3d_shape.cpp
-extern "C" unsigned sb_ngx_frame_shape_count();              // runtime/overrides/ngx_j3d_shape.cpp
-extern "C" int  sb_ngx_shapeti_dump(char*, int);            // runtime/overrides/ngx_j3d_shape.cpp (/ngxshapeti)
-extern "C" int  sb_ngx_verts_dump(char*, int);              // runtime/overrides/ngx_j3d_shape.cpp (/ngxverts)
-extern "C" int  sb_ngx_texmtxloads_dump(char*, int);        // runtime/overrides/ngx_j3d_shape.cpp (/texmtxloads)
-int sb_ngx_efbcopies_dump(char*, int);                       // runtime/overrides/ngx_j3d_shape.cpp (/efbcopies)
-int sb_ngx_pixel_batch(float, float, char*, int);            // runtime/overrides/ngx_j3d_shape.cpp
-int sb_ngx_pixel_blend(float, float, char*, int);            // runtime/overrides/ngx_j3d_shape.cpp (/pixblend)
-int sb_ngx_find_magenta(char*, int);                         // runtime/overrides/ngx_j3d_shape.cpp (/magmat)
-extern "C" int ngx_geom_diff_report(char* out, int cap);     // runtime/overrides/ngx_j3d_shape.cpp (/ngxgeomdiff)
-extern "C" int ngx_proj_diff_report(char* out, int cap);     // runtime/overrides/ngx_j3d_shape.cpp (/ngxproj)
-extern "C" int sb_ngx_set_onlyti(int);                       // runtime/render/ngx_present.cpp (/ngxonly)
-extern "C" int sb_ngx_set_skipti(int);                       // runtime/render/ngx_present.cpp (/ngxskip)
-extern "C" int sb_ngx_set_onlyepoch(int);                    // runtime/render/ngx_present.cpp (/ngxepoch)
-extern "C" int sb_ngx_set_dropepoch(int);                    // runtime/render/ngx_present.cpp (/ngxepoch)
-extern "C" int sb_ngx_set_onlypass(int);                     // runtime/render/ngx_present.cpp (/ngxonlypass)
-extern "C" int sb_ngx_set_droppass(int);                     // runtime/render/ngx_present.cpp (/ngxdroppass)
-extern "C" int sb_ngx_set_rtfilter(int);                     // runtime/render/ngx_present.cpp (/ngxrtfilter)
-extern "C" void sb_ngx_skipset_clear();                      // runtime/render/ngx_present.cpp (/ngxskipset)
-extern "C" void sb_ngx_skipset_add(int);                     // runtime/render/ngx_present.cpp (/ngxskipset)
-int sb_ngx_render(char*, int);                               // runtime/render/vk_mesh.cpp
-int sb_ngx_present_test(char*, int);                         // runtime/render/vk_mesh.cpp
-extern "C" void sb_ngx_present_stats(unsigned long*, unsigned long*, unsigned long*, int*, int*, int*, unsigned long*);  // ngx_present.cpp
-extern "C" unsigned long sb_ngx_mip_textures();  // ngx_present.cpp — count of authored-mip textures decoded
-extern "C" void sb_ngx_particle_stats(unsigned long*, unsigned long*);  // ngx_j3d_shape.cpp — N7 JPA counters
-extern "C" int sb_ngx_last_particle_ti();  // ngx_j3d_shape.cpp — tev_index of the last emitted particle batch
-extern "C" void  sb_ngx_interp_stats(unsigned long*, unsigned long*);  // ngx_present.cpp — interp60 cadence
-extern "C" int   sb_ngx_interp60_enabled();                            // ngx_j3d_shape.cpp
-extern "C" float sb_ngx_interp_alpha();                                // ngx_j3d_shape.cpp
-extern "C" void  sb_ngx_set_interp_alpha(float);                       // ngx_j3d_shape.cpp
 int sb_tev_shader_selftest(char*, int);                      // runtime/render/tev_shader.cpp
 void gxs_frametime_reset();                                   // runtime/gx_stream.h
 void gxs_frametime_stats(unsigned long*, double*, double*, double*, double*);
@@ -192,19 +147,7 @@ u32 qarg_dec(const char* path, const char* key, u32 def) {
 extern "C" void interp_verify_arm(int);
 extern "C" int  interp_verify_report(char*, int);
 extern "C" int  sb_capture_frames;
-extern "C" volatile int g_sb_efb_copy_on;   // /efbcopy?on=N — A/B toggle the EFB-copy writeback
-extern "C" volatile int g_sb_ngx_present;   // /abshot toggles the present source (Present.cpp)
 extern "C" volatile int g_sb_ab_capture;    // /abshot2 arms same-present dual capture (Present.cpp)
-extern "C" unsigned long sb_ngx_front_frame();  // /abshot2 liveness: published ngx snapshot frame id
-extern "C" int sb_ngx_set_mtxsrc(int);          // /ngxmtxsrc live skinned-matrix source A/B
-extern "C" int sb_ngx_set_dbg(int);         // /ngxdbg sets the native renderer debug mode
-extern "C" void sb_ngx_set_nolight(int);    // /ngxdbg?nolight= toggles native lighting (capture)
-extern "C" void sb_ngx_set_freeze(int);     // /ngxfreeze latches the published snapshot
-extern "C" int  sb_ngx_get_freeze();
-extern "C" int  sb_ngx_set_noblend(int);    // /ngxnoblend forces materials opaque
-extern "C" int sb_xfmem_dump(char*, int);   // /xfdump prints live Dolphin xfmem (ngx_j3d_shape.cpp)
-extern "C" int sb_xfmem_hist(char*, int);   // /xfhist prints distinct xfmem draw-tuples (ngx_j3d_shape.cpp)
-extern "C" int sb_ngx_gen_shader(unsigned, char*, int);   // /skyshader dumps generated TEV GLSL (ngx_j3d_shape.cpp)
 
 // Peek a GW×GH grid of Dolphin's EFB (RGB) and write a PPM. MUST be called on the CPU thread (the
 // PeekColor blocking event hangs otherwise) with bEFBAccessEnable on. EFB native = 640×528. Shared by
@@ -289,100 +232,6 @@ std::string handle_repl(const char* path) {
         app("verdict=%s\n", fails == 0 ? "PARITY-OK" : (fails < 0 ? "NO-ORACLE" : "MISMATCH"));
         return std::string(buf, n);
     }
-    if (strncmp(path, "/j2drender", 10) == 0) {  // N3 render the HUD natively (offscreen + PPM)
-        char rep[8192];
-        sb_j2d_render(rep, sizeof rep);
-        app("%s", rep);
-        return std::string(buf, n);
-    }
-    if (strncmp(path, "/texat", 6) == 0) {   // decode a guest texture (addr/fmt/w/h) → intensity grid
-        char rep[4096];
-        auto qv = [&](const char* k, long def) -> long {
-            const char* q = strstr(path, k); if (!q) return def;
-            return strtol(q + strlen(k), nullptr, 0);
-        };
-        sb_tex_at_dump(rep, sizeof rep, (uint32_t)qv("a=", 0), (int)qv("fmt=", 0),
-                       (int)qv("w=", 0), (int)qv("h=", 0));
-        app("%s", rep);
-        return std::string(buf, n);
-    }
-    if (strncmp(path, "/j2dscreens", 11) == 0) {  // correlation: every recent J2DScreen root + window inventory
-        char rep[16384];
-        sb_j2d_screens_dump(rep, sizeof rep);
-        app("%s", rep);
-        return std::string(buf, n);
-    }
-    if (strncmp(path, "/j2d", 4) == 0) {     // N3 J2D pane-tree walk (live HUD draw data)
-        char rep[16384];
-        sb_j2d_dump(rep, sizeof rep);
-        app("%s", rep);
-        return std::string(buf, n);
-    }
-    if (strncmp(path, "/vkquad", 7) == 0) {  // N2 native Vulkan textured-quad offscreen render
-        char rep[2048];
-        sb_vk_quad_selftest(rep, sizeof rep);
-        app("%s", rep);
-        return std::string(buf, n);
-    }
-    if (strncmp(path, "/xfdump", 7) == 0) {  // live Dolphin xfmem lighting/colour (oracle = truth)
-        char rep[2048]; int rn = sb_xfmem_dump(rep, sizeof rep); app("%.*s", rn, rep);
-        return std::string(buf, n);
-    }
-    if (strncmp(path, "/xfhist", 7) == 0) {  // distinct xfmem tuples at J3DShape::draw (oracle = truth)
-        char rep[4096]; int rn = sb_xfmem_hist(rep, sizeof rep); app("%.*s", rn, rep);
-        return std::string(buf, n);
-    }
-    if (strncmp(path, "/skyshader", 10) == 0) {  // generated TEV GLSL for a material (default sky)
-        unsigned ce = 0x09fae8; if (const char* p = strstr(path, "ce=")) ce = strtoul(p+3, nullptr, 16);
-        char rep[8192]; int rn = sb_ngx_gen_shader(ce, rep, sizeof rep); app("%.*s", rn, rep);
-        return std::string(buf, n);
-    }
-    if (strncmp(path, "/efbcopy", 8) == 0) {  // LIVE A/B: EFB-copy writeback on/off (effect samples scene vs black)
-        if (const char* p = strstr(path, "on=")) g_sb_efb_copy_on = atoi(p + 3) != 0;
-        app("efb-copy writeback = %d\n", g_sb_efb_copy_on);
-        return std::string(buf, n);
-    }
-    if (strncmp(path, "/ngxmtxsrc", 10) == 0) {  // LIVE skinned-matrix source A/B (no rebuild)
-        int m = 0; if (const char* p = strstr(path, "m=")) m = atoi(p + 2);
-        app("ngx skinned matrix src = %d  (0=per-packet object-model, 1=g_posmtx, 2=modelview)\n",
-            sb_ngx_set_mtxsrc(m));
-        return std::string(buf, n);
-    }
-    if (strncmp(path, "/ngxproj", 8) == 0) {  // ngx projection vs Dolphin's ACTUAL projection
-        char rep[2048]; int rn = ngx_proj_diff_report(rep, sizeof rep); app("%.*s", rn, rep);
-        return std::string(buf, n);
-    }
-    if (strncmp(path, "/ngxgeomdiff", 12) == 0) {  // ngx-vs-Dolphin per-slot matrix differential
-        char rep[16384]; int rn = ngx_geom_diff_report(rep, sizeof rep); app("%.*s", rn, rep);
-        return std::string(buf, n);
-    }
-    if (strncmp(path, "/ngxdbg", 7) == 0) {
-        // Flip the native renderer's debug mode on a LIVE scene (no relaunch). /ngxdbg?m=MODE
-        // MODE: normal|tex|ras|cat|bid (or 0..4). Clears the pipeline cache → shaders regen.
-        // (Must precede the broad "/ngx" parity handler below.)
-        if (const char* p = strstr(path, "nolight=")) {
-            int on = atoi(p + 8); sb_ngx_set_nolight(on);
-            app("ngx nolight = %d\n", on);
-            return std::string(buf, n);
-        }
-        int m = 0;
-        if (const char* p = strstr(path, "m=")) {
-            p += 2;
-            if      (!strncmp(p, "normal", 6)) m = 0;
-            else if (!strncmp(p, "tex", 3))    m = 1;
-            else if (!strncmp(p, "ras", 3))    m = 2;
-            else if (!strncmp(p, "cat", 3))    m = 3;
-            else if (!strncmp(p, "bid", 3))    m = 4;
-            else if (!strncmp(p, "tex1", 4))   m = 5;
-            else if (!strncmp(p, "uv0", 3))    m = 6;
-            else if (!strncmp(p, "uv1", 3))    m = 7;
-            else m = atoi(p);
-        }
-        sb_ngx_set_dbg(m);
-        static const char* names[5] = {"normal","tex","ras","cat","bid"};
-        app("ngx debug mode = %d (%s)\n", m, (m>=0&&m<=4)?names[m]:"?");
-        return std::string(buf, n);
-    }
     if (strncmp(path, "/ngxvtx", 7) == 0) {  // N4 native GX vertex-attribute extractor self-test
         char rep[2048]; sb_ngx_vertex_selftest(rep, sizeof rep); app("%s", rep);
         return std::string(buf, n);
@@ -458,159 +307,12 @@ std::string handle_repl(const char* path) {
         app("efbgrab: %s (%dx%d, frame-boundary — FLAKY; prefer /efbgrabnext)\n", ok ? "wrote" : "FAILED", GW, GH);
         return std::string(buf, n);
     }
-    if (strncmp(path, "/ngxshapes", 10) == 0) {  // per-shape NDC bbox (localize a misplaced shape)
-        static thread_local char rep[16384]; sb_ngx_shapes_dump(rep, sizeof rep); app("%s", rep);
-        return std::string(buf, n);
-    }
     if (strncmp(path, "/gxblend", 8) == 0) {  // GXSetBlendMode histogram + copy gamma (darkening-pass hunt)
         static thread_local char rep[4096]; sb_gx_blend_dump(rep, sizeof rep); app("%s", rep);
         return std::string(buf, n);
     }
     if (strncmp(path, "/copyfilter", 11) == 0) {  // EFB->XFB vfilter coeffs (copy-brightening hunt)
         static thread_local char rep[512]; sb_gx_copyfilter_dump(rep, sizeof rep); app("%s", rep);
-        return std::string(buf, n);
-    }
-    if (strncmp(path, "/shapeat", 8) == 0) {  // shapes covering NDC (x,y): captured vs FRESH guest colorBlock
-        float qx = 0.f, qy = 0.f;
-        if (const char* p = strstr(path, "x=")) qx = (float)atof(p + 2);
-        if (const char* p = strstr(path, "y=")) qy = (float)atof(p + 2);
-        static thread_local char rep[16384]; sb_ngx_shapeat_dump(rep, sizeof rep, qx, qy); app("%s", rep);
-        return std::string(buf, n);
-    }
-    if (strncmp(path, "/gxstate", 8) == 0) {  // GX-cmd-stream vs ngx-object-model render-state diff
-        // sh=ADDR targets by SHAPE ADDRESS (stable; tev_index renumbers per frame). ti= targets by
-        // tev_index AND clears the sh target. (sh=0 also clears it.)
-        if (const char* p = strstr(path, "sh=")) sb_ngx_set_gxstate_sh((unsigned)strtoul(p + 3, nullptr, 16));
-        if (const char* p = strstr(path, "ti=")) { sb_ngx_set_gxstate_ti(atoi(p + 3)); sb_ngx_set_gxstate_sh(0); }
-        static thread_local char rep[8192]; sb_ngx_gxstate_dump(rep, sizeof rep); app("%s", rep);
-        return std::string(buf, n);
-    }
-    if (strncmp(path, "/efbcopies", 10) == 0) {  // rolling EFB-copy log (display vs offscreen routing)
-        static thread_local char rep[8192]; sb_ngx_efbcopies_dump(rep, sizeof rep); app("%s", rep);
-        return std::string(buf, n);
-    }
-    if (strncmp(path, "/ngxshapeti", 11) == 0) {  // draw#→material ti map (cluster runs) — BEFORE /ngxshape (prefix)
-        static thread_local char rep[16384]; sb_ngx_shapeti_dump(rep, sizeof rep); app("%s", rep);
-        return std::string(buf, n);
-    }
-    if (strncmp(path, "/ngxverts", 9) == 0) {  // per-vertex NDC+alpha+UV of the /gxstate target ti shape
-        static thread_local char rep[65536]; sb_ngx_verts_dump(rep, sizeof rep); app("%s", rep);
-        return std::string(buf, n);
-    }
-    if (strncmp(path, "/texmtxloads", 12) == 0) {  // what J3DTexMtx::load actually feeds GX (sync truth)
-        static thread_local char rep[8192]; sb_ngx_texmtxloads_dump(rep, sizeof rep); app("%s", rep);
-        return std::string(buf, n);
-    }
-    if (strncmp(path, "/ngxshape", 9) == 0) {  // N4 live J3DShape native-mesh capture stats
-        static thread_local char rep[16384]; sb_ngx_shape_dump(rep, sizeof rep); app("%s", rep);
-        return std::string(buf, n);
-    }
-    if (strncmp(path, "/ngxorder", 9) == 0) {  // displayed batches in DRAW order (ti + vcount) — maps prefix N -> layer
-        static thread_local char rep[16384]; sb_ngx_order_dump(rep, sizeof rep); app("%s", rep);
-        return std::string(buf, n);
-    }
-    if (strncmp(path, "/ngxprefix", 10) == 0) {  // render only first N batches (draw order) then present
-        int v = -1; if (const char* p = strstr(path, "n=")) v = atoi(p + 2);
-        sb_ngx_set_prefix(v); app("ngx prefix_n = %d\n", v); return std::string(buf, n);
-    }
-    if (strncmp(path, "/ngxdrawlimit", 13) == 0) {  // LOCKSTEP: draw only first N J3DShapes on BOTH engines
-        int v = -1; if (const char* p = strstr(path, "n=")) v = atoi(p + 2);
-        sb_ngx_set_draw_limit(v);
-        app("ngx draw_limit = %d  (last frame had %u shapes)\n", v, sb_ngx_frame_shape_count());
-        return std::string(buf, n);
-    }
-    if (strncmp(path, "/ngxnojpa", 9) == 0) {  // DRIFT-FREE A/B: toggle JPA particle emission live
-        int v = -1; if (const char* p = strstr(path, "v=")) v = atoi(p + 2);
-        sb_jpa_set_disable(v);
-        app("jpa_disable = %d  (-1=env, 0=ON, 1=OFF)\n", v);
-        return std::string(buf, n);
-    }
-    if (strncmp(path, "/ngxonly", 8) == 0) {   // runtime: render ONLY this tev_index (-2 env, -1 off)
-        int t = -1; if (const char* p = strstr(path, "ti=")) t = atoi(p + 3);
-        sb_ngx_set_onlyti(t); app("ngx only_ti = %d\n", t); return std::string(buf, n);
-    }
-    if (strncmp(path, "/ngxskip", 8) == 0 && path[8] != 's') {   // SKIP this tev_index (NOT /ngxskipset)
-        int t = -1; if (const char* p = strstr(path, "ti=")) t = atoi(p + 3);
-        sb_ngx_set_skipti(t); app("ngx skip_ti = %d\n", t); return std::string(buf, n);
-    }
-    if (strncmp(path, "/ngxskipset", 11) == 0) {  // skip a SET of tev_indices: ti=9,10,18 (empty = clear)
-        sb_ngx_skipset_clear();
-        if (const char* p = strstr(path, "ti=")) {
-            p += 3; while (*p && *p != '&') { sb_ngx_skipset_add(atoi(p)); while (*p && *p!=',' && *p!='&') p++; if (*p==',') p++; }
-        }
-        app("ngx skipset updated\n"); return std::string(buf, n);
-    }
-    if (strncmp(path, "/ngxepoch", 9) == 0) {  // isolate an EFB-copy epoch: keep=N (only) or drop=N
-        int keep = -1, drop = -1;
-        if (const char* p = strstr(path, "keep=")) keep = atoi(p + 5);
-        if (const char* p = strstr(path, "drop=")) drop = atoi(p + 5);
-        sb_ngx_set_onlyepoch(keep); sb_ngx_set_dropepoch(drop);
-        app("ngx epoch filter: keep=%d drop=%d\n", keep, drop); return std::string(buf, n);
-    }
-    if (strncmp(path, "/ngxonlypass", 12) == 0) {  // render ONLY this projection pass (-1 off)
-        int p = -1; if (const char* q = strstr(path, "p=")) p = atoi(q + 2);
-        sb_ngx_set_onlypass(p); app("ngx only_pass = %d\n", p); return std::string(buf, n);
-    }
-    if (strncmp(path, "/ngxdroppass", 12) == 0) {  // drop this projection pass (file-select ghost: -1 off)
-        int p = -1; if (const char* q = strstr(path, "p=")) p = atoi(q + 2);
-        sb_ngx_set_droppass(p); app("ngx drop_pass = %d\n", p); return std::string(buf, n);
-    }
-    if (strncmp(path, "/ngxrtfilter", 12) == 0) {  // render-target-aware present (ghost fix): on=0/1
-        int v = 1; if (const char* p = strstr(path, "on=")) v = atoi(p + 3);
-        sb_ngx_set_rtfilter(v); app("ngx rtfilter = %d (drop auxiliary offscreen epochs)\n", v);
-        return std::string(buf, n);
-    }
-    if (strncmp(path, "/ngxfreeze", 10) == 0) { // FREEZE the published snapshot (deterministic A/B)
-        int on = 1; if (const char* p = strstr(path, "on=")) on = atoi(p + 3);
-        sb_ngx_set_freeze(on); app("ngx frozen = %d (snapshot latched; tweak modes/layers/blend on this frame)\n", sb_ngx_get_freeze());
-        return std::string(buf, n);
-    }
-    if (strncmp(path, "/ngxnoblend", 11) == 0) {// force every material opaque (-1 per-mat, 0 opaque, 1 keep)
-        int v = 0; if (const char* p = strstr(path, "on=")) v = atoi(p + 3);
-        sb_ngx_set_noblend(v); app("ngx noblend = %d (0=force opaque, -1=per-material)\n", v);
-        return std::string(buf, n);
-    }
-    if (strncmp(path, "/magmat", 7) == 0) {  // locate the CMPR-magenta NPC material in the frozen frame
-        static thread_local char rep[4096]; sb_ngx_find_magenta(rep, sizeof rep); app("%s", rep);
-        return std::string(buf, n);
-    }
-    if (strncmp(path, "/pixblend", 9) == 0) {  // CPU full-pipeline blend-stack replay (per-layer TEV+blend over the clear)
-        float x = 0.f, y = -0.6f;
-        if (const char* p = strstr(path, "x=")) x = strtof(p + 2, nullptr);
-        if (const char* p = strstr(path, "y=")) y = strtof(p + 2, nullptr);
-        static thread_local char rep[65536]; sb_ngx_pixel_blend(x, y, rep, sizeof rep); app("%s", rep);
-        return std::string(buf, n);
-    }
-    if (strncmp(path, "/pixbatch", 9) == 0) {  // CPU pixel->batch raster probe (which captured batch covers a NDC point)
-        float x = 0.f, y = 0.9f;   // default: a sky point (top-centre, GL NDC y up)
-        if (const char* p = strstr(path, "x=")) x = strtof(p + 2, nullptr);
-        if (const char* p = strstr(path, "y=")) y = strtof(p + 2, nullptr);
-        static thread_local char rep[16384]; sb_ngx_pixel_batch(x, y, rep, sizeof rep); app("%s", rep);
-        return std::string(buf, n);
-    }
-    if (strncmp(path, "/ngxpresentlive", 15) == 0) {  // N7 live present: renderer stats (SUNBRIGHT_NGX_PRESENT)
-        unsigned long fr = 0, pi = 0, tx = 0, jq = 0; int w = 0, h = 0, ok = 0;
-        sb_ngx_present_stats(&fr, &pi, &tx, &w, &h, &ok, &jq);
-        app("ngx_present_live: init_ok=%d frames=%lu pipelines_built=%lu textures_decoded=%lu mip_textures=%lu target=%dx%d hud_quads=%lu\n",
-            ok, fr, pi, tx, sb_ngx_mip_textures(), w, h, jq);
-        { unsigned long pq = 0, pt = 0; sb_ngx_particle_stats(&pq, &pt);
-          app("ngx_particles: emitted_quads=%lu emitted_tris=%lu last_ti=%d\n", pq, pt, sb_ngx_last_particle_ti()); }
-        return std::string(buf, n);
-    }
-    if (strncmp(path, "/interp60", 9) == 0) {  // PC-native interp60 cadence: presents + in-between blends
-        unsigned long pr = 0, bl = 0; sb_ngx_interp_stats(&pr, &bl);
-        // /interp60?a=<0..1> sets the blend alpha live.
-        if (const char* q = strstr(path, "a=")) sb_ngx_set_interp_alpha((float)atof(q + 2));
-        app("interp60: enabled=%d alpha=%.2f presents=%lu blends(in-between)=%lu blend_frac=%.2f\n",
-            sb_ngx_interp60_enabled(), sb_ngx_interp_alpha(), pr, bl, pr ? (double)bl / pr : 0.0);
-        return std::string(buf, n);
-    }
-    if (strncmp(path, "/ngxpresent", 11) == 0) {  // N7 present primitive: render into an external target
-        char rep[1024]; sb_ngx_present_test(rep, sizeof rep); app("%s", rep);
-        return std::string(buf, n);
-    }
-    if (strncmp(path, "/ngxrender", 10) == 0) {  // N4 native Vulkan render of captured geometry
-        char rep[1024]; sb_ngx_render(rep, sizeof rep); app("%s", rep);
         return std::string(buf, n);
     }
     if (strncmp(path, "/ngx", 4) == 0) {   // R1 native-GX-decoder parity vs oracle
@@ -842,46 +544,6 @@ std::string handle_repl(const char* path) {
         return std::string(buf, n);
     }
 #ifdef HAVE_DOLPHIN_CORE
-    if (strncmp(path, "/abshot", 7) == 0 && path[7] != '2') {
-        // Zero-drift A/B: in NGX_PRESENT mode Dolphin's GX pipeline still renders the XFB
-        // each frame AND ngx renders its own texture for the SAME frame. Capture BOTH from
-        // ONE process by toggling the present source around two screenshots (~1 frame apart,
-        // identical present/readback path) → foo.gx.png (Dolphin GX render) + foo.ngx.png
-        // (native render). With DBG_RASCOLOR + NGX_TEVDBG=ras set this isolates lighting;
-        // with no debug env it compares the full render. No second process, no fastboot/
-        // shader-cache drift. /abshot?name=foo
-        if (!g_frame_dumper) return std::string("no frame dumper\n");
-        char name[64] = {0};
-        if (const char* p = strstr(path, "name=")) {
-            size_t i = 0; p += 5;
-            while (*p && *p != '&' && *p != ' ' && i + 1 < sizeof name) {
-                char c = *p++; name[i++] = (c=='/'||c=='\\') ? '_' : c;
-            }
-        }
-        if (!name[0]) snprintf(name, sizeof name, "ab_%llu",
-                               (unsigned long long)std::chrono::duration_cast<std::chrono::seconds>(
-                                   std::chrono::system_clock::now().time_since_epoch()).count());
-        mkdir("scratch", 0755); mkdir("scratch/screenshots", 0755);
-        const int saved = g_sb_ngx_present;
-        auto grab = [&](const char* suffix, int present_mode) -> long long {
-            g_sb_ngx_present = present_mode;
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));  // let one present settle the toggle
-            char full[256]; snprintf(full, sizeof full, "scratch/screenshots/%s.%s.png", name, suffix);
-            ::unlink(full);
-            g_frame_dumper->SaveScreenshot(full);
-            struct stat st{};
-            for (int i = 0; i < 300; i++) {
-                if (stat(full, &st) == 0 && st.st_size > 0) return (long long)st.st_size;
-                std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            }
-            return -1;
-        };
-        long long gx = grab("gx", 0);     // Dolphin GX XFB
-        long long ng = grab("ngx", 1);    // native ngx texture
-        g_sb_ngx_present = saved;
-        app("abshot %s: gx=%lld ngx=%lld bytes\n", name, gx, ng);
-        return std::string(buf, n);
-    }
     if (strncmp(path, "/loadstate", 10) == 0) {
         // Load a Dolphin save state on demand → a DETERMINISTIC scene for the pixel oracle.
         // This is the save-state half of tools/render/ab_oracle.sh: launch one process per
@@ -932,28 +594,6 @@ std::string handle_repl(const char* path) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
         app("savestate: %s %s (%lld bytes)\n", ok ? "saved" : "PENDING", file, (long long)st.st_size);
-        return std::string(buf, n);
-    }
-    if (strncmp(path, "/abshot2", 8) == 0) {
-        // TRUE zero-drift A/B: arm a SAME-PRESENT dual capture in Present.cpp. Writes
-        // scratch/screenshots/ab2.gx.ppm (Dolphin GX XFB) + ab2.ngx.ppm (native ngx) from
-        // the identical present → pixel-perfect camera alignment. Requires NGX_PRESENT mode.
-        mkdir("scratch", 0755); mkdir("scratch/screenshots", 0755);
-        ::unlink("scratch/screenshots/ab2.gx.ppm");
-        ::unlink("scratch/screenshots/ab2.ngx.ppm");
-        g_sb_ab_capture = 1;
-        struct stat st1{}, st2{}; bool ok = false;
-        for (int i = 0; i < 400; i++) {  // up to ~4s
-            if (stat("scratch/screenshots/ab2.gx.ppm", &st1) == 0 && st1.st_size > 0 &&
-                stat("scratch/screenshots/ab2.ngx.ppm", &st2) == 0 && st2.st_size > 0) { ok = true; break; }
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        }
-        // Self-certify: report the published ngx snapshot's frame id. Both PPMs come from ONE
-        // Present.cpp ProcessFrameDumping call (atomic same present); the GX XFB and the ngx
-        // snapshot are the same frame in steady state. If two successive /abshot2 calls show the
-        // SAME ngx_frame, the snapshot is stale (a no-3D frame kept the last buffer) — distrust it.
-        app("abshot2 %s: gx=%lld ngx=%lld bytes  ngx_frame=%lu  (single core, untainted GX oracle, same present)\n",
-            ok ? "saved" : "TIMEOUT", (long long)st1.st_size, (long long)st2.st_size, sb_ngx_front_frame());
         return std::string(buf, n);
     }
     if (strncmp(path, "/screenshot", 11) == 0) {
