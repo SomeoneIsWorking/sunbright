@@ -382,3 +382,32 @@ backtrace, match the b76 material 0x..8568 in the SAME run). (2) Determine if it
 mask and whether native should (a) draw it [noC] (honor the mask's intended colorUpdate) or (b) route it to
 a main-pass buffer / not enter it into MapXlu. (3) Whichever, the SEA (tev=2) must stay visible. Verify
 fileselect_overbright.py 42.7→~14 WITHOUT ablating b76.
+
+## UPDATE 2026-06-30 (BREAKTHROUGH) — b76 = a map.bmd joint entered by TMapModel; it's the shine-shadow/pollution EFB-readback class
+`SB_ENTRY_MAT` (entry-pass backtrace, targeting the b76 material ptr the capture publishes via
+sb_b76_material) names the enterer DEFINITIVELY:
+```
+J3DDrawBuffer::entryMatSort <- J3DJoint::entryIn <- J3DMtxCalcBasic::recursiveEntry <- MActor::entry
+  <- TJointModelManager::perform <- TPerformList::perform <- TMarDirector::direct
+```
+**`TMapModel` IS a `TJointModelManager`** (MapModel.cpp:124; mJointModelNum=1, initJointModel(
+"scene/map/map")). So the b76 mask is a **joint/material inside map.bmd**, entered into a translucent
+draw buffer by the MAP itself. It is NOT a separate composite/mirror object.
+
+**⇒ This is the SHINE-SHADOW / POLLUTION-mask EFB-READBACK effect class** — the same family as CLAUDE.md's
+`drawShineShadowVolume` (gated in TModelWaterManager::perform) / "pollution darkening" / sun-occlusion, and
+the **PARKED [[delfino-lighting-wash]]**. On GC this map joint is a camera-surrounding volume drawn
+**[noC]** (colorUpdate FALSE — writes no colour) whose visible effect is a SEPARATE EFB-readback darkening
+composite. native has no EFB readback, draws the volume cU=TRUE → opaque-white full-screen wash. So the
+file-select overbright and the Delfino wash are the SAME unimplemented effect, NOT a TEV/blend/routing bug.
+
+**THE FIX (faithful, bounded)**: make native draw this map-joint mask with **colorUpdate=FALSE** so it
+writes nothing — matching GC's DIRECT framebuffer result (the EFB-readback DARKENING remains a separate,
+acknowledged parked gap; absence of darkening is far closer than a white wash). The mask is a specific
+material in map.bmd; GC wraps its draw in GXSetColorUpdate(FALSE) via the shine-shadow/pollution effect
+path (drawShineShadowVolume / TModelWaterManager). NEXT: (1) identify WHICH map.bmd joint/material this is
+(extend SB_ENTRY_MAT to print the joint index/name + the material's TEV/texNo) and find how GC marks it
+[noC] (the effect that wraps it, or a material flag). (2) Reproduce that [noC] for this joint natively
+(own the shine-shadow path, or recognise the volume and honor its no-colour intent). (3) Keep the tev=2
+SEA visible. Verify fileselect_overbright.py 42.7→~14 WITHOUT ablating b76. See memory
+[[fileselect-overbright-screen-dome-white]] + [[delfino-lighting-wash]].

@@ -190,6 +190,9 @@ bool g_consumed = true;
 // Stamped onto every batch opened while set; lets the overbright harness attribute an over-composited
 // layer to the source pass (the EFB pre-passes 1..3 are off-screen on GC and shouldn't composite).
 int g_capture_phase = 0;
+// b76 overbright drill: capture publishes the b76 mask material ptr (key eb5c8e74) so the entry-pass
+// trace (J3DDrawBuffer::entryMatSort, SB_ENTRY_MAT=1) backtraces what enters the mask into MapXlu.
+void* g_b76_material = nullptr;
 // Active draw-buffer name (TDrawBufObj::getName()), stamped onto batches for overbright attribution.
 const char* g_capture_drawbuf = nullptr;
 // EFB→texture copy boundaries recorded during the scene capture (GXCopyTex → sb_boot_capture_efb_copy).
@@ -786,6 +789,7 @@ extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
         // post-pass white-saturating composite (key eb5c8e74) is attributed to its real owner.
         if (const char* d = std::getenv("SB_B76_DBG"); d && d[0] && d[0] != '0'
             && (unsigned)(me->key) == 0xc39d96b8u /* low32 of eb5c8e74c39d96b8 */) {
+            g_b76_material = (void*)mat;   // publish for SB_ENTRY_MAT=auto (entry-pass backtrace)
             int cu = 1, au = 1; sb_gx_get_color_alpha_update(&cu, &au);
             long calls = 0, lastFalse = -1; sb_gx_colupd_history(&calls, &lastFalse);
             int ring[16]; sb_gx_colupd_ring(ring);
@@ -976,6 +980,7 @@ extern "C" int sb_boot_capture_begin_scene() {
 // captured carries its source pass. Reset to 0 in end_scene.
 extern "C" void sb_boot_capture_set_phase(int phase) { g_capture_phase = phase; }
 extern "C" int  sb_boot_capture_phase() { return g_capture_phase; }   // SB_DBHEAD_DBG cross-ref
+extern "C" void* sb_b76_material() { return g_b76_material; }
 
 // Active draw-buffer name, stamped by TDrawBufObj::perform(flag&8) before mDrawBuffer->draw() flushes
 // it (the J3DShape::draw tap source). Lets the overbright harness attribute a batch (e.g. b76) to its
