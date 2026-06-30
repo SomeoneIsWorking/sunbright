@@ -838,3 +838,44 @@ off-screen ph1 drops them (must move them to the main pass or composite ph1's co
 composite quads must faithfully re-display texB as the visible scene. This is the large, well-scoped
 rendering-architecture task the prior sessions pointed at — now with every sub-blocker named and a
 per-pass differ (passdiff.py) + blend drill (blend_drill.py) to verify each step by VALUE.
+
+### 2026-07-01 (cont.) — BUG #2 RE: the perform-list structure is DATA-DRIVEN; "phase misassignment" is the SAME composite issue
+Read the decomp perform-list assembly (MarDirectorSetupObjects.cpp ~380-504, MarDirectorInitECT.cpp,
+MarDirectorPreEntry.cpp). The structure:
+
+- The render perform lists are **LOADED from `/data/PerformLists.bin`** (genObject), then re-grabbed by
+  name: `mPerformListGX = search("PerformList GX")`, `...GXPost = search("PerformList GX Post")`, etc.
+  (SetupObjects.cpp:450-459). So their per-entry buffer/flag content is DATA, identical native↔GC.
+- **unk40 (ph1)** = code-built: `unk40->push_back(drawBufferGroup, 8)` (SetupObjects.cpp:398). flag 8 =
+  DRAW. "Draw Buffer Group" = ALL the scene draw buffers → ph1 FLUSHES the whole scene. THIS is why
+  native captures the full scene (sky/map/mirror, incl the palm) in ph1.
+- **unk38/unk3C (ph2/ph3)** = `initECTGft` = graffiti EFB passes (empty on file-select: no pollution).
+- **mPerformListGX (ph4)** = loaded "PerformList GX" — the main scene render, bracketed by the
+  `通常シーン描画ステージ` (normalSceneDrawStage) TEfbCtrlTex which sets the OFF-SCREEN target +
+  copies EFB→`スクリーンテクスチャ` (TScreenTexture / gpScreenTexture, ScreenUtil.cpp).
+- **mPerformListGXPost (ph6)** = `initECDisp` (InitECT.cpp:98) = the VISIBLE DISPLAY pass:
+  `stageDisp` (TEfbCtrlDisp, 0x80) → **`合成3` (composite3) draw (0x8)** → lensFlare/glow → ChrOpa/ChrXlu
+  draw (Mario) → 2D groups (menu). composite3 SAMPLES スクリーンテクスチャ (the off-screen scene) = the
+  visible scene image.
+
+⇒ **"Bug #2" is NOT a separate phase misassignment — it is the SAME composite root cause.** The palm is
+"in ph1" because ph1 (unk40/drawBufferGroup) flushes the whole scene, which on GC renders to an
+OFF-SCREEN target (the mirror / screen texture), copied out, and DISPLAYED by composite3 in ph6. native
+paints ph1 (and ph4) directly to the visible FB (double-draw + overbright) and LACKS composite3. So the
+ENTIRE file-select overbright (sky additive, double-draw, palm) is ONE bug: native renders the off-screen
+render-to-texture passes into the visible framebuffer and has no composite3 to display them.
+
+THE FIX (single, now fully specified):
+1. Render the scene passes (ph1 unk40 drawBufferGroup + ph4 mPerformListGX) to an OFF-SCREEN target,
+   NOT the visible FB. native's snapshot_efb already captures at the EFB-copy boundaries — render those
+   segments off-screen and snapshot to スクリーンテクスチャ (= the soft-focus/通常シーン dest the imm
+   composite quad already binds via efb_src).
+2. The VISIBLE frame = composite3 + Chr(Mario, ph6) + 2D menu. composite3 ≈ the imm soft-focus quad
+   native already captures (efb_src consumer) — it samples the scene snapshot. Make it the ONLY thing
+   that displays the scene (don't paint ph1/ph4 directly).
+3. Order: composite3 (scene) → Chr → 2D menu. (Open: whether Mario is in the scene texture AND redrawn
+   in ph6 — resolve empirically with passdiff.py; oracle pass2/320x224 HAS Mario, oracle 640x448 final
+   also has Mario, so Mario may be in the scene texture, with ph6 Chr a second draw or a no-op.)
+Verify each step with tools/render/passdiff.py (per-pass) + blend_drill.py + fileselect_overbright.py.
+The SB_FS_COMPOSITE WIP (gated off) is the starting scaffold; its named blockers (soft-focus snapshot at
+end-of-scene; don't drop ph1's content; composite quad re-displays texB) are exactly this fix.
