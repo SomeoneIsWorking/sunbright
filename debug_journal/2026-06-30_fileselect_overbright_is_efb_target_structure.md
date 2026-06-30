@@ -277,3 +277,23 @@ update): build the pass1/pass2 EFB→texture snapshots and make the pass3 compos
 `[noC]` masks correctly write nothing and the visible image comes from the composite, as on GC. That is
 large but is the only non-bandaid path. Tooling now in place to drive it by value: SB_B76_DBG +
 sb_gx_colupd_history (native), SUNBRIGHT_DBG_GXBLEND/GXTEV/GXCOPY (oracle), fileselect_overbright.py.
+
+## UPDATE 2026-06-30 (latest) — backtrace NAMES the mask's two native flush owners
+Added `SB_B76_BT` (one backtrace per phase at the b76 capture). The MapXlu mask is flushed via
+`J3DDrawBuffer::drawHead` in BOTH:
+- **ph1**: `TMarDirector::direct+0x83b → TPerformList::perform → TViewObjPtrListT::perform → drawHead`
+  = the **unk40 "Draw Buffer Group"** flush (the `unk40->push_back(drawBufferGroup,8)` pre-pass draw).
+- **ph6**: `TMarDirector::direct+0x8e0 → TPerformList::perform → drawHead` = the **mPerformListGXPost**
+  entry **`composite3` ("合成3")** (pushed 0x8 in initECDisp / MarDirectorInitECT.cpp:155). `合成3` is a
+  SCENE-LOADED TViewObj (only ever `search`ed, never `new`ed in the decomp) that draws a J3DDrawBuffer —
+  the screen composite. Its buffer still holds the MapXlu mask packet ⇒ native re-draws the no-op mask.
+
+So native flushes the MapXlu mask buffer in **unk40 (Draw Buffer Group)** + **GXPost (composite3)** but
+NOT mPerformListGX (the main pass) — the OPPOSITE of GC (oracle: mask only in pass2 = main). The fix is
+to make native's J3D draw-buffer assignment/flush match GC so the mask flushes once in the main pass
+within its cU=FALSE window (or implement the EFB-copy-texture composite so composite3 samples a snapshot
+and the [noC] mask writes nothing). The contradiction to resolve first: on GC the SAME unk40 Draw Buffer
+Group + GXPost composite3 run, yet the oracle shows the mask combiner ONLY in pass2 — so on GC the MapXlu
+buffer must be EMPTY (already drained/frameInit'd) during the unk40 + GXPost flushes. Trace the MapXlu
+buffer's frameInit/entry/draw order per pass (SB_FI_TRACE + a new entry/draw trace) to find why native's
+buffer still holds the mask there. Tooling: SB_B76_BT, SB_B76_DBG (ring/colupd), SB_FI_TRACE, SB_DRAWBUF_INV.

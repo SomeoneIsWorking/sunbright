@@ -45,6 +45,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <execinfo.h>   // SB_B76_BT backtrace (name the mask's pass-routing owner)
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -794,6 +795,17 @@ extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
                          cu, au, calls, lastFalse, calls - lastFalse, rb,
                          (void*)model, (void*)model->getModelData(), (void*)mat,
                          (unsigned long long)me->key, vcount);
+            // SB_B76_BT=1: one backtrace per phase, to NAME the perform-list entry / TViewObj that
+            // draws this MapXlu mask in ph1 (unk40) and ph6 (GXPost) — the pass-routing owner.
+            if (const char* bt = std::getenv("SB_B76_BT"); bt && bt[0] && bt[0] != '0') {
+                static int btdone[8] = {0};
+                int ph = g_capture_phase & 7;
+                if (!btdone[ph]) { btdone[ph] = 1;
+                    void* fr[40]; int nf = backtrace(fr, 40);
+                    std::fprintf(stderr, "[b76-bt] phase=%d stack:\n", g_capture_phase);
+                    backtrace_symbols_fd(fr, nf, 2);
+                }
+            }
         }
         g_batches.push_back(b);
         g_last_mat = mat;
