@@ -160,3 +160,34 @@ perform-list entry / TViewObj (initECDisp lensGlow/specularSheen/composite3, or 
 that issues GXSetColorUpdate(FALSE) and ensure it's live at the J3D capture tap, or (b) extend the oracle to
 dump the per-stage TEV combiner so the white-saturation can be confirmed faithful vs a generation bug.
 Verify with `tools/render/fileselect_overbright.py` (42.7 now) — target the ~14 floor WITHOUT ablating b76.
+
+## UPDATE 2026-06-30 (latest, commits dd36378/e90ed49) — b76 IDENTIFIED = sea water (MapXlu); corrects [noC] guess
+Built draw-buffer-name attribution (TDrawBufObj::perform stamps getName() → batch dbgName, SB_BATCH_DBG
+`[batchbuf]`). **b76 (and b12, b75) are in "DrawBuf MapXlu"** = the translucent MAP buffer = the SEA WATER
+surface. So b76 is NOT an occlusion/[noC] pass (that earlier match was wrong) — it is the sea-water
+reflection composite (SRCALPHA/SRCCLR) that native renders opaque-WHITE.
+
+**Exact white mechanism (traced through bfrag_76.glsl):** the src colour AND src alpha both saturate from
+the VERTEX colour, not the texture:
+- src.rgb: stage1 `prev.rgb = (rastemp = vColor 0.87→222) << scale-2 = 444 → clamp 255` = white.
+- src.a:   stage1 `prev.a = (rastemp.a = col0.a 255) << scale-2 = 510 → clamp opaque` → o.a = 1.0.
+- The bound texture's alpha is LOW (btex_76 alpha mean 9.8) — so the texture is NOT what makes it opaque;
+  the VERTEX colour/alpha (222/255) doubled by the stage's scale-2 is. With src=opaque white, SRCALPHA/SRCCLR
+  `fb = src·srcA + dst·srcC = white + dst·white → clamp white` = the wash, unavoidable for an opaque-white src.
+
+So the divergence is upstream of the blend: native's `src` is opaque white; the Dolphin-GX oracle's sea
+water is transparent blue/teal. Candidates, to settle by VALUE:
+1. **native's vColor (CLR0) for this draw is wrong** (reads 0.87/1.0 near-white; the real sea-water vertex
+   colour is darker/tinted). The fileselect line has prior CLR0-decode bugs — check the J3D CLR0 read for
+   MapXlu. b12=1.0 vs b76=0.87 (per-vertex varying) → it IS vertex data.
+2. **native's generated TEV is wrong** — the stage-1 `<< scale-2` and/or the RASC (vColor) `d` input. EXTEND
+   THE ORACLE: dump the per-stage TEV combiner (color_env/alpha_env + tevscale, BPMEM_TEV_COLOR_ENV/ALPHA_ENV)
+   from the command stream for this material, and diff against native's bfrag_76.glsl. If the oracle's stage1
+   is scale-1 or a different `d`, native's sb_build_tev_state / sb_tev_gen_fragment mis-generates it.
+3. **the sea water should sample the 256×256 MIRROR EFB reflection** (b76's tex is 256×256 = mirror size,
+   efb_src nil → native binds a stale detail tex). Binding the mirror snapshot may change the combiner inputs
+   that feed `src`. This is the long-noted "256×256 mirror has no native consumer" gap — same bug.
+
+NEXT = extend the oracle with the per-stage TEV combiner dump (#2), compare to native's frag for the MapXlu
+sea-water material, and fix whichever of CLR0 / TEV-gen / mirror-binding diverges. Verify with
+fileselect_overbright.py (42.7 → ~14) WITHOUT ablating b76.
