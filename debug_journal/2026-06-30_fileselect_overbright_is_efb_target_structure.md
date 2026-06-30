@@ -411,3 +411,33 @@ path (drawShineShadowVolume / TModelWaterManager). NEXT: (1) identify WHICH map.
 (own the shine-shadow path, or recognise the volume and honor its no-colour intent). (3) Keep the tev=2
 SEA visible. Verify fileselect_overbright.py 42.7→~14 WITHOUT ablating b76. See memory
 [[fileselect-overbright-screen-dome-white]] + [[delfino-lighting-wash]].
+
+## UPDATE 2026-06-30 (FULL-PORT plan — user chose the full pass-structure port) 
+Corrected: native's EFB copies DO fire (SB_COPYTEX_DBG): 2/frame — (1) 256x256 mirror clear=1
+(鏡描画ステージ, = the pre-pass copy, oracle copy1 @653 prims), (2) 320x224 from 640x448 clear=0
+(通常シーン描画ステージ soft-focus, = oracle copy2 @1184). The earlier "zero copies" was WRONG.
+
+**The structure, fully mapped:**
+- pre-pass (prims 0-653) = MIRROR reflection render → copy to 256x256 mirror tex + CLEAR EFB.
+- main pass (prims 653-1184) = the scene incl. the tev=3 [noC] shine-shadow MASK (draw#1180) → copy
+  to 320x224 soft-focus tex.
+- post (prims >1184) = composite (samples the EFB textures) + the tev=2 SEA (draw#1184, cU=TRUE) + HUD.
+- The mask geometry is a map.bmd joint (TMapModel/TJointModelManager). On GC it draws [noC] in the MAIN
+  pass; native ENTERS it into DrawBuf MapXlu which flushes in GX Post (post, cU=TRUE) → white.
+
+**Why native diverges:** the map's translucent joints all go to MapXlu (post). GC splits them: the mask
+draws [noC] in the main pass, the sea cU=TRUE in post. The exact GC split mechanism (the map's main-pass
+draw vs the MapXlu post draw — マップグループ 0x8 in PerformList GX vs DrawBuf MapXlu 0x8 in GX Post) is
+the ONE remaining RE step. native's Mirror draw buffers are also EMPTY (SB_DRAWBUF_INV) — the mirror
+reflection isn't populated. xluCount=0 so it's NOT the priority-buffer (半透明優先) system.
+
+**THE FULL PORT (tasks #2/#3/#4, the user's chosen path):**
+1. Pin the GC main-pass map-draw mechanism that issues the mask [noC] (trace マップグループ 0x8 vs the map
+   MActor draw; is the mask drawn TWICE — main [noC] + post — or only main?). Likely the map MActor is
+   drawn in BOTH the main pass (マップグループ) and post (DrawBuf MapXlu), and the colorUpdate differs.
+2. Make native reproduce that: draw the map's main-pass pass with the live colorUpdate GC uses (so the
+   mask's [noC] is honored), and ensure the post MapXlu draw is the sea only (or also [noC] for the mask).
+3. Populate the Mirror reflection buffers (task #4) + segment the present honoring the mirror clear so the
+   256x256 mirror tex holds the reflection, and bind it to the post sea-composite consumer (task #3).
+Verify fileselect_overbright.py 42.7→~14. Diagnostic foundation (all committed, gated): SB_COPYTEX_DBG,
+SB_DBHEAD_DBG, SB_ENTRY_MAT, SB_MAPXLU_DBG, SB_B76_DBG/BT, SB_DRAWBUF_INV, SB_PL_DBG; oracle GXBLEND/GXTEV/GXCOPY.
