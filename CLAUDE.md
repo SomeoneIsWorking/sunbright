@@ -1,6 +1,50 @@
 # Sunbright — GameCube Static Recompiler
 
-## ⚡ ARCHITECTURE NOW: NO RECOMPILER IN THE GAME (2026-06-18, Phase C — read FIRST)
+## ⚡⚡ ARCHITECTURE NOW (2026-06-30) — TWO BINARIES, NGX ERADICATED (read FIRST, this supersedes the ngx claims below)
+Standing user directives, now LAW. Stop re-deriving them; they kept getting lost between sessions.
+
+1. **There are TWO binaries with ONE job each:**
+   - **`build-native/sms-boot` = THE native PC renderer** (the product). It runs the `reference/sms`
+     decomp as PC-native C++ over guest-layout RAM, rendering via the **nvk** Vulkan renderer
+     (`native/render/` + the shared pure decoders in `runtime/ngx/ngx_{decode,vertex,mesh,project,
+     clip,light}`). `./run.sh` launches this. ANY headed visual bug the user screenshots is an
+     **sms-boot/nvk** bug.
+   - **`build/sunbright` = the pure Dolphin-GX ORACLE** (ground truth, not the product). It runs the
+     game under Dolphin's JIT and renders via Dolphin's own GX pipeline. Used ONLY to produce the
+     reference values sms-boot is compared against.
+2. **NGX IS ERADICATED (2026-06-30, commit 00a573f). DO NOT resurrect it.** NGX was a broken
+   Dolphin-hybrid native-capture renderer (washed/mis-lit) that build/sunbright used to present. It is
+   deleted: `ngx_j3d_shape.cpp`, `ngx_present.cpp`, `interp_ngx.cpp`, the `SUNBRIGHT_NGX_PRESENT/SHAPE`
+   env, the `/ngx*` probe endpoints — all gone. build/sunbright now ALWAYS presents Dolphin GX. The
+   name "ngx" survives ONLY on the **pure shipping decoders** in `runtime/ngx/` (NgxTevState, vertex/
+   tex decode, projection, clip, decode_chanctl) that sms-boot reuses — those are NOT the renderer.
+3. **The valid geometry/lighting ORACLE is the Dolphin GX COMMAND STREAM**, never ngx (gone), never
+   xfmem (async-lagged). `runtime/gx_stream.cpp` captures the gather-pipe bytes; `runtime/gx_parse.h`
+   decodes them via Dolphin's own OpcodeDecoder (matrices, lights, projection, vertices). This is the
+   oracle source for the per-pass fidelity comparison.
+4. **FIDELITY by VALUE per render pass, NEVER by eye** (`tools/render/parity_sweep.py`). The user
+   CORRECTED a past session that declared the title "correct" from a PNG — it LOOKS right but is NOT.
+   Trust the value comparison. Make **TITLE + FILE-SELECT** match before Delfino gameplay. Compare
+   like-pass to like-pass (native passes drive_sky/scene-perform/drive_chr/drive_hud; oracle
+   EFB-gen/draw-buffer): geometry (matrices, vert counts/bbox) + lighting (GX lights, ambient, chan-ctrl).
+5. **sms-boot threading = SDL main thread + ONE game thread, NO others** (memory
+   `[[sms-boot-threading-architecture]]`). There is **ONE boot path** (`native/src/boot.cpp`): the game
+   ALWAYS runs on its own thread; process-main always owns windowing/present + the SDL event pump.
+   "Window vs headless" = whether a window is shown (`SB_WINDOW`); "turbo vs real-time" = pacing
+   (`SB_TURBO`). The game's OSThread async-loaders are run synchronously by the cooperative scheduler
+   (`os_impl.cpp`); the standing goal is to ELIMINATE those worker host threads (async→sync).
+
+**Live-window status (2026-06-30, commit 37eb1eb):** `SB_WINDOW=1 ./run.sh` works (no deadlock/crash).
+Three root-causes fixed: (a) a static-init heap bringup registered process-main as a scheduler fiber →
+lost-baton deadlock → `sb_sched_retire_current_fiber()` retires it; (b) the game thread wasn't marked a
+game thread → `new` split across allocators → `getNameRef` SIGSEGV → `sb_mark_game_thread()` at game-
+thread entry, `sb_unmark_game_thread()` on process-main; (c) per-frame render scratch in `present_hook`
+landed on the game SolidHeap (4M OOM/run) → `HostAllocScope` gates it to host malloc.
+**KNOWN ISSUE — the live window is SLOW (~18 fps, all threads ~0% CPU = over-sleeping, NOT CPU-bound).**
+Fixable; the prime suspect is the synchronous per-frame GPU fence/readback + worker-drain in the present
+path, not game logic (headless turbo is fast). Not yet fixed.
+
+## ⚡ ARCHITECTURE (2026-06-18, Phase C — the no-recomp pivot; ngx claims here are SUPERSEDED by the 2026-06-30 section above)
 The static recompiler is **ERADICATED from the game binary**. There is ONE execution mode:
 **gameplay runs under Dolphin's JIT; the engine runs as PC-native overrides.** `generated/` is no
 longer linked into `sunbright` (`sunbright_purejit_mode()` is unconditionally true; "Linked 0
