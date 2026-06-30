@@ -77,5 +77,25 @@ upper sky / distant beach (top-center +140,+88,+45); the only region where nativ
 top-right (block/banner area). A std-preserving, sky-concentrated, additive, red-dominant offset
 points at an over-contributing **additive layer** (sky-ray / sun-glow / a post pass), not the per-
 vertex diffuse lighting (which the SB_J3D_DBG data shows is light0-only / CLAMP / register-ambient
-with most materials lighting-OFF). NEXT: drill the additive sky/glow batches (SB_BATCH_DBG=-1 dumps
-per-batch rgb + blend mode + texture at settle) and find which over-contributes.
+with most materials lighting-OFF).
+
+## AUTOMATED ATTRIBUTION (the tooling does the drilling — `fileselect_overbright_drill.sh`)
+Rather than eyeball batch dumps, the harness ablates each blend class (new `SB_ABLATE_BM=src/dst`
+flag in sms_boot_present.cpp) and re-measures the overbright delta. Ranked (lower = more overbright
+removed):
+```
+  25.2  no_screen_1_3   (drop SCREEN blend  src=ONE dst=INVSRCCLR=1/3)  <- -17.5  the biggest culprit
+  31.9  no_additive_4_1 (drop additive      src=SRCALPHA dst=ONE=4/1)   <- -10.8  second
+  42.6  no_premul_1_5   (drop ONE/INVSRCALPHA)                          negligible
+  42.7  baseline
+  42.7  no_onealpha_1_1
+  51.7  no_imm_overlay  (drop the 2D overlay)                          WORSE (overlay was helping)
+  84.8  no_all_blend    (drop ALL blended batches)                     FAR WORSE
+```
+So the overbright is dominated by TWO sky layers: the **SCREEN-blend** base (1/3) and the **additive**
+ray/glow (4/1). `no_all_blend` being far worse proves these layers EXIST in the oracle too (the scene
+NEEDS them) — so the fix is to render them with the CORRECT (dimmer/coloured) raster, NOT to drop
+them. Both render with full-white raster (rgb=1,1,1; the SCREEN base is untextured, ntex=0) per the
+SB_BATCH_DBG dump — prime suspect = the capture sourcing matColor(white) where the material's COLOR0
+is VERTEX-sourced (cc0 bit0=1 → a sky gradient), so a white quad screen-blends the scene toward white.
+NEXT: trace those two materials' raster colour source (vertex vs register) + TEV, fix the white raster.

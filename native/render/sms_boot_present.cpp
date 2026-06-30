@@ -283,12 +283,35 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
     // translucent/additive passes are blowing the scene to white (overbright diagnosis).
     static const bool opaqueOnly = [](){ const char* v = std::getenv("SB_OPAQUE_ONLY"); return v && v[0] && v[0] != '0'; }();
     static const bool texturedOnly = [](){ const char* v = std::getenv("SB_TEXTURED_ONLY"); return v && v[0] && v[0] != '0'; }();
+    // SB_ABLATE_BM="src/dst[,src/dst...]": drop every BLENDED scene batch whose (src_factor,
+    // dst_factor) matches one of the listed pairs. Lets the overbright harness systematically
+    // disable each blend class (e.g. "4/1" additive SRCALPHA->ONE, "1/5" ONE->INVSRCALPHA) and
+    // re-measure the native-vs-oracle brightness delta, so the tool ATTRIBUTES the overbright to a
+    // specific layer instead of eyeballing batch dumps. Up to 8 pairs.
+    static int s_ablN = 0; static uint8_t s_ablSrc[8], s_ablDst[8];
+    static const bool ablBm = [](){
+        const char* v = std::getenv("SB_ABLATE_BM"); if (!v || !v[0]) return false;
+        const char* p = v;
+        while (*p && s_ablN < 8) {
+            int sf = std::atoi(p); const char* slash = std::strchr(p, '/'); if (!slash) break;
+            int df = std::atoi(slash + 1);
+            s_ablSrc[s_ablN] = (uint8_t)sf; s_ablDst[s_ablN] = (uint8_t)df; ++s_ablN;
+            const char* comma = std::strchr(p, ','); if (!comma) break; p = comma + 1;
+        }
+        return s_ablN > 0;
+    }();
     std::vector<NvkTevBatch> batches;
     batches.reserve((size_t)nsbatch + 1);
     for (int i = 0; i < nsbatch; ++i) {
         NvkTevBatch b = sbatches[i];
         if (skipKey && (unsigned)(b.shaderKey >> 32) == skipKey) continue;
         if (opaqueOnly && b.blend_mode != 0) continue;
+        if (ablBm && b.blend_mode != 0) {
+            bool drop = false;
+            for (int a = 0; a < s_ablN; ++a)
+                if (b.src_factor == s_ablSrc[a] && b.dst_factor == s_ablDst[a]) { drop = true; break; }
+            if (drop) continue;
+        }
         // SB_TEXTURED_ONLY=1: draw only scene batches that have a bound texmap0 — isolate the
         // textured map surfaces from untextured (sky/gradient) batches (so TEVDBG=tex is meaningful).
         if (texturedOnly && !(b.tex[0].rgba && b.tex[0].w && b.tex[0].h)) continue;
