@@ -23,6 +23,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
+#include <set>
 #include <vector>
 
 namespace {
@@ -33,7 +34,7 @@ namespace {
 std::vector<u8> g_cap;
 GxFrameInfo g_info;
 long g_frame_no = 0;
-unsigned long g_emitted = 0, g_parse_fail = 0;
+unsigned long g_emitted = 0, g_parse_fail = 0, g_boundaries = 0;
 
 // Safety cap: a normal frame is a few hundred KB; if a copy boundary is ever missed, burst rather
 // than grow unbounded (the very first "frame" also folds in all boot-time GX setup — bounded here).
@@ -75,8 +76,18 @@ extern "C" void sb_gather_flush_impl(const u8* bytes, std::size_t n) {
 // and relies on light-count + ambient/material/projType, which are exact here.
 extern "C" void sb_gx_capture_frame_boundary() {
     if (!enabled() || g_cap.empty()) return;
+    g_boundaries++;
     const bool ok = gxp_parse_frame(g_cap.data(), g_cap.size(), g_info);
-    g_cap.clear();
+    // Carry the UNCONSUMED tail to the next frame. The gather pipe stages bytes in 32-byte chunks,
+    // so when this GXCopyDisp boundary fires the frame's final command is usually truncated (<32 of
+    // its bytes still in the pipe). Clearing the whole buffer would drop those bytes and start the
+    // NEXT frame mid-command → a perpetual mis-frame cascade. Keeping [consumed, end) lets the split
+    // command complete next frame — same contract as gx_stream's decode tail. (RESYNC guard: a genuine
+    // unknown opcode at offset 0 consumes nothing; if the carried tail grows past a frame's worth,
+    // drop it to recover rather than wedge.)
+    const size_t consumed = ok ? g_cap.size() : g_info.fail_offset;
+    if (consumed) g_cap.erase(g_cap.begin(), g_cap.begin() + consumed);
+    if (g_cap.size() > (4u << 20)) g_cap.clear();   // runaway carry → resync
     if (!ok) {
         g_parse_fail++;
         if (dbg() && g_parse_fail <= 12)
@@ -92,6 +103,24 @@ extern "C" void sb_gx_capture_frame_boundary() {
     if (!f || fi.prims == 0) return;
 
     int ln = 0; for (int i = 0; i < 8; ++i) if (fi.lights[i].valid) ln++;
+    // Diagnostic (SUNBRIGHT_DBG_GXCAP): running UNION of distinct light positions seen across the
+    // WHOLE run, to falsify a per-segment under-count of the per-frame `n`. If this climbs to 8 for a
+    // scene whose per-frame `n` reads 3, the 3 is a fragmentation artifact (the frame's 8 lights are
+    // split across draw-buffer segments). If it stays at 3, the scene genuinely loads 3.
+    if (dbg()) {
+        static std::set<long> s_lpos;
+        for (int i = 0; i < 8; ++i) if (fi.lights[i].valid) {
+            long k = (long)(fi.lights[i].pos[0]) * 73856093L ^ (long)(fi.lights[i].pos[1]) * 19349663L
+                   ^ (long)(fi.lights[i].pos[2]) * 83492791L;
+            s_lpos.insert(k);
+        }
+        static size_t s_last = 0;
+        if (s_lpos.size() != s_last) {
+            s_last = s_lpos.size();
+            fprintf(stderr, "[gxcap] distinct light positions seen so far = %zu (this frame n=%d)\n",
+                    s_lpos.size(), ln);
+        }
+    }
     std::fprintf(f,
         "{\"frame\":%ld,\"nverts\":%u,\"nbatch\":%u,\"geom\":{\"onscr\":%u,\"nan\":0,"
         "\"ndc\":[0,0,0,0,0,0],\"cks\":0.0,\"colcks\":0.0}",
@@ -109,6 +138,6 @@ extern "C" void sb_gx_capture_frame_boundary() {
     std::fflush(f);
     g_emitted++;
     if (dbg() && (g_emitted % 128) == 0)
-        fprintf(stderr, "[gxcap] emitted=%lu parse_fail=%lu last prims=%u dls=%u lights=%d proj=%d\n",
-                g_emitted, g_parse_fail, fi.prims, fi.display_lists, ln, fi.proj_type);
+        fprintf(stderr, "[gxcap] emitted=%lu boundaries=%lu parse_fail=%lu last prims=%u dls=%u lights=%d proj=%d\n",
+                g_emitted, g_boundaries, g_parse_fail, fi.prims, fi.display_lists, ln, fi.proj_type);
 }
