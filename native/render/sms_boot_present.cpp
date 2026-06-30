@@ -300,11 +300,25 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
         }
         return s_ablN > 0;
     }();
+    // SB_ABLATE_PHASE="N[,N...]": drop every scene batch captured from perform-list phase N
+    // (1=unk40 pre-pass, 2=unk38, 3=unk3C, 4=mPerformListGX MAIN, 5=Silhouette, 6=GXPost). The
+    // overbright harness uses this to attribute the double-composite to a specific perform list:
+    // the EFB pre-passes render off-screen on GC, so compositing them into the visible framebuffer
+    // double-draws the whole scene. Up to 8 phases.
+    static int s_ablPhN = 0; static uint8_t s_ablPh[8];
+    static const bool ablPhase = [](){
+        const char* v = std::getenv("SB_ABLATE_PHASE"); if (!v || !v[0]) return false;
+        const char* p = v;
+        while (*p && s_ablPhN < 8) { s_ablPh[s_ablPhN++] = (uint8_t)std::atoi(p);
+            const char* c = std::strchr(p, ','); if (!c) break; p = c + 1; }
+        return s_ablPhN > 0;
+    }();
     std::vector<NvkTevBatch> batches;
     batches.reserve((size_t)nsbatch + 1);
     for (int i = 0; i < nsbatch; ++i) {
         NvkTevBatch b = sbatches[i];
         if (skipKey && (unsigned)(b.shaderKey >> 32) == skipKey) continue;
+        if (ablPhase) { bool drop=false; for (int a=0;a<s_ablPhN;++a) if (b.phase==s_ablPh[a]){drop=true;break;} if (drop) continue; }
         if (opaqueOnly && b.blend_mode != 0) continue;
         if (ablBm && b.blend_mode != 0) {
             bool drop = false;
@@ -516,9 +530,9 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
             int ntex=0; char texinfo[96]="-"; for (int t=0;t<8;++t) if (b.tex[t].rgba) { if(!ntex) std::snprintf(texinfo,sizeof texinfo,"t%d=%ux%u minF=%u mag=%u wrap=%u/%u",t,b.tex[t].w,b.tex[t].h,b.tex[t].min_filter,b.tex[t].linear,b.tex[t].wrap_s,b.tex[t].wrap_t); ++ntex; }
             // mean UV span over the batch's first texcoord set (degenerate UV → untextured-looking).
             float umn=1e30f,umx=-1e30f,vmn=1e30f,vmx=-1e30f; for (uint32_t i=b.vstart;i<b.vstart+b.vcount&&i<verts.size();++i){const NvkTevVertex&v=verts[i]; float u=v.uv[0][0],w2=v.uv[0][1]; if(u<umn)umn=u; if(u>umx)umx=u; if(w2<vmn)vmn=w2; if(w2>vmx)vmx=w2;}
-            std::fprintf(stderr, "[batchdbg] b%d vc=%u z[%.5f,%.5f]m%.5f ndcX[%.3f,%.3f] ndcY[%.3f,%.3f] "
+            std::fprintf(stderr, "[batchdbg] b%d ph%u vc=%u z[%.5f,%.5f]m%.5f ndcX[%.3f,%.3f] ndcY[%.3f,%.3f] "
                          "zt=%u zf=%u zw=%u bm=%u/%u/%u rgb=%.2f,%.2f,%.2f a=%.2f[%.2f,%.2f] cvar=%.3f ntex=%d %s uv[%.2f,%.2f;%.2f,%.2f] key=%llx\n",
-                         bi, b.vcount, zmn, zmx, zsum/cnt, xmn, xmx, ymn, ymx,
+                         bi, b.phase, b.vcount, zmn, zmx, zsum/cnt, xmn, xmx, ymn, ymx,
                          b.z_test, b.z_func, b.z_write, b.blend_mode, b.src_factor, b.dst_factor,
                          mr, mg, mb, ma, amn, amx, var, ntex, texinfo, umn,umx,vmn,vmx, (unsigned long long)b.shaderKey);
             // Dump each small textured batch's tex0 (RGB ppm + alpha as grayscale ppm) so a

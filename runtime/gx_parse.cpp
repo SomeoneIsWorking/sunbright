@@ -40,8 +40,14 @@ public:
     OPCODE_CALLBACK(void OnBP(u8 cmd, u32 value)) {
         if (cmd == BPMEM_PE_TOKEN_ID || cmd == BPMEM_PE_TOKEN_INT_ID)
             if (dl_depth == 0) out->token_offsets.push_back(offset);   // stream-offset record: outer only
-        if (cmd == BPMEM_TRIGGER_EFB_COPY)
+        if (cmd == BPMEM_TRIGGER_EFB_COPY) {
             out->copies++;
+            // Record the copy in order so a tool can diff the render-target structure (where the EFB
+            // is snapshotted to a texture vs the XFB) against native's single-target composite.
+            UPE_Copy pe; pe.Hex = value;
+            out->efb_copies.push_back({offset, value, out->prims,
+                                       (bool)pe.copy_to_xfb, (bool)pe.clear});
+        }
     }
     // Big-endian word readers over the XF load payload (the gather-pipe bytes are BE).
     static u32 be_u32(const u8* d, int word) {

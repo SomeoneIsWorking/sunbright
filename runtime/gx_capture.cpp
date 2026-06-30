@@ -150,6 +150,19 @@ extern "C" void sb_gx_capture_frame_boundary() {
         std::fprintf(f, "]},\"amb\":[%.3f,%.3f,%.3f],\"matc\":[%.3f,%.3f,%.3f,%.3f]}\n",
                      fi.amb[0], fi.amb[1], fi.amb[2], fi.matc[0], fi.matc[1], fi.matc[2], fi.matc[3]);
     }
+    // RENDER-TARGET STRUCTURE oracle (SUNBRIGHT_DBG_GXCOPY): print the in-order EFB-copy sequence for
+    // the first geometry frames. Each intra-frame copy with to_xfb=0 is an EFB→TEXTURE snapshot — a
+    // render-target boundary the native single-framebuffer composite has no equivalent for (it keeps
+    // drawing, double-compositing the scene = the file-select overbright). This is the DIRECT element
+    // comparison (Dolphin pass structure vs native's), not a pixel-delta knob.
+    if (std::getenv("SUNBRIGHT_DBG_GXCOPY") && g_frame_no < 8) {
+        fprintf(stderr, "[gxcopy] frame %ld: prims=%u dls=%u copies=%zu  seq:",
+                g_frame_no, fi.prims, fi.display_lists, fi.efb_copies.size());
+        for (const auto& c : fi.efb_copies)
+            fprintf(stderr, " [@%u prims<=%u %s%s]", c.offset, c.prims_before,
+                    c.to_xfb ? "->XFB" : "->TEX", c.clear ? " CLR" : "");
+        fprintf(stderr, "\n");
+    }
     std::fflush(f);
     g_frame_no++;
     g_emitted++;

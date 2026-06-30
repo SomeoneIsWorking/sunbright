@@ -60,6 +60,14 @@ struct NvkTevBatch {
     // alpha masking the water-volume / silhouette composites depend on.
     uint8_t color_update = 1, alpha_update = 1;
     uint8_t dst_alpha_force = 0, dst_alpha_val = 0;
+    // Which TMarDirector perform list this batch was captured from, under SB_OWN_GXLIST
+    // (set via sb_boot_capture_set_phase before each list runs). Lets the overbright harness
+    // attribute a duplicated/over-composited layer to its source pass: 0=unknown/hand-driven,
+    // 1=unk40(drawbuf/light pre-pass), 2=unk38(graffiti EFB), 3=unk3C(graffiti EFB),
+    // 4=mPerformListGX(MAIN), 5=mPerformListSilhouette, 6=mPerformListGXPost. The EFB pre-passes
+    // (1..3) render to OFF-SCREEN EFB regions on GC (copied to textures, sampled later) — they
+    // must NOT be alpha-composited into the visible framebuffer.
+    uint8_t phase = 0;
 };
 
 } // namespace sb::render

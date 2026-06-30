@@ -182,6 +182,10 @@ inline void sb_texgen_uv(const MatEntry::TexGenG& g, const NgxVertex& v,
 std::vector<NvkTevVertex>   g_verts;
 std::vector<NvkTevBatch> g_batches;
 bool g_consumed = true;
+// SB_OWN_GXLIST per-perform-list phase tag (see sb_boot_capture_set_phase + gx_geom.h NvkTevBatch::phase).
+// Stamped onto every batch opened while set; lets the overbright harness attribute an over-composited
+// layer to the source pass (the EFB pre-passes 1..3 are off-screen on GC and shouldn't composite).
+int g_capture_phase = 0;
 // Capture-once-per-present lock (see sb_boot_capture_begin_scene / _end_scene below).
 bool g_locked = false;          // when true, sb_boot_capture_j3d/sphere skip (interval already done)
 bool g_want_capture = true;     // re-armed by the present consuming the buffer
@@ -744,12 +748,14 @@ extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
 
     // Merge into the previous batch if the same material drew the immediately-preceding
     // shape (J3DMatPacket draws all its shapes consecutively); else open a new batch.
-    if (mat == g_last_mat && !g_batches.empty()) {
+    if (mat == g_last_mat && !g_batches.empty()
+        && g_batches.back().phase == (uint8_t)g_capture_phase) {
         g_batches.back().vcount += vcount;
     } else {
         NvkTevBatch b{};
         b.vstart = vstart; b.vcount = vcount;
         fill_batch_material(b, *me);
+        b.phase = (uint8_t)g_capture_phase;
         g_batches.push_back(b);
         g_last_mat = mat;
     }
@@ -913,9 +919,15 @@ extern "C" int sb_boot_capture_begin_scene() {
     return 1;
 }
 
+// SB_OWN_GXLIST: TMarDirector::direct stamps the current perform-list index before each list runs
+// (1=unk40, 2=unk38, 3=unk3C, 4=mPerformListGX, 5=Silhouette, 6=mPerformListGXPost) so every batch
+// captured carries its source pass. Reset to 0 in end_scene.
+extern "C" void sb_boot_capture_set_phase(int phase) { g_capture_phase = phase; }
+
 // Called by drive_scene after its draws — relock so the rest of the interval's draws are skipped.
 extern "C" void sb_boot_capture_end_scene() {
     g_locked = true;
+    g_capture_phase = 0;
     if (const char* e = std::getenv("SB_CAP_COUNT"); e && e[0] && e[0] != '0') {
         static long n = 0; ++n;
         std::fprintf(stderr, "[capcount] present-walk #%ld: shapes=%ld idx_sum=%ld (~%ld tris) "

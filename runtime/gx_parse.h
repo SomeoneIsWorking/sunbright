@@ -24,6 +24,17 @@ struct GxFrameInfo {
     std::vector<ArrayPatch> mtx_arrays;      // array 12 = XF_A (pos), 13 = XF_B (nrm)
     u32 prims = 0, display_lists = 0, copies = 0;
 
+    // ── EFB-copy SEQUENCE (render-target structure oracle) ────────────────────────────────────────
+    // Each BPMEM_TRIGGER_EFB_COPY (GXCopyDisp/GXCopyTex) is a render-target boundary: the EFB is
+    // snapshotted out (to a TEXTURE for a later sampler, or to the XFB for display) and usually
+    // cleared for the next pass. The native renderer flattens every pass into ONE framebuffer with
+    // ONE clear, so an intra-frame EFB→texture copy that Dolphin makes (e.g. the file-select unk40
+    // pre-pass output) has no native equivalent — native keeps compositing, double-drawing the
+    // scene. Record each copy in order with: the BP value (bit14=copy-to-XFB, bit11=clear), and the
+    // cumulative prim count BEFORE it, so a tool can diff the pass structure directly (not by pixels).
+    struct EfbCopy { u32 offset; u32 value; u32 prims_before; bool to_xfb; bool clear; };
+    std::vector<EfbCopy> efb_copies;
+
     // ── Per-pass geometry split (cross-engine pass tagging) ───────────────────────────────────────
     // The native parity dump (sb_parity_dump.h) reports the 3D SCENE pass only (perspective), so the
     // whole-frame oracle counts are NOT directly comparable. Bucket prims/verts/display-lists by the
