@@ -13,6 +13,7 @@
 #include <cstdio>
 
 extern "C" int sb_boot_capture_texsrc_is_efb_dest(const void*);  // sms_boot_j3d_capture.cpp
+extern "C" const void* sb_gx_bound_tex_image(int slot);          // gx_impl.cpp (live GXLoadTexObj image)
 #include <cstdlib>
 #include <unistd.h>
 
@@ -232,14 +233,33 @@ void sb_resolve_textures(J3DMaterial* mat, void* j3dTexturePtr, std::vector<SbTe
         const uint8_t* src = base + (intptr_t)(int32_t)t->imageDataOffset;
         const size_t srcbytes = (size_t)sb_tex_size_bytes(pw, ph, fmt);
 
-        // EFB-sampler attribution: if this texmap's image data IS an EFB-copy destination recorded
-        // this frame, it samples a snapshot of the EFB (the post-pass soft-focus/bloom composite) —
-        // on GC the real scene, here decoded as a stale/garbage asset → the file-select overbright.
-        if (sb_boot_capture_texsrc_is_efb_dest(src)) {
+        // EFB-sampler attribution: this texmap samples a snapshot of the EFB (the post-pass soft-
+        // focus/bloom/mirror composite — on GC the real scene, here decoded as stale/garbage RAM →
+        // the file-select overbright/checkerboard) if EITHER its static ResTIMG image data (`src`)
+        // OR the texture bound LIVE at this slot via GXTexObj (`liveImg`) is an EFB-copy destination.
+        // The sea MIRROR binds its EFB texture via a runtime GXTexObj (setTexAttb), so the material's
+        // table texNo resolves to a wrong asset and ONLY the live bound image matches. Tag it so the
+        // segmented present binds the live snapshot (keyed by the dest) instead of decoding.
+        const void* liveImg = sb_gx_bound_tex_image(m);
+        const void* efbKey = nullptr;
+        if (sb_boot_capture_texsrc_is_efb_dest(src))               efbKey = src;
+        else if (liveImg && sb_boot_capture_texsrc_is_efb_dest(liveImg)) efbKey = liveImg;
+        const bool isEfbSnapshot = (efbKey != nullptr);
+        if (isEfbSnapshot) {
             const char* d = std::getenv("SB_J3D_DBG");
             if (d && d[0] && d[0] != '0')
-                std::fprintf(stderr, "[texres] *** EFB-SAMPLER stage%d texmap%d texNo=%u %dx%d src=%p "
-                             "(samples an EFB-copy snapshot) ***\n", s, m, texNo, lw, lh, (const void*)src);
+                std::fprintf(stderr, "[texres] *** EFB-SAMPLER stage%d texmap%d texNo=%u %dx%d "
+                             "src=%p live=%p key=%p via=%s ***\n", s, m, texNo, lw, lh,
+                             (const void*)src, liveImg, efbKey, efbKey == src ? "ResTIMG" : "GXTexObj");
+            // Don't decode the stale guest RAM — emit a snapshot-bound texmap (rgba left empty; the
+            // segmented present binds the live framebuffer snapshot registered under `efbKey`).
+            SbTexImage img;
+            img.slot = m; img.w = (uint32_t)lw; img.h = (uint32_t)lh;
+            img.wrap_s = t->wrapS; img.wrap_t = t->wrapT;
+            img.linear = (t->magFilter == 1); img.min_filter = t->minFilter;
+            img.max_aniso = t->maxAnisotropy; img.efb_src = efbKey;
+            out.push_back(std::move(img));
+            continue;
         }
 
         const uint8_t* tlut = nullptr; int tlutfmt = 0;

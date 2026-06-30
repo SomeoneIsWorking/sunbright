@@ -88,3 +88,38 @@ the mirror binds via GXTexObj, a path the capture's ResTIMG-based texsrc match d
 `SUNBRIGHT_DBG_GXCOPY=1` on build/sunbright (oracle) re-confirms the 3-copy structure.
 A real fix drops `tools/render/fileselect_overbright.py` mean|delta| from 42.7 toward the
 ph1+ph4-only floor (~13.6) WITHOUT ablating layers, with the EFB-sampler quads sampling real scene.
+
+## UPDATE 2026-06-30 (later) — segmented present BUILT; the EFB copy is NOT the dominant overbright
+The segmented snapshot+resample present is implemented (native/render: `draw_tev_segment` +
+`snapshot_efb` in gx_sdlgpu; `NvkTevBatch::Tex::efb_src`; per-frame snapshot registry; the present
+splits the scene at the EFB-copy boundaries and binds the live snapshot to the EFB-sampler consumers).
+Findings from running it at the SETTLED file-select (the tooling did the drilling — segment dumps,
+not pixel knobs):
+
+- **The 2 native EFB copies are: [0,49) clear → 256×256 dest; [49,79) no-clear → 320×224 dest.**
+  Dumping each segment (`SB_SEG_DUMP=1`) shows segment **A0 [0,49) IS the full visible scene** (palm
+  tree, island, OPTIONS sign, Mario) and **A1 [49,79) is a SECOND scene render** (no palm tree, a
+  different camera/pass). So the "pre-pass" segment is NOT off-screen content — it holds the palm tree.
+- **Honoring the EFB clear REGRESSES (42.7→45.7) because it drops segment A0's palm tree** — native
+  captured it only before the boundary; the GC main pass that redraws it isn't faithfully split in
+  our capture. So honor-clear is now **opt-in** (`SB_EFB_HONOR_CLEAR_SEG=1`); default = CUMULATIVE
+  compositing (LOAD every segment, same coverage as one pass) + snapshots at each boundary.
+- **The ONE matched EFB-sampler is the soft-focus imm quad** (320×224, blend 1/4/5, image==320×224
+  dest). Binding it to the live scene snapshot instead of stale RAM is correct but **net-neutral
+  (42.7)** at settle — it is NOT the dominant wash. The 256×256 MIRROR has NO native consumer (checked
+  both the ResTIMG `src` AND the live `GXLoadTexObj` bound image via the new `sb_gx_bound_tex_image` —
+  no match; the sea reflection samples it via a path the capture doesn't reach, a SEPARATE small gap).
+- **THE DOMINANT OVERBRIGHT IS THE SKY/POST MULTI-LAYER BLEND, NOT THE EFB COPY.** The top-half white
+  "checkerboard" is the sky-dome detail-texture layers (the 8×8-texture additive batches b0/b1/b2 and
+  their phase-4 dupes b49/b50/b51 + the post-pass 256×256 quads b75/b76, blend 1/4/2/1/4/5). This is
+  exactly the **"ti=10 additive / ti=9 premult white cloud layers … multi-layer-blend NO-ORACLE trap"**
+  CLAUDE.md already flags as DO-NOT-EYEBALL. Phase-6 ablation drops 42.7→13.6 = the post pass owns the
+  wash. The fix path is a per-blend-layer comparison vs the **GX command-stream** value oracle
+  (blend equation / draw order / coverage per layer), NOT pixel ablation against the (imperfect) PNG.
+- **The PNG oracle `fileselect_gx_oracle.png` is itself imperfect** (user, 2026-06-30): Mario's shadow
+  is a white quad and the hidden FLUDD-Mario is visible. Treat its mean-delta as coarse, not gospel.
+
+**Net of this session:** the EFB segmentation is FAITHFUL infrastructure (kept, default-on, net-neutral,
+no regression) + reusable tooling (`SB_SEG_DUMP`, `SB_SKIP_BIDX`, `sb_gx_bound_tex_image`,
+`sb_boot_capture_efb_copies`). The overbright's true owner is the sky/post multi-layer blend — the
+next target, to be driven by command-stream per-layer comparison, not pixels.

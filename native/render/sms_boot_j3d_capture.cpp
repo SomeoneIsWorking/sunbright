@@ -339,11 +339,13 @@ void fill_batch_material(NvkTevBatch& b, const MatEntry& e) {
     b.z_test = e.z_test; b.z_func = e.z_func; b.z_write = e.z_write;
     b.blend_mode = e.blend_mode; b.src_factor = e.src_factor; b.dst_factor = e.dst_factor;
     for (const SbTexImage& t : e.tex) {
-        if (t.slot < 0 || t.slot >= 8 || t.rgba.empty()) continue;
-        b.tex[t.slot].rgba = (const uint8_t*)t.rgba.data();
+        if (t.slot < 0 || t.slot >= 8) continue;
+        if (t.rgba.empty() && !t.efb_src) continue;   // unbound (a snapshot texmap has empty rgba)
+        b.tex[t.slot].rgba = t.rgba.empty() ? nullptr : (const uint8_t*)t.rgba.data();
         b.tex[t.slot].w = t.w; b.tex[t.slot].h = t.h; b.tex[t.slot].linear = t.linear ? 1 : 0;
         b.tex[t.slot].min_filter = t.min_filter; b.tex[t.slot].max_aniso = t.max_aniso;
         b.tex[t.slot].wrap_s = t.wrap_s; b.tex[t.slot].wrap_t = t.wrap_t;
+        b.tex[t.slot].efb_src = t.efb_src;
     }
 }
 
@@ -957,6 +959,23 @@ extern "C" int sb_boot_capture_last_clear_boundary() {
     int b = -1;
     for (const auto& c : g_efb_copies) if (c.clear) b = (int)c.batch_index;
     return b;
+}
+
+// Export the full ordered EFB-copy list this frame for the segmented present. Each entry is one
+// EFB→texture copy boundary: `batch_index` (into the scene batch list — batches captured before it
+// were rendered to that target), `dest` (the snapshot key, == a consumer's Tex::efb_src), `clear`
+// (whether the copy wiped the EFB → the NEXT segment starts on a cleared framebuffer), and the copy
+// dims. Returns the number written (≤ max). Layout mirrors SbEfbCopy in sms_boot_present.cpp.
+struct SbEfbCopyOut { int batch_index; const void* dest; int clear; int wd; int ht; };
+extern "C" int sb_boot_capture_efb_copies(SbEfbCopyOut* out, int max) {
+    int n = 0;
+    for (const auto& c : g_efb_copies) {
+        if (n >= max) break;
+        out[n].batch_index = (int)c.batch_index; out[n].dest = c.dest;
+        out[n].clear = c.clear ? 1 : 0; out[n].wd = c.wd; out[n].ht = c.ht;
+        ++n;
+    }
+    return n;
 }
 
 // Called by drive_scene after its draws — relock so the rest of the interval's draws are skipped.

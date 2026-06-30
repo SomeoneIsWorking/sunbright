@@ -52,6 +52,13 @@ std::unordered_map<uint64_t, SDL_GPUGraphicsPipeline*> g_pipe_cache;
 std::unordered_map<uint32_t, SDL_GPUSampler*>          g_samp_cache;
 std::unordered_map<const void*, SDL_GPUTexture*>       g_tex_cache;
 
+// EFB-copy snapshots: a per-frame GPU copy of the offscreen colour taken at each EFB→texture copy
+// boundary (snapshot_efb), keyed by the copy's destination pointer. A batch whose Tex::efb_src
+// matches samples this snapshot (the GC soft-focus/bloom/mirror composite over the real scene)
+// instead of stale guest RAM. Released + cleared each frame_begin.
+std::unordered_map<const void*, SDL_GPUTexture*>       g_snap;
+SDL_GPUSampler*        g_samp_snap = nullptr;   // linear / clamp-to-edge for snapshot sampling
+
 SDL_GPUCommandBuffer*  g_cmd = nullptr;
 bool                   g_in_frame = false;
 SDL_FColor             g_clear{};
@@ -331,6 +338,16 @@ bool init(int w, int h) {
     sci.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
     g_samp_def = SDL_CreateGPUSampler(g_dev, &sci);
 
+    // Snapshot sampler: linear + clamp-to-edge (the EFB-copy composite quads sample a full-screen
+    // snapshot with uv∈[0,1]; clamp avoids wrapping the screen edge, linear matches the GC soft-focus).
+    SDL_GPUSamplerCreateInfo ssi{};
+    ssi.min_filter = SDL_GPU_FILTER_LINEAR; ssi.mag_filter = SDL_GPU_FILTER_LINEAR;
+    ssi.mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_NEAREST;
+    ssi.address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+    ssi.address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+    ssi.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+    g_samp_snap = SDL_CreateGPUSampler(g_dev, &ssi);
+
     // 1x1 white default for unbound texmaps.
     g_cmd = SDL_AcquireGPUCommandBuffer(g_dev);
     const uint8_t white[4] = { 255, 255, 255, 255 };
@@ -345,21 +362,30 @@ bool init(int w, int h) {
 
 void frame_begin(float r, float g, float b, float a) {
     if (!g_ok || g_in_frame) return;
+    // Release the previous frame's per-frame GPU textures + EFB-copy snapshots. The asset-texture
+    // cache keys on the source `rgba` host pointer, which is a REUSED scratch buffer frame-to-frame
+    // (different pixels, same address) — so it MUST be flushed every frame, not just in the single-
+    // pass draw_tev (the segmented path calls draw_tev_segment several times per frame).
+    for (auto& kv : g_tex_cache) if (kv.second) SDL_ReleaseGPUTexture(g_dev, kv.second);
+    g_tex_cache.clear();
+    for (auto& kv : g_snap) if (kv.second) SDL_ReleaseGPUTexture(g_dev, kv.second);
+    g_snap.clear();
     g_cmd = SDL_AcquireGPUCommandBuffer(g_dev);
     if (!g_cmd) { std::fprintf(stderr, "[gxsdl] AcquireGPUCommandBuffer failed: %s\n", SDL_GetError()); return; }
     g_clear = SDL_FColor{ r, g, b, a };
     g_in_frame = true;
 }
 
-void draw_tev(const sb::render::NvkTevVertex* verts, int nverts,
-              const sb::render::NvkTevBatch* batches, int nbatch) {
+void draw_tev_segment(const sb::render::NvkTevVertex* verts, int nverts,
+                      const sb::render::NvkTevBatch* batches, int nbatch, bool clearFirst) {
     if (!g_ok || !g_in_frame || !g_cmd) return;
-
-    for (auto& kv : g_tex_cache) if (kv.second) SDL_ReleaseGPUTexture(g_dev, kv.second);
-    g_tex_cache.clear();
     if (nverts < 0) nverts = 0;
 
     // ── Upload phase (copy passes precede the render pass) ──
+    // The vertex buffer holds the FULL combined list; batch vstart indices are absolute into it. We
+    // (re)upload it for each segment so the buffer is live regardless of call order — cheap vs the
+    // per-frame GPU render. The per-frame texture cache is built lazily (kept across segments; freed
+    // at frame_end, below, so a snapshot's consumer in a later segment still finds its asset textures).
     if (nverts > 0 && verts) {
         size_t bytes = (size_t)nverts * sizeof(sb::render::NvkTevVertex);
         ensure_vbuf(bytes);
@@ -376,14 +402,16 @@ void draw_tev(const sb::render::NvkTevVertex* verts, int nverts,
         const auto& b = batches[bi];
         if (!b.vcount) continue;
         for (int s = 0; s < 8; ++s)
-            if (b.tex[s].rgba && b.tex[s].w && b.tex[s].h) (void)tex_for(b.tex[s]);
+            if (!b.tex[s].efb_src && b.tex[s].rgba && b.tex[s].w && b.tex[s].h) (void)tex_for(b.tex[s]);
     }
 
-    // ── Render pass: clear, then per-batch TEV draw ──
+    // ── Render pass: clear (fresh EFB) or load (preserve prior segment), then per-batch TEV draw ──
     SDL_GPUColorTargetInfo cti{}; cti.texture = g_color; cti.clear_color = g_clear;
-    cti.load_op = SDL_GPU_LOADOP_CLEAR; cti.store_op = SDL_GPU_STOREOP_STORE;
+    cti.load_op = clearFirst ? SDL_GPU_LOADOP_CLEAR : SDL_GPU_LOADOP_LOAD;
+    cti.store_op = SDL_GPU_STOREOP_STORE;
     SDL_GPUDepthStencilTargetInfo dti{}; dti.texture = g_depth; dti.clear_depth = 1.0f;
-    dti.load_op = SDL_GPU_LOADOP_CLEAR; dti.store_op = SDL_GPU_STOREOP_DONT_CARE;
+    dti.load_op = clearFirst ? SDL_GPU_LOADOP_CLEAR : SDL_GPU_LOADOP_LOAD;
+    dti.store_op = SDL_GPU_STOREOP_STORE;   // STORE so a later LOAD segment sees this segment's depth
     dti.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE; dti.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
     SDL_GPURenderPass* rp = SDL_BeginGPURenderPass(g_cmd, &cti, 1, &dti);
 
@@ -401,6 +429,14 @@ void draw_tev(const sb::render::NvkTevVertex* verts, int nverts,
             SDL_PushGPUFragmentUniformData(g_cmd, 0, &b.push, (Uint32)sizeof(b.push));
             SDL_GPUTextureSamplerBinding tsb[8];
             for (int s = 0; s < 8; ++s) {
+                // An EFB-copy snapshot consumer binds the registered snapshot (the live scene), not
+                // its decoded `rgba` (stale guest RAM). Falls back to white if the snapshot is absent.
+                if (b.tex[s].efb_src) {
+                    auto it = g_snap.find(b.tex[s].efb_src);
+                    if (it != g_snap.end() && it->second) {
+                        tsb[s].texture = it->second; tsb[s].sampler = g_samp_snap; continue;
+                    }
+                }
                 bool has = b.tex[s].rgba && b.tex[s].w && b.tex[s].h;
                 tsb[s].texture = has ? tex_for(b.tex[s]) : g_white;
                 if (!tsb[s].texture) tsb[s].texture = g_white;
@@ -411,6 +447,33 @@ void draw_tev(const sb::render::NvkTevVertex* verts, int nverts,
         }
     }
     SDL_EndGPURenderPass(rp);
+}
+
+void draw_tev(const sb::render::NvkTevVertex* verts, int nverts,
+              const sb::render::NvkTevBatch* batches, int nbatch) {
+    // Single-pass equivalent: clear the target, then draw everything (the non-segmented path).
+    // (The per-frame texture/snapshot caches are flushed in frame_begin.)
+    draw_tev_segment(verts, nverts, batches, nbatch, /*clearFirst=*/true);
+}
+
+void snapshot_efb(const void* key) {
+    if (!g_ok || !g_in_frame || !g_cmd || !key) return;
+    // Reuse an existing snapshot texture for this key (a key repeats only across frames, where
+    // frame_begin already released it; within a frame each dest is distinct). Create one sized to
+    // the offscreen target and GPU-copy g_color into it (no CPU round-trip).
+    SDL_GPUTextureCreateInfo tci{};
+    tci.type = SDL_GPU_TEXTURETYPE_2D; tci.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+    tci.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
+    tci.width = (Uint32)g_w; tci.height = (Uint32)g_h; tci.layer_count_or_depth = 1;
+    tci.num_levels = 1; tci.sample_count = SDL_GPU_SAMPLECOUNT_1;
+    SDL_GPUTexture* snap = SDL_CreateGPUTexture(g_dev, &tci);
+    if (!snap) { std::fprintf(stderr, "[gxsdl] snapshot texture create failed: %s\n", SDL_GetError()); return; }
+    SDL_GPUCopyPass* cp = SDL_BeginGPUCopyPass(g_cmd);
+    SDL_GPUTextureLocation s{}; s.texture = g_color;
+    SDL_GPUTextureLocation d{}; d.texture = snap;
+    SDL_CopyGPUTextureToTexture(cp, &s, &d, (Uint32)g_w, (Uint32)g_h, 1, false);
+    SDL_EndGPUCopyPass(cp);
+    g_snap[key] = snap;
 }
 
 void frame_end() {

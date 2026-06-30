@@ -152,6 +152,11 @@ extern "C" int sb_present_frame() { return g_frame; }
 extern "C" int sb_camera_view_settled();   // scene_drive.cpp — view matrix stationary
 extern "C" int sb_boot_capture_last_clear_boundary();  // sms_boot_j3d_capture.cpp — EFB clear boundary
 extern "C" int sb_boot_capture_texsrc_is_efb_dest(const void*);  // texmap addr == an EFB-copy dest?
+extern "C" int sb_boot_capture_efb_copy_count();       // # of EFB→texture copies this frame
+// The ordered EFB-copy list (the GC multi-EFB-target structure). Layout mirrors SbEfbCopyOut in
+// sms_boot_j3d_capture.cpp. Used to segment the present render at the copy boundaries.
+struct SbEfbCopy { int batch_index; const void* dest; int clear; int wd; int ht; };
+extern "C" int sb_boot_capture_efb_copies(SbEfbCopy* out, int max);
 namespace {
 
 void present_hook(void* /*framebuffer*/, void* /*user*/) {
@@ -281,6 +286,14 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
     // SB_SKIP_KEY=hex: drop every scene batch whose shaderKey high-32 matches (bisect which batch
     // owns an artifact — e.g. eb5c8e74 = the file-select sea foam).
     static const unsigned skipKey = [](){ const char* v = std::getenv("SB_SKIP_KEY"); return v && v[0] ? (unsigned)std::strtoul(v,nullptr,16) : 0u; }();
+    // SB_SKIP_BIDX="i,j,k": drop the scene batches at these unfiltered indices (bisect which b<N> owns
+    // an artifact by exact index — e.g. the sky-checker batches b0,b1,b2). Up to 32 indices.
+    static int s_skipN = 0; static int s_skipBidx[32];
+    static const bool skipBidx = [](){
+        const char* v = std::getenv("SB_SKIP_BIDX"); if (!v || !v[0]) return false;
+        const char* p = v; while (*p && s_skipN < 32) { s_skipBidx[s_skipN++] = std::atoi(p);
+            const char* c = std::strchr(p, ','); if (!c) break; p = c + 1; } return s_skipN > 0;
+    }();
     // SB_OPAQUE_ONLY=1: draw only opaque scene batches (blend_mode 0) — isolate whether the
     // translucent/additive passes are blowing the scene to white (overbright diagnosis).
     static const bool opaqueOnly = [](){ const char* v = std::getenv("SB_OPAQUE_ONLY"); return v && v[0] && v[0] != '0'; }();
@@ -326,6 +339,7 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
     batches.reserve((size_t)nsbatch + 1);
     for (int i = 0; i < nsbatch; ++i) {
         if (clearBoundary > 0 && i < clearBoundary) continue;   // pre-clear pre-pass → snapshotted+wiped
+        if (skipBidx) { bool drop=false; for (int a=0;a<s_skipN;++a) if (i==s_skipBidx[a]){drop=true;break;} if (drop) continue; }
         NvkTevBatch b = sbatches[i];
         if (skipKey && (unsigned)(b.shaderKey >> 32) == skipKey) continue;
         if (ablPhase) { bool drop=false; for (int a=0;a<s_ablPhN;++a) if (b.phase==s_ablPh[a]){drop=true;break;} if (drop) continue; }
@@ -343,6 +357,13 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
                      b.z_test = 0; b.z_write = 0; }
         batches.push_back(b);
     }
+    // Whether any diagnostic SCENE filter dropped/reordered scene batches — if so the EFB-copy
+    // boundaries (recorded in unfiltered scene-batch index space) no longer map onto `batches`, so
+    // the segmented present must NOT run (fall back to one pass). Default run: no filter → 1:1.
+    const bool sceneFiltered = honorClear || ablPhase || opaqueOnly || ablBm ||
+                               (skipKey != 0) || solid || texturedOnly || skipBidx;
+    // Count of scene batches in `batches`; the 2D imm batches are appended after this index.
+    const int nScenePushed = (int)batches.size();
     // 2D immediate batches: each is either a colour-only run (gradient, solid window fill →
     // passthrough shader) or a textured pane (window border, picture digit, glyph → decode
     // the bound GX texture once, MODULATE by vertex colour). Decoded textures are cached by
@@ -409,11 +430,29 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
                          ib.w > 0 && ib.h > 0 && ib.w <= 4096 && ib.h <= 4096 &&
                          (!paletted(ib.fmt) || ib.tlut);
         if (ib.image && sb_boot_capture_texsrc_is_efb_dest(ib.image)) {
+            // EFB-copy snapshot consumer (the file-select soft-focus/bloom quad): bind the live
+            // framebuffer snapshot keyed by ib.image (registered by the segmented present at the
+            // copy boundary) instead of decoding stale guest RAM. This — with honoring the EFB clear
+            // — is the overbright fix: the post-pass composites over the REAL scene, not flat white.
+            b.tex[0].efb_src = ib.image;
+            b.tex[0].w = (uint32_t)ib.w; b.tex[0].h = (uint32_t)ib.h;
+            b.tex[0].linear = 1; b.tex[0].min_filter = 1; b.tex[0].wrap_s = 0; b.tex[0].wrap_t = 0;
+            ++n_tex_batches;
+            static const bool forceMod = [](){ const char* v = std::getenv("SB_IMM_MODULATE"); return v && v[0] && v[0] != '0'; }();
+            if (!forceMod && ib.tev && ib.tev->num_stages > 0) {
+                uint64_t key; b.fragGlsl = imm_tev_fragment(*ib.tev, key); b.shaderKey = key;
+                for (int c = 0; c < 4; ++c) for (int k = 0; k < 4; ++k) {
+                    b.push.tevreg[c][k] = ib.tev->tev_color[c][k];
+                    b.push.kcolor[c][k] = ib.tev->kcolor[c][k];
+                }
+            } else { b.fragGlsl = g_tex_frag.c_str(); b.shaderKey = g_tex_key; }
+            batches.push_back(b);
             const char* d = std::getenv("SB_J3D_DBG");
             if (d && d[0] && d[0] != '0') { static long n=0; if (n++<8)
-                std::fprintf(stderr, "[imm] *** EFB-SAMPLER imm batch %d image=%p %dx%d fmt=%d blend=%d/%d/%d "
-                             "(samples an EFB-copy snapshot) ***\n", bi, ib.image, ib.w, ib.h, ib.fmt,
+                std::fprintf(stderr, "[imm] EFB-SAMPLER imm batch %d image=%p %dx%d fmt=%d blend=%d/%d/%d "
+                             "-> live snapshot bound\n", bi, ib.image, ib.w, ib.h, ib.fmt,
                              ib.blendType, ib.blendSrc, ib.blendDst); }
+            continue;
         }
         if (ib.textured && !decodable) {
             static long s_rej = 0;
@@ -575,8 +614,73 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
 
     // ── Render the frame through the SDL3 GPU backend — the GX seam's ONLY renderer (the nvk
     // Vulkan rasterizer was retired; docs/gx_sdlgpu_switch.md). ──
+    // The GC renders the file-select frame across multiple EFB targets (a pre-pass/mirror copied to
+    // a texture + an EFB CLEAR, the main scene copied to a texture, then a post pass whose full-screen
+    // quads SAMPLE those copy textures). Honor that structure: render the scene in SEGMENTS split at
+    // the EFB-copy boundaries, snapshot the framebuffer at each (so a consumer samples the REAL scene,
+    // not stale RAM → the flat-white wash), and honor the EFB clear (so the off-screen pre-pass/mirror
+    // stops double-compositing → the additive overbright). See the 2026-06-30 overbright journal.
+    SbEfbCopy copies[8];
+    int ncopies = sb_boot_capture_efb_copy_count();
+    if (ncopies > 0) ncopies = sb_boot_capture_efb_copies(copies, 8);
+
+    // SB_SEG_DUMP=1: diagnostic — render the cumulative scene up to each EFB-copy boundary as its
+    // own single-pass frame and dump it (seg_NN_cumXX.ppm), so the per-segment composition is
+    // VISIBLE (which segment owns the sky checker / sea wash). Drilling tool, off by default.
+    static const bool segDump = [](){ const char* v = std::getenv("SB_SEG_DUMP"); return v && v[0] && v[0] != '0'; }();
+    if (segDump && dumpThis && ncopies > 0 && !sceneFiltered) {
+        static std::vector<uint8_t> seg_pix;
+        auto dump_range = [&](int lo, int hi, const char* tag){
+            sb::gxsdl::frame_begin(c[0], c[1], c[2], c[3]);
+            sb::gxsdl::draw_tev(verts.data(), (int)verts.size(),
+                                batches.data() + lo, hi - lo);
+            sb::gxsdl::frame_end();
+            seg_pix.assign((size_t)kW * kH * 4, 0);
+            sb::gxsdl::readback(seg_pix.data(), (int)kW, (int)kH);
+            char p[160]; std::snprintf(p, sizeof p, "scratch/frames/seg_%04d_%s.ppm", df, tag);
+            write_ppm_buf(p, seg_pix.data(), kW, kH);
+            std::fprintf(stderr, "[segdump] %s [%d,%d)\n", tag, lo, hi);
+        };
+        int prev = 0;
+        for (int k = 0; k < ncopies; ++k) {
+            int bnd = copies[k].batch_index; if (bnd > nScenePushed) bnd = nScenePushed;
+            char t[32]; std::snprintf(t, sizeof t, "A%d_only", k); dump_range(prev, bnd, t);
+            prev = bnd;
+        }
+        dump_range(prev, (int)batches.size(), "tail_only");
+        dump_range(0, nScenePushed, "scene_all");
+    }
+
+    // SB_EFB_HONOR_CLEAR_SEG (default OFF): honor the EFB *clear* between segments. The GC clears the
+    // EFB after the pre-pass/mirror copy so that off-screen render does NOT stay in the visible frame.
+    // Honoring it is only correct once native's main pass redraws everything the pre-pass held — until
+    // then a clearing copy DROPS content native captured only in the pre-pass segment (e.g. the
+    // file-select palm tree, captured at scene index < 49). So default to CUMULATIVE compositing (LOAD
+    // every segment) — same coverage as the single pass — while still snapshotting at each boundary so
+    // the post-pass EFB-sampler quads (the soft-focus) composite over the REAL accumulated scene
+    // instead of stale white. Flip this on once the per-pass geometry split is faithful.
+    static const bool honorClearSeg = [](){ const char* v = std::getenv("SB_EFB_HONOR_CLEAR_SEG"); return v && v[0] && v[0] != '0'; }();
     sb::gxsdl::frame_begin(c[0], c[1], c[2], c[3]);
-    sb::gxsdl::draw_tev(verts.data(), (int)verts.size(), batches.data(), (int)batches.size());
+    if (ncopies > 0 && !sceneFiltered) {
+        const int total = (int)batches.size();
+        int  segStart = 0;
+        bool clearFirst = true;                       // segment 0 starts on the frame clear
+        for (int k = 0; k < ncopies; ++k) {
+            int bound = copies[k].batch_index;
+            if (bound > nScenePushed) bound = nScenePushed;   // copy at scene-list end → imm follows
+            if (bound < segStart)     bound = segStart;
+            sb::gxsdl::draw_tev_segment(verts.data(), (int)verts.size(),
+                                        batches.data() + segStart, bound - segStart, clearFirst);
+            sb::gxsdl::snapshot_efb(copies[k].dest);          // snapshot this segment for its consumer
+            segStart   = bound;
+            clearFirst = honorClearSeg && (copies[k].clear != 0);  // honor the clear only when enabled
+        }
+        // Final segment: any scene tail past the last copy + the 2D imm overlay (the post pass).
+        sb::gxsdl::draw_tev_segment(verts.data(), (int)verts.size(),
+                                    batches.data() + segStart, total - segStart, clearFirst);
+    } else {
+        sb::gxsdl::draw_tev(verts.data(), (int)verts.size(), batches.data(), (int)batches.size());
+    }
     sb::gxsdl::frame_end();
     static std::vector<uint8_t> present_pix;
     present_pix.assign((size_t)kW * kH * 4, 0);

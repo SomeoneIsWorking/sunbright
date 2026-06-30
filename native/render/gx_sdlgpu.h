@@ -29,8 +29,25 @@ void frame_end();
 
 // P2+: render the captured combined geometry (scene 3D + 2D imm batches — the same verts/batches the
 // nvk path consumes) into the bound offscreen target. Must be called between frame_begin/frame_end.
+// (Single render pass that CLEARS the target — equivalent to draw_tev_segment(..., true).)
 void draw_tev(const sb::render::NvkTevVertex* verts, int nverts,
               const sb::render::NvkTevBatch* batches, int nbatch);
+
+// Render ONE segment of the frame between EFB-copy boundaries (the GC multi-EFB-target structure;
+// see the 2026-06-30 file-select overbright journal). Call draw_tev_segment / snapshot_efb in
+// sequence between frame_begin and frame_end:
+//   - clearFirst=true  → the render pass CLEARS colour+depth (a fresh EFB, e.g. after a clearing copy)
+//   - clearFirst=false → the render pass LOADS (preserves) the prior segment's colour+depth
+// `verts`/`nverts` is always the FULL combined vertex list (batch vstart indices are absolute); only
+// the `batches` sub-range is rendered. A batch slot carrying Tex::efb_src samples the snapshot
+// registered under that key (below) instead of its decoded `rgba`.
+void draw_tev_segment(const sb::render::NvkTevVertex* verts, int nverts,
+                      const sb::render::NvkTevBatch* batches, int nbatch, bool clearFirst);
+
+// Snapshot the current offscreen colour into a GPU texture registered under `key` (the EFB-copy
+// destination pointer). A later batch whose Tex::efb_src == key samples this snapshot. Snapshots are
+// released at the next frame_begin. Must be called between segments (not inside a render pass).
+void snapshot_efb(const void* key);
 
 // Read the last frame back into rgba (w*h*4, top-left origin). False if size mismatch / no device.
 bool readback(uint8_t* rgba, int w, int h);

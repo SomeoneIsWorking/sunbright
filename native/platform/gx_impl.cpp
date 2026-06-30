@@ -227,6 +227,16 @@ extern "C" void sb_gx_get_chan_matcolor(int slot, float rgba[4]) {
     rgba[0] = c.r / 255.f; rgba[1] = c.g / 255.f; rgba[2] = c.b / 255.f; rgba[3] = c.a / 255.f;
 }
 
+// The image pointer currently bound to GX texmap `slot` by the last GXLoadTexObj (state().boundTex).
+// Used by the J3D capture to catch a texmap whose texture is set at RUNTIME via a GXTexObj (the sea
+// MIRROR / pollution graffito EFB-copy textures), NOT via the model's static ResTIMG table — the
+// material's table texNo then resolves to a stale/wrong asset, but boundTex holds the real (EFB) image.
+extern "C" const void* sb_gx_bound_tex_image(int slot) {
+    if ((unsigned)slot >= 8) return nullptr;
+    const auto& b = state().boundTex[slot];
+    return b.valid ? b.image : nullptr;
+}
+
 // The CURRENT GX position matrix (GX_PNMTX selected by GXSetCurrentMtx, loaded by
 // GXLoadPosMtxImm) as a 3x4 — the modelview an immediate-mode draw (GXDrawSphere) uses.
 extern "C" void sb_gx_get_cur_posmtx(float m[3][4]) {

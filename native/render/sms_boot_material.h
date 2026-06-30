@@ -32,6 +32,10 @@ struct SbTexImage {
     bool     linear = false;     // MAG filter is LINEAR (else NEAREST)
     uint8_t  min_filter = 1;     // GX min filter (0 NEAR,1 LIN,2 NEAR_MIP_NEAR,3 LIN_MIP_NEAR,4 NEAR_MIP_LIN,5 LIN_MIP_LIN)
     uint8_t  max_aniso = 0;      // GX_ANISO_1=0, _2=1, _4=2
+    // Non-null when this texmap's image data IS an EFB-copy destination recorded this frame: it
+    // samples a snapshot of the framebuffer (the GC soft-focus/bloom/mirror composite), not `rgba`.
+    // The segmented present binds the snapshot registered under this key. (See the overbright journal.)
+    const void* efb_src = nullptr;
 };
 
 // Resolve+decode every texmap the material's TEV stages reference. `tex` is the model's

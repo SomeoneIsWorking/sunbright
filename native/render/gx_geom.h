@@ -49,7 +49,14 @@ struct NvkTevBatch {
                  uint8_t linear = 0;       // MAG filter linear (else nearest)
                  uint8_t min_filter = 1;   // GX min filter (encodes mip mode)
                  uint8_t max_aniso = 0;    // GX_ANISO_1/2/4 = 0/1/2
-                 uint8_t wrap_s = 1, wrap_t = 1; } tex[8];
+                 uint8_t wrap_s = 1, wrap_t = 1;
+                 // EFB-copy snapshot source: when non-null this texmap samples a snapshot of the
+                 // framebuffer taken at the EFB→texture copy whose destination pointer == efb_src
+                 // (the GC soft-focus/bloom/mirror composite), NOT the decoded `rgba`. The segmented
+                 // present (sms_boot_present.cpp) registers each snapshot in the SDL3-GPU backend
+                 // keyed by this pointer; the backend binds it for any batch slot carrying it. See
+                 // the 2026-06-30 file-select overbright journal.
+                 const void* efb_src = nullptr; } tex[8];
     uint8_t z_test = 1, z_func = 3 /*GX_LEQUAL*/, z_write = 1;
     uint8_t blend_mode = 0, src_factor = 1, dst_factor = 0;   // GX blend (0=none)
     // Pixel-engine write enables + destination-alpha (GXSetColorUpdate / GXSetAlphaUpdate /
