@@ -778,3 +778,63 @@ and (b) are fixed, because alone it drops the palm/blocks. The interleaved per-p
 is what made this legible — each cause is now a separate, attackable image. NEXT: attack (a) first
 (compare ph4+ph6 single-pass vs oracle pass2 320x224 via passdiff — it's a clean per-pass blend diff
 now), since it's independent of the phase-misassignment and the composite.
+
+### 2026-07-01 (cont.) — bug #1 ROOT-CAUSED via the blend drill: additive sky cloud painted as visible colour where GC has it [noC]
+Built SB_BLEND_DRILL (one run dumps the main-pass scene with each blend class dropped/isolated, +
+blend_drill.py ranks vs oracle pass2). It localized bug #1 precisely and the chain is now complete:
+
+- **The sky overbright is the SRCALPHA/ONE additive cloud layer.** Drill: dropping it cuts sky delta
+  91.4→36.7 (-54.7). The ONE/INVSRCCLR SCREEN layer is a DARKENING layer (drop → +42, WORSE).
+  drill_only_1_3.png (SCREEN+opaque) = the CLEAN blue gradient sky + teal sea (matches the oracle).
+  drill_only_4_1.png (additive+opaque) = a harsh black/white CHECKER of cloud puffs (the overbright).
+- **The renderer HONORS color_update** (gx_sdlgpu.cpp:165, color_write_mask from b.color_update). So a
+  batch captured cU=0 writes no RGB. The problem is the CAPTURE: native records the additive sky as
+  **cU=1**; the oracle (gxstate_diff + oracle_blend2) has SRCALPHA/ONE as **[noC][noA]** (cU=0, aU=0 —
+  a depth/mask-only draw in the off-screen passes). So GC writes NO colour for the additive sky; the
+  visible soft clouds come via the EFB-texture composite. Native paints the depth-only checker directly
+  → the dominant sky overbright.
+- **Confirmed separable & quantified:** SB_ABLATE_BM=4/1 (≡ honoring cU=0 on the additive sky, since
+  cU=0 with no composite = not painted) = drill_drop_4_1 = clean blue sky, delta 91→37. So correcting
+  the colorUpdate CAPTURE recovers most of the sky overbright independent of the composite; the
+  composite then supplies the soft clouds (the residual ~37).
+
+ROOT CAUSE (named): native's captured per-batch colorUpdate is TRUE for the off-screen [noC] depth/mask
+draws (additive sky + the other 10 cU-divergent signatures from gxstate_diff) where GC's is FALSE.
+native DOES track GXSetColorUpdate (gx_impl.cpp) and reads it live at batch-open (sms_boot_j3d_capture
+.cpp:358), so the bug is that the game's TEfbCtrl colorUpdate(FALSE) bracketing of the off-screen passes
+is NOT in effect at those draws under SB_OWN_GXLIST (either not run, or set-then-reset before the draw).
+
+THE FIX (two parts, both real): (A) reproduce the TEfbCtrl colorUpdate(FALSE) bracketing so native
+captures cU=0 for the off-screen scene/sky/mask draws → the honored write-mask stops the over-paint
+(sky 91→37, and the other 10 signatures). (B) the EFB-texture composite to supply the visible colour
+the off-screen passes no longer paint (the soft clouds, the scene). (A) is the higher-value, more
+separable half. NEXT: SB_DBG_COLUPD to see whether GXSetColorUpdate(FALSE) fires during the scene at
+all (→ "native never brackets" vs "wrong timing"), then fix the bracketing. New tools committed:
+tools/render/blend_drill.py + SB_BLEND_DRILL.
+
+### 2026-07-01 (cont.) — SB_DBG_COLUPD: the FALSE bracketing FIRES (82445×) — it's a TIMING clobber → the bug REUNIFIES with the composite
+SB_DBG_COLUPD on the settled file-select: GXSetColorUpdate is called **82445 FALSE / 424691 TRUE**. So
+the game's colorUpdate(FALSE) bracketing of the off-screen passes IS running in native — native is not
+missing it. The bug is TIMING: at the moment native opens the additive-sky (and other off-screen) batch,
+colorUpdate has been restored to TRUE. The most likely mechanism: every J3DMaterial load/shape draw sets
+GXSetColorUpdate(TRUE) from its PE block (that's most of the 424691 TRUE calls), CLOBBERING the
+EFB-control's pass-level FALSE. On GC the off-screen pass's FALSE takes precedence over the per-material
+value for the whole pass.
+
+⇒ **The diagnosis REUNIFIES.** Bug #1 (sky additive overbright) is NOT a separate per-pass blend bug —
+it is the SAME root cause as the double-draw and the composite: native renders the off-screen
+render-to-texture passes directly into the VISIBLE framebuffer, because the off-screen-pass
+colorUpdate=FALSE is clobbered per-material and there is no composite to supply the visible colour. The
+additive sky is just the most visible instance. The genuinely separate issue is bug #2 (palm/blocks
+captured in ph1/unk40 instead of the main pass).
+
+⇒ **The fix is the off-screen composite, done right** (SB_FS_COMPOSITE direction): render ph1 (mirror)
+and the main scene to OFF-SCREEN targets — which inherently keeps them OUT of the visible FB and
+sidesteps the per-material colorUpdate clobber entirely (no need to fight the cU sequence) — snapshot
+each, then build the visible frame from the composite quads + 2D menu. The remaining blockers for that
+composite (all identified): (1) the soft-focus snapshot must be taken at end-of-scene, not the recorded
+mid-scene copy index (fix staged in SB_FS_COMPOSITE); (2) bug #2 — palm/blocks are in ph1, so an
+off-screen ph1 drops them (must move them to the main pass or composite ph1's colour too); (3) the
+composite quads must faithfully re-display texB as the visible scene. This is the large, well-scoped
+rendering-architecture task the prior sessions pointed at — now with every sub-blocker named and a
+per-pass differ (passdiff.py) + blend drill (blend_drill.py) to verify each step by VALUE.
