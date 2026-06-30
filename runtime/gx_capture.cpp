@@ -20,6 +20,7 @@
 
 #include "gx_parse.h"
 #include "gxblend_summary.h"
+#include "gxtev_summary.h"
 
 #include <cstddef>
 #include <cstdio>
@@ -181,6 +182,38 @@ extern "C" void sb_gx_capture_frame_boundary() {
                           d.color_update, d.alpha_update, d.numtevstages, d.proj_type, d.prims});
         for (const std::string& line : gxblend::summarize(ds))
             fprintf(stderr, "  %s\n", line.c_str());
+    }
+    // PER-STAGE TEV COMBINER value oracle (SUNBRIGHT_DBG_GXTEV): for each DISTINCT TEV combiner among
+    // the SRCALPHA/SRCCLR draws (the sea-water/composite signature that native paints opaque-white, b76)
+    // decode every active stage's color/alpha combiner (a/b/c/d inputs, bias, op, scale, clamp, dest) +
+    // the TEV color/konst registers. This is the ground-truth combiner to diff register-for-register
+    // against native's generated frag (scratch/frames/bfrag_76.glsl) / NgxTevStage — settling whether
+    // native's white sea is a TEV-GEN bug (wrong stage scale / `d` input) or an input (CLR0/vColor) bug.
+    if (std::getenv("SUNBRIGHT_DBG_GXTEV") && g_frame_no >= 4 && g_frame_no < 8
+        && fi.tev_snaps.size() == fi.draws.size() && !fi.draws.empty()) {
+        uint64_t seen[64]; int nseen = 0;   // dedupe by a cheap combiner hash so each material prints once
+        for (size_t i = 0; i < fi.draws.size(); ++i) {
+            const auto& d = fi.draws[i];
+            // The sea-water/composite signature: SRCALPHA(4) src, SRCCLR(2) dst, blending. (Also covers
+            // the [noC]-class occlusion draws that share these factors — both are worth seeing by value.)
+            if (!(d.blend_enable && d.src == 4 && d.dst == 2)) continue;
+            const auto& t = fi.tev_snaps[i];
+            uint64_t h = 1469598103934665603ull;
+            for (int s = 0; s < t.nstages && s < 16; ++s) { h = (h ^ t.color_env[s]) * 1099511628211ull;
+                                                            h = (h ^ t.alpha_env[s]) * 1099511628211ull; }
+            bool dup = false; for (int k = 0; k < nseen; ++k) if (seen[k] == h) { dup = true; break; }
+            if (dup) continue; if (nseen < 64) seen[nseen++] = h;
+            fprintf(stderr, "[gxtev] frame %ld SRCALPHA/SRCCLR draw#%zu pass%u tev=%u verts=%u proj=%s\n",
+                    g_frame_no, i, d.efb_pass, t.nstages, d.prims, d.proj_type ? "ortho" : "persp");
+            for (int s = 0; s < t.nstages && s < 16; ++s) {
+                fprintf(stderr, "    s%d %s\n", s, gxtev::format_color(t.color_env[s]).c_str());
+                fprintf(stderr, "       %s\n",    gxtev::format_alpha(t.alpha_env[s]).c_str());
+            }
+            for (int r = 0; r < 4; ++r)   // TEV color/konst regs: RA=red(0-10)|alpha(12-22), BG=blue(0-10)|green(12-22)
+                fprintf(stderr, "    reg%d R=%d A=%d B=%d G=%d\n", r,
+                        (int)((t.tevreg_ra[r] & 0x7FF)), (int)((t.tevreg_ra[r] >> 12) & 0x7FF),
+                        (int)((t.tevreg_bg[r] & 0x7FF)), (int)((t.tevreg_bg[r] >> 12) & 0x7FF));
+        }
     }
     std::fflush(f);
     g_frame_no++;

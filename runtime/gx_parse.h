@@ -60,6 +60,21 @@ struct GxFrameInfo {
     };
     std::vector<DrawRec> draws;
 
+    // ── Per-draw per-STAGE TEV combiner snapshot (file-select sea-water overbright, 2026-06-30) ─────
+    // The blend oracle (DrawRec) gives the blend equation + stage count; this gives the combiner
+    // CONTENTS so the native sea-water TEV (b76, which paints opaque-white) can be diffed register-for-
+    // register against Dolphin's. Captured only when SUNBRIGHT_DBG_GXTEV is set (it copies up to 16
+    // stage register pairs per draw), parallel to `draws` (same index). color_env/alpha_env are the live
+    // BPMEM_TEV_COLOR_ENV/ALPHA_ENV words — identical layout to NgxTevStage::color_env/alpha_env.
+    struct TevSnap {
+        u8  nstages;             // active TEV stages at draw time (GENMODE.numtevstages + 1)
+        u32 color_env[16];       // per-stage ColorCombiner reg (BPMEM_TEV_COLOR_ENV, 0xC0 + 2*stage)
+        u32 alpha_env[16];       // per-stage AlphaCombiner reg (BPMEM_TEV_ALPHA_ENV, 0xC1 + 2*stage)
+        u32 tevreg_ra[4];        // TEV color/konst regs RA word (BPMEM_TEV_COLOR_RA, 0xE0 + 2*reg)
+        u32 tevreg_bg[4];        // TEV color/konst regs BG word (BPMEM_TEV_COLOR_BG, 0xE1 + 2*reg)
+    };
+    std::vector<TevSnap> tev_snaps;   // empty unless SUNBRIGHT_DBG_GXTEV; tev_snaps[i] pairs with draws[i]
+
     // ── Per-pass geometry split (cross-engine pass tagging) ───────────────────────────────────────
     // The native parity dump (sb_parity_dump.h) reports the 3D SCENE pass only (perspective), so the
     // whole-frame oracle counts are NOT directly comparable. Bucket prims/verts/display-lists by the

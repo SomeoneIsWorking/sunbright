@@ -31,16 +31,30 @@ public:
     u32       genmode = 0;           // last BPMEM_GENMODE (numtevstages live in here)
     u8        efb_pass = 0;          // EFB copies fired so far this frame
     bool      record_draws = false;  // gate the (potentially large) per-draw record
+    bool      record_tev = false;    // gate the (large) per-stage TEV combiner snapshot (SUNBRIGHT_DBG_GXTEV)
+    u32       color_env[16] = {};    // live BPMEM_TEV_COLOR_ENV per stage (0xC0 + 2*stage)
+    u32       alpha_env[16] = {};    // live BPMEM_TEV_ALPHA_ENV per stage (0xC1 + 2*stage)
+    u32       tevreg_ra[4] = {};     // live BPMEM_TEV_COLOR_RA per reg (0xE0 + 2*reg)
+    u32       tevreg_bg[4] = {};     // live BPMEM_TEV_COLOR_BG per reg (0xE1 + 2*reg)
 
     void record_draw(u32 prims) {
         if (!record_draws || out->draws.size() >= 8192) return;
         GenMode gm; gm.hex = genmode;
+        const u8 nstages = (u8)(gm.numtevstages + 1);
         out->draws.push_back({offset, efb_pass,
             (u8)blend.src_factor.Value(), (u8)blend.dst_factor.Value(),
             (u8)blend.blend_enable.Value(), (u8)blend.subtract.Value(),
             (u8)blend.logic_op_enable.Value(), (u8)blend.logic_mode.Value(),
             (u8)blend.color_update.Value(), (u8)blend.alpha_update.Value(),
-            (u8)(gm.numtevstages + 1), (u8)((out->proj_type == 1) ? 1 : 0), prims});
+            nstages, (u8)((out->proj_type == 1) ? 1 : 0), prims});
+        if (record_tev) {
+            GxFrameInfo::TevSnap s{}; s.nstages = nstages;
+            std::memcpy(s.color_env, color_env, sizeof color_env);
+            std::memcpy(s.alpha_env, alpha_env, sizeof alpha_env);
+            std::memcpy(s.tevreg_ra, tevreg_ra, sizeof tevreg_ra);
+            std::memcpy(s.tevreg_bg, tevreg_bg, sizeof tevreg_bg);
+            out->tev_snaps.push_back(s);
+        }
     }
 
     // CP state persists across frames (J3D reprograms VCD/VAT per shape; the
@@ -61,6 +75,17 @@ public:
             if (dl_depth == 0) out->token_offsets.push_back(offset);   // stream-offset record: outer only
         if (cmd == BPMEM_BLENDMODE) blend.hex = value;   // live blend equation for the per-draw oracle
         if (cmd == BPMEM_GENMODE)   genmode  = value;    // live numtevstages
+        // Live per-stage TEV combiner + color/konst registers (the sea-water combiner value oracle).
+        if (cmd >= BPMEM_TEV_COLOR_ENV && cmd <= BPMEM_TEV_COLOR_ENV + 0x1F) {
+            const u32 stage = (cmd - BPMEM_TEV_COLOR_ENV) >> 1;
+            if ((cmd & 1) == 0) color_env[stage] = value;   // 0xC0 + 2*stage = ColorCombiner
+            else                alpha_env[stage] = value;   // 0xC1 + 2*stage = AlphaCombiner
+        }
+        if (cmd >= BPMEM_TEV_COLOR_RA && cmd <= BPMEM_TEV_COLOR_RA + 7) {
+            const u32 reg = (cmd - BPMEM_TEV_COLOR_RA) >> 1;
+            if ((cmd & 1) == 0) tevreg_ra[reg] = value;     // 0xE0 + 2*reg = RA word
+            else                tevreg_bg[reg] = value;     // 0xE1 + 2*reg = BG word
+        }
         if (cmd == BPMEM_TRIGGER_EFB_COPY) {
             out->copies++;
             // Record the copy in order so a tool can diff the render-target structure (where the EFB
@@ -185,6 +210,8 @@ bool gxp_parse_frame(const u8* p, size_t n, GxFrameInfo& out, bool recurse_dls) 
     // gx_capture.cpp). The blend/genmode state persists across frames like CP state (J3D reprograms
     // it per material), so a frame that opens mid-material still sees the live equation.
     g_an.record_draws = (std::getenv("SUNBRIGHT_DBG_GXBLEND") != nullptr);
+    g_an.record_tev   = (std::getenv("SUNBRIGHT_DBG_GXTEV") != nullptr);
+    if (g_an.record_tev) g_an.record_draws = true;   // TEV snapshot pairs with the draw record (same index)
     u32 pos = 0;
     while (pos < n) {
         g_an.offset = pos;

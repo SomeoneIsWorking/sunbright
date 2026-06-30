@@ -29,6 +29,7 @@
 #include "tev_eval.h"
 #include "tex_decode.h"
 #include "gxblend_summary.h"
+#include "gxtev_summary.h"
 
 // ── Units under test (self-test entry points defined in their own .cpp) ──────
 extern int sb_ngx_vertex_selftest(char* out, int cap);   // runtime/ngx/ngx_vertex.cpp
@@ -830,6 +831,55 @@ int test_gxblend(char* rep, int cap) {
     return fails;
 }
 
+// ── per-STAGE TEV combiner decode (gxtev_summary.h) ──────────────────────────
+// The sea-water overbright (b76) is settled by diffing Dolphin's per-stage TEV combiner (read from the
+// GX command stream) against native's generated frag. gx_capture.cpp decodes the live
+// BPMEM_TEV_COLOR_ENV/ALPHA_ENV words via gxtev::format_color/format_alpha; this asserts that decode is
+// faithful to the GX bit layout (NgxTevStage's), so a mis-decode can't produce a false "they match"/
+// "they differ" verdict. Cases are hand-built from the GX register field positions, including b76's
+// exact stage-1 word (the `d=ras.rgb << scale-2` doubling that saturates the sea to white).
+int test_gxtev(char* rep, int cap) {
+    int pos = 0, fails = 0;
+    auto failf = [&](const char* msg) {
+        fails++; if (pos < cap) pos += snprintf(rep + pos, cap - pos, "FAIL %s\n", msg); };
+    auto want = [&](const std::string& got, const char* sub, const char* tag) {
+        if (got.find(sub) == std::string::npos) {
+            failf(tag);
+            if (pos < cap) pos += snprintf(rep + pos, cap - pos, "  got: %s\n", got.c_str());
+        } };
+
+    // Arg-name tables cover the full GX enums in order (color 0..15, alpha 0..7).
+    const char* cwant[16] = {"prev.rgb","prev.a","c0.rgb","c0.a","c1.rgb","c1.a","c2.rgb","c2.a",
+                             "tex.rgb","tex.a","ras.rgb","ras.a","ONE","HALF","konst","ZERO"};
+    for (uint8_t a = 0; a < 16; ++a) if (strcmp(gxtev::color_arg(a), cwant[a])) failf("color_arg name");
+    const char* awant[8] = {"prev","c0","c1","c2","tex","ras","konst","ZERO"};
+    for (uint8_t a = 0; a < 8; ++a) if (strcmp(gxtev::alpha_arg(a), awant[a])) failf("alpha_arg name");
+
+    // b76 stage-1 COLOR combiner: d=RasColor(10) a=Zero(15) b=Color1(4) c=PrevColor(0), add, clamp,
+    // Scale2, dest=Prev. Built field-by-field = exactly what saturates the sea to white (ras.rgb << 1).
+    const uint32_t ce = 10u | (0u<<4) | (4u<<8) | (15u<<12) | (0u<<16) | (0u<<18) | (1u<<19) | (1u<<20) | (0u<<22);
+    if (ce != 0x18F40A) failf("b76 color_env word build");
+    std::string c = gxtev::format_color(ce);
+    want(c, "d=ras.rgb", "color d");      want(c, "a=ZERO", "color a");
+    want(c, "b=c1.rgb",  "color b");      want(c, "c=prev.rgb", "color c");
+    want(c, "op=+",      "color op");     want(c, "sc=x2", "color scale");
+    want(c, "clamp",     "color clamp");  want(c, "dst=prev", "color dest");
+
+    // b76 stage-1 ALPHA combiner: d=RasAlpha(5) a=Zero(7) b=TexAlpha(4) c=PrevAlpha(0), add, clamp, Scale2.
+    const uint32_t ae = (5u<<4) | (0u<<7) | (4u<<10) | (7u<<13) | (0u<<16) | (0u<<18) | (1u<<19) | (1u<<20);
+    if (ae != 0x18F050) failf("b76 alpha_env word build");
+    std::string al = gxtev::format_alpha(ae);
+    want(al, "d=ras", "alpha d");     want(al, "a=ZERO", "alpha a");
+    want(al, "b=tex", "alpha b");     want(al, "c=prev", "alpha c");
+    want(al, "sc=x2", "alpha scale"); want(al, "rsw=0 tsw=0", "alpha swap");
+
+    // A scale-1 (Scale1=0) stage must decode as sc=x1 — distinguishing the faithful case from b76's <<1.
+    const uint32_t ce1 = 10u | (15u<<12) | (1u<<19);   // d=ras.rgb, a=ZERO, clamp, Scale1
+    if (gxtev::format_color(ce1).find("sc=x1") == std::string::npos) failf("scale1 != x1");
+
+    return fails;
+}
+
 struct Unit { const char* name; int (*run)(char* rep, int cap); };
 
 const Unit kUnits[] = {
@@ -852,6 +902,7 @@ const Unit kUnits[] = {
     {"per_epoch",      test_per_epoch},
     {"pollution",      test_pollution},
     {"gxblend",        test_gxblend},
+    {"gxtev",          test_gxtev},
 };
 
 }  // namespace
