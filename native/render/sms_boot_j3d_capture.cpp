@@ -186,6 +186,13 @@ bool g_consumed = true;
 // Stamped onto every batch opened while set; lets the overbright harness attribute an over-composited
 // layer to the source pass (the EFB pre-passes 1..3 are off-screen on GC and shouldn't composite).
 int g_capture_phase = 0;
+// EFB→texture copy boundaries recorded during the scene capture (GXCopyTex → sb_boot_capture_efb_copy).
+// Each marks a render-target boundary at batch_index: the EFB so far is snapshotted to `dest` (a host
+// pointer into guest RAM, matchable against a later batch's resolved texmap src) and, if clear, wiped.
+// The native present honors these to stop the pre-pass double-composite and to feed the post-pass
+// EFB-sampler quads the real snapshot. See the 2026-06-30 overbright journal.
+struct EfbCopyMark { size_t batch_index; const void* dest; bool clear; int wd, ht; };
+std::vector<EfbCopyMark> g_efb_copies;
 // Capture-once-per-present lock (see sb_boot_capture_begin_scene / _end_scene below).
 bool g_locked = false;          // when true, sb_boot_capture_j3d/sphere skip (interval already done)
 bool g_want_capture = true;     // re-armed by the present consuming the buffer
@@ -915,6 +922,7 @@ extern "C" int sb_boot_capture_begin_scene() {
     g_want_capture = false;
     g_locked = false;
     g_consumed = true;   // discard anything captured earlier this interval; next draw clears
+    g_efb_copies.clear();
     g_present_shapes = g_present_idx = g_present_skipped = 0;
     return 1;
 }
@@ -923,6 +931,33 @@ extern "C" int sb_boot_capture_begin_scene() {
 // (1=unk40, 2=unk38, 3=unk3C, 4=mPerformListGX, 5=Silhouette, 6=mPerformListGXPost) so every batch
 // captured carries its source pass. Reset to 0 in end_scene.
 extern "C" void sb_boot_capture_set_phase(int phase) { g_capture_phase = phase; }
+
+// GXCopyTex tap (gx_fb_impl.cpp): record an EFB-copy render-target boundary at the current batch
+// position. Only while a scene capture is live (not locked) so it aligns with g_batches indices.
+extern "C" void sb_boot_capture_efb_copy(const void* dest, int clear, int wd, int ht) {
+    if (g_locked || g_consumed) return;
+    g_efb_copies.push_back({g_batches.size(), dest, clear != 0, wd, ht});
+    if (dbg_enabled())
+        std::fprintf(stderr, "[efbcopy] mark batch_index=%zu dest=%p clear=%d %dx%d (phase %d)\n",
+                     g_batches.size(), dest, clear, wd, ht, g_capture_phase);
+}
+extern "C" int sb_boot_capture_efb_copy_count() { return (int)g_efb_copies.size(); }
+// True if `src` (a resolved texmap image-data host pointer) is the destination of an EFB copy
+// recorded this frame — i.e. this texmap samples a snapshot of the EFB, not a real asset texture.
+// (The post-pass soft-focus/bloom composite quads.) Used to attribute the overbright.
+extern "C" int sb_boot_capture_texsrc_is_efb_dest(const void* src) {
+    for (const auto& c : g_efb_copies) if (c.dest == src) return 1;
+    return 0;
+}
+// The batch index of the LAST EFB→texture copy that CLEARED the EFB this frame (or -1 if none).
+// On GC that clear wipes the EFB, so every batch captured before it was snapshotted to a texture
+// and is NOT in the visible framebuffer — the native present drops them to stop the pre-pass
+// double-composite (the file-select overbright). Returns the boundary into the present batch list.
+extern "C" int sb_boot_capture_last_clear_boundary() {
+    int b = -1;
+    for (const auto& c : g_efb_copies) if (c.clear) b = (int)c.batch_index;
+    return b;
+}
 
 // Called by drive_scene after its draws — relock so the rest of the interval's draws are skipped.
 extern "C" void sb_boot_capture_end_scene() {

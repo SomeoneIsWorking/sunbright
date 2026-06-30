@@ -150,6 +150,8 @@ void write_ppm_buf(const char* path, const uint8_t* rgba, uint32_t w, uint32_t h
 } // namespace
 extern "C" int sb_present_frame() { return g_frame; }
 extern "C" int sb_camera_view_settled();   // scene_drive.cpp — view matrix stationary
+extern "C" int sb_boot_capture_last_clear_boundary();  // sms_boot_j3d_capture.cpp — EFB clear boundary
+extern "C" int sb_boot_capture_texsrc_is_efb_dest(const void*);  // texmap addr == an EFB-copy dest?
 namespace {
 
 void present_hook(void* /*framebuffer*/, void* /*user*/) {
@@ -313,9 +315,17 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
             const char* c = std::strchr(p, ','); if (!c) break; p = c + 1; }
         return s_ablPhN > 0;
     }();
+    // SB_EFB_HONOR_CLEAR (default OFF — diagnostic): drop scene batches captured before the LAST
+    // EFB clear copy. NOT a correct fix on its own: on GC the cleared pre-pass IS still visible
+    // because its snapshot texture is drawn back by a later pass — dropping the pre-pass without
+    // re-drawing its snapshot loses that content (measured 42.7→45.7 WORSE). The real fix is the
+    // segmented snapshot+resample renderer (see the 2026-06-30 overbright journal). Kept as an A/B tool.
+    static const bool honorClear = [](){ const char* v = std::getenv("SB_EFB_HONOR_CLEAR"); return v && v[0] && v[0]!='0'; }();
+    const int clearBoundary = honorClear ? sb_boot_capture_last_clear_boundary() : -1;
     std::vector<NvkTevBatch> batches;
     batches.reserve((size_t)nsbatch + 1);
     for (int i = 0; i < nsbatch; ++i) {
+        if (clearBoundary > 0 && i < clearBoundary) continue;   // pre-clear pre-pass → snapshotted+wiped
         NvkTevBatch b = sbatches[i];
         if (skipKey && (unsigned)(b.shaderKey >> 32) == skipKey) continue;
         if (ablPhase) { bool drop=false; for (int a=0;a<s_ablPhN;++a) if (b.phase==s_ablPh[a]){drop=true;break;} if (drop) continue; }
@@ -398,6 +408,13 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
         bool decodable = ib.textured && ib.image && fmt_ok(ib.fmt) &&
                          ib.w > 0 && ib.h > 0 && ib.w <= 4096 && ib.h <= 4096 &&
                          (!paletted(ib.fmt) || ib.tlut);
+        if (ib.image && sb_boot_capture_texsrc_is_efb_dest(ib.image)) {
+            const char* d = std::getenv("SB_J3D_DBG");
+            if (d && d[0] && d[0] != '0') { static long n=0; if (n++<8)
+                std::fprintf(stderr, "[imm] *** EFB-SAMPLER imm batch %d image=%p %dx%d fmt=%d blend=%d/%d/%d "
+                             "(samples an EFB-copy snapshot) ***\n", bi, ib.image, ib.w, ib.h, ib.fmt,
+                             ib.blendType, ib.blendSrc, ib.blendDst); }
+        }
         if (ib.textured && !decodable) {
             static long s_rej = 0;
             if (s_rej < 20) { ++s_rej;

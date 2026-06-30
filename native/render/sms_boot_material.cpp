@@ -11,6 +11,8 @@
 #include <cstring>
 #include <cstdint>
 #include <cstdio>
+
+extern "C" int sb_boot_capture_texsrc_is_efb_dest(const void*);  // sms_boot_j3d_capture.cpp
 #include <cstdlib>
 #include <unistd.h>
 
@@ -229,6 +231,16 @@ void sb_resolve_textures(J3DMaterial* mat, void* j3dTexturePtr, std::vector<SbTe
         const auto*  base = reinterpret_cast<const uint8_t*>(t);
         const uint8_t* src = base + (intptr_t)(int32_t)t->imageDataOffset;
         const size_t srcbytes = (size_t)sb_tex_size_bytes(pw, ph, fmt);
+
+        // EFB-sampler attribution: if this texmap's image data IS an EFB-copy destination recorded
+        // this frame, it samples a snapshot of the EFB (the post-pass soft-focus/bloom composite) —
+        // on GC the real scene, here decoded as a stale/garbage asset → the file-select overbright.
+        if (sb_boot_capture_texsrc_is_efb_dest(src)) {
+            const char* d = std::getenv("SB_J3D_DBG");
+            if (d && d[0] && d[0] != '0')
+                std::fprintf(stderr, "[texres] *** EFB-SAMPLER stage%d texmap%d texNo=%u %dx%d src=%p "
+                             "(samples an EFB-copy snapshot) ***\n", s, m, texNo, lw, lh, (const void*)src);
+        }
 
         const uint8_t* tlut = nullptr; int tlutfmt = 0;
         if (sb_tex_is_paletted(fmt)) {

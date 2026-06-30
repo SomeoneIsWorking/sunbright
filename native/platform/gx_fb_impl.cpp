@@ -165,7 +165,18 @@ void GXSetTexCopySrc(u16 left, u16 top, u16 wd, u16 ht) {
 void GXSetTexCopyDst(u16 wd, u16 ht, GXTexFmt fmt, GXBool mipmap) {
     auto& t = state().texCopy; t.dstWd = wd; t.dstHt = ht; t.fmt = fmt; t.mipmap = mipmap;
 }
-void GXCopyTex(void* dest, GXBool /*clear*/) { state().texCopy.lastDest = dest; }
+// EFB→texture copy. On GC this snapshots the current EFB into the texture at `dest` and (if clear)
+// wipes the EFB for the next pass; SMS uses it for the file-select pre-pass + soft-focus composite.
+// Record the copy as a render-target boundary in the scene capture (sb_boot_capture_efb_copy, a
+// no-op when the capture TU is inactive) so the native present can honor the clear and let a later
+// EFB-sampler batch (texmap src == dest) sample the snapshot instead of default-white. See
+// debug_journal/2026-06-30_fileselect_overbright_is_efb_target_structure.md.
+extern "C" void sb_boot_capture_efb_copy(const void* dest, int clear, int wd, int ht) __attribute__((weak));
+void GXCopyTex(void* dest, GXBool clear) {
+    state().texCopy.lastDest = dest;
+    if (sb_boot_capture_efb_copy)
+        sb_boot_capture_efb_copy(dest, clear ? 1 : 0, state().texCopy.dstWd, state().texCopy.dstHt);
+}
 
 // ===========================================================================
 // Pixel-format / fog / z-texture / alpha (record into GXState).
