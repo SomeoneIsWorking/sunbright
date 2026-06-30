@@ -703,20 +703,55 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
     // the post-pass EFB-sampler quads (the soft-focus) composite over the REAL accumulated scene
     // instead of stale white. Flip this on once the per-pass geometry split is faithful.
     static const bool honorClearSeg = [](){ const char* v = std::getenv("SB_EFB_HONOR_CLEAR_SEG"); return v && v[0] && v[0] != '0'; }();
+    // SB_FS_NOCLEAR=1: revert to the OLD cumulative compositing (no clear between segments) for A/B.
+    // Default = the file-select composite fix: render the ph1 (unk40) MIRROR pre-pass OFF-SCREEN and
+    // CLEAR at the ph1/ph4 PHASE boundary, so the main scene (ph4+ph6) starts on a clean framebuffer
+    // and the soft-focus snapshot (texB) holds the scene ONCE — not the ph1+ph4 double-draw that made
+    // the file-select overbright. The crux vs the retired SB_EFB_HONOR_CLEAR_SEG: that cleared at the
+    // mirror COPY's recorded batch index (which lands mid-ph4 and dropped ph4 content); this clears at
+    // the real phase boundary (the last phase==1 batch), so all of ph4 is preserved. The mirror is
+    // near-empty on file-select, so dropping it from the visible FB is faithful (its snapshot still
+    // feeds the sea reflection sampler). See the 2026-07-01 per-pass-differ journal.
+    // OPT-IN (default OFF): the phase-boundary off-screen composite is WIP — it correctly removes the
+    // ph1 double-draw, but (a) native renders the palm + A/B/C blocks in ph1 (not ph4/ph6), so clearing
+    // ph1 drops them, and (b) ph4+ph6 alone is STILL overbright (an intrinsic per-pass additive-blend
+    // issue, not just the double-draw). Both must be fixed before this can be the default. See the
+    // 2026-07-01 per-pass-differ journal. Until then default to the legacy cumulative composite.
+    static const bool fsComposite = [](){ const char* v = std::getenv("SB_FS_COMPOSITE"); return v && v[0] && v[0] != '0'; }();
+    const bool fsNoClear = !fsComposite;
+    // The ph1/ph4 boundary: ph1 (the unk40 mirror pre-pass) batches are captured first and carry
+    // phase==1. ph1End = one past the last leading phase==1 batch (0 if none → no special handling).
+    int ph1End = 0;
+    while (ph1End < nScenePushed && batches[(size_t)ph1End].phase == 1) ++ph1End;
     sb::gxsdl::frame_begin(c[0], c[1], c[2], c[3]);
     if (ncopies > 0 && !sceneFiltered) {
         const int total = (int)batches.size();
         int  segStart = 0;
         bool clearFirst = true;                       // segment 0 starts on the frame clear
         for (int k = 0; k < ncopies; ++k) {
-            int bound = copies[k].batch_index;
+            // The mirror copy (256x256) bounds the ph1 pre-pass: snapshot it at the PHASE boundary
+            // (ph1End) — NOT its recorded batch index (which lands mid-ph4 because native's perform-
+            // list ordering differs from GC's copy timing) — and CLEAR after, so the off-screen mirror
+            // is not composited into the visible frame. The SOFT-FOCUS copy (the scene's 通常シーン
+            // texture that the post-pass quad re-displays = the actual visible image) must snapshot the
+            // WHOLE main scene, so bound it at nScenePushed (after ALL of ph4+ph6), not its recorded
+            // mid-scene index — otherwise texB holds a half-drawn scene and the soft-focus quad shows
+            // garbage (the palm-loss + white wash seen when bound=recorded index).
+            const bool useFix  = !fsNoClear && ph1End > 0;
+            const bool isMirror = useFix && copies[k].wd == 256 && copies[k].ht == 256;
+            int bound;
+            if (isMirror)      bound = ph1End;
+            else if (useFix)   bound = nScenePushed;          // soft-focus → snapshot the full scene
+            else               bound = copies[k].batch_index; // legacy (SB_FS_NOCLEAR)
             if (bound > nScenePushed) bound = nScenePushed;   // copy at scene-list end → imm follows
             if (bound < segStart)     bound = segStart;
             sb::gxsdl::draw_tev_segment(verts.data(), (int)verts.size(),
                                         batches.data() + segStart, bound - segStart, clearFirst);
             sb::gxsdl::snapshot_efb(copies[k].dest);          // snapshot this segment for its consumer
             segStart   = bound;
-            clearFirst = honorClearSeg && (copies[k].clear != 0);  // honor the clear only when enabled
+            // Clear after the mirror pre-pass (GC clears the EFB post-mirror-copy); otherwise honor the
+            // legacy SB_EFB_HONOR_CLEAR_SEG knob (still default-off for non-mirror copies).
+            clearFirst = isMirror || (honorClearSeg && (copies[k].clear != 0));
         }
         // Final segment: any scene tail past the last copy + the 2D imm overlay (the post pass).
         sb::gxsdl::draw_tev_segment(verts.data(), (int)verts.size(),

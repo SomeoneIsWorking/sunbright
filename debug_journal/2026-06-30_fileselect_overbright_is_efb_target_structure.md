@@ -748,3 +748,33 @@ The crux vs the earlier failed honor-clear: clear at the PH1/PH4 PHASE boundary 
 NOT at copy0's batch index (which cut mid-ph4 and dropped ph4 content). NEXT: confirm the native imm
 soft-focus quad covers the frame and faithfully re-displays texB (check its coverage/blend), then
 implement; verify each pass goes green with passdiff.py + the overbright number.
+
+### 2026-07-01 (same session) — the per-pass differ DISPROVES the "purely a composite/double-draw" diagnosis
+Implemented the phase-boundary off-screen composite (SB_FS_COMPOSITE, sms_boot_present.cpp: render ph1
+off-screen → snapshot mirror → CLEAR at the ph1End phase boundary → render ph4+ph6 → snapshot the
+soft-focus texB at nScenePushed → composite). It did NOT fix the overbright, and the per-pass differ +
+two phase-isolation runs (SB_ABLATE_PHASE + SB_SKIP_IMM, the 3D scene WITHOUT the soft-focus quad)
+showed WHY — the prior committed diagnosis was incomplete:
+
+1. **ph4+ph6 ALONE is still overbright.** Rendering only the main+post phases (drop ph1, drop the imm
+   soft-focus quad) → the sky checker + sea are STILL washed white (scratch/frames/diag_ph46only.png).
+   So a large part of the overbright is INTRINSIC to the single main-pass render — an additive/SCREEN
+   blend fidelity issue (the long-known multi-layer-blend trap), NOT the ph1 double-draw or the
+   composite. The render-to-EFB-texture composite cannot fix this; it's a per-pass TEV/blend problem.
+2. **The palm + A/B/C blocks render in the WRONG phase.** They appear ONLY in ph1 (unk40), never in
+   ph4/ph6 (diag_ph46only has Mario+island+beach+OPTIONS but NO palm, NO blocks). On GC the palm/blocks
+   are in the MAIN scene (oracle pass2 = the 320x224 soft-focus has them). So native's perform-list
+   phase assignment puts main-scene geometry into the unk40 MIRROR pre-pass. Any fix that renders ph1
+   off-screen (correct, since GC's pass1 mirror is near-empty) DROPS the palm/blocks. Root cause likely
+   in how native's SB_OWN_GXLIST drives the draw buffers across the perform lists (a buffer flushed/
+   emptied by unk40 so mPerformListGX gets nothing) — a draw-buffer/perform-list mechanics bug, separate
+   from the composite.
+
+NET: the file-select overbright is NOT one bug. It is at least (a) a per-pass additive/SCREEN blend
+over-brightness (intrinsic, reproduces in ph4+ph6 alone) AND (b) a phase-misassignment that puts
+palm/blocks in unk40 instead of the main pass — on TOP of (c) the ph1 double-draw the composite would
+fix. The SB_FS_COMPOSITE composite is committed but gated OFF (default = legacy cumulative) until (a)
+and (b) are fixed, because alone it drops the palm/blocks. The interleaved per-pass differ (passdiff.py)
+is what made this legible — each cause is now a separate, attackable image. NEXT: attack (a) first
+(compare ph4+ph6 single-pass vs oracle pass2 320x224 via passdiff — it's a clean per-pass blend diff
+now), since it's independent of the phase-misassignment and the composite.
