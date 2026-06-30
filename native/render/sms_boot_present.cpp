@@ -671,6 +671,29 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
         dump_range(0, nScenePushed, "scene_all");
     }
 
+    // SB_PASS_DUMP=1: the NATIVE side of the per-pass A/B differ (tools/render/passdiff.py). Dump
+    // native's CUMULATIVE framebuffer at each EFB-copy boundary — pass{k}_native = everything drawn
+    // up to copy k (the off-screen render-to-texture content at that boundary), the direct counterpart
+    // of the oracle's Dolphin-decoded efb1_n{k} dump (SUNBRIGHT_DUMP_EFB). pass3 (the visible frame)
+    // is the normal present (boot_NNNN.ppm). Comparing pass-by-pass localizes the FIRST divergent pass
+    // as an IMAGE — the interleaved divergence detector that replaces the per-process aggregate diff.
+    static const bool passDump = [](){ const char* v = std::getenv("SB_PASS_DUMP"); return v && v[0] && v[0] != '0'; }();
+    if (passDump && dumpThis && ncopies > 0 && !sceneFiltered) {
+        static std::vector<uint8_t> pass_pix;
+        for (int k = 0; k < ncopies; ++k) {
+            int bnd = copies[k].batch_index; if (bnd > nScenePushed) bnd = nScenePushed; if (bnd < 0) bnd = 0;
+            sb::gxsdl::frame_begin(c[0], c[1], c[2], c[3]);
+            sb::gxsdl::draw_tev(verts.data(), (int)verts.size(), batches.data(), bnd);
+            sb::gxsdl::frame_end();
+            pass_pix.assign((size_t)kW * kH * 4, 0);
+            sb::gxsdl::readback(pass_pix.data(), (int)kW, (int)kH);
+            char p[160]; std::snprintf(p, sizeof p, "scratch/frames/pass%d_native_%04d.ppm", k + 1, df);
+            write_ppm_buf(p, pass_pix.data(), kW, kH);
+            std::fprintf(stderr, "[passdump] pass%d_native = cumulative [0,%d) %dx%d copy(dest=%p %dx%d clear=%d)\n",
+                         k + 1, bnd, kW, kH, copies[k].dest, copies[k].wd, copies[k].ht, copies[k].clear);
+        }
+    }
+
     // SB_EFB_HONOR_CLEAR_SEG (default OFF): honor the EFB *clear* between segments. The GC clears the
     // EFB after the pre-pass/mirror copy so that off-screen render does NOT stay in the visible frame.
     // Honoring it is only correct once native's main pass redraws everything the pre-pass held — until

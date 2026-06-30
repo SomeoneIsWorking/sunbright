@@ -1046,6 +1046,17 @@ int main(int argc, char* argv[]) {
         Config::SetBase(Config::GFX_DUMP_TEXTURES, true);
         Config::SetBase(Config::GFX_HACK_SKIP_EFB_COPY_TO_RAM, false);
     }
+    // SUNBRIGHT_DUMP_EFB: dump every intra-frame EFB→texture copy as a Dolphin-decoded PNG
+    // (efb1_n######_WxH_F.png in Dump/Textures/<gameid>/), the GROUND-TRUTH per-pass framebuffer
+    // for the file-select render-to-EFB-texture composite. This is the ORACLE side of the per-pass
+    // A/B differ (tools/render/passdiff.py): pass1 = the 256x256 mirror, pass2 = the 320x224
+    // soft-focus, each decoded by Dolphin's own copy pipeline — no GC-tiled-format decode needed.
+    // Off by default (it Save()s every copy of every frame). Force copies to RAM so the EFB-copy
+    // pipeline runs the dump path.
+    if (getenv("SUNBRIGHT_DUMP_EFB")) {
+        Config::SetBase(Config::GFX_DUMP_EFB_TARGET, true);
+        Config::SetBase(Config::GFX_HACK_SKIP_EFB_COPY_TO_RAM, false);
+    }
     // Shader compilation (user-directed: NO ubershaders): synchronous specialized shaders +
     // persistent per-game pipeline cache + boot-time precompile of every cached pipeline.
     // The map-open/level-entry whole-game freezes were first-seen-material pipeline compiles
