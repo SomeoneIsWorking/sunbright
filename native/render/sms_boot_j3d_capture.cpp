@@ -929,6 +929,13 @@ extern "C" void sb_boot_capture_end_scene() {
 // Present drains the frame's captured scene: the vertex list + per-material batches. Returns the
 // vertex count; *batches/*nbatches point at the batch list. Marks the buffers consumed (next
 // append clears). The NvkTevBatch fragGlsl/tex pointers stay valid (owned by g_matcache).
+// Running counts of what's been captured into the current frame so far — used by scene_drive's
+// SB_PASS_VERTS diagnostic to attribute the per-pass vertex/batch deltas (which native sub-pass
+// — sky / scene-perform / chr / hud — contributes how much), to localize a geometry gap vs the
+// per-pass oracle. Cheap: just the live vector sizes.
+extern "C" int sb_boot_capture_vert_count(void)  { return (int)g_verts.size(); }
+extern "C" int sb_boot_capture_batch_count(void) { return (int)g_batches.size(); }
+
 int sb_boot_capture_tev_take(const NvkTevVertex** verts,
                              const NvkTevBatch** batches, int* nbatches) {
     if (verts)    *verts    = g_verts.empty() ? nullptr : g_verts.data();

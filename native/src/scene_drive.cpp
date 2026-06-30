@@ -100,6 +100,8 @@ void init_graphics() {
 extern "C" int sb_present_frame();   // native/render/sms_boot_present.cpp (settled-frame gate)
 extern "C" int  sb_boot_capture_begin_scene();  // sms_boot_j3d_capture.cpp — capture-once-per-present
 extern "C" void sb_boot_capture_end_scene();
+extern "C" int  sb_boot_capture_vert_count(void);   // sms_boot_j3d_capture.cpp — SB_PASS_VERTS diag
+extern "C" int  sb_boot_capture_batch_count(void);
 
 // Camera-settle detector. The option camera (CPolarSubCamera) SMOOTHLY lerps toward its target
 // over ~130 present frames AFTER the file-select choice state (unk10==2) is entered, so a frame
@@ -701,7 +703,24 @@ extern "C" bool sb_boot_drive_scene() {
 		return true;
 	}
 	if (sb_boot_capture_begin_scene()) {
+		// SB_PASS_VERTS: attribute the captured vertex/batch count to each native sub-pass (sky /
+		// scene-perform / chr / hud), so a geometry gap vs the per-pass GX-stream oracle (scene verts
+		// oracle 22723 vs native ~6531) can be localized to the pass that's short — likely the scene
+		// OBJECTS (palm/parrot/island) that perform(0x8) doesn't enter. Diagnostic-only; once/run.
+		const bool passDbg = [](){ const char* e = std::getenv("SB_PASS_VERTS"); return e && e[0] && e[0] != '0'; }();
+		static int s_passOnce = 0;
+		const bool passLog = passDbg && sb_camera_view_settled() && s_passOnce < 3;
+		auto passMark = [&](const char* name, int v0, int b0){
+			if (passLog) std::fprintf(stderr, "[pass-verts] %-14s +%6d verts  +%4d batches  (total %d/%d)\n",
+			    name, sb_boot_capture_vert_count()-v0, sb_boot_capture_batch_count()-b0,
+			    sb_boot_capture_vert_count(), sb_boot_capture_batch_count());
+		};
+		// Frame starts logically EMPTY: the capture buffer is cleared lazily on the first append of
+		// this present (g_consumed), so the live size still holds last frame here — baseline at 0 so
+		// the sky pass's delta == its own contribution, not a spurious negative.
+		int pv = 0, pb = 0;
 		drive_sky();
+		passMark("sky", pv, pb); pv = sb_boot_capture_vert_count(); pb = sb_boot_capture_batch_count();
 
 		// NPC CALC PASS (opt-in, WIP — SB_NPC_CALC=1). The conductor's live actors (NPCs) set their
 		// base TR matrix from mPosition only in TLiveActor::perform's calc branch (bit 0x2 →
@@ -716,6 +735,7 @@ extern "C" bool sb_boot_drive_scene() {
 			gpConductor->perform(0x2, &g_graphics);
 
 		scene->perform(0x8, &g_graphics);
+		passMark("scene-perform", pv, pb); pv = sb_boot_capture_vert_count(); pb = sb_boot_capture_batch_count();
 
 		// SB_SCENE_BUF=1: one-shot — count packets entered into the scene's own draw buffers
 		// (mDrawBuffers[0]=opa, [1]=xlu) after the children walk. Discriminates "map never
@@ -751,11 +771,14 @@ extern "C" bool sb_boot_drive_scene() {
 		// gameplay map, the player Mario (gpMarioOriginal) via the faithful TMario::calcView/entryModels.
 		if (const char* e = getenv("SB_NO_DRIVE_CHR"); !(e && e[0] && e[0] != '0'))
 			drive_chr();
+		passMark("chr", pv, pb); pv = sb_boot_capture_vert_count(); pb = sb_boot_capture_batch_count();
 
 		// In-game HUD overlay (coin/shine/timer/FLUDD). Drawn LAST so the 2D ortho overlay
 		// composites on top of the 3D scene. ON by default; SB_NO_HUD opts out.
 		if (const char* e = getenv("SB_NO_HUD"); !(e && e[0] && e[0] != '0'))
 			drive_hud();
+		passMark("hud", pv, pb);
+		if (passLog) ++s_passOnce;
 
 		sb_boot_capture_end_scene();
 	}
