@@ -29,6 +29,7 @@
 #include <Camera/Camera.hpp>                            // gpCamera (CPolarSubCamera)
 #include <Camera/CameraOption.hpp>                       // gpCameraOption (title/load pan state)
 #include <MoveBG/MapObjOption.hpp>                        // TFileLoadBlock
+#include <GC2D/GCConsole2.hpp>                            // TGCConsole2 (in-game HUD console)
 #include <Player/Mario.hpp>                               // gpMarioOriginal (file-select Mario)
 #include <M3DUtil/M3UModelMario.hpp>                      // M3UModelMario::getModel (Mario body J3DModel)
 #include <M3DUtil/MActor.hpp>                             // MActor::getModel
@@ -371,6 +372,27 @@ void drive_chr() {
 
 	j3dSys.setUnk4C(3); b0->draw();
 	j3dSys.setUnk4C(4); b1->draw();
+}
+
+// In-game HUD (TGCConsole2 = "GCコンソール"): the coin/shine/timer/life counters + FLUDD water
+// gauge, drawn from the J2DSetScreen built off "standard_1.blo". On real HW the master GX
+// perform-list delivers bit 0x8 to the console's perform → it draws. In sms-boot the perform-list
+// masks the 2D draw bit (same dropped-draw-bit class as the sky/map/Chr groups), so the HUD never
+// reaches the screen — the SAME reason drive_sky/drive_chr exist. Mirror them: find the console by
+// its Shift-JIS name and call perform(0x8) directly. The freshly-ported TGCConsole2::perform
+// (reference/sms GCConsole2.cpp) builds a J2DOrthoGraph from the viewport and draws unkB0, which
+// flows through the J2D imm-capture path → SDL3-GPU. ON by default (SB_NO_HUD opts out).
+void drive_hud() {
+	TGCConsole2* console = JDrama::TNameRefGen::search<TGCConsole2>("GCコンソール");
+	if (!console) {
+		if (dbg()) { static long n=0; if((++n%200)==1)
+			std::fprintf(stderr, "[drive-hud] no 'GCコンソール' found (not loaded this scene)\n"); }
+		return;
+	}
+	// param_1 & 0x8 = the J2D draw branch (the only branch the stage-1 port implements).
+	console->perform(0x8, &g_graphics);
+	if (dbg()) { static long n=0; if((++n%200)==1)
+		std::fprintf(stderr, "[drive-hud] drove TGCConsole2::perform(0x8) console=%p\n", (void*)console); }
 }
 } // namespace
 
@@ -720,6 +742,11 @@ extern "C" bool sb_boot_drive_scene() {
 		// gameplay map, the player Mario (gpMarioOriginal) via the faithful TMario::calcView/entryModels.
 		if (const char* e = getenv("SB_NO_DRIVE_CHR"); !(e && e[0] && e[0] != '0'))
 			drive_chr();
+
+		// In-game HUD overlay (coin/shine/timer/FLUDD). Drawn LAST so the 2D ortho overlay
+		// composites on top of the 3D scene. ON by default; SB_NO_HUD opts out.
+		if (const char* e = getenv("SB_NO_HUD"); !(e && e[0] && e[0] != '0'))
+			drive_hud();
 
 		sb_boot_capture_end_scene();
 	}
