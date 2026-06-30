@@ -776,6 +776,19 @@ extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
         fill_batch_material(b, *me);
         b.phase = (uint8_t)g_capture_phase;
         b.dbgName = g_capture_drawbuf;
+        // SB_B76_DBG: identify the b76 overbright draw at its TRUE source. The dbgName ("DrawBuf
+        // MapXlu") is a GLOBAL stamped by the last TDrawBufObj::perform and can be STALE for a draw
+        // that is NOT a draw-buffer flush. Print the captured material's model+modelData name, the
+        // live colorUpdate/alphaUpdate, the phase, and the draw-buffer name as it stands — so the
+        // post-pass white-saturating composite (key eb5c8e74) is attributed to its real owner.
+        if (const char* d = std::getenv("SB_B76_DBG"); d && d[0] && d[0] != '0'
+            && (unsigned)(me->key) == 0xc39d96b8u /* low32 of eb5c8e74c39d96b8 */) {
+            int cu = 1, au = 1; sb_gx_get_color_alpha_update(&cu, &au);
+            std::fprintf(stderr, "[b76] phase=%d drawbuf=\"%s\" liveCU=%d liveAU=%d model=%p modelData=%p mat=%p key=%llx vc=%u\n",
+                         g_capture_phase, g_capture_drawbuf ? g_capture_drawbuf : "(none)",
+                         cu, au, (void*)model, (void*)model->getModelData(), (void*)mat,
+                         (unsigned long long)me->key, vcount);
+        }
         g_batches.push_back(b);
         g_last_mat = mat;
     }
