@@ -191,3 +191,44 @@ water is transparent blue/teal. Candidates, to settle by VALUE:
 NEXT = extend the oracle with the per-stage TEV combiner dump (#2), compare to native's frag for the MapXlu
 sea-water material, and fix whichever of CLR0 / TEV-gen / mirror-binding diverges. Verify with
 fileselect_overbright.py (42.7 → ~14) WITHOUT ablating b76.
+
+## UPDATE 2026-06-30 (latest, commit 004267a) — per-stage TEV oracle REFUTES CLR0/TEV-gen/mirror; cause = native paints a [noC][noA] volume
+Built the per-stage TEV combiner value oracle the prior handoff's "next task" called for
+(`gxtev_summary.h` pure decoder + render_test `gxtev` unit, 20/20; `SUNBRIGHT_DBG_GXTEV` in
+gx_parse/gx_capture snapshots per-stage color_env/alpha_env + TEV regs per draw). Ran it on the
+settled oracle (build/sunbright, frame 6) and diffed against native's `scratch/frames/bfrag_76.glsl`.
+
+**RESULT — all three handoff candidates REFUTED by value:**
+- The oracle's settled frame has exactly TWO SRCALPHA/SRCCLR (bm=4/2) draws:
+  - **draw#1096 pass2(MAIN), tev=3, `[noC][noA]`, 11 verts, persp, regs all 255** — combiner
+    `s0 d=c0.rgb; s1 d=ras.rgb a=ZERO b=c1.rgb c=prev sc=x2 clamp; s2 d=prev` = **byte-for-byte
+    native's bfrag_76**. GXSetColorUpdate AND AlphaUpdate FALSE ⇒ writes NOTHING on GC (a
+    depth/occlusion/mask volume).
+  - **draw#1100 pass3(POST), tev=2, VISIBLE, reg1≈(194,242,190) blue** — the genuinely visible
+    translucent composite; a DIFFERENT 2-stage combiner.
+  There is **NO visible 3-stage SRCALPHA/SRCCLR draw** anywhere — that combiner ONLY ever appears
+  as the invisible `[noC][noA]` volume.
+- So native's **TEV-gen is faithful** (the 3-stage combiner is reproduced register-for-register)
+  and **CLR0 is faithful** (vColor≈0.87 matches the white-reg occlusion volume, whose vColor is
+  irrelevant since it writes no color). The combiner doesn't sample texture color ⇒ **not a mirror
+  reflection** either. CLR0 / TEV-gen / mirror are all NOT the bug.
+
+**THE ACTUAL CAUSE (structural, by value):** native paints (cU=1) a draw GC marks no-color-no-alpha.
+Native batch (SB_BATCH_DBG settled): `b76 ph6 bm=1/4/2 cU=1 aU=0 key=eb5c8e74 drawbuf="DrawBuf
+MapXlu"`, and `b12 ph1` is the SAME key/geometry. So native captures the SAME MapXlu volume in
+**ph1 (unk40 pre-pass) AND ph6 (mPerformListGXPost)**, both with stale cU=1 — whereas GC draws the
+matching combiner ONCE in **pass2 (MAIN scene, mPerformListGX = ph4)** with cU=0,aU=0. native does
+NOT capture it in ph4 at all. The captured `cU=1,aU=0` is exactly `TMario::drawLogic`'s/water-volume
+RESTORE state (cU=TRUE,aU=FALSE) — native reads colorUpdate from the wrong pass.
+
+`MarDirectorPreEntry.cpp` pushes "DrawBuf MapXlu" with flag **0x480** (frameInit|setDrawBuffer, NO
+draw bit 0x8) — same "entered-but-not-drawn-here" mechanism as the sky buffers (s28 journal). The
+actual MapXlu DRAW (bit 0x8) fires from a different perform-list entry. native's draw-buffer flush
+runs in ph1/ph6, not the GC main pass — so the [noC][noA] volume is composited visible + the EFB
+pre-pass (ph1) is composited into the visible FB instead of being an off-screen copy.
+
+**NEXT (the real fix — structural, the same EFB/pass-routing issue this journal opened with):** make
+native draw the MapXlu buffer in the correct (main) pass with the live colorUpdate GC uses, so the
+[noC][noA] volume writes no color; and/or stop compositing the ph1 off-screen pre-pass into the
+visible framebuffer. NOT a combiner/CLR0/mirror fix. Verify: fileselect_overbright.py 42.7→~14
+without ablating b76.
