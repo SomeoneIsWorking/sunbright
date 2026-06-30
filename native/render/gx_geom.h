@@ -75,6 +75,11 @@ struct NvkTevBatch {
     // (1..3) render to OFF-SCREEN EFB regions on GC (copied to textures, sampled later) — they
     // must NOT be alpha-composited into the visible framebuffer.
     uint8_t phase = 0;
+    // Debug-only: the draw-buffer name active when this batch was captured (TDrawBufObj::getName(),
+    // static string), for attributing a batch to its source buffer in the overbright harness. nullptr
+    // if not captured from a TDrawBufObj draw (e.g. a directly-performed TViewObj). Not used by the
+    // renderer.
+    const char* dbgName = nullptr;
 };
 
 } // namespace sb::render

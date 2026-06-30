@@ -604,6 +604,7 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
                          b.push.tevreg[0][0],b.push.tevreg[0][1],b.push.tevreg[0][2],b.push.tevreg[0][3],
                          b.push.tevreg[1][0],b.push.tevreg[1][1],b.push.tevreg[1][2],b.push.tevreg[1][3],
                          b.tex[0].efb_src, b.tex[1].efb_src);
+            std::fprintf(stderr, "[batchbuf] b%d drawbuf=\"%s\"\n", bi, b.dbgName ? b.dbgName : "(none)");
             // Dump the generated TEV fragment shader for the composite batches (dst_factor SRCCLR/
             // INVSRCCLR — the over-bright class) so the combiner that produces `src` is inspectable.
             if (b.fragGlsl && (b.dst_factor == 2 || b.dst_factor == 3)) {

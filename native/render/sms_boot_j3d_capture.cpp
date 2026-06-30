@@ -187,6 +187,8 @@ bool g_consumed = true;
 // Stamped onto every batch opened while set; lets the overbright harness attribute an over-composited
 // layer to the source pass (the EFB pre-passes 1..3 are off-screen on GC and shouldn't composite).
 int g_capture_phase = 0;
+// Active draw-buffer name (TDrawBufObj::getName()), stamped onto batches for overbright attribution.
+const char* g_capture_drawbuf = nullptr;
 // EFB→texture copy boundaries recorded during the scene capture (GXCopyTex → sb_boot_capture_efb_copy).
 // Each marks a render-target boundary at batch_index: the EFB so far is snapshotted to `dest` (a host
 // pointer into guest RAM, matchable against a later batch's resolved texmap src) and, if clear, wiped.
@@ -773,6 +775,7 @@ extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
         b.vstart = vstart; b.vcount = vcount;
         fill_batch_material(b, *me);
         b.phase = (uint8_t)g_capture_phase;
+        b.dbgName = g_capture_drawbuf;
         g_batches.push_back(b);
         g_last_mat = mat;
     }
@@ -941,6 +944,12 @@ extern "C" int sb_boot_capture_begin_scene() {
 // (1=unk40, 2=unk38, 3=unk3C, 4=mPerformListGX, 5=Silhouette, 6=mPerformListGXPost) so every batch
 // captured carries its source pass. Reset to 0 in end_scene.
 extern "C" void sb_boot_capture_set_phase(int phase) { g_capture_phase = phase; }
+
+// Active draw-buffer name, stamped by TDrawBufObj::perform(flag&8) before mDrawBuffer->draw() flushes
+// it (the J3DShape::draw tap source). Lets the overbright harness attribute a batch (e.g. b76) to its
+// source draw buffer ("DrawBuf Sky Xlu" / "...LensFlare" / etc.) by NAME instead of guessing. The name
+// strings are static (the draw buffers outlive the program), so the pointer is safe to keep on a batch.
+extern "C" void sb_boot_capture_set_drawbuf(const char* name) { g_capture_drawbuf = name; }
 
 // GXCopyTex tap (gx_fb_impl.cpp): record an EFB-copy render-target boundary at the current batch
 // position. Only while a scene capture is live (not locked) so it aligns with g_batches indices.
