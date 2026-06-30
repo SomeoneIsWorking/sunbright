@@ -67,6 +67,11 @@ struct NvkTevBatch {
     // alpha masking the water-volume / silhouette composites depend on.
     uint8_t color_update = 1, alpha_update = 1;
     uint8_t dst_alpha_force = 0, dst_alpha_val = 0;
+    // Active TEV stage count (NgxTevState.num_stages, == GX GENMODE numtevstages+1). Carried purely
+    // so the per-draw GX-state diff (SB_GXDRAW vs the oracle's SUNBRIGHT_DBG_GXDRAW) can match a
+    // native batch to its oracle draw by blend/tev SIGNATURE (the engines merge differently, so an
+    // index-align is impossible; signature is the renderer-neutral join key). Not used by the renderer.
+    uint8_t num_stages = 0;
     // Which TMarDirector perform list this batch was captured from, under SB_OWN_GXLIST
     // (set via sb_boot_capture_set_phase before each list runs). Lets the overbright harness
     // attribute a duplicated/over-composited layer to its source pass: 0=unknown/hand-driven,

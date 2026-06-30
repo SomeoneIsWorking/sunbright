@@ -209,7 +209,8 @@ bool gxp_parse_frame(const u8* p, size_t n, GxFrameInfo& out, bool recurse_dls) 
     // Record the per-draw blend/TEV oracle only when a consumer asked for it (env-gated in
     // gx_capture.cpp). The blend/genmode state persists across frames like CP state (J3D reprograms
     // it per material), so a frame that opens mid-material still sees the live equation.
-    g_an.record_draws = (std::getenv("SUNBRIGHT_DBG_GXBLEND") != nullptr);
+    g_an.record_draws = (std::getenv("SUNBRIGHT_DBG_GXBLEND") != nullptr)
+                        || (std::getenv("SUNBRIGHT_DBG_GXDRAW") != nullptr);
     g_an.record_tev   = (std::getenv("SUNBRIGHT_DBG_GXTEV") != nullptr);
     if (g_an.record_tev) g_an.record_draws = true;   // TEV snapshot pairs with the draw record (same index)
     u32 pos = 0;

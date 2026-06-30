@@ -120,6 +120,7 @@ struct MatEntry {
     uint64_t key = 0;
     NvkTevPush push{};
     uint8_t z_test = 1, z_func = 3, z_write = 1, blend_mode = 0, src_factor = 1, dst_factor = 0;
+    uint8_t num_stages = 0;   // NgxTevState.num_stages (GX GENMODE numtevstages+1) — for the SB_GXDRAW diff
     std::vector<SbTexImage> tex;
     // Per colour-channel raster BASE colour (first slice = UNLIT): the material colour
     // register, used as the GX raster colour unless the channel sources from the vertex.
@@ -227,6 +228,7 @@ const MatEntry* get_mat_entry(J3DMaterial* mat, J3DTexture* modelTex) {
         e.fog_type = st.pe.fog_type; e.fog_startz = st.pe.fog_startz; e.fog_endz = st.pe.fog_endz;
         e.z_test = st.pe.z_test; e.z_func = st.pe.z_func; e.z_write = st.pe.z_write;
         e.blend_mode = st.pe.blend_mode; e.src_factor = st.pe.src_factor; e.dst_factor = st.pe.dst_factor;
+        e.num_stages = st.num_stages;
         // Bisection: SB_TEV_NOBLEND forces every batch opaque (no blend) to test whether
         // blend-over-the-black-clear is what's blanking the scene.
         static const bool noblend = [](){ const char* v = std::getenv("SB_TEV_NOBLEND"); return v && v[0] && v[0] != '0'; }();
@@ -347,6 +349,7 @@ void fill_batch_material(NvkTevBatch& b, const MatEntry& e) {
     b.push = e.push; b.shaderKey = e.key; b.fragGlsl = e.frag.c_str();
     b.z_test = e.z_test; b.z_func = e.z_func; b.z_write = e.z_write;
     b.blend_mode = e.blend_mode; b.src_factor = e.src_factor; b.dst_factor = e.dst_factor;
+    b.num_stages = e.num_stages;
     // GXSetColorUpdate / GXSetAlphaUpdate are LIVE global GX state at draw time, NOT in the
     // J3DMaterial PE block — read them now (the batch is opened during the shape's draw). The
     // file-select composite3 (b76, SRCALPHA/SRCCLR) runs under GXSetColorUpdate(GX_FALSE): the GC
@@ -1074,6 +1077,26 @@ extern "C" void sb_boot_capture_end_scene() {
                      "g_verts=%zu skipped=%ld\n",
                      n, g_present_shapes, g_present_idx, g_present_idx / 3,
                      g_verts.size(), g_present_skipped);
+        std::fflush(stderr);
+    }
+    // ORDERED per-draw GX-state dump (SB_GXDRAW) — one line per batch in draw/flush order. Mirrors
+    // the oracle's SUNBRIGHT_DBG_GXDRAW (gx_capture.cpp) field-for-field so tools/render/gxstate_diff.py
+    // can group both sides by GX-state SIGNATURE (blend/tev/proj) and diff colorUpdate per signature —
+    // the deterministic native-vs-oracle diff that ends the pass/phase log-reading oscillation. The
+    // native blend_mode (GXBlendMode: 0 none / 1 blend / 2 logic / 3 subtract) is normalised to the
+    // oracle's blend_enable + subtract booleans. proj is not per-batch on native, so emit '?'.
+    if (const char* e = std::getenv("SB_GXDRAW"); e && e[0] && e[0] != '0') {
+        static long fr = 0; ++fr;
+        for (size_t i = 0; i < g_batches.size(); ++i) {
+            const NvkTevBatch& b = g_batches[i];
+            int be  = (b.blend_mode == 1 || b.blend_mode == 3) ? 1 : 0;  // BLEND or SUBTRACT both enable blending
+            int sub = (b.blend_mode == 3) ? 1 : 0;
+            std::fprintf(stderr,
+                "[gxdraw] fr=%ld i=%zu phase=%u drawbuf=%s key=%08x cU=%u aU=%u be=%d src=%u dst=%u sub=%d tev=%u v=%u\n",
+                fr, i, b.phase, b.dbgName ? b.dbgName : "-",
+                (unsigned)(b.shaderKey >> 32), b.color_update, b.alpha_update,
+                be, b.src_factor, b.dst_factor, sub, b.num_stages, b.vcount);
+        }
         std::fflush(stderr);
     }
 }

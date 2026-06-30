@@ -183,6 +183,19 @@ extern "C" void sb_gx_capture_frame_boundary() {
         for (const std::string& line : gxblend::summarize(ds))
             fprintf(stderr, "  %s\n", line.c_str());
     }
+    // ORDERED per-draw GX-state dump (SUNBRIGHT_DBG_GXDRAW): one line per draw in stream/draw order
+    // (NOT run-length-collapsed like GXBLEND), mirroring native's SB_GXDRAW so tools/render/
+    // gxstate_diff.py can group both engines by GX-state SIGNATURE and diff colorUpdate per signature.
+    // Same factor-name table as GXBLEND. Bounded to the settled frame window [4,8).
+    if (std::getenv("SUNBRIGHT_DBG_GXDRAW") && g_frame_no >= 4 && g_frame_no < 8 && !fi.draws.empty()) {
+        for (size_t i = 0; i < fi.draws.size(); ++i) {
+            const auto& d = fi.draws[i];
+            fprintf(stderr,
+                "[gxdraw] fr=%ld i=%zu pass=%u cU=%u aU=%u be=%u src=%u dst=%u sub=%u tev=%u proj=%u v=%u\n",
+                g_frame_no, i, d.efb_pass, d.color_update, d.alpha_update, d.blend_enable,
+                d.src, d.dst, d.subtract, d.numtevstages, d.proj_type, d.prims);
+        }
+    }
     // PER-STAGE TEV COMBINER value oracle (SUNBRIGHT_DBG_GXTEV): for each DISTINCT TEV combiner among
     // the SRCALPHA/SRCCLR draws (the sea-water/composite signature that native paints opaque-white, b76)
     // decode every active stage's color/alpha combiner (a/b/c/d inputs, bias, op, scale, clamp, dest) +

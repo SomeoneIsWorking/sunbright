@@ -595,3 +595,65 @@ draw order within a frame) using the oracle's gx_stream/gx_parse capture (runtim
 native per-draw dump. That turns "native cU diverges somewhere" into the EXACT draw + the missing
 GXSetColorUpdate(FALSE)/extra TRUE. THEN either (a) fix native's colorUpdate sequence so b76 captures [noC],
 or (b) implement the off-screen-render + pass3-composite split. Do NOT do another speculative blend ablation.
+
+## UPDATE 2026-07-01 (DETERMINISTIC DIFF BUILT — b76 was a red herring; divergence is the WHOLE pass structure)
+Built the per-draw native-vs-oracle GX-state diff the prior NEXT called for. It ends the b76/pass/phase
+oscillation outright by comparing the two engines by VALUE, deterministically, across EVERY draw — not the
+single b76 mask.
+
+**Tooling (committed):**
+- Oracle ordered per-draw dump: `SUNBRIGHT_DBG_GXDRAW=1` on build/sunbright → `[gxdraw] fr=.. i=.. pass=..
+  cU=.. aU=.. be=.. src=.. dst=.. sub=.. tev=.. proj=.. v=..` (one line per draw, in draw order, frames 4-7;
+  gx_capture.cpp after the GXBLEND block; record_draws now also enabled by GXDRAW in gx_parse.cpp).
+- Native ordered per-draw dump: `SB_GXDRAW=1` on build-native/sms-boot → same `[gxdraw]` fields per BATCH in
+  flush order (sms_boot_j3d_capture.cpp `end_scene`). Added `num_stages` to NvkTevBatch+MatEntry so the TEV
+  stage count (the join key) is on the batch.
+- `tools/render/gxstate_diff.py` — groups BOTH engines' draws by GX-state SIGNATURE (be,src,dst,sub,tev) and
+  reports each engine's colorUpdate/alphaUpdate value-set + draw/vert counts + passes/phases per signature.
+  Signature is the only valid cross-engine join (native merges shapes by material+phase → ~79 batches; oracle
+  is ~1170 per-primitive draws — index-align is impossible). `tools/render/gxstate_diff.sh` captures both +
+  diffs. Artifact: `scratch/passes/gxstate_diff_result.txt`.
+
+**THE DECISIVE RESULT (settled file-select, oracle frame 6 vs native settled frame):**
+```
+ORACLE colorUpdate by EFB pass:        NATIVE colorUpdate by phase:
+  pass1 cU0: 653 draws, 3518v          phase1 cU1: 31 batches, 11331v
+  pass2 cU0: 435 draws, 3035v          phase4 cU1: 29 batches, 11286v
+  pass2 cU1:  12 draws,   96v          phase6 cU1: 19 batches,  7551v
+  pass3 cU0:  11 draws,   44v          (NOTHING is cU0 on native)
+  pass3 cU1:  59 draws, 1484v
+```
+- **The oracle writes COLOUR for only ~1580 verts** (pass3's 1484v visible composite + pass2's 96v). pass1
+  (653 draws — the MIRROR reflection render) and pass2-main (435 draws) are **entirely cU=0** = off-screen
+  render-to-EFB-texture (copied out, then the visible pass3 composite SAMPLES them). Confirmed pass-level, not
+  per-draw: ALL of pass1 and 97% of pass2 are cU=0.
+- **Native writes COLOUR for ALL 30168 verts** (everything cU=1), across ph1/ph4/ph6, and **ph1 (11331v) ≈
+  ph4 (11286v) = the scene painted TWICE** (the unk40 pre-pass + the main pass, both composited visibly).
+- **The b76 mask is NOT special.** The diff shows **11 signatures** with the identical cU divergence (oracle
+  cU0 / native cU1), e.g. `SRCALPHA/INVSRCALPHA tev=5` (443 oracle draws p1 cU0 vs 30 native batches cU1),
+  `ONE/INVSRCCLR tev=1` (76 cU0 vs 2 cU1), … and the tev=3 SRCALPHA/SRCCLR mask is just ONE of them. Chasing
+  b76 alone was the wrong unit the whole time — it is the entire off-screen pass structure native flattens.
+- **Native LACKS the visible pass3 composite entirely.** The oracle's `SRCALPHA/SRCCLR tev=2` (26 draws,
+  1352v, p3, cU1 — the visible sea/scene composite that samples the EFB textures) and `SRCALPHA/INVSRCALPHA
+  tev=3` (30 draws, 120v, p3 ortho) are **oracle-only** — native has no batch of that signature. Native shows
+  the scene only because it paints the off-screen [noC] passes directly.
+
+**⇒ This DEFINITIVELY confirms the structural diagnosis and kills the "fix b76's colorUpdate" path (3a):**
+honoring cU per-draw makes native draw the off-screen passes with no colour → BLACK, because native has no
+pass3 composite to show the scene. The ONLY faithful fix is path (3b), the EFB-copy-texture composite:
+render pass1 (mirror) + pass2 (main) OFF-SCREEN honouring cU=0, copy EFB→texture at each boundary (native
+already records both copies: 256×256 mirror clear=1, 320×224 soft-focus clear=0), then render the pass3
+composite (cU=1) SAMPLING those snapshots as the visible image. Native has the snapshot infra
+(draw_tev_segment/snapshot_efb/efb_src) but does NOT yet (a) suppress painting the off-screen passes nor
+(b) reproduce the 1352v+120v pass3 composite draws.
+
+**ONE unresolved RE question the composite port hinges on (next step):** if pass1+pass2 are cU=0 (write no
+colour), what colour does the pass3 composite SAMPLE from the EFB-copy textures? Either the EFB copies grab
+the CLEAR colour + an alpha/depth mask (so pass3 reconstructs colour via its TEV sampling a detail/gradient
+texture, not the scene), OR a small set of cU=1 draws (pass2's 12 / pass3's own) build the visible colour and
+the [noC] passes are pure depth/silhouette masks. Resolve by dumping the EFB-copy FORMAT (color vs
+z/alpha) from the oracle command stream (SUNBRIGHT_DBG_GXCOPY + the copy's pixel-format BP) and reading the
+pass3 composite's TEV combiner (SUNBRIGHT_DBG_GXTEV draw#1184) — both tools already exist. THEN implement the
+composite. Verify every step with `tools/render/fileselect_overbright.py` (42.7 now) AND re-run
+`tools/render/gxstate_diff.sh` (the off-screen signatures must flip native cU1→cU0, and a native pass3
+composite signature must appear). Do NOT add another speculative blend ablation.
