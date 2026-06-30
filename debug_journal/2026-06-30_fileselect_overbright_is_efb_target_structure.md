@@ -123,3 +123,40 @@ not pixel knobs):
 no regression) + reusable tooling (`SB_SEG_DUMP`, `SB_SKIP_BIDX`, `sb_gx_bound_tex_image`,
 `sb_boot_capture_efb_copies`). The overbright's true owner is the sky/post multi-layer blend — the
 next target, to be driven by command-stream per-layer comparison, not pixels.
+
+## UPDATE 2026-06-30 (later, commit 3fb6917) — VALUE oracle built; overbright = ONE batch b76 (composite/occlusion)
+Built the command-stream per-draw BLEND/TEV value oracle (the handoff's next task), driven by VALUE:
+- `gx_parse.{h,cpp}` records per-draw GX pixel state (blend src/dst/subtract/enable/logicop, color/alpha
+  update, numtevstages, EFB pass, projType) → `GxFrameInfo::draws`; `SUNBRIGHT_DBG_GXBLEND` emits it via
+  the pure `gxblend_summary.h` (run-length-deduped, factor-named). `render_test` `gxblend` unit (TDD, 19/19).
+- Native side: `SB_BATCH_DBG` now also prints per-batch TEV konst/tevreg + color/alpha-update + bfrag glsl.
+
+**The overbright is ONE batch.** Ablation (localize-only; the DIAGNOSIS is the value oracle): drop the
+post pass (ph6) 42.7→13.6; drop just **b76** 42.7→**14.2**; drop the HUD 42.7→42.9 (irrelevant). So b76
+alone owns the wash.
+
+**b76 identity + why it washes (by value):** full-screen quad, `bm=1/4/2` (SRCALPHA/SRCCLR), 3-stage TEV,
+256×256 84×-tiled tex, drawn in BOTH ph1 (as b12) and ph6. Its generated frag (scratch/frames/bfrag_76.glsl)
+saturates `src` to WHITE: stage-1 `prev.rgb = (rastemp=vColor 0.87→222) << 1 = 444 → clamp 255`. Then
+SRCALPHA/SRCCLR over the scene = white wash.
+
+**The oracle's matching draw writes NOTHING.** `SUNBRIGHT_DBG_GXBLEND` frame 6: the **pass2** (main scene,
+between the 2 EFB copies) 3-stage SRCALPHA/SRCCLR is **`[noC][noA]`** = GXSetColorUpdate/AlphaUpdate FALSE,
+11 verts, persp. So on GC this is an invisible occlusion/depth-only pass (sun-occlusion / lens-glow class).
+Native draws it VISIBLE-WHITE → the overbright. b76 also has absurd NDC (`ndcX[-106119,124861]`, 165× off
+screen) = mis-projected (a small/ortho pass blown full-screen), and lands in the WRONG passes (ph1+ph6, not
+the oracle's pass2).
+
+**Fix landed (faithful infra, no regression @42.7):** J3D batches now capture the LIVE GXSetColorUpdate/
+AlphaUpdate global state (J3DPEBlock has no such field) instead of hardcoding 1 — 30 batches now correctly
+write no alpha (`sb_gx_get_color_alpha_update`, gx_impl.cpp). This did NOT fix b76: GXSetColorUpdate(FALSE)
+is called 250k× but is NOT active at b76's capture moment (`SB_DBG_COLUPD` trace). So native's perform-list
+execution doesn't wrap b76's draw in colorUpdate(FALSE) the way GC does.
+
+**NEXT (the real fix, well-defined):** identify b76's effect/model (it's in the scene draw buffers, drawn
+by unk40 AND post — likely the sun-occlusion / lens-glow / specular-sheen "[noC]" occlusion volume) and
+make native honor its colorUpdate=FALSE (and/or its correct ortho projection). Either (a) find the
+perform-list entry / TViewObj (initECDisp lensGlow/specularSheen/composite3, or the scene occlusion model)
+that issues GXSetColorUpdate(FALSE) and ensure it's live at the J3D capture tap, or (b) extend the oracle to
+dump the per-stage TEV combiner so the white-saturation can be confirmed faithful vs a generation bug.
+Verify with `tools/render/fileselect_overbright.py` (42.7 now) — target the ~14 floor WITHOUT ablating b76.
