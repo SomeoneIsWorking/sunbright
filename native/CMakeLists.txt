@@ -335,6 +335,19 @@ add_test(NAME native_j3dload_test COMMAND sms-j3dload_test
          WORKING_DIRECTORY "${SMS_NATIVE_REPO_ROOT}")
 
 # ---------------------------------------------------------------------------
+# parity_sweep_logic — Python unit tests for the CROSS-ENGINE comparison brain
+# (tools/render/parity_sweep.py): the geometry + LIGHTING window-summary diff used
+# to compare sms-boot vs the Dolphin-GX/ngx oracle for title/file-select fidelity.
+# Pure logic over synthetic JSONL; no ROM/GPU/Dolphin. TDD ground truth for the
+# light-count/ambient/material/projType divergence detection.
+# ---------------------------------------------------------------------------
+find_program(PYTHON3_EXE NAMES python3 python)
+if(PYTHON3_EXE)
+    add_test(NAME parity_sweep_logic
+             COMMAND "${PYTHON3_EXE}" "${SMS_NATIVE_REPO_ROOT}/tools/render/parity_sweep_test.py")
+endif()
+
+# ---------------------------------------------------------------------------
 # sms-boot — the native bring-up executable: PlatformInit (--wrap=main) -> the game's
 # own main() (TApplication). Won't LINK until the remaining seams + game C++ stubs
 # resolve; the link failure reveals the true critical-path stub set. Opt-in (it is

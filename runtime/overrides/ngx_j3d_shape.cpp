@@ -2557,8 +2557,32 @@ void ngx_frame_publish() {
             }
             if (!on) { xmn=xmx=ymn=ymx=zmn=zmx=0.f; }
             std::fprintf(s_pf, "{\"frame\":%ld,\"nverts\":%ld,\"nbatch\":%d,\"geom\":{\"onscr\":%d,\"nan\":%d,"
-                         "\"ndc\":[%.4f,%.4f,%.4f,%.4f,%.4f,%.4f],\"cks\":%.3f,\"colcks\":%.3f}}\n",
+                         "\"ndc\":[%.4f,%.4f,%.4f,%.4f,%.4f,%.4f],\"cks\":%.3f,\"colcks\":%.3f}",
                          s_pfn++, nv, ndbatch, on, nan, xmn,xmx,ymn,ymx,zmn,zmx, cks, col);
+            // LIGHTING + projType — the CROSS-ENGINE comparable game-output state (same field names
+            // + 0..1 scale as sms-boot's sb_parity_emit, so parity_sweep.py compares them directly).
+            // The 8 hardware lights (g_light, captured at GXLoadLightObjImm — the state the GPU uses),
+            // the GXSetChanAmbColor ambient register (g_amb_reg, u8→0..1), and the GXSetChanColor
+            // material register (g_gx_matcol, u8→0..1). NOTE: we deliberately do NOT emit a `proj`
+            // field — its presence flips parity_sweep.py to per-frame mode, but the two engines number
+            // frames independently, so projType + lighting are compared via the cross-engine WINDOW
+            // SUMMARY (medians over the settled window). projType IS emitted (a single int, robust).
+            {
+                int ln = 0; for (int i = 0; i < 8; ++i) if (g_light[i].valid) ++ln;
+                std::fprintf(s_pf, ",\"projType\":%u,\"lights\":{\"n\":%d,\"l\":[", g_proj_type, ln);
+                int em = 0;
+                for (int i = 0; i < 8; ++i) {
+                    if (!g_light[i].valid) continue;
+                    std::fprintf(s_pf, "%s{\"p\":[%.1f,%.1f,%.1f],\"c\":[%.3f,%.3f,%.3f]}", em++ ? "," : "",
+                                 g_light[i].pos[0], g_light[i].pos[1], g_light[i].pos[2],
+                                 g_light[i].color[0], g_light[i].color[1], g_light[i].color[2]);
+                }
+                std::fprintf(s_pf, "]},\"amb\":[%.3f,%.3f,%.3f],\"matc\":[%.3f,%.3f,%.3f,%.3f]",
+                             g_amb_reg[0][0]/255.f, g_amb_reg[0][1]/255.f, g_amb_reg[0][2]/255.f,
+                             g_gx_matcol[0][0]/255.f, g_gx_matcol[0][1]/255.f,
+                             g_gx_matcol[0][2]/255.f, g_gx_matcol[0][3]/255.f);
+            }
+            std::fprintf(s_pf, "}\n");
             std::fflush(s_pf);
         }
     }

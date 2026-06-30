@@ -169,11 +169,25 @@ def _median(xs):
     xs = sorted(xs); n = len(xs)
     return 0 if not n else (xs[n//2] if n % 2 else 0.5*(xs[n//2-1]+xs[n//2]))
 
+def _mode(xs):
+    """Most-common value (for projType, a discrete int)."""
+    if not xs:
+        return None
+    counts = {}
+    for x in xs:
+        counts[x] = counts.get(x, 0) + 1
+    return max(counts.items(), key=lambda kv: kv[1])[0]
+
 def _summarize(frames):
-    """Convention-robust window summary: median DISPLAYED BATCH count (the robust cross-engine
-    geometry signal — independent of clip methodology), total verts, on-screen count, and
-    on-screen screen-XY extent."""
+    """Convention-robust window summary over the SETTLED window. GEOMETRY: median DISPLAYED BATCH
+    count (the robust cross-engine geometry signal — independent of clip methodology), total verts,
+    on-screen count, and on-screen screen-XY extent. LIGHTING (added for the title/file-select
+    geometry+lighting parity work): median light count, per-channel median ambient + material colour,
+    and modal projection type. Lighting fields are renderer-neutral game output (both engines load the
+    SAME GX light/ambient/material state from the same guest RAM), so a median mismatch is a real
+    divergence even though frame indices don't align cross-engine."""
     nb, nv, on, w, h = [], [], [], [], []
+    ln = []; amb = [[], [], []]; matc = [[], [], [], []]; ptype = []
     for f in frames:
         g = f.get("geom", {})
         if g.get("onscr", 0) <= 0:   # skip blank/transition frames
@@ -181,13 +195,29 @@ def _summarize(frames):
         nb.append(f.get("nbatch", 0)); nv.append(f.get("nverts", 0)); on.append(g.get("onscr", 0))
         nd = g.get("ndc", [0,0,0,0,0,0])
         w.append(nd[1]-nd[0]); h.append(nd[3]-nd[2])
+        L = f.get("lights")
+        if L is not None and L.get("n") is not None:
+            ln.append(L.get("n", 0))
+        a = f.get("amb")
+        if a:
+            for i in range(min(3, len(a))): amb[i].append(a[i])
+        m = f.get("matc")
+        if m:
+            for i in range(min(4, len(m))): matc[i].append(m[i])
+        pt = f.get("projType")
+        if pt is not None:
+            ptype.append(pt)
     return {"frames": len(nv), "nbatch": _median(nb), "nverts": _median(nv), "onscr": _median(on),
-            "xw": _median(w), "yh": _median(h)}
+            "xw": _median(w), "yh": _median(h),
+            "lights_n": (_median(ln) if ln else None),
+            "amb": [_median(c) for c in amb] if amb[0] else None,
+            "matc": [_median(c) for c in matc] if matc[0] else None,
+            "projType": _mode(ptype) if ptype else None}
 
 def _diff_summary(A, B, pa, pb):
     sa, sb = _summarize(A), _summarize(B)
     print(f"cross-engine summary (no shared frame indices):")
-    print(f"  {'metric':12s} {'oracle':>14s} {'native':>14s}   relΔ")
+    print(f"  {'metric':14s} {'oracle':>14s} {'native':>14s}   relΔ")
     div = 0
     # nbatch is the PRIMARY (robust) signal: displayed batch/material count is independent of clip
     # methodology. on-screen verts is SECONDARY (confounded — sms-boot emits unclipped, the GX
@@ -199,8 +229,39 @@ def _diff_summary(A, B, pa, pb):
         rel = abs(va-vb) / max(1.0, abs(va), abs(vb))
         flag = "  <-- DIVERGE" if rel > tol else ""
         if rel > tol: div += 1
-        print(f"  {label:12s} {va:14.1f} {vb:14.1f}   {rel:5.2f}{flag}")
+        print(f"  {label:14s} {va:14.1f} {vb:14.1f}   {rel:5.2f}{flag}")
     print(f"  (* batches = robust signal; ~ on-screen verts confounded by clip methodology)")
+
+    # ── LIGHTING (geometry+lighting parity) ──────────────────────────────────────────────────────
+    # Renderer-neutral game output: both engines load the SAME lights/ambient/material from guest RAM,
+    # so a median mismatch over the settled window is a real divergence (sms-boot reading the wrong
+    # light/ambient/material, or driving a pass without its lights). Absolute tolerances (these are
+    # 0..1 colours / small integer counts, not large magnitudes where a relative tol makes sense).
+    print(f"  -- lighting --")
+    # Light count: integer; a difference >0.5 (i.e. ≥1 light) is a divergence.
+    if sa["lights_n"] is not None and sb["lights_n"] is not None:
+        va, vb = sa["lights_n"], sb["lights_n"]
+        flag = "  <-- DIVERGE" if abs(va-vb) > 0.5 else ""
+        if flag: div += 1
+        print(f"  {'light count':14s} {va:14.1f} {vb:14.1f}   {abs(va-vb):5.1f}{flag}")
+    # Ambient + material colour: per-channel max abs delta of the channel medians (tol 0.02 = ~5/255).
+    for key, label in (("amb", "ambient"), ("matc", "material col")):
+        va, vb = sa[key], sb[key]
+        if va is None or vb is None:
+            continue
+        d = max((abs(x-y) for x, y in zip(va, vb)), default=0.0)
+        flag = "  <-- DIVERGE" if d > 0.02 else ""
+        if flag: div += 1
+        sva = "[" + ",".join(f"{x:.2f}" for x in va) + "]"
+        svb = "[" + ",".join(f"{x:.2f}" for x in vb) + "]"
+        print(f"  {label:14s} {sva:>14s} {svb:>14s}   {d:5.3f}{flag}")
+    # Projection type (0 persp / 1 ortho): discrete; any mode mismatch is a divergence.
+    if sa["projType"] is not None and sb["projType"] is not None:
+        va, vb = sa["projType"], sb["projType"]
+        flag = "  <-- DIVERGE" if va != vb else ""
+        if flag: div += 1
+        print(f"  {'projType':14s} {va:14d} {vb:14d}   {'-':>5s}{flag}")
+
     if sa["frames"] == 0 or sb["frames"] == 0:
         print(f"  WARN: a dump has 0 non-blank frames (oracle {sa['frames']}, native {sb['frames']})")
     print(f"summary: {div} metric(s) diverge beyond tolerance")
