@@ -657,3 +657,35 @@ pass3 composite's TEV combiner (SUNBRIGHT_DBG_GXTEV draw#1184) — both tools al
 composite. Verify every step with `tools/render/fileselect_overbright.py` (42.7 now) AND re-run
 `tools/render/gxstate_diff.sh` (the off-screen signatures must flip native cU1→cU0, and a native pass3
 composite signature must appear). Do NOT add another speculative blend ablation.
+
+### 2026-07-01 (same session, RE follow-up) — the RE question RESOLVED: the beach IS a cU=0 render-to-texture composite (confirms the fix is the composite)
+Pushed on the "if pass1/pass2 are cU=0, where's the colour?" question with the per-stage TEV oracle + the
+rendered PNG, and it resolves cleanly (no parse bug):
+- **The bit is NOT inverted / not misread.** Verified against known-visible draws: the ortho HUD (pass3,
+  proj=1) and the sea (pass3, SRCALPHA/SRCCLR) BOTH read **cU=1** correctly; the beach/palm/Mario/blocks
+  geometry (pass1, 653 draws, verified raw) reads **cU=0 AND aU=0**. So the visible scene geometry genuinely
+  renders with colorUpdate=FALSE. The whole frame has only **71 cU=1 draws** (pass2's 12 DSTALPHA composites +
+  pass3's 59) — far too few to BE the beach. The beach is therefore NOT drawn directly to the visible FB.
+- **EFB-copy structure (SUNBRIGHT_DBG_GXCOPY, frame 6):** 3 copies — `@0 ->XFB CLR` (display prev frame +
+  clear), `@653 ->TEX CLR` (after pass1 → copy to a texture + clear), `@1100 ->TEX` (after pass2 → copy to a
+  texture, no clear). So pass1 (653 cU=0 draws) renders the scene to EFB, copies it to a TEXTURE, clears;
+  pass2 (cU=0) renders more to EFB, copies to a 2nd texture; pass3 composites.
+- **pass3 composite TEV (SUNBRIGHT_DBG_GXTEV draw#1100, tev=2):** outputs the RASTER colour `reg1≈(194,242,
+  190)` teal modulated by the bound texture's ALPHA only — that specific draw is the flat teal SEA surface.
+  The 26 SRCALPHA/SRCCLR sea quads (1352v) + the ortho HUD are pass3's cU=1 set.
+- **CONCLUSION:** the file-select is a true **render-to-EFB-texture composite**: the scene is rendered with
+  colorUpdate=FALSE to fill the EFB, copied to textures at the copy boundaries, and the visible frame is built
+  by pass3 quads sampling those textures (plus the directly-drawn sea + HUD). colorUpdate=FALSE during the
+  scene render is faithful BECAUSE the EFB content is consumed via the copy, not shown directly. This
+  CONFIRMS (does not contradict) the committed conclusion: the only faithful native fix is the EFB-copy-
+  texture composite — there is no per-draw colorUpdate tweak that helps, because honouring cU=0 with no
+  composite = black, and native already paints everything to approximate the composite (→ overbright +
+  double-draw). The display mechanism to reproduce: render pass1→texA, render pass2→texB, then render pass3
+  sampling texA/texB as the visible image.
+- **STILL TO PIN before implementing:** which pass3 draw BLITS the scene texture (texA/texB) to screen — it's
+  NOT the SRCALPHA/SRCCLR sea quad (that's flat teal). Look for the early pass3 cU=1 large-coverage draw with
+  a non-SRCALPHA/SRCCLR blend (NONE or SRCALPHA/INVSRCALPHA) whose bound texmap == an EFB-copy dest. Then the
+  native segmented present (draw_tev_segment/snapshot_efb/efb_src already exist) must: render the cU=0 scene
+  into segment A (off-screen), snapshot to texA at the copy boundary, CLEAR, render segment B → texB, then
+  render the pass3 composite binding texA/texB. Native currently composites cumulatively (every segment LOAD)
+  → it shows the scene but over-bright/double; the fix is to make pass3 the ONLY visible draw + bind snapshots.
