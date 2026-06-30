@@ -1,3 +1,5 @@
+#include <cstdlib>
+#include <cstdio>
 // gx_fb_impl.cpp — native GX seam, SLICE 6: the framebuffer/management half of GX
 // (display & texture copy, pixel format, fog, draw-sync, palettes, the imm-mode draw
 // verbs, peek, perf metrics) + the pure-math texture/XFB helpers and the NTSC-480i
@@ -174,6 +176,13 @@ void GXSetTexCopyDst(u16 wd, u16 ht, GXTexFmt fmt, GXBool mipmap) {
 extern "C" void sb_boot_capture_efb_copy(const void* dest, int clear, int wd, int ht) __attribute__((weak));
 void GXCopyTex(void* dest, GXBool clear) {
     state().texCopy.lastDest = dest;
+    if (const char* e = std::getenv("SB_COPYTEX_DBG"); e && e[0] && e[0] != '0') {
+        static long n = 0; if (n < 40) { ++n;
+            std::fprintf(stderr, "[copytex] GXCopyTex dest=%p clear=%d dst=%dx%d src=%d,%d %dx%d cap=%d\n",
+                         dest, (int)clear, state().texCopy.dstWd, state().texCopy.dstHt,
+                         state().texCopy.srcLeft, state().texCopy.srcTop, state().texCopy.srcWd,
+                         state().texCopy.srcHt, sb_boot_capture_efb_copy ? 1 : 0); }
+    }
     if (sb_boot_capture_efb_copy)
         sb_boot_capture_efb_copy(dest, clear ? 1 : 0, state().texCopy.dstWd, state().texCopy.dstHt);
 }
