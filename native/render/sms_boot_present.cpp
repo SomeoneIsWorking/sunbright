@@ -71,6 +71,7 @@ int g_start_dump = 0;
 int g_dumped = 0;
 bool g_on_scene = false;
 bool g_dump_started = false;
+bool g_settle_dump = false;   // SB_FRAME_DUMP_SETTLE: start dumping once the camera has SETTLED
 int g_request_dump = 0;  // event-triggered dump request (next N presented frames)
 
 // The 2D-overlay passthrough TEV shader (out = rasterColor), generated once.
@@ -210,6 +211,14 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
         // presented frames regardless of the start/max window.
         dumpThis = true;
         --g_request_dump;
+        ++g_frame;
+    } else if (g_settle_dump) {
+        // Dump only once the option camera has SETTLED (the file-select choice scene, ~present
+        // frame 1690 — the number isn't known ahead of time, so we gate on the settle detector,
+        // mirroring SB_BATCH_DBG=-1). This is the sms-boot companion to fileselect_oracle.sh's
+        // settled Dolphin-GX capture: it lets the two be pixel-compared at the SAME settled state.
+        if (!g_dump_started && nscene > 0 && sb_camera_view_settled()) g_dump_started = true;
+        dumpThis = g_dump_started;
         ++g_frame;
     } else if (g_on_scene) {
         if (!g_dump_started && nscene > 0) g_dump_started = true;
@@ -579,6 +588,8 @@ extern "C" void sb_boot_present_install() {
                 g_start_dump = std::atoi(s) > 0 ? std::atoi(s) : 0;
             if (const char* o = std::getenv("SB_FRAME_DUMP_ON_SCENE"))
                 g_on_scene = (o[0] && o[0] != '0');
+            if (const char* s = std::getenv("SB_FRAME_DUMP_SETTLE"))
+                g_settle_dump = (s[0] && s[0] != '0');
             ::mkdir("scratch", 0755);
             ::mkdir("scratch/frames", 0755);
         }

@@ -50,3 +50,32 @@ Residual parity under SB_OWN_GXLIST (the NEXT divergences, in priority order):
 ## Repro
 `tools/render/fileselect_value_oracle.sh` (now runs the native side with SB_OWN_GXLIST=1).
 Oracle jsonl: scratch/passes/fs_oracle.jsonl; native: scratch/passes/fs_native.jsonl.
+
+## The overbright, now QUANTIFIED as a value (the next divergence's verification harness)
+Two new tools turn the overbright into a number a fix must move:
+- **`SB_FRAME_DUMP_SETTLE=1`** (sms_boot_present.cpp) — dump starts once the option camera has
+  SETTLED (the file-select choice scene, settles ~present frame 564; gates on `sb_camera_view_settled`,
+  mirroring `SB_BATCH_DBG=-1`). This is the sms-boot companion to `fileselect_oracle.sh`'s settled
+  Dolphin-GX capture — both can now be compared at the SAME settled state. (Earlier handoff frames at
+  ~327 were the intro PAN — misleading. The camera settles by ~564 present frames, not the "1690"
+  LOGIC-frame figure.)
+- **`tools/render/fileselect_overbright.py`** — per-channel + 4x4 per-region MEAN-RGB delta between a
+  settled native frame and `scratch/oracle/fileselect_gx_oracle.png`.
+
+Measured (SB_OWN_GXLIST, settled frame 575 vs Dolphin-GX oracle):
+```
+  channel   native   oracle   delta(N-O)   std N / O
+    R        181.6    118.0     +63.6       84.8 / 80.0
+    G        200.4    159.4     +41.0       62.9 / 61.8
+    B        213.9    190.5     +23.4       68.3 / 71.6
+  mean |delta| 42.7   std-preserving(additive)=True
+```
+The std MATCHES per channel (84.8≈80, 62.9≈61.8, 68.3≈71.6) → the overbright is an **additive,
+std-preserving brightness offset** (~[+64,+41,+23], RED-dominant), NOT a per-material multiply and
+NOT structural noise (geometry/textures are right). The 4x4 grid puts the worst overbright in the
+upper sky / distant beach (top-center +140,+88,+45); the only region where native is DARKER is the
+top-right (block/banner area). A std-preserving, sky-concentrated, additive, red-dominant offset
+points at an over-contributing **additive layer** (sky-ray / sun-glow / a post pass), not the per-
+vertex diffuse lighting (which the SB_J3D_DBG data shows is light0-only / CLAMP / register-ambient
+with most materials lighting-OFF). NEXT: drill the additive sky/glow batches (SB_BATCH_DBG=-1 dumps
+per-batch rgb + blend mode + texture at settle) and find which over-contributes.
