@@ -73,6 +73,17 @@ renderTevFrame. Interim, EFB-sampler batches (texmap == EFB-copy dest) should be
 rather than drawn flat-white (consistent with the CLAUDE.md EFB-readback-effect gap), but the real
 fix is the segmented render + readback above.
 
+## THE CONSUMER — found (RE, 2026-06-30)
+`TEfbCtrlTex::perform` (reference/sms/src/JSystem/JDrama/JDREfbCtrl.cpp:80-99) is the EFB-copy
+PRODUCER: `GXSetTexCopySrc/Dst` + `GXCopyTex(mImagePtr, doClear)`. `MarDirectorInitECT.cpp` creates
+the file-select EFB textures: the sea **MIRROR** `"鏡描画ステージ"` (samples via `mirrorCam->unk60`,
+a **GXTexObj** — `setTexAttb`, NOT a ResTIMG) and the pollution **"graffito"** textures
+(`mImagePtr = &img + img->imageDataOffset`, a ResTIMG image). The CONSUMER binds that texture and
+draws a full-screen composite quad — `b76` (256×256, bm=1/4/2 multiply, rgb 0.87) is the prime
+suspect. Native makes `GXCopyTex` a no-op, so `mImagePtr` holds STALE guest RAM; the consumer decodes
+that as its texture → the flat ~0.87 multiply wash. (The 0 J3D/imm address matches earlier are because
+the mirror binds via GXTexObj, a path the capture's ResTIMG-based texsrc match doesn't cover.)
+
 ## Verify
 `SUNBRIGHT_DBG_GXCOPY=1` on build/sunbright (oracle) re-confirms the 3-copy structure.
 A real fix drops `tools/render/fileselect_overbright.py` mean|delta| from 42.7 toward the
