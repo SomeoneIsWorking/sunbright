@@ -87,6 +87,7 @@ extern "C" void sb_boot_dump_camera(int frame) {
 extern "C" void sb_gx_get_chan_amb(int slot, float rgb[3]);
 extern "C" void sb_gx_get_chan_matcolor(int slot, float rgba[4]);
 extern "C" void sb_gx_get_cur_posmtx(float m[3][4]);
+extern "C" void sb_gx_get_color_alpha_update(int* color_update, int* alpha_update);
 extern "C" unsigned long sb_gx_light_load_count(void);
 extern "C" void sb_host_alloc_push(void);
 extern "C" void sb_host_alloc_pop(void);
@@ -338,6 +339,13 @@ void fill_batch_material(NvkTevBatch& b, const MatEntry& e) {
     b.push = e.push; b.shaderKey = e.key; b.fragGlsl = e.frag.c_str();
     b.z_test = e.z_test; b.z_func = e.z_func; b.z_write = e.z_write;
     b.blend_mode = e.blend_mode; b.src_factor = e.src_factor; b.dst_factor = e.dst_factor;
+    // GXSetColorUpdate / GXSetAlphaUpdate are LIVE global GX state at draw time, NOT in the
+    // J3DMaterial PE block — read them now (the batch is opened during the shape's draw). The
+    // file-select composite3 (b76, SRCALPHA/SRCCLR) runs under GXSetColorUpdate(GX_FALSE): the GC
+    // writes no colour, so it must NOT paint; capturing it as colour-writing made it a full-screen
+    // white wash (the dominant overbright). See the per-draw blend value oracle finding.
+    int cu = 1, au = 1; sb_gx_get_color_alpha_update(&cu, &au);
+    b.color_update = (uint8_t)cu; b.alpha_update = (uint8_t)au;
     for (const SbTexImage& t : e.tex) {
         if (t.slot < 0 || t.slot >= 8) continue;
         if (t.rgba.empty() && !t.efb_src) continue;   // unbound (a snapshot texmap has empty rgba)

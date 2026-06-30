@@ -1,3 +1,5 @@
+#include <cstdlib>
+#include <cstdio>
 // gx_impl.cpp — native GX seam, SLICE 1: the transform block (projection/viewport/
 // scissor + GXProject). "Rebuild as a PC game": GXSet* capture into the native GXState
 // (gx_state.h); the GameCube FIFO / XF-register writes the decomp does are DROPPED —
@@ -123,7 +125,25 @@ void GXSetZMode(GXBool compare, GXCompare func, GXBool update) {
 }
 void GXSetZCompLoc(GXBool beforeTex) { state().zCompLocBeforeTex = beforeTex; }
 void GXSetCullMode(GXCullMode mode) { state().cullMode = mode; }
-void GXSetColorUpdate(GXBool enable) { state().colorUpdate = enable; }
+void GXSetColorUpdate(GXBool enable) {
+    if (const char* d = std::getenv("SB_DBG_COLUPD"); d && d[0] && d[0] != '0') {
+        static long n0 = 0, n1 = 0; if (enable) ++n1; else ++n0;
+        if ((n0 + n1) <= 8 || ((n0 + n1) % 256) == 0)
+            std::fprintf(stderr, "[GXSetColorUpdate] enable=%d (false-count=%ld true-count=%ld)\n",
+                         (int)enable, n0, n1);
+    }
+    state().colorUpdate = enable;
+}
+
+// Live GXSetColorUpdate / GXSetAlphaUpdate state, for the J3D capture (the J3DMaterial PE block has
+// NO color/alpha-update field — those are global GX state the effect's draw code sets, e.g.
+// GXSetColorUpdate(GX_FALSE) for a no-colour pass). Without this, native captured every J3D batch as
+// colour-writing and painted the file-select composite (b76, SRCALPHA/SRCCLR) WHITE where the GC
+// writes nothing → the overbright. Mirrors the imm path's g_colorUpdate read (gx_imm_impl.cpp).
+extern "C" void sb_gx_get_color_alpha_update(int* color_update, int* alpha_update) {
+    if (color_update) *color_update = state().colorUpdate ? 1 : 0;
+    if (alpha_update) *alpha_update = state().alphaUpdate ? 1 : 0;
+}
 void GXSetAlphaCompare(GXCompare comp0, u8 ref0, GXAlphaOp op, GXCompare comp1, u8 ref1) {
     auto& g = state();
     g.alphaComp0 = comp0; g.alphaRef0 = ref0; g.alphaOp = op;

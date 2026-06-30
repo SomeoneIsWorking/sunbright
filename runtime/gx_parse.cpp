@@ -1,6 +1,7 @@
 // GX frame-stream analyzer — see gx_parse.h.
 #include "gx_parse.h"
 #include <cstring>
+#include <cstdlib>
 
 // Host base of guest main RAM (low 24 MB), published by memory_bridge.cpp on first RAM access.
 // Used to decode display-list bodies in place: a GX_CMD_CALL_DL command in the captured FIFO carries
@@ -24,6 +25,24 @@ public:
     bool recurse_dls = false;        // decode display-list bodies from guest RAM (per-pass vert count)
     int  dl_depth = 0;               // >0 while inside a recursed DL (suppress stream-offset recording)
 
+    // Live GX pixel state for the per-draw blend/TEV value oracle (file-select overbright). Tracked
+    // from BP loads; sampled into out->draws at each primitive. efb_pass increments per EFB copy.
+    BlendMode blend{};               // last BPMEM_BLENDMODE
+    u32       genmode = 0;           // last BPMEM_GENMODE (numtevstages live in here)
+    u8        efb_pass = 0;          // EFB copies fired so far this frame
+    bool      record_draws = false;  // gate the (potentially large) per-draw record
+
+    void record_draw(u32 prims) {
+        if (!record_draws || out->draws.size() >= 8192) return;
+        GenMode gm; gm.hex = genmode;
+        out->draws.push_back({offset, efb_pass,
+            (u8)blend.src_factor.Value(), (u8)blend.dst_factor.Value(),
+            (u8)blend.blend_enable.Value(), (u8)blend.subtract.Value(),
+            (u8)blend.logic_op_enable.Value(), (u8)blend.logic_mode.Value(),
+            (u8)blend.color_update.Value(), (u8)blend.alpha_update.Value(),
+            (u8)(gm.numtevstages + 1), (u8)((out->proj_type == 1) ? 1 : 0), prims});
+    }
+
     // CP state persists across frames (J3D reprograms VCD/VAT per shape; the
     // very first armed frame may mis-size until the first reprogram, which the
     // ok=false verdict catches).
@@ -40,6 +59,8 @@ public:
     OPCODE_CALLBACK(void OnBP(u8 cmd, u32 value)) {
         if (cmd == BPMEM_PE_TOKEN_ID || cmd == BPMEM_PE_TOKEN_INT_ID)
             if (dl_depth == 0) out->token_offsets.push_back(offset);   // stream-offset record: outer only
+        if (cmd == BPMEM_BLENDMODE) blend.hex = value;   // live blend equation for the per-draw oracle
+        if (cmd == BPMEM_GENMODE)   genmode  = value;    // live numtevstages
         if (cmd == BPMEM_TRIGGER_EFB_COPY) {
             out->copies++;
             // Record the copy in order so a tool can diff the render-target structure (where the EFB
@@ -47,6 +68,7 @@ public:
             UPE_Copy pe; pe.Hex = value;
             out->efb_copies.push_back({offset, value, out->prims,
                                        (bool)pe.copy_to_xfb, (bool)pe.clear});
+            if (efb_pass < 255) ++efb_pass;              // a new render-target pass begins after a copy
         }
     }
     // Big-endian word readers over the XF load payload (the gather-pipe bytes are BE).
@@ -108,6 +130,7 @@ public:
         const int pass = (out->proj_type == 1) ? 1 : 0;   // 1 = ortho (HUD), else perspective (scene)
         out->prims_pass[pass]++;
         out->verts_pass[pass] += num_vertices;
+        record_draw(num_vertices);   // live blend/TEV value oracle (gated)
     }
     OPCODE_CALLBACK(void OnDisplayList(u32 address, u32 size)) {
         out->display_lists++;
@@ -157,6 +180,11 @@ bool gxp_parse_frame(const u8* p, size_t n, GxFrameInfo& out, bool recurse_dls) 
     g_an.unknown = false;
     g_an.recurse_dls = recurse_dls;
     g_an.dl_depth = 0;
+    g_an.efb_pass = 0;
+    // Record the per-draw blend/TEV oracle only when a consumer asked for it (env-gated in
+    // gx_capture.cpp). The blend/genmode state persists across frames like CP state (J3D reprograms
+    // it per material), so a frame that opens mid-material still sees the live equation.
+    g_an.record_draws = (std::getenv("SUNBRIGHT_DBG_GXBLEND") != nullptr);
     u32 pos = 0;
     while (pos < n) {
         g_an.offset = pos;

@@ -19,6 +19,7 @@
 // purejit-safe override in gx_stream_own.cpp calling sb_gx_capture_frame_boundary().
 
 #include "gx_parse.h"
+#include "gxblend_summary.h"
 
 #include <cstddef>
 #include <cstdio>
@@ -162,6 +163,24 @@ extern "C" void sb_gx_capture_frame_boundary() {
             fprintf(stderr, " [@%u prims<=%u %s%s]", c.offset, c.prims_before,
                     c.to_xfb ? "->XFB" : "->TEX", c.clear ? " CLR" : "");
         fprintf(stderr, "\n");
+    }
+    // PER-DRAW BLEND / TEV value oracle (SUNBRIGHT_DBG_GXBLEND): the ground-truth blend equation +
+    // TEV-stage count for every draw, grouped by EFB pass, run-length-deduped (consecutive draws with
+    // identical pixel state collapse to one line with a count). The POST pass = the highest efb_pass;
+    // diff its blend layers against native's phase-6 batches (sms_boot_present batchdbg `bm=s/d`). GX
+    // blend factor names: 0 ZERO 1 ONE 2 SRCCLR 3 INVSRCCLR 4 SRCALPHA 5 INVSRCALPHA 6 DSTALPHA
+    // 7 INVDSTALPHA. This is the VALUE comparison the file-select overbright fix must be driven by.
+    if (std::getenv("SUNBRIGHT_DBG_GXBLEND") && g_frame_no >= 4 && g_frame_no < 8 && !fi.draws.empty()) {
+        fprintf(stderr, "[gxblend] frame %ld: %zu draws across %u EFB pass(es)\n",
+                g_frame_no, fi.draws.size(), (unsigned)fi.efb_copies.size() + 1);
+        // Map the parser's DrawRec to the pure summary unit (gxblend_summary.h) — the SAME code the
+        // render_test unit-tests, so the value oracle's grouping/naming is verified Dolphin-free.
+        std::vector<gxblend::Draw> ds; ds.reserve(fi.draws.size());
+        for (const auto& d : fi.draws)
+            ds.push_back({d.efb_pass, d.src, d.dst, d.blend_enable, d.subtract, d.logic_enable,
+                          d.color_update, d.alpha_update, d.numtevstages, d.proj_type, d.prims});
+        for (const std::string& line : gxblend::summarize(ds))
+            fprintf(stderr, "  %s\n", line.c_str());
     }
     std::fflush(f);
     g_frame_no++;

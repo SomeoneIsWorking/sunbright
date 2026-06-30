@@ -35,6 +35,31 @@ struct GxFrameInfo {
     struct EfbCopy { u32 offset; u32 value; u32 prims_before; bool to_xfb; bool clear; };
     std::vector<EfbCopy> efb_copies;
 
+    // ── Per-draw BLEND / TEV value oracle (file-select overbright, 2026-06-30) ─────────────────────
+    // The dominant file-select overbright lives in the POST pass (mPerformListGXPost) — a multi-layer
+    // blend the native renderer over-composites (the CLAUDE.md "no-oracle trap"). To fix it by VALUE
+    // (not pixel ablation) we need Dolphin's ground-truth blend equation + TEV stage count for the
+    // draws in each EFB pass, so a tool can diff them against native's per-batch blend (sms_boot_present
+    // batchdbg `bm=s/d/...`). Each draw records the live GX pixel state at draw time: blend factors,
+    // subtract/enable/logicop, color/alpha update, and the TEV stage count (BPMEM_GENMODE numtevstages).
+    // `efb_pass` = how many EFB copies have fired before this draw (0 = pre-first-copy pass, etc.), so
+    // the POST pass = the highest efb_pass. `prims` = num_vertices of the draw (0 for a bare DL header).
+    struct DrawRec {
+        u32 offset;          // stream offset of the primitive/DL command
+        u8  efb_pass;        // EFB-copy index this draw falls in (0,1,2,…)
+        u8  src, dst;        // GX blend src/dst factor (BlendMode.src_factor / dst_factor)
+        u8  blend_enable;    // BlendMode.blend_enable
+        u8  subtract;        // BlendMode.subtract (1 => GX_BM_SUBTRACT)
+        u8  logic_enable;    // BlendMode.logic_op_enable
+        u8  logic_mode;      // BlendMode.logic_mode
+        u8  color_update;    // BlendMode.color_update
+        u8  alpha_update;    // BlendMode.alpha_update
+        u8  numtevstages;    // BPMEM_GENMODE.numtevstages + 1 (live)
+        u8  proj_type;       // 0 perspective / 1 ortho at draw time
+        u32 prims;           // num_vertices of this primitive (0 if a DL header record)
+    };
+    std::vector<DrawRec> draws;
+
     // ── Per-pass geometry split (cross-engine pass tagging) ───────────────────────────────────────
     // The native parity dump (sb_parity_dump.h) reports the 3D SCENE pass only (perspective), so the
     // whole-frame oracle counts are NOT directly comparable. Bucket prims/verts/display-lists by the

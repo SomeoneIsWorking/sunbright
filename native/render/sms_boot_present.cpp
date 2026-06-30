@@ -591,6 +591,25 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
                          bi, b.phase, b.vcount, zmn, zmx, zsum/cnt, xmn, xmx, ymn, ymx,
                          b.z_test, b.z_func, b.z_write, b.blend_mode, b.src_factor, b.dst_factor,
                          mr, mg, mb, ma, amn, amx, var, ntex, texinfo, umn,umx,vmn,vmx, (unsigned long long)b.shaderKey);
+            // TEV value oracle (native side): the konst colours + S10 TEV colour registers fed to
+            // the generated combiner, plus whether each bound texmap is an EFB-copy snapshot. This is
+            // the native counterpart of the Dolphin-GX per-draw blend/TEV oracle (gx_capture.cpp
+            // SUNBRIGHT_DBG_GXBLEND) — diff the two for the post-pass composite (b76 = the file-select
+            // overbright). A near-white konst/tevreg fed to a SRCALPHA/SRCCLR blend over a dark texture
+            // is the over-bright signature.
+            std::fprintf(stderr, "[batchtev] b%d cU=%u aU=%u k0=%d,%d,%d,%d k1=%d,%d,%d,%d r0=%d,%d,%d,%d r1=%d,%d,%d,%d efb=%p/%p\n",
+                         bi, b.color_update, b.alpha_update,
+                         b.push.kcolor[0][0],b.push.kcolor[0][1],b.push.kcolor[0][2],b.push.kcolor[0][3],
+                         b.push.kcolor[1][0],b.push.kcolor[1][1],b.push.kcolor[1][2],b.push.kcolor[1][3],
+                         b.push.tevreg[0][0],b.push.tevreg[0][1],b.push.tevreg[0][2],b.push.tevreg[0][3],
+                         b.push.tevreg[1][0],b.push.tevreg[1][1],b.push.tevreg[1][2],b.push.tevreg[1][3],
+                         b.tex[0].efb_src, b.tex[1].efb_src);
+            // Dump the generated TEV fragment shader for the composite batches (dst_factor SRCCLR/
+            // INVSRCCLR — the over-bright class) so the combiner that produces `src` is inspectable.
+            if (b.fragGlsl && (b.dst_factor == 2 || b.dst_factor == 3)) {
+                char pf[128]; std::snprintf(pf, sizeof pf, "scratch/frames/bfrag_%02d.glsl", bi);
+                if (FILE* f = fopen(pf, "w")) { fputs(b.fragGlsl, f); fclose(f); }
+            }
             // Dump each small textured batch's tex0 (RGB ppm + alpha as grayscale ppm) so a
             // wash/ray layer's texture content + alpha falloff is visible, not guessed.
             for (int ti=0; ti<8; ++ti) {

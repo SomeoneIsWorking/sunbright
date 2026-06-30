@@ -28,6 +28,7 @@
 #include "tev_shader.h"
 #include "tev_eval.h"
 #include "tex_decode.h"
+#include "gxblend_summary.h"
 
 // ── Units under test (self-test entry points defined in their own .cpp) ──────
 extern int sb_ngx_vertex_selftest(char* out, int cap);   // runtime/ngx/ngx_vertex.cpp
@@ -779,6 +780,56 @@ int test_pollution(char* rep, int cap) {
     return fails;
 }
 
+// ── per-draw BLEND/TEV value oracle (gxblend_summary.h) ──────────────────────
+// The file-select overbright was localized by reading Dolphin's per-draw blend equation from the GX
+// command stream and diffing it against native's per-batch blend (the b76 composite3 = SRCALPHA/SRCCLR
+// wash). gx_capture.cpp emits that via gxblend::summarize; this asserts the pure grouping/naming so a
+// future change can't silently corrupt the oracle's output (e.g. mis-collapse distinct blend states,
+// drop a vertex from the run sum, or mis-name a GX blend factor → a false "they match" verdict).
+int test_gxblend(char* rep, int cap) {
+    int pos = 0, fails = 0;
+    auto failf = [&](const char* msg) {
+        fails++; if (pos < cap) pos += snprintf(rep + pos, cap - pos, "FAIL %s\n", msg); };
+
+    // Blend factor names cover the full GXBlendFactor table (0..7), in order.
+    const char* want_names[8] = {"ZERO","ONE","SRCCLR","INVSRCCLR","SRCALPHA","INVSRCALPHA","DSTALPHA","INVDSTALPHA"};
+    for (uint8_t f = 0; f < 8; ++f)
+        if (strcmp(gxblend::factor_name(f), want_names[f]) != 0) failf("factor_name mismatch");
+
+    // Run-length collapse: 3 identical SRCALPHA/INVSRCALPHA draws + 1 differing (SRCALPHA/ONE) + 2
+    // identical → exactly 3 groups, with vertex sums 6, 5, 8 (not silently dropped or merged).
+    auto mk = [](uint8_t src, uint8_t dst, uint8_t pass, uint8_t tev, uint32_t v) {
+        gxblend::Draw d; d.src = src; d.dst = dst; d.blend_enable = 1; d.efb_pass = pass;
+        d.numtevstages = tev; d.verts = v; return d; };
+    std::vector<gxblend::Draw> draws = {
+        mk(4, 5, 1, 1, 2), mk(4, 5, 1, 1, 2), mk(4, 5, 1, 1, 2),   // SRCALPHA/INVSRCALPHA ×3 = 6 verts
+        mk(4, 1, 1, 1, 5),                                          // SRCALPHA/ONE ×1 = 5 verts (splits)
+        mk(4, 5, 1, 1, 4), mk(4, 5, 1, 1, 4),                       // SRCALPHA/INVSRCALPHA ×2 = 8 verts
+    };
+    auto lines = gxblend::summarize(draws);
+    if (lines.size() != 3) { failf("summarize group count != 3"); }
+    else {
+        if (lines[0].find("SRCALPHA   /INVSRCALPHA") == std::string::npos
+            || lines[0].find("x3 (6 verts)") == std::string::npos) failf("group0 wrong");
+        if (lines[1].find("SRCALPHA   /ONE") == std::string::npos
+            || lines[1].find("x1 (5 verts)") == std::string::npos) failf("group1 wrong");
+        if (lines[2].find("x2 (8 verts)") == std::string::npos) failf("group2 wrong");
+    }
+
+    // A different EFB pass or TEV-stage count must NOT collapse with an otherwise-identical draw:
+    // the value oracle relies on pass/tev to attribute the post composite (b76 = pass3-class, 3 stages).
+    std::vector<gxblend::Draw> split = { mk(4, 2, 2, 3, 11), mk(4, 2, 3, 3, 11), mk(4, 2, 3, 2, 11) };
+    if (gxblend::summarize(split).size() != 3) failf("pass/tev must not collapse");
+
+    // The b76 overbright signature: SRCALPHA/SRCCLR is named distinctly (SRCCLR, not SRCALPHA) so the
+    // post-pass multiply-brighten composite is identifiable by value, not confused with a normal blend.
+    gxblend::Draw b76 = mk(4, 2, 3, 3, 15);
+    auto s = gxblend::summarize({b76});
+    if (s.empty() || s[0].find("SRCALPHA   /SRCCLR") == std::string::npos) failf("b76 signature");
+
+    return fails;
+}
+
 struct Unit { const char* name; int (*run)(char* rep, int cap); };
 
 const Unit kUnits[] = {
@@ -800,6 +851,7 @@ const Unit kUnits[] = {
     {"display_gen",    test_display_gen},
     {"per_epoch",      test_per_epoch},
     {"pollution",      test_pollution},
+    {"gxblend",        test_gxblend},
 };
 
 }  // namespace
