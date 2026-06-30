@@ -543,3 +543,55 @@ net-neutral). That is the next, large, well-scoped task — the user's chosen fu
 Net: measurement + diagnosis re-confirmed from GROUND TRUTH; b76 colour-fix paths (CLR0/TEV/lighting/mirror)
 are DEAD; the fix is the EFB-copy-texture composite. Tooling added: `[b76-raster]` probe, fresh
 `scratch/passes/{oracle_blend2.log analysis, pl_dbg.log, b76_raster.log, skip_b76 frame}`.
+
+## UPDATE 2026-07-01 — divergence narrowed to a per-draw colorUpdate mismatch (infra confirmed working)
+Continued from 10efee7. Fresh baseline + full pipeline trace (Explore agent map archived in this session).
+
+**Fresh measurement (SB_OWN_GXLIST settled frame 566):** overbright = **42.7** (unchanged). b76 (key
+eb5c8e74) confirmed a CAMERA-SPANNING volume: `[mapxlu-pkt] key=eb5c8e74 vc=15 ntex=2 eyeZ[-50800,56113]`
+— a degenerate full-frustum volume, not visible scene content. The other MapXlu packet is f191 (vc=30,
+eyeZ[521,1609]).
+
+**The full segmented-present infrastructure ALL WORKS** (the journal previously implied EFB copies weren't
+detected — WRONG; that was me not printing the count). Verified with SB_J3D_DBG `[efbcopy] mark`:
+native records **2 EFB copies/frame**:
+- copy0: `batch_index=49 dest=…79c0 clear=1 256x256 (phase 4)` = the sea MIRROR (鏡描画ステージ)
+- copy1: `batch_index=79 dest=…3cda0 clear=0 320x224 (phase 6)` = the SOFT-FOCUS (通常シーン描画ステージ)
+So `ncopies=2`, the segmented present runs (sms_boot_present.cpp:684), snapshots are taken at both
+boundaries, and the 320×224 soft-focus imm quad DOES bind its snapshot (efb_src) — but it's net-neutral
+because the snapshot already holds the cumulatively-painted scene (native paints everything).
+
+**ORACLE GROUND TRUTH (scratch/passes/oracle_blend2.log, SUNBRIGHT_DBG_GXBLEND) — the pass split is exact:**
+```
+line 81-116  pass1+pass2: ~all [noC]/[noC][noA] (the OFF-SCREEN render-to-EFB-texture passes)
+line 115     pass2  BLEND SRCALPHA/SRCCLR tev=3 [noC][noA] x3 (11 verts)  ← b76 counterpart: WRITES NOTHING
+line 117     pass3  BLEND SRCALPHA/SRCCLR tev=2          x26 (1352 verts)  ← THE VISIBLE composite (colour ON)
+```
+The GXBLEND "passN" labels are by EFB-COPY BOUNDARY, not perform-list phase. So the visible file-select
+frame on GC is a POST-PROCESS COMPOSITE: pass1+pass2 render the scene off-screen (colorUpdate FALSE),
+copy EFB→texture, then pass3's 1352-vert tev=2 quad samples those textures and is the ONLY colour-writing
+draw. native lacks pass3 and instead paints pass1+pass2 directly → overbright; the soft-focus quad then
+re-adds them → double-bright.
+
+**THE DIVERGENCE IS NOW A VALUE, not a deduction.** native draws the b76 mask in phase 6 with **liveCU=1
+liveAU=0** (`[b76] phase=6 … liveCU=1 liveAU=0 last_false@…(delta=3) ring=1110101010110111`). The oracle
+has the SAME draw as **[noC][noA]** (cU=FALSE). SB_COLUPD_BT shows every phase-6 GXSetColorUpdate caller is
+**enable=1** (TPerformList::perform+0x45, SMS_DrawInit, TModelWaterManager::perform+0x1b0,
+TZBufferCatch::perform+0x25). So native restores cU=TRUE before the MapXlu flush where the oracle keeps it
+FALSE — native's colorUpdate sequence diverges from Dolphin's at this exact draw. The main-pass [noC] is set
+by `TEfbCtrl::perform(0x80) → GXSetColorUpdate(!unk20.check(0x100))` (JDREfbCtrl.cpp:11); native runs that
+in phase 4 but the window has closed (cU restored TRUE) by the phase-6 MapXlu flush.
+
+**WHY there is no bounded mask-skip:** native paints pass1+pass2 to SHOW the scene at all (it has no pass3
+composite). Skipping/[noC]-honoring the b76 mask alone (SB_SKIP_KEY=eb5c8e74 → 42.7→14.2) removes the
+dominant wash but is only a measurement, not a faithful fix — the residual 14.2 sky-dome layer + the fact
+that the whole pass2 is [noC] mean the faithful fix is the EFB-copy-texture composite (user-chosen full
+pass-structure port): render pass1+pass2 to an OFF-SCREEN target (honoring per-draw [noC] so the snapshot is
+clean), then clear the visible FB and render pass3 = the composite sampling the snapshots.
+
+**NEXT (TOOLING-FIRST):** the manual log-reading cycle keeps oscillating on the pass/phase labeling. Build a
+DETERMINISTIC per-draw native-vs-oracle GX-state diff (colorUpdate/alphaUpdate/blend/tev per draw, aligned by
+draw order within a frame) using the oracle's gx_stream/gx_parse capture (runtime/gx_*.cpp) + a matching
+native per-draw dump. That turns "native cU diverges somewhere" into the EXACT draw + the missing
+GXSetColorUpdate(FALSE)/extra TRUE. THEN either (a) fix native's colorUpdate sequence so b76 captures [noC],
+or (b) implement the off-screen-render + pass3-composite split. Do NOT do another speculative blend ablation.
