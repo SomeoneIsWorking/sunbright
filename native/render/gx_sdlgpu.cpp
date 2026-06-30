@@ -22,6 +22,8 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <atomic>
+#include <mutex>
 
 namespace sb::gxsdl {
 
@@ -55,6 +57,10 @@ bool                   g_in_frame = false;
 SDL_FColor             g_clear{};
 
 std::vector<uint8_t> g_cpu;
+// g_cpu is written by the GAME thread (frame_end) and read by the SDL MAIN thread (present_window).
+// Guard it — the only cross-thread shared state in the SDL-main + one-game-thread model.
+std::mutex            g_cpu_mtx;
+std::atomic<bool>     g_game_done{false};
 
 constexpr SDL_GPUTextureFormat DEPTH_FMT = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
 
@@ -423,9 +429,10 @@ void frame_end() {
     if (mapped) {
         // SDL3 GPU's clip→framebuffer Y is inverted vs raw Vulkan (nvk), so the download is
         // bottom-up vs the top-left PPM/nvk convention. Flip rows on copy-out (cull is NONE so
-        // winding is irrelevant; depth unaffected).
+        // winding is irrelevant; depth unaffected). Lock g_cpu — the SDL main thread reads it.
         const uint8_t* src = (const uint8_t*)mapped;
         const size_t row = (size_t)g_w * 4;
+        std::lock_guard<std::mutex> lk(g_cpu_mtx);
         for (int y = 0; y < g_h; ++y)
             std::memcpy(g_cpu.data() + (size_t)(g_h - 1 - y) * row, src + (size_t)y * row, row);
         SDL_UnmapGPUTransferBuffer(g_dev, g_dl);
@@ -438,5 +445,73 @@ bool readback(uint8_t* rgba, int w, int h) {
     std::memcpy(rgba, g_cpu.data(), (size_t)w * h * 4);
     return true;
 }
+
+// ── Live window present (SB_WINDOW=1) — runs on the SDL MAIN thread ───────────────────────────────
+// Architecture (user directive 2026-06-30): MAIN thread = SDL (window + events + present), ONE
+// separate GAME thread runs the decomp and renders the offscreen frame into g_cpu. present_window()
+// is called ONLY from the SDL main thread (boot.cpp's window loop) — never the game thread.
+//
+// CRITICAL (learned the hard way): presenting on the game/scheduler thread is what crashed/deadlocked
+// everything — claiming a window on g_dev (the offscreen render device) spun up Vulkan WSI threads and
+// wedged the cooperative scheduler's sb_sched_drain_until_idle; and an SDL_Renderer present on the game
+// thread hit X11/DRI3 from the wrong thread → SIGSEGV. With present on the SDL main thread and a plain
+// SOFTWARE SDL_Renderer (its own backend; g_dev untouched), windowing is single-threaded + safe. g_cpu
+// is the one shared buffer (game writes in frame_end, main reads here) — guarded by g_cpu_mtx.
+SDL_Window*   g_window   = nullptr;
+SDL_Renderer* g_wr       = nullptr;
+SDL_Texture*  g_wtex     = nullptr;
+bool          g_window_off = false;   // window creation failed → stop trying
+bool          g_quit      = false;
+
+bool window_should_quit() { return g_quit; }
+
+void present_window() {
+    if (!g_ok || g_window_off) return;
+    if (!g_window) {
+        g_window = SDL_CreateWindow("sms-boot (native PC renderer)", g_w * 2, g_h * 2,
+                                    SDL_WINDOW_RESIZABLE);
+        if (!g_window) { std::fprintf(stderr, "[gxsdl] SDL_CreateWindow failed: %s\n", SDL_GetError());
+                         g_window_off = true; return; }
+        // Force the SOFTWARE renderer: a hardware (Vulkan/GL) SDL_Renderer fights the SDL3-GPU Vulkan
+        // device (g_dev) for the same GPU and crashes inside SDL. Software blits via X — trivial at
+        // 640×480→window and fully decoupled from the render device. (The heavy 3D render is still GPU.)
+        g_wr = SDL_CreateRenderer(g_window, "software");
+        if (!g_wr) { std::fprintf(stderr, "[gxsdl] SDL_CreateRenderer failed: %s\n", SDL_GetError());
+                     SDL_DestroyWindow(g_window); g_window = nullptr; g_window_off = true; return; }
+        SDL_SetRenderVSync(g_wr, 0);   // non-blocking present — must not stall the scheduler runner
+        g_wtex = SDL_CreateTexture(g_wr, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STREAMING, g_w, g_h);
+        std::fprintf(stderr, "[gxsdl] live window up (%dx%d, SDL_Renderer)\n", g_w * 2, g_h * 2);
+    }
+    // Pump events (responsiveness + clean quit).
+    SDL_Event ev;
+    while (SDL_PollEvent(&ev)) {
+        if (ev.type == SDL_EVENT_QUIT || ev.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) g_quit = true;
+        else if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.scancode == SDL_SCANCODE_ESCAPE) g_quit = true;
+    }
+    if (!g_wtex) return;
+    {   // lock the read against the game thread's frame_end write
+        std::lock_guard<std::mutex> lk(g_cpu_mtx);
+        if (!g_cpu.empty()) SDL_UpdateTexture(g_wtex, nullptr, g_cpu.data(), g_w * 4);
+    }
+    SDL_RenderClear(g_wr);
+    SDL_RenderTexture(g_wr, g_wtex, nullptr, nullptr);   // scales to the window
+    SDL_RenderPresent(g_wr);
+}
+
+// SB_WINDOW=1 → live-inspection window mode. Read once.
+bool window_mode() {
+    static int v = -1;
+    if (v < 0) { const char* e = std::getenv("SB_WINDOW"); v = (e && e[0] && e[0] != '0') ? 1 : 0; }
+    return v != 0;
+}
+
+// Called from the SDL MAIN thread BEFORE the game thread starts, so SDL video is initialised on the
+// thread that will own the window + event pump (SDL's windowing is main-thread-affine).
+void window_preinit() {
+    if (!SDL_WasInit(SDL_INIT_VIDEO)) SDL_InitSubSystem(SDL_INIT_VIDEO);
+}
+
+void mark_game_done() { g_game_done.store(true, std::memory_order_release); }
+bool game_done()      { return g_game_done.load(std::memory_order_acquire); }
 
 } // namespace sb::gxsdl

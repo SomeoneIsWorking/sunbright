@@ -9,6 +9,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include "../platform/vi_present.h"  // sb_vi_set_pacing (SB_TURBO)
+#ifdef SMS_HAVE_RENDER
+#include <thread>
+#include <SDL3/SDL.h>                 // SDL_Delay (main-thread window loop)
+#include "../render/gx_sdlgpu.h"      // sb::gxsdl window-mode main-thread present
+#endif
 
 namespace sb::platform { bool PlatformInit(int argc, char** argv); void PlatformShutdown(); }
 
@@ -40,6 +45,39 @@ extern "C" int __wrap_main(int argc, char** argv) {
         sb_vi_set_pacing(false);
     sb_pad_driver_install();  // headless scripted input, if SB_PAD_SCRIPT/SB_PAD_DRIVE set
     std::printf("[boot] PlatformInit OK -> game main()\n");
+
+#ifdef SMS_HAVE_RENDER
+    // SB_WINDOW: PC-port threading model — the SDL MAIN thread owns the window + present, the GAME
+    // runs on a separate thread (it renders into the offscreen g_cpu buffer; we present it here).
+    // This is the ONLY safe place to drive SDL windowing: presenting from the game/scheduler thread
+    // contends with X11/Vulkan-WSI and crashes/deadlocks (see gx_sdlgpu.cpp). The game's own OSThread
+    // workers are async-loading helpers run synchronously by the cooperative scheduler — they are NOT
+    // the SDL/game split; this is the deliberate two-thread (SDL + game) top-level structure.
+    if (sb::gxsdl::window_mode()) {
+        sb::gxsdl::window_preinit();   // SDL_Init(VIDEO) on THIS (main) thread before the game starts
+        static int s_rc = 0;
+        std::thread game([argc, argv]() {
+            s_rc = __real_main(argc, argv);
+            sb::gxsdl::mark_game_done();
+        });
+        // Main-thread present + event loop. Exits when the game finishes OR the window is closed.
+        while (!sb::gxsdl::window_should_quit() && !sb::gxsdl::game_done()) {
+            sb::gxsdl::present_window();
+            SDL_Delay(8);              // ~120 Hz poll; the game paces itself to real time
+        }
+        if (sb::gxsdl::window_should_quit()) {
+            // User closed the window: the detached game thread may still be mid-work; we're quitting
+            // the process anyway, so don't join (it might be parked) — just shut down + exit.
+            game.detach();
+            sb::platform::PlatformShutdown();
+            return 0;
+        }
+        game.join();
+        sb::platform::PlatformShutdown();
+        return s_rc;
+    }
+#endif
+
     int rc = __real_main(argc, argv);
     sb::platform::PlatformShutdown();
     return rc;

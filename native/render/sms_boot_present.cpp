@@ -184,7 +184,11 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
     int nibatch = 0;
     int nimm = sb_gx_imm_take_batches(&imm, &ibatches, &nibatch);
 
-    if (g_request_dump <= 0 && (!g_max_dump || g_dumped >= g_max_dump)) return;
+    // SB_WINDOW=1: live-inspection mode — render + present EVERY frame to a window (run.sh -> sms-boot),
+    // independent of the dump window. Artifacts (PPM/parity) still only write inside the dump window.
+    static const bool windowMode = [](){ const char* v = std::getenv("SB_WINDOW"); return v && v[0] && v[0] != '0'; }();
+
+    if (!windowMode && g_request_dump <= 0 && (!g_max_dump || g_dumped >= g_max_dump)) return;
 
     bool dumpThis;
     if (g_request_dump > 0) {
@@ -198,11 +202,19 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
         dumpThis = g_dump_started;
         ++g_frame;
     } else {
-        if (g_frame < g_start_dump) { ++g_frame; return; }
-        dumpThis = (g_frame < g_start_dump + g_max_dump);
+        dumpThis = (g_frame >= g_start_dump && g_frame < g_start_dump + g_max_dump);
         ++g_frame;
     }
-    if (!dumpThis) return;
+    // In window mode we render every frame to keep g_cpu fresh (only artifact writes are gated on
+    // dumpThis). BUT not until the first real SCENE has been captured: rendering during boot/loading
+    // does a per-frame GPU fence wait on the cooperative scheduler's RUNNER thread, which starves the
+    // async-load workers (JKRDecomp/JKRAram) that the runner then waits on → deadlock (watchdog hang).
+    // Once gameplay is rendering, the loader workers are idle and the per-frame render is safe (this is
+    // exactly when the dump path renders). STOPGAP until the worker threads are eliminated (async→sync,
+    // memory sms-boot-threading-architecture) — then per-frame render is unconditionally safe.
+    static bool g_scene_seen = false;
+    if (nscene > 0) g_scene_seen = true;
+    if (!dumpThis && (!windowMode || !g_scene_seen)) return;
 
     if (!g_init_tried) {
         g_init_tried = true;
@@ -488,6 +500,7 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
     present_pix.assign((size_t)kW * kH * 4, 0);
     sb::gxsdl::readback(present_pix.data(), (int)kW, (int)kH);
 
+    if (dumpThis) {
     char path[160];
     std::snprintf(path, sizeof path, "scratch/frames/boot_%04d.ppm", df);
     write_ppm_buf(path, present_pix.data(), kW, kH);
@@ -528,6 +541,11 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
                        batches.data(), (int)batches.size(), L, P,
                        present_pix.data(), (int)kW, (int)kH);
     }
+    } // if (dumpThis)
+
+    // SB_WINDOW: the game thread does NOT present — it only renders into g_cpu (above, every frame in
+    // windowMode). The SDL MAIN thread (boot.cpp's window loop) calls present_window() to show g_cpu.
+    // Presenting here would be on the game/scheduler thread → the X11/WSI crash+deadlock we fixed.
 }
 
 } // namespace

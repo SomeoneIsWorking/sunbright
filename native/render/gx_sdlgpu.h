@@ -35,4 +35,18 @@ void draw_tev(const sb::render::NvkTevVertex* verts, int nverts,
 // Read the last frame back into rgba (w*h*4, top-left origin). False if size mismatch / no device.
 bool readback(uint8_t* rgba, int w, int h);
 
+// Live window (SB_WINDOW=1) — the SDL MAIN-thread present path (see gx_sdlgpu.cpp). The game runs on
+// a separate thread and renders into g_cpu; the SDL main thread calls present_window() in a loop to
+// show it. present_window() MUST be called only from the SDL main thread (never the game thread).
+//   window_mode()      — is SB_WINDOW set?
+//   window_preinit()   — SDL_Init(VIDEO) on the main thread, before the game thread starts.
+//   present_window()   — pump events + blit g_cpu to the window (main thread).
+//   window_should_quit / game_done / mark_game_done — main-loop exit conditions.
+bool window_mode();
+void window_preinit();
+void present_window();
+bool window_should_quit();
+void mark_game_done();
+bool game_done();
+
 } // namespace sb::gxsdl
