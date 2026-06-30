@@ -325,3 +325,32 @@ re-enters the MapXlu buffer between the main pass and composite3 so the post flu
 the MapXlu entry() calls (which models, which pass) + frameInit timing vs MapOpa (the sibling that DOES
 flush in ph4). Tooling: SB_DBHEAD_DBG, SB_DRAWBUF_INV, SB_FI_TRACE, SB_B76_BT/DBG. Verify:
 fileselect_overbright.py 42.7→~14 WITHOUT ablating b76.
+
+## UPDATE 2026-06-30 (latest) — CORRECTION: MapXlu-in-GXPost is FAITHFUL (game data); b76 is a degenerate near-plane volume
+`SB_PL_DBG` (PerformList::load entry dump) shows the GAME'S OWN perform-list data routes
+**`DrawBuf MapXlu` filter=0x8 (draw) into `PerformList GX Post`** — NOT `PerformList GX` (main).
+The main list draws the MIRROR buffers (DrawBuf Mirror Opa/Xlu, MirrorSky, MirrorAlways) + MapOpa +
+マップグループ + Sky; the post list draws ChrOpa, MapXlu, the 半透明優先 map buffers, StaticMapObj Sun/
+ShadowXlu, beam mgr, etc. **So native flushing MapXlu in ph6 is FAITHFUL — NOT the bug.** (The earlier
+"MapXlu uniquely routed ph1+ph6" anomaly is just that MapXlu's draw-bit entry lives in GX Post by design;
+the ph1 flush is the unk40 Draw-Buffer-Group pre-pass.)
+
+**⇒ The journal's per-stage TEV refutation compared b76 to the WRONG oracle draw.** b76 (native MapXlu
+POST draw, bm=4/2 SRCALPHA/SRCCLR) must compare to GC's **POST-pass** MapXlu SRCALPHA/SRCCLR draw
+(`draw#1184`, tev=2, reg1≈(194,242,190) BLUE/teal), NOT the MAIN-pass mask (`draw#1180`, tev=3). The
+prior session matched by combiner-hash to draw#1180 and concluded "TEV-gen faithful" — that comparison
+was against a different draw (the main-pass mirror/depth mask).
+
+**What b76 actually is**: vc=15, z[-41056,+64870] (SPANS the near plane — verts behind the camera),
+ndcX[-106119,124861] (near-plane-crossing projection explosion → covers the screen), tev=3 white-
+saturating, rgb=0.87. GC's post MapXlu visible sea (draw#1184) is tev=2 blue, 52 verts, normal geometry.
+So b76 is a SEPARATE degenerate near-plane-spanning volume that native fails to near-plane-CLIP (so it
+covers the screen) AND paints white. Either (a) it's a [noC]/culled no-op on GC that native draws, or
+(b) native mis-clips a volume GC clips away.
+
+**NEXT (re-pointed)**: (1) find GC's match for b76 by VALUE — is there a 15-vert near-plane-spanning
+SRCALPHA/SRCCLR tev=3 draw anywhere in the oracle, and is it [noC]/clipped? (2) Identify b76's model
+(0x4332ae0, a MapXlu packet) — RE which sea/map sub-object it is and its geometry. (3) The prime fix
+suspects are now NEAR-PLANE CLIPPING (native's clip lets a camera-spanning volume blow up full-screen)
+and/or that this volume is a depth/occlusion no-op GC culls. Verify fileselect_overbright.py 42.7→~14.
+Tooling: SB_PL_DBG (perform-list entries), SB_DBHEAD_DBG (buffer flush map), SB_DRAWBUF_INV, SB_B76_DBG.
