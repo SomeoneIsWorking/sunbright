@@ -232,3 +232,48 @@ native draw the MapXlu buffer in the correct (main) pass with the live colorUpda
 [noC][noA] volume writes no color; and/or stop compositing the ph1 off-screen pre-pass into the
 visible framebuffer. NOT a combiner/CLR0/mirror fix. Verify: fileselect_overbright.py 42.7→~14
 without ablating b76.
+
+## UPDATE 2026-06-30 (latest, next session) — colupd-history probe PROVES it's draw-order, not a missing FALSE
+Built `sb_gx_colupd_history` (gx_impl.cpp: a monotonic GXSetColorUpdate call counter + the call index
+of the last GX_FALSE), wired into the `[b76]` debug line (delta = calls since last FALSE). Ran at the
+SETTLED file-select:
+- **ph6 b76**: `liveCU=1 liveAU=0 colupd_calls=891554 last_false@891551 delta=3`
+- **ph1 b12**: `liveCU=1 liveAU=1 colupd_calls=891566 last_false@891551 delta=15`
+
+So `GXSetColorUpdate(GX_FALSE)` **is** called (3–15 calls before the mask draw), but a `GX_TRUE` restore
+runs *between* the FALSE and native's draw → native runs the mask OUTSIDE the GC colorUpdate=FALSE
+window. NOT a missing FALSE; a draw-ORDER divergence.
+
+### The full structure, settled by VALUE (oracle SUNBRIGHT_DBG_GXBLEND/GXCOPY/GXTEV, frame 6)
+The whole file-select frame is an EFB-copy-TEXTURE composite, NOT a direct scene render:
+- **pass1 (pre-pass, efb_pass 1, 653 draws)** = **entirely `[noC][noA]`** (depth/occlusion only) → copy
+  EFB→TEX + CLEAR. The 3-stage SRCALPHA/SRCCLR mask is NOT here.
+- **pass2 (main, efb_pass 2, ~531 draws)** = **mostly `[noC][noA]`** too; the 3-stage SRCALPHA/SRCCLR
+  mask (`draw#1180`, tev=3, [noC][noA], 11 verts) appears ONLY here. Copy EFB→TEX.
+- **pass3 (post, efb_pass 3)** = the genuinely visible image: `SRCALPHA/SRCCLR tev=2 x26 (1352 verts)`
+  reg1≈(194,242,190) blue = the sea/scene composite (samples the EFB-copy textures) + the ortho HUD.
+
+⇒ **GC's visible file-select image is the pass3 composite sampling EFB-copy textures.** pass1/pass2 write
+almost no color directly — they build depth/alpha masks that are copied to textures. Native has no
+EFB-copy textures, so it cannot reproduce pass3; instead native paints the `[noC]` pass1/pass2 draws
+directly to get *something* on screen. The b76 overbright is one symptom of that: the MapXlu mask is a
+total no-op on GC (cU=0, aU=0, zw=0 — writes nothing), but native paints it white, mis-projected
+full-screen (ndcX[-106119,124861]).
+
+### Why native draws the mask in ph1+ph6 (not ph4 like GC) — the precise divergence
+- GC draws the 3-stage MapXlu mask ONLY in pass2 (= ph4 mPerformListGX); native's unk40 Draw-Buffer-Group
+  flush (ph1) and the post pass (ph6) both draw it, ph4 does not. So native's MapXlu draw buffer holds
+  the mask packet when unk40/post run, whereas GC's pre-pass buffer-group does NOT draw this mask.
+- Net: native draws this no-op mask TWICE in the wrong passes, both with colorUpdate restored to TRUE,
+  so it paints. The fix is **pass-routing / buffer-fill timing**: the MapXlu mask must be drawn (if at
+  all) in the main pass within the cU=FALSE window, not in unk40/post — i.e. native's draw-buffer flush
+  order must match GC's (the buffer-group draw in unk40 must NOT contain the main-pass-only mask).
+
+### The honest conclusion (for the successor)
+The b76 overbright is NOT independently fixable by a colorUpdate read — native reads every other field
+right (aU=0, zw=0); only colorUpdate is wrong, and it's wrong because of the pass-routing/flatten. The
+real, faithful fix is the **EFB-copy-texture composite** (the segmented present infra from the earlier
+update): build the pass1/pass2 EFB→texture snapshots and make the pass3 composite sample them — then the
+`[noC]` masks correctly write nothing and the visible image comes from the composite, as on GC. That is
+large but is the only non-bandaid path. Tooling now in place to drive it by value: SB_B76_DBG +
+sb_gx_colupd_history (native), SUNBRIGHT_DBG_GXBLEND/GXTEV/GXCOPY (oracle), fileselect_overbright.py.

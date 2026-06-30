@@ -125,7 +125,16 @@ void GXSetZMode(GXBool compare, GXCompare func, GXBool update) {
 }
 void GXSetZCompLoc(GXBool beforeTex) { state().zCompLocBeforeTex = beforeTex; }
 void GXSetCullMode(GXCullMode mode) { state().cullMode = mode; }
+// GXSetColorUpdate call history (b76 overbright drill, 2026-06-30): a monotonically increasing
+// call counter + the call index of the most recent GX_FALSE write, so the J3D capture can print,
+// at b76's draw, how recently colorUpdate was set FALSE (and then restored TRUE). If g_colupd_last_false
+// is far below g_colupd_calls at the draw, a TRUE restore ran in between → native runs the mask draw
+// OUTSIDE the GC colorUpdate=FALSE window (the structural pass-routing divergence).
+long g_colupd_calls = 0;
+long g_colupd_last_false = -1;   // call index of the last GXSetColorUpdate(GX_FALSE)
 void GXSetColorUpdate(GXBool enable) {
+    ++g_colupd_calls;
+    if (!enable) g_colupd_last_false = g_colupd_calls;
     if (const char* d = std::getenv("SB_DBG_COLUPD"); d && d[0] && d[0] != '0') {
         static long n0 = 0, n1 = 0; if (enable) ++n1; else ++n0;
         if ((n0 + n1) <= 8 || ((n0 + n1) % 256) == 0)
@@ -133,6 +142,10 @@ void GXSetColorUpdate(GXBool enable) {
                          (int)enable, n0, n1);
     }
     state().colorUpdate = enable;
+}
+extern "C" void sb_gx_colupd_history(long* calls, long* last_false) {
+    if (calls)      *calls      = g_colupd_calls;
+    if (last_false) *last_false = g_colupd_last_false;
 }
 
 // Live GXSetColorUpdate / GXSetAlphaUpdate state, for the J3D capture (the J3DMaterial PE block has

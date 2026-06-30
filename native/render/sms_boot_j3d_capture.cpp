@@ -88,6 +88,7 @@ extern "C" void sb_gx_get_chan_amb(int slot, float rgb[3]);
 extern "C" void sb_gx_get_chan_matcolor(int slot, float rgba[4]);
 extern "C" void sb_gx_get_cur_posmtx(float m[3][4]);
 extern "C" void sb_gx_get_color_alpha_update(int* color_update, int* alpha_update);
+extern "C" void sb_gx_colupd_history(long* calls, long* last_false);  // b76 overbright drill
 extern "C" unsigned long sb_gx_light_load_count(void);
 extern "C" void sb_host_alloc_push(void);
 extern "C" void sb_host_alloc_pop(void);
@@ -784,9 +785,11 @@ extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
         if (const char* d = std::getenv("SB_B76_DBG"); d && d[0] && d[0] != '0'
             && (unsigned)(me->key) == 0xc39d96b8u /* low32 of eb5c8e74c39d96b8 */) {
             int cu = 1, au = 1; sb_gx_get_color_alpha_update(&cu, &au);
-            std::fprintf(stderr, "[b76] phase=%d drawbuf=\"%s\" liveCU=%d liveAU=%d model=%p modelData=%p mat=%p key=%llx vc=%u\n",
+            long calls = 0, lastFalse = -1; sb_gx_colupd_history(&calls, &lastFalse);
+            std::fprintf(stderr, "[b76] phase=%d drawbuf=\"%s\" liveCU=%d liveAU=%d colupd_calls=%ld last_false@%ld (delta=%ld) model=%p modelData=%p mat=%p key=%llx vc=%u\n",
                          g_capture_phase, g_capture_drawbuf ? g_capture_drawbuf : "(none)",
-                         cu, au, (void*)model, (void*)model->getModelData(), (void*)mat,
+                         cu, au, calls, lastFalse, calls - lastFalse,
+                         (void*)model, (void*)model->getModelData(), (void*)mat,
                          (unsigned long long)me->key, vcount);
         }
         g_batches.push_back(b);
