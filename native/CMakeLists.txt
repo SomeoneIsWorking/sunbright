@@ -63,7 +63,10 @@ target_include_directories(sms-native PUBLIC
     "${SMS_NATIVE_REPO_ROOT}/reference/sms/include"
     # BE->host asset byteswap layer (bmd_swap_to_host), wired into the BMD/BDL
     # model load path for swap-at-load. Symbols come from sms-assets at link.
-    "${SMS_NATIVE_REPO_ROOT}/native/assets")
+    "${SMS_NATIVE_REPO_ROOT}/native/assets"
+    # Pure renderer-port headers used by scene_drive (sms_boot_setlight.h — the
+    # TLightCommon::setLight stage-light selection).
+    "${SMS_NATIVE_REPO_ROOT}/native/render")
 
 target_compile_options(sms-native PRIVATE
     # Force-include the portable Gekko intrinsics + fixed-width types shim.
@@ -441,7 +444,10 @@ foreach(test_src ${SMS_PLATFORM_TESTS})
         "${SMS_NATIVE_REPO_ROOT}/reference/sms/include"
         # The renderer's pure lighting decoder (ngx_light.h) — gx_test cross-checks the
         # GXSetChanCtrl packing against decode_chanctl().
-        "${SMS_NATIVE_REPO_ROOT}/runtime/ngx")
+        "${SMS_NATIVE_REPO_ROOT}/runtime/ngx"
+        # native/render — pure renderer-port headers (e.g. sms_boot_setlight.h,
+        # the TLightCommon::setLight stage-light selection that setlight_test covers).
+        "${SMS_NATIVE_REPO_ROOT}/native/render")
     target_compile_options(sms-${test_name} PRIVATE -fcommon)
     # sms-gd (GD display-list builder, decomp source) is referenced by gd_test;
     # sms-assets (BE->host asset swappers) by anm_swap_test/bmd swaps; a static lib

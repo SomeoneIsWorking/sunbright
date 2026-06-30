@@ -40,6 +40,7 @@
 #include <JSystem/J3D/J3DGraphBase/J3DPacket.hpp>         // J3DMatPacket / J3DShapePacket
 #include <dolphin/mtx.h>
 #include <dolphin/gx.h>                                 // GXRenderModeObj, GXNtsc480Int
+#include "sms_boot_setlight.h"                          // sb::build_stage_lights (TLightCommon::setLight port)
 #include <cstdio>
 #include <cmath>
 #include <cstdlib>
@@ -593,54 +594,62 @@ extern "C" bool sb_boot_drive_scene() {
 		}
 	}
 
-	// OWN THE STAGE-LIGHT LOAD (port of the stubbed TLightCommon path).
-	// The stage's diffuse sun lives in the "Light Group" (TLightAry) scene object — each
-	// TIdxLight already carries a fully-loaded GXLightObj (colour via TLight::load) + a
-	// world-space position (TPlacement::mPosition). The decomp's TLightCommon::setLight /
-	// ::perform would view-transform that position and GXLoadLightObjImm it into GX_LIGHT0/1
-	// (the slots the stage CLOF materials' cc0=0x68e enable), but those methods are EMPTY
-	// STUBS in reference/sms (community decomp never implemented them) → nothing ever loads a
-	// GX light → the (wired+tested) per-vertex lighting consumer is inert (nlights==0).
-	// We drive that load ourselves here, faithfully: GX light i ← Light Group light[i], its
-	// position transformed by the live view matrix (GX lighting runs in view space), colour
-	// from the loaded GXLightObj, flat attenuation (matching the TLight ctor's
-	// GXInitLightAttn(1,0,0,1,0,0)). Done every frame because the view matrix moves with the
-	// camera. This must run BEFORE perform(0x8): the j3d capture reads sb_gx_get_lights()
-	// during the shape draw inside perform.
+	// OWN THE STAGE-LIGHT LOAD — faithful port of TLightCommon::setLight (the decomp left it
+	// an empty stub; LightUtil.cpp). The real game loads the stage's GX lights from ONE
+	// Light-Group entry (the sun at index unk24, = Light-Group[0] for the option scene) via
+	// setLight, NOT by blasting the whole palette. setLight loads THREE GX lights:
+	//   GX_LIGHT0 positional (view-transformed sun) + GX_LIGHT1 effect/specular (gpLightManager,
+	//   conditional) + GX_LIGHT2 directional (-normalize(sun) as a specular dir). All share the
+	// Light-Group[0] colour (white) → 3 white lights in slots 0/1/2. Decompiled from GMSE01
+	// @0x80229a30 / TLightMario @0x80229610; the pure selection math + its tests live in
+	// native/render/sms_boot_setlight.h + native/platform/tests/setlight_test.cpp.
 	//
-	// NOTE on index→slot mapping: we use the setLight model (GX_LIGHTi ← getLightColor(i) =
-	// light[i]), NOT perform's "same obj in all 3 slots", to avoid double-counting light[0].
-	// On the Delfino data the palette is L0=white, L1=black, so this yields a single white
-	// diffuse light (L1 contributes nothing) — clean and unambiguous. The 2×-white ambiguity
-	// the RE flagged (scratch/light_re_spec.md §5, handoff open-Q) is thereby moot here.
-	// NOTE on position: every Light Group entry loads at world-origin (0,0,0) — the data is a
-	// colour palette at the origin, with no runtime sun-direction setter on this path (grep
-	// GXInitLightDir → none stage-specific). So this is faithfully a point light at the world
-	// origin (radial shading), NOT a directional sun. If the look is wrong, the real sun dir
-	// is applied elsewhere (JStage during cutscenes) — investigate THAT, do not fudge positions.
+	// VALUE-VERIFIED (GX-command-stream oracle, 2026-06-30): stage-15 file-select loads exactly
+	// 3 white lights — proving the effect light is ON. The previous code here loaded 8 Light-Group
+	// entries into GX_LIGHT0..7 (a pre-oracle guess that diverged 3→8). See memory
+	// [[fileselect-lighting-3-vs-8-divergence]]. This must run BEFORE perform(0x8): the j3d capture
+	// reads sb_gx_get_lights() during the shape draw.
+	//
+	// effectOn: setLight gates GX_LIGHT1 on gpLightManager->unk54 && unk55, set by an inlined
+	// calcLightBorder we have not located; native's gpLightManager ctor defaults them to 0. The
+	// oracle proves the effect light is ON for file-select, and its data (gpLightManager loadAfter)
+	// is Light-Group[0] — so we drive it from Light-Group[0] here. SB_NO_EFFECT_LIGHT forces it off
+	// (→ 2 lights) for A/B. Refinement: port the calcLightBorder gate to source effectOn live.
 	{
 		JDrama::TLightAry* la =
 		    JDrama::TNameRefGen::search<JDrama::TLightAry>("Light Group");
-		if (la && la->mLights) {
-			const int n = la->mLightCount < 8 ? la->mLightCount : 8;
-			for (int i = 0; i < n; ++i) {
-				const JDrama::TIdxLight& src = la->mLights[i];
-				GXColor col; GXGetLightColor(&src.unk24, &col);   // loaded by TLight::load
-				const JGeometry::TVec3<f32>& wp = src.getPosition();
-				Vec mp = { wp.x, wp.y, wp.z }, vp;                // world -> view space
-				PSMTXMultVec(g_graphics.mViewMtx.mMtx, &mp, &vp);
+		if (la && la->mLights && la->mLightCount > 0) {
+			const JDrama::TIdxLight& sun = la->mLights[0];  // index unk24 (=0 for option scene)
+			GXColor col; GXGetLightColor(&sun.unk24, &col);
+			const JGeometry::TVec3<f32>& wp = sun.getPosition();
 
-				GXLightObj obj;
-				GXInitLightPos(&obj, vp.x, vp.y, vp.z);
-				GXInitLightColor(&obj, col);
-				GXInitLightAttn(&obj, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f);  // flat (TLight ctor)
+			sb::SetLightIn lin{};
+			lin.lgColor[0]=col.r/255.f; lin.lgColor[1]=col.g/255.f;
+			lin.lgColor[2]=col.b/255.f; lin.lgColor[3]=col.a/255.f;
+			lin.lgPos[0]=wp.x; lin.lgPos[1]=wp.y; lin.lgPos[2]=wp.z;
+			for (int r = 0; r < 3; ++r) for (int c = 0; c < 4; ++c)
+				lin.view[r*4+c] = g_graphics.mViewMtx.mMtx[r][c];
+			lin.effectOn =
+			    !(std::getenv("SB_NO_EFFECT_LIGHT") && std::getenv("SB_NO_EFFECT_LIGHT")[0] != '0');
+			// Effect light data = gpLightManager's, which loadAfter fills from Light-Group[0].
+			for (int i = 0; i < 3; ++i) lin.effPos[i]   = lin.lgPos[i];
+			for (int i = 0; i < 4; ++i) lin.effColor[i] = lin.lgColor[i];
+
+			sb::OutLight lo[3];
+			sb::build_stage_lights(lin, lo);
+			for (int i = 0; i < 3; ++i) {
+				if (!lo[i].present) continue;
+				GXLightObj obj{};   // zero unset fields (GXInitSpecularDir leaves pos unwritten)
+				if (lo[i].specular) GXInitSpecularDir(&obj, lo[i].pos[0], lo[i].pos[1], lo[i].pos[2]);
+				else                GXInitLightPos(&obj, lo[i].pos[0], lo[i].pos[1], lo[i].pos[2]);
+				GXColor lc = { (u8)(lo[i].color[0]*255.f+0.5f), (u8)(lo[i].color[1]*255.f+0.5f),
+				               (u8)(lo[i].color[2]*255.f+0.5f), (u8)(lo[i].color[3]*255.f+0.5f) };
+				GXInitLightColor(&obj, lc);
+				GXInitLightAttn(&obj, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f);  // GXInitLightObj default
 				GXLoadLightObjImm(&obj, (GXLightID)(GX_LIGHT0 << i));
 			}
 		}
 		// Ambient: GXSetChanAmbColor(GX_COLOR0A0, AmbGroup[0]) — faithful to the original.
-		// (The per-vertex consumer currently sources ambient from the J3D material block,
-		// which in J3D is the same value that loads this register, so this owns the register
-		// for parity / a future GX-ambient consumer rather than changing the current output.)
 		JDrama::TAmbAry* aa =
 		    JDrama::TNameRefGen::search<JDrama::TAmbAry>("Ambient Group");
 		if (aa && aa->mAmbColors && aa->mAmbColorCount > 0) {
