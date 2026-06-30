@@ -975,6 +975,7 @@ extern "C" int sb_boot_capture_begin_scene() {
 // (1=unk40, 2=unk38, 3=unk3C, 4=mPerformListGX, 5=Silhouette, 6=mPerformListGXPost) so every batch
 // captured carries its source pass. Reset to 0 in end_scene.
 extern "C" void sb_boot_capture_set_phase(int phase) { g_capture_phase = phase; }
+extern "C" int  sb_boot_capture_phase() { return g_capture_phase; }   // SB_DBHEAD_DBG cross-ref
 
 // Active draw-buffer name, stamped by TDrawBufObj::perform(flag&8) before mDrawBuffer->draw() flushes
 // it (the J3DShape::draw tap source). Lets the overbright harness attribute a batch (e.g. b76) to its

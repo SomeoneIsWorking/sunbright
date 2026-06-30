@@ -297,3 +297,31 @@ Group + GXPost composite3 run, yet the oracle shows the mask combiner ONLY in pa
 buffer must be EMPTY (already drained/frameInit'd) during the unk40 + GXPost flushes. Trace the MapXlu
 buffer's frameInit/entry/draw order per pass (SB_FI_TRACE + a new entry/draw trace) to find why native's
 buffer still holds the mask there. Tooling: SB_B76_BT, SB_B76_DBG (ring/colupd), SB_FI_TRACE, SB_DRAWBUF_INV.
+
+## UPDATE 2026-06-30 (latest) — SB_DBHEAD_DBG buffer-flush map: MapXlu uniquely routed ph1+ph6
+Added `SB_DBHEAD_DBG` (J3DDrawBuffer::drawHead trace: buffer ptr + capture phase + packet count) +
+`sb_boot_capture_phase()`. Cross-referenced with `SB_DRAWBUF_INV` (MapXlu = buf 0x..200dc, 2 packets).
+The settled per-pass flush map:
+- MapXlu (200dc): **ph1 + ph6**  ← THE ANOMALY
+- MapOpa (1fe3c), Sky Xlu (1fd7c), 20f40 (16pk), 210e0 (2pk): **ph1 + ph4** (main pass) — all siblings
+- ec7c60, ec7b18: ph6 only (composite3's own buffers)
+
+So **every scene buffer flushes in ph1 (unk40 pre-pass) + ph4 (mPerformListGX main) EXCEPT MapXlu,
+which flushes in ph1 + ph6 (GXPost)**. MapXlu is uniquely routed to the POST pass, not the main pass.
+The owner is `composite3` ("合成3", GXPost) — the SEA-REFLECTION composite that draws the translucent
+map (sea water) after the mirror EFB texture is ready. That is plausibly FAITHFUL for the sea SURFACE.
+
+**The bug**: the MapXlu buffer holds **2 packets** = the sea surface (tev=2, the visible blue composite
+= oracle draw#1184, pass3) AND the tev=3 white-saturating MASK (= oracle draw#1180, pass2/MAIN). drawHead
+draws BOTH together in ph6 → native paints the tev=3 mask white in the post pass. On GC the mask draws in
+the MAIN pass (pass2, cU=FALSE no-op) and the sea in the POST pass (pass3, cU=TRUE visible) — they are
+SEPARATED (different buffers or different draw times). Native has both in ONE buffer flushed once in ph6.
+
+**NEXT (the real fix)**: separate the two MapXlu packets so the tev=3 mask draws in the MAIN pass (ph4,
+cU=FALSE → writes nothing) and only the tev=2 sea surface draws in ph6 (composite3, cU=TRUE). Investigate
+why native's MapXlu buffer contains the mask packet at composite3's ph6 flush — either (a) the mask should
+be entered into a DIFFERENT buffer (one flushed in the main pass like MapOpa), or (b) GC frameInit's /
+re-enters the MapXlu buffer between the main pass and composite3 so the post flush sees only the sea. Trace
+the MapXlu entry() calls (which models, which pass) + frameInit timing vs MapOpa (the sibling that DOES
+flush in ph4). Tooling: SB_DBHEAD_DBG, SB_DRAWBUF_INV, SB_FI_TRACE, SB_B76_BT/DBG. Verify:
+fileselect_overbright.py 42.7→~14 WITHOUT ablating b76.
