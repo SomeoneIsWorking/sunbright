@@ -95,7 +95,20 @@ removed):
 So the overbright is dominated by TWO sky layers: the **SCREEN-blend** base (1/3) and the **additive**
 ray/glow (4/1). `no_all_blend` being far worse proves these layers EXIST in the oracle too (the scene
 NEEDS them) — so the fix is to render them with the CORRECT (dimmer/coloured) raster, NOT to drop
-them. Both render with full-white raster (rgb=1,1,1; the SCREEN base is untextured, ntex=0) per the
-SB_BATCH_DBG dump — prime suspect = the capture sourcing matColor(white) where the material's COLOR0
-is VERTEX-sourced (cc0 bit0=1 → a sky gradient), so a white quad screen-blends the scene toward white.
-NEXT: trace those two materials' raster colour source (vertex vs register) + TEV, fix the white raster.
+them.
+
+### ⚠ CORRECTION (don't chase CLR0 — that was my error)
+I first guessed the SCREEN layer was a "white dome / CLR0 decode bug." WRONG. The `[cov]` probe
+(per-shape vclr0) + the batchdbg show the SCREEN dome (bm=1/1/3, vc=1800, ntex=0) has a BLUE vertex
+gradient that is CORRECTLY read: vclr0=151,192,255; the batch's raster rgb=**0.24,0.60,0.90** (blue),
+cvar=0.135. The rgb=1,1,1 white batches are the ADDITIVE 1/4/1 ones (textured sun-rays, TEV
+KONST*TEXC). So the dome colour is RIGHT.
+
+Since ablating the CORRECT blue SCREEN dome still DROPS the delta (and ablating all blends is far
+WORSE), the real cause is that native **OVER-COMPOSITES** these blend layers relative to Dolphin —
+a blend-equation / draw-ORDER / COVERAGE difference, NOT a wrong layer colour. This is exactly the
+CLAUDE.md multi-layer-blend trap; it now HAS a value harness (fileselect_overbright.py + the drill).
+NEXT (real): compare native vs Dolphin compositing of the SCREEN(1/1/3) + additive(4/1) layers —
+(a) is the SCREEN blend (src=ONE,dst=INVSRCCLR) implemented correctly in nvk? (b) draw order vs the
+opaque scene; (c) does the surround dome bleed its blue SCREEN floor onto the beach/sea (coverage)?
+The fix must drop mean|delta| from 42.7 WITHOUT ablating the layers.
