@@ -489,3 +489,57 @@ matches GC's framebuffer (no white wash). Verify: fileselect_overbright.py 42.7 
 
 Tooling added this session: SB_MAPXLU_PKT (native MapXlu per-packet dump). Oracle proof reproduced from
 scratch/passes/oracle_blend2.log (SUNBRIGHT_DBG_GXBLEND frame 4).
+
+## UPDATE 2026-06-30 (next session) — RE-CONFIRMED from oracle ground truth; one excursion corrected; raster probe rules out CLR0/lighting
+Continued from bad76b0. Two solid results + one self-correction.
+
+**(1) FRESH measurement — b76 is the dominant wash (re-verified).** `SB_SKIP_KEY=eb5c8e74` (drop the
+b76 packet) on a settled file-select run: `fileselect_overbright.py` 42.7 → **14.2**. The 4×4 region grid
+shows b76 covers the whole screen (bottom rows go to ~0 when dropped); the +108 top-row residual is the
+SEPARATE sky-dome layer. Baseline 42.7 is **std-PRESERVING (additive)**, not std-compressing — consistent
+with a full-screen blended layer, not a hard white-saturate.
+
+**(2) SELF-CORRECTION — I briefly mis-refuted the [noC] diagnosis; the oracle blend log REFUTES my
+refutation.** Mid-session I argued (from `SB_PL_DBG`: `DrawBuf MapXlu` draws ONLY in `PerformList GX Post`,
+and J3D materials never call `GXSetColorUpdate`) that b76 must be a VISIBLE joint, not a [noC] mask. That
+was WRONG. `scratch/passes/oracle_blend2.log` (SUNBRIGHT_DBG_GXBLEND, ground truth) settles it:
+```
+pass2  SRCALPHA/SRCCLR tev=3 [noC][noA] x3 (11 verts)   ← b76's counterpart: WRITES NOTHING
+pass3  SRCALPHA/SRCCLR tev=2            x26 (1352 verts) ← the VISIBLE sea composite (EFB-texture sampler)
+```
+b76 (tev=3) maps to the **[noC][noA]** draw; the visible sea is **tev=2, 1352 verts, in pass3**. So the
+journal's long-standing "b76 = tev=3 [noC] mask native paints white" is **CORRECT**. The visible sea native
+is missing (its MapXlu only has 15v mask + 30v f191, NOT the 1352v tev=2 sea) is the pass3 EFB-texture
+composite native can't reproduce.
+
+**The useful refinement this excursion produced:** the [noC] is **PASS-LEVEL, not per-draw**. Nearly EVERY
+pass2 draw in the oracle is `[noC]`/`[noC][noA]` (lines 81–115) — pass2 is the whole main-scene-render-to-EFB-
+texture, run with `GXSetColorUpdate(FALSE)` set ONCE by the EFB-control object (`TEfbCtrl::perform(0x80)` →
+`GXSetColorUpdate(!unk20.check(0x100))`, JDREfbCtrl.cpp:11; the `通常シーン描画ステージ` setup) — NOT a
+colorUpdate object adjacent to the MapXlu draw (there is none; `SB_PL_DBG` shows MapXlu bracketed only by
+`Map Draw SnapTime` timers). native never enters that pass-level [noC] state, so it paints all of pass2.
+
+**(3) RASTER PROBE rules out CLR0 / lighting / mirror as the b76 "fix".** New gated probe `[b76-raster]`
+(SB_B76_DBG, sms_boot_j3d_capture.cpp) prints the mask's raster inputs at the settled frame:
+```
+[b76-raster] lit=1 nlights=3 do_light=1 cc0=0706 matSrcVtx0=0 rawCLR0=255,255,255,255 matColor0=255,255,255,255
+```
+`matSrcVtx0=0` → the raster colour is the **material register (white)**, not per-vertex; lit=1. So b76's
+colour is lit-white — but **its colour is IRRELEVANT** (on GC it writes no colour). Chasing CLR0/TEV-gen/
+lighting/mirror-binding for b76 is pointless; the ONLY faithful fix is to make it **write no colour**, which
+requires honoring pass2's pass-level [noC]. The bfrag (`scratch/frames/bfrag_76.glsl`) doubles vColor to
+saturation (`2·vColor`), and its bound texture feeds **alpha only** — so neither a darker vColor nor the
+mirror texture would matter; the draw must simply not paint.
+
+**Why there is no bounded fix (and the real fix):** honoring pass2's [noC] makes native draw the whole main
+scene with no colour → BLACK, because native relies on painting the [noC] passes visibly (it has no pass3
+EFB-texture composite to show the scene). So [noC] honoring regresses (same class as honor-clear 42.7→45.7).
+The ONLY faithful fix is the **EFB-copy-texture multi-pass composite**: render pass2 into the EFB (masks
+[noC]), copy EFB→texture, then render pass3's tev=2 composite SAMPLING that texture (= the visible scene +
+sea). native has partial infra (`draw_tev_segment`/`snapshot_efb`/EFB-sampler binding, sms_boot_present.cpp)
+but the pass3 composite does not yet reproduce the scene from the snapshot (binding it is currently
+net-neutral). That is the next, large, well-scoped task — the user's chosen full pass-structure port.
+
+Net: measurement + diagnosis re-confirmed from GROUND TRUTH; b76 colour-fix paths (CLR0/TEV/lighting/mirror)
+are DEAD; the fix is the EFB-copy-texture composite. Tooling added: `[b76-raster]` probe, fresh
+`scratch/passes/{oracle_blend2.log analysis, pl_dbg.log, b76_raster.log, skip_b76 frame}`.

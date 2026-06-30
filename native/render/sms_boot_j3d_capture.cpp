@@ -818,6 +818,19 @@ extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
                          cu, au, calls, lastFalse, calls - lastFalse, rb,
                          (void*)model, (void*)model->getModelData(), (void*)mat,
                          (unsigned long long)me->key, vcount);
+            // RASTER-COLOUR DIAGNOSIS (2026-06-30): b76 washes white because the frag doubles its
+            // raster colour (vColor) to saturation. Is vColor too bright because the joint is LIT
+            // and native's lighting is too bright, or UNLIT and the raw CLR0 read is wrong? Print
+            // lit/chanCtrl/matSrcVtx + the raw first-vertex CLR0 + matColor reg + do_light state.
+            if (!idx.empty()) {
+                const auto& sv0 = verts[idx[0]];
+                const bool do_light_dbg = me->lit && nlights > 0;
+                std::fprintf(stderr, "[b76-raster] lit=%d nlights=%d do_light=%d cc0=%04x matSrcVtx0=%d "
+                             "rawCLR0=%u,%u,%u,%u matColor0=%u,%u,%u,%u\n",
+                             (int)me->lit, nlights, (int)do_light_dbg, me->chanCtrl[0],
+                             (int)me->matSrcVtx[0], sv0.clr[0][0], sv0.clr[0][1], sv0.clr[0][2], sv0.clr[0][3],
+                             me->matColor[0][0], me->matColor[0][1], me->matColor[0][2], me->matColor[0][3]);
+            }
             // SB_B76_BT=1: one backtrace per phase, to NAME the perform-list entry / TViewObj that
             // draws this MapXlu mask in ph1 (unk40) and ph6 (GXPost) — the pass-routing owner.
             if (const char* bt = std::getenv("SB_B76_BT"); bt && bt[0] && bt[0] != '0') {
