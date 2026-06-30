@@ -25,6 +25,8 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <algorithm>
+#include <utility>
 #include <sys/stat.h>
 #include <sys/types.h>
 
@@ -692,6 +694,56 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
             std::fprintf(stderr, "[passdump] pass%d_native = cumulative [0,%d) %dx%d copy(dest=%p %dx%d clear=%d)\n",
                          k + 1, bnd, kW, kH, copies[k].dest, copies[k].wd, copies[k].ht, copies[k].clear);
         }
+    }
+
+    // SB_BLEND_DRILL=1: attribute the per-pass blend OVERBRIGHT (bug #1) to a specific blend class in
+    // ONE run (a native run is ~4 min, so N separate SB_ABLATE_BM runs is too slow). Operates on the
+    // MAIN-pass batches only (phase != 1) to isolate the single scene render from the ph1 mirror
+    // double-draw AND the imm soft-focus quad — so the dumps are directly comparable to the oracle's
+    // 320x224 pass2 (the clean single scene). For every distinct (src,dst) blend factor pair among the
+    // main-pass blended batches it dumps: drill_base (all main-pass), drill_drop_S_D (that pair removed),
+    // drill_only_S_D (only that pair, over the opaque base). tools/render/blend_drill.py then region-
+    // diffs each vs oracle_pass2 and ranks which class's brightness dominates the sky/sea overbright.
+    static const bool blendDrill = [](){ const char* v = std::getenv("SB_BLEND_DRILL"); return v && v[0] && v[0] != '0'; }();
+    if (blendDrill && dumpThis && !sceneFiltered) {
+        static std::vector<uint8_t> drill_pix;
+        // main-pass batches (phase != 1), in order
+        std::vector<int> mainIdx;
+        for (int i = 0; i < nScenePushed; ++i) if (batches[(size_t)i].phase != 1) mainIdx.push_back(i);
+        // distinct (src,dst) among the BLENDED main-pass batches
+        std::vector<std::pair<int,int>> sigs;
+        for (int i : mainIdx) { const auto& b = batches[(size_t)i];
+            if (b.blend_mode == 0) continue;
+            std::pair<int,int> s{b.src_factor, b.dst_factor};
+            if (std::find(sigs.begin(), sigs.end(), s) == sigs.end()) sigs.push_back(s); }
+        auto render_dump = [&](const std::vector<NvkTevBatch>& bs, const char* tag){
+            sb::gxsdl::frame_begin(c[0], c[1], c[2], c[3]);
+            sb::gxsdl::draw_tev(verts.data(), (int)verts.size(), bs.data(), (int)bs.size());
+            sb::gxsdl::frame_end();
+            drill_pix.assign((size_t)kW * kH * 4, 0);
+            sb::gxsdl::readback(drill_pix.data(), (int)kW, (int)kH);
+            char p[160]; std::snprintf(p, sizeof p, "scratch/frames/drill_%s_%04d.ppm", tag, df);
+            write_ppm_buf(p, drill_pix.data(), kW, kH);
+            std::fprintf(stderr, "[blenddrill] %s : %zu batches\n", tag, bs.size());
+        };
+        // base = all main-pass batches
+        std::vector<NvkTevBatch> base; for (int i : mainIdx) base.push_back(batches[(size_t)i]);
+        render_dump(base, "base");
+        for (auto [s, d] : sigs) {
+            std::vector<NvkTevBatch> drop, only;
+            for (int i : mainIdx) { const auto& b = batches[(size_t)i];
+                bool match = (b.blend_mode != 0 && b.src_factor == s && b.dst_factor == d);
+                if (!match) drop.push_back(b);                 // everything except this class
+                if (match || b.blend_mode == 0) only.push_back(b);  // this class over the opaque base
+            }
+            char td[32], to[32];
+            std::snprintf(td, sizeof td, "drop_%d_%d", s, d);
+            std::snprintf(to, sizeof to, "only_%d_%d", s, d);
+            render_dump(drop, td);
+            render_dump(only, to);
+        }
+        std::fprintf(stderr, "[blenddrill] %zu distinct blend classes among %zu main-pass batches\n",
+                     sigs.size(), mainIdx.size());
     }
 
     // SB_EFB_HONOR_CLEAR_SEG (default OFF): honor the EFB *clear* between segments. The GC clears the
