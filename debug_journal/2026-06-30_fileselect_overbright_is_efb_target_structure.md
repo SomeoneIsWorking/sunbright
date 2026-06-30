@@ -689,3 +689,62 @@ rendered PNG, and it resolves cleanly (no parse bug):
   into segment A (off-screen), snapshot to texA at the copy boundary, CLEAR, render segment B → texB, then
   render the pass3 composite binding texA/texB. Native currently composites cumulatively (every segment LOAD)
   → it shows the scene but over-bright/double; the fix is to make pass3 the ONLY visible draw + bind snapshots.
+
+## 2026-07-01 (later) — INTERLEAVED per-pass framebuffer differ built (passdiff.py); divergence = PASS1; fix structure pinned
+User pushed back on the two-separate-processes + aggregate-signature diff: "is it not possible to
+build something that runs interleaved rendering and automatically surfaces where the divergence
+comes from?" Right call. Built it (commit 7e94265). True per-DRAW lockstep is infeasible (native
+walks J3D objects → 79 merged batches; oracle consumes the GX FIFO → 1170 prims; no shared draw
+index — that's why gxstate_diff can only join by signature). But the engines DO share the PASS
+boundaries (the EFB copies). So the differ compares each engine's FRAMEBUFFER at those boundaries.
+
+**Tooling (committed):**
+- ORACLE: `SUNBRIGHT_DUMP_EFB=1` (main_sdl.cpp → Config::GFX_DUMP_EFB_TARGET) → Dolphin dumps every
+  intra-frame EFB→texture copy DECODED to `<home>/.local/share/dolphin-emu/Dump/Textures/efb1_n######_WxH_F.png`.
+  No GC-tiled decode needed — Dolphin's own copy pipeline writes the PNG. Reproduce the SETTLED
+  file-select: real-time `run.sh` (NOT headless — needs the probe) + `SUNBRIGHT_DUMP_EFB=1` +
+  `SUNBRIGHT_STAGE=15`, then `/pad?do=start&ms=250` once to leave PRESS-START, settle ~40s. (Headless
+  fastboot stage 15 stays on the TITLE = same beach + logo overlay; press Start to reach the option
+  scene = beach + "Select data"/ABC blocks/OPTIONS.)
+- NATIVE: `SB_PASS_DUMP=1` (sms_boot_present.cpp) → cumulative FB at each copy boundary →
+  `scratch/frames/pass{k}_native_NNNN.ppm`.
+- `tools/render/passdiff.py` groups oracle dumps by dims, matches native pass-k, prints per-channel
+  mean delta + writes side-by-side (native|oracle|heat) PNGs to scratch/passes/passdiff_*.png.
+
+**The 3 oracle EFB copies SEEN AS IMAGES (settled file-select):**
+- `256x256_5` (pass1, MIRROR/鏡): NEAR-EMPTY — black except a tiny Mario reflection at top-center.
+  mean ≈ (1,1,1). The file-select mirror reflects almost nothing.
+- `320x224_4` (pass2, soft-focus/通常シーン): THE CLEAN SINGLE SCENE — beach, palm, sea, island,
+  Mario, A/B/C blocks, OPTIONS sign. NO 2D menu banners. mean ≈ (122,172,184). THIS is what native
+  must match (the scene rendered ONCE).
+- `640x448_15` (pass3, FINAL): pass2 + the 2D blue menu banners ("Select data." / Corrupt/New/New)
+  = the visible frame. mean ≈ (123,163,191).
+
+**DECISIVE per-pass result (native vs oracle):**
+```
+pass1: native meanRGB (174,200,208) [the WHOLE bright scene]  vs  oracle (0.9,0.5,0.4) [empty mirror]  → delta 193  ← DIVERGENCE
+pass2: native (194,217,212)  vs  oracle (130,177,184)  → delta 72  (overbright, additive offset)
+pass3: native (182,200,214)  vs  oracle (123,163,191)  → delta 66
+```
+**Native draws the FULL main scene with the MAIN camera in the unk40 (ph1) mirror pre-pass** — where
+GC renders an (almost empty) reflection off-screen to a 256x256 target. That scene stays in the
+visible FB and the later passes pile on → the overbright + double-draw.
+
+**WHY a simple `SB_ABLATE_PHASE=1` is NOT the fix (tested):** overbright UNCHANGED (66→66; 42.7→45.7
+on the old metric, WORSE). ABLATE_PHASE sets sceneFiltered=true → DISABLES the segmented present →
+the imm soft-focus quad (efb_src consumer) finds no snapshot → binds WHITE → washes the whole upper
+scene (the "lost palm" in the ablate frame is the palm HIDDEN under the white soft-focus quad, not
+dropped). So the soft-focus snapshot path is CENTRAL and must stay live — the fix CANNOT be a phase
+ablation; it must be the proper segmented off-screen render.
+
+**THE FIX (now fully pinned, matches the oracle pass structure):** rework the segmented present to
+render OFF-SCREEN with a CLEAR at the phase boundaries, so each snapshot is clean:
+  1. ph1 (unk40 mirror) → render off-screen → snapshot copy0.dest (texA mirror) → CLEAR.
+  2. ph4+ph6 (main + chr) → render off-screen → snapshot copy1.dest (texB = the CLEAN scene, incl
+     Mario/palm/blocks, with NO ph1 double-draw because of the clear) → CLEAR.
+  3. VISIBLE frame = the composite quads (the imm soft-focus quad sampling texB + the sea quad
+     sampling texA) + the 2D menu banners. The scene is shown ONCE, via texB — exactly pass3.
+The crux vs the earlier failed honor-clear: clear at the PH1/PH4 PHASE boundary (use batch.phase),
+NOT at copy0's batch index (which cut mid-ph4 and dropped ph4 content). NEXT: confirm the native imm
+soft-focus quad covers the frame and faithfully re-displays texB (check its coverage/blend), then
+implement; verify each pass goes green with passdiff.py + the overbright number.
