@@ -421,7 +421,17 @@ static void sb_drawbuf_inventory() {
 	for (const char* nm : names) {
 		JDrama::TDrawBufObj* o = JDrama::TNameRefGen::search<JDrama::TDrawBufObj>(nm);
 		J3DDrawBuffer* b = o ? o->getDrawBuffer() : nullptr;
-		std::fprintf(stderr, "[drawbuf-inv] %-32s obj=%p buf=%p\n", nm, (void*)o, (void*)b);
+		// Walk the buffer's packet chains: heads = occupied slots, packets = total entered models.
+		// A non-empty global Map/Chr buffer that native never DRAWS is the missing-geometry target.
+		long heads = 0, packets = 0;
+		if (b && b->mBuffer)
+			for (u32 s = 0; s < b->mSize; ++s) {
+				J3DPacket* p = b->mBuffer[s];
+				if (p) ++heads;
+				for (; p; p = p->getNextPacket()) ++packets;
+			}
+		std::fprintf(stderr, "[drawbuf-inv] %-32s obj=%p buf=%p heads=%ld packets=%ld\n",
+		             nm, (void*)o, (void*)b, heads, packets);
 	}
 }
 
