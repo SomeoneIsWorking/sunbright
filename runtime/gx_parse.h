@@ -28,6 +28,23 @@ struct GxFrameInfo {
     u32 fail_offset = 0;                     // where parsing stopped
     u8  fail_opcode = 0;                     // opcode byte there
     u32 total = 0;                           // frame size
+
+    // ── Per-pass parity oracle (Dolphin-GX ground truth from the command stream) ──────────────────
+    // The XF register state the GPU actually uses, captured from the SETPROJECTION / SETVIEWPORT /
+    // light-memory / channel-colour XF loads in this frame's stream. This is the VALID oracle for the
+    // native renderer's lighting/projection parity (sb_parity_dump.h) — it is what Dolphin's GX
+    // pipeline consumes, not the async-lagged xfmem read-back. Reset per frame.
+    struct GxLight { bool valid = false; float pos[3] = {}; float color[3] = {}; };
+    GxLight lights[8];
+    int   light_loads = 0;                   // count of light-memory XF loads seen (8 lights max)
+    float amb[3]  = {0,0,0};                  // SETCHAN0_AMBCOLOR (u8 RGB -> 0..1), last seen
+    float matc[4] = {1,1,1,1};               // SETCHAN0_MATCOLOR (u8 RGBA -> 0..1), last seen
+    bool  have_proj = false;
+    int   proj_type = 0;                     // 0 = perspective, 1 = orthographic
+    float proj[6] = {};                      // SETPROJECTION matrix (6 values)
+    bool  have_vp = false;
+    float vp[6] = {};                        // SETVIEWPORT (wd,ht,nearz, xorig,yorig,farz scaled)
+    u32   chan0_ctrl = 0;                     // SETCHAN0_COLOR (light mask / amb-mat source)
 };
 
 // Parse `n` bytes of frame stream; fills `out`. Returns out.ok.

@@ -349,6 +349,38 @@ void gxs_frame_boundary() {
             fprintf(stderr, "\n");
         }
     }
+    // ── Parity oracle dump (SUNBRIGHT_PARITY_DUMP=path) ───────────────────────────────────────────
+    // Emit one JSON line/frame of the Dolphin-GX command-stream state, matching the cross-engine fields
+    // sms-boot's sb_parity_dump.h emits, so tools/render/parity_sweep.py can diff the two engines'
+    // lighting/projection by VALUE. This REPLACES the deleted ngx SUNBRIGHT_PARITY_DUMP. PHASE 1:
+    // lights/ambient/material/projType (the documented divergence) are exact register state from the XF
+    // loads — no transform needed. geom.onscr is a LIVENESS PROXY (= prims) so _summarize counts the
+    // frame; real clip-space on-screen verts are phase 2 (needs the posmtx+projection vertex transform).
+    if (parse_ok) {
+        static std::FILE* s_pf = [](){ const char* p = getenv("SUNBRIGHT_PARITY_DUMP");
+            return (p && p[0]) ? std::fopen(p, "w") : nullptr; }();
+        static long s_pfn = 0;
+        const GxFrameInfo& fi = g_frame_info;
+        if (s_pf && fi.prims > 0) {
+            int ln = 0; for (int i = 0; i < 8; ++i) if (fi.lights[i].valid) ln++;
+            std::fprintf(s_pf,
+                "{\"frame\":%ld,\"nverts\":%u,\"nbatch\":%u,\"geom\":{\"onscr\":%u,\"nan\":0,"
+                "\"ndc\":[0,0,0,0,0,0],\"cks\":0.0,\"colcks\":0.0}",
+                s_pfn++, fi.prims, fi.display_lists, fi.prims);
+            std::fprintf(s_pf, ",\"projType\":%d,\"lights\":{\"n\":%d,\"l\":[", fi.proj_type, ln);
+            int em = 0;
+            for (int i = 0; i < 8; ++i) {
+                if (!fi.lights[i].valid) continue;
+                std::fprintf(s_pf, "%s{\"p\":[%.1f,%.1f,%.1f],\"c\":[%.3f,%.3f,%.3f]}", em++ ? "," : "",
+                             fi.lights[i].pos[0], fi.lights[i].pos[1], fi.lights[i].pos[2],
+                             fi.lights[i].color[0], fi.lights[i].color[1], fi.lights[i].color[2]);
+            }
+            std::fprintf(s_pf, "]},\"amb\":[%.3f,%.3f,%.3f],\"matc\":[%.3f,%.3f,%.3f,%.3f]}\n",
+                         fi.amb[0], fi.amb[1], fi.amb[2], fi.matc[0], fi.matc[1], fi.matc[2], fi.matc[3]);
+            std::fflush(s_pf);
+        }
+    }
+
     g_frame.swap(g_prev_frame);
     std::swap(g_frame_info, g_prev_info);
     g_frame.clear();
