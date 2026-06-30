@@ -77,7 +77,9 @@ extern "C" void sb_gather_flush_impl(const u8* bytes, std::size_t n) {
 extern "C" void sb_gx_capture_frame_boundary() {
     if (!enabled() || g_cap.empty()) return;
     g_boundaries++;
-    const bool ok = gxp_parse_frame(g_cap.data(), g_cap.size(), g_info);
+    // recurse_dls=true: J3D scene geometry is issued through display lists whose vertex data lives in
+    // guest RAM, not the FIFO — follow them so verts_pass holds the real per-pass vertex count.
+    const bool ok = gxp_parse_frame(g_cap.data(), g_cap.size(), g_info, /*recurse_dls=*/true);
     // Carry the UNCONSUMED tail to the next frame. The gather pipe stages bytes in 32-byte chunks,
     // so when this GXCopyDisp boundary fires the frame's final command is usually truncated (<32 of
     // its bytes still in the pipe). Clearing the whole buffer would drop those bytes and start the
@@ -121,21 +123,35 @@ extern "C" void sb_gx_capture_frame_boundary() {
                     s_lpos.size(), ln);
         }
     }
-    std::fprintf(f,
-        "{\"frame\":%ld,\"nverts\":%u,\"nbatch\":%u,\"geom\":{\"onscr\":%u,\"nan\":0,"
-        "\"ndc\":[0,0,0,0,0,0],\"cks\":0.0,\"colcks\":0.0}",
-        g_frame_no++, fi.prims, fi.display_lists, fi.prims);
-    std::fprintf(f, ",\"projType\":%d,\"lights\":{\"n\":%d,\"l\":[", fi.proj_type, ln);
-    int em = 0;
-    for (int i = 0; i < 8; ++i) {
-        if (!fi.lights[i].valid) continue;
-        std::fprintf(f, "%s{\"p\":[%.1f,%.1f,%.1f],\"c\":[%.3f,%.3f,%.3f]}", em++ ? "," : "",
-                     fi.lights[i].pos[0], fi.lights[i].pos[1], fi.lights[i].pos[2],
-                     fi.lights[i].color[0], fi.lights[i].color[1], fi.lights[i].color[2]);
+    // PER-PASS emit (cross-engine pass tagging): one JSON line per non-empty pass, tagged with the
+    // pass name so parity_sweep aligns LIKE pass to LIKE pass. The native parity dump is the 3D scene
+    // (perspective) only, so its line carries "pass":"scene" — comparing to THIS perspective bucket's
+    // real per-pass vertex count (verts_pass[0]) makes geometry comparable, instead of the old
+    // whole-frame prims vs native verts scope mismatch. The ortho bucket is the 2D HUD ("hud").
+    // Lighting is whole-frame XF state, attached to the scene pass (where the GX lights are loaded);
+    // the hud line reports n=0 to avoid implying the 2D overlay is lit.
+    static const char* kPassName[2] = {"scene", "hud"};
+    for (int pass = 0; pass < 2; ++pass) {
+        if (fi.prims_pass[pass] == 0) continue;     // skip an empty pass this frame
+        const bool scene = (pass == 0);
+        std::fprintf(f,
+            "{\"frame\":%ld,\"pass\":\"%s\",\"nverts\":%u,\"nbatch\":%u,\"prims\":%u,\"geom\":{\"onscr\":%u,"
+            "\"nan\":0,\"ndc\":[0,0,0,0,0,0],\"cks\":0.0,\"colcks\":0.0}",
+            g_frame_no, kPassName[pass], fi.verts_pass[pass], fi.dls_pass[pass], fi.prims_pass[pass],
+            fi.verts_pass[pass]);
+        std::fprintf(f, ",\"projType\":%d,\"lights\":{\"n\":%d,\"l\":[", pass, scene ? ln : 0);
+        int em = 0;
+        if (scene) for (int i = 0; i < 8; ++i) {
+            if (!fi.lights[i].valid) continue;
+            std::fprintf(f, "%s{\"p\":[%.1f,%.1f,%.1f],\"c\":[%.3f,%.3f,%.3f]}", em++ ? "," : "",
+                         fi.lights[i].pos[0], fi.lights[i].pos[1], fi.lights[i].pos[2],
+                         fi.lights[i].color[0], fi.lights[i].color[1], fi.lights[i].color[2]);
+        }
+        std::fprintf(f, "]},\"amb\":[%.3f,%.3f,%.3f],\"matc\":[%.3f,%.3f,%.3f,%.3f]}\n",
+                     fi.amb[0], fi.amb[1], fi.amb[2], fi.matc[0], fi.matc[1], fi.matc[2], fi.matc[3]);
     }
-    std::fprintf(f, "]},\"amb\":[%.3f,%.3f,%.3f],\"matc\":[%.3f,%.3f,%.3f,%.3f]}\n",
-                 fi.amb[0], fi.amb[1], fi.amb[2], fi.matc[0], fi.matc[1], fi.matc[2], fi.matc[3]);
     std::fflush(f);
+    g_frame_no++;
     g_emitted++;
     if (dbg() && (g_emitted % 128) == 0)
         fprintf(stderr, "[gxcap] emitted=%lu boundaries=%lu parse_fail=%lu last prims=%u dls=%u lights=%d proj=%d\n",

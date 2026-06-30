@@ -46,14 +46,19 @@ struct SbParityProj {
 
 // Emit one JSON line describing this frame. `verts` are CLIP-space (xyzw); NDC = xyz/w.
 // `fb` is the RGBA8 readback (fbw*fbh*4) — the XFB whose region stats we summarise.
+// `pass` tags WHICH render pass this line is (cross-engine pass alignment — see gx_capture.cpp).
+// The native parity dump captures the 3D J3D scene only, so it is the "scene" (perspective) pass;
+// parity_sweep aligns it to the oracle's matching scene-pass line. Defaulted so existing callers
+// (and the value-track A/B) keep working unchanged.
 inline void sb_parity_emit(std::FILE* f, int frame, const float clear[4],
                            const NvkTevVertex* verts, int nverts,
                            const NvkTevBatch* batches, int nbatch,
                            const SbParityLights& L, const SbParityProj& P,
-                           const uint8_t* fb, int fbw, int fbh) {
+                           const uint8_t* fb, int fbw, int fbh,
+                           const char* pass = "scene") {
     if (!f) return;
-    std::fprintf(f, "{\"frame\":%d,\"clear\":[%.3f,%.3f,%.3f,%.3f],\"nverts\":%d,\"nbatch\":%d",
-                 frame, clear[0], clear[1], clear[2], clear[3], nverts, nbatch);
+    std::fprintf(f, "{\"frame\":%d,\"pass\":\"%s\",\"clear\":[%.3f,%.3f,%.3f,%.3f],\"nverts\":%d,\"nbatch\":%d",
+                 frame, pass, clear[0], clear[1], clear[2], clear[3], nverts, nbatch);
 
     // Projection + viewport (exact cross-engine game state).
     std::fprintf(f, ",\"projType\":%d,\"proj\":[%.5f,%.5f,%.5f,%.5f,%.5f,%.5f],\"vp\":[%.1f,%.1f,%.1f,%.1f,%.4f,%.4f]",

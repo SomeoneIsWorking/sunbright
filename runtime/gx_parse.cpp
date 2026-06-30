@@ -2,6 +2,12 @@
 #include "gx_parse.h"
 #include <cstring>
 
+// Host base of guest main RAM (low 24 MB), published by memory_bridge.cpp on first RAM access.
+// Used to decode display-list bodies in place: a GX_CMD_CALL_DL command in the captured FIFO carries
+// only the DL's guest address+size — the vertex data lives in guest RAM, not the gather pipe — so the
+// per-pass vertex count (verts_pass) must follow the DL into RAM, exactly as Dolphin's GPU does.
+extern u8* g_ram_base;
+
 #ifdef HAVE_DOLPHIN_MEMMAP
 #include "VideoCommon/BPMemory.h"
 #include "VideoCommon/CPMemory.h"
@@ -15,6 +21,8 @@ public:
     GxFrameInfo* out = nullptr;
     u32 offset = 0;                  // offset of the command being decoded
     bool unknown = false;
+    bool recurse_dls = false;        // decode display-list bodies from guest RAM (per-pass vert count)
+    int  dl_depth = 0;               // >0 while inside a recursed DL (suppress stream-offset recording)
 
     // CP state persists across frames (J3D reprograms VCD/VAT per shape; the
     // very first armed frame may mis-size until the first reprogram, which the
@@ -23,7 +31,7 @@ public:
 
     OPCODE_CALLBACK(void OnCP(u8 cmd, u32 value)) {
         cp.LoadCPReg(cmd, value);
-        if (cmd >= 0xA0 && cmd <= 0xAF) {
+        if (cmd >= 0xA0 && cmd <= 0xAF && dl_depth == 0) {   // stream-offset record: outer stream only
             const u32 array = cmd - 0xA0;
             if (array == 12 || array == 13)        // XF_A pos / XF_B nrm matrix arrays
                 out->mtx_arrays.push_back({offset, array, value});
@@ -31,7 +39,7 @@ public:
     }
     OPCODE_CALLBACK(void OnBP(u8 cmd, u32 value)) {
         if (cmd == BPMEM_PE_TOKEN_ID || cmd == BPMEM_PE_TOKEN_INT_ID)
-            out->token_offsets.push_back(offset);
+            if (dl_depth == 0) out->token_offsets.push_back(offset);   // stream-offset record: outer only
         if (cmd == BPMEM_TRIGGER_EFB_COPY)
             out->copies++;
     }
@@ -87,10 +95,38 @@ public:
         if (covers(0x100e, 1)) out->chan0_ctrl = be_u32(data, (int)(0x100e - lo));
     }
     OPCODE_CALLBACK(void OnIndexedLoad(CPArray, u32, u16, u8)) {}
-    OPCODE_CALLBACK(void OnPrimitiveCommand(OpcodeDecoder::Primitive, u8, u32, u16, const u8*)) {
+    OPCODE_CALLBACK(void OnPrimitiveCommand(OpcodeDecoder::Primitive, u8, u32, u16 num_vertices, const u8*)) {
         out->prims++;
+        // Bucket by the active projection type (the cross-engine pass discriminator). proj_type is
+        // updated the moment SETPROJECTION is decoded (OnXF), so it holds the pass this draw belongs to.
+        const int pass = (out->proj_type == 1) ? 1 : 0;   // 1 = ortho (HUD), else perspective (scene)
+        out->prims_pass[pass]++;
+        out->verts_pass[pass] += num_vertices;
     }
-    OPCODE_CALLBACK(void OnDisplayList(u32, u32)) { out->display_lists++; }
+    OPCODE_CALLBACK(void OnDisplayList(u32 address, u32 size)) {
+        out->display_lists++;
+        out->dls_pass[(out->proj_type == 1) ? 1 : 0]++;
+        // Follow the DL into guest RAM so its prims/verts land in the active pass bucket. Only when
+        // enabled (the parity oracle) and the body is wholly inside the host-mapped low-24 MB RAM;
+        // guard depth (J3D DLs don't nest, but a corrupt size must never recurse unbounded).
+        if (!recurse_dls || dl_depth >= 4 || !g_ram_base || size == 0) return;
+        if ((address >> 28) != 0x8 || (address & 0x0FFFFFFFu) + size > 0x01800000u) return;
+        decode_dl(g_ram_base + (address & 0x01FFFFFFu), size);
+    }
+    // Decode a display-list body. NOINLINE breaks the force-inline recursion (OnDisplayList ->
+    // RunCommand -> OnDisplayList for nested DLs); a DL-internal unknown stops only this DL, never the
+    // outer frame's `ok` verdict.
+    __attribute__((noinline)) void decode_dl(const u8* body, u32 size) {
+        ++dl_depth;
+        const bool outer_unknown = unknown;
+        for (u32 p = 0; p < size;) {
+            const u32 sz = OpcodeDecoder::RunCommand(body + p, size - p, *this);
+            if (sz == 0 || unknown) break;    // truncated / unknown inside the DL → stop this DL only
+            p += sz;
+        }
+        unknown = outer_unknown;
+        --dl_depth;
+    }
     OPCODE_CALLBACK(void OnNop(u32)) {}
     OPCODE_CALLBACK(void OnUnknown(u8 opcode, const u8*)) {
         // 0x44 (unknown-metrics) and 0x48 (invalidate vertex cache) are real
@@ -109,10 +145,12 @@ Analyzer g_an;   // persistent CP state; guest threads are nthr-serialized
 
 }  // namespace
 
-bool gxp_parse_frame(const u8* p, size_t n, GxFrameInfo& out) {
+bool gxp_parse_frame(const u8* p, size_t n, GxFrameInfo& out, bool recurse_dls) {
     out = GxFrameInfo{};
     g_an.out = &out;
     g_an.unknown = false;
+    g_an.recurse_dls = recurse_dls;
+    g_an.dl_depth = 0;
     u32 pos = 0;
     while (pos < n) {
         g_an.offset = pos;
@@ -128,5 +166,5 @@ bool gxp_parse_frame(const u8* p, size_t n, GxFrameInfo& out) {
 }
 
 #else
-bool gxp_parse_frame(const u8*, size_t, GxFrameInfo& out) { out = GxFrameInfo{}; return false; }
+bool gxp_parse_frame(const u8*, size_t, GxFrameInfo& out, bool) { out = GxFrameInfo{}; return false; }
 #endif

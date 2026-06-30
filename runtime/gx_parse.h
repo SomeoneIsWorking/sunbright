@@ -23,6 +23,18 @@ struct GxFrameInfo {
     struct ArrayPatch { u32 offset; u32 array; u32 base; };  // CP ARRAY_BASE loads
     std::vector<ArrayPatch> mtx_arrays;      // array 12 = XF_A (pos), 13 = XF_B (nrm)
     u32 prims = 0, display_lists = 0, copies = 0;
+
+    // ── Per-pass geometry split (cross-engine pass tagging) ───────────────────────────────────────
+    // The native parity dump (sb_parity_dump.h) reports the 3D SCENE pass only (perspective), so the
+    // whole-frame oracle counts are NOT directly comparable. Bucket prims/verts/display-lists by the
+    // ACTIVE projection type at draw time — the reliable, renderer-neutral pass discriminator both
+    // engines share: index 0 = perspective (the 3D scene = "scene" pass), 1 = ortho (the 2D HUD/overlay
+    // = "hud" pass). `verts_pass` is the real summed vertex count (OnPrimitiveCommand num_vertices),
+    // so the SCENE bucket is directly comparable to the native dump's nverts. See gx_capture.cpp.
+    u32 prims_pass[2] = {0, 0};
+    u32 verts_pass[2] = {0, 0};
+    u32 dls_pass[2]   = {0, 0};
+
     bool ok = false;                         // parsed exactly to the end, no unknowns
     // failure forensics
     u32 fail_offset = 0;                     // where parsing stopped
@@ -48,4 +60,7 @@ struct GxFrameInfo {
 };
 
 // Parse `n` bytes of frame stream; fills `out`. Returns out.ok.
-bool gxp_parse_frame(const u8* p, size_t n, GxFrameInfo& out);
+// `recurse_dls` (parity oracle only): follow GX_CMD_CALL_DL into guest RAM so display-list prims/verts
+// are counted into verts_pass/prims_pass — needed because the DL bodies are NOT in the FIFO stream.
+// Default off so the interpolation consumers (token/matrix-array offsets) see unchanged behaviour.
+bool gxp_parse_frame(const u8* p, size_t n, GxFrameInfo& out, bool recurse_dls = false);

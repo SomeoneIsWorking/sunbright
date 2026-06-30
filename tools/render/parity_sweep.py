@@ -98,13 +98,13 @@ def diff(pa, pb, ndc_tol=0.02, bright_tol=8.0):
     cross = not any("proj" in f for f in A) or not any("proj" in f for f in B)
     if cross:
         return _diff_summary(A, B, pa, pb)
-    byf_b = {fr.get("frame"): fr for fr in B}
+    byf_b = {(fr.get("frame"), _pass_of(fr)): fr for fr in B}
     div = 0; matched = 0
     def relmax(va, vb):
         return max((abs(x-y) / max(1.0, abs(x), abs(y)) for x, y in zip(va, vb)), default=0.0)
     for fa in A:
         fi = fa.get("frame")
-        fb = byf_b.get(fi)
+        fb = byf_b.get((fi, _pass_of(fa)))
         if fb is None:
             continue
         matched += 1
@@ -178,7 +178,12 @@ def _mode(xs):
         counts[x] = counts.get(x, 0) + 1
     return max(counts.items(), key=lambda kv: kv[1])[0]
 
-def _summarize(frames):
+def _pass_of(f):
+    """Which render pass a parity line belongs to. Both emitters tag lines with `pass` now; older
+    dumps (and the native value-track A/B) have no tag and are the 3D scene by construction."""
+    return f.get("pass", "scene")
+
+def _summarize(frames, want_pass="scene"):
     """Convention-robust window summary over the SETTLED window. GEOMETRY: median DISPLAYED BATCH
     count (the robust cross-engine geometry signal — independent of clip methodology), total verts,
     on-screen count, and on-screen screen-XY extent. LIGHTING (added for the title/file-select
@@ -189,6 +194,8 @@ def _summarize(frames):
     nb, nv, on, w, h = [], [], [], [], []
     ln = []; amb = [[], [], []]; matc = [[], [], [], []]; ptype = []
     for f in frames:
+        if _pass_of(f) != want_pass:   # align LIKE pass to LIKE pass (scene vs scene)
+            continue
         g = f.get("geom", {})
         if g.get("onscr", 0) <= 0:   # skip blank/transition frames
             continue
@@ -215,22 +222,35 @@ def _summarize(frames):
             "projType": _mode(ptype) if ptype else None}
 
 def _diff_summary(A, B, pa, pb):
-    sa, sb = _summarize(A), _summarize(B)
-    print(f"cross-engine summary (no shared frame indices):")
+    # Align LIKE pass to LIKE pass: compare the 3D SCENE pass (perspective) on both sides. The native
+    # parity dump is scene-only; the oracle tags its scene-pass line with real per-pass vertex counts
+    # (display lists followed into guest RAM), so nverts is now directly comparable — no longer the old
+    # whole-frame-prims vs scene-verts scope mismatch. A "hud" line is also present; we summarise scene.
+    sa, sb = _summarize(A, "scene"), _summarize(B, "scene")
+    print(f"cross-engine summary — SCENE pass (no shared frame indices):")
     print(f"  {'metric':14s} {'oracle':>14s} {'native':>14s}   relΔ")
     div = 0
-    # nbatch is the PRIMARY (robust) signal: displayed batch/material count is independent of clip
-    # methodology. on-screen verts is SECONDARY (confounded — sms-boot emits unclipped, the GX
-    # capture near-clips, so the in-[-1,1] count differs for near/edge geometry even at parity).
-    rows = [("nbatch", 0.10, "batches*"), ("nverts", 0.15, "total verts"),
-            ("onscr", 0.25, "on-screen v~"), ("xw", 0.05, "screen width"), ("yh", 0.05, "screen height")]
+    # nverts is now a PRIMARY signal: both sides report the real per-pass vertex count of the same
+    # (perspective) pass, so a gap is a real geometry divergence (over-draw / missing / extra content).
+    # nbatch (oracle = display-list count, native = material-batch count) groups differently, so it is
+    # order-of-magnitude only. Screen W/H extent stays robust (both ~2.0 = full-screen).
+    # The oracle (GX command-stream) does NOT transform vertices, so it emits a zeroed NDC AABB; the
+    # screen-extent rows are only meaningful when BOTH sides carry real NDC (native A/B, or a future
+    # oracle that projects). Skip them otherwise rather than report a bogus 0-vs-1.9 divergence.
+    both_ndc = (abs(sa["xw"]) + abs(sa["yh"]) > 1e-6) and (abs(sb["xw"]) + abs(sb["yh"]) > 1e-6)
+    rows = [("nverts", 0.15, "scene verts"), ("nbatch", 0.50, "batches~"),
+            ("onscr", 0.25, "on-screen v~")]
+    if both_ndc:
+        rows += [("xw", 0.05, "screen width"), ("yh", 0.05, "screen height")]
     for k, tol, label in rows:
         va, vb = sa[k], sb[k]
         rel = abs(va-vb) / max(1.0, abs(va), abs(vb))
         flag = "  <-- DIVERGE" if rel > tol else ""
         if rel > tol: div += 1
         print(f"  {label:14s} {va:14.1f} {vb:14.1f}   {rel:5.2f}{flag}")
-    print(f"  (* batches = robust signal; ~ on-screen verts confounded by clip methodology)")
+    if not both_ndc:
+        print(f"  (screen W/H skipped: the GX-stream oracle emits no NDC — extent not cross-comparable)")
+    print(f"  (scene verts = like-pass comparable; ~ batches/on-screen grouping- & clip-confounded)")
 
     # ── LIGHTING (geometry+lighting parity) ──────────────────────────────────────────────────────
     # Renderer-neutral game output: both engines load the SAME lights/ambient/material from guest RAM,
@@ -265,17 +285,15 @@ def _diff_summary(A, B, pa, pb):
     if sa["frames"] == 0 or sb["frames"] == 0:
         print(f"  WARN: a dump has 0 non-blank frames (oracle {sa['frames']}, native {sb['frames']})")
     # HONESTY CAVEAT (do not draw conclusions past what these signals actually measure):
-    #  • RELIABLE cross-engine: light COUNT (both sides load GX lights at 3D-scene draw time).
-    #  • CONFOUNDED — ambient / material col / projType are sampled at frame PUBLISH (after the 2D
-    #    HUD/logo draw), so they reflect the LAST 2D register, not the 3D scene; a mismatch here can
-    #    be pure sampling phase, NOT a real divergence. (To make these reliable, snapshot lighting at
-    #    3D-scene draw time in BOTH emitters — see debug_journal/2026-06-30_title_parity_confounds.md.)
-    #  • CONFOUNDED — nbatch / nverts / onscr have different capture SCOPE per engine (the native
-    #    parity dump is J3D-3D-only and EXCLUDES the 2D imm logo/HUD; the oracle ngx capture groups +
-    #    filters differently), so absolute counts are not directly comparable. Screen W/H extent is
-    #    the most robust geometry signal (both ~2.0 = full-screen here).
-    print(f"  NOTE: only light-count is reliable cross-engine; ambient/matc/projType are publish-phase")
-    print(f"        sampled and nbatch/nverts/onscr are capture-scope confounded (see caveat in source).")
+    #  • RELIABLE cross-engine: light COUNT and SCENE vertex count — both now compare the SAME 3D
+    #    (perspective) pass: the oracle tags its scene-pass line and counts display-list verts from
+    #    guest RAM, so its verts_pass[scene] is the real geometry of the same pass the native dump emits.
+    #  • CONFOUNDED — ambient / material col are whole-frame last-seen XF state (the oracle has no
+    #    per-pass split for them yet); a small mismatch can be sampling phase, not a real divergence.
+    #  • PARTIALLY confounded — nbatch (oracle = display-list count vs native = material-batch count)
+    #    and onscr (different clip methodology) group differently; treat as order-of-magnitude.
+    print(f"  NOTE: light-count + SCENE verts are like-pass comparable now; nbatch/onscr group-confounded,")
+    print(f"        ambient/matc are whole-frame last-seen (see caveat in source).")
     print(f"summary: {div} metric(s) diverge beyond tolerance")
     return 1 if div else 0
 

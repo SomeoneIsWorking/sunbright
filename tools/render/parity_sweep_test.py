@@ -30,12 +30,13 @@ def _write(frames):
 # ngx oracle dump) so parity_sweep stays in cross-engine window-summary mode; `engine="native"`
 # carries them. Both carry projType + lights + amb + matc (the cross-engine lighting signal).
 def frame(engine, n_lights=1, amb=(0.20, 0.20, 0.22), matc=(1.0, 1.0, 1.0, 1.0),
-          projType=0, onscr=1000, nbatch=40):
+          projType=0, onscr=1000, nbatch=40, pass_="scene", nverts=None):
     g = {"onscr": onscr, "nan": 0, "ndc": [-0.8, 0.8, -0.7, 0.7, 0.0, 1.0],
          "cks": 12.3, "colcks": 45.6}
     lights = {"n": n_lights, "l": [{"p": [10.0, 20.0, 30.0], "c": [1.0, 0.95, 0.9]}
                                    for _ in range(n_lights)]}
-    fr = {"frame": 0, "nverts": onscr + 200, "nbatch": nbatch, "geom": g,
+    fr = {"frame": 0, "pass": pass_, "nverts": (onscr + 200 if nverts is None else nverts),
+          "nbatch": nbatch, "geom": g,
           "projType": projType, "lights": lights, "amb": list(amb), "matc": list(matc)}
     if engine == "native":
         fr["proj"] = [1.2, 0.0, 1.5, 0.0, 1.0, 2.0]
@@ -107,6 +108,33 @@ def main():
     # ambient within tolerance must not be flagged as a divergence (find the ambient row, check no DIVERGE)
     amb_lines = [ln for ln in txt.splitlines() if "amb" in ln.lower()]
     check(all("DIVERGE" not in ln for ln in amb_lines), "ambient within tolerance not flagged")
+
+    print("[7] PER-PASS alignment: oracle emits scene+hud lines, native scene only")
+    # The oracle now emits one line per pass; the ortho HUD line must NOT confound the scene compare.
+    # scene verts match (5000), hud is a small ortho pass; projType for the SCENE pass is 0 on both.
+    oracle_pp = []
+    for _ in range(N):
+        oracle_pp.append(frame("oracle", projType=0, pass_="scene", nverts=5000, onscr=4800))
+        oracle_pp.append(frame("oracle", projType=1, pass_="hud", n_lights=0, nverts=130, onscr=120))
+    native_pp = [frame("native", projType=0, pass_="scene", nverts=5000, onscr=4800) for _ in range(N)]
+    rc, txt = run_diff(oracle_pp, native_pp)
+    check("SCENE pass" in txt, "summary aligns on the SCENE pass")
+    pt_lines = [ln for ln in txt.splitlines() if "projtype" in ln.lower()]
+    check(pt_lines and all("DIVERGE" not in ln for ln in pt_lines),
+          "ortho HUD line does not spuriously flag projType (scene pass compared)")
+    sv = [ln for ln in txt.splitlines() if "scene verts" in ln.lower()]
+    check(sv and "DIVERGE" not in sv[0], "matching scene verts (5000 vs 5000) not flagged")
+
+    print("[8] PER-PASS: a divergence in the SCENE pass verts IS flagged across the hud noise")
+    oracle_pp2 = []
+    for _ in range(N):
+        oracle_pp2.append(frame("oracle", projType=0, pass_="scene", nverts=5000, onscr=4800))
+        oracle_pp2.append(frame("oracle", projType=1, pass_="hud", n_lights=0, nverts=130, onscr=120))
+    native_pp2 = [frame("native", projType=0, pass_="scene", nverts=9000, onscr=8600) for _ in range(N)]
+    rc, txt = run_diff(oracle_pp2, native_pp2)
+    check(rc == 1, "scene-pass vertex divergence (5000 → 9000) returns nonzero")
+    sv = [ln for ln in txt.splitlines() if "scene verts" in ln.lower()]
+    check(sv and "DIVERGE" in sv[0], "scene verts divergence reported")
 
     if FAILS:
         print(f"\nFAILED {len(FAILS)} check(s)")
