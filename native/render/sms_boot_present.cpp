@@ -41,7 +41,21 @@ void sb_gx_get_chan_amb(int slot, float rgb[3]) __attribute__((weak));
 void sb_gx_get_chan_matcolor(int slot, float rgba[4]) __attribute__((weak));
 void sb_gx_get_projection(int* type, float proj[6], float vp[6]) __attribute__((weak));
 void sb_boot_dump_camera(int frame) __attribute__((weak));
+// JKR host-allocation gate: route plain `new`/std::vector growth to host malloc (not the game's
+// JKR/Solid heap) while raised. present_hook runs on the GAME thread, so its per-frame renderer
+// scratch (verts/batches/tex_storage/present_pix + anything renderTevFrame allocates) would otherwise
+// land on the active SolidHeap and exhaust it (the 4M-per-run "SolidHeap OUT OF MEMORY" flood in
+// window mode, which renders every frame). Renderer scratch is not a game object — gate it to host.
+void sb_host_alloc_push(void) __attribute__((weak));
+void sb_host_alloc_pop(void)  __attribute__((weak));
 }
+namespace {
+// RAII guard: raise the host-alloc gate for the lifetime of the per-frame render block.
+struct HostAllocScope {
+    HostAllocScope()  { if (sb_host_alloc_push) sb_host_alloc_push(); }
+    ~HostAllocScope() { if (sb_host_alloc_pop)  sb_host_alloc_pop(); }
+};
+} // namespace
 // The frame's captured live J3D scene: vertex list + per-material TEV batches. WEAK — null when
 // the capture TU (sms_boot_j3d_capture.cpp) isn't linked, in which case the present draws only 2D.
 int sb_boot_capture_tev_take(const NvkTevVertex** verts,
@@ -228,6 +242,11 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
     if (!g_init_ok) { g_max_dump = 0; return; }
     ensure_pass_shader();
     ensure_tex_shader();
+
+    // All per-frame renderer scratch below (verts/batches/tex_storage/present_pix + renderTevFrame
+    // internals) must allocate on host malloc, NOT the game's JKR/Solid heap (we run on the game
+    // thread). Held until present_hook returns; frees auto-route by tag regardless of gate state.
+    HostAllocScope host_alloc_scope;
 
     float c[4] = {0, 0, 0, 1};
     sb_gx_get_clear_color(c);

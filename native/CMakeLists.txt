@@ -418,12 +418,14 @@ if(SMS_BUILD_BOOT)
     target_link_libraries(sms-boot PRIVATE
         "$<LINK_GROUP:RESCAN,sms-native,sms-gd,sms-assets,sms-platform,$<TARGET_NAME_IF_EXISTS:sms-bootstubs>>"
         Threads::Threads)
-    # Attach the native renderer (slice 1: VI present hook -> nvk -> frame dump) when the
-    # Vulkan renderer lib was built. SMS_HAVE_RENDER gates the call in boot.cpp.
-    if(TARGET sms-render)
-        target_link_libraries(sms-boot PRIVATE sms-render)
-        target_compile_definitions(sms-boot PRIVATE SMS_HAVE_RENDER)
+    # The native renderer (VI present hook -> nvk -> frame dump) is MANDATORY: sms-boot IS the
+    # native renderer, and its single boot path always drives the SDL present loop. The build
+    # requires Vulkan/glslang (sms-render); there is no non-render configuration.
+    if(NOT TARGET sms-render)
+        message(FATAL_ERROR "sms-boot requires the native renderer (sms-render), but it was not built "
+                            "(Vulkan/glslang not found). The native renderer is mandatory.")
     endif()
+    target_link_libraries(sms-boot PRIVATE sms-render)
 endif()
 
 file(GLOB SMS_PLATFORM_TESTS CONFIGURE_DEPENDS

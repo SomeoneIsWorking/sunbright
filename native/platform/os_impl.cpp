@@ -59,6 +59,8 @@
 #include <thread>
 #include <unordered_map>
 #include <vector>
+#include <unistd.h>
+#include <sys/syscall.h>
 
 // Stuck-process watchdog (watchdog_impl.cpp): heartbeat kicked at every scheduler
 // hand-off; the running fiber is recorded so a stall can be backtraced.
@@ -126,6 +128,9 @@ struct NativeThread {
     bool detached = false;
     bool cancel   = false;
     bool is_main  = false;
+    bool abandoned = false;          // retired from the scheduler (e.g. the process-main fiber once
+                                     // the game thread takes over) — never picked again
+
     s32  priority = 16;
     const void* wait_obj = nullptr;  // object this thread is parked on (targeted wake)
     void* retval = nullptr;
@@ -170,6 +175,9 @@ NativeThread* backing(OSThread* t) {
 // the bootstrap/main) as a cooperative fiber. Idempotent. Caller holds g_sched.
 NativeThread* cur_self_locked() {
     if (t_self) return t_self;
+    if (std::getenv("SB_SCHED_DBG"))
+        std::fprintf(stderr, "[sched] cur_self_locked: NEW main-ish fiber on host tid=%ld (g_current=%p, g_all=%zu)\n",
+                     (long)syscall(SYS_gettid), (void*)g_current, g_all.size());
     NativeThread* n = new NativeThread();
     n->is_main = true; n->runnable = true; n->started = true; n->priority = 16;
     n->os = &g_main_os;
@@ -190,7 +198,7 @@ int index_of(NativeThread* n) {
 }
 
 bool schedulable(NativeThread* n) {
-    return n->runnable && !n->finished && n->os->suspend <= 0 && n != g_idle_waiter;
+    return n->runnable && !n->finished && !n->abandoned && n->os->suspend <= 0 && n != g_idle_waiter;
 }
 
 // Highest priority (lowest number) schedulable thread, round-robin among equals
@@ -696,6 +704,29 @@ int OSReceiveMessage(OSMessageQueue* mq, void* msg, long flags) {
 // then proceeds with the retrace. This is the native stand-in for "main blocks on
 // the VI interrupt while lower-priority workers run". Called from vi_impl.cpp.
 // ===========================================================================
+// Retire the CALLING host thread's fiber from the cooperative scheduler permanently.
+// Used by the SB_WINDOW boot path: a static-init heap bringup (JKRExpHeap::alloc ->
+// OSLockMutex) registers the PROCESS-MAIN thread as the "main fiber" and makes it
+// g_current before __wrap_main spawns the real game thread (a second main fiber) and
+// leaves process-main to run the SDL present loop. process-main then never re-enters
+// the scheduler, so any pick_next that selects its fiber loses the baton (cv.notify to
+// a thread asleep in SDL) -> deadlock. Retiring it makes the game thread the sole main
+// fiber (identical to the headless single-main-thread configuration, which never hangs).
+// The fiber struct is kept alive (t_self stays valid) but flagged unschedulable.
+void sb_sched_retire_current_fiber(void) {
+    std::unique_lock<std::mutex> lk(g_sched);
+    NativeThread* self = cur_self_locked();
+    self->abandoned = true;
+    self->runnable  = false;
+    if (g_current == self) {
+        // Hand the baton on. If the game thread has already registered, pick it;
+        // otherwise clear g_current so its first cur_self_locked() claims the baton.
+        NativeThread* next = pick_next();
+        g_current = next;
+        if (next) next->cv.notify_all();
+    }
+}
+
 void sb_sched_drain_until_idle(void) {
     std::unique_lock<std::mutex> lk(g_sched);
     NativeThread* self = cur_self_locked();
