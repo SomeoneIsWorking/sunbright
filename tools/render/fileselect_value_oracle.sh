@@ -33,8 +33,15 @@ echo "    oracle frames: $(wc -l < "$ORACLE" 2>/dev/null || echo 0)"
 echo "[2/3] NATIVE — build-native/sms-boot → $NATIVE"
 pkill -9 -x sms-boot 2>/dev/null; sleep 1; rm -f "$NATIVE"
 S=""; for f in $(seq 200 12 1690); do S="$S ${f}:START $((f+6)):-"; done
+# SB_OWN_GXLIST=1: measure the geometry-COMPLETE foundation — the REAL master GX perform-list render
+# (TMarDirector::direct). The hand-driven default scene_drive path is structurally incomplete (only
+# draws 通常シーン's 3 children: conductor/light-mgr/perf-group), topping out at ~6.5k of the 22.7k
+# scene verts; SB_OWN_GXLIST closes the geometry gap to relΔ 0.02 (the map/manager/player groups the
+# master perform list draws into the GLOBAL draw buffers). See
+# debug_journal/2026-06-30_fileselect_geometry_gap_is_ownlist.md. Override with SB_OWN_GXLIST=0 to A/B
+# the hand-driven path. The residual overbright on this foundation is the next divergence to own.
 timeout -s KILL 200 setarch -R env SUNBRIGHT_DISC=scratch/disc/sms.iso SB_THP_FAST=1 SB_TURBO=1 \
-  SB_HOST_ALLOC_CAP_MB=3072 SB_STAGE=15 SB_SCENARIO=0 \
+  SB_HOST_ALLOC_CAP_MB=3072 SB_STAGE=15 SB_SCENARIO=0 SB_OWN_GXLIST="${SB_OWN_GXLIST:-1}" \
   SB_FRAME_DUMP=1 SB_FRAME_DUMP_ON_SCENE=1 SB_PARITY_DUMP="$NATIVE" \
   SB_PAD_SCRIPT="$S" ./build-native/sms-boot > scratch/passes/fs_native.log 2>&1 &
 NPID=$!
