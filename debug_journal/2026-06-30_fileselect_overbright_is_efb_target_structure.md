@@ -354,3 +354,31 @@ SRCALPHA/SRCCLR tev=3 draw anywhere in the oracle, and is it [noC]/clipped? (2) 
 suspects are now NEAR-PLANE CLIPPING (native's clip lets a camera-spanning volume blow up full-screen)
 and/or that this volume is a depth/occlusion no-op GC culls. Verify fileselect_overbright.py 42.7→~14.
 Tooling: SB_PL_DBG (perform-list entries), SB_DBHEAD_DBG (buffer flush map), SB_DRAWBUF_INV, SB_B76_DBG.
+
+## UPDATE 2026-06-30 (CORRECTION OF THE CORRECTION) — b76 IS draw#1180 (tev=3); the real bug = mask mis-entered into MapXlu
+The previous update wrongly claimed b76 maps to draw#1184 (tev=2). **That was an error.** Verified:
+`scratch/frames/bfrag_76.glsl` has **3 stages** (stage 0/1/2) → b76 is **tev=3**, which matches the
+oracle's **draw#1180** (pass2/MAIN, tev=3, SRCALPHA/SRCCLR, **[noC][noA]**, ~11 verts) — exactly the
+ORIGINAL journal match. draw#1184 (tev=2, blue) is the SEPARATE visible sea. So b76 = the tev=3 [noC]
+camera-surrounding MASK, drawn by GC in the MAIN pass with colorUpdate/alphaUpdate FALSE (writes nothing).
+
+**The genuinely NEW, correct finding (keep this):** `SB_PL_DBG` proves `DrawBuf MapXlu` is drawn in
+**PerformList GX Post** (game data) — so native flushing MapXlu in ph6 with colorUpdate=TRUE is faithful
+FOR THE SEA SURFACE (draw#1184, tev=2, the OTHER MapXlu packet, correctly visible). The BUG is that the
+tev=3 [noC] MASK packet (b76) is ALSO in native's MapXlu buffer (which has **2 packets** per
+SB_DRAWBUF_INV) → it draws with the sea's cU=TRUE in post → painted white. On GC the tev=3 mask is NOT in
+MapXlu — it is drawn in the MAIN pass ([noC]) by a different buffer. native MIS-ENTERS the mask into MapXlu.
+
+**Where the mask belongs on GC**: the main list (PerformList GX) draws DrawBuf Mirror Opa/Xlu, MirrorSky,
+MirrorAlways, MapOpa, マップグループ — all [noC]-capable main-pass buffers. native's ph4 flushed only
+MapOpa/SkyXlu/20f40/210e0 — **NO mirror buffers** (native doesn't populate the mirror reflection render).
+So the prime hypothesis: the tev=3 mask is the MIRROR water-volume / silhouette mask that GC draws into a
+Mirror buffer in the main pass ([noC]); native, not running the mirror, mis-routes it into MapXlu (post,
+cU=TRUE) → white wash.
+
+**NEXT (accurate)**: (1) Identify b76's model (0x4332ae0) and which scene object ENTERS it into the MapXlu
+buffer — add an entry-pass trace (tap J3DDrawBuffer::entryMatSort/entryMatAnmSort, print J3DMaterial ptr +
+backtrace, match the b76 material 0x..8568 in the SAME run). (2) Determine if it's the mirror/silhouette
+mask and whether native should (a) draw it [noC] (honor the mask's intended colorUpdate) or (b) route it to
+a main-pass buffer / not enter it into MapXlu. (3) Whichever, the SEA (tev=2) must stay visible. Verify
+fileselect_overbright.py 42.7→~14 WITHOUT ablating b76.
