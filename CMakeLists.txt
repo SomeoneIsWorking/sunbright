@@ -163,6 +163,7 @@ add_executable(sunbright
     runtime/memory_bridge.cpp
     runtime/gx_stream.cpp
     runtime/gx_parse.cpp
+    runtime/gx_capture.cpp
     runtime/ngx/ngx_decode.cpp
     runtime/ngx/ngx_vertex.cpp
     runtime/ngx/ngx_mesh.cpp

@@ -123,9 +123,21 @@ extern "C" void sb_efb_grab_frame_reset();                // scene_render.cpp (r
 extern "C" void sb_efb_grab_arm(int gw, int gh) { g_efb_grab_w.store(gw); g_efb_grab_h.store(gh); }
 namespace {
 static const bool s_efb_grab_mode = getenv("SUNBRIGHT_EFB_GRAB") != nullptr;
+// GX-command-stream parity oracle (gx_capture.cpp): when SUNBRIGHT_PARITY_DUMP is set, GXCopyDisp
+// is the per-frame boundary at which the captured stream is parsed + JSON-emitted. Purejit-safe.
+static const bool s_parity_mode = [](){ const char* p = getenv("SUNBRIGHT_PARITY_DUMP"); return p && p[0]; }();
 }
+extern "C" void sb_gx_capture_frame_boundary();   // gx_capture.cpp
 
 SUNBRIGHT_OVERRIDE(ov_gxs_copydisp, 0x8035ececu) {
+    if (s_parity_mode && sunbright_purejit_mode()) {
+        // Parse the frame captured up to this copy, then run the REAL GXCopyDisp so Dolphin still
+        // presents (this is the oracle — Dolphin owns rendering). The copy command's own bytes are
+        // not needed for the lighting/projection parse, so parsing before the body is fine.
+        sb_gx_capture_frame_boundary();
+        sb_run_original_around(cpu, 0x8035ececu, nullptr, 0);
+        return;
+    }
     if (s_efb_grab_mode && sunbright_purejit_mode()) {
         int w = g_efb_grab_w.exchange(0), h = g_efb_grab_h.exchange(0);
         if (w > 0 && h > 0) sb_efb_grab_grid(w, h, "scratch/screenshots/efbgrab.ppm");  // EFB full NOW
@@ -139,7 +151,9 @@ SUNBRIGHT_OVERRIDE(ov_gxs_copydisp, 0x8035ececu) {
 }
 
 static const bool s_efb_grab_pj = [] {
-    if (s_efb_grab_mode) mark_override_purejit_safe(0x8035ececu);   // fire per-GXCopyDisp in the GX baseline
+    // Fire per-GXCopyDisp under pure-JIT in the GX baseline for EITHER the EFB-grab grid or the
+    // GX-command-stream parity oracle (gx_capture.cpp).
+    if (s_efb_grab_mode || s_parity_mode) mark_override_purejit_safe(0x8035ececu);
     return true;
 }();
 

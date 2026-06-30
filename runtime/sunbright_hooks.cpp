@@ -26,6 +26,7 @@ void sb_hook_gpfifo_write8(void* self, u8 v);
 void sb_hook_gpfifo_write16(void* self, u16 v);
 void sb_hook_gpfifo_write32(void* self, u32 v);
 void sb_hook_gpfifo_write64(void* self, u64 v);
+void sb_gather_flush_impl(const u8* bytes, std::size_t n);   // gx_capture.cpp
 
 void sb_hook_dsp_gen_interrupt(void* self, u64 dsp_int_type, s64 cycles_late);
 void sb_hook_dsp_update_audio_dma(void* self);
@@ -57,6 +58,7 @@ void sb_install_hooks() {
   sb_slot_gpfifo_write16 = &sb_hook_gpfifo_write16;
   sb_slot_gpfifo_write32 = &sb_hook_gpfifo_write32;
   sb_slot_gpfifo_write64 = &sb_hook_gpfifo_write64;
+  sb_slot_gather_flush = &sb_gather_flush_impl;   // GX-command-stream parity oracle (gx_capture.cpp)
 
   // DSP
   sb_slot_dsp_gen_interrupt = &sb_hook_dsp_gen_interrupt;
