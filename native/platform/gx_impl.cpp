@@ -1,3 +1,4 @@
+#include <execinfo.h>
 #include <cstdlib>
 #include <cstdio>
 // gx_impl.cpp — native GX seam, SLICE 1: the transform block (projection/viewport/
@@ -135,6 +136,7 @@ long g_colupd_last_false = -1;   // call index of the last GXSetColorUpdate(GX_F
 // Ring of the last 16 GXSetColorUpdate values (b76 drill: see what restores cU=TRUE before the mask draw).
 unsigned char g_colupd_ring[16] = {0};
 int           g_colupd_ring_pos = 0;
+extern "C" int sb_boot_capture_phase();
 void GXSetColorUpdate(GXBool enable) {
     ++g_colupd_calls;
     if (!enable) g_colupd_last_false = g_colupd_calls;
@@ -145,6 +147,19 @@ void GXSetColorUpdate(GXBool enable) {
         if ((n0 + n1) <= 8 || ((n0 + n1) % 256) == 0)
             std::fprintf(stderr, "[GXSetColorUpdate] enable=%d (false-count=%ld true-count=%ld)\n",
                          (int)enable, n0, n1);
+    }
+    // SB_COLUPD_BT: in GX Post (phase 6), log every GXSetColorUpdate value + its guest caller, so the
+    // exact sequence native runs before the MapXlu mask flush is visible (vs Dolphin's, which is FALSE).
+    if (const char* d = std::getenv("SB_COLUPD_BT"); d && d[0] && d[0] != '0'
+        && sb_boot_capture_phase() == 6) {
+        static int n = 0; if (n < 400) { ++n;
+            void* fr[6]; int nf = backtrace(fr, 6);
+            char** sym = backtrace_symbols(fr, nf);
+            // shorten: keep just the mangled caller name token
+            const char* c2 = nf > 2 && sym ? sym[2] : "?";
+            std::fprintf(stderr, "[colupd6 #%d] enable=%d via %s\n", n, (int)enable, c2);
+            free(sym);
+        }
     }
     state().colorUpdate = enable;
 }
