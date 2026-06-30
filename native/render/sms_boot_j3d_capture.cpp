@@ -771,6 +771,25 @@ extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
                          ex, ey, ez, p.x, p.y, p.z, ez > 0 ? " BEHIND" : ""); }
     }
 
+    // SB_MAPXLU_PKT: dump every shape flushed under the "DrawBuf MapXlu" buffer (the 2 packets:
+    // the sea + the mask) — material key, vColor[0], eye-z range (camera-spanning = the occlusion
+    // VOLUME), to settle whether native HAS the tev=2 sea joint (→ TEV-misgen) or only the mask
+    // (→ wrong-joint entry). Phase 6 only (the GX-Post flush that paints white).
+    if (const char* e = std::getenv("SB_MAPXLU_PKT"); e && e[0] && e[0] != '0'
+        && g_capture_phase == 6 && g_capture_drawbuf && std::strstr(g_capture_drawbuf, "MapXlu")
+        && !idx.empty()) {
+        static int n = 0; if (n < 16 && sb_present_frame() > 200) { ++n;
+            float ex,ey,ez, mnz=1e30f,mxz=-1e30f;
+            for (const unsigned ii : idx) { eye_of(verts[ii], ex, ey, ez);
+                mnz=std::fmin(mnz,ez); mxz=std::fmax(mxz,ez); }
+            const auto& sv = verts[idx[0]];
+            std::fprintf(stderr, "[mapxlu-pkt] key=%llx vc=%u ntex=%zu vClr0=%u,%u,%u,%u eyeZ[%.0f,%.0f]%s\n",
+                         (unsigned long long)me->key, vcount, me->tex.size(),
+                         sv.clr[0][0], sv.clr[0][1], sv.clr[0][2], sv.clr[0][3], mnz, mxz,
+                         (mnz < 0 && mxz > 0) ? " <-CAMERA-SPANNING-VOLUME" : "");
+        }
+    }
+
     // Merge into the previous batch if the same material drew the immediately-preceding
     // shape (J3DMatPacket draws all its shapes consecutively); else open a new batch.
     if (mat == g_last_mat && !g_batches.empty()

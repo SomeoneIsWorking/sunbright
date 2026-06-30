@@ -441,3 +441,51 @@ reflection isn't populated. xluCount=0 so it's NOT the priority-buffer (半透�
    256x256 mirror tex holds the reflection, and bind it to the post sea-composite consumer (task #3).
 Verify fileselect_overbright.py 42.7→~14. Diagnostic foundation (all committed, gated): SB_COPYTEX_DBG,
 SB_DBHEAD_DBG, SB_ENTRY_MAT, SB_MAPXLU_DBG, SB_B76_DBG/BT, SB_DRAWBUF_INV, SB_PL_DBG; oracle GXBLEND/GXTEV/GXCOPY.
+
+## UPDATE 2026-06-30 (DECISIVE — ends the b76-identity correction cycle; pins the exact structural fix)
+Two measurements settle every open thread above.
+
+**(1) Native side — SB_MAPXLU_PKT (new probe, committed) dumps the MapXlu buffer's packets at the
+settled file-select (frame 566):**
+```
+[mapxlu-pkt] key=f19161bf… vc=30 ntex=1 vClr0=255,255,255,255 eyeZ[521,1609]                      ← SEA (normal geom, in front)
+[mapxlu-pkt] key=eb5c8e74… vc=15 ntex=2 vClr0=255,255,255,255 eyeZ[-50800,56113] <-CAMERA-SPANNING ← MASK = b76 (degenerate volume)
+```
+So native's MapXlu buffer holds **2 packets**: the SEA (key f191, 30 v, eyeZ all +ve = real geometry)
+and the MASK (key eb5c8e74 = b76, 15 v, eyeZ spans the near plane = camera-surrounding volume). Both
+flush together in ph6 (GX Post, composite3) with the global colorUpdate restored to TRUE → native
+paints the mask opaque-white = the overbright.
+
+**(2) Oracle side — SUNBRIGHT_DBG_GXBLEND (build/sunbright, settled frame 4) shows the two
+SRCALPHA/SRCCLR draws live in DIFFERENT EFB passes:**
+```
+pass2 (MAIN)  SRCALPHA/SRCCLR tev=3 [noC][noA] persp x3 (11 verts)   ← the MASK (b76). writes NOTHING.
+pass3 (POST)  SRCALPHA/SRCCLR tev=2            persp x26 (1352 verts) ← the visible SEA composite.
+```
+There is **NO tev=3 SRCALPHA/SRCCLR draw in pass3** anywhere. So on GC the tev=3 mask is drawn
+**only in the MAIN pass (pass2), `[noC][noA]` = a depth-only occlusion volume that writes no colour**;
+the visible sea (tev=2) is the SEPARATE post-pass composite. The EFB soft-focus copy (通常シーン描画
+ステージ, prim 1184) fires BETWEEN them: mask just before (main), sea just after (post).
+
+**The bug, stated exactly:** native lumps the depth-only mask packet and the visible sea packet into
+ONE MapXlu buffer and draws BOTH in the post pass (ph6) with cU=TRUE. GC draws the mask in the MAIN
+pass as a no-colour depth volume and the sea in POST. Native's pass routing is wrong for the mask.
+
+This DEFINITIVELY closes every prior "b76 = draw#1180 vs #1184 / CLR0 / TEV-gen / mirror" oscillation:
+b76 IS the tev=3 main-pass depth-only mask (matches draw#1180), and the fix is neither a combiner nor a
+blend nor a CLR0 change — it is the **pass split**. The bounded "honor live colorUpdate" fix already in
+`fill_batch_material` (sms_boot_j3d_capture.cpp:350-356) CANNOT work: at the ph6 flush the global cU is
+TRUE, and native does not run the soft-focus effect's GXSetColorUpdate(FALSE) that wraps GC's main pass.
+
+**THE FIX (user-chosen full pass-structure port, now precisely scoped to ONE divergence):** the depth-
+only mask packet must be drawn in native's MAIN-pass segment with colour writes OFF (matching GC's
+no-colour result), and the sea packet stays the post composite. Native already segments the present at
+EFB-copy boundaries (sms_boot_present.cpp:683-700) — the missing piece is splitting the MapXlu buffer's
+two packets across the soft-focus copy boundary (mask→main segment [noC], sea→post segment) instead of
+flushing both in ph6. Equivalently: stop entering the depth mask into the post-flushed MapXlu buffer;
+draw it in the main pass as the depth-only volume GC does. The EFB-readback DARKENING that the mask sets
+up remains the separately-parked [[delfino-lighting-wash]] gap — but "mask writes no colour" already
+matches GC's framebuffer (no white wash). Verify: fileselect_overbright.py 42.7 → ~14 WITHOUT ablating b76.
+
+Tooling added this session: SB_MAPXLU_PKT (native MapXlu per-packet dump). Oracle proof reproduced from
+scratch/passes/oracle_blend2.log (SUNBRIGHT_DBG_GXBLEND frame 4).
