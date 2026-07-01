@@ -497,7 +497,7 @@ extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
     J3DModel* model = j3dSys.getModel();
     if (!model || !model->getModelData()) return true;
 
-    J3DVertexData* vd = shape->unk44;
+    J3DVertexData* vd = shape->mVertexData;
     if (!vd) return true;
     const uint8_t* base = (const uint8_t*)vd->getVtxPosArray();
     if (!base) return true;
@@ -632,10 +632,10 @@ extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
     // GXPost pass), j3dSys.getModel() is the cap, not the body. Using the model's (wrong) drawMtxNum=1
     // as the bounds ceiling truncated every body vertex needing skin index ≥1 to drawIdx=0 — every
     // limb collapsed onto whichever joint matrix lived at slot 0 (the visually mangled/scattered
-    // Mario at the settled file-select picker). FIX: read the ceiling from shape->unk48
+    // Mario at the settled file-select picker). FIX: read the ceiling from shape->mDrawMtxData
     // (J3DDrawMtxData*), which is bound ONCE per-shape at model-init (setDrawMtxDataPointer) and is
     // therefore always correct for THIS shape regardless of j3dSys's current-model state.
-    const int drawMtxNum = shape->unk48 ? (int)shape->unk48->mEntryNum
+    const int drawMtxNum = shape->mDrawMtxData ? (int)shape->mDrawMtxData->mEntryNum
                           : (model->getModelData() ? (int)model->getModelData()->getDrawMtxNum() : 0);
     float posMtx[3][4];   // matrix 0 — for the debug probes below only (real geometry skins per-vertex)
     if (drawTbl) std::memcpy(posMtx, &drawTbl[0][0], sizeof(posMtx));
