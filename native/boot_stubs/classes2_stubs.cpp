@@ -141,8 +141,7 @@ void TSandBird::control() {}
 // TGoalWatermelon: key = touchActor (first method shadowing TMapObjBase::touchActor)
 void TGoalWatermelon::touchActor(THitActor*) {}
 
-// TMammaMirrorMapOperator: key = perform (first method shadowing JDrama::TViewObj::perform)
-void TMammaMirrorMapOperator::perform(u32, JDrama::TGraphics*) {}
+// TMammaMirrorMapOperator::perform lives natively in reference/sms/src/MoveBG/MapObjMamma.cpp.
 
 // TSandEgg: key = getSDLModelFlag (first method shadowing TMapObjBase::getSDLModelFlag)
 u32 TSandEgg::getSDLModelFlag() const { return 0; }

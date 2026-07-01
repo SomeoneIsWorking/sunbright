@@ -22,6 +22,17 @@ inline float mamma_node_center(float axis_min, float axis_max) {
     return 0.5f * (axis_max + axis_min);
 }
 
+// Visibility predicate for the operator's per-node hide/show decision (@0x801cf46c).
+// Returns true when the joint should be HIDDEN — semantically, "the camera is within the
+// node's LOD radius AND closer to this node than to the active mirror's origin," which is
+// the RE's `<=` compound condition (inverted vs the `>` in the far/show branch). Extracted
+// so a future perform port + this test share the same math. Comparison is on refined
+// distances (NR-refined sqrt of the raw dist²), so units match mNodeRadius (linear meters).
+inline bool mamma_node_should_be_hidden(float dist_to_node, float node_radius,
+                                        float dist_to_mirror) {
+    return (dist_to_node <= node_radius) && (dist_to_node <= dist_to_mirror);
+}
+
 // Compute the per-node visibility threshold radius. Uses XZ (horizontal) bbox extent only —
 // Y is ignored. Result is `min(max(half_x, half_z) + PADDING, CAP)` where PADDING=2000 and
 // CAP=3000 are SDA2 constants at -0x2848 and -0x2844 respectively.

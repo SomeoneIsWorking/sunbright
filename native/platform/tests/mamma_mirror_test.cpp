@@ -57,6 +57,29 @@ static void test_threshold_equal_branch() {
     CHECK(t == 2200.0f, "tied half_x==half_z → 200+2000 = 2200");
 }
 
+// ── perform's hide/show predicate ────────────────────────────────────────────
+static void test_hidden_when_close_and_inside_mirror() {
+    // Camera inside node's radius AND closer to node than to mirror → HIDE.
+    CHECK(sb::mamma_node_should_be_hidden(500.0f, 2000.0f, 3000.0f) == true,
+          "500 < 2000 AND 500 < 3000 → hidden");
+}
+static void test_shown_when_far_from_node() {
+    // Distance to node exceeds node's radius → SHOW (even if closer than mirror).
+    CHECK(sb::mamma_node_should_be_hidden(2500.0f, 2000.0f, 3000.0f) == false,
+          "2500 > 2000 (radius) → shown");
+}
+static void test_shown_when_farther_than_mirror() {
+    // Distance to node exceeds distance to mirror (though within LOD radius) → SHOW.
+    // Mario is on the "wrong side" of the mirror plane, so the interior gets drawn.
+    CHECK(sb::mamma_node_should_be_hidden(1500.0f, 2000.0f, 1000.0f) == false,
+          "1500 > 1000 (mirror dist) → shown");
+}
+static void test_boundary_le_semantics() {
+    // The RE uses `<=` on the compound; on the exact boundary the node stays hidden.
+    CHECK(sb::mamma_node_should_be_hidden(2000.0f, 2000.0f, 2000.0f) == true,
+          "boundary (dist == radius == mirror) → hidden (<= not <)");
+}
+
 int main() {
     test_center_symmetric();
     test_threshold_x_dominant();
@@ -64,6 +87,10 @@ int main() {
     test_threshold_cap_clamps();
     test_threshold_ignores_y();
     test_threshold_equal_branch();
+    test_hidden_when_close_and_inside_mirror();
+    test_shown_when_far_from_node();
+    test_shown_when_farther_than_mirror();
+    test_boundary_le_semantics();
     if (g_fail) { std::fprintf(stderr, "mamma_mirror_test: %d FAILURE(S)\n", g_fail); return 1; }
     std::printf("mamma_mirror_test: all passed\n");
     return 0;
