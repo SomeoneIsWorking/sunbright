@@ -583,6 +583,48 @@ static void sb_map_model_probe() {
 	}
 }
 
+// SB_PLAYERGROUP_DBG=1: one-shot probe of "プレーヤーグループ" (entered at MarDirectorPreEntry.cpp:73,
+// flag 0x204 — the SAME faithful master-perform-list path that correctly enters map.bmd). This is
+// almost certainly where the option-scene's "display Mario" (the standalone posed figure distinct
+// from gpMarioOriginal, per drive_chr's comment above) gets entered. Names its children + walks any
+// MActor/J3DModel found to report shape/material counts, so a truncated display-Mario draw shows up
+// as a low shape count vs the model's own modelData.
+static void sb_playergroup_probe() {
+	JDrama::TViewObj* grp = JDrama::TNameRefGen::search<JDrama::TViewObj>("プレーヤーグループ");
+	if (!grp) { std::fprintf(stderr, "[playergroup-dbg] プレーヤーグループ = NULL\n"); return; }
+	void** vt = *(void***)grp;
+	Dl_info info; const char* cls = (vt[0] && dladdr(vt[0], &info) && info.dli_sname) ? info.dli_sname : "?";
+	std::fprintf(stderr, "[playergroup-dbg] プレーヤーグループ=%p class=%s\n", (void*)grp, cls);
+	auto* lst = static_cast<JDrama::TViewObjPtrListT<JDrama::TViewObj>*>(grp);
+	int ci = 0;
+	for (auto it = lst->getChildren().begin(); it != lst->getChildren().end(); ++it, ++ci) {
+		JDrama::TViewObj* c = *it;
+		void** cvt = c ? *(void***)c : nullptr;
+		Dl_info ci_info; const char* ccls = (cvt && cvt[0] && dladdr(cvt[0], &ci_info) && ci_info.dli_sname) ? ci_info.dli_sname : "?";
+		std::fprintf(stderr, "[playergroup-dbg]   child[%d]=%p name='%s' class=%s\n",
+		             ci, (void*)c, c && c->getName() ? c->getName() : "?", ccls);
+		if (ccls && std::strstr(ccls, "TMario")) {
+			TMario* ma = static_cast<TMario*>(c);
+			std::fprintf(stderr, "[playergroup-dbg]     this-vs-gpMarioOriginal: %s\n",
+			             (void*)ma == (void*)gpMarioOriginal ? "SAME" : "DIFFERENT");
+			if (ma->mModel) {
+				J3DModel* bm = ma->mModel->getModel();
+				if (bm && bm->getModelData()) {
+					std::fprintf(stderr, "[playergroup-dbg]     model=%p shapeNum=%d matNum=%d jointNum=%d\n",
+					             (void*)bm, (int)bm->getModelData()->getShapeNum(),
+					             (int)bm->getModelData()->getMaterialNum(),
+					             (int)bm->getModelData()->getJointNum());
+				} else {
+					std::fprintf(stderr, "[playergroup-dbg]     model=%p (no modelData)\n", (void*)bm);
+				}
+			} else {
+				std::fprintf(stderr, "[playergroup-dbg]     mModel = NULL\n");
+			}
+		}
+	}
+	std::fprintf(stderr, "[playergroup-dbg] プレーヤーグループ child_count=%d\n", ci);
+}
+
 // SB_MAPGROUP_DBG=1: one-shot probe of "マップグループ" (TIdxGroupObj<THitActor>) — the group
 // TMapStaticObj instances (palm/parrot/island/decorative static map objects) register into, entered
 // into buffers each frame at MarDirectorPreEntry.cpp:37 (flag 0x204). Names/classes every child so a
@@ -614,6 +656,9 @@ extern "C" bool sb_boot_drive_scene() {
 	}
 	if (const char* e = getenv("SB_MAP_MODEL_DBG"); e && e[0] && e[0] != '0') {
 		static int n = 0; if (n < 1 && sb_camera_view_settled()) { ++n; sb_map_model_probe(); }
+	}
+	if (const char* e = getenv("SB_PLAYERGROUP_DBG"); e && e[0] && e[0] != '0') {
+		static int n = 0; if (n < 1 && sb_camera_view_settled()) { ++n; sb_playergroup_probe(); }
 	}
 	// SB_NO_DRIVE_SCENE=1: bisection gate — skip the entire native scene drive so the
 	// only draw path is the real GC perform list. Used to attribute draw-buffer cycles.
