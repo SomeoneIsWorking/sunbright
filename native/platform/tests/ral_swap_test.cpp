@@ -114,10 +114,35 @@ int main() {
 	CHECK(host_s16(buf, RAIL1 + 0x00) == 103, "graph1 node mPosition.x");
 	CHECK(host_u32(buf, RAIL1 + 0x08) == 0x000000B3u, "graph1 node mFlags");
 
-	// Idempotency: a second swap of the same buffer is a no-op (remembered pointer).
+	// Idempotency: a second swap of the same buffer is a no-op (now detected BY CONTENT —
+	// the host-order node count is already a sane small value).
 	smsport::sb_ral_swap_to_host(buf, SIZE);
 	CHECK(host_s32(buf, 0x00) == 2, "desc0 mNodeNum unchanged after repeat swap");
 	CHECK(host_u32(buf, RAIL0 + 0x08) == 0x000000B1u, "node0 mFlags unchanged after repeat");
+
+	// The content predicate directly (self-describing idempotency).
+	{
+		uint8_t be[16]; std::memset(be, 0, sizeof(be)); put_be32(be, 0, 18); // 00 00 00 12
+		CHECK(!smsport::ral_already_swapped(be), "BE buffer (nodeNum 18) -> needs swap");
+		uint8_t host[16]; std::memset(host, 0, sizeof(host));
+		host[0] = 18;                                                        // 12 00 00 00 = LE 18
+		CHECK(smsport::ral_already_swapped(host), "host-order buffer (nodeNum 18) -> already swapped");
+		uint8_t empty[16]; std::memset(empty, 0, sizeof(empty));
+		CHECK(!smsport::ral_already_swapped(empty), "empty/terminator buffer -> not 'already swapped'");
+	}
+
+	// REGRESSION (the real bug): a pointer-keyed cache wrongly reported "already swapped"
+	// when the JKR heap reused a freed scene.ral's address for the NEXT stage's buffer, so
+	// the fresh big-endian data was read raw -> ~2.9 GB `new TGraphNode[]` -> SolidHeap OOM.
+	// Overwrite the SAME address with fresh BE content and confirm it re-swaps.
+	std::memset(buf, 0, sizeof(buf));
+	put_be32(buf, 0x00, 5);        // desc0: 5 nodes
+	put_be32(buf, 0x08, RAIL0);
+	put_be32(buf, DESC, 0);        // terminator
+	for (int i = 0; i < 5; ++i) put_be_rail(buf, RAIL0 + i * kRailNodeSize, i + 1);
+	smsport::sb_ral_swap_to_host(buf, SIZE);
+	CHECK(host_s32(buf, 0x00) == 5, "pointer-reuse: fresh BE buffer at same addr re-swaps (nodeNum 5)");
+	CHECK(host_u32(buf, RAIL0 + 0x08) == 0x000000B1u, "pointer-reuse: node0 mFlags swapped");
 
 	std::fprintf(stderr, "%s\n", g_fail ? "RAL SWAP TEST FAILED" : "ral swap test ok");
 	return g_fail;
