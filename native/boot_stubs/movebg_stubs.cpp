@@ -404,7 +404,7 @@ TWaterRecoverObj::TWaterRecoverObj(const char* name) : TMapObjBase(name) {}
 // ============================================================
 // TWireBell
 // ============================================================
-TWireBell::TWireBell(const char* name) : TMapObjBase(name) {}
+TWireBell::TWireBell(const char* name) : TMapObjBase(name), mWireIndex(0) {}
 
 // ============================================================
 // vtable-bearing classes: all declared virtual methods need bodies

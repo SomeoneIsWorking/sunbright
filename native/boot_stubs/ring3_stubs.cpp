@@ -98,7 +98,6 @@ void TMammaYacht::initMapObj() {}
 void TManhole::appeared() {}
 void TManhole::calc() {}
 void TManhole::initMapObj() {}
-void TManhole::loadAfter() {}
 void TManhole::setGroundCollision() {}
 void TMapObjBall::calcCurrentMtx() {}
 void TMapObjBall::checkWallCollision(JGeometry::TVec3<float>*) {}
@@ -194,7 +193,6 @@ void TSwingBoard::load(JSUMemoryInputStream&) {}
 void TViking::initMapObj() {}
 void TViking::loadAfter() {}
 void TWireBell::control() {}
-void TWireBell::loadAfter() {}
 // (emit vtable for TGuide)
 //
 // The real TGuide::load (Guide.cpp, undecompiled) FIRST mounts the "guide" 2D archive

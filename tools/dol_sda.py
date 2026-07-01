@@ -46,6 +46,8 @@ KNOWN_SDA1 = {
                                         # also TMBindShadowManager::request reads mForwardPos +0x50
     -0x62b8: "gpMapObjManager",         # ShiningStone::load — getMActorAnmData() for map-obj MActors
     -0x6318: "gpMirrorModelManager",    # MammaMirrorMapOperator::perform — unk18 = active-mirror idx, unk24 = TMirrorCamera
+    -0x6308: "gpMapWireManager",        # TWireBell::loadAfter — getWireNo(const Vec3&) → wire index
+    -0x6060: "gpFlagManager",           # TRedCoinSwitch::load / TCoverFruit::loadAfter — TFlagManager::getShineFlag / getFlag
     -0x5fe0: "gpResourceManager",       # ShiningStone::load — JPAResourceManager::load(name, id)
     # -0x5db8: setup-holder used by MammaMirror loadAfter ((unaff_r13-0x5db8)+4)
     # -0x6044: (TSunMgr reads [+0x7c] after — sibling of gpMarDirector; maybe gpApplication child)
