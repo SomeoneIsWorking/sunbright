@@ -623,13 +623,36 @@ static void sb_playergroup_probe() {
 			TMario* ma = static_cast<TMario*>(c);
 			std::fprintf(stderr, "[playergroup-dbg]     this-vs-gpMarioOriginal: %s\n",
 			             (void*)ma == (void*)gpMarioOriginal ? "SAME" : "DIFFERENT");
+			std::fprintf(stderr, "[playergroup-dbg]     mAnimationId=0x%x\n", (unsigned)ma->mAnimationId);
 			if (ma->mModel) {
 				J3DModel* bm = ma->mModel->getModel();
 				if (bm && bm->getModelData()) {
+					int jn = (int)bm->getModelData()->getJointNum();
 					std::fprintf(stderr, "[playergroup-dbg]     model=%p shapeNum=%d matNum=%d jointNum=%d\n",
 					             (void*)bm, (int)bm->getModelData()->getShapeNum(),
-					             (int)bm->getModelData()->getMaterialNum(),
-					             (int)bm->getModelData()->getJointNum());
+					             (int)bm->getModelData()->getMaterialNum(), jn);
+					// Sanity check every joint's world (anm) matrix: NaN/inf or a wildly-scaled
+					// translation would explain the visually mangled/twisted Mario seen at the
+					// file-select settled picker (screenshot comparison, session 2026-07-01).
+					int nanCount = 0, wildCount = 0;
+					for (int j = 0; j < jn; ++j) {
+						MtxPtr m = bm->getAnmMtx(j);
+						if (!m) continue;
+						bool nan = false, wild = false;
+						for (int r = 0; r < 3 && !nan; ++r)
+							for (int c2 = 0; c2 < 4; ++c2)
+								if (!std::isfinite(m[r][c2])) { nan = true; break; }
+						if (!nan && (std::fabs(m[0][3]) > 100000.f || std::fabs(m[1][3]) > 100000.f
+						             || std::fabs(m[2][3]) > 100000.f)) wild = true;
+						if (nan) ++nanCount;
+						if (wild) ++wildCount;
+						if (j < 29 || nan || wild)
+							std::fprintf(stderr,
+								"[playergroup-dbg]       joint[%d] t=(%.2f,%.2f,%.2f) nan=%d wild=%d\n",
+								j, m[0][3], m[1][3], m[2][3], (int)nan, (int)wild);
+					}
+					std::fprintf(stderr, "[playergroup-dbg]     TOTAL nanJoints=%d wildJoints=%d / %d\n",
+					             nanCount, wildCount, jn);
 				} else {
 					std::fprintf(stderr, "[playergroup-dbg]     model=%p (no modelData)\n", (void*)bm);
 				}
