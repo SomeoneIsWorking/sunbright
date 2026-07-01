@@ -385,10 +385,6 @@ extern "C" void sb_gx_capture_frame_boundary() {
             for (const auto& m : g_flush_marks)
                 if (m.off <= d.offset && (!best || m.off > best->off)) best = &m;
             std::string who = best ? attrib_sym(best->pc) : std::string("?");
-            if (best && who.rfind("draw__8J3DShapeCFv", 0) == 0) {
-                unsigned this_ptr = best->r31;
-                if (this_ptr >= 0x80000000u && this_ptr < 0x81800000u) shape_this_ptrs.insert(this_ptr);
-            }
             if (best) {
                 // Prefer the OUTERMOST "perform" frame over the innermost "draw" frame. J3DShape::draw/
                 // J3DDisplayListObj::callDL/etc are ONE shared virtual-dispatch function called by every
@@ -402,14 +398,29 @@ extern "C" void sb_gx_capture_frame_boundary() {
                 // seen (i.e. the outermost/most specific caller), falling back to the innermost "draw"
                 // match only if no "perform" frame was found in the walked range.
                 std::string perform_match, draw_match;
+                bool nested_in_shape_draw = (who.rfind("draw__8J3DShapeCFv", 0) == 0);
                 unsigned fp = best->sp;
                 for (int fr = 0; fr < 16 && fp >= 0x80000000u && fp < 0x81800000u; fr++) {
                     std::string s = attrib_sym(attrib_r32(fp + 4));
+                    if (s.rfind("draw__8J3DShapeCFv", 0) == 0) nested_in_shape_draw = true;
                     if (s.find("perform") != std::string::npos) perform_match = s;   // keep overwriting -> outermost wins
                     else if (draw_match.empty() &&
                              (s.find("draw") != std::string::npos || s.find("Draw") != std::string::npos))
                         draw_match = s;   // keep innermost draw as a fallback only
                     unsigned nx = attrib_r32(fp); if (nx <= fp) break; fp = nx;
+                }
+                // r31 is callee-saved by ABI convention: whether the flush PC landed directly inside
+                // J3DShape::draw's own body, or inside a leaf helper it CALLED (WriteMTXPS4x3,
+                // GXLoadPosMtxImm, loadPosMtxIndx/loadNrmMtxIndx, callDL, SMS_InitPacket_OneTevColor —
+                // none of which use r31 for their own purposes), r31 still holds J3DShape::draw's `this`
+                // as long as we can prove via the back-chain that J3DShape::draw is somewhere on the
+                // call stack (nested_in_shape_draw, checked above via both the direct match and the walk).
+                // Without this broadening the shape count only saw draws whose flush PC landed EXACTLY
+                // inside J3DShape::draw itself — a small minority — undercounting badly (measured: 21-28
+                // per single-frame sample before, most flushes actually land in the generic helpers).
+                if (nested_in_shape_draw) {
+                    unsigned this_ptr = best->r31;
+                    if (this_ptr >= 0x80000000u && this_ptr < 0x81800000u) shape_this_ptrs.insert(this_ptr);
                 }
                 if (!perform_match.empty()) who = perform_match;
                 else if (!draw_match.empty()) who = draw_match;
