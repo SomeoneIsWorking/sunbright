@@ -91,7 +91,7 @@ TCraneUpDown::TCraneUpDown(const char* name) : TMapObjBase(name) {}
 // ============================================================
 // TDoor
 // ============================================================
-TDoor::TDoor(const char* name) : TMapObjBase(name) {}
+TDoor::TDoor(const char* name) : TMapObjBase(name), mLocked(0) {}
 
 // ============================================================
 // TFerrisWheel

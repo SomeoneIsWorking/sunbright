@@ -63,7 +63,6 @@ BOOL TCoverFruit::receiveMessage(THitActor*, unsigned int) { return 0; }
 void TCraneRotY::control() {}
 void TCraneRotY::load(JSUMemoryInputStream&) {}
 void TCraneUpDown::initMapObj() {}
-void TDoor::load(JSUMemoryInputStream&) {}
 void TFerrisWheel::initMapObj() {}
 void TFluffManager::loadAfter() {}
 void TFluffManager::load(JSUMemoryInputStream&) {}
