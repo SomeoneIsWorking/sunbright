@@ -59,8 +59,7 @@ TBathWaterPreprocessor::TBathWaterPreprocessor(TBathWaterManager* mgr)
 {
 }
 
-// TBathWaterPreprocessor: key = perform (first and only explicit virtual)
-void TBathWaterPreprocessor::perform(u32, JDrama::TGraphics*) {}
+// TBathWaterPreprocessor::perform lives natively in reference/sms/src/Map/BathWaterManager.cpp.
 
 // TBathWaterManager: key = load (first explicit virtual; ctor already in ui_map_stubs.cpp)
 void TBathWaterManager::load(JSUMemoryInputStream&) {}
