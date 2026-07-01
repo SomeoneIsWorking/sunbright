@@ -50,7 +50,7 @@ namespace {
 // pc, guest sp). At the frame boundary, for the sea-signature draw, find the flush that wrote its
 // primitive and walk the guest back-chain (r1 → saved LR) to NAME the drawing function + its callers.
 // The back-chain is real guest stack state, valid under JIT regardless of pc precision.
-struct FlushMark { std::size_t off; unsigned pc; unsigned sp; };
+struct FlushMark { std::size_t off; unsigned pc; unsigned sp; unsigned r31; };
 std::vector<FlushMark> g_flush_marks;
 
 bool attrib_enabled() {
@@ -144,7 +144,7 @@ extern "C" void sb_gather_flush_impl(const u8* bytes, std::size_t n) {
 #ifdef HAVE_DOLPHIN_MEMMAP
     if (attrib_enabled() && gx_dbg_window()) {
         auto& ppc = Core::System::GetInstance().GetPPCState();
-        g_flush_marks.push_back({ g_cap.size(), ppc.pc, ppc.gpr[1] });
+        g_flush_marks.push_back({ g_cap.size(), ppc.pc, ppc.gpr[1], ppc.gpr[31] });
     }
 #endif
     g_cap.insert(g_cap.end(), bytes, bytes + n);
@@ -364,6 +364,20 @@ extern "C" void sb_gx_capture_frame_boundary() {
     // (fi.draws) + SUNBRIGHT_GX_ATTRIB (flush marks) + the DBG_GXAT window.
     if (attrib_enabled() && gx_dbg_window() && getenv("SUNBRIGHT_GX_ATTRIB_SUM") && !fi.draws.empty()) {
         std::map<std::string, unsigned long> sumv;
+        // DISTINCT J3DShape INSTANCE COUNT: when a flush lands directly inside J3DShape::draw
+        // (802e0390), its prologue (verified via --disasm: `mflr r0; stw r0,4(r1); stwu r1,-0x30
+        // (r1); stw r31,0x2c(r1); or r31,r3,r3; ...`) spills the CALLER's old r31 to the stack
+        // FIRST, then only AFTER that does `or r31,r3,r3` (mr r31,this) load `this` into r31 — so
+        // the stack slot [r1+0x2c] holds the caller's r31, NOT `this` (an earlier version of this
+        // comment/code wrongly assumed otherwise; caught because every "shape" it named repeatedly
+        // resolved to the SAME low, .text-range addresses across every frame — real heap objects
+        // don't do that). `this` lives in the LIVE register r31 for the rest of the function's
+        // execution instead, so FlushMark now also captures ppc.gpr[31] at the moment of the flush
+        // (a live-register read, not a stack read) — that's the actual J3DShape* instance. Counting
+        // DISTINCT pointer values (not just verts) answers "how many separate shapes does the
+        // oracle actually draw" directly, comparable against native's own per-buffer shape counts
+        // (SB_DRAWBUF_INV packet counts) without needing to name each shape's owning model.
+        std::set<unsigned> shape_this_ptrs;
         for (size_t i = 0; i < fi.draws.size(); ++i) {
             const auto& d = fi.draws[i];
             if (d.proj_type != 0 || d.prims == 0) continue;   // scene (perspective) draws only
@@ -371,6 +385,10 @@ extern "C" void sb_gx_capture_frame_boundary() {
             for (const auto& m : g_flush_marks)
                 if (m.off <= d.offset && (!best || m.off > best->off)) best = &m;
             std::string who = best ? attrib_sym(best->pc) : std::string("?");
+            if (best && who.rfind("draw__8J3DShapeCFv", 0) == 0) {
+                unsigned this_ptr = best->r31;
+                if (this_ptr >= 0x80000000u && this_ptr < 0x81800000u) shape_this_ptrs.insert(this_ptr);
+            }
             if (best) {
                 // Prefer the OUTERMOST "perform" frame over the innermost "draw" frame. J3DShape::draw/
                 // J3DDisplayListObj::callDL/etc are ONE shared virtual-dispatch function called by every
@@ -401,10 +419,15 @@ extern "C" void sb_gx_capture_frame_boundary() {
         std::vector<std::pair<std::string,unsigned long>> v(sumv.begin(), sumv.end());
         std::sort(v.begin(), v.end(), [](const std::pair<std::string,unsigned long>&a,
                                          const std::pair<std::string,unsigned long>&b){ return a.second > b.second; });
-        fprintf(stderr, "[gxsum] frame %ld top scene draws by raw-verts (total scene tris=%u):\n",
-                g_frame_no, fi.tris_pass[0]);
+        fprintf(stderr, "[gxsum] frame %ld top scene draws by raw-verts (total scene tris=%u, distinct J3DShape this-ptrs=%zu):\n",
+                g_frame_no, fi.tris_pass[0], shape_this_ptrs.size());
         for (size_t i = 0; i < v.size() && i < 16; i++)
             fprintf(stderr, "  %8lu  %s\n", v[i].second, v[i].first.c_str());
+        if (getenv("SUNBRIGHT_GX_ATTRIB_SHAPES")) {
+            fprintf(stderr, "[gxshapes] frame %ld this-ptrs:", g_frame_no);
+            for (unsigned p : shape_this_ptrs) fprintf(stderr, " %08x", p);
+            fprintf(stderr, "\n");
+        }
     }
     g_flush_marks.clear();
 #endif
