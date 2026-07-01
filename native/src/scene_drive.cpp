@@ -43,6 +43,7 @@
 #include <JSystem/J3D/J3DGraphBase/J3DPacket.hpp>         // J3DMatPacket / J3DShapePacket
 #include <Map/Map.hpp>                                     // TMap / gpMap
 #include <Map/MapModel.hpp>                                // TMapModelManager
+#include <JSystem/J3D/J3DGraphBase/J3DShape.hpp>          // J3DShape::getDisplayListSize
 #include <dolphin/mtx.h>
 #include <dolphin/gx.h>                                 // GXRenderModeObj, GXNtsc480Int
 #include "sms_boot_setlight.h"                          // sb::build_stage_lights (TLightCommon::setLight port)
@@ -573,6 +574,21 @@ static void sb_map_model_probe() {
 				if (depth <= 2)
 					std::fprintf(stderr, "[map-model-dbg]     %*sjoint shapes=%d children=%d hidden=%d\n",
 					             depth * 2, "", j->getShapeNum(), j->getChildrenNum(), (int)hidden);
+				// Per-shape raw GX display-list BYTE SIZE (summed over all matrix-group draws) — the
+				// real geometry payload, independent of any decode/entry bug. A shape with a
+				// plausible byte count but few tris drawn would point at a display-list DECODE
+				// truncation, not a missing-shape problem.
+				for (int s = 0; s < j->getShapeNum(); ++s) {
+					J3DShape* sh = j->getShape(s);
+					if (!sh) continue;
+					u32 total = 0;
+					for (u32 g = 0; g < sh->getMtxGroupNum(); ++g) {
+						J3DShapeDraw* d = sh->getShapeDraw((u16)g);
+						if (d) total += d->getDisplayListSize();
+					}
+					std::fprintf(stderr, "[map-model-dbg]       shape[%d] mtxGroups=%u displayListBytes=%u\n",
+					             s, sh->getMtxGroupNum(), total);
+				}
 				for (int c = 0; c < j->getChildrenNum(); ++c)
 					walk(j->getChild(c), depth + 1, totalShapes, hiddenJoints, totalJoints);
 			};
