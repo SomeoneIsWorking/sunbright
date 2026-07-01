@@ -229,9 +229,29 @@ bool g_wave_want = true;
 J3DMaterial* g_last_mat = nullptr;   // for consecutive-shape batch merging within a frame
 // SB_CAP_COUNT diagnostic: per-present shape/triangle accounting (reset in begin_scene, dumped in
 // end_scene) — measures whether the gameplay scene over-emits (the ~6M-vert OOM-ceiling question).
-long g_present_shapes = 0;       // shapes captured this present (idx non-empty)
+long g_present_shapes = 0;       // shapes captured this present (idx non-empty) — one increment
+                                  // PER CALL, so a shape entered into multiple draw-buffer phases
+                                  // (e.g. MapOpa/Mirror/Sky drawing identically in BOTH ph1 and ph4,
+                                  // see fileselect-scene-underdraw-not-overdraw memory) is counted
+                                  // once per phase, NOT once per distinct object. Compare
+                                  // g_present_shapes_distinct_n against the oracle's own
+                                  // distinct-J3DShape-instance count (SUNBRIGHT_GX_ATTRIB_SHAPES),
+                                  // not this raw call count, for an apples-to-apples shape total.
 long g_present_idx    = 0;       // summed idx (≈ vertices triangulated) this present
 long g_present_skipped = 0;      // shapes skipped by the OOM/runaway guards this present
+// Unique J3DShape* this present. A plain array + linear scan (not std::unordered_set<const void*>)
+// — the guest-intrinsics shim this TU compiles under pollutes libstdc++'s hashtable template
+// instantiation for pointer keys (a hard compile error, not a runtime concern); shape counts here
+// are in the low hundreds at most, so linear dedup is cheap enough.
+constexpr int kMaxDistinctShapes = 2048;
+const void* g_present_shapes_distinct[kMaxDistinctShapes];
+int g_present_shapes_distinct_n = 0;
+void mark_shape_distinct(const void* shape) {
+    for (int i = 0; i < g_present_shapes_distinct_n; ++i)
+        if (g_present_shapes_distinct[i] == shape) return;
+    if (g_present_shapes_distinct_n < kMaxDistinctShapes)
+        g_present_shapes_distinct[g_present_shapes_distinct_n++] = shape;
+}
 
 const MatEntry* get_mat_entry(J3DMaterial* mat, J3DTexture* modelTex) {
     auto it = g_matcache.find(mat);
@@ -613,6 +633,7 @@ extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
         return true;
     }
     g_present_shapes += 1;
+    mark_shape_distinct(shape);
     g_present_idx    += (long)idx.size();
 
     int projType; float proj[6]; float vp[6];
@@ -1122,6 +1143,7 @@ extern "C" int sb_boot_capture_begin_scene() {
     g_consumed = true;   // discard anything captured earlier this interval; next draw clears
     g_efb_copies.clear();
     g_present_shapes = g_present_idx = g_present_skipped = 0;
+    g_present_shapes_distinct_n = 0;
     return 1;
 }
 
@@ -1207,9 +1229,9 @@ extern "C" void sb_boot_capture_end_scene() {
     g_capture_phase = 0;
     if (const char* e = std::getenv("SB_CAP_COUNT"); e && e[0] && e[0] != '0') {
         static long n = 0; ++n;
-        std::fprintf(stderr, "[capcount] present-walk #%ld: shapes=%ld idx_sum=%ld (~%ld tris) "
+        std::fprintf(stderr, "[capcount] present-walk #%ld: shapes=%ld distinct_shapes=%d idx_sum=%ld (~%ld tris) "
                      "g_verts=%zu skipped=%ld\n",
-                     n, g_present_shapes, g_present_idx, g_present_idx / 3,
+                     n, g_present_shapes, g_present_shapes_distinct_n, g_present_idx, g_present_idx / 3,
                      g_verts.size(), g_present_skipped);
         // Per-perform-list-phase triangle breakdown (1=unk40,2=unk38,3=unk3C,4=mPerformListGX,
         // 5=Silhouette,6=GXPost). Localizes which phase is short vs the oracle's 16651 scene tris.
