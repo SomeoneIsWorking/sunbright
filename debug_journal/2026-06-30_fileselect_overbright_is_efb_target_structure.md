@@ -1066,3 +1066,59 @@ why native runs a TRUE restore before the MapXlu flush that GC does not (orderin
 ordering OR latch colorUpdate per-draw at J3D-material draw time. Value target: fileselect_overbright.py
 42.6→~14 (== SB_SKIP_KEY=eb5c8e74). Do NOT re-pursue the mirror/off-screen-composite plan — the overbright
 is purely this one colorUpdate bit across ~11 draw signatures.
+
+### 2026-07-01 (SESSION N+3) — VERIFIED BY IMAGE+ABLATION: b76 is a SPURIOUS ph6 OVERDRAW on an already-correct sea; the "flip cU at capture" framing is WRONG
+This session VERIFIED the overbright end-to-end with images (not just numbers) and CORRECTS the N+2 fix
+premise. New tooling (committed, gated): `SB_COLUPD_ALL=1` (gx_impl.cpp — logs EVERY GXSetColorUpdate
+across ALL phases with the global call index + phase + caller, gated on `g_colupd_calls>4000`);
+`SB_DRAWBUF_MAT=1` + settled `SB_DRAWBUF_INV` (scene_drive.cpp — the draw-buffer inventory now runs at a
+SETTLED frame and prints each buffer's packet J3DMaterial low-24-bit ptrs, so a buffer can be matched to
+the sea-mask material).
+
+**MEASURED (harness `scratch/run_measure.sh` + `run_ablate.sh`, oracle ref `oracle_pass3_final.png`):**
+- baseline **42.6**; `SB_SKIP_KEY=eb5c8e74` **14.1**; `SB_ABLATE_PHASE=6` **13.6**; `SB_ABLATE_PHASE=1` **45.6 (WORSE)**.
+- IMAGES (`scratch/frames/cmp3.png`, `cmp_skip_ph6.png`): baseline = a full-screen WHITE WASH over the
+  sea/beach. Dropping b76 (skipkey) or all of ph6 REVEALS a **correct teal sea + tan beach underneath** —
+  i.e. native ALREADY draws the coloured sea correctly (it is NOT the eb5c8e74 batch); b76 is a **spurious
+  white OVERDRAW on top of it**. Dropping ph1 is WORSE (45.6) because ph1 HOLDS the good teal sea.
+  ⇒ the fix target is the **ph6** b76 draw specifically (drawn last, on top, covering the frame).
+
+**MECHANISM (SB_COLUPD_ALL trace, scratch/passes/colupd_all.log) — the N+2 "make b76 capture cU=0" is not
+directly actionable, and here is why:** native runs the REAL master perform list (SB_OWN_GXLIST), so its
+GXSetColorUpdate sequence == the decomp's. At the ph6 b76 draw native has liveCU=1, liveAU=0. The AU=0 is
+faithful (a mask sets alphaUpdate FALSE and nothing restores it). The CU=1 is ALSO faithful for THAT draw
+point: `SMS_DrawInit`→`j3dSys.drawInit()` issues `GXSetColorUpdate(GX_TRUE)` but NOT AlphaUpdate
+(J3DSys.cpp:124) right before the display-pass flush. The ONLY cU=FALSE anywhere near b76 is
+TModelWaterManager's own volume draws (perform+0x26b / drawWaterVolume+0x25), immediately restored — they
+do NOT wrap b76 (N+2's "b76 is a water-mgr draw" is false; confirmed again). So there is NO adjacent
+pass-level cU=FALSE for `fill_batch_material` to capture — the captured cU=TRUE is CORRECT for a draw
+issued in the display pass. **The bug is not the captured colorUpdate; it is that the sea-mask material is
+DRAWN IN THE DISPLAY PASS AT ALL.**
+
+**WHERE the ph6 b76 comes from (backtrace SB_B76_BT + initECDisp read + settled inventory):**
+- ph6 b76 stack = `mPerformListGXPost->perform (TPerformList) → J3DDrawBuffer::drawHead → J3DMatPacket::draw
+  → J3DShape::draw`. It is a genuine J3D draw-buffer flush from the GXPost/display perform list.
+- `TMarDirector::initECDisp` (MarDirectorInitECT.cpp:98-224) builds mPerformListGXPost and pushes ONLY:
+  stageDisp, composite3(合成3), LensFlare/glow(+specular), **ChrOpa/ChrXlu**, Group 2D 2, Group 2D, Guide.
+  **There is NO MapXlu / sea buffer in GXPost.** Oracle pass3 (display) has SRCALPHA/SRCCLR tev=**2** (the
+  1352-vert coloured sea) but NO tev=3 mask — GC never draws this mask in the display pass.
+- Settled `SB_DRAWBUF_INV`+`SB_DRAWBUF_MAT`: the sea-mask material (**c97c48**, alongside sea-surface c97468)
+  lives in **DrawBuf MapXlu** (2 packets). At the settled frame the GXPost buffers (ChrOpa/ChrXlu empty;
+  LensFlare = 11 lens materials 353288…, NOT the sea) do NOT contain c97c48. So the ph6 mask flush is a
+  TRANSIENT entry (entered+flushed within GXPost) OR the MapXlu buffer is re-flushed by a GXPost object —
+  the mask's ph6 model instance (0x4321a0, modelData 0x3f33a58) DIFFERS from the ph1 MapXlu instance
+  (0xc98534, 0xc95600), so it is a SECOND model sharing material c97c48, entered into a GXPost buffer.
+
+⇒ **ROOT CAUSE (N+3):** native draws a SECOND instance of the sea-mask material in the GXPost/display pass
+(where GC draws only the coloured tev=2 sea + Chr + 2D). This spurious display-pass mask, painted cU=TRUE
+(faithfully, per drawInit), is the full-screen white overdraw. The FIX is to find the GXPost object that
+enters model 0x4321a0 (the second sea-mask instance) and stop it entering the display pass (faithful to
+GC's initECDisp, which has no MapXlu) — NOT to force cU=0 at capture (that would be a per-draw magic-key
+bandaid, and the captured cU is legitimately TRUE). NEXT: instrument J3DMatPacket::entry / the GXPost
+objects (composite3 / スペキュラシーン / a mirror-model manager) to catch who enters model 0x4321a0 into a
+GXPost draw buffer; that entry is the bug. Value target unchanged: fileselect_overbright.py 42.6→~14.
+
+⛔ CORRECTED this session: N+2's "make native's b12/b76 capture color_update=0 in fill_batch_material" —
+native's live cU IS legitimately TRUE at the flattened draw (drawInit restored it); there is no pass-level
+cU=FALSE to read. The fix is at the model-ENTRY / draw-ROUTING layer (stop the spurious GXPost mask entry),
+not the capture layer. The mirror-EFB (N+1) and ph6-transform hypotheses remain dead.

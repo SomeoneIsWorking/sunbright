@@ -137,6 +137,7 @@ long g_colupd_last_false = -1;   // call index of the last GXSetColorUpdate(GX_F
 unsigned char g_colupd_ring[16] = {0};
 int           g_colupd_ring_pos = 0;
 extern "C" int sb_boot_capture_phase();
+extern "C" int sb_present_frame();
 void GXSetColorUpdate(GXBool enable) {
     ++g_colupd_calls;
     if (!enable) g_colupd_last_false = g_colupd_calls;
@@ -158,6 +159,21 @@ void GXSetColorUpdate(GXBool enable) {
             // shorten: keep just the mangled caller name token
             const char* c2 = nf > 2 && sym ? sym[2] : "?";
             std::fprintf(stderr, "[colupd6 #%d] enable=%d via %s\n", n, (int)enable, c2);
+            free(sym);
+        }
+    }
+    // SB_COLUPD_ALL: log EVERY GXSetColorUpdate across ALL phases with the global call index + phase
+    // + caller, so the exact ordering of the cU=FALSE effect vs the intervening frameInit(cU=TRUE)
+    // restore vs the sea-mask (b76) draw is visible in ONE interleaved stream (the b76 capture prints
+    // its own [b76] line at the same call index). Gated + capped; only fires once the scene settles.
+    if (const char* d = std::getenv("SB_COLUPD_ALL"); d && d[0] && d[0] != '0'
+        && sb_boot_capture_phase() != 0) {
+        static int n = 0; if (n < 400 && g_colupd_calls > 4000) { ++n;
+            void* fr[6]; int nf = backtrace(fr, 6);
+            char** sym = backtrace_symbols(fr, nf);
+            const char* c2 = nf > 2 && sym ? sym[2] : "?";
+            std::fprintf(stderr, "[colupd @%ld ph%d] enable=%d via %s\n",
+                         g_colupd_calls, sb_boot_capture_phase(), (int)enable, c2);
             free(sym);
         }
     }

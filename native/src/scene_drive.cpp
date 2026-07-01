@@ -424,20 +424,31 @@ static void sb_drawbuf_inventory() {
 		// Walk the buffer's packet chains: heads = occupied slots, packets = total entered models.
 		// A non-empty global Map/Chr buffer that native never DRAWS is the missing-geometry target.
 		long heads = 0, packets = 0;
+		// SB_DRAWBUF_MAT=1: also print each packet's J3DMaterial ptr (cast to J3DMatPacket), so the
+		// overbright harness can NAME which buffer holds the sea-mask material (0x…c97c28, key
+		// eb5c8e74) — GXPost's initECDisp has NO MapXlu, so if a Chr/LensFlare buffer holds it the
+		// mask is erroneously entered into the display pass (the spurious ph6 white overdraw).
+		const bool matdmp = [](){ const char* e = getenv("SB_DRAWBUF_MAT"); return e && e[0] && e[0] != '0'; }();
+		char mats[256]; int mn = 0; mats[0] = 0;
 		if (b && b->mBuffer)
 			for (u32 s = 0; s < b->mSize; ++s) {
 				J3DPacket* p = b->mBuffer[s];
 				if (p) ++heads;
-				for (; p; p = p->getNextPacket()) ++packets;
+				for (; p; p = p->getNextPacket()) { ++packets;
+					if (matdmp && mn < 220) {
+						J3DMaterial* m = static_cast<J3DMatPacket*>(p)->getMaterial();
+						mn += std::snprintf(mats + mn, sizeof(mats) - mn, " %06x", (unsigned)((uintptr_t)m & 0xffffff));
+					}
+				}
 			}
-		std::fprintf(stderr, "[drawbuf-inv] %-32s obj=%p buf=%p heads=%ld packets=%ld\n",
-		             nm, (void*)o, (void*)b, heads, packets);
+		std::fprintf(stderr, "[drawbuf-inv] %-32s obj=%p buf=%p heads=%ld packets=%ld mats=%s\n",
+		             nm, (void*)o, (void*)b, heads, packets, mats);
 	}
 }
 
 extern "C" bool sb_boot_drive_scene() {
 	if (const char* e = getenv("SB_DRAWBUF_INV"); e && e[0] && e[0] != '0') {
-		static int n = 0; if (n < 1) { ++n; sb_drawbuf_inventory(); }
+		static int n = 0; if (n < 1 && sb_present_frame() > 250) { ++n; sb_drawbuf_inventory(); }
 	}
 	// SB_NO_DRIVE_SCENE=1: bisection gate — skip the entire native scene drive so the
 	// only draw path is the real GC perform list. Used to attribute draw-buffer cycles.
