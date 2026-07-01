@@ -1122,3 +1122,31 @@ GXPost draw buffer; that entry is the bug. Value target unchanged: fileselect_ov
 native's live cU IS legitimately TRUE at the flattened draw (drawInit restored it); there is no pass-level
 cU=FALSE to read. The fix is at the model-ENTRY / draw-ROUTING layer (stop the spurious GXPost mask entry),
 not the capture layer. The mirror-EFB (N+1) and ph6-transform hypotheses remain dead.
+
+#### N+3 CORRECTION (same session) — GXPost DOES draw MapXlu (data-driven); the divergence is the ph6 MapXlu buffer CONTENTS
+The N+3 entry above said "initECDisp pushes NO MapXlu, so the ph6 mask is a spurious entry." That is
+INCOMPLETE: mPerformListGXPost is LOADED from `/data/PerformLists.bin` and initECDisp only APPENDS. The
+loaded "PerformList GX Post" DOES contain **`DrawBuf MapXlu` (filter 0x8 = draw)** (SB_PL_DBG dump,
+scratch/passes/plload.log). Full measured routing:
+- **`DrawBuf MapOpa`** is in "PerformList GX" (ph4/通常シーン, filter 0x8). **`DrawBuf MapXlu`** is ONLY in
+  "PerformList GX Post" (ph6, filter 0x8) — it is the ONLY MapXlu draw entry in ANY loaded list, and there
+  is **NO `DrawBuf MapXlu` frameInit (0x80) entry anywhere**. So MapXlu is drawn in ph6 by DATA (GC too).
+- `SB_DBHEAD_DBG` (per-flush buffer-ptr trace): DrawBuf MapXlu (buf=…b1f7bc, **2 packets** = sea c97468 +
+  mask c97c48) is flushed in **phase 1 AND phase 6** (unk40's drawBufferGroup push at SetupObjects.cpp:398
+  = ph1; the loaded GXPost entry = ph6), NEVER ph4. Two extra ph6-only buffers (…ec71f8 15pkt, …ec7340
+  2pkt) also flush in ph6.
+- ORACLE: pass3 (=native ph6/display) has SRCALPHA/SRCCLR tev=**2** (the sea packet c97468, 1352v) but NO
+  tev=**3** mask. GC's pass2 has the tev=3 mask [noC][noA]. So **GC's ph6 MapXlu draws only the SEA packet;
+  native's ph6 MapXlu draws sea + MASK.** The mask packet (c97c48) is present in native's MapXlu buffer at
+  ph6 where GC's is not.
+
+⇒ **REFINED ROOT CAUSE:** native's MapXlu buffer still contains the sea-MASK packet (c97c48) when GXPost
+flushes it in ph6, so native paints the mask white on top of the display. On GC the mask is drawn earlier
+(pass2, cU=FALSE) and is NOT in the buffer by the ph6 flush — a buffer ENTRY/frameInit CADENCE divergence
+(MapXlu has no perform-list frameInit; models enter it via the map group; native evidently never removes/
+re-enters so the mask persists into ph6, and/or native draws ph1's drawBufferGroup MapXlu to the visible
+FB where GC renders it off-screen). NEXT STEP (concrete): instrument the ENTRY of the mask model (0x4321a0,
+material c97c48) into MapXlu — J3DModel::entry / j3dSys.setDrawBuffer(MapXlu) — to find who enters it and
+whether GC would have frameInit-cleared MapXlu before ph6. The fix is to make native's ph6 MapXlu match
+GC's contents (sea only), NOT to force cU=0 at capture. (So BOTH N+2's "cU at capture" AND N+3's "spurious
+GXPost entry" framings are superseded by: the mask packet wrongly persists in the ph6 MapXlu buffer.)
