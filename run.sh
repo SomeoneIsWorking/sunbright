@@ -62,6 +62,14 @@ export SB_SDLGPU="${SB_SDLGPU:-1}"   # SDL3-GPU GX backend (the only renderer)
 export SB_WINDOW="${SB_WINDOW:-1}"   # live inspection window
 export SB_THP_FAST="${SB_THP_FAST:-1}"
 export SB_HOST_ALLOC_CAP_MB="${SB_HOST_ALLOC_CAP_MB:-3072}"
+# Default boot target: stage 15 = the title/file-select scene (not Delfino Plaza fastboot). A
+# default SB_PAD_SCRIPT pulses Start a few times in the real-time PRESS-START window (verified
+# this session: reliably carries TCardLoad from mState 3 "press start" through to mState 0, the
+# settled 3-block "Select data." picker). Override SB_STAGE=1 (or any other value) to go elsewhere;
+# set SB_PAD_SCRIPT="" to boot to the title screen only, with no auto-press.
+export SB_STAGE="${SB_STAGE:-15}"
+export SB_SCENARIO="${SB_SCENARIO:-0}"
+export SB_PAD_SCRIPT="${SB_PAD_SCRIPT-300:START 315:- 340:START 355:- 380:START 395:- 420:START 435:- 460:START 475:-}"
 # NOTE: do NOT default SB_TURBO here — windowed inspection wants REAL-TIME pacing (~60fps), not
 # uncapped. Turbo out-runs the display swapchain and floods the GPU present queue (the watchdog
 # hang). Set SB_TURBO=1 explicitly only for headless throughput runs.
