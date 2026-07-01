@@ -44,6 +44,8 @@ KNOWN_SDA1 = {
     -0x6328: "gpMap",                   # TMBindShadowManager::request passes to isInArea
     -0x7118: "gpCamera or gpPolarCamera",  # TSunMgr passes to CPolarSubCamera::isNowInbetween;
                                         # also TMBindShadowManager::request reads mForwardPos +0x50
+    -0x62b8: "gpMapObjManager",         # ShiningStone::load — getMActorAnmData() for map-obj MActors
+    -0x5fe0: "gpResourceManager",       # ShiningStone::load — JPAResourceManager::load(name, id)
     # -0x5db8: setup-holder used by MammaMirror loadAfter ((unaff_r13-0x5db8)+4)
     # -0x6044: (TSunMgr reads [+0x7c] after — sibling of gpMarDirector; maybe gpApplication child)
     # -0x7100: (TSunMgr/LensFlare test bit at +0x15 — maybe cinematics-manager, TApplication child)

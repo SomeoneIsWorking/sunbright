@@ -194,7 +194,6 @@ void TSandLeafBase::initMapObj() {}
 void TShellCup::initMapObj() {}
 void TShellCup::loadAfter() {}
 void TShellCup::perform(unsigned int, JDrama::TGraphics*) {}
-void TShiningStone::load(JSUMemoryInputStream&) {}
 void TSwingBoard::control() {}
 void TSwingBoard::load(JSUMemoryInputStream&) {}
 void TViking::initMapObj() {}
