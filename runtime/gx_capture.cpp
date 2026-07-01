@@ -25,10 +25,70 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <algorithm>
+#include <fstream>
 #include <set>
+#include <string>
+#include <utility>
 #include <vector>
 
+#ifdef HAVE_DOLPHIN_MEMMAP
+#include "Core/System.h"
+#include "Core/PowerPC/PowerPC.h"
+#endif
+
+// Guest RAM base (defined in gx_parse.cpp) — lets the attribution walker read the guest back-chain.
+extern u8* g_ram_base;
+
 namespace {
+
+// ── Oracle GX-draw ATTRIBUTION (SUNBRIGHT_GX_ATTRIB) ──────────────────────────────────────────────
+// The oracle runs the real game under Dolphin JIT, so a captured GX draw (e.g. the pass3 reflective
+// sea) has no obvious source function. Fix: at every gather-pipe flush, snapshot (byte-offset, guest
+// pc, guest sp). At the frame boundary, for the sea-signature draw, find the flush that wrote its
+// primitive and walk the guest back-chain (r1 → saved LR) to NAME the drawing function + its callers.
+// The back-chain is real guest stack state, valid under JIT regardless of pc precision.
+struct FlushMark { std::size_t off; unsigned pc; unsigned sp; };
+std::vector<FlushMark> g_flush_marks;
+
+bool attrib_enabled() {
+    static int v = -1;
+    if (v < 0) { const char* p = getenv("SUNBRIGHT_GX_ATTRIB"); v = (p && p[0] && p[0] != '0') ? 1 : 0; }
+    return v == 1;
+}
+
+// addr → "name+0xNN" from reference/sms_gmse01_funcs.txt (same map the probe /fn uses).
+std::string attrib_sym(unsigned a) {
+    static std::vector<std::pair<unsigned, std::string>> t;
+    static bool loaded = false;
+    if (!loaded) {
+        loaded = true;
+        const char* path = getenv("SUNBRIGHT_SYMBOLS");
+        std::ifstream f(path ? path : "reference/sms_gmse01_funcs.txt");
+        std::string line;
+        while (std::getline(f, line)) {
+            char* end = nullptr;
+            unsigned long addr = strtoul(line.c_str(), &end, 16);
+            if (end == line.c_str() || !end) continue;
+            while (*end == ' ' || *end == '\t') end++;
+            if (addr) t.emplace_back((unsigned)addr, std::string(end));
+        }
+        std::sort(t.begin(), t.end());
+    }
+    if (t.empty() || a < t.front().first) { char b[16]; snprintf(b, sizeof b, "%08x", a); return b; }
+    auto it = std::upper_bound(t.begin(), t.end(), a,
+        [](unsigned v, const std::pair<unsigned, std::string>& p){ return v < p.first; });
+    --it;
+    char b[256]; snprintf(b, sizeof b, "%s+0x%x", it->second.c_str(), a - it->first);
+    return b;
+}
+
+unsigned attrib_r32(unsigned a) {   // big-endian guest word via g_ram_base
+    if (!g_ram_base || a < 0x80000000u) return 0;
+    const u8* p = g_ram_base + (a & 0x01FFFFFFu);
+    return ((unsigned)p[0] << 24) | ((unsigned)p[1] << 16) | ((unsigned)p[2] << 8) | p[3];
+}
 
 // Whole-frame gather-pipe bytes (big-endian, FIFO order). Filled by sb_gather_flush_impl on the
 // CPU/PowerPC thread; consumed + cleared at the GXCopyDisp boundary on the same thread (the gather
@@ -76,6 +136,12 @@ bool dbg() {
 extern "C" void sb_gather_flush_impl(const u8* bytes, std::size_t n) {
     if (!enabled() || !bytes || !n) return;
     if (g_cap.size() + n > kCap) g_cap.clear();   // never seen a boundary — drop, don't OOM
+#ifdef HAVE_DOLPHIN_MEMMAP
+    if (attrib_enabled() && gx_dbg_window()) {
+        auto& ppc = Core::System::GetInstance().GetPPCState();
+        g_flush_marks.push_back({ g_cap.size(), ppc.pc, ppc.gpr[1] });
+    }
+#endif
     g_cap.insert(g_cap.end(), bytes, bytes + n);
 }
 
@@ -237,6 +303,38 @@ extern "C" void sb_gx_capture_frame_boundary() {
                         (int)((t.tevreg_bg[r] & 0x7FF)), (int)((t.tevreg_bg[r] >> 12) & 0x7FF));
         }
     }
+#ifdef HAVE_DOLPHIN_MEMMAP
+    // ATTRIBUTION: name the source function of each SRCALPHA/SRCCLR draw (the reflective-sea signature).
+    // For each such draw, find the gather flush that wrote its primitive (largest mark off ≤ draw.offset)
+    // and walk the guest back-chain from that flush's SP → names the object's draw method + callers.
+    if (attrib_enabled() && gx_dbg_window() && !fi.draws.empty()) {
+        unsigned seen_sp[64]; int nseen = 0;
+        for (size_t i = 0; i < fi.draws.size(); ++i) {
+            const auto& d = fi.draws[i];
+            if (!(d.blend_enable && d.src == 4 && d.dst == 2 && d.proj_type == 0)) continue;  // persp sea sig
+            // nearest flush mark at or before this primitive's stream offset
+            const FlushMark* best = nullptr;
+            for (const auto& m : g_flush_marks) {
+                if (m.off <= d.offset && (!best || m.off > best->off)) best = &m;
+            }
+            if (!best) continue;
+            bool dup = false; for (int k = 0; k < nseen; ++k) if (seen_sp[k] == best->sp) { dup = true; break; }
+            if (dup) continue; if (nseen < 64) seen_sp[nseen++] = best->sp;
+            fprintf(stderr, "[gxattrib] frame %ld draw#%zu tev=%u verts=%u off=%u pc=%08x %s | sp=%08x\n",
+                    g_frame_no, i, d.numtevstages, d.prims, d.offset, best->pc,
+                    attrib_sym(best->pc).c_str(), best->sp);
+            unsigned fp = best->sp;
+            for (int fr = 0; fr < 16 && fp >= 0x80000000u && fp < 0x81800000u; fr++) {
+                unsigned lr = attrib_r32(fp + 4);
+                fprintf(stderr, "    [%2d] lr=%08x  %s\n", fr, lr, attrib_sym(lr).c_str());
+                unsigned nx = attrib_r32(fp);
+                if (nx <= fp || nx < 0x80000000u || nx >= 0x81800000u) break;
+                fp = nx;
+            }
+        }
+    }
+    g_flush_marks.clear();
+#endif
     std::fflush(f);
     g_frame_no++;
     g_emitted++;
