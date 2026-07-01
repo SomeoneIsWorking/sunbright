@@ -73,8 +73,7 @@ void TBathWaterManager::load(JSUMemoryInputStream&) {}
 // TMapObjBall: key = receiveMessage (first explicit virtual)
 BOOL TMapObjBall::receiveMessage(THitActor*, u32) { return 0; }
 
-// TResetFruit: key = perform (first explicit virtual)
-void TResetFruit::perform(u32, JDrama::TGraphics*) {}
+// TResetFruit::perform lives natively in reference/sms/src/MoveBG/MapObjBall.cpp — no stub.
 
 // TRandomFruit: key = initMapObj (first and only explicit virtual)
 void TRandomFruit::initMapObj() {}
