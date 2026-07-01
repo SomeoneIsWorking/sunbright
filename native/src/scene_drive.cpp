@@ -409,9 +409,16 @@ void drive_hud() {
 // PERSPECTIVE projection active at GXBegin (initDraw only loads the view pos-matrix). Driven in
 // BOTH the OWN_GXLIST and hand-driven paths (the imm capture accumulates independent of the J3D
 // scene lock). ON by default; SB_NO_WAVE opts out.
+extern "C" int sb_boot_wave_begin();   // sms_boot_j3d_capture.cpp — once-per-present gate
 void drive_wave() {
 	if (const char* e = getenv("SB_NO_WAVE"); e && e[0] && e[0] != '0') return;
 	if (!gpMapObjWave) return;
+	// Draw the wave EXACTLY once per present interval. drive_wave runs on every direct(), which under
+	// TURBO fires several times per shown frame; the imm buffer accumulates across the interval (it
+	// only clears on the first GXBegin after a present drains), so an ungated wave triple-appended its
+	// 1352-vert grid -> scene-vert overdraw (native 3900 imm vs oracle 1352). The gate matches the
+	// game's once-per-VI draw. Value-verified: TMapObjWave::draw oracle imm = 1352 (26 strips × 52).
+	if (!sb_boot_wave_begin()) return;
 	// initDraw loads j3dSys.getViewMtx() as the pos matrix, but under OWN_GXLIST the scene's own
 	// perform(0x8) (which normally copies g.mViewMtx -> j3dSys) has not run when we get here, so
 	// j3dSys.mViewMtx is stale. Install the live camera view (computed above) exactly as

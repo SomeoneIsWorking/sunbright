@@ -46,7 +46,7 @@ public:
             (u8)blend.blend_enable.Value(), (u8)blend.subtract.Value(),
             (u8)blend.logic_op_enable.Value(), (u8)blend.logic_mode.Value(),
             (u8)blend.color_update.Value(), (u8)blend.alpha_update.Value(),
-            nstages, (u8)((out->proj_type == 1) ? 1 : 0), prims});
+            nstages, (u8)((out->proj_type == 1) ? 1 : 0), prims, (u8)(dl_depth == 0 ? 1 : 0)});
         if (record_tev) {
             GxFrameInfo::TevSnap s{}; s.nstages = nstages;
             std::memcpy(s.color_env, color_env, sizeof color_env);
@@ -148,13 +148,30 @@ public:
         if (covers(0x100e, 1)) out->chan0_ctrl = be_u32(data, (int)(0x100e - lo));
     }
     OPCODE_CALLBACK(void OnIndexedLoad(CPArray, u32, u16, u8)) {}
-    OPCODE_CALLBACK(void OnPrimitiveCommand(OpcodeDecoder::Primitive, u8, u32, u16 num_vertices, const u8*)) {
+    OPCODE_CALLBACK(void OnPrimitiveCommand(OpcodeDecoder::Primitive prim, u8, u32, u16 num_vertices, const u8*)) {
         out->prims++;
         // Bucket by the active projection type (the cross-engine pass discriminator). proj_type is
         // updated the moment SETPROJECTION is decoded (OnXF), so it holds the pass this draw belongs to.
         const int pass = (out->proj_type == 1) ? 1 : 0;   // 1 = ortho (HUD), else perspective (scene)
         out->prims_pass[pass]++;
         out->verts_pass[pass] += num_vertices;
+        if (dl_depth == 0) out->imm_verts_pass[pass] += num_vertices;   // top-level = immediate-mode
+        // TRIANGLE count — the triangulation-invariant geometry metric. num_vertices counts the RAW
+        // GX primitive verts (a 52-vert strip is 52), but native's parity nverts counts POST-
+        // triangulation list verts (that strip → 50 tris → 150), so the raw-vs-list vert comparison is
+        // confounded (the "wave overdraw" 3900 vs 1352 was exactly this). Triangles are comparable.
+        {
+            u32 t = 0;
+            switch (prim) {
+                case OpcodeDecoder::Primitive::GX_DRAW_QUADS:
+                case OpcodeDecoder::Primitive::GX_DRAW_QUADS_2:      t = num_vertices / 4 * 2; break;
+                case OpcodeDecoder::Primitive::GX_DRAW_TRIANGLES:    t = num_vertices / 3; break;
+                case OpcodeDecoder::Primitive::GX_DRAW_TRIANGLE_STRIP:
+                case OpcodeDecoder::Primitive::GX_DRAW_TRIANGLE_FAN: t = num_vertices >= 2 ? num_vertices - 2 : 0; break;
+                default: t = 0; break;   // lines/points draw no triangles
+            }
+            out->tris_pass[pass] += t;
+        }
         // Latch the ambient the GPU uses for THIS pass's draws (the first draw of the pass sets it;
         // the scene's CLOF materials never re-set ambient, so the pass's opening value is definitive).
         if (!out->amb_pass_set[pass]) {

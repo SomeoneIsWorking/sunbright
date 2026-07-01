@@ -57,8 +57,11 @@ inline void sb_parity_emit(std::FILE* f, int frame, const float clear[4],
                            const uint8_t* fb, int fbw, int fbh,
                            const char* pass = "scene") {
     if (!f) return;
-    std::fprintf(f, "{\"frame\":%d,\"pass\":\"%s\",\"clear\":[%.3f,%.3f,%.3f,%.3f],\"nverts\":%d,\"nbatch\":%d",
-                 frame, pass, clear[0], clear[1], clear[2], clear[3], nverts, nbatch);
+    // native g_verts is a TRIANGLE LIST (verts in triples), so triangles = nverts/3. This is the
+    // triangulation-invariant metric comparable to the oracle's "tris" (strips/fans/quads reduced to
+    // triangles) — the reliable geometry-parity number, unlike raw-vs-list vert counts.
+    std::fprintf(f, "{\"frame\":%d,\"pass\":\"%s\",\"clear\":[%.3f,%.3f,%.3f,%.3f],\"nverts\":%d,\"tris\":%d,\"nbatch\":%d",
+                 frame, pass, clear[0], clear[1], clear[2], clear[3], nverts, nverts / 3, nbatch);
 
     // Projection + viewport (exact cross-engine game state).
     std::fprintf(f, ",\"projType\":%d,\"proj\":[%.5f,%.5f,%.5f,%.5f,%.5f,%.5f],\"vp\":[%.1f,%.1f,%.1f,%.1f,%.4f,%.4f]",

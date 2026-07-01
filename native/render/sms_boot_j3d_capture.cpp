@@ -217,6 +217,13 @@ std::unordered_set<const void*> g_efb_dest_seen;
 // Capture-once-per-present lock (see sb_boot_capture_begin_scene / _end_scene below).
 bool g_locked = false;          // when true, sb_boot_capture_j3d/sphere skip (interval already done)
 bool g_want_capture = true;     // re-armed by the present consuming the buffer
+// Immediate-mode (gx_imm) draws — the TMapObjWave sea grid — are NOT gated by the g_locked J3D
+// capture lock: they append to the shared imm buffer on EVERY drive_scene, which under TURBO fires
+// several times per present, so the wave (1352 verts) accumulated 2-3× -> a scene-vert OVERDRAW vs
+// the oracle (native 3900 imm vs oracle 1352). This latch runs the imm-wave draw EXACTLY once per
+// present interval (re-armed at present drain, like g_want_capture), so it matches the game's
+// once-per-VI draw. See scene_drive.cpp drive_wave().
+bool g_wave_want = true;
 J3DMaterial* g_last_mat = nullptr;   // for consecutive-shape batch merging within a frame
 // SB_CAP_COUNT diagnostic: per-present shape/triangle accounting (reset in begin_scene, dumped in
 // end_scene) — measures whether the gameplay scene over-emits (the ~6M-vert OOM-ceiling question).
@@ -1098,6 +1105,16 @@ extern "C" int sb_boot_capture_begin_scene() {
     return 1;
 }
 
+// Once-per-present gate for the immediate-mode wave (drive_wave). Returns 1 on the first call of a
+// present interval (draw the wave now), 0 afterwards (skip — already appended). Re-armed at present
+// drain (sb_boot_capture_tev_take). Independent of the J3D capture lock so it works in BOTH the
+// OWN_GXLIST and hand-driven paths. Prevents the TURBO multi-direct() wave-accumulation overdraw.
+extern "C" int sb_boot_wave_begin() {
+    if (!g_wave_want) return 0;
+    g_wave_want = false;
+    return 1;
+}
+
 // SB_OWN_GXLIST: TMarDirector::direct stamps the current perform-list index before each list runs
 // (1=unk40, 2=unk38, 3=unk3C, 4=mPerformListGX, 5=Silhouette, 6=mPerformListGXPost) so every batch
 // captured carries its source pass. Reset to 0 in end_scene.
@@ -1216,5 +1233,6 @@ int sb_boot_capture_tev_take(const NvkTevVertex** verts,
     int n = (int)g_verts.size();
     g_consumed = true;
     g_want_capture = true;   // re-arm: the next drive_scene captures a fresh frame for this present
+    g_wave_want = true;      // re-arm the imm-wave once-per-present gate (see drive_wave)
     return n;
 }

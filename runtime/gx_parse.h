@@ -57,6 +57,7 @@ struct GxFrameInfo {
         u8  numtevstages;    // BPMEM_GENMODE.numtevstages + 1 (live)
         u8  proj_type;       // 0 perspective / 1 ortho at draw time
         u32 prims;           // num_vertices of this primitive (0 if a DL header record)
+        u8  immediate;       // 1 = top-level in-FIFO GXBegin (dl_depth==0); 0 = inside a display list
     };
     std::vector<DrawRec> draws;
 
@@ -91,6 +92,15 @@ struct GxFrameInfo {
     // active pass so the SCENE bucket carries the ambient the GPU actually used for the 3D scene.
     float amb_pass[2][3] = {{0,0,0},{0,0,0}};
     bool  amb_pass_set[2] = {false, false};
+    // Immediate-mode (in-FIFO GXBegin) vertex count per pass, split from display-list verts. The
+    // map/scene geometry issues via GX_CMD_CALL_DL (display lists); TMapObjWave's sea grid draws via
+    // raw immediate-mode GXBegin. So imm_verts_pass[scene] isolates the wave-class draw in the oracle —
+    // the definitive test of whether the oracle draws a separate immediate sea overlay at all.
+    u32 imm_verts_pass[2] = {0, 0};
+    // Triangle count per pass — the triangulation-invariant geometry metric (strips/fans/quads all
+    // reduced to triangles). Comparable to native's g_verts.size()/3, unlike the raw-vs-list vert
+    // counts. This is the RELIABLE cross-engine geometry-parity number.
+    u32 tris_pass[2] = {0, 0};
 
     bool ok = false;                         // parsed exactly to the end, no unknowns
     // failure forensics

@@ -231,8 +231,8 @@ extern "C" void sb_gx_capture_frame_boundary() {
         const float ax = ap ? fi.amb_pass[pass][0] : fi.amb[0];
         const float ay = ap ? fi.amb_pass[pass][1] : fi.amb[1];
         const float az = ap ? fi.amb_pass[pass][2] : fi.amb[2];
-        std::fprintf(f, "]},\"amb\":[%.3f,%.3f,%.3f],\"matc\":[%.3f,%.3f,%.3f,%.3f]}\n",
-                     ax, ay, az, fi.matc[0], fi.matc[1], fi.matc[2], fi.matc[3]);
+        std::fprintf(f, "]},\"amb\":[%.3f,%.3f,%.3f],\"matc\":[%.3f,%.3f,%.3f,%.3f],\"imm_verts\":%u,\"tris\":%u}\n",
+                     ax, ay, az, fi.matc[0], fi.matc[1], fi.matc[2], fi.matc[3], fi.imm_verts_pass[pass], fi.tris_pass[pass]);
     }
     // RENDER-TARGET STRUCTURE oracle (SUNBRIGHT_DBG_GXCOPY): print the in-order EFB-copy sequence for
     // the first geometry frames. Each intra-frame copy with to_xfb=0 is an EFB→TEXTURE snapshot — a
@@ -316,9 +316,15 @@ extern "C" void sb_gx_capture_frame_boundary() {
     // and walk the guest back-chain from that flush's SP → names the object's draw method + callers.
     if (attrib_enabled() && gx_dbg_window() && !fi.draws.empty()) {
         unsigned seen_sp[64]; int nseen = 0;
+        // SUNBRIGHT_GX_ATTRIB_IMM: name EVERY immediate-mode (in-FIFO GXBegin) perspective/scene draw,
+        // not just the sea-blend signature — identifies what the oracle's ~1640 imm scene verts actually
+        // are (is a 3900-vert TMapObjWave among them? the native drive_wave-overdraw question).
+        const bool imm_mode = getenv("SUNBRIGHT_GX_ATTRIB_IMM") != nullptr;
         for (size_t i = 0; i < fi.draws.size(); ++i) {
             const auto& d = fi.draws[i];
-            if (!(d.blend_enable && d.src == 4 && d.dst == 2 && d.proj_type == 0)) continue;  // persp sea sig
+            const bool sea_sig = d.blend_enable && d.src == 4 && d.dst == 2 && d.proj_type == 0;
+            const bool imm_scene = imm_mode && d.immediate && d.proj_type == 0 && d.prims > 0;
+            if (!sea_sig && !imm_scene) continue;
             // nearest flush mark at or before this primitive's stream offset
             const FlushMark* best = nullptr;
             for (const auto& m : g_flush_marks) {
