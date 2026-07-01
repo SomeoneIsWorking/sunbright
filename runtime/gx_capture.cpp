@@ -224,8 +224,15 @@ extern "C" void sb_gx_capture_frame_boundary() {
                          fi.lights[i].pos[0], fi.lights[i].pos[1], fi.lights[i].pos[2],
                          fi.lights[i].color[0], fi.lights[i].color[1], fi.lights[i].color[2]);
         }
+        // Emit the PER-PASS ambient (the ambient the GPU used for THIS pass's draws) when recorded,
+        // else fall back to the frame-global last-seen value. The scene pass's per-pass amb is the
+        // valid oracle for native's scene-draw ambient (the frame-global one is the HUD's white).
+        const bool ap = fi.amb_pass_set[pass];
+        const float ax = ap ? fi.amb_pass[pass][0] : fi.amb[0];
+        const float ay = ap ? fi.amb_pass[pass][1] : fi.amb[1];
+        const float az = ap ? fi.amb_pass[pass][2] : fi.amb[2];
         std::fprintf(f, "]},\"amb\":[%.3f,%.3f,%.3f],\"matc\":[%.3f,%.3f,%.3f,%.3f]}\n",
-                     fi.amb[0], fi.amb[1], fi.amb[2], fi.matc[0], fi.matc[1], fi.matc[2], fi.matc[3]);
+                     ax, ay, az, fi.matc[0], fi.matc[1], fi.matc[2], fi.matc[3]);
     }
     // RENDER-TARGET STRUCTURE oracle (SUNBRIGHT_DBG_GXCOPY): print the in-order EFB-copy sequence for
     // the first geometry frames. Each intra-frame copy with to_xfb=0 is an EFB→TEXTURE snapshot — a

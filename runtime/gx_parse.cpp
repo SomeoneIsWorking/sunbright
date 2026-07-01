@@ -155,6 +155,12 @@ public:
         const int pass = (out->proj_type == 1) ? 1 : 0;   // 1 = ortho (HUD), else perspective (scene)
         out->prims_pass[pass]++;
         out->verts_pass[pass] += num_vertices;
+        // Latch the ambient the GPU uses for THIS pass's draws (the first draw of the pass sets it;
+        // the scene's CLOF materials never re-set ambient, so the pass's opening value is definitive).
+        if (!out->amb_pass_set[pass]) {
+            out->amb_pass[pass][0] = out->amb[0]; out->amb_pass[pass][1] = out->amb[1];
+            out->amb_pass[pass][2] = out->amb[2]; out->amb_pass_set[pass] = true;
+        }
         record_draw(num_vertices);   // live blend/TEV value oracle (gated)
     }
     OPCODE_CALLBACK(void OnDisplayList(u32 address, u32 size)) {

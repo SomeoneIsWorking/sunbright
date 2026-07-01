@@ -85,6 +85,12 @@ struct GxFrameInfo {
     u32 prims_pass[2] = {0, 0};
     u32 verts_pass[2] = {0, 0};
     u32 dls_pass[2]   = {0, 0};
+    // Per-pass AMBIENT: the frame-global `amb` (below) is "last seen" = the frame-FINAL value (the J2D
+    // HUD sets it to white 255 AFTER the scene), so comparing it to native's scene-draw ambient is
+    // apples-to-oranges. Record the live SETCHAN0_AMBCOLOR at the moment of each primitive draw into the
+    // active pass so the SCENE bucket carries the ambient the GPU actually used for the 3D scene.
+    float amb_pass[2][3] = {{0,0,0},{0,0,0}};
+    bool  amb_pass_set[2] = {false, false};
 
     bool ok = false;                         // parsed exactly to the end, no unknowns
     // failure forensics

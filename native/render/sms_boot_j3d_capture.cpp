@@ -284,6 +284,24 @@ const MatEntry* get_mat_entry(J3DMaterial* mat, J3DTexture* modelTex) {
             }
         }
         e.ok = true;
+        // SB_AMB_DBG: one-shot per distinct material — dump lit / hasAmb / ambColor / matColor so we
+        // can tell (per the parity handoff) whether the file-select map materials carry their OWN
+        // ambient block (getAmbColor non-null) or fall back to the global GX register.
+        if (std::getenv("SB_AMB_DBG")) {
+            static std::unordered_set<uint64_t> s_seen;
+            if (s_seen.insert(e.key).second && s_seen.size() <= 64) {
+                J3DColorBlock* cb = mat->getColorBlock();
+                uint32_t ty = cb ? cb->getType() : 0;
+                J3DGXColor* ac = cb ? cb->getAmbColor(0) : nullptr;
+                std::fprintf(stderr, "[amb] key=%llx lit=%d hasAmb0=%d amb0=%u,%u,%u matc0=%u,%u,%u cc0=%04x ntex=%zu "
+                    "cb=%p ty=%c%c%c%c ac=%p acv=%u,%u,%u\n",
+                    (unsigned long long)e.key, (int)e.lit, (int)e.hasAmb[0],
+                    e.ambColor[0][0], e.ambColor[0][1], e.ambColor[0][2],
+                    e.matColor[0][0], e.matColor[0][1], e.matColor[0][2], e.chanCtrl[0], e.tex.size(),
+                    (void*)cb, (char)(ty>>24),(char)(ty>>16),(char)(ty>>8),(char)ty,
+                    (void*)ac, ac?ac->color.r:0, ac?ac->color.g:0, ac?ac->color.b:0);
+            }
+        }
         // Capture the GX texgen block: per texgen slot, the type/src/mtx-sel + the material's OWN
         // mTotalMtx (@J3DTexMtx+0x64 — the matrix J3D bakes into the per-frame DL replay; animated
         // materials re-patch it each frame, so it is exactly what the GPU uses). Applied per-vertex
