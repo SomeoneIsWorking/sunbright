@@ -99,6 +99,9 @@ TGenerator::TGenerator(const char* name)
 
 TOneShotGenerator::TOneShotGenerator(const char* name)
     : THitActor(name)
+    , mSpawnKey2(nullptr)
+    , unk6C(0)
+    , mSpawnKey1(nullptr)
 {
 }
 

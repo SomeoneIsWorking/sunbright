@@ -44,8 +44,7 @@ TSimpleEffect::TSimpleEffect(const char* name)
 // TGenerator: key = load (first explicit virtual)
 void TGenerator::load(JSUMemoryInputStream&) {}
 
-// TOneShotGenerator: key = load (first explicit virtual)
-void TOneShotGenerator::load(JSUMemoryInputStream&) {}
+// TOneShotGenerator::load lives natively in reference/sms/src/Enemy/Generator.cpp.
 
 // ============================================================
 // === Map/BathWaterManager.hpp ===

@@ -138,7 +138,6 @@ void TMareCork::calcRootMatrix() {}
 void TMareCork::drawObject(JDrama::TGraphics*) {}
 MtxPtr TMareCork::getTakingMtx() { return {}; }
 void TMareCork::moveObject() {}
-void TMareEventPoint::load(JSUMemoryInputStream&) {}
 void TMareFall::load(JSUMemoryInputStream&) {}
 void TMerrygoround::draw() const {}
 void TMerrygoround::initMapObj() {}
