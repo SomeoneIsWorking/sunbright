@@ -232,6 +232,18 @@ const MatEntry* get_mat_entry(J3DMaterial* mat, J3DTexture* modelTex) {
     if (sb_build_tev_state(mat, st)) {
         e.frag = sb_tev_gen_fragment(st);
         e.key  = fnv64(e.frag.c_str());
+        if ((unsigned)(e.key >> 32) == 0xeb5c8e74u) {   // b76 sea: dump raw per-stage TEV envs (one-shot)
+            J3DTevBlock* tb2 = mat->getTevBlock();
+            std::fprintf(stderr, "[b76-tev] num_stages=%u tbStageNum=%d\n",
+                         st.num_stages, tb2 ? tb2->getTevStageNum() : -1);
+            for (int s = 0; s < st.num_stages && s < 8; ++s) {
+                const uint8_t* sb2 = tb2 ? reinterpret_cast<const uint8_t*>(tb2->getTevStage(s)) : nullptr;
+                std::fprintf(stderr, "[b76-tev] s%d ce=%06x ae=%06x bytes=%02x %02x %02x %02x %02x %02x %02x %02x\n",
+                             s, st.stage[s].color_env, st.stage[s].alpha_env,
+                             sb2?sb2[0]:0, sb2?sb2[1]:0, sb2?sb2[2]:0, sb2?sb2[3]:0,
+                             sb2?sb2[4]:0, sb2?sb2[5]:0, sb2?sb2[6]:0, sb2?sb2[7]:0);
+            }
+        }
         for (int c = 0; c < 4; ++c) for (int k = 0; k < 4; ++k) {
             e.push.kcolor[c][k] = st.kcolor[c][k];
             e.push.tevreg[c][k] = st.tev_color[c][k];
@@ -669,6 +681,19 @@ extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
         L.distA[0]=lraw[i][13];L.distA[1]=lraw[i][14];L.distA[2]=lraw[i][15];
     }
     const bool do_light = me->lit && nlights > 0;
+    if ((unsigned)(me->key >> 32) == 0xeb5c8e74u) {   // b76 sea-reflection raster probe (one-shot)
+        static int s_b76 = 0;
+        if (s_b76 < 3 && sb_camera_view_settled()) { ++s_b76;
+            std::fprintf(stderr, "[b76-ras] lit=%d do_light=%d nlights=%d matSrcVtx0=%d matColor0=%u,%u,%u,%u "
+                         "ambColor0=%u,%u,%u chanCtrl0=%04x\n",
+                         (int)me->lit, (int)do_light, nlights, (int)me->matSrcVtx[0],
+                         me->matColor[0][0], me->matColor[0][1], me->matColor[0][2], me->matColor[0][3],
+                         me->ambColor[0][0], me->ambColor[0][1], me->ambColor[0][2], me->chanCtrl[0]);
+            if (!verts.empty())
+                std::fprintf(stderr, "[b76-ras] vtxClr0[0]=%u,%u,%u,%u  L0(valid=%d c=%.2f,%.2f,%.2f)\n",
+                             verts[0].clr[0][0], verts[0].clr[0][1], verts[0].clr[0][2], verts[0].clr[0][3],
+                             (int)lsrc[0].valid, lsrc[0].color[0], lsrc[0].color[1], lsrc[0].color[2]); }
+    }
     if (dbg_enabled()) {
         static int s_ld = 0;
         if (s_ld < 8) { ++s_ld;

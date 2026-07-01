@@ -600,13 +600,26 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
             // SUNBRIGHT_DBG_GXBLEND) — diff the two for the post-pass composite (b76 = the file-select
             // overbright). A near-white konst/tevreg fed to a SRCALPHA/SRCCLR blend over a dark texture
             // is the over-bright signature.
-            std::fprintf(stderr, "[batchtev] b%d cU=%u aU=%u k0=%d,%d,%d,%d k1=%d,%d,%d,%d r0=%d,%d,%d,%d r1=%d,%d,%d,%d efb=%p/%p\n",
+            // Decoded-texture mean RGBA per slot (the DECISIVE datum for the b76 wash: is the sea
+            // reflection texture native decodes actually near-white?). Mean over the whole tex.
+            auto texmean = [](const sb::render::NvkTevBatch::Tex& t, int out[4]){
+                out[0]=out[1]=out[2]=out[3]=-1;
+                if (!t.rgba || !t.w || !t.h) return;
+                unsigned long long s0=0,s1=0,s2=0,s3=0; const uint8_t* p=t.rgba;
+                size_t n=(size_t)t.w*t.h; for (size_t i=0;i<n;++i){ s0+=p[i*4];s1+=p[i*4+1];s2+=p[i*4+2];s3+=p[i*4+3]; }
+                out[0]=(int)(s0/n); out[1]=(int)(s1/n); out[2]=(int)(s2/n); out[3]=(int)(s3/n);
+            };
+            int tm0[4], tm1[4]; texmean(b.tex[0], tm0); texmean(b.tex[1], tm1);
+            if ((unsigned)(b.shaderKey >> 32) == 0xeb5c8e74u && b.fragGlsl)
+                std::fprintf(stderr, "[b76-glsl]\n%s\n[/b76-glsl]\n", b.fragGlsl);
+            std::fprintf(stderr, "[batchtev] b%d cU=%u aU=%u k0=%d,%d,%d,%d k1=%d,%d,%d,%d r0=%d,%d,%d,%d r1=%d,%d,%d,%d efb=%p/%p texmean0=%d,%d,%d,%d texmean1=%d,%d,%d,%d\n",
                          bi, b.color_update, b.alpha_update,
                          b.push.kcolor[0][0],b.push.kcolor[0][1],b.push.kcolor[0][2],b.push.kcolor[0][3],
                          b.push.kcolor[1][0],b.push.kcolor[1][1],b.push.kcolor[1][2],b.push.kcolor[1][3],
                          b.push.tevreg[0][0],b.push.tevreg[0][1],b.push.tevreg[0][2],b.push.tevreg[0][3],
                          b.push.tevreg[1][0],b.push.tevreg[1][1],b.push.tevreg[1][2],b.push.tevreg[1][3],
-                         b.tex[0].efb_src, b.tex[1].efb_src);
+                         b.tex[0].efb_src, b.tex[1].efb_src,
+                         tm0[0],tm0[1],tm0[2],tm0[3], tm1[0],tm1[1],tm1[2],tm1[3]);
             std::fprintf(stderr, "[batchbuf] b%d drawbuf=\"%s\"\n", bi, b.dbgName ? b.dbgName : "(none)");
             // Dump the generated TEV fragment shader for the composite batches (dst_factor SRCCLR/
             // INVSRCCLR — the over-bright class) so the combiner that produces `src` is inspectable.

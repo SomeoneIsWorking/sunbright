@@ -1008,3 +1008,43 @@ directly to the visible FB → the sea is double-drawn (ph1 model A + ph6 model 
 3. Make ph1 (unk40/drawBufferGroup) render OFF-SCREEN (to the screen texture), not to the visible FB, so
    the sea isn't double-drawn and the visible frame = composite3(display scene) + reflection + Chr + 2D.
 Verify each step by VALUE (fileselect_overbright.py; target ~14). Do NOT skip b76 by magic key/NDC guard.
+
+### 2026-07-01 (SESSION N+2) — MIRROR HYPOTHESIS FULLY FALSIFIED. The wash is a colorUpdate=FALSE depth pre-pass native paints as white.
+The N+1 handoff said "b76 = the sea REFLECTION sampling the unwired 256×256 MIRROR EFB; wire the mirror".
+**That is WRONG — disproven by direct per-batch measurement this session.** New diagnostics added (all gated,
+kept as tooling): `texmean0/1` on the batchtev line (mean DECODED texture RGBA per slot), a one-shot
+`[b76-glsl]` dump of b76's generated combiner, `[b76-ras]` (lit/matSrc/matColor/vtxClr/light), and
+`[b76-tev]` (raw per-stage color_env/alpha_env + the 8 J3DTevStage bytes + num_stages).
+
+**MEASURED at settled file-select (SB_BATCH_DBG=-1, SB_OWN_GXLIST):**
+- b76/b12 (key eb5c8e74, THE wash) texmean0=**9,9,9,9** texmean1=**9,9,9,9** — its two textures decode to
+  near-**BLACK**, NOT white. `efb=(nil)/(nil)` — b76 is **NOT an EFB sampler**. The journal's "native
+  decodes stale RAM → flat 0.87 white; wire the mirror" is FALSE: the 0.87 was the VERTEX colour, and no
+  mirror texmap is involved. The real EFB/screen-copy samplers are the SEPARATE batches b27/b28/b45/b46
+  (`efb=…/0x…3cda0`, the 320×224 screen texture = composite3), and they are ALREADY correctly wired.
+- b76 is a LIT sea-reflection material: matColor=white, ambient=black, 1 white light, diffuse=CLAMP →
+  native lit raster ≈ **0.87**. Combiner (RAW envs, faithfully captured, 3 stages): s1 color = `2×raster`
+  → clamps to **white**; s1 alpha D=RASA=255 → alpha **≈1.0**. Blend SRCALPHA/SRCCLR → `white*1 + dst*white`
+  = full-screen white multiply. Native's combiner + blend are **FAITHFUL** (verified below).
+- **ORACLE match (scratch/passes/oracle_gxdbg.log, SUNBRIGHT_DBG_GXAT=300):** native's b76 (tev=**3**,
+  ~15 huge grazing verts, SRCALPHA/SRCCLR) matches the oracle's **`pass2 SRCALPHA/SRCCLR tev=3 [noC][noA]`
+  (11 verts)** — a draw with **colorUpdate=FALSE AND alphaUpdate=FALSE**: on GC it writes only Z (a depth/
+  mask pre-pass), painting NOTHING to colour. (The oracle's pass3 tev=**2** 52-vert×26=1352 SRCALPHA/SRCCLR
+  is a DIFFERENT draw — the actual finely-tessellated coloured sea — not native's b76.)
+
+⇒ **ROOT CAUSE (measured, supersedes ALL prior overbright hypotheses incl. mirror-EFB, ph6-transform,
+multi-layer-blend):** native draws the sea's **depth-only pre-pass** (b12 ph1 / b76 ph6, eb5c8e74) with
+**colorUpdate=TRUE**, but GC draws it with **GXSetColorUpdate(GX_FALSE)** so it writes no colour. Native's
+near-white combiner output then paints the full-screen wash; on GC that same draw is invisible. The
+fix is to capture colorUpdate=FALSE for this draw. `fill_batch_material` ALREADY reads the LIVE
+colorUpdate (`sb_gx_get_color_alpha_update`) — but it returns TRUE at b12/b76's capture time. The open
+question (drill SB_B76_DBG / SB_COLUPD_BT running): WHY is live colorUpdate TRUE — either the
+GXSetColorUpdate(GX_FALSE) caller for this pass doesn't run under SB_OWN_GXLIST, or the capture reads
+colorUpdate at the wrong point relative to the perform-list draw (a TRUE restore ran in between).
+GXSetColorUpdate(GX_FALSE) callers of interest: JDREfbCtrl.cpp:11 `GXSetColorUpdate(!unk20.check(0x100))`,
+JDREfbSetting.cpp:53, ModelWaterManager (many), MarioDraw.cpp:2319.
+
+DEAD ENDS confirmed this session (do NOT re-chase): wire b76's "mirror" texmap (it has none; textures are
+black assets, efb=nil); ph6 transform; lighting-as-the-cause (the lit 0.87 only matters because the draw
+shouldn't write colour at all); per-vertex NDC guard; skip-by-magic-key. The whole "off-screen composite +
+mirror snapshot" plan is UNNECESSARY for the overbright — it's one wrong colorUpdate bit.
