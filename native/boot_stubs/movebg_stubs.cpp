@@ -178,7 +178,22 @@ TMammaBlockRotate::TMammaBlockRotate(const char* name) : TMapObjBase(name) {}
 // TMammaMirrorMapOperator
 // ============================================================
 TMammaMirrorMapOperator::TMammaMirrorMapOperator(const char* name)
-    : JDrama::TViewObj(name) {}
+    : JDrama::TViewObj(name)
+{
+	// The 8 per-node arrays are populated by loadAfter (native port in MapObjMamma.cpp);
+	// perform runs first-and-only-time in gpMSMirror.mCurrentIdx==-1 mode which forces all
+	// visibility flags to 1 anyway, but zeroing them here means a perform-before-loadAfter
+	// call (or a scene without a mirror-terrain resource) can't read uninitialized garbage.
+	for (int i = 0; i < 8; ++i) {
+		mNodes[i] = nullptr;
+		mNodeCenter[i].setAll(0.0f);
+		mNodeRadius[i] = 0.0f;
+		mNodeVisible[i] = 0;
+	}
+	mMirrorSPos.setAll(0.0f);
+	mMirrorMPos.setAll(0.0f);
+	mMirrorLPos.setAll(0.0f);
+}
 
 // ============================================================
 // TMammaYacht

@@ -96,7 +96,6 @@ void TLeanMirror::touchPlayer(THitActor*) {}
 void TMammaBlockRotate::control() {}
 void TMammaBlockRotate::initMapObj() {}
 void TMammaBlockRotate::load(JSUMemoryInputStream&) {}
-void TMammaMirrorMapOperator::loadAfter() {}
 void TMammaYacht::initMapObj() {}
 void TManhole::appeared() {}
 void TManhole::calc() {}
