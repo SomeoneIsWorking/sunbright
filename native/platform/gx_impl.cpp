@@ -136,7 +136,10 @@ long g_colupd_last_false = -1;   // call index of the last GXSetColorUpdate(GX_F
 // Ring of the last 16 GXSetColorUpdate values (b76 drill: see what restores cU=TRUE before the mask draw).
 unsigned char g_colupd_ring[16] = {0};
 int           g_colupd_ring_pos = 0;
-extern "C" int sb_boot_capture_phase();
+// WEAK: only defined inside the sms-boot executable (native/render/sms_boot_j3d_capture.cpp) —
+// a test target that links this file without the render-capture pipeline (e.g. sms-j3dload_test)
+// must still link cleanly. Safe: every call site below is gated behind a getenv() debug flag.
+extern "C" int sb_boot_capture_phase() __attribute__((weak));
 extern "C" int sb_present_frame();
 void GXSetColorUpdate(GXBool enable) {
     ++g_colupd_calls;
