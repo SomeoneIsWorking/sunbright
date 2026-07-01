@@ -101,6 +101,13 @@ struct GxFrameInfo {
     // reduced to triangles). Comparable to native's g_verts.size()/3, unlike the raw-vs-list vert
     // counts. This is the RELIABLE cross-engine geometry-parity number.
     u32 tris_pass[2] = {0, 0};
+    // Triangles per EFB-copy pass (efb_pass index). GC renders across multiple EFB targets — the main
+    // scene renders off-screen, then a display/GXPost pass RE-DRAWS/composites several buffers. Those
+    // re-draws inflate the whole-frame triangle count, so native (a single-target flat compositor that
+    // does NOT re-draw) reads as an "under-draw" vs the oracle TOTAL. Splitting by efb_pass isolates
+    // the MAIN scene pass (efb 0) — the geometry native should actually match — from the composite.
+    u32 tris_efb[8] = {0,0,0,0,0,0,0,0};
+    u32 max_efb_pass = 0;
 
     bool ok = false;                         // parsed exactly to the end, no unknowns
     // failure forensics

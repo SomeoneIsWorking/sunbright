@@ -532,7 +532,7 @@ extern "C" bool sb_boot_drive_scene() {
 		static int n = 0; if (n < 1 && sb_present_frame() > 250) { ++n; sb_indirect_probe(); }
 	}
 	if (const char* e = getenv("SB_DRAWBUF_INV"); e && e[0] && e[0] != '0') {
-		static int n = 0; if (n < 1 && sb_present_frame() > 250) { ++n; sb_drawbuf_inventory(); }
+		static int n = 0; if (n < 1 && sb_camera_view_settled()) { ++n; sb_drawbuf_inventory(); }
 	}
 	// SB_NO_DRIVE_SCENE=1: bisection gate — skip the entire native scene drive so the
 	// only draw path is the real GC perform list. Used to attribute draw-buffer cycles.

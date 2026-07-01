@@ -52,6 +52,7 @@
 #include <vector>
 #include <unordered_map>
 #include <unordered_set>
+#include <map>
 
 using namespace sb::render;
 
@@ -1198,6 +1199,19 @@ extern "C" void sb_boot_capture_end_scene() {
         std::fprintf(stderr, "[capcount]   by-phase tris:");
         for (int p = 0; p < 8; ++p) if (ph_v[p]) std::fprintf(stderr, " ph%d=%ld(%ldb)", p, ph_v[p]/3, ph_b[p]);
         std::fprintf(stderr, "\n");
+        // Per-(phase, draw-buffer) triangle breakdown — names WHICH buffer/group each phase's tris come
+        // from, so a scene under-draw can be pinned to a specific buffer (MapOpa/MapXlu/半透明優先/Sky/
+        // Chr) vs the oracle. dbgName is nullptr for directly-performed TViewObjs (shown as "(direct)").
+        {
+            std::map<std::pair<int,std::string>, long> byBuf;
+            for (const auto& b : g_batches) {
+                std::string nm = b.dbgName ? b.dbgName : "(direct)";
+                byBuf[{b.phase & 7, nm}] += b.vcount;
+            }
+            for (const auto& kv : byBuf)
+                std::fprintf(stderr, "[capcount]     ph%d %-32s %ld tris\n",
+                             kv.first.first, kv.first.second.c_str(), kv.second/3);
+        }
         std::fflush(stderr);
     }
     // ORDERED per-draw GX-state dump (SB_GXDRAW) — one line per batch in draw/flush order. Mirrors

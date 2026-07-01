@@ -171,6 +171,8 @@ public:
                 default: t = 0; break;   // lines/points draw no triangles
             }
             out->tris_pass[pass] += t;
+            if (efb_pass < 8) out->tris_efb[efb_pass] += t;
+            if (efb_pass > out->max_efb_pass) out->max_efb_pass = efb_pass;
         }
         // Latch the ambient the GPU uses for THIS pass's draws (the first draw of the pass sets it;
         // the scene's CLOF materials never re-set ambient, so the pass's opening value is definitive).

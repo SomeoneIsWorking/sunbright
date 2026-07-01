@@ -27,6 +27,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <algorithm>
+#include <map>
 #include <fstream>
 #include <set>
 #include <string>
@@ -231,8 +232,15 @@ extern "C" void sb_gx_capture_frame_boundary() {
         const float ax = ap ? fi.amb_pass[pass][0] : fi.amb[0];
         const float ay = ap ? fi.amb_pass[pass][1] : fi.amb[1];
         const float az = ap ? fi.amb_pass[pass][2] : fi.amb[2];
-        std::fprintf(f, "]},\"amb\":[%.3f,%.3f,%.3f],\"matc\":[%.3f,%.3f,%.3f,%.3f],\"imm_verts\":%u,\"tris\":%u}\n",
+        std::fprintf(f, "]},\"amb\":[%.3f,%.3f,%.3f],\"matc\":[%.3f,%.3f,%.3f,%.3f],\"imm_verts\":%u,\"tris\":%u",
                      ax, ay, az, fi.matc[0], fi.matc[1], fi.matc[2], fi.matc[3], fi.imm_verts_pass[pass], fi.tris_pass[pass]);
+        if (scene) {   // whole-frame EFB-pass triangle split (scene line only): main vs composite passes
+            std::fprintf(f, ",\"tris_efb\":[");
+            for (unsigned e = 0; e <= fi.max_efb_pass && e < 8; ++e)
+                std::fprintf(f, "%s%u", e ? "," : "", fi.tris_efb[e]);
+            std::fprintf(f, "]");
+        }
+        std::fprintf(f, "}\n");
     }
     // RENDER-TARGET STRUCTURE oracle (SUNBRIGHT_DBG_GXCOPY): print the in-order EFB-copy sequence for
     // the first geometry frames. Each intra-frame copy with to_xfb=0 is an EFB→TEXTURE snapshot — a
@@ -345,6 +353,38 @@ extern "C" void sb_gx_capture_frame_boundary() {
                 fp = nx;
             }
         }
+    }
+    // SUNBRIGHT_GX_ATTRIB_SUM: aggregate RAW VERTS per source function (back-chain) across ALL
+    // perspective/scene draws this frame — names the biggest scene geometry contributors so a native
+    // under-draw can be pinned to the object the oracle draws more of. Needs SUNBRIGHT_DBG_GXDRAW
+    // (fi.draws) + SUNBRIGHT_GX_ATTRIB (flush marks) + the DBG_GXAT window.
+    if (attrib_enabled() && gx_dbg_window() && getenv("SUNBRIGHT_GX_ATTRIB_SUM") && !fi.draws.empty()) {
+        std::map<std::string, unsigned long> sumv;
+        for (size_t i = 0; i < fi.draws.size(); ++i) {
+            const auto& d = fi.draws[i];
+            if (d.proj_type != 0 || d.prims == 0) continue;   // scene (perspective) draws only
+            const FlushMark* best = nullptr;
+            for (const auto& m : g_flush_marks)
+                if (m.off <= d.offset && (!best || m.off > best->off)) best = &m;
+            std::string who = best ? attrib_sym(best->pc) : std::string("?");
+            if (best) {   // prefer the first back-chain frame naming a draw/perform (skip GX internals)
+                unsigned fp = best->sp;
+                for (int fr = 0; fr < 6 && fp >= 0x80000000u && fp < 0x81800000u; fr++) {
+                    std::string s = attrib_sym(attrib_r32(fp + 4));
+                    if (s.find("draw") != std::string::npos || s.find("Draw") != std::string::npos
+                        || s.find("perform") != std::string::npos) { who = s; break; }
+                    unsigned nx = attrib_r32(fp); if (nx <= fp) break; fp = nx;
+                }
+            }
+            sumv[who] += d.prims;
+        }
+        std::vector<std::pair<std::string,unsigned long>> v(sumv.begin(), sumv.end());
+        std::sort(v.begin(), v.end(), [](const std::pair<std::string,unsigned long>&a,
+                                         const std::pair<std::string,unsigned long>&b){ return a.second > b.second; });
+        fprintf(stderr, "[gxsum] frame %ld top scene draws by raw-verts (total scene tris=%u):\n",
+                g_frame_no, fi.tris_pass[0]);
+        for (size_t i = 0; i < v.size() && i < 16; i++)
+            fprintf(stderr, "  %8lu  %s\n", v[i].second, v[i].first.c_str());
     }
     g_flush_marks.clear();
 #endif
