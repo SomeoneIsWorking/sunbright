@@ -504,4 +504,3 @@ void TSandBomb::initMapObj() {}
 // --- TSandLeaf (vtable for TSandLeaf) ---
 // Ctor is inline in header.
 u32 TSandLeaf::touchWater(THitActor*) { return 0; }
-void TSandLeaf::control() {}
