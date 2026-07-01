@@ -1191,6 +1191,13 @@ extern "C" void sb_boot_capture_end_scene() {
                      "g_verts=%zu skipped=%ld\n",
                      n, g_present_shapes, g_present_idx, g_present_idx / 3,
                      g_verts.size(), g_present_skipped);
+        // Per-perform-list-phase triangle breakdown (1=unk40,2=unk38,3=unk3C,4=mPerformListGX,
+        // 5=Silhouette,6=GXPost). Localizes which phase is short vs the oracle's 16651 scene tris.
+        long ph_v[8] = {0}, ph_b[8] = {0};
+        for (const auto& b : g_batches) { int p = b.phase & 7; ph_v[p] += b.vcount; ph_b[p]++; }
+        std::fprintf(stderr, "[capcount]   by-phase tris:");
+        for (int p = 0; p < 8; ++p) if (ph_v[p]) std::fprintf(stderr, " ph%d=%ld(%ldb)", p, ph_v[p]/3, ph_b[p]);
+        std::fprintf(stderr, "\n");
         std::fflush(stderr);
     }
     // ORDERED per-draw GX-state dump (SB_GXDRAW) — one line per batch in draw/flush order. Mirrors
