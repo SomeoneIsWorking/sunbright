@@ -203,3 +203,34 @@ bright turquoise shimmer appears and the ph6-MapXlu stopgap can be re-evaluated.
 - `SB_MATANM_DBG` — MActor::setModel + updateMatAnm per-material unk30/unk2C/anm-ptr trace.
 - `SB_SHIMMER_DBG` (pre-existing) — confirmed TShimmer::perform never runs in file-select.
 - Defensive null-anm fail-safe in `SMS_CalcMatAnmAndMakeDL` (draws-without-anm + one-shot WARN).
+
+---
+
+## SESSION N+8 (2026-07-01) — DEFINITIVE: the reflective sea = `TMapObjWave::draw()` (via oracle GX-draw attribution). sun_mirror was a red herring.
+
+User steer: "You can place hooks in Dolphin JIT or use Dolphin Interpreter (again with hooks), these
+aren't real stoppers." → built the oracle-side attribution I'd been avoiding.
+
+**Tool: `SUNBRIGHT_GX_ATTRIB`** (runtime/gx_capture.cpp, commit 66d1fea). In the pure-JIT oracle
+(build/sunbright), snapshot (gather-byte-offset, guest pc, guest sp) at every gather-pipe flush
+(`sb_gather_flush_impl`, reading `Core::System::GetPPCState()`). At the frame boundary, for each
+SRCALPHA/SRCCLR persp draw, find the flush that wrote its primitive (largest mark offset ≤ DrawRec.offset)
+and walk the guest back-chain (r1→saved LR via `g_ram_base`) → name the drawing function from
+`reference/sms_gmse01_funcs.txt`. Driver `scratch/run_gxattrib.sh` (STAGE=15 → settled file-select,
+GXAT=300). The back-chain leaf had no saved LR yet, but the **pc alone named it precisely**.
+
+**RESULT:** `[gxattrib] frame 300 draw#2878 tev=2 verts=52 pc=801dd3a0 draw__11TMapObjWaveFv+0x184` —
+the pass3 reflective sea (26 tri-strips × 52v) is **`TMapObjWave::draw()`**. Confirmed stable across
+frames 300-303. NOT sun_mirror (N+7 red herring), NOT any draw buffer (N+6 ruled out).
+
+**The gap:** `TMapObjWave` (MoveBG/MapObjWave.cpp, "波の表現") has only getHeight/getWaveHeight ported;
+draw/perform/load/updateTime/updateHeightAndAlpha/initDraw/ctor are UNPORTED. Decompiled all of them
+(Ghidra headless → `scratch/decomp/801d{ca00,cc08,cdd8,ce60,cf04,d21c,d548,d720}.c`). draw() is a
+GXBegin(GX_TRIANGLESTRIP 0x98) grid-mesh loop writing y-height to the WPAR + per-vertex texcoords;
+initDraw() sets up 2 texgens (one PROJECTIVE = the reflection) + 2 TEV stages +
+GXSetBlendMode(BLEND,SRCALPHA,SRCCLR) + binds /scene/map/map/wave.bti via a JUTTexture.
+
+**Port plan captured in `scratch/wave_port_notes.md`** (GX FUN_→name map, member layout 0x10-0x94, SDA2
+constants r2=0x80416BA0/r13=0x804141C0, and 3 wiring gaps: projective-reflection EFB texture source,
+raw-GX capture path — draw() is not J3DShape so native's capture won't see it — and verify creation).
+NEXT SESSION: execute that port. Handoff: scratch/handoff_reflective_sea.md.
