@@ -140,6 +140,29 @@ the debugging-path rule above.
   "verify before you declare done."
 - This generalizes the TDD-renderer section below: tooling is the prerequisite, the fix is second.
 
+### ⚠️ Which verification, and WHEN — unit-test-first for ports; oracle-compare only when COMPLETE (user directive 2026-07-01)
+This does NOT weaken VERIFICATION-FIRST — it says pick the RIGHT verification for the current state,
+and it names a real failure mode that keeps recurring. **"Verification" is not one thing.** There are
+two layers and they apply at different times:
+1. **UNIT TEST from RE (spec-derived expected values) — ALWAYS ships WITH a port.** When you port a
+   function, the verification-first harness IS a unit test whose expected values you HAND-DERIVE from
+   the disassembly/decomp (what the original computes), Dolphin-free / no ROM / no GPU. Port → unit
+   test → done. This is mandatory for every ported function (see the render-test / sms_boot_setlight
+   pattern). You do NOT need a whole-system oracle to verify a single ported function.
+2. **ORACLE / whole-system parity differential (vs Dolphin-GX) — only once the subsystem is COMPLETE
+   enough to run end-to-end.** Standing up the parity/oracle comparison for a scene or subsystem that
+   still has KNOWN implementation gaps (unported stubs, a scene that doesn't even render, a screen you
+   can't reach) is the recurring TRAP: every "divergence" the oracle reports is ambiguous — missing
+   feature vs real bug — so you burn days debugging INCOMPLETENESS. **That is diagnosing why the car
+   won't start when the engine isn't installed yet.** Do NOT oracle-compare something that has
+   implementation gaps.
+**Order: IMPLEMENT the missing pieces (all the stubs, until it runs end-to-end) → UNIT-TEST each
+ported piece from RE → THEN turn on the oracle/parity comparison to catch the remaining REAL fidelity
+bugs.** If you catch yourself building an elaborate whole-system measurement/oracle harness while the
+thing it measures is still half-implemented, STOP and go finish the implementation first. The
+"build the reachability/oracle tooling first" clause above still holds for a COMPLETE, reachable
+target you merely can't observe yet — it does NOT license oracle-debugging an unfinished implementation.
+
 ## 🔁 THE "continue" PORTING LOOP (HARD RULE — user directive 2026-06-23, never deviate)
 When the user says **"continue"** / "keep going" (or you finish a unit and there's more to port), do
 NOT stop to ask "which path?" and do NOT punt the decision back to the user. Run this loop yourself
