@@ -24,6 +24,7 @@
 #include <JSystem/JDrama/JDRLighting.hpp>               // TLightMap (light probe)
 #include <JSystem/JDrama/JDRDrawBufObj.hpp>             // TDrawBufObj (sky draw buffers)
 #include <JSystem/JDrama/JDRViewObjPtrList.hpp>         // TViewObjPtrListT (indirect scene walk)
+#include <Strategic/HitActor.hpp>                       // THitActor (マップグループ children)
 #include <JSystem/J3D/J3DGraphBase/J3DSys.hpp>          // j3dSys
 #include <JSystem/J3D/J3DGraphBase/J3DDrawBuffer.hpp>   // J3DDrawBuffer
 #include <JSystem/JDrama/JDRGraphics.hpp>               // TGraphics
@@ -40,6 +41,8 @@
 #include <Enemy/Conductor.hpp>                             // gpConductor (NPC calc pass)
 #include <JSystem/J3D/J3DGraphAnimator/J3DModel.hpp>      // J3DModel / J3DModelData
 #include <JSystem/J3D/J3DGraphBase/J3DPacket.hpp>         // J3DMatPacket / J3DShapePacket
+#include <Map/Map.hpp>                                     // TMap / gpMap
+#include <Map/MapModel.hpp>                                // TMapModelManager
 #include <dolphin/mtx.h>
 #include <dolphin/gx.h>                                 // GXRenderModeObj, GXNtsc480Int
 #include "sms_boot_setlight.h"                          // sb::build_stage_lights (TLightCommon::setLight port)
@@ -48,6 +51,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <dlfcn.h>
+#include <functional>
 
 extern "C" GXRenderModeObj GXNtsc480Int;                // gx_fb_impl.cpp (640x480 NTSC mode)
 extern "C" void sb_gx_latch_proj44(const float m[16]);  // gx_impl.cpp — latch the scene perspective
@@ -535,12 +539,81 @@ static void sb_indirect_probe() {
 	dumpVtbl("スクリーンテクスチャ", scr);
 }
 
+// SB_MAP_MODEL_DBG=1: one-shot probe of gpMap's TMapModelManager — how many TOP-LEVEL joint-model
+// .bmd files the option map is built from (mJointModelNum, each independently entered/drawn by
+// TJointModelManager::perform), and per-file shape count + standing/hidden flag. If native only
+// loaded/registered a SUBSET of the real file count, that alone explains a severe scene under-draw
+// (each joint-model file is a wholly separate .bmd, not just a sub-mesh of one file).
+static void sb_map_model_probe() {
+	if (!gpMap) { std::fprintf(stderr, "[map-model-dbg] gpMap = NULL\n"); return; }
+	TMapModelManager* mgr = gpMap->getModelManager();
+	if (!mgr) { std::fprintf(stderr, "[map-model-dbg] gpMap->mModelManager = NULL\n"); return; }
+	int n = mgr->getJointModelNum();
+	std::fprintf(stderr, "[map-model-dbg] TMapModelManager jointModelNum=%d folder=%s\n",
+	             n, mgr->getFolder() ? mgr->getFolder() : "?");
+	for (int i = 0; i < n; ++i) {
+		TJointModel* jm = mgr->getJointModel(i);
+		if (!jm) { std::fprintf(stderr, "[map-model-dbg]   [%d] = NULL\n", i); continue; }
+		J3DModelData* md = jm->getModelData();
+		std::fprintf(stderr,
+			"[map-model-dbg]   [%d] shapeNum=%d childrenNum=%d hidden(flag1)=%d modelData=%p matNum=%d\n",
+			i, jm->getShapeNum(), jm->getChildrenNum(), (int)jm->checkFlag(1),
+			(void*)md, md ? (int)md->getMaterialNum() : -1);
+		// Recurse the WHOLE within-model joint tree (TJointObj::mChildren) — this is where the actual
+		// shapes live (the root often has 0 shapes and just groups sub-joints). Sums total shapes +
+		// counts how many joints are hidden (sit, flag bit 1) vs standing, so a truncated draw shows
+		// up as either a low total-shape count or a large hidden fraction.
+		std::function<void(TJointObj*, int, long&, long&, long&)> walk =
+			[&](TJointObj* j, int depth, long& totalShapes, long& hiddenJoints, long& totalJoints) {
+				if (!j || depth > 12) return;
+				++totalJoints;
+				bool hidden = j->checkFlag(1);
+				if (hidden) ++hiddenJoints;
+				totalShapes += j->getShapeNum();
+				if (depth <= 2)
+					std::fprintf(stderr, "[map-model-dbg]     %*sjoint shapes=%d children=%d hidden=%d\n",
+					             depth * 2, "", j->getShapeNum(), j->getChildrenNum(), (int)hidden);
+				for (int c = 0; c < j->getChildrenNum(); ++c)
+					walk(j->getChild(c), depth + 1, totalShapes, hiddenJoints, totalJoints);
+			};
+		long totalShapes = 0, hiddenJoints = 0, totalJoints = 0;
+		walk(jm, 0, totalShapes, hiddenJoints, totalJoints);
+		std::fprintf(stderr, "[map-model-dbg]   [%d] TREE totalJoints=%ld totalShapes=%ld hiddenJoints=%ld\n",
+		             i, totalJoints, totalShapes, hiddenJoints);
+	}
+}
+
+// SB_MAPGROUP_DBG=1: one-shot probe of "マップグループ" (TIdxGroupObj<THitActor>) — the group
+// TMapStaticObj instances (palm/parrot/island/decorative static map objects) register into, entered
+// into buffers each frame at MarDirectorPreEntry.cpp:37 (flag 0x204). Names/classes every child so a
+// missing decorative object shows up as either absent from this list, or present but not drawing.
+static void sb_mapgroup_probe() {
+	JDrama::TViewObj* grp = JDrama::TNameRefGen::search<JDrama::TViewObj>("マップグループ");
+	if (!grp) { std::fprintf(stderr, "[mapgroup-dbg] マップグループ = NULL\n"); return; }
+	auto* lst = static_cast<JDrama::TViewObjPtrListT<THitActor>*>(grp);
+	int ci = 0;
+	for (auto it = lst->getChildren().begin(); it != lst->getChildren().end(); ++it, ++ci) {
+		THitActor* c = *it;
+		void** cvt = c ? *(void***)c : nullptr;
+		Dl_info info; const char* cls = (cvt && cvt[0] && dladdr(cvt[0], &info) && info.dli_sname) ? info.dli_sname : "?";
+		std::fprintf(stderr, "[mapgroup-dbg]   child[%d]=%p name='%s' class=%s\n",
+		             ci, (void*)c, c && c->getName() ? c->getName() : "?", cls);
+	}
+	std::fprintf(stderr, "[mapgroup-dbg] マップグループ child_count=%d\n", ci);
+}
+
 extern "C" bool sb_boot_drive_scene() {
 	if (const char* e = getenv("SB_IND_DBG"); e && e[0] && e[0] != '0') {
 		static int n = 0; if (n < 1 && sb_present_frame() > 250) { ++n; sb_indirect_probe(); }
 	}
 	if (const char* e = getenv("SB_DRAWBUF_INV"); e && e[0] && e[0] != '0') {
 		static int n = 0; if (n < 1 && sb_camera_view_settled()) { ++n; sb_drawbuf_inventory(); }
+	}
+	if (const char* e = getenv("SB_MAPGROUP_DBG"); e && e[0] && e[0] != '0') {
+		static int n = 0; if (n < 1 && sb_camera_view_settled()) { ++n; sb_mapgroup_probe(); }
+	}
+	if (const char* e = getenv("SB_MAP_MODEL_DBG"); e && e[0] && e[0] != '0') {
+		static int n = 0; if (n < 1 && sb_camera_view_settled()) { ++n; sb_map_model_probe(); }
 	}
 	// SB_NO_DRIVE_SCENE=1: bisection gate — skip the entire native scene drive so the
 	// only draw path is the real GC perform list. Used to attribute draw-buffer cycles.
