@@ -317,13 +317,20 @@ endif()
 # SKIP-passes when the copyrighted BMD asset is absent (gitignored scratch/bmd/).
 # ---------------------------------------------------------------------------
 add_executable(sms-j3dload_test
-    "${SMS_NATIVE_REPO_ROOT}/native/render/tests/j3dload_test.cpp")
+    "${SMS_NATIVE_REPO_ROOT}/native/render/tests/j3dload_test.cpp"
+    # sb_tex_decode/sb_tex_pad_w/sb_tex_pad_h have no weak fallback (real, always-buildable,
+    # GPU-free code — gx_imm_impl.cpp calls them unconditionally), so link the actual decoder
+    # rather than stub it out. Everything else this test's link closure needs from the render-
+    # capture pipeline (sb_boot_capture_phase et al.) IS weak-declared — see JDRDrawBufObj.cpp /
+    # J3DDrawBuffer.cpp / Map.cpp / gx_impl.cpp — and resolves to a safe no-op here.
+    "${SMS_NATIVE_REPO_ROOT}/runtime/render/tex_decode.cpp")
 set_target_properties(sms-j3dload_test PROPERTIES
     CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
 target_include_directories(sms-j3dload_test PRIVATE
     "${SMS_NATIVE_REPO_ROOT}/native/shim"
     "${SMS_NATIVE_REPO_ROOT}/reference/sms/include"
-    "${SMS_NATIVE_REPO_ROOT}/native/assets")
+    "${SMS_NATIVE_REPO_ROOT}/native/assets"
+    "${SMS_NATIVE_REPO_ROOT}/runtime/render")
 target_compile_options(sms-j3dload_test PRIVATE
     -include "${SMS_NATIVE_REPO_ROOT}/native/shim/gekko_intrinsics.h"
     -w -Wno-narrowing -fcommon)
