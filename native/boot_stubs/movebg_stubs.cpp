@@ -417,7 +417,6 @@ void TChangeStageMerrygoround::calc() {}
 
 // --- TCraneCargo (vtable for TCraneCargo) ---
 // Ctor is inline in header.
-void TCraneCargo::control() {}
 void TCraneCargo::calc() {}
 
 // --- TDamageObj (vtable for TDamageObj) ---
