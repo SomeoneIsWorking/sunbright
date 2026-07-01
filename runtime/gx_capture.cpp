@@ -371,14 +371,30 @@ extern "C" void sb_gx_capture_frame_boundary() {
             for (const auto& m : g_flush_marks)
                 if (m.off <= d.offset && (!best || m.off > best->off)) best = &m;
             std::string who = best ? attrib_sym(best->pc) : std::string("?");
-            if (best) {   // prefer the first back-chain frame naming a draw/perform (skip GX internals)
+            if (best) {
+                // Prefer the OUTERMOST "perform" frame over the innermost "draw" frame. J3DShape::draw/
+                // J3DDisplayListObj::callDL/etc are ONE shared virtual-dispatch function called by every
+                // shape instance in the scene, so naming the innermost "draw" match (the old 6-frame,
+                // first-match behavior) collapses hundreds of distinct objects (map, sky, palm tree,
+                // decorative statics, water, chr) into a handful of generic buckets — useless for finding
+                // which SPECIFIC object a native under-draw is missing. Each object's own ...::perform()
+                // (TMap::perform, TMapObjWave::perform, TDrawBufObj::perform, TSky::perform, a specific
+                // TMapStaticObj subclass's perform, ...) is a DISTINCT mangled symbol per class, so it
+                // identifies the actual object. Walk deeper (16 frames) and take the LAST "perform" match
+                // seen (i.e. the outermost/most specific caller), falling back to the innermost "draw"
+                // match only if no "perform" frame was found in the walked range.
+                std::string perform_match, draw_match;
                 unsigned fp = best->sp;
-                for (int fr = 0; fr < 6 && fp >= 0x80000000u && fp < 0x81800000u; fr++) {
+                for (int fr = 0; fr < 16 && fp >= 0x80000000u && fp < 0x81800000u; fr++) {
                     std::string s = attrib_sym(attrib_r32(fp + 4));
-                    if (s.find("draw") != std::string::npos || s.find("Draw") != std::string::npos
-                        || s.find("perform") != std::string::npos) { who = s; break; }
+                    if (s.find("perform") != std::string::npos) perform_match = s;   // keep overwriting -> outermost wins
+                    else if (draw_match.empty() &&
+                             (s.find("draw") != std::string::npos || s.find("Draw") != std::string::npos))
+                        draw_match = s;   // keep innermost draw as a fallback only
                     unsigned nx = attrib_r32(fp); if (nx <= fp) break; fp = nx;
                 }
+                if (!perform_match.empty()) who = perform_match;
+                else if (!draw_match.empty()) who = draw_match;
             }
             sumv[who] += d.prims;
         }
