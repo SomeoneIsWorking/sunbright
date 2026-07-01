@@ -1150,3 +1150,32 @@ material c97c48) into MapXlu — J3DModel::entry / j3dSys.setDrawBuffer(MapXlu) 
 whether GC would have frameInit-cleared MapXlu before ph6. The fix is to make native's ph6 MapXlu match
 GC's contents (sea only), NOT to force cU=0 at capture. (So BOTH N+2's "cU at capture" AND N+3's "spurious
 GXPost entry" framings are superseded by: the mask packet wrongly persists in the ph6 MapXlu buffer.)
+
+### 2026-07-01 (SESSION N+4) — WASH FIXED (42.6→14.0) + root cause PINNED; user directive: reproduce the reflective sea
+The overbright wash is the phase-6 (GXPost/display) RE-FLUSH of the persistent MapXlu buffer, whose
+sea-MASK packet (key eb5c8e74 / material c97c48, SRCALPHA/SRCCLR Z-mask) paints white on top of the
+frame. PROVEN by the new `SB_DBHEAD_PKT` per-flush trace: MapXlu (buf b1f7bc) holds a STABLE 2 packets
+(sea-detail c97468 + mask c97c48) and is flushed in BOTH phase 1 (unk40 drawBufferGroup = main scene)
+and phase 6 (mPerformListGXPost = display), both colorUpdate=TRUE. The mask draws harmlessly in ph1
+(later scene geometry covers it) and destructively in ph6 (drawn LAST, on top). Oracle (oracle_gxdbg.log):
+the mask appears ONLY in pass2 as [noC][noA]; GC's display pass draws the SEA as tev=2 SRCALPHA/SRCCLR
+~1352-vert REFLECTIVE water, which native does not reproduce.
+
+**FIX (stopgap, commit 8bb2844 / parent daf0724):** suppress the phase-6 "DrawBuf MapXlu" redraw in
+`JDRDrawBufObj.cpp` (A/B: `SB_KEEP_PH6_MAPXLU=1`). Metric 42.6→14.0 (== SB_ABLATE_PHASE=6 13.6 /
+SB_SKIP_KEY=eb5c8e74 14.1); image: wash gone, native shows the ph1 opaque teal sea.
+
+**⛔ CORRECTED / DEAD (do NOT re-chase):** "DrawBuf MapXlu" is a PLAIN TDrawBufObj, not a
+TMirrorMapDrawBuf (SB_MIRRORBUF_DBG: only MirrorAlways/MirrorSky are, and they correctly gate off with
+unk18=-1 — mirror is INACTIVE in file-select). The "second model 0x4321a0" of N+3 is STALE
+j3dSys.mModel (the shape-packet draw never sets it), NOT a real second instance. sit/stand joints inert
+(xluCount=0). N+2/N+3's "make the mask capture cU=0" was the wrong layer — native's live cU is
+legitimately TRUE (ReInitializeGX/drawInit), there is no pass-level cU=FALSE to read.
+
+**USER DIRECTIVE (next task):** "native should reproduce the reflective sea." The stopgap only removes
+the wash; native's sea stays flat/opaque (b9). GC's is a bright turquoise tev=2 SRCALPHA/SRCCLR
+reflective surface = the INDIRECT water scene: "DrawBuf Indirect" is in PerformList GX Post and
+`インダイレクトシーン` is pushed, BUT native's DrawBuf Indirect is EMPTY (heads=0/packets=0,
+inv3.log) — the indirect water model is never entered → never drawn. NEXT: find the インダイレクトシーン
+class + why its perform doesn't populate DrawBuf Indirect in native; port the indirect/EFB-sampling
+reflective water draw; then REMOVE the ph6-MapXlu stopgap. Full brief: `scratch/handoff_reflective_sea.md`.
