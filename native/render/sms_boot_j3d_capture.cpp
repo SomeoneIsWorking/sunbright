@@ -620,7 +620,23 @@ extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
     // The shape's draw-matrix table (model->VIEW/eye space, computed by the model's viewCalc) for
     // the current view. Each entry is a Mtx (f32[3][4]). Per-vertex skinning selects WHICH entry.
     Mtx* drawTbl = shape->mDrawMatrices ? shape->mDrawMatrices[*shape->mCurrentViewNo] : nullptr;
-    const int drawMtxNum = model->getModelData() ? (int)model->getModelData()->getDrawMtxNum() : 0;
+    // BOUND for the per-vertex skin-matrix index (mtx_for() below), MUST come from the shape's OWN
+    // draw-matrix table, not from j3dSys.getModel(). j3dSys.getModel() is whichever model's
+    // calc/entry/viewCalc ran MOST RECENTLY (every J3DModel entry point calls j3dSys.setModel(this))
+    // — NOT necessarily the model that owns THIS shape, since draw() happens later at buffer-flush
+    // time, possibly after several OTHER models' calc/entry re-set j3dSys's "current model" pointer.
+    // PROVEN (SB_SKIN_BOUNDS_DBG, file-select picker): TMario's body shapes (own table 106 entries)
+    // captured while j3dSys.getModel() pointed at the CAP model (table size 1) — TMarioCap's cap
+    // sub-models run their OWN calc/entry/viewCalc INSIDE TMario::perform, AFTER the body's
+    // entryModels in the SAME call, so by the time ChrOpa/ChrXlu actually draw() (much later, at the
+    // GXPost pass), j3dSys.getModel() is the cap, not the body. Using the model's (wrong) drawMtxNum=1
+    // as the bounds ceiling truncated every body vertex needing skin index ≥1 to drawIdx=0 — every
+    // limb collapsed onto whichever joint matrix lived at slot 0 (the visually mangled/scattered
+    // Mario at the settled file-select picker). FIX: read the ceiling from shape->unk48
+    // (J3DDrawMtxData*), which is bound ONCE per-shape at model-init (setDrawMtxDataPointer) and is
+    // therefore always correct for THIS shape regardless of j3dSys's current-model state.
+    const int drawMtxNum = shape->unk48 ? (int)shape->unk48->mEntryNum
+                          : (model->getModelData() ? (int)model->getModelData()->getDrawMtxNum() : 0);
     float posMtx[3][4];   // matrix 0 — for the debug probes below only (real geometry skins per-vertex)
     if (drawTbl) std::memcpy(posMtx, &drawTbl[0][0], sizeof(posMtx));
     else         std::memcpy(posMtx, ident, sizeof(posMtx));
