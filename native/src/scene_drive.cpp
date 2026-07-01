@@ -653,6 +653,23 @@ static void sb_playergroup_probe() {
 					}
 					std::fprintf(stderr, "[playergroup-dbg]     TOTAL nanJoints=%d wildJoints=%d / %d\n",
 					             nanCount, wildCount, jn);
+					// getAnmMtx is the raw joint WORLD matrix (checked above, all sane). The actual
+					// render/skinning path uses a SEPARATE table (getDrawMtx, filled by
+					// J3DModel::viewCalc as viewMtx*anmMtx per mDrawMtxData-mapped joint) — if
+					// viewCalc() isn't running (or runs stale/out of order) for this model, getAnmMtx
+					// can look perfect while getDrawMtx is garbage/stale. Dump both to compare.
+					int dmn = bm->getModelData() ? (int)bm->getModelData()->getDrawMtxNum() : 0;
+					std::fprintf(stderr, "[playergroup-dbg]     drawMtxNum=%d\n", dmn);
+					for (int i = 0; i < dmn && i < 12; ++i) {
+						Mtx& dm = bm->getDrawMtx(i);
+						bool nan = false;
+						for (int r = 0; r < 3 && !nan; ++r)
+							for (int c2 = 0; c2 < 4; ++c2)
+								if (!std::isfinite(dm[r][c2])) { nan = true; break; }
+						std::fprintf(stderr,
+							"[playergroup-dbg]       drawMtx[%d] t=(%.2f,%.2f,%.2f) nan=%d\n",
+							i, dm[0][3], dm[1][3], dm[2][3], (int)nan);
+					}
 				} else {
 					std::fprintf(stderr, "[playergroup-dbg]     model=%p (no modelData)\n", (void*)bm);
 				}
