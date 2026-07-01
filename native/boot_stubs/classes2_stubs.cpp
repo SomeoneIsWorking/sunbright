@@ -127,7 +127,7 @@ void TLeanMirror::draw() const {}
 
 // TShiningStone: key = perform (first method shadowing THitActor::perform;
 //   endDemo/putOnLight not in THitActor virtuals)
-void TShiningStone::perform(u32, JDrama::TGraphics*) {}
+// TShiningStone::perform lives natively in reference/sms/src/MoveBG/MapObjMamma.cpp.
 
 // TMammaBlockRotate: key = touchWater (first method shadowing TMapObjBase::touchWater)
 u32 TMammaBlockRotate::touchWater(THitActor*) { return 0; }
