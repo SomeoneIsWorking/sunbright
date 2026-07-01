@@ -23,6 +23,7 @@
 #include <JSystem/JDrama/JDRSmJ3DScn.hpp>               // TSmJ3DScn
 #include <JSystem/JDrama/JDRLighting.hpp>               // TLightMap (light probe)
 #include <JSystem/JDrama/JDRDrawBufObj.hpp>             // TDrawBufObj (sky draw buffers)
+#include <JSystem/JDrama/JDRViewObjPtrList.hpp>         // TViewObjPtrListT (indirect scene walk)
 #include <JSystem/J3D/J3DGraphBase/J3DSys.hpp>          // j3dSys
 #include <JSystem/J3D/J3DGraphBase/J3DDrawBuffer.hpp>   // J3DDrawBuffer
 #include <JSystem/JDrama/JDRGraphics.hpp>               // TGraphics
@@ -45,6 +46,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <dlfcn.h>
 
 extern "C" GXRenderModeObj GXNtsc480Int;                // gx_fb_impl.cpp (640x480 NTSC mode)
 extern "C" void sb_gx_latch_proj44(const float m[16]);  // gx_impl.cpp — latch the scene perspective
@@ -446,7 +448,54 @@ static void sb_drawbuf_inventory() {
 	}
 }
 
+// SB_IND_DBG=1: one-shot probe of the reflective-sea INDIRECT scene. Identifies the
+// class of the "インダイレクトシーン" TViewObj (via dladdr on its vtable slots), whether the
+// SeaIndirect model loaded (shape count), and the state of DrawBuf Indirect — so we can see
+// WHY the buffer stays empty (object missing / model missing / perform enters nothing).
+static void sb_indirect_probe() {
+	auto dumpVtbl = [](const char* tag, void* obj){
+		if (!obj) { std::fprintf(stderr, "[ind-dbg] %s = NULL\n", tag); return; }
+		void** vt = *(void***)obj;
+		std::fprintf(stderr, "[ind-dbg] %s=%p vtbl=%p", tag, obj, (void*)vt);
+		Dl_info info;
+		for (int i = 0; i < 8; ++i) {
+			if (vt[i] && dladdr(vt[i], &info) && info.dli_sname)
+				std::fprintf(stderr, "\n            vt[%d] %s", i, info.dli_sname);
+		}
+		std::fprintf(stderr, "\n");
+	};
+	JDrama::TViewObj* ind = JDrama::TNameRefGen::search<JDrama::TViewObj>("インダイレクトシーン");
+	dumpVtbl("インダイレクトシーン", ind);
+	// インダイレクトシーン is a TViewObjPtrListT<TViewObj> (vtable=TViewObjPtrListT). Walk its
+	// children so we can see WHAT the indirect scene contains (the reflective-sea model?).
+	if (ind) {
+		auto* lst = static_cast<JDrama::TViewObjPtrListT<JDrama::TViewObj>*>(ind);
+		int ci = 0;
+		for (auto it = lst->getChildren().begin(); it != lst->getChildren().end(); ++it, ++ci) {
+			JDrama::TViewObj* c = *it;
+			void** cvt = c ? *(void***)c : nullptr;
+			Dl_info di; const char* cls = "?";
+			// resolve via nm-style: print the vtable ptr; class named offline
+			std::fprintf(stderr, "[ind-dbg]   child[%d]=%p name='%s' vtbl=%p\n",
+			             ci, (void*)c, c && c->getName() ? c->getName() : "?", (void*)cvt);
+			(void)di; (void)cls;
+		}
+		std::fprintf(stderr, "[ind-dbg]   インダイレクトシーン child_count=%d\n", ci);
+	}
+	JDrama::TViewObj* seaI = JDrama::TNameRefGen::search<JDrama::TViewObj>("SeaIndirect");
+	dumpVtbl("SeaIndirect", seaI);
+	JDrama::TViewObj* refP = JDrama::TNameRefGen::search<JDrama::TViewObj>("ReflectParts");
+	dumpVtbl("ReflectParts", refP);
+	JDrama::TViewObj* refS = JDrama::TNameRefGen::search<JDrama::TViewObj>("ReflectSky");
+	dumpVtbl("ReflectSky", refS);
+	JDrama::TViewObj* scr = JDrama::TNameRefGen::search<JDrama::TViewObj>("スクリーンテクスチャ");
+	dumpVtbl("スクリーンテクスチャ", scr);
+}
+
 extern "C" bool sb_boot_drive_scene() {
+	if (const char* e = getenv("SB_IND_DBG"); e && e[0] && e[0] != '0') {
+		static int n = 0; if (n < 1 && sb_present_frame() > 250) { ++n; sb_indirect_probe(); }
+	}
 	if (const char* e = getenv("SB_DRAWBUF_INV"); e && e[0] && e[0] != '0') {
 		static int n = 0; if (n < 1 && sb_present_frame() > 250) { ++n; sb_drawbuf_inventory(); }
 	}
