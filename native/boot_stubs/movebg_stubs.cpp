@@ -422,7 +422,7 @@ void TCraneCargo::calc() {}
 
 // --- TDamageObj (vtable for TDamageObj) ---
 // Ctor is inline in header.
-void TDamageObj::perform(u32, JDrama::TGraphics*) {}
+// perform lives natively in reference/sms/src/MoveBG/MapObjTown.cpp.
 void TDamageObj::init(u32) {}
 void TDamageObj::load(JSUMemoryInputStream& s) { (void)s; }
 
