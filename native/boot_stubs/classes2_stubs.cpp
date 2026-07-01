@@ -249,8 +249,7 @@ void TMerrygoround::control() {}
 // TBalloonKoopaJr: key = touchActor (first method shadowing TMapObjGeneral/TMapObjBase::touchActor)
 void TBalloonKoopaJr::touchActor(THitActor*) {}
 
-// TPinnaEntrance: key = loadAfter (first and only method, shadows TMapObjBase::loadAfter)
-void TPinnaEntrance::loadAfter() {}
+// TPinnaEntrance::loadAfter lives natively in reference/sms/src/MoveBG/MapObjPinna.cpp.
 
 // TWaterRecoverObj: key = touchPlayer (first and only method, shadows TMapObjBase::touchPlayer)
 void TWaterRecoverObj::touchPlayer(THitActor*) {}
