@@ -40,6 +40,7 @@
 #include "sms_boot_material.h" // sb_build_tev_state, sb_resolve_textures, SbTexImage
 #include <JSystem/J3D/J3DGraphBase/J3DTexture.hpp> // J3DTexture::getNum (table-size probe)
 #include "sms_boot_lighting.h" // sb_light_vertex_color0 (pure, unit-tested)
+#include "sms_boot_skin_bounds.h" // sb::skin_drawmtx_bound / resolve_skin_index (pure, unit-tested)
 #include "ngx_light.h"         // ngx::LightSrc
 
 #include <cmath>
@@ -635,8 +636,10 @@ extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
     // Mario at the settled file-select picker). FIX: read the ceiling from shape->mDrawMtxData
     // (J3DDrawMtxData*), which is bound ONCE per-shape at model-init (setDrawMtxDataPointer) and is
     // therefore always correct for THIS shape regardless of j3dSys's current-model state.
-    const int drawMtxNum = shape->mDrawMtxData ? (int)shape->mDrawMtxData->mEntryNum
-                          : (model->getModelData() ? (int)model->getModelData()->getDrawMtxNum() : 0);
+    const int drawMtxNum = sb::skin_drawmtx_bound(
+        shape->mDrawMtxData != nullptr,
+        shape->mDrawMtxData ? (int)shape->mDrawMtxData->mEntryNum : 0,
+        model->getModelData() ? (int)model->getModelData()->getDrawMtxNum() : 0);
     float posMtx[3][4];   // matrix 0 — for the debug probes below only (real geometry skins per-vertex)
     if (drawTbl) std::memcpy(posMtx, &drawTbl[0][0], sizeof(posMtx));
     else         std::memcpy(posMtx, ident, sizeof(posMtx));
@@ -774,7 +777,7 @@ extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
         if (!no_skin && s.packet < shape->getMtxGroupNum()) {
             if (J3DShapeMtx* sm = shape->getShapeMtx(s.packet)) {
                 const u16 di = sm->getUseMtxIndex((u16)(s.matidx / 3));
-                if (di != 0xffff && (int)di < drawMtxNum) drawIdx = (int)di;
+                drawIdx = sb::resolve_skin_index(di, drawMtxNum);
             }
         }
         return drawTbl[drawIdx];
