@@ -210,10 +210,5 @@ TStageEnemyInfo::TStageEnemyInfo()
 {
 }
 
-// ---------------------------------------------------------------------------
-// ShadowUtil — TMBindShadowBody ctor + entryDrawShadow
-// ---------------------------------------------------------------------------
-#include <MarioUtil/ShadowUtil.hpp>
-
-TMBindShadowBody::TMBindShadowBody(THitActor*, J3DModel*, float) { }
-void TMBindShadowBody::entryDrawShadow() { }
+// TMBindShadowBody ctor + entryDrawShadow live natively in
+// reference/sms/src/MarioUtil/ShadowUtil.cpp — no stub needed here.

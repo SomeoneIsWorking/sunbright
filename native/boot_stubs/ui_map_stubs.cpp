@@ -172,15 +172,8 @@ TMarioGamePad::~TMarioGamePad() {}
 
 // ─── MarioUtil / Shadow ───────────────────────────────────────────────────────
 
-#include <MarioUtil/ShadowUtil.hpp>
-
-// TMBindShadowManager — inherits JDrama::TViewObj.
-TMBindShadowManager::TMBindShadowManager(const char* name)
-    : JDrama::TViewObj(name)
-{
-}
-void TMBindShadowManager::forceRequest(const TCircleShadowRequest&, u32) {}
-void TMBindShadowManager::request(const TCircleShadowRequest&, u32) {}
+// TMBindShadowManager ctor + forceRequest/request live natively in
+// reference/sms/src/MarioUtil/ShadowUtil.cpp — no stub needed here.
 
 // ─── Player ───────────────────────────────────────────────────────────────────
 
