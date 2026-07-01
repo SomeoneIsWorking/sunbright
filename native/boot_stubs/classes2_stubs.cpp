@@ -332,8 +332,7 @@ void TMapObjTreeScale::loadAfter() {}
 // ============================================================
 #include <MoveBG/MapObjWave.hpp>
 
-// TMapObjWave: key = load (first explicit virtual)
-void TMapObjWave::load(JSUMemoryInputStream&) {}
+// TMapObjWave::load is now ported faithfully in reference/sms/src/MoveBG/MapObjWave.cpp.
 
 // ============================================================
 // === MoveBG/ModelGate.hpp ===

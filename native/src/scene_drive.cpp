@@ -30,6 +30,7 @@
 #include <Camera/Camera.hpp>                            // gpCamera (CPolarSubCamera)
 #include <Camera/CameraOption.hpp>                       // gpCameraOption (title/load pan state)
 #include <MoveBG/MapObjOption.hpp>                        // TFileLoadBlock
+#include <MoveBG/MapObjWave.hpp>                          // TMapObjWave / gpMapObjWave (reflective sea)
 #include <GC2D/GCConsole2.hpp>                            // TGCConsole2 (in-game HUD console)
 #include <Player/Mario.hpp>                               // gpMarioOriginal (file-select Mario)
 #include <M3DUtil/M3UModelMario.hpp>                      // M3UModelMario::getModel (Mario body J3DModel)
@@ -398,6 +399,31 @@ void drive_hud() {
 	console->perform(0x8, &g_graphics);
 	if (dbg()) { static long n=0; if((++n%200)==1)
 		std::fprintf(stderr, "[drive-hud] drove TGCConsole2::perform(0x8) console=%p\n", (void*)console); }
+}
+
+// The REFLECTIVE SEA (TMapObjWave, "波の表現"). Ported in reference/sms/src/MoveBG/MapObjWave.cpp;
+// oracle GX-draw attribution (SUNBRIGHT_GX_ATTRIB) pinned the turquoise sea to its draw(). Like
+// the sky/HUD/Chr, sms-boot's perform-list dispatch never delivers the draw bit to it, so it must
+// be hand-driven. Its draw() emits RAW immediate-mode GX (GXBegin/GXPosition — NOT a J3DShape), so
+// it is captured by the gx_imm path (which is NOT per-present locked), and only needs the live
+// PERSPECTIVE projection active at GXBegin (initDraw only loads the view pos-matrix). Driven in
+// BOTH the OWN_GXLIST and hand-driven paths (the imm capture accumulates independent of the J3D
+// scene lock). ON by default; SB_NO_WAVE opts out.
+void drive_wave() {
+	if (const char* e = getenv("SB_NO_WAVE"); e && e[0] && e[0] != '0') return;
+	if (!gpMapObjWave) return;
+	// initDraw loads j3dSys.getViewMtx() as the pos matrix, but under OWN_GXLIST the scene's own
+	// perform(0x8) (which normally copies g.mViewMtx -> j3dSys) has not run when we get here, so
+	// j3dSys.mViewMtx is stale. Install the live camera view (computed above) exactly as
+	// TSmJ3DScn::perform would, so the water grid transforms with the current camera.
+	j3dSys.setViewMtx(g_graphics.mViewMtx.mMtx);
+	// Make the scene's perspective the active GX projection so the immediate-mode capture
+	// projects the water grid as 3D (not the HUD's ortho, which may be the last-set proj).
+	GXSetProjection(g_graphics.mProjMtx.mMtx, GX_PERSPECTIVE);
+	gpMapObjWave->perform(0x1, &g_graphics);  // updateTime — scroll the wave/tex phases
+	gpMapObjWave->perform(0x8, &g_graphics);  // initDraw + draw (the sea grid)
+	if (dbg()) { static long n=0; if((++n%200)==1)
+		std::fprintf(stderr, "[drive-wave] drove TMapObjWave::perform(8) wave=%p\n", (void*)gpMapObjWave); }
 }
 } // namespace
 
@@ -769,6 +795,11 @@ extern "C" bool sb_boot_drive_scene() {
 	// SETUP ONLY (camera/proj/lights above) and skips the hand-driven draw — so the capture holds
 	// the full perform-list scene, not the partial hand-wired subset. Must NOT call begin_scene here
 	// (it would consume the once-per-present capture arm before the real render runs).
+	// The reflective sea (TMapObjWave) draws via raw immediate-mode GX, captured by the (unlocked)
+	// gx_imm path — so it must run in BOTH the OWN_GXLIST and hand-driven modes. Drive it here,
+	// after the camera/projection setup above and before the OWN_GXLIST early return.
+	drive_wave();
+
 	if (sb_own_gxlist()) {
 		if (dbg()) { static long n=0; if((++n%200)==0||n<=2)
 			std::fprintf(stderr, "[scene-drive] SB_OWN_GXLIST: setup-only (real GX perform list owns the draw)\n"); }

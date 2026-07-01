@@ -240,8 +240,7 @@ TMapObjWaterSpray::TMapObjWaterSpray(const char* name) : TMapObjBase(name) {}
 // ============================================================
 // TMapObjWave
 // ============================================================
-TMapObjWave::TMapObjWave(const char* name) : JDrama::TViewObj(name) {}
-// getHeight / getWaveHeight are now ported faithfully in
+// TMapObjWave ctor / load / perform / draw / initDraw are now ported faithfully in
 // reference/sms/src/MoveBG/MapObjWave.cpp (no longer stubbed here).
 
 // ============================================================

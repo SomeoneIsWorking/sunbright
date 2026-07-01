@@ -135,7 +135,6 @@ void TMapObjTreeScale::control() {}
 u32 TMapObjTreeScale::touchWater(THitActor*) { return 0; }
 void TMapObjTree::touchPlayer(THitActor*) {}
 void TMapObjWaterSpray::load(JSUMemoryInputStream&) {}
-void TMapObjWave::perform(unsigned int, JDrama::TGraphics*) {}
 void TMareCork::calcRootMatrix() {}
 void TMareCork::drawObject(JDrama::TGraphics*) {}
 MtxPtr TMareCork::getTakingMtx() { return {}; }
