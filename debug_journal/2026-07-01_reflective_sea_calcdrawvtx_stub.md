@@ -72,6 +72,44 @@ TDLTexQuad/GXCallDisplayList path is captured, WITH the indirect-texturing + EFB
    image matches `scratch/passes/oracle_pass3_final.png` turquoise water). The ph6-MapXlu STOPGAP in
    JDRDrawBufObj.cpp is orthogonal — leave it until the sea draws, then re-evaluate.
 
+## ⚠ CORRECTION (same session): the water-manager path is ALSO ruled out
+Verifying before porting calcDrawVtx (per "believe the observation, verify") saved a wasted port.
+Decompiled calcDrawVtx @0x8027e5f4 (Ghidra headless, `scratch/decomp/8027e5f4.c`): it builds ONE
+TDLTexQuad per **water PARTICLE** with `mParticleFlagSOA[i]&0xf == 1`. Those particles are **FLUDD
+water SPRAY droplets** (created by Mario spraying; `move()` advances them with gravity/velocity) — NOT
+a static sea surface. Extended `SB_WATER_DBG` to count particles: file-select shows
+**`nParticle=0 (type1=0 type2=0 type3=0)`** every frame. So even a fully-ported calcDrawVtx would draw
+NOTHING in the idle file-select scene. **drawRefracAndSpec / the water manager is NOT the file-select
+reflective sea.** (calcDrawVtx being a stub is still a real gap for in-GAME sprayed-water reflection —
+worth porting later — but it is NOT this bug.)
+
+## ⚠ ALSO ruled out this session (all EMPTY / never fire in file-select)
+- **DrawBuf AfterIndirect Opa/Xlu**: heads=0 packets=0 (`SB_DRAWBUF_INV`, now includes them). The sea's
+  flag-0x80 → AfterIndirect routing (TMapStaticObj::perform:209) would land here — it's empty.
+- **The "sea"/"SeaIndirect"/"ReflectSky"/"ReflectParts" TMapStaticObj**: `SB_SEA_DBG` tap in
+  TMapStaticObj::perform prints NOTHING → no static object with those names ever performs in the option
+  map. So the file-select sea is NOT a named `sea` static object; it is part of the map model
+  (マップグループ → DrawBuf MapOpa=7pkt / MapXlu=2pkt, which native DOES draw as the flat teal b9).
+
+## So WHERE is the pass-3 reflective sea? (open — next session starts HERE)
+All guessed native mechanisms are inert. Native draws the sea ONCE (b9, ph1/scene pass, ~1413 verts,
+bm=NONE opaque, flat teal). The oracle draws an ADDITIONAL layer in the DISPLAY pass (pass3, ~1352
+verts, tev=2, blend SRCALPHA/SRCCLR, persp). NOTE: the "indirect texturing" claim in the handoff was an
+INFERENCE, not measured — the gxblend line only says tev=2 SRCALPHA/SRCCLR. So the reflective sea may
+just be a **second, alpha-blended 2-TEV-stage draw of the sea geometry in the display pass** that native
+never issues.
+
+**NEXT (TOOLING-FIRST): get oracle-side attribution.** Use the GX command-stream oracle
+(`build/sunbright`, pure Dolphin-GX, `runtime/gx_stream.cpp`/`gx_parse.h` — memory
+[[gx-command-stream-oracle]]) to identify WHICH GC draw call / source function emits the pass3
+1352-vert SRCALPHA/SRCCLR sea, and its material/texture. Stop guessing native mechanisms; read the
+oracle's actual command stream for that draw. Then find why native omits that pass (likely: the sea
+model's second material/pass, or a display-pass re-draw the native capture drops). Compare native b9's
+material to the oracle's pass3 material at the VALUE level.
+
 ## Tooling added (gated, kept)
-- `SB_WATER_DBG=1` — `TModelWaterManager::perform` per-flag trace + TDLTexQuad quadN (ModelWaterManager.cpp).
+- `SB_WATER_DBG=1` — `TModelWaterManager::perform` per-flag trace + TDLTexQuad quadN + particle counts (ModelWaterManager.cpp).
 - `SB_IND_DBG=1` — indirect-scene / reflect-object class+child probe (scene_drive.cpp, `sb_indirect_probe`).
+- `SB_SEA_DBG=1` — TMapStaticObj::perform tap for sea/SeaIndirect/ReflectSky/ReflectParts (MapStaticObject.cpp).
+- `SB_DRAWBUF_INV=1` — now also inventories DrawBuf AfterIndirect Opa/Xlu + StaticMapObj Sun Opa/Xlu.
+- `scratch/decomp/8027e5f4.c` — decompiled calcDrawVtx (for the later in-game sprayed-water port).

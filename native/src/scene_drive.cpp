@@ -415,6 +415,8 @@ extern "C" void sb_blk_probe();
 static void sb_drawbuf_inventory() {
 	static const char* names[] = {
 		"DrawBuf ChrOpa", "DrawBuf ChrXlu", "DrawBuf Graffito", "DrawBuf Indirect",
+		"DrawBuf AfterIndirect Opa", "DrawBuf AfterIndirect Xlu",
+		"DrawBuf StaticMapObj SunOpa", "DrawBuf StaticMapObj SunXlu",
 		"DrawBuf LensFlare", "DrawBuf MapOpa", "DrawBuf MapXlu",
 		"DrawBuf Map 半透明優先2 (opa)", "DrawBuf Map 半透明優先2 (xlu)",
 		"DrawBuf Map 半透明優先 (opa)", "DrawBuf Map 半透明優先 (xlu)",
