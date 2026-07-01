@@ -74,21 +74,8 @@ u8 TPauseMenu2::getNextState() { return 0; }
 void TPauseMenu2::setDrawEnd() {}
 void TPauseMenu2::setDrawStart() {}
 
-// TSunGlass — inherits JDrama::TViewObj; has 3 non-inline virtuals.
-// Must read the NameRef header (keyCode + name) so the object is findable by
-// JDrama::TNameRefGen::search; setup2 looks it up by name ("サングラスフェーダ")
-// and derefs the result. An empty stub left mName at the ctor default -> search
-// returned null -> null deref in setup2.
-void TSunGlass::load(JSUMemoryInputStream& stream)
-{
-	JDrama::TViewObj::load(stream);
-}
-void TSunGlass::loadAfter() {}
-void TSunGlass::perform(u32, JDrama::TGraphics*) {}
-
-// TSunShine — inherits TSunGlass; overrides 2 virtuals.
-void TSunShine::loadAfter() {}
-void TSunShine::perform(u32, JDrama::TGraphics*) {}
+// TSunGlass + TSunShine load/loadAfter/perform live natively in
+// reference/sms/src/GC2D/SunGlass.cpp — no stubs needed here.
 
 // TTalk2D2 — inherits JDrama::TViewObj; 3 pure non-virtuals + 3 overrides.
 TTalk2D2::TTalk2D2(const char* name)
