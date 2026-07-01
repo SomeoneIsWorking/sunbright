@@ -959,3 +959,52 @@ part is fine, so a per-vertex magnitude test cannot separate "all verts huge" (d
    Separate transform bug (wrong matrix for the GXPost/ortho screen-space pass).
 3. The soft-focus consumers (b27/b45) need a PERSISTED prior-frame scene snapshot to sample (they draw
    before this frame's copy). Only matters once the scene is off-screen-only.
+
+### 2026-07-01 (SESSION N+1) — ph6-transform hypothesis FALSIFIED by measurement; b76 = the sea REFLECTION sampling the unwired MIRROR EFB
+The prior handoff (`scratch/handoff_ph6_transform.md`) said "NEXT TASK: fix why ph6 draws get the wrong
+projection matrix." **That hypothesis is WRONG — disproven by direct measurement.** New tooling this
+session: `sb_gx_get_live_projection` (gx_impl.cpp — the LIVE GX projection, vs the perspective-latching
+`sb_gx_get_projection`); `SB_B76_XF` (dump b76's live-vs-latched proj/vp/posMtx + resulting NDC);
+`SUNBRIGHT_DBG_GXAT=<frame>` (gx_capture.cpp — move the oracle's GXBLEND/GXDRAW/GXTEV/GXCOPY dump window
+to a reachable frame, e.g. the settled file-select ~frame 300).
+
+**MEASURED (SB_B76_XF, settled):** b76 (key eb5c8e74) pos0=(-61423,0,-37968) — HUGE world-space sea
+geometry, NOT a screen quad. Its LATCH perspective (2.042, vp 640×448) and its LIVE phase-6 perspective
+are IDENTICAL and both project the first vertex to ndc(-2.895,0.21,1.0) (sensibly off-screen-left). The
+"±100000 NDC" is just the near-camera verts of a giant grazing y=0 plane (uv tiled 84×) — NORMAL for a
+big ground/sea plane, NOT a transform error. **b76's projection is correct.** (The live-ortho-when-live-
+type-ortho capture fix was tried → overbright 42.6→45.6 REGRESSION → reverted. Do NOT retry it.)
+
+**b76's real identity (SB_BATCH_DBG + SB_B76_BT backtrace):** "DrawBuf MapXlu", 256×256 tex, minF=5,
+wrap=1/1, uv 0.82–84.82, blend bm=1/4/2 = **SRCALPHA/SRCCLR**, ntex=**2**, efb=(nil)/(nil). It is drawn
+in BOTH ph1 (model A 0x…c98554) AND ph6 (model B 0x…4321c0) — DIFFERENT model instances SHARING the
+material (mat 0x…c97c48), projecting IDENTICALLY. The ph6 draw comes from the REAL `mPerformListGXPost->
+perform → J3DDrawBuffer::drawHead` (backtrace), i.e. it is genuine perform-list content, not a
+scene_drive artifact (scene_drive is setup-only under SB_OWN_GXLIST).
+
+**ORACLE ground truth (build/sunbright, SUNBRIGHT_DBG_GXAT=300 GXCOPY/GXBLEND at settled file-select):**
+- EFB copies/frame = **3**: `[->XFB CLR]`, `[->TEX CLR @prims<=653]` (the **256×256 MIRROR**),
+  `[->TEX @prims<=2906]` (the **320×224 screen texture**, 通常シーン). = 4 render passes. Off-screen
+  composite CONFIRMED.
+- **pass3 (the DISPLAY pass = native's ph6) CONTAINS `BLEND SRCALPHA/SRCCLR tev=2 proj=persp x26
+  (1352 verts)`** — exactly b76's blend/proj. ⇒ **b76 is FAITHFUL: GC draws this SRCALPHA/SRCCLR
+  perspective composite in the display pass too.** It is the SEA REFLECTION layer; on GC it samples the
+  256×256 MIRROR EFB copy (the first ->TEX). Native never wires the mirror EFB to b76's texmap
+  (efb=nil; it binds stale asset 0xc71340) → decodes stale guest RAM → flat ~0.87 white → the
+  SRCALPHA/SRCCLR blend paints a full-screen white multiply = THE overbright wash.
+
+⇒ **ROOT CAUSE (verified, supersedes "ph6 mis-transform"):** the file-select overbright is the
+mirror/EFB-readback composite gap. b76/b12 (the sea reflection, SRCALPHA/SRCCLR, 256×256, ntex=2) must
+sample the 256×256 MIRROR EFB copy; native leaves that texmap unwired (efb=nil) so it reads stale RAM =
+white. Secondary contributor: native paints ph1 (which on GC renders OFF-SCREEN to the screen texture)
+directly to the visible FB → the sea is double-drawn (ph1 model A + ph6 model B), both to visible.
+
+**THE FAITHFUL FIX (two coupled parts, the large composite task the journal has pointed at):**
+1. Native must render the mirror pass (reflected scene, ≤653 prims) to an off-screen target and snapshot
+   it as the 256×256 mirror texture (native already records a 256×256 EFB copy dest per prior notes).
+2. Wire b76's mirror texmap (the ntex=2 material's reflection sampler) to that snapshot — its src_ptr
+   must match the recorded mirror copy dest so `fill_batch_material`'s live efb_src re-eval (FIX 1 this
+   week) tags it and the segmented present binds the mirror snapshot instead of decoding stale RAM.
+3. Make ph1 (unk40/drawBufferGroup) render OFF-SCREEN (to the screen texture), not to the visible FB, so
+   the sea isn't double-drawn and the visible frame = composite3(display scene) + reflection + Chr + 2D.
+Verify each step by VALUE (fileselect_overbright.py; target ~14). Do NOT skip b76 by magic key/NDC guard.

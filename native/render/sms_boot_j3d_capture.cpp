@@ -58,6 +58,7 @@ using namespace sb::render;
 extern "C" int  sb_present_frame(void);   // sms_boot_present.cpp — settled-frame gating
 extern "C" int  sb_camera_view_settled(void);   // scene_drive.cpp — view matrix stationary
 extern "C" void sb_gx_get_projection(int* type, float proj[6], float vp[6]);
+extern "C" void sb_gx_get_live_projection(int* type, float proj[6], float vp[6]);
 extern "C" int  sb_gx_get_proj44(float m[16]);
 extern "C" int  sb_gx_get_lights(float out[8][16]);
 extern "C" int  sb_boot_get_scene_camera(float view[12], float proj[16]) __attribute__((weak));
@@ -585,6 +586,32 @@ extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
     float posMtx[3][4];   // matrix 0 — for the debug probes below only (real geometry skins per-vertex)
     if (drawTbl) std::memcpy(posMtx, &drawTbl[0][0], sizeof(posMtx));
     else         std::memcpy(posMtx, ident, sizeof(posMtx));
+
+    // SB_B76_XF: at the b76 overbright wash shape (key low32 0xc39d96b8), dump the LIVE vs LATCHED
+    // projection + viewport + posMtx + resulting NDC, so we see exactly which matrix that draw
+    // wants. This is the ph6 transform probe — b76 is a later phase-6 shape the per-phase-first
+    // SB_PH_XF missed.
+    if (const char* e = std::getenv("SB_B76_XF"); e && e[0] && e[0] != '0'
+        && (unsigned)(me->key) == 0xc39d96b8u && !idx.empty() && sb_camera_view_settled()) {
+        static int n = 0; if (n < 4) { ++n;
+            int lt; float lp[6], lv[6]; sb_gx_get_live_projection(&lt, lp, lv);
+            const NgxVertex& s0 = verts[idx[0]];
+            SbImmVtx qLatch = imm_project(SbImmRawVtx{ s0.pos[0],s0.pos[1],s0.pos[2],0,0,0,0 },
+                                          projType, proj, posMtx, vp);
+            SbImmVtx qLive  = imm_project(SbImmRawVtx{ s0.pos[0],s0.pos[1],s0.pos[2],0,0,0,0 },
+                                          lt, lp, posMtx, lv);
+            std::fprintf(stderr, "[b76xf] phase=%d pos0=(%.1f,%.1f,%.1f)\n"
+                         "        LATCH type=%d proj[%.3f %.3f %.3f %.3f %.3f %.3f] vp[%.0f %.0f %.0f %.0f] -> ndc(%.3f,%.3f,%.3f)\n"
+                         "        LIVE  type=%d proj[%.3f %.3f %.3f %.3f %.3f %.3f] vp[%.0f %.0f %.0f %.0f] -> ndc(%.3f,%.3f,%.3f)\n"
+                         "        posMtx r0[%.2f %.2f %.2f %.2f] r1[%.2f %.2f %.2f %.2f] r2[%.2f %.2f %.2f %.2f]\n",
+                         g_capture_phase, s0.pos[0],s0.pos[1],s0.pos[2],
+                         projType, proj[0],proj[1],proj[2],proj[3],proj[4],proj[5], vp[0],vp[1],vp[2],vp[3], qLatch.x,qLatch.y,qLatch.z,
+                         lt, lp[0],lp[1],lp[2],lp[3],lp[4],lp[5], lv[0],lv[1],lv[2],lv[3], qLive.x,qLive.y,qLive.z,
+                         posMtx[0][0],posMtx[0][1],posMtx[0][2],posMtx[0][3],
+                         posMtx[1][0],posMtx[1][1],posMtx[1][2],posMtx[1][3],
+                         posMtx[2][0],posMtx[2][1],posMtx[2][2],posMtx[2][3]);
+        }
+    }
 
     // SB_MARIO_XF: dump every captured shape's first vertex world pos + projected ndc + which
     // texture table was chosen. Gated to a SETTLED frame window (the early frames are the intro

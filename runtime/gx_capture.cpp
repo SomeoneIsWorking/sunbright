@@ -38,6 +38,15 @@ GxFrameInfo g_info;
 long g_frame_no = 0;
 unsigned long g_emitted = 0, g_parse_fail = 0, g_boundaries = 0;
 
+// The per-draw dump windows below default to the first geometry frames [4,8). To reach a scene
+// that only appears after boot (e.g. the settled stage-15 file-select, ~frame 200+), set
+// SUNBRIGHT_DBG_GXAT=<frame> — the window becomes [GXAT, GXAT+4). Lets the GXBLEND/GXDRAW/GXTEV/
+// GXCOPY oracles capture the file-select POST-pass composite for the overbright value comparison.
+static inline bool gx_dbg_window() {
+    static const long at = [](){ const char* v = std::getenv("SUNBRIGHT_DBG_GXAT"); return v && v[0] ? atol(v) : 4; }();
+    return g_frame_no >= at && g_frame_no < at + 4;
+}
+
 // Safety cap: a normal frame is a few hundred KB; if a copy boundary is ever missed, burst rather
 // than grow unbounded (the very first "frame" also folds in all boot-time GX setup — bounded here).
 constexpr size_t kCap = 16u << 20;
@@ -157,7 +166,7 @@ extern "C" void sb_gx_capture_frame_boundary() {
     // render-target boundary the native single-framebuffer composite has no equivalent for (it keeps
     // drawing, double-compositing the scene = the file-select overbright). This is the DIRECT element
     // comparison (Dolphin pass structure vs native's), not a pixel-delta knob.
-    if (std::getenv("SUNBRIGHT_DBG_GXCOPY") && g_frame_no < 8) {
+    if (std::getenv("SUNBRIGHT_DBG_GXCOPY") && gx_dbg_window()) {
         fprintf(stderr, "[gxcopy] frame %ld: prims=%u dls=%u copies=%zu  seq:",
                 g_frame_no, fi.prims, fi.display_lists, fi.efb_copies.size());
         for (const auto& c : fi.efb_copies)
@@ -171,7 +180,7 @@ extern "C" void sb_gx_capture_frame_boundary() {
     // diff its blend layers against native's phase-6 batches (sms_boot_present batchdbg `bm=s/d`). GX
     // blend factor names: 0 ZERO 1 ONE 2 SRCCLR 3 INVSRCCLR 4 SRCALPHA 5 INVSRCALPHA 6 DSTALPHA
     // 7 INVDSTALPHA. This is the VALUE comparison the file-select overbright fix must be driven by.
-    if (std::getenv("SUNBRIGHT_DBG_GXBLEND") && g_frame_no >= 4 && g_frame_no < 8 && !fi.draws.empty()) {
+    if (std::getenv("SUNBRIGHT_DBG_GXBLEND") && gx_dbg_window() && !fi.draws.empty()) {
         fprintf(stderr, "[gxblend] frame %ld: %zu draws across %u EFB pass(es)\n",
                 g_frame_no, fi.draws.size(), (unsigned)fi.efb_copies.size() + 1);
         // Map the parser's DrawRec to the pure summary unit (gxblend_summary.h) — the SAME code the
@@ -187,7 +196,7 @@ extern "C" void sb_gx_capture_frame_boundary() {
     // (NOT run-length-collapsed like GXBLEND), mirroring native's SB_GXDRAW so tools/render/
     // gxstate_diff.py can group both engines by GX-state SIGNATURE and diff colorUpdate per signature.
     // Same factor-name table as GXBLEND. Bounded to the settled frame window [4,8).
-    if (std::getenv("SUNBRIGHT_DBG_GXDRAW") && g_frame_no >= 4 && g_frame_no < 8 && !fi.draws.empty()) {
+    if (std::getenv("SUNBRIGHT_DBG_GXDRAW") && gx_dbg_window() && !fi.draws.empty()) {
         for (size_t i = 0; i < fi.draws.size(); ++i) {
             const auto& d = fi.draws[i];
             fprintf(stderr,
@@ -202,7 +211,7 @@ extern "C" void sb_gx_capture_frame_boundary() {
     // the TEV color/konst registers. This is the ground-truth combiner to diff register-for-register
     // against native's generated frag (scratch/frames/bfrag_76.glsl) / NgxTevStage — settling whether
     // native's white sea is a TEV-GEN bug (wrong stage scale / `d` input) or an input (CLR0/vColor) bug.
-    if (std::getenv("SUNBRIGHT_DBG_GXTEV") && g_frame_no >= 4 && g_frame_no < 8
+    if (std::getenv("SUNBRIGHT_DBG_GXTEV") && gx_dbg_window()
         && fi.tev_snaps.size() == fi.draws.size() && !fi.draws.empty()) {
         uint64_t seen[64]; int nseen = 0;   // dedupe by a cheap combiner hash so each material prints once
         for (size_t i = 0; i < fi.draws.size(); ++i) {

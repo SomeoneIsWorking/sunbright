@@ -249,6 +249,22 @@ extern "C" void sb_gx_get_projection(int* type, float proj[6], float vp[6]) {
         }
     }
 }
+
+// The LIVE projection + viewport (NOT the latched perspective). GXPost / J2D 2D draws call a real
+// GXSetProjection(GX_ORTHOGRAPHIC) + GXSetViewport right before drawing, so at synchronous capture
+// time (SB_OWN_GXLIST) the live state IS that ortho — the correct matrix for a 2D screen-space draw.
+// sb_gx_get_projection deliberately hides this (it prefers the perspective for the 3D scene, whose
+// projection reaches GX only via the camera latch, never a live GXSetProjection). The capture uses
+// this to project ortho draws with their own ortho instead of the leftover 3D perspective.
+extern "C" void sb_gx_get_live_projection(int* type, float proj[6], float vp[6]) {
+    auto& g = state();
+    if (type) *type = (int)g.projType;
+    if (proj) for (int i = 0; i < 6; ++i) proj[i] = g.projMtx[i];
+    if (vp) {
+        vp[0] = g.vpLeft; vp[1] = g.vpTop;  vp[2] = g.vpWd;
+        vp[3] = g.vpHt;   vp[4] = g.vpNearz; vp[5] = g.vpFarz;
+    }
+}
 // Export the live hardware lights for the native scene capture's per-vertex lighting. Each
 // row: [valid, r,g,b, px,py,pz, dx,dy,dz, a0,a1,a2, k0,k1,k2] (view-space pos/dir, 0..1 colour,
 // matching ngx::LightSrc). Returns the count of VALID lights (0 ⇒ no light pipeline yet).
