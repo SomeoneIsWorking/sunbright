@@ -1048,3 +1048,21 @@ DEAD ENDS confirmed this session (do NOT re-chase): wire b76's "mirror" texmap (
 black assets, efb=nil); ph6 transform; lighting-as-the-cause (the lit 0.87 only matters because the draw
 shouldn't write colour at all); per-vertex NDC guard; skip-by-magic-key. The whole "off-screen composite +
 mirror snapshot" plan is UNNECESSARY for the overbright — it's one wrong colorUpdate bit.
+
+#### N+2 CORRECTION (same session): b76 is NOT a TModelWaterManager draw
+Checked ModelWaterManager.cpp blends: NONE use SRCALPHA/SRCCLR (they use ONE/ONE, DSTALPHA/*,
+SRCALPHA/INVSRCALPHA, ZERO/SRCALPHA…). So b76 (bm=1/4/2 = SRCALPHA/SRCCLR, baked into material
+0xc97c48's PE block) is a **MapXlu draw-buffer J3D material draw**, not a water-manager immediate draw.
+TModelWaterManager/TZBufferCatch merely show up as the ph6 GXSetColorUpdate callers (they wrap THEIR
+OWN passes FALSE→TRUE). The unresolved mechanism = the older memory's "TIMING CLOBBER" (commit 55bab80):
+the off-screen PASS sets colorUpdate=FALSE, but a later TRUE (per-draw or ReInitializeGX or the
+perform-list flush) restores it before native captures/flushes the MapXlu buffer containing b76. So b76
+(and the other 10 cU0-vs-cU1 signatures from the gxstate_diff finding) get cU=1. The FIX is to make
+native's b76/MapXlu flush honor the PASS-level colorUpdate=FALSE — i.e. capture color_update from the GX
+state that was live when GC issued THIS draw, not the perform-list flush moment. Concretely: (a) find who
+sets colorUpdate=FALSE for the off-screen scene PASS2 that contains b76 (candidate: JDREfbSetting.cpp:53
+`GXSetColorUpdate((flags&1)==0)` / JDREfbCtrl.cpp:11, or the draw-buffer/pass frameInit), (b) determine
+why native runs a TRUE restore before the MapXlu flush that GC does not (ordering divergence), (c) fix the
+ordering OR latch colorUpdate per-draw at J3D-material draw time. Value target: fileselect_overbright.py
+42.6→~14 (== SB_SKIP_KEY=eb5c8e74). Do NOT re-pursue the mirror/off-screen-composite plan — the overbright
+is purely this one colorUpdate bit across ~11 draw signatures.
