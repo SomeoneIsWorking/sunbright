@@ -121,7 +121,6 @@ void TMapObjElasticCode::control() {}
 void TMapObjElasticCode::initMapObj() {}
 void TMapObjGrowTree::control() {}
 void TMapObjGrowTree::initMapObj() {}
-void TMapObjGrowTree::loadAfter() {}
 void TMapObjPuncher::control() {}
 void TMapObjPuncher::load(JSUMemoryInputStream&) {}
 void TMapObjSwitch::load(JSUMemoryInputStream&) {}
