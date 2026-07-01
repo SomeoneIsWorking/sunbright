@@ -28,7 +28,6 @@
 void TAmiKing::bind() {}
 void TAmiKing::calcRootMatrix() {}
 void TAmiKing::initMapObj() {}
-void TAmiKing::loadAfter() {}
 void TAmiKing::moveObject() {}
 void TAmiKing::touchPlayer(THitActor*) {}
 void TAnimalBase::calcRootMatrix() {}
