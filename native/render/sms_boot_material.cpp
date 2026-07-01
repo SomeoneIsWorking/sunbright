@@ -241,6 +241,17 @@ void sb_resolve_textures(J3DMaterial* mat, void* j3dTexturePtr, std::vector<SbTe
         // table texNo resolves to a wrong asset and ONLY the live bound image matches. Tag it so the
         // segmented present binds the live snapshot (keyed by the dest) instead of decoding.
         const void* liveImg = sb_gx_bound_tex_image(m);
+        // SB_EFB_PROBE: log every large (composite-quad-sized) texmap's static ResTIMG src and
+        // live GXTexObj image vs the recorded EFB-copy dests, so the b75/b76 EFB-sampler wash quads'
+        // bound pointers can be compared to the copy dest (why texsrc_is_efb_dest never matches).
+        if (lw >= 128 || lh >= 128) {
+            static const bool probe = [](){ const char* v = std::getenv("SB_EFB_PROBE"); return v && v[0] && v[0] != '0'; }();
+            if (probe) { static long n = 0; if (n < 80) { ++n;
+                std::fprintf(stderr, "[efbprobe] stage%d texmap%d texNo=%u %dx%d src=%p live=%p isEfbSrc=%d isEfbLive=%d\n",
+                             s, m, texNo, lw, lh, (const void*)src, liveImg,
+                             sb_boot_capture_texsrc_is_efb_dest(src),
+                             liveImg ? sb_boot_capture_texsrc_is_efb_dest(liveImg) : -1); } }
+        }
         const void* efbKey = nullptr;
         if (sb_boot_capture_texsrc_is_efb_dest(src))               efbKey = src;
         else if (liveImg && sb_boot_capture_texsrc_is_efb_dest(liveImg)) efbKey = liveImg;
@@ -257,7 +268,7 @@ void sb_resolve_textures(J3DMaterial* mat, void* j3dTexturePtr, std::vector<SbTe
             img.slot = m; img.w = (uint32_t)lw; img.h = (uint32_t)lh;
             img.wrap_s = t->wrapS; img.wrap_t = t->wrapT;
             img.linear = (t->magFilter == 1); img.min_filter = t->minFilter;
-            img.max_aniso = t->maxAnisotropy; img.efb_src = efbKey;
+            img.max_aniso = t->maxAnisotropy; img.efb_src = efbKey; img.src_ptr = src;
             out.push_back(std::move(img));
             continue;
         }
@@ -305,6 +316,7 @@ void sb_resolve_textures(J3DMaterial* mat, void* j3dTexturePtr, std::vector<SbTe
         // GX_LIN_MIP_LIN minification got point-sampled at grazing angles → shoreline moire.
         img.min_filter = t->minFilter;
         img.max_aniso  = t->maxAnisotropy;
+        img.src_ptr    = src;   // keep for the live efb_src re-evaluation in fill_batch_material
         img.rgba.resize((size_t)lw * lh);
         for (int y = 0; y < lh; ++y)
             std::memcpy(&img.rgba[(size_t)y * lw], &padded[(size_t)y * pw], (size_t)lw * 4);

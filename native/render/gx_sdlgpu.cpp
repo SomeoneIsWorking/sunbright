@@ -430,12 +430,16 @@ void draw_tev_segment(const sb::render::NvkTevVertex* verts, int nverts,
             SDL_GPUTextureSamplerBinding tsb[8];
             for (int s = 0; s < 8; ++s) {
                 // An EFB-copy snapshot consumer binds the registered snapshot (the live scene), not
-                // its decoded `rgba` (stale guest RAM). Falls back to white if the snapshot is absent.
+                // its decoded `rgba` (stale guest RAM). If the snapshot is absent, bind WHITE — NOT
+                // the stale rgba: (1) the guest RAM at an EFB-copy dest is garbage native never wrote;
+                // (2) calling tex_for() here (the rgba fallback) would BeginGPUCopyPass to upload the
+                // texture INSIDE this open render pass — the pre-pass upload loop SKIPS efb_src batches,
+                // so their rgba is never pre-uploaded → "copy pass during another pass" abort.
                 if (b.tex[s].efb_src) {
                     auto it = g_snap.find(b.tex[s].efb_src);
-                    if (it != g_snap.end() && it->second) {
-                        tsb[s].texture = it->second; tsb[s].sampler = g_samp_snap; continue;
-                    }
+                    tsb[s].texture = (it != g_snap.end() && it->second) ? it->second : g_white;
+                    tsb[s].sampler = (it != g_snap.end() && it->second) ? g_samp_snap : g_samp_def;
+                    continue;
                 }
                 bool has = b.tex[s].rgba && b.tex[s].w && b.tex[s].h;
                 tsb[s].texture = has ? tex_for(b.tex[s]) : g_white;

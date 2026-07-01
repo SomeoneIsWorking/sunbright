@@ -51,6 +51,7 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <unordered_set>
 
 using namespace sb::render;
 
@@ -203,6 +204,15 @@ const char* g_capture_drawbuf = nullptr;
 // EFB-sampler quads the real snapshot. See the 2026-06-30 overbright journal.
 struct EfbCopyMark { size_t batch_index; const void* dest; bool clear; int wd, ht; };
 std::vector<EfbCopyMark> g_efb_copies;
+// PERSISTENT set of every EFB-copy destination address ever seen (across frames). An EFB-copy dest
+// (スクリーンテクスチャ / the sea mirror) is a STABLE guest texture address — the producer GXCopyTex
+// and the consumer composite quad are in the same frame, but the consumer can be CAPTURED before its
+// producing copy is recorded into the per-frame g_efb_copies list (the 通常シーン copy lands at the
+// end of the main pass, yet the GXPost composite3 quad that samples it is checked at its own capture
+// point). Matching the per-frame list alone therefore MISSES composite3 (its src == the dest exactly,
+// but the dest isn't in g_efb_copies yet → isEfbSrc=0, the long-standing "no efb_src consumer" bug).
+// The persistent set recognizes the consumer regardless of intra-frame order.
+std::unordered_set<const void*> g_efb_dest_seen;
 // Capture-once-per-present lock (see sb_boot_capture_begin_scene / _end_scene below).
 bool g_locked = false;          // when true, sb_boot_capture_j3d/sphere skip (interval already done)
 bool g_want_capture = true;     // re-armed by the present consuming the buffer
@@ -344,6 +354,7 @@ const MatEntry* get_mat_entry(J3DMaterial* mat, J3DTexture* modelTex) {
     return &res.first->second;
 }
 
+extern "C" int sb_boot_capture_texsrc_is_efb_dest(const void* src);   // defined below (live efb check)
 // Fill an NvkTevBatch's tex[] slots + push/state from a MatEntry (called when opening a batch).
 void fill_batch_material(NvkTevBatch& b, const MatEntry& e) {
     b.push = e.push; b.shaderKey = e.key; b.fragGlsl = e.frag.c_str();
@@ -359,12 +370,19 @@ void fill_batch_material(NvkTevBatch& b, const MatEntry& e) {
     b.color_update = (uint8_t)cu; b.alpha_update = (uint8_t)au;
     for (const SbTexImage& t : e.tex) {
         if (t.slot < 0 || t.slot >= 8) continue;
-        if (t.rgba.empty() && !t.efb_src) continue;   // unbound (a snapshot texmap has empty rgba)
+        // RE-EVALUATE the EFB-sampler status LIVE (the material+texture decode is cached per
+        // J3DMaterial, but whether a texmap samples an EFB copy is dynamic — composite3's screen-
+        // texture material is first cached before its 通常シーン EFB copy is known, so the cached
+        // efb_src is a stale null). If the texmap's src is now a recorded EFB-copy dest, bind the
+        // snapshot (the present's draw_tev_segment prefers efb_src over the stale decoded rgba).
+        const void* efb = t.efb_src;
+        if (!efb && t.src_ptr && sb_boot_capture_texsrc_is_efb_dest(t.src_ptr)) efb = t.src_ptr;
+        if (t.rgba.empty() && !efb) continue;   // unbound (a snapshot texmap has empty rgba)
         b.tex[t.slot].rgba = t.rgba.empty() ? nullptr : (const uint8_t*)t.rgba.data();
         b.tex[t.slot].w = t.w; b.tex[t.slot].h = t.h; b.tex[t.slot].linear = t.linear ? 1 : 0;
         b.tex[t.slot].min_filter = t.min_filter; b.tex[t.slot].max_aniso = t.max_aniso;
         b.tex[t.slot].wrap_s = t.wrap_s; b.tex[t.slot].wrap_t = t.wrap_t;
-        b.tex[t.slot].efb_src = t.efb_src;
+        b.tex[t.slot].efb_src = efb;
     }
 }
 
@@ -1028,6 +1046,12 @@ extern "C" void sb_boot_capture_set_drawbuf(const char* name) { g_capture_drawbu
 extern "C" void sb_boot_capture_efb_copy(const void* dest, int clear, int wd, int ht) {
     if (g_locked || g_consumed) return;
     g_efb_copies.push_back({g_batches.size(), dest, clear != 0, wd, ht});
+    if (dest) g_efb_dest_seen.insert(dest);   // persistent: recognize the consumer regardless of order
+    if (const char* v = std::getenv("SB_EFB_PROBE"); v && v[0] && v[0] != '0') {
+        static long n = 0; if (n < 12) { ++n;
+            std::fprintf(stderr, "[efbprobe] COPY dest=%p clear=%d %dx%d (phase %d, batch %zu)\n",
+                         dest, clear, wd, ht, g_capture_phase, g_batches.size()); }
+    }
     if (dbg_enabled())
         std::fprintf(stderr, "[efbcopy] mark batch_index=%zu dest=%p clear=%d %dx%d (phase %d)\n",
                      g_batches.size(), dest, clear, wd, ht, g_capture_phase);
@@ -1037,8 +1061,11 @@ extern "C" int sb_boot_capture_efb_copy_count() { return (int)g_efb_copies.size(
 // recorded this frame — i.e. this texmap samples a snapshot of the EFB, not a real asset texture.
 // (The post-pass soft-focus/bloom composite quads.) Used to attribute the overbright.
 extern "C" int sb_boot_capture_texsrc_is_efb_dest(const void* src) {
+    if (!src) return 0;
     for (const auto& c : g_efb_copies) if (c.dest == src) return 1;
-    return 0;
+    // Fall back to the persistent across-frames set: composite3 binds a stable EFB-copy dest address
+    // but is captured before this frame's copy is recorded (see g_efb_dest_seen).
+    return g_efb_dest_seen.count(src) ? 1 : 0;
 }
 // The batch index of the LAST EFB→texture copy that CLEARED the EFB this frame (or -1 if none).
 // On GC that clear wipes the EFB, so every batch captured before it was snapshotted to a texture

@@ -26,6 +26,7 @@
 #include <unordered_map>
 #include <vector>
 #include <algorithm>
+#include <cmath>
 #include <utility>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -744,6 +745,56 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
         }
         std::fprintf(stderr, "[blenddrill] %zu distinct blend classes among %zu main-pass batches\n",
                      sigs.size(), mainIdx.size());
+    }
+
+    // SB_FS_CANDS=1: ONE-RUN composite-structure sweep. The file-select frame is a render-to-EFB-
+    // texture composite (journal 2026-06-30): the scene renders OFF-SCREEN to スクリーンテクスチャ
+    // and the visible frame is composite3 (an imm quad SAMPLING that texture) + 2D menu. native's
+    // capture splits the scene into ph1 (unk40 drawBufferGroup = whole scene incl palm/blocks), ph4
+    // (mPerformListGX main scene), ph6 (GXPost = Mario + composite3). Which off-screen batch set
+    // reproduces the clean single scene (no ph1/ph4 double-draw) is an empirical question — dump
+    // candidates A..D in ONE run (each: render the candidate off-screen → snapshot to BOTH copy
+    // dests → CLEAR → draw the imm overlay, whose soft-focus quad re-displays the snapshot), then
+    // compare each scratch/frames/cand_*.ppm vs scratch/passes/oracle_pass3_final.png with
+    // fileselect_overbright.py to pick the structure, which becomes the SB_FS_COMPOSITE default.
+    static const bool fsCands = [](){ const char* v = std::getenv("SB_FS_CANDS"); return v && v[0] && v[0] != '0'; }();
+    if (fsCands && dumpThis && ncopies > 0 && !sceneFiltered) {
+        int ph1End2 = 0; while (ph1End2 < nScenePushed && batches[(size_t)ph1End2].phase == 1) ++ph1End2;
+        int ph6Start = nScenePushed; for (int i = 0; i < nScenePushed; ++i) if (batches[(size_t)i].phase == 6) { ph6Start = i; break; }
+        std::fprintf(stderr, "[fscands] nScene=%d ph1End=%d ph6Start=%d ncopies=%d\n",
+                     nScenePushed, ph1End2, ph6Start, ncopies);
+        static std::vector<uint8_t> cand_pix;
+        const int total = (int)batches.size();
+        auto render_cand = [&](const std::vector<NvkTevBatch>& off, const char* tag){
+            sb::gxsdl::frame_begin(c[0], c[1], c[2], c[3]);
+            // 1) render the candidate scene OFF-SCREEN (into g_color, not shown)
+            sb::gxsdl::draw_tev_segment(verts.data(), (int)verts.size(),
+                                        off.data(), (int)off.size(), /*clearFirst=*/true);
+            // 2) snapshot to every EFB-copy dest so whichever the imm quad samples re-displays it
+            for (int k = 0; k < ncopies; ++k) sb::gxsdl::snapshot_efb(copies[k].dest);
+            // 3) CLEAR the visible FB and draw ONLY the imm overlay (soft-focus quad samples snapshot)
+            sb::gxsdl::draw_tev_segment(verts.data(), (int)verts.size(),
+                                        batches.data() + nScenePushed, total - nScenePushed,
+                                        /*clearFirst=*/true);
+            sb::gxsdl::frame_end();
+            cand_pix.assign((size_t)kW * kH * 4, 0);
+            sb::gxsdl::readback(cand_pix.data(), (int)kW, (int)kH);
+            char p[160]; std::snprintf(p, sizeof p, "scratch/frames/cand_%s_%04d.ppm", tag, df);
+            write_ppm_buf(p, cand_pix.data(), kW, kH);
+            std::fprintf(stderr, "[fscands] %s : %zu offscreen batches\n", tag, off.size());
+        };
+        auto slice = [&](int lo, int hi){ std::vector<NvkTevBatch> v;
+            for (int i = lo; i < hi && i < nScenePushed; ++i) v.push_back(batches[(size_t)i]); return v; };
+        // A = whole scene (ph1+ph4+ph6) off-screen
+        render_cand(slice(0, nScenePushed), "A_all");
+        // B = ph1 only (the drawBufferGroup whole-scene flush)
+        render_cand(slice(0, ph1End2), "B_ph1");
+        // C = ph4+ph6 (no ph1)
+        render_cand(slice(ph1End2, nScenePushed), "C_ph46");
+        // D = ph1 + ph6 (whole-scene flush + Mario, skip the ph4 redundant main re-draw)
+        { std::vector<NvkTevBatch> v = slice(0, ph1End2);
+          for (int i = ph6Start; i < nScenePushed; ++i) v.push_back(batches[(size_t)i]);
+          render_cand(v, "D_ph1_6"); }
     }
 
     // SB_EFB_HONOR_CLEAR_SEG (default OFF): honor the EFB *clear* between segments. The GC clears the

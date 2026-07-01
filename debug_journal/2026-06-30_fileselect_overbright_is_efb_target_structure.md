@@ -879,3 +879,83 @@ THE FIX (single, now fully specified):
 Verify each step with tools/render/passdiff.py (per-pass) + blend_drill.py + fileselect_overbright.py.
 The SB_FS_COMPOSITE WIP (gated off) is the starting scaffold; its named blockers (soft-focus snapshot at
 end-of-scene; don't drop ph1's content; composite quad re-displays texB) are exactly this fix.
+
+### 2026-07-01 (IMPLEMENTATION session) — FRESH ground truth: native captures NO efb_src consumer; ph6 is mis-transformed; the wash is b75/b76
+Started the composite implementation. Built SB_FS_CANDS (one-run composite-structure sweep: render a
+candidate scene OFF-SCREEN → snapshot to both copy dests → CLEAR → draw imm overlay only). RESULT:
+candidates A(all)/B(ph1)/C(ph4+6)/D(ph1+6) ALL scored 145.6 vs oracle pass3 — IDENTICAL regardless of
+off-screen content, mean RGB ~(4,4,23) = NEAR BLACK + blue menu. ⇒ **the imm overlay does NOT
+re-display the scene snapshot.** The handoff's premise ("native already captures the composite3 /
+soft-focus quad that samples the snapshot") is FALSE in the current build.
+
+Confirmed by fresh settled diagnostics (SB_BATCH_DBG=-1 batchtev + SB_J3D_DBG EFB-SAMPLER count):
+- **ZERO native batches carry efb_src** (all 79 scene batches efb=(nil)/(nil); imm EFB-SAMPLER count=0).
+  So NOTHING in native samples the recorded EFB copies (0x..79c0 256x256 mirror; 0x..3cda0 320x224
+  soft-focus). The segmented-present snapshot infra has no consumer → it is a no-op today.
+- **The overbright wash is ph6 batches b75/b76** (256x256 textured, bm=1/4/5 a=0.5 rgb0.86 / bm=1/4/2
+  rgb0.87 the SRCALPHA/SRCCLR multiply). They DECODE STALE guest RAM (texsrc didn't match a copy dest)
+  → flat ~0.87 white. b76 geometry is DEGENERATE (ndcX[-106119,124861], z[-41056,64870]) = a
+  full-frustum volume that spans the screen → full-screen wash.
+- **ph6 is MIS-TRANSFORMED:** EVERY ph6 scene batch (b60-74 = Mario/Chr/UI) has off-screen NDC
+  (ndcX≈[-250,-128] all < -1, ndcY≈[450,900]). So ph6's legit content renders OFF-SCREEN (invisible);
+  only the degenerate b76 wash covers the visible frame. This is why dropping ph6 IMPROVES the image
+  (journal above: ph1+ph4 keep / ph6 drop → 13.6) without losing visible content — Mario was never
+  visible from ph6 anyway. ph6 (GXPost/initECDisp, J2D/ortho screen-space) is transformed with the
+  wrong matrix/projection in native's capture.
+
+⇒ The picture is bigger than "add composite3": (1) native has no efb_src consumer at all (the b75/b76
+quads' bound texmap pointer != the GXCopyTex dest — probing why with SB_EFB_PROBE), and (2) ph6
+geometry is mis-projected off-screen. The dominant 42.7→~13.6 win is entirely removing the b75/b76
+stale-RAM wash. Tools this session: SB_FS_CANDS (one-run candidate composites), SB_EFB_PROBE (log large
+texmaps' src/live ptr vs copy dests).
+
+### 2026-07-01 (IMPLEMENTATION cont.) — FIXED the "no efb_src consumer" root bug + a mid-pass crash; but composite3 has NO visible effect (the wash is elsewhere)
+Two real bugs fixed this session (committed), plus a disproven approach:
+
+**FIX 1 — composite3 IS now recognized as an EFB sampler (the long-standing "0 efb_src" bug).**
+SB_EFB_PROBE proved the soft-focus/composite3 consumers (b27/b28 in ph1, b45/b46 in ph4) bind a
+320x224 texmap whose ResTIMG src `0x..3cda0` EXACTLY equals the 通常シーン EFB-copy dest `0x..3cda0`
+— yet `texsrc_is_efb_dest` returned 0. Two causes, both fixed:
+  (a) the per-frame `g_efb_copies` list is checked when the consumer is captured, but the consumer is
+      captured BEFORE its producing GXCopyTex is recorded → miss. Fix: a PERSISTENT `g_efb_dest_seen`
+      set (an EFB-copy dest is a stable guest address; recognize it across frames).
+  (b) the MatEntry (incl. efb_src) is CACHED per-J3DMaterial at first resolve — composite3's material
+      was cached in an early frame before the copy was known → efb_src cached stale-null forever. Fix:
+      store the texmap `src_ptr` in SbTexImage and RE-EVALUATE efb_src LIVE in fill_batch_material
+      (the efb-sampler status is dynamic). Now b27/b28/b45/b46 correctly carry efb=`0x..3cda0`.
+
+**FIX 2 — mid-render-pass copy-pass crash.** With efb_src now set, an efb batch whose snapshot is
+absent fell through to `tex_for()` (a texture upload = BeginGPUCopyPass) INSIDE the open render pass
+(the pre-pass upload loop SKIPS efb_src batches) → SDL validation abort "Cannot begin copy pass during
+another pass". Fix (gx_sdlgpu.cpp): an efb_src batch with a missing snapshot binds WHITE, never tex_for
+(binding the stale EFB-dest guest RAM was wrong anyway). Deterministic crash → gone.
+
+**BUT the headline number did NOT move (42.6 → 42.6).** The composite3 consumers b27/b45 are captured at
+batch <77, BEFORE the copy1 snapshot (batch 77), so in the present they bind WHITE (snapshot not ready).
+Whether they bind white or the old stale RAM makes ZERO visible difference — so composite3 is NOT the
+overbright. On GC these consumers sample the PRIOR-frame end-of-scene screen texture (temporal); native
+has no persisted snapshot for them. Even if wired, they are soft-focus/bloom that ADD to an
+already-directly-painted scene → would not fix overbright without the full off-screen-only structure.
+
+**The dominant wash is b12/b76** (shaderKey eb5c8e74c39d96b8; journal above: SB_SKIP_KEY=eb5c8e74 →
+14.2). b76 binds an ASSET texture (live 0xc71340, src 0x..ef6ec0 — NEITHER is a copy dest, so FIX 1
+does not touch it) and its geometry is DEGENERATE (verts project to ±100000). It covers the screen as a
+near-white SRCALPHA/SRCCLR multiply. On GC b76 is the mirror/EFB composite (binds the 256x256 mirror
+EFB texture via a GXTexObj that native doesn't wire → it grabs a stale asset instead).
+
+**DISPROVEN this session:** a "degenerate-NDC guard" (skip batches whose verts project beyond ±1000) —
+it skipped 54/79 batches (the whole scene, delta 139.7). scene[j].x/y are NOT clip-clamped NDC[-1,1]:
+a legit batch (sky dome, terrain) has behind-camera/outlier verts that project huge while its in-view
+part is fine, so a per-vertex magnitude test cannot separate "all verts huge" (degenerate b76) from
+"some verts huge" (normal partial-clip). REVERTED. Do NOT retry a per-vertex NDC-magnitude guard.
+
+**REMAINING to fix the overbright (the real composite, next session):**
+1. b12/b76 is an EFB-readback composite (mirror texobj) native renders as a degenerate white wash. It is
+   the dominant overbright (skipping it alone → 14.2). Two faithful options: (a) wire the mirror GXTexObj
+   so b76's live image resolves to the 256x256 mirror copy dest (0x..79c0) → FIX 1 tags it → binds the
+   mirror snapshot; or (b) per the EFB-readback-gap policy, skip the unreproducible composite — but by a
+   FAITHFUL identifier (its material/mirror-consumer nature), NOT a magic key or NDC-magnitude.
+2. ph6 is mis-transformed: every ph6 scene batch (Mario/Chr b60-74) projects off-screen (ndcX all < -1).
+   Separate transform bug (wrong matrix for the GXPost/ortho screen-space pass).
+3. The soft-focus consumers (b27/b45) need a PERSISTED prior-frame scene snapshot to sample (they draw
+   before this frame's copy). Only matters once the scene is off-screen-only.

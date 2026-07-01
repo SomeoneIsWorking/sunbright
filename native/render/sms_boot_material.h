@@ -36,6 +36,11 @@ struct SbTexImage {
     // samples a snapshot of the framebuffer (the GC soft-focus/bloom/mirror composite), not `rgba`.
     // The segmented present binds the snapshot registered under this key. (See the overbright journal.)
     const void* efb_src = nullptr;
+    // The texmap's resolved ResTIMG image-data host pointer, kept so the batch-fill can RE-EVALUATE
+    // efb_src LIVE each frame (the EFB-sampler status is dynamic: a material is decoded+cached once,
+    // but whether its src is an EFB-copy dest depends on copies recorded across frames — composite3's
+    // material is first cached before the screen-texture copy is known, so a cached efb_src is stale-null).
+    const void* src_ptr = nullptr;
 };
 
 // Resolve+decode every texmap the material's TEV stages reference. `tex` is the model's
