@@ -105,7 +105,11 @@ unsigned long g_emitted = 0, g_parse_fail = 0, g_boundaries = 0;
 // GXCOPY oracles capture the file-select POST-pass composite for the overbright value comparison.
 static inline bool gx_dbg_window() {
     static const long at = [](){ const char* v = std::getenv("SUNBRIGHT_DBG_GXAT"); return v && v[0] ? atol(v) : 4; }();
-    return g_frame_no >= at && g_frame_no < at + 4;
+    // SUNBRIGHT_DBG_GXAT_WIDTH widens the window past the default 4 frames — needed to attribute a
+    // scene reached only after real-time input (e.g. probe-driven Start presses) whose settled frame
+    // number isn't known in advance.
+    static const long width = [](){ const char* v = std::getenv("SUNBRIGHT_DBG_GXAT_WIDTH"); return v && v[0] ? atol(v) : 4; }();
+    return g_frame_no >= at && g_frame_no < at + width;
 }
 
 // Safety cap: a normal frame is a few hundred KB; if a copy boundary is ever missed, burst rather

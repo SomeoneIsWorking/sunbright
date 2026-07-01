@@ -454,10 +454,18 @@ static void sb_drawbuf_inventory() {
 		"DrawBuf Map 半透明優先2 (opa)", "DrawBuf Map 半透明優先2 (xlu)",
 		"DrawBuf Map 半透明優先 (opa)", "DrawBuf Map 半透明優先 (xlu)",
 		"DrawBuf Sky Opa", "DrawBuf Sky Xlu",
+		"DrawBuf Mirror Opa", "DrawBuf Mirror Xlu",
+		"DrawBuf MirrorSky Opa", "DrawBuf MirrorSky Xlu",
+		"DrawBuf MirrorAlways Opa", "DrawBuf MirrorAlways Xlu",
 	};
 	for (const char* nm : names) {
 		JDrama::TDrawBufObj* o = JDrama::TNameRefGen::search<JDrama::TDrawBufObj>(nm);
 		J3DDrawBuffer* b = o ? o->getDrawBuffer() : nullptr;
+		if (o) {
+			void** vt = *(void***)o;
+			Dl_info info; const char* cls = (dladdr(vt[0], &info) && info.dli_sname) ? info.dli_sname : "?";
+			std::fprintf(stderr, "[drawbuf-inv]   %s vtbl-class=%s\n", nm, cls);
+		}
 		// Walk the buffer's packet chains: heads = occupied slots, packets = total entered models.
 		// A non-empty global Map/Chr buffer that native never DRAWS is the missing-geometry target.
 		long heads = 0, packets = 0;
