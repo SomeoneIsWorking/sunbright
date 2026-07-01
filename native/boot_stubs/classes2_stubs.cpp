@@ -302,8 +302,7 @@ void TMapObjWaterSpray::calc() {}
 // THideObjInfo: key = perform (first method shadowing JDrama::TViewObj::perform)
 void THideObjInfo::perform(u32, JDrama::TGraphics*) {}
 
-// TMapObjSwitch: key = control (first method shadowing TMapObjBase::control)
-void TMapObjSwitch::control() {}
+// TMapObjSwitch::control lives natively in reference/sms/src/MoveBG/MapObjTown.cpp.
 
 // TRedCoinSwitch: key = receiveMessage (first method shadowing TMapObjBase::receiveMessage)
 BOOL TRedCoinSwitch::receiveMessage(THitActor*, u32) { return 0; }
