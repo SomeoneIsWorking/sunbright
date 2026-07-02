@@ -76,9 +76,6 @@ BOOL TMapObjBall::receiveMessage(THitActor*, u32) { return 0; }
 // TRandomFruit: key = initMapObj (first and only explicit virtual)
 void TRandomFruit::initMapObj() {}
 
-// TCoverFruit: key = loadAfter (first explicit virtual)
-void TCoverFruit::loadAfter() {}
-
 // TBigWatermelon: key = loadAfter (first explicit virtual)
 void TBigWatermelon::loadAfter() {}
 

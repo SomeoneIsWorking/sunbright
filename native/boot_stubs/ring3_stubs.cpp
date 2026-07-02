@@ -156,7 +156,6 @@ BOOL TOneShotGenerator::receiveMessage(THitActor*, unsigned int) { return 0; }
 void TPinnaCoaster::initMapObj() {}
 void TRedCoinSwitch::control() {}
 void TRedCoinSwitch::loadAfter() {}
-void TRedCoinSwitch::load(JSUMemoryInputStream&) {}
 void TResetFruit::appearing() {}
 void TResetFruit::breaking() {}
 void TResetFruit::checkGroundCollision(JGeometry::TVec3<float>*) {}
@@ -191,7 +190,6 @@ void TShellCup::perform(unsigned int, JDrama::TGraphics*) {}
 void TSwingBoard::control() {}
 void TSwingBoard::load(JSUMemoryInputStream&) {}
 void TViking::initMapObj() {}
-void TViking::loadAfter() {}
 void TWireBell::control() {}
 // (emit vtable for TGuide)
 //
