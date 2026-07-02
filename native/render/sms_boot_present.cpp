@@ -384,14 +384,11 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
         if (skipImm) break;
         if (bi == skipImmIdx) continue;
         const SbImmBatch& ib = ibatches[bi];
-        // Colour-OFF passes (alpha-only mask writers, `colorUpdate=0`) and DSTALPHA-reading
-        // composites (blend factor 6 / 7) are BOTH emitted through the batch — the SDL3 GPU
-        // backend honors color_write_mask (gx_sdlgpu.cpp:165-168) so a colour-OFF pass writes
-        // only alpha, and DSTALPHA/INVDSTALPHA blend factors map through sdl_blend_factor()
-        // correctly (gx_sdlgpu.cpp:92-93). Previous stopgap dropped this whole class because
-        // the imm path was missing the J3D mask writers for TModelWaterManager — that's a
-        // Delfino gameplay concern; file-select's J2D UI mask writers ARE imm draws and
-        // compose within the same pass.
+        // sb::render::should_emit_imm_batch (gx_imm_xform.h) — pure predicate under test in
+        // native/render/tests/parity/imm_batch_emit_test.cpp. Post-ca8d5f3 it returns true
+        // for every captured batch; the SDL3 GPU backend honors color_write_mask +
+        // DSTALPHA/INVDSTALPHA blend factors so alpha-plane writers + DSTALPHA readers compose.
+        if (!sb::render::should_emit_imm_batch(ib)) continue;
         NvkTevBatch b{};
         b.vstart = (uint32_t)nscene + ib.vstart;
         b.vcount = ib.vcount;

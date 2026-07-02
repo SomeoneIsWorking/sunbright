@@ -66,6 +66,23 @@ struct SbImmBatch {
     const NgxTevState* tev = nullptr;
 };
 
+// Which captured imm batches the present layer should emit as NvkTevBatches. Prior to
+// commit ca8d5f3 sms_boot_present.cpp:386-398 hard-dropped every batch with
+// `colorUpdate=0` (alpha-plane mask writer) OR any DSTALPHA blend factor (src or dst
+// factor 6/7) as a stopgap against the Delfino water-volume mask reader painting
+// fullscreen black when its J3D mask writers weren't captured. That drop also elided
+// the file-select J2D UI DSTALPHA composition, which writes its own mask via imm
+// draws in the same pass. The current rule: emit every captured batch — the SDL3 GPU
+// backend (gx_sdlgpu.cpp) honors color_write_mask and DSTALPHA blend factors
+// correctly, so a mask writer + mask reader within the same pass composes as expected.
+//
+// Retained as a pure predicate so it is DIRECTLY testable at the level the drawdiff
+// signature-bucket divergence surfaced (native emitting 0 (1,6,7) and 0 (1,1,1) batches
+// vs oracle's 14 and 4). Test: native/platform/tests/imm_batch_emit_test.cpp.
+inline bool should_emit_imm_batch(const SbImmBatch& /*ib*/) {
+    return true;
+}
+
 // GX primitive ids (GXEnum.h) — only the ones immediate mode emits.
 enum {
     SB_GX_QUADS         = 0x80,
