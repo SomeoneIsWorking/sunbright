@@ -21,6 +21,12 @@
 #include <cmath>
 #include <vector>
 
+// TApplication::mAppState reader — defined in native/src/sb_parity_appstate.cpp (sms-native
+// lib, which has the sms include path). NON-inline so sb_parity_emit's call site in
+// sms-render creates a hard link dependency, forcing the linker to pull in the sms-native
+// TU that defines it (a static-init constructor would otherwise be stripped by --gc-sections).
+extern "C" unsigned sb_get_app_state();
+
 namespace sb::render {
 
 // Per-light + channel state the caller fills from the GX accessors (sb_gx_get_lights /
@@ -62,6 +68,13 @@ inline void sb_parity_emit(std::FILE* f, int frame, const float clear[4],
     // triangles) — the reliable geometry-parity number, unlike raw-vs-list vert counts.
     std::fprintf(f, "{\"frame\":%d,\"pass\":\"%s\",\"clear\":[%.3f,%.3f,%.3f,%.3f],\"nverts\":%d,\"tris\":%d,\"nbatch\":%d",
                  frame, pass, clear[0], clear[1], clear[2], clear[3], nverts, nverts / 3, nbatch);
+
+    // Game-state fingerprint (TApplication::mAppState — one of APP_STATE_{WAIT..MENU}).
+    // parity_sweep gates drawdiff on THIS matching between engines. A silent state mismatch
+    // (native at APP_STATE_TITLE, oracle at APP_STATE_GAMEPLAY, both settled) was shipping
+    // meaningless SBS captures before this — now it exits STATE-MISMATCH.
+    // Read directly from the native TApplication object: gpApplication.mAppState.
+    std::fprintf(f, ",\"appState\":%u", sb_get_app_state());
 
     // Projection + viewport (exact cross-engine game state).
     std::fprintf(f, ",\"projType\":%d,\"proj\":[%.5f,%.5f,%.5f,%.5f,%.5f,%.5f],\"vp\":[%.1f,%.1f,%.1f,%.1f,%.4f,%.4f]",

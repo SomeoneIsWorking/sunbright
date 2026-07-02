@@ -42,10 +42,15 @@ timeout -s KILL "$((SETTLE + 5))" setarch -R env \
   ./build/sunbright "$SUNBRIGHT_ROM" > scratch/passes/sbs_oracle.log 2>&1 &
 OPID=$!
 
-echo "[sbs] launching native (build-native/sms-boot, SB_STAGE=15, DUMP_START=250 MAX=4)..."
+echo "[sbs] launching native (build-native/sms-boot, SB_FILESELECT=1 SB_STAGE=15 SB_OWN_GXLIST=1)..."
+# SB_FILESELECT=1 routes native's fastboot through APP_STATE_TITLE → TSelectDir (the actual
+# file-select), NOT APP_STATE_GAMEPLAY (SB_STAGE=15 alone lands somewhere ELSE — session 16
+# SBS reveal). SB_OWN_GXLIST=1 uses the REAL master GX perform-list (the geometry-complete
+# path — session 15 memory [[fileselect-geometry-gap-is-ownlist]]) so the scene matches
+# what value-oracle measures. Same recipe as tools/render/fileselect_value_oracle.sh.
 timeout -s KILL "$((SETTLE + 5))" setarch -R env \
   SUNBRIGHT_DISC="$HERE/scratch/disc/sms.iso" SB_THP_FAST=1 SB_TURBO=1 \
-  SB_HOST_ALLOC_CAP_MB=3072 SB_STAGE=15 SB_SCENARIO=0 \
+  SB_HOST_ALLOC_CAP_MB=3072 SB_FILESELECT=1 SB_STAGE=15 SB_SCENARIO=0 SB_OWN_GXLIST=1 \
   SB_FRAME_DUMP=1 SB_FRAME_DUMP_START=250 SB_FRAME_DUMP_MAX=4 SB_WATCHDOG_SECS=0 \
   ./build-native/sms-boot > scratch/passes/sbs_native.log 2>&1 &
 NPID=$!

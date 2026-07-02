@@ -240,12 +240,24 @@ extern "C" void sb_gx_capture_frame_boundary() {
             "\"nan\":0,\"ndc\":[0,0,0,0,0,0],\"cks\":0.0,\"colcks\":0.0}",
             g_frame_no, kPassName[pass], fi.verts_pass[pass], fi.dls_pass[pass], fi.prims_pass[pass],
             fi.verts_pass[pass]);
+        // Game-state fingerprint (TApplication::mAppState @ gpApplication+0x8, US GMSE01 =
+        // 0x803E9700). Emitted BEFORE the projection fingerprint so parity_sweep can gate
+        // STATE-MISMATCH before touching proj values. One byte in guest RAM, read via
+        // g_ram_base — same helper attrib_r32 uses. When the guest hasn't populated it yet
+        // (pre-boot) it reads 0 = APP_STATE_WAIT, which matches native's zero-init default.
+        {
+            unsigned app_state = 0xFFFFu;
+            if (g_ram_base) {
+                app_state = (unsigned)g_ram_base[(0x803E9700u + 0x8) & 0x01FFFFFFu];
+            }
+            std::fprintf(f, ",\"appState\":%u", app_state);
+        }
         // FINGERPRINT (game-state signature — SETPROJECTION + SETVIEWPORT bytes from THIS frame's
         // FIFO stream, parsed by gx_parse). Both engines run identical guest code that sets
         // projection/viewport, so at the same game state these bytes match. parity_sweep.drawdiff
         // uses this fingerprint to pair frames across engines and downgrade the STATE-UNPINNED
         // banner. Read PER-PASS (proj_pass/vp_pass): the frame-global fi.proj/fi.vp is "last seen"
-        // (= HU»D ortho at end-of-frame), so it would put HUD state on the SCENE line and never
+        // (= HUD ortho at end-of-frame), so it would put HUD state on the SCENE line and never
         // match native's true scene projection. proj_type is the REAL GX type (0=persp/1=ortho),
         // NOT the pass loop index — the coincidence perspective==scene==0 hid this bug but was
         // fragile. Emit only when the pass actually captured a projection/viewport.

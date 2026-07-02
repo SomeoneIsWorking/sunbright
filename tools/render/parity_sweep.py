@@ -436,6 +436,44 @@ def _native_draw_sig(b):
         int(b.get("vc", 0)),         # vertex count
     )
 
+# --- STATE-MISMATCH gate (must run BEFORE any projection-fingerprint work) ---------------
+# TApplication::mAppState is the guest's own state machine — one of APP_STATE_{WAIT=0,
+# DEFAULT=1, BOOT=2, NLOGO=3, DONE=4, GAMEPLAY=5, MOVIE=6, QUIT=7, TITLE=8, MENU=9}. Two
+# engines settled at different mAppState values means the SBS is comparing entirely
+# different game screens; no downstream fingerprint or drawdiff has any meaning.
+_APP_STATES = ["WAIT","DEFAULT","BOOT","NLOGO","DONE","GAMEPLAY","MOVIE","QUIT","TITLE","MENU"]
+def _app_state_name(s):
+    if s is None: return "MISSING"
+    if s == 0xFFFF: return "UNKNOWN"
+    return _APP_STATES[s] if 0 <= s < len(_APP_STATES) else f"?{s}"
+
+def _dominant_app_state(dump):
+    """Most-common appState across all scene lines that carry it. Ignores UNKNOWN (0xFFFF)."""
+    from collections import Counter
+    c = Counter()
+    for f in dump:
+        if f.get("pass") != "scene": continue
+        s = f.get("appState")
+        if s is None or s == 0xFFFF: continue
+        c[int(s)] += 1
+    if not c: return None
+    return c.most_common(1)[0][0]
+
+def _state_mismatch_check(A, B):
+    """Returns (ok, message). ok=False means fail-loud before proceeding to drawdiff."""
+    sa = _dominant_app_state(A); sb = _dominant_app_state(B)
+    if sa is None and sb is None:
+        return True, "appState absent on both sides (pre-fingerprint dump — allowing)"
+    if sa is None:
+        return False, f"STATE-MISMATCH: oracle has no appState tag, native settled at APP_STATE_{_app_state_name(sb)}"
+    if sb is None:
+        return False, f"STATE-MISMATCH: native has no appState tag, oracle settled at APP_STATE_{_app_state_name(sa)}"
+    if sa != sb:
+        return False, (f"STATE-MISMATCH: oracle settled at APP_STATE_{_app_state_name(sa)} ({sa}), "
+                       f"native at APP_STATE_{_app_state_name(sb)} ({sb}) — they are on different game screens; "
+                       f"align fastboot so both reach the same TApplication::mAppState before comparing")
+    return True, f"STATE-MATCH: both engines at APP_STATE_{_app_state_name(sa)}"
+
 def drawdiff(pa, pb):
     """Per-draw ordered diff between two parity dumps that carry per-draw records:
     - oracle (gx_capture.cpp under SUNBRIGHT_PARITY_DRAWS=1) emits `draws`:[…] per line
@@ -452,6 +490,21 @@ def drawdiff(pa, pb):
     A, B = load_jsonl(pa), load_jsonl(pb)
     if not A or not B:
         print(f"HARNESS-FAIL: empty dump(s) ({pa}: {len(A)}, {pb}: {len(B)})"); return 2
+    # ── STATE-MISMATCH GATE (before ANY per-frame or per-draw work) ─────────────────────
+    # If the two engines' TApplication::mAppState disagrees, they're on different game
+    # screens and no downstream comparison has meaning. Fail loud with the two state names
+    # instead of silently producing a diff. This was added after a session-16 SBS shot
+    # showed oracle at APP_STATE_GAMEPLAY and native at APP_STATE_TITLE — same fastboot
+    # STAGE=15 env routes them to different states because each engine's fastboot uses
+    # 'stage 15' differently. The gate must fire BEFORE the projection fingerprint (which
+    # can coincidentally match on near/far even across states).
+    ok, msg = _state_mismatch_check(A, B)
+    if not ok:
+        print("=" * 78)
+        print(msg)
+        print("=" * 78)
+        return 2
+    print(msg)   # STATE-MATCH banner (single line before the drawdiff header)
     # STATE-PIN: pair frames by matching (projType, proj[6], vp[6]) fingerprint. If both sides
     # share a fingerprint, use it — that IS bit-equal SETPROJECTION/SETVIEWPORT bytes, i.e. the
     # game issued the same scene setup. Fall back to first-scene ordering + STATE-UNPINNED banner

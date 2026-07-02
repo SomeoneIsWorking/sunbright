@@ -44,7 +44,10 @@ list(APPEND SMS_NATIVE_SOURCES
      # Owns the active-camera transform for the native scene render (gpCamera -> view+proj).
      "${SMS_NATIVE_REPO_ROOT}/native/src/camera_latch.cpp"
      # Drives the real scene-draw flow natively (TSmJ3DScn::perform(8)) so entry() runs.
-     "${SMS_NATIVE_REPO_ROOT}/native/src/scene_drive.cpp")
+     "${SMS_NATIVE_REPO_ROOT}/native/src/scene_drive.cpp"
+     # sb_get_app_state() — TApplication::mAppState reader for sb_parity_dump.h (which lives
+     # in native/render/ and can't include <System/Application.hpp>). Session 16 STATE-MISMATCH gate.
+     "${SMS_NATIVE_REPO_ROOT}/native/src/sb_parity_appstate.cpp")
 
 add_library(sms-native STATIC ${SMS_NATIVE_SOURCES})
 
@@ -439,7 +442,10 @@ if(SMS_BUILD_BOOT)
     # (sms-gd) and the BE->host asset swappers (sms-assets) through the game's vtables,
     # so link the full RESCAN group (not just sms-native+sms-platform).
     target_link_libraries(sms-boot PRIVATE
-        "$<LINK_GROUP:RESCAN,sms-native,sms-gd,sms-assets,sms-platform,$<TARGET_NAME_IF_EXISTS:sms-bootstubs>>"
+        # sms-render is inside the RESCAN group because sb_parity_emit (in sms-render) calls
+        # sb_get_app_state (in sms-native). Without RESCAN, sms-render is linked after
+        # sms-native and the undef ref never resolves.
+        "$<LINK_GROUP:RESCAN,sms-native,sms-gd,sms-assets,sms-platform,sms-render,$<TARGET_NAME_IF_EXISTS:sms-bootstubs>>"
         Threads::Threads)
     # The native renderer (VI present hook -> nvk -> frame dump) is MANDATORY: sms-boot IS the
     # native renderer, and its single boot path always drives the SDL present loop. The build
