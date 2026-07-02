@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""fileselect_overbright.py — quantify the SB_OWN_GXLIST file-select OVERBRIGHT as a VALUE.
+"""title_overbright.py — quantify the SB_OWN_GXLIST title screen OVERBRIGHT as a VALUE.
 
 The geometry gap is closed by SB_OWN_GXLIST (see debug_journal/2026-06-30_fileselect_geometry_
 gap_is_ownlist.md), but on that foundation the scene renders OVERBRIGHT vs the Dolphin-GX oracle.
@@ -8,12 +8,12 @@ SETTLED native frame and the settled Dolphin-GX oracle, plus the std (a std-PRES
 delta == an additive brightness offset; a std-SCALING delta == a multiply).
 
 Capture the inputs first:
-  ORACLE: tools/render/fileselect_oracle.sh   -> scratch/oracle/fileselect_gx_oracle.png
+  ORACLE: tools/render/title_oracle.sh   -> scratch/oracle/title_gx_oracle.png
   NATIVE: build-native/sms-boot ... SB_OWN_GXLIST=1 SB_FRAME_DUMP=1 SB_FRAME_DUMP_SETTLE=1
           (the settle-gated dump waits for the option camera to settle) -> newest scratch/frames/boot_*.ppm
 
-Usage: fileselect_overbright.py [native.ppm] [oracle.png]
-  defaults: newest scratch/frames/boot_*.ppm  +  scratch/oracle/fileselect_gx_oracle.png
+Usage: title_overbright.py [native.ppm] [oracle.png]
+  defaults: newest scratch/frames/boot_*.ppm  +  scratch/oracle/title_gx_oracle.png
 A fix is good iff the per-channel |delta| shrinks toward 0 with std staying matched.
 """
 import sys, glob, os
@@ -27,7 +27,7 @@ def newest_native():
 
 def main():
     npath = sys.argv[1] if len(sys.argv) > 1 else newest_native()
-    opath = sys.argv[2] if len(sys.argv) > 2 else 'scratch/oracle/fileselect_gx_oracle.png'
+    opath = sys.argv[2] if len(sys.argv) > 2 else 'scratch/oracle/title_gx_oracle.png'
     n = np.asarray(Image.open(npath).convert('RGB')).astype(float)
     H, W = n.shape[:2]
     # Rescale the oracle to the native frame size (the oracle is full-res; framing matches per

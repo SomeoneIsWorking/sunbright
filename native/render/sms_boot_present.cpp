@@ -225,7 +225,7 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
     } else if (g_settle_dump) {
         // Dump only once the option camera has SETTLED (the file-select choice scene, ~present
         // frame 1690 — the number isn't known ahead of time, so we gate on the settle detector,
-        // mirroring SB_BATCH_DBG=-1). This is the sms-boot companion to fileselect_oracle.sh's
+        // mirroring SB_BATCH_DBG=-1). This is the sms-boot companion to title_oracle.sh's
         // settled Dolphin-GX capture: it lets the two be pixel-compared at the SAME settled state.
         if (!g_dump_started && nscene > 0 && sb_camera_view_settled()) g_dump_started = true;
         dumpThis = g_dump_started;
@@ -762,7 +762,7 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
     // candidates A..D in ONE run (each: render the candidate off-screen → snapshot to BOTH copy
     // dests → CLEAR → draw the imm overlay, whose soft-focus quad re-displays the snapshot), then
     // compare each scratch/frames/cand_*.ppm vs scratch/passes/oracle_pass3_final.png with
-    // fileselect_overbright.py to pick the structure, which becomes the SB_FS_COMPOSITE default.
+    // title_overbright.py to pick the structure, which becomes the SB_FS_COMPOSITE default.
     static const bool fsCands = [](){ const char* v = std::getenv("SB_FS_CANDS"); return v && v[0] && v[0] != '0'; }();
     if (fsCands && dumpThis && ncopies > 0 && !sceneFiltered) {
         int ph1End2 = 0; while (ph1End2 < nScenePushed && batches[(size_t)ph1End2].phase == 1) ++ph1End2;

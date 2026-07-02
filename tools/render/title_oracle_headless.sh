@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# fileselect_oracle_headless.sh — capture the Dolphin-GX ground-truth render of the settled
-# stage-15 file-select 3-block picker, HEADLESS (no window, no ./run.sh). Companion to the
-# windowed tools/render/fileselect_oracle.sh — use this one when there's no display / the user
+# title_oracle_headless.sh — capture the Dolphin-GX ground-truth render of the settled
+# stage-15 title screen 3-block picker, HEADLESS (no window, no ./run.sh). Companion to the
+# windowed tools/render/title_oracle.sh — use this one when there's no display / the user
 # doesn't want a headed run.
 #
-# Recipe matches tools/render/fileselect_value_oracle.sh's oracle-capture step (known to reach
+# Recipe matches tools/render/title_value_oracle.sh's oracle-capture step (known to reach
 # the settled picker reliably): SUNBRIGHT_HEADLESS=1 SUNBRIGHT_FASTBOOT=1 SUNBRIGHT_STAGE=15
 # SUNBRIGHT_SCENARIO=0 + probe, 2x Start via /pad to leave PRESS-START, then settle. Adds
 # SUNBRIGHT_DUMP=1 so Dolphin's FrameDumper writes PNGs to <home>/.local/share/dolphin-emu/Dump/Frames
 # even though nothing is presented to a window (headless still renders real Vulkan frames).
 #
-# Usage: tools/render/fileselect_oracle_headless.sh [settle_s=55]
-# Output: scratch/oracle/fileselect_gx_oracle_headless.png
+# Usage: tools/render/title_oracle_headless.sh [settle_s=55]
+# Output: scratch/oracle/title_gx_oracle_headless.png
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$HERE"
@@ -19,7 +19,7 @@ source .env 2>/dev/null || { echo "no .env (need SUNBRIGHT_ROM)"; exit 1; }
 
 SETTLE="${1:-55}"
 DUMP="$HOME/.local/share/dolphin-emu/Dump/Frames"
-OUT="scratch/oracle/fileselect_gx_oracle_headless.png"
+OUT="scratch/oracle/title_gx_oracle_headless.png"
 mkdir -p scratch/oracle
 rm -f "$DUMP"/*.png 2>/dev/null
 
@@ -29,7 +29,7 @@ echo "[oracle-headless] launching build/sunbright HEADLESS -> stage 15 (probe, d
 timeout -s KILL 240 setarch -R env \
   SUNBRIGHT_ROM="$SUNBRIGHT_ROM" SUNBRIGHT_HEADLESS=1 SUNBRIGHT_FASTBOOT=1 SUNBRIGHT_STAGE=15 \
   SUNBRIGHT_SCENARIO=0 SUNBRIGHT_NGX_PRESENT=0 SUNBRIGHT_PROBE=1 SUNBRIGHT_TURBO=1 \
-  SUNBRIGHT_DUMP=1 build/sunbright > scratch/oracle/fileselect_oracle_headless.log 2>&1 &
+  SUNBRIGHT_DUMP=1 build/sunbright > scratch/oracle/title_oracle_headless.log 2>&1 &
 OPID=$!
 
 echo "[oracle-headless] waiting for probe..."

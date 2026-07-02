@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# fileselect_overbright_drill.sh — AUTOMATICALLY attribute the SB_OWN_GXLIST file-select overbright
-# to a render layer. For each candidate ablation it boots sms-boot to a SETTLED file-select, dumps
-# one frame, measures the per-channel mean-RGB delta vs the Dolphin-GX oracle (fileselect_overbright.py),
+# title_overbright_drill.sh — AUTOMATICALLY attribute the SB_OWN_GXLIST title screen overbright
+# to a render layer. For each candidate ablation it boots sms-boot to a SETTLED title screen, dumps
+# one frame, measures the per-channel mean-RGB delta vs the Dolphin-GX oracle (title_overbright.py),
 # and ranks the configs by how much they REDUCE the overbright (mean |delta|). The ablation that drops
 # the delta the most owns the overbright — no eyeballing batch dumps.
 #
-# Prereq: scratch/oracle/fileselect_gx_oracle.png (tools/render/fileselect_oracle.sh).
+# Prereq: scratch/oracle/title_gx_oracle.png (tools/render/title_oracle.sh).
 # Each run polls for the settled dump and kills as soon as it lands (settle ~present frame 564).
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"; cd "$HERE"
 source .env 2>/dev/null
-ORACLE=scratch/oracle/fileselect_gx_oracle.png
-[ -f "$ORACLE" ] || { echo "missing $ORACLE (run fileselect_oracle.sh)"; exit 1; }
+ORACLE=scratch/oracle/title_gx_oracle.png
+[ -f "$ORACLE" ] || { echo "missing $ORACLE (run title_oracle.sh)"; exit 1; }
 mkdir -p scratch/passes/drill
 PAD=""; for f in $(seq 200 12 560); do PAD="$PAD ${f}:START $((f+6)):-"; done
 
@@ -40,7 +40,7 @@ run_one() {
   pkill -9 -x sms-boot 2>/dev/null; wait $pid 2>/dev/null
   if [ -z "$got" ]; then echo "  $label: NO settled frame"; return; fi
   cp "$got" "scratch/passes/drill/${label}.ppm"
-  python3 tools/render/fileselect_overbright.py "scratch/passes/drill/${label}.ppm" "$ORACLE" \
+  python3 tools/render/title_overbright.py "scratch/passes/drill/${label}.ppm" "$ORACLE" \
     > "scratch/passes/drill/${label}.diff" 2>&1
   local d; d=$(grep 'mean |delta|' "scratch/passes/drill/${label}.diff" | grep -o 'channels: [0-9.]*' | grep -o '[0-9.]*')
   echo "$d $label $(basename "$got")"

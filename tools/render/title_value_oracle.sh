@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# fileselect_value_oracle.sh — VALUE-track parity for the stage-15 file-select screen.
+# title_value_oracle.sh — VALUE-track parity for the stage-15 title screen screen.
 #
-# Captures the per-frame GX-command-stream parity JSON from BOTH engines at file-select and runs the
+# Captures the per-frame GX-command-stream parity JSON from BOTH engines at title screen and runs the
 # cross-engine diff (tools/render/parity_sweep.py). This is the VALUE track (lights/projType/geometry
-# aggregate) — the pixel track is fileselect_oracle.sh.
+# aggregate) — the pixel track is title_oracle.sh.
 #
 #   ORACLE (ground truth)  : build/sunbright (pure Dolphin-GX) → gx_capture.cpp → SUNBRIGHT_PARITY_DUMP
 #   NATIVE (the product)   : build-native/sms-boot → sb_parity_dump.h → SB_PARITY_DUMP
@@ -45,7 +45,7 @@ timeout -s KILL 200 setarch -R env SUNBRIGHT_DISC=scratch/disc/sms.iso SB_THP_FA
   SB_FRAME_DUMP=1 SB_FRAME_DUMP_ON_SCENE=1 SB_PARITY_DUMP="$NATIVE" \
   SB_PAD_SCRIPT="$S" ./build-native/sms-boot > scratch/passes/fs_native.log 2>&1 &
 NPID=$!
-# sms-boot dumps every frame once on-scene; let it reach + settle file-select, then stop.
+# sms-boot dumps every frame once on-scene; let it reach + settle title screen, then stop.
 sleep 150; pkill -9 -x sms-boot 2>/dev/null; wait $NPID 2>/dev/null
 echo "    native frames: $(wc -l < "$NATIVE" 2>/dev/null || echo 0)"
 

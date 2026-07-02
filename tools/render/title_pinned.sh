@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# fileselect_pinned.sh — SAME-STATE PINNED file-select parity capture.
+# title_pinned.sh — SAME-STATE PINNED title screen parity capture.
 #
 # Runs the Dolphin-GX oracle (build/sunbright) and the native renderer
 # (build-native/sms-boot) with:
-#   • identical SUNBRIGHT_FASTBOOT / SB_FASTBOOT path — both fastboot to stage 15 (file-select)
+#   • identical SUNBRIGHT_FASTBOOT / SB_FASTBOOT path — both fastboot to stage 15 (title screen)
 #   • identical SUNBRIGHT_PAD_SCRIPT / SB_PAD_SCRIPT — same VI-indexed pad input
 #   • identical SUNBRIGHT_PARITY_DUMP_FROM / SB_FRAME_DUMP_START — same
 #     GXCopyDisp/present-count floor for parity emission
@@ -23,12 +23,12 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"; cd "$HERE"
 source .env 2>/dev/null || { echo "no .env (need SUNBRIGHT_ROM)"; exit 1; }
 mkdir -p scratch/passes
 
-# Same input on both sides. Empty script (just fastboot lands on file-select).
+# Same input on both sides. Empty script (just fastboot lands on title screen).
 # Add START pulses if the game needs to click through additional dialogs — both
 # engines get the same schedule so their game state stays aligned.
 PAD_SCRIPT="${PAD_SCRIPT:-}"
 # Same emission floor on both sides. Under TURBO both engines reach ~500 frames
-# of settled file-select within seconds; FROM=250 discards the intro/settle pan.
+# of settled title screen within seconds; FROM=250 discards the intro/settle pan.
 FROM="${FROM:-250}"
 
 ORACLE=scratch/passes/pinned_oracle.jsonl

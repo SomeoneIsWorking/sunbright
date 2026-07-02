@@ -65,13 +65,11 @@ constexpr u32 FM_SAVED_SAVE_TIME  = 0x378;
 constexpr u32 APP_STATE_DONE     = 4;
 constexpr u32 APP_STATE_GAMEPLAY = 5;
 constexpr u32 APP_STATE_MOVIE    = 6;
-constexpr u32 APP_STATE_TITLE    = 8;  // TSelectDir (file-select) — reference/sms Application.hpp:70
-
-bool fileselect_enabled() {
-    static int v = -1;
-    if (v < 0) { const char* e = getenv("SUNBRIGHT_FILESELECT"); v = (e && *e && *e != '0') ? 1 : 0; }
-    return v == 1;
-}
+// APP_STATE_TITLE (=TSelectDir/select.szs) is the SCENARIO SELECT screen, NOT the retail
+// title. The retail title screen + save-file picker lives in GAMEPLAY stage 15 (option.arc
+// + TFileLoadBlock). Taxonomy corrected 2026-07-02 (memory [[title-vs-scenario-select-taxonomy]]).
+// The old SUNBRIGHT_FILESELECT env routed here and has been removed — SUNBRIGHT_STAGE=15
+// alone reaches the real title screen via APP_STATE_GAMEPLAY.
 
 bool fastboot_enabled() {
     static int v = -1;
@@ -317,18 +315,7 @@ SUNBRIGHT_OVERRIDE(ov_fb_movie_direct, MOVIE_DIRECT) {
 
             g_done = true;
             do_transition(cpu);
-            // SUNBRIGHT_FILESELECT=1 → route through TSelectDir (APP_STATE_TITLE) — mirrors
-            // native SB_FILESELECT=1 in reference/sms/src/System/Application.cpp:569 for the
-            // same-state pinning protocol. NOTE (limitation): under APP_STATE_TITLE the oracle
-            // does not currently emit any scene-pass parity frames — TSelectDir setup done by
-            // TApplication::proc when transitioning INTO the title state is not complete via
-            // this override alone. For the SETTLED-file-select capture, SUNBRIGHT_STAGE=15
-            // (without FILESELECT) already reaches the file-select scene in APP_STATE_GAMEPLAY
-            // and captures it correctly — that is the current pinnable state. Left in as a
-            // named env for future symmetry work with native's TSelectDir routing.
-            cpu.gpr[3] = fileselect_enabled() ? APP_STATE_TITLE : APP_STATE_GAMEPLAY;
-            if (fileselect_enabled())
-                fprintf(stderr, "[fastboot] → file-select (APP_STATE_TITLE) — WIP: scene may not render\n");
+            cpu.gpr[3] = APP_STATE_GAMEPLAY;
             return;
         }
     }

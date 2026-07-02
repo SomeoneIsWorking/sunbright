@@ -49,7 +49,7 @@ Light-Group[0] colour. For the option scene (stage 15, title + file-select) that
   (`sb::build_stage_lights`), unit-tested in `native/platform/tests/setlight_test.cpp`.
 - `native/src/scene_drive.cpp` drives it each frame before `perform(0x8)`, replacing the old
   8-Light-Group-entry blast (a pre-oracle guess; commit 0dff27f).
-- VALUE-VERIFIED via `tools/render/fileselect_value_oracle.sh`: light count 8→3, then
+- VALUE-VERIFIED via `tools/render/title_value_oracle.sh`: light count 8→3, then
   `parity_sweep diff` reports light count **3.0 vs 3.0 (relΔ 0.0)**, ambient/material unchanged.
 
 ## Open / refinement
