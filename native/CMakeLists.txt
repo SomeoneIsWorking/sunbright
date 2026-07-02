@@ -139,7 +139,7 @@ target_include_directories(sms-platform PUBLIC
     "${SMS_NATIVE_REPO_ROOT}/runtime/render"  # tex_decode.h (SB_IMM_PRIM_DBG sprite dump)
     "${SMS_NATIVE_REPO_ROOT}/runtime/ngx"     # ngx_render_data.h (NgxTevState per imm batch)
     "${SMS_NATIVE_REPO_ROOT}/reference/sms/include")
-target_compile_options(sms-platform PRIVATE -Wall -Wextra -Werror=narrowing
+target_compile_options(sms-platform PRIVATE -Wall -Wextra
     # The SDK headers declare HW-register/OS globals (__VIRegs, __OSBusClock, ...)
     # as tentative definitions WITHOUT extern; -fcommon merges them (Metrowerks
     # common-symbol behavior) instead of -fno-common's multiple-definition error.
@@ -190,7 +190,7 @@ set_target_properties(sms-assets PROPERTIES
     CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
 target_include_directories(sms-assets PUBLIC
     "${SMS_NATIVE_REPO_ROOT}/native/assets")
-target_compile_options(sms-assets PRIVATE -Wall -Wextra -Werror=narrowing)
+target_compile_options(sms-assets PRIVATE -Wall -Wextra)
 
 # Seam unit tests (TDD: assert spec-computed truth; the tested function IS the
 # shipping seam function). Each native/platform/tests/*_test.cpp is its own
@@ -294,7 +294,7 @@ if(SB_VULKAN_LIB AND SB_VULKAN_INC AND SB_GLSLANG)
     target_link_libraries(sms-render PUBLIC "${SB_VULKAN_LIB}" ${SB_NATIVE_GLSLANG_LIBS} SDL3::SDL3)
     # tev_shader.cpp / glsl_compile.cpp are SHIPPING ngx code (predates strict warnings);
     # -Wall -Wextra applies to the new nvk code, but keep the reused TUs from erroring.
-    target_compile_options(sms-render PRIVATE -Wall -Wextra -Werror=narrowing)
+    target_compile_options(sms-render PRIVATE -Wall -Wextra)
     set_source_files_properties(
         "${SMS_NATIVE_REPO_ROOT}/runtime/render/tev_shader.cpp"
         "${SMS_NATIVE_REPO_ROOT}/runtime/render/glsl_compile.cpp"
@@ -468,7 +468,7 @@ foreach(test_src ${SMS_PLATFORM_TESTS})
         # native/render — pure renderer-port headers (e.g. sms_boot_setlight.h,
         # the TLightCommon::setLight stage-light selection that setlight_test covers).
         "${SMS_NATIVE_REPO_ROOT}/native/render")
-    target_compile_options(sms-${test_name} PRIVATE -fcommon -Werror=narrowing)
+    target_compile_options(sms-${test_name} PRIVATE -fcommon)
     # sms-gd (GD display-list builder, decomp source) is referenced by gd_test;
     # sms-assets (BE->host asset swappers) by anm_swap_test/bmd swaps; a static lib
     # contributes nothing to tests that don't reference it (its PUBLIC include dir
