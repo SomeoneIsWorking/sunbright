@@ -436,6 +436,22 @@ void GXInitLightAttnA(GXLightObj* lt, f32 a0, f32 a1, f32 a2) {
 void GXInitLightAttnK(GXLightObj* lt, f32 k0, f32 k1, f32 k2) {
     auto& o = obj(lt); o.distAtt[0]=k0; o.distAtt[1]=k1; o.distAtt[2]=k2;
 }
+// GC SDK GXInitLightDistAttn — computes (k0,k1,k2) from reference distance +
+// brightness + dist-fn enum. Only two fn enums are used in SMS: GX_DA_OFF (0),
+// GX_DA_GENTLE (1), GX_DA_MEDIUM (3). Matches the SDK's math:
+//   kfactor = 0.5 * (1 - ref_br)
+//   dist_fn switch selects the (k0, k1, k2) triple.
+void GXInitLightDistAttn(GXLightObj* lt, f32 ref_dist, f32 ref_br, GXDistAttnFn dist_fn) {
+    if (dist_fn == 0) { GXInitLightAttnK(lt, 1.0f, 0.0f, 0.0f); return; }  // OFF
+    f32 kf = 0.5f * (1.0f - ref_br);
+    f32 k0 = 1.0f, k1 = 0.0f, k2 = 0.0f;
+    switch (dist_fn) {
+    case 1: /* GENTLE */ k1 = kf / (ref_dist);                                  break;
+    case 3: /* MEDIUM */ k1 = kf / (ref_dist);                                  break;
+    case 4: /* STEEP  */ k2 = kf / (ref_dist * ref_dist);                       break;
+    }
+    GXInitLightAttnK(lt, k0, k1, k2);
+}
 
 unsigned long g_light_load_count = 0;   // s26 diag: does ANY code path load a GX light natively?
 extern "C" unsigned long sb_gx_light_load_count() { return g_light_load_count; }
