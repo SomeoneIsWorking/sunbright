@@ -1305,10 +1305,13 @@ int main(int argc, char* argv[]) {
         //                           state — play to the moment you want once, then reload it forever.
         static const char* state_load = getenv("SUNBRIGHT_STATE");
         static const char* state_save = getenv("SUNBRIGHT_SAVE_STATE");
+        static const char* pad_script = getenv("SUNBRIGHT_PAD_SCRIPT");
         {
-            // Subscribe (lazily, once video is up) to count presented VI fields.
+            // Subscribe (lazily, once video is up) to count presented VI fields. Trigger from
+            // SUNBRIGHT_STATE (save-state gating) OR SUNBRIGHT_PAD_SCRIPT (frame-indexed pad drive
+            // for same-state parity capture, symmetric with native's SB_PAD_SCRIPT).
             static Common::EventHook field_hook; static bool subscribed = false;
-            if (state_load && !subscribed && guest_mem_ready()) {
+            if ((state_load || pad_script) && !subscribed && guest_mem_ready()) {
                 subscribed = true;
                 field_hook = GetVideoEvents().vi_end_field_event.Register(
                     [] { g_present_fields.fetch_add(1, std::memory_order_relaxed); });
@@ -1363,6 +1366,86 @@ int main(int argc, char* argv[]) {
                 saved = true;
                 State::SaveAs(Core::System::GetInstance(), save_on_hud);
                 fprintf(stderr, "[state] auto-saved at gameplay HUD → %s\n", save_on_hud);
+            }
+        }
+
+        // SUNBRIGHT_PAD_SCRIPT — frame-indexed pad drive, symmetric with native SB_PAD_SCRIPT
+        // (native/src/pad_driver.cpp). Same syntax:
+        //   "F:TOKENS F:TOKENS ..." — at VI count >= F, hold TOKENS until the next entry.
+        //   TOKENS = '+'-joined subset of A B X Y START Z L R UP DOWN LEFT RIGHT
+        //   (C-stick omitted here; not needed for title/file-select pinning).
+        // Purpose: same-state capture harness. Feed both engines the same script; both drive
+        // pad input at matching VI-present counts, so the file-select they land on is the same
+        // game state (same input timeline, same frame index). Prerequisite for the
+        // parity_sweep drawdiff banner to lift its STATE-UNPINNED refusal.
+        struct SPadEntry { uint32_t frame; uint32_t bits; };
+        static std::vector<SPadEntry> pad_entries = [](){
+            std::vector<SPadEntry> out;
+            const char* spec = getenv("SUNBRIGHT_PAD_SCRIPT");
+            if (!spec || !spec[0]) return out;
+            std::string s(spec);
+            auto tok_bits = [](const std::string& s)->uint32_t{
+                uint32_t b = 0; size_t i = 0;
+                while (i < s.size()) {
+                    size_t j = s.find('+', i); if (j == std::string::npos) j = s.size();
+                    std::string t = s.substr(i, j - i);
+                    if      (t == "A") b |= P_A;
+                    else if (t == "B") b |= P_B;
+                    else if (t == "X") b |= P_X;
+                    else if (t == "Y") b |= P_Y;
+                    else if (t == "START") b |= P_START;
+                    else if (t == "Z") b |= P_Z;
+                    else if (t == "L") b |= P_L;
+                    else if (t == "R") b |= P_R;
+                    else if (t == "UP") b |= P_UP;
+                    else if (t == "DOWN") b |= P_DOWN;
+                    else if (t == "LEFT") b |= P_LEFT;
+                    else if (t == "RIGHT") b |= P_RIGHT;
+                    // '-' / NONE / unknown → neutral
+                    i = j + 1;
+                }
+                return b;
+            };
+            size_t i = 0;
+            while (i < s.size()) {
+                while (i < s.size() && (s[i] == ' ' || s[i] == ',' || s[i] == ';')) ++i;
+                if (i >= s.size()) break;
+                size_t j = i;
+                while (j < s.size() && s[j] != ' ' && s[j] != ',' && s[j] != ';') ++j;
+                std::string item = s.substr(i, j - i);
+                i = j;
+                size_t colon = item.find(':');
+                if (colon == std::string::npos) continue;
+                SPadEntry e;
+                e.frame = (uint32_t)strtoul(item.substr(0, colon).c_str(), nullptr, 10);
+                e.bits  = tok_bits(item.substr(colon + 1));
+                out.push_back(e);
+            }
+            // insertion sort by frame
+            for (size_t a = 1; a < out.size(); ++a)
+                for (size_t b = a; b > 0 && out[b-1].frame > out[b].frame; --b)
+                    std::swap(out[b-1], out[b]);
+            if (!out.empty())
+                fprintf(stderr, "[pad-script] SUNBRIGHT_PAD_SCRIPT: %zu entries (frame-indexed by VI count)\n", out.size());
+            return out;
+        }();
+        if (!pad_entries.empty()) {
+            const uint64_t now = g_present_fields.load(std::memory_order_relaxed);
+            uint32_t bits = 0;
+            for (const auto& e : pad_entries) {
+                if (e.frame <= now) bits = e.bits;
+                else break;
+            }
+            g_pad.store(bits, std::memory_order_relaxed);
+            // SUNBRIGHT_DBG_PAD_SCRIPT: trace each bits change (rare, under-TURBO drops per-VI
+            // detail — this is fine because the state is script-driven so each transition matters).
+            if (getenv("SUNBRIGHT_DBG_PAD_SCRIPT")) {
+                static uint32_t last_bits = ~0u;
+                if (bits != last_bits) {
+                    last_bits = bits;
+                    fprintf(stderr, "[pad-script] VI=%llu bits=0x%x\n",
+                            (unsigned long long)now, bits);
+                }
             }
         }
 

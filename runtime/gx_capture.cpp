@@ -122,6 +122,19 @@ bool enabled() {
     return v == 1;
 }
 
+// SUNBRIGHT_PARITY_DUMP_FROM=N — same-state capture pin. Suppress emission until N VI
+// presents have elapsed, so both engines (driven with the same SUNBRIGHT_PAD_SCRIPT /
+// SB_PAD_SCRIPT) start emitting at the same game state. Prerequisite for
+// parity_sweep.drawdiff to lift its STATE-UNPINNED banner.
+long parity_dump_from() {
+    static long v = -1;
+    if (v < 0) { const char* p = getenv("SUNBRIGHT_PARITY_DUMP_FROM"); v = (p && p[0]) ? atol(p) : 0; }
+    return v;
+}
+bool state_pin_ready(long frame_no) {
+    return frame_no >= parity_dump_from();
+}
+
 std::FILE* outfile() {
     static std::FILE* f = [](){ const char* p = getenv("SUNBRIGHT_PARITY_DUMP");
         return (p && p[0]) ? std::fopen(p, "w") : nullptr; }();
@@ -182,9 +195,15 @@ extern "C" void sb_gx_capture_frame_boundary() {
 
     std::FILE* f = outfile();
     const GxFrameInfo& fi = g_info;
+    // Same-state pin: suppress emission until frame count >= SUNBRIGHT_PARITY_DUMP_FROM. The
+    // frame counter must advance before the emission gate — else the counter never increments
+    // and the gate never opens (state_pin_ready → false forever). Do the increment first so the
+    // pin is measured in real GXCopyDisp boundaries, not emitted frames.
+    g_frame_no++;
     // Only emit frames with real geometry — a blank/2D-only frame would pollute the settled-window
     // medians parity_sweep computes (it already skips onscr==0, but prims==0 is the cleaner gate).
     if (!f || fi.prims == 0) return;
+    if (!state_pin_ready(g_frame_no)) return;
 
     int ln = 0; for (int i = 0; i < 8; ++i) if (fi.lights[i].valid) ln++;
     // Diagnostic (SUNBRIGHT_DBG_GXCAP): running UNION of distinct light positions seen across the
@@ -473,7 +492,6 @@ extern "C" void sb_gx_capture_frame_boundary() {
     g_flush_marks.clear();
 #endif
     std::fflush(f);
-    g_frame_no++;
     g_emitted++;
     if (dbg() && (g_emitted % 128) == 0)
         fprintf(stderr, "[gxcap] emitted=%lu boundaries=%lu parse_fail=%lu last prims=%u dls=%u lights=%d proj=%d\n",
