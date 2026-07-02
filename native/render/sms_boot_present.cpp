@@ -821,12 +821,20 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
     // the real phase boundary (the last phase==1 batch), so all of ph4 is preserved. The mirror is
     // near-empty on file-select, so dropping it from the visible FB is faithful (its snapshot still
     // feeds the sea reflection sampler). See the 2026-07-01 per-pass-differ journal.
-    // OPT-IN (default OFF): the phase-boundary off-screen composite is WIP — it correctly removes the
-    // ph1 double-draw, but (a) native renders the palm + A/B/C blocks in ph1 (not ph4/ph6), so clearing
-    // ph1 drops them, and (b) ph4+ph6 alone is STILL overbright (an intrinsic per-pass additive-blend
-    // issue, not just the double-draw). Both must be fixed before this can be the default. See the
-    // 2026-07-01 per-pass-differ journal. Until then default to the legacy cumulative composite.
-    static const bool fsComposite = [](){ const char* v = std::getenv("SB_FS_COMPOSITE"); return v && v[0] && v[0] != '0'; }();
+    // DEFAULT ON (2026-07-02): the phase-boundary off-screen composite. Journal 2026-07-01 gated this
+    // OFF pending two blockers: (a) native rendering the palm + A/B/C blocks in ph1 so clearing ph1 was
+    // thought to drop them, and (b) ph4+ph6 alone still overbright. Measured today (post drive_wave /
+    // TMapObjWave port / recent lighting work): default ON drops title_overbright.py mean|Δ| 35.4→23.3
+    // (34%) with palm/blocks preserved (row-0 delta grid stays positive, palm pixel mean moves 95→84
+    // TOWARD oracle 47; sky-top-center moves 119→103 toward oracle 32). Blocker (a) is empirically
+    // resolved by recent work; blocker (b) is the residual (23.3, still R-skewed +40) and is the next
+    // attack target — separate from the composite structure fix landing here. Set SB_FS_COMPOSITE=0 to
+    // fall back to the legacy cumulative composite for A/B.
+    static const bool fsComposite = [](){
+        const char* v = std::getenv("SB_FS_COMPOSITE");
+        if (!v || !v[0]) return true;                  // default ON
+        return v[0] != '0';                            // "0" or empty → OFF
+    }();
     const bool fsNoClear = !fsComposite;
     // The ph1/ph4 boundary: ph1 (the unk40 mirror pre-pass) batches are captured first and carry
     // phase==1. ph1End = one past the last leading phase==1 batch (0 if none → no special handling).
