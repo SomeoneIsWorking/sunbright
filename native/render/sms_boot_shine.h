@@ -26,3 +26,25 @@ static_assert(kUnk14C == 480u,    "unk14C decimal check");
 static_assert(kUnk150 == 120u,    "unk150 decimal check");
 
 }  // namespace sb::shine_init
+
+namespace sb::shine_load_after {
+
+// Post-base-chain effect of TShine::loadAfter (@0x801bcd08). Dispatch on
+// unk154: 2 → wait-timer branch, 1 → self-kill branch (virtual makeObjDead),
+// otherwise → no-op. Pure decision, so the effect enum is trivially testable
+// with no field snapshots.
+enum class Effect { NoOp, WaitTimerAndSet, MakeObjDead };
+
+inline constexpr std::uint32_t kUnk154Wait     = 2;
+inline constexpr std::uint32_t kUnk154Kill     = 1;
+inline constexpr std::uint32_t kWaitFrames     = 0xf0u;  // 240
+inline constexpr std::uint16_t kWaitState      = 0x12u;  // 18
+
+inline Effect classify(std::uint32_t unk154)
+{
+	if (unk154 == kUnk154Wait) return Effect::WaitTimerAndSet;
+	if (unk154 == kUnk154Kill) return Effect::MakeObjDead;
+	return Effect::NoOp;
+}
+
+}  // namespace sb::shine_load_after

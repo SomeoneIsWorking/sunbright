@@ -23,6 +23,16 @@ int main() {
 	CHECK(sb::shine_init::kUnk170 == sb::shine_init::kUnk178,
 	      "unk170 and unk178 seed to identical values");
 
+	// --- TShine::loadAfter dispatch (@0x801bcd08) ---
+	using E = sb::shine_load_after::Effect;
+	CHECK(sb::shine_load_after::kWaitFrames == 0xf0, "loadAfter: wait-timer = 0xf0 (240)");
+	CHECK(sb::shine_load_after::kWaitState  == 0x12, "loadAfter: wait-state = 0x12 (18)");
+	CHECK(sb::shine_load_after::classify(0) == E::NoOp,               "loadAfter: unk154==0 → no-op");
+	CHECK(sb::shine_load_after::classify(1) == E::MakeObjDead,        "loadAfter: unk154==1 → makeObjDead");
+	CHECK(sb::shine_load_after::classify(2) == E::WaitTimerAndSet,    "loadAfter: unk154==2 → wait-timer branch");
+	CHECK(sb::shine_load_after::classify(3) == E::NoOp,               "loadAfter: unk154>=3 → no-op");
+	CHECK(sb::shine_load_after::classify(0xFFFFFFFFu) == E::NoOp,     "loadAfter: overflow-large unk154 → no-op");
+
 	if (g_fail) { std::fprintf(stderr, "shine_test: %d FAILURE(S)\n", g_fail); return 1; }
 	std::printf("shine_test: all passed\n");
 	return 0;
