@@ -316,14 +316,37 @@ extern "C" void sb_gx_capture_frame_boundary() {
         if (std::getenv("SUNBRIGHT_PARITY_DRAWS") && !fi.draws.empty()) {
             std::fprintf(f, ",\"draws\":[");
             int em = 0;
-            for (const auto& d : fi.draws) {
+            const bool haveLight = fi.light_snaps.size() == fi.draws.size();
+            for (size_t di = 0; di < fi.draws.size(); ++di) {
+                const auto& d = fi.draws[di];
                 if ((int)d.proj_type != pass) continue;
                 std::fprintf(f,
                     "%s{\"i\":%u,\"efb\":%u,\"proj\":%u,\"be\":%u,\"src\":%u,\"dst\":%u,\"sub\":%u,"
-                    "\"cU\":%u,\"aU\":%u,\"tev\":%u,\"v\":%u,\"imm\":%u}",
+                    "\"cU\":%u,\"aU\":%u,\"tev\":%u,\"v\":%u,\"imm\":%u",
                     em++ ? "," : "", d.offset, d.efb_pass, d.proj_type, d.blend_enable,
                     d.src, d.dst, d.subtract, d.color_update, d.alpha_update, d.numtevstages,
                     d.prims, d.immediate);
+                // Per-draw LIGHTING snapshot (SUNBRIGHT_DBG_GXLIGHT). This is the ORACLE side of
+                // the overbright wash diagnostic — captures the exact chan_ctrl / amb / matc /
+                // lights state feeding the raster stage at the moment of THIS draw. Native's
+                // per-batch batchtev output emits the same fields, so a per-shape diff pinpoints
+                // which pipeline stage native diverges on.
+                if (haveLight) {
+                    const auto& L = fi.light_snaps[di];
+                    std::fprintf(f, ",\"cc\":%u,\"amb\":[%.3f,%.3f,%.3f],\"matc\":[%.3f,%.3f,%.3f,%.3f],\"lm\":%u,\"lights\":[",
+                                 L.chan0_ctrl, L.amb[0], L.amb[1], L.amb[2],
+                                 L.matc[0], L.matc[1], L.matc[2], L.matc[3], L.light_valid);
+                    int lem = 0;
+                    for (int li = 0; li < 8; ++li) {
+                        if (!(L.light_valid & (1u << li))) continue;
+                        std::fprintf(f, "%s{\"i\":%d,\"p\":[%.1f,%.1f,%.1f],\"c\":[%.3f,%.3f,%.3f]}",
+                                     lem++ ? "," : "", li,
+                                     L.light_pos[li][0], L.light_pos[li][1], L.light_pos[li][2],
+                                     L.light_col[li][0], L.light_col[li][1], L.light_col[li][2]);
+                    }
+                    std::fprintf(f, "]");
+                }
+                std::fprintf(f, "}");
             }
             std::fprintf(f, "]");
         }

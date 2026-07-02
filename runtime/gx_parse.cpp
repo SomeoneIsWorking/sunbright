@@ -33,6 +33,7 @@ public:
     u8        efb_pass = 0;          // EFB copies fired so far this frame
     bool      record_draws = false;  // gate the (potentially large) per-draw record
     bool      record_tev = false;    // gate the (large) per-stage TEV combiner snapshot (SUNBRIGHT_DBG_GXTEV)
+    bool      record_light = false;  // gate the per-draw lighting snapshot (SUNBRIGHT_DBG_GXLIGHT)
     u32       color_env[16] = {};    // live BPMEM_TEV_COLOR_ENV per stage (0xC0 + 2*stage)
     u32       alpha_env[16] = {};    // live BPMEM_TEV_ALPHA_ENV per stage (0xC1 + 2*stage)
     u32       tevreg_ra[4] = {};     // live BPMEM_TEV_COLOR_RA per reg (0xE0 + 2*reg)
@@ -55,6 +56,23 @@ public:
             std::memcpy(s.tevreg_ra, tevreg_ra, sizeof tevreg_ra);
             std::memcpy(s.tevreg_bg, tevreg_bg, sizeof tevreg_bg);
             out->tev_snaps.push_back(s);
+        }
+        if (record_light) {
+            GxFrameInfo::LightSnap l{};
+            l.chan0_ctrl = out->chan0_ctrl;
+            for (int i = 0; i < 3; ++i) { l.amb[i] = out->amb[i]; l.matc[i] = out->matc[i]; }
+            l.matc[3] = out->matc[3];
+            u8 mask = 0;
+            for (int i = 0; i < 8; ++i) {
+                if (!out->lights[i].valid) continue;
+                mask |= (u8)(1 << i);
+                for (int k = 0; k < 3; ++k) {
+                    l.light_pos[i][k] = out->lights[i].pos[k];
+                    l.light_col[i][k] = out->lights[i].color[k];
+                }
+            }
+            l.light_valid = mask;
+            out->light_snaps.push_back(l);
         }
     }
 
@@ -261,6 +279,8 @@ bool gxp_parse_frame(const u8* p, size_t n, GxFrameInfo& out, bool recurse_dls) 
                         || (std::getenv("SUNBRIGHT_PARITY_DRAWS") != nullptr);
     g_an.record_tev   = (std::getenv("SUNBRIGHT_DBG_GXTEV") != nullptr);
     if (g_an.record_tev) g_an.record_draws = true;   // TEV snapshot pairs with the draw record (same index)
+    g_an.record_light = (std::getenv("SUNBRIGHT_DBG_GXLIGHT") != nullptr);
+    if (g_an.record_light) g_an.record_draws = true; // light snapshot pairs with the draw record
     u32 pos = 0;
     while (pos < n) {
         g_an.offset = pos;

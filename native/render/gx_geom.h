@@ -85,6 +85,19 @@ struct NvkTevBatch {
     // if not captured from a TDrawBufObj draw (e.g. a directly-performed TViewObj). Not used by the
     // renderer.
     const char* dbgName = nullptr;
+
+    // ── PER-BATCH LIGHTING SNAPSHOT (overbright wash cross-engine diagnostic, 2026-07-02) ──
+    // Captures the raster-stage inputs at the moment this batch's shape was captured. Mirrors the
+    // oracle's per-draw LightSnap in gx_parse.h (see runtime/gx_parse.h::GxFrameInfo::LightSnap):
+    // same channels (RGB float in [0,1]) so a cross-engine per-shape diff pins which stage diverges.
+    // Populated in sms_boot_j3d_capture.cpp from the material's chan-ctrl + amb/mat + live GX lights.
+    // Values captured, not owned; consumers just read.
+    uint16_t dbg_chan_ctrl = 0;      // chanCtrl[0] (light mask + amb-mat source)
+    uint8_t  dbg_light_mask = 0;     // bit i = light i was valid at capture
+    float    dbg_amb[3]  = {0, 0, 0};    // material's ambColor[0] normalised
+    float    dbg_matc[4] = {1, 1, 1, 1}; // material's matColor[0] normalised
+    float    dbg_light_pos[8][3] = {};
+    float    dbg_light_col[8][3] = {};
 };
 
 } // namespace sb::render

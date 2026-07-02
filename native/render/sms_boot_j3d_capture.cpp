@@ -515,6 +515,27 @@ extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
     if (!shape) return false;
     HostAllocScope _hostalloc;
 
+    // SB_CU_ENTRY_TRACE=1: count how many J3DShape::draw entries land with cU=false vs cU=true,
+    // bucketed by phase. Diagnoses whether native's GXSetColorUpdate state is EVER false at the
+    // capture point (the settled bar the light-diff tool sees is that native has 0 cU=0 batches
+    // while oracle has hundreds per frame — but native issues 67k GXSetColorUpdate(FALSE) calls
+    // per session, so somewhere the calls fire but not while any shape is being captured).
+    if (const char* e = std::getenv("SB_CU_ENTRY_TRACE"); e && e[0] && e[0] != '0') {
+        int cu = 1, au = 1; sb_gx_get_color_alpha_update(&cu, &au);
+        const int ph = g_capture_phase;
+        static long tally[8][2] = {};   // [phase][cU]
+        static long total = 0;
+        if (ph >= 0 && ph < 8) tally[ph][cu ? 1 : 0]++;
+        ++total;
+        if ((total % 5000) == 0) {
+            std::fprintf(stderr, "[cU-entry] shape-capture entries so far=%ld  (per phase, cU=0/cU=1):", total);
+            for (int p = 0; p < 8; ++p)
+                if (tally[p][0] || tally[p][1])
+                    std::fprintf(stderr, " ph%d=%ld/%ld", p, tally[p][0], tally[p][1]);
+            std::fprintf(stderr, "\n");
+        }
+    }
+
     J3DModel* model = j3dSys.getModel();
     if (!model || !model->getModelData()) return true;
 
@@ -940,6 +961,29 @@ extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
         fill_batch_material(b, *me);
         b.phase = (uint8_t)g_capture_phase;
         b.dbgName = g_capture_drawbuf;
+        // Per-batch LIGHTING snapshot — mirrors the oracle's per-draw LightSnap so a shape's raster-
+        // stage inputs can be compared directly across engines. Fields: chan_ctrl (light mask + amb/mat
+        // source), material ambColor[0] and matColor[0] normalised, the 8 hardware lights (position +
+        // color, valid mask). The oracle emits the same in the parity JSONL under keys cc/amb/matc/
+        // lm/lights per draw (see gx_capture.cpp).
+        b.dbg_chan_ctrl = me->chanCtrl[0];
+        b.dbg_amb[0]  = me->ambColor[0][0] / 255.f;
+        b.dbg_amb[1]  = me->ambColor[0][1] / 255.f;
+        b.dbg_amb[2]  = me->ambColor[0][2] / 255.f;
+        b.dbg_matc[0] = me->matColor[0][0] / 255.f;
+        b.dbg_matc[1] = me->matColor[0][1] / 255.f;
+        b.dbg_matc[2] = me->matColor[0][2] / 255.f;
+        b.dbg_matc[3] = me->matColor[0][3] / 255.f;
+        uint8_t lmask = 0;
+        for (int i = 0; i < 8; ++i) {
+            if (!lsrc[i].valid) continue;
+            lmask |= (uint8_t)(1u << i);
+            for (int k = 0; k < 3; ++k) {
+                b.dbg_light_pos[i][k] = lsrc[i].pos[k];
+                b.dbg_light_col[i][k] = lsrc[i].color[k];
+            }
+        }
+        b.dbg_light_mask = lmask;
         // SB_B76_DBG: identify the b76 overbright draw at its TRUE source. The dbgName ("DrawBuf
         // MapXlu") is a GLOBAL stamped by the last TDrawBufObj::perform and can be STALE for a draw
         // that is NOT a draw-buffer flush. Print the captured material's model+modelData name, the

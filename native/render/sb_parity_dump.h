@@ -134,13 +134,30 @@ inline void sb_parity_emit(std::FILE* f, int frame, const float clear[4],
         }
         if (!cnt) { cxmn=cxmx=cymn=cymx=czmn=czmx=cwmn=cwmx=0.f; }
         std::fprintf(f, "%s{\"k\":\"%llx\",\"vc\":%u,\"onscr\":%u,\"z\":[%u,%u,%u],\"bm\":[%u,%u,%u],"
-                     "\"cU\":%u,\"aU\":%u,\"ntex\":%d,"
-                     "\"clip\":[%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.3f,%.3f],\"cks\":%.3f,\"bad\":%d}",
+                     "\"cU\":%u,\"aU\":%u,\"ntex\":%d,\"ph\":%u,"
+                     "\"clip\":[%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.3f,%.3f],\"cks\":%.3f,\"bad\":%d",
                      bi ? "," : "", (unsigned long long)b.shaderKey, b.vcount, onscr,
                      b.z_test, b.z_func, b.z_write, b.blend_mode, b.src_factor, b.dst_factor,
                      b.color_update, b.alpha_update,
                      [&]{ int n=0; for(int t=0;t<8;++t) if(b.tex[t].rgba)++n; return n; }(),
+                     (unsigned)b.phase,
                      cxmn,cxmx,cymn,cymx,czmn,czmx,cwmn,cwmx, cks, bad);
+        // Per-batch LIGHTING snapshot — same fields as the oracle's per-draw light snap in
+        // gx_capture.cpp (cc/amb/matc/lm/lights). This is the cross-engine join anchor for the
+        // overbright wash diagnostic: pin a shape by (shaderKey, phase, vc) and diff the raster-
+        // stage inputs to find which pipeline stage diverges (lighting port vs shader vs blend).
+        std::fprintf(f, ",\"cc\":%u,\"amb\":[%.3f,%.3f,%.3f],\"matc\":[%.3f,%.3f,%.3f,%.3f],\"lm\":%u,\"lights\":[",
+                     b.dbg_chan_ctrl, b.dbg_amb[0], b.dbg_amb[1], b.dbg_amb[2],
+                     b.dbg_matc[0], b.dbg_matc[1], b.dbg_matc[2], b.dbg_matc[3], b.dbg_light_mask);
+        int lem = 0;
+        for (int li = 0; li < 8; ++li) {
+            if (!(b.dbg_light_mask & (1u << li))) continue;
+            std::fprintf(f, "%s{\"i\":%d,\"p\":[%.1f,%.1f,%.1f],\"c\":[%.3f,%.3f,%.3f]}",
+                         lem++ ? "," : "", li,
+                         b.dbg_light_pos[li][0], b.dbg_light_pos[li][1], b.dbg_light_pos[li][2],
+                         b.dbg_light_col[li][0], b.dbg_light_col[li][1], b.dbg_light_col[li][2]);
+        }
+        std::fprintf(f, "]}");
     }
     std::fprintf(f, "]");
 

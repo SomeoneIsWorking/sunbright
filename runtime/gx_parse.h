@@ -76,6 +76,25 @@ struct GxFrameInfo {
     };
     std::vector<TevSnap> tev_snaps;   // empty unless SUNBRIGHT_DBG_GXTEV; tev_snaps[i] pairs with draws[i]
 
+    // ── Per-draw LIGHTING snapshot (overbright wash investigation, 2026-07-02) ──────────────────
+    // The blend + TEV snapshots (above) explain WHAT combiner runs; this explains what INPUTS the
+    // combiner is fed via the chan-ctrl / lighting pipeline. Snapshots the live lighting state at
+    // the moment of each primitive so an oracle vs native per-shape diff can pinpoint which stage
+    // diverges: the per-vertex material colour (matc), the ambient (amb), the chan-ctrl (which
+    // lights are enabled + which vertex source is used), and the 8 lights themselves. Gated on
+    // SUNBRIGHT_DBG_GXLIGHT (or implied by SUNBRIGHT_DBG_GXTEV so a single flag covers the whole
+    // "why is native's ph6 lighting different from oracle's" diagnostic). Layout mirrors what
+    // native's batchtev/batchlight already emit — same fields on both sides.
+    struct LightSnap {
+        u32   chan0_ctrl;      // BPMEM_CHAN0_COLOR (0x100e): light mask + amb-mat source flags
+        float amb[3];          // live BPMEM_CHAN0_AMBCOLOR
+        float matc[4];         // live BPMEM_CHAN0_MATCOLOR
+        u8    light_valid;     // bitmask: bit i = light i is enabled+loaded
+        float light_pos[8][3]; // per-light position at draw time
+        float light_col[8][3]; // per-light colour at draw time
+    };
+    std::vector<LightSnap> light_snaps;   // empty unless SUNBRIGHT_DBG_GXLIGHT; light_snaps[i] pairs with draws[i]
+
     // ── Per-pass geometry split (cross-engine pass tagging) ───────────────────────────────────────
     // The native parity dump (sb_parity_dump.h) reports the 3D SCENE pass only (perspective), so the
     // whole-frame oracle counts are NOT directly comparable. Bucket prims/verts/display-lists by the
