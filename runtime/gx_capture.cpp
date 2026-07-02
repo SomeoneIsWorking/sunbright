@@ -244,6 +244,36 @@ extern "C" void sb_gx_capture_frame_boundary() {
                 std::fprintf(f, "%s%u", e ? "," : "", fi.tris_efb[e]);
             std::fprintf(f, "]");
         }
+        // ── Per-draw ordered record (opt-in, SUNBRIGHT_PARITY_DRAWS=1) ────────────────────────────
+        // Emit ONE JSON object per DrawRec in stream/draw order so parity_sweep can do an ordered-
+        // position cross-engine diff and NAME the first divergent draw call (per 2026-07-02
+        // workflow directive step #2). Same idea as sms-boot's per-batch batches[] emission but
+        // keyed by ordered-position, not by grouped shader key (nvk shaderKey is renderer-specific
+        // and not reconstructible on the oracle side). Fields chosen to survive cross-engine:
+        // efb_pass, proj_type, blend {enable,src,dst,subtract}, color/alpha update, tev-stage count,
+        // vertex count. The parity_sweep diff will match by position first, then use these fields
+        // as the NAMED divergence anchors.
+        //
+        // Opt-in: only emit when SUNBRIGHT_PARITY_DRAWS is set (avoids inflating the JSONL when only
+        // the coarse per-pass summary is wanted). The per-pass summary lines above are unchanged.
+        //
+        // Emitted for the CURRENT pass only (matches the per-pass summary line that carries it).
+        // We loop draws.filter(d.proj_type==pass) so a per-pass "draws":[…] tail attaches to its
+        // pass's summary line.
+        if (std::getenv("SUNBRIGHT_PARITY_DRAWS") && !fi.draws.empty()) {
+            std::fprintf(f, ",\"draws\":[");
+            int em = 0;
+            for (const auto& d : fi.draws) {
+                if ((int)d.proj_type != pass) continue;
+                std::fprintf(f,
+                    "%s{\"i\":%u,\"efb\":%u,\"proj\":%u,\"be\":%u,\"src\":%u,\"dst\":%u,\"sub\":%u,"
+                    "\"cU\":%u,\"aU\":%u,\"tev\":%u,\"v\":%u,\"imm\":%u}",
+                    em++ ? "," : "", d.offset, d.efb_pass, d.proj_type, d.blend_enable,
+                    d.src, d.dst, d.subtract, d.color_update, d.alpha_update, d.numtevstages,
+                    d.prims, d.immediate);
+            }
+            std::fprintf(f, "]");
+        }
         std::fprintf(f, "}\n");
     }
     // RENDER-TARGET STRUCTURE oracle (SUNBRIGHT_DBG_GXCOPY): print the in-order EFB-copy sequence for
