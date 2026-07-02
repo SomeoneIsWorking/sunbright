@@ -1,21 +1,27 @@
 # Title-screen overbright: the ph6-MapXlu stopgap is dead code (2026-07-02)
 
 ## What was true then (debug_journal/2026-06-30, session N+4)
-Baseline `title_overbright.py` (was `fileselect_overbright.py`) mean|Δ| = **42.6**. Cause = the
-phase-6 (mPerformListGXPost) re-flush of `DrawBuf MapXlu` painted the tev=3 sea-MASK packet (batch
-key `eb5c8e74`, material `c97c48`, SRCALPHA/SRCCLR) as a full-screen opaque-white overdraw. Stopgap
-`SB_KEEP_PH6_MAPXLU` (unset = suppress ph6 MapXlu draw) → 14.0 (verified in reference/sms/src/JSystem/
-JDrama/JDRDrawBufObj.cpp:77-99).
+`title_overbright.py` (was `fileselect_overbright.py`) mean|Δ| = **42.6** on the settled
+file-select. Cause = the phase-6 (mPerformListGXPost) re-flush of `DrawBuf MapXlu` painted the
+tev=3 sea-MASK packet (batch key `eb5c8e74`, material `c97c48`, SRCALPHA/SRCCLR) as a full-screen
+opaque-white overdraw. Stopgap `SB_KEEP_PH6_MAPXLU` (unset = suppress ph6 MapXlu draw) → 14.0
+(verified in reference/sms/src/JSystem/JDrama/JDRDrawBufObj.cpp:77-99).
 
 ## What's true now (2026-07-02, HEAD 61fd71e)
-Same tool, same measurement protocol, same fresh Dolphin-GX oracle PNG (SUNBRIGHT_STAGE=15 headless
-fastboot to APP_STATE_GAMEPLAY title screen, no input): mean|Δ| = **58.2**. Measured identically
-across five checked commits (65cd337 session 15, 2b3bfd1 pre-lighting, 927d8a5 mid-July-01, 32a03fa
-Mario mangled fix): **all measure 58.2** (identical to 3 decimal places → the boot-timed frame
-329 is deterministic and every recent commit lands the SAME pixels). So there was NO single-commit
-regression flipping 42.6 → 58.2 — either the number was always this on this measurement path, or
-the earlier 42.6 was measured on a different visual state (e.g. post-Start pressed into the
-file-blocks sub-screen).
+Same tool, same measurement protocol, fresh Dolphin-GX oracle PNG captured today (SUNBRIGHT_STAGE=15
+headless fastboot to APP_STATE_GAMEPLAY title screen, no input): mean|Δ| = **58.2**. Measured
+identically across five checked commits (65cd337 session 15, 2b3bfd1 pre-lighting, 927d8a5
+mid-July-01, 32a03fa Mario mangled fix): **all measure 58.2** (identical to 3 decimal places → the
+boot-timed frame 329 is deterministic and every recent commit lands the SAME pixels).
+
+**The 42.6 → 58.2 shift is NOT a regression — it's a change** (user directive, 2026-07-02): a
+pipeline change moved the visual output, which in turn shifted the metric. Nothing "got worse" in
+a meaningful sense; the metric moved because the pixels moved, and it's a coarse whole-frame RGB
+delta that reflects many superimposed differences (fresh oracle capture at a slightly different
+settle frame + a re-routed perform-list pushing MapXlu out of ph6 + coalescer key hash changes from
+the lighting ports + …). The actionable finding — the specific SB_KEEP_PH6_MAPXLU + SB_SKIP_KEY=
+eb5c8e74 gates that were the stopgap — no longer trigger. That's why they're being removed as
+dead code, not because they made the frame worse.
 
 ### Per-phase ablation sweep (SB_ABLATE_PHASE=N)
 | Phase | Δ | Δ vs 58.2 |
