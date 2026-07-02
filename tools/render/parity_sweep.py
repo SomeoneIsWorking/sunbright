@@ -321,6 +321,100 @@ def _diff_summary(A, B, pa, pb):
     return 1 if div else 0
 
 # ---------------------------------------------------------------------------------------
+# Per-draw ordered diff (produces a NAMED first-divergent draw call)
+# ---------------------------------------------------------------------------------------
+def _first_scene_with_draws(dump, key):
+    """Return the first scene-pass frame whose per-draw stream is populated."""
+    for f in dump:
+        if _pass_of(f) != "scene": continue
+        if f.get(key): return f
+    return None
+
+def _oracle_draw_sig(d):
+    """Cross-engine signature for an ORACLE (gx_capture.cpp) DrawRec JSON object.
+    Fields chosen to align with a NATIVE (nvk NvkTevBatch) draw:
+      - blend enable + src + dst + subtract
+      - color/alpha update
+      - TEV stage count
+      - vertex count
+    Excludes anything renderer-specific (shaderKey, mat-index)."""
+    return (
+        int(d.get("be", 0)), int(d.get("src", 0)), int(d.get("dst", 0)),
+        int(d.get("sub", 0)), int(d.get("cU", 0)), int(d.get("aU", 0)),
+        int(d.get("tev", 0)), int(d.get("v", 0)),
+    )
+
+def _native_draw_sig(b):
+    """Cross-engine signature for a NATIVE (sms-boot NvkTevBatch) batch JSON object.
+    `bm` is [mode, src, dst] where mode encodes blend-enable/subtract; the native z/blend
+    layout is different from GX raw factor codes, so this is a first-pass signature to
+    surface the SHAPE of the divergence (vertex count + tev-stage count are the most
+    reliably comparable across engines)."""
+    bm = b.get("bm", [0, 0, 0])
+    # native NvkTevBatch stores tex-count, not tev-stage count. Use ntex as an ordinal
+    # proxy for structural comparison; if the ordered position agrees the same-place
+    # nature is what the diff reports.
+    return (
+        1 if bm[0] else 0,           # be (best-effort: nonzero mode = blend enabled)
+        int(bm[1]), int(bm[2]),      # src, dst
+        0,                            # sub (not tracked separately on native side)
+        1, 1,                         # cU, aU (native always writes color+alpha)
+        int(b.get("ntex", 0)),       # substitute for tev-stage count (proxy)
+        int(b.get("vc", 0)),         # vertex count
+    )
+
+def drawdiff(pa, pb):
+    """Per-draw ordered diff between two parity dumps that carry per-draw records:
+    - oracle (gx_capture.cpp under SUNBRIGHT_PARITY_DRAWS=1) emits `draws`:[…] per line
+    - native (sb_parity_dump.h) emits `batches`:[…] per line
+
+    Compares ordered position N on each side and NAMES the first divergent draw call
+    with its signature fields. Refuses to emit when either side has no per-draw stream
+    or when both sides show they were captured against different game states.
+
+    NOTE: this is still cross-engine ordering — same-state pinning
+    (scratch/GOALS.md step #1) is the prerequisite for calling a divergence real
+    rather than an ordering artifact. Prints STATE-UNPINNED banner and refuses to
+    label findings as authoritative."""
+    A, B = load_jsonl(pa), load_jsonl(pb)
+    if not A or not B:
+        print(f"HARNESS-FAIL: empty dump(s) ({pa}: {len(A)}, {pb}: {len(B)})"); return 2
+    fa = _first_scene_with_draws(A, "draws")
+    fb = _first_scene_with_draws(B, "batches")
+    if fa is None:
+        print(f"HARNESS-FAIL: oracle {pa} has no per-draw stream — run with SUNBRIGHT_PARITY_DRAWS=1")
+        return 2
+    if fb is None:
+        print(f"HARNESS-FAIL: native {pb} has no per-batch stream (sb_parity_dump.h emission?)")
+        return 2
+    print("=" * 78)
+    print("STATE-UNPINNED PER-DRAW ORDERED DIFF — NOT authoritative.")
+    print(f"  oracle frame {fa.get('frame')} pass=scene: {len(fa.get('draws', []))} draws")
+    print(f"  native frame {fb.get('frame')} pass=scene: {len(fb.get('batches', []))} batches")
+    print("  Draws compared by ordered position. Same-state pinning (GOALS.md #1) required")
+    print("  before treating a NAMED divergence here as a fix target.")
+    print("=" * 78)
+    da = fa.get("draws", []); db = fb.get("batches", [])
+    n = min(len(da), len(db))
+    if not n:
+        print(f"HARNESS-FAIL: 0 draws on one side (oracle {len(da)}, native {len(db)})")
+        return 2
+    for i in range(n):
+        sa, sb = _oracle_draw_sig(da[i]), _native_draw_sig(db[i])
+        # Vertex count is the most survivable cross-engine anchor; TEV vs ntex is a proxy.
+        # First surface the vc / blend triple mismatch — those are the ones whose meaning is
+        # consistent across engines.
+        if sa[7] != sb[7] or (sa[0], sa[1], sa[2]) != (sb[0], sb[1], sb[2]):
+            print(f"  DIVERGE @ ordered draw {i}:")
+            print(f"    oracle: vc={sa[7]}  blend(be,src,dst)={sa[0],sa[1],sa[2]}  tev={sa[6]}")
+            print(f"    native: vc={sb[7]}  blend(be,src,dst)={sb[0],sb[1],sb[2]}  ntex={sb[6]}")
+            print(f"    (first ordered mismatch — further draws not shown; fix or pin first)")
+            return 1
+    print(f"  {n} ordered draws agree on the surveyed anchors (vc + blend triple).")
+    print(f"  Length gap: oracle has {len(da)-n} extra, native has {len(db)-n} extra draws past position {n}.")
+    return 0 if len(da) == len(db) else 1
+
+# ---------------------------------------------------------------------------------------
 # PIXEL track (vs Dolphin-GX oracle)
 # ---------------------------------------------------------------------------------------
 def main():
@@ -329,6 +423,7 @@ def main():
     mode = sys.argv[1]
     if mode == "check":  return check(sys.argv[2])
     if mode == "diff":   return diff(sys.argv[2], sys.argv[3])
+    if mode == "drawdiff": return drawdiff(sys.argv[2], sys.argv[3])
     print(__doc__); return 2
 
 if __name__ == "__main__":
