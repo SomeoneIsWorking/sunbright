@@ -180,6 +180,18 @@ public:
             out->amb_pass[pass][0] = out->amb[0]; out->amb_pass[pass][1] = out->amb[1];
             out->amb_pass[pass][2] = out->amb[2]; out->amb_pass_set[pass] = true;
         }
+        // Latch the projection+viewport this pass's draws use — same discipline as amb_pass. Only
+        // latch when the frame has actually seen a SETPROJECTION/SETVIEWPORT (have_proj/have_vp),
+        // else a first-frame pass would freeze the zero-init default and misleadingly compare equal.
+        if (!out->proj_pass_set[pass] && out->have_proj) {
+            for (int k = 0; k < 6; ++k) out->proj_pass[pass][k] = out->proj[k];
+            out->proj_type_pass[pass] = out->proj_type;
+            out->proj_pass_set[pass] = true;
+        }
+        if (!out->vp_pass_set[pass] && out->have_vp) {
+            for (int k = 0; k < 6; ++k) out->vp_pass[pass][k] = out->vp[k];
+            out->vp_pass_set[pass] = true;
+        }
         record_draw(num_vertices);   // live blend/TEV value oracle (gated)
     }
     OPCODE_CALLBACK(void OnDisplayList(u32 address, u32 size)) {

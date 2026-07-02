@@ -240,7 +240,29 @@ extern "C" void sb_gx_capture_frame_boundary() {
             "\"nan\":0,\"ndc\":[0,0,0,0,0,0],\"cks\":0.0,\"colcks\":0.0}",
             g_frame_no, kPassName[pass], fi.verts_pass[pass], fi.dls_pass[pass], fi.prims_pass[pass],
             fi.verts_pass[pass]);
-        std::fprintf(f, ",\"projType\":%d,\"lights\":{\"n\":%d,\"l\":[", pass, scene ? ln : 0);
+        // FINGERPRINT (game-state signature — SETPROJECTION + SETVIEWPORT bytes from THIS frame's
+        // FIFO stream, parsed by gx_parse). Both engines run identical guest code that sets
+        // projection/viewport, so at the same game state these bytes match. parity_sweep.drawdiff
+        // uses this fingerprint to pair frames across engines and downgrade the STATE-UNPINNED
+        // banner. Read PER-PASS (proj_pass/vp_pass): the frame-global fi.proj/fi.vp is "last seen"
+        // (= HU»D ortho at end-of-frame), so it would put HUD state on the SCENE line and never
+        // match native's true scene projection. proj_type is the REAL GX type (0=persp/1=ortho),
+        // NOT the pass loop index — the coincidence perspective==scene==0 hid this bug but was
+        // fragile. Emit only when the pass actually captured a projection/viewport.
+        if (fi.proj_pass_set[pass]) {
+            std::fprintf(f, ",\"projType\":%d,\"proj\":[%.5f,%.5f,%.5f,%.5f,%.5f,%.5f]",
+                         fi.proj_type_pass[pass],
+                         fi.proj_pass[pass][0], fi.proj_pass[pass][1], fi.proj_pass[pass][2],
+                         fi.proj_pass[pass][3], fi.proj_pass[pass][4], fi.proj_pass[pass][5]);
+        } else {
+            std::fprintf(f, ",\"projType\":%d", pass);   // legacy fallback: pass index
+        }
+        if (fi.vp_pass_set[pass]) {
+            std::fprintf(f, ",\"vp\":[%.1f,%.1f,%.1f,%.1f,%.4f,%.4f]",
+                         fi.vp_pass[pass][0], fi.vp_pass[pass][1], fi.vp_pass[pass][2],
+                         fi.vp_pass[pass][3], fi.vp_pass[pass][4], fi.vp_pass[pass][5]);
+        }
+        std::fprintf(f, ",\"lights\":{\"n\":%d,\"l\":[", scene ? ln : 0);
         int em = 0;
         if (scene) for (int i = 0; i < 8; ++i) {
             if (!fi.lights[i].valid) continue;

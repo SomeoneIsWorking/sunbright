@@ -330,6 +330,70 @@ def _first_scene_with_draws(dump, key):
         if f.get(key): return f
     return None
 
+# --- STATE-PIN fingerprint ---------------------------------------------------------------
+# A scene frame's game-state signature is (projType, proj[6], vp[6]) — both engines derive
+# these from the SAME guest code path (GXSetProjection/GXSetViewport writing to XF). At the
+# same game state the values match; a mismatch names a real state divergence (different
+# scene / different director state) that ORDERING alignment cannot recover. Rounding: proj
+# to 3 decimals absorbs FP jitter without hiding real diffs; vp to 1 decimal covers the
+# integer pixel dims + the [0,1] near/far.
+def _fp(frame):
+    p = frame.get("proj"); v = frame.get("vp"); t = frame.get("projType")
+    if p is None or v is None or t is None: return None
+    return (int(t),
+            tuple(round(float(x), 3) for x in p),
+            tuple(round(float(x), 1) for x in v))
+
+def _pick_matched_scene_pair(A, B, key_a, key_b):
+    """Find (frame_a, frame_b) with equal state-pin fingerprint on both sides, both carrying a
+    per-draw stream. Returns (fa, fb, fp) or (None, None, reason). Prefers the fingerprint that
+    covers the most scene frames on BOTH sides (settled / stable state), not a one-off transient."""
+    from collections import Counter
+    fps_a = Counter()
+    fps_b = Counter()
+    idx_a, idx_b = {}, {}
+    for f in A:
+        if _pass_of(f) != "scene" or not f.get(key_a): continue
+        fp = _fp(f)
+        if fp is None: continue
+        fps_a[fp] += 1
+        idx_a.setdefault(fp, f)
+    for f in B:
+        if _pass_of(f) != "scene" or not f.get(key_b): continue
+        fp = _fp(f)
+        if fp is None: continue
+        fps_b[fp] += 1
+        idx_b.setdefault(fp, f)
+    if not fps_a: return None, None, "oracle has no proj+vp-tagged scene frames (rebuild sunbright with the fingerprint emit)"
+    if not fps_b: return None, None, "native has no proj+vp-tagged scene frames (rebuild sms-boot with the fingerprint emit)"
+    common = set(fps_a) & set(fps_b)
+    if not common:
+        # Name the discrepancy: print the top-3 fingerprints on each side (a scene often visits a
+        # HANDFUL of camera/vp states over the capture, and the top-1 on each side can be
+        # DIFFERENT phases of the SAME intro). If any of ora's top-3 differ from native's top-3
+        # only in ONE field, that's a real state divergence in that field.
+        lines = ["no fingerprint match"]
+        lines.append("  oracle top fingerprints (projType, proj[0..5], vp[0..5]) — count):")
+        for fp, c in fps_a.most_common(3):
+            lines.append(f"    ({c:5d})  projType={fp[0]}  proj={fp[1]}  vp={fp[2]}")
+        lines.append("  native top fingerprints — count):")
+        for fp, c in fps_b.most_common(3):
+            lines.append(f"    ({c:5d})  projType={fp[0]}  proj={fp[1]}  vp={fp[2]}")
+        # Also diff top-1 on each side, for the quick summary.
+        top_a = fps_a.most_common(1)[0][0]
+        top_b = fps_b.most_common(1)[0][0]
+        diffs = []
+        if top_a[0] != top_b[0]: diffs.append(f"projType oracle={top_a[0]} native={top_b[0]}")
+        for i,(oa,ob) in enumerate(zip(top_a[1], top_b[1])):
+            if oa != ob: diffs.append(f"proj[{i}] oracle={oa} native={ob}")
+        for i,(oa,ob) in enumerate(zip(top_a[2], top_b[2])):
+            if oa != ob: diffs.append(f"vp[{i}] oracle={oa} native={ob}")
+        if diffs: lines.append("  top-1 vs top-1 diffs: " + "; ".join(diffs))
+        return None, None, "\n".join(lines)
+    # Score by min(count_a, count_b) — a fingerprint that persists on BOTH sides is settled state.
+    best_fp = max(common, key=lambda fp: min(fps_a[fp], fps_b[fp]))
+    return idx_a[best_fp], idx_b[best_fp], best_fp
+
 def _oracle_draw_sig(d):
     """Cross-engine signature for an ORACLE (gx_capture.cpp) DrawRec JSON object.
     Fields chosen to align with a NATIVE (nvk NvkTevBatch) draw:
@@ -379,20 +443,34 @@ def drawdiff(pa, pb):
     A, B = load_jsonl(pa), load_jsonl(pb)
     if not A or not B:
         print(f"HARNESS-FAIL: empty dump(s) ({pa}: {len(A)}, {pb}: {len(B)})"); return 2
-    fa = _first_scene_with_draws(A, "draws")
-    fb = _first_scene_with_draws(B, "batches")
-    if fa is None:
-        print(f"HARNESS-FAIL: oracle {pa} has no per-draw stream — run with SUNBRIGHT_PARITY_DRAWS=1")
-        return 2
-    if fb is None:
-        print(f"HARNESS-FAIL: native {pb} has no per-batch stream (sb_parity_dump.h emission?)")
-        return 2
+    # STATE-PIN: pair frames by matching (projType, proj[6], vp[6]) fingerprint. If both sides
+    # share a fingerprint, use it — that IS bit-equal SETPROJECTION/SETVIEWPORT bytes, i.e. the
+    # game issued the same scene setup. Fall back to first-scene ordering + STATE-UNPINNED banner
+    # when they don't (the harness names the fingerprint discrepancy).
+    fa, fb, fp_or_reason = _pick_matched_scene_pair(A, B, "draws", "batches")
+    pinned = fa is not None
+    if not pinned:
+        # No fingerprint match — fall back so the diff still runs, but keep the banner up.
+        fa = _first_scene_with_draws(A, "draws")
+        fb = _first_scene_with_draws(B, "batches")
+        if fa is None:
+            print(f"HARNESS-FAIL: oracle {pa} has no per-draw stream — run with SUNBRIGHT_PARITY_DRAWS=1")
+            return 2
+        if fb is None:
+            print(f"HARNESS-FAIL: native {pb} has no per-batch stream (sb_parity_dump.h emission?)")
+            return 2
     print("=" * 78)
-    print("STATE-UNPINNED PER-DRAW ORDERED DIFF — NOT authoritative.")
+    if pinned:
+        print("STATE-PINNED PER-DRAW DIFF — projection+viewport fingerprint match.")
+        print(f"  fingerprint projType={fp_or_reason[0]} proj={fp_or_reason[1]} vp={fp_or_reason[2]}")
+    else:
+        print("STATE-UNPINNED PER-DRAW ORDERED DIFF — NOT authoritative.")
+        print(f"  reason: {fp_or_reason}")
     print(f"  oracle frame {fa.get('frame')} pass=scene: {len(fa.get('draws', []))} draws")
     print(f"  native frame {fb.get('frame')} pass=scene: {len(fb.get('batches', []))} batches")
-    print("  Draws compared by ordered position. Same-state pinning (GOALS.md #1) required")
-    print("  before treating a NAMED divergence here as a fix target.")
+    if not pinned:
+        print("  Draws compared by ordered position. Same-state pinning (GOALS.md #1) required")
+        print("  before treating a NAMED divergence here as a fix target.")
     print("=" * 78)
     da = fa.get("draws", []); db = fb.get("batches", [])
     n = min(len(da), len(db))

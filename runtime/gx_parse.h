@@ -92,6 +92,14 @@ struct GxFrameInfo {
     // active pass so the SCENE bucket carries the ambient the GPU actually used for the 3D scene.
     float amb_pass[2][3] = {{0,0,0},{0,0,0}};
     bool  amb_pass_set[2] = {false, false};
+    // Per-pass PROJECTION+VIEWPORT: the frame-global proj/vp below is "last seen" (= HUD ortho by
+    // frame end), so the scene pass line would carry HUD state and the state-pin fingerprint would
+    // reject a true match. Latch at the FIRST primitive of each pass, same discipline as amb_pass.
+    int   proj_type_pass[2] = {0, 0};
+    float proj_pass[2][6]   = {{0,0,0,0,0,0},{0,0,0,0,0,0}};
+    bool  proj_pass_set[2]  = {false, false};
+    float vp_pass[2][6]     = {{0,0,0,0,0,0},{0,0,0,0,0,0}};
+    bool  vp_pass_set[2]    = {false, false};
     // Immediate-mode (in-FIFO GXBegin) vertex count per pass, split from display-list verts. The
     // map/scene geometry issues via GX_CMD_CALL_DL (display lists); TMapObjWave's sea grid draws via
     // raw immediate-mode GXBegin. So imm_verts_pass[scene] isolates the wave-class draw in the oracle —
