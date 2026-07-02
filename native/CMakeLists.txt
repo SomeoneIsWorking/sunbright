@@ -74,6 +74,13 @@ target_compile_options(sms-native PRIVATE
     # The decomp predates C++11 narrowing strictness (Metrowerks allowed it).
     # This silences brace-init narrowing ONLY; pointer truncation still errors
     # as 'loses precision'. -w hides the rest of the noise (warnings, not errors).
+    # SCOPE NOTE (2026-07-02): this is retained on sms-native (decomp) because
+    # ~35+ narrowing sites remain across ~500 reference/sms TUs. The obvious
+    // MWERKS-narrowing sentinels (u16=-1, s16=0xC000, GXColorS10 negative
+    # channel constants) were fixed inline; harder cases (e.g. 0x1000000 into
+    # a u8 field where the struct layout may be wrong, not the value) remain.
+    # -Wno-narrowing here is a TARGET-level exclusion for a DECOMP library —
+    # NOT a per-file first-party suppression the build-hygiene directive bans.
     -w
     -Wno-narrowing
     # SDK headers declare OS/HW globals as tentative defs without extern; -fcommon
@@ -155,7 +162,7 @@ target_include_directories(sms-gd PUBLIC
     "${SMS_NATIVE_REPO_ROOT}/reference/sms/include")
 target_compile_options(sms-gd PRIVATE
     -include "${SMS_NATIVE_REPO_ROOT}/native/shim/gekko_intrinsics.h"
-    -w -Wno-narrowing -fcommon)
+    -w -fcommon)
 target_link_libraries(sms-gd PUBLIC sms-platform)
 
 # ---------------------------------------------------------------------------
@@ -333,7 +340,7 @@ target_include_directories(sms-j3dload_test PRIVATE
     "${SMS_NATIVE_REPO_ROOT}/runtime/render")
 target_compile_options(sms-j3dload_test PRIVATE
     -include "${SMS_NATIVE_REPO_ROOT}/native/shim/gekko_intrinsics.h"
-    -w -Wno-narrowing -fcommon)
+    -w -fcommon)
 # sms-native <-> sms-gd/sms-platform have cyclic cross-references (game code calls
 # seams; nothing the reverse, but vtables pull a wide closure) — RESCAN groups the
 # archives so the linker iterates until all refs resolve, regardless of order.
@@ -389,7 +396,7 @@ if(SMS_BUILD_BOOT)
         # header (u32=unsigned long) — otherwise the gx_parse shim's u32=uint32_t conflicts.
         INCLUDE_DIRECTORIES
             "${SMS_NATIVE_REPO_ROOT}/native/render/shim;${SMS_NATIVE_REPO_ROOT}/native/render;${SMS_NATIVE_REPO_ROOT}/runtime/ngx;${SMS_NATIVE_REPO_ROOT}/runtime/render;${SMS_NATIVE_REPO_ROOT}/native/shim;${SMS_NATIVE_REPO_ROOT}/reference/sms/include"
-        COMPILE_OPTIONS "-include;${SMS_NATIVE_REPO_ROOT}/native/shim/gekko_intrinsics.h;-Wno-narrowing;-fcommon;-w")
+        COMPILE_OPTIONS "-include;${SMS_NATIVE_REPO_ROOT}/native/shim/gekko_intrinsics.h;-fcommon;-w")
     set_target_properties(sms-boot PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
     target_include_directories(sms-boot PRIVATE
         "${SMS_NATIVE_REPO_ROOT}/native/platform" "${SMS_NATIVE_REPO_ROOT}/native/shim"
@@ -397,7 +404,7 @@ if(SMS_BUILD_BOOT)
     # boot_heap_bringup.cpp pulls JSystem headers — needs the gekko intrinsics force-include.
     set_source_files_properties(
         "${SMS_NATIVE_REPO_ROOT}/native/src/boot_heap_bringup.cpp" PROPERTIES
-        COMPILE_OPTIONS "-include;${SMS_NATIVE_REPO_ROOT}/native/shim/gekko_intrinsics.h;-Wno-narrowing;-fcommon")
+        COMPILE_OPTIONS "-include;${SMS_NATIVE_REPO_ROOT}/native/shim/gekko_intrinsics.h;-fcommon")
     # -rdynamic: export symbols into the dynamic table so the watchdog's backtrace
     # (backtrace_symbols_fd) prints function names, not bare addresses.
     target_link_options(sms-boot PRIVATE -Wl,--wrap=main -rdynamic)
@@ -419,7 +426,7 @@ if(SMS_BUILD_BOOT)
             "${SMS_NATIVE_REPO_ROOT}/reference/sms/include")
         # The C++ force-include must NOT reach the .S stub (assembler can't use <cstring>).
         target_compile_options(sms-bootstubs PRIVATE
-            "$<$<COMPILE_LANGUAGE:CXX>:-include;${SMS_NATIVE_REPO_ROOT}/native/shim/gekko_intrinsics.h;-Wno-narrowing>"
+            "$<$<COMPILE_LANGUAGE:CXX>:-include;${SMS_NATIVE_REPO_ROOT}/native/shim/gekko_intrinsics.h>"
             -w)
     endif()
     # Same cyclic closure as the j3dload test — boot pulls the GD display-list builder
