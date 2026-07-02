@@ -33,6 +33,32 @@ int main() {
 	CHECK(sb::shine_load_after::classify(3) == E::NoOp,               "loadAfter: unk154>=3 → no-op");
 	CHECK(sb::shine_load_after::classify(0xFFFFFFFFu) == E::NoOp,     "loadAfter: overflow-large unk154 → no-op");
 
+	// --- TShine::loadBeforeInit predicates (@0x801bcc18) ---
+	{
+		using namespace sb::shine_load_before_init;
+		CHECK(name_to_unk154("normal")   == 0, "loadBeforeInit: 'normal' → 0");
+		CHECK(name_to_unk154("quickly")  == 2, "loadBeforeInit: 'quickly' → 2");
+		CHECK(name_to_unk154("")         == 1, "loadBeforeInit: empty → 1");
+		CHECK(name_to_unk154("Normal")   == 1, "loadBeforeInit: strcmp is case-sensitive");
+		CHECK(name_to_unk154("normal ")  == 1, "loadBeforeInit: strcmp requires exact match");
+		CHECK(name_to_unk154("norm")     == 1, "loadBeforeInit: prefix does NOT match");
+		CHECK(name_to_unk154(nullptr)    == 1, "loadBeforeInit: null-guard falls to 1");
+
+		CHECK(kDefaultWait == 0x78, "loadBeforeInit: default wait = 0x78 (120)");
+		CHECK(clamp_wait(-1) == 0x78, "loadBeforeInit: -1 → default 120");
+		CHECK(clamp_wait(0)  == 0,    "loadBeforeInit: 0 passthrough");
+		CHECK(clamp_wait(60) == 60,   "loadBeforeInit: 60 passthrough");
+		CHECK(clamp_wait(-2) == -2,   "loadBeforeInit: -2 passthrough (only -1 is the sentinel)");
+
+		// clamp_toggle: only toggle ∈ {-1, 0} produce nonzero results.
+		CHECK(clamp_toggle(-1) == 0, "loadBeforeInit: toggle -1 → 0 (kept, +1)");
+		CHECK(clamp_toggle(0)  == 1, "loadBeforeInit: toggle 0 → 1 (kept, +1)");
+		CHECK(clamp_toggle(1)  == 0, "loadBeforeInit: toggle 1 → 0 (pinned to -1, +1)");
+		CHECK(clamp_toggle(42) == 0, "loadBeforeInit: toggle >1 → 0");
+		// Signed: -2 → val+1 = -1 < 2 → kept → 0 (u8 wraparound? -1+1=0). Verify.
+		CHECK(clamp_toggle(-2) == 0xFF, "loadBeforeInit: toggle -2 → (u8)(-1) = 0xFF");
+	}
+
 	if (g_fail) { std::fprintf(stderr, "shine_test: %d FAILURE(S)\n", g_fail); return 1; }
 	std::printf("shine_test: all passed\n");
 	return 0;

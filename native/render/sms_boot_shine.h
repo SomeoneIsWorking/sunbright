@@ -48,3 +48,39 @@ inline Effect classify(std::uint32_t unk154)
 }
 
 }  // namespace sb::shine_load_after
+
+namespace sb::shine_load_before_init {
+
+// Pure predicates from TShine::loadBeforeInit (@0x801bcc18).
+
+// Name-tag → unk154 mapping. Byte-verified string literals; do NOT lower-case
+// or trim on entry — the RE calls strcmp verbatim.
+inline std::uint32_t name_to_unk154(const char* name)
+{
+	if (name == nullptr) return 1;
+	// Manual strcmp to keep the header header-only + freestanding.
+	auto streq = [](const char* a, const char* b) {
+		while (*a && *b && *a == *b) { ++a; ++b; }
+		return *a == *b;
+	};
+	if (streq(name, "normal"))  return 0;
+	if (streq(name, "quickly")) return 2;
+	return 1;
+}
+
+// Default wait-time when stream reads -1.
+inline constexpr int kDefaultWait = 0x78;  // 120
+
+// s32 wait-time → clamped to 0x78 if -1, otherwise passthrough.
+inline int clamp_wait(int wait) { return (wait == -1) ? kDefaultWait : wait; }
+
+// Signed toggle → u8 unk190 via the (val+1)<2 clamp.
+// Effect: toggle == 0 → 1; toggle == -1 → 0; anything else → 0.
+inline std::uint8_t clamp_toggle(int toggle)
+{
+	if (toggle + 1 >= 2)
+		toggle = -1;
+	return static_cast<std::uint8_t>(toggle + 1);
+}
+
+}  // namespace sb::shine_load_before_init
