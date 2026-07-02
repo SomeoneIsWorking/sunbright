@@ -48,6 +48,7 @@ pkill -9 -x sms-boot 2>/dev/null; sleep 1; rm -f "$NATIVE"
 timeout -s KILL 60 setarch -R env SUNBRIGHT_DISC=scratch/disc/sms.iso SB_THP_FAST=1 SB_TURBO=1 \
   SB_HOST_ALLOC_CAP_MB=3072 SB_STAGE=15 SB_SCENARIO=0 \
   SB_FRAME_DUMP=1 SB_FRAME_DUMP_START="$FROM" \
+  SB_WATCHDOG_SECS="${SB_WATCHDOG_SECS:-0}" \
   SB_PAD_SCRIPT="$PAD_SCRIPT" \
   SB_PARITY_DUMP="$NATIVE" \
   ./build-native/sms-boot > scratch/passes/pinned_native.log 2>&1 &
