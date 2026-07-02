@@ -76,7 +76,7 @@ target_compile_options(sms-native PRIVATE
     # as 'loses precision'. -w hides the rest of the noise (warnings, not errors).
     # SCOPE NOTE (2026-07-02): this is retained on sms-native (decomp) because
     # ~35+ narrowing sites remain across ~500 reference/sms TUs. The obvious
-    // MWERKS-narrowing sentinels (u16=-1, s16=0xC000, GXColorS10 negative
+    # MWERKS-narrowing sentinels (u16=-1, s16=0xC000, GXColorS10 negative
     # channel constants) were fixed inline; harder cases (e.g. 0x1000000 into
     # a u8 field where the struct layout may be wrong, not the value) remain.
     # -Wno-narrowing here is a TARGET-level exclusion for a DECOMP library —
@@ -97,7 +97,9 @@ target_compile_options(sms-native PRIVATE
     # (_Unwind_Resume) and crashes. Disabling the partition keeps every block
     # inside its own function, so a fall-through hits that function's own
     # epilogue/ret (the original benign behavior) instead of foreign code.
-    -fno-reorder-blocks-and-partition
+    # GCC-only: hot/cold block partitioning. clang doesn't do the partition, so
+    # the fallthrough-into-foreign-cleanup case can't arise under clang.
+    $<$<CXX_COMPILER_ID:GNU>:-fno-reorder-blocks-and-partition>
     # The decomp source is UTF-8, but the GameCube assets store Japanese names
     # in Shift-JIS (the original game was compiled from Shift-JIS source). The
     # JDrama NameRef tree is searched by node NAME (e.g. TApplication::unk30 =
@@ -108,8 +110,12 @@ target_compile_options(sms-native PRIVATE
     # build did. ASCII is identical in SJIS, so type strings / printf formats
     # are unaffected. (-finput-charset names the source encoding for the
     # conversion.)
-    -finput-charset=UTF-8
-    -fexec-charset=SHIFT_JIS)
+    # clang doesn't support SHIFT_JIS in -fexec-charset (iconv-backed on GCC).
+    # Under clang the JDrama NameRef search will miss any Japanese-name node —
+    # first-party clang builds are for portability CI only, not runtime; the
+    # SJIS-name game paths are exercised under the GCC build.
+    $<$<CXX_COMPILER_ID:GNU>:-finput-charset=UTF-8>
+    $<$<CXX_COMPILER_ID:GNU>:-fexec-charset=SHIFT_JIS>)
 
 # ---------------------------------------------------------------------------
 # sms-platform — the native PC implementations of the GameCube SDK seams the
