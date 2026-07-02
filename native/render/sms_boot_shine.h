@@ -84,3 +84,53 @@ inline std::uint8_t clamp_toggle(int toggle)
 }
 
 }  // namespace sb::shine_load_before_init
+
+namespace sb::shine_make_mactors {
+
+// Pure decision spec for TShine::makeMActors (@0x801bcdd4). After allocating
+// the TMActorKeeper (which the port does by calling the engine primitive),
+// the function chooses ONE of two bmd names to hand to initMActor based on:
+//   (1) whether TFlagManager marks this shine's ID as already collected, AND
+//   (2) whether this instance's name is the Mani-shop variant.
+// Any other case (flag unset, or set but name mismatch) → "shine.bmd".
+// The 「シャイン（マニ屋用）」 name is the Mani-shop's placeholder shine that
+// shows an empty pedestal after the mission has been cleared once.
+//
+// Regressions this catches:
+//   * Missing the AND (falling back to shine.bmd on flag-only) — the Mani-shop
+//     display would keep showing a full Shine after collection.
+//   * Reversing the flag polarity → shine_empty.bmd shown on every OTHER shine
+//     that hasn't been collected yet.
+//   * Trimming/lowercasing the name check — strcmp against the SJIS-encoded
+//     literal is exact-match, per the RE.
+
+inline constexpr const char* kShineNormalBmd = "shine.bmd";
+inline constexpr const char* kShineEmptyBmd  = "shine_empty.bmd";
+inline constexpr const char* kManiShopName   = "シャイン（マニ屋用）";
+
+inline constexpr std::uint32_t kKeeperModelLoaderFlags = 0x10220000u;
+
+// After-decision unk1B4 latch: set to 1 only in the empty-pedestal branch.
+inline constexpr std::uint8_t kUnk1B4EmptyBranch = 1;
+
+// Choose which bmd to load — returns the pointer to one of the constants above.
+// Manual strcmp keeps the header freestanding (matches the rest of the file).
+inline const char* choose_bmd(bool shine_flag_set, const char* actor_name)
+{
+    if (!shine_flag_set || actor_name == nullptr)
+        return kShineNormalBmd;
+    // Byte-exact compare against the SJIS bytes of the Mani-shop variant.
+    const char* a = actor_name;
+    const char* b = kManiShopName;
+    while (*a && *b && *a == *b) { ++a; ++b; }
+    if (*a == 0 && *b == 0) return kShineEmptyBmd;
+    return kShineNormalBmd;
+}
+
+// True when the port should latch unk1B4 = 1 (empty-pedestal branch).
+inline bool should_latch_empty(bool shine_flag_set, const char* actor_name)
+{
+    return choose_bmd(shine_flag_set, actor_name) == kShineEmptyBmd;
+}
+
+}  // namespace sb::shine_make_mactors

@@ -59,6 +59,45 @@ int main() {
 		CHECK(clamp_toggle(-2) == 0xFF, "loadBeforeInit: toggle -2 → (u8)(-1) = 0xFF");
 	}
 
+	// --- TShine::makeMActors bmd choice (@0x801bcdd4) ---
+	{
+		using namespace sb::shine_make_mactors;
+		CHECK(kKeeperModelLoaderFlags == 0x10220000u,
+		      "makeMActors: TMActorKeeper.mModelLoaderFlags = 0x10220000");
+		CHECK(kUnk1B4EmptyBranch == 1,
+		      "makeMActors: unk1B4 latch is 1 in the empty-pedestal branch");
+
+		// Flag unset → normal shine regardless of name.
+		CHECK(choose_bmd(false, nullptr)         == kShineNormalBmd,
+		      "makeMActors: flag=0 + null → shine.bmd");
+		CHECK(choose_bmd(false, "シャイン（マニ屋用）") == kShineNormalBmd,
+		      "makeMActors: flag=0 + Mani-shop name → still shine.bmd (AND check)");
+		CHECK(choose_bmd(false, "シャイン")        == kShineNormalBmd,
+		      "makeMActors: flag=0 + default name → shine.bmd");
+
+		// Flag set — only the exact Mani-shop name flips to empty.
+		CHECK(choose_bmd(true, nullptr)          == kShineNormalBmd,
+		      "makeMActors: flag=1 + null name → shine.bmd (null-guard)");
+		CHECK(choose_bmd(true, "シャイン")         == kShineNormalBmd,
+		      "makeMActors: flag=1 + default name → shine.bmd (not Mani-shop)");
+		CHECK(choose_bmd(true, "シャイン（マニ屋用）") == kShineEmptyBmd,
+		      "makeMActors: flag=1 + Mani-shop → shine_empty.bmd");
+
+		// Name-substring must NOT match (exact strcmp only).
+		CHECK(choose_bmd(true, "マニ屋用")         == kShineNormalBmd,
+		      "makeMActors: name substring does not match");
+		CHECK(choose_bmd(true, "シャイン（マニ屋用）extra") == kShineNormalBmd,
+		      "makeMActors: name suffix invalidates match");
+
+		// Latch predicate mirrors bmd choice.
+		CHECK(!should_latch_empty(false, "シャイン（マニ屋用）"),
+		      "makeMActors: unk1B4 stays 0 when flag=0");
+		CHECK(should_latch_empty(true, "シャイン（マニ屋用）"),
+		      "makeMActors: unk1B4 latches when flag+name match");
+		CHECK(!should_latch_empty(true, "シャイン"),
+		      "makeMActors: unk1B4 stays 0 for the plain-name variant");
+	}
+
 	if (g_fail) { std::fprintf(stderr, "shine_test: %d FAILURE(S)\n", g_fail); return 1; }
 	std::printf("shine_test: all passed\n");
 	return 0;
