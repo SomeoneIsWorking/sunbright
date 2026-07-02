@@ -78,9 +78,19 @@ session — see next):
   MapXlu re-entry"), and it's no-op now anyway.
 - Document this finding here so next session doesn't chase 42.6→58.2 as a regression.
 
-## Bandaid-free fix (unchanged, well-scoped)
+## Bandaid-free fix (well-scoped in class, wrong-target correction)
 The real fix remains what debug_journal/2026-06-30_fileselect_overbright_is_efb_target_structure.md
-already scopes: reproduce GC's EFB-copy-texture composite. `TMapObjSeaIndirect::perform` at
-`reference/sms/src/MoveBG/MapObjWater.cpp:26` is still an EMPTY STUB — its `init()` already binds
-`スクリーンテクスチャ` at texmap slot 1 for `/common/map/UNDERwater.bmd`, so `perform` needs to
-draw the reflective sea sampling that EFB screen texture.
+already scopes: reproduce GC's EFB-copy-texture composite. **CORRECTION (2026-07-02):** an earlier
+hand-off named `TMapObjSeaIndirect::perform` as the fix target based on it being an empty stub in
+the decomp source. But directly disassembling the ROM (`./build/sunbright-recomp --disasm 0x801eabf4
+4`) shows GC's `TMapObjSeaIndirect::perform` is ALSO EMPTY (a single `blr`). The source stub matches
+the ROM. So porting THAT function accomplishes nothing.
+
+The `init()` at ROM 0x801eaacc..0x801eabf0 DOES load `/common/map/UNDERwater.bmd` and bind the
+screen texture to texmap slot 1, but `perform` doesn't dispatch it — the MActor sits there with no
+draw dispatch. The reflective sea (oracle pass3 tev=2 SRCALPHA/SRCCLR ~1352-vert draw) is drawn by
+a DIFFERENT actor — the prime suspect from N+4 is `composite3` (合成3, pushed 0x8 in
+`initECDisp`, MarDirectorInitECT.cpp), which draws a J3DDrawBuffer containing the full-screen sea
+composite quad that samples the screen texture. Locating that actor + porting its perform is the
+real fix target. That's a substantially larger scope than a single method port and belongs in a
+focused successor session.
