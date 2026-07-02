@@ -136,6 +136,99 @@ static void test_dst_alpha_passthrough() {
     CHECK(approx(out.a, 0.6f), "blend leaves dst.a unchanged (alpha_update is separate)");
 }
 
+// ── OVERBRIGHT-NARROWING: analyse the wash SIGNATURE (per-channel gain) ─────────
+// Sampled pixel values at the settled title-screen lower band (scratch/screenshots/
+// sbs_title.png, 2026-07-02, mean over y ∈ [0.65H, 0.85H], the sea band under the
+// file-select UI):
+static constexpr float ORACLE_RGB[3] = {102.0f/255.0f, 183.0f/255.0f, 189.0f/255.0f};
+static constexpr float NATIVE_RGB[3] = {220.0f/255.0f, 230.0f/255.0f, 229.0f/255.0f};
+// A grep of the native settled batchdbg dump (SB_OWN_GXLIST=1 SB_BATCH_DBG=-1) at
+// 2026-07-02 found ZERO scene batches whose per-vertex mean colour is red-dominant
+// (r > g+0.05 and r > b+0.05 and r > 0.2). So the wash driver is NOT one of the
+// scene J3D batches' vertex-colour rasters. Candidates the remaining narrowing points
+// at: (a) an IMM overlay batch (2D file-select UI / fader / HUD) with a warm tint,
+// (b) a scene batch whose TEV combiner GENERATES a warm output from neutral vertex
+// colour + a warm konst/tevreg (e.g. TEVREG0 sampled from a warm constant), or (c) an
+// accumulated many-pass composite of near-neutral small contributions that add up to
+// a warm net shift.
+
+static void test_wash_gain_is_NON_UNIFORM() {
+    // Multiplicative gain per channel: native / oracle.
+    // r: 220/102 = 2.157   g: 230/183 = 1.257   b: 229/189 = 1.212
+    // Green and blue barely move (~+20%); RED more than DOUBLES. This is the
+    // signature of a CHROMATIC (colour-tinted) source, NOT an achromatic wash.
+    const float gr = NATIVE_RGB[0] / ORACLE_RGB[0];
+    const float gg = NATIVE_RGB[1] / ORACLE_RGB[1];
+    const float gb = NATIVE_RGB[2] / ORACLE_RGB[2];
+    CHECK(gr > 2.0f,  "red channel gain > 2.0 (strong shift)");
+    CHECK(gg < 1.35f, "green channel gain < 1.35 (weak shift)");
+    CHECK(gb < 1.30f, "blue channel gain  < 1.30 (weak shift)");
+    // The signature: R shifts much more than G/B. Rules out any hypothesis where
+    // the wash source is achromatic (grey / white / neutral tone) blended UNIFORMLY.
+    CHECK(gr > gg * 1.5f && gr > gb * 1.5f,
+          "red-channel gain >= 1.5x green/blue gains → source is CHROMATICALLY WARM");
+}
+
+static void test_no_uniform_grey_src_can_produce_the_wash() {
+    // Any grey src (r == g == b) at ANY alpha via SRCALPHA/SRCCLR produces a
+    // uniform shift ratio across channels (because the per-channel formula is
+    // `src_c * (a + dst_c)` and src_c is the same for all channels). Sweep a
+    // range of grey srcs + alphas — none should reproduce the observed shift
+    // within tight tolerance. This is proof-by-exhaustion that the wash driver
+    // is a COLOURED src, not a grey/white one.
+    Rgba dst{ORACLE_RGB[0], ORACLE_RGB[1], ORACLE_RGB[2], 1.0f};
+    for (int gi = 1; gi <= 10; ++gi) {          // grey levels 0.1 .. 1.0
+        const float g = gi * 0.1f;
+        for (int ai = 1; ai <= 10; ++ai) {      // alphas 0.1 .. 1.0
+            const float a = ai * 0.1f;
+            Rgba src{g, g, g, a};
+            Rgba out = blend(SRCALPHA, SRCCLR, false, src, dst);
+            const bool hits = approx(out.r, NATIVE_RGB[0], 0.03f)
+                           && approx(out.g, NATIVE_RGB[1], 0.03f)
+                           && approx(out.b, NATIVE_RGB[2], 0.03f);
+            CHECK(!hits, "no grey src at any alpha can reproduce the wash under SRCALPHA/SRCCLR");
+        }
+    }
+}
+
+static void test_required_src_colour_is_warm() {
+    // Given a SINGLE SRCALPHA/SRCCLR pass with src.a=1.0, solve for src.rgb that
+    // maps ORACLE → NATIVE. Formula: out_c = src_c * (a + dst_c) → src_c = out_c / (a + dst_c).
+    // For a=1.0 this yields src ≈ (0.616, 0.525, 0.516) — a WARM neutral (r > g > b).
+    // Lock the derived colour so future analysis reads it here.
+    const float a = 1.0f;
+    const float sr = NATIVE_RGB[0] / (a + ORACLE_RGB[0]);
+    const float sg = NATIVE_RGB[1] / (a + ORACLE_RGB[1]);
+    const float sb = NATIVE_RGB[2] / (a + ORACLE_RGB[2]);
+    CHECK(sr > sg && sg > sb,
+          "solved src.rgb is r > g > b (warm-toned) — narrows the wash driver to a warm source "
+          "(candidates: sun/glow, fader tint, or the file-select 'PUSH START' overlay)");
+    CHECK(sr < 1.0f && sg < 1.0f && sb < 1.0f,
+          "solved src.rgb all < 1.0 (physical colour) at src.a=1.0");
+    // Verify the inverse: feeding the solved src back through the blend reproduces
+    // the observed native pixel. If this check fails, the analytic formula drifted.
+    Rgba src{sr, sg, sb, a};
+    Rgba dst{ORACLE_RGB[0], ORACLE_RGB[1], ORACLE_RGB[2], 1.0f};
+    Rgba out = blend(SRCALPHA, SRCCLR, false, src, dst);
+    CHECK(approx(out.r, NATIVE_RGB[0], 1e-4f), "solved src produces observed native R");
+    CHECK(approx(out.g, NATIVE_RGB[1], 1e-4f), "solved src produces observed native G");
+    CHECK(approx(out.b, NATIVE_RGB[2], 1e-4f), "solved src produces observed native B");
+}
+
+static void test_low_alpha_would_require_impossible_src() {
+    // At low src.a (e.g. 0.25), the required src.r would exceed 1.0 — impossible.
+    // This bounds src.a from below: whatever draws the wash must have alpha >= ~0.35
+    // to be physically realisable under this blend. Locks the alpha floor.
+    const float a_bad = 0.25f;
+    const float sr = NATIVE_RGB[0] / (a_bad + ORACLE_RGB[0]);   // 0.86/0.65 ≈ 1.32
+    CHECK(sr > 1.0f,
+          "src.a=0.25 requires unreachable src.r>1 → wash source's src.a must be higher");
+    // Find the alpha floor where src.r == 1.0 exactly: src.r = 1 → a = out.r - dst.r.
+    const float alpha_floor = NATIVE_RGB[0] - ORACLE_RGB[0];   // 0.86 - 0.4 = 0.46
+    CHECK(alpha_floor > 0.4f && alpha_floor < 0.55f,
+          "single-pass alpha floor ≈ 0.46 (below this, no valid src produces the wash)");
+}
+
 int main() {
     test_factors();
     test_alpha_blend_over_black();
@@ -147,7 +240,15 @@ int main() {
     test_subtract_clamps_below_zero();
     test_clamp_range();
     test_dst_alpha_passthrough();
+    test_wash_gain_is_NON_UNIFORM();
+    test_no_uniform_grey_src_can_produce_the_wash();
+    test_required_src_colour_is_warm();
+    test_low_alpha_would_require_impossible_src();
     if (g_fail) { std::fprintf(stderr, "gx_blend_eval_test: %d FAILURE(S)\n", g_fail); return 1; }
-    std::printf("gx_blend_eval_test: all passed (H1+2 disconfirmed: mask double-flush cannot explain the observed wash)\n");
+    std::printf("gx_blend_eval_test: all passed\n");
+    std::printf("  H1+2 (mask double-flush) DISCONFIRMED — predicts (1,1,1), observed (220,230,229).\n");
+    std::printf("  Wash driver is a CHROMATICALLY WARM source (r>g>b), NOT a grey/white one.\n");
+    std::printf("  Single-pass src.a floor ≈ 0.46; solved src @a=1.0 ≈ (0.616, 0.525, 0.516).\n");
+    std::printf("  Candidates: sun glow (太陽遮蔽物グロー), lens flare (レンズフレア), fader tint.\n");
     return 0;
 }
