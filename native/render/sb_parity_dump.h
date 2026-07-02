@@ -120,10 +120,12 @@ inline void sb_parity_emit(std::FILE* f, int frame, const float clear[4],
             ++cnt;
         }
         if (!cnt) { cxmn=cxmx=cymn=cymx=czmn=czmx=cwmn=cwmx=0.f; }
-        std::fprintf(f, "%s{\"k\":\"%llx\",\"vc\":%u,\"onscr\":%u,\"z\":[%u,%u,%u],\"bm\":[%u,%u,%u],\"ntex\":%d,"
+        std::fprintf(f, "%s{\"k\":\"%llx\",\"vc\":%u,\"onscr\":%u,\"z\":[%u,%u,%u],\"bm\":[%u,%u,%u],"
+                     "\"cU\":%u,\"aU\":%u,\"ntex\":%d,"
                      "\"clip\":[%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.3f,%.3f],\"cks\":%.3f,\"bad\":%d}",
                      bi ? "," : "", (unsigned long long)b.shaderKey, b.vcount, onscr,
                      b.z_test, b.z_func, b.z_write, b.blend_mode, b.src_factor, b.dst_factor,
+                     b.color_update, b.alpha_update,
                      [&]{ int n=0; for(int t=0;t<8;++t) if(b.tex[t].rgba)++n; return n; }(),
                      cxmn,cxmx,cymn,cymx,czmn,czmx,cwmn,cwmx, cks, bad);
     }
