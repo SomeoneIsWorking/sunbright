@@ -331,20 +331,30 @@ def _first_scene_with_draws(dump, key):
     return None
 
 # --- STATE-PIN fingerprint ---------------------------------------------------------------
-# A scene frame's game-state signature is (projType, proj[6]) — both engines derive these
-# from the SAME guest code path (GXSetProjection writing to XF). At the same game state the
-# values match; a mismatch names a real state divergence (different scene / different
-# director state) that ORDERING alignment cannot recover. Rounding: proj to 3 decimals
-# absorbs FP jitter without hiding real diffs.
+# A scene frame's game-state signature is (projType, proj[4], proj[5]) — the near/far
+# terms. This is the cross-engine SUBSET of the projection that survives oracle-only extra
+# render passes.
 #
-# vp[] deliberately NOT in the fingerprint: on the oracle it's Dolphin's raw XFMEM
-# SETVIEWPORT format (farZ scaled by 0xFFFFFF), on native it's SbParityProj.vp (raw
-# floats [0,1]) — different units, will never match at identical game state. The proj
-# matrix alone identifies the scene camera; vp differences would be a follow-up analysis.
+# The oracle runs TMirrorCamera::perform (reference/sms/src/Map/MapMirror.cpp:29) which
+# issues a mirror-pre-render SETPROJECTION at unk80*gpCamera->mFovy (measured 52° at
+# fileselect, vs the main scene's 40°). gx_parse.proj_pass latches at the FIRST primitive
+# of the pass — and the mirror pass draws BEFORE the main scene, so the SCENE line's proj
+# matrix on the oracle is the MIRROR's 52° widened matrix, not the main scene camera.
+# Native lacks TMirrorCamera → its scene line carries the 40° matrix. So proj[0]/proj[2]
+# (fovy-dependent scales) will legitimately diverge even at identical game state.
+#
+# proj[4] = m22 = -F/(F-N) and proj[5] = m23 = -F*N/(F-N) — the near/far plane
+# encoding. Mirror and main scene BOTH use gpCamera->mNear/mFar (MapMirror.cpp:30), so
+# proj[4]/proj[5] are IDENTICAL between the two passes on the oracle, AND identical to
+# native. This is the cross-engine subset that pins state correctly.
+#
+# vp[] and proj[0..3] deliberately NOT in the fingerprint: vp is unit-mismatched between
+# oracle (Dolphin XFMEM raw) and native (SbParityProj); proj[0..3] carry the fovy-scaled
+# terms that suffer the mirror-pass corruption above.
 def _fp(frame):
     p = frame.get("proj"); t = frame.get("projType")
-    if p is None or t is None: return None
-    return (int(t), tuple(round(float(x), 3) for x in p))
+    if p is None or t is None or len(p) < 6: return None
+    return (int(t), round(float(p[4]), 3), round(float(p[5]), 3))
 
 def _pick_matched_scene_pair(A, B, key_a, key_b):
     """Find (frame_a, frame_b) with equal state-pin fingerprint on both sides, both carrying a
@@ -375,19 +385,18 @@ def _pick_matched_scene_pair(A, B, key_a, key_b):
         # DIFFERENT phases of the SAME intro). If any of ora's top-3 differ from native's top-3
         # only in ONE field, that's a real state divergence in that field.
         lines = ["no fingerprint match"]
-        lines.append("  oracle top fingerprints (projType, proj[0..5]) — count):")
+        lines.append("  oracle top fingerprints (projType, proj[4], proj[5]) — count):")
         for fp, c in fps_a.most_common(3):
-            lines.append(f"    ({c:5d})  projType={fp[0]}  proj={fp[1]}")
+            lines.append(f"    ({c:5d})  projType={fp[0]}  proj[4]={fp[1]}  proj[5]={fp[2]}")
         lines.append("  native top fingerprints — count):")
         for fp, c in fps_b.most_common(3):
-            lines.append(f"    ({c:5d})  projType={fp[0]}  proj={fp[1]}")
-        # Also diff top-1 on each side, for the quick summary.
+            lines.append(f"    ({c:5d})  projType={fp[0]}  proj[4]={fp[1]}  proj[5]={fp[2]}")
         top_a = fps_a.most_common(1)[0][0]
         top_b = fps_b.most_common(1)[0][0]
         diffs = []
         if top_a[0] != top_b[0]: diffs.append(f"projType oracle={top_a[0]} native={top_b[0]}")
-        for i,(oa,ob) in enumerate(zip(top_a[1], top_b[1])):
-            if oa != ob: diffs.append(f"proj[{i}] oracle={oa} native={ob}")
+        if top_a[1] != top_b[1]: diffs.append(f"proj[4] oracle={top_a[1]} native={top_b[1]}")
+        if top_a[2] != top_b[2]: diffs.append(f"proj[5] oracle={top_a[2]} native={top_b[2]}")
         if diffs: lines.append("  top-1 vs top-1 diffs: " + "; ".join(diffs))
         return None, None, "\n".join(lines)
     # Score by min(count_a, count_b) — a fingerprint that persists on BOTH sides is settled state.
@@ -461,8 +470,8 @@ def drawdiff(pa, pb):
             return 2
     print("=" * 78)
     if pinned:
-        print("STATE-PINNED PER-DRAW DIFF — projection fingerprint match.")
-        print(f"  fingerprint projType={fp_or_reason[0]} proj={fp_or_reason[1]}")
+        print("STATE-PINNED PER-DRAW DIFF — near/far fingerprint match.")
+        print(f"  fingerprint projType={fp_or_reason[0]} proj[4]={fp_or_reason[1]} proj[5]={fp_or_reason[2]}")
     else:
         print("STATE-UNPINNED PER-DRAW ORDERED DIFF — NOT authoritative.")
         print(f"  reason: {fp_or_reason}")
