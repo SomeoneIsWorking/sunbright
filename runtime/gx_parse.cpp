@@ -2,6 +2,7 @@
 #include "gx_parse.h"
 #include <cstring>
 #include <cstdlib>
+#include <cstdio>
 
 // Host base of guest main RAM (low 24 MB), published by memory_bridge.cpp on first RAM access.
 // Used to decode display-list bodies in place: a GX_CMD_CALL_DL command in the captured FIFO carries
@@ -133,6 +134,15 @@ public:
             for (int k = 0; k < 6; ++k) out->proj[k] = be_f32(data, (int)(0x1020 + k - lo));
             out->proj_type = (int)be_u32(data, (int)(0x1026 - lo));   // 0 = perspective, 1 = ortho
             out->have_proj = true;
+            // Every XFMEM SETPROJECTION write, opt-in log. Sees the RAW bytes reaching Dolphin XF —
+            // regardless of overrides / recomp / JIT — so if the projection is being widened
+            // between game code and GPU, this catches it. Used to trace fileselect fovy=40°→52°
+            // divergence between oracle and native (session16 residual).
+            if (getenv("SUNBRIGHT_LOG_PROJ")) {
+                std::fprintf(stderr, "[proj] type=%d m00=%.4f m03=%.4f m11=%.4f m13=%.4f m22=%.4f m23=%.4f\n",
+                             out->proj_type, out->proj[0], out->proj[1], out->proj[2],
+                             out->proj[3], out->proj[4], out->proj[5]);
+            }
         }
         // ── Viewport: XFMEM_SETVIEWPORT 0x101a, 6 floats.
         if (covers(0x101a, 6)) {
