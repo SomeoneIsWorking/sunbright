@@ -363,8 +363,13 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
     // Whether any diagnostic SCENE filter dropped/reordered scene batches — if so the EFB-copy
     // boundaries (recorded in unfiltered scene-batch index space) no longer map onto `batches`, so
     // the segmented present must NOT run (fall back to one pass). Default run: no filter → 1:1.
+    // skipBidx removes individual scene batches but keeps ordering, so the segmented composite
+    // (which snapshots at phase boundaries via NvkTevBatch::phase, not copies[k].batch_index)
+    // is still valid. Don't force sceneFiltered for skipBidx — this lets us surgically ablate
+    // an overpaint batch (e.g. the b76 sea mask in ph6) while the composite still eliminates the
+    // ph1 duplicate. All other filters DO reorder/coalesce → they still force one-pass.
     const bool sceneFiltered = honorClear || ablPhase || opaqueOnly || ablBm ||
-                               (skipKey != 0) || solid || texturedOnly || skipBidx;
+                               (skipKey != 0) || solid || texturedOnly;
     // Count of scene batches in `batches`; the 2D imm batches are appended after this index.
     const int nScenePushed = (int)batches.size();
     // 2D immediate batches: each is either a colour-only run (gradient, solid window fill →
