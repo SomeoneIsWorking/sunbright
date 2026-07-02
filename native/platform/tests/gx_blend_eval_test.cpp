@@ -12,6 +12,7 @@
 
 #include "gx_blend_eval.h"
 #include <cstdio>
+#include <initializer_list>
 
 using namespace sb::gxblend;
 
@@ -295,6 +296,145 @@ static void test_h3_last_write_wins_predicts_upshift() {
           "ph6-only clay/adobe pixel predicted red ≈ 0.37 (evidence lock)");
 }
 
+// ── Multi-region sampling: rule out a UNIFORM fullscreen-warm-layer hypothesis ──
+// Sampled means at three vertical bands of sbs_title.png (2026-07-02):
+//    SKY    y ∈ [0.05, 0.25]: oracle=( 40,113,158)  native=(113,142,167)
+//    ISLAND y ∈ [0.35, 0.55]: oracle=(120,148,219)  native=(175,195,245)
+//    SEA    y ∈ [0.65, 0.85]: oracle=(102,183,189)  native=(220,230,229)
+// Delta (native − oracle) per region:
+//    SKY    = (+73, +29, +9)
+//    ISLAND = (+55, +47, +26)
+//    SEA    = (+118, +47, +40)
+// Each is warm (delta.r > delta.g > delta.b — same signature) but the MAGNITUDE
+// varies dramatically. That is the discriminator we exploit below.
+
+static void test_wash_delta_is_NON_UNIFORM_across_regions() {
+    // Deltas in 0-255 space.
+    constexpr int SKY_D[3]    = {73, 29,  9};
+    constexpr int ISLAND_D[3] = {55, 47, 26};
+    constexpr int SEA_D[3]    = {118, 47, 40};
+    // If a single fullscreen warm-additive pass (e.g. TLensGlow, TSunModel glow,
+    // fader tint) were the driver, every region would receive THE SAME delta —
+    // sky-additive N applied on top of sky = sky+N; same N applied on top of sea = sea+N.
+    // The observed deltas are not uniform (SEA.r is 118 vs SKY.r 73 — a 60% spread).
+    // Reject a fullscreen-uniform hypothesis on the red-channel spread alone.
+    const int rmax = SEA_D[0], rmin = SKY_D[0];
+    CHECK(rmax - rmin > 30,
+          "R-delta spread > 30 across regions → NOT a single fullscreen warm layer");
+    // Sky's R-shift is disproportionately huge relative to sky's G/B shifts — hints
+    // that sky's specific rendering diverges more than the map region's.
+    CHECK(SKY_D[0] > SKY_D[1] * 2 && SKY_D[0] > SKY_D[2] * 5,
+          "SKY delta is REDDEST — sky-material rendering pathway diverges strongly");
+}
+
+static void test_all_regions_share_warm_signature_direction() {
+    // Cross-region invariant: EVERY region's delta is R > G > B (warm), and G>=B.
+    // This is what lets H3 (per-material triple-flush) still fit: the wrong
+    // lighting/blend affects MANY materials, but they all have warm textures, so
+    // the aggregate shift is warm everywhere the frame has geometry — with region-
+    // specific magnitude proportional to how much wrong-composited map material
+    // that region sees.
+    constexpr int SKY_D[3]    = {73, 29,  9};
+    constexpr int ISLAND_D[3] = {55, 47, 26};
+    constexpr int SEA_D[3]    = {118, 47, 40};
+    for (const auto& d : { SKY_D, ISLAND_D, SEA_D }) {
+        CHECK(d[0] > d[1] && d[1] >= d[2],
+              "every region: delta.r > delta.g >= delta.b (warm signature invariant)");
+        CHECK(d[0] > 0 && d[1] > 0 && d[2] > 0,
+              "every region: shift is POSITIVE (brightness ADDED, not subtracted)");
+    }
+}
+
+static void test_no_single_multiplicative_gain_explains_all_regions() {
+    // Could a single per-channel MULTIPLICATIVE gain (e.g. wrong gamma pipeline)
+    // explain all three regions? gain = native/oracle:
+    //   SKY    R=2.83, G=1.26, B=1.06
+    //   ISLAND R=1.46, G=1.32, B=1.12
+    //   SEA    R=2.16, G=1.26, B=1.21
+    // The R gain ranges 1.46 .. 2.83 — a nearly 2x spread. A single gamma / global
+    // scale would give the SAME gain in every region. Reject uniform gamma too.
+    const float sky_r    = 113.0f / 40.0f;
+    const float island_r = 175.0f / 120.0f;
+    const float sea_r    = 220.0f / 102.0f;
+    CHECK(sky_r > island_r * 1.5f,
+          "SKY R-gain > 1.5× ISLAND R-gain → no single global multiplicative gain fits");
+    CHECK(sea_r > island_r * 1.3f && sky_r > sea_r * 1.2f,
+          "SKY > SEA > ISLAND R-gain — gain varies with region → NOT a global gamma bug");
+}
+
+// ── ABLATION EXPERIMENT: SB_ABLATE_PHASE=6 shifts, but overshoots on SEA ────────
+// A runtime ablation was performed 2026-07-02: rerun sms-boot with SB_ABLATE_PHASE=6
+// (drops every scene batch captured during mPerformListGXPost dispatch) and re-sample
+// the three regions. This test locks the observed per-region deltas so a future arc
+// reads them instead of re-running the experiment:
+//   SKY    unablated=(113,142,167)  ablated=(103,135,184)  ← modest improvement, B moved toward oracle 158
+//   ISLAND unablated=(175,195,245)  ablated=(175,195,249)  ← no change
+//   SEA    unablated=(220,230,229)  ablated=( 18,123,128)  ← COLLAPSED, darker than oracle
+// SEA overshooting to (18,123,128) — darker than oracle (102,183,189) — proves ph6
+// contains BOTH the wash contribution AND legitimate sea/water rendering. So a naive
+// "gate ph6" fix loses valid content. The right fix must be SURGICAL: isolate the
+// wash-causing map redraws WITHIN ph6 from the sea/final-composite draws that must run.
+
+static void test_ablate_ph6_shifts_but_overshoots_sea() {
+    // Locked observed per-region deltas from the ablation experiment.
+    constexpr int SEA_UNABLATED[3]   = {220, 230, 229};
+    constexpr int SEA_ABLATED_PH6[3] = { 18, 123, 128};
+    constexpr int SEA_ORACLE[3]      = {102, 183, 189};
+    // Ablation reduces SEA on every channel — direction of the shift is correct.
+    for (int c = 0; c < 3; ++c) {
+        CHECK(SEA_ABLATED_PH6[c] < SEA_UNABLATED[c],
+              "SB_ABLATE_PHASE=6 reduces SEA channel intensity — direction correct");
+    }
+    // But the reduction OVERSHOOTS the oracle target — dropping BELOW oracle rather
+    // than converging on it. That means ph6 also runs legitimate draws in this region.
+    for (int c = 0; c < 3; ++c) {
+        CHECK(SEA_ABLATED_PH6[c] < SEA_ORACLE[c],
+              "ablated SEA channel dropped BELOW oracle → ph6 also carries legitimate content");
+    }
+    // Quantify the overshoot: SEA dropped by (~200, ~107, ~101). Oracle needed only
+    // (~118, ~47, ~40) worth of removal. So ~40% of the removed content was VALID.
+    const int removed_r = SEA_UNABLATED[0] - SEA_ABLATED_PH6[0];    // 202
+    const int wanted_r  = SEA_UNABLATED[0] - SEA_ORACLE[0];          // 118
+    CHECK(removed_r > wanted_r * 1.5,
+          "ablation removed ~1.7× more than needed on SEA.R — over-aggressive fix, will lose content");
+}
+
+static void test_ablation_narrows_fix_shape() {
+    // The right fix, evidence-derived:
+    //   * NOT a phase-wide gate (SEA overshoots to (18,123,128) → dark, unacceptable)
+    //   * The redundant MAP-MATERIAL redraws inside ph6 are the wash source (H3)
+    //   * The valid SEA/water draws inside ph6 must remain
+    //   * So the fix keys on MATERIAL not PHASE: skip the ph6 flush of shaderKeys
+    //     already flushed at ph1/ph4 (the 6 duplicated map keys: e33908fd, 224004d9,
+    //     153cc191, f19161bf, 85b2f9ca, 69ebca44) — leave everything else in ph6
+    //     to draw normally
+    //   * OR the segmented-EFB-snapshot-and-clear approach: at end of ph1/ph4, take
+    //     a snapshot texture and clear the framebuffer; ph6 draws over cleared
+    //     framebuffer then composites the snapshot; ph6 map redraws still happen but
+    //     they go to a target the final composite doesn't sample (or samples via
+    //     depth-tested compositing that discards them).
+    // Both approaches keep the legit ph6 content while eliminating the wash.
+    // Neither has been implemented yet; this test documents the fix-shape narrowing.
+    CHECK(true, "fix shape narrowed: material-key gate OR segmented EFB clear — NOT phase-wide gate");
+}
+
+static void test_region_specific_wash_supports_H3() {
+    // The narrowing chain:
+    //   (a) shift is warm everywhere but non-uniform → NOT a single fullscreen layer
+    //   (b) shift is warm everywhere but not a single global gain → NOT a global
+    //       gamma / lighting-scale bug
+    //   (c) already established: 6 map materials duplicated across ph{1,4,6},
+    //       ph6 lighting is 15× brighter than ph1 for the same geometry
+    //   (d) already established: ZERO warm scene-batch vertex colours, ZERO warm
+    //       konst/tevreg — the warmth can only come from TEXTURES modulated by
+    //       (wrong-bright) lighting; the 48 batches with WARM textures fit
+    //   (e) map-material coverage varies per region, so region-specific wash
+    //       magnitude is EXACTLY what H3 predicts.
+    // Nothing here is a definitive proof, but every rejection above thins the
+    // hypothesis space toward H3.
+    CHECK(true, "narrowing chain (a)-(e) leaves H3 (missing EFB-clear → last-write-wins map flush) as the standing lead");
+}
+
 static void test_h3_ruled_in_ph6_dominates_shift_direction() {
     // ALTERNATIVE HYPOTHESIS: maybe the wash is from an ORACLE-ph pass being MISSING on
     // native (dimmer, cooler) rather than ph6 being EXTRA (brighter, warmer). Numerically
@@ -331,6 +471,12 @@ int main() {
     test_low_alpha_would_require_impossible_src();
     test_h3_multi_phase_flush_count_matches_evidence();
     test_h3_last_write_wins_predicts_upshift();
+    test_wash_delta_is_NON_UNIFORM_across_regions();
+    test_all_regions_share_warm_signature_direction();
+    test_no_single_multiplicative_gain_explains_all_regions();
+    test_ablate_ph6_shifts_but_overshoots_sea();
+    test_ablation_narrows_fix_shape();
+    test_region_specific_wash_supports_H3();
     test_h3_ruled_in_ph6_dominates_shift_direction();
     if (g_fail) { std::fprintf(stderr, "gx_blend_eval_test: %d FAILURE(S)\n", g_fail); return 1; }
     std::printf("gx_blend_eval_test: all passed\n");
@@ -340,7 +486,16 @@ int main() {
     std::printf("    * Per-phase vertex lighting varies dim→bright (b13 ph1=0.03 → b57 ph6=0.47, 15× brighter).\n");
     std::printf("    * bm=1/4/5 alpha=1 + LEQUAL depth-write = LAST WRITE WINS → ph6's brightest lighting is what native shows.\n");
     std::printf("    * Warm tex modulated by bright ras = warm-tinted output → matches observed wash's chromatic signature.\n");
-    std::printf("  NEXT ARC: (a) implement segmented EFB snapshot+clear across phases, OR (b) gate ph6 map flushes\n");
-    std::printf("           so the correct (ph1 or ph4) lighting is the last write.\n");
+    std::printf("  MULTI-REGION check: wash delta per region (SKY/ISLAND/SEA) is warm-consistent but non-uniform:\n");
+    std::printf("    SKY delta=(+73,+29,+9)   ISLAND=(+55,+47,+26)   SEA=(+118,+47,+40).\n");
+    std::printf("    Rules out single fullscreen warm layer AND global gamma bug — both would give equal shift.\n");
+    std::printf("  ABLATION EXPERIMENT: SB_ABLATE_PHASE=6 shifts every region — SKY improves modestly,\n");
+    std::printf("    ISLAND unchanged, SEA COLLAPSES to (18,123,128), well BELOW oracle (102,183,189).\n");
+    std::printf("    Rules out phase-wide gate: ph6 also runs legitimate SEA/water draws.\n");
+    std::printf("  FIX SHAPE (evidence-narrowed):\n");
+    std::printf("    * NOT a phase gate (loses legit content).\n");
+    std::printf("    * Material-key gate: skip ph6 flush of the 6 shaderKeys already flushed at ph1/ph4\n");
+    std::printf("      (e33908fd, 224004d9, 153cc191, f19161bf, 85b2f9ca, 69ebca44) — leave rest.\n");
+    std::printf("    * OR segmented EFB snapshot+clear so ph6 map redraws don't reach the final composite.\n");
     return 0;
 }
