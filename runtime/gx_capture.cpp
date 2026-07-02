@@ -561,7 +561,38 @@ extern "C" void sb_gx_capture_frame_boundary() {
             for (const auto& m : g_flush_marks)
                 if (m.off <= w.offset && (!best || m.off > best->off)) best = &m;
             const unsigned pc = best ? best->pc : 0u;
-            const std::string sym = best ? attrib_sym(pc) : std::string("?");
+            std::string sym = best ? attrib_sym(pc) : std::string("?");
+            // Hoist attribution to the outermost meaningful caller (same pattern as [gxsum]): the
+            // gather-pipe flush PC often lands deep in a GX runtime helper (WriteMTXPS4x3,
+            // __GXXfVtxSpecs, GXLoadPosMtxImm, GXBegin, __GXSetDirtyState) that no game code
+            // directly programs. Walk the back-chain up to 16 frames; prefer an outer "perform"
+            // frame, else an outer "draw"/"Draw" frame, else keep the raw sym. That surfaces
+            // TMBindShadowManager::drawShadow / TMario::perform / TModelWaterManager::drawMirror
+            // etc as the real writers of cU=FALSE, matching sms-boot's SB_COLUPD_ALL callers.
+            if (best) {
+                // Prefer the INNERMOST specific actor over the outermost dispatch: for cU-writer
+                // attribution the useful signal is which SCENE ACTOR toggled cU (TMBindShadowManager,
+                // TModelWaterManager, TMario, SMS_FillScreenAlpha, TEfbCtrl, …), not "the perform-list
+                // dispatched something." So skip TPerformList::perform (the outer dispatcher) and stop
+                // at the FIRST inner perform/draw/Fill match encountered walking from the flush PC
+                // outward. If the flush PC itself already resolves to a specific-actor perform (not
+                // TPerformList), keep it as-is.
+                auto is_specific = [](const std::string& s){
+                    if (s.rfind("perform__12TPerformList", 0) == 0) return false;   // outer dispatcher
+                    return s.find("perform") != std::string::npos ||
+                           s.find("draw") != std::string::npos ||
+                           s.find("Draw") != std::string::npos ||
+                           s.find("SMS_Fill") != std::string::npos;
+                };
+                if (!is_specific(sym)) {
+                    unsigned fp = best->sp;
+                    for (int fr = 0; fr < 16 && fp >= 0x80000000u && fp < 0x81800000u; fr++) {
+                        std::string s = attrib_sym(attrib_r32(fp + 4));
+                        if (is_specific(s)) { sym = s; break; }
+                        unsigned nx = attrib_r32(fp); if (nx <= fp) break; fp = nx;
+                    }
+                }
+            }
             if (w.new_cU == 0) false_by_sym[sym]++;
             fprintf(stderr, "[cU-writer] fr=%ld off=%u %s pc=%08x sym=%s\n",
                     g_frame_no, w.offset,

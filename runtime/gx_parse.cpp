@@ -30,6 +30,12 @@ public:
     // from BP loads; sampled into out->draws at each primitive. efb_pass increments per EFB copy.
     BlendMode blend{};               // last BPMEM_BLENDMODE
     u32       genmode = 0;           // last BPMEM_GENMODE (numtevstages live in here)
+    // GC BP masking (BPMEM_BP_MASK=0xFE): the next BP write only updates bits set in bpMask;
+    // preserved bits keep their old value. Reset to 0xFFFFFF after each non-BP_MASK write. GDSetBlendMode
+    // uses this to update blend factors WITHOUT touching bits 2-4 (dither/color_update/alpha_update),
+    // so a raw-value bit-3 comparison over-counts phantom cU transitions. Semantics mirror Dolphin's
+    // externals/dolphin/Source/Core/VideoCommon/BPStructs.cpp LoadBPReg.
+    u32       bp_mask = 0xFFFFFF;
     u8        efb_pass = 0;          // EFB copies fired so far this frame
     bool      record_draws = false;  // gate the (potentially large) per-draw record
     bool      record_tev = false;    // gate the (large) per-stage TEV combiner snapshot (SUNBRIGHT_DBG_GXTEV)
@@ -92,16 +98,32 @@ public:
     OPCODE_CALLBACK(void OnBP(u8 cmd, u32 value)) {
         if (cmd == BPMEM_PE_TOKEN_ID || cmd == BPMEM_PE_TOKEN_INT_ID)
             if (dl_depth == 0) out->token_offsets.push_back(offset);   // stream-offset record: outer only
-        if (cmd == BPMEM_BLENDMODE) {
-            // Record cU (color_update bit) transitions BEFORE overwriting blend, so a downstream
-            // consumer (gx_capture) can name the guest function that toggled it on-wire.
-            BlendMode nb{}; nb.hex = value;
+        if (cmd == BPMEM_BP_MASK) {
+            // BPMEM_BP_MASK sets the mask for the NEXT BP write (Dolphin semantics). Do NOT reset
+            // it after this write — reset happens after the next non-mask BP write (below).
+            bp_mask = value & 0xFFFFFFu;
+        } else if (cmd == BPMEM_BLENDMODE) {
+            // Apply the pending mask (GDSetBlendMode uses BPMEM_BP_MASK=0x001FE3 to leave bits 2-4
+            // — dither/color_update/alpha_update — untouched). A raw-value comparison over-counts
+            // phantom cU transitions on writes that preserved bit 3. Combine per Dolphin's
+            // LoadBPReg: newval = (old & ~mask) | (value & mask).
+            const u32 old_hex = blend.hex;
+            const u32 eff_val = (old_hex & ~bp_mask) | (value & bp_mask);
+            BlendMode nb{}; nb.hex = eff_val;
             const bool old_cU = blend.color_update.Value();
             const bool new_cU = nb.color_update.Value();
             if (old_cU != new_cU) {
                 out->cu_writes.push_back({offset, (u8)new_cU, (u8)old_cU});
             }
-            blend.hex = value;                            // live blend equation for the per-draw oracle
+            blend.hex = eff_val;
+            bp_mask = 0xFFFFFFu;
+        } else {
+            // Non-mask BP writes clear the mask (per Dolphin BPStructs.cpp:840). We don't apply the
+            // mask to other BP registers here because their live-state tracking (GENMODE, TEV, EFB
+            // copies, PE tokens) is downstream of GX helpers that never mask them — GDSetBlendMode's
+            // mask preamble is the only one in J3D's compiled DLs. If a future DL introduces a
+            // masked write elsewhere, extend this branch to apply eff_val to that register too.
+            bp_mask = 0xFFFFFFu;
         }
         if (cmd == BPMEM_GENMODE)   genmode  = value;    // live numtevstages
         // Live per-stage TEV combiner + color/konst registers (the sea-water combiner value oracle).
