@@ -262,6 +262,7 @@ const MatEntry* get_mat_entry(J3DMaterial* mat, J3DTexture* modelTex) {
         e.frag = sb_tev_gen_fragment(st);
         e.key  = fnv64(e.frag.c_str());
         if ((unsigned)(e.key >> 32) == 0xeb5c8e74u) {   // b76 sea: dump raw per-stage TEV envs (one-shot)
+            g_b76_material = (void*)mat;   // publish so SB_ENTRY_MAT probe works without SB_B76_DBG
             J3DTevBlock* tb2 = mat->getTevBlock();
             std::fprintf(stderr, "[b76-tev] num_stages=%u tbStageNum=%d\n",
                          st.num_stages, tb2 ? tb2->getTevStageNum() : -1);

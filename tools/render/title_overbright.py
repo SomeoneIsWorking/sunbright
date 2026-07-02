@@ -39,11 +39,21 @@ def main():
     print(f"  channel   native            oracle            delta(N-O)        std N / O")
     for i,ch in enumerate('RGB'):
         print(f"    {ch}      {nm[i]:7.1f}           {om[i]:7.1f}           {nm[i]-om[i]:+7.1f}           {ns[i]:5.1f} / {os_[i]:5.1f}")
+    # channel-mean |delta| — the OLD headline metric. MISLEADING: it computes each channel's mean
+    # separately then takes |delta|, so a scene that is +80 in the sky and -80 in the ground reports
+    # ~0. Kept as `channel_mean_delta` for continuity; the real headline is `mean_abs_pixel_delta`.
     dmean = float(np.abs(nm-om).mean())
+    # TRUE per-pixel mean |delta| — average |N-O| over every pixel and channel. This is the number
+    # a real fidelity fix must move; cannot be fooled by sky-vs-ground error cancellation.
+    dmean_pix = float(np.abs(n-o).mean())
     stds_match = bool(np.all(np.abs(ns-os_) < 0.25*np.maximum(os_,1)))
-    print(f"  mean |delta| over channels: {dmean:.1f}   std-preserving(additive)={stds_match}")
-    # 4x4 region grid of the brightness delta (locate WHICH part is most overbright).
-    print("  region delta(N-O) mean-RGB (4x4 grid, top-left -> bottom-right):")
+    print(f"  channel_mean_delta:   {dmean:5.1f}   (MISLEADING: cancels sky-vs-ground errors)")
+    print(f"  mean_abs_pixel_delta: {dmean_pix:5.1f}   (TRUE fidelity metric — move THIS)")
+    print(f"  std-preserving(additive)={stds_match}")
+    # 4x4 region grid: signed mean-RGB delta (shows +/- overbright/underbright direction) AND
+    # mean|delta| per region (shows magnitude regardless of sign — a region that is +80 in one half
+    # and -80 in the other reports huge |delta| but tiny signed delta).
+    print("  region SIGNED delta(N-O) mean-RGB (4x4 grid, top-left -> bottom-right):")
     for ry in range(4):
         row = []
         for rx in range(4):
@@ -52,6 +62,14 @@ def main():
             d = n[ys:ye,xs:xe].reshape(-1,3).mean(0) - o[ys:ye,xs:xe].reshape(-1,3).mean(0)
             row.append(f"[{d[0]:+5.0f},{d[1]:+5.0f},{d[2]:+5.0f}]")
         print("    " + " ".join(row))
+    print("  region mean_abs_pixel_delta (4x4 grid):")
+    for ry in range(4):
+        row = []
+        for rx in range(4):
+            ys, ye = ry*H//4, (ry+1)*H//4
+            xs, xe = rx*W//4, (rx+1)*W//4
+            row.append(f"{float(np.abs(n[ys:ye,xs:xe]-o[ys:ye,xs:xe]).mean()):5.1f}")
+        print("    " + "  ".join(row))
 
 if __name__ == '__main__':
     main()

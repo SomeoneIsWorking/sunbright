@@ -1,5 +1,53 @@
 # Sunbright — GameCube Static Recompiler
 
+## 🚫🚫 NO EMULATION CHASING — RE the intent, port PC-native (HARD RULE 2026-07-03, read BEFORE everything else)
+
+**Under `SMS_NATIVE_PLATFORM` we implement the game's INTENDED effect in native SDL3 GPU code. We
+do NOT try to make our GX/TEV/EFB emulation faithfully reproduce the GC's fixed-function pipeline.**
+Emulation is a dead end and has caused every recent stall:
+- TEV combiners don't map to modern shaders (multi-stage integer lerps saturating to white).
+- EFB copies / ph1-4-6 "composite" pipelining don't map to SDL3 GPU targets — the whole "run the
+  scene through 3 offscreen targets and blit them together" mental model is GC's, not ours.
+- "GC lighting" is a fixed-function chan-ctrl formula; ours is native GLSL with proper diffuse.
+- Every past "make GX faithful" fix produced more subtle wrongness that produced more bandaids.
+  See `debug_journal/2026-06-30_fileselect_overbright_is_efb_target_structure.md` — 1181 lines of
+  emulation-chasing that ended at "the metric was lying to us the whole time" (2026-07-03).
+
+**The discipline, in order:**
+1. **See the visible defect** in a screenshot of `build-native/sms-boot`.
+2. **RE the effect** — what actor renders it on GC, what is its VISUAL INTENT (a skybox, a
+   ripple, a rounded 2D pane, a save-slot card), what are its inputs (positions, textures, lights,
+   game state). If the actor isn't reverse-engineered yet, RE'ing it IS the first task.
+3. **Port PC-native** — under `SMS_NATIVE_PLATFORM`, write the effect as native SDL3 GPU code:
+   a native GLSL fragment shader, a native vertex path, a native 2D pipeline, whatever fits.
+   Do NOT route it through `sb_tev_gen_fragment` or a J3D→GX→emulator translation. Do NOT gate
+   it on `sb_boot_capture_phase() == 6` or EFB copies. Do NOT think about which "phase" it runs
+   in — that's a GC concept our renderer doesn't have.
+4. **Verify against the oracle** for the intent (the visible thing), not against GX register
+   values or EFB pixel deltas that don't have a native-side counterpart.
+
+**Metric discipline (added 2026-07-03).** The old `title_overbright.py` reported "mean |delta|
+over channels" — signed per-channel mean then |·|, so sky-overbright + ground-underbright
+CANCEL to a small number. It made SB_FS_COMPOSITE default ON look like a 35→23 win when the
+true per-pixel |delta| barely moved (~65→~65). Now `title_overbright.py` reports BOTH:
+- `channel_mean_delta` (kept, LABELED MISLEADING).
+- `mean_abs_pixel_delta` — TRUE per-pixel |native − oracle|. Move THIS.
+
+**Visible title-screen defects to attack (2026-07-03 user review of native vs oracle):**
+- Skybox misrendered.
+- Water surface has white artifacts.
+- 2D pane boxes misrendered.
+- Save-file boxes missing (RE gap: the file-select save-slot draw isn't ported).
+
+Each is a discrete port under this rule. Don't collapse them into a single "overbright" metric;
+attack them one by one, RE first, then native SDL3 GPU implementation.
+
+**Do NOT reintroduce:** `SB_FS_COMPOSITE` phase-boundary composite, `SB_SKIP_PH6_MAPXLU`,
+`SB_SKIP_BIDX`, `SB_KEEP_PH6_MAPXLU`, `snapshot_efb`-based post-processing, or any other "make
+GX phase routing look right" mechanism. These are all bandaids the user has now explicitly
+banned. When you notice yourself thinking about ph1/ph4/ph6, EFB copies, TEV combiner
+faithfulness, or draw-buffer redispatch — STOP and re-read this section.
+
 ## ⚡⚡ ARCHITECTURE NOW (2026-06-30) — TWO BINARIES, NGX ERADICATED (read FIRST, this supersedes the ngx claims below)
 Standing user directives, now LAW. Stop re-deriving them; they kept getting lost between sessions.
 
@@ -162,33 +210,6 @@ bugs.** If you catch yourself building an elaborate whole-system measurement/ora
 thing it measures is still half-implemented, STOP and go finish the implementation first. The
 "build the reachability/oracle tooling first" clause above still holds for a COMPLETE, reachable
 target you merely can't observe yet — it does NOT license oracle-debugging an unfinished implementation.
-
-## 🔁 THE "continue" PORTING LOOP (HARD RULE — user directive 2026-06-23, never deviate)
-When the user says **"continue"** / "keep going" (or you finish a unit and there's more to port), do
-NOT stop to ask "which path?" and do NOT punt the decision back to the user. Run this loop yourself
-and KEEP PORTING. Picking between two good paths is NOT a user decision — choose the one that
-advances OWNERSHIP and go. Full workflow: `docs/porting_workflow.md`.
-
-1. **Is the TOOLING enough?** Can I SEE and VERIFY the current divergence as a value (not by
-   eyeballing a frame)? If NO → **build more tooling first** (the value-divergence detector, the
-   verification harness, the oracle). Compare values, never pixels-by-eye. (Ties to TOOLING-FIRST above.)
-2. **Is the RE enough?** Do I actually understand the ORIGINAL behavior — the data, the exact code
-   path, the values it produces? If NO → **do more RE** (disassemble with sunbright-recomp, read the
-   `reference/sms` decomp, MEASURE the live values).
-3. **Is the OWNERSHIP enough?** Is the behavior ported to a PC-native path that produces the CORRECT
-   values? If NO → **more RE + port it** (own the path; no blackbox, no bandaid).
-
-**THERE IS (ESSENTIALLY) NO SUCH THING AS BLOCKED (user directive 2026-06-23).** A genuine blocker is
-only something CATASTROPHIC and external — the ROM file is gone, the disk is dead, the repo is
-deleted. Everything else is NOT a blocker, it is the next task. When you catch yourself thinking
-"I'm blocked / I need the user to decide / I can't verify this / sync is too hard / two viable paths"
-→ that is the signal to **DO WHATEVER IS NEEDED TO UNBLOCK YOURSELF**: build the missing tool, RE the
-unknown, find the address, write the harness, pick a path and go. Never stop to ask, never punt the
-decision back. "It's big / only live-verifiable / I'm not 100% sure / I'd need to build X first" are
-all *instructions to build X and continue*, not reasons to halt. The ONLY allowed stop is a real
-external catastrophe (ROM deleted) — and even then, say what's needed to restore it and proceed on
-everything else. This is the SAME spirit as the global "urge to stop = continue" and TOOLING-FIRST
-rules; the default response to "continue" is: tooling → RE → ownership, loop, unblock yourself, keep porting.
 
 ## What this project is
 Static recompiler for Super Mario Sunshine (GameCube/PowerPC) → native PC binary.
