@@ -1,5 +1,33 @@
 # cU-dispatch gap — the actors that program cU=FALSE on GC and don't on native (2026-07-02)
 
+## CORRECTION 2026-07-02 (same day, later)
+
+**The causal link "missing cU=FALSE bracket → visible overbright" claimed below is
+FALSE.** Diagnostically verified: adding `GXSetColorUpdate(GX_FALSE)` at drawShadow's
+exit (mirroring GC's exit state per Ghidra `scratch/decomp_shadow/8022f014.c:226`)
+yielded ZERO change in `title_overbright.py` mean|Δ| — baseline 35.4 with and without
+the added call, identical to 3 decimal places, identical 4×4 region grid. So the
+shadow port's cU-discipline gap is a real port-fidelity gap, but it does NOT
+materialize as visible overbright.
+
+The overbright is a **ph1+ph4 scene double-draw** — a render-to-texture composite
+gap already correctly identified in `debug_journal/2026-06-30_fileselect_overbright_
+is_efb_target_structure.md` and refined in `debug_journal/2026-07-02_overbright_
+stopgap_is_dead_code.md`: on GC the ph1 unk40 pre-pass renders OFF-SCREEN to a
+texture that later passes sample; native composites both ph1 pre-pass AND ph4 main
+scene into the visible framebuffer → double-draw. Per-actor cU discipline is
+orthogonal to this.
+
+The cU-writer probe (`SUNBRIGHT_LOG_CU_WRITERS`) itself is still useful — it names
+port-fidelity gaps in specific actors — but it should NOT be treated as the
+overbright-fix roadmap. The "Fix priority" list below is retained for the actor
+port-fidelity work but reordered: those ports may not move overbright at all.
+
+Real overbright fix path is task #8 (segmented snapshot+resample renderer or
+targeted per-actor render-to-texture redirect for the ph1 unk40 pre-pass).
+
+---
+
 ## What this journal entry establishes
 
 At the settled title screen (stage 15, scenario 0), Dolphin+GX (the
