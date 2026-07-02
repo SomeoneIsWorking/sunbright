@@ -37,6 +37,7 @@
 #include <M3DUtil/M3UModelMario.hpp>                      // M3UModelMario::getModel (Mario body J3DModel)
 #include <M3DUtil/MActor.hpp>                             // MActor::getModel
 #include <Map/Sky.hpp>                                    // TSky (sky anim probe)
+#include "sms_native_sky.h"                                // SMS_NATIVE_PLATFORM sky-backdrop seam
 #include <Strategic/ObjModel.hpp>                         // TMActorKeeper
 #include <Enemy/Conductor.hpp>                             // gpConductor (NPC calc pass)
 #include <JSystem/J3D/J3DGraphAnimator/J3DModel.hpp>      // J3DModel / J3DModelData
@@ -179,6 +180,20 @@ void drive_sky() {
 	// 0x204 per MarDirectorPreEntry.cpp; 0x20E adds 0x2 setBaseTRMtx + 0x8 GXDrawSphere backdrop).
 	u32 f = 0x20E;
 	if (const char* e = std::getenv("SB_SKY_FLAG"); e && e[0]) f = (u32)std::strtoul(e, nullptr, 16);
+#ifdef SMS_NATIVE_PLATFORM
+	// Bit 0x8 is TSky's GXDrawSphere(8,0x10) inside-out solid-blue backdrop-sphere at scale 100000.
+	// Under SMS_NATIVE_PLATFORM the native present clears the framebuffer to that exact blue when
+	// sb_native_sky_active() is true (sms_boot_present.cpp), which IS the effect of the sphere —
+	// fill every pixel behind the dome with RGBA(0,0x12,0xEE). So drop bit 0x8 from the recompiled
+	// dispatch: no GXDrawSphere emitted, no TEV-emulated 100000-unit inside-out sphere in the batch
+	// stream (which was combiner-saturating to overbright-white — the visible defect). See
+	// sms_native_sky.h. The dome-model bits (0x2 setBaseTRMtx, 0x4 viewCalc, 0x200 entry) are kept
+	// so unk44->perform still runs and the textured sky.bmd dome renders. SB_SKY_FLAG override wins
+	// (diagnostic; keeps A/B against the pre-port behavior).
+	if (sb_native_sky_active() && !(std::getenv("SB_SKY_FLAG") && std::getenv("SB_SKY_FLAG")[0])) {
+		f &= ~0x8u;
+	}
+#endif
 	if (const char* e = std::getenv("SB_SKY_ANM_PROBE"); e && e[0] && e[0] != '0') {
 		static int pn = 0;
 		if (pn < 2) { ++pn;
@@ -1133,4 +1148,25 @@ extern "C" void sb_blk_probe() {
 			}
 		}
 	}
+}
+
+// ── SMS_NATIVE_PLATFORM sky-backdrop seam (see native/render/sms_native_sky.h) ─────────────────
+// TSky's bit-0x8 branch fills every pixel behind the dome with RGBA(0x00,0x12,0xEE) via a
+// scale-100000 inside-out GXDrawSphere. Under SMS_NATIVE_PLATFORM the native present clears the
+// framebuffer to that colour and drive_sky() drops bit 0x8, so the sphere is neither issued nor
+// TEV-emulated. Active on the stages where TSky is invoked with the bit set — stage 15 (the
+// title/file-select) is the only such stage in the SMS perform-list dispatch (the rest use
+// 0x204 without 0x8, so the sphere never runs and the clear stays whatever GXSetCopyClear
+// picked). Cheap: active predicate == mMap == 15.
+extern "C" bool sb_native_sky_active(void) {
+	return gpMarDirector && gpMarDirector->mMap == 15;
+}
+extern "C" void sb_native_sky_backdrop(float rgba[4]) {
+	// Bit-exact TSky::perform GXSetChanMatColor: 0x00, 0x12, 0xEE, 0x80. The 0x80 alpha was a
+	// chan-mat argument the TEV then discarded (single stage GX_PASSCLR, no dst-alpha writer here);
+	// the FRAMEBUFFER clear wants opaque alpha so downstream imm blends see solid=1.
+	rgba[0] = 0.0f;
+	rgba[1] = 0x12 / 255.0f;
+	rgba[2] = 0xEE / 255.0f;
+	rgba[3] = 1.0f;
 }

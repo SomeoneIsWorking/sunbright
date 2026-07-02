@@ -19,6 +19,7 @@
 #include "tev_shader.h"        // sb_tev_gen_fragment
 #include "tex_decode.h"        // sb_tex_decode (J2D textured-pane decode)
 #include "sb_parity_dump.h"    // sb_parity_emit (value-track parity sweep)
+#include "sms_native_sky.h"    // sb_native_sky_active / sb_native_sky_backdrop
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -269,6 +270,17 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
 
     float c[4] = {0, 0, 0, 1};
     sb_gx_get_clear_color(c);
+#ifdef SMS_NATIVE_PLATFORM
+    // TSky's bit-0x8 branch draws a scale-100000 inside-out GXDrawSphere flat-colour
+    // RGBA(0x00,0x12,0xEE) as a solid backdrop behind the textured dome. Under
+    // SMS_NATIVE_PLATFORM we RENDER THE INTENT natively: the SDL3-GPU render-pass load-op
+    // CLEAR fills every pixel with that colour, bypassing the TEV-emulator entirely
+    // (which was combiner-saturating the sphere to overbright-white — the visible defect).
+    // scene_drive.cpp drive_sky() correspondingly drops bit 0x8 so the recompiled path
+    // doesn't also issue GXDrawSphere. See native/render/sms_native_sky.h. (Dome model
+    // still renders through the existing path; a native dome pipeline is task-#1 follow-up.)
+    if (sb_native_sky_active()) sb_native_sky_backdrop(c);
+#endif
 
     // Combined vertex list: scene verts first (batch vstarts are already 0-based into the scene
     // list), then the 2D imm verts appended after.

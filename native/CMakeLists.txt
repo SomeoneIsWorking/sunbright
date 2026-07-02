@@ -120,6 +120,12 @@ target_compile_options(sms-native PRIVATE
     $<$<CXX_COMPILER_ID:GNU>:-finput-charset=UTF-8>
     $<$<CXX_COMPILER_ID:GNU>:-fexec-charset=SHIFT_JIS>)
 
+# SMS_NATIVE_PLATFORM: the "no emulation chasing" gate (CLAUDE.md top rule, 2026-07-03).
+# Under this define, effects RE'd from the game are ported to native PC (SDL3 GPU / native
+# shaders) instead of being routed through the recompiled J3D→GX→TEV-emulator chain. Set
+# PUBLIC so downstream consumers (sms-render, sms-boot) also see it.
+target_compile_definitions(sms-native PUBLIC SMS_NATIVE_PLATFORM=1)
+
 # ---------------------------------------------------------------------------
 # sms-platform — the native PC implementations of the GameCube SDK seams the
 # game links (#include <dolphin/...>). Phase-2 work (native/platform/README.md).
@@ -287,6 +293,8 @@ if(SB_VULKAN_LIB AND SB_VULKAN_INC AND SB_GLSLANG)
         "${SB_SHADER_GEN}/tev_vert_spv.h")
     set_target_properties(sms-render PROPERTIES
         CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+    # See sms-native above. The present layer needs the gate to override the frame clear.
+    target_compile_definitions(sms-render PUBLIC SMS_NATIVE_PLATFORM=1)
     target_include_directories(sms-render PUBLIC
         # shim/ FIRST so ngx_decode's #include "gx_parse.h" gets the Dolphin-free shadow.
         "${SMS_NATIVE_REPO_ROOT}/native/render/shim"
