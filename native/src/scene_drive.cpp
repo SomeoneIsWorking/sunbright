@@ -985,20 +985,24 @@ extern "C" bool sb_boot_drive_scene() {
 	// the full perform-list scene, not the partial hand-wired subset. Must NOT call begin_scene here
 	// (it would consume the once-per-present capture arm before the real render runs).
 	if (sb_own_gxlist()) {
-		// The real master GX perform list ALREADY dispatches TMapObjWave::perform(0x8), so its
-		// 1352-vert (+ 26 strips × 96 flush verts = ~3900 raw imm) sea grid is captured through
-		// the gx_imm path from within that master render. Calling drive_wave() here as well was
-		// a duplicate — value-verified via SB_NO_WAVE bisect: OWN_GXLIST=1 with drive_wave = 26949
-		// scene verts vs oracle 22723 (relΔ 0.18 divergence), without drive_wave = 23049 (relΔ 0.01
-		// within tolerance). Under OWN_GXLIST=0 the hand-driven perform(0x8) does NOT reach
-		// TMapObjWave (hand-wired subset), so drive_wave stays live in that path only.
-		// [[fileselect-scene-underdraw-not-overdraw]] — 4226-vert gap resolved 2026-07-02.
+		// OWN THE WAVE DRAW. The stage-15 (title-screen) PerformLists.bin does NOT dispatch
+		// TMapObjWave: 波 lives at /全体シーン/波 as a direct child of 全体シーン (not under 通常シーン
+		// which the perform list drives via 描画ステージ / DrawBuf* pushes). Empirically verified
+		// 2026-07-02: SB_OWN_GXLIST=1 SB_WAVE_DBG=1 → [wave] ctor + [wave] load fire (actor is
+		// registered) but ZERO [wave] perform → mPerformListGX->perform never reaches it.
+		// This is the same class of dropped-draw as drive_sky (空グループ) / drive_chr (file blocks) —
+		// data-driven dispatch drops it, so own it natively. Session-15's "double-draw under
+		// OWN_GXLIST=1" (26949 vs 22723 scene verts w/ drive_wave) has since inverted: the master
+		// list no longer captures the wave through any path, so drive_wave here is the sole source.
+		// Oracle attribution at settled state: draw__11TMapObjWaveFv+0x23c owns 26 draws × 52 verts
+		// (1352-vert tev=2 SRCALPHA/SRCCLR pass3 composite — the reflective sea).
+		drive_wave();
 		if (dbg()) { static long n=0; if((++n%200)==0||n<=2)
-			std::fprintf(stderr, "[scene-drive] SB_OWN_GXLIST: setup-only (real GX perform list owns the draw)\n"); }
+			std::fprintf(stderr, "[scene-drive] SB_OWN_GXLIST: setup + own drive_wave (real GX perform list owns the rest)\n"); }
 		return true;
 	}
 	// The reflective sea (TMapObjWave) draws via raw immediate-mode GX; the hand-driven scene
-	// perform(0x8) does not reach it, so drive it here in the hand-driven path only.
+	// perform(0x8) does not reach it, so drive it here in the hand-driven path too.
 	drive_wave();
 
 	if (sb_boot_capture_begin_scene()) {
