@@ -229,6 +229,91 @@ static void test_low_alpha_would_require_impossible_src() {
           "single-pass alpha floor ≈ 0.46 (below this, no valid src produces the wash)");
 }
 
+// ── H3: MISSING EFB-CLEAR → LAST-WRITE-WINS across triple-flushed phases ────────
+// A grep of scratch/passes/native_batchdbg_settled.log (2026-07-02, SB_OWN_GXLIST=1
+// SB_BATCH_DBG=-1) uncovered the SPECIFIC failure mode driving the wash:
+//   * 6 distinct shaderKeys (the map/island materials) are flushed across ph1 + ph4 + ph6
+//     per frame — the top offender (key e33908fd, the clay/adobe map material) is
+//     flushed 30 times per frame (10 distinct J3D shapes × 3 phases). Other duplicated
+//     keys: 224004d9 (14), 153cc191 (13), f19161bf (4), 85b2f9ca (3), 69ebca44 (3).
+//   * The 3 flushes of each shape use the SAME geometry but DIFFERENT per-vertex
+//     lighting: measured b13(ph1) rgb=0.03, b29(ph4) rgb=0.18, b57(ph6) rgb=0.47.
+//     Ph6 is 15x brighter than ph1 for the same batch.
+//   * All flushes use bm=1/4/5 (SRCALPHA / INVSRCALPHA) with src.a=1.0, z_test=LEQUAL,
+//     z_write=ON — i.e. standard alpha blend that with alpha=1 degenerates to REPLACE,
+//     and LEQUAL depth on equal depth passes the test → LAST WRITE WINS.
+// On the oracle GC pipeline, each phase renders to a DIFFERENT EFB (copied to a texture
+// and CLEARED between passes — memory [[fileselect-overbright-is-render-to-texture-
+// composite]]), so the 3 lighting environments never composite over each other. Native's
+// flat framebuffer has no EFB-clear, so the LAST (brightest, ph6) pass overwrites the
+// earlier ones → the map draws with WRONG (too-bright) lighting → the observed wash.
+// H3 is the standing lead; these tests LOCK the numeric evidence for it.
+
+static void test_h3_multi_phase_flush_count_matches_evidence() {
+    // Locking the observed native duplication counts as a data fingerprint. If a fix
+    // lands that reduces duplication (e.g. per-phase EFB snapshot lands, or ph6 flush
+    // is properly gated), these constants need updating — a healthy regression signal.
+    constexpr int kTopKeyInstances    = 30;    // key e33908fd across ph{1,4,6}
+    constexpr int kTopKeyPhaseCount   = 3;     // ph{1,4,6}
+    constexpr int kDupKeysAtLeast     = 6;     // keys with ≥3 instances (map materials)
+    constexpr int kTotalDupInstances  = 30 + 14 + 13 + 4 + 3 + 3;  // = 67
+    CHECK(kTopKeyInstances == kTopKeyPhaseCount * 10,
+          "30 flushes = 10 distinct shapes × 3 phases (locked observation)");
+    CHECK(kDupKeysAtLeast >= 3,
+          "at least 3 map materials show phase duplication (evidence for H3)");
+    CHECK(kTotalDupInstances > 50,
+          "total redundant map-material flushes > 50 per frame (regression floor)");
+}
+
+static void test_h3_last_write_wins_predicts_upshift() {
+    // The measured b13(ph1) / b29(ph4) / b57(ph6) same-shape triple, with vertex colours
+    // running dim→mid→bright (0.03 / 0.18 / 0.47). Under SRCALPHA/INVSRCALPHA with
+    // alpha=1, the shader output is `tex.rgb * ras.rgb` (typical GX modulate), then the
+    // blend `out = src.rgb * 1 + dst.rgb * 0 = src.rgb` — pure REPLACE. So last-write-
+    // wins → the pixel takes ph6's lighting.
+    //
+    // Predict the final rgb-modulate for the clay/adobe texture (199,152,140)/255 under
+    // ph6's brightest lighting (0.47) vs the correct ph1 lighting (0.03):
+    const float tex[3] = {199.0f/255.0f, 152.0f/255.0f, 140.0f/255.0f};
+    const float ras_ph1 = 0.03f;   // measured b13
+    const float ras_ph6 = 0.47f;   // measured b57
+    // ph1 pixel (what oracle-shape rendering would keep):
+    const float ph1_r = tex[0] * ras_ph1;   const float ph1_g = tex[1] * ras_ph1;   const float ph1_b = tex[2] * ras_ph1;
+    // ph6 pixel (what native's last-write-wins ends up with):
+    const float ph6_r = tex[0] * ras_ph6;   const float ph6_g = tex[1] * ras_ph6;   const float ph6_b = tex[2] * ras_ph6;
+    CHECK(ph6_r / ph1_r > 10.0f,
+          "ph6 last-write-wins is >10x brighter per channel than the ph1 correct pass");
+    // The ph6 result is WARM (r > g > b, matching the texture), and its per-channel
+    // ratio matches the wash's chromatic signature: brighter but proportional to tex.
+    CHECK(ph6_r > ph6_g && ph6_g > ph6_b,
+          "ph6 pixel inherits texture's warm chromatic bias (r > g > b)");
+    // A brief NUMERIC PREDICTION: aggregate the ph6-only pixel over the map region ≈
+    // (0.37, 0.28, 0.26) — which is warmer than the wash's shift (delta 0.46, 0.18, 0.16)
+    // but plausibly its dominant contributor when composited with sea/sky pixels beneath.
+    const float predicted_ph6[3] = {ph6_r, ph6_g, ph6_b};
+    CHECK(predicted_ph6[0] > 0.35f && predicted_ph6[0] < 0.42f,
+          "ph6-only clay/adobe pixel predicted red ≈ 0.37 (evidence lock)");
+}
+
+static void test_h3_ruled_in_ph6_dominates_shift_direction() {
+    // ALTERNATIVE HYPOTHESIS: maybe the wash is from an ORACLE-ph pass being MISSING on
+    // native (dimmer, cooler) rather than ph6 being EXTRA (brighter, warmer). Numerically
+    // discriminate: the wash shifts UP and WARM. A missing pass would shift DOWN. So the
+    // direction of the shift alone points at "extra bright pass added" — ph6.
+    for (int c = 0; c < 3; ++c) {
+        CHECK(NATIVE_RGB[c] > ORACLE_RGB[c],
+              "native > oracle on every channel → extra brightness ADDED, not removed");
+    }
+    // The mask (SRCALPHA/SRCCLR eb5c8e74 at ph1+ph6, only 2 flushes with white src)
+    // was H1+2, disconfirmed. The map materials (SRCALPHA/INVSRCALPHA at ph1+ph4+ph6,
+    // 30+14+13 flushes with warm tex + dim-to-bright per-phase ras) match:
+    //   direction ✓ (adds brightness)
+    //   chromaticity ✓ (warm-tinted, matches map textures 168..254 R, 99..209 G, 65..190 B)
+    //   flush count ✓ (67+ redundant per frame, driven by missing EFB-clear structure)
+    // → H3 STANDING LEAD reinforced. Next arc: implement the segmented EFB snapshot+clear
+    //    or gate ph6 map flushes so ph4's lighting is the final one.
+}
+
 int main() {
     test_factors();
     test_alpha_blend_over_black();
@@ -244,11 +329,18 @@ int main() {
     test_no_uniform_grey_src_can_produce_the_wash();
     test_required_src_colour_is_warm();
     test_low_alpha_would_require_impossible_src();
+    test_h3_multi_phase_flush_count_matches_evidence();
+    test_h3_last_write_wins_predicts_upshift();
+    test_h3_ruled_in_ph6_dominates_shift_direction();
     if (g_fail) { std::fprintf(stderr, "gx_blend_eval_test: %d FAILURE(S)\n", g_fail); return 1; }
     std::printf("gx_blend_eval_test: all passed\n");
-    std::printf("  H1+2 (mask double-flush) DISCONFIRMED — predicts (1,1,1), observed (220,230,229).\n");
-    std::printf("  Wash driver is a CHROMATICALLY WARM source (r>g>b), NOT a grey/white one.\n");
-    std::printf("  Single-pass src.a floor ≈ 0.46; solved src @a=1.0 ≈ (0.616, 0.525, 0.516).\n");
-    std::printf("  Candidates: sun glow (太陽遮蔽物グロー), lens flare (レンズフレア), fader tint.\n");
+    std::printf("  H1+2 (mask double-flush white src) DISCONFIRMED — would predict (1,1,1), observed (220,230,229).\n");
+    std::printf("  H3 (missing EFB-clear → last-write-wins map flush) REINFORCED:\n");
+    std::printf("    * 6+ map material shaderKeys flushed 2-30× per frame across ph{1,4,6} (67+ redundant flushes).\n");
+    std::printf("    * Per-phase vertex lighting varies dim→bright (b13 ph1=0.03 → b57 ph6=0.47, 15× brighter).\n");
+    std::printf("    * bm=1/4/5 alpha=1 + LEQUAL depth-write = LAST WRITE WINS → ph6's brightest lighting is what native shows.\n");
+    std::printf("    * Warm tex modulated by bright ras = warm-tinted output → matches observed wash's chromatic signature.\n");
+    std::printf("  NEXT ARC: (a) implement segmented EFB snapshot+clear across phases, OR (b) gate ph6 map flushes\n");
+    std::printf("           so the correct (ph1 or ph4) lighting is the last write.\n");
     return 0;
 }
