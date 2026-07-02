@@ -384,18 +384,14 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
         if (skipImm) break;
         if (bi == skipImmIdx) continue;
         const SbImmBatch& ib = ibatches[bi];
-        // The TModelWaterManager water-volume / silhouette effect masks the framebuffer ALPHA with
-        // J3D shape draws (SMS_DrawShape / SMS_DrawCube) that the immediate-mode path does NOT
-        // capture, so the dst-alpha PLANE (which IS implemented + parity-tested, see
-        // tests/parity/dst_alpha_test) has no live mask to read. Until that mask geometry is routed
-        // to the alpha plane, drop the whole effect rather than render it wrong: the colour-OFF
-        // setup/clear passes are invisible in GX anyway, and a dst-alpha-reading composite over an
-        // empty mask paints fullscreen black (INV_DST_ALPHA→src). Ordinary 2D HUD/text/window draws
-        // (no dst-alpha) are untouched. STOPGAP: route the water-volume mask shapes to the alpha
-        // plane to render the actual tint — until then the effect is absent, not washed/black.
-        const bool readsDstAlpha = (ib.blendType == 1) &&
-            (ib.blendSrc == 6 || ib.blendSrc == 7 || ib.blendDst == 6 || ib.blendDst == 7);
-        if (!ib.colorUpdate || readsDstAlpha) continue;
+        // Colour-OFF passes (alpha-only mask writers, `colorUpdate=0`) and DSTALPHA-reading
+        // composites (blend factor 6 / 7) are BOTH emitted through the batch — the SDL3 GPU
+        // backend honors color_write_mask (gx_sdlgpu.cpp:165-168) so a colour-OFF pass writes
+        // only alpha, and DSTALPHA/INVDSTALPHA blend factors map through sdl_blend_factor()
+        // correctly (gx_sdlgpu.cpp:92-93). Previous stopgap dropped this whole class because
+        // the imm path was missing the J3D mask writers for TModelWaterManager — that's a
+        // Delfino gameplay concern; file-select's J2D UI mask writers ARE imm draws and
+        // compose within the same pass.
         NvkTevBatch b{};
         b.vstart = (uint32_t)nscene + ib.vstart;
         b.vcount = ib.vcount;
