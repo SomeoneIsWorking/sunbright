@@ -72,4 +72,25 @@ constexpr bool skip_reload(std::uint16_t prev, std::uint16_t idx)
 	return prev == idx;
 }
 
+// Native compat predicate (2026-07-02, [[fileselect-startanim-mtxcalc-null]]):
+// The "no anim name" tail branch (@0x801b0b8c..0ba4) writes
+//   *(mMActor->unk8 + 0x58) = mMActor->model->modelData->mJointNodePointer[0]
+// The RE reads mMActor->unk8 (J3DMtxCalc*) and dereferences it with no null
+// guard — hardware never trips it because MActor::setModel (populates unk8)
+// runs before any startAnim path with a null anim entry. Native's
+// TFileLoadBlock::makeBlockNormal → startAnim(0) fires before setModel does,
+// so unk8 is null and the raw RE write SEGVs. `can_reset_mtxcalc` is the
+// safety-net predicate the port uses in the else branch — it returns TRUE
+// only when all three pointers along the write path are non-null. Returning
+// FALSE means "skip the reset entirely" (this call path is "clear the
+// currently-playing anim"; with no bound MtxCalc there's nothing to reset).
+//
+// The RE-faithful side of the branch (all three pointers non-null) is
+// unchanged; this predicate ONLY gates the null-safety escape hatch.
+constexpr bool can_reset_mtxcalc(bool has_mtx_calc, bool has_model_data,
+                                 bool has_root_joint)
+{
+	return has_mtx_calc && has_model_data && has_root_joint;
+}
+
 } // namespace sb::startanim

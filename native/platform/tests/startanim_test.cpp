@@ -54,6 +54,22 @@ int main() {
     CHECK(!skip_reload(2, 3), "slot changed → reload");
     CHECK(!skip_reload(kSentinelSlot, 0), "sentinel → not the same as slot 0 → reload");
 
+    // can_reset_mtxcalc — the native compat predicate gating the mtx-calc
+    // reset write in the "no anim name" tail branch. It must return TRUE only
+    // when ALL three pointers along the RE write path are non-null: mMActor's
+    // MtxCalc (unk8), the model's ModelData, and the ModelData's root joint.
+    // A single null anywhere in the chain → skip the reset, avoiding the
+    // TFileLoadBlock::makeBlockNormal SEGV that happens when MActor::setModel
+    // hasn't run yet ([[fileselect-startanim-mtxcalc-null]]).
+    CHECK( can_reset_mtxcalc(true,  true,  true),  "all three pointers OK → do the reset");
+    CHECK(!can_reset_mtxcalc(false, true,  true),  "MtxCalc null (setModel not run yet) → skip");
+    CHECK(!can_reset_mtxcalc(true,  false, true),  "ModelData null (model not bound) → skip");
+    CHECK(!can_reset_mtxcalc(true,  true,  false), "root joint null (empty model data) → skip");
+    CHECK(!can_reset_mtxcalc(false, false, false), "all null → skip (upstream MActor un-init)");
+    // Polarity smoke: predicate must NOT be inverted. A flipped version would
+    // do the write EXACTLY when it's unsafe.
+    CHECK( can_reset_mtxcalc(true,  true,  true) != false, "polarity: all-true → true (not inverted)");
+
     if (g_fail) { std::fprintf(stderr, "startanim_test: %d FAILURE(S)\n", g_fail); return 1; }
     std::printf("startanim_test: all passed\n");
     return 0;
