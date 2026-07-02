@@ -95,6 +95,16 @@ struct GxFrameInfo {
     };
     std::vector<LightSnap> light_snaps;   // empty unless SUNBRIGHT_DBG_GXLIGHT; light_snaps[i] pairs with draws[i]
 
+    // ── On-wire GXSetColorUpdate transitions (2026-07-02, cU-dispatch probe) ─────────────────────
+    // Every BPMEM_BLENDMODE write whose color_update bit differs from the previous BlendMode is a GC
+    // on-wire GXSetColorUpdate() effect. Recording the stream offset lets a downstream consumer
+    // (gx_capture) correlate each transition to the nearest preceding gather-flush guest-PC (FlushMark)
+    // — naming the specific game function that wrote cU=FALSE around a depth-only prepass. Native's
+    // SB_COLUPD_ALL emits the same information from the sms-boot side; diffing the two lists names the
+    // dispatch path missing on native. Always captured (cost = one push_back per real cU transition).
+    struct CuWrite { u32 offset; u8 new_cU; u8 old_cU; };
+    std::vector<CuWrite> cu_writes;
+
     // ── Per-pass geometry split (cross-engine pass tagging) ───────────────────────────────────────
     // The native parity dump (sb_parity_dump.h) reports the 3D SCENE pass only (perspective), so the
     // whole-frame oracle counts are NOT directly comparable. Bucket prims/verts/display-lists by the

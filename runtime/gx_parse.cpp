@@ -92,7 +92,17 @@ public:
     OPCODE_CALLBACK(void OnBP(u8 cmd, u32 value)) {
         if (cmd == BPMEM_PE_TOKEN_ID || cmd == BPMEM_PE_TOKEN_INT_ID)
             if (dl_depth == 0) out->token_offsets.push_back(offset);   // stream-offset record: outer only
-        if (cmd == BPMEM_BLENDMODE) blend.hex = value;   // live blend equation for the per-draw oracle
+        if (cmd == BPMEM_BLENDMODE) {
+            // Record cU (color_update bit) transitions BEFORE overwriting blend, so a downstream
+            // consumer (gx_capture) can name the guest function that toggled it on-wire.
+            BlendMode nb{}; nb.hex = value;
+            const bool old_cU = blend.color_update.Value();
+            const bool new_cU = nb.color_update.Value();
+            if (old_cU != new_cU) {
+                out->cu_writes.push_back({offset, (u8)new_cU, (u8)old_cU});
+            }
+            blend.hex = value;                            // live blend equation for the per-draw oracle
+        }
         if (cmd == BPMEM_GENMODE)   genmode  = value;    // live numtevstages
         // Live per-stage TEV combiner + color/konst registers (the sea-water combiner value oracle).
         if (cmd >= BPMEM_TEV_COLOR_ENV && cmd <= BPMEM_TEV_COLOR_ENV + 0x1F) {

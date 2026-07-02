@@ -546,6 +546,38 @@ extern "C" void sb_gx_capture_frame_boundary() {
             fprintf(stderr, "\n");
         }
     }
+    // SUNBRIGHT_LOG_CU_WRITERS: name the guest function behind every on-wire GXSetColorUpdate
+    // transition this frame, by correlating each BPMEM_BLENDMODE cU-toggle offset to the nearest
+    // preceding gather-flush FlushMark. Pairs with sms-boot's SB_COLUPD_ALL — diffing the two lists
+    // names the dispatch path that fires cU=FALSE on the oracle but not on native (the file-select
+    // overbright's smoking gun: 3-4k depth-only cU=0 prepass draws per frame on GC, ZERO on native).
+    if (attrib_enabled() && gx_dbg_window() && std::getenv("SUNBRIGHT_LOG_CU_WRITERS")
+        && !fi.cu_writes.empty()) {
+        int n_false = 0, n_true = 0;
+        std::map<std::string, unsigned long> false_by_sym;
+        for (const auto& w : fi.cu_writes) {
+            if (w.new_cU == 0) ++n_false; else ++n_true;
+            const FlushMark* best = nullptr;
+            for (const auto& m : g_flush_marks)
+                if (m.off <= w.offset && (!best || m.off > best->off)) best = &m;
+            const unsigned pc = best ? best->pc : 0u;
+            const std::string sym = best ? attrib_sym(pc) : std::string("?");
+            if (w.new_cU == 0) false_by_sym[sym]++;
+            fprintf(stderr, "[cU-writer] fr=%ld off=%u %s pc=%08x sym=%s\n",
+                    g_frame_no, w.offset,
+                    w.new_cU ? "cU=1" : "cU=0",
+                    pc, sym.c_str());
+        }
+        fprintf(stderr, "[cU-writer-sum] fr=%ld total=%zu false=%d true=%d\n",
+                g_frame_no, fi.cu_writes.size(), n_false, n_true);
+        if (n_false > 0) {
+            std::vector<std::pair<std::string, unsigned long>> v(false_by_sym.begin(), false_by_sym.end());
+            std::sort(v.begin(), v.end(), [](const auto& a, const auto& b){ return a.second > b.second; });
+            fprintf(stderr, "[cU-writer-false-by-caller] fr=%ld\n", g_frame_no);
+            for (size_t i = 0; i < v.size() && i < 16; ++i)
+                fprintf(stderr, "  %6lu  %s\n", v[i].second, v[i].first.c_str());
+        }
+    }
     g_flush_marks.clear();
 #endif
     std::fflush(f);
