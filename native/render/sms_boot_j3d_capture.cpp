@@ -437,6 +437,23 @@ void fill_batch_material(NvkTevBatch& b, const MatEntry& e) {
         // snapshot (the present's draw_tev_segment prefers efb_src over the stale decoded rgba).
         const void* efb = t.efb_src;
         if (!efb && t.src_ptr && sb_boot_capture_texsrc_is_efb_dest(t.src_ptr)) efb = t.src_ptr;
+        // SB_EFB_MATCH_DBG: for every big (composite-sized) texmap, log its src_ptr and whether it
+        // was recognized as an EFB-copy dest. Diagnoses why all batches carry efb=(nil)/(nil) even
+        // though 2 EFB copies are recorded per frame (task #10, 2026-07-03): if none of the big
+        // texmaps' src_ptrs equal a recorded dest, the game's texmap-bind path doesn't consume the
+        // native GXCopyTex dest — either the texmap's src is a different (guest?) pointer, or the
+        // material caches its src before the copy is recorded and never refreshes. Both are fixable
+        // once seen. Gate: SB_EFB_MATCH_DBG=1 (default off, cost = a few fprintf's per settled frame).
+        if ((t.w >= 128 || t.h >= 128) && t.src_ptr) {
+            static int nlog = 0;
+            static const bool dbg = [](){ const char* v = std::getenv("SB_EFB_MATCH_DBG");
+                return v && v[0] && v[0] != '0'; }();
+            if (dbg && nlog < 30) { ++nlog;
+                std::fprintf(stderr, "[efbmatch] tex slot=%d %ux%u src_ptr=%p efb_cache=%p live_match=%d\n",
+                             t.slot, t.w, t.h, t.src_ptr, t.efb_src,
+                             sb_boot_capture_texsrc_is_efb_dest(t.src_ptr));
+            }
+        }
         if (t.rgba.empty() && !efb) continue;   // unbound (a snapshot texmap has empty rgba)
         b.tex[t.slot].rgba = t.rgba.empty() ? nullptr : (const uint8_t*)t.rgba.data();
         b.tex[t.slot].w = t.w; b.tex[t.slot].h = t.h; b.tex[t.slot].linear = t.linear ? 1 : 0;
