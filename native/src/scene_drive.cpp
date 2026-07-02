@@ -984,23 +984,16 @@ extern "C" bool sb_boot_drive_scene() {
 	// SETUP ONLY (camera/proj/lights above) and skips the hand-driven draw — so the capture holds
 	// the full perform-list scene, not the partial hand-wired subset. Must NOT call begin_scene here
 	// (it would consume the once-per-present capture arm before the real render runs).
+	// The reflective sea (TMapObjWave) draws via raw immediate-mode GX, captured by the (unlocked)
+	// gx_imm path — so it must run in BOTH the OWN_GXLIST and hand-driven modes. Drive it here,
+	// after the camera/projection setup above and before the OWN_GXLIST early return.
+	drive_wave();
+
 	if (sb_own_gxlist()) {
-		// The real master GX perform list ALREADY dispatches TMapObjWave::perform(0x8), so its
-		// 1352-vert (+ 26 strips × 96 flush verts = ~3900 raw imm) sea grid is captured through
-		// the gx_imm path from within that master render. Calling drive_wave() here as well was
-		// a duplicate — value-verified via SB_NO_WAVE bisect: OWN_GXLIST=1 with drive_wave = 26949
-		// scene verts vs oracle 22723 (relΔ 0.18 divergence), without drive_wave = 23049 (relΔ 0.01
-		// within tolerance). Under OWN_GXLIST=0 the hand-driven perform(0x8) does NOT reach
-		// TMapObjWave (hand-wired subset), so drive_wave stays live in that path only.
-		// [[fileselect-scene-underdraw-not-overdraw]] — 4226-vert gap resolved 2026-07-02.
 		if (dbg()) { static long n=0; if((++n%200)==0||n<=2)
 			std::fprintf(stderr, "[scene-drive] SB_OWN_GXLIST: setup-only (real GX perform list owns the draw)\n"); }
 		return true;
 	}
-	// The reflective sea (TMapObjWave) draws via raw immediate-mode GX; the hand-driven scene
-	// perform(0x8) does not reach it, so drive it here in the hand-driven path only.
-	drive_wave();
-
 	if (sb_boot_capture_begin_scene()) {
 		// SB_PASS_VERTS: attribute the captured vertex/batch count to each native sub-pass (sky /
 		// scene-perform / chr / hud), so a geometry gap vs the per-pass GX-stream oracle (scene verts
