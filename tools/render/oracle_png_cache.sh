@@ -44,33 +44,30 @@ fi
 source .env 2>/dev/null || { echo "[oracle-png-cache] no .env" >&2; exit 1; }
 [ -x "build/sunbright" ] || { echo "[oracle-png-cache] build/sunbright missing" >&2; exit 1; }
 
-echo "[oracle-png-cache] capturing PNG at settled post-Start (${SETTLE}s) → $OUT" >&2
+echo "[oracle-png-cache] capturing PNG at settled post-Start (${SETTLE}s, VI-timed press) → $OUT" >&2
 pkill -9 -x sunbright 2>/dev/null; sleep 1
 rm -f "$DUMP_ORACLE"/framedump_*.png
 
+# VI-timed Start presses (deterministic — see oracle_cache.sh for the timing rationale
+# and memory [[tcardload-title-to-fileselect-state-machine]]).
 timeout -s KILL "$((SETTLE + 5))" env \
     SUNBRIGHT_HEADLESS=1 SUNBRIGHT_TURBO=1 SUNBRIGHT_BACKEND=Vulkan \
     SUNBRIGHT_FASTBOOT=1 SUNBRIGHT_STAGE="$STAGE" SUNBRIGHT_SCENARIO="$SCENARIO" \
-    SUNBRIGHT_PROBE=1 SUNBRIGHT_DUMP=1 \
+    SUNBRIGHT_DUMP=1 \
+    SUNBRIGHT_PAD_SCRIPT="700:START 732:- 1200:START 1232:-" \
     ./build/sunbright "$SUNBRIGHT_ROM" > "${OUT%.png}.log" 2>&1 &
 OPID=$!
-# Wait for probe, press Start ×2.
-for i in $(seq 1 30); do
-    sleep 1
-    curl -s --max-time 1 http://127.0.0.1:17654/metrics >/dev/null 2>&1 && break
-done
-# ONE Start press — a second would confirm file 1 and drop into gameplay.
-curl -s --max-time 3 "http://127.0.0.1:17654/pad?do=start&ms=250" >/dev/null 2>&1 || true
 sleep "$SETTLE"
 pkill -9 -x sunbright 2>/dev/null
 wait $OPID 2>/dev/null
 
-# Pick the 2nd-newest PNG (newest may be truncated by SIGKILL mid-write).
+# Pick the 3rd-newest PNG (newest 2 often truncated by SIGKILL mid-write; verified with
+# PIL — even numeric-name "second newest" was corrupted in one run).
 mapfile -t OP < <(ls -t "$DUMP_ORACLE"/framedump_*.png 2>/dev/null)
-if [ "${#OP[@]}" -lt 1 ]; then
-    echo "[oracle-png-cache] FAIL no PNGs (log: ${OUT%.png}.log)" >&2; exit 2
+if [ "${#OP[@]}" -lt 3 ]; then
+    echo "[oracle-png-cache] FAIL <3 PNGs (log: ${OUT%.png}.log)" >&2; exit 2
 fi
-SRC="${OP[1]:-${OP[0]}}"
+SRC="${OP[2]}"
 cp "$SRC" "$OUT"
 echo "$CURRENT" > "$STAMP"
 echo "[oracle-png-cache] wrote $OUT (from $SRC)" >&2

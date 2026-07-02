@@ -35,51 +35,37 @@ command -v magick >/dev/null || { echo "magick (ImageMagick) required"; exit 1; 
 pkill -9 -x sunbright 2>/dev/null
 pkill -9 -x sms-boot  2>/dev/null
 sleep 1
-rm -f "$DUMP_ORACLE"/framedump_*.png "$DUMP_NATIVE"/boot_*.ppm 2>/dev/null
+rm -f "$DUMP_NATIVE"/boot_*.ppm 2>/dev/null
 
-echo "[sbs] launching oracle (build/sunbright, STAGE=15, widescreen off, DUMP=1, +Start x2)..."
-timeout -s KILL "$((SETTLE + 5))" setarch -R env \
-  SUNBRIGHT_HEADLESS=1 SUNBRIGHT_TURBO=1 SUNBRIGHT_BACKEND=Vulkan \
-  SUNBRIGHT_FASTBOOT=1 SUNBRIGHT_STAGE=15 SUNBRIGHT_SCENARIO=0 \
-  SUNBRIGHT_WIDESCREEN=0 SUNBRIGHT_DUMP=1 SUNBRIGHT_PROBE=1 \
-  ./build/sunbright "$SUNBRIGHT_ROM" > scratch/passes/sbs_oracle.log 2>&1 &
-OPID=$!
+# Oracle: reuse cached PNG unless the build/capture-code/fastboot mtimes changed.
+# Caches under scratch/oracle/title_gx_oracle.png (see oracle_png_cache.sh). This
+# skips ~55s of oracle capture on cache HIT — significant when iterating native.
+ORACLE_PNG_CACHED="$(bash tools/render/oracle_png_cache.sh 2>&1 | tee /dev/stderr | tail -1)"
+if [ ! -f "$ORACLE_PNG_CACHED" ]; then
+    echo "[sbs] FAIL: oracle PNG cache failed"; exit 2
+fi
 
-# Wait for probe, then press Start ONCE to advance PUSH-START → file-block sub-screen
-# (where the reflective sea is visible — user directive 2026-07-02). On the Dolphin
-# oracle a second Start would confirm file 1 and drop into gameplay/attract (verified
-# empirically — 2 presses put the oracle in an in-game-HUD state); on native two presses
-# are needed because the first Start dispatches differently (TCardLoad state gating).
-for i in $(seq 1 30); do
-  sleep 1
-  curl -s --max-time 1 http://127.0.0.1:17654/metrics >/dev/null 2>&1 && break
-done
-curl -s --max-time 3 "http://127.0.0.1:17654/pad?do=start&ms=250" >/dev/null 2>&1 || true
+echo "[sbs] using cached oracle: $ORACLE_PNG_CACHED"
 
-echo "[sbs] launching native (build-native/sms-boot, SB_STAGE=15 SB_OWN_GXLIST=1, +Start x2 via SB_PAD_SCRIPT)..."
-# SB_PAD_SCRIPT frame-times two Start presses to reach the same file-block sub-screen the
-# oracle reaches via probe /pad. Dump starts at frame 800 to capture the settled state
-# (SB_FRAME_DUMP_START replaces the earlier SB_FRAME_DUMP_ON_SCENE — we need past-Start
-# frames, not "first scene frame").
+echo "[sbs] launching native (build-native/sms-boot, SB_STAGE=15 SB_OWN_GXLIST=1, VI-timed +Start x2 via SB_PAD_SCRIPT)..."
+# Native's TCardLoad-frame counting differs from oracle's VI counting — native's own
+# per-perform trace confirms press 1 at frame 86 (state 9→3), press 2 at frame 586
+# (state 3→8), landed at state 0 by frame 746 (verified 2026-07-02 with SB_SEL_DBG=1).
+# Native VI counting is closer to TCardLoad's; use frame 250 / 500 (same interval).
+# SB_SEL_DUMP_SETTLED=8 gates dump on mState==0 && unk10==2 && camera_view_settled().
 timeout -s KILL "$((SETTLE + 5))" setarch -R env \
   SUNBRIGHT_DISC="$HERE/scratch/disc/sms.iso" SB_THP_FAST=1 SB_TURBO=1 \
   SB_HOST_ALLOC_CAP_MB=3072 SB_STAGE=15 SB_SCENARIO=0 SB_OWN_GXLIST=1 \
   SB_PAD_SCRIPT="250:START 282:- 500:START 532:-" \
-  SB_FRAME_DUMP=1 SB_FRAME_DUMP_START=800 SB_FRAME_DUMP_MAX=8 SB_WATCHDOG_SECS=0 \
+  SB_SEL_DUMP_SETTLED=8 SB_WATCHDOG_SECS=0 \
   ./build-native/sms-boot > scratch/passes/sbs_native.log 2>&1 &
 NPID=$!
 
 sleep "$SETTLE"
-pkill -9 -x sunbright 2>/dev/null
 pkill -9 -x sms-boot  2>/dev/null
-wait $OPID 2>/dev/null
 wait $NPID 2>/dev/null
 
-# Oracle: pick the SECOND-newest PNG (newest may be truncated by SIGKILL mid-write).
-mapfile -t OP < <(ls -t "$DUMP_ORACLE"/framedump_*.png 2>/dev/null)
-ORACLE_PNG=""
-if   [ "${#OP[@]}" -ge 2 ]; then ORACLE_PNG="${OP[1]}"
-elif [ "${#OP[@]}" -ge 1 ]; then ORACLE_PNG="${OP[0]}"; fi
+ORACLE_PNG="$ORACLE_PNG_CACHED"
 
 # Native: LAST valid boot_XXXX.ppm (all should be complete — sms-boot writes atomically per frame).
 mapfile -t NP < <(ls -t "$DUMP_NATIVE"/boot_*.ppm 2>/dev/null)
