@@ -49,15 +49,31 @@ fi
 source .env 2>/dev/null || { echo "[oracle-cache] no .env (need SUNBRIGHT_ROM)" >&2; exit 1; }
 [ -x "build/sunbright" ] || { echo "[oracle-cache] build/sunbright missing (cmake --build build)" >&2; exit 1; }
 
-echo "[oracle-cache] capturing (${SETTLE}s) → $OUT" >&2
+# Drive Start via the probe HTTP endpoint so the oracle settles at the file-block
+# sub-screen (where the reflective sea is visible), not the pre-Start PUSH-START
+# screen. Set SB_ORACLE_NO_START=1 to skip the presses (keep raw title state).
+echo "[oracle-cache] capturing (${SETTLE}s, with Start press unless SB_ORACLE_NO_START) → $OUT" >&2
 pkill -9 -x sunbright 2>/dev/null; sleep 1
 rm -f "$OUT"
 timeout -s KILL "$((SETTLE + 5))" env \
     SUNBRIGHT_HEADLESS=1 SUNBRIGHT_TURBO=1 SUNBRIGHT_BACKEND=Vulkan \
     SUNBRIGHT_FASTBOOT=1 SUNBRIGHT_STAGE="$STAGE" SUNBRIGHT_SCENARIO="$SCENARIO" \
+    SUNBRIGHT_PROBE=1 \
     SUNBRIGHT_PARITY_DUMP="$OUT" SUNBRIGHT_PARITY_DRAWS=1 \
+    SUNBRIGHT_DUMP="${SUNBRIGHT_DUMP:-0}" \
     ./build/sunbright "$SUNBRIGHT_ROM" > "${OUT%.jsonl}.log" 2>&1 &
 OPID=$!
+# Wait for the probe to accept connections, then drive Start (twice — the first
+# advances TCardLoad past PUSH-START, second gates file-slot picker).
+if [ -z "${SB_ORACLE_NO_START:-}" ]; then
+    for i in $(seq 1 30); do
+        sleep 1
+        curl -s --max-time 1 http://127.0.0.1:17654/metrics >/dev/null 2>&1 && break
+    done
+    # ONE press: PUSH-START → file-block sub-screen. A second press would confirm
+    # file 1 and drop into gameplay/attract (verified 2026-07-02 by user against SBS).
+    curl -s --max-time 3 "http://127.0.0.1:17654/pad?do=start&ms=250" >/dev/null 2>&1 || true
+fi
 sleep "$SETTLE"
 pkill -9 -x sunbright 2>/dev/null
 wait $OPID 2>/dev/null

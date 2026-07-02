@@ -37,24 +37,35 @@ pkill -9 -x sms-boot  2>/dev/null
 sleep 1
 rm -f "$DUMP_ORACLE"/framedump_*.png "$DUMP_NATIVE"/boot_*.ppm 2>/dev/null
 
-echo "[sbs] launching oracle (build/sunbright, STAGE=15, widescreen off, DUMP=1)..."
+echo "[sbs] launching oracle (build/sunbright, STAGE=15, widescreen off, DUMP=1, +Start x2)..."
 timeout -s KILL "$((SETTLE + 5))" setarch -R env \
   SUNBRIGHT_HEADLESS=1 SUNBRIGHT_TURBO=1 SUNBRIGHT_BACKEND=Vulkan \
   SUNBRIGHT_FASTBOOT=1 SUNBRIGHT_STAGE=15 SUNBRIGHT_SCENARIO=0 \
-  SUNBRIGHT_WIDESCREEN=0 SUNBRIGHT_DUMP=1 \
+  SUNBRIGHT_WIDESCREEN=0 SUNBRIGHT_DUMP=1 SUNBRIGHT_PROBE=1 \
   ./build/sunbright "$SUNBRIGHT_ROM" > scratch/passes/sbs_oracle.log 2>&1 &
 OPID=$!
 
-echo "[sbs] launching native (build-native/sms-boot, SB_STAGE=15 SB_OWN_GXLIST=1)..."
-# SB_STAGE=15 routes the default fastboot to APP_STATE_GAMEPLAY stage 15 = the retail title
-# screen (the "PUSH START" scene with save-file blocks). SB_OWN_GXLIST=1 uses the REAL master
-# GX perform-list (the geometry-complete path — session 15 memory
-# [[fileselect-geometry-gap-is-ownlist]]) so the scene matches what value-oracle measures.
-# Same recipe as tools/render/title_value_oracle.sh.
+# Wait for probe, then press Start ONCE to advance PUSH-START → file-block sub-screen
+# (where the reflective sea is visible — user directive 2026-07-02). On the Dolphin
+# oracle a second Start would confirm file 1 and drop into gameplay/attract (verified
+# empirically — 2 presses put the oracle in an in-game-HUD state); on native two presses
+# are needed because the first Start dispatches differently (TCardLoad state gating).
+for i in $(seq 1 30); do
+  sleep 1
+  curl -s --max-time 1 http://127.0.0.1:17654/metrics >/dev/null 2>&1 && break
+done
+curl -s --max-time 3 "http://127.0.0.1:17654/pad?do=start&ms=250" >/dev/null 2>&1 || true
+
+echo "[sbs] launching native (build-native/sms-boot, SB_STAGE=15 SB_OWN_GXLIST=1, +Start x2 via SB_PAD_SCRIPT)..."
+# SB_PAD_SCRIPT frame-times two Start presses to reach the same file-block sub-screen the
+# oracle reaches via probe /pad. Dump starts at frame 800 to capture the settled state
+# (SB_FRAME_DUMP_START replaces the earlier SB_FRAME_DUMP_ON_SCENE — we need past-Start
+# frames, not "first scene frame").
 timeout -s KILL "$((SETTLE + 5))" setarch -R env \
   SUNBRIGHT_DISC="$HERE/scratch/disc/sms.iso" SB_THP_FAST=1 SB_TURBO=1 \
   SB_HOST_ALLOC_CAP_MB=3072 SB_STAGE=15 SB_SCENARIO=0 SB_OWN_GXLIST=1 \
-  SB_FRAME_DUMP=1 SB_FRAME_DUMP_START=250 SB_FRAME_DUMP_MAX=4 SB_WATCHDOG_SECS=0 \
+  SB_PAD_SCRIPT="250:START 282:- 500:START 532:-" \
+  SB_FRAME_DUMP=1 SB_FRAME_DUMP_START=800 SB_FRAME_DUMP_MAX=8 SB_WATCHDOG_SECS=0 \
   ./build-native/sms-boot > scratch/passes/sbs_native.log 2>&1 &
 NPID=$!
 
