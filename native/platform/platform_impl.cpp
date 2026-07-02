@@ -96,6 +96,11 @@ bool PlatformInit(int argc, char** argv) {
     const char* disc = (argc > 1) ? argv[1] : nullptr;
     if (!disc) disc = std::getenv("SUNBRIGHT_DISC");
     if (!disc) disc = std::getenv("SUNBRIGHT_ROM");
+    // Default: scratch/disc/sms.iso next to the binary — the canonical drop-in path
+    // used by tools/render/title_sbs.sh and the rest of the harness. Without this
+    // fallback, `./build-native/sms-boot` with a bare env fails silently here and
+    // then SEGVs deep inside JKRMemArchive when arcBufNLogo comes back null.
+    if (!disc) disc = "scratch/disc/sms.iso";
     if (disc) {
         if (!sb_platform_open_gcm(disc))
             std::fprintf(stderr, "[platform] could not open disc image: %s "

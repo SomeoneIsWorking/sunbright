@@ -33,6 +33,7 @@
 #include <JSystem/J3D/J3DGraphAnimator/J3DModel.hpp>
 
 #include "gx_geom.h"               // NvkTevVertex, NvkTevBatch, NvkTevPush
+#include "sms_native_sky.h"        // sb_native_sky_is_model (SMS_NATIVE_PLATFORM sky-batch tagging)
 #include "gx_imm_xform.h"      // SbImmRawVtx / SbImmVtx / imm_project / imm_project_eye_clip
 #include "ngx_mesh.h"          // NgxCP, NgxVertex, ngx_build_mesh
 #include "ngx_render_data.h"   // NgxTevState
@@ -1002,6 +1003,35 @@ extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
             }
         }
         b.dbg_light_mask = lmask;
+#ifdef SMS_NATIVE_PLATFORM
+        // SMS_NATIVE_PLATFORM: if this batch's owning J3DModel is the registered sky.bmd model
+        // (scene_drive.cpp registers it each frame under sb_native_sky_active()), tag the batch
+        // so gx_sdlgpu uses a hardcoded native GLSL fragment shader (sample tex[0] directly) —
+        // bypassing sb_tev_gen_fragment which was combiner-saturating the sky to overbright-white.
+        // Same captured verts / textures / blend / depth — only the fragment shader is native.
+        // Match on J3DModelData* (shared shape data), not J3DModel* (per-instance): see
+        // scene_drive.cpp's registration comment. modelData is available via getModelData().
+        J3DModelData* mdData = model->getModelData();
+        if (sb_native_sky_is_model(mdData)) b.is_native_sky = 1;
+        if (const char* d = std::getenv("SB_NATIVE_SKY_DBG"); d && d[0] && d[0] != '0') {
+            static int seen_mds = 0;
+            static const void* uniq[24] = {0};
+            bool novel = true;
+            for (int i = 0; i < seen_mds; ++i) if (uniq[i] == (const void*)mdData) { novel = false; break; }
+            if (novel && seen_mds < 24) {
+                uniq[seen_mds++] = (const void*)mdData;
+                std::fprintf(stderr, "[nsky-scan] modelData=%p match=%d phase=%d dbgName=%s\n",
+                             (const void*)mdData, (int)sb_native_sky_is_model(mdData),
+                             g_capture_phase, g_capture_drawbuf ? g_capture_drawbuf : "-");
+            }
+            static int nsky = 0;
+            if (b.is_native_sky && nsky < 8) { ++nsky;
+                std::fprintf(stderr, "[nsky] batch#%zu vc=%u tex0=%p(%ux%u) key=%llx phase=%d\n",
+                             g_batches.size(), b.vcount, (const void*)b.tex[0].rgba,
+                             b.tex[0].w, b.tex[0].h, (unsigned long long)b.shaderKey, g_capture_phase);
+            }
+        }
+#endif
         // SB_B76_DBG: identify the b76 overbright draw at its TRUE source. The dbgName ("DrawBuf
         // MapXlu") is a GLOBAL stamped by the last TDrawBufObj::perform and can be STALE for a draw
         // that is NOT a draw-buffer flush. Print the captured material's model+modelData name, the

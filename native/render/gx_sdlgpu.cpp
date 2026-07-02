@@ -127,6 +127,56 @@ SDL_GPUShader* ensure_frag(uint64_t shaderKey, const char* glsl) {
     return sh;
 }
 
+// SMS_NATIVE_PLATFORM: the native sky.bmd dome fragment shader (CLAUDE.md 2026-07-03 hard rule).
+// TSky's TEV combiner was multi-stage integer math that saturated to overbright-white when run
+// through sb_tev_gen_fragment. The dome's INTENDED visual is simply "sample the sky texture"
+// (a zenith→horizon blue gradient in tex_0 for the base pass, cloud-strip textures for the
+// overlay passes) — so this shader ignores TEV and outputs texture.rgba directly. Same input
+// layout as tev.vert / the TEV frag (fUV[0..7] varyings, sampler2D tex_0..tex_7) so we can
+// swap it in without touching the vertex shader or the pipeline vertex/uniform bindings. Blend/
+// depth state stays per-batch (the dome's base pass is opaque; cloud strips blend via GX blend
+// factors the capture already forwarded — same batch state as before, just a different frag).
+constexpr const char kNativeSkyFragGlsl[] = R"(#version 450
+layout(location=0) in vec4 fColor;
+layout(location=1) in vec4 fColor1;
+layout(location=2) in vec4 fUV0_1;
+layout(location=3) in vec4 fUV2_3;
+layout(location=4) in vec4 fUV4_5;
+layout(location=5) in vec4 fUV6_7;
+layout(set=2, binding=0) uniform sampler2D tex_0;
+layout(set=2, binding=1) uniform sampler2D tex_1;
+layout(set=2, binding=2) uniform sampler2D tex_2;
+layout(set=2, binding=3) uniform sampler2D tex_3;
+layout(set=2, binding=4) uniform sampler2D tex_4;
+layout(set=2, binding=5) uniform sampler2D tex_5;
+layout(set=2, binding=6) uniform sampler2D tex_6;
+layout(set=2, binding=7) uniform sampler2D tex_7;
+layout(set=3, binding=0) uniform Mat { ivec4 kcolor[4]; ivec4 tevreg[4]; };  // kept for binding parity with tev.vert; unused
+layout(location=0) out vec4 outColor;
+void main() {
+    // Render the intent: sample the dome's texture. Sky.bmd assigns each shape/material its own
+    // texmap (base gradient, cloud strips, horizon fade); the game's TEV stages composed them
+    // with an overbright combiner. Native: just take tex_0 raw. Because each SHAPE has its own
+    // batch with its own tex[0] set by the capture, tex_0 already IS the material's designated
+    // texmap for this batch's draw.
+    outColor = texture(tex_0, fUV0_1.xy);
+}
+)";
+
+SDL_GPUShader* ensure_native_sky_frag() {
+    // Cache key well outside the TEV shaderKey space (fnv64 hashes never land at 0). Reuse the
+    // main frag cache so cleanup is uniform.
+    constexpr uint64_t kSkyKey = 0x5B5B5F534B595F5Bull;   // "[[_SKY_[" — unlikely collision
+    auto it = g_frag_cache.find(kSkyKey);
+    if (it != g_frag_cache.end()) return it->second;
+    std::vector<uint32_t> spv = sb_compile_fragment_glsl(kNativeSkyFragGlsl);
+    SDL_GPUShader* sh = spv.empty() ? nullptr
+        : make_shader(spv.data(), spv.size() * 4, SDL_GPU_SHADERSTAGE_FRAGMENT, /*samplers*/8, /*uniform*/1);
+    if (!sh) std::fprintf(stderr, "[gxsdl] native sky frag compile/create failed\n");
+    g_frag_cache.emplace(kSkyKey, sh);
+    return sh;
+}
+
 SDL_GPUGraphicsPipeline* ensure_pipeline(const sb::render::NvkTevBatch& b) {
     uint32_t state = (uint32_t)(b.blend_mode & 1)
                    | ((uint32_t)(b.src_factor & 15) << 1)
@@ -138,10 +188,20 @@ SDL_GPUGraphicsPipeline* ensure_pipeline(const sb::render::NvkTevBatch& b) {
                    | ((uint32_t)(b.alpha_update & 1) << 15)
                    | ((uint32_t)(b.dst_alpha_force & 1) << 16);
     uint64_t key = b.shaderKey * 1099511628211ull ^ state ^ ((uint64_t)b.dst_alpha_val << 40);
+#ifdef SMS_NATIVE_PLATFORM
+    // Native-sky batches share ONE pipeline per blend/depth state (independent of the TEV-side
+    // shaderKey), so the key namespace is folded down to just the state bits. Sentinel high bit
+    // keeps them out of any TEV pipeline's slot.
+    if (b.is_native_sky) key = 0xB000000000000000ull | state;
+#endif
     auto it = g_pipe_cache.find(key);
     if (it != g_pipe_cache.end()) return it->second;
 
-    SDL_GPUShader* fs = ensure_frag(b.shaderKey, b.fragGlsl);
+    SDL_GPUShader* fs =
+#ifdef SMS_NATIVE_PLATFORM
+        b.is_native_sky ? ensure_native_sky_frag() :
+#endif
+        ensure_frag(b.shaderKey, b.fragGlsl);
     if (!fs) { g_pipe_cache.emplace(key, nullptr); return nullptr; }
 
     using V = sb::render::NvkTevVertex;

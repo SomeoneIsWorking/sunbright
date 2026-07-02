@@ -58,6 +58,7 @@ timeout -s KILL "$((SETTLE + 5))" setarch -R env \
   SB_HOST_ALLOC_CAP_MB=3072 SB_STAGE=15 SB_SCENARIO=0 SB_OWN_GXLIST=1 \
   SB_PAD_SCRIPT="250:START 282:- 500:START 532:-" \
   SB_SEL_DUMP_SETTLED=8 SB_WATCHDOG_SECS=0 \
+  ${SB_NATIVE_SKY_DBG:+SB_NATIVE_SKY_DBG=$SB_NATIVE_SKY_DBG} \
   ./build-native/sms-boot > scratch/passes/sbs_native.log 2>&1 &
 NPID=$!
 
