@@ -222,10 +222,33 @@ def _summarize(frames, want_pass="scene"):
             "projType": _mode(ptype) if ptype else None}
 
 def _diff_summary(A, B, pa, pb):
-    # Align LIKE pass to LIKE pass: compare the 3D SCENE pass (perspective) on both sides. The native
-    # parity dump is scene-only; the oracle tags its scene-pass line with real per-pass vertex counts
-    # (display lists followed into guest RAM), so nverts is now directly comparable — no longer the old
-    # whole-frame-prims vs scene-verts scope mismatch. A "hud" line is also present; we summarise scene.
+    # ── FAIL-FAST HARNESS INVARIANTS ────────────────────────────────────────────────────────────
+    # A parity number that can silently mean "measured against nothing" is worse than no number
+    # (per CLAUDE.md fail-fast + 2026-07-02 workflow directive). Refuse to emit when the inputs
+    # cannot possibly yield a valid comparison.
+    scene_a = [f for f in A if _pass_of(f) == "scene" and f.get("geom", {}).get("onscr", 0) > 0]
+    scene_b = [f for f in B if _pass_of(f) == "scene" and f.get("geom", {}).get("onscr", 0) > 0]
+    if not scene_a:
+        print(f"HARNESS-FAIL: oracle {pa} has 0 non-empty scene frames (dead capture)"); return 2
+    if not scene_b:
+        print(f"HARNESS-FAIL: native {pb} has 0 non-empty scene frames (dead capture)"); return 2
+    # ── STATE-PINNING GUARD ────────────────────────────────────────────────────────────────────
+    # This comparison is a WINDOW-SUMMARY MEDIAN across DIFFERENT captured states — the oracle
+    # and native processes run independently with different pacing, so the same frame index on
+    # each side is different game-time. A "within tolerance" verdict here is NOT evidence that
+    # the two engines produced the same output. It is at best a first-order sanity check.
+    # Print the pinning gap prominently so nothing downstream mistakes this for state-pinned
+    # evidence (per 2026-07-02 directive: no evidence from mismatched-state captures).
+    fa_range = (scene_a[0].get("frame"), scene_a[-1].get("frame"), len(scene_a))
+    fb_range = (scene_b[0].get("frame"), scene_b[-1].get("frame"), len(scene_b))
+    print("=" * 78)
+    print("STATE-UNPINNED WINDOW SUMMARY — NOT authoritative evidence.")
+    print(f"  oracle frames [{fa_range[0]}..{fa_range[1]}] ({fa_range[2]} non-empty)")
+    print(f"  native frames [{fb_range[0]}..{fb_range[1]}] ({fb_range[2]} non-empty)")
+    print("  Same-state pinning (same input, same frame index, same camera) is NOT implemented.")
+    print("  A 'within tolerance' verdict here is NOT proof the two engines match — it is a")
+    print("  first-order sanity check across unaligned windows. Do not use as fix evidence.")
+    print("=" * 78)
     sa, sb = _summarize(A, "scene"), _summarize(B, "scene")
     print(f"cross-engine summary — SCENE pass (no shared frame indices):")
     print(f"  {'metric':14s} {'oracle':>14s} {'native':>14s}   relΔ")
