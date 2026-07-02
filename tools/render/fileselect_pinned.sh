@@ -39,8 +39,14 @@ pkill -9 -x sunbright 2>/dev/null; sleep 1; rm -f "$ORACLE"
 timeout -s KILL 60 env SUNBRIGHT_HEADLESS=1 SUNBRIGHT_TURBO=1 SUNBRIGHT_BACKEND=Vulkan \
   SUNBRIGHT_FASTBOOT=1 SUNBRIGHT_STAGE=15 SUNBRIGHT_SCENARIO=0 \
   SUNBRIGHT_PAD_SCRIPT="$PAD_SCRIPT" \
+  SUNBRIGHT_WIDESCREEN=0 \
   SUNBRIGHT_PARITY_DUMP="$ORACLE" SUNBRIGHT_PARITY_DUMP_FROM="$FROM" SUNBRIGHT_PARITY_DRAWS=1 \
   ./build/sunbright "$SUNBRIGHT_ROM" > scratch/passes/pinned_oracle.log 2>&1
+# SUNBRIGHT_WIDESCREEN=0 disables runtime/overrides/scene_render.cpp's ws_squeeze m[0][0]*=0.75.
+# The oracle's default 16:9 squeeze widens the 3D projection horizontally — a REAL divergence from
+# native (which doesn't apply that squeeze at all in the sms-boot renderer). For state-pin parity
+# both engines must run RAW 4:3 so their proj matrices come from identical game code with no
+# post-hoc squeeze.
 echo "    oracle lines: $(wc -l < "$ORACLE" 2>/dev/null || echo 0)"
 
 echo "[2/3] NATIVE — build-native/sms-boot (fastboot stage 15, START=$FROM)"

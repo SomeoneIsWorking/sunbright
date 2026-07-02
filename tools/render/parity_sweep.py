@@ -331,18 +331,20 @@ def _first_scene_with_draws(dump, key):
     return None
 
 # --- STATE-PIN fingerprint ---------------------------------------------------------------
-# A scene frame's game-state signature is (projType, proj[6], vp[6]) — both engines derive
-# these from the SAME guest code path (GXSetProjection/GXSetViewport writing to XF). At the
-# same game state the values match; a mismatch names a real state divergence (different
-# scene / different director state) that ORDERING alignment cannot recover. Rounding: proj
-# to 3 decimals absorbs FP jitter without hiding real diffs; vp to 1 decimal covers the
-# integer pixel dims + the [0,1] near/far.
+# A scene frame's game-state signature is (projType, proj[6]) — both engines derive these
+# from the SAME guest code path (GXSetProjection writing to XF). At the same game state the
+# values match; a mismatch names a real state divergence (different scene / different
+# director state) that ORDERING alignment cannot recover. Rounding: proj to 3 decimals
+# absorbs FP jitter without hiding real diffs.
+#
+# vp[] deliberately NOT in the fingerprint: on the oracle it's Dolphin's raw XFMEM
+# SETVIEWPORT format (farZ scaled by 0xFFFFFF), on native it's SbParityProj.vp (raw
+# floats [0,1]) — different units, will never match at identical game state. The proj
+# matrix alone identifies the scene camera; vp differences would be a follow-up analysis.
 def _fp(frame):
-    p = frame.get("proj"); v = frame.get("vp"); t = frame.get("projType")
-    if p is None or v is None or t is None: return None
-    return (int(t),
-            tuple(round(float(x), 3) for x in p),
-            tuple(round(float(x), 1) for x in v))
+    p = frame.get("proj"); t = frame.get("projType")
+    if p is None or t is None: return None
+    return (int(t), tuple(round(float(x), 3) for x in p))
 
 def _pick_matched_scene_pair(A, B, key_a, key_b):
     """Find (frame_a, frame_b) with equal state-pin fingerprint on both sides, both carrying a
@@ -373,12 +375,12 @@ def _pick_matched_scene_pair(A, B, key_a, key_b):
         # DIFFERENT phases of the SAME intro). If any of ora's top-3 differ from native's top-3
         # only in ONE field, that's a real state divergence in that field.
         lines = ["no fingerprint match"]
-        lines.append("  oracle top fingerprints (projType, proj[0..5], vp[0..5]) — count):")
+        lines.append("  oracle top fingerprints (projType, proj[0..5]) — count):")
         for fp, c in fps_a.most_common(3):
-            lines.append(f"    ({c:5d})  projType={fp[0]}  proj={fp[1]}  vp={fp[2]}")
+            lines.append(f"    ({c:5d})  projType={fp[0]}  proj={fp[1]}")
         lines.append("  native top fingerprints — count):")
         for fp, c in fps_b.most_common(3):
-            lines.append(f"    ({c:5d})  projType={fp[0]}  proj={fp[1]}  vp={fp[2]}")
+            lines.append(f"    ({c:5d})  projType={fp[0]}  proj={fp[1]}")
         # Also diff top-1 on each side, for the quick summary.
         top_a = fps_a.most_common(1)[0][0]
         top_b = fps_b.most_common(1)[0][0]
@@ -386,8 +388,6 @@ def _pick_matched_scene_pair(A, B, key_a, key_b):
         if top_a[0] != top_b[0]: diffs.append(f"projType oracle={top_a[0]} native={top_b[0]}")
         for i,(oa,ob) in enumerate(zip(top_a[1], top_b[1])):
             if oa != ob: diffs.append(f"proj[{i}] oracle={oa} native={ob}")
-        for i,(oa,ob) in enumerate(zip(top_a[2], top_b[2])):
-            if oa != ob: diffs.append(f"vp[{i}] oracle={oa} native={ob}")
         if diffs: lines.append("  top-1 vs top-1 diffs: " + "; ".join(diffs))
         return None, None, "\n".join(lines)
     # Score by min(count_a, count_b) — a fingerprint that persists on BOTH sides is settled state.
@@ -461,8 +461,8 @@ def drawdiff(pa, pb):
             return 2
     print("=" * 78)
     if pinned:
-        print("STATE-PINNED PER-DRAW DIFF — projection+viewport fingerprint match.")
-        print(f"  fingerprint projType={fp_or_reason[0]} proj={fp_or_reason[1]} vp={fp_or_reason[2]}")
+        print("STATE-PINNED PER-DRAW DIFF — projection fingerprint match.")
+        print(f"  fingerprint projType={fp_or_reason[0]} proj={fp_or_reason[1]}")
     else:
         print("STATE-UNPINNED PER-DRAW ORDERED DIFF — NOT authoritative.")
         print(f"  reason: {fp_or_reason}")
