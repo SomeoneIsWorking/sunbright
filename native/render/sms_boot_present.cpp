@@ -840,6 +840,14 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
     // phase==1. ph1End = one past the last leading phase==1 batch (0 if none → no special handling).
     int ph1End = 0;
     while (ph1End < nScenePushed && batches[(size_t)ph1End].phase == 1) ++ph1End;
+    // The ph4/ph6 boundary: the soft-focus copy on GC snapshots pass2 (= native's ph4/mPerformListGX
+    // main scene), NOT pass2+pass3. ph4End = one past the last ph4 batch. ph6 (mPerformListGXPost)
+    // batches follow — they include the composite3 imm quad that samples the soft-focus snapshot
+    // (efb_src consumer). Snapshotting at ph4End (instead of nScenePushed) matches GC's copy timing:
+    // the snapshot holds only the main scene, and ph6's composite3 quad re-displays it. Legacy
+    // (SB_FS_NOCLEAR / SB_FS_COMPOSITE=0) keeps the whole-scene bound.
+    int ph4End = ph1End;
+    while (ph4End < nScenePushed && batches[(size_t)ph4End].phase == 4) ++ph4End;
     sb::gxsdl::frame_begin(c[0], c[1], c[2], c[3]);
     if (ncopies > 0 && !sceneFiltered) {
         const int total = (int)batches.size();
@@ -858,7 +866,7 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
             const bool isMirror = useFix && copies[k].wd == 256 && copies[k].ht == 256;
             int bound;
             if (isMirror)      bound = ph1End;
-            else if (useFix)   bound = nScenePushed;          // soft-focus → snapshot the full scene
+            else if (useFix)   bound = ph4End > ph1End ? ph4End : nScenePushed; // soft-focus → snapshot ph4 (main scene) only
             else               bound = copies[k].batch_index; // legacy (SB_FS_NOCLEAR)
             if (bound > nScenePushed) bound = nScenePushed;   // copy at scene-list end → imm follows
             if (bound < segStart)     bound = segStart;
@@ -868,7 +876,17 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
             segStart   = bound;
             // Clear after the mirror pre-pass (GC clears the EFB post-mirror-copy); otherwise honor the
             // legacy SB_EFB_HONOR_CLEAR_SEG knob (still default-off for non-mirror copies).
-            clearFirst = isMirror || (honorClearSeg && (copies[k].clear != 0));
+            // SB_FS_CLEAR_AFTER_MAIN=1 (diagnostic): also clear after the SOFT-FOCUS snapshot so the
+            // ph4+ph6 main scene doesn't remain visible in the FB — the composite3/soft-focus consumer
+            // batches (which sample the snapshot) then repaint the scene ONCE, matching GC's pass3
+            // display-pass structure where pass1+pass2 are cU=0 off-screen and only pass3 writes.
+            static const bool clearAfterMain = [](){
+                const char* v = std::getenv("SB_FS_CLEAR_AFTER_MAIN");
+                return v && v[0] && v[0] != '0';
+            }();
+            clearFirst = isMirror
+                      || (honorClearSeg && (copies[k].clear != 0))
+                      || (useFix && !isMirror && clearAfterMain);
         }
         // Final segment: any scene tail past the last copy + the 2D imm overlay (the post pass).
         sb::gxsdl::draw_tev_segment(verts.data(), (int)verts.size(),
