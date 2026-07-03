@@ -129,9 +129,9 @@ TSurfGesso::TSurfGesso(const char* name)
 #include <MoveBG/MapObjBase.hpp>
 
 void TMapObjBase::appear() { }
-void TMapObjBase::calc() { }
-void TMapObjBase::dead() { }
-void TMapObjBase::draw() const { }
+// calc/draw/dead now defined in reference/sms/src/MoveBG/MapObjBase.cpp
+// alongside the perform() port (all four are byte-exact `blr` in the
+// binary — empty stubs for vtable slot fill).
 void TMapObjBase::getDepthAtFloating() { }
 u16  TMapObjBase::getHitObjNumMax() { return 0; }
 f32  TMapObjBase::getRadiusAtY(f32) const { return 0.f; }
