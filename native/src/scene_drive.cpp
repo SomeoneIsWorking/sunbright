@@ -961,6 +961,30 @@ extern "C" bool sb_boot_drive_scene() {
 			const JUtility::TColor& a = aa->mAmbColors[0].mColor;
 			GXColor amb = { a.r, a.g, a.b, a.a };
 			GXSetChanAmbColor(GX_COLOR0A0, amb);
+			// SB_AMB_PROBE=1 (2026-07-04, title #18 lit-vertex-over-brightening): print the
+			// actual ambient the native drive_chr dispatches, once per session. Oracle scene
+			// pass reports amb=(0.502,0.502,0.502) = (128,128,128) — validate here whether
+			// AmbGroup[0]'s value matches.
+			if (const char* e = std::getenv("SB_AMB_PROBE"); e && e[0] && e[0] != '0') {
+				static bool s_p = false;
+				if (!s_p) { s_p = true;
+					std::fprintf(stderr,
+						"[amb-probe] AmbGroup=%p count=%d dispatched=(%u,%u,%u,%u)"
+						"  oracle_expected=(128,128,128) diff=(%d,%d,%d)\n",
+						(void*)aa, aa->mAmbColorCount,
+						(unsigned)amb.r, (unsigned)amb.g, (unsigned)amb.b, (unsigned)amb.a,
+						(int)amb.r - 128, (int)amb.g - 128, (int)amb.b - 128);
+				}
+			}
+		} else if (const char* e = std::getenv("SB_AMB_PROBE"); e && e[0] && e[0] != '0') {
+			static bool s_p = false;
+			if (!s_p) { s_p = true;
+				std::fprintf(stderr,
+					"[amb-probe] NO AmbGroup at drive_chr - aa=%p mAmbColors=%p count=%d.\n"
+					"  Oracle scene expects amb=(128,128,128). Native register stays at default (0,0,0).\n",
+					(void*)aa, aa ? (void*)aa->mAmbColors : nullptr,
+					aa ? aa->mAmbColorCount : -1);
+			}
 		}
 	}
 
