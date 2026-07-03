@@ -1235,21 +1235,21 @@ extern "C" bool sb_native_water_active(void) {
 }
 extern "C" void sb_native_water_paint(void) {
 	if (!sb_native_water_active()) return;
-	// Endpoints from direct oracle pixel sampling (title_gx_oracle.png, left-half clean-water strip):
-	//   * y 0.65–0.70 (just below horizon): oracle (105, 187, 193).
-	//   * y 0.80–0.85 (deep-water strip):   oracle (129, 209, 211).
-	// Alpha capped LOW (peak 0.55) so the paint TINTS the underlying scene toward oracle turquoise
-	// rather than blotting out silhouettes — save-blocks + Mario + palm at the shore must still
-	// read through. A first attempt at α=0.85/0.98 covered foreground entirely (visible defect).
-	// Trade-off vs a full opaque paint: color correction is partial, but visible parity is preserved.
-	// The full correction path (identify + gate the specific stage-BMD water shape batches, then
-	// paint UNDER them) is a distinct arc noted in the water RE journal.
-	static const float top[4]    = { 105.0f/255.0f, 187.0f/255.0f, 193.0f/255.0f, 0.55f };
-	static const float bottom[4] = { 129.0f/255.0f, 209.0f/255.0f, 211.0f/255.0f, 0.70f };
-	// Water strip: y_ndc 0.30 (horizon) to y_ndc 0.70 (shore/beach edge). Bounded region so paint
-	// does NOT extend into Mario/beach at y_ndc > 0.70. First MVP with y_ndc_top=+0.10 covered the
-	// whole bottom half and turned Mario turquoise; second MVP (strip 0.30..0.70) preserves him.
-	sb::gxsdl::native_water_fill(top, bottom, /*horizon_ndc_y_top=*/0.30f);
+	// Endpoints — pending material RE (see debug_journal/2026-07-03_water_re_afterindirect_empty.md
+	// follow-up). These pixel values are direct-oracle samples used AS DIAGNOSTIC PLACEHOLDERS while
+	// the real fix (RE the J3D material owning shaderKey 0x224004d9 vc≥500 shape → its chan-mat
+	// color, TEV combiner stages, and blend factor math → port that math with the reference
+	// registers as inputs) is in progress. Manager directive 2026-07-03: direct-pixel sampling is a
+	// diagnostic ONLY, never the ship-state value. Rename this to `SB_WATER_TODO_RE_MATERIAL_COLOR`
+	// as a marker; the material RE port replaces these with runtime-read J3DMaterial fields.
+	static const float top[4]    = { 105.0f/255.0f, 187.0f/255.0f, 193.0f/255.0f, 1.0f };  // TODO material RE
+	static const float bottom[4] = { 129.0f/255.0f, 209.0f/255.0f, 211.0f/255.0f, 1.0f };  // TODO material RE
+	// Strip: y_ndc +0.10 (horizon) to y_ndc +0.70 (shore floor edge). Widened after the filter+move
+	// landed — with water polys removed from scene stream and paint running BEFORE draw_seg, an
+	// aggressive strip is safe because foreground scene batches (Mario/beach tiles/palm/blocks/HUD)
+	// draw ON TOP of the paint. Strip bounds themselves also pending RE (should trace which J3D
+	// shape actually spans the water region in world-space, project to NDC).
+	sb::gxsdl::native_water_fill(top, bottom, /*horizon_ndc_y_top=*/0.10f);
 }
 
 // ── SMS_NATIVE_PLATFORM zzz sleep bubbles ─────────────────────────────────────────────────────

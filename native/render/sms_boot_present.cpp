@@ -381,6 +381,20 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
         // fine underneath. See debug_journal/2026-06-30_fileselect_overbright_is_efb_target_structure.md
         // for the earlier RE + why chasing this via ph-N gates was a dead end.
         if ((unsigned)(b.shaderKey >> 32) == 0xeb5c8e74u) continue;
+        // Skip the title-screen stage-BMD water-surface polygons when the native water paint owns
+        // the sea region. Same class as the eb5c8e74 mirror skip — RE'd:
+        //   * shaderKey hi32 = 0x224004d9 is the material shared by several option.arc shapes
+        //     (small palm-canopy leaflets vc≤90, the beach shore vc=1413, plus MapObj small strips).
+        //   * The vc=1413 batches are the WATER SURFACE (proven 2026-07-03: SB_SKIP_KEY=224004d9
+        //     removes them and the water strip becomes clean sky-blue — see water RE journal
+        //     debug_journal/2026-07-03_water_re_afterindirect_empty.md).
+        // Precise gate: shaderKey 224004d9 AND vc >= 500. All other 224004d9 shapes (palm/leaflet,
+        // vc ≤ 90) keep drawing so their canopy silhouettes remain visible. Under this gate the
+        // native water paint (sb_native_water_paint) provides the sea color at α=1 instead of the
+        // dark-teal TEV output the emulated combiner produced. Only active when sky_active
+        // (sb_native_sky_active == mMap==15) — Delfino gameplay maps aren't guarded.
+        if ((unsigned)(b.shaderKey >> 32) == 0x224004d9u && b.vcount >= 500 && sb_native_sky_active())
+            continue;
 #endif
         if (ablPhase) { bool drop=false; for (int a=0;a<s_ablPhN;++a) if (b.phase==s_ablPh[a]){drop=true;break;} if (drop) continue; }
         if (opaqueOnly && b.blend_mode != 0) continue;
@@ -943,6 +957,13 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
     auto draw_seg = [&](int seg_first, int seg_count, bool clearFirst) {
         if (sky_active && clearFirst) {
             sb_native_sky_paint();                                             // CLEAR + gradient
+            // Water paint goes right after the sky's CLEAR+gradient (both use fullscreen triangles;
+            // sky's render pass has ended). Water uses LOAD_OP=LOAD so it composites over sky. The
+            // subsequent draw_tev_segment then draws the scene batches (palm/beach/Mario/HUD) ON TOP
+            // of both — the water polys themselves are filtered out for map==15 (shaderKey 224004d9
+            // vc≥500 gate above). Order matters: sky BEHIND, water OVER sky, scene OVER water,
+            // zzz OVER scene. Under this order the paint's α = 1.0 is safe (no foreground bleed).
+            sb_native_water_paint();
             sb::gxsdl::draw_tev_segment(verts.data(), (int)verts.size(),
                                         batches.data() + seg_first, seg_count, /*clearFirst=*/false);
         } else {
@@ -993,15 +1014,11 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
     } else {
         draw_seg(0, (int)batches.size(), /*clearFirst=*/true);
     }
-    // SMS_NATIVE_PLATFORM: turquoise water pass painted OVER scene batches but BEFORE the final
-    // HUD/zzz overlay (native paint order: sky_fill → scene batches (incl. HUD imm) → water_fill →
-    // zzz). Owned by scene_drive.cpp::sb_native_water_paint; gated on mMap==15 (title). Alpha ramp
-    // keyed to horizon_ndc_y so above-horizon HUD pixels are untouched; the water region gets its
-    // oracle-sampled turquoise gradient. RE journal: debug_journal/2026-07-03_water_re_afterindirect
-    // _empty.md. Trade-off vs "gate the water polys out": their shader key (0x224004d9) is shared
-    // with several non-water shapes, so a key skip isn't precise — painting on top is cleaner and
-    // avoids identifying every stage-BMD water shape id.
-    sb_native_water_paint();
+    // (2026-07-03) MVP water paint that sat HERE (after scene batches, alpha=0.55/0.70) was a
+    // bandaid — manager correctly rejected it. Real fix landed above: the vc≥500 stage-BMD water
+    // polys (shaderKey 0x224004d9) are FILTERED OUT of the scene batch stream when sky_active, and
+    // sb_native_water_paint now runs BEFORE draw_seg (see below-comment placement) so scene batches
+    // (palm, Mario, beach) draw ON TOP of the α=1 native water. No overlay-on-foreground bandaid.
     // SMS_NATIVE_PLATFORM: zzz sleep bubbles painted last, over the final composite. No-op unless
     // gpMarioOriginal->mStatus == MARIO_STATUS_SLEEP (title/file-select settled state). Owned by
     // scene_drive.cpp::sb_native_zzz_paint — see debug_journal/2026-07-03_zzz_native_paint.md.

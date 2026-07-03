@@ -725,10 +725,14 @@ void native_water_fill(const float top[4], const float bottom[4], float horizon_
     for (int i = 0; i < 4; ++i) { push.top[i] = top[i]; push.bottom[i] = bottom[i]; }
     // horizon_ndc_y is the STRIP TOP (where paint fades in from sky). Bottom fades out at
     // horizon_ndc_y + 0.40 (empirical: oracle water ends where beach/Mario start ~y_ndc +0.70).
-    push.horizon[0] = horizon_ndc_y;              // upper edge
-    push.horizon[1] = horizon_ndc_y + 0.40f;      // lower edge
-    push.horizon[2] = 0.06f;                       // upper softness
-    push.horizon[3] = 0.06f;                       // lower softness
+    // Strip: horizon_ndc_y (top) to horizon_ndc_y + 0.50 (bottom). Below the strip is beach floor
+    // where Mario stands — scene batches draw the floor tiles / shore terrain there; painting
+    // through would tint them turquoise (visible defect). Sampling oracle: water spans y_frac
+    // 0.60..0.85 = y_ndc +0.20..+0.70; caller sets top to +0.20, strip stops at +0.70.
+    push.horizon[0] = horizon_ndc_y;              // upper edge (fade in at horizon)
+    push.horizon[1] = horizon_ndc_y + 0.60f;      // lower edge (fade out at shore)
+    push.horizon[2] = 0.06f;                      // upper softness
+    push.horizon[3] = 0.06f;                      // lower softness
 
     // Paint over the current color target — preserve existing content (LOAD), no depth needed.
     SDL_GPUColorTargetInfo cti{}; cti.texture = g_color;
