@@ -502,6 +502,14 @@ if(SMS_BUILD_BOOT)
             # GX_ORACLE render-sink present entry point (stub today, Dolphin
             # videovulkan wiring in step 4).
             "${SMS_NATIVE_REPO_ROOT}/native/render/oracle_present.cpp")
+        # Dolphin's headers require C++23 (std::to_underlying in BitUtils.h).
+        # sms-boot as a whole is C++17 for the decomp; compile the two Dolphin-
+        # touching TUs at C++23 individually. They talk to the rest of sms-boot
+        # only through C ABI (sb_oracle_present_frame + Host_* free functions).
+        set_source_files_properties(
+            "${SMS_NATIVE_REPO_ROOT}/native/render/oracle_present.cpp"
+            "${SMS_NATIVE_REPO_ROOT}/native/src/dolphin_host_shims.cpp"
+            PROPERTIES COMPILE_OPTIONS "-std=c++23")
         target_include_directories(sms-boot PRIVATE
             "${SMS_NATIVE_REPO_ROOT}/externals/dolphin/Source/Core")
         target_link_libraries(sms-boot PRIVATE videovulkan videocommon core uicommon common)

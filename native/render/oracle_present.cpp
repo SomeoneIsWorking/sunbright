@@ -21,6 +21,14 @@
 
 #include "gx_sdlgpu.h"
 
+#include "Common/Config/Config.h"
+#include "Common/MsgHandler.h"     // SetEnableAlert — silence Y/N prompts
+#include "Common/WindowSystemInfo.h"
+#include "Core/Config/MainSettings.h"
+#include "UICommon/UICommon.h"
+#include "VideoCommon/VideoBackendBase.h"
+#include "VideoCommon/VideoConfig.h"
+
 #include <cstdint>
 #include <cstdio>
 #include <vector>
@@ -29,6 +37,69 @@ namespace {
 
 // Once-per-process init logging so the user sees the oracle sink is active.
 bool s_announced = false;
+bool s_video_up = false;
+bool s_video_tried = false;
+
+// Try to bring up Dolphin's video backend once. Returns true on success. Logs
+// pass/fail loudly so we can name what's blocking the standalone init on first
+// failure (see Path C step 4 notes).
+bool try_init_video_backend() {
+    if (s_video_tried) return s_video_up;
+    s_video_tried = true;
+    std::fprintf(stderr, "[oracle] attempting standalone Dolphin video backend init...\n");
+
+    // Silence PanicAlert prompts (Init/backend may hit assertions we want to
+    // log-and-continue on, not block on a Y/N stdin prompt).
+    Common::SetEnableAlert(false);
+
+    // Point Dolphin at a user directory before Init — otherwise the FS backend
+    // panics on empty m_root_path. Isolated per-process to avoid clobbering the
+    // oracle build/sunbright's <home>/.config/dolphin-emu. SB_ORACLE_USERDIR overrides.
+    if (const char* ud = std::getenv("SB_ORACLE_USERDIR"))
+        UICommon::SetUserDirectory(ud);
+    else
+        UICommon::SetUserDirectory(std::string("./scratch/sms_boot_oracle_userdir"));
+
+    // UICommon::Init brings up the Config layer stack, SConfig, g_Config,
+    // LogManager, and calls ActivateBackend(MAIN_GFX_BACKEND). It's the
+    // sanctioned entry point (same one runtime/main_sdl.cpp uses) — safer than
+    // hand-picking pieces.
+    UICommon::Init();
+    UICommon::CreateDirectories();
+
+    // Force Vulkan as the graphics backend (BaseConfigLoader may default to
+    // OpenGL). PopulateBackendInfo below re-reads MAIN_GFX_BACKEND, so setting
+    // this after UICommon::Init is what actually picks Vulkan.
+    Config::SetBase(Config::MAIN_GFX_BACKEND, std::string("Vulkan"));
+
+    // Headless WSI for the first probe — no window, no swapchain. Dolphin's
+    // Vulkan backend supports this (see VKMain.cpp: `enable_surface = wsi.type
+    // != Headless`). If we get this far without crashing we've proven the
+    // instance / physical-device / device / vertex-manager path works
+    // standalone; step 4b wires up a real WSI so present goes to the window.
+    WindowSystemInfo wsi{};
+    wsi.type = WindowSystemType::Headless;
+
+    // PopulateBackendInfo fills g_backend_info (feature flags used during
+    // Initialize). It also calls ActivateBackend(config value) — that's why
+    // we set MAIN_GFX_BACKEND above.
+    VideoBackendBase::PopulateBackendInfo(wsi);
+
+    if (!g_video_backend) {
+        std::fprintf(stderr, "[oracle] g_video_backend null after PopulateBackendInfo\n");
+        return false;
+    }
+    std::fprintf(stderr, "[oracle] backend activated: %s\n", g_video_backend->GetDisplayName().c_str());
+
+    const bool ok = g_video_backend->Initialize(wsi);
+    if (!ok) {
+        std::fprintf(stderr, "[oracle] VideoBackend::Initialize returned false — check Dolphin's PanicAlertFmt output above\n");
+        return false;
+    }
+    std::fprintf(stderr, "[oracle] Dolphin video backend UP (headless). Real rendering wires in step 4b.\n");
+    s_video_up = true;
+    return true;
+}
 
 // Paint pattern helper — distinctive so a visual diff vs NATIVE_PC is obvious.
 void paint_stub(std::vector<uint8_t>& rgba, int w, int h) {
@@ -55,7 +126,8 @@ void paint_stub(std::vector<uint8_t>& rgba, int w, int h) {
 extern "C" void sb_oracle_present_frame(void* /*framebuffer*/, void* /*user*/) {
     if (!s_announced) {
         s_announced = true;
-        std::fprintf(stderr, "[oracle] sink active — stub magenta pattern until Dolphin videovulkan wire-up lands\n");
+        std::fprintf(stderr, "[oracle] sink active\n");
+        try_init_video_backend();  // one-shot probe; sets s_video_up
     }
 
     int w = 0, h = 0;
