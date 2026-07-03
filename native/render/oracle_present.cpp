@@ -52,6 +52,7 @@
 // renderer consumes at present time. We route them into Dolphin's utility
 // draw path instead.
 extern "C" void sb_gx_get_clear_color(float* rgba);
+extern "C" void sb_gx_call_trace_dump(void) __attribute__((weak));
 // Non-extern (C++ linkage in sms_boot_j3d_capture.cpp) — must be in the global
 // namespace like the definition.
 int sb_boot_capture_tev_take(const sb::render::NvkTevVertex** verts,
@@ -289,9 +290,12 @@ extern "C" void sb_oracle_present_frame(void* /*framebuffer*/, void* /*user*/) {
             OpcodeDecoder::RunFifo<false>(
                 DataReader((u8*)fifo_data, (u8*)(fifo_data + fifo_size)),
                 &cycles);
-            if (s_frame == 1 || s_frame == 60 || s_frame == 300 || s_frame == 500)
-                std::fprintf(stderr, "[oracle] f%d ran %zu FIFO bytes\n",
-                             s_frame, fifo_size);
+        }
+        // Log any frame with FIFO activity — silence the many zero-byte frames
+        // that happen when the game is between rendering phases.
+        if (fifo_size > 0 || s_frame % 60 == 0) {
+            std::fprintf(stderr, "[oracle] f%d ran %zu FIFO bytes\n", s_frame, fifo_size);
+            if (&sb_gx_call_trace_dump) sb_gx_call_trace_dump();
         }
         sb::gxfifo::reset_frame();
     }

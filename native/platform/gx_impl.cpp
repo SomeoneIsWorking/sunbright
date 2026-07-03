@@ -16,6 +16,31 @@
 #include "gx_state.h"
 #include "gx_fifo.h"
 
+// BP register addresses (from VideoCommon/BPMemory.h) — the SAME opcodes Dolphin's
+// CommandProcessor decodes on a real emulator run. Declared here (before any GX
+// function body) so every setter can reference bp::* without ordering pain.
+namespace bp {
+constexpr uint8_t GENMODE      = 0x00;
+constexpr uint8_t SCISSORTL    = 0x20;
+constexpr uint8_t SCISSORBR    = 0x21;
+constexpr uint8_t SCISSOROFFSET= 0x59;
+constexpr uint8_t ZMODE        = 0x40;
+constexpr uint8_t BLENDMODE    = 0x41;
+constexpr uint8_t CONSTANTALPHA= 0x42;
+constexpr uint8_t ZCOMPARE     = 0x43;   // PE_CONTROL — has color/alpha update bits
+constexpr uint8_t CLEAR_AR     = 0x4F;
+constexpr uint8_t CLEAR_GB     = 0x50;
+constexpr uint8_t CLEAR_Z      = 0x51;
+constexpr uint8_t ALPHACOMPARE = 0xF3;
+constexpr uint8_t TEV_COLOR_ENV_BASE = 0xC0;   // +2*stage
+constexpr uint8_t TEV_ALPHA_ENV_BASE = 0xC1;   // +2*stage
+constexpr uint8_t TEV_REGISTER_L_BASE = 0xE0;
+constexpr uint8_t TEV_REGISTER_H_BASE = 0xE1;
+constexpr uint8_t TEV_KSEL_BASE = 0xF6;
+constexpr uint8_t TREF_BASE     = 0x28;   // TEV order — +stage/2
+constexpr uint8_t TEV_KONSTANT_C_BASE = 0xE0;   // reuse TEV_REGISTER_L; konst uses same reg range with kmode
+} // namespace bp
+
 // Host sink for the GameCube write-gather pipe. The decomp's inline GX FIFO writers
 // (GXVert.h: GXCmd*/GXPosition*/...) target this 32-byte bit-bucket natively instead
 // of the nonexistent 0xCC008000 MMIO — the native renderer reads the object model, so
@@ -78,6 +103,14 @@ void GXSetProjection(f32 mtx[4][4], GXProjectionType type) {
         g.proj3dVp[3] = g.vpHt;   g.proj3dVp[4] = g.vpNearz; g.proj3dVp[5] = g.vpFarz;
         g.proj3dValid = true;
     }
+    // XF projection register range: XFMEM_PROJECTION = 0x1020 (6 f32s + 1 u32 type).
+    // Layout matches GXSetProjection's on-wire packing: pm[0..5] followed by
+    // the type word (0 = perspective, 1 = orthographic).
+    sb::gxfifo::write_u8(0x10);
+    sb::gxfifo::write_u16_be(6);            // count - 1 (7 words)
+    sb::gxfifo::write_u16_be(0x1020);       // XFMEM_PROJECTION
+    for (int i = 0; i < 6; ++i) sb::gxfifo::write_f32_be(g.projMtx[i]);
+    sb::gxfifo::write_u32_be((u32)type);
 }
 
 void GXGetProjectionv(f32* ptr) {
@@ -99,8 +132,30 @@ void GXSetViewportJitter(f32 left, f32 top, f32 wd, f32 ht, f32 nearz, f32 farz,
     g.vpNearz = nearz; g.vpFarz = farz;
 }
 
+// XF viewport register range: XFMEM_VIEWPORT = 0x101A (6 f32s: wd/2, -ht/2, zscale, xorig, yorig, zorig).
+// See VideoCommon/XFMemory.h and GXTransform.h §Viewport. Wrote as a burst.
+static void emit_xf_viewport() {
+    auto& g = state();
+    const float wd_half = g.vpWd * 0.5f;
+    const float ht_half = g.vpHt * -0.5f;
+    const float zscale  = g.vpFarz - g.vpNearz;
+    const float xorig   = g.vpLeft + wd_half + 342.0f;   // GC pipe adds 342, from GX SDK
+    const float yorig   = g.vpTop  - ht_half + 342.0f;
+    const float zorig   = g.vpFarz;
+    sb::gxfifo::write_u8(0x10);                 // XF opcode
+    sb::gxfifo::write_u16_be(5);                // count - 1 (6 regs)
+    sb::gxfifo::write_u16_be(0x101A);           // XFMEM_VIEWPORT
+    sb::gxfifo::write_f32_be(wd_half);
+    sb::gxfifo::write_f32_be(ht_half);
+    sb::gxfifo::write_f32_be(zscale);
+    sb::gxfifo::write_f32_be(xorig);
+    sb::gxfifo::write_f32_be(yorig);
+    sb::gxfifo::write_f32_be(zorig);
+}
+
 void GXSetViewport(f32 left, f32 top, f32 wd, f32 ht, f32 nearz, f32 farz) {
     GXSetViewportJitter(left, top, wd, ht, nearz, farz, 1u);
+    emit_xf_viewport();
 }
 
 void GXGetViewportv(f32* vp) {
@@ -112,42 +167,64 @@ void GXGetViewportv(f32* vp) {
 void GXSetScissor(u32 left, u32 top, u32 wd, u32 ht) {
     auto& g = state();
     g.scLeft = left; g.scTop = top; g.scWd = wd; g.scHt = ht;
+    // BPMEM_SCISSORTL / SCISSORBR — encoded as (y+342, x+342) 12-bit each.
+    const u32 tl = ((top + 342) & 0x3FF) | (((left + 342) & 0x3FF) << 12);
+    const u32 br = ((top + ht - 1 + 342) & 0x3FF) | (((left + wd - 1 + 342) & 0x3FF) << 12);
+    sb::gxfifo::bp_write(bp::SCISSORTL, tl);
+    sb::gxfifo::bp_write(bp::SCISSORBR, br);
 }
 
 // --- SLICE 2: core pixel-pipeline state -----------------------------------
 // Capture clean semantic values into GXState (no GC BP register bit-packing) — the
 // native renderer maps these to its pipeline directly.
-// BP register addresses (from VideoCommon/BPMemory.h) — the SAME opcodes Dolphin's
-// CommandProcessor decodes on a real emulator run. Kept here so gx_impl.cpp doesn't
-// need to include Dolphin headers.
-namespace bp {
-constexpr uint8_t GENMODE      = 0x00;
-constexpr uint8_t SCISSORTL    = 0x20;
-constexpr uint8_t SCISSORBR    = 0x21;
-constexpr uint8_t SCISSOROFFSET= 0x59;
-constexpr uint8_t ZMODE        = 0x40;
-constexpr uint8_t BLENDMODE    = 0x41;
-constexpr uint8_t CONSTANTALPHA= 0x42;
-constexpr uint8_t ZCOMPARE     = 0x43;   // PE_CONTROL — has color/alpha update bits
-constexpr uint8_t ALPHACOMPARE = 0xF3;
-constexpr uint8_t TEV_COLOR_ENV_BASE = 0xC0;   // +2*stage
-constexpr uint8_t TEV_ALPHA_ENV_BASE = 0xC1;   // +2*stage
-constexpr uint8_t TEV_REGISTER_L_BASE = 0xE0;  // TEV colour reg lo (rr, aa) — +2*reg
-constexpr uint8_t TEV_REGISTER_H_BASE = 0xE1;  // TEV colour reg hi (bb, gg) — +2*reg
-constexpr uint8_t TEV_KSEL_BASE = 0xF6;
+
+// Per-frame call counter — SB_GX_CALL_TRACE=1 dumps counts every present so we
+// can see which state setters actually run.
+namespace {
+struct CallCounter {
+    const char* name;
+    long count;
+};
+CallCounter g_cc[64] = {};
+int g_cc_n = 0;
+}
+static void inc_call_counter(const char* name) {
+    static const bool on = std::getenv("SB_GX_CALL_TRACE") != nullptr;
+    if (!on) return;
+    for (int i = 0; i < g_cc_n; ++i) {
+        if (g_cc[i].name == name) { ++g_cc[i].count; return; }
+    }
+    if (g_cc_n < 64) { g_cc[g_cc_n++] = {name, 1}; }
+}
+extern "C" void sb_gx_call_trace_dump(void) {
+    if (!std::getenv("SB_GX_CALL_TRACE")) return;
+    long total = 0;
+    for (int i = 0; i < g_cc_n; ++i) total += g_cc[i].count;
+    if (total == 0) return;
+    std::fprintf(stderr, "[gx-trace] total=%ld", total);
+    for (int i = 0; i < g_cc_n; ++i)
+        std::fprintf(stderr, " %s=%ld", g_cc[i].name, g_cc[i].count);
+    std::fprintf(stderr, "\n");
+    for (int i = 0; i < g_cc_n; ++i) g_cc[i].count = 0;
 }
 
 // Pack {r,g,b,a} into 24 low bits + one BP register write. BPMEM_CLEAR_AR (0x4F)
 // carries A<<8 | R, BPMEM_CLEAR_GB (0x50) carries G<<8 | B. That's how the GC's
 // EFB clear registers work — used by GXSetCopyClear below.
 static inline void bp_write_clear_ar(u8 a, u8 r) {
-    sb::gxfifo::bp_write(0x4F, ((u32)a << 8) | (u32)r);
+    sb::gxfifo::bp_write(bp::CLEAR_AR, ((u32)a << 8) | (u32)r);
 }
 static inline void bp_write_clear_gb(u8 g, u8 b) {
-    sb::gxfifo::bp_write(0x50, ((u32)g << 8) | (u32)b);
+    sb::gxfifo::bp_write(bp::CLEAR_GB, ((u32)g << 8) | (u32)b);
 }
 
+// Per-frame counter of GX seam calls that emit into the FIFO. SB_GX_CALL_TRACE=1
+// dumps counts every present so we can see if state setters are actually being
+// called at scene render time.
+static void inc_call_counter(const char* name);
+
 void GXSetBlendMode(GXBlendMode type, GXBlendFactor src, GXBlendFactor dst, GXLogicOp op) {
+    inc_call_counter("BlendMode");
     auto& g = state();
     g.blendType = type; g.blendSrc = src; g.blendDst = dst; g.blendLogicOp = op;
     // BPMEM_BLENDMODE bit layout (VideoCommon/BPMemory.h union BlendMode):
@@ -189,12 +266,29 @@ void GXSetZCompLoc(GXBool beforeTex) {
     else           s_pe_control &= ~(1u << 6);
     sb::gxfifo::bp_write(bp::ZCOMPARE, s_pe_control);
 }
+// Forward-decl the GENMODE helper (defined below with the num-* setters).
+static void emit_genmode();
+
 void GXSetCullMode(GXCullMode mode) {
     state().cullMode = mode;
-    // GXSetCullMode maps to BPMEM_GENMODE bits 14-15 (cullmode). Since GENMODE
-    // holds many fields we write from GENMODE-shadowing helpers elsewhere; for
-    // isolated cull changes, punt to the game's next GENMODE write to carry it.
-    // (The game re-emits GENMODE frequently via GXSetNumChans etc.)
+    emit_genmode();
+}
+
+// Rebuild BPMEM_BLENDMODE from current state — called whenever colorUpdate /
+// alphaUpdate changes so the update bits stay in sync. Duplicates the packing
+// in GXSetBlendMode; kept as a static so both call sites share the encoding.
+static void emit_blendmode() {
+    auto& g = state();
+    u32 v = 0;
+    v |= (g.blendType == 1) ? 0x1 : 0;
+    v |= (g.blendType == 2) ? 0x2 : 0;
+    v |= (g.colorUpdate ? 0x8 : 0);
+    v |= (g.alphaUpdate ? 0x10 : 0);
+    v |= ((u32)(g.blendDst & 7) << 5);
+    v |= ((u32)(g.blendSrc & 7) << 8);
+    v |= (g.blendType == 3) ? (1u << 11) : 0;
+    v |= ((u32)(g.blendLogicOp & 0xF) << 12);
+    sb::gxfifo::bp_write(bp::BLENDMODE, v);
 }
 // GXSetColorUpdate call history (b76 overbright drill, 2026-06-30): a monotonically increasing
 // call counter + the call index of the most recent GX_FALSE write, so the J3D capture can print,
@@ -251,6 +345,7 @@ void GXSetColorUpdate(GXBool enable) {
         }
     }
     state().colorUpdate = enable;
+    emit_blendmode();
 }
 extern "C" void sb_gx_colupd_history(long* calls, long* last_false) {
     if (calls)      *calls      = g_colupd_calls;
@@ -415,9 +510,34 @@ extern "C" void sb_gx_get_cur_posmtx(float m[3][4]) {
     for (int r = 0; r < 3; ++r) for (int c = 0; c < 4; ++c) m[r][c] = pm[r][c];
 }
 
-void GXSetNumChans(u8 n)     { state().numChans = n; }
-void GXSetNumTexGens(u8 n)   { state().numTexGens = n; }
-void GXSetNumTevStages(u8 n) { state().numTevStages = n; }
+// BPMEM_GENMODE (0x00) packs numtexgens[3:0] | numcolchans[4:5] | ind_stages[7:8] |
+// zfreeze[9] | numtev_stages[10:13] | cull_mode[14:15] | multisample[19] | flatshade[15?].
+// This helper composes the currently-live values from state() and emits a single
+// GENMODE write. Called from num-* setters + cull + wherever these change.
+static void emit_genmode() {
+    auto& g = state();
+    u32 v = 0;
+    v |= (u32)(g.numTexGens & 0xF);
+    v |= ((u32)(g.numChans & 0x3) << 4);
+    // g.numTevStages is stored as (real_count-1) in most SDK usage; BPMemory's
+    // numtevstages field is also (real_count-1) — write directly.
+    v |= ((u32)((g.numTevStages ? g.numTevStages - 1 : 0) & 0xF) << 10);
+    // GXCullMode: NONE=0/FRONT=1/BACK=2/ALL=3. BPMemory: NONE=0/BACK=1/FRONT=2/ALL=3.
+    // Swap FRONT/BACK when mapping.
+    u32 cull_bp = 0;
+    switch (g.cullMode) {
+        case 0: cull_bp = 0; break;   // NONE
+        case 1: cull_bp = 2; break;   // GX FRONT → BP FRONT (2)
+        case 2: cull_bp = 1; break;   // GX BACK  → BP BACK  (1)
+        case 3: cull_bp = 3; break;   // ALL
+    }
+    v |= (cull_bp << 14);
+    sb::gxfifo::bp_write(bp::GENMODE, v);
+}
+
+void GXSetNumChans(u8 n)     { state().numChans = n; emit_genmode(); }
+void GXSetNumTexGens(u8 n)   { state().numTexGens = n; emit_genmode(); }
+void GXSetNumTevStages(u8 n) { state().numTevStages = n; emit_genmode(); }
 
 // --- SLICE 3: lighting (chan-ctrl/material/ambient + light objects) ---------
 // GXSet* capture into GXState; the native renderer (ngx_light) consumes them per
@@ -562,29 +682,38 @@ inline void set_field(u32& reg, int size, int shift, u32 val) {
 
 void GXSetTevColorIn(GXTevStageID stage, GXTevColorArg a, GXTevColorArg b,
                      GXTevColorArg c, GXTevColorArg d) {
+    inc_call_counter("TevColorIn");
     u32& r = state().tev.colorEnv[stage];
     set_field(r, 4, 12, a); set_field(r, 4, 8, b); set_field(r, 4, 4, c); set_field(r, 4, 0, d);
+    // BPMEM_TEV_COLOR_ENV = 0xC0 + 2*stage.
+    sb::gxfifo::bp_write(bp::TEV_COLOR_ENV_BASE + 2 * stage, r);
 }
 void GXSetTevAlphaIn(GXTevStageID stage, GXTevAlphaArg a, GXTevAlphaArg b,
                      GXTevAlphaArg c, GXTevAlphaArg d) {
+    inc_call_counter("TevAlphaIn");
     u32& r = state().tev.alphaEnv[stage];
     set_field(r, 3, 13, a); set_field(r, 3, 10, b); set_field(r, 3, 7, c); set_field(r, 3, 4, d);
+    sb::gxfifo::bp_write(bp::TEV_ALPHA_ENV_BASE + 2 * stage, r);
 }
 void GXSetTevColorOp(GXTevStageID stage, GXTevOp op, GXTevBias bias, GXTevScale scale,
                      GXBool clamp, GXTevRegID out_reg) {
+    inc_call_counter("TevColorOp");
     u32& r = state().tev.colorEnv[stage];
     set_field(r, 1, 18, op & 1);
     if (op <= 1) { set_field(r, 2, 20, scale); set_field(r, 2, 16, bias); }
     else         { set_field(r, 2, 20, (op >> 1) & 3); set_field(r, 2, 16, 3); }
     set_field(r, 1, 19, clamp & 0xFF); set_field(r, 2, 22, out_reg);
+    sb::gxfifo::bp_write(bp::TEV_COLOR_ENV_BASE + 2 * stage, r);
 }
 void GXSetTevAlphaOp(GXTevStageID stage, GXTevOp op, GXTevBias bias, GXTevScale scale,
                      GXBool clamp, GXTevRegID out_reg) {
+    inc_call_counter("TevAlphaOp");
     u32& r = state().tev.alphaEnv[stage];
     set_field(r, 1, 18, op & 1);
     if (op <= 1) { set_field(r, 2, 20, scale); set_field(r, 2, 16, bias); }
     else         { set_field(r, 2, 20, (op >> 1) & 3); set_field(r, 2, 16, 3); }
     set_field(r, 1, 19, clamp & 0xFF); set_field(r, 2, 22, out_reg);
+    sb::gxfifo::bp_write(bp::TEV_ALPHA_ENV_BASE + 2 * stage, r);
 }
 void GXSetTevOp(GXTevStageID id, GXTevMode mode) {
     GXTevColorArg carg = (id != GX_TEVSTAGE0) ? GX_CC_CPREV : GX_CC_RASC;
