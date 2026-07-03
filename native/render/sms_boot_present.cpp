@@ -357,6 +357,21 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
         if (skipBidx) { bool drop=false; for (int a=0;a<s_skipN;++a) if (i==s_skipBidx[a]){drop=true;break;} if (drop) continue; }
         NvkTevBatch b = sbatches[i];
         if (skipKey && (unsigned)(b.shaderKey >> 32) == skipKey) continue;
+#ifdef SMS_NATIVE_PLATFORM
+        // Skip the title-screen sea-mirror EFB-src composite (shader key hi32 = 0xeb5c8e74,
+        // drawbuf "DrawBuf MapXlu"). RE'd intent: a full-screen quad that samples a pre-copied
+        // EFB texture (the sea mirror render-to-texture from TEfbCtrlTex::perform 鏡描画ステージ)
+        // and composites it dreamily over the scene. Blend is SRCALPHA/INVSRCCLR with the
+        // shader saturating vertex-color to (255,255,255) — on GC the bound tex carries the
+        // real reflected scene so the composite reads correctly; on native we don't emulate
+        // GC EFB→texture copies, the bound tex arrives near-black, and the combiner emits
+        // near-white → the whole water region becomes a white wash (the long-standing "b76
+        // overbright" class). Per the 2026-07-03 HARD RULE we do NOT chase EFB emulation; we
+        // simply don't run this composite natively. The base sea (b3/b9 turquoise) draws
+        // fine underneath. See debug_journal/2026-06-30_fileselect_overbright_is_efb_target_structure.md
+        // for the earlier RE + why chasing this via ph-N gates was a dead end.
+        if ((unsigned)(b.shaderKey >> 32) == 0xeb5c8e74u) continue;
+#endif
         if (ablPhase) { bool drop=false; for (int a=0;a<s_ablPhN;++a) if (b.phase==s_ablPh[a]){drop=true;break;} if (drop) continue; }
         if (opaqueOnly && b.blend_mode != 0) continue;
         if (ablBm && b.blend_mode != 0) {
