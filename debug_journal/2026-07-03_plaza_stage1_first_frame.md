@@ -137,6 +137,65 @@ Attack in RE-first order per the 2026-07-03 HARD RULE: RE which actor draws
 each defect (sky-dome BMD? sea `TMapObjWave`?), port PC-native under
 `SMS_NATIVE_PLATFORM` via SDL3 GPU. Do NOT re-emulate GX/TEV faithfulness.
 
+## CORRECTION (2026-07-03, after probing Defect #1)
+
+The Δ=28.5 headline is **capture-methodology, not fidelity**. Direct probes:
+
+**Probe A — is sky.bmd captured?** With `SB_STAGE=1 SB_PASS_VERTS=1` (no
+`SB_OWN_GXLIST`) the pass breakdown shows `sky +2790 verts +5 batches` (drive_sky's
+hand-driven path). Under `SB_OWN_GXLIST=1` the master perform list captures the
+scene via a different path (total 280k verts) but doesn't tag sky separately.
+Either way, batches EXIST.
+
+**Probe B — does the native sky-paint mechanism apply on Plaza?** Added a
+`SB_FORCE_NATIVE_SKY=1` env-gated override (`extern "C" bool sb_native_sky_active`
+in `native/src/scene_drive.cpp:1180`) that flips the gate ON for any active stage.
+Result: **native output BYTE-IDENTICAL** — same mean (14.3,14.1,9.0), same 11.37%
+non-zero fraction, same bbox. The paint mechanism (`sb_native_sky_paint` via
+`draw_seg` in `sms_boot_present.cpp:898`) is NOT the missing thing. **Probe
+reverted** (no diff shipped).
+
+**Probe C — what's actually in each image?** Bounding-box + row/column band
+inspection:
+- Native (`boot_3001.ppm`): content spans full `(15,13)→(619,460)` bbox but
+  density is only **11.37% non-zero**. Sparse scattered content over the entire
+  640×480 area. NOT a small centered content region.
+- Oracle (`plaza_gx_oracle.png` = framedump_4340): content ONLY in a **401×216
+  CENTERED window** `(120,150)→(521,366)`. Blue-heavy (R=0, G=0, B=94-112 in
+  center rows). Corners and edges pure black. **This is a LETTERBOXED
+  cutscene**, not plaza gameplay.
+
+**Probe D — does native ever escape this state?** Tried
+`SB_FRAME_DUMP_START=8000` (much later than 3000): **byte-identical output**
+(mean 14.3/14.1/9.0, 11.37% nonzero, same bbox). Native has settled into a
+static state and is not advancing to actual plaza gameplay.
+
+## Revised defect list
+
+Both engines are stuck at pre-gameplay states, but DIFFERENT ones:
+1. **Oracle at framedump_4340 shows a letterboxed cutscene (probably the shine-
+   sprite delivery intro), NOT plaza gameplay.** Its 401×216 central content
+   with heavy blue is the sea/sky visible mid-cutscene.
+2. **Native at frame 3000..8000 shows a static, low-density (11.37% nonzero)
+   scene** — 280k scene_verts captured but most fragments discarded.
+   Content spans the whole framebuffer with sparse coverage, not a cutscene
+   letterbox. Native's boot has stabilized on some non-gameplay state and is
+   spinning there.
+3. The 28.5 |Δ| measures **which non-gameplay state each engine got stuck in**,
+   NOT rendering fidelity. Actionable fidelity work requires BOTH engines to
+   reach real plaza gameplay first.
+
+**Next-arc gate**: before Defect #1 can be attacked on its own merits, we need
+to make both engines reach POST-CUTSCENE plaza gameplay. Options: skip the
+delivery cutscene (find + trigger its skip button, same as the title's Start
+press), OR pick a savefile-based capture that lands directly in gameplay
+(scratch/fresh_plaza.sav or similar per memory `abshot2-gx-oracle-empty`).
+Once both engines are at a real gameplay frame, RE-CAPTURE Δ. Only THEN can
+the sky-dome / water / HUD defect ranking be meaningful.
+
+The sky-dome port work (title-class native paint) is NOT falsified — it's
+premature to invoke without a real gameplay comparison.
+
 ## Scheduler deadlock — FILED, not landed
 
 Filed as separate arc. Initial hypothesis ("drain waits for absent worker")
