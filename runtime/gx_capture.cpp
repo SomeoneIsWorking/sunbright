@@ -274,6 +274,17 @@ extern "C" void sb_gx_capture_frame_boundary() {
                          fi.vp_pass[pass][0], fi.vp_pass[pass][1], fi.vp_pass[pass][2],
                          fi.vp_pass[pass][3], fi.vp_pass[pass][4], fi.vp_pass[pass][5]);
         }
+        // Sky #16 dome projection audit (2026-07-04): emit the pass-first XFmem PNMTX0 (row-major
+        // 3x4). The oracle's live PNMTX0 at first primitive is the camera/view matrix the GPU
+        // applies to positions before the projection. A native-vs-oracle diff of this 3x4 + proj +
+        // vp names the divergence in the view/camera chain (dome renders bright-blue on native vs
+        // muted on oracle → different verts land under the same pixel → matrix delta).
+        if (fi.posmtx_pass_set[pass]) {
+            std::fprintf(f, ",\"posMtx\":[%.6f,%.6f,%.6f,%.4f,%.6f,%.6f,%.6f,%.4f,%.6f,%.6f,%.6f,%.4f]",
+                         fi.posmtx_pass[pass][ 0], fi.posmtx_pass[pass][ 1], fi.posmtx_pass[pass][ 2], fi.posmtx_pass[pass][ 3],
+                         fi.posmtx_pass[pass][ 4], fi.posmtx_pass[pass][ 5], fi.posmtx_pass[pass][ 6], fi.posmtx_pass[pass][ 7],
+                         fi.posmtx_pass[pass][ 8], fi.posmtx_pass[pass][ 9], fi.posmtx_pass[pass][10], fi.posmtx_pass[pass][11]);
+        }
         std::fprintf(f, ",\"lights\":{\"n\":%d,\"l\":[", scene ? ln : 0);
         int em = 0;
         if (scene) for (int i = 0; i < 8; ++i) {

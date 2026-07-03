@@ -40,6 +40,8 @@ public:
     bool      record_draws = false;  // gate the (potentially large) per-draw record
     bool      record_tev = false;    // gate the (large) per-stage TEV combiner snapshot (SUNBRIGHT_DBG_GXTEV)
     bool      record_light = false;  // gate the per-draw lighting snapshot (SUNBRIGHT_DBG_GXLIGHT)
+    float     live_posmtx0[12] = {}; // live XFmem PNMTX0 (row-major 3x4)
+    bool      have_live_posmtx0 = false;
     u32       color_env[16] = {};    // live BPMEM_TEV_COLOR_ENV per stage (0xC0 + 2*stage)
     u32       alpha_env[16] = {};    // live BPMEM_TEV_ALPHA_ENV per stage (0xC1 + 2*stage)
     u32       tevreg_ra[4] = {};     // live BPMEM_TEV_COLOR_RA per reg (0xE0 + 2*reg)
@@ -206,6 +208,14 @@ public:
             out->matc[0] = ((m >> 24) & 0xFF)/255.f; out->matc[1] = ((m >> 16) & 0xFF)/255.f;
             out->matc[2] = ((m >> 8) & 0xFF)/255.f;  out->matc[3] = (m & 0xFF)/255.f; }
         if (covers(0x100e, 1)) out->chan0_ctrl = be_u32(data, (int)(0x100e - lo));
+        // XFmem position matrix memory 0x0000..0x00FF holds up to 21 3x4 (12-word) matrices
+        // (PNMTX0=0x000, PNMTX1=0x00C, …). Capture PNMTX0 whenever the load touches it — J3D reprograms
+        // it per draw via LOAD_XF_REG(0x000, 12 words). Live value = the matrix the next primitive
+        // will consume.
+        if (lo <= 0x0000 && hi >= 0x000C) {
+            for (int k = 0; k < 12; ++k) live_posmtx0[k] = be_f32(data, (int)(0x0000 + k - lo));
+            have_live_posmtx0 = true;
+        }
     }
     OPCODE_CALLBACK(void OnIndexedLoad(CPArray, u32, u16, u8)) {}
     OPCODE_CALLBACK(void OnPrimitiveCommand(OpcodeDecoder::Primitive prim, u8, u32, u16 num_vertices, const u8*)) {
@@ -251,6 +261,10 @@ public:
         if (!out->vp_pass_set[pass] && out->have_vp) {
             for (int k = 0; k < 6; ++k) out->vp_pass[pass][k] = out->vp[k];
             out->vp_pass_set[pass] = true;
+        }
+        if (!out->posmtx_pass_set[pass] && have_live_posmtx0) {
+            for (int k = 0; k < 12; ++k) out->posmtx_pass[pass][k] = live_posmtx0[k];
+            out->posmtx_pass_set[pass] = true;
         }
         record_draw(num_vertices);   // live blend/TEV value oracle (gated)
     }
@@ -303,6 +317,7 @@ bool gxp_parse_frame(const u8* p, size_t n, GxFrameInfo& out, bool recurse_dls) 
     g_an.recurse_dls = recurse_dls;
     g_an.dl_depth = 0;
     g_an.efb_pass = 0;
+    g_an.have_live_posmtx0 = false;
     // Record the per-draw blend/TEV oracle only when a consumer asked for it (env-gated in
     // gx_capture.cpp). The blend/genmode state persists across frames like CP state (J3D reprograms
     // it per material), so a frame that opens mid-material still sees the live equation.

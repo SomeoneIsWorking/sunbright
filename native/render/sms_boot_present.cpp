@@ -466,6 +466,27 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
             b.fragGlsl  = sb::gxsdl::kCloudStripFragGlsl_ptr;
             b.shaderKey = sb::gxsdl::kCloudStripFragKey;
         }
+        // SB_NATIVE_DOME_DUMP=1 (2026-07-04, sky #16 dome projection audit): per-vertex clip-space
+        // dump of the sky.bmd dome shape (shape key hi32 = 0x2d45a7be, 752 verts). NvkTevVertex is
+        // already in clip space (native's transform applied); we emit it alongside CLR0 so a diff
+        // vs the oracle-side dump can name the vertex whose projection diverges. First matching
+        // batch only. Format: "[dome-nv] v<idx> pos=(x,y,z,w) ndc=(x/w,y/w,z/w) clr0=r,g,b,a".
+        if ((unsigned)(b.shaderKey >> 32) == 0x2d45a7beu && sb_native_sky_active()) {
+            static bool s_ndd = false;
+            if (!s_ndd && std::getenv("SB_NATIVE_DOME_DUMP")) { s_ndd = true;
+                std::fprintf(stderr, "[dome-nv] batch vstart=%u vcount=%u phase=%u shaderKey=%llx\n",
+                             b.vstart, b.vcount, b.phase, (unsigned long long)b.shaderKey);
+                for (uint32_t i = b.vstart; i < b.vstart + b.vcount && i < verts.size(); ++i) {
+                    const NvkTevVertex& v = verts[i];
+                    const float w = (v.w != 0.f) ? v.w : 1.f;
+                    std::fprintf(stderr,
+                        "[dome-nv] v%u pos=(%.4f,%.4f,%.4f,%.4f) ndc=(%.5f,%.5f,%.5f) clr0=%.3f,%.3f,%.3f,%.3f\n",
+                        i - b.vstart, v.x, v.y, v.z, v.w,
+                        v.x / w, v.y / w, v.z / w,
+                        v.rgba[0], v.rgba[1], v.rgba[2], v.rgba[3]);
+                }
+            }
+        }
 #endif
         if (ablPhase) { bool drop=false; for (int a=0;a<s_ablPhN;++a) if (b.phase==s_ablPh[a]){drop=true;break;} if (drop) continue; }
         if (opaqueOnly && b.blend_mode != 0) continue;

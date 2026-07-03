@@ -806,6 +806,39 @@ extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
     if (drawTbl) std::memcpy(posMtx, &drawTbl[0][0], sizeof(posMtx));
     else         std::memcpy(posMtx, ident, sizeof(posMtx));
 
+    // SB_DOME_XF=1 (2026-07-04, sky #16 dome projection audit): dump native's live projection +
+    // viewport + posMtx that the sky.bmd dome shape (shape key hi32 = 0x2d45a7be, 752 raw verts)
+    // sees. Also project the first 8 raw verts to NDC so we can compare vs oracle numbers.
+    // Fires once per shape hit (both phase=1 and phase=4 dome draws), first 4 hits.
+    if (const char* e = std::getenv("SB_DOME_XF"); e && e[0] && e[0] != '0'
+        && me && (unsigned)(me->key >> 32) == 0x2d45a7beu && !verts.empty()) {
+        static int n = 0; if (n < 4) { ++n;
+            int lt; float lp[6], lv[6]; sb_gx_get_live_projection(&lt, lp, lv);
+            std::fprintf(stderr,
+                "[dome-xf] hit#%d raw_verts=%zu\n"
+                "         LATCH type=%d proj[%.5f %.5f %.5f %.5f %.5f %.5f] vp[%.1f %.1f %.1f %.1f %.6f %.6f]\n"
+                "         LIVE  type=%d proj[%.5f %.5f %.5f %.5f %.5f %.5f] vp[%.1f %.1f %.1f %.1f %.6f %.6f]\n"
+                "         posMtx r0[%.4f %.4f %.4f %.4f]\n"
+                "                r1[%.4f %.4f %.4f %.4f]\n"
+                "                r2[%.4f %.4f %.4f %.4f]\n",
+                n, verts.size(),
+                projType, proj[0],proj[1],proj[2],proj[3],proj[4],proj[5], vp[0],vp[1],vp[2],vp[3],vp[4],vp[5],
+                lt, lp[0],lp[1],lp[2],lp[3],lp[4],lp[5], lv[0],lv[1],lv[2],lv[3],lv[4],lv[5],
+                posMtx[0][0],posMtx[0][1],posMtx[0][2],posMtx[0][3],
+                posMtx[1][0],posMtx[1][1],posMtx[1][2],posMtx[1][3],
+                posMtx[2][0],posMtx[2][1],posMtx[2][2],posMtx[2][3]);
+            const int nsam = std::min<int>(8, (int)verts.size());
+            for (int vi = 0; vi < nsam; ++vi) {
+                const NgxVertex& s = verts[vi];
+                SbImmVtx q = imm_project(SbImmRawVtx{ s.pos[0],s.pos[1],s.pos[2],0,0,0,0 },
+                                          projType, proj, posMtx, vp);
+                std::fprintf(stderr,
+                    "[dome-xf]   v%d world=(%.2f,%.2f,%.2f) -> ndc(%.5f,%.5f,%.5f)\n",
+                    vi, s.pos[0], s.pos[1], s.pos[2], q.x, q.y, q.z);
+            }
+        }
+    }
+
     // SB_B76_XF: at the b76 overbright wash shape (key low32 0xc39d96b8), dump the LIVE vs LATCHED
     // projection + viewport + posMtx + resulting NDC, so we see exactly which matrix that draw
     // wants. This is the ph6 transform probe — b76 is a later phase-6 shape the per-phase-first

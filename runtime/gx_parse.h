@@ -129,6 +129,13 @@ struct GxFrameInfo {
     bool  proj_pass_set[2]  = {false, false};
     float vp_pass[2][6]     = {{0,0,0,0,0,0},{0,0,0,0,0,0}};
     bool  vp_pass_set[2]    = {false, false};
+    // Per-pass POSITION MATRIX (row-major 3x4, XFmem 0x000-based PNMTX0 = current position matrix
+    // at first primitive of the pass). Latched once per pass, same discipline as proj_pass/vp_pass.
+    // Used for the sky-dome / camera projection audit (sky #16, 2026-07-04): native captures the
+    // equivalent 3x4 via j3dSys draw-matrix table + sb_gx_get_live_projection; a diff of the two
+    // 3x4s + proj[6] + vp[6] names the divergence in the view/camera chain.
+    float posmtx_pass[2][12] = {{0,0,0,0,0,0,0,0,0,0,0,0},{0,0,0,0,0,0,0,0,0,0,0,0}};
+    bool  posmtx_pass_set[2] = {false, false};
     // Immediate-mode (in-FIFO GXBegin) vertex count per pass, split from display-list verts. The
     // map/scene geometry issues via GX_CMD_CALL_DL (display lists); TMapObjWave's sea grid draws via
     // raw immediate-mode GXBegin. So imm_verts_pass[scene] isolates the wave-class draw in the oracle —
