@@ -70,19 +70,11 @@ void sb_native_zzz_paint(void);
 bool sb_native_water_active(void);
 void sb_native_water_paint(void);
 
-// SMS_NATIVE_PLATFORM cloud pass — reproduces the RE'd sky.bmd cloud-strip intent
-// (shaderKey 0x7bc0841d) natively over the sky region. Reference chain (2026-07-03 RE):
-//   * 2-stage TEV: stage0 = RASC × TEX0 (RASC = matColor white); stage1 = CPREV × TEX1.
-//     Net = white × TEX0(uv_a) × TEX1(uv_b). Both textures are the SAME 8×8 I4 pattern
-//     sampled at two offset UVs → analytic model: multiply two offset fBm samples.
-//   * Blend = SRCALPHA / ONE (additive). Alpha channel from TEXA (matches intensity).
-//   * 8×8 I4 pixel content mean = 122/255 ≈ 0.48 → contribution mean = 0.48² ≈ 0.23.
-// Native pass draws a full-screen triangle, computes TEX(uv0) × TEX(uv1) analytically
-// via two offset value-noise samples, and adds them (SRCALPHA/ONE) over the current
-// frame — the sky.bmd dome batches (rendered by drive_sky's restored 0x20E flag) supply
-// the base sky-blue behind. Masked to the upper sky region so foreground stays clean.
-// Call BEFORE scene batches (order: sky_backdrop clear -> water_paint -> cloud_paint ->
-// scene draws) so palm/HUD/Mario composite on top.
-void sb_native_cloud_paint(void);
+// DELETED 2026-07-03 (task #13): sb_native_cloud_paint / native_cloud_fill / kNativeCloudFs
+// (fullscreen paint approach) is superseded by the SHADER-SWAP port. Cloud-strip batches
+// (shaderKey 0x7bc0841d) stay in the scene stream at their natural DrawBuf AfterIndirect Xlu
+// slot; their fragment shader is swapped to sb::gxsdl::kCloudStripFragGlsl, which samples the
+// byte-exact 8×8 I4 pattern using real vertex-driven UVs from the material's texgens. No
+// fullscreen paint, no region proxies, no composition-order plumbing.
 
 }

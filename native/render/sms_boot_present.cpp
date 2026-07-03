@@ -395,15 +395,17 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
         // (sb_native_sky_active == mMap==15) — Delfino gameplay maps aren't guarded.
         if ((unsigned)(b.shaderKey >> 32) == 0x224004d9u && b.vcount >= 500 && sb_native_sky_active())
             continue;
-        // Sky.bmd cloud strip — shaderKey 0x7bc0841d (RE'd 2026-07-03, task #1/#2 of the sky arc):
-        // 40-vertex vertical strip material, 2-stage TEV = TEX(uv0) × TEX(uv1) with 8×8 I4 texture
-        // sampled at two offset uvs, blend = SRCALPHA/ONE (additive). Our TEV emulation saturates
-        // the additive contribution → white cloud wash. Per the 2026-07-03 hard rule (no emulation
-        // chasing), skip these batches on native and let a native cloud pass reproduce the intent
-        // separately. Blue dome (key=2d45a7be6c503257, 752 verts, matSrc=vertex CLR0) still draws
-        // normally under the restored 0x20E sky flag.
-        if ((unsigned)(b.shaderKey >> 32) == 0x7bc0841du && sb_native_sky_active())
-            continue;
+        // Sky.bmd cloud strip (shaderKey 0x7bc0841d) — SHADER-SWAP port (task #13, 2026-07-03).
+        // Keep the batch in the stream (it uses its own 40-vertex mesh with per-vertex TEX0/TEX1
+        // through the material's texgens, its own PE state = SRC_ALPHA/ONE additive) and only
+        // swap the fragment shader for the byte-exact RE'd math (see gx_sdlgpu.cpp
+        // kCloudStripFragGlsl). This mirrors the reference exactly: same slot in DrawBuf
+        // AfterIndirect Xlu, same mesh + blend, only the per-pixel colour computation changes.
+        // No fullscreen paint, no cloud_inject_idx, no TILE proxies.
+        if ((unsigned)(b.shaderKey >> 32) == 0x7bc0841du && sb_native_sky_active()) {
+            b.fragGlsl  = sb::gxsdl::kCloudStripFragGlsl_ptr;
+            b.shaderKey = sb::gxsdl::kCloudStripFragKey;
+        }
 #endif
         if (ablPhase) { bool drop=false; for (int a=0;a<s_ablPhN;++a) if (b.phase==s_ablPh[a]){drop=true;break;} if (drop) continue; }
         if (opaqueOnly && b.blend_mode != 0) continue;
@@ -963,53 +965,18 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
     // pre-pass etc). Non-sky stages just clearFirst as before. See
     // debug_journal/2026-07-03_sky_bmd_offscreen.md for why the game's sky.bmd batches paint nothing.
     const bool sky_active = sb_native_sky_active();
-    // 2026-07-03 sky-arc task #10 (composition-order fix): the reference cloud strip (shaderKey
-    // 7bc0841d) renders in DrawBuf AfterIndirect Xlu — same buffer as the dome (2d45a7be), palm,
-    // Mario, and HUD — but at a specific slot BETWEEN the dome and the foreground. We filter the
-    // strip out of the scene stream (its TEV emulation saturates additively), and inject the
-    // native cloud pass at the corresponding slot: right after the LAST dome batch, before the
-    // foreground (palm/HUD/Mario/beach) batches. Compute cloud_inject_idx = 1 + max index of any
-    // batch whose shaderKey hi32 == 0x2d45a7be in the scene portion of `batches`. Negative if the
-    // dome isn't present in this frame (pre-settle, non-title map) → no cloud pass fires.
-    int cloud_inject_idx = -1;
-    if (sky_active) {
-        for (int bi = 0; bi < nScenePushed; ++bi) {
-            if ((unsigned)(batches[(size_t)bi].shaderKey >> 32) == 0x2d45a7beu)
-                cloud_inject_idx = bi + 1;
-        }
-    }
+    // 2026-07-03 sky-arc task #13 (shader-swap architecture): the reference cloud strip renders
+    // in DrawBuf AfterIndirect Xlu at its natural slot BETWEEN dome and foreground — under the
+    // shader-swap port, its batches stay in the stream (fragGlsl patched to kCloudStripFragGlsl
+    // in the batch-fill loop above) so ordering/blend/depth just work. No cloud_inject_idx, no
+    // fullscreen paint, no TILE proxies. draw_seg is a straight passthrough with the water paint
+    // prelude for sky-active first segments.
     auto draw_seg = [&](int seg_first, int seg_count, bool clearFirst) {
-        // Sky-active first-segment header: water paint runs BEFORE scene batches so filtered
-        // stage-BMD water polys are covered at α=1 and foreground scene batches draw over it.
         if (sky_active && clearFirst) {
             sb_native_water_paint();
         }
-        // Cloud inject split: if this segment straddles cloud_inject_idx, draw the head, run the
-        // cloud pass, then draw the tail. Cloud pass composites additively over the just-drawn
-        // dome and BEFORE the just-not-yet-drawn foreground batches, matching where the reference
-        // cloud strip's slot sits in DrawBuf AfterIndirect Xlu.
-        const int seg_end = seg_first + seg_count;
-        if (cloud_inject_idx > seg_first && cloud_inject_idx < seg_end) {
-            const int head = cloud_inject_idx - seg_first;
-            sb::gxsdl::draw_tev_segment(verts.data(), (int)verts.size(),
-                                        batches.data() + seg_first, head, clearFirst);
-            sb_native_cloud_paint();
-            sb::gxsdl::draw_tev_segment(verts.data(), (int)verts.size(),
-                                        batches.data() + cloud_inject_idx, seg_count - head,
-                                        /*clearFirst=*/false);
-            cloud_inject_idx = -1;   // one-shot (avoid duplicate fire in later segments)
-        } else if (cloud_inject_idx >= 0 && cloud_inject_idx <= seg_first) {
-            // The dome ended in a prior segment; this whole segment is the foreground tail. Fire
-            // the cloud pass BEFORE the segment so clouds land over the previously-drawn dome
-            // and BEFORE this segment's foreground draws.
-            sb_native_cloud_paint();
-            cloud_inject_idx = -1;   // one-shot
-            sb::gxsdl::draw_tev_segment(verts.data(), (int)verts.size(),
-                                        batches.data() + seg_first, seg_count, clearFirst);
-        } else {
-            sb::gxsdl::draw_tev_segment(verts.data(), (int)verts.size(),
-                                        batches.data() + seg_first, seg_count, clearFirst);
-        }
+        sb::gxsdl::draw_tev_segment(verts.data(), (int)verts.size(),
+                                    batches.data() + seg_first, seg_count, clearFirst);
     };
     if (ncopies > 0 && !sceneFiltered) {
         const int total = (int)batches.size();

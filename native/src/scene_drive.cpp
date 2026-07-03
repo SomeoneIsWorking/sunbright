@@ -1243,21 +1243,10 @@ extern "C" bool sb_native_water_active(void) {
 	return gpMarDirector && gpMarDirector->mMap == 15;
 }
 
-// Native cloud pass — replaces the TEV-emulation of sky.bmd's additive cloud strip. Per the
-// 2026-07-03 RE (task #2), the intent is TEX(uv0)×TEX(uv1) additive with density mean ~0.23,
-// occupying the upper sky band. Region is Vulkan clip-y coordinates.
-extern "C" void sb_native_cloud_paint(void) {
-	if (!sb_native_sky_active()) return;
-	// Region gates the cloud ADDITIVE contribution to the sky band. Task #10 (composition
-	// order) landed: cloud pass now runs BETWEEN the sky.bmd dome and foreground batches, so
-	// palm/HUD/Mario draw ON TOP of the cloud contribution — the region can span the FULL
-	// visible sky above the horizon without leaking onto foreground. Oracle's visible clouds
-	// occupy roughly image y_frac 0.02..0.45 = y_ndc -0.96..-0.10 (Vulkan clip-y: -1 top).
-	// These are REGION gates, NOT hand-tuned colour parameters — the colour is white (RE'd
-	// RASC×TEXC=TEX) modulated by analytic noise (density mean ≈ 0.23 from 8×8 I4 mean 0.48²).
-	static const float region[4] = { -0.96f, -0.10f, 0.04f, 0.20f };
-	sb::gxsdl::native_cloud_fill(region);
-}
+// Native cloud pass — DELETED (2026-07-03, task #13). Superseded by the SHADER-SWAP port:
+// cloud-strip batches (shaderKey 0x7bc0841d) stay in the scene stream and their fragment
+// shader is swapped to gx_sdlgpu::kCloudStripFragGlsl (byte-exact 8×8 I4 sampling using real
+// vertex-driven UVs from the material's texgens). See sms_boot_present.cpp batch fill loop.
 extern "C" void sb_native_water_paint(void) {
 	if (!sb_native_water_active()) return;
 	// Endpoints — pending material RE (see debug_journal/2026-07-03_water_re_afterindirect_empty.md

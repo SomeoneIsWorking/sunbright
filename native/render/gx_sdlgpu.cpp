@@ -726,24 +726,29 @@ static SDL_GPUGraphicsPipeline* ensure_water_pipeline() {
 // Native fragment analytically models TEX × TEX by multiplying two offset value-noise fields
 // at ~8-cell scale (matches the 8-pixel texel period on a repeat-wrapped strip). Density is
 // scaled by the region mask so clouds fade into the horizon and sit only in the upper sky.
-// Sky.bmd cloud-strip 8×8 I4 texture — dumped byte-exact 2026-07-03 via [cloudmat] SB_J3D_DBG
-// probe (commit 5423fe5). Both bound texmaps (slot 0 and slot 1) reference the SAME 8×8 pattern
-// per the RE; the material's two texgens sample it at different UVs. Values normalised to 0..1.
-// Layout: row-major, [row][col], row 0 = top of texel grid.
-constexpr const char kNativeCloudFs[] = R"(#version 450
-layout(location=0) in vec2 vNdc;
-// region.x = top edge y_ndc (Vulkan clip-y: -1 top, +1 bottom).
-// region.y = bottom edge y_ndc (below which clouds vanish).
-// region.z = ramp softness at top edge, region.w = softness at bottom edge.
-layout(set=3, binding=0) uniform Cloud { vec4 region; } cloud;
-layout(location=0) out vec4 outColor;
+// ── Byte-exact cloud-strip FRAGMENT SHADER (in-stream swap) ─────────────────────────────────────
+// This fragment is patched into the sky.bmd cloud-strip batches (shaderKey hi32 == 0x7bc0841d)
+// via NvkTevBatch::fragGlsl in sms_boot_present.cpp. The batch keeps its real mesh (40 vertices
+// with per-vertex TEX0/TEX1 UVs produced by the material's texgens — see sb_texgen_uv), its
+// material's PE state (blend SRC_ALPHA/ONE, depth test/write), and its position in the batch
+// stream (DrawBuf AfterIndirect Xlu, after the dome, before HUD/palm). We only replace the
+// per-pixel colour computation with the RE'd math: sample the byte-exact 8×8 I4 pattern at
+// vUV[0] and vUV[1], multiply, output white × (t0×t1) with same as alpha (matches TEV chain
+// stage0 = RASC × TEX0.rgba, stage1 = CPREV × TEX1.rgba, RASC = matC0 = white).
+//
+// Uses the standard TEV vertex-shader interface (see native/render/shaders/tev.vert): vUV[0..7],
+// vColor, vColor1. No textures bound (empty samplers) — we don't sample tex[8], we sample the
+// embedded const array; the standard batch pipeline still binds 8 samplers via g_white so the
+// descriptor set matches, but they're not read.
+constexpr const char kCloudStripFragGlsl[] = R"(#version 450
+layout(location=0) in vec4 vColor;
+layout(location=1) in vec2 vUV[8];
+layout(location=9) in vec4 vColor1;
+layout(location=0) out vec4 o;
+layout(set=0, binding=0) uniform sampler2D tex[8];
+layout(push_constant) uniform Mat { ivec4 kcolor[4]; ivec4 tevreg[4]; } m;
 
-// The RE'd 8×8 I4 texel intensities (0..1). Row-major, ROW 0 = top of the texel grid.
-// See sms_boot_j3d_capture.cpp [cloudmat] probe for the raw byte dump. Contents:
-//   row0: 00 00 00 00 ff ff ff 66     row4: ff ff ff 00 ff 00 00 00
-//   row1: 00 00 00 00 ff ff ff ff     row5: ff ff ff ff 00 00 00 00
-//   row2: 00 00 00 00 ff ff ff 66     row6: ff ff ff ff 00 00 00 00
-//   row3: 00 00 00 ff 00 ff ff ff     row7: ff ff ff ff 00 00 00 00
+// The RE'd 8×8 I4 texel intensities (0..1). See [cloudmat] probe dump in commit 5423fe5.
 const float kCloudTex[64] = float[64](
     0.000, 0.000, 0.000, 0.000, 1.000, 1.000, 1.000, 0.400,
     0.000, 0.000, 0.000, 0.000, 1.000, 1.000, 1.000, 1.000,
@@ -755,137 +760,42 @@ const float kCloudTex[64] = float[64](
     1.000, 1.000, 1.000, 1.000, 0.000, 0.000, 0.000, 0.000
 );
 
-// Bilinear sample of the 8×8 pattern with REPEAT wrap (matches material's wrap_s=wrap_t=1 and
-// GC's default minF=magF=GX_LINEAR from the RE'd texres output). uv is in texels (0..8 covers
-// the texture once); fractional part = the sub-texel weight, integer part wraps.
+// Bilinear sample of the 8×8 pattern with REPEAT wrap (matches material's wrap=1 + GX_LINEAR).
+// uv is in NORMALISED texture coords (0..1) — same convention as the sampler2D API and as the
+// texgen output (J3D texgen matrices are authored in normalised uv space).
 float sampleTex(vec2 uv) {
-    // Wrap into [0..8) then split into floor+frac. Add a full-period bias before mod to keep
-    // the semantics well-defined for negative uv (mod of a negative in GLSL is implementation-
-    // defined for some cases; the offset keeps us positive).
-    uv = mod(uv + 800.0, 8.0);
-    vec2 i0 = floor(uv);
-    vec2 f  = uv - i0;
-    // Neighbour indices with REPEAT wrap (i1 = (i0+1) % 8).
+    vec2 tex = uv * 8.0;                // to texel coords
+    tex = mod(tex + 800.0, 8.0);        // REPEAT wrap
+    vec2 i0 = floor(tex);
+    vec2 f  = tex - i0;
     ivec2 a = ivec2(i0);
     ivec2 b = ivec2(mod(i0 + 1.0, 8.0));
-    // Fetch four surrounding texels.
     float s00 = kCloudTex[a.y * 8 + a.x];
     float s10 = kCloudTex[a.y * 8 + b.x];
     float s01 = kCloudTex[b.y * 8 + a.x];
     float s11 = kCloudTex[b.y * 8 + b.x];
-    // Bilinear interpolate.
     float sx0 = mix(s00, s10, f.x);
     float sx1 = mix(s01, s11, f.x);
     return mix(sx0, sx1, f.y);
 }
 
 void main() {
-    float y      = clamp(vNdc.y, -1.0, 1.0);
-    float y_top  = cloud.region.x;
-    float y_bot  = cloud.region.y;
-    float soft_t = max(cloud.region.z, 0.001);
-    float soft_b = max(cloud.region.w, 0.001);
-    // Region gate: alpha inside strip, 0 outside — matches the 40-vertex vertical strip mesh
-    // TSky's cloud material actually draws over. Outside the strip, contribution = 0.
-    float aTop = smoothstep(y_top - soft_t, y_top + soft_t, y);
-    float aBot = 1.0 - smoothstep(y_bot - soft_b, y_bot + soft_b, y);
-    float mask = aTop * aBot;
-    if (mask <= 0.0) { outColor = vec4(0.0); return; }
-    // Screen-space UV in TEXEL units. On GC the 40-vertex cloud strip mesh has a specific UV
-    // span through its texgens; the projection of that span onto screen space determines how
-    // much of the 8×8 pattern is visible. We don't have the exact vertex TEX0/TEX1 + texgen
-    // matrices, so TILE_X/Y are structural proxies: how many pattern periods span the sky
-    // region. Oracle's clouds look ≈ one to one-and-a-half pattern periods across the visible
-    // sky, so 1.4 across x, 0.7 vertically. The two offset UVs (uv0, uv1) reproduce the RE'd
-    // two-texgen chain — both texcoords sample the SAME texture, differing by their texgen
-    // delta, which we approximate as a half-tile shift (4 texels) so the TEX×TEX multiply
-    // isn't degenerate (uv0==uv1 → TEX²). The FUNCTION CLASS (bilinear sample of the RE'd
-    // 8×8 pattern × another bilinear sample of the same pattern at a shifted uv) is exact.
-    const float TILE_X = 1.4;
-    const float TILE_Y = 0.7;
-    vec2 uv0 = vec2((vNdc.x * 0.5 + 0.5) * TILE_X * 8.0,
-                    (1.0 - y) * 0.5 * TILE_Y * 8.0);
-    vec2 uv1 = uv0 + vec2(3.0, 2.0);
-    // RE'd TEV combine: stage0 = RASC × TEX(uv0), stage1 = CPREV × TEX(uv1). RASC = matColor
-    // white = 1.0, so combined color = TEX(uv0) × TEX(uv1). Alpha env samples TEX.a (same
-    // I4 intensity). Additive blend factor = SRC_ALPHA → the effective additive contribution
-    // per channel is TEX(uv0) × TEX(uv1) × TEX(uv0).a ≈ TEX0 × TEX1 × TEX0 (I4 = same value
-    // in RGB and A). Use TEX0×TEX1 for RGB and same for alpha (SRC_ALPHA/ONE blend applies
-    // this alpha to the RGB inside the pipe → equivalent contribution).
-    float t0 = sampleTex(uv0);
-    float t1 = sampleTex(uv1);
-    float tex = t0 * t1;
-    float a   = tex * mask;
-    outColor  = vec4(vec3(1.0), a);
+    // RE'd TEV combine collapsed to a single expression:
+    //   stage0.rgb = TEX(uv0).rgb  (RASC=1, a=0, d=0)
+    //   stage1.rgb = stage0.rgb × TEX(uv1).rgb  (CPREV × TEXC)
+    //   final.rgb  = TEX(uv0).rgb × TEX(uv1).rgb
+    // Since the 8×8 is I4, R=G=B=A=intensity. Final.rgb = white × (t0 * t1) where the RGB is
+    // 1 and the alpha channel carries t0*t1 for the SRC_ALPHA / ONE additive blend.
+    float t0 = sampleTex(vUV[0]);
+    float t1 = sampleTex(vUV[1]);
+    float k  = t0 * t1;
+    o = vec4(1.0, 1.0, 1.0, k);
+    // Reference unused vars so glslang doesn't optimise out the shader interface (which would
+    // break the pipeline's descriptor-set contract with the batch's bound state).
+    if (m.kcolor[0].w == -12345678) o.r += vColor.r * 1e-30 + vColor1.r * 1e-30 + texture(tex[0], vec2(0)).r * 1e-30;
 }
 )";
 
-struct NativeCloudPush { float region[4]; };
-static SDL_GPUShader*           g_cloud_fs   = nullptr;
-static SDL_GPUGraphicsPipeline* g_cloud_pipe = nullptr;
-
-static SDL_GPUGraphicsPipeline* ensure_cloud_pipeline() {
-    if (g_cloud_pipe) return g_cloud_pipe;
-    if (!g_sky_vs) (void)ensure_sky_pipeline();
-    std::vector<uint32_t> fspv = sb_compile_fragment_glsl(kNativeCloudFs);
-    if (fspv.empty()) {
-        std::fprintf(stderr, "\n=== FATAL [gxsdl]: native cloud shader compile failed ===\n");
-        std::fflush(stderr); std::abort();
-    }
-    g_cloud_fs = make_shader(fspv.data(), fspv.size() * 4, SDL_GPU_SHADERSTAGE_FRAGMENT,
-                             /*samplers*/0, /*uniform*/1);
-    if (!g_cloud_fs) {
-        std::fprintf(stderr, "[gxsdl] native cloud fragment create failed: %s\n", SDL_GetError());
-        std::abort();
-    }
-    SDL_GPUColorTargetDescription ctd{};
-    ctd.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
-    // ADDITIVE (SRC_ALPHA / ONE) — matches the RE'd GX blend for the cloud strip.
-    ctd.blend_state.enable_blend            = true;
-    ctd.blend_state.src_color_blendfactor   = SDL_GPU_BLENDFACTOR_SRC_ALPHA;
-    ctd.blend_state.dst_color_blendfactor   = SDL_GPU_BLENDFACTOR_ONE;
-    ctd.blend_state.color_blend_op          = SDL_GPU_BLENDOP_ADD;
-    ctd.blend_state.src_alpha_blendfactor   = SDL_GPU_BLENDFACTOR_ONE;
-    ctd.blend_state.dst_alpha_blendfactor   = SDL_GPU_BLENDFACTOR_ONE;
-    ctd.blend_state.alpha_blend_op          = SDL_GPU_BLENDOP_ADD;
-    ctd.blend_state.color_write_mask        = 0xf;
-    SDL_GPUGraphicsPipelineCreateInfo gpi{};
-    gpi.vertex_shader   = g_sky_vs;
-    gpi.fragment_shader = g_cloud_fs;
-    gpi.primitive_type  = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
-    gpi.vertex_input_state.num_vertex_buffers    = 0;
-    gpi.vertex_input_state.num_vertex_attributes = 0;
-    gpi.rasterizer_state.cull_mode  = SDL_GPU_CULLMODE_NONE;
-    gpi.rasterizer_state.fill_mode  = SDL_GPU_FILLMODE_FILL;
-    gpi.rasterizer_state.front_face = SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
-    gpi.multisample_state.sample_count            = SDL_GPU_SAMPLECOUNT_1;
-    gpi.depth_stencil_state.enable_depth_test     = false;
-    gpi.depth_stencil_state.enable_depth_write    = false;
-    gpi.target_info.num_color_targets             = 1;
-    gpi.target_info.color_target_descriptions     = &ctd;
-    gpi.target_info.has_depth_stencil_target      = true;
-    gpi.target_info.depth_stencil_format          = DEPTH_FMT;
-    g_cloud_pipe = SDL_CreateGPUGraphicsPipeline(g_dev, &gpi);
-    if (!g_cloud_pipe) {
-        std::fprintf(stderr, "[gxsdl] native cloud pipeline create failed: %s\n", SDL_GetError());
-        std::abort();
-    }
-    return g_cloud_pipe;
-}
-
-void native_cloud_fill(const float region[4]) {
-    if (!g_ok || !g_in_frame || !g_cmd || !region) return;
-    SDL_GPUGraphicsPipeline* pipe = ensure_cloud_pipeline();
-    if (!pipe) return;
-    NativeCloudPush push{}; for (int i = 0; i < 4; ++i) push.region[i] = region[i];
-    SDL_GPUColorTargetInfo cti{}; cti.texture = g_color;
-    cti.load_op = SDL_GPU_LOADOP_LOAD; cti.store_op = SDL_GPU_STOREOP_STORE;
-    SDL_GPURenderPass* rp = SDL_BeginGPURenderPass(g_cmd, &cti, 1, nullptr);
-    SDL_BindGPUGraphicsPipeline(rp, pipe);
-    SDL_PushGPUFragmentUniformData(g_cmd, 0, &push, (Uint32)sizeof(push));
-    SDL_DrawGPUPrimitives(rp, 3, 1, 0, 0);
-    SDL_EndGPURenderPass(rp);
-}
 
 void native_water_fill(const float top[4], const float bottom[4], float horizon_ndc_y) {
     if (!g_ok || !g_in_frame || !g_cmd || !top || !bottom) return;
@@ -1187,5 +1097,11 @@ void window_preinit() {
 
 void mark_game_done() { g_game_done.store(true, std::memory_order_release); }
 bool game_done()      { return g_game_done.load(std::memory_order_acquire); }
+
+// Exported for the shader-swap in sms_boot_present.cpp — points to the byte-exact fragment
+// text; the pipeline cache keys on kCloudStripFragKey so a distinct pipeline is built for
+// the swapped batches (never colliding with the material's original TEV-generated key).
+const char* const kCloudStripFragGlsl_ptr = kCloudStripFragGlsl;
+const uint64_t     kCloudStripFragKey     = 0x7bc0841dc10d0100ull;   // distinct sentinel
 
 } // namespace sb::gxsdl

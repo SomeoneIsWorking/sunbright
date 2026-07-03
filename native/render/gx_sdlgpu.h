@@ -66,11 +66,13 @@ void native_sky_fill(const float top[4], const float horizon[4]);
 // stage-BMD water polys are covered by the intent color), BEFORE native_zzz_paint / frame_end.
 void native_water_fill(const float top[4], const float bottom[4], float horizon_ndc_y);
 
-// SMS_NATIVE_PLATFORM cloud pass — reproduces the RE'd sky.bmd cloud-strip intent
-// (shaderKey 0x7bc0841d, 2 TEV stages, TEX(uv0) × TEX(uv1) additive) natively. RE derivation
-// in sms_native_sky.h. `region` = (top_ndc_y, bottom_ndc_y, softness_upper, softness_lower)
-// mask; clouds appear inside the strip, additive blend = SRC_ALPHA/ONE.
-void native_cloud_fill(const float region[4]);
+// Byte-exact cloud-strip fragment shader — patched into NvkTevBatch::fragGlsl for batches with
+// shaderKey hi32 == 0x7bc0841d (sky.bmd cloud strips) so they render with the RE'd sampling
+// math (bilinear 8×8 I4 × 8×8 I4, output as alpha with white RGB → SRC_ALPHA/ONE additive)
+// instead of the TEV emulator (which saturates). The batches keep their real mesh + material
+// blend state + slot in the batch stream. See kCloudStripFragGlsl definition in gx_sdlgpu.cpp.
+extern const char* const kCloudStripFragGlsl_ptr;
+extern const uint64_t     kCloudStripFragKey;   // unique key for the pipeline cache
 
 // SMS_NATIVE_PLATFORM zzz sleep bubbles pass (CLAUDE.md 2026-07-03 hard rule). Paints up to N
 // screen-space quads with soft "Z" glyphs, blended over the composited scene — the visual intent
