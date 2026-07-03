@@ -672,8 +672,11 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
                                  b.blend_mode, b.src_factor, b.dst_factor, b.phase, b.vcount, ntex,
                                  skHi, bi);
                 }
-                const bool water_spans_row2 = (ymn < 0.60f && ymx > -0.10f);
-                const bool water_bluish     = (mb > mr + 0.05f && (mb + mg) > 0.8f);
+                // ndcY here is raw v.y (clip-space, huge). Coarse row-2 gate = spans the "middle
+                // rows" positively-biased range; loose enough to catch reflective-sea batches whose
+                // per-vertex color is only mildly blue (b23/b76 title screen: rgb ~0.54,0.65,0.71).
+                const bool water_spans_row2 = (ymn < 1200.0f && ymx > -1200.0f);
+                const bool water_bluish     = (mb > mr + 0.05f && mb > mg - 0.10f && mb > 0.30f);
                 const bool water_tex_bluish = (tm0[0] >= 0 && tm0[2] > tm0[0] + 15);
                 if (water_spans_row2 && (water_bluish || water_tex_bluish)) {
                     std::fprintf(stderr, "[WATER-SUSPECT] b%d owner=\"%s\" ndcY[%.3f,%.3f] ndcX[%.3f,%.3f] "
