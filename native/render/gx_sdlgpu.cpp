@@ -630,6 +630,158 @@ void native_sky_fill(const float top[4], const float horizon[4]) {
     SDL_EndGPURenderPass(rp);
 }
 
+// ── SMS_NATIVE_PLATFORM zzz sleep bubbles ───────────────────────────────────────────────────────
+// Screen-space blue-tinted "Z" glyphs painted over the final composite. Vertex-buffer-less draw
+// of 6 verts/quad, up to 8 quads (instanced). Push constants carry per-quad (x, y, half, alpha).
+// Fragment shader draws a soft-edged "Z" (three thick strokes) on a translucent rounded card so
+// the intent (rising zzz bubbles above sleeping Mario) reads at a glance.
+constexpr const char kNativeZzzVs[] = R"(#version 450
+layout(location=0) out vec2 vUV;
+layout(location=1) out float vAlpha;
+layout(set=1, binding=0) uniform Zzz { vec4 quads[8]; int count; } zzz;
+void main() {
+    int qi = gl_VertexIndex / 6;
+    int vi = gl_VertexIndex % 6;
+    // Two-triangle quad (0,1,2)(0,2,3) → corners (-1,-1)(+1,-1)(+1,+1)(-1,+1).
+    vec2 corners[6] = vec2[6](
+        vec2(-1.0,-1.0), vec2(+1.0,-1.0), vec2(+1.0,+1.0),
+        vec2(-1.0,-1.0), vec2(+1.0,+1.0), vec2(-1.0,+1.0)
+    );
+    vec2 c = corners[vi];
+    vec4 q = zzz.quads[qi];               // x, y, half, alpha
+    float hsz = q.z;                       // half-size in NDC (`half` is a reserved GLSL word).
+    // Vulkan clip-y: -1 top, +1 bottom. UV (0..1) top-left origin — flip Y to match glyph draw.
+    vec2 pos = vec2(q.x + c.x * hsz, q.y + c.y * hsz);
+    vUV = vec2(0.5 + 0.5 * c.x, 0.5 - 0.5 * c.y);
+    vAlpha = q.w;
+    // Cull the excess instances (past count) by collapsing them to a point.
+    if (qi >= zzz.count) { pos = vec2(2.0, 2.0); }
+    gl_Position = vec4(pos, 0.0, 1.0);
+}
+)";
+
+// Fragment: soft rounded card + a stylized "Z" glyph (3 strokes).
+constexpr const char kNativeZzzFs[] = R"(#version 450
+layout(location=0) in vec2 vUV;
+layout(location=1) in float vAlpha;
+layout(location=0) out vec4 outColor;
+
+float strokeDist(vec2 uv, vec2 a, vec2 b, float w) {
+    vec2 pa = uv - a, ba = b - a;
+    float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+    float d = length(pa - ba * h);
+    return smoothstep(w, w * 0.5, d);
+}
+void main() {
+    // uv in [0,1]. Center at (0.5,0.5).
+    vec2 uv = vUV;
+    vec2 p  = uv - vec2(0.5);
+    float r = length(p);
+    // Soft card fade — rounded square-ish; falls off past radius 0.45.
+    float card = smoothstep(0.50, 0.35, r);
+    // "Z" glyph: top bar, diagonal, bottom bar. All in UV space.
+    const float w = 0.09;
+    float z1 = strokeDist(uv, vec2(0.25, 0.28), vec2(0.75, 0.28), w);
+    float z2 = strokeDist(uv, vec2(0.72, 0.30), vec2(0.28, 0.70), w);
+    float z3 = strokeDist(uv, vec2(0.25, 0.72), vec2(0.75, 0.72), w);
+    float glyph = clamp(z1 + z2 + z3, 0.0, 1.0);
+
+    // Blue-tinted card + white glyph, alpha modulated by per-quad alpha and card fade.
+    vec3 cardCol  = vec3(0.35, 0.55, 0.95);
+    vec3 glyphCol = vec3(1.00, 1.00, 1.00);
+    vec3 rgb = mix(cardCol, glyphCol, glyph);
+    float a = vAlpha * (card * 0.75 + glyph * 0.9);
+    outColor = vec4(rgb, a);
+}
+)";
+
+struct NativeZzzPush { float quads[8][4]; int count; int _pad0; int _pad1; int _pad2; };
+static SDL_GPUShader*           g_zzz_vs   = nullptr;
+static SDL_GPUShader*           g_zzz_fs   = nullptr;
+static SDL_GPUGraphicsPipeline* g_zzz_pipe = nullptr;
+
+static SDL_GPUGraphicsPipeline* ensure_zzz_pipeline() {
+    if (g_zzz_pipe) return g_zzz_pipe;
+    std::vector<uint32_t> vspv = sb_compile_vertex_glsl(kNativeZzzVs);
+    std::vector<uint32_t> fspv = sb_compile_fragment_glsl(kNativeZzzFs);
+    if (vspv.empty() || fspv.empty()) {
+        std::fprintf(stderr, "\n=== FATAL [gxsdl]: native zzz shader compile failed (vs=%d fs=%d) ===\n",
+                     (int)vspv.empty(), (int)fspv.empty());
+        std::fflush(stderr); std::abort();
+    }
+    SDL_GPUShaderCreateInfo vci{};
+    vci.code = (const Uint8*)vspv.data(); vci.code_size = vspv.size() * 4; vci.entrypoint = "main";
+    vci.format = SDL_GPU_SHADERFORMAT_SPIRV; vci.stage = SDL_GPU_SHADERSTAGE_VERTEX;
+    vci.num_samplers = 0; vci.num_uniform_buffers = 1;
+    g_zzz_vs = SDL_CreateGPUShader(g_dev, &vci);
+    g_zzz_fs = make_shader(fspv.data(), fspv.size() * 4, SDL_GPU_SHADERSTAGE_FRAGMENT,
+                           /*samplers*/0, /*uniform*/0);
+    if (!g_zzz_vs || !g_zzz_fs) {
+        std::fprintf(stderr, "\n=== FATAL [gxsdl]: native zzz shader create vs=%p fs=%p err=%s ===\n",
+                     (void*)g_zzz_vs, (void*)g_zzz_fs, SDL_GetError());
+        std::abort();
+    }
+    SDL_GPUColorTargetDescription ctd{};
+    ctd.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+    ctd.blend_state.enable_blend = true;
+    ctd.blend_state.src_color_blendfactor = SDL_GPU_BLENDFACTOR_SRC_ALPHA;
+    ctd.blend_state.dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+    ctd.blend_state.color_blend_op        = SDL_GPU_BLENDOP_ADD;
+    ctd.blend_state.src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
+    ctd.blend_state.dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+    ctd.blend_state.alpha_blend_op        = SDL_GPU_BLENDOP_ADD;
+    SDL_GPUGraphicsPipelineCreateInfo gpi{};
+    gpi.vertex_shader = g_zzz_vs;
+    gpi.fragment_shader = g_zzz_fs;
+    gpi.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+    gpi.vertex_input_state.num_vertex_buffers = 0;
+    gpi.vertex_input_state.num_vertex_attributes = 0;
+    gpi.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
+    gpi.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
+    gpi.rasterizer_state.front_face = SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
+    gpi.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
+    gpi.depth_stencil_state.enable_depth_test = false;
+    gpi.depth_stencil_state.enable_depth_write = false;
+    gpi.target_info.num_color_targets = 1;
+    gpi.target_info.color_target_descriptions = &ctd;
+    gpi.target_info.has_depth_stencil_target = true;
+    gpi.target_info.depth_stencil_format = DEPTH_FMT;
+    g_zzz_pipe = SDL_CreateGPUGraphicsPipeline(g_dev, &gpi);
+    if (!g_zzz_pipe) {
+        std::fprintf(stderr, "\n=== FATAL [gxsdl]: native zzz pipeline create failed: %s ===\n",
+                     SDL_GetError());
+        std::abort();
+    }
+    return g_zzz_pipe;
+}
+
+void native_zzz_paint(const float quads[][4], int count) {
+    if (!g_ok || !g_in_frame || !g_cmd || !quads || count <= 0) return;
+    if (count > 8) count = 8;
+    SDL_GPUGraphicsPipeline* pipe = ensure_zzz_pipeline();
+    if (!pipe) return;
+
+    NativeZzzPush push{};
+    for (int i = 0; i < count; ++i) {
+        push.quads[i][0] = quads[i][0];
+        push.quads[i][1] = quads[i][1];
+        push.quads[i][2] = quads[i][2];
+        push.quads[i][3] = quads[i][3];
+    }
+    push.count = count;
+
+    SDL_GPUColorTargetInfo cti{}; cti.texture = g_color; cti.clear_color = g_clear;
+    cti.load_op = SDL_GPU_LOADOP_LOAD; cti.store_op = SDL_GPU_STOREOP_STORE;
+    SDL_GPUDepthStencilTargetInfo dti{}; dti.texture = g_depth; dti.clear_depth = 1.0f;
+    dti.load_op = SDL_GPU_LOADOP_LOAD; dti.store_op = SDL_GPU_STOREOP_STORE;
+    dti.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE; dti.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
+    SDL_GPURenderPass* rp = SDL_BeginGPURenderPass(g_cmd, &cti, 1, &dti);
+    SDL_BindGPUGraphicsPipeline(rp, pipe);
+    SDL_PushGPUVertexUniformData(g_cmd, 0, &push, (Uint32)sizeof(push));
+    SDL_DrawGPUPrimitives(rp, count * 6, 1, 0, 0);
+    SDL_EndGPURenderPass(rp);
+}
+
 void snapshot_efb(const void* key) {
     if (!g_ok || !g_in_frame || !g_cmd || !key) return;
     // Reuse an existing snapshot texture for this key (a key repeats only across frames, where

@@ -947,6 +947,10 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
     } else {
         draw_seg(0, (int)batches.size(), /*clearFirst=*/true);
     }
+    // SMS_NATIVE_PLATFORM: zzz sleep bubbles painted last, over the final composite. No-op unless
+    // gpMarioOriginal->mStatus == MARIO_STATUS_SLEEP (title/file-select settled state). Owned by
+    // scene_drive.cpp::sb_native_zzz_paint — see debug_journal/2026-07-03_zzz_native_paint.md.
+    sb_native_zzz_paint();
     sb::gxsdl::frame_end();
     static std::vector<uint8_t> present_pix;
     present_pix.assign((size_t)kW * kH * 4, 0);

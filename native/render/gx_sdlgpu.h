@@ -57,6 +57,14 @@ void snapshot_efb(const void* key);
 // draw_tev_segment, using LOAD_OP=LOAD so it paints over the clear without erasing depth.
 void native_sky_fill(const float top[4], const float horizon[4]);
 
+// SMS_NATIVE_PLATFORM zzz sleep bubbles pass (CLAUDE.md 2026-07-03 hard rule). Paints up to N
+// screen-space quads with soft "Z" glyphs, blended over the composited scene — the visual intent
+// of the JPA `PARTICLE_MS_POI_ZZZ` particle above sleeping Mario's head, native-owned instead of
+// chasing the JPA NaN dispatch chain (see debug_journal/2026-07-03_zzz_particle_nan_diagnosis.md).
+// Each quad = (ndc_x, ndc_y, half_size_ndc, alpha01). Call AFTER all draw_tev_segment calls,
+// BEFORE frame_end. Blend = SRC_ALPHA/INV_SRC_ALPHA. Ignored when count<=0 or no frame active.
+void native_zzz_paint(const float quads[][4], int count);
+
 // Read the last frame back into rgba (w*h*4, top-left origin). False if size mismatch / no device.
 bool readback(uint8_t* rgba, int w, int h);
 

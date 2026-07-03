@@ -37,4 +37,11 @@ void sb_native_sky_backdrop(float rgba[4]);
 // the first draw_tev_segment. No-op when sb_native_sky_active() is false.
 void sb_native_sky_paint(void);
 
+// SMS_NATIVE_PLATFORM zzz sleep bubbles pass (CLAUDE.md 2026-07-03 hard rule). Painted over the
+// final composite when gpMarioOriginal->mStatus == MARIO_STATUS_SLEEP — the visual intent of the
+// JPA `PARTICLE_MS_POI_ZZZ` particle above sleeping Mario's head, native-owned instead of chasing
+// the JPA NaN dispatch chain (see debug_journal/2026-07-03_zzz_particle_nan_diagnosis.md and
+// 2026-07-03_zzz_native_paint.md). Call between the last draw_tev_segment and frame_end.
+void sb_native_zzz_paint(void);
+
 }

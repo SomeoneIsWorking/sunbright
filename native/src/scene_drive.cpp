@@ -59,6 +59,7 @@
 extern "C" GXRenderModeObj GXNtsc480Int;                // gx_fb_impl.cpp (640x480 NTSC mode)
 extern "C" void sb_gx_latch_proj44(const float m[16]);  // gx_impl.cpp — latch the scene perspective
 extern "C" void sb_gx_get_projection(int* type, float proj[6], float vp[6]);  // what the capture uses
+extern "C" int  sb_gx_get_proj44(float m[16]);                                // scene perspective 4x4
 extern "C" void sb_fi_watch_register(J3DDrawBuffer* opa, J3DDrawBuffer* xlu);  // J3DDrawBuffer.cpp (SB_FI_TRACE)
 
 namespace {
@@ -1205,4 +1206,68 @@ extern "C" void sb_native_sky_paint(void) {
 	static const float top[4]     = {  40.0f/255.0f, 120.0f/255.0f, 190.0f/255.0f, 1.0f };
 	static const float horizon[4] = { 140.0f/255.0f, 195.0f/255.0f, 230.0f/255.0f, 1.0f };
 	sb::gxsdl::native_sky_fill(top, horizon);
+}
+
+// ── SMS_NATIVE_PLATFORM zzz sleep bubbles ─────────────────────────────────────────────────────
+// Paint 3 rising, fading blue "Z" cards above sleeping Mario's head at the title/file-select
+// screen. Gated on gpMarioOriginal->mStatus == MARIO_STATUS_SLEEP so it only shows when Mario has
+// actually settled into the cross-legged sleep pose (see debug_journal/2026-07-03_mario_deep_sleep
+// _dump_gate.md). Screen-space quads over the final composite — deliberately NOT the JPA JPAResource
+// path (see 2026-07-03_zzz_particle_nan_diagnosis.md for why native paint owns this).
+//
+// Position: at the title stage the display Mario draws at roughly NDC (-0.41, +0.20) (drive_chr
+// dump). Head-top is a bit above center (y≈-0.05 in Vulkan clip, y=-1 is TOP). We seed bubbles at
+// (x0, y0)=(-0.41, -0.08) and each bubble rises 0.20 in NDC over 180 frames, cycling. Alpha fades
+// as the bubble rises. Tunable via SB_ZZZ_X0 / SB_ZZZ_Y0 / SB_ZZZ_HALF envs (diagnostic).
+extern "C" void sb_native_zzz_paint(void) {
+	// Only when the sleep pose is actually reached — matches CardLoad's own gate (MarioParticle:718
+	// runs unconditionally from MarioWait, but its VISIBLE-effect check lives in the CardLoad chain).
+	if (!gpMarioOriginal) return;
+	if ((int)gpMarioOriginal->mStatus != (int)MARIO_STATUS_SLEEP) return;
+
+	auto envf = [](const char* n, float d) -> float {
+		const char* v = std::getenv(n);
+		return (v && v[0]) ? (float)std::atof(v) : d;
+	};
+	// Bubble base position in NDC (Vulkan clip: y=-1 top, y=+1 bottom). Defaults tuned to where
+	// sms-boot's title-stage Mario sits at settled (roughly (0.05, +0.20) — head top around
+	// y≈+0.12; bubbles start just above at y=+0.02 and rise). A projected-from-Mario's-head-joint
+	// path was tried and rejected: the live g_graphics.mViewMtx at present-hook time is the HUD
+	// ortho, not the 3D scene view — projecting through it puts the bubbles in the upper corner.
+	// The scene view+proj isn't cleanly latched anywhere accessible here, so tuned constants win.
+	// Envs SB_ZZZ_X0 / SB_ZZZ_Y0 override for stage/camera shifts.
+	const float x0   = envf("SB_ZZZ_X0",    0.13f);
+	const float y0   = envf("SB_ZZZ_Y0",    0.42f);   // just above native title Mario's head
+	const float half = envf("SB_ZZZ_HALF",  0.055f);  // ~11% of screen height per bubble
+	const float rise = envf("SB_ZZZ_RISE",  0.40f);   // total NDC rise before cycle
+	const float driftX = 0.045f;                       // slight lateral wobble per bubble
+	const int   period = 180;                          // ~3s per bubble cycle at 60fps
+	const int   stagger = 60;                          // 1s between consecutive bubbles
+
+	const int f = sb_present_frame();
+
+	float quads[3][4];
+	for (int i = 0; i < 3; ++i) {
+		int phase = ((f + i * stagger) % period + period) % period;
+		float t = (float)phase / (float)period;               // 0..1
+		float y = y0 - rise * t;                              // rises (Vulkan y=-1 = up)
+		float x = x0 + driftX * (float)(i - 1);               // stagger left/center/right
+		float alpha = (1.0f - t) * 0.85f;                     // fade out
+		if (alpha < 0.0f) alpha = 0.0f;
+		quads[i][0] = x;
+		quads[i][1] = y;
+		quads[i][2] = half * (0.6f + 0.4f * (1.0f - t));      // shrink slightly with age
+		quads[i][3] = alpha;
+	}
+	if (const char* d = std::getenv("SB_ZZZ_DBG"); d && d[0] && d[0] != '0') {
+		static int dn = 0;
+		if (dn < 4) { ++dn;
+			std::fprintf(stderr, "[zzz-native] f=%d mStatus=0x%x quads=[(%.2f,%.2f,a=%.2f)(%.2f,%.2f,a=%.2f)(%.2f,%.2f,a=%.2f)]\n",
+			             f, (unsigned)gpMarioOriginal->mStatus,
+			             quads[0][0], quads[0][1], quads[0][3],
+			             quads[1][0], quads[1][1], quads[1][3],
+			             quads[2][0], quads[2][1], quads[2][3]);
+		}
+	}
+	sb::gxsdl::native_zzz_paint(quads, 3);
 }
