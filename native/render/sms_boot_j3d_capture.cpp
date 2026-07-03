@@ -261,7 +261,7 @@ const MatEntry* get_mat_entry(J3DMaterial* mat, J3DTexture* modelTex) {
     if (sb_build_tev_state(mat, st)) {
         e.frag = sb_tev_gen_fragment(st);
         e.key  = fnv64(e.frag.c_str());
-        if (dbg_enabled() && (unsigned)(e.key >> 32) == 0x7bc0841du) {   // sky.bmd cloud strip: dump per-stage TEV envs + textures (SB_J3D_DBG)
+        if (dbg_enabled() && ((unsigned)(e.key >> 32) == 0x7bc0841du || (unsigned)(e.key >> 32) == 0x224004d9u)) {   // sky.bmd cloud strip / water surface / other 224004d9-fingerprinted materials: dump per-stage TEV envs + textures (SB_J3D_DBG)
             J3DTevBlock* tb2 = mat->getTevBlock();
             std::fprintf(stderr, "[cloudmat] key=%llx num_stages=%u tbStageNum=%d\n",
                          (unsigned long long)e.key, st.num_stages, tb2 ? tb2->getTevStageNum() : -1);
@@ -308,8 +308,8 @@ const MatEntry* get_mat_entry(J3DMaterial* mat, J3DTexture* modelTex) {
         // does NOT render with — its materials index a 59-entry shared table while the embedded one
         // holds 4, so every map/beach texmap went OOB → no sampler → flat-white sand/buildings.
         sb_resolve_textures(mat, modelTex ? (void*)modelTex : j3dSys.getTexture(), e.tex);
-        if (dbg_enabled() && (unsigned)(e.key >> 32) == 0x7bc0841du) {
-            // Cloud-strip texture pixel dump: intensity grid per bound texmap (SB_J3D_DBG).
+        if (dbg_enabled() && ((unsigned)(e.key >> 32) == 0x7bc0841du || (unsigned)(e.key >> 32) == 0x224004d9u)) {
+            // Cloud-strip / water / 224004d9-material texture pixel dump: intensity grid per bound texmap (SB_J3D_DBG).
             for (size_t ti = 0; ti < e.tex.size(); ++ti) {
                 const SbTexImage& t = e.tex[ti];
                 std::fprintf(stderr, "[cloudmat] tex#%zu slot=%d %ux%u wrap=%u,%u minF=%u magF=%d rgba=%zu bytes\n",

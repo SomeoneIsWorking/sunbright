@@ -393,7 +393,15 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
         // native water paint (sb_native_water_paint) provides the sea color at α=1 instead of the
         // dark-teal TEV output the emulated combiner produced. Only active when sky_active
         // (sb_native_sky_active == mMap==15) — Delfino gameplay maps aren't guarded.
-        if ((unsigned)(b.shaderKey >> 32) == 0x224004d9u && b.vcount >= 500 && sb_native_sky_active())
+        // Water arc (2026-07-03 task #17): water polys (shaderKey 0x224004d9 vc>=500) are NO
+        // LONGER filtered — the RE'd material (ns=1 RASC×TEXC, msv0=1 vertex-sourced turquoise
+        // ~(109,192,201), texture 128×256 near-white mean (225,233,227), blend depending on
+        // shape) SHOULD produce oracle's rich turquoise output through the standard TEV path.
+        // Prior filter + sb_native_water_paint (hand-tuned endpoints) was the fullscreen bandaid;
+        // we replace it with the standard pipeline like we did for the sky dome.
+        // Kept as SB_WATER_LEGACY_FILTER=1 diagnostic in case regression bisection needs it.
+        if (const char* e = std::getenv("SB_WATER_LEGACY_FILTER"); e && e[0] && e[0] != '0'
+            && (unsigned)(b.shaderKey >> 32) == 0x224004d9u && b.vcount >= 500 && sb_native_sky_active())
             continue;
         // Sky.bmd cloud strip (shaderKey 0x7bc0841d) — SHADER-SWAP port (task #13, 2026-07-03).
         // Keep the batch in the stream (it uses its own 40-vertex mesh with per-vertex TEX0/TEX1
@@ -972,8 +980,12 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
     // fullscreen paint, no TILE proxies. draw_seg is a straight passthrough with the water paint
     // prelude for sky-active first segments.
     auto draw_seg = [&](int seg_first, int seg_count, bool clearFirst) {
+        // Water arc (task #17): water polys now render through the standard TEV path (see the
+        // un-filter change above). Legacy hand-tuned fullscreen paint is gated behind
+        // SB_WATER_LEGACY_PAINT=1 as a bisection knob.
         if (sky_active && clearFirst) {
-            sb_native_water_paint();
+            if (const char* e = std::getenv("SB_WATER_LEGACY_PAINT"); e && e[0] && e[0] != '0')
+                sb_native_water_paint();
         }
         sb::gxsdl::draw_tev_segment(verts.data(), (int)verts.size(),
                                     batches.data() + seg_first, seg_count, clearFirst);
