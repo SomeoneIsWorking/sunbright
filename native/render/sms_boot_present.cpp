@@ -397,12 +397,73 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
     const int clearBoundary = honorClear ? sb_boot_capture_last_clear_boundary() : -1;
     std::vector<NvkTevBatch> batches;
     batches.reserve((size_t)nsbatch + 1);
+    // SB_BIDX_TEX_DUMP="N": dump batch N's per-slot texture (dimensions + mean rgba + first row
+    // bytes) — targeted parity-trace probe. Fires once per session on the first matching batch.
+    static const int bidxTexDump = [](){ const char* v = std::getenv("SB_BIDX_TEX_DUMP");
+        return (v && v[0]) ? std::atoi(v) : -1; }();
+    static bool s_btd_done = false;
     for (int i = 0; i < nsbatch; ++i) {
         if (clearBoundary > 0 && i < clearBoundary) continue;   // pre-clear pre-pass → snapshotted+wiped
+        if (!s_btd_done && bidxTexDump == i) {
+            s_btd_done = true;
+            const NvkTevBatch& b_probe = sbatches[i];
+            std::fprintf(stderr, "[bidxtex] bidx=%d vc=%u vstart=%u ntex=%u shaderKey=%llx bm=%u/%u/%u\n",
+                         i, b_probe.vcount, b_probe.vstart, (unsigned)(size_t)8,
+                         (unsigned long long)b_probe.shaderKey,
+                         b_probe.blend_mode, b_probe.src_factor, b_probe.dst_factor);
+            for (size_t s = 0; s < (size_t)8; ++s) {
+                const auto& t = b_probe.tex[s];
+                if (!t.rgba || !t.w || !t.h) continue;
+                std::fprintf(stderr, "[bidxtex] bidx=%d slot=%zu w=%u h=%u wrap=%u/%u minF=%u linear=%u\n",
+                             i, s, t.w, t.h, t.wrap_s, t.wrap_t, t.min_filter, t.linear);
+                unsigned rsum=0,gsum=0,bsum=0,asum=0; size_t n = (size_t)t.w * t.h;
+                for (size_t p = 0; p < n; ++p) {
+                    rsum += t.rgba[p*4]; gsum += t.rgba[p*4+1];
+                    bsum += t.rgba[p*4+2]; asum += t.rgba[p*4+3];
+                }
+                std::fprintf(stderr, "[bidxtex] bidx=%d slot=%zu mean rgba=%u,%u,%u,%u\n", i, s,
+                             (unsigned)(rsum/n), (unsigned)(gsum/n), (unsigned)(bsum/n), (unsigned)(asum/n));
+                // First 4 rows, alpha channel only (foliage cutout uses alpha):
+                for (uint32_t y = 0; y < std::min(t.h, 8u); ++y) {
+                    std::fprintf(stderr, "[bidxtex] bidx=%d row%u alpha:", i, y);
+                    for (uint32_t x = 0; x < std::min(t.w, 16u); ++x)
+                        std::fprintf(stderr, " %02x", (unsigned)t.rgba[(y*t.w+x)*4+3]);
+                    std::fprintf(stderr, "\n");
+                }
+            }
+            // Also dump first 8 vertices' clip-pos + uv0
+            const NvkTevVertex* vp = verts.data();
+            for (uint32_t vi = b_probe.vstart; vi < b_probe.vstart + std::min(b_probe.vcount, 8u) && vi < verts.size(); ++vi) {
+                float ndcx = vp[vi].w != 0.f ? vp[vi].x / vp[vi].w : 0.f;
+                float ndcy = vp[vi].w != 0.f ? vp[vi].y / vp[vi].w : 0.f;
+                std::fprintf(stderr, "[bidxvtx] bidx=%d v%u pos=(%.1f,%.1f,%.1f,%.1f) ndc=(%.3f,%.3f) uv0=(%.4f,%.4f) rgba=(%.3f,%.3f,%.3f,%.3f)\n",
+                             i, vi - b_probe.vstart, vp[vi].x, vp[vi].y, vp[vi].z, vp[vi].w,
+                             ndcx, ndcy,
+                             vp[vi].uv[0][0], vp[vi].uv[0][1],
+                             vp[vi].rgba[0], vp[vi].rgba[1], vp[vi].rgba[2], vp[vi].rgba[3]);
+            }
+        }
         if (skipBidx) { bool drop=false; for (int a=0;a<s_skipN;++a) if (i==s_skipBidx[a]){drop=true;break;} if (drop) continue; }
         if (skipRange && i >= s_skipLo && i <= s_skipHi) continue;
         NvkTevBatch b = sbatches[i];
         if (skipKey && (unsigned)(b.shaderKey >> 32) == skipKey) continue;
+        // SB_SKIP_NEGW=1: drop any batch that contains a vertex with w <= 0 (behind camera).
+        // Trace 2026-07-04: b3 (224004d9 vc=132) had verts w spanning -60504 to +470 — triangles
+        // crossed the near-clip plane and rasterized fragments across the horizon into the sky
+        // region, producing the white top-center hotspot native/oracle differ on. Oracle's GX
+        // pipeline reject-drops such triangles wholesale; native/Vulkan clips and rasterizes,
+        // producing pixels where oracle draws nothing. Test whether skipping these batches
+        // eliminates the hotspot over-paint. Diagnostic — real fix is per-triangle clip, not
+        // batch-level skip.
+        static const bool skipNegW = [](){ const char* v = std::getenv("SB_SKIP_NEGW");
+            return v && v[0] && v[0] != '0'; }();
+        if (skipNegW) {
+            bool hasNegW = false;
+            for (uint32_t vi = b.vstart; vi < b.vstart + b.vcount && vi < verts.size(); ++vi) {
+                if (verts[vi].w <= 0.f) { hasNegW = true; break; }
+            }
+            if (hasNegW) continue;
+        }
 #ifdef SMS_NATIVE_PLATFORM
         // Skip the title-screen sea-mirror EFB-src composite (shader key hi32 = 0xeb5c8e74,
         // drawbuf "DrawBuf MapXlu"). RE'd intent: a full-screen quad that samples a pre-copied
@@ -469,12 +530,12 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
             if (!s_ctd && std::getenv("SB_CLOUD_TEX_DUMP")) { s_ctd = true;
                 for (int slot = 0; slot < 2; ++slot) {
                     const auto& t = b.tex[slot];
-                    std::fprintf(stderr, "[cloudtex] slot=%d w=%u h=%u rgba=%p wrap=%u/%u minF=%u linear=%u\n",
-                                 slot, t.w, t.h, (const void*)t.rgba, t.wrap_s, t.wrap_t, t.min_filter, t.linear);
+                    std::fprintf(stderr, "[cloudtex] bidx=%d slot=%d w=%u h=%u rgba=%p wrap=%u/%u minF=%u linear=%u\n",
+                                 i, slot, t.w, t.h, (const void*)t.rgba, t.wrap_s, t.wrap_t, t.min_filter, t.linear);
                     if (!t.rgba || !t.w || !t.h) continue;
                     unsigned rsum=0,gsum=0,bsum=0,asum=0; size_t n = (size_t)t.w * t.h;
                     for (size_t p = 0; p < n; ++p) { rsum+=t.rgba[p*4]; gsum+=t.rgba[p*4+1]; bsum+=t.rgba[p*4+2]; asum+=t.rgba[p*4+3]; }
-                    std::fprintf(stderr, "[cloudtex] slot=%d mean rgba=%u,%u,%u,%u\n", slot,
+                    std::fprintf(stderr, "[cloudtex] bidx=%d slot=%d mean rgba=%u,%u,%u,%u\n", i, slot,
                                  (unsigned)(rsum/n), (unsigned)(gsum/n), (unsigned)(bsum/n), (unsigned)(asum/n));
                     for (uint32_t y = 0; y < t.h && y < 16; ++y) {
                         std::fprintf(stderr, "[cloudtex] slot=%d row%u:", slot, y);
