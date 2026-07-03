@@ -28,6 +28,16 @@ def newest_native():
 def main():
     npath = sys.argv[1] if len(sys.argv) > 1 else newest_native()
     opath = sys.argv[2] if len(sys.argv) > 2 else 'scratch/oracle/title_gx_oracle.png'
+    # Caller-sanity guard (added 2026-07-03 after a full session where args were run
+    # swapped and every SIGNED delta read backward — native is DARKER not brighter, and
+    # a "drive_sea" plan was drafted before the direction was corrected). Fatal, not warn:
+    # silently accepting a swapped invocation contaminates every downstream decision.
+    def _looks_like_oracle(p): return 'oracle' in os.path.basename(p).lower() or 'title_gx' in os.path.basename(p).lower()
+    def _looks_like_native(p): return 'boot_' in os.path.basename(p).lower() or 'sms-boot' in os.path.basename(p).lower()
+    if _looks_like_oracle(npath) or _looks_like_native(opath):
+        sys.stderr.write(f"FATAL: arg order looks swapped.\n  arg1 (native): {npath}\n  arg2 (oracle): {opath}\n"
+                         f"Usage: title_overbright.py <native.ppm> <oracle.png>  (native FIRST, oracle SECOND)\n")
+        sys.exit(2)
     n = np.asarray(Image.open(npath).convert('RGB')).astype(float)
     H, W = n.shape[:2]
     # Rescale the oracle to the native frame size (the oracle is full-res; framing matches per
