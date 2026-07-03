@@ -91,7 +91,10 @@ bool try_init_video_backend() {
     }
     std::fprintf(stderr, "[oracle] backend activated: %s\n", g_video_backend->GetDisplayName().c_str());
 
+    std::fprintf(stderr, "[oracle] calling VideoBackend::Initialize...\n");
+    std::fflush(stderr);
     const bool ok = g_video_backend->Initialize(wsi);
+    std::fprintf(stderr, "[oracle] VideoBackend::Initialize returned %d\n", (int)ok);
     if (!ok) {
         std::fprintf(stderr, "[oracle] VideoBackend::Initialize returned false — check Dolphin's PanicAlertFmt output above\n");
         return false;
