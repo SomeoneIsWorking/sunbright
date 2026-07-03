@@ -21,6 +21,7 @@
 #include "gx_parse.h"
 #include "gxblend_summary.h"
 #include "gxtev_summary.h"
+#include "pin_state_schema.h"
 
 #include <cstddef>
 #include <cstdio>
@@ -33,6 +34,8 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <sys/stat.h>
+#include <sys/types.h>
 
 #ifdef HAVE_DOLPHIN_MEMMAP
 #include "Core/System.h"
@@ -90,6 +93,87 @@ unsigned attrib_r32(unsigned a) {   // big-endian guest word via g_ram_base
     const u8* p = g_ram_base + (a & 0x01FFFFFFu);
     return ((unsigned)p[0] << 24) | ((unsigned)p[1] << 16) | ((unsigned)p[2] << 8) | p[3];
 }
+// Guest RAM readers used by the pin fingerprint. Same big-endian layout as attrib_r32.
+inline u8 guest_r8(unsigned a) {
+    if (!g_ram_base || a < 0x80000000u) return 0;
+    return g_ram_base[(a & 0x01FFFFFFu)];
+}
+inline u16 guest_r16(unsigned a) {
+    if (!g_ram_base || a < 0x80000000u) return 0;
+    const u8* p = g_ram_base + (a & 0x01FFFFFFu);
+    return ((u16)p[0] << 8) | p[1];
+}
+inline s16 guest_r16s(unsigned a) { return (s16)guest_r16(a); }
+inline float guest_rf32(unsigned a) {
+    u32 v = attrib_r32(a);
+    float f;
+    std::memcpy(&f, &v, 4);
+    return f;
+}
+inline void guest_read_vec3f(unsigned a, float out[3]) {
+    out[0] = guest_rf32(a);
+    out[1] = guest_rf32(a + 4);
+    out[2] = guest_rf32(a + 8);
+}
+
+// Populate SbPinGameState from guest RAM at the RE'd US GMSE01 addresses.
+// Symmetric to native's sb_pin_state_populate (native/src/pin_state_native.cpp).
+void oracle_populate_pin_state(SbPinGameState& gs) {
+    std::memset(&gs, 0, sizeof(gs));
+    if (!g_ram_base) return;
+
+    // TApplication is embedded at gpApplication (not a pointer).
+    gs.app_state = guest_r8(SMS_US_GPAPPLICATION + TAPP_OFF_APPSTATE);
+    unsigned stage    = guest_r8 (SMS_US_GPAPPLICATION + TAPP_OFF_NEXTAREA + 0);
+    unsigned scenario = guest_r8 (SMS_US_GPAPPLICATION + TAPP_OFF_NEXTAREA + 1);
+    gs.next_area_raw = (stage << 24) | (scenario << 16);
+    gs.movie = attrib_r32(SMS_US_GPAPPLICATION + TAPP_OFF_MOVIE);
+    gs.have_app = 1;
+
+    // gpMarDirector (pointer slot). Only capture the pointer value + validity.
+    gs.mardirector_ptr = attrib_r32(SMS_US_GPMARDIRECTOR);
+    gs.have_mardirector = (gs.mardirector_ptr >= 0x80000000u) ? 1 : 0;
+
+    // gpMarioPos — NOTE: native declares extern gpMarioPos as TVec3<f32>*, so on guest side
+    // this slot holds a POINTER to Mario's world-position Vec3, not the Vec3 itself. Read the
+    // pointer, then read Vec3 from wherever it points.
+    unsigned mario_pos_ptr = attrib_r32(SMS_US_GPMARIOPOS);
+    if (mario_pos_ptr >= 0x80000000u) {
+        guest_read_vec3f(mario_pos_ptr, gs.mario_pos);
+        gs.have_mario_pos = 1;
+    }
+
+    // gpMarioOriginal (pointer) + TMario fields.
+    gs.mario_ptr = attrib_r32(SMS_US_GPMARIOORIGINAL);
+    if (gs.mario_ptr >= 0x80000000u) {
+        gs.mario_status       = attrib_r32(gs.mario_ptr + TMARIO_OFF_STATUS);
+        gs.mario_anim_id      = guest_r16 (gs.mario_ptr + TMARIO_OFF_ANIMID);
+        gs.mario_status_state = guest_r16 (gs.mario_ptr + TMARIO_OFF_STATUSSTATE);
+        gs.mario_status_timer = guest_r16 (gs.mario_ptr + TMARIO_OFF_STATUSTIMER);
+        gs.mario_motion_frame = 0.f;   // oracle side: no getMotionFrameCtrl accessor; skipped
+        gs.have_mario = 1;
+    }
+
+    // gpCamera (CPolarSubCamera pointer) + pose. Timers come from gpCameraOption below.
+    gs.camera_ptr = attrib_r32(SMS_US_GPCAMERA);
+    if (gs.camera_ptr >= 0x80000000u) {
+        guest_read_vec3f(gs.camera_ptr + TCAMERA_OFF_POSITION, gs.camera_pos);
+        guest_read_vec3f(gs.camera_ptr + TCAMERA_OFF_TARGET,   gs.camera_target);
+        guest_read_vec3f(gs.camera_ptr + TCAMERA_OFF_UPVEC,    gs.camera_up);
+        gs.camera_mode        = (int)(s32)attrib_r32(gs.camera_ptr + TCAMERA_OFF_MODE);
+        gs.camera_fovy        = guest_rf32(gs.camera_ptr + TCAMERA_OFF_FOVY);
+        gs.camera_params_ptr  = attrib_r32(gs.camera_ptr + TCAMERA_OFF_CURRPARAMS);
+        gs.have_camera = 1;
+    }
+    // gpCameraOption — TCameraOption where mIntroChaseTimer et al. live. RE'd from
+    // ctrlOptionCamera_ decomp (see pin_state_schema.h SMS_US_GPCAMERAOPTION).
+    unsigned camopt_ptr = attrib_r32(SMS_US_GPCAMERAOPTION);
+    if (camopt_ptr >= 0x80000000u) {
+        gs.camera_intro_timer     = guest_r16s(camopt_ptr + TCAMOPT_OFF_INTROTIMER);
+        gs.camera_load_pan_frames = guest_r16s(camopt_ptr + TCAMOPT_OFF_LOADPANFR);
+        gs.camera_load_pan_timer  = guest_r16s(camopt_ptr + TCAMOPT_OFF_LOADPANTIMER);
+    }
+}
 
 // Whole-frame gather-pipe bytes (big-endian, FIFO order). Filled by sb_gather_flush_impl on the
 // CPU/PowerPC thread; consumed + cleared at the GXCopyDisp boundary on the same thread (the gather
@@ -133,6 +217,24 @@ long parity_dump_from() {
 }
 bool state_pin_ready(long frame_no) {
     return frame_no >= parity_dump_from();
+}
+
+// SUNBRIGHT_PIN_TICK / sb_gx_set_pin_tick(N) — scene-sync harness pin (2026-07-04).
+// At GXCopyDisp boundary where g_frame_no == pin_tick, emit scratch/frames/pin_NNNN_oracle.json
+// with view (posmtx_efb[main]) + proj (proj_efb[main]) + viewport (vp_efb[main]) + lights.
+// Symmetric to native's SB_PIN_TICK path in native/render/sms_boot_present.cpp. Consumed by
+// tools/render/pin_diff.py which asserts cross-engine state parity BEFORE any pixel diff.
+long g_pin_tick = -1;
+long g_scene_frame = 0;   // ordinal of the current scene-perspective GXCopyDisp frame (fi.prims_pass[0] > 0)
+bool g_pin_fired = false;
+long pin_tick() {
+    static long v = -2;
+    if (v == -2) {
+        const char* p = getenv("SUNBRIGHT_PIN_TICK");
+        v = (p && p[0]) ? atol(p) : -1;
+        if (v >= 0) g_pin_tick = v;
+    }
+    return g_pin_tick;
 }
 
 std::FILE* outfile() {
@@ -200,6 +302,112 @@ extern "C" void sb_gx_capture_frame_boundary() {
     // and the gate never opens (state_pin_ready → false forever). Do the increment first so the
     // pin is measured in real GXCopyDisp boundaries, not emitted frames.
     g_frame_no++;
+    // Scene ordinal: bump when this frame has a perspective (3D) pass. Skips boot / loading /
+    // intro-video frames the engines take different amounts of time through.
+    if (fi.prims_pass[0] > 0) ++g_scene_frame;
+    // SUNBRIGHT_PIN_TICK — one-shot pin_<PT>_oracle.json + pin_<PT>_oracle.done marker at the
+    // PT-th perspective (scene) frame. Fires independent of SUNBRIGHT_PARITY_DUMP because the pin
+    // JSON is the harness fingerprint, not a per-frame value dump.
+    if (long pt = pin_tick(); pt >= 0 && !g_pin_fired && fi.prims_pass[0] > 0 && g_scene_frame == pt) {
+        // Pick the MAIN scene EFB pass: the one whose posMtx is a REAL camera view (non-identity).
+        // The other perspective passes (TMirrorCamera pre-pass at FOVy=52°, sky/dome pass at 40°
+        // with world-space geometry) use identity posMtx — they're not the pass whose view we're
+        // syncing against native's C_MTXLookAt output. Scan LAST-first so the final scene pass
+        // wins over any earlier auxiliary pass that also happens to carry a non-identity view.
+        auto is_identity_view = [](const float v[12]) {
+            return v[0] == 1.f && v[5] == 1.f && v[10] == 1.f
+                && v[1] == 0.f && v[2] == 0.f && v[3] == 0.f
+                && v[4] == 0.f && v[6] == 0.f && v[7] == 0.f
+                && v[8] == 0.f && v[9] == 0.f && v[11] == 0.f;
+        };
+        int mainEfb = -1;
+        for (int i = 7; i >= 0; --i) {
+            if (!fi.proj_efb_set[i] || !fi.posmtx_efb_set[i] || fi.proj_type_efb[i] != 0) continue;
+            if (is_identity_view(fi.posmtx_efb[i])) continue;
+            mainEfb = i; break;
+        }
+        // Fallback 1: any perspective efb pass with proj+posmtx (accept identity as last resort).
+        if (mainEfb < 0) {
+            for (int i = 7; i >= 0; --i) {
+                if (fi.proj_efb_set[i] && fi.posmtx_efb_set[i] && fi.proj_type_efb[i] == 0) { mainEfb = i; break; }
+            }
+        }
+        int projType = 0;
+        float view[12] = {0}, proj6[6] = {0}, vp6[6] = {0};
+        if (mainEfb >= 0) {
+            projType = fi.proj_type_efb[mainEfb];
+            std::memcpy(view, fi.posmtx_efb[mainEfb], sizeof(view));
+            std::memcpy(proj6, fi.proj_efb[mainEfb], sizeof(proj6));
+            std::memcpy(vp6, fi.vp_efb[mainEfb], sizeof(vp6));
+        } else if (fi.proj_pass_set[0]) {   // per-pass scene fallback
+            projType = fi.proj_type_pass[0];
+            std::memcpy(view, fi.posmtx_pass[0], sizeof(view));
+            std::memcpy(proj6, fi.proj_pass[0], sizeof(proj6));
+            std::memcpy(vp6, fi.vp_pass[0], sizeof(vp6));
+        }
+        int nlt = 0;
+        for (int i = 0; i < 8; ++i) if (fi.lights[i].valid) nlt++;
+
+        ::mkdir("scratch", 0755); ::mkdir("scratch/frames", 0755);
+        char path[192];
+        std::snprintf(path, sizeof path, "scratch/frames/pin_%04ld_oracle.json", pt);
+        FILE* pf = std::fopen(path, "w");
+        if (pf) {
+            std::fprintf(pf, "{\n  \"engine\": \"oracle\",\n  \"tick\": %ld,\n"
+                             "  \"efb_pass\": %d,\n  \"proj_type\": %d,\n",
+                         pt, mainEfb, projType);
+            std::fprintf(pf, "  \"view\": [");
+            for (int i = 0; i < 12; ++i) std::fprintf(pf, "%s%.9g", i ? "," : "", view[i]);
+            std::fprintf(pf, "],\n  \"proj6\": [");
+            for (int i = 0; i < 6; ++i)  std::fprintf(pf, "%s%.9g", i ? "," : "", proj6[i]);
+            std::fprintf(pf, "],\n  \"vp\": [");
+            for (int i = 0; i < 6; ++i)  std::fprintf(pf, "%s%.9g", i ? "," : "", vp6[i]);
+            // ── Game-state fingerprint from guest RAM. Symmetric with native pin JSON. ──
+            SbPinGameState gs{};
+            oracle_populate_pin_state(gs);
+            std::fprintf(pf, "],\n  \"have_state\": 1,\n");
+            std::fprintf(pf, "  \"app\": {\"have\": %u, \"appState\": %u, \"nextArea\": %u, \"movie\": %u},\n",
+                         gs.have_app, gs.app_state, gs.next_area_raw, gs.movie);
+            std::fprintf(pf, "  \"mardirector\": {\"have\": %u, \"ptr\": %u},\n",
+                         gs.have_mardirector, gs.mardirector_ptr);
+            std::fprintf(pf, "  \"marioPos\": {\"have\": %u, \"pos\": [%.6g,%.6g,%.6g]},\n",
+                         gs.have_mario_pos, gs.mario_pos[0], gs.mario_pos[1], gs.mario_pos[2]);
+            std::fprintf(pf, "  \"mario\": {\"have\": %u, \"ptr\": %u, \"status\": %u, \"animId\": %u, "
+                              "\"statusState\": %u, \"statusTimer\": %u, \"motionFrame\": %.6f},\n",
+                         gs.have_mario, gs.mario_ptr, gs.mario_status, gs.mario_anim_id,
+                         gs.mario_status_state, gs.mario_status_timer, gs.mario_motion_frame);
+            std::fprintf(pf, "  \"camera\": {\"have\": %u, \"ptr\": %u, \"paramsPtr\": %u, "
+                              "\"pos\": [%.6g,%.6g,%.6g], \"target\": [%.6g,%.6g,%.6g], "
+                              "\"up\": [%.6g,%.6g,%.6g], \"mode\": %d, \"fovy\": %.6g, "
+                              "\"introTimer\": %d, \"loadPanFrames\": %d, \"loadPanTimer\": %d},\n",
+                         gs.have_camera, gs.camera_ptr, gs.camera_params_ptr,
+                         gs.camera_pos[0], gs.camera_pos[1], gs.camera_pos[2],
+                         gs.camera_target[0], gs.camera_target[1], gs.camera_target[2],
+                         gs.camera_up[0], gs.camera_up[1], gs.camera_up[2],
+                         gs.camera_mode, gs.camera_fovy,
+                         gs.camera_intro_timer, gs.camera_load_pan_frames, gs.camera_load_pan_timer);
+            std::fprintf(pf, "  \"lights\": [");
+            int emitted = 0;
+            for (int i = 0; i < 8; ++i) if (fi.lights[i].valid) {
+                if (emitted++) std::fprintf(pf, ",");
+                std::fprintf(pf, "\n    {\"idx\": %d, \"col\": [%.6g,%.6g,%.6g], "
+                                  "\"pos\": [%.6g,%.6g,%.6g]}",
+                             i, fi.lights[i].color[0], fi.lights[i].color[1], fi.lights[i].color[2],
+                             fi.lights[i].pos[0],   fi.lights[i].pos[1],   fi.lights[i].pos[2]);
+            }
+            std::fprintf(pf, "\n  ],\n  \"amb\": [%.6g,%.6g,%.6g]\n}\n",
+                         fi.amb[0], fi.amb[1], fi.amb[2]);
+            std::fclose(pf);
+            char donepath[192];
+            std::snprintf(donepath, sizeof donepath, "scratch/frames/pin_%04ld_oracle.done", pt);
+            if (FILE* d = std::fopen(donepath, "w")) { std::fprintf(d, "pin %ld ok\n", pt); std::fclose(d); }
+            std::fprintf(stderr, "[gxcap-pin] tick=%ld efb=%d proj[0]=%.4f view[0]=%.3f lights=%d -> %s\n",
+                         pt, mainEfb, proj6[0], view[0], nlt, path);
+        } else {
+            std::fprintf(stderr, "[gxcap-pin] cannot open %s\n", path);
+        }
+        g_pin_fired = true;
+    }
     // Only emit frames with real geometry — a blank/2D-only frame would pollute the settled-window
     // medians parity_sweep computes (it already skips onscr==0, but prims==0 is the cleaner gate).
     if (!f || fi.prims == 0) return;
@@ -659,3 +867,14 @@ extern "C" void sb_gx_capture_frame_boundary() {
         fprintf(stderr, "[gxcap] emitted=%lu boundaries=%lu parse_fail=%lu last prims=%u dls=%u lights=%d proj=%d\n",
                 g_emitted, g_boundaries, g_parse_fail, fi.prims, fi.display_lists, ln, fi.proj_type);
 }
+
+// Pin-tick control for the scene-sync harness. Set from /pinshot?vi=N (probe_server.cpp).
+// The setter arms the one-shot; the getter lets the endpoint poll for completion.
+extern "C" void sb_gx_set_pin_tick(long tick) {
+    g_pin_tick = tick;
+    g_pin_fired = false;
+    fprintf(stderr, "[gxcap-pin] armed pin_tick=%ld\n", tick);
+}
+extern "C" long sb_gx_get_pin_tick(void) { return g_pin_tick; }
+extern "C" int  sb_gx_pin_fired(void)    { return g_pin_fired ? 1 : 0; }
+extern "C" long sb_gx_get_frame_no(void) { return g_frame_no; }

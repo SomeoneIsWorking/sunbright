@@ -28,6 +28,13 @@
 ProbeCounters g_probe;
 bool g_probe_enabled = false;
 
+// gx_capture.cpp pin controls (scene-sync harness). Declared at file scope so the
+// anonymous-namespace handler in this TU can call them via ordinary C linkage.
+extern "C" void sb_gx_set_pin_tick(long tick);
+extern "C" long sb_gx_get_pin_tick(void);
+extern "C" int  sb_gx_pin_fired(void);
+extern "C" long sb_gx_get_frame_no(void);
+
 #ifdef HAVE_DOLPHIN_CORE
 #  include <vector>
 #  include <algorithm>
@@ -623,6 +630,59 @@ std::string handle_repl(const char* path) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
         app("%s %s (%lld bytes)\n", ok ? "saved" : "TIMEOUT", full, (long long)st.st_size);
+        return std::string(buf, n);
+    }
+    if (strncmp(path, "/pinshot", 8) == 0) {
+        // Scene-sync harness pin: arm sb_gx_set_pin_tick(vi), poll sb_gx_pin_fired until
+        // the GXCopyDisp boundary at frame_no == vi has written scratch/frames/pin_VVVV_oracle.json,
+        // then trigger a Dolphin screenshot to scratch/frames/pin_VVVV_oracle.png. The two together
+        // are the oracle-side pin bundle consumed by tools/render/pin_diff.py.
+        //   /pinshot?vi=N[&timeout_s=30]
+        long vi = (long)qarg_dec(path, "vi", 0);
+        long tmo = (long)qarg_dec(path, "timeout_s", 30);
+        if (vi <= 0) return std::string("usage: /pinshot?vi=<N>[&timeout_s=<S>]\n");
+        // If the pin already fired for this vi at startup (SUNBRIGHT_PIN_TICK env), don't rearm —
+        // rearming resets g_pin_fired and starts waiting for the scene ordinal to reach vi again,
+        // which never happens (scene ordinal only advances). Just take a screenshot of the current
+        // frame; at settled title that's the same visible state.
+        bool already = (sb_gx_get_pin_tick() == vi && sb_gx_pin_fired());
+        if (!already) {
+            sb_gx_set_pin_tick(vi);
+            app("armed pin_tick=%ld (current frame_no=%ld, timeout=%lds)\n",
+                vi, sb_gx_get_frame_no(), tmo);
+            long ticks = tmo * 100;
+            bool fired = false;
+            for (long i = 0; i < ticks; ++i) {
+                if (sb_gx_pin_fired()) { fired = true; break; }
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            if (!fired) {
+                app("pin_tick=%ld TIMEOUT after %lds (frame_no=%ld)\n",
+                    vi, tmo, sb_gx_get_frame_no());
+                return std::string(buf, n);
+            }
+        } else {
+            app("pin_tick=%ld already FIRED at startup — taking screenshot only\n", vi);
+        }
+        app("pin_tick=%ld FIRED at frame_no=%ld -> scratch/frames/pin_%04ld_oracle.json\n",
+            vi, sb_gx_get_frame_no(), vi);
+        // Companion PNG. Title is quiescent post-settle so a 1-2 frame drift is negligible.
+        // The JSON is the ground-truth pin state; the PNG is for visual SBS.
+        if (g_frame_dumper) {
+            mkdir("scratch", 0755); mkdir("scratch/frames", 0755);
+            char full[256]; snprintf(full, sizeof full, "scratch/frames/pin_%04ld_oracle.png", vi);
+            ::unlink(full);
+            g_frame_dumper->SaveScreenshot(full);
+            struct stat st{}; bool ok = false;
+            for (int i = 0; i < 200; i++) {
+                if (stat(full, &st) == 0 && st.st_size > 0) { ok = true; break; }
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            app("%s %s (%lld bytes)\n", ok ? "saved PNG" : "PNG TIMEOUT",
+                full, (long long)st.st_size);
+        } else {
+            app("no frame dumper — PNG skipped (JSON is authoritative)\n");
+        }
         return std::string(buf, n);
     }
 #endif

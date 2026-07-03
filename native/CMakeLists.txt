@@ -47,7 +47,11 @@ list(APPEND SMS_NATIVE_SOURCES
      "${SMS_NATIVE_REPO_ROOT}/native/src/scene_drive.cpp"
      # sb_get_app_state() — TApplication::mAppState reader for sb_parity_dump.h (which lives
      # in native/render/ and can't include <System/Application.hpp>). Session 16 STATE-MISMATCH gate.
-     "${SMS_NATIVE_REPO_ROOT}/native/src/sb_parity_appstate.cpp")
+     "${SMS_NATIVE_REPO_ROOT}/native/src/sb_parity_appstate.cpp"
+     # sb_pin_state_populate — game-state fingerprint reader for the scene-sync harness.
+     # Populates SbPinGameState (runtime/pin_state_schema.h) from the live C++ game objects.
+     # Symmetric to the oracle-side populator in runtime/gx_capture.cpp (guest RAM reader).
+     "${SMS_NATIVE_REPO_ROOT}/native/src/pin_state_native.cpp")
 
 add_library(sms-native STATIC ${SMS_NATIVE_SOURCES})
 

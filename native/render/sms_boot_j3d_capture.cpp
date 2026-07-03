@@ -47,6 +47,8 @@
 #include <cstdint>
 #include <cstdlib>
 #include <execinfo.h>   // SB_B76_BT backtrace (name the mask's pass-routing owner)
+#include "../../runtime/pin_state_schema.h"
+
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -88,6 +90,84 @@ extern "C" void sb_boot_dump_camera(int frame) {
     std::fclose(f);
     std::fprintf(stderr, "[cam-dump] frame %d -> %s (view[0]=%.3f %.3f %.3f %.1f valid=%d)\n",
                  frame, path, view[0], view[1], view[2], view[3], have);
+}
+
+// Pin-state dump: one JSON with view + proj + lights + FULL GAME STATE at a specific
+// pin tick. Consumed by tools/render/pin_diff.py to assert cross-engine scene sync
+// BEFORE any pixel-delta claim. Symmetric to the oracle's SUNBRIGHT_PIN_TICK path in
+// runtime/gx_capture.cpp, which reads the SAME fields from guest RAM via the addresses
+// in runtime/pin_state_schema.h.
+//
+// Game-state fields include TApplication (mAppState/mNextArea/mMovie), gpMarioPos,
+// gpMarioOriginal (mStatus/mAnimId/mStatusState/mStatusTimer + motion frame), and
+// gpCamera (mPosition/mTarget/upVec/mMode + FOVy + intro/load-pan timers). Any
+// divergence in these tells pin_diff.py exactly which game-logic field drifted
+// between native and oracle at the same pin — that's the RE anchor for follow-up.
+// Non-weak decl: forces the linker to pull sb_pin_state_populate.o out of libsms-native.a
+// (a weak decl wouldn't — weak refs don't drag archive members). If sms-native isn't
+// linked, sms-boot fails at link time — which is what we want (there's no meaningful pin
+// without game state).
+extern "C" int sb_pin_state_populate(SbPinGameState* out);
+
+extern "C" void sb_boot_dump_pin_json(int tick) {
+    float view[12] = {0}, proj[16] = {0};
+    int have_cam = (&sb_boot_get_scene_camera) ? sb_boot_get_scene_camera(view, proj) : 0;
+    float lraw[8][16] = {{0}};
+    int nl = sb_gx_get_lights ? sb_gx_get_lights(lraw) : 0;
+
+    SbPinGameState gs{};
+    int have_state = sb_pin_state_populate(&gs);
+
+    char path[160];
+    std::snprintf(path, sizeof path, "scratch/frames/pin_%04d.json", tick);
+    FILE* f = std::fopen(path, "w");
+    if (!f) { std::fprintf(stderr, "[pin-json] cannot open %s\n", path); return; }
+    std::fprintf(f, "{\n");
+    std::fprintf(f, "  \"engine\": \"native\",\n");
+    std::fprintf(f, "  \"tick\": %d,\n", tick);
+    std::fprintf(f, "  \"have_cam\": %d,\n", have_cam);
+    std::fprintf(f, "  \"view\": [");
+    for (int i = 0; i < 12; ++i) std::fprintf(f, "%s%.9g", i ? "," : "", view[i]);
+    std::fprintf(f, "],\n  \"proj\": [");
+    for (int i = 0; i < 16; ++i) std::fprintf(f, "%s%.9g", i ? "," : "", proj[i]);
+    // ── Game-state fingerprint (SbPinGameState). Symmetric with oracle. ──
+    std::fprintf(f, "],\n  \"have_state\": %d,\n", have_state);
+    std::fprintf(f, "  \"app\": {\"have\": %u, \"appState\": %u, \"nextArea\": %u, \"movie\": %u},\n",
+                 gs.have_app, gs.app_state, gs.next_area_raw, gs.movie);
+    std::fprintf(f, "  \"mardirector\": {\"have\": %u, \"ptr\": %u},\n",
+                 gs.have_mardirector, gs.mardirector_ptr);
+    std::fprintf(f, "  \"marioPos\": {\"have\": %u, \"pos\": [%.6g,%.6g,%.6g]},\n",
+                 gs.have_mario_pos, gs.mario_pos[0], gs.mario_pos[1], gs.mario_pos[2]);
+    std::fprintf(f, "  \"mario\": {\"have\": %u, \"ptr\": %u, \"status\": %u, \"animId\": %u, "
+                    "\"statusState\": %u, \"statusTimer\": %u, \"motionFrame\": %.6f},\n",
+                 gs.have_mario, gs.mario_ptr, gs.mario_status, gs.mario_anim_id,
+                 gs.mario_status_state, gs.mario_status_timer, gs.mario_motion_frame);
+    std::fprintf(f, "  \"camera\": {\"have\": %u, \"ptr\": %u, \"paramsPtr\": %u, "
+                    "\"pos\": [%.6g,%.6g,%.6g], \"target\": [%.6g,%.6g,%.6g], "
+                    "\"up\": [%.6g,%.6g,%.6g], \"mode\": %d, \"fovy\": %.6g, "
+                    "\"introTimer\": %d, \"loadPanFrames\": %d, \"loadPanTimer\": %d},\n",
+                 gs.have_camera, gs.camera_ptr, gs.camera_params_ptr,
+                 gs.camera_pos[0], gs.camera_pos[1], gs.camera_pos[2],
+                 gs.camera_target[0], gs.camera_target[1], gs.camera_target[2],
+                 gs.camera_up[0], gs.camera_up[1], gs.camera_up[2],
+                 gs.camera_mode, gs.camera_fovy,
+                 gs.camera_intro_timer, gs.camera_load_pan_frames, gs.camera_load_pan_timer);
+    std::fprintf(f, "  \"lights\": [");
+    int emitted = 0;
+    for (int i = 0; i < nl && i < 8; ++i) {
+        if (lraw[i][0] == 0.f) continue;
+        if (emitted++) std::fprintf(f, ",");
+        std::fprintf(f, "\n    {\"idx\": %d, \"col\": [%.6g,%.6g,%.6g], "
+                        "\"pos\": [%.6g,%.6g,%.6g]}",
+                     i, lraw[i][1], lraw[i][2], lraw[i][3],
+                     lraw[i][4], lraw[i][5], lraw[i][6]);
+    }
+    std::fprintf(f, "\n  ]\n}\n");
+    std::fclose(f);
+    std::fprintf(stderr, "[pin-json] tick=%d view0=%.3f cam=%d mario=%d(status=0x%x anim=0x%x) "
+                        "cam_intro=%d lights=%d -> %s\n",
+                 tick, view[0], have_cam, gs.have_mario,
+                 gs.mario_status, gs.mario_anim_id, gs.camera_intro_timer, emitted, path);
 }
 extern "C" void sb_gx_get_chan_amb(int slot, float rgb[3]);
 extern "C" void sb_gx_get_chan_matcolor(int slot, float rgba[4]);

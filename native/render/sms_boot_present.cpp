@@ -45,6 +45,7 @@ void sb_gx_get_chan_amb(int slot, float rgb[3]) __attribute__((weak));
 void sb_gx_get_chan_matcolor(int slot, float rgba[4]) __attribute__((weak));
 void sb_gx_get_projection(int* type, float proj[6], float vp[6]) __attribute__((weak));
 void sb_boot_dump_camera(int frame) __attribute__((weak));
+void sb_boot_dump_pin_json(int tick) __attribute__((weak));
 // JKR host-allocation gate: route plain `new`/std::vector growth to host malloc (not the game's
 // JKR/Solid heap) while raised. present_hook runs on the GAME thread, so its per-frame renderer
 // scratch (verts/batches/tex_storage/present_pix + anything renderTevFrame allocates) would otherwise
@@ -77,6 +78,14 @@ bool g_on_scene = false;
 bool g_dump_started = false;
 bool g_settle_dump = false;   // SB_FRAME_DUMP_SETTLE: start dumping once the camera has SETTLED
 int g_request_dump = 0;  // event-triggered dump request (next N presented frames)
+// SB_PIN_TICK=N — scene-sync harness: dump PPM + pin_NNNN.json at the N-th PERSPECTIVE
+// (scene) present frame. Counts only frames where nscene > 0, so it skips boot / loading /
+// intro-video frames the two engines take different amounts of wall time through. Symmetric
+// to the oracle's SUNBRIGHT_PIN_TICK path in runtime/gx_capture.cpp (which counts scene
+// frames via fi.prims_pass[0] > 0). Consumed by tools/render/pin_diff.py.
+int g_pin_tick = -1;
+int g_scene_frame = 0;    // ordinal of the current scene (nscene>0) present frame, starting at 1
+bool g_pin_fired = false;
 
 // The 2D-overlay passthrough TEV shader (out = rasterColor), generated once.
 std::string g_pass_frag;
@@ -214,10 +223,17 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
     // independent of the dump window. Artifacts (PPM/parity) still only write inside the dump window.
     static const bool windowMode = [](){ const char* v = std::getenv("SB_WINDOW"); return v && v[0] && v[0] != '0'; }();
 
-    if (!windowMode && g_request_dump <= 0 && (!g_max_dump || g_dumped >= g_max_dump)) return;
+    if (!windowMode && g_pin_tick < 0 && g_request_dump <= 0 && (!g_max_dump || g_dumped >= g_max_dump)) return;
 
     bool dumpThis;
-    if (g_request_dump > 0) {
+    // Pin gate takes precedence: dump on the g_pin_tick-th scene (nscene>0) frame.
+    // Counting scene frames — not raw present frames — is what makes native ↔ oracle
+    // sync robust to their different boot/intro timings.
+    if (g_pin_tick >= 0 && !g_pin_fired) {
+        if (nscene > 0) ++g_scene_frame;
+        dumpThis = (nscene > 0 && g_scene_frame == g_pin_tick);
+        ++g_frame;
+    } else if (g_request_dump > 0) {
         // Event-triggered dump (e.g. TCardLoad reaching mState 0): capture the next N
         // presented frames regardless of the start/max window.
         dumpThis = true;
@@ -1126,13 +1142,31 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
 
     if (dumpThis) {
     char path[160];
-    std::snprintf(path, sizeof path, "scratch/frames/boot_%04d.ppm", df);
+    // In pin mode, name the PPM after the scene ordinal (matches pin_NNNN.json/.done) so
+    // the harness has a deterministic path to open. Regular dumps still use boot_NNNN.ppm.
+    if (g_pin_tick >= 0 && !g_pin_fired && nscene > 0 && g_scene_frame == g_pin_tick)
+        std::snprintf(path, sizeof path, "scratch/frames/pin_%04d.ppm", g_pin_tick);
+    else
+        std::snprintf(path, sizeof path, "scratch/frames/boot_%04d.ppm", df);
     write_ppm_buf(path, present_pix.data(), kW, kH);
 
     // SB_CAM_DUMP: alongside the PPM, write the exact view+proj the renderer used (cam_NNNN.txt)
     // so the Dolphin-GX oracle can be transplanted to the SAME viewpoint (rung-6 camera align).
     static const bool camDump = [](){ const char* v = std::getenv("SB_CAM_DUMP"); return v && v[0] && v[0] != '0'; }();
     if (camDump && (&sb_boot_dump_camera)) sb_boot_dump_camera(df);
+    // SB_PIN_TICK gate: at the pinned SCENE tick, ALSO emit pin_NNNN.json (the state
+    // fingerprint pin_diff.py consumes) and drop a scratch/frames/pin_NNNN.done marker so
+    // the harness knows the pin succeeded. Filename uses g_pin_tick (the scene ordinal)
+    // so native and oracle end up with matching pin_NNNN.json / pin_NNNN_oracle.json.
+    if (g_pin_tick >= 0 && !g_pin_fired && nscene > 0 && g_scene_frame == g_pin_tick) {
+        if (&sb_boot_dump_pin_json) sb_boot_dump_pin_json(g_pin_tick);
+        char donepath[160];
+        std::snprintf(donepath, sizeof donepath, "scratch/frames/pin_%04d.done", g_pin_tick);
+        FILE* d = std::fopen(donepath, "w");
+        if (d) { std::fprintf(d, "pin scene_frame=%d present_frame=%d ok\n",
+                              g_pin_tick, df); std::fclose(d); }
+        g_pin_fired = true;
+    }
     std::printf("[present] frame %d clear=(%.2f,%.2f,%.2f,%.2f) scene_verts=%d scene_batches=%d "
                 "imm_tris=%d imm_batches=%d (textured=%d) -> %s\n",
                 df, c[0], c[1], c[2], c[3], nscene, nsbatch, nimm / 3, nibatch,
@@ -1175,6 +1209,16 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
 } // namespace
 
 extern "C" void sb_boot_present_install() {
+    if (const char* p = std::getenv("SB_PIN_TICK")) {
+        int v = std::atoi(p);
+        if (v > 0) {
+            g_pin_tick = v;
+            ::mkdir("scratch", 0755);
+            ::mkdir("scratch/frames", 0755);
+            std::fprintf(stderr, "[present] SB_PIN_TICK=%d — will dump one PPM + pin_%04d.json + pin_%04d.done\n",
+                         v, v, v);
+        }
+    }
     if (const char* e = std::getenv("SB_FRAME_DUMP")) {
         if (e[0] && e[0] != '0') {
             const char* m = std::getenv("SB_FRAME_DUMP_MAX");
