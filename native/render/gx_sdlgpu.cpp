@@ -726,6 +726,10 @@ static SDL_GPUGraphicsPipeline* ensure_water_pipeline() {
 // Native fragment analytically models TEX × TEX by multiplying two offset value-noise fields
 // at ~8-cell scale (matches the 8-pixel texel period on a repeat-wrapped strip). Density is
 // scaled by the region mask so clouds fade into the horizon and sit only in the upper sky.
+// Sky.bmd cloud-strip 8×8 I4 texture — dumped byte-exact 2026-07-03 via [cloudmat] SB_J3D_DBG
+// probe (commit 5423fe5). Both bound texmaps (slot 0 and slot 1) reference the SAME 8×8 pattern
+// per the RE; the material's two texgens sample it at different UVs. Values normalised to 0..1.
+// Layout: row-major, [row][col], row 0 = top of texel grid.
 constexpr const char kNativeCloudFs[] = R"(#version 450
 layout(location=0) in vec2 vNdc;
 // region.x = top edge y_ndc (Vulkan clip-y: -1 top, +1 bottom).
@@ -734,21 +738,47 @@ layout(location=0) in vec2 vNdc;
 layout(set=3, binding=0) uniform Cloud { vec4 region; } cloud;
 layout(location=0) out vec4 outColor;
 
-float hash(vec2 p) {
-    p = fract(p * vec2(123.34, 456.21));
-    p += dot(p, p + 45.32);
-    return fract(p.x * p.y);
+// The RE'd 8×8 I4 texel intensities (0..1). Row-major, ROW 0 = top of the texel grid.
+// See sms_boot_j3d_capture.cpp [cloudmat] probe for the raw byte dump. Contents:
+//   row0: 00 00 00 00 ff ff ff 66     row4: ff ff ff 00 ff 00 00 00
+//   row1: 00 00 00 00 ff ff ff ff     row5: ff ff ff ff 00 00 00 00
+//   row2: 00 00 00 00 ff ff ff 66     row6: ff ff ff ff 00 00 00 00
+//   row3: 00 00 00 ff 00 ff ff ff     row7: ff ff ff ff 00 00 00 00
+const float kCloudTex[64] = float[64](
+    0.000, 0.000, 0.000, 0.000, 1.000, 1.000, 1.000, 0.400,
+    0.000, 0.000, 0.000, 0.000, 1.000, 1.000, 1.000, 1.000,
+    0.000, 0.000, 0.000, 0.000, 1.000, 1.000, 1.000, 0.400,
+    0.000, 0.000, 0.000, 1.000, 0.000, 1.000, 1.000, 1.000,
+    1.000, 1.000, 1.000, 0.000, 1.000, 0.000, 0.000, 0.000,
+    1.000, 1.000, 1.000, 1.000, 0.000, 0.000, 0.000, 0.000,
+    1.000, 1.000, 1.000, 1.000, 0.000, 0.000, 0.000, 0.000,
+    1.000, 1.000, 1.000, 1.000, 0.000, 0.000, 0.000, 0.000
+);
+
+// Bilinear sample of the 8×8 pattern with REPEAT wrap (matches material's wrap_s=wrap_t=1 and
+// GC's default minF=magF=GX_LINEAR from the RE'd texres output). uv is in texels (0..8 covers
+// the texture once); fractional part = the sub-texel weight, integer part wraps.
+float sampleTex(vec2 uv) {
+    // Wrap into [0..8) then split into floor+frac. Add a full-period bias before mod to keep
+    // the semantics well-defined for negative uv (mod of a negative in GLSL is implementation-
+    // defined for some cases; the offset keeps us positive).
+    uv = mod(uv + 800.0, 8.0);
+    vec2 i0 = floor(uv);
+    vec2 f  = uv - i0;
+    // Neighbour indices with REPEAT wrap (i1 = (i0+1) % 8).
+    ivec2 a = ivec2(i0);
+    ivec2 b = ivec2(mod(i0 + 1.0, 8.0));
+    // Fetch four surrounding texels.
+    float s00 = kCloudTex[a.y * 8 + a.x];
+    float s10 = kCloudTex[a.y * 8 + b.x];
+    float s01 = kCloudTex[b.y * 8 + a.x];
+    float s11 = kCloudTex[b.y * 8 + b.x];
+    // Bilinear interpolate.
+    float sx0 = mix(s00, s10, f.x);
+    float sx1 = mix(s01, s11, f.x);
+    return mix(sx0, sx1, f.y);
 }
-float vnoise(vec2 p) {
-    vec2 i = floor(p);
-    vec2 f = fract(p);
-    vec2 w = f * f * (3.0 - 2.0 * f);
-    float a = hash(i + vec2(0.0, 0.0));
-    float b = hash(i + vec2(1.0, 0.0));
-    float c = hash(i + vec2(0.0, 1.0));
-    float d = hash(i + vec2(1.0, 1.0));
-    return mix(mix(a, b, w.x), mix(c, d, w.x), w.y);
-}
+
 void main() {
     float y      = clamp(vNdc.y, -1.0, 1.0);
     float y_top  = cloud.region.x;
@@ -761,25 +791,32 @@ void main() {
     float aBot = 1.0 - smoothstep(y_bot - soft_b, y_bot + soft_b, y);
     float mask = aTop * aBot;
     if (mask <= 0.0) { outColor = vec4(0.0); return; }
-    // Two offset noise samples ≈ TEX(uv0), TEX(uv1). Scale controls how many cloud cells span
-    // the screen. ~8 cells across x, ~4 vertically → ratio approximating oracle's puff density.
-    // The distortion applied to uv0 (feedback via a second vnoise sample) breaks the multiply
-    // grid so puffs are irregular, matching the offset-uv chained samples of the RE'd TEV chain.
-    vec2 uv0 = vec2(vNdc.x * 4.0, (1.0 - y) * 2.5);
-    vec2 uv1 = uv0 * 1.3 + vec2(1.7, 0.9);
-    float d  = vnoise(uv0 + 17.0);
-    float n0 = vnoise(uv0 + 0.6 * d);
-    float n1 = vnoise(uv1 - 0.4 * d);
-    // fBm-like second octave for softer detail (small contribution).
-    float n2 = 0.5 * vnoise(uv0 * 2.1);
-    // TEX × TEX (mean 0.48 × 0.48 = 0.23). Soft threshold to get "puffs" instead of a flat wash
-    // — mirrors the binary I4 texel pattern's structure (mostly 0 or 1, some 0x66 mids).
-    float raw = (n0 + 0.3 * n2) * n1;
-    float tex = smoothstep(0.25, 0.65, raw);
-    // Additive contribution: white × tex, scaled by mask. Alpha = tex×mask (SRC_ALPHA/ONE will
-    // multiply the RGB by this same alpha inside blend, matching TEV's tex.rgb × tex.a).
-    float a = tex * mask;
-    outColor = vec4(vec3(1.0), a);
+    // Screen-space UV in TEXEL units. On GC the 40-vertex cloud strip mesh has a specific UV
+    // span through its texgens; the projection of that span onto screen space determines how
+    // much of the 8×8 pattern is visible. We don't have the exact vertex TEX0/TEX1 + texgen
+    // matrices, so TILE_X/Y are structural proxies: how many pattern periods span the sky
+    // region. Oracle's clouds look ≈ one to one-and-a-half pattern periods across the visible
+    // sky, so 1.4 across x, 0.7 vertically. The two offset UVs (uv0, uv1) reproduce the RE'd
+    // two-texgen chain — both texcoords sample the SAME texture, differing by their texgen
+    // delta, which we approximate as a half-tile shift (4 texels) so the TEX×TEX multiply
+    // isn't degenerate (uv0==uv1 → TEX²). The FUNCTION CLASS (bilinear sample of the RE'd
+    // 8×8 pattern × another bilinear sample of the same pattern at a shifted uv) is exact.
+    const float TILE_X = 1.4;
+    const float TILE_Y = 0.7;
+    vec2 uv0 = vec2((vNdc.x * 0.5 + 0.5) * TILE_X * 8.0,
+                    (1.0 - y) * 0.5 * TILE_Y * 8.0);
+    vec2 uv1 = uv0 + vec2(3.0, 2.0);
+    // RE'd TEV combine: stage0 = RASC × TEX(uv0), stage1 = CPREV × TEX(uv1). RASC = matColor
+    // white = 1.0, so combined color = TEX(uv0) × TEX(uv1). Alpha env samples TEX.a (same
+    // I4 intensity). Additive blend factor = SRC_ALPHA → the effective additive contribution
+    // per channel is TEX(uv0) × TEX(uv1) × TEX(uv0).a ≈ TEX0 × TEX1 × TEX0 (I4 = same value
+    // in RGB and A). Use TEX0×TEX1 for RGB and same for alpha (SRC_ALPHA/ONE blend applies
+    // this alpha to the RGB inside the pipe → equivalent contribution).
+    float t0 = sampleTex(uv0);
+    float t1 = sampleTex(uv1);
+    float tex = t0 * t1;
+    float a   = tex * mask;
+    outColor  = vec4(vec3(1.0), a);
 }
 )";
 
