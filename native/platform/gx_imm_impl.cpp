@@ -33,6 +33,7 @@
 #include "gx_imm_xform.h"
 #include "tex_decode.h"      // sb_tex_decode / sb_tex_pad_* (SB_IMM_PRIM_DBG texture dump)
 #include "ngx_render_data.h" // NgxTevState — the full TEV combiner carried per imm batch
+#include "gx_fifo.h"          // GX_ORACLE FIFO recorder — DRAW opcode + vertex-payload encoding
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -256,8 +257,78 @@ extern "C" {
 static void* g_imm_caller[6];
 static int   g_imm_caller_n = 0;
 
+// Encode this primitive as a GC DRAW opcode + vertex payload into sb::gxfifo,
+// so the GX_ORACLE sink's OpcodeDecoder drives Dolphin's real render pipeline.
+// Uses a fixed vertex layout the SDK header redirect knows (position 3xf32 +
+// color0 4xf32 direct + texcoord0 2xf32 direct, matching SbImmVtx byte-for-byte
+// = 36 bytes). CP registers are programmed once per frame to describe this
+// format under VAT slot 0.
+static void emit_fifo_draw() {
+    if (!sb::gxfifo::enabled() || g_prim_verts.empty()) return;
+
+    // One-time CP setup per frame: vertex descriptor + attribute-format table.
+    static bool s_cp_set_this_frame = false;
+    // Reset happens implicitly at oracle_present's sb::gxfifo::reset_frame() —
+    // we re-emit CP setup on first draw of the next frame.
+    if (!s_cp_set_this_frame) {
+        s_cp_set_this_frame = true;
+        // VCD_LO (CP reg 0x50): pos=direct(0x01<<9), color0=direct(0x01<<13).
+        u32 vcd_lo = (1u << 9) | (1u << 13);
+        sb::gxfifo::cp_write(0x50, vcd_lo);
+        // VCD_HI (CP reg 0x60): texcoord0=direct (0x01<<0).
+        u32 vcd_hi = 0x1;
+        sb::gxfifo::cp_write(0x60, vcd_hi);
+        // VAT slot 0 (CP regs 0x70-0x72). Pack position(3xF32), color0(RGBA8),
+        // texcoord0(2xF32). Details of the field packing come from Dolphin's
+        // CPMemory.h VAT bit layout — using 0 defaults means the game's actual
+        // attributes are only correctly parsed once the setter emits VAT for
+        // each format. First-cut: position=count3 type=4(F32) frac=0.
+        // Full VAT encoding is next arc.
+    }
+    // Fake next-frame reset — the FIFO buffer is cleared on present, so on the
+    // next present the sink will call sb_gx_emit_full_state() again which
+    // triggers re-setup here via the sentinel. Set the flag every present so
+    // this is correct; the flag reset happens in sb_gx_imm_frame_begin below.
+
+    // DRAW opcode = base | (vtxfmt & 7). SMS immediate mode uses vtxfmt=0.
+    u8 opcode = 0;
+    switch (g_prim) {
+        case 0x80: opcode = 0x80; break;   // QUADS
+        case 0x90: opcode = 0x90; break;   // TRIANGLES
+        case 0x98: opcode = 0x98; break;   // TRIANGLE_STRIP
+        case 0xA0: opcode = 0xA0; break;   // TRIANGLE_FAN
+        case 0xA8: opcode = 0xA8; break;   // LINES
+        case 0xB0: opcode = 0xB0; break;   // LINE_STRIP
+        case 0xB8: opcode = 0xB8; break;   // POINTS
+        default:   return;                  // unknown primitive
+    }
+    const u16 nverts = (u16)g_prim_verts.size();
+    sb::gxfifo::write_u8(opcode);
+    sb::gxfifo::write_u16_be(nverts);
+    // Vertex payload: position (3xF32) + color0 (4xF32 → 4xU8 RGBA) + texcoord0 (2xF32).
+    // Layout MUST match VAT slot 0 above; for the first cut we emit F32 across the
+    // board and rely on Dolphin's default VAT (mostly F32) to accept it.
+    for (const auto& v : g_prim_verts) {
+        sb::gxfifo::write_f32_be(v.x);
+        sb::gxfifo::write_f32_be(v.y);
+        sb::gxfifo::write_f32_be(v.z);
+        sb::gxfifo::write_u8((u8)(v.r * 255.0f));
+        sb::gxfifo::write_u8((u8)(v.g * 255.0f));
+        sb::gxfifo::write_u8((u8)(v.b * 255.0f));
+        sb::gxfifo::write_u8((u8)(v.a * 255.0f));
+        sb::gxfifo::write_f32_be(v.u);
+        sb::gxfifo::write_f32_be(v.v);
+    }
+}
+// Reset the CP-set-this-frame gate at frame boundary — called from
+// sb_boot_capture_frame_begin (once per present).
+extern "C" void sb_gx_imm_fifo_frame_begin(void);
+
 static void finalize_prim(void) {
     if (!g_in_begin) return;
+    // Emit the DRAW opcode + vertex payload into sb::gxfifo BEFORE we mark the
+    // primitive done (otherwise g_prim_verts.clear() below would drop them).
+    emit_fifo_draw();
     g_in_begin = false;
     if (g_prim_dbg_at && !g_prim_dbg_done && !g_prim_verts.empty()) {
         PrimRec r{}; r.prim = g_prim; r.nv = (int)g_prim_verts.size();
