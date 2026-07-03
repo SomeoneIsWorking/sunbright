@@ -272,18 +272,40 @@ static void emit_fifo_draw() {
     // we re-emit CP setup on first draw of the next frame.
     if (!s_cp_set_this_frame) {
         s_cp_set_this_frame = true;
-        // VCD_LO (CP reg 0x50): pos=direct(0x01<<9), color0=direct(0x01<<13).
+        // VCD_LO (CP reg 0x50): each attr uses 2 bits.
+        //   bit0-1 = PosMatIdx enable (0)
+        //   bit2-8 = TexMatIdx0-7 enables (0)
+        //   bit9-10 = Position    (1 = DIRECT)
+        //   bit11-12 = Normal     (0 = NONE)
+        //   bit13-14 = Color0     (1 = DIRECT)
+        //   bit15-16 = Color1     (0 = NONE)
         u32 vcd_lo = (1u << 9) | (1u << 13);
         sb::gxfifo::cp_write(0x50, vcd_lo);
-        // VCD_HI (CP reg 0x60): texcoord0=direct (0x01<<0).
+        // VCD_HI (CP reg 0x60): 8 texcoords, 2 bits each. Only tex0 direct.
         u32 vcd_hi = 0x1;
         sb::gxfifo::cp_write(0x60, vcd_hi);
-        // VAT slot 0 (CP regs 0x70-0x72). Pack position(3xF32), color0(RGBA8),
-        // texcoord0(2xF32). Details of the field packing come from Dolphin's
-        // CPMemory.h VAT bit layout — using 0 defaults means the game's actual
-        // attributes are only correctly parsed once the setter emits VAT for
-        // each format. First-cut: position=count3 type=4(F32) frac=0.
-        // Full VAT encoding is next arc.
+        // VAT slot 0, group 0 (CP reg 0x70) — UVAT_group0 (CPMemory.h line 330):
+        //   [0]      PosElements (0=XY, 1=XYZ)
+        //   [1-3]    PosFormat   (4 = Float)
+        //   [4-8]    PosFrac
+        //   [9]      NormalElements
+        //   [10-12]  NormalFormat
+        //   [13]     Color0Elements (0=RGB, 1=RGBA)
+        //   [14-16]  Color0Comp     (5 = RGBA8888)
+        //   [17-20]  Color1 (unused)
+        //   [21]     Tex0CoordElements (0=S, 1=ST)
+        //   [22-24]  Tex0CoordFormat (4 = Float)
+        //   [25-29]  Tex0Frac
+        u32 vat0 = 0;
+        vat0 |= (1u << 0);          // PosElements = XYZ
+        vat0 |= (4u << 1);          // PosFormat = Float
+        vat0 |= (0u << 4);          // PosFrac = 0
+        vat0 |= (1u << 13);         // Color0Elements = RGBA
+        vat0 |= (5u << 14);         // Color0Comp = RGBA8888
+        vat0 |= (1u << 21);         // Tex0Elements = ST
+        vat0 |= (4u << 22);         // Tex0Format = Float
+        vat0 |= (0u << 25);         // Tex0Frac = 0
+        sb::gxfifo::cp_write(0x70, vat0);
     }
     // Fake next-frame reset — the FIFO buffer is cleared on present, so on the
     // next present the sink will call sb_gx_emit_full_state() again which
