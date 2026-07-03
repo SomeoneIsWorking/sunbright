@@ -37,6 +37,7 @@
 #include <M3DUtil/M3UModelMario.hpp>                      // M3UModelMario::getModel (Mario body J3DModel)
 #include <M3DUtil/MActor.hpp>                             // MActor::getModel
 #include <Map/Sky.hpp>                                    // TSky (sky anim probe)
+#include <MarioUtil/LightUtil.hpp>                        // gpLightManager (SB_LMGR_PROBE)
 #include "sms_native_sky.h"                                // SMS_NATIVE_PLATFORM sky-backdrop seam
 #include "gx_sdlgpu.h"                                     // sb::gxsdl::native_water_fill
 #include <Strategic/ObjModel.hpp>                         // TMActorKeeper
@@ -961,6 +962,36 @@ extern "C" bool sb_boot_drive_scene() {
 			const JUtility::TColor& a = aa->mAmbColors[0].mColor;
 			GXColor amb = { a.r, a.g, a.b, a.a };
 			GXSetChanAmbColor(GX_COLOR0A0, amb);
+			// SB_LMGR_PROBE=1 (2026-07-04, title #18): report gpLightManager state — is it
+			// wired? Did makeDrawBuffer run? Which mLightSets are enabled + have mDrawBuffers?
+			// If mDrawBuffers is null on all 4 sets, the setupObjects() path that would call
+			// gpLightManager->makeDrawBuffer() didn't run — a discoverable porting gap that
+			// the fixed bitmask correction depends on.
+			if (const char* e = std::getenv("SB_LMGR_PROBE"); e && e[0] && e[0] != '0') {
+				static bool s_lp = false;
+				if (!s_lp) { s_lp = true;
+					using LM = TLightWithDBSetManager;
+					LM* mgr = gpLightManager;
+					std::fprintf(stderr,
+						"[lmgr-probe] gpLightManager=%p mEffectEnabled=%d mEffectValid=%d "
+						"mLightSets=%p mMarioLight=%p\n",
+						(void*)mgr, mgr ? (int)mgr->mEffectEnabled : -1,
+						mgr ? (int)mgr->mEffectValid : -1,
+						mgr ? (void*)mgr->mLightSets : nullptr,
+						mgr ? (void*)mgr->mMarioLight : nullptr);
+					if (mgr && mgr->mLightSets) for (int i = 0; i < 4; ++i) {
+						TLightWithDBSet* s = mgr->mLightSets[i];
+						const char* name = i==0 ? "player" : i==1 ? "mapobj" : i==2 ? "object" : "indirect";
+						std::fprintf(stderr,
+							"[lmgr-probe]   [%d]=%s ptr=%p mEnabled=%d mBufferCount=%d "
+							"mDrawBuffers=%p\n",
+							i, name, (void*)s,
+							s ? (int)s->mEnabled : -1,
+							s ? s->mBufferCount : -1,
+							s ? (void*)s->mDrawBuffers : nullptr);
+					}
+				}
+			}
 			// SB_AMB_PROBE=1 (2026-07-04, title #18 lit-vertex-over-brightening): print the
 			// actual ambient the native drive_chr dispatches, once per session. Oracle scene
 			// pass reports amb=(0.502,0.502,0.502) = (128,128,128) — validate here whether
