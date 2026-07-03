@@ -630,6 +630,116 @@ void native_sky_fill(const float top[4], const float horizon[4]) {
     SDL_EndGPURenderPass(rp);
 }
 
+// ── SMS_NATIVE_PLATFORM native water paint ─────────────────────────────────────────────────────
+// Turquoise gradient over the water region, alpha-modulated so above-horizon pixels (sky/HUD) are
+// untouched. Reuses the fullscreen-triangle vertex shader (kNativeSkyVs) — same NDC-passthrough.
+// Fragment: vertical gradient between two RGBA endpoints + smoothstep alpha ramp at horizon.
+//
+// Vulkan clip-y sign: -1 top, +1 bottom (matches vNdc.y usage in kNativeSkyFs). horizon.x holds
+// the horizon-line y (typical ~+0.10). horizon.y holds the ramp softness half-width (~0.06).
+// horizon.z/w unused. Kept out of a `Horizon { }` block so the whole struct fits one std140 vec4.
+constexpr const char kNativeWaterFs[] = R"(#version 450
+layout(location=0) in vec2 vNdc;
+// horizon.x = upper y_ndc (where water begins fading in from sky).
+// horizon.y = lower y_ndc (where water fades out into beach/Mario).
+// horizon.z = softness at upper edge, horizon.w = softness at lower edge.
+layout(set=3, binding=0) uniform Water { vec4 top; vec4 bottom; vec4 horizon; } water;
+layout(location=0) out vec4 outColor;
+void main() {
+    float y = clamp(vNdc.y, -1.0, 1.0);          // Vulkan clip-y: -1 top, +1 bottom
+    float hy_top  = water.horizon.x;
+    float hy_bot  = water.horizon.y;
+    float soft_t  = max(water.horizon.z, 0.001);
+    float soft_b  = max(water.horizon.w, 0.001);
+    // Gradient parameter from top edge to bottom edge of water region.
+    float t = clamp((y - hy_top) / max(hy_bot - hy_top, 0.001), 0.0, 1.0);
+    vec3 rgb = mix(water.top.rgb, water.bottom.rgb, t);
+    // Alpha ramps IN at the upper edge and OUT at the lower edge so paint stays confined to the
+    // water STRIP, not the whole bottom half — Mario/beach at y > hy_bot remain untouched.
+    float aIn  = smoothstep(hy_top - soft_t, hy_top + soft_t, y);
+    float aOut = 1.0 - smoothstep(hy_bot - soft_b, hy_bot + soft_b, y);
+    float a = aIn * aOut * mix(water.top.a, water.bottom.a, t);
+    outColor = vec4(rgb, a);
+}
+)";
+
+struct NativeWaterPush { float top[4]; float bottom[4]; float horizon[4]; };
+static SDL_GPUShader*           g_water_fs   = nullptr;
+static SDL_GPUGraphicsPipeline* g_water_pipe = nullptr;
+
+static SDL_GPUGraphicsPipeline* ensure_water_pipeline() {
+    if (g_water_pipe) return g_water_pipe;
+    // Reuse kNativeSkyVs — the fullscreen-triangle vertex shader that emits vNdc directly.
+    if (!g_sky_vs) (void)ensure_sky_pipeline();
+    std::vector<uint32_t> fspv = sb_compile_fragment_glsl(kNativeWaterFs);
+    if (fspv.empty()) {
+        std::fprintf(stderr, "\n=== FATAL [gxsdl]: native water shader compile failed ===\n");
+        std::fflush(stderr); std::abort();
+    }
+    g_water_fs = make_shader(fspv.data(), fspv.size() * 4, SDL_GPU_SHADERSTAGE_FRAGMENT,
+                             /*samplers*/0, /*uniform*/1);
+    if (!g_water_fs) {
+        std::fprintf(stderr, "[gxsdl] native water fragment create failed: %s\n", SDL_GetError());
+        std::abort();
+    }
+    SDL_GPUColorTargetDescription ctd{};
+    ctd.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+    ctd.blend_state.enable_blend = true;
+    ctd.blend_state.src_color_blendfactor  = SDL_GPU_BLENDFACTOR_SRC_ALPHA;
+    ctd.blend_state.dst_color_blendfactor  = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+    ctd.blend_state.color_blend_op         = SDL_GPU_BLENDOP_ADD;
+    ctd.blend_state.src_alpha_blendfactor  = SDL_GPU_BLENDFACTOR_ONE;
+    ctd.blend_state.dst_alpha_blendfactor  = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+    ctd.blend_state.alpha_blend_op         = SDL_GPU_BLENDOP_ADD;
+    ctd.blend_state.color_write_mask       = 0xf;
+    SDL_GPUGraphicsPipelineCreateInfo gpi{};
+    gpi.vertex_shader   = g_sky_vs;   // reuse full-screen NDC-passthrough VS
+    gpi.fragment_shader = g_water_fs;
+    gpi.primitive_type  = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+    gpi.vertex_input_state.num_vertex_buffers    = 0;
+    gpi.vertex_input_state.num_vertex_attributes = 0;
+    gpi.rasterizer_state.cull_mode  = SDL_GPU_CULLMODE_NONE;
+    gpi.rasterizer_state.fill_mode  = SDL_GPU_FILLMODE_FILL;
+    gpi.rasterizer_state.front_face = SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
+    gpi.multisample_state.sample_count            = SDL_GPU_SAMPLECOUNT_1;
+    gpi.depth_stencil_state.enable_depth_test     = false;
+    gpi.depth_stencil_state.enable_depth_write    = false;
+    gpi.target_info.num_color_targets       = 1;
+    gpi.target_info.color_target_descriptions = &ctd;
+    gpi.target_info.has_depth_stencil_target  = true;
+    gpi.target_info.depth_stencil_format      = DEPTH_FMT;
+    g_water_pipe = SDL_CreateGPUGraphicsPipeline(g_dev, &gpi);
+    if (!g_water_pipe) {
+        std::fprintf(stderr, "[gxsdl] native water pipeline create failed: %s\n", SDL_GetError());
+        std::abort();
+    }
+    return g_water_pipe;
+}
+
+void native_water_fill(const float top[4], const float bottom[4], float horizon_ndc_y) {
+    if (!g_ok || !g_in_frame || !g_cmd || !top || !bottom) return;
+    SDL_GPUGraphicsPipeline* pipe = ensure_water_pipeline();
+    if (!pipe) return;
+
+    NativeWaterPush push{};
+    for (int i = 0; i < 4; ++i) { push.top[i] = top[i]; push.bottom[i] = bottom[i]; }
+    // horizon_ndc_y is the STRIP TOP (where paint fades in from sky). Bottom fades out at
+    // horizon_ndc_y + 0.40 (empirical: oracle water ends where beach/Mario start ~y_ndc +0.70).
+    push.horizon[0] = horizon_ndc_y;              // upper edge
+    push.horizon[1] = horizon_ndc_y + 0.40f;      // lower edge
+    push.horizon[2] = 0.06f;                       // upper softness
+    push.horizon[3] = 0.06f;                       // lower softness
+
+    // Paint over the current color target — preserve existing content (LOAD), no depth needed.
+    SDL_GPUColorTargetInfo cti{}; cti.texture = g_color;
+    cti.load_op = SDL_GPU_LOADOP_LOAD; cti.store_op = SDL_GPU_STOREOP_STORE;
+    SDL_GPURenderPass* rp = SDL_BeginGPURenderPass(g_cmd, &cti, 1, nullptr);
+    SDL_BindGPUGraphicsPipeline(rp, pipe);
+    SDL_PushGPUFragmentUniformData(g_cmd, 0, &push, (Uint32)sizeof(push));
+    SDL_DrawGPUPrimitives(rp, 3, 1, 0, 0);
+    SDL_EndGPURenderPass(rp);
+}
+
 // ── SMS_NATIVE_PLATFORM zzz sleep bubbles ───────────────────────────────────────────────────────
 // Screen-space blue-tinted "Z" glyphs painted over the final composite. Vertex-buffer-less draw
 // of 6 verts/quad, up to 8 quads (instanced). Push constants carry per-quad (x, y, half, alpha).

@@ -44,4 +44,30 @@ void sb_native_sky_paint(void);
 // 2026-07-03_zzz_native_paint.md). Call between the last draw_tev_segment and frame_end.
 void sb_native_zzz_paint(void);
 
+// SMS_NATIVE_PLATFORM native water paint (CLAUDE.md 2026-07-03 hard rule; sea RE journal
+// debug_journal/2026-07-03_water_re_afterindirect_empty.md). Paints a turquoise gradient over
+// the water region of the frame with a smoothstep horizon fade, when the scene renders water.
+//
+// What we're rendering: at title (map==15) the water is drawn on native as scene batches with
+// shaderKey hi32 0x224004d9 — the option.arc stage-BMD water surface polygons (proven via
+// SB_SKIP_KEY=224004d9 → native water strip becomes clean sky-blue, i.e. those batches ARE the
+// water surface). Their native TEV/material combines a greenish-cyan raster (0.47,0.85,0.76)
+// with a sandy-tone texture to produce dark green-teal (25, 122, 109) at y0.65-0.70, whereas
+// oracle at the same y is rich turquoise (105, 187, 193). Per the hard rule (no emulation
+// chasing) we do NOT re-tune the emulator; we own the pass — paint the intent natively over
+// the frame after scene batches, before HUD/imm.
+//
+// Gradient endpoints are direct oracle pixel samples (2026-07-03):
+//   horizon    (near screen y_ndc ≈ +0.10): (105, 187, 193)  — turquoise-cyan.
+//   near-beach (near screen y_ndc ≈ +1.00): (129, 209, 211)  — lighter turquoise.
+// Below y_ndc < +0.05 (above horizon) the paint is fully transparent so sky is untouched.
+// TMapObjWave imm ripples still composite ON TOP of this via the imm/HUD render pass — the
+// near-white ripple intent (RASC×2 clamped, MapObjWave.cpp:231-235) reads correctly against
+// the turquoise base.
+//
+// Call BEFORE `draw_tev_segment` for the imm-batch tail (so scene batches under the water paint,
+// HUD/imm over it). See sms_boot_present.cpp integration.
+bool sb_native_water_active(void);
+void sb_native_water_paint(void);
+
 }

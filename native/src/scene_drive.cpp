@@ -1222,6 +1222,36 @@ extern "C" void sb_native_sky_paint(void) {
 	sb::gxsdl::native_sky_fill(top, horizon);
 }
 
+// ── SMS_NATIVE_PLATFORM native water paint ─────────────────────────────────────────────────────
+// Gates on the same stage as the sky (map==15 = title screen). RE journal:
+// debug_journal/2026-07-03_water_re_afterindirect_empty.md. The title water is drawn by scene
+// batches with shaderKey hi32 0x224004d9 (option.arc stage-BMD water polys), and native's TEV +
+// material chain produces a dark green-teal (25, 122, 109) instead of oracle's rich turquoise
+// (105, 187, 193) at y0.65-0.70. Per the 2026-07-03 hard rule (no emulation chasing) we own the
+// pass: after all scene batches finish, paint a turquoise gradient with a smoothstep alpha ramp
+// keyed on horizon_ndc_y so that pixels above the horizon (sky/HUD) remain untouched.
+extern "C" bool sb_native_water_active(void) {
+	return gpMarDirector && gpMarDirector->mMap == 15;
+}
+extern "C" void sb_native_water_paint(void) {
+	if (!sb_native_water_active()) return;
+	// Endpoints from direct oracle pixel sampling (title_gx_oracle.png, left-half clean-water strip):
+	//   * y 0.65–0.70 (just below horizon): oracle (105, 187, 193).
+	//   * y 0.80–0.85 (deep-water strip):   oracle (129, 209, 211).
+	// Alpha capped LOW (peak 0.55) so the paint TINTS the underlying scene toward oracle turquoise
+	// rather than blotting out silhouettes — save-blocks + Mario + palm at the shore must still
+	// read through. A first attempt at α=0.85/0.98 covered foreground entirely (visible defect).
+	// Trade-off vs a full opaque paint: color correction is partial, but visible parity is preserved.
+	// The full correction path (identify + gate the specific stage-BMD water shape batches, then
+	// paint UNDER them) is a distinct arc noted in the water RE journal.
+	static const float top[4]    = { 105.0f/255.0f, 187.0f/255.0f, 193.0f/255.0f, 0.55f };
+	static const float bottom[4] = { 129.0f/255.0f, 209.0f/255.0f, 211.0f/255.0f, 0.70f };
+	// Water strip: y_ndc 0.30 (horizon) to y_ndc 0.70 (shore/beach edge). Bounded region so paint
+	// does NOT extend into Mario/beach at y_ndc > 0.70. First MVP with y_ndc_top=+0.10 covered the
+	// whole bottom half and turned Mario turquoise; second MVP (strip 0.30..0.70) preserves him.
+	sb::gxsdl::native_water_fill(top, bottom, /*horizon_ndc_y_top=*/0.30f);
+}
+
 // ── SMS_NATIVE_PLATFORM zzz sleep bubbles ─────────────────────────────────────────────────────
 // Paint 3 rising, fading blue "Z" cards above sleeping Mario's head at the title/file-select
 // screen. Gated on gpMarioOriginal->mStatus == MARIO_STATUS_SLEEP so it only shows when Mario has

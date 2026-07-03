@@ -993,6 +993,15 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
     } else {
         draw_seg(0, (int)batches.size(), /*clearFirst=*/true);
     }
+    // SMS_NATIVE_PLATFORM: turquoise water pass painted OVER scene batches but BEFORE the final
+    // HUD/zzz overlay (native paint order: sky_fill → scene batches (incl. HUD imm) → water_fill →
+    // zzz). Owned by scene_drive.cpp::sb_native_water_paint; gated on mMap==15 (title). Alpha ramp
+    // keyed to horizon_ndc_y so above-horizon HUD pixels are untouched; the water region gets its
+    // oracle-sampled turquoise gradient. RE journal: debug_journal/2026-07-03_water_re_afterindirect
+    // _empty.md. Trade-off vs "gate the water polys out": their shader key (0x224004d9) is shared
+    // with several non-water shapes, so a key skip isn't precise — painting on top is cleaner and
+    // avoids identifying every stage-BMD water shape id.
+    sb_native_water_paint();
     // SMS_NATIVE_PLATFORM: zzz sleep bubbles painted last, over the final composite. No-op unless
     // gpMarioOriginal->mStatus == MARIO_STATUS_SLEEP (title/file-select settled state). Owned by
     // scene_drive.cpp::sb_native_zzz_paint — see debug_journal/2026-07-03_zzz_native_paint.md.

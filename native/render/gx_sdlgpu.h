@@ -57,6 +57,15 @@ void snapshot_efb(const void* key);
 // draw_tev_segment, using LOAD_OP=LOAD so it paints over the clear without erasing depth.
 void native_sky_fill(const float top[4], const float horizon[4]);
 
+// SMS_NATIVE_PLATFORM native water paint (CLAUDE.md 2026-07-03 hard rule; RE journal
+// debug_journal/2026-07-03_water_re_afterindirect_empty.md). Paints a turquoise gradient over
+// the water region using an alpha ramp keyed on `horizon_ndc_y` (Vulkan clip-y: -1 top, +1 bottom).
+// Pixels ABOVE the horizon (v.y < horizon_ndc_y - 0.02) fully transparent; pixels BELOW ramp to
+// full opaque over ~6% of screen height. Color = mix(top, bottom) parameterised on v.y between
+// horizon and +1. Alpha blend = SRC_ALPHA/INV_SRC_ALPHA. Call AFTER all draw_tev_segment (so the
+// stage-BMD water polys are covered by the intent color), BEFORE native_zzz_paint / frame_end.
+void native_water_fill(const float top[4], const float bottom[4], float horizon_ndc_y);
+
 // SMS_NATIVE_PLATFORM zzz sleep bubbles pass (CLAUDE.md 2026-07-03 hard rule). Paints up to N
 // screen-space quads with soft "Z" glyphs, blended over the composited scene — the visual intent
 // of the JPA `PARTICLE_MS_POI_ZZZ` particle above sleeping Mario's head, native-owned instead of
