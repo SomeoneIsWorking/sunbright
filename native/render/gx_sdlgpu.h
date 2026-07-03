@@ -66,6 +66,12 @@ void native_sky_fill(const float top[4], const float horizon[4]);
 // stage-BMD water polys are covered by the intent color), BEFORE native_zzz_paint / frame_end.
 void native_water_fill(const float top[4], const float bottom[4], float horizon_ndc_y);
 
+// SMS_NATIVE_PLATFORM cloud pass — reproduces the RE'd sky.bmd cloud-strip intent
+// (shaderKey 0x7bc0841d, 2 TEV stages, TEX(uv0) × TEX(uv1) additive) natively. RE derivation
+// in sms_native_sky.h. `region` = (top_ndc_y, bottom_ndc_y, softness_upper, softness_lower)
+// mask; clouds appear inside the strip, additive blend = SRC_ALPHA/ONE.
+void native_cloud_fill(const float region[4]);
+
 // SMS_NATIVE_PLATFORM zzz sleep bubbles pass (CLAUDE.md 2026-07-03 hard rule). Paints up to N
 // screen-space quads with soft "Z" glyphs, blended over the composited scene — the visual intent
 // of the JPA `PARTICLE_MS_POI_ZZZ` particle above sleeping Mario's head, native-owned instead of

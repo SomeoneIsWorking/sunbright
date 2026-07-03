@@ -716,6 +716,140 @@ static SDL_GPUGraphicsPipeline* ensure_water_pipeline() {
     return g_water_pipe;
 }
 
+// ── SMS_NATIVE_PLATFORM cloud pass ─────────────────────────────────────────────────────────────
+// Port of sky.bmd cloud strip (shaderKey 0x7bc0841d). RE'd on 2026-07-03:
+//   * 2 TEV stages, both sampling the SAME 8×8 I4 texture with different tex-gens (offset UVs).
+//     Stage 0 = RASC × TEX(uv0), stage 1 = CPREV × TEX(uv1). Since RASC = matColor white,
+//     the color output = TEX(uv0) × TEX(uv1).
+//   * Blend = SRC_ALPHA / ONE (additive). Alpha comes from TEXA → same intensity pattern.
+//   * 8×8 texel mean = 0.48 → contribution mean = 0.48² ≈ 0.23 additive white per pixel.
+// Native fragment analytically models TEX × TEX by multiplying two offset value-noise fields
+// at ~8-cell scale (matches the 8-pixel texel period on a repeat-wrapped strip). Density is
+// scaled by the region mask so clouds fade into the horizon and sit only in the upper sky.
+constexpr const char kNativeCloudFs[] = R"(#version 450
+layout(location=0) in vec2 vNdc;
+// region.x = top edge y_ndc (Vulkan clip-y: -1 top, +1 bottom).
+// region.y = bottom edge y_ndc (below which clouds vanish).
+// region.z = ramp softness at top edge, region.w = softness at bottom edge.
+layout(set=3, binding=0) uniform Cloud { vec4 region; } cloud;
+layout(location=0) out vec4 outColor;
+
+float hash(vec2 p) {
+    p = fract(p * vec2(123.34, 456.21));
+    p += dot(p, p + 45.32);
+    return fract(p.x * p.y);
+}
+float vnoise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    vec2 w = f * f * (3.0 - 2.0 * f);
+    float a = hash(i + vec2(0.0, 0.0));
+    float b = hash(i + vec2(1.0, 0.0));
+    float c = hash(i + vec2(0.0, 1.0));
+    float d = hash(i + vec2(1.0, 1.0));
+    return mix(mix(a, b, w.x), mix(c, d, w.x), w.y);
+}
+void main() {
+    float y      = clamp(vNdc.y, -1.0, 1.0);
+    float y_top  = cloud.region.x;
+    float y_bot  = cloud.region.y;
+    float soft_t = max(cloud.region.z, 0.001);
+    float soft_b = max(cloud.region.w, 0.001);
+    // Region gate: alpha inside strip, 0 outside — matches the 40-vertex vertical strip mesh
+    // TSky's cloud material actually draws over. Outside the strip, contribution = 0.
+    float aTop = smoothstep(y_top - soft_t, y_top + soft_t, y);
+    float aBot = 1.0 - smoothstep(y_bot - soft_b, y_bot + soft_b, y);
+    float mask = aTop * aBot;
+    if (mask <= 0.0) { outColor = vec4(0.0); return; }
+    // Two offset noise samples ≈ TEX(uv0), TEX(uv1). Scale controls how many cloud cells span
+    // the screen. ~8 cells across x, ~4 vertically → ratio approximating oracle's puff density.
+    // The distortion applied to uv0 (feedback via a second vnoise sample) breaks the multiply
+    // grid so puffs are irregular, matching the offset-uv chained samples of the RE'd TEV chain.
+    vec2 uv0 = vec2(vNdc.x * 4.0, (1.0 - y) * 2.5);
+    vec2 uv1 = uv0 * 1.3 + vec2(1.7, 0.9);
+    float d  = vnoise(uv0 + 17.0);
+    float n0 = vnoise(uv0 + 0.6 * d);
+    float n1 = vnoise(uv1 - 0.4 * d);
+    // fBm-like second octave for softer detail (small contribution).
+    float n2 = 0.5 * vnoise(uv0 * 2.1);
+    // TEX × TEX (mean 0.48 × 0.48 = 0.23). Soft threshold to get "puffs" instead of a flat wash
+    // — mirrors the binary I4 texel pattern's structure (mostly 0 or 1, some 0x66 mids).
+    float raw = (n0 + 0.3 * n2) * n1;
+    float tex = smoothstep(0.25, 0.65, raw);
+    // Additive contribution: white × tex, scaled by mask. Alpha = tex×mask (SRC_ALPHA/ONE will
+    // multiply the RGB by this same alpha inside blend, matching TEV's tex.rgb × tex.a).
+    float a = tex * mask;
+    outColor = vec4(vec3(1.0), a);
+}
+)";
+
+struct NativeCloudPush { float region[4]; };
+static SDL_GPUShader*           g_cloud_fs   = nullptr;
+static SDL_GPUGraphicsPipeline* g_cloud_pipe = nullptr;
+
+static SDL_GPUGraphicsPipeline* ensure_cloud_pipeline() {
+    if (g_cloud_pipe) return g_cloud_pipe;
+    if (!g_sky_vs) (void)ensure_sky_pipeline();
+    std::vector<uint32_t> fspv = sb_compile_fragment_glsl(kNativeCloudFs);
+    if (fspv.empty()) {
+        std::fprintf(stderr, "\n=== FATAL [gxsdl]: native cloud shader compile failed ===\n");
+        std::fflush(stderr); std::abort();
+    }
+    g_cloud_fs = make_shader(fspv.data(), fspv.size() * 4, SDL_GPU_SHADERSTAGE_FRAGMENT,
+                             /*samplers*/0, /*uniform*/1);
+    if (!g_cloud_fs) {
+        std::fprintf(stderr, "[gxsdl] native cloud fragment create failed: %s\n", SDL_GetError());
+        std::abort();
+    }
+    SDL_GPUColorTargetDescription ctd{};
+    ctd.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+    // ADDITIVE (SRC_ALPHA / ONE) — matches the RE'd GX blend for the cloud strip.
+    ctd.blend_state.enable_blend            = true;
+    ctd.blend_state.src_color_blendfactor   = SDL_GPU_BLENDFACTOR_SRC_ALPHA;
+    ctd.blend_state.dst_color_blendfactor   = SDL_GPU_BLENDFACTOR_ONE;
+    ctd.blend_state.color_blend_op          = SDL_GPU_BLENDOP_ADD;
+    ctd.blend_state.src_alpha_blendfactor   = SDL_GPU_BLENDFACTOR_ONE;
+    ctd.blend_state.dst_alpha_blendfactor   = SDL_GPU_BLENDFACTOR_ONE;
+    ctd.blend_state.alpha_blend_op          = SDL_GPU_BLENDOP_ADD;
+    ctd.blend_state.color_write_mask        = 0xf;
+    SDL_GPUGraphicsPipelineCreateInfo gpi{};
+    gpi.vertex_shader   = g_sky_vs;
+    gpi.fragment_shader = g_cloud_fs;
+    gpi.primitive_type  = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+    gpi.vertex_input_state.num_vertex_buffers    = 0;
+    gpi.vertex_input_state.num_vertex_attributes = 0;
+    gpi.rasterizer_state.cull_mode  = SDL_GPU_CULLMODE_NONE;
+    gpi.rasterizer_state.fill_mode  = SDL_GPU_FILLMODE_FILL;
+    gpi.rasterizer_state.front_face = SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
+    gpi.multisample_state.sample_count            = SDL_GPU_SAMPLECOUNT_1;
+    gpi.depth_stencil_state.enable_depth_test     = false;
+    gpi.depth_stencil_state.enable_depth_write    = false;
+    gpi.target_info.num_color_targets             = 1;
+    gpi.target_info.color_target_descriptions     = &ctd;
+    gpi.target_info.has_depth_stencil_target      = true;
+    gpi.target_info.depth_stencil_format          = DEPTH_FMT;
+    g_cloud_pipe = SDL_CreateGPUGraphicsPipeline(g_dev, &gpi);
+    if (!g_cloud_pipe) {
+        std::fprintf(stderr, "[gxsdl] native cloud pipeline create failed: %s\n", SDL_GetError());
+        std::abort();
+    }
+    return g_cloud_pipe;
+}
+
+void native_cloud_fill(const float region[4]) {
+    if (!g_ok || !g_in_frame || !g_cmd || !region) return;
+    SDL_GPUGraphicsPipeline* pipe = ensure_cloud_pipeline();
+    if (!pipe) return;
+    NativeCloudPush push{}; for (int i = 0; i < 4; ++i) push.region[i] = region[i];
+    SDL_GPUColorTargetInfo cti{}; cti.texture = g_color;
+    cti.load_op = SDL_GPU_LOADOP_LOAD; cti.store_op = SDL_GPU_STOREOP_STORE;
+    SDL_GPURenderPass* rp = SDL_BeginGPURenderPass(g_cmd, &cti, 1, nullptr);
+    SDL_BindGPUGraphicsPipeline(rp, pipe);
+    SDL_PushGPUFragmentUniformData(g_cmd, 0, &push, (Uint32)sizeof(push));
+    SDL_DrawGPUPrimitives(rp, 3, 1, 0, 0);
+    SDL_EndGPURenderPass(rp);
+}
+
 void native_water_fill(const float top[4], const float bottom[4], float horizon_ndc_y) {
     if (!g_ok || !g_in_frame || !g_cmd || !top || !bottom) return;
     SDL_GPUGraphicsPipeline* pipe = ensure_water_pipeline();

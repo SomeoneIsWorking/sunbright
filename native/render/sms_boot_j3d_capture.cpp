@@ -261,6 +261,22 @@ const MatEntry* get_mat_entry(J3DMaterial* mat, J3DTexture* modelTex) {
     if (sb_build_tev_state(mat, st)) {
         e.frag = sb_tev_gen_fragment(st);
         e.key  = fnv64(e.frag.c_str());
+        if (dbg_enabled() && (unsigned)(e.key >> 32) == 0x7bc0841du) {   // sky.bmd cloud strip: dump per-stage TEV envs + textures (SB_J3D_DBG)
+            J3DTevBlock* tb2 = mat->getTevBlock();
+            std::fprintf(stderr, "[cloudmat] key=%llx num_stages=%u tbStageNum=%d\n",
+                         (unsigned long long)e.key, st.num_stages, tb2 ? tb2->getTevStageNum() : -1);
+            for (int s = 0; s < st.num_stages && s < 8; ++s) {
+                J3DTevOrder* ord2 = tb2 ? tb2->getTevOrder(s) : nullptr;
+                std::fprintf(stderr, "[cloudmat] s%d ce=%06x ae=%06x tmap=%u tcoord=%u chan=%u kc=%u ka=%u\n",
+                             s, st.stage[s].color_env, st.stage[s].alpha_env,
+                             ord2?ord2->mTexMap:0xff, ord2?ord2->mTexCoord:0xff, ord2?ord2->mColorChan:0xff,
+                             st.stage[s].kcsel, st.stage[s].kasel);
+            }
+            for (int c = 0; c < 4; ++c)
+                std::fprintf(stderr, "[cloudmat] tevreg[%d]=%d,%d,%d,%d kcolor[%d]=%u,%u,%u,%u\n",
+                             c, st.tev_color[c][0], st.tev_color[c][1], st.tev_color[c][2], st.tev_color[c][3],
+                             c, st.kcolor[c][0], st.kcolor[c][1], st.kcolor[c][2], st.kcolor[c][3]);
+        }
         if ((unsigned)(e.key >> 32) == 0xeb5c8e74u) {   // b76 sea: dump raw per-stage TEV envs (one-shot)
             g_b76_material = (void*)mat;   // publish so SB_ENTRY_MAT probe works without SB_B76_DBG
             J3DTevBlock* tb2 = mat->getTevBlock();
@@ -292,6 +308,33 @@ const MatEntry* get_mat_entry(J3DMaterial* mat, J3DTexture* modelTex) {
         // does NOT render with — its materials index a 59-entry shared table while the embedded one
         // holds 4, so every map/beach texmap went OOB → no sampler → flat-white sand/buildings.
         sb_resolve_textures(mat, modelTex ? (void*)modelTex : j3dSys.getTexture(), e.tex);
+        if (dbg_enabled() && (unsigned)(e.key >> 32) == 0x7bc0841du) {
+            // Cloud-strip texture pixel dump: intensity grid per bound texmap (SB_J3D_DBG).
+            for (size_t ti = 0; ti < e.tex.size(); ++ti) {
+                const SbTexImage& t = e.tex[ti];
+                std::fprintf(stderr, "[cloudmat] tex#%zu slot=%d %ux%u wrap=%u,%u minF=%u magF=%d rgba=%zu bytes\n",
+                             ti, t.slot, t.w, t.h, t.wrap_s, t.wrap_t, t.min_filter, (int)t.linear, t.rgba.size()*4);
+                if (t.rgba.empty()) continue;
+                unsigned rsum=0,gsum=0,bsum=0,asum=0;
+                for (uint32_t px : t.rgba) {
+                    rsum += (px & 0xff);
+                    gsum += ((px >> 8) & 0xff);
+                    bsum += ((px >> 16) & 0xff);
+                    asum += ((px >> 24) & 0xff);
+                }
+                size_t n = t.rgba.size();
+                std::fprintf(stderr, "[cloudmat] tex#%zu mean rgba=%u,%u,%u,%u\n", ti,
+                             (unsigned)(rsum/n), (unsigned)(gsum/n), (unsigned)(bsum/n), (unsigned)(asum/n));
+                for (uint32_t y = 0; y < t.h && y < 16; ++y) {
+                    std::fprintf(stderr, "[cloudmat] tex#%zu row%u:", ti, y);
+                    for (uint32_t x = 0; x < t.w && x < 16; ++x) {
+                        uint32_t px = t.rgba[y * t.w + x];
+                        std::fprintf(stderr, " %02x", (unsigned)(px & 0xff));   // R (I4 → R=G=B)
+                    }
+                    std::fprintf(stderr, "\n");
+                }
+            }
+        }
         if (J3DColorBlock* cb = mat->getColorBlock()) {
             int nchan = cb->getColorChanNum();
             for (int c = 0; c < 2; ++c) {
@@ -673,6 +716,25 @@ extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
     }
     g_present_shapes += 1;
     mark_shape_distinct(shape);
+    // SB_SKY_CAP_ALL: enumerate every shape in a Sky drawbuf — material key, matC0, chan0Src,
+    // mean vertex CLR0, mean posY (locate the dome base by whose top-vertex y is highest / whose
+    // CLR0 is the visible sky-blue).
+    if (const char* ev = std::getenv("SB_SKY_CAP_ALL"); ev && ev[0] && ev[0] != '0' && !idx.empty()) {
+        static int n = 0; if (n < 400) { ++n;
+            unsigned rs=0,gs=0,bs=0,as=0; float miny=1e9f, maxy=-1e9f;
+            for (const NgxVertex& v : verts) {
+                rs += v.clr[0][0]; gs += v.clr[0][1]; bs += v.clr[0][2]; as += v.clr[0][3];
+                if (v.pos[1] < miny) miny = v.pos[1];
+                if (v.pos[1] > maxy) maxy = v.pos[1];
+            }
+            size_t nv = verts.size() ? verts.size() : 1;
+            std::fprintf(stderr, "[skyshape#%d] drawbuf=%s key=%llx nverts=%zu clr0mean=%u,%u,%u,%u matC0=%u,%u,%u,%u posY=[%.1f..%.1f]\n",
+                         n, g_capture_drawbuf, (unsigned long long)me->key, verts.size(),
+                         (unsigned)(rs/nv), (unsigned)(gs/nv), (unsigned)(bs/nv), (unsigned)(as/nv),
+                         me->matColor[0][0], me->matColor[0][1], me->matColor[0][2], me->matColor[0][3],
+                         miny, maxy);
+        }
+    }
     g_present_idx    += (long)idx.size();
 
     int projType; float proj[6]; float vp[6];

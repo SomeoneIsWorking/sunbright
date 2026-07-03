@@ -395,6 +395,15 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
         // (sb_native_sky_active == mMap==15) — Delfino gameplay maps aren't guarded.
         if ((unsigned)(b.shaderKey >> 32) == 0x224004d9u && b.vcount >= 500 && sb_native_sky_active())
             continue;
+        // Sky.bmd cloud strip — shaderKey 0x7bc0841d (RE'd 2026-07-03, task #1/#2 of the sky arc):
+        // 40-vertex vertical strip material, 2-stage TEV = TEX(uv0) × TEX(uv1) with 8×8 I4 texture
+        // sampled at two offset uvs, blend = SRCALPHA/ONE (additive). Our TEV emulation saturates
+        // the additive contribution → white cloud wash. Per the 2026-07-03 hard rule (no emulation
+        // chasing), skip these batches on native and let a native cloud pass reproduce the intent
+        // separately. Blue dome (key=2d45a7be6c503257, 752 verts, matSrc=vertex CLR0) still draws
+        // normally under the restored 0x20E sky flag.
+        if ((unsigned)(b.shaderKey >> 32) == 0x7bc0841du && sb_native_sky_active())
+            continue;
 #endif
         if (ablPhase) { bool drop=false; for (int a=0;a<s_ablPhN;++a) if (b.phase==s_ablPh[a]){drop=true;break;} if (drop) continue; }
         if (opaqueOnly && b.blend_mode != 0) continue;
@@ -956,16 +965,18 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
     const bool sky_active = sb_native_sky_active();
     auto draw_seg = [&](int seg_first, int seg_count, bool clearFirst) {
         if (sky_active && clearFirst) {
-            sb_native_sky_paint();                                             // CLEAR + gradient
-            // Water paint goes right after the sky's CLEAR+gradient (both use fullscreen triangles;
-            // sky's render pass has ended). Water uses LOAD_OP=LOAD so it composites over sky. The
-            // subsequent draw_tev_segment then draws the scene batches (palm/beach/Mario/HUD) ON TOP
-            // of both — the water polys themselves are filtered out for map==15 (shaderKey 224004d9
-            // vc≥500 gate above). Order matters: sky BEHIND, water OVER sky, scene OVER water,
-            // zzz OVER scene. Under this order the paint's α = 1.0 is safe (no foreground bleed).
-            sb_native_water_paint();
+            // 2026-07-03 sky RE arc: sb_native_sky_paint() (hand-tuned oracle-sampled gradient
+            // endpoints + fBm clouds) is REMOVED. The reference sky.bmd dome shape (key
+            // 2d45a7be6c503257, 752 verts, matSrc=vertex CLR0 mean (49,147,227)) now dispatches
+            // via drive_sky's restored 0x20E flag and renders through the standard TEV capture
+            // path — that IS the reference sky, in its native vertex-blue gradient. The frame
+            // clear (frame_begin's g_clear) is the TSky bit-0x8 backdrop-sphere colour set by
+            // sb_native_sky_backdrop (0,0x12,0xEE) and shows through where the dome has α<1.
+            // Additive cloud strips (shaderKey 7bc0841d) are filtered out (see above); a native
+            // cloud pass replicates their fBm intent (task #3 follow-up).
+            sb_native_water_paint();                                            // water arc unchanged
             sb::gxsdl::draw_tev_segment(verts.data(), (int)verts.size(),
-                                        batches.data() + seg_first, seg_count, /*clearFirst=*/false);
+                                        batches.data() + seg_first, seg_count, clearFirst);
         } else {
             sb::gxsdl::draw_tev_segment(verts.data(), (int)verts.size(),
                                         batches.data() + seg_first, seg_count, clearFirst);
@@ -1019,6 +1030,13 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
     // polys (shaderKey 0x224004d9) are FILTERED OUT of the scene batch stream when sky_active, and
     // sb_native_water_paint now runs BEFORE draw_seg (see below-comment placement) so scene batches
     // (palm, Mario, beach) draw ON TOP of the α=1 native water. No overlay-on-foreground bandaid.
+    // SMS_NATIVE_PLATFORM: cloud strip (RE'd 2026-07-03, task #8): additive white noise pattern
+    // matching sky.bmd's shaderKey 0x7bc0841d cloud batches (which we filter out — see the
+    // batch-stream filter above). Runs AFTER scene batches so it composites OVER the sky.bmd
+    // dome (which uses α=255 INVSRCALPHA and would otherwise overwrite the clouds if painted
+    // beneath). Strictly region-gated to the upper sky band so palm canopy / HUD stay untouched.
+    // Order: sky_backdrop clear -> water_paint -> scene draws (dome+palm+HUD) -> cloud_paint -> zzz.
+    sb_native_cloud_paint();
     // SMS_NATIVE_PLATFORM: zzz sleep bubbles painted last, over the final composite. No-op unless
     // gpMarioOriginal->mStatus == MARIO_STATUS_SLEEP (title/file-select settled state). Owned by
     // scene_drive.cpp::sb_native_zzz_paint — see debug_journal/2026-07-03_zzz_native_paint.md.

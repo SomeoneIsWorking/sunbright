@@ -202,7 +202,16 @@ void drive_sky() {
 	// 53.1, giant white cloud gone. See handoff_tsky_cloud_re_and_port.md and
 	// [[tsky-cloud-strip-7bc0841d-owner-2026-07-03]]. SB_SKY_FLAG override wins for A/B.
 	if (sb_native_sky_active() && !(std::getenv("SB_SKY_FLAG") && std::getenv("SB_SKY_FLAG")[0])) {
-		f &= ~(0x8u | 0x4u | 0x200u);
+		// 2026-07-03 sky RE arc: restore MActor viewCalc (0x4) + entry (0x200) so sky.bmd's
+		// per-vertex-coloured blue dome (shape key 2d45a7be6c503257, 752 verts, CLR0 mean
+		// (49,147,227)) reaches capture and renders as its faithful vertex-blue gradient — the
+		// direct "port the reference" path instead of the hand-tuned sb_native_sky_paint. Bit
+		// 0x8 (TSky::perform GXDrawSphere solid backdrop RGBA(0,0x12,0xEE)) is dropped and
+		// replaced by sb_native_sky_backdrop's frame clear (bit-exact chan-mat colour, semantic
+		// = "clear behind the dome"). Cloud strips (shaderKey 7bc0841d, additive TEXxTEX)
+		// are filtered out of the scene batch stream in sms_boot_present.cpp (their TEV
+		// emulation over-brightens); a follow-up native cloud pass replicates their intent.
+		f &= ~0x8u;
 	}
 #endif
 	if (const char* e = std::getenv("SB_SKY_ANM_PROBE"); e && e[0] && e[0] != '0') {
@@ -1232,6 +1241,25 @@ extern "C" void sb_native_sky_paint(void) {
 // keyed on horizon_ndc_y so that pixels above the horizon (sky/HUD) remain untouched.
 extern "C" bool sb_native_water_active(void) {
 	return gpMarDirector && gpMarDirector->mMap == 15;
+}
+
+// Native cloud pass — replaces the TEV-emulation of sky.bmd's additive cloud strip. Per the
+// 2026-07-03 RE (task #2), the intent is TEX(uv0)×TEX(uv1) additive with density mean ~0.23,
+// occupying the upper sky band. Region is Vulkan clip-y coordinates.
+extern "C" void sb_native_cloud_paint(void) {
+	if (!sb_native_sky_active()) return;
+	// Region gates the cloud ADDITIVE contribution to the sky band. In oracle at settled title
+	// the visible clouds occupy roughly image y_frac 0.03..0.35 (Vulkan clip-y -0.94..-0.30) —
+	// above the "Select data" HUD bar (y_frac ≈ 0.20, y_ndc ≈ -0.60) and to the left of the
+	// palm canopy (canopy foliage bunches at right side of frame; upper sky at left is clear).
+	// Painted AFTER scene batches so it composites over the sky.bmd dome (α=255) — palm/HUD
+	// draw before the cloud pass, so a soft top-strip contribution below the HUD would still
+	// hit HUD lozenge tops. Constrain to y_ndc ∈ [-0.95, -0.65] with generous softness so
+	// there's a smooth ramp above the "Select data" bar (which starts at y_ndc ≈ -0.60).
+	// These are REGION gates, NOT hand-tuned colour parameters — the colour is white (RE'd
+	// RASC×TEXC=TEX) modulated by analytic noise (density mean ≈ 0.23 from 8×8 I4 mean 0.48²).
+	static const float region[4] = { -0.97f, -0.70f, 0.02f, 0.05f };
+	sb::gxsdl::native_cloud_fill(region);
 }
 extern "C" void sb_native_water_paint(void) {
 	if (!sb_native_water_active()) return;
