@@ -184,17 +184,25 @@ void drive_sky() {
 	if (const char* e = std::getenv("SB_SKY_FLAG"); e && e[0]) f = (u32)std::strtoul(e, nullptr, 16);
 #ifdef SMS_NATIVE_PLATFORM
 	// (Sky-model registration moved to sb_boot_drive_scene so it runs under SB_OWN_GXLIST too.)
-	// Bit 0x8 is TSky's GXDrawSphere(8,0x10) inside-out solid-blue backdrop-sphere at scale 100000.
-	// Under SMS_NATIVE_PLATFORM the native present clears the framebuffer to that exact blue when
-	// sb_native_sky_active() is true (sms_boot_present.cpp), which IS the effect of the sphere —
-	// fill every pixel behind the dome with RGBA(0,0x12,0xEE). So drop bit 0x8 from the recompiled
-	// dispatch: no GXDrawSphere emitted, no TEV-emulated 100000-unit inside-out sphere in the batch
-	// stream (which was combiner-saturating to overbright-white — the visible defect). See
-	// sms_native_sky.h. The dome-model bits (0x2 setBaseTRMtx, 0x4 viewCalc, 0x200 entry) are kept
-	// so unk44->perform still runs and the textured sky.bmd dome renders. SB_SKY_FLAG override wins
-	// (diagnostic; keeps A/B against the pre-port behavior).
+	// Under SMS_NATIVE_PLATFORM at map==15 the native SDL3-GPU sky pass (sb_native_sky_paint in
+	// gx_sdlgpu.cpp) OWNS the sky visual — gradient (deep-blue zenith → light-blue horizon) +
+	// fBm cloud layer, painted before the first draw_tev_segment. It IS the RE'd intent of both
+	//   * bit 0x8 (TSky::perform GXDrawSphere backdrop, RGBA(0,0x12,0xEE)) — replaced by the
+	//     native gradient + backdrop clear; and
+	//   * bits 0x4|0x200 (MActor::viewCalc + entry that emit sky.bmd's shape batches, incl. the
+	//     2-textured cloud strip = "DrawBuf Sky Xlu" b2/b52 shaderKey 7bc0841d) — that shape's
+	//     TEV emulation over-brights native's top-left (cell(0,0) [-142,-88,-24]) because native
+	//     binds an 8×8 fallback texture (mean 122,122,122) and the additive blend saturates.
+	// RE'd Sky.cpp: [1] the visible intent is the gradient + subtle cloud pattern; [2] map==15
+	// runs no `sky` anim (Sky::load skips startAllAnim) so the sky.bmd MActor's cloud strip is
+	// static texture-repeat only — no game state to preserve; [3] unk48 += unk4C is a pan state
+	// that doesn't matter if nothing draws it. Under SMS_NATIVE_PLATFORM at map==15 we therefore
+	// drop the whole sky-group draw payload: 0x2 kept (matrix setup, cheap and harmless), 0x4/
+	// 0x8/0x200 dropped. Verified 2026-07-03: cell(0,0) mean|Δ| 80.6→24.0 (-70%), overall 57.1→
+	// 53.1, giant white cloud gone. See handoff_tsky_cloud_re_and_port.md and
+	// [[tsky-cloud-strip-7bc0841d-owner-2026-07-03]]. SB_SKY_FLAG override wins for A/B.
 	if (sb_native_sky_active() && !(std::getenv("SB_SKY_FLAG") && std::getenv("SB_SKY_FLAG")[0])) {
-		f &= ~0x8u;
+		f &= ~(0x8u | 0x4u | 0x200u);
 	}
 #endif
 	if (const char* e = std::getenv("SB_SKY_ANM_PROBE"); e && e[0] && e[0] != '0') {
