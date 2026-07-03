@@ -24,13 +24,19 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"; cd "$HERE"
 source .env 2>/dev/null || { echo "no .env (need SUNBRIGHT_ROM)"; exit 1; }
 
-PIN_TICK="${PIN_TICK:-900}"
+# Prefer the game-tick anchor (SB_PIN_INTRO / SUNBRIGHT_PIN_INTRO) — pin fires when the
+# guest's mIntroChaseTimer reaches this value. K=0 = "title intro-camera settled endpoint",
+# guaranteed to be identical game state across engines regardless of tick-rate drift.
+# Fallback (PIN_TICK) is the older scene-ordinal anchor, kept for legacy runs / diagnostics.
+PIN_INTRO="${PIN_INTRO:-0}"
+PIN_TICK="${PIN_TICK:-}"
+PIN_KEY="${PIN_INTRO}"
 OUT="scratch/frames"
 mkdir -p "$OUT" scratch/passes
 
 # Clean stale pin artifacts so the .done markers can't produce false positives from a prior run.
-rm -f "$OUT/pin_$(printf %04d "$PIN_TICK")".{json,done,png,ppm} \
-      "$OUT/pin_$(printf %04d "$PIN_TICK")_oracle".{json,done,png}
+rm -f "$OUT/pin_$(printf %04d "$PIN_KEY")".{json,done,png,ppm} \
+      "$OUT/pin_$(printf %04d "$PIN_KEY")_oracle".{json,done,png}
 
 # Real lockstep is impossible with pkill-based cleanup: leftover processes carry
 # stale save state. Use SIGINT + short escalation to SIGKILL per feedback
@@ -46,7 +52,7 @@ kill_stale() {
     sleep 0.3
 }
 
-echo "== title_pinned: PIN_TICK=$PIN_TICK =="
+echo "== title_pinned: PIN_INTRO=$PIN_INTRO${PIN_TICK:+ (fallback PIN_TICK=$PIN_TICK)} =="
 echo
 
 # ============================================================================
@@ -55,7 +61,7 @@ echo
 # produce raw 4:3 proj matrices from identical game code. Empty pad script —
 # we want the actual title screen, NOT the file-select.
 # ============================================================================
-echo "[1/3] ORACLE — build/sunbright  (fastboot stage 15, empty pad, PIN_TICK=$PIN_TICK)"
+echo "[1/3] ORACLE — build/sunbright  (fastboot stage 15, empty pad, intro anchor=$PIN_INTRO)"
 kill_stale sunbright
 
 env SUNBRIGHT_HEADLESS=1 SUNBRIGHT_TURBO=1 SUNBRIGHT_BACKEND=Vulkan \
@@ -64,13 +70,14 @@ env SUNBRIGHT_HEADLESS=1 SUNBRIGHT_TURBO=1 SUNBRIGHT_BACKEND=Vulkan \
     SUNBRIGHT_WIDESCREEN=0 \
     SUNBRIGHT_PROBE=1 \
     SUNBRIGHT_PARITY_DUMP=scratch/passes/pinned_oracle.jsonl \
-    SUNBRIGHT_PIN_TICK="$PIN_TICK" \
+    SUNBRIGHT_PIN_INTRO="$PIN_INTRO" \
+    ${PIN_TICK:+SUNBRIGHT_PIN_TICK="$PIN_TICK"} \
     ./build/sunbright "$SUNBRIGHT_ROM" > scratch/passes/pinned_oracle.log 2>&1 &
 OPID=$!
 
 # Poll for the oracle probe to be listening + the .done marker to appear.
-ORACLE_DONE="$OUT/pin_$(printf %04d "$PIN_TICK")_oracle.done"
-ORACLE_JSON="$OUT/pin_$(printf %04d "$PIN_TICK")_oracle.json"
+ORACLE_DONE="$OUT/pin_$(printf %04d "$PIN_KEY")_oracle.done"
+ORACLE_JSON="$OUT/pin_$(printf %04d "$PIN_KEY")_oracle.json"
 for i in $(seq 1 60); do   # up to 60 s
     if [[ -s "$ORACLE_DONE" ]]; then break; fi
     if ! kill -0 "$OPID" 2>/dev/null; then
@@ -89,8 +96,15 @@ fi
 # Ask the probe to save a PNG at the pinned state. Oracle is still running at
 # turbo; title is quiescent post-settle so the frame captured a few ms after
 # the JSON write is the same visible state.
-curl -s -m 10 "http://127.0.0.1:17654/pinshot?vi=$PIN_TICK&timeout_s=5" >/dev/null || true
-ORACLE_PNG="$OUT/pin_$(printf %04d "$PIN_TICK")_oracle.png"
+# Oracle side: with the intro anchor, the pin JSON is already emitted by gx_capture at fire.
+# Just take a screenshot of the current (settled) frame — title is quiescent so drift is nil.
+curl -s -m 10 "http://127.0.0.1:17654/screenshot?name=pin_$(printf %04d "$PIN_KEY")_oracle_tmp" \
+    >/dev/null || true
+if [[ -s "scratch/screenshots/pin_$(printf %04d "$PIN_KEY")_oracle_tmp.png" ]]; then
+    mv "scratch/screenshots/pin_$(printf %04d "$PIN_KEY")_oracle_tmp.png" \
+       "$OUT/pin_$(printf %04d "$PIN_KEY")_oracle.png"
+fi
+ORACLE_PNG="$OUT/pin_$(printf %04d "$PIN_KEY")_oracle.png"
 kill_stale sunbright
 wait "$OPID" 2>/dev/null || true
 echo "  oracle JSON $([[ -s "$ORACLE_JSON" ]] && echo present || echo MISSING)"
@@ -102,18 +116,19 @@ echo
 # dump of scratch/frames/pin_<N>.ppm + pin_<N>.json + pin_<N>.done at present
 # frame == N. No settle detector — deterministic tick equality.
 # ============================================================================
-echo "[2/3] NATIVE — build-native/sms-boot  (fastboot stage 15, empty pad, PIN_TICK=$PIN_TICK)"
+echo "[2/3] NATIVE — build-native/sms-boot  (fastboot stage 15, empty pad, intro anchor=$PIN_INTRO)"
 kill_stale sms-boot
 
-NATIVE_DONE="$OUT/pin_$(printf %04d "$PIN_TICK").done"
-NATIVE_JSON="$OUT/pin_$(printf %04d "$PIN_TICK").json"
-NATIVE_PPM="$OUT/boot_$(printf %04d "$PIN_TICK").ppm"
+NATIVE_DONE="$OUT/pin_$(printf %04d "$PIN_KEY").done"
+NATIVE_JSON="$OUT/pin_$(printf %04d "$PIN_KEY").json"
+NATIVE_PPM="$OUT/pin_$(printf %04d "$PIN_KEY").ppm"
 
 setarch -R env SUNBRIGHT_DISC=scratch/disc/sms.iso SB_THP_FAST=1 SB_TURBO=1 \
     SB_HOST_ALLOC_CAP_MB=3072 SB_STAGE=15 SB_SCENARIO=0 \
     SB_PAD_SCRIPT="" \
     SB_FRAME_DUMP=1 SB_FRAME_DUMP_MAX=2 \
-    SB_PIN_TICK="$PIN_TICK" \
+    SB_PIN_INTRO="$PIN_INTRO" \
+    ${PIN_TICK:+SB_PIN_TICK="$PIN_TICK"} \
     SB_WATCHDOG_SECS="${SB_WATCHDOG_SECS:-0}" \
     ./build-native/sms-boot > scratch/passes/pinned_native.log 2>&1 &
 NPID=$!
@@ -143,7 +158,7 @@ echo
 # [3/3] Assert scene sync. If RED, no pixel diff — the number would lie.
 # ============================================================================
 echo "[3/3] pin_diff — cross-engine state parity assertion"
-python3 tools/render/pin_diff.py "$PIN_TICK"
+python3 tools/render/pin_diff.py "$PIN_KEY"
 RC=$?
 if [[ $RC -ne 0 ]]; then
     echo
@@ -151,5 +166,5 @@ if [[ $RC -ne 0 ]]; then
     exit "$RC"
 fi
 echo
-echo "STATE PARITY GREEN — pin bundle at $OUT/pin_$(printf %04d "$PIN_TICK")*."
+echo "STATE PARITY GREEN — pin bundle at $OUT/pin_$(printf %04d "$PIN_KEY")*."
 echo "Bundle: $NATIVE_JSON  $NATIVE_PPM  $ORACLE_JSON  $ORACLE_PNG"

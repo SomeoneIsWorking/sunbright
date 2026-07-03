@@ -125,7 +125,13 @@ namespace {
 static const bool s_efb_grab_mode = getenv("SUNBRIGHT_EFB_GRAB") != nullptr;
 // GX-command-stream parity oracle (gx_capture.cpp): when SUNBRIGHT_PARITY_DUMP is set, GXCopyDisp
 // is the per-frame boundary at which the captured stream is parsed + JSON-emitted. Purejit-safe.
-static const bool s_parity_mode = [](){ const char* p = getenv("SUNBRIGHT_PARITY_DUMP"); return p && p[0]; }();
+// Also fire when the scene-sync harness is armed (SUNBRIGHT_PIN_TICK) — the pin JSON needs
+// the same per-frame GxFrameInfo parse the parity dump emits.
+static const bool s_parity_mode = [](){
+    const char* p  = getenv("SUNBRIGHT_PARITY_DUMP");
+    const char* pt = getenv("SUNBRIGHT_PIN_TICK");
+    return (p && p[0]) || (pt && pt[0]);
+}();
 }
 extern "C" void sb_gx_capture_frame_boundary();   // gx_capture.cpp
 

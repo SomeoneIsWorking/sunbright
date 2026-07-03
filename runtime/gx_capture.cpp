@@ -202,7 +202,14 @@ constexpr size_t kCap = 16u << 20;
 
 bool enabled() {
     static int v = -1;
-    if (v < 0) { const char* p = getenv("SUNBRIGHT_PARITY_DUMP"); v = (p && p[0]) ? 1 : 0; }
+    if (v < 0) {
+        const char* p  = getenv("SUNBRIGHT_PARITY_DUMP");
+        const char* pt = getenv("SUNBRIGHT_PIN_TICK");
+        // Capture is enabled if EITHER the parity dump (per-frame JSONL) OR the pin harness is
+        // requested. The pin path needs GxFrameInfo (proj/view/lights/posmtx) parsed at frame
+        // boundary — same machinery as parity dump — so the capture gate must be open.
+        v = ((p && p[0]) || (pt && pt[0])) ? 1 : 0;
+    }
     return v == 1;
 }
 
@@ -224,8 +231,9 @@ bool state_pin_ready(long frame_no) {
 // with view (posmtx_efb[main]) + proj (proj_efb[main]) + viewport (vp_efb[main]) + lights.
 // Symmetric to native's SB_PIN_TICK path in native/render/sms_boot_present.cpp. Consumed by
 // tools/render/pin_diff.py which asserts cross-engine state parity BEFORE any pixel diff.
-long g_pin_tick = -1;
-long g_scene_frame = 0;   // ordinal of the current scene-perspective GXCopyDisp frame (fi.prims_pass[0] > 0)
+long g_pin_tick = -1;      // scene-ordinal anchor (drift-prone across engines)
+long g_pin_intro = -1;     // game-tick anchor: mIntroChaseTimer == g_pin_intro (preferred)
+long g_scene_frame = 0;    // ordinal of the current scene-perspective GXCopyDisp frame
 bool g_pin_fired = false;
 long pin_tick() {
     static long v = -2;
@@ -235,6 +243,15 @@ long pin_tick() {
         if (v >= 0) g_pin_tick = v;
     }
     return g_pin_tick;
+}
+long pin_intro() {
+    static long v = -2;
+    if (v == -2) {
+        const char* p = getenv("SUNBRIGHT_PIN_INTRO");
+        v = (p && p[0]) ? atol(p) : -1;
+        if (v >= 0) g_pin_intro = v;
+    }
+    return g_pin_intro;
 }
 
 std::FILE* outfile() {
@@ -305,10 +322,25 @@ extern "C" void sb_gx_capture_frame_boundary() {
     // Scene ordinal: bump when this frame has a perspective (3D) pass. Skips boot / loading /
     // intro-video frames the engines take different amounts of time through.
     if (fi.prims_pass[0] > 0) ++g_scene_frame;
-    // SUNBRIGHT_PIN_TICK — one-shot pin_<PT>_oracle.json + pin_<PT>_oracle.done marker at the
-    // PT-th perspective (scene) frame. Fires independent of SUNBRIGHT_PARITY_DUMP because the pin
-    // JSON is the harness fingerprint, not a per-frame value dump.
-    if (long pt = pin_tick(); pt >= 0 && !g_pin_fired && fi.prims_pass[0] > 0 && g_scene_frame == pt) {
+    // Two possible pin anchors:
+    //   SUNBRIGHT_PIN_TICK  — scene-ordinal (drifts because oracle burst-ticks game logic
+    //                         during boot/turbo while native runs 1:1 tick/scene)
+    //   SUNBRIGHT_PIN_INTRO — mIntroChaseTimer value at gpCameraOption + 0x0A. Both engines
+    //                         reach the same value regardless of ordinal drift — this is the
+    //                         true GAME-TICK anchor for the title scene-sync.
+    long pt = pin_tick(), pi = pin_intro();
+    bool tick_hit  = (pt >= 0 && fi.prims_pass[0] > 0 && g_scene_frame == pt);
+    bool intro_hit = false;
+    long intro_val = 0;
+    if (pi >= 0 && fi.prims_pass[0] > 0) {
+        unsigned camopt_ptr = attrib_r32(SMS_US_GPCAMERAOPTION);
+        if (camopt_ptr >= 0x80000000u) {
+            intro_val = guest_r16s(camopt_ptr + TCAMOPT_OFF_INTROTIMER);
+            if (intro_val == pi) intro_hit = true;
+        }
+    }
+    long pin_key = intro_hit ? pi : (tick_hit ? pt : -1);
+    if (pin_key >= 0 && !g_pin_fired) {
         // Pick the MAIN scene EFB pass: the one whose posMtx is a REAL camera view (non-identity).
         // The other perspective passes (TMirrorCamera pre-pass at FOVy=52°, sky/dome pass at 40°
         // with world-space geometry) use identity posMtx — they're not the pass whose view we're
@@ -350,12 +382,12 @@ extern "C" void sb_gx_capture_frame_boundary() {
 
         ::mkdir("scratch", 0755); ::mkdir("scratch/frames", 0755);
         char path[192];
-        std::snprintf(path, sizeof path, "scratch/frames/pin_%04ld_oracle.json", pt);
+        std::snprintf(path, sizeof path, "scratch/frames/pin_%04ld_oracle.json", pin_key);
         FILE* pf = std::fopen(path, "w");
         if (pf) {
             std::fprintf(pf, "{\n  \"engine\": \"oracle\",\n  \"tick\": %ld,\n"
                              "  \"efb_pass\": %d,\n  \"proj_type\": %d,\n",
-                         pt, mainEfb, projType);
+                         pin_key, mainEfb, projType);
             std::fprintf(pf, "  \"view\": [");
             for (int i = 0; i < 12; ++i) std::fprintf(pf, "%s%.9g", i ? "," : "", view[i]);
             std::fprintf(pf, "],\n  \"proj6\": [");
@@ -399,10 +431,18 @@ extern "C" void sb_gx_capture_frame_boundary() {
                          fi.amb[0], fi.amb[1], fi.amb[2]);
             std::fclose(pf);
             char donepath[192];
-            std::snprintf(donepath, sizeof donepath, "scratch/frames/pin_%04ld_oracle.done", pt);
-            if (FILE* d = std::fopen(donepath, "w")) { std::fprintf(d, "pin %ld ok\n", pt); std::fclose(d); }
-            std::fprintf(stderr, "[gxcap-pin] tick=%ld efb=%d proj[0]=%.4f view[0]=%.3f lights=%d -> %s\n",
-                         pt, mainEfb, proj6[0], view[0], nlt, path);
+            std::snprintf(donepath, sizeof donepath, "scratch/frames/pin_%04ld_oracle.done", pin_key);
+            if (FILE* d = std::fopen(donepath, "w")) {
+                std::fprintf(d, "pin key=%ld anchor=%s scene#%ld frame_no=%ld introTimer=%ld ok\n",
+                             pin_key, intro_hit ? "intro" : "tick",
+                             g_scene_frame, g_frame_no, intro_val);
+                std::fclose(d);
+            }
+            std::fprintf(stderr, "[gxcap-pin] key=%ld anchor=%s scene#%ld intro=%ld efb=%d "
+                                "proj[0]=%.4f view[0]=%.3f lights=%d -> %s\n",
+                         pin_key, intro_hit ? "intro" : "tick",
+                         g_scene_frame, intro_val,
+                         mainEfb, proj6[0], view[0], nlt, path);
         } else {
             std::fprintf(stderr, "[gxcap-pin] cannot open %s\n", path);
         }

@@ -34,6 +34,16 @@
 
 using namespace sb::render;
 
+// Optional: gpCameraOption for the intro-timer pin anchor. Weak so builds without
+// the SMS decomp headers (unlikely in practice) still work.
+struct TCameraOption;
+extern TCameraOption* gpCameraOption __attribute__((weak));
+// Fields of TCameraOption we touch. mIntroChaseTimer is at offset 0x0A per
+// runtime/pin_state_schema.h — declared here as a local layout to avoid pulling
+// the full game header into this TU. Casting through this local shim gives us
+// the s16 timer value.
+struct TCameraOptionShim { uint8_t pad[0x0A]; int16_t mIntroChaseTimer; };
+
 extern "C" {
 void sb_vi_set_present_hook(void (*fn)(void*, void*), void* user);
 void sb_gx_get_clear_color(float* rgba);
@@ -78,13 +88,18 @@ bool g_on_scene = false;
 bool g_dump_started = false;
 bool g_settle_dump = false;   // SB_FRAME_DUMP_SETTLE: start dumping once the camera has SETTLED
 int g_request_dump = 0;  // event-triggered dump request (next N presented frames)
-// SB_PIN_TICK=N — scene-sync harness: dump PPM + pin_NNNN.json at the N-th PERSPECTIVE
-// (scene) present frame. Counts only frames where nscene > 0, so it skips boot / loading /
-// intro-video frames the two engines take different amounts of wall time through. Symmetric
-// to the oracle's SUNBRIGHT_PIN_TICK path in runtime/gx_capture.cpp (which counts scene
-// frames via fi.prims_pass[0] > 0). Consumed by tools/render/pin_diff.py.
-int g_pin_tick = -1;
-int g_scene_frame = 0;    // ordinal of the current scene (nscene>0) present frame, starting at 1
+// SB_PIN_TICK / SB_PIN_INTRO — scene-sync harness. Two anchors:
+//   • SB_PIN_TICK=N  fires at the N-th perspective (scene) present frame — cheap, but
+//     drifts across engines because oracle burst-ticks the game logic during boot/turbo
+//     while native runs 1:1 tick-per-scene (measured 2026-07-04: at scene#1 oracle's
+//     mIntroChaseTimer had already decremented from 300 → 284, then 300→92 by scene#3).
+//   • SB_PIN_INTRO=K fires on the FIRST scene present where gpCameraOption->mIntroChaseTimer
+//     equals K. This is a GAME-TICK anchor — both engines will hit "intro timer == K"
+//     regardless of how many rendered frames they took to get there. K=0 pins at
+//     "title intro complete" — the natural settled endpoint.
+int g_pin_tick = -1;    // scene-ordinal anchor (drift-prone, kept for diagnostics)
+int g_pin_intro = -1;   // mIntroChaseTimer anchor (preferred)
+int g_scene_frame = 0;  // ordinal of the current scene present, for filename
 bool g_pin_fired = false;
 
 // The 2D-overlay passthrough TEV shader (out = rasterColor), generated once.
@@ -223,15 +238,20 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
     // independent of the dump window. Artifacts (PPM/parity) still only write inside the dump window.
     static const bool windowMode = [](){ const char* v = std::getenv("SB_WINDOW"); return v && v[0] && v[0] != '0'; }();
 
-    if (!windowMode && g_pin_tick < 0 && g_request_dump <= 0 && (!g_max_dump || g_dumped >= g_max_dump)) return;
+    const bool pin_armed = (g_pin_tick >= 0 || g_pin_intro >= 0);
+    if (!windowMode && !pin_armed && g_request_dump <= 0 && (!g_max_dump || g_dumped >= g_max_dump)) return;
 
     bool dumpThis;
-    // Pin gate takes precedence: dump on the g_pin_tick-th scene (nscene>0) frame.
-    // Counting scene frames — not raw present frames — is what makes native ↔ oracle
-    // sync robust to their different boot/intro timings.
-    if (g_pin_tick >= 0 && !g_pin_fired) {
+    // Pin gate takes precedence. Two possible anchors — see g_pin_intro/g_pin_tick decls.
+    if (pin_armed && !g_pin_fired) {
         if (nscene > 0) ++g_scene_frame;
-        dumpThis = (nscene > 0 && g_scene_frame == g_pin_tick);
+        bool tick_hit  = (g_pin_tick  >= 0 && g_scene_frame == g_pin_tick);
+        bool intro_hit = false;
+        if (g_pin_intro >= 0 && nscene > 0 && &gpCameraOption && gpCameraOption) {
+            auto* shim = reinterpret_cast<const TCameraOptionShim*>(gpCameraOption);
+            if ((int)shim->mIntroChaseTimer == g_pin_intro) intro_hit = true;
+        }
+        dumpThis = (nscene > 0 && (tick_hit || intro_hit));
         ++g_frame;
     } else if (g_request_dump > 0) {
         // Event-triggered dump (e.g. TCardLoad reaching mState 0): capture the next N
@@ -1142,10 +1162,15 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
 
     if (dumpThis) {
     char path[160];
-    // In pin mode, name the PPM after the scene ordinal (matches pin_NNNN.json/.done) so
-    // the harness has a deterministic path to open. Regular dumps still use boot_NNNN.ppm.
-    if (g_pin_tick >= 0 && !g_pin_fired && nscene > 0 && g_scene_frame == g_pin_tick)
-        std::snprintf(path, sizeof path, "scratch/frames/pin_%04d.ppm", g_pin_tick);
+    // Compute the pin key for filename: SB_PIN_INTRO wins if it's the one that fired,
+    // else SB_PIN_TICK, else this is a regular dump.
+    int pin_key = -1;
+    if (pin_armed && !g_pin_fired && nscene > 0) {
+        if (g_pin_intro >= 0) pin_key = g_pin_intro;
+        else if (g_pin_tick >= 0 && g_scene_frame == g_pin_tick) pin_key = g_pin_tick;
+    }
+    if (pin_key >= 0)
+        std::snprintf(path, sizeof path, "scratch/frames/pin_%04d.ppm", pin_key);
     else
         std::snprintf(path, sizeof path, "scratch/frames/boot_%04d.ppm", df);
     write_ppm_buf(path, present_pix.data(), kW, kH);
@@ -1154,17 +1179,15 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
     // so the Dolphin-GX oracle can be transplanted to the SAME viewpoint (rung-6 camera align).
     static const bool camDump = [](){ const char* v = std::getenv("SB_CAM_DUMP"); return v && v[0] && v[0] != '0'; }();
     if (camDump && (&sb_boot_dump_camera)) sb_boot_dump_camera(df);
-    // SB_PIN_TICK gate: at the pinned SCENE tick, ALSO emit pin_NNNN.json (the state
-    // fingerprint pin_diff.py consumes) and drop a scratch/frames/pin_NNNN.done marker so
-    // the harness knows the pin succeeded. Filename uses g_pin_tick (the scene ordinal)
-    // so native and oracle end up with matching pin_NNNN.json / pin_NNNN_oracle.json.
-    if (g_pin_tick >= 0 && !g_pin_fired && nscene > 0 && g_scene_frame == g_pin_tick) {
-        if (&sb_boot_dump_pin_json) sb_boot_dump_pin_json(g_pin_tick);
+    // Pin gate: fire pin JSON + .done marker on either the scene-ordinal (SB_PIN_TICK)
+    // or the intro-timer (SB_PIN_INTRO) anchor — whichever hit above (pin_key ≥ 0).
+    if (pin_key >= 0 && !g_pin_fired) {
+        if (&sb_boot_dump_pin_json) sb_boot_dump_pin_json(pin_key);
         char donepath[160];
-        std::snprintf(donepath, sizeof donepath, "scratch/frames/pin_%04d.done", g_pin_tick);
+        std::snprintf(donepath, sizeof donepath, "scratch/frames/pin_%04d.done", pin_key);
         FILE* d = std::fopen(donepath, "w");
-        if (d) { std::fprintf(d, "pin scene_frame=%d present_frame=%d ok\n",
-                              g_pin_tick, df); std::fclose(d); }
+        if (d) { std::fprintf(d, "pin key=%d scene_frame=%d present_frame=%d ok\n",
+                              pin_key, g_scene_frame, df); std::fclose(d); }
         g_pin_fired = true;
     }
     std::printf("[present] frame %d clear=(%.2f,%.2f,%.2f,%.2f) scene_verts=%d scene_batches=%d "
@@ -1215,8 +1238,17 @@ extern "C" void sb_boot_present_install() {
             g_pin_tick = v;
             ::mkdir("scratch", 0755);
             ::mkdir("scratch/frames", 0755);
-            std::fprintf(stderr, "[present] SB_PIN_TICK=%d — will dump one PPM + pin_%04d.json + pin_%04d.done\n",
-                         v, v, v);
+            std::fprintf(stderr, "[present] SB_PIN_TICK=%d (scene ordinal anchor)\n", v);
+        }
+    }
+    if (const char* p = std::getenv("SB_PIN_INTRO")) {
+        int v = std::atoi(p);
+        // v==0 is a legitimate value (title-intro settled). Accept anything >= 0.
+        if (v >= 0) {
+            g_pin_intro = v;
+            ::mkdir("scratch", 0755);
+            ::mkdir("scratch/frames", 0755);
+            std::fprintf(stderr, "[present] SB_PIN_INTRO=%d (game-tick anchor: mIntroChaseTimer)\n", v);
         }
     }
     if (const char* e = std::getenv("SB_FRAME_DUMP")) {
