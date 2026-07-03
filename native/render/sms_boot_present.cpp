@@ -449,6 +449,20 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
                     }
                 }
             }
+            // SB_CLOUD_UV_DUMP=1: dump per-vertex (uv0, uv1, pos) for the cloud strip so we can
+            // diff against Dolphin-GX oracle. If UVs differ, texgen decode is wrong (residual
+            // hypothesis #2 from f44e45f). Fires once at the first kept batch.
+            static bool s_cud = false;
+            if (!s_cud && std::getenv("SB_CLOUD_UV_DUMP")) { s_cud = true;
+                std::fprintf(stderr, "[clouduv] batch vstart=%u vcount=%u phase=%u\n",
+                             b.vstart, b.vcount, b.phase);
+                for (uint32_t i = b.vstart; i < b.vstart + b.vcount && i < verts.size(); ++i) {
+                    const NvkTevVertex& v = verts[i];
+                    std::fprintf(stderr, "[clouduv] v%u pos=(%.3f,%.3f,%.3f,%.3f) uv0=(%.4f,%.4f) uv1=(%.4f,%.4f)\n",
+                                 i - b.vstart, v.x, v.y, v.z, v.w,
+                                 v.uv[0][0], v.uv[0][1], v.uv[1][0], v.uv[1][1]);
+                }
+            }
             b.fragGlsl  = sb::gxsdl::kCloudStripFragGlsl_ptr;
             b.shaderKey = sb::gxsdl::kCloudStripFragKey;
         }
