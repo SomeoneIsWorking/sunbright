@@ -50,6 +50,10 @@ KNOWN_SDA1 = {
     -0x6060: "gpFlagManager",           # TRedCoinSwitch::load / TCoverFruit::loadAfter — TFlagManager::getShineFlag / getFlag
     -0x6044: "gpMSound",                # TMapObjSwitch::control — MSound::playTimer + game-wide SE dispatch
     -0x5fe0: "gpResourceManager",       # ShiningStone::load — JPAResourceManager::load(name, id)
+    -0x626c: "gpMapObjWave",            # TMap::update + TMapObjWaterFilter::perform — getHeight(x,y,z) receiver
+    -0x7160: "MSGBasic",                # MSoundSE::startSoundActorInner — JAIBasic cast of MSGMSound
+    -0x7164: "MSGMSound",               # MSoundSE::startSoundActorInner — .unkD1 = stage sound bank
+    -0x7168: "MSSeCallBack::smWaterFilter",  # u16, NOT a pointer (in-place value)
     # -0x5db8: setup-holder used by MammaMirror loadAfter ((unaff_r13-0x5db8)+4)
     # -0x6044: (TSunMgr reads [+0x7c] after — sibling of gpMarDirector; maybe gpApplication child)
     # -0x7100: (TSunMgr/LensFlare test bit at +0x15 — maybe cinematics-manager, TApplication child)
