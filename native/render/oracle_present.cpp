@@ -41,6 +41,10 @@
 #include <cstdio>
 #include <vector>
 
+// Bridge from the game-side GX seam (native/platform/gx_impl.cpp) — hands us the
+// game's currently-set GXSetCopyClear color as floats 0..1.
+extern "C" void sb_gx_get_clear_color(float* rgba);
+
 namespace {
 
 void tame_dolphin_config();
@@ -229,9 +233,27 @@ extern "C" void sb_oracle_present_frame(void* /*framebuffer*/, void* /*user*/) {
 
     static int s_frame = 0;
     ++s_frame;
-    // Animate the clear so it's visibly Dolphin-driven, not a static paint.
-    const float t = (float)(s_frame & 0xff) / 255.0f;
-    ClearColor clear{{t, 0.15f, 1.0f - t, 1.0f}};
+
+    // FIRST GX STATE BRIDGE: read the game's current GXSetCopyClear color and
+    // hand it to Dolphin's SetAndClearFramebuffer. When the game changes its
+    // clear color (per-scene, per-effect), Dolphin's output visibly follows.
+    // This is the smallest possible "GX drives Dolphin" wire — proof that the
+    // seam bridge works end-to-end before we scale to the other 191 GX calls.
+    //
+    // NOTE: at the title screen the game clears to (0,0,0); the visible sky
+    // colour comes from the sky-dome BATCH drawn on top of the clear. Until
+    // step 4c-B bridges vertex submissions too, oracle output is a solid
+    // black — that's the GAME's request, not a bug. Set SB_ORACLE_FORCE_CLEAR=
+    // "r,g,b" (floats 0..1) to override for smoke-testing the pipeline.
+    float game_clear[4] = {0, 0, 0, 1};
+    sb_gx_get_clear_color(game_clear);
+    if (const char* fc = std::getenv("SB_ORACLE_FORCE_CLEAR")) {
+        float r = 0, g = 0, b = 0;
+        if (std::sscanf(fc, "%f,%f,%f", &r, &g, &b) == 3) {
+            game_clear[0] = r; game_clear[1] = g; game_clear[2] = b;
+        }
+    }
+    ClearColor clear{{game_clear[0], game_clear[1], game_clear[2], game_clear[3]}};
 
     g_gfx->BeginUtilityDrawing();
     g_gfx->SetAndClearFramebuffer(s_fbo.get(), clear, 0.0f);
@@ -257,9 +279,12 @@ extern "C" void sb_oracle_present_frame(void* /*framebuffer*/, void* /*user*/) {
 
     if (win_w > 0) sb::gxsdl::inject_cpu_frame(s_buf.data(), w, h);
 
-    // Dump a PPM for the first few frames so headless runs produce visible
-    // evidence Dolphin rendered. Path C step 4b-A verification.
-    if (s_frame <= 5) {
+    // Dump PPMs at spaced intervals to catch different game phases (title
+    // shows real content ~frame 300+). Path C step 4b-A verification.
+    if (s_frame == 1 || s_frame == 30 || s_frame == 60 || s_frame == 120 ||
+        s_frame == 200 || s_frame == 300 || s_frame == 400 || s_frame == 500) {
+        std::fprintf(stderr, "[oracle] f%d clear=(%.3f,%.3f,%.3f)\n", s_frame,
+                     game_clear[0], game_clear[1], game_clear[2]);
         char path[256];
         std::snprintf(path, sizeof(path), "scratch/frames/oracle_%04d.ppm", s_frame);
         if (FILE* f = std::fopen(path, "wb")) {

@@ -210,6 +210,13 @@ void GXSetAlphaCompare(GXCompare comp0, u8 ref0, GXAlphaOp op, GXCompare comp1, 
 void GXSetCopyClear(GXColor clear, u32 z) {
     auto& g = state();
     g.copyClearColor = clear; g.copyClearZ = z;
+    static const bool trace = std::getenv("SB_CLEAR_TRACE") != nullptr;
+    if (trace) {
+        static int n = 0; if (n < 20) { ++n;
+            std::fprintf(stderr, "[GXSetCopyClear] rgba=(%u,%u,%u,%u) z=0x%x\n",
+                         clear.r, clear.g, clear.b, clear.a, z);
+        }
+    }
 }
 
 // Bridge for the renderer-attach present layer (native/render/sms_boot_present.cpp),
