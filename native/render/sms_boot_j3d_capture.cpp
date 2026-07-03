@@ -393,6 +393,21 @@ const MatEntry* get_mat_entry(J3DMaterial* mat, J3DTexture* modelTex) {
                     const Mtx& m = tm->mTotalMtx;
                     for (int r = 0; r < 3; ++r) for (int c = 0; c < 4; ++c) g.m[r*4+c] = m[r][c];
                     g.has_mtx = true;
+                    static uint64_t s_tg_seen[64] = {0}; static int s_tg_n = 0;
+                    if (std::getenv("SB_TG_DUMP")) {
+                        uint64_t k64 = e.key ^ ((uint64_t)(i + 1) * 0x9E3779B97F4A7C15ULL);
+                        bool dup = false; for (int k = 0; k < s_tg_n; ++k) if (s_tg_seen[k] == k64) { dup = true; break; }
+                        if (!dup && s_tg_n < 64) {
+                            s_tg_seen[s_tg_n++] = k64;
+                            uint8_t info = *((const uint8_t*)tm + 1);
+                            std::fprintf(stderr,
+                                "[tgdump] key=%llx tg%d mInfo=0x%02x(type=%u) mTotalMtx=[%.4f %.4f %.4f %.4f / %.4f %.4f %.4f %.4f]\n",
+                                (unsigned long long)e.key, i,
+                                (unsigned)info, (unsigned)(info & 0x7f),
+                                m[0][0], m[0][1], m[0][2], m[0][3],
+                                m[1][0], m[1][1], m[1][2], m[1][3]);
+                        }
+                    }
                 }
             }
         }
@@ -894,6 +909,47 @@ extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
                          me->ambColor[0][0], me->ambColor[0][1], me->ambColor[0][2],
                          (int)lsrc[0].valid, lsrc[0].color[0],lsrc[0].color[1],lsrc[0].color[2],
                          lsrc[0].pos[0],lsrc[0].pos[1],lsrc[0].pos[2]); }
+    }
+    // SB_DOME_DBG=1 (2026-07-04, task #7): dump the sky.bmd dome material's state so we can see
+    // why native's sky base renders brighter than oracle. Dome shape key hi32 = 2d45a7be.
+    if (std::getenv("SB_DOME_DBG") && me && (unsigned)(me->key >> 32) == 0x2d45a7beu) {
+        static int s_dd = 0;
+        if (s_dd < 2) { ++s_dd;
+            std::fprintf(stderr,
+                "[dome] key=%llx lit=%d nlights=%d do_light=%d cc0=%04x cc1=%04x "
+                "matSrcVtx0=%d matSrcVtx1=%d matColor0=(%u,%u,%u,%u) matColor1=(%u,%u,%u,%u) "
+                "ambColor0=(%u,%u,%u) hasAmb0=%d blend_mode=%u src=%u dst=%u z_test=%u z_write=%u\n",
+                (unsigned long long)me->key, (int)me->lit, nlights, (int)do_light,
+                me->chanCtrl[0], me->chanCtrl[1],
+                (int)me->matSrcVtx[0], (int)me->matSrcVtx[1],
+                me->matColor[0][0], me->matColor[0][1], me->matColor[0][2], me->matColor[0][3],
+                me->matColor[1][0], me->matColor[1][1], me->matColor[1][2], me->matColor[1][3],
+                me->ambColor[0][0], me->ambColor[0][1], me->ambColor[0][2], (int)me->hasAmb[0],
+                (unsigned)me->blend_mode, (unsigned)me->src_factor, (unsigned)me->dst_factor,
+                (unsigned)me->z_test, (unsigned)me->z_write);
+            // Also dump the CP state used to decode this shape's colors, so we know which format decoded.
+            std::fprintf(stderr, "[dome] cp.vcd_lo=0x%08x  vat[0][0]=0x%08x  clr0-fmt-nibble=%u "
+                "clr0-array-base=%p clr0-array-stride=%u\n",
+                (unsigned)cp.vcd_lo, (unsigned)cp.vat[0][0],
+                (unsigned)((cp.vat[0][0] >> 14) & 7),
+                (const void*)cp.array_base[2], (unsigned)cp.array_stride[2]);
+            // Sample 8 vertices across the dome to see the CLR0 range (mean, min, max per channel)
+            if (!verts.empty()) {
+                unsigned nv = (unsigned)verts.size(); unsigned step = nv > 8 ? nv/8 : 1;
+                unsigned rmn=255,gmn=255,bmn=255,rmx=0,gmx=0,bmx=0;
+                unsigned rsm=0,gsm=0,bsm=0,cnt=0;
+                for (unsigned i = 0; i < nv; i += step) {
+                    unsigned r=verts[i].clr[0][0], g=verts[i].clr[0][1], b=verts[i].clr[0][2];
+                    if (r<rmn) rmn=r; if (r>rmx) rmx=r;
+                    if (g<gmn) gmn=g; if (g>gmx) gmx=g;
+                    if (b<bmn) bmn=b; if (b>bmx) bmx=b;
+                    rsm+=r; gsm+=g; bsm+=b; ++cnt;
+                    if (i < step*4) std::fprintf(stderr, "[dome]   v%u clr0=(%u,%u,%u)\n", i, r,g,b);
+                }
+                std::fprintf(stderr, "[dome] CLR0 stats over %u verts: mean=(%u,%u,%u) min=(%u,%u,%u) max=(%u,%u,%u)\n",
+                    nv, rsm/cnt,gsm/cnt,bsm/cnt, rmn,gmn,bmn, rmx,gmx,bmx);
+            }
+        }
     }
 
     if (g_consumed) { g_verts.clear(); g_batches.clear(); g_last_mat = nullptr; g_consumed = false; }
