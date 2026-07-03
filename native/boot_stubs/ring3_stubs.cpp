@@ -97,7 +97,6 @@ void TMammaBlockRotate::load(JSUMemoryInputStream&) {}
 void TMammaYacht::initMapObj() {}
 void TManhole::appeared() {}
 void TManhole::calc() {}
-void TManhole::initMapObj() {}
 void TManhole::setGroundCollision() {}
 void TMapObjBall::calcCurrentMtx() {}
 void TMapObjBall::checkWallCollision(JGeometry::TVec3<float>*) {}
