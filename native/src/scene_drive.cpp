@@ -1248,17 +1248,14 @@ extern "C" bool sb_native_water_active(void) {
 // occupying the upper sky band. Region is Vulkan clip-y coordinates.
 extern "C" void sb_native_cloud_paint(void) {
 	if (!sb_native_sky_active()) return;
-	// Region gates the cloud ADDITIVE contribution to the sky band. In oracle at settled title
-	// the visible clouds occupy roughly image y_frac 0.03..0.35 (Vulkan clip-y -0.94..-0.30) —
-	// above the "Select data" HUD bar (y_frac ≈ 0.20, y_ndc ≈ -0.60) and to the left of the
-	// palm canopy (canopy foliage bunches at right side of frame; upper sky at left is clear).
-	// Painted AFTER scene batches so it composites over the sky.bmd dome (α=255) — palm/HUD
-	// draw before the cloud pass, so a soft top-strip contribution below the HUD would still
-	// hit HUD lozenge tops. Constrain to y_ndc ∈ [-0.95, -0.65] with generous softness so
-	// there's a smooth ramp above the "Select data" bar (which starts at y_ndc ≈ -0.60).
+	// Region gates the cloud ADDITIVE contribution to the sky band. Task #10 (composition
+	// order) landed: cloud pass now runs BETWEEN the sky.bmd dome and foreground batches, so
+	// palm/HUD/Mario draw ON TOP of the cloud contribution — the region can span the FULL
+	// visible sky above the horizon without leaking onto foreground. Oracle's visible clouds
+	// occupy roughly image y_frac 0.02..0.45 = y_ndc -0.96..-0.10 (Vulkan clip-y: -1 top).
 	// These are REGION gates, NOT hand-tuned colour parameters — the colour is white (RE'd
 	// RASC×TEXC=TEX) modulated by analytic noise (density mean ≈ 0.23 from 8×8 I4 mean 0.48²).
-	static const float region[4] = { -0.97f, -0.70f, 0.02f, 0.05f };
+	static const float region[4] = { -0.96f, -0.10f, 0.04f, 0.20f };
 	sb::gxsdl::native_cloud_fill(region);
 }
 extern "C" void sb_native_water_paint(void) {

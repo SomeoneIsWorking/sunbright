@@ -963,18 +963,47 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
     // pre-pass etc). Non-sky stages just clearFirst as before. See
     // debug_journal/2026-07-03_sky_bmd_offscreen.md for why the game's sky.bmd batches paint nothing.
     const bool sky_active = sb_native_sky_active();
+    // 2026-07-03 sky-arc task #10 (composition-order fix): the reference cloud strip (shaderKey
+    // 7bc0841d) renders in DrawBuf AfterIndirect Xlu — same buffer as the dome (2d45a7be), palm,
+    // Mario, and HUD — but at a specific slot BETWEEN the dome and the foreground. We filter the
+    // strip out of the scene stream (its TEV emulation saturates additively), and inject the
+    // native cloud pass at the corresponding slot: right after the LAST dome batch, before the
+    // foreground (palm/HUD/Mario/beach) batches. Compute cloud_inject_idx = 1 + max index of any
+    // batch whose shaderKey hi32 == 0x2d45a7be in the scene portion of `batches`. Negative if the
+    // dome isn't present in this frame (pre-settle, non-title map) → no cloud pass fires.
+    int cloud_inject_idx = -1;
+    if (sky_active) {
+        for (int bi = 0; bi < nScenePushed; ++bi) {
+            if ((unsigned)(batches[(size_t)bi].shaderKey >> 32) == 0x2d45a7beu)
+                cloud_inject_idx = bi + 1;
+        }
+    }
     auto draw_seg = [&](int seg_first, int seg_count, bool clearFirst) {
+        // Sky-active first-segment header: water paint runs BEFORE scene batches so filtered
+        // stage-BMD water polys are covered at α=1 and foreground scene batches draw over it.
         if (sky_active && clearFirst) {
-            // 2026-07-03 sky RE arc: sb_native_sky_paint() (hand-tuned oracle-sampled gradient
-            // endpoints + fBm clouds) is REMOVED. The reference sky.bmd dome shape (key
-            // 2d45a7be6c503257, 752 verts, matSrc=vertex CLR0 mean (49,147,227)) now dispatches
-            // via drive_sky's restored 0x20E flag and renders through the standard TEV capture
-            // path — that IS the reference sky, in its native vertex-blue gradient. The frame
-            // clear (frame_begin's g_clear) is the TSky bit-0x8 backdrop-sphere colour set by
-            // sb_native_sky_backdrop (0,0x12,0xEE) and shows through where the dome has α<1.
-            // Additive cloud strips (shaderKey 7bc0841d) are filtered out (see above); a native
-            // cloud pass replicates their fBm intent (task #3 follow-up).
-            sb_native_water_paint();                                            // water arc unchanged
+            sb_native_water_paint();
+        }
+        // Cloud inject split: if this segment straddles cloud_inject_idx, draw the head, run the
+        // cloud pass, then draw the tail. Cloud pass composites additively over the just-drawn
+        // dome and BEFORE the just-not-yet-drawn foreground batches, matching where the reference
+        // cloud strip's slot sits in DrawBuf AfterIndirect Xlu.
+        const int seg_end = seg_first + seg_count;
+        if (cloud_inject_idx > seg_first && cloud_inject_idx < seg_end) {
+            const int head = cloud_inject_idx - seg_first;
+            sb::gxsdl::draw_tev_segment(verts.data(), (int)verts.size(),
+                                        batches.data() + seg_first, head, clearFirst);
+            sb_native_cloud_paint();
+            sb::gxsdl::draw_tev_segment(verts.data(), (int)verts.size(),
+                                        batches.data() + cloud_inject_idx, seg_count - head,
+                                        /*clearFirst=*/false);
+            cloud_inject_idx = -1;   // one-shot (avoid duplicate fire in later segments)
+        } else if (cloud_inject_idx >= 0 && cloud_inject_idx <= seg_first) {
+            // The dome ended in a prior segment; this whole segment is the foreground tail. Fire
+            // the cloud pass BEFORE the segment so clouds land over the previously-drawn dome
+            // and BEFORE this segment's foreground draws.
+            sb_native_cloud_paint();
+            cloud_inject_idx = -1;   // one-shot
             sb::gxsdl::draw_tev_segment(verts.data(), (int)verts.size(),
                                         batches.data() + seg_first, seg_count, clearFirst);
         } else {
@@ -1030,13 +1059,10 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
     // polys (shaderKey 0x224004d9) are FILTERED OUT of the scene batch stream when sky_active, and
     // sb_native_water_paint now runs BEFORE draw_seg (see below-comment placement) so scene batches
     // (palm, Mario, beach) draw ON TOP of the α=1 native water. No overlay-on-foreground bandaid.
-    // SMS_NATIVE_PLATFORM: cloud strip (RE'd 2026-07-03, task #8): additive white noise pattern
-    // matching sky.bmd's shaderKey 0x7bc0841d cloud batches (which we filter out — see the
-    // batch-stream filter above). Runs AFTER scene batches so it composites OVER the sky.bmd
-    // dome (which uses α=255 INVSRCALPHA and would otherwise overwrite the clouds if painted
-    // beneath). Strictly region-gated to the upper sky band so palm canopy / HUD stay untouched.
-    // Order: sky_backdrop clear -> water_paint -> scene draws (dome+palm+HUD) -> cloud_paint -> zzz.
-    sb_native_cloud_paint();
+    // SMS_NATIVE_PLATFORM cloud pass injection moved INTO draw_seg (task #10 composition-order
+    // fix): the cloud pass now fires between the last sky.bmd dome batch and the foreground
+    // (palm/HUD/Mario) batches — mirroring where the RE'd cloud strip's slot sits in the
+    // reference's DrawBuf AfterIndirect Xlu. See cloud_inject_idx above.
     // SMS_NATIVE_PLATFORM: zzz sleep bubbles painted last, over the final composite. No-op unless
     // gpMarioOriginal->mStatus == MARIO_STATUS_SLEEP (title/file-select settled state). Owned by
     // scene_drive.cpp::sb_native_zzz_paint — see debug_journal/2026-07-03_zzz_native_paint.md.
