@@ -309,6 +309,15 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
         const char* p = v; while (*p && s_skipN < 32) { s_skipBidx[s_skipN++] = std::atoi(p);
             const char* c = std::strchr(p, ','); if (!c) break; p = c + 1; } return s_skipN > 0;
     }();
+    // SB_SKIP_RANGE="lo-hi": drop every scene batch whose unfiltered index is in [lo,hi].
+    // Halving-bisect tool for large scenes (Δ144 plaza gameplay batches > SB_SKIP_BIDX 32-cap).
+    static int s_skipLo = -1, s_skipHi = -1;
+    static const bool skipRange = [](){
+        const char* v = std::getenv("SB_SKIP_RANGE"); if (!v || !v[0]) return false;
+        const char* dash = std::strchr(v, '-'); if (!dash) return false;
+        s_skipLo = std::atoi(v); s_skipHi = std::atoi(dash + 1);
+        return s_skipHi >= s_skipLo;
+    }();
     // SB_OPAQUE_ONLY=1: draw only opaque scene batches (blend_mode 0) — isolate whether the
     // translucent/additive passes are blowing the scene to white (overbright diagnosis).
     static const bool opaqueOnly = [](){ const char* v = std::getenv("SB_OPAQUE_ONLY"); return v && v[0] && v[0] != '0'; }();
@@ -355,6 +364,7 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
     for (int i = 0; i < nsbatch; ++i) {
         if (clearBoundary > 0 && i < clearBoundary) continue;   // pre-clear pre-pass → snapshotted+wiped
         if (skipBidx) { bool drop=false; for (int a=0;a<s_skipN;++a) if (i==s_skipBidx[a]){drop=true;break;} if (drop) continue; }
+        if (skipRange && i >= s_skipLo && i <= s_skipHi) continue;
         NvkTevBatch b = sbatches[i];
         if (skipKey && (unsigned)(b.shaderKey >> 32) == skipKey) continue;
 #ifdef SMS_NATIVE_PLATFORM
