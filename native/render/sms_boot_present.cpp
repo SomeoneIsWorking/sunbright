@@ -554,14 +554,19 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
             }
             if (!n) continue;
             std::fprintf(stderr, "[immdbg] ib%d vc=%u x[%.3f,%.3f] y[%.3f,%.3f] rgb=%.2f,%.2f,%.2f a=%.2f "
-                         "tex=%d fmt=0x%x %dx%d blend=%d/%d/%d tev_ns=%d c0env=%08x C1=%d,%d,%d,%d "
+                         "tex=%d fmt=0x%x %dx%d blend=%d/%d/%d tev_ns=%d c0env=%08x "
+                         "R0=%d,%d,%d,%d R1=%d,%d,%d,%d R2=%d,%d,%d,%d "
                          "image=%p isEfbSrc=%d\n",
                          bi, ib.vcount, xmn,xmx,ymn,ymx, r/n,g/n,bl/n,a/n,
                          (int)ib.textured, ib.fmt, ib.w, ib.h, ib.blendType, ib.blendSrc, ib.blendDst,
                          ib.tev ? ib.tev->num_stages : -1,
                          ib.tev ? ib.tev->stage[0].color_env : 0u,
+                         ib.tev?ib.tev->tev_color[1][0]:0, ib.tev?ib.tev->tev_color[1][1]:0,
+                         ib.tev?ib.tev->tev_color[1][2]:0, ib.tev?ib.tev->tev_color[1][3]:0,
                          ib.tev?ib.tev->tev_color[2][0]:0, ib.tev?ib.tev->tev_color[2][1]:0,
                          ib.tev?ib.tev->tev_color[2][2]:0, ib.tev?ib.tev->tev_color[2][3]:0,
+                         ib.tev?ib.tev->tev_color[3][0]:0, ib.tev?ib.tev->tev_color[3][1]:0,
+                         ib.tev?ib.tev->tev_color[3][2]:0, ib.tev?ib.tev->tev_color[3][3]:0,
                          ib.image, ib.image ? sb_boot_capture_texsrc_is_efb_dest(ib.image) : -1);
             if (ib.vcount <= 24) for (uint32_t i = ib.vstart; i < ib.vstart + ib.vcount && (int)i < nimm; ++i) {
                 const SbImmVtx& v = imm[i];

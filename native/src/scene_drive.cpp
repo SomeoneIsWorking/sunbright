@@ -1021,6 +1021,14 @@ extern "C" bool sb_boot_drive_scene() {
 		// fragment shader (gx_sdlgpu.cpp / sms_native_sky.h). Backdrop-sphere bit 0x8 is stripped
 		// inside drive_sky under the same gate, so the recompiled GXDrawSphere doesn't fire.
 		if (sb_native_sky_active()) drive_sky();
+		// Same dropped-draw-bit class as sky/wave: the master perform list fills DrawBuf ChrOpa/Xlu
+		// via the manager group (entering the 3 file-select TFileLoadBlock A/B/C cubes) but never
+		// sets the draw bit — so the cubes are loaded + positioned yet never rendered under
+		// SB_OWN_GXLIST=1, giving the "save-file blocks missing" defect at the title. drive_chr()
+		// faithfully enters each block into ChrOpa and draws it. Was previously only reached on the
+		// !OWN_GXLIST branch further down (which no user recipe hits). SB_NO_DRIVE_CHR opts out.
+		if (const char* e = getenv("SB_NO_DRIVE_CHR"); !(e && e[0] && e[0] != '0'))
+			drive_chr();
 #endif
 		if (dbg()) { static long n=0; if((++n%200)==0||n<=2)
 			std::fprintf(stderr, "[scene-drive] SB_OWN_GXLIST: setup + own drive_wave (real GX perform list owns the rest)\n"); }
