@@ -45,6 +45,19 @@ extern "C" int __wrap_main(int argc, char** argv) {
         // iteration speed, not as the verification path.
         sb_vi_set_pacing(false);
     sb_pad_driver_install();  // headless scripted input, if SB_PAD_SCRIPT/SB_PAD_DRIVE set
+
+    // SB_HARNESS=<test-name>: Tier-1 vs Tier-2 in-process parity harness (task #29,
+    // 2026-07-04 direction pivot). Skips the game entirely; runs a hand-authored
+    // synthetic render sequence through the active tier sink and dumps a
+    // deterministic PPM to scratch/parity/<test>.<tier>.ppm. Compares via
+    // tools/render/tier_parity.sh. See native/src/render_parity.cpp.
+    if (const char* harness = std::getenv("SB_HARNESS"); harness && harness[0]) {
+        extern int sb_render_parity_run(const char*);
+        int rc = sb_render_parity_run(harness);
+        sb::platform::PlatformShutdown();
+        return rc;
+    }
+
     std::printf("[boot] PlatformInit OK -> game main()\n");
 
     // ── ONE boot path (PC-port threading model) ──────────────────────────────────────────────────

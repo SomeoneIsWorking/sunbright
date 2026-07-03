@@ -414,6 +414,8 @@ if(SMS_BUILD_BOOT)
         "${SMS_NATIVE_REPO_ROOT}/native/src/boot.cpp"
         # Headless scripted controller input (SB_PAD_SCRIPT / SB_PAD_DRIVE).
         "${SMS_NATIVE_REPO_ROOT}/native/src/pad_driver.cpp"
+        # SB_HARNESS=<test-name>: Tier-1 vs Tier-2 in-process parity harness.
+        "${SMS_NATIVE_REPO_ROOT}/native/src/render_parity.cpp"
         # Early heap for glslang static-init allocs (runs before main / PlatformInit).
         "${SMS_NATIVE_REPO_ROOT}/native/src/boot_heap_bringup.cpp"
         # SLICE 3a renderer-attach: live J3D scene capture (J3DShape::draw -> NDC tris,
