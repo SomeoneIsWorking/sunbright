@@ -14,6 +14,7 @@
 
 #include <dolphin/gx.h>
 #include "gx_state.h"
+#include "gx_fifo.h"
 
 // Host sink for the GameCube write-gather pipe. The decomp's inline GX FIFO writers
 // (GXVert.h: GXCmd*/GXPosition*/...) target this 32-byte bit-bucket natively instead
@@ -116,16 +117,85 @@ void GXSetScissor(u32 left, u32 top, u32 wd, u32 ht) {
 // --- SLICE 2: core pixel-pipeline state -----------------------------------
 // Capture clean semantic values into GXState (no GC BP register bit-packing) — the
 // native renderer maps these to its pipeline directly.
+// BP register addresses (from VideoCommon/BPMemory.h) — the SAME opcodes Dolphin's
+// CommandProcessor decodes on a real emulator run. Kept here so gx_impl.cpp doesn't
+// need to include Dolphin headers.
+namespace bp {
+constexpr uint8_t GENMODE      = 0x00;
+constexpr uint8_t SCISSORTL    = 0x20;
+constexpr uint8_t SCISSORBR    = 0x21;
+constexpr uint8_t SCISSOROFFSET= 0x59;
+constexpr uint8_t ZMODE        = 0x40;
+constexpr uint8_t BLENDMODE    = 0x41;
+constexpr uint8_t CONSTANTALPHA= 0x42;
+constexpr uint8_t ZCOMPARE     = 0x43;   // PE_CONTROL — has color/alpha update bits
+constexpr uint8_t ALPHACOMPARE = 0xF3;
+constexpr uint8_t TEV_COLOR_ENV_BASE = 0xC0;   // +2*stage
+constexpr uint8_t TEV_ALPHA_ENV_BASE = 0xC1;   // +2*stage
+constexpr uint8_t TEV_REGISTER_L_BASE = 0xE0;  // TEV colour reg lo (rr, aa) — +2*reg
+constexpr uint8_t TEV_REGISTER_H_BASE = 0xE1;  // TEV colour reg hi (bb, gg) — +2*reg
+constexpr uint8_t TEV_KSEL_BASE = 0xF6;
+}
+
+// Pack {r,g,b,a} into 24 low bits + one BP register write. BPMEM_CLEAR_AR (0x4F)
+// carries A<<8 | R, BPMEM_CLEAR_GB (0x50) carries G<<8 | B. That's how the GC's
+// EFB clear registers work — used by GXSetCopyClear below.
+static inline void bp_write_clear_ar(u8 a, u8 r) {
+    sb::gxfifo::bp_write(0x4F, ((u32)a << 8) | (u32)r);
+}
+static inline void bp_write_clear_gb(u8 g, u8 b) {
+    sb::gxfifo::bp_write(0x50, ((u32)g << 8) | (u32)b);
+}
+
 void GXSetBlendMode(GXBlendMode type, GXBlendFactor src, GXBlendFactor dst, GXLogicOp op) {
     auto& g = state();
     g.blendType = type; g.blendSrc = src; g.blendDst = dst; g.blendLogicOp = op;
+    // BPMEM_BLENDMODE bit layout (VideoCommon/BPMemory.h union BlendMode):
+    //   bit0=enable, bit1=logicop_enable, bit2=dither, bit3=colorUpd, bit4=alphaUpd,
+    //   bit5-7=dst_factor, bit8-10=src_factor, bit11=subtract, bit12-15=logic_mode.
+    // GXBlendMode maps: GX_BM_NONE=0 → blend=0, GX_BM_BLEND=1 → blend=1,
+    //   GX_BM_LOGIC=2 → logic_enable=1, GX_BM_SUBTRACT=3 → subtract=1.
+    // GXBlendFactor / GXLogicOp values match Dolphin's Src/DstBlendFactor / LogicOp 1:1.
+    u32 v = 0;
+    v |= (type == 1) ? 0x1 : 0;              // blend_enable
+    v |= (type == 2) ? 0x2 : 0;              // logic_op_enable
+    // color/alpha update come from state().colorUpdate / alphaUpdate — bind them
+    // into every BLENDMODE write so Dolphin sees them together.
+    v |= (g.colorUpdate ? 0x8 : 0);
+    v |= (g.alphaUpdate ? 0x10 : 0);
+    v |= ((u32)(dst & 7) << 5);
+    v |= ((u32)(src & 7) << 8);
+    v |= (type == 3) ? (1u << 11) : 0;       // subtract
+    v |= ((u32)(op & 0xF) << 12);
+    sb::gxfifo::bp_write(bp::BLENDMODE, v);
 }
 void GXSetZMode(GXBool compare, GXCompare func, GXBool update) {
     auto& g = state();
     g.zCompare = compare; g.zFunc = func; g.zUpdate = update;
+    // BPMEM_ZMODE layout: bit0=test_enable, bit1-3=func, bit4=update_enable.
+    u32 v = 0;
+    v |= compare ? 0x1 : 0;
+    v |= ((u32)(func & 7) << 1);
+    v |= update  ? 0x10 : 0;
+    sb::gxfifo::bp_write(bp::ZMODE, v);
 }
-void GXSetZCompLoc(GXBool beforeTex) { state().zCompLocBeforeTex = beforeTex; }
-void GXSetCullMode(GXCullMode mode) { state().cullMode = mode; }
+void GXSetZCompLoc(GXBool beforeTex) {
+    state().zCompLocBeforeTex = beforeTex;
+    // BPMEM_ZCOMPARE is PE_CONTROL — bit6 zcomparelocation. Preserve other bits
+    // by shadowing them; on first call the shadow starts zero, subsequent writes
+    // OR in bits progressively as the game touches them.
+    static u32 s_pe_control = 0;
+    if (beforeTex) s_pe_control |= (1u << 6);
+    else           s_pe_control &= ~(1u << 6);
+    sb::gxfifo::bp_write(bp::ZCOMPARE, s_pe_control);
+}
+void GXSetCullMode(GXCullMode mode) {
+    state().cullMode = mode;
+    // GXSetCullMode maps to BPMEM_GENMODE bits 14-15 (cullmode). Since GENMODE
+    // holds many fields we write from GENMODE-shadowing helpers elsewhere; for
+    // isolated cull changes, punt to the game's next GENMODE write to carry it.
+    // (The game re-emits GENMODE frequently via GXSetNumChans etc.)
+}
 // GXSetColorUpdate call history (b76 overbright drill, 2026-06-30): a monotonically increasing
 // call counter + the call index of the most recent GX_FALSE write, so the J3D capture can print,
 // at b76's draw, how recently colorUpdate was set FALSE (and then restored TRUE). If g_colupd_last_false

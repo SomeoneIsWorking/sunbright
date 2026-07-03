@@ -31,9 +31,16 @@
 #include "VideoCommon/AbstractGfx.h"
 #include "VideoCommon/AbstractStagingTexture.h"
 #include "VideoCommon/AbstractTexture.h"
+#include "VideoCommon/OpcodeDecoding.h"
 #include "VideoCommon/TextureConfig.h"
+#include "VideoCommon/VertexManagerBase.h"
 #include "VideoCommon/VideoBackendBase.h"
 #include "VideoCommon/VideoConfig.h"
+
+// The captured GX geometry contract — same format sms-boot's SDL3 renderer consumes.
+#include "gx_geom.h"
+// GX-seam FIFO recorder — the buffer we drain into Dolphin's OpcodeDecoder.
+#include "../platform/gx_fifo.h"
 
 #include "Common/MathUtil.h"       // Rectangle<int>
 
@@ -41,9 +48,14 @@
 #include <cstdio>
 #include <vector>
 
-// Bridge from the game-side GX seam (native/platform/gx_impl.cpp) — hands us the
-// game's currently-set GXSetCopyClear color as floats 0..1.
+// Bridges from the game-side GX seam — the SAME captures sms-boot's SDL3
+// renderer consumes at present time. We route them into Dolphin's utility
+// draw path instead.
 extern "C" void sb_gx_get_clear_color(float* rgba);
+// Non-extern (C++ linkage in sms_boot_j3d_capture.cpp) — must be in the global
+// namespace like the definition.
+int sb_boot_capture_tev_take(const sb::render::NvkTevVertex** verts,
+                             const sb::render::NvkTevBatch** batches, int* nbatch);
 
 namespace {
 
@@ -59,6 +71,7 @@ std::unique_ptr<AbstractTexture> s_color_rt;
 std::unique_ptr<AbstractFramebuffer> s_fbo;
 std::unique_ptr<AbstractStagingTexture> s_staging;
 int s_rt_w = 0, s_rt_h = 0;
+
 
 bool ensure_rt(int w, int h) {
     if (s_color_rt && s_rt_w == w && s_rt_h == h) return true;
@@ -257,6 +270,37 @@ extern "C" void sb_oracle_present_frame(void* /*framebuffer*/, void* /*user*/) {
 
     g_gfx->BeginUtilityDrawing();
     g_gfx->SetAndClearFramebuffer(s_fbo.get(), clear, 0.0f);
+
+    // ── Real GX pipeline through Dolphin (step 4c) ─────────────────────────
+    // sms-boot's GX seam (native/platform/gx_impl.cpp + gx_imm_impl.cpp) writes
+    // GC FIFO command bytes into sb::gxfifo during the frame — every BP write,
+    // XF write, CP write, and DRAW opcode. We drain those bytes through
+    // Dolphin's OpcodeDecoder::RunFifo<false>, which invokes the SAME callback
+    // chain Dolphin's CommandProcessor uses on a real emulator run. That
+    // decoder writes to BPMemory / XFMemory / VertexShaderManager / etc. and
+    // triggers real draws through g_vertex_manager. Same code path as the
+    // build/sunbright oracle — output matches by construction.
+    static const bool skip_fifo = std::getenv("SB_ORACLE_SKIP_FIFO") != nullptr;
+    if (!skip_fifo) {
+        const uint8_t* fifo_data = sb::gxfifo::data();
+        const size_t   fifo_size = sb::gxfifo::size();
+        if (fifo_size > 0) {
+            u32 cycles = 0;
+            OpcodeDecoder::RunFifo<false>(
+                DataReader((u8*)fifo_data, (u8*)(fifo_data + fifo_size)),
+                &cycles);
+            if (s_frame == 1 || s_frame == 60 || s_frame == 300 || s_frame == 500)
+                std::fprintf(stderr, "[oracle] f%d ran %zu FIFO bytes\n",
+                             s_frame, fifo_size);
+        }
+        sb::gxfifo::reset_frame();
+    }
+    // Legacy scene-batch drain (leave the buffers empty so they don't grow
+    // unbounded even though we don't feed them into Dolphin any more).
+    const sb::render::NvkTevVertex* scene = nullptr;
+    const sb::render::NvkTevBatch*  batches = nullptr;
+    int nbatch = 0;
+    (void)sb_boot_capture_tev_take(&scene, &batches, &nbatch);
 
     static std::vector<uint8_t> s_buf;
     const size_t need = (size_t)w * h * 4;

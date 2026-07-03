@@ -1,6 +1,7 @@
 // engine.cpp — sb::engine::mode() backing. See runtime/engine.h.
 
 #include "../../runtime/engine.h"
+#include "../platform/gx_fifo.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -27,6 +28,9 @@ void init_from_env() {
             std::fprintf(stderr, "[engine] unrecognized SB_RENDER='%s' (use native|oracle), keeping default\n", v);
     }
     std::printf("[engine] render mode = %s\n", mode_name());
+    // GX seam FIFO recording (see native/platform/gx_fifo.h). Enabled iff
+    // GX_ORACLE, so NATIVE_PC pays no cost.
+    sb::gxfifo::init();
 }
 
 RenderMode mode() { return s_mode; }

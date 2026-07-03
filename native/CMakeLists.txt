@@ -142,6 +142,9 @@ target_compile_definitions(sms-native PUBLIC SMS_NATIVE_PLATFORM=1)
 # ---------------------------------------------------------------------------
 file(GLOB SMS_PLATFORM_SOURCES CONFIGURE_DEPENDS
      "${SMS_NATIVE_REPO_ROOT}/native/platform/*_impl.cpp")
+# The GX-seam FIFO recorder (feeds Dolphin's OpcodeDecoder in the GX_ORACLE sink).
+list(APPEND SMS_PLATFORM_SOURCES
+     "${SMS_NATIVE_REPO_ROOT}/native/platform/gx_fifo.cpp")
 
 find_package(Threads REQUIRED)
 
