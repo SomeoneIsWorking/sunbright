@@ -1,41 +1,43 @@
 // sms_native_sky.h — the SMS_NATIVE_PLATFORM sky port (CLAUDE.md 2026-07-03 hard rule).
 //
-// What TSky (reference/sms/src/Map/Sky.cpp) is trying to render:
-//   1. Its bit-0x8 branch draws GXDrawSphere(8, 0x10) inside-out at scale 100000 with the flat
-//      mat colour RGBA(0x00, 0x12, 0xEE, 0x80) and GX_PASSCLR — a solid deep-blue backdrop that
-//      fills every pixel behind the textured dome. It is semantically a "clear-to-this-colour".
-//   2. A camera-tracked sky.bmd hemisphere with a stage-15 slow Y-axis spin (0.035°/frame),
-//      drawn as the entered MActor model.
+// TSky (reference/sms/src/Map/Sky.cpp) draws two things at title (mMap==15):
+//   1. Bit 0x8 — GXDrawSphere(8, 0x10) inside-out at scale 100000, flat chan-mat colour
+//      RGBA(0x00, 0x12, 0xEE, 0x80), single-stage GX_PASSCLR. Semantically "clear-to-this-colour".
+//   2. Bits 0x4|0x200 — MActor::viewCalc + entry that emits the sky.bmd batches:
+//        DOME  (shape key 2d45a7be6c503257, 752 verts, per-vertex CLR0 blue (49,147,227),
+//               NO texture) in DrawBuf AfterIndirect Xlu.
+//        CLOUD STRIP (shape key 7bc0841d43634f53, 40 verts, 2-texgen TEV output
+//               clamp(2·TEX(uv0)·TEX(uv1), 0, 1) with SRC_ALPHA/ONE additive blend, byte-exact
+//               8×8 I4 texture) in DrawBuf Sky Xlu.
+//   3. bit 0x2 — sets the sky MActor's base TR matrix to a camera-centered slow-Y-spin at title
+//      (0.035°/frame), so both dome and cloud strip rotate slowly around Y.
 //
-// Under SMS_NATIVE_PLATFORM this file owns (1): the frame clear becomes TSky's backdrop colour
-// when the active stage renders TSky, i.e. we render the intent (fill screen with the blue)
-// natively via the SDL3-GPU render-pass load-op CLEAR — no TEV combiner, no GXDrawSphere,
-// no 100000-unit sphere. drive_sky() drops bit 0x8 correspondingly, so the recompiled path
-// stops issuing that DrawSphere and the TEV-emulator no longer runs it. Part (2) — the
-// textured dome — is a follow-up (task #1) that will add a dedicated SDL3-GPU sky-dome
-// pipeline; the recompiled J3D dome draw still runs in the meantime.
+// Under SMS_NATIVE_PLATFORM the port is (split across three seams):
+//   - Backdrop (1) → sb_native_sky_backdrop writes TSky's exact chan-mat RGB into the SDL3-GPU
+//     frame clear; drive_sky() drops bit 0x8 so the sphere is neither issued nor TEV-emulated.
+//   - Dome (2a) → drive_sky() keeps bits 0x4|0x200 so sky.bmd's per-vertex-blue hemisphere
+//     renders through the normal J3D scene batch stream (its CLR0 blue IS the sky base colour).
+//   - Cloud strip (2b) → shader-swap: the 40-vertex batch stays in the scene stream with its
+//     real material blend state, but its fragment shader is patched to kCloudStripFragGlsl
+//     (a byte-exact RE'd port of the 2-stage TEV combiner reading the same 8×8 I4 pattern).
+//     sms_boot_present.cpp filters the ph1 draw (off-screen EFB) and keeps the ph4 draw (visible).
+//   - Spin (3) → runs through the recompiled TSky::perform's bit-0x2 branch untouched.
+//
+// A hand-tuned fullscreen gradient + fBm cloud shader was tried and DELETED 2026-07-04 — it was
+// bandaid emulation-chasing (hand-picked endpoint colours, synthetic noise pattern) that
+// duplicated the sky.bmd dome's per-vertex blue and the cloud strip's real texture pattern.
 #pragma once
 #include <cstdint>
 
 extern "C" {
 
-// True when this frame's active scene renders TSky (currently: gpMarDirector->mMap == 15,
-// the title / file-select stage — the only place TSky's backdrop-sphere bit is set on the
-// perform flag; other maps drive TSky with 0x204, sans bit-0x8, so no override is needed).
+// True when this frame's active scene renders TSky's backdrop-sphere path (mMap == 15).
 bool sb_native_sky_active(void);
 
-// Writes the deep-blue TSky backdrop colour into `rgba` (0..1). Bit-exact against TSky's
-// GXSetChanMatColor call: (0x00, 0x12, 0xEE, 0xFF). Alpha forced to 1.0 for the framebuffer
-// clear (GC's 0x80 was chan-mat alpha, unrelated to the FB write).
+// Writes the TSky::perform GXSetChanMatColor RGB (0x00, 0x12, 0xEE) into `rgba` (0..1) with
+// alpha forced to 1.0 (GC's 0x80 was chan-mat alpha, unrelated to the FB clear write). This is
+// the SDL3-GPU frame's clear colour when sb_native_sky_active() is true.
 void sb_native_sky_backdrop(float rgba[4]);
-
-// Paint the native sky over the current SDL3-GPU offscreen colour target, when active. Draws a
-// full-screen vertical gradient from a light zenith blue at the top to a haze horizon blue at the
-// bottom — the visual intent of TSky's backdrop-sphere + sky.bmd dome. Under sms-boot the game's
-// own sky.bmd batches project off-screen (see debug_journal/2026-07-03_sky_bmd_offscreen.md), so
-// this is the ONLY thing that paints the sky. Call this right after gxsdl::frame_begin, before
-// the first draw_tev_segment. No-op when sb_native_sky_active() is false.
-void sb_native_sky_paint(void);
 
 // SMS_NATIVE_PLATFORM zzz sleep bubbles pass (CLAUDE.md 2026-07-03 hard rule). Painted over the
 // final composite when gpMarioOriginal->mStatus == MARIO_STATUS_SLEEP — the visual intent of the

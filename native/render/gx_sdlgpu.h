@@ -49,14 +49,6 @@ void draw_tev_segment(const sb::render::NvkTevVertex* verts, int nverts,
 // released at the next frame_begin. Must be called between segments (not inside a render pass).
 void snapshot_efb(const void* key);
 
-// SMS_NATIVE_PLATFORM sky pass (CLAUDE.md 2026-07-03 hard rule). Paints a vertical blue gradient
-// full-screen — the visual intent of TSky's backdrop-sphere + sky.bmd dome, rendered as a native
-// SDL3-GPU pass instead of trying to make the game's off-screen sky.bmd batches project correctly
-// (see debug_journal/2026-07-03_sky_bmd_offscreen.md). `top` and `horizon` are RGBA[0..1] endpoints
-// (top = sky zenith, horizon = ground line). Called BETWEEN frame_begin and the first
-// draw_tev_segment, using LOAD_OP=LOAD so it paints over the clear without erasing depth.
-void native_sky_fill(const float top[4], const float horizon[4]);
-
 // SMS_NATIVE_PLATFORM native water paint (CLAUDE.md 2026-07-03 hard rule; RE journal
 // debug_journal/2026-07-03_water_re_afterindirect_empty.md). Paints a turquoise gradient over
 // the water region using an alpha ramp keyed on `horizon_ndc_y` (Vulkan clip-y: -1 top, +1 bottom).

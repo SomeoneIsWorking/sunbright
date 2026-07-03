@@ -475,159 +475,43 @@ void draw_tev(const sb::render::NvkTevVertex* verts, int nverts,
 // backdrop-sphere + sky.bmd dome (a blue zenith→horizon gradient behind the plaza) is rendered
 // natively here instead of relying on the game's sky.bmd batches — those project to off-screen
 // clip space under sms-boot (see debug_journal/2026-07-03_sky_bmd_offscreen.md). Uses a
-// vertex-buffer-less full-screen triangle (gl_VertexIndex trick) with a tiny fragment shader that
-// mixes two RGBA colours by normalized screen y. Blend disabled → opaque write; depth test
-// disabled → sky underlays everything drawn afterwards (map/water/HUD).
-constexpr const char kNativeSkyVs[] = R"(#version 450
-// Full-screen triangle from gl_VertexIndex (0,1,2). Emits fragCoord that covers [-1,1]^2.
+// Shared fullscreen-triangle VS. Vertex-buffer-less draw of 3 verts, coordinates from
+// gl_VertexIndex (0,1,2) covering [-1,1]^2 in clip space, emits vNdc for the fragment stage.
+// Reused by the native water paint (kNativeWaterFs) — the sky's own gradient/fBm pass was
+// deleted (2026-07-04) as the RE'd sky port owns the sky end-to-end via the backdrop clear
+// (sb_native_sky_backdrop, bit-exact TSky::perform GXSetChanMatColor), the sky.bmd dome
+// batches (drive_sky keeps 0x4|0x200 so the per-vertex-blue hemisphere renders through the
+// J3D path), and the cloud-strip shader-swap (kCloudStripFragGlsl, byte-exact TEV port).
+constexpr const char kFullscreenVs[] = R"(#version 450
 layout(location=0) out vec2 vNdc;
 void main() {
     vec2 p = vec2(float((gl_VertexIndex << 1) & 2) * 2.0 - 1.0,
                   float(gl_VertexIndex & 2)      * 2.0 - 1.0);
     vNdc = p;
-    // Depth = 1.0 (far plane) so it sits behind anything with depth-test on that draws afterwards.
-    // (This pass writes colour only; z-test/z-write are disabled in the pipeline anyway.)
     gl_Position = vec4(p, 1.0, 1.0);
 }
 )";
-// Fragment shader: vertical gradient + fBm cloud modulator. The gradient is the base sky (blue
-// zenith → haze horizon); the fBm layer composites soft white puffs on top of it to approximate
-// the oracle title screen's sky.bmd cloud strips, which sms-boot can't project on-screen (see
-// debug_journal/2026-07-03_sky_bmd_offscreen.md). Noise is a small hash-based value-noise + 4
-// fBm octaves — cheap enough for a fullscreen pass at 640×480, and completely deterministic
-// (no time/seed input, so the sky is stable across frames — file-select shouldn't animate).
-//
-// Cloud shaping:
-//   * cloud_uv skews UP-and-narrower toward the horizon (u scaled by 1+t, v scaled by 1-0.5t)
-//     so cloud puffs look "further" near the bottom, like distance perspective.
-//   * A vertical mask limits clouds to the upper 2/3 of the sky (0 at horizon, 1 above cloud_band).
-//   * `smoothstep(0.5, 0.75, fbm)` extracts puffs from the noise field — soft edges, no clouds
-//     below 0.5 (so most of the sky is clear blue).
-//   * puffs are mixed toward WHITE, alpha stays 1.0 (opaque paint of the sky pass).
-constexpr const char kNativeSkyFs[] = R"(#version 450
-layout(location=0) in vec2 vNdc;
-layout(set=3, binding=0) uniform Sky { vec4 top; vec4 horizon; } sky;
-layout(location=0) out vec4 outColor;
-
-float hash(vec2 p) {
-    p = fract(p * vec2(123.34, 456.21));
-    p += dot(p, p + 45.32);
-    return fract(p.x * p.y);
-}
-float vnoise(vec2 p) {
-    vec2 i = floor(p);
-    vec2 f = fract(p);
-    // smoothstep interpolation weights.
-    vec2 w = f * f * (3.0 - 2.0 * f);
-    float a = hash(i + vec2(0.0, 0.0));
-    float b = hash(i + vec2(1.0, 0.0));
-    float c = hash(i + vec2(0.0, 1.0));
-    float d = hash(i + vec2(1.0, 1.0));
-    return mix(mix(a, b, w.x), mix(c, d, w.x), w.y);
-}
-float fbm(vec2 p) {
-    float v = 0.0;
-    float a = 0.5;
-    for (int i = 0; i < 4; ++i) {
-        v += a * vnoise(p);
-        p *= 2.03;                                 // slight non-integer so octaves don't align
-        a *= 0.5;
-    }
-    return v;
-}
-void main() {
-    // Vulkan NDC: y=-1 is TOP of the framebuffer, y=+1 is BOTTOM. t rises with vNdc.y so
-    // t=0 at zenith, t=1 at horizon.
-    float t = clamp(0.5 + 0.5 * vNdc.y, 0.0, 1.0);
-    vec4 base = mix(sky.top, sky.horizon, t);
-
-    // fBm cloud layer over the upper 2/3 of the sky.
-    vec2 uv = vec2(vNdc.x * (1.0 + 0.6 * t), (1.0 - t) * 0.9) * 3.0;
-    float n = fbm(uv);
-    float band = 1.0 - smoothstep(0.55, 0.95, t);   // clouds fade out toward the horizon
-    float cloud = smoothstep(0.48, 0.78, n) * band;
-
-    vec3 rgb = mix(base.rgb, vec3(1.0), 0.85 * cloud);
-    outColor = vec4(rgb, 1.0);
-}
-)";
-
-struct NativeSkyPush { float top[4]; float horizon[4]; };
-static SDL_GPUShader*           g_sky_vs   = nullptr;
-static SDL_GPUShader*           g_sky_fs   = nullptr;
-static SDL_GPUGraphicsPipeline* g_sky_pipe = nullptr;
-
-static SDL_GPUGraphicsPipeline* ensure_sky_pipeline() {
-    if (g_sky_pipe) return g_sky_pipe;
-    std::vector<uint32_t> vspv = sb_compile_vertex_glsl(kNativeSkyVs);
-    std::vector<uint32_t> fspv = sb_compile_fragment_glsl(kNativeSkyFs);
-    if (vspv.empty() || fspv.empty()) {
-        std::fprintf(stderr, "\n=== FATAL [gxsdl]: native sky shader compile failed (vs=%d fs=%d) ===\n",
-                     (int)vspv.empty(), (int)fspv.empty());
+// Shared fullscreen-triangle VS module (compiled once, reused by any fullscreen paint pass).
+// Water paint uses this; the sky's own fBm/gradient paint was deleted with the 2026-07-04 RE'd
+// sky port.
+static SDL_GPUShader* g_fullscreen_vs = nullptr;
+static SDL_GPUShader* ensure_fullscreen_vs() {
+    if (g_fullscreen_vs) return g_fullscreen_vs;
+    std::vector<uint32_t> vspv = sb_compile_vertex_glsl(kFullscreenVs);
+    if (vspv.empty()) {
+        std::fprintf(stderr, "\n=== FATAL [gxsdl]: fullscreen VS compile failed ===\n");
         std::fflush(stderr); std::abort();
     }
-    // The vertex shader is stage-declared inside its SPIR-V module. Create with VERTEX stage.
     SDL_GPUShaderCreateInfo vci{};
     vci.code = (const Uint8*)vspv.data(); vci.code_size = vspv.size() * 4; vci.entrypoint = "main";
     vci.format = SDL_GPU_SHADERFORMAT_SPIRV; vci.stage = SDL_GPU_SHADERSTAGE_VERTEX;
     vci.num_samplers = 0; vci.num_uniform_buffers = 0;
-    g_sky_vs = SDL_CreateGPUShader(g_dev, &vci);
-    g_sky_fs = make_shader(fspv.data(), fspv.size() * 4, SDL_GPU_SHADERSTAGE_FRAGMENT,
-                           /*samplers*/0, /*uniform*/1);
-    if (!g_sky_vs || !g_sky_fs) {
-        std::fprintf(stderr, "[gxsdl] native sky shader create failed vs=%p fs=%p err=%s\n",
-                     (void*)g_sky_vs, (void*)g_sky_fs, SDL_GetError());
+    g_fullscreen_vs = SDL_CreateGPUShader(g_dev, &vci);
+    if (!g_fullscreen_vs) {
+        std::fprintf(stderr, "[gxsdl] fullscreen VS create failed: %s\n", SDL_GetError());
         std::abort();
     }
-    SDL_GPUColorTargetDescription ctd{};
-    ctd.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
-    ctd.blend_state.enable_blend = false;
-    SDL_GPUGraphicsPipelineCreateInfo gpi{};
-    gpi.vertex_shader = g_sky_vs;
-    gpi.fragment_shader = g_sky_fs;
-    gpi.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
-    gpi.vertex_input_state.num_vertex_buffers = 0;
-    gpi.vertex_input_state.num_vertex_attributes = 0;
-    gpi.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
-    gpi.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
-    gpi.rasterizer_state.front_face = SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
-    gpi.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
-    gpi.depth_stencil_state.enable_depth_test = false;
-    gpi.depth_stencil_state.enable_depth_write = false;
-    gpi.target_info.num_color_targets = 1;
-    gpi.target_info.color_target_descriptions = &ctd;
-    gpi.target_info.has_depth_stencil_target = true;
-    gpi.target_info.depth_stencil_format = DEPTH_FMT;
-    g_sky_pipe = SDL_CreateGPUGraphicsPipeline(g_dev, &gpi);
-    if (!g_sky_pipe) {
-        std::fprintf(stderr, "[gxsdl] native sky pipeline create failed: %s\n", SDL_GetError());
-        std::abort();
-    }
-    return g_sky_pipe;
-}
-
-void native_sky_fill(const float top[4], const float horizon[4]) {
-    if (!g_ok || !g_in_frame || !g_cmd || !top || !horizon) return;
-    SDL_GPUGraphicsPipeline* pipe = ensure_sky_pipeline();
-    if (!pipe) return;
-
-    NativeSkyPush push{};
-    for (int i = 0; i < 4; ++i) { push.top[i] = top[i]; push.horizon[i] = horizon[i]; }
-
-    // This IS the frame's first render pass — frame_begin only sets the pending clear colour, it
-    // doesn't paint. So CLEAR both colour and depth here (the gradient's fullscreen triangle then
-    // overwrites the colour clear). The caller MUST switch the subsequent first draw_tev_segment
-    // to clearFirst=false, or its LOAD_OP=CLEAR erases the gradient we just painted.
-    SDL_GPUColorTargetInfo cti{}; cti.texture = g_color; cti.clear_color = g_clear;
-    cti.load_op = SDL_GPU_LOADOP_CLEAR; cti.store_op = SDL_GPU_STOREOP_STORE;
-    SDL_GPUDepthStencilTargetInfo dti{}; dti.texture = g_depth; dti.clear_depth = 1.0f;
-    dti.load_op = SDL_GPU_LOADOP_CLEAR; dti.store_op = SDL_GPU_STOREOP_STORE;
-    dti.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE; dti.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
-    SDL_GPURenderPass* rp = SDL_BeginGPURenderPass(g_cmd, &cti, 1, &dti);
-    SDL_BindGPUGraphicsPipeline(rp, pipe);
-    SDL_PushGPUFragmentUniformData(g_cmd, 0, &push, (Uint32)sizeof(push));
-    SDL_DrawGPUPrimitives(rp, 3, 1, 0, 0);
-    SDL_EndGPURenderPass(rp);
+    return g_fullscreen_vs;
 }
 
 // ── SMS_NATIVE_PLATFORM native water paint ─────────────────────────────────────────────────────
@@ -669,8 +553,7 @@ static SDL_GPUGraphicsPipeline* g_water_pipe = nullptr;
 
 static SDL_GPUGraphicsPipeline* ensure_water_pipeline() {
     if (g_water_pipe) return g_water_pipe;
-    // Reuse kNativeSkyVs — the fullscreen-triangle vertex shader that emits vNdc directly.
-    if (!g_sky_vs) (void)ensure_sky_pipeline();
+    SDL_GPUShader* vs = ensure_fullscreen_vs();
     std::vector<uint32_t> fspv = sb_compile_fragment_glsl(kNativeWaterFs);
     if (fspv.empty()) {
         std::fprintf(stderr, "\n=== FATAL [gxsdl]: native water shader compile failed ===\n");
@@ -693,7 +576,7 @@ static SDL_GPUGraphicsPipeline* ensure_water_pipeline() {
     ctd.blend_state.alpha_blend_op         = SDL_GPU_BLENDOP_ADD;
     ctd.blend_state.color_write_mask       = 0xf;
     SDL_GPUGraphicsPipelineCreateInfo gpi{};
-    gpi.vertex_shader   = g_sky_vs;   // reuse full-screen NDC-passthrough VS
+    gpi.vertex_shader   = vs;   // shared fullscreen-triangle VS
     gpi.fragment_shader = g_water_fs;
     gpi.primitive_type  = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
     gpi.vertex_input_state.num_vertex_buffers    = 0;

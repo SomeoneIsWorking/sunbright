@@ -38,7 +38,7 @@
 #include <M3DUtil/MActor.hpp>                             // MActor::getModel
 #include <Map/Sky.hpp>                                    // TSky (sky anim probe)
 #include "sms_native_sky.h"                                // SMS_NATIVE_PLATFORM sky-backdrop seam
-#include "gx_sdlgpu.h"                                     // sb::gxsdl::native_sky_fill
+#include "gx_sdlgpu.h"                                     // sb::gxsdl::native_water_fill
 #include <Strategic/ObjModel.hpp>                         // TMActorKeeper
 #include <Enemy/Conductor.hpp>                             // gpConductor (NPC calc pass)
 #include <JSystem/J3D/J3DGraphAnimator/J3DModel.hpp>      // J3DModel / J3DModelData
@@ -183,34 +183,16 @@ void drive_sky() {
 	u32 f = 0x20E;
 	if (const char* e = std::getenv("SB_SKY_FLAG"); e && e[0]) f = (u32)std::strtoul(e, nullptr, 16);
 #ifdef SMS_NATIVE_PLATFORM
-	// (Sky-model registration moved to sb_boot_drive_scene so it runs under SB_OWN_GXLIST too.)
-	// Under SMS_NATIVE_PLATFORM at map==15 the native SDL3-GPU sky pass (sb_native_sky_paint in
-	// gx_sdlgpu.cpp) OWNS the sky visual — gradient (deep-blue zenith → light-blue horizon) +
-	// fBm cloud layer, painted before the first draw_tev_segment. It IS the RE'd intent of both
-	//   * bit 0x8 (TSky::perform GXDrawSphere backdrop, RGBA(0,0x12,0xEE)) — replaced by the
-	//     native gradient + backdrop clear; and
-	//   * bits 0x4|0x200 (MActor::viewCalc + entry that emit sky.bmd's shape batches, incl. the
-	//     2-textured cloud strip = "DrawBuf Sky Xlu" b2/b52 shaderKey 7bc0841d) — that shape's
-	//     TEV emulation over-brights native's top-left (cell(0,0) [-142,-88,-24]) because native
-	//     binds an 8×8 fallback texture (mean 122,122,122) and the additive blend saturates.
-	// RE'd Sky.cpp: [1] the visible intent is the gradient + subtle cloud pattern; [2] map==15
-	// runs no `sky` anim (Sky::load skips startAllAnim) so the sky.bmd MActor's cloud strip is
-	// static texture-repeat only — no game state to preserve; [3] unk48 += unk4C is a pan state
-	// that doesn't matter if nothing draws it. Under SMS_NATIVE_PLATFORM at map==15 we therefore
-	// drop the whole sky-group draw payload: 0x2 kept (matrix setup, cheap and harmless), 0x4/
-	// 0x8/0x200 dropped. Verified 2026-07-03: cell(0,0) mean|Δ| 80.6→24.0 (-70%), overall 57.1→
-	// 53.1, giant white cloud gone. See handoff_tsky_cloud_re_and_port.md and
-	// [[tsky-cloud-strip-7bc0841d-owner-2026-07-03]]. SB_SKY_FLAG override wins for A/B.
+	// SMS_NATIVE_PLATFORM sky port (2026-07-04, see sms_native_sky.h). Drop bit 0x8 (TSky's
+	// scale-100000 inside-out GXDrawSphere backdrop) — its RE'd intent is a solid clear to the
+	// chan-mat RGB(0, 0x12, 0xEE), which sb_native_sky_backdrop bit-exactly hands to the SDL3-GPU
+	// frame clear. Bits 0x4|0x200 (MActor viewCalc + entry) STAY on: the sky.bmd dome renders as
+	// scene batches through the normal J3D path — its per-vertex CLR0 blue (49,147,227) IS the
+	// sky base colour that used to be a hand-tuned gradient bandaid. The cloud strip (shape key
+	// 7bc0841d) also stays in the batch stream; its fragment shader is swapped to a byte-exact
+	// RE'd TEV port (kCloudStripFragGlsl) in sms_boot_present.cpp. Bit 0x2 (base TR spin)
+	// continues to run through the recompiled TSky::perform. SB_SKY_FLAG=hex overrides for A/B.
 	if (sb_native_sky_active() && !(std::getenv("SB_SKY_FLAG") && std::getenv("SB_SKY_FLAG")[0])) {
-		// 2026-07-03 sky RE arc: restore MActor viewCalc (0x4) + entry (0x200) so sky.bmd's
-		// per-vertex-coloured blue dome (shape key 2d45a7be6c503257, 752 verts, CLR0 mean
-		// (49,147,227)) reaches capture and renders as its faithful vertex-blue gradient — the
-		// direct "port the reference" path instead of the hand-tuned sb_native_sky_paint. Bit
-		// 0x8 (TSky::perform GXDrawSphere solid backdrop RGBA(0,0x12,0xEE)) is dropped and
-		// replaced by sb_native_sky_backdrop's frame clear (bit-exact chan-mat colour, semantic
-		// = "clear behind the dome"). Cloud strips (shaderKey 7bc0841d, additive TEXxTEX)
-		// are filtered out of the scene batch stream in sms_boot_present.cpp (their TEV
-		// emulation over-brightens); a follow-up native cloud pass replicates their intent.
 		f &= ~0x8u;
 	}
 #endif
@@ -1207,29 +1189,9 @@ extern "C" void sb_native_sky_backdrop(float rgba[4]) {
 	rgba[3] = 1.0f;
 }
 
-// The vertical-gradient endpoints for the native sky pass. Approximates the oracle title-screen
-// sky where the game intent is a light zenith blue fading into a horizon haze. The dome's
-// per-vertex ras (batch #3 vColor = 151/192/255 = light sky blue) is what the ORIGINAL asset
-// carried; horizon is a lighter haze so the transition into the water/palm strip blends softly.
-// Kept as constants — the file-select is one fixed camera choice; a per-camera lookup would be
-// premature. Reproduce with SB_NATIVE_SKY_DBG=1 tools/render/title_sbs.sh.
-extern "C" void sb_native_sky_paint(void) {
-	if (!sb_native_sky_active()) return;
-	// Gradient endpoints matched against oracle by direct pixel sampling of the settled title-
-	// screen frame (Dolphin-GX baseline). Sampled 2026-07-03 with `title_gx_oracle.png` at the
-	// LEFT-half clean-sky strip (avoiding palm canopy on the right):
-	//   * y 0.02–0.05 (top edge):   oracle (30, 140, 224).
-	//   * y 0.25–0.32 (mid sky):    oracle (94, 160, 233).
-	//   * y 0.38–0.42 (near horiz): oracle (99, 117, 250).
-	// Previous endpoints (40,120,190) / (140,195,230) were guesses that undershot green at
-	// zenith by ~20 and blue at horizon by ~20, leaving native's zenith reading too gray
-	// (native (49,126,193) vs oracle (30,140,224) — R+19 G-14 B-31). Endpoints now placed AT
-	// the sampled sky pixels so the fBm cloud layer modulates a correctly-toned base.
-	// Alpha = 1.0 (opaque paint).
-	static const float top[4]     = {  30.0f/255.0f, 140.0f/255.0f, 224.0f/255.0f, 1.0f };
-	static const float horizon[4] = { 130.0f/255.0f, 180.0f/255.0f, 250.0f/255.0f, 1.0f };
-	sb::gxsdl::native_sky_fill(top, horizon);
-}
+// (sb_native_sky_paint / native_sky_fill / kNativeSkyFs deleted 2026-07-04 as bandaid.
+// The RE'd sky port owns the sky through the backdrop clear + sky.bmd dome batches + cloud-
+// strip shader-swap; see sms_native_sky.h for the seam-by-seam breakdown.)
 
 // ── SMS_NATIVE_PLATFORM native water paint ─────────────────────────────────────────────────────
 // Gates on the same stage as the sky (map==15 = title screen). RE journal:
