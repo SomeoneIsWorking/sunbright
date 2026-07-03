@@ -52,12 +52,16 @@ echo "[sbs] launching native (build-native/sms-boot, SB_STAGE=15 SB_OWN_GXLIST=1
 # per-perform trace confirms press 1 at frame 86 (state 9→3), press 2 at frame 586
 # (state 3→8), landed at state 0 by frame 746 (verified 2026-07-02 with SB_SEL_DBG=1).
 # Native VI counting is closer to TCardLoad's; use frame 250 / 500 (same interval).
-# SB_SEL_DUMP_SETTLED=8 gates dump on mState==0 && unk10==2 && camera_view_settled().
+# SB_SEL_DUMP_SETTLED=N gates dump on mState==0 && unk10==2 && camera_view_settled()
+# and dumps N frames from that point. We pick the LAST frame in the shell below (mtime
+# newest). N=500 gives Mario time to transition through waitingStart → sleepy → sit_wait
+# (the cross-legged sit oracle shows) — with SB_SEL_DUMP_SETTLED=8 Mario was captured
+# in his standing WAIT anim (7 frames post-waitingStart, before waiting()→SLEEPY fires).
 timeout -s KILL "$((SETTLE + 5))" setarch -R env \
   SUNBRIGHT_DISC="$HERE/scratch/disc/sms.iso" SB_THP_FAST=1 SB_TURBO=1 \
   SB_HOST_ALLOC_CAP_MB=3072 SB_STAGE=15 SB_SCENARIO=0 SB_OWN_GXLIST=1 \
   SB_PAD_SCRIPT="250:START 282:- 500:START 532:-" \
-  SB_SEL_DUMP_SETTLED=8 SB_WATCHDOG_SECS=0 \
+  SB_SEL_DUMP_SETTLED=500 SB_WATCHDOG_SECS=0 \
   ${SB_NATIVE_SKY_DBG:+SB_NATIVE_SKY_DBG=$SB_NATIVE_SKY_DBG} \
   ./build-native/sms-boot > scratch/passes/sbs_native.log 2>&1 &
 NPID=$!
