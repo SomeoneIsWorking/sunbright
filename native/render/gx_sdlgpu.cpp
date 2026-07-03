@@ -121,22 +121,44 @@ SDL_GPUShader* ensure_frag(uint64_t shaderKey, const char* glsl) {
     std::vector<uint32_t> spv = sb_compile_fragment_glsl(src);
     SDL_GPUShader* sh = spv.empty() ? nullptr
         : make_shader(spv.data(), spv.size() * 4, SDL_GPU_SHADERSTAGE_FRAGMENT, /*samplers*/8, /*uniform*/1);
-    if (!sh) std::fprintf(stderr, "[gxsdl] TEV frag compile/create failed (key=%llx)\n",
-                          (unsigned long long)shaderKey);
+    if (!sh) {
+        // FAIL LOUD (CLAUDE.md 2026-06-21). A silent null here caches to g_frag_cache, becomes
+        // a null pipeline, and every batch using that shader is silently skipped by
+        // draw_tev_segment — the real defect (bad GLSL, missing symbol, whatever) then only
+        // surfaces as "nothing renders in this area" many turns later. Print the offending
+        // source so the compile error is actionable, then abort.
+        std::fprintf(stderr, "\n=== FATAL [gxsdl]: TEV fragment shader compile/create failed ===\n"
+                             "  key = %llx\n  spv empty? %d\n  original glsl:\n%s\n",
+                     (unsigned long long)shaderKey, (int)spv.empty(), glsl ? glsl : "(null)");
+        std::fflush(stderr);
+        std::abort();
+    }
     g_frag_cache.emplace(shaderKey, sh);
     return sh;
 }
 
-// SMS_NATIVE_PLATFORM: the native sky.bmd dome fragment shader (CLAUDE.md 2026-07-03 hard rule).
+// SMS_NATIVE_PLATFORM: the native sky.bmd dome fragment shaders (CLAUDE.md 2026-07-03 hard rule).
 // TSky's TEV combiner was multi-stage integer math that saturated to overbright-white when run
-// through sb_tev_gen_fragment. The dome's INTENDED visual is simply "sample the sky texture"
-// (a zenith→horizon blue gradient in tex_0 for the base pass, cloud-strip textures for the
-// overlay passes) — so this shader ignores TEV and outputs texture.rgba directly. Same input
-// layout as tev.vert / the TEV frag (fUV[0..7] varyings, sampler2D tex_0..tex_7) so we can
-// swap it in without touching the vertex shader or the pipeline vertex/uniform bindings. Blend/
-// depth state stays per-batch (the dome's base pass is opaque; cloud strips blend via GX blend
-// factors the capture already forwarded — same batch state as before, just a different frag).
-constexpr const char kNativeSkyFragGlsl[] = R"(#version 450
+// through sb_tev_gen_fragment. Empirical batch inventory at settled title (SB_NATIVE_SKY_DBG):
+//   * dome BASE (~1800 verts, no texmap, per-vertex ras = sky-blue like 151,192,255): a smooth
+//     zenith-to-horizon blue gradient MADE OF VERTEX COLOURS. No texture at all. On oracle this
+//     draws as a smooth blue dome.
+//   * cloud STRIPS (~24-48 verts each, 128x256 cloud tex, ras=white, blend=NONE): opaque
+//     textured mesh strips that carry the puffy-cloud pattern. Their texture is a near-monochrome
+//     white cloud shape with a variable-alpha silhouette; on oracle the TEV combines it with the
+//     dome BEHIND (already-written blue) so clouds appear soft. With blend=none and RGB=white
+//     everywhere, a raw sample writes hard white triangles (the visible defect).
+// Two forked shaders port the intent:
+//   * kNativeSkyBaseFrag  → just fColor (per-vertex sky gradient).
+//   * kNativeSkyCloudFrag → mix(fColor.rgb, vec3(1), tex.a): use cloud-tex ALPHA as a whiteness
+//     mask over the underlying sky colour carried by the vertex ras. Where tex.a=0 the vertex-
+//     colour blue passes through (cloud absent); where tex.a=1 the pixel goes white (thick
+//     cloud). This is the intent even though blend=none — the "blending" is done in the fragment
+//     with the batch's own vertex colour as the base. It gives soft cloud edges via texture
+//     interpolation and preserves the blue dome behind.
+// Same input layout as tev.vert / the TEV frag (fUV[0..7] varyings, sampler2D tex_0..tex_7).
+// Selected in ensure_pipeline by whether the batch has a real tex[0] bound.
+constexpr const char kNativeSkyBaseFrag[] = R"(#version 450
 layout(location=0) in vec4 fColor;
 layout(location=1) in vec4 fColor1;
 layout(location=2) in vec4 fUV0_1;
@@ -151,29 +173,60 @@ layout(set=2, binding=4) uniform sampler2D tex_4;
 layout(set=2, binding=5) uniform sampler2D tex_5;
 layout(set=2, binding=6) uniform sampler2D tex_6;
 layout(set=2, binding=7) uniform sampler2D tex_7;
-layout(set=3, binding=0) uniform Mat { ivec4 kcolor[4]; ivec4 tevreg[4]; };  // kept for binding parity with tev.vert; unused
+layout(set=3, binding=0) uniform Mat { ivec4 kcolor[4]; ivec4 tevreg[4]; };
 layout(location=0) out vec4 outColor;
+// Batch without a texmap (dome base): just the interpolated vertex colour.
+// (RE'd from the recompiled fragGlsl 2d45a7be6c503257 — Stage 0: Cprev = rastemp.rgb.)
+void main() { outColor = vec4(fColor.rgb, 1.0); }
+)";
+
+constexpr const char kNativeSkyCloudFrag[] = R"(#version 450
+layout(location=0) in vec4 fColor;
+layout(location=1) in vec4 fColor1;
+layout(location=2) in vec4 fUV0_1;
+layout(location=3) in vec4 fUV2_3;
+layout(location=4) in vec4 fUV4_5;
+layout(location=5) in vec4 fUV6_7;
+layout(set=2, binding=0) uniform sampler2D tex_0;
+layout(set=2, binding=1) uniform sampler2D tex_1;
+layout(set=2, binding=2) uniform sampler2D tex_2;
+layout(set=2, binding=3) uniform sampler2D tex_3;
+layout(set=2, binding=4) uniform sampler2D tex_4;
+layout(set=2, binding=5) uniform sampler2D tex_5;
+layout(set=2, binding=6) uniform sampler2D tex_6;
+layout(set=2, binding=7) uniform sampler2D tex_7;
+layout(set=3, binding=0) uniform Mat { ivec4 kcolor[4]; ivec4 tevreg[4]; };
+layout(location=0) out vec4 outColor;
+// Textured batch (cloud strip / horizon fade). RE'd from the recompiled fragGlsl
+// 224004d94d5fc178 — Stage 0: Cprev.rgb = textemp.rgb * rastemp.rgb / 255, alpha analogous.
+// Same formula in floating-point; bypasses sb_tev_gen_fragment's integer path which had a
+// history of overbright-white saturation for sky combiners.
 void main() {
-    // Render the intent: sample the dome's texture. Sky.bmd assigns each shape/material its own
-    // texmap (base gradient, cloud strips, horizon fade); the game's TEV stages composed them
-    // with an overbright combiner. Native: just take tex_0 raw. Because each SHAPE has its own
-    // batch with its own tex[0] set by the capture, tex_0 already IS the material's designated
-    // texmap for this batch's draw.
-    outColor = texture(tex_0, fUV0_1.xy);
+    vec4 t = texture(tex_0, fUV0_1.xy);
+    outColor = t * fColor;
 }
 )";
 
-SDL_GPUShader* ensure_native_sky_frag() {
-    // Cache key well outside the TEV shaderKey space (fnv64 hashes never land at 0). Reuse the
-    // main frag cache so cleanup is uniform.
-    constexpr uint64_t kSkyKey = 0x5B5B5F534B595F5Bull;   // "[[_SKY_[" — unlikely collision
-    auto it = g_frag_cache.find(kSkyKey);
+SDL_GPUShader* ensure_native_sky_frag(bool has_texture) {
+    // Two cache slots outside the TEV shaderKey space.
+    const uint64_t key = has_texture ? 0x5B5F534B595F435Dull /*"[_SKY_C]"*/
+                                     : 0x5B5F534B595F425Dull /*"[_SKY_B]"*/;
+    auto it = g_frag_cache.find(key);
     if (it != g_frag_cache.end()) return it->second;
-    std::vector<uint32_t> spv = sb_compile_fragment_glsl(kNativeSkyFragGlsl);
+    const char* src = has_texture ? kNativeSkyCloudFrag : kNativeSkyBaseFrag;
+    std::vector<uint32_t> spv = sb_compile_fragment_glsl(src);
     SDL_GPUShader* sh = spv.empty() ? nullptr
         : make_shader(spv.data(), spv.size() * 4, SDL_GPU_SHADERSTAGE_FRAGMENT, /*samplers*/8, /*uniform*/1);
-    if (!sh) std::fprintf(stderr, "[gxsdl] native sky frag compile/create failed\n");
-    g_frag_cache.emplace(kSkyKey, sh);
+    if (!sh) {
+        // FAIL LOUD — see ensure_frag for rationale. This one caught the (void)texture(...)
+        // GLSL-invalid line the first place I hit it, instead of hiding as "sky same as before".
+        std::fprintf(stderr, "\n=== FATAL [gxsdl]: native sky fragment shader compile/create failed ===\n"
+                             "  has_texture=%d  spv empty? %d\n  source:\n%s\n",
+                     (int)has_texture, (int)spv.empty(), src);
+        std::fflush(stderr);
+        std::abort();
+    }
+    g_frag_cache.emplace(key, sh);
     return sh;
 }
 
@@ -189,17 +242,17 @@ SDL_GPUGraphicsPipeline* ensure_pipeline(const sb::render::NvkTevBatch& b) {
                    | ((uint32_t)(b.dst_alpha_force & 1) << 16);
     uint64_t key = b.shaderKey * 1099511628211ull ^ state ^ ((uint64_t)b.dst_alpha_val << 40);
 #ifdef SMS_NATIVE_PLATFORM
-    // Native-sky batches share ONE pipeline per blend/depth state (independent of the TEV-side
-    // shaderKey), so the key namespace is folded down to just the state bits. Sentinel high bit
-    // keeps them out of any TEV pipeline's slot.
-    if (b.is_native_sky) key = 0xB000000000000000ull | state;
+    // Native-sky pipelines share ONE per (has_texture, blend/depth state). Sentinel high bit
+    // keeps them out of any TEV pipeline's slot. `has_texture` picks the base-vs-cloud shader.
+    const bool native_sky_has_tex = b.is_native_sky && b.tex[0].rgba && b.tex[0].w && b.tex[0].h;
+    if (b.is_native_sky) key = 0xB000000000000000ull | state | ((uint64_t)native_sky_has_tex << 60);
 #endif
     auto it = g_pipe_cache.find(key);
     if (it != g_pipe_cache.end()) return it->second;
 
     SDL_GPUShader* fs =
 #ifdef SMS_NATIVE_PLATFORM
-        b.is_native_sky ? ensure_native_sky_frag() :
+        b.is_native_sky ? ensure_native_sky_frag(native_sky_has_tex) :
 #endif
         ensure_frag(b.shaderKey, b.fragGlsl);
     if (!fs) { g_pipe_cache.emplace(key, nullptr); return nullptr; }
@@ -478,6 +531,9 @@ void draw_tev_segment(const sb::render::NvkTevVertex* verts, int nverts,
     if (nverts > 0 && verts && nbatch > 0 && batches) {
         SDL_GPUBufferBinding vb{}; vb.buffer = g_vbuf;
         SDL_BindGPUVertexBuffers(rp, 0, &vb, 1);
+#ifdef SMS_NATIVE_PLATFORM
+        uint32_t skyBatchIdx = 0;   // per-render-pass reset for SB_SKY_SKIP_HEX
+#endif
         for (int bi = 0; bi < nbatch; ++bi) {
             const auto& b = batches[bi];
             if (b.vcount == 0 || b.vstart >= (uint32_t)nverts) continue;
@@ -485,6 +541,28 @@ void draw_tev_segment(const sb::render::NvkTevVertex* verts, int nverts,
             if (b.vstart + count > (uint32_t)nverts) count = (uint32_t)nverts - b.vstart;
             SDL_GPUGraphicsPipeline* pipe = ensure_pipeline(b);
             if (!pipe) continue;
+#ifdef SMS_NATIVE_PLATFORM
+            // DIAG (2026-07-03, temporary): SB_SKY_SKIP_HEX="bitmask" — skip the Nth sky batch
+            // in this render pass if bit N set. Bisects which sky batches produce visible defects.
+            // SB_SKY_ONLY=1 — draw ONLY the sky batches (skip everything else). To see if the
+            // sky-tagged draws land where we expect.
+            if (b.is_native_sky) {
+                static uint32_t skipMask = ~0u;
+                if (skipMask == ~0u) {
+                    const char* e = std::getenv("SB_SKY_SKIP_HEX");
+                    skipMask = (e && e[0]) ? (uint32_t)std::strtoul(e, nullptr, 16) : 0;
+                }
+                if (skipMask & (1u << (skyBatchIdx & 31))) { ++skyBatchIdx; continue; }
+                ++skyBatchIdx;
+            } else {
+                static int onlySky = -1;
+                if (onlySky < 0) {
+                    const char* e = std::getenv("SB_SKY_ONLY");
+                    onlySky = (e && e[0] && e[0] != '0') ? 1 : 0;
+                }
+                if (onlySky) continue;
+            }
+#endif
             SDL_BindGPUGraphicsPipeline(rp, pipe);
             SDL_PushGPUFragmentUniformData(g_cmd, 0, &b.push, (Uint32)sizeof(b.push));
             SDL_GPUTextureSamplerBinding tsb[8];
@@ -518,6 +596,116 @@ void draw_tev(const sb::render::NvkTevVertex* verts, int nverts,
     // Single-pass equivalent: clear the target, then draw everything (the non-segmented path).
     // (The per-frame texture/snapshot caches are flushed in frame_begin.)
     draw_tev_segment(verts, nverts, batches, nbatch, /*clearFirst=*/true);
+}
+
+// ── SMS_NATIVE_PLATFORM native sky pass ─────────────────────────────────────────────────────────
+// Paints a vertical blue gradient over the offscreen colour target. The visual intent of TSky's
+// backdrop-sphere + sky.bmd dome (a blue zenith→horizon gradient behind the plaza) is rendered
+// natively here instead of relying on the game's sky.bmd batches — those project to off-screen
+// clip space under sms-boot (see debug_journal/2026-07-03_sky_bmd_offscreen.md). Uses a
+// vertex-buffer-less full-screen triangle (gl_VertexIndex trick) with a tiny fragment shader that
+// mixes two RGBA colours by normalized screen y. Blend disabled → opaque write; depth test
+// disabled → sky underlays everything drawn afterwards (map/water/HUD).
+constexpr const char kNativeSkyVs[] = R"(#version 450
+// Full-screen triangle from gl_VertexIndex (0,1,2). Emits fragCoord that covers [-1,1]^2.
+layout(location=0) out vec2 vNdc;
+void main() {
+    vec2 p = vec2(float((gl_VertexIndex << 1) & 2) * 2.0 - 1.0,
+                  float(gl_VertexIndex & 2)      * 2.0 - 1.0);
+    vNdc = p;
+    // Depth = 1.0 (far plane) so it sits behind anything with depth-test on that draws afterwards.
+    // (This pass writes colour only; z-test/z-write are disabled in the pipeline anyway.)
+    gl_Position = vec4(p, 1.0, 1.0);
+}
+)";
+constexpr const char kNativeSkyFs[] = R"(#version 450
+layout(location=0) in vec2 vNdc;
+layout(set=3, binding=0) uniform Sky { vec4 top; vec4 horizon; } sky;
+layout(location=0) out vec4 outColor;
+void main() {
+    // Vulkan NDC: y=-1 is TOP of the framebuffer, y=+1 is BOTTOM. t = 0 at top (zenith), 1 at
+    // bottom (horizon). So t rises with vNdc.y directly.
+    float t = clamp(0.5 + 0.5 * vNdc.y, 0.0, 1.0);
+    outColor = mix(sky.top, sky.horizon, t);
+}
+)";
+
+struct NativeSkyPush { float top[4]; float horizon[4]; };
+static SDL_GPUShader*           g_sky_vs   = nullptr;
+static SDL_GPUShader*           g_sky_fs   = nullptr;
+static SDL_GPUGraphicsPipeline* g_sky_pipe = nullptr;
+
+static SDL_GPUGraphicsPipeline* ensure_sky_pipeline() {
+    if (g_sky_pipe) return g_sky_pipe;
+    std::vector<uint32_t> vspv = sb_compile_vertex_glsl(kNativeSkyVs);
+    std::vector<uint32_t> fspv = sb_compile_fragment_glsl(kNativeSkyFs);
+    if (vspv.empty() || fspv.empty()) {
+        std::fprintf(stderr, "\n=== FATAL [gxsdl]: native sky shader compile failed (vs=%d fs=%d) ===\n",
+                     (int)vspv.empty(), (int)fspv.empty());
+        std::fflush(stderr); std::abort();
+    }
+    // The vertex shader is stage-declared inside its SPIR-V module. Create with VERTEX stage.
+    SDL_GPUShaderCreateInfo vci{};
+    vci.code = (const Uint8*)vspv.data(); vci.code_size = vspv.size() * 4; vci.entrypoint = "main";
+    vci.format = SDL_GPU_SHADERFORMAT_SPIRV; vci.stage = SDL_GPU_SHADERSTAGE_VERTEX;
+    vci.num_samplers = 0; vci.num_uniform_buffers = 0;
+    g_sky_vs = SDL_CreateGPUShader(g_dev, &vci);
+    g_sky_fs = make_shader(fspv.data(), fspv.size() * 4, SDL_GPU_SHADERSTAGE_FRAGMENT,
+                           /*samplers*/0, /*uniform*/1);
+    if (!g_sky_vs || !g_sky_fs) {
+        std::fprintf(stderr, "[gxsdl] native sky shader create failed vs=%p fs=%p err=%s\n",
+                     (void*)g_sky_vs, (void*)g_sky_fs, SDL_GetError());
+        std::abort();
+    }
+    SDL_GPUColorTargetDescription ctd{};
+    ctd.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+    ctd.blend_state.enable_blend = false;
+    SDL_GPUGraphicsPipelineCreateInfo gpi{};
+    gpi.vertex_shader = g_sky_vs;
+    gpi.fragment_shader = g_sky_fs;
+    gpi.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+    gpi.vertex_input_state.num_vertex_buffers = 0;
+    gpi.vertex_input_state.num_vertex_attributes = 0;
+    gpi.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
+    gpi.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
+    gpi.rasterizer_state.front_face = SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
+    gpi.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
+    gpi.depth_stencil_state.enable_depth_test = false;
+    gpi.depth_stencil_state.enable_depth_write = false;
+    gpi.target_info.num_color_targets = 1;
+    gpi.target_info.color_target_descriptions = &ctd;
+    gpi.target_info.has_depth_stencil_target = true;
+    gpi.target_info.depth_stencil_format = DEPTH_FMT;
+    g_sky_pipe = SDL_CreateGPUGraphicsPipeline(g_dev, &gpi);
+    if (!g_sky_pipe) {
+        std::fprintf(stderr, "[gxsdl] native sky pipeline create failed: %s\n", SDL_GetError());
+        std::abort();
+    }
+    return g_sky_pipe;
+}
+
+void native_sky_fill(const float top[4], const float horizon[4]) {
+    if (!g_ok || !g_in_frame || !g_cmd || !top || !horizon) return;
+    SDL_GPUGraphicsPipeline* pipe = ensure_sky_pipeline();
+    if (!pipe) return;
+
+    NativeSkyPush push{};
+    for (int i = 0; i < 4; ++i) { push.top[i] = top[i]; push.horizon[i] = horizon[i]; }
+
+    // This IS the frame's first render pass — frame_begin only sets the pending clear colour, it
+    // doesn't paint. So CLEAR both colour and depth here (the gradient's fullscreen triangle then
+    // overwrites the colour clear). The caller MUST switch the subsequent first draw_tev_segment
+    // to clearFirst=false, or its LOAD_OP=CLEAR erases the gradient we just painted.
+    SDL_GPUColorTargetInfo cti{}; cti.texture = g_color; cti.clear_color = g_clear;
+    cti.load_op = SDL_GPU_LOADOP_CLEAR; cti.store_op = SDL_GPU_STOREOP_STORE;
+    SDL_GPUDepthStencilTargetInfo dti{}; dti.texture = g_depth; dti.clear_depth = 1.0f;
+    dti.load_op = SDL_GPU_LOADOP_CLEAR; dti.store_op = SDL_GPU_STOREOP_STORE;
+    dti.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE; dti.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
+    SDL_GPURenderPass* rp = SDL_BeginGPURenderPass(g_cmd, &cti, 1, &dti);
+    SDL_BindGPUGraphicsPipeline(rp, pipe);
+    SDL_PushGPUFragmentUniformData(g_cmd, 0, &push, (Uint32)sizeof(push));
+    SDL_DrawGPUPrimitives(rp, 3, 1, 0, 0);
+    SDL_EndGPURenderPass(rp);
 }
 
 void snapshot_efb(const void* key) {

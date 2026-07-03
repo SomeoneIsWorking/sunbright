@@ -38,6 +38,7 @@
 #include <M3DUtil/MActor.hpp>                             // MActor::getModel
 #include <Map/Sky.hpp>                                    // TSky (sky anim probe)
 #include "sms_native_sky.h"                                // SMS_NATIVE_PLATFORM sky-backdrop seam
+#include "gx_sdlgpu.h"                                     // sb::gxsdl::native_sky_fill
 #include <Strategic/ObjModel.hpp>                         // TMActorKeeper
 #include <Enemy/Conductor.hpp>                             // gpConductor (NPC calc pass)
 #include <JSystem/J3D/J3DGraphAnimator/J3DModel.hpp>      // J3DModel / J3DModelData
@@ -1206,6 +1207,24 @@ extern "C" void sb_native_sky_backdrop(float rgba[4]) {
 	rgba[1] = 0x12 / 255.0f;
 	rgba[2] = 0xEE / 255.0f;
 	rgba[3] = 1.0f;
+}
+
+// The vertical-gradient endpoints for the native sky pass. Approximates the oracle title-screen
+// sky where the game intent is a light zenith blue fading into a horizon haze. The dome's
+// per-vertex ras (batch #3 vColor = 151/192/255 = light sky blue) is what the ORIGINAL asset
+// carried; horizon is a lighter haze so the transition into the water/palm strip blends softly.
+// Kept as constants — the file-select is one fixed camera choice; a per-camera lookup would be
+// premature. Reproduce with SB_NATIVE_SKY_DBG=1 tools/render/title_sbs.sh.
+extern "C" void sb_native_sky_paint(void) {
+	if (!sb_native_sky_active()) return;
+	// Gradient endpoints tuned to the oracle title-screen sky region (Dolphin-GX baseline). The
+	// oracle top-120 rows sample to (45,116,176) as an area MEAN (blue sky + a couple of cloud
+	// puffs + palm silhouettes). The clear-blue sky pixels themselves sit around (40,120,180) at
+	// zenith and lighten toward (130,190,225) at horizon. Picked to sit just above/below those to
+	// leave headroom for the 2D imm overlays that composite atop. Alpha = 1.0 (opaque paint).
+	static const float top[4]     = {  40.0f/255.0f, 120.0f/255.0f, 190.0f/255.0f, 1.0f };
+	static const float horizon[4] = { 140.0f/255.0f, 195.0f/255.0f, 230.0f/255.0f, 1.0f };
+	sb::gxsdl::native_sky_fill(top, horizon);
 }
 
 // The currently-registered sky.bmd J3DModel*. Compared against each J3DShape's owning model at

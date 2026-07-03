@@ -17,12 +17,12 @@ void ensure_init() {
 }
 }  // namespace
 
-std::vector<uint32_t> sb_compile_fragment_glsl(const std::string& src) {
+static std::vector<uint32_t> compile_stage(EShLanguage stage, const std::string& src) {
     ensure_init();
-    glslang::TShader shader(EShLangFragment);
+    glslang::TShader shader(stage);
     const char* str = src.c_str();
     shader.setStrings(&str, 1);
-    shader.setEnvInput(glslang::EShSourceGlsl, EShLangFragment, glslang::EShClientVulkan, 450);
+    shader.setEnvInput(glslang::EShSourceGlsl, stage, glslang::EShClientVulkan, 450);
     shader.setEnvClient(glslang::EShClientVulkan, glslang::EShTargetVulkan_1_0);
     shader.setEnvTarget(glslang::EShTargetSpv, glslang::EShTargetSpv_1_0);
 
@@ -38,6 +38,14 @@ std::vector<uint32_t> sb_compile_fragment_glsl(const std::string& src) {
         return {};
     }
     std::vector<uint32_t> spv;
-    glslang::GlslangToSpv(*prog.getIntermediate(EShLangFragment), spv);
+    glslang::GlslangToSpv(*prog.getIntermediate(stage), spv);
     return spv;
+}
+
+std::vector<uint32_t> sb_compile_fragment_glsl(const std::string& src) {
+    return compile_stage(EShLangFragment, src);
+}
+
+std::vector<uint32_t> sb_compile_vertex_glsl(const std::string& src) {
+    return compile_stage(EShLangVertex, src);
 }

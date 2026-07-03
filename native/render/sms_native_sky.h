@@ -29,6 +29,14 @@ bool sb_native_sky_active(void);
 // clear (GC's 0x80 was chan-mat alpha, unrelated to the FB write).
 void sb_native_sky_backdrop(float rgba[4]);
 
+// Paint the native sky over the current SDL3-GPU offscreen colour target, when active. Draws a
+// full-screen vertical gradient from a light zenith blue at the top to a haze horizon blue at the
+// bottom — the visual intent of TSky's backdrop-sphere + sky.bmd dome. Under sms-boot the game's
+// own sky.bmd batches project off-screen (see debug_journal/2026-07-03_sky_bmd_offscreen.md), so
+// this is the ONLY thing that paints the sky. Call this right after gxsdl::frame_begin, before
+// the first draw_tev_segment. No-op when sb_native_sky_active() is false.
+void sb_native_sky_paint(void);
+
 // Register the sky.bmd J3DModel* so the J3D-capture layer can tag its batches with
 // NvkTevBatch::is_native_sky. When set, gx_sdlgpu bypasses the TEV-generated fragment shader
 // for those batches and uses a hardcoded native GLSL shader that samples tex[0] — rendering

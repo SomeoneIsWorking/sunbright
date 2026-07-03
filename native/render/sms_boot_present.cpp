@@ -868,6 +868,22 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
     int ph4End = ph1End;
     while (ph4End < nScenePushed && batches[(size_t)ph4End].phase == 4) ++ph4End;
     sb::gxsdl::frame_begin(c[0], c[1], c[2], c[3]);
+    // SMS_NATIVE_PLATFORM sky helper: any segment that would CLEAR (fresh EFB) instead paints
+    // the sky first (which does its own CLEAR+gradient) and LOADs into the segment. This puts the
+    // sky BEHIND every scene batch that segment draws, and survives mid-frame clears (mirror
+    // pre-pass etc). Non-sky stages just clearFirst as before. See
+    // debug_journal/2026-07-03_sky_bmd_offscreen.md for why the game's sky.bmd batches paint nothing.
+    const bool sky_active = sb_native_sky_active();
+    auto draw_seg = [&](int seg_first, int seg_count, bool clearFirst) {
+        if (sky_active && clearFirst) {
+            sb_native_sky_paint();                                             // CLEAR + gradient
+            sb::gxsdl::draw_tev_segment(verts.data(), (int)verts.size(),
+                                        batches.data() + seg_first, seg_count, /*clearFirst=*/false);
+        } else {
+            sb::gxsdl::draw_tev_segment(verts.data(), (int)verts.size(),
+                                        batches.data() + seg_first, seg_count, clearFirst);
+        }
+    };
     if (ncopies > 0 && !sceneFiltered) {
         const int total = (int)batches.size();
         int  segStart = 0;
@@ -889,8 +905,7 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
             else               bound = copies[k].batch_index; // legacy (SB_FS_NOCLEAR)
             if (bound > nScenePushed) bound = nScenePushed;   // copy at scene-list end → imm follows
             if (bound < segStart)     bound = segStart;
-            sb::gxsdl::draw_tev_segment(verts.data(), (int)verts.size(),
-                                        batches.data() + segStart, bound - segStart, clearFirst);
+            draw_seg(segStart, bound - segStart, clearFirst);
             sb::gxsdl::snapshot_efb(copies[k].dest);          // snapshot this segment for its consumer
             segStart   = bound;
             // Clear after the mirror pre-pass (GC clears the EFB post-mirror-copy); otherwise honor the
@@ -908,10 +923,9 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
                       || (useFix && !isMirror && clearAfterMain);
         }
         // Final segment: any scene tail past the last copy + the 2D imm overlay (the post pass).
-        sb::gxsdl::draw_tev_segment(verts.data(), (int)verts.size(),
-                                    batches.data() + segStart, total - segStart, clearFirst);
+        draw_seg(segStart, total - segStart, clearFirst);
     } else {
-        sb::gxsdl::draw_tev(verts.data(), (int)verts.size(), batches.data(), (int)batches.size());
+        draw_seg(0, (int)batches.size(), /*clearFirst=*/true);
     }
     sb::gxsdl::frame_end();
     static std::vector<uint8_t> present_pix;

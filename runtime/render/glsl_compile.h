@@ -12,3 +12,7 @@
 // Compile a complete GLSL 450 fragment shader (must contain its own #version) to
 // SPIR-V words. Returns empty on failure (the glslang log is printed to stderr).
 std::vector<uint32_t> sb_compile_fragment_glsl(const std::string& src);
+
+// Same, but for a vertex shader — used for tiny native passes (e.g. the
+// SMS_NATIVE_PLATFORM sky-fill full-screen-triangle vertex shader).
+std::vector<uint32_t> sb_compile_vertex_glsl(const std::string& src);

@@ -1026,9 +1026,23 @@ extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
             }
             static int nsky = 0;
             if (b.is_native_sky && nsky < 8) { ++nsky;
-                std::fprintf(stderr, "[nsky] batch#%zu vc=%u tex0=%p(%ux%u) key=%llx phase=%d\n",
-                             g_batches.size(), b.vcount, (const void*)b.tex[0].rgba,
-                             b.tex[0].w, b.tex[0].h, (unsigned long long)b.shaderKey, g_capture_phase);
+                std::fprintf(stderr, "[nsky] batch#%zu vc=%u key=%llx phase=%d blend=%d/%d/%d cUau=%d/%d\n",
+                             g_batches.size(), b.vcount, (unsigned long long)b.shaderKey, g_capture_phase,
+                             b.blend_mode, b.src_factor, b.dst_factor, b.color_update, b.alpha_update);
+                for (int s = 0; s < 8; ++s) {
+                    if (b.tex[s].rgba || b.tex[s].w) {
+                        std::fprintf(stderr, "  tex[%d] %p %ux%u\n", s, (const void*)b.tex[s].rgba,
+                                     b.tex[s].w, b.tex[s].h);
+                    }
+                }
+                // Also print the first vertex's raster color so we can see the sky's per-vertex
+                // colors — these ARE the "blue gradient" if the dome base is coloured by vertex.
+                if (!idx.empty()) {
+                    const auto& v0 = verts[idx[0]];
+                    std::fprintf(stderr, "  vClr0[0]=%u,%u,%u,%u  uv0=%.3f,%.3f\n",
+                                 v0.clr[0][0], v0.clr[0][1], v0.clr[0][2], v0.clr[0][3],
+                                 (double)v0.tex[0][0], (double)v0.tex[0][1]);
+                }
             }
         }
 #endif
