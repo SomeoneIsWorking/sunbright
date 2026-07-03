@@ -426,6 +426,29 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
         // reference/sms/src/JSystem/JDrama/JDREfbCtrl.cpp:80 for the RE'd EFB-target actor.
         if ((unsigned)(b.shaderKey >> 32) == 0x7bc0841du && sb_native_sky_active()) {
             if (b.phase == 1) continue;
+            // SB_CLOUD_TEX_DUMP=1: dump native's ACTUAL BOUND cloud-strip 8×8 texture bytes
+            // (both slots) so we can compare against kCloudTex[64] and against sky.bmd's asset.
+            // Fires once per session.
+            static bool s_ctd = false;
+            if (!s_ctd && std::getenv("SB_CLOUD_TEX_DUMP")) { s_ctd = true;
+                for (int slot = 0; slot < 2; ++slot) {
+                    const auto& t = b.tex[slot];
+                    std::fprintf(stderr, "[cloudtex] slot=%d w=%u h=%u rgba=%p wrap=%u/%u minF=%u linear=%u\n",
+                                 slot, t.w, t.h, (const void*)t.rgba, t.wrap_s, t.wrap_t, t.min_filter, t.linear);
+                    if (!t.rgba || !t.w || !t.h) continue;
+                    unsigned rsum=0,gsum=0,bsum=0,asum=0; size_t n = (size_t)t.w * t.h;
+                    for (size_t p = 0; p < n; ++p) { rsum+=t.rgba[p*4]; gsum+=t.rgba[p*4+1]; bsum+=t.rgba[p*4+2]; asum+=t.rgba[p*4+3]; }
+                    std::fprintf(stderr, "[cloudtex] slot=%d mean rgba=%u,%u,%u,%u\n", slot,
+                                 (unsigned)(rsum/n), (unsigned)(gsum/n), (unsigned)(bsum/n), (unsigned)(asum/n));
+                    for (uint32_t y = 0; y < t.h && y < 16; ++y) {
+                        std::fprintf(stderr, "[cloudtex] slot=%d row%u:", slot, y);
+                        for (uint32_t x = 0; x < t.w && x < 16; ++x) {
+                            std::fprintf(stderr, " %02x", (unsigned)t.rgba[(y*t.w+x)*4]);   // R (I4 → R=G=B=A)
+                        }
+                        std::fprintf(stderr, "\n");
+                    }
+                }
+            }
             b.fragGlsl  = sb::gxsdl::kCloudStripFragGlsl_ptr;
             b.shaderKey = sb::gxsdl::kCloudStripFragKey;
         }
