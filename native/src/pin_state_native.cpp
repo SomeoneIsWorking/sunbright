@@ -89,24 +89,31 @@ extern "C" int sb_pin_state_populate(SbPinGameState* out) {
         out->camera_load_pan_timer  = (int)gpCameraOption->mLoadPanTimer;
     }
 
-    // gpLightManager fingerprint — what does the manager actually hold at pin time?
-    // TLightCommon::setLight reads mEffectPos + gate bytes; comparing native vs oracle
-    // values at pin names WHERE the divergence lives (loadAfter unported, or manager
-    // instance simply not there, or something between).
+    // gpLightManager fingerprint — read via C++ members, not raw byte offsets.
+    // The header's /* 0x1C */ comments are GUEST offsets (32-bit PowerPC pointers).
+    // On native x86_64 the vtable pointer is 8 bytes so byte offsets don't match;
+    // C++ field access resolves to the correct native address regardless.
     out->lmgr_ptr = (unsigned)(unsigned long)gpLightManager;
     if (gpLightManager) {
-        const uint8_t* base = reinterpret_cast<const uint8_t*>(gpLightManager);
-        const float* effPos = reinterpret_cast<const float*>(base + TLMGR_OFF_EFFECT_POS);
-        out->lmgr_effect_pos[0] = effPos[0];
-        out->lmgr_effect_pos[1] = effPos[1];
-        out->lmgr_effect_pos[2] = effPos[2];
-        // Pack GXColor u8[4] into u32 for compare.
-        const uint8_t* col = base + TLMGR_OFF_EFFECT_COLOR;
+        // mEffectPos: the header aliases unk1C/unk20/unk24 (3 u32) over a Vec3<f32>.
+        // loadAfter writes floats via memcpy into those u32 slots; read them back the
+        // same way to get the actual float values.
+        float x, y, z;
+        std::memcpy(&x, &gpLightManager->unk1C, 4);
+        std::memcpy(&y, &gpLightManager->unk20, 4);
+        std::memcpy(&z, &gpLightManager->unk24, 4);
+        out->lmgr_effect_pos[0] = x;
+        out->lmgr_effect_pos[1] = y;
+        out->lmgr_effect_pos[2] = z;
+        // Pack GXColor u8[4] into u32 for compare (BE ordering, matching the
+        // oracle-side attrib_r32 which reads guest BE bytes).
         out->lmgr_effect_color =
-            ((unsigned)col[0] << 24) | ((unsigned)col[1] << 16) |
-            ((unsigned)col[2] << 8)  |  (unsigned)col[3];
-        out->lmgr_effect_enabled = *(base + TLMGR_OFF_EFFECT_ENABLED);
-        out->lmgr_effect_valid   = *(base + TLMGR_OFF_EFFECT_VALID);
+            ((unsigned)gpLightManager->mEffectColor.r << 24) |
+            ((unsigned)gpLightManager->mEffectColor.g << 16) |
+            ((unsigned)gpLightManager->mEffectColor.b <<  8) |
+             (unsigned)gpLightManager->mEffectColor.a;
+        out->lmgr_effect_enabled = gpLightManager->mEffectEnabled;
+        out->lmgr_effect_valid   = gpLightManager->mEffectValid;
         out->have_lmgr = 1;
     }
     return 1;
