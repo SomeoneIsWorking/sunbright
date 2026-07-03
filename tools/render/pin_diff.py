@@ -31,7 +31,12 @@ from dataclasses import dataclass
 VIEW_TOL = 1e-3        # posMtx elements are ~unit-length rotations + translation floats,
                        # both engines run the same guest code → 1e-3 is generous slack for
                        # inline-gather ordering, still tight enough to catch a real drift
-LIGHT_TOL = 1e-2       # light pos/col floats are stored as GC f32 in guest RAM
+LIGHT_ABS_TOL = 1e-2   # light color floats are in [0,1] — bit-exact
+LIGHT_REL_TOL = 5e-3   # 0.5%. Light positions in view space scale up to ~1M for stage 15.
+                       # A 1e-4 relative view-mtx drift (which sub-1e-3 VIEW_TOL allows for
+                       # PPC paired-single vs SSE scalar rounding on GC f32) amplifies into
+                       # ~100s of unit delta on ~500k-magnitude positions. Absolute LIGHT_TOL
+                       # of 1e-2 was miscalibrated for values that big; use relative for pos.
 PROJ_TOL = 1e-3        # GC proj[6] values (near/far/A/B/C/D) are shared game state
 
 
@@ -142,12 +147,27 @@ def cmp_lights(n: dict, o: dict, verdicts: list[Verdict]) -> None:
         return
     verdicts.append(Verdict("light count", True, f"n={len(nl)}"))
     # Match by index (both sides emit only valid lights, in stream order).
+    # Position uses a scale-aware tolerance: |Δ| ≤ max(LIGHT_ABS_TOL, LIGHT_REL_TOL * max(|a|,|b|)).
+    # Colour is [0,1] — pure absolute tolerance.
+    def pos_ok(a, b):
+        if len(a) != len(b):
+            return False, math.inf, -1
+        worst = 0.0; idx = -1; ok = True
+        for i, (x, y) in enumerate(zip(a, b)):
+            d = abs(float(x) - float(y))
+            scale = max(abs(float(x)), abs(float(y)), 1.0)
+            tol = max(LIGHT_ABS_TOL, LIGHT_REL_TOL * scale)
+            if d > worst:
+                worst = d; idx = i
+            if d > tol:
+                ok = False
+        return ok, worst, idx
     all_ok = True
     worst = 0.0
     detail = []
     for i in range(len(nl)):
-        okp, dp, _ = diff_arr(nl[i]["pos"], ol[i]["pos"], LIGHT_TOL)
-        okc, dc, _ = diff_arr(nl[i]["col"], ol[i]["col"], LIGHT_TOL)
+        okp, dp, _ = pos_ok(nl[i]["pos"], ol[i]["pos"])
+        okc, dc, _ = diff_arr(nl[i]["col"], ol[i]["col"], LIGHT_ABS_TOL)
         worst = max(worst, dp, dc)
         if not (okp and okc):
             all_ok = False
@@ -155,7 +175,8 @@ def cmp_lights(n: dict, o: dict, verdicts: list[Verdict]) -> None:
     verdicts.append(Verdict(
         "per-light (pos, col)",
         all_ok,
-        f"max|Δ|={worst:.4g} (tol {LIGHT_TOL})" + (" — " + "; ".join(detail) if detail else "")))
+        f"max|Δ|={worst:.4g} (pos tol=max({LIGHT_ABS_TOL},{LIGHT_REL_TOL}·|v|), col tol={LIGHT_ABS_TOL})"
+        + (" — " + "; ".join(detail) if detail else "")))
 
 
 def cmp_int(name: str, nv, ov, verdicts: list[Verdict], hex_fmt: bool = False) -> None:

@@ -946,39 +946,81 @@ extern "C" bool sb_boot_drive_scene() {
 			GXColor col; GXGetLightColor(&sun.unk24, &col);
 			const JGeometry::TVec3<f32>& wp = sun.getPosition();
 
-			sb::SetLightIn lin{};
-			lin.lgColor[0]=col.r/255.f; lin.lgColor[1]=col.g/255.f;
-			lin.lgColor[2]=col.b/255.f; lin.lgColor[3]=col.a/255.f;
-			lin.lgPos[0]=wp.x; lin.lgPos[1]=wp.y; lin.lgPos[2]=wp.z;
-			for (int r = 0; r < 3; ++r) for (int c = 0; c < 4; ++c)
-				lin.view[r*4+c] = g_graphics.mViewMtx.mMtx[r][c];
-			lin.effectOn =
-			    !(std::getenv("SB_NO_EFFECT_LIGHT") && std::getenv("SB_NO_EFFECT_LIGHT")[0] != '0');
-			// Effect light data. RE'd source (TLightCommon::setLight @0x80229a30, decomp in
-			// scratch/decomp/80229a30.c): reads `gpLightManager+0x1c` (mEffectPos, 3 f32s
-			// aliased over unk1C/20/24) view-transformed for GX_LIGHT1. Oracle's stage-15 title
-			// shows mEffectPos=(200000, 500000, 200000). On NATIVE gpLightManager exists but its
-			// mEffectPos stays UNINITIALIZED (measured 2026-07-04: garbage like (0, -6.5e21, 0))
-			// because loadAfter/calcLightBorder aren't fully ported — see
-			// [[light-dbset-porting-gaps-2026-07-04]]. STOPGAP: fall back to lgPos for effPos
-			// (produces L1==L0 duplicate — visibly wrong but deterministic and doesn't segfault).
-			// PROPER FIX: port TLightWithDBSetManager::loadAfter to populate mEffectPos from the
-			// scene light-set data (separate arc).
-			for (int i = 0; i < 3; ++i) lin.effPos[i]   = lin.lgPos[i];   // STOPGAP: L1 duplicates L0
-			for (int i = 0; i < 4; ++i) lin.effColor[i] = lin.lgColor[i];
+			// Faithful transcription of TLightCommon::perform(flag=0xA0), which title-scene
+			// dispatch runs. Two phases, in order:
+			//
+			//   Phase 1 (flag & 0x80, LIGHT-INIT — reference/sms .../LightUtil.cpp:297-311):
+			//     One GXLightObj: pos = Light-Group[0].mPosition (WORLD, no view mult),
+			//     colour = Light-Group[0] colour, attn = all-zero (directional-uniform).
+			//     Broadcast to GX_LIGHT0/1/2 as-is.
+			//   Phase 2 (flag & 0x20, setLight — LightUtil.cpp:217-282):
+			//     GX_LIGHT0: view-transformed sun, cos+dist attn = GC-default.
+			//     GX_LIGHT1: gated on gpLightManager->mEffectEnabled && mEffectValid.
+			//                mEffectEnabled=0 at title, so this branch does NOT fire → L1
+			//                keeps the Phase 1 world value. Confirmed against oracle:
+			//                pin_diff shows both engines have mEffectEnabled=0 (2026-07-04).
+			//     GX_LIGHT2: specular directional. GXInitSpecularDir(-normalize(view*sun))
+			//                writes ldir (half-angle) AND lpos (= -nrm * 1048576).
+			//
+			// Prior code here called sms_boot_setlight.h's build_stage_lights with a STOPGAP
+			// effPos=lgPos + effectOn=true — produced L1 = duplicate of L0 (a fake). The
+			// LIGHT-INIT phase was entirely missing, so L1 never received its true value.
+			// Killed the shortcut; emit the real two-phase sequence.
+			const float wx = wp.x, wy = wp.y, wz = wp.z;
 
-			sb::OutLight lo[3];
-			sb::build_stage_lights(lin, lo);
-			for (int i = 0; i < 3; ++i) {
-				if (!lo[i].present) continue;
-				GXLightObj obj{};   // zero unset fields (GXInitSpecularDir leaves pos unwritten)
-				if (lo[i].specular) GXInitSpecularDir(&obj, lo[i].pos[0], lo[i].pos[1], lo[i].pos[2]);
-				else                GXInitLightPos(&obj, lo[i].pos[0], lo[i].pos[1], lo[i].pos[2]);
-				GXColor lc = { (u8)(lo[i].color[0]*255.f+0.5f), (u8)(lo[i].color[1]*255.f+0.5f),
-				               (u8)(lo[i].color[2]*255.f+0.5f), (u8)(lo[i].color[3]*255.f+0.5f) };
+			// ── Phase 1: LIGHT-INIT — world pos to L0/L1/L2. ─────────────────────
+			{
+				GXLightObj obj{};
+				GXInitLightPos(&obj, wx, wy, wz);
+				GXInitLightColor(&obj, col);
+				GXInitLightAttn(&obj, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f);   // all-zero attn (directional-uniform)
+				GXLoadLightObjImm(&obj, GX_LIGHT0);
+				GXLoadLightObjImm(&obj, GX_LIGHT1);
+				GXLoadLightObjImm(&obj, GX_LIGHT2);
+			}
+
+			// ── Phase 2: setLight — L0 view-transformed, L1 gated (skip), L2 specular. ─
+			// L0 — view-transformed positional sun.
+			{
+				JGeometry::TVec3<f32> vpos;
+				JGeometry::TVec3<f32> wpos{wx, wy, wz};
+				PSMTXMultVec(g_graphics.mViewMtx.mMtx, &wpos, &vpos);
+				GXLightObj obj{};
+				GXInitLightPos(&obj, vpos.x, vpos.y, vpos.z);
+				GXInitLightColor(&obj, col);
+				GXInitLightAttn(&obj, 1.f, 0.f, 0.f, 1.f, 0.f, 0.f);   // GC default
+				GXLoadLightObjImm(&obj, GX_LIGHT0);
+			}
+			// L1 — gpLightManager effect-light (mEffectEnabled=0 at title → skipped).
+			if (gpLightManager && gpLightManager->mEffectEnabled && gpLightManager->mEffectValid
+			    && !(std::getenv("SB_NO_EFFECT_LIGHT") && std::getenv("SB_NO_EFFECT_LIGHT")[0] != '0'))
+			{
+				const JGeometry::TVec3<f32>* mgrPos =
+				    reinterpret_cast<const JGeometry::TVec3<f32>*>(&gpLightManager->unk1C);
+				JGeometry::TVec3<f32> vpos;
+				PSMTXMultVec(g_graphics.mViewMtx.mMtx, const_cast<JGeometry::TVec3<f32>*>(mgrPos), &vpos);
+				GXLightObj obj{};
+				GXInitLightPos(&obj, vpos.x, vpos.y, vpos.z);
+				GXColor lc = gpLightManager->mEffectColor;
+				lc.a = static_cast<u8>(static_cast<int>(static_cast<f32>(lc.a) * gpLightManager->mEffectAlphaScale));
 				GXInitLightColor(&obj, lc);
-				GXInitLightAttn(&obj, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f);  // GXInitLightObj default
-				GXLoadLightObjImm(&obj, (GXLightID)(GX_LIGHT0 << i));
+				GXInitLightAttnA(&obj, 1.f, 0.f, 0.f);
+				GXInitLightDistAttn(&obj, 1000.f, 0.5f, GX_DA_MEDIUM);
+				GXLoadLightObjImm(&obj, GX_LIGHT1);
+			}
+			// L2 — specular directional. dir = -normalize(view*sun); GXInitSpecularDir
+			// writes ldir (half-angle) + lpos (= arg * 1048576 sign-conventions per SDK).
+			{
+				JGeometry::TVec3<f32> vpos;
+				JGeometry::TVec3<f32> wpos{wx, wy, wz};
+				PSMTXMultVec(g_graphics.mViewMtx.mMtx, &wpos, &vpos);
+				JGeometry::TVec3<f32> nrm{vpos.x, vpos.y, vpos.z};
+				PSVECNormalize(&nrm, &nrm);
+				GXLightObj obj{};
+				GXInitSpecularDir(&obj, -nrm.x, -nrm.y, -nrm.z);
+				GXInitLightColor(&obj, col);
+				GXInitLightAttn(&obj, 1.f, 0.f, 0.f, 1.f, 0.f, 0.f);
+				GXLoadLightObjImm(&obj, GX_LIGHT2);
 			}
 		}
 		// Ambient: GXSetChanAmbColor(GX_COLOR0A0, AmbGroup[0]) — faithful to the original.

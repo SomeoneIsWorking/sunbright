@@ -1,6 +1,7 @@
 #include <execinfo.h>
 #include <cstdlib>
 #include <cstdio>
+#include <cmath>
 // gx_impl.cpp — native GX seam, SLICE 1: the transform block (projection/viewport/
 // scissor + GXProject). "Rebuild as a PC game": GXSet* capture into the native GXState
 // (gx_state.h); the GameCube FIFO / XF-register writes the decomp does are DROPPED —
@@ -731,8 +732,24 @@ void GXInitLightDir(GXLightObj* lt, f32 nx, f32 ny, f32 nz) {
     // GX stores the NEGATED direction (light-to-vertex); the decomp/HW negate here.
     auto& o = obj(lt); o.dir[0] = -nx; o.dir[1] = -ny; o.dir[2] = -nz;
 }
+// Faithful port of the GC SDK GXInitSpecularDir (reference/sms/src/dolphin/gx/GXLight.c:105).
+// Writes BOTH ldir (half-angle) AND lpos (= -nrm * 1048576) — the HW places the "specular"
+// light at a huge distance behind the camera along -nrm so its rays are parallel at the vertex.
+// Native's earlier overlay wrote only dir; that left GX_LIGHT2's pos stuck at (0,0,0), which
+// pin_diff surfaces as a per-light divergence vs oracle (-nrm*1048576 = (-455k,732k,-596k) at title).
 void GXInitSpecularDir(GXLightObj* lt, f32 nx, f32 ny, f32 nz) {
-    auto& o = obj(lt); o.dir[0] = nx; o.dir[1] = ny; o.dir[2] = nz;
+    auto& o = obj(lt);
+    const f32 vx = -nx;
+    const f32 vy = -ny;
+    const f32 vz = -nz + 1.0f;
+    const f32 mag2 = vx*vx + vy*vy + vz*vz;
+    const f32 rmag = (mag2 > 0.f) ? (1.0f / std::sqrt(mag2)) : 0.f;
+    o.dir[0] = vx * rmag;
+    o.dir[1] = vy * rmag;
+    o.dir[2] = vz * rmag;
+    o.pos[0] = -nx * 1048576.0f;
+    o.pos[1] = -ny * 1048576.0f;
+    o.pos[2] = -nz * 1048576.0f;
 }
 void GXInitLightAttn(GXLightObj* lt, f32 a0, f32 a1, f32 a2, f32 k0, f32 k1, f32 k2) {
     auto& o = obj(lt);
