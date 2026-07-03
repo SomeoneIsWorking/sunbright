@@ -196,6 +196,64 @@ the sky-dome / water / HUD defect ranking be meaningful.
 The sky-dome port work (title-class native paint) is NOT falsified — it's
 premature to invoke without a real gameplay comparison.
 
+## Gameplay comparison LANDED (2026-07-03, commit 9036bf2)
+
+`plaza_sbs.sh` now loads `scratch/freeroam_plaza.sav` on the oracle side via
+`/loadstate` (probe endpoint, CPU-thread State::LoadAs). Native side
+unchanged — its SB_STAGE=1 fastboot already flag-skips cutscenes to
+APP_STATE_GAMEPLAY on frame 0 (Application.cpp:572, sets
+`getBool 0x30009/B/C/D → true`, mCurrArea=(1,0,0)).
+
+Oracle now shows real plaza gameplay: **mean (81.4, 91.2, 96.5)**,
+nonzero=99.96%, bbox = full frame. Bright sky + plaza scene.
+
+Native's SB_STAGE=1 output unchanged (mean 14.3/14.1/9.0, 11.37% nonzero) —
+that IS its current plaza gameplay render. It's not "stuck in a state" — it
+IS the plaza gameplay render, just sparse and dark.
+
+**Real baseline Δ = 88.2** (was fake 28.5 vs cutscene). All 4×4 signed-delta
+cells are NEGATIVE → native uniformly darker than oracle everywhere.
+
+## Revised (real) defect list — Plaza gameplay
+
+Ranked by region |Δ| magnitude, most-broken first:
+
+  Region |Δ| grid:
+    82.1   68.3   69.1   82.7    <- top strip (sky area)
+    88.2   86.9   78.7  100.5    <- upper scene
+    97.4  102.6   91.6   88.0    <- mid scene (worst)
+    95.5   99.3  100.9   80.1    <- bottom (ground/HUD)
+
+1. **Mid-scene (rows 1–2, cols 1–2): -100 across all channels.** The plaza
+   ground / buildings / palm trees are essentially not appearing on native.
+   This is not a single-actor defect — it's a broad rendering failure.
+2. **Top-right corner (r0c3, r1c3): -73 blue / -104 all channels.** The sky
+   dome + horizon area, missing.
+3. **Bottom-right (r3c3): -56R/-76G/-69B.** The least-broken region — HUD
+   partially rendering here.
+4. **Sky top-left (r0c0..c2): -18 to -57.** Less severe than mid-scene,
+   suggests the sky-clear is partially working.
+
+**Pattern**: native's mean (14.3, 14.1, 9.0) has near-equal R and G with less
+B — grayscale-ish, no color, low brightness. Oracle's (81.4, 91.2, 96.5) has
+progressively more B — sky-tinted, bright. Native is drawing DARK grays where
+oracle has bright color. Consistent with:
+- Lighting / material color not applied
+- Or fragment shading discarding most output
+- Or blend mode producing near-zero alpha everywhere
+
+Actionable next probes (for the follow-up arc):
+- Compare native's TEV/lighting pipeline to what a settled plaza would
+  compute. Native's std of 40-52 across channels vs oracle's 26-32 says
+  native has HIGH variance but LOW mean — flat-shaded scattered points, not
+  smoothly-lit surfaces.
+- Bisect: set `SB_SKIP_KEY=<batch_hash>` on individual scene batches to see
+  which ones actually contribute pixels vs which are silently discarded.
+- Check the native pass-verts distribution at gameplay (SB_PASS_VERTS=1):
+  the sky:2790 / scene-perform:126321 / chr:4044 breakdown from the earlier
+  probe was captured pre-cutscene-end; re-capture at settled gameplay to see
+  what draws.
+
 ## Scheduler deadlock — FILED, not landed
 
 Filed as separate arc. Initial hypothesis ("drain waits for absent worker")
