@@ -59,3 +59,13 @@ const uint8_t* data() { return s_buf.data(); }
 size_t size() { return s_buf.size(); }
 
 } // namespace sb::gxfifo
+
+// C-linkage bridges the SDK write-gather pipe redirect calls into (GXVert.h).
+// One entry per width; all funnel into the same FIFO buffer. These are the
+// SOLE integration point for J3D's raw BP/XF/CP writes via GXCmd/GXParam.
+extern "C" {
+void sb_gx_wgfifo_u8 (unsigned char  v) { sb::gxfifo::write_u8(v); }
+void sb_gx_wgfifo_u16(unsigned short v) { sb::gxfifo::write_u16_be(v); }
+void sb_gx_wgfifo_u32(unsigned int   v) { sb::gxfifo::write_u32_be(v); }
+void sb_gx_wgfifo_f32(float          v) { sb::gxfifo::write_f32_be(v); }
+}
