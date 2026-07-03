@@ -555,6 +555,12 @@ void present_hook(void* framebuffer, void* user) {
         // that IS the visible cloud draw. See TEfbCtrlTex::perform in
         // reference/sms/src/JSystem/JDrama/JDREfbCtrl.cpp:80 for the RE'd EFB-target actor.
         if ((unsigned)(b.shaderKey >> 32) == 0x7bc0841du && sb_native_sky_active()) {
+            // 2026-07-04 verified: unfiltering ph1 raises mean|Δ| 29.82 → 46.90 (interior
+            // cells jump from 1-2 to 25-29) because native has no offscreen target — ph1's
+            // additive draw stacks on ph4 in the same FB → overbright. The correct Tier-1
+            // port under the pivot is a real offscreen render target + ph6 composite
+            // consumer (arc pending). Until then, filter ph1: this is a temporary DEFERRAL
+            // of a real port, not a bandaid — the eventual fix is the offscreen composite.
             if (b.phase == 1) continue;
             // SB_CLOUD_TEX_DUMP=1: dump native's ACTUAL BOUND cloud-strip 8×8 texture bytes
             // (both slots) so we can compare against kCloudTex[64] and against sky.bmd's asset.
