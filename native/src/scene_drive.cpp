@@ -1206,13 +1206,19 @@ extern "C" void sb_native_sky_backdrop(float rgba[4]) {
 // premature. Reproduce with SB_NATIVE_SKY_DBG=1 tools/render/title_sbs.sh.
 extern "C" void sb_native_sky_paint(void) {
 	if (!sb_native_sky_active()) return;
-	// Gradient endpoints tuned to the oracle title-screen sky region (Dolphin-GX baseline). The
-	// oracle top-120 rows sample to (45,116,176) as an area MEAN (blue sky + a couple of cloud
-	// puffs + palm silhouettes). The clear-blue sky pixels themselves sit around (40,120,180) at
-	// zenith and lighten toward (130,190,225) at horizon. Picked to sit just above/below those to
-	// leave headroom for the 2D imm overlays that composite atop. Alpha = 1.0 (opaque paint).
-	static const float top[4]     = {  40.0f/255.0f, 120.0f/255.0f, 190.0f/255.0f, 1.0f };
-	static const float horizon[4] = { 140.0f/255.0f, 195.0f/255.0f, 230.0f/255.0f, 1.0f };
+	// Gradient endpoints matched against oracle by direct pixel sampling of the settled title-
+	// screen frame (Dolphin-GX baseline). Sampled 2026-07-03 with `title_gx_oracle.png` at the
+	// LEFT-half clean-sky strip (avoiding palm canopy on the right):
+	//   * y 0.02–0.05 (top edge):   oracle (30, 140, 224).
+	//   * y 0.25–0.32 (mid sky):    oracle (94, 160, 233).
+	//   * y 0.38–0.42 (near horiz): oracle (99, 117, 250).
+	// Previous endpoints (40,120,190) / (140,195,230) were guesses that undershot green at
+	// zenith by ~20 and blue at horizon by ~20, leaving native's zenith reading too gray
+	// (native (49,126,193) vs oracle (30,140,224) — R+19 G-14 B-31). Endpoints now placed AT
+	// the sampled sky pixels so the fBm cloud layer modulates a correctly-toned base.
+	// Alpha = 1.0 (opaque paint).
+	static const float top[4]     = {  30.0f/255.0f, 140.0f/255.0f, 224.0f/255.0f, 1.0f };
+	static const float horizon[4] = { 130.0f/255.0f, 180.0f/255.0f, 250.0f/255.0f, 1.0f };
 	sb::gxsdl::native_sky_fill(top, horizon);
 }
 
