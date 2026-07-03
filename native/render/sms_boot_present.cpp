@@ -410,7 +410,22 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
         // kCloudStripFragGlsl). This mirrors the reference exactly: same slot in DrawBuf
         // AfterIndirect Xlu, same mesh + blend, only the per-pixel colour computation changes.
         // No fullscreen paint, no cloud_inject_idx, no TILE proxies.
+        //
+        // Task #16 (2026-07-03): filter the ph1 draw of this batch. On GC the sky.bmd cloud
+        // strip is entered into "DrawBuf Sky Xlu" once but reached via TWO perform-list
+        // executions: ph1 into an off-screen EFB target (TEfbCtrlTex::perform then 256×256
+        // GXCopyTex with clear=1 — the mirror-blur intermediate that a later composite quad
+        // samples) and ph4 into the main scene (mPerformListGX MAIN). Only the ph4 draw is
+        // visible in the final framebuffer; the ph1 draw feeds a texture whose consumer we
+        // don't emulate. Native has no per-pass render targets, so BOTH draws land on the
+        // main FB and the SRCALPHA/ONE additive blend accumulates twice — doubling the cloud
+        // contribution → pale white patches over the upper sky (visible defect). Filtering
+        // the ph1 draw matches the RE'd oracle behaviour (ph1 = off-screen = invisible),
+        // same pattern as the eb5c8e74 sea-mirror composite skip above. Do NOT touch ph4 —
+        // that IS the visible cloud draw. See TEfbCtrlTex::perform in
+        // reference/sms/src/JSystem/JDrama/JDREfbCtrl.cpp:80 for the RE'd EFB-target actor.
         if ((unsigned)(b.shaderKey >> 32) == 0x7bc0841du && sb_native_sky_active()) {
+            if (b.phase == 1) continue;
             b.fragGlsl  = sb::gxsdl::kCloudStripFragGlsl_ptr;
             b.shaderKey = sb::gxsdl::kCloudStripFragKey;
         }

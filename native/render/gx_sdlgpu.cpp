@@ -780,16 +780,25 @@ float sampleTex(vec2 uv) {
 }
 
 void main() {
-    // RE'd TEV combine collapsed to a single expression:
-    //   stage0.rgb = TEX(uv0).rgb  (RASC=1, a=0, d=0)
-    //   stage1.rgb = stage0.rgb × TEX(uv1).rgb  (CPREV × TEXC)
-    //   final.rgb  = TEX(uv0).rgb × TEX(uv1).rgb
-    // Since the 8×8 is I4, R=G=B=A=intensity. Final.rgb = white × (t0 * t1) where the RGB is
-    // 1 and the alpha channel carries t0*t1 for the SRC_ALPHA / ONE additive blend.
+    // RE'd TEV combine (from sb_tev_gen_fragment output for shaderKey 7bc0841d43634f53 —
+    // see scratch/frames/mat_7bc0841d43634f53.txt, generated on 2026-07-03):
+    //   stage0:  prev.rgb = lerp(0, TEX(uv0), RASC) = TEX(uv0) × RASC        (RASC≈1 at title)
+    //            prev.a   = lerp(0, TEX(uv0).a, RASC.a) = TEX(uv0).a × RASC.a
+    //   stage1:  prev.rgb = clamp((lerp(0, TEX(uv1), prev) << 1), 0, 255)
+    //                     = clamp(2 × TEX(uv1) × TEX(uv0), 0, 1)             (TEV_SCALE_2)
+    //            prev.a   = clamp((lerp(0, TEX(uv1).a, prev.a) << 1), 0, 255)
+    //                     = clamp(2 × t0 × t1, 0, 1)                          (I4: r=g=b=a)
+    // Since the 8×8 is I4, R=G=B=A=intensity everywhere → prev is a scalar × (1,1,1,1).
+    // The blend that follows is SRC_ALPHA / ONE (additive):
+    //   pixel = DST + SRC × SRC.A = DST + prev.rgb × prev.a
+    // A prior (2026-07-03 task #13) shader-swap emitted `vec4(1,1,1, t0*t1)` — that dropped
+    // the ×2 SCALE bit AND left rgb at 1.0 instead of the TEV output (k). Result: overbright
+    // white patches in the upper title-screen sky over cloud-strip triangles. Fixed 2026-07-03
+    // task #16 by matching the RE'd TEV output exactly.
     float t0 = sampleTex(vUV[0]);
     float t1 = sampleTex(vUV[1]);
-    float k  = t0 * t1;
-    o = vec4(1.0, 1.0, 1.0, k);
+    float k  = clamp(2.0 * t0 * t1, 0.0, 1.0);
+    o = vec4(k, k, k, k);
     // Reference unused vars so glslang doesn't optimise out the shader interface (which would
     // break the pipeline's descriptor-set contract with the batch's bound state).
     if (m.kcolor[0].w == -12345678) o.r += vColor.r * 1e-30 + vColor1.r * 1e-30 + texture(tex[0], vec2(0)).r * 1e-30;
