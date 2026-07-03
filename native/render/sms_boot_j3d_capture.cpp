@@ -733,6 +733,31 @@ extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
                          (unsigned)(rs/nv), (unsigned)(gs/nv), (unsigned)(bs/nv), (unsigned)(as/nv),
                          me->matColor[0][0], me->matColor[0][1], me->matColor[0][2], me->matColor[0][3],
                          miny, maxy);
+            // Dome shade RE (task #14): bucket vertices by posY into 5 bands so we see the
+            // per-vertex CLR0 gradient the artist authored (top-of-dome color vs equator vs
+            // bottom). The "mean = (49,147,227)" figure hides potential top-vs-bottom variation.
+            if ((unsigned)(me->key >> 32) == 0x2d45a7beu) {
+                constexpr int kBands = 5;
+                struct Band { unsigned r=0,g=0,b=0,a=0; size_t n=0; float ymin=1e9f,ymax=-1e9f; };
+                Band bands[kBands];
+                const float span = (maxy - miny);
+                for (const NgxVertex& v : verts) {
+                    int bi = (span > 0.001f) ? (int)((v.pos[1] - miny) / span * kBands) : 0;
+                    if (bi < 0) bi = 0; if (bi >= kBands) bi = kBands - 1;
+                    Band& B = bands[bi];
+                    B.r += v.clr[0][0]; B.g += v.clr[0][1]; B.b += v.clr[0][2]; B.a += v.clr[0][3];
+                    B.n += 1;
+                    if (v.pos[1] < B.ymin) B.ymin = v.pos[1];
+                    if (v.pos[1] > B.ymax) B.ymax = v.pos[1];
+                }
+                for (int bi = 0; bi < kBands; ++bi) {
+                    const Band& B = bands[bi]; if (!B.n) continue;
+                    std::fprintf(stderr, "[dome-clr0] band%d posY[%.0f..%.0f] n=%zu clr0=%u,%u,%u,%u\n",
+                                 bi, B.ymin, B.ymax, B.n,
+                                 (unsigned)(B.r/B.n), (unsigned)(B.g/B.n),
+                                 (unsigned)(B.b/B.n), (unsigned)(B.a/B.n));
+                }
+            }
         }
     }
     g_present_idx    += (long)idx.size();
