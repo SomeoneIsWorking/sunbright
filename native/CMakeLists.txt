@@ -51,7 +51,10 @@ list(APPEND SMS_NATIVE_SOURCES
      # sb_pin_state_populate — game-state fingerprint reader for the scene-sync harness.
      # Populates SbPinGameState (runtime/pin_state_schema.h) from the live C++ game objects.
      # Symmetric to the oracle-side populator in runtime/gx_capture.cpp (guest RAM reader).
-     "${SMS_NATIVE_REPO_ROOT}/native/src/pin_state_native.cpp")
+     "${SMS_NATIVE_REPO_ROOT}/native/src/pin_state_native.cpp"
+     # sb::engine::mode() — runtime render-sink toggle (NATIVE_PC vs GX_ORACLE).
+     # SB_RENDER env selects; today only NATIVE_PC is wired. See runtime/engine.h.
+     "${SMS_NATIVE_REPO_ROOT}/native/src/engine.cpp")
 
 add_library(sms-native STATIC ${SMS_NATIVE_SOURCES})
 
@@ -251,17 +254,28 @@ if(SB_VULKAN_LIB AND SB_VULKAN_INC AND SB_GLSLANG)
                 -o "${SB_SHADER_GEN}/tev_vert_spv.h"
         DEPENDS "${SB_SHADER_DIR}/tev.vert" VERBATIM)
 
-    # System glslang for the RUNTIME GLSL->SPIR-V compiler (glsl_compile.cpp). This is
-    # the same shipping wrapper the Dolphin build uses; here it links the standalone
-    # system glslang (Fedora glslang-devel). Prefer the CONFIG package (namespaced
-    # targets, transitive deps); fall back to plain -l names.
-    find_package(glslang CONFIG QUIET)
-    if(TARGET glslang::SPIRV)
-        set(SB_NATIVE_GLSLANG_LIBS glslang::SPIRV glslang::glslang
-            glslang::glslang-default-resource-limits)
+    # glslang for the RUNTIME GLSL->SPIR-V compiler (glsl_compile.cpp).
+    #
+    # When native/ is included from the root CMakeLists.txt, Dolphin's bundled
+    # glslang has already been added via add_subdirectory and exposes the plain
+    # target names (glslang / SPIRV / glslang-default-resource-limits) into our
+    # scope — reuse them directly. Calling find_package(glslang CONFIG) here
+    # would pull in the SYSTEM Fedora glslang config file, which tries to
+    # (re)define the namespaced glslang::* targets, and clashes with what Dolphin
+    # has already partially defined (glslang::SPIRV etc.). Standalone native/
+    # builds don't have Dolphin's targets, so fall back to find_package or the
+    # system libs.
+    if(TARGET SPIRV AND TARGET glslang)
+        set(SB_NATIVE_GLSLANG_LIBS SPIRV glslang glslang-default-resource-limits)
     else()
-        set(SB_NATIVE_GLSLANG_LIBS glslang glslang-default-resource-limits SPIRV
-            SPIRV-Tools-opt SPIRV-Tools)
+        find_package(glslang CONFIG QUIET)
+        if(TARGET glslang::SPIRV)
+            set(SB_NATIVE_GLSLANG_LIBS glslang::SPIRV glslang::glslang
+                glslang::glslang-default-resource-limits)
+        else()
+            set(SB_NATIVE_GLSLANG_LIBS glslang glslang-default-resource-limits SPIRV
+                SPIRV-Tools-opt SPIRV-Tools)
+        endif()
     endif()
 
     # ── SDL3 GPU (GX→SDL3-GPU switch, docs/gx_sdlgpu_switch.md) ─────────────────────────────
@@ -467,6 +481,32 @@ if(SMS_BUILD_BOOT)
                             "(Vulkan/glslang not found). The native renderer is mandatory.")
     endif()
     target_link_libraries(sms-boot PRIVATE sms-render)
+
+    # ── GX_ORACLE render sink (Path C): link Dolphin's video backend ──────────────
+    # sb::engine::mode() == GX_ORACLE routes the game's GX calls through Dolphin's
+    # videovulkan backend (same pipeline build/sunbright uses as the oracle). Both
+    # sinks are compiled in; the user selects at runtime via SB_RENDER. Compile-time
+    # SMS_NATIVE_PLATFORM still governs game-code execution (audio/threading/memory) —
+    # only the render sink is toggleable.
+    #
+    # `videovulkan` is defined by the root CMakeLists.txt when `native/` is included
+    # via add_subdirectory(native). Standalone `native/` builds (without root) don't
+    # get the oracle sink and skip the link — the NATIVE_PC sink is fully functional
+    # on its own.
+    if(TARGET videovulkan)
+        # Dolphin's core/videocommon require Host_* + Discord::* symbols the frontend
+        # normally provides. sms-boot is not a real emulator front-end — provide
+        # no-op stubs (see native/src/dolphin_host_shims.cpp).
+        target_sources(sms-boot PRIVATE
+            "${SMS_NATIVE_REPO_ROOT}/native/src/dolphin_host_shims.cpp")
+        target_include_directories(sms-boot PRIVATE
+            "${SMS_NATIVE_REPO_ROOT}/externals/dolphin/Source/Core")
+        target_link_libraries(sms-boot PRIVATE videovulkan videocommon core uicommon common)
+        target_compile_definitions(sms-boot PRIVATE SB_HAVE_ORACLE_SINK=1)
+    else()
+        message(STATUS "sms-boot: standalone native build — GX_ORACLE sink unavailable "
+                       "(build from the root CMakeLists.txt to link Dolphin).")
+    endif()
 endif()
 
 file(GLOB SMS_PLATFORM_TESTS CONFIGURE_DEPENDS

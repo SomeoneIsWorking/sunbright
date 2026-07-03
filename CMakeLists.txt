@@ -231,6 +231,17 @@ target_link_libraries(sunbright PRIVATE
 # (macOS frameworks (Cocoa/Metal/QuartzCore/IOKit) come transitively from the Dolphin core/uicommon
 # libs and SDL2, so no explicit framework links are needed here.)
 
+# ── Native port (sms-boot + sms-native library) ───────────────────────────────
+# The native binary lives in native/ and is the PC-native product. Building it
+# from root gives it access to Dolphin's `videovulkan` for the GX_ORACLE render
+# sink (see native/CMakeLists.txt). native/ can still be configured standalone
+# for pure game-logic library builds — it detects the absence of Dolphin targets
+# and gracefully drops the oracle sink. When included from root, force sms-boot
+# on (its SMS_BUILD_BOOT opt-in defaults OFF for standalone builds where linkage
+# was historically incomplete; root builds always want it).
+set(SMS_BUILD_BOOT ON CACHE BOOL "" FORCE)
+add_subdirectory(native)
+
 # ── Install ───────────────────────────────────────────────────────────────────
 install(TARGETS sunbright DESTINATION bin)
 install(TARGETS sunbright-recomp DESTINATION bin)

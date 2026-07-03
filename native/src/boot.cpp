@@ -12,6 +12,7 @@
 #include <thread>
 #include <SDL3/SDL.h>                 // SDL_Delay (main-thread window loop)
 #include "../render/gx_sdlgpu.h"      // sb::gxsdl main-thread present
+#include "../../runtime/engine.h"     // sb::engine::init_from_env — render-sink toggle
 
 namespace sb::platform { bool PlatformInit(int argc, char** argv); void PlatformShutdown(); }
 
@@ -27,6 +28,9 @@ extern "C" void sb_boot_present_install();
 
 extern "C" int __wrap_main(int argc, char** argv) {
     std::printf("[boot] native SMS bring-up: PlatformInit...\n");
+    // Resolve render sink from SB_RENDER before anything else — later boot code
+    // may query mode() when deciding which pipeline to initialize.
+    sb::engine::init_from_env();
     if (!sb::platform::PlatformInit(argc, argv)) {
         std::fprintf(stderr, "[boot] PlatformInit failed (no disc? set SUNBRIGHT_ROM)\n");
         return 1;
