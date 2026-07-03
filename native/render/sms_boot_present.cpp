@@ -652,6 +652,39 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
                 out[0]=(int)(s0/n); out[1]=(int)(s1/n); out[2]=(int)(s2/n); out[3]=(int)(s3/n);
             };
             int tm0[4], tm1[4]; texmean(b.tex[0], tm0); texmean(b.tex[1], tm1);
+            // Auto-flag SKY/WATER divergence candidates for one-shot owner ID (Barış workflow-first
+            // 2026-07-03, [[title-cloud-not-shader-2026-07-03]]). Vulkan NDC: y=-1 top, +1 bottom.
+            // title_overbright.py grid: row 0 ndcY in [-1.0,-0.5], row 2 in [0.0,+0.5]. Sky
+            // candidate = reaches into row 0/1 (ymn<-0.4) AND raster OR tex reads whitish → could
+            // paint the cell(0,0) [-142,-88,-24] wash. Water candidate = spans row 2 AND blue-biased.
+            {
+                const char* owner = b.dbgName ? b.dbgName : "(unknown-drawbuf)";
+                const uint32_t skHi = (uint32_t)(b.shaderKey >> 32);
+                const bool tex_white  = (tm0[0] > 200 && tm0[1] > 200 && tm0[2] > 200);
+                const bool ras_bright = (mr > 0.75 && mg > 0.75 && mb > 0.75);
+                const bool tex_bright = (tm0[0] >= 0 && tm0[0]+tm0[1]+tm0[2] > 450);
+                if (ymn < -0.4f && (ras_bright || tex_white || tex_bright)) {
+                    std::fprintf(stderr, "[SKY-SUSPECT] b%d owner=\"%s\" ndcY[%.3f,%.3f] ndcX[%.3f,%.3f] "
+                                 "rgb=%.2f,%.2f,%.2f texmean0=%d,%d,%d,%d bm=%u/%u/%u ph%u vc=%u ntex=%d "
+                                 "-> verify: SB_SKIP_KEY=%x tools/render/title_sbs.sh (or SB_SKIP_BIDX=%d)\n",
+                                 bi, owner, ymn, ymx, xmn, xmx, mr, mg, mb,
+                                 tm0[0], tm0[1], tm0[2], tm0[3],
+                                 b.blend_mode, b.src_factor, b.dst_factor, b.phase, b.vcount, ntex,
+                                 skHi, bi);
+                }
+                const bool water_spans_row2 = (ymn < 0.60f && ymx > -0.10f);
+                const bool water_bluish     = (mb > mr + 0.05f && (mb + mg) > 0.8f);
+                const bool water_tex_bluish = (tm0[0] >= 0 && tm0[2] > tm0[0] + 15);
+                if (water_spans_row2 && (water_bluish || water_tex_bluish)) {
+                    std::fprintf(stderr, "[WATER-SUSPECT] b%d owner=\"%s\" ndcY[%.3f,%.3f] ndcX[%.3f,%.3f] "
+                                 "rgb=%.2f,%.2f,%.2f texmean0=%d,%d,%d,%d bm=%u/%u/%u ph%u vc=%u ntex=%d "
+                                 "-> verify: SB_SKIP_KEY=%x tools/render/title_sbs.sh (or SB_SKIP_BIDX=%d)\n",
+                                 bi, owner, ymn, ymx, xmn, xmx, mr, mg, mb,
+                                 tm0[0], tm0[1], tm0[2], tm0[3],
+                                 b.blend_mode, b.src_factor, b.dst_factor, b.phase, b.vcount, ntex,
+                                 skHi, bi);
+                }
+            }
             if ((unsigned)(b.shaderKey >> 32) == 0xeb5c8e74u && b.fragGlsl)
                 std::fprintf(stderr, "[b76-glsl]\n%s\n[/b76-glsl]\n", b.fragGlsl);
             std::fprintf(stderr, "[batchtev] b%d cU=%u aU=%u k0=%d,%d,%d,%d k1=%d,%d,%d,%d r0=%d,%d,%d,%d r1=%d,%d,%d,%d efb=%p/%p texmean0=%d,%d,%d,%d texmean1=%d,%d,%d,%d\n",
