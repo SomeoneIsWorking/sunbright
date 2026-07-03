@@ -937,8 +937,17 @@ extern "C" bool sb_boot_drive_scene() {
 				lin.view[r*4+c] = g_graphics.mViewMtx.mMtx[r][c];
 			lin.effectOn =
 			    !(std::getenv("SB_NO_EFFECT_LIGHT") && std::getenv("SB_NO_EFFECT_LIGHT")[0] != '0');
-			// Effect light data = gpLightManager's, which loadAfter fills from Light-Group[0].
-			for (int i = 0; i < 3; ++i) lin.effPos[i]   = lin.lgPos[i];
+			// Effect light data. RE'd source (TLightCommon::setLight @0x80229a30, decomp in
+			// scratch/decomp/80229a30.c): reads `gpLightManager+0x1c` (mEffectPos, 3 f32s
+			// aliased over unk1C/20/24) view-transformed for GX_LIGHT1. Oracle's stage-15 title
+			// shows mEffectPos=(200000, 500000, 200000). On NATIVE gpLightManager exists but its
+			// mEffectPos stays UNINITIALIZED (measured 2026-07-04: garbage like (0, -6.5e21, 0))
+			// because loadAfter/calcLightBorder aren't fully ported — see
+			// [[light-dbset-porting-gaps-2026-07-04]]. STOPGAP: fall back to lgPos for effPos
+			// (produces L1==L0 duplicate — visibly wrong but deterministic and doesn't segfault).
+			// PROPER FIX: port TLightWithDBSetManager::loadAfter to populate mEffectPos from the
+			// scene light-set data (separate arc).
+			for (int i = 0; i < 3; ++i) lin.effPos[i]   = lin.lgPos[i];   // STOPGAP: L1 duplicates L0
 			for (int i = 0; i < 4; ++i) lin.effColor[i] = lin.lgColor[i];
 
 			sb::OutLight lo[3];
