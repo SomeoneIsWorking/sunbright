@@ -53,6 +53,7 @@
 // draw path instead.
 extern "C" void sb_gx_get_clear_color(float* rgba);
 extern "C" void sb_gx_call_trace_dump(void) __attribute__((weak));
+extern "C" void sb_gx_emit_full_state(void) __attribute__((weak));
 // Non-extern (C++ linkage in sms_boot_j3d_capture.cpp) — must be in the global
 // namespace like the definition.
 int sb_boot_capture_tev_take(const sb::render::NvkTevVertex** verts,
@@ -283,6 +284,11 @@ extern "C" void sb_oracle_present_frame(void* /*framebuffer*/, void* /*user*/) {
     // build/sunbright oracle — output matches by construction.
     static const bool skip_fifo = std::getenv("SB_ORACLE_SKIP_FIFO") != nullptr;
     if (!skip_fifo) {
+        // Big-hammer: dump full captured state as FIFO writes RIGHT BEFORE the
+        // decoder consumes the frame. This gives Dolphin a complete BP/XF
+        // snapshot even for state fields whose setters don't yet emit their own
+        // FIFO write, at the cost of re-emitting every frame.
+        if (&sb_gx_emit_full_state) sb_gx_emit_full_state();
         const uint8_t* fifo_data = sb::gxfifo::data();
         const size_t   fifo_size = sb::gxfifo::size();
         if (fifo_size > 0) {

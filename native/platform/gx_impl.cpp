@@ -196,6 +196,118 @@ static void inc_call_counter(const char* name) {
     }
     if (g_cc_n < 64) { g_cc[g_cc_n++] = {name, 1}; }
 }
+// Forward decls of the state-composition helpers (defined lower in this file).
+static void emit_genmode();
+static void emit_blendmode();
+
+// Emit the entire current GXState as a FIFO burst. Called every present from the
+// oracle sink so Dolphin sees a complete state snapshot before consuming any
+// deltas (BP/XF/CP writes the seam emits during the frame). This is the "big
+// hammer" approach — instrument-every-setter is the correct long-term shape,
+// but this single function gives us broad coverage per unit of code so the
+// oracle output already looks like the game.
+extern "C" void sb_gx_emit_full_state(void) {
+    if (!sb::gxfifo::enabled()) return;
+    auto& g = state();
+
+    // ── BP registers ────────────────────────────────────────────────────────
+    // GENMODE (0x00) — composed from num-* / cull.
+    emit_genmode();
+    // SCISSOR TL/BR (0x20/0x21) + offset (0x59, always 0 for the game).
+    {
+        const u32 tl = ((g.scTop  + 342) & 0x3FF) | (((g.scLeft + 342) & 0x3FF) << 12);
+        const u32 br = ((g.scTop  + g.scHt - 1 + 342) & 0x3FF)
+                     | (((g.scLeft + g.scWd - 1 + 342) & 0x3FF) << 12);
+        sb::gxfifo::bp_write(bp::SCISSORTL, tl);
+        sb::gxfifo::bp_write(bp::SCISSORBR, br);
+    }
+    // ZMODE (0x40) + BLENDMODE (0x41) + PE_CONTROL (0x43).
+    {
+        u32 v = 0;
+        v |= g.zCompare ? 0x1 : 0;
+        v |= ((u32)(g.zFunc & 7) << 1);
+        v |= g.zUpdate  ? 0x10 : 0;
+        sb::gxfifo::bp_write(bp::ZMODE, v);
+    }
+    emit_blendmode();
+    {
+        u32 v = 0;
+        // PE_CONTROL bits: pixel-format lo bits (0-2) + zformat (3-5) + zcomploc (6) + reserved.
+        // Simplified: only the zcomploc bit — other fields default fine for RGBA8.
+        if (g.zCompLocBeforeTex) v |= (1u << 6);
+        sb::gxfifo::bp_write(bp::ZCOMPARE, v);
+    }
+    // ALPHACOMPARE (0xF3) — 4 fields packed.
+    {
+        u32 v = 0;
+        v |= ((u32)g.alphaRef0);
+        v |= ((u32)g.alphaRef1) << 8;
+        v |= ((u32)(g.alphaComp0 & 7)) << 16;
+        v |= ((u32)(g.alphaComp1 & 7)) << 19;
+        v |= ((u32)(g.alphaOp & 3)) << 22;
+        sb::gxfifo::bp_write(bp::ALPHACOMPARE, v);
+    }
+    // TEV COLOR_ENV / ALPHA_ENV per stage (16 stages).
+    for (int s = 0; s < 16; ++s) {
+        sb::gxfifo::bp_write(bp::TEV_COLOR_ENV_BASE + 2 * s, g.tev.colorEnv[s]);
+        sb::gxfifo::bp_write(bp::TEV_ALPHA_ENV_BASE + 2 * s, g.tev.alphaEnv[s]);
+    }
+    // TEV colour registers (CPREV/C0/C1/C2). Split L/H per register: L carries alpha<<12 | red.
+    for (int r = 0; r < 4; ++r) {
+        const s16 R = g.tev.tevColor[r][0], G_ = g.tev.tevColor[r][1];
+        const s16 B = g.tev.tevColor[r][2], A_ = g.tev.tevColor[r][3];
+        const u32 lo = ((u32)(R & 0x7FF)) | (((u32)(A_ & 0x7FF)) << 12);
+        const u32 hi = ((u32)(B & 0x7FF)) | (((u32)(G_ & 0x7FF)) << 12);
+        // TEV_REGISTERL_0/1/2/3 = 0xE0 + 2*r ; TEV_REGISTERH = 0xE1 + 2*r
+        sb::gxfifo::bp_write(bp::TEV_REGISTER_L_BASE + 2 * r, lo);
+        sb::gxfifo::bp_write(bp::TEV_REGISTER_H_BASE + 2 * r, hi);
+    }
+
+    // ── XF registers ────────────────────────────────────────────────────────
+    // XFMEM_VIEWPORT (0x101A) — 6 f32.
+    {
+        const float wd_half = g.vpWd * 0.5f;
+        const float ht_half = g.vpHt * -0.5f;
+        const float zscale  = g.vpFarz - g.vpNearz;
+        const float xorig   = g.vpLeft + wd_half + 342.0f;
+        const float yorig   = g.vpTop  - ht_half + 342.0f;
+        const float zorig   = g.vpFarz;
+        sb::gxfifo::write_u8(0x10);
+        sb::gxfifo::write_u16_be(5);
+        sb::gxfifo::write_u16_be(0x101A);
+        sb::gxfifo::write_f32_be(wd_half);
+        sb::gxfifo::write_f32_be(ht_half);
+        sb::gxfifo::write_f32_be(zscale);
+        sb::gxfifo::write_f32_be(xorig);
+        sb::gxfifo::write_f32_be(yorig);
+        sb::gxfifo::write_f32_be(zorig);
+    }
+    // XFMEM_PROJECTION (0x1020) — 6 f32 + 1 u32 type.
+    {
+        sb::gxfifo::write_u8(0x10);
+        sb::gxfifo::write_u16_be(6);
+        sb::gxfifo::write_u16_be(0x1020);
+        for (int i = 0; i < 6; ++i) sb::gxfifo::write_f32_be(g.projMtx[i]);
+        sb::gxfifo::write_u32_be((u32)g.projType);
+    }
+    // XFMEM_POSMATRICES (0x0000) — position/normal matrix memory, 3x4 rows each,
+    // 64 matrix slots × 12 floats = 768 words. Emit in bursts of 12 per slot only
+    // when the game has actually written to that slot (basic slot 0 is enough for
+    // the title's static camera; larger coverage lands as needed).
+    // Slot 0 posmtx:
+    {
+        sb::gxfifo::write_u8(0x10);
+        sb::gxfifo::write_u16_be(11);       // 12 words - 1
+        sb::gxfifo::write_u16_be(0x0000);   // XFMEM_POSMATRICES
+        for (int r = 0; r < 3; ++r)
+            for (int c = 0; c < 4; ++c)
+                sb::gxfifo::write_f32_be(g.posMtx[0][r][c]);
+    }
+
+    // Chan control + material/ambient colours (XFMEM_SETNUMCHAN=0x1009 etc.)
+    // — kept minimal for now; will expand once we see visible geometry lit
+    // correctly through the passthrough state above.
+}
 extern "C" void sb_gx_call_trace_dump(void) {
     if (!std::getenv("SB_GX_CALL_TRACE")) return;
     long total = 0;
