@@ -37,15 +37,4 @@ void sb_native_sky_backdrop(float rgba[4]);
 // the first draw_tev_segment. No-op when sb_native_sky_active() is false.
 void sb_native_sky_paint(void);
 
-// Register the sky.bmd J3DModel* so the J3D-capture layer can tag its batches with
-// NvkTevBatch::is_native_sky. When set, gx_sdlgpu bypasses the TEV-generated fragment shader
-// for those batches and uses a hardcoded native GLSL shader that samples tex[0] — rendering
-// the game's exact sky gradient/cloud textures without the TEV combiner's overbright
-// saturation. drive_sky() calls this each frame (it's a cheap pointer compare + store).
-// Passing nullptr clears the registration (e.g. leaving stage 15).
-void sb_native_sky_register_model(void* j3dmodel);
-
-// True if `m` is the currently-registered sky model. Called from the batch-capture site.
-bool sb_native_sky_is_model(const void* m);
-
 }

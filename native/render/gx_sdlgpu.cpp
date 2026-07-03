@@ -137,99 +137,6 @@ SDL_GPUShader* ensure_frag(uint64_t shaderKey, const char* glsl) {
     return sh;
 }
 
-// SMS_NATIVE_PLATFORM: the native sky.bmd dome fragment shaders (CLAUDE.md 2026-07-03 hard rule).
-// TSky's TEV combiner was multi-stage integer math that saturated to overbright-white when run
-// through sb_tev_gen_fragment. Empirical batch inventory at settled title (SB_NATIVE_SKY_DBG):
-//   * dome BASE (~1800 verts, no texmap, per-vertex ras = sky-blue like 151,192,255): a smooth
-//     zenith-to-horizon blue gradient MADE OF VERTEX COLOURS. No texture at all. On oracle this
-//     draws as a smooth blue dome.
-//   * cloud STRIPS (~24-48 verts each, 128x256 cloud tex, ras=white, blend=NONE): opaque
-//     textured mesh strips that carry the puffy-cloud pattern. Their texture is a near-monochrome
-//     white cloud shape with a variable-alpha silhouette; on oracle the TEV combines it with the
-//     dome BEHIND (already-written blue) so clouds appear soft. With blend=none and RGB=white
-//     everywhere, a raw sample writes hard white triangles (the visible defect).
-// Two forked shaders port the intent:
-//   * kNativeSkyBaseFrag  → just fColor (per-vertex sky gradient).
-//   * kNativeSkyCloudFrag → mix(fColor.rgb, vec3(1), tex.a): use cloud-tex ALPHA as a whiteness
-//     mask over the underlying sky colour carried by the vertex ras. Where tex.a=0 the vertex-
-//     colour blue passes through (cloud absent); where tex.a=1 the pixel goes white (thick
-//     cloud). This is the intent even though blend=none — the "blending" is done in the fragment
-//     with the batch's own vertex colour as the base. It gives soft cloud edges via texture
-//     interpolation and preserves the blue dome behind.
-// Same input layout as tev.vert / the TEV frag (fUV[0..7] varyings, sampler2D tex_0..tex_7).
-// Selected in ensure_pipeline by whether the batch has a real tex[0] bound.
-constexpr const char kNativeSkyBaseFrag[] = R"(#version 450
-layout(location=0) in vec4 fColor;
-layout(location=1) in vec4 fColor1;
-layout(location=2) in vec4 fUV0_1;
-layout(location=3) in vec4 fUV2_3;
-layout(location=4) in vec4 fUV4_5;
-layout(location=5) in vec4 fUV6_7;
-layout(set=2, binding=0) uniform sampler2D tex_0;
-layout(set=2, binding=1) uniform sampler2D tex_1;
-layout(set=2, binding=2) uniform sampler2D tex_2;
-layout(set=2, binding=3) uniform sampler2D tex_3;
-layout(set=2, binding=4) uniform sampler2D tex_4;
-layout(set=2, binding=5) uniform sampler2D tex_5;
-layout(set=2, binding=6) uniform sampler2D tex_6;
-layout(set=2, binding=7) uniform sampler2D tex_7;
-layout(set=3, binding=0) uniform Mat { ivec4 kcolor[4]; ivec4 tevreg[4]; };
-layout(location=0) out vec4 outColor;
-// Batch without a texmap (dome base): just the interpolated vertex colour.
-// (RE'd from the recompiled fragGlsl 2d45a7be6c503257 — Stage 0: Cprev = rastemp.rgb.)
-void main() { outColor = vec4(fColor.rgb, 1.0); }
-)";
-
-constexpr const char kNativeSkyCloudFrag[] = R"(#version 450
-layout(location=0) in vec4 fColor;
-layout(location=1) in vec4 fColor1;
-layout(location=2) in vec4 fUV0_1;
-layout(location=3) in vec4 fUV2_3;
-layout(location=4) in vec4 fUV4_5;
-layout(location=5) in vec4 fUV6_7;
-layout(set=2, binding=0) uniform sampler2D tex_0;
-layout(set=2, binding=1) uniform sampler2D tex_1;
-layout(set=2, binding=2) uniform sampler2D tex_2;
-layout(set=2, binding=3) uniform sampler2D tex_3;
-layout(set=2, binding=4) uniform sampler2D tex_4;
-layout(set=2, binding=5) uniform sampler2D tex_5;
-layout(set=2, binding=6) uniform sampler2D tex_6;
-layout(set=2, binding=7) uniform sampler2D tex_7;
-layout(set=3, binding=0) uniform Mat { ivec4 kcolor[4]; ivec4 tevreg[4]; };
-layout(location=0) out vec4 outColor;
-// Textured batch (cloud strip / horizon fade). RE'd from the recompiled fragGlsl
-// 224004d94d5fc178 — Stage 0: Cprev.rgb = textemp.rgb * rastemp.rgb / 255, alpha analogous.
-// Same formula in floating-point; bypasses sb_tev_gen_fragment's integer path which had a
-// history of overbright-white saturation for sky combiners.
-void main() {
-    vec4 t = texture(tex_0, fUV0_1.xy);
-    outColor = t * fColor;
-}
-)";
-
-SDL_GPUShader* ensure_native_sky_frag(bool has_texture) {
-    // Two cache slots outside the TEV shaderKey space.
-    const uint64_t key = has_texture ? 0x5B5F534B595F435Dull /*"[_SKY_C]"*/
-                                     : 0x5B5F534B595F425Dull /*"[_SKY_B]"*/;
-    auto it = g_frag_cache.find(key);
-    if (it != g_frag_cache.end()) return it->second;
-    const char* src = has_texture ? kNativeSkyCloudFrag : kNativeSkyBaseFrag;
-    std::vector<uint32_t> spv = sb_compile_fragment_glsl(src);
-    SDL_GPUShader* sh = spv.empty() ? nullptr
-        : make_shader(spv.data(), spv.size() * 4, SDL_GPU_SHADERSTAGE_FRAGMENT, /*samplers*/8, /*uniform*/1);
-    if (!sh) {
-        // FAIL LOUD — see ensure_frag for rationale. This one caught the (void)texture(...)
-        // GLSL-invalid line the first place I hit it, instead of hiding as "sky same as before".
-        std::fprintf(stderr, "\n=== FATAL [gxsdl]: native sky fragment shader compile/create failed ===\n"
-                             "  has_texture=%d  spv empty? %d\n  source:\n%s\n",
-                     (int)has_texture, (int)spv.empty(), src);
-        std::fflush(stderr);
-        std::abort();
-    }
-    g_frag_cache.emplace(key, sh);
-    return sh;
-}
-
 SDL_GPUGraphicsPipeline* ensure_pipeline(const sb::render::NvkTevBatch& b) {
     uint32_t state = (uint32_t)(b.blend_mode & 1)
                    | ((uint32_t)(b.src_factor & 15) << 1)
@@ -241,20 +148,10 @@ SDL_GPUGraphicsPipeline* ensure_pipeline(const sb::render::NvkTevBatch& b) {
                    | ((uint32_t)(b.alpha_update & 1) << 15)
                    | ((uint32_t)(b.dst_alpha_force & 1) << 16);
     uint64_t key = b.shaderKey * 1099511628211ull ^ state ^ ((uint64_t)b.dst_alpha_val << 40);
-#ifdef SMS_NATIVE_PLATFORM
-    // Native-sky pipelines share ONE per (has_texture, blend/depth state). Sentinel high bit
-    // keeps them out of any TEV pipeline's slot. `has_texture` picks the base-vs-cloud shader.
-    const bool native_sky_has_tex = b.is_native_sky && b.tex[0].rgba && b.tex[0].w && b.tex[0].h;
-    if (b.is_native_sky) key = 0xB000000000000000ull | state | ((uint64_t)native_sky_has_tex << 60);
-#endif
     auto it = g_pipe_cache.find(key);
     if (it != g_pipe_cache.end()) return it->second;
 
-    SDL_GPUShader* fs =
-#ifdef SMS_NATIVE_PLATFORM
-        b.is_native_sky ? ensure_native_sky_frag(native_sky_has_tex) :
-#endif
-        ensure_frag(b.shaderKey, b.fragGlsl);
+    SDL_GPUShader* fs = ensure_frag(b.shaderKey, b.fragGlsl);
     if (!fs) { g_pipe_cache.emplace(key, nullptr); return nullptr; }
 
     using V = sb::render::NvkTevVertex;
@@ -531,9 +428,6 @@ void draw_tev_segment(const sb::render::NvkTevVertex* verts, int nverts,
     if (nverts > 0 && verts && nbatch > 0 && batches) {
         SDL_GPUBufferBinding vb{}; vb.buffer = g_vbuf;
         SDL_BindGPUVertexBuffers(rp, 0, &vb, 1);
-#ifdef SMS_NATIVE_PLATFORM
-        uint32_t skyBatchIdx = 0;   // per-render-pass reset for SB_SKY_SKIP_HEX
-#endif
         for (int bi = 0; bi < nbatch; ++bi) {
             const auto& b = batches[bi];
             if (b.vcount == 0 || b.vstart >= (uint32_t)nverts) continue;
@@ -541,28 +435,6 @@ void draw_tev_segment(const sb::render::NvkTevVertex* verts, int nverts,
             if (b.vstart + count > (uint32_t)nverts) count = (uint32_t)nverts - b.vstart;
             SDL_GPUGraphicsPipeline* pipe = ensure_pipeline(b);
             if (!pipe) continue;
-#ifdef SMS_NATIVE_PLATFORM
-            // DIAG (2026-07-03, temporary): SB_SKY_SKIP_HEX="bitmask" — skip the Nth sky batch
-            // in this render pass if bit N set. Bisects which sky batches produce visible defects.
-            // SB_SKY_ONLY=1 — draw ONLY the sky batches (skip everything else). To see if the
-            // sky-tagged draws land where we expect.
-            if (b.is_native_sky) {
-                static uint32_t skipMask = ~0u;
-                if (skipMask == ~0u) {
-                    const char* e = std::getenv("SB_SKY_SKIP_HEX");
-                    skipMask = (e && e[0]) ? (uint32_t)std::strtoul(e, nullptr, 16) : 0;
-                }
-                if (skipMask & (1u << (skyBatchIdx & 31))) { ++skyBatchIdx; continue; }
-                ++skyBatchIdx;
-            } else {
-                static int onlySky = -1;
-                if (onlySky < 0) {
-                    const char* e = std::getenv("SB_SKY_ONLY");
-                    onlySky = (e && e[0] && e[0] != '0') ? 1 : 0;
-                }
-                if (onlySky) continue;
-            }
-#endif
             SDL_BindGPUGraphicsPipeline(rp, pipe);
             SDL_PushGPUFragmentUniformData(g_cmd, 0, &b.push, (Uint32)sizeof(b.push));
             SDL_GPUTextureSamplerBinding tsb[8];
@@ -618,15 +490,65 @@ void main() {
     gl_Position = vec4(p, 1.0, 1.0);
 }
 )";
+// Fragment shader: vertical gradient + fBm cloud modulator. The gradient is the base sky (blue
+// zenith → haze horizon); the fBm layer composites soft white puffs on top of it to approximate
+// the oracle title screen's sky.bmd cloud strips, which sms-boot can't project on-screen (see
+// debug_journal/2026-07-03_sky_bmd_offscreen.md). Noise is a small hash-based value-noise + 4
+// fBm octaves — cheap enough for a fullscreen pass at 640×480, and completely deterministic
+// (no time/seed input, so the sky is stable across frames — file-select shouldn't animate).
+//
+// Cloud shaping:
+//   * cloud_uv skews UP-and-narrower toward the horizon (u scaled by 1+t, v scaled by 1-0.5t)
+//     so cloud puffs look "further" near the bottom, like distance perspective.
+//   * A vertical mask limits clouds to the upper 2/3 of the sky (0 at horizon, 1 above cloud_band).
+//   * `smoothstep(0.5, 0.75, fbm)` extracts puffs from the noise field — soft edges, no clouds
+//     below 0.5 (so most of the sky is clear blue).
+//   * puffs are mixed toward WHITE, alpha stays 1.0 (opaque paint of the sky pass).
 constexpr const char kNativeSkyFs[] = R"(#version 450
 layout(location=0) in vec2 vNdc;
 layout(set=3, binding=0) uniform Sky { vec4 top; vec4 horizon; } sky;
 layout(location=0) out vec4 outColor;
+
+float hash(vec2 p) {
+    p = fract(p * vec2(123.34, 456.21));
+    p += dot(p, p + 45.32);
+    return fract(p.x * p.y);
+}
+float vnoise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    // smoothstep interpolation weights.
+    vec2 w = f * f * (3.0 - 2.0 * f);
+    float a = hash(i + vec2(0.0, 0.0));
+    float b = hash(i + vec2(1.0, 0.0));
+    float c = hash(i + vec2(0.0, 1.0));
+    float d = hash(i + vec2(1.0, 1.0));
+    return mix(mix(a, b, w.x), mix(c, d, w.x), w.y);
+}
+float fbm(vec2 p) {
+    float v = 0.0;
+    float a = 0.5;
+    for (int i = 0; i < 4; ++i) {
+        v += a * vnoise(p);
+        p *= 2.03;                                 // slight non-integer so octaves don't align
+        a *= 0.5;
+    }
+    return v;
+}
 void main() {
-    // Vulkan NDC: y=-1 is TOP of the framebuffer, y=+1 is BOTTOM. t = 0 at top (zenith), 1 at
-    // bottom (horizon). So t rises with vNdc.y directly.
+    // Vulkan NDC: y=-1 is TOP of the framebuffer, y=+1 is BOTTOM. t rises with vNdc.y so
+    // t=0 at zenith, t=1 at horizon.
     float t = clamp(0.5 + 0.5 * vNdc.y, 0.0, 1.0);
-    outColor = mix(sky.top, sky.horizon, t);
+    vec4 base = mix(sky.top, sky.horizon, t);
+
+    // fBm cloud layer over the upper 2/3 of the sky.
+    vec2 uv = vec2(vNdc.x * (1.0 + 0.6 * t), (1.0 - t) * 0.9) * 3.0;
+    float n = fbm(uv);
+    float band = 1.0 - smoothstep(0.55, 0.95, t);   // clouds fade out toward the horizon
+    float cloud = smoothstep(0.48, 0.78, n) * band;
+
+    vec3 rgb = mix(base.rgb, vec3(1.0), 0.85 * cloud);
+    outColor = vec4(rgb, 1.0);
 }
 )";
 

@@ -742,34 +742,6 @@ extern "C" bool sb_boot_drive_scene() {
 		static int n = 0;
 		if (n < 3) { ++n; sb_blk_probe(); }
 	}
-#ifdef SMS_NATIVE_PLATFORM
-	// Register the sky.bmd J3DModel* each frame so the J3D capture layer tags its batches for
-	// the native-sky fragment shader. Must run under BOTH the hand-driven path AND SB_OWN_GXLIST
-	// (which skips drive_sky) — the sky.bmd draws through the real GX perform list in the latter
-	// case but still needs its capture tag. Passing nullptr clears when TSky isn't active (non-15
-	// stages or search miss). Cheap: one search + one pointer store.
-	{
-		TSky* sky = JDrama::TNameRefGen::search<TSky>("空");
-		MActor* ma = sky ? sky->unk44 : nullptr;
-		// Register on J3DModelData*, NOT J3DModel*: sky.bmd's shape data is loaded once as a
-		// modelData and can be bound into multiple J3DModel instances (per anim variant / draw
-		// buffer instance), so a Model* comparison misses valid sky draws. The capture site sees
-		// the SHAPE's owning ModelData via j3dSys.getModel()->getModelData() = the shared handle.
-		J3DModel* mdl = ma ? ma->getModel() : nullptr;
-		J3DModelData* md = mdl ? mdl->getModelData() : nullptr;
-		void* skymd = (sb_native_sky_active() && md) ? (void*)md : nullptr;
-		sb_native_sky_register_model(skymd);
-		if (const char* d = std::getenv("SB_NATIVE_SKY_DBG"); d && d[0] && d[0] != '0') {
-			static int n = 0;
-			if (n < 1) { ++n;
-				std::fprintf(stderr, "[nsky-reg] active=%d sky=%p mactor=%p model=%p modelData=%p\n",
-				             (int)sb_native_sky_active(),
-				             (void*)sky, (void*)ma, (void*)mdl, skymd);
-			}
-		}
-	}
-#endif
-
 	// Start a fresh capture frame: one drawn scene == one captured frame. direct() can run
 	// multiple times between two VI presents (logic loop > retrace under TURBO); without this
 	// reset the duplicate scene copies accumulate and interleave at the horizon (the dithered
@@ -1225,17 +1197,4 @@ extern "C" void sb_native_sky_paint(void) {
 	static const float top[4]     = {  40.0f/255.0f, 120.0f/255.0f, 190.0f/255.0f, 1.0f };
 	static const float horizon[4] = { 140.0f/255.0f, 195.0f/255.0f, 230.0f/255.0f, 1.0f };
 	sb::gxsdl::native_sky_fill(top, horizon);
-}
-
-// The currently-registered sky.bmd J3DModel*. Compared against each J3DShape's owning model at
-// batch-capture time (sms_boot_j3d_capture.cpp) — a match tags the batch native-sky so
-// gx_sdlgpu uses the hardcoded sky fragment shader instead of the TEV-generated one. void* not
-// J3DModel* so callers don't need the SMS header hierarchy. Atomic-relaxed access is fine
-// since capture and drive_sky run on the same game thread (no cross-thread scheduling here).
-static void* g_native_sky_model = nullptr;
-extern "C" void sb_native_sky_register_model(void* j3dmodel) {
-	g_native_sky_model = j3dmodel;
-}
-extern "C" bool sb_native_sky_is_model(const void* m) {
-	return m && m == g_native_sky_model;
 }

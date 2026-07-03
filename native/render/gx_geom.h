@@ -98,15 +98,6 @@ struct NvkTevBatch {
     float    dbg_matc[4] = {1, 1, 1, 1}; // material's matColor[0] normalised
     float    dbg_light_pos[8][3] = {};
     float    dbg_light_col[8][3] = {};
-
-    // SMS_NATIVE_PLATFORM: when set, gx_sdlgpu bypasses the TEV-generated fragment shader
-    // and uses a hardcoded native GLSL shader instead — same captured verts/textures/blend,
-    // but native color math. Currently used for the sky.bmd dome (TSky, reference/sms/src/
-    // Map/Sky.cpp): the TEV combiner was saturating to overbright-white; a native "sample
-    // tex[0]" shader renders the game's exact sky gradient/cloud textures faithfully. Set in
-    // sms_boot_j3d_capture.cpp when the batch's owning J3DModel is the registered sky model
-    // (native/render/sms_native_sky.h). Zero by default → unchanged behavior everywhere else.
-    uint8_t is_native_sky = 0;
 };
 
 } // namespace sb::render
