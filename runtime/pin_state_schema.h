@@ -30,6 +30,16 @@
 // This is the TCameraOption* where mIntroChaseTimer / mLoadPanTimer / mUpDownPanTimer
 // actually live — NOT gpCamera->mCurrentParams (which is TCameraKindParam, different struct).
 #define SMS_US_GPCAMERAOPTION    0x8040D108u   // TCameraOption* (pointer slot)
+// gpLightManager at SDA offset -0x610c (RE'd via decomp of TLightCommon::setLight
+// @0x80229a30 which reads *(r13 - 0x610c) as the manager pointer).
+#define SMS_US_GPLIGHTMANAGER    0x8040E0B4u   // TLightWithDBSetManager* (pointer slot)
+
+// TLightWithDBSetManager field offsets (from reference/sms/include/MarioUtil/LightUtil.hpp).
+#define TLMGR_OFF_EFFECT_COLOR   0x18          // GXColor (u8[4])
+#define TLMGR_OFF_EFFECT_POS     0x1C          // Vec3f aliased over unk1C/unk20/unk24
+#define TLMGR_OFF_EFFECT_ALPHA   0x28          // f32 mEffectAlphaScale
+#define TLMGR_OFF_EFFECT_ENABLED 0x54          // u8 mEffectEnabled — gate #1 for GX_LIGHT1
+#define TLMGR_OFF_EFFECT_VALID   0x55          // u8 mEffectValid — gate #2 for GX_LIGHT1
 
 // ── TApplication field offsets ──────────────────────────────────────────────
 #define TAPP_OFF_APPSTATE        0x08          // u8
@@ -101,6 +111,14 @@ struct SbPinGameState {
     int   camera_load_pan_frames;
     int   camera_load_pan_timer;
     unsigned char have_camera;
+    // gpLightManager fingerprint — the specific fields TLightCommon::setLight reads
+    // for GX_LIGHT1 (mEffectPos + gate bytes). Named in the light-port arc.
+    unsigned lmgr_ptr;
+    float    lmgr_effect_pos[3];
+    unsigned lmgr_effect_color;   // packed u32 RGBA
+    unsigned lmgr_effect_enabled; // u8 widened
+    unsigned lmgr_effect_valid;   // u8 widened
+    unsigned char have_lmgr;
 };
 #endif
 

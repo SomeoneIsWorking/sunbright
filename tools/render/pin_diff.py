@@ -214,6 +214,17 @@ def cmp_game_state(n: dict, o: dict, verdicts: list[Verdict]) -> None:
     if nmp.get("have") and omp.get("have"):
         cmp_vec3("gpMarioPos", nmp.get("pos", [0]*3), omp.get("pos", [0]*3), verdicts, tol=1e-2)
 
+    nlm = n.get("lmgr", {})
+    olm = o.get("lmgr", {})
+    if nlm.get("have") and olm.get("have"):
+        cmp_vec3("lmgr.mEffectPos",     nlm.get("effectPos", [0]*3), olm.get("effectPos", [0]*3), verdicts, tol=1e-2)
+        cmp_int ("lmgr.mEffectColor",   nlm.get("effectColor", -1),  olm.get("effectColor", -1),  verdicts, hex_fmt=True)
+        cmp_int ("lmgr.mEffectEnabled", nlm.get("effectEnabled",-1), olm.get("effectEnabled",-1), verdicts)
+        cmp_int ("lmgr.mEffectValid",   nlm.get("effectValid",-1),   olm.get("effectValid",-1),   verdicts)
+    else:
+        verdicts.append(Verdict("lmgr.*", False,
+                                f"one side missing (native.have={nlm.get('have')} oracle.have={olm.get('have')})"))
+
     nm = n.get("mario", {})
     om = o.get("mario", {})
     if nm.get("have") and om.get("have"):

@@ -152,6 +152,11 @@ extern "C" void sb_boot_dump_pin_json(int tick) {
                  gs.camera_up[0], gs.camera_up[1], gs.camera_up[2],
                  gs.camera_mode, gs.camera_fovy,
                  gs.camera_intro_timer, gs.camera_load_pan_frames, gs.camera_load_pan_timer);
+    std::fprintf(f, "  \"lmgr\": {\"have\": %u, \"ptr\": %u, \"effectPos\": [%.6g,%.6g,%.6g], "
+                    "\"effectColor\": %u, \"effectEnabled\": %u, \"effectValid\": %u},\n",
+                 gs.have_lmgr, gs.lmgr_ptr,
+                 gs.lmgr_effect_pos[0], gs.lmgr_effect_pos[1], gs.lmgr_effect_pos[2],
+                 gs.lmgr_effect_color, gs.lmgr_effect_enabled, gs.lmgr_effect_valid);
     std::fprintf(f, "  \"lights\": [");
     int emitted = 0;
     for (int i = 0; i < nl && i < 8; ++i) {

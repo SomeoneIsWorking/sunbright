@@ -12,6 +12,7 @@
 #include <System/MarDirector.hpp>
 #include <Camera/Camera.hpp>
 #include <Camera/CameraOption.hpp>
+#include <MarioUtil/LightUtil.hpp>
 #include <Player/Mario.hpp>
 #include <Player/MarioAccess.hpp>
 
@@ -86,6 +87,27 @@ extern "C" int sb_pin_state_populate(SbPinGameState* out) {
         out->camera_intro_timer     = (int)gpCameraOption->mIntroChaseTimer;
         out->camera_load_pan_frames = (int)gpCameraOption->mLoadPanFrames;
         out->camera_load_pan_timer  = (int)gpCameraOption->mLoadPanTimer;
+    }
+
+    // gpLightManager fingerprint — what does the manager actually hold at pin time?
+    // TLightCommon::setLight reads mEffectPos + gate bytes; comparing native vs oracle
+    // values at pin names WHERE the divergence lives (loadAfter unported, or manager
+    // instance simply not there, or something between).
+    out->lmgr_ptr = (unsigned)(unsigned long)gpLightManager;
+    if (gpLightManager) {
+        const uint8_t* base = reinterpret_cast<const uint8_t*>(gpLightManager);
+        const float* effPos = reinterpret_cast<const float*>(base + TLMGR_OFF_EFFECT_POS);
+        out->lmgr_effect_pos[0] = effPos[0];
+        out->lmgr_effect_pos[1] = effPos[1];
+        out->lmgr_effect_pos[2] = effPos[2];
+        // Pack GXColor u8[4] into u32 for compare.
+        const uint8_t* col = base + TLMGR_OFF_EFFECT_COLOR;
+        out->lmgr_effect_color =
+            ((unsigned)col[0] << 24) | ((unsigned)col[1] << 16) |
+            ((unsigned)col[2] << 8)  |  (unsigned)col[3];
+        out->lmgr_effect_enabled = *(base + TLMGR_OFF_EFFECT_ENABLED);
+        out->lmgr_effect_valid   = *(base + TLMGR_OFF_EFFECT_VALID);
+        out->have_lmgr = 1;
     }
     return 1;
 }

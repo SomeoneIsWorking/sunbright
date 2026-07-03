@@ -924,6 +924,23 @@ extern "C" bool sb_boot_drive_scene() {
 	{
 		JDrama::TLightAry* la =
 		    JDrama::TNameRefGen::search<JDrama::TLightAry>("Light Group");
+		// SB_LIGHTGROUP_DUMP: one-shot dump of ALL Light Group entries with pos + color.
+		// Comparing with oracle's 3 lights (sun @ [-249k], effect @ [200k,500k,200k],
+		// third @ [-455k]) tells us if native's asset load is finding the same 3 lights or
+		// only a subset.
+		if (la && std::getenv("SB_LIGHTGROUP_DUMP")) {
+			static int seen = 0;
+			if (seen++ < 1) {
+				std::fprintf(stderr, "[lightgroup-dump] TLightAry=%p count=%d\n",
+				             (void*)la, la->mLightCount);
+				for (int i = 0; i < la->mLightCount && i < 20; ++i) {
+					GXColor c; GXGetLightColor(&la->mLights[i].unk24, &c);
+					const JGeometry::TVec3<f32>& p = la->mLights[i].getPosition();
+					std::fprintf(stderr, "  L[%d] idx=%u col=(%u,%u,%u,%u) pos=(%.1f,%.1f,%.1f)\n",
+					             i, la->mLights[i].unk68, c.r, c.g, c.b, c.a, p.x, p.y, p.z);
+				}
+			}
+		}
 		if (la && la->mLights && la->mLightCount > 0) {
 			const JDrama::TIdxLight& sun = la->mLights[0];  // index unk24 (=0 for option scene)
 			GXColor col; GXGetLightColor(&sun.unk24, &col);

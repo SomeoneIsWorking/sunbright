@@ -173,6 +173,15 @@ void oracle_populate_pin_state(SbPinGameState& gs) {
         gs.camera_load_pan_frames = guest_r16s(camopt_ptr + TCAMOPT_OFF_LOADPANFR);
         gs.camera_load_pan_timer  = guest_r16s(camopt_ptr + TCAMOPT_OFF_LOADPANTIMER);
     }
+    // gpLightManager — the manager instance TLightCommon::setLight reads for GX_LIGHT1.
+    gs.lmgr_ptr = attrib_r32(SMS_US_GPLIGHTMANAGER);
+    if (gs.lmgr_ptr >= 0x80000000u) {
+        guest_read_vec3f(gs.lmgr_ptr + TLMGR_OFF_EFFECT_POS, gs.lmgr_effect_pos);
+        gs.lmgr_effect_color   = attrib_r32(gs.lmgr_ptr + TLMGR_OFF_EFFECT_COLOR);
+        gs.lmgr_effect_enabled = guest_r8   (gs.lmgr_ptr + TLMGR_OFF_EFFECT_ENABLED);
+        gs.lmgr_effect_valid   = guest_r8   (gs.lmgr_ptr + TLMGR_OFF_EFFECT_VALID);
+        gs.have_lmgr = 1;
+    }
 }
 
 // Whole-frame gather-pipe bytes (big-endian, FIFO order). Filled by sb_gather_flush_impl on the
@@ -418,6 +427,11 @@ extern "C" void sb_gx_capture_frame_boundary() {
                          gs.camera_up[0], gs.camera_up[1], gs.camera_up[2],
                          gs.camera_mode, gs.camera_fovy,
                          gs.camera_intro_timer, gs.camera_load_pan_frames, gs.camera_load_pan_timer);
+            std::fprintf(pf, "  \"lmgr\": {\"have\": %u, \"ptr\": %u, \"effectPos\": [%.6g,%.6g,%.6g], "
+                              "\"effectColor\": %u, \"effectEnabled\": %u, \"effectValid\": %u},\n",
+                         gs.have_lmgr, gs.lmgr_ptr,
+                         gs.lmgr_effect_pos[0], gs.lmgr_effect_pos[1], gs.lmgr_effect_pos[2],
+                         gs.lmgr_effect_color, gs.lmgr_effect_enabled, gs.lmgr_effect_valid);
             std::fprintf(pf, "  \"lights\": [");
             int emitted = 0;
             for (int i = 0; i < 8; ++i) if (fi.lights[i].valid) {
