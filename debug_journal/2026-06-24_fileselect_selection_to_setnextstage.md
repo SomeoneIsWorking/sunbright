@@ -154,8 +154,9 @@ title-logo letters, striped beach artifact, hx_wipe type 10.
 Cached project `scratch/ghidra_proj/sms.rep` (program `sms_flat.bin`). Decompile any US addr:
     printf "<hexaddr>\n" > scratch/decomp_targets.txt
     DECOMP_TARGETS=$PWD/scratch/decomp_targets.txt DECOMP_OUT=$PWD/scratch/decomp \
-      /opt/ghidra_11.0.3_PUBLIC/support/analyzeHeadless scratch/ghidra_proj sms \
+      analyzeHeadless scratch/ghidra_proj sms \
       -process sms_flat.bin -noanalysis -scriptPath scratch -postScript CreateAndDecomp.py -okToDelete
+      # (analyzeHeadless resolves via $PATH; symlink now points at current Ghidra install)
     # -> scratch/decomp/<addr>.c   (US func addrs: reference/sms_gmse01_funcs.txt;
     #    many GC2D/TCardLoad funcs are NOT in funcs.txt — use the JP symbol name in
     #    reference/sms_gmsj01_symbols.txt then find the US addr by the mangled name.)

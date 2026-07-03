@@ -45,7 +45,13 @@ gx_imm path (`native/platform/gx_imm_impl.cpp`) and composited by `sms_boot_pres
 screen's TOrthoProj::perform(0x10) sets GXSetProjection(ORTHO) before the group draws.
 
 ## Reusable Ghidra-decomp tooling (THIS is the force multiplier — reuse it every boot-order unit)
-The community decomp is missing whole TUs (all of Select*). Ghidra headless gives readable C:
+The community decomp is missing whole TUs (all of Select*). Ghidra headless gives readable C.
+Note (2026-07-04): the old flat-BinaryLoader path below is superseded — install the Cuyler36
+GameCube-Loader extension (matches installed Ghidra version) and `analyzeHeadless <proj> <name>
+-import scratch/bin/sms.dol -loader-autoloadMaps false` imports the DOL natively (real section
+addresses, `Gekko_Broadway` sleigh). See sunbright decomp-port SKILL.md for details.
+
+Legacy (Ghidra 11.x, no extension):
 1. `python3 scratch/dol2flat.py` → `scratch/bin/sms_flat.bin` (flat image of sms.dol, base 0x80003100).
 2. Import+analyze: `analyzeHeadless scratch/ghidra_proj sms -import scratch/bin/sms_flat.bin
    -processor "PowerPC:BE:32:default" -loader BinaryLoader -loader-baseAddr 0x80003100` (the project
