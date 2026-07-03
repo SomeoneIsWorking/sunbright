@@ -285,6 +285,37 @@ extern "C" void sb_gx_capture_frame_boundary() {
                          fi.posmtx_pass[pass][ 4], fi.posmtx_pass[pass][ 5], fi.posmtx_pass[pass][ 6], fi.posmtx_pass[pass][ 7],
                          fi.posmtx_pass[pass][ 8], fi.posmtx_pass[pass][ 9], fi.posmtx_pass[pass][10], fi.posmtx_pass[pass][11]);
         }
+        // Sky #16 dome projection audit (2026-07-04): per-EFB-pass matrices for the scene pass —
+        // on SMS title, efb 0 = mirror pre-pass @ 52° (TMirrorCamera 1.3×), efb 1 = main scene @
+        // 40° (where sky.bmd's dome draws). Emit as parallel arrays so a tool picks the right pass.
+        if (scene && fi.max_efb_pass > 0) {
+            std::fprintf(f, ",\"efbProj\":[");
+            for (u32 k = 0; k <= fi.max_efb_pass && k < 8; ++k) {
+                if (k) std::fprintf(f, ",");
+                if (!fi.proj_efb_set[k]) { std::fprintf(f, "null"); continue; }
+                std::fprintf(f, "[%.5f,%.5f,%.5f,%.5f,%.5f,%.5f]",
+                             fi.proj_efb[k][0], fi.proj_efb[k][1], fi.proj_efb[k][2],
+                             fi.proj_efb[k][3], fi.proj_efb[k][4], fi.proj_efb[k][5]);
+            }
+            std::fprintf(f, "],\"efbVp\":[");
+            for (u32 k = 0; k <= fi.max_efb_pass && k < 8; ++k) {
+                if (k) std::fprintf(f, ",");
+                if (!fi.vp_efb_set[k]) { std::fprintf(f, "null"); continue; }
+                std::fprintf(f, "[%.2f,%.2f,%.2f,%.2f,%.4f,%.4f]",
+                             fi.vp_efb[k][0], fi.vp_efb[k][1], fi.vp_efb[k][2],
+                             fi.vp_efb[k][3], fi.vp_efb[k][4], fi.vp_efb[k][5]);
+            }
+            std::fprintf(f, "],\"efbPosMtx\":[");
+            for (u32 k = 0; k <= fi.max_efb_pass && k < 8; ++k) {
+                if (k) std::fprintf(f, ",");
+                if (!fi.posmtx_efb_set[k]) { std::fprintf(f, "null"); continue; }
+                std::fprintf(f, "[%.6f,%.6f,%.6f,%.4f,%.6f,%.6f,%.6f,%.4f,%.6f,%.6f,%.6f,%.4f]",
+                             fi.posmtx_efb[k][ 0], fi.posmtx_efb[k][ 1], fi.posmtx_efb[k][ 2], fi.posmtx_efb[k][ 3],
+                             fi.posmtx_efb[k][ 4], fi.posmtx_efb[k][ 5], fi.posmtx_efb[k][ 6], fi.posmtx_efb[k][ 7],
+                             fi.posmtx_efb[k][ 8], fi.posmtx_efb[k][ 9], fi.posmtx_efb[k][10], fi.posmtx_efb[k][11]);
+            }
+            std::fprintf(f, "]");
+        }
         std::fprintf(f, ",\"lights\":{\"n\":%d,\"l\":[", scene ? ln : 0);
         int em = 0;
         if (scene) for (int i = 0; i < 8; ++i) {

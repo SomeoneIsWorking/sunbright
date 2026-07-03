@@ -266,6 +266,24 @@ public:
             for (int k = 0; k < 12; ++k) out->posmtx_pass[pass][k] = live_posmtx0[k];
             out->posmtx_pass_set[pass] = true;
         }
+        // Per-EFB-pass latch: only the perspective (scene) draws matter here; HUD/ortho passes
+        // aren't per-target on SMS. The mirror pre-pass copies to texture then the main scene
+        // renders, so efb_pass 0 = pre-pass, efb_pass 1 = main scene, etc.
+        if (out->proj_type == 0 && efb_pass < 8) {
+            if (!out->proj_efb_set[efb_pass] && out->have_proj) {
+                for (int k = 0; k < 6; ++k) out->proj_efb[efb_pass][k] = out->proj[k];
+                out->proj_type_efb[efb_pass] = out->proj_type;
+                out->proj_efb_set[efb_pass] = true;
+            }
+            if (!out->vp_efb_set[efb_pass] && out->have_vp) {
+                for (int k = 0; k < 6; ++k) out->vp_efb[efb_pass][k] = out->vp[k];
+                out->vp_efb_set[efb_pass] = true;
+            }
+            if (!out->posmtx_efb_set[efb_pass] && have_live_posmtx0) {
+                for (int k = 0; k < 12; ++k) out->posmtx_efb[efb_pass][k] = live_posmtx0[k];
+                out->posmtx_efb_set[efb_pass] = true;
+            }
+        }
         record_draw(num_vertices);   // live blend/TEV value oracle (gated)
     }
     OPCODE_CALLBACK(void OnDisplayList(u32 address, u32 size)) {

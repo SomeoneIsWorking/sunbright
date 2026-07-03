@@ -136,6 +136,18 @@ struct GxFrameInfo {
     // 3x4s + proj[6] + vp[6] names the divergence in the view/camera chain.
     float posmtx_pass[2][12] = {{0,0,0,0,0,0,0,0,0,0,0,0},{0,0,0,0,0,0,0,0,0,0,0,0}};
     bool  posmtx_pass_set[2] = {false, false};
+    // Per-EFB-pass projection/viewport/PNMTX0 latch (2026-07-04). proj_pass above latches at the
+    // very first perspective primitive, which on SMS title is the mirror-camera pre-pass @ FOVy=52°
+    // (TMirrorCamera::perform, memory [[session16-perpass-fingerprint]]) — NOT the main scene draw
+    // where sky.bmd's dome renders at FOVy=40°. Track per-EFB-copy-pass so a tool can pick out the
+    // main scene (efb_pass ≥ 1, i.e. AFTER the mirror pre-copy). Up to 8 passes tracked.
+    int   proj_type_efb[8] = {0,0,0,0,0,0,0,0};
+    float proj_efb[8][6]   = {};
+    bool  proj_efb_set[8]  = {};
+    float vp_efb[8][6]     = {};
+    bool  vp_efb_set[8]    = {};
+    float posmtx_efb[8][12] = {};
+    bool  posmtx_efb_set[8] = {};
     // Immediate-mode (in-FIFO GXBegin) vertex count per pass, split from display-list verts. The
     // map/scene geometry issues via GX_CMD_CALL_DL (display lists); TMapObjWave's sea grid draws via
     // raw immediate-mode GXBegin. So imm_verts_pass[scene] isolates the wave-class draw in the oracle —
