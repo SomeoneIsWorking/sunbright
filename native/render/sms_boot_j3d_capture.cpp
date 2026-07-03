@@ -870,6 +870,24 @@ extern "C" bool sb_boot_capture_j3d(J3DShape* shape) {
             float ambc0[3];
             if (me->hasAmb[0]) { ambc0[0]=me->ambColor[0][0]/255.f; ambc0[1]=me->ambColor[0][1]/255.f; ambc0[2]=me->ambColor[0][2]/255.f; }
             else               { sb_gx_get_chan_amb(0, ambc0); }
+#ifdef SMS_NATIVE_PLATFORM
+            // Native ambient floor for lit surfaces (SB_AMB_FLOOR env, default 0.35). The
+            // file-select scene loads the ambient register to (0,0,0) (ReInitializeGX +
+            // ReInitLighting), and the palm's material chanCtrl (0x0706 = 1 light, SPOT
+            // attn, CLAMP diffuse) only sums light-0 diffuse — vertices facing away from
+            // the sun hit 0. Oracle's overall palm brightness is ~35% higher, matching an
+            // implicit ambient floor. Rather than chase which GC actor was supposed to
+            // set the register (a per-scene RE gap), we own the pass by bumping ambient
+            // to a per-channel floor. Off-goal cosmetics (SB_AMB_FLOOR=0) are honored.
+            static const float ambFloor = [](){
+                const char* v = std::getenv("SB_AMB_FLOOR");
+                if (!v || !v[0]) return 0.35f;
+                float f = (float)std::atof(v); return (f < 0.f ? 0.f : (f > 1.f ? 1.f : f));
+            }();
+            if (ambc0[0] < ambFloor) ambc0[0] = ambFloor;
+            if (ambc0[1] < ambFloor) ambc0[1] = ambFloor;
+            if (ambc0[2] < ambFloor) ambc0[2] = ambFloor;
+#endif
             const float vcol0[3] = { s.clr[0][0]/255.f, s.clr[0][1]/255.f, s.clr[0][2]/255.f };
             float lit[3];
             // Use the vertex's OWN skinning matrix so the normal transforms with the right joint.
