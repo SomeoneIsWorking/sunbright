@@ -31,6 +31,7 @@
 #include "VideoCommon/AbstractGfx.h"
 #include "VideoCommon/AbstractStagingTexture.h"
 #include "VideoCommon/AbstractTexture.h"
+#include "VideoCommon/FramebufferManager.h"
 #include "VideoCommon/OpcodeDecoding.h"
 #include "VideoCommon/TextureConfig.h"
 #include "VideoCommon/VertexManagerBase.h"
@@ -271,7 +272,13 @@ extern "C" void sb_oracle_present_frame(void* /*framebuffer*/, void* /*user*/) {
     ClearColor clear{{game_clear[0], game_clear[1], game_clear[2], game_clear[3]}};
 
     g_gfx->BeginUtilityDrawing();
-    g_gfx->SetAndClearFramebuffer(s_fbo.get(), clear, 0.0f);
+    // Bind DOLPHIN's own EFB framebuffer (managed by g_framebuffer_manager) so
+    // any DRAW opcodes the OpcodeDecoder emits below actually land there.
+    // Previously we cleared our own s_fbo, but Dolphin's rendering targets its
+    // internal EFB and left s_fbo untouched — so the readback showed only the
+    // clear color. Now clear + read the EFB itself.
+    AbstractFramebuffer* efb = g_framebuffer_manager->GetEFBFramebuffer();
+    g_gfx->SetAndClearFramebuffer(efb, clear, 0.0f);
 
     // ── Real GX pipeline through Dolphin (step 4c) ─────────────────────────
     // sms-boot's GX seam (native/platform/gx_impl.cpp + gx_imm_impl.cpp) writes
@@ -316,12 +323,18 @@ extern "C" void sb_oracle_present_frame(void* /*framebuffer*/, void* /*user*/) {
     const size_t need = (size_t)w * h * 4;
     if (s_buf.size() != need) s_buf.assign(need, 0);
 
-    // Download the just-cleared RT to CPU each frame. Flush() is a synchronous
-    // wait for GPU; that's fine on sms-boot's single game thread — no worker
-    // thread stall (backend multithreading is off for that reason, see
-    // tame_dolphin_config in try_init_video_backend).
+    // Download DOLPHIN's EFB color texture (which contains the actual DRAW
+    // output) to CPU. The staging texture we allocated is sized w×h — Dolphin's
+    // EFB is 640×528 at 1x scale. We copy the game's 640×480 top region.
+    AbstractTexture* efb_color = g_framebuffer_manager->GetEFBColorTexture();
+    if (s_frame == 1) {
+        std::fprintf(stderr, "[oracle] EFB texture = %ux%u\n",
+                     efb_color->GetWidth(), efb_color->GetHeight());
+    }
+    MathUtil::Rectangle<int> src_rect(0, 0, std::min(w, (int)efb_color->GetWidth()),
+                                             std::min(h, (int)efb_color->GetHeight()));
     MathUtil::Rectangle<int> full(0, 0, w, h);
-    s_staging->CopyFromTexture(s_color_rt.get(), full, 0, 0, full);
+    s_staging->CopyFromTexture(efb_color, src_rect, 0, 0, full);
     s_staging->Flush();
     s_staging->ReadTexels(full, s_buf.data(), (u32)(w * 4));
 
