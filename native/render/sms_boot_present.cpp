@@ -447,22 +447,26 @@ void present_hook(void* /*framebuffer*/, void* /*user*/) {
         if (skipRange && i >= s_skipLo && i <= s_skipHi) continue;
         NvkTevBatch b = sbatches[i];
         if (skipKey && (unsigned)(b.shaderKey >> 32) == skipKey) continue;
-        // SB_SKIP_NEGW=1: drop any batch that contains a vertex with w <= 0 (behind camera).
-        // Trace 2026-07-04: b3 (224004d9 vc=132) had verts w spanning -60504 to +470 — triangles
-        // crossed the near-clip plane and rasterized fragments across the horizon into the sky
-        // region, producing the white top-center hotspot native/oracle differ on. Oracle's GX
-        // pipeline reject-drops such triangles wholesale; native/Vulkan clips and rasterizes,
-        // producing pixels where oracle draws nothing. Test whether skipping these batches
-        // eliminates the hotspot over-paint. Diagnostic — real fix is per-triangle clip, not
-        // batch-level skip.
-        static const bool skipNegW = [](){ const char* v = std::getenv("SB_SKIP_NEGW");
-            return v && v[0] && v[0] != '0'; }();
-        if (skipNegW) {
-            bool hasNegW = false;
-            for (uint32_t vi = b.vstart; vi < b.vstart + b.vcount && vi < verts.size(); ++vi) {
-                if (verts[vi].w <= 0.f) { hasNegW = true; break; }
+        // SB_SKIP_NEGW=<key>: drop batches with vertex w<=0 (behind camera). If value is a hex
+        // shaderKey (32-bit high), only drop matching-key batches; if "1", drop ALL negative-w
+        // batches (dangerous — will also drop sky-dome and other around-camera geometry).
+        // Diagnostic — real fix is per-triangle clip, not batch skip.
+        static const unsigned skipNegWKey = [](){
+            const char* v = std::getenv("SB_SKIP_NEGW");
+            if (!v || !v[0]) return 0u;
+            if (v[0] == '1' && v[1] == 0) return 0xFFFFFFFFu;   // "1" = all
+            return (unsigned)std::strtoul(v, nullptr, 16);
+        }();
+        if (skipNegWKey) {
+            unsigned key_hi = (unsigned)(b.shaderKey >> 32);
+            bool key_match = (skipNegWKey == 0xFFFFFFFFu) || (skipNegWKey == key_hi);
+            if (key_match) {
+                bool hasNegW = false;
+                for (uint32_t vi = b.vstart; vi < b.vstart + b.vcount && vi < verts.size(); ++vi) {
+                    if (verts[vi].w <= 0.f) { hasNegW = true; break; }
+                }
+                if (hasNegW) continue;
             }
-            if (hasNegW) continue;
         }
 #ifdef SMS_NATIVE_PLATFORM
         // Skip the title-screen sea-mirror EFB-src composite (shader key hi32 = 0xeb5c8e74,
