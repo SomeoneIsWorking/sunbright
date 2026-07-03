@@ -922,6 +922,21 @@ bool readback(uint8_t* rgba, int w, int h) {
     return true;
 }
 
+// See gx_sdlgpu.h — GX_ORACLE sink pushes its rendered frame into the shared g_cpu buffer so the
+// existing SDL main-thread window path (present_window below) blits it to the screen. Silent
+// no-op on size mismatch or uninitialised backbuffer so the game thread doesn't hang the present.
+void inject_cpu_frame(const uint8_t* rgba, int w, int h) {
+    if (!g_ok || !rgba || w != g_w || h != g_h) return;
+    std::lock_guard<std::mutex> lk(g_cpu_mtx);
+    if (g_cpu.size() != (size_t)w * h * 4) return;
+    std::memcpy(g_cpu.data(), rgba, (size_t)w * h * 4);
+}
+
+void backbuffer_size(int* w, int* h) {
+    if (w) *w = g_ok ? g_w : 0;
+    if (h) *h = g_ok ? g_h : 0;
+}
+
 // ── Live window present (SB_WINDOW=1) — runs on the SDL MAIN thread ───────────────────────────────
 // Architecture (user directive 2026-06-30): MAIN thread = SDL (window + events + present), ONE
 // separate GAME thread runs the decomp and renders the offscreen frame into g_cpu. present_window()

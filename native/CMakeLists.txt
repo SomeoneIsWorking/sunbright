@@ -498,7 +498,10 @@ if(SMS_BUILD_BOOT)
         # normally provides. sms-boot is not a real emulator front-end — provide
         # no-op stubs (see native/src/dolphin_host_shims.cpp).
         target_sources(sms-boot PRIVATE
-            "${SMS_NATIVE_REPO_ROOT}/native/src/dolphin_host_shims.cpp")
+            "${SMS_NATIVE_REPO_ROOT}/native/src/dolphin_host_shims.cpp"
+            # GX_ORACLE render-sink present entry point (stub today, Dolphin
+            # videovulkan wiring in step 4).
+            "${SMS_NATIVE_REPO_ROOT}/native/render/oracle_present.cpp")
         target_include_directories(sms-boot PRIVATE
             "${SMS_NATIVE_REPO_ROOT}/externals/dolphin/Source/Core")
         target_link_libraries(sms-boot PRIVATE videovulkan videocommon core uicommon common)

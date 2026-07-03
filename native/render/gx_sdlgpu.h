@@ -77,6 +77,16 @@ void native_zzz_paint(const float quads[][4], int count);
 // Read the last frame back into rgba (w*h*4, top-left origin). False if size mismatch / no device.
 bool readback(uint8_t* rgba, int w, int h);
 
+// Overwrite the CPU-side frame buffer that present_window() blits to the window. Used by the
+// GX_ORACLE sink so an alternate renderer can push its output into the same window path.
+// rgba is w*h*4 top-left origin; w,h must match the current backbuffer size. No-op if the
+// backbuffer isn't initialised yet or the size doesn't match. Thread-safe (locks g_cpu_mtx).
+void inject_cpu_frame(const uint8_t* rgba, int w, int h);
+
+// Report the current backbuffer size (0,0 if not initialised). Used by callers that need to
+// allocate an intermediate frame buffer of the right shape.
+void backbuffer_size(int* w, int* h);
+
 // Live window (SB_WINDOW=1) — the SDL MAIN-thread present path (see gx_sdlgpu.cpp). The game runs on
 // a separate thread and renders into g_cpu; the SDL main thread calls present_window() in a loop to
 // show it. present_window() MUST be called only from the SDL main thread (never the game thread).

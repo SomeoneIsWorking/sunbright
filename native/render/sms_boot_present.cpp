@@ -20,6 +20,7 @@
 #include "tex_decode.h"        // sb_tex_decode (J2D textured-pane decode)
 #include "sb_parity_dump.h"    // sb_parity_emit (value-track parity sweep)
 #include "sms_native_sky.h"    // sb_native_sky_active / sb_native_sky_backdrop
+#include "../../runtime/engine.h"  // sb::engine::mode() — NATIVE_PC vs GX_ORACLE dispatch
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -187,7 +188,35 @@ struct SbEfbCopy { int batch_index; const void* dest; int clear; int wd; int ht;
 extern "C" int sb_boot_capture_efb_copies(SbEfbCopy* out, int max);
 namespace {
 
-void present_hook(void* /*framebuffer*/, void* /*user*/) {
+// Forward decl of the GX_ORACLE sink (native/render/oracle_present.cpp). Kept as
+// a weak symbol so a standalone build-native/ build that doesn't include the
+// oracle sink links without it (the dispatch below falls through to NATIVE_PC).
+extern "C" void sb_oracle_present_frame(void* framebuffer, void* user) __attribute__((weak));
+
+void present_hook(void* framebuffer, void* user) {
+    // ── Render-sink dispatch (Path C) ────────────────────────────────────────
+    // sb::engine::mode() is the runtime toggle from SB_RENDER. NATIVE_PC (default)
+    // falls through to this function's body — the SDL3 GPU renderer. GX_ORACLE
+    // diverts every present to the Dolphin videovulkan sink and returns without
+    // touching the SDL3 pipeline. This keeps the two sinks independent: neither
+    // scribbles on the other's captured state / GPU resources.
+    if (sb::engine::mode() == sb::engine::RenderMode::GX_ORACLE) {
+        if (&sb_oracle_present_frame) {
+            sb_oracle_present_frame(framebuffer, user);
+        } else {
+            // Oracle sink not linked (standalone native/ build). Log once, then
+            // fall through to the NATIVE_PC path so the game keeps rendering.
+            static bool warned = false;
+            if (!warned) {
+                warned = true;
+                std::fprintf(stderr, "[present] SB_RENDER=oracle requested but oracle sink not linked; falling back to NATIVE_PC\n");
+            }
+        }
+        // If oracle sink handled it, we still need to drain the captured buffers
+        // (see below) — but the oracle sink is responsible for that itself.
+        // Just return here so the NATIVE_PC pipeline doesn't double-render.
+        if (&sb_oracle_present_frame) return;
+    }
     // SB_PRESENT_TRACE: unconditional VI-present heartbeat — counts EVERY present_hook call
     // (i.e. every VIWaitForRetrace), independent of dumping, so we can measure whether the
     // VI/present rate collapses during a scene (the file-select state-0 stall: the capture
