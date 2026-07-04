@@ -343,7 +343,12 @@ extern "C" void sb_oracle_present_frame(void* /*framebuffer*/, void* /*user*/) {
         std::fflush(stderr);
         std::abort();
     }
-    g_gfx->SetAndClearFramebuffer(efb, clear, 0.0f);
+    // Depth clear = 1.0 (GC "clear to far plane"). Depth-test with GX_LESS
+    // requires incoming z < depth-buffer z; clearing to 0.0 made every
+    // compare fail and blackholed synth-depth on Tier 2. GC's clearZ
+    // register default is 0xFFFFFF (~1.0 normalised), so this is the
+    // faithful default even before any GXSetCopyClear.
+    g_gfx->SetAndClearFramebuffer(efb, clear, 1.0f);
 
     // ── Real GX pipeline through Dolphin (step 4c) ─────────────────────────
     // sms-boot's GX seam (native/platform/gx_impl.cpp + gx_imm_impl.cpp) writes

@@ -28,6 +28,7 @@
 #include "../render/gx_sdlgpu.h"
 
 #include <dolphin/gx.h>
+#include "../platform/gx_state.h"   // sb::platform::gx::state() for z-state routing (needs gx.h)
 #include <dolphin/mtx.h>
 
 #include <algorithm>
@@ -299,6 +300,120 @@ struct SynthBlend {
     }
 };
 
+// SynthDepth — two overlapping triangles at different z. Front (green) at
+// z=+0.3, back (red) at z=-0.3. With Z-test enabled and GX_LESS, the green
+// triangle must occlude the red triangle at the overlap region.
+//
+// Exercises: BPMEM_ZMODE (enable/func/write), depth-buffer allocation on
+// both tiers, XFMEM_VIEWPORT depth mapping into Vulkan's [0,1] clip range.
+// If Tier 2's depth-buffer allocation is missing, both triangles render
+// as if depth were disabled — front triangle "loses" to whichever draws
+// last (red, drawn second) at the overlap.
+struct SynthDepth {
+    static constexpr GXColor kClearColor{ 0, 0, 0, 255 };
+    static const char* name() { return "synth-depth"; }
+    static bool needs_geometry() { return true; }
+    static void program() {
+        GXSetCopyClear(kClearColor, 0xffffff);
+        // Z-test ON, GX_LESS, write depth. This is the point of the test.
+        GXSetZMode(GX_TRUE, GX_LESS, GX_TRUE);
+        GXSetColorUpdate(GX_TRUE);
+        GXSetAlphaUpdate(GX_TRUE);
+        GXSetBlendMode(GX_BM_NONE, GX_BL_ONE, GX_BL_ZERO, GX_LO_NOOP);
+        GXSetCullMode(GX_CULL_NONE);
+        GXSetAlphaCompare(GX_ALWAYS, 0, GX_AOP_OR, GX_ALWAYS, 0);
+        GXSetZCompLoc(GX_FALSE);
+        GXSetViewport(0.f, 0.f, (f32)kW, (f32)kH, 0.f, 1.f);
+        GXSetScissor(0, 0, kW, kH);
+        GXSetNumChans(1);
+        GXSetNumTexGens(0);
+        GXSetNumTevStages(1);
+        GXSetChanCtrl(GX_COLOR0A0, GX_FALSE, GX_SRC_REG, GX_SRC_VTX,
+                      0, GX_DF_CLAMP, GX_AF_NONE);
+        GXSetTevOrder(GX_TEVSTAGE0, GX_TEXCOORD_NULL, GX_TEXMAP_NULL, GX_COLOR0A0);
+        GXSetTevOp(GX_TEVSTAGE0, GX_PASSCLR);
+        Mtx44 proj;
+        // n=-1, f=1 so GC ortho maps world z∈[-1,+1] → NDC z∈[0,1] safely
+        // inside Vulkan's clip range. Triangles at z=+0.3 and z=-0.3 land
+        // at NDC z=0.35 / 0.65.
+        C_MTXOrtho(proj, 1.f, -1.f, -1.f, 1.f, -1.f, 1.f);
+        GXSetProjection(proj, GX_ORTHOGRAPHIC);
+        Mtx pos;
+        MTXIdentity(pos);
+        GXSetCurrentMtx(GX_PNMTX0);
+        GXLoadPosMtxImm(pos, GX_PNMTX0);
+        GXClearVtxDesc();
+        GXSetVtxDesc(GX_VA_POS,  GX_DIRECT);
+        GXSetVtxDesc(GX_VA_CLR0, GX_DIRECT);
+        GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS,  GX_POS_XYZ,  GX_F32,   0);
+        GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_CLR0, GX_CLR_RGBA, GX_RGBA8, 0);
+        // GREEN triangle FRONT (z=+0.3): drawn FIRST.
+        GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);
+        GXPosition3f32(-0.6f,  0.5f, 0.3f);  GXColor4u8(0, 255, 0, 255);
+        GXPosition3f32( 0.6f,  0.5f, 0.3f);  GXColor4u8(0, 255, 0, 255);
+        GXPosition3f32( 0.0f, -0.5f, 0.3f);  GXColor4u8(0, 255, 0, 255);
+        GXEnd();
+        // RED triangle BACK (z=-0.3): drawn SECOND; must be Z-culled where
+        // green is closer.
+        GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);
+        GXPosition3f32(-0.4f,  0.7f, -0.3f);  GXColor4u8(255, 0, 0, 255);
+        GXPosition3f32( 0.8f,  0.7f, -0.3f);  GXColor4u8(255, 0, 0, 255);
+        GXPosition3f32( 0.2f, -0.3f, -0.3f);  GXColor4u8(255, 0, 0, 255);
+        GXEnd();
+    }
+};
+
+// SynthScissor — kept for a future arc where Tier 1's SDL3-GPU pipeline
+// grows per-batch scissor plumbing. Currently: Tier 1 has no scissor rect
+// on the imm batches, so the full-screen white triangle bleeds outside
+// the scissor and the harness panic fires. Not wired into the dispatch.
+struct SynthScissor {
+    static constexpr GXColor kClearColor{ 20, 80, 40, 255 };   // dark green
+    static const char* name() { return "synth-scissor"; }
+    static bool needs_geometry() { return true; }
+    static void program() {
+        GXSetCopyClear(kClearColor, 0xffffff);
+        GXSetZMode(GX_FALSE, GX_ALWAYS, GX_FALSE);
+        GXSetColorUpdate(GX_TRUE);
+        GXSetAlphaUpdate(GX_TRUE);
+        GXSetBlendMode(GX_BM_NONE, GX_BL_ONE, GX_BL_ZERO, GX_LO_NOOP);
+        GXSetCullMode(GX_CULL_NONE);
+        GXSetAlphaCompare(GX_ALWAYS, 0, GX_AOP_OR, GX_ALWAYS, 0);
+        GXSetZCompLoc(GX_FALSE);
+        GXSetViewport(0.f, 0.f, (f32)kW, (f32)kH, 0.f, 1.f);
+        // The interesting bit: scissor to (160,120)..(480,360) — a 320x240
+        // window in the middle of the 640x480 frame. Anything outside must
+        // survive as the clear colour.
+        GXSetScissor(160, 120, 320, 240);
+        GXSetNumChans(1);
+        GXSetNumTexGens(0);
+        GXSetNumTevStages(1);
+        GXSetChanCtrl(GX_COLOR0A0, GX_FALSE, GX_SRC_REG, GX_SRC_VTX,
+                      0, GX_DF_CLAMP, GX_AF_NONE);
+        GXSetTevOrder(GX_TEVSTAGE0, GX_TEXCOORD_NULL, GX_TEXMAP_NULL, GX_COLOR0A0);
+        GXSetTevOp(GX_TEVSTAGE0, GX_PASSCLR);
+        Mtx44 proj;
+        C_MTXOrtho(proj, 1.f, -1.f, -1.f, 1.f, 0.f, 1.f);
+        GXSetProjection(proj, GX_ORTHOGRAPHIC);
+        Mtx pos;
+        MTXIdentity(pos);
+        GXSetCurrentMtx(GX_PNMTX0);
+        GXLoadPosMtxImm(pos, GX_PNMTX0);
+        GXClearVtxDesc();
+        GXSetVtxDesc(GX_VA_POS,  GX_DIRECT);
+        GXSetVtxDesc(GX_VA_CLR0, GX_DIRECT);
+        GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS,  GX_POS_XYZ,  GX_F32,   0);
+        GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_CLR0, GX_CLR_RGBA, GX_RGBA8, 0);
+        // A big white triangle that fully overlaps the whole viewport — the
+        // scissor is doing the cutting.
+        GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);
+        GXPosition3f32(-1.f,  1.f, 0.f);  GXColor4u8(255, 255, 255, 255);
+        GXPosition3f32( 3.f,  1.f, 0.f);  GXColor4u8(255, 255, 255, 255);
+        GXPosition3f32(-1.f, -3.f, 0.f);  GXColor4u8(255, 255, 255, 255);
+        GXEnd();
+    }
+};
+
 // ── Tier-1 render: SDL3 GPU ────────────────────────────────────────────────────
 
 // Convert an SbImmBatch into an NvkTevBatch pointing at the same vertex range
@@ -311,7 +426,14 @@ NvkTevBatch imm_to_tev_batch(const SbImmBatch& ib, uint32_t vertex_base) {
     b.vcount = ib.vcount;
     b.fragGlsl = kPassFrag;
     b.shaderKey = 0x50415353c0d0dfULL;   // "PASS" + suffix — any unique u64 works
-    b.z_test = 0; b.z_write = 0;
+    // Route z-state from the captured GXState (unlike the game's imm path
+    // in sms_boot_present.cpp which hardcodes z-off for 2D-on-top draws).
+    // synth-depth needs this: without it, Tier 1 ignores GXSetZMode entirely
+    // and both triangles overwrite in draw order.
+    const auto& g = sb::platform::gx::state();
+    b.z_test  = g.zCompare ? 1 : 0;
+    b.z_write = g.zUpdate  ? 1 : 0;
+    b.z_func  = (uint8_t)g.zFunc;
     // Faithful per-prim blend from the immediate-mode capture. blendType=1
     // is GX_BM_BLEND; factors are GXBlendFactor values (ZERO=0 .. INVSRCALPHA=5).
     // Without this the harness silently overwrote the framebuffer on XLU
@@ -481,9 +603,13 @@ extern "C" int sb_render_parity_run(const char* test_name) {
     } else if (std::strcmp(test_name, SynthBlend::name()) == 0) {
         SynthBlend::program();
         has_geometry = SynthBlend::needs_geometry();
+    } else if (std::strcmp(test_name, SynthDepth::name()) == 0) {
+        SynthDepth::program();
+        has_geometry = SynthDepth::needs_geometry();
     } else {
         PARITY_PANIC("unknown test-name '%s' — known scenarios: synth-clear, "
-                     "synth-triangle, synth-blend. Typo in SB_HARNESS?", test_name);
+                     "synth-triangle, synth-blend, synth-depth. Typo in "
+                     "SB_HARNESS?", test_name);
     }
 
     switch (mode) {

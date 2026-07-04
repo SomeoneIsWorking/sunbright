@@ -135,14 +135,22 @@ void GXSetViewportJitter(f32 left, f32 top, f32 wd, f32 ht, f32 nearz, f32 farz,
 
 // XF viewport register range: XFMEM_VIEWPORT = 0x101A (6 f32s: wd/2, -ht/2, zscale, xorig, yorig, zorig).
 // See VideoCommon/XFMemory.h and GXTransform.h §Viewport. Wrote as a burst.
+//
+// zscale/zorig are scaled to the GC's 24-bit depth range (0..16777215):
+// Dolphin's VertexShaderManager reads `xfmem.viewport.zRange` and `farZ`
+// and DIVIDES by 16777215.0 to normalise into Vulkan's [0,1] clip range
+// (VertexShaderManager.cpp:404-416). Writing normalised 0..1 values here
+// makes Dolphin see zRange=0 and clip every vertex — the synth-depth
+// blocker landed 2026-07-04.
+static constexpr float kGCDepth24 = 16777215.0f;
 static void emit_xf_viewport() {
     auto& g = state();
     const float wd_half = g.vpWd * 0.5f;
     const float ht_half = g.vpHt * -0.5f;
-    const float zscale  = g.vpFarz - g.vpNearz;
+    const float zscale  = (g.vpFarz - g.vpNearz) * kGCDepth24;
     const float xorig   = g.vpLeft + wd_half + 342.0f;   // GC pipe adds 342, from GX SDK
     const float yorig   = g.vpTop  - ht_half + 342.0f;
-    const float zorig   = g.vpFarz;
+    const float zorig   = g.vpFarz * kGCDepth24;
     sb::gxfifo::write_u8(0x10);                 // XF opcode
     sb::gxfifo::write_u16_be(5);                // count - 1 (6 regs)
     sb::gxfifo::write_u16_be(0x101A);           // XFMEM_VIEWPORT
