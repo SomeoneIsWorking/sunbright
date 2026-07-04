@@ -527,6 +527,18 @@ void sb_gx_imm_color_rgba(unsigned r, unsigned g, unsigned b, unsigned a) {
         auto& v = g_prim_verts.back();
         v.r = g_cr; v.g = g_cg; v.b = g_cb; v.a = g_ca;
     }
+    // Same fix-up for the RAW pre-transform buffer that emit_fifo_draw feeds
+    // to Dolphin. Without this the Tier-2 vertex payload carries whichever
+    // colour g_c* held BEFORE this call (stale from the previous vertex),
+    // so vertex[i] rasterises with vertex[i-1]'s colour — a one-vertex
+    // shift that manifested as the "permuted RGB gradient" bug 2026-07-04.
+    // (Diagnosed by instrumenting VertexLoaderX64::RunVertices and reading
+    // the output-vertex bytes: RGBA at offset 12 held whatever colour was
+    // set BEFORE GXPosition, not AFTER.)
+    if (g_in_begin && !g_prim_verts_raw.empty()) {
+        auto& v = g_prim_verts_raw.back();
+        v.r = g_cr; v.g = g_cg; v.b = g_cb; v.a = g_ca;
+    }
 }
 void sb_gx_imm_color_u32(unsigned c) {   // packed 0xRRGGBBAA
     sb_gx_imm_color_rgba((c >> 24) & 0xff, (c >> 16) & 0xff, (c >> 8) & 0xff, c & 0xff);
