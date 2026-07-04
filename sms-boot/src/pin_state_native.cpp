@@ -6,7 +6,7 @@
 // Zero-verdict on nullptr: fields are optional. pin_diff.py knows to skip fields
 // whose `have_*` flag is 0 on either side (with a WARN).
 
-#include "../../runtime/pin_state_schema.h"
+#include "../pin_state_schema.h"
 
 #include <System/Application.hpp>
 #include <System/MarDirector.hpp>

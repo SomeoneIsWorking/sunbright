@@ -1,41 +1,31 @@
-// engine.h — process-wide render-sink toggle for sms-boot.
+// engine.h — process-wide render-path selector for sms-boot.
 //
-// The problem: SMS_NATIVE_PLATFORM is a preprocessor gate, so a single build can
-// only compile ONE render path. That prevents side-by-side "is our SDL3 pipeline
-// wrong, or is the reference wrong?" comparisons in a single binary.
+// sms-boot has two render paths (post-2026-07-04 rework):
+//   PC_NATIVE   — reference/sms decomp emits PC-native SDL3-GPU calls directly.
+//                 Deferred until the GC-faithful path reaches pixel parity.
+//   GC_FAITHFUL — reference/sms decomp emits its original GameCube GX SDK calls;
+//                 they run through Aurora (encounter/aurora) onto WebGPU/Dawn.
+//                 This is the in-process oracle chasing Dolphin-GX parity, and
+//                 the default until Path A pixel parity closes.
 //
-// This class holds a runtime choice for WHICH render sink the GX seam dispatches
-// into. NATIVE_PC is today's SDL3 GPU renderer (the shipping product). GX_ORACLE
-// routes GX calls into Dolphin's videovulkan backend as a reference-only sink
-// used to A/B diagnose divergences. Fixes still land in NATIVE_PC — the oracle
-// sink is a measurement instrument, never ship state.
-//
-// This toggle is the render-sink ONLY. It does NOT influence audio, threading,
-// memory, or any other SMS_NATIVE_PLATFORM ifdef — those must remain compile-time
-// because there's no alternative implementation for them (game code has to
-// execute somewhere).
-//
-// Chosen at startup from SB_RENDER (or SUNBRIGHT_RENDER for parity with the
-// rest of the diag env prefix). Default: NATIVE_PC.
+// Selection is compile-time (-DSB_RENDER=gc|pc). The enum here is a runtime
+// witness for logging/probe endpoints — the actual path is baked into which
+// backend headers reference/sms sees at include time.
 
 #pragma once
 
 namespace sb::engine {
 
 enum class RenderMode {
-    NATIVE_PC,   // sms-boot's SDL3 GPU renderer (default; the shipping product)
-    GX_ORACLE,   // Dolphin videovulkan backend, reference-only diagnostic sink
+    PC_NATIVE,    // reference/sms -> SDL3-GPU direct
+    GC_FAITHFUL,  // reference/sms -> Aurora <dolphin/gx.h> -> WebGPU/Dawn
 };
 
-// Initialize from environment (SB_RENDER=native|oracle, default native). Idempotent.
-// Called once from boot.cpp before the game thread starts.
+// Initialize from environment (kept for probe/log parity; the real path is
+// compile-time). Idempotent. Called once from boot.cpp.
 void init_from_env();
 
-// Current mode. Reads a plain global — cheap enough to call per-draw. Set once
-// at startup, never mutated after init.
 RenderMode mode();
-
-// Human-readable name of the current mode, for logs / probe.
 const char* mode_name();
 
 } // namespace sb::engine

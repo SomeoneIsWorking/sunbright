@@ -8,11 +8,11 @@
 // true critical-path stub set to fill scene-by-scene (handoff step 3/boot).
 #include <cstdio>
 #include <cstdlib>
-#include "../platform/vi_present.h"  // sb_vi_set_pacing (SB_TURBO)
+#include "../common/vi_present.h"  // sb_vi_set_pacing (SB_TURBO)
 #include <thread>
 #include <SDL3/SDL.h>                 // SDL_Delay (main-thread window loop)
-#include "../render/gx_sdlgpu.h"      // sb::gxsdl main-thread present
-#include "../../runtime/engine.h"     // sb::engine::init_from_env — render-sink toggle
+#include "../render_pc/gx_sdlgpu.h"      // sb::gxsdl main-thread present
+#include "../engine.h"     // sb::engine::init_from_env — render-sink toggle
 
 namespace sb::platform { bool PlatformInit(int argc, char** argv); void PlatformShutdown(); }
 
@@ -45,18 +45,6 @@ extern "C" int __wrap_main(int argc, char** argv) {
         // iteration speed, not as the verification path.
         sb_vi_set_pacing(false);
     sb_pad_driver_install();  // headless scripted input, if SB_PAD_SCRIPT/SB_PAD_DRIVE set
-
-    // SB_HARNESS=<test-name>: Tier-1 vs Tier-2 in-process parity harness (task #29,
-    // 2026-07-04 direction pivot). Skips the game entirely; runs a hand-authored
-    // synthetic render sequence through the active tier sink and dumps a
-    // deterministic PPM to scratch/parity/<test>.<tier>.ppm. Compares via
-    // tools/render/tier_parity.sh. See native/src/render_parity.cpp.
-    if (const char* harness = std::getenv("SB_HARNESS"); harness && harness[0]) {
-        extern int sb_render_parity_run(const char*);
-        int rc = sb_render_parity_run(harness);
-        sb::platform::PlatformShutdown();
-        return rc;
-    }
 
     std::printf("[boot] PlatformInit OK -> game main()\n");
 

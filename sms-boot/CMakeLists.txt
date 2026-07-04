@@ -1,12 +1,12 @@
 # sms-native — the Super Mario Sunshine decomp (reference/sms) compiled as a
 # NATIVE PC static library. No GameCube, no Dolphin, no PPC, no recompiler.
 #
-# This is the phase-2 foundation (see native/platform/README.md and
+# This is the phase-2 foundation (see sms-boot/common/README.md and
 # debug_journal/2026-06-20_native_engine_bringup_feasibility.md). Phase-1 proved
 # all 577 game-logic .cpp compile to objects on a 64-bit host with two shims
 # force-included; this target archives them into libsms-native.a. The GameCube
 # SDK/hardware seams the game calls (#include <dolphin/...>) are implemented in
-# native/platform (TODO bodies for now) — so this library has UNRESOLVED SDK
+# sms-boot/common (TODO bodies for now) — so this library has UNRESOLVED SDK
 # symbols by design until the seams + an engine main() link against it.
 #
 # Standalone build (no Dolphin needed — pure syntax/codegen of the game logic):
@@ -35,26 +35,26 @@ list(FILTER SMS_NATIVE_SOURCES EXCLUDE REGEX
 
 # The decomp's JASystem::Vload sequence loader is the DEAD path for SMS (it needs
 # JaiArcS.hed, which is not on the disc FST). Replace it with a native BARC-backed
-# loader (native/src/sms_boot_audio.cpp) that sources sequences from mSound.aaf +
+# loader (sms-boot/src/sms_boot_audio.cpp) that sources sequences from mSound.aaf +
 # sequence.arc, so JAIBasic::loadArcSeqData succeeds at stage entry.
 list(FILTER SMS_NATIVE_SOURCES EXCLUDE REGEX
      "/reference/sms/src/JSystem/JAudio/JASystem/JASVload\\.cpp$")
 list(APPEND SMS_NATIVE_SOURCES
-     "${SMS_NATIVE_REPO_ROOT}/native/src/sms_boot_audio.cpp"
+     "${SMS_NATIVE_REPO_ROOT}/sms-boot/src/sms_boot_audio.cpp"
      # Owns the active-camera transform for the native scene render (gpCamera -> view+proj).
-     "${SMS_NATIVE_REPO_ROOT}/native/src/camera_latch.cpp"
+     "${SMS_NATIVE_REPO_ROOT}/sms-boot/src/camera_latch.cpp"
      # Drives the real scene-draw flow natively (TSmJ3DScn::perform(8)) so entry() runs.
-     "${SMS_NATIVE_REPO_ROOT}/native/src/scene_drive.cpp"
+     "${SMS_NATIVE_REPO_ROOT}/sms-boot/src/scene_drive.cpp"
      # sb_get_app_state() — TApplication::mAppState reader for sb_parity_dump.h (which lives
-     # in native/render/ and can't include <System/Application.hpp>). Session 16 STATE-MISMATCH gate.
-     "${SMS_NATIVE_REPO_ROOT}/native/src/sb_parity_appstate.cpp"
+     # in sms-boot/render_pc/ and can't include <System/Application.hpp>). Session 16 STATE-MISMATCH gate.
+     "${SMS_NATIVE_REPO_ROOT}/sms-boot/src/sb_parity_appstate.cpp"
      # sb_pin_state_populate — game-state fingerprint reader for the scene-sync harness.
-     # Populates SbPinGameState (runtime/pin_state_schema.h) from the live C++ game objects.
+     # Populates SbPinGameState (sms-boot/pin_state_schema.h) from the live C++ game objects.
      # Symmetric to the oracle-side populator in runtime/gx_capture.cpp (guest RAM reader).
-     "${SMS_NATIVE_REPO_ROOT}/native/src/pin_state_native.cpp"
+     "${SMS_NATIVE_REPO_ROOT}/sms-boot/src/pin_state_native.cpp"
      # sb::engine::mode() — runtime render-sink toggle (NATIVE_PC vs GX_ORACLE).
-     # SB_RENDER env selects; today only NATIVE_PC is wired. See runtime/engine.h.
-     "${SMS_NATIVE_REPO_ROOT}/native/src/engine.cpp")
+     # SB_RENDER env selects; today only NATIVE_PC is wired. See sms-boot/engine.h.
+     "${SMS_NATIVE_REPO_ROOT}/sms-boot/src/engine.cpp")
 
 add_library(sms-native STATIC ${SMS_NATIVE_SOURCES})
 
@@ -69,18 +69,18 @@ set_target_properties(sms-native PROPERTIES
     CXX_EXTENSIONS OFF)
 
 target_include_directories(sms-native PUBLIC
-    "${SMS_NATIVE_REPO_ROOT}/native/shim"
+    "${SMS_NATIVE_REPO_ROOT}/sms-boot/shim"
     "${SMS_NATIVE_REPO_ROOT}/reference/sms/include"
     # BE->host asset byteswap layer (bmd_swap_to_host), wired into the BMD/BDL
     # model load path for swap-at-load. Symbols come from sms-assets at link.
-    "${SMS_NATIVE_REPO_ROOT}/native/assets"
+    "${SMS_NATIVE_REPO_ROOT}/sms-boot/assets"
     # Pure renderer-port headers used by scene_drive (sms_boot_setlight.h — the
     # TLightCommon::setLight stage-light selection).
-    "${SMS_NATIVE_REPO_ROOT}/native/render")
+    "${SMS_NATIVE_REPO_ROOT}/sms-boot/render_pc")
 
 target_compile_options(sms-native PRIVATE
     # Force-include the portable Gekko intrinsics + fixed-width types shim.
-    -include "${SMS_NATIVE_REPO_ROOT}/native/shim/gekko_intrinsics.h"
+    -include "${SMS_NATIVE_REPO_ROOT}/sms-boot/shim/gekko_intrinsics.h"
     # The decomp predates C++11 narrowing strictness (Metrowerks allowed it).
     # This silences brace-init narrowing ONLY; pointer truncation still errors
     # as 'loses precision'. -w hides the rest of the noise (warnings, not errors).
@@ -135,16 +135,13 @@ target_compile_definitions(sms-native PUBLIC SMS_NATIVE_PLATFORM=1)
 
 # ---------------------------------------------------------------------------
 # sms-platform — the native PC implementations of the GameCube SDK seams the
-# game links (#include <dolphin/...>). Phase-2 work (native/platform/README.md).
+# game links (#include <dolphin/...>). Phase-2 work (sms-boot/common/README.md).
 # Grows seam by seam; each <sub>_impl.cpp defines the unresolved SDK symbols for
 # one subsystem (MTX/OS/DVD/VI/GX/...). Built clean (-Wall -Wextra), real C++ —
 # these are NEW native code, not decomp, so they get full warnings.
 # ---------------------------------------------------------------------------
 file(GLOB SMS_PLATFORM_SOURCES CONFIGURE_DEPENDS
-     "${SMS_NATIVE_REPO_ROOT}/native/platform/*_impl.cpp")
-# The GX-seam FIFO recorder (feeds Dolphin's OpcodeDecoder in the GX_ORACLE sink).
-list(APPEND SMS_PLATFORM_SOURCES
-     "${SMS_NATIVE_REPO_ROOT}/native/platform/gx_fifo.cpp")
+     "${SMS_NATIVE_REPO_ROOT}/sms-boot/common/*_impl.cpp")
 
 find_package(Threads REQUIRED)
 
@@ -152,11 +149,11 @@ add_library(sms-platform STATIC ${SMS_PLATFORM_SOURCES})
 set_target_properties(sms-platform PROPERTIES
     CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
 target_include_directories(sms-platform PUBLIC
-    "${SMS_NATIVE_REPO_ROOT}/native/platform"
-    "${SMS_NATIVE_REPO_ROOT}/native/shim"
-    "${SMS_NATIVE_REPO_ROOT}/native/render"   # gx_imm_xform.h (immediate-mode capture)
-    "${SMS_NATIVE_REPO_ROOT}/runtime/render"  # tex_decode.h (SB_IMM_PRIM_DBG sprite dump)
-    "${SMS_NATIVE_REPO_ROOT}/runtime/ngx"     # ngx_render_data.h (NgxTevState per imm batch)
+    "${SMS_NATIVE_REPO_ROOT}/sms-boot/common"
+    "${SMS_NATIVE_REPO_ROOT}/sms-boot/shim"
+    "${SMS_NATIVE_REPO_ROOT}/sms-boot/render_pc"   # gx_imm_xform.h (immediate-mode capture)
+    "${SMS_NATIVE_REPO_ROOT}/sms-boot/render_pc/gx_common"  # tex_decode.h (SB_IMM_PRIM_DBG sprite dump)
+    "${SMS_NATIVE_REPO_ROOT}/sms-boot/render_pc/ngx"     # ngx_render_data.h (NgxTevState per imm batch)
     "${SMS_NATIVE_REPO_ROOT}/reference/sms/include")
 target_compile_options(sms-platform PRIVATE -Wall -Wextra
     # The SDK headers declare HW-register/OS globals (__VIRegs, __OSBusClock, ...)
@@ -183,10 +180,10 @@ set_target_properties(sms-gd PROPERTIES
     LINKER_LANGUAGE CXX)
 set_source_files_properties(${SMS_GD_SOURCES} PROPERTIES LANGUAGE CXX)
 target_include_directories(sms-gd PUBLIC
-    "${SMS_NATIVE_REPO_ROOT}/native/shim"
+    "${SMS_NATIVE_REPO_ROOT}/sms-boot/shim"
     "${SMS_NATIVE_REPO_ROOT}/reference/sms/include")
 target_compile_options(sms-gd PRIVATE
-    -include "${SMS_NATIVE_REPO_ROOT}/native/shim/gekko_intrinsics.h"
+    -include "${SMS_NATIVE_REPO_ROOT}/sms-boot/shim/gekko_intrinsics.h"
     -w -fcommon)
 target_link_libraries(sms-gd PUBLIC sms-platform)
 
@@ -200,19 +197,19 @@ target_link_libraries(sms-gd PUBLIC sms-platform)
 # headers. Includes the Yaz0/RARC reader (rarc.cpp) for archive extraction.
 # ---------------------------------------------------------------------------
 add_library(sms-assets STATIC
-    "${SMS_NATIVE_REPO_ROOT}/native/assets/bmd_swap.cpp"
-    "${SMS_NATIVE_REPO_ROOT}/native/assets/bmt_swap.cpp"
-    "${SMS_NATIVE_REPO_ROOT}/native/assets/anm_swap.cpp"
-    "${SMS_NATIVE_REPO_ROOT}/native/assets/timg_swap.cpp"
-    "${SMS_NATIVE_REPO_ROOT}/native/assets/rarc.cpp")
+    "${SMS_NATIVE_REPO_ROOT}/sms-boot/assets/bmd_swap.cpp"
+    "${SMS_NATIVE_REPO_ROOT}/sms-boot/assets/bmt_swap.cpp"
+    "${SMS_NATIVE_REPO_ROOT}/sms-boot/assets/anm_swap.cpp"
+    "${SMS_NATIVE_REPO_ROOT}/sms-boot/assets/timg_swap.cpp"
+    "${SMS_NATIVE_REPO_ROOT}/sms-boot/assets/rarc.cpp")
 set_target_properties(sms-assets PROPERTIES
     CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
 target_include_directories(sms-assets PUBLIC
-    "${SMS_NATIVE_REPO_ROOT}/native/assets")
+    "${SMS_NATIVE_REPO_ROOT}/sms-boot/assets")
 target_compile_options(sms-assets PRIVATE -Wall -Wextra)
 
 # Seam unit tests (TDD: assert spec-computed truth; the tested function IS the
-# shipping seam function). Each native/platform/tests/*_test.cpp is its own
+# shipping seam function). Each sms-boot/common/tests/*_test.cpp is its own
 # assert-main executable, registered with ctest as platform_<name>.
 enable_testing()
 
@@ -228,7 +225,7 @@ find_program(SB_GLSLANG NAMES glslangValidator)
 if(SB_VULKAN_LIB AND SB_VULKAN_INC AND SB_GLSLANG)
     set(SB_SHADER_GEN "${CMAKE_BINARY_DIR}/gen_shaders")
     file(MAKE_DIRECTORY "${SB_SHADER_GEN}")
-    set(SB_SHADER_DIR "${SMS_NATIVE_REPO_ROOT}/native/render/shaders")
+    set(SB_SHADER_DIR "${SMS_NATIVE_REPO_ROOT}/sms-boot/render_pc/shaders")
     add_custom_command(
         OUTPUT "${SB_SHADER_GEN}/tri_vert_spv.h"
         COMMAND "${SB_GLSLANG}" -V --vn tri_vert_spv "${SB_SHADER_DIR}/tri.vert"
@@ -292,21 +289,21 @@ if(SB_VULKAN_LIB AND SB_VULKAN_INC AND SB_GLSLANG)
     endif()
 
     add_library(sms-render STATIC
-        "${SMS_NATIVE_REPO_ROOT}/native/render/ngx_native_glue.cpp"
-        "${SMS_NATIVE_REPO_ROOT}/native/render/gx_sdlgpu.cpp"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/render_pc/ngx_native_glue.cpp"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/render_pc/gx_sdlgpu.cpp"
         # The sms-boot VI present hook (SDL3 GPU render + frame dump).
-        "${SMS_NATIVE_REPO_ROOT}/native/render/sms_boot_present.cpp"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/render_pc/sms_boot_present.cpp"
         # Reused SHIPPING TEV combiner generator + runtime GLSL->SPIR-V compiler (NOT
         # forked) — the same code the ngx renderer uses, Dolphin-free here.
-        "${SMS_NATIVE_REPO_ROOT}/runtime/render/tev_shader.cpp"
-        "${SMS_NATIVE_REPO_ROOT}/runtime/render/glsl_compile.cpp"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/render_pc/gx_common/tev_shader.cpp"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/render_pc/gx_common/glsl_compile.cpp"
         # Reused PURE ngx geometry decoders (NOT forked — these ARE the shipping
         # renderer's GC display-list -> native-mesh path), compiled Dolphin-free via
         # the gx_parse.h shadow below.
-        "${SMS_NATIVE_REPO_ROOT}/runtime/ngx/ngx_decode.cpp"
-        "${SMS_NATIVE_REPO_ROOT}/runtime/ngx/ngx_vertex.cpp"
-        "${SMS_NATIVE_REPO_ROOT}/runtime/ngx/ngx_mesh.cpp"
-        "${SMS_NATIVE_REPO_ROOT}/runtime/render/tex_decode.cpp"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/render_pc/ngx/ngx_decode.cpp"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/render_pc/ngx/ngx_vertex.cpp"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/render_pc/ngx/ngx_mesh.cpp"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/render_pc/gx_common/tex_decode.cpp"
         "${SB_SHADER_GEN}/tri_vert_spv.h"
         "${SB_SHADER_GEN}/tri_frag_spv.h"
         "${SB_SHADER_GEN}/tex_vert_spv.h"
@@ -318,28 +315,28 @@ if(SB_VULKAN_LIB AND SB_VULKAN_INC AND SB_GLSLANG)
     target_compile_definitions(sms-render PUBLIC SMS_NATIVE_PLATFORM=1)
     target_include_directories(sms-render PUBLIC
         # shim/ FIRST so ngx_decode's #include "gx_parse.h" gets the Dolphin-free shadow.
-        "${SMS_NATIVE_REPO_ROOT}/native/render/shim"
-        "${SMS_NATIVE_REPO_ROOT}/native/render"
-        "${SMS_NATIVE_REPO_ROOT}/runtime/ngx"
-        "${SMS_NATIVE_REPO_ROOT}/runtime/render"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/render_pc/shim"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/render_pc"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/render_pc/ngx"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/render_pc/gx_common"
         "${SB_SHADER_GEN}" "${SB_VULKAN_INC}")
     target_link_libraries(sms-render PUBLIC "${SB_VULKAN_LIB}" ${SB_NATIVE_GLSLANG_LIBS} SDL3::SDL3)
     # tev_shader.cpp / glsl_compile.cpp are SHIPPING ngx code (predates strict warnings);
     # -Wall -Wextra applies to the new nvk code, but keep the reused TUs from erroring.
     target_compile_options(sms-render PRIVATE -Wall -Wextra)
     set_source_files_properties(
-        "${SMS_NATIVE_REPO_ROOT}/runtime/render/tev_shader.cpp"
-        "${SMS_NATIVE_REPO_ROOT}/runtime/render/glsl_compile.cpp"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/render_pc/gx_common/tev_shader.cpp"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/render_pc/gx_common/glsl_compile.cpp"
         PROPERTIES COMPILE_OPTIONS "-w")
 
-    # ── Parity-focused renderer TDD (native/render/tests/parity/*_test.cpp) ────────────────
+    # ── Parity-focused renderer TDD (sms-boot/render_pc/tests/parity/*_test.cpp) ────────────────
     # Faithfulness tests: render a KNOWN input through the SDL3 GPU renderer (sb::gxsdl) and
     # assert the readback pixels against SPEC-computed ground truth (GX semantics), built from
     # small scope (clear, single triangle, single textured quad, one TEV stage, blend, depth)
     # up to larger scenes. The old render tests (nvk-based, self-consistency only) were removed:
     # they didn't prove correctness. See docs/gx_sdlgpu_switch.md ("Parity-focused TDD").
     file(GLOB SB_PARITY_TESTS CONFIGURE_DEPENDS
-         "${SMS_NATIVE_REPO_ROOT}/native/render/tests/parity/*_test.cpp")
+         "${SMS_NATIVE_REPO_ROOT}/sms-boot/render_pc/tests/parity/*_test.cpp")
     foreach(pt ${SB_PARITY_TESTS})
         get_filename_component(pt_name "${pt}" NAME_WE)
         add_executable(sms-${pt_name} "${pt}")
@@ -362,22 +359,22 @@ endif()
 # SKIP-passes when the copyrighted BMD asset is absent (gitignored scratch/bmd/).
 # ---------------------------------------------------------------------------
 add_executable(sms-j3dload_test
-    "${SMS_NATIVE_REPO_ROOT}/native/render/tests/j3dload_test.cpp"
+    "${SMS_NATIVE_REPO_ROOT}/sms-boot/render_pc/tests/j3dload_test.cpp"
     # sb_tex_decode/sb_tex_pad_w/sb_tex_pad_h have no weak fallback (real, always-buildable,
     # GPU-free code — gx_imm_impl.cpp calls them unconditionally), so link the actual decoder
     # rather than stub it out. Everything else this test's link closure needs from the render-
     # capture pipeline (sb_boot_capture_phase et al.) IS weak-declared — see JDRDrawBufObj.cpp /
     # J3DDrawBuffer.cpp / Map.cpp / gx_impl.cpp — and resolves to a safe no-op here.
-    "${SMS_NATIVE_REPO_ROOT}/runtime/render/tex_decode.cpp")
+    "${SMS_NATIVE_REPO_ROOT}/sms-boot/render_pc/gx_common/tex_decode.cpp")
 set_target_properties(sms-j3dload_test PROPERTIES
     CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
 target_include_directories(sms-j3dload_test PRIVATE
-    "${SMS_NATIVE_REPO_ROOT}/native/shim"
+    "${SMS_NATIVE_REPO_ROOT}/sms-boot/shim"
     "${SMS_NATIVE_REPO_ROOT}/reference/sms/include"
-    "${SMS_NATIVE_REPO_ROOT}/native/assets"
-    "${SMS_NATIVE_REPO_ROOT}/runtime/render")
+    "${SMS_NATIVE_REPO_ROOT}/sms-boot/assets"
+    "${SMS_NATIVE_REPO_ROOT}/sms-boot/render_pc/gx_common")
 target_compile_options(sms-j3dload_test PRIVATE
-    -include "${SMS_NATIVE_REPO_ROOT}/native/shim/gekko_intrinsics.h"
+    -include "${SMS_NATIVE_REPO_ROOT}/sms-boot/shim/gekko_intrinsics.h"
     -w -fcommon)
 # sms-native <-> sms-gd/sms-platform have cyclic cross-references (game code calls
 # seams; nothing the reverse, but vtables pull a wide closure) — RESCAN groups the
@@ -411,40 +408,38 @@ endif()
 option(SMS_BUILD_BOOT "Build the native bring-up exe (expected to fail-link until stubs land)" OFF)
 if(SMS_BUILD_BOOT)
     add_executable(sms-boot
-        "${SMS_NATIVE_REPO_ROOT}/native/src/boot.cpp"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/src/boot.cpp"
         # Headless scripted controller input (SB_PAD_SCRIPT / SB_PAD_DRIVE).
-        "${SMS_NATIVE_REPO_ROOT}/native/src/pad_driver.cpp"
-        # SB_HARNESS=<test-name>: Tier-1 vs Tier-2 in-process parity harness.
-        "${SMS_NATIVE_REPO_ROOT}/native/src/render_parity.cpp"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/src/pad_driver.cpp"
         # Early heap for glslang static-init allocs (runs before main / PlatformInit).
-        "${SMS_NATIVE_REPO_ROOT}/native/src/boot_heap_bringup.cpp"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/src/boot_heap_bringup.cpp"
         # SLICE 3a renderer-attach: live J3D scene capture (J3DShape::draw -> NDC tris,
         # drained by the present hook). Needs BOTH the J3D headers (reference/sms/include +
         # gekko force-include, like the loader tests) AND the render headers (nvk/ngx, via
         # the gx_parse shim) — only sms-boot has both include sets, so it is compiled here
         # rather than in sms-render. Provides the weak sb_boot_capture_j3d{,_take} symbols.
-        "${SMS_NATIVE_REPO_ROOT}/native/render/sms_boot_j3d_capture.cpp"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/render_pc/sms_boot_j3d_capture.cpp"
         # Material/TEV/texture extraction from the captured shape's J3DMaterial (same J3D +
         # render include sets as the capture).
-        "${SMS_NATIVE_REPO_ROOT}/native/render/sms_boot_material.cpp")
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/render_pc/sms_boot_material.cpp")
     set_source_files_properties(
-        "${SMS_NATIVE_REPO_ROOT}/native/render/sms_boot_j3d_capture.cpp"
-        "${SMS_NATIVE_REPO_ROOT}/native/render/sms_boot_material.cpp" PROPERTIES
-        # ORDER MATTERS: native/render/shim FIRST so ngx_decode's #include "gx_parse.h"
-        # gets the Dolphin-free shadow; native/shim BEFORE reference/sms/include so
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/render_pc/sms_boot_j3d_capture.cpp"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/render_pc/sms_boot_material.cpp" PROPERTIES
+        # ORDER MATTERS: sms-boot/render_pc/shim FIRST so ngx_decode's #include "gx_parse.h"
+        # gets the Dolphin-free shadow; sms-boot/shim BEFORE reference/sms/include so
         # <dolphin/types.h> resolves to the host shadow (u32=uint32_t) and NOT the GC SDK
         # header (u32=unsigned long) — otherwise the gx_parse shim's u32=uint32_t conflicts.
         INCLUDE_DIRECTORIES
-            "${SMS_NATIVE_REPO_ROOT}/native/render/shim;${SMS_NATIVE_REPO_ROOT}/native/render;${SMS_NATIVE_REPO_ROOT}/runtime/ngx;${SMS_NATIVE_REPO_ROOT}/runtime/render;${SMS_NATIVE_REPO_ROOT}/native/shim;${SMS_NATIVE_REPO_ROOT}/reference/sms/include"
-        COMPILE_OPTIONS "-include;${SMS_NATIVE_REPO_ROOT}/native/shim/gekko_intrinsics.h;-fcommon;-w")
+            "${SMS_NATIVE_REPO_ROOT}/sms-boot/render_pc/shim;${SMS_NATIVE_REPO_ROOT}/sms-boot/render_pc;${SMS_NATIVE_REPO_ROOT}/sms-boot/render_pc/ngx;${SMS_NATIVE_REPO_ROOT}/sms-boot/render_pc/gx_common;${SMS_NATIVE_REPO_ROOT}/sms-boot/shim;${SMS_NATIVE_REPO_ROOT}/reference/sms/include"
+        COMPILE_OPTIONS "-include;${SMS_NATIVE_REPO_ROOT}/sms-boot/shim/gekko_intrinsics.h;-fcommon;-w")
     set_target_properties(sms-boot PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
     target_include_directories(sms-boot PRIVATE
-        "${SMS_NATIVE_REPO_ROOT}/native/platform" "${SMS_NATIVE_REPO_ROOT}/native/shim"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/common" "${SMS_NATIVE_REPO_ROOT}/sms-boot/shim"
         "${SMS_NATIVE_REPO_ROOT}/reference/sms/include")
     # boot_heap_bringup.cpp pulls JSystem headers — needs the gekko intrinsics force-include.
     set_source_files_properties(
-        "${SMS_NATIVE_REPO_ROOT}/native/src/boot_heap_bringup.cpp" PROPERTIES
-        COMPILE_OPTIONS "-include;${SMS_NATIVE_REPO_ROOT}/native/shim/gekko_intrinsics.h;-fcommon")
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/src/boot_heap_bringup.cpp" PROPERTIES
+        COMPILE_OPTIONS "-include;${SMS_NATIVE_REPO_ROOT}/sms-boot/shim/gekko_intrinsics.h;-fcommon")
     # -rdynamic: export symbols into the dynamic table so the watchdog's backtrace
     # (backtrace_symbols_fd) prints function names, not bare addresses.
     target_link_options(sms-boot PRIVATE -Wl,--wrap=main -rdynamic)
@@ -454,19 +449,19 @@ if(SMS_BUILD_BOOT)
     # Compiled into a lib in the RESCAN closure; replaced with faithful ports as the
     # runtime actually exercises each class.
     file(GLOB SMS_BOOT_STUBS CONFIGURE_DEPENDS
-         "${SMS_NATIVE_REPO_ROOT}/native/boot_stubs/*.cpp"
-         "${SMS_NATIVE_REPO_ROOT}/native/boot_stubs/*.S")
+         "${SMS_NATIVE_REPO_ROOT}/sms-boot/boot_stubs/*.cpp"
+         "${SMS_NATIVE_REPO_ROOT}/sms-boot/boot_stubs/*.S")
     if(SMS_BOOT_STUBS)
         enable_language(ASM)
         add_library(sms-bootstubs STATIC ${SMS_BOOT_STUBS})
         set_target_properties(sms-bootstubs PROPERTIES
             CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
         target_include_directories(sms-bootstubs PRIVATE
-            "${SMS_NATIVE_REPO_ROOT}/native/shim"
+            "${SMS_NATIVE_REPO_ROOT}/sms-boot/shim"
             "${SMS_NATIVE_REPO_ROOT}/reference/sms/include")
         # The C++ force-include must NOT reach the .S stub (assembler can't use <cstring>).
         target_compile_options(sms-bootstubs PRIVATE
-            "$<$<COMPILE_LANGUAGE:CXX>:-include;${SMS_NATIVE_REPO_ROOT}/native/shim/gekko_intrinsics.h>"
+            "$<$<COMPILE_LANGUAGE:CXX>:-include;${SMS_NATIVE_REPO_ROOT}/sms-boot/shim/gekko_intrinsics.h>"
             -w)
     endif()
     # Same cyclic closure as the j3dload test — boot pulls the GD display-list builder
@@ -486,64 +481,25 @@ if(SMS_BUILD_BOOT)
                             "(Vulkan/glslang not found). The native renderer is mandatory.")
     endif()
     target_link_libraries(sms-boot PRIVATE sms-render)
-
-    # ── GX_ORACLE render sink (Path C): link Dolphin's video backend ──────────────
-    # sb::engine::mode() == GX_ORACLE routes the game's GX calls through Dolphin's
-    # videovulkan backend (same pipeline build/sunbright uses as the oracle). Both
-    # sinks are compiled in; the user selects at runtime via SB_RENDER. Compile-time
-    # SMS_NATIVE_PLATFORM still governs game-code execution (audio/threading/memory) —
-    # only the render sink is toggleable.
-    #
-    # `videovulkan` is defined by the root CMakeLists.txt when `native/` is included
-    # via add_subdirectory(native). Standalone `native/` builds (without root) don't
-    # get the oracle sink and skip the link — the NATIVE_PC sink is fully functional
-    # on its own.
-    # Tier-2 (SB_RENDER=oracle) direct-write bridge: bypasses the FIFO byte
-    # reconstruction path and calls Dolphin's LoadBPReg/LoadXFReg directly.
-    # See native/render/oracle_direct.{h,cpp}.
-    if(TARGET videovulkan)
-        # Dolphin's core/videocommon require Host_* + Discord::* symbols the frontend
-        # normally provides. sms-boot is not a real emulator front-end — provide
-        # no-op stubs (see native/src/dolphin_host_shims.cpp).
-        target_sources(sms-boot PRIVATE
-            "${SMS_NATIVE_REPO_ROOT}/native/src/dolphin_host_shims.cpp"
-            "${SMS_NATIVE_REPO_ROOT}/native/render/oracle_present.cpp"
-            # Direct-write bridge: sb::oracle::bp_write / xf_write route into
-            # Dolphin's LoadBPReg / LoadXFReg without going through FIFO byte
-            # reconstruction. Also touches Dolphin headers → C++23.
-            "${SMS_NATIVE_REPO_ROOT}/native/render/oracle_direct.cpp")
-        set_source_files_properties(
-            "${SMS_NATIVE_REPO_ROOT}/native/render/oracle_present.cpp"
-            "${SMS_NATIVE_REPO_ROOT}/native/render/oracle_direct.cpp"
-            "${SMS_NATIVE_REPO_ROOT}/native/src/dolphin_host_shims.cpp"
-            PROPERTIES COMPILE_OPTIONS "-std=c++23")
-        target_include_directories(sms-boot PRIVATE
-            "${SMS_NATIVE_REPO_ROOT}/externals/dolphin/Source/Core")
-        target_link_libraries(sms-boot PRIVATE videovulkan videocommon core uicommon common)
-        target_compile_definitions(sms-boot PRIVATE SB_HAVE_ORACLE_SINK=1)
-    else()
-        message(STATUS "sms-boot: standalone native build — GX_ORACLE sink unavailable "
-                       "(build from the root CMakeLists.txt to link Dolphin).")
-    endif()
 endif()
 
 file(GLOB SMS_PLATFORM_TESTS CONFIGURE_DEPENDS
-     "${SMS_NATIVE_REPO_ROOT}/native/platform/tests/*_test.cpp")
+     "${SMS_NATIVE_REPO_ROOT}/sms-boot/common/tests/*_test.cpp")
 foreach(test_src ${SMS_PLATFORM_TESTS})
     get_filename_component(test_name "${test_src}" NAME_WE)
     add_executable(sms-${test_name} "${test_src}")
     set_target_properties(sms-${test_name} PROPERTIES
         CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
     target_include_directories(sms-${test_name} PRIVATE
-        "${SMS_NATIVE_REPO_ROOT}/native/platform"
-        "${SMS_NATIVE_REPO_ROOT}/native/shim"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/common"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/shim"
         "${SMS_NATIVE_REPO_ROOT}/reference/sms/include"
         # The renderer's pure lighting decoder (ngx_light.h) — gx_test cross-checks the
         # GXSetChanCtrl packing against decode_chanctl().
-        "${SMS_NATIVE_REPO_ROOT}/runtime/ngx"
-        # native/render — pure renderer-port headers (e.g. sms_boot_setlight.h,
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/render_pc/ngx"
+        # sms-boot/render_pc — pure renderer-port headers (e.g. sms_boot_setlight.h,
         # the TLightCommon::setLight stage-light selection that setlight_test covers).
-        "${SMS_NATIVE_REPO_ROOT}/native/render")
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/render_pc")
     target_compile_options(sms-${test_name} PRIVATE -fcommon)
     # sms-gd (GD display-list builder, decomp source) is referenced by gd_test;
     # sms-assets (BE->host asset swappers) by anm_swap_test/bmd swaps; a static lib

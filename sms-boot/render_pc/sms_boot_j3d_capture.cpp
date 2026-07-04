@@ -47,7 +47,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <execinfo.h>   // SB_B76_BT backtrace (name the mask's pass-routing owner)
-#include "../../runtime/pin_state_schema.h"
+#include "../pin_state_schema.h"
 
 #include <cstdio>
 #include <cstring>

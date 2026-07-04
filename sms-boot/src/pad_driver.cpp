@@ -20,7 +20,7 @@
 // full-deflect ±72 maps to a clamped octagon exactly like a real stick.
 
 #include <dolphin/pad.h>
-#include "../platform/vi_present.h"
+#include "../common/vi_present.h"
 #include <cstdlib>
 #include <cstring>
 #include <cstdio>

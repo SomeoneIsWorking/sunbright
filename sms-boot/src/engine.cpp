@@ -1,7 +1,6 @@
 // engine.cpp — sb::engine::mode() backing. See runtime/engine.h.
 
-#include "../../runtime/engine.h"
-#include "../platform/gx_fifo.h"
+#include "../engine.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -10,35 +9,35 @@
 namespace sb::engine {
 
 namespace {
-RenderMode s_mode = RenderMode::NATIVE_PC;
+#if defined(SB_RENDER_GC_FAITHFUL)
+RenderMode s_mode = RenderMode::GC_FAITHFUL;
+#else
+RenderMode s_mode = RenderMode::PC_NATIVE;
+#endif
 bool s_inited = false;
 }
 
 void init_from_env() {
     if (s_inited) return;
     s_inited = true;
+    // Compile-time path is authoritative. SB_RENDER at runtime is a log echo only —
+    // if it disagrees with the compiled path, we shout and ignore it.
     const char* v = std::getenv("SB_RENDER");
     if (!v || !v[0]) v = std::getenv("SUNBRIGHT_RENDER");
-    if (v && v[0]) {
-        if (!std::strcmp(v, "oracle") || !std::strcmp(v, "gx") || !std::strcmp(v, "dolphin"))
-            s_mode = RenderMode::GX_ORACLE;
-        else if (!std::strcmp(v, "native") || !std::strcmp(v, "pc") || !std::strcmp(v, "sdl3"))
-            s_mode = RenderMode::NATIVE_PC;
-        else
-            std::fprintf(stderr, "[engine] unrecognized SB_RENDER='%s' (use native|oracle), keeping default\n", v);
+    if (v && v[0] && std::strcmp(v, mode_name()) != 0) {
+        std::fprintf(stderr,
+            "[engine] SB_RENDER='%s' ignored: this build is %s (rebuild with -DSB_RENDER=%s to switch)\n",
+            v, mode_name(), (s_mode == RenderMode::PC_NATIVE ? "gc" : "pc"));
     }
-    std::printf("[engine] render mode = %s\n", mode_name());
-    // GX seam FIFO recording (see native/platform/gx_fifo.h). Enabled iff
-    // GX_ORACLE, so NATIVE_PC pays no cost.
-    sb::gxfifo::init();
+    std::printf("[engine] render path = %s\n", mode_name());
 }
 
 RenderMode mode() { return s_mode; }
 
 const char* mode_name() {
     switch (s_mode) {
-        case RenderMode::NATIVE_PC:  return "native";
-        case RenderMode::GX_ORACLE:  return "oracle";
+        case RenderMode::PC_NATIVE:   return "pc";
+        case RenderMode::GC_FAITHFUL: return "gc";
     }
     return "?";
 }

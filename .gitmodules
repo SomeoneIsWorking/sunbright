@@ -2,3 +2,6 @@
 	path = reference/sms
 	url = https://github.com/SomeoneIsWorking/sms.git
 	branch = sunbright
+[submodule "extern/aurora"]
+	path = extern/aurora
+	url = https://github.com/encounter/aurora
