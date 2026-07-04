@@ -23,9 +23,14 @@
 #include <aurora/main.h>
 #include <dolphin/gx.h>
 
+#include <System/Application.hpp>
+#include <dolphin/os.h>
+
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+
+extern TApplication gpApplication;
 
 // TODO: the real game entry, hooked from reference/sms/src/main.cpp. For MVP
 // bring-up we just clear to a distinctive colour every frame so we can prove
@@ -68,23 +73,23 @@ int main(int argc, char* argv[]) {
     config.mem2Size       = ARAM_DEFAULT_SIZE;
 
     AuroraInfo info = aurora_initialize(argc, argv, &config);
-    std::fprintf(stdout, "[sms-boot-gc] aurora up: backend=%d fb=%ux%u\n",
+    std::fprintf(stdout, "[sms-boot] aurora up: backend=%d fb=%ux%u\n",
                  (int)info.backend, info.windowSize.fb_width, info.windowSize.fb_height);
+    std::fflush(stdout);
 
-    // TODO: spawn the game thread here (mirrors sms-boot/src/boot.cpp under
-    // Path B). For MVP we run the SDL/present loop only.
-    bool exiting = false;
-    while (!exiting) {
-        const AuroraEvent* event = aurora_update();
-        while (event && event->type != AURORA_NONE) {
-            if (event->type == AURORA_EXIT) exiting = true;
-            ++event;
-        }
-        if (exiting) break;
-        if (!aurora_begin_frame()) continue;
-        draw_bringup_frame();
-        aurora_end_frame();
-    }
+    // OSInit() sets up the emulated MEM1 arena Aurora simulates. On the real
+    // console it's called by system firmware before main; games (and reference/sms)
+    // don't call it themselves, so do it here before any JKR heap allocs.
+    OSInit();
+
+    // Hand off to the game. TApplication::initialize is the decomp's own
+    // GC entry; under SMS_NATIVE_PLATFORM=1 its GC-side threading/CD paths
+    // short-circuit to sync/single-thread. proc() drives the frame loop
+    // (which must also pump aurora_update / begin_frame / end_frame — that
+    // integration comes next).
+    gpApplication.initialize();
+    gpApplication.proc();
+    gpApplication.finalize();
 
     aurora_shutdown();
     return 0;

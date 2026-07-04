@@ -14,9 +14,22 @@ set(SMS_NATIVE_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/..")
 # Game-logic sources = reference/sms/src/**.cpp MINUS the GC SDK/CRT dirs (Aurora
 # supplies dolphin/*; PowerPC_EABI_Support/TRK_MINNOW_DOLPHIN are PPC CRT).
 file(GLOB_RECURSE SMS_NATIVE_SOURCES CONFIGURE_DEPENDS
-     "${SMS_NATIVE_REPO_ROOT}/reference/sms/src/*.cpp")
+     "${SMS_NATIVE_REPO_ROOT}/reference/sms/src/*.cpp"
+     "${SMS_NATIVE_REPO_ROOT}/reference/sms/src/*.c")
 list(FILTER SMS_NATIVE_SOURCES EXCLUDE REGEX
      "/reference/sms/src/(dolphin|PowerPC_EABI_Support|TRK_MINNOW_DOLPHIN)/")
+# OdemuExi2 debugger driver, dspproc/dsptask/osdsp — PPC-hardware/DSP register
+# access, not portable native. Retired debugger/DSP paths.
+list(FILTER SMS_NATIVE_SOURCES EXCLUDE REGEX
+     "/reference/sms/src/(OdemuExi2|JSystem/dspproc|JSystem/dsptask|JSystem/osdsp)")
+# hx_wiper.c / THPPlayer/*.c: HAM movie-wipe controller + Nintendo THP video
+# playback. Both drive GX directly and depend on cache/DVD hardware. Movies are
+# skipped under SMS_NATIVE_PLATFORM=1; sdk_gap_stubs.cpp provides linkable
+# no-ops for the exported entry points.
+list(FILTER SMS_NATIVE_SOURCES EXCLUDE REGEX
+     "/reference/sms/src/GC2D/hx_wiper\\.c$")
+list(FILTER SMS_NATIVE_SOURCES EXCLUDE REGEX
+     "/reference/sms/src/THPPlayer/")
 
 # JASVload wants JaiArcS.hed which isn't on the disc FST; replaced by
 # sms_boot_audio.cpp's BARC-backed loader.
@@ -36,6 +49,14 @@ list(FILTER SMS_NATIVE_SOURCES EXCLUDE REGEX
 
 list(APPEND SMS_NATIVE_SOURCES
      "${SMS_NATIVE_REPO_ROOT}/sms-boot/src/sms_boot_audio.cpp")
+
+# .c decomp TUs (THPPlayer/*.c) — compile as C++ so they see the C++ Aurora
+# headers and pick up the same -include shim.
+foreach(_src ${SMS_NATIVE_SOURCES})
+    if(_src MATCHES "\\.c$")
+        set_source_files_properties("${_src}" PROPERTIES LANGUAGE CXX)
+    endif()
+endforeach()
 
 add_library(sms-native STATIC ${SMS_NATIVE_SOURCES})
 
@@ -82,6 +103,9 @@ find_package(Threads REQUIRED)
 # ---------------------------------------------------------------------------
 file(GLOB SMS_GD_SOURCES CONFIGURE_DEPENDS
      "${SMS_NATIVE_REPO_ROOT}/reference/sms/src/dolphin/gd/*.c")
+# GDLight.c duplicates aurora::gd's GDLight.cpp; Aurora's is canonical and paired
+# with its GX pipeline, so use it.
+list(FILTER SMS_GD_SOURCES EXCLUDE REGEX "/GDLight\\.c$")
 add_library(sms-gd STATIC ${SMS_GD_SOURCES})
 set_target_properties(sms-gd PROPERTIES
     CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF
@@ -156,6 +180,7 @@ if(TARGET aurora_core)
         aurora::pad
         aurora::si
         aurora::card
+        aurora::dvd
         aurora::gd
         aurora::ms
         Threads::Threads)
