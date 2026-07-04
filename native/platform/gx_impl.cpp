@@ -810,8 +810,31 @@ static void emit_genmode() {
     sb::gxfifo::bp_write(bp::GENMODE, v);
 }
 
-void GXSetNumChans(u8 n)     { state().numChans = n; emit_genmode(); }
-void GXSetNumTexGens(u8 n)   { state().numTexGens = n; emit_genmode(); }
+// GXSetNumChans / GXSetNumTexGens each write BPMEM_GENMODE via emit_genmode
+// AND the corresponding XF-side count register (XFMEM_SETNUMCHAN 0x1009,
+// XFMEM_SETNUMTEXGENS 0x103F). Dolphin's VertexManagerBase::Flush hard-drops
+// any DRAW where bpmem.genMode.numtexgens ≠ xfmem.numTexGen.numTexGens or
+// bpmem.genMode.numcolchans ≠ xfmem.numChan.numColorChans ("Mismatched
+// configuration between XF and BP stages. Skipping draw." — VMB.cpp:475).
+// Without the XF-side writes, every DRAW in the actual game FIFO was
+// silently discarded and the EFB stayed at the initial clear colour
+// (2026-07-04 title-in-oracle black-screen root cause).
+void GXSetNumChans(u8 n) {
+    state().numChans = n;
+    emit_genmode();
+    sb::gxfifo::write_u8(0x10);
+    sb::gxfifo::write_u16_be(0);            // 1 word
+    sb::gxfifo::write_u16_be(0x1009);       // XFMEM_SETNUMCHAN
+    sb::gxfifo::write_u32_be((u32)n & 0x7);
+}
+void GXSetNumTexGens(u8 n) {
+    state().numTexGens = n;
+    emit_genmode();
+    sb::gxfifo::write_u8(0x10);
+    sb::gxfifo::write_u16_be(0);            // 1 word
+    sb::gxfifo::write_u16_be(0x103F);       // XFMEM_SETNUMTEXGENS
+    sb::gxfifo::write_u32_be((u32)n & 0xF);
+}
 void GXSetNumTevStages(u8 n) { state().numTevStages = n; emit_genmode(); }
 
 // --- SLICE 3: lighting (chan-ctrl/material/ambient + light objects) ---------

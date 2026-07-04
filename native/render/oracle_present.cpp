@@ -343,6 +343,13 @@ extern "C" void sb_oracle_present_frame(void* /*framebuffer*/, void* /*user*/) {
         std::fflush(stderr);
         std::abort();
     }
+    // 2026-07-04: skip the explicit clear when running a REAL game frame —
+    // the game issues its own EFB clears via BPMEM_COPY_YSCALE/CLEAR_AR
+    // + a CopyDisp with clear flag, and my SetAndClearFramebuffer was
+    // binding + clearing the EFB such that later draws still hit it —
+    // BUT synth scenarios need this call (they have no game-side clear).
+    // Gate on SB_ORACLE_NO_HOST_CLEAR so I can probe the title path.
+    if (!std::getenv("SB_ORACLE_NO_HOST_CLEAR"))
     // Depth clear = 1.0 (GC "clear to far plane"). Depth-test with GX_LESS
     // requires incoming z < depth-buffer z; clearing to 0.0 made every
     // compare fail and blackholed synth-depth on Tier 2. GC's clearZ
