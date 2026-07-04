@@ -345,6 +345,80 @@ extern "C" void sb_oracle_present_frame(void* /*framebuffer*/, void* /*user*/) {
         if (&sb_gx_emit_full_state) sb_gx_emit_full_state();
         const uint8_t* fifo_data = sb::gxfifo::data();
         const size_t   fifo_size = sb::gxfifo::size();
+
+        // SB_ORACLE_DUMP_FIFO=1: annotate each command in the FIFO stream
+        // before Dolphin decodes it. Shows exactly which BP/XF/CP register
+        // writes reach Dolphin (and, by omission, which state the game
+        // expects but sb_gx_emit_full_state doesn't emit). Diagnostic for
+        // the Tier-2 geometry blocker (task #29).
+        static const bool dump_fifo = std::getenv("SB_ORACLE_DUMP_FIFO") != nullptr;
+        if (dump_fifo && fifo_size > 0) {
+            std::fprintf(stderr, "[fifo] f%d %zu bytes:\n", s_frame, fifo_size);
+            // GC FIFO opcodes (per Dolphin VideoCommon/OpcodeDecoding.h):
+            //   0x00 = NOP
+            //   0x08 = LOAD_CP_REG  (1 byte reg + 4 bytes value)
+            //   0x10 = LOAD_XF_REG  (2 bytes cnt-1 + 2 bytes reg + N*4 payload)
+            //   0x20..0x38 = LOAD_INDX_A/B/C/D
+            //   0x40 = CALL_DL
+            //   0x48 = INVL_VC
+            //   0x61 = LOAD_BP_REG  (4 bytes; high byte = reg, low 24 = value)
+            //   0x80..0xB8 = DRAW_*
+            size_t i = 0;
+            while (i < fifo_size) {
+                const uint8_t op = fifo_data[i];
+                if (op == 0x00) { i += 1; continue; }
+                if (op == 0x08 && i + 6 <= fifo_size) {
+                    // LOAD_CP_REG: reg byte + 4 bytes value.
+                    const uint8_t reg = fifo_data[i+1];
+                    const uint32_t val = ((uint32_t)fifo_data[i+2] << 24)
+                                        | ((uint32_t)fifo_data[i+3] << 16)
+                                        | ((uint32_t)fifo_data[i+4] << 8)
+                                        |  (uint32_t)fifo_data[i+5];
+                    std::fprintf(stderr, "  CP  reg=0x%02x val=0x%08x\n", reg, val);
+                    i += 6; continue;
+                }
+                if (op == 0x10 && i + 5 <= fifo_size) {
+                    const uint16_t cnt_m1 = ((uint16_t)fifo_data[i+1] << 8) | fifo_data[i+2];
+                    const uint16_t xf_reg = ((uint16_t)fifo_data[i+3] << 8) | fifo_data[i+4];
+                    const uint16_t nwords = cnt_m1 + 1;
+                    std::fprintf(stderr, "  XF  reg=0x%04x nwords=%u", xf_reg, (unsigned)nwords);
+                    for (int w = 0; w < nwords && i + 5 + 4*w + 4 <= fifo_size; ++w) {
+                        uint32_t u = ((uint32_t)fifo_data[i+5+4*w+0] << 24)
+                                    | ((uint32_t)fifo_data[i+5+4*w+1] << 16)
+                                    | ((uint32_t)fifo_data[i+5+4*w+2] << 8)
+                                    |  (uint32_t)fifo_data[i+5+4*w+3];
+                        float f; std::memcpy(&f, &u, 4);
+                        std::fprintf(stderr, " %g", (double)f);
+                    }
+                    std::fprintf(stderr, "\n");
+                    i += 5 + 4 * nwords; continue;
+                }
+                if (op == 0x61 && i + 5 <= fifo_size) {
+                    // LOAD_BP_REG: 4 bytes; high byte = reg, low 24 = value.
+                    const uint8_t reg = fifo_data[i+1];
+                    const uint32_t val = ((uint32_t)fifo_data[i+2] << 16)
+                                        | ((uint32_t)fifo_data[i+3] << 8)
+                                        |  (uint32_t)fifo_data[i+4];
+                    std::fprintf(stderr, "  BP  reg=0x%02x val=0x%06x\n", reg, val);
+                    i += 5; continue;
+                }
+                // DRAW opcodes 0x80..0xB8.
+                if ((op & 0xC0) == 0x80 && i + 3 <= fifo_size) {
+                    const uint16_t nverts = ((uint16_t)fifo_data[i+1] << 8) | fifo_data[i+2];
+                    static const char* prim[] = {"QUAD","QUAD2","TRI","TRISTRIP",
+                                                 "TRIFAN","LINE","LINESTRIP","POINT"};
+                    const int pidx = (op >> 3) & 7;
+                    std::fprintf(stderr, "  DRAW op=%02x %s n=%u (stopping dump — "
+                                         "vertex payload size depends on VAT)\n",
+                                 op, prim[pidx], (unsigned)nverts);
+                    break;
+                }
+                std::fprintf(stderr, "  ??  op=%02x (unknown, stopping dump at offset %zu)\n",
+                             op, i);
+                break;
+            }
+        }
+
         if (fifo_size > 0) {
             u32 cycles = 0;
             OpcodeDecoder::RunFifo<false>(

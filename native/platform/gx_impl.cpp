@@ -305,9 +305,94 @@ extern "C" void sb_gx_emit_full_state(void) {
                 sb::gxfifo::write_f32_be(g.posMtx[0][r][c]);
     }
 
-    // Chan control + material/ambient colours (XFMEM_SETNUMCHAN=0x1009 etc.)
-    // — kept minimal for now; will expand once we see visible geometry lit
-    // correctly through the passthrough state above.
+    // ── BP TREF per TEV stage (0x28 + stage/2). Two stages packed per reg.
+    // Layout for the low half (bits 0-11) — high half (bits 12-23) is the
+    // stage+1 slot in the same reg:
+    //   [0-2]  texcoord      (0..7 or 7=NULL)
+    //   [3-5]  texmap        (0..7 or 7=NULL)
+    //   [6]    color_channel_bit_0
+    //   [7]    unused
+    //   [8]    texture_enable (0 = tex disabled, 1 = enabled)
+    //   [9]    color_channel_bit_1
+    //   [10]   color_channel_bit_2 (COLOR_ZERO=7, COLOR0=0, COLOR1=1, ALPHA_BUMP=5, ALPHA_BUMP_N=6)
+    //   [11]   pad
+    // We encode the per-stage state saved by GXSetTevOrder into this layout.
+    auto encode_tref_stage = [&](int s) -> u32 {
+        u32 v = 0;
+        u32 texmap   = (g.tev.texmap[s]   == 0xff) ? 7u : g.tev.texmap[s];
+        u32 texcoord = (g.tev.texcoord[s] == 0xff) ? 7u : g.tev.texcoord[s];
+        // GC channel enums for TREF: COLOR0_A0=0, COLOR1_A1=1, ALPHA_BUMP=5,
+        // ALPHA_BUMP_N=6, COLOR_ZERO=7. Native saves the raw GXChannelID which
+        // uses 0=COLOR0, 1=COLOR1, 2=ALPHA0, 3=ALPHA1, 4=COLOR0A0, 5=COLOR1A1,
+        // 6=COLOR_ZERO, 7=ALPHA_BUMP, ... — remap the COLOR0A0/COLOR1A1 pair
+        // to Dolphin's TREF encoding (BPMemory.h: TevColorChan enum).
+        u32 chan = g.tev.colorChan[s];
+        u32 tref_chan = 7u;   // default COLOR_ZERO
+        if (chan == GX_COLOR0A0 || chan == GX_COLOR0) tref_chan = 0;
+        else if (chan == GX_COLOR1A1 || chan == GX_COLOR1) tref_chan = 1;
+        else if (chan == GX_ALPHA_BUMP) tref_chan = 5;
+        else if (chan == GX_ALPHA_BUMPN) tref_chan = 6;
+        v |= (texcoord & 7);
+        v |= (texmap   & 7) << 3;
+        // Bit 8 = texture enable: 1 iff texmap present (not 7=NULL).
+        v |= (g.tev.texmap[s] == 0xff ? 0u : 1u) << 8;
+        // Bits 6/9/10 = tref_chan (3 bits split across low/mid/high).
+        v |= (tref_chan & 1) << 6;
+        v |= ((tref_chan >> 1) & 1) << 9;
+        v |= ((tref_chan >> 2) & 1) << 10;
+        return v;
+    };
+    for (int reg = 0; reg < 8; ++reg) {
+        const int s_lo = reg * 2;
+        const int s_hi = s_lo + 1;
+        u32 v_lo = encode_tref_stage(s_lo);
+        u32 v_hi = encode_tref_stage(s_hi);
+        u32 packed = (v_lo & 0xFFF) | ((v_hi & 0xFFF) << 12);
+        sb::gxfifo::bp_write(0x28 + reg, packed);
+    }
+
+    // ── XF channel control (SETNUMCHAN + per-chan colour/alpha ctrl + colour) ──
+    // SETNUMCHAN (0x1009): low 3 bits = number of colour channels.
+    {
+        sb::gxfifo::write_u8(0x10);
+        sb::gxfifo::write_u16_be(0);            // count-1 = 0 → 1 word
+        sb::gxfifo::write_u16_be(0x1009);
+        sb::gxfifo::write_u32_be((u32)g.numChans & 0x7);
+    }
+    // SETCHAN0_COLOR (0x100E) / SETCHAN0_ALPHA (0x1010) / SETCHAN1_COLOR
+    // (0x100F) / SETCHAN1_ALPHA (0x1011). Each is a 24-bit chan-ctrl word we
+    // already stored in g.chan[i].ctrl. Dolphin's XFMEM layout has
+    // AMBCOLOR/MATCOLOR at 0x100A-0x100D and then the four ctrl regs at
+    // 0x100E-0x1011 in the order color0, alpha0, color1, alpha1.
+    for (int i = 0; i < 2; ++i) {
+        // Ambient + material colour for channel i (u32 RGBA8).
+        auto pack_rgba = [](GXColor c) {
+            return ((u32)c.r << 24) | ((u32)c.g << 16) | ((u32)c.b << 8) | (u32)c.a;
+        };
+        {
+            sb::gxfifo::write_u8(0x10); sb::gxfifo::write_u16_be(0);
+            sb::gxfifo::write_u16_be((u16)(0x100A + i));  // AMBCOLOR i
+            sb::gxfifo::write_u32_be(pack_rgba(g.chan[i].ambColor));
+        }
+        {
+            sb::gxfifo::write_u8(0x10); sb::gxfifo::write_u16_be(0);
+            sb::gxfifo::write_u16_be((u16)(0x100C + i));  // MATCOLOR i
+            sb::gxfifo::write_u32_be(pack_rgba(g.chan[i].matColor));
+        }
+        // Colour ctrl (COLOR0 = 0x100E, COLOR1 = 0x100F).
+        {
+            sb::gxfifo::write_u8(0x10); sb::gxfifo::write_u16_be(0);
+            sb::gxfifo::write_u16_be((u16)(0x100E + i));
+            sb::gxfifo::write_u32_be(g.chan[i].ctrl);
+        }
+        // Alpha ctrl (ALPHA0 = 0x1010, ALPHA1 = 0x1011). Native stores alpha
+        // ctrl at indices 2/3 in chan[].
+        {
+            sb::gxfifo::write_u8(0x10); sb::gxfifo::write_u16_be(0);
+            sb::gxfifo::write_u16_be((u16)(0x1010 + i));
+            sb::gxfifo::write_u32_be(g.chan[2 + i].ctrl);
+        }
+    }
 }
 extern "C" void sb_gx_call_trace_dump(void) {
     if (!std::getenv("SB_GX_CALL_TRACE")) return;

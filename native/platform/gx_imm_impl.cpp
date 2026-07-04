@@ -263,8 +263,22 @@ static int   g_imm_caller_n = 0;
 // color0 4xf32 direct + texcoord0 2xf32 direct, matching SbImmVtx byte-for-byte
 // = 36 bytes). CP registers are programmed once per frame to describe this
 // format under VAT slot 0.
+// The GX_ORACLE sink needs the FULL BP/XF state programmed BEFORE any DRAW
+// opcode reaches OpcodeDecoder — otherwise Dolphin's VertexManager rasterises
+// against partial defaults (blend/z/scissor/TEV all zero) and outputs
+// nothing. sb_gx_emit_full_state() dumps the whole live GXState as FIFO
+// writes; we call it right before each DRAW so Dolphin's decoder sees the
+// state MATERIALISED at the moment the primitive fires. Weak so a build
+// without Tier 2 linked (standalone native) doesn't ODR-fail.
+extern "C" void sb_gx_emit_full_state(void) __attribute__((weak));
+
 static void emit_fifo_draw() {
     if (!sb::gxfifo::enabled() || g_prim_verts.empty()) return;
+
+    // Prepend the full BP/XF snapshot so Dolphin's decoder has complete
+    // pipeline state programmed before the DRAW opcode. Skips a null
+    // sb_gx_emit_full_state (weak-linked; absent in Tier-1-only builds).
+    if (&sb_gx_emit_full_state) sb_gx_emit_full_state();
 
     // One-time CP setup per frame: vertex descriptor + attribute-format table.
     static bool s_cp_set_this_frame = false;
@@ -306,6 +320,27 @@ static void emit_fifo_draw() {
         vat0 |= (4u << 22);         // Tex0Format = Float
         vat0 |= (0u << 25);         // Tex0Frac = 0
         sb::gxfifo::cp_write(0x70, vat0);
+
+        // XFMEM_SETINVERTEXSPEC (0x1008) — MUST match CP VCD numColors /
+        // numNormals / numTextures or Dolphin's VertexShaderManager rejects
+        // the setup with a hard "Mismatched configuration" error and rasters
+        // no pixels. Encoding (per Dolphin's XFStructs.h InVertexSpec):
+        //   bits 0-1  numColors  (0..2)
+        //   bits 2-3  numNormals (0=none, 1=normal, 2=NBT)
+        //   bits 4-7  numTextures (0..8)
+        // We emit 1 color + 0 normal + 1 texcoord to match the DRAW payload
+        // (see write_f32/u8 sequence below). If we ever add multiple colors
+        // or textures per vertex we MUST update this in lockstep with VCD.
+        {
+            u32 xf_vertspec = 0;
+            xf_vertspec |= (1u & 0x3);           // 1 color
+            xf_vertspec |= (0u & 0x3) << 2;      // 0 normals
+            xf_vertspec |= (1u & 0xF) << 4;      // 1 texcoord
+            sb::gxfifo::write_u8(0x10);
+            sb::gxfifo::write_u16_be(0);
+            sb::gxfifo::write_u16_be(0x1008);
+            sb::gxfifo::write_u32_be(xf_vertspec);
+        }
     }
     // Fake next-frame reset — the FIFO buffer is cleared on present, so on the
     // next present the sink will call sb_gx_emit_full_state() again which
