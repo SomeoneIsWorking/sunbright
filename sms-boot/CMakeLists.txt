@@ -524,20 +524,65 @@ endforeach()
 # without it.
 # ---------------------------------------------------------------------------
 if(TARGET aurora_core)
+    # ─── sms-native-gc — reference/sms compiled against Aurora's <dolphin/*.h> ────
+    # Mirrors sms-native (Path B) but with the include-search order flipped so
+    # Aurora's dolphin headers win over sms-boot/shim/dolphin/. Aurora's types.h
+    # does NOT define SMS_NATIVE_PLATFORM, so reference/sms takes its original GC
+    # paths, and every GXSetChanCtrl/GXBegin/etc. resolves into aurora::gx's impl.
+    add_library(sms-native-gc STATIC ${SMS_NATIVE_SOURCES})
+    set_target_properties(sms-native-gc PROPERTIES
+        CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+    # PATH ORDER MATTERS:
+    #   1. dolphin_shadow — one-line shims that intercept reference/sms's
+    #      granular <dolphin/os/OS*.h> so Aurora's monolithic <dolphin/os.h>
+    #      is the sole source of OS types.
+    #   2. extern/aurora/include — Aurora's <dolphin/*.h> proper.
+    #   3. reference/sms/include — game headers (Player/, System/, JSystem/, ...).
+    #      Its <dolphin/types.h> is neutralized by force-defining its guard
+    #      _DOLPHIN_TYPES_H_ below so it never re-typedefs u32 as `unsigned long`.
+    target_include_directories(sms-native-gc PUBLIC
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/render_gc/dolphin_shadow"
+        "${SMS_NATIVE_REPO_ROOT}/extern/aurora/include"
+        "${SMS_NATIVE_REPO_ROOT}/reference/sms/include"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/assets")
+    target_compile_options(sms-native-gc PRIVATE
+        # Force Aurora's <dolphin/types.h> to be seen FIRST by every TU, so
+        # BOOL/TRUE/FALSE/s32/u32 are defined before any decomp header uses them.
+        -include "${SMS_NATIVE_REPO_ROOT}/extern/aurora/include/dolphin/types.h"
+        # Neutralize reference/sms's <dolphin/types.h> — its guard is different
+        # from Aurora's (_DOLPHIN_TYPES_H_ vs DOLPHIN_TYPES_H). Pre-defining the
+        # reference/sms guard prevents its content from ever being included.
+        -D_DOLPHIN_TYPES_H_
+        # Same MWERKS-era decomp compat as sms-native.
+        -w -Wno-narrowing -fcommon
+        $<$<CXX_COMPILER_ID:GNU>:-fno-reorder-blocks-and-partition>
+        $<$<CXX_COMPILER_ID:GNU>:-finput-charset=UTF-8>
+        $<$<CXX_COMPILER_ID:GNU>:-fexec-charset=SHIFT_JIS>)
+    # Explicit: DO NOT define SMS_NATIVE_PLATFORM. That's the whole point of
+    # Path A — reference/sms takes the original GC SDK paths through Aurora.
+
     add_executable(sms-boot-gc
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/render_gc/aurora_bridge.cpp")
     set_target_properties(sms-boot-gc PROPERTIES
         CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
-    # Aurora's example (extern/aurora/examples/simple.c) links the same four.
+    # aurora_bridge.cpp includes <aurora/*.h> + <dolphin/gx.h> — the same Aurora
+    # headers sms-native-gc sees.
+    target_include_directories(sms-boot-gc PRIVATE
+        "${SMS_NATIVE_REPO_ROOT}/extern/aurora/include")
     target_link_libraries(sms-boot-gc PRIVATE
+        sms-native-gc  # reference/sms compiled against Aurora's dolphin headers
         aurora::core   # SDL3 + WebGPU/Dawn app framework
         aurora::gx     # GC GX SDK -> WebGPU pipeline
         aurora::main   # provides real main() that dispatches to our aurora_main
         aurora::vi     # VI framebuffer size
+        aurora::os     # OSInit/OSCreateThread/OSPanic/etc.
+        aurora::mtx    # GC math library
+        aurora::pad    # controller input
+        aurora::si     # serial interface
+        aurora::card   # memory card (kabufuda-backed)
+        aurora::gd     # GD display-list builder
+        aurora::ms     # mouse
         Threads::Threads)
-    # NOTE: intentionally no sms-native / sms-platform link here yet. The game
-    # bring-up + reference/sms compilation under Aurora's dolphin headers is a
-    # separate arc; MVP proves aurora_core links + a Vulkan clear renders.
 else()
     message(STATUS "sms-boot-gc skipped: aurora_core not defined (build from root CMakeLists.txt).")
 endif()
