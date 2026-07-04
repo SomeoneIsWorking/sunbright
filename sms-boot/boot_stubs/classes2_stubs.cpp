@@ -85,11 +85,9 @@ void TBigWatermelon::loadAfter() {}
 #include <MoveBG/MapObjItem2.hpp>
 
 // TMushroom1up: key = load (first explicit virtual)
-void TMushroom1up::load(JSUMemoryInputStream&) {}
-
+// [dedup] void TMushroom1up::load(JSUMemoryInputStream&) {} 
 // TJumpBase: key = receiveMessage (first explicit virtual)
-BOOL TJumpBase::receiveMessage(THitActor*, u32) { return 0; }
-
+// [dedup] BOOL TJumpBase::receiveMessage(THitActor*, u32) { return 0; } 
 // ============================================================
 // === MoveBG/MapObjMamma.hpp ===
 // ============================================================
@@ -288,25 +286,19 @@ void TFruitLauncher::loadAfter() {}
 #include <MoveBG/MapObjTown.hpp>
 
 // TDoor: key = touchPlayer (first method shadowing TMapObjBase::touchPlayer)
-void TDoor::touchPlayer(THitActor*) {}
-
+// [dedup] void TDoor::touchPlayer(THitActor*) {} 
 // TManhole: key = touchPlayer (first method shadowing TMapObjGeneral/TMapObjBase::touchPlayer)
-void TManhole::touchPlayer(THitActor*) {}
-
+// [dedup] void TManhole::touchPlayer(THitActor*) {} 
 // TMapObjWaterSpray: key = calc (first method shadowing TMapObjBase::calc)
-void TMapObjWaterSpray::calc() {}
-
-// THideObjInfo: key = perform (first method shadowing JDrama::TViewObj::perform)
-void THideObjInfo::perform(u32, JDrama::TGraphics*) {}
+// [dedup] void TMapObjWaterSpray::calc() {} 
+// THideObjInfo provided natively in reference/sms/src/MoveBG/MapObjTown.cpp.
 
 // TMapObjSwitch::control lives natively in reference/sms/src/MoveBG/MapObjTown.cpp.
 
 // TRedCoinSwitch: key = receiveMessage (first method shadowing TMapObjBase::receiveMessage)
-BOOL TRedCoinSwitch::receiveMessage(THitActor*, u32) { return 0; }
-
+// [dedup] BOOL TRedCoinSwitch::receiveMessage(THitActor*, u32) { return 0; } 
 // TBasketReverse: key = kill (first method shadowing TMapObjBase::kill)
-void TBasketReverse::kill() {}
-
+// [dedup] void TBasketReverse::kill() {} 
 // ============================================================
 // === MoveBG/MapObjTree.hpp ===
 // ============================================================

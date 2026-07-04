@@ -88,10 +88,7 @@ TCraneRotY::TCraneRotY(const char* name) : TMapObjBase(name) {}
 // ============================================================
 TCraneUpDown::TCraneUpDown(const char* name) : TMapObjBase(name) {}
 
-// ============================================================
-// TDoor
-// ============================================================
-TDoor::TDoor(const char* name) : TMapObjBase(name), mLocked(0) {}
+// TDoor now provided by reference/sms/src/MoveBG/MapObjTown.cpp.
 
 // ============================================================
 // TFerrisWheel
@@ -144,10 +141,7 @@ THangingBridge::THangingBridge(const char* name) : JDrama::TViewObj(name) {}
 // ============================================================
 THangingBridgeBoard::THangingBridgeBoard(const char* name) : TLeanBlock(name) {}
 
-// ============================================================
-// THideObjInfo
-// ============================================================
-THideObjInfo::THideObjInfo(const char* name) : JDrama::TViewObj(name) {}
+// THideObjInfo now provided by reference/sms/src/MoveBG/MapObjTown.cpp.
 
 // ============================================================
 // TIceBlock
@@ -157,8 +151,7 @@ TIceBlock::TIceBlock(const char* name) : TMapObjBase(name) {}
 // ============================================================
 // TJumpBase
 // ============================================================
-TJumpBase::TJumpBase(const char* name) : TMapObjBase(name) {}
-
+// [dedup] TJumpBase::TJumpBase(const char* name) : TMapObjBase(name) {} 
 // ============================================================
 // TJumpMushroom
 // ============================================================
@@ -203,9 +196,8 @@ TMammaYacht::TMammaYacht(const char* name) : TMapObjBase(name) {}
 // ============================================================
 // TManhole
 // ============================================================
-TManhole::TManhole(const char* name) : TMapObjGeneral(name) {}
-void TManhole::makeManholeUnuseful(const TMapObjBase*) {}
-
+// [dedup] TManhole::TManhole(const char* name) : TMapObjGeneral(name) {}
+// [dedup] void TManhole::makeManholeUnuseful(const TMapObjBase*) {} 
 // ============================================================
 // TMapObjBall
 // ============================================================
@@ -239,8 +231,7 @@ TMapObjSteam::TMapObjSteam(const char* name) : THideObjBase(name) {}
 // ============================================================
 // TMapObjSwitch
 // ============================================================
-TMapObjSwitch::TMapObjSwitch(const char* name) : TMapObjBase(name) {}
-
+// [dedup] TMapObjSwitch::TMapObjSwitch(const char* name) : TMapObjBase(name) {} 
 // ============================================================
 // TMapObjTree / TMapObjTreeScale
 // ============================================================
@@ -250,8 +241,7 @@ TMapObjTreeScale::TMapObjTreeScale(const char* name) : TMapObjGeneral(name) {}
 // ============================================================
 // TMapObjWaterSpray
 // ============================================================
-TMapObjWaterSpray::TMapObjWaterSpray(const char* name) : TMapObjBase(name) {}
-
+// [dedup] TMapObjWaterSpray::TMapObjWaterSpray(const char* name) : TMapObjBase(name) {} 
 // ============================================================
 // TMapObjWave
 // ============================================================
@@ -292,8 +282,7 @@ TMuddyBoat::TMuddyBoat(const char* name) : TMapObjBase(name) {}
 // ============================================================
 // TMushroom1up
 // ============================================================
-TMushroom1up::TMushroom1up(int, const char* name) : TMapObjBase(name) {}
-
+// [dedup] TMushroom1up::TMushroom1up(int, const char* name) : TMapObjBase(name) {} 
 // ============================================================
 // TPinnaCoaster
 // ============================================================
@@ -312,8 +301,7 @@ TRandomFruit::TRandomFruit(const char* name) : TResetFruit(name) {}
 // ============================================================
 // TRedCoinSwitch
 // ============================================================
-TRedCoinSwitch::TRedCoinSwitch(const char* name) : TMapObjBase(name) {}
-
+// [dedup] TRedCoinSwitch::TRedCoinSwitch(const char* name) : TMapObjBase(name) {} 
 // ============================================================
 // TResetFruit
 // ============================================================
@@ -422,9 +410,8 @@ void TCraneCargo::calc() {}
 // --- TDamageObj (vtable for TDamageObj) ---
 // Ctor is inline in header.
 // perform lives natively in reference/sms/src/MoveBG/MapObjTown.cpp.
-void TDamageObj::init(u32) {}
-void TDamageObj::load(JSUMemoryInputStream& s) { (void)s; }
-
+// [dedup] void TDamageObj::init(u32) {}
+// [dedup] void TDamageObj::load(JSUMemoryInputStream& s) { (void)s; } 
 // --- TFence (vtable for TFence) ---
 // Ctor is inline in header.
 BOOL TFence::receiveMessage(THitActor*, u32) { return 0; }
@@ -450,25 +437,21 @@ void TFenceWaterH::changeStatusToWait() {}
 
 // --- TMapObjBillboard (vtable for TMapObjBillboard) ---
 // Ctor is inline in header.
-void TMapObjBillboard::swing(THitActor*) {}
-void TMapObjBillboard::touchActor(THitActor*) {}
-u32 TMapObjBillboard::touchWater(THitActor*) { return 0; }
-
+// [dedup] void TMapObjBillboard::swing(THitActor*) {}
+// [dedup] void TMapObjBillboard::touchActor(THitActor*) {}
+// [dedup] u32 TMapObjBillboard::touchWater(THitActor*) { return 0; } 
 // --- TMapObjChangeStage (vtable for TMapObjChangeStage) ---
 // Ctor is inline in header.
-void TMapObjChangeStage::touchPlayer(THitActor*) {}
-void TMapObjChangeStage::load(JSUMemoryInputStream& s) { (void)s; }
-
+// [dedup] void TMapObjChangeStage::touchPlayer(THitActor*) {}
+// [dedup] void TMapObjChangeStage::load(JSUMemoryInputStream& s) { (void)s; } 
 // --- TMapObjChangeStageHipDrop (vtable for TMapObjChangeStageHipDrop) ---
 // Ctor is inline in header.
-void TMapObjChangeStageHipDrop::touchPlayer(THitActor*) {}
-void TMapObjChangeStageHipDrop::initMapObj() {}
-
+// [dedup] void TMapObjChangeStageHipDrop::touchPlayer(THitActor*) {}
+// [dedup] void TMapObjChangeStageHipDrop::initMapObj() {} 
 // --- TMapObjStartDemo (vtable for TMapObjStartDemo) ---
 // Ctor is inline in header.
-void TMapObjStartDemo::touchPlayer(THitActor*) {}
-void TMapObjStartDemo::load(JSUMemoryInputStream& s) { (void)s; }
-
+// [dedup] void TMapObjStartDemo::touchPlayer(THitActor*) {}
+// [dedup] void TMapObjStartDemo::load(JSUMemoryInputStream& s) { (void)s; } 
 // --- TRailFence (vtable for TRailFence) ---
 // Ctor is inline in header.
 BOOL TRailFence::receiveMessage(THitActor*, u32) { return 0; }

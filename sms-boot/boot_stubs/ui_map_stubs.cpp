@@ -35,44 +35,7 @@ TGuide::TGuide(const char* name)
 void TGuide::setup(JKRMemArchive*) {}
 void TGuide::startMoveCursor() {}
 
-// TPauseMenu2 — inherits JDrama::TViewObj; non-virtual methods in bucket.
-TPauseMenu2::TPauseMenu2(const char* name)
-    : JDrama::TViewObj(name)
-    , unk10(0)
-    , unk14(nullptr)
-    , unk18(nullptr)
-    , unk1C(nullptr)
-    , unk84(0.0f)
-    , unk88(0.0f)
-    , unk8C(0.0f)
-    , unk90(0.0f)
-    , unk94(0)
-    , unkD4(nullptr)
-    , unkD8(nullptr)
-    , unkDC(nullptr)
-    , unkE0(0)
-    , unkE4(0)
-    , unkE8(0)
-    , unkEC(0)
-    , unkF4(0)
-    , unkF8(0)
-    , unkFC(0)
-    , unk100(0)
-    , unk102(0)
-    , unk104(0)
-    , unk108(0)
-    , unk109(0)
-    , unk110(nullptr)
-    , unk10C(nullptr)
-    , unk114(0)
-    , unk118(nullptr)
-{
-    for (int i = 0; i < 5; i++) unk20[i] = nullptr;
-    for (int i = 0; i < 3; i++) unk98[i] = nullptr;
-}
-u8 TPauseMenu2::getNextState() { return 0; }
-void TPauseMenu2::setDrawEnd() {}
-void TPauseMenu2::setDrawStart() {}
+// TPauseMenu2 fully implemented natively in reference/sms/src/GC2D/PauseMenu2.cpp.
 
 // TSunGlass + TSunShine load/loadAfter/perform live natively in
 // reference/sms/src/GC2D/SunGlass.cpp — no stubs needed here.
@@ -118,22 +81,8 @@ TBathWaterManager::TBathWaterManager()
 {
 }
 
-// TMapCollisionBase::setMtx — plain non-virtual member.
-void TMapCollisionBase::setMtx(MtxPtr mtx)
-{
-    MTXCopy(mtx, unk20);
-}
-
-// TMapWireActor statics.
-f32 TMapWireActor::mCommonAttackHeight = 0.0f;
-f32 TMapWireActor::mCommonAttackRadius = 0.0f;
-
-// TPollutionLayer — has pure-abstract-in-base virtuals that THIS class is the
-// first concrete owner of.  Define them so vtable for TPollutionLayer is emitted.
-int TPollutionLayer::getPlaneType() const { return 0; }
-int TPollutionLayer::getTexPosS(f32) const { return 0; }
-int TPollutionLayer::getTexPosT(f32) const { return 0; }
-bool TPollutionLayer::isInArea(f32, f32, f32) const { return false; }
+// setMtx / TMapWireActor statics / TPollutionLayer methods now live natively
+// in reference/sms (upstream 2026-07 sync).
 
 // ─── Strategic ────────────────────────────────────────────────────────────────
 

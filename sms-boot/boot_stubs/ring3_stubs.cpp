@@ -38,7 +38,7 @@ BOOL TAnimalBase::receiveMessage(THitActor*, unsigned int) { return 0; }
 void TAreaCylinder::perform(unsigned int, JDrama::TGraphics*) {}
 void TBalloonKoopaJr::kill() {}
 void TBalloonKoopaJr::load(JSUMemoryInputStream&) {}
-void TBasketReverse::initMapObj() {}
+// [dedup] void TBasketReverse::initMapObj() {}
 void TBathWaterManager::loadAfter() {}
 void TBathWaterManager::perform(unsigned int, JDrama::TGraphics*) {}
 void TBigWatermelon::appearing() {}
@@ -75,13 +75,13 @@ void THangingBridgeBoard::calcDefaultMtx() {}
 void THangingBridgeBoard::initMapObj() {}
 void THangingBridgeBoard::setGroundCollision() {}
 void THangingBridge::loadAfter() {}
-void THideObjInfo::load(JSUMemoryInputStream&) {}
+// [dedup] void THideObjInfo::load(JSUMemoryInputStream&) {}
 void THorizontalViking::initMapObj() {}
-void TJumpBase::calcRootMatrix() {}
-void TJumpBase::control() {}
-void TJumpBase::ensureTakeSituation() {}
-Mtx* TJumpBase::getRootJointMtx() const { return nullptr; }
-void TJumpBase::initMapObj() {}
+// [dedup] void TJumpBase::calcRootMatrix() {}
+// [dedup] void TJumpBase::control() {}
+// [dedup] void TJumpBase::ensureTakeSituation() {}
+// [dedup] Mtx* TJumpBase::getRootJointMtx() const { return nullptr; }
+// [dedup] void TJumpBase::initMapObj() {}
 void TJumpMushroom::load(JSUMemoryInputStream&) {}
 void TLeanMirror::control() {}
 u32 TLeanMirror::getSDLModelFlag() const { return 0; }
@@ -95,9 +95,9 @@ void TMammaBlockRotate::control() {}
 void TMammaBlockRotate::initMapObj() {}
 void TMammaBlockRotate::load(JSUMemoryInputStream&) {}
 void TMammaYacht::initMapObj() {}
-void TManhole::appeared() {}
-void TManhole::calc() {}
-void TManhole::setGroundCollision() {}
+// [dedup] void TManhole::appeared() {}
+// [dedup] void TManhole::calc() {}
+// [dedup] void TManhole::setGroundCollision() {}
 void TMapObjBall::calcCurrentMtx() {}
 void TMapObjBall::checkWallCollision(JGeometry::TVec3<float>*) {}
 void TMapObjBall::control() {}
@@ -121,14 +121,14 @@ void TMapObjGrowTree::control() {}
 void TMapObjGrowTree::initMapObj() {}
 void TMapObjPuncher::control() {}
 void TMapObjPuncher::load(JSUMemoryInputStream&) {}
-void TMapObjSwitch::load(JSUMemoryInputStream&) {}
-BOOL TMapObjSwitch::receiveMessage(THitActor*, unsigned int) { return 0; }
+// [dedup] void TMapObjSwitch::load(JSUMemoryInputStream&) {}
+// [dedup] BOOL TMapObjSwitch::receiveMessage(THitActor*, unsigned int) { return 0; }
 f32 TMapObjTree::getRadiusAtY(float) const { return 0; }
 void TMapObjTree::initMapObj() {}
 void TMapObjTreeScale::control() {}
 u32 TMapObjTreeScale::touchWater(THitActor*) { return 0; }
 void TMapObjTree::touchPlayer(THitActor*) {}
-void TMapObjWaterSpray::load(JSUMemoryInputStream&) {}
+// [dedup] void TMapObjWaterSpray::load(JSUMemoryInputStream&) {}
 void TMareCork::calcRootMatrix() {}
 void TMareCork::drawObject(JDrama::TGraphics*) {}
 MtxPtr TMareCork::getTakingMtx() { return {}; }
@@ -145,16 +145,16 @@ void TMuddyBoat::control() {}
 u32 TMuddyBoat::getSDLModelFlag() const { return 0; }
 void TMuddyBoat::initMapObj() {}
 void TMuddyBoat::kill() {}
-void TMushroom1up::control() {}
-void TMushroom1up::initMapObj() {}
-void TMushroom1up::makeObjAppeared() {}
-void TMushroom1up::perform(unsigned int, JDrama::TGraphics*) {}
-void TMushroom1up::touchPlayer(THitActor*) {}
+// [dedup] void TMushroom1up::control() {}
+// [dedup] void TMushroom1up::initMapObj() {}
+// [dedup] void TMushroom1up::makeObjAppeared() {}
+// [dedup] void TMushroom1up::perform(unsigned int, JDrama::TGraphics*) {}
+// [dedup] void TMushroom1up::touchPlayer(THitActor*) {}
 void TOneShotGenerator::loadAfter() {}
 BOOL TOneShotGenerator::receiveMessage(THitActor*, unsigned int) { return 0; }
 void TPinnaCoaster::initMapObj() {}
-void TRedCoinSwitch::control() {}
-void TRedCoinSwitch::loadAfter() {}
+// [dedup] void TRedCoinSwitch::control() {}
+// [dedup] void TRedCoinSwitch::loadAfter() {}
 void TResetFruit::appearing() {}
 void TResetFruit::breaking() {}
 void TResetFruit::checkGroundCollision(JGeometry::TVec3<float>*) {}
@@ -208,14 +208,10 @@ void TGuide::load(JSUMemoryInputStream& stream)
 	SMSMountAramArchive(gpMarDirector->unkD8, gArBkGuide);
 }
 // TMBindShadowManager::load lives natively in reference/sms/src/MarioUtil/ShadowUtil.cpp
-// (emit vtable for TPauseMenu2)
-void TPauseMenu2::load(JSUMemoryInputStream& stream)
-{
-	JDrama::TViewObj::load(stream); // read NameRef header so search("ポーズメニュー") finds it
-}
+// TPauseMenu2::load now provided natively in reference/sms/src/GC2D/PauseMenu2.cpp.
 
 // ring-4: last vtable-slot virtuals for the 3 misc classes (perform/loadAfter).
 void TGuide::perform(unsigned int, JDrama::TGraphics*) {}
 // TMBindShadowManager::perform lives natively in reference/sms/src/MarioUtil/ShadowUtil.cpp
-void TPauseMenu2::loadAfter() {}
-void TPauseMenu2::perform(unsigned int, JDrama::TGraphics*) {}
+// [dedup] void TPauseMenu2::loadAfter() {}
+// [dedup] void TPauseMenu2::perform(unsigned int, JDrama::TGraphics*) {} 
