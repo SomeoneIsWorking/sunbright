@@ -23,6 +23,17 @@
 #include <cstddef>
 #include <cstdint>
 
+// Weak-linked bridge to Dolphin's own LoadBPReg/LoadXFReg entry points (see
+// native/render/oracle_direct.{h,cpp}). When Dolphin's video backend is up,
+// every BP / XF write below ALSO fires directly against Dolphin's live
+// bpmem/xfmem — no FIFO decode round-trip, no missed registers due to encode
+// bugs. Weak so the standalone (native-only) build still links.
+namespace sb::oracle {
+    bool ready() __attribute__((weak));
+    void bp_write(uint8_t, uint32_t) __attribute__((weak));
+    void xf_write(uint16_t, uint32_t, const uint32_t*) __attribute__((weak));
+}
+
 namespace sb::gxfifo {
 
 // Called once at engine init from sb::engine::init_from_env(): enables recording
@@ -53,30 +64,52 @@ void reset_frame();
 const uint8_t* data();
 size_t size();
 
-// Helpers for the most common opcodes so seam call sites stay terse.
+// Helpers for the most common opcodes so seam call sites stay terse. When
+// Dolphin is up, ALSO route the write into Dolphin's live bpmem/xfmem via the
+// direct bridge (sb::oracle::bp_write / xf_write). The FIFO byte buffer is
+// still populated for compatibility with the OpcodeDecoder drain path — but
+// state actually LANDS in Dolphin through the direct route, which sidesteps
+// every "we forgot to emit register X" silent-fail (SETINVERTEXSPEC,
+// SCISSOROFFSET, TREF, etc. were all discoverable this way).
 inline void bp_write(uint8_t reg, uint32_t value24) {
     write_u8(0x61);
     write_u32_be((uint32_t)reg << 24 | (value24 & 0xFFFFFF));
+    if (&sb::oracle::ready && sb::oracle::ready() && &sb::oracle::bp_write)
+        sb::oracle::bp_write(reg, value24);
 }
 inline void cp_write(uint8_t reg, uint32_t value) {
     write_u8(0x08);
     write_u8(reg);
     write_u32_be(value);
+    // CP registers control VertexLoader/CP state on Dolphin. There's no
+    // exposed LoadCPReg equivalent in Dolphin's namespace at the same level
+    // as LoadBPReg/LoadXFReg — CP state is handled by the VertexManager +
+    // CommandProcessor internally. For now CP writes stay FIFO-only; the
+    // OpcodeDecoder drain applies them. Add a direct path here when
+    // Dolphin exposes one.
 }
-// XF single-register write (count=1). For multi-register bursts callers write the
-// 0x10 header + count + reg themselves via write_u8/write_u16_be, then push the
-// payload with write_f32_be / write_u32_be per element.
+// XF single-register write (count=1).
 inline void xf_write_u32(uint16_t reg, uint32_t value) {
     write_u8(0x10);
-    write_u16_be(0);              // count - 1  (single register)
+    write_u16_be(0);
     write_u16_be(reg);
     write_u32_be(value);
+    if (&sb::oracle::ready && sb::oracle::ready() && &sb::oracle::xf_write) {
+        // Direct bridge expects big-endian on the wire (LoadXFReg unswaps).
+        uint32_t be = __builtin_bswap32(value);
+        sb::oracle::xf_write(reg, 1, &be);
+    }
 }
 inline void xf_write_f32(uint16_t reg, float value) {
     write_u8(0x10);
     write_u16_be(0);
     write_u16_be(reg);
     write_f32_be(value);
+    if (&sb::oracle::ready && sb::oracle::ready() && &sb::oracle::xf_write) {
+        uint32_t u; __builtin_memcpy(&u, &value, 4);
+        uint32_t be = __builtin_bswap32(u);
+        sb::oracle::xf_write(reg, 1, &be);
+    }
 }
 
 } // namespace sb::gxfifo

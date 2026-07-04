@@ -53,6 +53,17 @@
 
 // Forward decls of the two render sinks.
 extern "C" void sb_oracle_present_frame(void* framebuffer, void* user) __attribute__((weak));
+
+// Optional direct-write bridge into Dolphin. When linked (Tier-2 builds), this
+// brings Dolphin's video backend UP before the scenario runs so each GX SDK
+// setter can call LoadBPReg/LoadXFReg immediately — no FIFO byte encoding.
+namespace sb::oracle { bool ensure_up(); }
+[[maybe_unused]] static bool oracle_ensure_up_or_no_op() {
+    if constexpr (requires { sb::oracle::ensure_up(); }) {
+        return sb::oracle::ensure_up();
+    }
+    return false;
+}
 // Immediate-mode batch drain (native/platform/gx_imm_impl.cpp).
 extern "C" int sb_gx_imm_take_batches(const sb::render::SbImmVtx** verts,
                                       const sb::render::SbImmBatch** batches, int* nbatch);
@@ -395,6 +406,14 @@ extern "C" int sb_render_parity_run(const char* test_name) {
     const auto mode = sb::engine::mode();
     std::fprintf(stderr, "[parity] harness start: test=%s tier=%s\n",
                  test_name, tier_name(mode));
+
+    // In Tier-2 mode: bring Dolphin's video backend UP BEFORE the scenario
+    // runs. Each subsequent GX SDK setter then routes directly to Dolphin's
+    // LoadBPReg / LoadXFReg — no FIFO byte encoding. In Tier-1 mode, this is
+    // a no-op.
+    if (mode == sb::engine::RenderMode::GX_ORACLE) {
+        (void)oracle_ensure_up_or_no_op();
+    }
 
     bool has_geometry = false;
     if (std::strcmp(test_name, SynthClear::name()) == 0) {

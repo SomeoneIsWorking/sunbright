@@ -7,6 +7,17 @@
 #include <cstring>
 #include <vector>
 
+// Weak-linked bridge to Dolphin's own LoadBPReg/LoadXFReg (native/render/
+// oracle_direct.cpp). When Dolphin's video backend is up, EVERY sb::gxfifo
+// register write also fires directly against Dolphin's live bpmem/xfmem — no
+// FIFO decode round-trip. Weak so the standalone (native-only) build links
+// without oracle_direct.o.
+namespace sb::oracle {
+    bool ready() __attribute__((weak));
+    void bp_write(uint8_t, uint32_t) __attribute__((weak));
+    void xf_write(uint16_t, uint32_t, const uint32_t*) __attribute__((weak));
+}
+
 namespace sb::gxfifo {
 
 namespace {

@@ -498,21 +498,23 @@ if(SMS_BUILD_BOOT)
     # via add_subdirectory(native). Standalone `native/` builds (without root) don't
     # get the oracle sink and skip the link — the NATIVE_PC sink is fully functional
     # on its own.
+    # Tier-2 (SB_RENDER=oracle) direct-write bridge: bypasses the FIFO byte
+    # reconstruction path and calls Dolphin's LoadBPReg/LoadXFReg directly.
+    # See native/render/oracle_direct.{h,cpp}.
     if(TARGET videovulkan)
         # Dolphin's core/videocommon require Host_* + Discord::* symbols the frontend
         # normally provides. sms-boot is not a real emulator front-end — provide
         # no-op stubs (see native/src/dolphin_host_shims.cpp).
         target_sources(sms-boot PRIVATE
             "${SMS_NATIVE_REPO_ROOT}/native/src/dolphin_host_shims.cpp"
-            # GX_ORACLE render-sink present entry point (stub today, Dolphin
-            # videovulkan wiring in step 4).
-            "${SMS_NATIVE_REPO_ROOT}/native/render/oracle_present.cpp")
-        # Dolphin's headers require C++23 (std::to_underlying in BitUtils.h).
-        # sms-boot as a whole is C++17 for the decomp; compile the two Dolphin-
-        # touching TUs at C++23 individually. They talk to the rest of sms-boot
-        # only through C ABI (sb_oracle_present_frame + Host_* free functions).
+            "${SMS_NATIVE_REPO_ROOT}/native/render/oracle_present.cpp"
+            # Direct-write bridge: sb::oracle::bp_write / xf_write route into
+            # Dolphin's LoadBPReg / LoadXFReg without going through FIFO byte
+            # reconstruction. Also touches Dolphin headers → C++23.
+            "${SMS_NATIVE_REPO_ROOT}/native/render/oracle_direct.cpp")
         set_source_files_properties(
             "${SMS_NATIVE_REPO_ROOT}/native/render/oracle_present.cpp"
+            "${SMS_NATIVE_REPO_ROOT}/native/render/oracle_direct.cpp"
             "${SMS_NATIVE_REPO_ROOT}/native/src/dolphin_host_shims.cpp"
             PROPERTIES COMPILE_OPTIONS "-std=c++23")
         target_include_directories(sms-boot PRIVATE

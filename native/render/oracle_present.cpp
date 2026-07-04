@@ -53,6 +53,9 @@
 // renderer consumes at present time. We route them into Dolphin's utility
 // draw path instead.
 extern "C" void sb_gx_get_clear_color(float* rgba);
+// Weak: defined in native/render/oracle_direct.cpp when linked. Marks Dolphin
+// ready so sb::oracle::bp_write / xf_write route into LoadBPReg/LoadXFReg.
+extern "C" void sb_oracle_direct_mark_ready(int up) __attribute__((weak));
 extern "C" void sb_gx_call_trace_dump(void) __attribute__((weak));
 extern "C" void sb_gx_emit_full_state(void) __attribute__((weak));
 // Non-extern (C++ linkage in sms_boot_j3d_capture.cpp) — must be in the global
@@ -169,6 +172,10 @@ bool try_init_video_backend() {
     }
     std::fprintf(stderr, "[oracle] Dolphin video backend UP (headless). Real rendering wires in step 4b.\n");
     s_video_up = true;
+    // Notify the direct-write bridge (sb::oracle::bp_write / xf_write / ...)
+    // that Dolphin is ready. Subsequent GX SDK setters skip the FIFO byte
+    // reconstruction path and call Dolphin's LoadBPReg/LoadXFReg directly.
+    if (&sb_oracle_direct_mark_ready) sb_oracle_direct_mark_ready(1);
     std::fflush(stderr);
     return true;
 }
@@ -203,6 +210,17 @@ void paint_stub(std::vector<uint8_t>& rgba, int w, int h) {
 }
 
 } // namespace
+
+// Explicit init entry point for the direct-write bridge (oracle_direct.cpp).
+// Brings Dolphin's video backend UP without rendering a frame — so the
+// harness can prime Dolphin, then let the scenario populate live bpmem/xfmem
+// via direct writes, THEN issue the first real present. Returns true on
+// successful init; idempotent across calls.
+extern "C" int sb_oracle_init_only(void) {
+    if (s_video_up) return 1;
+    if (!s_announced) { s_announced = true; std::fprintf(stderr, "[oracle] sink active (init-only path)\n"); }
+    return try_init_video_backend() ? 1 : 0;
+}
 
 extern "C" void sb_oracle_present_frame(void* /*framebuffer*/, void* /*user*/) {
     static long s_beat = 0;
