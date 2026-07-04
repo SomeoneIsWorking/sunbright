@@ -271,7 +271,13 @@ extern "C" void sb_oracle_present_frame(void* /*framebuffer*/, void* /*user*/) {
     }
     ClearColor clear{{game_clear[0], game_clear[1], game_clear[2], game_clear[3]}};
 
-    g_gfx->BeginUtilityDrawing();
+    // Diagnostic (2026-07-04, task #29): BeginUtilityDrawing/EndUtilityDrawing
+    // were kept from previous session's WIP. Utility drawing is Dolphin's path
+    // for post-processing/EFB-copy blits (which use their own pipelines); real
+    // GX draws through VertexManager expect the NORMAL renderer state. Wrap in
+    // SB_ORACLE_USE_UTILITY=1 as a keep-old-behavior knob; default OFF.
+    static const bool use_utility = std::getenv("SB_ORACLE_USE_UTILITY") != nullptr;
+    if (use_utility) g_gfx->BeginUtilityDrawing();
     // Bind DOLPHIN's own EFB framebuffer (managed by g_framebuffer_manager) so
     // any DRAW opcodes the OpcodeDecoder emits below actually land there.
     // Previously we cleared our own s_fbo, but Dolphin's rendering targets its
@@ -338,7 +344,7 @@ extern "C" void sb_oracle_present_frame(void* /*framebuffer*/, void* /*user*/) {
     s_staging->Flush();
     s_staging->ReadTexels(full, s_buf.data(), (u32)(w * 4));
 
-    g_gfx->EndUtilityDrawing();
+    if (use_utility) g_gfx->EndUtilityDrawing();
     // PresentBackbuffer cycles per-frame resources (descriptor pools, command
     // buffer ring). Skipping it grows GPU memory unbounded — see Presenter.cpp
     // comment around line 1183.
