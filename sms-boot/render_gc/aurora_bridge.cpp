@@ -19,6 +19,7 @@
 // main(). We initialize Aurora then hand control to the game thread.
 
 #include <aurora/aurora.h>
+#include <aurora/dvd.h>
 #include <aurora/event.h>
 #include <aurora/main.h>
 #include <dolphin/gx.h>
@@ -112,6 +113,19 @@ int main(int argc, char* argv[]) {
     // console it's called by system firmware before main; games (and reference/sms)
     // don't call it themselves, so do it here before any JKR heap allocs.
     OSInit();
+
+    // Mount the SMS disc for Aurora's DVD backend. Path from SUNBRIGHT_ROM
+    // env, then ./rom.rvz drop-in.
+    const char* rom = std::getenv("SUNBRIGHT_ROM");
+    if (!rom || !*rom) rom = "rom.rvz";
+    if (!aurora_dvd_open(rom)) {
+        std::fprintf(stderr, "[sms-boot] aurora_dvd_open failed for %s\n", rom);
+        std::fflush(stderr);
+        return 1;
+    }
+    std::fprintf(stdout, "[sms-boot] DVD mounted: %s\n", rom);
+    std::fflush(stdout);
+
     sb_watchdog_install();
 
     // Hand off to the game. TApplication::initialize is the decomp's own
