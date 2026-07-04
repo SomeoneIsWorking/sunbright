@@ -472,6 +472,63 @@ struct SynthScale {
     }
 };
 
+// SynthTwoTri — two separate GXBegin/GXEnd blocks, each with a distinct
+// coloured triangle at a distinct position. Tests that per-draw state
+// isolation works end-to-end: each DRAW opcode goes to Dolphin's
+// OpcodeDecoder as its own primitive with the current CP/BP/XF snapshot
+// at that moment, and that emit_full_state's redundant re-emission
+// between draws doesn't corrupt state.
+struct SynthTwoTri {
+    static constexpr GXColor kClearColor{ 0, 0, 0, 255 };
+    static const char* name() { return "synth-two-tri"; }
+    static bool needs_geometry() { return true; }
+    static void program() {
+        GXSetCopyClear(kClearColor, 0xffffff);
+        GXSetZMode(GX_FALSE, GX_ALWAYS, GX_FALSE);
+        GXSetColorUpdate(GX_TRUE);
+        GXSetAlphaUpdate(GX_TRUE);
+        GXSetBlendMode(GX_BM_NONE, GX_BL_ONE, GX_BL_ZERO, GX_LO_NOOP);
+        GXSetCullMode(GX_CULL_NONE);
+        GXSetAlphaCompare(GX_ALWAYS, 0, GX_AOP_OR, GX_ALWAYS, 0);
+        GXSetZCompLoc(GX_FALSE);
+        GXSetViewport(0.f, 0.f, (f32)kW, (f32)kH, 0.f, 1.f);
+        GXSetScissor(0, 0, kW, kH);
+        GXSetNumChans(1);
+        GXSetNumTexGens(0);
+        GXSetNumTevStages(1);
+        GXSetChanCtrl(GX_COLOR0A0, GX_FALSE, GX_SRC_REG, GX_SRC_VTX,
+                      0, GX_DF_CLAMP, GX_AF_NONE);
+        GXSetTevOrder(GX_TEVSTAGE0, GX_TEXCOORD_NULL, GX_TEXMAP_NULL, GX_COLOR0A0);
+        GXSetTevOp(GX_TEVSTAGE0, GX_PASSCLR);
+        Mtx44 proj;
+        C_MTXOrtho(proj, 1.f, -1.f, -1.f, 1.f, 0.f, 1.f);
+        GXSetProjection(proj, GX_ORTHOGRAPHIC);
+        Mtx pos;
+        MTXIdentity(pos);
+        GXSetCurrentMtx(GX_PNMTX0);
+        GXLoadPosMtxImm(pos, GX_PNMTX0);
+        GXClearVtxDesc();
+        GXSetVtxDesc(GX_VA_POS,  GX_DIRECT);
+        GXSetVtxDesc(GX_VA_CLR0, GX_DIRECT);
+        GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS,  GX_POS_XYZ,  GX_F32,   0);
+        GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_CLR0, GX_CLR_RGBA, GX_RGBA8, 0);
+        // First triangle: solid CYAN in the LEFT half.
+        GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);
+        GXPosition3f32(-0.9f,  0.5f, 0.f);  GXColor4u8(  0, 200, 200, 255);
+        GXPosition3f32(-0.1f,  0.5f, 0.f);  GXColor4u8(  0, 200, 200, 255);
+        GXPosition3f32(-0.5f, -0.5f, 0.f);  GXColor4u8(  0, 200, 200, 255);
+        GXEnd();
+        // Second triangle: solid ORANGE in the RIGHT half. Separate
+        // GXBegin, so Dolphin sees this as a distinct DRAW after a fresh
+        // emit_full_state pass.
+        GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);
+        GXPosition3f32( 0.1f,  0.5f, 0.f);  GXColor4u8(255, 128,   0, 255);
+        GXPosition3f32( 0.9f,  0.5f, 0.f);  GXColor4u8(255, 128,   0, 255);
+        GXPosition3f32( 0.5f, -0.5f, 0.f);  GXColor4u8(255, 128,   0, 255);
+        GXEnd();
+    }
+};
+
 // SynthViewport — INTENTIONALLY not wired into the dispatch: exposed a
 // Tier-1 gap rather than a Tier-2 gap. Tier 2 handled the 320x240 offset
 // viewport correctly first-run — triangle bounds x=[201..438]/y=[160..319]
@@ -870,6 +927,9 @@ extern "C" int sb_render_parity_run(const char* test_name) {
     } else if (std::strcmp(test_name, SynthScale::name()) == 0) {
         SynthScale::program();
         has_geometry = SynthScale::needs_geometry();
+    } else if (std::strcmp(test_name, SynthTwoTri::name()) == 0) {
+        SynthTwoTri::program();
+        has_geometry = SynthTwoTri::needs_geometry();
     } else {
         // synth-lit intentionally not wired: closing it requires GXNormal3f32
         // implementation, per-vertex normal capture in the imm layer, CP
@@ -881,7 +941,7 @@ extern "C" int sb_render_parity_run(const char* test_name) {
         // when the wiring lands.
         PARITY_PANIC("unknown test-name '%s' — known scenarios: synth-clear, "
                      "synth-triangle, synth-blend, synth-depth, synth-persp, "
-                     "synth-scale. Typo in SB_HARNESS?", test_name);
+                     "synth-scale, synth-two-tri. Typo in SB_HARNESS?", test_name);
     }
 
     switch (mode) {
