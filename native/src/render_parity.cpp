@@ -472,6 +472,63 @@ struct SynthScale {
     }
 };
 
+// SynthViewport — INTENTIONALLY not wired into the dispatch: exposed a
+// Tier-1 gap rather than a Tier-2 gap. Tier 2 handled the 320x240 offset
+// viewport correctly first-run — triangle bounds x=[201..438]/y=[160..319]
+// exactly matched the expected viewport-transformed screen coords
+// (v0=(200,160), v1=(440,160), v2=(320,320)). Tier 1's SDL3-GPU imm
+// pipeline ignores GXState.vpLeft/vpTop/vpWd/vpHt and paints with a
+// full-screen Vulkan viewport, so its triangle came out at bounds
+// x=[400..639]/y=[319..479] — completely off, sitting in the bottom-right
+// as if the viewport were the whole frame. Closing this scenario needs
+// Tier 1's imm-batch pipeline to consult GXState viewport, parallel to
+// the scissor gap synth-scissor caught. Left here as documentation of
+// what the "same triangle in a smaller/offset viewport" test should
+// exercise (XFMEM_VIEWPORT with non-full-screen values — my zscale fix
+// only covered the 640x480 case).
+struct SynthViewport {
+    static constexpr GXColor kClearColor{ 0, 0, 0, 255 };
+    static const char* name() { return "synth-viewport"; }
+    static bool needs_geometry() { return true; }
+    static void program() {
+        GXSetCopyClear(kClearColor, 0xffffff);
+        GXSetZMode(GX_FALSE, GX_ALWAYS, GX_FALSE);
+        GXSetColorUpdate(GX_TRUE);
+        GXSetAlphaUpdate(GX_TRUE);
+        GXSetBlendMode(GX_BM_NONE, GX_BL_ONE, GX_BL_ZERO, GX_LO_NOOP);
+        GXSetCullMode(GX_CULL_NONE);
+        GXSetAlphaCompare(GX_ALWAYS, 0, GX_AOP_OR, GX_ALWAYS, 0);
+        GXSetZCompLoc(GX_FALSE);
+        // The interesting bit: 320x240 viewport centred in the frame.
+        GXSetViewport(160.f, 120.f, 320.f, 240.f, 0.f, 1.f);
+        GXSetScissor(0, 0, kW, kH);
+        GXSetNumChans(1);
+        GXSetNumTexGens(0);
+        GXSetNumTevStages(1);
+        GXSetChanCtrl(GX_COLOR0A0, GX_FALSE, GX_SRC_REG, GX_SRC_VTX,
+                      0, GX_DF_CLAMP, GX_AF_NONE);
+        GXSetTevOrder(GX_TEVSTAGE0, GX_TEXCOORD_NULL, GX_TEXMAP_NULL, GX_COLOR0A0);
+        GXSetTevOp(GX_TEVSTAGE0, GX_PASSCLR);
+        Mtx44 proj;
+        C_MTXOrtho(proj, 1.f, -1.f, -1.f, 1.f, 0.f, 1.f);
+        GXSetProjection(proj, GX_ORTHOGRAPHIC);
+        Mtx pos;
+        MTXIdentity(pos);
+        GXSetCurrentMtx(GX_PNMTX0);
+        GXLoadPosMtxImm(pos, GX_PNMTX0);
+        GXClearVtxDesc();
+        GXSetVtxDesc(GX_VA_POS,  GX_DIRECT);
+        GXSetVtxDesc(GX_VA_CLR0, GX_DIRECT);
+        GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS,  GX_POS_XYZ,  GX_F32,   0);
+        GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_CLR0, GX_CLR_RGBA, GX_RGBA8, 0);
+        GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);
+        GXPosition3f32(-0.75f,  0.67f, 0.f);  GXColor4u8(255,   0,   0, 255);
+        GXPosition3f32( 0.75f,  0.67f, 0.f);  GXColor4u8(  0, 255,   0, 255);
+        GXPosition3f32( 0.00f, -0.67f, 0.f);  GXColor4u8(  0,   0, 255, 255);
+        GXEnd();
+    }
+};
+
 // SynthLit — enable one directional light on channel 0, matsource=REG
 // (dark red material), enablelighting=on. The vertex normal points
 // straight at the light. Expected shade = mat * (amb + diff) with
