@@ -421,6 +421,98 @@ struct SynthPersp {
     }
 };
 
+// SynthLit — enable one directional light on channel 0, matsource=REG
+// (dark red material), enablelighting=on. The vertex normal points
+// straight at the light. Expected shade = mat * (amb + diff) with
+// diff = dot(N, -Ldir).
+//
+// Exercises: XFMEM_LIGHTS registers (0x0600 range) — Dolphin's per-vertex
+// lighting_chn0 reads dpos/ddir/color/cosatt/distatt from xfmem.lights[k].
+// If Tier 2 leaves them zero, the whole diffuse term is 0 and only the
+// ambient contributes.
+struct SynthLit {
+    static constexpr GXColor kClearColor{ 0, 0, 0, 255 };
+    static const char* name() { return "synth-lit"; }
+    static bool needs_geometry() { return true; }
+    static void program() {
+        GXSetCopyClear(kClearColor, 0xffffff);
+        GXSetZMode(GX_FALSE, GX_ALWAYS, GX_FALSE);
+        GXSetColorUpdate(GX_TRUE);
+        GXSetAlphaUpdate(GX_TRUE);
+        GXSetBlendMode(GX_BM_NONE, GX_BL_ONE, GX_BL_ZERO, GX_LO_NOOP);
+        GXSetCullMode(GX_CULL_NONE);
+        GXSetAlphaCompare(GX_ALWAYS, 0, GX_AOP_OR, GX_ALWAYS, 0);
+        GXSetZCompLoc(GX_FALSE);
+        GXSetViewport(0.f, 0.f, (f32)kW, (f32)kH, 0.f, 1.f);
+        GXSetScissor(0, 0, kW, kH);
+        GXSetNumChans(1);
+        GXSetNumTexGens(0);
+        GXSetNumTevStages(1);
+        // Material RED (128,0,0), ambient dark (32,32,32). Light L0 white,
+        // direction pointing -Z (into the screen); vertex normals point +Z
+        // (out of the screen, i.e. AT the light source) → cos(θ)=1 → full
+        // diffuse contribution.
+        GXColor mat = { 128, 0, 0, 255 };
+        GXColor amb = {  32, 32, 32, 255 };
+        GXSetChanMatColor(GX_COLOR0A0, mat);
+        GXSetChanAmbColor(GX_COLOR0A0, amb);
+        // Enable lighting on chan 0: amb_src=REG, mat_src=REG, light_mask
+        // covers LIGHT0, DiffuseFunc=CLAMP, AttnFunc=NONE.
+        GXSetChanCtrl(GX_COLOR0A0, GX_TRUE, GX_SRC_REG, GX_SRC_REG,
+                      GX_LIGHT0, GX_DF_CLAMP, GX_AF_NONE);
+        // Configure L0: directional white light. GC's convention for a
+        // directional light is a POSITIONAL light placed far away along
+        // the direction the light comes FROM, with atten k=(1,0,0). The
+        // vertex → light vector is then approximately parallel (which is
+        // what "directional" means).
+        //   Light comes from +Z (behind the camera in Vulkan/GC view space
+        //   with the identity posmtx), shines down -Z.
+        //   → place the light at (0, 0, +1e6).
+        // Direction is used for SPOT/SPECULAR lights; for pure diffuse we
+        // leave dir at the GXInitLightDir default (which negates the arg,
+        // so passing (0,0,-1) stores +Z — matches the "toward the light"
+        // convention).
+        GXLightObj lt;
+        GXInitLightColor(&lt, GXColor{ 255, 255, 255, 255 });
+        GXInitLightPos(&lt, 0.f, 0.f, 1000000.f);
+        GXInitLightDir(&lt, 0.f, 0.f, -1.f);
+        GXInitLightAttn(&lt, 1, 0, 0, 1, 0, 0);   // k=(1,0,0): distance-independent
+        GXLoadLightObjImm(&lt, GX_LIGHT0);
+        GXSetTevOrder(GX_TEVSTAGE0, GX_TEXCOORD_NULL, GX_TEXMAP_NULL, GX_COLOR0A0);
+        GXSetTevOp(GX_TEVSTAGE0, GX_PASSCLR);
+        Mtx44 proj;
+        C_MTXOrtho(proj, 1.f, -1.f, -1.f, 1.f, 0.f, 1.f);
+        GXSetProjection(proj, GX_ORTHOGRAPHIC);
+        Mtx pos;
+        MTXIdentity(pos);
+        GXSetCurrentMtx(GX_PNMTX0);
+        GXLoadPosMtxImm(pos, GX_PNMTX0);
+        // Vertex format now includes NORMAL. Vertex colour is not used for
+        // channel-0 base (matsource=REG grabs from the material register)
+        // but the vertex descriptor still allocates it — keep the layout
+        // symmetrical with other scenarios so the vertex-loader gap is
+        // isolated to normals only.
+        GXClearVtxDesc();
+        GXSetVtxDesc(GX_VA_POS,  GX_DIRECT);
+        GXSetVtxDesc(GX_VA_NRM,  GX_DIRECT);
+        GXSetVtxDesc(GX_VA_CLR0, GX_DIRECT);
+        GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS,  GX_POS_XYZ,  GX_F32,   0);
+        GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_NRM,  GX_NRM_XYZ,  GX_F32,   0);
+        GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_CLR0, GX_CLR_RGBA, GX_RGBA8, 0);
+        GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);
+        GXPosition3f32(-0.75f,  0.67f, 0.f);
+        GXNormal3f32(0.f, 0.f, 1.f);
+        GXColor4u8(255, 255, 255, 255);
+        GXPosition3f32( 0.75f,  0.67f, 0.f);
+        GXNormal3f32(0.f, 0.f, 1.f);
+        GXColor4u8(255, 255, 255, 255);
+        GXPosition3f32( 0.00f, -0.67f, 0.f);
+        GXNormal3f32(0.f, 0.f, 1.f);
+        GXColor4u8(255, 255, 255, 255);
+        GXEnd();
+    }
+};
+
 // SynthScissor — kept for a future arc where Tier 1's SDL3-GPU pipeline
 // grows per-batch scissor plumbing. Currently: Tier 1 has no scissor rect
 // on the imm batches, so the full-screen white triangle bleeds outside
@@ -668,6 +760,14 @@ extern "C" int sb_render_parity_run(const char* test_name) {
         SynthPersp::program();
         has_geometry = SynthPersp::needs_geometry();
     } else {
+        // synth-lit intentionally not wired: closing it requires GXNormal3f32
+        // implementation, per-vertex normal capture in the imm layer, CP
+        // VCD/VAT normal enable, XFMEM_SETINVERTEXSPEC nrm count, and a
+        // per-vertex normal in the FIFO payload — plus Tier 1's SDL3-GPU
+        // renderer needs to grow lit-vertex material/lighting math, since
+        // its current passthrough shader just outputs the vertex colour.
+        // Left as a whole arc; the SynthLit struct above sits ready for
+        // when the wiring lands.
         PARITY_PANIC("unknown test-name '%s' — known scenarios: synth-clear, "
                      "synth-triangle, synth-blend, synth-depth, synth-persp. "
                      "Typo in SB_HARNESS?", test_name);

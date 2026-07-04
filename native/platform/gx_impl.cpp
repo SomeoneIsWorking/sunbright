@@ -395,6 +395,39 @@ extern "C" void sb_gx_emit_full_state(void) {
         sb::gxfifo::bp_write(0x28 + reg, packed);
     }
 
+    // ── XFMEM_LIGHTS (0x0600) — 8 lights × 16 words each ─────────────────────
+    // Dolphin's per-vertex `dolphin_calculate_lighting_chn0` reads directly
+    // from xfmem.lights[k] (color, cosatt, distatt, dpos, ddir). Without
+    // emission Dolphin sees all-zero lights → diffuse = 0 → only ambient
+    // contributes, so a lit red material renders as ambient*mat (nearly
+    // black) even when a light is explicitly configured. Layout is fixed
+    // in Dolphin's struct Light (XFMemory.h:383):
+    //   0..2:  useless[3]        (skip 3 words)
+    //   3:     color RGBA8       (1 word)
+    //   4..6:  cosatt[3]         (3 f32)
+    //   7..9:  distatt[3]        (3 f32)
+    //  10..12: dpos[3]           (3 f32)
+    //  13..15: ddir[3]           (3 f32)
+    for (int k = 0; k < 8; ++k) {
+        const auto& L = g.light[k];
+        if (!L.valid) continue;                              // not GXLoadLightObjImm'd
+        const u16 base = 0x0600 + k * 16;
+        sb::gxfifo::write_u8(0x10);
+        sb::gxfifo::write_u16_be(15);                        // count - 1 (16 words)
+        sb::gxfifo::write_u16_be(base);
+        for (int i = 0; i < 3; ++i) sb::gxfifo::write_u32_be(0);   // useless[3]
+        // Colour: light.color[] is float 0..1. Pack as RGBA8.
+        const u32 rgba = ((u32)(L.color[0] * 255.0f + 0.5f) << 24) |
+                         ((u32)(L.color[1] * 255.0f + 0.5f) << 16) |
+                         ((u32)(L.color[2] * 255.0f + 0.5f) <<  8) |
+                         ((u32)(L.color[3] * 255.0f + 0.5f));
+        sb::gxfifo::write_u32_be(rgba);
+        for (int i = 0; i < 3; ++i) sb::gxfifo::write_f32_be(L.cosAtt[i]);
+        for (int i = 0; i < 3; ++i) sb::gxfifo::write_f32_be(L.distAtt[i]);
+        for (int i = 0; i < 3; ++i) sb::gxfifo::write_f32_be(L.pos[i]);
+        for (int i = 0; i < 3; ++i) sb::gxfifo::write_f32_be(L.dir[i]);
+    }
+
     // ── XF channel control (SETNUMCHAN + per-chan colour/alpha ctrl + colour) ──
     // SETNUMCHAN (0x1009): low 3 bits = number of colour channels.
     {
