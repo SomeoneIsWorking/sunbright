@@ -363,6 +363,64 @@ struct SynthDepth {
     }
 };
 
+// SynthPersp — perspective projection instead of ortho. A single triangle
+// centred on the -Z axis, drawn at z=-3 (in front of the camera). Under
+// perspective, x/y are DIVIDED by w = -z after projection, so the triangle
+// should appear as a smaller centred triangle vs the ortho case.
+//
+// Exercises: XFMEM_SETPROJECTION type=perspective (Dolphin builds a
+// different projection matrix layout — raw[1] populates m[0][2], not
+// m[0][3]; raw[3] populates m[1][2]), the w-divide in the vertex shader,
+// and the perspective depth mapping the viewport z-scale participates in.
+struct SynthPersp {
+    static constexpr GXColor kClearColor{ 0, 0, 0, 255 };
+    static const char* name() { return "synth-persp"; }
+    static bool needs_geometry() { return true; }
+    static void program() {
+        GXSetCopyClear(kClearColor, 0xffffff);
+        GXSetZMode(GX_FALSE, GX_ALWAYS, GX_FALSE);
+        GXSetColorUpdate(GX_TRUE);
+        GXSetAlphaUpdate(GX_TRUE);
+        GXSetBlendMode(GX_BM_NONE, GX_BL_ONE, GX_BL_ZERO, GX_LO_NOOP);
+        GXSetCullMode(GX_CULL_NONE);
+        GXSetAlphaCompare(GX_ALWAYS, 0, GX_AOP_OR, GX_ALWAYS, 0);
+        GXSetZCompLoc(GX_FALSE);
+        GXSetViewport(0.f, 0.f, (f32)kW, (f32)kH, 0.f, 1.f);
+        GXSetScissor(0, 0, kW, kH);
+        GXSetNumChans(1);
+        GXSetNumTexGens(0);
+        GXSetNumTevStages(1);
+        GXSetChanCtrl(GX_COLOR0A0, GX_FALSE, GX_SRC_REG, GX_SRC_VTX,
+                      0, GX_DF_CLAMP, GX_AF_NONE);
+        GXSetTevOrder(GX_TEVSTAGE0, GX_TEXCOORD_NULL, GX_TEXMAP_NULL, GX_COLOR0A0);
+        GXSetTevOp(GX_TEVSTAGE0, GX_PASSCLR);
+        // Perspective: 60° FOV, aspect kW/kH, near=1, far=100.
+        Mtx44 proj;
+        C_MTXPerspective(proj, 60.f, (f32)kW/(f32)kH, 1.f, 100.f);
+        GXSetProjection(proj, GX_PERSPECTIVE);
+        Mtx pos;
+        MTXIdentity(pos);
+        GXSetCurrentMtx(GX_PNMTX0);
+        GXLoadPosMtxImm(pos, GX_PNMTX0);
+        GXClearVtxDesc();
+        GXSetVtxDesc(GX_VA_POS,  GX_DIRECT);
+        GXSetVtxDesc(GX_VA_CLR0, GX_DIRECT);
+        GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS,  GX_POS_XYZ,  GX_F32,   0);
+        GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_CLR0, GX_CLR_RGBA, GX_RGBA8, 0);
+        // Triangle at z=-3, 2 units wide, 2 tall. Centred on -Z axis.
+        // Under perspective (60° FOV, aspect 4:3), a unit at z=-3 covers
+        // 1 / (3 * tan(30°)) ≈ 0.577 of the half-height. So the triangle
+        // should NOT fill the frame — it should appear as a smaller
+        // centred triangle, size distinct from the ortho baseline. That
+        // difference is exactly what this scenario measures.
+        GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);
+        GXPosition3f32(-1.f,  1.f, -3.f);  GXColor4u8(255,   0,   0, 255);
+        GXPosition3f32( 1.f,  1.f, -3.f);  GXColor4u8(  0, 255,   0, 255);
+        GXPosition3f32( 0.f, -1.f, -3.f);  GXColor4u8(  0,   0, 255, 255);
+        GXEnd();
+    }
+};
+
 // SynthScissor — kept for a future arc where Tier 1's SDL3-GPU pipeline
 // grows per-batch scissor plumbing. Currently: Tier 1 has no scissor rect
 // on the imm batches, so the full-screen white triangle bleeds outside
@@ -606,10 +664,13 @@ extern "C" int sb_render_parity_run(const char* test_name) {
     } else if (std::strcmp(test_name, SynthDepth::name()) == 0) {
         SynthDepth::program();
         has_geometry = SynthDepth::needs_geometry();
+    } else if (std::strcmp(test_name, SynthPersp::name()) == 0) {
+        SynthPersp::program();
+        has_geometry = SynthPersp::needs_geometry();
     } else {
         PARITY_PANIC("unknown test-name '%s' — known scenarios: synth-clear, "
-                     "synth-triangle, synth-blend, synth-depth. Typo in "
-                     "SB_HARNESS?", test_name);
+                     "synth-triangle, synth-blend, synth-depth, synth-persp. "
+                     "Typo in SB_HARNESS?", test_name);
     }
 
     switch (mode) {
