@@ -39,6 +39,22 @@ list(FILTER SMS_NATIVE_SOURCES EXCLUDE REGEX
 # sequence.arc, so JAIBasic::loadArcSeqData succeeds at stage entry.
 list(FILTER SMS_NATIVE_SOURCES EXCLUDE REGEX
      "/reference/sms/src/JSystem/JAudio/JASystem/JASVload\\.cpp$")
+
+# Under Path A (Aurora, TARGET_PC) these TUs are pure PPC-hardware plumbing —
+# raw register-ID arrays, exception context register dumping, MSL PPC
+# intrinsics. They have no meaningful native implementation; Aurora owns the
+# equivalent surfaces (GX register I/O, OS panics, glibc math). Excluded
+# wholesale; the game code that would have called into them is either
+# unreachable natively (JUTException) or reached only through Aurora's own
+# implementation (raw GX register writes go through aurora::gx).
+list(FILTER SMS_NATIVE_SOURCES EXCLUDE REGEX
+     "/reference/sms/src/JSystem/JUtility/JUTException\\.cpp$")
+list(FILTER SMS_NATIVE_SOURCES EXCLUDE REGEX
+     "/reference/sms/src/JSystem/JUtility/JUTDirectPrint\\.cpp$")
+list(FILTER SMS_NATIVE_SOURCES EXCLUDE REGEX
+     "/reference/sms/src/JSystem/JRenderer\\.cpp$")
+list(FILTER SMS_NATIVE_SOURCES EXCLUDE REGEX
+     "/reference/sms/src/JSystem/JParticle/JPAField\\.cpp$")
 list(APPEND SMS_NATIVE_SOURCES
      "${SMS_NATIVE_REPO_ROOT}/sms-boot/src/sms_boot_audio.cpp"
      # Owns the active-camera transform for the native scene render (gpCamera -> view+proj).
