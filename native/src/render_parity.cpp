@@ -150,11 +150,16 @@ struct SynthTriangle {
         GXSetTevOrder(GX_TEVSTAGE0, GX_TEXCOORD_NULL, GX_TEXMAP_NULL, GX_COLOR0A0);
         GXSetTevOp(GX_TEVSTAGE0, GX_PASSCLR);
 
-        // Matrices: ortho projection mapping pixel space (0..640, 0..480, 0..1)
-        // to NDC. Identity position matrix. Passing raw pixel coords to
-        // GXPosition3f32 below then produces on-screen vertices.
+        // Matrices: IDENTITY-mapping ortho + identity position matrix. Both
+        // Tier 1 (native imm_project) and Tier 2 (Dolphin's XF vertex shader)
+        // apply proj × posmtx to the input vertex. For the two tiers to render
+        // the same triangle from the same FIFO/state, this transform must be
+        // pass-through (or at least symmetric). Using ortho(t=1, b=-1, l=-1,
+        // r=1, n=0, f=1) yields a matrix that maps NDC → NDC (scales by 1).
+        // The triangle vertices below are therefore already in NDC ([-1,+1]).
         Mtx44 proj;
-        C_MTXOrtho(proj, 0.f, (f32)kH, 0.f, (f32)kW, 0.f, 1.f);
+        C_MTXOrtho(proj, /*t=*/1.f, /*b=*/-1.f, /*l=*/-1.f, /*r=*/1.f,
+                          /*n=*/0.f, /*f=*/1.f);
         GXSetProjection(proj, GX_ORTHOGRAPHIC);
         Mtx pos;
         MTXIdentity(pos);
@@ -168,17 +173,17 @@ struct SynthTriangle {
         GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS,  GX_POS_XYZ,  GX_F32,   0);
         GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_CLR0, GX_CLR_RGBA, GX_RGBA8, 0);
 
-        // Draw one triangle. Vertices in PIXEL coords (top-left origin per GX):
-        //   • top-left corner  → red
-        //   • top-right corner → green
-        //   • bottom-center    → blue
-        // The ortho above maps these to NDC and the passthrough TEV outputs the
-        // interpolated raster colour.
+        // Draw one triangle. Vertices in NDC (identity ortho above):
+        //   • upper-left  (-0.75, +0.67, 0) → red
+        //   • upper-right (+0.75, +0.67, 0) → green
+        //   • lower-center ( 0.00, -0.67, 0) → blue
+        // (In GC convention +Y is up; Vulkan will flip Y-down at present time
+        // via gx_imm_xform's -y remap. Tier 2 needs to apply the same convention
+        // via the XF viewport / projection state.)
         GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);
-        GXPosition3f32( 80.f,        80.f,  0.0f);  GXColor4u8(255,   0,   0, 255);
-        GXPosition3f32((f32)kW - 80, 80.f,  0.0f);  GXColor4u8(  0, 255,   0, 255);
-        GXPosition3f32((f32)kW / 2,  (f32)kH - 80, 0.0f);
-                                                    GXColor4u8(  0,   0, 255, 255);
+        GXPosition3f32(-0.75f,  0.67f, 0.f);  GXColor4u8(255,   0,   0, 255);
+        GXPosition3f32( 0.75f,  0.67f, 0.f);  GXColor4u8(  0, 255,   0, 255);
+        GXPosition3f32( 0.00f, -0.67f, 0.f);  GXColor4u8(  0,   0, 255, 255);
         GXEnd();
     }
 };
