@@ -421,6 +421,57 @@ struct SynthPersp {
     }
 };
 
+// SynthScale — same triangle as SynthTriangle but with a NON-identity
+// posmtx (scale 2x in X, 0.5x in Y). Tests XFMEM_POSMATRICES with actual
+// data instead of identity: if Dolphin gets a zero'd or default matrix,
+// vertices multiply to zero and the triangle vanishes / degenerates.
+// Both tiers should produce the same distorted triangle.
+struct SynthScale {
+    static constexpr GXColor kClearColor{ 0, 0, 0, 255 };
+    static const char* name() { return "synth-scale"; }
+    static bool needs_geometry() { return true; }
+    static void program() {
+        GXSetCopyClear(kClearColor, 0xffffff);
+        GXSetZMode(GX_FALSE, GX_ALWAYS, GX_FALSE);
+        GXSetColorUpdate(GX_TRUE);
+        GXSetAlphaUpdate(GX_TRUE);
+        GXSetBlendMode(GX_BM_NONE, GX_BL_ONE, GX_BL_ZERO, GX_LO_NOOP);
+        GXSetCullMode(GX_CULL_NONE);
+        GXSetAlphaCompare(GX_ALWAYS, 0, GX_AOP_OR, GX_ALWAYS, 0);
+        GXSetZCompLoc(GX_FALSE);
+        GXSetViewport(0.f, 0.f, (f32)kW, (f32)kH, 0.f, 1.f);
+        GXSetScissor(0, 0, kW, kH);
+        GXSetNumChans(1);
+        GXSetNumTexGens(0);
+        GXSetNumTevStages(1);
+        GXSetChanCtrl(GX_COLOR0A0, GX_FALSE, GX_SRC_REG, GX_SRC_VTX,
+                      0, GX_DF_CLAMP, GX_AF_NONE);
+        GXSetTevOrder(GX_TEVSTAGE0, GX_TEXCOORD_NULL, GX_TEXMAP_NULL, GX_COLOR0A0);
+        GXSetTevOp(GX_TEVSTAGE0, GX_PASSCLR);
+        Mtx44 proj;
+        C_MTXOrtho(proj, 1.f, -1.f, -1.f, 1.f, 0.f, 1.f);
+        GXSetProjection(proj, GX_ORTHOGRAPHIC);
+        // Non-identity posmtx: half x, half y (shrink the triangle to a
+        // quarter of the ortho'd frame area).
+        Mtx pos;
+        MTXIdentity(pos);
+        pos[0][0] = 0.5f;   // scale X
+        pos[1][1] = 0.5f;   // scale Y
+        GXSetCurrentMtx(GX_PNMTX0);
+        GXLoadPosMtxImm(pos, GX_PNMTX0);
+        GXClearVtxDesc();
+        GXSetVtxDesc(GX_VA_POS,  GX_DIRECT);
+        GXSetVtxDesc(GX_VA_CLR0, GX_DIRECT);
+        GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS,  GX_POS_XYZ,  GX_F32,   0);
+        GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_CLR0, GX_CLR_RGBA, GX_RGBA8, 0);
+        GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);
+        GXPosition3f32(-0.75f,  0.67f, 0.f);  GXColor4u8(255,   0,   0, 255);
+        GXPosition3f32( 0.75f,  0.67f, 0.f);  GXColor4u8(  0, 255,   0, 255);
+        GXPosition3f32( 0.00f, -0.67f, 0.f);  GXColor4u8(  0,   0, 255, 255);
+        GXEnd();
+    }
+};
+
 // SynthLit — enable one directional light on channel 0, matsource=REG
 // (dark red material), enablelighting=on. The vertex normal points
 // straight at the light. Expected shade = mat * (amb + diff) with
@@ -759,6 +810,9 @@ extern "C" int sb_render_parity_run(const char* test_name) {
     } else if (std::strcmp(test_name, SynthPersp::name()) == 0) {
         SynthPersp::program();
         has_geometry = SynthPersp::needs_geometry();
+    } else if (std::strcmp(test_name, SynthScale::name()) == 0) {
+        SynthScale::program();
+        has_geometry = SynthScale::needs_geometry();
     } else {
         // synth-lit intentionally not wired: closing it requires GXNormal3f32
         // implementation, per-vertex normal capture in the imm layer, CP
@@ -769,8 +823,8 @@ extern "C" int sb_render_parity_run(const char* test_name) {
         // Left as a whole arc; the SynthLit struct above sits ready for
         // when the wiring lands.
         PARITY_PANIC("unknown test-name '%s' — known scenarios: synth-clear, "
-                     "synth-triangle, synth-blend, synth-depth, synth-persp. "
-                     "Typo in SB_HARNESS?", test_name);
+                     "synth-triangle, synth-blend, synth-depth, synth-persp, "
+                     "synth-scale. Typo in SB_HARNESS?", test_name);
     }
 
     switch (mode) {
