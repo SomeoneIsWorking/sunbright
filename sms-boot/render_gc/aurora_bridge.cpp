@@ -1,54 +1,32 @@
-// aurora_bridge.cpp — Path A entry point.
+// aurora_bridge.cpp — sms-boot's entry point.
 //
-// sms-boot's GC-faithful render path. The reference/sms decomp emits its
-// original GameCube GX SDK calls (GXSetChanCtrl, GXSetProjection, GXBegin,
-// ...) and Aurora's <dolphin/gx.h> implementation drives WebGPU/Dawn under
-// them. No emulation-of-Dolphin translation layer, no FIFO byte replay — the
-// game's own SDK calls are the interface.
-//
-// Include layering (per-TU, controlled by CMake include-dir order):
-//   Path A (this target): extern/aurora/include -> reference/sms/include.
-//     Aurora's <dolphin/types.h> wins → SMS_NATIVE_PLATFORM is NOT defined →
-//     reference/sms takes the original GC paths through Aurora.
-//   Path B (sms-boot target): sms-boot/shim -> reference/sms/include.
-//     Our shim's <dolphin/types.h> wins → SMS_NATIVE_PLATFORM=1 → reference/sms
-//     takes the native-C++ branches routing into sms-boot/render_pc/.
-//
-// This file is Path A ONLY. Aurora's <aurora/main.h> `#define main aurora_main`
-// takes our int main() over as the app entry called from libaurora_core's real
-// main(). We initialize Aurora then hand control to the game thread.
+// PC threading model (per user directive 2026-07-05, mirrors the old Path-B
+// boot.cpp): MAIN thread owns the window and pumps Aurora (event loop,
+// aurora_begin_frame/end_frame, SDL). GAME runs on a real PC std::thread —
+// NOT a GC OSThread — that owns TApplication::initialize/proc/finalize and
+// issues GX draws. Aurora is IO-only: input in, pixels out. It never drives
+// game logic.
 
 #include <aurora/aurora.h>
 #include <aurora/dvd.h>
 #include <aurora/event.h>
 #include <aurora/main.h>
 #include <dolphin/gx.h>
-
-#include <System/Application.hpp>
 #include <dolphin/os.h>
 
+#include <System/Application.hpp>
+
+#include <atomic>
+#include <chrono>
+#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <csignal>
 #include <execinfo.h>
+#include <thread>
 #include <unistd.h>
 
 extern TApplication gpApplication;
-
-// TODO: the real game entry, hooked from reference/sms/src/main.cpp. For MVP
-// bring-up we just clear to a distinctive colour every frame so we can prove
-// the Aurora pipeline is alive end-to-end before wiring in the game thread.
-static void draw_bringup_frame() {
-    GXSetCopyClear(
-        (GXColor){
-            .r = 32,
-            .g = 96,
-            .b = 200,
-            .a = 255,
-        },
-        GX_MAX_Z24);
-}
 
 // ---- Watchdog: SIGALRM handler dumps backtrace and aborts if the boot loop
 // stalls. Kick sb_watchdog_kick() from progress checkpoints to reset the timer.
@@ -95,7 +73,7 @@ static void log_callback(AuroraLogLevel level, const char* module,
 
 int main(int argc, char* argv[]) {
     AuroraConfig config = {};
-    config.appName        = "Sunbright (Path A, GC-faithful)";
+    config.appName        = "Sunbright";
     config.desiredBackend = BACKEND_VULKAN;
     config.logCallback    = &log_callback;
     config.logLevel       = LOG_INFO;
@@ -109,18 +87,12 @@ int main(int argc, char* argv[]) {
                  (int)info.backend, info.windowSize.fb_width, info.windowSize.fb_height);
     std::fflush(stdout);
 
-    // OSInit() sets up the emulated MEM1 arena Aurora simulates. On the real
-    // console it's called by system firmware before main; games (and reference/sms)
-    // don't call it themselves, so do it here before any JKR heap allocs.
     OSInit();
 
-    // Mount the SMS disc for Aurora's DVD backend. Path from SUNBRIGHT_ROM
-    // env, then ./rom.rvz drop-in.
     const char* rom = std::getenv("SUNBRIGHT_ROM");
     if (!rom || !*rom) rom = "rom.rvz";
     if (!aurora_dvd_open(rom)) {
         std::fprintf(stderr, "[sms-boot] aurora_dvd_open failed for %s\n", rom);
-        std::fflush(stderr);
         return 1;
     }
     std::fprintf(stdout, "[sms-boot] DVD mounted: %s\n", rom);
@@ -128,15 +100,42 @@ int main(int argc, char* argv[]) {
 
     sb_watchdog_install();
 
-    // Hand off to the game. TApplication::initialize is the decomp's own
-    // GC entry; under SMS_NATIVE_PLATFORM=1 its GC-side threading/CD paths
-    // short-circuit to sync/single-thread. proc() drives the frame loop
-    // (which must also pump aurora_update / begin_frame / end_frame — that
-    // integration comes next).
-    gpApplication.initialize();
-    gpApplication.proc();
-    gpApplication.finalize();
+    // GAME thread — PC std::thread, NOT a GC OSThread. Owns the game main
+    // loop; issues GX draws. Aurora is called only from THIS main thread
+    // (window/present/event pump).
+    std::atomic<int> game_rc{-1};
+    std::thread game([&game_rc]() {
+        gpApplication.initialize();
+        gpApplication.proc();
+        gpApplication.finalize();
+        game_rc.store(0);
+    });
+
+    // MAIN thread — Aurora IO pump. Runs the event loop and per-frame
+    // begin/end so the swapchain doesn't stall. Exits when the game thread
+    // finishes or the user closes the window.
+    bool exit_requested = false;
+    while (!exit_requested && game_rc.load() == -1) {
+        const AuroraEvent* event = aurora_update();
+        while (event && event->type != AURORA_NONE) {
+            if (event->type == AURORA_EXIT) exit_requested = true;
+            else if (event->type == AURORA_WINDOW_RESIZED) info.windowSize = event->windowSize;
+            ++event;
+        }
+        if (aurora_begin_frame()) {
+            aurora_end_frame();
+        }
+        // Yield so the game thread can make progress; ~120 Hz poll.
+        std::this_thread::sleep_for(std::chrono::milliseconds(8));
+    }
+
+    if (exit_requested && game_rc.load() == -1) {
+        // User asked to quit while game is mid-work: detach and shut down.
+        game.detach();
+    } else {
+        game.join();
+    }
 
     aurora_shutdown();
-    return 0;
+    return game_rc.load() == -1 ? 0 : game_rc.load();
 }

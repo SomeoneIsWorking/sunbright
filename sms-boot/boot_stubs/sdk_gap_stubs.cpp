@@ -44,45 +44,22 @@ void OSInitCond(OSCond*) {}
 void OSSignalCond(OSCond*) {}
 void OSWaitCond(OSCond*, OSMutex*) {}
 
-// Single-threaded PC engine: OSCreateThread stashes (func, param); OSResumeThread
-// runs func(param) synchronously and stores the result. Everything else is
-// morally already-terminated. This lets the game's async setup work (setupThread
-// running SMSLoadArchive) execute in-line before OSJoinThread returns.
+// PC engine is single-threaded. OS threading primitives are pure no-ops; the
+// game's OSCreateThread/OSResumeThread callsites decide synchronously whether
+// to run the target function directly (setup threads) or skip it (worker
+// loop bodies that block on OSReceiveMessage). See reference/sms callsites
+// under SMS_NATIVE_PLATFORM.
 void OSInitThreadQueue(OSThreadQueue*) {}
 void OSSleepThread(OSThreadQueue*) {}
 void OSWakeupThread(OSThreadQueue*) {}
 OSThread* OSGetCurrentThread(void) { return nullptr; }
 void OSCancelThread(OSThread*) {}
-BOOL OSIsThreadTerminated(OSThread* t) {
-    if (!t) return TRUE;
-    return t->state == OS_THREAD_STATE_MORIBUND ? TRUE : FALSE;
-}
+BOOL OSIsThreadTerminated(OSThread*) { return TRUE; }
 void OSYieldThread(void) {}
-BOOL OSCreateThread(OSThread* t, void* (*func)(void*), void* param,
-                    void*, u32, s32, u16) {
-    if (!t) return FALSE;
-    std::memset(t, 0, sizeof(*t));
-    t->specific[0] = reinterpret_cast<void*>(func);
-    t->specific[1] = param;
-    t->state = OS_THREAD_STATE_READY;
-    return TRUE;
-}
-s32 OSResumeThread(OSThread* t) {
-    if (!t) return 0;
-    if (t->state != OS_THREAD_STATE_READY) return 0;
-    auto* func = reinterpret_cast<void* (*)(void*)>(t->specific[0]);
-    void* param = t->specific[1];
-    t->state = OS_THREAD_STATE_RUNNING;
-    t->val = func ? func(param) : nullptr;
-    t->state = OS_THREAD_STATE_MORIBUND;
-    return 0;
-}
+BOOL OSCreateThread(OSThread*, void* (*)(void*), void*, void*, u32, s32, u16) { return TRUE; }
+s32  OSResumeThread(OSThread*) { return 0; }
 void OSExitThread(void*) {}
-BOOL OSJoinThread(OSThread* t, void** val) {
-    if (!t) return FALSE;
-    if (val) *val = t->val;
-    return TRUE;
-}
+BOOL OSJoinThread(OSThread*, void**) { return TRUE; }
 void OSDetachThread(OSThread*) {}
 s32  OSGetThreadPriority(OSThread*) { return 0; }
 
