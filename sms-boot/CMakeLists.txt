@@ -169,6 +169,8 @@ if(TARGET aurora_core)
             -w -fcommon)
     endif()
 
+    # -rdynamic so backtrace_symbols in the watchdog handler resolves names.
+    target_link_options(sms-boot PRIVATE -rdynamic)
     target_link_libraries(sms-boot PRIVATE
         "$<LINK_GROUP:RESCAN,sms-native,sms-gd,sms-assets,$<TARGET_NAME_IF_EXISTS:sms-bootstubs>>"
         aurora::core

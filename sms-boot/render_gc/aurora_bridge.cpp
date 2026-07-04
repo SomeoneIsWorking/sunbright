@@ -29,6 +29,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <csignal>
+#include <execinfo.h>
+#include <unistd.h>
 
 extern TApplication gpApplication;
 
@@ -44,6 +47,34 @@ static void draw_bringup_frame() {
             .a = 255,
         },
         GX_MAX_Z24);
+}
+
+// ---- Watchdog: SIGALRM handler dumps backtrace and aborts if the boot loop
+// stalls. Kick sb_watchdog_kick() from progress checkpoints to reset the timer.
+// SB_WATCHDOG_SECS overrides the default (5 s).
+static constexpr unsigned kWatchdogDefaultSecs = 5;
+static void sb_watchdog_handler(int) {
+    const char* msg = "\n=== WATCHDOG: no progress within timeout, aborting ===\n";
+    write(2, msg, std::strlen(msg));
+    void* frames[64];
+    int n = backtrace(frames, 64);
+    backtrace_symbols_fd(frames, n, 2);
+    write(2, "\n", 1);
+    _exit(134);
+}
+extern "C" void sb_watchdog_kick(void) {
+    const char* env = std::getenv("SB_WATCHDOG_SECS");
+    unsigned secs = env ? (unsigned)std::atoi(env) : kWatchdogDefaultSecs;
+    if (secs == 0) secs = kWatchdogDefaultSecs;
+    alarm(secs);
+}
+static void sb_watchdog_install(void) {
+    struct sigaction sa{};
+    sa.sa_handler = sb_watchdog_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGALRM, &sa, nullptr);
+    sb_watchdog_kick();
 }
 
 static void log_callback(AuroraLogLevel level, const char* module,
@@ -81,6 +112,7 @@ int main(int argc, char* argv[]) {
     // console it's called by system firmware before main; games (and reference/sms)
     // don't call it themselves, so do it here before any JKR heap allocs.
     OSInit();
+    sb_watchdog_install();
 
     // Hand off to the game. TApplication::initialize is the decomp's own
     // GC entry; under SMS_NATIVE_PLATFORM=1 its GC-side threading/CD paths
