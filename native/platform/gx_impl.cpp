@@ -277,6 +277,29 @@ extern "C" void sb_gx_emit_full_state(void) {
         sb::gxfifo::bp_write(bp::TEV_REGISTER_H_BASE + 2 * r, hi);
     }
 
+    // BPMEM_TEV_KSEL (0xF6-0xFD) — RAS/TEX SWAP TABLES (8 entries).
+    //
+    // Dolphin's PixelShaderGen swizzles the rasteriser colour via a swap
+    // table lookup (`rastemp = col0.<swap>` — PixelShaderGen.cpp:1388-1390).
+    // The 4 swap tables are formed from pairs of TEV_KSEL registers:
+    //   swap_table_id N → ksel[2*N].{swap_rb, swap_ga}, ksel[2*N+1].{swap_rb, swap_ga}
+    // ksel[k].swap_rb (bits 0-1) selects the source channel for the Red
+    // slot when k is even OR the Blue slot when k is odd. Similarly
+    // swap_ga (bits 2-3) → Green on even k, Alpha on odd k.
+    //
+    // For the IDENTITY swap (col0.rgba → rgba) all 8 ksel regs must be set:
+    //   even ksel: swap_rb=Red(0), swap_ga=Green(1) → val = 0 | (1<<2) = 0x04
+    //   odd  ksel: swap_rb=Blue(2), swap_ga=Alpha(3) → val = 2 | (3<<2) = 0x0E
+    //
+    // Without emission Dolphin sees ksel[0..7]=0, so every swap is
+    // {Red, Red, Red, Red} → rastemp = col0.rrrr → GRAYSCALE, which is
+    // the exact symptom that surfaced 2026-07-04 on synth-triangle
+    // (bug found via reading PixelShaderGen.cpp:1388, not by tuning).
+    for (int k = 0; k < 8; ++k) {
+        const u32 val = (k & 1) ? 0x0E : 0x04;
+        sb::gxfifo::bp_write(0xF6 + k, val);
+    }
+
     // ── XF registers ────────────────────────────────────────────────────────
     // XFMEM_VIEWPORT (0x101A) — 6 f32.
     {
