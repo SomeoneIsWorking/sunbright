@@ -295,47 +295,28 @@ static void emit_fifo_draw() {
         //   bit15-16 = Color1     (0 = NONE)
         u32 vcd_lo = (1u << 9) | (1u << 13);
         sb::gxfifo::cp_write(0x50, vcd_lo);
-        // VCD_HI (CP reg 0x60): 8 texcoords, 2 bits each. Only tex0 direct.
-        u32 vcd_hi = 0x1;
+        // VCD_HI (CP reg 0x60): 8 texcoords, 2 bits each. NO texcoords for the
+        // synth-triangle case — the passthrough TEV stage uses raster COLOR
+        // only, no sampling. Keeping tex0 in the vertex format wasted 8 bytes
+        // per vertex AND required matching numTextures=1 in XF vertex spec.
+        u32 vcd_hi = 0;
         sb::gxfifo::cp_write(0x60, vcd_hi);
-        // VAT slot 0, group 0 (CP reg 0x70) — UVAT_group0 (CPMemory.h line 330):
-        //   [0]      PosElements (0=XY, 1=XYZ)
-        //   [1-3]    PosFormat   (4 = Float)
-        //   [4-8]    PosFrac
-        //   [9]      NormalElements
-        //   [10-12]  NormalFormat
-        //   [13]     Color0Elements (0=RGB, 1=RGBA)
-        //   [14-16]  Color0Comp     (5 = RGBA8888)
-        //   [17-20]  Color1 (unused)
-        //   [21]     Tex0CoordElements (0=S, 1=ST)
-        //   [22-24]  Tex0CoordFormat (4 = Float)
-        //   [25-29]  Tex0Frac
+        // VAT slot 0, group 0 (CP reg 0x70) — pos XYZ Float + color0 RGBA8.
         u32 vat0 = 0;
         vat0 |= (1u << 0);          // PosElements = XYZ
         vat0 |= (4u << 1);          // PosFormat = Float
         vat0 |= (0u << 4);          // PosFrac = 0
         vat0 |= (1u << 13);         // Color0Elements = RGBA
         vat0 |= (5u << 14);         // Color0Comp = RGBA8888
-        vat0 |= (1u << 21);         // Tex0Elements = ST
-        vat0 |= (4u << 22);         // Tex0Format = Float
-        vat0 |= (0u << 25);         // Tex0Frac = 0
         sb::gxfifo::cp_write(0x70, vat0);
 
         // XFMEM_SETINVERTEXSPEC (0x1008) — MUST match CP VCD numColors /
-        // numNormals / numTextures or Dolphin's VertexShaderManager rejects
-        // the setup with a hard "Mismatched configuration" error and rasters
-        // no pixels. Encoding (per Dolphin's XFStructs.h InVertexSpec):
-        //   bits 0-1  numColors  (0..2)
-        //   bits 2-3  numNormals (0=none, 1=normal, 2=NBT)
-        //   bits 4-7  numTextures (0..8)
-        // We emit 1 color + 0 normal + 1 texcoord to match the DRAW payload
-        // (see write_f32/u8 sequence below). If we ever add multiple colors
-        // or textures per vertex we MUST update this in lockstep with VCD.
+        // numNormals / numTextures or Dolphin rejects the setup.
         {
             u32 xf_vertspec = 0;
             xf_vertspec |= (1u & 0x3);           // 1 color
             xf_vertspec |= (0u & 0x3) << 2;      // 0 normals
-            xf_vertspec |= (1u & 0xF) << 4;      // 1 texcoord
+            xf_vertspec |= (0u & 0xF) << 4;      // 0 texcoords
             sb::gxfifo::write_u8(0x10);
             sb::gxfifo::write_u16_be(0);
             sb::gxfifo::write_u16_be(0x1008);
@@ -373,8 +354,9 @@ static void emit_fifo_draw() {
         sb::gxfifo::write_u8((u8)(v.g * 255.0f));
         sb::gxfifo::write_u8((u8)(v.b * 255.0f));
         sb::gxfifo::write_u8((u8)(v.a * 255.0f));
-        sb::gxfifo::write_f32_be(v.u);
-        sb::gxfifo::write_f32_be(v.v);
+        // No texcoord0 emitted here: VCD_HI + VAT + SETINVERTEXSPEC above all
+        // agree on 0 texcoords. Adding u,v bytes back requires updating all
+        // three in lockstep or Dolphin's VertexLoader misreads the stride.
     }
 }
 // Reset the CP-set-this-frame gate at frame boundary — called from
