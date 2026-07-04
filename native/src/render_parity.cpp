@@ -248,6 +248,57 @@ struct SynthTriangle {
     }
 };
 
+// SynthBlend — like SynthTriangle but with a non-black clear and an XLU
+// triangle (α=0.5) on top. Exercises BPMEM_BLENDMODE + BPMEM_BP_MASK plus
+// alpha propagation through the vertex → colours_0 → TEV alpha chain.
+// The expected result at any triangle-interior pixel is
+//   final = src*α + dst*(1-α) = 0.5*vertex_rgb + 0.5*(clear_rgb)
+// If Tier 2 doesn't wire GXSetBlendMode, the triangle will overwrite the
+// clear and this test will FAIL loudly.
+struct SynthBlend {
+    static constexpr GXColor kClearColor{ 32, 64, 128, 255 };   // dark blue-ish
+    static const char* name() { return "synth-blend"; }
+    static bool needs_geometry() { return true; }
+    static void program() {
+        GXSetCopyClear(kClearColor, 0xffffff);
+        GXSetZMode(GX_FALSE, GX_ALWAYS, GX_FALSE);
+        GXSetColorUpdate(GX_TRUE);
+        GXSetAlphaUpdate(GX_TRUE);
+        // Standard XLU blend: src*srcα + dst*(1-srcα)
+        GXSetBlendMode(GX_BM_BLEND, GX_BL_SRCALPHA, GX_BL_INVSRCALPHA, GX_LO_NOOP);
+        GXSetCullMode(GX_CULL_NONE);
+        GXSetAlphaCompare(GX_ALWAYS, 0, GX_AOP_OR, GX_ALWAYS, 0);
+        GXSetZCompLoc(GX_FALSE);
+        GXSetViewport(0.f, 0.f, (f32)kW, (f32)kH, 0.f, 1.f);
+        GXSetScissor(0, 0, kW, kH);
+        GXSetNumChans(1);
+        GXSetNumTexGens(0);
+        GXSetNumTevStages(1);
+        GXSetChanCtrl(GX_COLOR0A0, GX_FALSE, GX_SRC_REG, GX_SRC_VTX,
+                      0, GX_DF_CLAMP, GX_AF_NONE);
+        GXSetTevOrder(GX_TEVSTAGE0, GX_TEXCOORD_NULL, GX_TEXMAP_NULL, GX_COLOR0A0);
+        GXSetTevOp(GX_TEVSTAGE0, GX_PASSCLR);
+        Mtx44 proj;
+        C_MTXOrtho(proj, 1.f, -1.f, -1.f, 1.f, 0.f, 1.f);
+        GXSetProjection(proj, GX_ORTHOGRAPHIC);
+        Mtx pos;
+        MTXIdentity(pos);
+        GXSetCurrentMtx(GX_PNMTX0);
+        GXLoadPosMtxImm(pos, GX_PNMTX0);
+        GXClearVtxDesc();
+        GXSetVtxDesc(GX_VA_POS,  GX_DIRECT);
+        GXSetVtxDesc(GX_VA_CLR0, GX_DIRECT);
+        GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS,  GX_POS_XYZ,  GX_F32,   0);
+        GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_CLR0, GX_CLR_RGBA, GX_RGBA8, 0);
+        // Uniform red triangle at α=128 (0.5). Blends over the dark-blue clear.
+        GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);
+        GXPosition3f32(-0.75f,  0.67f, 0.f);  GXColor4u8(255, 0, 0, 128);
+        GXPosition3f32( 0.75f,  0.67f, 0.f);  GXColor4u8(255, 0, 0, 128);
+        GXPosition3f32( 0.00f, -0.67f, 0.f);  GXColor4u8(255, 0, 0, 128);
+        GXEnd();
+    }
+};
+
 // ── Tier-1 render: SDL3 GPU ────────────────────────────────────────────────────
 
 // Convert an SbImmBatch into an NvkTevBatch pointing at the same vertex range
@@ -261,8 +312,13 @@ NvkTevBatch imm_to_tev_batch(const SbImmBatch& ib, uint32_t vertex_base) {
     b.fragGlsl = kPassFrag;
     b.shaderKey = 0x50415353c0d0dfULL;   // "PASS" + suffix — any unique u64 works
     b.z_test = 0; b.z_write = 0;
-    // Ignore captured blend for the passthrough test; force straight overwrite.
-    b.blend_mode = 0; b.src_factor = 1; b.dst_factor = 0;
+    // Faithful per-prim blend from the immediate-mode capture. blendType=1
+    // is GX_BM_BLEND; factors are GXBlendFactor values (ZERO=0 .. INVSRCALPHA=5).
+    // Without this the harness silently overwrote the framebuffer on XLU
+    // triangles — synth-blend caught it (2026-07-04).
+    b.blend_mode = (ib.blendType == 1) ? 1 : 0;
+    b.src_factor = (uint8_t)ib.blendSrc;
+    b.dst_factor = (uint8_t)ib.blendDst;
     b.color_update = 1; b.alpha_update = 1;
     return b;
 }
@@ -422,9 +478,12 @@ extern "C" int sb_render_parity_run(const char* test_name) {
     } else if (std::strcmp(test_name, SynthTriangle::name()) == 0) {
         SynthTriangle::program();
         has_geometry = SynthTriangle::needs_geometry();
+    } else if (std::strcmp(test_name, SynthBlend::name()) == 0) {
+        SynthBlend::program();
+        has_geometry = SynthBlend::needs_geometry();
     } else {
         PARITY_PANIC("unknown test-name '%s' — known scenarios: synth-clear, "
-                     "synth-triangle. Typo in SB_HARNESS?", test_name);
+                     "synth-triangle, synth-blend. Typo in SB_HARNESS?", test_name);
     }
 
     switch (mode) {
