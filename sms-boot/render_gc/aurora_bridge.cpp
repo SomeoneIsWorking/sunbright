@@ -127,8 +127,12 @@ int main(int argc, char* argv[]) {
     config.logLevel       = LOG_INFO;
     config.msaa           = 1;
     config.vsync          = true;
-    config.mem1Size       = MEM1_DEFAULT_SIZE;
-    config.mem2Size       = ARAM_DEFAULT_SIZE;
+    // Boost MEM1 well past the GC's 24 MB. On PC there's no reason to
+    // pretend we're memory-constrained; the game fills the JKRSolidHeap
+    // that ate ~14 MB in scene setup (mesh + shape packets + matrices)
+    // and OOMs on the FIRST J3D shape draw with only 24 MB.
+    config.mem1Size       = 256 * 1024 * 1024;
+    config.mem2Size       = 64 * 1024 * 1024;
 
     AuroraInfo info = aurora_initialize(argc, argv, &config);
     std::fprintf(stdout, "[sms-boot] aurora up: backend=%d fb=%ux%u\n",
