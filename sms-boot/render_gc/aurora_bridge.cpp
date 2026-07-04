@@ -22,23 +22,64 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <dirent.h>
 #include <execinfo.h>
+#include <fcntl.h>
 #include <thread>
 #include <unistd.h>
 
 extern TApplication gpApplication;
 
+// JKRHeap host-vs-JKR routing (reference/sms/src/JSystem/JKernel/JKRHeap.cpp):
+// plain `new` on a thread that is NOT marked as a game thread falls back to
+// host malloc, bypassing the JKR heap entirely. The game thread MUST be marked
+// or the game's own heap children (spGameHeapBlock etc.) land outside the root
+// arena and JKRGetRootHeap()->getSize() returns -1 for later reads.
+extern "C" void sb_mark_game_thread(void);
+extern "C" void sb_unmark_game_thread(void);
+
 // ---- Watchdog: SIGALRM handler dumps backtrace and aborts if the boot loop
 // stalls. Kick sb_watchdog_kick() from progress checkpoints to reset the timer.
 // SB_WATCHDOG_SECS overrides the default (5 s).
 static constexpr unsigned kWatchdogDefaultSecs = 5;
-static void sb_watchdog_handler(int) {
-    const char* msg = "\n=== WATCHDOG: no progress within timeout, aborting ===\n";
-    write(2, msg, std::strlen(msg));
+// SIGUSR1 handler: each thread that receives it dumps ITS OWN userspace bt.
+// The watchdog broadcasts SIGUSR1 to every task tid so we get all threads.
+#include <sys/syscall.h>
+static void sb_sigusr1_handler(int) {
+    pid_t tid = (pid_t)syscall(SYS_gettid);
+    dprintf(2, "\n--- Thread tid=%d ---\n", (int)tid);
     void* frames[64];
     int n = backtrace(frames, 64);
     backtrace_symbols_fd(frames, n, 2);
-    write(2, "\n", 1);
+}
+static void sb_watchdog_handler(int) {
+    const char* msg = "\n=== WATCHDOG: no progress within timeout, dumping all threads ===\n";
+    write(2, msg, std::strlen(msg));
+
+    pid_t self_tid = (pid_t)syscall(SYS_gettid);
+    // First the signal-recipient thread (main) — its own bt is via backtrace().
+    dprintf(2, "\n--- Signal-recipient thread (main tid=%d) ---\n", (int)self_tid);
+    void* frames[64];
+    int n = backtrace(frames, 64);
+    backtrace_symbols_fd(frames, n, 2);
+
+    // Broadcast SIGUSR1 to every other thread; each dumps its own bt.
+    DIR* d = opendir("/proc/self/task");
+    if (d) {
+        struct dirent* de;
+        pid_t pid = getpid();
+        while ((de = readdir(d)) != nullptr) {
+            if (de->d_name[0] == '.') continue;
+            pid_t tid = (pid_t)atoi(de->d_name);
+            if (tid == self_tid) continue;
+            syscall(SYS_tgkill, pid, tid, SIGUSR1);
+        }
+        closedir(d);
+    }
+    // Give the handlers time to run before we exit.
+    struct timespec ts = { 0, 200 * 1000 * 1000 };
+    nanosleep(&ts, nullptr);
+    write(2, "\n=== end thread dump ===\n", 25);
     _exit(134);
 }
 extern "C" void sb_watchdog_kick(void) {
@@ -51,8 +92,15 @@ static void sb_watchdog_install(void) {
     struct sigaction sa{};
     sa.sa_handler = sb_watchdog_handler;
     sigemptyset(&sa.sa_mask);
-    sa.sa_flags = 0;
+    sa.sa_flags = SA_RESTART;
     sigaction(SIGALRM, &sa, nullptr);
+
+    struct sigaction su{};
+    su.sa_handler = sb_sigusr1_handler;
+    sigemptyset(&su.sa_mask);
+    su.sa_flags = SA_RESTART;
+    sigaction(SIGUSR1, &su, nullptr);
+
     sb_watchdog_kick();
 }
 
@@ -105,11 +153,16 @@ int main(int argc, char* argv[]) {
     // (window/present/event pump).
     std::atomic<int> game_rc{-1};
     std::thread game([&game_rc]() {
+        sb_mark_game_thread();  // routes plain `new` onto the JKR heap
         gpApplication.initialize();
         gpApplication.proc();
         gpApplication.finalize();
         game_rc.store(0);
     });
+    // Main thread is IO-only; its `new` (SDL/Aurora/etc.) must stay off the
+    // non-thread-safe JKR heap. The static-init heap bringup may have marked
+    // process-main by default; unmark it here.
+    sb_unmark_game_thread();
 
     // MAIN thread — Aurora IO pump. Runs the event loop and per-frame
     // begin/end so the swapchain doesn't stall. Exits when the game thread
