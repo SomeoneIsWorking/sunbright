@@ -508,3 +508,36 @@ foreach(test_src ${SMS_PLATFORM_TESTS})
     target_link_libraries(sms-${test_name} PRIVATE sms-platform sms-gd sms-assets)
     add_test(NAME platform_${test_name} COMMAND sms-${test_name})
 endforeach()
+
+# ---------------------------------------------------------------------------
+# sms-boot-gc — Path A: GC-faithful bring-up via Aurora (extern/aurora).
+#
+# reference/sms's GC SDK calls (GXSetChanCtrl, GXBegin, ...) go through Aurora's
+# <dolphin/*.h> onto WebGPU/Dawn. Coexists with sms-boot (Path B, SDL3-GPU
+# direct). For MVP this target links only aurora_bridge.cpp against
+# aurora_core; the game bring-up is stubbed to a clear-frame loop so we can
+# prove the Aurora pipeline is alive before wiring the game thread in.
+#
+# Aurora is added by the ROOT CMakeLists.txt via add_subdirectory(extern/aurora).
+# When sms-boot/ is configured standalone (no root), aurora_core is absent and
+# this target is silently skipped — Path B (sms-boot) is fully functional
+# without it.
+# ---------------------------------------------------------------------------
+if(TARGET aurora_core)
+    add_executable(sms-boot-gc
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/render_gc/aurora_bridge.cpp")
+    set_target_properties(sms-boot-gc PROPERTIES
+        CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+    # Aurora's example (extern/aurora/examples/simple.c) links the same four.
+    target_link_libraries(sms-boot-gc PRIVATE
+        aurora::core   # SDL3 + WebGPU/Dawn app framework
+        aurora::gx     # GC GX SDK -> WebGPU pipeline
+        aurora::main   # provides real main() that dispatches to our aurora_main
+        aurora::vi     # VI framebuffer size
+        Threads::Threads)
+    # NOTE: intentionally no sms-native / sms-platform link here yet. The game
+    # bring-up + reference/sms compilation under Aurora's dolphin headers is a
+    # separate arc; MVP proves aurora_core links + a Vulkan clear renders.
+else()
+    message(STATUS "sms-boot-gc skipped: aurora_core not defined (build from root CMakeLists.txt).")
+endif()
