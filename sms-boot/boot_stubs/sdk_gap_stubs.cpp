@@ -238,42 +238,11 @@ void JRNSetIndTexMtx(GXIndTexMtxID, float (*)[3], signed char) {}
 void JRNSetIndTexOrder(unsigned int, GXTexCoordID, GXTexMapID, GXTexCoordID, GXTexMapID, GXTexCoordID, GXTexMapID, GXTexCoordID, GXTexMapID) {}
 void JRNSetTevIndirect(GXTevStageID, GXIndTexStageID, GXIndTexFormat, GXIndTexBiasSel, GXIndTexMtxID, GXIndTexWrap, GXIndTexWrap, bool, bool, GXIndTexAlphaSel) {}
 
-// ---- JPA fields (JPAField.cpp is excluded — PPC-only impl; declare minimal
-// hierarchy the emitter references) ----
-JPABaseField::JPABaseField() {}
-namespace {
-struct StubField {};
-}
-class JPAFieldManager {
-public:
-    JPAFieldManager();
-    ~JPAFieldManager();
-    void deleteAllField();
-    void setField(unsigned char);
-    void calcFieldParams();
-    void affectField(JPAParticle*);
-};
-JPAFieldManager::JPAFieldManager() {}
-JPAFieldManager::~JPAFieldManager() {}
-void JPAFieldManager::deleteAllField() {}
-void JPAFieldManager::setField(unsigned char) {}
-void JPAFieldManager::calcFieldParams() {}
-void JPAFieldManager::affectField(JPAParticle*) {}
-void JPABaseField_loadFieldBlock_stub(void*) {}
-namespace {
-struct JPABaseFieldBinder {
-    JPABaseFieldBinder() {}
-};
-}
-// Force JPABaseField::loadFieldBlock symbol; mangled name must match. Provide via
-// method definition inline in a translation unit that sees the class.
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wall"
-extern "C" {
-// Fallback: define mangled symbol directly via asm alias.
-void _ZN12JPABaseField14loadFieldBlockEP12JPADataBlock(void*, void*) {}
-}
-#pragma GCC diagnostic pop
+// (Removed: JPAField.cpp is now built as part of sms-native — see CMakeLists.txt.
+// The stubs here previously provided empty ctors/methods that skipped critical
+// JSUPtrLink init in JPABaseField::JPABaseField(), leaving fresh fields with
+// uninitialized mPtrList/mPrev/mNext and crashing JSUPtrList::prepend on any
+// SolidHeap reuse.)
 
 // ---- JUTException / JUTDirectPrint (JUT*.cpp excluded — provide static storage
 // + no-op methods so callers link) ----

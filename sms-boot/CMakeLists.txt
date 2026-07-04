@@ -44,8 +44,12 @@ list(FILTER SMS_NATIVE_SOURCES EXCLUDE REGEX
      "/reference/sms/src/JSystem/JUtility/JUTDirectPrint\\.cpp$")
 list(FILTER SMS_NATIVE_SOURCES EXCLUDE REGEX
      "/reference/sms/src/JSystem/JRenderer\\.cpp$")
-list(FILTER SMS_NATIVE_SOURCES EXCLUDE REGEX
-     "/reference/sms/src/JSystem/JParticle/JPAField\\.cpp$")
+# JPAField.cpp was previously excluded as "PPC-only impl". Not true — the source
+# in reference/sms is portable C++ and its ctor `unk0(this)` is required to
+# initialize JSUPtrLink members. Without it the stub in boot_stubs was leaving
+# mData/mPtrList/mPrev/mNext uninitialized, and JPAEmitterManager's fields loop
+# then re-entered a "stale" field (previously used on a reset SolidHeap) with
+# mPtrList=non-null and crashed inside JSUPtrList::prepend's unlink path.
 
 list(APPEND SMS_NATIVE_SOURCES
      "${SMS_NATIVE_REPO_ROOT}/sms-boot/src/sms_boot_audio.cpp")
