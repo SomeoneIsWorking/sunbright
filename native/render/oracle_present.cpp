@@ -224,15 +224,36 @@ extern "C" void sb_oracle_present_frame(void* /*framebuffer*/, void* /*user*/) {
     sb::gxsdl::backbuffer_size(&win_w, &win_h);
     if (win_w > 0 && win_h > 0) { w = win_w; h = win_h; }
 
-    // Fallback: Dolphin didn't come up — paint stub so the user still sees
-    // something diagnostic instead of a black window.
+    // FAIL FAST (CLAUDE.md § "FAIL FAST"): if Dolphin's video backend didn't
+    // come up, we USED TO paint a magenta stub pattern and continue. That's
+    // exactly the class of silent failure the discipline forbids — a bogus
+    // output that looks like "Tier 2 rendered something" while it's really
+    // just fill. Any dependent measurement (parity harness, oracle A/B) will
+    // report a wrong number without any indication it's wrong.
+    // Now: abort with a clear message. SB_ORACLE_ALLOW_STUB=1 preserves the
+    // old fallback for when someone genuinely wants a placeholder (rare;
+    // documented for archaeology).
     if (!s_video_up || !g_gfx) {
-        static std::vector<uint8_t> s_buf;
-        const size_t need = (size_t)w * h * 4;
-        if (s_buf.size() != need) s_buf.assign(need, 0);
-        paint_stub(s_buf, w, h);
-        if (win_w > 0) sb::gxsdl::inject_cpu_frame(s_buf.data(), w, h);
-        return;
+        static const bool allow_stub = std::getenv("SB_ORACLE_ALLOW_STUB") != nullptr;
+        if (allow_stub) {
+            static std::vector<uint8_t> s_buf;
+            const size_t need = (size_t)w * h * 4;
+            if (s_buf.size() != need) s_buf.assign(need, 0);
+            paint_stub(s_buf, w, h);
+            if (win_w > 0) sb::gxsdl::inject_cpu_frame(s_buf.data(), w, h);
+            return;
+        }
+        std::fprintf(stderr,
+            "\n[oracle] ABORT — Dolphin video backend did NOT come up. "
+            "s_video_up=%d g_gfx=%p. Look above for the last "
+            "[oracle] init line — the failure mode is whatever line stopped "
+            "printing. Common causes: missing Vulkan driver, headless WSI "
+            "unsupported, UICommon config path invalid. Set "
+            "SB_ORACLE_ALLOW_STUB=1 to fall back to the magenta stub (NOT "
+            "what you want in a parity harness).\n",
+            (int)s_video_up, (void*)g_gfx.get());
+        std::fflush(stderr);
+        std::abort();
     }
 
     // Diagnostic: is present_hook itself being called repeatedly? Skip all
@@ -241,11 +262,22 @@ extern "C" void sb_oracle_present_frame(void* /*framebuffer*/, void* /*user*/) {
     static const bool skip_dolphin = [](){ const char* v = std::getenv("SB_ORACLE_SKIP_DOLPHIN"); return v && v[0] && v[0] != '0'; }();
     if (skip_dolphin) return;
 
-    // Dolphin path (step 4b-A): clear a Dolphin-allocated color RT, read back
-    // to CPU, inject into sms-boot's window. Solid color driven by frame
-    // counter proves both the GPU pipeline (clear + submit) and the readback
-    // path work. Step 4c wires up real GX state → VertexManager → this RT.
-    if (!ensure_rt(w, h)) return;
+    // Dolphin path: clear a Dolphin-allocated color RT, read back to CPU,
+    // inject into sms-boot's window. Solid color driven by frame counter
+    // proves both the GPU pipeline (clear + submit) and the readback path
+    // work. FAIL FAST: RT allocation failure would previously return silently;
+    // now aborts — a silent skip produces a stale/reused readback buffer.
+    if (!ensure_rt(w, h)) {
+        std::fprintf(stderr,
+            "\n[oracle] ABORT — ensure_rt(%d, %d) FAILED. Dolphin's g_gfx "
+            "couldn't allocate the color RT / framebuffer / staging texture. "
+            "Check the [oracle] error line printed inside ensure_rt for the "
+            "specific SDL/Vulkan failure. Cannot continue: a silent return "
+            "would reuse the last frame's readback buffer as if it were "
+            "fresh — the exact silent-fail case FAIL FAST catches.\n", w, h);
+        std::fflush(stderr);
+        std::abort();
+    }
 
     static int s_frame = 0;
     ++s_frame;
@@ -284,6 +316,15 @@ extern "C" void sb_oracle_present_frame(void* /*framebuffer*/, void* /*user*/) {
     // internal EFB and left s_fbo untouched — so the readback showed only the
     // clear color. Now clear + read the EFB itself.
     AbstractFramebuffer* efb = g_framebuffer_manager->GetEFBFramebuffer();
+    if (!efb) {
+        std::fprintf(stderr,
+            "\n[oracle] ABORT — g_framebuffer_manager->GetEFBFramebuffer() "
+            "returned null. Dolphin's FramebufferManager is not set up. "
+            "Something went wrong between VideoBackend::Initialize returning "
+            "true and now; check the CreateFramebufferManager path.\n");
+        std::fflush(stderr);
+        std::abort();
+    }
     g_gfx->SetAndClearFramebuffer(efb, clear, 0.0f);
 
     // ── Real GX pipeline through Dolphin (step 4c) ─────────────────────────
@@ -333,6 +374,13 @@ extern "C" void sb_oracle_present_frame(void* /*framebuffer*/, void* /*user*/) {
     // output) to CPU. The staging texture we allocated is sized w×h — Dolphin's
     // EFB is 640×528 at 1x scale. We copy the game's 640×480 top region.
     AbstractTexture* efb_color = g_framebuffer_manager->GetEFBColorTexture();
+    if (!efb_color) {
+        std::fprintf(stderr,
+            "\n[oracle] ABORT — GetEFBColorTexture() returned null "
+            "post-clear. Cannot read back.\n");
+        std::fflush(stderr);
+        std::abort();
+    }
     if (s_frame == 1) {
         std::fprintf(stderr, "[oracle] EFB texture = %ux%u\n",
                      efb_color->GetWidth(), efb_color->GetHeight());
@@ -352,27 +400,47 @@ extern "C" void sb_oracle_present_frame(void* /*framebuffer*/, void* /*user*/) {
 
     if (win_w > 0) sb::gxsdl::inject_cpu_frame(s_buf.data(), w, h);
 
-    // Dump PPMs at spaced intervals to catch different game phases (title
-    // shows real content ~frame 300+). Path C step 4b-A verification.
+    // Dump PPMs at spaced intervals to catch different game phases. FAIL FAST:
+    // if fopen or fwrite fails, abort with the specific reason — a silent
+    // fopen-null was hiding "the harness relocated an empty file" bugs.
     if (s_frame == 1 || s_frame == 30 || s_frame == 60 || s_frame == 120 ||
         s_frame == 200 || s_frame == 300 || s_frame == 400 || s_frame == 500) {
         std::fprintf(stderr, "[oracle] f%d clear=(%.3f,%.3f,%.3f)\n", s_frame,
                      game_clear[0], game_clear[1], game_clear[2]);
         char path[256];
         std::snprintf(path, sizeof(path), "scratch/frames/oracle_%04d.ppm", s_frame);
-        if (FILE* f = std::fopen(path, "wb")) {
-            std::fprintf(f, "P6\n%d %d\n255\n", w, h);
-            // s_buf is RGBA — write RGB triplets.
-            std::vector<uint8_t> rgb((size_t)w * h * 3);
-            for (int i = 0; i < w * h; ++i) {
-                rgb[i * 3 + 0] = s_buf[i * 4 + 0];
-                rgb[i * 3 + 1] = s_buf[i * 4 + 1];
-                rgb[i * 3 + 2] = s_buf[i * 4 + 2];
-            }
-            std::fwrite(rgb.data(), 1, rgb.size(), f);
-            std::fclose(f);
-            std::fprintf(stderr, "[oracle] wrote %s\n", path);
+        FILE* f = std::fopen(path, "wb");
+        if (!f) {
+            std::fprintf(stderr, "\n[oracle] ABORT — fopen(%s, wb) failed. "
+                                 "scratch/frames/ may not exist or be writable.\n",
+                         path);
+            std::fflush(stderr);
+            std::abort();
         }
+        if (std::fprintf(f, "P6\n%d %d\n255\n", w, h) <= 0) {
+            std::fclose(f);
+            std::fprintf(stderr, "\n[oracle] ABORT — PPM header write to %s "
+                                 "failed.\n", path);
+            std::fflush(stderr);
+            std::abort();
+        }
+        // s_buf is RGBA — write RGB triplets.
+        std::vector<uint8_t> rgb((size_t)w * h * 3);
+        for (int i = 0; i < w * h; ++i) {
+            rgb[i * 3 + 0] = s_buf[i * 4 + 0];
+            rgb[i * 3 + 1] = s_buf[i * 4 + 1];
+            rgb[i * 3 + 2] = s_buf[i * 4 + 2];
+        }
+        const size_t got = std::fwrite(rgb.data(), 1, rgb.size(), f);
+        if (got != rgb.size()) {
+            std::fclose(f);
+            std::fprintf(stderr, "\n[oracle] ABORT — PPM body write to %s short: "
+                                 "got %zu of %zu bytes.\n", path, got, rgb.size());
+            std::fflush(stderr);
+            std::abort();
+        }
+        std::fclose(f);
+        std::fprintf(stderr, "[oracle] wrote %s\n", path);
     }
 
     // NOTE: the NATIVE_PC path also drains sb_boot_capture_tev_take + the imm

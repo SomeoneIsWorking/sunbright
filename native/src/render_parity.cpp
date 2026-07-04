@@ -32,9 +32,24 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>   // std::abort
 #include <cstring>
 #include <sys/stat.h>
 #include <vector>
+
+// FAIL FAST (CLAUDE.md § "FAIL FAST"): every precondition / postcondition failure
+// in the parity harness turns into a hard abort with a full diagnostic message.
+// A "silent" failure here (silent no-op, return-error-code that the shell script
+// ignores) manufactures a bogus green PPM and hides the real bug. Two runs of a
+// broken tier must produce a LOUD abort — not a smaller PPM, not a bit-exact
+// zero, not a truncated file. Wrapping the printf + abort in a macro so the
+// error site + line show up in the stack.
+#define PARITY_PANIC(fmt, ...) do { \
+    std::fprintf(stderr, "\n[parity] ABORT at %s:%d — " fmt "\n", \
+                 __FILE__, __LINE__, ##__VA_ARGS__); \
+    std::fflush(stderr); \
+    std::abort(); \
+} while (0)
 
 // Forward decls of the two render sinks.
 extern "C" void sb_oracle_present_frame(void* framebuffer, void* user) __attribute__((weak));
@@ -66,30 +81,58 @@ const char* kPassFrag =
     "layout(push_constant) uniform Mat { ivec4 kcolor[4]; ivec4 tevreg[4]; } m;\n"
     "void main(){ o = vColor; }\n";
 
-bool write_ppm_rgba(const char* path, const uint8_t* rgba, int w, int h) {
+void write_ppm_rgba_or_panic(const char* path, const uint8_t* rgba, int w, int h) {
     FILE* f = std::fopen(path, "wb");
-    if (!f) return false;
-    std::fprintf(f, "P6\n%d %d\n255\n", w, h);
+    if (!f) PARITY_PANIC("open PPM for write failed: %s (errno-strerror below)\n"
+                         "                (harness cannot produce output; check "
+                         "path exists / is writable)", path);
+    if (std::fprintf(f, "P6\n%d %d\n255\n", w, h) <= 0) {
+        std::fclose(f);
+        PARITY_PANIC("write PPM header failed: %s", path);
+    }
     std::vector<uint8_t> rgb((size_t)w * h * 3);
     for (int i = 0; i < w * h; ++i) {
         rgb[i * 3 + 0] = rgba[i * 4 + 0];
         rgb[i * 3 + 1] = rgba[i * 4 + 1];
         rgb[i * 3 + 2] = rgba[i * 4 + 2];
     }
-    std::fwrite(rgb.data(), 1, rgb.size(), f);
-    std::fclose(f);
-    return true;
+    const size_t wanted = rgb.size();
+    const size_t got = std::fwrite(rgb.data(), 1, wanted, f);
+    if (got != wanted) {
+        std::fclose(f);
+        PARITY_PANIC("write PPM body short: got %zu bytes, wanted %zu (%s)",
+                     got, wanted, path);
+    }
+    if (std::fclose(f) != 0)
+        PARITY_PANIC("close PPM failed: %s", path);
 }
 
-bool copy_file(const char* src, const char* dst) {
+void copy_file_or_panic(const char* src, const char* dst) {
     FILE* in = std::fopen(src, "rb");
-    if (!in) return false;
+    if (!in) PARITY_PANIC("open source for copy failed: %s (Tier-2 oracle sink "
+                          "was supposed to write this — its present function may "
+                          "have silently failed to produce a PPM)", src);
     FILE* out = std::fopen(dst, "wb");
-    if (!out) { std::fclose(in); return false; }
+    if (!out) { std::fclose(in); PARITY_PANIC("open dest for copy failed: %s", dst); }
     uint8_t buf[8192];
-    while (size_t n = std::fread(buf, 1, sizeof buf, in)) std::fwrite(buf, 1, n, out);
+    size_t total = 0;
+    while (size_t n = std::fread(buf, 1, sizeof buf, in)) {
+        size_t got = std::fwrite(buf, 1, n, out);
+        if (got != n) {
+            std::fclose(in); std::fclose(out);
+            PARITY_PANIC("copy short: got %zu/%zu at offset %zu (%s -> %s)",
+                         got, n, total, src, dst);
+        }
+        total += n;
+    }
+    if (total == 0) {
+        std::fclose(in); std::fclose(out);
+        PARITY_PANIC("copy source was empty: %s (Tier-2 oracle sink produced a "
+                     "0-byte PPM — its present function completed but wrote "
+                     "nothing; this is the silent-fail case FAIL FAST catches)",
+                     src);
+    }
     std::fclose(in); std::fclose(out);
-    return true;
 }
 
 const char* tier_name(sb::engine::RenderMode m) {
@@ -208,18 +251,29 @@ NvkTevBatch imm_to_tev_batch(const SbImmBatch& ib, uint32_t vertex_base) {
 }
 
 int run_tier1(const char* test_name, bool has_geometry) {
-    if (!sb::gxsdl::init(kW, kH)) {
-        std::fprintf(stderr, "[parity] Tier 1: sb::gxsdl::init(%d,%d) FAILED — "
-                             "need SDL_VIDEODRIVER=offscreen or a valid display\n",
+    if (!sb::gxsdl::init(kW, kH))
+        PARITY_PANIC("Tier 1: sb::gxsdl::init(%d,%d) FAILED — set "
+                     "SDL_VIDEODRIVER=offscreen or run with a valid display",
                      kW, kH);
-        return 1;
-    }
+
     // Drain any immediate-mode geometry the scenario submitted. For a clear-only
-    // scenario (needs_geometry=false) this returns 0 batches; that's fine.
+    // scenario (has_geometry=false) this returns 0 batches; that's expected.
+    // If the scenario CLAIMED geometry but the imm buffer is empty, that's a
+    // silent capture bug — panic instead of silently rendering a clear frame.
     const SbImmVtx* imm_verts = nullptr;
     const SbImmBatch* imm_batches = nullptr;
     int n_imm_batches = 0;
     int n_imm_verts = sb_gx_imm_take_batches(&imm_verts, &imm_batches, &n_imm_batches);
+    if (has_geometry && n_imm_verts == 0)
+        PARITY_PANIC("Tier 1: scenario '%s' declared has_geometry=true but "
+                     "sb_gx_imm_take_batches returned 0 vertices — the GXBegin/"
+                     "GXPosition/GXEnd path in the scenario didn't capture "
+                     "anything into GXState. This is a silent-capture bug.",
+                     test_name);
+    if (has_geometry && n_imm_batches == 0)
+        PARITY_PANIC("Tier 1: scenario '%s' captured %d vertices but 0 batches "
+                     "— the SbImmBatch record wasn't emitted (finalize_prim gap)",
+                     test_name, n_imm_verts);
 
     // Build the NvkTev vertex + batch list. For synth-clear there are none.
     std::vector<NvkTevVertex> verts;
@@ -250,18 +304,39 @@ int run_tier1(const char* test_name, bool has_geometry) {
     sb::gxsdl::frame_end();
 
     std::vector<uint8_t> pix((size_t)kW * kH * 4, 0);
-    if (!sb::gxsdl::readback(pix.data(), kW, kH)) {
-        std::fprintf(stderr, "[parity] Tier 1: readback FAILED\n");
-        return 1;
+    if (!sb::gxsdl::readback(pix.data(), kW, kH))
+        PARITY_PANIC("Tier 1: sb::gxsdl::readback(%d,%d) FAILED — SDL3 GPU may "
+                     "have failed to download the color target; check that the "
+                     "render pass actually executed (frame_begin/end pair)",
+                     kW, kH);
+
+    // NOTE: sb::gxsdl silent-return preconditions (g_ok, g_in_frame, g_cmd) can
+    // ALSO produce a zero-buffer readback without any explicit failure. Detect
+    // that case: if the scenario declared has_geometry and the buffer is
+    // uniformly the clear colour, the batches were dropped silently.
+    if (has_geometry) {
+        bool all_uniform = true;
+        const uint8_t* p0 = pix.data();
+        for (int i = 4; i < (int)pix.size(); i += 4) {
+            if (pix[i] != p0[0] || pix[i+1] != p0[1] || pix[i+2] != p0[2]) {
+                all_uniform = false; break;
+            }
+        }
+        if (all_uniform)
+            PARITY_PANIC("Tier 1: scenario '%s' declared has_geometry=true but "
+                         "the readback framebuffer is uniformly (%u,%u,%u) — "
+                         "the batches were silently dropped. Likely candidates: "
+                         "vertices clipped by the Vulkan [0,1] depth range, "
+                         "sb::gxsdl::draw_tev_segment early-returned due to a "
+                         "precondition, or the shader failed to compile silently.",
+                         test_name, p0[0], p0[1], p0[2]);
     }
+
     ::mkdir("scratch", 0755);
     ::mkdir("scratch/parity", 0755);
     char path[192];
     std::snprintf(path, sizeof path, "scratch/parity/%s.native.ppm", test_name);
-    if (!write_ppm_rgba(path, pix.data(), kW, kH)) {
-        std::fprintf(stderr, "[parity] Tier 1: PPM write FAILED (%s)\n", path);
-        return 1;
-    }
+    write_ppm_rgba_or_panic(path, pix.data(), kW, kH);
     std::fprintf(stderr, "[parity] Tier 1 wrote %s (%d imm verts, %d batches)\n",
                  path, n_imm_verts, n_imm_batches);
     if (std::getenv("SB_PARITY_DBG")) {
@@ -283,14 +358,13 @@ int run_tier1(const char* test_name, bool has_geometry) {
 // ── Tier-2 render: Dolphin videovulkan in-process ──────────────────────────────
 
 int run_tier2(const char* test_name) {
-    if (!&sb_oracle_present_frame) {
-        std::fprintf(stderr, "[parity] Tier 2 (oracle) sink NOT LINKED into this "
-                             "sms-boot build. Rebuild with root-CMake so the "
-                             "Dolphin videovulkan sink is included.\n");
-        return 1;
-    }
-    // The oracle sink writes its PPM at frame 1 (native/render/oracle_present.cpp).
-    // Delete any stale file first so we know our copy is fresh.
+    if (!&sb_oracle_present_frame)
+        PARITY_PANIC("Tier 2 (oracle) sink NOT LINKED into this sms-boot build. "
+                     "Rebuild with root-CMake `cmake --build build --target "
+                     "sms-boot -j` so the Dolphin videovulkan sink is included; "
+                     "the standalone build-native/ target links only Tier 1.");
+
+    // Delete any stale file so we can be sure this run produced our copy.
     const char* src_ppm = "scratch/frames/oracle_0001.ppm";
     std::remove(src_ppm);
 
@@ -300,12 +374,9 @@ int run_tier2(const char* test_name) {
     ::mkdir("scratch/parity", 0755);
     char dst_path[192];
     std::snprintf(dst_path, sizeof dst_path, "scratch/parity/%s.oracle.ppm", test_name);
-    if (!copy_file(src_ppm, dst_path)) {
-        std::fprintf(stderr, "[parity] Tier 2: could not relocate %s -> %s "
-                             "(oracle sink may have failed to write)\n",
-                     src_ppm, dst_path);
-        return 1;
-    }
+    // copy_file_or_panic aborts on missing source, 0-byte source, or short
+    // copy — the three silent-fail cases the oracle sink can produce.
+    copy_file_or_panic(src_ppm, dst_path);
     std::fprintf(stderr, "[parity] Tier 2 wrote %s\n", dst_path);
     return 0;
 }
@@ -327,14 +398,15 @@ extern "C" int sb_render_parity_run(const char* test_name) {
         SynthTriangle::program();
         has_geometry = SynthTriangle::needs_geometry();
     } else {
-        std::fprintf(stderr, "[parity] unknown test-name '%s' (known: "
-                             "synth-clear, synth-triangle)\n", test_name);
-        return 2;
+        PARITY_PANIC("unknown test-name '%s' — known scenarios: synth-clear, "
+                     "synth-triangle. Typo in SB_HARNESS?", test_name);
     }
 
     switch (mode) {
     case sb::engine::RenderMode::NATIVE_PC: return run_tier1(test_name, has_geometry);
     case sb::engine::RenderMode::GX_ORACLE: return run_tier2(test_name);
     }
-    return 3;
+    PARITY_PANIC("unreachable: unknown sb::engine::RenderMode (%d) — "
+                 "engine.h enum extended without harness dispatch",
+                 (int)mode);
 }

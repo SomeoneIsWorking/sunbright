@@ -38,27 +38,51 @@ COMMON_ENV=(
     "SB_WATCHDOG_SECS=0"
 )
 
+# FAIL FAST: three ways a run can be bad, distinguished so we never silently
+# accept a broken result:
+#   1. The harness explicitly panicked (`[parity] ABORT`, `[oracle] ABORT`)
+#      — the FAIL FAST paths in native/src/render_parity.cpp and
+#      native/render/oracle_present.cpp. Definitive failure.
+#   2. The PPM file didn't materialise. Also definitive.
+#   3. The process exited non-zero but the PPM is present and no ABORT marker.
+#      This is the KNOWN Vulkan-layer (liblsfg-vk.so) SEGV on shutdown, which
+#      fires AFTER main returned successfully. Warn but treat as OK — the PPM
+#      IS the deliverable. If a real shutdown ordering bug creeps in later,
+#      we'll see it as an ABORT before then.
+run_tier() {
+    local tier=$1 ; shift
+    local logfile="scratch/parity/${TEST_NAME}.${tier}.log"
+    timeout 45 setarch -R env "${COMMON_ENV[@]}" "$@" \
+        "$BIN" > "$logfile" 2>&1
+    local rc=$?
+    # Case 1: explicit panic from our own FAIL FAST paths.
+    if grep -qE '\[(parity|oracle)\] ABORT' "$logfile"; then
+        echo "  FAIL: Tier ${tier} panicked (see [ABORT] line):" >&2
+        grep -A5 -E '\[(parity|oracle)\] ABORT' "$logfile" >&2
+        return 1
+    fi
+    # Case 2: PPM missing.
+    if [[ ! -s "scratch/parity/${TEST_NAME}.${tier}.ppm" ]]; then
+        echo "  FAIL: Tier ${tier} did not produce " \
+             "scratch/parity/${TEST_NAME}.${tier}.ppm (exit=$rc)" >&2
+        tail -30 "$logfile" >&2
+        return 2
+    fi
+    # Case 3: non-zero exit but PPM present. Warn only.
+    if [[ $rc -ne 0 ]]; then
+        echo "  OK (with post-write exit $rc): scratch/parity/${TEST_NAME}.${tier}.ppm" \
+             "— likely Vulkan-layer shutdown SEGV, harmless"
+    else
+        echo "  OK: scratch/parity/${TEST_NAME}.${tier}.ppm"
+    fi
+    return 0
+}
+
 echo "[1/2] Tier 1 (native SDL3-GPU)"
-timeout 30 setarch -R env "${COMMON_ENV[@]}" \
-    SB_RENDER=native SDL_VIDEODRIVER=offscreen \
-    "$BIN" > scratch/parity/${TEST_NAME}.native.log 2>&1 || true
-if [[ ! -s "scratch/parity/${TEST_NAME}.native.ppm" ]]; then
-    echo "  FAIL: Tier 1 didn't produce scratch/parity/${TEST_NAME}.native.ppm" >&2
-    tail -20 scratch/parity/${TEST_NAME}.native.log >&2
-    exit 2
-fi
-echo "  OK: scratch/parity/${TEST_NAME}.native.ppm"
+run_tier native SB_RENDER=native SDL_VIDEODRIVER=offscreen || exit 2
 
 echo "[2/2] Tier 2 (Dolphin videovulkan in-process)"
-timeout 45 setarch -R env "${COMMON_ENV[@]}" \
-    SB_RENDER=oracle \
-    "$BIN" > scratch/parity/${TEST_NAME}.oracle.log 2>&1 || true
-if [[ ! -s "scratch/parity/${TEST_NAME}.oracle.ppm" ]]; then
-    echo "  FAIL: Tier 2 didn't produce scratch/parity/${TEST_NAME}.oracle.ppm" >&2
-    tail -20 scratch/parity/${TEST_NAME}.oracle.log >&2
-    exit 3
-fi
-echo "  OK: scratch/parity/${TEST_NAME}.oracle.ppm"
+run_tier oracle SB_RENDER=oracle || exit 3
 
 echo
 echo "[diff]"
