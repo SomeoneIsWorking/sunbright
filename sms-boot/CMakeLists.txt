@@ -73,10 +73,23 @@ file(COPY "${SMS_NATIVE_REPO_ROOT}/reference/sms/include/"
      PATTERN "dolphin" EXCLUDE
      PATTERN "dolphin.h" EXCLUDE)
 
-# TARGET_PC gates Aurora's fixed-width typedefs.
-# SMS_NATIVE_PLATFORM is the PC-engine gate INSIDE reference/sms: single-threaded,
-# sync/instant loading, skip-CD paths, etc.
-target_compile_definitions(sms-native PUBLIC TARGET_PC=1 SMS_NATIVE_PLATFORM=1)
+# Three orthogonal compile-time gates:
+#   TARGET_PC          — Aurora's fixed-width typedefs (BOOL/s32/u32/etc.).
+#                        Owned by Aurora, not by reference/sms game code.
+#   SMS_NATIVE_PLATFORM — PC ENGINE gate: single-threaded, sync/instant loading,
+#                        no OSCreateThread carriers, host-malloc paths, fail-fast
+#                        panics. Purely game-side. Has nothing to do with rendering.
+#   SMS_AURORA         — AURORA RENDERER gate: skip raw GC display-list callsites
+#                        (Aurora extends the fifo format with GX_AURORA subcommands
+#                        + size/le payloads), route J3DLoadArrayBasePtr through
+#                        the AURORA_LOAD_ARRAYBASE opcode. Enabled iff we're
+#                        rendering through aurora::gx.
+# Two-project TDD: an alternate renderer (e.g. a future SDL3-GPU path) would
+# leave SMS_NATIVE_PLATFORM=1 but drop SMS_AURORA.
+target_compile_definitions(sms-native PUBLIC
+    TARGET_PC=1
+    SMS_NATIVE_PLATFORM=1
+    SMS_AURORA=1)
 
 target_include_directories(sms-native PUBLIC
     "${SMS_NATIVE_REPO_ROOT}/extern/aurora/include"
@@ -114,7 +127,7 @@ set_source_files_properties(${SMS_GD_SOURCES} PROPERTIES LANGUAGE CXX)
 target_include_directories(sms-gd PUBLIC
     "${SMS_NATIVE_REPO_ROOT}/extern/aurora/include"
     "${SMS_INCLUDE_STAGED}")
-target_compile_definitions(sms-gd PUBLIC TARGET_PC=1 SMS_NATIVE_PLATFORM=1)
+target_compile_definitions(sms-gd PUBLIC TARGET_PC=1 SMS_NATIVE_PLATFORM=1 SMS_AURORA=1)
 target_compile_options(sms-gd PRIVATE
     -include "${SMS_NATIVE_REPO_ROOT}/extern/aurora/include/dolphin/types.h"
     -w -fcommon)
@@ -166,6 +179,7 @@ if(TARGET aurora_core)
             "$<$<COMPILE_LANGUAGE:CXX>:-include;${SMS_NATIVE_REPO_ROOT}/extern/aurora/include/dolphin/types.h>"
             "$<$<COMPILE_LANGUAGE:CXX>:-DTARGET_PC=1>"
             "$<$<COMPILE_LANGUAGE:CXX>:-DSMS_NATIVE_PLATFORM=1>"
+            "$<$<COMPILE_LANGUAGE:CXX>:-DSMS_AURORA=1>"
             -w -fcommon)
     endif()
 
