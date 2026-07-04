@@ -214,13 +214,26 @@ extern "C" void sb_gx_emit_full_state(void) {
     // ── BP registers ────────────────────────────────────────────────────────
     // GENMODE (0x00) — composed from num-* / cull.
     emit_genmode();
-    // SCISSOR TL/BR (0x20/0x21) + offset (0x59, always 0 for the game).
+    // SCISSOR TL/BR (0x20/0x21) + SCISSOROFFSET (0x59). Native's SCISSORTL/BR
+    // encoding adds the GX-required 342-pixel bias to both left/top. Dolphin's
+    // BPFunctions::SetScissorAndViewport reads scissor_offset (0x59) and does
+    // `x_off = scissor_off.x << 1`, then subtracts x_off from scissorTL to
+    // recover the game-space scissor. The GC hardware default is
+    // scissor_offset.x = scissor_offset.y = 342/2 = 171 → x_off = y_off = 342
+    // which cancels our 342 bias exactly. Missing this emission caused Dolphin
+    // to render the entire viewport 342 pixels offset toward the bottom-right,
+    // so a triangle whose Tier-1 apex was pixel (80,79) came out at (422,421)
+    // on Tier 2 (verified 2026-07-04 via SB_ORACLE_DUMP_FIFO). Comment in
+    // externals/dolphin/.../BPFunctions.cpp:124-127 documents the cancellation.
     {
         const u32 tl = ((g.scTop  + 342) & 0x3FF) | (((g.scLeft + 342) & 0x3FF) << 12);
         const u32 br = ((g.scTop  + g.scHt - 1 + 342) & 0x3FF)
                      | (((g.scLeft + g.scWd - 1 + 342) & 0x3FF) << 12);
         sb::gxfifo::bp_write(bp::SCISSORTL, tl);
         sb::gxfifo::bp_write(bp::SCISSORBR, br);
+        // ScissorOffset: 10-bit x in bits 0-9, 10-bit y in bits 10-19.
+        const u32 off = (171u & 0x3FFu) | ((171u & 0x3FFu) << 10);
+        sb::gxfifo::bp_write(0x59, off);
     }
     // ZMODE (0x40) + BLENDMODE (0x41) + PE_CONTROL (0x43).
     {

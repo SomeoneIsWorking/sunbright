@@ -200,15 +200,15 @@ struct SynthTriangle {
         // pass-through (or at least symmetric). Using ortho(t=1, b=-1, l=-1,
         // r=1, n=0, f=1) yields a matrix that maps NDC → NDC (scales by 1).
         // The triangle vertices below are therefore already in NDC ([-1,+1]).
-        // Depth range: near=-1, far=1 (not near=0, far=1). With ortho at n=0,
-        // f=1, the depth mapping in GC clip space would put input z=0 at
-        // clip_z=-1 (out of Vulkan's [0,1] range → clipped). Using n=-1
-        // centres input z=0 at clip_z=-0.5, remapping to Vulkan z=0.25 which
-        // is inside the depth range. Confirmed 2026-07-04 fixing the
-        // "324 pixels in bottom-right corner" Tier-2 depth-clip symptom.
+        // Standard GC ortho: n=0, f=1. This is what a game would naturally
+        // use. Tier 2 must handle it — depth mapping into Vulkan's [0,1]
+        // clip range is Dolphin's responsibility (via BPMEM viewport z
+        // scale/offset), NOT the harness's. Do not "widen" this to n=-1
+        // to make the triangle render on Tier 2 — that hides a real
+        // Tier-2 bug.
         Mtx44 proj;
         C_MTXOrtho(proj, /*t=*/1.f, /*b=*/-1.f, /*l=*/-1.f, /*r=*/1.f,
-                          /*n=*/-1.f, /*f=*/1.f);
+                          /*n=*/0.f, /*f=*/1.f);
         GXSetProjection(proj, GX_ORTHOGRAPHIC);
         Mtx pos;
         MTXIdentity(pos);

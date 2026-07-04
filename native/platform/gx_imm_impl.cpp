@@ -129,6 +129,12 @@ bool  g_in_begin = false;
 int   g_prim = 0;
 int   g_prim_nverts = 0;       // GXBegin's declared vertex count (0 = unknown → rely on GXEnd)
 std::vector<SbImmVtx> g_prim_verts;
+// Parallel array holding the RAW pre-transform vertex position (as passed to
+// GXPosition3f32). Tier 2's FIFO DRAW payload must carry the raw position so
+// Dolphin's own vertex shader can apply its projection × viewport transform;
+// Tier 1 reads g_prim_verts (post-transform NDC). Populated in sb_gx_imm_pos
+// alongside g_prim_verts, cleared alongside it in sb_gx_imm_begin.
+std::vector<SbImmRawVtx> g_prim_verts_raw;
 bool  g_prim_has_uv = false;   // a GXTexCoord* fired this prim
 int   g_tc_phase = 0;          // 1-component texcoord pairing: 0 = expecting S, 1 = T
 
@@ -346,17 +352,22 @@ static void emit_fifo_draw() {
     // Vertex payload: position (3xF32) + color0 (4xF32 → 4xU8 RGBA) + texcoord0 (2xF32).
     // Layout MUST match VAT slot 0 above; for the first cut we emit F32 across the
     // board and rely on Dolphin's default VAT (mostly F32) to accept it.
-    for (const auto& v : g_prim_verts) {
-        sb::gxfifo::write_f32_be(v.x);
-        sb::gxfifo::write_f32_be(v.y);
-        sb::gxfifo::write_f32_be(v.z);
-        sb::gxfifo::write_u8((u8)(v.r * 255.0f));
-        sb::gxfifo::write_u8((u8)(v.g * 255.0f));
-        sb::gxfifo::write_u8((u8)(v.b * 255.0f));
-        sb::gxfifo::write_u8((u8)(v.a * 255.0f));
-        // No texcoord0 emitted here: VCD_HI + VAT + SETINVERTEXSPEC above all
-        // agree on 0 texcoords. Adding u,v bytes back requires updating all
-        // three in lockstep or Dolphin's VertexLoader misreads the stride.
+    // Write RAW pre-transform position. Dolphin's vertex shader applies its
+    // own projection × posmtx AND does its own Vulkan Y-flip
+    // (VertexShaderGen.cpp:876). Native's g_prim_verts holds SbImmVtx which is
+    // already post-transform + Y-flipped for SDL3 GPU consumption — writing
+    // that to FIFO would double-transform on Tier 2 (triangle appeared in
+    // bottom-right corner). The raw position is what a real game would emit
+    // via GXPosition3f32 → gather-pipe.
+    for (size_t i = 0; i < g_prim_verts_raw.size(); ++i) {
+        const auto& r = g_prim_verts_raw[i];
+        sb::gxfifo::write_f32_be(r.x);
+        sb::gxfifo::write_f32_be(r.y);
+        sb::gxfifo::write_f32_be(r.z);
+        sb::gxfifo::write_u8((u8)(r.r * 255.0f));
+        sb::gxfifo::write_u8((u8)(r.g * 255.0f));
+        sb::gxfifo::write_u8((u8)(r.b * 255.0f));
+        sb::gxfifo::write_u8((u8)(r.a * 255.0f));
     }
 }
 // Reset the CP-set-this-frame gate at frame boundary — called from
@@ -480,6 +491,7 @@ void sb_gx_imm_begin(int prim, int vtxfmt, int nverts) {
     g_prim = prim;
     g_prim_nverts = nverts;
     g_prim_verts.clear();
+    g_prim_verts_raw.clear();
     g_prim_has_uv = false;
     g_tc_phase = 0;
     snapshot_state();
@@ -492,6 +504,7 @@ void sb_gx_imm_pos(float x, float y, float z) {
     SbImmRawVtx raw{ x, y, z, g_cr, g_cg, g_cb, g_ca, 0.0f, 0.0f };
     SbImmVtx p = sb::render::imm_project(raw, g_projType, g_projMtx, g_posMtx, g_vp);
     g_prim_verts.push_back(p);
+    g_prim_verts_raw.push_back(raw);
     g_tc_phase = 0;   // each new vertex restarts 1-component (S,T) pairing
     if (g_dbg && g_dbg_left > 0) {
         --g_dbg_left;
