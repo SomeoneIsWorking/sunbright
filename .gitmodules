@@ -4,4 +4,5 @@
 	branch = sunbright
 [submodule "extern/aurora"]
 	path = extern/aurora
-	url = https://github.com/encounter/aurora
+	url = https://github.com/SomeoneIsWorking/aurora.git
+	branch = sunbright

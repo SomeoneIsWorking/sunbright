@@ -532,28 +532,38 @@ if(TARGET aurora_core)
     add_library(sms-native-gc STATIC ${SMS_NATIVE_SOURCES})
     set_target_properties(sms-native-gc PROPERTIES
         CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
-    # PATH ORDER MATTERS:
-    #   1. dolphin_shadow — one-line shims that intercept reference/sms's
-    #      granular <dolphin/os/OS*.h> so Aurora's monolithic <dolphin/os.h>
-    #      is the sole source of OS types.
-    #   2. extern/aurora/include — Aurora's <dolphin/*.h> proper.
-    #   3. reference/sms/include — game headers (Player/, System/, JSystem/, ...).
-    #      Its <dolphin/types.h> is neutralized by force-defining its guard
-    #      _DOLPHIN_TYPES_H_ below so it never re-typedefs u32 as `unsigned long`.
+    # Stage reference/sms/include into the build tree WITHOUT its dolphin/ subdir.
+    # reference/sms/include/dolphin/ is the decomp's own copy of the GC SDK headers
+    # (mostly identical to Aurora's — hence the collision). Aurora provides them
+    # authoritatively under Path A, and reference/sms's game headers still need
+    # `<System/MarDirector.hpp>`-style includes to resolve, so we can't just drop
+    # reference/sms/include entirely. Instead, mirror it into the build tree with
+    # dolphin/ excluded, and put THAT on the include path. Aurora's <dolphin/*>
+    # becomes the sole source.
+    set(SMS_INCLUDE_STAGED "${CMAKE_CURRENT_BINARY_DIR}/staged_sms_include")
+    file(REMOVE_RECURSE "${SMS_INCLUDE_STAGED}")
+    file(COPY "${SMS_NATIVE_REPO_ROOT}/reference/sms/include/"
+         DESTINATION "${SMS_INCLUDE_STAGED}"
+         PATTERN "dolphin" EXCLUDE
+         PATTERN "dolphin.h" EXCLUDE)
+
     target_include_directories(sms-native-gc PUBLIC
-        "${SMS_NATIVE_REPO_ROOT}/sms-boot/render_gc/dolphin_shadow"
+        # Aurora's canonical <dolphin/*.h> — sole GC SDK header source.
         "${SMS_NATIVE_REPO_ROOT}/extern/aurora/include"
-        "${SMS_NATIVE_REPO_ROOT}/reference/sms/include"
+        # reference/sms game headers, minus dolphin/ (staged above).
+        "${SMS_INCLUDE_STAGED}"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/assets")
+    # TARGET_PC gates Aurora's fixed-width typedefs (s32/u32/BOOL/TRUE/FALSE)
+    # in <dolphin/types.h>. Without it, s32/u32 fall back to `long`/`unsigned long`
+    # which is 64-bit-wide under LP64 — every struct layout in the decomp would
+    # be silently wrong.
+    target_compile_definitions(sms-native-gc PUBLIC TARGET_PC=1)
     target_compile_options(sms-native-gc PRIVATE
-        # Force Aurora's <dolphin/types.h> to be seen FIRST by every TU, so
-        # BOOL/TRUE/FALSE/s32/u32 are defined before any decomp header uses them.
-        -include "${SMS_NATIVE_REPO_ROOT}/extern/aurora/include/dolphin/types.h"
-        # Neutralize reference/sms's <dolphin/types.h> — its guard is different
-        # from Aurora's (_DOLPHIN_TYPES_H_ vs DOLPHIN_TYPES_H). Pre-defining the
-        # reference/sms guard prevents its content from ever being included.
-        -D_DOLPHIN_TYPES_H_
-        # Same MWERKS-era decomp compat as sms-native.
+        # Force Aurora's <dolphin/types.h> + our Path-A compat shims (Mtx33,
+        # _GXColor / _GXColorS10 tag aliases) to be seen FIRST by every TU.
+        # SHELL: keeps each `-include <path>` as a single argument so CMake
+        # doesn't dedupe the -include tokens across a two-header list.
+        "SHELL:-include ${SMS_NATIVE_REPO_ROOT}/extern/aurora/include/dolphin/types.h"
         -w -Wno-narrowing -fcommon
         $<$<CXX_COMPILER_ID:GNU>:-fno-reorder-blocks-and-partition>
         $<$<CXX_COMPILER_ID:GNU>:-finput-charset=UTF-8>
