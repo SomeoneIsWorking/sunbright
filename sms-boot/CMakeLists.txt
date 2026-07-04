@@ -68,9 +68,28 @@ set_target_properties(sms-native PROPERTIES
     # method name (Strategic/spcinterp.hpp `u32 typeof() const`) -> parse error.
     CXX_EXTENSIONS OFF)
 
+# Stage reference/sms/include into the build tree WITHOUT its dolphin/ subdir.
+# reference/sms/include/dolphin/ is the decomp's own copy of the GC SDK headers,
+# which collides with Aurora's canonical set. Aurora provides them
+# authoritatively; game code still needs `<System/MarDirector.hpp>`-style
+# includes to resolve, so mirror everything else.
+set(SMS_INCLUDE_STAGED "${CMAKE_CURRENT_BINARY_DIR}/staged_sms_include")
+file(REMOVE_RECURSE "${SMS_INCLUDE_STAGED}")
+file(COPY "${SMS_NATIVE_REPO_ROOT}/reference/sms/include/"
+     DESTINATION "${SMS_INCLUDE_STAGED}"
+     PATTERN "dolphin" EXCLUDE
+     PATTERN "dolphin.h" EXCLUDE)
+
+# TARGET_PC gates Aurora's fixed-width typedefs + BOOL/TRUE/FALSE in
+# <dolphin/types.h>. Without it, s32/u32 fall back to `long`/`unsigned long`
+# (64-bit-wide under LP64) — every decomp struct layout would be silently wrong.
+target_compile_definitions(sms-native PUBLIC TARGET_PC=1)
+
 target_include_directories(sms-native PUBLIC
-    "${SMS_NATIVE_REPO_ROOT}/sms-boot/shim"
-    "${SMS_NATIVE_REPO_ROOT}/reference/sms/include"
+    # Aurora's canonical <dolphin/*.h> — sole GC SDK header source.
+    "${SMS_NATIVE_REPO_ROOT}/extern/aurora/include"
+    # reference/sms game headers, minus dolphin/ (staged above).
+    "${SMS_INCLUDE_STAGED}"
     # BE->host asset byteswap layer (bmd_swap_to_host), wired into the BMD/BDL
     # model load path for swap-at-load. Symbols come from sms-assets at link.
     "${SMS_NATIVE_REPO_ROOT}/sms-boot/assets"
@@ -79,8 +98,11 @@ target_include_directories(sms-native PUBLIC
     "${SMS_NATIVE_REPO_ROOT}/sms-boot/render_pc")
 
 target_compile_options(sms-native PRIVATE
-    # Force-include the portable Gekko intrinsics + fixed-width types shim.
-    -include "${SMS_NATIVE_REPO_ROOT}/sms-boot/shim/gekko_intrinsics.h"
+    # Force Aurora's <dolphin/types.h> to be seen FIRST by every TU. This
+    # guarantees BOOL/TRUE/FALSE/s32/u32 are defined before any decomp header
+    # uses them (the decomp expects them as ambient in every .cpp because the
+    # original MWERKS build always included this first via prefix headers).
+    "SHELL:-include ${SMS_NATIVE_REPO_ROOT}/extern/aurora/include/dolphin/types.h"
     # The decomp predates C++11 narrowing strictness (Metrowerks allowed it).
     # This silences brace-init narrowing ONLY; pointer truncation still errors
     # as 'loses precision'. -w hides the rest of the noise (warnings, not errors).
@@ -127,11 +149,11 @@ target_compile_options(sms-native PRIVATE
     $<$<CXX_COMPILER_ID:GNU>:-finput-charset=UTF-8>
     $<$<CXX_COMPILER_ID:GNU>:-fexec-charset=SHIFT_JIS>)
 
-# SMS_NATIVE_PLATFORM: the "no emulation chasing" gate (CLAUDE.md top rule, 2026-07-03).
-# Under this define, effects RE'd from the game are ported to native PC (SDL3 GPU / native
-# shaders) instead of being routed through the recompiled J3D→GX→TEV-emulator chain. Set
-# PUBLIC so downstream consumers (sms-render, sms-boot) also see it.
-target_compile_definitions(sms-native PUBLIC SMS_NATIVE_PLATFORM=1)
+# SMS_NATIVE_PLATFORM historically gated the SDL3-GPU (Path B) render branches
+# in reference/sms. Under the merged single-binary build the render-path split
+# will become a runtime dispatch (deferred until Path A is faithful), and Path
+# A is the current focus — so the ifdefs stay OFF for now and reference/sms
+# takes the original GC SDK paths through Aurora.
 
 # ---------------------------------------------------------------------------
 # sms-platform — the native PC implementations of the GameCube SDK seams the
@@ -150,11 +172,12 @@ set_target_properties(sms-platform PROPERTIES
     CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
 target_include_directories(sms-platform PUBLIC
     "${SMS_NATIVE_REPO_ROOT}/sms-boot/common"
-    "${SMS_NATIVE_REPO_ROOT}/sms-boot/shim"
+    "${SMS_NATIVE_REPO_ROOT}/extern/aurora/include"
+            "${SMS_INCLUDE_STAGED}"
     "${SMS_NATIVE_REPO_ROOT}/sms-boot/render_pc"   # gx_imm_xform.h (immediate-mode capture)
     "${SMS_NATIVE_REPO_ROOT}/sms-boot/render_pc/gx_common"  # tex_decode.h (SB_IMM_PRIM_DBG sprite dump)
     "${SMS_NATIVE_REPO_ROOT}/sms-boot/render_pc/ngx"     # ngx_render_data.h (NgxTevState per imm batch)
-    "${SMS_NATIVE_REPO_ROOT}/reference/sms/include")
+    "${SMS_NATIVE_REPO_ROOT}/${SMS_INCLUDE_STAGED}")
 target_compile_options(sms-platform PRIVATE -Wall -Wextra
     # The SDK headers declare HW-register/OS globals (__VIRegs, __OSBusClock, ...)
     # as tentative definitions WITHOUT extern; -fcommon merges them (Metrowerks
@@ -180,10 +203,11 @@ set_target_properties(sms-gd PROPERTIES
     LINKER_LANGUAGE CXX)
 set_source_files_properties(${SMS_GD_SOURCES} PROPERTIES LANGUAGE CXX)
 target_include_directories(sms-gd PUBLIC
-    "${SMS_NATIVE_REPO_ROOT}/sms-boot/shim"
-    "${SMS_NATIVE_REPO_ROOT}/reference/sms/include")
+    "${SMS_NATIVE_REPO_ROOT}/extern/aurora/include"
+            "${SMS_INCLUDE_STAGED}"
+    "${SMS_NATIVE_REPO_ROOT}/${SMS_INCLUDE_STAGED}")
 target_compile_options(sms-gd PRIVATE
-    -include "${SMS_NATIVE_REPO_ROOT}/sms-boot/shim/gekko_intrinsics.h"
+    -include "${SMS_NATIVE_REPO_ROOT}/extern/aurora/include/dolphin/types.h"
     -w -fcommon)
 target_link_libraries(sms-gd PUBLIC sms-platform)
 
@@ -311,8 +335,10 @@ if(SB_VULKAN_LIB AND SB_VULKAN_INC AND SB_GLSLANG)
         "${SB_SHADER_GEN}/tev_vert_spv.h")
     set_target_properties(sms-render PROPERTIES
         CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
-    # See sms-native above. The present layer needs the gate to override the frame clear.
-    target_compile_definitions(sms-render PUBLIC SMS_NATIVE_PLATFORM=1)
+    # SMS_NATIVE_PLATFORM off — see sms-native above. sms-render itself is only
+    # linked when the Path B (SDL3-GPU) render branch is active; under the merged
+    # build with Aurora as the current focus, it's dead-linked pending the
+    # render-path runtime dispatch conversion.
     target_include_directories(sms-render PUBLIC
         # shim/ FIRST so ngx_decode's #include "gx_parse.h" gets the Dolphin-free shadow.
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/render_pc/shim"
@@ -369,12 +395,13 @@ add_executable(sms-j3dload_test
 set_target_properties(sms-j3dload_test PROPERTIES
     CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
 target_include_directories(sms-j3dload_test PRIVATE
-    "${SMS_NATIVE_REPO_ROOT}/sms-boot/shim"
-    "${SMS_NATIVE_REPO_ROOT}/reference/sms/include"
+    "${SMS_NATIVE_REPO_ROOT}/extern/aurora/include"
+            "${SMS_INCLUDE_STAGED}"
+    "${SMS_NATIVE_REPO_ROOT}/${SMS_INCLUDE_STAGED}"
     "${SMS_NATIVE_REPO_ROOT}/sms-boot/assets"
     "${SMS_NATIVE_REPO_ROOT}/sms-boot/render_pc/gx_common")
 target_compile_options(sms-j3dload_test PRIVATE
-    -include "${SMS_NATIVE_REPO_ROOT}/sms-boot/shim/gekko_intrinsics.h"
+    -include "${SMS_NATIVE_REPO_ROOT}/extern/aurora/include/dolphin/types.h"
     -w -fcommon)
 # sms-native <-> sms-gd/sms-platform have cyclic cross-references (game code calls
 # seams; nothing the reverse, but vtables pull a wide closure) — RESCAN groups the
@@ -430,16 +457,17 @@ if(SMS_BUILD_BOOT)
         # <dolphin/types.h> resolves to the host shadow (u32=uint32_t) and NOT the GC SDK
         # header (u32=unsigned long) — otherwise the gx_parse shim's u32=uint32_t conflicts.
         INCLUDE_DIRECTORIES
-            "${SMS_NATIVE_REPO_ROOT}/sms-boot/render_pc/shim;${SMS_NATIVE_REPO_ROOT}/sms-boot/render_pc;${SMS_NATIVE_REPO_ROOT}/sms-boot/render_pc/ngx;${SMS_NATIVE_REPO_ROOT}/sms-boot/render_pc/gx_common;${SMS_NATIVE_REPO_ROOT}/sms-boot/shim;${SMS_NATIVE_REPO_ROOT}/reference/sms/include"
-        COMPILE_OPTIONS "-include;${SMS_NATIVE_REPO_ROOT}/sms-boot/shim/gekko_intrinsics.h;-fcommon;-w")
+            "${SMS_NATIVE_REPO_ROOT}/sms-boot/render_pc/shim;${SMS_NATIVE_REPO_ROOT}/sms-boot/render_pc;${SMS_NATIVE_REPO_ROOT}/sms-boot/render_pc/ngx;${SMS_NATIVE_REPO_ROOT}/sms-boot/render_pc/gx_common;${SMS_NATIVE_REPO_ROOT}/extern/aurora/include;${SMS_INCLUDE_STAGED};${SMS_NATIVE_REPO_ROOT}/${SMS_INCLUDE_STAGED}"
+        COMPILE_OPTIONS "-include;${SMS_NATIVE_REPO_ROOT}/extern/aurora/include/dolphin/types.h;-fcommon;-w")
     set_target_properties(sms-boot PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
     target_include_directories(sms-boot PRIVATE
-        "${SMS_NATIVE_REPO_ROOT}/sms-boot/common" "${SMS_NATIVE_REPO_ROOT}/sms-boot/shim"
-        "${SMS_NATIVE_REPO_ROOT}/reference/sms/include")
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/common" "${SMS_NATIVE_REPO_ROOT}/extern/aurora/include"
+            "${SMS_INCLUDE_STAGED}"
+        "${SMS_NATIVE_REPO_ROOT}/${SMS_INCLUDE_STAGED}")
     # boot_heap_bringup.cpp pulls JSystem headers — needs the gekko intrinsics force-include.
     set_source_files_properties(
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/src/boot_heap_bringup.cpp" PROPERTIES
-        COMPILE_OPTIONS "-include;${SMS_NATIVE_REPO_ROOT}/sms-boot/shim/gekko_intrinsics.h;-fcommon")
+        COMPILE_OPTIONS "-include;${SMS_NATIVE_REPO_ROOT}/extern/aurora/include/dolphin/types.h;-fcommon")
     # -rdynamic: export symbols into the dynamic table so the watchdog's backtrace
     # (backtrace_symbols_fd) prints function names, not bare addresses.
     target_link_options(sms-boot PRIVATE -Wl,--wrap=main -rdynamic)
@@ -457,11 +485,12 @@ if(SMS_BUILD_BOOT)
         set_target_properties(sms-bootstubs PROPERTIES
             CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
         target_include_directories(sms-bootstubs PRIVATE
-            "${SMS_NATIVE_REPO_ROOT}/sms-boot/shim"
-            "${SMS_NATIVE_REPO_ROOT}/reference/sms/include")
+            "${SMS_NATIVE_REPO_ROOT}/extern/aurora/include"
+            "${SMS_INCLUDE_STAGED}"
+            "${SMS_NATIVE_REPO_ROOT}/${SMS_INCLUDE_STAGED}")
         # The C++ force-include must NOT reach the .S stub (assembler can't use <cstring>).
         target_compile_options(sms-bootstubs PRIVATE
-            "$<$<COMPILE_LANGUAGE:CXX>:-include;${SMS_NATIVE_REPO_ROOT}/sms-boot/shim/gekko_intrinsics.h>"
+            "$<$<COMPILE_LANGUAGE:CXX>:-include;${SMS_NATIVE_REPO_ROOT}/extern/aurora/include/dolphin/types.h>"
             -w)
     endif()
     # Same cyclic closure as the j3dload test — boot pulls the GD display-list builder
@@ -492,8 +521,9 @@ foreach(test_src ${SMS_PLATFORM_TESTS})
         CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
     target_include_directories(sms-${test_name} PRIVATE
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/common"
-        "${SMS_NATIVE_REPO_ROOT}/sms-boot/shim"
-        "${SMS_NATIVE_REPO_ROOT}/reference/sms/include"
+        "${SMS_NATIVE_REPO_ROOT}/extern/aurora/include"
+            "${SMS_INCLUDE_STAGED}"
+        "${SMS_NATIVE_REPO_ROOT}/${SMS_INCLUDE_STAGED}"
         # The renderer's pure lighting decoder (ngx_light.h) — gx_test cross-checks the
         # GXSetChanCtrl packing against decode_chanctl().
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/render_pc/ngx"
@@ -509,81 +539,13 @@ foreach(test_src ${SMS_PLATFORM_TESTS})
     add_test(NAME platform_${test_name} COMMAND sms-${test_name})
 endforeach()
 
-# ---------------------------------------------------------------------------
-# sms-boot-gc — Path A: GC-faithful bring-up via Aurora (extern/aurora).
-#
-# reference/sms's GC SDK calls (GXSetChanCtrl, GXBegin, ...) go through Aurora's
-# <dolphin/*.h> onto WebGPU/Dawn. Coexists with sms-boot (Path B, SDL3-GPU
-# direct). For MVP this target links only aurora_bridge.cpp against
-# aurora_core; the game bring-up is stubbed to a clear-frame loop so we can
-# prove the Aurora pipeline is alive before wiring the game thread in.
-#
-# Aurora is added by the ROOT CMakeLists.txt via add_subdirectory(extern/aurora).
-# When sms-boot/ is configured standalone (no root), aurora_core is absent and
-# this target is silently skipped — Path B (sms-boot) is fully functional
-# without it.
-# ---------------------------------------------------------------------------
+# Aurora link — sms-boot's GX-faithful render path (extern/aurora) is linked
+# into the ONE sms-boot binary. render-path selection is a runtime dispatch
+# inside reference/sms; both branches always compile.
 if(TARGET aurora_core)
-    # ─── sms-native-gc — reference/sms compiled against Aurora's <dolphin/*.h> ────
-    # Mirrors sms-native (Path B) but with the include-search order flipped so
-    # Aurora's dolphin headers win over sms-boot/shim/dolphin/. Aurora's types.h
-    # does NOT define SMS_NATIVE_PLATFORM, so reference/sms takes its original GC
-    # paths, and every GXSetChanCtrl/GXBegin/etc. resolves into aurora::gx's impl.
-    add_library(sms-native-gc STATIC ${SMS_NATIVE_SOURCES})
-    set_target_properties(sms-native-gc PROPERTIES
-        CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
-    # Stage reference/sms/include into the build tree WITHOUT its dolphin/ subdir.
-    # reference/sms/include/dolphin/ is the decomp's own copy of the GC SDK headers
-    # (mostly identical to Aurora's — hence the collision). Aurora provides them
-    # authoritatively under Path A, and reference/sms's game headers still need
-    # `<System/MarDirector.hpp>`-style includes to resolve, so we can't just drop
-    # reference/sms/include entirely. Instead, mirror it into the build tree with
-    # dolphin/ excluded, and put THAT on the include path. Aurora's <dolphin/*>
-    # becomes the sole source.
-    set(SMS_INCLUDE_STAGED "${CMAKE_CURRENT_BINARY_DIR}/staged_sms_include")
-    file(REMOVE_RECURSE "${SMS_INCLUDE_STAGED}")
-    file(COPY "${SMS_NATIVE_REPO_ROOT}/reference/sms/include/"
-         DESTINATION "${SMS_INCLUDE_STAGED}"
-         PATTERN "dolphin" EXCLUDE
-         PATTERN "dolphin.h" EXCLUDE)
-
-    target_include_directories(sms-native-gc PUBLIC
-        # Aurora's canonical <dolphin/*.h> — sole GC SDK header source.
-        "${SMS_NATIVE_REPO_ROOT}/extern/aurora/include"
-        # reference/sms game headers, minus dolphin/ (staged above).
-        "${SMS_INCLUDE_STAGED}"
-        "${SMS_NATIVE_REPO_ROOT}/sms-boot/assets")
-    # TARGET_PC gates Aurora's fixed-width typedefs (s32/u32/BOOL/TRUE/FALSE)
-    # in <dolphin/types.h>. Without it, s32/u32 fall back to `long`/`unsigned long`
-    # which is 64-bit-wide under LP64 — every struct layout in the decomp would
-    # be silently wrong.
-    target_compile_definitions(sms-native-gc PUBLIC TARGET_PC=1)
-    target_compile_options(sms-native-gc PRIVATE
-        # Force Aurora's <dolphin/types.h> + our Path-A compat shims (Mtx33,
-        # _GXColor / _GXColorS10 tag aliases) to be seen FIRST by every TU.
-        # SHELL: keeps each `-include <path>` as a single argument so CMake
-        # doesn't dedupe the -include tokens across a two-header list.
-        "SHELL:-include ${SMS_NATIVE_REPO_ROOT}/extern/aurora/include/dolphin/types.h"
-        -w -Wno-narrowing -fcommon
-        $<$<CXX_COMPILER_ID:GNU>:-fno-reorder-blocks-and-partition>
-        $<$<CXX_COMPILER_ID:GNU>:-finput-charset=UTF-8>
-        $<$<CXX_COMPILER_ID:GNU>:-fexec-charset=SHIFT_JIS>)
-    # Explicit: DO NOT define SMS_NATIVE_PLATFORM. That's the whole point of
-    # Path A — reference/sms takes the original GC SDK paths through Aurora.
-
-    add_executable(sms-boot-gc
-        "${SMS_NATIVE_REPO_ROOT}/sms-boot/render_gc/aurora_bridge.cpp")
-    set_target_properties(sms-boot-gc PROPERTIES
-        CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
-    # aurora_bridge.cpp includes <aurora/*.h> + <dolphin/gx.h> — the same Aurora
-    # headers sms-native-gc sees.
-    target_include_directories(sms-boot-gc PRIVATE
-        "${SMS_NATIVE_REPO_ROOT}/extern/aurora/include")
-    target_link_libraries(sms-boot-gc PRIVATE
-        sms-native-gc  # reference/sms compiled against Aurora's dolphin headers
+    target_link_libraries(sms-boot PRIVATE
         aurora::core   # SDL3 + WebGPU/Dawn app framework
         aurora::gx     # GC GX SDK -> WebGPU pipeline
-        aurora::main   # provides real main() that dispatches to our aurora_main
         aurora::vi     # VI framebuffer size
         aurora::os     # OSInit/OSCreateThread/OSPanic/etc.
         aurora::mtx    # GC math library
@@ -591,8 +553,5 @@ if(TARGET aurora_core)
         aurora::si     # serial interface
         aurora::card   # memory card (kabufuda-backed)
         aurora::gd     # GD display-list builder
-        aurora::ms     # mouse
-        Threads::Threads)
-else()
-    message(STATUS "sms-boot-gc skipped: aurora_core not defined (build from root CMakeLists.txt).")
+        aurora::ms)    # mouse
 endif()
