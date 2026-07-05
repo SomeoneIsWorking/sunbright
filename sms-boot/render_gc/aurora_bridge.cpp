@@ -127,6 +127,16 @@ int main(int argc, char* argv[]) {
     config.logLevel       = LOG_INFO;
     config.msaa           = 1;
     config.vsync          = true;
+    // Default window size — small enough that first-frame render / swapchain
+    // acquire doesn't cost a minute at the default 3200x1975 the aurora hi-DPI
+    // fallback picks. Env SB_W / SB_H override. GC native is 640x480; give it
+    // 2x for a bit of headroom while staying cheap.
+    {
+        const char* ew = std::getenv("SB_W");
+        const char* eh = std::getenv("SB_H");
+        config.windowWidth  = ew ? (uint32_t)std::strtoul(ew, nullptr, 0) : 1280u;
+        config.windowHeight = eh ? (uint32_t)std::strtoul(eh, nullptr, 0) : 960u;
+    }
     // Boost MEM1 well past the GC's 24 MB. On PC there's no reason to
     // pretend we're memory-constrained; the game fills the JKRSolidHeap
     // that ate ~14 MB in scene setup (mesh + shape packets + matrices)
