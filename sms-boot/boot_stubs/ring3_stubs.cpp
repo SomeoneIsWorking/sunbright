@@ -124,12 +124,12 @@ void TMapObjPuncher::load(JSUMemoryInputStream&) {}
 // [dedup] void TMapObjSwitch::load(JSUMemoryInputStream&) {}
 // [dedup] BOOL TMapObjSwitch::receiveMessage(THitActor*, unsigned int) { return 0; }
 f32 TMapObjTree::getRadiusAtY(float) const { return 0; }
-// STUB: chain to base so initActorData runs and mMapObjData is populated.
-// Without this palmNormal (and every other TMapObjTree instance) crashes in
-// TMapObjBase::makeObjAppeared with a null mMapObjData. Proper fix = port
-// TMapObjTree::initMapObj from the decomp (which adds tree-specific setup on
-// top of TMapObjGeneral::initMapObj).
-void TMapObjTree::initMapObj() { TMapObjGeneral::initMapObj(); }
+void TMapObjTree::initMapObj() {
+    OSPanic(__FILE__, __LINE__,
+            "TMapObjTree::initMapObj not ported — real body adds tree-specific "
+            "setup on top of TMapObjGeneral::initMapObj (mMapObjData + more). "
+            "Port from reference/sms decomp before boot progresses.");
+}
 void TMapObjTreeScale::control() {}
 u32 TMapObjTreeScale::touchWater(THitActor*) { return 0; }
 void TMapObjTree::touchPlayer(THitActor*) {}
