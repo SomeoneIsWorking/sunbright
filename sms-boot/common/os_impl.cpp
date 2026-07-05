@@ -379,7 +379,15 @@ OSThread* OSGetCurrentThread(void) { return t_current; }
 BOOL OSIsThreadTerminated(OSThread* t) {
     std::lock_guard<std::mutex> lk(g_sched);
     NativeThread* n = backing(t);
-    return (n && n->finished) ? TRUE : FALSE;
+    if (n && n->finished) return TRUE;
+    // No backing NativeThread but the OSThread is in MORIBUND state: the game
+    // ran what would have been the thread body synchronously (see
+    // TMarDirector::setup on SMS_NATIVE_PLATFORM) and stamped MORIBUND to
+    // signal completion. Treat that as terminated so the caller's polling
+    // `while (!OSIsThreadTerminated) return 0;` loops make progress instead
+    // of spinning forever.
+    if (!n && t && t->state == OS_THREAD_STATE_MORIBUND) return TRUE;
+    return FALSE;
 }
 
 static void thread_trampoline(NativeThread* n) {
