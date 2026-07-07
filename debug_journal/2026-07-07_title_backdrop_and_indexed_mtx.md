@@ -202,3 +202,38 @@ same). NEXT: use the Dolphin fork oracle (extern/dolphin, branch sunbright-oracl
 log per-draw XF matrix state at the same scene and diff against ours — hook
 VertexShaderManager / XF writes. Guess-probing is exhausted; this is what the oracle
 directive is for.
+
+## Continuation 9 (tooling-first directive): oracle drawlog + two real fixes + narrowed remainder
+
+USER directives recorded: tooling first, always; GX bypasses allowed at my discretion but
+output must match the oracle ([[tooling-first-gx-bypass-2026-07-07]]). Runs now headless
+(SB_HEADLESS=1 — hidden window no longer pauses the frame loop).
+
+Tooling built this round:
+- Dolphin fork hook (extern/dolphin, VertexManagerBase::Flush, SB_ORACLE_DRAWLOG=1):
+  per-draw [oracle-draw] projection/posmatrix/viewport — full-run capture at
+  scratch/oracle/oracle_draws.log (~1M draws, tail = title).
+- SB_PASS_DBG (aurora): title frame = [blue-clear+mirror 88 cmds] resolve
+  [main scene 32 cmds, no clear] resolve [2D]. Scene pass structure is sane.
+- SB_DUMP_FRAME_EVERY: numbered dump series — exposed that fixed-index dumps sampled
+  different title phases per run (white = fade/assembly animation, blue = steady).
+- Draw dump now carries mark/cU/aU/blend/pos-fmt/mtxIdx/full posmtx.
+
+REAL FIXES (verified at state level, both pushed):
+1. TActor::load left mRotation/mScaling big-endian (same raw-JSU-read class as
+   TPlacement::mPosition). BE 1.0 scale = 4.6e-41 denormal → every affected model's
+   joint rotations collapsed to ~0 → geometry degenerated to points. TSunModel's base
+   matrix was the visible victim. After fix: SB_CALC_DBG shows real rotations, unit
+   scales; draw-level posmtx now proper camera matrices.
+2. GC does not far-clip; wgpu does. Title sun/sky live at z≈-222k with far≈30k.
+   Aurora now requests DepthClipControl and sets unclippedDepth on GX pipelines.
+
+REMAINDER (title backdrop still absent): with matrices/projection/cull/blend/masks all
+verified correct, the perspective Sky Xlu draws are few and small (4/5-vert quads + one
+202-vert strip) — hand-projection of extreme dome verts lands mostly offscreen. Open
+question: is the 202-vert strip the whole visible dome ring (and off-screen due to a
+remaining transform subtlety), or are most dome strips missing from the fifo? NEXT:
+(a) CPU-side NDC probe — project the 202-vert draw's fetched positions through the
+captured posmtx+proj and histogram the clip results; (b) diff the same scene against
+scratch/oracle/oracle_draws.log (hooked Dolphin, same format fields) to compare
+draw counts and matrices at the title. Both instruments exist; this is mechanical now.
