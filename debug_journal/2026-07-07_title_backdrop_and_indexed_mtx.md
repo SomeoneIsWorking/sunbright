@@ -174,3 +174,31 @@ Oracle stood up (memory [[real-oracle-dolphin-fork-2026-07-07]]):
   GXCallDisplayList vs committed draws; or a fifo debug-marker subcommand emitted from
   J3DShape::draw so [draw-dump] lines carry the shape/buffer name. Then vertex-fetch
   (INDEX16 + array base) correctness for those draws vs the letters'.
+
+## Continuation 8: REAL BUG FIXED — BMD vertex arrays were big-endian on the GPU
+
+Marker-identified draws (GXInsertDebugMarker from J3DDrawBuffer::draw → mark='...' in
+SB_DRAW_DUMP) proved Sky Xlu/MapOpa draws COMMIT to the GPU — 6 sky + 8 map per frame
+under the CORRECT perspective (plus a redundant stale-ortho draw site: unk40's
+drawBufferGroup draws the same buffers early-frame with leftover ortho projection —
+harmless-by-invisibility but worth understanding someday). VAT census: sky/map = F32
+INDEX16 positions; the WORKING logo letters = S16 frac=8. SB_POS_PROBE (parse-time fetch
+of the first vertex position) showed the F32 arrays as BYTE-SWAPPED GARBAGE
+(xyz=(2.4e18, nan, 5.9e-39)).
+
+ROOT CAUSE: bmd_swap.cpp swap_VTX1 DELIBERATELY left the VTX1 vertex scalar arrays
+big-endian — the deleted Path-B ngx decoder contract ("reads arrays as BE") — while
+J3DLoadArrayBasePtr tags them le=true for Aurora, whose WGSL fetch reads storage
+natively. FIX: swap_VTX1 now swaps each array's homogeneous scalar run to host
+(F32/U16/S16 units; colors only for the 16-bit packed formats), matching the le=true
+tag. Verified: SB_POS_PROBE now returns sane world-scale positions
+((-14017,13970,11019), (-5000,-5000,0), ...). Letters unaffected.
+
+STILL NOT RASTERIZED after the fix (SB_FORCE_COLOR unchanged): with positions sane,
+projection correct, cull disabled, matrices plausible — the remaining suspect is the
+per-vertex/current matrix slot path for these shapes (JRNLoadCurrentMtx is a stubbed
+no-op writing CP 0x30/0x40 + XF 0x1018 raw; J3DShapeMtxDL GD display lists carry the
+same). NEXT: use the Dolphin fork oracle (extern/dolphin, branch sunbright-oracle) to
+log per-draw XF matrix state at the same scene and diff against ours — hook
+VertexShaderManager / XF writes. Guess-probing is exhausted; this is what the oracle
+directive is for.

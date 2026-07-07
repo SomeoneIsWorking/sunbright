@@ -267,16 +267,39 @@ static void swap_VTX1(uint8_t* out, const uint8_t* be, uint32_t size) {
 		}
 	}
 
-	// The VTX1 array DATA (POS/NRM/CLR/TEX scalar streams) is LEFT BIG-ENDIAN — it is NOT
-	// byteswapped to host-endian. The decoder contract is big-endian: the native renderer's
-	// ngx vertex/DL decoders (runtime/ngx) read these arrays AND the shape display-list
-	// stream as big-endian and byteswap on every read, exactly mirroring the GC GP. Swapping
-	// the arrays here (as an earlier version did) made ngx decode host-endian data through a
-	// BE reader = garbage geometry. The structural fields (header offsets, fmt list) ARE
-	// swapped above because they're read host-endian by J3DModelLoader; only the bulk vertex
-	// scalar arrays stay BE. Native GX is stubbed, so nothing reads array scalars host-endian.
-	// (Matches J3DModelLoader.cpp's "leaves vertex arrays big-endian" contract.)
-	(void)na; (void)arrs;
+	// Swap the VTX1 array DATA (POS/NRM/CLR/TEX scalar streams) to HOST endianness.
+	//
+	// HISTORY: an earlier policy deliberately left these big-endian for the
+	// Path-B ngx decoders ("BE decoder contract"). That renderer is DELETED;
+	// under Aurora the arrays are bound via J3DLoadArrayBasePtr with le=true
+	// and fetched by the WGSL shader as native little-endian storage — BE
+	// content here rendered every rigid F32 model's positions as float
+	// garbage (the invisible title sky dome / map / sea, 2026-07-07). Host
+	// order is also what the CPU-side skin/deform readers want. The shape
+	// display-list STREAM (indices, vertex counts) stays BE — the fifo
+	// processor parses it with bigEndian=true.
+	//
+	// Each array is a homogeneous scalar run [its offset, next array offset or
+	// block end); swap unit from the attr's GXCompType (colors: only the
+	// 16-bit packed formats swap).
+	{
+		// Sort by offset to find each run's end.
+		for (int i = 1; i < na; ++i) {
+			Arr key = arrs[i];
+			int j = i - 1;
+			while (j >= 0 && arrs[j].off > key.off) { arrs[j + 1] = arrs[j]; --j; }
+			arrs[j + 1] = key;
+		}
+		for (int i = 0; i < na; ++i) {
+			uint32_t end = (i + 1 < na) ? arrs[i + 1].off : size;
+			if (end > size) end = size;
+			bool found = false;
+			uint32_t type = vtx_fmt_type(be, fmt_off, size, arrs[i].attr, &found);
+			if (!found) continue; // attr not in fmt list -> unused array, leave as-is
+			uint32_t unit = arrs[i].color ? color_unit(type) : numeric_unit(type);
+			swap_run(out, arrs[i].off, end, unit);
+		}
+	}
 }
 
 // SHP1 / J3DShapeBlock (J3DShapeFactory.hpp):
