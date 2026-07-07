@@ -6,3 +6,7 @@
 	path = extern/aurora
 	url = https://github.com/SomeoneIsWorking/aurora.git
 	branch = sunbright
+[submodule "extern/dolphin"]
+	path = extern/dolphin
+	url = https://github.com/dolphin-emu/dolphin.git
+	shallow = true

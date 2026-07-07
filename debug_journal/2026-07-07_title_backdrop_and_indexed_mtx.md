@@ -141,3 +141,36 @@ simplifications; make things understandable before making them work.
   output (charted territory: LightUtil RE, sms_boot_setlight spec, SB_TEX_DBG). Next
   session: sample one MapOpa packet's channel/TEV state at draw; compare against the
   setlight spec; check ambient/material colors reaching aurora's uniform builder.
+
+## Continuation 6 (user directive: REAL ORACLE — Dolphin fork with debug hooks)
+
+Oracle stood up (memory [[real-oracle-dolphin-fork-2026-07-07]]):
+- tools/oracle/capture.sh: system/fork Dolphin + framedump (-C overrides, config not
+  persisted — the old DumpFrames perf trap), per-frame PNGs, degenerate-capture guard.
+- extern/dolphin submodule (upstream URL, pinned; user's SomeoneIsWorking/dolphin fork has
+  branch sunbright-oracle for future hooks). NoGUI build at
+  extern/dolphin/build/Binaries/dolphin-emu-nogui (Qt6 devel absent → -DENABLE_QT=OFF,
+  -DENABLE_EVDEV=OFF).
+- GROUND TRUTH captured: scratch/oracle/oracle_title_reference.png (framedump_6000 of a
+  300s unthrottled run) — title = sky w/ clouds + sea horizon + BLUE reflective logo +
+  PRESS START. The June scratch/screenshots/oracle_title.png matches. Also learned: our
+  SB_NO_FASTBOOT natural boot reaches the title directly (movies excluded) while Dolphin
+  passes through the full attract; frame indices are NOT comparable across the two — pin
+  states by CONTENT, not frame number.
+
+## Continuation 7: invisibility bracketed to rasterization — falsification log
+
+- [shapedraw] trace: sky/map geometry DLs ARE called with real GC strip opcodes.
+- SB_FORCE_COLOR=1 (new aurora diagnostic — fragment shader returns magenta): ONLY the
+  logo/glow silhouette appears. The sky/map geometry is NEVER RASTERIZED (not a TEV/
+  texture-output problem).
+- Projection values at perspective draws are correct GC convention (near=10, far≈30k).
+  The 202-vert draws are LOGO letters, drawn both ortho and perspective.
+- SB_SKIP_COPY_QUAD=1 (new): dropping the screen-texture quads changes nothing —
+  quad overdraw falsified.
+- handle_draw/draw_prim have no silent-drop path (merged draws still render).
+- REMAINING GAP (next probe): whether the sky/map DL draw commands reach push_gx_draw at
+  all — need per-draw shape identity. Options: count draw opcodes per DL in
+  GXCallDisplayList vs committed draws; or a fifo debug-marker subcommand emitted from
+  J3DShape::draw so [draw-dump] lines carry the shape/buffer name. Then vertex-fetch
+  (INDEX16 + array base) correctness for those draws vs the letters'.
