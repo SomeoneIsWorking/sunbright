@@ -1,7 +1,17 @@
 # sms-boot — Super Mario Sunshine decomp (reference/sms) compiled native, rendered
-# through Aurora. ONE binary. SMS_NATIVE_PLATFORM=1 + Aurora. No legacy platform
-# seam layer, no SDL3-GPU Path-B renderer. Engine-level PC-native mods live inside
+# through Aurora. ONE binary, ONE runtime, ONE thread: the game runs on the
+# process main thread; Aurora (render + audio + input + DVD) is IO called from
+# inside the game's frame via the sb_frame_present seam (runtime/frame_seam.cpp).
+# All I/O is synchronous and unthrottled. Engine-level PC-native mods live inside
 # reference/sms behind SMS_NATIVE_PLATFORM.
+#
+# Layout:
+#   main.cpp     — entry point (aurora init, DVD mount, game on main thread)
+#   runtime/     — PC runtime seams: frame present/pace, SDK stubs, watchdog,
+#                  audio pump, BARC-backed Vload
+#   shims/       — RE'd game-logic spec headers included by reference/sms
+#   assets/      — BE→host asset byteswappers
+#   boot_stubs/  — scaffold stubs for unported game classes
 
 cmake_minimum_required(VERSION 3.20)
 
@@ -52,7 +62,7 @@ list(FILTER SMS_NATIVE_SOURCES EXCLUDE REGEX
 # mPtrList=non-null and crashed inside JSUPtrList::prepend's unlink path.
 
 list(APPEND SMS_NATIVE_SOURCES
-     "${SMS_NATIVE_REPO_ROOT}/sms-boot/src/sms_boot_audio.cpp")
+     "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/sms_boot_audio.cpp")
 
 # .c decomp TUs (THPPlayer/*.c) — compile as C++ so they see the C++ Aurora
 # headers and pick up the same -include shim.
@@ -99,10 +109,9 @@ target_include_directories(sms-native PUBLIC
     "${SMS_NATIVE_REPO_ROOT}/extern/aurora/include"
     "${SMS_INCLUDE_STAGED}"
     "${SMS_NATIVE_REPO_ROOT}/sms-boot/assets"
-    # Headers only — SMS_NATIVE_PLATFORM=1 branches in reference/sms reference
-    # sms_boot_*.h shims. Their .cpp impls live in the retired render_pc lib;
-    # unresolved symbols become the porting worklist.
-    "${SMS_NATIVE_REPO_ROOT}/sms-boot/render_pc")
+    # RE'd game-logic spec headers (sms_boot_*.h) that SMS_NATIVE_PLATFORM
+    # branches in reference/sms include.
+    "${SMS_NATIVE_REPO_ROOT}/sms-boot/shims")
 
 target_compile_options(sms-native PRIVATE
     "SHELL:-include ${SMS_NATIVE_REPO_ROOT}/extern/aurora/include/dolphin/types.h"
@@ -159,12 +168,22 @@ enable_testing()
 # ---------------------------------------------------------------------------
 if(TARGET aurora_core)
     add_executable(sms-boot
-        "${SMS_NATIVE_REPO_ROOT}/sms-boot/render_gc/aurora_bridge.cpp")
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/main.cpp"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/frame_seam.cpp"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/audio_out.cpp"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/watchdog.cpp"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/sdk_stubs.cpp")
     set_target_properties(sms-boot PROPERTIES
         CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
     target_include_directories(sms-boot PRIVATE
         "${SMS_NATIVE_REPO_ROOT}/extern/aurora/include"
         "${SMS_INCLUDE_STAGED}")
+    # sdk_stubs.cpp speaks the GC SDK surface (dolphin/* headers, u32/BOOL
+    # types) — compile it like the decomp TUs.
+    set_source_files_properties(
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/sdk_stubs.cpp" PROPERTIES
+        COMPILE_OPTIONS "-include;${SMS_NATIVE_REPO_ROOT}/extern/aurora/include/dolphin/types.h;-w;-fcommon"
+        COMPILE_DEFINITIONS "TARGET_PC=1;SMS_NATIVE_PLATFORM=1;SMS_AURORA=1")
 
     # boot_stubs/ — scaffold stubs for unported game classes; replaced with
     # real ports as the boot-order path exercises each one.
@@ -193,6 +212,7 @@ if(TARGET aurora_core)
         "$<LINK_GROUP:RESCAN,sms-native,sms-gd,sms-assets,$<TARGET_NAME_IF_EXISTS:sms-bootstubs>>"
         aurora::core
         aurora::gx
+        aurora::audio
         aurora::main
         aurora::vi
         aurora::os
