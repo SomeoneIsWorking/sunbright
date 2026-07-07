@@ -3,7 +3,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-#include <unordered_set>
+#include <unordered_map>
+#include <cstring>
 #include <new>
 #include <unistd.h>
 #include <sys/syscall.h>
@@ -45,12 +46,24 @@ template <class T> struct MallocAlloc {
     template <class U> bool operator!=(const MallocAlloc<U>&) const noexcept { return false; }
 };
 
-// Pointers already swapped (idempotency). Archive buffers stay mounted for the screen's
-// lifetime, so a pointer uniquely identifies a TIMG; swapping twice would re-corrupt it.
-using SwapSet = std::unordered_set<const void*, std::hash<const void*>,
-                                   std::equal_to<const void*>, MallocAlloc<const void*>>;
-SwapSet& swapped_set() {
-    static SwapSet s;
+// CONTENT-VERIFIED idempotency. A bare pointer set is not enough: the game
+// wipes whole JKR heaps between scenes (freeAll) and the allocator reuses
+// addresses, so a NEW big-endian ResTIMG can land on an address that was
+// swapped in a previous life — a pointer-only set then SKIPS its swap and the
+// raw BE header reaches GXInitTexObj (observed: 77th JPA texture
+// P_msm_kemuball3_ia, width 64 read as 0x4000). Alongside each pointer we
+// store a snapshot of the 0x20-byte header AS SWAPPED; on a repeat pointer,
+// bytes == snapshot means "still the swapped occupant" (skip), bytes !=
+// snapshot means the address was recycled by a new occupant (swap as new).
+// Swapping twice would re-corrupt, so the snapshot is the ground truth.
+struct HeaderSnapshot {
+    uint8_t bytes[0x20];
+};
+using SwapMap = std::unordered_map<const void*, HeaderSnapshot, std::hash<const void*>,
+                                   std::equal_to<const void*>,
+                                   MallocAlloc<std::pair<const void* const, HeaderSnapshot>>>;
+SwapMap& swapped_map() {
+    static SwapMap s;
     return s;
 }
 
@@ -64,14 +77,17 @@ void restimg_swap_to_host(const void* timg) {
                      n++, sb_gettid(), timg);
         std::fflush(stderr);
     }
-    if (!swapped_set().insert(timg).second) return;   // already swapped
     uint8_t* p = static_cast<uint8_t*>(const_cast<void*>(timg));
+    auto [it, fresh] = swapped_map().try_emplace(timg);
+    if (!fresh && std::memcmp(it->second.bytes, p, 0x20) == 0)
+        return; // same swapped occupant — already host-endian
     sw16(p + 0x02);   // width
     sw16(p + 0x04);   // height
     sw16(p + 0x0A);   // numColors
     sw32(p + 0x0C);   // paletteOffset
     sw16(p + 0x1A);   // lodBias (s16)
     sw32(p + 0x1C);   // imageDataOffset
+    std::memcpy(it->second.bytes, p, 0x20);
 }
 
 }  // namespace smsport::assets
