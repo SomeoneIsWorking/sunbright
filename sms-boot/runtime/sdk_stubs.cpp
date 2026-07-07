@@ -228,16 +228,6 @@ void GXSetDispCopyFrame2Field(GXCopyMode) {}
 u16  GXGetNumXfbLines(u16, f32) { return 0; }
 f32  GXGetYScaleFactor(u16, u16) { return 1.0f; }
 void GXInitTexCacheRegion(GXTexRegion*, GXBool, u32, GXTexCacheSize, u32, GXTexCacheSize) {}
-void GXGetTexObjAll(const GXTexObj*, void** image_ptr, u16* width, u16* height,
-                    GXTexFmt* fmt, GXTexWrapMode* wrap_s, GXTexWrapMode* wrap_t, GXBool* mip_map) {
-    if (image_ptr) *image_ptr = nullptr;
-    if (width) *width = 0;
-    if (height) *height = 0;
-    if (fmt) *fmt = (GXTexFmt)0;
-    if (wrap_s) *wrap_s = (GXTexWrapMode)0;
-    if (wrap_t) *wrap_t = (GXTexWrapMode)0;
-    if (mip_map) *mip_map = 0;
-}
 
 // ---- HAM movie-wipe controller (retired — SMS_NATIVE_PLATFORM=1 uses direct
 // scene transitions; no-op stubs let the callers link) ----
