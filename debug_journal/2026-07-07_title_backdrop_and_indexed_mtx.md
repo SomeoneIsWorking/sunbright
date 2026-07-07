@@ -78,13 +78,27 @@ bind when an EFB copy to its data pointer appears after a stale static resolve; 
 tracing. Verified: 2 copies/frame now execute at title (512x549 fmt5 clear=1 + 640x480
 fmt4 clear=0).
 
-## NEXT (named, in progress): screen-texture redraw path
+## Continuation 3: copy IS sampled; EFB persistence landed; scene draws still empty
 
-The backdrop is still not visible (background = copy-clear black now). Remaining chain to
-verify: (a) the copy's resolve_pass actually captures the scene draws that precede it in
-the fifo (render-pass ordering inside aurora gfx), (b) the screen-texture quad samples the
-copy (copy-bind trace fires?), (c) the 512x549 copy size is suspicious — GC EFB max is
-528 lines; the game computes copy geometry through GXGetNumXfbLines/GXGetYScaleFactor
-which are STILL ZERO/1.0 STUBS in sms-boot/runtime/sdk_stubs.cpp — implement both
-(aurora has TODOs for them) and re-check. Also still open: J2D letter-quad blend artifact
-during fades; PRESS START prompt absent (may be state-timing).
+- [copy-bind] fires 72×: the screen-texture quads DO sample the copy handles (dest
+  0x..a020 sampled as a 256x256 texobj, 0x..47860 as 320x224 — dims mismatch the copy's
+  512x549/640x480, worth revisiting, but sampling works).
+- Landed aurora 8eabe8d: GC-faithful EFB PERSISTENCE — the per-frame first render pass no
+  longer clears; only explicit copy-clear erases the EFB (GC semantics; SMS pipelines the
+  scene copy across frames). Correct regardless, but did NOT surface the backdrop.
+- FALSIFIED by that: the invisibility is not (only) copy/persistence ordering. The
+  presented frame contains copy-clear -> late scene-buffer draws -> present, so visible
+  scene pixels should not even need the quad — yet background stays at the copy-clear
+  color. Strong inference: the ~105 perspective draws in the fifo are the 3D LOGO LETTER
+  models (which ARE visible), and the map/sky/sea buffers draw EMPTY.
+
+## NEXT (named): why are the Sky/Map J3DDrawBuffers empty at draw time?
+
+Probe: per-buffer packet count in J3DDrawBuffer::draw (buffer->name registry already
+exists for SB_ENTRY_MAT in TDrawBufObj). If Sky/Map buffers show 0 packets while entry()
+runs 40 models/frame, the entry lands in the WRONG buffer instances (j3dSys draw-buffer
+pointer at actor-entry time) — chase who sets j3dSys.setDrawBuffer during the ENTRY pass
+(TDrawBufObj 0x400 setBuf entries in the preEntry list order). Also open: copy texobj
+dims vs copy dims mismatch (256x256 texobj / 512x549 copy — GXGetNumXfbLines/
+GXGetYScaleFactor still stubbed zero/1.0); J2D letter-quad blend artifact during fades;
+PRESS START prompt absent.
