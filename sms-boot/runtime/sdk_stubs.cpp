@@ -227,8 +227,6 @@ void GXSetCopyClamp(GXFBClamp) {}
 void GXSetDispCopyFrame2Field(GXCopyMode) {}
 u16  GXGetNumXfbLines(u16, f32) { return 0; }
 f32  GXGetYScaleFactor(u16, u16) { return 1.0f; }
-void GXLoadPosMtxIndx(u16, u32) {}
-void GXLoadNrmMtxIndx3x3(u16, u32) {}
 void GXInitTexCacheRegion(GXTexRegion*, GXBool, u32, GXTexCacheSize, u32, GXTexCacheSize) {}
 void GXGetTexObjAll(const GXTexObj*, void** image_ptr, u16* width, u16* height,
                     GXTexFmt* fmt, GXTexWrapMode* wrap_s, GXTexWrapMode* wrap_t, GXBool* mip_map) {
