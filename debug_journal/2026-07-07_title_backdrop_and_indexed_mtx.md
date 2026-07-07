@@ -102,3 +102,21 @@ pointer at actor-entry time) — chase who sets j3dSys.setDrawBuffer during the 
 dims vs copy dims mismatch (256x256 texobj / 512x549 copy — GXGetNumXfbLines/
 GXGetYScaleFactor still stubbed zero/1.0); J2D letter-quad blend artifact during fades;
 PRESS START prompt absent.
+
+## Continuation 4: scene DRAWS pixels; the copy/repaint loop is the remaining defect
+
+- SB_DRAWBUF_STATS (new, J3DDrawBuffer::draw): at title the buffers are FILLED and DRAWN —
+  Sky Xlu=6 packets, MapOpa=7, MapXlu=2, Mirror Opa=14, LensFlare=11. Entry/dispatch is
+  NOT the problem (falsifies "buffers empty" hypothesis).
+- SB_NO_COPY_CLEAR (new, aurora copy_tex diagnostic): with the copy's EFB clear
+  suppressed, dark-blue sky-sphere segments and glow accumulation SURVIVE to present —
+  scene draws DO emit pixels (scratch/screenshots/title_noclear.png).
+- Net: scene renders (at least sky backdrop pieces) → mid-frame copy erases the EFB →
+  the screen-texture quad that must REPAINT the copied scene paints nothing visible.
+  Narrowed defect: the repaint quad. Known concrete oddity to chase first: the quad's
+  texobj is 256x256 / 320x224 while the copies are 512x549 / 640x480 (copy dims flow
+  through GXGetNumXfbLines/GXGetYScaleFactor — STILL zero/1.0 stubs in
+  sms-boot/runtime/sdk_stubs.cpp; aurora has TODOs). Implement both with real GC
+  formulas, re-measure, then inspect the quad's TEV/blend/alpha if still black.
+- MapOpa's 7 packets drawing only sky-colored output also suggests map materials render
+  dark (lighting/TEV) — verify once the repaint loop shows anything at all.
