@@ -120,3 +120,24 @@ PRESS START prompt absent.
   formulas, re-measure, then inspect the quad's TEV/blend/alpha if still black.
 - MapOpa's 7 packets drawing only sky-colored output also suggests map materials render
   dark (lighting/TEV) — verify once the repaint loop shows anything at all.
+
+## Continuation 5 (user directive: middle ground faithful↔feasible)
+
+USER course-correction recorded (memory [[middle-ground-feasibility-2026-07-07]]): don't
+dig deep into uncharted GC machinery; prefer understood, documented, convergent-to-faithful
+simplifications; make things understandable before making them work.
+
+- DEFERRED COPY-CLEAR MODEL landed (aurora): copy_tex resolves the live EFB but defers its
+  clear to the next frame start (which clears with the same GXSetCopyClear color). Frame:
+  clear -> scene -> copy(no clear) -> 2D over live scene. Sidesteps the still-black
+  screen-texture repaint quad; converges to faithful when that repaint works.
+  SB_COPY_CLEAR=1 restores immediate faithful clear for A/B.
+- TViewport::load BE-rect fix (reference/sms): raw read(&x,4) of .ral dwords, same class
+  as TPerformList's filter. Was feeding GXSetViewport 65536x65536 / scissor 256x256.
+- With rects fixed, the 27 odd draws identify as the title's LEGITIMATE 256x256 MIRROR
+  pass (logo reflection) — NOT the island scene. Falsifies "scene clipped by scissor".
+- Remaining, now-crisp question: the Sky/Map buffer packets draw inside the correct
+  640x448 perspective group yet contribute no visible pixels — lighting/TEV/material
+  output (charted territory: LightUtil RE, sms_boot_setlight spec, SB_TEX_DBG). Next
+  session: sample one MapOpa packet's channel/TEV state at draw; compare against the
+  setlight spec; check ambient/material colors reaching aurora's uniform builder.
