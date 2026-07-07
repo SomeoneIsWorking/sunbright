@@ -163,6 +163,22 @@ target_compile_options(sms-assets PRIVATE -Wall -Wextra)
 enable_testing()
 
 # ---------------------------------------------------------------------------
+# Shim spec tests — unit tests from RE (spec-derived expected values) for the
+# pure game-logic headers in shims/. No ROM, no GPU, no game link.
+# ---------------------------------------------------------------------------
+file(GLOB SMS_SHIM_TESTS CONFIGURE_DEPENDS
+     "${SMS_NATIVE_REPO_ROOT}/sms-boot/shims/tests/*_test.cpp")
+foreach(_test ${SMS_SHIM_TESTS})
+    get_filename_component(_name "${_test}" NAME_WE)
+    add_executable(shim-${_name} "${_test}")
+    set_target_properties(shim-${_name} PROPERTIES
+        CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+    target_include_directories(shim-${_name} PRIVATE
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/shims")
+    add_test(NAME shim-${_name} COMMAND shim-${_name})
+endforeach()
+
+# ---------------------------------------------------------------------------
 # sms-boot — the ONE binary. reference/sms decomp compiled with
 # SMS_NATIVE_PLATFORM=1, rendered through Aurora (SDL3 + Dawn/WebGPU).
 # ---------------------------------------------------------------------------

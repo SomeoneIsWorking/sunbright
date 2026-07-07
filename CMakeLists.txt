@@ -4,6 +4,7 @@ project(sunbright CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+enable_testing()
 
 # The sole shipping binary: sms-boot — reference/sms decomp compiled native,
 # with Aurora (encounter/aurora, SDL3 + WebGPU/Dawn) providing the whole GC
