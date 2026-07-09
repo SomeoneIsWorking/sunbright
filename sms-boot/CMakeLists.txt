@@ -228,7 +228,8 @@ if(TARGET aurora_core)
         "$<LINK_GROUP:RESCAN,sms-native,sms-gd,sms-assets,$<TARGET_NAME_IF_EXISTS:sms-bootstubs>>"
         aurora::core
         aurora::gx
-        aurora::audio
+        # aurora::audio removed upstream; sb_audio_frame is a no-op until the JAS
+        # DSP-frame mixer arc lands. Re-add the (then-current) audio target then.
         aurora::main
         aurora::vi
         aurora::os
