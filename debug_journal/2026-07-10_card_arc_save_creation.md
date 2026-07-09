@@ -61,3 +61,36 @@ gameplay load.
 - gdb 17.2 segfaults on this binary's cores; `lldb -c core` works.
 - Subagent trap seen twice: an agent that starts its own background run then "waits for the
   completion notification" idles forever — tell agents they must poll/kill their own runs.
+
+## 5. BCSV/JMapData BE-swap (Koga::ToolData) — Load flow reaches DELFINO AIRPORT
+
+`Koga::ToolData::Attach` cast the raw BE BCSV blob (`/subtitle/rnbl/<movie>.bcr`, loaded by
+`TMovieRumble::init` at the post-Load intro movie) straight to `JMapData*` → wild offsets in
+GetValue → SEGV. New `sms-boot/assets/bcsv_swap.{h,cpp}` swaps header + field table + typed
+row cells in place at the Attach seam (field `mType` fully determines cell width; strings
+untouched). Idempotency: BCSV has no magic → content-verified header snapshot map
+(restlut_swap precedent). Corrupt field type byte → OSPanic (fail fast). Scope-swept:
+Koga::ToolData/BCSV has NO other raw consumer in the tree.
+
+**Verified furthest state (new record): Load confirm → intro movie completes →
+`TMarDirector::setup map=0` → `airport0.arc` mounts (Delfino Airport 0/0) → designed
+fail-fast: `genObject: no getNameRef case for "FruitsBoatManagerB"` — the stage-0 actor
+porting worklist begins.**
+
+## 6. Negative finding: save block "New" label is CORRECT, not a bug
+
+The created .gci's slot sectors are genuinely all-zero (checksum-valid blanks from
+`filledInitData_`); bookmark `unk18` is the first u32 of the serialized TFlagManager blob at
+preview offset 0x14, and only `saveBookmark()` (CardSave.cpp:1466, an in-gameplay save)
+ever writes it. Aurora's CARDRead offset math (sizeof(File)=0x40 GCI header skip) was
+checked byte-for-byte and is correct. Do NOT re-investigate "save shows New" until a
+gameplay session has actually saved. (The old "Corrupt" labels were the createFile
+opened=false zero-write bug, fixed in aurora `aab319f`.)
+
+## Pad-input harness notes (for future probes)
+
+- `SB_SEL_PICK=<0|1|2>` (CardLoad.cpp:552) injects the save-block head-butt (blocks are 3D
+  objects, not cursor UI). Then ONE A press confirms the submenu (cursor defaults to Load).
+- Working full sequence to gameplay handoff:
+  `SB_SEL_PICK=0 SB_PAD_SCRIPT="600:START 610:- 900:START 910:- 1500:A 1510:-"`.
+- `SB_DUMP_FRAME_AFTER` counts PRESENTS, not pad-script frame ticks — the two clocks differ.
