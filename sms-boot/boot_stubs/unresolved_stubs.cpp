@@ -89,7 +89,7 @@ const TNerveSBH_Fall& TNerveSBH_Fall::theNerve() { static TNerveSBH_Fall n; retu
 const TNerveSBH_SleepContinue& TNerveSBH_SleepContinue::theNerve() { static TNerveSBH_SleepContinue n; return n; }
 
 // ---- movie-wipe (GC2D/hx_wiper.h): the 8 referenced Hx_ symbols are now a faithful
-//      native port in native/platform/hx_wipe_impl.cpp (was stubbed here). ----
+//      native port in sms-boot/runtime/hx_wipe.cpp (was stubbed here). ----
 
 // ---- low-level DSP/audio (JSystem/dspproc.h, dsptask.h) ----
 void DSPReleaseHalt() {}

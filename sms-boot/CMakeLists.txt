@@ -181,6 +181,25 @@ foreach(_test ${SMS_SHIM_TESTS})
 endforeach()
 
 # ---------------------------------------------------------------------------
+# Runtime seam tests — unit tests from RE for pure-logic ports living in
+# runtime/ (not shims/). platform_hx_wipe: the Hx_ wipe/transition state
+# machine (runtime/hx_wipe.cpp). No ROM, no GPU, no game link.
+# ---------------------------------------------------------------------------
+file(GLOB SMS_RUNTIME_TESTS CONFIGURE_DEPENDS
+     "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/tests/*_test.cpp")
+foreach(_test ${SMS_RUNTIME_TESTS})
+    get_filename_component(_name "${_test}" NAME_WE)
+    add_executable(platform-${_name} "${_test}"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/hx_wipe.cpp")
+    set_target_properties(platform-${_name} PROPERTIES
+        CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+    target_include_directories(platform-${_name} PRIVATE
+        "${SMS_NATIVE_REPO_ROOT}/extern/aurora/include"
+        "${SMS_INCLUDE_STAGED}")
+    add_test(NAME platform_${_name} COMMAND platform-${_name})
+endforeach()
+
+# ---------------------------------------------------------------------------
 # sms-boot — the ONE binary. reference/sms decomp compiled with
 # SMS_NATIVE_PLATFORM=1, rendered through Aurora (SDL3 + Dawn/WebGPU).
 # ---------------------------------------------------------------------------
@@ -190,7 +209,8 @@ if(TARGET aurora_core)
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/frame_seam.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/audio_out.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/watchdog.cpp"
-        "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/sdk_stubs.cpp")
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/sdk_stubs.cpp"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/hx_wipe.cpp")
     set_target_properties(sms-boot PROPERTIES
         CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
     target_include_directories(sms-boot PRIVATE

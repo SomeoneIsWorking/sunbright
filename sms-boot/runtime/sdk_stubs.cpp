@@ -229,16 +229,10 @@ u16  GXGetNumXfbLines(u16, f32) { return 0; }
 f32  GXGetYScaleFactor(u16, u16) { return 1.0f; }
 void GXInitTexCacheRegion(GXTexRegion*, GXBool, u32, GXTexCacheSize, u32, GXTexCacheSize) {}
 
-// ---- HAM movie-wipe controller (retired — SMS_NATIVE_PLATFORM=1 uses direct
-// scene transitions; no-op stubs let the callers link) ----
-void Hx_ResetWipe(u32, u32) {}
-void Hx_StartWipe(int, int) {}
-u32  Hx_UpdateWipe(f32) { return 0; }
-int  Hx_GetWipeType(int) { return 0; }
-int  Hx_MovieStartSyncEx() { return 0; }
-void Hx_ProvideResource(void*, int) {}
-void Hx_ProvideResourceEx(void*) {}
-void Hx_RemoveResource() {}
+// ---- HAM movie-wipe controller (GC2D/hx_wiper.h): the 8 externally-referenced
+// Hx_ symbols are a faithful native port in runtime/hx_wipe.cpp (recovered from
+// the 2026-06-21/26 STAGE-A port and re-landed here; see that file's header
+// comment for the full RE trail). Do NOT re-add no-op stubs for these here. ----
 
 // ---- THP (movie playback) — MOVIE-SKIP SEAM -------------------------------
 // The THP video/audio decode+render arc (JPEG-DCT frame decode, VI-retrace

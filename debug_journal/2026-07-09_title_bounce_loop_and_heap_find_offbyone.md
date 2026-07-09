@@ -82,3 +82,26 @@ computing the offset once in a static initializer.
   "8"s are coincidences of the same loop count, neither is a retry table.
 - gdb `break file:line` doesn't resolve on this Release binary (no line info) — use the
   env-gated in-process backtrace diagnostics instead.
+
+## 6. (2026-07-10) THP movie-skip seam + hx_wipe port resurrection — attract loop complete
+
+- **THP stubs** (`sms-boot/runtime/sdk_stubs.cpp`): `THPPlayerGetState()` returned 0 forever
+  → `TMovieDirector::direct` busy-spun in STATE_PLAYING (3.7M direct() calls / 90 s). Stubs
+  now model the real states (RE'd from excluded `THPPlayer.c`: 1=prepared, 2=playing,
+  3=finished-normal, 5=DVD-error): `Play` jumps straight to 3 so the game's own
+  end-of-playback path (`decideNextMode`) runs. NOTE: 3 is the normal end, NOT 5 — 5 takes
+  MovieDirector's error branch. Verified: title logo renders (screenshot), movie 12 completes.
+- **hx_wipe**: movie 9 (Entrance.thp) then parked in FADE_IN — `Hx_MovieStartSyncEx`,
+  `Hx_UpdateWipe`, `Hx_GetWipeType` were `return 0` stubs (gates: MovieDirector.cpp:295 and
+  ScrnFader.cpp:228-231 — the fader can never reach FULLY_FADED_IN for ANY wipe). A complete
+  verified port existed (`sms-boot/common/hx_wipe_impl.cpp` + ctest, sessions 12/14) and was
+  deleted by the one-runtime consolidation (`d6d15d7`) though nothing in it depended on retired
+  infra. Resurrected as `sms-boot/runtime/hx_wipe.cpp` + `runtime/tests/hx_wipe_test.cpp`
+  (ctest `platform_hx_wipe_test`: DONE at 204 frames, SE gate once, THP gate once at frame
+  131 — all green). Attract loop now cycles 12→9→12→9→12 cleanly.
+- **Attract loop is real GC behavior**: `CardLoad.cpp:940-950` alternates movies 12/9 every
+  45 s idle at the title (flag 0x3001C). Title is not supposed to hold.
+- Also landed: `restlut_swap.{h,cpp}` (completes reference/sms `a47d69d4`, which shipped
+  only the caller side — build was red), CMake comment fix (sdk_gap_stubs.cpp never existed).
+- **Lesson (workflow)**: before re-porting a subsystem, `git log --all --full-history` for
+  prior ports — the consolidation deleted at least one verified port that nothing superseded.
