@@ -82,3 +82,48 @@ CARD completion protocol, not card provisioning.
 - `reference/sms`: `J3DDrawBuffer.cpp` — added buffer NAME to the `[dbhead]` flush line
   (uses existing `sb_boot_drawbuf_name`) for the task-2 census (not yet captured — CARD blocks).
 - `sms-boot/CMakeLists.txt`: removed `aurora::audio` link.
+
+## Update: the "CARD deadlock" was a red herring — real blocker was the inline-threading chain
+
+Re-ran under gdb: the OSPanic backtrace was NOT card — it was
+`JKRAramStream::write_StreamToAram_Async` → the **ARAM/DVD subsystem**. The
+`[aurora::card]` line was a coincidental non-fatal log. Traced and fixed a chain
+of identical defects (all the same pattern: a JKRThread worker's command queue is
+`OSInitMessageQueue`'d inside `run()`, which never executes under native because
+`OSResumeThread` is a no-op → the queue stays 0-capacity → the blocking
+`OSSendMessage` at the enqueue site OSPanics; CLAUDE.md's model is "every GC-thread
+body runs inline at its enqueue site"). Fixed instances:
+
+1. **JKRAramStream** (`write_StreamToAram_Async`): inline `writeToAram`.
+2. **aurora DVD** (`dvd.cpp`): the divergent lineage added a `DvdWorker`
+   `std::thread` — structurally incompatible with the panic-on-empty-block
+   `OSReceiveMessage` (async completion races the immediate panic). Don't start
+   the worker → `enqueue` takes its `executeNow` branch → inline
+   `execute(block)` (process_command + callback) → completion fires before
+   `DVDReadAsync` returns. This is the documented "No DVD worker thread... every
+   DVDRead*/Async completes inline" design.
+3. **JKRAramPiece** (`orderAsync`): inline `sendCommand` → `startDMA` →
+   `ARQPostRequest`. Confirmed aurora's `AR.cpp` already emulates ARQPostRequest
+   as inline memcpy + synchronous `doneDMA` callback (and the decomp `ar.c`/
+   `arq.c` are excluded from the native build — no `__ARQInterruptServiceRoutine`
+   symbol). So the ARAM DMA completes inline once dispatch reaches it.
+4. **vtx attr 14** (aurora `shader.cpp:vtx_attr`): a texcoord referenced by
+   TexGen/TEV but `GX_NONE` in the VAT hit FATAL; now defaults to `vec2f(0.0)`,
+   matching the existing NRM/CLR defaults + GC HW.
+5. **JKRDecomp** (`sendCommand`): inline `decode` + ARAM-chain/callback/completion
+   dispatch (was deadlocking `TMarDirector::loadParticle` → `JKRDecompressFromDVD`).
+
+**Result:** the title now boots from a first-frame ARAM deadlock all the way
+through `TMarDirector::setup` → `loadResource`/`loadParticle` → `genObject`
+(scene-object construction, e.g. "MapObjFlagManager"). This is a large milestone.
+
+**Current blocker (next session):** a SIGSEGV ~around scene construction
+(after genObject). Hard to pin — gdb keeps catching parked aurora gpu worker
+threads (pipeline_cache_writer / WSI swapchain), not the faulting frame. With
+`SB_WATCHDOG_SECS=0` the process still exits 139 (real segfault, not the
+watchdog). Next step: `thread apply all bt` under gdb to find the faulting
+thread, or run AddressSanitizer. Tasks 2/3 (the `[dbhead]` census + NDC probe)
+still need a title that renders; the census diagnostic itself is wired and ready.
+
+NOTE: the earlier "task 4 (oracle diff) infeasible" conclusion stands — the
+Dolphin submodule + oracle tiers remain retired.
