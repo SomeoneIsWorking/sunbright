@@ -102,7 +102,8 @@ cmake --build build --target sms-boot -j$(nproc)
 ./run.sh [rom.rvz]        # ROM via $SUNBRIGHT_ROM / .env / rom.rvz drop-in
 ```
 
-Env vars: `SB_W`/`SB_H` (window), `SB_TURBO` (unpaced), `SB_WATCHDOG_SECS`,
+Env vars: `SB_W`/`SB_H` (window), `SB_HEADLESS` (never show the window — REQUIRED for all
+automated/diagnostic runs, agents included), `SB_TURBO` (unpaced), `SB_WATCHDOG_SECS`,
 `SB_NO_FASTBOOT` / `SB_STAGE` / `SB_SCENARIO` (boot destination, `Application.cpp`),
 `SB_DUMP_FRAME` / `SB_DUMP_FRAME_AFTER` (framebuffer dump), `SB_DBG_AUDIO`.
 Diagnostic env vars route through these tracked names — prune dead ones on sight.
