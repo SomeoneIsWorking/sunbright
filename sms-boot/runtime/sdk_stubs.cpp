@@ -240,22 +240,107 @@ void Hx_ProvideResource(void*, int) {}
 void Hx_ProvideResourceEx(void*) {}
 void Hx_RemoveResource() {}
 
-// ---- THP (movie playback — skipped under SMS_NATIVE_PLATFORM=1) ----
-BOOL THPPlayerInit() { return TRUE; }
-BOOL THPPlayerOpen(const char*, BOOL) { return FALSE; }
-BOOL THPPlayerClose() { return TRUE; }
+// ---- THP (movie playback) — MOVIE-SKIP SEAM -------------------------------
+// The THP video/audio decode+render arc (JPEG-DCT frame decode, VI-retrace
+// pump, GX texture upload — reference/sms/src/THPPlayer/THPPlayer.c, EXCLUDED
+// from the native build in CMakeLists.txt) is not ported. This is a minimal
+// state machine that fakes an INSTANTLY-FINISHED movie so
+// TMovieDirector::direct() (reference/sms/src/System/MovieDirector.cpp)
+// takes its own, already-ported, real end-of-playback branch instead of
+// spinning forever in STATE_PLAYING waiting for a frame count that will
+// never advance. DELETE this whole block (and the sThp* statics) once the
+// real THP decode/render arc lands.
+//
+// Real ActivePlayer.state values, reverse-engineered from THPPlayer.c (no
+// named enum there — just raw assignments to the u8 `state` field):
+//   0 = idle / not playing        (THPPlayerOpen L199-203, THPPlayerStop L450-451)
+//   1 = prepared, ready to play   (THPPlayerPrepare success, L419)
+//   2 = playing                   (THPPlayerPlay success, L438)
+//   3 = FINISHED — last frame decoded and all buffers drained; the
+//       ORDINARY, non-error end of a movie (PlayControl(), L551-565)
+//   4 = paused                    (THPPlayerPause, L476-477)
+//   5 = DVD/video decode ERROR    (PlayControl(), L492-495 — NOT reached by
+//       a normal end of playback, only by a corrupt/short DVD read)
+//
+// TMovieDirector::direct()'s STATE_PLAYING case (MovieDirector.cpp:335-351)
+// polls THPPlayerGetState() every frame:
+//   == 5 -> nextState = STATE_FADE_OUT directly (the player's ERROR path)
+//   == 3 -> desiredAppState = decideNextMode(&nextState) (the player's
+//           NORMAL end-of-playback path — already correct for every movie,
+//           incl. the title idle-attract autodemoA: movie==12 sets
+//           mNextArea=(15,0,0) and returns APP_STATE 5, back to title
+//           stage 15).
+// A movie that finishes normally reports state 3, not 5 (5 is the DVD/codec
+// error branch) — so this stub fakes 3, taking the SAME code path a real
+// completed movie takes rather than borrowing the unrelated error branch.
+static bool sThpOpen  = false;
+static u8   sThpState = 0; // idle
+
+BOOL THPPlayerInit() { sThpOpen = false; sThpState = 0; return TRUE; }
+void THPPlayerQuit() { sThpOpen = false; sThpState = 0; }
+
+BOOL THPPlayerOpen(const char*, BOOL) {
+    // Real THPPlayerOpen parses the .thp header off DVD (THPPlayer.c:120-211).
+    // We never decode a real movie, so any filename opens successfully.
+    sThpOpen  = true;
+    sThpState = 0;
+    return TRUE;
+}
+
+BOOL THPPlayerClose() {
+    if (sThpOpen && sThpState == 0) { sThpOpen = false; return TRUE; }
+    return FALSE;
+}
+
 u32  THPPlayerCalcNeedMemory() { return 0; }
-BOOL THPPlayerSetBuffer(u8*) { return TRUE; }
-BOOL THPPlayerPrepare(s32, s32, s32, s32) { return TRUE; }
-BOOL THPPlayerPlay() { return TRUE; }
-BOOL THPPlayerPause() { return TRUE; }
-BOOL THPPlayerStop() { return TRUE; }
-void THPPlayerQuit() {}
-u32  THPPlayerGetState() { return 0; }
-u32  THPPlayerDrawCurrentFrame(void*, void*, u32, u32, u32) { return 0; }
+BOOL THPPlayerSetBuffer(u8*) { return sThpOpen; }
+
+BOOL THPPlayerPrepare(s32, s32, s32, s32) {
+    if (sThpOpen && sThpState == 0) { sThpState = 1; return TRUE; }
+    return FALSE;
+}
+
+BOOL THPPlayerPlay() {
+    if (sThpOpen && (sThpState == 1 || sThpState == 4)) {
+        // Real THPPlayerPlay() moves state 1|4 -> 2 (playing) and lets the
+        // VI-retrace PlayControl() callback tick frames until it naturally
+        // reaches state 3. We decode/render nothing, so skip straight to
+        // 3 — a zero-duration movie that still drives the engine's real
+        // end-of-playback branch above instead of a fake/bypassed one.
+        sThpState = 3;
+        return TRUE;
+    }
+    return FALSE;
+}
+
+BOOL THPPlayerPause() {
+    if (sThpOpen && sThpState == 2) { sThpState = 4; return TRUE; }
+    return FALSE;
+}
+
+BOOL THPPlayerStop() {
+    if (sThpOpen) sThpState = 0;
+    return TRUE;
+}
+
+u32  THPPlayerGetState() { return sThpState; }
+
+u32  THPPlayerDrawCurrentFrame(void*, void*, u32, u32, u32) { return 0; } // no frame ever decoded
 BOOL THPPlayerDrawDone() { return TRUE; }
-BOOL THPPlayerGetAudioInfo(THPAudioInfo*) { return FALSE; }
-BOOL THPPlayerGetVideoInfo(THPVideoInfo*) { return FALSE; }
+
+BOOL THPPlayerGetAudioInfo(THPAudioInfo*) { return FALSE; } // no audio track decoded
+
+BOOL THPPlayerGetVideoInfo(THPVideoInfo* info) {
+    // MovieDirector::rsetup() (MovieDirector.cpp:177) reads this unconditionally
+    // (the BOOL result is discarded) to size TTHPRender::setParams; leaving
+    // *info uninitialized reads garbage stack memory into the render rect.
+    // 640x480 matches the usual NTSC game-render frame size; videoType=0 =
+    // progressive (no interlace field bits set) — sane placeholder dims for
+    // a movie that never actually decodes a frame.
+    if (info) { info->xSize = 640; info->ySize = 480; info->videoType = 0; }
+    return sThpOpen;
+}
+
 void THPPlayerSetVolume(s32, s32) {}
 
 } // extern "C"

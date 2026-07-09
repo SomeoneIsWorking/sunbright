@@ -34,8 +34,9 @@ list(FILTER SMS_NATIVE_SOURCES EXCLUDE REGEX
      "/reference/sms/src/(OdemuExi2|JSystem/dspproc|JSystem/dsptask|JSystem/osdsp)")
 # hx_wiper.c / THPPlayer/*.c: HAM movie-wipe controller + Nintendo THP video
 # playback. Both drive GX directly and depend on cache/DVD hardware. Movies are
-# skipped under SMS_NATIVE_PLATFORM=1; sdk_gap_stubs.cpp provides linkable
-# no-ops for the exported entry points.
+# skipped under SMS_NATIVE_PLATFORM=1; runtime/sdk_stubs.cpp provides linkable
+# no-ops (a small state machine faking an instantly-finished movie) for the
+# exported entry points.
 list(FILTER SMS_NATIVE_SOURCES EXCLUDE REGEX
      "/reference/sms/src/GC2D/hx_wiper\\.c$")
 list(FILTER SMS_NATIVE_SOURCES EXCLUDE REGEX
@@ -153,6 +154,7 @@ add_library(sms-assets STATIC
     "${SMS_NATIVE_REPO_ROOT}/sms-boot/assets/bmt_swap.cpp"
     "${SMS_NATIVE_REPO_ROOT}/sms-boot/assets/anm_swap.cpp"
     "${SMS_NATIVE_REPO_ROOT}/sms-boot/assets/timg_swap.cpp"
+    "${SMS_NATIVE_REPO_ROOT}/sms-boot/assets/restlut_swap.cpp"
     "${SMS_NATIVE_REPO_ROOT}/sms-boot/assets/rarc.cpp")
 set_target_properties(sms-assets PROPERTIES
     CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
