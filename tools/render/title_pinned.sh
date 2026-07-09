@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # title_pinned.sh — REAL LOCKSTEP scene-sync at the title screen.
 #
-# Goal (nifty-chasing-bachman.md): before any pixel-delta claim, prove native
-# (build-native/sms-boot) and oracle (build/sunbright) rendered the SAME game
-# state on the SAME game tick. Every SBS before this script existed diffed two
-# independently-settled captures at unrelated states.
+# Goal: before any pixel-delta claim, prove native (SB_RENDER=native) and oracle
+# (SB_RENDER=oracle, Dolphin videovulkan backend) rendered the SAME game state on
+# the SAME game tick. Both use the unified build/sms-boot/sms-boot binary.
+# Every SBS before this script existed diffed two independently-settled captures
+# at unrelated states.
 #
 # Contract:
 #   1. Fastboot both sides to stage 15 with EMPTY pad script (title screen,
@@ -56,23 +57,24 @@ echo "== title_pinned: PIN_INTRO=$PIN_INTRO${PIN_TICK:+ (fallback PIN_TICK=$PIN_
 echo
 
 # ============================================================================
-# [1/3] Oracle side — build/sunbright, Dolphin-GX. WIDESCREEN=0 to disable
-# runtime/overrides/scene_render.cpp's m[0][0]*=0.75 squeeze so both engines
-# produce raw 4:3 proj matrices from identical game code. Empty pad script —
-# we want the actual title screen, NOT the file-select.
+# [1/3] Oracle side — sms-boot with SB_RENDER=oracle (Dolphin videovulkan backend).
+# WIDESCREEN=0 to disable runtime/overrides/scene_render.cpp's m[0][0]*=0.75 squeeze
+# so both engines produce raw 4:3 proj matrices from identical game code. Empty pad
+# script — we want the actual title screen, NOT the file-select.
 # ============================================================================
-echo "[1/3] ORACLE — build/sunbright  (fastboot stage 15, empty pad, intro anchor=$PIN_INTRO)"
-kill_stale sunbright
+echo "[1/3] ORACLE — build/sms-boot/sms-boot SB_RENDER=oracle  (fastboot stage 15, empty pad, intro anchor=$PIN_INTRO)"
+kill_stale sms-boot
 
-env SUNBRIGHT_HEADLESS=1 SUNBRIGHT_TURBO=1 SUNBRIGHT_BACKEND=Vulkan \
-    SUNBRIGHT_FASTBOOT=1 SUNBRIGHT_STAGE=15 SUNBRIGHT_SCENARIO=0 \
-    SUNBRIGHT_PAD_SCRIPT="" \
-    SUNBRIGHT_WIDESCREEN=0 \
-    SUNBRIGHT_PROBE=1 \
-    SUNBRIGHT_PARITY_DUMP=scratch/passes/pinned_oracle.jsonl \
-    SUNBRIGHT_PIN_INTRO="$PIN_INTRO" \
-    ${PIN_TICK:+SUNBRIGHT_PIN_TICK="$PIN_TICK"} \
-    ./build/sunbright "$SUNBRIGHT_ROM" > scratch/passes/pinned_oracle.log 2>&1 &
+env SB_HEADLESS=1 SB_TURBO=1 SB_BACKEND=Vulkan \
+    SB_FASTBOOT=1 SB_STAGE=15 SB_SCENARIO=0 \
+    SB_PAD_SCRIPT="" \
+    SB_WIDESCREEN=0 \
+    SB_PROBE=1 \
+    SB_PARITY_DUMP=scratch/passes/pinned_oracle.jsonl \
+    SB_PIN_INTRO="$PIN_INTRO" \
+    SB_RENDER=oracle \
+    ${PIN_TICK:+SB_PIN_TICK="$PIN_TICK"} \
+    ./build/sms-boot/sms-boot > scratch/passes/pinned_oracle.log 2>&1 &
 OPID=$!
 
 # Poll for the oracle probe to be listening + the .done marker to appear.
@@ -90,7 +92,7 @@ done
 if [[ ! -s "$ORACLE_DONE" ]]; then
     echo "  ORACLE pin TIMEOUT ($ORACLE_DONE never appeared)" >&2
     tail -30 scratch/passes/pinned_oracle.log >&2
-    kill_stale sunbright
+    kill_stale sms-boot
     exit 1
 fi
 # Ask the probe to save a PNG at the pinned state. Oracle is still running at
@@ -105,32 +107,33 @@ if [[ -s "scratch/screenshots/pin_$(printf %04d "$PIN_KEY")_oracle_tmp.png" ]]; 
        "$OUT/pin_$(printf %04d "$PIN_KEY")_oracle.png"
 fi
 ORACLE_PNG="$OUT/pin_$(printf %04d "$PIN_KEY")_oracle.png"
-kill_stale sunbright
+kill_stale sms-boot
 wait "$OPID" 2>/dev/null || true
 echo "  oracle JSON $([[ -s "$ORACLE_JSON" ]] && echo present || echo MISSING)"
 echo "  oracle PNG  $([[ -s "$ORACLE_PNG" ]]  && echo present || echo missing)"
 echo
 
 # ============================================================================
-# [2/3] Native side — build-native/sms-boot. SB_PIN_TICK=N triggers a one-shot
-# dump of scratch/frames/pin_<N>.ppm + pin_<N>.json + pin_<N>.done at present
-# frame == N. No settle detector — deterministic tick equality.
+# [2/3] Native side — sms-boot with SB_RENDER=native (SDL3 GPU GX backend).
+# SB_PIN_TICK=N triggers a one-shot dump of scratch/frames/pin_<N>.ppm + pin_<N>.json
+# + pin_<N>.done at present frame == N. No settle detector — deterministic tick equality.
 # ============================================================================
-echo "[2/3] NATIVE — build-native/sms-boot  (fastboot stage 15, empty pad, intro anchor=$PIN_INTRO)"
+echo "[2/3] NATIVE — build/sms-boot/sms-boot SB_RENDER=native  (fastboot stage 15, empty pad, intro anchor=$PIN_INTRO)"
 kill_stale sms-boot
 
 NATIVE_DONE="$OUT/pin_$(printf %04d "$PIN_KEY").done"
 NATIVE_JSON="$OUT/pin_$(printf %04d "$PIN_KEY").json"
 NATIVE_PPM="$OUT/pin_$(printf %04d "$PIN_KEY").ppm"
 
-setarch -R env SUNBRIGHT_DISC=scratch/disc/sms.iso SB_THP_FAST=1 SB_TURBO=1 \
+setarch -R env SB_DISC=scratch/disc/sms.iso SB_THP_FAST=1 SB_TURBO=1 \
     SB_HOST_ALLOC_CAP_MB=3072 SB_STAGE=15 SB_SCENARIO=0 \
     SB_PAD_SCRIPT="" \
     SB_FRAME_DUMP=1 SB_FRAME_DUMP_MAX=2 \
     SB_PIN_INTRO="$PIN_INTRO" \
+    SB_RENDER=native \
     ${PIN_TICK:+SB_PIN_TICK="$PIN_TICK"} \
     SB_WATCHDOG_SECS="${SB_WATCHDOG_SECS:-0}" \
-    ./build-native/sms-boot > scratch/passes/pinned_native.log 2>&1 &
+    ./build/sms-boot/sms-boot > scratch/passes/pinned_native.log 2>&1 &
 NPID=$!
 
 for i in $(seq 1 90); do   # up to 90 s
