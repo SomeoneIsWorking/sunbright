@@ -31,6 +31,7 @@ extern TApplication gpApplication;
 extern "C" void sb_mark_game_thread(void);
 extern "C" void sb_watchdog_install(void);
 extern "C" void sb_frame_seam_start(void);
+extern "C" void sb_pad_script_install(void);  // headless scripted input (SB_PAD_SCRIPT)
 
 static void log_callback(AuroraLogLevel level, const char* module,
                          const char* message, unsigned int) {
@@ -90,6 +91,9 @@ int main(int argc, char* argv[]) {
 
     // Keyboard drives pad 0 unless a physical gamepad takes over.
     PADSetKeyboardActive(0, TRUE);
+    // Headless scripted input (SB_PAD_SCRIPT), composed on top via Aurora's
+    // virtual-pad seam; no-op when unset.
+    sb_pad_script_install();
 
     sb_watchdog_install();
     sb_frame_seam_start();

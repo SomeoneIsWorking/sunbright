@@ -38,6 +38,11 @@ void sb_audio_frame(void);
 uint32_t VIGetRetraceCount(void);
 void VIWaitForRetrace(void);
 
+// Headless scripted controller input (runtime/pad_script.cpp), driven by
+// SB_PAD_SCRIPT. No-op when unset. Feeds Aurora's virtual-pad seam
+// (PADSetVirtualStatus), which composes with keyboard/gamepad input.
+void sb_pad_script_tick(uint32_t retrace_count);
+
 // Aurora's weak host-alloc hooks (lib/dolphin/dvd) resolve to the JKR gate:
 // DVD entry points allocate C++ objects (file handles, FST path strings)
 // whose lifetime must not be tied to whatever JKR heap is current.
@@ -110,7 +115,10 @@ void sb_frame_present(unsigned retraces) {
     // Advance the SDK retrace counter by the fields this frame covers so the
     // game's own pacing math (TVideo::mNextRetraceIndex) stays consistent.
     if (retraces == 0) retraces = 1;
-    for (unsigned i = 0; i < retraces; ++i) VIWaitForRetrace();
+    for (unsigned i = 0; i < retraces; ++i) {
+        VIWaitForRetrace();
+        sb_pad_script_tick(VIGetRetraceCount());
+    }
 
     sb_watchdog_kick();
     sb_audio_frame();
