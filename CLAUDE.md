@@ -114,12 +114,18 @@ Scratch output → gitignored `scratch/` (never `/tmp`).
 ## Active target
 
 Boot-order fidelity: GC logo → title (stage 15) → file-select → gameplay, rendered through
-Aurora GX. Fix defects in boot order; finish one port end-to-end before switching. Known
-open render gaps: `GXLoadPosMtxIndx`/`GXLoadNrmMtxIndx3x3` indexed skinning matrices
-(no-ops — J3D skinning wrong until implemented), NULL-texMap TEV callsite question
-(aurora `26d5a7b` emits 0 per GC HW; an uncommitted investigation into WHO sets NULL on
-stages 0-7 lives in the user's aurora checkout). Named audio arc: port the JAS DSP-frame
-mixer into `sb_audio_frame`.
+Aurora GX. Fix defects in boot order; finish one port end-to-end before switching.
+`GXLoadPosMtxIndx`/`GXLoadNrmMtxIndx3x3` are IMPLEMENTED (2026-07-09, CP LOAD_INDX parser +
+emitters) and re-verified non-degenerate at the title (2026-07-10,
+`debug_journal/2026-07-10_phase_provider_restore_and_behind_camera_finding.md`) — do not
+re-suspect them for the black title backdrop. Current known cause: `DrawBuf MapOpa`'s
+perspective draws resolve to a well-formed (det≈+1) camera-space matrix whose Z comes out
+POSITIVE for every sampled vertex → `clip.w≤0` → discarded as behind-camera before
+rasterization; root cause (which camera/view computation feeds this draw, and why its
+forward-axis disagrees with the projection) is unresolved RE work, see that journal entry.
+NULL-texMap TEV callsite question (aurora `26d5a7b` emits 0 per GC HW; an uncommitted
+investigation into WHO sets NULL on stages 0-7 lives in the user's aurora checkout). Named
+audio arc: port the JAS DSP-frame mixer into `sb_audio_frame`.
 
 ## Skills
 

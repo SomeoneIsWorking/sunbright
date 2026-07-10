@@ -414,14 +414,14 @@ void JUTException::readPad(unsigned int* a, unsigned int* b) { if (a) *a = 0; if
 // ---- sb_* capture no-ops still referenced by SMS_NATIVE_PLATFORM branches in
 // reference/sms (retired Path-B capture hooks; removing those callsites
 // upstream retires these too) ----
+// sb_boot_capture_set_phase / sb_boot_capture_phase moved to phase_track.cpp (real per-frame
+// phase tracker restoring the [dbhead]/[mapxlu] diagnostics; the old stub here silently
+// discarded the phase, and the sb_own_gxlist/sb_boot_capture_begin_scene/end_scene capture-lock
+// gate they used to sit behind belonged to the deleted Path-B capture buffer — removed upstream.
 extern "C" {
-void sb_boot_capture_begin_scene(int) {}
-void sb_boot_capture_end_scene() {}
-void sb_boot_capture_set_phase(int) {}
 void sb_boot_drive_scene() {}
 void sb_boot_request_dump(const char*) {}
 bool sb_camera_view_settled() { return true; }
 int  sb_gx_get_color_alpha_update() { return 0; }
 void sb_gx_get_projection(float*) {}
-void sb_own_gxlist() {}
 }

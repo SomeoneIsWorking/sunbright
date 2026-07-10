@@ -211,6 +211,7 @@ if(TARGET aurora_core)
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/audio_out.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/watchdog.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/sdk_stubs.cpp"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/phase_track.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/hx_wipe.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/pad_script.cpp")
     set_target_properties(sms-boot PROPERTIES
