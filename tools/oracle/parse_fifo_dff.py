@@ -163,6 +163,12 @@ GX_PRIMITIVE_END = 0xBF
 CP_COMMAND_MASK = 0xF0
 MATINDEX_A = 0x30
 MATINDEX_B = 0x40
+XF_POSMTX_END = 0x100  # XF pos/normal matrix memory: addr 0x000-0x0FF, matrix N at addr N*12
+                        # (3 rows x 4 floats/matrix; verified empirically against this .dff's
+                        # own posmtx write addresses: 0, 120, 132, 144, ... = 0*12, 10*12, 11*12,
+                        # 12*12, ... i.e. exact multiples of 12 words, never 4 or 8 alone) —
+                        # matches Dolphin's XFMemory.h posMatrices[] / VertexShaderManager
+                        # convention (position matrix stride = 12 words == 3x4 GX matrix).
 VCD_LO = 0x50
 VCD_HI = 0x60
 CP_VAT_REG_A = 0x70
@@ -286,6 +292,8 @@ class CPState:
         self.vcd_lo = 0
         self.vcd_hi = 0
         self.vats = [VAT() for _ in range(8)]
+        self.mat_idx_a = 0  # CP reg 0x30: PosNormalMtxIdx (bits 0-5) + Tex0-4MtxIdx
+        self.mat_idx_b = 0  # CP reg 0x40: Tex5-7MtxIdx (not needed for pos matrix)
 
     def load(self, command: int, value: int):
         sub = command & CP_COMMAND_MASK
@@ -299,7 +307,21 @@ class CPState:
             self.vats[command & CP_VAT_MASK].g1 = value
         elif sub == CP_VAT_REG_C:
             self.vats[command & CP_VAT_MASK].g2 = value
-        # MATINDEX_A/B, ARRAY_BASE: not needed for vertex-size computation.
+        elif sub == MATINDEX_A:
+            self.mat_idx_a = value
+        elif sub == MATINDEX_B:
+            self.mat_idx_b = value
+        # ARRAY_BASE: not needed for vertex-size computation or matrix resolution.
+
+    # --- matrix-index resolution (task: per-draw posmtx dump) ---
+    def pnmtxidx_enabled(self) -> bool:
+        """VCD_LO bit 0: PNMTXIDX present per-vertex (CPMemory.h TVtxDesc::Low0::PosMatIdx)."""
+        return bool(bits(self.vcd_lo, 0, 1))
+
+    def pnmtx_default(self) -> int:
+        """CP MatrixIndexA bits 0-5: PosNormalMtxIdx, the matrix used when PNMTXIDX is NOT
+        streamed per-vertex (CPMemory.h TMatrixIndexA::PosNormalMtxIdx)."""
+        return bits(self.mat_idx_a, 0, 6)
 
     # --- VCD low (9 bits: PosMatIdx + 8x TexMatIdx) + Position/Normal/Color0/Color1 (2 bits each) ---
     def vcd_low9_popcount(self):
@@ -373,6 +395,13 @@ class DrawEvent:
     primitive: str
     vat: int
     num_vertices: int
+    # --- per-draw matrix dump (task step 1 extension) ---
+    proj_type: str = None            # "PERSPECTIVE" | "ORTHOGRAPHIC" | None (never set this frame)
+    proj_floats: tuple = None        # 7 raw XF words (6 mtx floats + type), as floats/int
+    mtx_source: str = None           # "default" | "per-vertex" | "per-vertex(unread)"
+    mtx_index: int = None            # resolved pos-matrix number actually used by this draw
+    posmtx: tuple = None             # 12 floats (3x4 row-major) or None if never written this frame
+    posmtx_complete: bool = False    # False if any of the 12 XF words for mtx_index were never seen
 
 
 @dataclass
@@ -382,6 +411,10 @@ class BPEvent:
     fifo_pos: int
     command: int
     value: int
+
+
+def u32_to_f32(word: int) -> float:
+    return struct.unpack(">f", struct.pack(">I", word & 0xFFFFFFFF))[0]
 
 
 def classify_xf(address: int) -> str:
@@ -401,6 +434,16 @@ def decode_frame(frame_idx: int, data: bytes, cp: CPState):
     seq = 0
     pos = 0
     n = len(data)
+    # Live XF pos/normal-matrix memory (addr -> raw u32 word) and the most recent
+    # GXSetProjection load, threaded through sequentially so each draw snapshots
+    # exactly the state live at that point in the stream (persists across frames
+    # via the caller-owned `cp`-style pattern would require passing these in too,
+    # but posmtx/proj are real GX hardware state that also carries frame-to-frame;
+    # the caller only reuses `cp`, so a draw very early in a frame that relies on
+    # a matrix loaded in a PRIOR frame will show posmtx_complete=False here — note
+    # this rather than silently guessing).
+    xf_pos_mem = {}
+    last_proj = None  # (type_str, 7-tuple of raw u32 words)
     while pos < n:
         op = data[pos]
         avail = n - pos
@@ -437,6 +480,12 @@ def decode_frame(frame_idx: int, data: bytes, cp: CPState):
             words = struct.unpack_from(f">{stream_size}I", data, pos + 5)
             kind = classify_xf(base_address)
             xf_events.append(XFEvent(frame_idx, seq, pos, base_address, stream_size, words, kind))
+            if base_address < XF_POSMTX_END:
+                for i, w in enumerate(words):
+                    xf_pos_mem[base_address + i] = w
+            if kind == "projection" and stream_size == 7:
+                ptype = "ORTHOGRAPHIC" if words[6] else "PERSPECTIVE"
+                last_proj = (ptype, words)
             seq += 1
             pos += total
             continue
@@ -493,8 +542,40 @@ def decode_frame(frame_idx: int, data: bytes, cp: CPState):
                     f"= {num_vertices * vertex_size}B but only {avail - 3} available — "
                     f"vertex-size computation likely wrong, ABORTING frame {frame_idx} decode")
                 break
+            # --- resolve which pos matrix this draw uses (task step 1) ---
+            per_vertex = cp.pnmtxidx_enabled()
+            if per_vertex:
+                # PNMTXIDX is the first byte of every vertex (VertexLoaderBase
+                # attribute order: PosMtxIdx, Tex0-7MtxIdx, Position, Normal,
+                # Color0-1, TexCoord0-7). Read vertex 0's raw index directly —
+                # no pragmatic per-vertex breakdown attempted (task allows
+                # "else mark it"; here it IS easy, so we read it).
+                if num_vertices > 0 and pos + 3 < n:
+                    mtx_index = data[pos + 3]
+                    mtx_source = "per-vertex"
+                else:
+                    mtx_index = None
+                    mtx_source = "per-vertex(unread)"
+            else:
+                mtx_index = cp.pnmtx_default()
+                mtx_source = "default"
+
+            posmtx = None
+            posmtx_complete = False
+            if mtx_index is not None:
+                base = mtx_index * 12
+                raw = [xf_pos_mem.get(base + i) for i in range(12)]
+                posmtx_complete = all(w is not None for w in raw)
+                posmtx = tuple(u32_to_f32(w) if w is not None else None for w in raw)
+
+            proj_type = last_proj[0] if last_proj else None
+            proj_floats = tuple(u32_to_f32(w) for w in last_proj[1][:6]) + (last_proj[1][6],) \
+                if last_proj else None
+
             draw_events.append(DrawEvent(frame_idx, seq, pos, PRIMITIVE_NAMES[primitive], vat,
-                                          num_vertices))
+                                          num_vertices, proj_type=proj_type, proj_floats=proj_floats,
+                                          mtx_source=mtx_source, mtx_index=mtx_index, posmtx=posmtx,
+                                          posmtx_complete=posmtx_complete))
             seq += 1
             pos += total
             continue
@@ -512,6 +593,9 @@ def main():
     ap.add_argument("dff", help="path to a Dolphin .dff FIFO log")
     ap.add_argument("--frame", type=int, default=None, help="only show this frame index")
     ap.add_argument("--summary", action="store_true", help="print counts only, no full event list")
+    ap.add_argument("--matrix-tsv", metavar="OUT",
+                     help="write a per-draw TSV (seq, nverts, prim, projection, posmtx) to OUT "
+                          "instead of the normal timeline dump")
     args = ap.parse_args()
 
     with open(args.dff, "rb") as f:
@@ -529,6 +613,30 @@ def main():
     ]
 
     cp = CPState()  # CP state persists across frames (real GX hardware state, not per-frame)
+
+    if args.matrix_tsv:
+        out_rows = []
+        for i, fr in enumerate(frames):
+            if args.frame is not None and i != args.frame:
+                continue
+            data = buf[fr.fifo_data_offset: fr.fifo_data_offset + fr.fifo_data_size]
+            _xf_events, draw_events, _bp_events, _unknown, _warnings = decode_frame(i, data, cp)
+            out_rows.extend(draw_events)
+        cols = ["frame", "seq", "prim", "nverts", "proj_type"] + [f"proj{k}" for k in range(7)] + \
+               ["mtx_source", "mtx_index", "posmtx_complete"] + [f"pm{k}" for k in range(12)]
+        with open(args.matrix_tsv, "w") as out:
+            out.write("\t".join(cols) + "\n")
+            for e in out_rows:
+                proj = e.proj_floats if e.proj_floats else (None,) * 7
+                pm = e.posmtx if e.posmtx else (None,) * 12
+                row = [e.frame, e.seq, e.primitive, e.num_vertices, e.proj_type or ""] + \
+                      [f"{v:.6g}" if isinstance(v, float) else ("" if v is None else v) for v in proj] + \
+                      [e.mtx_source or "", e.mtx_index if e.mtx_index is not None else "",
+                       int(e.posmtx_complete)] + \
+                      [f"{v:.6g}" if v is not None else "" for v in pm]
+                out.write("\t".join(str(x) for x in row) + "\n")
+        print(f"wrote {len(out_rows)} draws to {args.matrix_tsv}", file=sys.stderr)
+        return
 
     for i, fr in enumerate(frames):
         if args.frame is not None and i != args.frame:
