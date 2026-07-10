@@ -168,3 +168,23 @@ half-res capture over the frame. Next: capture native's actual title perspective
 / EFB-copy contents to see what the composite samples. `SB_SKIP_ORTHO` HANGS the boot (fade
 screens are ortho — a load loop waits on a fade that never renders), so isolate 3D-vs-2D some
 other way. Do NOT diff against `title_gx_oracle.png`; use `frames/check_3800.png`.
+
+## ★★★★★ RESOLVED PREMISE: the "293 vs 1258 sparse scene" is a DRAW-MERGING ARTIFACT
+
+The entire multi-attempt "native title scene is 10x sparser than retail" premise was WRONG.
+Aurora MERGES consecutive same-state draw calls (command_processor.cpp:2170-2208, canMerge +
+`lastDraw->vertRange.size += vertRange.size`); Dolphin's .dff FIFO records every emitted draw
+UNMERGED. Proof: `TMapObjWave::draw()` (the reflective sea) emits **26 triangle strips**
+(`SB_WAVE_DBG`: `strips=26 vpp=52`) but the aurora draw dump shows **1** 52-vert draw — the 26
+merged into 1. So native's 293 merged draws correspond to retail's 1258 unmerged. **Native
+renders the SAME content** — the sea (26 strips), clouds, objects are all there; they're just
+merged in the dump. The camera is also correct: native's view-matrix translation
+(306,-1043,-354) matches retail's wave posmtx (305,-1043,-353) to <1 unit.
+
+**Do NOT re-investigate "missing objects / sparse scene / missing sea / missing clouds."** It
+was a capture-method artifact. The ONLY real title defect is the **uniform over-bright (blue
+saturated) + blur** of the correctly-framed, correctly-populated content — a post/compositing
+or global-state bug, NOT missing geometry. Focus there: the half-res (320x224) normal-scene
+snapshot composite (`通常シーン描画ステージ` + `合成3`), and any global brightness/gamma in the
+present path. Every draw-count-based comparison this session is void; use PIXELS + per-draw
+state, never draw counts, for aurora-vs-Dolphin.
