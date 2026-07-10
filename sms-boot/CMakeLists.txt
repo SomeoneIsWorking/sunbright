@@ -95,12 +95,23 @@ set_target_properties(sms-native PROPERTIES
     CXX_EXTENSIONS OFF)
 
 # Stage reference/sms/include without its dolphin/ subdir; Aurora supplies dolphin/.
+# SYMLINK each top-level entry (except dolphin) rather than file(COPY): file(COPY) runs
+# only at configure time, so edits to reference/sms/include/*.hpp were silently shadowed by
+# a stale staged copy and did NOT reach `cmake --build` (0 recompiles despite header edits —
+# the 2026-07-10 unk-rename incident, and the recurring "header-path shadowing" hazard).
+# Symlinks resolve to the live source, so header EDITS propagate on the next build with no
+# reconfigure; only a NEW top-level dir under include/ still needs a reconfigure.
 set(SMS_INCLUDE_STAGED "${CMAKE_CURRENT_BINARY_DIR}/staged_sms_include")
 file(REMOVE_RECURSE "${SMS_INCLUDE_STAGED}")
-file(COPY "${SMS_NATIVE_REPO_ROOT}/reference/sms/include/"
-     DESTINATION "${SMS_INCLUDE_STAGED}"
-     PATTERN "dolphin" EXCLUDE
-     PATTERN "dolphin.h" EXCLUDE)
+file(MAKE_DIRECTORY "${SMS_INCLUDE_STAGED}")
+file(GLOB _sms_inc_entries RELATIVE "${SMS_NATIVE_REPO_ROOT}/reference/sms/include"
+     "${SMS_NATIVE_REPO_ROOT}/reference/sms/include/*")
+foreach(_e ${_sms_inc_entries})
+    if(NOT _e STREQUAL "dolphin" AND NOT _e STREQUAL "dolphin.h")
+        file(CREATE_LINK "${SMS_NATIVE_REPO_ROOT}/reference/sms/include/${_e}"
+             "${SMS_INCLUDE_STAGED}/${_e}" SYMBOLIC)
+    endif()
+endforeach()
 
 # Three orthogonal compile-time gates:
 #   TARGET_PC          — Aurora's fixed-width typedefs (BOOL/s32/u32/etc.).

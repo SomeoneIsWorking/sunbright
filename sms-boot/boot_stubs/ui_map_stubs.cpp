@@ -147,8 +147,8 @@ JPADefaultTexture::~JPADefaultTexture() {}
 M3UMtxCalcSIAnmBlendQuat::M3UMtxCalcSIAnmBlendQuat()
     : J3DMtxCalcSoftimage()
     , unk50(0.0f)
-    , unk54(nullptr)
-    , unk58(nullptr)
+    , mAnmTransformNew(nullptr)
+    , mAnmTransformOld(nullptr)
     , unk5C(false)
     , unk60(0.0f)
 {
