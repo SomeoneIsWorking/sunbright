@@ -134,6 +134,31 @@ scene-loader / stage-setup port, related to the gated `TMapObjTree::initMapObj` 
 render tweak. Diagnostics all committed (`SB_SEA_DBG`, `SB_CAM_DBG`, `SB_COPY_DBG` incl.
 tex-copies, `SB_EFBTEX_DBG`, blend/cU + vp draw dump, `SB_SKIP_GHOST`).
 
+## Per-draw diff + a foundational doubt (2026-07-10, session end)
+
+Mechanical per-draw diff native-vs-retail (both nominally the PUSH START title):
+- Retail world pass (SEG1): 4v×228, 5v×111, 3v×45, … Native world pass: 4v×30, 5v×7, 3v×0.
+- Retail has ~472 4v PERSPECTIVE draws at posmtx translation **(0,0,0)** (camera-relative),
+  split ~245 (mirror SEG0) + ~228 (world SEG1) — i.e. one big camera-relative object drawn
+  as hundreds of small strips (nverts at origin: 4v×343, 5v×145, 3v×131, 6v×58, 8v×40 …).
+  Native draws ~30 of these.
+- Retail mirror pass = 653 draws vs native 71.
+
+**But `sky.bmd` has only 4 shapes / 4 materials** — so those ~900 small camera-relative
+strips are NOT the sky model. Native cannot produce hundreds of sky/cloud draws from a
+4-shape sky. This exposes a foundational doubt this session never resolved: **is retail's
+`title_press_start_vi_stable.dff` the SAME game state as native `SB_STAGE=15`?** They both
+show the logo, but retail's scene is far richer with content native has no source for. If the
+states differ (e.g. retail's attract-title map/scene ≠ native's map-15 "Option"), the entire
+293-vs-1258 "sparse scene" comparison is confounded, and the real defect may be ONLY the
+uniform over-bright/blur, not missing objects.
+
+**What's needed to break the deadlock (not done this session):** a LIVE Dolphin capture at
+native's EXACT state (same map/stage/tick), or confirmation of what map/scene retail's title
+FIFO actually is. Without a matched oracle, per-draw diffs mislead. ~10+ render/scene
+hypotheses were each falsified (see above); the state-match question is the missing
+foundation. STATUS: title parity UNRESOLVED; needs a matched-state oracle before more work.
+
 ## Superseded hypotheses (this session, do not re-chase)
 The logo/scene appears **oversized** (SM letters fill the screen vs ~60% in retail) +
 blurry. That reads as a SCALE/PROJECTION divergence in the title's perspective pass (retail
