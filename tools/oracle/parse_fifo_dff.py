@@ -214,6 +214,20 @@ BP_TREF_HI = 0x2F
 BP_KSEL_LO = 0xF6            # 0xF6-0xFD: konst color/alpha select per PAIR of stages (+ swap table)
 BP_KSEL_HI = 0xFD
 
+# --- EFB clear-color/depth (0x4F-0x51) + copy-execute trigger (0x52). Bit layouts
+# copied 1:1 from extern/aurora/lib/gx/command_processor.cpp's handle_bp() cases
+# 0x4F/0x50/0x51/0x52 (2026-07-10 title-sky-paint investigation) -- same
+# known-good-decoder rationale as the TEV registers above. Landed in THIS
+# tracked parser because the investigation's ad hoc analysis previously lived
+# only in a throwaway scratch script (scratch/oracle/fifo/extract_entry_paint_dome.py)
+# and was never validated against a full color-writing-draw census, which is
+# exactly how "dome color_update=0 + clear=black" got over-read as "screen is
+# black" (see debug_journal/2026-07-10_fifo_parser_colorupdate_validation.md).
+BP_CLEAR_RA = 0x4F   # r: bits 0-7, a: bits 8-15
+BP_CLEAR_BG = 0x50   # b: bits 0-7, g: bits 8-15
+BP_CLEAR_Z = 0x51    # depth: bits 0-23
+BP_EFB_COPY_EXEC = 0x52  # clear_enable: bit 11, display_copy: bit 14
+
 GX_COMPARE_NAMES = ["NEVER", "LESS", "EQUAL", "LEQUAL", "GREATER", "NEQUAL", "GEQUAL", "ALWAYS"]
 DOLPHIN_CULLMODE_NAMES = ["NONE", "BACK", "FRONT", "ALL"]
 ALPHA_LOGIC_NAMES = ["AND", "OR", "XOR", "XNOR"]
@@ -327,6 +341,10 @@ class BPRasterState:
         self.cmode0 = 0
         self.alphacompare = 0
         self.tev = TevStageState()
+        self.clear_ra = 0    # BP 0x4F raw (r/a)
+        self.clear_bg = 0    # BP 0x50 raw (b/g)
+        self.clear_z = 0xFFFFFF  # BP 0x51 raw depth, HW reset default = far
+        self.copy_events = []  # appended on BP 0x52 (EFB copy-execute trigger)
 
     def load(self, command: int, value: int):
         self.tev.load(command, value)
@@ -342,6 +360,26 @@ class BPRasterState:
             self.cmode0 = value
         elif command == BP_ALPHACOMPARE:
             self.alphacompare = value
+        elif command == BP_CLEAR_RA:
+            self.clear_ra = value
+        elif command == BP_CLEAR_BG:
+            self.clear_bg = value
+        elif command == BP_CLEAR_Z:
+            self.clear_z = value
+        elif command == BP_EFB_COPY_EXEC:
+            self.copy_events.append({
+                "clear_enable": bits(value, 11, 1),
+                "display_copy": bits(value, 14, 1),
+                "clear_rgba": self.clear_rgba(),
+                "clear_depth": self.clear_z,
+            })
+
+    def clear_rgba(self):
+        r = bits(self.clear_ra, 0, 8)
+        a = bits(self.clear_ra, 8, 8)
+        b = bits(self.clear_bg, 0, 8)
+        g = bits(self.clear_bg, 8, 8)
+        return (r, g, b, a)
 
     # --- decoded views ---
     def cullmode(self):
@@ -849,6 +887,15 @@ def main():
                      help="write the per-draw RASTER-STATE TSV (viewport/scissor/zmode/blend/"
                           "alphacompare/cullmode) for the world-pass dome (202v) + 3 MapOpa-anchor "
                           "draws to OUT, instead of the normal timeline dump")
+    ap.add_argument("--assert-sky-paint", action="store_true",
+                     help="self-test (2026-07-10 title-sky-paint investigation): decode the "
+                          "given frame (default 0) and REQUIRE at least one draw with "
+                          "color_update=1 whose viewport+scissor cover the full 640x448 EFB "
+                          "(the region a full-screen sky/gradient draw must cover). Exits "
+                          "nonzero and prints the reason if none is found -- guards against "
+                          "silently re-concluding 'nothing paints the sky' from a single "
+                          "draw's color_update bit (see debug_journal/"
+                          "2026-07-10_fifo_parser_colorupdate_validation.md).")
     ap.add_argument("--tev-tsv", metavar="OUT",
                      help="write a per-draw-per-stage TEV/material-state TSV (color_env/alpha_env/"
                           "tref/ksel decode) for the world-pass sky DOME (202v) + up to 3 CLOUD "
@@ -871,6 +918,42 @@ def main():
 
     cp = CPState()  # CP state persists across frames (real GX hardware state, not per-frame)
     bp = BPRasterState()  # ditto for BP raster registers
+
+    if args.assert_sky_paint:
+        target_frame = args.frame if args.frame is not None else 0
+        fr = frames[target_frame]
+        data = buf[fr.fifo_data_offset: fr.fifo_data_offset + fr.fifo_data_size]
+        _xf_events, draw_events, _bp_events, _unknown, _warnings = decode_frame(target_frame, data, cp, bp)
+
+        def is_fullscreen(e):
+            if not e.viewport or not e.scissor:
+                return False
+            wd, ht, x0, y0 = e.viewport
+            sx0, sy0, sx1, sy1 = e.scissor
+            return (abs(wd - 640.0) < 1.0 and abs(ht - 448.0) < 1.0
+                    and sx0 <= 0 and sy0 <= 0 and sx1 >= 639 and sy1 >= 447)
+
+        color_writers = [e for e in draw_events if e.blend and e.blend.get("color_update") == 1]
+        sky_paint_draws = [e for e in color_writers if is_fullscreen(e)]
+
+        print(f"# ASSERT-SKY-PAINT frame={target_frame}: {len(draw_events)} draws, "
+              f"{len(color_writers)} color_update=1, {len(sky_paint_draws)} of those cover the "
+              f"full 640x448 EFB (candidate sky/gradient painters)", file=sys.stderr)
+        if bp.copy_events:
+            for i, ce in enumerate(bp.copy_events):
+                print(f"#   copy_event[{i}] clear_enable={ce['clear_enable']} "
+                      f"display_copy={ce['display_copy']} clear_rgba={ce['clear_rgba']} "
+                      f"clear_depth={ce['clear_depth']}", file=sys.stderr)
+        if not sky_paint_draws:
+            raise SystemExit(
+                f"FAIL: frame {target_frame} has ZERO color_update=1 draws covering the full "
+                f"640x448 EFB. Either this .dff genuinely doesn't paint the sky this frame, or "
+                f"the BP_CMODE0/viewport/scissor decode has regressed -- do NOT conclude "
+                f"'the sky is black' from a single draw's color_update bit without this check.")
+        verts = sorted(set(e.num_vertices for e in sky_paint_draws))
+        print(f"PASS: {len(sky_paint_draws)} full-screen color-writing draw(s) in frame "
+              f"{target_frame}, vertex counts present: {verts}")
+        return
 
     if args.raster_tsv:
         out_rows = []
