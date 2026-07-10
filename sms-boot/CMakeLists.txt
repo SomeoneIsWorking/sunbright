@@ -188,6 +188,11 @@ endforeach()
 # ---------------------------------------------------------------------------
 file(GLOB SMS_RUNTIME_TESTS CONFIGURE_DEPENDS
      "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/tests/*_test.cpp")
+# jaudio_release_test needs the full game-logic link set (sms-native/sms-gd/
+# sms-assets/aurora), not hx_wipe.cpp + aurora::mtx -- it gets its own
+# add_executable further down, gated on aurora_core like sms-boot itself.
+list(FILTER SMS_RUNTIME_TESTS EXCLUDE REGEX
+     "/sms-boot/runtime/tests/jaudio_release_test\\.cpp$")
 foreach(_test ${SMS_RUNTIME_TESTS})
     get_filename_component(_name "${_test}" NAME_WE)
     add_executable(platform-${_name} "${_test}"
@@ -271,4 +276,41 @@ if(TARGET aurora_core)
         aurora::gd
         aurora::ms
         Threads::Threads)
+
+    # -----------------------------------------------------------------------
+    # jaudio_release_test — links the REAL JAIBasic/JAISound code (same
+    # sms-native/sms-gd/sms-assets/aurora set as sms-boot, SMS_NATIVE_PLATFORM=1)
+    # rather than a hand copy, to lock the JAudio handle-pool release /
+    # double-release invariants fixed in reference/sms fdce9d18. Excluded from
+    # the generic runtime-tests glob above (that loop links only hx_wipe.cpp +
+    # aurora::mtx; this test needs the full game-logic link set).
+    # -----------------------------------------------------------------------
+    add_executable(platform-jaudio_release_test
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/tests/jaudio_release_test.cpp"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/sdk_stubs.cpp")
+    set_target_properties(platform-jaudio_release_test PROPERTIES
+        CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+    target_include_directories(platform-jaudio_release_test PRIVATE
+        "${SMS_NATIVE_REPO_ROOT}/extern/aurora/include"
+        "${SMS_INCLUDE_STAGED}")
+    set_source_files_properties(
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/sdk_stubs.cpp" PROPERTIES
+        COMPILE_OPTIONS "-include;${SMS_NATIVE_REPO_ROOT}/extern/aurora/include/dolphin/types.h;-w;-fcommon"
+        COMPILE_DEFINITIONS "TARGET_PC=1;SMS_NATIVE_PLATFORM=1;SMS_AURORA=1")
+    target_link_libraries(platform-jaudio_release_test PRIVATE
+        "$<LINK_GROUP:RESCAN,sms-native,sms-gd,sms-assets,$<TARGET_NAME_IF_EXISTS:sms-bootstubs>>"
+        aurora::core
+        aurora::gx
+        aurora::main
+        aurora::vi
+        aurora::os
+        aurora::mtx
+        aurora::pad
+        aurora::si
+        aurora::card
+        aurora::dvd
+        aurora::gd
+        aurora::ms
+        Threads::Threads)
+    add_test(NAME platform_jaudio_release_test COMMAND platform-jaudio_release_test)
 endif()
