@@ -81,3 +81,21 @@ Chain established mechanically (each step evidence-backed):
   dispatched: who calls TSmJ3DScn::perform on retail.
 - Census-tool trap logged: my 通常シーン raw-trace count was substring-poisoned by
   通常シーン描画ステージ/Viewport — always anchor SJIS name matches.
+
+## Part 3 (hands-on): SPHERE FALSIFIED as the title backdrop — drive_scene no-op is faithful
+
+- ZERO scale-100000 posmtx draws in BOTH retail captures (steady .dff AND the 150-frame
+  ENTRY transition .dff). Retail NEVER draws TSky's backdrop sphere at stage 15 — the
+  bit-8 path (TSmJ3DScn::perform(8) → TSky) does not execute on retail at the title,
+  exactly as the old Path-B comment claimed. Part 2's "the blue = the sphere" was WRONG;
+  the sphere is real code but dormant here. Consequently sb_boot_drive_scene's dead no-op
+  is FAITHFUL — do NOT resurrect the Path-B scene driver; delete the call+comment instead.
+- The light-manager chain (TLightWithDBSetManager/Set/DrawBuffer) is verified ported
+  1:1 and live (bit 8 reaches the light drawbufs every frame) — not implicated.
+- Retail's visible sky must come from the DOME (202v, identity posmtx = camera-relative
+  concat canceling to ~identity, CLR0 gradient) painted with color at ENTRY frames and
+  persisted in the EFB thereafter (steady frames draw the world Z-only, cU=0 — Part 1).
+- LIVE LEAD: native's dome draws every frame under a ROTATION+translation posmtx (not
+  ~identity) — the view×baseTR concat differs from retail (camera state? the Y-spin
+  branch? view-calc path). Next: extract the dome draw's matrix/channel/cmode0 from the
+  ENTRY capture's first cU=1 world frame (the paint frame) and diff against native's dome.
