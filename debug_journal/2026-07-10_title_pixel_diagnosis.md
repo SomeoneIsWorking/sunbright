@@ -335,3 +335,17 @@ NEXT: find the title logo assembly→hold transition (CardLoad / TExPane 'titl' 
 why the fly-in glyph layers' alpha doesn't reach 0 (or they aren't hidden) at settle. The
 tev-name dump shows duotone draws at BOTH mColorAlpha=0 (faded) and =255 (visible) — some
 glyphs stuck visible. That is the remaining title-parity fix.
+
+---
+
+## 2026-07-11 (cont) — CONFIRMED: logo saturation is a REAL bug, not phase (fine sweep)
+
+Fine every-40-present sweep over the whole title (149 frames, multiple attract cycles;
+SB_DUMP_FRAME_EVERY): among 104 logo-showing frames the bluest logo blue-spot is a very
+CONSISTENT [148,176,235] and NEVER approaches oracle [81,133,215]. Steady-state => a real
+rendering difference, not animation phase. Base-only (SB_SKIP_DUOTONE) = [81,133,216] =
+oracle, so the mBlack=0x0000ff00 IA4 duotone overlay letters render white-ish over the base
+and dilute it. Duotone math is correct-per-spec (IA4 body intensity ~226 => lerp to
+mWhite=white); aurora IA4 decode matches Dolphin. So the open question is whether the ORACLE
+draws these duotone letters at the hold (=> aurora TEV renders them lighter, aurora bug) or
+hides them (=> game visibility). Next: oracle FIFO --tev-tsv ground truth.
