@@ -63,6 +63,32 @@ mis-frames the whole 3D scene. This points at the **title camera / view matrix (
 `TSky::perform` (the `// TODO: match this awfulness` hand-transcribed inverse-camera formula)
 — re-examine it and the camera1 view matrix that feeds the title world pass.
 
+## ROOT CAUSE (confirmed): native color-draws the title; retail draws Z-only + composites
+
+Added blend/cU to the draw dump (aurora: `bm sf df cU aU`). Native settled title = 293 draws,
+**~290 are cU=1** (color-writing). Retail settled title = 1258 draws, **only 71 cU=1** — the
+entire 3D world+mirror is drawn `color_update=0` (Z-only) and the visible image is composited
+from the EFB snapshot (the 26× 52-vert block after EFB copy #2). Retail's dome/sky raster:
+`blend_enable=1, color_update=0`. Native's `DrawBuf Sky Xlu`: `cU=1, sf=1(ONE)/df=3(INVSRCCLR)`
+— it PAINTS the sky (bright blue) where retail paints nothing, which is the blue-white wash.
+
+So the camera is fine (framing ≈ correct; the up-at-sky camera settles cleanly — pos
+(1095,328,-13) → target (532,1136,158), fovy 40 = retail's proj), blend is mostly normal,
+additive draws are offscreen (LensFlare/Sky-sphere, proven inert). The defect is
+**architectural**: native lacks retail's Z-only-then-EFB-snapshot-composite path for the title
+and instead directly color-draws every pass. The blown-out/blurry result is that direct render
+(over-bright sky blend + the 256×256 mirror pass + no snapshot composite) instead of retail's
+composited frame.
+
+**The fix = port the title EFB-copy compositor + color-update management** (the named work):
+retail's `TEfbCtrl`/`TEfbCtrlTex` (`JDREfbCtrl.cpp`) set `GXSetColorUpdate(false)` for the 3D
+passes and drive the mid-scene EFB copy; the 26-draw compositor block then paints the visible
+backdrop by sampling that snapshot. Native's EfbCtrl objects aren't managing cU / aren't doing
+the mid-scene copy, so everything falls through as a direct cU=1 draw. This is a subsystem port,
+not a one-line fix. Diagnostics wired for it: SB_DRAW_DUMP_FRAME now prints vp + bm/sf/df/cU/aU;
+SB_SKIP_GHOST, SB_CAM_DBG, SB_NDC_PROBE. NOTE: SB_SKIP_ORTHO and SB_SKIP_MARK=Mirror both HANG
+the boot (fades/mirror-copy are load-bearing) — don't use them.
+
 ## Leading (unverified) hypothesis for next session
 The logo/scene appears **oversized** (SM letters fill the screen vs ~60% in retail) +
 blurry. That reads as a SCALE/PROJECTION divergence in the title's perspective pass (retail
