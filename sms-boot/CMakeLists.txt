@@ -218,6 +218,7 @@ if(TARGET aurora_core)
     add_executable(sms-boot
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/main.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/frame_seam.cpp"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/trace_seq.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/audio_out.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/watchdog.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/sdk_stubs.cpp"

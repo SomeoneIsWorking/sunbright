@@ -38,6 +38,12 @@ void sb_audio_frame(void);
 uint32_t VIGetRetraceCount(void);
 void VIWaitForRetrace(void);
 
+// Shared cross-instrument sequence counter (runtime/trace_seq.cpp).
+// SB_TRACE_SEQ=1: stamp present-boundary entry/exit so they interleave with
+// the plist-order/proj/drawbuf-flush logs on one global order, not just a
+// retrace stamp (see trace_seq.cpp for why retrace alone doesn't suffice).
+uint64_t sb_trace_seq(void);
+
 // Headless scripted controller input (runtime/pad_script.cpp), driven by
 // SB_PAD_SCRIPT. No-op when unset. Feeds Aurora's virtual-pad seam
 // (PADSetVirtualStatus), which composes with keyboard/gamepad input.
@@ -73,6 +79,15 @@ bool turbo() {
     return v == 1;
 }
 
+bool trace_seq_on() {
+    static int v = -1;
+    if (v < 0) {
+        const char* e = std::getenv("SB_TRACE_SEQ");
+        v = (e && e[0] && e[0] != '0') ? 1 : 0;
+    }
+    return v == 1;
+}
+
 } // namespace
 
 extern "C" {
@@ -85,14 +100,26 @@ void sb_frame_seam_start(void) {
 }
 
 void sb_frame_present(unsigned retraces) {
+    if (trace_seq_on()) {
+        std::fprintf(stderr, "[trace] seq=%lu present-enter retrace=%u retraces_arg=%u\n",
+                     (unsigned long)sb_trace_seq(), VIGetRetraceCount(), retraces);
+    }
     sb_host_alloc_push();
 
     if (s_frameOpen) {
         aurora_end_frame();
+        if (trace_seq_on()) {
+            std::fprintf(stderr, "[trace] seq=%lu aurora-end-frame retrace=%u\n",
+                         (unsigned long)sb_trace_seq(), VIGetRetraceCount());
+        }
     } else {
         // Surface unpresentable (minimized): the frame's GX commands were
         // queued but never begun; drop them so the fifo doesn't grow.
         aurora_discard_frame();
+        if (trace_seq_on()) {
+            std::fprintf(stderr, "[trace] seq=%lu aurora-discard-frame retrace=%u\n",
+                         (unsigned long)sb_trace_seq(), VIGetRetraceCount());
+        }
     }
 
     const AuroraEvent* event = aurora_update();
@@ -110,6 +137,10 @@ void sb_frame_present(unsigned retraces) {
     }
 
     s_frameOpen = aurora_begin_frame();
+    if (trace_seq_on()) {
+        std::fprintf(stderr, "[trace] seq=%lu aurora-begin-frame retrace=%u\n",
+                     (unsigned long)sb_trace_seq(), VIGetRetraceCount());
+    }
     sb_host_alloc_pop();
 
     // Advance the SDK retrace counter by the fields this frame covers so the
@@ -122,6 +153,11 @@ void sb_frame_present(unsigned retraces) {
 
     sb_watchdog_kick();
     sb_audio_frame();
+
+    if (trace_seq_on()) {
+        std::fprintf(stderr, "[trace] seq=%lu present-exit retrace=%u\n",
+                     (unsigned long)sb_trace_seq(), VIGetRetraceCount());
+    }
 
     if (!turbo()) {
         s_nextDeadlineNs += (int64_t)retraces * kFieldNs;
