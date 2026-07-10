@@ -136,11 +136,19 @@ Aurora GX. Fix defects in boot order; finish one port end-to-end before switchin
 `GXLoadPosMtxIndx`/`GXLoadNrmMtxIndx3x3` are IMPLEMENTED (2026-07-09, CP LOAD_INDX parser +
 emitters) and re-verified non-degenerate at the title (2026-07-10,
 `debug_journal/2026-07-10_phase_provider_restore_and_behind_camera_finding.md`) — do not
-re-suspect them for the black title backdrop. Current known cause: `DrawBuf MapOpa`'s
-perspective draws resolve to a well-formed (det≈+1) camera-space matrix whose Z comes out
-POSITIVE for every sampled vertex → `clip.w≤0` → discarded as behind-camera before
-rasterization; root cause (which camera/view computation feeds this draw, and why its
-forward-axis disagrees with the projection) is unresolved RE work, see that journal entry.
+re-suspect them for the black title backdrop. Current known cause (2026-07-10, supersedes
+the behind-camera theory below via a direct native-vs-retail frame diff,
+`debug_journal/2026-07-10_native_vs_retail_title_frame_structure.md`): native's settled
+title frame is **293 draws vs retail's 1258** and is STRUCTURALLY wrong in two ways — (1) a
+**phase-1 ghost pass** double-draws every DrawBuf under the stale ortho projection carried
+from the prior frame's 2D tail (retail draws each buffer once), and (2) native LACKS the
+mid-scene EFB-copy snapshot + the **26× 52-vert compositor block** that actually paints
+retail's visible backdrop (native emits 1 of the 26). The old "dome resolves behind-camera"
+theory is MISDIRECTED: retail draws the 202v dome with `color_update=0` (invisible), so the
+backdrop is NOT the dome — it is the 71 color-writers fed by the snapshot pipeline. Do not
+chase the dome matrix for the backdrop. Fix order: delete the ghost pass, then port the
+`TEfbCtrlTex`→`GXCopyTex` snapshot pipeline (built in `TMarDirector::initECT{Mir,Disp}`;
+the `…Draw SnapTime` nodes are `TTimeRec` profiling timers, NOT the copy trigger).
 NULL-texMap TEV callsite question (aurora `26d5a7b` emits 0 per GC HW; an uncommitted
 investigation into WHO sets NULL on stages 0-7 lives in the user's aurora checkout). Named
 audio arc: port the JAS DSP-frame mixer into `sb_audio_frame`.
