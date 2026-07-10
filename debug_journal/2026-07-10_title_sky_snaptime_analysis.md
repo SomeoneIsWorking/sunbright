@@ -55,3 +55,29 @@ visibility (#5).
   GXSetColorUpdate(false) call that native never makes in steady state).
 - scratch/rarc_list.py offset math ignores fileDataOffset (flagged by extraction agent) —
   fix pending.
+
+## Part 2 (hands-on, main session): the scene draw is DEAD natively — sb_boot_drive_scene
+
+Chain established mechanically (each step evidence-backed):
+- "SnapTime" = PROFILER markers (TTimeRec), NOT a snapshot pipeline — Part-1's hypothesis
+  name was wrong; the steady-state cU=0 question stands but is retail-side EfbCtrl behavior.
+- The title backdrop BLUE = TSky::perform(8)'s GC-only GXDrawSphere(8,0x10) backdrop
+  (chan-mat 0x0012EE, scale-100000 posmtx) — Sky.cpp:70-98, byte-verified RE note
+  reference/sms/docs/re_notes/title_screen_sky_chain.md.
+- NATIVE: no scale-100000 draw exists in the full-frame dump (293 draws) → the sphere
+  never emits. TSky is created by 空グループ (IdxGroup CREATES members: type 'Sky');
+  its bit-8 comes from TSmJ3DScn::perform(8)'s child walk (param|0x204).
+- **TSmJ3DScn::perform is NEVER CALLED natively** (SB_J3D_DBG: zero [smj3dscn] lines in a
+  run where camera1 testPerform fired 21k times). The perform lists never dispatch the
+  scene (disc-correct); Path B drove it via sb_boot_drive_scene()
+  (MarDirectorDirect.cpp:382, comment says so) whose provider native/src/scene_drive.cpp
+  was DELETED in the one-runtime consolidation — the call is a dead no-op. ANOTHER
+  silent-stub casualty (same class as JRenderer).
+- OPEN: the RETAIL mechanism delivering bit 8 to TSmJ3DScn. setupObjects comment claims
+  "Draw Buffer Group performed with bit 8 is what reaches TSmJ3DScn::perform(8)" via
+  gpLightManager->addChildGroupObj(drawBufferGroup) — but the group's children dump shows
+  DrawBufObjs + <TLightDrawBuffer> pairs only, NOT the scene. The link is likely inside
+  TLightManager/TLightDrawBuffer::perform (light-DB-set manager). Ghidra xref task
+  dispatched: who calls TSmJ3DScn::perform on retail.
+- Census-tool trap logged: my 通常シーン raw-trace count was substring-poisoned by
+  通常シーン描画ステージ/Viewport — always anchor SJIS name matches.
