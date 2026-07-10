@@ -349,3 +349,18 @@ and dilute it. Duotone math is correct-per-spec (IA4 body intensity ~226 => lerp
 mWhite=white); aurora IA4 decode matches Dolphin. So the open question is whether the ORACLE
 draws these duotone letters at the hold (=> aurora TEV renders them lighter, aurora bug) or
 hides them (=> game visibility). Next: oracle FIFO --tev-tsv ground truth.
+
+---
+
+## 2026-07-11 (cont) — sparkle fix (state1->2) landed + REAL letter diluter = p_0X overlay not fading
+
+Sparkle (s_0X/unkF8) fade fix committed (sms 81a1de92, Ghidra-verified state 1->2). BUT it did
+NOT change the letter-region blue [148,176,235] — so the sparkles are NOT the letter diluter
+(they're localized elsewhere). SB_SKIP_MBLACK bisect (new J2DPicture diagnostic):
+- skip mBlack=ffffff00 (the p_0X OVERLAY letters = unk1D4) -> logo blue [94,139,219] ≈ oracle
+  [81,133,215]. **The overlay panes are the letter diluter.**
+So unk1D4 'p_0X' overlay letters do NOT fully fade to alpha 0 at the settled hold (they should).
+Same bug CLASS as the sparkle typo (a port divergence in titleDraw's unk18 state machine). Ran a
+multi-agent RE-diff of the whole port titleDraw vs the retail decompile scratch/decomp/8016c060.c
+to find the overlay-fade divergence(s) + any others. (8016c060.c = titleDraw retail decompile,
+464 lines, switch on unk18.)
