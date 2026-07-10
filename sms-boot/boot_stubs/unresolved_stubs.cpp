@@ -5,6 +5,7 @@
 // versions replace them as the runtime exercises each. NOT a bandaid — an explicit,
 // acknowledged link scaffold (see CLAUDE.md: named stopgap, not a silent patch).
 
+#include "stub_trace.h"
 #include <Enemy/BossEel.hpp>
 #include <Enemy/BossHanachan.hpp>
 #include <Enemy/BossPakkun.hpp>
@@ -92,6 +93,10 @@ const TNerveSBH_SleepContinue& TNerveSBH_SleepContinue::theNerve() { static TNer
 //      native port in sms-boot/runtime/hx_wipe.cpp (was stubbed here). ----
 
 // ---- low-level DSP/audio (JSystem/dspproc.h, dsptask.h) ----
+// INTENTIONAL SEAM: part of the documented audio-silence gap (CLAUDE.md "Named audio
+// arc" — the JAS DSP-frame mixer is not ported yet; output = aurora::audio via
+// sb_audio_frame). These raw DSP-hardware mailbox/mixer primitives have no meaning
+// until that port lands; no loud stub here duplicates the already-tracked audio gap.
 void DSPReleaseHalt() {}
 void DsetMixerLevel(float) {}
 void DsetupTable(u32, u32, u32, u32, u32) {}
@@ -100,13 +105,17 @@ void DspFinishWork(u16) {}
 void DsyncFrame2(u32, u32, u32) {}
 
 // ---- matrix / effect helpers (MarioUtil/MtxUtil.hpp, Enemy/FeetInv.hpp) ----
-void SMS_GetActorMtx(const THitActor&, MtxPtr) {}
-void SMS_GetLightPerspectiveForEffectMtx(MtxPtr) {}
-void SMS_MakeJointsToArc(J3DModel*, const JGeometry::TVec3<f32>&, const JGeometry::TVec3<f32>&, const JGeometry::TVec3<f32>&) {}
-void FeetInvCalc(J3DModel*, u16, u16, u16, f32) {}
-int  TMtxSwingRZCallBack(J3DNode*, int) { return 0; }
-int  TMtxSwingRZReverseXZCallBack(J3DNode*, int) { return 0; }
-int  TMtxTimeLagCallBack(J3DNode*, int) { return 0; }
+// SILENT LANDMINE class: these leave their MtxPtr/J3DModel out-params untouched (not
+// even zeroed) rather than computing the real IK/effect matrix — a caller that reads
+// the result gets whatever was already on the stack/heap. Loud-once so a boss/effect
+// path that starts depending on real output doesn't fail silently like JRNISetTevOrder did.
+void SMS_GetActorMtx(const THitActor&, MtxPtr) { SB_STUB_HIT("SMS_GetActorMtx"); }
+void SMS_GetLightPerspectiveForEffectMtx(MtxPtr) { SB_STUB_HIT("SMS_GetLightPerspectiveForEffectMtx"); }
+void SMS_MakeJointsToArc(J3DModel*, const JGeometry::TVec3<f32>&, const JGeometry::TVec3<f32>&, const JGeometry::TVec3<f32>&) { SB_STUB_HIT("SMS_MakeJointsToArc"); }
+void FeetInvCalc(J3DModel*, u16, u16, u16, f32) { SB_STUB_HIT("FeetInvCalc"); }
+int  TMtxSwingRZCallBack(J3DNode*, int) { SB_STUB_HIT("TMtxSwingRZCallBack"); return 0; }
+int  TMtxSwingRZReverseXZCallBack(J3DNode*, int) { SB_STUB_HIT("TMtxSwingRZReverseXZCallBack"); return 0; }
+int  TMtxTimeLagCallBack(J3DNode*, int) { SB_STUB_HIT("TMtxTimeLagCallBack"); return 0; }
 
 // ---- spc trace (Strategic/spcinterp.hpp) ----
 void SpcTrace(const char*, ...) {}
@@ -135,66 +144,66 @@ TMBindShadowManager* gpBindShadowManager  = nullptr;
 
 // ---- nerve execute() bodies (DECLARE_NERVE declares the virtual; defining it emits
 //      the vtable that theNerve()'s static instance needs). Off-path boss AI -> FALSE. ----
-BOOL TNerveBEelTearsGenerate::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveBEelTearsMarioRecover::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveBEelTearsMoveUp::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveBEelTearsSplit::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveBEelTearsWaterHit::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveBPBreakSleep::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveBPCannon::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveBPCannonL::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveBPDie::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveBPFall::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveBPFly::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveBPFlyCannon::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveBPFlyPivot::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveBPGetUp::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveBPHover::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveBPJumpReact::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveBPPivot::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveBPPreDie::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveBPSleep::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveBPStompReact::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveBPSwallow::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveBPSwing::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveBPTakeOff::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveBPTornado::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveBPTouchDown::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveBPTumble::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveBPTumbleIn::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveBPTumbleOut::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveBPVomit::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveBPWait::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveBPWaitL::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveBWBark::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveBWDie::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveBWFall::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveBWGraphWander::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveBWJump::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveBWJumpAway::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveBWJumpToBath::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveBWRoll::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveBWShake::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveBWStun::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveBWWakeup::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveBossEelAppear::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveBossEelDie::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveBossEelEat::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveBossEelFirstSpin::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveBossEelMouthOpenWait::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveBossEelOutWait::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveBossEelQuickBack::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveBossEelSecondSpin::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveBossEelSleepOnBottom::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveBossEelSlowBack::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveBossEelWaitAppear::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveBossHanachanDamage::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveBossHanachanDead::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveBossHanachanDown::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveBossHanachanGetUp::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveBossHanachanGraphWander::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveBossHanachanSnort::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveBossHanachanTumble::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveOilBallStay::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveSBH_Fall::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
-BOOL TNerveSBH_SleepContinue::execute(TSpineBase<TLiveActor>*) const { return FALSE; }
+BOOL TNerveBEelTearsGenerate::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBEelTearsGenerate::execute"); return FALSE; }
+BOOL TNerveBEelTearsMarioRecover::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBEelTearsMarioRecover::execute"); return FALSE; }
+BOOL TNerveBEelTearsMoveUp::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBEelTearsMoveUp::execute"); return FALSE; }
+BOOL TNerveBEelTearsSplit::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBEelTearsSplit::execute"); return FALSE; }
+BOOL TNerveBEelTearsWaterHit::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBEelTearsWaterHit::execute"); return FALSE; }
+BOOL TNerveBPBreakSleep::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBPBreakSleep::execute"); return FALSE; }
+BOOL TNerveBPCannon::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBPCannon::execute"); return FALSE; }
+BOOL TNerveBPCannonL::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBPCannonL::execute"); return FALSE; }
+BOOL TNerveBPDie::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBPDie::execute"); return FALSE; }
+BOOL TNerveBPFall::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBPFall::execute"); return FALSE; }
+BOOL TNerveBPFly::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBPFly::execute"); return FALSE; }
+BOOL TNerveBPFlyCannon::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBPFlyCannon::execute"); return FALSE; }
+BOOL TNerveBPFlyPivot::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBPFlyPivot::execute"); return FALSE; }
+BOOL TNerveBPGetUp::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBPGetUp::execute"); return FALSE; }
+BOOL TNerveBPHover::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBPHover::execute"); return FALSE; }
+BOOL TNerveBPJumpReact::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBPJumpReact::execute"); return FALSE; }
+BOOL TNerveBPPivot::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBPPivot::execute"); return FALSE; }
+BOOL TNerveBPPreDie::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBPPreDie::execute"); return FALSE; }
+BOOL TNerveBPSleep::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBPSleep::execute"); return FALSE; }
+BOOL TNerveBPStompReact::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBPStompReact::execute"); return FALSE; }
+BOOL TNerveBPSwallow::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBPSwallow::execute"); return FALSE; }
+BOOL TNerveBPSwing::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBPSwing::execute"); return FALSE; }
+BOOL TNerveBPTakeOff::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBPTakeOff::execute"); return FALSE; }
+BOOL TNerveBPTornado::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBPTornado::execute"); return FALSE; }
+BOOL TNerveBPTouchDown::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBPTouchDown::execute"); return FALSE; }
+BOOL TNerveBPTumble::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBPTumble::execute"); return FALSE; }
+BOOL TNerveBPTumbleIn::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBPTumbleIn::execute"); return FALSE; }
+BOOL TNerveBPTumbleOut::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBPTumbleOut::execute"); return FALSE; }
+BOOL TNerveBPVomit::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBPVomit::execute"); return FALSE; }
+BOOL TNerveBPWait::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBPWait::execute"); return FALSE; }
+BOOL TNerveBPWaitL::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBPWaitL::execute"); return FALSE; }
+BOOL TNerveBWBark::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBWBark::execute"); return FALSE; }
+BOOL TNerveBWDie::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBWDie::execute"); return FALSE; }
+BOOL TNerveBWFall::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBWFall::execute"); return FALSE; }
+BOOL TNerveBWGraphWander::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBWGraphWander::execute"); return FALSE; }
+BOOL TNerveBWJump::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBWJump::execute"); return FALSE; }
+BOOL TNerveBWJumpAway::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBWJumpAway::execute"); return FALSE; }
+BOOL TNerveBWJumpToBath::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBWJumpToBath::execute"); return FALSE; }
+BOOL TNerveBWRoll::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBWRoll::execute"); return FALSE; }
+BOOL TNerveBWShake::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBWShake::execute"); return FALSE; }
+BOOL TNerveBWStun::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBWStun::execute"); return FALSE; }
+BOOL TNerveBWWakeup::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBWWakeup::execute"); return FALSE; }
+BOOL TNerveBossEelAppear::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBossEelAppear::execute"); return FALSE; }
+BOOL TNerveBossEelDie::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBossEelDie::execute"); return FALSE; }
+BOOL TNerveBossEelEat::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBossEelEat::execute"); return FALSE; }
+BOOL TNerveBossEelFirstSpin::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBossEelFirstSpin::execute"); return FALSE; }
+BOOL TNerveBossEelMouthOpenWait::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBossEelMouthOpenWait::execute"); return FALSE; }
+BOOL TNerveBossEelOutWait::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBossEelOutWait::execute"); return FALSE; }
+BOOL TNerveBossEelQuickBack::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBossEelQuickBack::execute"); return FALSE; }
+BOOL TNerveBossEelSecondSpin::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBossEelSecondSpin::execute"); return FALSE; }
+BOOL TNerveBossEelSleepOnBottom::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBossEelSleepOnBottom::execute"); return FALSE; }
+BOOL TNerveBossEelSlowBack::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBossEelSlowBack::execute"); return FALSE; }
+BOOL TNerveBossEelWaitAppear::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBossEelWaitAppear::execute"); return FALSE; }
+BOOL TNerveBossHanachanDamage::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBossHanachanDamage::execute"); return FALSE; }
+BOOL TNerveBossHanachanDead::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBossHanachanDead::execute"); return FALSE; }
+BOOL TNerveBossHanachanDown::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBossHanachanDown::execute"); return FALSE; }
+BOOL TNerveBossHanachanGetUp::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBossHanachanGetUp::execute"); return FALSE; }
+BOOL TNerveBossHanachanGraphWander::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBossHanachanGraphWander::execute"); return FALSE; }
+BOOL TNerveBossHanachanSnort::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBossHanachanSnort::execute"); return FALSE; }
+BOOL TNerveBossHanachanTumble::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBossHanachanTumble::execute"); return FALSE; }
+BOOL TNerveOilBallStay::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveOilBallStay::execute"); return FALSE; }
+BOOL TNerveSBH_Fall::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveSBH_Fall::execute"); return FALSE; }
+BOOL TNerveSBH_SleepContinue::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveSBH_SleepContinue::execute"); return FALSE; }

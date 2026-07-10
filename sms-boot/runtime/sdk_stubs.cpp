@@ -33,10 +33,11 @@
 #include <dolphin/thp.h>
 #include <cstring>
 #include <cstdlib>
+#include "../boot_stubs/stub_trace.h"
 
 extern "C" {
 
-// ---- OS threading (single-threaded PC engine — locks are no-ops) ----
+// ---- (a) INTENTIONAL SEAM — OS threading (single-threaded PC engine — locks are no-ops) ----
 void OSInitMutex(OSMutex*) {}
 void OSLockMutex(OSMutex*) {}
 void OSUnlockMutex(OSMutex*) {}
@@ -132,7 +133,7 @@ void OSPanic(const char* file, int line, const char* fmt, ...) {
     std::fputc('\n', stderr);
     abort();
 }
-// ---- OS misc ----
+// ---- (a) INTENTIONAL SEAM — OS misc (reset/sound-mode/interrupt hooks; no PC equivalent needed) ----
 BOOL OSEnableInterrupts(void) { return TRUE; }
 BOOL OSDisableInterrupts(void) { return TRUE; }
 BOOL OSRestoreInterrupts(BOOL) { return TRUE; }
@@ -144,34 +145,34 @@ void OSSetSoundMode(u32) {}
 u32  OSGetProgressiveMode(void) { return 0; }
 void OSSetProgressiveMode(u32) {}
 
-// ---- OS stopwatch (kept as zeros — no perf timing needed for bring-up) ----
+// ---- (a) INTENTIONAL SEAM — OS stopwatch (kept as zeros — no perf timing needed for bring-up) ----
 void OSInitStopwatch(OSStopwatch*, char*) {}
 void OSStartStopwatch(OSStopwatch*) {}
 void OSStopStopwatch(OSStopwatch*) {}
 OSTime OSCheckStopwatch(OSStopwatch*) { return 0; }
 void OSResetStopwatch(OSStopwatch*) {}
 
-// ---- OS font (returns nulls — SMS_NATIVE_PLATFORM=1 skips font rendering) ----
+// ---- (a) INTENTIONAL SEAM — OS font (returns nulls — SMS_NATIVE_PLATFORM=1 skips font rendering) ----
 u16   OSGetFontEncode(void) { return 0; }
 BOOL  OSInitFont(OSFontHeader*) { return TRUE; }
 char* OSGetFontTexture(const char* s, void**, s32*, s32*, s32*) { return const_cast<char*>(s); }
 char* OSGetFontWidth(const char* s, s32* w) { if (w) *w = 0; return const_cast<char*>(s); }
 
-// ---- DC cache — no-op on x86 (coherent) ----
+// ---- (a) INTENTIONAL SEAM — DC cache: no-op on x86 (coherent, no PPC cache-line management needed) ----
 void DCInvalidateRange(void*, u32) {}
 void DCFlushRange(void*, u32) {}
 void DCStoreRange(void*, u32) {}
 void DCFlushRangeNoSync(void*, u32) {}
 void DCZeroRange(void*, u32) {}
 
-// ---- ARAM base ----
+// ---- (a) INTENTIONAL SEAM — ARAM base (ARAM DMA copies run inline at the enqueue site; base address is a GC-hardware detail no native caller reads) ----
 u32 ARGetBaseAddress(void) { return 0; }
 
-// ---- DSP mailboxes ----
+// ---- (a) INTENTIONAL SEAM — DSP mailboxes (no DSP coprocessor on PC; audio out is aurora::audio, see AI section) ----
 u32 DSPCheckMailFromDSP(void) { return 0; }
 u32 DSPReadMailFromDSP(void) { return 0; }
 
-// ---- AI (audio interface — Aurora doesn't drive AI; native audio owns output) ----
+// ---- (a) INTENTIONAL SEAM — AI (audio interface — part of the documented audio-silence gap, CLAUDE.md "Named audio arc": aurora::audio owns output via sb_audio_frame, the JAS DSP mixer is not ported yet) ----
 void AIInit(u8*) {}
 void AIInitDMA(u32, u32) {}
 void AIStartDMA(void) {}
@@ -183,7 +184,7 @@ void AISetStreamSampleRate(u32) {}
 void AISetStreamVolLeft(u8) {}
 void AISetStreamVolRight(u8) {}
 
-// ---- VI retrace counter ----
+// ---- (a) INTENTIONAL SEAM — VI retrace counter (real frame pacing is sb_frame_present, runtime/frame_seam.cpp) ----
 // VIWaitForRetrace is a PURE COUNTER, not the frame boundary: the game also
 // calls it from load-polling spin loops and TV-mode settle loops (all of
 // which complete instantly now that I/O is synchronous). The real per-frame
@@ -207,26 +208,61 @@ static GXDrawSyncCallback s_drawSyncCallback = nullptr;
 void GXSetDrawSync(u16 token) {
     if (s_drawSyncCallback) s_drawSyncCallback(token);
 }
+// GXClearPixMetric/GXReadPixMetric back TPollutionCount's on-screen goop-pixel counter
+// (Map/PollutionCount.cpp) — a real gameplay mechanic (Mare/Ricco pollution meter), not
+// yet reached by the title/file-select boot target. Aurora has no GX perf-counter
+// pipeline (extern/aurora/lib/dolphin/gx/GXPerf.cpp marks both TODO), so this always
+// reports zero pixels — a fabricated "no pollution visible" answer, not a real readback.
+// SILENT LANDMINE: loud-once so the pollution meter doesn't quietly read as empty forever.
 void GXClearPixMetric(void) {}
 void GXReadPixMetric(u32* a, u32* b, u32* c, u32* d, u32* e, u32* f) {
+    SB_STUB_HIT("GXReadPixMetric");
     if (a) *a = 0; if (b) *b = 0; if (c) *c = 0; if (d) *d = 0;
     if (e) *e = 0; if (f) *f = 0;
 }
+// GXEnableBreakPt/GXDisableBreakPt: INTENTIONAL SEAM, already documented at the
+// callsite (reference/sms/src/System/DrawSyncManager.cpp:124) — single-threaded/
+// synchronous rendering has no async GP FIFO to breakpoint against.
 void GXEnableBreakPt(void*) {}
 void GXDisableBreakPt(void) {}
+// GXWaitDrawDone: INTENTIONAL SEAM — synchronous rendering means the draw is always
+// already done by the time anything could wait on it (no GP pipe latency to hide).
 void GXWaitDrawDone(void) {}
 GXDrawSyncCallback GXSetDrawSyncCallback(GXDrawSyncCallback cb) {
     GXDrawSyncCallback prev = s_drawSyncCallback;
     s_drawSyncCallback = cb;
     return prev;
 }
+// GXSetMisc: INTENTIONAL SEAM — GX_MT_XF_FLUSH/GX_MT_DL_SAVE_CONTEXT are GP-pipeline
+// sync tokens for a real GC transform-unit FIFO; Aurora's fifo is unsynchronized by
+// construction (single-threaded, no XF latency to flush against).
 void GXSetMisc(GXMiscToken, u32) {}
+// GXPokeAlphaRead: configures whether GXPeekARGB's alpha channel is read from the EFB.
+// Paired with the GXPeekARGB landmine below — the mode setting itself writes no data,
+// but see GXPeekARGB's comment for the landmine this feeds.
 void GXPokeAlphaRead(GXAlphaReadMode) {}
-void GXPeekARGB(u16, u16, u32* col) { if (col) *col = 0; }
+// GXPeekARGB reads back a live EFB pixel — Player/MarioMain.cpp:301 samples the pixel
+// under Mario's screen position (used for a gameplay color-based check). Aurora has no
+// EFB readback path (GXCpu2Efb.h declares it, no .cpp body). Always-black is a
+// fabricated answer, not a real sample. SILENT LANDMINE: loud-once.
+void GXPeekARGB(u16, u16, u32* col) {
+    SB_STUB_HIT("GXPeekARGB");
+    if (col) *col = 0;
+}
+// GXSetCopyClamp/GXSetDispCopyFrame2Field/GXGetNumXfbLines/GXGetYScaleFactor: EFB->XFB
+// copy vertical-scale/interlace config. INTENTIONAL SEAM — Aurora manages its own
+// framebuffer resolution/scaling internally (GXSetDispCopyYScale computes the real xfb
+// line count via its own gx_get_num_xfb_lines helper, extern/aurora/lib/dolphin/gx/
+// GXFrameBuffer.cpp); these GC-hardware-copy-descriptor accessors have no consumer on
+// the Aurora path (JDRRenderMode.cpp's rmo->xfbHeight/interlace fields are read back by
+// nothing Aurora uses to size its own copy).
 void GXSetCopyClamp(GXFBClamp) {}
 void GXSetDispCopyFrame2Field(GXCopyMode) {}
 u16  GXGetNumXfbLines(u16, f32) { return 0; }
 f32  GXGetYScaleFactor(u16, u16) { return 1.0f; }
+// GXInitTexCacheRegion: GC TMEM texture-cache region bookkeeping (J3DSys.cpp / GXInit.c)
+// — Aurora textures are uploaded through its own GPU texture path, not GC TMEM regions.
+// INTENTIONAL SEAM.
 void GXInitTexCacheRegion(GXTexRegion*, GXBool, u32, GXTexCacheSize, u32, GXTexCacheSize) {}
 
 // ---- HAM movie-wipe controller (GC2D/hx_wiper.h): the 8 externally-referenced
@@ -400,10 +436,55 @@ void JUTException::readPad(unsigned int* a, unsigned int* b) { if (a) *a = 0; if
 // phase tracker restoring the [dbhead]/[mapxlu] diagnostics; the old stub here silently
 // discarded the phase, and the sb_own_gxlist/sb_boot_capture_begin_scene/end_scene capture-lock
 // gate they used to sit behind belonged to the deleted Path-B capture buffer — removed upstream.
+//
+// 2026-07-10 STUB AUDIT FINDING: these 5 definitions had drifted out of signature-sync
+// with the `extern "C"` declarations at their actual callsites (CardLoad.cpp,
+// MarDirectorDirect.cpp, J3DDrawBuffer.cpp, J3DModel.cpp) — e.g.
+// sb_gx_get_color_alpha_update was declared `void(int*, int*)` at its callsite but
+// DEFINED here as a zero-arg `int()`. extern "C" linkage resolves by NAME only, so this
+// linked and ran with the caller's real args silently discarded (undefined behavior,
+// exactly the JRenderer failure shape: a linkable stub whose signature lies about what
+// it does). Fixed to match the real callsite signatures; kept as no-ops (all 5 sit
+// behind retired-Path-B or env-gated SB_*_DBG diagnostic branches, never the render hot
+// path) but the pointer-output ones now correctly do nothing INSTEAD of corrupting args.
 extern "C" {
-void sb_boot_drive_scene() {}
-void sb_boot_request_dump(const char*) {}
-bool sb_camera_view_settled() { return true; }
-int  sb_gx_get_color_alpha_update() { return 0; }
-void sb_gx_get_projection(float*) {}
+bool sb_boot_drive_scene() {
+    // Path-B relic: forced TSmJ3DScn::perform(8) because Path-B's MActor-perform dispatch
+    // never delivered bit 0x8 to the scene (see docs/DO_NOT_REVISIT_FLIP.md history).
+    // Aurora (Path A) delivers scene draw through its own GX dispatch — the workaround
+    // does not apply here (same reasoning as TSky::perform's Path-B-only MActor-bit
+    // drop, debug_journal 2026-07-03). Caller (MarDirectorDirect.cpp) discards the
+    // return value, so `true` vs the old `void` was never observable; kept as a no-op.
+    return true;
+}
+void sb_boot_request_dump(int) {
+    // Retired Path-B frame-dump-N-frames request (SB_SEL_DUMP/SB_SEL_DUMP_SETTLED
+    // diagnostics in CardLoad.cpp); the capture buffer it drove was deleted with Path-B.
+    // SB_DUMP_FRAME(_AFTER) is the current frame-capture diagnostic (aurora end_frame).
+    SB_STUB_HIT("sb_boot_request_dump");
+}
+bool sb_camera_view_settled() {
+    // SB_SEL_DUMP_SETTLED gate (CardLoad.cpp): "has the option-camera pan finished".
+    // Always-settled is the conservative choice (never blocks the dump waiting on a
+    // signal nothing produces) but is a fabricated answer, not a real query.
+    SB_STUB_HIT("sb_camera_view_settled");
+    return true;
+}
+void sb_gx_get_color_alpha_update(int* cu, int* au) {
+    // SB_DBHEAD_PKT diagnostic (J3DDrawBuffer.cpp): live TEV cU/aU (color/alpha update
+    // enable) at flush time. Caller pre-seeds *cu=*au=1 before calling — leaving the
+    // out-params untouched (rather than not writing them at all) keeps that seeded
+    // default rather than reading uninitialized memory, but it's still a fabricated
+    // answer: the real cU/aU never gets read from the live TEV stage state.
+    SB_STUB_HIT("sb_gx_get_color_alpha_update");
+    (void)cu; (void)au;
+}
+void sb_gx_get_projection(int* projType, float* proj, float* vp) {
+    // SB_J3D_DBG diagnostic (J3DModel.cpp): live projection type/matrix/viewport for
+    // per-1000-frame telemetry. Caller passes uninitialized locals and prints them
+    // regardless of what we do here — leave them as the caller's garbage rather than
+    // fabricating plausible-looking numbers that would misrepresent real GX state.
+    SB_STUB_HIT("sb_gx_get_projection");
+    (void)projType; (void)proj; (void)vp;
+}
 }

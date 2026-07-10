@@ -6,6 +6,7 @@
 
 // ─── GC2D ─────────────────────────────────────────────────────────────────────
 
+#include "stub_trace.h"
 #include <GC2D/BlendPane.hpp>
 #include <GC2D/GCConsole2.hpp>
 #include <GC2D/Guide.hpp>
@@ -19,7 +20,7 @@ TBlendPane::TBlendPane(J2DScreen* screen, u32 tag)
     : TBoundPane(screen, tag)
 {
 }
-void TBlendPane::update() {}
+void TBlendPane::update() { SB_STUB_HIT("TBlendPane::update"); }
 
 // TGCConsole2 static data members (JUTPoint — default-init to 0).
 JUTPoint TGCConsole2::cDownMidPoint;
@@ -32,8 +33,8 @@ TGuide::TGuide(const char* name)
     : JDrama::TViewObj(name)
 {
 }
-void TGuide::setup(JKRMemArchive*) {}
-void TGuide::startMoveCursor() {}
+void TGuide::setup(JKRMemArchive*) { SB_STUB_HIT("TGuide::setup"); }
+void TGuide::startMoveCursor() { SB_STUB_HIT("TGuide::startMoveCursor"); }
 
 // TPauseMenu2 fully implemented natively in reference/sms/src/GC2D/PauseMenu2.cpp.
 
@@ -49,11 +50,11 @@ void TTalk2D2::load(JSUMemoryInputStream& stream)
 {
 	JDrama::TViewObj::load(stream); // read NameRef header so search() finds it
 }
-void TTalk2D2::loadAfter() {}
-void TTalk2D2::perform(u32, JDrama::TGraphics*) {}
-void TTalk2D2::forceCloseTalk() {}
-void TTalk2D2::openTalkWindow(TBaseNPC*) {}
-void TTalk2D2::setMessageID(u32, u32) {}
+void TTalk2D2::loadAfter() { SB_STUB_HIT("TTalk2D2::loadAfter"); }
+void TTalk2D2::perform(u32, JDrama::TGraphics*) { SB_STUB_HIT("TTalk2D2::perform"); }
+void TTalk2D2::forceCloseTalk() { SB_STUB_HIT("TTalk2D2::forceCloseTalk"); }
+void TTalk2D2::openTalkWindow(TBaseNPC*) { SB_STUB_HIT("TTalk2D2::openTalkWindow"); }
+void TTalk2D2::setMessageID(u32, u32) { SB_STUB_HIT("TTalk2D2::setMessageID"); }
 
 void* TTalk2D2::cColorTable = nullptr;
 
@@ -90,7 +91,7 @@ TBathWaterManager::TBathWaterManager()
 
 // TTakeActor::getRadiusAtY — non-inline virtual declared in TakeActor.hpp.
 // typeinfo for TTakeActor is emitted when its first non-inline virtual is defined.
-f32 TTakeActor::getRadiusAtY(f32) const { return 0.0f; }
+f32 TTakeActor::getRadiusAtY(f32) const { SB_STUB_HIT("TTakeActor::getRadiusAtY"); return 0.0f; }
 
 // ─── System ───────────────────────────────────────────────────────────────────
 
@@ -117,7 +118,7 @@ TMarioGamePad::~TMarioGamePad() {}
 
 // TWaterHitActor — inherits THitActor; has one non-inline virtual.
 // vtable + typeinfo emitted by defining receiveMessage.
-BOOL TWaterHitActor::receiveMessage(THitActor*, u32) { return 0; }
+BOOL TWaterHitActor::receiveMessage(THitActor*, u32) { SB_STUB_HIT("TWaterHitActor::receiveMessage"); return 0; }
 
 // ─── JSystem / JKernel ────────────────────────────────────────────────────────
 
@@ -129,7 +130,7 @@ JKRDvdFinder::JKRDvdFinder(const char*)
     : mIsDvdOpen(false)
 {
 }
-bool JKRDvdFinder::findNextFile() { return false; }
+bool JKRDvdFinder::findNextFile() { SB_STUB_HIT("JKRDvdFinder::findNextFile"); return false; }
 
 // ─── JSystem / JParticle ──────────────────────────────────────────────────────
 

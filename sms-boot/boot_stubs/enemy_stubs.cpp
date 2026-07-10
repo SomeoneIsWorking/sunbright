@@ -22,6 +22,7 @@
 // ---------------------------------------------------------------------------
 // Animal subsystem
 // ---------------------------------------------------------------------------
+#include "stub_trace.h"
 #include <Animal/AnimalBase.hpp>
 
 // TAnimalBase::TAnimalBase(u32, const char*)
@@ -33,10 +34,10 @@ TAnimalBase::TAnimalBase(u32 param0, const char* name)
 }
 
 // TAnimalBase::execWalk(bool)
-void TAnimalBase::execWalk(bool) { }
+void TAnimalBase::execWalk(bool) { SB_STUB_HIT("TAnimalBase::execWalk"); }
 
 // TAnimalBase::resetRandomCurPathNode()
-void TAnimalBase::resetRandomCurPathNode() { }
+void TAnimalBase::resetRandomCurPathNode() { SB_STUB_HIT("TAnimalBase::resetRandomCurPathNode"); }
 
 // ---------------------------------------------------------------------------
 // Animal manager — TMewManager ctor (methods are in AnimalManager.cpp)
@@ -128,18 +129,18 @@ TSurfGesso::TSurfGesso(const char* name)
 // ---------------------------------------------------------------------------
 #include <MoveBG/MapObjBase.hpp>
 
-void TMapObjBase::appear() { }
+void TMapObjBase::appear() { SB_STUB_HIT("TMapObjBase::appear"); }
 // calc/draw/dead now defined in reference/sms/src/MoveBG/MapObjBase.cpp
 // alongside the perform() port (all four are byte-exact `blr` in the
 // binary — empty stubs for vtable slot fill).
-void TMapObjBase::getDepthAtFloating() { }
-u16  TMapObjBase::getHitObjNumMax() { return 0; }
-f32  TMapObjBase::getRadiusAtY(f32) const { return 0.f; }
-MtxPtr TMapObjBase::getTakingMtx() { return nullptr; }
-void TMapObjBase::kill() { }
-void TMapObjBase::loadBeforeInit(JSUMemoryInputStream&) { }
-void TMapObjBase::setModelMtx(MtxPtr) { }
-u32  TMapObjBase::touchWater(THitActor*) { return 0; }
+void TMapObjBase::getDepthAtFloating() { SB_STUB_HIT("TMapObjBase::getDepthAtFloating"); }
+u16 TMapObjBase::getHitObjNumMax() { SB_STUB_HIT("TMapObjBase::getHitObjNumMax"); return 0; }
+f32 TMapObjBase::getRadiusAtY(f32) const { SB_STUB_HIT("TMapObjBase::getRadiusAtY"); return 0.f; }
+MtxPtr TMapObjBase::getTakingMtx() { SB_STUB_HIT("TMapObjBase::getTakingMtx"); return nullptr; }
+void TMapObjBase::kill() { SB_STUB_HIT("TMapObjBase::kill"); }
+void TMapObjBase::loadBeforeInit(JSUMemoryInputStream&) { SB_STUB_HIT("TMapObjBase::loadBeforeInit"); }
+void TMapObjBase::setModelMtx(MtxPtr) { SB_STUB_HIT("TMapObjBase::setModelMtx"); }
+u32 TMapObjBase::touchWater(THitActor*) { SB_STUB_HIT("TMapObjBase::touchWater"); return 0; }
 
 // ---------------------------------------------------------------------------
 // MtxCalcFootInv
@@ -153,7 +154,7 @@ TMtxCalcFootInv::TMtxCalcFootInv(u16 a, u16 b, u16 c, u16 d, u16 e, u16 f, f32 g
 {
 }
 
-void TMtxCalcFootInv::calc(u16) { }
+void TMtxCalcFootInv::calc(u16) { SB_STUB_HIT("TMtxCalcFootInv::calc"); }
 
 // ---------------------------------------------------------------------------
 // NameKuri — TNameKuriLauncher ctor + TDiffusionNameKuriManager ctor
@@ -177,7 +178,7 @@ TDiffusionNameKuriManager::TDiffusionNameKuriManager(const char* name)
 // ---------------------------------------------------------------------------
 #include <Enemy/RiccoHook.hpp>
 
-void TRiccoHookManager::perform(u32, JDrama::TGraphics*) { }
+void TRiccoHookManager::perform(u32, JDrama::TGraphics*) { SB_STUB_HIT("TRiccoHookManager::perform"); }
 
 // ---------------------------------------------------------------------------
 // Rocket
@@ -189,7 +190,7 @@ TRocket::TRocket(const char* name)
 {
 }
 
-bool TRocket::isAttack() { return false; }
+bool TRocket::isAttack() { SB_STUB_HIT("TRocket::isAttack"); return false; }
 
 // ---------------------------------------------------------------------------
 // SmallEnemy — TSmallEnemy::initAttacker
@@ -197,7 +198,7 @@ bool TRocket::isAttack() { return false; }
 // ---------------------------------------------------------------------------
 #include <Enemy/SmallEnemy.hpp>
 
-void TSmallEnemy::initAttacker(THitActor*) { }
+void TSmallEnemy::initAttacker(THitActor*) { SB_STUB_HIT("TSmallEnemy::initAttacker"); }
 
 // ---------------------------------------------------------------------------
 // EnemyTable — TStageEnemyInfo ctor

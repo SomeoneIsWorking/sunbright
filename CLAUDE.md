@@ -53,6 +53,19 @@ both oracle tiers, the SDL3-GPU Path-B renderer (`render_pc`), the GX-seam captu
 (`docs/DO_NOT_REVISIT_FLIP.md`). History: `debug_journal/`, memory
 `[[aurora-two-path-refactor-2026-07-04]]`, `debug_journal/2026-07-07_one_runtime_consolidation.md`.
 
+## 🏛️ RENDERER DOCTRINE (2026-07-10, decided at user's delegation): Aurora GX-replay stays
+
+Faithfulness/parity via the easier path = the GX-replay architecture, because parity is
+only debuggable when intermediate states are comparable to the oracle (FIFO diffs,
+per-draw matrix diffs — the tooling that repeatedly localized defects this project could
+never have found from pixels alone). A native renderer reimplementation converges to
+per-pixel GX emulation anyway at the parity bar while destroying comparability; Path B
+and the flip engine already proved the rewrite path harder (both retired). Do not
+re-propose it. Narrow license: at genuinely opaque HARDWARE seams (EFB copy mechanics,
+XFB present), an understood modern equivalent is acceptable — only if its output matches
+the oracle ("faithful outputs over faithful plumbing", seams only, never the GX state
+machine).
+
 ## 🚫 NO BANDAIDS — RE the intent, port it
 
 For any bug/crash/hang: find WHERE, name the ROOT CAUSE, then reverse-engineer the behavior
@@ -67,7 +80,12 @@ output that papers over an RE gap is not.
 
 Bad magic, unparseable header, precondition violated, unexpected null, out-of-range value →
 CRASH RIGHT THERE (OSPanic/assert) with a message naming the location and dumping the
-offending values. Never return nil/0/empty and let it propagate; never no-op an operation
+offending values. **Silent success-shaped stubs are BANNED** (2026-07-10, the JRenderer
+incident: 20 no-op stubs + a stale CMake exclusion left every TEV texmap NULL → black
+screen mimicking legitimate render defects for days): every stub is either a DOCUMENTED
+intentional seam or LOUD — one-time `[STUB-CALLED]` OSReport on first call, OSPanic where
+a wrong result corrupts state. CMake `list(FILTER ... EXCLUDE)` entries on reference/sms
+sources are part of the same audit surface — an exclusion can keep a later fix dead. Never return nil/0/empty and let it propagate; never no-op an operation
 that callers assume happened (the stubbed OSMessageQueue silently skipping ARAM DMA/SZS
 decode is the canonical local example — and shader/pipeline compile failures MUST panic,
 not skip batches). Guard with `SMS_NATIVE_PLATFORM` so original decomp behavior is
