@@ -53,8 +53,22 @@ list(FILTER SMS_NATIVE_SOURCES EXCLUDE REGEX
      "/reference/sms/src/JSystem/JUtility/JUTException\\.cpp$")
 list(FILTER SMS_NATIVE_SOURCES EXCLUDE REGEX
      "/reference/sms/src/JSystem/JUtility/JUTDirectPrint\\.cpp$")
-list(FILTER SMS_NATIVE_SOURCES EXCLUDE REGEX
-     "/reference/sms/src/JSystem/JRenderer\\.cpp$")
+# JRenderer.cpp was previously excluded here as "pure PPC-hardware, no meaningful
+# native impl" — false: it holds the REAL J3DGD*/JRNI* BP-register writers
+# (JRNISetTevOrder's TREF write among them). Excluding it left every one of
+# those 21 writers resolved to sdk_stubs.cpp's empty no-op bodies, so J3D
+# materials never wrote their TEV order/channel/texcoord-scale/tex-attr BP
+# regs at all — every stage kept aurora's gx.hpp default `texMapId =
+# GX_TEXMAP_NULL`, which forces TEXC=0 in the combiner regardless of the
+# material's real texture. This is the root cause of the black title
+# Sky Xlu/MapOpa backdrop (2026-07-10): geometry rasterizes correctly
+# (confirmed via SB_FORCE_COLOR, full-screen magenta coverage) but color
+# is forced to 0 because the texture/channel setup was never wired.
+# 2026-07-08's 4ed2ac15 already made JRenderer.cpp's decomp body compile
+# natively (LP64 casts, GXTexImage*Ids externs) but never removed this
+# exclusion, so the fix silently never took effect. Building it natively now;
+# the matching sdk_stubs.cpp no-ops for these 21 symbols are removed below
+# to avoid duplicate-definition link errors.
 # JPAField.cpp was previously excluded as "PPC-only impl". Not true — the source
 # in reference/sms is portable C++ and its ctor `unk0(this)` is required to
 # initialize JSUPtrLink members. Without it the stub in boot_stubs was leaving

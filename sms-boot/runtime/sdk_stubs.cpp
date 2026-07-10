@@ -339,37 +339,19 @@ void THPPlayerSetVolume(s32, s32) {}
 
 } // extern "C"
 
-// ---- J3DGD (decomp's GD-buffer helpers into GX-style calls — usually inlined
-// into display-lists; PC engine renders through Aurora directly, so these are
-// no-ops for now) ----
+// ---- J3DGD/JRN* (decomp's GD-buffer + Ninja-renderer BP-register writers) ----
+// Real bodies now built natively from reference/sms/src/JSystem/JRenderer.cpp
+// (sms-boot/CMakeLists.txt no longer excludes it — see the comment there,
+// 2026-07-10: these no-op stubs were silently dropping the ENTIRE J3D
+// material BP-register stream, including JRNISetTevOrder's TREF write,
+// which is why every TEV stage kept aurora's default texMapId=GX_TEXMAP_NULL
+// and rendered geometry with color forced to 0 regardless of texture/RASC).
+// Only JPABaseField's forward decls below are still needed by other stubs
+// in this file.
 struct _GXFogAdjTable;
 struct JPADataBlock;
 struct JPAParticle;
 class JPABaseField { public: JPABaseField(); };
-
-void J3DGDLoadTexMtxImm(float (*)[4], unsigned int, GXTexMtxType) {}
-void J3DGDLoadTlut(void*, unsigned int, GXTlutSize) {}
-void J3DGDSetChanAmbColor(GXChannelID, GXColor) {}
-void J3DGDSetChanCtrl(GXChannelID, unsigned char, GXColorSrc, GXColorSrc, unsigned int, GXDiffuseFn, GXAttnFn) {}
-void J3DGDSetChanMatColor(GXChannelID, GXColor) {}
-void J3DGDSetFog(GXFogType, float, float, float, float, GXColor) {}
-void J3DGDSetTevKColor(GXTevKColorID, GXColor) {}
-void J3DGDSetTexCoordGen(GXTexCoordID, GXTexGenType, GXTexGenSrc, unsigned char, unsigned int) {}
-void J3DGDSetTexCoordScale2(GXTexCoordID, unsigned short, unsigned char, unsigned char, unsigned short, unsigned char, unsigned char) {}
-void J3DGDSetTexImgAttr(GXTexMapID, unsigned short, unsigned short, GXTexFmt) {}
-void J3DGDSetTexImgPtr(GXTexMapID, void*) {}
-void J3DGDSetTexTlut(GXTexMapID, unsigned int, GXTlutFmt) {}
-
-// ---- JRN* (JSystem Ninja renderer indirect-TEV/fog helpers) ----
-void JRNISetFogRangeAdj(bool, unsigned short, _GXFogAdjTable*) {}
-void JRNISetTevColorS10(GXTevRegID, GXColorS10) {}
-void JRNISetTevOrder(GXTevStageID, GXTexCoordID, GXTexMapID, GXChannelID, GXTexCoordID, GXTexMapID, GXChannelID) {}
-void JRNLoadCurrentMtx(unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int) {}
-void JRNLoadTexCached(GXTexMapID, unsigned int, GXTexCacheSize, unsigned int, GXTexCacheSize) {}
-void JRNSetIndTexCoordScale(GXIndTexStageID, GXIndTexScale, GXIndTexScale, GXIndTexScale, GXIndTexScale) {}
-void JRNSetIndTexMtx(GXIndTexMtxID, float (*)[3], signed char) {}
-void JRNSetIndTexOrder(unsigned int, GXTexCoordID, GXTexMapID, GXTexCoordID, GXTexMapID, GXTexCoordID, GXTexMapID, GXTexCoordID, GXTexMapID) {}
-void JRNSetTevIndirect(GXTevStageID, GXIndTexStageID, GXIndTexFormat, GXIndTexBiasSel, GXIndTexMtxID, GXIndTexWrap, GXIndTexWrap, bool, bool, GXIndTexAlphaSel) {}
 
 // (Removed: JPAField.cpp is now built as part of sms-native — see CMakeLists.txt.
 // The stubs here previously provided empty ctors/methods that skipped critical
