@@ -199,9 +199,119 @@ BP_CMODE0 = 0x41          # blend_enable:0 logic_op_enable:1 dither:2 color_upda
                           # dst_factor:5-7 src_factor:8-10 subtract:11 logic_mode:12-15
 BP_ALPHACOMPARE = 0xF3    # ref0:0-7 ref1:8-15 comp0:16-18 comp1:19-21 logic(op):22-23
 
+# --- TEV/material registers (title-fidelity task, 2026-07-10). Bit layouts copied
+# 1:1 from extern/aurora/lib/gx/command_processor.cpp's handle_bp() (the SAME
+# decoder the native runtime uses to populate g_gxState.tevStages), NOT
+# independently re-derived from Dolphin -- this guarantees the two sides decode
+# identical raw bits identically, so a field mismatch below is a REAL semantic
+# divergence (wrong bytes reaching the BP FIFO), not a decoder disagreement.
+BP_TEV_COLOR_ENV_LO = 0xC0   # 0xC0,0xC2,...,0xDE (even): color combiner, stage=(reg-0xC0)/2
+BP_TEV_COLOR_ENV_HI = 0xDE
+BP_TEV_ALPHA_ENV_LO = 0xC1   # 0xC1,0xC3,...,0xDF (odd): alpha combiner + swap sel, stage=(reg-0xC1)/2
+BP_TEV_ALPHA_ENV_HI = 0xDF
+BP_TREF_LO = 0x28            # 0x28-0x2F: texmap/texcoord/channel per PAIR of stages
+BP_TREF_HI = 0x2F
+BP_KSEL_LO = 0xF6            # 0xF6-0xFD: konst color/alpha select per PAIR of stages (+ swap table)
+BP_KSEL_HI = 0xFD
+
 GX_COMPARE_NAMES = ["NEVER", "LESS", "EQUAL", "LEQUAL", "GREATER", "NEQUAL", "GEQUAL", "ALWAYS"]
 DOLPHIN_CULLMODE_NAMES = ["NONE", "BACK", "FRONT", "ALL"]
 ALPHA_LOGIC_NAMES = ["AND", "OR", "XOR", "XNOR"]
+MAX_TEV_STAGES = 16
+
+
+def decode_tev_op_bias_scale(value: int):
+    """Shared color/alpha-env op/bias/scale decode (bits 16-21 + 18), identical
+    shape in both env registers per command_processor.cpp handle_bp()."""
+    if bits(value, 16, 2) == 3:
+        hw_op = bits(value, 18, 1) | (bits(value, 20, 2) << 1)
+        return hw_op + 8, 0, 0  # op, bias=GX_TB_ZERO, scale=GX_CS_SCALE_1 (compare mode)
+    return bits(value, 18, 1), bits(value, 16, 2), bits(value, 20, 2)
+
+
+class TevStageState:
+    """Live per-stage TEV/material register snapshot (16 stages), threaded
+    sequentially the same way BPRasterState is -- real GX HW state persists
+    frame-to-frame."""
+
+    __slots__ = ("color_env", "alpha_env", "tref", "ksel")
+
+    def __init__(self):
+        self.color_env = [0] * MAX_TEV_STAGES  # raw 0xC0.. register value per stage
+        self.alpha_env = [0] * MAX_TEV_STAGES  # raw 0xC1.. register value per stage
+        self.tref = [0] * MAX_TEV_STAGES       # raw TREF register value REPEATED for both
+                                                 # stages sharing it (simplifies indexing)
+        self.ksel = [0] * MAX_TEV_STAGES        # raw KSEL register value, ditto
+
+    def load(self, command: int, value: int):
+        if BP_TEV_COLOR_ENV_LO <= command <= BP_TEV_COLOR_ENV_HI and (command & 1) == 0:
+            stage = (command - BP_TEV_COLOR_ENV_LO) // 2
+            if stage < MAX_TEV_STAGES:
+                self.color_env[stage] = value
+        elif BP_TEV_ALPHA_ENV_LO <= command <= BP_TEV_ALPHA_ENV_HI and (command & 1) == 1:
+            stage = (command - BP_TEV_ALPHA_ENV_LO) // 2
+            if stage < MAX_TEV_STAGES:
+                self.alpha_env[stage] = value
+        elif BP_TREF_LO <= command <= BP_TREF_HI:
+            idx = command - BP_TREF_LO
+            s0, s1 = idx * 2, idx * 2 + 1
+            if s0 < MAX_TEV_STAGES:
+                self.tref[s0] = value
+            if s1 < MAX_TEV_STAGES:
+                self.tref[s1] = value
+        elif BP_KSEL_LO <= command <= BP_KSEL_HI:
+            idx = command - BP_KSEL_LO
+            s0, s1 = idx * 2, idx * 2 + 1
+            if s0 < MAX_TEV_STAGES:
+                self.ksel[s0] = value
+            if s1 < MAX_TEV_STAGES:
+                self.ksel[s1] = value
+
+    def stage_fields(self, stage: int, num_tev_stages: int):
+        """Decode stage `stage`'s full material state. TREF/KSEL registers are
+        laid out one-per-STAGE-PAIR (stage0 = low half, stage1 = high half of
+        the SAME register value) -- decode the correct half by stage parity."""
+        cval = self.color_env[stage]
+        aval = self.alpha_env[stage]
+        c_op, c_bias, c_scale = decode_tev_op_bias_scale(cval)
+        a_op, a_bias, a_scale = decode_tev_op_bias_scale(aval)
+
+        tref = self.tref[stage]
+        if stage % 2 == 0:
+            tex_map = bits(tref, 0, 3)
+            tex_coord = bits(tref, 3, 3)
+            tex_enable = bits(tref, 6, 1)
+            chan_hw = bits(tref, 7, 3)
+        else:
+            tex_map = bits(tref, 12, 3)
+            tex_coord = bits(tref, 15, 3)
+            tex_enable = bits(tref, 18, 1)
+            chan_hw = bits(tref, 19, 3)
+
+        ksel = self.ksel[stage]
+        if stage % 2 == 0:
+            kc_sel = bits(ksel, 4, 5)
+            ka_sel = bits(ksel, 9, 5)
+        else:
+            kc_sel = bits(ksel, 14, 5)
+            ka_sel = bits(ksel, 19, 5)
+
+        return {
+            "texmap": tex_map if tex_enable else 255,  # 255 == GX_TEXMAP_NULL sentinel
+            "texcoord": tex_coord,
+            "tex_enable": tex_enable,
+            "chan_hw": chan_hw,
+            "ca": bits(cval, 12, 4), "cb": bits(cval, 8, 4),
+            "cc": bits(cval, 4, 4), "cd": bits(cval, 0, 4),
+            "c_op": c_op, "c_bias": c_bias, "c_scale": c_scale,
+            "c_clamp": bits(cval, 19, 1), "c_outreg": bits(cval, 22, 2),
+            "aa": bits(aval, 13, 3), "ab": bits(aval, 10, 3),
+            "ac": bits(aval, 7, 3), "ad": bits(aval, 4, 3),
+            "a_op": a_op, "a_bias": a_bias, "a_scale": a_scale,
+            "a_clamp": bits(aval, 19, 1), "a_outreg": bits(aval, 22, 2),
+            "swap_ras": bits(aval, 0, 2), "swap_tex": bits(aval, 2, 2),
+            "kc_sel": kc_sel, "ka_sel": ka_sel,
+        }
 
 
 class BPRasterState:
@@ -216,8 +326,10 @@ class BPRasterState:
         self.zmode = 0
         self.cmode0 = 0
         self.alphacompare = 0
+        self.tev = TevStageState()
 
     def load(self, command: int, value: int):
+        self.tev.load(command, value)
         if command == BP_GENMODE:
             self.genmode = value
         elif command == BP_SCISSORTL:
@@ -234,6 +346,13 @@ class BPRasterState:
     # --- decoded views ---
     def cullmode(self):
         return bits(self.genmode, 14, 2)
+
+    def num_tev_stages(self):
+        return bits(self.genmode, 10, 4) + 1
+
+    def tev_stages(self):
+        n = self.num_tev_stages()
+        return [self.tev.stage_fields(i, n) for i in range(n)]
 
     def scissor_rect(self):
         """Returns (x0, y0, x1, y1) in EFB pixel space, both TL/BR de-biased by
@@ -501,6 +620,7 @@ class DrawEvent:
     zmode: dict = None               # {test_enable, func, update_enable}
     blend: dict = None               # {blend_enable, logic_op_enable, color_update, alpha_update, dst_factor, src_factor, subtract}
     alphacompare: dict = None        # {ref0, ref1, comp0, comp1, logic}
+    tev_stages: tuple = None         # tuple of per-stage dicts (TevStageState.stage_fields), title-fidelity task
 
 
 @dataclass
@@ -703,7 +823,8 @@ def decode_frame(frame_idx: int, data: bytes, cp: CPState, bp: "BPRasterState" =
                 viewport=last_viewport, viewport_complete=last_viewport is not None,
                 cullmode=bp.cullmode(), scissor=bp.scissor_rect(),
                 zmode=bp.zmode_fields(), blend=bp.blend_fields(),
-                alphacompare=bp.alphacompare_fields()))
+                alphacompare=bp.alphacompare_fields(),
+                tev_stages=tuple(bp.tev_stages())))
             seq += 1
             pos += total
             continue
@@ -728,6 +849,10 @@ def main():
                      help="write the per-draw RASTER-STATE TSV (viewport/scissor/zmode/blend/"
                           "alphacompare/cullmode) for the world-pass dome (202v) + 3 MapOpa-anchor "
                           "draws to OUT, instead of the normal timeline dump")
+    ap.add_argument("--tev-tsv", metavar="OUT",
+                     help="write a per-draw-per-stage TEV/material-state TSV (color_env/alpha_env/"
+                          "tref/ksel decode) for the world-pass sky DOME (202v) + up to 3 CLOUD "
+                          "STRIP (40v) draws to OUT, instead of the normal timeline dump")
     args = ap.parse_args()
 
     with open(args.dff, "rb") as f:
@@ -816,6 +941,53 @@ def main():
         print(f"# MANIFEST wrote {len(selected)} rows ({len(dome_rows[:2])} DOME + "
               f"{len(anchor_rows[:3])} MAPOPA_ANCHOR) from {args.dff} frame(s) "
               f"{args.frame if args.frame is not None else 'all'} to {args.raster_tsv}",
+              file=sys.stderr)
+        return
+
+    if args.tev_tsv:
+        out_rows = []
+        for i, fr in enumerate(frames):
+            if args.frame is not None and i != args.frame:
+                continue
+            data = buf[fr.fifo_data_offset: fr.fifo_data_offset + fr.fifo_data_size]
+            _xf_events, draw_events, _bp_events, _unknown, _warnings = decode_frame(i, data, cp, bp)
+            out_rows.extend(draw_events)
+
+        def is_world_proj(e):
+            if not e.proj_floats or e.proj_type != "PERSPECTIVE":
+                return False
+            return abs(e.proj_floats[0] - 2.04163) < 0.01 and abs(e.proj_floats[2] - 2.74748) < 0.01
+
+        dome_rows = [e for e in out_rows if is_world_proj(e) and e.num_vertices == 202]
+        cloud_rows = [e for e in out_rows if is_world_proj(e) and e.num_vertices == 40]
+        selected = [("DOME", e) for e in dome_rows[:2]] + [("CLOUD", e) for e in cloud_rows[:3]]
+        if not selected:
+            raise SystemExit(
+                "REFUSING: found 0 matching world-pass draws (dome 202v or cloud-strip 40v) -- "
+                "filter predicates likely stale vs this .dff; not writing an empty/misleading TSV")
+
+        cols = ["frame", "seq", "role", "nverts", "stage", "num_stages",
+                "texmap", "texcoord", "tex_enable", "chan_hw",
+                "ca", "cb", "cc", "cd", "c_op", "c_bias", "c_scale", "c_clamp", "c_outreg",
+                "aa", "ab", "ac", "ad", "a_op", "a_bias", "a_scale", "a_clamp", "a_outreg",
+                "swap_ras", "swap_tex", "kc_sel", "ka_sel"]
+        with open(args.tev_tsv, "w") as out:
+            out.write("\t".join(cols) + "\n")
+            for role, e in selected:
+                stages = e.tev_stages or ()
+                for st_idx, st in enumerate(stages):
+                    row = [e.frame, e.seq, role, e.num_vertices, st_idx, len(stages),
+                           st["texmap"], st["texcoord"], st["tex_enable"], st["chan_hw"],
+                           st["ca"], st["cb"], st["cc"], st["cd"],
+                           st["c_op"], st["c_bias"], st["c_scale"], st["c_clamp"], st["c_outreg"],
+                           st["aa"], st["ab"], st["ac"], st["ad"],
+                           st["a_op"], st["a_bias"], st["a_scale"], st["a_clamp"], st["a_outreg"],
+                           st["swap_ras"], st["swap_tex"], st["kc_sel"], st["ka_sel"]]
+                    out.write("\t".join(str(x) for x in row) + "\n")
+        n_stage_rows = sum(len(e.tev_stages or ()) for _, e in selected)
+        print(f"# MANIFEST wrote {n_stage_rows} stage-rows from {len(selected)} draws "
+              f"({len(dome_rows[:2])} DOME + {len(cloud_rows[:3])} CLOUD) from {args.dff} "
+              f"frame(s) {args.frame if args.frame is not None else 'all'} to {args.tev_tsv}",
               file=sys.stderr)
         return
 
