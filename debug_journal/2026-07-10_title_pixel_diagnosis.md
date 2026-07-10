@@ -205,3 +205,43 @@ the dump). (2) Which .blo is being drawn — `title_1.blo` (unk34) or the loadin
 (load.blo/unk28)? CardLoad::draw switches screen by state; a wrong state would draw the wrong .blo.
 (3) texture wrap REPEAT-vs-CLAMP for the tiled pictures. Localized to the J2D 2D layer — NOT 3D,
 camera, or content (those are correct; sparse-scene was a merge artifact).
+
+---
+
+## 2026-07-11 — SPIRV harness fix + bounds premise DEBUNKED + scene-is-present reframe
+
+Major corrections to this doc's earlier leads:
+
+1. **RENDER HARNESS WAS BROKEN (now fixed).** The title crashed 5-6/6 on cold pipeline
+   compile with `Produced invalid SPIRV` — root cause was aurora's WGSL vertex-fetch
+   helpers using **dynamic-offset `extractBits`**, which Tint miscompiles (clamped lowering
+   → OpExtInst(GLSL.std.450) invalid operand). Fixed in aurora (`9dcd5e2`, shift+mask). The
+   2026-07-10_title_fidelity_infra.md "closed as ccache staleness" verdict was WRONG and is
+   corrected there. ALL prior captures were with a warm dawn_cache masking this. Any capture
+   requires `SUNBRIGHT_ROM` set (else dvd_open fails → misleading "crash").
+
+2. **The "J2D pictures draw at huge 2202px bounds" premise was a STALE-BINARY ARTIFACT.**
+   On a clean build the `[j2d-fullset]` dump shows NORMAL bounds (mBoundsW≈160/121/140,
+   clamped to texture size ≈74px, centered). There is NO bounds/scale bug. Do not re-chase it.
+
+3. **Logo-letter textures decode CORRECTLY.** tex_382-385 are I8/IA4 (fmt1/fmt2) duotone
+   glyphs; dumped RGBA shows R==G==B grayscale with alpha==intensity (corr 1.0). getTransparency
+   returns 2 (truthy) → TEV uses GX_CA_TEXA. mBlack=0x0000ff00 (blue) is the INTENDED duotone
+   (blue letters, matches oracle). Duotone stage alpha = 255*TEXA → background alpha 0 →
+   should be transparent. TEV/blend (bm=1 sf=4 df=5 = GX_BM_BLEND SRCALPHA/INVSRCALPHA) correct.
+   The letters have a LARGE soft glow halo filling most of the texture rect.
+
+4. **The 3D scene IS present in native.** frame-140 draw-dump: 291 draws = 134 PERSPECTIVE +
+   157 ortho, marks include DrawBuf Mirror Opa ×142, MapOpa, Sky Xlu, LensFlare,
+   TLightDrawBuffer::Opa, ShadowOpa, MapXlu. So geometry is NOT wholesale missing.
+
+5. **Oracle settled title is predominantly 3D PERSPECTIVE** (title_press_start_vi_stable.dff:
+   1258 draws, ORTHO only appears seq>=21074 as a late-frame tail). The logo/sun/palm/rainbow
+   are 3D models, not 2D pictures.
+
+**OPEN (next):** captured image shows sky+clouds + washed 2D glow-letters but LACKS the crisp
+3D logo / palm / rainbow / ocean-reflection that the oracle shows — even though native emits
+perspective Map/Mirror/Sky draws. Next step: per-scene-element diff (which perspective draws
+land on-screen vs off / wrong-colored), NOT more J2D-bounds work. Also re-scrutinize the
+"291 vs 1258 = pure merge artifact" claim: a 4.3x gap may partly be genuinely-absent draws
+(logo model?), not only aurora draw-merging — validate before trusting.
