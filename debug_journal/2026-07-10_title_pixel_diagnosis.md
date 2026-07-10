@@ -311,3 +311,27 @@ all CORRECT.
 stable settled frame, sweep SB_DUMP_FRAME_AFTER and pick the frame whose blue-letter-spot
 RGB is closest to [80,131,213]. Next parity work = PRESS START prompt phase + whether native
 reaches a STABLE hold (oracle holds 3 identical frames) or keeps re-animating.
+
+---
+
+## 2026-07-11 (cont) — REAL DEFECT FOUND: fly-in glyph layers don't fade out → wash blue base
+
+Refines the "faithful modulo phase" claim: there IS a real (subtle) defect. Frame sweep
+(sw_650..980) shows the logo blue-spot mean plateaus at ITS BLUEST ~[155,180,237] (frame
+650-720) and NEVER reaches oracle [81,133,215] — then lightens further (transition). So it is
+NOT pure animation phase.
+
+DECISIVE isolation (SB_SKIP_DUOTONE=1, new diagnostic in J2DPicture::drawSelf — drops
+mBlack!=0/mWhite!=white "duotone" pictures = the fly-in glyph/highlight layers): with the
+glyph layers removed, the base-only blue-spot = **[81,133,216]**, matching oracle
+**[81,133,215]** EXACTLY. And tex_355's own blue-core texels = [89,145,219] ~= oracle. So:
+- Base texture tex_355 (the complete finished blue logo) renders oracle-perfect on its own.
+- The white fly-in GLYPH layers (duotone I8/IA4 pictures) are drawn ON TOP and dilute the
+  blue to [153,177,236]. They persist at the settled hold instead of fading out.
+- At the oracle's settled hold only the pure blue base shows → the glyphs ARE supposed to
+  fade/hide once the logo assembles; native's glyph fade-out is incomplete.
+
+NEXT: find the title logo assembly→hold transition (CardLoad / TExPane 'titl' animators) and
+why the fly-in glyph layers' alpha doesn't reach 0 (or they aren't hidden) at settle. The
+tev-name dump shows duotone draws at BOTH mColorAlpha=0 (faded) and =255 (visible) — some
+glyphs stuck visible. That is the remaining title-parity fix.
