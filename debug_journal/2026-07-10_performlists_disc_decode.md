@@ -80,10 +80,11 @@ Also re-dumped native's actual constructed **"Draw Buffer Group"** child list di
 children:` block emitted once at `setupObjects()`): 34 children, `DrawBuf Sky
 Opa/Xlu/MapOpa/MapXlu/... /StaticMapObj SunOpa/SunXlu/ShadowOpa/ShadowXlu/Graffito/Mirror
 Opa/Xlu/MirrorSky Opa/Xlu/MirrorAlways Opa/Xlu/ChrOpa/Xlu/LensFlare/Last
-Xlu/Indirect/AfterIndirect Opa/Xlu/<TLightDrawBuffer::Opa/Xlu>×4` — this order comes from
-`/scene/map/scene.bin` (not decoded this session; a separately-compressed per-stage archive,
-out of scope), but its *relative* order is what actually reaches the FIFO capture's SEG0/1
-segmentation, since these are the objects `unk40` flushes.
+Xlu/Indirect/AfterIndirect Opa/Xlu/<TLightDrawBuffer::Opa/Xlu>×4` — its order/source was
+guessed here as `/scene/map/scene.bin`, but that guess was WRONG and is corrected in
+`2026-07-10_drawbuf_group_type_mapping_falsified.md`: it's actually `/data/scenecmn.bin`
+(stage-independent, loaded once in `TMarDirector::loadResource()`), decoded directly in
+that follow-up session.
 
 ## 3. One new granular fact: which draw buffers are actually `TMirrorMapDrawBuf`-gated
 
@@ -118,6 +119,11 @@ Ghidra-confirmed), phase 1's spurious content shows up uniformly across mirror-g
 ungated buffers alike (Sky Xlu/MapOpa are not mirror buffers at all and still flush nonzero
 packets at phase 1) — so a missing mirror gate on 2 buffer names is not sufficient to explain
 the whole phase-1 divergence and is not the thing to chase next.
+
+**Follow-up resolved this fully** (`2026-07-10_drawbuf_group_type_mapping_falsified.md`):
+decoded `/data/scenecmn.bin` directly and confirmed `DrawBuf Mirror Opa`/`DrawBuf Mirror
+Xlu` are declared `DrawBufObj` (plain, ungated) ON DISC — native's construction is
+faithful, not a bug. The "unresolved" framing directly below is superseded.
 
 ## 4. Conclusion — no fix; this session's finding is corroborating, not new
 
