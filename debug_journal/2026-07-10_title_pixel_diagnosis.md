@@ -106,7 +106,35 @@ not a one-line fix. Diagnostics wired for it: SB_DRAW_DUMP_FRAME now prints vp +
 SB_SKIP_GHOST, SB_CAM_DBG, SB_NDC_PROBE. NOTE: SB_SKIP_ORTHO and SB_SKIP_MARK=Mirror both HANG
 the boot (fades/mirror-copy are load-bearing) — don't use them.
 
-## Leading (unverified) hypothesis for next session
+## DEEPEST ROOT (traced): the title SCENE is under-populated
+
+Native draws ~10× fewer draws than retail (293 vs 1258; mirror 71 vs 653; the AfterIndirect
+reflective-sea composite is **1 draw vs retail's 26× 52-vert block**). Traced via `SB_SEA_DBG`
+(now `[sea-perform]` in `TMapStaticObj::perform`): at the settled title (camera confirmed
+settled via `SB_CAM_DBG`), the ONLY `TMapStaticObj` performing is **`sun_mirror`**
+(太陽in鏡, from `Camera/sunmodel.cpp:112`), param_1=0x6 (calc only), never the entry pass
+(0x200), UNK80=0. Retail's title has the reflective sea + scenery as many static objects.
+
+The `initStageCommon` sea (`波（遠景）`/`インダイレクト波`, Map.cpp:146-150) is gated on
+`getCurrentMap() ∈ {4,3,0xD,9,5,6,0x14,0,1}` and the **title map is 15** (TSky `mMap==15`),
+so it's correctly excluded — the title's scene objects come from the title **scene.bin**, and
+native only instantiates `sun_mirror` from it. So the title defect bottoms out at
+**scene-loader / object-creation completeness for the title stage**: native creates a tiny
+fraction of the title's scene objects, so most passes (mirror reflection, the reflective-sea
+composite that paints the visible backdrop, scenery) have nothing to draw → the sparse,
+over-bright, blurry result.
+
+## Engineering assessment (title parity scope)
+Title parity is NOT a single bug — it is a stack: (1) the title scene.bin objects mostly
+aren't created (only `sun_mirror` seen), so passes are near-empty; (2) with no composited
+backdrop, native falls back to direct cU=1 color-draws of the sparse content (over-bright sky
+blend); (3) the half-res (320×224) snapshot path. The EFB-copy plumbing itself WORKS (2
+copies/frame). The dominant fix is (1): get the title stage's scene objects created. That is a
+scene-loader / stage-setup port, related to the gated `TMapObjTree::initMapObj` work, not a
+render tweak. Diagnostics all committed (`SB_SEA_DBG`, `SB_CAM_DBG`, `SB_COPY_DBG` incl.
+tex-copies, `SB_EFBTEX_DBG`, blend/cU + vp draw dump, `SB_SKIP_GHOST`).
+
+## Superseded hypotheses (this session, do not re-chase)
 The logo/scene appears **oversized** (SM letters fill the screen vs ~60% in retail) +
 blurry. That reads as a SCALE/PROJECTION divergence in the title's perspective pass (retail
 world proj diag = [2.04163, 2.74748]) OR a broken screen-texture composite stretching a
