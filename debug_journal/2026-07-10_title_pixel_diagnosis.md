@@ -80,7 +80,24 @@ and instead directly color-draws every pass. The blown-out/blurry result is that
 (over-bright sky blend + the 256×256 mirror pass + no snapshot composite) instead of retail's
 composited frame.
 
-**The fix = port the title EFB-copy compositor + color-update management** (the named work):
+## CORRECTION (verified): native DOES do the EFB copies — 2/frame
+
+Earlier "native does 0 GXCopyTex" was WRONG — read off a STALE binary after a silently-failed
+build (an `sb_gx_last_marker` scope error). With `SB_COPY_DBG` + `SB_EFBTEX_DBG` on a clean
+build, native does **4476 tex-copies over the run (~2/frame)**: `鏡描画ステージ` (mirror,
+256×256) and `通常シーン描画ステージ` (normal-scene snapshot, **320×224 = half-res**), both
+firing `TEfbCtrlTex::perform` with the draw bit 0x8 and a valid `mImagePtr`. So the EFB-copy
+pipeline is NOT missing. (LESSON: always confirm BUILD=0 before trusting a run; a failed build
+leaves the prior binary and its instrumentation silently absent.) The blur is therefore the
+**half-res (320×224) normal-scene snapshot in the composite path** (2× upscale to 640×448),
+not an absent copy. Next: find whether `合成3` / the snapshot composite is drawn full-screen
+over the frame (it shouldn't dominate the crisp direct render — retail's title is crisp despite
+the same half-res snapshot object existing). NOTE `SB_SKIP_COPY_QUAD` did NOT change the image,
+so either the composite isn't flagged as a copy-sampler or it isn't the visible layer — resolve
+that before assuming the composite is the blur.
+
+**The (revised) fix direction = the title color-update + snapshot-composite semantics** (native
+color-draws cU=1 where retail is Z-only+composite; and the half-res snapshot path):
 retail's `TEfbCtrl`/`TEfbCtrlTex` (`JDREfbCtrl.cpp`) set `GXSetColorUpdate(false)` for the 3D
 passes and drive the mid-scene EFB copy; the 26-draw compositor block then paints the visible
 backdrop by sampling that snapshot. Native's EfbCtrl objects aren't managing cU / aren't doing
