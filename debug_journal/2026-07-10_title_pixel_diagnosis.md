@@ -188,3 +188,20 @@ or global-state bug, NOT missing geometry. Focus there: the half-res (320x224) n
 snapshot composite (`通常シーン描画ステージ` + `合成3`), and any global brightness/gamma in the
 present path. Every draw-count-based comparison this session is void; use PIXELS + per-draw
 state, never draw counts, for aurora-vs-Dolphin.
+
+## Loop iteration (2026-07-11): visible defect is J2D huge-tiled pictures
+
+`SB_J2D_DRAW_DUMP` (J2DPicture::drawFullSet) shows the attract title's J2D pictures drawn at
+ENORMOUS bounds (w/h 2000–10107, up to h=14438) with tiny 40–63px 2-tone textures (mBlack blue
+0000ff00, mWhite ffffffff) in wrap mode — that tiled blue↔white fill IS the blurry blue-white
+wash. Bounds GROW over the run (40→384→…). Ruled OUT: `TCoord2D`/`CLBChaseGeneralConstantSpecifySpeed`
+overshoot (it clamps at target correctly), so the interpolator isn't the unbounded-growth source.
+J2DPane reads .blo bounds as fixed S16, so the size comes from a large resize TARGET or a large
+.blo pane. drawFullSet computes tiling UVs (renderWidth/texW ≈ 50×) — blur = if the texture wraps
+CLAMP not REPEAT, those UVs stretch the edge texel instead of tiling.
+
+OPEN for next iteration: (1) are these huge panes the SETTLED title or intro-transient? (frame-gate
+the dump). (2) Which .blo is being drawn — `title_1.blo` (unk34) or the loading screen
+(load.blo/unk28)? CardLoad::draw switches screen by state; a wrong state would draw the wrong .blo.
+(3) texture wrap REPEAT-vs-CLAMP for the tiled pictures. Localized to the J2D 2D layer — NOT 3D,
+camera, or content (those are correct; sparse-scene was a merge artifact).
