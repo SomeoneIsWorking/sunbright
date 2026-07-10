@@ -172,3 +172,69 @@ genuinely wrong).
 - `extern/aurora/lib/gx/command_processor.cpp` `[ndc-probe-behind]` — companion to the
   existing `SB_NDC_PROBE`/`SB_NDC_MARK`, prints resolved pos-matrix + camera-space position
   for the first 6 perspective-draw vertices whose `clip.w≤0` (previously silently skipped).
+
+## Part 3 (2026-07-10, continuation): "aurora MTX sign-convention regression" hypothesis FALSIFIED with a permanent unit test; defect re-confirmed and re-quantified, root cause still open
+
+This session's task was framed as "aurora's view/projection matrix functions have a
+sign-convention error vs the GC SDK" (prime suspect: `C_MTXLookAt`/`C_MTXPerspective`/
+`C_MTXFrustum`/`C_MTXOrtho`, citing the aurora lineage's past LOAD_INDX/GXGetTexObjAll
+regressions as precedent). Verified this framing is **wrong** before touching any code:
+
+- Diffed `extern/aurora/lib/dolphin/mtx/{mtx.c,mtx44.c}` against
+  `reference/sms/src/dolphin/mtx/{mtx.c,mtx44.c}` (the vendored Nintendo SDK source, the
+  authoritative ground truth — reference/sms's own `dolphin/mtx/*.c` is excluded from the
+  native build in `sms-boot/CMakeLists.txt` line ~30, so **every** game call to
+  `C_MTXLookAt`/`C_MTXPerspective`/`C_MTXConcat` already resolves to aurora's
+  `aurora::mtx` target, not a copy — there is only one implementation in the running
+  binary). `C_MTXLookAt`, `C_MTXPerspective`, and `C_MTXConcat` are **byte-identical**
+  between the two trees (same formulas, same operand order, right down to the
+  `-((camPos->z*vRight.z)+...)` parenthesization). `GXSetProjection`/`GXProject` in
+  `extern/aurora/lib/dolphin/gx/GXTransform.cpp` also match the known GC SDK layout
+  (w-row `[0,0,-1,0]`, `wc = 1/-peye.z`).
+- Added `sms-boot/runtime/tests/mtx_lookat_test.cpp` (ctest `platform_mtx_lookat_test`),
+  linked directly against `aurora::mtx` (the real shipped implementation, not a hand
+  copy) — 4 camera setups (origin-relative, offset-along-view-axis, looking down +X, and
+  the projection w-row) all assert the GC convention (forward = **-Z** in view space,
+  `clip.w = -mv.z`, a point in front of the camera has negative view-space Z / positive
+  clip.w). **All pass.** This is a permanent regression guard: if a future aurora bump
+  ever does regress this sign convention (the stated failure mode for LOAD_INDX/
+  GXGetTexObjAll in this project's history), this test goes red immediately instead of
+  requiring a fresh multi-hour RE pass to rediscover it.
+- Re-ran `SB_NDC_PROBE=1 SB_NDC_MARK=MapOpa` fresh (this session, HEAD =
+  `1555671`) and got the **same matrix and the same mv.z range** already recorded in Part
+  2 above (`M=[0.290 0.000 0.957 305.422 | -0.479 0.866 0.145 -810.631 | -0.828 -0.501
+  0.251 -745.904]`, `mv.z` in the `2500..3150` range) — the defect is real, reproducible,
+  and unchanged since Part 2, not stale. But the framing in Part 2 ("every DrawBuf
+  MapOpa perspective draw sampled") overstates it: quantifying this run's 400 sampled
+  `MapOpa` draws by `wneg` (vertices discarded behind-camera out of `vtxCount`), **243
+  draws have `wneg=0`** (fully in front, correct) and **82 draws have `wneg=4`** (100%
+  behind camera, matching Part 2's quoted matrix exactly); the remainder are partial
+  (dome/enclosing-mesh-style mixed visibility, expected for non-planar geometry). So: one
+  specific recurring object/shape-group bound through `mtx=0` with this exact
+  view-matrix is textbook-consistently 180°-wrong; most other `MapOpa` draws in the same
+  frame are fine. Same shape holds for `DrawBuf Sky Xlu` (306/400 sampled draws
+  `wneg=0`, the rest partial-visibility consistent with an enclosing sky-dome mesh, not a
+  systemic flip) — so the black backdrop is not "the whole 3D world is behind the
+  camera", it is this narrower, already-quantified subset.
+
+**Conclusion: do not patch the MTX library — there is nothing wrong there, in isolation
+or now under a permanent test.** The defect is exactly where Part 2 already narrowed it:
+upstream, in which camera/view matrix gets concatenated into the `M` bound for this
+specific `MapOpa` draw's `mtx=0` slot. Per the no-bandaids rule, this session does not
+attempt a guessed 180°/negate-Z patch on top of a falsified hypothesis. Named per Part
+2's still-standing next step: RE which `TCamera`/J3D view-matrix-build call produces this
+exact `M` (phase=1 entry-pass stale camera vs. phase=4/6 recomputed camera, per Part 1's
+restored phase instrument, is the leading candidate — it directly explains why some
+`MapOpa` draws in the *same frame* are fine and others aren't) — a Dolphin-oracle
+per-draw camera capture (`scratch/oracle/oracle_draws.log`-class tool) diffed against
+this `M` would confirm which side (native's camera build vs. this convention assumption)
+is wrong, faster than guessing.
+
+### Frame-dump verdict (this session)
+
+`SB_DUMP_FRAME_AFTER=600` lands mid-way through the SMS logo/wipe intro (2D `J2DScreen`
+splash over a black background — expected, that background is black on real hardware
+too); this is not evidence about the 3D backdrop either way. A later dump
+(`SB_DUMP_FRAME_AFTER=3000`) is needed to sample past the intro into the live title
+scene; see `scratch/frames_title/probe_check_late.png` for that capture from this
+session.

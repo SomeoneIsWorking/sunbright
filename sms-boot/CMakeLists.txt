@@ -197,6 +197,11 @@ foreach(_test ${SMS_RUNTIME_TESTS})
     target_include_directories(platform-${_name} PRIVATE
         "${SMS_NATIVE_REPO_ROOT}/extern/aurora/include"
         "${SMS_INCLUDE_STAGED}")
+    if(TARGET aurora_mtx)
+        # Link aurora's actual C_MTX* implementation (not a hand copy) for
+        # tests that check the GC sign convention against it (mtx_lookat_test).
+        target_link_libraries(platform-${_name} PRIVATE aurora::mtx)
+    endif()
     add_test(NAME platform_${_name} COMMAND platform-${_name})
 endforeach()
 
