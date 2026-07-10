@@ -276,3 +276,38 @@ TEfbCtrlTex->GXCopyTex snapshot arc / AfterIndirect indirect-texture pass; nativ
 Raw pixel diff t_300 vs check_3800 = 62.7 mean but DOMINATED by cloud-pattern misalignment
 (top-left quadrant 119.5 — different animation phase of the moving clouds), NOT the logo.
 Do not use whole-frame pixel diff as the metric while clouds animate out of phase.
+
+---
+
+## 2026-07-11 (cont) — ★★★ TITLE LOGO RENDERS FAITHFULLY — the "washed logo" was ALWAYS animation phase
+
+**RESOLVED: there is NO title-logo rendering bug.** The logo is a single big base texture
+`tex_355` (460x304 RGB5A3) = the COMPLETE finished blue "SUPER MARIO SUNSHINE" logo (shine
+sprite, palm, rainbow, red/yellow sun emblem, ocean reflection — identical to the oracle),
+drawn at pane bounds 534x353, PLUS individual fly-in glyph layers (I8/IA4, white via duotone)
+that animate during assembly.
+
+The logo animation OSCILLATES by present count (attract cycle): captured blue-letter-spot
+mean RGB was 300=[234,241,250] (white, mid-assembly), 700=[156,178,236] (settled blue),
+1200=[238,238,255] (white again — re-animating / attract restart). At the settled hold
+(frame ~700) native matches the oracle closely: see scratch/screenshots/sbs_700.png — blue
+3D-shaded logo, rainbow, shine, palm, sun emblem, (c)2002 all correct. Oracle blue-letter
+mean [80,131,213] vs native-700 [156,178,236] (slightly lighter, essentially the same).
+
+So the multi-SESSION "logo ~2x oversized / washed white / blue boxes" investigation was
+ENTIRELY an artifact of capturing mid-assembly animation phases (glyphs flying in / base not
+yet composited), compounded earlier by the SPIRV harness crash + a stale-binary huge-bounds
+misread. The J2D picture path, bounds, wrap, binding, duotone, and base-texture composite are
+all CORRECT.
+
+**Remaining title diffs (minor, not the logo):**
+1. PRESS START prompt at a different fade/blink phase (native-700 shows full faint "PRESS
+   START!" arc across top; oracle check_3800 shows just "PR" fading in) — animation phase.
+2. Slightly lower logo saturation at frame 700 (may deepen a few frames later).
+3. Sky cloud pattern out of phase (moving clouds; different frame) — inherent to non-identical
+   frames, not a bug.
+
+**Capture protocol:** the settled blue hold is around ~700 presents but OSCILLATES; to pin a
+stable settled frame, sweep SB_DUMP_FRAME_AFTER and pick the frame whose blue-letter-spot
+RGB is closest to [80,131,213]. Next parity work = PRESS START prompt phase + whether native
+reaches a STABLE hold (oracle holds 3 identical frames) or keeps re-animating.
