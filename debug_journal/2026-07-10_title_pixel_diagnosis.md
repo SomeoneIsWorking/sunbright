@@ -245,3 +245,34 @@ perspective Map/Mirror/Sky draws. Next step: per-scene-element diff (which persp
 land on-screen vs off / wrong-colored), NOT more J2D-bounds work. Also re-scrutinize the
 "291 vs 1258 = pure merge artifact" claim: a 4.3x gap may partly be genuinely-absent draws
 (logo model?), not only aurora draw-merging — validate before trusting.
+
+---
+
+## 2026-07-11 (cont) — "Oversized washed logo" was CAPTURE-TIMING; real defect = logo lacks reflection fill
+
+**★ The "logo renders ~2x oversized + blurry/washed" defect does NOT exist at the settled
+title — it was a mid-animation capture.** Captures at `SB_DUMP_FRAME_AFTER=200` land while
+the title TExPane logo is still animating in (zooming/forming) → looks huge and washed. At
+`SB_DUMP_FRAME_AFTER=300` (settled) the render is STRUCTURALLY CORRECT and close to the
+oracle: "SUPER MARIO SUNSHINE" logo at the right size/position, shine sprite, palm tree,
+rainbow trail, ©2002 NINTENDO, sun flare — all present and placed correctly (see
+scratch/screenshots/t_300.png + sbs_300.png side-by-side vs check_3800). **Always capture the
+title at >=300 presents.** The binding=15/wrapH=wrapV=1/texture-stretch analysis was correct
+but IRRELEVANT — those are authored .blo values (verified against raw bytes via
+SB_J2D_PIC_HEXDUMP: mBinding byte=0x0f, wrapMode byte=0x05) and the oracle stretches the
+same way; the stretch is not the defect.
+
+**Real remaining defect (subtle, well-scoped):** the logo letters render WASHED-OUT WHITE /
+semi-transparent, MISSING the blue-sky-top / teal-ocean-bottom ENVIRONMENT-REFLECTION interior
+fill that the oracle letters have. Oracle "SUPER MARIO" = solid blue with 3D shading + the sun
+emblem red/yellow; mine = pale ghostly white glyphs (correct shape, wrong fill). The I8
+letter textures (big_tx_g/o/ex/s.bti) supply only the white glyph + rainbow corner-color tints;
+the BLUE/colored fill must come from an additional layer the render is missing — most likely
+the EFB-copy environment/reflection snapshot applied to the logo (the named
+TEfbCtrlTex->GXCopyTex snapshot arc / AfterIndirect indirect-texture pass; native emits only
+1 'AfterIndirect Xlu' draw). NEXT: trace where the oracle's blue logo fill comes from
+(separate blue base picture layer vs indirect/EFB reflection) and port it.
+
+Raw pixel diff t_300 vs check_3800 = 62.7 mean but DOMINATED by cloud-pattern misalignment
+(top-left quadrant 119.5 — different animation phase of the moving clouds), NOT the logo.
+Do not use whole-frame pixel diff as the metric while clouds animate out of phase.
