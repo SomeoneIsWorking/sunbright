@@ -2,6 +2,8 @@
 #include "bmd_blocks.h"  // detail::swap_ResNTAB_block (shared name-table swapper)
 #include "rarc.h"        // be16/be32 explicit big-endian reads
 
+#include <algorithm>     // std::min
+
 namespace smsport::assets {
 
 // ---- in-place big-endian -> host swaps on the OUTPUT copy --------------------
@@ -375,7 +377,21 @@ AnmSwapResult anm_swap_to_host(const uint8_t* be_data, size_t len,
 		if (off + 8 > len) { r.error = "block table overrun"; return r; }
 		const uint32_t tag = be32(be_data + off + 0);
 		const uint32_t bsz = be32(be_data + off + 4);
-		if (bsz < 8 || off + bsz > len) { r.error = "bad block size"; return r; }
+		if (bsz < 8) { r.error = "bad block size"; return r; }
+		// J3D anm files conventionally declare a final-block mSize that
+		// includes trailing pad the GC loader never dereferences (mSize is
+		// only used via off += bsz to reach the NEXT block's header).
+		// airport0.arc's map.btk declares mSize=388 on its single TTK1 block
+		// starting at 0x20 while the file itself is only 416 bytes
+		// (0x20+388=420, a 4-byte overshoot) — on GC those 4 pad bytes are
+		// simply the next packed RARC entry's leading bytes, harmless since
+		// nothing reads past the block's real content. Only the NON-final
+		// blocks actually dereference bsz to advance, so only they get a
+		// hard error; the final block's effective size is clamped to what
+		// the buffer actually holds so the per-format swapper stays in-bounds.
+		const bool is_final = (i == block_num - 1);
+		if (!is_final && off + bsz > len) { r.error = "bad block size"; return r; }
+		const uint32_t swap_bsz = is_final ? std::min<uint32_t>(bsz, (uint32_t)(len - off)) : bsz;
 		sw32(out.data() + off + 0);   // mType (so the loader's fourcc compare matches)
 		sw32(out.data() + off + 4);   // mSize
 
@@ -383,16 +399,16 @@ AnmSwapResult anm_swap_to_host(const uint8_t* be_data, size_t len,
 		const uint8_t* bbo = be_data + off;
 		bool covered = true;
 		switch (tag) {
-		case 0x414E4B31: /* ANK1 */ swap_ANK1(obo, bbo, bsz); break;
-		case 0x54505431: /* TPT1 */ swap_TPT1(obo, bbo, bsz); break;
-		case 0x54544B31: /* TTK1 */ swap_TTK1(obo, bbo, bsz); break;
-		case 0x54524B31: /* TRK1 */ swap_TRK1(obo, bbo, bsz); break;
-		case 0x50414B31: /* PAK1 */ swap_PAK1(obo, bbo, bsz); break;
-		case 0x434C4B31: /* CLK1 */ swap_CLK1(obo, bbo, bsz); break;
-		case 0x414E4631: /* ANF1 */ swap_ANF1(obo, bbo, bsz); break;
-		case 0x50414631: /* PAF1 */ swap_PAF1(obo, bbo, bsz); break;
-		case 0x56414631: /* VAF1 */ swap_VAF1(obo, bbo, bsz); break;
-		case 0x434C4631: /* CLF1 */ swap_CLF1(obo, bbo, bsz); break;
+		case 0x414E4B31: /* ANK1 */ swap_ANK1(obo, bbo, swap_bsz); break;
+		case 0x54505431: /* TPT1 */ swap_TPT1(obo, bbo, swap_bsz); break;
+		case 0x54544B31: /* TTK1 */ swap_TTK1(obo, bbo, swap_bsz); break;
+		case 0x54524B31: /* TRK1 */ swap_TRK1(obo, bbo, swap_bsz); break;
+		case 0x50414B31: /* PAK1 */ swap_PAK1(obo, bbo, swap_bsz); break;
+		case 0x434C4B31: /* CLK1 */ swap_CLK1(obo, bbo, swap_bsz); break;
+		case 0x414E4631: /* ANF1 */ swap_ANF1(obo, bbo, swap_bsz); break;
+		case 0x50414631: /* PAF1 */ swap_PAF1(obo, bbo, swap_bsz); break;
+		case 0x56414631: /* VAF1 */ swap_VAF1(obo, bbo, swap_bsz); break;
+		case 0x434C4631: /* CLF1 */ swap_CLF1(obo, bbo, swap_bsz); break;
 		default: covered = false; break;
 		}
 		if (covered) r.blocks_covered++;
