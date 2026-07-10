@@ -57,6 +57,36 @@ backdrop. (The `TSky::perform` `// TODO: match this awfulness` translation formu
 `MTXScale(100000)` `GXDrawSphere` are separate and were a red herring — `GXDrawSphere(8,16)`
 emits 34-vert strips, not the 202v draw.)
 
+## Ghost pass LOCALIZED (viewport-proven, 2026-07-10 follow-up)
+
+Added viewport to the draw dump (aurora). Native frame 2000 decodes unambiguously:
+
+```
+  proj=O vp=640x448  [GHOST]  Sky(9) MapOpa(18) MapXlu(2) Mirror Opa(71) Mirror Xlu(2) LensFlare(11) Light(12)  =125
+  proj=P vp=256x256  [MIRROR] Mirror Opa(71) Mirror Xlu(2)                                                      =73   <- matches retail V_MIRROR
+  proj=P vp=640x448  [WORLD]  Sky(9) MapOpa(19) Light(12) ShadowOpa(5) MapXlu(3) buf?(1) AfterIndirect(1)       =50   <- matches retail V_WORLD
+  proj=O/P vp=640x448 [UI]    LensFlare(2 O +11 P) ChrXlu(32 O)
+```
+
+The ghost is the **first block: the ENTIRE 3D scene drawn under ORTHOGRAPHIC full-screen
+(640x448)** — even the mirror is drawn full-screen ortho here, which is doubly wrong (the
+real mirror is 256x256 perspective). The real perspective mirror + world passes follow and
+match retail's viewports.
+
+**Source: `unk40->push_back(drawBufferGroup, 8)` (MarDirectorSetupObjects.cpp:455).** unk40
+is dispatched FIRST in TMarDirector::direct's RENDER branch (phase 1, before
+mPerformListGX). It draws "Draw Buffer Group" (bit 0x8 = the whole 3D scene). In RETAIL this
+is the single perspective world pass; in NATIVE it executes under the **stale ortho
+projection** carried from the previous frame's GXPost 2D-UI tail because perspective is not
+yet (re)bound in the fifo when unk40 runs — aurora defers the whole frame's fifo and drains
+at present, and the phase attribution confirmed all draws drain together (phase reads 6 for
+every draw at drain; emit-order is the real signal). Root cause of the ghost = the
+projection state seen by unk40's draw is stale ortho, not the intended perspective. Fix
+direction (unverified, next arc): establish the world camera/perspective projection before
+unk40's Draw-Buffer-Group draw so the single scene pass renders under perspective (as
+retail's does), eliminating the spurious ortho pre-flush — NOT by deleting unk40 (it is the
+legitimate scene-draw pass in retail).
+
 ## What native must change (prioritized, from this data)
 
 1. **Delete the phase-1 ghost pass** (the `proj=O` first flush of every DrawBuf). Zero
