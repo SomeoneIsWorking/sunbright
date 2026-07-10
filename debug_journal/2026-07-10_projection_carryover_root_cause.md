@@ -170,6 +170,78 @@ session should pull a Dolphin oracle GX-stream capture (`tools/oracle/`, same cl
 the 2026-07-07 arc built) of one title frame's full `GXSetProjection` sequence and diff it
 against `scratch/logs/run8_filtered.log`'s sequence above.
 
+## 6. Addendum (continuation session) — the `[plload] DROPPED` candidates in §4 are FALSIFIED, not confirmed
+
+Follow-up investigation targeting exactly the "candidate culprits" list in §4, plus
+`EmitterViewObj`/`EmitterIndirectViewObj` (also DROPPED, omitted from §4's list). Method: (1)
+live-captured the raw bytes of every DROPPED name via `SB_PL_DBG=1` (`.env`-sourced ROM run,
+`scratch/logs/plload_investigate3.log`) and confirmed the exact Shift-JIS byte sequences by
+`cp932`-decoding them in Python (no encoding bug — `TNameRef::searchF`,
+`JDRNameRef.cpp:144-154`, is a plain `strcmp`, both sides are raw SJIS bytes, no transcoding
+step exists anywhere in this path); (2) combined `SB_NAMEREF_DBG=1` with `SB_PL_DBG=1`
+(`scratch/logs/combined_dbg.log`) and counted every `TNameRef::genObject type="PerformList"`
+construction between the start of `/data/PerformLists.bin`'s parse and `Shine PfLst Anm`'s
+completion: **exactly 7**, matching the 7 already-known named lists (Movement, CalcAnim, GX,
+Silhouette, GX Post, Shine PfLst Mov, Shine PfLst Anm) with zero left over. **None of the
+"PERF..."/`ブラーカメラ` names is ever itself constructed as a `TPerformList` (or any other
+object) anywhere in this data file** — ruling out the §4 registration-order hypothesis
+(the `TMapObjWave`-class bug where a forward-referenced sibling loads too late) for all of
+them. They are referenced only as entry names inside `PerformList GX`/`GX Post`'s own
+load-loop, searching for an object that is never registered under that literal name by
+anything in currently-ported `reference/sms`.
+
+**Full corrected set of DROPPED entries** (`scratch/logs/plload_investigate3.log`, this
+session — 2 more than §4 listed): `PERFマップ描画`, `PERFマップ系その他描画`, `PERF鏡ステージ`,
+`PERFパーティクル描画`, `PERFキャラ描画`, `ブラーカメラ`, plus `EmitterViewObj` and
+`EmitterIndirectViewObj` (ASCII, no encoding issue either).
+
+**Concrete falsification, machine-code level, for the mirror case**: `TMarDirector::initECTMir`
+(`reference/sms/src/System/MarDirectorInitECT.cpp:75-94`) takes `TPerformList* param_1` (bound
+to `mPerformListGX` at its one call site, `MarDirectorSetupObjects.cpp:429`) but never
+references it in the decompiled body — only searches/configures `mirrorTex`
+("鏡描画ステージ") and `mirrorCam` ("鏡カメラ", both search successfully, `found=1`). This
+looked exactly like a decompile gap (a dropped `push_back(mirrorTex, filter)` call), which
+would have made `PERF鏡ステージ`'s absence a real, fixable wiring bug. **Ghidra-decompiled the
+actual retail-compiled function** (US disc: `FUN_8029badc @ 0x8029badc`, found by string-xref
+on the same two SJIS literals, byte-for-byte structural match to the decomp; JP `0x800EEFEC`/
+PAL `0x802939B8` are the same 0xF8-byte size) — **Ghidra infers a zero-argument signature**:
+both incoming argument registers (r3/r4) are clobbered in the prologue before any read, no
+spill-to-stack, no `push_back`-shaped call anywhere in the 0xF8 bytes. **`param_1` is a true
+dead parameter in the shipped retail binary, not a decompile gap.** The mirror stage draw is
+wired into the perform-list some other way entirely (or not through `mPerformListGX` at all) —
+`PERF鏡ステージ` really is inert data in retail too.
+
+**Character-draw case is similarly falsified, from the decomp source directly** (no Ghidra
+needed): `TMarDirector::initECDisp` (`MarDirectorInitECT.cpp:98-224`, populates
+`mPerformListGXPost`, called `MarDirectorSetupObjects.cpp:490`) unconditionally
+`push_back`s `camera1` (flag `0x10` = set-perspective-projection), `drawBufChrOpa`/
+`drawBufChrXlu` (`0x480`/`0x8` = collect + draw), directly by C++ reference — **not** via any
+NameRef search for `PERFキャラ描画`. Character drawing already dispatches under `camera1`'s
+perspective, unconditionally, regardless of whether `PERFキャラ描画` resolves. Map drawing is
+likewise already dispatched via `DrawBuf MapOpa`/`DrawBuf MapXlu` (both `found=1` in the
+capture) — separate, already-successful entries, unrelated to the dropped `PERFマップ描画`/
+`PERFマップ系その他描画`.
+
+**Conclusion: the §4 hypothesis is wrong.** Resolving any of the `[plload] DROPPED` names
+would not change phase-4 dispatch — the real map/character/mirror draws are already wired
+into the perform lists through separate, already-successful paths (hardcoded `push_back` or
+differently-named search hits), independent of these entries. The most likely explanation,
+now with one confirmed instance (mirror), is that these are genuinely-vestigial
+performance-toggle/debug markers GC shipped inert in `PerformLists.bin` even on retail — the
+code's own standing comment (`PerformList.cpp:60-65`) already anticipated this class of
+finding. `EmitterViewObj`/`EmitterIndirectViewObj` remain genuinely unresolved: no C++ call
+site registers either name (the one existing `TEmitterViewObj` construction,
+`MarDirectorInitECT.cpp:234`, uses the *bracketed* default name `"<EmitterViewObj>"` — verified
+against the retail US DOL's rodata, `scratch/sms_us.dol`, which contains `<EmitterViewObj>`
+literally twice and the unbracketed form nowhere — and inserts into the unrelated `"Group 2D"`
+list). Whether this is a second not-yet-ported construction site or another vestigial entry is
+undetermined without a live Dolphin oracle capture of retail's actual dispatch for this scene.
+**No fix applied this session** — every candidate wiring gap checked was disproven by direct
+evidence; inventing a push_back/rename to make the drop count go down would be exactly the
+banned "hardcode the expected value" pattern. The black-backdrop root cause from §§1-5 (cross-
+frame projection carry-over, phase-6 tail ortho bleeding into phase-1 draw) stands
+unexplained-but-unrefuted; the DROPPED-entry angle is a closed dead end, not a lead.
+
 ## Frame verdict
 
 `scratch/frames_title/proj_verify_1990.png` (SB_DUMP_FRAME_AFTER=1990, this session, HEAD +

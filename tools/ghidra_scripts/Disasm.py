@@ -1,5 +1,6 @@
 #@runtime Jython
-# Disasm — print instructions in [SMS_DIS_START, SMS_DIS_END).
+# -*- coding: utf-8 -*-
+# Disasm - print instructions in [SMS_DIS_START, SMS_DIS_END).
 import os
 start = int(os.environ.get("SMS_DIS_START", "0"), 16)
 end   = int(os.environ.get("SMS_DIS_END",   "0"), 16)
