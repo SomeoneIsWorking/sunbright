@@ -182,6 +182,97 @@ XFMEM_SETVIEWPORT = 0x101A       # 6 words: 0x101a-0x101f
 XFMEM_SETPROJECTION = 0x1020     # 7 words incl. type: 0x1020-0x1026 (task's stated range 0x1020-0x103f covers this + padding)
 XFMEM_SETNUMTEXGENS = 0x103F
 
+# ---------------------------------------------------------------------------
+# BP (Blitting Processor) raster-state registers relevant to per-draw raster
+# comparison (task: title_world_pass_raster.tsv). Bit layouts verified against
+# Dolphin's Source/Core/VideoCommon/BPMemory.h (GenMode/ScissorPos/ZMode/
+# BlendMode/AlphaTest bitfields, fetched directly from the dolphin-emu/dolphin
+# GitHub master during this session — not guessed/recalled).
+# ---------------------------------------------------------------------------
+BP_GENMODE = 0x00        # cullmode: BitField<14,2>  (0=NONE,1=BACK,2=FRONT,3=ALL per Dolphin CullMode enum;
+                          # note this ordering is BACK=1/FRONT=2, NOT GX SDK's GX_CULL_FRONT=1/GX_CULL_BACK=2 —
+                          # flagged explicitly in the emitted TSV as "dolphin_cullmode" to avoid silent mixup)
+BP_SCISSORTL = 0x20       # y: BitField<0,11>  x: BitField<12,11>  (both +342 GX-SDK bias, cancels vs BR)
+BP_SCISSORBR = 0x21       # same layout as TL
+BP_ZMODE = 0x40           # test_enable: bit0  func: bits1-3 (CompareMode 0=NEVER..7=ALWAYS)  update_enable: bit4
+BP_CMODE0 = 0x41          # blend_enable:0 logic_op_enable:1 dither:2 color_update:3 alpha_update:4
+                          # dst_factor:5-7 src_factor:8-10 subtract:11 logic_mode:12-15
+BP_ALPHACOMPARE = 0xF3    # ref0:0-7 ref1:8-15 comp0:16-18 comp1:19-21 logic(op):22-23
+
+GX_COMPARE_NAMES = ["NEVER", "LESS", "EQUAL", "LEQUAL", "GREATER", "NEQUAL", "GEQUAL", "ALWAYS"]
+DOLPHIN_CULLMODE_NAMES = ["NONE", "BACK", "FRONT", "ALL"]
+ALPHA_LOGIC_NAMES = ["AND", "OR", "XOR", "XNOR"]
+
+
+class BPRasterState:
+    """Live snapshot of the BP raster registers this task cares about, threaded
+    sequentially through the stream (real GX HW state persists frame-to-frame,
+    same pattern as CPState/xf_pos_mem/last_proj above)."""
+
+    def __init__(self):
+        self.genmode = 0
+        self.scissor_tl = 0
+        self.scissor_br = 0
+        self.zmode = 0
+        self.cmode0 = 0
+        self.alphacompare = 0
+
+    def load(self, command: int, value: int):
+        if command == BP_GENMODE:
+            self.genmode = value
+        elif command == BP_SCISSORTL:
+            self.scissor_tl = value
+        elif command == BP_SCISSORBR:
+            self.scissor_br = value
+        elif command == BP_ZMODE:
+            self.zmode = value
+        elif command == BP_CMODE0:
+            self.cmode0 = value
+        elif command == BP_ALPHACOMPARE:
+            self.alphacompare = value
+
+    # --- decoded views ---
+    def cullmode(self):
+        return bits(self.genmode, 14, 2)
+
+    def scissor_rect(self):
+        """Returns (x0, y0, x1, y1) in EFB pixel space, both TL/BR de-biased by
+        the GX-SDK +342 offset (see BPFunctions.cpp SetScissorAndLineOffset:
+        the offset is added by GXSetScissor before the HW write and cancels
+        out between TL/BR — so raw_field - 342 recovers the true coordinate)."""
+        tl_y = bits(self.scissor_tl, 0, 11) - 342
+        tl_x = bits(self.scissor_tl, 12, 11) - 342
+        br_y = bits(self.scissor_br, 0, 11) - 342
+        br_x = bits(self.scissor_br, 12, 11) - 342
+        return (tl_x, tl_y, br_x, br_y)
+
+    def zmode_fields(self):
+        return {
+            "test_enable": bits(self.zmode, 0, 1),
+            "func": GX_COMPARE_NAMES[bits(self.zmode, 1, 3)],
+            "update_enable": bits(self.zmode, 4, 1),
+        }
+
+    def blend_fields(self):
+        return {
+            "blend_enable": bits(self.cmode0, 0, 1),
+            "logic_op_enable": bits(self.cmode0, 1, 1),
+            "color_update": bits(self.cmode0, 3, 1),
+            "alpha_update": bits(self.cmode0, 4, 1),
+            "dst_factor": bits(self.cmode0, 5, 3),
+            "src_factor": bits(self.cmode0, 8, 3),
+            "subtract": bits(self.cmode0, 11, 1),
+        }
+
+    def alphacompare_fields(self):
+        return {
+            "ref0": bits(self.alphacompare, 0, 8),
+            "ref1": bits(self.alphacompare, 8, 8),
+            "comp0": GX_COMPARE_NAMES[bits(self.alphacompare, 16, 3)],
+            "comp1": GX_COMPARE_NAMES[bits(self.alphacompare, 19, 3)],
+            "logic": ALPHA_LOGIC_NAMES[bits(self.alphacompare, 22, 2)],
+        }
+
 PRIMITIVE_NAMES = {
     0x0: "GX_DRAW_QUADS", 0x1: "GX_DRAW_QUADS_2", 0x2: "GX_DRAW_TRIANGLES",
     0x3: "GX_DRAW_TRIANGLE_STRIP", 0x4: "GX_DRAW_TRIANGLE_FAN", 0x5: "GX_DRAW_LINES",
@@ -402,6 +493,14 @@ class DrawEvent:
     mtx_index: int = None            # resolved pos-matrix number actually used by this draw
     posmtx: tuple = None             # 12 floats (3x4 row-major) or None if never written this frame
     posmtx_complete: bool = False    # False if any of the 12 XF words for mtx_index were never seen
+    # --- per-draw raster-state dump (task step 1 extension, 2026-07-10) ---
+    viewport: tuple = None           # (wd, ht, x, y) decoded from the last XF SETVIEWPORT, or None
+    viewport_complete: bool = False  # False if no XF SETVIEWPORT has ever been seen this stream
+    cullmode: int = None             # Dolphin GenMode.cullmode raw value (0=NONE,1=BACK,2=FRONT,3=ALL)
+    scissor: tuple = None            # (x0, y0, x1, y1), de-biased EFB pixel rect
+    zmode: dict = None               # {test_enable, func, update_enable}
+    blend: dict = None               # {blend_enable, logic_op_enable, color_update, alpha_update, dst_factor, src_factor, subtract}
+    alphacompare: dict = None        # {ref0, ref1, comp0, comp1, logic}
 
 
 @dataclass
@@ -425,15 +524,23 @@ def classify_xf(address: int) -> str:
     return "other"
 
 
-def decode_frame(frame_idx: int, data: bytes, cp: CPState):
+def decode_frame(frame_idx: int, data: bytes, cp: CPState, bp: "BPRasterState" = None):
     """Runs the GX opcode decoder over one frame's raw FIFO byte stream.
-    Returns (xf_events, draw_events, bp_events, unknown_opcodes, warnings)."""
+    Returns (xf_events, draw_events, bp_events, unknown_opcodes, warnings).
+    `bp` (optional, added for the per-draw raster-state task) persists BP
+    raster-register state across frames the same way `cp` does; pass the same
+    instance across sequential decode_frame() calls to get correct carry-over."""
+    if bp is None:
+        bp = BPRasterState()
     xf_events, draw_events, bp_events = [], [], []
     warnings = []
     unknown = []
     seq = 0
     pos = 0
     n = len(data)
+    last_viewport = None  # (wd, ht, x, y, complete) — GXSetViewport XF formula: wd=2*[0], ht=-2*[1], x=[3]-[0], y=[4]+[1]
+                           # (GC BP/XF viewport convention: words = [xf_wd, xf_ht, near, x0+wd, y0-ht, far];
+                           # this matches title_pass_structure.txt's own derivation "wd=2*[0] ht=-2*[1]" comment)
     # Live XF pos/normal-matrix memory (addr -> raw u32 word) and the most recent
     # GXSetProjection load, threaded through sequentially so each draw snapshots
     # exactly the state live at that point in the stream (persists across frames
@@ -486,6 +593,21 @@ def decode_frame(frame_idx: int, data: bytes, cp: CPState):
             if kind == "projection" and stream_size == 7:
                 ptype = "ORTHOGRAPHIC" if words[6] else "PERSPECTIVE"
                 last_proj = (ptype, words)
+            if kind == "viewport" and stream_size == 6:
+                wd_f, ht_f, _zrange, xorig_f, yorig_f, _zoff = (u32_to_f32(w) for w in words)
+                width = 2.0 * wd_f
+                height = -2.0 * ht_f
+                # GX-SDK "+342" internal coordinate bias applies to BOTH scissor AND
+                # viewport-origin registers alike (BPFunctions.cpp: "both the offsets
+                # and the coordinates have 342 added to them internally by GX
+                # functions") -- verified against this .dff's own numbers: mirror
+                # viewport (wd=128,ht=-128) gives xOrig-wd=342, yOrig+ht=342 raw, and
+                # world viewport (wd=320,ht=-224) gives the SAME 342,342 raw despite a
+                # different size/position, which only makes sense as a constant HW
+                # bias -> true origin (0,0) for both, subtracted here.
+                x0 = (xorig_f - wd_f) - 342.0
+                y0 = (yorig_f + ht_f) - 342.0
+                last_viewport = (width, height, x0, y0)
             seq += 1
             pos += total
             continue
@@ -523,6 +645,7 @@ def decode_frame(frame_idx: int, data: bytes, cp: CPState):
             cmd2 = data[pos + 1]
             value = (data[pos + 2] << 16) | (data[pos + 3] << 8) | data[pos + 4]
             bp_events.append(BPEvent(frame_idx, seq, pos, cmd2, value))
+            bp.load(cmd2, value)
             seq += 1
             pos += 5
             continue
@@ -572,10 +695,15 @@ def decode_frame(frame_idx: int, data: bytes, cp: CPState):
             proj_floats = tuple(u32_to_f32(w) for w in last_proj[1][:6]) + (last_proj[1][6],) \
                 if last_proj else None
 
-            draw_events.append(DrawEvent(frame_idx, seq, pos, PRIMITIVE_NAMES[primitive], vat,
-                                          num_vertices, proj_type=proj_type, proj_floats=proj_floats,
-                                          mtx_source=mtx_source, mtx_index=mtx_index, posmtx=posmtx,
-                                          posmtx_complete=posmtx_complete))
+            draw_events.append(DrawEvent(
+                frame_idx, seq, pos, PRIMITIVE_NAMES[primitive], vat,
+                num_vertices, proj_type=proj_type, proj_floats=proj_floats,
+                mtx_source=mtx_source, mtx_index=mtx_index, posmtx=posmtx,
+                posmtx_complete=posmtx_complete,
+                viewport=last_viewport, viewport_complete=last_viewport is not None,
+                cullmode=bp.cullmode(), scissor=bp.scissor_rect(),
+                zmode=bp.zmode_fields(), blend=bp.blend_fields(),
+                alphacompare=bp.alphacompare_fields()))
             seq += 1
             pos += total
             continue
@@ -596,6 +724,10 @@ def main():
     ap.add_argument("--matrix-tsv", metavar="OUT",
                      help="write a per-draw TSV (seq, nverts, prim, projection, posmtx) to OUT "
                           "instead of the normal timeline dump")
+    ap.add_argument("--raster-tsv", metavar="OUT",
+                     help="write the per-draw RASTER-STATE TSV (viewport/scissor/zmode/blend/"
+                          "alphacompare/cullmode) for the world-pass dome (202v) + 3 MapOpa-anchor "
+                          "draws to OUT, instead of the normal timeline dump")
     args = ap.parse_args()
 
     with open(args.dff, "rb") as f:
@@ -613,6 +745,79 @@ def main():
     ]
 
     cp = CPState()  # CP state persists across frames (real GX hardware state, not per-frame)
+    bp = BPRasterState()  # ditto for BP raster registers
+
+    if args.raster_tsv:
+        out_rows = []
+        for i, fr in enumerate(frames):
+            if args.frame is not None and i != args.frame:
+                continue
+            data = buf[fr.fifo_data_offset: fr.fifo_data_offset + fr.fifo_data_size]
+            _xf_events, draw_events, _bp_events, _unknown, _warnings = decode_frame(i, data, cp, bp)
+            out_rows.extend(draw_events)
+
+        # Filter to the world-pass draws named in the task: proj diag matching the
+        # WORLD camera (2.04163, 2.74748), specifically the dome (202v, unique
+        # signature per title_pass_structure.txt SEG1) plus 3 MapOpa-anchor draws
+        # (posmtx translation ~= (305.42,-1043.36,-353.41), tol 0.5 -- same anchor
+        # title_pass_structure.txt used to identify MapOpa content).
+        def is_world_proj(e):
+            if not e.proj_floats or e.proj_type != "PERSPECTIVE":
+                return False
+            return abs(e.proj_floats[0] - 2.04163) < 0.01 and abs(e.proj_floats[2] - 2.74748) < 0.01
+
+        def is_mapopa_anchor(e):
+            if not e.posmtx or not e.posmtx_complete:
+                return False
+            tx, ty, tz = e.posmtx[3], e.posmtx[7], e.posmtx[11]
+            return (abs(tx - 305.42) < 0.5 and abs(ty - (-1043.36)) < 0.5 and abs(tz - (-353.41)) < 0.5)
+
+        dome_rows = [e for e in out_rows if is_world_proj(e) and e.num_vertices == 202]
+        anchor_rows = [e for e in out_rows if is_world_proj(e) and is_mapopa_anchor(e)]
+        selected = dome_rows[:2] + anchor_rows[:3]
+        if not selected:
+            raise SystemExit(
+                "REFUSING: found 0 matching world-pass draws (dome 202v or MapOpa anchor) -- "
+                "filter predicates likely stale vs this .dff; not writing an empty/misleading TSV")
+
+        cols = ["frame", "seq", "role", "prim", "nverts",
+                "vp_wd", "vp_ht", "vp_x0", "vp_y0", "vp_complete",
+                "scissor_x0", "scissor_y0", "scissor_x1", "scissor_y1",
+                "dolphin_cullmode",
+                "z_test_enable", "z_func", "z_update_enable",
+                "blend_enable", "logic_op_enable", "color_update", "alpha_update",
+                "dst_factor", "src_factor", "subtract",
+                "acmp_ref0", "acmp_ref1", "acmp_comp0", "acmp_comp1", "acmp_logic",
+                "posmtx_tx", "posmtx_ty", "posmtx_tz"]
+        with open(args.raster_tsv, "w") as out:
+            out.write("\t".join(cols) + "\n")
+            for e in selected:
+                role = "DOME" if e.num_vertices == 202 else "MAPOPA_ANCHOR"
+                vp = e.viewport or (None, None, None, None)
+                sc = e.scissor or (None, None, None, None)
+                z = e.zmode or {}
+                bl = e.blend or {}
+                ac = e.alphacompare or {}
+                pm = e.posmtx or (None,) * 12
+                row = [e.frame, e.seq, role, e.primitive, e.num_vertices,
+                       *(f"{v:.4f}" if isinstance(v, float) else v for v in vp),
+                       int(e.viewport_complete),
+                       *sc,
+                       e.cullmode,
+                       z.get("test_enable"), z.get("func"), z.get("update_enable"),
+                       bl.get("blend_enable"), bl.get("logic_op_enable"), bl.get("color_update"),
+                       bl.get("alpha_update"), bl.get("dst_factor"), bl.get("src_factor"),
+                       bl.get("subtract"),
+                       ac.get("ref0"), ac.get("ref1"), ac.get("comp0"), ac.get("comp1"), ac.get("logic"),
+                       f"{pm[3]:.2f}" if pm[3] is not None else "",
+                       f"{pm[7]:.2f}" if pm[7] is not None else "",
+                       f"{pm[11]:.2f}" if pm[11] is not None else ""]
+                out.write("\t".join("" if x is None else str(x) for x in row) + "\n")
+        print(f"# MANIFEST wrote {len(selected)} rows ({len(dome_rows[:2])} DOME + "
+              f"{len(anchor_rows[:3])} MAPOPA_ANCHOR) from {args.dff} frame(s) "
+              f"{args.frame if args.frame is not None else 'all'} to {args.raster_tsv}",
+              file=sys.stderr)
+        return
 
     if args.matrix_tsv:
         out_rows = []
@@ -620,7 +825,7 @@ def main():
             if args.frame is not None and i != args.frame:
                 continue
             data = buf[fr.fifo_data_offset: fr.fifo_data_offset + fr.fifo_data_size]
-            _xf_events, draw_events, _bp_events, _unknown, _warnings = decode_frame(i, data, cp)
+            _xf_events, draw_events, _bp_events, _unknown, _warnings = decode_frame(i, data, cp, bp)
             out_rows.extend(draw_events)
         cols = ["frame", "seq", "prim", "nverts", "proj_type"] + [f"proj{k}" for k in range(7)] + \
                ["mtx_source", "mtx_index", "posmtx_complete"] + [f"pm{k}" for k in range(12)]
@@ -642,7 +847,7 @@ def main():
         if args.frame is not None and i != args.frame:
             continue
         data = buf[fr.fifo_data_offset: fr.fifo_data_offset + fr.fifo_data_size]
-        xf_events, draw_events, bp_events, unknown, warnings = decode_frame(i, data, cp)
+        xf_events, draw_events, bp_events, unknown, warnings = decode_frame(i, data, cp, bp)
 
         print(f"\n== frame {i}  fifoStart=0x{fr.fifo_start:x} fifoEnd=0x{fr.fifo_end:x} "
               f"bytes={fr.fifo_data_size} ==")
