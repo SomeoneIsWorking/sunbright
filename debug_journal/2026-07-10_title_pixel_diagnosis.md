@@ -44,6 +44,25 @@ Pixel stats (mean RGB / fully-white fraction):
   ScreenUtil.cpp:218) — 320×240. Retail uses this too, so half-res alone isn't the extreme
   blur, but a broken composite that upscales it over the whole frame would be.
 
+## NDC-probe finding: the 3D scene is MIS-FRAMED (maps outside NDC)
+
+`SB_NDC_PROBE` at the title (min-verts 25–50, perspective + ortho): essentially NO 3D
+draw lands inside the visible NDC box. The 202v sky sphere (scale-100000 `GXDrawSphere`)
+maps to ndcX ±343..754 (drifting — the map==15 sky spin), `inXY=0`, both under ortho AND
+perspective — invisible by geometry (retail draws the same 202v dome `cU=0`, also invisible,
+so consistent). The largest in-view thing is a 42v `DrawBuf MapOpa` under ORTHO with a single
+vertex barely inside (ndcX up to 138). So native's title 3D backdrop is projected almost
+entirely OUTSIDE the frame; the visible blurry blue-white is the 2D/composite layer with no
+correct 3D behind it.
+
+Native sky posmtx `M=[-0.595 0 -0.804 -335.1 | 0.650 0.588 -0.481 -132.2 | 0.473 -0.809
+-0.350 -96.1]` (a rotation + translation) where **retail's 202v sky posmtx is IDENTITY**.
+The scene is drawn camera-relative, so this posmtx IS (view · model); a wrong view matrix
+mis-frames the whole 3D scene. This points at the **title camera / view matrix (camera1 +
+"J3D System Set View Mtx")**, NOT blend/bloom/fog. This is the same camera-relative math in
+`TSky::perform` (the `// TODO: match this awfulness` hand-transcribed inverse-camera formula)
+— re-examine it and the camera1 view matrix that feeds the title world pass.
+
 ## Leading (unverified) hypothesis for next session
 The logo/scene appears **oversized** (SM letters fill the screen vs ~60% in retail) +
 blurry. That reads as a SCALE/PROJECTION divergence in the title's perspective pass (retail
