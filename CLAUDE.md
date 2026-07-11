@@ -133,25 +133,28 @@ Scratch output → gitignored `scratch/` (never `/tmp`).
 
 Boot-order fidelity: GC logo → title (stage 15) → file-select → gameplay, rendered through
 Aurora GX. Fix defects in boot order; finish one port end-to-end before switching.
-`GXLoadPosMtxIndx`/`GXLoadNrmMtxIndx3x3` are IMPLEMENTED (2026-07-09, CP LOAD_INDX parser +
-emitters) and re-verified non-degenerate at the title (2026-07-10,
-`debug_journal/2026-07-10_phase_provider_restore_and_behind_camera_finding.md`) — do not
-re-suspect them for the black title backdrop. Current known cause (2026-07-10, supersedes
-the behind-camera theory below via a direct native-vs-retail frame diff,
-`debug_journal/2026-07-10_native_vs_retail_title_frame_structure.md`): native's settled
-title frame is **293 draws vs retail's 1258** and is STRUCTURALLY wrong in two ways — (1) a
-**phase-1 ghost pass** double-draws every DrawBuf under the stale ortho projection carried
-from the prior frame's 2D tail (retail draws each buffer once), and (2) native LACKS the
-mid-scene EFB-copy snapshot + the **26× 52-vert compositor block** that actually paints
-retail's visible backdrop (native emits 1 of the 26). The old "dome resolves behind-camera"
-theory is MISDIRECTED: retail draws the 202v dome with `color_update=0` (invisible), so the
-backdrop is NOT the dome — it is the 71 color-writers fed by the snapshot pipeline. Do not
-chase the dome matrix for the backdrop. Fix order: delete the ghost pass, then port the
-`TEfbCtrlTex`→`GXCopyTex` snapshot pipeline (built in `TMarDirector::initECT{Mir,Disp}`;
-the `…Draw SnapTime` nodes are `TTimeRec` profiling timers, NOT the copy trigger).
-NULL-texMap TEV callsite question (aurora `26d5a7b` emits 0 per GC HW; an uncommitted
-investigation into WHO sets NULL on stages 0-7 lives in the user's aurora checkout). Named
-audio arc: port the JAS DSP-frame mixer into `sb_audio_frame`.
+
+**Title screen status (2026-07-11): the title RENDERS FAITHFULLY.** The multi-session
+"washed / orange / blue-diluted / oversized logo" defect was a **diagnostic dump-path
+mislabel**, NOT a render bug — `SB_DUMP_FRAME` wrote raw BGRA8 surface bytes but logged them
+as "RGBA", so every consumer that read them as RGBA saw red/blue swapped (blue sky → orange,
+blue logo → orange). Now FIXED in aurora: the dump normalizes to true RGBA8 on output, so the
+file matches its label (see `debug_journal/2026-07-11_dump_bgra_mislabel.md`). **Do NOT
+re-open title-color/logo investigations** (J2D bounds, duotone overlays, EFB-snapshot
+composites, mBlack bisects, titleDraw state-machine diffs, the "293-vs-1258 sparse scene"
+theory) — all were measured off misread dumps and are falsified there. Any future title work
+must use the now-default (RGBA8, color-correct) dumps. Minor real residuals (cosmetic, not
+blocking): native whole-frame ~15-25 levels brighter than oracle; PRESS START prompt and
+"SUNSHINE" word at different animation phase. One outstanding structural note (perf wart, not
+parity-blocking): a phase-1 ghost pass double-draws each DrawBuf under stale ortho
+(`SB_SKIP_GHOST=1` drops it with bit-identical output).
+
+`GXLoadPosMtxIndx`/`GXLoadNrmMtxIndx3x3` are IMPLEMENTED (2026-07-09) and verified
+non-degenerate — do not re-suspect them. The `…Draw SnapTime` nodes in the title are
+`TTimeRec` profiling timers, NOT the EFB-copy trigger. NULL-texMap TEV callsite question
+(aurora `26d5a7b` emits 0 per GC HW; an uncommitted investigation into WHO sets NULL on
+stages 0-7 lives in the user's aurora checkout). Named audio arc: port the JAS DSP-frame
+mixer into `sb_audio_frame` (game is silent by omission).
 
 ## Skills
 
