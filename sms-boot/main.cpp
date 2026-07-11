@@ -24,6 +24,10 @@
 
 extern TApplication gpApplication;
 
+// FIFO parity harness (SB_FIFO_REPLAY=<path.dff>): replay a captured Dolphin GX
+// FIFO through aurora and dump the frame(s), instead of booting the game.
+extern "C" int sb_fifo_replay_run(const char* dffPath);  // runtime/fifo_player.cpp
+
 // JKRHeap host-vs-JKR routing (reference/sms/src/JSystem/JKernel/JKRHeap.cpp):
 // plain `new` on a thread not marked as THE game thread falls back to host
 // malloc. The main thread is marked just before game code starts; host-side
@@ -79,6 +83,18 @@ int main(int argc, char* argv[]) {
     std::fflush(stdout);
 
     OSInit();
+
+    // FIFO parity harness: if SB_FIFO_REPLAY is set, replay the named .dff
+    // through aurora and exit -- no DVD, no game boot. Capture via SB_DUMP_FRAME.
+    if (const char* dff = std::getenv("SB_FIFO_REPLAY"); dff && *dff) {
+        std::fprintf(stdout, "[sms-boot] SB_FIFO_REPLAY: %s\n", dff);
+        std::fflush(stdout);
+        int n = sb_fifo_replay_run(dff);
+        std::fprintf(stdout, "[sms-boot] replay done: %d frames\n", n);
+        std::fflush(stdout);
+        aurora_shutdown();
+        return 0;
+    }
 
     const char* rom = std::getenv("SUNBRIGHT_ROM");
     if (!rom || !*rom) rom = "rom.rvz";

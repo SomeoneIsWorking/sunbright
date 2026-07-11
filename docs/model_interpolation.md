@@ -1,6 +1,6 @@
 # Native rendering port + motion interpolation (N64Recomp-style) — design map
 
-> ## 🛑 ARCHITECTURE RULING (user, 2026-06-12) — object level, NOT stream level
+> ## 🛑 ARCHITECTURE RULING (user, 2026-06-12; AMENDED 2026-07-11) — object level, NOT stream level
 > A FIFO-replay design (capture gather-pipe bytes, strip tokens, patch CP
 > ARRAY_BASE loads, re-push through GPFifo, juggle XFB presents) was built and
 > verified (commits "60fps interp M-A/M-P": gx_stream.cpp assembler — 0 FIFO
@@ -10,6 +10,18 @@
 > deleting. Those modules stay (env-gated, off) as native-renderer-arc
 > groundwork ONLY. Interpolation is built at the JDrama/J3D OBJECT level.
 >
+> **Amendment (user, 2026-07-11):** the FIFO-replay ban is **scoped to
+> motion interpolation** (a production feature that re-issues frames at 60 Hz).
+> It does NOT prohibit a **diagnostic FIFO parity harness** — an offline
+> `SB_FIFO_REPLAY=<path.dff>` mode that replays a captured Dolphin GX FIFO
+> through aurora's renderer, dumps the framebuffer, and compares it
+> pixel-for-pixel against Dolphin's render of the same FIFO. The harness is a
+> verification tool (same GX input, two renderers, controlled experiment), not a
+> runtime dependency on Dolphin: it consumes a static `.dff` file, no Dolphin
+> code. This is explicitly permitted. See
+> `debug_journal/2026-07-11_fifo_replay_no_calldl.md` + the `SB_FIFO_REPLAY`
+> implementation in `sms-boot/runtime/fifo_player.cpp`.
+
 > ## The PC-port design: decouple the render pass from the game tick
 > Game simulates at 30 Hz; render every 60 Hz field. On the in-between field,
 > re-issue the engine's own draw pass with per-model draw matrices blended
