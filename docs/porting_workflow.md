@@ -60,7 +60,7 @@ path that advances ownership, go. Never punt the decision to the user.
 
 ## THE PARITY LOOP — RE → PORT → IMPLEMENT → TDD → FIX (user directive 2026-06-26)
 The named, proven cycle. Run it continuously, one divergence at a time, until parity is GREAT.
-Respawn (`cci respawn -f scratch/handoff_keep_working.md`) when context degrades — never stop.
+Never stop; commit durable state (in-repo notes, commits) as you go so any fresh session can pick up.
 
 1. **RE** — find WHERE the divergence comes from and name the exact mechanism. Backtrace the live
    draw/value (e.g. `SB_IMM_TRACE_SOLID` printed `SMS_FillScreenAlpha <- TModelWaterManager::
