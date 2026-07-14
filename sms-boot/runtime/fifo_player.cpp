@@ -30,6 +30,9 @@ constexpr std::uint8_t GX_VAT_MASK     = 0x07;
 constexpr std::uint16_t GX_AURORA_LOAD_ARRAYBASE = 0x0010;
 constexpr std::uint16_t GX_AURORA_LOAD_TEXOBJ    = 0x0030;
 constexpr std::uint16_t GX_AURORA_LOAD_TLUT      = 0x0031;
+constexpr std::uint16_t GX_AURORA_LOAD_COPY_SRC  = 0x0035;
+constexpr std::uint16_t GX_AURORA_LOAD_COPY_DST  = 0x0036;
+constexpr std::uint16_t GX_AURORA_LOAD_COPY_DEST = 0x0037;
 // CP array-base register addresses (aurora ignores the raw 32-bit value; the
 // translator must synthesize GX_AURORA_LOAD_ARRAYBASE with a host pointer).
 constexpr std::uint8_t CP_REG_ARRAYBASE_LO = 0xA0;
@@ -409,6 +412,17 @@ std::vector<std::uint8_t> translate_frame(const FifoCapture& cap, std::uint32_t 
     TexSlot texSlots[8];               // 8 texture maps
     std::uint32_t texDataVersion = 1;  // bumped on every TextureMap memupdate
 
+    // EFB copy state: aurora's copy_tex() sources its rect/dims/format/dest
+    // exclusively from GX_AURORA_LOAD_COPY_{SRC,DST,DEST} (the native GXCopyTex
+    // seam) — it does NOT decode the raw BP copy regs. The .dff stream carries
+    // the copies as BP writes, so mirror them: track 0x49 (src top/left),
+    // 0x4A (src size-1), 0x4B (dest addr >> 5), and at each 0x52 trigger with
+    // copy_to_xfb==0 synthesize the three aurora opcodes first. Field layout
+    // per Dolphin BPMemory.h (X10Y10 + UPE_Copy).
+    std::uint32_t bpCopySrcXY = 0;     // 0x49: x=bits 0-9, y=bits 10-19
+    std::uint32_t bpCopySrcWH = 0;     // 0x4A: (w-1)=bits 0-9, (h-1)=bits 10-19
+    std::uint32_t bpCopyDest  = 0;     // 0x4B: dest phys addr >> 5
+
     // Emit a GX_AURORA_LOAD_TEXOBJ for texmap `id` from its tracked state.
     auto emitTexObj = [&](int id) {
         const TexSlot& ts = texSlots[id];
@@ -426,6 +440,18 @@ std::vector<std::uint8_t> translate_frame(const FifoCapture& cap, std::uint32_t 
         }
         std::uint64_t hostPtr = ts.baseAddr
             ? reinterpret_cast<std::uint64_t>(shadow.host(ts.baseAddr)) : 0;
+        // SB_FIFO_TEXDBG=1: log the first synthesized binds (which texmap, GC
+        // addr, dims/format) to sanity-check bind synthesis against the oracle.
+        static int s_texDbg = -1;
+        if (s_texDbg < 0) s_texDbg = std::getenv("SB_FIFO_TEXDBG") != nullptr ? 1 : 0;
+        if (s_texDbg == 1) {
+            static int n = 0;
+            if (n < 40) {
+                std::fprintf(stderr,
+                    "[fifo-texbind] n=%d texmap=%d gcAddr=0x%06X %ux%u fmt=%u ver=%u\n",
+                    ++n, id, ts.baseAddr, w, h, fmt, texDataVersion);
+            }
+        }
         auto pushBE16 = [&](std::uint16_t v) { out.push_back(v>>8); out.push_back(v&0xFF); };
         auto pushBE64 = [&](std::uint64_t v) { for(int i=7;i>=0;--i) out.push_back((v>>(i*8))&0xFF); };
         auto pushBE32 = [&](std::uint32_t v) { for(int i=3;i>=0;--i) out.push_back((v>>(i*8))&0xFF); };
@@ -499,6 +525,15 @@ std::vector<std::uint8_t> translate_frame(const FifoCapture& cap, std::uint32_t 
                 // (le=true only applies to the NATIVE runtime, where the game
                 // computes matrix arrays host-side; a .dff replay never does.)
                 bool le = false;
+                static int s_abDbg = -1;
+                if (s_abDbg < 0) s_abDbg = std::getenv("SB_FIFO_TEXDBG") != nullptr ? 1 : 0;
+                if (s_abDbg == 1) {
+                    static int n = 0;
+                    if (n < 40) {
+                        std::fprintf(stderr, "[fifo-arraybase] n=%d cpReg=0x%02X attr=%d gcAddr=0x%08X\n",
+                                     ++n, addr, attrIdx, val);
+                    }
+                }
                 if (val == 0) {
                     emitArrayBase(out, attrIdx, 0, 0, le);  // null/empty slot
                 } else {
@@ -567,7 +602,65 @@ std::vector<std::uint8_t> translate_frame(const FifoCapture& cap, std::uint32_t 
                     if (isI0) { texSlots[tm].image0 = val; texSlots[tm].haveI0 = true; }
                     else      { texSlots[tm].baseAddr = (val & 0x00FFFFFFu) << 5;
                                 texSlots[tm].haveI3 = true; }
-                    if (texSlots[tm].haveI0 && texSlots[tm].haveI3) emitTexObj(tm);
+                    // Emit ONLY at image3 — GX writes a bind's registers in
+                    // ascending order (mode, image0..image3), so image3 marks
+                    // the set complete. Emitting at image0 would pair the NEW
+                    // dims with the PREVIOUS bind's base address and poison
+                    // aurora's (texObjId, version)-keyed cache with wrong dims.
+                    if (!isI0 && texSlots[tm].haveI0) {
+                        ++texDataVersion;  // fresh version per bind: never
+                                           // trust a possibly-poisoned entry
+                        emitTexObj(tm);
+                    }
+                }
+                // EFB copy regs + trigger.
+                if (reg == 0x49) bpCopySrcXY = val;
+                else if (reg == 0x4A) bpCopySrcWH = val;
+                else if (reg == 0x4B) bpCopyDest = val;
+                else if (reg == 0x52 && ((val >> 14) & 1u) == 0 &&
+                         std::getenv("SB_FIFO_NO_COPYSYN") == nullptr) {
+                    // SB_FIFO_NO_COPYSYN=1 (diagnostic): skip EFB-copy synthesis
+                    // so copy-fed texture binds fall back to decoding the
+                    // recorded RAM snapshot bytes (what Dolphin's memupdates
+                    // captured) instead of aurora's live EFB resolve. A/B
+                    // isolates "copy plumbing wrong" from "copied content wrong":
+                    // frame-feedback textures bootstrap from record-time pixels.
+                    // Texture copy (copy_to_xfb==0): synthesize the aurora copy
+                    // opcodes BEFORE the 0x52 passthrough triggers copy_tex().
+                    // UPE_Copy: target_pixel_format=bits 3-6 (tp_realFormat =
+                    // tpf/2 + (tpf&1)*8), half_scale=bit 9, clear=bit 11.
+                    std::uint32_t srcX = bpCopySrcXY & 0x3FF;
+                    std::uint32_t srcY = (bpCopySrcXY >> 10) & 0x3FF;
+                    std::uint32_t srcW = (bpCopySrcWH & 0x3FF) + 1;
+                    std::uint32_t srcH = ((bpCopySrcWH >> 10) & 0x3FF) + 1;
+                    std::uint32_t tpf = (val >> 3) & 0xF;
+                    std::uint32_t fmt = tpf / 2 + (tpf & 1) * 8;
+                    bool halfScale = ((val >> 9) & 1u) != 0;
+                    std::uint32_t dstW = halfScale ? srcW / 2 : srcW;
+                    std::uint32_t dstH = halfScale ? srcH / 2 : srcH;
+                    if (fmt >= 8) {
+                        static bool zWarned = false;
+                        if (!zWarned) {
+                            zWarned = true;
+                            std::fprintf(stderr,
+                                "[fifo_player] WARN: EFB copy with Z/exotic real-format %u "
+                                "(tpf=%u) -- passing through, aurora may misresolve\n",
+                                fmt, tpf);
+                        }
+                    }
+                    auto pushBE16 = [&](std::uint16_t v) { out.push_back(v>>8); out.push_back(v&0xFF); };
+                    auto pushBE32 = [&](std::uint32_t v) { for(int i=3;i>=0;--i) out.push_back((v>>(i*8))&0xFF); };
+                    auto pushBE64 = [&](std::uint64_t v) { for(int i=7;i>=0;--i) out.push_back((v>>(i*8))&0xFF); };
+                    out.push_back(GX_AURORA);
+                    pushBE16(GX_AURORA_LOAD_COPY_SRC);
+                    pushBE32(srcX); pushBE32(srcY); pushBE32(srcW); pushBE32(srcH);
+                    out.push_back(GX_AURORA);
+                    pushBE16(GX_AURORA_LOAD_COPY_DST);
+                    pushBE32(dstW); pushBE32(dstH); pushBE32(fmt);
+                    std::uint32_t destAddr = (bpCopyDest & 0x00FFFFFFu) << 5;
+                    out.push_back(GX_AURORA);
+                    pushBE16(GX_AURORA_LOAD_COPY_DEST);
+                    pushBE64(reinterpret_cast<std::uint64_t>(shadow.host(destAddr)));
                 }
             }
             out.insert(out.end(), src + pos, src + pos + std::min(5u, end - pos));
@@ -641,6 +734,10 @@ int replay(const FifoCapture& cap) {
 
 // C entry point for main.cpp's SB_FIFO_REPLAY gate.
 extern "C" int sb_fifo_replay_run(const char* dffPath) {
+    // Deterministic captures: async pipeline compilation skips draws whose
+    // pipelines aren't ready, so a 3-frame replay renders a different subset
+    // every run. Force synchronous compiles for the whole replay.
+    setenv("SB_SYNC_PIPELINES", "1", 0);
     sb::FifoCapture cap = sb::load_dff(dffPath);
     return sb::replay(cap);
 }

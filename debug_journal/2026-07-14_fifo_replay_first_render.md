@@ -80,3 +80,66 @@ preload_state BP/XF gaps, vertex color (CLR0) path).
 - **byte-histogram ≠ opcode histogram** (reaffirmed): only the synced walk counts opcodes.
 - `.dff` header `*Size` fields for bpMem/cpMem/xfMem/xfRegs are u32 ELEMENT COUNTS (byte
   size = count*4); texMem is bytes. Loader fixed accordingly (fifo_player.h comment).
+
+---
+
+# Session continuation: REPLAY REACHES NEAR-ORACLE PARITY (same day)
+
+After the first coherent render, three more root-caused fixes took the replay from
+"sunburst over black" to **visually matching Dolphin's own playback of the same .dff**
+(blue sky, cloud SUPER MARIO SUN letters, sun glare + rays — side-by-side near-identical).
+
+## Fix 4: texture-bind cache poisoning (black-everything regression)
+
+The bind-order rewrite emitted LOAD_TEXOBJ on BOTH image0 and image3 writes. GX writes a
+bind's registers in ascending order, so an image0 write paired the NEW dims with the
+PREVIOUS bind's base address; aurora caches by (texObjId=addr, version), so the poisoned
+entry (wrong dims for that address) stuck even after the correct image3-time emit —
+wrong-dim textures everywhere → black. Fix: emit ONLY at image3 (bind-set complete) and
+bump the version per bind. (The earlier "sunburst" render that motivated the rewrite was
+actually produced by a STALE BINARY — the rewrite build had failed and the old heuristic
+binary ran. Lesson: check `Built target` before trusting an A/B.)
+
+## Fix 5: EFB-copy synthesis (translator layer 6)
+
+aurora's copy_tex() sources rect/dims/format/dest exclusively from
+GX_AURORA_LOAD_COPY_{SRC,DST,DEST} (native GXCopyTex seam) — it never decodes the raw BP
+copy regs. Translator now tracks BP 0x49/0x4A/0x4B and, at each 0x52 trigger with
+copy_to_xfb==0, synthesizes the three aurora opcodes (dest = shadow host ptr; UPE_Copy
+decode: tpf=bits 3-6, realFmt=tpf/2+(tpf&1)*8, half_scale=bit 9). The title's
+frame-feedback backdrop (26×52v draws sampling copy #2) needs this. SB_FIFO_NO_COPYSYN=1
+is the A/B diagnostic (fall back to RAM-snapshot bytes for copy-fed binds).
+
+## Fix 6 (THE big one): async pipeline compilation was dropping draws
+
+aurora compiles pipelines async and SKIPS draws whose pipelines aren't ready. Invisible
+in a long interactive run; FATAL in a 3-frame replay: every run rendered a different
+arbitrary subset (frame 0 near-empty cold, "sunburst-only" = the few compiled pipelines).
+This was the dominant cause of ALL the dark frames across the session — the fixes above
+were real but their effects were masked/confounded by compile-race nondeterminism.
+Fix: aurora SB_SYNC_PIPELINES=1 (Blocking priority for gx/clear pipelines);
+sb_fifo_replay_run() sets it automatically. Verified: two runs byte-identical
+(cmp on the RGBA dumps).
+
+## Verified state (2026-07-14)
+
+- Replay of title_settled.dff frame 0 == Dolphin dff-playback frame, visually. RMSE 0.25
+  is dominated by FRAMING: our replay presents the raw EFB (640x448 content + letterbox,
+  slight offset) while Dolphin presents via the display copy/XFB path — the display copy
+  (toXfb=1) is still aurora's named STUB. Plus small missing seagull sprites. Those two
+  are the next arc.
+- Headless .dff playback oracle: `dolphin-emu-x11 -b -u <userdir> -e file.dff
+  -C Dolphin.Movie.DumpFrames=True` → per-frame PNGs. No GUI needed for playback.
+
+## Falsified / corrected along the way
+
+- parse_fifo_dff.py's per-draw `posmtx` does NOT model LOAD_INDX (indexed XF matrix
+  loads) — it reported identity for the 202v sky-dome draws, but the RAM matrix array
+  (memupdate at 0xF80FC0) holds the CAMERA matrix, which is what both Dolphin and our
+  replay correctly use. Do not trust parser pm for J3D draws (J3D loads matrices via
+  LOAD_INDX_A/B). Parser fix = future work.
+- The sky-dome DOES paint the blue sky in this mid-fly-in capture (clr0=[03 80 dc ff],
+  1-stage TEV passing rasterized vertex color) — the "dome paints nothing (cU=0)"
+  journal note applies to the SETTLED title steady-state only.
+- "inXY=0" in the NDC probe is NOT proof a draw is invisible: giant triangles with all
+  verts outside the frustum still rasterize across the screen (the dome's do).
