@@ -131,3 +131,31 @@ source — texture alpha not selected into the TEV alpha chain, or blend/acmp se
 differently than retail during the alpha-fade phase). Next: SB_DRAW_DUMP the
 native blocky frame's 2D letter draws and diff field-by-field against the
 replay's #147-194 letter draws (which render correctly).
+
+## Blocky fly-in letters: ROOT CAUSE LOCALIZED — extra ortho scene dispatches
+
+Falsifiers run at native present 320 (the maximally blocky frame, retrace≈638,
+`SB_TRACE_SEQ` maps presents↔retrace at 2/present):
+- `SB_SKIP_GHOST=1` does NOT remove the blocks (scratch/shots/ghost_ab.png) — the
+  currently-skipped phase-1 ghost is not (or not the only) source.
+- Field-diff of the SAME letter draw (identical trans/sub-prim structure/textures,
+  e.g. trans=(305.4,…)):
+  - retail (title_settled.dff replay, renders box-free): drawn ONCE, `proj=P
+    prj=[2.0416 2.7475 ...]`, amb=(0.5,0.5,0.5), aU=0, vp=(2,2 640x448).
+  - native blocky frame: drawn THREE times — #2709 `proj=O prj=[0.0045 -0.0031
+    -0.5 -0.5]` (stale 2D ortho), #2907 `proj=P prj=[2.0416 ...]` (the correct
+    draw), #3000 `proj=O` AGAIN. An ortho-projected 3D cloud-letter mesh IS a
+    big translucent screen rectangle — the blocks.
+  - Frame totals: native 498 proj=O vs 402 proj=P post-merge draws; retail's
+    frame has only the small 2D tail in ortho. The native frame loop dispatches
+    the 3D DrawBufs multiple times under a stale ortho projection.
+- At settle the ghost output happens to be invisible (hence the old "perf wart,
+  bit-identical with SB_SKIP_GHOST=1" classification — TRUE at settle only).
+  During fly-in it is THE user-visible "blocky text background" defect.
+
+NEXT (proper fix, no bandaid): RE why the native JDrama draw-phase dispatch runs
+the scene DrawBufs under the 2D/ortho phase (twice!) when retail does not —
+likely the perform-list draw-phase routing (TDrawBufObj dispatch per phase) or a
+missing phase gate in the ported director loop; SB_SKIP_GHOST's heuristic covers
+only one of the dispatch sites. Fix = eliminate the extra dispatches at the
+source, then delete SB_SKIP_GHOST entirely.
