@@ -28,6 +28,8 @@ constexpr std::uint8_t GX_AURORA       = 0x50;
 constexpr std::uint8_t GX_OPCODE_MASK  = 0xF8;
 constexpr std::uint8_t GX_VAT_MASK     = 0x07;
 constexpr std::uint16_t GX_AURORA_LOAD_ARRAYBASE = 0x0010;
+constexpr std::uint16_t GX_AURORA_LOAD_TEXOBJ    = 0x0030;
+constexpr std::uint16_t GX_AURORA_LOAD_TLUT      = 0x0031;
 // CP array-base register addresses (aurora ignores the raw 32-bit value; the
 // translator must synthesize GX_AURORA_LOAD_ARRAYBASE with a host pointer).
 constexpr std::uint8_t CP_REG_ARRAYBASE_LO = 0xA0;
@@ -56,15 +58,17 @@ FifoCapture load_dff(const std::string& path) {
     cap.header = h;
 
     // File-wide memory snapshots (borrowed slices; fileData outlives them).
-    auto slice = [&](std::uint64_t off, std::uint32_t s) -> const std::uint8_t* {
-        if (off + s > cap.fileData.size()) fail("memory snapshot out of bounds");
+    // bpMem/cpMem/xfMem/xfRegs are u32 arrays — their header size field is an
+    // element count; the byte size is count*4. texMem is a u8 array (byte size).
+    auto slice = [&](std::uint64_t off, std::uint32_t bytes) -> const std::uint8_t* {
+        if (off + bytes > cap.fileData.size()) fail("memory snapshot out of bounds");
         return cap.fileData.data() + off;
     };
-    cap.bpMem  = slice(h->bpMemOffset, h->bpMemSize);   cap.bpMemSize  = h->bpMemSize;
-    cap.cpMem  = slice(h->cpMemOffset, h->cpMemSize);   cap.cpMemSize  = h->cpMemSize;
-    cap.xfMem  = slice(h->xfMemOffset, h->xfMemSize);   cap.xfMemSize  = h->xfMemSize;
-    cap.xfRegs = slice(h->xfRegsOffset, h->xfRegsSize); cap.xfRegsSize = h->xfRegsSize;
-    cap.texMem = slice(h->texMemOffset, h->texMemSize); cap.texMemSize = h->texMemSize;
+    cap.bpMem  = slice(h->bpMemOffset,  h->bpMemSize  * 4u); cap.bpMemCount  = h->bpMemSize;
+    cap.cpMem  = slice(h->cpMemOffset,  h->cpMemSize  * 4u); cap.cpMemCount  = h->cpMemSize;
+    cap.xfMem  = slice(h->xfMemOffset,  h->xfMemSize  * 4u); cap.xfMemCount  = h->xfMemSize;
+    cap.xfRegs = slice(h->xfRegsOffset, h->xfRegsSize * 4u); cap.xfRegsCount = h->xfRegsSize;
+    cap.texMem = slice(h->texMemOffset, h->texMemSize);      cap.texMemSize  = h->texMemSize;
 
     // Frames + their memory updates.
     if (h->frameListOffset + (std::uint64_t)h->frameCount * sizeof(DffFrameInfo) > cap.fileData.size())
@@ -270,6 +274,62 @@ struct GcShadow {
     std::uint8_t* host(std::uint32_t gcAddr) { return buf.data() + gcAddr; }
 };
 
+// Pre-load the file-wide register snapshots (bpMem/cpMem/xfRegs) as synthesized
+// BP/CP/XF load commands. This establishes the GPU state that was live when the
+// capture started — clear color, TEV config, VCD/VAT, projection matrices, etc.
+// Without this, the first frame renders with default (zero) state and the EFB
+// clears/draws come out wrong. Emitted as a prefix to frame 0's translated stream.
+//
+// bpMem: 256 u32s, bpMem[i] = BP register i's value (24-bit). Skip action regs
+//   (0x52 EFB copy trigger, 0x53) — loading those has side effects.
+// xfRegs: 88 u32s, XF register memory (projection/viewport matrices etc).
+//   Loaded via LOAD_XF_REG to the matching XF address (xfRegs[i] -> addr i).
+// cpMem: 256 u32s — VCD/VAT/MatrixIndex. These are also reloaded by the frame
+//   stream itself (the stream loads VCD/VAT before each draw batch), so skipping
+//   the cpMem pre-load is safe and avoids double-emitting array-base regs.
+std::vector<std::uint8_t> preload_state(const FifoCapture& cap) {
+    std::vector<std::uint8_t> out;
+    auto pushBE24 = [&](std::uint32_t v) {
+        out.push_back((v >> 16) & 0xFF);
+        out.push_back((v >> 8) & 0xFF);
+        out.push_back(v & 0xFF);
+    };
+    auto pushBE32 = [&](std::uint32_t v) {
+        for (int i = 3; i >= 0; --i) out.push_back((v >> (i*8)) & 0xFF);
+    };
+    // The snapshots are stored big-endian (GC-native) in the .dff.
+    auto rdBE32 = [](const std::uint8_t* p) -> std::uint32_t {
+        return (std::uint32_t(p[0]) << 24) | (std::uint32_t(p[1]) << 16) |
+               (std::uint32_t(p[2]) << 8) | std::uint32_t(p[3]);
+    };
+
+    // BP registers (0x00-0xFF). Skip 0x52/0x53 (action: EFB copy).
+    if (cap.bpMem && cap.bpMemCount >= 256) {
+        for (std::uint32_t i = 0; i < 256; ++i) {
+            std::uint32_t val = rdBE32(cap.bpMem + i * 4) & 0x00FFFFFFu;
+            if (i == 0x52 || i == 0x53) continue;  // action regs
+            if (val == 0) continue;  // skip zero (default) to keep the prefix lean
+            out.push_back(GX_LOAD_BP_REG);
+            out.push_back(static_cast<std::uint8_t>(i));
+            pushBE24(val);
+        }
+    }
+    // XF register memory via LOAD_XF_REG. xfRegs[0..87] maps directly to XF
+    // addresses 0x0000..0x0057. Loaded as one batch (count=88, addr=0).
+    // (Only nonzero words are meaningful, but XF loads are batched so we send
+    //  the whole array in one LOAD_XF_REG for correctness.)
+    if (cap.xfRegs && cap.xfRegsCount > 0) {
+        std::uint32_t cnt = cap.xfRegsCount;
+        out.push_back(GX_LOAD_XF_REG);
+        // cmd word: ((count-1)<<16) | addr
+        pushBE32(((cnt - 1) << 16) | 0x0000);
+        for (std::uint32_t i = 0; i < cnt; ++i) {
+            pushBE32(rdBE32(cap.xfRegs + i * 4));
+        }
+    }
+    return out;
+}
+
 // Emit a GX_AURORA_LOAD_ARRAYBASE (0x50 00 1x) into the output stream.
 // Format (command_processor.cpp:2859): u8 op=0x50, u16 sub=0x0010|cpIdx (BE),
 // u64 hostPtr (BE), u32 size (BE), u8 le-flag.
@@ -311,9 +371,16 @@ std::uint32_t rd_be32(const std::uint8_t* p) {
 //   (2) Memory updates interleaved at their fifoPosition -> writes into shadow.
 // BP/LOAD_XF_REG/LOAD_CP_REG(non-arraybase)/primitives/LOAD_INDX pass through
 // verbatim (HW-standard; aurora decodes them).
-std::vector<std::uint8_t> translate_frame(const FifoFrame& frame, GcShadow& shadow) {
+std::vector<std::uint8_t> translate_frame(const FifoCapture& cap, std::uint32_t frameIdx,
+                                          GcShadow& shadow) {
+    const FifoFrame& frame = cap.frames[frameIdx];
     std::vector<std::uint8_t> out;
-    out.reserve(frame.fifoData.size() + frame.memoryUpdates.size() * 16);
+    // Frame 0 gets the register-snapshot pre-load as a prefix.
+    if (frameIdx == 0) {
+        std::vector<std::uint8_t> pre = preload_state(cap);
+        out.insert(out.end(), pre.begin(), pre.end());
+    }
+    out.reserve(out.size() + frame.fifoData.size() + frame.memoryUpdates.size() * 16);
     std::size_t muIdx = 0;
     const std::uint8_t* src = frame.fifoData.data();
     std::uint32_t pos = 0;
@@ -325,15 +392,76 @@ std::vector<std::uint8_t> translate_frame(const FifoFrame& frame, GcShadow& shad
     // GX_AURORA_LOAD_ARRAYBASE. attr 12-15 = POS/NRM/TEX/LIGHT matrix arrays.
     std::uint32_t attrBase[16] = {};
 
+    // Texture binding: aurora sources texture data EXCLUSIVELY from
+    // GX_AURORA_LOAD_TEXOBJ (the native GDSetTexObj seam) — it ignores the BP
+    // image0/image3 registers for data. The .dff stream carries the real GC
+    // bind dynamics as BP writes: image0 = width/height/format, image3 =
+    // physical base addr >> 5. So the translator mirrors every bind: track
+    // both regs per texmap and emit LOAD_TEXOBJ (host pointer into the
+    // GC-RAM shadow) whenever a texmap has both halves. TextureMap memory
+    // updates only fill the shadow (plus bump the data version so aurora's
+    // texture cache re-uploads under an unchanged pointer).
+    struct TexSlot {
+        std::uint32_t image0 = 0;      // raw image0 value (w/h/fmt)
+        std::uint32_t baseAddr = 0;    // byte address ((image3 & 0xFFFFFF) << 5)
+        bool haveI0 = false, haveI3 = false;
+    };
+    TexSlot texSlots[8];               // 8 texture maps
+    std::uint32_t texDataVersion = 1;  // bumped on every TextureMap memupdate
+
+    // Emit a GX_AURORA_LOAD_TEXOBJ for texmap `id` from its tracked state.
+    auto emitTexObj = [&](int id) {
+        const TexSlot& ts = texSlots[id];
+        std::uint32_t i0 = ts.image0;
+        std::uint32_t w = (i0 & 0x3FF) + 1;
+        std::uint32_t h = ((i0 >> 10) & 0x3FF) + 1;
+        std::uint32_t fmt = (i0 >> 20) & 0xF;
+        static bool ciWarned = false;
+        if ((fmt == 8 || fmt == 9 || fmt == 10) && !ciWarned) {
+            ciWarned = true;
+            std::fprintf(stderr,
+                "[fifo_player] WARN: CI-format texture bound (fmt=%u texmap=%d) but "
+                "LOAD_TLUT synthesis is not implemented yet -- palette lookups garbage\n",
+                fmt, id);
+        }
+        std::uint64_t hostPtr = ts.baseAddr
+            ? reinterpret_cast<std::uint64_t>(shadow.host(ts.baseAddr)) : 0;
+        auto pushBE16 = [&](std::uint16_t v) { out.push_back(v>>8); out.push_back(v&0xFF); };
+        auto pushBE64 = [&](std::uint64_t v) { for(int i=7;i>=0;--i) out.push_back((v>>(i*8))&0xFF); };
+        auto pushBE32 = [&](std::uint32_t v) { for(int i=3;i>=0;--i) out.push_back((v>>(i*8))&0xFF); };
+        out.push_back(GX_AURORA);
+        pushBE16(GX_AURORA_LOAD_TEXOBJ);
+        out.push_back(static_cast<std::uint8_t>(id));
+        pushBE64(hostPtr);
+        pushBE32(w);
+        pushBE32(h);
+        pushBE32(fmt);
+        pushBE32(0);          // tlut (none for now; LOAD_TLUT is a separate layer)
+        out.push_back(0);     // mipCount (base only; mode1 max_lod arrives via BP)
+        pushBE32(ts.baseAddr);      // texObjId: GC base addr uniquely names the object
+        pushBE32(texDataVersion);   // re-binds after new data get a fresh version
+    };
+
     while (pos < end) {
         // Apply memory updates scheduled at-or-before this position.
         while (muIdx < frame.memoryUpdates.size() &&
                frame.memoryUpdates[muIdx].fifoPosition <= pos) {
             const MemoryUpdate& mu = frame.memoryUpdates[muIdx];
-            // VertexStream + XFData both land in the shadow (vertex attrs + matrix
-            // arrays). TextureMap/TMEM handled in a later layer.
             if (mu.type == kMemUpdateVertexStream || mu.type == kMemUpdateXFData) {
                 shadow.write(mu.address, mu.data.data(), mu.data.size());
+            } else if (mu.type == kMemUpdateTextureMap) {
+                // New texture bytes land in the shadow; bump the version so the
+                // NEXT bind of any texobj over this data re-uploads. If a texmap
+                // is currently bound to this address, re-emit it immediately
+                // (data changed under a live binding).
+                shadow.write(mu.address, mu.data.data(), mu.data.size());
+                ++texDataVersion;
+                for (int t = 0; t < 8; ++t) {
+                    if (texSlots[t].haveI0 && texSlots[t].haveI3 &&
+                        texSlots[t].baseAddr == mu.address) {
+                        emitTexObj(t);
+                    }
+                }
             }
             ++muIdx;
         }
@@ -365,9 +493,12 @@ std::vector<std::uint8_t> translate_frame(const FifoFrame& frame, GcShadow& shad
                 attrBase[attrIdx] = val;
                 // The shadow covers all of MEM1, so any nonzero base resolves to
                 // a valid host pointer (zeroed if the data isn't in an update).
-                // Matrix arrays (attr 12-15) are host-computed (little-endian);
-                // vertex attrs (0-11) are GC-native (big-endian -> le=false).
-                bool le = (attrIdx >= 12);
+                // ALL arrays are big-endian here: every base points into the
+                // GC-RAM shadow, which holds raw Dolphin-emulated GC memory
+                // (memoryUpdates), including the matrix arrays (attr 12-15).
+                // (le=true only applies to the NATIVE runtime, where the game
+                // computes matrix arrays host-side; a .dff replay never does.)
+                bool le = false;
                 if (val == 0) {
                     emitArrayBase(out, attrIdx, 0, 0, le);  // null/empty slot
                 } else {
@@ -415,6 +546,30 @@ std::vector<std::uint8_t> translate_frame(const FifoFrame& frame, GcShadow& shad
             continue;
         }
         if (op == GX_LOAD_BP_REG) {
+            // Mirror texture binds: image0 (w/h/fmt) + image3 (base addr >> 5)
+            // per texmap; a texmap with both halves gets a synthesized
+            // LOAD_TEXOBJ at every image write (GXLoadTexObj emits image3 last,
+            // but J3D re-binds in varying order -- emitting on either write
+            // once both are known is bind-order agnostic; a redundant re-emit
+            // with unchanged fields is a no-op in aurora's cache).
+            if (pos + 5 <= end) {
+                std::uint8_t reg = src[pos + 1];
+                // image0 regs: 0x88-0x8B (texmap 0-3), 0xA8-0xAB (texmap 4-7)
+                // image3 regs: 0x94-0x97 (texmap 0-3), 0xB4-0xB7 (texmap 4-7)
+                std::uint32_t val = (std::uint32_t(src[pos+2]) << 16) |
+                                    (std::uint32_t(src[pos+3]) << 8) | src[pos+4];
+                int tm = -1; bool isI0 = false;
+                if (reg >= 0x88 && reg <= 0x8B) { tm = reg - 0x88; isI0 = true; }
+                else if (reg >= 0xA8 && reg <= 0xAB) { tm = reg - 0xA8 + 4; isI0 = true; }
+                else if (reg >= 0x94 && reg <= 0x97) { tm = reg - 0x94; }
+                else if (reg >= 0xB4 && reg <= 0xB7) { tm = reg - 0xB4 + 4; }
+                if (tm >= 0) {
+                    if (isI0) { texSlots[tm].image0 = val; texSlots[tm].haveI0 = true; }
+                    else      { texSlots[tm].baseAddr = (val & 0x00FFFFFFu) << 5;
+                                texSlots[tm].haveI3 = true; }
+                    if (texSlots[tm].haveI0 && texSlots[tm].haveI3) emitTexObj(tm);
+                }
+            }
             out.insert(out.end(), src + pos, src + pos + std::min(5u, end - pos));
             pos += 5;
             continue;
@@ -452,7 +607,7 @@ int replay(const FifoCapture& cap) {
     shadow.init();
     for (const auto& frame : cap.frames) {
 
-        std::vector<std::uint8_t> cmds = translate_frame(frame, shadow);
+        std::vector<std::uint8_t> cmds = translate_frame(cap, rendered, shadow);
         std::printf("[fifo_player] frame %d: translated %u -> %u bytes\n",
                     rendered, (unsigned)frame.fifoData.size(), (unsigned)cmds.size());
         std::fflush(stdout);
@@ -470,6 +625,14 @@ int replay(const FifoCapture& cap) {
         std::printf("[fifo_player] frame %d: done\n", rendered);
         std::fflush(stdout);
         ++rendered;
+    }
+    // Pump two empty frames so async readbacks queued on the last replay frame
+    // (SB_DUMP_FRAME's buffer map) resolve before the device is destroyed --
+    // without this the dump aborts with "Buffer was destroyed before mapping
+    // was resolved" and writes nothing.
+    for (int i = 0; i < 2; ++i) {
+        if (!aurora_begin_frame()) break;
+        aurora_end_frame();
     }
     return rendered;
 }

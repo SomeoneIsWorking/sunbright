@@ -86,14 +86,19 @@ struct FifoFrame {
 
 // A loaded .dff. The file-wide memory snapshots (bpMem/cpMem/xfMem/xfRegs/texMem)
 // are kept as borrowed slices into `fileData` (zero-copy).
+//
+// IMPORTANT: the header's *Size fields are u32 ELEMENT COUNTS, not byte sizes
+// (Dolphin's FifoDataFile writes header.bpMemSize = BP_MEM_SIZE = 256, then
+// WriteArray(m_BPMem) writes 256 u32s = 1024 bytes). The byte size is count*4.
+// texMem is the exception: it's a u8 array, so texMemSize IS the byte size.
 struct FifoCapture {
     std::vector<std::uint8_t> fileData;        // the whole file, kept alive
     const DffFileHeader* header = nullptr;
-    const std::uint8_t* bpMem = nullptr;  std::uint32_t bpMemSize = 0;
-    const std::uint8_t* cpMem = nullptr;  std::uint32_t cpMemSize = 0;
-    const std::uint8_t* xfMem = nullptr;  std::uint32_t xfMemSize = 0;
-    const std::uint8_t* xfRegs = nullptr; std::uint32_t xfRegsSize = 0;
-    const std::uint8_t* texMem = nullptr; std::uint32_t texMemSize = 0;
+    const std::uint8_t* bpMem = nullptr;  std::uint32_t bpMemCount = 0;   // u32 elements
+    const std::uint8_t* cpMem = nullptr;  std::uint32_t cpMemCount = 0;   // u32 elements
+    const std::uint8_t* xfMem = nullptr;  std::uint32_t xfMemCount = 0;   // u32 elements
+    const std::uint8_t* xfRegs = nullptr; std::uint32_t xfRegsCount = 0;  // u32 elements
+    const std::uint8_t* texMem = nullptr; std::uint32_t texMemSize = 0;   // bytes (u8 array)
     std::vector<FifoFrame> frames;
 };
 
