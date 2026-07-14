@@ -1,40 +1,30 @@
-# Manually patch a function (skip recompilation)
+# Port a decomp function to native (`/patch-func <name|0xADDR>`)
 
-Use when a PPC function can't be cleanly recompiled and needs a hand-written C++ replacement.
+For the ONE-RUNTIME native build (reference/sms compiled native): replace a
+boot_stub OSPanic / fill an unported function with a faithful C++ port.
 
-## Usage
+## 1. Generate the dossier (one command — does the extraction labor)
 ```
-/patch-func 0x80243ABC "short description of what this function does"
+python3 tools/re/port_dossier.py <name-substr|0xADDR>
 ```
+Prints a path to `scratch/re/dossier_*.md` with: auto-bounded disasm, whether the
+decomp already has a C++ body, the boot_stub site, and porter notes.
+(Needs `scratch/bin/sms.dol` — regenerate via `tools/re/dol_extract.c` if missing.)
 
-## Steps
+## 2. Port
+- **Decomp body EXISTS** (dossier §2 shows a `src/...` hit): the function is already
+  written — the "port" is usually just removing the boot_stub and fixing a BE-swap /
+  LP64 / uninit issue so the real body links & runs. Mechanical; delegate-friendly.
+- **No decomp body** (cold RE): transcribe the disasm (§1) to C++. Cross-check
+  lui/addiu sign-extension against Ghidra's decompiler; watch the LP64/BE gotchas in
+  §4. If it calls an unported callee, run the tool on that address too. This is
+  main-session brain-work (Sonnet ceiling), not agent labor.
+- Delete the boot_stub in the SAME change; add a spec unit test from the RE
+  (expected values hand-derived from the disasm) per the TDD-per-defect rule.
 
-1. Create `runtime/patches/func_$ADDR.cpp`:
-   ```cpp
-   // Manual patch for PPC function at $ADDR
-   // Reason: $DESCRIPTION
-   #include "../cpu_state.h"
-   #include "../intrinsics.h"
-   
-   extern "C" void func_$ADDR(CPUState& cpu) {
-       // Hand-written replacement
-   }
-   ```
-
-2. Add the address to `runtime/patches/patch_list.h`:
-   ```cpp
-   PATCH(0x$ADDR, func_$ADDR)
-   ```
-
-3. The recompiler will skip this address when regenerating `generated/`
-   (patch_list.h takes precedence over generated jump_table.cpp)
-
-4. Update CLAUDE.md — add the patched function under a "## Manually patched functions" section
-
-5. Document WHY the function needed patching (indirect branch? self-modifying? hardware-specific trick?)
-
-## Common reasons to patch
-- Function uses computed indirect branches that aren't resolvable statically
-- Function touches hardware registers directly (MMIO) — replace with Dolphin API call
-- Function is a memcpy/memset variant — replace with C stdlib version
-- Floating-point edge case that our emitter gets wrong
+## 3. Build + verify (delegate this labor to a Sonnet agent)
+```
+cmake --build build --target sms-boot -j$(nproc)
+SB_HEADLESS=1 SB_TURBO=1 SB_STAGE=<n> timeout -s KILL 30 ./run.sh 2>&1 | grep -aiE 'PANIC|STUB-CALLED <fn>'
+```
+Verify the OSPanic is gone and boot advances; commit test+port together.
