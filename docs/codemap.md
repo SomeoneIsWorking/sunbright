@@ -13,7 +13,7 @@ Legend: ✅ done (verified on real data) · 🟡 partial (documented gap) · �
 | GC logo | 🟡 | renders + advances, but the **Nintendo logo shows BLUE** (user-observed 2026-07-15) — likely a channel-swap/TEV issue on the boot-logo pass specifically (title colors are correct, so not global). Capture headlessly (record_fifo.sh / fork framedump) before investigating; do NOT hand-debug. |
 | Title (stage 15 attract) | 🟡 | renders faithfully at settle (means within 3 of oracle, 2026-07-14); residuals: seagulls missing, anim phase offsets, no EFB copies (mirror/logo reflection), ghost pass |
 | File-select / save screen | 🟡 | reachable (Enter=START), renders; formal oracle gate pending |
-| Gameplay (Delfino) | ⬜ | OSPanics at unported TMapObjTree::initMapObj — GATED behind title oracle gate |
+| Gameplay (Delfino) | ⬜ | boot now clears tree init (TMapObjTree::initMapObj ported 2026-07-15, cold RE) → reaches object-gen + perform-list load + render, then aborts on an aurora `GXBegin without matching GXEnd` (render layer, unrelated to tree init). Next boot blockers: `TMapObjTree::perform` (loud stub) + the GXBegin/GXEnd mismatch. Still GATED behind the title oracle gate |
 | Audio (everything) | ⬜ | silent by omission; arc plan in docs/audio_native_mixer_plan.md (M1 kernel wiring in progress) |
 
 ## Runtime (sms-boot/)

@@ -218,7 +218,7 @@ file(GLOB SMS_RUNTIME_TESTS CONFIGURE_DEPENDS
 # they get their own add_executable further down, gated on aurora_core like
 # sms-boot itself.
 list(FILTER SMS_RUNTIME_TESTS EXCLUDE REGEX
-     "/sms-boot/runtime/tests/(jaudio_release_test|gx_yscale_test)\\.cpp$")
+     "/sms-boot/runtime/tests/(jaudio_release_test|gx_yscale_test|mapobjtree_initeach_test)\\.cpp$")
 foreach(_test ${SMS_RUNTIME_TESTS})
     get_filename_component(_name "${_test}" NAME_WE)
     add_executable(platform-${_name} "${_test}"
@@ -377,4 +377,30 @@ if(TARGET aurora_core)
         aurora::ms
         Threads::Threads)
     add_test(NAME platform_gx_yscale_test COMMAND platform-gx_yscale_test)
+
+    # -----------------------------------------------------------------------
+    # mapobjtree_initeach_test — pins the RE'd species->leaf-count/param table
+    # of the cold-ported TMapObjTree::initEach (reference/sms/src/MoveBG/
+    # MapObjTree.cpp, 2026-07-15). initEach is a dependency-free field-writer,
+    # so the test compiles MapObjTree.cpp DIRECTLY (not via the game library)
+    # and drives the real linked initEach. -ffunction-sections + --gc-sections
+    # drops the unreferenced initMapObj/TMapObjLeaf-ctor (and their heavy
+    # actor-graph deps) at link, so no sms-native/aurora link is needed. -w
+    # matches the decomp's policy for the MoveBG/JSystem header chain.
+    # -----------------------------------------------------------------------
+    add_executable(platform-mapobjtree_initeach_test
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/tests/mapobjtree_initeach_test.cpp"
+        "${SMS_NATIVE_REPO_ROOT}/reference/sms/src/MoveBG/MapObjTree.cpp")
+    set_target_properties(platform-mapobjtree_initeach_test PROPERTIES
+        CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+    target_compile_options(platform-mapobjtree_initeach_test PRIVATE
+        -w -ffunction-sections -fdata-sections)
+    target_compile_definitions(platform-mapobjtree_initeach_test PRIVATE
+        TARGET_PC=1 SMS_NATIVE_PLATFORM=1 SMS_AURORA=1)
+    target_include_directories(platform-mapobjtree_initeach_test PRIVATE
+        "${SMS_NATIVE_REPO_ROOT}/extern/aurora/include"
+        "${SMS_INCLUDE_STAGED}")
+    target_link_options(platform-mapobjtree_initeach_test PRIVATE
+        "-Wl,--gc-sections")
+    add_test(NAME platform_mapobjtree_initeach_test COMMAND platform-mapobjtree_initeach_test)
 endif()

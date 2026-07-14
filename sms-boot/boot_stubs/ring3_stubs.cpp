@@ -125,12 +125,9 @@ void TMapObjPuncher::load(JSUMemoryInputStream&) { SB_STUB_HIT("TMapObjPuncher::
 // [dedup] void TMapObjSwitch::load(JSUMemoryInputStream&) {}
 // [dedup] BOOL TMapObjSwitch::receiveMessage(THitActor*, unsigned int) { return 0; }
 f32 TMapObjTree::getRadiusAtY(float) const { SB_STUB_HIT("TMapObjTree::getRadiusAtY"); return 0; }
-void TMapObjTree::initMapObj() {
-    OSPanic(__FILE__, __LINE__,
-            "TMapObjTree::initMapObj not ported — real body adds tree-specific "
-            "setup on top of TMapObjGeneral::initMapObj (mMapObjData + more). "
-            "Port from reference/sms decomp before boot progresses.");
-}
+// [ported] TMapObjTree::initMapObj + initEach + TMapObjLeaf ctor now live in
+// reference/sms/src/MoveBG/MapObjTree.cpp (cold RE of US 0x801f68b4/0x801f6a64/
+// 0x801f6ef4, 2026-07-15).
 void TMapObjTreeScale::control() { SB_STUB_HIT("TMapObjTreeScale::control"); }
 u32 TMapObjTreeScale::touchWater(THitActor*) { SB_STUB_HIT("TMapObjTreeScale::touchWater"); return 0; }
 void TMapObjTree::touchPlayer(THitActor*) { SB_STUB_HIT("TMapObjTree::touchPlayer"); }
