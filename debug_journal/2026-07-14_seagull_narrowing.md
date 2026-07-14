@@ -31,22 +31,46 @@ their bind's mode1 is genuinely 0 at that stream position (Dolphin's snapshot ag
   copy_xf_data (LOAD_INDX target) sets stateDirty — mid-stream matrix loads DO break
   merges.
 
+## Session 2 additions (same day): depth ELIMINATED for real; every state layer now falsified
+
+- The earlier "SB_NO_DEPTH changed 0 pixels" was measured post `-alpha off` — comparing
+  the RAW dumps shows 25 alpha-only pixel diffs at BOTH bird locations. That looked like
+  "birds rasterize but are depth-killed, clouds (aU=0) later overwrite color". FALSIFIED
+  in turn by per-draw instruments:
+  - `SB_NO_ZWRITE_DRAWS=0:9999999` (suppress ALL depth writes): byte-identical frame ⇒
+    NOTHING in this frame is ever killed by another draw's written depth.
+  - `SB_NO_ZTEST_DRAWS=132:144` (force compare Always for the bird draws): byte-identical
+    ⇒ the birds are NOT depth-killed at all — they emit ZERO fragments. (Pipelines
+    compile synchronously by default, so these aren't async-skip false negatives.)
+  - The 25 alpha diffs under global SB_NO_DEPTH remain unexplained — do not treat them
+    as bird evidence.
+- `SB_NO_ARRCACHE=1` (re-upload every indexed array per draw): byte-identical ⇒ stale
+  array-upload caching is NOT the cause.
+- WGSL fetch helpers audited (load_u8/u16/u32_raw): all shift+mask, no dynamic-offset
+  extractBits — the Tint-miscompile class does not apply.
+- `SB_ONLY_DRAW` isolation windows are CONFOUNDED around EFB-copy clears (skipping the
+  draws around a copy changes clear behavior); its "enabler draw #76/#77" readings are
+  artifacts, not dependencies.
+- Bird trifan triangle areas computed from probe NDC: up to 6.2 px² (≈25 px² at 2×
+  internal) — not degenerate; coverage cannot explain zero fragments.
+
 ## Remaining suspects (next session)
 
-The draws produce ZERO fragments (with cutout disabled, blend off, colorUpdate on —
-any fragment would be visible). Either:
-1. The GPU-side vertex path (storage-buffer attribute fetch + pnMtx uniform indexing)
-   transforms these vertices differently than the CPU-state probe (e.g. PNMTXIDX
-   handling for this vertex layout, or a stale/partial pos-array cachedRange upload
-   for the bird pool), or
-2. Thin-trifan rasterization: the fan's triangles are slivers that miss all sample
-   centers in wgpu while GC/Dolphin's fill rules catch them (the O-ring bird's
-   paleness could be partial coverage). Note aurora renders at 2x internal — MORE
-   samples than Dolphin 1x — which argues against pure coverage.
-Probe idea: [vtx-gpu] instrument — read back the exact bytes the vertex-fetch shader
-sees for one windowed draw (storage-buffer slice at the draw's vaRanges + uniform
-pnMtx block) and cross-check against the CPU probe; or force PNMTX0 (identity-skin)
-for the windowed draw to see if it appears.
+The draws produce ZERO fragments with every fixed-function kill path disabled. The
+divergence must be in the GPU-side vertex path producing out-of-frustum/degenerate
+positions from the SAME inputs the CPU probe transforms correctly. Bird vertex layout
+is distinctive: per-vertex PNMTXIDX (direct u8) + POS/NRM/CLR0/TEX0 all INDEX16 —
+odd 9-ish byte stride, per-vertex matrix indexing into the pnMtx uniform.
+Next instruments (pick one):
+1. `SB_DUMP_WGSL=<dir>` the bird pipeline + dump its uniform block (proj + postex_mtx)
+   at push time, then HAND-SIMULATE vertex 0 of draw #133 through the WGSL fetch code
+   (offsets, stride, in_pnmtxidx /3, mat3x4 row-vector order) vs the CPU probe.
+2. RenderDoc capture of the replay frame (Dawn/Vulkan) — inspect the bird draw's VS
+   inputs/outputs directly.
+Watch for: config.vtxStride vs the stream parser's vtxSize disagreeing for this
+layout; mat3x4 postex_mtx row/column convention for the `vec4f(pos,1) * mtx` product;
+uniform offset misalignment shifting postex_mtx for draws whose ubuf layout includes
+optional blocks (loadsTevReg bitset, lighting).
 
 ## Instruments added (aurora 6f20fc6, 6b003bd)
 
