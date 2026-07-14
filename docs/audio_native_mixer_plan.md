@@ -34,6 +34,30 @@ per 5ms DAC frame (x subframes):
     - write back voice state (position, loop, predictor/history)
   mix buses -> dsp_buf L/R; Kernel::vframeWork imixcopy -> dac[]; push to aurora.
 
+## M2 input, mapped (2026-07-15 RE — the renderer's data source)
+
+The decomp's now-native sequencer fills the voice state; M2 just renders it. Source of truth
+= `JASystem::TDSPChannel::DSPCH[64]` (static in JASDSPChannel.cpp), 64 voices. Each
+`DSPCH[i].unkC` is a `DSPInterface::DSPBuffer*` = the **Zelda-ucode VPB**
+(JASDSPInterface.hpp; the decomp itself notes it matches Dolphin `UCodes/Zelda.cpp`).
+Per-voice render params (set by DSPBuffer::setWaveInfo/setOscInfo/setPitch/setMixerVolume
+in JASDSPInterface.cpp):
+- `unk110` (s16*) = decoded/encoded wave base; `unk114` = length; `unk118` = loop/osc info.
+- format decided in setWaveInfo (param_2): PCM16 / PCM8 / **AFC** (the common case) — decode
+  with the PROVEN `afc_decode()` in scratch/audio_ref/native_jas_recomp_era.cpp:205
+  (verified bit-exact vs ROM by ear; coefficients in docs/audio_data_formats.md).
+- pitch = setPitch(u16) (fixed-point ratio) → fractional resample step.
+- volume = the `Channel unk10[6]` bus entries (targetVolume/currentVolume ramps) + pan.
+- `unk10A` = active/gate flag; `unk2` = the per-frame "needs work" bit (updateAll clears it).
+
+So M2's DsyncFrame2(subframes, bufL, bufR): for each DSPCH[i] whose VPB is active, decode
+its wave (AFC/PCM), advance a fractional sample cursor by the pitch step across the frame's
+sample count, apply the volume ramp + 2-bus (L/R) pan, and accumulate into bufL/bufR. Reuse
+the reference engine's afc_decode + resample math; drive it from the live VPB, NOT the
+reference's own BMS sequencer (that's the decomp's job now, running natively). DSPCH is
+static — expose it via a small extern accessor (or render inside the JAS namespace) rather
+than duplicating state.
+
 ## Milestones
 
 1. **Kernel wiring** — run Kernel::init + Driver::init at first sb_audio_frame
