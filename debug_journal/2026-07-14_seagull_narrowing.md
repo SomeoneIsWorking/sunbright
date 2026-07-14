@@ -85,11 +85,37 @@ the CPU probe:
 - uniform struct offsets (vtx_start..array_start[12]=80B, proj@80, postex_mtx@144,
   20×48B, nrm_mtx 10×48B) match shader_info.cpp's append order/alignment.
 So the SOURCE agrees with the CPU math that puts the birds on-screen, yet zero
-fragments come out. The divergence is below WGSL source level: driver/Tint compile,
-actual uniform bytes at bind time, or the draw not reaching submission. Next session:
-RenderDoc (or Dawn toggle dump) capture of the replay frame → inspect draw #133's
-bound uniform bytes + VS out, or add a transform-feedback-style debug (write out.pos
-to a storage buffer for windowed draws).
+fragments come out.
+
+## Session 3 additions: uniforms verified, driver exonerated — it's the draw execution
+
+- **lavapipe reproduces it**: `VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json`
+  replay → birds still missing on software Vulkan. Not a native-driver bug; the
+  submitted commands themselves are wrong somewhere.
+- **`SB_UNIF_DUMP=<lo>[:<hi>]`** (new, build_uniform): dumps vtxStart/curPn/viewports/
+  vaRange offsets/proj/all 10 pn matrices for windowed draws. Draw #133's dump shows
+  the bird bone matrices (pn0-pn8 at ≈(-3224,-2729,-7932)) and a sane projection.
+  HAND-SIMULATED vertex 0 through the WGSL math with these exact values:
+  mv=(-3206.5,…) matches [ndc-probe]; x_ndc=-0.827; wgpu z=0.00123 in [0,1]. The
+  uniform data is PROVABLY correct at push time.
+- Remaining surface, by elimination: the indexed-draw EXECUTION for this draw —
+  index-buffer generation (trifan triangulation), draw-call parameters
+  (base vertex/first index/count), or the vbuf staging slice at vtxStart. Everything
+  upstream (state, uniforms, arrays, shader source) is verified.
+- RenderDoc trigger IMPLEMENTED (`SB_RDOC=<present#>` + `SB_RDOC_PATH`, aurora ad45944:
+  dlopen + Start/EndFrameCapture at end_frame boundaries, headless-safe) but BLOCKED:
+  under `renderdoccmd capture`, StartFrameCapture crashes the process (Dawn interplay;
+  SB_NO_GPU_PROF=1 — new switch disabling timestamp queries — does not fix it). Plain
+  dlopen mode returns success but writes no .rdc (no Vulkan layer injected).
+- Draw-execution layer also audited: prepare_idx_buffer fan triangulation standard,
+  instanceCount=1, bind_pipeline ASSERTs on miss (no silent skip; ASSERT active in
+  Release), render() sets index buffer from idxRange and DrawIndexed(indexCount, 1).
+- RECOMMENDED NEXT (in our control, no RenderDoc needed): a VS-output debug — for
+  SB_NDC_DRAW-windowed draws, generate the pipeline with an extra storage-buffer
+  binding and have the vertex shader write out.pos per vertex; read back after drain.
+  Compares what the GPU ACTUALLY computed against the CPU probe with zero external
+  tooling. Alternatively debug the RenderDoc crash (try --opt-api-validation,
+  windowed non-headless run, or capture only a trimmed replay).
 
 ## Instruments added (aurora 6f20fc6, 6b003bd)
 
