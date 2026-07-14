@@ -55,7 +55,8 @@ When JP decomp misbehaves on the US disc, check the US disasm first
 |---|---|
 | `oracle/parse_fifo_dff.py` | .dff ground-truth parser (draw counts, BP/CP/XF state; posmtx blind to LOAD_INDX) |
 | ⛔ `oracle/xdrive.py` | XTest GUI driver — DEPRECATED, do NOT use. Driving the Dolphin GUI is banned (user, 2026-07-15). Use the fork's headless tool below. |
-| Dolphin **fork** headless | `extern/dolphin_fork/` (SomeoneIsWorking/dolphin@sunbright, gitignored scratch clone). `DolphinNoGUI --fifo-record=<path>` captures a .dff with no window (commit dc57256). Build: `-DENABLE_QT=OFF`, target `dolphin-emu-nogui`. Stock Fedora dolphin-emu has headless bugs the fork fixes — route ALL oracle work (record + framedump) through the fork. |
+| `oracle/record_fifo.sh` | ✅ Headless .dff capture (no GUI). Wraps the fork's `DolphinNoGUI --fifo-record`. `record_fifo.sh <out.dff> [after=7500] [frames=3]`. Recaptured `title_press_start.dff` (settled, pixel-validated). |
+| Dolphin **fork** headless | `extern/dolphin_fork/` (SomeoneIsWorking/dolphin@sunbright, gitignored scratch clone; BUILT: `build/Binaries/dolphin-emu-nogui`). `--fifo-record` NoGUI flag = fork commits dc57256+05c8f74. Build: submodules `--init --depth 1` (deinit Qt/mGBA/FFmpeg-bin), `-DENABLE_QT=OFF -DENABLE_EVDEV=OFF -DUSE_MGBA=OFF`, target `dolphin-emu-nogui`. Stock Fedora dolphin-emu has headless bugs the fork fixes. TODO: repoint the framedump pixel-oracle path (capture.sh uses stock `-b`; NoGUI needs `-p headless`) at the fork too. |
 | `oracle/capture.sh` | Dolphin boot framedump capture (repoint at the fork binary) |
 | `re/ppcdis.py`, `re/disasm_range.py` | capstone disasm over scratch/bin/sms.dol with funcs.txt symbols |
 | `re/dol_extract.c` | main.dol from RVZ via the build's nod prebuilt |
