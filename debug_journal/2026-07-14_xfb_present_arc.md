@@ -96,3 +96,38 @@ correct 4:3 framing through the new display-copy present path.
    unported copy-time 7-tap vertical deflicker (softens 1px-tall detail in Dolphin)
    and resampler differences. Cosmetic-scale; port the vfilter in the EFB resolve
    pass (NOT the present stretch — two independent HW stages) for pixel-exactness.
+
+## Seagull localization progress (2026-07-14, SB_NDC_DRAW)
+
+New aurora tooling `SB_NDC_DRAW=<lo>[:<hi>]` (aurora d643dfa) probes any
+[draw-dump]-indexed draw per-vertex. Findings on title_settled.dff draws 132-143
+(the four bird instances, two invisible):
+- All four project on-screen at the correct locations (NDC matches oracle bird
+  pixels), correct depth (inZ), zero behind-camera vertices, per-vertex skinning
+  matrix indices 0-8 all load correctly. **Geometry/matrix hypotheses FALSIFIED.**
+- `SB_NO_DEPTH=1` (depth compare Always, no z-writes) changes ZERO pixels in the
+  whole replayed frame (byte-level compare) — depth-kill falsified too, with the
+  caveat that the instrument wasn't validated against a known depth-culled case
+  in this scene (the title sky scene may genuinely have no depth overlap).
+- Remaining prime suspect: the TEXTURE layer. All bird bodies share state
+  (aComp GEQUAL 128 cutout) but bind different per-bird 64x64 texture addresses
+  (animation frames); replay frames 1-2 carry exactly ONE TextureMap memupdate
+  per frame (the flapping-bird atlas is the only animating texture). Next probe:
+  log the bird texmaps' bind addresses + versions around draws 132-143 and diff
+  the decoded texels of visible vs invisible birds' textures.
+
+## NEW user-visible defect: blocky letter backgrounds during title fly-in
+
+User report (2026-07-14, windowed ./run.sh): "earlier frames, the text has
+blocky background". Reproduced headless: at ~present 320 (SB_DUMP_FRAME_EVERY=20
+boot sequence, scratch/shots/bs_montage2.png tile 2) every SUPER MARIO SUNSHINE
+letter is drawn with a translucent dark-blue RECTANGLE around it; by settle
+(~present 440+) the blocks are gone and the logo is correct.
+KEY FACT: the FIFO replay of title_settled.dff — retail's GX stream at the SAME
+mid-fly-in phase — renders these letters with NO blocks through the same aurora.
+So aurora rasterizes the retail stream correctly; the native game emits WRONG
+GX state for the letter panes during fade-in (suspect: J2D/material-anim alpha
+source — texture alpha not selected into the TEV alpha chain, or blend/acmp set
+differently than retail during the alpha-fade phase). Next: SB_DRAW_DUMP the
+native blocky frame's 2D letter draws and diff field-by-field against the
+replay's #147-194 letter draws (which render correctly).
