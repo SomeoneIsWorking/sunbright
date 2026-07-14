@@ -15,12 +15,15 @@ src 640×448@(0,0), stride 1280 B (=640 px YUYV), yscale 0x100 (unity → 448 XF
 
 - `GXSetDispCopyDst`'s `ht` arg is dead on real HW; XFB line count =
   `GXSetDispCopyYScale` return (`GXGetNumXfbLines(srcH, yscale)`).
-- **VI, not the copy, fills the TV picture**: VI stretches xfbHeight copied lines
-  across viHeight physical scanlines (480) unconditionally — the XFB's own aspect
-  never reaches the screen. That was aurora's bug: `calculate_present_viewport`
-  letterbox-fit the copy's own 640×448 (10:7) instead of the render mode's
-  viWidth×viHeight (640×480). Now `g_sbViWidth/Height` (latched at VIConfigure,
-  default 640×480) feeds the viewport aspect.
+- **VI, not the copy, fills the TV picture**: VI stretches the XFB across the TV's
+  fixed 4:3 picture — the XFB's own aspect never reaches the screen. That was
+  aurora's bug: `calculate_present_viewport` letterbox-fit the copy's own 640×448
+  (10:7). The present aspect is now the constant 4:3 (640,480) at the end_frame
+  call site. NOTE a first design (latching the render mode's raw viWidth/viHeight
+  at VIConfigure) was WRONG and was reverted same-day: SMS programs viWidth=660,
+  viHeight=448 — overscan-domain scan-out values that a real TV and the Dolphin
+  oracle both still show as the full 4:3 picture. Raw VI fields must not drive
+  the viewport.
 - The real XFB is YUYV — **no alpha channel**. aurora's RGBA8 display-copy texture
   now forces the opaque-alpha swizzle. (SMS's EFB alpha at title averages ~0.2 from
   dst-alpha stamps; leaking it washes any alpha-aware consumer.)
@@ -60,6 +63,29 @@ unity-normalized (redistributes between rows, adds nothing). Diagnose upstream
   per-job in aurora; EVERY=1 = one dump per present, `.<seq>` suffix in queue order.
 - `SB_DRAW_DUMP` had a hardcoded floor of 200 (draws 0-199 uninspectable — blocked
   the seagull localization). Removed; `SB_DRAW_DUMP=0` dumps from the first draw.
+
+## GXGetNumXfbLines/GXGetYScaleFactor were silent 0-stubs (fixed + tested)
+
+The VIConfigure fail-fast (transient, during the reverted latch design) surfaced a
+banned-class bug: `sms-boot/runtime/sdk_stubs.cpp` had `GXGetNumXfbLines` return 0 and
+`GXGetYScaleFactor` return 1.0f behind a comment claiming "no consumer on the Aurora
+path" — falsified: `JDrama::CalcRenderModeXFBHeight` computes every render mode's
+xfbHeight AND viHeight through them, so every mode carried xfbHeight=0/viHeight=0.
+Both are now faithful SDK ports (from `reference/sms/src/dolphin/gx/GXFrameBuf.c`) in
+aurora `GXFrameBuffer.cpp`, with a spec unit test (`platform-gx_yscale_test`: anchor
+values incl. the captured title copy's unity yscale/448 lines + a sweep against a
+verbatim SDK transcription). Domain gotcha: the y-scale register is 9 bits, so
+yScale ≤ 0.5 wraps `(u32)(256/yScale) & 0x1FF` to 0 → divide-by-zero (PPC divwu is
+silent, x86 traps); valid domain is yScale strictly within (0.5, 2.0].
+
+## run.sh default = the working game
+
+Plain `./run.sh` used to take the game's built-in fastboot default (Delfino Plaza,
+stage 1) which OSPanics at the unported `TMapObjTree::initMapObj`. run.sh now opts
+out of fastboot (SB_NO_FASTBOOT=1) when no explicit SB_STAGE/SB_SCENARIO/
+SB_NO_FASTBOOT is given → vanilla GC-logo → title/attract boot, windowed. Verified:
+headless run via run.sh defaults reaches the settled title, full-color logo,
+correct 4:3 framing through the new display-copy present path.
 
 ## Remaining replay-vs-oracle deltas (title_settled)
 

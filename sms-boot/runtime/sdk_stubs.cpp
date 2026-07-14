@@ -249,17 +249,14 @@ void GXPeekARGB(u16, u16, u32* col) {
     SB_STUB_HIT("GXPeekARGB");
     if (col) *col = 0;
 }
-// GXSetCopyClamp/GXSetDispCopyFrame2Field/GXGetNumXfbLines/GXGetYScaleFactor: EFB->XFB
-// copy vertical-scale/interlace config. INTENTIONAL SEAM — Aurora manages its own
-// framebuffer resolution/scaling internally (GXSetDispCopyYScale computes the real xfb
-// line count via its own gx_get_num_xfb_lines helper, extern/aurora/lib/dolphin/gx/
-// GXFrameBuffer.cpp); these GC-hardware-copy-descriptor accessors have no consumer on
-// the Aurora path (JDRRenderMode.cpp's rmo->xfbHeight/interlace fields are read back by
-// nothing Aurora uses to size its own copy).
+// GXSetCopyClamp/GXSetDispCopyFrame2Field: EFB->XFB copy clamp/interlace config.
+// INTENTIONAL SEAM — Aurora manages its own framebuffer scaling internally and has
+// no interlaced scan-out. (GXGetNumXfbLines/GXGetYScaleFactor used to be silent
+// stubs HERE returning 0/1.0f — that zeroed every render mode's computed
+// xfbHeight/viHeight in JDrama::CalcRenderModeXFBHeight. They are now faithful
+// SDK ports in extern/aurora/lib/dolphin/gx/GXFrameBuffer.cpp.)
 void GXSetCopyClamp(GXFBClamp) {}
 void GXSetDispCopyFrame2Field(GXCopyMode) {}
-u16  GXGetNumXfbLines(u16, f32) { return 0; }
-f32  GXGetYScaleFactor(u16, u16) { return 1.0f; }
 // GXInitTexCacheRegion: GC TMEM texture-cache region bookkeeping (J3DSys.cpp / GXInit.c)
 // — Aurora textures are uploaded through its own GPU texture path, not GC TMEM regions.
 // INTENTIONAL SEAM.

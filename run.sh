@@ -3,9 +3,15 @@
 #
 # Usage:
 #   ./run.sh [rom.rvz]        # ROM also via $SUNBRIGHT_ROM, .env, or rom.rvz drop-in
-#   SB_STAGE=15 ./run.sh      # boot destination (15 = title screen); SB_NO_FASTBOOT=1 for attract flow
+#   SB_STAGE=15 ./run.sh      # fastboot destination (15 = title screen)
 #   SB_TURBO=1 ./run.sh       # unpaced (no NTSC-field frame pacing)
 #   SB_W=1920 SB_H=1080 ./run.sh
+#
+# Default (no SB_STAGE/SB_SCENARIO/SB_NO_FASTBOOT set): the vanilla boot flow
+# (GC logo -> title/attract) — the currently WORKING part of the port. The
+# game's built-in fastboot default is Delfino Plaza, which still OSPanics at
+# the unported TMapObjTree::initMapObj, so run.sh opts out of fastboot unless
+# a destination is explicitly requested.
 #
 # Keyboard drives pad 0. Closing the window quits.
 set -eo pipefail
@@ -28,6 +34,11 @@ fi
 
 ROM="${1:-${SUNBRIGHT_ROM:-$HERE/rom.rvz}}"
 [[ -f "$ROM" ]] || { echo "[run] ROM not found: $ROM (set SUNBRIGHT_ROM or drop rom.rvz)" >&2; exit 1; }
+
+# No explicit destination -> vanilla boot flow (see header comment).
+if [[ -z "${SB_STAGE:-}" && -z "${SB_SCENARIO:-}" && -z "${SB_NO_FASTBOOT:-}" ]]; then
+    export SB_NO_FASTBOOT=1
+fi
 
 export SUNBRIGHT_ROM="$ROM"
 echo "[run] sms-boot  \"$ROM\""

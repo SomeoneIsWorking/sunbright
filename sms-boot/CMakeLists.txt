@@ -213,11 +213,12 @@ endforeach()
 # ---------------------------------------------------------------------------
 file(GLOB SMS_RUNTIME_TESTS CONFIGURE_DEPENDS
      "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/tests/*_test.cpp")
-# jaudio_release_test needs the full game-logic link set (sms-native/sms-gd/
-# sms-assets/aurora), not hx_wipe.cpp + aurora::mtx -- it gets its own
-# add_executable further down, gated on aurora_core like sms-boot itself.
+# jaudio_release_test and gx_yscale_test need the full game-logic link set
+# (sms-native/sms-gd/sms-assets/aurora), not hx_wipe.cpp + aurora::mtx --
+# they get their own add_executable further down, gated on aurora_core like
+# sms-boot itself.
 list(FILTER SMS_RUNTIME_TESTS EXCLUDE REGEX
-     "/sms-boot/runtime/tests/jaudio_release_test\\.cpp$")
+     "/sms-boot/runtime/tests/(jaudio_release_test|gx_yscale_test)\\.cpp$")
 foreach(_test ${SMS_RUNTIME_TESTS})
     get_filename_component(_name "${_test}" NAME_WE)
     add_executable(platform-${_name} "${_test}"
@@ -340,4 +341,37 @@ if(TARGET aurora_core)
         aurora::ms
         Threads::Threads)
     add_test(NAME platform_jaudio_release_test COMMAND platform-jaudio_release_test)
+
+    # -----------------------------------------------------------------------
+    # gx_yscale_test — links aurora's REAL GXGetNumXfbLines/GXGetYScaleFactor
+    # (ported 2026-07-14 from reference/sms/src/dolphin/gx/GXFrameBuf.c after
+    # the silent sdk_stubs versions zeroed every render mode's xfbHeight/
+    # viHeight) and sweeps them against a verbatim SDK transcription. Needs
+    # the aurora::gx link set, hence the same full-link pattern as
+    # jaudio_release_test.
+    # -----------------------------------------------------------------------
+    add_executable(platform-gx_yscale_test
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/tests/gx_yscale_test.cpp"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/sdk_stubs.cpp")
+    set_target_properties(platform-gx_yscale_test PROPERTIES
+        CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+    target_include_directories(platform-gx_yscale_test PRIVATE
+        "${SMS_NATIVE_REPO_ROOT}/extern/aurora/include"
+        "${SMS_INCLUDE_STAGED}")
+    target_link_libraries(platform-gx_yscale_test PRIVATE
+        "$<LINK_GROUP:RESCAN,sms-native,sms-gd,sms-assets,$<TARGET_NAME_IF_EXISTS:sms-bootstubs>>"
+        aurora::core
+        aurora::gx
+        aurora::main
+        aurora::vi
+        aurora::os
+        aurora::mtx
+        aurora::pad
+        aurora::si
+        aurora::card
+        aurora::dvd
+        aurora::gd
+        aurora::ms
+        Threads::Threads)
+    add_test(NAME platform_gx_yscale_test COMMAND platform-gx_yscale_test)
 endif()
