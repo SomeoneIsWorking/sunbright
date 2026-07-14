@@ -54,8 +54,9 @@ When JP decomp misbehaves on the US disc, check the US disasm first
 | Tool | Purpose |
 |---|---|
 | `oracle/parse_fifo_dff.py` | .dff ground-truth parser (draw counts, BP/CP/XF state; posmtx blind to LOAD_INDX) |
-| `oracle/xdrive.py` | XTest GUI driver (Dolphin FIFO recorder on Xvfb) |
-| `oracle/capture.sh` | Dolphin boot framedump capture |
+| ⛔ `oracle/xdrive.py` | XTest GUI driver — DEPRECATED, do NOT use. Driving the Dolphin GUI is banned (user, 2026-07-15). Use the fork's headless tool below. |
+| Dolphin **fork** headless | `extern/dolphin_fork/` (SomeoneIsWorking/dolphin@sunbright, gitignored scratch clone). `DolphinNoGUI --fifo-record=<path>` captures a .dff with no window (commit dc57256). Build: `-DENABLE_QT=OFF`, target `dolphin-emu-nogui`. Stock Fedora dolphin-emu has headless bugs the fork fixes — route ALL oracle work (record + framedump) through the fork. |
+| `oracle/capture.sh` | Dolphin boot framedump capture (repoint at the fork binary) |
 | `re/ppcdis.py`, `re/disasm_range.py` | capstone disasm over scratch/bin/sms.dol with funcs.txt symbols |
 | `re/dol_extract.c` | main.dol from RVZ via the build's nod prebuilt |
 | `dol_sda.py` | SDA/r13 constant resolution |
