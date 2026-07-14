@@ -132,7 +132,13 @@ differently than retail during the alpha-fade phase). Next: SB_DRAW_DUMP the
 native blocky frame's 2D letter draws and diff field-by-field against the
 replay's #147-194 letter draws (which render correctly).
 
-## Blocky fly-in letters: ROOT CAUSE LOCALIZED — extra ortho scene dispatches
+## Blocky fly-in letters — section FALSIFIED (kept for the record)
+
+**FALSIFIED as the cause of the visible blocks** (same day): SB_SKIP_GHOST=1 left the
+blocks intact, and the real cause was the decomp's phantom overlay-pane mBlack constant
+(0x01006667 → 0x00FFFF00) — see `2026-07-14_blocky_letters_mblack.md`. The extra ortho
+ghost dispatch described below IS still real as a structural/perf wart (retail has no
+counterpart) and still needs RE + removal, but it did not paint the user-visible blocks.
 
 Falsifiers run at native present 320 (the maximally blocky frame, retrace≈638,
 `SB_TRACE_SEQ` maps presents↔retrace at 2/present):
