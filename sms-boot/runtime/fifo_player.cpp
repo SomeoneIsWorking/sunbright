@@ -436,6 +436,7 @@ std::vector<std::uint8_t> translate_frame(const FifoCapture& cap, std::uint32_t 
     // texture cache re-uploads under an unchanged pointer).
     struct TexSlot {
         std::uint32_t image0 = 0;      // raw image0 value (w/h/fmt)
+        std::uint32_t mode1  = 0;      // raw TexMode1 (min_lod/max_lod, Q4.4) — mip chain depth
         std::uint32_t baseAddr = 0;    // byte address ((image3 & 0xFFFFFF) << 5)
         bool haveI0 = false, haveI3 = false;
     };
@@ -472,6 +473,12 @@ std::vector<std::uint8_t> translate_frame(const FifoCapture& cap, std::uint32_t 
         bpCopyDest  = bpSnap(0x4B);
         bpCopyStride = bpSnap(0x4D);
         if (std::uint32_t ys = bpSnap(0x4E) & 0x1FF) bpCopyYScale = ys;
+        // Seed per-texmap TexMode1 (mip min/max lod) so a bind whose mode1 write
+        // precedes the capture window still gets its real mip chain depth.
+        for (int t = 0; t < 4; ++t) {
+            texSlots[t].mode1     = bpSnap(0x84 + t);
+            texSlots[t + 4].mode1 = bpSnap(0xA4 + t);
+        }
     }
 
     // GXGetNumXfbLines (SDK GXFrameBuf.c): number of XFB lines a display copy
@@ -511,13 +518,13 @@ std::vector<std::uint8_t> translate_frame(const FifoCapture& cap, std::uint32_t 
         // SB_FIFO_TEXDBG=1: log the first synthesized binds (which texmap, GC
         // addr, dims/format) to sanity-check bind synthesis against the oracle.
         static int s_texDbg = -1;
-        if (s_texDbg < 0) s_texDbg = std::getenv("SB_FIFO_TEXDBG") != nullptr ? 1 : 0;
-        if (s_texDbg == 1) {
+        if (s_texDbg < 0) { const char* e = std::getenv("SB_FIFO_TEXDBG"); s_texDbg = e ? std::atoi(e) : 0; }
+        if (s_texDbg >= 1) {
             static int n = 0;
-            if (n < 40) {
+            if (n < (s_texDbg > 1 ? 100000 : 40)) {
                 std::fprintf(stderr,
-                    "[fifo-texbind] n=%d texmap=%d gcAddr=0x%06X %ux%u fmt=%u ver=%u\n",
-                    ++n, id, ts.baseAddr, w, h, fmt, texDataVersion);
+                    "[fifo-texbind] n=%d texmap=%d gcAddr=0x%06X %ux%u fmt=%u ver=%u mode1=0x%06X\n",
+                    ++n, id, ts.baseAddr, w, h, fmt, texDataVersion, ts.mode1);
             }
         }
         auto pushBE16 = [&](std::uint16_t v) { out.push_back(v>>8); out.push_back(v&0xFF); };
@@ -531,7 +538,20 @@ std::vector<std::uint8_t> translate_frame(const FifoCapture& cap, std::uint32_t 
         pushBE32(h);
         pushBE32(fmt);
         pushBE32(0);          // tlut (none for now; LOAD_TLUT is a separate layer)
-        out.push_back(0);     // mipCount (base only; mode1 max_lod arrives via BP)
+        // Mip level count from the capture's own TexMode1 max_lod (Q4.4, bits
+        // [8:15]). Hardcoding 0 here made EVERY replayed texture base-only:
+        // GXTexObj_::mip_count() gates on the has_mips flag that LOAD_TEXOBJ
+        // derives from this byte, so mode1 arriving via BP was NOT enough (the
+        // 2026-07-14 seagull defect: trilinear-minified alpha-cutout sprites
+        // sampled the base level only -> tiny birds failed the GEQUAL-128
+        // cutout everywhere and vanished; the bigger one lost its downsampled
+        // grey markings). Clamp to the dimensionally-possible chain depth.
+        std::uint32_t maxLodInt = ((ts.mode1 >> 8) & 0xFF) >> 4;
+        std::uint32_t maxDim = w > h ? w : h;
+        std::uint32_t dimLevels = 0;
+        while ((maxDim >> dimLevels) > 1) ++dimLevels;
+        if (maxLodInt > dimLevels) maxLodInt = dimLevels;
+        out.push_back(static_cast<std::uint8_t>(maxLodInt + 1));
         pushBE32(ts.baseAddr);      // texObjId: GC base addr uniquely names the object
         pushBE32(texDataVersion);   // re-binds after new data get a fresh version
     };
@@ -672,6 +692,11 @@ std::vector<std::uint8_t> translate_frame(const FifoCapture& cap, std::uint32_t 
                 std::uint32_t val = (std::uint32_t(src[pos+2]) << 16) |
                                     (std::uint32_t(src[pos+3]) << 8) | src[pos+4];
                 int tm = -1; bool isI0 = false;
+                // TexMode1 regs: 0x84-0x87 (texmap 0-3), 0xA4-0xA7 (texmap 4-7)
+                // — min/max lod; needed so the synthesized LOAD_TEXOBJ carries
+                // the real mip chain depth (see emitTexObj).
+                if (reg >= 0x84 && reg <= 0x87) { texSlots[reg - 0x84].mode1 = val; }
+                else if (reg >= 0xA4 && reg <= 0xA7) { texSlots[reg - 0xA4 + 4].mode1 = val; }
                 if (reg >= 0x88 && reg <= 0x8B) { tm = reg - 0x88; isI0 = true; }
                 else if (reg >= 0xA8 && reg <= 0xAB) { tm = reg - 0xA8 + 4; isI0 = true; }
                 else if (reg >= 0x94 && reg <= 0x97) { tm = reg - 0x94; }
