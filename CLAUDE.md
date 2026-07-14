@@ -163,6 +163,11 @@ mixer into `sb_audio_frame` (game is silent by omission).
 `/analyze-rom` · `/build` · `/update-docs` · `/patch-func ADDR` (recomp-era skills are stale
 pending cleanup).
 
+## Codemap
+
+`docs/codemap.md` — what is where, what's done, what's missing. Consult at task START;
+update in the SAME commit that lands/changes a subsystem.
+
 ## Findings registry
 
 Learned a non-obvious fact worth keeping? Add it to `debug_journal/<date>_<topic>.md` and
