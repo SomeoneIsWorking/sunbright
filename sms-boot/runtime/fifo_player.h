@@ -91,6 +91,9 @@ struct FifoFrame {
 // (Dolphin's FifoDataFile writes header.bpMemSize = BP_MEM_SIZE = 256, then
 // WriteArray(m_BPMem) writes 256 u32s = 1024 bytes). The byte size is count*4.
 // texMem is the exception: it's a u8 array, so texMemSize IS the byte size.
+// ENDIANNESS: these snapshots are Dolphin's host-endian (LITTLE-endian) state
+// arrays written raw — unlike the command stream and memoryUpdates, which are
+// GC big-endian. Verified empirically (see preload_state).
 struct FifoCapture {
     std::vector<std::uint8_t> fileData;        // the whole file, kept alive
     const DffFileHeader* header = nullptr;

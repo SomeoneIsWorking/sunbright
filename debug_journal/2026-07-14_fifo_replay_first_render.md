@@ -143,3 +143,43 @@ sb_fifo_replay_run() sets it automatically. Verified: two runs byte-identical
   journal note applies to the SETTLED title steady-state only.
 - "inXY=0" in the NDC probe is NOT proof a draw is invisible: giant triangles with all
   verts outside the frustum still rasterize across the screen (the dome's do).
+
+---
+
+# Fail-fast sweep (same day, user directive): silent skips/fails/fallbacks BANNED
+
+All soft paths found this session became crashes (aurora 7096122, sunbright commit):
+
+- aurora CHECK was an NDEBUG no-op — every contract/bounds validation silently
+  vanished from Release builds. Now fatal in all builds.
+- Pipelines compile SYNCHRONOUSLY by default; the async draw-skip default is gone
+  (SB_ASYNC_PIPELINES=1 opt-in replaces SB_SYNC_PIPELINES). bind_pipeline crashes if a
+  draw ever reaches a missing pipeline.
+- LOAD_INDX copy_xf_data failure → fatal. Instantly exposed a REAL aurora bug: the
+  posmtx branch wrote its matrix but was missing `return true`, so every position-matrix
+  indexed load had been reporting failure (silently, since the failure log was
+  NDEBUG-gated). Fixed.
+- The always-on PosMtx sub-copy CHECK then exposed a REAL preload bug in the replay:
+  preload_state sent Dolphin's xfRegs (XF registers, 0x1000-0x1057) to XF address 0x0000
+  — position-matrix memory — corrupting it at frame start. Also: the .dff snapshots
+  (bpMem/cpMem/xfMem/xfRegs) are LITTLE-endian (Dolphin host arrays written raw), not
+  GC BE — verified empirically (xfRegs[0x20] = 0.003125 LE vs -4e8 BE; bpMem[0x40] =
+  0x1F LE = classic zmode). preload_state now reads LE, sends xfRegs to 0x1000, and
+  preloads xfMem (0x0000-0x067F) in per-object chunks matching copy_xf_data granularity.
+  Both bugs were fully masked on the title capture (in-frame state rewrites cover them)
+  — output stayed byte-identical — but they'd corrupt any capture that depends on
+  initial state.
+- fifo_player fatals (were warns/silent): unknown opcode (stream desync), CI-format
+  bind without TLUT synthesis, Z/exotic EFB-copy format, memory update outside MEM1,
+  unhandled memupdate type (e.g. TMEM), aurora_begin_frame failure mid-replay.
+
+Verified after the sweep: replay output byte-identical to pre-sweep; native boot to
+settled title clean (SB_NO_FASTBOOT; note the default fastboot destination OSPanics at
+the unported TMapObjTree::initMapObj — pre-existing, loud, correct). One unreproduced
+observation: a no-ROM aborted run printed a Tint "SPIRV %bswap16 Operand cannot be a
+type" error once; did NOT reproduce on real boots or replays — if it resurfaces, it's
+the tint-vertex-fetch-helper class again (see 2026-07-11 landmine memory).
+
+NOTE (settled-title observation, needs follow-up): the native settled-title dump taken
+during verification shows the SUNSHINE logo letters WITH their blue sea/sky fill —
+the 2026-07-11 "logo letters lack environment-reflection fill" memory may be stale.
