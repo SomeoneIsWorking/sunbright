@@ -87,6 +87,32 @@ the CPU probe:
 So the SOURCE agrees with the CPU math that puts the birds on-screen, yet zero
 fragments come out.
 
+## 2026-07-15 REFRAME: bug is PHASE-SPECIFIC, not a general aurora defect
+
+Oracle-vs-replay proven both ways with the new headless fork playback
+(tools/oracle/record_fifo.sh; oracle PNGs via the fork's DumpFramesAsImages):
+- **Settled title (title_press_start.dff, recaptured settled)**: our aurora replay renders
+  the seagulls CORRECTLY — birds by PRESS and by STAR match the Dolphin oracle
+  (scratch/bin/ps_replay_vs_oracle.png). So aurora's bird vertex path is NOT fundamentally
+  broken.
+- **Mid-fly-in (title_settled.dff)**: oracle shows 2 birds (mid-left grey bird + bottom-left)
+  that our replay DROPS (scratch/bin/ts_replay_vs_oracle.png). REAL miss, but only at this
+  animation phase.
+So the defect is a phase/instance-specific zero-fragment drop, NOT "aurora can't draw birds."
+It reproduces in title_settled.dff (failing birds #133-135) while OTHER bird draws in the
+SAME frame render (the earlier "2 of 4" split) AND all birds render in the settled capture.
+This gives a clean passing-vs-failing pair to diff.
+- Falsified this session too: **SB_NO_MERGE=1** (never merge draws) changes ZERO pixels on
+  title_settled.dff → draw-merge uniform/array reuse is NOT the cause.
+
+NEXT (when resumed): diff a FAILING bird draw (title_settled.dff #133) vs a PASSING one
+(#137-138 same frame, or any bird in title_press_start.dff) at the vertex level — same
+GX state, both CPU-project on-screen, so the trigger is whatever differs (bone matrix
+values / PNMTXIDX slot / vertex indices) interacting with the GPU fetch. The settled-vs-
+flyin difference is the strongest lever: find which per-draw field flips between the phase
+where it renders and the phase where it doesn't. NOT gate-blocking (settled title is
+correct); a real animation-phase residual.
+
 ## Session 3 additions: uniforms verified, driver exonerated — it's the draw execution
 
 - **lavapipe reproduces it**: `VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json`
