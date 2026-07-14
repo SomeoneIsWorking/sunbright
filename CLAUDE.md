@@ -144,8 +144,10 @@ re-open title-color/logo investigations** (J2D bounds, duotone overlays, EFB-sna
 composites, mBlack bisects, titleDraw state-machine diffs, the "293-vs-1258 sparse scene"
 theory) — all were measured off misread dumps and are falsified there. Any future title work
 must use the now-default (RGBA8, color-correct) dumps. Minor real residuals (cosmetic, not
-blocking): native whole-frame ~15-25 levels brighter than oracle; PRESS START prompt and
-"SUNSHINE" word at different animation phase. One outstanding structural note (perf wart, not
+blocking): PRESS START prompt and "SUNSHINE" word at different animation phase; seagulls
+missing at settle. The old "~15-25 levels brighter" residual is RESOLVED (2026-07-14): it
+was the phantom mBlack decomp constant (debug_journal/2026-07-14_blocky_letters_mblack.md);
+settled whole-frame means now within 3 levels of the boot oracle (143,178,204 vs 146,178,201). One outstanding structural note (perf wart, not
 parity-blocking): a phase-1 ghost pass double-draws each DrawBuf under stale ortho
 (`SB_SKIP_GHOST=1` drops it with bit-identical output).
 

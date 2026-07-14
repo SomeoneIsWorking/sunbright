@@ -30,6 +30,10 @@ src 640×448@(0,0), stride 1280 B (=640 px YUYV), yscale 0x100 (unity → 448 XF
 
 ## Brightness excess: display-copy stage RULED OUT
 
+RESOLVED later same day: the brightness excess was the phantom mBlack overlay constant
+(see 2026-07-14_blocky_letters_mblack.md) — after that fix, settled whole-frame means are
+within 3 levels of the full-boot Dolphin oracle (143,178,204 vs 146,178,201). The
+analysis below (ruling out the display-copy stage) remains valid:
 The known native-title ~15-25-level whole-frame brightness excess is NOT the display
 copy: gamma is linear (00) on every captured frame, and the 7-tap vfilter is
 unity-normalized (redistributes between rows, adds nothing). Diagnose upstream
