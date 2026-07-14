@@ -72,6 +72,25 @@ layout; mat3x4 postex_mtx row/column convention for the `vec4f(pos,1) * mtx` pro
 uniform offset misalignment shifting postex_mtx for draws whose ubuf layout includes
 optional blocks (loadsTevReg bitset, lighting).
 
+## WGSL source audit (done, session 2): consistent — needs a GPU capture next
+
+The bird pipeline is `scratch/wgsl/pipeline_530c51bd37db0ffa.wgsl` (SB_DUMP_WGSL over
+the replay; identified by the unique stride-9 layout). Verified line-by-line against
+the CPU probe:
+- vertex fetch: pnmtxidx u8 @+0 (shift+mask, `/3u`), pos INDEX16 @+1 (S16 frac 8),
+  nrm @+3 (frac 14), clr0 @+5 (rgba8 array), tex0 @+7 (S16 frac 8) — byte-identical
+  to the probe's walker offsets.
+- transform: `vec4f(in_pos,1) * postex_mtx[idx]` with mat3x4 columns = GC rows =
+  exactly the probe's row dot products; proj likewise; reversed-z `out.pos.z = -z`.
+- uniform struct offsets (vtx_start..array_start[12]=80B, proj@80, postex_mtx@144,
+  20×48B, nrm_mtx 10×48B) match shader_info.cpp's append order/alignment.
+So the SOURCE agrees with the CPU math that puts the birds on-screen, yet zero
+fragments come out. The divergence is below WGSL source level: driver/Tint compile,
+actual uniform bytes at bind time, or the draw not reaching submission. Next session:
+RenderDoc (or Dawn toggle dump) capture of the replay frame → inspect draw #133's
+bound uniform bytes + VS out, or add a transform-feedback-style debug (write out.pos
+to a storage buffer for windowed draws).
+
 ## Instruments added (aurora 6f20fc6, 6b003bd)
 
 - `SB_NO_ACMP=1` — global alpha-compare drop (pipeline-level bisect).
