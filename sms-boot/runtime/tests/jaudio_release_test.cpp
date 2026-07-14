@@ -26,6 +26,18 @@
 #include <cstdio>
 #include <cstring>
 
+// This narrow test links only sms-native/sms-gd/sms-assets (no sms-boot
+// runtime, no aurora::audio) and never drives a video/audio frame, so it
+// never reaches JASystem::DSPBuf::process's DsyncFrame2 call in practice --
+// but JASDSPBuf.cpp.o (part of sms-native) still references the symbol at
+// link time. The real body lives in sms-boot/runtime/jas_kernel_native.cpp
+// (audio milestone 1, docs/audio_native_mixer_plan.md); pulling that whole
+// TU in here would drag in gpMSound -> Application.cpp -> the full
+// TApplication/MarDirector/ScrnFader chain this test intentionally excludes.
+// A local link-satisfying stub is correct here: it's test-harness scaffold,
+// not a runtime seam a real boot could hit silently.
+void DsyncFrame2(u32, uintptr_t, uintptr_t) { }
+
 static int g_fail = 0;
 #define CHECK(cond, msg) do { \
 	if (!(cond)) { std::fprintf(stderr, "FAIL: %s\n", msg); g_fail = 1; } \

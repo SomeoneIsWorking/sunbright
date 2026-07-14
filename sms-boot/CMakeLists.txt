@@ -246,6 +246,7 @@ if(TARGET aurora_core)
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/frame_seam.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/trace_seq.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/audio_out.cpp"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/jas_kernel_native.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/watchdog.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/sdk_stubs.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/phase_track.cpp"
@@ -291,8 +292,10 @@ if(TARGET aurora_core)
         "$<LINK_GROUP:RESCAN,sms-native,sms-gd,sms-assets,$<TARGET_NAME_IF_EXISTS:sms-bootstubs>>"
         aurora::core
         aurora::gx
-        # aurora::audio removed upstream; sb_audio_frame is a no-op until the JAS
-        # DSP-frame mixer arc lands. Re-add the (then-current) audio target then.
+        # Audio milestone 1 landed (docs/audio_native_mixer_plan.md): the JAS
+        # KERNEL now runs natively and pushes dac[] buffers to aurora::audio via
+        # sb_jas_kernel_frame (sms-boot/runtime/jas_kernel_native.cpp).
+        aurora::audio
         aurora::main
         aurora::vi
         aurora::os

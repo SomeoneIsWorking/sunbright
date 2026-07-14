@@ -1,19 +1,22 @@
 // audio_out.cpp — per-frame host audio pump, called once per VIWaitForRetrace
 // from the frame seam.
 //
-// Output path: JAS mixer -> aurora_audio_push (SDL3 audio stream, see
-// extern/aurora/include/aurora/audio.h). The GC pipeline synthesized samples
-// in DSP ucode (JASystem AudioThread -> DSPBuf -> AI DMA); that mixer is NOT
-// ported yet — reference/sms's dspproc/dsptask TUs are PPC-DSP register code
-// with no native body, and JASystem::AudioThread::audioproc returns null under
-// SMS_NATIVE_PLATFORM. Until the native mixer arc lands, this pump has nothing
-// to push and the game is silent BY OMISSION, not by design.
-//
-// Mixer arc (next audio milestone): port Kernel::updateDac + the DSP-frame
-// synth (channel mixing, ADPCM decode) to native C, call it here for one
-// frame's worth of 32 kHz stereo S16, aurora_audio_open on first samples,
-// pace against aurora_audio_queued_frames().
+// Milestone 1 (docs/audio_native_mixer_plan.md) landed: the decomp's own JASystem
+// KERNEL (Kernel::init/updateDac/vframeWork, DSPBuf's triple-buffer pipeline,
+// TDSPChannel::updateAll) now runs synchronously on the game thread, driven from
+// here — see sms-boot/runtime/jas_kernel_native.cpp for the full call-chain
+// writeup. The one still-missing piece is the DSP-ucode VOICE RENDERER itself
+// (DsyncFrame2, the Zelda-ucode per-voice mix — milestone 2): it's a documented
+// LOUD seam that silences its output buffers, so the game is silent by an
+// explicit, tracked gap, not by omission. Once milestone 2 lands, no change is
+// needed here — DsyncFrame2 starts producing real samples and this pump starts
+// forwarding real audio automatically (registerDacCallback wiring already carries
+// whatever Kernel::vframeWork() produces to aurora::audio).
+
+extern "C" void sb_jas_kernel_init(void);
+extern "C" void sb_jas_kernel_frame(void);
 
 extern "C" void sb_audio_frame(void) {
-    // No native mixer yet — see header comment.
+    sb_jas_kernel_init();
+    sb_jas_kernel_frame();
 }

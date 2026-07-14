@@ -93,16 +93,15 @@ const TNerveSBH_SleepContinue& TNerveSBH_SleepContinue::theNerve() { static TNer
 //      native port in sms-boot/runtime/hx_wipe.cpp (was stubbed here). ----
 
 // ---- low-level DSP/audio (JSystem/dspproc.h, dsptask.h) ----
-// INTENTIONAL SEAM: part of the documented audio-silence gap (CLAUDE.md "Named audio
-// arc" — the JAS DSP-frame mixer is not ported yet; output = aurora::audio via
-// sb_audio_frame). These raw DSP-hardware mailbox/mixer primitives have no meaning
-// until that port lands; no loud stub here duplicates the already-tracked audio gap.
+// INTENTIONAL SEAM: raw GC-DSP-hardware mailbox primitives with no PC meaning —
+// there is no DSP to boot/halt/mail. DsyncFrame2 (the actual per-buffer ucode
+// render call, i.e. the audio milestone-2 voice-renderer seam) now has a real,
+// documented, LOUD body in sms-boot/runtime/jas_kernel_native.cpp — not stubbed here.
 void DSPReleaseHalt() {}
 void DsetMixerLevel(float) {}
 void DsetupTable(u32, u32, u32, u32, u32) {}
 void DspBoot(void (*)(void*)) {}
 void DspFinishWork(u16) {}
-void DsyncFrame2(u32, u32, u32) {}
 
 // ---- matrix / effect helpers (MarioUtil/MtxUtil.hpp, Enemy/FeetInv.hpp) ----
 // SILENT LANDMINE class: these leave their MtxPtr/J3DModel out-params untouched (not
