@@ -452,6 +452,40 @@ std::vector<std::uint8_t> translate_frame(const FifoCapture& cap, std::uint32_t 
     std::uint32_t bpCopySrcXY = 0;     // 0x49: x=bits 0-9, y=bits 10-19
     std::uint32_t bpCopySrcWH = 0;     // 0x4A: (w-1)=bits 0-9, (h-1)=bits 10-19
     std::uint32_t bpCopyDest  = 0;     // 0x4B: dest phys addr >> 5
+    std::uint32_t bpCopyStride = 0;    // 0x4D: dest stride in 32-byte units
+    std::uint32_t bpCopyYScale = 0x100; // 0x4E: vertical scale, 0x100 = unity
+
+    // Seed the copy trackers from the file-wide BP snapshot (LE u32 elements,
+    // low 24 bits = register value): a capture may rely on copy regs written
+    // before recording started, so tracker defaults alone would be stale.
+    {
+        auto bpSnap = [&](std::uint32_t reg) -> std::uint32_t {
+            if (reg < cap.bpMemCount) {
+                const std::uint8_t* p = cap.bpMem + reg * 4u;
+                return ((std::uint32_t)p[0] | ((std::uint32_t)p[1] << 8) |
+                        ((std::uint32_t)p[2] << 16));
+            }
+            return 0;
+        };
+        bpCopySrcXY = bpSnap(0x49);
+        bpCopySrcWH = bpSnap(0x4A);
+        bpCopyDest  = bpSnap(0x4B);
+        bpCopyStride = bpSnap(0x4D);
+        if (std::uint32_t ys = bpSnap(0x4E) & 0x1FF) bpCopyYScale = ys;
+    }
+
+    // GXGetNumXfbLines (SDK GXFrameBuf.c): number of XFB lines a display copy
+    // emits, from the EFB source height and the 0x4E y-scale register. Same
+    // formula as aurora's gx_get_num_xfb_lines (anon-ns there, so local copy).
+    auto numXfbLines = [](std::uint32_t height, std::uint32_t scale) {
+        std::uint32_t actual = ((height - 1) * 0x100u) / scale + 1;
+        std::uint32_t s = scale;
+        if (s > 0x80 && s < 0x100) {
+            while (s % 2 == 0) s /= 2;
+            if (height % s == 0) ++actual;
+        }
+        return actual > 0x400u ? 0x400u : actual;
+    };
 
     // Emit a GX_AURORA_LOAD_TEXOBJ for texmap `id` from its tracked state.
     auto emitTexObj = [&](int id) {
@@ -661,7 +695,9 @@ std::vector<std::uint8_t> translate_frame(const FifoCapture& cap, std::uint32_t 
                 if (reg == 0x49) bpCopySrcXY = val;
                 else if (reg == 0x4A) bpCopySrcWH = val;
                 else if (reg == 0x4B) bpCopyDest = val;
-                else if (reg == 0x52 && ((val >> 14) & 1u) == 0 &&
+                else if (reg == 0x4D) bpCopyStride = val;
+                else if (reg == 0x4E) bpCopyYScale = val & 0x1FF;
+                else if (reg == 0x52 &&
                          std::getenv("SB_FIFO_NO_COPYSYN") == nullptr) {
                     // SB_FIFO_NO_COPYSYN=1 (diagnostic): skip EFB-copy synthesis
                     // so copy-fed texture binds fall back to decoding the
@@ -669,43 +705,73 @@ std::vector<std::uint8_t> translate_frame(const FifoCapture& cap, std::uint32_t 
                     // captured) instead of aurora's live EFB resolve. A/B
                     // isolates "copy plumbing wrong" from "copied content wrong":
                     // frame-feedback textures bootstrap from record-time pixels.
-                    // Texture copy (copy_to_xfb==0): synthesize the aurora copy
-                    // opcodes BEFORE the 0x52 passthrough triggers copy_tex().
+                    // Synthesize the aurora copy opcodes BEFORE the 0x52
+                    // passthrough triggers copy_tex().
                     // UPE_Copy: target_pixel_format=bits 3-6 (tp_realFormat =
-                    // tpf/2 + (tpf&1)*8), half_scale=bit 9, clear=bit 11.
+                    // tpf/2 + (tpf&1)*8), half_scale=bit 9, clear=bit 11,
+                    // copy_to_xfb=bit 14.
                     std::uint32_t srcX = bpCopySrcXY & 0x3FF;
                     std::uint32_t srcY = (bpCopySrcXY >> 10) & 0x3FF;
                     std::uint32_t srcW = (bpCopySrcWH & 0x3FF) + 1;
                     std::uint32_t srcH = ((bpCopySrcWH >> 10) & 0x3FF) + 1;
-                    std::uint32_t tpf = (val >> 3) & 0xF;
-                    std::uint32_t fmt = tpf / 2 + (tpf & 1) * 8;
-                    bool halfScale = ((val >> 9) & 1u) != 0;
-                    std::uint32_t dstW = halfScale ? srcW / 2 : srcW;
-                    std::uint32_t dstH = halfScale ? srcH / 2 : srcH;
-                    if (fmt >= 8) {
-                        // FAIL FAST: Z/exotic copy formats are not handled by
-                        // the synthesis; passing them through would misresolve
-                        // and pollute downstream sampling. (Was a warn.)
-                        std::fprintf(stderr,
-                            "[fifo_player] FATAL: EFB copy with Z/exotic real-format %u "
-                            "(tpf=%u, trigger val=0x%06X) -- implement this format's "
-                            "synthesis before replaying this capture\n",
-                            fmt, tpf, val);
-                        std::abort();
-                    }
                     auto pushBE16 = [&](std::uint16_t v) { out.push_back(v>>8); out.push_back(v&0xFF); };
                     auto pushBE32 = [&](std::uint32_t v) { for(int i=3;i>=0;--i) out.push_back((v>>(i*8))&0xFF); };
                     auto pushBE64 = [&](std::uint64_t v) { for(int i=7;i>=0;--i) out.push_back((v>>(i*8))&0xFF); };
-                    out.push_back(GX_AURORA);
-                    pushBE16(GX_AURORA_LOAD_COPY_SRC);
-                    pushBE32(srcX); pushBE32(srcY); pushBE32(srcW); pushBE32(srcH);
-                    out.push_back(GX_AURORA);
-                    pushBE16(GX_AURORA_LOAD_COPY_DST);
-                    pushBE32(dstW); pushBE32(dstH); pushBE32(fmt);
-                    std::uint32_t destAddr = (bpCopyDest & 0x00FFFFFFu) << 5;
-                    out.push_back(GX_AURORA);
-                    pushBE16(GX_AURORA_LOAD_COPY_DEST);
-                    pushBE64(reinterpret_cast<std::uint64_t>(shadow.host(destAddr)));
+                    if (((val >> 14) & 1u) != 0) {
+                        // Display copy (copy_to_xfb): the EFB rect resolved to
+                        // the XFB VI scans out. Dest width from the stride reg
+                        // (32-byte units, 2 B/px YUYV), line count from the
+                        // y-scale reg via GXGetNumXfbLines. No LOAD_COPY_DEST:
+                        // aurora's BP-0x52 copy_to_xfb path keys the resolve
+                        // on its internal kDisplayCopyDest sentinel and
+                        // latches it as the present source. fmt=RGBA8 mirrors
+                        // aurora's native GXSetDispCopyDst (the XFB's YUYV
+                        // scan-out format isn't a GXTexFmt; aurora presents
+                        // through a plain RGBA8 render texture).
+                        if (bpCopyStride == 0 || bpCopyYScale == 0) {
+                            std::fprintf(stderr,
+                                "[fifo_player] FATAL: display copy with degenerate stride=%u "
+                                "yscale=%u (trigger val=0x%06X) -- capture preload or reg "
+                                "tracking is wrong\n", bpCopyStride, bpCopyYScale, val);
+                            std::abort();
+                        }
+                        std::uint32_t dstW = bpCopyStride * 32u / 2u;
+                        std::uint32_t dstH = numXfbLines(srcH, bpCopyYScale);
+                        out.push_back(GX_AURORA);
+                        pushBE16(GX_AURORA_LOAD_COPY_SRC);
+                        pushBE32(srcX); pushBE32(srcY); pushBE32(srcW); pushBE32(srcH);
+                        out.push_back(GX_AURORA);
+                        pushBE16(GX_AURORA_LOAD_COPY_DST);
+                        pushBE32(dstW); pushBE32(dstH); pushBE32(6 /* GX_TF_RGBA8 */);
+                    } else {
+                        // Texture copy (copy_to_xfb==0).
+                        std::uint32_t tpf = (val >> 3) & 0xF;
+                        std::uint32_t fmt = tpf / 2 + (tpf & 1) * 8;
+                        bool halfScale = ((val >> 9) & 1u) != 0;
+                        std::uint32_t dstW = halfScale ? srcW / 2 : srcW;
+                        std::uint32_t dstH = halfScale ? srcH / 2 : srcH;
+                        if (fmt >= 8) {
+                            // FAIL FAST: Z/exotic copy formats are not handled by
+                            // the synthesis; passing them through would misresolve
+                            // and pollute downstream sampling. (Was a warn.)
+                            std::fprintf(stderr,
+                                "[fifo_player] FATAL: EFB copy with Z/exotic real-format %u "
+                                "(tpf=%u, trigger val=0x%06X) -- implement this format's "
+                                "synthesis before replaying this capture\n",
+                                fmt, tpf, val);
+                            std::abort();
+                        }
+                        out.push_back(GX_AURORA);
+                        pushBE16(GX_AURORA_LOAD_COPY_SRC);
+                        pushBE32(srcX); pushBE32(srcY); pushBE32(srcW); pushBE32(srcH);
+                        out.push_back(GX_AURORA);
+                        pushBE16(GX_AURORA_LOAD_COPY_DST);
+                        pushBE32(dstW); pushBE32(dstH); pushBE32(fmt);
+                        std::uint32_t destAddr = (bpCopyDest & 0x00FFFFFFu) << 5;
+                        out.push_back(GX_AURORA);
+                        pushBE16(GX_AURORA_LOAD_COPY_DEST);
+                        pushBE64(reinterpret_cast<std::uint64_t>(shadow.host(destAddr)));
+                    }
                 }
             }
             out.insert(out.end(), src + pos, src + pos + std::min(5u, end - pos));
@@ -772,11 +838,12 @@ int replay(const FifoCapture& cap) {
         std::fflush(stdout);
         ++rendered;
     }
-    // Pump two empty frames so async readbacks queued on the last replay frame
-    // (SB_DUMP_FRAME's buffer map) resolve before the device is destroyed --
-    // without this the dump aborts with "Buffer was destroyed before mapping
-    // was resolved" and writes nothing.
-    for (int i = 0; i < 2; ++i) {
+    // Pump empty frames so async readbacks resolve before the device is
+    // destroyed -- without this the dump aborts with "Buffer was destroyed
+    // before mapping was resolved" and writes nothing. One readback resolves
+    // per present, and SB_DUMP_FRAME_EVERY=1 queues one per replayed frame,
+    // so pump 2 + one per replayed frame.
+    for (int i = 0; i < 2 + rendered; ++i) {
         if (!aurora_begin_frame()) break;
         aurora_end_frame();
     }
