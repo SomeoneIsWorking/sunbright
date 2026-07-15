@@ -1,5 +1,30 @@
 # 2026-07-15 — File-select parity vs the oracle: mostly faithful, 3 real residuals
 
+## ✅ MATCHED-STATE COMPARISON DONE RIGHT — isolates the ONE real render divergence: MARIO PALENESS
+
+The sound matched-state test (native `SB_FIFO_REPLAY(fsel_try_7300.dff)` vs Dolphin FIFO-player playback
+of the SAME dff = `dolphin_fsel_true.png`) renders IDENTICAL recorded draws, so every pixel difference is
+PURE aurora render fidelity — ZERO state confound. Result (`scratch/shots/replay_matched.png`):
+- **FRAMING IS FAITHFUL.** Banner / shine×01 / New / A-B-C cubes / palm / OPTIONS sign / Mario all at the
+  SAME positions. ⇒ The "framing/OPTIONS-cut-off divergence" chased earlier was live-native GAME STATE
+  (camera pan position / capture timing) vs the dff's recorded moment — NOT a render bug. File-select
+  framing/projection is correct. (Watch the 1280×896 replay vs 640×480 dolphin XFB-scale when diffing
+  numerically — align visually, not by naive resize.)
+- **WATER**: native has the white speckle, dolphin is smooth turquoise = the known aurora EFB-copy REPLAY
+  artifact (separate; live-native water already matched true Dolphin, journal above).
+- **MARIO IS PALE/WASHED in native** (pale overalls) vs dolphin's vibrant blue+red — AT MATCHED STATE, same
+  draws (mario region dABS 40, the largest non-water). ⇒ a REAL aurora RENDER bug (lighting/TEV computation
+  renders the same Mario draws too bright/desaturated), NOT timing/game-logic. This is
+  [[mario-paleness-l1-not-cause-2026-07-04]] confirmed render-side ("attack L0/L2 diffuse").
+
+⇒ **THE file-select render target is now singular and real: fix Mario paleness in aurora's rendering.**
+Since the draws are identical to dolphin's, the divergence is how aurora PROCESSES Mario's lit draws
+(the ch0 diffuse light math / TEV / material), downstream of the GX state. NEXT RE: dump Mario's lit
+draws' full state from the replay (SB_DRAW_DUMP=1 SB_DRAW_DUMP_FRAME=<N> now uncapped + SB_TEV_DUMP) and
+compare aurora's computed lighting/TEV to what those GX commands should produce — the bug is in aurora's
+GX lighting/TEV eval (gx.cpp / shader gen), or an unapplied light/material reg. Everything below
+(paleness-as-ambient, framing-as-bug) is SUPERSEDED by this matched-state result.
+
 ## ❌ PALENESS LEAD FALSIFIED (2026-07-15, same day) — the draw_diff "0x28-absent" was a 200-cap ARTIFACT
 
 The lead below ("native never emits 0x28 ambient") is FALSE. Root cause of the false lead: `SB_DRAW_DUMP`
