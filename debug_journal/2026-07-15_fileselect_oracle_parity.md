@@ -17,6 +17,21 @@ PURE aurora render fidelity — ZERO state confound. Result (`scratch/shots/repl
   renders the same Mario draws too bright/desaturated), NOT timing/game-logic. This is
   [[mario-paleness-l1-not-cause-2026-07-04]] confirmed render-side ("attack L0/L2 diffuse").
 
+### RE REDIRECT (2026-07-15): paleness is AURORA-SIDE lighting eval, likely SKINNED NORMALS — not game-side L0/L2
+
+The prior RE ([[mario-paleness-l1-not-cause-2026-07-04]]) ruled out L1 + ambient and suspected GAME-SIDE
+L0/L2 diffuse. The matched-state result REFINES that: the REPLAY renders Mario pale using the `.dff`'s
+RETAIL GX light commands — game-side `TLightMario::setLight` is BYPASSED in replay. So the bug is NOT the
+game-side light setup; it's how AURORA EVALUATES the (correct, retail) lighting. And it's Mario-SPECIFIC
+(cubes/palm/static objects render fine in the same replay), and Mario is the only SKINNED object here ⇒
+prime suspect: aurora's per-vertex NORMAL handling for SKINNED draws (envelope/weighted normal matrix),
+which drives the diffuse `N·L`; wrong normals → wrong diffuse → over-bright/desaturated. (Note CLAUDE.md:
+GXLoadPosMtxIndx/GXLoadNrmMtxIndx3x3 are "verified non-degenerate" — so suspect the shader's normal
+TRANSFORM / lighting use, or normal renormalization, not the load.) NEXT: in the replay, compare a SKINNED
+lit draw (Mario) vs a NON-skinned lit draw (cube) — same lights — and inspect aurora's WGSL vertex-lighting
++ normal path (extern/aurora/lib/gx/shader.cpp / gx.cpp). This supersedes the "add SB_NO_L0/L2_LIGHT
+game-side toggles" plan (those act on game-side setLight, which replay doesn't use).
+
 ⇒ **THE file-select render target is now singular and real: fix Mario paleness in aurora's rendering.**
 Since the draws are identical to dolphin's, the divergence is how aurora PROCESSES Mario's lit draws
 (the ch0 diffuse light math / TEV / material), downstream of the GX state. NEXT RE: dump Mario's lit
