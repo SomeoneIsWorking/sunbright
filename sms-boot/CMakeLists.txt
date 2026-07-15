@@ -252,6 +252,7 @@ if(TARGET aurora_core)
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/phase_track.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/hx_wipe.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/pad_script.cpp"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/pin_state.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/fifo_player.cpp")
     set_target_properties(sms-boot PROPERTIES
         CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
