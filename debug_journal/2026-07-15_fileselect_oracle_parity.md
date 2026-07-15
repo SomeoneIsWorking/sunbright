@@ -171,8 +171,26 @@ Three findings that narrow it:
    sea-mirror snapshot, or still near-black?) and check whether the sea-MIRROR render pass + its
    `GXCopyTex` run and populate that texture. If they run and copy_tex populates it → the composite
    should already show reflection (chase why it doesn't). If not → wire the mirror pass (TMirrorCamera
-   / mirror draw-buffer → GXCopyTex into the composite's sampled texture). Tools: SB_BATCH_DBG,
-   per-draw tex-id + draw-dump. Live render-debugging — best fresh.
+   / mirror draw-buffer → GXCopyTex into the composite's sampled texture). Live render-debugging — best fresh.
+
+### Diagnostic pass 2 (2026-07-15): GXCopyTex FIRES — the copy machinery is active
+
+`SB_COPY_DBG=1` at native file-select: **GXCopyTex fires 2×/frame** — 1410 pairs over the run,
+strictly alternating `dest=A clear=1` then `dest=B clear=0` (two stable dests). Plus the separate
+disp-copy (640×448) for present. So the EFB→TEXTURE copy runs — residual #1 is NOT "the copy never
+happens." Narrows to: (a) does the copied CONTENT hold a real sea-mirror render (vs black/clear), and
+(b) does the `eb5c8e74` composite bind+sample that dest and produce the glare? The visible frame still
+shows flat turquoise water (no glint), so the reflection isn't reaching the pixels — break is in
+content, binding, or the composite's TEV/blend.
+
+**TOOLING GAP for the next step:** `SB_BATCH_DBG` (the batch-attribution dump that characterized
+`key=eb5c8e74`, `texmean0=9,9,9,9` in 2026-06/07) is RETIRED — it no longer exists. And `SB_SKIP_MIRROR_*`
+is about the SKY material's GX_MIRROR texture-wrap quads, NOT the sea-mirror camera (red herring). So
+inspecting the composite draw's sampled-texture content now needs either shader-hash matching
+(`SB_SHADER_DUMP` prints `[draw-shader] hash=`; match hi32 `eb5c8e74`) OR re-adding per-draw batch
+attribution (bound tex-id + texmean) keyed to the copied dests A/B. That instrument is the WORKFLOW-FIRST
+prerequisite for the next diagnostic: dump the content of copied dests A/B and the composite's sampled
+tex0, to decide content-vs-binding-vs-TEV. Build that first, then diagnose.
 
 - For a clean quantified pixel diff, first fix the capture-height mismatch (dump native at
   448 or the oracle at 480) — the 960-vs-896 misalignment inflated the earlier 67% number.
