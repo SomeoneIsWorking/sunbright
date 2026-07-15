@@ -192,5 +192,33 @@ attribution (bound tex-id + texmean) keyed to the copied dests A/B. That instrum
 prerequisite for the next diagnostic: dump the content of copied dests A/B and the composite's sampled
 tex0, to decide content-vs-binding-vs-TEV. Build that first, then diagnose.
 
+### Diagnostic pass 3 (2026-07-15): the copy-sampling composite contributes ~NOTHING to the water
+
+`SB_SKIP_COPY_QUAD=1` (drops every draw flagged `g_sbDrawSamplesCopy` = samples an EFB-copy texture)
+vs the baseline: the WATER region changes by <0.05 per channel (mean base [98.5,200.9,207.9] →
+skip [98.5,200.8,207.9]); only 1.37% of water pixels move at all. ⇒ The EFB-copy-sampling
+composite produces essentially NO visible water output in native right now. Combined with the flat
+turquoise water (no glint), the sea-mirror reflection is simply not being produced — even though
+GXCopyTex fires (pass 2) and the drop is retired (re-scope). So the copied texture the composite
+samples is empty/black, OR the composite isn't the sea one / isn't flagged as a copy-sampler.
+(HONESTY CAVEAT: this test only drops draws detected as copy-samplers; if the sea composite isn't
+so-detected it wasn't dropped and this is inconclusive FOR THAT DRAW — but the water is flat either
+way, so the reflection is absent regardless.)
+
+Also clarified: `SB_SHADER_HASH` prints `xxh3(shaderConfig)`, NOT the old `eb5c8e74` shaderKey — so
+it can't match the historical key directly.
+
+### ⛔ Residual 1 is now at the DIAGNOSIS→IMPLEMENTATION boundary (fresh session / user priority call)
+
+Everything reversible/diagnostic is done. Ruled out: missing copy (fires 2×/frame), the retired
+force-drop, and "composite already works" (it contributes ~nothing). What remains is IMPLEMENTATION:
+render the sea-MIRROR view of the scene into a texture (TMirrorCamera / the mirror draw-buffer) →
+GXCopyTex it → ensure the `eb5c8e74` composite samples THAT and blends it visibly. This is the same
+unported machinery as the title's mirror-capture + logo-reflection EFB copies (renderer-doctrine
+sanctions the seam). It's a substantial rendering feature, not a continuation edit — worth a fresh
+session and possibly a priority check (finish this vs. move to the Delfino/gameplay arc or the audio
+arc). Start by REVERSE-ENGINEERING how retail renders the file-select sea reflection (which camera/
+draw-buffer, what it copies, what the composite's TEV expects) before writing any native pass.
+
 - For a clean quantified pixel diff, first fix the capture-height mismatch (dump native at
   448 or the oracle at 480) — the 960-vs-896 misalignment inflated the earlier 67% number.
