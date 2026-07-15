@@ -39,18 +39,33 @@ to grep — use `grep -a` for the Shift-JIS perform-list names) shows the fix DI
 overalls **shoulder straps are now correctly deep blue** (the fix helped), but the **bib/body reads
 pale/white** (0 deep-blue px in a tight crop) with dark blotches.
 
-⚠️ CAUSE NOT CONFIRMED — do not treat as the ambient gap yet. An earlier draft of this note blamed
-"ch0 amb=(1.0) vs retail 0.5", but the frame-1250 dump shows the SAME Mario material (tex 256²,
-tev=5) appears at BOTH amb=0.5 (97×) and amb=1.0 (49×) in one frame — consistent with the known
-**multi-pass render** (main scene + the retail reflection/mirror pre-pass, memory
-[[session16-perpass-fingerprint]]), i.e. amb=1.0 is likely a legitimate SEPARATE pass, not a
-per-Mario ambient error. Also the crouch/settling pose confounds the color read (crossed arms +
-white gloves occlude the bib center). So the live-native residual is real but its cause is OPEN.
-NEXT (do it right): capture live-native at a SETTLED, standing pose matched to a true oracle state
-(or use `--save-state-at`/`--load-state-at` on the fork for a pose-matched Dolphin render), isolate
-the MAIN-pass Mario overalls draw (not the reflection pass), and only then compare ambient / TEV /
-lights against the oracle. Do NOT claim the shipped game's Mario is fixed — only the aurora decode
-bug is fixed + replay-verified.
+### ✅ LIVE-NATIVE ROOT CAUSE FOUND (measured from oracle): L2 specular attenuation not set
+
+Compared the port's live-native Mario draw config against the retail `.dff` replay (both now go
+through the same fixed renderer, so any output diff = a GX-STATE diff the port's game logic
+produces). Ruled OUT ambient: the amb=1.0 draws are the MIRROR pass (`mark='DrawBuf Mirror Opa'`),
+the MAIN-scene Mario (`mark='buf?'`) is **amb=0.5, same as retail** — ambient is NOT the cause. The
+real divergence is **light L2's attenuation** (L2 = Mario's COLOR1 GX_AF_SPEC highlight light):
+- **retail L2**: `cosAtt=(0,0,1) distAtt=(25,0,-24)` — exactly `GXInitLightShininess(50)` (specular).
+- **live-native L2**: `cosAtt=(1,0,0) distAtt=(1,0,0)` — constant attenuation → SPEC attn evaluates
+  to ~1 (full) → L2 adds full white → washes Mario. (Same end-symptom as the decode bug, now the
+  cause is the port not setting L2's specular attenuation.)
+
+Located: `reference/sms/src/MarioUtil/LightUtil.cpp:277-281` (TLight setLight, GX_LIGHT2 block):
+```
+GXInitSpecularDir(&obj, -nrm.x, -nrm.y, -nrm.z);   // 277
+GXInitLightColor(&obj, col);
+GXInitLightAttn(&obj, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f);  // 281 — CONSTANT; overwrites specular
+```
+Line 281 sets constant attn where retail sets the shininess-50 specular coefficients. The FIX is to
+give L2 the specular attenuation (`GXInitLightAttn(&obj, 0,0,1, 25,0,-24)` = `GXInitLightShininess`
+50, matching the oracle). BUT this is a decomp-submodule game-logic change that MUST be verified
+first, NOT edited blind: (1) confirm this exact `setLight` is the path that runs for file-select
+Mario (multiple TLight subclasses exist); (2) check the decomp vs the retail disasm — either the
+decomp is genuinely wrong here or the port diverged from upstream doldecomp/sms (sync-first if
+upstream already has it right); (3) re-capture live-native after the edit and re-measure the
+overalls vs oracle. Do NOT claim the shipped game's Mario is fixed until (3) passes — only the
+aurora decode bug is fixed + replay-verified so far.
 
 ---
 _(original investigation notes below — kept; the "differing TEV input" NEXT was correct: it was
