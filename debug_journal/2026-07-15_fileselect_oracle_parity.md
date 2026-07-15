@@ -1,5 +1,20 @@
 # 2026-07-15 — File-select parity vs the oracle: mostly faithful, 3 real residuals
 
+## WATER SPECKLE (replay-oracle artifact) — pinned to ONE draw via new SB_SKIP_HASH tool
+
+The `.dff`-replay's file-select ocean renders as harsh white speckle (NOT in live-native — live water
+matches true Dolphin, so this is a REPLAY-ORACLE artifact, not a shipped-game bug). Built `SB_SKIP_HASH=
+<hex>[,...]` (aurora ad93196 — drop draws by shader-config hash, the only isolation available on the
+marker-less replay path) and pinned it: **hash `6f65bd280aa2fcc7`** — a screen-covering 4-vert quad, 2×/frame,
+sampling a **256×256 I4** texture with **minFilt=5 (LIN_MIP_LIN)**; its byte-identical SMOOTH sibling (draw
+#286, `7c53028b…`) differs ONLY in the sampler (minFilt=1 → LOD 0). Skipping the culprit removes the speckle
+(white% 75→0). So aurora is sampling this texture's upper MIPS as noise. Ruled out: mip_count too high
+(clamped to dim-max, no change — verified cold-start) and the I4 tile decode (offsets/padding correct).
+REMAINING cause (deep, replay-oracle-only): either the `.dff` doesn't carry this texture's mip DATA (garbage
+past level 0) or aurora's LOD/`lod_bias` (`tex0_size_bias.z` in the shader) over-selects mips vs GC. NEXT:
+dump this texObj's lod_bias/max_lod + the decoded mip levels; or test forcing LOD 0 for it (matches the
+sibling). Fixing it also cleans the `.dff` pixel oracle for the sea (which contaminated the Mario measure).
+
 ## ✅ MATCHED-STATE COMPARISON DONE RIGHT — isolates the ONE real render divergence: MARIO PALENESS
 
 The sound matched-state test (native `SB_FIFO_REPLAY(fsel_try_7300.dff)` vs Dolphin FIFO-player playback
