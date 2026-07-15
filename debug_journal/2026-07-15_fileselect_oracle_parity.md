@@ -32,6 +32,30 @@ lit draw (Mario) vs a NON-skinned lit draw (cube) — same lights — and inspec
 + normal path (extern/aurora/lib/gx/shader.cpp / gx.cpp). This supersedes the "add SB_NO_L0/L2_LIGHT
 game-side toggles" plan (those act on game-side setLight, which replay doesn't use).
 
+### TOOL COMPLETE (2026-07-15): fork `--load-state-at` renders a save state deterministically
+
+The matched-state oracle is now complete end-to-end (fork c26bbbe): `--save-state-at <field>` WRITES a
+reproducible .sav; `--load-state-at <field>` FRESH-boots + `State::LoadAs` mid-run (headless boot-FROM-state
+doesn't step the core) + renders + self-exits. Verified: renders file-select (water [96,188,201]),
+BIT-IDENTICAL across runs (meanABS 0.000). Also fixed the `is_set` vs `is_set_by_user` guard bug (optparse
+seeds defaults into the value map, so `!is_set("save_state_at")` was always false → dead block). Pipeline:
+save state → `--load-state-at`+DumpFrames = pixel oracle; save state → FIFO-record = matched draw oracle.
+
+### MARIO PALENESS RE — narrowed to aurora SKINNED-normal path (not the direct normal-matrix parse)
+
+Ruled out: aurora's direct XF normal-matrix parse (command_processor.cpp:328, addr 0x400-0x459) reads the
+3×3 correctly into pnMtx[].nrm and is SHARED with static objects (cubes render fine) ⇒ not the Mario bug.
+The shader normalizes mv_nrm (shader.cpp:1079) ⇒ not an un-normalized-normal over-brighten. So the
+Mario-specific factor is the INDEXED matrix path: skinned Mario loads per-vertex normal matrices via
+`CP_LOAD_INDX` (opcode ~0x28 → XF 0x400 range) from an in-memory array, NOT direct GXLoadNrmMtxImm.
+SUSPECT: aurora's indexed normal-matrix load writes/derives the wrong matrix (or the skinned normal ends
+up wrong) → wrong diffuse N·L → over-bright/washed. NEXT (needs fresh context — deep aurora XF/skinning):
+(a) use the shader normal-viz debug (shader.cpp:1625 `prev = vec4f(in.nrm, ...)`) or add a per-vertex mv_nrm
+dump on a Mario skinned draw to see if skinned normals are wrong vs static; (b) trace aurora's
+CP_LOAD_INDX handling for the XF-D (normal) matrix array; (c) with the tool now working, capture a matched
+Mario oracle (`--load-state-at` Dolphin render + FIFO-record→native replay) for a clean side-by-side.
+Cosmetic/non-blocking; well-characterized as aurora skinned-normal diffuse.
+
 ### DATA (2026-07-15): file-select Mario is NOT a ChrOpa draw — he's in the PERSPECTIVE scene buffers
 
 Uncapped full-frame dump of live-native file-select (frame 1200/1500, SB_DRAW_DUMP_FRAME + SB_TEV_DUMP):
