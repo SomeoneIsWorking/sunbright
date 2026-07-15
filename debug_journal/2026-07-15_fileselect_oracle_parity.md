@@ -1,6 +1,26 @@
 # 2026-07-15 — File-select parity vs the oracle: mostly faithful, 3 real residuals
 
-## 🔎 PALENESS LEAD (2026-07-15, via new tools/oracle/draw_diff.py) — ambient 0x80 vs 0x28 per light-set
+## ❌ PALENESS LEAD FALSIFIED (2026-07-15, same day) — the draw_diff "0x28-absent" was a 200-cap ARTIFACT
+
+The lead below ("native never emits 0x28 ambient") is FALSE. Root cause of the false lead: `SB_DRAW_DUMP`
+hard-caps at 200 draws (aurora command_processor.cpp), so the native log was the FIRST 200 draws only —
+and the 0x28-ambient draws (StaticMapObj SunOpa, ~1725× per the full-frame amb-trace) come LATER, so they
+were never in the sample. The earlier full-frame `amb-trace` (aurora GXSetChanAmbColor value log) PROVED
+native emits BOTH `80808000` (0x80, 15521×) AND `28282800` (0x28, 1725×) — matching the oracle's 0x80/0x28
+RGB. So native's ambient RGB is CORRECT; the per-light-set index is NOT the paleness bug. (The only ambient
+delta that stands is the ALPHA: native 0x..00 vs oracle 0x..ff — non-visible, the getAmbColor alpha-scale
+field nuance already noted.)
+
+TOOLING FIX (so this cap can't confound again): `SB_DRAW_DUMP=1 SB_DRAW_DUMP_FRAME=<N>` now dumps the FULL
+ch0 `[draw-dump]` line for exactly frame N, UNCAPPED (aurora: shared `s_ddFrameActive` gate). Use that, not
+bare SB_DRAW_DUMP (200-cap), for any full-frame native-vs-oracle draw_diff.
+
+**Paleness status: OPEN and possibly NOT REAL.** The palm-trunk [189,209,214] vs Dolphin [165,179,164]
+region box sits at the FRAME EDGE and native's value is BLUE-tinted (214 B) — likely SKY contamination in
+the box, not a real trunk difference. RE-VERIFY with a clean, sky-free trunk crop before treating paleness
+as a defect at all. Do NOT chase the per-light-set ambient index (falsified here).
+
+## (FALSIFIED — see above) PALENESS LEAD (2026-07-15, via new tools/oracle/draw_diff.py) — ambient 0x80 vs 0x28 per light-set
 
 Built `tools/oracle/draw_diff.py` (native-vs-oracle per-draw render-state diff, committed) to stop
 hand-grepping. First run (native-live SB_DRAW_DUMP vs oracle fsel_try_7300.dff replay, --group none):
