@@ -1,5 +1,35 @@
 # 2026-07-15 — File-select parity vs the oracle: mostly faithful, 3 real residuals
 
+## ✅✅ RESOLVED — FILE-SELECT PARITY COMPLETE vs the TRUE Dolphin oracle (2026-07-15, final)
+
+All three original residuals are resolved/dismissed, verified against a REAL Dolphin framedump
+(not the artifact-prone aurora replay):
+1. **Palm under-lit — FIXED** (the missing `TLightCommon::setLight` scene-ambient; see below).
+2. **A/B/C cubes under-lit — FIXED** (same ambient fix).
+3. **Ocean sun-glare — NOT A NATIVE DEFECT** (dismissed). It was entirely an aurora `SB_FIFO_REPLAY`
+   artifact. Captured the TRUE Dolphin render of file-select (fork `dolphin-emu-nogui -p headless -e
+   fsel_try_7300.dff -C Dolphin.Movie.DumpFrames=True` under Xvfb → `scratch/shots/dolphin_fsel_true.png`):
+   the true GC water is **turquoise** `[96.6,188.3,200.7]`, 5.3% whitish — and NATIVE water is
+   `[96,193,204]`, 7% whitish. They MATCH on every channel. The "prominent white water band" existed
+   ONLY in the aurora `.dff` replays (harsh speckle/whitewash from aurora mis-replaying the mirror /
+   frame-feedback EFB copies + the `eb5c8e74` composite). Native's water is faithful; there was no bug
+   to fix. TMapObjWave (faithful, subtle) and the EFB composite were both correctly NOT the cause.
+
+**Net:** native file-select renders faithfully vs the true Dolphin oracle (water, palm, cubes, Mario,
+sky, UI all match; only slot-A save-data differs = Dolphin memcard shine×01 vs native blank New, which
+is correct). The multi-pass RE (EFB-composite → TMapObjWave → wave.bti → oracle-validity) converged by
+ruling causes OUT honestly rather than landing a wrong fix for a non-existent defect.
+
+**Two follow-ups (NOT file-select-parity blockers, separate arcs):**
+- (minor) ambient ALPHA=0 vs 0xff — `getAmbColor` alpha-scale field nuance (0x18 vs 0x1C), non-visible.
+- (tooling) the aurora `SB_FIFO_REPLAY` mis-renders EFB-copy/composite water as speckle/whitewash — a
+  DIAGNOSTIC-tool fidelity bug (the .dff pixel oracle is unreliable for any scene with mirror/feedback
+  EFB copies). Worth fixing for future oracle work; independent of native game parity.
+
+---
+### (below: the investigation history that led here)
+
+
 User directive: file-select parity, compare against the oracle. Built the oracle harness,
 captured both sides at FULL RES, and compared. The file-select (stage-15 save-blocks,
 reached by pressing START at the title) renders the full beach/ocean/sky/palm scene + the
