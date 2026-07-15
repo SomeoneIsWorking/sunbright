@@ -10,3 +10,8 @@
 	path = extern/dolphin
 	url = https://github.com/dolphin-emu/dolphin.git
 	shallow = true
+[submodule "extern/dolphin_fork"]
+	path = extern/dolphin_fork
+	url = https://github.com/SomeoneIsWorking/dolphin.git
+	branch = sunbright
+	shallow = true

@@ -35,4 +35,3 @@ rom.rvz
 # Python bytecode
 __pycache__/
 *.pyc
-extern/dolphin_fork/
