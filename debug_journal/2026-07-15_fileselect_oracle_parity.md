@@ -648,3 +648,35 @@ several `SB_DUMP_FRAME_AFTER` values to catch Mario STANDING front-on (matching 
 compare overalls/hat saturation. Only then judge whether any real Mario desaturation exists. The mip
 `SB_SKIP_HASH`/dimension-clamp work (aurora ad93196) stays as correct robustness but was chasing the
 replay artifact — not a game-path fix.
+
+---
+
+## 🔴 CONFIRMED DEFECT (2026-07-15) — Mario overalls washed pale, vs TRUE oracle (Mario-specific, ADDITIVE signature)
+
+With a valid oracle for the first time, the Mario "paleness" is REAL (earlier sessions' "measurement
+artifact / leg matches 1.02" verdict was measured against the speckle-contaminated `.dff` replay — now
+falsified). Measured on the sitting file-select Mario (native `SB_STAGE=15`+START, frame 700 & 1400 both
+sitting) vs the true Dolphin oracle overalls:
+
+- native overalls bib: **RGB [144,166,180], sat 0.18, val 0.71** (pale grey-blue; even darkest-20% ≈ [134,175,165])
+- true oracle overalls: **RGB [20,52,150], sat 0.87, val 0.59** (deep saturated navy)
+
+**It is NOT the diffuse-light chain (L0/L1/L2) prior sessions chased.** GX shading is multiplicative:
+`out = matColor · clamp(ambIntensity·ambColor + Σlights, 0,1)`. To get native [144,166,180] from the
+oracle's effective matColor [20,52,150] would need lighting = [7.2, 3.2, 1.2] — impossible (clamped ≤1).
+The oracle's navy = matColor with lighting saturated to ~1. Native instead LIFTS R by +124 and G by +114
+while B is ~correct (180 vs 150). A disproportionate additive R+G lift cannot come from any multiplicative
+light term ⇒ the cause is ADDITIVE: a TEV stage adding a bright/const color, a wrong (washed/lighter)
+overalls TEXTURE bind, or a KONST/C-reg add — on Mario's material specifically.
+
+**Scoping — proven Mario-specific, not global:** file-select ENVIRONMENT (palm, A/B/C blocks, water, beach,
+sky — all lit 3D) is at parity with the true oracle (~10-12 levels); the 2D save-slot dialog renders deep
+saturated blue [40,74,225] (renderer CAN produce saturated blue). Only Mario's 3D material washes out.
+Pose is NOT the cause: the sitting bib faces up (more light) but that is a shading-angle effect, nowhere
+near a 7×/3× R/G lift; and native is pale at every captured frame.
+
+**NEXT RE STEP (retarget off the light chain):** dump Mario's overalls DRAW in native — the TEV stage
+combine (is there an ADD stage / KONST / C-reg contributing?), the bound texture (is the overalls texmap
+the right image, right format, not a washed/blank fallback?), and RASC vs TEXC inputs — and compare to the
+same draw in the oracle `.dff`. The additive R+G lift is the fingerprint to match. (Reuse SB_TEV_STOP /
+SB_LIGHT_DBG / the draw-dump tooling.) This is the concrete file-select parity arc now that water is closed.
