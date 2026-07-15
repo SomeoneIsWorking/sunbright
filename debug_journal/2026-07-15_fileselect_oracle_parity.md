@@ -804,3 +804,25 @@ NEXT (decisive, no premature theory): (1) `SB_LIGHT_DBG` the main overalls draw 
 positions native-vs-oracle; (2) extend `[draw-dump]` to emit TEV KONST + per-stage combine + all bound
 texmaps; (3) if all match, dump the overalls texture bytes native binds vs the `.dff`. Name the cause
 only after one of these shows the real divergence.
+
+### Further narrowing (2026-07-15) — overalls render STATE fully matches; cause is TEV-stage math or texture pixels
+
+Added per-draw `[dd-light]`/`[dd-konst]` to the draw-dump and compared the overalls draw
+(verts=23 tex0=64x128 tev=2 light=1) native-boot vs `.dff` replay:
+
+    NATIVE:  L0 col=(1,1,1) cosAtt=(1,0,0) distAtt=(1,0,0)  L1 col=(1,1,1) distAtt=0  K0=(0.298,0.424,0.380) K1-3=white
+    ORACLE:  L0 col=(1,1,1) cosAtt=(1,0,0) distAtt=(1,0,0)  L1 col=(1,1,1) distAtt=0  K0=(0.298,0.424,0.380) K1-3=white
+
+Light COLORS match (white), attn match, KONST match (K0 the distinctive 0.298/0.424/0.380). L0
+position differs only by pose/frame. Together with the already-matching matColor=white, ambient=0.5
+(main `buf?` draw), tex0 dims, tev-stage count, blend, and acmp — the overalls render STATE is
+identical native-vs-oracle. Yet the visible beach Mario is pale (native overalls sat 0.15 vs oracle
+0.69) while the replay renders navy. TWO fields remain unverified, and I will NOT guess between them
+(having already been wrong once with the ambient theory):
+1. **TEV per-stage combine ops** — `tev=2` (2 stages); the draw-dump shows the stage COUNT but not the
+   per-stage color/alpha op / inputs / which konst+texmap each stage uses. `SB_TEV_DUMP=1` dumps these.
+2. **The 64x128 overalls TEXTURE pixels** — native's loader may decode it washed vs the disc/Dolphin
+   bytes the `.dff` carries.
+NEXT: `SB_TEV_DUMP` the overalls draw native-vs-replay (if the stage math differs, that's it); if the
+TEV matches too, dump the 64x128 texture bytes native binds vs the `.dff`'s and diff them. Only then
+name the cause. Tooling in place: SB_DRAW_DUMP_ALL, [dd-light]/[dd-konst], SB_TEV_DUMP.
