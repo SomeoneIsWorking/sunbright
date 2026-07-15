@@ -41,7 +41,26 @@ BIT-IDENTICAL across runs (meanABS 0.000). Also fixed the `is_set` vs `is_set_by
 seeds defaults into the value map, so `!is_set("save_state_at")` was always false → dead block). Pipeline:
 save state → `--load-state-at`+DumpFrames = pixel oracle; save state → FIFO-record = matched draw oracle.
 
-### ✅ MARIO PALENESS — SURFACED by SB_TEV_STOP tool: aurora DYNAMIC DIFFUSE over-bright (~2× diffuse)
+### ⚠️ MARIO PALENESS — REASSESSED as MINOR/borderline; the dramatic version was MEASUREMENT ARTIFACT
+
+After building tools (SB_TEV_STOP, SB_LIGHT_DBG, SB_NRM_VIZ) and ruling out normals/ambient/L1/texture/
+matColor/TEV-op/dead-light, the FIX attempts didn't move Mario. Then the honest reassessment: the
+dramatic "washed white" was largely ARTIFACT, not a real render defect:
+- The `mario_matched_crop` that looked washed was native-replay (896) DOWNSCALED to 400H — the downscale
+  lightened/blurred Mario. At FULL RES (`scratch/shots/mariofix2_crop.png`) Mario renders FINE: red hat,
+  blue overalls, reasonably saturated.
+- The 1.24× (overalls) / 1.49× (hat) region ratios were CONTAMINATED: Mario is small and surrounded by the
+  white water-speckle EFB-replay artifact; my coordinate boxes kept catching background/gloves, not his body
+  (the "tight overalls" box even read [255,255,255] = a glove/highlight). Where Mario IS cleanly measurable
+  (leg/skin, robust median), he MATCHES the oracle at **~1.02**.
+⇒ The "Mario paleness" is at most a SUBTLE over-bright within the water-artifact measurement noise — NOT a
+significant defect. I over-portrayed it from downscaled + background-contaminated comparisons (same failure
+mode as the earlier palm-trunk "paleness", which was also a crop artifact). The genuine remaining
+file-select render issue is the WATER EFB-copy REPLAY artifact (which also contaminated these measurements).
+Tools + the dead-light 0/0 guard (safe robustness) are kept. LESSON: measure Mario with a clean
+background-free crop (or the water fixed) before claiming a lighting defect.
+
+### (INFLATED — see reassessment above) MARIO PALENESS — SURFACED by SB_TEV_STOP tool: aurora DYNAMIC DIFFUSE over-bright (~2× diffuse)
 
 Built `SB_TEV_STOP=<N>` (aurora 11c709d) — TEV-stage bisector, outputs the combiner state after stage N.
 Rendering Mario at N=0..4 showed his final overalls color emerges at STAGE 4 (which uses `RASC` = the lit
