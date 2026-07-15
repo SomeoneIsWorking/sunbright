@@ -754,3 +754,21 @@ load/apply bug (default-white fallback or a BE-swap of the material ambient colo
 color-channel path — NOT in LightUtil. Oracle confirms 0.5 is the intended scene-wide lit ambient
 (492 of 510 lit draws use 0.50; only 18 use 1.0). NEXT: trace how Mario's J3DMaterial color-channel
 ambient (GX_COLOR0A0) is loaded from his BMD and why it applies 0xFF instead of 0x80.
+
+### Narrowing (2026-07-15) — the 0xFF is a color-block-select or ambient-index load bug (SAME BMD)
+
+Traced the J3D material ambient path:
+- `J3DColorBlockLightOn::load()` sets `GXSetChanAmbColor(GX_COLOR0A0+i, mAmbColor[i].color)`;
+  `J3DColorBlockLightOff::load()` does NOT set ambient (inherits the register).
+- `J3DMaterialFactory::newAmbColor` returns either `mpAmbColor[mAmbColorIdx]` (BMD bytes) or the
+  default `{0x32,0x32,0x32,0x32}` — it can NEVER produce 0xFF. `j3dDefaultAmbInfo` is also 0x32.
+
+So 0xFF is not a default. Native and oracle load the SAME Mario BMD, so an identical LightOn material
+would apply identical ambient. Native applying 0xFF where oracle applies 0x80 ⇒ native either (a)
+selects `J3DColorBlockLightOff` for Mario's overalls material (so it never sets ambient and inherits a
+stale 0xFF left in GX_COLOR0A0 by a preceding white-ambient material / different draw order), or (b)
+mis-loads `mAmbColorIdx`/`mpAmbColor` (an LP64 pointer/index offset) so the wrong ambient entry is read.
+The additive-TEV washout is FAITHFUL — with the correct 0.5 ambient the added raster is dim and navy
+survives; the ONLY thing to fix is the ambient value. NEXT (runtime trace): for Mario's overalls
+material, dump the color-block TYPE (LightOn vs LightOff) and the loaded `mAmbColor[0]`/`mAmbColorIdx`
+value; compare to the BMD bytes; fix the mis-select or the index load. No hand-set 0.5.
