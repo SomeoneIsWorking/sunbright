@@ -710,3 +710,34 @@ BMD/BTI loaders (suspect).
 NEXT: dump native BOOT file-select draws with `SB_DRAW_DUMP_ALL`, find Mario's overalls draw (skinned
 ~18-23 vert strip), read its bound tex0 (dims/format) + TEV, and compare to the oracle-replay draw's;
 then inspect the actual texture bytes native binds (washed vs navy). Fix the loader.
+
+---
+
+## 🎯🎯 ROOT CAUSE (2026-07-15) — Mario ch0 AMBIENT is 1.0 (white), oracle is 0.5 — washes the lit overalls
+
+Dumped native BOOT file-select frame 700 (`SB_DRAW_DUMP=0 SB_DRAW_DUMP_FRAME=700`, now reliable:
+present==retrace-change ordinal in boot, and proj-set no longer throttles). Mario's skinned draws
+appear under `buf?` / `DrawBuf Mirror Opa` (the main + sea-mirror passes) and their draw STATE MATCHES
+the oracle replay exactly — same verts, tex0 dims, tev-stage count, matColor=white. Diffing the full
+ch0 state of the distinctive `verts=23 tex0=64x128 tev=2 light=1` overalls draw:
+
+    NATIVE:  ch0[light=1 matSrc=0 ambSrc=0 mat=(1,1,1,1) amb=(1.00,1.00,1.00) mask=03]
+    ORACLE:  ch0[light=1 matSrc=0 ambSrc=0 mat=(1,1,1,1) amb=(0.50,0.50,0.50) mask=03]
+
+**The ONLY difference is the ch0 AMBIENT color: native 1.0 (0xFF), oracle 0.5 (0x80).** Everything
+else (mat, mask, TEV, a0, acmp) is identical. Mario is LIT (light=1, mask=03), so:
+`lighting = ambColor + Σ(attn·diff·lightColor)`. With amb=1.0 the lighting term saturates to ~1.0
+across the whole model; the lit raster color (matColor·lighting = white) feeds Mario's additive TEV,
+which ADDS ~white to the overalls texture → R,G lifted, navy washed to [144,166,180] (the additive
+signature measured earlier). With amb=0.5 (oracle) the shadowed side stays dark, the texture navy
+survives. The ENVIRONMENT is unlit (light=0) so ambient never reaches it — this is why the defect is
+Mario-ONLY while palm/blocks/water are at parity. This 0x80-vs-0xFF ambient is the same lead earlier
+"falsified as a 200-cap sampling artifact" — it was REAL; the per-draw dump (uncapped) confirms it.
+
+**Two candidate sources (next test decides):** (a) Mario's J3D MATERIAL ambient color (his BMD sets
+0x80808080 via GXSetChanAmbColor at draw; native applies 0xFF = a material-ambient load bug / default-
+white fallback), OR (b) the `TLightCommon::setLight` tail `GXSetChanAmbColor(GX_COLOR0A0, getAmbColor(idx))`
+I added for the map-object under-lighting fix — if getAmbColor returns 0xFF here and runs after/instead
+of Mario's material ambient. NEXT: instrument getAmbColor's return + whether Mario's material sets its own
+ch0 ambient before the draw; confirm which path yields 0xFF, and fix THAT (load Mario's 0x80 material
+ambient faithfully / scope the setLight ambient so it doesn't clobber lit materials). Do NOT hand-set 0.5.
