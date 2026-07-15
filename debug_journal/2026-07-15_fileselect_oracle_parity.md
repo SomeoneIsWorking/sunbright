@@ -1,5 +1,28 @@
 # 2026-07-15 — File-select parity vs the oracle: mostly faithful, 3 real residuals
 
+## 🔎 PALENESS LEAD (2026-07-15, via new tools/oracle/draw_diff.py) — ambient 0x80 vs 0x28 per light-set
+
+Built `tools/oracle/draw_diff.py` (native-vs-oracle per-draw render-state diff, committed) to stop
+hand-grepping. First run (native-live SB_DRAW_DUMP vs oracle fsel_try_7300.dff replay, --group none):
+**native lit draws emit `amb=(0.50)` (0x80) or `(1.00)`; the oracle emits `amb=(0.16,0.16,0.16)` (0x28)
+prominently — a value native NEVER emits.** Ambient 0.50 vs 0.16 = ~3× too bright ⇒ the palm/Mario
+PALENESS lead. (Confound: live-vs-.dff draw sets differ + SB_DRAW_DUMP caps ~200 draws; but STATIC-object
+lighting is frame-independent and native's total ABSENCE of 0x28 is the signal.)
+
+**Hypothesis (RE-able as pure game-logic, NO pixel oracle needed):** the retail game has multiple light
+sets (TLightWithDBSetManager: player/mapobj/object/indirect), each with its own `mAmbBaseIdx` into the
+"Ambient Group" TAmbAry; different objects get different scene ambient (0x28 for some, 0x80 for others).
+`TLightCommon::setLight` → `GXSetChanAmbColor(getAmbColor(idx))`, and `getAmbColor` reads
+`AmbAry->mAmbColors[idx + mAmbBaseIdx]`. If native's per-set `mAmbBaseIdx` (and/or the idx passed to
+setLight) is collapsed/zero, every set reads the same AmbAry entry (0x80) → native never produces 0x28.
+NEXT RE (Ghidra, no pixel compare): verify each TLightWithDBSet's `mAmbBaseIdx`/`mLightBaseIdx` are set
+to the retail per-set values (disasm the set construction / setLightType), and that getAmbColor's index
+matches the disasm — cross-check vs the scene's AmbAry contents. This is checkable against the
+disassembly + scene data directly, sidestepping the matched-state pixel confound. See
+[[light-dbset-porting-gaps-2026-07-04]], [[tlightwithdbsetmanager-bitmasks-corrected-2026-07-04]],
+[[mario-paleness-l1-not-cause-2026-07-04]] (ambient was "ruled out" there pre-setLight-fix — re-open:
+the per-set ambient INDEX, not the value, is the new suspect).
+
 ## ⚠️ RETRACTION (2026-07-15) — "PARITY COMPLETE" below was PREMATURE; full-frame compare shows residuals
 
 The "complete" claim was based on a WATER-region numerical match + eyeballing the rest. A proper
