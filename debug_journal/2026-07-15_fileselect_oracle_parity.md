@@ -32,6 +32,25 @@ lit draw (Mario) vs a NON-skinned lit draw (cube) — same lights — and inspec
 + normal path (extern/aurora/lib/gx/shader.cpp / gx.cpp). This supersedes the "add SB_NO_L0/L2_LIGHT
 game-side toggles" plan (those act on game-side setLight, which replay doesn't use).
 
+### DATA (2026-07-15): file-select Mario is NOT a ChrOpa draw — he's in the PERSPECTIVE scene buffers
+
+Uncapped full-frame dump of live-native file-select (frame 1200/1500, SB_DRAW_DUMP_FRAME + SB_TEV_DUMP):
+the frame has NO `ChrOpa` (lit 3D character) draws. All `Chr`-tagged draws are 2D orthographic `ChrXlu`
+UI sprites (unlit, mat white). The 466-draw frame is: `buf?` (154, persp), `DrawBuf Mirror Opa` (142),
+`ChrXlu` (81, all proj=O 2D), `MapOpa` (37), `<TLightDrawBuffer::Opa>` (24), `Sky Xlu` (12), `StaticMapObj
+ShadowOpa` (6), `MapXlu` (5), `Mirror Xlu` (4). The lit perspective draws use `light=1 amb=(0.5) mask=03`.
+⇒ file-select Mario is drawn among the PERSPECTIVE scene buffers (`buf?`/`MapOpa`), NOT Chr-tagged — so
+"grep Chr" doesn't find him. The lit CUBES are in those same buffers and render FINE, while Mario is pale,
+and Mario is the only SKINNED object → still points at aurora's skinned-normal diffuse.
+
+NEXT (isolate Mario's skinned draws): within the perspective lit draws, Mario = the high-vertex skinned
+shapes using indexed pos/nrm matrices (posmtx varies per draw, many verts). Filter `buf?`/`MapOpa`
+`light=1` draws by vert count / mtxIdx variation to find his skin draws, dump their normals + per-light
+diffuse. OR (cleaner, and it's the next boot-order target anyway) study Mario in GAMEPLAY where he's a
+clear `ChrOpa` lit character (`SB_SEL_PICK=<n>` + longer pad script to reach the airport, memory notes).
+The paleness is a REAL aurora render residual (cosmetic, non-blocking) — well-characterized as skinned-normal
+/ diffuse eval, aurora-side.
+
 ⇒ **THE file-select render target is now singular and real: fix Mario paleness in aurora's rendering.**
 Since the draws are identical to dolphin's, the divergence is how aurora PROCESSES Mario's lit draws
 (the ch0 diffuse light math / TEV / material), downstream of the GX state. NEXT RE: dump Mario's lit
