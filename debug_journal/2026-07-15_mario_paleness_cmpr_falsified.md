@@ -75,15 +75,37 @@ artifact, i.e. NOT a shipped-game bug. (Caveat: a uniform wash fits mip-blur les
 the water's speckle, and aurora's 2× render would select *finer* mips — so this is a lead, not
 a conclusion.)
 
-## NEXT (decisive, not yet done)
+## DONE — live-native settles it: the wash is a REAL shipped-game bug (mip/LOD FALSIFIED)
 
-Capture **live-native** file-select with Mario settled and compare his overalls to the oracle.
-`SB_STAGE=15` boots to the TITLE view (renders faithfully); reaching the Mario save-select view
-needs a pad-driven START to pan the camera (`SB_PAD_SCRIPT` with START presses; Mario settle ≈
-`MARIO_STATUS_SLEEP`). If live-native overalls are deep-blue ≈ oracle → the replay-wash is an
-oracle artifact and file-select is faithful (close it like the water). If live-native is washed
-→ real bug, and the cause is aurora's texture SAMPLING for Mario (mip LOD / lod_bias), the same
-axis as the open water-speckle item — attack that, not textures/lighting/TEV (all ruled out).
+Captured live-native file-select with Mario via `SB_STAGE=15` + `SB_PAD_SCRIPT="600:START
+610:- 900:START 910:-"` (title→save-select camera pan), `SB_TURBO=1`, dump at present 1600
+(`scratch/texcmp/livenative2_full.png`). Result:
+- **Water is smooth turquoise, NO speckle** → confirms the water speckle IS replay-only.
+- **Mario is STILL washed** (pale-pink hat, near-white overalls) in live-native → the paleness
+  is a REAL render bug present in BOTH aurora paths (replay + live-native), while Dolphin
+  renders him correctly. The "replay-mip-artifact" hypothesis above is **FALSIFIED**. (Verify,
+  don't assume — this is why.)
+
+Then **mip/LOD sampling FALSIFIED directly**: new `SB_FORCE_LOD0=1` (clamp every sampler to
+LOD 0, `gx.cpp` TextureBind::get_descriptor) leaves the replay overalls at [127,164,193] —
+unchanged from [127,164,195]. Mario's wash is NOT mip over-selection.
+
+## Rule-out ledger (all VERIFIED this session — do NOT re-open)
+texture decode · lighting eval · TEV op codegen · mip/LOD sampling · global gamma. All match
+the oracle / are equivalent to Dolphin. The lit palm (mask=01) matches; RASC ≈ white in both.
+
+## NEXT (narrowed): a differing TEV *input*, Mario-specific
+The wash is real, Mario-only, in aurora's per-draw eval, and NOT decode/lighting/TEV-ops/mip.
+Remaining Mario-specific variables that can shift the color: (a) the alpha-**blend** bm=1
+bf=4/5 (SRCALPHA/INVSRCALPHA) — if aurora's Mario output ALPHA differs from Dolphin, he blends
+with the bright background (note: a naive blend-over-sand/sky does NOT fit — the measured B
+channel goes UP 173→195, so not a plain background bleed); (b) **KONST selection** (kcSel/kaSel
+→ wrong konst reg or rgb-vs-aaa); (c) **TEV swap tables** (tevSwapRas/tevSwapTex); (d)
+**texcoord gen** (samples a different texel). Concrete first step: `SB_TEV_STOP=0..4` on the
+ACTUAL on-screen Mario draw (prior tevstop shots were mis-cropped background) via the aligned
+instrument to find the stage where the wash emerges, then audit that stage's konst/swap/inputs
+against the GC spec. Also worth a direct check: dump Mario's output ALPHA (framebuffer A or a
+TEV-alpha viz) vs what the blend expects.
 
 ## Tooling added (kept, gated)
 - draw-dump: `attnFn`/`diffFn` on the ch0 line; `[tex]` now reports **all 8 texmaps**
