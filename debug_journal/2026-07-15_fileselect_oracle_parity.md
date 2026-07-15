@@ -41,6 +41,25 @@ BIT-IDENTICAL across runs (meanABS 0.000). Also fixed the `is_set` vs `is_set_by
 seeds defaults into the value map, so `!is_set("save_state_at")` was always false → dead block). Pipeline:
 save state → `--load-state-at`+DumpFrames = pixel oracle; save state → FIFO-record = matched draw oracle.
 
+### ✅ MARIO PALENESS — SURFACED by SB_TEV_STOP tool: aurora DYNAMIC DIFFUSE over-bright (~2× diffuse)
+
+Built `SB_TEV_STOP=<N>` (aurora 11c709d) — TEV-stage bisector, outputs the combiner state after stage N.
+Rendering Mario at N=0..4 showed his final overalls color emerges at STAGE 4 (which uses `RASC` = the lit
+vertex color). Then a matched-state per-region measure (native `SB_FIFO_REPLAY` vs Dolphin playback of the
+SAME dff, at correct locations, native full-res — no downscale confound) is decisive:
+- palm-trunk ratio **1.00**, sand **1.02** (MATCH — the earlier "palm paleness" was a crop/resize artifact)
+- cube gold **1.07**, **Mario overalls 1.24** (native [207,220,238] vs Dolphin [164,174,197]).
+Mario is uniquely ~24% over-bright. Static/ambient-only map objects (LightOff) MATCH; Mario is the only
+DYNAMICALLY-lit thing (TLightMario → L0/L1). ⇒ the bug is aurora's **dynamic diffuse lighting eval**,
+over-contributing for Mario. Back-of-envelope: if Dolphin lighting≈0.5(amb)+0.15(diff) and aurora≈0.5+0.30,
+that's ~**2× the diffuse** — a clean factor suggesting a light DOUBLE-COUNTED or an extra light summed
+(Mario mask=03 = lights 0,1; L1 is the effect light — if aurora sums an L1 contribution that GC has at
+zero/half, or L0 twice, that's the 2×). CONFIRMS the old L0/L2-diffuse suspicion, now matched-state +
+quantified. Also corrected: the "washed white" impression was EXAGGERATED by the 896→480 downscale; the
+real defect is a moderate uniform ~1.24× over-bright (clean crop `scratch/shots/mario_matched_crop.png`).
+NEXT (close to fix): isolate WHICH light over-contributes — dump aurora's per-light diffuse (attn, diff,
+light.color, lightMask) for a Mario draw vs the .dff's light setup; check if aurora sums a light GC masks/zeros.
+
 ### MARIO PALENESS — CHECKPOINT (2026-07-15): precisely localized, 6 hypotheses ruled out, cosmetic
 
 Ruled out, each verified (not guessed): **normals** (SB_NRM_VIZ shows correct smooth normals), **ambient**
