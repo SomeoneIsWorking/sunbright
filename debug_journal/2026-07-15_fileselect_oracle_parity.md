@@ -772,3 +772,35 @@ The additive-TEV washout is FAITHFUL — with the correct 0.5 ambient the added 
 survives; the ONLY thing to fix is the ambient value. NEXT (runtime trace): for Mario's overalls
 material, dump the color-block TYPE (LightOn vs LightOff) and the loaded `mAmbColor[0]`/`mAmbColorIdx`
 value; compare to the BMD bytes; fix the mis-select or the index load. No hand-set 0.5.
+
+---
+
+## ⚠️ SELF-CORRECTION (2026-07-15) — the AMBIENT root-cause was WRONG (mirror-draw red herring)
+
+The three prior commits (93bb951/c9f77ae/e1129ae) claiming "Mario ch0 ambient 1.0 vs 0.5 is the root
+cause" are FALSIFIED. They diffed the FIRST matching overalls draw, which is the sea-MIRROR REFLECTION
+pass (`DrawBuf Mirror Opa`), amb=1.0. But dumping ALL overalls draws shows THREE:
+
+    amb=(1.00,1.00,1.00) mark='DrawBuf Mirror Opa'   <- the reflection (red herring)
+    amb=(0.50,0.50,0.50) mark='DrawBuf Mirror Opa'
+    amb=(0.50,0.50,0.50) mark='buf?'                 <- the MAIN (visible beach) Mario — CORRECT 0.5
+
+The MAIN visible Mario draw has amb=0.5, MATCHING the oracle (whose overalls draws are all 0.5). So the
+ambient is NOT the cause of the visible washout — only the sea reflection has the stray 1.0 (a real but
+separate/minor issue: the Mirror pass doesn't re-apply scene ambient; `SB_AMB_TRACE` shows `DrawBuf
+ChrXlu` sets 0xFF and Mirror Opa inherits it).
+
+**The visible Mario paleness is STILL REAL and still unexplained:** native beach overalls [137,145,164]
+sat 0.15 vs oracle [62,141,192] sat 0.69 (blue cluster). The main draw matches the oracle on EVERY field
+the draw-dump captures — prim, verts, tex0 dims, tev-stage count, matColor=white, AND ambient=0.5. Yet
+native renders pale and the `.dff` replay (correct recorded texture bytes + commands) renders navy. ⇒ The
+difference is in a field the `[draw-dump]` line does NOT expose: the LIGHT colors/positions (mask=03,
+lights 0+1 — `SB_LIGHT_DBG`), the TEV KONST / stage combine details, a 2nd texture stage, OR the bound
+overalls TEXTURE CONTENT (native's loader producing a washed texture vs the `.dff`'s post-load bytes).
+
+RELIABILITY LESSON: I over-committed to "ambient" because it was the ONE differing field in the partial
+draw-dump — but I diffed the wrong (mirror) draw and never checked the main draw or the un-dumped fields.
+NEXT (decisive, no premature theory): (1) `SB_LIGHT_DBG` the main overalls draw — compare light colors/
+positions native-vs-oracle; (2) extend `[draw-dump]` to emit TEV KONST + per-stage combine + all bound
+texmaps; (3) if all match, dump the overalls texture bytes native binds vs the `.dff`. Name the cause
+only after one of these shows the real divergence.
