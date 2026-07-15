@@ -44,9 +44,36 @@ Native: `SB_STAGE=15 SB_PAD_SCRIPT="600:START 610:-" SB_DUMP_FRAME=... SB_DUMP_F
 Not defects: file-block content (native all "New" = blank save is correct; oracle slot 1 =
 shine×01 from Dolphin's memcard) and Mario anim-pose (mismatched capture instants).
 
-## Next
+## ROOT CAUSE of residuals 2+3 (palm + cubes under-lit): AMBIENT COLOR loads as 0
 
-Residuals 2+3 (palm + cubes both darker) smell like ONE shared cause: the file-select
-scene's lighting/ambient. Diagnose that first (one fix may resolve both). Residual 1 (sea
-glare) ties into the existing reflective-sea arc. For a clean quantified diff, first fix the
-capture-height mismatch (dump native at 448, or the oracle at 480).
+Dual per-draw state dump (SB_DRAW_DUMP, native file-select vs oracle .dff replay) nailed it.
+The dominant lit-perspective draw signature:
+- ORACLE: `ch0[light=1 matSrc=0 ambSrc=0 mat=(1,1,1,1) amb=(0.50,0.50,0.50) mask=03]`
+- NATIVE: `ch0[light=1 matSrc=0 ambSrc=0 mat=(1,1,1,1) amb=(0.00,0.00,0.00) mask=03]`
+
+The ONLY difference is the **ambient color: 0.5 (oracle) vs 0.0 (native)**. With lit,
+matSrc/ambSrc=REG, output = mat×(ambient + Σlights); native's zero ambient makes every
+not-directly-lit surface (palm trunk, shadowed cube faces) render BLACK — exactly the
+symptom. This is almost certainly NOT file-select-specific — it's every lit J3D scene
+(the title just has few lit-3D draws so it hid there). HIGH VALUE fix.
+
+Narrowing (do NOT rush — a wrong swap here breaks ALL model loading):
+- The material ambient comes from `J3DMaterial::load` (J3DMaterial.cpp:274-276 emits
+  `mAmbColor[i].color` via J3DGDSetChanAmbColor), set from `J3DMaterialFactory::newAmbColor`
+  (J3DMaterialFactory.cpp:242) = `mpAmbColor[initData->mAmbColorIdx[stage]]` (or the default).
+- The default is `j3dDefaultAmbInfo = {0x32,0x32,0x32,0x32}` (≈0.2) — so native's 0.00 is NOT
+  the default fallback; native reads `mpAmbColor[idx] == 0` where the oracle's is 0x80. Same
+  BMD, so native's ambient LOAD is wrong: either the u16 `mAmbColorIdx` reads byte-swapped
+  (BMD MAT3 is big-endian) → wrong entry, or `block.mpAmbColor` offset resolves wrong (LP64),
+  or the MAT3 swapper (`readMaterial`) doesn't cover the ambient array/indices. `matColor`
+  reads white in both, but that's the newMatColor default (0xFF), so it doesn't prove the
+  index path works.
+- NEXT DIAGNOSTIC (before fixing): for one file-select material, print native's
+  `mpAmbColorNum`, the `mpAmbColor[]` entries, and `initData->mAmbColorIdx[0]` — compare to
+  the raw BMD MAT3 bytes. That says definitively index-swap vs array-offset vs default-path.
+
+## Other residuals
+
+- Residual 1 (ocean sun-glare) = the existing reflective-sea arc (separate).
+- For a clean quantified pixel diff, first fix the capture-height mismatch (dump native at
+  448 or the oracle at 480) — the 960-vs-896 misalignment inflated the earlier 67% number.
