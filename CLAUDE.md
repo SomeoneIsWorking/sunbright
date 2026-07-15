@@ -147,7 +147,9 @@ automated/diagnostic runs, agents included), `SB_TURBO` (unpaced), `SB_WATCHDOG_
 Diagnostic env vars route through these tracked names — prune dead ones on sight.
 Keyboard drives pad 0 (`PADSetKeyboardActive`). Kill a stuck run with `timeout -s KILL N`;
 the in-process SIGALRM watchdog dumps all-thread backtraces on a stalled frame.
-Scratch output → gitignored `scratch/` (never `/tmp`).
+Scratch output → gitignored `scratch/` (never `/tmp`). To clear a scratch dir, use
+`python3 tools/scratch_clean.py <scratch-dir> [--glob '*.png']` (never `rm -rf` — the
+harness gates it; the tool refuses paths outside `scratch/`). Use it in subagent prompts too.
 
 ## Active target
 
