@@ -32,20 +32,25 @@ water-speckle REPLAY-ONLY artifact — not Mario, not this bug.
 
 ### ⚠️ SCOPE CORRECTION — the fix is verified on the REPLAY, but LIVE-NATIVE Mario is UNCHANGED
 
-Re-captured live-native file-select with the fixed binary; Mario is still washed there. A
-live-native draw-dump (`SB_DRAW_DUMP_FRAME` at the settled file-select frame; note the boot log is
-binary to grep — use `grep -a` because of Shift-JIS perform-list names) shows the fix DID apply —
-**live-native ch1 now decodes attnFn=0 (SPEC)**, same as retail. So the decode fix is not the
-live-native gap. The live-native config DIFFERS from retail's dff in the **ambient**: many of
-Mario's lit draws have **ch0 amb=(1.0,1.0,1.0)** (full-white ambient) whereas retail/oracle uses
-**amb=(0.5)** on all of them. White ambient washes Mario to near-white regardless of the specular
-fix — `matColor(white) * clamp(1.0 + ...) = white`. So the live-native residual is a **game-logic
-light-setup difference** (the port's TLight/ambient path produces amb=1.0 where retail produces
-0.5), NOT the aurora decode bug. (Do NOT claim the shipped game's Mario is fully fixed — only the
-aurora decode bug is fixed + replay-verified.) NEXT: RE why the port sets Mario's COLOR0 ambient to
-1.0 (retail 0.5) — suspect the TLightMario / `TLightCommon::setLight` `GXSetChanAmbColor` path
-(known gaps: [[light-dbset-porting-gaps-2026-07-04]]; codemap notes a prior setLight ambient fix).
-Confirm the exact overalls draw's ambient, then fix the game-logic ambient source.
+Re-captured live-native file-select with the fixed binary; Mario is PARTIALLY improved but not at
+parity. A live-native draw-dump (`SB_DRAW_DUMP_FRAME` at the settled frame; the boot log is binary
+to grep — use `grep -a` for the Shift-JIS perform-list names) shows the fix DID apply —
+**live-native ch1 now decodes attnFn=0 (SPEC)**, same as retail. In the settled crouch capture the
+overalls **shoulder straps are now correctly deep blue** (the fix helped), but the **bib/body reads
+pale/white** (0 deep-blue px in a tight crop) with dark blotches.
+
+⚠️ CAUSE NOT CONFIRMED — do not treat as the ambient gap yet. An earlier draft of this note blamed
+"ch0 amb=(1.0) vs retail 0.5", but the frame-1250 dump shows the SAME Mario material (tex 256²,
+tev=5) appears at BOTH amb=0.5 (97×) and amb=1.0 (49×) in one frame — consistent with the known
+**multi-pass render** (main scene + the retail reflection/mirror pre-pass, memory
+[[session16-perpass-fingerprint]]), i.e. amb=1.0 is likely a legitimate SEPARATE pass, not a
+per-Mario ambient error. Also the crouch/settling pose confounds the color read (crossed arms +
+white gloves occlude the bib center). So the live-native residual is real but its cause is OPEN.
+NEXT (do it right): capture live-native at a SETTLED, standing pose matched to a true oracle state
+(or use `--save-state-at`/`--load-state-at` on the fork for a pose-matched Dolphin render), isolate
+the MAIN-pass Mario overalls draw (not the reflection pass), and only then compare ambient / TEV /
+lights against the oracle. Do NOT claim the shipped game's Mario is fixed — only the aurora decode
+bug is fixed + replay-verified.
 
 ---
 _(original investigation notes below — kept; the "differing TEV input" NEXT was correct: it was
