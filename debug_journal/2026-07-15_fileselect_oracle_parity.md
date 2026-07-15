@@ -680,3 +680,33 @@ combine (is there an ADD stage / KONST / C-reg contributing?), the bound texture
 the right image, right format, not a washed/blank fallback?), and RASC vs TEXC inputs — and compare to the
 same draw in the oracle `.dff`. The additive R+G lift is the fingerprint to match. (Reuse SB_TEV_STOP /
 SB_LIGHT_DBG / the draw-dump tooling.) This is the concrete file-select parity arc now that water is closed.
+
+---
+
+## 🎯 LOCALIZED (2026-07-15) — Mario overalls defect is NATIVE GAME-LOGIC, not aurora render
+
+WORKFLOW-FIRST fix first: stopped paying the ~2-min-boot + retrace-ordinal-guess tax per draw
+inspection. Two aurora tooling changes (committed):
+- `[proj-set]` log moved off `SB_DRAW_DUMP` onto its own `SB_PROJ_DUMP` (it was firing every
+  projection-set of the ENTIRE boot, throttling turbo so runs never even reached file-select).
+- **`SB_DRAW_DUMP_ALL=1`**: dump EVERY draw uncapped, no frame gate — the only frame-targeting that
+  works in BOTH boot and `.dff`-replay. (Replay bypasses the game's `waitForRetrace`, so
+  `sb_gx_vi_retrace_count()` never advances and the retrace-ordinal `SB_DRAW_DUMP_FRAME` gate dumps
+  0 draws.) Replay = INSTANT deterministic scene inspection (3 frames, no boot).
+
+Decisive split — render the `.dff` REPLAY (aurora rendering the ORACLE's exact fifo commands) and
+compare Mario to native BOOT:
+- **REPLAY overalls (aurora on oracle commands): [81,98,156] sat 0.46 — BLUE, correct.**
+- native BOOT overalls: [144,166,180] sat 0.18 — pale, WRONG.
+⇒ **aurora renders Mario's overalls correctly.** The bug is in the NATIVE game-logic path feeding
+aurora. Every lit draw has `mat=(1,1,1)` white (via `SB_DRAW_DUMP_ALL` over the replay: 1108 draws,
+zero blue-material draws) — Mario's overalls color is TEXTURE-driven, not matColor. Multiplicative
+lighting (texColor·lighting≤1) can only DARKEN navy, never lift R/G to 144/166 — so native is binding
+a WRONG/WASHED overalls texture (or a different TEV) for Mario. This is a texture-load / TEV game-logic
+bug (same class as the BE-swap/LP64/per-packet-texture fixes), NOT a lighting or aurora-render bug. The
+`.dff` carries post-load GPU texture bytes (correct); native loads Mario's texture through the game's
+BMD/BTI loaders (suspect).
+
+NEXT: dump native BOOT file-select draws with `SB_DRAW_DUMP_ALL`, find Mario's overalls draw (skinned
+~18-23 vert strip), read its bound tex0 (dims/format) + TEV, and compare to the oracle-replay draw's;
+then inspect the actual texture bytes native binds (washed vs navy). Fix the loader.
