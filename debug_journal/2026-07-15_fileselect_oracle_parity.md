@@ -72,6 +72,25 @@ Narrowing (do NOT rush — a wrong swap here breaks ALL model loading):
   `mpAmbColorNum`, the `mpAmbColor[]` entries, and `initData->mAmbColorIdx[0]` — compare to
   the raw BMD MAT3 bytes. That says definitively index-swap vs array-offset vs default-path.
 
+### RULED OUT (2026-07-15, SB_AMB_DBG trace in newAmbColor — kept as an env-gated diagnostic)
+
+The trace shows the material factory LOADS the ambient CORRECTLY: `mat=0 st=0
+ambIdx=0x0000 -> arr=(80,80,80,32)` = 0x80 = 0.5 (ch0). And `J3DGDSetChanAmbColor`
+(JRenderer.cpp:46) EMITS it correctly (packs r<<24|g<<16|b<<8|a → XF ambient reg; not a
+stub). So the material load + emission are NOT the bug — the 0.5 is correct at creation.
+
+⇒ The amb=0 at DRAW time is a DOWNSTREAM OVERRIDE: something re-sets GXSetChanAmbColor to 0
+for the scene draw-buffers. The dominant amb=0 draw markers are `DrawBuf Mirror Opa`,
+`<TLightDrawBuffer::Opa>`, `DrawBuf MapOpa`, `buf?` — i.e. the SCENE-LIGHTING / draw-buffer
+path (TLightDrawBuffer / TLightWithDBSet / the map light setup), which ties into the existing
+lighting-porting gaps ([[light-dbset-porting-gaps-2026-07-04]], calcLightBorder,
+[[tlightwithdbsetmanager-bitmasks-corrected]]). Real game emits amb=0.5 there; native emits 0.
+
+NEXT: trace ALL GXSetChanAmbColor callers (value + caller) during a file-select frame to find
+WHO sets ambient=0 for the Mirror/Map/TLightDrawBuffer draws (add a caller trace in aurora's
+GXSetChanAmbColor or the XF-ambient register write). Then port/fix that scene-ambient setup.
+Do this fresh — it's in the TLightWithDBSet lighting arc, not a one-liner.
+
 ## Other residuals
 
 - Residual 1 (ocean sun-glare) = the existing reflective-sea arc (separate).
