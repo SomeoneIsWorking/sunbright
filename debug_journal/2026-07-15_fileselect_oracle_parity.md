@@ -155,5 +155,24 @@ the same missing machinery as the title's mirror-capture + logo-reflection EFB c
 next file-select parity step; start it with fresh context (orient on aurora's EFB-copy handling
 first). Do NOT re-attempt the retired `SB_FS_COMPOSITE` segmented-render/snapshot_efb path (falsified
 2026-07-03) or any endpoint-gradient hand-tune of the sea (violates no-hand-tuning).
+
+### RE-SCOPE (2026-07-15, orientation pass — the arc is SMALLER than "implement EFB copies")
+
+Three findings that narrow it:
+1. **Aurora ALREADY has EFB-copy machinery** — `GXCopyTex`, `GXSetTexCopySrc/Dst`, and a working
+   `copy_tex()` resolve/cache (`extern/aurora/lib/dolphin/gx/GXFrameBuffer.cpp:128` — "Pass 1 (source)
+   → GXCopyTex(clear) → Pass 2 samples the copy"). NOT a from-scratch EFB implementation.
+2. **The 2026-07-03 `SB_SKIP_KEY` / `native/render/sms_boot_present.cpp` composite-drop is RETIRED**
+   (gone with the one-runtime consolidation — that file no longer exists). The `eb5c8e74` sea-mask
+   composite now flows through the NORMAL draw-buffer path ("sea-MASK material c97c48, key eb5c8e74"
+   in `JDRDrawBufObj.cpp:113` / `J3DDrawBuffer.cpp:530`). So it is no longer force-dropped — it draws,
+   sampling whatever texture is bound.
+3. ⇒ **Real next diagnostic:** at native file-select, dump the `eb5c8e74` draw's bound tex0 (a live
+   sea-mirror snapshot, or still near-black?) and check whether the sea-MIRROR render pass + its
+   `GXCopyTex` run and populate that texture. If they run and copy_tex populates it → the composite
+   should already show reflection (chase why it doesn't). If not → wire the mirror pass (TMirrorCamera
+   / mirror draw-buffer → GXCopyTex into the composite's sampled texture). Tools: SB_BATCH_DBG,
+   per-draw tex-id + draw-dump. Live render-debugging — best fresh.
+
 - For a clean quantified pixel diff, first fix the capture-height mismatch (dump native at
   448 or the oracle at 480) — the 960-vs-896 misalignment inflated the earlier 67% number.
