@@ -42,9 +42,19 @@ Legend: ✅ done (verified on real data) · 🟡 partial (documented gap) · �
 
 ## Reference decomp (reference/sms — submodule, SomeoneIsWorking/sms fork)
 
-Compiles native via SMS_NATIVE_PLATFORM + SMS_AURORA. Known decomp-bug classes fixed so
-far: BE swaps, LP64 overlays, fused-immediate phantom constants (mBlack 2026-07-14),
-swapped anim args (sparkles 2026-07-15), region count skew (JP 13 vs US 18 panes).
+Compiles native via SMS_NATIVE_PLATFORM + SMS_AURORA. **Native-only, no recomp** (decided
+2026-07-15, CLAUDE.md) — decomp gaps are hand-ported. Known decomp-bug classes fixed so far:
+BE swaps, LP64 overlays, fused-immediate phantom constants (mBlack 2026-07-14), swapped anim
+args (sparkles 2026-07-15), region count skew (JP 13 vs US 18 panes), retail overflows benign
+on PPC but host-corrupting (4x4-into-3x4 Mtx, SMS_GetLightPerspectiveForEffectMtx 2026-07-15),
+dropped GC-no-op calls (GXEnd 2026-07-15).
+
+**Decomp gaps** = ~64 empty `src/**.cpp` files (still hand-port surface). Accelerator: the
+`upstream` remote is `doldecomp/sms` (we are 310 commits ahead / 24 behind); a full merge is
+conflict-risky, but our EMPTY gap files can be taken from `upstream/main` file-by-file. As of
+2026-07-15 only 6 of our 64 gaps are filled upstream: Animal/{AnimalBase,boid,fishoid},
+Enemy/{bossManta,gatekeeper,egggen} — cherry-pick + drop the matching boot_stub + native-fix.
+Ports landed 2026-07-15: TMapObjTree::initMapObj/initEach, SMS_GetLightPerspectiveForEffectMtx.
 When JP decomp misbehaves on the US disc, check the US disasm first
 (`tools/re/disasm_range.py scratch/bin/sms.dol …`; regenerate the DOL with
 `tools/re/dol_extract.c` — build cmd in its header).
