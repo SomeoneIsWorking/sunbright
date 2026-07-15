@@ -1,6 +1,21 @@
 # 2026-07-15 — File-select parity vs the oracle: mostly faithful, 3 real residuals
 
-## ✅✅ RESOLVED — FILE-SELECT PARITY COMPLETE vs the TRUE Dolphin oracle (2026-07-15, final)
+## ⚠️ RETRACTION (2026-07-15) — "PARITY COMPLETE" below was PREMATURE; full-frame compare shows residuals
+
+The "complete" claim was based on a WATER-region numerical match + eyeballing the rest. A proper
+full-frame native-vs-true-Dolphin compare (`scratch/shots/fsel_vs_dolphin.png`, native resized to the
+Dolphin 640×480) shows the water matches (ΔABS 3.2) and under-lighting is fixed, but UNCONFIRMED
+residuals remain: palm-trunk paler in native ([189,209,214] vs [165,179,164], Δ35), Mario pose +
+paleness differ, and horizontal framing differs (native cuts off the OPTIONS sign; blocks shifted).
+Hypotheses to run down (NOT yet resolved): (a) framing + Mario pose = capture-timing (the file-select
+camera PANS; native@1400-presents vs Dolphin .dff@field-7300 may be different pan positions — align both
+to the settled save-blocks camera state before judging); (b) palm-trunk + Mario paleness may be the
+KNOWN L0/L2-diffuse paleness residual ([[mario-paleness-l1-not-cause]] — ambient/L1 already ruled out
+there), NOT the ambient fix (amb-trace confirmed native emits the oracle's 0x80); (c) region-box
+contamination (palm-trunk box at the frame edge may include sky). Do NOT call file-select done until
+these are separated real-vs-artifact. TMapObjWave + water stay resolved.
+
+## (below, superseded by the retraction above) FILE-SELECT PARITY vs the TRUE Dolphin oracle (2026-07-15)
 
 All three original residuals are resolved/dismissed, verified against a REAL Dolphin framedump
 (not the artifact-prone aurora replay):
