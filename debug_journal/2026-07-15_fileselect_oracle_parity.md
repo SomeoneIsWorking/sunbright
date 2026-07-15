@@ -34,6 +34,18 @@ gives: a canonical pixel oracle (framedump) AND a matched draw oracle (FIFO-reco
 and native, driven to the same event, is finally comparable. Until then, STOP hunting file-select pixel
 divergences against unmatched captures.
 
+**BUT — a matched-state test that needs NO save-state (do this FIRST):** native `SB_FIFO_REPLAY(dff)` and
+Dolphin FIFO-player playback of the SAME dff render the IDENTICAL recorded draws → matched by construction
+(same camera, same Mario pose, same everything). So compare native-replay(fsel_try_7300.dff) vs
+`dolphin_fsel_true.png` (Dolphin playback of the same dff): any pixel difference is PURE aurora RENDER
+fidelity (framing, lighting, materials) — ZERO state confound. This splits the question cleanly:
+ - If framing/lighting MATCH there (only water differs = known EFB-replay artifact) ⇒ aurora renders
+   file-select faithfully; the LIVE-native framing difference is game-logic (live camera state) — THEN the
+   save-state matched-state tooling is what's needed to chase that.
+ - If they DIFFER there ⇒ a real aurora render bug (projection/framing/lighting), RE it directly.
+NEXT TICK: run that same-dff render-parity compare (native SB_FIFO_REPLAY vs dolphin_fsel_true) with the
+new uncapped full-frame draw_diff + a pixel diff, water excluded. No new tooling required.
+
 **Paleness status: OPEN and possibly NOT REAL.** The palm-trunk [189,209,214] vs Dolphin [165,179,164]
 region box sits at the FRAME EDGE and native's value is BLUE-tinted (214 B) — likely SKY contamination in
 the box, not a real trunk difference. RE-VERIFY with a clean, sky-free trunk crop before treating paleness
