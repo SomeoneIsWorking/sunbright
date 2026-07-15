@@ -41,7 +41,22 @@ BIT-IDENTICAL across runs (meanABS 0.000). Also fixed the `is_set` vs `is_set_by
 seeds defaults into the value map, so `!is_set("save_state_at")` was always false → dead block). Pipeline:
 save state → `--load-state-at`+DumpFrames = pixel oracle; save state → FIFO-record = matched draw oracle.
 
-### MARIO PALENESS RE — narrowed to aurora SKINNED-normal path (not the direct normal-matrix parse)
+### MARIO PALENESS — SKINNED-NORMAL HYPOTHESIS FALSIFIED (2026-07-15, via new SB_NRM_VIZ tool)
+
+Built `SB_NRM_VIZ` (aurora 3b7300e, env-gated normal visualization — outputs mv_nrm as fragment color).
+Rendered file-select replay with it: **Mario's normals are SMOOTH and CORRECT** — a continuous color
+gradient wrapping the hat dome / nose / arms / legs, no speckle/discontinuity/garbage; cubes are clean
+flat-shaded faces (`scratch/shots/nrmviz_mario.png`). ⇒ skinned-Mario's normals are HEALTHY; the paleness
+is NOT wrong normals. So the ruled-out set is now: normals, ambient (verified 0x80/0x28 correct), L1
+([[mario-paleness-l1-not-cause-2026-07-04]]). Since normals→diff (N·L) are correct and the lights are
+retail-correct (from the .dff), the per-vertex LIT color should match Dolphin — so the paleness is
+DOWNSTREAM of vertex lighting: Mario's **TEV combiner**, **texture decode**, **material (matColor)**, or
+**specular (L2)**, whichever differs from Dolphin's eval of the same draws. NEXT: isolate Mario's draws in
+the perspective buffers (buf?/MapOpa, by vert count / mtxIdx — he's not Chr-tagged) and dump their TEV
+stages + bound texture + matColor (SB_TEV_DUMP), comparing aurora's combine to what those GX commands
+should produce. Cosmetic/non-blocking.
+
+### (SUPERSEDED — falsified above) MARIO PALENESS RE — narrowed to aurora SKINNED-normal path
 
 Ruled out: aurora's direct XF normal-matrix parse (command_processor.cpp:328, addr 0x400-0x459) reads the
 3×3 correctly into pnMtx[].nrm and is SHARED with static objects (cubes render fine) ⇒ not the Mario bug.
