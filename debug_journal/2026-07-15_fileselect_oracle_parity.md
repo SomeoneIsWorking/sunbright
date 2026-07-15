@@ -239,6 +239,31 @@ foam/glint appears matching the oracle; (c) if confirmed, fix the wave.bti alpha
 format) — a real BE/format fix, no hand-tuning. This is a TRACTABLE texture-alpha bug, a much smaller
 arc than the EFB-reflection implementation the prior passes feared.
 
+#### ⚠️ SELF-CORRECTION (2026-07-15, verify pass) — TMapObjWave is FAITHFUL; re-attribution was premature
+
+Verified the above hypothesis and it does NOT hold as a "bug". `SB_TEX_DUMP` of the loaded `wave.bti`
+(the ONLY 128×256 fmt0/I4 texture) shows it loads with REAL, faithful content: alpha/intensity
+min 0 / **max 102** / mean 9.93 / **28.3% nonzero** (not all-zero → NOT a data-load bug). Max 102 =
+`ExpandTo8<4>(6)` — the source I4 texels genuinely max at 6/15, i.e. the foam texture is intrinsically
+DIM + sparse (matches the 2026-06-25 "dark, sparse, faint specks" characterization). Aurora's I4
+decoder is correct (`a = intensity`, texture_convert.cpp:220).
+
+Now the TEV math is decisive: final blend alpha = `TEXA²·RASA`. With `TEXA ≤ 0.4` (102/255) and squared,
+the peak foam alpha is ≤0.16 and the MEAN is ~0 — so TMapObjWave's foam is FAITHFULLY near-invisible,
+on native AND (same math + same texture) on GC. ⇒ The `SB_WAVE_ALPHA_RASA` "foam appeared" result was
+MISLEADING: it replaced TEXA with vertex-fade alpha, making the WHOLE grid semi-opaque — that is NOT
+what GC does. TMapObjWave is a faithful, subtle effect; it is almost certainly NOT the source of the
+oracle's prominent white water band.
+
+**Corrected open question:** WHAT produces the oracle's prominent white water foam/glint? Leading
+candidate (unverified): the 2026-06-25 **b30 "full-width white overlay"** — a SEPARATE 256×256 texture,
+`bm=1/4/2`, `ntex=2`, asymmetric UV — which is a DIFFERENT draw from the 128×256 I4 grid and back then
+DID render (as diagonal stripes). It may have since stopped drawing, or its texture/UV changed. NEXT
+(do NOT claim a root cause first): (1) rigorous native-baseline vs oracle WATER-region diff to quantify
+the ACTUAL residual (the "prominent band" was eyeballed — confirm it's real and how large); (2) identify
+what draws the b30-style full-width foam overlay in the current native frame and in the oracle .dff, and
+whether it renders. Only then name the cause. Keep TMapObjWave OFF the suspect list (faithful).
+
 ### (SUPERSEDED by the RE pass above) Residual 1 as an EFB-reflection implementation arc
 
 Everything reversible/diagnostic is done. Ruled out: missing copy (fires 2×/frame), the retired
