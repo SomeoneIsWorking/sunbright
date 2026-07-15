@@ -255,7 +255,32 @@ MISLEADING: it replaced TEXA with vertex-fade alpha, making the WHOLE grid semi-
 what GC does. TMapObjWave is a faithful, subtle effect; it is almost certainly NOT the source of the
 oracle's prominent white water band.
 
-**Corrected open question:** WHAT produces the oracle's prominent white water foam/glint? Leading
+#### 🛑 WORKFLOW-FIRST BLOCKER (2026-07-15) — the file-select WATER "oracle" is INVALID (aurora-replay artifact)
+
+Went to quantify the water residual and hit a foundational problem: **there is no trustworthy pixel
+oracle for the file-select water.** Every "oracle" image compared against so far is an aurora
+`SB_FIFO_REPLAY` of the `.dff` (aurora RENDERING the recorded fifo), NOT a real Dolphin framedump —
+and aurora's replay produces WATER ARTIFACTS there (the mirror/frame-feedback EFB copies + the
+`eb5c8e74` composite render as harsh white-and-dark SPECKLE / whitewash). Evidence:
+- The two cached "oracles" DISAGREE wildly on the same water band: `fsel_oracle.png` = mean
+  [111,166,183] / 29% whitish (bluish), `amb_oracle.png` = [215,219,215] / 74% whitish (near-white
+  speckle). Both are 1280×**896** = aurora's replay dimension (448 EFB lines ×2), both aurora renders.
+- The `water_compare.png` oracle strip is TV-static speckle, not a smooth sun-glint — an artifact
+  signature, not a natural highlight.
+- `scratch/oracle/dffplay_user/Dump/Frames/` (Dolphin's OWN FIFO-player playback = the real render) is
+  EMPTY. So no real-Dolphin water reference exists.
+
+⇒ The entire "oracle has a prominent white water band" premise was built on aurora replay artifacts.
+Native's smooth turquoise water may be CLOSER to the true Dolphin output than any of these. Residual 1
+(ocean water) is **UNMEASURABLE until a real Dolphin framedump of file-select exists** — comparing
+against the aurora `.dff` replay is invalid for the water region (never debug a blackbox: the
+instrument is broken). WORKFLOW-FIRST next step: capture a TRUE Dolphin file-select framedump —
+either Dolphin FIFO-player playback of `fsel_try_7300.dff` with `Dolphin.Movie.DumpFrames=True`
+(→ dffplay_user/Dump/Frames/, per MANIFEST), or a direct fork boot to file-select via `--pad-start-at`
++ headless framedump. Only with that real reference can the water residual be judged at all. Until
+then, do NOT chase the water against the replay — and TMapObjWave stays ruled faithful.
+
+**(historical) Corrected open question:** WHAT produces the oracle's prominent white water foam/glint? Leading
 candidate (unverified): the 2026-06-25 **b30 "full-width white overlay"** — a SEPARATE 256×256 texture,
 `bm=1/4/2`, `ntex=2`, asymmetric UV — which is a DIFFERENT draw from the 128×256 I4 grid and back then
 DID render (as diagonal stripes). It may have since stopped drawing, or its texture/UV changed. NEXT
