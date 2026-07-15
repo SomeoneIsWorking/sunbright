@@ -41,6 +41,24 @@ BIT-IDENTICAL across runs (meanABS 0.000). Also fixed the `is_set` vs `is_set_by
 seeds defaults into the value map, so `!is_set("save_state_at")` was always false → dead block). Pipeline:
 save state → `--load-state-at`+DumpFrames = pixel oracle; save state → FIFO-record = matched draw oracle.
 
+### MARIO PALENESS — narrowed to aurora TEV-COMBINER-OP fidelity (texture + matColor also ruled out)
+
+Full-frame draw+TEV+texture dump of the replay (SB_DRAW_DUMP_FRAME=0 + SB_TEV_DUMP + SB_TEX_DUMP): two
+MORE hypotheses ruled out. (1) **Texture decode RULED OUT** — Mario's overalls texture (tex_49, 16×32
+fmt5/RGB5A3) decodes to correct saturated denim blue (center (85,102,153)); only 2 blue textures in the
+300-tex dump, both decode blue. (2) **matColor RULED OUT** — Mario's draws are `mat=(1,1,1,1)` REG, IDENTICAL
+to the cubes that render fine; no per-vertex color (clr0=0, vtx default white). Mario is a skinned mesh =
+many low-vert (≤23) tri-strips per matrix, `ch0[light=1 matSrc=0 ambSrc=0 mat=(1,1,1,1) amb=(0.5) mask=03]`.
+⇒ The overalls blue enters via TEXTURE and is combined through Mario's TEV. Two Mario materials: a `tev=2`
+skin material and a `tev=5` multi-texture material (317 draws) with `op=COMPARE` (stage0), `bias=SUBHALF`
+terms, and muted KONST regs (reg1≈lavender (0.59,0.59,0.71), reg2≈grey-blue (0.62,0.63,0.66)). At MATCHED
+state aurora gets the SAME TEV setup + textures as Dolphin, so the wash-to-white = aurora evaluating one of
+these combiner ops (COMPARE / SUBHALF-bias / KONST-select / multi-texmap modulate) differently from GC. The
+cubes render fine because their TEV is simpler. NEXT (deep, cosmetic): the draw-dump `[tex]` only logs
+texMap0, but the overalls bind on a higher texmap — extend it to dump ALL bound texmaps to pin the exact
+overalls draw, then compare aurora's per-stage TEV op eval to the GC TEV spec for that material. This is
+aurora TEV-op-fidelity RE (deep); the paleness is cosmetic/non-blocking and now precisely localized.
+
 ### MARIO PALENESS — SKINNED-NORMAL HYPOTHESIS FALSIFIED (2026-07-15, via new SB_NRM_VIZ tool)
 
 Built `SB_NRM_VIZ` (aurora 3b7300e, env-gated normal visualization — outputs mv_nrm as fragment color).
