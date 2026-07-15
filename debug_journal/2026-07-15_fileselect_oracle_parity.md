@@ -826,3 +826,30 @@ identical native-vs-oracle. Yet the visible beach Mario is pale (native overalls
 NEXT: `SB_TEV_DUMP` the overalls draw native-vs-replay (if the stage math differs, that's it); if the
 TEV matches too, dump the 64x128 texture bytes native binds vs the `.dff`'s and diff them. Only then
 name the cause. Tooling in place: SB_DRAW_DUMP_ALL, [dd-light]/[dd-konst], SB_TEV_DUMP.
+
+### ✅ NARROWED TO TEXTURE PIXELS (2026-07-15) — CMPR overalls texture; every render-state field matches
+
+`SB_TEV_DUMP` of the overalls draw, native-boot vs `.dff` replay — BYTE-IDENTICAL:
+
+    stage0: texMap=1 texCoord=1 chan=4 color(a=8 b=10 c=14 d=2 op=0 bias=2) kcSel=3 kaSel=28
+    stage1: texMap=0 texCoord=0 chan=5 color(a=0 b=10 c=14 d=8 op=0 bias=2) kcSel=4 kaSel=28
+    tex fmt=14 minFilt=1 magFilt=1 wrapS=0 wrapT=0
+    C0=white  C1=(0.761,0.698,0.808,0.631)  C2=(0.616,0.631,0.663,1.0)  C3=white
+
+TEV stages, konst-select, and the TEV color REGISTERS (C1/C2, set by GXSetTevColor from the material)
+all match EXACTLY native-vs-oracle. `fmt=14` = **GX_TF_CMPR** (DXT1-like, GC big-endian layout).
+
+⇒ EVERY render-state field is now proven identical native-vs-oracle for the overalls draw: matColor,
+ambient (main draw), light colors/attn, KONST, TEV per-stage ops, C-registers, texture format, filters,
+wrap. The ONLY remaining variable is the **CMPR texture PIXEL DATA**. The `.dff` replay (aurora's shared
+CMPR decoder on the disc's recorded bytes) renders NAVY; native-boot (same decoder, native-loaded bytes)
+renders PALE ⇒ **native loads Mario's CMPR overalls texture with different bytes than the disc** — a
+native BMD CMPR texture-load/decode bug (CMPR is GC big-endian: 16-bit RGB565 endpoints + 2-bit indices,
+sub-block ordering differs from PC DXT1; a byte-order/block-layout error washes the colors). aurora
+decodes CMPR correctly (replay proves it), so the bug is in native's texture LOAD path feeding wrong
+CMPR bytes, not the decoder.
+
+NEXT (final, decisive): dump the CMPR bytes native binds for texMap=0/1 of the overalls draw and diff
+against the `.dff`'s recorded texture-load bytes; find where native's BMD CMPR load diverges (endpoint
+byteswap / sub-block order) and fix it. This also likely fixes the whole character (skin/hat use the same
+CMPR path). Tooling: SB_DRAW_DUMP_ALL + [dd-light]/[dd-konst] + SB_TEV_DUMP now dump full per-draw state.
