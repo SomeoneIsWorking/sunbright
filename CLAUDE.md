@@ -167,9 +167,11 @@ must use the now-default (RGBA8, color-correct) dumps. Minor real residuals (cos
 blocking): PRESS START prompt and "SUNSHINE" word at different animation phase; seagulls
 missing at settle. The old "~15-25 levels brighter" residual is RESOLVED (2026-07-14): it
 was the phantom mBlack decomp constant (debug_journal/2026-07-14_blocky_letters_mblack.md);
-settled whole-frame means now within 3 levels of the boot oracle (143,178,204 vs 146,178,201). One outstanding structural note (perf wart, not
-parity-blocking): a phase-1 ghost pass double-draws each DrawBuf under stale ortho
-(`SB_SKIP_GHOST=1` drops it with bit-identical output).
+settled whole-frame means now within 3 levels of the boot oracle (143,178,204 vs 146,178,201).
+(Historical note removed 2026-07-15: an earlier "phase-1 ghost pass, SB_SKIP_GHOST drops it
+bit-identical" claim was based on a PHANTOM env — `SB_SKIP_GHOST` does not exist in the code.
+Whether a redundant double-draw exists at all is unverified; use SB_DRAW_STATS / SB_SKIP_ORTHO,
+not that env.)
 
 `GXLoadPosMtxIndx`/`GXLoadNrmMtxIndx3x3` are IMPLEMENTED (2026-07-09) and verified
 non-degenerate — do not re-suspect them. The `…Draw SnapTime` nodes in the title are

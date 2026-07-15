@@ -1,4 +1,22 @@
-# 2026-07-15 — Delfino storage-buffer overflow = real capacity (>8MB) + ghost-pass doubling
+# 2026-07-15 — Delfino storage-buffer overflow (NOTE: ghost-pass theory FALSIFIED)
+
+> ⛔ CORRECTION (2026-07-15, later same day): **`SB_SKIP_GHOST` DOES NOT EXIST in the aurora
+> code** — verified by grep; only `SB_SKIP_ORTHO`/`SB_SKIP_PERSP` exist. Every run below that
+> passed `SB_SKIP_GHOST=1` was a NO-OP (unrecognized env, ignored). So the "ghost pass ~doubles
+> storage, SB_SKIP_GHOST removes the overflow" conclusion is FALSIFIED — the "ghost off" runs
+> were identical to "ghost on". The two 32MB runs differing (one overflowed at 33MB, one reached
+> the fifo desync) is FRAME-CONTENT NON-DETERMINISM, not a ghost pass: the storage overflow and
+> the `0x70` fifo desync are TWO INDEPENDENT failures in the same Delfino frame, and which one the
+> fifo drain reaches first varies per run (the game has RNG/timing-dependent emission). The
+> phantom env came from a stale codemap note; I compounded it by instructing an agent to use it.
+> WHAT REMAINS TRUE: (a) single-pass Delfino storage genuinely exceeds the 8MB title-era cap
+> (real capacity — sized to 32MB); (b) the array cache works (SB_ARR_DBG real=0); (c) the
+> `0x70` fifo desync at the StaticMapObj ShadowOpa block boundary is a real, separate bug
+> (see below — that part stands). Whether a "phase-1 double-draw ghost pass" exists AT ALL is
+> now UNVERIFIED (its only toggle was the phantom env); re-establish with real instruments
+> (SB_DRAW_STATS per-drain bytes/draws, SB_SKIP_ORTHO) before claiming it.
+
+## (below: original ghost-pass writeup — the ghost-cause claims are FALSIFIED per above)
 
 > RESOLVED framing (read this first — the sections below record the messy path there):
 > The per-frame storage staging overflow has TWO independent causes, established by a 2x2
