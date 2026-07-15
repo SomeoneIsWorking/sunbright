@@ -12,8 +12,27 @@ delta that stands is the ALPHA: native 0x..00 vs oracle 0x..ff — non-visible, 
 field nuance already noted.)
 
 TOOLING FIX (so this cap can't confound again): `SB_DRAW_DUMP=1 SB_DRAW_DUMP_FRAME=<N>` now dumps the FULL
-ch0 `[draw-dump]` line for exactly frame N, UNCAPPED (aurora: shared `s_ddFrameActive` gate). Use that, not
-bare SB_DRAW_DUMP (200-cap), for any full-frame native-vs-oracle draw_diff.
+ch0 `[draw-dump]` line for exactly frame N, UNCAPPED (aurora 3598759, shared `s_ddFrameActive` gate;
+verified 466 lines incl. amb=0x28). Use that, not bare SB_DRAW_DUMP (200-cap), for any full-frame draw_diff.
+
+## 🧱 THE REAL BLOCKER: matched-state comparison — need the save-state RELOAD-RENDER (crux)
+
+Every file-select divergence I "found" turned out to be an UNMATCHED-STATE artifact: the paleness was a
+200-cap sampling artifact + framing misalignment; the framing itself is a camera-state mismatch. Native
+file-select is NOT a still frame — a settle check (present 1400 vs 3000) shows whole-frame meanABS 19.8
+(all regions move), but that is CONFOUNDED by the **attract-loop timeout** (memory: ~45s idle → attract
+movie ≈ 2700 frames, so 3000 is a DIFFERENT scene, not "still panning"). So there is no reliable "settled"
+native frame to grab, and the camera pans + Mario idles + attract can fire. ⇒ Ad-hoc frame-count captures
+CANNOT give matched state — confirmed empirically, repeatedly.
+
+The only sound fix is FREEZING one deterministic state and rendering it: the fork `--save-state-at` WRITE
+path works (24.6MB reproducible .sav), but RELOAD-RENDER is broken — booting the fork headless with
+`--save_state=<file>` loads the core but doesn't STEP VI fields (no frames). **NEXT (the crux blocker to
+build past):** make the headless boot-from-state STEP the core (investigate why NoGUI doesn't run emulation
+after a state load — likely starts paused / MainLoop not advancing the CPU). Once it renders, one save state
+gives: a canonical pixel oracle (framedump) AND a matched draw oracle (FIFO-record from the same state) —
+and native, driven to the same event, is finally comparable. Until then, STOP hunting file-select pixel
+divergences against unmatched captures.
 
 **Paleness status: OPEN and possibly NOT REAL.** The palm-trunk [189,209,214] vs Dolphin [165,179,164]
 region box sits at the FRAME EDGE and native's value is BLUE-tinted (214 B) — likely SKY contamination in
