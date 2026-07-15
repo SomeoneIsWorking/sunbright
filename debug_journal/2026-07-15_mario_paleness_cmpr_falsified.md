@@ -1,5 +1,41 @@
 # 2026-07-15 — Mario "paleness": CMPR-texture conclusion FALSIFIED; localized to Mario-only render eval
 
+## ✅✅ RESOLVED — root cause: aurora's XF chanctrl attnFn decode had bit9/bit10 SWAPPED
+
+The wash was **aurora misdecoding the GX channel-control attenuation function**. Real GC/decomp
+encoding (`reference/sms/src/dolphin/gx/GXLight.c` GXSetChanCtrl, cross-checked vs Dolphin
+`XFMemory.h` `attnfunc` `BitField<9,2>` {None,Spec,Dir,Spot}):
+- **bit 9  = (attn_fn != GX_AF_NONE)**
+- **bit 10 = (attn_fn != GX_AF_SPEC)**
+
+aurora's decode (`command_processor.cpp`) tested `!bit10 → NONE` first, i.e. it had bit9/bit10
+swapped, so a **SPEC** channel (bit9=1, bit10=0) was read as **NONE**. Under NONE, aurora forces
+`attn=1, diff=1` and adds the light's FULL color as a constant; under SPEC it computes an
+attenuated specular highlight (mostly dim). Mario's **COLOR1** is a `GX_AF_SPEC` highlight light
+(L2, white); TEV **stage 4** (`chan=5`=COLOR1A1) pulls COLOR1 RASC into the combine, so the
+phantom full-white add blew him toward white. Localized by `SB_TEV_STOP`: overalls stay mid-tone
+through stages 0–3, jump to blown-white at stage 4.
+
+**Fix** (aurora): correct the decode to the real hardware convention, and fix the matching
+`GXLighting.cpp` encode (bit9/bit10 + the `diffFn` zero-condition, which the decomp keys on
+`attn==SPEC`, not `==NONE`) so encode↔decode round-trip and match hardware. General fix — affects
+EVERY object using GX_AF_SPEC or GX_AF_NONE, not just Mario.
+
+**Verified**: replay overalls **[127,164,195] (washed) → [10,69,175]**, oracle **[19,68,169]** —
+near-exact. Side-by-side `scratch/texcmp/fix_side.png`: aurora Mario now matches the oracle
+(deep red hat, saturated blue overalls, brown shoes, proper shading). `dd-ch1` now shows
+`attnFn=0` (SPEC) for Mario. No regression: title replay still faithful (mean [139.6,174.4,200.6]
+vs boot-oracle ~[143,178,204]); whole-frame replay meanABS 27.96→27.37.
+
+Note: the remaining left-vs-right background difference in `fix_side.png` is the SEPARATE, known
+water-speckle REPLAY-ONLY artifact — not Mario, not this bug.
+
+---
+_(original investigation notes below — kept; the "differing TEV input" NEXT was correct: it was
+COLOR1's specular light being misdecoded)_
+
+
+
 Follow-up to the same-day commits `4f67166`/`265b920`, which concluded the Mario overalls
 paleness was "narrowed to CMPR texture pixels → GC big-endian CMPR load bug." **That
 conclusion is FALSIFIED here** — verified, not argued. This entry records what is actually
