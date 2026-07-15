@@ -47,11 +47,31 @@ of `sms-boot/CMakeLists.txt`. `shims/` holds RE'd game-logic spec headers includ
 `reference/sms`; `boot_stubs/` holds scaffold stubs for unported classes (each one is
 porting worklist, replaced as the boot path exercises it).
 
-⛔ Retired and deleted — do not resurrect: the recomp/JIT stack, the Dolphin submodule and
-both oracle tiers, the SDL3-GPU Path-B renderer (`render_pc`), the GX-seam capture layer
-(`sms-boot/common`), the cooperative scheduler, the "flip" host-layout engine
-(`docs/DO_NOT_REVISIT_FLIP.md`). History: `debug_journal/`, memory
-`[[aurora-two-path-refactor-2026-07-04]]`, `debug_journal/2026-07-07_one_runtime_consolidation.md`.
+⛔ Retired and deleted: the Dolphin submodule and both oracle tiers, the SDL3-GPU Path-B
+renderer (`render_pc`), the GX-seam capture layer (`sms-boot/common`), the cooperative
+scheduler. History: `debug_journal/`, memory `[[aurora-two-path-refactor-2026-07-04]]`,
+`debug_journal/2026-07-07_one_runtime_consolidation.md`.
+
+## 🏛️ NATIVE-ONLY, NO RECOMP (2026-07-15, decided at user's delegation)
+
+Everything is ported to NATIVE C++ — there is no recomp/PPC-execution fallback, and none
+will be reintroduced. The recomp stack (and the "flip" host-layout engine it needed) were
+retired because emitting flip-backed code was intractable; that difficulty is STRUCTURAL,
+not incidental: `reference/sms` is a **decomp** compiled to host layout (LP64, little-endian,
+native vtables), while recompiled PPC needs **guest** layout (32-bit big-endian pointers,
+guest vtables/addresses). Calling recomp'd PPC on a native object requires marshaling every
+field across that boundary = the flip engine = proven impossible. Recomp only worked when the
+WHOLE game ran guest-side under Dolphin (the retired era). Native-only is also REQUIRED for
+the goal — interpolated 60fps (like Dusklight, the TP decomp port on Aurora): the renderer
+interpolates native transforms; recomp'd logic would be opaque and un-interpolatable.
+
+The gaps I hand-port are **decomp gaps** (functions `reference/sms` has no body for) — finite,
+not infinite. The accelerator is **syncing upstream `doldecomp/sms`** (the `upstream` remote
+on the reference/sms fork) so community-filled bodies land for free, plus RE tooling
+(`tools/re/port_dossier.py`). Rendering-affecting code is always native; when a native port
+faithfully reproduces a retail overflow/UB that's benign on PPC but corrupts on host (e.g. a
+4x4 write into a 3x4 buffer), adapt to produce the same OBSERVABLE result without the host
+corruption, documented as such.
 
 ## 🏛️ RENDERER DOCTRINE (2026-07-10, decided at user's delegation): Aurora GX-replay stays
 
