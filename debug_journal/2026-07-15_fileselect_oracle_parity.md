@@ -41,6 +41,28 @@ BIT-IDENTICAL across runs (meanABS 0.000). Also fixed the `is_set` vs `is_set_by
 seeds defaults into the value map, so `!is_set("save_state_at")` was always false → dead block). Pipeline:
 save state → `--load-state-at`+DumpFrames = pixel oracle; save state → FIFO-record = matched draw oracle.
 
+### MARIO PALENESS — CHECKPOINT (2026-07-15): precisely localized, 6 hypotheses ruled out, cosmetic
+
+Ruled out, each verified (not guessed): **normals** (SB_NRM_VIZ shows correct smooth normals), **ambient**
+(0x80/0x28 correct), **L1** (prior), **texture-decode** (overalls tex_49 RGB5A3 → correct blue),
+**matColor** (white REG, same as fine cubes), and **TEV op codegen** (aurora's `tev_op`, shader.cpp:364,
+implements all 8 compare ops; `COMP_GR16_GT`=op10 that Mario's tev=5 material uses looks correct:
+`select(0,c, GR16(a)>GR16(b)) + d`). So the wash-to-white is a SUBTLE divergence in aurora's MULTI-STAGE
+TEV COMBINE of Mario's specific materials (the tev=5 material's stage interplay: TEXA-compare mask → C2/C1
+KONST mixes with SUBHALF biases → RASC lighting modulate), not any single op. This is deep aurora
+TEV-combine-fidelity RE for a COSMETIC, non-blocking residual — CHECKPOINTED here (marathon session,
+context pressure). The precise next step for a fresh, focused effort:
+1. Extend the draw-dump `[tex]` line to report ALL bound texmaps (currently only texMap0) — small aurora
+   change — to pin the exact overalls-binding draw + its stage.
+2. Reconstruct that draw's full generated WGSL (SB_SHADER_DUMP/SB_SHADER_HASH) and walk it stage-by-stage
+   against the GC TEV spec for the material, finding the one stage whose output diverges (suspects: the
+   SUBHALF-bias handling, the KONST-reg mix, or texmap ordering in the multi-tex modulate).
+3. Verify with the matched-state tool (`--load-state-at` Dolphin render vs native replay of the same state)
+   on Mario specifically.
+Tools ready: SB_NRM_VIZ, SB_TEV_DUMP, SB_TEX_DUMP, draw_diff.py, --save-state-at/--load-state-at, uncapped
+SB_DRAW_DUMP_FRAME. File-select is otherwise FAITHFUL (framing + lighting confirmed; water is a separate
+aurora EFB-copy REPLAY tooling artifact, not a live-native bug).
+
 ### MARIO PALENESS — narrowed to aurora TEV-COMBINER-OP fidelity (texture + matColor also ruled out)
 
 Full-frame draw+TEV+texture dump of the replay (SB_DRAW_DUMP_FRAME=0 + SB_TEV_DUMP + SB_TEX_DUMP): two
