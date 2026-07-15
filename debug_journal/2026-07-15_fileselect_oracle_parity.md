@@ -135,8 +135,25 @@ WHO sets ambient=0 for the Mirror/Map/TLightDrawBuffer draws (add a caller trace
 GXSetChanAmbColor or the XF-ambient register write). Then port/fix that scene-ambient setup.
 Do this fresh — it's in the TLightWithDBSet lighting arc, not a one-liner.
 
-## Other residuals
+## Residual 1 (ocean sun-glare/foam) — CHARACTERIZED: the sea-mirror EFB composite (deferred arc)
 
-- Residual 1 (ocean sun-glare) = the existing reflective-sea arc (separate).
+The oracle's bright white sun-glint/foam across the mid-distance water is the **sea-mirror EFB
+composite** (shader key hi32 `0xeb5c8e74`, drawbuf `DrawBuf MapXlu`), fully characterized in
+`debug_journal/2026-07-03_water_sea_mirror_efb_composite.md`. In GC it samples a pre-copied
+EFB→TEXTURE snapshot of the sea-mirror render and blends it (bm=1/4/2) dreamily over the water —
+that IS the reflection/glare. Under `SMS_NATIVE_PLATFORM` we do not emulate GC EFB→TEXTURE copies,
+so the bound texture arrived near-black, the TEV (`GX_CS_SCALE_2`) saturated to white, and the
+composite painted the whole frame white — so it was deliberately DROPPED (skip batches with
+`(shaderKey>>32)==0xeb5c8e74`). Dropping it is faithful given "paint pure white ≠ the RE'd intent",
+but the COST is exactly this residual: flat turquoise water, no reflection highlight.
+
+**To resolve it = implement the EFB-copy sea-mirror reflection pass** (render mirror view →
+EFB→TEXTURE copy → rebind as the composite's tex → run the real `eb5c8e74` TEV/blend). This is
+WITHIN the renderer doctrine ("understood modern equivalent acceptable at genuinely opaque HARDWARE
+seams — EFB copy mechanics, XFB present"). It's a SUBSTANTIAL aurora arc, not a one-liner, and it's
+the same missing machinery as the title's mirror-capture + logo-reflection EFB copies. This is the
+next file-select parity step; start it with fresh context (orient on aurora's EFB-copy handling
+first). Do NOT re-attempt the retired `SB_FS_COMPOSITE` segmented-render/snapshot_efb path (falsified
+2026-07-03) or any endpoint-gradient hand-tune of the sea (violates no-hand-tuning).
 - For a clean quantified pixel diff, first fix the capture-height mismatch (dump native at
   448 or the oracle at 480) — the 960-vs-896 misalignment inflated the earlier 67% number.
