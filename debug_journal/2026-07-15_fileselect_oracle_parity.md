@@ -741,3 +741,16 @@ I added for the map-object under-lighting fix — if getAmbColor returns 0xFF he
 of Mario's material ambient. NEXT: instrument getAmbColor's return + whether Mario's material sets its own
 ch0 ambient before the draw; confirm which path yields 0xFF, and fix THAT (load Mario's 0x80 material
 ambient faithfully / scope the setLight ambient so it doesn't clobber lit materials). Do NOT hand-set 0.5.
+
+### Disambiguation (2026-07-15) — the 0xFF ambient is Mario's J3D MATERIAL, NOT the setLight tail
+
+Ran native frame-700 draw dump with the `setLight` ambient tail disabled (`SB_NO_SETLIGHT_AMB=1`,
+temporary diag, reverted): **Mario's overalls ambient stayed (1.00,1.00,1.00) — unchanged**, while
+other lit map draws dropped to (0,0,0) (the black-map-object case the setLight fix correctly rescues).
+⇒ The `TLightCommon::setLight` ambient fix is NOT the source of Mario's white ambient — it is correct
+and needed. Mario's 0xFF ambient comes from his OWN J3D MATERIAL (the material's color-channel loads/
+applies GX_COLOR0A0 = 0xFF at Mario's draw; the oracle applies 0x80). This is a Mario material-ambient
+load/apply bug (default-white fallback or a BE-swap of the material ambient color), in the J3D material
+color-channel path — NOT in LightUtil. Oracle confirms 0.5 is the intended scene-wide lit ambient
+(492 of 510 lit draws use 0.50; only 18 use 1.0). NEXT: trace how Mario's J3DMaterial color-channel
+ambient (GX_COLOR0A0) is loaded from his BMD and why it applies 0xFF instead of 0x80.
