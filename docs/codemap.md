@@ -53,7 +53,13 @@ dropped GC-no-op calls (GXEnd 2026-07-15).
 `upstream` remote is `doldecomp/sms` (we are 310 commits ahead / 24 behind); a full merge is
 conflict-risky, but our EMPTY gap files can be taken from `upstream/main` file-by-file. As of
 2026-07-15 only 6 of our 64 gaps are filled upstream: Animal/{AnimalBase,boid,fishoid},
-Enemy/{bossManta,gatekeeper,egggen} — cherry-pick + drop the matching boot_stub + native-fix.
+Enemy/{bossManta,gatekeeper,egggen}. NOT drop-in: because our fork is 310 commits ahead,
+upstream bodies reference newer decomp symbols our headers lack — AnimalBase.cpp needed ~11
+header reconciliations (missing enums CUE_MOVE/CUE_CALC_*, LIVE_FLAG_UNK20, type
+TAnimalBaseUnk150, method decls initNoLoad_/flyToCurPathNode/animalWalkIn, API renames
+setEulerX→setEuler, MSound::startSeRandPlay). So each cherry-pick = copy body + drop the
+matching boot_stubs + reconcile ~10 header divergences + build/verify — a focused per-file
+cycle, modest leverage. (Tried AnimalBase 2026-07-15, reverted: needs the header pass first.)
 Ports landed 2026-07-15: TMapObjTree::initMapObj/initEach, SMS_GetLightPerspectiveForEffectMtx.
 When JP decomp misbehaves on the US disc, check the US disasm first
 (`tools/re/disasm_range.py scratch/bin/sms.dol …`; regenerate the DOL with
