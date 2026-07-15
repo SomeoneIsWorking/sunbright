@@ -613,3 +613,38 @@ draw-buffer, what it copies, what the composite's TEV expects) before writing an
 
 - For a clean quantified pixel diff, first fix the capture-height mismatch (dump native at
   448 or the oracle at 480) — the 960-vs-896 misalignment inflated the earlier 67% number.
+
+---
+
+## ✅ RESOLUTION (2026-07-15) — TRUE Dolphin oracle built; water arc CLOSED as faithful
+
+Cleared the WORKFLOW-FIRST blocker (no trustworthy file-select pixel oracle). Built a genuine
+Dolphin render of file-select with the fork's `--load-state-at` (fresh-boot → `State::LoadAs`
+mid-run → keep stepping → framedump AVI), loading `scratch/oracle/state/fsel_settled.sav`. Recipe
+in scratch/oracle/MANIFEST.md (2026-07-15 update). Oracle frame:
+`scratch/oracle/loadstate_probe/png/fsel_dolphin_end.png`.
+
+**Water is FAITHFUL — the speckle was an aurora-replay artifact, now falsified against real Dolphin.**
+The true oracle water is smooth turquoise with NO white speckle band. Every prior "prominent white
+water band / whitewash" observation came from an aurora `SB_FIFO_REPLAY` of the `.dff` (mirror/EFB-copy
+speckle), NOT a real render. TMapObjWave was already ruled faithful (TEXA²·RASA ⇒ near-invisible foam).
+⇒ The entire ocean-water/EFB-reflection residual is CLOSED: native's smooth turquoise water matches the
+real Dolphin oracle. Do NOT re-open the file-select water against `.dff` replays.
+
+**Environment parity (pose-independent regions, native `SB_STAGE=15`+START vs true oracle):**
+- water (y320-360, full width): dRGB [-5.7, +9.4, +11.4] — faithful turquoise
+- beach (y430-470):             dRGB [+9.2, +4.4, +4.1]
+- right sky (above palm):        dRGB [-2.0, -12.3, +4.1]
+All within ~10-12 levels; a small ~5-10-level native-brighter systematic (same class as the old
+resolved title residual). File-select ENVIRONMENT (sky/water/beach/palm/blocks) is at parity.
+
+**Only remaining open item: Mario's body color, POSE-CONFOUNDED.** Native's file-select capture (START
+pressed → "Select data." save-slot overlay, blank card → New/New/New panels) has Mario in a CROUCHED
+idle pose (white undershirt/gloves showing) while the oracle save-state is the pre-dialog landing with
+Mario STANDING front-on (blue overalls showing). Comparing different animation frames is invalid — the
+earlier "Mario pale/washed" was measured across this pose mismatch AND (before) against the speckle-
+contaminated replay. NOT yet a confirmed defect. NEXT (tractable, tooling): dump native file-select at
+several `SB_DUMP_FRAME_AFTER` values to catch Mario STANDING front-on (matching the oracle pose), then
+compare overalls/hat saturation. Only then judge whether any real Mario desaturation exists. The mip
+`SB_SKIP_HASH`/dimension-clamp work (aurora ad93196) stays as correct robustness but was chasing the
+replay artifact — not a game-path fix.
