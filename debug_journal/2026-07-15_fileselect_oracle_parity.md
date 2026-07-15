@@ -44,7 +44,51 @@ Native: `SB_STAGE=15 SB_PAD_SCRIPT="600:START 610:-" SB_DUMP_FRAME=... SB_DUMP_F
 Not defects: file-block content (native all "New" = blank save is correct; oracle slot 1 =
 shine×01 from Dolphin's memcard) and Mario anim-pose (mismatched capture instants).
 
-## ROOT CAUSE of residuals 2+3 (palm + cubes under-lit): AMBIENT COLOR loads as 0
+## ✅ RESOLVED (2026-07-15): residuals 2+3 fixed — `setLight` was missing the scene-ambient set
+
+**Root cause (the REAL one, after ruling out the material path below):** `TLightCommon::setLight`
+(@US 0x80229a30) ends by applying the scene ambient to the ch0 ambient register:
+`GXSetChanAmbColor(GX_COLOR0A0, getAmbColor(idx))` (disasm tail @0x80229c64-0x80229c88 —
+`getAmbColor` takes the RAW idx r30, NOT the doubled light-getter index gi=idx*2 r31). Our
+native port OMITTED that call. And `setLight` STARTS with `ReInitializeGX()`, which sets
+`GXSetChanAmbColor(GX_COLOR0A0, black)`. So every setLight left the ambient register at 0.
+
+Why that darkened the scene: the file-select map objects (palm, A/B/C cubes, MapStaticObj)
+are loaded WITHOUT `J3DMLF_MaterialColorLightOn` (literal game-data flags: `0x10210000`/
+`0x10220000`/`0x10020000`, `MapStaticObject kMdlF_PE1`, `{"amenbo_model1.bmd",0x10210000}` —
+identical on retail), so their color block is `J3DColorBlockLightOff`, whose `setAmbColor`/
+`load` are NO-OPS: per-material ambient is faithfully DISCARDED. These lit LightOff materials
+(chanctrl `light=1`) rely entirely on the GLOBAL ambient register — which `setLight` is
+supposed to set to the scene ambient and didn't. Result: not-directly-lit faces (palm trunk,
+shadowed cube faces) rendered BLACK.
+
+**Fix:** appended the missing `GXSetChanAmbColor(GX_COLOR0A0, getAmbColor(idx))` to
+`TLightCommon::setLight` (reference/sms `MarioUtil/LightUtil.cpp`). `TLightMario::setLight`
+delegates to the base, so both are fixed. This is NOT file-select-specific — it restores
+correct ambient for EVERY lit J3D scene (title 3D, gameplay). Faithful RE completion.
+
+**Verified (before→after→oracle, all headless):** the palm trunk went from a black silhouette
+to light green/tan; the A/B/C cubes from dim to bright golden (letters visible); both now MATCH
+the Dolphin oracle. amb-trace: native now emits `80808000` (0x80 ambient, 15521×) + `28282800`
+(0x28, StaticMapObj SunOpa) on the TLightDrawBuffer/Mirror marks — exactly the oracle's
+`808080ff`/`282828ff` RGB. Full-frame: 20.1% of pixels brightened (delta +48/+66/+37 RGB over
+changed pixels); mean brightness moved to bracket the oracle (G 149→162 vs 159, B 188→195 vs 191).
+Screenshots: scratch/shots/ambfix_before.png vs ambfix2_after.png vs amb_oracle.png.
+
+### ⚠️ Remaining sub-residual (secondary, NOT visible-blocking): ambient ALPHA = 0 vs oracle 0xff
+
+Native emits `80808000` (a=0) where the oracle has `808080ff` (a=0xff). RGB matches (the
+visible fix); only the ambient ALPHA differs. Cause: `getAmbColor` scales `c.a *= mAlphaScale`
+and the ctor leaves the scale field 0. TWO RE nuances found (unfixed, next step): (1) `getLightColor`
+reads the alpha-scale from **0x1C** (`mAlphaScale`) but `getAmbColor` reads it from **0x18**
+(`unk18`) — the port uses `mAlphaScale` for BOTH; and (2) both fields are 0 at file-select in
+native, yet the oracle alpha is 0xff, so the correct scale field must be set to ~1.0 at runtime
+by some setter our port doesn't run. Ambient-alpha only feeds lit ALPHA-channel draws (ambSrc=REG),
+so it's not visibly blocking here — but it IS a faithfulness gap. Fix path: correct `getAmbColor`
+to read 0x18, then find who sets that field (verify the full 0x80229cec disasm for r3-reassignment
+first — the `lfs 0x18(r3)` may not be `this`-relative).
+
+## (ORIGINAL, now superseded) ROOT CAUSE hypothesis: AMBIENT COLOR loads as 0
 
 Dual per-draw state dump (SB_DRAW_DUMP, native file-select vs oracle .dff replay) nailed it.
 The dominant lit-perspective draw signature:
