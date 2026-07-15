@@ -208,7 +208,38 @@ way, so the reflection is absent regardless.)
 Also clarified: `SB_SHADER_HASH` prints `xxh3(shaderConfig)`, NOT the old `eb5c8e74` shaderKey — so
 it can't match the historical key directly.
 
-### ⛔ Residual 1 is now at the DIAGNOSIS→IMPLEMENTATION boundary (fresh session / user priority call)
+### 🔁 RE pass (2026-07-15, "do the RE work") — RESIDUAL 1 RE-ATTRIBUTED: it's TMapObjWave foam, NOT the EFB composite
+
+Doing the RE reversed the attribution. The oracle's sea white-glint/foam is almost certainly
+**TMapObjWave** (the animated Mario-centred sea-foam grid, `MoveBG/MapObjWave.cpp` — FULLY PORTED),
+NOT the `eb5c8e74` EFB composite (which `SB_SKIP_COPY_QUAD` proved contributes ~nothing → red herring
+for the glint; the 2026-07-03 note was about a different artifact, the whole-screen white-WASH).
+
+Evidence (SB_WAVE_DBG + SB_WAVE_SOLID at native file-select):
+- TMapObjWave IS created + loaded (`mMap=15`, coef 30/25, strip 26, half 2600) + performs (0x3001/0x8)
+  + `draw()` runs 3× (origin=(950,100,-1000), Mario-centred grid). So it draws.
+- `SB_WAVE_SOLID=1` (forces the grid opaque, `GX_BM_NONE`, alpha-compare ALWAYS) BRIGHTENS the water
+  region +65R/+20G/+17B (163,220,225 vs the normal 98,201,208). So the grid GEOMETRY + COLOR land on
+  the water correctly — only the ALPHA/blend kills it in normal mode.
+- Normal blend `GX_BM_BLEND, GX_BL_SRCALPHA, GX_BL_SRCCLR`: out = src·srcA + dst·srcRGB. With srcA≈0
+  and srcRGB≈white, out≈dst → invisible (exactly the flat-turquoise symptom).
+
+Where the alpha dies: `mAlpha=255` (ctor), vertex `RASA = 255·fade` (opaque at centre) — NOT the
+problem. The TEV alpha chain is stage0 `A = TEXA·RASA`, stage1 `A = TEXA·APREV = TEXA²·RASA`. So the
+final blend alpha is **TEXA²·RASA**, dominated by `wave.bti`'s texture ALPHA. ⇒ HYPOTHESIS (strong,
+not yet verified): `wave.bti` (`/scene/map/map/wave.bti`, loaded via `JKRFileLoader::getGlbResource` +
+`JUTTexture::load`) has its alpha channel reading ~0 in native — likely a BTI ResTIMG header/format
+byteswap or alpha-format load bug (cf. [[fileselect-textured-2d]] "standalone J2D TIMG is raw BE, swap
+at getResource"; getGlbResource may not swap the BTI header → wrong `format`/alpha).
+
+NEXT (verify then fix): (a) dump `wave.bti`'s loaded format + a sample of its ALPHA channel as native
+sees it (is it ~0? is `format` a sane GXTexFmt with alpha, e.g. IA8/RGB5A3?); (b) quick falsifier —
+temporarily force the grid alpha to bypass TEXA (or set the TEV alpha to RASA only) and confirm the
+foam/glint appears matching the oracle; (c) if confirmed, fix the wave.bti alpha load (header swap /
+format) — a real BE/format fix, no hand-tuning. This is a TRACTABLE texture-alpha bug, a much smaller
+arc than the EFB-reflection implementation the prior passes feared.
+
+### (SUPERSEDED by the RE pass above) Residual 1 as an EFB-reflection implementation arc
 
 Everything reversible/diagnostic is done. Ruled out: missing copy (fires 2×/frame), the retired
 force-drop, and "composite already works" (it contributes ~nothing). What remains is IMPLEMENTATION:
