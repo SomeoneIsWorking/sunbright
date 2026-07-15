@@ -72,12 +72,26 @@ give L2 the specular attenuation (`GXInitLightAttn(&obj, 0,0,1, 25,0,-24)` = `GX
 - Upstream doldecomp/sms is NOT locally comparable (only the commit object is fetched, tree=0
   files); a full `git fetch upstream` would be needed to diff — deliberate sync, not done here.
 
-**Remaining before the fix (deliberate work, NOT autonomous):** disasm 0x80229a30's L2 block in
-Ghidra to confirm whether retail calls `GXInitLightAttn(0,0,1,25,0,-24)` inline (→ line 281 is a
-constant-transcription bug, fix in place) OR `GXInitLightShininess(&obj, 0.5)` as a separate call
-(→ port the shininess call for byte-faithfulness). Then edit, and re-capture live-native to verify
-overalls → deep blue. Do NOT claim the shipped Mario is fixed until that passes — only the aurora
-decode bug is fixed + replay-verified so far.
+### ✅✅✅ RESOLVED — live-native Mario now at parity (disasm-confirmed + ported + visually verified)
+
+Disassembled GMSE01 @0x80229c30-c54 (capstone on scratch/bin/sms.dol via the DOL-VA map): the
+retail L2 block is `GXInitLightAttn(&obj, 0.0, 0.0, 1.0, s*0.5, 0.0, 1.0 - s*0.5)` with
+`s = *(f32*)(this+0x10)` = `TLightCommon::mShininess` (=50.0f after `loadAfter`) — i.e.
+`GXInitLightShininess` inlined, giving cosAtt=(0,0,1) distAtt=(25,0,-24). So line 281's
+`(1,0,0,1,0,0)` was a genuine **constant-transcription bug** (wrong on BOTH cosAtt and distAtt).
+`GXInitLightShininess` is not a separate symbol in the decomp — retail inlines the `GXInitLightAttn`
+call, so the byte-faithful fix is inline too.
+
+FIX (reference/sms `LightUtil.cpp:281`, submodule commit d5bb55a1): replaced with
+`GXInitLightAttn(&obj, 0,0,1, mShininess*0.5f, 0,0, 1 - mShininess*0.5f)`; renamed `unk10`→
+`mShininess`. **Verified live-native** (`SB_STAGE=15` + pad-driven START, `SB_DUMP_FRAME`): Mario
+overalls **0 deep-blue px → 951 px at [10,64,166]**, matching the oracle **[20,60,170]**; SBS
+`scratch/texcmp/l2fix_sbs.png` shows washed→vibrant (deep red hat, blue overalls, brown shoes,
+proper shading). Full frame at parity, no regression (cubes/palm/banners correct).
+
+**MARIO PALENESS FULLY RESOLVED** — two independent bugs: (1) aurora XF chanctrl attnFn decode
+bit-swap (replay path); (2) this port GX_LIGHT2 constant-attn transcription (live-native path). Both
+fixed + verified on their respective paths.
 
 ---
 _(original investigation notes below — kept; the "differing TEV input" NEXT was correct: it was
