@@ -59,13 +59,25 @@ GXInitLightAttn(&obj, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f);  // 281 — CONSTANT;
 ```
 Line 281 sets constant attn where retail sets the shininess-50 specular coefficients. The FIX is to
 give L2 the specular attenuation (`GXInitLightAttn(&obj, 0,0,1, 25,0,-24)` = `GXInitLightShininess`
-50, matching the oracle). BUT this is a decomp-submodule game-logic change that MUST be verified
-first, NOT edited blind: (1) confirm this exact `setLight` is the path that runs for file-select
-Mario (multiple TLight subclasses exist); (2) check the decomp vs the retail disasm — either the
-decomp is genuinely wrong here or the port diverged from upstream doldecomp/sms (sync-first if
-upstream already has it right); (3) re-capture live-native after the edit and re-measure the
-overalls vs oracle. Do NOT claim the shipped game's Mario is fixed until (3) passes — only the
-aurora decode bug is fixed + replay-verified so far.
+50, matching the oracle).
+
+**De-risked (tick 3, read-only RE — all confirmed):**
+- **Path confirmed.** `TLightMario::setLight` @0x80229610 is a byte-identical twin of
+  `TLightCommon::setLight` @0x80229a30 (CodeWarrior emitted the same body for both polymorphic
+  overrides); the port dispatches Mario's setLight to the base (LightUtil.cpp:390→392). So the
+  L2 block at :270-283 IS Mario's light-2 setup. (Funcs: both in reference/sms_gmse01_funcs.txt.)
+- **`GXInitSpecularDir` sets ONLY `ldir`/`lpos`, NOT cosAtt/distAtt** (reference/sms GXLight.c —
+  verified). So L2's attenuation comes ENTIRELY from the `GXInitLightAttn` at :281. Retail's
+  L2 `distAtt=(25,0,-24)` is too specific to come from anywhere else → line 281's args are the bug.
+- Upstream doldecomp/sms is NOT locally comparable (only the commit object is fetched, tree=0
+  files); a full `git fetch upstream` would be needed to diff — deliberate sync, not done here.
+
+**Remaining before the fix (deliberate work, NOT autonomous):** disasm 0x80229a30's L2 block in
+Ghidra to confirm whether retail calls `GXInitLightAttn(0,0,1,25,0,-24)` inline (→ line 281 is a
+constant-transcription bug, fix in place) OR `GXInitLightShininess(&obj, 0.5)` as a separate call
+(→ port the shininess call for byte-faithfulness). Then edit, and re-capture live-native to verify
+overalls → deep blue. Do NOT claim the shipped Mario is fixed until that passes — only the aurora
+decode bug is fixed + replay-verified so far.
 
 ---
 _(original investigation notes below — kept; the "differing TEV input" NEXT was correct: it was
