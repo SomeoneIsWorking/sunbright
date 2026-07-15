@@ -30,6 +30,23 @@ vs boot-oracle ~[143,178,204]); whole-frame replay meanABS 27.96→27.37.
 Note: the remaining left-vs-right background difference in `fix_side.png` is the SEPARATE, known
 water-speckle REPLAY-ONLY artifact — not Mario, not this bug.
 
+### ⚠️ SCOPE CORRECTION — the fix is verified on the REPLAY, but LIVE-NATIVE Mario is UNCHANGED
+
+Re-captured live-native file-select with the fixed binary; Mario is still washed there. A
+live-native draw-dump (`SB_DRAW_DUMP_FRAME` at the settled file-select frame; note the boot log is
+binary to grep — use `grep -a` because of Shift-JIS perform-list names) shows the fix DID apply —
+**live-native ch1 now decodes attnFn=0 (SPEC)**, same as retail. So the decode fix is not the
+live-native gap. The live-native config DIFFERS from retail's dff in the **ambient**: many of
+Mario's lit draws have **ch0 amb=(1.0,1.0,1.0)** (full-white ambient) whereas retail/oracle uses
+**amb=(0.5)** on all of them. White ambient washes Mario to near-white regardless of the specular
+fix — `matColor(white) * clamp(1.0 + ...) = white`. So the live-native residual is a **game-logic
+light-setup difference** (the port's TLight/ambient path produces amb=1.0 where retail produces
+0.5), NOT the aurora decode bug. (Do NOT claim the shipped game's Mario is fully fixed — only the
+aurora decode bug is fixed + replay-verified.) NEXT: RE why the port sets Mario's COLOR0 ambient to
+1.0 (retail 0.5) — suspect the TLightMario / `TLightCommon::setLight` `GXSetChanAmbColor` path
+(known gaps: [[light-dbset-porting-gaps-2026-07-04]]; codemap notes a prior setLight ambient fix).
+Confirm the exact overalls draw's ambient, then fix the game-logic ambient source.
+
 ---
 _(original investigation notes below — kept; the "differing TEV input" NEXT was correct: it was
 COLOR1's specular light being misdecoded)_
