@@ -74,6 +74,26 @@ The hex dump around the desync contains 64-bit HOST POINTERS (`.. 3b 39 12 7f 00
 pointer payload, reading its low bytes (0x70, 0x60) as opcodes. Last draw-identity marker:
 `'DrawBuf StaticMapObj ShadowOpa'`.
 
+### Pinned precisely (2026-07-15, marker-filtered trace SB_FIFO_TRACE_MARK=ShadowOpa)
+
+Every command up to pos 946088 parses CORRECTLY (verified by the per-command trace): the
+ShadowOpa quad draw (0x80, vtxCount=4, vtxSize=6 = POS-only XYZ s16, span 27), 3 BP loads,
+a GX_AURORA ARRAYBASE (0x50 + u16 subcmd + u64 ptr + u32 + u8 = span 16, correct), XF loads
+(span 53 = 12 regs, span 9 = 1 reg, both correct), CP loads (span 6 each) — a complete
+VAT-fmt0 setup ending at 946088. THEN 88 zero-bytes (read as NOPs) up to pos 946176, then
+`0x70` (invalid) followed by host pointers (`60 3b 71 00 7f 00 00` = 0x00007f00713b60-ish).
+
+Facts: pos 946176 is 32-byte aligned; GX_WRITE_AURORA = `0x50` + BE-u16 subcmd (verified
+against the enum in GXAurora.h, ARRAYBASE=0x0010 etc.); the fifo DL mechanism pads display
+lists to 32 bytes with ZEROS (fifo.cpp end_display_list). So the 88-zero gap looks like a
+block/DL boundary, and the block starting at 946176 (0x70 + pointers) is where valid parsing
+should resume but the opcode is wrong. REMAINING HYPOTHESES (next focused session): (a) a
+display-list / DRAW_SIZED region whose declared size vs written bytes disagree, leaving the
+parser at the wrong offset for the next block; (b) a stubbed shadow-emission path that left
+the fifo region partially written; (c) the drain `size` includes a region the frame didn't
+actually fill contiguously. Instruments in place: SB_FIFO_TRACE_MARK (per-command trace),
+span= in the recent-opcode dump, 128-deep ring, wide hex.
+
 Ruled OUT this session (dead ends — do not re-chase):
 - vtxSize miscalc for matrix-index attrs (PNMTXIDX/TEXnMTXIDX): REFUTED — `comp_type_size`
   and `comp_cnt_count` (attr_fmt.cpp) both special-case those attrs to return 1, so
