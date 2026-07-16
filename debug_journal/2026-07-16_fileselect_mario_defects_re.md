@@ -117,3 +117,12 @@ not usable to split texture-vs-TEV for the patches. Better next instrument: per-
 Mario-texture dump compare (his gloves/shoes textures native vs replay via SB_TEX_DUMP content-hash,
 which previously matched globally — recheck scoped to the black-patch textures), or the planned
 single-vertex normal trace.
+
+### NEW LEAD (untested): the black patches may be the DIRTY/GOO overlay misfiring
+The patch SHAPES are splotch-like (body/gloves/shoes/nose) — Mario's tev=5 material's TEXA-compare
+KONST stages are the DIRT/goo overlay system, and the port's TMario::load zeroes mFlag then only
+touches HAS_FLUDD while retail's settled mFlag=0x00040001 (extra bits). If the dirty state/texture
+(H_ma_rak.bti, cDirtyFileName in MarioInit) animates/gates differently in native, the dirt stage
+could render BLACK splotches where retail renders none. TEST: force the dirty TEV stage off (or
+compare the dirt texture/anim state native-vs-oracle) — cheaper and more shape-consistent than the
+single-vertex normal trace. Check first next tick.
