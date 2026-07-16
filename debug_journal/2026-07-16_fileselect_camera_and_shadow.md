@@ -63,3 +63,30 @@ are separate requests, not a bug.
 - SB_DUMP_FRAME_EVERY (pre-existing) — periodic dumps for pan-trajectory capture (note: in
   SB_TURBO presents accumulate far faster than paced game-frames, so the pan completes before
   present ~560; dump from present 0 to catch the transition).
+
+## Open: ~20px vertical framing residual + shadow visibility (needs a MATCHED-state oracle)
+
+After the camera fixes, native's settled camera pos/target/fovy match the pin (fsel_pin.json,
+oracle-derived) exactly, and the HORIZONTAL framing matches (OPTIONS sign fully visible). But the
+scene renders ~20px (448-space) / ~41px (896 EFB) LOWER than every oracle reference:
+- native EFB Mario-feet y=892 vs replay(fsel_try_7300.dff) EFB y=851 (same aurora path, no VI
+  resize — so NOT a resize artifact).
+- native feet y=477 vs fsel_dolphin_end.png y=452 and dolpan/d060.png y=455 (640x480), center-x
+  matches (~182) — a pure vertical shift affecting the whole scene (static blocks/sign shift too).
+
+This pushes Mario's feet to the bottom edge, so the (working) shadow disc — verified rendering at
+his feet via SB_SHADOW_VIZ — falls at/below the frame bottom = "missing shadow".
+
+BLOCKER: none of the oracle references is a MATCHED-state capture of native's exact settled
+camera. The pin (from fsel_settled.sav, --load-state-at) pins only the CAMERA, not Mario; the
+replay dff is field 7300; d060 is a --pad-start-at=7600 settle. They may each be at a different
+pan/settle moment than native's settle, so the 20px could be a reference mismatch rather than a
+native bug. Tuning against them = the mismatched-oracle trap ([[reliability-discipline-2026-07-10]]).
+
+NEXT (deliberate, not autonomous): capture a Dolphin settle at native's EXACT camera — dump the
+oracle's settled camera values (fork --dump-state-json) and confirm they equal native's
+(1095,328,-13 / ~1148,~413,-1008 / 40); if equal, the 20px is a reference artifact and the framing
+is correct (shadow then just needs the crisp Z-stencil drawShadow port, FUN_8022f014). If the
+oracle's settled camera differs, THAT delta is the real bug. Only compare pixels against that
+matched capture. Viewport note: native logical vp=(0,0 640x448) vs oracle draws (2,2 640x448) — a
+real 2px origin difference (GXSetViewport top offset not applied), but 2px ≠ 20px, so not the cause.
