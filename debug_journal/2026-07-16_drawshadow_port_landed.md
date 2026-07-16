@@ -168,6 +168,33 @@ resolve them; then the frame order matches retail and the ambient chain heals
 itself. Diagnostics kept: SB_SHADOW_PASSES / SB_SHADOW_SETUPN (TEMP, remove
 with the residual), [light] setLight trace under SB_SHADOW_DBG.
 
+### CORRECTION (2026-07-16, later): the "resolve the dropped entries" NEXT above is
+### largely FALSIFIED — the drops are mostly RETAIL-LEGITIMATE, not the block-tint cause.
+
+The block tint was fixed in iteration 5 by the TLightDrawBuffer OWNER-WIRING chain
+(empty setLight stub + null light/amb globals), NOT by resolving any perform-list
+drop. Independently verified that at least the ASCII drops are benign:
+- `[plload] DROPPED: entry='EmitterViewObj'` — the perform-list DATA FILE genuinely
+  contains the unbracketed `EmitterViewObj` (readString is correct: BE16 length prefix,
+  no mangling), but retail registers the object as `<EmitterViewObj>` WITH angle brackets
+  (verified: `strings scratch/bin/sms.dol | grep EmitterViewObj` → `<EmitterViewObj>`).
+  NameRef searchF is an exact `strcmp`, so **retail ALSO fails this search and drops the
+  entry**. It is harmless: TEmitterViewObj is a member of the "Group 2D" list, which is
+  pushed into the draw perform-list with filter 0x8 (MarDirectorInitECT.cpp ~line 216),
+  so the emitter's calc AND draw run via Group 2D membership regardless of the drop. This
+  is exactly the "GC ships PerformLists.bin with entries that are legitimately absent"
+  case the PerformList.cpp DROPPED comment already documents.
+- Renaming the ctor to `EmitterViewObj` to "fix" the drop would DIVERGE from retail (a
+  bandaid); the DOL string check prevented it.
+
+So the `[plload] DROPPED` spam is NOT a scene-graph bug to chase wholesale — it is mostly
+retail-legitimate absent entries. Do not re-open "resolve the dropped perform-list
+entries" as a blanket arc. IF a specific missing visual (a particular particle/effect)
+is ever traced to a drop, verify FIRST that retail actually resolves that exact name
+(check the object's real registered name in the DOL vs the data-file name) before
+treating the drop as the cause. The block-tint / ambient-order concern is CLOSED
+(iteration 5).
+
 ## Update (iteration 5): BLOCK TINT FIXED — Mario's shadow RENDERS at file-select
 
 The ambient chain had three stacked defects, all now fixed properly:
