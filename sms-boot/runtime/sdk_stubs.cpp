@@ -247,7 +247,13 @@ void GXPokeAlphaRead(GXAlphaReadMode) {}
 // fabricated answer, not a real sample. SILENT LANDMINE: loud-once.
 void GXPeekARGB(u16, u16, u32* col) {
     SB_STUB_HIT("GXPeekARGB");
-    if (col) *col = 0;
+    // STOPGAP: return the 0x10 dst-alpha stamp (= "Mario NOT occluded").
+    // MarioMain.cpp:302 tests (peek & 0xff000000) == 0x10000000; the previous 0
+    // made the check fail every frame -> MARIO_FLAG_OCCLUDED permanently ON.
+    // (Tested 2026-07-16: this was NOT the file-select black-patch cause — the
+    // patches are unchanged either way — but not-occluded is the correct answer
+    // whenever nothing covers Mario.) Proper fix: aurora EFB readback (GXCpu2Efb).
+    if (col) *col = 0x10000000;
 }
 // GXSetCopyClamp/GXSetDispCopyFrame2Field: EFB->XFB copy clamp/interlace config.
 // INTENTIONAL SEAM — Aurora manages its own framebuffer scaling internally and has

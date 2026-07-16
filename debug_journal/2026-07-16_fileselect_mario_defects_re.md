@@ -103,3 +103,10 @@ zeroDrawMtx: Mario 43/106 → 0. BUT the black patches are unchanged → those s
 uploaded/used; the patch cause is still OPEN. Next suspects: per-vertex NRM source data for the
 multi-matrix (skinned) packets, or the per-vertex matrix-index stream, or aurora's live-native
 (non-replay) indexed-normal fetch. Compare one black-patch vertex end-to-end vs oracle next.
+
+### OCCLUDED-flag theory FALSIFIED for the black patches
+GXPeekARGB stub returned 0 → MARIO_FLAG_OCCLUDED permanently ON (MarioMain.cpp:302 stamp test).
+Changed the stub to the 0x10 not-occluded stamp (a more-correct documented STOPGAP; proper fix =
+aurora EFB readback): black patches UNCHANGED (4069 near-black px before and after) → the occlusion
+flag is NOT the cause. Remaining next step: single-vertex end-to-end normal comparison (black-patch
+vertex: BMD NRM source → matrix index → transform) vs the oracle.
