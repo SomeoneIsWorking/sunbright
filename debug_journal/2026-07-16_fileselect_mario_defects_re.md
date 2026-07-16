@@ -126,3 +126,8 @@ touches HAS_FLUDD while retail's settled mFlag=0x00040001 (extra bits). If the d
 could render BLACK splotches where retail renders none. TEST: force the dirty TEV stage off (or
 compare the dirt texture/anim state native-vs-oracle) — cheaper and more shape-consistent than the
 single-vertex normal trace. Check first next tick.
+
+### Dirt/goo theory FALSIFIED: mDirty=0 (matches retail; replay K0.a=0.000 renders correctly)
+Black-patch cause still OPEN. Falsified so far: nrm-palette zeros, OCCLUDED flag, dirt overlay.
+Remaining: per-draw TEV-stage isolation on Mario's actual draws, or single-vertex normal trace, or
+diff the full TEV/tex state of ONE black-patch draw native-vs-replay with the existing dump tools.
