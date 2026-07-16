@@ -139,3 +139,31 @@ My 5-pass port implements sequence #1 only. Sequences #2/#3 belong to the light
 manager's shadow pipeline (separate arc — the calcLightBorder/DBSet port).
 The block-tint residual investigation continues by dumping OUR frame to the
 same TSV shape and aligning against these three sequences.
+
+## Update (iteration 4): block-tint ROOT CAUSE — perform-list order vs dropped NameRef entries
+
+Bisect chain: SB_SHADOW_PASSES=0 (no draws, setup only) still darkens the blocks;
+SB_SHADOW_SETUPN bisect pins it to setup call #1 — ReInitializeGX() alone. The
+blocks' perspective lit draws differ ONLY in ch0 ambient: 0.50 (shadows off) vs
+0.00 (on) — ReInitLighting()'s GXSetChanAmbColor(black) persists into their
+capture. Retail recovers because its GX perform list runs a LIGHT node (setLight
+-> ambient reapply; fifo shows the XF 0x100A ambient reload at seq 7709,
+immediately after the shadow window at 7686) BEFORE the option-scene map buffer
+that draws the blocks. Our frame timeline (draw-dump marks + [light] events)
+shows the split: 18 MapOpa draws at amb 0.5, then the shadow node, then 12
+MapOpa draws (the blocks) at amb 0.0 — the blocks' node dispatches BEFORE the
+ambient-restoring setLight in OUR list order.
+
+WHY the order differs: the perform-list loader DROPS entries whose names miss
+the NameRef tree — the boot log's long-standing `[plload] DROPPED:
+list='PerformList GX' entry='PERFマップ描画' ...` spam (map-draw, char-draw,
+ground-marks, particle nodes). The blocks' buffer therefore hangs off a
+different node position relative to the light nodes. The shadow port's faithful
+mid-frame ReInitializeGX merely EXPOSED this pre-existing scene-graph gap.
+
+NEXT (the real fix, own arc): resolve the dropped perform-list entries — find
+why those NameRef names are absent (owner objects unported? name lookup
+Shift-JIS mismatch? tree built before those objects register?) and make plload
+resolve them; then the frame order matches retail and the ambient chain heals
+itself. Diagnostics kept: SB_SHADOW_PASSES / SB_SHADOW_SETUPN (TEMP, remove
+with the residual), [light] setLight trace under SB_SHADOW_DBG.
