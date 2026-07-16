@@ -65,4 +65,42 @@ Do NOT change unk24 until 1-3 are resolved. The user's "blue is a defect" is gro
 ## Tooling gap surfaced (workflow-first for next time)
 - No BTI/TIMG decoder or nintendo.arc extractor in tools/. Build a `tools/decode_bti.py`
   (BTI header → RGBA PNG) + arc extraction so logo/2D texture identity is checkable without
-  guessing. This blocks resolving hypothesis #1.
+  guessing. This blocks resolving hypothesis #1. UPDATE: partially unblocked via aurora's
+  `SB_TEX_DUMP=<dir>` (dumps each converted mip-0 RGBA to
+  `tex_<seq>_<w>x<h>_fmt<f>_<label>.raw`, cap `SB_TEX_DUMP_MAX`) — a standalone .bti decoder
+  is still worth building but the running build's decode can be eyeballed now.
+
+## RESOLUTION (2026-07-17, iteration 2): premise CORRECTED — not a color bug, a reveal/sequencing issue
+
+Hypothesis #1 (image identity) RESOLVED via `SB_TEX_DUMP`: the logo texture is
+`tex_00_376x104_fmt3` = **GX_TF_IA8 (intensity+alpha GRAYSCALE)** and decodes correctly to
+the black-on-white **"Nintendo®" rounded-pill wordmark** (scratch/texdump/tex00_rgb.png).
+IA8 carries NO color — the on-screen color is entirely `unk24`×intensity. So my build
+renders the CORRECT texture, tinted blue. Decode/asset bug: FALSIFIED.
+
+Finer fork oracle (logo_probe2, every-2-frames 0-32): the retail boot's FIRST visible
+content is the **grayscale "Nintendo Presents SUPER MARIO SUNSHINE" text** (f012→f032, R=G=B,
+fading 15→110, ~1% coverage), then the red brush-M grows. There is **NO visible "Nintendo®"
+pill logo** in the fork boot at all (f000-f011 are pure black; the pill's ~5% bright coverage
+never appears). Same US disc / same nintendo.arc as my build, so the asset is identical — the
+pill just isn't REVEALED in retail.
+
+=> The "GC-logo shows BLUE" defect is NOT a channel-swap/TEV/color-constant bug (the prior
+codemap framing). `unk24=(0,70,255)` is faithful (DOL) and the texture/decode are correct.
+The real defect: **my build REVEALS the Nintendo pill logo (blue) that retail keeps hidden
+behind the screen fader** (or sequences so the pill is never shown un-faded). It's a
+FADER / reveal-timing / director-sequencing divergence in GCLogoDir, and the blue color is a
+red herring — with retail's fader covering it, its tint never matters.
+
+NEXT (bounded, when this is re-prioritized): compare the ScrnFader (`GC2D/ScrnFader.cpp`)
+state during GCLogoDir vs retail — retail's fader appears to stay opaque-black over the pill
+phase and only wipes to reveal the "presents" screen. Check `mFader->startWipe(14,0.4,0.0)` /
+`isFullyFadedIn/Out` semantics in the port. The "presents" text + red-M card is a SEPARATE
+screen from GCLogoDir's pill (different texture; not nintendo_376x104) — identify its
+director (likely the title intro / a THP) as part of the same arc.
+
+## Priority note
+This is a cosmetic ~1s early-boot logo, NOT blocking title/file-select/gameplay. It has now
+consumed multiple iterations. DEPRIORITIZED pending higher-value work; the premise is
+corrected and the next step is scoped above so it can be resumed cheaply. Do NOT reopen as a
+"color" bug.
