@@ -88,6 +88,28 @@ bool trace_seq_on() {
     return v == 1;
 }
 
+// SB_PROFILE=N: every N presents, print a rolling mean of each frame phase's
+// wall-clock cost (μs). Phases: game = time the GAME spent between presents
+// (its own logic + GX emission), endframe = aurora_end_frame (GX fifo drain +
+// wgpu render + present), events = aurora_update, begin = aurora_begin_frame.
+// The "game" slice is measured present-exit(N-1) -> present-enter(N). Turbo
+// removes pacing so these are pure work costs. Default off.
+struct Profiler {
+    int period = 0;         // 0 = disabled
+    long n = 0;
+    int64_t lastExit = 0;   // present-exit timestamp of previous frame
+    double sGame = 0, sEnd = 0, sEvt = 0, sBeg = 0;
+    static Profiler& get() {
+        static Profiler p = [] {
+            Profiler q;
+            const char* e = std::getenv("SB_PROFILE");
+            q.period = (e && e[0]) ? std::atoi(e) : 0;
+            return q;
+        }();
+        return p;
+    }
+};
+
 } // namespace
 
 extern "C" {
@@ -104,6 +126,9 @@ void sb_frame_present(unsigned retraces) {
         std::fprintf(stderr, "[trace] seq=%lu present-enter retrace=%u retraces_arg=%u\n",
                      (unsigned long)sb_trace_seq(), VIGetRetraceCount(), retraces);
     }
+    Profiler& prof = Profiler::get();
+    int64_t tEnter = prof.period ? now_ns() : 0;
+
     sb_host_alloc_push();
 
     if (s_frameOpen) {
@@ -122,6 +147,8 @@ void sb_frame_present(unsigned retraces) {
         }
     }
 
+    int64_t tEndDone = prof.period ? now_ns() : 0;
+
     const AuroraEvent* event = aurora_update();
     bool exit_requested = false;
     while (event != nullptr && event->type != AURORA_NONE) {
@@ -136,12 +163,31 @@ void sb_frame_present(unsigned retraces) {
         _exit(0); // no static-dtor teardown: game/Dawn statics are not unwind-safe
     }
 
+    int64_t tEvtDone = prof.period ? now_ns() : 0;
+
     s_frameOpen = aurora_begin_frame();
     if (trace_seq_on()) {
         std::fprintf(stderr, "[trace] seq=%lu aurora-begin-frame retrace=%u\n",
                      (unsigned long)sb_trace_seq(), VIGetRetraceCount());
     }
     sb_host_alloc_pop();
+
+    if (prof.period) {
+        int64_t tBegDone = now_ns();
+        if (prof.lastExit != 0) prof.sGame += (tEnter - prof.lastExit) / 1000.0;
+        prof.sEnd += (tEndDone - tEnter) / 1000.0;
+        prof.sEvt += (tEvtDone - tEndDone) / 1000.0;
+        prof.sBeg += (tBegDone - tEvtDone) / 1000.0;
+        if (++prof.n >= prof.period) {
+            double d = prof.n;
+            std::fprintf(stderr,
+                "[profile] frames=%ld avg μs: game=%.0f endframe=%.0f events=%.0f begin=%.0f  total=%.0f (%.1f fps-equiv)\n",
+                prof.n, prof.sGame / d, prof.sEnd / d, prof.sEvt / d, prof.sBeg / d,
+                (prof.sGame + prof.sEnd + prof.sEvt + prof.sBeg) / d,
+                1e6 / ((prof.sGame + prof.sEnd + prof.sEvt + prof.sBeg) / d));
+            prof.n = 0; prof.sGame = prof.sEnd = prof.sEvt = prof.sBeg = 0;
+        }
+    }
 
     // Advance the SDK retrace counter by the fields this frame covers so the
     // game's own pacing math (TVideo::mNextRetraceIndex) stays consistent.
@@ -171,6 +217,11 @@ void sb_frame_present(unsigned retraces) {
             s_nextDeadlineNs = now;
         }
     }
+
+    // Mark the present-exit instant for the next frame's "game" slice (game
+    // logic + GX emission between two presents). After pacing so a paced run
+    // still attributes only real work to "game", not the sleep.
+    if (prof.period) prof.lastExit = now_ns();
 }
 
 } // extern "C"
