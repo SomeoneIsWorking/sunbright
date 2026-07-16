@@ -58,3 +58,31 @@ interactive file-select states.
 
 Note: `[STUB-CALLED] sb_camera_view_settled -- unported` fires at this scene — a camera
 settle predicate stub; unrelated to input but flagged for the worklist.
+
+## RE map of the file-select input path (for the next iteration — don't re-derive)
+
+`TCardLoad` (reference/sms/src/GC2D/CardLoad.cpp) is the title↔file-select controller
+(one scene, camera pan; [[tcardload-title-to-fileselect-state-machine]]). Main state
+machine is `switch (mState)` starting at CardLoad.cpp:755. States:
+- 10 → 9 → 3: TITLE phase (titleDraw, logo/copyright panes, PRESS START attract).
+  At state 3, `checkFrameMeaning(0x20) || getTrigger()&0x1000` (A or START) →
+  moveToLoadFromTitle → state 8.
+- 8 → 0: pan into file-select; state 0 = the "Select data" + New/New/New menu.
+- State 0 (CardLoad.cpp:755) does NOT read A directly — it drives a NESTED progress
+  sub-machine via `unk1C` (PROGRESS_UNK2/3/30/32…) and `unk10`, plus a separate slot
+  cursor (TSelectMenu / TSelectDir, SelectDir.cpp — `mSelectMenu->mGamePad` wired at
+  SelectDir.cpp:123). The slot-select + create-file-confirm logic lives in that nested
+  layer, NOT in the CardLoad state-0 case body.
+
+Input meaning mapping (MarioGamePad.cpp:22-50): `checkFrameMeaning(0x20)` == the A button,
+but ONLY when the pad is in a MENU flag mode — `PAD_FLAG_0x80` or `PAD_FLAG_0x1`
+(`updateMeaning(A, MEANING_0x20, …)`). Outside those flags A falls through to gameplay
+(`MEANING_0x10000`) and never becomes 0x20. CardLoad manages this itself:
+`mGamePad->onFlag(0x1)` (CardLoad.cpp:925) / `offFlag(0x1)` (:903).
+
+NEXT-ITERATION ENTRY POINT: read TSelectMenu / TSelectDir slot-cursor input handling
+(the nested layer) — determine (a) whether the port sets PAD_FLAG_0x1 at file-select
+state 0, (b) what stick/A sequence moves the hand cursor onto a New slot and confirms
+create-file. Then a pad script with the correct nav opens the dialog and unlocks the
+same-state diff. This is a NAV/INPUT arc with NO render defect — lower priority than
+render-fidelity work, which is complete+verified.
