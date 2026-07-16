@@ -94,3 +94,12 @@ report of WHICH matrix indices are zero per model (zeroDrawMtx/first/fullWgt/wEv
 Mario's shapes reference the zero slots (real defect: draw matrices not written — envelope count
 mismatch?) or the zero slots are unused padding (then black patches need another explanation and
 retail behavior at det==0 must be matched instead). All logging now via sb_log channels.
+
+### Envelope-slot zeros FIXED (real bug) — but black patches PERSIST (not the cause)
+
+viewCalc's envelope range is INDEX-mapped (86 entries over 43 matrices for Mario); the bulk
+sequential concat left [fullWgt+wEvlp, DrawMtxNum) zero. Fixed with the indexed concat (submodule).
+zeroDrawMtx: Mario 43/106 → 0. BUT the black patches are unchanged → those slots were never
+uploaded/used; the patch cause is still OPEN. Next suspects: per-vertex NRM source data for the
+multi-matrix (skinned) packets, or the per-vertex matrix-index stream, or aurora's live-native
+(non-replay) indexed-normal fetch. Compare one black-patch vertex end-to-end vs oracle next.
