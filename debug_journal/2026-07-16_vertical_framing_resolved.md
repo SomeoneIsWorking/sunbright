@@ -81,3 +81,32 @@ port retail's Z-buffer-as-stencil two-pass `TMBindShadowManager::drawShadow`
   (stride landing on one instance) is the same trap that falsified the mirror-actor
   verify; camlookall is the antidote.
 - `tools/oracle/measure_voffset.py` — feature-row vertical-framing diff vs oracle.
+
+## Addendum: Z-stencil drawShadow port SCOPED (RE artifacts regenerated)
+
+`scratch/decomp_shadow/` (lost in the 07-14 scratch wipe) regenerated via:
+`SMS_DECOMP_VAS=0x8022f014,... analyzeHeadless scratch/ghidra_proj SMS -process
+-noanalysis -scriptPath tools/ghidra_scripts -postScript DecompDump.py`
+(13 functions: calcVtx 8022e0cc, force/request, drawShadow 8022f014, drawShadowGD
+8022fa40, drawShadowVolume 802305dc, perform 80231108, SMS_DrawCube/SettingDrawShape/
+DrawShape 80225d00/c94/c30, + 3 from the unnamed 0x80231288-0x80233174 gap where the
+manager ctor / TMBindShadowBody methods live — US funcs.txt gap, same class as 0x801b).
+
+Mechanism (from 8022f014.c, all callees symbol-resolved): per shadow group
+(mgr+0x1c, stride 0x14, masked by draw flags) — (1) color-update OFF +
+GXSetDstAlpha stamp via SMS_DrawCube over the group's AABB (clears EFB dst
+alpha in the affected rect), (2) volume back faces Z-LESS no-update (blend 1,1,0)
+marking dst alpha through drawShadowVolume per TAlphaShadowQuad (+4 mtx, +0x68
+setup, +0x6c next), (3) color pass blending GX_BL_DSTALPHA/INVDSTALPHA (blend
+1,6,7) → darkening exactly where the volume covered ground, (4) type==3 entries
+draw a J3D disc model (SMS_SettingDrawShape/SMS_DrawShape, LOD picked by a
+height-vs-global compare), (5) restore + optional debug pass (mgr+0x64). The else
+branch (r13-0x60f8 byte) is a fullscreen-quad debug mode (direct FIFO writes).
+
+**Aurora capability verified**: cmode1 (0x42) → g_gxState.dstAlpha, and
+GX_BL_DSTALPHA/GX_BL_INVDSTALPHA → wgpu DstAlpha/OneMinusDstAlpha — the EFB
+dst-alpha-as-stencil trick is portable as-is. Port work = retail data structures
+(footprint list mgr+0x18 stride 0x70, group array, quad cluster lists from
+calcVtx, shadow disc J3DModelData array mgr+0x3c) replacing the simplified decal
+path in reference/sms/src/MarioUtil/ShadowUtil.cpp (documented hack, RE-frontier
+debt). Dossier: scratch/re/drawshadow_dossier.md.
