@@ -110,3 +110,32 @@ the RGBA6 assumption. Diagnostics: SB_SHADOW_DBG (counts), SB_SHADOW_BISECT
   calls (0x4000000e before the caster buffers, 0x20000008 after) — casters
   overdraw their own volume darkening. Verified our call order matches (shadow
   call #1 draws precede the block draws in the dump diff).
+
+## Update (iteration 3): retail fifo decoded — THREE shadow sequences per frame
+
+`parse_fifo_dff.py --raster-all` (new mode: every draw's blend/Z/cull/dst-alpha row;
+cmode1 now tracked) on fsel_try_7300.dff frame 1 shows:
+
+1. **seq 7090-7686** — the simple 5-pass volume path, 3 groups at the BLOCK
+   positions (view trans -344/-104/+135, -112, -1000): stamp cube (cU=0 aU=1
+   blend 1,1 dstA=on/0, Z ALWAYS) → mark strips 10+4+4 (cU=0, blend ONE/ZERO,
+   dstA off, Z LEQUAL) → darken strips (cU=1, blend DSTALPHA/INVDSTALPHA,
+   dstA=on/0, Z GEQUAL) → re-stamp cube. MATCHES my ported drawShadow pass-for-
+   pass (states verified column by column). This is perform call #1
+   (0x4000000e, map-obj class) — and it precedes the block color draws, so
+   casters overdraw their own darkening. My port's call #1 behaves the same.
+2. **seq 11467-12287** — an ELABORATE alpha-composite sequence at the block/
+   static positions: cube stamped with dstA=16(!), fullscreen quad, cubes with
+   src-factor=DSTALPHA alpha-multiplies (blend 6,0 / 6,1 / 6,7 with cU=0 aU=1),
+   then 10-vert TRIANGLE FANS (disc!) blended 0,4 then 6,7 — a shadow-DENSITY
+   accumulator (alpha as a multi-level darkness mask) ending in a disc draw.
+3. **seq 12807+** — Mario's shadow volume built from BODY-SHAPED strips
+   (59/49/13/12/11 verts — real model geometry, not the circle model) with the
+   same mark/darken states. This is geometry-based volume shadowing — almost
+   certainly the TLightWithDBSet draw-buffer system (TLightDrawBuffer marks
+   exist in our dumps; calcLightBorder gaps are a KNOWN unported area).
+
+My 5-pass port implements sequence #1 only. Sequences #2/#3 belong to the light
+manager's shadow pipeline (separate arc — the calcLightBorder/DBSet port).
+The block-tint residual investigation continues by dumping OUR frame to the
+same TSV shape and aligning against these three sequences.

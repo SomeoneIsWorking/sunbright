@@ -339,6 +339,7 @@ class BPRasterState:
         self.scissor_br = 0
         self.zmode = 0
         self.cmode0 = 0
+        self.cmode1 = 0  # BP 0x42: dst-alpha value (7:0) + enable (bit 8)
         self.alphacompare = 0
         self.tev = TevStageState()
         self.clear_ra = 0    # BP 0x4F raw (r/a)
@@ -358,6 +359,8 @@ class BPRasterState:
             self.zmode = value
         elif command == BP_CMODE0:
             self.cmode0 = value
+        elif command == 0x42:
+            self.cmode1 = value
         elif command == BP_ALPHACOMPARE:
             self.alphacompare = value
         elif command == BP_CLEAR_RA:
@@ -419,6 +422,8 @@ class BPRasterState:
             "dst_factor": bits(self.cmode0, 5, 3),
             "src_factor": bits(self.cmode0, 8, 3),
             "subtract": bits(self.cmode0, 11, 1),
+            "dst_alpha_enable": bits(self.cmode1, 8, 1),
+            "dst_alpha_val": bits(self.cmode1, 0, 8),
         }
 
     def alphacompare_fields(self):
@@ -883,6 +888,10 @@ def main():
     ap.add_argument("--matrix-tsv", metavar="OUT",
                      help="write a per-draw TSV (seq, nverts, prim, projection, posmtx) to OUT "
                           "instead of the normal timeline dump")
+    ap.add_argument("--raster-all", metavar="OUT",
+                    help="TSV of EVERY draw's raster state (blend/z/cull/updates + dst-alpha) "
+                         "for the chosen --frame — the frame-order/dst-alpha comparison view "
+                         "(2026-07-16 shadow block-tint RCA).")
     ap.add_argument("--raster-tsv", metavar="OUT",
                      help="write the per-draw RASTER-STATE TSV (viewport/scissor/zmode/blend/"
                           "alphacompare/cullmode) for the world-pass dome (202v) + 3 MapOpa-anchor "
@@ -954,6 +963,31 @@ def main():
         print(f"PASS: {len(sky_paint_draws)} full-screen color-writing draw(s) in frame "
               f"{target_frame}, vertex counts present: {verts}")
         return
+
+    if args.raster_all:
+        rows = []
+        for i, fr in enumerate(frames):
+            if args.frame is not None and i != args.frame:
+                continue
+            data = buf[fr.fifo_data_offset: fr.fifo_data_offset + fr.fifo_data_size]
+            _xf, draws, _bp, _unk, _warn = decode_frame(i, data, cp, bp)
+            rows.extend(draws)
+        if not rows:
+            raise SystemExit("REFUSING: --raster-all found 0 draws (bad --frame / stale file?)")
+        with open(args.raster_all, "w") as out:
+            out.write("seq\tprim\tnverts\tproj\tcU\taU\tblend\tsrcF\tdstF\tdstA_en\tdstA\tzfun\tzupd\tcull\ttx\tty\ttz\n")
+            for e in rows:
+                b = e.blend; z = e.zmode
+                def _f(v):
+                    return v if isinstance(v, float) else 0.0
+                tx = _f(e.posmtx[3]) if e.posmtx else 0.0
+                ty = _f(e.posmtx[7]) if e.posmtx else 0.0
+                tz = _f(e.posmtx[11]) if e.posmtx else 0.0
+                out.write(f"{e.seq}\t{e.primitive}\t{e.num_vertices}\t{(e.proj_type or '?')[:4]}\t"
+                          f"{b['color_update']}\t{b['alpha_update']}\t{b['blend_enable']}\t"
+                          f"{b['src_factor']}\t{b['dst_factor']}\t{b['dst_alpha_enable']}\t{b['dst_alpha_val']}\t"
+                          f"{z['func']}\t{z['update_enable']}\t{e.cullmode}\t{tx:.1f}\t{ty:.1f}\t{tz:.1f}\n")
+        print(f"[raster-all] wrote {len(rows)} draws -> {args.raster_all}")
 
     if args.raster_tsv:
         out_rows = []
