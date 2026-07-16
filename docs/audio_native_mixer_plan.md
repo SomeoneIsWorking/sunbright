@@ -89,3 +89,48 @@ than duplicating state.
   implement from the decomp + RE, keep provenance clean).
 - `JASAiCtrl.cpp` (updateDac/vframeWork/mix* — already decompiled), `JASDSPBuf.cpp`
   (triple-buffer pipeline), `JASDSPChannel.cpp`, `JASDSPInterface.cpp`.
+
+## M2 VPB field map — RE'd from the setters (2026-07-17)
+
+Implementing DsyncFrame2 (the seam in sms-boot/runtime/jas_kernel_native.cpp:103-113, which
+currently memsets bufL/bufR to silence) needs the exact DSPBuffer VPB semantics. RE'd from
+JASDSPInterface.cpp setters (the fields the native sequencer fills each frame):
+
+- **Pitch**: `unk4` (u16, clamped to 0x7fff) — `setPitch`. Fixed-point resample ratio; the
+  reference engine's step = pitch / 0x?  (confirm scale vs native_jas_recomp_era resample).
+- **Mixer buses**: `unk10[6]` = `Channel{ u16 id; u16 targetVolume; u16 currentVolume; u16 unkC }`.
+  - `setMixerVolume(bus, vol, dpage)`: `targetVolume=vol`, ramp delta in `unkC` hi byte. Gated
+    by `unk10A` (returns early if set — the lock flag).
+  - `setMixerInitVolume` seeds current=target immediately (no ramp).
+  - `id` = bus routing code from `setBusConnect`'s `connect_table[12]`
+    ({0,0x0D00,0x0D60,0x0DC0,0x0E20,0x0E80,0x0EE0,0x0CA0,0x0F40,0x0FA0,0x0B00,0x09A0}) — maps
+    logical bus → DSP output (L/R main + aux). For v1 (L/R only) use buses 0/1.
+- **Wave / format**: `setWaveInfo(Wave_*, dataPtr)`:
+  - `unk118 = (s16*)dataPtr` — encoded sample base.
+  - format index = `Wave_.unk1`; `unk64 = COMP_BLOCKSAMPLES[fmt]` (AFC fmt0/1 = 16, PCM = 1),
+    `unk100 = COMP_BLOCKBYTES[fmt]` ({9,5,8,16,1,1,1,1}). **fmt ≤ 1 → AFC, else PCM** — matches
+    `native_jas_recomp_era.cpp:393` (`wv.fmt<=1 → afc_decode(hq = fmt==0)`).
+  - loop: `unk102 = Wave_.unk10` (loop flag); if looping, `unk110 = Wave_.unk14` (loop base),
+    `unk114 = Wave_.unk18` (loop length), `unk104/unk106 = Wave_.unk20/unk22` (loop
+    predictor/history for AFC continuation). Non-loop: `unk114 = unk11C = Wave_.unk1C` (length).
+  - `unkB0[16]` zeroed at setWaveInfo (AFC decode history/coef scratch).
+- **Osc (synth)**: `setOscInfo` sets `unk118=0, unk64=16, unk100=param` — a generated waveform
+  path, distinct from sampled. v1 can skip (rare); render silence + note.
+- **Gate/pause**: `unk10A` (mixer lock), `unkC` (pause flag via setPauseFlag).
+- **Filters** (M3, skip in v1): `unk120[8]` FIR, `unk148[4]` IIR, `unk108` filter mode,
+  `unk150` dist.
+
+### Not yet pinned (needed before coding v1) — next RE step
+- The per-voice SAMPLE CURSOR / fractional position: the ucode maintains playback position +
+  loop wrap in the VPB (likely `unk68`/`unk6C`, the ucode's writeback addr) and the
+  predictor/history for AFC continuation across frames. Decide: read/write those VPB fields, OR
+  keep a host-side Voice[64] state (as native_jas_recomp_era.cpp does) keyed by DSPCH index +
+  re-trigger detection. Host-side state is cleaner (the ucode's exact writeback addr semantics
+  are fiddly) — confirm the re-trigger signal (playStart/unk10A transition, or unk2 "needs work").
+- `DSPCH[64]` access: `JASystem::TDSPChannel::DSPCH` is static in JASDSPChannel.cpp — add a
+  small extern accessor (plan §M2) rather than duplicating.
+
+### v1 scope (next iteration)
+PCM16 + AFC (reuse `afc_decode` @ native_jas_recomp_era.cpp:205, proven), linear resample by
+`unk4` step, L/R (buses 0/1) volume-ramp mix into bufL/bufR, host-side Voice[64] state. No
+aux/filters/osc. Target: title BGM audible. Unit test: afc_decode vs the recomp-era test vector.
