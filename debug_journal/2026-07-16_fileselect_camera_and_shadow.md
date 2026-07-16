@@ -64,7 +64,12 @@ are separate requests, not a bug.
   SB_TURBO presents accumulate far faster than paced game-frames, so the pan completes before
   present ~560; dump from present 0 to catch the transition).
 
-## Open: ~20px vertical framing residual + shadow visibility (needs a MATCHED-state oracle)
+## ~~Open~~ RESOLVED (2026-07-16 later): the ~20px was a capture artifact — see
+## `2026-07-16_vertical_framing_resolved.md`. Native framing matches a matched-state
+## oracle to +0.9px (feet) / +3.2px (blockA). The numbers below mixed a stale
+## pad-script timing (post-33x-perf-fix retrace shift → "settled" captures were TITLE)
+## with a 896-vs-960 dump-height normalization error. Shadow missing = REAL, needs the
+## Z-stencil drawShadow port (0x8022f014). Historical text kept below:
 
 After the camera fixes, native's settled camera pos/target/fovy match the pin (fsel_pin.json,
 oracle-derived) exactly, and the HORIZONTAL framing matches (OPTIONS sign fully visible). But the
