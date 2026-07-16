@@ -253,11 +253,13 @@ if(TARGET aurora_core)
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/hx_wipe.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/pad_script.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/pin_state.cpp"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/sb_log.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/fifo_player.cpp")
     set_target_properties(sms-boot PROPERTIES
         CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
     target_include_directories(sms-boot PRIVATE
         "${SMS_NATIVE_REPO_ROOT}/extern/aurora/include"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/shims"
         "${SMS_INCLUDE_STAGED}")
     # sdk_stubs.cpp speaks the GC SDK surface (dolphin/* headers, u32/BOOL
     # types) — compile it like the decomp TUs.

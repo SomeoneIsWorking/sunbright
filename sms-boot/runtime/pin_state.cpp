@@ -1,6 +1,8 @@
 // pin_state.cpp — native side of the cross-engine state-pin harness. See pin_state.h.
 #include "pin_state.h"
 
+#include <sb_log.h>
+
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -41,6 +43,8 @@ void load_once() {
   if (!path || !*path) return;
   FILE* f = std::fopen(path, "rb");
   if (!f) {
+    // Loud regardless of SB_LOG: an explicitly-requested pin that can't load is
+    // a broken run, not a diagnostic.
     std::fprintf(stderr, "[sb-pin] SB_PIN_STATE='%s' not readable\n", path);
     return;
   }

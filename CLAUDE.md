@@ -144,7 +144,11 @@ Env vars: `SB_W`/`SB_H` (window), `SB_HEADLESS` (never show the window — REQUI
 automated/diagnostic runs, agents included), `SB_TURBO` (unpaced), `SB_WATCHDOG_SECS`,
 `SB_NO_FASTBOOT` / `SB_STAGE` / `SB_SCENARIO` (boot destination, `Application.cpp`),
 `SB_DUMP_FRAME` / `SB_DUMP_FRAME_AFTER` (framebuffer dump), `SB_DBG_AUDIO`.
-Diagnostic env vars route through these tracked names — prune dead ones on sight.
+**Diagnostic logging goes through `SB_LOG=<chan>[,...]` (`all`, `list` to discover) — the ONE
+tracked channel registry (`sms-boot/shims/sb_log.h`, `SB_LOGC`/`SB_LOG_ONCE`/`SB_LOG_EVERY`).
+Never add ad-hoc `getenv("SB_DBG_*")+fprintf` diagnostics; convert stragglers on sight and
+prune dead channels.** Non-logging behavior toggles (dump paths, pins like `SB_PIN_STATE`)
+stay as their own tracked env vars — prune dead ones on sight.
 Keyboard drives pad 0 (`PADSetKeyboardActive`). Kill a stuck run with `timeout -s KILL N`;
 the in-process SIGALRM watchdog dumps all-thread backtraces on a stalled frame.
 Scratch output → gitignored `scratch/` (never `/tmp`). To clear a scratch dir, use
