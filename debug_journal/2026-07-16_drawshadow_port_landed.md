@@ -189,3 +189,37 @@ matched oracle (scratch/pndump/feet_final_sbs.png). RESIDUAL: shadow DIRECTION �
 oracle's shadow slants further left (sun direction); ours is straight-down
 because the light-pos global (mEffectPos mapping) is still zero at perform
 flag-4 (the calcLightBorder / light-manager arc). Separate follow-up.
+
+## Update (iteration 6): shadow DIRECTION FIXED and VERIFIED (sun-slanted, data-driven)
+
+The direction residual is closed. Root cause of straight-down: `getLightPos()`
+had been mapped to `TLightWithDBSetManager::mEffectPos`, which stays ZERO at
+file-select (the effect-light global is only published when the light manager's
+own effect runs, which the option scene doesn't do). RE'd the retail chain:
+`getLightPos` (@0x802281b8) returns the Vec* global @r13-0x6110, and
+`TLightCommon::loadAfter` (@0x80229e30) publishes that global as
+`&LightGroup.mLights[0].mPosition` — the scene's FIRST light, i.e. the sun.
+
+Fix (LightUtil.cpp getLightPos): resolve `&mLights[0].mPosition` lazily through
+the same `sb_light_ary_or_search()` the color getters already use. No mEffectPos.
+
+VERIFIED on real data (scratch/logs/shadow_dir.log, SB_SHADOW_DBG=1):
+`getLightPos()` now returns `(200000, 500000, 200000)` →
+`mShadowDir = (0.348, 0.870, 0.348)` — sun up-and-forward, NOT straight down.
+Rendered dump (scratch/pndump/shadow_dir_verify.png, crop mine_shadow_crop.png):
+the A/B/C block shadow quads now fall as flat rectangles into the FOREGROUND
+sand (down-and-toward-camera from the floating blocks), matching the retail
+oracle crop (oracle_shadow_crop.png). Straight-down would have parked them
+directly beneath the mid-screen blocks; slanted forward matches the oracle
+layout. Direction is data-driven (LightGroup[0].mPosition), not hand-tuned.
+
+Capture gotcha (not a bug): a long turbo run piped through `grep` and killed
+with `timeout -s KILL` LOSES grep's buffered tail — the flag-4 `lightPos=` lines
+looked absent until the run was re-done with stderr redirected to a file
+(line-buffered by the program). Redirect long-run output to a scratch log, don't
+pipe through grep, when the run will be SIGKILLed.
+
+The file-select shadow arc (volume render + block-tint + direction) is now
+COMPLETE and verified against the oracle. Remaining shadow work belongs to the
+separate light-manager arc: retail's fifo sequences #2 (alpha-density composite)
+and #3 (Mario body-shaped volume via TLightDrawBuffer) — see iteration 3.
