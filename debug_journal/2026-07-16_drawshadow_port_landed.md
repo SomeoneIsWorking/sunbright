@@ -167,3 +167,25 @@ Shift-JIS mismatch? tree built before those objects register?) and make plload
 resolve them; then the frame order matches retail and the ambient chain heals
 itself. Diagnostics kept: SB_SHADOW_PASSES / SB_SHADOW_SETUPN (TEMP, remove
 with the residual), [light] setLight trace under SB_SHADOW_DBG.
+
+## Update (iteration 5): BLOCK TINT FIXED — Mario's shadow RENDERS at file-select
+
+The ambient chain had three stacked defects, all now fixed properly:
+1. `TLightDrawBuffer::setLight(TLightCommon*)` was an EMPTY `{ }` inline stub —
+   every makeDrawBuffer discarded the owner it wired, so the per-buffer relight
+   (owner->setLight before the buffer's draws) never ran anywhere, ever. The
+   banned silent-success-stub class again; now stores mOwnerLight.
+2. With owners live, setLight crashed: makeDrawBuffer read the RAW
+   gpTLightCommonLightAry/AmbAry globals, which are STILL NULL at
+   makeDrawBuffer time on this port (groups load later) → base indices (u32)-1
+   → OOB reads in the getters. Fixed: makeDrawBuffer uses the same lazy
+   sb_light/amb_ary_or_search() the getters use (needles then resolve fine).
+3. getLightPosition/getLightColor/getAmbColor gained bounds guards (loud once
+   on ambient) so an unresolved base index can never again read wild memory.
+
+VERIFIED (pixels): blockA mean 147.5 == shadows-off baseline (was 62.4 tinted);
+Mario's volume shadow renders under his feet at file-select, color matching the
+matched oracle (scratch/pndump/feet_final_sbs.png). RESIDUAL: shadow DIRECTION —
+oracle's shadow slants further left (sun direction); ours is straight-down
+because the light-pos global (mEffectPos mapping) is still zero at perform
+flag-4 (the calcLightBorder / light-manager arc). Separate follow-up.
