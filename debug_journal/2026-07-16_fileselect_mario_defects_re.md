@@ -172,3 +172,44 @@ joints=14 pair, 1/1) never upload (not drawn; likely hidden mirror clones) — h
 
 **Tooling kept (SB_LOG channels):** `pn`, `pnzero` (aurora 2961e45), `j3dbuf`, `j3dbt`, `drwidx`,
 `evlp`, unsampled `nrmmtx`; parser `tools/render/pn_extract.py` (refuses logs without [pn] lines).
+
+## ✅ ALL REMAINING BLACK PATCHES (gloves/chest/legs) — ROOT-CAUSED & FIXED (2026-07-16)
+
+**Root cause: `ShapePacketCallBackFunc` was an EMPTY SILENT STUB** (PacketUtil.cpp:19 — exactly the
+banned no-silent-stubs class). Retail (0x80235f04) uses it as the per-shape-packet GX override
+dispatcher installed by every `SMS_InitPacket_*`: pre-draw it applies the LIVE material state
+(KONST/TEVREG/matcolor/fog) on top of the LOCKED material DL; post-draw it restores global fog.
+Mario's packets are locked (`SMS_MakeDLAndLock`) with `SMS_InitPacket_OneTevKColorAndFog` on every
+material — so natively the BMD-baked `K0.a=0x80` was never overridden by the live value
+(`TMario::addDirty` keeps `K0.a = mDirty = 0`), and the dirt/marking TEXA-compare stage fired over
+the marking regions → black glove backs, gray chest blotch, leg patches. **The original dirt-overlay
+theory was RIGHT** — it was "falsified" by reading `mDirty=0` at the game layer while the stale
+0x80 lived in the locked DL.
+
+**How it was found — full-record draw diff:** extended the aurora draw dump until every state
+dimension was covered ([tevswap] tables, SB_LOG=texgen incl. texmtx, SB_LOG=vtxarr full-array
+endian-normalized hashes), then `tools/render/draw_record_diff.py` (new) pairwise-diffed all ~50
+Mario body draws native-vs-replay. After pose-field normalization, the ONLY surviving diffs were
+`K0=(r,g,b,0.502)` native vs `(r,g,b,0.000)` oracle — the smoking gun.
+
+**Second fix (same session, disasm-verified): `TLightCommon` ctor constants** (retail 0x80229fbc):
+`unk14/unk18/mAlphaScale` are ALL `SDA2[-0x17a8]=1.0f` and `mShininess` finals to
+`SDA2[-0x1770]=50.0f`; the port had zeroed the three. `mAlphaScale=0` scaled every light/ambient
+ALPHA to 0 (the a0-amb=0-vs-1 divergence the record diff also surfaced). Not the patch cause but a
+real divergence for any lit-alpha material.
+
+**Verified:** pinned-state file-select capture now matches retail Mario — white gloves, clean blue
+overalls, brown shoes, lit nose, zero patches (`scratch/pndump/cbfix_mario_zoom.png`; pre-fix:
+`wait_mario_zoom.png`). Fixes: reference/sms 65dc62a0; instruments aurora 1b6f967.
+
+**Falsified along the way (recorded so nobody re-chases):**
+- Mirror-clone main-view overdraw (SB_NO_MIRROR_ENTRY A/B: patches unchanged).
+- Missing fullbright underlay pass (oracle "pass1" is the dst-alpha silhouette stamp, cU=0).
+- Texture content (SB_TEX_DUMP hashes match), vertex arrays (vtxarr hashes match), texgen/texmtx
+  (identical), swap tables (identical), skinned palettes (identical post mirror-fix).
+- Crouch pose defect: NOT a defect — captures were mid SLEEPY stretch/yawn (BELT_UP→YAWN→SIT
+  progressing normally, SB_LOG=manim); a capture-phase trap, same class as the title mid-anim traps.
+- Glove part-models "missing": retail handId=0 during WAIT/sleepy anims too (gMarioAnimeData entry
+  195/303 verified against DOL bytes) — body's built-in hand shapes are the correct visible gloves.
+- Oracle-only extra draws at file-select = SEAGULLS (64x64 RGB5A3 wing texture; still missing
+  natively — pre-existing known residual, unrelated to Mario).
