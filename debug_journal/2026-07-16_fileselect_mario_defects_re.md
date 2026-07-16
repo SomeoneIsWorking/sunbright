@@ -131,3 +131,44 @@ single-vertex normal trace. Check first next tick.
 Black-patch cause still OPEN. Falsified so far: nrm-palette zeros, OCCLUDED flag, dirt overlay.
 Remaining: per-draw TEV-stage isolation on Mario's actual draws, or single-vertex normal trace, or
 diff the full TEV/tex state of ONE black-patch draw native-vs-replay with the existing dump tools.
+
+## ✅ BLACK PATCHES (nose/chin/face) — ROOT-CAUSED & FIXED (2026-07-16): TMirrorActor envelope-copy bound
+
+**Correction first:** the earlier "nrm-palette zeros falsified / envelope fix verified 43→0" notes above
+were WRONG — the zeroDrawMtx probe used `SB_LOG_EVERY(300)`, which sampled Mario's zero reports OUT.
+Unsampled, Mario's body models still showed **zeroDrawMtx=28/106 every frame** (entries 49-58 + 92-105 =
+envelope indices 29..42, twice).
+
+**Chain (each step instrumented, not inferred):**
+1. New aurora `SB_LOG=pn` (full 10-slot pos/nrm palette per dumped draw): replay(fsel_try_7300.dff) =
+   ZERO bad slots; live-native Mario skinned draws = det==0 nrm slots per packet (`tools/render/pn_extract.py`).
+2. New aurora `SB_LOG=pnzero` (indexed XF loads with zero rotation): zero uploads came from Mario-body
+   buffers, indices 49-58 → the draw-mtx ARRAY itself has zeros at draw time.
+3. `SB_LOG=drwidx` (DRW1 dump): flag-1 indices are all in-range (two sequential 0..42 runs) — not an
+   index bug. `SB_LOG=evlp` (blend zero-witness): the envelope blend NEVER produces zero → the zeros
+   belong to models whose blend never runs.
+4. `SB_LOG=j3dbt` (creation backtrace): the zero-uploading models are the **TMirrorActor clones**
+   (`TMario::initMirrorModel` → `TMirrorActor::init` news a second J3DModel over Mario's modelData;
+   drawn in the Mirror Opa buffers in BOTH the 256x256 reflection pass and the 640x448 main pass).
+5. `TMirrorActor::perform` copies the source model's matrices into the clone each frame. The port
+   bounded BOTH copy loops by `getJointNum()` (29); **retail (0x80224910) bounds the second loop by
+   wEvlpMtxNum (modelData+0x84) = 43**. Envelopes 29..42 were never copied → clone viewCalc concats
+   zero sources → zero draw matrices → garbage nrm palette → black patches on envelope-skinned faces.
+
+**Fix:** MirrorActor.cpp second loop bound → `getWEvlpMtxNum()` (submodule 53f4c130). **Verified:**
+zeroDrawMtx 28→0 for both Mario body models, `pnzero` fully silent, and the settled file-select capture
+shows nose/chin/face lit correctly (scratch/pndump/fix_mario_zoom.png vs scratch/texcmp/fluddfix_mario.png).
+
+**Note on viewCalc:** retail fills the envelope draw-mtx range SEQUENTIALLY
+(`J3DMTXConcatArray(view, wEvlpMtx, drawMtx+fullWgt, wEvlpNum)` — Ghidra 0x802deeb8), not index-mapped.
+For Mario the DRW1 indices in [fullWgt, fullWgt+43) are 0..42 sequential, so the port's indexed fill is
+identical there and additionally defines [63,106) (retail leaves them stale; no observed shape references
+them). Equivalent-on-defined-range; keeping the indexed form.
+
+**STILL OPEN (separate defects, unchanged by this fix):** black glove BACKS, gray chest blotch, black
+leg patches, crouch-vs-standing pose. These were pixel-identical before/after the mirror fix and show
+no zero-matrix signature (`pnzero` silent) — different mechanism. Remaining zeroDrawMtx models (14/14
+joints=14 pair, 1/1) never upload (not drawn; likely hidden mirror clones) — harmless.
+
+**Tooling kept (SB_LOG channels):** `pn`, `pnzero` (aurora 2961e45), `j3dbuf`, `j3dbt`, `drwidx`,
+`evlp`, unsampled `nrmmtx`; parser `tools/render/pn_extract.py` (refuses logs without [pn] lines).
