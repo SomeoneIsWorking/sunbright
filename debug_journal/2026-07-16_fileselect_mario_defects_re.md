@@ -81,3 +81,16 @@ swallows the 0.5 ambient → clamp to 0 → black), while the oracle keeps them 
 (retail-recorded vertices) renders these fine → retail normals OK → **live-native's SKINNED normal
 computation produces wrong normals for a subset of vertices**. Next RE: native J3D skinning normal
 path (envelope/weighted NRM matrix) vs oracle.
+
+## Black patches — det==0 CONFIRMED as the mechanism (2026-07-16)
+
+`SB_LOG=nrmmtx` live-native probe: **>1M `J3DPSCalcInverseTranspose` det==0 bails** (1139 logged at
+1/1000 sampling), all with src row0=[0,0,0] — **all-zero draw matrices** are being inverse-
+transposed; the bail leaves the nrm-matrix slot as un-zeroed heap = garbage normals (black patches
+on Mario's nose/gloves/legs/shoes). Normals VISUALIZE smooth (SB_NRM_VIZ) because the garbage is in
+the per-draw NRM MATRIX PALETTE (used by the lit path's matrix-indexed transform), while the viz
+samples the post-transform interpolant of mostly-valid slots. NEXT (probe running): calcNrmMtx-level
+report of WHICH matrix indices are zero per model (zeroDrawMtx/first/fullWgt/wEvlp) to tell whether
+Mario's shapes reference the zero slots (real defect: draw matrices not written — envelope count
+mismatch?) or the zero slots are unused padding (then black patches need another explanation and
+retail behavior at det==0 must be matched instead). All logging now via sb_log channels.
