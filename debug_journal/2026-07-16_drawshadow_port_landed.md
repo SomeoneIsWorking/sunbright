@@ -83,3 +83,30 @@ step: dump which buffers run between the two shadow perform calls vs retail's
 perform list, and check the EFB pixel-format/dst-alpha semantics in aurora for
 the RGBA6 assumption. Diagnostics: SB_SHADOW_DBG (counts), SB_SHADOW_BISECT
 (1=skip all, 2=setup only, TEMP — remove when the residual closes).
+
+## Update (same day, iteration 2): Mario's shadow WORKS; block darkening root-caused to alpha bookkeeping
+
+- Fixed: calcVtx's view concat. Retail bakes `PSMTXConcat(j3dSys.mViewMtx, TRS)` at
+  CALC time — valid on guest because the frame's last 3D pass leaves the main view
+  in j3dSys. Our pipeline doesn't guarantee that (volumes rendered with garbage
+  view translations — mtxT z=+51 behind the camera). Host adaptation with identical
+  output: footprints store TRS only; drawShadow concats the graphics view at draw.
+  (DAT_804045dc == j3dSys confirmed: 130+ refs across the J3D range.)
+- VERIFIED: with SB_SHADOW_VIZ=1 (shadow color -> red) the dst-alpha stencil
+  correctly masks the darkening to the ground intersection at Mario's feet — the
+  faithful pipeline renders Mario's shadow. (scratch/pndump/shadow_viz.png)
+- Block darkening RCA so far: the blocks' own draws are STATE-IDENTICAL between
+  shadows-on/off (draw-dump diff), and the viz shows NO red on blocks — so no
+  shadow pass writes their pixels. The tint is bluish = the sea-reflection
+  dst-alpha composite blending differently: the 'StaticMapObj ShadowOpa'
+  alpha-only pre-pass (cU=0/aU=1) and the drawShadow exit state
+  (GXSetDstAlpha(1,0) — LOAD-BEARING: retail's exclusion stamps depend on it)
+  now change the frame's dst-alpha bookkeeping, and a later DSTALPHA-blend
+  composite (mirror/sea feedback) reads it. NEXT: compare the pass ORDER and
+  dst-alpha states against the retail fifo (fsel dff parse — the exact tooling
+  built for this) instead of hand-simulating the alpha flow.
+- Request flags now carry the caller's actor type (TLiveActor::requestShadow
+  passes getActorType()); bit30 splits groups across the two per-frame perform
+  calls (0x4000000e before the caster buffers, 0x20000008 after) — casters
+  overdraw their own volume darkening. Verified our call order matches (shadow
+  call #1 draws precede the block draws in the dump diff).
