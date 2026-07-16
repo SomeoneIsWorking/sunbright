@@ -134,3 +134,34 @@ JASDSPInterface.cpp setters (the fields the native sequencer fills each frame):
 PCM16 + AFC (reuse `afc_decode` @ native_jas_recomp_era.cpp:205, proven), linear resample by
 `unk4` step, L/R (buses 0/1) volume-ramp mix into bufL/bufR, host-side Voice[64] state. No
 aux/filters/osc. Target: title BGM audible. Unit test: afc_decode vs the recomp-era test vector.
+
+## M2 RE cont'd (2026-07-17): pitch scale nailed + voice liveness + decode confirmed
+
+- **Resample step = `unk4 / 4096.0`** (unity pitch). RE'd: `JASChannel.cpp:898`
+  `unk98 = 4096.0f * (unkA0 * (unk50 * unk8C))`, and `unk98` is exactly the value passed to
+  `DSPBuffer::setPitch` (JASChannel.cpp:150/157/183 → `buf->setPitch(channel->unk98)`), which
+  stores it in `unk4` (clamped 0x7fff). So step 1.0 = play at native rate; 8192 = +octave;
+  max ≈ 8.0. This is THE resample ratio — do not guess it.
+- **Voice liveness** (from `TDSPChannel::updateAll`, JASDSPChannel.cpp:247-278): render
+  `DSPCH[i]` when `DSPCH[i].unk1 != 1` (allocated, not free) AND its VPB (`DSPCH[i].unkC`) has
+  a wave (`unk118`/`unk110` set) AND not paused (`unkC == 0`). `unk10A` = mixer gate.
+  `DSPCH` is `TDSPChannel::DSPCH` (static, JASDSPChannel.cpp:13), 64 entries.
+- **Decode**: reuse `afc_decode` (native_jas_recomp_era.cpp:205, proven bit-exact) for fmt≤1
+  (fmt0 hq=9B/16smp, fmt1=5B/16smp); PCM16/PCM8 for fmt≥2. Decode the WHOLE wave once to a
+  cached s16 vector (reference approach), then resample from the cache with a fractional cursor
+  — avoids per-frame AFC predictor-continuation bookkeeping.
+
+### v1 is RE-ready to CODE (next iteration). Remaining v1 decisions (RE-grounded defaults):
+- **Volume**: `unk10[bus].currentVolume` (u16, Q15 → gain = current/32768); ramp `currentVolume`
+  toward `targetVolume` per frame (delta in `unkC` hi byte). v1 may step the ramp linearly.
+- **Bus→L/R**: `unk10[6]` buses; v1 uses bus 0 = L, bus 1 = R (main stereo), skip aux/dolby.
+  Exact routing (`unk10[].id` from setBusConnect's connect_table) + the ucode's mix math is the
+  Zelda.cpp reference — defer exact aux/effect routing to M3, verify L/R vs a Dolphin audio dump.
+- **Host state**: `struct HostVoice { s16* pcm-cache; u32 pcmLen; double cursor; u16 lastPitch;
+  u32 genTag; float rampL, rampR; }` [64], keyed by DSPCH index; re-decode when the wave base
+  (`unk118`) changes (re-trigger detection). Add `extern "C" DSPBuffer* sb_jas_dspch(int i)` +
+  count accessor in JASDSPChannel.cpp rather than duplicating DSPCH state.
+- Wire into `dsyncFrame2Native` (jas_kernel_native.cpp:103), replacing the memset: zero
+  bufL/bufR, then for each live voice accumulate `cache[cursor] * gain` into L/R advancing
+  cursor by step, wrapping at loop (`unk102` set → loop base `unk110`/len `unk114`) or stopping
+  at end. Clamp mix to s16.
