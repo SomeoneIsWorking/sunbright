@@ -110,3 +110,10 @@ Changed the stub to the 0x10 not-occluded stamp (a more-correct documented STOPG
 aurora EFB readback): black patches UNCHANGED (4069 near-black px before and after) → the occlusion
 flag is NOT the cause. Remaining next step: single-vertex end-to-end normal comparison (black-patch
 vertex: BMD NRM source → matrix index → transform) vs the oracle.
+
+### TEV-stage-0 probe: inconclusive (global truncation confounds)
+SB_TEV_STOP=0 truncates ALL materials, so the Mario region is dominated by truncated background —
+not usable to split texture-vs-TEV for the patches. Better next instrument: per-DRAW TEV stop or a
+Mario-texture dump compare (his gloves/shoes textures native vs replay via SB_TEX_DUMP content-hash,
+which previously matched globally — recheck scoped to the black-patch textures), or the planned
+single-vertex normal trace.
