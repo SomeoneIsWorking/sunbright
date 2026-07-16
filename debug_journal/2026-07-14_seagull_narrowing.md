@@ -150,3 +150,35 @@ correct); a real animation-phase residual.
   version, mip count, content hash, per-mip RGB5A3/IA8 alpha stats.
 - ndc-probe now prints per-vertex TEX0 UVs.
 - `SB_FIFO_TEXDBG=2` — uncapped bind log incl. tracked mode1.
+
+## Session 4 (2026-07-17): bind-offset FALSIFIED; sole remaining suspect = GPU vertex-fetch path
+
+Continued from Session 3's "VS-output readback" recommendation. Before building that
+instrument, checked the cheaper untested link — a push/bind UNIFORM OFFSET mismatch (the
+GPU binding a different uniform slice than the one SB_UNIF_DUMP verified at push time).
+FALSIFIED by code structure: `build_uniform(info, vertRange.offset, ranges)`
+(command_processor.cpp:3309) WRITES the uniform data AND returns the offset atomically;
+that returned offset becomes `DrawData.uniformRange.offset`, which `render()`
+(pipeline.cpp:25-26) binds verbatim via `SetBindGroup(1, …, offsets)`. So the GPU reads
+exactly the bytes SB_UNIF_DUMP printed — no push/bind divergence possible. Uniforms the
+GPU reads ARE correct.
+
+Combined with all prior falsifications (every fixed-function kill disabled → still zero
+fragments; CPU NDC on-screen & non-degenerate; uniforms correct at read), the divergence is
+now isolated to ONE surface: **the GPU-side VERTEX FETCH diverging from the CPU probe.**
+- The NDC probe (command_processor.cpp:1966-1971) reads positions from the CPU-side
+  `g_gxState.arrays[GX_VA_POS].data` (host ptr `arr.data`), walking indices with the
+  CPU-side `posFmt` stride/type. It gets CORRECT NDC.
+- The GPU instead reads its UPLOADED array storage buffer + the built index buffer, fetched
+  by the WGSL vertex shader using its own offset/stride logic.
+- If any of {array upload (byteswap/stride/offset), index-buffer content, WGSL fetch
+  offset/stride} diverges from the CPU walk, the GPU transforms WRONG positions →
+  off-frustum/degenerate → zero fragments, exactly the symptom, while the CPU probe (reading
+  arr.data directly) stays correct. This is the ONLY surface left.
+
+NEXT INSTRUMENT (build fresh): dump, for the SB_NDC_DRAW-windowed seagull draw, (a) the
+built index buffer slice (g_indexBuffer at data.idxRange), and (b) the GPU-uploaded
+GX_VA_POS array storage-buffer bytes at the shader's fetch offset, and compare BOTH against
+`arr.data` + the CPU-walked indices. Whichever diverges is the bug. This is cheaper than
+the full VS-output readback and directly tests the isolated surface. If both match, THEN the
+VS math itself (Tint) is implicated and the VS-output readback is warranted.
