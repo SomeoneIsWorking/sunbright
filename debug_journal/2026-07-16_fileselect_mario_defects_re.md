@@ -60,3 +60,24 @@ Nothing about the nose/FLUDD/pose is FIXED yet. What IS done: the pin/compare to
 Ghidra/oracle RE that CONFIRMS the FLUDD bug (retail=no FLUDD) and rules out TGuide/overalls-hue as
 causes. The fixes (placement-load layout for FLUDD; skinned normals for the black nose; animation
 for the pose) are real multi-function porting work to do against this ground truth.
+
+## ✅ FLUDD — RESOLVED (2026-07-16, disasm-confirmed + live-native-verified)
+
+Full RE chain: TMario vtable = 0x803dd660 (from the oracle guest dump, +0x0); load slot 4 =
+**0x80276bd0** — retail `TMario::load` MATCHES the port (reads placement u32, bit0==0 → FLUDD ON;
+scene.bin Mario entry: pos(950,100,-1000), then string "マリオ キャラ", u32s 0,0x64,0 → FLUDD ON at
+load is CORRECT). The strip happens later: DOL-wide scan for `lwz 0x118 / rlwinm 0,17,15 / stw`
+found 4 clear sites; the GC2D one @**0x8016d844** is inside TCardLoad's title→file-select
+transition (state 10→9): `lwz gpMarioOriginal(r13-0x60d8); mFlag &= ~0x8000`. The port had
+transcribed that line as `offFlag(MARIO_FLAG_GAME_OVER)` (0x400) — **wrong flag**. Fixed to
+`offFlag(MARIO_FLAG_HAS_FLUDD)` (CardLoad.cpp, submodule e86b7b41). Verified live-native with the
+pinned camera: FLUDD gone, Mario bare (scratch/texcmp/fluddfix_mario.png).
+
+## REMAINING (isolated, unambiguous): black patches = skinned normals
+
+Post-FLUDD-fix capture shows the leftover defect cleanly: BLACK patches on the nose, glove fronts,
+overall legs, shoe tops, chin — surfaces whose native N·L goes strongly negative (SIGN diffuse
+swallows the 0.5 ambient → clamp to 0 → black), while the oracle keeps them lit. The replay
+(retail-recorded vertices) renders these fine → retail normals OK → **live-native's SKINNED normal
+computation produces wrong normals for a subset of vertices**. Next RE: native J3D skinning normal
+path (envelope/weighted NRM matrix) vs oracle.
