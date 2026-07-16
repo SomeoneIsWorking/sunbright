@@ -182,3 +182,38 @@ GX_VA_POS array storage-buffer bytes at the shader's fetch offset, and compare B
 `arr.data` + the CPU-walked indices. Whichever diverges is the bug. This is cheaper than
 the full VS-output readback and directly tests the isolated surface. If both match, THEN the
 VS math itself (Tint) is implicated and the VS-output readback is warranted.
+
+## Session 4 cont'd: array-upload path AUDITED sound; merge re-confirmed falsified; only VS-fetch left
+
+Traced the GPU vertex-fetch path end to end (the sole remaining surface from the bind-offset
+falsification above):
+- Positions reach the GPU via `push_storage(array.data, effSize)` (command_processor.cpp:3006)
+  = the raw GC big-endian array bytes uploaded VERBATIM into g_storageBuffer; the WGSL fetch
+  helpers byteswap (already audited correct, Session 2). effSize = `array.size ? : sizeAuto`,
+  and `sizeAuto` grows to `(maxReferencedIndex+1)*stride` per draw (cmd_proc:2363-2382), so
+  coverage is sufficient per-draw.
+- The merge/array-coverage collapse (cmd_proc:2386 comment) is the natural suspect, BUT
+  `SB_NO_MERGE=1` was already shown to change ZERO pixels (line 106) — un-merging gives each
+  prim its own correct sizeAuto upload and STILL no birds. So neither merge reuse nor
+  array-upload truncation is the cause. Re-confirmed, do NOT re-test SB_NO_MERGE.
+- push_storage copies verbatim, so the staging bytes at vaRange.offset == arr.data (the same
+  bytes the CPU NDC probe reads and gets correct positions from). => the storage the GPU reads
+  is byte-correct.
+
+Therefore the divergence is NOT in data reaching the GPU. It is isolated to the SHADER's
+fetch COMPUTATION for this specific draw variant — the array_start uniform (vaRange.offset →
+storage index), the index-buffer VALUES from prepare_idx_buffer, or the VS position transform
+itself (a Tint codegen issue for this variant, beyond the extractBits class already ruled out).
+
+DEFINITIVE next step (unchanged from Session 3, now the ONLY surface): the VS-output
+readback instrument — variant pipeline with an extra storage-buffer binding, VS writes
+out.pos per vertex, read back, compare to the CPU probe. This is a dedicated, substantial
+aurora shader-gen change; it is the research-grade tool this bug now requires. The cheaper
+data-path hypotheses (bind offset, array coverage, merge, upload correctness) are ALL
+exhausted.
+
+## Priority: DEPRIORITIZED (same class as GC-logo)
+Cosmetic, phase-specific bird drop (2 birds at ONE title fly-in phase; settled title and
+press-start phase render birds correctly, lines 94-100). NOT gate-blocking. Requires a
+research-grade VS-readback instrument to progress further. Deprioritized pending higher-value
+work; resume by building that instrument as a dedicated task.
