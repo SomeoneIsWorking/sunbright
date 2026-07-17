@@ -25,12 +25,15 @@
 #include "stub_trace.h"
 #include <Animal/AnimalBase.hpp>
 
-// TAnimalBase::TAnimalBase(u32, const char*)
+// TAnimalBase::TAnimalBase(u32, const char*) — ported (US ctor @0x80009200, disasm-verified).
+// param0 is the actor-type, stored into mActorType (0x4c). The prior stub dropped it and
+// spuriously nulled mFrameTimer (not in the real ctor) — this broke getActorType() for the
+// seagull check in the ported TAnimalBase::loadAfter. The vtable/base-vtable stores are emitted
+// automatically by defining the ctor.
 TAnimalBase::TAnimalBase(u32 param0, const char* name)
     : TSpineEnemy(name)
 {
-    (void)param0;
-    mFrameTimer = nullptr;
+    mActorType = param0;
 }
 
 // TAnimalBase::execWalk(bool)
