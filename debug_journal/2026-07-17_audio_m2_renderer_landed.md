@@ -191,3 +191,38 @@ reports done (unk1==0xff), and the program is osc (0xF0). NEXT:
    dispatch), the wrong program (0xF0) + wrong wait mode could both follow from a bad track
    header parse. This is the highest-leverage check: dump the opcode bytes + dispatch.
 Renderer/pipeline/banks remain landed+correct; this is purely the sequencer note lifecycle.
+
+## Update 6: THE ROOT — sequences never load (sequence.arc not found); the BMS is all-zero
+
+Traced the all-zero BMS (Update 5) to its origin. The track's read pointer is valid but the
+BYTES ARE ZERO because the sequence data was never loaded:
+- readSeq (sms_boot_audio.cpp) reads sequence.arc via `JASystem::Dvd::loadToDramDvdT` ->
+  `loadToDramDvdTMain` -> `openDvd("/AudioRes/sequence.arc")` which **returns 0 (open FAILS)**.
+  readSeq logged "loaded seq" unconditionally (no error check), masking the failure. The
+  buffer stays zero-init -> every BMS opcode = 0x00 -> cmdNoteOn(note 0) forever -> the
+  tracks stall on the note-channel-done wait (Update 5) with prog=0xF0 (osc). ALL of the
+  note-issuance symptoms bottom out here.
+- WHY openDvd fails: sequence.arc is NOT on the disc FST (like JaiArcS.hed / mSound.aaf).
+- Attempt A (in-memory /audi capture, like mSound.aaf): `getResource("sequence.arc")` in
+  /audi returns only ~16 bytes -> NOT a /audi resource under that name. FALSIFIED.
+- Attempt B (BMS inside the aaf itself): aaf is 368896 bytes and the BARC offset 0x523a0
+  (336800) IS within it, but the bytes there are ZERO -> the sequences are NOT embedded in
+  the aaf. FALSIFIED.
+So sequence.arc is a real separate ~337KB+ file whose location on THIS disc is still
+unresolved: not disc-FST, not /audi resource, not in the aaf.
+
+Build kept STABLE + silent: readSeq now copies from sb_seq_data if valid else leaves the
+buffer zeroed (no crash); Application.cpp captures sequence.arc from /audi only if the
+resource is plausibly sized (currently a no-op). All the SB_DBG_AUDIO diagnostics that
+localized this chain are kept.
+
+### NEXT (locate sequence.arc — the single remaining blocker to audible BGM):
+1. List the disc FST (need a working tool — dolphin-tool wasn't built; try nod / a python
+   GC-disc reader) for sequence.arc / the /AudioRes dir — is it on the FST at a different
+   path/case, so the fix is the openDvd path?
+2. Check how RETAIL loads it: the original Vload/JaiArcS path, or an aurora DVD mount. Does
+   aurora's DVDOpen resolve ANY /AudioRes file (is the whole dir absent, or just the path
+   wrong)? Instrument openDvd/registerFastOpen for a working vs failing /AudioRes open.
+3. If it lives in a szs/arc resource, find which (it's not /audi "sequence.arc").
+Once sequence.arc loads, the WHOLE lower stack (renderer, pipeline, LP64, IBNK/WSYS banks —
+all landed+correct) should turn the real BMS into audible title BGM.

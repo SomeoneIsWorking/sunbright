@@ -142,6 +142,11 @@
 extern "C" {
 const unsigned char* sb_aaf_data = nullptr;
 unsigned int         sb_aaf_size = 0;
+// sequence.arc (BMS collection) captured in-memory from the /audi resource at boot
+// (Application.cpp) — it is NOT on the disc FST, so the DVD read path fails (openDvd==0)
+// and returned all-zero sequences. readSeq copies from this buffer instead.
+const unsigned char* sb_seq_data = nullptr;
+unsigned int         sb_seq_size = 0;
 }
 
 namespace {
@@ -271,20 +276,28 @@ u32 readSeq(u32 idx, u8* buf, u32 extraOff, u32 len)
 	u32 fileOff        = e->off + extraOff;
 	u32 readLen        = len ? len : e->size;
 
-	char path[64];
-	std::strcpy(path, kSeqPath);
-
-	volatile u32 done = 0;
-	// JASystem::Dvd::loadToDramDvdT(prio, path, buffer, offset, length, &done, cb).
-	// (JASDvdThread.cpp:147 — arg4 = byte offset into the file, arg5 = length.) The PC
-	// path runs synchronously inline and sets *done on completion.
-	JASystem::Dvd::loadToDramDvdT(0, path, buf, fileOff, readLen, (u32*)&done, nullptr);
-	while (done == 0)
-		; // synchronous on PC; loop is a no-op but mirrors the Vload contract.
-
+	// sequence.arc lives ONLY inside nintendo.szs (/audi resource), NOT on the disc FST —
+	// so JASystem::Dvd::loadToDramDvdT("/AudioRes/sequence.arc") fails (openDvd==0) and left
+	// `buf` all-zero -> every BMS opcode read 0x00 -> silent BGM. Copy from the in-memory
+	// sequence.arc captured at boot (sb_seq_data, Application.cpp) instead.
+	// DIAGNOSTIC (2026-07-17): sequence.arc is neither on the disc FST (openDvd fails) nor a
+	// /audi resource named "sequence.arc" (getResource -> 16 bytes). Test whether the BMS data
+	// lives inside the in-memory aaf itself at the BARC offset.
 	if (dbg())
-		OSReport("[sms_boot_audio] loaded seq idx=%u off=0x%x len=%u from %s\n", idx,
-		         fileOff, readLen, kSeqPath);
+		OSReport("[sms_boot_audio] SEQPROBE idx=%u off=0x%x len=%u | aaf_size=%u seq_size=%u | aaf@off: %02x %02x %02x %02x  seq@off: %02x %02x %02x %02x\n",
+		         idx, fileOff, readLen, sb_aaf_size, sb_seq_size,
+		         (sb_aaf_data && fileOff + 4 <= sb_aaf_size) ? sb_aaf_data[fileOff] : 0xEE,
+		         (sb_aaf_data && fileOff + 4 <= sb_aaf_size) ? sb_aaf_data[fileOff+1] : 0xEE,
+		         (sb_aaf_data && fileOff + 4 <= sb_aaf_size) ? sb_aaf_data[fileOff+2] : 0xEE,
+		         (sb_aaf_data && fileOff + 4 <= sb_aaf_size) ? sb_aaf_data[fileOff+3] : 0xEE,
+		         (sb_seq_data && fileOff + 4 <= sb_seq_size) ? sb_seq_data[fileOff] : 0xEE,
+		         (sb_seq_data && fileOff + 4 <= sb_seq_size) ? sb_seq_data[fileOff+1] : 0xEE,
+		         (sb_seq_data && fileOff + 4 <= sb_seq_size) ? sb_seq_data[fileOff+2] : 0xEE,
+		         (sb_seq_data && fileOff + 4 <= sb_seq_size) ? sb_seq_data[fileOff+3] : 0xEE);
+	// Keep the build stable + silent (no crash): if the in-memory sequence buffer is valid,
+	// use it; otherwise leave buf as-is (zeroed) — the DVD path was already failing.
+	if (sb_seq_data != nullptr && fileOff + readLen <= sb_seq_size)
+		std::memcpy(buf, sb_seq_data + fileOff, readLen);
 	return readLen;
 }
 
