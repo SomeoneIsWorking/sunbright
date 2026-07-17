@@ -1,6 +1,6 @@
 # RE: VI / XFB / Present pipeline (the 60 fps in-between-field path)
 
-Reverse-engineered from the vendored SMS decomp at `reference/sms/`. Addresses from
+Reverse-engineered from the vendored SMS decomp at `decomp/sms/`. Addresses from
 `reference/sms_gmse01_funcs.txt`. This documents the path that the 60 fps interpolator
 (`runtime/overrides/interp_redraw.cpp`) must drive, and the hazard that produces the
 "each XFB shown twice" (RRBB) cadence instead of clean alternation (RBRB).
@@ -15,7 +15,7 @@ references it where it interacts with the scan-out path.
 - **SMS is SINGLE-XFB-BUFFERED.** `TApplication::initialize` allocates ONE 0xA5000-byte
   framebuffer and passes the SAME pointer as both XFB slots:
   `mDisplay = new JDrama::TDisplay(2, pvVar3, pvVar3, rmode)`
-  (`reference/sms/src/System/Application.cpp:214,217`). So `TDisplay::unk4[0] == unk4[1]`,
+  (`decomp/sms/src/System/Application.cpp:214,217`). So `TDisplay::unk4[0] == unk4[1]`,
   and the ctor sets the single-buffer flag `unk64.on(0x40)` (`JDRDisplay.cpp:22-23`).
   Every game frame: EFB → that one XFB → VI scans it out.
 - **The game runs logic at 30 Hz and scans out 60 fields/s.** `TDisplay` is built with
@@ -41,8 +41,8 @@ references it where it interacts with the scan-out path.
 
 ## 1. JDrama::TDisplay
 
-Header: `reference/sms/include/JSystem/JDrama/JDRDisplay.hpp`
-Impl:   `reference/sms/src/JSystem/JDrama/JDRDisplay.cpp`
+Header: `decomp/sms/include/JSystem/JDrama/JDRDisplay.hpp`
+Impl:   `decomp/sms/src/JSystem/JDrama/JDRDisplay.cpp`
 
 ### Layout (verified vs header offsets)
 
@@ -117,8 +117,8 @@ logic frame ⇒ **30 fps logic, 60 Hz scan-out of the same XFB**.
 
 ## 2. JDrama::TVideo — the VI driver
 
-Header: `reference/sms/include/JSystem/JDrama/JDRVideo.hpp`
-Impl:   `reference/sms/src/JSystem/JDrama/JDRVideo.cpp`
+Header: `decomp/sms/include/JSystem/JDrama/JDRVideo.hpp`
+Impl:   `decomp/sms/src/JSystem/JDrama/JDRVideo.cpp`
 
 ### Layout
 | Off   | Field                          | Meaning |

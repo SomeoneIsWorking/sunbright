@@ -15,7 +15,7 @@ never by eyeballing, never by stopping.
 2. **Is the RE enough?** Do I understand the ORIGINAL behavior — the data layout, the exact code
    path, the values it produces, WHY?
    - NO → do more RE. Disassemble (`sunbright-recomp --disasm/--xref/--callees`), read the
-     `reference/sms` decomp, MEASURE live values (probes, dumps). Name the mechanism before fixing.
+     `decomp/sms` decomp, MEASURE live values (probes, dumps). Name the mechanism before fixing.
 3. **Is the OWNERSHIP enough?** Is the behavior ported to a PC-native path that produces the CORRECT
    verified values?
    - NO → more RE + port it. Own the path natively; no blackbox, no bandaid, no magic constant.
@@ -32,7 +32,7 @@ path that advances ownership, go. Never punt the decision to the user.
   [n]` · `--xref <addr> --funcs reference/sms_gmse01_funcs.txt` (callers) · `--callees <addr>`.
   Data symbols: `reference/sms_gmsj01_symbols.txt` is JP (GMSE01 = US differs; map by role/xref).
   DOL data reader: `scratch/doldump.py`.
-- **Decomp source of truth**: `reference/sms/` (the game's own C++; the native engine compiles it).
+- **Decomp source of truth**: `decomp/sms/` (the game's own C++; the native engine compiles it).
 - **Native value detectors / probes (the verification layer)**: `SB_CAM_DBG` ([cam-oracle],
   [proj-diverge]), `SB_J3D_DBG` ([cov], [sky-sphere], [stage-light], [mat], [litprobe]),
   `sb_gx_get_projection` / `sb_gx_get_cur_posmtx` / `sb_gx_get_chan_matcolor` exports, the per-shape
@@ -51,7 +51,7 @@ path that advances ownership, go. Never punt the decision to the user.
   `pkill -9 -x sms-boot` after. Logs have NUL → `grep -a`.
 
 ## Ownership pattern (how to port a behavior)
-1. Find the behavior's entry + data in `reference/sms` (+ disassemble the US binary to confirm).
+1. Find the behavior's entry + data in `decomp/sms` (+ disassemble the US binary to confirm).
 2. Extract the pure part into a header, unit-test it against spec-computed values.
 3. Drive/own it from the native path (e.g. `scene_drive.cpp` drives the real perform flow; an
    override replaces a stubbed function). Read the game's own objects from memory; never tap an
@@ -64,7 +64,7 @@ Never stop; commit durable state (in-repo notes, commits) as you go so any fresh
 
 1. **RE** — find WHERE the divergence comes from and name the exact mechanism. Backtrace the live
    draw/value (e.g. `SB_IMM_TRACE_SOLID` printed `SMS_FillScreenAlpha <- TModelWaterManager::
-   drawWaterVolume`), then read the decomp (`reference/sms/...`) + disassemble the US DOL to confirm
+   drawWaterVolume`), then read the decomp (`decomp/sms/...`) + disassemble the US DOL to confirm
    the precise semantics (e.g. `GXSetColorUpdate(GX_FALSE)` => writes NO colour). No fix until named.
 2. **PORT** — transcribe the original behaviour faithfully (control flow / state / GX semantics)
    from the decomp + DOL. STAGE A may stub pure-rendering helpers, but the CONTROL/STATE is exact

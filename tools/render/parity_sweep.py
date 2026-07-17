@@ -335,7 +335,7 @@ def _first_scene_with_draws(dump, key):
 # terms. This is the cross-engine SUBSET of the projection that survives oracle-only extra
 # render passes.
 #
-# The oracle runs TMirrorCamera::perform (reference/sms/src/Map/MapMirror.cpp:29) which
+# The oracle runs TMirrorCamera::perform (decomp/sms/src/Map/MapMirror.cpp:29) which
 # issues a mirror-pre-render SETPROJECTION at unk80*gpCamera->mFovy (measured 52° at
 # fileselect, vs the main scene's 40°). gx_parse.proj_pass latches at the FIRST primitive
 # of the pass — and the mirror pass draws BEFORE the main scene, so the SCENE line's proj

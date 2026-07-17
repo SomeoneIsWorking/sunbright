@@ -40,7 +40,7 @@
 >    game ran 18+ frames ahead during boot shader-compile hitches; Dolphin's PE coalesces
 >    draw-sync token interrupts (keeps only the latest) → TDrawSyncManager lost tokens → the
 >    breakpoint stopped advancing → watermark deadlock. Key decomp source:
->    reference/sms/src/System/DrawSyncManager.cpp (token→breakpoint protocol).
+>    decomp/sms/src/System/DrawSyncManager.cpp (token→breakpoint protocol).
 > Verified: long runs with draw-sync tokens + CP interrupts alternating continuously, VI fields
 > presented throughout, no overflow/deadlock. REPL gained /r16 (16-bit MMIO reads) and /gx
 > (CP/Fifo internals: rp/wp/bp/watermarks/interrupt_waiting).

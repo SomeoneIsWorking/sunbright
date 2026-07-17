@@ -58,12 +58,12 @@ runtime FIFO. The R1 framing/vertex-size logic (§3a) becomes that asset-geometr
 GP-FIFO path + Dolphin VideoCommon get deleted.
 
 ### What we port from (faithful RE source)
-The full JSystem decomp is vendored at `reference/sms` — port from it directly, don't re-derive:
-- J2D: `reference/sms/src/JSystem/J2D/{J2DScreen,J2DPane,J2DPicture,J2DGrafContext,J2DTextBox,J2DWindow,J2DPrint}.cpp`
-- J3D: `reference/sms/src/JSystem/J3D/J3DGraphBase/{J3DShape,J3DMaterial,J3DVertex,J3DTevs,J3DTransform,J3DDrawBuffer,J3DPacket,J3DSys}.cpp`
+The full JSystem decomp is vendored at `decomp/sms` — port from it directly, don't re-derive:
+- J2D: `decomp/sms/src/JSystem/J2D/{J2DScreen,J2DPane,J2DPicture,J2DGrafContext,J2DTextBox,J2DWindow,J2DPrint}.cpp`
+- J3D: `decomp/sms/src/JSystem/J3D/J3DGraphBase/{J3DShape,J3DMaterial,J3DVertex,J3DTevs,J3DTransform,J3DDrawBuffer,J3DPacket,J3DSys}.cpp`
   + `J3DGraphLoader` (BMD load) + `J3DGraphAnimator` (anim).
-- Textures: `reference/sms/src/JSystem/JUtility/JUTTexture.cpp`, `J3D/J3DGraphBase/J3DTexture`.
-- Particles: `reference/sms/src/JSystem/JParticle/`.
+- Textures: `decomp/sms/src/JSystem/JUtility/JUTTexture.cpp`, `J3D/J3DGraphBase/J3DTexture`.
+- Particles: `decomp/sms/src/JSystem/JParticle/`.
 Dolphin's `TextureDecoder` / `PixelShaderGen` are references for *the math* (re-derive natively, don't
 link). Validate against the **oracle** (`SUNBRIGHT_DISABLE_RECOMP`) and against Dolphin's frame dumps.
 
@@ -322,7 +322,7 @@ decoder; runtime GP-FIFO path on the delete list. Then, on the object-model arch
   earlier flat-color renders (o=vColor) were bright; the ONLY change that darkens is ×texColor → so
   `texColor×vColor` is demonstrably NOT the right combine for these materials. Guessing a combine is
   a bandaid. **The fix is the real per-material TEV combiner — N5 proper: walk J3DMaterial's TEV
-  stages (reference/sms J3DTevs.cpp; Dolphin PixelShaderGen as the math reference, re-derived) →
+  stages (decomp/sms J3DTevs.cpp; Dolphin PixelShaderGen as the math reference, re-derived) →
   generate a per-material-state SPIR-V fragment shader (TEV-state→shader cache), with the actual
   Konst/raster/texture inputs + alpha/blend.** Then lighting (normal transform via
   j3dSys.mCurrentNormMtx). Low texture-capture count per chunk also suggests some bindings come via
@@ -419,7 +419,7 @@ decoder; runtime GP-FIFO path on the delete list. Then, on the object-model arch
   sets, and draws. Texture uploads are recorded BEFORE `vkCmdBeginRenderPass` (copies/barriers are
   illegal inside a render pass); only the draws go in the pass. Two J2D-walker fixes were needed:
   - **Prune invisible subtrees** (`j2d_walk.cpp`) — `J2DPane::draw` early-returns on an invisible
-    pane and draws neither itself NOR its children (`reference/sms J2DPane.cpp:173`). The
+    pane and draws neither itself NOR its children (`decomp/sms J2DPane.cpp:173`). The
     counter-roll widget keeps its off-screen digit rows as `vis=0` PAN1 parents whose PIC1 children
     are `vis=1`; the old walk descended into them → the hidden rows drew on top of the live one (the
     gross top-left overlap). Now an invisible pane prunes its whole subtree.
@@ -449,7 +449,7 @@ decoder; runtime GP-FIFO path on the delete list. Then, on the object-model arch
   J2DWindow ('WIN1') so the dark translucent subtitle/dialogue bar was missing. Ported
   `J2DWindow::drawContents`: a 4-colour quad over the window interior, reusing the quad path with the
   1×1 white fallback texture × the contents corner colours (no texture). Corner map verified vs
-  reference/sms (col1=TL@0x118, col3=TR@0x120, col4=BR@0x124, col2=BL@0x11C; alpha=mColorAlpha@0xCD).
+  decomp/sms (col1=TL@0x118, col3=TR@0x120, col4=BR@0x124, col2=BL@0x11C; alpha=mColorAlpha@0xCD).
   Verified: the intro-dialogue bar (global [37,400]-[480,442], contents 0x00000088 ≈53% black) renders
   as a dark translucent bar (region lum 110 vs 226 above). The textured 9-slice **border** is also
   ported (J2DWindow::draw_private): the 4 corner textures placed at corners + stretched along the
@@ -465,7 +465,7 @@ decoder; runtime GP-FIFO path on the delete list. Then, on the object-model arch
   sub-rect), reusing the picture pipeline + the I4/IA4 black/white shader (atlas alpha = the glyph).
   Plumbing: `J2dQuad` gains a UV sub-rect; `quad_ortho.vert` takes a `uvrect` push constant
   (`vUV = mix(uvrect.xy, uvrect.zw, corner)`; identity (0,0,1,1) for pictures); push constant 64→80B;
-  J2D snapshot cap 128→1024. Field offsets verified vs reference/sms. Verified headless: the
+  J2D snapshot cap 128→1024. Field offsets verified vs decomp/sms. Verified headless: the
   "DELFINO PLAZA" stage-entry title renders crisply in the game's font over the native present
   (`scratch/screenshots/subtitle_zoom.png`); hud_quads ~6→14 with glyphs. NEXT: J2DWindow (WIN1,
   9-slice — the subtitle bar/message boxes); H/V text binding (currently left/top); gradient color.
@@ -512,7 +512,7 @@ decoder; runtime GP-FIFO path on the delete list. Then, on the object-model arch
     decode the 32-bit tag. (Delfino's getType compiles as `lis;addi`, so the decoder must
     accept opcode 14 with sign-extension, not just `ori`/opcode 24.) On Delfino **every**
     material is `'PEFL'` (full block); presets `'PEOP'`/`'PEED'`/`'PEXL'` are ported too
-    (GX state verbatim from `J3DPEBlock*::load`, `reference/sms J3DMaterial.cpp`).
+    (GX state verbatim from `J3DPEBlock*::load`, `decomp/sms J3DMaterial.cpp`).
   - **PEFL fields** (J3DPEBlockFull): `mAlphaComp`@0x08 (`mAlphaCmpID` u16@0x08, ref0@0x0A,
     ref1@0x0B), `mBlend`@0x0C (`J3DBlendInfo` raw mode/src/dst/logic), `mZMode`@0x10
     (`mZModeID` u16). The alpha-comp / z-mode **IDs decode as a plain bitfield** — that IS
@@ -570,7 +570,7 @@ decoder; runtime GP-FIFO path on the delete list. Then, on the object-model arch
     used texcoords per vertex, and select per stage in the TEV shader. (`GX_TG_COLOR0`/
     `SRTG` + `POS`/`NRM` env/proj mapping are the long tail after the TEX×matrix case.)
 
-**J3DShape DRAW PATH (RE'd 2026-06-14, `reference/sms/.../J3DShape.cpp`) — the live-hook seam.**
+**J3DShape DRAW PATH (RE'd 2026-06-14, `decomp/sms/.../J3DShape.cpp`) — the live-hook seam.**
 `J3DShape::draw()` does, in order:
   1. `GXCallDisplayList(mGDCommands, 0xC0)` — a prebuilt 0xC0-byte GD list that programs the GP-FIFO
      CP state for this shape: `GDSetVtxDescv(unk2C)` (→ VCD), `makeVtxArrayCmd()` (→ `GDSetArray`/
@@ -614,7 +614,7 @@ Still pending/parallel: N0 deterministic capture, native present/swapchain (N7).
   Dolphin's `PixelShaderGen` only as a *reference for the math*, re-derived natively.
 - **J3D surface is large/less-bounded** — this is the cost of the object-level seam (the GX-level seam
   was rejected as still-emulation). Mitigate with the thin-vertical-slice approach (J2D HUD first) and
-  by porting faithfully from `reference/sms` JSystem rather than re-deriving. Keep the recompiled
+  by porting faithfully from `decomp/sms` JSystem rather than re-deriving. Keep the recompiled
   J3DModel/anim doing the matrix/animation math; we own only the *draw*.
 - **Vulkan device ownership vs Dolphin during bring-up** — running our Vulkan alongside Dolphin's on
   one surface is awkward; may need to take the surface fully (N2) earlier than ideal, or render

@@ -5,7 +5,7 @@ Pins exactly which camera/projection source the plaza-water refraction texgen us
 the failed fix that froze only `j3dSys.mViewMtx` (0x804045DC) + skipped the EFB copy and
 **still ghosted Mario into the sky**.
 
-Addresses are GMSE01 (`reference/sms_gmse01_funcs.txt`); file:line refer to `reference/sms/`.
+Addresses are GMSE01 (`reference/sms_gmse01_funcs.txt`); file:line refer to `decomp/sms/`.
 
 ---
 

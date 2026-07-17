@@ -1,15 +1,15 @@
-# sms-boot — Super Mario Sunshine decomp (reference/sms) compiled native, rendered
+# sms-boot — Super Mario Sunshine decomp (decomp/sms) compiled native, rendered
 # through Aurora. ONE binary, ONE runtime, ONE thread: the game runs on the
 # process main thread; Aurora (render + audio + input + DVD) is IO called from
 # inside the game's frame via the sb_frame_present seam (runtime/frame_seam.cpp).
 # All I/O is synchronous and unthrottled. Engine-level PC-native mods live inside
-# reference/sms behind SMS_NATIVE_PLATFORM.
+# decomp/sms behind SMS_NATIVE_PLATFORM.
 #
 # Layout:
 #   main.cpp     — entry point (aurora init, DVD mount, game on main thread)
 #   runtime/     — PC runtime seams: frame present/pace, SDK stubs, watchdog,
 #                  audio pump, BARC-backed Vload
-#   shims/       — RE'd game-logic spec headers included by reference/sms
+#   shims/       — RE'd game-logic spec headers included by decomp/sms
 #   assets/      — BE→host asset byteswappers
 #   boot_stubs/  — scaffold stubs for unported game classes
 
@@ -21,38 +21,38 @@ endif()
 
 set(SMS_NATIVE_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/..")
 
-# Game-logic sources = reference/sms/src/**.cpp MINUS the GC SDK/CRT dirs (Aurora
+# Game-logic sources = decomp/sms/src/**.cpp MINUS the GC SDK/CRT dirs (Aurora
 # supplies dolphin/*; PowerPC_EABI_Support/TRK_MINNOW_DOLPHIN are PPC CRT).
 file(GLOB_RECURSE SMS_NATIVE_SOURCES CONFIGURE_DEPENDS
-     "${SMS_NATIVE_REPO_ROOT}/reference/sms/src/*.cpp"
-     "${SMS_NATIVE_REPO_ROOT}/reference/sms/src/*.c")
+     "${SMS_NATIVE_REPO_ROOT}/decomp/sms/src/*.cpp"
+     "${SMS_NATIVE_REPO_ROOT}/decomp/sms/src/*.c")
 list(FILTER SMS_NATIVE_SOURCES EXCLUDE REGEX
-     "/reference/sms/src/(dolphin|PowerPC_EABI_Support|TRK_MINNOW_DOLPHIN)/")
+     "/decomp/sms/src/(dolphin|PowerPC_EABI_Support|TRK_MINNOW_DOLPHIN)/")
 # OdemuExi2 debugger driver, dspproc/dsptask/osdsp — PPC-hardware/DSP register
 # access, not portable native. Retired debugger/DSP paths.
 list(FILTER SMS_NATIVE_SOURCES EXCLUDE REGEX
-     "/reference/sms/src/(OdemuExi2|JSystem/dspproc|JSystem/dsptask|JSystem/osdsp)")
+     "/decomp/sms/src/(OdemuExi2|JSystem/dspproc|JSystem/dsptask|JSystem/osdsp)")
 # hx_wiper.c / THPPlayer/*.c: HAM movie-wipe controller + Nintendo THP video
 # playback. Both drive GX directly and depend on cache/DVD hardware. Movies are
 # skipped under SMS_NATIVE_PLATFORM=1; runtime/sdk_stubs.cpp provides linkable
 # no-ops (a small state machine faking an instantly-finished movie) for the
 # exported entry points.
 list(FILTER SMS_NATIVE_SOURCES EXCLUDE REGEX
-     "/reference/sms/src/GC2D/hx_wiper\\.c$")
+     "/decomp/sms/src/GC2D/hx_wiper\\.c$")
 list(FILTER SMS_NATIVE_SOURCES EXCLUDE REGEX
-     "/reference/sms/src/THPPlayer/")
+     "/decomp/sms/src/THPPlayer/")
 
 # JASVload wants JaiArcS.hed which isn't on the disc FST; replaced by
 # sms_boot_audio.cpp's BARC-backed loader.
 list(FILTER SMS_NATIVE_SOURCES EXCLUDE REGEX
-     "/reference/sms/src/JSystem/JAudio/JASystem/JASVload\\.cpp$")
+     "/decomp/sms/src/JSystem/JAudio/JASystem/JASVload\\.cpp$")
 
 # Pure PPC-hardware TUs — no meaningful native implementation; Aurora owns the
 # equivalent surfaces (GX register I/O, OS panics, glibc math).
 list(FILTER SMS_NATIVE_SOURCES EXCLUDE REGEX
-     "/reference/sms/src/JSystem/JUtility/JUTException\\.cpp$")
+     "/decomp/sms/src/JSystem/JUtility/JUTException\\.cpp$")
 list(FILTER SMS_NATIVE_SOURCES EXCLUDE REGEX
-     "/reference/sms/src/JSystem/JUtility/JUTDirectPrint\\.cpp$")
+     "/decomp/sms/src/JSystem/JUtility/JUTDirectPrint\\.cpp$")
 # JRenderer.cpp was previously excluded here as "pure PPC-hardware, no meaningful
 # native impl" — false: it holds the REAL J3DGD*/JRNI* BP-register writers
 # (JRNISetTevOrder's TREF write among them). Excluding it left every one of
@@ -70,7 +70,7 @@ list(FILTER SMS_NATIVE_SOURCES EXCLUDE REGEX
 # the matching sdk_stubs.cpp no-ops for these 21 symbols are removed below
 # to avoid duplicate-definition link errors.
 # JPAField.cpp was previously excluded as "PPC-only impl". Not true — the source
-# in reference/sms is portable C++ and its ctor `unk0(this)` is required to
+# in decomp/sms is portable C++ and its ctor `unk0(this)` is required to
 # initialize JSUPtrLink members. Without it the stub in boot_stubs was leaving
 # mData/mPtrList/mPrev/mNext uninitialized, and JPAEmitterManager's fields loop
 # then re-entered a "stale" field (previously used on a reset SolidHeap) with
@@ -94,9 +94,9 @@ set_target_properties(sms-native PROPERTIES
     CXX_STANDARD_REQUIRED ON
     CXX_EXTENSIONS OFF)
 
-# Stage reference/sms/include without its dolphin/ subdir; Aurora supplies dolphin/.
+# Stage decomp/sms/include without its dolphin/ subdir; Aurora supplies dolphin/.
 # SYMLINK each top-level entry (except dolphin) rather than file(COPY): file(COPY) runs
-# only at configure time, so edits to reference/sms/include/*.hpp were silently shadowed by
+# only at configure time, so edits to decomp/sms/include/*.hpp were silently shadowed by
 # a stale staged copy and did NOT reach `cmake --build` (0 recompiles despite header edits —
 # the 2026-07-10 unk-rename incident, and the recurring "header-path shadowing" hazard).
 # Symlinks resolve to the live source, so header EDITS propagate on the next build with no
@@ -104,18 +104,18 @@ set_target_properties(sms-native PROPERTIES
 set(SMS_INCLUDE_STAGED "${CMAKE_CURRENT_BINARY_DIR}/staged_sms_include")
 file(REMOVE_RECURSE "${SMS_INCLUDE_STAGED}")
 file(MAKE_DIRECTORY "${SMS_INCLUDE_STAGED}")
-file(GLOB _sms_inc_entries RELATIVE "${SMS_NATIVE_REPO_ROOT}/reference/sms/include"
-     "${SMS_NATIVE_REPO_ROOT}/reference/sms/include/*")
+file(GLOB _sms_inc_entries RELATIVE "${SMS_NATIVE_REPO_ROOT}/decomp/sms/include"
+     "${SMS_NATIVE_REPO_ROOT}/decomp/sms/include/*")
 foreach(_e ${_sms_inc_entries})
     if(NOT _e STREQUAL "dolphin" AND NOT _e STREQUAL "dolphin.h")
-        file(CREATE_LINK "${SMS_NATIVE_REPO_ROOT}/reference/sms/include/${_e}"
+        file(CREATE_LINK "${SMS_NATIVE_REPO_ROOT}/decomp/sms/include/${_e}"
              "${SMS_INCLUDE_STAGED}/${_e}" SYMBOLIC)
     endif()
 endforeach()
 
 # Three orthogonal compile-time gates:
 #   TARGET_PC          — Aurora's fixed-width typedefs (BOOL/s32/u32/etc.).
-#                        Owned by Aurora, not by reference/sms game code.
+#                        Owned by Aurora, not by decomp/sms game code.
 #   SMS_NATIVE_PLATFORM — PC ENGINE gate: single-threaded, sync/instant loading,
 #                        no OSCreateThread carriers, host-malloc paths, fail-fast
 #                        panics. Purely game-side. Has nothing to do with rendering.
@@ -136,7 +136,7 @@ target_include_directories(sms-native PUBLIC
     "${SMS_INCLUDE_STAGED}"
     "${SMS_NATIVE_REPO_ROOT}/sms-boot/assets"
     # RE'd game-logic spec headers (sms_boot_*.h) that SMS_NATIVE_PLATFORM
-    # branches in reference/sms include.
+    # branches in decomp/sms include.
     "${SMS_NATIVE_REPO_ROOT}/sms-boot/shims")
 
 target_compile_options(sms-native PRIVATE
@@ -151,10 +151,10 @@ target_compile_options(sms-native PRIVATE
 find_package(Threads REQUIRED)
 
 # ---------------------------------------------------------------------------
-# sms-gd — decomp GC GD (display-list builder), compiled from reference/sms.
+# sms-gd — decomp GC GD (display-list builder), compiled from decomp/sms.
 # ---------------------------------------------------------------------------
 file(GLOB SMS_GD_SOURCES CONFIGURE_DEPENDS
-     "${SMS_NATIVE_REPO_ROOT}/reference/sms/src/dolphin/gd/*.c")
+     "${SMS_NATIVE_REPO_ROOT}/decomp/sms/src/dolphin/gd/*.c")
 # GDLight.c duplicates aurora::gd's GDLight.cpp; Aurora's is canonical and paired
 # with its GX pipeline, so use it.
 list(FILTER SMS_GD_SOURCES EXCLUDE REGEX "/GDLight\\.c$")
@@ -237,7 +237,7 @@ foreach(_test ${SMS_RUNTIME_TESTS})
 endforeach()
 
 # ---------------------------------------------------------------------------
-# sms-boot — the ONE binary. reference/sms decomp compiled with
+# sms-boot — the ONE binary. decomp/sms decomp compiled with
 # SMS_NATIVE_PLATFORM=1, rendered through Aurora (SDL3 + Dawn/WebGPU).
 # ---------------------------------------------------------------------------
 if(TARGET aurora_core)
@@ -315,7 +315,7 @@ if(TARGET aurora_core)
     # jaudio_release_test — links the REAL JAIBasic/JAISound code (same
     # sms-native/sms-gd/sms-assets/aurora set as sms-boot, SMS_NATIVE_PLATFORM=1)
     # rather than a hand copy, to lock the JAudio handle-pool release /
-    # double-release invariants fixed in reference/sms fdce9d18. Excluded from
+    # double-release invariants fixed in decomp/sms fdce9d18. Excluded from
     # the generic runtime-tests glob above (that loop links only hx_wipe.cpp +
     # aurora::mtx; this test needs the full game-logic link set).
     # -----------------------------------------------------------------------
@@ -350,7 +350,7 @@ if(TARGET aurora_core)
 
     # -----------------------------------------------------------------------
     # gx_yscale_test — links aurora's REAL GXGetNumXfbLines/GXGetYScaleFactor
-    # (ported 2026-07-14 from reference/sms/src/dolphin/gx/GXFrameBuf.c after
+    # (ported 2026-07-14 from decomp/sms/src/dolphin/gx/GXFrameBuf.c after
     # the silent sdk_stubs versions zeroed every render mode's xfbHeight/
     # viHeight) and sweeps them against a verbatim SDK transcription. Needs
     # the aurora::gx link set, hence the same full-link pattern as
@@ -383,7 +383,7 @@ if(TARGET aurora_core)
 
     # -----------------------------------------------------------------------
     # mapobjtree_initeach_test — pins the RE'd species->leaf-count/param table
-    # of the cold-ported TMapObjTree::initEach (reference/sms/src/MoveBG/
+    # of the cold-ported TMapObjTree::initEach (decomp/sms/src/MoveBG/
     # MapObjTree.cpp, 2026-07-15). initEach is a dependency-free field-writer,
     # so the test compiles MapObjTree.cpp DIRECTLY (not via the game library)
     # and drives the real linked initEach. -ffunction-sections + --gc-sections
@@ -393,7 +393,7 @@ if(TARGET aurora_core)
     # -----------------------------------------------------------------------
     add_executable(platform-mapobjtree_initeach_test
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/tests/mapobjtree_initeach_test.cpp"
-        "${SMS_NATIVE_REPO_ROOT}/reference/sms/src/MoveBG/MapObjTree.cpp")
+        "${SMS_NATIVE_REPO_ROOT}/decomp/sms/src/MoveBG/MapObjTree.cpp")
     set_target_properties(platform-mapobjtree_initeach_test PROPERTIES
         CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
     target_compile_options(platform-mapobjtree_initeach_test PRIVATE

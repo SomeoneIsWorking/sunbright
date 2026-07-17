@@ -2,7 +2,7 @@
 //
 // The reflective sea (title screen) is drawn as a Mario-centred grid of triangle strips.
 // Faithful to the RE (@0x801dcc08 load / @0x801dd21c draw / @0x801dce60 updateTime /
-// @0x801dd694 getWaveHeight — reference/sms/src/MoveBG/MapObjWave.cpp). All values are
+// @0x801dd694 getWaveHeight — decomp/sms/src/MoveBG/MapObjWave.cpp). All values are
 // SDA2 constants:
 //   mExtentBase   = 5200.0f (SDA2[-0x2510])
 //   mGridStep     =  200.0f (SDA2[-0x250c])

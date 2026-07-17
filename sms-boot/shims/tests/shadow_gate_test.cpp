@@ -4,7 +4,7 @@
 // Expected values are HAND-DERIVED from:
 //   - scratch/decomp_shadow/8022ecec.c  (TMBindShadowManager::request  — gate logic)
 //   - scratch/decomp_shadow/8022e0cc.c  (TMBindShadowManager::calcVtx  — ground projection)
-//   - reference/sms/src/Strategic/liveactor.cpp:307 (TLiveActor::requestShadow — field semantics)
+//   - decomp/sms/src/Strategic/liveactor.cpp:307 (TLiveActor::requestShadow — field semantics)
 // and from the port's own documented deviations (see sms_boot_shadow_gate.h + ShadowUtil.cpp
 // comments). The pure helpers below are the SAME functions the shipping code calls (ShadowUtil.cpp
 // routes request()/calcVtx()/entryDrawShadow() through them), so a failure here is a real port bug.

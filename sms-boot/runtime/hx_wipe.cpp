@@ -6,7 +6,7 @@
 // no-op Hx_* stubs that used to live in sms-boot/runtime/sdk_stubs.cpp (Hx_StartWipe,
 // Hx_ResetWipe, Hx_UpdateWipe, Hx_GetWipeType, Hx_MovieStartSyncEx, Hx_ProvideResource[Ex],
 // Hx_RemoveResource — those 8 are the only externally-referenced symbols of the library;
-// see reference/sms/src/GC2D/ScrnFader.cpp and reference/sms/src/System/MovieDirector.cpp).
+// see decomp/sms/src/GC2D/ScrnFader.cpp and decomp/sms/src/System/MovieDirector.cpp).
 //
 // Reverse-engineered byte-for-byte from the original DOL (GMSE01) — see
 // debug_journal/2026-06-21_session12_moviedir_crash_and_wipe_lib.md for the full RE and

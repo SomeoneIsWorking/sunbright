@@ -1,6 +1,6 @@
 # Sun / specular / EFB-feedback effects — per-field hazard analysis
 
-Reverse-engineered from `reference/sms/` for the 60fps in-between-field re-issue path.
+Reverse-engineered from `decomp/sms/` for the 60fps in-between-field re-issue path.
 The 60fps path re-issues the GX draw pass on an in-between field **without** re-running
 the 30Hz calc/movement perform-lists. Effects that read back the EFB/Z-buffer mid-frame
 to gate a draw are therefore hazardous: re-issuing them samples a *different* EFB and may
@@ -18,15 +18,15 @@ callback, NOT inline peeks. The flow, per frame:
 1. A `TZBufferCatch` / `TAlphaCatch` view-object sits in a draw perform list. In its
    draw phase (`perform` `&8`) it pushes a breakpoint and emits a draw-sync token into
    the GPU FIFO:
-   - `reference/sms/src/System/ZBufferCatch.cpp:6` `TZBufferCatch::perform` → `GXSetDrawSync(0x7D)`  (addr **0x802a58ec**)
-   - `reference/sms/src/System/ZBufferCatch.cpp:15` `TAlphaCatch::perform` → `GXSetDrawSync(0x7C)` (and a trailing `0x0`) (addr **0x802a58a8**)
+   - `decomp/sms/src/System/ZBufferCatch.cpp:6` `TZBufferCatch::perform` → `GXSetDrawSync(0x7D)`  (addr **0x802a58ec**)
+   - `decomp/sms/src/System/ZBufferCatch.cpp:15` `TAlphaCatch::perform` → `GXSetDrawSync(0x7C)` (and a trailing `0x0`) (addr **0x802a58a8**)
    These run AFTER the opaque scene/objects that occlude the sun / Mario have been drawn,
    so the EFB/Z at that point reflects "what is in front."
 
 2. When the GPU reaches the token it raises a draw-sync interrupt; Dolphin/HW calls the
    registered `GXSetDrawSyncCallback` → `TDrawSyncManager::drawSyncCallback`
-   (`reference/sms/src/System/DrawSyncManager.cpp:61`), which dispatches by token range to
-   the registered callbacks. Registration (`reference/sms/src/System/MarDirectorSetup2.cpp:91`):
+   (`decomp/sms/src/System/DrawSyncManager.cpp:61`), which dispatches by token range to
+   the registered callbacks. Registration (`decomp/sms/src/System/MarDirectorSetup2.cpp:91`):
    - token **0x7D** → `gpSunMgr`            (sun Z-occlusion probe)
    - token **0x7C** → `gpMarioOriginal`     (Mario alpha-occlusion probe)
    - tokens 0x7E..0xA5 → pollution counter layers (not in scope here)
@@ -44,14 +44,14 @@ property of *what was rendered into the EFB before the token*, not of the calc t
 
 ## 1. Sun / lens effects
 
-All four objects are created in `reference/sms/src/System/MarDirectorInitECT.cpp` (the
+All four objects are created in `decomp/sms/src/System/MarDirectorInitECT.cpp` (the
 "…Mir"/mirror-scene init, `initECTMir`) and `MarDirectorSetupObjects.cpp`. They are split
 across perform lists by phase: their **calc (`&1`) / anim (`&2`)** run in the 30Hz
 movement & calc-anim lists; their **GX entry (`&0x200`) / viewCalc (`&4`)** run in the GX
 draw list (`mPerformListGX`, via `initECTMir`, `MarDirectorSetupObjects.cpp:385`).
 
 ### 1a. TSunModel — "太陽モデル" (the sun disc + the Z-occlusion probe driver)
-- Source: `reference/sms/src/Camera/sunmodel.cpp`; header `include/Camera/SunModel.hpp`.
+- Source: `decomp/sms/src/Camera/sunmodel.cpp`; header `include/Camera/SunModel.hpp`.
 - `getZBufValue` base **0x8002ea70**; the inner GXPeekZ loop body is **0x8002fdbc**.
 - **What it draws:** the sun billboard model (`unk48`, a `J3DModel`) and a mirror copy
   ("太陽in鏡"). The draw itself does NOT read the EFB.
@@ -83,7 +83,7 @@ draw list (`mPerformListGX`, via `initECTMir`, `MarDirectorSetupObjects.cpp:385`
   ratio) rather than peeking the EFB itself — same class as the lens flare/glow below.
 
 ### 1c. レンズフレア — TLensFlare ("lens flare")
-- Source: `reference/sms/src/Camera/lensflare.cpp`; `perform` addr **0x8002d154**.
+- Source: `decomp/sms/src/Camera/lensflare.cpp`; `perform` addr **0x8002d154**.
 - **What it draws:** the `sun_lensfx.bmd` flare model along the screen line from the sun
   toward screen center (`perform` `&2` computes the position from a near-plane 9-grid;
   `&0x200` entries the model).
@@ -95,7 +95,7 @@ draw list (`mPerformListGX`, via `initECTMir`, `MarDirectorSetupObjects.cpp:385`
   driven, computed in phase `&1` (calc tick).
 
 ### 1d. 太陽遮蔽物グロー — TLensGlow ("sun occlusion glow")
-- Source: `reference/sms/src/Camera/lensglow.cpp`; `perform` ~**0x8002cxxx** (in the
+- Source: `decomp/sms/src/Camera/lensglow.cpp`; `perform` ~**0x8002cxxx** (in the
   `TLensGlow` block of funcs.txt; exact line not enumerated above — FLAGGED minor).
 - **What it draws:** the `glow.bmd` halo at the sun's screen position.
 - **EFB read:** none directly. Consumes `gpSunModel->getUnk194()` (dispersion),
@@ -115,7 +115,7 @@ getZBufValue` (GXPeekZ ×17). The other three effects are pure consumers of its 
 Two cooperating pieces: the EFB **alpha** probe (MarioMain) and the smoothed alpha
 feedback + redraw (DrawUtil `TSilhouette`).
 
-### 2a. The probe + alpha stamping — `reference/sms/src/Player/MarioMain.cpp`
+### 2a. The probe + alpha stamping — `decomp/sms/src/Player/MarioMain.cpp`
 Inside `TMario::draw` (the big phase-switched draw), gated on
 `UNK114_FLAG_DO_OCCLUSION_PROBE` (=0x400, `Mario.hpp:1591`):
 - phase `&0x02000000` (`MarioMain.cpp:193`): draw a bounding cube with color update OFF,
@@ -136,7 +136,7 @@ Inside `TMario::draw` (the big phase-switched draw), gated on
   by the dst-alpha that the probe path established. `gpSilhouetteManager->unk48` is the
   smoothed occlusion alpha (see 2b).
 
-### 2b. The feedback loop — `reference/sms/src/MarioUtil/DrawUtil.cpp` `TSilhouette`
+### 2b. The feedback loop — `decomp/sms/src/MarioUtil/DrawUtil.cpp` `TSilhouette`
 - `TSilhouette::perform` addr **0x80227914**.
 - phase `&1` (calc, `DrawUtil.cpp:95`):
   `fVar1 = MARIO_FLAG_OCCLUDED ? unk50 : 0.0f` (`unk50 = 128.0f`);
@@ -186,7 +186,7 @@ ground-darken alpha. The hard EFB decision is filtered into a slowly-ramping alp
 
 ## 4. Which perform list / phase each effect draws in
 
-Main draw loop: `reference/sms/src/System/MarDirectorDirect.cpp` `direct()`.
+Main draw loop: `decomp/sms/src/System/MarDirectorDirect.cpp` `direct()`.
 - **Calc/movement (30Hz tick, NOT re-issued on in-between fields):**
   `mShinePfLstMov->perform` (`MarDirectorDirect.cpp:145`), `movement()` (line 153),
   `mPerformListCalcAnim->perform` (line 156). The sun/lens/specular `&1`/`&2` phases live

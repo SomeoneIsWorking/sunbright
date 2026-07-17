@@ -6,20 +6,20 @@ say exactly what an "in-between" field re-issue (draw-only lists, no calc/moveme
 missing or double-processing.
 
 Primary sources (read, not guessed):
-- `reference/sms/src/System/MarDirectorDirect.cpp` — `TMarDirector::direct()` frame loop
-- `reference/sms/src/System/PerformList.cpp` — `TPerformList::perform` / `forEachPerform`
-- `reference/sms/src/JSystem/JDrama/JDRViewObj.cpp` — `TViewObj::testPerform`
-- `reference/sms/src/System/MarDirectorSetupObjects.cpp` — list construction
-- `reference/sms/src/System/MarDirectorInitECT.cpp` — `initECTGft` / `initECTMir` / `initECDisp`
-- `reference/sms/src/System/MarDirectorPreEntry.cpp` — `preEntry` (the MAIN 3D scene list)
-- `reference/sms/src/System/MarDirectorSetup2.cpp` — `setup2`
-- `reference/sms/src/MarioUtil/DrawUtil.cpp` — `TSilhouette` (the marukage round shadow)
-- `reference/sms/src/Player/ModelWaterManager.cpp` — `TModelWaterManager` (Mario water FX)
-- `reference/sms/src/Camera/lensglow.cpp`, `lensflare.cpp` — sun glow / lens flare
-- `reference/sms/src/Player/MarioMain.cpp` — `TMario::perform` (same flag convention)
+- `decomp/sms/src/System/MarDirectorDirect.cpp` — `TMarDirector::direct()` frame loop
+- `decomp/sms/src/System/PerformList.cpp` — `TPerformList::perform` / `forEachPerform`
+- `decomp/sms/src/JSystem/JDrama/JDRViewObj.cpp` — `TViewObj::testPerform`
+- `decomp/sms/src/System/MarDirectorSetupObjects.cpp` — list construction
+- `decomp/sms/src/System/MarDirectorInitECT.cpp` — `initECTGft` / `initECTMir` / `initECDisp`
+- `decomp/sms/src/System/MarDirectorPreEntry.cpp` — `preEntry` (the MAIN 3D scene list)
+- `decomp/sms/src/System/MarDirectorSetup2.cpp` — `setup2`
+- `decomp/sms/src/MarioUtil/DrawUtil.cpp` — `TSilhouette` (the marukage round shadow)
+- `decomp/sms/src/Player/ModelWaterManager.cpp` — `TModelWaterManager` (Mario water FX)
+- `decomp/sms/src/Camera/lensglow.cpp`, `lensflare.cpp` — sun glow / lens flare
+- `decomp/sms/src/Player/MarioMain.cpp` — `TMario::perform` (same flag convention)
 
 > ⚠ MEMBER-OFFSET CORRECTION vs the task framing. The decomp header
-> `reference/sms/include/System/MarDirector.hpp` (lines 165–176) gives the **actual**
+> `decomp/sms/include/System/MarDirector.hpp` (lines 165–176) gives the **actual**
 > offsets, which differ from the offsets named in the task prompt:
 >
 > | off  | member                  | role |
@@ -52,7 +52,7 @@ Primary sources (read, not guessed):
 
 ## 1. `TMarDirector::direct()` — the two-phase per-frame loop
 
-File: `reference/sms/src/System/MarDirectorDirect.cpp:42–185`.
+File: `decomp/sms/src/System/MarDirectorDirect.cpp:42–185`.
 
 > Address note: `direct()` is declared `virtual int direct()`
 > (`MarDirector.hpp:101`) but is **not separately symbolized** in
@@ -165,7 +165,7 @@ visibility), see §2.
 
 ## 2. Dispatch: `TPerformList::perform` → `TViewObj::testPerform` → `perform`
 
-File: `reference/sms/src/System/PerformList.cpp`. Address `802a4e28`
+File: `decomp/sms/src/System/PerformList.cpp`. Address `802a4e28`
 (`perform__12TPerformListFUlPQ26JDrama9TGraphics`).
 
 ```cpp

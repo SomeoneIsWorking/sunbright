@@ -55,7 +55,7 @@ Even with the above, the PRESENT render stays ~washed and it is **flaky/scene-de
   matsrc=REG lit shapes whose illum is computed wrong/saturates, (d) `unk114` per-view buffer
   vs static array timing.
 
-## Authoritative ground-truth sources (use these, NOT reference/sms which is incomplete)
+## Authoritative ground-truth sources (use these, NOT decomp/sms which is incomplete)
 - Lighting/channel state: Dolphin `xfmem` (VideoCommon/XFMemory.h) — `xfmem.color[2]` (LitChannel),
   `xfmem.ambColor[2]`, `xfmem.matColor[2]` (u32 RGBA, R in MSB), `xfmem.lights[8]`.
   ⚠ xfmem LAGS at J3DShape::draw (GPU thread async) — usable for slow-changing state (lights,

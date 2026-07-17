@@ -2,7 +2,7 @@
 // Big-endian -> host byteswap for Koga::ToolData BCSV/JMap blobs (.bcr movie
 // rumble tables, and any other future Koga::ToolData::Attach consumer).
 //
-// Layout (reference/sms/include/MarioUtil/ToolData.hpp — Koga::JMapData /
+// Layout (decomp/sms/include/MarioUtil/ToolData.hpp — Koga::JMapData /
 // Koga::JMapItem), all on-disc fields big-endian:
 //   header (0x10 bytes): s32 numEntries, s32 numFields, s32 dataOffset,
 //                        u32 entrySize

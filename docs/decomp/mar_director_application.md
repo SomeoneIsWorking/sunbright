@@ -1,9 +1,9 @@
 # TApplication / TMarDirector — the game-mode state machine (GMSE01 USA)
 
-Decomp research notes for the port. Sources: `reference/sms` (community decomp;
+Decomp research notes for the port. Sources: `decomp/sms` (community decomp;
 USA map `reference/sms_gmse01_funcs.txt` is sparse here — most state-machine
 functions are unnamed in it) + the PAL/JP full symbol maps in
-`reference/sms/config/GMS{P,J}01/symbols.txt` + direct disassembly of the USA
+`decomp/sms/config/GMS{P,J}01/symbols.txt` + direct disassembly of the USA
 binary (`sunbright-recomp --disasm`).
 
 **Address-resolution method (important):** the USA map names only
@@ -243,7 +243,7 @@ anything wanting a stage change
   get THPPlayerPause/Play around pause states.
 
 ### Contradictions / dead ends
-- `reference/sms` MarDirector.cpp TU split (MarDirectorDirect.cpp etc.) is a
+- `decomp/sms` MarDirector.cpp TU split (MarDirectorDirect.cpp etc.) is a
   decomp-side organization; in the USA binary all of direct/changeState/etc.
   are one contiguous TU range with local statics between changeState and
   direct (0x80298e80+0x76C..0x80299838, 0x24C of unnamed locals: decideNextStage

@@ -1,6 +1,6 @@
 // sms_native_sky.h — the SMS_NATIVE_PLATFORM sky port (CLAUDE.md 2026-07-03 hard rule).
 //
-// TSky (reference/sms/src/Map/Sky.cpp) draws two things at title (mMap==15):
+// TSky (decomp/sms/src/Map/Sky.cpp) draws two things at title (mMap==15):
 //   1. Bit 0x8 — GXDrawSphere(8, 0x10) inside-out at scale 100000, flat chan-mat colour
 //      RGBA(0x00, 0x12, 0xEE, 0x80), single-stage GX_PASSCLR. Semantically "clear-to-this-colour".
 //   2. Bits 0x4|0x200 — MActor::viewCalc + entry that emits the sky.bmd batches:

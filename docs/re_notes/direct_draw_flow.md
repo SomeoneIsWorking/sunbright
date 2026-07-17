@@ -6,20 +6,20 @@ Scope: resolve EXACTLY how `TMarDirector::direct()` splits calc vs draw across i
 water-surface + Mario-shadow 30 Hz flicker the user still sees on the in-between field.
 
 Primary sources (read, line-cited; not guessed):
-- `reference/sms/src/System/MarDirectorDirect.cpp:42-185` — `direct()`
-- `reference/sms/src/System/PerformList.cpp:4-19` — `perform`/`forEachPerform`
-- `reference/sms/src/JSystem/JDrama/JDRViewObj.cpp:3-15` — `testPerform`
-- `reference/sms/src/System/MarDirectorPreEntry.cpp:14-66` — `preEntry` (builds `unk34`)
-- `reference/sms/src/System/MarDirectorSetupObjects.cpp:383-479` — list construction & names
-- `reference/sms/src/System/MarDirectorInitECT.cpp` — `initECTGft`/`initECTMir`/`initECDisp`/`setupPerformList_console`
-- `reference/sms/src/JSystem/JDrama/JDRDrawBufObj.cpp:31-48` — `TDrawBufObj::perform` (★ the key)
-- `reference/sms/src/JSystem/JDrama/JDRSmJ3DScn.cpp:19-42` — `TSmJ3DScn::perform`
-- `reference/sms/src/Player/MarioMain.cpp:67-175` — `TMario::perform` (phase convention)
-- `reference/sms/src/Player/ModelWaterManager.cpp:1541+` — `TModelWaterManager::perform`
-- `reference/sms/src/MarioUtil/DrawUtil.cpp:93-167` — `TSilhouette::perform` (marukage)
+- `decomp/sms/src/System/MarDirectorDirect.cpp:42-185` — `direct()`
+- `decomp/sms/src/System/PerformList.cpp:4-19` — `perform`/`forEachPerform`
+- `decomp/sms/src/JSystem/JDrama/JDRViewObj.cpp:3-15` — `testPerform`
+- `decomp/sms/src/System/MarDirectorPreEntry.cpp:14-66` — `preEntry` (builds `unk34`)
+- `decomp/sms/src/System/MarDirectorSetupObjects.cpp:383-479` — list construction & names
+- `decomp/sms/src/System/MarDirectorInitECT.cpp` — `initECTGft`/`initECTMir`/`initECDisp`/`setupPerformList_console`
+- `decomp/sms/src/JSystem/JDrama/JDRDrawBufObj.cpp:31-48` — `TDrawBufObj::perform` (★ the key)
+- `decomp/sms/src/JSystem/JDrama/JDRSmJ3DScn.cpp:19-42` — `TSmJ3DScn::perform`
+- `decomp/sms/src/Player/MarioMain.cpp:67-175` — `TMario::perform` (phase convention)
+- `decomp/sms/src/Player/ModelWaterManager.cpp:1541+` — `TModelWaterManager::perform`
+- `decomp/sms/src/MarioUtil/DrawUtil.cpp:93-167` — `TSilhouette::perform` (marukage)
 - Runtime: `runtime/overrides/interp_redraw.cpp` (`kDrawLists`), `interp_capture.cpp`
 
-Member offsets are the decomp header `reference/sms/include/System/MarDirector.hpp:164-176`
+Member offsets are the decomp header `decomp/sms/include/System/MarDirector.hpp:164-176`
 and they match what the runtime override indexes (`g_mardir + 0x1C` … `+0x40`):
 
 | off  | member                   | built by |

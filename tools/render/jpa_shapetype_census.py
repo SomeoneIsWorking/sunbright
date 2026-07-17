@@ -3,7 +3,7 @@
 
 Scans the game's particle data for every JPABaseShape ('BSP1') block and counts
 the shapeType byte (mType = data[0x24] from the 'BSP1' magic, per
-reference/sms/.../JPABaseShape.cpp:102). This answers, from DATA (not from a
+decomp/sms/.../JPABaseShape.cpp:102). This answers, from DATA (not from a
 scene sweep), which JPA draw types actually EXIST in the shipped game — so we
 never port a renderer path for a type that can never appear (verify-first).
 

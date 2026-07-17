@@ -6,12 +6,12 @@
 // (i) ROOT-CAUSE RE CALL-CHAIN (file:line)
 // =====================================================================================
 // Reaching the option/file-select stage, MarDirector setup runs:
-//   reference/sms/src/System/MarDirectorSetupObjects.cpp:210
+//   decomp/sms/src/System/MarDirectorSetupObjects.cpp:210
 //     MSMainProc::setMSoundEnterStage(mMap, unk7D)
-//   reference/sms/src/System/MSoundMainSide.cpp:123  setMSoundEnterStage(...)
-//     -> (case 15) reference/sms/src/System/MSoundMainSide.cpp:381
+//   decomp/sms/src/System/MSoundMainSide.cpp:123  setMSoundEnterStage(...)
+//     -> (case 15) decomp/sms/src/System/MSoundMainSide.cpp:381
 //          SMSGetMSound()->loadArcSeqData(MSD_BGM_CHUBOSS2, false)
-//   reference/sms/src/JSystem/JAudio/JAInterface/JAIBasic.cpp:1234
+//   decomp/sms/src/JSystem/JAudio/JAInterface/JAIBasic.cpp:1234
 //     int JAIBasic::loadArcSeqData(u32 param_1, bool param_2):
 //       u32 uVar1   = param_1 & 0x3ff;                       // BARC sequence index
 //       u32 uVar2   = JASystem::Vload::checkSize(uVar1);     // size of the BMS
@@ -51,7 +51,7 @@
 // =====================================================================================
 // REIMPLEMENT the JASystem::Vload namespace (this file) so it is backed by the real BARC
 // table + sequence.arc, and EXCLUDE the decomp TU
-//   reference/sms/src/JSystem/JAudio/JASystem/JASVload.cpp
+//   decomp/sms/src/JSystem/JAudio/JASystem/JASVload.cpp
 // from the sms-native build so these definitions link instead.
 //
 // Why Vload and not loadArcSeqData / a checkOnMemory pre-register hook:
@@ -95,7 +95,7 @@
 //
 //        # Native BARC-backed sequence loader replaces the dead JaiArcS.hed Vload path.
 //        list(FILTER SMS_NATIVE_SOURCES EXCLUDE REGEX
-//             "/reference/sms/src/JSystem/JAudio/JASystem/JASVload\\.cpp$")
+//             "/decomp/sms/src/JSystem/JAudio/JASystem/JASVload\\.cpp$")
 //
 // 2. Add this file to the sms-boot executable sources (native/CMakeLists.txt ~line 336,
 //    the add_executable(sms-boot ...) list):
@@ -109,7 +109,7 @@
 //        list(APPEND SMS_NATIVE_SOURCES
 //             "${SMS_NATIVE_REPO_ROOT}/native/src/sms_boot_audio.cpp")
 //     — but it must then be compiled with the sms-native include dirs, which it already is
-//     via the reference/sms/include path; do NOT add the -w/-fcommon decomp flags, this is
+//     via the decomp/sms/include path; do NOT add the -w/-fcommon decomp flags, this is
 //     clean C++.)
 //
 // 3. No other source needs touching. No symbol allow-multiple-definition, no --wrap.
@@ -132,7 +132,7 @@
 // In-memory mSound.aaf, captured at boot by the integrator.
 // =====================================================================================
 // mSound.aaf is NOT a child of the disc FST — it exists ONLY inside nintendo.szs and is
-// read at boot as an archive RESOURCE (reference/sms/src/System/Application.cpp:312-317:
+// read at boot as an archive RESOURCE (decomp/sms/src/System/Application.cpp:312-317:
 // becomeCurrent("/audi") -> getResource/readResource("mSound.aaf") -> new MSound(... buf)).
 // A DVD read of "/AudioRes/mSound.aaf" can never resolve (checkFileExtend == 0). The
 // integrator captures the in-memory resource buffer right after Application.cpp:315

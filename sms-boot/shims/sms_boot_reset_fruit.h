@@ -5,7 +5,7 @@
 // branch fire?" predicate has pure math worth unit-testing; the rest is virtual dispatch and
 // vtable calls the port keeps faithful.
 //
-// Called by the shipping port (reference/sms/src/MoveBG/MapObjBall.cpp) so the test validates the
+// Called by the shipping port (decomp/sms/src/MoveBG/MapObjBall.cpp) so the test validates the
 // real function, not a fork.
 
 #pragma once

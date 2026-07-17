@@ -1,5 +1,5 @@
-[submodule "reference/sms"]
-	path = reference/sms
+[submodule "decomp/sms"]
+	path = decomp/sms
 	url = https://github.com/SomeoneIsWorking/sms.git
 	branch = sunbright
 [submodule "extern/aurora"]

@@ -1,5 +1,5 @@
 // jaudio_release_test.cpp — verify-first unit test locking the JAudio
-// handle-pool release / double-release invariants fixed in reference/sms
+// handle-pool release / double-release invariants fixed in decomp/sms
 // fdce9d18 (debug_journal/2026-07-10_audio_double_release_retail_audit.md).
 //
 // This links the REAL JAIBasic/JAISound code (compiled into the sms-native
@@ -45,7 +45,7 @@ static int g_fail = 0;
 } while (0)
 
 // Zeroed fixture standing in for a JAIData instance. JAIData::JAIData() is
-// declared in JAIData.hpp but never defined anywhere in reference/sms (no
+// declared in JAIData.hpp but never defined anywhere in decomp/sms (no
 // caller either -- dead in the real game), so `JAIData d;` is a link error.
 // Every JAIBasic method exercised here (stopSeq, releaseControllerHandle)
 // only ever touches unk210/unk180 through the `unk0` (JAIData*) pointer, so

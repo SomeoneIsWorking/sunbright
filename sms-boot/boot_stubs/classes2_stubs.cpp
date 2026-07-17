@@ -45,7 +45,7 @@ TSimpleEffect::TSimpleEffect(const char* name)
 // TGenerator: key = load (first explicit virtual)
 void TGenerator::load(JSUMemoryInputStream&) { SB_STUB_HIT("TGenerator::load"); }
 
-// TOneShotGenerator::load lives natively in reference/sms/src/Enemy/Generator.cpp.
+// TOneShotGenerator::load lives natively in decomp/sms/src/Enemy/Generator.cpp.
 
 // ============================================================
 // === Map/BathWaterManager.hpp ===
@@ -59,7 +59,7 @@ TBathWaterPreprocessor::TBathWaterPreprocessor(TBathWaterManager* mgr)
 {
 }
 
-// TBathWaterPreprocessor::perform lives natively in reference/sms/src/Map/BathWaterManager.cpp.
+// TBathWaterPreprocessor::perform lives natively in decomp/sms/src/Map/BathWaterManager.cpp.
 
 // TBathWaterManager: key = load (first explicit virtual; ctor already in ui_map_stubs.cpp)
 void TBathWaterManager::load(JSUMemoryInputStream&) { SB_STUB_HIT("TBathWaterManager::load"); }
@@ -72,7 +72,7 @@ void TBathWaterManager::load(JSUMemoryInputStream&) { SB_STUB_HIT("TBathWaterMan
 // TMapObjBall: key = receiveMessage (first explicit virtual)
 BOOL TMapObjBall::receiveMessage(THitActor*, u32) { SB_STUB_HIT("TMapObjBall::receiveMessage"); return 0; }
 
-// TResetFruit::perform lives natively in reference/sms/src/MoveBG/MapObjBall.cpp — no stub.
+// TResetFruit::perform lives natively in decomp/sms/src/MoveBG/MapObjBall.cpp — no stub.
 
 // TRandomFruit: key = initMapObj (first and only explicit virtual)
 void TRandomFruit::initMapObj() { SB_STUB_HIT("TRandomFruit::initMapObj"); }
@@ -122,7 +122,7 @@ void TLeanMirror::draw() const { SB_STUB_HIT("TLeanMirror::draw"); }
 
 // TShiningStone: key = perform (first method shadowing THitActor::perform;
 //   endDemo/putOnLight not in THitActor virtuals)
-// TShiningStone::perform lives natively in reference/sms/src/MoveBG/MapObjMamma.cpp.
+// TShiningStone::perform lives natively in decomp/sms/src/MoveBG/MapObjMamma.cpp.
 
 // TMammaBlockRotate: key = touchWater (first method shadowing TMapObjBase::touchWater)
 u32 TMammaBlockRotate::touchWater(THitActor*) { SB_STUB_HIT("TMammaBlockRotate::touchWater"); return 0; }
@@ -136,7 +136,7 @@ void TSandBird::control() { SB_STUB_HIT("TSandBird::control"); }
 // TGoalWatermelon: key = touchActor (first method shadowing TMapObjBase::touchActor)
 void TGoalWatermelon::touchActor(THitActor*) { SB_STUB_HIT("TGoalWatermelon::touchActor"); }
 
-// TMammaMirrorMapOperator::perform lives natively in reference/sms/src/MoveBG/MapObjMamma.cpp.
+// TMammaMirrorMapOperator::perform lives natively in decomp/sms/src/MoveBG/MapObjMamma.cpp.
 
 // TSandEgg: key = getSDLModelFlag (first method shadowing TMapObjBase::getSDLModelFlag)
 u32 TSandEgg::getSDLModelFlag() const { SB_STUB_HIT("TSandEgg::getSDLModelFlag"); return 0; }
@@ -245,7 +245,7 @@ void TMerrygoround::control() { SB_STUB_HIT("TMerrygoround::control"); }
 // TBalloonKoopaJr: key = touchActor (first method shadowing TMapObjGeneral/TMapObjBase::touchActor)
 void TBalloonKoopaJr::touchActor(THitActor*) { SB_STUB_HIT("TBalloonKoopaJr::touchActor"); }
 
-// TPinnaEntrance::loadAfter lives natively in reference/sms/src/MoveBG/MapObjPinna.cpp.
+// TPinnaEntrance::loadAfter lives natively in decomp/sms/src/MoveBG/MapObjPinna.cpp.
 
 // TWaterRecoverObj: key = touchPlayer (first and only method, shadows TMapObjBase::touchPlayer)
 void TWaterRecoverObj::touchPlayer(THitActor*) { SB_STUB_HIT("TWaterRecoverObj::touchPlayer"); }
@@ -292,9 +292,9 @@ void TFruitLauncher::loadAfter() { SB_STUB_HIT("TFruitLauncher::loadAfter"); }
 // [dedup] void TManhole::touchPlayer(THitActor*) {} 
 // TMapObjWaterSpray: key = calc (first method shadowing TMapObjBase::calc)
 // [dedup] void TMapObjWaterSpray::calc() {} 
-// THideObjInfo provided natively in reference/sms/src/MoveBG/MapObjTown.cpp.
+// THideObjInfo provided natively in decomp/sms/src/MoveBG/MapObjTown.cpp.
 
-// TMapObjSwitch::control lives natively in reference/sms/src/MoveBG/MapObjTown.cpp.
+// TMapObjSwitch::control lives natively in decomp/sms/src/MoveBG/MapObjTown.cpp.
 
 // TRedCoinSwitch: key = receiveMessage (first method shadowing TMapObjBase::receiveMessage)
 // [dedup] BOOL TRedCoinSwitch::receiveMessage(THitActor*, u32) { return 0; } 
@@ -306,7 +306,7 @@ void TFruitLauncher::loadAfter() { SB_STUB_HIT("TFruitLauncher::loadAfter"); }
 #include <MoveBG/MapObjTree.hpp>
 
 // TMapObjTree: key = perform (first explicit virtual)
-// TMapObjTree::perform now PORTED in reference/sms/src/MoveBG/MapObjTree.cpp (RE'd 2026-07-17).
+// TMapObjTree::perform now PORTED in decomp/sms/src/MoveBG/MapObjTree.cpp (RE'd 2026-07-17).
 
 // TMapObjTreeScale: key = loadAfter (first explicit virtual)
 void TMapObjTreeScale::loadAfter() { SB_STUB_HIT("TMapObjTreeScale::loadAfter"); }
@@ -316,7 +316,7 @@ void TMapObjTreeScale::loadAfter() { SB_STUB_HIT("TMapObjTreeScale::loadAfter");
 // ============================================================
 #include <MoveBG/MapObjWave.hpp>
 
-// TMapObjWave::load is now ported faithfully in reference/sms/src/MoveBG/MapObjWave.cpp.
+// TMapObjWave::load is now ported faithfully in decomp/sms/src/MoveBG/MapObjWave.cpp.
 
 // ============================================================
 // === MoveBG/ModelGate.hpp ===

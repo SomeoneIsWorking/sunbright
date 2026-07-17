@@ -1,6 +1,6 @@
 # Port a decomp function to native (`/patch-func <name|0xADDR>`)
 
-For the ONE-RUNTIME native build (reference/sms compiled native): replace a
+For the ONE-RUNTIME native build (decomp/sms compiled native): replace a
 boot_stub OSPanic / fill an unported function with a faithful C++ port.
 
 ## 1. Generate the dossier (one command — does the extraction labor)

@@ -11,7 +11,7 @@ Usage:
   port_dossier.py <name-substr|0xADDR> [out.md]
 
 Data sources (repo-relative): scratch/bin/sms.dol, reference/sms_gmse01_funcs.txt,
-reference/sms/{src,include}, sms-boot/boot_stubs. Regenerate the DOL with
+decomp/sms/{src,include}, sms-boot/boot_stubs. Regenerate the DOL with
 tools/re/dol_extract.c if scratch/bin/sms.dol is missing.
 """
 import os, subprocess, sys, re
@@ -78,7 +78,7 @@ def grep_decomp_body(name):
     meth, nlen, rest = m.group(1), int(m.group(2)), m.group(3)
     cls = rest[:nlen] if len(rest) >= nlen else rest
     pat = rf"\b{re.escape(cls)}::{re.escape(meth)}\b"
-    hits = run("grep", "-rn", "-E", pat, os.path.join(ROOT, "reference/sms/src"))
+    hits = run("grep", "-rn", "-E", pat, os.path.join(ROOT, "decomp/sms/src"))
     return (f"class={cls} method={meth}\n"
             + (hits if hits.strip() else "(NO decomp body found — cold RE / transcribe from disasm)\n"))
 

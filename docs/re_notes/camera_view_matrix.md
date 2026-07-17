@@ -6,21 +6,21 @@ where that matrix lives in guest RAM, and what reliably signals a scene cut, so 
 across a cut.
 
 Primary sources (read, not guessed):
-- `reference/sms/src/JSystem/JDrama/JDRCamera.cpp` — `TCamera` / `TPolarCamera` /
+- `decomp/sms/src/JSystem/JDrama/JDRCamera.cpp` — `TCamera` / `TPolarCamera` /
   `TLookAtCamera` / `TOrthoProj` (the JDrama camera base + view-matrix build).
-- `reference/sms/include/JSystem/JDrama/JDRCamera.hpp` — class layout.
-- `reference/sms/include/JSystem/JDrama/JDRPlacement.hpp` — `TPlacement` (`mPosition`@0x10).
-- `reference/sms/include/JSystem/JDrama/JDRGraphics.hpp` — `TGraphics` (`mViewMtx`@0xB4,
+- `decomp/sms/include/JSystem/JDrama/JDRCamera.hpp` — class layout.
+- `decomp/sms/include/JSystem/JDrama/JDRPlacement.hpp` — `TPlacement` (`mPosition`@0x10).
+- `decomp/sms/include/JSystem/JDrama/JDRGraphics.hpp` — `TGraphics` (`mViewMtx`@0xB4,
   `mProjMtx`@0x74, `unk0` phase flags).
-- `reference/sms/src/Camera/cameragc.cpp` — `CPolarSubCamera` (the real gameplay camera,
+- `decomp/sms/src/Camera/cameragc.cpp` — `CPolarSubCamera` (the real gameplay camera,
   `gpCamera`), incl. `CPolarSubCamera::perform`.
-- `reference/sms/include/Camera/Camera.hpp` — `CPolarSubCamera` layout.
-- `reference/sms/src/Camera/CameraDemo.cpp` — demo/cutscene cameras.
-- `reference/sms/src/Camera/CameraWarp.cpp` — instant camera jumps (`warpPosAndAt`).
-- `reference/sms/src/System/J3DSysFlag.cpp` — `TJ3DSysSetViewMtx::perform` (gfx → j3dSys).
-- `reference/sms/src/System/MarDirectorPreEntry.cpp` — the main 3D perform list (phase).
-- `reference/sms/include/JSystem/J3D/J3DGraphBase/J3DSys.hpp` — `J3DSys` (`mViewMtx`@0x0).
-- `reference/sms/include/dolphin/mtx.h` — `typedef f32 Mtx[3][4]` (line 22).
+- `decomp/sms/include/Camera/Camera.hpp` — `CPolarSubCamera` layout.
+- `decomp/sms/src/Camera/CameraDemo.cpp` — demo/cutscene cameras.
+- `decomp/sms/src/Camera/CameraWarp.cpp` — instant camera jumps (`warpPosAndAt`).
+- `decomp/sms/src/System/J3DSysFlag.cpp` — `TJ3DSysSetViewMtx::perform` (gfx → j3dSys).
+- `decomp/sms/src/System/MarDirectorPreEntry.cpp` — the main 3D perform list (phase).
+- `decomp/sms/include/JSystem/J3D/J3DGraphBase/J3DSys.hpp` — `J3DSys` (`mViewMtx`@0x0).
+- `decomp/sms/include/dolphin/mtx.h` — `typedef f32 Mtx[3][4]` (line 22).
 - See also `docs/re_notes/perform_list_architecture.md` for the perform-list phasing.
 
 Addresses are GMSE01 (US) from `reference/sms_gmse01_funcs.txt`. The decomp symbol maps
@@ -219,7 +219,7 @@ The projection is built every frame by the camera into `unk16C` (4x4) via
 (TGraphics+0x74) in the draw block; `GXSetProjection(gfx->mProjMtx, GX_PERSPECTIVE)` is
 issued only on phase bit 0x10 (`cameragc.cpp:1009`, JDRCamera.cpp:52/76).
 
-`GXSetProjection` US addr is **0x80362c34** (`reference/sms/src/dolphin/gx/GXTransform.c:39`).
+`GXSetProjection` US addr is **0x80362c34** (`decomp/sms/src/dolphin/gx/GXTransform.c:39`).
 The widescreen hooks in our runtime intercept here to widen the 3D projection for 16:9.
 
 Does projection change per frame? YES, it is rebuilt every frame, but it only changes

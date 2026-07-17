@@ -1,4 +1,4 @@
-# Sunbright — PC-Native Port of Super Mario Sunshine (reference/sms + Aurora)
+# Sunbright — PC-Native Port of Super Mario Sunshine (decomp/sms + Aurora)
 
 This file holds **hard rules and pointers only**. Session commentary, "FIXED" narratives, and
 architecture history live in `debug_journal/` and `docs/`. Every rule below is standing —
@@ -8,7 +8,7 @@ don't propose alternatives, don't argue around them.
 
 ## 🏛️ ARCHITECTURE — ONE RUNTIME (2026-07-07; supersedes every Tier/seam-oracle/Path-B doctrine)
 
-**One binary (`sms-boot`), one runtime, one thread.** The `reference/sms` decomp compiles
+**One binary (`sms-boot`), one runtime, one thread.** The `decomp/sms` decomp compiles
 native (`SMS_NATIVE_PLATFORM=1` + `SMS_AURORA=1`) and runs on the **process main thread**.
 Aurora (`extern/aurora`, SDL3 + WebGPU/Dawn) provides the entire GC platform surface: GX
 render, DVD, CARD, PAD/SI, VI, MTX, and host audio out. Aurora is an IO library called from
@@ -44,7 +44,7 @@ inside the game's own frame — it never drives game logic.
 
 **Layout:** `sms-boot/{main.cpp, runtime/, shims/, assets/, boot_stubs/}` — see the header
 of `sms-boot/CMakeLists.txt`. `shims/` holds RE'd game-logic spec headers included by
-`reference/sms`; `boot_stubs/` holds scaffold stubs for unported classes (each one is
+`decomp/sms`; `boot_stubs/` holds scaffold stubs for unported classes (each one is
 porting worklist, replaced as the boot path exercises it).
 
 ⛔ Retired and deleted: the Dolphin submodule and both oracle tiers, the SDL3-GPU Path-B
@@ -57,7 +57,7 @@ scheduler. History: `debug_journal/`, memory `[[aurora-two-path-refactor-2026-07
 Everything is ported to NATIVE C++ — there is no recomp/PPC-execution fallback, and none
 will be reintroduced. The recomp stack (and the "flip" host-layout engine it needed) were
 retired because emitting flip-backed code was intractable; that difficulty is STRUCTURAL,
-not incidental: `reference/sms` is a **decomp** compiled to host layout (LP64, little-endian,
+not incidental: `decomp/sms` is a **decomp** compiled to host layout (LP64, little-endian,
 native vtables), while recompiled PPC needs **guest** layout (32-bit big-endian pointers,
 guest vtables/addresses). Calling recomp'd PPC on a native object requires marshaling every
 field across that boundary = the flip engine = proven impossible. Recomp only worked when the
@@ -65,9 +65,9 @@ WHOLE game ran guest-side under Dolphin (the retired era). Native-only is also R
 the goal — interpolated 60fps (like Dusklight, the TP decomp port on Aurora): the renderer
 interpolates native transforms; recomp'd logic would be opaque and un-interpolatable.
 
-The gaps I hand-port are **decomp gaps** (functions `reference/sms` has no body for) — finite,
+The gaps I hand-port are **decomp gaps** (functions `decomp/sms` has no body for) — finite,
 not infinite. The accelerator is **syncing upstream `doldecomp/sms`** (the `upstream` remote
-on the reference/sms fork) so community-filled bodies land for free, plus RE tooling
+on the decomp/sms fork) so community-filled bodies land for free, plus RE tooling
 (`tools/re/port_dossier.py`). Rendering-affecting code is always native; when a native port
 faithfully reproduces a retail overflow/UB that's benign on PPC but corrupts on host (e.g. a
 4x4 write into a 3x4 buffer), adapt to produce the same OBSERVABLE result without the host
@@ -104,7 +104,7 @@ offending values. **Silent success-shaped stubs are BANNED** (2026-07-10, the JR
 incident: 20 no-op stubs + a stale CMake exclusion left every TEV texmap NULL → black
 screen mimicking legitimate render defects for days): every stub is either a DOCUMENTED
 intentional seam or LOUD — one-time `[STUB-CALLED]` OSReport on first call, OSPanic where
-a wrong result corrupts state. CMake `list(FILTER ... EXCLUDE)` entries on reference/sms
+a wrong result corrupts state. CMake `list(FILTER ... EXCLUDE)` entries on decomp/sms
 sources are part of the same audit surface — an exclusion can keep a later fix dead. Never return nil/0/empty and let it propagate; never no-op an operation
 that callers assume happened (the stubbed OSMessageQueue silently skipping ARAM DMA/SZS
 decode is the canonical local example — and shader/pipeline compile failures MUST panic,

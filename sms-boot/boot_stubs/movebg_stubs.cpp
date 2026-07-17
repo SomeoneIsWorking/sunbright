@@ -5,7 +5,7 @@
 // These are MINIMAL stub definitions whose sole purpose is to satisfy the
 // linker when building libsms-native.a before the real implementations are
 // ported.  Every body returns a neutral value (0 / nullptr / empty) and does
-// nothing.  Functions already defined in reference/sms/src/MoveBG/ are NOT
+// nothing.  Functions already defined in decomp/sms/src/MoveBG/ are NOT
 // redefined here.
 //
 // Symbols covered: the 93 entries in scratch/boot_buckets/movebg.txt
@@ -89,7 +89,7 @@ TCraneRotY::TCraneRotY(const char* name) : TMapObjBase(name) {}
 // ============================================================
 TCraneUpDown::TCraneUpDown(const char* name) : TMapObjBase(name) {}
 
-// TDoor now provided by reference/sms/src/MoveBG/MapObjTown.cpp.
+// TDoor now provided by decomp/sms/src/MoveBG/MapObjTown.cpp.
 
 // ============================================================
 // TFerrisWheel
@@ -142,7 +142,7 @@ THangingBridge::THangingBridge(const char* name) : JDrama::TViewObj(name) {}
 // ============================================================
 THangingBridgeBoard::THangingBridgeBoard(const char* name) : TLeanBlock(name) {}
 
-// THideObjInfo now provided by reference/sms/src/MoveBG/MapObjTown.cpp.
+// THideObjInfo now provided by decomp/sms/src/MoveBG/MapObjTown.cpp.
 
 // ============================================================
 // TIceBlock
@@ -247,7 +247,7 @@ TMapObjTreeScale::TMapObjTreeScale(const char* name) : TMapObjGeneral(name) {}
 // TMapObjWave
 // ============================================================
 // TMapObjWave ctor / load / perform / draw / initDraw are now ported faithfully in
-// reference/sms/src/MoveBG/MapObjWave.cpp (no longer stubbed here).
+// decomp/sms/src/MoveBG/MapObjWave.cpp (no longer stubbed here).
 
 // ============================================================
 // TMareCork
@@ -410,7 +410,7 @@ void TCraneCargo::calc() { SB_STUB_HIT("TCraneCargo::calc"); }
 
 // --- TDamageObj (vtable for TDamageObj) ---
 // Ctor is inline in header.
-// perform lives natively in reference/sms/src/MoveBG/MapObjTown.cpp.
+// perform lives natively in decomp/sms/src/MoveBG/MapObjTown.cpp.
 // [dedup] void TDamageObj::init(u32) {}
 // [dedup] void TDamageObj::load(JSUMemoryInputStream& s) { (void)s; } 
 // --- TFence (vtable for TFence) ---

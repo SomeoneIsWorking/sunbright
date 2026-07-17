@@ -12,7 +12,7 @@ This doc finds every OTHER system that, like the bind shadow, **renders empty/st
 the in-between** because its on-screen output depends on per-frame state produced in a
 phase the in-between skips.
 
-> Sources, all read (not guessed): `reference/sms` decomp + `reference/sms_gmsj01_symbols.txt`
+> Sources, all read (not guessed): `decomp/sms` decomp + `reference/sms_gmsj01_symbols.txt`
 > (JP map — the US build is GMSE01; .sbss deltas are NON-uniform, see §4) +
 > `docs/re_notes/perform_list_architecture.md` (which effect draws in which list/phase) +
 > `docs/re_notes/real_shadow_bindmgr.md` (the template) + the live runtime
@@ -59,7 +59,7 @@ The single clearest other instance of the EXACT shadow pattern.
 
 - **Class & globals:** `TQuestionManager : JDrama::TViewObj`, `gpQuestionManager`
   (JP .sbss `0x8040A368`; US ≈ see §4 — resolve live). Header
-  `reference/sms/include/Strategic/question.hpp`.
+  `decomp/sms/include/Strategic/question.hpp`.
 - **POPULATED (calc &4 phase, via actors):** `TQuestionManager::request()`
   (`question.cpp:25`) appends to `unk1C[unk12]` and `++unk12` (count `unk12`, u16 @ +0x12;
   cap 0x20; request array `unk1C` @ +0x1C, 0x10-byte `TQuestionRequest` entries). Callers

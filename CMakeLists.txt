@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 enable_testing()
 
-# The sole shipping binary: sms-boot — reference/sms decomp compiled native,
+# The sole shipping binary: sms-boot — decomp/sms decomp compiled native,
 # with Aurora (encounter/aurora, SDL3 + WebGPU/Dawn) providing the whole GC
 # platform surface: GX render, DVD (synchronous, nod-backed), CARD, PAD/SI,
 # VI, MTX, and host audio out (aurora::audio). One runtime, one thread — see

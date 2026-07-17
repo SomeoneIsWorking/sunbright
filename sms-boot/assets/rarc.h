@@ -3,7 +3,7 @@
 //
 // GameCube on-disk asset formats are BIG-ENDIAN. The decomp parses them by
 // casting raw file bytes to C structs (e.g. JKRArchive::SArcHeader in
-// reference/sms/include/JSystem/JKernel/JKRArchive.hpp), which silently
+// decomp/sms/include/JSystem/JKernel/JKRArchive.hpp), which silently
 // MISREADS every multi-byte field on a little-endian host. This reader is the
 // native, endian-CORRECT replacement: every multi-byte field is read with
 // explicit big-endian byte assembly (be16/be32) — never struct overlay.

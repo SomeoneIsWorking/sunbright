@@ -5,7 +5,7 @@ effects" class). Port: `runtime/overrides/water_native.cpp` (supersedes the draf
 `water_widescreen.cpp`, now a tombstone). Verification key at the bottom.
 
 Ground truth used: `./build/sunbright-recomp --disasm` on the named addresses +
-`reference/sms` decomp + `reference/sms_gmse01_funcs.txt`. Each claim is tagged
+`decomp/sms` decomp + `reference/sms_gmse01_funcs.txt`. Each claim is tagged
 **[disasm]**, **[decomp]**, or **UNVERIFIED**.
 
 ## 1. The screen capture the water samples (TScreenTexture)
@@ -100,7 +100,7 @@ the game funnels through this one helper. One seam fixes all of them.
 
 ## 3. TModelWaterManager — FLUDD/Mario water droplets (the "spray" water)
 
-`reference/sms/src/Player/ModelWaterManager.cpp`; perform 0x8027beb0 dispatches: **[decomp]**
+`decomp/sms/src/Player/ModelWaterManager.cpp`; perform 0x8027beb0 dispatches: **[decomp]**
 
 | pass | func | aspect-sensitive? |
 |---|---|---|

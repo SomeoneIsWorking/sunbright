@@ -9,7 +9,7 @@ emulation. Verified by ear: `w1stLoad_0.aw` wave 2 IS the boot-jingle sound.
 - `mSound.aaf` — JAudio init data (BST/BSTN/WSYS/IBNK tables). NOT a disc file: it lives
   **inside `/data/nintendo.szs`** (Yaz0-compressed RARC, file name lowercased to
   `msound.aaf`), loaded by `TApplication::initialize_bootAfter` and passed to `MSound`
-  as a pointer (`reference/sms/src/System/Application.cpp:303`).
+  as a pointer (`decomp/sms/src/System/Application.cpp:303`).
 - `/AudioRes/mSound.asn` — sound-ID name table (text), not init data.
 - `/AudioRes/Seqs/sequence.arc` — BMS sequences; `/AudioRes/Streams/title.afc` — streamed DTK.
 

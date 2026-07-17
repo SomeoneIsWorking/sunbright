@@ -1,6 +1,6 @@
 // gx_yscale_test.cpp — unit test from RE for aurora's GXGetNumXfbLines /
 // GXGetYScaleFactor (extern/aurora/lib/dolphin/gx/GXFrameBuffer.cpp), ported
-// 2026-07-14 from the SDK bodies in reference/sms/src/dolphin/gx/GXFrameBuf.c.
+// 2026-07-14 from the SDK bodies in decomp/sms/src/dolphin/gx/GXFrameBuf.c.
 //
 // Why this matters: JDrama::CalcRenderModeXFBHeight computes every render
 // mode's xfbHeight (= GXGetNumXfbLines(efbHeight, GXGetYScaleFactor(...)))

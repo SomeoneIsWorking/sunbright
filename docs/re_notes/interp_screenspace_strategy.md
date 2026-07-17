@@ -2,7 +2,7 @@
 
 How to present SMS's EFB-feedback effects (the plaza water refraction above all) correctly
 when we synthesize an in-between field at 60 fps. Grounded in the vendored decomp at
-`reference/sms/` and the existing notes:
+`decomp/sms/` and the existing notes:
 - `docs/re_notes/vi_xfb_present.md` — single XFB, the two-present alt-address cadence.
 - `docs/re_notes/water_rendering.md` — the screen-texture refraction mechanism.
 - `docs/re_notes/perform_list_architecture.md` — which effect draws in which list/phase.

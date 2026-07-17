@@ -36,10 +36,10 @@ TGuide::TGuide(const char* name)
 void TGuide::setup(JKRMemArchive*) { SB_STUB_HIT("TGuide::setup"); }
 void TGuide::startMoveCursor() { SB_STUB_HIT("TGuide::startMoveCursor"); }
 
-// TPauseMenu2 fully implemented natively in reference/sms/src/GC2D/PauseMenu2.cpp.
+// TPauseMenu2 fully implemented natively in decomp/sms/src/GC2D/PauseMenu2.cpp.
 
 // TSunGlass + TSunShine load/loadAfter/perform live natively in
-// reference/sms/src/GC2D/SunGlass.cpp — no stubs needed here.
+// decomp/sms/src/GC2D/SunGlass.cpp — no stubs needed here.
 
 // TTalk2D2 — inherits JDrama::TViewObj; 3 pure non-virtuals + 3 overrides.
 TTalk2D2::TTalk2D2(const char* name)
@@ -83,7 +83,7 @@ TBathWaterManager::TBathWaterManager()
 }
 
 // setMtx / TMapWireActor statics / TPollutionLayer methods now live natively
-// in reference/sms (upstream 2026-07 sync).
+// in decomp/sms (upstream 2026-07 sync).
 
 // ─── Strategic ────────────────────────────────────────────────────────────────
 
@@ -104,13 +104,13 @@ TMarioGamePad::~TMarioGamePad() {}
 
 // (TMarioGamePad::mResetFlag is defined in MarioGamePad.cpp — not stubbed, was over-reach.)
 
-// TSelectDir is now faithfully reconstructed in reference/sms/src/GC2D/SelectDir.cpp
+// TSelectDir is now faithfully reconstructed in decomp/sms/src/GC2D/SelectDir.cpp
 // (file-select port). The stub here is removed so the real implementation links.
 
 // ─── MarioUtil / Shadow ───────────────────────────────────────────────────────
 
 // TMBindShadowManager ctor + forceRequest/request live natively in
-// reference/sms/src/MarioUtil/ShadowUtil.cpp — no stub needed here.
+// decomp/sms/src/MarioUtil/ShadowUtil.cpp — no stub needed here.
 
 // ─── Player ───────────────────────────────────────────────────────────────────
 

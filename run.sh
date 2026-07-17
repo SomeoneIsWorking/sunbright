@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Launch sms-boot — the Super Mario Sunshine PC port (reference/sms + Aurora).
+# Launch sms-boot — the Super Mario Sunshine PC port (decomp/sms + Aurora).
 #
 # Usage:
 #   ./run.sh [rom.rvz]        # ROM also via $SUNBRIGHT_ROM, .env, or rom.rvz drop-in

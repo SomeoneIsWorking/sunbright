@@ -1,5 +1,5 @@
 // wave_grid_test — spec-derived unit test for the TMapObjWave grid/wave port
-// (reference/sms/src/MoveBG/MapObjWave.cpp), the pure math extracted into
+// (decomp/sms/src/MoveBG/MapObjWave.cpp), the pure math extracted into
 // native/render/sms_boot_wave_grid.h and CALLED BY the shipping load()/draw()/
 // updateTime()/getWaveHeight() so a broken test flags a real regression.
 //

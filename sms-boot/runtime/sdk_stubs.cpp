@@ -49,7 +49,7 @@ void OSWaitCond(OSCond*, OSMutex*) {}
 // PC engine is single-threaded. OS threading primitives are pure no-ops; the
 // game's OSCreateThread/OSResumeThread callsites decide synchronously whether
 // to run the target function directly (setup threads) or skip it (worker
-// loop bodies that block on OSReceiveMessage). See reference/sms callsites
+// loop bodies that block on OSReceiveMessage). See decomp/sms callsites
 // under SMS_NATIVE_PLATFORM.
 void OSInitThreadQueue(OSThreadQueue*) {}
 void OSSleepThread(OSThreadQueue*) {}
@@ -221,7 +221,7 @@ void GXReadPixMetric(u32* a, u32* b, u32* c, u32* d, u32* e, u32* f) {
     if (e) *e = 0; if (f) *f = 0;
 }
 // GXEnableBreakPt/GXDisableBreakPt: INTENTIONAL SEAM, already documented at the
-// callsite (reference/sms/src/System/DrawSyncManager.cpp:124) — single-threaded/
+// callsite (decomp/sms/src/System/DrawSyncManager.cpp:124) — single-threaded/
 // synchronous rendering has no async GP FIFO to breakpoint against.
 void GXEnableBreakPt(void*) {}
 void GXDisableBreakPt(void) {}
@@ -275,10 +275,10 @@ void GXInitTexCacheRegion(GXTexRegion*, GXBool, u32, GXTexCacheSize, u32, GXTexC
 
 // ---- THP (movie playback) — MOVIE-SKIP SEAM -------------------------------
 // The THP video/audio decode+render arc (JPEG-DCT frame decode, VI-retrace
-// pump, GX texture upload — reference/sms/src/THPPlayer/THPPlayer.c, EXCLUDED
+// pump, GX texture upload — decomp/sms/src/THPPlayer/THPPlayer.c, EXCLUDED
 // from the native build in CMakeLists.txt) is not ported. This is a minimal
 // state machine that fakes an INSTANTLY-FINISHED movie so
-// TMovieDirector::direct() (reference/sms/src/System/MovieDirector.cpp)
+// TMovieDirector::direct() (decomp/sms/src/System/MovieDirector.cpp)
 // takes its own, already-ported, real end-of-playback branch instead of
 // spinning forever in STATE_PLAYING waiting for a frame count that will
 // never advance. DELETE this whole block (and the sThp* statics) once the
@@ -379,7 +379,7 @@ void THPPlayerSetVolume(s32, s32) {}
 } // extern "C"
 
 // ---- J3DGD/JRN* (decomp's GD-buffer + Ninja-renderer BP-register writers) ----
-// Real bodies now built natively from reference/sms/src/JSystem/JRenderer.cpp
+// Real bodies now built natively from decomp/sms/src/JSystem/JRenderer.cpp
 // (sms-boot/CMakeLists.txt no longer excludes it — see the comment there,
 // 2026-07-10: these no-op stubs were silently dropping the ENTIRE J3D
 // material BP-register stream, including JRNISetTevOrder's TREF write,
@@ -433,7 +433,7 @@ void JUTException::waitTime(int) {}
 void JUTException::readPad(unsigned int* a, unsigned int* b) { if (a) *a = 0; if (b) *b = 0; }
 
 // ---- sb_* capture no-ops still referenced by SMS_NATIVE_PLATFORM branches in
-// reference/sms (retired Path-B capture hooks; removing those callsites
+// decomp/sms (retired Path-B capture hooks; removing those callsites
 // upstream retires these too) ----
 // sb_boot_capture_set_phase / sb_boot_capture_phase moved to phase_track.cpp (real per-frame
 // phase tracker restoring the [dbhead]/[mapxlu] diagnostics; the old stub here silently

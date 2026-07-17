@@ -7,7 +7,7 @@ draw array (`this+0x1C` / count `this+0x20`). **That fix was implemented
 *render technique* of the cast shadow (which `real_shadow_bindmgr.md` never characterised — it
 only RE'd the data plumbing) and explains why a geometry-only restore is insufficient.
 
-> Source caveat: `reference/sms/src/MarioUtil/ShadowUtil.cpp` is empty in the decomp. Everything
+> Source caveat: `decomp/sms/src/MarioUtil/ShadowUtil.cpp` is empty in the decomp. Everything
 > below is from GMSE01 disassembly via
 > `./build/sunbright-recomp "$SUNBRIGHT_ROM" --disasm <addr> <n>`, cross-checked against
 > `reference/sms_gmse01_funcs.txt`, the class header, and `MarDirectorDirect.cpp` / `JDREfbCtrl.cpp`.

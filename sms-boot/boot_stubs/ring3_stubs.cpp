@@ -33,7 +33,7 @@ void TAmiKing::moveObject() { SB_STUB_HIT("TAmiKing::moveObject"); }
 void TAmiKing::touchPlayer(THitActor*) { SB_STUB_HIT("TAmiKing::touchPlayer"); }
 void TAnimalBase::calcRootMatrix() { SB_STUB_HIT("TAnimalBase::calcRootMatrix"); }
 void TAnimalBase::init(TLiveManager*) { SB_STUB_HIT("TAnimalBase::init"); }
-// TAnimalBase::loadAfter now PORTED in reference/sms/src/Animal/AnimalBase.cpp (RE'd 2026-07-17).
+// TAnimalBase::loadAfter now PORTED in decomp/sms/src/Animal/AnimalBase.cpp (RE'd 2026-07-17).
 void TAnimalBase::perform(unsigned int, JDrama::TGraphics*) { SB_STUB_HIT("TAnimalBase::perform"); }
 BOOL TAnimalBase::receiveMessage(THitActor*, unsigned int) { SB_STUB_HIT("TAnimalBase::receiveMessage"); return 0; }
 void TAreaCylinder::perform(unsigned int, JDrama::TGraphics*) { SB_STUB_HIT("TAreaCylinder::perform"); }
@@ -58,7 +58,7 @@ void TCogwheel::initMapObj() { SB_STUB_HIT("TCogwheel::initMapObj"); }
 void TCogwheelScale::control() { SB_STUB_HIT("TCogwheelScale::control"); }
 BOOL TCogwheelScale::receiveMessage(THitActor*, unsigned int) { SB_STUB_HIT("TCogwheelScale::receiveMessage"); return 0; }
 void TCogwheelScale::touchPlayer(THitActor*) { SB_STUB_HIT("TCogwheelScale::touchPlayer"); }
-// TCoverFruit::calcRootMatrix now PORTED in reference/sms/src/MoveBG/MapObjBall.cpp (RE'd 2026-07-17).
+// TCoverFruit::calcRootMatrix now PORTED in decomp/sms/src/MoveBG/MapObjBall.cpp (RE'd 2026-07-17).
 BOOL TCoverFruit::receiveMessage(THitActor*, unsigned int) { SB_STUB_HIT("TCoverFruit::receiveMessage"); return 0; }
 void TCraneRotY::control() { SB_STUB_HIT("TCraneRotY::control"); }
 void TCraneRotY::load(JSUMemoryInputStream&) { SB_STUB_HIT("TCraneRotY::load"); }
@@ -99,14 +99,14 @@ void TMammaYacht::initMapObj() { SB_STUB_HIT("TMammaYacht::initMapObj"); }
 // [dedup] void TManhole::appeared() {}
 // [dedup] void TManhole::calc() {}
 // [dedup] void TManhole::setGroundCollision() {}
-// TMapObjBall::calcCurrentMtx now PORTED in reference/sms/src/MoveBG/MapObjBall.cpp (RE'd 2026-07-17).
+// TMapObjBall::calcCurrentMtx now PORTED in decomp/sms/src/MoveBG/MapObjBall.cpp (RE'd 2026-07-17).
 void TMapObjBall::checkWallCollision(JGeometry::TVec3<float>*) { SB_STUB_HIT("TMapObjBall::checkWallCollision"); }
 void TMapObjBall::control() { SB_STUB_HIT("TMapObjBall::control"); }
 void TMapObjBall::hold(TTakeActor*) { SB_STUB_HIT("TMapObjBall::hold"); }
-// TMapObjBall::initMapObj now PORTED in reference/sms/src/MoveBG/MapObjBall.cpp (RE'd 2026-07-17).
+// TMapObjBall::initMapObj now PORTED in decomp/sms/src/MoveBG/MapObjBall.cpp (RE'd 2026-07-17).
 void TMapObjBall::kicked() { SB_STUB_HIT("TMapObjBall::kicked"); }
 void TMapObjBall::makeObjAppeared() { SB_STUB_HIT("TMapObjBall::makeObjAppeared"); }
-// TMapObjBall::makeObjDefault now PORTED in reference/sms/src/MoveBG/MapObjBall.cpp (RE'd 2026-07-17).
+// TMapObjBall::makeObjDefault now PORTED in decomp/sms/src/MoveBG/MapObjBall.cpp (RE'd 2026-07-17).
 void TMapObjBall::put() { SB_STUB_HIT("TMapObjBall::put"); }
 void TMapObjBall::rebound(JGeometry::TVec3<float>*) { SB_STUB_HIT("TMapObjBall::rebound"); }
 void TMapObjBall::touchActor(THitActor*) { SB_STUB_HIT("TMapObjBall::touchActor"); }
@@ -126,7 +126,7 @@ void TMapObjPuncher::load(JSUMemoryInputStream&) { SB_STUB_HIT("TMapObjPuncher::
 // [dedup] BOOL TMapObjSwitch::receiveMessage(THitActor*, unsigned int) { return 0; }
 f32 TMapObjTree::getRadiusAtY(float) const { SB_STUB_HIT("TMapObjTree::getRadiusAtY"); return 0; }
 // [ported] TMapObjTree::initMapObj + initEach + TMapObjLeaf ctor now live in
-// reference/sms/src/MoveBG/MapObjTree.cpp (cold RE of US 0x801f68b4/0x801f6a64/
+// decomp/sms/src/MoveBG/MapObjTree.cpp (cold RE of US 0x801f68b4/0x801f6a64/
 // 0x801f6ef4, 2026-07-15).
 void TMapObjTreeScale::control() { SB_STUB_HIT("TMapObjTreeScale::control"); }
 u32 TMapObjTreeScale::touchWater(THitActor*) { SB_STUB_HIT("TMapObjTreeScale::touchWater"); return 0; }
@@ -210,11 +210,11 @@ void TGuide::load(JSUMemoryInputStream& stream)
 	JDrama::TViewObj::load(stream); // read NameRef header so search("ガイド画面") finds it
 	SMSMountAramArchive(gpMarDirector->unkD8, gArBkGuide);
 }
-// TMBindShadowManager::load lives natively in reference/sms/src/MarioUtil/ShadowUtil.cpp
-// TPauseMenu2::load now provided natively in reference/sms/src/GC2D/PauseMenu2.cpp.
+// TMBindShadowManager::load lives natively in decomp/sms/src/MarioUtil/ShadowUtil.cpp
+// TPauseMenu2::load now provided natively in decomp/sms/src/GC2D/PauseMenu2.cpp.
 
 // ring-4: last vtable-slot virtuals for the 3 misc classes (perform/loadAfter).
 void TGuide::perform(unsigned int, JDrama::TGraphics*) { SB_STUB_HIT("TGuide::perform"); }
-// TMBindShadowManager::perform lives natively in reference/sms/src/MarioUtil/ShadowUtil.cpp
+// TMBindShadowManager::perform lives natively in decomp/sms/src/MarioUtil/ShadowUtil.cpp
 // [dedup] void TPauseMenu2::loadAfter() {}
 // [dedup] void TPauseMenu2::perform(unsigned int, JDrama::TGraphics*) {} 

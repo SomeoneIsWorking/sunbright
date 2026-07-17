@@ -6,7 +6,7 @@ it **flickers on the in-between field**, on ground and water in sync. This is NO
 refraction/reflection (`drawRefracAndSpec`) — that is a separate effect and is not the
 subject here.
 
-All file:line refer to the vendored decomp `reference/sms/`; addresses are GMSE01
+All file:line refer to the vendored decomp `decomp/sms/`; addresses are GMSE01
 (`reference/sms_gmse01_funcs.txt`). The renderer facts are verified against our actual
 renderer, Dolphin's `VertexShaderGen.cpp` (we own that fork), not from memory.
 

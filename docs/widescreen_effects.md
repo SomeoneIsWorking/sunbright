@@ -13,7 +13,7 @@ w/6+1 per side. Do NOT use a leaky "inside effect X" flag on a hot global hook
 (GXLoadPosMtxImm): the tail-recursive scene draw leaks it (reverted TSunGlass attempt,
 note in scene_render.cpp).
 
-## Inventory (from reference/sms decomp) and status
+## Inventory (from decomp/sms decomp) and status
 
 | Effect | Guest func | Status |
 |---|---|---|

@@ -1,7 +1,7 @@
 # Stage GX-light load — TLightCommon::setLight (RE'd 2026-06-30)
 
 The real SMS stage-light GX load, decompiled from the US DOL (GMSE01) because the community
-decomp (`reference/sms` MarioUtil/LightUtil.cpp) left `TLightCommon::setLight`, `getLightColor`,
+decomp (`decomp/sms` MarioUtil/LightUtil.cpp) left `TLightCommon::setLight`, `getLightColor`,
 `getLightPosition`, `getAmbColor`, `loadAfter`, `perform` as **empty stubs**. This is the function
 that actually loads the stage's GX lights — NOT the JDrama `TLightMap`/`TActor::issueGXLight` path
 (both inert for the option scene) and NOT the `TLightAry` "Light Group" (that's just the palette).

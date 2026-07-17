@@ -26,7 +26,7 @@ stop/volume/pan/...     ── override ──▶   handle ops          voice pa
                                           │  via DiscIO (mSound.aaf from nintendo.szs: WSYS,
                                           │  IBNK; Banks/*.aw; Seqs/sequence.arc BMS; .asn)
                                           ├─ sequencer: port of JASSeqParser/TTrack semantics
-                                          │  (decomp reference/sms/src/JSystem/JAudio)
+                                          │  (decomp decomp/sms/src/JSystem/JAudio)
                                           ├─ synth: instruments (IBNK) → voices: AFC decode
                                           │  (port of tools/jingle/jingle.py, already correct),
                                           │  pitch from key/rate, ADSR envelopes, pan/dolby
@@ -159,7 +159,7 @@ HardStream/THP audio: keep current path (it WORKS — it is what has been audibl
    removed from the audio chain; Dolphin DSPHLE unused.
 
 ## Ground rules
-- Reference implementation is the decomp (reference/sms/src/JSystem/JAudio) — port semantics,
+- Reference implementation is the decomp (decomp/sms/src/JSystem/JAudio) — port semantics,
   not emulate hardware. The oracle (DISABLE_RECOMP, with the pass-through guard) is the
   behavioral test: same scene, compare WAV pitch/envelope profiles.
 - Data parsing in C++ mirrors tools/jingle/jingle.py exactly (it is the verified decoder).

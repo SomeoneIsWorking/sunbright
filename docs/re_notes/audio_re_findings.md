@@ -5,7 +5,7 @@ CLAUDE.md ("OPEN (quantified, post-fix)"). Ground-truth chain used throughout:
 
 1. **Binary disassembly** (`sunbright-recomp --disasm`, addresses from
    `reference/sms_gmse01_funcs.txt`) — final authority.
-2. **reference/sms decomp** — used as a map; its `TInstParam` field NAMES were verified
+2. **decomp/sms decomp** — used as a map; its `TInstParam` field NAMES were verified
    against the binary frame offsets below (they are correct; an earlier session's claim
    that they were crossed is itself wrong — see §2.3).
 3. **Parsed ROM data** (`SUNBRIGHT_DUMP_IBNK` → `scratch/logs/ibnk_dump.txt`, plus a
@@ -122,7 +122,7 @@ instrument data as the cause of defect 2/3.)
 | +0x38 | fixed-pitch flag | skips the C5BASE key-scaling |
 | +0x3A | direct release | `directReleaseOsc(0, …)` |
 
-This MATCHES the reference/sms decomp's field names (`unk10`=vol, `unk14`=pitch,
+This MATCHES the decomp/sms decomp's field names (`unk10`=vol, `unk14`=pitch,
 target0→`unk18` vol, target1→`unk1C` pitch). The native source comment claiming the
 decomp crossed these ("target 0 is VOLUME, target 1 is PITCH … decomp reads unk18 in
 both spots") reached the right effect-target mapping but for the wrong reason: the
@@ -226,7 +226,7 @@ noteOn/-request drop (`no-worker`, `expired`, `cap-steal`, `lifeTime`, `no-voice
 `wave-missing`, `no-inst`) dumped via `/njas`, run the standard A/B scene, and join the
 oracle-only hash list against the reject log. Fix whichever bucket dominates — most
 likely replacing the cap/lifeTime constants with the real JAIBasic per-category logic
-(`reference/sms/src/JSystem/JAudio/JAInterface`), which is also the M4 direction.
+(`decomp/sms/src/JSystem/JAudio/JAInterface`), which is also the M4 direction.
 
 ---
 

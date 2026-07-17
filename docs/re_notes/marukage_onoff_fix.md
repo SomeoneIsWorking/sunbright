@@ -7,7 +7,7 @@ in-between field — a clean on/off blink, not a position swim.** The `&0x10` te
 instrument-confirmed to fire on BOTH fields. So the SETUP is not the problem; the **receiving
 draw that paints the shadow pixels is missing on the in-between**.
 
-All file:line are `reference/sms/`; addresses GMSE01 (`reference/sms_gmse01_funcs.txt`).
+All file:line are `decomp/sms/`; addresses GMSE01 (`reference/sms_gmse01_funcs.txt`).
 Runtime: `runtime/overrides/interp_redraw.cpp`, `interp_capture.cpp`, `runtime/interp60.h`.
 
 ---

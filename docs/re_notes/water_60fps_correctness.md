@@ -8,7 +8,7 @@ lot and read as FLICKER (not smooth motion). User goal: 60 fps graphics / 30 fps
 and the water must be a correct 60 fps midpoint like the opaque scene — NOT a 30 fps
 fallback.
 
-All addresses GMSE01 (`reference/sms_gmse01_funcs.txt`); file:line into `reference/sms/`.
+All addresses GMSE01 (`reference/sms_gmse01_funcs.txt`); file:line into `decomp/sms/`.
 Runtime: `runtime/overrides/interp_redraw.cpp`, `interp_capture.cpp`. Cross-refs:
 `water_rendering.md`, `water_shadow_determinism.md`, `direct_draw_flow.md`,
 `j3d_draw_pipeline.md`, `interp_screenspace_strategy.md`.

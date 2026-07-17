@@ -4,7 +4,7 @@
 // that DON'T depend on GX / j3dSys / gpMap. Lets a unit test hand-derive expected values from RE
 // (Ghidra decompile in scratch/decomp_shadow/) without a ROM or GPU.
 //
-// The header intentionally mirrors the semantics of `reference/sms/src/MarioUtil/ShadowUtil.cpp`
+// The header intentionally mirrors the semantics of `decomp/sms/src/MarioUtil/ShadowUtil.cpp`
 // so the test validates the SHIPPING function, not a fork.
 
 #pragma once

@@ -3,7 +3,7 @@
 Decoded 2026-06-12 from the GMSE01 binary via `sunbright-recomp --disasm` plus a
 paired-single operand decoder (`scratch/psdec.py`, opcode-4 field extraction —
 needed because PS operand fields are unreadable by eye). Source reference:
-`reference/sms/src/PowerPC_EABI_Support/Msl/MSL_C/MSL_Common_Embedded/Math/Single_precision/trigf.c`.
+`decomp/sms/src/PowerPC_EABI_Support/Msl/MSL_C/MSL_Common_Embedded/Math/Single_precision/trigf.c`.
 Ports live in `runtime/overrides/native_math.cpp` with SUNBRIGHT_MATH_SHADOW blocks.
 
 ## sinf @ 0x8033c7e4, cosf @ 0x8033c650  — VERIFIED against disasm line-by-line

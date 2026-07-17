@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Decode /data/PerformLists.bin (the GC disc's perform-list data file) per the exact
 TNameRef::genObject + TPerformList::load wire format used by
-reference/sms/src/JSystem/JDrama/JDRNameRef.cpp, JDRViewObjPtrList.hpp, System/PerformList.cpp.
+decomp/sms/src/JSystem/JDrama/JDRNameRef.cpp, JDRViewObjPtrList.hpp, System/PerformList.cpp.
 
 This is ground truth for "what order does the disc specify" questions -- e.g. whether
 mPerformListGX's mirror-camera/mirror-scene entries precede its world-camera/DrawBuf-draw

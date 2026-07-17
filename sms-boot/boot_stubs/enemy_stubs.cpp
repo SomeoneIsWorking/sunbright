@@ -2,11 +2,11 @@
 //
 // These are minimal stub definitions that exist ONLY to satisfy the linker
 // while the native engine boots.  None of these bodies implement real behavior;
-// the real implementations either come from the decomp src (reference/sms/src/)
+// the real implementations either come from the decomp src (decomp/sms/src/)
 // or will be ported as PC-native overrides later.
 //
 // Symbols covered: the 37 undefined symbols listed in scratch/boot_buckets/enemy.txt
-// that are NOT already defined in the decomp src tree (reference/sms/src/).
+// that are NOT already defined in the decomp src tree (decomp/sms/src/).
 //
 // Symbols already in decomp src (NOT stubbed here, would be ODR violations):
 //   TEffectBiancoFunsui::loadAfter / emitEffect  (effectObj.cpp)
@@ -111,7 +111,7 @@ TOneShotGenerator::TOneShotGenerator(const char* name)
 
 // ---------------------------------------------------------------------------
 // Gesso — TLandGesso and TSurfGesso ctors
-// (TGesso methods are in reference/sms/src/Enemy/gesso.cpp)
+// (TGesso methods are in decomp/sms/src/Enemy/gesso.cpp)
 // ---------------------------------------------------------------------------
 #include <Enemy/Gesso.hpp>
 
@@ -128,16 +128,16 @@ TSurfGesso::TSurfGesso(const char* name)
 // ---------------------------------------------------------------------------
 // MapObjBase — virtual method bodies
 // (TMapObjBase::TMapObjBase ctor + receiveMessage + getRootJointMtx are in
-//  reference/sms/src/MoveBG/MapObjBase.cpp; everything else is stubbed here)
+//  decomp/sms/src/MoveBG/MapObjBase.cpp; everything else is stubbed here)
 // ---------------------------------------------------------------------------
 #include <MoveBG/MapObjBase.hpp>
 
 void TMapObjBase::appear() { SB_STUB_HIT("TMapObjBase::appear"); }
-// calc/draw/dead now defined in reference/sms/src/MoveBG/MapObjBase.cpp
+// calc/draw/dead now defined in decomp/sms/src/MoveBG/MapObjBase.cpp
 // alongside the perform() port (all four are byte-exact `blr` in the
 // binary — empty stubs for vtable slot fill).
 void TMapObjBase::getDepthAtFloating() { SB_STUB_HIT("TMapObjBase::getDepthAtFloating"); }
-// getHitObjNumMax / kill / loadBeforeInit now PORTED in reference/sms/src/MoveBG/MapObjBase.cpp
+// getHitObjNumMax / kill / loadBeforeInit now PORTED in decomp/sms/src/MoveBG/MapObjBase.cpp
 // (RE'd 2026-07-17: return 5 / makeObjDead() / empty — via US vtable slot analysis).
 f32 TMapObjBase::getRadiusAtY(f32) const { SB_STUB_HIT("TMapObjBase::getRadiusAtY"); return 0.f; }
 MtxPtr TMapObjBase::getTakingMtx() { SB_STUB_HIT("TMapObjBase::getTakingMtx"); return nullptr; }
@@ -217,4 +217,4 @@ TStageEnemyInfo::TStageEnemyInfo()
 }
 
 // TMBindShadowBody ctor + entryDrawShadow live natively in
-// reference/sms/src/MarioUtil/ShadowUtil.cpp — no stub needed here.
+// decomp/sms/src/MarioUtil/ShadowUtil.cpp — no stub needed here.

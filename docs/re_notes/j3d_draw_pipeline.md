@@ -1,6 +1,6 @@
 # J3D model draw / transform pipeline (RE for 60 fps interpolation)
 
-Reverse-engineered from `reference/sms/` (doldecomp/sms). Addresses from
+Reverse-engineered from `decomp/sms/` (doldecomp/sms). Addresses from
 `reference/sms_gmse01_funcs.txt`. This documents exactly what produces a model's
 on-screen transform, what RAM buffer the GPU reads, and the per-frame state an
 in-between re-issue must respect. It backs the substrate in

@@ -1,7 +1,7 @@
 # THP movie player state machine (GMSE01 USA)
 
 Decomp research notes for the port. The THP-transition NULL-deref (open bug)
-and FMV pacing live here. Sources: `reference/sms/src/THPPlayer/*` (SMS ships a
+and FMV pacing live here. Sources: `decomp/sms/src/THPPlayer/*` (SMS ships a
 *modified* Nintendo THPSimple library — see "SMS modifications") + USA map
 (this library IS named in `reference/sms_gmse01_funcs.txt`) + spot disasm.
 

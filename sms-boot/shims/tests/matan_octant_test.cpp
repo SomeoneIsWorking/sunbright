@@ -1,5 +1,5 @@
 // matan_octant_test — close-test for the matan (octant-reduced atan2) port in
-// reference/sms/src/MarioUtil/MathUtil.cpp (retail @0x8022ae08).
+// decomp/sms/src/MarioUtil/MathUtil.cpp (retail @0x8022ae08).
 //
 // NAMED defect (2026-07-16): a prior "OOB fix" rewrite of matan used the wrong
 // octant offset in the (param_1<0, param_2>=0, |param_1|>=param_2) branch —

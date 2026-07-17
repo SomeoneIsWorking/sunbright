@@ -7,7 +7,7 @@
 // pointer in the chain must be non-null for the call to happen; the predicate names those
 // gates so the test can walk every combination.
 //
-// Called by the shipping port (reference/sms/src/Map/BathWaterManager.cpp) so the test
+// Called by the shipping port (decomp/sms/src/Map/BathWaterManager.cpp) so the test
 // validates the real function.
 
 #pragma once

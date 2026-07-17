@@ -14,7 +14,7 @@ instruments: the NEW `/perflists` probe (this commit, `runtime/overrides/perflis
 and the EXISTING GX capture (`runtime/gx_stream.*` / `runtime/gx_parse.*`, already wired into
 `interp_redraw.cpp`).
 
-All file:line refer to `reference/sms/`; addresses GMSE01 (`reference/sms_gmse01_funcs.txt`),
+All file:line refer to `decomp/sms/`; addresses GMSE01 (`reference/sms_gmse01_funcs.txt`),
 data globals from GMSJ (`reference/sms_gmsj01_symbols.txt`, US deltas possible).
 
 ---

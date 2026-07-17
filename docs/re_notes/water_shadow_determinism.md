@@ -15,7 +15,7 @@ OTHER per-field-varying input to the water-surface draw and the shadow draw, and
 shared cause that survives both fixes.
 
 All addresses are GMSE01 (`reference/sms_gmse01_funcs.txt`); file:line refer to
-`reference/sms/`. Classifications: **(i) constant**, **(ii) camera/matrix-derived**
+`decomp/sms/`. Classifications: **(i) constant**, **(ii) camera/matrix-derived**
 (interpolated, fine), **(iii) EFB-sourced** (varies because the in-between EFB holds the
 interpolated scene), **(iv) frame-counter / calc-phase-sourced** (frozen on the in-between
 → juddery if it should move, or desynced if double-advanced).
@@ -24,7 +24,7 @@ interpolated scene), **(iv) frame-counter / calc-phase-sourced** (frozen on the 
 
 ## 1. `TModelWaterManager::drawRefracAndSpec` (0x8027c12c) — every input
 
-Source: `reference/sms/src/Player/ModelWaterManager.cpp:1442`. Called from `perform`'s
+Source: `decomp/sms/src/Player/ModelWaterManager.cpp:1442`. Called from `perform`'s
 `& 0x80` (post) phase (`:1584`). The three sub-passes each gate on a surface flag
 (`unk5D60`, a constant `367 = 0x16F`, set at `:148`): refraction (`& 2`, `:1503`),
 water-color (`& 4`, `:1521`), specular sparkle (`& 8`, `:1537`).

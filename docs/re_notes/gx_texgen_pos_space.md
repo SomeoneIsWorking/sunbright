@@ -10,13 +10,13 @@ matrix?
 
 Sources cited are in-repo: Dolphin's XF/texgen emulation under
 `externals/dolphin/Source/Core/VideoCommon/` and the SMS GX library under
-`reference/sms/src/dolphin/gx/`. Read, not guessed.
+`decomp/sms/src/dolphin/gx/`. Read, not guessed.
 
 ---
 
 ## 1. What vector does the texmtx multiply for GX_TG_POS / NRM / BINRM?
 
-### GC hardware side — `GXSetTexCoordGen2` (`reference/sms/src/dolphin/gx/GXAttr.c:520`)
+### GC hardware side — `GXSetTexCoordGen2` (`decomp/sms/src/dolphin/gx/GXAttr.c:520`)
 
 The source param is encoded into two XF fields, `row` (the texgen **source row**) and
 `form` (the **input form**):

@@ -3,14 +3,14 @@
 Native port: `runtime/overrides/native_gx.cpp`. Census source:
 `scratch/logs/call_census.tsv` (dispatched calls per run). Ground truth per
 function: GMSE01 disasm (`sunbright-recomp --disasm <addr>`), cross-checked
-instruction-for-instruction against `reference/sms/src/dolphin/gx/GXTev.c` /
+instruction-for-instruction against `decomp/sms/src/dolphin/gx/GXTev.c` /
 `GXBump.c` (decomp matched exactly on every function below) and Dolphin's
 `externals/dolphin/Source/Core/VideoCommon/BPMemory.h` for register names.
 
 ## Common machinery (VERIFIED in disasm of every function below)
 
 - **`gx` state-block pointer**: SDA load `lwz rX, -0x72F8(r13)` → guest global
-  `struct __GXData_struct* gx` (layout: `reference/sms/src/dolphin/gx/__gx.h`,
+  `struct __GXData_struct* gx` (layout: `decomp/sms/src/dolphin/gx/__gx.h`,
   offsets below confirmed in disasm).
 - **BP register write sequence** (`GX_WRITE_BP_REG`): byte `0x61`
   (GX_LOAD_BP_REG) then the 32-bit register value, both stored to the

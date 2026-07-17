@@ -8,7 +8,7 @@
 # gameplay produced a fake fidelity Δ.
 #
 # Native side: build-native/sms-boot + SB_STAGE=1 SB_SCENARIO=0 fastboot. Native's own fastboot
-# (reference/sms/src/System/Application.cpp:572) skips the intro cutscene flags and jumps
+# (decomp/sms/src/System/Application.cpp:572) skips the intro cutscene flags and jumps
 # straight to APP_STATE_GAMEPLAY on frame 0 — no savestate mechanism needed here (and none
 # exists yet for sms-boot). SB_FRAME_DUMP_START=3000 gives it wall time to reach the settled
 # gameplay render (frames >=3000 are byte-identical, so any specific start ≥3000 works).

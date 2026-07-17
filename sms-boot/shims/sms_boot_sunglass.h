@@ -4,7 +4,7 @@
 // or the game-pad. Lets a unit test hand-derive expected values from the RE (Ghidra decompile at
 // scratch/decomp_sunglass/8017d264.c) without a ROM or GPU.
 //
-// The shipping reference/sms/src/GC2D/SunGlass.cpp calls into these helpers so the test validates
+// The shipping decomp/sms/src/GC2D/SunGlass.cpp calls into these helpers so the test validates
 // the SAME function the game uses.
 
 #pragma once

@@ -1,6 +1,6 @@
 // main.cpp — sms-boot entry point. ONE runtime, ONE thread.
 //
-// The game (reference/sms decomp, SMS_NATIVE_PLATFORM=1) runs on the process
+// The game (decomp/sms decomp, SMS_NATIVE_PLATFORM=1) runs on the process
 // main thread — no game std::thread, no OSThread emulation, no cooperative
 // scheduler. Aurora is an IO library called from inside the game's own frame:
 // the per-frame present/pump/pace seam is sb_frame_present(), reached from
@@ -28,7 +28,7 @@ extern TApplication gpApplication;
 // FIFO through aurora and dump the frame(s), instead of booting the game.
 extern "C" int sb_fifo_replay_run(const char* dffPath);  // runtime/fifo_player.cpp
 
-// JKRHeap host-vs-JKR routing (reference/sms/src/JSystem/JKernel/JKRHeap.cpp):
+// JKRHeap host-vs-JKR routing (decomp/sms/src/JSystem/JKernel/JKRHeap.cpp):
 // plain `new` on a thread not marked as THE game thread falls back to host
 // malloc. The main thread is marked just before game code starts; host-side
 // work inside the frame/DVD seams runs under sb_host_alloc_push/pop.

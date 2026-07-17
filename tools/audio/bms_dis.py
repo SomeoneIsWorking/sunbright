@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """BMS (JAudio sequence) disassembler — semantics ported from the SMS decomp
-JASSeqParser::mainProc / Cmd_Process / Arglist (reference/sms/src/JSystem/JAudio).
+JASSeqParser::mainProc / Cmd_Process / Arglist (decomp/sms/src/JSystem/JAudio).
 
 Usage: bms_dis.py <file> [start_offset_hex] [--max N]
 Traces reachable code via BFS from the start offset, following jmp/call/opentrack.

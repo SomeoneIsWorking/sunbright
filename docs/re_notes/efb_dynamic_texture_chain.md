@@ -3,7 +3,7 @@
 Pins down the exact mechanism behind the "renders on real fields, absent/different on the
 in-between" flicker class that the user attributes to "a chain that renders a DYNAMIC TEXTURE
 on top of an existing object." All addresses are GMSE01 (`reference/sms_gmse01_funcs.txt`);
-file:line refer to the vendored decomp at `reference/sms/`.
+file:line refer to the vendored decomp at `decomp/sms/`.
 
 Builds on (do not re-derive — read these first):
 - `docs/re_notes/water_rendering.md` — the screen-texture refraction mechanism.
@@ -44,8 +44,8 @@ stable. The candidate override below (`runtime/overrides/efb_interp_freeze.cpp`,
 
 ## 1. `TEfbCtrlTex` — the shared primitive, its field layout and copy code
 
-Source: `reference/sms/src/JSystem/JDrama/JDREfbCtrl.cpp`,
-header `reference/sms/include/JSystem/JDrama/JDREfbCtrl.hpp`. Class chain:
+Source: `decomp/sms/src/JSystem/JDrama/JDREfbCtrl.cpp`,
+header `decomp/sms/include/JSystem/JDrama/JDREfbCtrl.hpp`. Class chain:
 `TViewObj → TEfbCtrl → TEfbCtrlTex`.
 
 ### Field layout (confirmed from the header AND the disassembly)

@@ -109,7 +109,7 @@ void DspFinishWork(u16) {}
 // the result gets whatever was already on the stack/heap. Loud-once so a boss/effect
 // path that starts depending on real output doesn't fail silently like JRNISetTevOrder did.
 void SMS_GetActorMtx(const THitActor&, MtxPtr) { SB_STUB_HIT("SMS_GetActorMtx"); }
-// [ported] SMS_GetLightPerspectiveForEffectMtx -> reference/sms/src/MarioUtil/MtxUtil.cpp (2026-07-15)
+// [ported] SMS_GetLightPerspectiveForEffectMtx -> decomp/sms/src/MarioUtil/MtxUtil.cpp (2026-07-15)
 void SMS_MakeJointsToArc(J3DModel*, const JGeometry::TVec3<f32>&, const JGeometry::TVec3<f32>&, const JGeometry::TVec3<f32>&) { SB_STUB_HIT("SMS_MakeJointsToArc"); }
 void FeetInvCalc(J3DModel*, u16, u16, u16, f32) { SB_STUB_HIT("FeetInvCalc"); }
 int  TMtxSwingRZCallBack(J3DNode*, int) { SB_STUB_HIT("TMtxSwingRZCallBack"); return 0; }

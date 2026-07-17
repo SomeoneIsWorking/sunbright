@@ -10,11 +10,11 @@ The cast-shadow system is the **bind-shadow** path: `gpBindShadowManager` /
 `TMBindShadowManager`. Actors queue a `TCircleShadowRequest` each frame; the manager
 accumulates them, then builds and draws the shadow geometry once per frame.
 
-> Source caveat: `reference/sms/src/MarioUtil/ShadowUtil.cpp` is **empty** in this decomp
+> Source caveat: `decomp/sms/src/MarioUtil/ShadowUtil.cpp` is **empty** in this decomp
 > (not yet decompiled). Everything below is RE'd directly from the GMSE01 DOL via
 > `scratch/disppc.py` (capstone PPC), cross-checked against the symbol table
 > (`reference/sms_gmse01_funcs.txt`), the class header
-> (`reference/sms/include/MarioUtil/ShadowUtil.hpp`), and the callers in
+> (`decomp/sms/include/MarioUtil/ShadowUtil.hpp`), and the callers in
 > `liveactor.cpp` / `enemymanager.cpp` / `MarioMain.cpp` / `MarDirectorDirect.cpp`.
 
 ---

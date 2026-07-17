@@ -6,7 +6,7 @@ field can render identically to the real field. The user observes (a) the water 
 **stale screen-texture reflection ghost** of moving objects.
 
 All addresses are GMSE01 (`reference/sms_gmse01_funcs.txt`). All file:line refer to the
-vendored decomp at `reference/sms/`.
+vendored decomp at `decomp/sms/`.
 
 ---
 
@@ -50,7 +50,7 @@ phase it will double-step and the surface texture jumps.
 ## 1. The water objects and what each draws
 
 ### TModelWaterManager — the player/spray water *and the plaza water surface refraction*
-`reference/sms/src/Player/ModelWaterManager.cpp`. vtable `perform` = `0x8027beb0`.
+`decomp/sms/src/Player/ModelWaterManager.cpp`. vtable `perform` = `0x8027beb0`.
 
 This is the central water object. Despite the name it owns both Mario's sprayed-water
 particles **and** the screen-space water-surface refraction/specular pass.
@@ -82,7 +82,7 @@ unk5D34 = TNameRefGen::search<TScreenTexture>("スクリーンテクスチャ")-
 `unk5D34` is the `JUTTexture*` bound as `GX_TEXMAP0` in `drawRefracAndSpec` (:1474).
 
 ### TScreenTexture — the EFB-copy target ("スクリーンテクスチャ")
-`reference/sms/src/MarioUtil/ScreenUtil.cpp`. `load` `0x8022d474`, `replace` `0x8022d360`.
+`decomp/sms/src/MarioUtil/ScreenUtil.cpp`. `load` `0x8022d474`, `replace` `0x8022d360`.
 
 `TScreenTexture::load` (:215) allocates a **half-resolution RGB565** JUTTexture:
 ```
@@ -101,7 +101,7 @@ its texgen is `GXSetTexCoordGen2(GX_TEXCOORD0, GX_TG_MTX2x4, GX_TG_TEX0, 0x3c, �
 identity-ish screen-space mapping.
 
 ### TShimmer — the heat-haze / water-shimmer mapobj
-`reference/sms/src/Map/Shimmer.cpp`. `perform` `0x8019f83c`, `loadAfter` `0x8019f740`.
+`decomp/sms/src/Map/Shimmer.cpp`. `perform` `0x8019f83c`, `loadAfter` `0x8019f740`.
 
 `loadAfter` (:84) injects the screen texture into the shimmer model's material slot 1:
 ```
@@ -118,7 +118,7 @@ unk44->getTexture()->setResTIMG(1, *TNameRefGen::search<TScreenTexture>("スク�
 - `param_1 & 0x200` → `unk48->update()` (J3DModel update).
 
 ### TMapObjSeaIndirect / TMapObjWaterFilter — the deep-water "under water" layer
-`reference/sms/src/MoveBG/MapObjWater.cpp`. `TMapObjWaterFilter::perform` `0x801ea840`,
+`decomp/sms/src/MoveBG/MapObjWater.cpp`. `TMapObjWaterFilter::perform` `0x801ea840`,
 `init` `0x801ea7f4`.
 
 `TMapObjSeaIndirect::init` (:28) loads `/common/map/UNDERwater.bmd` + `underwater` BTK and
