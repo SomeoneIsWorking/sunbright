@@ -113,3 +113,30 @@ wave (`alloc=1 wave=0`). Instrumented BankMgr::noteOn:
   uintptr_t and verify no truncation.
 - Diagnostics kept (SB_DBG_AUDIO): noteOn CALLED/FAIL reasons, startSeq trace, per-frame
   alloc/wave/paused/live channel counts.
+
+## Update 3: IBNK BE-swap + cid-2 wiring LANDED — banks now load (bank 255->0); note-issuance is the next gap
+
+Implemented the IBNK instrument-bank BE swap + wiring (the blocker from Update 2):
+- `BNKParser::sb_ibnk_swap_to_host` (JASBNKParser.cpp) — position-aware in-place BE swap of the
+  whole IBNK, mirroring createBasicBank's traversal: header vir-number@0x08 + mInstOffsets[0x80]
+  @0x24 + mPercOffsets[12]@0x3B4, then follow each into TInst (vol/pitch f32, osc/rand/sense/
+  keymap offsets), TOsc (+ osc-envelope s16 triple tables via getOscTableEndPtr semantics),
+  TRand/TSense/TKeymap/TVmap, and TPerc/TPmap (incl. u16 release table@0x308). Shared
+  oscillators (findOscPtr dedups) are swapped at most once via a HostPtrSet — double-swap would
+  undo them. The analogue of sb_wsys_swap_to_host.
+- `registBankBNK` (JASBankMgr.cpp): call sb_ibnk_swap_to_host FIRST, before the vir-number read
+  and createBasicBank.
+- cid-2 wiring (JAIBasic.cpp): build the null-terminated `unk50` table (data ptr + wave-bank
+  index) from the aaf cid-2 list, exactly like cid-3->unk54. Was previously skipped.
+
+VERIFIED (partial): no crash over 604s (swap is structurally sound); `noteOn` now gets
+`bank=0` instead of `bank=255` — the vir2phy mapping is populated (the @0x08 swap fixed the
+setVir2PhyTable read), so instrument banks register and resolve. Real progress.
+
+STILL SILENT — next gap: notes reaching noteOn are still `inst=0xF0` (osc path) and only ~5 of
+them. So the main melodic note-ons (real programs 0-127) aren't being issued by the sequencer,
+OR they fail in TTrack::noteOn before BankMgr::noteOn (my instrument only counts the latter).
+NEXT: instrument TTrack::noteOn — count total note attempts + raw program/note; determine why
+programs read 0xF0 (program-change not processed? track parse stalled? note data not reached?).
+Also still pending once real waves flow: the latent LP64 `chan->unk14 = (u32)(uintptr_t)wave`
+truncation (TChannel::unk14 u32 -> uintptr_t).
