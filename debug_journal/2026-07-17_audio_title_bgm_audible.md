@@ -66,10 +66,32 @@ array index with a named-field map (`sb_portarg_slot`, GC word index → field),
 `SMS_NATIVE_PLATFORM`. This wasn't the silence cause (the outer pitch came from `outerInit`'s
 direct assignment, bug 1) but was a real latent corruption of the seq-port fields.
 
+## M2 v2 (same day) — wave length is SAMPLES not bytes (over-read fix) + wave looping
+
+The v1 "mild aliasing" was a real correctness bug. `DSPBuffer::unk11C` (and the loop fields)
+are in **SAMPLES**, not bytes. Proof: the instrument waves sit back-to-back in ARAM
+(0x42520, 0x486c0, … gap 0x61A0 = 24992 B); with `len=44374` as bytes the wave would overrun
+the next one, but as samples the AFC byte span `(44374/16)*9 = 24957` fits the gap exactly
+(~30 B block padding). The v1 decode read `unk11C` *bytes* → ~1.78× over-read into the
+adjacent wave → high-frequency garbage (loud-1s ZCR 5201).
+
+Fix (`jas_kernel_native.cpp`): `sb_afc_decode` now takes a sample count, decodes
+`ceil(nSamples/16)` blocks (AFC state carries across), trims to `nSamples`; PCM paths use
+samples too. Loop fields (all sample units): `unk102` = loop flag (0xFFFF on every title
+instrument), `unk110` = loop-start sample, `unk114` = loop-end sample. Mix loop wraps
+`loopEnd → loopStart` while a looped voice plays (guarded: disable loop unless
+`0 < loopStart < loopEnd ≤ total`).
+
+Verified: loud-1s **ZCR 5201 → 1038** (aliasing gone), clean spectral peaks A#4 ~466 Hz +
+D5 ~587 Hz, sustained notes hold (loud-region sustain 24/24 windows vs sparse before),
+DC ≈ 0, no crash. WAV: `scratch/wav/title_bgm_looped_2026-07-17.wav`.
+
 ## Notes / next
 
-- M2 v1 resampler is linear-interp play-once (no loop yet); polyphonic mix ZCR is a bit high,
-  likely mild aliasing — refine in M2 v2 (loop points via `unk110`/`unk102`, better resample).
+- Amplitude is conservative (loud-1s peak ~1669/32767) now that the garbage is gone — if
+  retail is louder there may be a missing master-gain stage; do NOT hand-tune, RE it.
+- Resampler is still linear-interp (fine at ZCR ~1kHz); revisit only if a specific artifact
+  shows. SE/other-scene audio coverage not yet checked.
 - Diagnostics used to localize this (trkAll/updTrk/pitchEnv/outerInit-ROOT dumps) were
   investigation scaffolding and removed; the persistent `SB_DBG_AUDIO` voice-state/frame/DECODE
   dumps stay.

@@ -116,25 +116,33 @@ static const int kAfcCoef[16][2] = {
 static inline u16 sb_be16(const u8* p) { return (u16)((p[0] << 8) | p[1]); }
 
 // Decode a whole AFC stream (big-endian .aw data) to s16 PCM. hq: 9B/16smp blocks.
-static void sb_afc_decode(const u8* d, u32 len, bool hq, std::vector<s16>& out)
+// Decode `nSamples` AFC samples. The VPB length (unk11C) is a SAMPLE count, not a byte
+// count: AFC packs 16 samples per block (9 bytes hq / 5 bytes lq), and the waves sit
+// back-to-back in ARAM, so the byte span is ceil(nSamples/16)*blockBytes. Decoding
+// nSamples *bytes* over-ran ~1.78x into the adjacent wave and produced audible aliasing
+// (2026-07-17). Decode whole blocks (AFC state carries across them), then trim to nSamples.
+static void sb_afc_decode(const u8* d, u32 nSamples, bool hq, std::vector<s16>& out)
 {
     int yn1 = 0, yn2 = 0;
     const u32 bs = hq ? 9 : 5;
-    out.reserve(out.size() + (len / bs) * 16);
-    for (u32 b = 0; b + bs <= len; b += bs) {
-        const u8* blk = d + b;
-        const int delta = 1 << (blk[0] >> 4);
-        const int c0 = kAfcCoef[blk[0] & 0xF][0], c1 = kAfcCoef[blk[0] & 0xF][1];
+    const u32 nBlocks = (nSamples + 15) / 16;
+    const size_t start = out.size();
+    out.reserve(start + (size_t)nBlocks * 16);
+    for (u32 blk = 0; blk < nBlocks; blk++) {
+        const u8* b = d + (size_t)blk * bs;
+        const int delta = 1 << (b[0] >> 4);
+        const int c0 = kAfcCoef[b[0] & 0xF][0], c1 = kAfcCoef[b[0] & 0xF][1];
         for (int i = 0; i < 16; i++) {
             int nib;
-            if (hq) { nib = (blk[1 + i / 2] >> (i % 2 ? 0 : 4)) & 0xF; if (nib >= 8) nib -= 16; nib <<= 11; }
-            else    { nib = (blk[1 + i / 4] >> (6 - 2 * (i % 4))) & 3; if (nib >= 2) nib -= 4; nib <<= 13; }
+            if (hq) { nib = (b[1 + i / 2] >> (i % 2 ? 0 : 4)) & 0xF; if (nib >= 8) nib -= 16; nib <<= 11; }
+            else    { nib = (b[1 + i / 4] >> (6 - 2 * (i % 4))) & 3; if (nib >= 2) nib -= 4; nib <<= 13; }
             int s = (delta * nib + yn1 * c0 + yn2 * c1) >> 11;
             if (s > 32767) s = 32767; else if (s < -32768) s = -32768;
             yn2 = yn1; yn1 = s;
             out.push_back((s16)s);
         }
     }
+    out.resize(start + nSamples); // trim the partial last block
 }
 
 // Host-side per-voice playback state (the ucode keeps this in the VPB; on the host
@@ -144,12 +152,17 @@ struct HostVoice {
     std::vector<s16>  pcm;                // decoded wave cache
     double            cursor   = 0.0;     // fractional sample position
     bool              playing  = false;
+    bool              loop     = false;   // VPB unk102 != 0 (looped instrument wave)
+    size_t            loopStart = 0;      // loop restart sample (VPB unk110 value)
+    size_t            loopEnd   = 0;      // loop wrap sample (VPB unk114)
 };
 static HostVoice g_hostVoice[64];
 
 // Decode the voice's wave (VPB) into its PCM cache. Format from the VPB:
 //   unk64==16 -> AFC (unk100==9 hq / ==5 lq);  unk64==1 -> PCM (unk100==16 / ==8 bits).
-// unk11C = full length in BYTES (setWaveInfo: unk11C = Wave_.unk1C). Wave data is BE.
+// unk11C = full length in SAMPLES (Wave_.unk1C); AFC byte span = ceil(nSamples/16)*blockBytes.
+// unk102 = loop flag, unk110 = loop-start sample, unk114 = loop-end sample (all sample units).
+// Wave data is BE.
 // DSPBuffer::unk118 is the wave's ARAM ADDRESS (setWaveInfo stores the raw u32 aram addr as
 // an s16*), NOT a host pointer. On GC the DSP reads sample data straight out of ARAM; here
 // ARAM is a host-side buffer (aurora AR.cpp sAramBuffer, base = ARGetStorageAddress()), so an
@@ -170,20 +183,28 @@ static void sb_decode_voice(JASystem::DSPInterface::DSPBuffer* vpb, HostVoice& h
 {
     hv.pcm.clear();
     const u8* data = sb_aram_to_host(vpb->unk118);
-    const u32 lenBytes = vpb->unk11C;
-    if (vpb->unk118 == nullptr || data == nullptr || lenBytes == 0)
+    const u32 nSamples = vpb->unk11C; // SAMPLE count, not bytes
+    if (vpb->unk118 == nullptr || data == nullptr || nSamples == 0)
         return;
     if (vpb->unk64 == 16) {
-        sb_afc_decode(data, lenBytes, vpb->unk100 == 9, hv.pcm);
+        sb_afc_decode(data, nSamples, vpb->unk100 == 9, hv.pcm);
     } else if (vpb->unk64 == 1) {
         if (vpb->unk100 == 16) {
-            hv.pcm.resize(lenBytes / 2);
-            for (u32 i = 0; i < lenBytes / 2; i++) hv.pcm[i] = (s16)sb_be16(data + i * 2);
+            hv.pcm.resize(nSamples);
+            for (u32 i = 0; i < nSamples; i++) hv.pcm[i] = (s16)sb_be16(data + i * 2);
         } else if (vpb->unk100 == 8) {
-            hv.pcm.resize(lenBytes);
-            for (u32 i = 0; i < lenBytes; i++) hv.pcm[i] = (s16)((s8)data[i] << 8);
+            hv.pcm.resize(nSamples);
+            for (u32 i = 0; i < nSamples; i++) hv.pcm[i] = (s16)((s8)data[i] << 8);
         }
     }
+
+    // Loop metadata (sample units). Only trust it when sane; else fall back to play-once.
+    const size_t total = hv.pcm.size();
+    hv.loop      = (vpb->unk102 != 0);
+    hv.loopStart = reinterpret_cast<uintptr_t>(vpb->unk110);
+    hv.loopEnd   = vpb->unk114;
+    if (hv.loopEnd == 0 || hv.loopEnd > total || hv.loopStart >= hv.loopEnd)
+        hv.loop = false;
 }
 
 void dsyncFrame2Native(u32 /*subframes*/, uintptr_t bufL, uintptr_t bufR)
@@ -233,8 +254,9 @@ void dsyncFrame2Native(u32 /*subframes*/, uintptr_t bufL, uintptr_t bufR)
         const void* wb = vpb->unk118;
         if (wb != hv.waveBase) { // new wave bound to this channel -> (re)trigger
             if (s_dbg) {
-                std::fprintf(stderr, "[audio] DECODE ch%d wave=%p len=%d fmt=%u hq=%u  (about to decode)\n",
-                             ch, wb, vpb->unk11C, vpb->unk64, vpb->unk100);
+                std::fprintf(stderr, "[audio] DECODE ch%d wave=%p len=%d fmt=%u hq=%u  loop=%u loopEnd=%u loopPtr=%p (about to decode)\n",
+                             ch, wb, vpb->unk11C, vpb->unk64, vpb->unk100,
+                             vpb->unk102, vpb->unk114, (void*)vpb->unk110);
                 std::fflush(stderr);
             }
             hv.waveBase = wb;
@@ -255,10 +277,22 @@ void dsyncFrame2Native(u32 /*subframes*/, uintptr_t bufL, uintptr_t bufR)
         const float gL = q15(vpb->unk10[0].targetVolume);
         const float gR = q15(vpb->unk10[1].targetVolume);
         const size_t len = hv.pcm.size();
+        // Looped instrument waves wrap from loopEnd back to loopStart while the note is held;
+        // non-looped waves play once and stop. loopEnd/loopStart are decoded-PCM sample indices.
+        const size_t boundary = hv.loop ? hv.loopEnd : len;
         double c = hv.cursor;
         for (u32 i = 0; i < n; i++) {
-            const size_t idx = static_cast<size_t>(c);
-            if (idx >= len) { hv.playing = false; break; } // v1: play-once (loop = next increment)
+            size_t idx = static_cast<size_t>(c);
+            if (idx >= boundary) {
+                if (hv.loop) {
+                    const double span = static_cast<double>(hv.loopEnd - hv.loopStart);
+                    do { c -= span; } while (static_cast<size_t>(c) >= boundary);
+                    idx = static_cast<size_t>(c);
+                } else {
+                    hv.playing = false;
+                    break;
+                }
+            }
             const s16 s0 = hv.pcm[idx];
             const s16 s1 = (idx + 1 < len) ? hv.pcm[idx + 1] : s0;
             const float frac = static_cast<float>(c - static_cast<double>(idx));
