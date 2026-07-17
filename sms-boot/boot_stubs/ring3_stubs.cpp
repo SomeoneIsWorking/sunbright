@@ -103,7 +103,7 @@ void TMapObjBall::calcCurrentMtx() { SB_STUB_HIT("TMapObjBall::calcCurrentMtx");
 void TMapObjBall::checkWallCollision(JGeometry::TVec3<float>*) { SB_STUB_HIT("TMapObjBall::checkWallCollision"); }
 void TMapObjBall::control() { SB_STUB_HIT("TMapObjBall::control"); }
 void TMapObjBall::hold(TTakeActor*) { SB_STUB_HIT("TMapObjBall::hold"); }
-void TMapObjBall::initMapObj() { SB_STUB_HIT("TMapObjBall::initMapObj"); }
+// TMapObjBall::initMapObj now PORTED in reference/sms/src/MoveBG/MapObjBall.cpp (RE'd 2026-07-17).
 void TMapObjBall::kicked() { SB_STUB_HIT("TMapObjBall::kicked"); }
 void TMapObjBall::makeObjAppeared() { SB_STUB_HIT("TMapObjBall::makeObjAppeared"); }
 void TMapObjBall::makeObjDefault() { SB_STUB_HIT("TMapObjBall::makeObjDefault"); }
