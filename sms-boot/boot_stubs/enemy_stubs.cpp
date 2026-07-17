@@ -55,19 +55,10 @@ TMewManager::TMewManager(const char* name)
 // ---------------------------------------------------------------------------
 // AreaCylinder
 // ---------------------------------------------------------------------------
-#include <Enemy/AreaCylinder.hpp>
 
-TAreaCylinder::TAreaCylinder(const char* name)
-    : JDrama::TViewObj(name)
-    , unk10(0.f), unk14(0.f), unk18(0.f), unk1C(0.f), unk20(0.f), unk24(0.f)
-{
-}
+// TAreaCylinder ctor PORTED in decomp/sms/src/Enemy/areacylinder.cpp
 
-TAreaCylinder* TAreaCylinderManager::getCylinderContains(
-        const JGeometry::TVec3<f32>&)
-{
-    return nullptr;
-}
+// TAreaCylinderManager::getCylinderContains PORTED in areacylinder.cpp
 
 // ---------------------------------------------------------------------------
 // EffectObj — ctors only (loadAfter/emitEffect are in effectObj.cpp)

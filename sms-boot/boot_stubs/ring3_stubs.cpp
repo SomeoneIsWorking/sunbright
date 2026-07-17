@@ -36,7 +36,7 @@ void TAmiKing::touchPlayer(THitActor*) { SB_STUB_HIT("TAmiKing::touchPlayer"); }
 // TAnimalBase::loadAfter now PORTED in decomp/sms/src/Animal/AnimalBase.cpp (RE'd 2026-07-17).
 // TAnimalBase::perform PORTED in decomp/sms/src/Animal/AnimalBase.cpp (RE 2026-07-17).
 // TAnimalBase::receiveMessage PORTED in decomp/sms/src/Animal/AnimalBase.cpp (returns 0, RE 2026-07-17).
-void TAreaCylinder::perform(unsigned int, JDrama::TGraphics*) { SB_STUB_HIT("TAreaCylinder::perform"); }
+// void TAreaCylinder::perform(unsigned int, JDrama::TGraphics*) PORTED in areacylinder.cpp
 void TBalloonKoopaJr::kill() { SB_STUB_HIT("TBalloonKoopaJr::kill"); }
 void TBalloonKoopaJr::load(JSUMemoryInputStream&) { SB_STUB_HIT("TBalloonKoopaJr::load"); }
 // [dedup] void TBasketReverse::initMapObj() {}

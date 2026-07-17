@@ -21,7 +21,7 @@
 #include <Enemy/AreaCylinder.hpp>
 
 // TAreaCylinder: key = load (first explicit virtual)
-void TAreaCylinder::load(JSUMemoryInputStream&) { SB_STUB_HIT("TAreaCylinder::load"); }
+// void TAreaCylinder::load(JSUMemoryInputStream&) PORTED in areacylinder.cpp
 
 // ============================================================
 // === Enemy/EffectObj.hpp ===
