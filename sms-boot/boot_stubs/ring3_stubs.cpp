@@ -31,11 +31,11 @@ void TAmiKing::calcRootMatrix() { SB_STUB_HIT("TAmiKing::calcRootMatrix"); }
 void TAmiKing::initMapObj() { SB_STUB_HIT("TAmiKing::initMapObj"); }
 void TAmiKing::moveObject() { SB_STUB_HIT("TAmiKing::moveObject"); }
 void TAmiKing::touchPlayer(THitActor*) { SB_STUB_HIT("TAmiKing::touchPlayer"); }
-void TAnimalBase::calcRootMatrix() { SB_STUB_HIT("TAnimalBase::calcRootMatrix"); }
+// TAnimalBase::calcRootMatrix PORTED in decomp/sms/src/Animal/AnimalBase.cpp (empty override, RE 2026-07-17).
 void TAnimalBase::init(TLiveManager*) { SB_STUB_HIT("TAnimalBase::init"); }
 // TAnimalBase::loadAfter now PORTED in decomp/sms/src/Animal/AnimalBase.cpp (RE'd 2026-07-17).
 void TAnimalBase::perform(unsigned int, JDrama::TGraphics*) { SB_STUB_HIT("TAnimalBase::perform"); }
-BOOL TAnimalBase::receiveMessage(THitActor*, unsigned int) { SB_STUB_HIT("TAnimalBase::receiveMessage"); return 0; }
+// TAnimalBase::receiveMessage PORTED in decomp/sms/src/Animal/AnimalBase.cpp (returns 0, RE 2026-07-17).
 void TAreaCylinder::perform(unsigned int, JDrama::TGraphics*) { SB_STUB_HIT("TAreaCylinder::perform"); }
 void TBalloonKoopaJr::kill() { SB_STUB_HIT("TBalloonKoopaJr::kill"); }
 void TBalloonKoopaJr::load(JSUMemoryInputStream&) { SB_STUB_HIT("TBalloonKoopaJr::load"); }
