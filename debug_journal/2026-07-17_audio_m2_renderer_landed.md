@@ -226,3 +226,33 @@ localized this chain are kept.
 3. If it lives in a szs/arc resource, find which (it's not /audi "sequence.arc").
 Once sequence.arc loads, the WHOLE lower stack (renderer, pipeline, LP64, IBNK/WSYS banks —
 all landed+correct) should turn the real BMS into audible title BGM.
+
+## Update 7: *** SEQUENCER WORKS *** — sequence.arc path fixed (real notes + playing voices!)
+
+FOUND sequence.arc via a new aurora FST-dump (SB_DUMP_FST, fst.cpp fstCallback): it IS on the
+disc FST at **/AudioRes/Seqs/sequence.arc** (size 800704) — inside the `Seqs/` subdir. The
+loader used "/AudioRes/sequence.arc" (missing Seqs/), so openDvd failed and the BMS was
+all-zero. Fixed kSeqPath -> "/AudioRes/Seqs/sequence.arc"; reverted readSeq to the (now
+working) DVD read.
+
+VERIFIED (the breakthrough): the BMS now loads REAL data (bytes a4 08 00 a4 09 00...) and:
+- `TTrack::noteOn` gets REAL melodic notes: reg=0x79 (bank=0, prog=121 = a SAMPLED
+  instrument, not osc 0xF0), real pitches (31/43/57/58/62), velocities (70/51/93/84).
+- **DSP voices allocate AND render: `NEW max live voices=2 playing=2`** — the whole lower
+  stack (renderer, pipeline, LP64, IBNK/WSYS banks) is now exercised with real data. The
+  entire "silent BGM" chain (Updates 1-6) bottomed out at this one wrong path.
+
+## REMAINING (2 issues before audible verification):
+1. **Crash in JAISystemInterface::setSePortParameter** (via aiCallback->portCmdMain, ~24s in):
+   a USE-AFTER-FREE. The SE port command stores `args->mTrack` (outerInit,
+   JAISystemInterface.cpp:104-110; args = &param_1->unk4C[i].unk4, persistent). When the track
+   is freed before portCmdMain drains the command, mTrack dangles -> the handler derefs a
+   garbage track -> SIGSEGV. Added a null-mOuterParam guard (correct, matches noteOn's guards,
+   but this crash is a GARBAGE (non-null) track, not null). NEXT: clear a track's queued port
+   command(s) when it closes/frees (or invalidate unk4C[i].unk0/mTrack), so portCmdMain never
+   runs a stale command. TPortCmd fields are proper pointer types (no LP64 truncation).
+2. **Output still peak-0 in the pre-crash window** despite playing=2 — verify the renderer's
+   mix once the crash is fixed and the frame runs stably (could be voices just starting, or a
+   volume/DAC-forwarding issue). Re-check with SB_AUDIO_RAW after the SE fix.
+
+Diagnostics added this iteration: `SB_DUMP_FST` (aurora fst.cpp — lists every disc FST entry).

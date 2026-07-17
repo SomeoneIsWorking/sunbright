@@ -158,7 +158,7 @@ struct BarcEntry {
 };
 
 const char* const kAafPath = "/AudioRes/mSound.aaf"; // (no longer DVD-read; see below)
-const char* const kSeqPath = "/AudioRes/sequence.arc";
+const char* const kSeqPath = "/AudioRes/Seqs/sequence.arc"; // in the Seqs/ subdir (disc FST, verified via SB_DUMP_FST)
 
 // "JaiArcS.hed" is the logical sequence-archive name the decomp asks for; we register a
 // single logical arc under it so getArchiveHandle resolves to index 0 (unk2C == 0).
@@ -280,24 +280,23 @@ u32 readSeq(u32 idx, u8* buf, u32 extraOff, u32 len)
 	// so JASystem::Dvd::loadToDramDvdT("/AudioRes/sequence.arc") fails (openDvd==0) and left
 	// `buf` all-zero -> every BMS opcode read 0x00 -> silent BGM. Copy from the in-memory
 	// sequence.arc captured at boot (sb_seq_data, Application.cpp) instead.
-	// DIAGNOSTIC (2026-07-17): sequence.arc is neither on the disc FST (openDvd fails) nor a
-	// /audi resource named "sequence.arc" (getResource -> 16 bytes). Test whether the BMS data
-	// lives inside the in-memory aaf itself at the BARC offset.
+	char path[64];
+	std::strcpy(path, kSeqPath);
+
+	volatile u32 done = 0;
+	// JASystem::Dvd::loadToDramDvdT(prio, path, buffer, offset, length, &done, cb).
+	// (JASDvdThread.cpp — arg4 = byte offset into the file, arg5 = length.) The PC path runs
+	// synchronously inline. sequence.arc IS on the disc FST at /AudioRes/Seqs/sequence.arc
+	// (verified via SB_DUMP_FST 2026-07-17) — the earlier "/AudioRes/sequence.arc" path was
+	// wrong (missing the Seqs/ subdir), so openDvd failed and the BMS came back all-zero.
+	JASystem::Dvd::loadToDramDvdT(0, path, buf, fileOff, readLen, (u32*)&done, nullptr);
+	while (done == 0)
+		;
+
 	if (dbg())
-		OSReport("[sms_boot_audio] SEQPROBE idx=%u off=0x%x len=%u | aaf_size=%u seq_size=%u | aaf@off: %02x %02x %02x %02x  seq@off: %02x %02x %02x %02x\n",
-		         idx, fileOff, readLen, sb_aaf_size, sb_seq_size,
-		         (sb_aaf_data && fileOff + 4 <= sb_aaf_size) ? sb_aaf_data[fileOff] : 0xEE,
-		         (sb_aaf_data && fileOff + 4 <= sb_aaf_size) ? sb_aaf_data[fileOff+1] : 0xEE,
-		         (sb_aaf_data && fileOff + 4 <= sb_aaf_size) ? sb_aaf_data[fileOff+2] : 0xEE,
-		         (sb_aaf_data && fileOff + 4 <= sb_aaf_size) ? sb_aaf_data[fileOff+3] : 0xEE,
-		         (sb_seq_data && fileOff + 4 <= sb_seq_size) ? sb_seq_data[fileOff] : 0xEE,
-		         (sb_seq_data && fileOff + 4 <= sb_seq_size) ? sb_seq_data[fileOff+1] : 0xEE,
-		         (sb_seq_data && fileOff + 4 <= sb_seq_size) ? sb_seq_data[fileOff+2] : 0xEE,
-		         (sb_seq_data && fileOff + 4 <= sb_seq_size) ? sb_seq_data[fileOff+3] : 0xEE);
-	// Keep the build stable + silent (no crash): if the in-memory sequence buffer is valid,
-	// use it; otherwise leave buf as-is (zeroed) — the DVD path was already failing.
-	if (sb_seq_data != nullptr && fileOff + readLen <= sb_seq_size)
-		std::memcpy(buf, sb_seq_data + fileOff, readLen);
+		OSReport("[sms_boot_audio] loaded seq idx=%u off=0x%x len=%u from %s -> bytes: %02x %02x %02x %02x %02x %02x %02x %02x\n",
+		         idx, fileOff, readLen, kSeqPath,
+		         buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7]);
 	return readLen;
 }
 
