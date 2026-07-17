@@ -99,7 +99,7 @@ void TMammaYacht::initMapObj() { SB_STUB_HIT("TMammaYacht::initMapObj"); }
 // [dedup] void TManhole::appeared() {}
 // [dedup] void TManhole::calc() {}
 // [dedup] void TManhole::setGroundCollision() {}
-void TMapObjBall::calcCurrentMtx() { SB_STUB_HIT("TMapObjBall::calcCurrentMtx"); }
+// TMapObjBall::calcCurrentMtx now PORTED in reference/sms/src/MoveBG/MapObjBall.cpp (RE'd 2026-07-17).
 void TMapObjBall::checkWallCollision(JGeometry::TVec3<float>*) { SB_STUB_HIT("TMapObjBall::checkWallCollision"); }
 void TMapObjBall::control() { SB_STUB_HIT("TMapObjBall::control"); }
 void TMapObjBall::hold(TTakeActor*) { SB_STUB_HIT("TMapObjBall::hold"); }
