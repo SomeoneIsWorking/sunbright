@@ -1,6 +1,6 @@
 # Full-game native-port burn-down worklist
 
-83 gap files remaining · ~598,252 bytes of JP code to RE (≈ burden estimate from JP symbol sizes).
+76 gap files remaining · ~580,464 bytes of JP code to RE (≈ burden estimate from JP symbol sizes).
 
 Ordered by category, then RE burden (biggest first). `factory`: whether the actor type is registered / commented-out / not in getNameRef_Enemy.
 Regenerate: `python3 tools/re/gap_worklist.py --md > docs/port_worklist.md`
@@ -45,18 +45,12 @@ Regenerate: `python3 tools/re/gap_worklist.py --md > docs/port_worklist.md`
 | decomp/sms/src/Enemy/hanasambo.cpp | 8,012 | 38 | commented | THanaSambo, THanaSamboManager, TNerveHanaSamboHide, TNerveHanaSamboAppear, TNerveHanaSamboDie, TNerveHanaSamboWait |
 | decomp/sms/src/Enemy/gatekeeper.cpp | 7,804 | 24 | commented | TBiancoGateKeeper, TBiancoGateKeeperManager, TGateKeeperBase |
 | decomp/sms/src/Enemy/igaiga.cpp | 7,756 | 40 | commented | TIgaiga, TIgaigaManager, TNerveIgaigaWaterHit, TNerveIgaigaShootFromCannon, TNerveIgaigaRollOnGraph, TIgaigaPolluteModelManager |
-| decomp/sms/src/Enemy/fruitsboat.cpp | 7,304 | 21 | commented | TFruitsBoat, TNerveFruitsBoatGraphWander, TFruitsBoatManager, TNerveFruitsBoatBckTrace |
 | decomp/sms/src/Enemy/BossHanachanParts.cpp | 7,020 | 25 | - | TBossHanachanPartsBase, TBossHanachanPartsBody, TBossHanachanPartsHead |
 | decomp/sms/src/Enemy/rocket.cpp | 6,328 | 31 | commented | TRocket, TRocketManager, TNerveRocketPossessedNozzle, TNerveRocketFly, TNerveRocketWait |
 | decomp/sms/src/Enemy/limitkoopajr.cpp | 5,752 | 26 | - | TLimitKoopaJr, TNerveLimitKoopaJrWait, TLimitKoopaJrParams, TNerveLimitKoopaJrRun, TNerveLimitKoopaJrLaunch, TNerveLimitKoopaJrYahoo |
-| decomp/sms/src/Enemy/hauntLeg.cpp | 4,348 | 23 | commented | THauntLeg, THauntLegManager, TNerveHauntLegHaunt |
-| decomp/sms/src/Enemy/DebuTelesa.cpp | 1,940 | 22 | registered | TDebuTelesa, TDebuTelesaManager, TNerveDebuTelesaWait |
-| decomp/sms/src/Enemy/effectEnemy.cpp | 1,808 | 17 | commented | TEffectEnemy, TEffectEnemyManager |
 | decomp/sms/src/Enemy/BathtubBinder.cpp | 1,672 | 5 | - | TBathtubBinder |
 | decomp/sms/src/Enemy/BathtubPeach.cpp | 1,624 | 15 | - | TBathtubPeach, TBathtubPeachManager |
-| decomp/sms/src/Enemy/areacylinder.cpp | 1,500 | 8 | - | TAreaCylinder, TAreaCylinderManager |
 | decomp/sms/src/Enemy/SleepBossHanachan.cpp | 1,004 | 8 | - | TSleepBossHanachan, TSleepBossHanachanManager |
-| decomp/sms/src/Enemy/egggen.cpp | 888 | 9 | commented | TEggGenerator, TEggGenManager |
 | decomp/sms/src/Enemy/BossHanachanSave.cpp | 204 | 1 | - | TDemoBossHanachanSaveParams |
 | decomp/sms/src/Enemy/BossHanachanAnm.cpp | 0 | 0 | - | — |
 | decomp/sms/src/Enemy/BossHanachanEffect.cpp | 0 | 0 | - | — |
@@ -107,7 +101,6 @@ Regenerate: `python3 tools/re/gap_worklist.py --md > docs/port_worklist.md`
 |---|--:|--:|---|---|
 | decomp/sms/src/MoveBG/ModelGate.cpp | 6,200 | 8 | - | TModelGate |
 | decomp/sms/src/MoveBG/MapObjFlag.cpp | 5,160 | 13 | - | TMapObjFlagManager, TMapObjFlag |
-| decomp/sms/src/MoveBG/MapObjBianco.cpp | 0 | 0 | - | — |
 | decomp/sms/src/MoveBG/MapObjFence.cpp | 0 | 0 | - | — |
 | decomp/sms/src/MoveBG/MapObjSample.cpp | 0 | 0 | - | — |
 | decomp/sms/src/MoveBG/MapObjSirena.cpp | 0 | 0 | - | — |
