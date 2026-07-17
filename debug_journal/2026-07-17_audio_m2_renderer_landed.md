@@ -286,3 +286,32 @@ The setSePortParameter SIGSEGV (~24s in, consistent) is a use-after-free at the
    the queue never holds a command into freed memory.
 Once this lands, re-verify SB_AUDIO_RAW output (renderer/pipeline/banks/sequencer all work; the
 game just crashes on the first sound teardown).
+
+## Update 9: SE-port UAF — layered fixes landed; remaining crash = dangling `args` (const fault 0x1746f5168)
+
+Deep-dived the setSePortParameter SIGSEGV. Fault address is CONSTANT at 0x1746f5168 across
+every build (an unmapped heap address), and it is `param_1` itself (the command's
+`cmd->unkC` = args) — the read is at offset 0 (`param_1->mTrack`). So a QUEUED port command
+holds an `args` pointing into freed memory; portCmdMain runs it -> deref -> crash. Deterministic
+at ~24s of title BGM.
+
+### Fixes landed (all correct; each closed a real defect but not THIS crash):
+- **cancelPortCmd / cancelPortCmdStay IMPLEMENTED** (JASCmdStack.cpp) — were banned empty
+  no-op stubs. Now unlink `this` from the TPortHead queue. setPortCmd now dequeues a still-queued
+  command before re-arming (the decomp cleared unk0 without unlinking -> a re-armed cmd_once
+  entry double-linked and corrupted the list). VERIFIED it changed behavior: the crash PC moved
+  (0x51dc91 -> 0x51de11), i.e. the queue-corruption path is fixed; the dangling-args path remains.
+- closeTrack clears the parent's unk2C4[] back-ref on child self-close (JASTrack.cpp).
+- TrackMgr::isPoolTrack() + outerInit rejects a non-pool (wild) track before queuing
+  (JASTrackMgr, JAISystemInterface). setSePortParameter guards closed track / null mOuterParam.
+
+### Remaining ROOT (next): who frees the args memory at ~24s
+`args = &JAISeqUpdateData.unk4C[i].unk4`; unk180[] (the JAISeqUpdateData pool) and each
+unk4C[] are allocHeap'd from the JAIData heap (unk1F4, JAIData.cpp:609-623) — which SHOULD be
+persistent. Yet `args` = 0x1746f5168 is unmapped at ~24s. So either that heap is reset (a scene
+transition / audio re-init in the title attract at ~24s) OR unk4C is reallocated. cmd_once is
+drained same-frame, so the free must happen mid-frame between outerInit (queue) and portCmdMain
+(drain), OR a cmd lingers via a path I haven't found. NEXT: instrument the JAIData heap
+free / audio re-init and the ~24s scene event; when that heap tears down, cancel every
+unk4C[i].unk2C command (now that cancelPortCmd works) OR portHeadInit() the queues. Then verify
+SB_AUDIO_RAW output — the sequencer + voices already work (Update 7).
