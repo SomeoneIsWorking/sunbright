@@ -33,7 +33,7 @@ void TAmiKing::moveObject() { SB_STUB_HIT("TAmiKing::moveObject"); }
 void TAmiKing::touchPlayer(THitActor*) { SB_STUB_HIT("TAmiKing::touchPlayer"); }
 void TAnimalBase::calcRootMatrix() { SB_STUB_HIT("TAnimalBase::calcRootMatrix"); }
 void TAnimalBase::init(TLiveManager*) { SB_STUB_HIT("TAnimalBase::init"); }
-void TAnimalBase::loadAfter() { SB_STUB_HIT("TAnimalBase::loadAfter"); }
+// TAnimalBase::loadAfter now PORTED in reference/sms/src/Animal/AnimalBase.cpp (RE'd 2026-07-17).
 void TAnimalBase::perform(unsigned int, JDrama::TGraphics*) { SB_STUB_HIT("TAnimalBase::perform"); }
 BOOL TAnimalBase::receiveMessage(THitActor*, unsigned int) { SB_STUB_HIT("TAnimalBase::receiveMessage"); return 0; }
 void TAreaCylinder::perform(unsigned int, JDrama::TGraphics*) { SB_STUB_HIT("TAreaCylinder::perform"); }
@@ -58,7 +58,7 @@ void TCogwheel::initMapObj() { SB_STUB_HIT("TCogwheel::initMapObj"); }
 void TCogwheelScale::control() { SB_STUB_HIT("TCogwheelScale::control"); }
 BOOL TCogwheelScale::receiveMessage(THitActor*, unsigned int) { SB_STUB_HIT("TCogwheelScale::receiveMessage"); return 0; }
 void TCogwheelScale::touchPlayer(THitActor*) { SB_STUB_HIT("TCogwheelScale::touchPlayer"); }
-void TCoverFruit::calcRootMatrix() { SB_STUB_HIT("TCoverFruit::calcRootMatrix"); }
+// TCoverFruit::calcRootMatrix now PORTED in reference/sms/src/MoveBG/MapObjBall.cpp (RE'd 2026-07-17).
 BOOL TCoverFruit::receiveMessage(THitActor*, unsigned int) { SB_STUB_HIT("TCoverFruit::receiveMessage"); return 0; }
 void TCraneRotY::control() { SB_STUB_HIT("TCraneRotY::control"); }
 void TCraneRotY::load(JSUMemoryInputStream&) { SB_STUB_HIT("TCraneRotY::load"); }
