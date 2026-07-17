@@ -134,11 +134,10 @@ void TMapObjBase::appear() { SB_STUB_HIT("TMapObjBase::appear"); }
 // alongside the perform() port (all four are byte-exact `blr` in the
 // binary — empty stubs for vtable slot fill).
 void TMapObjBase::getDepthAtFloating() { SB_STUB_HIT("TMapObjBase::getDepthAtFloating"); }
-u16 TMapObjBase::getHitObjNumMax() { SB_STUB_HIT("TMapObjBase::getHitObjNumMax"); return 0; }
+// getHitObjNumMax / kill / loadBeforeInit now PORTED in reference/sms/src/MoveBG/MapObjBase.cpp
+// (RE'd 2026-07-17: return 5 / makeObjDead() / empty — via US vtable slot analysis).
 f32 TMapObjBase::getRadiusAtY(f32) const { SB_STUB_HIT("TMapObjBase::getRadiusAtY"); return 0.f; }
 MtxPtr TMapObjBase::getTakingMtx() { SB_STUB_HIT("TMapObjBase::getTakingMtx"); return nullptr; }
-void TMapObjBase::kill() { SB_STUB_HIT("TMapObjBase::kill"); }
-void TMapObjBase::loadBeforeInit(JSUMemoryInputStream&) { SB_STUB_HIT("TMapObjBase::loadBeforeInit"); }
 void TMapObjBase::setModelMtx(MtxPtr) { SB_STUB_HIT("TMapObjBase::setModelMtx"); }
 u32 TMapObjBase::touchWater(THitActor*) { SB_STUB_HIT("TMapObjBase::touchWater"); return 0; }
 
