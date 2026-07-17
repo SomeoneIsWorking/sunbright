@@ -34,7 +34,7 @@ void TAmiKing::touchPlayer(THitActor*) { SB_STUB_HIT("TAmiKing::touchPlayer"); }
 // TAnimalBase::calcRootMatrix PORTED in decomp/sms/src/Animal/AnimalBase.cpp (empty override, RE 2026-07-17).
 // TAnimalBase::init PORTED in decomp/sms/src/Animal/AnimalBase.cpp (RE 2026-07-17).
 // TAnimalBase::loadAfter now PORTED in decomp/sms/src/Animal/AnimalBase.cpp (RE'd 2026-07-17).
-void TAnimalBase::perform(unsigned int, JDrama::TGraphics*) { SB_STUB_HIT("TAnimalBase::perform"); }
+// TAnimalBase::perform PORTED in decomp/sms/src/Animal/AnimalBase.cpp (RE 2026-07-17).
 // TAnimalBase::receiveMessage PORTED in decomp/sms/src/Animal/AnimalBase.cpp (returns 0, RE 2026-07-17).
 void TAreaCylinder::perform(unsigned int, JDrama::TGraphics*) { SB_STUB_HIT("TAreaCylinder::perform"); }
 void TBalloonKoopaJr::kill() { SB_STUB_HIT("TBalloonKoopaJr::kill"); }
