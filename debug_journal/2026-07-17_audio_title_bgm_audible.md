@@ -86,10 +86,26 @@ Verified: loud-1s **ZCR 5201 → 1038** (aliasing gone), clean spectral peaks A#
 D5 ~587 Hz, sustained notes hold (loud-region sustain 24/24 windows vs sparse before),
 DC ≈ 0, no crash. WAV: `scratch/wav/title_bgm_looped_2026-07-17.wav`.
 
+## Amplitude is FAITHFUL, not a bug (RE'd, do not "fix" it)
+
+The conservative level (loud-1s peak ~1669/32767) is correct GC behavior — ruled out as a bug:
+
+- Per-voice `Channel::targetVolume` = `vol[0..1] × Driver::getMixerLevel()`
+  (`updateMixer`, JASChannel.cpp:368). `getMixerLevel()` = `MAX_MIXERLEVEL`, set by
+  `setMixerLevel(inputGainDown, …)` to `channel_level × 16384`. SMS calls it with
+  `inputGainDown = 0.5` (JAIBasic.cpp:77) → mixerLevel = **8192**. So a full-vol voice tops
+  out at targetVolume 8192, a deliberate −6 dB of summing headroom.
+- The DSP applies that volume **Q1.15** (÷32768): the SMS DSPBuffer is the Zelda ucode VPB
+  (`Channel{id,targetVolume,currentVolume}` — comment cites Dolphin Zelda.cpp#683), and
+  Dolphin's Zelda HLE applies voice volume in "1.15 fixed format" (`ApplyVolumeInPlace_1_15`,
+  explicit comment "Each of these volumes is in 1.15 fixed format"; the ÷2¹⁵/2¹⁶ `shift_factor`
+  is the *dolby* path only). The M2 renderer's `q15(v)=v/32768` matches exactly.
+
+So `0.5 (input gain) × note volumes`, summed with headroom, is the intended quiet level.
+Do NOT scale the output up — that's hand-tuning away faithful behavior.
+
 ## Notes / next
 
-- Amplitude is conservative (loud-1s peak ~1669/32767) now that the garbage is gone — if
-  retail is louder there may be a missing master-gain stage; do NOT hand-tune, RE it.
 - Resampler is still linear-interp (fine at ZCR ~1kHz); revisit only if a specific artifact
   shows. SE/other-scene audio coverage not yet checked.
 - Diagnostics used to localize this (trkAll/updTrk/pitchEnv/outerInit-ROOT dumps) were
