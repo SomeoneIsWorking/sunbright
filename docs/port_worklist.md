@@ -1,6 +1,6 @@
 # Full-game native-port burn-down worklist
 
-85 gap files remaining · ~617,092 bytes of JP code to RE (≈ burden estimate from JP symbol sizes).
+83 gap files remaining · ~598,252 bytes of JP code to RE (≈ burden estimate from JP symbol sizes).
 
 Ordered by category, then RE burden (biggest first). `factory`: whether the actor type is registered / commented-out / not in getNameRef_Enemy.
 Regenerate: `python3 tools/re/gap_worklist.py --md > docs/port_worklist.md`
@@ -10,7 +10,6 @@ Regenerate: `python3 tools/re/gap_worklist.py --md > docs/port_worklist.md`
 
 | file | burden | methods | factory | classes |
 |---|--:|--:|---|---|
-| decomp/sms/src/Animal/Bird.cpp | 15,312 | 52 | commented | TAnimalBird, TSandBird, TNerveAnimalBirdWalkOnGround, TNerveAnimalBirdGraphWander, TNerveAnimalBirdComeback, TNerveAnimalBirdActionOnGround |
 | decomp/sms/src/Animal/BeeHive.cpp | 12,592 | 34 | commented | TBeeHive, TNerveBeeHiveAttack, TNerveBeeHiveMarioWaterIn, TNerveBeeHiveBreak, TBeeHiveManager, TNerveBeeHiveFall |
 | decomp/sms/src/Animal/boid.cpp | 4,892 | 8 | - | TBoidLeader, TBoid |
 | decomp/sms/src/Animal/fishoid.cpp | 1,808 | 10 | commented | TFishoid, TFishoidManager |
@@ -51,7 +50,6 @@ Regenerate: `python3 tools/re/gap_worklist.py --md > docs/port_worklist.md`
 | decomp/sms/src/Enemy/rocket.cpp | 6,328 | 31 | commented | TRocket, TRocketManager, TNerveRocketPossessedNozzle, TNerveRocketFly, TNerveRocketWait |
 | decomp/sms/src/Enemy/limitkoopajr.cpp | 5,752 | 26 | - | TLimitKoopaJr, TNerveLimitKoopaJrWait, TLimitKoopaJrParams, TNerveLimitKoopaJrRun, TNerveLimitKoopaJrLaunch, TNerveLimitKoopaJrYahoo |
 | decomp/sms/src/Enemy/hauntLeg.cpp | 4,348 | 23 | commented | THauntLeg, THauntLegManager, TNerveHauntLegHaunt |
-| decomp/sms/src/Enemy/seal.cpp | 3,528 | 17 | commented | TSeal, TNerveSealDie, TNerveSealWait, TNerveSealSleep, TSealManager |
 | decomp/sms/src/Enemy/DebuTelesa.cpp | 1,940 | 22 | registered | TDebuTelesa, TDebuTelesaManager, TNerveDebuTelesaWait |
 | decomp/sms/src/Enemy/effectEnemy.cpp | 1,808 | 17 | commented | TEffectEnemy, TEffectEnemyManager |
 | decomp/sms/src/Enemy/BathtubBinder.cpp | 1,672 | 5 | - | TBathtubBinder |
