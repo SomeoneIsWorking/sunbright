@@ -106,7 +106,7 @@ void TMapObjBall::hold(TTakeActor*) { SB_STUB_HIT("TMapObjBall::hold"); }
 // TMapObjBall::initMapObj now PORTED in reference/sms/src/MoveBG/MapObjBall.cpp (RE'd 2026-07-17).
 void TMapObjBall::kicked() { SB_STUB_HIT("TMapObjBall::kicked"); }
 void TMapObjBall::makeObjAppeared() { SB_STUB_HIT("TMapObjBall::makeObjAppeared"); }
-void TMapObjBall::makeObjDefault() { SB_STUB_HIT("TMapObjBall::makeObjDefault"); }
+// TMapObjBall::makeObjDefault now PORTED in reference/sms/src/MoveBG/MapObjBall.cpp (RE'd 2026-07-17).
 void TMapObjBall::put() { SB_STUB_HIT("TMapObjBall::put"); }
 void TMapObjBall::rebound(JGeometry::TVec3<float>*) { SB_STUB_HIT("TMapObjBall::rebound"); }
 void TMapObjBall::touchActor(THitActor*) { SB_STUB_HIT("TMapObjBall::touchActor"); }
