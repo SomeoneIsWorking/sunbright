@@ -77,6 +77,7 @@
 // (samples, num_frames) shape aurora_audio_push() wants.
 
 #include <JSystem/JAudio/JASystem/JASAiCtrl.hpp>
+#include <JSystem/JAudio/JASystem/JASDSPInterface.hpp>
 #include <JSystem/JAudio/JASystem/JASRate.hpp>
 #include <JSystem/dspproc.h>
 #include <JSystem/dsptask.h>
@@ -88,6 +89,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <vector>
+
+// Audio M2 accessor (JASDSPChannel.cpp): VPB for live DSP voice i, else null.
+extern "C" JASystem::DSPInterface::DSPBuffer* sb_jas_dspch_vpb(int i);
 
 namespace {
 
@@ -95,21 +100,161 @@ bool g_headless = false;
 bool g_inited   = false;
 bool g_audioOpen = false;
 
-// Milestone-1 seam: real GC-DSP-ucode voice render (Zelda ucode) — see the file
-// header. Zeroes the frame so downstream mixing sees silence, not garbage.
-// bufL/bufR are live host pointers (uintptr_t — see JSystem/dsptask.h and the
-// JASDSPBuf.cpp callsite comment: a u32 here truncates a real LP64 heap pointer
-// and segfaults; verified live, not a hypothetical).
+// ── Audio M2: native DSP voice renderer (Zelda-ucode per-voice mix) ────────────
+// Replaces the milestone-1 silence seam. RE'd from the decomp + the proven
+// recomp-era decoder (scratch/audio_ref/native_jas_recomp_era.cpp) — see
+// docs/audio_native_mixer_plan.md "M2 VPB field map"/"pitch scale". bufL/bufR are
+// SEPARATE live host L/R buffers (getFrameSamples() mono s16 each);
+// vframeWork/imixcopy interleaves them into the stereo dac[] downstream.
+
+// AFC (ADPCM) coefficient table — proven bit-exact (native_jas_recomp_era.cpp).
+static const int kAfcCoef[16][2] = {
+    {0,0},{2048,0},{0,2048},{1024,1024},{4096,-2048},{3584,-1536},{3072,-1024},{4608,-2560},
+    {4200,-2248},{4800,-2300},{5120,-3072},{2048,-2048},{1024,-1024},{-1024,1024},{-1024,0},{-2048,0},
+};
+static inline u16 sb_be16(const u8* p) { return (u16)((p[0] << 8) | p[1]); }
+
+// Decode a whole AFC stream (big-endian .aw data) to s16 PCM. hq: 9B/16smp blocks.
+static void sb_afc_decode(const u8* d, u32 len, bool hq, std::vector<s16>& out)
+{
+    int yn1 = 0, yn2 = 0;
+    const u32 bs = hq ? 9 : 5;
+    out.reserve(out.size() + (len / bs) * 16);
+    for (u32 b = 0; b + bs <= len; b += bs) {
+        const u8* blk = d + b;
+        const int delta = 1 << (blk[0] >> 4);
+        const int c0 = kAfcCoef[blk[0] & 0xF][0], c1 = kAfcCoef[blk[0] & 0xF][1];
+        for (int i = 0; i < 16; i++) {
+            int nib;
+            if (hq) { nib = (blk[1 + i / 2] >> (i % 2 ? 0 : 4)) & 0xF; if (nib >= 8) nib -= 16; nib <<= 11; }
+            else    { nib = (blk[1 + i / 4] >> (6 - 2 * (i % 4))) & 3; if (nib >= 2) nib -= 4; nib <<= 13; }
+            int s = (delta * nib + yn1 * c0 + yn2 * c1) >> 11;
+            if (s > 32767) s = 32767; else if (s < -32768) s = -32768;
+            yn2 = yn1; yn1 = s;
+            out.push_back((s16)s);
+        }
+    }
+}
+
+// Host-side per-voice playback state (the ucode keeps this in the VPB; on the host
+// the renderer replaces the ucode, so we persist it keyed by DSPCH index).
+struct HostVoice {
+    const void*       waveBase = nullptr; // VPB unk118 at last decode (re-trigger detect)
+    std::vector<s16>  pcm;                // decoded wave cache
+    double            cursor   = 0.0;     // fractional sample position
+    bool              playing  = false;
+};
+static HostVoice g_hostVoice[64];
+
+// Decode the voice's wave (VPB) into its PCM cache. Format from the VPB:
+//   unk64==16 -> AFC (unk100==9 hq / ==5 lq);  unk64==1 -> PCM (unk100==16 / ==8 bits).
+// unk11C = full length in BYTES (setWaveInfo: unk11C = Wave_.unk1C). Wave data is BE.
+static void sb_decode_voice(JASystem::DSPInterface::DSPBuffer* vpb, HostVoice& hv)
+{
+    hv.pcm.clear();
+    const u8* data = reinterpret_cast<const u8*>(vpb->unk118);
+    const u32 lenBytes = vpb->unk11C;
+    if (data == nullptr || lenBytes == 0)
+        return;
+    if (vpb->unk64 == 16) {
+        sb_afc_decode(data, lenBytes, vpb->unk100 == 9, hv.pcm);
+    } else if (vpb->unk64 == 1) {
+        if (vpb->unk100 == 16) {
+            hv.pcm.resize(lenBytes / 2);
+            for (u32 i = 0; i < lenBytes / 2; i++) hv.pcm[i] = (s16)sb_be16(data + i * 2);
+        } else if (vpb->unk100 == 8) {
+            hv.pcm.resize(lenBytes);
+            for (u32 i = 0; i < lenBytes; i++) hv.pcm[i] = (s16)((s8)data[i] << 8);
+        }
+    }
+}
+
 void dsyncFrame2Native(u32 /*subframes*/, uintptr_t bufL, uintptr_t bufR)
 {
-    static bool warned = false;
-    if (!warned) {
-        std::fprintf(stderr, "[STUB-CALLED] DsyncFrame2 (audio M2 seam)\n");
-        warned = true;
+    static bool announced = false;
+    if (!announced) {
+        std::fprintf(stderr, "[audio] DsyncFrame2 native voice renderer active (M2 v1)\n");
+        announced = true;
     }
-    const u32 frameSamples = JASystem::Kernel::getFrameSamples();
-    std::memset(reinterpret_cast<void*>(bufL), 0, frameSamples * sizeof(s16));
-    std::memset(reinterpret_cast<void*>(bufR), 0, frameSamples * sizeof(s16));
+    const u32 n = JASystem::Kernel::getFrameSamples();
+    s16* L = reinterpret_cast<s16*>(bufL);
+    s16* R = reinterpret_cast<s16*>(bufR);
+
+    // Mix in 32-bit headroom to avoid mid-sum clipping, clamp at the end.
+    static std::vector<s32> accL, accR;
+    accL.assign(n, 0);
+    accR.assign(n, 0);
+
+    static int s_dbg = -1;
+    if (s_dbg < 0) s_dbg = std::getenv("SB_DBG_AUDIO") ? 1 : 0;
+    static long s_call = 0;
+    static int s_maxLive = -1;
+    const bool dbgNow = s_dbg && (s_call % 2000 == 0); // periodic
+    ++s_call;
+    int liveN = 0, playN = 0;
+
+    for (int ch = 0; ch < 64; ch++) {
+        JASystem::DSPInterface::DSPBuffer* vpb = sb_jas_dspch_vpb(ch);
+        HostVoice& hv = g_hostVoice[ch];
+        if (vpb == nullptr || vpb->unk118 == nullptr || vpb->unkC != 0 /*paused*/) {
+            hv.playing = false;
+            continue;
+        }
+        ++liveN;
+        if (dbgNow && liveN <= 6) {
+            std::fprintf(stderr,
+                "[audio] ch%d wave=%p unk4(pitch)=%u unk64=%u unk100=%u unk11C(len)=%u "
+                "unk10A=%u volL=%d volR=%d\n",
+                ch, vpb->unk118, vpb->unk4, vpb->unk64, vpb->unk100, vpb->unk11C,
+                vpb->unk10A, (int)(s16)vpb->unk10[0].targetVolume, (int)(s16)vpb->unk10[1].targetVolume);
+        }
+        const void* wb = vpb->unk118;
+        if (wb != hv.waveBase) { // new wave bound to this channel -> (re)trigger
+            hv.waveBase = wb;
+            sb_decode_voice(vpb, hv);
+            hv.cursor   = 0.0;
+            hv.playing  = !hv.pcm.empty();
+        }
+        if (!hv.playing || hv.pcm.empty())
+            continue;
+        ++playN;
+
+        const double step = static_cast<double>(vpb->unk4) / 4096.0; // unity = 4096 (JASChannel:898)
+        if (step <= 0.0)
+            continue;
+
+        // Buses: unk10[0] = L, unk10[1] = R main (Q15 target volume). Aux/effects = M3.
+        auto q15 = [](u16 v) -> float { s16 s = static_cast<s16>(v); return s > 0 ? static_cast<float>(s) / 32768.0f : 0.0f; };
+        const float gL = q15(vpb->unk10[0].targetVolume);
+        const float gR = q15(vpb->unk10[1].targetVolume);
+        const size_t len = hv.pcm.size();
+        double c = hv.cursor;
+        for (u32 i = 0; i < n; i++) {
+            const size_t idx = static_cast<size_t>(c);
+            if (idx >= len) { hv.playing = false; break; } // v1: play-once (loop = next increment)
+            const s16 s0 = hv.pcm[idx];
+            const s16 s1 = (idx + 1 < len) ? hv.pcm[idx + 1] : s0;
+            const float frac = static_cast<float>(c - static_cast<double>(idx));
+            const float samp = s0 + (s1 - s0) * frac; // linear interpolation
+            accL[i] += static_cast<s32>(samp * gL);
+            accR[i] += static_cast<s32>(samp * gR);
+            c += step;
+        }
+        hv.cursor = c;
+    }
+
+    if (s_dbg && liveN > s_maxLive) { // first time we see this many live voices
+        s_maxLive = liveN;
+        std::fprintf(stderr, "[audio] NEW max live voices=%d playing=%d (call %ld)\n", liveN, playN, s_call);
+    }
+    if (dbgNow)
+        std::fprintf(stderr, "[audio] frame: live=%d playing=%d (call %ld)\n", liveN, playN, s_call);
+
+    for (u32 i = 0; i < n; i++) {
+        s32 l = accL[i], r = accR[i];
+        L[i] = static_cast<s16>(l > 32767 ? 32767 : (l < -32768 ? -32768 : l));
+        R[i] = static_cast<s16>(r > 32767 ? 32767 : (r < -32768 ? -32768 : r));
+    }
 }
 
 } // namespace
@@ -131,7 +276,20 @@ void DsyncFrame2(u32 subframes, uintptr_t bufL, uintptr_t bufR)
 // aurora::audio (opening the device lazily, skipped entirely under SB_HEADLESS).
 void onDacBuffer(s16* buf, s32 numFrames)
 {
-    if (g_headless || buf == nullptr || numFrames <= 0)
+    if (buf == nullptr || numFrames <= 0)
+        return;
+    // SB_AUDIO_RAW=<path>: append the interleaved s16 stereo DAC output to a raw
+    // PCM file (persistent verification diagnostic — runs even headless, where the
+    // device push is skipped). Analyze with python (RMS/peak) or `ffmpeg -f s16le
+    // -ar 32000 -ac 2 -i <path> out.wav`. Milestone-2 audio A/B per the plan §M2.4.
+    if (const char* rawPath = std::getenv("SB_AUDIO_RAW")) {
+        static FILE* rawFp = std::fopen(rawPath, "wb");
+        if (rawFp) {
+            std::fwrite(buf, sizeof(s16) * 2, static_cast<size_t>(numFrames), rawFp);
+            std::fflush(rawFp);
+        }
+    }
+    if (g_headless)
         return;
     if (!g_audioOpen) {
         g_audioOpen = aurora_audio_open(32000, 2);
