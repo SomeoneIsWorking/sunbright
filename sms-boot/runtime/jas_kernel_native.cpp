@@ -150,12 +150,28 @@ static HostVoice g_hostVoice[64];
 // Decode the voice's wave (VPB) into its PCM cache. Format from the VPB:
 //   unk64==16 -> AFC (unk100==9 hq / ==5 lq);  unk64==1 -> PCM (unk100==16 / ==8 bits).
 // unk11C = full length in BYTES (setWaveInfo: unk11C = Wave_.unk1C). Wave data is BE.
+// DSPBuffer::unk118 is the wave's ARAM ADDRESS (setWaveInfo stores the raw u32 aram addr as
+// an s16*), NOT a host pointer. On GC the DSP reads sample data straight out of ARAM; here
+// ARAM is a host-side buffer (aurora AR.cpp sAramBuffer, base = ARGetStorageAddress()), so an
+// aram address must be rebased to sAramBuffer + addr before dereferencing. Without this the
+// renderer dereferenced a ~0.4MB "pointer" and SIGSEGV'd the moment a voice had a valid pitch
+// (2026-07-17: the BE-pitch fix un-gated the mix loop and exposed this). ARGetBaseAddress()==0
+// on native, so the aram address is a direct offset into sAramBuffer.
+extern "C" void* ARGetStorageAddress();
+static const u8* sb_aram_to_host(const void* aramAddr)
+{
+    const u8* base = reinterpret_cast<const u8*>(ARGetStorageAddress());
+    if (!base)
+        return nullptr;
+    return base + reinterpret_cast<uintptr_t>(aramAddr);
+}
+
 static void sb_decode_voice(JASystem::DSPInterface::DSPBuffer* vpb, HostVoice& hv)
 {
     hv.pcm.clear();
-    const u8* data = reinterpret_cast<const u8*>(vpb->unk118);
+    const u8* data = sb_aram_to_host(vpb->unk118);
     const u32 lenBytes = vpb->unk11C;
-    if (data == nullptr || lenBytes == 0)
+    if (vpb->unk118 == nullptr || data == nullptr || lenBytes == 0)
         return;
     if (vpb->unk64 == 16) {
         sb_afc_decode(data, lenBytes, vpb->unk100 == 9, hv.pcm);
@@ -216,6 +232,11 @@ void dsyncFrame2Native(u32 /*subframes*/, uintptr_t bufL, uintptr_t bufR)
         }
         const void* wb = vpb->unk118;
         if (wb != hv.waveBase) { // new wave bound to this channel -> (re)trigger
+            if (s_dbg) {
+                std::fprintf(stderr, "[audio] DECODE ch%d wave=%p len=%d fmt=%u hq=%u  (about to decode)\n",
+                             ch, wb, vpb->unk11C, vpb->unk64, vpb->unk100);
+                std::fflush(stderr);
+            }
             hv.waveBase = wb;
             sb_decode_voice(vpb, hv);
             hv.cursor   = 0.0;
