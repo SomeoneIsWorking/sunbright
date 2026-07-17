@@ -306,7 +306,7 @@ TRandomFruit::TRandomFruit(const char* name) : TResetFruit(name) {}
 // ============================================================
 // TResetFruit
 // ============================================================
-TResetFruit::TResetFruit(const char* name) : TMapObjBall(name) {}
+// TResetFruit::TResetFruit now PORTED in MapObjBall.cpp (RE'd 2026-07-17).
 void TResetFruit::makeObjLiving() { SB_STUB_HIT("TResetFruit::makeObjLiving"); }
 void TResetFruit::makeObjWaitingToAppear() { SB_STUB_HIT("TResetFruit::makeObjWaitingToAppear"); }
 

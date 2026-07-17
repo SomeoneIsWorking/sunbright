@@ -164,9 +164,9 @@ void TResetFruit::checkGroundCollision(JGeometry::TVec3<float>*) { SB_STUB_HIT("
 void TResetFruit::control() { SB_STUB_HIT("TResetFruit::control"); }
 u32 TResetFruit::getLivingTime() const { SB_STUB_HIT("TResetFruit::getLivingTime"); return 0; }
 void TResetFruit::hold(TTakeActor*) { SB_STUB_HIT("TResetFruit::hold"); }
-void TResetFruit::initMapObj() { SB_STUB_HIT("TResetFruit::initMapObj"); }
+// TResetFruit::initMapObj now PORTED in MapObjBall.cpp (RE'd 2026-07-17).
 void TResetFruit::kicked() { SB_STUB_HIT("TResetFruit::kicked"); }
-void TResetFruit::makeObjAppeared() { SB_STUB_HIT("TResetFruit::makeObjAppeared"); }
+// TResetFruit::makeObjAppeared now PORTED in MapObjBall.cpp (RE'd 2026-07-17).
 BOOL TResetFruit::receiveMessage(THitActor*, unsigned int) { SB_STUB_HIT("TResetFruit::receiveMessage"); return 0; }
 void TResetFruit::thrown() { SB_STUB_HIT("TResetFruit::thrown"); }
 void TResetFruit::touchActor(THitActor*) { SB_STUB_HIT("TResetFruit::touchActor"); }
