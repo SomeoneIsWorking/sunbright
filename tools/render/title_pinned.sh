@@ -18,8 +18,6 @@
 #      exits non-zero on RED — DO NOT trust a pixel diff on an unpinned pair.
 #   5. On GREEN, produce an SBS PNG. The pixel delta from that PNG is the first
 #      trustworthy renderer-only divergence number at title.
-#
-# See handoff notes in <home>/.claude/plans/nifty-chasing-bachman.md.
 
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"; cd "$HERE"

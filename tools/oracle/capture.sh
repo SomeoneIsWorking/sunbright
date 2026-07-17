@@ -12,7 +12,7 @@
 # present, else system dolphin-emu.
 #
 # NOTE (perf trap, memory [[perf-dump-config-and-probe]]): DumpFrames is passed
-# as a -C override, NOT persisted to <home>/.config/dolphin-emu — do not enable it
+# as a -C override, NOT persisted to the Dolphin config dir — do not enable it
 # in the saved config or every later run crawls under the FrameDumper.
 set -eo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

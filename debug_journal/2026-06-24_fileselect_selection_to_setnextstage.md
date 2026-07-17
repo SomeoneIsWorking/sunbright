@@ -55,7 +55,7 @@ fix the scene collision / Mario spawn so `checkGround(846,0,-1000)` returns non-
 Confirm by watching `[dir-state]` stay at 4 (not 7) and `[movestage] FIRED`.
 
 ## Repro (card already formatted → straight to UNK13 → auto-pick file 0)
-    cd <home>/repo/sunbright
+    cd <repo-root>
     cmake --build build-native --target sms-boot -j$(nproc)
     pkill -9 -x sms-boot; S=""; for f in $(seq 200 12 1690); do S="$S ${f}:START $((f+6)):-"; done
     for f in $(seq 1760 80 6000); do S="$S ${f}:A $((f+20)):-"; done

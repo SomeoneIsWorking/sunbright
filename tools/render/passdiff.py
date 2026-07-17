@@ -33,9 +33,10 @@ OUT = 'scratch/passes'
 os.makedirs(OUT, exist_ok=True)
 
 def auto_efb_dir():
-    for root in (os.path.expanduser('<home>/.local/share/dolphin-emu/Dump/Textures'),
-                 os.path.expanduser('<home>/.dolphin-emu/Dump/Textures'),
-                 os.path.expanduser('<home>/Library/Application Support/Dolphin/Dump/Textures')):
+    home = os.path.expanduser('~')
+    for root in (os.path.join(home, '.local/share/dolphin-emu/Dump/Textures'),
+                 os.path.join(home, '.dolphin-emu/Dump/Textures'),
+                 os.path.join(home, 'Library/Application Support/Dolphin/Dump/Textures')):
         if os.path.isdir(root):
             if glob.glob(os.path.join(root, 'efb1_n*.png')):
                 return root                               # dumps land directly in Textures/

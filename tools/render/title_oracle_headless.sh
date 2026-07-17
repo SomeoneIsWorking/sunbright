@@ -7,7 +7,7 @@
 # Recipe matches tools/render/title_value_oracle.sh's oracle-capture step (known to reach
 # the settled picker reliably): SUNBRIGHT_HEADLESS=1 SUNBRIGHT_FASTBOOT=1 SUNBRIGHT_STAGE=15
 # SUNBRIGHT_SCENARIO=0 + probe, 2x Start via /pad to leave PRESS-START, then settle. Adds
-# SUNBRIGHT_DUMP=1 so Dolphin's FrameDumper writes PNGs to <home>/.local/share/dolphin-emu/Dump/Frames
+# SUNBRIGHT_DUMP=1 so Dolphin's FrameDumper writes PNGs to its dump dir (<home>/.local/share/dolphin-emu/Dump/Frames)
 # even though nothing is presented to a window (headless still renders real Vulkan frames).
 #
 # Usage: tools/render/title_oracle_headless.sh [settle_s=55]
