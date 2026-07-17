@@ -256,3 +256,33 @@ VERIFIED (the breakthrough): the BMS now loads REAL data (bytes a4 08 00 a4 09 0
    volume/DAC-forwarding issue). Re-check with SB_AUDIO_RAW after the SE fix.
 
 Diagnostics added this iteration: `SB_DUMP_FST` (aurora fst.cpp — lists every disc FST entry).
+
+## Update 8: SE-port crash = JAISeqUpdateData use-after-free (cancelPortCmd is a NO-OP stub)
+
+The setSePortParameter SIGSEGV (~24s in, consistent) is a use-after-free at the
+**JAISeqUpdateData level**, not the track level:
+- The SE port command stores `args = &param_1->unk4C[i].unk4` (a pointer INTO the
+  JAISeqUpdateData) and is queued (addPortCmdOnce -> cmd_once). portCmdMain (aiCallback, in
+  DSPBuf::process) drains + runs it: `cmd->unk8(cmd->unkC)` -> setSePortParameter(args).
+- When a sound stops (~24s, BGM/SE end) its JAISeqUpdateData frees, but its queued port
+  command is NOT removed -> `param_1->mTrack` reads freed memory -> crash. Confirmed: guarding
+  on track->unk3C4 / getOuterParam did NOT help (the fault is reading mTrack from the freed
+  `param_1` itself, before those checks).
+- ROOT: `JASystem::Kernel::TPortCmd::cancelPortCmd`/`cancelPortCmdStay` (JASCmdStack.cpp:56-58)
+  are EMPTY `{ }` STUBS with no callers — the banned silent-no-op class. Nothing removes a
+  queued command when its owner tears down, so a stale command runs against freed args.
+
+### Fixes landed this iteration (correct, but for OTHER UAF paths — not the 24s crash):
+- closeTrack now clears the PARENT's unk2C4[] back-ref to a self-closing child (JASTrack.cpp)
+  — prevents getChild() returning a reused pool slot into a later outerInit. Correct + kept.
+- setSePortParameter guards track->unk3C4==0 / null mOuterParam — covers closed-track and
+  null-outer cases (kept; doesn't cover the freed-JAISeqUpdateData case).
+
+### NEXT (the final crash before audible verification):
+1. Implement `TPortCmd::cancelPortCmd(head)` / `cancelPortCmdStay()` — unlink `this` from the
+   TPortHead singly-linked list (head->unk0..unk4 chain; clear this->unk0/unk4). Currently no-op.
+2. Wire it: when a sound / its JAISeqUpdateData tears down (find the free/stop path), cancel
+   every unk4C[i].unk2C command from cmd_once + cmd_stay BEFORE freeing the update data. Then
+   the queue never holds a command into freed memory.
+Once this lands, re-verify SB_AUDIO_RAW output (renderer/pipeline/banks/sequencer all work; the
+game just crashes on the first sound teardown).
