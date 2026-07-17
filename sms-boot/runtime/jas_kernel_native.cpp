@@ -77,6 +77,7 @@
 // (samples, num_frames) shape aurora_audio_push() wants.
 
 #include <JSystem/JAudio/JASystem/JASAiCtrl.hpp>
+#include <JSystem/JAudio/JASystem/JASDSPBuf.hpp>
 #include <JSystem/JAudio/JASystem/JASDSPInterface.hpp>
 #include <JSystem/JAudio/JASystem/JASRate.hpp>
 #include <JSystem/dspproc.h>
@@ -189,13 +190,18 @@ void dsyncFrame2Native(u32 /*subframes*/, uintptr_t bufL, uintptr_t bufR)
     if (s_dbg < 0) s_dbg = std::getenv("SB_DBG_AUDIO") ? 1 : 0;
     static long s_call = 0;
     static int s_maxLive = -1;
-    const bool dbgNow = s_dbg && (s_call % 2000 == 0); // periodic
+    const bool dbgNow = s_dbg && (s_call % 500 == 0); // periodic
     ++s_call;
-    int liveN = 0, playN = 0;
+    int liveN = 0, playN = 0, allocN = 0, waveN = 0, pauseN = 0;
 
     for (int ch = 0; ch < 64; ch++) {
         JASystem::DSPInterface::DSPBuffer* vpb = sb_jas_dspch_vpb(ch);
         HostVoice& hv = g_hostVoice[ch];
+        if (vpb != nullptr) {
+            ++allocN;
+            if (vpb->unk118 != nullptr) ++waveN;
+            if (vpb->unkC != 0) ++pauseN;
+        }
         if (vpb == nullptr || vpb->unk118 == nullptr || vpb->unkC != 0 /*paused*/) {
             hv.playing = false;
             continue;
@@ -248,7 +254,8 @@ void dsyncFrame2Native(u32 /*subframes*/, uintptr_t bufL, uintptr_t bufR)
         std::fprintf(stderr, "[audio] NEW max live voices=%d playing=%d (call %ld)\n", liveN, playN, s_call);
     }
     if (dbgNow)
-        std::fprintf(stderr, "[audio] frame: live=%d playing=%d (call %ld)\n", liveN, playN, s_call);
+        std::fprintf(stderr, "[audio] frame: alloc=%d wave=%d paused=%d live=%d playing=%d (call %ld)\n",
+                     allocN, waveN, pauseN, liveN, playN, s_call);
 
     for (u32 i = 0; i < n; i++) {
         s32 l = accL[i], r = accR[i];
@@ -331,6 +338,19 @@ extern "C" void sb_jas_kernel_frame(void)
     sampleDebt += 32000.0 / 60.0;
     const u32 frameSamples = JASystem::Kernel::getFrameSamples(); // 560
     while (sampleDebt >= frameSamples) {
+        // PRODUCE one DSP frame: finishDSPFrame() -> process(UNK1) advances the
+        // triple-buffer write pointer, runs DsyncFrame2 (the native voice mix) and
+        // updateDSP() -> subframeCallback() (the SEQUENCER advance that triggers
+        // note-ons -> voice allocation). This is the native equivalent of retail's
+        // DSP-done interrupt driving finishDSPFrame. Without it the pipeline
+        // DEADLOCKS: mixDSP()'s idle-kick only calls finishDSPFrame when dspstatus
+        // == 0, but dspstatus is set to 1 by the first finishDSPFrame and only reset
+        // inside finishDSPFrame's buffer-full branch (never reached), so the whole
+        // producer path (sequencer + voice render) ran exactly ONCE per boot
+        // (2026-07-17: startSeq fired 8x but DsyncFrame2 ran once, live voices=0).
+        JASystem::DSPBuf::finishDSPFrame();
+        // CONSUME: vframeWork() -> mixDSP() copies the produced dsp_buf -> dac[] and
+        // fires the registered dac callback (-> aurora::audio).
         JASystem::Kernel::updateDac();
         sampleDebt -= frameSamples;
         ++updateDacCalls;

@@ -40,3 +40,43 @@ calls — worth confirming the DSPBuf::process → DsyncFrame2 cadence is right.
    the sequencer not running at all? (smnUse counter, alloc call count.)
 3. Confirm DsyncFrame2 call cadence vs updateDac (why so few calls).
 Once voices allocate, the renderer should produce audio and M2 v1 can be ear/waveform-verified.
+
+## Update (same day): pipeline DEADLOCK + LP64 crash fixed — pipeline now runs; next gap = no wave on notes
+
+Root-caused and fixed TWO bugs that made the "no DSP voices" symptom, both surfaced by
+actually driving the renderer:
+
+### 1. DSPBuf triple-buffer pipeline DEADLOCK (the "0 voices" root cause)
+`DsyncFrame2` AND the sequencer advance (`Kernel::subframeCallback` via `DSPBuf::updateDSP`)
+BOTH live in `process(DSPBUF_EVENTS_UNK1)` = `finishDSPFrame`. But M1 only drove
+`mixDSP` = `process(UNK2)`, whose idle-kick calls `finishDSPFrame` ONLY `if (dspstatus == 0)`
+— and `dspstatus` is set to 1 by the first `finishDSPFrame` and only reset inside
+`finishDSPFrame`'s buffer-full branch (never reached). So the whole producer path (voice
+render + sequencer tick) ran EXACTLY ONCE per boot, then deadlocked. Evidence: `startSeq`
+fired 8×, `updateDac` 38285×, but `DsyncFrame2` logged only "call 1". M1's "self-driving
+idle-kick" was never actually verified.
+FIX (sms-boot/runtime/jas_kernel_native.cpp): drive `DSPBuf::finishDSPFrame()` explicitly per
+DSP tick in `sb_jas_kernel_frame` (the native equivalent of retail's DSP-done interrupt). Now
+`DsyncFrame2` runs continuously (32000+ calls/run), sequencer advances.
+
+### 2. LP64 pointer truncation in the DSP-channel back-link (crash once pipeline ran)
+Driving the pipeline exposed a SIGSEGV in `Driver::updatecallDSPChannel` (via
+`TDSPChannel::updateAll`). `TDSPChannel::getLogicalChannel()` returns `(TChannel*)unk8`, but
+`unk8` was declared `u32` — and the logical channel is passed in as `(u32)(uintptr_t)this`
+(JASChannel.cpp:716/731/776), TRUNCATING the 64-bit host pointer. `getLogicalChannel` then
+reconstructs a garbage pointer → `channel->unk4` faults. Benign on 32-bit GC; fatal on host.
+FIX: widen the channel-pointer path `u32 -> uintptr_t` (`unk8`, `alloc(u32,uintptr_t)`,
+`allocate(uintptr_t)`, `free(*,uintptr_t)`, and drop the `(u32)` truncation at the 3 call
+sites). Also reordered `updatecallDSPChannel`'s `mgr = channel->unk4` to AFTER the null check
+(was a null-deref-before-check, same host-crash class). uintptr_t == u32 on GC (faithful).
+VERIFIED: crash gone, pipeline runs the full frame budget without core-dumping.
+
+### NEXT gap: channels allocate but carry NO wave
+With the pipeline running, the SB_DBG_AUDIO channel-state trace shows `alloc=1 wave=0` — ONE
+DSP channel is allocated but its VPB `unk118` (wave base) is never set, and only one at a time
+(not the many voices a BGM would use). So note-ons reach channel allocation but `setWaveInfo`
+is not reached / the wave lookup returns nothing. Next: trace `TTrack::noteOn` ->
+`BankMgr::noteOn` -> instrument/wave resolution — is the WAVE BANK (IBNK/WSYS / .aw archives)
+loaded, and does noteOn find an instrument+wave? (alloc=1 is likely a held control/SE channel,
+not a sounding note.) The renderer + pipeline are ready; the remaining gap is the
+sequencer→bank→wave binding.
