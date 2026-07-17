@@ -306,7 +306,7 @@ void TFruitLauncher::loadAfter() { SB_STUB_HIT("TFruitLauncher::loadAfter"); }
 #include <MoveBG/MapObjTree.hpp>
 
 // TMapObjTree: key = perform (first explicit virtual)
-void TMapObjTree::perform(u32, JDrama::TGraphics*) { SB_STUB_HIT("TMapObjTree::perform"); }
+// TMapObjTree::perform now PORTED in reference/sms/src/MoveBG/MapObjTree.cpp (RE'd 2026-07-17).
 
 // TMapObjTreeScale: key = loadAfter (first explicit virtual)
 void TMapObjTreeScale::loadAfter() { SB_STUB_HIT("TMapObjTreeScale::loadAfter"); }
