@@ -140,3 +140,28 @@ NEXT: instrument TTrack::noteOn — count total note attempts + raw program/note
 programs read 0xF0 (program-change not processed? track parse stalled? note data not reached?).
 Also still pending once real waves flow: the latent LP64 `chan->unk14 = (u32)(uintptr_t)wave`
 truncation (TChannel::unk14 u32 -> uintptr_t).
+
+## Update 4: note-issuance localized — only 8 noteOn total (tracks barely advance); reg6=0xF0 (osc)
+
+Instrumented TTrack::noteOn (SB_DBG_AUDIO). With IBNK banks now loading:
+- `noteOn` is reached only **8 times total** over a 35s run, across 20+ started tracks. So the
+  sequencer barely advances — the melody isn't playing at all (real BGM = hundreds of notes).
+- Every call: `reg=0xF0` (readRegDirect(6) = raw register mRegisterParam.unk0[6]), so
+  bank=0 / prog=0xF0 -> BankMgr::noteOn's `param_3 > 0xEF` routes to noteOnOsc (procedural
+  oscillator, setOscInfo, NO sampled wave -> unk118 stays null -> my renderer skips it).
+  pitch/voice/vel decode fine (r31/r27/r29); only the PROGRAM is wrong/osc.
+- Register 6 is written only by generic BMS register-write opcodes (Cmd_Process), not an
+  explicit writeRegDirect(6); no melody program-change appears to set it to a sampled prog
+  (0-127). But this is secondary — the primary issue is tracks not advancing.
+
+So the gap is now in the BMS SEQUENCE PARSE / track timing: tracks start (startSeq x20+) but
+issue ~8 notes total, meaning they STALL early — likely a wait/duration-timing bug
+(seqTimeToDspTime / rest handling) parking tracks ~forever after one event, OR the parser
+hits an unhandled opcode and stops the track (unk3C4->0). NEXT: instrument the parser
+(Cmd_Process / rootCallback) — do tracks stop (error/unknown opcode) or wait (timing)? Count
+per-track events + check for the unhandled-opcode/stop path. Also check reg-6 default in
+mRegisterParam.init() and whether any melody track ever writes a sampled program.
+
+(This is BELOW the M2 renderer + banks, which are landed and correct — the renderer, pipeline,
+LP64, and IBNK/WSYS bank loading are all done + verified; only the sequencer's note stream is
+starved. Diagnostics kept: SB_DBG_AUDIO TTrack::noteOn reg/prog/pitch trace.)
