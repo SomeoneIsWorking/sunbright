@@ -80,3 +80,36 @@ is not reached / the wave lookup returns nothing. Next: trace `TTrack::noteOn` -
 loaded, and does noteOn find an instrument+wave? (alloc=1 is likely a held control/SE channel,
 not a sounding note.) The renderer + pipeline are ready; the remaining gap is the
 sequencer→bank→wave binding.
+
+## Update 2: full silence chain traced to the FINAL blocker — IBNK not loaded (needs BE swap)
+
+With the pipeline running (deadlock + LP64 fixes above), traced why channels still carry no
+wave (`alloc=1 wave=0`). Instrumented BankMgr::noteOn:
+- `noteOn` is called only ~5x, ALWAYS `bank=255 (0xFF, unassigned) inst=240 (0xF0)`. inst
+  0xF0 > 0xEF routes to `noteOnOsc` (the procedural OSCILLATOR path, setOscInfo — no sampled
+  wave). So the tracks start (20+ startSeq) but issue almost no real notes, and those default
+  to osc with no instrument bank.
+- Root: the INSTRUMENT BANKS (IBNK) are never loaded. JAIBasic.cpp:253-258 comment documents
+  it: cid-3 WSYS wave banks ARE wired to unk54 + BE-swapped in registWaveBankWS, but cid-2
+  IBNK instrument banks -> `unk50` is LEFT NULL — "registBankBNK needs its own IBNK BE swap
+  before it can be wired (game null-guards unk50 -> silent instruments, no crash)". So
+  BankMgr::getBank returns null for every real note -> no instrument -> no wave.
+
+### The complete audio-silence chain (this session):
+1. DSPBuf pipeline deadlock (producer ran once) -> FIXED (drive finishDSPFrame per tick).
+2. LP64 TDSPChannel::unk8 pointer truncation -> SIGSEGV -> FIXED (u32->uintptr_t).
+3. Sequences (Vload/sms_boot_audio) + WSYS wave banks load fine.
+4. **IBNK instrument banks NOT loaded (unk50 null, pending IBNK BE swap)** <- FINAL blocker.
+
+### NEXT (the remaining M2-audible task): implement the IBNK BE swap + wire cid-2 -> unk50
+- IBNK (JASBNKParser / createBasicBank) is a big-endian instrument-bank format; on the LE host
+  it needs a position-aware BE swap (like WSYS's in registWaveBankWS) before registBankBNK can
+  parse it. Wire cid-2 blobs into unk50 in the aaf/cid loop (JAIBasic.cpp:259+), then the
+  existing registBankBNK(i, unk50[i]) + assignWaveBank loop (JAIBasic.cpp:411-422) binds them.
+- Once instruments load, noteOn resolves real waves -> setWaveInfo sets unk118 -> the (landed)
+  renderer decodes+mixes -> title BGM audible. THEN also fix the latent LP64 truncation
+  `chan->unk14 = (u32)(uintptr_t)wave` (TChannel::unk14 is u32; same class as unk8) which will
+  bite the moment real wave pointers flow — widen TChannel::unk14 + setWaveInfo's param to
+  uintptr_t and verify no truncation.
+- Diagnostics kept (SB_DBG_AUDIO): noteOn CALLED/FAIL reasons, startSeq trace, per-frame
+  alloc/wave/paused/live channel counts.
