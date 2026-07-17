@@ -165,3 +165,29 @@ mRegisterParam.init() and whether any melody track ever writes a sampled program
 (This is BELOW the M2 renderer + banks, which are landed and correct — the renderer, pipeline,
 LP64, and IBNK/WSYS bank loading are all done + verified; only the sequencer's note stream is
 starved. Diagnostics kept: SB_DBG_AUDIO TTrack::noteOn reg/prog/pitch trace.)
+
+## Update 5: parse-stall ROOT — tracks wait forever for note-channel-done (mWaitTimer==-1)
+
+Instrumented rootCallback + sParser.mainProc (SB_DBG_AUDIO):
+- rootCallback fires 25000+ times, unk3C4=1 (playing), tempo unk3B0=0.2398 — so tracks ARE
+  ticked at a normal rate; not a tempo/callback-driving problem.
+- BUT sParser.mainProc (the BMS opcode processor) runs only **3 times TOTAL**. So each track
+  processes ~its first few setup opcodes, then every mainProc() call breaks at the wait-gate
+  (JASTrack.cpp:692-710) BEFORE reaching sParser.mainProc, and never advances again.
+- The gate that's stuck: `mSeqCtrl.mWaitTimer == -1` (line 692) = "wait until note channel 0
+  finishes" (chan->unk1 == 0xff). The note's DSP channel never reaches done, so the wait never
+  releases -> track parked forever after its first note. (retcode never -1, so tracks don't
+  END; they WAIT.)
+- All 3 processed notes are prog=0xF0 (osc, noteOnOsc); osc notes with no release likely never
+  reach "done", which would explain the permanent wait.
+
+So the two symptoms share a cause at the note-channel lifecycle: the first note's channel never
+reports done (unk1==0xff), and the program is osc (0xF0). NEXT:
+1. Trace where TChannel::unk1 becomes 0xff (note "done") — is the note's release/duration ever
+   applied, or does updatecallDSPChannel / the envelope never tear the channel down? (My earlier
+   updatecallDSPChannel null/LP64 fix got the pipeline running; the channel may still not
+   progress to done.)
+2. Log the 3 setup opcodes sParser.mainProc processes — if they're misparsed (endianness/opcode
+   dispatch), the wrong program (0xF0) + wrong wait mode could both follow from a bad track
+   header parse. This is the highest-leverage check: dump the opcode bytes + dispatch.
+Renderer/pipeline/banks remain landed+correct; this is purely the sequencer note lifecycle.
