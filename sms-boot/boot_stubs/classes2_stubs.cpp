@@ -13,7 +13,7 @@
 #include <Animal/AnimalBase.hpp>
 
 // TAnimalBase: key = load (first explicit virtual)
-void TAnimalBase::load(JSUMemoryInputStream&) { SB_STUB_HIT("TAnimalBase::load"); }
+// TAnimalBase::load PORTED in decomp/sms/src/Animal/AnimalBase.cpp (RE 2026-07-17).
 
 // ============================================================
 // === Enemy/AreaCylinder.hpp ===

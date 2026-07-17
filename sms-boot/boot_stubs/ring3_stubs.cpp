@@ -32,7 +32,7 @@ void TAmiKing::initMapObj() { SB_STUB_HIT("TAmiKing::initMapObj"); }
 void TAmiKing::moveObject() { SB_STUB_HIT("TAmiKing::moveObject"); }
 void TAmiKing::touchPlayer(THitActor*) { SB_STUB_HIT("TAmiKing::touchPlayer"); }
 // TAnimalBase::calcRootMatrix PORTED in decomp/sms/src/Animal/AnimalBase.cpp (empty override, RE 2026-07-17).
-void TAnimalBase::init(TLiveManager*) { SB_STUB_HIT("TAnimalBase::init"); }
+// TAnimalBase::init PORTED in decomp/sms/src/Animal/AnimalBase.cpp (RE 2026-07-17).
 // TAnimalBase::loadAfter now PORTED in decomp/sms/src/Animal/AnimalBase.cpp (RE'd 2026-07-17).
 void TAnimalBase::perform(unsigned int, JDrama::TGraphics*) { SB_STUB_HIT("TAnimalBase::perform"); }
 // TAnimalBase::receiveMessage PORTED in decomp/sms/src/Animal/AnimalBase.cpp (returns 0, RE 2026-07-17).

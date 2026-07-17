@@ -40,7 +40,7 @@ TAnimalBase::TAnimalBase(u32 param0, const char* name)
 void TAnimalBase::execWalk(bool) { SB_STUB_HIT("TAnimalBase::execWalk"); }
 
 // TAnimalBase::resetRandomCurPathNode()
-void TAnimalBase::resetRandomCurPathNode() { SB_STUB_HIT("TAnimalBase::resetRandomCurPathNode"); }
+// TAnimalBase::resetRandomCurPathNode PORTED in decomp/sms/src/Animal/AnimalBase.cpp (RE 2026-07-17).
 
 // ---------------------------------------------------------------------------
 // Animal manager — TMewManager ctor (methods are in AnimalManager.cpp)
