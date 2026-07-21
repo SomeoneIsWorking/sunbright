@@ -1925,3 +1925,33 @@ Visible residuals to measure against the oracle, not yet root-caused:
 Next: a true side-by-side against the decomp oracle at the same screen. None of the existing
 `scratch/shots/fsel_*` images are usable for this — despite the name they are all TITLE-phase
 captures, not the block screen, so the oracle frame has to be captured fresh.
+
+## Recomp file-select vs the decomp oracle — first real side-by-side
+
+Oracle captured fresh from the decomp runtime (`SB_STAGE=15`,
+`SB_PAD_SCRIPT="2600:START 2610:-"`, dump after 3300 presents) since no usable oracle image of
+this screen existed. Note the documented size gotcha applies: the oracle dump came out
+1280x960 (window) and the recomp's 1280x896 (EFB), so a naive pixel diff between them is
+invalid — they must be brought to a common size before any numeric comparison.
+
+Structurally the recomp matches: same scene, same camera framing, same blocks, same signpost,
+same Mario pose. The differences are real render defects, not missing content:
+
+1. **The sea is speckled white noise in the recomp; smooth turquoise in the oracle.** This is
+   the most visible defect by far and the best next target. The oracle's sea is a clean
+   gradient from deep teal to shallow green-blue; the recomp's is dense white stipple over
+   roughly the right base colour, which reads like a per-pixel alpha/depth or texture-sampling
+   fault rather than wrong geometry.
+2. **Palm fronds are dark and desaturated in the recomp**, bright green in the oracle. Note
+   the fronds darken over the dialog panel in BOTH — that part is correct compositing in each,
+   so the defect is the fronds' base shading, not the panel blend or draw order.
+3. **The save-slot labels differ in kind**: the oracle draws "New" inside rounded blue J2D
+   panels above each block; the recomp draws outlined sprite-style "NEW" banners with no
+   panel. The dialog panel is also populated in the recomp and empty in the oracle. These two
+   are most likely a different phase of the fade-in animation rather than a render fault —
+   the screens were not captured at a pinned matching phase.
+
+That last point is the gate on any numeric parity work here: both sides need the animation
+phase pinned before a pixel percentage means anything, exactly as the decomp title-oracle gate
+already established. Item 1 does not need that gate — white stipple over water is wrong at any
+phase — so it is the next thing to chase.
