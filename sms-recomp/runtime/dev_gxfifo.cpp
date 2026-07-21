@@ -309,14 +309,8 @@ size_t parse(const u8* p, size_t n, int depth) {
         if (op == 0x10) {                       // XF write
             if (n - i < 5) { g_need = 5; break; }
             const u32 count = ((be16(p + i + 1)) & 0xFFFF) + 1;
-            const u32 xfaddr = be16(p + i + 3);
             // TexGen config lives at XF 0x1040-0x104F; log what the guest actually writes so
             // an "unconfigured tcg" in aurora can be attributed to the game or to us.
-            if (xfaddr >= 0x1040 && xfaddr <= 0x104F && n - i >= 1 + 4 + 4)
-                lucent::debug("gxfifo", "seq XF texgen[{}] srcRow={}",
-                              xfaddr - 0x1040, (be32(p + i + 5) >> 7) & 0x1F);
-            if (xfaddr == 0x103F && n - i >= 1 + 4 + 4)
-                lucent::debug("gxfifo", "seq XF numTexGens = {}", be32(p + i + 5));
             const size_t len = 1 + 4 + count * 4;
             if (n - i < len) { g_need = len; break; }
             g_out.insert(g_out.end(), p + i, p + i + len);
@@ -330,7 +324,6 @@ size_t parse(const u8* p, size_t n, int depth) {
 
             // 0x49: EFB copy top-left (10 bits each). 0x4A: width-1 / height-1.
             if (reg == 0x49) { g_copy_left = val & 0x3FF; g_copy_top = (val >> 10) & 0x3FF; }
-            else if (reg == 0x00) lucent::debug("gxfifo", "seq BP genMode numTexGens = {}", val & 0xF);
             else if (reg == 0x4A) { g_copy_w = (val & 0x3FF) + 1; g_copy_h = ((val >> 10) & 0x3FF) + 1; }
             // 0x52 bit 14 selects copy-to-XFB, which is what produces the presented frame.
             else if (reg == 0x52 && (val & (1u << 14))) emit_copy_state();

@@ -1463,3 +1463,37 @@ it turns "aurora failed somewhere" into "this parser mis-advanced here".
 
 Remaining, both now much later and less frequent: `unhandled tcg src 21` and
 `unsupported cull mode 3` (GX_CULL_ALL — an aurora gap rather than a stream problem).
+
+## Open contradiction: aurora reports cull mode 3, the stream never sends it
+
+`GX_CULL_ALL` (3) is a legitimate GX mode aurora does not implement — WebGPU has no
+"cull everything" rasterizer state, so `to_primitive_state` FATALs on it.
+
+But the guest does not appear to send it. Logging every BP `genMode` (`0x00`) write the
+parser frames shows only three before the fatal:
+
+```
+genMode #1 raw=0x000001 cull=0
+genMode #2 raw=0x004010 cull=1
+genMode #3 raw=0x004010 cull=1
+```
+
+Aurora reads the same bits (14-15) and SWAPS front/back, so `hwCull=1` becomes
+`GX_CULL_BACK` (2). Its default is also `GX_CULL_BACK`. So neither the stream nor the default
+explains a 3.
+
+Since aurora only ever sees `g_out`, and `g_out` is built solely from framed commands, one of
+these must be false — and that is the thing to establish next, not guess at:
+
+1. a `genMode` write is reaching aurora that this parser never framed (i.e. bytes enter
+   `g_out` by some path other than the BP branch), or
+2. `g_gxState.cullMode` is being set somewhere other than the `genMode` handler, or
+3. the FATAL's value is not `g_gxState.cullMode` at all but a shader-config copy taken
+   elsewhere.
+
+`AURORA_FIFO_TRACE=1` logs every command aurora itself decodes; diffing that against this
+parser's view of the same bytes settles (1) directly. That is the cheap decisive experiment
+and should come before any change to aurora.
+
+Note the same shape applies to the outstanding `tcg src 21`: the guest demonstrably writes
+valid texgen sources, aurora reports an unwritten slot. Both smell like one mechanism.
