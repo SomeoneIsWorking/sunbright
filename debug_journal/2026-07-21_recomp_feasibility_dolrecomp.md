@@ -49,7 +49,6 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j   # 0 errors
 - output: **221 C chunk files**, ~8.4M lines, 217 MB
 - **139 self-modifying-code sites** flagged for manual patching
 - DolRecomp source itself is modest: 47 files, ~10.5k lines
-  (compare: our retired prototype was ~2.4k lines with ZERO ps_* support)
 
 ### The 8.4M lines is an artefact of running WITHOUT a symbol map
 Every emitted function opens with a giant `switch (ctx->pc) { case ...: goto ... }`
@@ -81,3 +80,49 @@ deliberately — the old rule's reasoning (the flip boundary) does not apply to 
 standalone recomp, and its claim that native-only is *required* for interpolated
 60 fps is overstated: `runtime/interp60.h` from the recomp era interpolated by
 capturing `J3DModel::viewCalc` matrices.
+
+## ❌ CORRECTION — the retired recompiler WORKED; I mischaracterised it
+
+Everything above about "our retired prototype" was WRONG, and the user corrected it.
+I had grepped only `ppc_decoder.cpp` for quoted `"ps_..."` strings, found none, and
+concluded "zero paired-single support, a prototype". Both conclusions were false.
+
+What the retired stack actually contained (verified from git at `9283f44^`):
+
+* **A working hand-built Gekko recompiler.** `c_emitter.cpp` has **188
+  `case PPCOp::` emitter cases**; `ppc_mnemonic.cpp` has 41 `ps_*` entries. It
+  implemented paired singles AND quantized load/store with GQR —
+  `PSQ_L/LU/ST/LX/STX` calling `psq_load/psq_store(ea, cpu.gqr[n], w, ...)`, with a
+  comment recording the exact lesson that emitting `MEM_R32(ea)/MEM_R32(ea+4)` is
+  only valid for float and quantized u8/s8/u16/s16 need narrow, correctly-strided
+  access. That is precisely the work I credited DolRecomp for.
+* **A native OS/threading layer.** `runtime/native_threads.cpp` (431 lines) plus
+  `docs/native_threading.md`, which records that external-interrupt delivery was
+  FULLY PC-NATIVE — a behaviour port of OSInterrupt.c walking InterruptPrioTable and
+  calling the registered guest handler via `call_ppc`. So OSThread was NOT a
+  from-scratch cost, contrary to what I listed as the biggest remaining risk.
+* **74 files of native overrides** under `runtime/overrides/`: ngx renderer, native
+  JAS audio (jas_driver/aid/dsp_update/cmdnoteon), EFB, matrix, fastboot, widescreen,
+  and the interp60 60 fps stack (capture/redraw/verify/replay).
+
+**It was retired by USER DIRECTIVE on 2026-06-18 ("I don't want a recomp"), not
+because it failed.** The pivot journal records it live in Delfino at ~2.16M recomp
+calls/sec with Dolphin rendering the scene correctly. The thing that was genuinely
+intractable was the *flip engine* — recomp↔decomp field marshaling — which is the
+hybrid the user is explicitly NOT proposing.
+
+### What this changes about the recommendation
+
+Do NOT adopt DolRecomp as the base. We already have a working recompiler tailored to
+this project, with the override architecture built around it. DolRecomp is still
+useful as a **cross-check / gap-filler** (236 opcodes vs our 188) but resurrection
+beats adoption.
+
+The real delta for a STANDALONE recomp is narrower than I claimed: the old stack ran
+on **Dolphin's** substrate (Dolphin JIT dispatch, MMIO, interrupt sources). A
+standalone recomp needs its own substrate — which is exactly what **aurora** now
+provides (GX, DVD, PAD, VI, audio) and did not maturely provide back then. Plus we
+now have the decomp+Aurora **oracle** for per-function differential verification.
+
+So the work is: restore `tools/recompiler` + `runtime/native_threads` + the override
+stack, and swap Dolphin's substrate for aurora's — not build a recompiler.
