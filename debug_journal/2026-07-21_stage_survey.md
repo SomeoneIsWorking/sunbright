@@ -68,3 +68,43 @@ several actor families at once.
 Checking `grep -rl "TFooManager"` in the factory file gave FALSE POSITIVES — it
 matched commented-out `// TODO:` cases. The panic message is the ground truth for
 "is this type actually registered".
+
+## Root causes for the non-actor stage crashes (added same day)
+
+Diagnosed with `build-dbg` (RelWithDebInfo + `-fno-omit-frame-pointer`).
+
+**Stages 3 and 4 share ONE cause** — `SIGSEGV in __strlen_avx2`, immediately after
+a run of `J2DScreen::search MISSING pane tag ... -> region-tolerant dummy`
+(`sg06..sg08`, `t_1..t_4`, `b_1`).
+
+The chain:
+* Callers cast the search result to a richer subclass, e.g.
+  `unk528 = (J2DTextBox*)unkB0->search('tet2')` (GCConsole2.cpp:358).
+* `J2DScreen::search` falls back to `getRegionTolerantDummyPane()`, which returns
+  a **plain `J2DPane`** placement-new'd into a zeroed 0x200 buffer.
+* The buffer is deliberately over-allocated so derived non-virtual accesses land
+  in it (the comment even anticipates `(J2DTextBox*)p->setString`) — but it is
+  **zero-filled**, so a J2DTextBox's string pointer reads as NULL and the first
+  `strlen` on it segfaults.
+
+So the tolerated sentinel is safe for *pane* callers and unsafe for *TextBox*
+callers. This is the success-shaped-stub hazard: it masks the missing pane right
+up until someone treats it as the subclass it pretends to be.
+
+⚠️ DO NOT "fix" this casually: **stage 1 — the only healthy stage — takes this
+same dummy path** (its log shows pane misses too). Any change to the dummy must be
+re-verified against stage 1 rendering, not just stages 3/4. A promising direction
+is to make the dummy an actual `J2DTextBox` constructed with an empty string (it
+IS-A J2DPane, so pane callers keep working and TextBox callers get a valid empty
+string) — but the J2DTextBox ctors take a font/ResFONT, so that needs checking
+before it is trusted.
+
+**Stage 7** — jumps to address 0x0 (`frame #0: 0x0000000000000000`), i.e. a call
+through a null function pointer / unpopulated vtable slot. Different cause.
+
+**Stage 10** — `SIGSEGV fault=0x1` in `DVDClose(fileInfo=...)` at dvd.cpp:863.
+Different cause again (bad/uninitialised DVD file handle).
+
+lldb cannot unwind out of `__strlen_avx2` (hand-written asm, no frame pointer), so
+frame #0 is all you get there — identify the caller from the surrounding log
+context and the code, as done above.
