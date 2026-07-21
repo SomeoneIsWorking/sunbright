@@ -146,8 +146,22 @@ void run_command() {
 // inside whatever recompiled function performed this store, and would otherwise clobber the
 // GPRs that function still needs. That is exactly what a hardware interrupt does with
 // OSContext. Guest MEMORY changes persist, as they must.
+bool g_delivering = false;
+bool g_pending   = false;
+
 void deliver_complete() {
     reg(DI_SR) |= SR_TCINT;
+
+    // NON-REENTRANT. The handler routinely starts the NEXT transfer (the DVD library
+    // chains queued commands), which completes synchronously and would deliver another
+    // interrupt nested inside this one. Real hardware unwinds between interrupts; we would
+    // not, so the guest stack marched downward until it overwrote the small-data constants
+    // — observed as GXGetYScaleFactor reading 0 for a 256.0f constant and hanging, with a
+    // watchpoint catching __OSGetSystemTime writing into 0x804176e8.
+    //
+    // Nesting is bounded to one: a delivery requested while delivering is queued, and the
+    // outermost call drains it in a loop, which unwinds each handler before the next.
+    if (g_delivering) { g_pending = true; return; }
 
     if (!g_cpu) {
         lucent::error("di", "no CPU state registered — cannot deliver the completion "
@@ -155,10 +169,24 @@ void deliver_complete() {
         std::abort();
     }
 
-    const CPUState saved = *g_cpu;
-    g_cpu->gpr[4] = sb_r32(OS_CURRENT_CONTEXT);
-    call_ppc(*g_cpu, DVD_INTR_HANDLER);
-    *g_cpu = saved;
+    g_delivering = true;
+    unsigned rounds = 0;
+    do {
+        g_pending = false;
+        // A handler that queues work forever is a bug, not a workload. Bound it so it
+        // reports itself instead of spinning invisibly.
+        if (++rounds > 4096) {
+            lucent::error("di", "interrupt handler queued another transfer {} times without "
+                                "settling — the DVD command queue is not draining", rounds);
+            rt_dump_guest_stack("DI interrupt storm");
+            std::abort();
+        }
+        const CPUState saved = *g_cpu;
+        g_cpu->gpr[4] = sb_r32(OS_CURRENT_CONTEXT);
+        call_ppc(*g_cpu, DVD_INTR_HANDLER);
+        *g_cpu = saved;
+    } while (g_pending);
+    g_delivering = false;
 }
 
 u32 di_read(u32 ea, unsigned width) {

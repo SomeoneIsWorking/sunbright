@@ -96,6 +96,10 @@ extern "C" bool rt_mem_init() {
     pi_device_init();
     mi_device_init();
     gxregs_device_init();
+    if (const char* w = std::getenv("SBR_WATCH")) {
+        g_watch_wa = (u32)std::strtoul(w, nullptr, 0);
+        lucent::info("rt", "watchpoint armed at 0x{:08x}", g_watch_wa);
+    }
     aram_device_init();
     sram_device_init();   // attaches to EXI, so it must come after exi_device_init()
     return true;
@@ -255,6 +259,7 @@ void sb_poll_fire(u32 ea) {
 void sb_watch_fire(u32 ea, u32 value, int width, void* ret) {
     lucent::warn("watch", "write 0x{:08x} ({} bytes) @ 0x{:08x} from {}",
                  value, width, ea, ret);
+    rt_dump_guest_stack("watchpoint");
 }
 
 // ── Paired-single quantized load/store ───────────────────────────────────────
