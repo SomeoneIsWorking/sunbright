@@ -129,3 +129,28 @@ Different cause again (bad/uninitialised DVD file handle).
 lldb cannot unwind out of `__strlen_avx2` (hand-written asm, no frame pointer), so
 frame #0 is all you get there — identify the caller from the surrounding log
 context and the code, as done above.
+
+## ⚠️ Verification lesson: mean RGB is NOT a regression check
+
+The aurora DVD fix (DVDOpen/DVDFastOpen defined-state on failure) was reported as
+"stage 1 unregressed" on the basis that stage 1's mean RGB was unchanged at
+(145,151,156). That was a BAD check. A later pixel diff of the same two frames:
+
+    stage 1, before vs after the DVD fix: 118565 differing pixels (9.6%)
+
+The mean barely moved while a tenth of the frame changed — averages hide
+everything. **Always pixel-diff; never accept a mean as a regression check.**
+Stage 1 is deterministic (two consecutive runs of one binary differ by 0 pixels),
+so any nonzero diff between builds is a real change and must be explained.
+
+Characterisation of that particular change: 344 affected rows, y 165..511
+(upper-middle), differing-pixel mean (181,206,208) -> (179,205,204) — small
+per-pixel deltas in sky/water tones, i.e. a subtle shading/phase shift rather than
+a missing object. Plausible mechanism: a failed DVDOpen previously left the
+caller's DVDFileInfo as stack garbage which some caller consumed anyway; it now
+gets deterministic zeros. Kept the fix (it removes a genuine
+delete-of-garbage-pointer bug and unblocked stage 10) but the frames were sent to
+the user for a visual verdict, since there is no pixel oracle for stage 1.
+
+Handy: converting an SB_DUMP_FRAME .rgba to PNG for eyeballing needs no deps
+beyond zlib/struct (PIL is also available here); dumps are 1280x960 RGBA.
