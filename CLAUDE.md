@@ -86,6 +86,34 @@ XFB present), an understood modern equivalent is acceptable — only if its outp
 the oracle ("faithful outputs over faithful plumbing", seams only, never the GX state
 machine).
 
+## 🔄 UPSTREAM SYNC — rebase ~2x/week, and CONVERGE (don't fork)
+
+Upstream `doldecomp/sms` moves fast and is actively implementing the same actors we
+need (DebuTelesa, AreaCylinder, MapObjTree, GateKeeper, Butterfly… were all done
+upstream while we hand-ported them). **Check upstream before hand-porting a gap.**
+
+Use `python3 tools/re/rebase_upstream.py` — `status` → `rebase` → `audit` (loop until
+green) → `converge`. Hard-won rules:
+
+- **Resolve FILE-level, never hunk-level, and move header+cpp TOGETHER.** A class whose
+  `.hpp` and `.cpp` come from different sides will not build. Hunk-merging produces
+  internally-inconsistent TUs.
+- Two breakage classes only: **duplicate decls** (both sides added the same member →
+  delete OUR dup, keep upstream's) and **API drift** (upstream renamed something our
+  `.cpp` still calls → adapt our call site, or adopt upstream's pair).
+- **Prefer CONVERGING to upstream.** Every file we keep our own version of is a conflict
+  we pay for again in 3 days. Keep native deltas minimal, `#ifdef SMS_NATIVE_PLATFORM`,
+  and additive so git auto-merges them. Adopt upstream's version whenever it is
+  equal-or-better (it usually is — it's a matched decomp).
+- Keep ours ONLY where a real native fix lives (LP64/BE/guards). `rebase_upstream.py
+  diverge unmarked` lists the files with no native marker — that count is the debt to
+  drive down (currently ~386 of 566).
+- **Re-run convergence AFTER every rebase.** Adopting a file by content in a commit means
+  the next rebase replays that stale snapshot over newer upstream (this silently reverted
+  upstream's newer `Particles.hpp` once).
+- A build-green convergence is NOT proof: a file can compile yet drop a native LP64/BE fix
+  that only shows at runtime. Runtime-verify before trusting a big convergence batch.
+
 ## 🚫 NO BANDAIDS — RE the intent, port it
 
 For any bug/crash/hang: find WHERE, name the ROOT CAUSE, then reverse-engineer the behavior
