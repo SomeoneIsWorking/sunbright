@@ -719,3 +719,52 @@ Boot creates two non-`JUTException` workers, `0x802a9184` (prio 15) and `0x802a7
 matter, and now it does. Per the ONE RUNTIME rule the fix is to make the work happen
 synchronously at its ENQUEUE point — not to add a scheduler. Next step is to identify what
 those two threads do and where their work is enqueued.
+
+## ⚠️ PROCESS FAILURE: this session re-derived work that already existed
+
+User: *"I feel like we've done these before and the recomp game was already playable, it was
+just rendering incorrectly."* Correct, and worth recording as a process failure rather than
+buried as a footnote.
+
+`runtime/overrides/` at `9283f44^` holds **74 files**, including a native override for very
+nearly every seam this session rebuilt from disassembly:
+
+| retired file | lines | dolphin refs | what this session re-derived |
+|---|---|---|---|
+| `native_dvd.cpp` | 140 | 10 | `overrides/native_dvd.cpp` — **same function `0x8034da6c`, same command-block offsets, same synchronous-read-then-callback approach** |
+| `gxdrawdone_native.cpp` | 56 | 3 | `overrides/native_gx.cpp` |
+| `sms_vi_native.cpp` / `native_vi2.cpp` | 209 / 211 | 3 / 4 | `overrides/native_vi.cpp` |
+| `sms_os_memprotect.cpp` | 51 | 0 | `__OSInitMemoryProtection` override |
+| `os_init_audio_native.cpp` | 127 | 0 | `__OSInitAudioSystem` override |
+| `native_aram/exi/si/mi/pi2/dsp_regs/gx/card` | ~2100 | 1-6 each | `runtime/dev_*.cpp` |
+| `fastboot_native.cpp` | 323 | 0 | — (not yet looked at) |
+
+The rule in the global instructions is **"Read before you re-derive — and make 'before'
+cheap."** I did not consult the retired tree before rebuilding these, despite CLAUDE.md
+saying plainly: **"Resurrect, do not rebuild."**
+
+### What was genuinely new vs redundant
+
+**Genuinely new** (Dolphin's Memmap/HW provided all of it, so it never existed): the MMIO
+router, the device register models as a standalone substrate, the nod-backed disc reader,
+and `boot_env.cpp` (the apploader's low-memory state — no Dolphin meant nobody published
+the FST, arena or clocks). This is exactly what CLAUDE.md called "the genuinely NEW work…
+swapping Dolphin's substrate for aurora's".
+
+**Redundant**: the OS/DVD/GX/VI seam overrides. Independently arriving at the same function
+addresses and the same `DVDCommandBlock` layout does at least cross-validate both — but it
+cost a session.
+
+### One discrepancy worth resolving
+
+The retired file comments `0x28` as **prio**; this session's RE derived `0x28` as
+**callback** (`stw r7,40(r3)`, with `r8`→`r31` being prio). The SDK signature
+`DVDReadAbsAsyncPrio(block, addr, length, offset, callback, prio)` supports callback at
+`r7`. Check before trusting either comment.
+
+### Corrected approach
+
+Port the retired overrides systematically (they are mostly Dolphin-free) instead of
+re-deriving them, and **start from the known end-state**: under the Dolphin substrate the
+recomp reached title, file-select and gameplay — the open problem then was RENDERING, not
+boot. Boot bring-up on the new substrate is a means to get back there, not the goal.
