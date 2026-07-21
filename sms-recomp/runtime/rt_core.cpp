@@ -28,6 +28,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <sys/mman.h>
+#include <execinfo.h>
 #include <ctime>
 
 // ── Guest memory ─────────────────────────────────────────────────────────────
@@ -123,6 +124,24 @@ static void (*lookup(u32 addr))(CPUState&) {
     return nullptr;
 }
 
+// Every blocker in the standalone bring-up is "execution reached address X" and the first
+// question is always "through which guest functions?". Recompiled bodies are real C
+// functions named func_<addr>, and calls nest on the host stack, so the host backtrace IS
+// the guest call stack — provided the link uses -rdynamic so the names resolve.
+void rt_dump_guest_stack(const char* why) {
+    void* frames[64];
+    int n = backtrace(frames, 64);
+    char** names = backtrace_symbols(frames, n);
+    lucent::error("rt", "guest call stack ({}):", why);
+    if (!names) { lucent::error("rt", "  <backtrace_symbols failed>"); return; }
+    for (int i = 0; i < n; i++) {
+        // Only the guest frames are interesting; runtime frames are noise.
+        if (const char* f = std::strstr(names[i], "func_"))
+            lucent::error("rt", "  #{:<2} {}", i, f);
+    }
+    std::free(names);
+}
+
 void call_ppc(CPUState& cpu, u32 address) {
     address = code_addr_fold(address);
     // Overrides win over the recompiled body. Checked here rather than by patching the
@@ -135,6 +154,7 @@ void call_ppc(CPUState& cpu, u32 address) {
     // would let execution wander on with a half-executed call.
     lucent::error("rt", "call to un-recompiled address 0x{:08x} (lr=0x{:08x})",
                   address, cpu.lr);
+    rt_dump_guest_stack("un-recompiled call");
     std::abort();
 }
 
@@ -144,6 +164,7 @@ void rt_unhandled_insn(CPUState& cpu, u32 pc, u32 raw, const char* mnemonic) {
     lucent::error("rt", "unhandled instruction '{}' at 0x{:08x} (raw=0x{:08x}, lr=0x{:08x})",
                   mnemonic, pc, raw, cpu.lr);
     lucent::error("rt", "add an emitter for it in ppc_decoder.cpp + c_emitter.cpp");
+    rt_dump_guest_stack("unhandled instruction");
     std::abort();
 }
 

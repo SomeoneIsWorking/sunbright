@@ -41,5 +41,9 @@ target_link_libraries(sms-recomp-rt PUBLIC lucent::lucent)
 
 # Host harness: loads the DOL into guest RAM and runs the entry point.
 add_executable(sms-recomp host/main.cpp)
+# -rdynamic puts func_<addr> into the dynamic symbol table so rt_dump_guest_stack can
+# name the guest frames. Recompiled bodies nest on the host stack, so the host backtrace
+# is the guest call stack — but only if the names resolve.
+target_link_options(sms-recomp PRIVATE -rdynamic)
 target_link_libraries(sms-recomp PRIVATE sms-recomp-rt sms-recomp-guest
                       sms-recomp-overrides lucent::lucent)
