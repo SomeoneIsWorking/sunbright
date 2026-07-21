@@ -2167,3 +2167,35 @@ What survives from that entry:
 
 Re-measuring properly with `SB_DRAW_DUMP_FRAME` (uncapped, exactly one frame) on both runtimes
 to get true per-frame orthographic/perspective counts before drawing any conclusion.
+
+## Real bug found and FIXED: aurora's FIFO viewport origin bias was 340, should be 342
+
+Re-measured properly with `SB_DRAW_DUMP_FRAME` (uncapped, exactly one frame) on both runtimes:
+
+|        | total | ortho | persp | main vp | offscreen |
+|--------|-------|-------|-------|---------|-----------|
+| recomp |   310 |    81 |   229 |     237 |        73 |
+| oracle |   613 |   422 |   191 |     540 |        73 |
+
+The recomp does render orthographic draws, confirming the retraction above. The remaining
+counts differ a lot, but these two frames are NOT at a pinned animation phase, so the gap is
+not yet evidence of anything — noted and left alone rather than theorised about.
+
+The offscreen pass matches exactly (73 draws) for the third measurement running.
+
+The **viewport origin difference was real**, is phase-independent, and is now fixed. The GC
+viewport-origin bias is **342**, not 340: `GXSetViewport` encodes `ox = xOrig + width/2 + 342`,
+so recovering `xOrig` from the XF registers must subtract 342. Aurora's XF reconstruction used
+340, placing every FIFO-reconstructed viewport two pixels down and right.
+
+Why it hid for so long: `GXSetViewport` sets the logical viewport DIRECTLY and never goes
+through the reconstruction, so the decomp runtime — which calls the GX API — was never
+affected. Only the FIFO path was, which until this port had no serious consumer. It also
+affects the decomp's own `SB_FIFO_REPLAY` harness, so oracle replay diffs were carrying a
+constant 2-pixel offset.
+
+Verified: after the fix the recomp reports `vp=(0,0 640x448)` and `vp=(0,0 256x256)`, matching
+the oracle exactly on both passes. Pushed as aurora `fork/sunbright` 70652db.
+
+This does NOT fix the sea (86.1% near-white, unchanged) — expected, and stated so the fix is
+not mistaken for progress on that.
