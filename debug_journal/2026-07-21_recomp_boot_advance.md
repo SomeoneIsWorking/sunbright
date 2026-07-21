@@ -1086,3 +1086,31 @@ EFB/display-copy configuration, which is evidently not reaching it through the r
 stream yet. That is the next thing to chase — and note aurora also has
 `GX_AURORA_LOAD_VIEWPORT_RENDER`/`LOAD_SCISSOR_RENDER` extensions, which suggests the raw
 viewport in the stream is not sufficient by itself.
+
+## The recomp renders a real framebuffer
+
+The 1x1 present source was the display copy never reaching aurora. Aurora DOES handle the
+copy-to-XFB trigger (BP `0x52` bit 14) during FIFO replay, but only after the copy source and
+destination have been described through its own extensions — the raw BP registers carry EFB
+coordinates and a guest destination address it cannot use directly. Its own comment says so:
+
+> the copy src/dst state must have been loaded via `GX_AURORA_LOAD_COPY_{SRC,DST}` beforehand
+
+`dev_gxfifo.cpp` now tracks the EFB copy rectangle from BP `0x49` (top-left, 10 bits each)
+and `0x4A` (width-1 / height-1), and emits `GX_AURORA_LOAD_COPY_SRC` (4x u32) plus
+`GX_AURORA_LOAD_COPY_DST` (u32 w, u32 h, u32 fmt, u8 wide) immediately before passing the
+copy trigger through.
+
+**Result: the dump goes from 1x1 to 1280x896** — a real framebuffer, 4.5 MB.
+
+That is the third instance of one pattern, now worth stating plainly: **aurora's FIFO replay
+accepts the guest's command stream verbatim EXCEPT where a command carries a pointer or an
+address.** Array bases, display lists and copy src/dst all need translating into aurora's
+extensions, because in the decomp world those 32-bit values are truncated host pointers while
+here they are genuine guest addresses. Anything else pointer-bearing (texture objects, TLUTs
+— `GX_AURORA_LOAD_TEXOBJ`/`LOAD_TLUT`) will need the same treatment.
+
+**Content: uniform (17,17,17) dark grey.** Rendering is working; the game is drawing its
+boot-fade quad and nothing else, which is exactly consistent with it being stuck on the fade —
+the state problem already recorded, not a render problem. Distinguishing those two was the
+whole point of getting pixels out.

@@ -49,6 +49,10 @@ struct Vat { u32 vcd_lo = 0, vcd_hi = 0, fmt0 = 0, fmt1 = 0, fmt2 = 0; };
 Vat g_vat[8];
 u32 g_vcd_lo = 0, g_vcd_hi = 0;
 
+// EFB copy rectangle, tracked from BP 0x49/0x4A so the display copy can be described to
+// aurora in its own terms (see emit_copy_state).
+u32 g_copy_left = 0, g_copy_top = 0, g_copy_w = 0, g_copy_h = 0;
+
 struct Stats {
     u64 bytes = 0, nops = 0, cp = 0, xf = 0, bp = 0, draws = 0, verts = 0, unknown = 0;
 } g_stats;
@@ -152,6 +156,28 @@ void emit_arraybase(u32 attr, u32 guest_addr) {
     put_u8 (g_out, 0);                   // big-endian, as the guest wrote it
 }
 
+// Aurora's CP handles the copy-to-XFB trigger (BP 0x52 bit 14), but only after the copy
+// source and destination have been described through its own extensions — the raw BP
+// registers carry EFB coordinates and a guest destination address it cannot use directly.
+// Without this its present source is never created, and the frame it hands back is 1x1.
+void emit_copy_state() {
+    if (g_copy_w == 0 || g_copy_h == 0) return;
+
+    put_u8 (g_out, 0x50);
+    put_u16(g_out, GX_AURORA_LOAD_COPY_SRC);
+    put_u32(g_out, g_copy_left);
+    put_u32(g_out, g_copy_top);
+    put_u32(g_out, g_copy_w);
+    put_u32(g_out, g_copy_h);
+
+    put_u8 (g_out, 0x50);
+    put_u16(g_out, GX_AURORA_LOAD_COPY_DST);
+    put_u32(g_out, g_copy_w);
+    put_u32(g_out, g_copy_h);
+    put_u32(g_out, 0);      // GX_TF_I4 slot is unused for a display copy
+    put_u8 (g_out, 0);      // not a wide (double-strided) copy
+}
+
 u32 be32(const u8* p) { return (u32)p[0] << 24 | (u32)p[1] << 16 | (u32)p[2] << 8 | p[3]; }
 u32 be16(const u8* p) { return (u32)p[0] << 8 | p[1]; }
 
@@ -221,6 +247,15 @@ size_t parse(const u8* p, size_t n, int depth) {
 
         if (op == 0x61) {                       // BP register write
             if (n - i < 5) break;
+            const u8  reg = p[i + 1];
+            const u32 val = ((u32)p[i + 2] << 16) | ((u32)p[i + 3] << 8) | p[i + 4];
+
+            // 0x49: EFB copy top-left (10 bits each). 0x4A: width-1 / height-1.
+            if (reg == 0x49) { g_copy_left = val & 0x3FF; g_copy_top = (val >> 10) & 0x3FF; }
+            else if (reg == 0x4A) { g_copy_w = (val & 0x3FF) + 1; g_copy_h = ((val >> 10) & 0x3FF) + 1; }
+            // 0x52 bit 14 selects copy-to-XFB, which is what produces the presented frame.
+            else if (reg == 0x52 && (val & (1u << 14))) emit_copy_state();
+
             g_out.insert(g_out.end(), p + i, p + i + 5);
             g_stats.bp++; i += 5; continue;
         }
