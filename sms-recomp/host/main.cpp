@@ -19,6 +19,7 @@
 
 extern "C" bool rt_mem_init();
 bool disc_open(const char* path);
+CPUState* g_cpu = nullptr;
 void call_ppc(CPUState& cpu, u32 address);
 
 namespace {
@@ -105,7 +106,11 @@ int main(int argc, char** argv) {
         lucent::debug("dol", "section -> 0x{:08x} +0x{:x}", s.addr, s.size);
     }
 
-    CPUState cpu{};
+    // Devices that must deliver an interrupt into guest code (DI completion) need the CPU
+    // state; there is exactly one, so expose it rather than threading it through the MMIO
+    // router, which is otherwise purely address-based.
+    static CPUState cpu{};
+    g_cpu = &cpu;
     // The GC boots with a stack near the top of MEM1; __start sets up its own, but a
     // sane initial r1 keeps any early prologue from writing through address 0.
     cpu.gpr[1] = 0x816FFFF0u;

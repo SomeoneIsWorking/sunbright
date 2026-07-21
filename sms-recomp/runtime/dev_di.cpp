@@ -13,6 +13,7 @@
 
 #include "mmio.h"
 #include "disc.h"
+#include "intrinsics.h"
 
 #include <lucent/log.h>
 
@@ -22,6 +23,8 @@
 
 extern void rt_dump_guest_stack(const char* why);
 extern u8* g_ram_base;
+extern CPUState* g_cpu;                       // the single guest CPU state (host/main.cpp)
+extern void call_ppc(CPUState& cpu, u32 address);
 
 namespace {
 
@@ -39,6 +42,18 @@ constexpr u32 DI_CR      = DI_BASE + 0x1C;   // control: TSTART starts the comma
 constexpr u32 DI_CFG     = DI_BASE + 0x24;   // drive/console revision, low byte
 
 constexpr u32 CR_TSTART = 0x1u;
+
+// DI_SR bit layout, read off the guest's own handler at 0x8034a760:
+//   andi. r4,r0,0x002A  -> the three MASK bits   (1 = DEINTMASK, 3 = TCINTMASK, 5 = BRKINTMASK)
+//   andi. r3,r0,0x0054  -> the three STATUS bits (2 = DEINT,     4 = TCINT,     6 = BRKINT)
+constexpr u32 SR_TCINT = 0x10u;   // transfer complete
+
+// DVDLowIntrHandler. Hardcoding a game address in a device is not lovely, but this whole
+// runtime is built for one DOL (the jump table is too), and calling the guest's REAL handler
+// is far more faithful than reimplementing its event decoding here. Its r3 (interrupt
+// number) is overwritten before use, so only r4 (the OSContext) has to be right.
+constexpr u32 DVD_INTR_HANDLER = 0x8034a760u;
+constexpr u32 OS_CURRENT_CONTEXT = 0x800000D4u;
 
 // Drive commands, in the top byte of CMDBUF0.
 constexpr u32 CMD_INQUIRY   = 0x12;   // 32 bytes of drive identification
@@ -122,6 +137,30 @@ void run_command() {
     }
 }
 
+// The transfer is already done, so raise transfer-complete and run the guest's interrupt
+// handler immediately. Retail gets here via a real DI interrupt; with no interrupt source and
+// no latency to hide, delivering inline at the register write is the faithful equivalent —
+// the same reasoning as synchronous ARAM DMA and GXDrawDone.
+//
+// Registers are saved and restored around the call because the handler runs as a NESTED call
+// inside whatever recompiled function performed this store, and would otherwise clobber the
+// GPRs that function still needs. That is exactly what a hardware interrupt does with
+// OSContext. Guest MEMORY changes persist, as they must.
+void deliver_complete() {
+    reg(DI_SR) |= SR_TCINT;
+
+    if (!g_cpu) {
+        lucent::error("di", "no CPU state registered — cannot deliver the completion "
+                            "interrupt, and the DVD library would wait forever");
+        std::abort();
+    }
+
+    const CPUState saved = *g_cpu;
+    g_cpu->gpr[4] = sb_r32(OS_CURRENT_CONTEXT);
+    call_ppc(*g_cpu, DVD_INTR_HANDLER);
+    *g_cpu = saved;
+}
+
 u32 di_read(u32 ea, unsigned width) {
     if (width != 4) {
         lucent::error("di", "unsupported {}-byte read @ 0x{:08x}", width, ea);
@@ -141,6 +180,7 @@ void di_write(u32 ea, unsigned width, u32 value) {
     if (a == DI_CR && (value & CR_TSTART)) {
         reg(DI_CR) &= ~CR_TSTART;   // synchronous: never observed in flight
         run_command();
+        deliver_complete();
     }
 }
 

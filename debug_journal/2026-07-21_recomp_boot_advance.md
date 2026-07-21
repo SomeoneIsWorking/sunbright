@@ -611,3 +611,57 @@ next question is whether `GXBegin` is waiting on a CP FIFO watermark that never 
 static storage right now) — the write-gather pipe at `0xCC008000` takes 3.4 M writes and
 drops them all. Routing that pipe to aurora's GX is the next real arc, and it is the one that
 turns submitted geometry into pixels that can be diffed against the decomp oracle.
+
+## Synchronous DI interrupt delivery — DVD init now completes
+
+The game was looping in `mountStageArchive` drawing the fader with **zero disc reads**. Cause:
+`DVDLowInquiry` stores a completion callback at `r13-22952` and starts the transfer; the
+callback is invoked by `DVDLowIntrHandler` from the DI transfer-complete interrupt. Our DMA
+completed but nothing ever raised that interrupt, so the DVD library waited forever.
+
+`dev_di.cpp` now delivers it inline: set `DI_SR` transfer-complete, then **call the guest's
+own handler** (`0x8034a760`) rather than reimplementing its event decoding.
+
+DI_SR layout was read off that handler rather than recalled:
+
+```
+andi. r4,r0,0x002A   ; MASK bits   (1 DEINTMASK, 3 TCINTMASK, 5 BRKINTMASK)
+andi. r3,r0,0x0054   ; STATUS bits (2 DEINT,     4 TCINT,     6 BRKINT)
+```
+
+so `TCINT` is bit 4 (0x10). Conveniently the handler overwrites its `r3` (interrupt number)
+before use, so only `r4` (the `OSContext`, from `0x800000D4`) has to be right.
+
+**Registers are saved and restored around the call.** The handler runs as a nested call
+inside whatever recompiled function performed the store, and would otherwise clobber GPRs
+that function still needs — this is exactly what a hardware interrupt does with `OSContext`.
+Guest memory changes persist, as they must.
+
+Result: boot progresses past `mountStageArchive` into `SMSSetupTitleRenderMode`.
+
+## Current frontier: `GXGetYScaleFactor` spins on a zero height
+
+```
+func_802a5254  SMSSetupTitleRenderMode
+  func_802fb9e8  JDrama::CalcRenderModeXFBHeight
+    func_8035e734  GXGetYScaleFactor   <- infinite loop (3 stack samples, identical)
+```
+
+`GXGetYScaleFactor(u16 efbHeight, u16 xfbHeight)` contains three copies of a lowest-set-bit
+scan:
+
+```
+8035e7c8  srwi  r4,r4,1
+8035e7cc  andi. r0,r4,1
+8035e7d0  beq   -8          ; never terminates when r4 == 0
+```
+
+`r4` derives from a float conversion of the height ratio, so **a zero height hangs it**. This
+is retail code behaving exactly as retail would given zero input — the bug is upstream, in
+whatever supplies the render mode. Note the decomp side has a matching known hazard recorded
+as "efbHeight==0 SIGFPE", so this is a familiar class.
+
+Next step is to find where the `GXRenderModeObj` comes from and which field is zero — likely
+traceable to the VI device returning zeros for registers that retail's `VIInit` would have
+populated, or to a render-mode table lookup keyed off `VIGetTvFormat`. Do NOT clamp the
+height inside `GXGetYScaleFactor`; that would hide the real defect one layer up.
