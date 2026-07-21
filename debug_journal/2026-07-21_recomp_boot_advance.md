@@ -1521,3 +1521,34 @@ single raw write.
 
 This also means the outstanding `tcg src 21` deserves re-examination on the same basis before
 being treated as a state-loss bug.
+
+## GX_CULL_ALL implemented in aurora (fork branch `gx-cull-all`)
+
+With the masked-BP explanation established, the gap was real and the fix belongs in aurora:
+
+- `push_gx_draw` drops draws when `cullMode == GX_CULL_ALL` — both faces culled means no
+  fragments, which is what the hardware does.
+- `to_primitive_state` no longer aborts on it: a pipeline config may still be built when
+  state changes even though no draw using it is submitted, so the cull mode chosen there is
+  immaterial.
+
+Pushed to the `fork` remote as branch `gx-cull-all` rather than onto the submodule's current
+head, since the decomp runtime depends on the same library.
+
+**A run now reaches 4,260 presents with no fatal**, against ~120-330 before this session's
+GX work began.
+
+## Now in aurora's FIFO-path gaps
+
+The remaining failures are aurora features that its FIFO replay does not implement, rather
+than stream errors:
+
+- `unimplemented indexed XF load (opcode 0x20, dstAddr=030f, len=15)` — indexed XF loads into
+  some destination ranges
+- `XF: PosMtx sub-copy unsupported: offs=2, len=16385` — the length is implausible, so this
+  one may still be a desync and should be treated as suspect rather than a missing feature
+
+This is an expected boundary: aurora's FIFO replay was built to consume Dolphin `.dff`
+captures of a decomp-shaped stream, so a full retail command stream exercises paths the
+decomp runtime never emits. Each is a small, well-defined addition to aurora rather than a
+recomp problem.
