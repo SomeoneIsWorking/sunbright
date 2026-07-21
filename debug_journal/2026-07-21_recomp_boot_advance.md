@@ -867,3 +867,38 @@ Also worth noting for later, from the retired `fader_pace.cpp`: an un-paced boot
 GC-logo fade complete in milliseconds ("logo popped in fully visible"). That is COSMETIC, not
 a stall — the retired build still advanced — so frame pacing is a fidelity item, not the
 current blocker. It engaged on the first `TSMSFader::startWipe` (`0x8013f860`).
+
+## ROOT CAUSE of the post-load stall: thread death was never published to the guest
+
+The game's main loop polls **`OSIsThreadTerminated`** and then **`OSJoinThread`** (twice, for
+two workers — visible as `bl 0x80348374` / `bl 0x80348d08` inside `0x802a5f50`).
+
+`OSIsThreadTerminated` is `lhz r3,712(r3)` and returns true when the state halfword is 8
+(MORIBUND) or 0. The cooperative scheduler tracked thread death in its OWN bookkeeping and
+never wrote it back to the guest `OSThread`. So the loop asked "terminated?", got false
+forever, called `OSJoinThread` (which returned instantly, because the scheduler correctly
+knew the thread was dead), and looped — rendering frames indefinitely without ever advancing.
+
+`gsched_exit` now writes `OSThread::state = MORIBUND` at `+712`. The lesson generalizes: this
+scheduler replaces the guest's, so any state the guest OBSERVES about threads has to be
+published into the guest struct, not just tracked host-side.
+
+Also extended the `aram` device to the end of its block (`0xCC005012-0xCC005040`); the newly
+reached code touches `0xCC005030`.
+
+**Boot now advances into audio init:**
+
+```
+func_802a6dd0  TApplication (mountStageArchive+0x1438)
+  func_80014e70  MSound::startSoundSet
+    func_80301a28  JAIBasic::initDriver
+      func_803113c4  JASystem::AudioThread::start
+```
+
+Two JKRThread workers remain parked in `OSReceiveMessage`, as they should be.
+
+Note the retired `native_os.cpp` flagged exactly this next step: *"AudioThread::start
+creates+resumes the higher-priority audio thread (which runs Driver::init -> initBuffer to
+ALLOCATE the DSP FX buffers) and returns WITHOUT waiting, relying on this preemption; without
+it the main thread reaches JAIData::initData and configures FX lines that were never
+allocated -> null write."* `gsched_make_ready` already implements that priority preemption.

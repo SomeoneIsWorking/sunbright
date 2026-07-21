@@ -140,10 +140,10 @@ void aram_device_init() {
         // AR_INFO / AR_REFRESH power-on values the SDK reads before writing its own.
         reg(AR_INFO)    = 0;
         reg(AR_REFRESH) = 0;
-        // Only the ARAM registers. The DSP mailboxes and CSR (0x5000-0x500B) share this
-        // block but are a different device; claiming them would silently swallow accesses
-        // that should still be reported as unrouted.
-        mmio_register(MmioDevice{0xCC005012u, 0xCC005030u, "aram", &ar_read, &ar_write});
+        // The ARAM registers, through the end of the block. The DSP mailboxes and CSR
+        // (0x5000-0x500B) share this address space but are a different device; claiming
+        // them would silently swallow accesses that should still report as unrouted.
+        mmio_register(MmioDevice{0xCC005012u, 0xCC005040u, "aram", &ar_read, &ar_write});
         lucent::info("aram", "{} MB ARAM ready @ {}", kAramSize >> 20, (void*)g_aram);
     }
 }

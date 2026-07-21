@@ -99,6 +99,11 @@ void release_token(std::unique_lock<std::mutex>& lk) {
 // it has to track the token rather than whatever the guest scheduler last wrote.
 constexpr u32 OS_CURRENT_THREAD = 0x800000E4;
 
+// OSThread::state, a halfword at +712 (verified against OSResumeThread and
+// OSIsThreadTerminated, which tests it for MORIBUND or 0).
+constexpr u32 T_STATE           = 712;
+constexpr u16 OS_THREAD_MORIBUND = 8;
+
 // Thread 0 is adopted before OSInit has created the default OSThread, so its guest identity
 // is not known yet. Pick it up the first time it matters, rather than writing our
 // placeholder zero over the global the OS later sets — doing that handed guest code a NULL
@@ -254,6 +259,13 @@ void gsched_exit() {
     GuestThread* self = t_self;
     if (!self) return;
     self->state = State::Dead;
+
+    // Publish the death to the GUEST's own OSThread, not just our bookkeeping.
+    // OSIsThreadTerminated reads this halfword, and the game's main loop polls it before
+    // joining. Leaving it untouched meant the loop asked "terminated?" forever, got false,
+    // joined (which returned instantly because our scheduler knew better), and looped —
+    // rendering frames indefinitely without ever advancing the boot sequence.
+    if (self->os_thread) sb_w16(self->os_thread + T_STATE, OS_THREAD_MORIBUND);
     // OSJoinThread parks on a queue keyed by the thread it is waiting for.
     for (auto* t : g_threads)
         if (t->state == State::Blocked && t->wait_queue == self->os_thread) {
