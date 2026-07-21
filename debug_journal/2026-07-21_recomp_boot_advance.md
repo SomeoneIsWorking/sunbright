@@ -1654,3 +1654,38 @@ So ~49 MB is being staged inside a single aurora frame by something other than t
 textures, or copy that this runtime knowingly submits. The next probe is aurora-side: find
 which allocation reaches `map_staging` at that size, since the constant 16410880 (0xFA8000)
 should be traceable to one caller.
+
+## The overflowing buffer is aurora's STORAGE buffer, and there is a known reference
+
+`StagingBufferSize` is the sum of several regions; the reported capacity `50331648` is
+exactly `StorageBufferSize` (48 MB) from `lib/gfx/common.hpp`. So the overflow is the
+**indexed-array storage** region, not vertices, indices or uniforms.
+
+That constant carries a detailed history, and it measures the decomp runtime on **this very
+scene**:
+
+> the title/file-select frame already sat at 33.44mb (99.7% of 32mb, ghost-pass doubling
+> included) … The ghost-pass wart REMAINS the real fix; this headroom just stops capacity
+> from gating unrelated ports.
+
+So:
+
+| runtime | storage for the title/file-select frame |
+|---|---|
+| decomp + aurora | ~33.4 MB (already including a known redundant "ghost pass" doubling) |
+| recomp + aurora | 49.3 MB used, +16.4 MB requested = **~65.7 MB** |
+
+The recomp needs roughly **2x** what the decomp needs for the same frame. Since the decomp's
+figure already includes the ghost-pass doubling, this looks like a FURTHER doubling on the
+recomp side rather than the same wart.
+
+Note the constant's comment explicitly says growing it is not the fix — and it has already
+gone 8 -> 32 -> 48 MB. Raising it again would hide whatever is doubling here, so the useful
+question is what the recomp submits twice that the decomp submits once. Display-list
+inlining is the obvious suspect: every `CALL_DL` expands the list's bytes inline, so a list
+invoked twice contributes its indexed-array references twice — where the decomp path may let
+aurora reuse them.
+
+Measuring per-frame display-list expansions against the decomp's draw count on the same
+scene is the concrete next step; `SB_DRAW_STATS` on the decomp side and the existing
+`frame stream N KB (M DL expansions)` line on this side are directly comparable.
