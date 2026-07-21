@@ -53,6 +53,13 @@ u32 g_vcd_lo = 0, g_vcd_hi = 0;
 // aurora in its own terms (see emit_copy_state).
 u32 g_copy_left = 0, g_copy_top = 0, g_copy_w = 0, g_copy_h = 0;
 
+// Per-texmap image registers. image0 carries dimensions and format; image3 carries the
+// texel address (in 32-byte units). Aurora records both but takes the actual texel POINTER
+// from a GXTexObj supplied through its own extension — the same split as vertex array bases,
+// and for the same reason: a raw 32-bit value cannot be a host pointer.
+struct TexSlot { u32 image0 = 0, image3 = 0; bool have0 = false, have3 = false; };
+TexSlot g_tex[8];
+
 struct Stats {
     u64 bytes = 0, nops = 0, cp = 0, xf = 0, bp = 0, draws = 0, verts = 0, unknown = 0;
 } g_stats;
@@ -178,6 +185,37 @@ void emit_copy_state() {
     put_u8 (g_out, 0);      // not a wide (double-strided) copy
 }
 
+// GX_AURORA_LOAD_TEXOBJ payload, from aurora's parser: u8 map, u64 data, u32 w, u32 h,
+// u32 fmt, u32 tlut, u8 hasMips, u32 texObjId, u32 texDataVersion.
+void emit_texobj(u32 map) {
+    TexSlot& t = g_tex[map & 7];
+    if (!t.have0 || !t.have3) return;
+
+    const u32 w   = (t.image0 & 0x3FF) + 1;
+    const u32 h   = ((t.image0 >> 10) & 0x3FF) + 1;
+    const u32 fmt = (t.image0 >> 20) & 0xF;
+    const u32 phys = (t.image3 & 0x00FFFFFFu) << 5;   // image3 is in 32-byte units
+    if (phys >= 0x01800000u) {
+        lucent::debug("gxfifo", "texture {} address 0x{:08x} is outside MEM1", map, phys);
+        return;
+    }
+
+    put_u8 (g_out, 0x50);
+    put_u16(g_out, (u16)GX_AURORA_LOAD_TEXOBJ);
+    put_u8 (g_out, (u8)(map & 7));
+    put_u64(g_out, (u64)(uintptr_t)(g_ram_base + phys));
+    put_u32(g_out, w);
+    put_u32(g_out, h);
+    put_u32(g_out, fmt);
+    put_u32(g_out, 0);           // TLUT index; palettised formats need LOAD_TLUT too
+    put_u8 (g_out, 0);           // mips are gated by the real TexMode1 register, not here
+    // texObjId is aurora's texture cache key — a zero id makes every bind a cache miss and
+    // re-upload (the known 33x perf cliff). The texel address is stable and unique per
+    // texture, so it serves as the identity.
+    put_u32(g_out, phys ? phys : 1u);
+    put_u32(g_out, 0);           // data version: bumped only when texel bytes change
+}
+
 u32 be32(const u8* p) { return (u32)p[0] << 24 | (u32)p[1] << 16 | (u32)p[2] << 8 | p[3]; }
 u32 be16(const u8* p) { return (u32)p[0] << 8 | p[1]; }
 
@@ -255,6 +293,12 @@ size_t parse(const u8* p, size_t n, int depth) {
             else if (reg == 0x4A) { g_copy_w = (val & 0x3FF) + 1; g_copy_h = ((val >> 10) & 0x3FF) + 1; }
             // 0x52 bit 14 selects copy-to-XFB, which is what produces the presented frame.
             else if (reg == 0x52 && (val & (1u << 14))) emit_copy_state();
+            // Texture image registers. Maps 0-3 use the 0x8x/0x9x ids, maps 4-7 the 0xAx/0xBx
+            // ids. A texobj is emitted once both halves of a slot are known.
+            else if (reg >= 0x88 && reg <= 0x8B) { u32 m = reg - 0x88; g_tex[m].image0 = val; g_tex[m].have0 = true; emit_texobj(m); }
+            else if (reg >= 0xA8 && reg <= 0xAB) { u32 m = reg - 0xA8 + 4; g_tex[m].image0 = val; g_tex[m].have0 = true; emit_texobj(m); }
+            else if (reg >= 0x94 && reg <= 0x97) { u32 m = reg - 0x94; g_tex[m].image3 = val; g_tex[m].have3 = true; emit_texobj(m); }
+            else if (reg >= 0xB4 && reg <= 0xB7) { u32 m = reg - 0xB4 + 4; g_tex[m].image3 = val; g_tex[m].have3 = true; emit_texobj(m); }
 
             g_out.insert(g_out.end(), p + i, p + i + 5);
             g_stats.bp++; i += 5; continue;

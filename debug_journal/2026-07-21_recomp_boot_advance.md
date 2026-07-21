@@ -1260,3 +1260,37 @@ established three times already:
 
 Next: emit `GX_AURORA_LOAD_TEXOBJ` for each texture slot, built from the BP image registers
 with the texel pointer resolved out of guest memory.
+
+## Texture objects emitted; and what the draw trace actually shows
+
+`dev_gxfifo.cpp` now tracks the per-texmap BP image registers (`image0` = dimensions+format,
+`image3` = texel address in 32-byte units; maps 0-3 at `0x88-0x8B`/`0x94-0x97`, maps 4-7 at
+`0xA8-0xAB`/`0xB4-0xB7`) and emits `GX_AURORA_LOAD_TEXOBJ` once both halves of a slot are
+known. Payload from aurora's parser: `u8 map, u64 data, u32 w, u32 h, u32 fmt, u32 tlut,
+u8 hasMips, u32 texObjId, u32 texDataVersion`. The texel address doubles as `texObjId` —
+aurora's texture cache key — because a zero id makes every bind a cache miss and re-upload
+(the documented 33x perf cliff).
+
+**This did not change the output, and the reason is more interesting than a missing texture.**
+`AURORA_DRAW_TRACE=1` shows aurora receiving and parsing draws correctly, including large
+ones:
+
+```
+vtxCount=4      x168
+vtxCount=52     x26
+vtxCount=640    x1
+vtxCount=36917  x1
+vtxCount=57757  x1
+vtxCount=58347  x1
+```
+
+The scene-sized draws appear **exactly once each**, not per frame. Per-frame traffic is
+4-vertex quads — the fader. So the renderer is receiving what the game sends; the game is
+sending a fader every frame and the scene only once.
+
+That relocates the question back to game state: stage 15 has loaded and built its scene, but
+the game is not drawing it per frame. Rendering is no longer the suspect — which is the
+second time getting an instrument in place has moved the blame rather than confirmed it.
+
+The texobj emission is kept because it is required and correct in principle, but note it is
+**unverified**: nothing yet renders a texture, so it has not been shown to work.
