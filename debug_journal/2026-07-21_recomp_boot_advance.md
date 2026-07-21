@@ -1773,3 +1773,34 @@ rather than general inaccuracy.
 Honest position: the title screen RENDERS and matches closely, but "matching" in the
 pixel-parity sense is not established — that needs the animation phase pinned on both sides
 first, which is what the decomp's own title-oracle gate exists to do.
+
+## Controller input, and what pressing START runs into
+
+`overrides/native_pad.cpp` overrides `PADRead` (`0x80351600`, found as the call immediately
+before `PADClamp` inside `JUTGamePad::read`). SI is modelled as a transport with nothing
+attached, so the real `PADRead` reports every port disconnected (`err = -1`) and the game sees
+no input; on a PC port input comes from the host, so this is an override rather than a device.
+
+Port 0 reports connected, ports 1-3 report genuinely disconnected rather than pretending to be
+idle pads. Scripted input mirrors the decomp runtime's `SB_PAD_SCRIPT`:
+
+```
+SBR_PAD_SCRIPT="1500:START,1540:-"      # keyed on PAD read count (one per frame)
+```
+
+buttons named (`A B X Y Z L R START UP DOWN LEFT RIGHT`, `+` to combine, `-` for none).
+
+**Pressing START on the title re-enters the GAMEPLAY <-> MOVIE oscillation.** Tracing
+`mMovie` (`gpApplication+0x18`) shows movies **9** and **12** requested. Neither comes from
+`checkAdditionalMovie` — that only ever sets 1/3/4/5 — so the "already seen" flags do not
+gate this path. `Application.cpp:756` shows why: `APP_STATE_DONE` **falls through** to
+`APP_STATE_MOVIE`, setting `mMovie = 9` unconditionally.
+
+Overriding `TMovieDirector::direct` to report GAMEPLAY did NOT break the loop, so the
+re-entry is decided before the director runs. That override was reverted rather than left in
+— it changes game logic and did not do what it claimed, which is exactly the kind of
+unverified change that should not accumulate.
+
+The title itself is unaffected and still renders; this is specifically the title -> file-select
+transition wanting a movie. Worth noting the flags set earlier may also not be taking effect
+(`setFlag` at `0x80294b1c` is unverified) — that should be checked before more is built on it.

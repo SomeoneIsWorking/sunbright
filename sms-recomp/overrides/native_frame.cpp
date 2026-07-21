@@ -39,6 +39,8 @@ void report_app_state() {
                  st < (sizeof(kNames) / sizeof(*kNames)) ? kNames[st] : "?",
                  sb_r8(GPAPPLICATION + 0x0E), sb_r8(GPAPPLICATION + 0x0F),
                  sb_r8(GPAPPLICATION + 0x12), sb_r8(GPAPPLICATION + 0x13));
+    // mMovie (+0x18) identifies which movie a MOVIE state is trying to play.
+    if (st == 6) lucent::info("app", "  mMovie = {}", sb_r32(GPAPPLICATION + 0x18));
 }
 
 void video_wait_for_retrace(CPUState& cpu) {
