@@ -406,3 +406,49 @@ range it covers is easy to get subtly wrong, and a wrong checksum reproduces the
 default-fallback this abort exists to prevent. RE the guest's own validation — the OS reads
 and checks SRAM during `OSInit` — and match that, then verify the OS accepts it rather than
 assuming it did.
+
+## EXI device attachment + the SRAM/RTC chip
+
+`exi.h` adds an attachment interface (channel, chip-select, imm_write/imm_read/dma) and
+`dev_exi.cpp` now decodes EXI_CR properly: `CR_DMA` selects DMA over immediate, bits 2-3 are
+direction, bits 4-5 hold (length-1) for immediate transfers.
+
+`dev_sram.cpp` attaches on channel 0 / device 1 and implements the one command the game
+issues, `0x20000100` (SRAM read), followed by a 64-byte DMA.
+
+**The checksum question, settled by RE rather than recall.** The plan said not to write the
+SRAM checksum from memory of the algorithm. Checking was the right call: the game does not
+validate it at all. The only three places touching the SRAM mirror at `0x80402640` are
+
+| addr | role |
+|---|---|
+| `0x80347608` | read — `EXISelect(0,1,3)`, `EXIImm(0x20000100, 4, write)`, `EXIDma(64, read)` |
+| `0x8034773c` | lock |
+| `0x80347490` | flush / write-back |
+
+and none computes or verifies a checksum. That matches real hardware: the boot ROM
+validates and repairs SRAM; the game only reads it. So the checksum words are left **zero**
+rather than fabricating a value — a wrong checksum would be worse than none, and an
+unverifiable "correct" one is not something to claim. Contents are US-console defaults
+(language 0 = English, no flags, zero display offset).
+
+Unimplemented commands abort naming the command word instead of being quietly treated as a
+SRAM access, and SRAM write-back aborts rather than silently discarding settings changes.
+
+## Next: DI (the DVD interface)
+
+```
+func_80342550  __OSGetDIConfig   <- reads DI_CFG at 0xCC006024
+  <- func_80369fdc  EXISync
+     <- func_80347608  (SRAM read path)
+```
+
+DI registers sit at `0xCC006000`: `SR`, `CVR`, three command words, `MAR`, `LENGTH`, `CR`,
+`IMMBUF`, `CFG` (`+0x24`).
+
+This is a bigger arc than the previous devices, because a real DI has to serve the game's
+file reads from the disc image — the standalone host currently loads only `sms.dol` and has
+no disc mounted. The decomp+Aurora runtime already does this synchronously
+(`extern/aurora/lib/dolphin/dvd`, "every DVDRead*/Async completes inline and fires its
+callback before returning"), which is the model to follow, and the ROM path convention
+(`$SUNBRIGHT_ROM` / `.env` / `rom.rvz` drop-in) already exists.

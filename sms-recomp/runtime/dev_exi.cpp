@@ -16,11 +16,16 @@
 // plausible-but-wrong behaviour that hides for days.
 
 #include "mmio.h"
+#include "exi.h"
 
 #include <lucent/log.h>
 
+// Defined in rt_core.cpp — names the guest functions that led here.
+extern void rt_dump_guest_stack(const char* why);
+
 #include <cstdlib>
 #include <cstring>
+#include <vector>
 
 namespace {
 
@@ -35,8 +40,24 @@ constexpr u32 R_CSR = 0, R_MAR = 1, R_LEN = 2, R_CR = 3, R_DATA = 4;
 constexpr u32 CSR_CS_SHIFT = 7;
 constexpr u32 CSR_CS_MASK  = 0x7u << CSR_CS_SHIFT;
 
-// EXI_CR: bit0 starts the transfer and reads back clear once it completes.
+// EXI_CR: bit0 starts the transfer and reads back clear once it completes; bit1 selects
+// DMA over an immediate transfer; bits 2-3 are the direction; bits 4-5 hold (length - 1)
+// for immediate transfers.
 constexpr u32 CR_TSTART = 0x1u;
+constexpr u32 CR_DMA    = 0x2u;
+constexpr u32 CR_RW_SHIFT = 2, CR_RW_MASK = 0x3u << CR_RW_SHIFT;
+constexpr u32 CR_LEN_SHIFT = 4, CR_LEN_MASK = 0x3u << CR_LEN_SHIFT;
+
+std::vector<ExiDevice>& attached() {
+    static std::vector<ExiDevice> v;
+    return v;
+}
+
+const ExiDevice* find_device(u32 ch, int dev) {
+    for (const auto& d : attached())
+        if (d.channel == ch && d.device == (u32)dev) return &d;
+    return nullptr;
+}
 
 u32 g_reg[kChannels][5];
 
@@ -48,19 +69,31 @@ int selected_device(u32 ch) {
     return -1;   // none selected
 }
 
-void start_transfer(u32 ch) {
+void start_transfer(u32 ch, u32 cr) {
     const int dev = selected_device(ch);
     if (dev < 0) {
         lucent::error("exi", "channel {} started a transfer with no chip-select asserted "
                              "(CSR=0x{:08x})", ch, g_reg[ch][R_CSR]);
         std::abort();
     }
-    lucent::error("exi", "channel {} device {} has no implementation — EXI transport is "
-                         "modelled but nothing is attached. Returning bus-idle bytes would "
-                         "fake a broken console (corrupt SRAM checksum -> silent fallback "
-                         "to defaults). Implement this device.",
-                  ch, dev);
-    std::abort();
+    const ExiDevice* d = find_device(ch, dev);
+    if (!d) {
+        lucent::error("exi", "channel {} device {} has no implementation — EXI transport is "
+                             "modelled but nothing is attached. Returning bus-idle bytes "
+                             "would fake a broken console. Implement this device.", ch, dev);
+        rt_dump_guest_stack("EXI transfer to an unimplemented device");
+        std::abort();
+    }
+
+    const bool to_device = ((cr & CR_RW_MASK) >> CR_RW_SHIFT) != 0;
+
+    if (cr & CR_DMA) {
+        d->dma(g_reg[ch][R_MAR], g_reg[ch][R_LEN], to_device);
+        return;
+    }
+    const u32 len = ((cr & CR_LEN_MASK) >> CR_LEN_SHIFT) + 1;
+    if (to_device) d->imm_write(g_reg[ch][R_DATA], len);
+    else           g_reg[ch][R_DATA] = d->imm_read(len);
 }
 
 u32 exi_read(u32 ea, unsigned width) {
@@ -95,11 +128,22 @@ void exi_write(u32 ea, unsigned width, u32 value) {
 
     if (r == R_CR && (value & CR_TSTART)) {
         g_reg[ch][R_CR] &= ~CR_TSTART;   // completes before the write returns
-        start_transfer(ch);
+        start_transfer(ch, value);
     }
 }
 
 } // namespace
+
+void exi_attach(const ExiDevice& dev) {
+    if (find_device(dev.channel, (int)dev.device)) {
+        lucent::error("exi", "channel {} device {} already has something attached",
+                      dev.channel, dev.device);
+        std::abort();
+    }
+    attached().push_back(dev);
+    lucent::info("exi", "attached {} on channel {} device {}", dev.name, dev.channel,
+                 dev.device);
+}
 
 void exi_device_init() {
     std::memset(g_reg, 0, sizeof(g_reg));
