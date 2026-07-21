@@ -18,7 +18,45 @@
 #include <intrinsics.h>
 #include <lucent/log.h>
 
+extern void call_ppc(CPUState& cpu, u32 address);
+
 namespace {
+
+// TFlagManager::setFlag(u32 flag, long value) and the singleton's SDA slot. Addresses from
+// the retired fastboot override, which RE'd them against this DOL.
+constexpr u32 FM_SET_FLAG   = 0x80294b1cu;
+constexpr u32 FM_SDA_OFFSET = 0x6060u;      // TFlagManager::smInstance at r13 - 0x6060
+
+// "Movie already seen" flags. checkAdditionalMovie() consults these, and the game skips a
+// movie it thinks the player has watched. setBool(true, f) for these is exactly
+// setFlag(f, 1) (FlagManager.cpp case 3, all below 0x3001D).
+constexpr u32 kMovieSeen[] = {
+    0x30009,   // airport opening
+    0x3000B,   // plaza scenario-0 intro
+    0x3000C,   // plaza scenario-1 intro
+    0x3000D,   // shine gate
+};
+
+// Reporting movies as unopenable is not enough on its own: the game re-enters the MOVIE
+// state, fails again, and oscillates GAMEPLAY <-> MOVIE forever (observed). Marking them
+// seen is the game's OWN way of not playing a movie, so it stops asking.
+void mark_movies_seen(CPUState& cpu) {
+    const u32 fm = sb_r32(cpu.gpr[13] - FM_SDA_OFFSET);
+    if (!fm) {
+        lucent::warn("thp", "TFlagManager not constructed yet; movies not marked seen");
+        return;
+    }
+    for (u32 flag : kMovieSeen) {
+        const CPUState saved = cpu;
+        cpu.gpr[3] = fm;
+        cpu.gpr[4] = flag;
+        cpu.gpr[5] = 1;
+        call_ppc(cpu, FM_SET_FLAG);
+        cpu = saved;
+    }
+    lucent::info("thp", "marked {} attract/cutscene movies as already seen",
+                 sizeof(kMovieSeen) / sizeof(*kMovieSeen));
+}
 
 // THPPlayerOpen(const char* path) -> BOOL. 0 means the movie could not be opened.
 void thp_player_open(CPUState& cpu) {
@@ -28,6 +66,7 @@ void thp_player_open(CPUState& cpu) {
         lucent::warn("thp", "THP video is not decoded in this runtime — reporting movies as "
                             "unopenable so the game takes its own movie-setup-failure path. "
                             "Attract movies and cutscenes will not play.");
+        mark_movies_seen(cpu);
     }
     cpu.gpr[3] = 0;
 }

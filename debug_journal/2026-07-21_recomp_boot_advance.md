@@ -1418,3 +1418,23 @@ desync FATAL already dumps a 128-entry command ring plus the recent-draw ring sp
 show where a mis-advance happened. Using those to find the exact command whose length this
 parser computes differently is the way to close the remaining gap, rather than auditing bit
 layouts one at a time.
+
+## The GAMEPLAY <-> MOVIE oscillation, and how to skip a movie properly
+
+Reporting `THPPlayerOpen` as failing was not sufficient. The game re-entered the MOVIE state,
+failed again, and oscillated `GAMEPLAY <-> MOVIE` indefinitely — visible in the state log.
+
+The game's OWN way of not playing a movie is the "already seen" flags that
+`checkAdditionalMovie()` consults. `native_thp.cpp` now sets them on first use:
+`0x30009` (airport opening), `0x3000B`/`0x3000C` (plaza intros), `0x3000D` (shine gate).
+`setBool(true, f)` for these is exactly `setFlag(f, 1)` (FlagManager.cpp case 3, all below
+`0x3001D`), and `setFlag` is at `0x80294b1c` with `TFlagManager::smInstance` at `r13-0x6060`
+— addresses the retired fastboot override had already RE'd against this DOL, and the same
+four flags it set.
+
+**The oscillation stops and the game stays in GAMEPLAY stage 15.**
+
+Note the shape of this fix versus the previous one: failing the open used a real error path,
+but an error path the game is designed to RETRY. Marking the movie seen uses the path the
+game takes when there is simply nothing to play. The second is the honest analogue of "we
+have no video".
