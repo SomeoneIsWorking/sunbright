@@ -20,6 +20,7 @@
 #include "cpu_state.h"
 #include "intrinsics.h"
 #include "../overrides/overrides.h"
+#include "mmio.h"
 
 #include <lucent/log.h>
 #include <lucent/config.h>
@@ -49,6 +50,8 @@ u32  g_poll_last     = 0;
 u32  g_poll_reps     = 0;
 u32  g_watch_wa      = 0;   // armed watch address; 0 = disarmed
 
+extern void aram_device_init();
+
 extern "C" bool rt_mem_init() {
     if (g_ram_base) return true;
 
@@ -71,6 +74,8 @@ extern "C" bool rt_mem_init() {
 
     lucent::info("rt", "guest memory ready: MEM1 {} MB @ {}, L1 {} KB @ {}",
                  kMem1Size >> 20, (void*)g_ram_base, kL1Size >> 10, (void*)g_l1_base);
+
+    aram_device_init();   // devices register after guest RAM exists — ARAM DMAs into it
     return true;
 }
 
@@ -84,13 +89,25 @@ static void slow_report(const char* op, u32 ea, unsigned width) {
     lucent::debug("mmio", "unrouted {}{} @ 0x{:08x}", op, width * 8, ea);
 }
 
-u8  mem_r8_slow (u32 ea)            { slow_report("r", ea, 1); return 0; }
-u16 mem_r16_slow(u32 ea)            { slow_report("r", ea, 2); return 0; }
-u32 mem_r32_slow(u32 ea)            { slow_report("r", ea, 4); return 0; }
+// A device gets first refusal; anything unclaimed is still reported loudly.
+static u32 slow_read(u32 ea, unsigned width) {
+    u32 v = 0;
+    if (mmio_read(ea, width, v)) return v;
+    slow_report("r", ea, width);
+    return 0;
+}
+static void slow_write(u32 ea, unsigned width, u32 v) {
+    if (mmio_write(ea, width, v)) return;
+    slow_report("w", ea, width);
+}
+
+u8  mem_r8_slow (u32 ea)            { return (u8) slow_read(ea, 1); }
+u16 mem_r16_slow(u32 ea)            { return (u16)slow_read(ea, 2); }
+u32 mem_r32_slow(u32 ea)            { return       slow_read(ea, 4); }
 u64 mem_r64_slow(u32 ea)            { slow_report("r", ea, 8); return 0; }
-void mem_w8_slow (u32 ea, u8  v)    { (void)v; slow_report("w", ea, 1); }
-void mem_w16_slow(u32 ea, u16 v)    { (void)v; slow_report("w", ea, 2); }
-void mem_w32_slow(u32 ea, u32 v)    { (void)v; slow_report("w", ea, 4); }
+void mem_w8_slow (u32 ea, u8  v)    { slow_write(ea, 1, v); }
+void mem_w16_slow(u32 ea, u16 v)    { slow_write(ea, 2, v); }
+void mem_w32_slow(u32 ea, u32 v)    { slow_write(ea, 4, v); }
 void mem_w64_slow(u32 ea, u64 v)    { (void)v; slow_report("w", ea, 8); }
 
 // ── Dispatch ─────────────────────────────────────────────────────────────────

@@ -35,7 +35,8 @@ target_include_directories(sms-recomp-overrides PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/runtime" "${CMAKE_CURRENT_SOURCE_DIR}/overrides" "${GEN}")
 target_link_libraries(sms-recomp-overrides PUBLIC lucent::lucent)
 
-add_library(sms-recomp-rt STATIC runtime/rt_core.cpp)
+add_library(sms-recomp-rt STATIC runtime/rt_core.cpp runtime/mmio.cpp
+                                 runtime/dev_aram.cpp)
 target_include_directories(sms-recomp-rt PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/runtime" "${CMAKE_CURRENT_SOURCE_DIR}/overrides" "${GEN}")
 target_link_libraries(sms-recomp-rt PUBLIC lucent::lucent)
 

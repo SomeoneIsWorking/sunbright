@@ -224,3 +224,71 @@ general interrupt seam is still owed (VI retrace, CP/PE, DVD).
 
 That is the decision to make before writing code here — noting it rather than picking one
 mid-tick, since it sets the shape of every device seam that follows.
+
+## ARAM seam — landed as a DEVICE, not an SDK override
+
+Took the device path (option 2 above) rather than overriding `ARInit`/`ARStartDMA`.
+Deciding factor: an SDK override would have required RE'ing and reproducing every SDA
+global `ARInit` leaves behind, since `ARGetSize`/`ARGetBaseAddress` and the whole ARQ layer
+read them. ARAM is one of the simplest devices on the machine — a flat buffer, four address
+registers, a byte count — so modelling it lets the game's OWN init and sizing code run and
+*compute* those globals instead of us fabricating them.
+
+New: `runtime/mmio.h` + `mmio.cpp` (device router; overlapping ranges abort, unclaimed
+addresses stay loud) and `runtime/dev_aram.cpp`. The router is where DI/VI/SI/EXI will hang
+off later.
+
+**DMA is synchronous** — the copy completes inside the register write that starts it, so the
+busy bit is never observed set. Same "synchronous unthrottled I/O" as the decomp runtime,
+and it sidesteps the missing interrupt path for ARAM specifically. This is not debt to
+undo: inventing latency the host does not have would then require machinery to wait for it.
+
+Only `[0xCC005012, 0xCC005030)` is claimed. The DSP mailboxes and CSR (`0x5000-0x500B`)
+share the block but are a different device; claiming them would silently swallow accesses
+that should still report as unrouted.
+
+`aram_device_init()` is called explicitly from `rt_mem_init` rather than run from a static
+initializer — same static-archive linker-drop trap that silently disabled the first override.
+
+**Verified, not assumed:** with `SBR_LUCENT_DEBUG=aram` the game's size probe is visible
+doing real work —
+
+```
+[aram] DMA MM->AR mm=0x80427600 ar=0x01000000 len=0x20
+[aram] DMA MM->AR mm=0x80427600 ar=0x01200000 len=0x20
+[aram] DMA MM->AR mm=0x80427600 ar=0x02000000 len=0x20
+```
+
+It writes `0xDEADBEEF`/`0xBAD0BAD1` past the 16 MB mark to probe aliasing. `ar & (size-1)`
+wraps exactly as retail hardware does, so the probe concludes 16 MB by itself and boot
+proceeds past `ARInit`.
+
+## The scheduler is now REQUIRED (evidence, not speculation)
+
+Boot now creates **six** threads with three distinct entry points — no longer just
+`JUTException`:
+
+| entry | prio | count |
+|---|---|---|
+| `0x802c54b8` (`JUTException::run`) | 0, 8 | 4 |
+| `0x802a9184` | 15 | 1 |
+| `0x802a7878` | 17 | 1 |
+
+and then the MAIN thread parks:
+
+```
+func_802a6398 -> func_802a5f50 -> func_8001e920 -> func_8035dae8
+  -> func_803492e0  OSSleepThread
+  -> func_803486dc  SelectThread   <- spins here
+```
+
+It is waiting on work that only those prio-15/17 workers can do, and they are not being
+scheduled. Increment 1's loud warning called this exactly. So the cooperative token
+scheduler is the next piece, and it is now justified by a concrete boot stop rather than by
+the retired design's say-so.
+
+Also new and unexplained: `unhandled syscall at 0x80341ab8 (r3=0xcc010000)`. `0xCC010000` is
+the GX FIFO region, so this is likely a cache/store-gather operation. The runtime currently
+logs and continues; whether ignoring it is correct needs checking before it is trusted —
+`sc` at `0x803436b8` (reached from the ARAM sizing code around a DMA) is almost certainly a
+cache flush, which IS correctly a no-op on a coherent host, but neither has been confirmed.
