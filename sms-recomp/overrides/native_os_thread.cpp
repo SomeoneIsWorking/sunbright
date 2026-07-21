@@ -7,11 +7,12 @@
 // standalone boot aborts on exactly this: OSResumeThread -> SelectThread -> resume at
 // SelectThread+0x104.
 //
-// The port's answer (same as the retired Dolphin-era one, docs/native_threading.md at
-// 9283f44^) is that guest threads become HOST threads, so the guest scheduler is never
-// entered. That needs a cooperative token scheduler, because the GameCube was single-core
-// and the game relies on it: only one guest thread may run at a time, or we introduce
-// data races the game was never written to survive.
+// The port's answer is the ONE RUNTIME rule (CLAUDE.md): a GC thread's work runs INLINE at
+// its enqueue site, so the thread itself is never needed and the guest scheduler is never
+// entered. That is the same reasoning as synchronous ARAM DMA and synchronous GXDrawDone —
+// the host has no latency to hide, so there is nothing to overlap and nothing to schedule.
+// (An earlier draft of this file proposed porting a cooperative token scheduler instead.
+// That was wrong and inconsistent with every other seam in this runtime.)
 //
 // THIS INCREMENT DOES NOT SCHEDULE ANYTHING YET. It installs the seam — recording created
 // threads and keeping the guest's own bookkeeping exact — and makes a resume return
@@ -19,7 +20,7 @@
 // JUTException's, whose body parks forever waiting for a fault that a PC port surfaces
 // natively anyway. It is NOT enough in general: a worker whose body never runs is a real
 // behavioural gap, so every skipped resume says so out loud rather than looking like it
-// worked. The next increment ports the scheduler and turns these into real threads.
+// worked. When one is, the fix is to make that work synchronous at its enqueue site.
 
 #include "overrides.h"
 
@@ -50,8 +51,8 @@ struct ThreadRec {
     bool body_ran;
 };
 
-// Keyed by guest OSThread*. Not a set: the entry point and priority are what the next
-// increment needs in order to actually spawn the thread.
+// Keyed by guest OSThread*. Not a set: the entry point identifies WHICH worker went
+// unscheduled, which is what names the enqueue site that has to become synchronous.
 std::unordered_map<u32, ThreadRec>& threads() {
     static std::unordered_map<u32, ThreadRec> t;
     return t;
@@ -104,7 +105,8 @@ void os_resume_thread(CPUState& cpu) {
         lucent::warn("osthread",
                      "thread 0x{:08x} (entry 0x{:08x}, prio {}) became runnable but is NOT "
                      "being scheduled — its body will not run. Fine for a thread that only "
-                     "parks (JUTException); a real gap for a worker. Scheduler port pending.",
+                     "parks (JUTException). If a worker's output is ever actually needed, the "
+                     "fix is to make its ENQUEUE point synchronous, not to add a scheduler.",
                      thread, it->second.entry, it->second.priority);
     }
 }
@@ -112,7 +114,8 @@ void os_resume_thread(CPUState& cpu) {
 } // namespace
 
 SB_OVERRIDE(0x80348948u, os_create_thread, "OSCreateThread",
-            "record the thread for the host-thread scheduler; guest struct init is super-called")
+            "record the thread so an unscheduled worker is identifiable; guest struct init "
+            "is super-called")
 SB_OVERRIDE(0x80348ee8u, os_resume_thread, "OSResumeThread",
             "retail reschedules via SelectThread, which resumes mid-function and cannot be "
             "recompiled; bookkeeping is reproduced, scheduling is not")

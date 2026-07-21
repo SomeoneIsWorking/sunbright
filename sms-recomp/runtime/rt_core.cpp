@@ -31,6 +31,7 @@
 #include <sys/mman.h>
 #include <execinfo.h>
 #include <ctime>
+#include <unordered_map>
 
 // ── Guest memory ─────────────────────────────────────────────────────────────
 // GameCube MEM1 is 24 MB at 0x80000000 (cached) / 0xC0000000 (uncached); the
@@ -51,6 +52,8 @@ u32  g_poll_reps     = 0;
 u32  g_watch_wa      = 0;   // armed watch address; 0 = disarmed
 
 extern void aram_device_init();
+extern void dsp_device_init();
+extern void ai_device_init();
 
 extern "C" bool rt_mem_init() {
     if (g_ram_base) return true;
@@ -75,7 +78,10 @@ extern "C" bool rt_mem_init() {
     lucent::info("rt", "guest memory ready: MEM1 {} MB @ {}, L1 {} KB @ {}",
                  kMem1Size >> 20, (void*)g_ram_base, kL1Size >> 10, (void*)g_l1_base);
 
-    aram_device_init();   // devices register after guest RAM exists — ARAM DMAs into it
+    // Devices register after guest RAM exists (ARAM DMAs into it).
+    dsp_device_init();
+    ai_device_init();
+    aram_device_init();
     return true;
 }
 
@@ -85,19 +91,44 @@ extern "C" bool rt_mem_init() {
 // eventually hand off. Until that routing exists these are LOUD, not silent zeros —
 // a silent 0 here reads as valid hardware state and would fake plausible-but-wrong
 // behaviour for a long time before anyone noticed.
+void rt_dump_guest_stack(const char* why);
+
 static void slow_report(const char* op, u32 ea, unsigned width) {
     lucent::debug("mmio", "unrouted {}{} @ 0x{:08x}", op, width * 8, ea);
+}
+
+// An effective address in the first 64 KB with no segment nibble is a NULL pointer plus a
+// field offset — `lwz rX,0x1d0(r3)` with r3 == 0. Real hardware has no BAT covering it, so
+// this faults there too; returning 0 here instead would hand the guest a plausible value and
+// let it run on for millions of instructions before anything looked wrong (measured: 314k
+// reads of 0x1d0 in 15 s, long after whatever produced the NULL). Stop at the cause.
+static void trap_null(const char* op, u32 ea, unsigned width) {
+    if ((ea >> 28) != 0 || ea >= 0x00010000u) return;
+    lucent::error("rt", "NULL-pointer {}{} at guest address 0x{:08x} (field offset 0x{:x})",
+                  op, width * 8, ea, ea);
+    rt_dump_guest_stack("null dereference");
+    std::abort();
 }
 
 // A device gets first refusal; anything unclaimed is still reported loudly.
 static u32 slow_read(u32 ea, unsigned width) {
     u32 v = 0;
     if (mmio_read(ea, width, v)) return v;
-    slow_report("r", ea, width);
-    return 0;
+    trap_null("r", ea, width);
+    // FAIL FAST. Returning 0 for a device nobody implemented is a fabricated hardware
+    // answer: the guest treats it as real, and a 0 that should have been a pointer becomes
+    // a NULL dereference thousands of instructions later with no trace of where it came
+    // from. Stopping here names the missing device at the exact instruction that needed it,
+    // which is also the order in which devices should be implemented.
+    lucent::error("rt", "read{} from unrouted device register 0x{:08x} — no device claims "
+                        "it, and inventing a value would corrupt the guest silently",
+                  width * 8, ea);
+    rt_dump_guest_stack("unrouted device read");
+    std::abort();
 }
 static void slow_write(u32 ea, unsigned width, u32 v) {
     if (mmio_write(ea, width, v)) return;
+    trap_null("w", ea, width);
     slow_report("w", ea, width);
 }
 
@@ -291,5 +322,14 @@ u64 tb_get() {
 // yet, so say so LOUDLY rather than silently continuing with the guest believing a
 // syscall completed.
 void os_hle_call(CPUState& cpu, u32 address) {
-    lucent::warn("os", "unhandled syscall at 0x{:08x} (r3=0x{:08x})", address, cpu.gpr[3]);
+    // Per SITE, not per call: the GX path hits one of these on essentially every command
+    // (measured 1.67 M in a 40 s run), which buries every other line in the log and slows
+    // the run enough to distort what it is measuring. Once per site still surfaces a new
+    // one immediately, which is the point of the warning.
+    static std::unordered_map<u32, unsigned long> seen;
+    unsigned long& n = seen[address];
+    if (++n == 1)
+        lucent::warn("os", "unhandled syscall at 0x{:08x} (r3=0x{:08x}) — further "
+                           "occurrences at this address are counted, not logged",
+                     address, cpu.gpr[3]);
 }

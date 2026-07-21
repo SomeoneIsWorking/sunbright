@@ -263,7 +263,7 @@ It writes `0xDEADBEEF`/`0xBAD0BAD1` past the 16 MB mark to probe aliasing. `ar &
 wraps exactly as retail hardware does, so the probe concludes 16 MB by itself and boot
 proceeds past `ARInit`.
 
-## The scheduler is now REQUIRED (evidence, not speculation)
+## ~~The scheduler is now REQUIRED~~ — WRONG, see the correction below
 
 Boot now creates **six** threads with three distinct entry points — no longer just
 `JUTException`:
@@ -292,3 +292,78 @@ the GX FIFO region, so this is likely a cache/store-gather operation. The runtim
 logs and continues; whether ignoring it is correct needs checking before it is trusted —
 `sc` at `0x803436b8` (reached from the ARAM sizing code around a DMA) is almost certainly a
 cache flush, which IS correctly a no-op on a coherent host, but neither has been confirmed.
+
+## CORRECTION: the scheduler conclusion above was WRONG
+
+The section titled "the scheduler is now REQUIRED" was wrong, and the user caught it:
+*"That makes no sense, we already converted these async wait operations to sync before."*
+
+The error was diagnostic laziness. I saw the main thread parked in `OSSleepThread` ->
+`SelectThread` and concluded it was waiting for the unscheduled prio-15/17 workers —
+without checking what it was actually waiting ON. It was not waiting for a worker at all:
+
+```
+func_8035dae8  GXDrawDone   <- the actual wait
+  -> func_803492e0  OSSleepThread
+     -> func_803486dc  SelectThread
+```
+
+`GXDrawDone` parks until a PE draw-sync token interrupt. Nothing to do with threads.
+
+It was also **inconsistent with this very runtime**: ARAM DMA had just been made
+synchronous a few commits earlier, with the note "the host has no latency to hide". The
+same reasoning applies to every one of these waits, and to GC threads themselves — which
+is exactly the ONE RUNTIME rule that was already written down in CLAUDE.md:
+
+> every GC-thread body runs inline at its enqueue site
+
+**The standing rule for this runtime: a guest wait for asynchronous hardware becomes
+synchronous completion. There is no scheduler, and none is planned.** If a worker's output
+is ever genuinely needed, the fix is to make its ENQUEUE point synchronous — not to run the
+worker. The retired `sms_jkrthread.cpp` (35 lines at `9283f44^`) is the precedent.
+
+The misleading comments in `native_os_thread.cpp` have been corrected too, so the file no
+longer advertises a scheduler port that is not going to happen.
+
+## Seams landed after the correction
+
+- **`GXDrawDone`** (`native_gx.cpp`) — pushes the PE token byte-for-byte as retail does, so
+  the FIFO stream stays faithful for when aurora consumes it, then sets the flag the token
+  interrupt would have set. Only the WAIT is skipped.
+- **`VIWaitForRetrace`** (`native_vi.cpp`) — a pure counter, matching the decomp runtime.
+  Both read their SDA globals off `r13` at call time rather than hardcoding an address.
+
+With those, the game reaches its **main loop**: stack samples show `TMarioGamePad::read` ->
+`JUTGamePad::read` -> `OSGetTime` on one sample and `GXSetViewport` -> `GXSetViewportJitter`
+on the next. 3.4 M writes to `0xCC008000` (the write-gather pipe) confirm it is submitting
+real GX command traffic.
+
+## FAIL FAST applied to the memory path (user directive: "fail fast please")
+
+Two silent-zero paths were feeding the guest fabricated hardware answers:
+
+1. **NULL dereference.** `sb_ram_fast` only accepts the `0x8`/`0xC`/`0xE` windows, so
+   `lwz rX,0x1d0(r3)` with `r3 == 0` fell through to the slow path and returned 0. Measured
+   **314 k reads of `0x1d0`** in 15 s — the guest had been running on garbage for millions
+   of instructions. Now traps with a guest backtrace.
+2. **Unrouted device reads.** Returning 0 for a device nobody implemented is an invented
+   hardware answer; a 0 that should have been a pointer becomes a NULL dereference far from
+   its cause. Now fatal, naming the register and the guest call stack.
+
+This regresses apparent progress — boot now stops much earlier — but the earlier "progress"
+was the game running on fabricated data. **Fail-fast turned the device list into an ordered
+worklist**: each abort names exactly which register is needed next.
+
+Devices implemented in the order fail-fast demanded them:
+
+| device | range | note |
+|---|---|---|
+| `dsp` | `0xCC005000-0x5012` | mailboxes + CSR; DSP is permanently halted, interrupt-status bits can never set because nothing raises them |
+| `aram` | `0xCC005012-0x5030` | 16 MB buffer, synchronous DMA |
+| `ai` | `0xCC006C00-0x6C10` | sample counter is a REAL clock (48 kHz off `CLOCK_MONOTONIC`); a frozen counter would make any interval measured against it divide by zero or spin |
+
+**Next: EXI** (`0xCC006800`), read by `OSInit` — memory card / IPL / RTC, and the SRAM the
+OS reads at boot for language and video-mode settings.
+
+Also fixed: the `sc` warning fired 1.67 M times in a 40 s run, burying every other line and
+slowing the run enough to distort what it measured. Now once per SITE, counted thereafter.
