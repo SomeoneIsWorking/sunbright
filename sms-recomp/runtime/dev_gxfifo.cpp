@@ -51,9 +51,20 @@ struct Vat { u32 vcd_lo = 0, vcd_hi = 0, fmt0 = 0, fmt1 = 0, fmt2 = 0; };
 Vat g_vat[8];
 u32 g_vcd_lo = 0, g_vcd_hi = 0;
 
-// EFB copy rectangle, tracked from BP 0x49/0x4A so the display copy can be described to
-// aurora in its own terms (see emit_copy_state).
+// EFB copy rectangle, tracked from BP 0x49/0x4A so a copy can be described to aurora in its
+// own terms (see emit_copy_state).
 u32 g_copy_left = 0, g_copy_top = 0, g_copy_w = 0, g_copy_h = 0;
+
+// BP 0x4B: destination address of a copy, in 32-byte units. Only meaningful for a copy to a
+// TEXTURE — a display copy goes to the XFB, which aurora keys separately. Without this the
+// texture-copy destination is never described and aurora resolves into whatever pointer it
+// last held.
+u32 g_copy_dest = 0;
+
+// BP 0x4E: vertical copy scale, 1.8 fixed point (0x100 == 1:1). Together with the horizontal
+// half-scale bit of the copy command this is how a full EFB is resolved down into a smaller
+// texture — the sea reflection copies 640x448 of EFB into a 320x224 texture this way.
+u32 g_copy_yscale = 0x100;
 
 // Per-texmap image registers. image0 carries dimensions and format; image3 carries the
 // texel address (in 32-byte units). Aurora records both but takes the actual texel POINTER
@@ -198,13 +209,72 @@ void emit_arraybase(u32 attr, u32 guest_addr) {
 // source and destination have been described through its own extensions — the raw BP
 // registers carry EFB coordinates and a guest destination address it cannot use directly.
 // Without this its present source is never created, and the frame it hands back is 1x1.
-void emit_copy_state() {
+// `cmd` is the BP 0x52 payload; `to_xfb` is its bit 14, already decoded by the caller.
+//
+// BOTH kinds of copy must be described, not just the display copy. A copy to a texture is how
+// the game builds render-to-texture content — at file-select the sea's reflection is a 640x448
+// EFB region resolved into a 320x224 texture. Describing only the display copy left aurora
+// resolving texture copies against the previous display copy's extent and format, and into
+// whatever destination pointer it last held, since GX_AURORA_LOAD_COPY_DEST was never sent.
+void emit_copy_state(u32 cmd, bool to_xfb) {
     if (g_copy_w == 0 || g_copy_h == 0) return;
-    static u32 last_w = 0, last_h = 0;
-    if (g_copy_w != last_w || g_copy_h != last_h) {
-        last_w = g_copy_w; last_h = g_copy_h;
-        lucent::debug("gxfifo", "EFB copy {}x{} at ({},{})", g_copy_w, g_copy_h,
-                      g_copy_left, g_copy_top);
+
+    // The copy scales the EFB region down into the destination: bit 9 halves horizontally,
+    // and BP 0x4E scales vertically as 1.8 fixed point.
+    const bool half_scale   = (cmd >> 9) & 1;
+    const bool scale_invert = (cmd >> 10) & 1;
+    u32 dst_w = half_scale ? g_copy_w / 2 : g_copy_w;
+    u32 dst_h;
+    if (to_xfb) {
+        // A display copy scales height by BP 0x4E, 1.8 fixed point (inverted by bit 10).
+        const double ys = scale_invert ? 256.0 / (double)(g_copy_yscale ? g_copy_yscale : 0x100)
+                                       : (double)g_copy_yscale / 256.0;
+        dst_h = (u32)((double)g_copy_h * ys);
+    } else {
+        // A texture copy has no separate vertical scale: the half-scale bit halves BOTH
+        // dimensions. Confirmed against this game rather than assumed — the sea reflection
+        // copies a 640x448 EFB region with half-scale set, and the texture it then binds is
+        // 320x224. Treating 0x4E as the height scale here produced 320x448, which no texture
+        // in the scene matches.
+        dst_h = half_scale ? g_copy_h / 2 : g_copy_h;
+    }
+    if (dst_w == 0) dst_w = 1;
+    if (dst_h == 0) dst_h = 1;
+
+    // The copy format is NOT the raw bits 3-6. Hardware packs it so that the low bit selects
+    // the upper half of the format space:  fmt = field/2 + (field & 1) * 8.  Verified against
+    // this game's own copies: field 8 decodes to RGB565, and the sea reflection texture the
+    // game then binds is indeed RGB565 (format 4); field 10 decodes to RGB5A3. Reading the
+    // field directly instead gave the nonsensical "R8"/"B8" single-channel formats.
+    //
+    // For 0-6 the result coincides with the GXTexFmt numbering aurora wants (I4, I8, IA4, IA8,
+    // RGB565, RGB5A3, RGBA8).
+    const u32 field = (cmd >> 3) & 0xF;
+    u32 fmt = field / 2 + (field & 1) * 8;
+
+    // A display copy goes through the XFB, where the format field is not the texture format —
+    // the copy is YUV-converted and aurora wants the XFB as RGBA8. Decoding it as a texture
+    // format yields GX_TF_I4, 4-bit intensity, which renders the whole frame greyscale.
+    if (to_xfb) {
+        fmt = 6;    // GX_TF_RGBA8
+    } else if (fmt > 6 && fmt != 14) {
+        // The remaining copy formats are the single/dual-channel ones (A8, R8, G8, B8, RG8,
+        // GB8), which have no GXTexFmt equivalent. Nothing in the boot path uses them; say so
+        // rather than silently resolving into a wrong format.
+        lucent::warn("gxfifo", "EFB copy format {} (field {}, BP 0x52 = 0x{:06x}) has no "
+                               "GXTexFmt equivalent — single/dual-channel copy formats are not "
+                               "translated yet", fmt, field, cmd);
+        fmt = 6;
+    }
+
+    {   // One line per distinct copy shape, so the copy set of a scene is visible at a glance.
+        static u32 last_w = 0, last_h = 0, last_fmt = 0xFF; static bool last_xfb = false;
+        if (dst_w != last_w || dst_h != last_h || fmt != last_fmt || to_xfb != last_xfb) {
+            last_w = dst_w; last_h = dst_h; last_fmt = fmt; last_xfb = to_xfb;
+            lucent::debug("gxfifo", "EFB copy -> {} : src {}x{} at ({},{}) -> dst {}x{} fmt {}",
+                          to_xfb ? "XFB" : "texture", g_copy_w, g_copy_h, g_copy_left,
+                          g_copy_top, dst_w, dst_h, fmt);
+        }
     }
 
     put_u8 (g_out, 0x50);
@@ -216,13 +286,25 @@ void emit_copy_state() {
 
     put_u8 (g_out, 0x50);
     put_u16(g_out, GX_AURORA_LOAD_COPY_DST);
-    put_u32(g_out, g_copy_w);
-    put_u32(g_out, g_copy_h);
-    // Display copies land in an RGBA8 XFB. This field is NOT unused: format 0 is GX_TF_I4,
-    // 4-bit INTENSITY, which renders the whole frame greyscale — shape and texture detail
-    // intact, all colour gone.
-    put_u32(g_out, 6);      // GX_TF_RGBA8
+    put_u32(g_out, dst_w);
+    put_u32(g_out, dst_h);
+    put_u32(g_out, fmt);
     put_u8 (g_out, 0);      // not a wide (double-strided) copy
+
+    // The display copy is keyed on aurora's own kDisplayCopyDest and needs no destination.
+    // A texture copy does: without it aurora resolves into a stale pointer.
+    if (!to_xfb) {
+        const u32 phys = g_copy_dest << 5;
+        if (phys == 0 || phys >= 0x01800000u) {
+            lucent::error("gxfifo", "EFB texture copy destination 0x{:08x} (BP 0x4B = "
+                                    "0x{:06x}) is not in MEM1 — the copy has nowhere to land",
+                          phys, g_copy_dest);
+            std::abort();
+        }
+        put_u8 (g_out, 0x50);
+        put_u16(g_out, GX_AURORA_LOAD_COPY_DEST);
+        put_u64(g_out, (u64)(uintptr_t)(g_ram_base + phys));
+    }
 }
 
 // GX_AURORA_LOAD_TEXOBJ payload, from aurora's parser: u8 map, u64 data, u32 w, u32 h,
@@ -359,8 +441,14 @@ size_t parse(const u8* p, size_t n, int depth) {
             // 0x49: EFB copy top-left (10 bits each). 0x4A: width-1 / height-1.
             if (reg == 0x49) { g_copy_left = val & 0x3FF; g_copy_top = (val >> 10) & 0x3FF; }
             else if (reg == 0x4A) { g_copy_w = (val & 0x3FF) + 1; g_copy_h = ((val >> 10) & 0x3FF) + 1; }
-            // 0x52 bit 14 selects copy-to-XFB, which is what produces the presented frame.
-            else if (reg == 0x52 && (val & (1u << 14))) emit_copy_state();
+            // 0x4B: copy destination address (32-byte units). 0x4E: vertical copy scale.
+            else if (reg == 0x4B) { g_copy_dest = val & 0x00FFFFFFu; }
+            else if (reg == 0x4E) { g_copy_yscale = val & 0x00FFFFFFu; }
+            // 0x52 triggers a copy. Bit 14 selects copy-to-XFB (the presented frame); with it
+            // clear the copy targets a TEXTURE, which is equally real — render-to-texture
+            // content like the sea's reflection is built this way. Handling only the display
+            // copy silently dropped every texture copy.
+            else if (reg == 0x52) emit_copy_state(val, (val & (1u << 14)) != 0);
             // Texture image registers. Maps 0-3 use the 0x8x/0x9x ids, maps 4-7 the 0xAx/0xBx
             // ids. A texobj is emitted once both halves of a slot are known.
             else if (reg >= 0x88 && reg <= 0x8B) { u32 m = reg - 0x88; g_tex[m].image0 = val; g_tex[m].have0 = true; emit_texobj(m); }

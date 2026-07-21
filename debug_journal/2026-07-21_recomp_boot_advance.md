@@ -2020,3 +2020,41 @@ Next: emit copy state for texture copies too, with the format taken from the BP 
 instead of hardcoded, and re-measure the 85.9% figure. That number is the falsifier — if the
 sea does not change, the stale-state theory is wrong and the coplanar-draw question is back
 open.
+
+## EFB texture copies now translated — and the stale-state theory is FALSIFIED
+
+Implemented the fix and it did **not** change the sea: near-white in the sea crop is
+**85.9% before and 85.9% after**, against the oracle's 0.0%. By the falsifier I committed to
+last tick, the stale-copy-state theory is wrong. The white surface is something else, and the
+coplanar-draw question is back open.
+
+The work still stands on its own merits, because the copy path was genuinely broken in three
+ways — all found by making the dropped case loud instead of silent:
+
+1. **`GX_AURORA_LOAD_COPY_DEST` was never emitted at all.** Aurora resolves a texture copy into
+   `g_gxState.texCopyDest`; we never set it, so every texture copy landed on a stale pointer.
+2. **The copy format was hardcoded to RGBA8**, and my first attempt to decode it was also wrong.
+   The format is not raw bits 3-6: hardware packs it as `fmt = field/2 + (field & 1) * 8`.
+   Reading the field directly produced the nonsensical single-channel "R8"/"B8" formats. The
+   decode is confirmed against the game's own registers — field 8 decodes to RGB565 and the
+   texture the game subsequently binds is RGB565; field 10 decodes to RGB5A3.
+3. **The destination extent was wrong.** For a texture copy the half-scale bit halves BOTH
+   dimensions; BP 0x4E is the *display* copy's vertical scale. Treating 0x4E as the height
+   scale gave 320x448, which matches no texture in the scene.
+
+Self-check that the translation is now right, rather than merely different: the copies the
+parser reports are exactly the textures the game binds — `640x448 -> 320x224 fmt 4 (RGB565)`
+for the sea reflection and `256x256 fmt 5 (RGB5A3)`, with the display copy RGBA8. Before this,
+one of those was 320x448 and the formats were fiction. The rendered frame is otherwise
+unchanged, so nothing regressed.
+
+Also worth noting: decoding the format for the display copy too would have been a regression —
+an XFB copy is YUV-converted and its format field is not a texture format, so it decodes to
+GX_TF_I4 and renders the whole frame greyscale. That is now explicit in the code.
+
+**Where the sea investigation actually stands.** Ruled out: the animated ripple grid (stable
+across frames), palettised textures (none in the scene), the `tcg`/indirect parser gap (no
+warnings), and now stale/missing copy state. Still on the table: a genuine coplanar second
+draw of the sea. The next move is to identify the draw that paints white there — enumerate the
+draws covering that region rather than reasoning about which subsystem "should" own it, since
+three subsystem-level guesses in a row have now been wrong.
