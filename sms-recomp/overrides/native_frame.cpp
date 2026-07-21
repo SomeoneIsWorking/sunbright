@@ -14,6 +14,8 @@
 #include <intrinsics.h>
 #include <lucent/log.h>
 
+#include <chrono>
+
 extern "C" void func_802fc9a4(CPUState&);   // JDrama::TVideo::waitForRetrace
 extern void gxfifo_flush();
 
@@ -46,6 +48,19 @@ void video_wait_for_retrace(CPUState& cpu) {
 
     // Everything for this frame is in the stream now.
     gxfifo_flush();
+
+    // Present rate, so "is it slow?" is measured rather than guessed.
+    {
+        using clock = std::chrono::steady_clock;
+        static auto t0 = clock::now();
+        static long frames = 0;
+        if (++frames % 30 == 0) {
+            const auto now = clock::now();
+            const double s = std::chrono::duration<double>(now - t0).count();
+            lucent::debug("frame", "{} presents, {:.1f}/s over the last 30", frames, 30.0 / s);
+            t0 = now;
+        }
+    }
 
     aurora_end_frame();
     if (!aurora_begin_frame()) {

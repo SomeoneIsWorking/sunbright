@@ -1320,3 +1320,37 @@ to XFB and presented. It also matches the boot sequence — `TGCLogoDir` has bot
 `direct_nlogo` and `direct_dolby`, and this is the Dolby half.
 
 Frame capture for the record: `scratch/recomp/scene.png`.
+
+## Vertex sizing had to match aurora EXACTLY: the NBT/NBT3 normal quirk
+
+Aurora aborted with `unsupported primitive type 136`. `0x88` is not a primitive at all — the
+SDK enum goes `GX_QUADS = 0x80` straight to `GX_TRIANGLES = 0x90` — and aurora's own comments
+note that a stream desync surfaces exactly this way. So the fault was in OUR stream.
+
+Cause: `vertex_size()` did not implement the GC normal quirk that
+`calculate_last_vtx_size()` (aurora, `command_processor.cpp:1824`) does:
+
+- VAT_A **bit 9** selects NBT — normal+binormal+tangent, **9 components instead of 3**
+- VAT_A **bit 31** selects NBT3, where an **indexed** normal costs **three** indices
+  (3 bytes for INDEX8, 6 for INDEX16) rather than one
+
+J3D uses these for lit models, so every such draw's payload length was wrong, the byte span
+copied into the output stream was wrong, and aurora desynced. Matching aurora's algorithm
+exactly fixed it.
+
+The general lesson: this parser and aurora's must agree **bit for bit** on vertex layout,
+because the parser decides how many bytes belong to a draw. Aurora's own implementation is
+the reference — read it rather than deriving the rules independently.
+
+Also fixed while here: `parse()` re-scanned the whole buffer on every 4-byte append while a
+large command was incomplete (a 58 k-vertex draw is ~1.7 MB), which is quadratic. It now
+records how many bytes the outstanding command needs and waits for them. The nested
+display-list parse saves/restores that counter so an inner list cannot disturb the outer
+stream's state.
+
+Measured present rate is **~200/s** — an earlier "presents are slow" assumption was simply
+wrong, and the dumps that failed to appear were from the pre-fix build.
+
+**Next:** aurora now aborts on `unhandled tcg src 21 at tcg[1]`, a texture-coordinate
+generation source. The GX_TG enum tops out around 20, so this is either a further (smaller)
+desync or a genuine aurora gap — worth distinguishing before assuming either.

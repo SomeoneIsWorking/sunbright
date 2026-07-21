@@ -136,10 +136,23 @@ u32 vertex_size(u32 vat_idx) {
     const u32 c0_mode  = (v.vcd_lo >> 13) & 3;
     const u32 c1_mode  = (v.vcd_lo >> 15) & 3;
 
-    // VAT_A: pos elements bit0 / format bits1-3, normal format bits10-12.
+    // VAT_A: pos elements bit0 / format bits1-3.
     const u32 pos_cnt = ((v.fmt0 >> 0) & 1) ? 3 : 2;
     n += attr_size(pos_mode, pos_cnt * component_bytes((v.fmt0 >> 1) & 7));
-    n += attr_size(nrm_mode, 3 * component_bytes((v.fmt0 >> 10) & 7));
+
+    // Normals carry a GC quirk that must match aurora's calculate_last_vtx_size exactly:
+    // bit 9 selects NBT (normal+binormal+tangent, 9 components instead of 3) and bit 31
+    // selects NBT3, where an INDEXED normal costs THREE indices rather than one. Ignoring
+    // this made every J3D lit model's vertices the wrong length, so the bytes copied for a
+    // draw were wrong and the stream handed to aurora desynced — surfacing as aurora's
+    // "unsupported primitive type 136" (0x88 is not a primitive at all; its own comments
+    // note that a desync shows up exactly this way).
+    const bool nbt3 = ((v.fmt0 >> 31) & 1) != 0;
+    const bool nbt  = nbt3 || ((v.fmt0 >> 9) & 1) != 0;
+    const u32 nrm_comps = nbt ? 9u : 3u;
+    if (nrm_mode == 1)      n += nrm_comps * component_bytes((v.fmt0 >> 10) & 7);
+    else if (nrm_mode == 2) n += nbt3 ? 3u : 1u;
+    else if (nrm_mode == 3) n += nbt3 ? 6u : 2u;
 
     // VAT_A: col0 elements bit13 / comp bits14-16, col1 elements bit17 / comp bits18-20.
     n += attr_size(c0_mode, colour_bytes((v.fmt0 >> 14) & 7));
@@ -231,6 +244,9 @@ u32 be16(const u8* p) { return (u32)p[0] << 8 | p[1]; }
 // Frame as much of the buffer as is complete. Returns bytes consumed.
 size_t parse(const u8* p, size_t n, int depth = 0);
 
+// Bytes the next incomplete command needs before parsing can make progress again.
+size_t g_need = 0;
+
 // A display list lives in guest memory and is executed inline by the CP. Aurora cannot
 // follow the guest pointer (it ignores raw 32-bit addresses for the same reason it ignores
 // raw array bases), so the contents are parsed and emitted into the flat output stream
@@ -250,7 +266,11 @@ void inline_display_list(u32 guest_addr, u32 size, int depth) {
                       size);
         return;
     }
+    // g_need describes the OUTER stream's incomplete command; a nested list parses a
+    // complete buffer and must not disturb it.
+    const size_t saved_need = g_need;
     parse(g_ram_base + off, size, depth + 1);
+    g_need = saved_need;
 }
 
 size_t parse(const u8* p, size_t n, int depth) {
@@ -262,7 +282,7 @@ size_t parse(const u8* p, size_t n, int depth) {
             g_stats.nops++; i += 1; continue; }
 
         if (op == 0x08) {                       // CP register write
-            if (n - i < 6) break;
+            if (n - i < 6) { g_need = 6; break; }
             const u8  reg = p[i + 1];
             const u32 val = be32(p + i + 2);
             if (reg == 0x50) { g_vcd_lo = val; for (auto& v : g_vat) v.vcd_lo = val; }
@@ -284,16 +304,16 @@ size_t parse(const u8* p, size_t n, int depth) {
         }
 
         if (op == 0x10) {                       // XF write
-            if (n - i < 5) break;
+            if (n - i < 5) { g_need = 5; break; }
             const u32 count = ((be16(p + i + 1)) & 0xFFFF) + 1;
             const size_t len = 1 + 4 + count * 4;
-            if (n - i < len) break;
+            if (n - i < len) { g_need = len; break; }
             g_out.insert(g_out.end(), p + i, p + i + len);
             g_stats.xf++; i += len; continue;
         }
 
         if (op == 0x61) {                       // BP register write
-            if (n - i < 5) break;
+            if (n - i < 5) { g_need = 5; break; }
             const u8  reg = p[i + 1];
             const u32 val = ((u32)p[i + 2] << 16) | ((u32)p[i + 3] << 8) | p[i + 4];
 
@@ -314,7 +334,7 @@ size_t parse(const u8* p, size_t n, int depth) {
         }
 
         if (op == 0x48) {                       // call display list
-            if (n - i < 9) break;
+            if (n - i < 9) { g_need = 9; break; }
             const u32 addr = be32(p + i + 1);
             const u32 size = be32(p + i + 5);
             inline_display_list(addr, size, depth);
@@ -322,11 +342,12 @@ size_t parse(const u8* p, size_t n, int depth) {
         }
 
         if (op >= 0x80 && op <= 0xBF) {         // draw primitive
-            if (n - i < 3) break;
+            if (n - i < 3) { g_need = 3; break; }
             const u32 verts = be16(p + i + 1);
             const u32 vsize = vertex_size(op & 7);
             const size_t len = 3 + (size_t)verts * vsize;
-            if (vsize == 0 || n - i < len) break;   // wait for more, or VAT not seen yet
+            if (vsize == 0) break;                  // VAT not seen yet
+            if (n - i < len) { g_need = len; break; }
             g_out.insert(g_out.end(), p + i, p + i + len);
             g_stats.draws++; g_stats.verts += verts;
             i += len; continue;
@@ -338,6 +359,7 @@ size_t parse(const u8* p, size_t n, int depth) {
         lucent::debug("gxfifo", "unrecognised opcode 0x{:02x} — framing lost", op);
         return n;   // drop the rest of this batch
     }
+    if (i == n) g_need = 0;   // fully consumed; nothing outstanding
     return i;
 }
 
@@ -348,7 +370,10 @@ void fifo_write(u32 ea, unsigned width, u32 value) {
     g_buf.insert(g_buf.end(), tmp, tmp + width);
     g_stats.bytes += width;
 
-    if (g_buf.size() >= 4096) {
+    // Only re-parse once the outstanding command can actually complete. Without this a
+    // single large draw (58k vertices is ~1.7 MB) makes every subsequent 4-byte write
+    // re-scan the whole buffer from the start — quadratic, and it dominated the frame time.
+    if (g_buf.size() >= 4096 && g_buf.size() >= g_need) {
         const size_t used = parse(g_buf.data(), g_buf.size());
         g_buf.erase(g_buf.begin(), g_buf.begin() + used);
         if (g_buf.size() > 1u << 20) g_buf.clear();   // framing lost; do not grow unbounded
