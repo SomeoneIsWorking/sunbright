@@ -842,3 +842,28 @@ Two candidates worth separating next:
 Distinguishing them is cheap: pace the retrace counter to real time and see whether boot
 advances. That also matters independently, because a frame counter running 2500x faster than
 the wall clock will misbehave everywhere later.
+
+## Narrowing the post-load stall
+
+Findings this pass, all measured rather than inferred:
+
+- **`TGCLogoDir::direct` is never called.** The GC logo director is not the thing running, so
+  the stall is not in the logo state machine. (Reached by overriding `0x80295a0c` and seeing
+  zero calls.)
+- **The main loop is the render loop and it is healthy.** `0x802a5f50` (an unsymbolized
+  static in `TApplication.cpp` — the sparse symbol file makes it *look* like
+  `mountStageArchive+0x5b8`, which it is not) drives a virtual call through `this->0x1c`,
+  whose vtable at `0x803e1dc0` has `startRendering`/`endRendering` at +8/+0xc. So that field
+  is the `JDrama::TDisplay`, and the loop is doing frame start/end, pad reads and fader draws
+  every iteration.
+- **The archive is loaded and valid** (`SMSLoadArchive -> 0x8131f0e0`), so nothing is waiting
+  on the loader.
+
+So: the game renders frames indefinitely with a loaded archive, and simply never advances to
+requesting the next file. The thing that should advance it — a director/state machine beyond
+the render loop — has not been identified yet.
+
+Also worth noting for later, from the retired `fader_pace.cpp`: an un-paced boot makes the
+GC-logo fade complete in milliseconds ("logo popped in fully visible"). That is COSMETIC, not
+a stall — the retired build still advanced — so frame pacing is a fidelity item, not the
+current blocker. It engaged on the first `TSMSFader::startWipe` (`0x8013f860`).
