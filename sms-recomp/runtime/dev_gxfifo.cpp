@@ -194,6 +194,12 @@ void emit_arraybase(u32 attr, u32 guest_addr) {
 // Without this its present source is never created, and the frame it hands back is 1x1.
 void emit_copy_state() {
     if (g_copy_w == 0 || g_copy_h == 0) return;
+    static u32 last_w = 0, last_h = 0;
+    if (g_copy_w != last_w || g_copy_h != last_h) {
+        last_w = g_copy_w; last_h = g_copy_h;
+        lucent::debug("gxfifo", "EFB copy {}x{} at ({},{})", g_copy_w, g_copy_h,
+                      g_copy_left, g_copy_top);
+    }
 
     put_u8 (g_out, 0x50);
     put_u16(g_out, GX_AURORA_LOAD_COPY_SRC);
@@ -213,6 +219,11 @@ void emit_copy_state() {
 // GX_AURORA_LOAD_TEXOBJ payload, from aurora's parser: u8 map, u64 data, u32 w, u32 h,
 // u32 fmt, u32 tlut, u8 hasMips, u32 texObjId, u32 texDataVersion.
 void emit_texobj(u32 map) {
+    // SBR_NO_TEXOBJ=1 (diagnostic): stop describing textures to aurora, to bisect whether a
+    // staging overflow comes from texture uploads or from geometry.
+    static const bool disabled = std::getenv("SBR_NO_TEXOBJ") != nullptr;
+    if (disabled) return;
+
     TexSlot& t = g_tex[map & 7];
     if (!t.have0 || !t.have3) return;
     if (t.image0 == t.sent0 && t.image3 == t.sent3) return;   // unchanged bind
@@ -391,6 +402,19 @@ size_t parse(const u8* p, size_t n, int depth) {
             const size_t len = 3 + (size_t)verts * vsize;
             if (vsize == 0) break;                  // VAT not seen yet
             if (n - i < len) { g_need = len; break; }
+            // The decomp runtime submits ~3,166 vertices across ~334 draws for this same
+            // scene (SB_DRAW_STATS), i.e. roughly 10 vertices per draw. A draw claiming
+            // thousands is therefore a mis-frame reading data as a command, even when the
+            // span happens to land on a valid-looking opcode afterwards.
+            if (verts > 4096) {
+                lucent::warn("gxfifo",
+                             "implausible draw: op=0x{:02x} verts={} vsize={} — preceding "
+                             "bytes {:02x} {:02x} {:02x} {:02x}",
+                             op, verts, vsize,
+                             i >= 4 ? p[i - 4] : 0, i >= 3 ? p[i - 3] : 0,
+                             i >= 2 ? p[i - 2] : 0, i >= 1 ? p[i - 1] : 0);
+            }
+
             // Self-check: after a correctly sized draw the next byte must be a plausible
             // opcode. If it is not, THIS draw's vertex size is wrong — report the exact
             // VCD/VAT that produced it rather than letting aurora fail later with a

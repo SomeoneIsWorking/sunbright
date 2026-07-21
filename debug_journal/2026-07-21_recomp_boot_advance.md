@@ -1621,3 +1621,36 @@ Two candidate directions, not yet decided:
 Establishing which of those is true — by comparing per-frame submission against the decomp
 runtime on the same scene — is the honest next step, rather than raising a constant and
 hoping.
+
+## Cross-runtime comparison: the huge draws WERE bogus, and are now gone
+
+Running the decomp runtime on the same scene settles what "normal" looks like:
+
+```
+./build/sms-boot/sms-boot   SB_STAGE=15 SB_DRAW_STATS=1
+[draw-stats] frame=1460 bytes=438831 draws=334 verts=3166
+```
+
+**~3,166 vertices across ~334 draws per frame — about 10 vertices per draw.** Against that,
+the recomp's earlier draws of 36,917 / 57,757 / 58,347 vertices were plainly mis-framed, not
+a heavy scene. After the `CALL_DL`/`INVL_VC` opcode fix, `AURORA_DRAW_TRACE` shows the recomp
+submitting only 4- and 10-vertex draws — the same profile as the decomp. A plausibility check
+(warn when a draw claims > 4096 vertices, since the reference is ~10) now fires zero times.
+
+Having a second runtime on the same library, driving the same scene, is what made "is 58,347
+vertices reasonable?" answerable at all. Worth reaching for earlier next time.
+
+## The staging overflow is NOT explained yet
+
+The overflow persists and is bit-identical across runs — `have 49267584, need 16410880` every
+time — which rules out anything scene- or timing-dependent. Bisected so far:
+
+- **Not textures.** `SBR_NO_TEXOBJ=1` (added as a diagnostic) suppresses all
+  `GX_AURORA_LOAD_TEXOBJ` emission; the overflow is byte-identical with and without it.
+- **Not the EFB copy.** Logged as a correct `640x448 at (0,0)`.
+- **Not draw volume.** Aurora receives ~159 draws of 4-10 vertices.
+
+So ~49 MB is being staged inside a single aurora frame by something other than the draws,
+textures, or copy that this runtime knowingly submits. The next probe is aurora-side: find
+which allocation reaches `map_staging` at that size, since the constant 16410880 (0xFA8000)
+should be traceable to one caller.
