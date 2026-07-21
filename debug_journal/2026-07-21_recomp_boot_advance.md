@@ -554,3 +554,60 @@ an r13-relative scan does not match. Next step is to determine which — check t
 DOL actually ships at that address, and confirm `r13` matches `_SDA_BASE_` as set by
 `__start`. Do not "fix" it by assigning a plausible pointer; that would paper over whichever
 of the two it is.
+
+## ROOT CAUSE: the NULL `__GXData` was a DOL-loader bug (BSS clobbered initialised data)
+
+Not a game bug, not a recomp bug — a bug in `sms-recomp/host/main.cpp`.
+
+Evidence chain:
+1. `0x8035a664` starts `lwz r3,-29432(r13)` then `stb r31,1264(r3)`. The pointer was 0.
+2. `r13 = 0x804141C0` (`lis 0x8041` + **`ori 0x41c0`** — an earlier scan missed the `ori` and
+   computed the wrong slot). So the slot is `0x8040CEC8`.
+3. A base-tracking scan of every text section found **499 reads of that slot and ZERO
+   stores**. Nothing in the game ever assigns it, so it must be statically initialised.
+4. The DOL ships `0x804036a0` there — in **section 13** (`0x8040c1c0 +0xd40`).
+5. Section 13 lies **inside** the declared BSS range (`0x803e9700 +0x25498`).
+
+The host loaded sections and *then* cleared BSS, erasing a loaded data section. Fixed by
+clearing BSS **first** and loading sections over it, so initialised data wins. That is also
+what real hardware does.
+
+Worth keeping: "no code ever writes this variable" is a strong signal that it is initialised
+data and the loader is at fault — not an invitation to assign a plausible pointer.
+
+## Devices completed; the recomp now issues draw calls
+
+Added `mi`, `cp` and `pe` (all storage — they are configuration around the GX pipeline, whose
+real command traffic goes through the write-gather pipe at `0xCC008000`). With those plus
+the BSS fix, `GXInit` runs for real rather than being overridden.
+
+Stack sample now:
+
+```
+func_8013fc88  TSMSFader::draw
+  func_80140390  fill_rect
+    func_8035df88  GXBegin
+      func_8035d16c  (GX vertex path)
+```
+
+That is the boot fade rectangle — **the recompiled game is submitting real geometry**.
+
+## Known gap, deliberately not faked: the IPL font ROM
+
+The game reads the console boot ROM through the same EXI chip as SRAM (command `0x07f3c000`
+-> ROM offset `0x1FCF00`, the Shift-JIS system font). We have no IPL image and will not ship
+one — it is copyrighted console firmware. Reads are served zeros with a one-time warning
+naming the cause, so a blank-text symptom traces back here instead of looking like a
+font-rendering bug. The game's own UI fonts come off the disc and are unaffected.
+
+Same treatment for the 32-byte drive-identification block from `DVDLowInquiry`.
+
+Both are recorded as *unverified placeholders*, not as working features.
+
+## Next
+
+The run no longer aborts; it spins inside the GX vertex path with **zero disc reads**, so the
+next question is whether `GXBegin` is waiting on a CP FIFO watermark that never moves (CP is
+static storage right now) — the write-gather pipe at `0xCC008000` takes 3.4 M writes and
+drops them all. Routing that pipe to aurora's GX is the next real arc, and it is the one that
+turns submitted geometry into pixels that can be diffed against the decomp oracle.

@@ -55,7 +55,8 @@ add_library(sms-recomp-rt STATIC runtime/rt_core.cpp runtime/mmio.cpp
                                  runtime/dev_di.cpp
                                  runtime/dev_pi.cpp
                                  runtime/disc.cpp
-                                 runtime/dev_mi.cpp)
+                                 runtime/dev_mi.cpp
+                                 runtime/dev_gxregs.cpp)
 target_include_directories(sms-recomp-rt PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/runtime" "${CMAKE_CURRENT_SOURCE_DIR}/overrides" "${GEN}")
 target_link_libraries(sms-recomp-rt PUBLIC lucent::lucent nod::nod)
 

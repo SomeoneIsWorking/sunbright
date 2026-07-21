@@ -42,6 +42,12 @@ constexpr u32 S_FLAGS        = 0x13;
 // being quietly treated as a SRAM access.
 constexpr u32 CMD_SRAM_READ = 0x20000100;
 
+// Anything whose decoded address lands below the SRAM/RTC window is an IPL boot-ROM read.
+// The GameCube's boot ROM contains the system fonts (ANSI and Shift-JIS), which games load
+// through this same chip. Commands carry the ROM offset in bits 6..30.
+constexpr u32 CMD_ADDR_SHIFT = 6;
+constexpr u32 IPL_ROM_LIMIT  = 0x00800000;   // SRAM/RTC commands decode above this
+
 u8  g_sram[kSramSize];
 u32 g_command = 0;
 
@@ -52,12 +58,30 @@ void imm_write(u32 value, u32 len) {
         std::abort();
     }
     g_command = value;
-    if (g_command != CMD_SRAM_READ) {
-        lucent::error("sram", "unimplemented EXI command 0x{:08x} (RTC is 0x20000000, the "
-                              "IPL font ROM is a range). Implement it rather than letting it "
-                              "read as SRAM.", g_command);
-        std::abort();
+    if (g_command == CMD_SRAM_READ) return;
+
+    const u32 addr = (g_command >> CMD_ADDR_SHIFT) & 0x1FFFFFFu;
+    if (addr < IPL_ROM_LIMIT) {
+        // IPL boot-ROM read (the system font lives at ~0x1FCF00). We do not have an IPL
+        // image and will not ship one — it is copyrighted console firmware. Serving zeros
+        // means IPL-font glyphs render blank; the game's own UI fonts come off the disc and
+        // are unaffected. Announced once, precisely, so a blank-text symptom is traceable
+        // here instead of looking like a font-rendering bug.
+        static bool warned = false;
+        if (!warned) {
+            warned = true;
+            lucent::warn("sram", "IPL boot-ROM read at 0x{:06x} — no IPL image is available "
+                                 "(copyrighted console firmware), serving zeros. Text drawn "
+                                 "with the IPL system font will be blank. Disc fonts are "
+                                 "unaffected.", addr);
+        }
+        return;
     }
+
+    lucent::error("sram", "unimplemented EXI command 0x{:08x} (SRAM is 0x20000100, RTC is "
+                          "0x20000000). Implement it rather than letting it read as SRAM.",
+                  g_command);
+    std::abort();
 }
 
 u32 imm_read(u32 len) {
@@ -67,7 +91,9 @@ u32 imm_read(u32 len) {
 }
 
 void dma(u32 guest_addr, u32 len, bool to_device) {
-    if (g_command != CMD_SRAM_READ) {
+    const u32 addr = (g_command >> CMD_ADDR_SHIFT) & 0x1FFFFFFu;
+    const bool ipl = addr < IPL_ROM_LIMIT;
+    if (!ipl && g_command != CMD_SRAM_READ) {
         lucent::error("sram", "DMA with no command selected (0x{:08x})", g_command);
         std::abort();
     }
@@ -76,7 +102,7 @@ void dma(u32 guest_addr, u32 len, bool to_device) {
                               "in-game would silently fail to persist");
         std::abort();
     }
-    if (len > kSramSize) {
+    if (!ipl && len > kSramSize) {
         lucent::error("sram", "read of {} bytes exceeds the {}-byte chip", len, kSramSize);
         std::abort();
     }
@@ -84,6 +110,11 @@ void dma(u32 guest_addr, u32 len, bool to_device) {
     if (off + len > 0x01800000u) {
         lucent::error("sram", "DMA target 0x{:08x} is outside MEM1", guest_addr);
         std::abort();
+    }
+    if (ipl) {
+        std::memset(g_ram_base + off, 0, len);   // no IPL image; see imm_write
+        lucent::debug("sram", "IPL ROM read of {} bytes -> 0x{:08x} (zeros)", len, guest_addr);
+        return;
     }
     std::memcpy(g_ram_base + off, g_sram, len);
     lucent::debug("sram", "read {} bytes -> 0x{:08x}", len, guest_addr);

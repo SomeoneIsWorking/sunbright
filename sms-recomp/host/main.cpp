@@ -89,14 +89,20 @@ int main(int argc, char** argv) {
     if (!load_dol(dol_path, dol, bytes)) return 1;
 
     lucent::info("dol", "{}: {} sections, entry 0x{:08x}", dol_path, dol.sections.size(), dol.entry);
-    for (const auto& s : dol.sections) {
-        guest_write(s.addr, bytes.data() + s.off, s.size);
-        lucent::debug("dol", "section -> 0x{:08x} +0x{:x}", s.addr, s.size);
-    }
+
+    // BSS IS CLEARED FIRST, THEN SECTIONS ARE LOADED OVER IT. The order matters: this DOL's
+    // declared BSS range (0x803e9700 +0x25498) physically CONTAINS a loaded data section
+    // (0x8040c1c0 +0xd40, the small-data area). Clearing BSS afterwards would erase real
+    // initialised data — it erased __GXData, whose slot at 0x8040cec8 ships the pointer
+    // 0x804036a0, leaving GX to dereference NULL far away in the boot. Loaded data must win.
     if (dol.bss_size) {
         for (u32 i = 0; i < dol.bss_size; i++)
             if (u8* p = sb_ram_fast(dol.bss_addr + i)) *p = 0;
         lucent::debug("dol", "bss cleared 0x{:08x} +0x{:x}", dol.bss_addr, dol.bss_size);
+    }
+    for (const auto& s : dol.sections) {
+        guest_write(s.addr, bytes.data() + s.off, s.size);
+        lucent::debug("dol", "section -> 0x{:08x} +0x{:x}", s.addr, s.size);
     }
 
     CPUState cpu{};
