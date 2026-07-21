@@ -60,6 +60,7 @@ extern void si_device_init();
 extern void sram_device_init();
 extern void di_device_init();
 extern void pi_device_init();
+extern void mi_device_init();
 
 extern "C" bool rt_mem_init() {
     if (g_ram_base) return true;
@@ -92,6 +93,7 @@ extern "C" bool rt_mem_init() {
     si_device_init();
     di_device_init();
     pi_device_init();
+    mi_device_init();
     aram_device_init();
     sram_device_init();   // attaches to EXI, so it must come after exi_device_init()
     return true;

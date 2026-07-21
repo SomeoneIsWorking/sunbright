@@ -35,6 +35,15 @@ target_include_directories(sms-recomp-overrides PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/runtime" "${CMAKE_CURRENT_SOURCE_DIR}/overrides" "${GEN}")
 target_link_libraries(sms-recomp-overrides PUBLIC lucent::lucent)
 
+# nod supplies random-access reads of the disc image (ISO/RVZ/...). The DI device serves
+# the guest's own DVD library at the REGISTER level, so nothing marshals guest structs —
+# the game's DVD code, FST parsing and file reads all run as recompiled PPC. That is why
+# this links nod directly rather than aurora's SDK-level DVD implementation.
+set(AURORA_NOD_PROVIDER "auto" CACHE STRING "")
+set(AURORA_NOD_LINKAGE "static" CACHE STRING "")
+set(AURORA_NOD_VERSION "v2.0.0-alpha.10" CACHE STRING "")
+include("${CMAKE_CURRENT_SOURCE_DIR}/../extern/aurora/cmake/AuroraNodProvider.cmake")
+
 add_library(sms-recomp-rt STATIC runtime/rt_core.cpp runtime/mmio.cpp
                                  runtime/dev_aram.cpp
                                  runtime/dev_dsp.cpp
@@ -44,9 +53,11 @@ add_library(sms-recomp-rt STATIC runtime/rt_core.cpp runtime/mmio.cpp
                                  runtime/dev_si.cpp
                                  runtime/dev_sram.cpp
                                  runtime/dev_di.cpp
-                                 runtime/dev_pi.cpp)
+                                 runtime/dev_pi.cpp
+                                 runtime/disc.cpp
+                                 runtime/dev_mi.cpp)
 target_include_directories(sms-recomp-rt PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/runtime" "${CMAKE_CURRENT_SOURCE_DIR}/overrides" "${GEN}")
-target_link_libraries(sms-recomp-rt PUBLIC lucent::lucent)
+target_link_libraries(sms-recomp-rt PUBLIC lucent::lucent nod::nod)
 
 # Host harness: loads the DOL into guest RAM and runs the entry point.
 add_executable(sms-recomp host/main.cpp)

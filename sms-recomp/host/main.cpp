@@ -12,11 +12,13 @@
 #include <lucent/log.h>
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
 
 extern "C" bool rt_mem_init();
+bool disc_open(const char* path);
 void call_ppc(CPUState& cpu, u32 address);
 
 namespace {
@@ -71,6 +73,16 @@ int main(int argc, char** argv) {
     std::string dol_path = argc > 1 ? argv[1] : "scratch/bin/sms.dol";
 
     if (!rt_mem_init()) return 1;
+
+    // Mount the disc the DI device serves. Same convention as the decomp runtime:
+    // $SUNBRIGHT_ROM, else a rom.rvz drop-in beside the binary. Without it the game gets
+    // no filesystem, so this is fatal rather than a warning.
+    const char* rom = std::getenv("SUNBRIGHT_ROM");
+    if (!rom || !*rom) rom = "rom.rvz";
+    if (!disc_open(rom)) {
+        lucent::error("main", "no disc mounted — set SUNBRIGHT_ROM or drop rom.rvz");
+        return 1;
+    }
 
     Dol dol;
     std::vector<u8> bytes;

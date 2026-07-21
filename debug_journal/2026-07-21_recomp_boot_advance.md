@@ -507,3 +507,50 @@ So: link aurora's DVD into `sms-recomp` and override the guest's DVD library ent
 leaving `dev_di.cpp` for the register pokes the OS makes directly. `tools/recompiler/
 disc_loader.cpp` is NOT the answer — it is a Dolphin-DiscIO wrapper whose fallback parses
 plain ISO only, and this project's ROM is `.rvz`.
+
+## Disc mounted: nod + DI commands (register level, no marshaling)
+
+Chose the DI register level over SDK overrides, revising the plan recorded above. Reason:
+an SDK override has to marshal guest `DVDFileInfo` structs across the boundary, while
+serving DI commands needs **no marshaling at all** — the guest's own DVD library, its FST
+parsing and every file read run as recompiled PPC. All the host has to answer is "give me
+`len` bytes at absolute disc offset `off`".
+
+- `runtime/disc.{h,cpp}` — nod-backed random access. nod handles the container format, so
+  the project's `.rvz` works with no conversion step. Short reads loop until satisfied: a
+  silently-accepted short read would leave the tail of the buffer holding stale data that
+  looks like a successful load.
+- `dev_di.cpp` — commands `0xA8` (read: CMDBUF1 = offset >> 2, CMDBUF2 = byte count),
+  `0xAB` (seek — a no-op, since reads carry their own offset), `0xE3` (stop motor) and
+  `0x12` (inquiry). Unknown commands abort naming the command.
+- `dev_mi.cpp` — MI memory-protection registers as storage. The port needs no equivalent:
+  `rt_mem_init`'s `mprotect` poison already traps stray accesses.
+- Host mounts `$SUNBRIGHT_ROM` / `rom.rvz` (same convention as the decomp runtime) and
+  treats a missing disc as fatal.
+
+**Verified:** `[disc] mounted .../Super Mario Sunshine (USA).rvz (1459978240 bytes)` and the
+drive inquiry served, with boot continuing past `DVDInit`.
+
+**One honest gap, flagged in-code and at runtime:** the 32-byte drive-identification block
+returned by inquiry is zeros. The retail bytes are not something this port can verify, and
+fabricating a plausible drive could quietly select a firmware-workaround path inside the DVD
+library. It warns once, loudly, naming itself as the place to look if disc behaviour ever
+appears firmware-dependent. Nothing observable depends on it so far.
+
+## Current frontier: `__GXData` is NULL
+
+```
+[rt:error] NULL-pointer w8 at guest address 0x000004f0
+  func_8035a664 (GX)  <- func_802a73c4 (app init) <- func_80005600 <- __start
+```
+
+`0x8035a664` starts with `lwz r3,-29432(r13)` — the `__GXData` pointer in small data — and
+immediately writes `stb r31,1264(r3)`. The pointer is 0.
+
+Searched every `.text` section for a store to `-29432(r13)`: **there is none**. So the
+pointer is either statically initialised in `.sdata` (and something about how this runtime
+loads or bases small data is wrong) or written through absolute `lis`/`addi` addressing that
+an r13-relative scan does not match. Next step is to determine which — check the value the
+DOL actually ships at that address, and confirm `r13` matches `_SDA_BASE_` as set by
+`__start`. Do not "fix" it by assigning a plausible pointer; that would paper over whichever
+of the two it is.
