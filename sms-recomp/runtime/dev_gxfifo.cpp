@@ -57,7 +57,14 @@ u32 g_copy_left = 0, g_copy_top = 0, g_copy_w = 0, g_copy_h = 0;
 // texel address (in 32-byte units). Aurora records both but takes the actual texel POINTER
 // from a GXTexObj supplied through its own extension — the same split as vertex array bases,
 // and for the same reason: a raw 32-bit value cannot be a host pointer.
-struct TexSlot { u32 image0 = 0, image3 = 0; bool have0 = false, have3 = false; };
+struct TexSlot {
+    u32 image0 = 0, image3 = 0;
+    bool have0 = false, have3 = false;
+    // Last values actually sent. The game rewrites these registers on every material bind,
+    // so emitting unconditionally floods aurora with redundant texture loads — measured as a
+    // severe slowdown (retrace 240 -> 180 over a much longer run).
+    u32 sent0 = 0xFFFFFFFF, sent3 = 0xFFFFFFFF;
+};
 TexSlot g_tex[8];
 
 struct Stats {
@@ -190,6 +197,8 @@ void emit_copy_state() {
 void emit_texobj(u32 map) {
     TexSlot& t = g_tex[map & 7];
     if (!t.have0 || !t.have3) return;
+    if (t.image0 == t.sent0 && t.image3 == t.sent3) return;   // unchanged bind
+    t.sent0 = t.image0; t.sent3 = t.image3;
 
     const u32 w   = (t.image0 & 0x3FF) + 1;
     const u32 h   = ((t.image0 >> 10) & 0x3FF) + 1;

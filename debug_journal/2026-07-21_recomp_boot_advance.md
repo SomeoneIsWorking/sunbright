@@ -1294,3 +1294,29 @@ second time getting an instrument in place has moved the blame rather than confi
 
 The texobj emission is kept because it is required and correct in principle, but note it is
 **unverified**: nothing yet renders a texture, so it has not been shown to work.
+
+## FIRST REAL FRAME: the Dolby Pro Logic II screen renders
+
+Two fixes turned the flat grey into actual content.
+
+**1. Redundant texture loads were crippling the frame rate.** `emit_texobj` fired on every BP
+image-register write, and the game rewrites those on every material bind — so aurora was
+being told to load textures thousands of times per frame. A long run went BACKWARDS (retrace
+240 -> 180 over four times the wall clock). Emitting only when `(image0, image3)` actually
+change fixed it; the run now reaches retrace 300 in the same time.
+
+**2. "The scene is drawn once, not per frame" was wrong** — an artifact of that slowdown.
+With the flood removed, vertex submission climbs continuously (100 k -> 199 k between
+consecutive samples), i.e. the scene IS resubmitted every frame. The earlier conclusion came
+from having only four samples in a 60 s run; more samples falsified it.
+
+**The dump is no longer uniform:** 14 distinct colours, white (238,238,238) clustered in
+x 520-808, y 392-504 — centred. Rendered to PNG it is unmistakably the **Dolby Pro Logic II
+boot logo**, white on black, correctly positioned.
+
+That is the recompiled game drawing a real screen through aurora: guest GX commands out of
+the write-gather pipe, framed by our parser, pointer-translated, replayed by aurora, copied
+to XFB and presented. It also matches the boot sequence — `TGCLogoDir` has both
+`direct_nlogo` and `direct_dolby`, and this is the Dolby half.
+
+Frame capture for the record: `scratch/recomp/scene.png`.
