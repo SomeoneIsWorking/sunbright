@@ -126,3 +126,47 @@ now have the decomp+Aurora **oracle** for per-function differential verification
 
 So the work is: restore `tools/recompiler` + `runtime/native_threads` + the override
 stack, and swap Dolphin's substrate for aurora's — not build a recompiler.
+
+## ✅ Recompiler RESTORED and Dolphin-free (same day)
+
+After the NO-RECOMP directive was removed, `tools/recompiler/` was restored from
+`9283f44^` and now builds and runs with **no Dolphin dependency at all**.
+
+Changes needed (small):
+* **Dropped `host_stubs.cpp`** — it existed only to satisfy Dolphin's `Host`
+  interface when linking Dolphin DiscIO. `disc_loader.cpp` turned out to include no
+  Dolphin headers, so it was kept.
+* **Restored `runtime/cpu_state.h` + `intrinsics.h`** into `tools/runtime/` so the
+  sources' existing `"../runtime/..."` includes resolve unchanged (provisional
+  placement — they belong with the recomp runtime once it is stood up).
+* **Added a `.dol` input path.** RVZ needs Dolphin DiscIO; in the two-runtime
+  architecture aurora owns disc reading and the recompiler only ever needed the
+  executable. `recompile_mode` never used the DiscLoader at all (its "disc" hits
+  were the words discovery/discovered), so the unused parameter was removed;
+  `--analyze-only` still requires a disc and now says so instead of failing oddly.
+* Standalone `tools/recompiler/CMakeLists.txt` (`cmake -B build-recomp -S tools/recompiler`).
+
+### Verified output
+```
+./build-recomp/sunbright-recomp scratch/bin/sms.dol --output scratch/recomp_out
+Loading DOL: scratch/bin/sms.dol
+Routed 23 HW/privileged functions to Dolphin JIT
+Recompiling 6064 functions...
+  functions.h (6064 declarations), functions_*.cpp (24 files), jump_table.cpp
+```
+**6064 functions, 1,099,958 lines, 33 MB.** For scale, DolRecomp on the same DOL
+without a symbol map emitted 8.4M lines / 217 MB — ours defaults to
+`reference/sms_gmse01_funcs.txt`, so it knows function boundaries and is ~8x tighter.
+
+### The 23 JIT-routed functions = the real remaining HW seam list
+`function_needs_jit()` routes only genuine hardware side effects:
+`MTSR/MTSRIN` (segment regs), `TLBIE/TLBSYNC` (TLB), `ECIWX/ECOWX` (external
+control), and `MTSPR/MFSPR` on unmodeled SPRs (cache / MMU / gather-pipe / power).
+In a STANDALONE recomp these need native handling rather than a JIT fallback — most
+are tractable (flat guest memory makes MMU/TLB largely no-ops; the gather pipe maps
+to aurora's GX FIFO; cache ops become no-ops or explicit flushes).
+
+Note the recorded history in that function: `MTMSR`/`RFI` ARE modeled, i.e. the OS
+interrupt/scheduler/context-switch primitives are recompiled ("PC port owns them"),
+and a 2026-06-05 note says the post-THP crash is fixed by *finishing native
+threading*, not by reverting to JIT. That is the next structural piece.
