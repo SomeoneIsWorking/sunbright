@@ -2134,3 +2134,36 @@ the main and offscreen passes, which only that block can set. Both cannot be tru
 currently understand the code. Resolving that contradiction is the next step, and no claim
 about the mechanism should be made until it is: the honest reading is that my model of how the
 recomp's XF writes reach aurora is wrong somewhere.
+
+## CORRECTION: "the recomp renders nothing orthographic" was a MEASUREMENT ARTIFACT
+
+The previous entry's headline claim is **wrong** and is retracted here rather than left to
+mislead a later session.
+
+Resolving the open contradiction resolved it against me. Instrumenting our own parser shows it
+emits `XF projection write: addr 0x1020 count 7` exactly as aurora requires, and aurora's own
+`[proj-set]` fires **116,761 times** in a single run — **54,598 of them `type=O`**. The recomp
+sets orthographic projections constantly.
+
+The earlier "zero `[proj-set]` lines" measurement was simply bad: same binary, same env, but
+piped through `grep | tail` instead of redirected to a file, and it produced nothing. I should
+have distrusted a null result from a changed measurement pipeline before building a conclusion
+on it — a null reading is exactly the case where the instrument needs validating against a
+known positive first.
+
+And the draw-dump evidence was an artifact of the window: `SB_DRAW_DUMP` with
+`SB_DRAW_DUMP_AFTER` captures only the **first 200 draws** past the threshold. A file-select
+frame has more draws than that, and the 2D/J2D overlay is drawn LAST — so the cap truncated
+every frame before reaching the orthographic draws. "127 main + 73 offscreen = exactly 200"
+should have been the tell: that is the cap, not a frame boundary. Two runtimes windowed at
+different points then produced an apparent divergence that does not exist.
+
+What survives from that entry:
+- The `texs=[...]` field is a real improvement and its finding stands: neither runtime binds
+  the 320x224 reflection.
+- The **viewport origin difference is still real** — oracle `vp=(0,0 640x448)` vs recomp
+  `vp=(2,2 640x448)`, identical scissors — since that field is per-draw and not affected by
+  which draws the window caught.
+
+Re-measuring properly with `SB_DRAW_DUMP_FRAME` (uncapped, exactly one frame) on both runtimes
+to get true per-frame orthographic/perspective counts before drawing any conclusion.

@@ -429,6 +429,20 @@ size_t parse(const u8* p, size_t n, int depth) {
             // an "unconfigured tcg" in aurora can be attributed to the game or to us.
             const size_t len = 1 + 4 + count * 4;
             if (n - i < len) { g_need = len; break; }
+            {   // XF 0x1020 is the projection (6 params + type). Aurora only latches it when
+                // it arrives as a single write of >= 7 words starting exactly at 0x1020, so
+                // record what the guest actually emits — the count and address here decide
+                // whether the projection is ever applied at all.
+                const u32 addr = be32(p + i + 1) & 0xFFFF;
+                if (addr == 0x1020) {
+                    static u32 seen = 0;
+                    if (seen < 4) {
+                        ++seen;
+                        lucent::debug("gxfifo", "XF projection write: addr 0x{:04x} count {}",
+                                      addr, count);
+                    }
+                }
+            }
             g_out.insert(g_out.end(), p + i, p + i + len);
             g_stats.xf++; i += len; continue;
         }
