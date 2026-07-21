@@ -170,3 +170,41 @@ Note the recorded history in that function: `MTMSR`/`RFI` ARE modeled, i.e. the 
 interrupt/scheduler/context-switch primitives are recompiled ("PC port owns them"),
 and a 2026-06-05 note says the post-THP crash is fixed by *finishing native
 threading*, not by reverting to JIT. That is the next structural piece.
+
+## ✅ Entire recompiled game COMPILES (same day)
+
+Layout established: `sms-recomp/runtime/` (tracked: cpu_state.h, intrinsics.h) and
+`sms-recomp/generated/` (gitignored build output) — chosen so the generated code's
+existing `#include "../runtime/..."` resolves with no source edits.
+
+```
+./build-recomp/sunbright-recomp scratch/bin/sms.dol --output sms-recomp/generated
+ls functions_*.cpp | xargs -P$(nproc) -I{} g++ -std=c++20 -O1 -c {} -o /dev/null -I.
+```
+**All 24 chunks / 6064 functions / 1.1M lines compile with ZERO errors** (~44 s wall,
+1086% CPU). So the recompiler output is well-formed C++20 against the restored
+runtime headers — not just "it emitted something".
+
+### The complete runtime surface still to implement (~20 symbols)
+
+From `nm -u` on a compiled chunk:
+
+* **Guest memory** — `g_ram_base`, `g_l1_base`, and the slow/MMIO paths
+  `mem_r{8,16,32,64}_slow` / `mem_w{8,16,32,64}_slow`. (The fast paths are already
+  inline in intrinsics.h: `sb_r32` etc. do `sb_ram_fast(ea)` + `__builtin_bswap32`.)
+* **Dispatch** — `call_ppc(CPUState&, u32)` and `tail_ppc(CPUState&, u32)`.
+* **CPU/OS state** — `msr_get()`, `msr_set_raw(u32)` (MSR/interrupt-enable, needed by
+  the recompiled scheduler since MTMSR/RFI are modeled), `icbi32(u32)` (icache invalidate).
+* **Diagnostics carried over from the Dolphin era** — `g_in_poll_yield`, `g_poll_last`,
+  `g_poll_reps`, `sb_poll_fire` (spin-loop/poll detection) and `g_watch_wa`,
+  `sb_watch_fire` (memory watchpoints). These can start as no-ops.
+* **libm** — `fma`, `sqrt`.
+* Plus `psq_load` / `psq_store` (declared in intrinsics.h; not referenced by the
+  sampled chunk but needed for paired-single quantized access).
+
+That is the whole boundary between the recompiled game and the host. Standing it on
+aurora means backing guest memory with a flat 24 MB MEM1 (+ARAM) allocation, routing
+the slow paths to MMIO/hardware, and pointing dispatch at the generated jump table.
+
+NEW DIRECTIVE NOTE: any diagnostics added to this runtime must use **lucent**
+(the project-wide C++20 logger), not ad-hoc gated fprintf.
