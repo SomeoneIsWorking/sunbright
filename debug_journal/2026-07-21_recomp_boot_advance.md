@@ -1019,3 +1019,33 @@ drawing.
 
 This is the foundation for routing to aurora: the stream is now framed, and the vertex format
 tracking a translator needs is already in place.
+
+## Rendering plan: aurora consumes the FIFO directly
+
+`aurora_fifo_replay(const uint8_t* data, uint32_t size, int bigEndian)`
+(`extern/aurora/include/aurora/aurora.h:148`) takes a raw GX command stream, and
+`extern/aurora/lib/gx/command_processor.cpp` is a full CP implementation. So **no translation
+layer is needed** — the guest's gather-pipe bytes can be handed to aurora as-is. This is also
+why the decomp runtime's `SB_FIFO_REPLAY` harness can replay Dolphin `.dff` captures.
+
+**One real obstacle, and aurora documents the fix.** Its CP deliberately IGNORES raw CP
+array-base writes (`0xA0-0xAF`):
+
+> the raw CP write can only carry a 32-bit truncated host pointer, so we cannot use `value`
+> as a real base address on a 64-bit host … the CORRECT 64-bit pointer for the same attr will
+> be supplied separately via `GX_AURORA_LOAD_ARRAYBASE`
+
+That reasoning holds for the decomp, where the "guest address" is really a truncated host
+pointer. **It does not hold for the recomp**, where those 32 bits are a genuine guest address
+and we own the memory they refer to. So the bridge is:
+
+- feed the FIFO to `aurora_fifo_replay`
+- intercept CP writes to `0xA0-0xAF` and re-emit them as
+  `GX_AURORA_LOAD_ARRAYBASE` (`0x0010`, see `dolphin/gx/GXAurora.h`) carrying
+  `g_ram_base + (guest_addr & 0x01FFFFFF)`
+
+The FIFO parser already tracks CP writes, so it is the natural place to do this.
+
+Remaining integration work: link aurora with `AURORA_ENABLE_GX=ON` into `sms-recomp`,
+initialise it, and drive `aurora_begin_frame`/`aurora_end_frame` from the existing frame seam
+(`VIWaitForRetrace` / `TVideo::waitForRetrace`).
