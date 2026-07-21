@@ -52,26 +52,45 @@ renderer (`render_pc`), the GX-seam capture layer (`sms-boot/common`), the coope
 scheduler. History: `debug_journal/`, memory `[[aurora-two-path-refactor-2026-07-04]]`,
 `debug_journal/2026-07-07_one_runtime_consolidation.md`.
 
-## 🏛️ NATIVE-ONLY, NO RECOMP (2026-07-15, decided at user's delegation)
+## 🏛️ TWO RUNTIMES (2026-07-21, decided at user's delegation; SUPERSEDES "NATIVE-ONLY, NO RECOMP")
 
-Everything is ported to NATIVE C++ — there is no recomp/PPC-execution fallback, and none
-will be reintroduced. The recomp stack (and the "flip" host-layout engine it needed) were
-retired because emitting flip-backed code was intractable; that difficulty is STRUCTURAL,
-not incidental: `decomp/sms` is a **decomp** compiled to host layout (LP64, little-endian,
-native vtables), while recompiled PPC needs **guest** layout (32-bit big-endian pointers,
-guest vtables/addresses). Calling recomp'd PPC on a native object requires marshaling every
-field across that boundary = the flip engine = proven impossible. Recomp only worked when the
-WHOLE game ran guest-side under Dolphin (the retired era). Native-only is also REQUIRED for
-the goal — interpolated 60fps (like Dusklight, the TP decomp port on Aurora): the renderer
-interpolates native transforms; recomp'd logic would be opaque and un-interpolatable.
+The 2026-07-15 "no recomp, none will be reintroduced" directive is **REMOVED**. Two runtimes
+are now first-class, side by side:
 
-The gaps I hand-port are **decomp gaps** (functions `decomp/sms` has no body for) — finite,
-not infinite. The accelerator is **syncing upstream `doldecomp/sms`** (the `upstream` remote
-on the decomp/sms fork) so community-filled bodies land for free, plus RE tooling
-(`tools/re/port_dossier.py`). Rendering-affecting code is always native; when a native port
-faithfully reproduces a retail overflow/UB that's benign on PPC but corrupts on host (e.g. a
-4x4 write into a 3x4 buffer), adapt to produce the same OBSERVABLE result without the host
-corruption, documented as such.
+1. **decomp + Aurora** (`decomp/sms` + `extern/aurora`) — the existing native runtime. Still the
+   moddable end-state and the **verification oracle**: it renders title, file-select and Delfino
+   correctly, so recomp output can be diffed against it in-process, per function.
+2. **recomp + native overrides** — the game's real PPC code, statically recompiled, with native
+   overrides at the HW/OS seams. Runs the WHOLE game without hand-porting every actor.
+
+**What was actually intractable was the FLIP ENGINE, not recompilation.** The retired hybrid had
+recomp'd PPC calling into *native decomp objects*, needing per-field marshaling between guest
+layout (32-bit BE, guest vtables) and host layout (LP64, LE, native vtables). That boundary is
+structurally impossible and stays banned — **do not reintroduce recomp↔decomp interop.** A
+STANDALONE recomp has no such boundary: guest layout end-to-end, overrides only at narrow
+HW/OS APIs (GX, DVD, PAD, VI, audio). That is the N64Recomp / Zelda64Recompiled model.
+
+**The old rule's supporting claims were wrong and must not be repeated:**
+- It said recomp was retired "because emitting flip-backed code was intractable". The RECOMPILER
+  worked — retired 2026-06-18 by directive ("I don't want a recomp") while live in Delfino at
+  ~2.16M recomp calls/sec. Only the flip engine failed.
+- It said native-only is "REQUIRED for interpolated 60fps". Overstated: the recomp era
+  interpolated via `runtime/interp60.h` by capturing `J3DModel::viewCalc` matrices.
+
+**Resurrect, do not rebuild.** In git at `9283f44^`: `tools/recompiler/` (188 `case PPCOp::`
+emitter cases, 41 `ps_*` mnemonics, `PSQ_L/LU/ST/LX/STX` with GQR dequantization),
+`runtime/native_threads.cpp` (431 lines; interrupt delivery already fully PC-native, a behaviour
+port of OSInterrupt.c), and 74 files of `runtime/overrides/` (ngx renderer, native JAS audio, EFB,
+matrix, widescreen, the interp60 stack). The genuinely NEW work is swapping **Dolphin's** substrate
+(JIT dispatch, MMIO, interrupt sources) for **aurora's**, which did not exist maturely in June.
+`DolRecomp` (GPL-3.0, GameCube-native, 236 opcodes) is a **cross-check / gap-filler**, not the base.
+
+The decomp side is unchanged: gaps I hand-port are **decomp gaps** — finite, not infinite. The
+accelerator is **syncing upstream `doldecomp/sms`** so community-filled bodies land for free (see
+UPSTREAM SYNC), plus RE tooling (`tools/re/port_dossier.py`). Rendering-affecting decomp code is
+always native; when a native port faithfully reproduces a retail overflow/UB that is benign on PPC
+but corrupts on host (e.g. a 4x4 write into a 3x4 buffer), adapt to produce the same OBSERVABLE
+result without the host corruption, documented as such.
 
 ## 🏛️ RENDERER DOCTRINE (2026-07-10, decided at user's delegation): Aurora GX-replay stays
 
