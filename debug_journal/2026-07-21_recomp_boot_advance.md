@@ -452,3 +452,58 @@ no disc mounted. The decomp+Aurora runtime already does this synchronously
 (`extern/aurora/lib/dolphin/dvd`, "every DVDRead*/Async completes inline and fires its
 callback before returning"), which is the model to follow, and the ROM path convention
 (`$SUNBRIGHT_ROM` / `.env` / `rom.rvz` drop-in) already exists.
+
+## DI + PI devices; the DVD decision
+
+- **`di`** (`0xCC006000-0x6040`) — register block. `DI_CVR` reports the lid CLOSED (a disc is
+  present; an open lid would send the game to its "insert disc" path) and `DI_CFG` is 0,
+  which `__OSGetDIConfig` returns masked to its low byte. Disc COMMANDS abort naming the
+  command word rather than being served zeros.
+- **`pi`** (`0xCC003000-0x3040`) — interrupt cause/mask (nothing pending: no device here
+  raises one) and the Flipper revision.
+
+**Flipper revision, decided by RE not by recall.** `OSInit` does:
+
+```
+lis  r3,0xcc00 ; addi r3,r3,0x3000
+lwz  r0,0x2c(r3)        ; PI_FLIPPER_REV
+rlwinm r0,r0,0,0,3      ; keep top nibble
+rlwinm r0,r0,4,28,31    ; move it down
+add  r0,r3,r0           ; fold into the console-revision field
+...
+cmplwi r4,0 ; beq -> r4 = 0x10000002    ; explicit "unknown" fallback
+```
+
+The guest provides its own fallback constant when the revision comes out zero. Reporting 0
+takes that branch. The alternative — writing the real retail revision word — is a specific
+constant this port cannot verify, and a wrong one would silently select a different
+hardware-workaround path inside the SDK. Taking a branch the game itself provides for the
+unknown case beats inventing a value.
+
+## Next arc: DVD via aurora, as an SDK override (not DI commands)
+
+Boot now issues a real drive command:
+
+```
+[di:error] disc command 0x12000000 is not implemented — no disc is mounted.
+```
+
+`0x12000000` is the drive inquiry, from `DVDInit`. Serving the disc at the DI register level
+would mean implementing the drive command protocol AND a disc-image reader. Neither is
+necessary:
+
+- CLAUDE.md names DVD as an **override seam**, not a device.
+- `extern/aurora/lib/dolphin/dvd` already implements the SDK-level API and already opens
+  this project's `.rvz` (`aurora_dvd_open`, used by `sms-boot/main.cpp`). The decomp runtime
+  drives it synchronously — "every DVDRead*/Async completes inline and fires its callback
+  before returning" — which is the model this runtime wants anyway.
+- Its dependencies are `nod` + SDL3, NOT the graphics stack, so it can be linked into
+  `sms-recomp` without pulling in Dawn/WebGPU.
+
+This is also exactly what the two-runtime doctrine calls the genuinely new work: swapping
+Dolphin's substrate for aurora's.
+
+So: link aurora's DVD into `sms-recomp` and override the guest's DVD library entry points,
+leaving `dev_di.cpp` for the register pokes the OS makes directly. `tools/recompiler/
+disc_loader.cpp` is NOT the answer — it is a Dolphin-DiscIO wrapper whose fallback parses
+plain ISO only, and this project's ROM is `.rvz`.
