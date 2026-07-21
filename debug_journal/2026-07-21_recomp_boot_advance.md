@@ -1746,3 +1746,30 @@ decomp produced 66k colours through the identical dump path proved the loss was 
 the capture's.
 
 **The standalone recomp now renders the Super Mario Sunshine title screen in colour.**
+
+## Title comparison against the oracle: close, with identifiable gaps
+
+A naive byte-wise diff of the two dumps gave a meaningless 77%: the captures are **different
+sizes** — recomp 1280x896 (EFB), decomp 1280x960 (window) — exactly the documented
+`SB_DUMP_FRAME` gotcha. Re-sampled by normalised position it is 60% differing, but the title
+screen ANIMATES (logo bounce, drifting clouds, the START prompt) and these are two
+independent runs at unaligned phases, so that number is not a parity measure either.
+
+Rendering both and looking is more informative at this stage:
+
+| element | decomp oracle | recomp |
+|---|---|---|
+| logo, lettering, rainbow, palm, FLUDD, copyright | present | present, same placement |
+| sky/cloud palette | `(187,219,242)` family | same family, within a bit |
+| sun | bright glare / lens-flare bloom | plain sun sprite, no glare |
+| sea | blue ocean band along the bottom | absent |
+| prompt | "PRESS STA[RT]" | "START!" — likely a different phase of the same prompt animation |
+
+So the structure and palette match, and two elements are genuinely missing: the **sun glare**
+and the **reflective sea**. Both are known-heavy features on the decomp side (`TSunGlass`,
+`TMapObjWave` / the reflective-sea work), so their absence here is a specific, nameable gap
+rather than general inaccuracy.
+
+Honest position: the title screen RENDERS and matches closely, but "matching" in the
+pixel-parity sense is not established — that needs the animation phase pinned on both sides
+first, which is what the decomp's own title-oracle gate exists to do.
