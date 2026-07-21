@@ -33,6 +33,12 @@ constexpr u16 CSR_ARINT  = 0x0020;
 constexpr u16 CSR_DSPINT = 0x0080;
 constexpr u16 CSR_STATUS_MASK = CSR_AIINT | CSR_ARINT | CSR_DSPINT;
 
+// Mailbox "full" bit, bit 15 of the HIGH halfword of either mailbox. Hardware sets it when
+// the sender writes, and the RECEIVER clears it by reading. The SDK spins on it:
+//   __DSPCheckMailToDSP   (0x80353d38): bit 15 of 0xCC005000 — mail still pending TO the DSP
+//   __DSPCheckMailFromDSP (0x80353d48): bit 15 of 0xCC005004 — mail waiting FROM the DSP
+constexpr u16 MAIL_FULL = 0x8000;
+
 u16 g_reg[0x10];
 
 u16& reg(u32 off) { return g_reg[(off - 0x5000) >> 1]; }
@@ -59,6 +65,11 @@ void dsp_write(u32 ea, unsigned width, u32 value) {
 
     if (width == 2) {
         u16 v = (u16)value;
+        // Mail to the DSP is consumed the instant it is written: there is no DSP core to
+        // read it later and clear the bit, so leaving it set makes every SDK send spin
+        // forever (observed in DSPInterface::initBuffer on the audio thread). Accepting
+        // immediately is the truthful model for a receiver that is not there.
+        if ((o & ~1u) == DSP_MAIL_TO_DSP_H) v &= (u16)~MAIL_FULL;
         if ((o & ~1u) == DSP_CSR) {
             // Status bits are write-1-to-clear; they are already clear, so just drop them
             // and keep the control bits the caller set.
@@ -68,7 +79,9 @@ void dsp_write(u32 ea, unsigned width, u32 value) {
         return;
     }
     if (width == 4) {
-        reg(o)     = (u16)(value >> 16);
+        u16 hi = (u16)(value >> 16);
+        if (o == DSP_MAIL_TO_DSP_H) hi &= (u16)~MAIL_FULL;
+        reg(o)     = hi;
         reg(o + 2) = (u16)value;
         return;
     }

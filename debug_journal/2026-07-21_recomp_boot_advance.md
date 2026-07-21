@@ -902,3 +902,34 @@ creates+resumes the higher-priority audio thread (which runs Driver::init -> ini
 ALLOCATE the DSP FX buffers) and returns WITHOUT waiting, relying on this preemption; without
 it the main thread reaches JAIData::initData and configures FX lines that were never
 allocated -> null write."* `gsched_make_ready` already implements that priority preemption.
+
+## Audio init: the DSP seams
+
+With thread death published, boot reaches `MSound::startSoundSet` -> `JAIBasic::initDriver`
+-> `JASystem::AudioThread::start`, which creates the audio thread at a HIGHER priority than
+its creator. `gsched_make_ready` honours that preemption, so the audio thread takes the token
+immediately — and then never gives it back, because every DSP interaction waits for a reply
+only a real DSP core can produce. That parks the entire boot behind it.
+
+Three seams, in increasing order of surgical-ness:
+
+1. **`__DSP_boot_task`** (`0x8035406c`) — uploads the microcode and handshakes over the
+   mailboxes. Overridden to a no-op: there is no core to boot, and audio is host-side.
+2. **The JASystem DSP task-queue readiness predicate** (`0x80337ca0`) — `lbz r0,-23224(r13);
+   return (r0 == 1)`, a byte the task-completion interrupt sets. Overridden to report ready:
+   a queue nothing is ever queued into always has a free slot. Deliberately narrow, so
+   `DSPInterface::initBuffer` still performs its FX-buffer allocations, which
+   `JAIData::initData` later expects to exist.
+3. **Mailbox "full" bit** — fixed in the DEVICE rather than by overriding more SDK functions.
+   Bit 15 of the high halfword is set by the sender and cleared by the RECEIVER when it
+   reads. `dev_dsp.cpp` now clears it on write to `DSP_MAIL_TO_DSP`: mail is consumed the
+   instant it is sent, which is the truthful model for a receiver that is not there. Without
+   it `__DSPCheckMailToDSP` (`0x80353d38`, bit 15 of `0xCC005000`) reported pending forever
+   and every SDK send spun.
+
+Preferring the device fix to an SDK override matters here: one device rule retires several
+spin loops at once, and it keeps the guest's own DSP code running rather than replacing it.
+
+Audio thread progress: `initBuffer` -> `0x80337580` now COMPLETES; it is currently in
+`0x80337360`, one frame up. Silence is still by omission — none of this makes sound, it
+stops the absence of a DSP from deadlocking the boot.
