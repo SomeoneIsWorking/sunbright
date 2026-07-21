@@ -195,14 +195,15 @@ static int recompile_mode(const DOL& dol, const std::string& out_dir) {
         for (const auto& s : dol.sections) if (s.is_text && a == s.addr) return true;
         return false;
     };
-    // Pointer/vtable discovery is OPT-IN (SUNBRIGHT_DISCOVER_POINTERS): it roughly
-    // doubles recompiled coverage, but under the current dispatch call model every
-    // recomp→recomp return bounces to the JIT, so more recompiled code = more
-    // round-trips = slower — and the newly-pulled-in code still has recomp bugs.
-    // Default off keeps the validated, fast 6032-function baseline. Re-enable once
-    // the correctness harness validates the extra code and the C-call model lands.
+    // Pointer/vtable discovery is ON by default. It was opt-in while the recompiler
+    // targeted Dolphin, where an un-recompiled callee simply fell through to the JIT, so
+    // extra coverage only bought more recomp→JIT round-trips. The standalone port has no
+    // JIT and no fallback of any kind: a function reached through a vtable or a function
+    // pointer that is not in the image is a hard abort. Coverage is therefore a
+    // correctness requirement, not a performance tradeoff. Opt out with
+    // SUNBRIGHT_NO_DISCOVER_POINTERS to reproduce the old 6k-function baseline.
     std::unordered_set<u32> ptr_funcs;
-    if (getenv("SUNBRIGHT_DISCOVER_POINTERS")) {
+    if (!getenv("SUNBRIGHT_NO_DISCOVER_POINTERS")) {
         // A value `v` is a function-entry candidate iff it points into .text, the first word
         // there is real code (not padding/terminator), and it sits at a function BOUNDARY
         // (a section start, or preceded by a terminator). The boundary test rejects interior
@@ -212,7 +213,14 @@ static int recompile_mode(const DOL& dol, const std::string& out_dir) {
             if (v & 3) return;
             u32 w, prev;
             if (!text_word(v, w)) return;                // points into .text?
-            if (w == 0 || is_term(w)) return;            // first insn must be real code
+            if (w == 0) return;                          // padding is never a function
+            // A trivial C++ ctor/dtor compiles to a single `blr`, and this codebase is
+            // full of them — one is handed to __construct_array as the element ctor.
+            // Rejecting every terminator-first candidate discarded all of them, so the
+            // call through the pointer hit an address that was never recompiled. Other
+            // terminators (b/bctr) stay rejected: as a FIRST word they are far more
+            // likely to be a stray data value than a thunk.
+            if (is_term(w) && w != 0x4E800020u) return;
             if (is_section_start(v) || (text_word(v - 4, prev) && is_term(prev)))
                 ptr_funcs.insert(v);
         };
@@ -237,7 +245,7 @@ static int recompile_mode(const DOL& dol, const std::string& out_dir) {
         //     cleanly yet (they need function_needs_jit-style routing / native ports first), so
         //     enabling it as-is destabilizes boot. WIP — keep off until those are handled.
         for (const auto& s : dol.sections) {
-            if (!getenv("SUNBRIGHT_DISCOVER_CODEPTRS")) break;
+            if (getenv("SUNBRIGHT_NO_DISCOVER_CODEPTRS")) break;
             if (!s.is_text) continue;
             u32 hi[32]; bool hi_ok[32] = {};
             for (u32 off = 0; off + 4 <= s.size; off += 4) {
@@ -267,6 +275,20 @@ static int recompile_mode(const DOL& dol, const std::string& out_dir) {
         std::printf("Pointer-referenced function candidates: %zu\n", ptr_funcs.size());
     }
 
+    // Direct-call targets from EVERY text section, unclipped. Discovery used to run
+    // strictly per-section, so a bl crossing a section boundary was thrown away: .init
+    // (__start) calls into .text, and those callees were never emitted at all — at
+    // runtime the very first such call hit "un-recompiled address" and aborted. The
+    // target of a bl is a function start no matter which section the caller sits in.
+    std::vector<u32> cross_targets;
+    for (const auto& [base, data] : dol.text_sections()) {
+        auto t = find_call_targets(data.data(), base, data.size());
+        cross_targets.insert(cross_targets.end(), t.begin(), t.end());
+    }
+    std::sort(cross_targets.begin(), cross_targets.end());
+    cross_targets.erase(std::unique(cross_targets.begin(), cross_targets.end()),
+                        cross_targets.end());
+
     // Collect all functions from text sections
     for (const auto& [base, data] : dol.text_sections()) {
         // real_funcs = genuine function starts (symbol/heuristic). These — and ONLY these —
@@ -276,6 +298,12 @@ static int recompile_mode(const DOL& dol, const std::string& out_dir) {
         // crash — checkInitDataFile was cut at a discovered interior label, splitting its body).
         const u32 sec_end = base + (u32)data.size();
         auto real_funcs = find_functions(data.data(), base, data.size());
+        // Callees reached only by a bl from ANOTHER text section. These are real function
+        // starts on exactly the same evidence as same-section bl targets (a direct call
+        // names an entry point), so they DO belong in real_funcs and DO act as fend
+        // boundaries — without that, the preceding function swallows their body.
+        for (u32 t : cross_targets)
+            if (t >= base && t < sec_end) real_funcs.push_back(t);
         std::sort(real_funcs.begin(), real_funcs.end());
         real_funcs.erase(std::unique(real_funcs.begin(), real_funcs.end()), real_funcs.end());
 

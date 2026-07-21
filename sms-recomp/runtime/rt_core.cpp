@@ -19,6 +19,7 @@
 
 #include "cpu_state.h"
 #include "intrinsics.h"
+#include "../overrides/overrides.h"
 
 #include <lucent/log.h>
 #include <lucent/config.h>
@@ -96,6 +97,19 @@ struct JumpEntry { u32 addr; void (*fn)(CPUState&); };
 extern "C" const JumpEntry  g_recomp_table[];
 extern "C" const size_t     g_recomp_table_size;
 
+// Fold an instruction address onto the cached-virtual window the recompiled image is
+// keyed by. The GameCube BATs give every code byte three aliases — 0x8xxxxxxx cached,
+// 0xCxxxxxxx uncached, 0x0xxxxxxx physical — and OS code uses all three: it clears
+// MSR[IR|DR] and rfi's to a PHYSICAL address (rlwinm rN,rN,0,2,31 immediately before
+// mtsrr0 is the giveaway) so the jump runs with translation off. Without this fold the
+// dispatcher sees 0x003464a0, finds nothing, and aborts on what is a perfectly ordinary
+// OS control transfer. Modelling the fixed alias is faithful; it is what the BATs do.
+static u32 code_addr_fold(u32 addr) {
+    const u32 phys = addr & 0x0FFFFFFFu;
+    if (phys >= kMem1Size) return addr;   // not a MEM1 alias — leave it to fail loudly
+    return 0x80000000u | phys;
+}
+
 // The generated table is emitted in ascending address order, so a binary search is
 // both correct and O(log n) — this is the hottest call in the whole runtime.
 static void (*lookup(u32 addr))(CPUState&) {
@@ -110,6 +124,11 @@ static void (*lookup(u32 addr))(CPUState&) {
 }
 
 void call_ppc(CPUState& cpu, u32 address) {
+    address = code_addr_fold(address);
+    // Overrides win over the recompiled body. Checked here rather than by patching the
+    // jump table because the generated code routes EVERY call — direct bl and indirect
+    // bctrl alike — through this one function, so a single check covers both.
+    if (auto fn = override_lookup(address)) { fn(cpu); return; }
     if (auto fn = lookup(address)) { fn(cpu); return; }
     // Not recompiled. In the Dolphin era this fell through to the JIT; standalone
     // there is no fallback, so this is a hard stop rather than a silent no-op that
@@ -120,6 +139,13 @@ void call_ppc(CPUState& cpu, u32 address) {
 }
 
 void tail_ppc(CPUState& cpu, u32 address) { call_ppc(cpu, address); }
+
+void rt_unhandled_insn(CPUState& cpu, u32 pc, u32 raw, const char* mnemonic) {
+    lucent::error("rt", "unhandled instruction '{}' at 0x{:08x} (raw=0x{:08x}, lr=0x{:08x})",
+                  mnemonic, pc, raw, cpu.lr);
+    lucent::error("rt", "add an emitter for it in ppc_decoder.cpp + c_emitter.cpp");
+    std::abort();
+}
 
 // ── CPU / OS state ───────────────────────────────────────────────────────────
 // MTMSR/RFI are modeled in the recompiler (the recompiled OS owns interrupt state),

@@ -910,7 +910,13 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
 
     // ── Unhandled ────────────────────────────────────────────────────────────
     default:
+        // A comment alone would make an unhandled opcode a SILENT no-op: execution
+        // continues with the instruction's effect simply missing, and the corruption
+        // surfaces somewhere unrelated. In the Dolphin era the JIT covered these; a
+        // standalone port has no fallback, so it has to stop at the real cause.
         line("// UNHANDLED: %s at 0x%08x (raw=0x%08x)", i.mnemonic().c_str(), i.pc, i.raw);
+        line("rt_unhandled_insn(cpu, 0x%08xu, 0x%08xu, \"%s\");", i.pc, i.raw,
+             i.mnemonic().c_str());
         unhandled_++;
         unhandled_ops_.push_back(i.mnemonic());
         break;
@@ -919,18 +925,8 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
 
 // Linear scan to find function boundaries.
 // Heuristic: BL target = new function start; BCLR with bo=0x14 = function end.
-std::vector<u32> find_functions(const u8* text, u32 base_addr, u32 size) {
-    std::vector<u32> funcs;
-    std::unordered_set<u32> seen;
-    auto enqueue = [&](u32 addr) {
-        if (addr >= base_addr && addr < base_addr + size && !seen.count(addr)) {
-            seen.insert(addr);
-            funcs.push_back(addr);
-        }
-    };
-
-    enqueue(base_addr);  // entry point
-
+std::vector<u32> find_call_targets(const u8* text, u32 base_addr, u32 size) {
+    std::vector<u32> targets;
     for (u32 off = 0; off + 4 <= size; off += 4) {
         u32 word_be;
         std::memcpy(&word_be, text + off, 4);
@@ -938,12 +934,22 @@ std::vector<u32> find_functions(const u8* text, u32 base_addr, u32 size) {
         u32 pc   = base_addr + off;
         PPCInstr instr = decode(word, pc);
 
-        if (instr.op == PPCOp::B && instr.lk)
-            enqueue(instr.target);  // bl → callee starts here
-        if (instr.op == PPCOp::BC && instr.lk)
-            enqueue(instr.target);
+        // bl / bcl → the callee starts at the branch target, wherever it lives.
+        if ((instr.op == PPCOp::B || instr.op == PPCOp::BC) && instr.lk)
+            targets.push_back(instr.target);
     }
+    std::sort(targets.begin(), targets.end());
+    targets.erase(std::unique(targets.begin(), targets.end()), targets.end());
+    return targets;
+}
+
+std::vector<u32> find_functions(const u8* text, u32 base_addr, u32 size) {
+    std::vector<u32> funcs;
+    funcs.push_back(base_addr);  // section start is a function start by definition
+    for (u32 t : find_call_targets(text, base_addr, size))
+        if (t >= base_addr && t < base_addr + size) funcs.push_back(t);
 
     std::sort(funcs.begin(), funcs.end());
+    funcs.erase(std::unique(funcs.begin(), funcs.end()), funcs.end());
     return funcs;
 }

@@ -23,10 +23,23 @@ target_include_directories(sms-recomp-guest PUBLIC "${GEN}" "${CMAKE_CURRENT_SOU
 # Generated code is machine-emitted: its warnings are noise, not signal.
 target_compile_options(sms-recomp-guest PRIVATE -w)
 
+# Overrides are part of the runtime, not the guest: they REPLACE recompiled bodies, so
+# they must not be compiled with the generated code's relaxed warning settings.
+#
+# OBJECT, not STATIC: each override self-registers from a static initializer and exports
+# nothing else, so in a static archive the linker discards the whole object as unused and
+# the override silently never installs. An object library always contributes its objects.
+file(GLOB SB_OVERRIDES "${CMAKE_CURRENT_SOURCE_DIR}/overrides/*.cpp")
+add_library(sms-recomp-overrides OBJECT ${SB_OVERRIDES})
+target_include_directories(sms-recomp-overrides PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/runtime" "${CMAKE_CURRENT_SOURCE_DIR}/overrides" "${GEN}")
+target_link_libraries(sms-recomp-overrides PUBLIC lucent::lucent)
+
 add_library(sms-recomp-rt STATIC runtime/rt_core.cpp)
-target_include_directories(sms-recomp-rt PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/runtime" "${GEN}")
+target_include_directories(sms-recomp-rt PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/runtime" "${CMAKE_CURRENT_SOURCE_DIR}/overrides" "${GEN}")
 target_link_libraries(sms-recomp-rt PUBLIC lucent::lucent)
 
 # Host harness: loads the DOL into guest RAM and runs the entry point.
 add_executable(sms-recomp host/main.cpp)
-target_link_libraries(sms-recomp PRIVATE sms-recomp-rt sms-recomp-guest lucent::lucent)
+target_link_libraries(sms-recomp PRIVATE sms-recomp-rt sms-recomp-guest
+                      sms-recomp-overrides lucent::lucent)

@@ -189,6 +189,11 @@ extern void call_ppc(CPUState& cpu, u32 address);
 // (the boot→main-loop handoff and other never-returning transitions land here).
 extern void tail_ppc(CPUState& cpu, u32 address);
 
+// An opcode the recompiler has no emitter for. Emitted INLINE at the instruction's own
+// address so the stop happens at the real cause: skipping it would drop its effect and
+// corrupt state that only misbehaves much later, somewhere unrelated. Never returns.
+extern void rt_unhandled_insn(CPUState& cpu, u32 pc, u32 raw, const char* mnemonic);
+
 // Special-purpose registers we don't model in CPUState (HID0/HID2, BATs, DSISR,
 // SRRn, etc.) pass straight through to Dolphin's live PowerPCState.spr[]. This
 // keeps OS/HW-init code (e.g. mtspr HID2 to enable paired singles) coherent with
