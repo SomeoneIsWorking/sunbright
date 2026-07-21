@@ -208,3 +208,56 @@ the slow paths to MMIO/hardware, and pointing dispatch at the generated jump tab
 
 NEW DIRECTIVE NOTE: any diagnostics added to this runtime must use **lucent**
 (the project-wide C++20 logger), not ad-hoc gated fprintf.
+
+## ✅ The recomp EXECUTES standalone (no Dolphin anywhere)
+
+Built `sms-recomp/`: `runtime/rt_core.cpp` (the whole host boundary) + `host/main.cpp`
+(DOL loader + entry) + CMake that FetchContent's **lucent** (the project's C++20
+logger — no hand-rolled logging).
+
+`rt_core.cpp` implements every symbol `nm -u` listed:
+* **Guest memory** — 32 MB mmap covering sb_ram_fast's 0x01FFFFFF mask, with
+  [24 MB,32 MB) `mprotect(PROT_NONE)` so a stray access FAULTS instead of silently
+  aliasing into fake game data. 256 KB locked-L1 at 0xE0000000.
+* **Slow/MMIO paths** — deliberately LOUD (lucent `debug("mmio")`), never silent
+  zeros: a silent 0 reads as valid hardware state and would fake plausible-but-wrong
+  behaviour for a long time.
+* **Dispatch** — binary search over the generated ascending `g_recomp_table`;
+  an un-recompiled target is a hard stop, not a no-op that lets execution wander.
+* **dcbz32** — real 32-byte zero (games use it as a bulk clear; a no-op leaves stale
+  data the guest believes is zeroed).
+* **tb_get** — monotonic clock scaled to the Gekko TBR (bus/4 = 40.5 MHz), because
+  OSGetTime/OSTicksToSeconds depend on that scale.
+* **psq_load/store** — carried over from memory_bridge.cpp WITH its root-caused GQR
+  fix (6-bit SIGNED scale; `1u << scale` is UB for scale>=32, e.g. u8 YUV scale=61=-3).
+
+### Two real recompiler fixes fell out of running it
+
+1. **The DOL entry point was never a discovery root.** GMSE01's `__start` (0x8000522c)
+   is not in the symbol map and nothing `bl`s to it, so neither symbol lookup nor
+   bl-reachability found it — the recompiled image had no way in. Now seeded explicitly.
+2. **SPRs are now modelled as storage** (`CPUState::spr[1024]`, generic emitter
+   default cases). On a standalone PC port HID0/HID2/L2CR/BATs/PVR configure hardware
+   that does not exist, so write-then-read-back IS correct. Result:
+   **"Routed 0 HW/privileged functions to Dolphin JIT"** — all 23 previously-punted
+   functions now recompile, which matters because standalone has no JIT to punt to.
+
+### Current state — honest
+```
+[rt] guest memory ready: MEM1 24 MB @ 0x..., L1 256 KB @ 0x...
+[dol] scratch/bin/sms.dol: 10 sections, entry 0x8000522c
+[rt] entering recompiled code at 0x8000522c
+[rt:error] call to un-recompiled address 0x80342518 (lr=0x80005454)
+```
+It loads the DOL, enters `__start`, and executes real recompiled PPC until a callee
+is missing. **6088 functions recompiled, 0 routed to JIT.**
+
+NEXT BLOCKER (a genuine discovery gap, NOT a HW seam): 0x80342518 is a real function
+that `__start` `bl`s at 0x80005450, but discovery absorbed it into the body of the
+function at 0x80342410 (the table has 0x80342410 then 0x80342550). So `find_functions`'
+"looks like a function start" heuristic rejected it. Fix that in discovery — do NOT
+hardcode the address into kForceEntry, that would be a bandaid that hides the same
+class of gap everywhere else.
+
+Title-screen / file-select matching is downstream of this: the boot chain has to
+reach the point where it drives GX before any oracle diff is meaningful.

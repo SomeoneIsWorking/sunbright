@@ -498,6 +498,8 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
         case SPR_SRR0:  line("%s = cpu.srr0;", d.c_str()); break;
         case SPR_SRR1:  line("%s = cpu.srr1;", d.c_str()); break;
         default:
+            // Storage-only SPR (see cpu_state.h): return what was written.
+            line("%s = cpu.spr[%u];", d.c_str(), (unsigned)spr); break;
             // Not modeled in CPUState — read Dolphin's live SPR (HID0/HID2/BAT/...)
             line("%s = spr_get(%d);", d.c_str(), spr); break;
         }
@@ -518,6 +520,8 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
         case SPR_SRR0:  line("cpu.srr0 = %s;", s.c_str()); break;
         case SPR_SRR1:  line("cpu.srr1 = %s;", s.c_str()); break;
         default:
+            // Storage-only SPR (see cpu_state.h): inert on a PC, keep the value.
+            line("cpu.spr[%u] = %s;", (unsigned)spr, s.c_str()); break;
             // Not modeled in CPUState — write Dolphin's live SPR (HID0/HID2/BAT/...)
             line("spr_set(%d, %s);", spr, s.c_str()); break;
         }

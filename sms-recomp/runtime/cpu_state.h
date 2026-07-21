@@ -52,6 +52,14 @@ struct CPUState {
 
     // GQR (graphics quantization registers) — for psq_l/psq_st
     u32    gqr[8];
+    // Generic SPR storage. On a STANDALONE PC port the remaining SPRs (HID0/HID1/HID2,
+    // L2CR, ICTC, the IBAT/DBAT pairs, PVR, DEC, ...) configure hardware that does not
+    // exist here: there are no GC caches, and memory is flat so the BATs describe
+    // nothing. Their writes are inert and their reads must simply return what was
+    // written, which is exactly storage. Modelling them this way is what lets early
+    // boot (__start, cache/MMU init) be RECOMPILED instead of punted to a JIT that a
+    // standalone build does not have.
+    u32    spr[1024];
 
     void reset() { std::memset(this, 0, sizeof(*this)); }
 };

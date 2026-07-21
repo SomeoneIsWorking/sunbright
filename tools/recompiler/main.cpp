@@ -29,7 +29,13 @@ static bool spr_is_modeled(u16 spr) {
     if (spr == SPR_XER || spr == SPR_LR || spr == SPR_CTR) return true;
     if (spr == SPR_SRR0 || spr == SPR_SRR1) return true;   // exception/context save-restore — modeled
     if (spr >= SPR_GQR0 && spr <= SPR_GQR0 + 7) return true;
-    return false;
+    // Everything else is modelled as plain storage in CPUState::spr[] — see the note
+    // there. On a standalone PC port these configure hardware that does not exist
+    // (caches, BATs/MMU, core config), so write-then-read-back IS the correct
+    // behaviour, and it lets early boot be recompiled rather than routed to a JIT
+    // this build does not have. Genuinely side-effecting OPS (MTSR/MTSRIN, TLBIE/
+    // TLBSYNC, ECIWX/ECOWX) are still filtered in function_needs_jit().
+    return true;
 }
 
 static bool function_needs_jit(const std::vector<PPCInstr>& instrs) {
@@ -348,6 +354,12 @@ static int recompile_mode(const DOL& dol, const std::string& out_dir) {
             if (p >= base && p < sec_end) funcs.push_back(p);
         for (u32 p : kForceEntry)                      // merge in forced indirect-call entries
             if (p >= base && p < sec_end) funcs.push_back(p);
+        // The DOL entry point is a function root BY DEFINITION. It is not necessarily
+        // in the symbol map — GMSE01's __start (0x8000522c) is not — and nothing bl's
+        // to it, so neither symbol lookup nor bl-reachability discovers it. Without
+        // this the recompiled image has no way in: dispatch on the entry address hits
+        // an empty table and aborts. Seed it explicitly.
+        if (dol.entry >= base && dol.entry < sec_end) funcs.push_back(dol.entry);
         std::sort(funcs.begin(), funcs.end());
         funcs.erase(std::unique(funcs.begin(), funcs.end()), funcs.end());
         all_funcs.insert(all_funcs.end(), funcs.begin(), funcs.end());
