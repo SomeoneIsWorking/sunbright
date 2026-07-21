@@ -2058,3 +2058,41 @@ warnings), and now stale/missing copy state. Still on the table: a genuine copla
 draw of the sea. The next move is to identify the draw that paints white there — enumerate the
 draws covering that region rather than reasoning about which subsystem "should" own it, since
 three subsystem-level guesses in a row have now been wrong.
+
+## Workflow defect: aurora's retrace-gated diagnostics were silently dead in the recomp
+
+Trying to enumerate the draws, `SB_DRAW_DUMP` produced **zero lines**. The cause is worth
+recording because it had nothing to do with the sea and would have kept biting.
+
+Aurora gates several diagnostics — `SB_DRAW_DUMP_AFTER`, `SB_DRAW_DUMP_FRAME`, the
+`SB_NDC_DRAW` window — on a frame ordinal from a **weak** `VIGetRetraceCount` that the runtime
+is expected to provide. sms-boot provides it from its frame seam; this runtime never did, so
+the weak symbol resolved to null, aurora's counter read 0 forever, and every one of those
+diagnostics silently produced nothing. They did not report being unavailable — they just never
+fired. A whole existing toolkit was decomp-only by accident.
+
+Fixed by exporting the recomp's present count as `VIGetRetraceCount`
+(`overrides/native_frame.cpp`). Verified: the same command now yields 200 draw-dump lines
+where it produced 0.
+
+## Enumerating the file-select frame's draws
+
+With the toolkit working, the frame is 127 draws in the main `640x448` viewport plus 73 in a
+`256x256` offscreen pass. Two results:
+
+- **`colorUpdate` is not the culprit.** A long run of 59-vertex draws has `cU=0` with opaque
+  `bf=1/0`, which would paint over the sea if colour writes were not masked — but aurora does
+  honour it (`to_write_mask` in `gx.cpp`), so those are a legitimate depth/alpha pass.
+- **Nothing binds the sea reflection.** No draw in the frame has `tex0=320x224` — the RGB565
+  reflection texture is copied every single frame and then never sampled on texmap 0. The
+  copies are `640x448 -> 320x224 RGB565` and `256x256 RGB5A3`, and only the latter's size shows
+  up in the draw list (126 draws).
+
+That is the strongest lead yet and it inverts the earlier framing again: the problem may not be
+an extra white surface drawn OVER the sea, but the sea's reflection never being sampled, so the
+water renders with whatever its remaining TEV stages produce.
+
+Caveat before treating that as established: the dump reports **tex0 only**, so the reflection
+could be bound to a higher texmap and simply not visible in this listing. Confirming which
+texmap the sea samples is the next step, and it is a question about the draw's own state rather
+than another subsystem guess.

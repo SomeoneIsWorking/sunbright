@@ -43,7 +43,21 @@ void report_app_state() {
     if (st == 6) lucent::info("app", "  mMovie = {}", sb_r32(GPAPPLICATION + 0x18));
 }
 
+// Aurora gates several of its diagnostics on a frame ordinal it obtains by calling a WEAK
+// VIGetRetraceCount that the runtime is expected to provide (sms-boot does, from its frame
+// seam). This runtime provided none, so the weak symbol resolved to null, aurora's counter
+// read 0 forever, and every retrace-gated diagnostic — SB_DRAW_DUMP_AFTER,
+// SB_DRAW_DUMP_FRAME, the SB_NDC_DRAW window — silently produced nothing. They did not report
+// being unavailable; they simply never fired.
+//
+// Providing it here makes aurora's whole existing diagnostic toolkit work for the recomp on
+// the same terms as the decomp runtime, rather than being decomp-only by accident.
+extern "C" unsigned VIGetRetraceCount(void);
+namespace { unsigned g_present_count = 0; }
+extern "C" unsigned VIGetRetraceCount(void) { return g_present_count; }
+
 void video_wait_for_retrace(CPUState& cpu) {
+    ++g_present_count;
     report_app_state();
     // Let the game do its own frame bookkeeping first.
     func_802fc9a4(cpu);
