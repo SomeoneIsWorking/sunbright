@@ -1804,3 +1804,23 @@ unverified change that should not accumulate.
 The title itself is unaffected and still renders; this is specifically the title -> file-select
 transition wanting a movie. Worth noting the flags set earlier may also not be taking effect
 (`setFlag` at `0x80294b1c` is unverified) — that should be checked before more is built on it.
+
+## setFlag VERIFIED (and the movie loop is therefore something else)
+
+The `setFlag` address (`0x80294b1c`) came from the retired fastboot override and had never
+been confirmed against this DOL. It is now checked at runtime rather than trusted:
+`TFlagManager::setFlag` case 3 writes `mGameBools[low >> 3]` bit `(low & 7)`, and
+`mGameBools` sits at **+0xCC** (after `mCardBools[119]` and `mCardInts[21]`). After setting
+the four movie flags, `mark_movies_seen` reads those bits back and aborts if any is clear.
+
+**Result: all four verified set.** So the address is right, the flags do land, and the
+GAMEPLAY <-> MOVIE oscillation after pressing START is NOT caused by the flags failing —
+which is what I had assumed and would otherwise have "fixed" next.
+
+That narrows it: with `0x30009`/`0x3000B`/`0x3000C`/`0x3000D` all set, every
+`checkAdditionalMovie` branch that consults them is gated, yet `mMovie` still reports 9 and
+12. Movie 9 is the `APP_STATE_DONE` fallthrough (`Application.cpp:756`); what selects 12 is
+still unidentified and is the thing to find next.
+
+The check stays in the code permanently — it costs one read per flag and turns a silently
+wrong address into an immediate, named failure.

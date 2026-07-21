@@ -54,7 +54,23 @@ void mark_movies_seen(CPUState& cpu) {
         call_ppc(cpu, FM_SET_FLAG);
         cpu = saved;
     }
-    lucent::info("thp", "marked {} attract/cutscene movies as already seen",
+    // VERIFY rather than assume: setFlag's address came from the retired override and was
+    // never confirmed against this DOL. TFlagManager::setFlag case 3 writes
+    // mGameBools[low >> 3] bit (low & 7), and mGameBools sits at +0xCC (after
+    // mCardBools[119] and mCardInts[21]).
+    constexpr u32 FM_GAME_BOOLS = 0xCC;
+    for (u32 flag : kMovieSeen) {
+        const u32 low = flag & 0xFFFF;
+        const u8  b   = sb_r8(fm + FM_GAME_BOOLS + (low >> 3));
+        const bool set = (b >> (low & 7)) & 1;
+        if (!set) {
+            lucent::error("thp", "setFlag(0x{:05x}) did not take — mGameBools[{}] = 0x{:02x}. "
+                                 "The setFlag address (0x{:08x}) is wrong.",
+                          flag, low >> 3, b, FM_SET_FLAG);
+            std::abort();
+        }
+    }
+    lucent::info("thp", "marked {} attract/cutscene movies as already seen (verified)",
                  sizeof(kMovieSeen) / sizeof(*kMovieSeen));
 }
 
