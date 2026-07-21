@@ -54,6 +54,9 @@ u32  g_watch_wa      = 0;   // armed watch address; 0 = disarmed
 extern void aram_device_init();
 extern void dsp_device_init();
 extern void ai_device_init();
+extern void exi_device_init();
+extern void vi_device_init();
+extern void si_device_init();
 
 extern "C" bool rt_mem_init() {
     if (g_ram_base) return true;
@@ -81,6 +84,9 @@ extern "C" bool rt_mem_init() {
     // Devices register after guest RAM exists (ARAM DMAs into it).
     dsp_device_init();
     ai_device_init();
+    exi_device_init();
+    vi_device_init();
+    si_device_init();
     aram_device_init();
     return true;
 }

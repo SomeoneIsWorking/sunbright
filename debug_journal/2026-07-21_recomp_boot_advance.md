@@ -367,3 +367,42 @@ OS reads at boot for language and video-mode settings.
 
 Also fixed: the `sc` warning fired 1.67 M times in a 40 s run, burying every other line and
 slowing the run enough to distort what it measured. Now once per SITE, counted thereafter.
+
+## Device worklist, driven by fail-fast
+
+With unrouted reads fatal, each abort names the next device. Landed this round:
+
+| device | range | notes |
+|---|---|---|
+| `vi` | `0xCC002000-0x2080` | storage; `VI_DTV_STATUS` (`+0x6C`) reports **no component cable**, selecting interlaced NTSC — the same mode the decomp runtime renders and the oracle captures, so the two stay comparable |
+| `si` | `0xCC006400-0x6500` | controller transport; `COMCSR` start bit clears immediately. No controller reported connected — truthful (none is wired up), unlike inventing all-zero button data which would be indistinguishable from a real pad |
+| `exi` | `0xCC006800-0x683C` | 3 channels x 5 registers; transport ONLY |
+
+`dev_vi.cpp` had a bug worth recording because the shape recurs: `reg()` indexes off a full
+guest ADDRESS, but the initialiser passed a bare offset (`0x206C`), so `(off - VI_BASE)`
+underflowed and wrote far outside the array. It segfaulted during device registration,
+before the DOL even loaded. `reg()` now range-checks and aborts, and the constant is a full
+address. Any device file using the same `reg(addr)` idiom should range-check too.
+
+## Next: the EXI SRAM/RTC device (channel 0, device 1)
+
+The EXI transport is now exercised, and it stops exactly where it was designed to:
+
+```
+[exi:error] channel 0 device 1 has no implementation — EXI transport is modelled but
+            nothing is attached. Returning bus-idle bytes would fake a broken console
+            (corrupt SRAM checksum -> silent fallback to defaults). Implement this device.
+```
+
+This is deliberate. Handing back bus-idle `0xFF` bytes would give the OS a corrupt SRAM
+checksum, it would silently fall back to defaults, and boot would *appear* to work while
+the console configuration (language, video mode, display offset) came from nowhere.
+
+The device speaks a small command protocol: a 32-bit command word selects RTC (`0x20000000`),
+SRAM (`0x20000100`) or the IPL ROM, with bit 31 marking a write; data bytes follow.
+
+**Do NOT write the SRAM checksum from memory of what the algorithm is.** The exact byte
+range it covers is easy to get subtly wrong, and a wrong checksum reproduces the silent
+default-fallback this abort exists to prevent. RE the guest's own validation — the OS reads
+and checks SRAM during `OSInit` — and match that, then verify the OS accepts it rather than
+assuming it did.
