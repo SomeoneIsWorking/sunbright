@@ -1114,3 +1114,50 @@ here they are genuine guest addresses. Anything else pointer-bearing (texture ob
 boot-fade quad and nothing else, which is exactly consistent with it being stuck on the fade —
 the state problem already recorded, not a render problem. Distinguishing those two was the
 whole point of getting pixels out.
+
+## ROOT CAUSE: the game REUSES OSThread structs, and the scheduler ignored the second use
+
+With pixels available, the state could finally be read directly instead of inferred.
+`gpApplication` is at `0x803E9700` (confirmed against the retired `fastboot_native.cpp`) and
+`mAppState` is a `u8` at `+0x08`. It read **3 = `APP_STATE_NLOGO`** (enum from
+`decomp/sms/include/System/Application.hpp`), forever.
+
+The decomp is the oracle for what NLOGO is supposed to do (`Application.cpp:853`):
+
+```c
+} else if (mAppState == APP_STATE_NLOGO) {
+    nextState = APP_STATE_WAIT;
+    if (!(sGameInit & 1) && mDirector->direct() == APP_STATE_DONE) sGameInit |= 1;
+    if (!(sGameInit & 2) && OSIsThreadTerminated(&gSetupThread)) { OSJoinThread(...); sGameInit |= 2; }
+    if (sGameInit == 3) nextState = APP_STATE_DONE;
+}
+```
+
+Instrumenting showed bit 0 was being set — `TGCLogoDir::direct` ran and returned
+`APP_STATE_DONE` at call #101. So the wait was on bit 1, `gSetupThread`.
+
+`Application.cpp` creates that thread **twice**: line 313 with `SetupThreadFuncBoot`, and
+line 445 with `SetupThreadFuncLogo` — **reusing the same `OSThread` struct**. `gsched_create`
+had `if (find(os_thread)) return;`, so the second creation was silently dropped: the thread
+never ran, never terminated, and NLOGO waited on it forever.
+
+`gsched_create` now resets an existing entry with the new entry/param/stack/priority. Two
+cases are distinguished:
+
+- **Dead** — ordinary reuse; reset and let `OSResumeThread` start it again.
+- **Parked** — also legitimate: the game recreates a struct whose previous occupant waits
+  forever on a queue nothing posts to (a THP worker). It is retired so the scheduler never
+  picks it again. *This leaks one parked host thread per recreation* — bounded and harmless
+  in practice, but a real leak; the honest fix is a generation counter so a woken stale
+  thread exits rather than resuming a retired body.
+- **Running** — recreation from inside the thread's own body, which cannot be legitimate,
+  still aborts.
+
+**Effect: disc reads 149 -> 924**, and the game now loads its real boot set —
+`mario.szs`, `common.szs`, `option.szs`, `particle.szs`, `guide.szs`, `params.szs`,
+`scenecmn.bin`, `game_6.szs` and `Entrance.thp` (the attract movie).
+
+**Next:** a NULL dereference in the THP player (`OSReceiveMessage` on a null queue, called
+from the THP region around `0x8001db24`). Expected territory — there is no video decoding
+here, and `Entrance.thp` is the attract movie. The retired `fastboot_native.cpp` skipped this
+whole state; the equivalent decision is due.

@@ -160,7 +160,48 @@ void gsched_init(CPUState& main_cpu, u32 os_thread) {
 void gsched_create(u32 os_thread, u32 entry, u32 param, u32 stack, int priority) {
     adopt_self_id();
     std::lock_guard<std::mutex> lk(g_lock);
-    if (find(os_thread)) return;   // already tracked
+
+    // The game REUSES OSThread structs: TApplication creates gSetupThread once for BOOT and
+    // again for NLOGO with a different entry point. Treating the address as already-tracked
+    // meant the second thread was never created — it never ran, never terminated, and the
+    // NLOGO state waited forever on OSIsThreadTerminated(&gSetupThread).
+    if (GuestThread* old = find(os_thread)) {
+        // RUNNING means we are inside that thread's own body, which cannot be a legitimate
+        // recreation — that is a real bug worth stopping for.
+        if (old->state == State::Running) {
+            lucent::error("sched", "OSThread 0x{:08x} recreated from inside its own body "
+                                   "(entry 0x{:08x} -> 0x{:08x})",
+                          os_thread, old->entry, entry);
+            std::abort();
+        }
+        // Blocked is legitimate: the game recreates a struct whose previous occupant is
+        // parked forever on a queue nothing will post to (a THP worker, for instance).
+        // From the game's point of view that thread is finished. Retire it so the scheduler
+        // never picks it again.
+        //
+        // The parked host thread stays parked — it is waiting on a condition variable that
+        // will never be signalled. That leaks one host thread per recreation, which is
+        // bounded and harmless in practice, but it is a leak: the honest fix is a generation
+        // counter so a woken stale thread exits instead of resuming a retired body.
+        if (old->state != State::Dead) {
+            lucent::debug("sched", "OSThread 0x{:08x} recreated while parked; retiring the "
+                                   "previous body (entry 0x{:08x})", os_thread, old->entry);
+            old->state = State::Dead;
+        }
+        if (old->host.joinable()) old->host.detach();
+        old->entry = entry; old->param = param; old->stack = stack;
+        old->priority = priority;
+        old->state = State::Blocked;    // created suspended; OSResumeThread starts it
+        old->wait_queue = 0;
+        old->started = false;
+        old->cpu = CPUState{};
+        if (t_self) {
+            old->cpu.gpr[2]  = t_self->cpu.gpr[2];
+            old->cpu.gpr[13] = t_self->cpu.gpr[13];
+        }
+        return;
+    }
+
     auto* t = new GuestThread();
     t->os_thread = os_thread;
     t->entry     = entry;
