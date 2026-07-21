@@ -2096,3 +2096,41 @@ Caveat before treating that as established: the dump reports **tex0 only**, so t
 could be bound to a higher texmap and simply not visible in this listing. Confirming which
 texmap the sea samples is the next step, and it is a question about the draw's own state rather
 than another subsystem guess.
+
+## Oracle draw-diff at file-select: the recomp never renders anything ORTHOGRAPHIC
+
+Extended aurora's `[draw-dump]` line with a `texs=[map:WxH,...]` field listing every bound
+texmap, not just tex0 — the single-tex0 field cannot answer "which draw samples texture X", so
+the previous tick's "nothing binds the reflection" could not be trusted. With it:
+
+- **Confirmed, caveat closed: no draw binds the 320x224 reflection on ANY texmap.**
+- **But the oracle does not bind it either (also zero).** So an unsampled reflection is normal
+  and that lead is dead. Cheap to establish, and it is the third sea hypothesis to fall.
+
+The oracle comparison did surface two hard divergences. Note the draw STRUCTURE matches
+exactly — 127 draws in the main viewport plus 73 in a 256x256 offscreen pass, in both
+runtimes, with the offscreen pass's projection identical to 4 decimal places. The recomp's
+draw stream is structurally right; the divergence is in per-draw state:
+
+1. **Projection type.** Of the 127 main-viewport draws the oracle renders **111
+   ORTHOGRAPHIC** (`prj=[0.0045 -0.0031 -0.5000 -0.5000]`) and 16 perspective. The recomp
+   renders **all 127 perspective** and, across the whole 200-draw window, **not one
+   orthographic draw**. The 2D/J2D overlay is being drawn through the 3D projection.
+2. **Viewport origin.** Oracle `vp=(0,0 640x448)`, recomp `vp=(2,2 640x448)` — the recomp is
+   offset by 2 pixels in both axes, with identical scissor `sc=(0,0 640x448)` on both sides.
+
+This plausibly subsumes a difference I previously waved off as "unpinned animation phase": the
+save-slot labels and dialog panel sit in visibly different places between the two captures.
+Those are exactly the 2D elements that would be misplaced by a wrong projection. It may also
+explain the sea, if the white surface is a 2D overlay quad landing over the water instead of
+where it belongs — but that is a hypothesis, not a conclusion, and the sea has already
+falsified three of those.
+
+**Open contradiction, recorded rather than glossed.** Aurora only assigns `g_gxState.proj`
+inside the XF 0x1020 handler, gated on `projOff == 0 && count >= 7`, and that same block emits
+`[proj-set]` under `SB_PROJ_DUMP`. Running the recomp with `SB_PROJ_DUMP=1` produced **zero**
+such lines — yet the draws report non-default projection values that differ correctly between
+the main and offscreen passes, which only that block can set. Both cannot be true as I
+currently understand the code. Resolving that contradiction is the next step, and no claim
+about the mechanism should be made until it is: the honest reading is that my model of how the
+recomp's XF writes reach aurora is wrong somewhere.
