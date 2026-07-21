@@ -809,3 +809,36 @@ instant-FS DVD path.
 
 Next: it loads that first archive then returns to its main loop without requesting more, so
 something downstream is still waiting.
+
+## Where the boot stands after threading
+
+The loader thread works end to end:
+
+- `DVDConvertPathToEntrynum("/data/nintendo.szs") = 48`
+- 28 instant-FS reads covering the whole file (`offset 0x1134a8d8 len 0x1a208`)
+- `SMSLoadArchive -> 0x8131f0e0` — a valid archive pointer
+- `JKRDecomp::orderSync` / `decode` are never called, so this archive needs no worker
+
+Then it stops: **only `nintendo.szs` is ever requested** (twice), and the main thread runs its
+frame loop indefinitely (6.09 M retraces in 40 s) doing pad reads without asking for another
+file.
+
+Note the retired `native_dvd.cpp` recorded the identical symptom — *"under native scheduling
+only data/nintendo.szs transfers; pure-Dolphin reads sequence.arc / *.aw / mario.szs / … next"*
+— but its cause (the DVD command queue's dispatch-next step never firing) is bypassed
+entirely by instant reads, and the loader here demonstrably completes. So the stall is
+downstream of loading, not in it.
+
+Two candidates worth separating next:
+
+1. **Timing skew.** `VIWaitForRetrace` is a pure counter draining at ~150 k "frames"/s while
+   `OSGetTime` runs off a real monotonic clock. Anything frame-counted finishes instantly
+   while anything time-based takes real seconds — a boot state machine mixing both would sit
+   waiting for a wall-clock deadline that, from its own frame count, should have passed
+   aeons ago.
+2. **A state machine waiting on something else entirely** — the prio-15 thread
+   (`0x802a9184`), a fader completion flag, or the logo sequence itself.
+
+Distinguishing them is cheap: pace the retrace counter to real time and see whether boot
+advances. That also matters independently, because a frame counter running 2500x faster than
+the wall clock will misbehave everywhere later.
