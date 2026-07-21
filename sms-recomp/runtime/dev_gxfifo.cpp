@@ -20,11 +20,15 @@
 
 #include "mmio.h"
 
+#include <aurora/aurora.h>
+#include <dolphin/gx/GXAurora.h>
 #include <lucent/log.h>
 
 #include <cstdlib>
 #include <cstring>
 #include <vector>
+
+extern u8* g_ram_base;
 
 namespace {
 
@@ -33,6 +37,12 @@ constexpr u32 FIFO_BASE = 0xCC008000;
 // The stream arrives in pieces of 1/2/4/8 bytes; commands straddle those writes, so it has
 // to be reassembled before it can be framed.
 std::vector<u8> g_buf;
+
+// The stream handed to aurora. Identical to the guest's, except that CP array-base writes
+// are rewritten (see below) — aurora cannot use the guest's 32-bit address directly.
+std::vector<u8> g_out;
+
+
 
 // Per-VAT vertex descriptors, enough to compute a vertex's byte size.
 struct Vat { u32 vcd_lo = 0, vcd_hi = 0, fmt0 = 0, fmt1 = 0, fmt2 = 0; };
@@ -123,16 +133,60 @@ u32 vertex_size(u32 vat_idx) {
     return n;
 }
 
+void put_u8 (std::vector<u8>& v, u8 x)  { v.push_back(x); }
+void put_u16(std::vector<u8>& v, u16 x) { v.push_back((u8)(x >> 8)); v.push_back((u8)x); }
+void put_u32(std::vector<u8>& v, u32 x) { for (int i = 3; i >= 0; i--) v.push_back((u8)(x >> (i * 8))); }
+void put_u64(std::vector<u8>& v, u64 x) { for (int i = 7; i >= 0; i--) v.push_back((u8)(x >> (i * 8))); }
+
+// GX_AURORA (0x50) + subcommand, then a 64-bit host pointer, 32-bit size, 1-byte LE flag.
+void emit_arraybase(u32 attr, u32 guest_addr) {
+    const u32 off = guest_addr & 0x01FFFFFFu;
+    if (off >= 0x01800000u) {
+        lucent::debug("gxfifo", "array base 0x{:08x} is outside MEM1 — dropped", guest_addr);
+        return;
+    }
+    put_u8 (g_out, 0x50);
+    put_u16(g_out, (u16)(GX_AURORA_LOAD_ARRAYBASE + attr));
+    put_u64(g_out, (u64)(uintptr_t)(g_ram_base + off));
+    put_u32(g_out, 0x01800000u - off);   // the array cannot extend past MEM1
+    put_u8 (g_out, 0);                   // big-endian, as the guest wrote it
+}
+
 u32 be32(const u8* p) { return (u32)p[0] << 24 | (u32)p[1] << 16 | (u32)p[2] << 8 | p[3]; }
 u32 be16(const u8* p) { return (u32)p[0] << 8 | p[1]; }
 
 // Frame as much of the buffer as is complete. Returns bytes consumed.
-size_t parse(const u8* p, size_t n) {
+size_t parse(const u8* p, size_t n, int depth = 0);
+
+// A display list lives in guest memory and is executed inline by the CP. Aurora cannot
+// follow the guest pointer (it ignores raw 32-bit addresses for the same reason it ignores
+// raw array bases), so the contents are parsed and emitted into the flat output stream
+// instead — aurora sees the commands, not a pointer to them.
+//
+// This matters more than it looks: J3D bakes per-shape geometry into display lists, so
+// without this almost all real drawing is invisible to the parser (it showed up as
+// "unrecognised opcode 0x48 — framing lost", which discarded the rest of the batch).
+void inline_display_list(u32 guest_addr, u32 size, int depth) {
+    if (depth > 4) {
+        lucent::debug("gxfifo", "display-list nesting deeper than 4 — not following");
+        return;
+    }
+    const u32 off = guest_addr & 0x01FFFFFFu;
+    if (off + size > 0x01800000u || size == 0) {
+        lucent::debug("gxfifo", "display list 0x{:08x} +0x{:x} is outside MEM1", guest_addr,
+                      size);
+        return;
+    }
+    parse(g_ram_base + off, size, depth + 1);
+}
+
+size_t parse(const u8* p, size_t n, int depth) {
     size_t i = 0;
     while (i < n) {
         const u8 op = p[i];
 
-        if (op == 0x00) { g_stats.nops++; i += 1; continue; }
+        if (op == 0x00) { g_out.insert(g_out.end(), p + i, p + i + 1);
+            g_stats.nops++; i += 1; continue; }
 
         if (op == 0x08) {                       // CP register write
             if (n - i < 6) break;
@@ -143,6 +197,16 @@ size_t parse(const u8* p, size_t n) {
             else if (reg >= 0x70 && reg <= 0x77) g_vat[reg - 0x70].fmt0 = val;
             else if (reg >= 0x80 && reg <= 0x87) g_vat[reg - 0x80].fmt1 = val;
             else if (reg >= 0x90 && reg <= 0x97) g_vat[reg - 0x90].fmt2 = val;
+
+            if (reg >= 0xA0 && reg <= 0xAF) {
+                // Vertex array base. Aurora IGNORES the raw CP write, because in the decomp
+                // world these 32 bits are a truncated HOST pointer. Here they are a genuine
+                // GUEST address into memory we own, so resolve it and hand aurora the real
+                // pointer through its own extension (GX_AURORA, opcode 0x50).
+                emit_arraybase(reg - 0xA0, val);
+            } else {
+                g_out.insert(g_out.end(), p + i, p + i + 6);
+            }
             g_stats.cp++; i += 6; continue;
         }
 
@@ -151,12 +215,22 @@ size_t parse(const u8* p, size_t n) {
             const u32 count = ((be16(p + i + 1)) & 0xFFFF) + 1;
             const size_t len = 1 + 4 + count * 4;
             if (n - i < len) break;
+            g_out.insert(g_out.end(), p + i, p + i + len);
             g_stats.xf++; i += len; continue;
         }
 
         if (op == 0x61) {                       // BP register write
             if (n - i < 5) break;
+            g_out.insert(g_out.end(), p + i, p + i + 5);
             g_stats.bp++; i += 5; continue;
+        }
+
+        if (op == 0x48) {                       // call display list
+            if (n - i < 9) break;
+            const u32 addr = be32(p + i + 1);
+            const u32 size = be32(p + i + 5);
+            inline_display_list(addr, size, depth);
+            i += 9; continue;
         }
 
         if (op >= 0x80 && op <= 0xBF) {         // draw primitive
@@ -165,6 +239,7 @@ size_t parse(const u8* p, size_t n) {
             const u32 vsize = vertex_size(op & 7);
             const size_t len = 3 + (size_t)verts * vsize;
             if (vsize == 0 || n - i < len) break;   // wait for more, or VAT not seen yet
+            g_out.insert(g_out.end(), p + i, p + i + len);
             g_stats.draws++; g_stats.verts += verts;
             i += len; continue;
         }
@@ -200,12 +275,20 @@ u32 fifo_read(u32 ea, unsigned width) {
 
 } // namespace
 
+// Hand the frame's command stream to aurora. Called once per presented frame.
+void gxfifo_flush() {
+    if (g_out.empty()) return;
+    aurora_fifo_replay(g_out.data(), (u32)g_out.size(), /*bigEndian=*/1);
+    g_out.clear();
+}
+
 void gxfifo_stats(u64& draws, u64& verts, u64& bytes) {
     draws = g_stats.draws; verts = g_stats.verts; bytes = g_stats.bytes;
 }
 
 void gxfifo_device_init() {
     g_buf.reserve(1 << 16);
+    g_out.reserve(1 << 20);
     // The gather pipe is a single address the CPU stores to repeatedly; the block is
     // 0xCC008000-0xCC008020 on hardware.
     mmio_register(MmioDevice{FIFO_BASE, FIFO_BASE + 0x20, "gxfifo", &fifo_read, &fifo_write});

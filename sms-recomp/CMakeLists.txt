@@ -33,13 +33,21 @@ file(GLOB SB_OVERRIDES "${CMAKE_CURRENT_SOURCE_DIR}/overrides/*.cpp")
 add_library(sms-recomp-overrides OBJECT ${SB_OVERRIDES})
 target_include_directories(sms-recomp-overrides PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/runtime" "${CMAKE_CURRENT_SOURCE_DIR}/overrides" "${GEN}")
-target_link_libraries(sms-recomp-overrides PUBLIC nod::nod)
+target_link_libraries(sms-recomp-overrides PUBLIC nod::nod aurora::gx)
 target_link_libraries(sms-recomp-overrides PUBLIC lucent::lucent)
 
 # nod supplies random-access reads of the disc image (ISO/RVZ/...). The DI device serves
 # the guest's own DVD library at the REGISTER level, so nothing marshals guest structs —
 # the game's DVD code, FST parsing and file reads all run as recompiled PPC. That is why
 # this links nod directly rather than aurora's SDK-level DVD implementation.
+# Aurora provides the GX implementation. aurora_fifo_replay() consumes a raw GX command
+# stream, which is exactly what the guest writes to the gather pipe, so no translation layer
+# is needed for the command stream itself — only for pointers (see dev_gxfifo.cpp).
+# DVD stays OFF: this runtime serves the disc itself through nod (runtime/disc.cpp).
+set(AURORA_ENABLE_GX ON CACHE BOOL "" FORCE)
+set(AURORA_ENABLE_DVD OFF CACHE BOOL "" FORCE)
+add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../extern/aurora" aurora-build EXCLUDE_FROM_ALL)
+
 set(AURORA_NOD_PROVIDER "auto" CACHE STRING "")
 set(AURORA_NOD_LINKAGE "static" CACHE STRING "")
 set(AURORA_NOD_VERSION "v2.0.0-alpha.10" CACHE STRING "")
@@ -62,7 +70,7 @@ add_library(sms-recomp-rt STATIC runtime/rt_core.cpp runtime/mmio.cpp
                                  runtime/boot_env.cpp
                                  runtime/guest_sched.cpp)
 target_include_directories(sms-recomp-rt PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/runtime" "${CMAKE_CURRENT_SOURCE_DIR}/overrides" "${GEN}")
-target_link_libraries(sms-recomp-rt PUBLIC lucent::lucent nod::nod)
+target_link_libraries(sms-recomp-rt PUBLIC lucent::lucent nod::nod aurora::gx)
 
 # Host harness: loads the DOL into guest RAM and runs the entry point.
 add_executable(sms-recomp host/main.cpp)
@@ -71,4 +79,8 @@ add_executable(sms-recomp host/main.cpp)
 # is the guest call stack — but only if the names resolve.
 target_link_options(sms-recomp PRIVATE -rdynamic)
 target_link_libraries(sms-recomp PRIVATE sms-recomp-rt sms-recomp-guest
-                      sms-recomp-overrides lucent::lucent)
+                      sms-recomp-overrides lucent::lucent
+                      # aurora_core and aurora_gx reference each other, so both must be on
+                      # the link line together for the static archives to resolve.
+                      aurora::core aurora::gx aurora::core
+                      aurora::main aurora::vi aurora::os aurora::mtx)

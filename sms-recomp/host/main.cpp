@@ -10,6 +10,8 @@
 #include "guest_sched.h"
 #include "intrinsics.h"
 
+#include <aurora/aurora.h>
+
 #include <lucent/config.h>
 #include <lucent/log.h>
 
@@ -74,6 +76,23 @@ int main(int argc, char** argv) {
     lucent::config::set_prefix("SBR_");   // SBR_LUCENT_DEBUG=mmio,rt,poll
 
     std::string dol_path = argc > 1 ? argv[1] : "scratch/bin/sms.dol";
+
+    // Aurora provides the GX implementation. mem1Size/mem2Size are 0: this runtime owns its
+    // guest memory (rt_mem_init), and aurora is handed real host pointers for anything it
+    // needs to read out of it.
+    AuroraConfig acfg = {};
+    acfg.appName        = "sunbright-recomp";
+    acfg.desiredBackend = BACKEND_VULKAN;
+    acfg.msaa           = 1;
+    acfg.vsync          = false;
+    acfg.windowWidth    = std::getenv("SB_W") ? (u32)std::strtoul(std::getenv("SB_W"), nullptr, 0) : 1280u;
+    acfg.windowHeight   = std::getenv("SB_H") ? (u32)std::strtoul(std::getenv("SB_H"), nullptr, 0) : 960u;
+    acfg.mem1Size       = 0;
+    acfg.mem2Size       = 0;
+    AuroraInfo ainfo = aurora_initialize(argc, argv, &acfg);
+    lucent::info("rt", "aurora up: backend={} fb={}x{}", (int)ainfo.backend,
+                 ainfo.windowSize.fb_width, ainfo.windowSize.fb_height);
+    aurora_begin_frame();
 
     if (!rt_mem_init()) return 1;
 

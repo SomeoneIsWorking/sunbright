@@ -1049,3 +1049,40 @@ The FIFO parser already tracks CP writes, so it is the natural place to do this.
 Remaining integration work: link aurora with `AURORA_ENABLE_GX=ON` into `sms-recomp`,
 initialise it, and drive `aurora_begin_frame`/`aurora_end_frame` from the existing frame seam
 (`VIWaitForRetrace` / `TVideo::waitForRetrace`).
+
+## Aurora is wired in: the guest's GX stream now reaches a real renderer
+
+`sms-recomp` links aurora (`AURORA_ENABLE_GX=ON`, DVD off — this runtime serves the disc
+itself through nod) and feeds it the guest's own command stream.
+
+- `dev_gxfifo.cpp` now REWRITES rather than only counts: every recognised command is copied
+  verbatim into an output stream, except CP array-base writes, which become
+  `GX_AURORA_LOAD_ARRAYBASE` (`GX_AURORA` opcode `0x50`, then u16 subcommand, u64 host
+  pointer, u32 size, u8 endian flag) carrying `g_ram_base + (addr & 0x01FFFFFF)`.
+- `overrides/native_frame.cpp` overrides `JDrama::TVideo::waitForRetrace` as the once-per-frame
+  present: flush the stream to `aurora_fifo_replay`, then `end_frame`/`begin_frame`.
+  `VIWaitForRetrace` is deliberately NOT this point — the game spins on it from load loops.
+- `host/main.cpp` initialises aurora with `mem1Size = 0`: this runtime owns its guest memory
+  and hands aurora real host pointers for anything it must read.
+
+**Display lists were the big omission.** Opcode `0x48` (call display list) was unhandled, and
+since an unrecognised opcode drops the rest of the batch, most of the stream was being
+discarded ("unrecognised opcode 0x48 — framing lost"). J3D bakes per-shape geometry into
+display lists, so this is where real drawing lives. They are now INLINED: the list is read
+out of guest memory and its commands emitted into the flat stream, because aurora cannot
+follow a guest pointer — the same reason it ignores raw array bases. Nesting is bounded to 4.
+After this, framing errors are gone.
+
+Build notes worth keeping: the targets are `aurora::gx` / `aurora::core` (there is no
+`aurora::aurora`), the two reference each other so both must appear together on the link
+line, and the overrides object library needs `aurora::gx` for its include path.
+
+**Verified running headless at low resolution** (SB_HEADLESS=1, per the project rule that all
+agent runs are headless): aurora initialises on Vulkan, the frame seam fires, and draws
+accumulate steadily with zero GX errors.
+
+Open: the dumped framebuffer is **1x1**. Aurora sizes its render target from the game's
+EFB/display-copy configuration, which is evidently not reaching it through the replayed
+stream yet. That is the next thing to chase — and note aurora also has
+`GX_AURORA_LOAD_VIEWPORT_RENDER`/`LOAD_SCISSOR_RENDER` extensions, which suggests the raw
+viewport in the stream is not sufficient by itself.
