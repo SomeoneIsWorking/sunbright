@@ -6,6 +6,7 @@
 // the information we are after — it tells us which HW seam to route to aurora next.
 
 #include "cpu_state.h"
+#include "boot_env.h"
 #include "intrinsics.h"
 
 #include <lucent/config.h>
@@ -115,6 +116,13 @@ int main(int argc, char** argv) {
     // sane initial r1 keeps any early prologue from writing through address 0.
     cpu.gpr[1] = 0x816FFFF0u;
     cpu.pc     = dol.entry;
+
+    // After the DOL is in memory: the apploader's low-memory state must not be clobbered
+    // by section loading, and the FST lives above the DOL's sections.
+    u32 arena_lo = dol.bss_addr + dol.bss_size;
+    for (const auto& s : dol.sections)
+        if (s.addr + s.size > arena_lo) arena_lo = s.addr + s.size;
+    if (!boot_env_setup(arena_lo)) return 1;
 
     lucent::info("rt", "entering recompiled code at 0x{:08x}", dol.entry);
     call_ppc(cpu, dol.entry);

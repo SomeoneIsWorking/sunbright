@@ -33,6 +33,7 @@ file(GLOB SB_OVERRIDES "${CMAKE_CURRENT_SOURCE_DIR}/overrides/*.cpp")
 add_library(sms-recomp-overrides OBJECT ${SB_OVERRIDES})
 target_include_directories(sms-recomp-overrides PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/runtime" "${CMAKE_CURRENT_SOURCE_DIR}/overrides" "${GEN}")
+target_link_libraries(sms-recomp-overrides PUBLIC nod::nod)
 target_link_libraries(sms-recomp-overrides PUBLIC lucent::lucent)
 
 # nod supplies random-access reads of the disc image (ISO/RVZ/...). The DI device serves
@@ -56,7 +57,8 @@ add_library(sms-recomp-rt STATIC runtime/rt_core.cpp runtime/mmio.cpp
                                  runtime/dev_pi.cpp
                                  runtime/disc.cpp
                                  runtime/dev_mi.cpp
-                                 runtime/dev_gxregs.cpp)
+                                 runtime/dev_gxregs.cpp
+                                 runtime/boot_env.cpp)
 target_include_directories(sms-recomp-rt PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/runtime" "${CMAKE_CURRENT_SOURCE_DIR}/overrides" "${GEN}")
 target_link_libraries(sms-recomp-rt PUBLIC lucent::lucent nod::nod)
 

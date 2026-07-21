@@ -665,3 +665,57 @@ Next step is to find where the `GXRenderModeObj` comes from and which field is z
 traceable to the VI device returning zeros for registers that retail's `VIInit` would have
 populated, or to a render-mode table lookup keyed off `VIGetTvFormat`. Do NOT clamp the
 height inside `GXGetYScaleFactor`; that would hide the real defect one layer up.
+
+## DVD eliminated: reads are now instant filesystem reads (user directive)
+
+The DI-register path worked — the disc mounted and the drive inquiry was served — but it
+meant reproducing hardware whose only job was to hide latency the host does not have, and it
+dragged in three things that were each a problem on their own: interrupt delivery, a command
+queue to drain, and a 32-byte drive-identification block whose retail contents this port
+cannot verify. The DVD library rejected that unverifiable drive ID and retried forever
+(`interrupt handler queued another transfer 4097 times without settling`).
+
+Cutting above the protocol removes all three at once. `overrides/native_dvd.cpp` overrides:
+
+| function | behaviour |
+|---|---|
+| `DVDReadAbsAsyncPrio` | reads the bytes out of the disc image inside the call, fills the command block, runs the callback, returns TRUE |
+| `DVDInquiryAsync` | zeroed reply — truthful (no drive) and inert (selects no firmware workaround) |
+| `DVDReadDiskID` | the first 32 bytes of the disc, which we genuinely have |
+
+`DVDCommandBlock` layout was read off the recompiled functions, not recalled:
+`+0x08` command, `+0x0C` state, `+0x10` offset, `+0x14` length, `+0x18` addr,
+`+0x20` transferred, `+0x28` callback (from `DVDReadAbsAsyncPrio`'s stores and
+`DVDGetCommandBlockStatus`'s `lwz r0,12(r31)`).
+
+Everything above the transport — FST, path resolution, file handles, `JKRDvdFile` — still
+runs as recompiled PPC. Only the transport is replaced.
+
+## Boot environment (what the apploader would have left behind)
+
+Loading only the DOL left every low-memory OS global zero. That does not fail loudly; it
+fails far away. `runtime/boot_env.cpp` now publishes what a real boot leaves:
+
+- disc ID (first 0x20 bytes) at `0x80000000`, boot magic `0x0D15EA5E`, version, memory size,
+  console type
+- **the FST**, loaded from the disc to the top of MEM1, with `0x80000038`/`0x8000003C`
+- arena bounds — `lo` = end of the DOL's sections and BSS, `hi` = the FST. An earlier
+  version used `0x80003100` for `lo`, which overlaps the game's own code and data: its heap
+  would have allocated on top of itself.
+- **bus/CPU clocks** at `0x800000F8`/`0x800000FC`. Not decoration — the OS derives its
+  timebase and every timeout from them, and a zero bus clock makes every DVD timeout expire
+  instantly.
+
+Verified: `FST 0x1140 bytes -> 0x817feec0; arena 0x80417800..0x817feec0; bus 162 MHz`.
+
+## Frontier: an unscheduled worker is now load-bearing
+
+The interrupt storm is gone and DVD init completes. The game runs its main loop
+(`TMarioGamePad::read`), but **`DVDOpen` and `DVDConvertPathToEntrynum` are never called** —
+it is not requesting files at all, so it is blocked before that.
+
+Boot creates two non-`JUTException` workers, `0x802a9184` (prio 15) and `0x802a7878`
+(prio 17), and neither runs. Increment 1's warning said exactly this would eventually
+matter, and now it does. Per the ONE RUNTIME rule the fix is to make the work happen
+synchronously at its ENQUEUE point — not to add a scheduler. Next step is to identify what
+those two threads do and where their work is enqueued.
