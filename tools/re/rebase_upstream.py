@@ -80,6 +80,19 @@ def diverging_files():
     return [f for f in out.splitlines() if f.strip()]
 
 
+def exists_upstream(path):
+    """True if upstream/main has this path at all.
+
+    Files we ADDED (our own ports, e.g. include/Animal/Bird.hpp) show up in the
+    divergence diff but are not convergence candidates — `git checkout
+    upstream/main -- <them>` fails and aborts the whole batch.
+    """
+    return subprocess.run(
+        ["git", "cat-file", "-e", f"upstream/main:{path}"],
+        cwd=SUBMODULE, capture_output=True,
+    ).returncode == 0
+
+
 def classify(files):
     """Split into (guarded, unmarked). Unmarked files are convergence candidates."""
     guarded, unmarked = [], []
@@ -204,6 +217,11 @@ def cmd_converge(args):
     ensure_clean()
     files = diverging_files()
     _, unmarked = classify(files)
+    ours_only = [f for f in unmarked if not exists_upstream(f)]
+    unmarked = [f for f in unmarked if f not in ours_only]
+    if ours_only:
+        print(f"[converge] skipping {len(ours_only)} file(s) upstream does not have "
+              f"(our own additions, nothing to converge to)")
     if args.limit:
         unmarked = unmarked[: args.limit]
     if not unmarked:
