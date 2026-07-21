@@ -20,6 +20,7 @@
 #include <vector>
 
 extern void call_ppc(CPUState& cpu, u32 address);
+extern void rt_dump_guest_stack(const char* why);
 
 namespace {
 
@@ -80,11 +81,16 @@ void release_token(std::unique_lock<std::mutex>& lk) {
         if (any_blocked) {
             lucent::error("sched", "deadlock: every guest thread is blocked and nothing can "
                                    "wake them");
+            static const char* kState[] = {"Ready", "Running", "Blocked", "DrainWait", "Dead"};
             for (auto* t : g_threads)
-                lucent::error("sched", "  thread 0x{:08x} entry 0x{:08x} prio {} state {} "
-                                       "queue 0x{:08x}",
-                              t->os_thread, t->entry, t->priority, (int)t->state,
-                              t->wait_queue);
+                lucent::error("sched", "  thread 0x{:08x} entry 0x{:08x} prio {:2} {:9} "
+                                       "queue 0x{:08x}{}",
+                              t->os_thread, t->entry, t->priority,
+                              kState[(int)t->state], t->wait_queue,
+                              t == t_self ? "   <- last to block" : "");
+            // The thread that just blocked is the one that closed the cycle, so its guest
+            // call stack names the wait that cannot be satisfied.
+            rt_dump_guest_stack("deadlock");
             std::abort();
         }
         g_running = nullptr;

@@ -1222,3 +1222,41 @@ rejected it on exactly that basis.
 
 A bare `blr` is now accepted as a function entry without the boundary test. Functions:
 **14,241 -> 14,287**.
+
+## GXWaitDrawDone — the deadlock at stage 15
+
+Once stage 15 loaded, every guest thread blocked. The scheduler's deadlock detector caught it
+and, with the guest stack added to the report, named the wait immediately:
+
+```
+GXWaitDrawDone <- TMarDirector::setup2 <- ... <- gameLoop
+```
+
+`GXDrawDone` (already overridden) is "push a token AND wait"; **`GXWaitDrawDone`
+(`0x8035da9c`) is the wait half on its own** and was missed. It blocks on the same
+`__GXDrawDoneFlag`, which has no source here. Overridden the same way.
+
+The deadlock report now prints state names and the guest call stack of the thread that closed
+the cycle, which is what turned "everything is blocked" into a one-line diagnosis.
+
+## Where rendering stands
+
+With that fixed the game runs in GAMEPLAY stage 15 with no errors, and **vertex submission
+jumps from ~500 to 182,013 per frame** — real scene geometry, not just the fader quad.
+
+**But the framebuffer is still uniform (17,17,17).** Geometry is being submitted and accepted
+(no array-base rejections even with `AURORA_ARRAYBASE_REJECT_RAW=1`, so the pointer
+translation is working), yet nothing lands in the presented image.
+
+Untranslated pointer-bearing state is the leading suspect, consistent with the pattern
+established three times already:
+
+- **`GX_AURORA_LOAD_TEXOBJ` / `LOAD_TLUT` are NOT emitted.** Texture image addresses arrive
+  as BP `image0`/`image3` register writes carrying guest physical addresses; aurora stores
+  them but takes the actual texel pointer from a `GXTexObj` supplied separately — exactly the
+  array-base situation. Every textured draw therefore has no texture data.
+- `GX_AURORA_LOAD_VIEWPORT_RENDER` / `LOAD_SCISSOR_RENDER` also exist, suggesting the raw
+  viewport in the stream may not be sufficient on its own.
+
+Next: emit `GX_AURORA_LOAD_TEXOBJ` for each texture slot, built from the BP image registers
+with the texel pointer resolved out of guest memory.

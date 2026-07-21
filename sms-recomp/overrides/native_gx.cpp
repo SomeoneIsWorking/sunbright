@@ -54,8 +54,28 @@ void gx_draw_done(CPUState& cpu) {
     sb_w8(flag, 1);                      // what the PE token interrupt handler would do
 }
 
+// GXWaitDrawDone @0x8035da9c. GXDrawDone is "send a token AND wait"; this is the wait half
+// on its own, used when the token was pushed earlier. It blocks on the same
+// __GXDrawDoneFlag, so it needs the same treatment — rendering is synchronous here, so the
+// GPU is already finished by the time anyone asks.
+//
+// Missing this deadlocked the whole game once it reached stage 15: TMarDirector::setup2
+// calls it, the main thread parked forever, and every other thread eventually blocked behind
+// it (caught by the scheduler's deadlock detector, which named the wait).
+void gx_wait_draw_done(CPUState& cpu) {
+    const u32 flag = cpu.gpr[13] - 22432;
+    if (!sb_ram_fast(flag)) {
+        lucent::error("gx", "__GXDrawDoneFlag at 0x{:08x} (r13=0x{:08x}) is not in MEM1",
+                      flag, cpu.gpr[13]);
+        std::abort();
+    }
+    sb_w8(flag, 1);
+}
+
 } // namespace
 
+SB_OVERRIDE(0x8035da9cu, gx_wait_draw_done, "GXWaitDrawDone",
+            "rendering is synchronous; the token it waits on has no source here")
 SB_OVERRIDE(0x8035dae8u, gx_draw_done, "GXDrawDone",
             "rendering is synchronous in this port, so the GPU is already done; retail parks "
             "until a PE token interrupt that has no source here")
