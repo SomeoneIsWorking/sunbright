@@ -1897,3 +1897,31 @@ nothing because the value arrives as a *parameter* (`mMovie = param_1`) — the 
 in one run what pattern-matching could not. And I spent several ticks treating a symptom as
 the defect without asking whether the behaviour was CORRECT; "what makes this happen" should
 have been preceded by "is this supposed to happen".
+
+## MILESTONE: the standalone recomp reaches and renders FILE-SELECT
+
+Once the oscillation was understood as attract mode rather than a defect, the fix was simply
+to press START *before* the 45-second idle timer instead of after it. With
+`SBR_PAD_SCRIPT="600:START,640:-"` the title advances and the runtime renders the file-select
+screen (`scratch/screenshots/recomp_after_start.png`, 125,463 distinct colours):
+
+- the three save blocks A / B / C with their NEW banners, correctly coloured and lettered
+- Mario seated on the beach, the palm tree, the OPTIONS signpost and arrow
+- the sea, sky and clouds
+- the "There is no Memory Card in Slot A." dialog panel — correct, since no memory card is
+  emulated, and it confirms the CARD path reports its real state rather than a fabricated one
+
+That is both halves of the original goal reached in the standalone recomp: title screen, then
+file-select. Every earlier tick spent on "what selects movie 12" was chasing the game
+behaving correctly while idle.
+
+The app never left `GAMEPLAY`/stage 15 during the run — no movie was entered at all, which is
+the expected behaviour once input arrives before the idle timer.
+
+Visible residuals to measure against the oracle, not yet root-caused:
+- the sea reads noisy/speckled rather than smoothly reflective
+- the palm fronds over the dialog panel look dark and flat
+
+Next: a true side-by-side against the decomp oracle at the same screen. None of the existing
+`scratch/shots/fsel_*` images are usable for this — despite the name they are all TITLE-phase
+captures, not the block screen, so the oracle frame has to be captured fresh.
