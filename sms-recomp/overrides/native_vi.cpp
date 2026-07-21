@@ -16,6 +16,8 @@
 #include <lucent/log.h>
 #include <guest_sched.h>
 
+extern void gxfifo_stats(u64&, u64&, u64&);
+
 #include <cstdlib>
 
 namespace {
@@ -49,7 +51,12 @@ void vi_wait_for_retrace(CPUState& cpu) {
     // Frame progress is otherwise only inferable from stack sampling. One line per second
     // of emulated video is cheap and tells you immediately whether the game is advancing
     // or spinning in one place.
-    if (n % 60 == 0) lucent::debug("vi", "retrace {} ({} s of video)", n, n / 60);
+    if (n % 60 == 0) {
+        u64 draws = 0, verts = 0, bytes = 0;
+        gxfifo_stats(draws, verts, bytes);
+        lucent::debug("vi", "retrace {} — GX: {} draws, {} verts, {} KB submitted",
+                      n, draws, verts, bytes >> 10);
+    }
 }
 
 } // namespace

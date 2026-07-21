@@ -982,3 +982,40 @@ is being dropped.** Routing that FIFO to aurora would both make the current stat
 what the retired era's open problem was: rendering, not boot.
 
 Next: GX FIFO out of `0xCC008000` and into aurora.
+
+## GX FIFO: the command stream is now framed and measurable
+
+`runtime/dev_gxfifo.cpp` claims the write-gather pipe (`0xCC008000`) and parses the GX
+command stream instead of discarding it.
+
+Why a parser and not SDK overrides: GX is not a function-call API at the metal. The SDK's
+inline macros store command bytes AND vertex data straight to the gather pipe, so the command
+stream is the only place the geometry exists — overriding `GXBegin`/`GXPosition3f32` would
+capture nothing. This is the same reason the renderer doctrine is GX-replay.
+
+Top-level framing: `0x00` NOP, `0x08` CP register write (6 bytes), `0x10` XF write
+(header + count words), `0x61` BP write (5 bytes), `0x80-0xBF` draw primitive (16-bit vertex
+count then payload). The stream arrives in 1/2/4/8-byte pieces that straddle commands, so it
+is reassembled before framing.
+
+The hard part is knowing a draw's payload length, which needs the live vertex format:
+
+- **VCD** (CP `0x50`/`0x60`) gives each attribute's presence mode — none / direct / index8 /
+  index16. Indexed attributes are 1 or 2 bytes whatever the format.
+- **VAT** (CP `0x70-0x77` / `0x80-0x87` / `0x90-0x97`) gives the direct formats: position
+  elements+format, normal format, colour component formats, and texcoord formats packed 9
+  bits each (VAT_A holds texcoord 0, VAT_B 1-4, VAT_C 5-7).
+
+**Decoding those properly mattered.** A first version assumed 4-byte colours and f32 texcoord
+pairs and desynced **18 times** per run. Decoding colour component formats
+(RGB565/RGB8/RGBX8/RGBA4/RGBA6/RGBA8 = 2/3/4/2/3/4 bytes) and per-texcoord formats from the
+VAT registers brought that to **1** — at startup, before any VAT has been seen, which is
+expected. An unrecognised opcode drops the rest of the batch rather than resyncing blindly on
+data that happens to look like opcodes.
+
+Measured: **~1.26 M draws / 5.05 M verts** in a 25 s run, consistently 4 verts per draw —
+quads, i.e. the fader/logo rectangle, which matches what the profile showed the main thread
+drawing.
+
+This is the foundation for routing to aurora: the stream is now framed, and the vertex format
+tracking a translator needs is already in place.

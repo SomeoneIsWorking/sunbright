@@ -62,6 +62,8 @@ extern void di_device_init();
 extern void pi_device_init();
 extern void mi_device_init();
 extern void gxregs_device_init();
+extern void gxfifo_device_init();
+extern void gxfifo_stats(u64&, u64&, u64&);
 
 extern "C" bool rt_mem_init() {
     if (g_ram_base) return true;
@@ -96,6 +98,7 @@ extern "C" bool rt_mem_init() {
     pi_device_init();
     mi_device_init();
     gxregs_device_init();
+    gxfifo_device_init();
     if (const char* w = std::getenv("SBR_WATCH")) {
         g_watch_wa = (u32)std::strtoul(w, nullptr, 0);
         lucent::info("rt", "watchpoint armed at 0x{:08x}", g_watch_wa);

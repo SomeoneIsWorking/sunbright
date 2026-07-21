@@ -58,6 +58,7 @@ add_library(sms-recomp-rt STATIC runtime/rt_core.cpp runtime/mmio.cpp
                                  runtime/disc.cpp
                                  runtime/dev_mi.cpp
                                  runtime/dev_gxregs.cpp
+                                 runtime/dev_gxfifo.cpp
                                  runtime/boot_env.cpp
                                  runtime/guest_sched.cpp)
 target_include_directories(sms-recomp-rt PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/runtime" "${CMAKE_CURRENT_SOURCE_DIR}/overrides" "${GEN}")
