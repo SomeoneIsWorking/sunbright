@@ -955,3 +955,30 @@ DMA and this seam share one implementation.
 resolves through the FST to **`wScene_16.aw`** (an audio wave bank, `0x3aaa80` bytes), far
 beyond the boot logo. The main thread is in the render loop under
 `JDrama::TDisplay::startRendering`; the JKRThread workers remain correctly parked.
+
+## Status: the recomp runs a stable frame loop with 8 threads
+
+Measured state after the ARQ fix:
+
+| thread | state |
+|---|---|
+| main | running the frame loop |
+| 4x JKRThread workers (`0x802c54b8` trampoline) | parked in `OSReceiveMessage` |
+| `0x802a9184` | parked in `OSReceiveMessage` |
+| audio thread (`0x80311170`) | parked in `OSReceiveMessage` |
+| audio kernel (`0x803171ec`) | parked in `OSReceiveMessage` |
+| card manager (`0x802b3264`) | parked in a message receive |
+
+Profiling the main thread over 24 samples shows an ordinary frame — `TDisplay::startRendering`,
+`TSMSFader::draw`, `JAIBasic` audio processing, `TMarioGamePad::read`,
+`TDisplay::endRendering`. **Nothing is spinning**; this is a game running frames, not a
+deadlock. Files loaded: `nintendo.szs`, `sequence.arc`, `wScene_16.aw` (149 reads).
+
+It simply does not advance to the next screen. Investigating that blind is expensive — the
+last few blockers each took a disassembly dive — and there is a much better instrument
+available: **the game is submitting real GX commands to the write-gather pipe and every one
+is being dropped.** Routing that FIFO to aurora would both make the current state visible
+(what screen is it actually on?) and is the arc the user originally asked for. It is also
+what the retired era's open problem was: rendering, not boot.
+
+Next: GX FIFO out of `0xCC008000` and into aurora.
