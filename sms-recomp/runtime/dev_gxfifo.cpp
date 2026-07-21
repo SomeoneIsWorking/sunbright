@@ -301,6 +301,18 @@ void emit_copy_state(u32 cmd, bool to_xfb) {
                           phys, g_copy_dest);
             std::abort();
         }
+        {   // Aurora resolves a sampled texture to an EFB-copy result by looking the texobj's
+            // texel POINTER up in its copy-texture map, which is keyed by this destination.
+            // If the two disagree the copy still happens and the bind still happens, but the
+            // draw samples raw MEM1 instead of the copy — silently, and looking exactly like
+            // a broken texture.
+            static u32 last = 0;
+            if (phys != last) {
+                last = phys;
+                lucent::debug("gxfifo", "EFB copy destination phys 0x{:08x} ({}x{})", phys,
+                              dst_w, dst_h);
+            }
+        }
         put_u8 (g_out, 0x50);
         put_u16(g_out, GX_AURORA_LOAD_COPY_DEST);
         put_u64(g_out, (u64)(uintptr_t)(g_ram_base + phys));
@@ -329,6 +341,17 @@ void emit_texobj(u32 map) {
         return;
     }
 
+    {   // Counterpart of the copy-destination log above: the pointer a bind presents to
+        // aurora must equal the destination a copy registered, or the copy is never sampled.
+        if (w == 320 && h == 224) {
+            static u32 last = 0;
+            if (phys != last) {
+                last = phys;
+                lucent::debug("gxfifo", "bind of a 320x224 texture: phys 0x{:08x} fmt {}", phys,
+                              fmt);
+            }
+        }
+    }
     put_u8 (g_out, 0x50);
     put_u16(g_out, (u16)GX_AURORA_LOAD_TEXOBJ);
     put_u8 (g_out, (u8)(map & 7));

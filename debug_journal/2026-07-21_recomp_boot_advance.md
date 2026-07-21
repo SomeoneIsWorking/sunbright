@@ -2199,3 +2199,39 @@ the oracle exactly on both passes. Pushed as aurora `fork/sunbright` 70652db.
 
 This does NOT fix the sea (86.1% near-white, unchanged) — expected, and stated so the fix is
 not mistaken for progress on that.
+
+## CORRECTION 2, and the sea narrows to TEXTURE CONTENT
+
+**The "neither runtime binds the 320x224 reflection" finding was also a window artifact.** Same
+200-draw cap, same mistake, two entries running. In the FULL frame the reflection IS bound —
+recomp draw `#576688`, and the oracle has exactly one such draw too. I have now been bitten
+twice by that cap; the lesson is that `SB_DRAW_DUMP_AFTER` must not be used for any
+"nothing/never" claim, only `SB_DRAW_DUMP_FRAME`.
+
+With full frames the comparison is sharp, and the sea draw is **identical in both runtimes**:
+
+```
+recomp #576688  verts=52 tex0=320x224 zcmp=1 zupd=0 trans=(-1092.7,-320.8,99.1) tev=2 ...
+oracle #1575789 verts=52 tex0=320x224 zcmp=1 zupd=0 trans=(-1092.7,-320.8,99.1) tev=2 ...
+```
+
+Same vertex count, same position, same TEV stage count, same channel config, same viewport,
+same texture dimensions. **The geometry and render state are correct.** So the white sea is
+neither a coplanar extra draw nor wrong state — it is the CONTENT of the reflection texture.
+That also retires the coplanar-draw hypothesis that has been open for several entries.
+
+Wiring checked and found sound, so the defect is narrower than "the copy path is broken":
+- Aurora's `copy_tex` registers each resolve in `g_gxState.copyTextures[dest]`, and the CP's
+  FIFO trigger calls that same function — the FIFO path is wired correctly in principle.
+- `resolve_sampled_textures` looks the texobj's texel pointer up in that map, so a bind finds
+  the copy only if the two addresses agree. They DO for the sea: copy destination
+  `0x00c43e00 (320x224)` matches a bind at `phys 0x00c43e00 fmt 4`.
+
+One loose end worth chasing: a SECOND 320x224 texture is bound each frame at
+`phys 0x003e1280`, alternating with the copy destination, and nothing ever copies to that
+address. Whether the sea samples the copied one or that one is not yet established.
+
+Blocked on instrumentation, not on ideas: aurora's `SB_COPY_DBG` caps at 40 lines and boot
+spends those on display copies long before file-select, so the sea's own copies are never
+observed. Next step is to make that log reach the moment of interest — the same
+tooling-before-conclusions move that unblocked the draw dump.
