@@ -46,7 +46,8 @@ void video_wait_for_retrace(CPUState& cpu) {
     // Let the game do its own frame bookkeeping first.
     func_802fc9a4(cpu);
 
-    // Everything for this frame is in the stream now.
+    // Everything for this frame is in the stream now. Only hand it over if a frame is
+    // actually open; otherwise it would be replayed into a frame that will be discarded.
     gxfifo_flush();
 
     // Present rate, so "is it slow?" is measured rather than guessed.
@@ -62,11 +63,28 @@ void video_wait_for_retrace(CPUState& cpu) {
         }
     }
 
-    aurora_end_frame();
-    if (!aurora_begin_frame()) {
-        // A lost swapchain (resize, minimise) — the frame is discarded, not an error.
+    // Frame bookkeeping, per aurora's contract:
+    //  - end_frame must NOT run if the matching begin_frame returned false
+    //  - a frame begun but not presentable must be DISCARDED, or the fifo grows unbounded
+    //  - aurora_update() is the event pump; without it the window/swapchain state never
+    //    advances
+    //
+    // Getting this wrong made the per-frame staging buffer accumulate across frames instead
+    // of resetting: ~291 KB of stream per frame reached aurora's 48 MB limit after roughly
+    // 170 frames and aborted with "mapped ByteBuffer overflow".
+    static bool s_frameActive = true;   // main() opened the first frame
+
+    if (s_frameActive) {
+        aurora_end_frame();
+    } else {
         aurora_discard_frame();
     }
+
+    // Once per frame: aurora_update returns the frame's event ARRAY, it is not a
+    // pop-one-at-a-time queue. Calling it in a loop never terminates.
+    aurora_update();
+
+    s_frameActive = aurora_begin_frame();
 }
 
 } // namespace

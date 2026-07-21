@@ -16,7 +16,9 @@
 //   0x10 aaaa hhhh d…       XF write: (count-1)<<16 | addr, then count 32-bit words
 //   0x61 rrvvvvvv           BP register write (opcode byte + 24-bit payload)
 //   0x80..0xB8 | vat        draw primitive: 16-bit vertex count, then vertex data
-//   0x48 / 0x50 / 0x58      display-list call and friends
+//   0x40 aaaaaaaa ssssssss  call display list (address, size)
+//   0x48                    invalidate vertex cache (no payload)
+//   0x20/0x28/0x30/0x38     indexed XF load (one u32)
 
 #include "mmio.h"
 
@@ -250,6 +252,9 @@ size_t parse(const u8* p, size_t n, int depth = 0);
 // Bytes the next incomplete command needs before parsing can make progress again.
 size_t g_need = 0;
 
+// Per-frame display-list expansion tally.
+u64 g_dl_calls = 0, g_dl_bytes = 0;
+
 // A display list lives in guest memory and is executed inline by the CP. Aurora cannot
 // follow the guest pointer (it ignores raw 32-bit addresses for the same reason it ignores
 // raw array bases), so the contents are parsed and emitted into the flat output stream
@@ -271,6 +276,7 @@ void inline_display_list(u32 guest_addr, u32 size, int depth) {
     }
     // g_need describes the OUTER stream's incomplete command; a nested list parses a
     // complete buffer and must not disturb it.
+    g_dl_calls++; g_dl_bytes += size;
     const size_t saved_need = g_need;
     parse(g_ram_base + off, size, depth + 1);
     g_need = saved_need;
@@ -346,16 +352,36 @@ size_t parse(const u8* p, size_t n, int depth) {
         // inline_display_list ignores the return value.
         if (op == 0x20 || op == 0x28 || op == 0x30 || op == 0x38) {
             if (n - i < 5) { g_need = 5; break; }
+            // Sanity-check the payload: index<<16 | (len-1)<<12 | xfAddr. Real destinations
+            // are XF matrix memory (pos 0x000-0x077, tex 0x078-0x0EF, nrm 0x400-0x459,
+            // post-tex 0x500-0x5EF). A destination outside those means this parser emitted
+            // a mis-framed word, not that aurora lacks a feature — worth distinguishing,
+            // because aurora reports both the same way.
+            const u32 w  = be32(p + i + 1);
+            const u32 da = w & 0x0FFF;
+            const bool sane = da < 0x0F0 || (da >= 0x400 && da < 0x45A) ||
+                              (da >= 0x500 && da < 0x5F0);
+            if (!sane)
+                lucent::warn("gxfifo", "indexed XF load op 0x{:02x} dstAddr=0x{:03x} len={} "
+                                       "is outside XF matrix memory — likely mis-framed",
+                             op, da, ((w >> 12) & 0xF) + 1);
             g_out.insert(g_out.end(), p + i, p + i + 5);
             i += 5; continue;
         }
 
-        if (op == 0x48) {                       // call display list
+        // GX_CMD_CALL_DL is 0x40 and GX_CMD_INVL_VC is 0x48 — NOT the other way round.
+        // Having these swapped consumed 9 bytes for a 1-byte command and left every real
+        // display-list call unrecognised, which is what kept desyncing the stream after the
+        // indexed-XF fix (mis-framed indexed loads with nonsense destinations like 0xf10).
+        if (op == 0x40) {                       // call display list: address + size
             if (n - i < 9) { g_need = 9; break; }
-            const u32 addr = be32(p + i + 1);
-            const u32 size = be32(p + i + 5);
-            inline_display_list(addr, size, depth);
+            inline_display_list(be32(p + i + 1), be32(p + i + 5), depth);
             i += 9; continue;
+        }
+
+        if (op == 0x48) {                       // invalidate vertex cache: no payload
+            g_out.insert(g_out.end(), p + i, p + i + 1);
+            i += 1; continue;
         }
 
         if (op >= 0x80 && op <= 0xBF) {         // draw primitive
@@ -371,8 +397,10 @@ size_t parse(const u8* p, size_t n, int depth) {
             // misleading "unsupported primitive" somewhere unrelated.
             if (i + len < n) {
                 const u8 nx = p[i + len];
-                const bool ok = nx == 0x00 || nx == 0x08 || nx == 0x10 || nx == 0x48 ||
-                                nx == 0x61 || (nx >= 0x80 && nx <= 0xBF);
+                const bool ok = nx == 0x00 || nx == 0x08 || nx == 0x10 || nx == 0x40 ||
+                                nx == 0x48 || nx == 0x50 || nx == 0x61 ||
+                                nx == 0x20 || nx == 0x28 || nx == 0x30 || nx == 0x38 ||
+                                (nx >= 0x80 && nx <= 0xBF);
                 if (!ok) {
                     const Vat& v = g_vat[op & 7];
                     lucent::warn("gxfifo",
@@ -436,6 +464,15 @@ void gxfifo_flush() {
     }
 
     if (g_out.empty()) return;
+
+    // Display lists are INLINED (aurora ignores nested CALL_DL), so a list called once per
+    // object contributes its bytes once per call. That is semantically right — the hardware
+    // re-reads it from RAM each time — but it makes the per-frame stream much larger than
+    // the guest's own FIFO traffic, which is worth being able to see.
+    lucent::debug("gxfifo", "frame stream {} KB ({} DL expansions, {} KB inlined)",
+                  g_out.size() >> 10, g_dl_calls, g_dl_bytes >> 10);
+    g_dl_calls = 0; g_dl_bytes = 0;
+
     aurora_fifo_replay(g_out.data(), (u32)g_out.size(), /*bigEndian=*/1);
     g_out.clear();
 }

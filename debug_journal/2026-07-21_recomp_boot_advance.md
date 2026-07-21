@@ -1552,3 +1552,40 @@ This is an expected boundary: aurora's FIFO replay was built to consume Dolphin 
 captures of a decomp-shaped stream, so a full retail command stream exercises paths the
 decomp runtime never emits. Each is a small, well-defined addition to aurora rather than a
 recomp problem.
+
+## Two more parser/contract bugs
+
+**1. `GX_CMD_CALL_DL` and `GX_CMD_INVL_VC` were swapped.** From
+`dolphin/gx/GXCommandList.h`: **`0x40` is call-display-list** (address + size) and **`0x48`
+is invalidate-vertex-cache** (no payload). This parser had them the other way round, so it
+consumed 9 bytes for a 1-byte command and left every real display-list call unrecognised.
+That was the residual desync after the indexed-XF fix, visible as indexed loads with
+impossible destinations (`dstAddr=0xf10`).
+
+Adding `0x48` as a DL call earlier *appeared* to help only because it silenced the
+"unrecognised opcode" log — a reminder that a symptom disappearing is not evidence of a
+correct model.
+
+The draw self-check needed its whitelist widened for the same reason (it flagged a perfectly
+valid `0x40` as a mis-frame). **With both corrected there are no framing errors and no
+desync fatals.**
+
+**2. Aurora's frame contract was being violated.** Its header states: `end_frame` must NOT
+run if the matching `begin_frame` returned false, an un-presentable frame must be
+DISCARDED or the fifo grows unbounded, and `aurora_update()` is the event pump. This runtime
+called `end_frame` unconditionally and never pumped events. Fixed by tracking whether a frame
+is open and calling `aurora_update()` **once** per frame — it returns the frame's event
+ARRAY, so draining it in a `while` loop never terminates (which stalled boot at
+`APP_STATE_BOOT` until corrected).
+
+## Still open: a 16 MB single upload
+
+`mapped ByteBuffer overflow: have 49267584 bytes (capacity 50331648), need 16410880 more`.
+
+The "need" is a SINGLE request of 16 MB, not accumulation — per-frame stream is only ~291 KB
+(184 display-list expansions, 87 KB inlined). So one draw is asking for ~164k vertices at
+100 bytes each. The parser's self-check cannot see this case: it only validates when the
+draw fits inside the current buffer, so a draw spanning batches is unchecked.
+
+Extending the self-check to cover cross-batch draws is the next step — that is precisely the
+blind spot where a bad vertex count would survive.
