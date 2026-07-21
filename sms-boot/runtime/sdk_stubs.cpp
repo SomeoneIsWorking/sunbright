@@ -400,37 +400,60 @@ class JPABaseField { public: JPABaseField(); };
 
 // ---- JUTException / JUTDirectPrint (JUT*.cpp excluded — provide static storage
 // + no-op methods so callers link) ----
-class JUTDirectPrint {
-public:
-    static JUTDirectPrint* sDirectPrint;
-    static JUTDirectPrint* start();
-    void changeFrameBuffer(void*, unsigned short, unsigned short);
-    void drawString(unsigned short, unsigned short, char*);
-    void erase(int, int, int, int);
-};
+//
+// 💥 2026-07-21, ASan-verified startup memory corruption. This block previously
+// declared its OWN minimal `class JUTException` / `class JUTDirectPrint` here
+// rather than including the real headers. Those local classes had NO data
+// members (size 1), so create()/start() handed back a 1-byte object — while
+// every real caller (marerr.cpp) sees the REAL class and writes fields at their
+// real offsets through it:
+//
+//   ERROR: AddressSanitizer: global-buffer-overflow
+//   WRITE of size 8 at 0x... (in a global redzone)
+//     #0 JUTException::setGamePad(JUTGamePad*)  JUTException.hpp:96   (mGamePad, ofs 0x68)
+//     #1 MarErrInit()                           marerr.cpp:35
+//     #2 TApplication::initialize()             Application.cpp:260
+//
+// A textbook ODR violation that silently smashed neighbouring globals on every
+// boot. Including the REAL headers makes the type THE type, and the storage
+// below is correctly sized + zero-initialised. No constructor runs (JKRThread's
+// is not available natively) — acceptable because this is an exception/dev
+// facility we never actually enter on PC; the methods below stay no-ops. If a
+// caller ever needs real behaviour, port JUTException.cpp instead of widening
+// this seam.
+#include <JSystem/JUtility/JUTDirectPrint.hpp>
+#include <JSystem/JUtility/JUTException.hpp>
+
 JUTDirectPrint* JUTDirectPrint::sDirectPrint = nullptr;
-JUTDirectPrint* JUTDirectPrint::start() { static JUTDirectPrint p; sDirectPrint = &p; return &p; }
-void JUTDirectPrint::changeFrameBuffer(void*, unsigned short, unsigned short) {}
-void JUTDirectPrint::drawString(unsigned short, unsigned short, char*) {}
+JUTDirectPrint* JUTDirectPrint::start()
+{
+	alignas(JUTDirectPrint) static unsigned char storage[sizeof(JUTDirectPrint)];
+	sDirectPrint = reinterpret_cast<JUTDirectPrint*>(storage);
+	return sDirectPrint;
+}
+void JUTDirectPrint::changeFrameBuffer(void*, u16, u16) {}
+void JUTDirectPrint::drawString(u16, u16, char*) {}
 void JUTDirectPrint::erase(int, int, int, int) {}
 
-class JUTException {
-public:
-    static JUTException* sErrorManager;
-    static JUTException* create(JUTDirectPrint*);
-    static void createConsole(void*, unsigned int);
-    static void appendMapFile(char*);
-    static void setPreUserCallback(void (*)(unsigned short, OSContext*, ...));
-    static void waitTime(int);
-    void readPad(unsigned int*, unsigned int*);
-};
 JUTException* JUTException::sErrorManager = nullptr;
-JUTException* JUTException::create(JUTDirectPrint*) { static JUTException e; sErrorManager = &e; return &e; }
-void JUTException::createConsole(void*, unsigned int) {}
+JUTException* JUTException::create(JUTDirectPrint*)
+{
+	alignas(JUTException) static unsigned char storage[sizeof(JUTException)];
+	sErrorManager = reinterpret_cast<JUTException*>(storage);
+	return sErrorManager;
+}
+void JUTException::createConsole(void*, u32) {}
 void JUTException::appendMapFile(char*) {}
-void JUTException::setPreUserCallback(void (*)(unsigned short, OSContext*, ...)) {}
-void JUTException::waitTime(int) {}
-void JUTException::readPad(unsigned int* a, unsigned int* b) { if (a) *a = 0; if (b) *b = 0; }
+OSErrorHandler JUTException::setPreUserCallback(OSErrorHandler) { return nullptr; }
+void JUTException::waitTime(s32) {}
+// real signature returns bool (the old local stub declared it void — part of the
+// same ODR divergence); no pad is ever read natively, so report "nothing pressed".
+bool JUTException::readPad(u32* buttons, u32* trigger)
+{
+	if (buttons) *buttons = 0;
+	if (trigger) *trigger = 0;
+	return false;
+}
 
 // ---- sb_* capture no-ops still referenced by SMS_NATIVE_PLATFORM branches in
 // decomp/sms (retired Path-B capture hooks; removing those callsites
