@@ -1955,3 +1955,25 @@ That last point is the gate on any numeric parity work here: both sides need the
 phase pinned before a pixel percentage means anything, exactly as the decomp title-oracle gate
 already established. Item 1 does not need that gate — white stipple over water is wrong at any
 phase — so it is the next thing to chase.
+
+## Sea speckle: the obvious suspect is ruled out
+
+First guess was the known FIFO-parser gap `unhandled tcg src 21` producing garbage texcoords.
+**Falsified**: a full run to file-select emits no `tcg`, indirect-texture, or unhandled-feature
+warnings at all. The only warnings are the known THP, IPL-font and three counted syscall lines,
+none of which touch the sea. So the speckle is produced by a path the parser handles without
+complaint — a wrong *value*, not a missing feature.
+
+Remaining hypotheses, untested, in the order I'd falsify them:
+
+1. **The TMapObjWave ripple grid drawing wrong.** Best fit for the appearance: the project's
+   own notes record it as an immediate-mode ripple grid, and blown-out white specks scattered
+   across the sea are exactly what that grid would look like with wrong vertex colour, alpha
+   or texcoords. The oracle renders the same ripples subtly.
+2. **Z-fighting between coplanar sea layers**, which classically produces dense stipple.
+   Distinguishable from 1 by whether the speckle pattern is stable or shimmers frame to frame.
+3. Alpha-test dithering on the sea material.
+
+Falsifier for 1 vs 2: dump two consecutive frames and compare the speckle pixels. Z-fighting
+at a fixed camera is stable; a mis-drawn animated ripple grid changes every frame. That is a
+cheap, decisive first test and does not require the animation phase to be pinned.
