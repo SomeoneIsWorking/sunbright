@@ -1354,3 +1354,35 @@ wrong, and the dumps that failed to appear were from the pre-fix build.
 **Next:** aurora now aborts on `unhandled tcg src 21 at tcg[1]`, a texture-coordinate
 generation source. The GX_TG enum tops out around 20, so this is either a further (smaller)
 desync or a genuine aurora gap — worth distinguishing before assuming either.
+
+## VAT_C texcoord offset — the last stream desync
+
+`unsupported primitive type 136` persisted intermittently after the NBT3 fix. Cause: my
+VAT_C decode assumed TEX5 began at bit 0. Aurora's parser shows it does not —
+**TEX4's 5-bit `frac` occupies bits 0-4 of VAT_C, so TEX5 starts at bit 5**:
+
+```
+TEX4.frac  bits 0-4      TEX5 cnt/type/frac  bits 5 / 6-8 / 9-13
+TEX6       bits 14 / 15-17 / 18-22           TEX7  bits 23 / 24-26 / 27-31
+```
+
+(VAT_B, by contrast, IS a clean 9-bit stride from bit 0, which is what made the wrong
+assumption look plausible.) Texcoord-heavy vertices were therefore sized wrongly and the
+stream desynced. **Fixed: three consecutive runs, no primitive error.**
+
+That is twice now that a vertex-layout detail derived independently was wrong where aurora's
+own parser had it right. The rule stands: read aurora's decode, do not re-derive it.
+
+## Remaining: `unhandled tcg src 21 at tcg[1]` — now reproducible
+
+With the desync gone this fires consistently. `21` is `GX_MAX_TEXGENSRC`, aurora's
+"never written" sentinel, and `mtx=60`/`postMtx=125` are both identity defaults — so
+aurora's `tcg[1]` was never configured in its session.
+
+The guest evidently DOES configure it: logging XF writes to `0x1040-0x104F` shows all eight
+texgens written with valid source rows (5-12 = `GX_TG_TEX0..TEX7`), 1719 times per run.
+Aurora only assigns `tcg.src` when `srcRow < 13`, and these all qualify.
+
+So either those XF writes are not reaching aurora intact, or something resets aurora's tcg
+state between the write and the draw. That is the next thing to pin down — and unlike the
+desyncs, this one is stable enough to bisect properly.

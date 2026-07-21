@@ -114,7 +114,10 @@ u32 texcoord_bytes(const Vat& v, int i) {
         const u32 sh = (u32)(i - 1) * 9;
         elem = (v.fmt1 >> sh) & 1; fmt = (v.fmt1 >> (sh + 1)) & 7;
     } else {
-        const u32 sh = (u32)(i - 5) * 9;
+        // VAT_C starts with TEX4's 5-bit frac, so TEX5 begins at bit 5 — not bit 0.
+        // Getting this wrong made texcoord-heavy vertices the wrong size and desynced the
+        // stream handed to aurora (its "unsupported primitive type 136", intermittently).
+        const u32 sh = 5 + (u32)(i - 5) * 9;
         elem = (v.fmt2 >> sh) & 1; fmt = (v.fmt2 >> (sh + 1)) & 7;
     }
     return (elem ? 2u : 1u) * component_bytes(fmt);
@@ -306,6 +309,12 @@ size_t parse(const u8* p, size_t n, int depth) {
         if (op == 0x10) {                       // XF write
             if (n - i < 5) { g_need = 5; break; }
             const u32 count = ((be16(p + i + 1)) & 0xFFFF) + 1;
+            const u32 xfaddr = be16(p + i + 3);
+            // TexGen config lives at XF 0x1040-0x104F; log what the guest actually writes so
+            // an "unconfigured tcg" in aurora can be attributed to the game or to us.
+            if (xfaddr >= 0x1040 && xfaddr <= 0x104F && n - i >= 1 + 4 + 4)
+                lucent::debug("gxfifo", "XF texgen[{}] = 0x{:08x} (srcRow={})",
+                              xfaddr - 0x1040, be32(p + i + 5), (be32(p + i + 5) >> 7) & 0x1F);
             const size_t len = 1 + 4 + count * 4;
             if (n - i < len) { g_need = len; break; }
             g_out.insert(g_out.end(), p + i, p + i + len);
