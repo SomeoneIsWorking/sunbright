@@ -1497,3 +1497,27 @@ and should come before any change to aurora.
 
 Note the same shape applies to the outstanding `tcg src 21`: the guest demonstrably writes
 valid texgen sources, aurora reports an unwritten slot. Both smell like one mechanism.
+
+## Contradiction resolved: BP writes are MASKED, so raw bits are not the value
+
+The cull-mode puzzle — "aurora reports 3, the stream never sends 3" — came from measuring the
+wrong thing. Aurora's `handle_bp` implements the GC's **BP write-mask register (0xFE)**:
+
+```cpp
+u32 ssMask = g_gxState.bpRegCache[0xFE];
+g_gxState.bpRegCache[0xFE] = 0x00FFFFFF;          // mask applies to ONE following write
+const u32 merged = (g_gxState.bpRegCache[regId] & ~ssMask) | (value & ssMask);
+```
+
+A masked write only updates the masked bits and keeps the rest of the cached register. So a
+write that sets **bit 15 alone**, merged with a cached **bit 14**, produces cull = 3 —
+without any single raw write ever containing 3. The probe checked raw bits and correctly
+reported zero, which is why it looked impossible.
+
+**So `GX_CULL_ALL` is genuinely used by the game, and aurora's missing support is a real
+gap**, not a symptom of a parser bug. Worth remembering generally: for BP registers, the
+value the hardware ends up with is the merged one — never reason about a BP field from a
+single raw write.
+
+This also means the outstanding `tcg src 21` deserves re-examination on the same basis before
+being treated as a state-loss bug.
