@@ -345,6 +345,18 @@ size_t parse(const u8* p, size_t n, int depth) {
             g_stats.bp++; i += 5; continue;
         }
 
+        // Indexed XF loads: GX_LOAD_INDX_A/B/C/D select the PosMtx / NrmMtx / TexMtx /
+        // Light arrays. One u32 payload: index<<16 | (len-1)<<12 | xfAddr. J3D emits these
+        // constantly for per-shape matrix loads, and NOT knowing them was the desync: the
+        // parser hit "unrecognised opcode" and dropped the rest of the batch — silently
+        // discarding the remainder of any display list that contained one, since
+        // inline_display_list ignores the return value.
+        if (op == 0x20 || op == 0x28 || op == 0x30 || op == 0x38) {
+            if (n - i < 5) { g_need = 5; break; }
+            g_out.insert(g_out.end(), p + i, p + i + 5);
+            i += 5; continue;
+        }
+
         if (op == 0x48) {                       // call display list
             if (n - i < 9) { g_need = 9; break; }
             const u32 addr = be32(p + i + 1);
@@ -360,6 +372,24 @@ size_t parse(const u8* p, size_t n, int depth) {
             const size_t len = 3 + (size_t)verts * vsize;
             if (vsize == 0) break;                  // VAT not seen yet
             if (n - i < len) { g_need = len; break; }
+            // Self-check: after a correctly sized draw the next byte must be a plausible
+            // opcode. If it is not, THIS draw's vertex size is wrong — report the exact
+            // VCD/VAT that produced it rather than letting aurora fail later with a
+            // misleading "unsupported primitive" somewhere unrelated.
+            if (i + len < n) {
+                const u8 nx = p[i + len];
+                const bool ok = nx == 0x00 || nx == 0x08 || nx == 0x10 || nx == 0x48 ||
+                                nx == 0x61 || (nx >= 0x80 && nx <= 0xBF);
+                if (!ok) {
+                    const Vat& v = g_vat[op & 7];
+                    lucent::warn("gxfifo",
+                                 "vertex size {} looks wrong for vat{}: next byte 0x{:02x} "
+                                 "after {} verts. vcd_lo=0x{:08x} vcd_hi=0x{:08x} "
+                                 "fmt0=0x{:08x} fmt1=0x{:08x} fmt2=0x{:08x}",
+                                 vsize, op & 7, nx, verts, v.vcd_lo, v.vcd_hi,
+                                 v.fmt0, v.fmt1, v.fmt2);
+                }
+            }
             g_out.insert(g_out.end(), p + i, p + i + len);
             g_stats.draws++; g_stats.verts += verts;
             i += len; continue;

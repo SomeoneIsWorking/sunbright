@@ -1438,3 +1438,28 @@ Note the shape of this fix versus the previous one: failing the open used a real
 but an error path the game is designed to RETRY. Marking the movie seen uses the path the
 game takes when there is simply nothing to play. The second is the honest analogue of "we
 have no video".
+
+## ROOT CAUSE of the desync: indexed XF loads were an unknown opcode
+
+`GX_LOAD_INDX_A/B/C/D` (`0x20`/`0x28`/`0x30`/`0x38`) are indexed XF loads — one u32 payload,
+`index<<16 | (len-1)<<12 | xfAddr`, selecting the PosMtx / NrmMtx / TexMtx / Light arrays.
+J3D emits them constantly for per-shape matrix loads.
+
+The parser did not know them, so it took the "unrecognised opcode" path and dropped the rest
+of the batch. Worse, inside an inlined display list that meant **silently discarding the
+remainder of the list**, because `inline_display_list` ignores the parse return value. Every
+J3D shape whose display list loaded a matrix lost everything after that point.
+
+That is why the symptoms were nonsense values in unrelated places (`unsupported primitive
+136`, `PosMtx sub-copy len=2305`, `tcg src 21`) and why they moved between runs.
+
+**Effect: a run reached 3,300 presents with no error, against ~120-330 before.**
+
+The self-check added to the draw path — verify the byte after a draw is a plausible opcode,
+and if not report the exact VCD/VAT — is what localised this. It showed a draw whose vertex
+size was *correct* (12 bytes, position-only f32) still landing on an invalid next byte, which
+proved the mis-advance happened earlier and was not a vertex-size bug at all. Worth keeping:
+it turns "aurora failed somewhere" into "this parser mis-advanced here".
+
+Remaining, both now much later and less frequent: `unhandled tcg src 21` and
+`unsupported cull mode 3` (GX_CULL_ALL — an aurora gap rather than a stream problem).
