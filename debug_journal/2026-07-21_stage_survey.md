@@ -91,6 +91,27 @@ So the tolerated sentinel is safe for *pane* callers and unsafe for *TextBox*
 callers. This is the success-shaped-stub hazard: it masks the missing pane right
 up until someone treats it as the subclass it pretends to be.
 
+### ❌ FALSIFIED (same day) — the dummy's null mText is NOT the stage 3/4 cause
+
+The above chain was a hypothesis and it is WRONG as an explanation of the crash.
+Tested directly: the dummy was rebuilt as a real `J2DTextBox(nullptr, "")` — so
+`mText` is a valid empty string and the "strlen(NULL)" path is gone — and
+**stages 3 and 4 still SIGSEGV in `__strlen_avx2` at the same point**. Whatever
+that strlen is reading, it is not this dummy's mText. Their root cause is OPEN.
+
+The J2DTextBox dummy was KEPT anyway, but only as documented hardening of a real
+latent null-deref (any TextBox caller of the old bare-J2DPane dummy would have
+strlen'd a NULL), explicitly not as a fix. It measured pixel-neutral on stage 1.
+
+Two measurement corrections worth keeping:
+* Stage 1 IS deterministic — two consecutive runs of the same binary differ by
+  **0** pixels. So a pixel delta between builds is a real change, never noise.
+* An 8814-pixel (0.7%) stage-1 delta observed against the older
+  `delfino_fixed.rgba` baseline was initially blamed on this dummy edit. Wrong:
+  reverting the edit did NOT restore the baseline, so the delta comes from an
+  EARLIER commit (most likely the .bas byteswap fix changing animation data).
+  Always re-measure after a revert before attributing a change.
+
 ⚠️ DO NOT "fix" this casually: **stage 1 — the only healthy stage — takes this
 same dummy path** (its log shows pane misses too). Any change to the dummy must be
 re-verified against stage 1 rendering, not just stages 3/4. A promising direction
