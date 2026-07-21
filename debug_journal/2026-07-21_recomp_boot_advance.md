@@ -108,3 +108,55 @@ address and this answers all of that in one call.
 
 The boot does not reach GX yet, so title-screen / file-select oracle matching is still
 downstream. The decomp+Aurora runtime remains the renderer and the oracle.
+
+## Guest backtrace on abort (landed after the above)
+
+`rt_dump_guest_stack` prints the host backtrace on any runtime abort. Recompiled bodies
+are real C functions named `func_<addr>` and calls nest on the host stack, so the host
+backtrace *is* the guest call stack; the executable links with `-rdynamic` so the names
+resolve. This turns "reached address X" into a full call chain in one run.
+
+It resolved the current blocker immediately:
+
+```
+#2  func_803486dc  SelectThread      <- abort here
+#3  func_803492e0
+#4  func_80346258
+#5  func_802c6690
+#6  func_802c54b8
+#7  func_803486dc  SelectThread
+#8  func_80348ee8  OSResumeThread
+#9  func_802c662c
+#10 func_8029cfc0
+#11 func_802a73c4
+#12 func_80005600
+#13 func_8000522c  __start
+```
+
+So the stop is a guest **context switch out of `OSResumeThread`** — precisely what the
+retired native OSThread overrides existed to prevent.
+
+## Feasibility of the OSThread arc (assessed, not yet started)
+
+Sources at `9283f44^`:
+
+| file | lines | notes |
+|---|---|---|
+| `runtime/native_threads.cpp` | 431 | the `nthr` cooperative scheduler — **1** Dolphin reference total |
+| `runtime/native_threads.h` | 109 | |
+| `runtime/native_os.cpp` | 449 | OSCreateThread/Resume/Suspend/GetCurrentThread overrides |
+| `runtime/overrides/sms_jkrthread.cpp` | 35 | replicates JKRThread worker bodies synchronously |
+| `docs/native_threading.md` | — | design doc + hard-won gotchas |
+
+The scheduler is effectively Dolphin-free, so this is a port, not a rewrite. Note the
+*rest* of `docs/native_threading.md` (native interrupt dispatch, GX FIFO pacing, VI
+retrace, draw-sync token synthesis) IS deeply Dolphin-coupled and does NOT come back —
+those seams belong to aurora in the two-runtime architecture.
+
+Design note from that doc worth keeping: every `OSCreateThread`'d worker (JKRThread
+decomp/stream pool, audio) immediately `OSReceiveMessage`-waits for work, so a worker
+never actually needs to run — dropping its suspend count and returning without scheduling
+is sufficient. The one real subtlety recorded there is **priority preemption**:
+`AudioThread::start` creates+resumes a higher-priority thread that allocates the DSP FX
+buffers and returns without waiting, relying on the GC scheduler switching immediately.
+Skip that and the main thread configures FX lines that were never allocated -> null write.
