@@ -1689,3 +1689,36 @@ aurora reuse them.
 Measuring per-frame display-list expansions against the decomp's draw count on the same
 scene is the concrete next step; `SB_DRAW_STATS` on the decomp side and the existing
 `frame stream N KB (M DL expansions)` line on this side are directly comparable.
+
+## THE TITLE SCREEN RENDERS
+
+Root cause of the storage overflow: `GX_AURORA_LOAD_ARRAYBASE` was being sent a real byte
+count. Aurora treats that literally —
+
+```c
+// size 0 = "trust" registration (J3D): upload the auto-derived extent
+// (max referenced index, maintained in draw_prim).
+const u32 effSize = array.size != 0 ? array.size : array.sizeAuto;
+gfx::push_storage(array.data, effSize);
+```
+
+— so every indexed array pushed `0x01800000 - offset` bytes (up to 24 MB) into the 48 MB
+storage buffer. The value was chosen as "the array cannot run past MEM1": technically true,
+and catastrophic. **Passing 0** makes aurora upload only up to the highest index actually
+referenced.
+
+**Result: 7,700+ presents with no fatal** (previously ~90), and the frame capture is the
+**Super Mario Sunshine title screen** — logo, "START!", "(c) 2002 NINTENDO", clouds, sun,
+palm tree, FLUDD, all correctly positioned. Capture: `scratch/recomp/title.png`.
+
+The generalisable point: three separate bugs today came from supplying aurora a
+*plausible-looking* value where it wanted a sentinel or the exact thing (`texObjId` 0 vs a
+stable id, array size vs 0, and the raw-vs-merged BP value). When a field has a documented
+"trust me" mode, use it rather than computing a conservative bound.
+
+**Not yet correct: the image is greyscale.** Every sampled pixel has R=G=B across 14 levels,
+so shape, texture detail and layout are right but colour is absent. Texture data is clearly
+reaching the GPU (the logo lettering and cloud detail are legible), so the likely culprit is
+the texture FORMAT field in `GX_AURORA_LOAD_TEXOBJ` — `(image0 >> 20) & 0xF` — being
+misinterpreted, e.g. an RGB texture decoded as I8 intensity. That is the next thing to check,
+and it is exactly the kind of claim to verify against the decomp oracle rather than assume.

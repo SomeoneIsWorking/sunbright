@@ -184,7 +184,13 @@ void emit_arraybase(u32 attr, u32 guest_addr) {
     put_u8 (g_out, 0x50);
     put_u16(g_out, (u16)(GX_AURORA_LOAD_ARRAYBASE + attr));
     put_u64(g_out, (u64)(uintptr_t)(g_ram_base + off));
-    put_u32(g_out, 0x01800000u - off);   // the array cannot extend past MEM1
+    // Size 0 is aurora's "trust" registration: it uploads the AUTO-DERIVED extent, i.e. up
+    // to the highest index actually referenced (tracked in draw_prim), instead of a fixed
+    // span. Passing a real byte count makes it upload exactly that many bytes —
+    // `0x01800000 - off` (up to 24 MB, "the array cannot run past MEM1") was technically
+    // true and catastrophic: every indexed array pushed megabytes into the 48 MB storage
+    // buffer, which is what overflowed it.
+    put_u32(g_out, 0);
     put_u8 (g_out, 0);                   // big-endian, as the guest wrote it
 }
 
