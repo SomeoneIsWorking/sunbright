@@ -160,3 +160,67 @@ is sufficient. The one real subtlety recorded there is **priority preemption**:
 `AudioThread::start` creates+resumes a higher-priority thread that allocates the DSP FX
 buffers and returns without waiting, relying on the GC scheduler switching immediately.
 Skip that and the main thread configures FX lines that were never allocated -> null write.
+
+## Increment 1 of the OSThread arc — landed
+
+`sms-recomp/overrides/native_os_thread.cpp` overrides `OSCreateThread` (records the thread,
+super-calls the recompiled body so the guest `OSThread` struct stays byte-exact) and
+`OSResumeThread` (reproduces the bookkeeping, skips the scheduling).
+
+Offsets **verified against this DOL**, not taken from the retired notes — disassembling
+`OSResumeThread` @`0x80348ee8` shows `lwz/stw r,716(r29)` (suspend, s32),
+`lhz r,712(r29)` + `cmpwi 4` (state, u16, WAITING==4), and the `if (--suspend < 0)
+suspend = 0` clamp at `0x80348f20..2c`.
+
+Boot creates exactly two threads, both `entry=0x802c54b8` = `JUTException::run`
+(prio 0 and prio 8), whose bodies park forever waiting for a fault. Not scheduling them
+costs nothing at boot — a PC port surfaces host faults natively. Every skipped resume
+warns loudly, because a *worker* whose body never runs would be a real behavioural gap.
+
+Boot now runs past thread creation into `JKRAram::create`.
+
+## Next blocker: the ARAM (audio RAM) seam
+
+`JKRAram::create` -> `__ct__7JKRAramFUlUll` -> `0x80352f4c` -> `0x80353090`, spinning
+**4.0 M reads of `0xCC005016`** in 6 s. The loop is
+
+```
+lis  r3,0xcc00 ; addi r3,r3,0x5000
+lhz  r0,0x16(r3)          ; 0xCC005016
+rlwinm. r0,r0,0,31,31     ; test bit 0
+beq  -8                   ; spin until it sets
+```
+
+then it stores `0x01000000` (16 MB, the ARAM size) to an SDA global. So `0x80353090` is
+the ARAM sizing routine and `0x80352f4c` is `ARInit`.
+
+AR API surface, found by scanning `0x80352c00..0x80353d00` for absolute `0xCC0050xx`
+accesses (none of these are in `sms_gmse01_funcs.txt` — only `ARQInit` @`0x80353b74` and
+`ARQPostRequest` @`0x80353bdc` are labelled):
+
+| addr | registers touched | identification |
+|---|---|---|
+| `0x80352df4` | w `AR_DMA_MMADDR` (0x5020/22), r `AR_DMA_ARADDR` (0x5024) | `ARStartDMA` |
+| `0x80352f4c` | r `AR_REFRESH` (0x501a) | `ARInit` |
+| `0x80353090` | r `AR_SIZE` (0x5012), r/w DMA regs (0x5020-0x502a) | ARAM sizing |
+
+### Two options, and the open question
+
+1. **Override the AR SDK functions** (ARInit / ARStartDMA) with a host 16 MB buffer and
+   memcpy DMA. Matches the decomp runtime, where ARAM copies already run inline at the
+   enqueue site ("synchronous unthrottled I/O"). Cost: `ARInit`'s SDA globals must be RE'd
+   and reproduced, since `ARGetSize`/`ARGetBaseAddress` and the ARQ layer read them.
+2. **Implement the AR device MMIO** (16 MB buffer; DMA performed on the CNT write) so the
+   game's own `ARInit` and sizing code run for real. Avoids REing the globals and is more
+   faithful, at the cost of a small device model.
+
+**Blocking question for either path: interrupt delivery.** AR DMA completion raises an
+interrupt, and the ARQ queue layer fires its callbacks from it. The standalone runtime has
+no interrupt path at all — the retired native dispatch (`native_dispatch_one/pending`) was
+a behaviour port of `OSInterrupt.c` but read Dolphin's PI cause/mask registers directly, so
+it does not come back as-is. Doing DMA synchronously and invoking the completion callback
+inline sidesteps this for AR specifically, and matches the one-runtime doctrine, but a
+general interrupt seam is still owed (VI retrace, CP/PE, DVD).
+
+That is the decision to make before writing code here — noting it rather than picking one
+mid-tick, since it sets the shape of every device seam that follows.
