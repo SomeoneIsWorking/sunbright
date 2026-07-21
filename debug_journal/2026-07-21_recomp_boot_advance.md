@@ -1386,3 +1386,35 @@ Aurora only assigns `tcg.src` when `srcRow < 13`, and these all qualify.
 So either those XF writes are not reaching aurora intact, or something resets aurora's tcg
 state between the write and the draw. That is the next thing to pin down — and unlike the
 desyncs, this one is stable enough to bisect properly.
+
+## Frame-boundary drain (real bug, but not the current one)
+
+`parse()` only ran once 4096 bytes had accumulated, so a frame's trailing commands could sit
+unparsed and be emitted in the NEXT frame's stream — aurora would draw a frame with the
+previous frame's state. `gxfifo_flush()` now drains the buffer before presenting, which is
+correct at a frame boundary because the guest has finished writing.
+
+This did **not** fix `unhandled tcg src 21`, and `unsupported primitive 136` still appears
+intermittently, so the VAT_C fix reduced but did not eliminate the desync.
+
+## Honest state of GX parity
+
+Confirmed by tracing the guest's own writes:
+
+- All eight texgens ARE configured with valid source rows before any draw
+  (`texgen[0..7] srcRow=5..12`), then `numTexGens` is set to 1 and later 0.
+- Aurora's XF header decode (`count = header>>16 + 1`, `addr = header & 0xFFFF`) matches
+  this parser's exactly, so the writes are framed identically.
+- Aurora copies `numTexGens` entries out of `tcgs[]` when building a pipeline, and only
+  assigns `tcg.src` for `srcRow < 13` — all observed rows qualify.
+
+So the guest configures `tcg[1]`, our stream carries it, and aurora still reports it unset at
+draw time. Something between those points is losing or reordering state, and the remaining
+intermittent primitive error says the vertex-size decode still disagrees with aurora's for at
+least one configuration.
+
+The productive next step is not more guessing: aurora ships `AURORA_FIFO_TRACE`, and its
+desync FATAL already dumps a 128-entry command ring plus the recent-draw ring specifically to
+show where a mis-advance happened. Using those to find the exact command whose length this
+parser computes differently is the way to close the remaining gap, rather than auditing bit
+layouts one at a time.
