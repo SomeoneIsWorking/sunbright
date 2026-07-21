@@ -21,6 +21,7 @@
 // and then building machinery to wait for it.
 
 #include "mmio.h"
+#include "aram.h"
 
 #include <lucent/log.h>
 
@@ -58,6 +59,23 @@ u16& reg(u32 off) { return g_reg[(off - 0x5000) >> 1]; }
 
 u32 reg32(u32 off_hi) { return ((u32)reg(off_hi) << 16) | reg(off_hi + 2); }
 
+// Shared by the register-level DMA and the ARQ seam above it.
+void do_dma(u32 mm, u32 ar, u32 len, bool to_mram) {
+    const u32 mm_off = mm & 0x01FFFFFFu;
+    const u32 ar_off = ar & (kAramSize - 1);   // ARAM wraps; the size probe relies on it
+
+    if (mm_off + len > 0x01800000u || ar_off + len > kAramSize) {
+        lucent::error("aram", "DMA out of range: mm=0x{:08x} ar=0x{:08x} len=0x{:x} {}",
+                      mm, ar, len, to_mram ? "AR->MM" : "MM->AR");
+        std::abort();
+    }
+    if (to_mram) std::memcpy(g_ram_base + mm_off, g_aram + ar_off, len);
+    else         std::memcpy(g_aram + ar_off, g_ram_base + mm_off, len);
+
+    lucent::debug("aram", "DMA {} mm=0x{:08x} ar=0x{:08x} len=0x{:x}",
+                  to_mram ? "AR->MM" : "MM->AR", mm, ar, len);
+}
+
 void run_dma() {
     const u32 mm    = reg32(AR_DMA_MM_H);
     const u32 ar    = reg32(AR_DMA_AR_H);
@@ -68,23 +86,7 @@ void run_dma() {
     const u32  len     = cnt32 & 0x7FFFFFFFu;
     if (len == 0) return;
 
-    // Address the guest's view of main memory the same way sb_ram_fast does.
-    const u32 mm_off = mm & 0x01FFFFFFu;
-    const u32 ar_off = ar & (kAramSize - 1);   // ARAM wraps; the size probe relies on it
-
-    // A transfer running off either end is a real bug in the caller, not something to
-    // clamp silently — clamping would corrupt the size probe's aliasing result.
-    if (mm_off + len > 0x01800000u || ar_off + len > kAramSize) {
-        lucent::error("aram", "DMA out of range: mm=0x{:08x} ar=0x{:08x} len=0x{:x} {}",
-                      mm, ar, len, to_mram ? "AR->MM" : "MM->AR");
-        std::abort();
-    }
-
-    if (to_mram) std::memcpy(g_ram_base + mm_off, g_aram + ar_off, len);
-    else         std::memcpy(g_aram + ar_off, g_ram_base + mm_off, len);
-
-    lucent::debug("aram", "DMA {} mm=0x{:08x} ar=0x{:08x} len=0x{:x}",
-                  to_mram ? "AR->MM" : "MM->AR", mm, ar, len);
+    do_dma(mm, ar, len, to_mram);
 }
 
 u32 ar_read(u32 ea, unsigned width) {
@@ -123,6 +125,10 @@ void ar_write(u32 ea, unsigned width, u32 value) {
 }
 
 } // namespace
+
+void aram_dma(u32 mram_addr, u32 aram_addr, u32 len, bool to_mram) {
+    do_dma(mram_addr, aram_addr, len, to_mram);
+}
 
 // Explicit init rather than a static initializer: this file exports nothing else, so in a
 // static archive the linker would discard the whole object and the device would silently

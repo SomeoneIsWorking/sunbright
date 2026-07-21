@@ -933,3 +933,25 @@ spin loops at once, and it keeps the guest's own DSP code running rather than re
 Audio thread progress: `initBuffer` -> `0x80337580` now COMPLETES; it is currently in
 `0x80337360`, one frame up. Silence is still by omission — none of this makes sound, it
 stops the absence of a DSP from deadlocking the boot.
+
+## ARQ completes synchronously — file loading opens up (31 -> 149 reads)
+
+`JASystem::Kernel::portCmdInit` posts ARAM DMA requests through **ARQ** and then spins on a
+pending count (`r13-23444`) that only the ARAM interrupt drains. Same shape as DVD: a queue
+whose completion depends on an interrupt this runtime does not have.
+
+`overrides/native_arq.cpp` overrides `ARQPostRequest` (`0x80353bdc`). The transfer has nothing
+to wait for — ARAM is a host buffer and the copy is a `memcpy` — so the request is performed
+and completed inside the post, then the completion callback runs as the ARAM interrupt would
+have invoked it (`r3` = the request), with whole-state save/restore because it is a nested
+call inside a function that has not returned.
+
+`ARQRequest` layout came from the recompiled `ARQPostRequest` prologue stores
+(`stw r0,0 / r4,4 / r5,8 / r7,0x10 / r8,0x14 / r9,0x18 / r10,0x1c`), i.e. next, owner, type,
+source, dest, length, callback. `dev_aram.cpp` now exports `aram_dma()` so the register-level
+DMA and this seam share one implementation.
+
+**Effect: disc reads went 31 -> 149**, and the game is loading real content — the last read
+resolves through the FST to **`wScene_16.aw`** (an audio wave bank, `0x3aaa80` bytes), far
+beyond the boot logo. The main thread is in the render loop under
+`JDrama::TDisplay::startRendering`; the JKRThread workers remain correctly parked.

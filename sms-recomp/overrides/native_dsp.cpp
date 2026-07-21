@@ -11,7 +11,10 @@
 
 #include "overrides.h"
 
+#include <intrinsics.h>
 #include <lucent/log.h>
+
+extern "C" void func_80337580(CPUState&);   // JASystem DSP task submit
 
 namespace {
 
@@ -62,8 +65,23 @@ void dsp_task_ready(CPUState& cpu) {
     cpu.gpr[3] = 1;
 }
 
+// The JASystem DSP task SUBMIT @0x80337580. Retail hands the task to the DSP and the
+// task-completion interrupt later decrements a pending counter at r13-23248; the caller
+// (0x80337360) spins on `while (pending != 0)`. With no DSP there is no completion
+// interrupt, so the counter never drains.
+//
+// Run the real submit — it does the mailbox work and bookkeeping the surrounding code
+// depends on — then report the task as finished, because a task handed to a receiver that
+// does not exist is complete the moment it is submitted.
+void dsp_task_submit(CPUState& cpu) {
+    func_80337580(cpu);
+    sb_w32(cpu.gpr[13] - 23248, 0);
+}
+
 } // namespace
 
+SB_OVERRIDE(0x80337580u, dsp_task_submit, "JASystem DSP task submit",
+            "no completion interrupt exists to drain the pending count")
 SB_OVERRIDE(0x80337ca0u, dsp_task_ready, "JASystem DSP task-queue ready",
             "no DSP consumes tasks, so a slot is always free")
 SB_OVERRIDE(0x8035406cu, dsp_boot_task, "__DSP_boot_task",
