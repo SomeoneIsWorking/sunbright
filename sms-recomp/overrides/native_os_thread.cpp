@@ -1,121 +1,115 @@
-// native_os_thread.cpp — OS threading overrides (increment 1 of the OSThread arc).
+// native_os_thread.cpp — OS threading, backed by the cooperative scheduler (runtime/guest_sched).
 //
-// The GameCube OS multiplexes software threads onto one CPU by context switching:
-// SelectThread picks the next thread and OSLoadContext `rfi`s into it, resuming at an
-// arbitrary saved PC. A recompiler that emits one C function per guest function cannot
-// express that — there is no way to re-enter func_803486dc partway through its body. The
-// standalone boot aborts on exactly this: OSResumeThread -> SelectThread -> resume at
-// SelectThread+0x104.
+// The GameCube OS multiplexes threads onto one CPU by context switching: SelectThread picks
+// the next thread and OSLoadContext `rfi`s into it, resuming at an arbitrary saved PC. A
+// recompiler emitting one C function per guest function cannot re-enter a body partway
+// through, so that scheduler can never run here.
 //
-// The port's answer is the ONE RUNTIME rule (CLAUDE.md): a GC thread's work runs INLINE at
-// its enqueue site, so the thread itself is never needed and the guest scheduler is never
-// entered. That is the same reasoning as synchronous ARAM DMA and synchronous GXDrawDone —
-// the host has no latency to hide, so there is nothing to overlap and nothing to schedule.
-// (An earlier draft of this file proposed porting a cooperative token scheduler instead.
-// That was wrong and inconsistent with every other seam in this runtime.)
+// Instead each guest thread gets a real host thread and its own CPUState, with exactly one
+// token so only one runs at a time — the GameCube is single-core and the game is written for
+// it. Blocking becomes a token hand-off, which is what lets a thread park mid-function and
+// resume exactly where it left off.
 //
-// THIS INCREMENT DOES NOT SCHEDULE ANYTHING YET. It installs the seam — recording created
-// threads and keeping the guest's own bookkeeping exact — and makes a resume return
-// without rescheduling. That is enough for boot, where the only thread created is
-// JUTException's, whose body parks forever waiting for a fault that a PC port surfaces
-// natively anyway. It is NOT enough in general: a worker whose body never runs is a real
-// behavioural gap, so every skipped resume says so out loud rather than looking like it
-// worked. When one is, the fix is to make that work synchronous at its enqueue site.
+// The primitives below are the complete interception surface. Message queues need no
+// override of their own: OSSendMessage/OSReceiveMessage block through OSSleepThread and
+// OSWakeupThread, which are intercepted here.
 
 #include "overrides.h"
 
 #include <intrinsics.h>
 #include <lucent/log.h>
+#include <guest_sched.h>
 
-#include <unordered_map>
-#include <vector>
+#include <cstdlib>
 
-// Recompiled bodies we super-call for faithful guest-struct init. Calling them directly
-// (not through call_ppc) is deliberate: it bypasses override_lookup, so there is no
-// recursion back into us.
+// Super-called for faithful guest-struct init. Called directly (not through call_ppc) so it
+// bypasses override_lookup and cannot recurse back into us.
 extern "C" void func_80348948(CPUState&);   // OSCreateThread
-extern "C" void func_80348ee8(CPUState&);   // OSResumeThread
 
 namespace {
 
-// OSThread layout. VERIFIED against this DOL by disassembling OSResumeThread @0x80348ee8:
-//   lwz r4,716(r29) / stw r0,716(r29)   -> suspend count is a 32-bit field at +716
-//   lhz r0,712(r29) / cmpwi r0,4        -> state is a 16-bit field at +712, WAITING == 4
-constexpr u32 T_STATE   = 712;   // u16: 1=READY 2=RUNNING 4=WAITING 8=MORIBUND
-constexpr u32 T_SUSPEND = 716;   // s32: suspend count; > 0 means not runnable
-constexpr u32 T_PRIO    = 720;   // s32: effective priority (LOWER number = higher priority)
+// OSThread layout, verified against this DOL by disassembling OSResumeThread @0x80348ee8:
+//   lwz r4,716(r29) / stw r0,716(r29)   -> suspend count, s32 at +716
+//   lhz r0,712(r29) / cmpwi r0,4        -> state, u16 at +712, WAITING == 4
+constexpr u32 T_SUSPEND = 716;
 
-struct ThreadRec {
-    u32 entry, param, stack, stack_size;
-    int priority;
-    bool body_ran;
-};
-
-// Keyed by guest OSThread*. Not a set: the entry point identifies WHICH worker went
-// unscheduled, which is what names the enqueue site that has to become synchronous.
-std::unordered_map<u32, ThreadRec>& threads() {
-    static std::unordered_map<u32, ThreadRec> t;
-    return t;
-}
-
-// OSCreateThread @0x80348948:
-//   BOOL OSCreateThread(OSThread* r3, void* entry r4, void* param r5, void* stack r6,
-//                       u32 stackSize r7, OSPriority r8, u16 attr r9)
-// It does not reschedule, so the recompiled body runs to completion and returns normally.
-// Super-calling it keeps the guest OSThread struct byte-exact (state, priority, links,
-// context, stack canary, active-thread list) — guest code walks those, so fabricating them
-// here would be a slow-burning source of wrong behaviour.
+// OSCreateThread(OSThread* r3, entry r4, param r5, stack r6, stackSize r7, prio r8, attr r9)
+// It does not reschedule, so the recompiled body runs to completion. Super-calling keeps the
+// guest OSThread struct byte-exact (state, priority, links, context, canary, active list) —
+// guest code walks those, so fabricating them here would be a slow-burning source of wrong
+// behaviour.
 void os_create_thread(CPUState& cpu) {
     const u32 os_thread = cpu.gpr[3];
-    const ThreadRec rec{cpu.gpr[4], cpu.gpr[5], cpu.gpr[6], cpu.gpr[7],
-                        (int)(s32)cpu.gpr[8], false};
+    const u32 entry = cpu.gpr[4], param = cpu.gpr[5], stack = cpu.gpr[6];
+    const int prio  = (int)(s32)cpu.gpr[8];
 
     func_80348948(cpu);
-    if (cpu.gpr[3] == 0) return;   // creation failed (bad priority) — nothing to record
+    if (cpu.gpr[3] == 0) return;   // creation failed (bad priority)
 
-    threads()[os_thread] = rec;
-    lucent::info("osthread", "OSCreateThread OSThread=0x{:08x} entry=0x{:08x} param=0x{:08x} "
-                             "stack=0x{:08x} prio={}",
-                 os_thread, rec.entry, rec.param, rec.stack, rec.priority);
+    gsched_create(os_thread, entry, param, stack, prio);
+    lucent::debug("osthread", "create 0x{:08x} entry 0x{:08x} prio {}", os_thread, entry,
+                  prio);
 }
 
-// OSResumeThread @0x80348ee8: s32 OSResumeThread(OSThread*) — returns the PREVIOUS suspend
-// count. Retail decrements, clamps at 0, and when the count reaches 0 makes the thread
-// runnable via the scheduler. We reproduce the bookkeeping exactly (verified against the
-// disassembly, including the clamp) and stop before the scheduling.
+// OSResumeThread(OSThread*) -> previous suspend count. Retail decrements, clamps at 0, and
+// makes the thread runnable through the scheduler when it reaches 0.
 void os_resume_thread(CPUState& cpu) {
     const u32 thread = cpu.gpr[3];
-
-    auto it = threads().find(thread);
-    if (it == threads().end()) {
-        // Not a thread the game created — the default/main thread. It is already running,
-        // so a faithful resume is safe and is what retail does.
-        func_80348ee8(cpu);
-        return;
-    }
-
     const s32 old_suspend = (s32)sb_r32(thread + T_SUSPEND);
     s32 suspend = old_suspend - 1;
-    if (suspend < 0) suspend = 0;          // retail clamps; see 0x80348f20..0x80348f2c
+    if (suspend < 0) suspend = 0;      // retail clamps; see 0x80348f20..0x80348f2c
     sb_w32(thread + T_SUSPEND, (u32)suspend);
     cpu.gpr[3] = (u32)old_suspend;
 
-    if (suspend == 0 && !it->second.body_ran) {
-        it->second.body_ran = true;   // announce once per thread, not once per resume
-        lucent::warn("osthread",
-                     "thread 0x{:08x} (entry 0x{:08x}, prio {}) became runnable but is NOT "
-                     "being scheduled — its body will not run. Fine for a thread that only "
-                     "parks (JUTException). If a worker's output is ever actually needed, the "
-                     "fix is to make its ENQUEUE point synchronous, not to add a scheduler.",
-                     thread, it->second.entry, it->second.priority);
-    }
+    if (suspend == 0) gsched_make_ready(thread);
+}
+
+// OSSuspendThread(OSThread*) -> previous suspend count. Suspending SELF parks until resumed.
+void os_suspend_thread(CPUState& cpu) {
+    const u32 thread = cpu.gpr[3];
+    const s32 old_suspend = (s32)sb_r32(thread + T_SUSPEND);
+    sb_w32(thread + T_SUSPEND, (u32)(old_suspend + 1));
+    cpu.gpr[3] = (u32)old_suspend;
+
+    // Suspending another thread takes effect at its next scheduling point; suspending
+    // yourself parks immediately, which is the GX FIFO back-pressure contract.
+    if (thread == gsched_current_os_thread() && old_suspend + 1 > 0) gsched_block(0);
+}
+
+// OSSleepThread(OSThreadQueue*) — park the caller on a queue until OSWakeupThread.
+void os_sleep_thread(CPUState& cpu) { gsched_block(cpu.gpr[3]); }
+
+// OSWakeupThread(OSThreadQueue*) — everything parked on the queue becomes runnable.
+void os_wakeup_thread(CPUState& cpu) { gsched_wake_queue(cpu.gpr[3]); }
+
+// OSYieldThread() — stay runnable, give an equal-or-higher priority thread a turn.
+void os_yield_thread(CPUState& cpu) { (void)cpu; gsched_yield(); }
+
+// OSExitThread() — never returns.
+void os_exit_thread(CPUState& cpu) {
+    (void)cpu;
+    gsched_exit();
+    lucent::error("osthread", "OSExitThread returned, which cannot happen");
+    std::abort();
+}
+
+// OSJoinThread(OSThread*, void** result) -> BOOL. Park on a queue keyed by the target;
+// gsched_exit wakes exactly that queue.
+void os_join_thread(CPUState& cpu) {
+    const u32 target = cpu.gpr[3];
+    while (!gsched_is_dead(target)) gsched_block(target);
+    cpu.gpr[3] = 1;
 }
 
 } // namespace
 
-SB_OVERRIDE(0x80348948u, os_create_thread, "OSCreateThread",
-            "record the thread so an unscheduled worker is identifiable; guest struct init "
-            "is super-called")
-SB_OVERRIDE(0x80348ee8u, os_resume_thread, "OSResumeThread",
-            "retail reschedules via SelectThread, which resumes mid-function and cannot be "
-            "recompiled; bookkeeping is reproduced, scheduling is not")
+SB_OVERRIDE(0x80348948u, os_create_thread,  "OSCreateThread",
+            "register with the cooperative scheduler; guest struct init is super-called")
+SB_OVERRIDE(0x80348ee8u, os_resume_thread,  "OSResumeThread",
+            "retail reschedules via SelectThread, which resumes mid-function")
+SB_OVERRIDE(0x80349170u, os_suspend_thread, "OSSuspendThread", "token hand-off")
+SB_OVERRIDE(0x803492e0u, os_sleep_thread,   "OSSleepThread",   "token hand-off")
+SB_OVERRIDE(0x803493ccu, os_wakeup_thread,  "OSWakeupThread",  "token hand-off")
+SB_OVERRIDE(0x8034890cu, os_yield_thread,   "OSYieldThread",   "token hand-off")
+SB_OVERRIDE(0x80348a68u, os_exit_thread,    "OSExitThread",    "token hand-off")
+SB_OVERRIDE(0x80348d08u, os_join_thread,    "OSJoinThread",    "token hand-off")

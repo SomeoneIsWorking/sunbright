@@ -768,3 +768,44 @@ Port the retired overrides systematically (they are mostly Dolphin-free) instead
 re-deriving them, and **start from the known end-state**: under the Dolphin substrate the
 recomp reached title, file-select and gameplay — the open problem then was RENDERING, not
 boot. Boot bring-up on the new substrate is a means to get back there, not the goal.
+
+## Cooperative guest threading — the game now loads files off the disc
+
+Rather than porting 74 Dolphin-era override files, the sensible cut was to solve what was
+actually blocking: threads. `runtime/guest_sched.{h,cpp}` gives each guest thread a real host
+thread and its **own CPUState**, with one token so only one runs at a time (the GameCube is
+single-core and the game is written for it). Blocking is a token hand-off, which is what lets
+a thread park mid-function and resume exactly where it left off — the thing a
+function-granular recompiler cannot otherwise express.
+
+Interception surface is 8 primitives, all symbolized: `OSCreateThread`, `OSResumeThread`,
+`OSSuspendThread`, `OSSleepThread`, `OSWakeupThread`, `OSYieldThread`, `OSExitThread`,
+`OSJoinThread`. **Message queues need no override**: `OSSendMessage`/`OSReceiveMessage` block
+through `OSSleepThread`/`OSWakeupThread`.
+
+Four bugs found and fixed on the way, each worth keeping:
+
+1. **`sched.h` shadowed the system `<sched.h>`** that pthread needs, and `sched_yield`
+   collided with POSIX. Renamed to `guest_sched.h` / `gsched_*`.
+2. **Thread 0 had no guest identity.** It is adopted before `OSInit` creates the default
+   `OSThread`, so its `os_thread` was 0 — and writing that placeholder over `0x800000E4`
+   handed guest code a NULL `OSThread*` (fault reading +0x2f8). Now adopted lazily.
+3. **The frame loop starved every lower-priority thread.** The archive loader is prio 17,
+   below the main thread's 16, so it only runs when the main thread blocks. Retail SLEEPS in
+   `VIWaitForRetrace` for a whole field and everything runnable gets to run during it; the
+   pure-counter override never blocked. Added `gsched_drain()` — park until nothing else is
+   Ready — and called it from the VI override. The retired `docs/native_threading.md` names
+   this exact failure: *"a never-blocking frame loop starves lower-priority threads (the boot
+   setup thread) forever."*
+4. **New threads started with r2/r13 = 0.** The small-data bases are set once at boot and are
+   ABI for every thread; a zeroed CPUState made every `r13`-relative access wild
+   (`SMSLoadArchive` reading `0xffffa0d4`). `gsched_create` now seeds them from the creating
+   thread. That exposed a second layer: thread 0's scheduler CPUState was a *copy* taken
+   before boot, so `main` now runs on `gsched_cpu()` rather than a stale local.
+
+**Verified:** four guest threads live, three parked in `OSReceiveMessage` (one is
+`JKRDecomp::run`), and the game performs **28 disc reads totalling 107 KB** through the
+instant-FS DVD path.
+
+Next: it loads that first archive then returns to its main loop without requesting more, so
+something downstream is still waiting.

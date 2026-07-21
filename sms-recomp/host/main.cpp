@@ -7,6 +7,7 @@
 
 #include "cpu_state.h"
 #include "boot_env.h"
+#include "guest_sched.h"
 #include "intrinsics.h"
 
 #include <lucent/config.h>
@@ -124,8 +125,15 @@ int main(int argc, char** argv) {
         if (s.addr + s.size > arena_lo) arena_lo = s.addr + s.size;
     if (!boot_env_setup(arena_lo)) return 1;
 
+    // Adopt this host thread as guest thread 0 before any guest code runs, so the
+    // scheduler owns threading from the first instruction.
+    gsched_init(cpu, sb_r32(0x800000E4u));
+
     lucent::info("rt", "entering recompiled code at 0x{:08x}", dol.entry);
-    call_ppc(cpu, dol.entry);
-    lucent::info("rt", "returned from entry (lr=0x{:08x})", cpu.lr);
+    // Run on the scheduler's copy, not the local one: gsched_create seeds new threads with
+    // the creating thread's r2/r13 (the small-data bases), so thread 0's registers have to
+    // be the ones the scheduler can see, not a stale snapshot taken before boot.
+    call_ppc(gsched_cpu(), dol.entry);
+    lucent::info("rt", "returned from entry (lr=0x{:08x})", gsched_cpu().lr);
     return 0;
 }

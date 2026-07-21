@@ -14,6 +14,7 @@
 
 #include <intrinsics.h>
 #include <lucent/log.h>
+#include <guest_sched.h>
 
 #include <cstdlib>
 
@@ -39,6 +40,11 @@ void vi_wait_for_retrace(CPUState& cpu) {
     }
     const u32 n = sb_r32(count) + 1;
     sb_w32(count, n);
+
+    // Retail SLEEPS here for a whole field, and every other runnable thread gets to run
+    // during it regardless of priority. Without that the frame loop never yields and the
+    // lower-priority setup/loader threads never run at all.
+    gsched_drain();
 
     // Frame progress is otherwise only inferable from stack sampling. One line per second
     // of emulated video is cheap and tells you immediately whether the game is advancing
