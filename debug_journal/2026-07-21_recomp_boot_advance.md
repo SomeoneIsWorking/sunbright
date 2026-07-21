@@ -1977,3 +1977,46 @@ Remaining hypotheses, untested, in the order I'd falsify them:
 Falsifier for 1 vs 2: dump two consecutive frames and compare the speckle pixels. Z-fighting
 at a fixed camera is stable; a mis-drawn animated ripple grid changes every frame. That is a
 cheap, decisive first test and does not require the animation phase to be pinned.
+
+## Sea speckle: stable, so not the ripple grid — and the copy-state path is the suspect
+
+**Two-frame test, decisive.** Frames 2200 and 2201 differ in only 4.0% of sea pixels, and the
+near-white fraction is unchanged (85.9% -> 86.1%). A mis-drawn *animated* ripple grid would
+change substantially every frame, so **hypothesis 1 (TMapObjWave) is falsified**. The white is
+a stable surface. The residual 4% is ordinary ripple animation on top.
+
+Quantified against the oracle at the same sea region: **85.9% of the recomp's sea is near-white
+vs 0.0% of the oracle's**. Zoomed, it is not random noise but elongated horizontal dashes of
+the *correct* teal showing through white, densest toward the horizon — the classic look of a
+grazing-angle coplanar conflict, not a texture-sampling fault.
+
+**Palettised-texture theory ruled out.** Formats actually used at file-select are 0 (I4),
+1 (I8), 2 (IA4), 3 (IA8), 4 (RGB565), 5 (RGB5A3) and 14 (CMPR). No C4/C8/C14X2, so the
+parser's hardcoded `TLUT index 0` cannot be implicated here.
+
+**What stands out instead: a format-4 texture at 320x224.** That is an EFB copy-to-texture —
+the sea's reflection. And the parser handles only the *display* copy:
+
+```cpp
+else if (reg == 0x52 && (val & (1u << 14))) emit_copy_state();   // bit 14 = copy to XFB
+```
+
+A copy-to-texture (bit 14 clear) emits no copy state at all. Checked aurora before blaming it,
+and aurora is NOT the gap — its CP handles both cases (`command_processor.cpp:1017`):
+`copy_tex(kDisplayCopyDest, clear)` for XFB and `copy_tex(g_gxState.texCopyDest, clear)` for
+textures. BP writes are forwarded verbatim, so aurora sees the trigger.
+
+So the likely defect is **stale copy state**, not a missing copy: `emit_copy_state()` pushes
+`GX_AURORA_LOAD_COPY_SRC/DST` — including a hardcoded `GX_TF_RGBA8` chosen for the display
+copy — and runs *only* on XFB copies. When a texture copy then executes, aurora resolves it
+using whatever src/dst extent and format the last display copy left behind, rather than the
+320x224 RGB565 the game asked for. A reflection texture resolved at the wrong extent/format
+would be exactly the kind of stable, wrong-coloured surface seen over the water.
+
+This is also a rule violation on my part worth naming: dropping the non-XFB case silently is
+precisely the banned success-shaped no-op. It should have been loud from the start.
+
+Next: emit copy state for texture copies too, with the format taken from the BP 0x52 payload
+instead of hardcoded, and re-measure the 85.9% figure. That number is the falsifier — if the
+sea does not change, the stale-state theory is wrong and the coplanar-draw question is back
+open.
