@@ -32,8 +32,11 @@ void report_app_state() {
     last = st;
     static const char* kNames[] = {"WAIT", "DEFAULT", "BOOT", "NLOGO", "DONE",
                                    "GAMEPLAY", "MOVIE", "QUIT", "TITLE", "MENU"};
-    lucent::info("app", "mAppState -> {} ({})", st,
-                 st < (sizeof(kNames) / sizeof(*kNames)) ? kNames[st] : "?");
+    // TGameSequence is {u8 stage, u8 scenario, u16 flags}: mCurrArea +0x0E, mNextArea +0x12.
+    lucent::info("app", "mAppState -> {} ({})  curr={{{},{}}} next={{{},{}}}", st,
+                 st < (sizeof(kNames) / sizeof(*kNames)) ? kNames[st] : "?",
+                 sb_r8(GPAPPLICATION + 0x0E), sb_r8(GPAPPLICATION + 0x0F),
+                 sb_r8(GPAPPLICATION + 0x12), sb_r8(GPAPPLICATION + 0x13));
 }
 
 void video_wait_for_retrace(CPUState& cpu) {

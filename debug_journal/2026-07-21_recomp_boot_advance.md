@@ -1192,3 +1192,33 @@ read count is: the game repeatedly tries to enter a stage and falls back. Per th
 note in the retired `fastboot_native.cpp`, the retail title screen and save-file picker are
 GAMEPLAY **stage 15** (`option.arc`), so this loop is the game attempting the title and not
 completing it.
+
+## ROOT CAUSE of the DONE <-> GAMEPLAY cycle: thread exit values were dropped
+
+The state log showed the target: `next={15,0}` — **stage 15**, the retail title screen and
+save-file picker (`option.arc`). It entered GAMEPLAY, fell back to DONE, and retried forever.
+
+`TMarDirector::setupThreadFunc` returns `loadResource()`'s result, and `gameLoop` reads it
+through `OSJoinThread(&gSetupThread, &val)` to decide whether the stage loaded. The scheduler
+captured no exit value and `os_join_thread` never wrote the `void** result` out-parameter, so
+the game read stale memory and concluded every stage load had failed.
+
+`GuestThread` now records the body's `r3` when it returns, `gsched_exit_value()` exposes it,
+and `OSJoinThread` writes it to the out-parameter. **The oscillation stops: the game reaches
+GAMEPLAY stage 15 and stays there.**
+
+Worth generalising: this is the third time the fix has been *"publish to the guest what the
+guest observes"* — thread state (`OSIsThreadTerminated`), the current-thread global
+(`OSGetCurrentThread`), and now exit values. Replacing the guest's scheduler means owning
+every observable it used to maintain.
+
+## Discovery gap: functions that are a bare `blr`
+
+Stage 15 loading immediately hit `call to un-recompiled address 0x800339a0`. That address is
+a single `blr` — a complete, empty function body. MWCC merges identical bodies, so several
+empty virtuals point at the SAME `blr`, which is therefore usually preceded by another
+function's last instruction rather than by a terminator. The pointer-discovery boundary test
+rejected it on exactly that basis.
+
+A bare `blr` is now accepted as a function entry without the boundary test. Functions:
+**14,241 -> 14,287**.

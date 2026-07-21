@@ -221,6 +221,13 @@ static int recompile_mode(const DOL& dol, const std::string& out_dir) {
             // terminators (b/bctr) stay rejected: as a FIRST word they are far more
             // likely to be a stray data value than a thunk.
             if (is_term(w) && w != 0x4E800020u) return;
+            // A bare `blr` IS a complete function body, and MWCC merges identical bodies —
+            // several empty virtuals end up pointing at the SAME blr, which is therefore
+            // usually preceded by another function's last instruction rather than by a
+            // terminator. Accept it without the boundary test, otherwise those entries are
+            // never discovered and an indirect call to one aborts at runtime (observed:
+            // 0x800339a0, reached once stage 15 started loading).
+            if (w == 0x4E800020u) { ptr_funcs.insert(v); return; }
             if (is_section_start(v) || (text_word(v - 4, prev) && is_term(prev)))
                 ptr_funcs.insert(v);
         };

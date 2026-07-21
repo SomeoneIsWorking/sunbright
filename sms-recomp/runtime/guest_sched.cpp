@@ -33,6 +33,7 @@ struct GuestThread {
     State state = State::Blocked;
     u32 wait_queue = 0;
     bool started = false;
+    u32 exit_value = 0;   // r3 when the body returned; OSJoinThread hands this back
     CPUState cpu{};
     std::condition_variable cv;
     std::thread host;
@@ -133,7 +134,12 @@ void thread_main(GuestThread* self) {
 
     call_ppc(self->cpu, self->entry);
 
-    // Returning from the body is a normal exit.
+    // The body's return value IS the thread's exit value, and callers read it through
+    // OSJoinThread's out-parameter. TMarDirector::setupThreadFunc returns loadResource()'s
+    // result and gameLoop decides success from it, so dropping this made every stage load
+    // look like a failure.
+    self->exit_value = self->cpu.gpr[3];
+
     gsched_exit();
 }
 
@@ -314,6 +320,12 @@ void gsched_exit() {
             t->state = State::Ready;
         }
     release_token(lk);
+}
+
+u32 gsched_exit_value(u32 os_thread) {
+    std::lock_guard<std::mutex> lk(g_lock);
+    GuestThread* t = find(os_thread);
+    return t ? t->exit_value : 0;
 }
 
 bool gsched_is_dead(u32 os_thread) {

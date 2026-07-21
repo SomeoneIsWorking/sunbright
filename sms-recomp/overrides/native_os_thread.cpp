@@ -97,7 +97,11 @@ void os_exit_thread(CPUState& cpu) {
 // gsched_exit wakes exactly that queue.
 void os_join_thread(CPUState& cpu) {
     const u32 target = cpu.gpr[3];
+    const u32 out    = cpu.gpr[4];      // void** result
     while (!gsched_is_dead(target)) gsched_block(target);
+    // Hand back the body's return value. Callers act on it: gameLoop treats
+    // TMarDirector::setupThreadFunc's result as stage-load success/failure.
+    if (out) sb_w32(out, gsched_exit_value(target));
     cpu.gpr[3] = 1;
 }
 

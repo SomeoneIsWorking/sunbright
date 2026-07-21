@@ -34,3 +34,6 @@ u32 gsched_current_os_thread();
 
 bool gsched_is_tracked(u32 os_thread);
 bool gsched_is_dead(u32 os_thread);
+
+// The value the thread body returned (its r3), for OSJoinThread.
+u32  gsched_exit_value(u32 os_thread);
