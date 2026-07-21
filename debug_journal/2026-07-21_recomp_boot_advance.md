@@ -1589,3 +1589,35 @@ draw fits inside the current buffer, so a draw spanning batches is unchecked.
 
 Extending the self-check to cover cross-batch draws is the next step — that is precisely the
 blind spot where a bad vertex count would survive.
+
+## The overflow is expansion, not accumulation
+
+`begin_frame` always succeeds and frames open/close correctly, so the staging buffer is not
+failing to reset. Instrumenting each flush shows the real shape: most frames carry **0 KB**,
+then a single frame carries **291 KB** (184 display-list expansions, 87 KB inlined) — and it
+is that one frame that overflows aurora's ~48 MB per-frame staging.
+
+So ~291 KB of GC command stream expands to >65 MB in aurora's vertex format. That is not
+absurd on its face: aurora resolves indexed GC vertices into flat vertex buffers, and a
+vertex with position, normal, two colours and eight texcoords is well over 100 bytes
+expanded, so a few 50k-vertex draws reach tens of MB.
+
+Note also the present rate — up to ~9,990/s — meaning `TVideo::waitForRetrace` is reached far
+more often than once per displayed frame. Empty flushes are cheap, but it does mean the
+chosen frame boundary fires during load loops as well as real frames.
+
+Two candidate directions, not yet decided:
+
+1. **The frame boundary may be wrong.** If the game reaches `waitForRetrace` many times per
+   real frame, the "frame" being handed to aurora is not the game's frame. The decomp runtime
+   distinguishes these (`VIWaitForRetrace` as a pure counter vs the present point); the same
+   distinction may need to be sharper here.
+2. **The scene genuinely needs more staging than the decomp path does.** The decomp runtime
+   renders these scenes through the same aurora without overflowing, so a like-for-like
+   comparison of what each submits per frame would show whether this stream is doing
+   something wasteful (repeated display-list expansion is the obvious suspect) or whether the
+   limit is simply low for a full retail stream.
+
+Establishing which of those is true — by comparing per-frame submission against the decomp
+runtime on the same scene — is the honest next step, rather than raising a constant and
+hoping.

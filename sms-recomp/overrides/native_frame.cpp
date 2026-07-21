@@ -84,7 +84,10 @@ void video_wait_for_retrace(CPUState& cpu) {
     // pop-one-at-a-time queue. Calling it in a loop never terminates.
     aurora_update();
 
+    const bool wasActive = s_frameActive;
     s_frameActive = aurora_begin_frame();
+    if (s_frameActive != wasActive)
+        lucent::warn("frame", "aurora_begin_frame -> {}", s_frameActive);
 }
 
 } // namespace
