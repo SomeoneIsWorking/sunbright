@@ -1855,3 +1855,45 @@ That is worth establishing against the decomp oracle first: run the decomp runti
 START at the same point, and see whether IT enters APP_STATE_MOVIE. If it does not, the
 question becomes why this runtime's `perform` raises movie 12 where the oracle's does not —
 a behavioural divergence to root-cause, not a video gap to paper over.
+
+## The GAMEPLAY<->MOVIE oscillation is ATTRACT MODE — correct behaviour, not a bug
+
+Chased to the end, and the conclusion inverts the framing I had been working under.
+
+`func_8029a044` is `TMarDirector::fireStreamingMovie(u8)` — confirmed structurally, not
+guessed: its `setNextStage` constants (`0x3B, 0xE06, 0xE07, 0x3C, 0x101, 0xF`) and the
+`cmpwi 12` switch bound match `MarDirectorEvent.cpp` exactly. Movie 12 takes the `default`
+branch, `setNextStage(0xF)` = stage 15.
+
+The caller is `CardLoad.cpp:978` — the title state machine:
+
+```c
+if (unkC0 / 120.0f > 45.0f) {                       // 45 seconds idle at the title
+    if (getBool(0x3001C)) { fireStreamingMovie(9);  setBool(false, 0x3001C); }
+    else                  { fireStreamingMovie(12); setBool(true,  0x3001C); }
+    unkC0 = 0;
+}
+```
+
+An **idle timer** that fires an attract-mode movie every 45 seconds, **alternating 9 and 12**
+via flag `0x3001C`. That is precisely the observed oscillation, down to the two movie numbers.
+The runtime is behaving correctly; it is idling at the title because nothing advances it, and
+attract mode is what retail does when you walk away.
+
+So the movie path was never the defect and "what selects movie 12" was the wrong question.
+Two separate real issues were hiding behind it:
+
+1. **The actual blocker: the title is not advancing.** START at the title does not move the
+   state machine on. In `CardLoad.cpp`, START (`getTrigger() & 0x1000`) does NOT advance the
+   state — it only fast-forwards the title animation (`mTitleAnimState = 4`, pane alphas to
+   255). The advance to `mState = 8` (`moveToLoadFromTitle`, the camera pan to file-select)
+   happens in the branch above, once the animation has completed. So the next question is
+   whether START is reaching the game at all, and whether the title animation completes.
+2. **THP playback is absent**, so any movie that does fire cannot play. Real, but downstream —
+   and once the title advances properly, attract mode never triggers in the first place.
+
+Two process notes worth keeping. The static scan for a literal 12 stored to `+0x18` found
+nothing because the value arrives as a *parameter* (`mMovie = param_1`) — the watchpoint found
+in one run what pattern-matching could not. And I spent several ticks treating a symptom as
+the defect without asking whether the behaviour was CORRECT; "what makes this happen" should
+have been preceded by "is this supposed to happen".
