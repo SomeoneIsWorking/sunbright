@@ -237,7 +237,9 @@ TMapObjSteam::TMapObjSteam(const char* name) : THideObjBase(name) {}
 // TMapObjTree / TMapObjTreeScale
 // ============================================================
 TMapObjTree::TMapObjTree(const char* name) : TMapObjGeneral(name) {}
-TMapObjTreeScale::TMapObjTreeScale(const char* name) : TMapObjGeneral(name) {}
+// TMapObjTreeScale derives from TMapObjTree (upstream MapObjTree match, 2026-07),
+// not TMapObjGeneral — chain the direct base.
+TMapObjTreeScale::TMapObjTreeScale(const char* name) : TMapObjTree(name) {}
 
 // ============================================================
 // TMapObjWaterSpray
