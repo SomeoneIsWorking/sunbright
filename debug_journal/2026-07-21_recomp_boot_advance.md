@@ -1824,3 +1824,34 @@ still unidentified and is the thing to find next.
 
 The check stays in the code permanently — it costs one read per flag and turns a silently
 wrong address into an immediate, named failure.
+
+## What sets movie 12 (found with the watchpoint, not by reading code)
+
+A static scan for `li rX,12` followed by a store to `+0x18` found nothing — the value is not
+written as a literal near the store. `SBR_WATCH=0x803E9718` (mMovie) named the writer
+immediately:
+
+```
+[watch] write 0x0000000c @ 0x803e9718 from func_8029a044
+  <- func_8016cba8 <- JDrama::TViewObj::testPerform <- TViewObjPtrList::perform
+```
+
+So a **view object's per-frame `perform`** sets `mMovie = 12` — it is re-set every frame,
+which is why the state re-enters MOVIE no matter how the previous attempt ended. That
+explains the oscillation's persistence: it is not a transition failing to complete, it is a
+signal being re-raised continuously.
+
+The watchpoint (added earlier for the small-data corruption) answered in one run what a
+static scan could not. Worth reaching for sooner for "who writes this address" questions.
+
+## A cross-check worth heeding before going further
+
+The project's own notes record that **title <-> file-select is a CAMERA PAN driven by
+TCardLoad** (states 10->9->3->8->0), not a movie — both are stage 15. So a movie being raised
+on START may itself be the divergence rather than something to work around, and "skip the
+movie" could be the wrong instinct entirely.
+
+That is worth establishing against the decomp oracle first: run the decomp runtime, press
+START at the same point, and see whether IT enters APP_STATE_MOVIE. If it does not, the
+question becomes why this runtime's `perform` raises movie 12 where the oracle's does not —
+a behavioural divergence to root-cause, not a video gap to paper over.
