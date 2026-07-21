@@ -19,7 +19,25 @@ extern void gxfifo_flush();
 
 namespace {
 
+// gpApplication (0x803E9700) field offsets from decomp/sms/include/System/Application.hpp:
+// mDirector +0x04, mAppState +0x08 (u8), mCurrArea +0x0E, mNextArea +0x12.
+// Reported once per frame under SBR_LUCENT_DEBUG=app so boot progress is always visible
+// without rebuilding a throwaway diagnostic.
+constexpr u32 GPAPPLICATION = 0x803E9700;
+
+void report_app_state() {
+    static u32 last = 0xFFFFFFFF;
+    const u32 st = sb_r8(GPAPPLICATION + 0x08);
+    if (st == last) return;
+    last = st;
+    static const char* kNames[] = {"WAIT", "DEFAULT", "BOOT", "NLOGO", "DONE",
+                                   "GAMEPLAY", "MOVIE", "QUIT", "TITLE", "MENU"};
+    lucent::info("app", "mAppState -> {} ({})", st,
+                 st < (sizeof(kNames) / sizeof(*kNames)) ? kNames[st] : "?");
+}
+
 void video_wait_for_retrace(CPUState& cpu) {
+    report_app_state();
     // Let the game do its own frame bookkeeping first.
     func_802fc9a4(cpu);
 

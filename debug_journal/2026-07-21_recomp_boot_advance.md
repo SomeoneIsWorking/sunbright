@@ -1161,3 +1161,34 @@ cases are distinguished:
 from the THP region around `0x8001db24`). Expected territory — there is no video decoding
 here, and `Entrance.thp` is the attract movie. The retired `fastboot_native.cpp` skipped this
 whole state; the equivalent decision is due.
+
+## THP skipped via the game's own failure path — the boot state machine now RUNS
+
+The THP player faulted (NULL read inside its decode thread body at `0x800200d8`) because this
+runtime has no video decoding — the same "absent by omission" position as audio. Rather than
+stub the decode path piecemeal, `overrides/native_thp.cpp` makes **`THPPlayerOpen` report
+failure**. The game already handles movie setup failing, so this uses the game's own control
+flow rather than inventing one. Attract movies and cutscenes do not play.
+
+**Result — the state machine advances for the first time:**
+
+```
+[app] mAppState -> 2 (BOOT)
+[app] mAppState -> 3 (NLOGO)
+[app] mAppState -> 4 (DONE)
+[app] mAppState -> 5 (GAMEPLAY)
+```
+
+and disc reads went **924 -> 337,501**.
+
+`native_frame.cpp` now reports `mAppState` transitions once per change under
+`SBR_LUCENT_DEBUG=app`, so boot progress is permanently visible instead of needing a
+throwaway diagnostic each time.
+
+## Current: a DONE <-> GAMEPLAY cycle
+
+The state then oscillates `DONE -> GAMEPLAY -> DONE -> GAMEPLAY`, which is what the huge
+read count is: the game repeatedly tries to enter a stage and falls back. Per the taxonomy
+note in the retired `fastboot_native.cpp`, the retail title screen and save-file picker are
+GAMEPLAY **stage 15** (`option.arc`), so this loop is the game attempting the title and not
+completing it.
