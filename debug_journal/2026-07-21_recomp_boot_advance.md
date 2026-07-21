@@ -1722,3 +1722,27 @@ reaching the GPU (the logo lettering and cloud detail are legible), so the likel
 the texture FORMAT field in `GX_AURORA_LOAD_TEXOBJ` — `(image0 >> 20) & 0xF` — being
 misinterpreted, e.g. an RGB texture decoded as I8 intensity. That is the next thing to check,
 and it is exactly the kind of claim to verify against the decomp oracle rather than assume.
+
+## COLOUR: the title screen renders correctly
+
+The greyscale was one field. `emit_copy_state` sent the display copy's texture format as
+**0**, with a comment guessing it was "unused for a display copy". **Format 0 is `GX_TF_I4` —
+4-bit INTENSITY**, so the entire frame resolved through an intensity format: shape, texture
+detail and layout intact, all colour discarded. Sending `GX_TF_RGBA8` (6) fixes it.
+
+Verified against the decomp oracle on the same screen, using the same aurora dump path:
+
+| | distinct colours | greyscale | top colours |
+|---|---|---|---|
+| decomp (oracle) | 66,510 | 8% | `(255,255,255)`, `(187,219,242)`, `(187,219,241)` |
+| recomp | 57,180 | 7% | `(255,255,255)`, `(187,219,241)`, `(188,220,244)` |
+
+The same sky blues to within a bit — not merely "colour appeared", but the *same* palette as
+the reference. Capture: `scratch/recomp/title_color.png`.
+
+That comment ("unused for a display copy") was an assumption written as if it were a fact,
+and it cost a full investigation cycle. The oracle comparison is what settled it: knowing the
+decomp produced 66k colours through the identical dump path proved the loss was ours and not
+the capture's.
+
+**The standalone recomp now renders the Super Mario Sunshine title screen in colour.**

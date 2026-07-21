@@ -218,7 +218,10 @@ void emit_copy_state() {
     put_u16(g_out, GX_AURORA_LOAD_COPY_DST);
     put_u32(g_out, g_copy_w);
     put_u32(g_out, g_copy_h);
-    put_u32(g_out, 0);      // GX_TF_I4 slot is unused for a display copy
+    // Display copies land in an RGBA8 XFB. This field is NOT unused: format 0 is GX_TF_I4,
+    // 4-bit INTENSITY, which renders the whole frame greyscale — shape and texture detail
+    // intact, all colour gone.
+    put_u32(g_out, 6);      // GX_TF_RGBA8
     put_u8 (g_out, 0);      // not a wide (double-strided) copy
 }
 
@@ -251,6 +254,14 @@ void emit_texobj(u32 map) {
     put_u32(g_out, w);
     put_u32(g_out, h);
     put_u32(g_out, fmt);
+    {   // Which texture formats are we describing? A scene rendering entirely in greys
+        // would be explained by everything decoding as an intensity format.
+        static u32 seen = 0;
+        if (!(seen & (1u << fmt))) {
+            seen |= 1u << fmt;
+            lucent::debug("gxfifo", "texture format {} first seen ({}x{})", fmt, w, h);
+        }
+    }
     put_u32(g_out, 0);           // TLUT index; palettised formats need LOAD_TLUT too
     put_u8 (g_out, 0);           // mips are gated by the real TexMode1 register, not here
     // texObjId is aurora's texture cache key — a zero id makes every bind a cache miss and
