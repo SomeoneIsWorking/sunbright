@@ -178,6 +178,7 @@ add_library(sms-assets STATIC
     "${SMS_NATIVE_REPO_ROOT}/sms-boot/assets/bmd_swap.cpp"
     "${SMS_NATIVE_REPO_ROOT}/sms-boot/assets/bmt_swap.cpp"
     "${SMS_NATIVE_REPO_ROOT}/sms-boot/assets/anm_swap.cpp"
+    "${SMS_NATIVE_REPO_ROOT}/sms-boot/assets/bas_swap.cpp"
     "${SMS_NATIVE_REPO_ROOT}/sms-boot/assets/timg_swap.cpp"
     "${SMS_NATIVE_REPO_ROOT}/sms-boot/assets/restlut_swap.cpp"
     "${SMS_NATIVE_REPO_ROOT}/sms-boot/assets/rarc.cpp"
