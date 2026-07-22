@@ -3893,3 +3893,41 @@ could have falsified the premise is the one I did not run.
 Next: bisect by vertex count with `SB_SKIP_VERTS` to find which draw group actually paints the
 sea region. That is now a mechanical search with a validated instrument, rather than a
 hypothesis to defend.
+
+## The wash is painted by 4-VERTEX QUADS — bisected, and the scene is clean without them
+
+With a validated skip instrument, bisected the frame's 23 distinct vertex counts:
+
+```
+skip 3..13   -> sea 0.0% near-white, mean (8,123,186)      wash GONE
+skip 14..202 -> sea 83.4%                                   wash remains
+skip 3..7    -> sea 0.2%                                    wash GONE
+skip 8..13   -> sea 85.3%                                   wash remains
+skip 4 ONLY  -> sea 0.2%, mean (22,110,122)                 wash GONE
+skip 3,5,6,7 -> sea 82.6%                                   wash remains
+```
+
+**The 4-vertex draws paint the wash.** And with them removed the scene is clean and correct —
+teal sea, right colours, sharp palm, no white anywhere (`scratch/screenshots/bis_c.png`). The
+2D UI disappears too, since those are also quads, so this is not yet a fix — but it proves the
+whole 3D scene underneath is being rendered correctly, and something drawn as a quad is
+covering it.
+
+Narrowing further with the oracle: the **perspective** 4-vertex draws are IDENTICAL between
+runtimes — same textures, blend, colour/alpha update, depth, TEV stage counts and
+multiplicities (22x 256x256 tev=5, 6x 128x256, 4x 128x64, 2x 64x128, 2x 16x64 in both). So the
+culprit is among the ORTHOGRAPHIC quads, i.e. a 2D overlay drawn over the finished scene.
+
+That finally makes sense of the symptom's shape: a 2D quad covering the lower screen explains
+why the sea draw was irrelevant, why the sea's every attribute matched, why the palm was
+affected too (it is in the covered band), and why sky and sand — outside or above it — matched.
+
+**Tooling caveat, recorded so it is not trusted later:** added `SB_SKIP_TEX=<W>x<H>` to skip by
+texture dimensions, and it produces a fully BLACK frame for every value tried (512x256, 256x256,
+20x20, and a small-texture set). That is not a result — either it matches everything or the run
+dies before dumping. It needs debugging before use; the vertex-count skip is the one that has
+been validated against a known-positive.
+
+Next: identify the specific orthographic quad. The useful discriminator is position/extent
+rather than texture, so the next instrument is to log each ortho quad's screen rectangle from
+its vertex data — the covering quad will be the one spanning the washed band.
