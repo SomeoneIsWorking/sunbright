@@ -98,7 +98,12 @@ PPCInstr decode(u32 word, u32 pc) {
             case 72:  i.op = PPCOp::PS_MR;     break;
             case 136: i.op = PPCOp::PS_NABS;   break;
             case 264: i.op = PPCOp::PS_ABS;    break;
-            case 1014:i.op = PPCOp::PS_SUM0;   break; // actually 512+502?
+            // Opcode 4 XO=1014 is dcbz_l, NOT a paired-single op: it zeroes the 32-byte
+            // cache block containing EA, the locked-cache counterpart of dcbz (opcode 31,
+            // same XO). Decoding it as ps_sum0 turned a memory clear into a float add, so
+            // any buffer the game zeroes this way kept its previous contents. Our locked
+            // cache is backed storage at 0xE0000000, so the plain dcbz semantics are right.
+            case 1014:i.op = PPCOp::DCBZ;      break;
             }
             // sum0/sum1 special cases — bits[10:1]
             if (xop10 == 10) i.op = PPCOp::PS_SUM0;
