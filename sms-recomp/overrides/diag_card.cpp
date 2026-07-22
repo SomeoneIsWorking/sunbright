@@ -200,10 +200,23 @@ void exi_deselect(CPUState& cpu) {
 // The helper ORs EXIImm/EXISync/EXIDeselect failures into one flag, so the return code cannot
 // say which failed. Count each separately.
 void exi_imm(CPUState& cpu) {
+    const u32 ch = cpu.gpr[3];
+    // Read the flag word BEFORE the call: EXIImm's prologue tests it, and reading afterwards
+    // would show whatever the call left behind rather than what it decided on.
+    const u32 flags_before = sb_r32(0x804040a0u + (ch & 3) * 0x40u + 0xc);
     func_80369bf4(cpu);
     if (!tracing()) return;
     static long n = 0, fail = 0, lastReport = 0;
-    ++n; if (cpu.gpr[3] == 0) ++fail;
+    ++n;
+    if (cpu.gpr[3] == 0) {
+        ++fail;
+        // The precondition is bits 0-1 clear and bit 0x4 set. Report the first few failures
+        // with the flags that caused them, so the cause is read rather than deduced.
+        static int shown = 0;
+        if (shown < 6) { ++shown;
+            lucent::info("card", "EXIImm FAILED ch{} flags=0x{:08x} (bits0-1={} bit0x4={})", ch,
+                         flags_before, flags_before & 3, (flags_before >> 2) & 1); }
+    }
     if (n - lastReport >= 2000) { lastReport = n;
         lucent::info("card", "EXIImm: {} calls, {} FAILED", n, fail); }
 }

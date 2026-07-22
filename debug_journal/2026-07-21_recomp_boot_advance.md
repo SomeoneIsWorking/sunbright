@@ -3563,3 +3563,35 @@ role: the missing piece is not the callback but the handler's bookkeeping. Confi
 `__EXIData[chan]+0xc` at an EXIImm failure and checking bits 0-1, then decide where those should
 be cleared — ideally by having the transfer completion do exactly what the hardware handler
 does, rather than by clearing a bit because it unblocks the caller.
+
+## Card: confirmed — EXIImm fails on the SDK's "transfer in progress" bit
+
+Read the flags at the moment of failure rather than deducing them:
+
+```
+[card] EXIImm FAILED ch0 flags=0x0000001d (bits0-1=1 bit0x4=1)
+```
+
+Every failure has **bit 0 set** (transfer in progress) with bit 0x4 set (selected) — exactly the
+precondition in EXIImm's prologue, and exactly what was predicted. For once the hypothesis
+survived its test.
+
+`EXISync` (0x80369fdc) explains why it is not the one failing: it spins on the **CR register's
+TSTART bit** (`0xCC006800 + chan*0x14 + 0xc`) and then performs the completion bookkeeping
+INLINE — so a caller that uses EXIImm+EXISync always clears its own busy bit. Our transfers
+complete before the register write returns, so TSTART is already clear and EXISync sails through.
+
+That leaves the SDK's **asynchronous** path: EXIImm with a callback returns immediately and
+EXISync is never called, so bit 0 is cleared only by the EXI transfer-complete interrupt
+handler. This runtime has no interrupt delivery, and `deliver_completion` runs the callback
+without the handler's bookkeeping. Anything using that path leaves bit 0 set permanently, and
+the card's next EXIImm is refused — matching both the ~22% rate and the alternation, since the
+card's own sync transfers interleave with another user's async ones (SRAM/RTC polls constantly
+on this same channel).
+
+**Next, and deliberately not a shortcut:** the fix is NOT to clear bit 0 because it unblocks the
+caller. The right move is for transfer completion to do what the hardware handler does — ideally
+by locating and calling the SDK's own EXI interrupt handler, so the SDK updates its own state
+with its own code, exactly as `deliver_completion` already does for the callback. Clearing the
+bit from the device would be poking guest state to satisfy a check, which is the class of fix
+this project bans.
