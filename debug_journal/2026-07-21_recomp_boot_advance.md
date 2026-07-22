@@ -2489,3 +2489,32 @@ counter once per call, and `video_wait_for_retrace` presents once per call — i
 animation from retrace deltas, an interlaced-field convention (2 fields per frame) would produce
 exactly a factor of 2. That is the next thing to check, and it is worth checking broadly: an
 animation-rate error of 2x would affect EVERY time-driven thing in the game, not just the sea.
+
+## Correcting the rate analysis, and a wall-clock hypothesis
+
+Stamped the UV probe with a frame ordinal to rule out the mundane explanation that consecutive
+probe lines were two draws in one frame. They are not — one sea draw per rendered frame in both
+runtimes — so **the 2x per-frame UV rate stands**.
+
+But my previous entry's "per retrace" arithmetic was wrong and is retracted: the two `rc`
+values are not the same quantity. The oracle's is the SDK field counter (advanced twice per
+frame by `sb_frame_present`, one per NTSC field), while the recomp's is the host present
+counter I added for `VIGetRetraceCount`. Comparing them as if they measured the same thing
+produced a bogus "4x per retrace". Per RENDERED FRAME the difference is 2x, and that is the
+only rate claim supported by the data.
+
+`TVideo::waitForRetrace(u16 param_1)` takes the number of fields the frame covers (2 here) and
+also records `mLastRetraceTime = OSGetTick()`. That matters, because this runtime's time base
+is derived from a monotonic host clock at the correct 40.5 MHz (`tb_get` in rt_core.cpp). So if
+the sea's scroll is driven by an OSGetTick DELTA rather than a per-frame constant, then a
+runtime rendering at half the frame rate advances it twice as much per frame — while being
+correct in real time. That would make the 2x a symptom of frame rate, not a timing bug, and the
+white sea would need a different explanation again.
+
+Distinguishing those two cases is the next step and needs one number: the two runtimes' actual
+present rates. Two attempts to measure it this tick failed for tooling reasons, not for lack of
+a result — `/usr/bin/time` on a process that keeps running past its frame dump measures the
+timeout, not the run, and a `| grep` pipeline discarded the rate lines. Worth doing properly
+rather than guessing: if the recomp runs at ~half the oracle's rate, the wall-clock explanation
+holds and the sea's UV divergence is a consequence of performance; if the rates are comparable,
+the game's animation input genuinely differs and that is the bug.
