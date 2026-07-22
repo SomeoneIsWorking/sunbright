@@ -74,6 +74,26 @@ void guest_set_f32(u32 ea, f32 v) {
     sb_w32(ea, bits);
 }
 
+} // namespace
+
+// ── Suspend scopes ───────────────────────────────────────────────────────────────────────
+// Some draws must NOT be squeezed, and they fall into two kinds:
+//
+//   * full-screen 2D that is authored 0..640 and must span the whole 16:9 picture (fades,
+//     wipes, the dash-blur quad). For these the last 2D ortho is re-issued UNSQUEEZED for the
+//     duration, so 0..640 covers the real screen, then re-squeezed after.
+//   * offscreen passes whose output is consumed through a matrix built from the UNsqueezed
+//     camera (the EFB->texture passes, the mirror pre-render). Squeezing the render but not
+//     the lookup shifts the result ~25% toward the texture centre.
+//
+// Flags rather than a stack because the guest reaches these through perform() dispatch; each
+// scope saves and restores the previous value.
+bool g_ws_2d_suspend = false;
+bool g_ws_persp_suspend = false;
+u32  g_ws_last_ortho = 0;
+
+namespace {
+
 // True once the game has drawn anything in perspective. The boot and logo screens are pure 2D and
 // are presented 4:3, so squeezing them would wrongly narrow them; from the first 3D frame onward
 // the 2D shares a 16:9 picture and must be pre-squeezed to survive it.
@@ -85,7 +105,14 @@ void ov_gx_set_projection(CPUState& cpu) {
     const bool is2d = (type != GX_PERSPECTIVE);
     if (!is2d) g_seen3d = true;
 
-    const bool patch = widescreen_on() && (!is2d || g_seen3d) && sb_ram_fast(mtx) != nullptr;
+    // Remember the live 2D ortho so a suspend scope can re-issue it unsqueezed. Orthos issued
+    // INSIDE a scope are effect-internal (draw_mist's ortho lives on the guest stack), and
+    // recording one would leave the reload pointer dangling once the frame returns.
+    if (is2d && !g_ws_2d_suspend && sb_ram_fast(mtx) != nullptr) g_ws_last_ortho = mtx;
+
+    const bool suspended = is2d ? g_ws_2d_suspend : g_ws_persp_suspend;
+    const bool patch = widescreen_on() && !suspended && (!is2d || g_seen3d) &&
+                       sb_ram_fast(mtx) != nullptr;
     f32 m00 = 0.0f, m03 = 0.0f;
     if (patch) {
         const float scale = ws_scale();
@@ -138,6 +165,27 @@ void ov_gx_set_projection_entry(CPUState& cpu) {
 }
 
 } // namespace
+
+// Re-issue the last 2D ortho through the real GXSetProjection, with the squeeze suspended or
+// restored according to the current flag. A scratch CPUState is enough: GXSetProjection preserves
+// the callee-saved registers the caller cares about.
+static void ws_reload_ortho(CPUState& cpu) {
+    if (!g_ws_last_ortho) return;
+    CPUState scratch = cpu;
+    scratch.gpr[3] = g_ws_last_ortho;
+    scratch.gpr[4] = 1;   // GX_ORTHOGRAPHIC
+    ov_gx_set_projection(scratch);
+}
+
+void ws_2d_suspend_begin(CPUState& cpu) {
+    g_ws_2d_suspend = true;
+    ws_reload_ortho(cpu);   // unsqueezed: 0..640 now spans the whole 16:9 present
+}
+
+void ws_2d_suspend_end(CPUState& cpu) {
+    g_ws_2d_suspend = false;
+    ws_reload_ortho(cpu);   // re-apply the squeeze for whatever draws next
+}
 
 // The pillar: half the width the 2D squeeze leaves empty on each side, in the game's own 640-wide
 // 2D space. hud.cpp anchors corner elements back out by exactly this much. 0 when widescreen is off,
