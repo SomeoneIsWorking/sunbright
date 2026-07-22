@@ -2941,3 +2941,37 @@ scene and the two runtimes are demonstrably not drawing the same scene.
 
 Next: identify what the 512x256 texture is (J2D window/pane atlas is the obvious candidate) and
 which draw path emits those quads, then find why the recomp emits a quarter of them.
+
+## The 2D gap explained: the recomp has NO memory-card support, so the UI state differs
+
+Eliminated two mechanical causes first, both by measurement:
+- **Not cull-all drops.** Added a counter to aurora's `GX_CULL_ALL` early-return (dropping a
+  draw is invisible by construction, so it needed counting): **zero** dropped draws in either
+  runtime.
+- **Not parser framing loss.** Our FIFO parser drops the remainder of a batch on an
+  unrecognised opcode, which would truncate exactly the tail-of-frame 2D draws — but the count
+  is **zero** across a full run.
+
+So the game itself is not emitting those draws in the recomp, and the reason was on screen the
+whole time: **the recomp's dialog reads "There is no Memory Card in Slot A." while the oracle's
+dialog is empty.** The decomp links aurora's CARD implementation (`aurora_card`); this runtime
+has no card device and no CARD overrides at all. The game therefore takes its own no-card path
+and draws a different, smaller UI — no blue J2D "New" panel per slot, hence a quarter of the
+512x256 quads.
+
+**The two runtimes are not rendering the same scene**, and have not been for the whole
+file-select comparison. That undermines the sea comparison as well: the sea samples a grab of
+the ENTIRE scene through wrapping UVs, so a different UI in that grab means a different sampled
+colour. Some or all of the sea's brightness difference may simply be "the scenes differ" rather
+than a rendering defect — which would explain why every piece of GX state matched while the
+output did not.
+
+I should have caught this far earlier. The dialog text was visible in the very first
+side-by-side screenshot and I described it then as evidence the CARD path "reports its real
+state rather than a fabricated one" — correct as far as it went, but I did not follow through to
+the consequence that the two runtimes were therefore in different UI states and not comparable.
+
+Next: implement CARD for the recomp (aurora's CARD is already there, as the decomp's use of it
+shows) so both runtimes reach the same file-select state. Only then is a scene-level comparison
+meaningful — and the sea question should be re-asked from scratch afterwards, not resumed from
+its current dead end.
