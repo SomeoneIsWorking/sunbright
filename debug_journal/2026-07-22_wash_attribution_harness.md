@@ -246,21 +246,41 @@ recomp its own registry (`sms-recomp/runtime/sb_log.cpp`, same semantics, same S
 Validation matters: `SB_LOG=list` announces a channel when a callsite CHECKS it, which is how the
 next result was read correctly rather than as another zero.
 
-## The finding
+## FALSE START: "the recomp issues no indexed matrix loads" was WRONG
 
-With the channel live, `SB_LOG=pnzero,list` through to file-select announces **no channels at
-all**. The `pnzero` check sits inside the `CP_CMD_LOAD_INDX_A..D` handler (indexed XF load), so
-the callsite is never reached: **the recomp issues no indexed pos/nrm matrix loads**.
+I first read the silence as "the callsite is never reached, so there are no indexed pos/nrm matrix
+loads" and published that. It was wrong twice over.
 
-That matches the symptom precisely. In J3D, rigid parts load their matrix directly
-(`GXLoadPosMtxImm` -> `CP_CMD_LOAD_XF_REG`), while ENVELOPE-SKINNED parts use `GXLoadPosMtxIndx`
--> an indexed XF load from the draw-matrix pool. Mario's rigid parts (body, head, hat, legs)
-render correctly; his envelope-skinned arms and gloves never receive their matrices and collapse.
+**The provider still was not linked.** `sb_log.cpp` went into the `sms-recomp-rt` STATIC LIBRARY,
+and a weak UNDEFINED reference does not pull a member out of a static archive — nothing strongly
+references `sb_log.o`, so it was never extracted and the weak symbol stayed null. `nm` showed
+`w sb_log_enabled` with no address in the final binary. The provider must be compiled into the
+EXECUTABLE. This is the same silent-zero failure the file was documenting, repeated one step later.
 
-## Next step
+**The raw opcode census refutes the claim outright.** `SB_OPCODE_CENSUS=500` over the file-select
+frame counts, in the recomp: `20=6,458,890` and `28=6,458,890` — indexed XF loads, POS and NRM
+paired as expected (oracle known-positive: `20=22,888,411`, `28=22,888,411`). The recomp issues
+millions of them.
 
-Determine WHY no indexed load reaches the FIFO: either the game's `GXLoadPosMtxIndx` path does not
-emit the opcode in this runtime, or the opcode is emitted but dispatched down a different branch
-before reaching the `CP_CMD_LOAD_INDX_*` case. Count raw FIFO opcodes in the recomp stream to
-split those two before touching any code — do NOT assume which, and validate the counter against a
-known-positive (the decomp runtime, which must show a nonzero indexed-load count).
+## What is actually established
+
+With the provider linked into the executable (`nm` shows `T sb_log_enabled`) and the channel
+provably live (`SB_LOG=list` announces `pnzero`, 13.8M checks), the result is a MEASURED zero:
+
+- **0 zero-rotation matrix uploads** — skinning matrices are not being zeroed.
+- **6.4M indexed pos/nrm matrix loads** — the envelope-skinning path is exercised.
+
+So Mario's missing arms are neither "matrices never loaded" nor "matrices zeroed". Both hypotheses
+are refuted with validated instruments. The defect lies further along: the matrices load, but what
+the arm packets do with them is wrong (candidates, untested: the envelope matrix INDEX range per
+packet — this project has already hit `wEvlpMtxNum` bounds in `TMirrorActor` — or the draw-matrix
+pool's endianness on the `copy_xf_data(..., !array.le)` path, where a guest-endian pool read as
+host-endian yields garbage transforms rather than zeros).
+
+## Standing lesson
+
+Two investigations in one day were derailed by an instrument that answered "no" when it meant
+"absent". Aurora's `sb_gx_log_on` now ABORTS when `SB_LOG` is set and no provider is linked: if
+the user asked for diagnostics, silently delivering none is never the right answer. (That abort
+path is NOT yet exercised — both runtimes now provide the symbol, so triggering it would require
+deliberately unlinking the provider.)
