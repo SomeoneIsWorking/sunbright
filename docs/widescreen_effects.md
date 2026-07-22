@@ -13,7 +13,7 @@ w/6+1 per side. Do NOT use a leaky "inside effect X" flag on a hot global hook
 (GXLoadPosMtxImm): the tail-recursive scene draw leaks it (reverted TSunGlass attempt,
 note in scene_render.cpp).
 
-## Inventory (from decomp/sms decomp) and status
+## Inventory (from reference/sms decomp) and status
 
 | Effect | Guest func | Status |
 |---|---|---|
@@ -102,3 +102,60 @@ note in scene_render.cpp).
 - Headless verification: `SUNBRIGHT_STATE=<sav>` needs `SUNBRIGHT_STATE_FIELDS=0` under
   SUNBRIGHT_HEADLESS — the vi_end_field_event field counter never increments without a
   presenter, so the default 1500-field threshold never arms.
+
+---
+
+# Recomp-era addendum (2026-07-23)
+
+The table above was written for the Dolphin-era runtime. Everything it marks ✅ has now been
+ported to `sms-recomp` (`widescreen.cpp`, `widescreen_effects.cpp`, `hud.cpp`,
+`sunmodel_widescreen.cpp`). Three things do NOT carry over unchanged, all for the same reason:
+
+**"A fix exists" and "the fix runs" were different claims in the Dolphin era.** That runtime
+reached overrides through JIT block-linking, which silently skipped some entirely — this document's
+own dead-ends section records the TAfterEffect/TEfbCtrlTex fixes never being in the binary at all.
+In the recomp EVERY call goes through `call_ppc`, so every override fires, and fixes that were
+never exercised are exercised now.
+
+Hence `/wsfx`, a live effect census on the probe (`SBR_PROBE=1`): which widescreen-affected effects
+actually ran this session, and how often. Measure before believing this table.
+
+## Corrections found by measuring, not reading
+
+1. **The fade rect was widened TWICE.** `TSMSFader::draw` widens and then calls `drawFadeinout`,
+   which is also hooked; both reach `fill_rect`. Measured via `/fills`: the same rect arriving as
+   both `-107..747` and `-250..890`. Only the outermost wrapper may widen now.
+
+2. **The fader's suspend scope ran every frame while drawing nothing.** `TSMSFader::draw` returns
+   immediately when `mFadeStatus == FULLY_FADED_IN` (all of normal gameplay), but the wrapper still
+   entered `ws_2d_suspend_begin/end`, which re-issues a projection on entry AND exit — 4860 scoped
+   pairs per run in Delfino Plaza where 37 were wanted. Now mirrors the game's own early-out
+   (status at +0x20).
+
+   NOTE, since the tempting theory is wrong: this was NOT clobbering a perspective projection.
+   Measured `fader.draw.under2d = 4860 of 4860` — the fader always runs under a 2D ortho, so the
+   reload re-issued the same kind of projection. It was waste and a latent hazard, not corruption.
+   The same check says `TAfterEffect` also always runs under 2D, as this document assumed.
+
+3. **`TMovieSubTitle: centered 4:3 composition is correct` describes the wrong element.** The
+   subtitle band that is narrower than its text (user report, pre-existing since the Dolphin era) is
+   drawn by **`J2DTextBox` panes `tet1`/`tet2`**, identified live via `/2dclass` — the telop/message
+   system, not `TMovieSubTitle`'s `me_a`/`me_b`. It is also NOT `fill_rect` (`/fills` shows only
+   fades) and NOT the quad emitter (`/2d` does not list it). STILL OPEN: the band pane itself has
+   not been identified — it is neither a J2DPicture nor a J2DTextBox, so the next step is
+   `J2DPane::drawSelf`, the base-class path this diagnostic does not yet hook.
+
+## Diagnostics (all live, all on the probe)
+
+| Endpoint | Answers |
+|---|---|
+| `/wsfx` | which widescreen effects ran, how often, and under which projection kind |
+| `/fills` | every distinct rect `fill_rect` was asked for |
+| `/2d` | 2D panes drawn via the quad emitter: name, transform, HUD anchor |
+| `/2dclass` | which J2D CLASS drew each pane (needs `SBR_DIAG_2D=1`) |
+
+## Not yet verified in this runtime
+
+`sunmodel_widescreen.cpp` is ported but has never been observed executing — `getZBufValue` was not
+reached in Delfino Plaza or Gelato Beach across ~1000 frames. It needs a scene with a live sun/lens
+flare before its correction can be called verified.

@@ -91,6 +91,10 @@ void guest_set_f32(u32 ea, f32 v) {
 bool g_ws_2d_suspend = false;
 bool g_ws_persp_suspend = false;
 u32  g_ws_last_ortho = 0;
+// Which projection kind the game last set. A 2D effect wrapper that re-issues an ortho while a
+// PERSPECTIVE is current leaves the wrong projection behind for whatever draws next, so a wrapper
+// needs to be able to ask.
+bool g_ws_last_proj_is2d = false;
 
 namespace {
 
@@ -104,6 +108,7 @@ void ov_gx_set_projection(CPUState& cpu) {
     const u32 type = cpu.gpr[4];
     const bool is2d = (type != GX_PERSPECTIVE);
     if (!is2d) g_seen3d = true;
+    g_ws_last_proj_is2d = is2d;
 
     // Remember the live 2D ortho so a suspend scope can re-issue it unsqueezed. Orthos issued
     // INSIDE a scope are effect-internal (draw_mist's ortho lives on the guest stack), and

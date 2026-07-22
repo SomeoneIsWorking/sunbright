@@ -42,6 +42,7 @@ extern "C" void func_801aa6cc(CPUState&);   // TBathWaterManager::draw_mist
 
 // widescreen.cpp
 extern bool g_ws_2d_suspend;
+extern bool g_ws_last_proj_is2d;
 extern bool g_ws_persp_suspend;
 void ws_2d_suspend_begin(CPUState&);
 void ws_2d_suspend_end(CPUState&);
@@ -59,6 +60,32 @@ constexpr u32 AFTEREFFECT_PERFORM  = 0x8022d4f8u;
 constexpr u32 BATH_DRAW_MIST       = 0x801aa6ccu;
 
 bool widescreen_on() { return sbr_ws_pillar() != 0; }
+
+// ── Live effect census (probe /wsfx) ─────────────────────────────────────────────────────
+// Which widescreen-affected effects actually RUN, and how often. The retired inventory
+// (docs/widescreen_effects.md) marks each effect fixed, but that status does not transfer to
+// this runtime: the Dolphin era reached overrides through JIT block-linking, which silently
+// skipped some of them entirely (its own notes record the TAfterEffect/TEfbCtrlTex fixes never
+// being in the binary at all), while here every call goes through call_ppc and reaches them.
+// So "a fix exists" and "the fix runs, once" are different claims, and only this tells them
+// apart. An effect that never fires cannot have been verified by looking at the screen.
+std::map<std::string, unsigned long> g_fx;
+void fx(const char* name) { ++g_fx[name]; }
+
+const bool g_fx_probe = [] {
+    sb_probe_register("/wsfx", "widescreen effect census: which effects ran, and how often",
+                      [](const ProbeArgs&) {
+                          std::string out;
+                          char buf[96];
+                          for (const auto& [k, n] : g_fx) {
+                              std::snprintf(buf, sizeof buf, "%-26s %lu\n", k.c_str(), n);
+                              out += buf;
+                          }
+                          if (out.empty()) out = "no widescreen effects have run yet\n";
+                          return out;
+                      });
+    return true;
+}();
 
 // JDrama::TRect (JUTRect) is s32 x1, y1, x2, y2.
 constexpr u32 RECT_X1 = 0x0, RECT_X2 = 0x8;
@@ -92,13 +119,35 @@ void with_widened_rect(CPUState& cpu, u32 rectReg, void (*real)(CPUState&)) {
 
 // TSMSFader fills the caller's TRect with a GX quad. Widening the rect is enough here:
 // drawFadeinout draws its own quad rather than going through fill_rect.
-void ov_fader_draw_fadeinout(CPUState& cpu) { with_widened_rect(cpu, cpu.gpr[4], func_8013fa54); }
+void ov_fader_draw_fadeinout(CPUState& cpu) { fx("fader.drawFadeinout"); with_widened_rect(cpu, cpu.gpr[4], func_8013fa54); }
 
 // TSMSFader::draw also carries the hx_wiper circle-wipe curtain, which draws 0..640 geometry with
 // the CURRENT ortho — so the rect widening is not enough and the ortho itself must be unsqueezed
 // for the duration, or the wipe shows pillars at the sides.
+// MIRROR THE GAME'S OWN EARLY-OUT. TSMSFader::draw (GC2D/ScrnFader.cpp) draws NOTHING when the
+// fade is FULLY_FADED_IN, which is the state for all of normal gameplay — and the census shows
+// this entry running every single frame (4686 calls over ~3900 frames in Delfino Plaza).
+//
+// Entering the suspend scope regardless was actively harmful, not merely wasteful: the scope
+// re-issues a 2D ORTHO through the real GXSetProjection on both entry and exit. Whatever
+// projection the scene had current at that moment — a perspective, during the 3D passes — was
+// therefore replaced by an ortho every frame, for a fader that drew nothing at all.
+//
+// mFadeStatus is at +0x20 (ScrnFader.hpp); 1 = FULLY_FADED_IN.
+constexpr u32 FADER_STATUS = 0x20;
+constexpr u32 FADE_STATUS_FULLY_FADED_IN = 1;
+
 void ov_fader_draw(CPUState& cpu) {
-    if (!widescreen_on()) { func_8013fc88(cpu); return; }
+    fx("fader.draw");
+    fx(g_ws_last_proj_is2d ? "fader.draw.under2d" : "fader.draw.under3d");
+    const u32 self = cpu.gpr[3];
+    const bool draws_nothing =
+        sb_ram_fast(self) && sb_r32(self + FADER_STATUS) == FADE_STATUS_FULLY_FADED_IN;
+    if (!widescreen_on() || draws_nothing) {
+        func_8013fc88(cpu);
+        return;
+    }
+    fx("fader.draw.scoped");
     ws_2d_suspend_begin(cpu);
     with_widened_rect(cpu, cpu.gpr[4], func_8013fc88);
     ws_2d_suspend_end(cpu);
@@ -138,10 +187,12 @@ const bool g_fill_probe = [] {
 void ov_fill_rect(CPUState& cpu) {
     const u32 rect = cpu.gpr[3];
     if (!widescreen_on() || !sb_ram_fast(rect)) { func_80140390(cpu); return; }
+    fx("fill_rect");
     note_fill(rect);
     const s32 x1 = (s32)sb_r32(rect + RECT_X1), x2 = (s32)sb_r32(rect + RECT_X2);
     const bool full_width = (x1 <= 0 && x1 > -40 && x2 >= 600 && x2 < 700);
     if (!full_width) { func_80140390(cpu); return; }
+    fx("fill_rect.widened");
     with_widened_rect(cpu, rect, func_80140390);
 }
 
@@ -150,6 +201,8 @@ void ov_fill_rect(CPUState& cpu) {
 // TEXTURE pixel space, 1:1 with the copy source rect, so those orthos must reach the GP verbatim.
 void ov_efbctrltex_perform(CPUState& cpu) {
     const u32 flags = cpu.gpr[4];
+    if (flags & 0x80) fx("efbtex.pass_open");
+    if (flags & 0x8) fx("efbtex.pass_close");
     if (!widescreen_on()) { func_802f8bac(cpu); return; }
     if (flags & 0x80) {
         g_ws_2d_suspend = true;
@@ -174,6 +227,7 @@ void ov_efbctrldisp_perform(CPUState& cpu) {
 // camera parameters. Squeezing only the render slides the reflection ~25% toward the texture
 // centre. Offscreen perspective consumed through camera-derived matrices stays 4:3.
 void ov_mirrorcam_perform(CPUState& cpu) {
+    fx("mirrorcam.perform");
     if (!widescreen_on()) { func_80193fbc(cpu); return; }
     const bool prev = g_ws_persp_suspend;
     g_ws_persp_suspend = true;
@@ -189,6 +243,8 @@ void ov_aftereffect_perform(CPUState& cpu) {
     const u32 self = cpu.gpr[3], flags = cpu.gpr[4];
     // Mirror the game's own early-outs: only the draw pass (0x10), with the effect enabled
     // (unk14 bit 0), emits the quad. Otherwise this would churn projections every frame.
+    fx("aftereffect.perform");
+    fx(g_ws_last_proj_is2d ? "aftereffect.under2d" : "aftereffect.under3d");
     const bool draws = widescreen_on() && (flags & 0x10) && sb_ram_fast(self) && (sb_r8(self + 0x14) & 1);
     if (!draws) { func_8022d4f8(cpu); return; }
     ws_2d_suspend_begin(cpu);
@@ -201,6 +257,7 @@ void ov_aftereffect_perform(CPUState& cpu) {
 // identity mapping: squeezing it would shrink the redraw to the centre 3/4 and misalign it against
 // the copy. Flag only, no ortho reload — draw_mist issues its own projection.
 void ov_bath_draw_mist(CPUState& cpu) {
+    fx("bath.draw_mist");
     if (!widescreen_on()) { func_801aa6cc(cpu); return; }
     const bool prev = g_ws_2d_suspend;
     g_ws_2d_suspend = true;
