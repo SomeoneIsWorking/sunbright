@@ -2746,3 +2746,46 @@ about the FRAME SEAM rather than game logic: one of the two runtimes renders a d
 of frames per game update. The decomp's `MarDirectorDirect.cpp` already carries a comment about
 a "catch-up render" being made deterministic, which is the right place to look next — as is
 whether the decomp presents an extra frame per update by design or by accident.
+
+## CORRECTION: not presents per direct() — movement dispatches per direct()
+
+Last entry concluded "the decomp calls `direct()` once per TWO presents". **That is wrong**, and
+the error was methodological: I divided a movement count from one run by a `direct()` call count
+from a DIFFERENT run. Measuring both in a single run settles it:
+
+```
+[dir-br] call=49132 ... vsyncRate=20 unk54_in=20 unk54_out=0
+[phase] after 106600 retraces: movement=98170 draw=49050
+```
+
+- `direct()` calls 49132 vs draws 49050 vs frames 53300 -> **~1 present per `direct()` call**,
+  not 2. The frame seam is fine.
+- movement 98170 / 49132 calls = **2.0 movement dispatches per `direct()` call** — even though
+  `unk54_in=20 -> unk54_out=0` proves the loop iterates FOUR times.
+
+So both runtimes iterate the loop 4x per call, but the decomp only dispatches movement to the
+actor on 2 of those iterations while the recomp dispatches on all 4. The divergence is a GATE
+inside the loop, not the loop count and not the frame seam.
+
+The gate is visible in `MarDirectorDirect.cpp`:
+
+```c
+u32 uVar11 = ~uVar8;
+u32 uVar4  = uVar11;
+if (unk58 & 1) uVar4 &= ~0x100;
+if (unk58 & 2) uVar4 &= 0x200;      // clears bit 0 -> actor's `param & 0x1` false
+...
+mPerformListMovement->perform(uVar4, &local_140);
+```
+
+`uVar4` is the COMPLEMENT of `uVar8`, and `uVar8` accumulates bits from the `mState` switch
+earlier in the loop (`uVar8 |= 1`, `uVar8 |= 2`). So whether an actor sees the movement bit
+depends on `mState` and `unk58` — and `uVar4 &= 0x200` in particular clears bit 0 outright.
+
+Next: log `uVar8`/`uVar4`/`unk58` per loop iteration in the decomp and compare against the same
+values in the recomp. That pins down which iteration's gate differs, and the retail
+disassembly at 0x80299b2c (already cited in this file for the neighbouring branch) can then
+adjudicate — as it did for the loop itself, where the port turned out to be faithful.
+
+Methodological note to self: two of the last three conclusions came from dividing counts taken
+in different runs. Cross-run arithmetic is not measurement; put both counters in one run.
