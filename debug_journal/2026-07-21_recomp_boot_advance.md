@@ -3983,3 +3983,48 @@ whether that perspective quad's VERTEX DATA differs between runtimes — state a
 but nothing has yet compared the numbers it is drawn from. Note `SB_SKIP_BIGQUAD` produced no
 frame dump at all (the run does not survive skipping that quad), so it needs a gentler probe
 than removal.
+
+## A pixel-attribution HARNESS — and two more candidates killed by it
+
+Built the thing this investigation actually needed: `SB_PIXEL_WATCH=<x>,<y>[,<frame>]` reports
+**every draw whose geometry covers that pixel, in order, with the state that decides what it
+writes there**. Each draw's vertices go through the same transform the GPU uses — per-vertex
+PNMTXIDX, position matrix, projection, divide by w, viewport map — and any draw whose
+screen-space box contains the watch point is printed. One run, no bisecting.
+
+It works. Watching a washed sea pixel (160,360) returns 17 covering draws, including:
+
+```
+[pixel-watch] draw#358517 P verts=4  box=[-2947..3587 x -2853..3301] bf=1/1 cU=0 aU=1
+[pixel-watch] draw#358623 O verts=8  box=[0..640 x 0..448]  tex0=256x256 bf=4/5 cU=1 aU=0
+[pixel-watch] draw#358625 O verts=4  box=[0..640 x -16..464] tex0=128x256 bf=4/5 cU=1 aU=1
+```
+
+The last is the FADER: `tevp=[0:c(15,15,15,10) a(7,7,7,5)] tm=255`, no texgens, TEXMAP_NULL —
+`GX_PASSCLR`, exactly `TSMSFader::fill_rect`'s signature (ScrnFader.cpp:15-42), blended
+SRCALPHA/INVSRCALPHA, full-screen, drawn last. The oracle's 128x256 orthographic draws are
+textured with blending OFF, so the recomp draws a fader quad the oracle does not. A compelling
+candidate — and the agent that "ruled out" the fader was wrong to, since it is demonstrably
+emitting here.
+
+**Measured anyway. Both remaining 4-vertex candidates are refuted:**
+
+```
+skip the fader quad (ortho, 4 verts, numTexGens==0):   sea 82.1%  (unchanged)
+skip the scene quad (persp, 4 verts, ONE/ONE, cU=0):   sea 82.1%  (unchanged)
+```
+
+So we have a genuine paradox to resolve, stated plainly rather than papered over: skipping ALL
+4-vertex draws clears the wash completely, yet neither of the only two 4-vertex draws that cover
+the washed pixel clears it alone. The possibilities, in the order worth testing:
+
+1. **The harness is missing covering draws.** It decodes F32/S16/U16 positions and skips other
+   formats silently — the same class of gap that made the earlier quad sweep look conclusive on
+   a third of the data. It should COUNT what it could not decode and say so.
+2. **Bounding boxes over-/under-approximate.** A large rotated quad's box can contain a pixel
+   its triangles do not, and vice versa.
+3. **The effect is cumulative** — several 4-vertex draws each contributing, so removing any one
+   changes nothing measurable while removing all changes everything.
+
+(1) is both the most likely and the cheapest to check, and it is the same mistake twice, so the
+harness gets a "could not decode N draws" line before it is trusted further.
