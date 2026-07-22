@@ -9,6 +9,7 @@
 // (overrides/native_vi.cpp). This split is the same one the decomp runtime uses.
 
 #include "overrides.h"
+#include "../runtime/probe_server.h"
 
 #include <aurora/aurora.h>
 #include <aurora/event.h>
@@ -134,6 +135,10 @@ void video_wait_for_retrace(CPUState& cpu) {
     ++g_present_count;
     report_app_state();
     report_mario_pos();
+    // The probe's handlers run HERE, on the game thread at the frame boundary, which is the only
+    // point guest memory is coherent. See probe_server.h.
+    sb_probe_start();
+    sb_probe_pump();
 
     // How far the GUEST's own retrace counter advances per rendered frame. Game code paces
     // animation off this, and the decomp runtime advances it once per NTSC field (twice per
