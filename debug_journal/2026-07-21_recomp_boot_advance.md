@@ -3769,3 +3769,37 @@ retail does before assuming which runtime is wrong.
 Next: find what dispatches the Graffito pass and why the recomp issues it 68 times. `cU=0`
 draws being invisible on their own is precisely why this hid for so long — it can only be seen
 by counting, not by looking.
+
+## The extra alpha objects are 17 SEPARATE objects, and not save-driven
+
+Broke the 17x over-draw down by transform, which distinguishes "dispatched more often" from
+"more objects exist" using data already captured:
+
+```
+RECOMP: 34 draws of 59 verts -> 17 distinct positions, each drawn twice
+ORACLE:  2 draws of 59 verts ->  1 distinct position,  drawn twice
+```
+
+Both dispatch each object the SAME number of times (twice). The recomp's scene simply contains
+**17 of these objects where the oracle has 1**, all in a tight cluster on the sand plane
+(x -246..-184, y ~-310 constant, z -982..-958); the oracle's single one sits inside that same
+cluster. So this is not a dispatch-rate problem like the movement phase — it is object count.
+
+**Confound checked and eliminated.** The recomp had mounted a real save while the oracle had
+none, so their game state genuinely differed and the draw counts could have followed from that.
+Re-ran the recomp with `SBR_CARD_A` pointing at a nonexistent file, reproducing the oracle's
+no-card state:
+
+```
+59-vertex draws with no card: 68     (with card: 68)
+sea near-white with no card: 82.1%   (with card: 82.1%, oracle: 0.0%)
+```
+
+Identical. The extra objects and the wash are independent of card and save state, so the
+comparison stands on its own — and, usefully, the whole card arc turns out NOT to have been a
+prerequisite for this measurement after all.
+
+Next: identify what these 17 objects are. Constraints are tight — 59 vertices, colour writes
+off, alpha writes on, drawn twice each, on a horizontal plane at constant height in a small
+patch, with the oracle rendering exactly one. That is a well-specified search in the scene's
+actor list rather than an open question.
