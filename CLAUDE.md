@@ -207,17 +207,24 @@ harness gates it; the tool refuses paths outside `scratch/`). Use it in subagent
 Boot-order fidelity: GC logo → title (stage 15) → file-select → gameplay, rendered through
 Aurora GX. Fix defects in boot order; finish one port end-to-end before switching.
 
-**Recomp file-select status (2026-07-22): it RENDERS CORRECTLY.** The multi-session "sea wash"
-defect does NOT exist: the measurement rect sat on the white SURF LINE (legitimately white), and
-the "oracle" reference was the TITLE SCREEN — `SB_STAGE=15` boots to title, reaching file-select
-needs `SB_PAD_SCRIPT="800:START 840:-"` and a late dump. With both runtimes actually at
-file-select the covering-prim inventories match (41 vs 41 screen-blend draws over the pixel).
-Do NOT re-open "sea wash" investigations; see `debug_journal/2026-07-22_wash_attribution_harness.md`.
-Those residuals are FIXED (2026-07-22): `GXTexObj_::has_mips()` gated on aurora's `flags` bit 0,
-which only the SDK/extension path sets — the recomp drives textures via BP registers, so every
-mipmapped texture bound single-level and minified ground planes aliased into bright shimmer.
-`has_mips()` now derives from TexMode0's min-filter field, the hardware's own rule. Recomp
-file-select now matches retail per-region within ~6 levels.
+**Recomp status (2026-07-22): title, file-select AND Delfino Plaza all render.** File-select
+renders correctly — do NOT re-open "sea wash" investigations (the measurement rect sat on the
+white SURF LINE and the "oracle" was the TITLE SCREEN; see
+`debug_journal/2026-07-22_wash_attribution_harness.md`). The residual there was FIXED:
+`GXTexObj_::has_mips()` gated on aurora's `flags` bit 0, which only the SDK path sets, so every
+mipmapped texture bound single-level; it now derives from TexMode0's min-filter field, the
+hardware's own rule.
+
+**Loading a save reaching the plaza is FIXED (2026-07-22).** "Back to the title screen" is the
+stage-load failure path (`TApplication::proc` turns setup failure into `APP_STATE_DONE` =
+`mNextArea.set(15,0,0)`). Root cause: SPRs were per-`CPUState`, so `LCEnable()`'s HID2 bit was
+invisible to the THP decode thread and the codec returned "locked cache not enabled" — failing
+`loadResource`'s `if (mMap == 1) thpInit()`, which is Delfino-only. SPRs are now machine-wide.
+**Any machine-scope state modelled per-CPUState is invisible across threads** and will look like
+an unrelated subsystem "not being ported". THP decoding WORKS; only session teardown+reopen does
+not (`SBR_THP=stage|all|none`, default stage). `SBR_FASTBOOT=1` / `SBR_STAGE=<n>` boot straight
+into a stage — use it, it makes gameplay bugs reproducible without driving the menus. Details:
+`debug_journal/2026-07-22_recomp_delfino_spr_locked_cache.md`.
 
 **Title screen status (2026-07-11): the title RENDERS FAITHFULLY.** The multi-session
 "washed / orange / blue-diluted / oversized logo" defect was a **diagnostic dump-path
