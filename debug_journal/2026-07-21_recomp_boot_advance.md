@@ -4028,3 +4028,41 @@ the washed pixel clears it alone. The possibilities, in the order worth testing:
 
 (1) is both the most likely and the cheapest to check, and it is the same mistake twice, so the
 harness gets a "could not decode N draws" line before it is trusted further.
+
+## Harness hardened: it now accounts for itself — and the paradox survives
+
+Two self-checks added after the harness produced a null, because a null from an unvalidated
+instrument has misled this investigation repeatedly:
+
+1. **Coverage accounting.** The pixel watch now reports how many draws it examined and how many
+   it COULD NOT DECODE. Result: **2550 draws examined, 0 not decoded.** So the "only two
+   4-vertex draws cover this pixel" finding is not an artefact of silently skipped formats —
+   that was the leading explanation and it is now dead.
+   (Its first version printed nothing at all: the accounting was inside the single-frame gate,
+   so its frame-change trigger could never fire. Reporting periodically instead.)
+2. **Skip hit counts.** Each targeted skip now reports how many draws it actually removed —
+   a skip that matches nothing yields a null indistinguishable from "not the cause".
+   `SB_SKIP_FADER` removes **123,401 draws** over a run (~82/frame, so it matches every
+   untextured orthographic quad, not merely the fader). The skips are real; the earlier
+   refutations stand.
+
+**A genuine harness limitation, found by that validation and worth keeping in mind:** the pixel
+watch runs in `draw_prim`, which is BEFORE the skip point in `push_gx_draw`. So it reports draws
+as SUBMITTED, not as rendered — which is why the fader still appeared in the covering list under
+`SB_SKIP_FADER`. Not a broken skip; a probe placed one stage too early. Its coverage answers are
+still valid, but it cannot be used to confirm that a skip took effect.
+
+So the paradox is real and now well-characterised rather than explained away:
+- skipping ALL 4-vertex draws clears the wash;
+- the only two 4-vertex draws covering the washed pixel are the untextured full-screen quad
+  (fader family) and the additive scene-covering quad;
+- skipping each of those families individually — both verified to remove thousands of draws —
+  leaves the wash exactly as it was (82.1%, identical mean).
+
+That combination can only hold if the covering test is wrong for some draw, since the coverage
+census is complete. The remaining suspect is the SCREEN-SPACE MAPPING itself: bounding boxes
+over- or under-approximate, and more importantly the orthographic path may not need the position
+matrix at all — if 2D quads arrive already in screen space, applying `pnMtx` to them puts their
+computed box somewhere the draw never was. That would let a genuinely covering quad go
+unreported while unrelated ones appear. Next: validate the mapping by asserting a known draw's
+box — the save-block quads, whose on-screen position is measurable from the screenshot.
