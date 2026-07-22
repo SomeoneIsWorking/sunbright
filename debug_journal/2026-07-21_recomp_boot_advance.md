@@ -3052,3 +3052,43 @@ Worth noting the design is holding up: every wrong guess so far produced a LOUD,
 failure (a distinct on-screen message, or the device aborting on an unimplemented command)
 rather than silently wrong save data. That is the fail-fast rule paying off in a subsystem where
 quiet corruption would be the worst outcome.
+
+## Card: read address layout decoded from retail; the failure is EARLIER than reading
+
+Disassembled the driver's read-command builder rather than guessing further. At `0x8035579c`
+it writes a 5-byte command — `0x52` plus FOUR address bytes — with the offset scattered
+(`0x803557ac`..`0x803557c8`):
+
+```
+b0 = (addr >> 29) & 0x03    b1 = (addr >> 21) & 0xFF
+b2 = (addr >> 19) & 0x03    b3 = (addr >> 12) & 0x7F
+```
+
+Those are contiguous bits 12..30, and the driver pre-masks the address with `0xFFFFF000`
+(`rlwinm r26, r26, 0, 0, 0x13`), so the low 12 bits are always zero. Implemented the exact
+inverse, including reassembling the address across the 4-byte + 1-byte immediate transfers
+EXIImmEx splits the command into.
+
+**But the guest never gets there.** Logging every distinct command it issues:
+
+```
+[card] command 0x00 (imm write 0x00000000, 2 bytes)   read ID
+[card] command 0x89 (imm write 0x89000000, 1 bytes)   clear status
+[card] command 0x83 (imm write 0x83000000, 2 bytes)   read status
+```
+
+...and nothing else — no `0x52` read, no DMA. So the "damaged" verdict is reached from the ID
+and status alone, before a single block is read, and the address work (while correct and worth
+keeping) is not what is blocking.
+
+Candidates for the next step, in order:
+1. **The status byte's meaning.** We answer `0x41` (READY|UNLOCKED). If the driver expects a
+   different encoding — or polls for a bit to CHANGE after `0x89` — it would give up here.
+2. **Missing transfer-complete interrupt.** `CARDMountAsync` drives the mount through EXI
+   callbacks, which on hardware come from the TC/EXT interrupts. Our EXI completes transfers
+   synchronously and may never deliver the interrupt the driver's state machine waits on, so
+   the mount would fail without ever issuing a read — which fits the evidence exactly.
+
+Candidate 2 is the better fit: the driver stopping after status, rather than reading and
+rejecting the data, is what an async state machine that never advances looks like. The way to
+tell them apart is to disassemble what the driver does with the status byte it just read.

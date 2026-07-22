@@ -57,6 +57,24 @@ bool            g_dirty   = false;
 // completes it.
 u8  g_cmd  = 0;
 u32 g_addr = 0;
+u8  g_addr_buf[4] = {0, 0, 0, 0};
+u32 g_addr_want = 0;      // address bytes still outstanding for the command in flight
+
+// The driver scatters the byte offset across the four address bytes (0x803557ac..0x803557c8):
+//   b0 = (addr >> 29) & 0x03   b1 = (addr >> 21) & 0xFF
+//   b2 = (addr >> 19) & 0x03   b3 = (addr >> 12) & 0x7F
+// Those fields are contiguous bits 12..30, and the driver masks the address with 0xFFFFF000
+// beforehand, so the low 12 bits are always zero. This is the exact inverse.
+void decode_address() {
+    g_addr = ((u32)(g_addr_buf[0] & 0x03) << 29) | ((u32)g_addr_buf[1] << 21) |
+             ((u32)(g_addr_buf[2] & 0x03) << 19) | ((u32)(g_addr_buf[3] & 0x7F) << 12);
+    static int n = 0;
+    if (n < 12) {
+        ++n;
+        lucent::debug("card", "read addr bytes {:02x} {:02x} {:02x} {:02x} -> offset 0x{:x}",
+                      g_addr_buf[0], g_addr_buf[1], g_addr_buf[2], g_addr_buf[3], g_addr);
+    }
+}
 u8  g_status = STATUS_READY | STATUS_UNLOCKED;
 
 // The EXI device ID identifies the card's capacity. The SDK maps it to the retail block
@@ -96,12 +114,28 @@ void card_imm_write(u32 value, u32 len) {
     const u8 b2 = (u8)(value >> 8);
     const u8 b3 = (u8)value;
 
-    if (g_cmd == CMD_READ_BLOCK && len <= 4) {
-        // Address bytes continue the read command already in flight.
-        g_addr = (g_addr << (8 * len)) | (value >> (8 * (4 - len)));
+    if (g_addr_want > 0) {
+        // Address bytes continuing a command already in flight. EXIImmEx splits the driver's
+        // 5-byte command into a 4-byte and a 1-byte immediate transfer, so they arrive in
+        // pieces and have to be reassembled before decoding.
+        for (u32 k = 0; k < len && g_addr_want > 0; ++k) {
+            g_addr_buf[4 - g_addr_want] = (u8)(value >> (8 * (3 - k)));
+            --g_addr_want;
+        }
+        if (g_addr_want == 0) decode_address();
         return;
     }
 
+    {   // Every distinct command the driver issues, once each: the sequence it actually
+        // performs is the specification, and guessing which commands matter is what produced
+        // the earlier wrong answers.
+        static bool seen[256] = {};
+        if (!seen[b0]) {
+            seen[b0] = true;
+            lucent::debug("card", "command 0x{:02x} (imm write 0x{:08x}, {} bytes)", b0, value,
+                          len);
+        }
+    }
     g_cmd = b0;
     switch (b0) {
     case CMD_READ_ID:
@@ -111,8 +145,15 @@ void card_imm_write(u32 value, u32 len) {
         g_status |= STATUS_READY;
         return;
     case CMD_READ_BLOCK:
-        // 0x52 <addr:3> — the address arrives in the same immediate write when len allows.
-        g_addr = ((u32)b1 << 16) | ((u32)b2 << 8) | b3;
+        // 0x52 followed by FOUR address bytes (the driver builds a 5-byte command at
+        // 0x8035579c). This first transfer carries as many of them as it has room for.
+        g_addr_want = 4;
+        for (u32 k = 1; k < len && g_addr_want > 0; ++k) {
+            g_addr_buf[4 - g_addr_want] = (u8)(value >> (8 * (3 - k)));
+            --g_addr_want;
+        }
+        if (g_addr_want == 0) decode_address();
+        (void)b1; (void)b2; (void)b3;
         return;
     case CMD_WRITE_PAGE:
     case CMD_ERASE_SECT:
@@ -152,6 +193,14 @@ void card_dma(u32 guest_addr, u32 len, bool to_device) {
         lucent::error("card", "card DMA out of range: offset 0x{:x} + {} > {} bytes", g_addr,
                       len, g_image.size());
         std::abort();
+    }
+    {
+        static int n = 0;
+        if (n < 12) {
+            ++n;
+            lucent::debug("card", "DMA {} {} bytes at card offset 0x{:x}",
+                          to_device ? "write" : "read", len, g_addr);
+        }
     }
     u8* host = g_ram_base + guest_addr;
     if (to_device) {
