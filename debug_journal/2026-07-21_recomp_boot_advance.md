@@ -2235,3 +2235,38 @@ Blocked on instrumentation, not on ideas: aurora's `SB_COPY_DBG` caps at 40 line
 spends those on display copies long before file-select, so the sea's own copies are never
 observed. Next step is to make that log reach the moment of interest — the same
 tooling-before-conclusions move that unblocked the draw dump.
+
+## Copy sequences MATCH the oracle; the sea defect is upstream of the copy
+
+Unblocked the instrumentation (aurora `SB_COPY_DBG_AFTER=<retrace>`, pushed as 7f22b65) and
+rebuilt the decomp runtime against the same aurora, so both sides are now comparable. Worth
+noting the gate's own first version printed nothing: it counted pre-window copies against the
+40-line budget, so boot exhausted it before the window opened.
+
+The two runtimes' copy sequences are **the same copies in the same order**:
+
+```
+oracle  n=1 dest=…cdb0    1280x960 fmt=6 clear=1 src=(0,0 640x448) mark='DrawBuf ChrXlu'
+        n=2 dest=…123b40   512x549 fmt=5 clear=1 src=(0,0 256x256) mark='DrawBuf Mirror Xlu'
+        n=3 dest=…060fe0   640x480 fmt=4 clear=0 src=(0,0 640x448) mark='buf?'
+recomp  n=1 dest=…5ef48   1280x896 fmt=6 clear=1 src=(0,0 640x448)
+        n=2 dest=…0f6ee0   512x512 fmt=5 clear=1 src=(0,0 256x256)
+        n=3 dest=…043e00   640x448 fmt=4 clear=0 src=(0,0 640x448)
+```
+
+Same count, same order, same formats, same source rectangles, and the destinations are the
+addresses we compute. The oracle's markers name them: the 256x256 RGB5A3 copy is the **Mirror**
+pass, and the RGB565 one the sea samples is a full-EFB grab. So the copy PLUMBING is right and
+the remaining difference must be the EFB CONTENT at the moment of the grab — which is upstream
+of everything I have been changing.
+
+**The dst-height difference is not a bug.** Recomp 448 vs oracle 480 lines: measured
+`yscale=0x100` (1:1) on every copy, so deriving XFB height as EFB height x yscale = 448 is
+faithful to what the FIFO actually carries. The oracle's 480 comes from `GXSetDispCopyDst`'s
+explicit arguments, which the API path stores directly and which never appear in the command
+stream at all. Both are self-consistent, and this finally explains the long-standing
+1280x896-vs-1280x960 dump-size difference noted way back at the first side-by-side. I am
+deliberately NOT "fixing" this by inventing a scale factor the stream does not contain.
+
+Next: the sea samples a copy of the main EFB, so compare what is drawn BEFORE that copy in each
+runtime — the draws, not the copy.

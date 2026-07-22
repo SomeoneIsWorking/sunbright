@@ -274,6 +274,8 @@ void emit_copy_state(u32 cmd, bool to_xfb) {
             lucent::debug("gxfifo", "EFB copy -> {} : src {}x{} at ({},{}) -> dst {}x{} fmt {}",
                           to_xfb ? "XFB" : "texture", g_copy_w, g_copy_h, g_copy_left,
                           g_copy_top, dst_w, dst_h, fmt);
+            lucent::debug("gxfifo", "  copy scale: yscale=0x{:x} half={} -> dst {}x{}",
+                          g_copy_yscale, half_scale ? 1 : 0, dst_w, dst_h);
         }
     }
 
