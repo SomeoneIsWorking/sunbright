@@ -39,6 +39,7 @@ constexpr u32 kDevice  = 0;
 constexpr u8 CMD_READ_ID     = 0x00;
 constexpr u8 CMD_READ_STATUS = 0x83;
 constexpr u8 CMD_CLEAR_STAT  = 0x89;
+constexpr u8 CMD_SET_INTR_EN = 0x81;   // 0x81 <0|1>: enable/disable the card's interrupt
 constexpr u8 CMD_READ_BLOCK  = 0x52;
 constexpr u8 CMD_WRITE_PAGE  = 0xF2;
 constexpr u8 CMD_ERASE_SECT  = 0xF1;
@@ -76,6 +77,7 @@ void decode_address() {
     }
 }
 u8  g_status = STATUS_READY | STATUS_UNLOCKED;
+bool g_intr_enabled = false;   // set by command 0x81; nothing here raises an interrupt
 
 // The EXI device ID identifies the card's capacity. The SDK maps it to the retail block
 // counts (59/123/251/507/1019/2043 usable blocks), so the value doubles with each size step:
@@ -143,6 +145,15 @@ void card_imm_write(u32 value, u32 len) {
         return;
     case CMD_CLEAR_STAT:
         g_status |= STATUS_READY;
+        return;
+    case CMD_SET_INTR_EN:
+        // The driver builds this at 0x803546c0 as 0x8101_0000 or 0x8100_0000 and writes two
+        // bytes, so the payload is a boolean: enable or disable the card's completion
+        // interrupt. Record it and answer nothing. This runtime completes every transfer
+        // before the register write returns, so there is no interrupt to gate — but the card
+        // must still ACCEPT the command, and a card that silently ignored it would be lying
+        // about a control it is expected to honour.
+        g_intr_enabled = (b1 != 0);
         return;
     case CMD_READ_BLOCK:
         // 0x52 followed by FOUR address bytes (the driver builds a 5-byte command at

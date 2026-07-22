@@ -36,6 +36,10 @@ constexpr u32 S_DISPLAY_OFFS = 0x10;   // s8
 constexpr u32 S_NTD          = 0x11;
 constexpr u32 S_LANGUAGE     = 0x12;
 constexpr u32 S_FLAGS        = 0x13;
+// SramEx: the per-slot memory-card flash IDs and their checksum bytes.
+constexpr u32 S_FLASHID          = 0x14;   // u8[2][12], indexed by EXI channel
+constexpr u32 S_FLASHID_LEN      = 12;
+constexpr u32 S_FLASHID_CHECKSUM = 0x3A;   // u8[2]
 
 // Commands this chip understands, as a full 32-bit command word. Only the one the game
 // actually issues is implemented; anything else aborts naming the command, rather than
@@ -132,6 +136,25 @@ void sram_device_init() {
     g_sram[S_NTD]          = 0;
     g_sram[S_DISPLAY_OFFS] = 0;
     (void)S_CHECKSUM; (void)S_EAD0; (void)S_COUNTER_BIAS;
+
+    // Flash-ID records. SRAM remembers the flash ID of the card last seen in each slot plus a
+    // checksum byte, so the OS can tell that a different card has been swapped in. The CARD
+    // library VERIFIES it during mount (0x803584e4..0x80358504): it sums flashID[chan][0..11]
+    // and requires flashIDCheckSum[chan] to equal the one's complement of that sum, returning
+    // CARD_RESULT_IOERROR (-5) otherwise — which is exactly what a card mount hit here.
+    //
+    // Offsets read off the SDK: the accessor at 0x80347798 returns SRAM+0x14 (the flash-ID
+    // array, 12 bytes per channel), and the mount indexes the checksum at +0x26 past it.
+    //
+    // We have no recorded flash IDs, which is a legitimate console state — but the block must
+    // still be SELF-CONSISTENT, exactly as an IPL that wrote both fields together would leave
+    // it. Computing the checksum from the bytes actually present keeps the invariant true
+    // whatever those bytes are, rather than hardcoding the value that happens to satisfy it.
+    for (u32 chan = 0; chan < 2; ++chan) {
+        u8 sum = 0;
+        for (u32 i = 0; i < S_FLASHID_LEN; ++i) sum += g_sram[S_FLASHID + chan * S_FLASHID_LEN + i];
+        g_sram[S_FLASHID_CHECKSUM + chan] = (u8)~sum;
+    }
 
     exi_attach(ExiDevice{0, 1, "sram/rtc", &imm_write, &imm_read, &dma});
 }

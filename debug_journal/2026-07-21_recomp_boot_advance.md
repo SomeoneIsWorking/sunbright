@@ -3274,3 +3274,39 @@ Worth noting how the earlier decision aged: `dev_sram.cpp` chose to leave the ch
 rather than fabricate one, and recorded that if anything ever validated it, "it will show up as
 behaviour rather than being silently papered over". It did exactly that, as a specific error
 message with a traceable cause.
+
+## Card: SRAM flash-ID consistency + interrupt-enable land; BLOCK READS NOW WORK
+
+Two fixes, both derived from retail rather than guessed:
+
+**1. SRAM flash-ID self-consistency.** The accessor at 0x80347798 returns SRAM+0x14, and the
+mount indexes its checksum at +0x26 past that — so `flashID[chan]` lives at `SRAM+0x14 +
+chan*12` and `flashIDCheckSum[chan]` at `SRAM+0x3A + chan`. Our all-zero block gave a computed
+`~0 = 0xFF` against a stored `0`. Fixed by COMPUTING the checksum from the flash-ID bytes
+actually present at init, so the invariant holds whatever those bytes are, instead of
+hardcoding the value that satisfies today's check. Having no recorded flash IDs is a legitimate
+console state; an internally inconsistent NVRAM block is not.
+
+**2. Card command 0x81.** The driver builds it at 0x803546c0 as `0x8101_0000` or `0x8100_0000`
+and writes two bytes — a boolean, i.e. the card's interrupt-enable control. Recorded and
+answered with nothing. This runtime completes transfers before the register write returns so
+there is no interrupt to gate, but the card must still ACCEPT a control it is expected to
+honour rather than silently ignoring it.
+
+**Result — the mount now reads the card:**
+
+```
+[card] command 0x52 (imm write 0x52000000, 4 bytes)
+[card] read addr bytes 00 00 00 00 -> offset 0x0
+[card] DMA read 512 bytes at card offset 0x0
+[card] CARDMount -> -3
+```
+
+That is the header block, at the right offset, in the right page size — **the scattered
+address layout decoded from 0x803557ac is verified working**, no longer just implemented.
+
+`CARDMount` now returns **-3 (CARD_RESULT_NOCARD)** after reading the header, so the next
+question is what it rejects in that data. Progress this session on the card, each step
+established from the DOL and confirmed by a changed symptom: slot empty -> device detected ->
+ID accepted -> probe succeeds -> flash-ID check passes -> header read. Every wrong step
+announced itself loudly instead of corrupting saves.
