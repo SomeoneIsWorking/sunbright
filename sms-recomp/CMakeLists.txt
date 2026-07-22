@@ -33,7 +33,7 @@ file(GLOB SB_OVERRIDES "${CMAKE_CURRENT_SOURCE_DIR}/overrides/*.cpp")
 add_library(sms-recomp-overrides OBJECT ${SB_OVERRIDES})
 target_include_directories(sms-recomp-overrides PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/runtime" "${CMAKE_CURRENT_SOURCE_DIR}/overrides" "${GEN}")
-target_link_libraries(sms-recomp-overrides PUBLIC nod::nod aurora::gx)
+target_link_libraries(sms-recomp-overrides PUBLIC nod::nod aurora::gx aurora::pad)
 target_link_libraries(sms-recomp-overrides PUBLIC lucent::lucent)
 
 # nod supplies random-access reads of the disc image (ISO/RVZ/...). The DI device serves
@@ -83,4 +83,4 @@ target_link_libraries(sms-recomp PRIVATE sms-recomp-rt sms-recomp-guest
                       # aurora_core and aurora_gx reference each other, so both must be on
                       # the link line together for the static archives to resolve.
                       aurora::core aurora::gx aurora::core
-                      aurora::main aurora::vi aurora::os aurora::mtx)
+                      aurora::main aurora::vi aurora::os aurora::mtx aurora::pad)

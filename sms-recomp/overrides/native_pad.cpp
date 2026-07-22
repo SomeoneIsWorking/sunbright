@@ -18,6 +18,18 @@
 #include <intrinsics.h>
 #include <lucent/log.h>
 
+// Aurora's pad service. Declared here rather than including <dolphin/pad.h>: that header pulls
+// in aurora's dolphin prelude, which redefines the PPC intrinsics this translation unit already
+// has. Only the layout of PADStatus and these two entry points matter.
+struct PADStatus {
+    unsigned short button;
+    signed char stickX, stickY, substickX, substickY;
+    unsigned char triggerLeft, triggerRight, analogA, analogB;
+    signed char err;
+};
+extern "C" unsigned int PADRead(PADStatus* status);
+extern "C" void PADSetKeyboardActive(unsigned int port, int active);
+
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -29,7 +41,11 @@ namespace {
 //   +0x00 u16 button, +0x02 stickX, +0x03 stickY, +0x04 substickX, +0x05 substickY,
 //   +0x06 triggerLeft, +0x07 triggerRight, +0x08 analogA, +0x09 analogB, +0x0A s8 err
 constexpr u32 PAD_STATUS_SIZE = 12;
-constexpr u32 PS_BUTTON = 0x00, PS_ERR = 0x0A;
+// PADStatus: u16 button, s8 stickX/stickY, s8 substickX/substickY, u8 triggerL/R, u8 analogA/B,
+// s8 err. Matching the SDK layout matters because the game reads the sticks, not just buttons.
+constexpr u32 PS_BUTTON = 0x00, PS_STICK_X = 0x02, PS_STICK_Y = 0x03;
+constexpr u32 PS_SUB_X = 0x04, PS_SUB_Y = 0x05, PS_TRIG_L = 0x06, PS_TRIG_R = 0x07;
+constexpr u32 PS_ANALOG_A = 0x08, PS_ANALOG_B = 0x09, PS_ERR = 0x0A;
 
 constexpr s8 PAD_ERR_NONE      = 0;
 constexpr s8 PAD_ERR_NO_CTRLR  = -1;
@@ -101,12 +117,25 @@ u16 scripted_buttons() {
 // PADRead(PADStatus status[4]) -> u32 mask of ports that reported a read error.
 void pad_read(CPUState& cpu) {
     static bool parsed = false;
-    if (!parsed) { parsed = true; parse_script(); }
+    if (!parsed) {
+        parsed = true;
+        parse_script();
+        // Let the keyboard drive port 0, the same arrangement the decomp runtime uses.
+        ::PADSetKeyboardActive(0, true);
+    }
 
     const u32 out = cpu.gpr[3];
     ++g_reads;
 
-    const u16 buttons = scripted_buttons();
+    // REAL input from aurora (keyboard and any attached controller), OR-ed with the script so
+    // an automated run and a human at the keyboard both work — and so a scripted run can still
+    // be nudged by hand. Aurora owns the window's input, exactly as it does for the decomp
+    // runtime; without this the recomp could only ever replay SBR_PAD_SCRIPT and a window was
+    // useless to a person.
+    PADStatus host[4] = {};
+    ::PADRead(host);
+
+    const u16 buttons = (u16)(scripted_buttons() | host[0].button);
     static u16 last = 0xFFFF;
     if (buttons != last) {
         last = buttons;
@@ -118,6 +147,14 @@ void pad_read(CPUState& cpu) {
         for (u32 b = 0; b < PAD_STATUS_SIZE; b++) sb_w8(p + b, 0);
         if (i == 0) {
             sb_w16(p + PS_BUTTON, buttons);
+            sb_w8 (p + PS_STICK_X,  (u8)host[0].stickX);
+            sb_w8 (p + PS_STICK_Y,  (u8)host[0].stickY);
+            sb_w8 (p + PS_SUB_X,    (u8)host[0].substickX);
+            sb_w8 (p + PS_SUB_Y,    (u8)host[0].substickY);
+            sb_w8 (p + PS_TRIG_L,   host[0].triggerLeft);
+            sb_w8 (p + PS_TRIG_R,   host[0].triggerRight);
+            sb_w8 (p + PS_ANALOG_A, host[0].analogA);
+            sb_w8 (p + PS_ANALOG_B, host[0].analogB);
             sb_w8 (p + PS_ERR, (u8)PAD_ERR_NONE);
         } else {
             // Ports 1-3 genuinely have nothing attached; say so rather than reporting a
