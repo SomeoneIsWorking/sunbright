@@ -59,6 +59,22 @@ extern "C" unsigned VIGetRetraceCount(void) { return g_present_count; }
 void video_wait_for_retrace(CPUState& cpu) {
     ++g_present_count;
     report_app_state();
+
+    // How far the GUEST's own retrace counter advances per rendered frame. Game code paces
+    // animation off this, and the decomp runtime advances it once per NTSC field (twice per
+    // frame) — so a different step here changes every time-driven thing in the game.
+    {
+        const u32 addr = cpu.gpr[13] - 22768;
+        if (sb_ram_fast(addr)) {
+            static u32 prev = 0;
+            const u32 now = sb_r32(addr);
+            static long n = 0;
+            if (++n <= 8 || n % 200 == 0)
+                lucent::debug("frame", "guest retrace counter {} (+{} since last present)",
+                              now, now - prev);
+            prev = now;
+        }
+    }
     // Let the game do its own frame bookkeeping first.
     func_802fc9a4(cpu);
 

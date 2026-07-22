@@ -2518,3 +2518,35 @@ timeout, not the run, and a `| grep` pipeline discarded the rate lines. Worth do
 rather than guessing: if the recomp runs at ~half the oracle's rate, the wall-clock explanation
 holds and the sea's UV divergence is a consequence of performance; if the rates are comparable,
 the game's animation input genuinely differs and that is the bug.
+
+## Both timing hypotheses eliminated by measurement
+
+Measured properly this time (log to a file, not through a pipe):
+
+**1. Frame rate.** The recomp runs **~157 presents/s** — it has NO frame pacing at all, while
+the decomp paces each present to its NTSC fields via `sb_frame_present` (~30/s). That REFUTES
+the wall-clock hypothesis rather than confirming it: if the sea's scroll were driven by an
+elapsed-time delta, our much SHORTER frames would advance it LESS per frame, not 2x more. The
+observed difference is in the opposite direction to what wall-clock timing predicts.
+
+**2. Retrace step.** Instrumented the guest's own `__VIRetraceCount` at the frame boundary:
+
+```
+[frame] guest retrace counter 17998 (+2 since last present)
+```
+
+**+2 per present, exactly matching the decomp**, which advances it once per NTSC field via
+`sb_frame_present(param_1)` with param_1 = 2. So `TVideo::waitForRetrace` is being asked for the
+same number of fields in both runtimes and the guest-visible retrace clock is identical. The
+animation input is not the retrace counter either.
+
+So the 2x per-frame UV step is driven by neither wall-clock time nor retrace count, yet every GX
+comparison matches. That points at game state feeding the sea's texture-matrix animation
+directly — something computed by ported/recompiled code rather than supplied by the runtime.
+
+**Separately: the missing frame pacing is a real gap regardless of the sea.** The game runs
+roughly 5x faster than real time, which will matter for anything time-driven (audio, movie
+playback, physics tuned to a field rate) even though it demonstrably is not what moves these
+UVs. The decomp's model is the reference: pace each present to `param_1` NTSC fields, with an
+escape hatch equivalent to SB_TURBO. Recording it as a known defect rather than fixing it
+mid-investigation.
