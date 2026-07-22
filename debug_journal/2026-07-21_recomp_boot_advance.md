@@ -3693,3 +3693,36 @@ and on screen: **"Select data."** with slot A showing the real save (a Shine cou
 and C as "New", in the blue J2D panels — the UI structure the oracle shows, now for the same
 reason: an actual mounted memory card. The nine-failure card chain from the previous entries is
 closed, and closed by deleting the hardware emulation rather than finishing it.
+
+## First VALID file-select comparison — sky and sand match; the wash is localised
+
+With the card mounted, both runtimes finally render the same screen structure, so a per-region
+comparison means something for the first time (both 1280x960, no rescaling):
+
+| region | recomp mean rgb | oracle mean rgb | near-white r/o | verdict |
+|--------|-----------------|-----------------|----------------|---------|
+| sky    | (46,127,233)    | (48,128,233)    | 0.3% / 0.5%    | **matches**, within 2 levels |
+| sand   | (205,183,176)   | (204,181,172)   | 0.0% / 0.6%    | **matches**, within 4 levels |
+| sea    | (230,227,228)   | (80,189,205)    | 82.1% / 0.0%   | washed out |
+| palm   | (191,204,198)   | (124,169,190)   | 20.0% / 0.0%   | washed out |
+
+So the recomp's rendering is NOT broadly wrong — large flat areas of the frame agree with the
+oracle to within a few levels. The wash is confined to specific surfaces, and it now includes
+the palm region as well as the sea, which is new information: whatever it is affects more than
+one object, so "the sea's reflection" was too narrow a frame for it.
+
+Whole-frame difference is 54.5% of pixels, but that number is not meaningful yet — it is
+dominated by the washed regions plus a genuine content difference (below).
+
+**Unexpected, and worth recording rather than glossing:** the ORACLE shows all three slots as
+"New" with an empty dialog, while the RECOMP shows the real save (a Shine count of 01). So the
+decomp runtime is NOT reading the same card content — the recomp is now the one showing the
+user's actual save data. That inverts an assumption from several entries ago, where I attributed
+the oracle's blue panels to it having mounted a real card; it has a card, but evidently not the
+same one or not the same contents. Which runtime is reading the user's card correctly is now its
+own question, and the recomp appears to be the one doing it.
+
+Next: the wash affects at least two distinct surfaces (sea, palm). Comparing the draw state of a
+washed PALM draw against the oracle's is a fresh angle on a defect that resisted eight
+sea-specific hypotheses — and unlike the sea, the palm is opaque geometry with no
+render-to-texture feedback in its path.
