@@ -3726,3 +3726,46 @@ Next: the wash affects at least two distinct surfaces (sea, palm). Comparing the
 washed PALM draw against the oracle's is a fresh angle on a defect that resisted eight
 sea-specific hypotheses — and unlike the sea, the palm is opaque geometry with no
 render-to-texture feedback in its path.
+
+## The wash: an ALPHA pass drawn 17x too often (Graffito)
+
+Compared the 3D draws with the card mounted so both runtimes render the same scene. They match
+almost exactly — same textures, same vertex counts, same multiplicities — with ONE extra group
+in the recomp:
+
+```
+recomp: 3D tex0=256x256 verts=59  x34     <- absent from the oracle's top groups
+```
+
+Counting the whole frame:
+
+```
+recomp 59-vertex draws: 68
+oracle 59-vertex draws:  4
+```
+
+**A 17x over-draw**, and the oracle's marker identifies them: **`DrawBuf Graffito`** — the
+graffiti/pollution layer. State is identical on both sides (`prim=152 verts=59 proj=P
+vp=640x448 bm=1 sf=1 df=0 cU=0 aU=1`), so this is not a state defect: the same draw is simply
+issued many more times.
+
+**Why that would wash the frame.** `cU=0` means these draws write NO COLOUR — which is exactly
+why I dismissed them many entries ago as a harmless depth/alpha pass. But `aU=1`: they write
+DESTINATION ALPHA. Anything later blended against dst-alpha then reads an alpha that has been
+accumulated 17x too many times. The sea's blend factors are `4/2` (src-alpha / src-colour), and
+the palm is the other washed surface — while sky and sand, which are opaque and do not consult
+dst-alpha, match the oracle within a few levels. That fits every measurement in the previous
+entry.
+
+It also explains why eight sea-specific hypotheses failed: the defect is not in the sea's draw,
+its textures, its TEV, its texgen, or its copies — all of which matched. It is in what the
+FRAMEBUFFER's alpha channel contains by the time the sea is blended into it.
+
+Note the shape is familiar: a per-frame pass running too many times, exactly like the movement
+phase running 4x where the decomp ran 2x. That one turned out to be a decomp bug found via the
+recomp; this one is the reverse direction, so it deserves the same treatment — establish what
+retail does before assuming which runtime is wrong.
+
+Next: find what dispatches the Graffito pass and why the recomp issues it 68 times. `cU=0`
+draws being invisible on their own is precisely why this hid for so long — it can only be seen
+by counting, not by looking.
