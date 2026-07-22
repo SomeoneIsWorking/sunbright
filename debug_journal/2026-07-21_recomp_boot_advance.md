@@ -2910,3 +2910,34 @@ That is a bigger and better-defined defect than the sea, and it may well contain
 brightness depends on the content of a grab of the whole scene, and the two runtimes demonstrably
 do not draw the same scene. Chasing the missing draws is now the more promising thread — and
 unlike the sea it needs no circular reasoning to measure.
+
+## The 2D gap: the recomp is missing J2D panel draws (pre-existing, not from the gate fix)
+
+Broke the orthographic draws down by texture and vertex count for one frame on each side:
+
+| tex0 (4-vert quads) | oracle | recomp |
+|---------------------|--------|--------|
+| 512x256             |    274 |     64 |
+| 20x20               |     32 |      8 |
+| 256x256 (4/6/8 vt)  |     31 |      1 |
+
+Checked first whether my movement-gate fix caused this: the oracle's orthographic count and its
+512x256 quad count are **identical before and after the fix** (844 / 275 in both logs). So the
+gap is pre-existing and unrelated — worth ruling out explicitly, since I had just changed how
+often the movement phase runs.
+
+Cross-referencing the two screenshots explains what the numbers mean, and corrects an earlier
+misreading. In the ORACLE, each save slot has a rounded blue J2D panel above it containing the
+word "New", and the memory-card dialog is an empty blue panel. In the RECOMP those panels are
+ABSENT — the slots show outlined sprite-style "NEW" text with no panel behind them, and the
+dialog panel is drawn but its frame differs. I previously attributed that difference to the two
+captures being at different animation phases; with movement rates now equal between the runtimes
+and the draw counts differing by ~4x on exactly the textures those panels use, that explanation
+does not hold. **The recomp is failing to emit a large class of J2D panel/window draws.**
+
+This is a real, visible, non-circular defect — unlike the sea, it can be verified by looking at
+the screen — and it is plausibly upstream of the sea, since the sea samples a grab of the whole
+scene and the two runtimes are demonstrably not drawing the same scene.
+
+Next: identify what the 512x256 texture is (J2D window/pane atlas is the obvious candidate) and
+which draw path emits those quads, then find why the recomp emits a quarter of them.
