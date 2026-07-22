@@ -58,7 +58,6 @@ extern void exi_device_init();
 extern void vi_device_init();
 extern void si_device_init();
 extern void sram_device_init();
-extern void card_device_init();
 extern void di_device_init();
 extern void pi_device_init();
 extern void mi_device_init();
@@ -106,7 +105,6 @@ extern "C" bool rt_mem_init() {
     }
     aram_device_init();
     sram_device_init();   // attaches to EXI, so it must come after exi_device_init()
-    card_device_init();   // likewise; the slot simply stays empty with no image
     return true;
 }
 

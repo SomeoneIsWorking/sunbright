@@ -39,14 +39,6 @@ constexpr u32 kChannelSize = 0x14;    // CSR, MAR, LENGTH, CR, DATA
 constexpr u32 R_CSR = 0, R_MAR = 1, R_LEN = 2, R_CR = 3, R_DATA = 4;
 
 // EXI_CSR chip-select lines live in bits 7..9, one per device.
-// __EXIData[chan]: the SDK's per-channel control block (EXIImm @0x80369bf4 addresses it as
-// 0x804040a0 + chan * 0x40, and stores the completion callback at +4).
-constexpr u32 kExiDataBase   = 0x804040a0;
-constexpr u32 kExiDataStride = 0x40;
-constexpr u32 kExiCallbackOff = 4;
-
-void deliver_completion(u32 ch);   // defined below; runs the SDK's EXI callback inline
-
 constexpr u32 CSR_EXIINT   = 1u << 1;    // EXI interrupt status  (write 1 to clear)
 constexpr u32 CSR_TCINT    = 1u << 3;    // transfer-complete status (write 1 to clear)
 constexpr u32 CSR_EXTINT   = 1u << 11;   // insertion/removal event  (write 1 to clear)
@@ -168,81 +160,7 @@ void exi_write(u32 ea, unsigned width, u32 value) {
     if (r == R_CR && (value & CR_TSTART)) {
         g_reg[ch][R_CR] &= ~CR_TSTART;   // completes before the write returns
         start_transfer(ch, value);
-        deliver_completion(ch);
     }
-}
-
-// A transfer started with a callback registered is ASYNCHRONOUS on hardware: the transfer
-// completes later and the EXI transfer-complete (TC) interrupt runs the SDK's handler, which
-// does THREE things — clears the channel's busy state, copies received immediate bytes out of
-// the DATA register into the caller's buffer, and dispatches the callback. This runtime has no
-// interrupt delivery (dev_pi.cpp), so none of that happened and the SDK's state machines stalled:
-// __EXIData[chan]+0xc kept its busy bits set, and EXIImm refuses to start while they are set
-// (measured: 1322 refusals in 6000 calls, flags=0x1d every time — bit 0 = DMA busy).
-//
-// Transfers here complete before the register write returns, so the honest completion point is
-// right here. Rather than reproducing the handler's bookkeeping in host code — which would mean
-// poking guest state to satisfy a check the guest is perfectly capable of satisfying itself —
-// dispatch the guest's OWN registered handler. The SDK then updates its own structures with its
-// own code, exactly as it does on hardware.
-//
-// Verified against this DOL: EXIInit (0x8036ad2c) registers TCIntrruptHandler (0x8036aa4c) via
-// __OSSetInterruptHandler (0x803458f8), which stores into the table at 0x80003040. The TC
-// interrupt number is 10 + chan*3 — the same encoding EXIImm uses when it unmasks the interrupt.
-// The handler returns immediately when no callback is pending, so calling it after a synchronous
-// transfer is a no-op (EXISync does that bookkeeping inline).
-constexpr u32 kIntrHandlerTable = 0x80003040;   // __OSInterruptHandlerTable
-constexpr u32 kCurrentContext   = 0x800000D4;   // __OSCurrentContext
-
-void deliver_completion(u32 ch) {
-    const u32 intno   = 10 + ch * 3;            // __OS_INTERRUPT_EXI_<ch>_TC
-    const u32 handler = sb_r32(kIntrHandlerTable + 4 * intno);
-    const u32 pending = sb_r32(kExiDataBase + ch * kExiDataStride + kExiCallbackOff);
-
-    // Nothing pending means nothing to complete. The SDK's handler makes exactly this check
-    // first and returns having touched no state, so dispatching it would be a no-op — and
-    // synchronous callers (EXIImm+EXISync) finish their own bookkeeping inline. Checking here
-    // as well keeps early boot working: the first EXI traffic is the SRAM read, which runs
-    // before OSInit has created any thread, so there is no handler and no context yet. That is
-    // a legitimate state on hardware too, where interrupts are still off at that point.
-    if (pending == 0) return;
-
-    if (handler == 0) {
-        // A pending callback with no registered handler is impossible: EXIInit registers the
-        // handler, and only EXIImm/EXIDma set a callback.
-        lucent::error("exi", "channel {} has a completion callback pending but no TC interrupt "
-                             "handler is registered (int {})", ch, intno);
-        std::abort();
-    }
-
-    // The handler saves and restores __OSCurrentContext around the callback and stores this
-    // pointer back at the end, so a null context would leave the OS with no current context.
-    const u32 context = sb_r32(kCurrentContext);
-    if (context == 0) {
-        lucent::error("exi", "a completion callback is pending on channel {} but there is no "
-                             "current OS context — the SDK's TC handler restores this pointer "
-                             "and would leave it null", ch);
-        std::abort();
-    }
-
-    // The callback commonly starts the next transfer, so this nests. Depth is bounded by the
-    // driver's own sequence; runaway recursion means a callback re-arming itself forever, which
-    // must be loud rather than a stack overflow.
-    static int depth = 0;
-    if (++depth > 32) {
-        lucent::error("exi", "EXI completion nested {} deep on channel {} — a callback is "
-                             "re-arming itself without progressing", depth, ch);
-        std::abort();
-    }
-
-    // Run on the CURRENT thread's register state: this is ordinary guest code needing the
-    // small-data bases (r2/r13) and a valid stack. Copying rather than reusing keeps the
-    // caller's registers intact across the nested call.
-    CPUState cpu = gsched_cpu();
-    cpu.gpr[3] = intno;      // s16 interrupt
-    cpu.gpr[4] = context;    // OSContext* of the interrupted thread
-    call_ppc(cpu, handler);
-    --depth;
 }
 
 } // namespace

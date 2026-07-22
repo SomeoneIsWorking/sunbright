@@ -3641,3 +3641,55 @@ the abort and no DMA read follows, so 0xff is arriving from some OTHER sequence.
 kept because it matches the disassembled read sequence, but it is NOT exercised and NOT the
 explanation — flagged rather than left looking like a fix. Next step is to identify which SDK
 call site emits that write instead of guessing again.
+
+## MILESTONE: the memory card MOUNTS — native, synchronous, real save data on screen
+
+Course correction from the user: **this runtime is not bound by GameCube interrupts; the card
+should be native and synchronous, and we already had this before the retirement.** Both parts
+were right, and the second saved a great deal of work — `runtime/overrides/native_card.cpp`
+existed at `9283f44^` (304 lines) and its header comment describes exactly this problem and
+solution, written the first time round.
+
+I had been building the opposite: an EXI card device driven by the guest's hardware driver,
+which forced me to reproduce interrupt delivery to complete transfers. That is emulating a
+console to serve a host file instantly.
+
+**What landed instead** (`sms-recomp/overrides/native_card.cpp`, ported from the retired file to
+the current override framework): replace the HARDWARE layer only, keep every filesystem
+structure and policy in the recompiled SDK.
+
+- `CARDProbeEx` — the host image is present; report size/sector from it.
+- `CARDMountAsync` — fill CARDControl, read the 5 system blocks into the caller's workArea, run
+  the recompiled `__CARDVerify`, then `__CARDPutControlBlock` and the api callback.
+- `__CARDReadSegment` / `__CARDWritePage` / `__CARDEraseSector` — host I/O, then the SDK's own
+  chain callback runs SYNCHRONOUSLY; those callbacks do the looping, exactly as the interrupt
+  flow does, without the interrupt.
+
+Completions happen before the API returns, so `__CARDSync` never sleeps and the whole
+lost-wakeup class is gone by construction — the same shape as DVD.
+
+Removed with it: the EXI card device (`dev_card.cpp`) and the TC-interrupt dispatch in
+`dev_exi.cpp`. EXI is a synchronous transport again.
+
+**Three real bugs the fail-fast caught on the way**, each a genuine gap rather than a nuisance:
+1. **SRAM had no write path.** The mount writes the card's flash-ID record and
+   `__OSUnlockSramEx(flush)` writes it back; our device only implemented reads. Implemented,
+   with the write-address decode read off the command word.
+2. **SRAM write-back uses IMMEDIATE writes, not DMA.** Data words were being decoded as
+   commands — it aborted on `0x53554e42`, which is `"SUNB"`, the first four bytes of the flash
+   ID going back to the chip.
+3. **Guest addresses were not masked to physical** in the new card code (`g_ram_base + work`
+   with a `0x8xxxxxxx` pointer), indexing ~2 GB past the arena. Every other device masks; this
+   one dumped core inside the mount until it did too.
+
+**Verified result:**
+
+```
+[card] slot A: ~/.local/share/dolphin-emu/GC/MemoryCardA.USA.raw (128 Mbit, 2048 blocks)
+[card] mount: verify=0 (128 Mbit, 2048 blocks)      <- CARD_RESULT_READY
+```
+
+and on screen: **"Select data."** with slot A showing the real save (a Shine count of 01) and B
+and C as "New", in the blue J2D panels — the UI structure the oracle shows, now for the same
+reason: an actual mounted memory card. The nine-failure card chain from the previous entries is
+closed, and closed by deleting the hardware emulation rather than finishing it.

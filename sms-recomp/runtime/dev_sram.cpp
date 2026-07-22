@@ -55,14 +55,59 @@ constexpr u32 IPL_ROM_LIMIT  = 0x00800000;   // SRAM/RTC commands decode above t
 u8  g_sram[kSramSize];
 u32 g_command = 0;
 
+// Byte offset a write command selected, or kNoWrite when the pending command is a read.
+constexpr u32 kNoWrite = 0xFFFFFFFFu;
+u32 g_write_offset = kNoWrite;
+
+// Bit 31 of the command word selects a write.
+constexpr u32 CMD_WRITE = 0x80000000u;
+
 void imm_write(u32 value, u32 len) {
     if (len != 4) {
         lucent::error("sram", "immediate write of {} bytes (0x{:08x}) — only the 4-byte "
                               "command word is understood", len, value);
         std::abort();
     }
+    // A write command is followed by the DATA words themselves, not by further commands. The
+    // SDK flushes SRAM with immediate writes (four bytes at a time), so anything arriving while
+    // a write is selected is payload — decoding it as a command aborted on "SUNB", the first
+    // four bytes of the flash ID being written back.
+    if (g_write_offset != kNoWrite) {
+        // The chip is 64 bytes and its address pointer simply runs out; the transfer that
+        // follows is a new command, not more payload. We cannot observe the chip-select drop
+        // from here (the EXI device interface has no deselect hook), so the end of the address
+        // space is what ends the write phase.
+        if (g_write_offset >= kSramSize) {
+            g_write_offset = kNoWrite;
+            // fall through and treat this word as a command
+        } else {
+        // The DATA register presents the word MSB-first, exactly as the chip receives it.
+        const u32 n = (kSramSize - g_write_offset) < 4 ? (kSramSize - g_write_offset) : 4;
+        for (u32 i = 0; i < n; ++i) g_sram[g_write_offset + i] = (u8)(value >> (8 * (3 - i)));
+        g_write_offset += n;
+        return;
+        }
+    }
+
     g_command = value;
-    if (g_command == CMD_SRAM_READ) return;
+    if (g_command == CMD_SRAM_READ) { g_write_offset = kNoWrite; return; }
+
+    // Write commands set bit 31; the address field is a byte address within the chip, so the
+    // SRAM offset is that address minus SRAM's own base. __OSUnlockSramEx(flush) writes back
+    // only the region it marked dirty, so this is how settings the guest changes reach the
+    // chip — the flash-ID record a card mount updates being the case that surfaced it.
+    if (value & CMD_WRITE) {
+        const u32 addr = (value >> CMD_ADDR_SHIFT) & 0x1FFFFFFu;
+        const u32 sram_base = (CMD_SRAM_READ >> CMD_ADDR_SHIFT) & 0x1FFFFFFu;
+        if (addr < sram_base || addr - sram_base >= kSramSize) {
+            lucent::error("sram", "write command 0x{:08x} targets chip address 0x{:x}, outside "
+                                  "the {}-byte SRAM at 0x{:x}", value, addr, kSramSize,
+                          sram_base);
+            std::abort();
+        }
+        g_write_offset = addr - sram_base;
+        return;
+    }
 
     const u32 addr = (g_command >> CMD_ADDR_SHIFT) & 0x1FFFFFFu;
     if (addr < IPL_ROM_LIMIT) {
@@ -97,13 +142,30 @@ u32 imm_read(u32 len) {
 void dma(u32 guest_addr, u32 len, bool to_device) {
     const u32 addr = (g_command >> CMD_ADDR_SHIFT) & 0x1FFFFFFu;
     const bool ipl = addr < IPL_ROM_LIMIT;
+
+    if (to_device) {
+        // Write-back of the region a write command selected. The chip is battery-backed on a
+        // console; here it lives only for the run, which is the honest equivalent of a console
+        // whose settings are re-derived at boot — what matters is that the guest reads back
+        // what it wrote, so its own checksums stay consistent.
+        if (g_write_offset == kNoWrite) {
+            lucent::error("sram", "SRAM DMA write with no write command selected (0x{:08x})",
+                          g_command);
+            std::abort();
+        }
+        if (g_write_offset + len > kSramSize) {
+            lucent::error("sram", "write of {} bytes at offset 0x{:x} runs past the {}-byte chip",
+                          len, g_write_offset, kSramSize);
+            std::abort();
+        }
+        const u32 src = guest_addr & 0x01FFFFFFu;
+        std::memcpy(g_sram + g_write_offset, g_ram_base + src, len);
+        lucent::debug("sram", "wrote {} bytes at offset 0x{:x}", len, g_write_offset);
+        return;
+    }
+
     if (!ipl && g_command != CMD_SRAM_READ) {
         lucent::error("sram", "DMA with no command selected (0x{:08x})", g_command);
-        std::abort();
-    }
-    if (to_device) {
-        lucent::error("sram", "writing SRAM back is not implemented yet — settings changed "
-                              "in-game would silently fail to persist");
         std::abort();
     }
     if (!ipl && len > kSramSize) {
