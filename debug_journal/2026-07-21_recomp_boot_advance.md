@@ -2550,3 +2550,41 @@ playback, physics tuned to a field rate) even though it demonstrably is not what
 UVs. The decomp's model is the reference: pace each present to `param_1` NTSC fields, with an
 escape hatch equivalent to SB_TURBO. Recording it as a known defect rather than fixing it
 mid-investigation.
+
+## ROOT CAUSE LOCATED: the recomp runs the MOVEMENT phase twice as often
+
+Traced the sea's UVs to their generator. `TMapObjWave` emits two texcoords per vertex
+(`MapObjWave.cpp:342-349`):
+
+```c
+GXTexCoord2f32(mTexOffS + xw * mTexScale,      zNear * mTexScale);   // TEX0: U animated
+GXTexCoord2f32(kTexS2K * xw * mTexScale2,      mTexOffT + zNear * mTexScale2); // TEX1: V animated
+```
+
+That is EXACTLY the measured signature — tex0's U and tex1's V animated, the other two
+components static — so the sea is `TMapObjWave` and the animated terms are `mTexOffS`/`mTexOffT`.
+
+Both are advanced in `updateTime()` by a constant `mTexRate = 0.0015f`, and `updateTime()` runs
+from `perform()` gated on `param & 0x1` — **the movement phase**. So the scroll rate is a direct
+readout of how many movement passes run per frame:
+
+| runtime | UV delta/frame | / 0.0015 | movement passes per frame |
+|---------|----------------|----------|---------------------------|
+| oracle  | 0.0030         | 2        | 2                         |
+| recomp  | 0.0060         | 4        | 4                         |
+
+**The recomp runs the game's movement phase twice as often as the decomp runtime does.** That is
+not a sea bug at all — it is a game-loop divergence that advances EVERY actor's per-frame
+update twice as fast, and the sea merely happens to expose it as an accumulating value I could
+measure precisely. It plausibly explains the animation-phase mismatches I have been setting
+aside for many ticks (Mario's pose, the title's PRESS START prompt, the save-slot labels).
+
+This also retires the last of the GX-side theories: nothing about the renderer was ever wrong
+here. Every GX comparison matched because the GX stream was faithfully carrying the output of a
+game loop that had already run too many times.
+
+Next: count `perform(movement)` calls per present directly in the recomp rather than inferring
+from 0.0015 arithmetic, and find why the phase runs 4x. Worth checking whether the OTHER phases
+(draw is `param & 0x8`) are also doubled — the sea is drawn once per frame, which suggests the
+DRAW phase is NOT doubled and only movement is, an asymmetry that should point straight at the
+cause.
