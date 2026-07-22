@@ -37,6 +37,7 @@ constexpr u32 kChannelSize = 0x14;    // CSR, MAR, LENGTH, CR, DATA
 constexpr u32 R_CSR = 0, R_MAR = 1, R_LEN = 2, R_CR = 3, R_DATA = 4;
 
 // EXI_CSR chip-select lines live in bits 7..9, one per device.
+constexpr u32 CSR_EXT      = 1u << 12;   // a device is connected in the external slot
 constexpr u32 CSR_CS_SHIFT = 7;
 constexpr u32 CSR_CS_MASK  = 0x7u << CSR_CS_SHIFT;
 
@@ -107,6 +108,16 @@ u32 exi_read(u32 ea, unsigned width) {
     if (ch >= kChannels) {
         lucent::error("exi", "read @ 0x{:08x} is outside the three channels", ea);
         std::abort();
+    }
+    if (r == R_CSR) {
+        // Bit 12 (EXT) reports "a device is connected in this channel's external slot". The
+        // SDK's EXIProbe reads it to decide whether a memory card is present, WITHOUT issuing
+        // any command — so a device attached here is invisible to the guest until this bit
+        // says so. Device 0 is the external slot (memory card); device 1 on channel 0 is the
+        // internal SRAM/RTC chip, which is not an insertable device and must not set EXT.
+        u32 v = g_reg[ch][R_CSR] & ~CSR_EXT;
+        if (find_device(ch, 0) != nullptr) v |= CSR_EXT;
+        return v;
     }
     return g_reg[ch][r];
 }

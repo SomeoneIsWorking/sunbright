@@ -61,6 +61,7 @@ add_library(sms-recomp-rt STATIC runtime/rt_core.cpp runtime/mmio.cpp
                                  runtime/dev_vi.cpp
                                  runtime/dev_si.cpp
                                  runtime/dev_sram.cpp
+                                 runtime/dev_card.cpp
                                  runtime/dev_di.cpp
                                  runtime/dev_pi.cpp
                                  runtime/disc.cpp

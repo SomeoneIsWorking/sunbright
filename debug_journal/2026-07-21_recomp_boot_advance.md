@@ -2979,7 +2979,10 @@ its current dead end.
 ## Confirmed: the decomp reads a REAL memory card, the recomp has none
 
 Traced aurora's card path resolution (`DolphinCardPath.cpp`) to Dolphin's own location, and the
-file is there on this machine: `~/.dolphin-emu/GC/MemoryCardA.USA.raw`. So the decomp runtime
+file is there on this machine: `~/.local/share/dolphin-emu/GC/MemoryCardA.USA.raw`
+(16 MiB = 2048 blocks of 8 KiB). NOTE: an earlier draft of this entry named
+`~/.dolphin-emu/GC/...` — that path does NOT exist here; the listing I read came from the
+second command in a two-command line whose first had failed under `2>/dev/null`. Corrected. So the decomp runtime
 mounts a real, populated memory card, while the recomp has no CARD support at all.
 
 That closes the question completely. The two runtimes were in different UI states because they
@@ -3015,3 +3018,37 @@ Option 2 is the better fit for a standalone recomp: the guest already HAS workin
 attaching hardware for it to talk to keeps every structure in guest layout, which is precisely
 the boundary problem that killed the old hybrid. Option 1 re-introduces per-struct marshalling
 at a much wider API than DVD's.
+
+## Memory card for the recomp: device attached, ID accepted, read protocol still wrong
+
+Implemented option 2 — a card device on EXI channel 0 chip-select 0
+(`sms-recomp/runtime/dev_card.cpp`), backed by the real Dolphin card image so saves stay
+interchangeable. The guest's own recompiled CARD driver talks to it, so every CARDFileInfo /
+CARDStat stays in guest layout and no marshalling is involved.
+
+The game's own error messages turned out to be an excellent protocol oracle — each fix moved it
+to the next one:
+
+1. **"There is no Memory Card in Slot A."** — the device attached but was invisible. EXI CSR
+   bit 12 (EXT) reports "a device is connected in this channel's external slot", and the SDK's
+   probe reads it WITHOUT issuing any command; our EXI transport never set it. Note EXT must
+   reflect device 0 only — channel 0's device 1 is the internal SRAM/RTC chip, which is not
+   insertable and must not report as one.
+2. **"The device in Slot A is not supported."** — detected, ID rejected. The EXI device ID is a
+   capacity code doubling per size step (512 KB -> 0x04 … 16 MB -> 0x80), returned as a full
+   32-bit word rather than left-justified like a short immediate transfer. My first table was
+   both wrong-valued and wrongly justified.
+3. **"The Memory Card in Slot A is damaged and cannot be used."** — where it stands now. The
+   card is accepted and mounted, and the guest is reading it, so the block-read command and its
+   DMA are being exercised; the data coming back is wrong. My read path takes a 3-byte address
+   from the opening immediate write, which is a guess — real cards take a wider address plus
+   dummy bytes, and the exact framing depends on card size.
+
+Next: disassemble the SDK's card read sequence in this DOL rather than guessing the protocol —
+the guest driver is retail code, so what it emits IS the specification. The same approach that
+settled the movement-gate question.
+
+Worth noting the design is holding up: every wrong guess so far produced a LOUD, specific
+failure (a distinct on-screen message, or the device aborting on an unimplemented command)
+rather than silently wrong save data. That is the fail-fast rule paying off in a subsystem where
+quiet corruption would be the worst outcome.
