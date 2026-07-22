@@ -3931,3 +3931,55 @@ been validated against a known-positive.
 Next: identify the specific orthographic quad. The useful discriminator is position/extent
 rather than texture, so the next instrument is to log each ortho quad's screen rectangle from
 its vertex data — the covering quad will be the one spanning the washed band.
+
+## Multi-agent narrowing: a strong candidate, measured and REFUTED
+
+Ran a four-angle read-only workflow (fader / dump-diff / file-select 2D / aurora-side) with
+adversarial verification, per the project's workflow rules — agents investigate and report, the
+main session applies and measures.
+
+**Two independent agents converged on the same candidate**, which is worth something in itself:
+
+```
+[draw-dump] #358921 prim=128 verts=4 tex0=512x256 proj=O bm=1 bf=4/1 cU=1 aU=0
+            tevp=[0:c(4,2,8,15) a(7,4,1,7)]  cull=0 zcmp=1 zupd=0
+```
+
+— the ONLY orthographic 4-vertex draw present in the recomp frame with no state counterpart
+anywhere in the oracle frame (verified by independent multiset diff, normalising pointers,
+markers, viewport origin and projection), additive (SRCALPHA -> ONE), and the last draw of the
+frame. `grep -c "c(4,2,8,15)"` is 1 in the recomp dump and 0 in the oracle's.
+
+The verifier refused to confirm it — correctly — on the grounds that nothing tied it to washed
+PIXELS, only to being state-unique. So I ran that test: skip exactly
+`proj==ORTHO && verts==4 && dstFactor==ONE && !alphaUpdate` (unique in the frame):
+
+```
+sea WITHOUT it: near-white 82.1%  mean (230,227,228)
+baseline:       near-white 82.1%  mean (230,227,228)
+```
+
+**Identical — refuted.** A genuinely recomp-only additive full-frame-capable draw turns out not
+to paint the wash. Worth keeping as a known divergence, but it is not this defect.
+
+The workflow also produced two corrections to my own record, both checkable:
+- The fader is ruled out at source level: `TSMSFader::draw` emits nothing when fully faded in
+  (ScrnFader.cpp:187-203), and `setColor` clamps components to <= 0xD2 so it cannot brighten.
+- **All recomp 2D draws differ from the oracle in one projection element**: recomp
+  `prj=[0.0033 -0.0045 -0.0010 -0.5000]` vs oracle `[0.0033 -0.0045 -0.5000 -0.5000]` — the
+  recomp's 2D ortho gets near/far ~= -500/+500 instead of -1/+1. At z=0 both give the same
+  depth, so it is not claimed as the cause, but it is a real difference nobody had noticed.
+
+Also measured this session, with the frame-gated quad-rect logger (`SB_QUAD_RECT=<frame>`):
+- No orthographic quad at file-select is larger than 21x28 — they are all text glyphs. So the
+  covering quad is NOT orthographic, which contradicts the previous entry's inference.
+- There IS a 2000x2000 PERSPECTIVE 4-vertex quad (`tex0=64x64 tev=1 bm=1 bf=1/1 cU=0 aU=1`),
+  one per frame — and the oracle has exactly one too, with identical TEV.
+
+Open, with the search space much smaller: the wash is painted by a 4-vertex draw; it is not the
+sea draw, not the additive ortho quad, not any orthographic quad (all are glyph-sized), and the
+one scene-covering perspective quad exists identically in both runtimes. The next test is
+whether that perspective quad's VERTEX DATA differs between runtimes — state and extent match,
+but nothing has yet compared the numbers it is drawn from. Note `SB_SKIP_BIGQUAD` produced no
+frame dump at all (the run does not survive skipping that quad), so it needs a gentler probe
+than removal.
