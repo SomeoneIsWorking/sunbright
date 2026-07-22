@@ -205,3 +205,24 @@ band, dark grey shadow decals, wooden OPTIONS sign present.
 Retail was consulted first, on Fable's advice, precisely because the decomp is the approximation
 and its water/shadow subsystems are documented-incomplete — the recomp could have been the correct
 one. It was not: retail agrees with the decomp on all three residuals.
+
+---
+
+# Next blocker: the recomp cannot be driven past file-select automatically
+
+Pressing A at file-select does nothing, and that is CORRECT behaviour, not a defect. In SMS's
+file-select you do not select a file with a button: **Mario head-butts the file block**. The
+player walks him to it and jumps. (The decomp runtime has `SB_SEL_PICK=<0|1|2>` precisely
+because Mario is in a scripted `waitingStart` state and is not freely controllable headless —
+see memory `fileselect-selection-to-setnextstage`.)
+
+Verified the input path itself is fine: `SBR_LUCENT_DEBUG=pad` shows `read 1800: buttons 0x0100`,
+so A is delivered; the game simply has nothing to do with it there.
+
+The real gap is in the harness: `SBR_PAD_SCRIPT` sets **buttons only** and cannot drive the
+ANALOG STICK, so no script can walk Mario to the block. Extending it to accept stick positions
+(e.g. `1800:STICK=0,-1`) is the prerequisite for any automated gameplay verification in the
+recomp — the same reason the decomp needed `SB_SEL_PICK`.
+
+Confirmed working while investigating this: seagulls now render at file-select (matching retail),
+and Mario reaches his sleep idle, so the scene is running its full animation set.
