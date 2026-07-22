@@ -3159,3 +3159,47 @@ status successfully, and then stops of its own accord. The next step is the one 
 taken directly — disassemble what CARDMount/CARDProbeEx do with the status byte they just read,
 rather than reasoning about which subsystem "must" be responsible. The retail code is available
 and has settled every other question in this investigation on the first attempt.
+
+## Card: located exactly — EXIProbe's insertion DEBOUNCE never elapses
+
+Instrumented the guest's own return codes instead of reasoning about layers
+(`overrides/diag_card.cpp`, `SBR_CARD_TRACE=1`):
+
+```
+[card] EXIProbeEx -> 0        (repeatedly)
+[card] CARDProbeEx -> -1      (repeatedly)
+[card] EXIGetID -> 856916     (once, non-zero = success)
+```
+
+`CARDProbeEx` (0x803580a8) is a thin wrapper: it calls `EXIProbeEx` and returns -1 whenever that
+returns 0. So the whole card failure reduces to **`EXIProbe` never reporting the card present**.
+
+Disassembling `EXIProbe` (0x8036a2d8) shows what it actually tests — and it reads the EXI CSR
+register directly (`r6 = 0xCC006800 + chan*0x14`), not any SDK state:
+
+```
+lwz r7, 0(r6)                      ; the channel's CSR
+rlwinm. r0, r7, 0, 0x14, 0x14      ; bit 11, EXTINT (insertion/removal event)
+  -> if set: clear it (write back with 0x800) and zero __EXIData[chan]+0x20
+             and the global at 0x800030c0 + chan*4
+rlwinm. r0, r7, 0, 0x13, 0x13      ; bit 12, EXT (device present)  <- we DO set this
+  -> if clear: bail
+  -> if set:  read 0x800000f8 (bus clock), convert to ms, and compare against a stored
+              timestamp — an insertion DEBOUNCE
+```
+
+And `EXIProbeEx`'s tail distinguishes the two failure modes precisely: if the global at
+`0x800030c0 + chan*4` is non-zero it returns **0** (still settling), else **-1** (no card). We
+observe 0, so a timestamp IS stored and the settle period is simply never satisfied.
+
+So the EXT bit was necessary but not sufficient: the SDK models a card as something INSERTED at
+a moment in time, and will not use it until it has been stable for a debounce interval measured
+against `OSGetTime`. Our card is present from the first instant, which is a state the debounce
+was never written to handle — the timestamp bookkeeping happens in the EXTINT branch, which
+never runs because we never raise EXTINT.
+
+Next: read the comparison at 0x8036a370.. to see exactly which interval and which timestamp,
+then decide between raising EXTINT once at attach (so the SDK runs its own insertion bookkeeping
+and the debounce starts from a real moment) or ensuring the stored timestamp is already old.
+The former is the faithful one — it lets the SDK's own code do the work rather than arranging
+for its state to look right.
