@@ -4066,3 +4066,22 @@ matrix at all — if 2D quads arrive already in screen space, applying `pnMtx` t
 computed box somewhere the draw never was. That would let a genuinely covering quad go
 unreported while unrelated ones appear. Next: validate the mapping by asserting a known draw's
 box — the save-block quads, whose on-screen position is measurable from the screenshot.
+
+---
+
+## ⚠️ AUDIT (2026-07-22): every oracle comparison in this file is CONTAMINATED
+
+The "wash" this file investigates **does not exist**, and the oracle it compares against was the
+**title screen**, not file-select (`SB_STAGE=15` boots to title; file-select needs
+`SB_PAD_SCRIPT="800:START 840:-"` and a much later dump). See
+`debug_journal/2026-07-22_wash_attribution_harness.md`.
+
+Consequently the divergences recorded here are **unverified measurements, not facts**:
+
+- "the recomp renders 17 alpha-writing objects where the oracle renders 1" — measured across two
+  different scenes. **Struck.** Do not cite it.
+- "recomp 2D projection near/far ≈ ±500 vs oracle ±1" — same defect. **Struck.**
+
+Do not build on either without re-measuring path-matched (both runtimes navigated to the same
+scene the same way). The real defect behind the visual symptoms in this file was aurora binding
+every mipmapped texture single-level on the BP-register path — fixed 2026-07-22.
