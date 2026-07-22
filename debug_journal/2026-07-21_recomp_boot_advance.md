@@ -2350,3 +2350,38 @@ parser gap, stale/missing copy state, a coplanar extra draw, the reflection not 
 viewport scaling, and the clear colour. What remains unexamined is the TEV configuration of the
 sea draw itself — the dump reports the stage COUNT (2, matching the oracle) but not the stage
 ops, so "same tev=2" has never actually meant "same TEV program".
+
+## The sea is a FEEDBACK LOOP, and ours has runaway gain
+
+Two new instruments (both pushed to aurora): the draw dump now carries the full per-stage TEV
+program, and `SB_PRESENT_COPY=<W>x<H>` presents any copy's resolved texture so its content can
+be SEEN instead of inferred.
+
+**The sea draw's TEV program is byte-identical between runtimes:**
+
+```
+0:c(15,15,15,15)o=0,0,0,r0 a(7,4,5,7)o=0,0,0,r0 tm=0 tc=0 ch=4 k=6/0 |
+1:c(10,15,15,15)o=0,0,1,r0 a(7,4,0,7)o=0,0,1,r0 tm=0 tc=1 ch=4 k=6/0
+```
+
+Stage 1 is `a=TEXC` with `b=c=d=ZERO` and scale=1 (x2), so the sea's colour is **2x the
+texture** it samples on texmap 0 — the EFB copy.
+
+**And that copy contains the whole finished scene, in BOTH runtimes.** Presenting it directly:
+ours shows the complete file-select frame including its own already-white sea (19.4%
+near-white); the oracle's shows the same frame with a correct teal sea (4.8%). So this is a
+**feedback loop** — the sea samples a grab of the scene and multiplies it by two, frame after
+frame. Any excess brightness compounds until it saturates to white, which is exactly the
+failure mode aurora's own copy_tex comments already describe ("saturate the frame white").
+
+That reframes the defect precisely: it is not that something paints the sea white, but that a
+loop which is stable in the oracle is divergent here. With the draw state, both texture
+pointers, the TEV program and the blend all matching, the remaining variable is **where** the
+sea samples that texture. Stage 1 uses `tc=1` — a GENERATED texcoord — and the draw dump does
+not report texgen configuration at all. If our texgen maps the sea's pixels onto a brighter
+part of the grab (the sky, say) rather than the water, the loop gain exceeds one and runs away.
+
+Next: compare the texgen setup (source, type, matrix) for this draw between runtimes. Note the
+long-standing `unhandled tcg src 21` warning in aurora's FIFO path is a texgen gap and may well
+be this — it did not appear in an earlier file-select grep, which is worth re-checking now
+rather than assuming.
