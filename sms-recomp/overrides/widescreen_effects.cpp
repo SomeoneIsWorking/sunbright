@@ -21,10 +21,15 @@
 
 #include "overrides.h"
 
+#include "../runtime/probe_server.h"
+
 #include <intrinsics.h>
 #include <lucent/log.h>
 
+#include <cstdio>
 #include <cstdlib>
+#include <map>
+#include <string>
 
 extern "C" void func_8013fa54(CPUState&);   // TSMSFader::drawFadeinout
 extern "C" void func_8013fc88(CPUState&);   // TSMSFader::draw
@@ -58,10 +63,24 @@ bool widescreen_on() { return sbr_ws_pillar() != 0; }
 // JDrama::TRect (JUTRect) is s32 x1, y1, x2, y2.
 constexpr u32 RECT_X1 = 0x0, RECT_X2 = 0x8;
 
+// These wrappers NEST: TSMSFader::draw widens the rect and then calls drawFadeinout, which is also
+// hooked, and both eventually reach fill_rect. Widening at each level compounds — measured as the
+// same rect arriving at fill_rect as both -107..747 and -250..890. The Dolphin era did not see this
+// because JIT block-linking kept the inner calls from reaching their overrides at all; here every
+// call goes through call_ppc, so only the OUTERMOST wrapper may widen.
+int g_widen_depth = 0;
+
+struct WidenScope {
+    WidenScope() { ++g_widen_depth; }
+    ~WidenScope() { --g_widen_depth; }
+    bool outermost() const { return g_widen_depth == 1; }
+};
+
 // A 16:9 picture shows 4/3 the horizontal range of the 4:3 ortho plane, i.e. w/6 more per side.
 void with_widened_rect(CPUState& cpu, u32 rectReg, void (*real)(CPUState&)) {
     const u32 rect = rectReg;
-    if (!widescreen_on() || !sb_ram_fast(rect)) { real(cpu); return; }
+    const WidenScope scope;
+    if (!widescreen_on() || !scope.outermost() || !sb_ram_fast(rect)) { real(cpu); return; }
     const s32 x1 = (s32)sb_r32(rect + RECT_X1), x2 = (s32)sb_r32(rect + RECT_X2);
     const s32 extra = (x2 - x1) / 6 + 1;
     sb_w32(rect + RECT_X1, (u32)(x1 - extra));
@@ -85,6 +104,32 @@ void ov_fader_draw(CPUState& cpu) {
     ws_2d_suspend_end(cpu);
 }
 
+// Live inventory of the solid bands the game fills (probe /fills). "Which rect is the black strip
+// behind the dialogue" is not answerable from a screenshot; this reports every distinct rect
+// fill_rect was asked for, so a band can be matched to its authored extents.
+std::map<std::string, unsigned long> g_fills;
+
+void note_fill(u32 rect) {
+    char key[40];
+    std::snprintf(key, sizeof key, "%d,%d,%d,%d", (int)(s32)sb_r32(rect + 0x0), (int)(s32)sb_r32(rect + 0x4),
+                  (int)(s32)sb_r32(rect + 0x8), (int)(s32)sb_r32(rect + 0xC));
+    ++g_fills[key];
+}
+
+const bool g_fill_probe = [] {
+    sb_probe_register("/fills", "distinct fill_rect rects seen: x1,y1,x2,y2 -> count", [](const ProbeArgs&) {
+        std::string out;
+        char buf[96];
+        for (const auto& [k, n] : g_fills) {
+            std::snprintf(buf, sizeof buf, "%-28s %lu\n", k.c_str(), n);
+            out += buf;
+        }
+        if (out.empty()) out = "no fills recorded yet\n";
+        return out;
+    });
+    return true;
+}();
+
 // GC2D's shared fill_rect draws solid bands — including the stage-name telop backdrop and the
 // dialogue band. Those are authored full-display (x1 <= 0, x2 >= 640); under the squeeze the band
 // stops at the 4:3 edges with the scene visible beside it. PARTIAL fills (wipe boxes, dialog
@@ -93,6 +138,7 @@ void ov_fader_draw(CPUState& cpu) {
 void ov_fill_rect(CPUState& cpu) {
     const u32 rect = cpu.gpr[3];
     if (!widescreen_on() || !sb_ram_fast(rect)) { func_80140390(cpu); return; }
+    note_fill(rect);
     const s32 x1 = (s32)sb_r32(rect + RECT_X1), x2 = (s32)sb_r32(rect + RECT_X2);
     const bool full_width = (x1 <= 0 && x1 > -40 && x2 >= 600 && x2 < 700);
     if (!full_width) { func_80140390(cpu); return; }

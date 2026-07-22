@@ -37,11 +37,16 @@
 
 #include "overrides.h"
 
+#include "../runtime/probe_server.h"
+
 #include <intrinsics.h>
 #include <lucent/log.h>
 
 #include <cctype>
+#include <cstdio>
 #include <cstdlib>
+#include <map>
+#include <string>
 
 extern "C" void func_802cd2ec(CPUState&);   // the 2D quad emitter
 extern "C" void func_80362e0c(CPUState&);   // GXLoadPosMtxImm
@@ -124,6 +129,43 @@ bool hud_stretch_band(const char n[5]) {
 // 1/scale — how much to widen something that must span the full screen.
 f32 inv_scale() { return 1.0f + (f32)sbr_ws_pillar() / 320.0f; }
 
+// ── Live pane inventory (probe /2d) ──────────────────────────────────────────────────────
+// Which 2D panes are on screen right now, and where each one thinks it is. Identifying an
+// element by eye from a screenshot is guesswork; this reports the .blo name and the X
+// translation the game actually used, so a misplaced element can be matched to its pane
+// instead of fixed by nudging a constant.
+struct PaneSeen {
+    f32 m00 = 0, m03 = 0;
+    unsigned long hits = 0;
+    HudAnchor anchor = A_NONE;
+};
+std::map<std::string, PaneSeen> g_panes;
+
+void note_pane(const char nm[5], u32 mtxBase, HudAnchor a) {
+    if (nm[0] == '\0') return;
+    auto& e = g_panes[nm];
+    e.m00 = guest_f32(mtxBase + MTX_M00);
+    e.m03 = guest_f32(mtxBase + MTX_M03);
+    e.anchor = a;
+    ++e.hits;
+}
+
+const bool g_pane_probe = [] {
+    sb_probe_register("/2d", "2D panes drawn recently: name, transform, anchor", [](const ProbeArgs&) {
+        std::string out;
+        char buf[160];
+        for (const auto& [name, e] : g_panes) {
+            static const char* kA[] = {"-", "left", "centre", "right"};
+            std::snprintf(buf, sizeof buf, "%-6s m00=%8.3f m03=%8.2f anchor=%-6s hits=%lu\n",
+                          name.c_str(), (double)e.m00, (double)e.m03, kA[e.anchor], e.hits);
+            out += buf;
+        }
+        if (out.empty()) out = "no 2D panes recorded yet\n";
+        return out;
+    });
+    return true;
+}();
+
 void ov_quad(CPUState& cpu) {
     const u32 self = cpu.gpr[3];
     const int pillar = sbr_ws_pillar();
@@ -150,6 +192,7 @@ void ov_quad(CPUState& cpu) {
     // Shifting m03 moves the element to its 16:9 edge. This is a TRANSFORM, not a clip rect, so
     // nothing is cropped by moving it.
     const HudAnchor a = hud_anchor(nm);
+    if (guest_obj(self)) note_pane(nm, self + PANE_MTX, a);
     f32 m03 = 0.0f;
     bool moved = false;
     if (pillar != 0 && (a == A_LEFT || a == A_RIGHT) && guest_obj(self)) {
@@ -209,6 +252,7 @@ void ov_load_pos_mtx_imm(CPUState& cpu) {
         char nm[5];
         read_fourcc(mtx - 0x54, nm);
         const HudAnchor a = hud_anchor(nm);
+        note_pane(nm, mtx, a);   // this path draws the panes the quad emitter never sees
         if (a == A_LEFT)  shift = -pillar;
         if (a == A_RIGHT) shift =  pillar;
     }
