@@ -28,6 +28,7 @@
 #include <intrinsics.h>
 #include <lucent/log.h>
 
+#include <cmath>
 #include <cstdlib>
 
 extern "C" void func_80362c34(CPUState&);   // GXSetProjection
@@ -137,6 +138,19 @@ void ov_gx_set_projection_entry(CPUState& cpu) {
 }
 
 } // namespace
+
+// The pillar: half the width the 2D squeeze leaves empty on each side, in the game's own 640-wide
+// 2D space. hud.cpp anchors corner elements back out by exactly this much. 0 when widescreen is off,
+// which is what makes every HUD shift below collapse to a no-op.
+int sbr_ws_pillar() {
+    static int p = -1;
+    if (p < 0) {
+        const float s = ws_scale();
+        p = (!widescreen_on() || s <= 0.0f || s >= 1.0f) ? 0 : (int)lroundf(320.0f * (1.0f - s) / s);
+        if (const char* o = std::getenv("SBR_HUD_OFF")) p = std::atoi(o);
+    }
+    return p;
+}
 
 SB_OVERRIDE(GX_SET_PROJECTION, ov_gx_set_projection_entry, "GXSetProjection",
             "widescreen: squeeze the projection horizontally so a 16:9 field of view is rendered "
