@@ -25,6 +25,7 @@ extern "C" void func_8036a44c(CPUState&);   // EXIProbe(chan) - the public entry
 extern "C" void func_80354830(CPUState&);
 extern "C" void func_80354740(CPUState&);
 extern "C" void func_8035593c(CPUState&);
+extern "C" void func_8036ae40(CPUState&);   // EXILock(chan, dev, callback)
 extern "C" void func_8035873c(CPUState&);   // CARDMountAsync(chan, workArea, detach, cb)
 extern "C" void func_803554e0(CPUState&);   // __CARDSync(chan)
 extern "C" void func_8036a580(CPUState&);   // EXIAttach(chan, callback)
@@ -90,6 +91,22 @@ TRACE_CARD(worker_h1,        80354830, "worker/0x80354830")
 TRACE_CARD(worker_h2,        80354740, "worker/0x80354740")
 TRACE_CARD(worker_h3,        8035593c, "worker/0x8035593c")
 
+// EXILock returns 0 when the channel is already locked by someone else. Report the channel's
+// flag word and the device recorded as holding it, so "locked" can be attributed rather than
+// guessed at. __EXIData[chan]: +0xc flags (bit 0x10 = locked), +0x18 locked device.
+void exi_lock(CPUState& cpu) {
+    const u32 ch = cpu.gpr[3];
+    func_8036ae40(cpu);
+    if (!tracing()) return;
+    static s32 last = 0x7fffffff; static long run = 0;
+    const s32 r = (s32)cpu.gpr[3];
+    if (r == last) { ++run; return; }
+    const u32 base = 0x804040a0u + ch * 0x40u;
+    lucent::info("card", "EXILock(ch{}) -> {} after {} x {}  flags=0x{:08x} lockedDev={}", ch, r,
+                 run, last, sb_r32(base + 0xc), sb_r32(base + 0x18));
+    last = r; run = 1;
+}
+
 // EXIProbe's insertion debounce: it stores a 100ms-unit timestamp per channel at
 // 0x800030c0 + chan*4 and requires 3 units to elapse. Report the raw inputs so the stall is
 // visible as numbers rather than inferred from a return code.
@@ -125,3 +142,4 @@ SB_OVERRIDE(0x8036a44cu, exi_probe_real,   "EXIProbe (trace)",       "diagnostic
 SB_OVERRIDE(0x80354830u, worker_h1,        "card worker helper 1",   "diagnostic; real body runs")
 SB_OVERRIDE(0x80354740u, worker_h2,        "card worker helper 2",   "diagnostic; real body runs")
 SB_OVERRIDE(0x8035593cu, worker_h3,        "card worker helper 3",   "diagnostic; real body runs")
+SB_OVERRIDE(0x8036ae40u, exi_lock,         "EXILock (trace)",        "diagnostic; real body runs")

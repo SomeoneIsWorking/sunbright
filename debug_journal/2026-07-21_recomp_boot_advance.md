@@ -3384,3 +3384,35 @@ Flagging that as a hypothesis rather than a conclusion, because this is the thir
 subsystem that a plausible mechanism has been contradicted by measurement. The test is direct:
 trace `EXILock` (0x8036a44c's neighbour at 0x8036ae40) for its return value and whether the
 callback it registers is ever invoked.
+
+## Card: the EXI channel-0 lock is held for the SRAM chip, not the card
+
+```
+[card] EXILock(ch0) -> 1  flags=0x00000010 lockedDev=1
+```
+
+The lock IS granted (returns 1, flags bit 0x10 set) — but `__EXIData[0]+0x18` records the locked
+device as **1**, and slot A's card is device **0**. `EXISelect` checks both the lock bit AND the
+device (`lwz r0, 0x18(r31); cmplw r0, r28`), so the card's select for device 0 is refused while
+device 1 holds the channel, helper 0x80354830 returns -3, and the mount reports NOCARD.
+
+Channel 0 device 1 is the SRAM/RTC chip (`dev_sram.cpp`). So something takes the EXI channel-0
+lock for SRAM and does not release it before the card needs the channel — and the flash-ID
+checksum work added earlier is itself an SRAM consumer reached during mount (0x803584e8 calls
+0x80347b20, the SRAM lock/unlock helper, with 0/1 selecting release-vs-commit).
+
+This corrects the previous entry's hypothesis in a useful direction: the lock is NOT ungranted
+for want of a callback — it is granted to the wrong device. Recording that the hypothesis was
+wrong in its mechanism while right that the lock was the blocker; the trace settled it in one
+run, as tracing has every time in this subsystem.
+
+Next: find who takes the device-1 lock and why it outlives its SRAM access. The candidates are
+the SDK's SRAM path (`0x80347798` / `0x80347b20`) failing to unlock — plausibly because its
+release runs from a completion path this runtime never reaches — or our own SRAM device leaving
+a transfer in a state the SDK reads as still busy. Both are testable by tracing 0x80347b20's
+calls and the flag word around them.
+
+Session note: the card has advanced through eight distinct, separately-diagnosed failures now
+(empty slot, EXT bit, device ID, W1C status bits, probe debounce, flash-ID checksum, command
+0x81, and now the EXI lock owner). Each one was found from the DOL and confirmed by a changed
+symptom, and each wrong guess announced itself rather than corrupting the card.
