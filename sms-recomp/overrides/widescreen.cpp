@@ -187,6 +187,10 @@ void ws_2d_suspend_end(CPUState& cpu) {
     ws_reload_ortho(cpu);   // re-apply the squeeze for whatever draws next
 }
 
+// The horizontal squeeze factor, for code that must reason about where geometry REALLY lands on
+// the anamorphic EFB (sunmodel_widescreen.cpp's occlusion probes).
+float sbr_ws_squeeze_scale() { return ws_scale(); }
+
 // The pillar: half the width the 2D squeeze leaves empty on each side, in the game's own 640-wide
 // 2D space. hud.cpp anchors corner elements back out by exactly this much. 0 when widescreen is off,
 // which is what makes every HUD shift below collapse to a no-op.
