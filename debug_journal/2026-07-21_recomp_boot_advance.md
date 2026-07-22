@@ -2666,3 +2666,43 @@ first place.
 Note `VIGetTvFormat()` is another runtime-supplied value: aurora's returns 0 unconditionally.
 If the recomp's recompiled SDK reads real VI registers instead, the two runtimes could disagree
 on TV format and hence on this entire rate — worth checking alongside the count.
+
+## Both sides measured — and it is not obvious which one is CORRECT
+
+The decomp counter finally ran (after fixing a build failure, below):
+
+```
+oracle  [phase] after 98000 retraces: movement=97796 draw=48898
+                 (1.00 movement/retrace, 0.50 draw/retrace)
+recomp  [phase] after 14200 presents: movement=56376 draw=14094
+                 (3.97 movement/frame,  0.99 draw/frame)
+```
+
+Retraces advance 2 per rendered frame, so the oracle is **2 movement + 1 draw per frame** and
+the recomp **4 movement + 1 draw per frame**. My original inference of 2 for the oracle was
+right; the previous entry's doubt about it is resolved in its favour.
+
+**But the arithmetic in `direct()` predicts 4, not 2.** `vsyncRate = 600 / 30 = 20`, and the
+loop subtracts 5 until below 5, giving four passes: 20 -> 15 -> 10 -> 5 -> 0. The RECOMP matches
+that prediction exactly; the DECOMP does half of it.
+
+That inverts the assumption I have been working under all session. The recomp runs the game's
+REAL PPC `direct()`; the decomp runs our hand-ported C++ version of it. Where the two disagree
+on control flow, the recomp is the better evidence of what retail does — so the likelier reading
+is that **the decomp's ported `direct()` runs half the movement passes it should**, not that the
+recomp runs twice too many. The oracle has been treated as ground truth for rendering, where it
+is validated against real hardware output; it is NOT automatically ground truth for game-loop
+control flow, which is exactly the kind of thing a hand port gets subtly wrong.
+
+Deciding this needs the actual retail behaviour, not a preference between our two runtimes:
+disassemble `TMarDirector::direct` around the loop (0x80299b2c-0x80299b6c is already cited in
+MarDirectorDirect.cpp for a nearby branch) and count what the hardware does. Until then neither
+runtime should be "fixed" toward the other — that would be exactly the kind of change that makes
+a symptom disappear without establishing which behaviour is right.
+
+**Workflow: `cmake ... | grep error; echo built` masked a build failure twice this session.**
+Both times a stale binary then ran and produced a confidently wrong "no output" result — the
+decomp counter appeared to prove `TMapObjWave::perform` was never called, when in fact the file
+had failed to compile (an `extern "C"` at block scope) and the old binary was running. Check the
+build's exit status, or verify the new code is actually in the binary (`strings | grep`), rather
+than printing an unconditional success message.
