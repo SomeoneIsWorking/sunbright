@@ -48,7 +48,67 @@ per se is NOT the defect. The classes differ in kind: the oracle's dominant cros
 recomp's at the watch pixel are `bf=1/3` (ONE/INVSRCCLR, 64x64) and `bf=1/5` (ONE/INVSRCALPHA,
 256x256) with `wneg = 1` — *partial* crossings, which are the ones that smear.
 
+## CORRECTION: the crossing-class findings above are SUPERSEDED
+
+Results 2 and 3 (the CROSSES skip) do **not** localize anything. The control that killed them:
+applying the same partial-crosser skip to the **oracle** takes its sea to (3,1,1) — near black.
+Partial eye-crossers carry essentially the whole scene in both runtimes, so removing them
+removes the picture. "The wash is painted by partial crossers" reduces to "the scene is drawn
+by the scene."
+
+Result 3 (two blend-pair subsets each clearing the wash) was an instrument bug, as suspected:
+`blendFacSrc/Dst` are **stale whenever `blendMode == GX_BM_NONE`**, so a filter matching on
+them without checking `blendMode` sweeps in opaque draws and two "disjoint" filters select
+overlapping sets. With `blendMode == GX_BM_BLEND` required, dropping the entire screen-blend
+family (`SB_SKIP_BF=1,3`, 2,000,501 draws) and the entire `1/5` family (812,501 draws) each
+leave the wash **completely unchanged**. Both families are exonerated.
+
+## The instrument, fixed properly
+
+A bounding box over the in-front vertices is not a coverage test, and no amount of extra
+classes repairs that. `draw_prim` now computes **true coverage**: triangulate the primitive
+(QUADS/TRIANGLES/STRIP/FAN), clip each triangle against the near plane `w >= eps` with
+Sutherland-Hodgman in homogeneous space, project the clipped polygon, and do an exact
+point-in-triangle test. There is no CROSSES class any more — a straddling prim is simply
+clipped and then answered exactly, like the GPU does.
+
+Validation: `SB_SKIP_COVERING=1` with clip-correct coverage takes the sea from 82.1% near-white
+to **0.2%**, where the bounding-box version dropped 393,001 draws and changed *nothing*.
+The instrument now both names and removes the painting draws.
+
+### Controls that make the instrument trustworthy
+
+- **Sham blend pair** (`SB_SKIP_WNEG_BF=13,13`, a pair nothing uses) → 82.1%, unchanged.
+  The filter is live, not inert.
+- **Sham surgery** (drop only prims with *every* vertex behind the eye — GPU-clipped, so
+  visually inert) → 82.1%, byte-identical mean. The skip mechanism does not perturb unrelated
+  rendering, so skip results are not contaminated.
+- 393,001 box-covering draws and 640,401 opaque perspective quads each dropped with no change:
+  "removing enough draws clears anything" is false.
+
+## Where it points
+
+Covering prims at the sea pixel, one frame, oracle (`SB_STAGE=15`) vs recomp (file-select):
+
+| covering prims | oracle | recomp |
+|---|---|---|
+| total | 122 | 71 |
+| screen-blend `64x64 tev=1 bf=1/3` | 32 | 41 |
+| opaque base `bm=0 bf=1/0` (64x128 + 256x256) | 29 | 7 |
+| `128x256 tev=2 bf=4/2` | 16 | 3 |
+
+`bf=1/3` is ONE/INVSRCCLR — a **screen blend**, which can only brighten and converges to white
+under repetition. The recomp applies *more* of them over *far less* opaque base: the base layer
+that should re-establish a dark sea colour each frame is largely absent, so the brightening
+layers accumulate unopposed. That is a mechanism consistent with every measurement here.
+
+**Not yet verified**, and the next thing to test: the two runs may not be at the same camera
+state (oracle boots straight to stage 15, the recomp navigates via START), and camera state
+changes which prims cover the pixel. Confirm the cameras match before treating the missing
+opaque base as the root cause.
+
 ## Falsified along the way
+
 
 - "The sea draw paints the wash" — `SB_SKIP_VERTS=52` proved it does not.
 - The extra alpha draws, the fader family (123,401 draws), the additive scene quad, and the
