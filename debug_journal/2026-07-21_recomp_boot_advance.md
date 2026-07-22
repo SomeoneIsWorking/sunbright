@@ -3237,3 +3237,40 @@ unexercised.
 Next: disassemble `CARDMount` (0x803588dc) to find which check produces -5 ahead of any I/O. The
 pattern that keeps working is going straight to the retail code with a specific question; the
 detours have all come from reasoning about which subsystem "should" be responsible.
+
+## CARDMount -5 is a FLASH-ID CHECKSUM check against SRAM
+
+Traced the -5 to its single source. `CARDMount` -> `CARDMountAsync` -> the mount worker at
+0x80358224, and the only `li r30, -5` in the whole CARD library is at **0x80358504**:
+
+```
+0x803584d4  lbz   r0, 0(r3) / add r28, r28, r0 / bdnz     ; sum 12 bytes
+0x803584e8  bl    0x80347b20                              ; -> SRAM block pointer
+0x803584f0  nor   r0, r28, r28                            ; ~sum
+0x803584f4  lbz   r3, 0x26(r3)                            ; SRAM[+0x26]
+0x803584f8  clrlwi r0, r0, 0x18                           ; & 0xFF
+0x803584fc  cmplw r3, r0
+0x80358500  beq   0x8035850c                              ; match -> mount continues
+0x80358504  li    r30, -5                                 ; mismatch -> CARD_RESULT_IOERROR
+```
+
+That is the console's **flash-ID check**: GameCube SRAM records the flash ID of the card last
+seen in each slot, plus a checksum byte, so the OS can detect that a different card has been
+swapped in. The mount compares a 12-byte flash ID against that stored checksum and refuses the
+card if they disagree.
+
+Our SRAM device (`dev_sram.cpp`) deliberately leaves its checksum words zero — its own comment
+explains why, and that reasoning was sound at the time: nothing in the DOL validated SRAM, so
+fabricating a value would have been inventing data. **That is no longer true.** Attaching a card
+brought a consumer of SRAM into existence, and the honest state for a console with this card
+inserted is an SRAM block whose flash-ID record matches it.
+
+Next: find where the 12 summed bytes come from (a card flash-ID command not yet implemented, or
+bytes derived from the EXI ID), then make the SRAM device carry a flash-ID record consistent
+with the card actually attached. That is legitimate console state — the IPL writes it on first
+insertion — as opposed to patching the game's check, which would be the banned shortcut.
+
+Worth noting how the earlier decision aged: `dev_sram.cpp` chose to leave the checksum zero
+rather than fabricate one, and recorded that if anything ever validated it, "it will show up as
+behaviour rather than being silently papered over". It did exactly that, as a specific error
+message with a traceable cause.

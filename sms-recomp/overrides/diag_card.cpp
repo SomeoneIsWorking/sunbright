@@ -19,6 +19,8 @@ extern "C" void func_80357f88(CPUState&);   // CARDCheck(chan)
 extern "C" void func_8036a4cc(CPUState&);   // EXIProbeEx(chan)
 extern "C" void func_8036b050(CPUState&);   // EXIGetID(chan, dev, *id)
 extern "C" void func_8036a2d8(CPUState&);   // EXIProbe(chan)
+extern "C" void func_8035873c(CPUState&);   // CARDMountAsync(chan, workArea, detach, cb)
+extern "C" void func_803554e0(CPUState&);   // __CARDSync(chan)
 
 namespace {
 
@@ -62,6 +64,8 @@ TRACE_CARD(card_mount,    803588dc, "CARDMount")
 TRACE_CARD(card_check,    80357f88, "CARDCheck")
 TRACE_CARD(exi_probe_ex,  8036a4cc, "EXIProbeEx")
 TRACE_CARD(exi_get_id,    8036b050, "EXIGetID")
+TRACE_CARD(card_mount_async, 8035873c, "CARDMountAsync")
+TRACE_CARD(card_sync,        803554e0, "__CARDSync")
 
 // EXIProbe's insertion debounce: it stores a 100ms-unit timestamp per channel at
 // 0x800030c0 + chan*4 and requires 3 units to elapse. Report the raw inputs so the stall is
@@ -88,3 +92,5 @@ SB_OVERRIDE(0x80357f88u, card_check,    "CARDCheck (trace)",   "diagnostic; real
 SB_OVERRIDE(0x8036a4ccu, exi_probe_ex,  "EXIProbeEx (trace)",  "diagnostic; real body runs")
 SB_OVERRIDE(0x8036b050u, exi_get_id,    "EXIGetID (trace)",    "diagnostic; real body runs")
 SB_OVERRIDE(0x8036a2d8u, exi_probe,     "EXIProbe (trace)",    "diagnostic; real body runs")
+SB_OVERRIDE(0x8035873cu, card_mount_async, "CARDMountAsync (trace)", "diagnostic; real body runs")
+SB_OVERRIDE(0x803554e0u, card_sync,        "__CARDSync (trace)",     "diagnostic; real body runs")
