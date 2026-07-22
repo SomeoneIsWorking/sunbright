@@ -482,6 +482,18 @@ size_t parse(const u8* p, size_t n, int depth) {
             else if (reg == 0x4A) { g_copy_w = (val & 0x3FF) + 1; g_copy_h = ((val >> 10) & 0x3FF) + 1; }
             // 0x4B: copy destination address (32-byte units). 0x4E: vertical copy scale.
             else if (reg == 0x4B) { g_copy_dest = val & 0x00FFFFFFu; }
+            // 0x4F/0x50: the EFB clear colour (AR / GB). A copy with the clear bit set leaves
+            // the EFB filled with this, so anything grabbed before much is drawn returns it.
+            else if (reg == 0x4F || reg == 0x50) {
+                static u32 ar = 0xFFFFFFFF, gb = 0xFFFFFFFF;
+                if (reg == 0x4F) ar = val; else gb = val;
+                static u32 last_ar = 0, last_gb = 0;
+                if (ar != last_ar || gb != last_gb) {
+                    last_ar = ar; last_gb = gb;
+                    lucent::debug("gxfifo", "EFB clear colour: a={} r={} g={} b={}",
+                                  (ar >> 8) & 0xFF, ar & 0xFF, (gb >> 8) & 0xFF, gb & 0xFF);
+                }
+            }
             else if (reg == 0x4E) { g_copy_yscale = val & 0x00FFFFFFu; }
             // 0x52 triggers a copy. Bit 14 selects copy-to-XFB (the presented frame); with it
             // clear the copy targets a TEXTURE, which is equally real — render-to-texture

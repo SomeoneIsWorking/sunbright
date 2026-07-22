@@ -2306,3 +2306,47 @@ Whether it explains the white sea is NOT established — the reflection copy gra
 vertical scale error would distort content rather than whiten it. But it is a real divergence
 in the exact coordinate mapping the copy goes through, and it should be fixed before drawing
 further conclusions about copy content.
+
+## VI configuration fixed — frame geometry now matches the oracle
+
+aurora derives its logical framebuffer from its OWN VI configuration, which this runtime never
+set (it owns the VI registers itself), so aurora used its 640x480 default while the game renders
+640x448. Since `logical_fb_size()` feeds `map_logical_viewport`, every viewport and EFB-copy
+rectangle was scaled by 960/480 = 2.0 instead of 960/448 = 2.14.
+
+Fixed by overriding `VIConfigure` to forward fbWidth/efbHeight through a new narrow aurora
+entry point `aurora_vi_set_fb_size` (preferred over handing aurora a `GXRenderModeObj`, which
+would couple this runtime to that struct's layout — and whose headers cannot be included here,
+they redefine the PPC intrinsics). The recompiled body is super-called first, so the guest still
+programs its own VI exactly as retail does.
+
+Verified against the oracle — all three copies now identical where all three differed before:
+
+|            | before      | after      | oracle     |
+|------------|-------------|------------|------------|
+| display    | 1280x896    | 1280x960   | 1280x960   |
+| mirror     | 512x512     | 512x549    | 512x549    |
+| reflection | 640x448     | 640x480    | 640x480    |
+| logical    | 640x480     | 640x448    | 640x448    |
+
+Frame dumps are now 1280x960 like the oracle's, which removes the size mismatch that has made
+direct pixel diffs invalid since the first side-by-side. The frame is visibly correct in
+proportion where it had been vertically squashed — Mario in particular now has the right shape,
+which retires the "different animation phase" hand-wave I used for him earlier.
+
+## Sea: the clear-colour theory is dead too
+
+Reasoned that a copy with the clear bit set leaves the EFB filled with the clear colour, so a
+grab taken before much is drawn would return it — and if that colour were white, the reflection
+would be white. Decoded BP 0x4F/0x50 in our parser to check, and verified the decode matches
+aurora's byte for byte (0x4F: r=bits0-7, a=bits8-15; 0x50: b=bits0-7, g=bits8-15) rather than
+trusting my own reading of the register.
+
+**The EFB clears to BLACK** (a=0 r=0 g=0 b=0 by the time file-select is up). A grab of a
+mostly-empty EFB would therefore be black, not white. Theory eliminated.
+
+Sea hypotheses now eliminated: animated ripple grid, palettised textures, the tcg/indirect
+parser gap, stale/missing copy state, a coplanar extra draw, the reflection not being sampled,
+viewport scaling, and the clear colour. What remains unexamined is the TEV configuration of the
+sea draw itself — the dump reports the stage COUNT (2, matching the oracle) but not the stage
+ops, so "same tev=2" has never actually meant "same TEV program".
