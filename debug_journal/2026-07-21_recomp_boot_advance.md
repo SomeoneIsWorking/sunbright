@@ -2621,3 +2621,48 @@ nothing:
 Next: find what dispatches the movement phase and why it runs 4x. The decomp's own game loop is
 the reference for how many times `TMarDirector::direct` (and hence each phase) should run per
 frame.
+
+## The mechanism: a catch-up loop driven by SMSGetVSyncTimesPerSec
+
+`TMarDirector::direct` (MarDirectorDirect.cpp) runs the movement phase in a **catch-up loop**:
+
+```c
+int vsyncRate = 600 / (int)SMSGetVSyncTimesPerSec();   // line 77
+unk54 += vsyncRate;                                    // line 137
+for (;;) {
+    if (!(unk4C & 0x4000)) {
+        unk54 -= 5;
+        if (unk54 < 5) unk4C |= 0x4000;
+        ...
+        mPerformListMovement->perform(uVar4, &local_140);   // movement phase
+```
+
+So movement passes per `direct()` = `vsyncRate / 5`, and the whole thing hangs off
+`SMSGetVSyncTimesPerSec()`:
+
+```c
+f32 SMSGetVSyncTimesPerSec() {   // Application.cpp:84
+    f32 result = 60.0f;          // NTSC/MPAL/EURGB60
+    switch (VIGetTvFormat()) { case VI_PAL: result = 50.0f; break; }
+    return result / 2.0f;        // -> 30 for NTSC
+}
+```
+
+30/sec gives vsyncRate = 20 and **4 movement passes per frame** — which matches the recomp's
+measured 3.97 exactly. So the recomp is doing what this code says.
+
+**That contradicts my inferred oracle rate of 2**, and the inference is the weaker claim: it
+came from dividing the oracle's UV delta by `mTexRate`, not from counting anything. If the
+decomp runs the same `direct()` with the same NTSC format it should also do 4, and then the
+oracle's slower scroll must have a different explanation — a different `mTexRate`, a different
+`VIGetTvFormat`, or `direct()` not running every present.
+
+Added the matching `SB_PHASE_COUNT` counter to the decomp's own `TMapObjWave::perform` to settle
+it by measurement. The run did not reach file-select inside its timeout (the oracle needs
+~200s to get there with `SB_STAGE=15` and START at retrace 2600), so the number is not in hand
+yet — recorded as pending rather than guessed, since guessing is what put the 2 there in the
+first place.
+
+Note `VIGetTvFormat()` is another runtime-supplied value: aurora's returns 0 unconditionally.
+If the recomp's recompiled SDK reads real VI registers instead, the two runtimes could disagree
+on TV format and hence on this entire rate — worth checking alongside the count.
