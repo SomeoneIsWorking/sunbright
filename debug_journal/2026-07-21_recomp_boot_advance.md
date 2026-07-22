@@ -2789,3 +2789,53 @@ adjudicate — as it did for the loop itself, where the port turned out to be fa
 
 Methodological note to self: two of the last three conclusions came from dividing counts taken
 in different runs. Cross-run arithmetic is not measurement; put both counters in one run.
+
+## FIXED (in the DECOMP): a misdecompiled mask halved every actor's movement rate
+
+The retail disassembly adjudicated it, and the bug was ours — in the decomp, not the recomp.
+
+```
+0x80299b08  lwz    r3, 0x58(r26)            ; unk58
+0x80299b0c  nor    r31, r27, r27            ; uVar4 = ~uVar8
+0x80299b14  clrlwi. r0, r3, 0x1f            ; unk58 & 1
+0x80299b1c  rlwinm r4, r4, 0, 0x14, 0x12    ; -> clear PPC bit 19  = &= ~0x1000
+0x80299b20  rlwinm. r0, r3, 0, 0x1e, 0x1e   ; unk58 & 2
+0x80299b28  rlwinm r4, r4, 0, 0x13, 0x11    ; -> clear PPC bit 18  = &= ~0x2000
+```
+
+(`rlwinm` with MB>ME wraps, so MB=20/ME=18 is "all bits except PPC bit 19" = `~(1<<12)` =
+`~0x1000`; MB=19/ME=17 is `~(1<<13)` = `~0x2000`.)
+
+Our port had:
+
+```c
+if (unk58 & 1) uVar4 &= ~0x100;    // wrong constant
+if (unk58 & 2) uVar4 &= 0x200;     // wrong constant AND wrong operation
+```
+
+The second is the damaging one: `&= 0x200` is not a bit-clear at all, it masks `uVar4` down to
+bit 9 and so clears **bit 0 — the MOVEMENT bit**. Every actor's movement pass was therefore
+skipped on the loop iterations where `unk58 & 2` holds.
+
+**Measured before and after, in single runs:**
+
+| | movement / direct() call | draw / call |
+|---|---|---|
+| decomp before | 2.00 | 1.00 |
+| decomp after  | **3.99** | 1.00 |
+| recomp (retail code) | 3.97 | 0.99 |
+
+The decomp now matches the recompiled retail code and retail's own arithmetic
+(`vsyncRate 20 / 5 = 4`). Draw is unchanged, and file-select still renders correctly — sea
+still 0.0% near-white, scene identical — so nothing regressed.
+
+**This validates the two-runtime doctrine concretely.** The recomp runs the real PPC code, so
+where the two disagree it is evidence about retail, and here it caught a decomp defect that had
+been silently halving every actor's update rate — animation timing, physics steps, anything
+driven by the movement pass — in the runtime being used as the rendering oracle. No amount of
+comparing the decomp against itself would have surfaced it.
+
+Note this does NOT fix the recomp's white sea: the recomp was already doing the right number of
+movement passes. What it removes is the 2x discrepancy BETWEEN the runtimes, so their animation
+phases are now directly comparable — which makes the recomp's remaining UV/brightness difference
+measurable against a correct reference for the first time.
