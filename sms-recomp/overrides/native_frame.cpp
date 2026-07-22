@@ -15,6 +15,8 @@
 #include <lucent/log.h>
 
 #include <chrono>
+#include <cstdlib>
+#include <ctime>
 
 extern "C" void func_802fc9a4(CPUState&);   // JDrama::TVideo::waitForRetrace
 extern void gxfifo_flush();
@@ -55,6 +57,27 @@ void report_app_state() {
 extern "C" unsigned VIGetRetraceCount(void);
 namespace { unsigned g_present_count = 0; }
 extern "C" unsigned VIGetRetraceCount(void) { return g_present_count; }
+
+// One NTSC field. The game asks for N retraces per frame (30fps scenes ask for 2), so pacing to
+// the count IT requested is what keeps its own timing math and the wall clock agreeing.
+constexpr int64_t kFieldNs = 1000000000LL * 1001 / 60000;
+
+int64_t now_ns() {
+    timespec ts{};
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;
+}
+
+bool turbo() {
+    static int v = -1;
+    if (v < 0) {
+        const char* e = std::getenv("SB_TURBO");
+        v = (e != nullptr && e[0] != '\0' && e[0] != '0') ? 1 : 0;
+    }
+    return v == 1;
+}
+
+int64_t g_nextDeadlineNs = 0;
 
 void video_wait_for_retrace(CPUState& cpu) {
     ++g_present_count;
@@ -120,6 +143,40 @@ void video_wait_for_retrace(CPUState& cpu) {
     s_frameActive = aurora_begin_frame();
     if (s_frameActive != wasActive)
         lucent::warn("frame", "aurora_begin_frame -> {}", s_frameActive);
+
+    // PACING. Without this the recomp runs as fast as the host allows (measured ~157 fps against
+    // the oracle's 30) — every animation, timer and physics step driven off the retrace count
+    // runs at whatever speed the machine happens to manage, which is not the game.
+    //
+    // Pace to the number of retraces the GAME asked for this frame, taken from its own counter
+    // (the same counter VIWaitForRetrace advances), not to a fixed 60Hz: a 30fps scene requests
+    // two fields per frame and must be paced as two. Deadline-based rather than sleep-per-frame,
+    // so a frame that overruns is absorbed by the next instead of compounding drift. This mirrors
+    // sms-boot/runtime/frame_seam.cpp; SB_TURBO=1 disables it in both runtimes.
+    if (!turbo()) {
+        const u32 addr = cpu.gpr[13] - 22768;
+        static u32 s_prevRetrace = 0;
+        unsigned retraces = 1;
+        if (sb_ram_fast(addr)) {
+            const u32 now = sb_r32(addr);
+            const u32 delta = now - s_prevRetrace;
+            s_prevRetrace = now;
+            // A load hitch can advance the counter arbitrarily; clamp so one hitch cannot
+            // translate into a multi-second sleep.
+            if (delta >= 1 && delta <= 8) retraces = delta;
+        }
+        if (g_nextDeadlineNs == 0) g_nextDeadlineNs = now_ns();
+        g_nextDeadlineNs += (int64_t)retraces * kFieldNs;
+        const int64_t now = now_ns();
+        if (now < g_nextDeadlineNs) {
+            const int64_t d = g_nextDeadlineNs - now;
+            timespec ts{(time_t)(d / 1000000000LL), (long)(d % 1000000000LL)};
+            nanosleep(&ts, nullptr);
+        } else if (now - g_nextDeadlineNs > 4 * kFieldNs) {
+            // Fell far behind (load hitch): resynchronize instead of sprinting to catch up.
+            g_nextDeadlineNs = now;
+        }
+    }
 }
 
 } // namespace

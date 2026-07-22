@@ -8,11 +8,16 @@
 #   ./run-recomp.sh [rom.rvz] [sms.dol]
 #   SB_W=1920 SB_H=1080 ./run-recomp.sh
 #   SBR_LUCENT_DEBUG=card,gxfifo ./run-recomp.sh    # per-channel diagnostics
+#   SB_TURBO=1 ./run-recomp.sh                     # unpaced (no frame limiting)
 #
 # WHAT TO EXPECT: boots GC logo -> title. Press START (Enter) at the title to reach
-# file-select, which mounts your real Dolphin memory card and shows your saves.
-# Known defect: a washed-out band across the sea/lower scene — under investigation
-# (debug_journal/2026-07-21_recomp_boot_advance.md).
+# file-select, which mounts your real Dolphin memory card and shows your saves. Title and
+# file-select both render faithfully (verified per-region against the decomp oracle and
+# against a retail Dolphin capture, 2026-07-22).
+#
+# Runs at the game's own rate — it paces to the retrace count the game asks for, so the
+# menus run at 30fps like the console. SB_TURBO=1 removes pacing (runs as fast as the host
+# manages, ~120fps here); useful for automated runs, wrong for playing.
 #
 # Keyboard drives pad 0: Enter = START, X = A, Z = B, arrows = stick. Closing the
 # window quits. For an unattended run use SBR_PAD_SCRIPT="600:START,640:-" (keys on
