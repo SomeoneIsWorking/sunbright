@@ -3451,3 +3451,43 @@ Another plausible-mechanism guess eliminated by reading the code rather than ass
 Next: find what takes the device-1 lock and never releases it. The boot SRAM read is the
 leading candidate and is directly checkable — trace EXILock/EXISelect calls with their device
 argument from boot, and see which one leaves flags bit 0x10 set.
+
+## Card: lock is FINE; the alternating -3 is EXISelect's "already selected" bit
+
+Corrected again by measurement. The card's own lock succeeds:
+
+```
+[card] EXILock(dev0) -> 1 holder=dev0 flags=0x00000018   (0x10 locked | 0x8 attached)
+```
+
+`holder=dev0` — the card holds channel 0, so the previous entry's "lock held for the SRAM chip"
+was **wrong**. What actually happened: my trace capped at 24 lines, and SRAM/RTC locks the
+channel constantly, so the card's own 3,733 dev0 locks scrolled past unseen and I read a dev1
+sample as the whole story. **Fourth time a log cap has produced a confident wrong answer in this
+investigation.** Fixed the same way as before, by FILTERING (report dev0 unconditionally, count
+dev1) rather than raising the cap.
+
+With the lock correct, the real pattern is visible:
+
+```
+[card] worker/0x80354830 -> 0
+[card] worker/0x80354830 -> -3 (after 1 x 0)     <- strict alternation
+[card] read addr bytes 00 00 00 00 -> offset 0x0
+[card] DMA read 512 bytes at card offset 0x0     <- and reads DO happen
+```
+
+Alternating success/failure with the lock held points at `EXISelect`'s FIRST check, which is not
+the lock at all:
+
+```
+lwz r0, 0xc(r31) / rlwinm. r0, r0, 0, 0x1d, 0x1d   ; flags bit 0x4 = channel already SELECTED
+bne <fail>                                          ; selected -> refuse
+```
+
+So one operation selects the channel and leaves it selected; the next select is refused; then
+something clears the bit and it succeeds again. That is a missing DESELECT between operations —
+SDK-side state (bit 0x4 in `__EXIData[chan]+0xc`), set by EXISelect and cleared by EXIDeselect.
+
+Next: find where the deselect should happen and why it is skipped. The likely shape, given
+everything else in this runtime, is an error/completion path that returns early without
+deselecting — which would also explain why it alternates rather than failing outright.

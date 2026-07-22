@@ -96,7 +96,30 @@ TRACE_CARD(worker_h3,        8035593c, "worker/0x8035593c")
 // guessed at. __EXIData[chan]: +0xc flags (bit 0x10 = locked), +0x18 locked device.
 void exi_lock(CPUState& cpu) {
     const u32 ch = cpu.gpr[3];
+    const u32 dev = cpu.gpr[4];
+    // Who takes the channel lock, and for WHICH device. EXISelect refuses a device that does
+    // not match the lock holder, so the device argument is the whole question here.
+    // Report device-0 locks (the memory card) unconditionally, and device-1 (SRAM/RTC) only
+    // as a running count. SRAM is locked constantly, so a cap on ALL calls hides the rare card
+    // lock among them — the same trap as the earlier log caps, avoided by FILTERING rather
+    // than by picking a bigger number.
+    static long sram_locks = 0;
+    if (dev != 0) ++sram_locks;
     func_8036ae40(cpu);
+    // For the CARD's own lock requests, report the outcome and who ends up holding the
+    // channel. Reported on transitions only, so a long run of identical results cannot bury a
+    // change.
+    if (tracing() && dev == 0) {
+        const u32 base = 0x804040a0u + ch * 0x40u;
+        const s32 r = (s32)cpu.gpr[3];
+        const u32 flags = sb_r32(base + 0xc);
+        const u32 owner = sb_r32(base + 0x18);
+        static s32 last = 0x7fffffff; static u32 lastOwner = 0xffffffff; static long run = 0;
+        if (r == last && owner == lastOwner) { ++run; return; }
+        lucent::info("card", "EXILock(dev0) -> {} holder=dev{} flags=0x{:08x} (after {}; {} "
+                             "sram locks so far)", r, owner, flags, run, sram_locks);
+        last = r; lastOwner = owner; run = 1;
+    }
     if (!tracing()) return;
     static s32 last = 0x7fffffff; static long run = 0;
     const s32 r = (s32)cpu.gpr[3];
