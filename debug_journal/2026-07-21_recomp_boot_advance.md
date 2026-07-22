@@ -2706,3 +2706,43 @@ decomp counter appeared to prove `TMapObjWave::perform` was never called, when i
 had failed to compile (an `extern "C"` at block scope) and the old binary was running. Check the
 build's exit status, or verify the new code is actually in the binary (`strings | grep`), rather
 than printing an unconditional success message.
+
+## Located precisely: the divergence is PRESENTS PER direct() CALL, not the loop
+
+Retail disassembly first, to settle which runtime's loop is faithful:
+
+```
+0x8029985c  li    r3, 0x258          ; 600
+0x8029986c  divw  r25, r3, r0        ; r0 = (int)SMSGetVSyncTimesPerSec()
+...
+0x80299970  lwz   r3, 0x54(r26)      ; unk54
+0x80299974  addi  r0, r3, -5
+0x80299980  cmpwi r0, 5
+0x80299984  bge   0x80299994         ; keep looping while >= 5
+```
+
+The decomp's port of this loop is structurally faithful to retail — same 600, same divide, same
+-5/compare-5. So the earlier suspicion that our ported `direct()` was wrong here is NOT
+supported; that hypothesis is withdrawn.
+
+Then the decomp's own existing `SB_DIRECT_BR` diagnostic supplied the missing numbers:
+
+```
+[dir-br] call=2 branch=both vsyncRate=20 unk54_in=20 unk54_out=0 ...
+```
+
+`vsyncRate = 20` (so `SMSGetVSyncTimesPerSec()` = 30, matching the recomp), and the loop drains
+20 in steps of 5 — **4 movement passes per `direct()` call in the decomp too**. Both runtimes
+agree on the loop AND on the rate.
+
+So the 2x is neither: with 4 movement passes per call but only 2 movement passes per rendered
+frame, **the decomp calls `direct()` once per TWO presents, while the recomp calls it once per
+present.** Cross-checks: 97796 movement / 4 = 24449 direct() calls across 98000 retraces = one
+call per 4 retraces = one per 2 frames; and draw measures 0.50/retrace = 1 per frame, so the
+decomp presents twice per game update.
+
+That is a much more specific defect than "the movement phase runs twice as often", and it is
+about the FRAME SEAM rather than game logic: one of the two runtimes renders a different number
+of frames per game update. The decomp's `MarDirectorDirect.cpp` already carries a comment about
+a "catch-up render" being made deterministic, which is the right place to look next — as is
+whether the decomp presents an extra frame per update by design or by accident.
