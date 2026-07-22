@@ -60,6 +60,7 @@ u8  g_cmd  = 0;
 u32 g_addr = 0;
 u8  g_addr_buf[4] = {0, 0, 0, 0};
 u32 g_addr_want = 0;      // address bytes still outstanding for the command in flight
+bool g_dummy_phase = false;   // clocking out latency bytes between a read address and its DMA
 
 // The driver scatters the byte offset across the four address bytes (0x803557ac..0x803557c8):
 //   b0 = (addr >> 29) & 0x03   b1 = (addr >> 21) & 0xFF
@@ -116,6 +117,13 @@ void card_imm_write(u32 value, u32 len) {
     const u8 b2 = (u8)(value >> 8);
     const u8 b3 = (u8)value;
 
+    if (g_dummy_phase) {
+        // Between a read command's address and its DMA the driver clocks out "latency" bytes
+        // (0x803557f4: EXIImmEx of card->latency bytes from a scratch buffer). The card ignores
+        // whatever is written during that window — it is filling the pipeline, not issuing a
+        // command. Without this the dummy 0xFF bytes were decoded as a command and aborted.
+        return;
+    }
     if (g_addr_want > 0) {
         // Address bytes continuing a command already in flight. EXIImmEx splits the driver's
         // 5-byte command into a 4-byte and a 1-byte immediate transfer, so they arrive in
@@ -163,7 +171,7 @@ void card_imm_write(u32 value, u32 len) {
             g_addr_buf[4 - g_addr_want] = (u8)(value >> (8 * (3 - k)));
             --g_addr_want;
         }
-        if (g_addr_want == 0) decode_address();
+        if (g_addr_want == 0) { decode_address(); g_dummy_phase = true; }
         (void)b1; (void)b2; (void)b3;
         return;
     case CMD_WRITE_PAGE:
@@ -213,6 +221,7 @@ void card_dma(u32 guest_addr, u32 len, bool to_device) {
                           to_device ? "write" : "read", len, g_addr);
         }
     }
+    g_dummy_phase = false;   // the DMA is the end of the read command's dummy window
     u8* host = g_ram_base + guest_addr;
     if (to_device) {
         std::memcpy(g_image.data() + g_addr, host, len);

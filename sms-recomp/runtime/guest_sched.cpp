@@ -106,6 +106,17 @@ void release_token(std::unique_lock<std::mutex>& lk) {
 // it has to track the token rather than whatever the guest scheduler last wrote.
 constexpr u32 OS_CURRENT_THREAD = 0x800000E4;
 
+// The guest's "context of whoever is running" global. OSThread BEGINS with its OSContext, so
+// the current thread's address IS its context pointer — that is how the OS's own context
+// switch maintains this.
+//
+// Nothing in this runtime switches contexts, so this was never written and read as NULL. It
+// stayed invisible until the EXI TC interrupt handler needed it: that handler saves the
+// current context around a callback and restores this pointer afterwards, so dispatching it
+// with a null context would have left the OS with no current context at all. Publishing it
+// alongside OS_CURRENT_THREAD keeps the pair consistent for any guest code that reads either.
+constexpr u32 OS_CURRENT_CONTEXT = 0x800000D4;
+
 // OSThread::state, a halfword at +712 (verified against OSResumeThread and
 // OSIsThreadTerminated, which tests it for MORIBUND or 0).
 constexpr u32 T_STATE           = 712;
@@ -116,13 +127,19 @@ constexpr u16 OS_THREAD_MORIBUND = 8;
 // placeholder zero over the global the OS later sets — doing that handed guest code a NULL
 // OSThread* and it faulted reading a field at +0x2f8.
 void adopt_self_id() {
-    if (t_self && t_self->os_thread == 0) t_self->os_thread = sb_r32(OS_CURRENT_THREAD);
+    if (t_self && t_self->os_thread == 0) {
+        t_self->os_thread = sb_r32(OS_CURRENT_THREAD);
+        if (t_self->os_thread) sb_w32(OS_CURRENT_CONTEXT, t_self->os_thread);
+    }
 }
 
 // Block until this thread holds the token.
 void acquire_token(std::unique_lock<std::mutex>& lk, GuestThread* self) {
     self->cv.wait(lk, [self] { return g_running == self; });
-    if (self->os_thread) sb_w32(OS_CURRENT_THREAD, self->os_thread);
+    if (self->os_thread) {
+        sb_w32(OS_CURRENT_THREAD, self->os_thread);
+        sb_w32(OS_CURRENT_CONTEXT, self->os_thread);   // OSContext is at offset 0 of OSThread
+    }
 }
 
 void thread_main(GuestThread* self) {

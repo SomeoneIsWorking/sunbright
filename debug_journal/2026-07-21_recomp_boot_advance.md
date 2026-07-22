@@ -3595,3 +3595,49 @@ by locating and calling the SDK's own EXI interrupt handler, so the SDK updates 
 with its own code, exactly as `deliver_completion` already does for the callback. Clearing the
 bit from the device would be poking guest state to satisfy a check, which is the class of fix
 this project bans.
+
+## FIXED: dispatch the guest's own EXI interrupt handler (Fable-assisted)
+
+Brought in a second opinion on the EXI completion problem. It confirmed the hypothesis, refined
+it, and caught a bug I had not seen:
+
+- **Refinement:** the stuck flag bit is bit 0 = `EXI_STATE_DMA`, not IMM. `EXIDma` (0x80369ef0)
+  sets `state |= 1` with the same callback-at-+4 pattern, so the permanently-busy transfer is an
+  async **DMA**, not an immediate transfer. Same mechanism either way.
+- **Second bug found:** `deliver_completion` ran the callback but never copied received immediate
+  bytes out of the DATA register into the caller's buffer — so every async immediate READ was
+  returning garbage, silently. Fixed by the same change.
+- **The handler:** `TCIntrruptHandler` = **0x8036aa4c**, registered by `EXIInit` (0x8036ad2c) via
+  `__OSSetInterruptHandler` (0x803458f8) into the table at **0x80003040**. TC interrupt number is
+  **10 + chan*3** — the same encoding EXIImm uses when unmasking. It acks the CSR, clears
+  `state & 3`, copies immediate data back, and dispatches the callback, saving/restoring
+  `__OSCurrentContext` around it.
+
+**The fix**: after every transfer, dispatch the guest's registered handler out of its own
+interrupt table rather than reproducing its bookkeeping in host code. Looking the handler up in
+the table (instead of hardcoding 0x8036aa4c) means the SDK's own registration decides what runs,
+and an unset entry with a pending callback is a detectable impossible state.
+
+Two things the fail-fast caught immediately, both real:
+
+1. **`__OSCurrentContext` (0x800000D4) was never published.** Nothing in this runtime switches
+   contexts, so it read NULL — and the handler RESTORES that pointer at the end, so dispatching
+   with NULL would have left the OS with no current context. The scheduler now publishes it
+   alongside `OS_CURRENT_THREAD` when granting the token; OSThread begins with its OSContext, so
+   the thread's address IS the context pointer. Same "publish what the guest observes" rule that
+   the thread-state work already followed.
+2. **Check order.** Requiring a handler/context before checking whether anything is pending broke
+   early boot: the first EXI traffic is the SRAM read, before OSInit creates any thread. The
+   handler itself checks "callback pending" first and returns having touched nothing, so we do
+   the same — on hardware that path runs with interrupts still off.
+
+**Verified result:** the worker helpers at 0x80354830 and 0x80354740 now BOTH return 0, where
+0x80354830 previously alternated 0/-3. The EXIImm refusals are gone.
+
+**New frontier:** the mount now reaches an unimplemented card command — a 4-byte immediate write
+of `0xffffffff`. I guessed it was the latency/dummy window between a read command and its DMA
+(the driver does write those, at 0x803557f4) and implemented that window, but it did NOT stop
+the abort and no DMA read follows, so 0xff is arriving from some OTHER sequence. That code is
+kept because it matches the disassembled read sequence, but it is NOT exercised and NOT the
+explanation — flagged rather than left looking like a fix. Next step is to identify which SDK
+call site emits that write instead of guessing again.
