@@ -122,3 +122,48 @@ retail ground truth from the Dolphin fork (headless, `--fifo-record` / NoGUI per
 runtimes share the aurora GX layer, so a per-draw diff localizes it. Do NOT assume the remaining
 oddities are renderer bugs; the emitter audit above found two codegen defects in one sitting, and
 the paired-single/quantized-load family is where to look next.
+
+## 60fps interpolation restored (2026-07-23) — replay, not re-simulation
+
+**Measured: 30.0 ticks/s, 60.1 presents/s in Delfino Plaza.** The game still simulates at 30 Hz;
+only the render is decoupled.
+
+The retired Dolphin-era implementation began by re-issuing the engine's draw perform-lists on the
+in-between field and converged, after a long fight with crashes and double-stepped animation, on
+REPLAYING the captured GX command stream instead. This runtime is already built that way —
+`dev_gxfifo` collects a frame's commands and hands them to `aurora_fifo_replay` — so "render the
+same frame again" is one call.
+
+The part that makes the second render show something different is simpler here than in the Dolphin
+era, and worth recording: **aurora reads indexed arrays through host pointers into guest RAM**
+(`emit_arraybase`), so it re-reads the draw matrices at replay time. Blending the guest buffers
+between the two replays is therefore sufficient. No aurora change, no second game frame, no game
+code re-entered — which is what removes the entire crash class the old path fought.
+
+Where the two ticks live (RE from the retired interp_capture.cpp, J3DModel::viewCalc @0x802deeb8):
+viewCalc swaps the double buffer and recomputes each joint's draw matrix, so after a real field
+`mDrawMtxBuf[0][view]` is tick N-1 and `[1][view]` is tick N — and `[1]` is what the shape packets
+load. The in-between writes lerp(N-1, N, alpha) into `[1]`, replays, then restores N. **Restoring is
+mandatory**: leaving blended values in place makes them the base for the next interpolation and the
+scene drifts backwards a fraction of a tick every frame.
+
+### Freshly-spawned models must be excluded — measured, not theorised
+A model that first appears this field has no previous tick: `mDrawMtxBuf[0]` holds whatever the
+allocator last left there. Before gating on "was this model live last field", peak joint delta was
+**1.2e27** — a vertex flung across the screen. With the gate: 386 models rejected per run and the
+peak drops to 8.3e10. A per-joint magnitude clamp is NOT the fix (the retired code removed one
+because it misfired on distant geometry during camera rotation); the gate is about provenance.
+
+### Still open
+- **Cut detection.** A camera cut still interpolates across the discontinuity. The retired code
+  detected cuts at the CAMERA level and skipped the whole in-between for that tick; the residual
+  8.3e10 peak is probably exactly this. Do this before chasing per-model heuristics.
+- **Screenspace effects** (the user's own warning, and the last blocker before retirement): the
+  replay re-runs the frame's EFB-copy and screen-texture commands, so effects that sample the
+  screen (water refraction, mirror, dash blur, mist) can sample the wrong half-step. The retired
+  tree carried efb_interp_freeze.cpp / shadow_interp.cpp / cast_shadow_interp.cpp and a per-list
+  mask for this. Treat those as evidence of WHICH passes misbehave, not as a finished answer.
+- **Cost**: ticks/s drops ~30.0 -> 28 with interpolation on (the extra replay). Worth profiling
+  before blaming the blend — replaying the whole stream re-parses it.
+
+Live tuning without a rebuild: `curl '127.0.0.1:17654/interp60?alpha=0.5'` (or `on=0` to A/B).

@@ -24,6 +24,12 @@
 
 extern "C" void func_802fc9a4(CPUState&);   // JDrama::TVideo::waitForRetrace
 extern void gxfifo_flush();
+extern void gxfifo_replay_last();
+
+// interp60.cpp — 60fps interpolation. The blend/restore pair brackets the extra present.
+bool sbr_interp60();
+bool sbr_interp60_blend();
+void sbr_interp60_restore();
 
 namespace {
 
@@ -131,8 +137,61 @@ struct QuitSignals {
     }
 } g_quitSignals;
 
+// Sleep until `fields` more NTSC fields have elapsed. Deadline-accumulating rather than
+// sleep-per-call, so a frame that overruns is absorbed by the next instead of compounding drift.
+void pace_fields(unsigned fields) {
+    if (turbo() || fields == 0) return;
+    if (g_nextDeadlineNs == 0) g_nextDeadlineNs = now_ns();
+    g_nextDeadlineNs += (int64_t)fields * kFieldNs;
+    const int64_t now = now_ns();
+    if (now < g_nextDeadlineNs) {
+        const int64_t d = g_nextDeadlineNs - now;
+        timespec ts{(time_t)(d / 1000000000LL), (long)(d % 1000000000LL)};
+        nanosleep(&ts, nullptr);
+    } else if (now - g_nextDeadlineNs > 4 * kFieldNs) {
+        g_nextDeadlineNs = now;   // fell far behind (load hitch): resync, don't sprint to catch up
+    }
+}
+
+// Present whatever is in the open frame and open the next one, per aurora's contract:
+//  - end_frame must NOT run if the matching begin_frame returned false
+//  - a frame begun but not presentable must be DISCARDED, or the fifo grows unbounded
+//  - aurora_update() is the event pump; without it the window/swapchain state never advances
+//
+// Getting this wrong made the per-frame staging buffer accumulate across frames instead of
+// resetting: ~291 KB of stream per frame reached aurora's 48 MB limit after roughly 170 frames
+// and aborted with "mapped ByteBuffer overflow".
+void present_and_reopen(bool& frameActive) {
+    ++g_present_count;   // presents, not game ticks: interpolation makes two per tick
+    if (frameActive) {
+        aurora_end_frame();
+    } else {
+        aurora_discard_frame();
+    }
+
+    // aurora_update returns the frame's event ARRAY; it is not a pop-one-at-a-time queue, so
+    // calling it in a loop never terminates. The events MUST be inspected, not merely pumped:
+    // AURORA_EXIT is how closing the window asks the program to stop, and discarding it left the
+    // window uncloseable.
+    const AuroraEvent* event = aurora_update();
+    bool exit_requested = g_quit_requested != 0;
+    while (event != nullptr && event->type != AURORA_NONE) {
+        if (event->type == AURORA_EXIT) exit_requested = true;
+        ++event;
+    }
+    if (exit_requested) {
+        lucent::info("frame", "{} — shutting down",
+                     g_quit_requested ? "signal received" : "window closed");
+        aurora_shutdown();
+        std::_Exit(0);
+    }
+
+    const bool wasActive = frameActive;
+    frameActive = aurora_begin_frame();
+    if (frameActive != wasActive) lucent::warn("frame", "aurora_begin_frame -> {}", frameActive);
+}
+
 void video_wait_for_retrace(CPUState& cpu) {
-    ++g_present_count;
     report_app_state();
     report_mario_pos();
     // The probe's handlers run HERE, on the game thread at the frame boundary, which is the only
@@ -162,16 +221,21 @@ void video_wait_for_retrace(CPUState& cpu) {
     // actually open; otherwise it would be replayed into a frame that will be discarded.
     gxfifo_flush();
 
-    // Present rate, so "is it slow?" is measured rather than guessed.
+    // Rates, so "is it slow?" is measured rather than guessed. TICKS are game frames; PRESENTS
+    // are what reaches the screen, and with 60fps interpolation there are two per tick — counting
+    // only ticks made a working 60fps look like 30.
     {
         using clock = std::chrono::steady_clock;
         static auto t0 = clock::now();
-        static long frames = 0;
-        if (++frames % 30 == 0) {
+        static long ticks = 0;
+        static unsigned lastPresents = 0;
+        if (++ticks % 30 == 0) {
             const auto now = clock::now();
             const double s = std::chrono::duration<double>(now - t0).count();
-            lucent::debug("frame", "{} presents, {:.1f}/s over the last 30", frames, 30.0 / s);
+            lucent::debug("frame", "{:.1f} ticks/s, {:.1f} presents/s", 30.0 / s,
+                          (double)(g_present_count - lastPresents) / s);
             t0 = now;
+            lastPresents = g_present_count;
         }
     }
 
@@ -186,35 +250,30 @@ void video_wait_for_retrace(CPUState& cpu) {
     // 170 frames and aborted with "mapped ByteBuffer overflow".
     static bool s_frameActive = true;   // main() opened the first frame
 
-    if (s_frameActive) {
-        aurora_end_frame();
-    } else {
-        aurora_discard_frame();
-    }
+    present_and_reopen(s_frameActive);
 
-    // Once per frame: aurora_update returns the frame's event ARRAY, it is not a
-    // pop-one-at-a-time queue. Calling it in a loop never terminates.
+    // ── The in-between field (60fps interpolation) ───────────────────────────────────────
+    // The frame just presented is tick N. Blend every live model's draw matrices toward tick
+    // N-1 and replay the SAME command stream: aurora re-reads those matrices out of guest RAM,
+    // so the identical stream renders the scene half a tick earlier. No game code runs, which
+    // is what keeps animation from double-stepping and keeps this out of the crash business.
     //
-    // The events MUST be inspected, not merely pumped: AURORA_EXIT is how closing the window
-    // asks the program to stop. Discarding it left the window uncloseable — the only way out
-    // was killing the process, which is not an acceptable way to quit a game.
-    const AuroraEvent* event = aurora_update();
-    bool exit_requested = g_quit_requested != 0;
-    while (event != nullptr && event->type != AURORA_NONE) {
-        if (event->type == AURORA_EXIT) exit_requested = true;
-        ++event;
+    // Paced as a field of its own, so the two presents are evenly spaced rather than
+    // back-to-back — otherwise the output is two frames in quick succession followed by a long
+    // gap, which looks worse than 30fps however high the present count reads.
+    unsigned fields_paced = 0;
+    if (sbr_interp60() && s_frameActive) {
+        pace_fields(1);
+        ++fields_paced;
+        if (sbr_interp60_blend()) {
+            gxfifo_replay_last();
+            present_and_reopen(s_frameActive);
+        }
+        // Tick N goes back BEFORE the game's next field, always — including when the blend
+        // produced nothing to present. Leaving blended values in place would make them the base
+        // for the next interpolation, and the scene would drift backwards every frame.
+        sbr_interp60_restore();
     }
-    if (exit_requested) {
-        lucent::info("frame", "{} — shutting down", g_quit_requested ? "signal received"
-                                                                    : "window closed");
-        aurora_shutdown();
-        std::_Exit(0);
-    }
-
-    const bool wasActive = s_frameActive;
-    s_frameActive = aurora_begin_frame();
-    if (s_frameActive != wasActive)
-        lucent::warn("frame", "aurora_begin_frame -> {}", s_frameActive);
 
     // PACING. Without this the recomp runs as fast as the host allows (measured ~157 fps against
     // the oracle's 30) — every animation, timer and physics step driven off the retrace count
@@ -225,7 +284,7 @@ void video_wait_for_retrace(CPUState& cpu) {
     // two fields per frame and must be paced as two. Deadline-based rather than sleep-per-frame,
     // so a frame that overruns is absorbed by the next instead of compounding drift. This mirrors
     // sms-boot/runtime/frame_seam.cpp; SB_TURBO=1 disables it in both runtimes.
-    if (!turbo()) {
+    {
         const u32 addr = cpu.gpr[13] - 22768;
         static u32 s_prevRetrace = 0;
         unsigned retraces = 1;
@@ -237,17 +296,8 @@ void video_wait_for_retrace(CPUState& cpu) {
             // translate into a multi-second sleep.
             if (delta >= 1 && delta <= 8) retraces = delta;
         }
-        if (g_nextDeadlineNs == 0) g_nextDeadlineNs = now_ns();
-        g_nextDeadlineNs += (int64_t)retraces * kFieldNs;
-        const int64_t now = now_ns();
-        if (now < g_nextDeadlineNs) {
-            const int64_t d = g_nextDeadlineNs - now;
-            timespec ts{(time_t)(d / 1000000000LL), (long)(d % 1000000000LL)};
-            nanosleep(&ts, nullptr);
-        } else if (now - g_nextDeadlineNs > 4 * kFieldNs) {
-            // Fell far behind (load hitch): resynchronize instead of sprinting to catch up.
-            g_nextDeadlineNs = now;
-        }
+        // The in-between field already consumed one of this tick's fields.
+        pace_fields(retraces > fields_paced ? retraces - fields_paced : 0);
     }
 }
 

@@ -43,6 +43,7 @@ std::vector<u8> g_buf;
 // The stream handed to aurora. Identical to the guest's, except that CP array-base writes
 // are rewritten (see below) — aurora cannot use the guest's 32-bit address directly.
 std::vector<u8> g_out;
+std::vector<u8> g_last;   // the stream of the frame just presented (see gxfifo_last_frame)
 
 
 
@@ -654,7 +655,22 @@ void gxfifo_flush() {
     g_dl_calls = 0; g_dl_bytes = 0;
 
     aurora_fifo_replay(g_out.data(), (u32)g_out.size(), /*bigEndian=*/1);
+    // Keep the stream: 60fps interpolation presents the SAME frame a second time with the
+    // guest's draw matrices blended toward the previous tick. Aurora reads indexed arrays
+    // through host pointers into guest RAM (emit_arraybase), so replaying this identical
+    // stream after blending those buffers renders the in-between field — no second game
+    // frame, no game code re-entered.
+    g_last.swap(g_out);
     g_out.clear();
+}
+
+// The stream that produced the frame just presented (empty if none).
+const std::vector<u8>& gxfifo_last_frame() { return g_last; }
+
+// Replay it again, into whatever frame is currently open.
+void gxfifo_replay_last() {
+    if (g_last.empty()) return;
+    aurora_fifo_replay(g_last.data(), (u32)g_last.size(), /*bigEndian=*/1);
 }
 
 void gxfifo_stats(u64& draws, u64& verts, u64& bytes) {
