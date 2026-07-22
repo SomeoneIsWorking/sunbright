@@ -28,6 +28,8 @@ extern "C" void func_8035593c(CPUState&);
 extern "C" void func_8036ae40(CPUState&);   // EXILock(chan, dev, callback)
 extern "C" void func_8036a748(CPUState&);   // EXISelect(chan, dev, freq)
 extern "C" void func_8036a874(CPUState&);   // EXIDeselect(chan)
+extern "C" void func_80369bf4(CPUState&);   // EXIImm(chan, buf, len, mode, cb)
+extern "C" void func_80369fdc(CPUState&);   // EXISync(chan)
 extern "C" void func_8035873c(CPUState&);   // CARDMountAsync(chan, workArea, detach, cb)
 extern "C" void func_803554e0(CPUState&);   // __CARDSync(chan)
 extern "C" void func_8036a580(CPUState&);   // EXIAttach(chan, callback)
@@ -188,13 +190,34 @@ void exi_select(CPUState& cpu) {
 void exi_deselect(CPUState& cpu) {
     func_8036a874(cpu);
     if (!tracing()) return;
-    static long des = 0;
-    ++des;
+    static long des = 0, fail = 0;
+    ++des; if (cpu.gpr[3] == 0) ++fail;
     static long lastReport = 0;
     if (des - lastReport >= 2000) { lastReport = des;
-        lucent::info("card", "EXIDeselect: {} calls", des); }
+        lucent::info("card", "EXIDeselect: {} calls, {} FAILED", des, fail); }
+}
+
+// The helper ORs EXIImm/EXISync/EXIDeselect failures into one flag, so the return code cannot
+// say which failed. Count each separately.
+void exi_imm(CPUState& cpu) {
+    func_80369bf4(cpu);
+    if (!tracing()) return;
+    static long n = 0, fail = 0, lastReport = 0;
+    ++n; if (cpu.gpr[3] == 0) ++fail;
+    if (n - lastReport >= 2000) { lastReport = n;
+        lucent::info("card", "EXIImm: {} calls, {} FAILED", n, fail); }
+}
+void exi_sync(CPUState& cpu) {
+    func_80369fdc(cpu);
+    if (!tracing()) return;
+    static long n = 0, fail = 0, lastReport = 0;
+    ++n; if (cpu.gpr[3] == 0) ++fail;
+    if (n - lastReport >= 2000) { lastReport = n;
+        lucent::info("card", "EXISync: {} calls, {} FAILED", n, fail); }
 }
 
 SB_OVERRIDE(0x8036ae40u, exi_lock,         "EXILock (trace)",        "diagnostic; real body runs")
 SB_OVERRIDE(0x8036a748u, exi_select,       "EXISelect (trace)",      "diagnostic; real body runs")
 SB_OVERRIDE(0x8036a874u, exi_deselect,     "EXIDeselect (trace)",    "diagnostic; real body runs")
+SB_OVERRIDE(0x80369bf4u, exi_imm,          "EXIImm (trace)",         "diagnostic; real body runs")
+SB_OVERRIDE(0x80369fdcu, exi_sync,         "EXISync (trace)",        "diagnostic; real body runs")

@@ -3525,3 +3525,41 @@ interrupt, stuck EXTINT, mislabelled probe, lock owner, and now the select leak)
 line is that each was a plausible story built on a diagnostic that did not distinguish it from
 its neighbours; each fell to a measurement that did. Distinguishing the three candidates needs
 one trace per call, which is the obvious next step and cheap.
+
+## Card: EXIImm is the failing call (~22% of the time)
+
+Traced the three candidates separately, since the helper ORs them into one flag:
+
+```
+[card] EXIImm:      6000 calls, 1322 FAILED
+[card] EXISync:     6000 calls,    0 FAILED
+[card] EXIDeselect: 4000 calls,    0 FAILED
+```
+
+**EXIImm is the only one that fails**, and it fails about 22% of the time — consistent with the
+helper's alternating 0/-3.
+
+Its preconditions are in the prologue at 0x80369bf4:
+
+```
+lwz     r0, 0xc(r27)             ; __EXIData[chan] flags
+clrlwi. r0, r0, 0x1e             ; bits 0-1 must be CLEAR (transfer/DMA in progress)
+bne     <fail>
+lwz     r0, 0xc(r27)
+rlwinm. r0, r0, 0, 0x1d, 0x1d    ; bit 0x4 must be SET (channel selected)
+bne     <proceed>
+<fail: return 0>
+```
+
+Select is proven balanced and never refused, so bit 0x4 is set; that leaves **bits 0-1: the
+SDK's own "transfer in progress" state**. Those are set when a transfer starts and cleared when
+it completes — and on hardware the completion is signalled by the EXI transfer-complete
+interrupt, whose handler clears them. This runtime has no interrupt delivery, and
+`deliver_completion` (added earlier) calls the registered CALLBACK but does not touch the SDK's
+busy flags, because clearing them is the interrupt HANDLER's job, not the callback's.
+
+That is a concrete, testable next step and it finally gives the earlier interrupt work a real
+role: the missing piece is not the callback but the handler's bookkeeping. Confirm by reading
+`__EXIData[chan]+0xc` at an EXIImm failure and checking bits 0-1, then decide where those should
+be cleared — ideally by having the transfer completion do exactly what the hardware handler
+does, rather than by clearing a bit because it unblocks the caller.
