@@ -11,10 +11,12 @@
 #include "overrides.h"
 
 #include <aurora/aurora.h>
+#include <aurora/event.h>
 #include <intrinsics.h>
 #include <lucent/log.h>
 
 #include <chrono>
+#include <csignal>
 #include <cstdlib>
 #include <ctime>
 
@@ -79,6 +81,23 @@ bool turbo() {
 
 int64_t g_nextDeadlineNs = 0;
 
+// Set from a signal handler, so it must be async-signal-safe: a volatile sig_atomic_t flag and
+// nothing else. The frame loop acts on it at the frame boundary, where shutting aurora down is
+// safe — a handler cannot do that itself.
+volatile std::sig_atomic_t g_quit_requested = 0;
+
+extern "C" void sb_quit_signal(int sig) { g_quit_requested = sig; }
+
+// SIGINT (Ctrl-C) and SIGTERM (kill, and what a session manager sends at logout) must both bring
+// the process down cleanly. Without handlers the default action kills it outright, leaving the
+// GPU device and audio stream to be torn down by the OS.
+struct QuitSignals {
+    QuitSignals() {
+        std::signal(SIGINT, sb_quit_signal);
+        std::signal(SIGTERM, sb_quit_signal);
+    }
+} g_quitSignals;
+
 void video_wait_for_retrace(CPUState& cpu) {
     ++g_present_count;
     report_app_state();
@@ -137,7 +156,22 @@ void video_wait_for_retrace(CPUState& cpu) {
 
     // Once per frame: aurora_update returns the frame's event ARRAY, it is not a
     // pop-one-at-a-time queue. Calling it in a loop never terminates.
-    aurora_update();
+    //
+    // The events MUST be inspected, not merely pumped: AURORA_EXIT is how closing the window
+    // asks the program to stop. Discarding it left the window uncloseable — the only way out
+    // was killing the process, which is not an acceptable way to quit a game.
+    const AuroraEvent* event = aurora_update();
+    bool exit_requested = g_quit_requested != 0;
+    while (event != nullptr && event->type != AURORA_NONE) {
+        if (event->type == AURORA_EXIT) exit_requested = true;
+        ++event;
+    }
+    if (exit_requested) {
+        lucent::info("frame", "{} — shutting down", g_quit_requested ? "signal received"
+                                                                    : "window closed");
+        aurora_shutdown();
+        std::_Exit(0);
+    }
 
     const bool wasActive = s_frameActive;
     s_frameActive = aurora_begin_frame();

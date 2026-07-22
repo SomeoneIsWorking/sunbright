@@ -33,6 +33,10 @@ struct PADStatus {
     signed char err;
 };
 extern "C" unsigned int PADRead(PADStatus* status);
+extern "C" int PADInit(void);
+// {scancode, padButton} pairs; scancode <= 0 (PAD_KEY_INVALID) means "unbound".
+struct PADKeyButtonBinding { int scancode; unsigned int padButton; };
+extern "C" PADKeyButtonBinding* PADGetKeyButtonBindings(unsigned port, unsigned* count);
 extern "C" void PADSetKeyboardActive(unsigned int port, int active);
 
 #include <cstdlib>
@@ -163,8 +167,29 @@ void pad_read(CPUState& cpu) {
     if (!parsed) {
         parsed = true;
         parse_script();
+        // aurora's PADInit is what POPULATES the default key bindings; without it the binding
+        // table is empty and an "active" keyboard pad reports no button ever pressed. The decomp
+        // runtime gets this for free because the game's PAD SDK *is* aurora's, so its PADInit
+        // call lands here. This runtime recompiles the guest's own PADInit instead, which knows
+        // nothing about aurora — so aurora's must be called explicitly or the keyboard is dead.
+        ::PADInit();
         // Let the keyboard drive port 0, the same arrangement the decomp runtime uses.
         ::PADSetKeyboardActive(0, true);
+        // Report how many keys are actually bound. "Keyboard active" is not the same as
+        // "keyboard usable": with an unpopulated binding table the pad is active and reports
+        // nothing, which is indistinguishable from a player pressing no keys. Counting them
+        // makes a dead keyboard say so instead of looking like idleness.
+        {
+            unsigned count = 0;
+            const PADKeyButtonBinding* b = ::PADGetKeyButtonBindings(0, &count);
+            unsigned bound = 0;
+            for (unsigned i = 0; b != nullptr && i < count; ++i)
+                if (b[i].scancode > 0) ++bound;
+            if (bound == 0)
+                lucent::error("pad", "keyboard is active but NO keys are bound — input is dead");
+            else
+                lucent::info("pad", "keyboard: {} of {} keys bound", bound, count);
+        }
     }
 
     const u32 out = cpu.gpr[3];

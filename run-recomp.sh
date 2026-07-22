@@ -19,8 +19,8 @@
 # menus run at 30fps like the console. SB_TURBO=1 removes pacing (runs as fast as the host
 # manages, ~120fps here); useful for automated runs, wrong for playing.
 #
-# Keyboard drives pad 0: Enter = START, X = A, Z = B, arrows = stick. Closing the
-# window quits. For an unattended run use SBR_PAD_SCRIPT="600:START,640:-" (keys on
+# Keyboard drives pad 0: Enter = START, X = A, Z = B, arrows = stick. Closing the window
+# quits, as does Ctrl-C or SIGTERM. For an unattended run use SBR_PAD_SCRIPT="600:START,640:-" (keys on
 # PAD read count) together with SB_HEADLESS=1.
 #
 # Memory card: slot A is a real Dolphin card image, shared with Dolphin so saves stay
