@@ -86,26 +86,47 @@ The instrument now both names and removes the painting draws.
 - 393,001 box-covering draws and 640,401 opaque perspective quads each dropped with no change:
   "removing enough draws clears anything" is false.
 
-## Where it points
+## ⚠️ THE PREMISE WAS WRONG — there is no "wash", and the reference frame was a DIFFERENT SCENE
 
-Covering prims at the sea pixel, one frame, oracle (`SB_STAGE=15`) vs recomp (file-select):
+Two errors, found only by **looking at the images** instead of at the numbers:
 
-| covering prims | oracle | recomp |
+1. **The "oracle" reference was the TITLE SCREEN.** `SB_STAGE=15` boots to the title, not to
+   file-select — reaching file-select needs `SB_PAD_SCRIPT="800:START 840:-"` and a much later
+   dump. Every oracle number in this file above (0.0% near-white, mean (80,189,205)) was the
+   title screen's open ocean, compared against the recomp's *file-select*.
+2. **The measurement rect (150,640)-(470,800) sits on the white SURF LINE** where the waves
+   break on the beach — legitimately white. "82.1% near-white" was measuring foam and calling
+   it a defect. The recomp's file-select otherwise renders correctly: sky, sea, sand, Mario,
+   palm, menu, HUD all present and right.
+
+With the oracle actually at file-select and the cameras visually matched, the covering-prim
+inventories at the same pixel are **nearly identical**, and the claimed opaque deficit
+evaporates — it was entirely the title-vs-file-select confound:
+
+| covering prims at the pixel | oracle (file-select) | recomp (file-select) |
 |---|---|---|
-| total | 122 | 71 |
-| screen-blend `64x64 tev=1 bf=1/3` | 32 | 41 |
-| opaque base `bm=0 bf=1/0` (64x128 + 256x256) | 29 | 7 |
-| `128x256 tev=2 bf=4/2` | 16 | 3 |
+| total | 83 | 71 |
+| screen-blend `64x64 bf=1/3` | 41 | 41 |
+| opaque base `256x256 bm=0` | 7 | 6 |
+| `256x256 bf=1/5` | 9 | 3 |
 
-`bf=1/3` is ONE/INVSRCCLR — a **screen blend**, which can only brighten and converges to white
-under repetition. The recomp applies *more* of them over *far less* opaque base: the base layer
-that should re-establish a dark sea colour each frame is largely absent, so the brightening
-layers accumulate unopposed. That is a mechanism consistent with every measurement here.
+## The REAL residual difference (visual, both at file-select)
 
-**Not yet verified**, and the next thing to test: the two runs may not be at the same camera
-state (oracle boots straight to stage 15, the recomp navigates via START), and camera state
-changes which prims cover the pixel. Confirm the cameras match before treating the missing
-opaque base as the root cause.
+- The oracle's sea meets the sand cleanly with no white foam; the recomp draws a broad white
+  surf band along the whole shoreline.
+- The three shadow decals under the save-file blocks are dark grey in the oracle and render as
+  bright white-blue patches in the recomp.
+
+Since the draw population and every blend/TEV *configuration* signature match, the divergence is
+in what those draws **write** — bound texture content, TEV konst/register colours, or vertex
+colours — not in which draws exist or how they are blended. An unbound or white texture is the
+obvious candidate and has bitten this project before (`texObjId=0` cache miss; NULL-texMap TEV
+callsites). That is the next thing to check, and it is a *cosmetic* residual, not a wash.
+
+**Method lesson, the expensive one:** the entire investigation ran on a numeric comparison of a
+rect chosen without ever looking at what was inside it, against a reference never confirmed to be
+the same scene. Two five-second image looks would have prevented all of it. Look at the picture
+before measuring the picture.
 
 ## Falsified along the way
 

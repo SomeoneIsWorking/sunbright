@@ -207,6 +207,16 @@ harness gates it; the tool refuses paths outside `scratch/`). Use it in subagent
 Boot-order fidelity: GC logo → title (stage 15) → file-select → gameplay, rendered through
 Aurora GX. Fix defects in boot order; finish one port end-to-end before switching.
 
+**Recomp file-select status (2026-07-22): it RENDERS CORRECTLY.** The multi-session "sea wash"
+defect does NOT exist: the measurement rect sat on the white SURF LINE (legitimately white), and
+the "oracle" reference was the TITLE SCREEN — `SB_STAGE=15` boots to title, reaching file-select
+needs `SB_PAD_SCRIPT="800:START 840:-"` and a late dump. With both runtimes actually at
+file-select the covering-prim inventories match (41 vs 41 screen-blend draws over the pixel).
+Do NOT re-open "sea wash" investigations; see `debug_journal/2026-07-22_wash_attribution_harness.md`.
+Real remaining residual (cosmetic): recomp draws white surf along the shoreline where the oracle
+draws none, and the save-block shadow decals render white-blue instead of dark grey — same draws,
+same blend/TEV config, so suspect bound texture content / TEV colour data, not the blend chain.
+
 **Title screen status (2026-07-11): the title RENDERS FAITHFULLY.** The multi-session
 "washed / orange / blue-diluted / oversized logo" defect was a **diagnostic dump-path
 mislabel**, NOT a render bug — `SB_DUMP_FRAME` wrote raw BGRA8 surface bytes but logged them
