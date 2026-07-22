@@ -226,3 +226,41 @@ recomp — the same reason the decomp needed `SB_SEL_PICK`.
 
 Confirmed working while investigating this: seagulls now render at file-select (matching retail),
 and Mario reaches his sleep idle, so the scene is running its full animation set.
+
+---
+
+# Mario's arms are missing in the recomp: no indexed XF matrix loads (2026-07-22)
+
+Symptom: at file-select the recomp draws Mario's shoulders but not his forearms or gloves, with a
+thin white sliver at his side — geometry COLLAPSED, not culled. Retail and the decomp oracle both
+draw full arms with white gloves.
+
+## Harness defect found FIRST (and it produced a false negative)
+
+`SB_LOG=pnzero` reported "0 zero-rotation matrix uploads". That was meaningless: aurora gates its
+GX diagnostics on a **weak** `sb_log_enabled` that the hosting runtime must provide. Only sms-boot
+provided it, so in the recomp the symbol resolved to null and `sb_gx_log_on` returned false for
+EVERY channel — every aurora SB_LOG channel was silently dead in this runtime. Fixed by giving the
+recomp its own registry (`sms-recomp/runtime/sb_log.cpp`, same semantics, same SB_LOG spec).
+
+Validation matters: `SB_LOG=list` announces a channel when a callsite CHECKS it, which is how the
+next result was read correctly rather than as another zero.
+
+## The finding
+
+With the channel live, `SB_LOG=pnzero,list` through to file-select announces **no channels at
+all**. The `pnzero` check sits inside the `CP_CMD_LOAD_INDX_A..D` handler (indexed XF load), so
+the callsite is never reached: **the recomp issues no indexed pos/nrm matrix loads**.
+
+That matches the symptom precisely. In J3D, rigid parts load their matrix directly
+(`GXLoadPosMtxImm` -> `CP_CMD_LOAD_XF_REG`), while ENVELOPE-SKINNED parts use `GXLoadPosMtxIndx`
+-> an indexed XF load from the draw-matrix pool. Mario's rigid parts (body, head, hat, legs)
+render correctly; his envelope-skinned arms and gloves never receive their matrices and collapse.
+
+## Next step
+
+Determine WHY no indexed load reaches the FIFO: either the game's `GXLoadPosMtxIndx` path does not
+emit the opcode in this runtime, or the opcode is emitted but dispatched down a different branch
+before reaching the `CP_CMD_LOAD_INDX_*` case. Count raw FIFO opcodes in the recomp stream to
+split those two before touching any code — do NOT assume which, and validate the counter against a
+known-positive (the decomp runtime, which must show a nonzero indexed-load count).
