@@ -47,6 +47,11 @@ constexpr u32 kExiCallbackOff = 4;
 
 void deliver_completion(u32 ch);   // defined below; runs the SDK's EXI callback inline
 
+constexpr u32 CSR_EXIINT   = 1u << 1;    // EXI interrupt status  (write 1 to clear)
+constexpr u32 CSR_TCINT    = 1u << 3;    // transfer-complete status (write 1 to clear)
+constexpr u32 CSR_EXTINT   = 1u << 11;   // insertion/removal event  (write 1 to clear)
+constexpr u32 CSR_W1C_MASK = CSR_EXIINT | CSR_TCINT | CSR_EXTINT;
+
 constexpr u32 CSR_EXT      = 1u << 12;   // a device is connected in the external slot
 constexpr u32 CSR_CS_SHIFT = 7;
 constexpr u32 CSR_CS_MASK  = 0x7u << CSR_CS_SHIFT;
@@ -143,6 +148,19 @@ void exi_write(u32 ea, unsigned width, u32 value) {
     if (ch >= kChannels) {
         lucent::error("exi", "write @ 0x{:08x} is outside the three channels", ea);
         std::abort();
+    }
+
+    if (r == R_CSR) {
+        // The interrupt-status bits are WRITE-1-TO-CLEAR: the SDK writes a 1 to acknowledge an
+        // event, and hardware then reads back 0. Storing the write verbatim inverts that — the
+        // bit reads back SET forever, so the guest sees a permanently pending event.
+        //
+        // This is not theoretical. EXIProbe (0x8036a2d8) resets its insertion-debounce
+        // timestamp every time it observes EXTINT, so a stuck EXTINT meant the card never
+        // finished settling: EXIProbeEx returned 0 (still settling) on all 400 traced calls and
+        // the game reported the card as damaged. Nothing in this runtime ever RAISES these
+        // bits, so after masking they simply stay clear, which is the truth here.
+        value &= ~CSR_W1C_MASK;
     }
 
     g_reg[ch][r] = value;

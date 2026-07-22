@@ -3203,3 +3203,37 @@ then decide between raising EXTINT once at attach (so the SDK runs its own inser
 and the debounce starts from a real moment) or ensuring the stored timestamp is already old.
 The former is the faithful one — it lets the SDK's own code do the work rather than arranging
 for its state to look right.
+
+## Card probe SUCCEEDS; mount now fails with -5 before any I/O
+
+Two real EXI fixes this tick, both hardware semantics rather than workarounds:
+
+1. **Write-1-to-clear status bits.** EXI CSR bits 1 (EXIINT), 3 (TCINT) and 11 (EXTINT) are
+   acknowledged by WRITING A ONE, after which hardware reads back zero. Our transport stored
+   register writes verbatim, so an acknowledged bit read back SET forever. Masking them on write
+   is the truth here, since nothing in this runtime raises them. (The CSR now reads exactly
+   `0x00001000` — EXT alone.)
+2. The EXT presence bit from the previous tick.
+
+**And the probe now succeeds:**
+
+```
+[card] EXIProbeEx  -> 1 (after 307225 x 0)
+[card] CARDProbeEx -> 0 (after 307225 x -1)
+[card] CARDMount   -> -5
+```
+
+The insertion debounce DOES elapse — it just takes 307,225 polls to get there, which is why
+every earlier trace showed only zeros. **My log cap hid the success, for the third time this
+investigation** (the 200-draw window twice, now a 400-line report cap). Fixed properly by
+reporting only on VALUE CHANGE with a run-length, which is the right shape for anything polled
+in a retry loop: it cannot hide a transition no matter how long the run.
+
+Where it stands now: `CARDMount` returns **-5 (CARD_RESULT_IOERROR)** and the card device still
+sees only read-ID, clear-status and read-status — **no 0x52 block read at all**. So the mount
+fails before touching the card's contents, and the read-address decoding done earlier is still
+unexercised.
+
+Next: disassemble `CARDMount` (0x803588dc) to find which check produces -5 ahead of any I/O. The
+pattern that keeps working is going straight to the retail code with a specific question; the
+detours have all come from reasoning about which subsystem "should" be responsible.

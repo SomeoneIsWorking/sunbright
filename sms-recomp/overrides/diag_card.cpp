@@ -18,6 +18,7 @@ extern "C" void func_803588dc(CPUState&);   // CARDMount(chan, workArea, detachC
 extern "C" void func_80357f88(CPUState&);   // CARDCheck(chan)
 extern "C" void func_8036a4cc(CPUState&);   // EXIProbeEx(chan)
 extern "C" void func_8036b050(CPUState&);   // EXIGetID(chan, dev, *id)
+extern "C" void func_8036a2d8(CPUState&);   // EXIProbe(chan)
 
 namespace {
 
@@ -28,18 +29,26 @@ bool tracing() {
 
 // Report the first few results per entry point: these are called in a retry loop, so an
 // unbounded log would bury the first failure that matters.
-void report(const char* what, s32 result, int limit = 6) {
-    static int counts[8] = {};
+// Report only when a result CHANGES. A per-call cap hides exactly the event that matters here
+// — these are polled in a retry loop, so the first N calls are all the same failure and a later
+// success scrolls past the limit unseen. (That cap already misled this investigation once.)
+void report(const char* what, s32 result) {
     static const char* names[8] = {};
+    static s32 last[8] = {};
+    static long runs[8] = {};
     int slot = 0;
     for (; slot < 8; ++slot) {
-        if (names[slot] == nullptr) { names[slot] = what; break; }
+        if (names[slot] == nullptr) {
+            names[slot] = what; last[slot] = result; runs[slot] = 1;
+            lucent::info("card", "{} -> {}", what, result);
+            return;
+        }
         if (names[slot] == what) break;
     }
-    if (slot < 8 && counts[slot] < limit) {
-        ++counts[slot];
-        lucent::info("card", "{} -> {}", what, result);
-    }
+    if (slot >= 8) return;
+    if (result == last[slot]) { ++runs[slot]; return; }
+    lucent::info("card", "{} -> {} (after {} x {})", what, result, runs[slot], last[slot]);
+    last[slot] = result; runs[slot] = 1;
 }
 
 #define TRACE_CARD(fn, addr, label)                                                            \
@@ -54,6 +63,23 @@ TRACE_CARD(card_check,    80357f88, "CARDCheck")
 TRACE_CARD(exi_probe_ex,  8036a4cc, "EXIProbeEx")
 TRACE_CARD(exi_get_id,    8036b050, "EXIGetID")
 
+// EXIProbe's insertion debounce: it stores a 100ms-unit timestamp per channel at
+// 0x800030c0 + chan*4 and requires 3 units to elapse. Report the raw inputs so the stall is
+// visible as numbers rather than inferred from a return code.
+void exi_probe(CPUState& cpu) {
+    const u32 ch = cpu.gpr[3];
+    func_8036a2d8(cpu);
+    if (!tracing()) return;
+    static int n = 0;
+    if (n < 20) {
+        ++n;
+        const u32 csr   = sb_r32(0xCC006800u + ch * 0x14u);
+        const u32 stamp = sb_r32(0x800030c0u + ch * 4u);
+        lucent::info("card", "EXIProbe(ch{}) -> {}  csr=0x{:08x} debounce_stamp={}", ch,
+                     (s32)cpu.gpr[3], csr, stamp);
+    }
+}
+
 } // namespace
 
 SB_OVERRIDE(0x803580a8u, card_probe_ex, "CARDProbeEx (trace)", "diagnostic; real body runs")
@@ -61,3 +87,4 @@ SB_OVERRIDE(0x803588dcu, card_mount,    "CARDMount (trace)",   "diagnostic; real
 SB_OVERRIDE(0x80357f88u, card_check,    "CARDCheck (trace)",   "diagnostic; real body runs")
 SB_OVERRIDE(0x8036a4ccu, exi_probe_ex,  "EXIProbeEx (trace)",  "diagnostic; real body runs")
 SB_OVERRIDE(0x8036b050u, exi_get_id,    "EXIGetID (trace)",    "diagnostic; real body runs")
+SB_OVERRIDE(0x8036a2d8u, exi_probe,     "EXIProbe (trace)",    "diagnostic; real body runs")
