@@ -3341,3 +3341,46 @@ gate on the mount.
 Getting the symbol identity wrong is the same class of error as the log caps: a diagnostic that
 reports something adjacent to the question and gets read as answering it. Checking the address
 against the symbol table costs nothing and I skipped it.
+
+## Card: the -3 is EXISelect failing on an unheld EXI LOCK
+
+Traced the -3 to its origin by tracing the worker's helpers rather than reasoning about them:
+
+```
+[card] worker/0x80354830 -> 0
+[card] worker/0x80354830 -> -3 (after 1 x 0)     <- alternates 0 / -3
+[card] EXIProbe -> 1                              (the REAL one now; it succeeds)
+```
+
+Helper `0x80354830` is the source. Its very first action is `EXISelect(chan, 0, 4)`, and it
+returns -3 when that fails:
+
+```
+0x80354850  bl    0x8036a748        ; EXISelect
+0x80354854  cmpwi r3, 0
+0x8035485c  li    r3, -3            ; EXISelect failed
+```
+
+And `EXISelect` (0x8036a748) requires the channel to be **LOCKED**:
+
+```
+lwz r0, 0xc(r31) / rlwinm. r0, r0, 0, 0x1b, 0x1b   ; flags bit 0x10 = lock held
+beq  <fail>                                         ; not locked -> return 0
+lwz r0, 0x18(r31) / cmplw r0, r28                   ; and the locked device must match
+```
+
+`CARDMountAsync` takes that lock through `EXILock` (0x8036ae40) at 0x803588a8, and its result
+decides the path: non-zero means the lock was granted immediately and the mount proceeds; zero
+means DEFERRED — the SDK will call back when the lock becomes available. Our trace shows
+`CARDMountAsync -> 0`, the deferred path.
+
+**Leading hypothesis (not yet tested):** the lock callback never fires. `deliver_completion`
+added earlier only runs the per-channel TRANSFER callback at `__EXIData[chan]+4`; an EXILock
+callback is separate state, so nothing would ever grant the deferred lock. The worker then runs
+without it and `EXISelect` fails — which also fits the alternating 0/-3 pattern, where some
+attempts hold the lock and others do not.
+
+Flagging that as a hypothesis rather than a conclusion, because this is the third time in this
+subsystem that a plausible mechanism has been contradicted by measurement. The test is direct:
+trace `EXILock` (0x8036a44c's neighbour at 0x8036ae40) for its return value and whether the
+callback it registers is ever invoked.

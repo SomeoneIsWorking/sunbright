@@ -18,7 +18,13 @@ extern "C" void func_803588dc(CPUState&);   // CARDMount(chan, workArea, detachC
 extern "C" void func_80357f88(CPUState&);   // CARDCheck(chan)
 extern "C" void func_8036a4cc(CPUState&);   // EXIProbeEx(chan)
 extern "C" void func_8036b050(CPUState&);   // EXIGetID(chan, dev, *id)
-extern "C" void func_8036a2d8(CPUState&);   // EXIProbe(chan)
+extern "C" void func_8036a2d8(CPUState&);   // internal probe helper (NOT EXIProbe)
+extern "C" void func_8036a44c(CPUState&);   // EXIProbe(chan) - the public entry point
+// Helpers the mount worker calls and whose negative results it propagates (0x80358314,
+// 0x80358328, 0x80358360).
+extern "C" void func_80354830(CPUState&);
+extern "C" void func_80354740(CPUState&);
+extern "C" void func_8035593c(CPUState&);
 extern "C" void func_8035873c(CPUState&);   // CARDMountAsync(chan, workArea, detach, cb)
 extern "C" void func_803554e0(CPUState&);   // __CARDSync(chan)
 extern "C" void func_8036a580(CPUState&);   // EXIAttach(chan, callback)
@@ -79,6 +85,10 @@ void card_mount_async(CPUState& cpu) {
 }
 TRACE_CARD(card_sync,        803554e0, "__CARDSync")
 TRACE_CARD(exi_attach,       8036a580, "EXIAttach")
+TRACE_CARD(exi_probe_real,   8036a44c, "EXIProbe")
+TRACE_CARD(worker_h1,        80354830, "worker/0x80354830")
+TRACE_CARD(worker_h2,        80354740, "worker/0x80354740")
+TRACE_CARD(worker_h3,        8035593c, "worker/0x8035593c")
 
 // EXIProbe's insertion debounce: it stores a 100ms-unit timestamp per channel at
 // 0x800030c0 + chan*4 and requires 3 units to elapse. Report the raw inputs so the stall is
@@ -95,7 +105,7 @@ void exi_probe(CPUState& cpu) {
     if (r == last) { ++run; return; }
     const u32 csr   = sb_r32(0xCC006800u + ch * 0x14u);
     const u32 stamp = sb_r32(0x800030c0u + ch * 4u);
-    lucent::info("card", "EXIProbe(ch{}) -> {} after {} x {}  csr=0x{:08x} stamp={}", ch, r,
+    lucent::info("card", "probe-helper(ch{}) -> {} after {} x {}  csr=0x{:08x} stamp={}", ch, r,
                  run, last, csr, stamp);
     last = r; run = 1;
 }
@@ -107,7 +117,11 @@ SB_OVERRIDE(0x803588dcu, card_mount,    "CARDMount (trace)",   "diagnostic; real
 SB_OVERRIDE(0x80357f88u, card_check,    "CARDCheck (trace)",   "diagnostic; real body runs")
 SB_OVERRIDE(0x8036a4ccu, exi_probe_ex,  "EXIProbeEx (trace)",  "diagnostic; real body runs")
 SB_OVERRIDE(0x8036b050u, exi_get_id,    "EXIGetID (trace)",    "diagnostic; real body runs")
-SB_OVERRIDE(0x8036a2d8u, exi_probe,     "EXIProbe (trace)",    "diagnostic; real body runs")
+SB_OVERRIDE(0x8036a2d8u, exi_probe,     "probe helper (trace)", "diagnostic; real body runs")
 SB_OVERRIDE(0x8035873cu, card_mount_async, "CARDMountAsync (trace)", "diagnostic; real body runs")
 SB_OVERRIDE(0x803554e0u, card_sync,        "__CARDSync (trace)",     "diagnostic; real body runs")
 SB_OVERRIDE(0x8036a580u, exi_attach,       "EXIAttach (trace)",      "diagnostic; real body runs")
+SB_OVERRIDE(0x8036a44cu, exi_probe_real,   "EXIProbe (trace)",       "diagnostic; real body runs")
+SB_OVERRIDE(0x80354830u, worker_h1,        "card worker helper 1",   "diagnostic; real body runs")
+SB_OVERRIDE(0x80354740u, worker_h2,        "card worker helper 2",   "diagnostic; real body runs")
+SB_OVERRIDE(0x8035593cu, worker_h3,        "card worker helper 3",   "diagnostic; real body runs")
