@@ -2874,3 +2874,39 @@ slow creep measured earlier (82% -> 92%) looks like. Both runtimes issue the sam
 have never established WHERE the sea draw sits relative to copy #3 in each. That is the next
 measurement: interleave the copy log and the draw dump on a common counter so the ordering is
 directly visible on both sides.
+
+## Copy/draw ordering is IDENTICAL — but the recomp renders half the draws per frame
+
+Put copies and draws on one timeline (aurora's copy log now carries `afterDraw=`, the global
+pushed-draw ordinal), aligned both windows on the same frame, and measured each runtime:
+
+```
+recomp  frame draws #328237..#328549 (313)   sea draw #328469   reflection copy afterDraw=328469
+oracle  frame draws #1583304..#1583916 (613) sea draw #1583605  reflection copy afterDraw=587480
+```
+
+The oracle's two counters are offset by a constant (its dump index and push count start at
+different points), but normalising by the frame start puts its sea draw at exactly its
+reflection copy's ordinal — **the same relative position as the recomp**. In BOTH runtimes the
+reflection copy is taken immediately AFTER the sea draw, so in both the sea samples the previous
+frame's grab including its own previous output. The feedback loop exists in both, with the same
+structure, and the ordering hypothesis is dead.
+
+**What the measurement did surface is a large content difference:**
+
+| | draws/frame | display->mirror | mirror->reflection | reflection->next |
+|--------|-------------|-----------------|--------------------|------------------|
+| recomp |         313 |              73 |                159 |               81 |
+| oracle |         613 |             184 |                117 |              312 |
+
+The recomp renders roughly HALF the draws per frame, and the distribution differs sharply —
+most of the oracle's extra draws fall after the reflection copy (312 vs 81), which is where the
+2D/J2D overlay is drawn. That matches the earlier full-frame breakdown (oracle 422 orthographic
+draws vs the recomp's 81) which I set aside at the time as an unpinned animation phase. With
+movement rates now equal between the runtimes, that excuse is gone: **the recomp is genuinely
+emitting far fewer 2D draws than the oracle.**
+
+That is a bigger and better-defined defect than the sea, and it may well contain it: the sea's
+brightness depends on the content of a grab of the whole scene, and the two runtimes demonstrably
+do not draw the same scene. Chasing the missing draws is now the more promising thread — and
+unlike the sea it needs no circular reasoning to measure.
