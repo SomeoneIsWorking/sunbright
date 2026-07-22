@@ -2385,3 +2385,36 @@ Next: compare the texgen setup (source, type, matrix) for this draw between runt
 long-standing `unhandled tcg src 21` warning in aurora's FIFO path is a texgen gap and may well
 be this — it did not appear in an earlier file-select grep, which is worth re-checking now
 rather than assuming.
+
+## Texgen is identical too — the divergence is in DATA, not configuration
+
+```
+recomp  tcg=[0:ty=1 src=4 mtx=60 pm=125 n=0, 1:ty=1 src=5 mtx=60 pm=125 n=0]
+oracle  tcg=[0:ty=1 src=4 mtx=60 pm=125 n=0, 1:ty=1 src=5 mtx=60 pm=125 n=0]
+```
+
+`mtx=60` is GX_IDENTITY and `src=4/5` are the vertex TEX0/TEX1 attributes, so the sea's UVs come
+straight from vertex data through an identity matrix. No texgen matrix is involved, and the
+`unhandled tcg src 21` warning is unrelated to this draw (its sources are 4 and 5).
+
+The sea draw now matches the oracle on **every piece of state I can enumerate**: geometry
+(52 verts, same world position), viewport, depth mode, blend mode and factors, both bound
+texture pointers, the full per-stage TEV program, and now texgen. The copies feeding it match in
+count, order, format, source rect and destination. Yet the output differs.
+
+So the divergence is in DATA rather than configuration. Three candidates, none yet tested:
+
+1. **Vertex texcoord values.** With an identity texgen the UVs are read straight out of the
+   vertex stream, and our VAT decoding has been wrong before (the VAT_C TEX5 bit offset). Wrong
+   UVs would sample a brighter part of the grab and push the loop's gain above one.
+2. **The copy texture's ALPHA.** The blend is `bf=4/2` — src x srcAlpha + dst x srcColor — so
+   the loop gain depends directly on the sea's alpha, which stage 1 derives from TEXA. The copy
+   is RGB565 (no alpha), which aurora swizzles to 1.0, and `copy_tex` also overwrites alpha
+   before resolving when `alphaUpdate && dstAlpha != UINT32_MAX`. A different dst-alpha state
+   would change the gain without changing any of the state compared above.
+3. The blend DESTINATION content, i.e. what was already in the framebuffer under the sea.
+
+Candidate 2 is the most promising: it is the one term in the loop that is invisible to every
+comparison run so far, and this project already has history with mid-frame dst-alpha
+(the GXPeekARGB/Mario-occlusion note). Testing it means comparing `dstAlpha`/`alphaUpdate` at
+the copy, which the copy log does not currently report.
