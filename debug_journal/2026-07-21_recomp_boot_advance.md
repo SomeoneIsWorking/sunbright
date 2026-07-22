@@ -3092,3 +3092,41 @@ Candidates for the next step, in order:
 Candidate 2 is the better fit: the driver stopping after status, rather than reading and
 rejecting the data, is what an async state machine that never advances looks like. The way to
 tell them apart is to disassemble what the driver does with the status byte it just read.
+
+## Card blocker identified: this runtime has NO interrupt delivery
+
+`dev_pi.cpp` says it outright — *"There is no interrupt delivery in this runtime"*, `PI_INTSR`
+reads 0 permanently, and nothing raises an interrupt. `dev_exi.cpp` has no interrupt handling at
+all.
+
+That confirms candidate 2 and explains the evidence exactly. `CARDMountAsync` drives the mount
+through EXI completion callbacks, which on hardware are delivered by the EXI transfer-complete
+interrupt. With no interrupt, the driver issues read-ID, clear-status and read-status, and its
+state machine then simply never advances — so it never reaches a block read, and the game
+eventually reports the card as damaged. The three commands we see are precisely the prefix that
+completes before the first callback would have fired.
+
+This is architectural rather than a card bug, and it is why every other asynchronous subsystem
+in this runtime is an OVERRIDE: DVD completes inline, VI retrace is a plain counter, the DSP is
+a no-op. CARD is the first subsystem attempted as real hardware, and it is the first to need the
+interrupt path those overrides were avoiding.
+
+Three ways forward:
+
+1. **Deliver EXI completion to the guest synchronously.** After a transfer, call the driver's
+   registered EXI callback directly instead of raising an interrupt. This fits the runtime's
+   existing doctrine — a guest wait on asynchronous hardware becomes synchronous completion,
+   exactly as DVD does — and keeps every structure in guest layout. It needs the device to
+   invoke guest code, which the runtime can already do.
+2. **Resurrect real interrupt delivery.** CLAUDE.md records that the retired recomp era had
+   `runtime/native_threads.cpp` with "interrupt delivery already fully PC-native, a behaviour
+   port of OSInterrupt.c" in git at `9283f44^`. That would unblock CARD and anything else
+   async, and is the most faithful option — but it is a large piece of machinery to reintroduce
+   for one subsystem.
+3. Override the CARD SDK entry points (the option rejected earlier for needing per-structure
+   marshalling). Unchanged assessment.
+
+Option 1 is the right next step: smallest, consistent with how this runtime already handles
+every other asynchronous device, and it leaves option 2 available if something later needs
+genuine interrupts. The card device itself (attach, EXT detection, ID, status, the retail
+address layout) is sound and staged behind this.
