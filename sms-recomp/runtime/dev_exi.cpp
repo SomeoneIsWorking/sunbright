@@ -17,6 +17,8 @@
 
 #include "mmio.h"
 #include "exi.h"
+#include "guest_sched.h"
+#include "intrinsics.h"
 
 #include <lucent/log.h>
 
@@ -37,6 +39,14 @@ constexpr u32 kChannelSize = 0x14;    // CSR, MAR, LENGTH, CR, DATA
 constexpr u32 R_CSR = 0, R_MAR = 1, R_LEN = 2, R_CR = 3, R_DATA = 4;
 
 // EXI_CSR chip-select lines live in bits 7..9, one per device.
+// __EXIData[chan]: the SDK's per-channel control block (EXIImm @0x80369bf4 addresses it as
+// 0x804040a0 + chan * 0x40, and stores the completion callback at +4).
+constexpr u32 kExiDataBase   = 0x804040a0;
+constexpr u32 kExiDataStride = 0x40;
+constexpr u32 kExiCallbackOff = 4;
+
+void deliver_completion(u32 ch);   // defined below; runs the SDK's EXI callback inline
+
 constexpr u32 CSR_EXT      = 1u << 12;   // a device is connected in the external slot
 constexpr u32 CSR_CS_SHIFT = 7;
 constexpr u32 CSR_CS_MASK  = 0x7u << CSR_CS_SHIFT;
@@ -140,7 +150,53 @@ void exi_write(u32 ea, unsigned width, u32 value) {
     if (r == R_CR && (value & CR_TSTART)) {
         g_reg[ch][R_CR] &= ~CR_TSTART;   // completes before the write returns
         start_transfer(ch, value);
+        deliver_completion(ch);
     }
+}
+
+// A transfer started with a callback registered is ASYNCHRONOUS on hardware: the transfer
+// completes later and the EXI transfer-complete interrupt runs the callback, which is how the
+// SDK's state machines (CARDMountAsync above all) advance. This runtime has no interrupt
+// delivery at all (dev_pi.cpp), so those state machines simply stopped: the memory-card driver
+// issued read-ID, clear-status, read-status and then waited forever for a callback that could
+// never arrive, and the game reported the card as damaged.
+//
+// Transfers here complete before the register write returns, so the honest completion point is
+// right here. Calling the callback directly is the same treatment DVD gets — a guest wait on
+// asynchronous hardware becomes synchronous completion — and it keeps every structure in guest
+// layout, since the SDK's own callback runs on the SDK's own data.
+//
+// EXIImm (0x80369bf4) stores the callback at __EXIData[chan] + 4 and takes its async path when
+// it is non-null; the real interrupt handler clears it before invoking it, so a callback fires
+// exactly once. Both are reproduced here.
+void deliver_completion(u32 ch) {
+    const u32 cb_addr = kExiDataBase + ch * kExiDataStride + kExiCallbackOff;
+    const u32 cb = sb_r32(cb_addr);
+    if (cb == 0) return;
+
+    // Clear before dispatch, exactly as the hardware handler does: the callback commonly starts
+    // the next transfer, and leaving the pointer set would run it twice.
+    sb_w32(cb_addr, 0);
+
+    // The callback usually starts the next transfer, so this nests. Depth is bounded by the
+    // driver's own sequence; runaway recursion means a callback that re-arms itself forever,
+    // which must be loud rather than a stack overflow.
+    static int depth = 0;
+    if (++depth > 32) {
+        lucent::error("exi", "EXI completion callbacks nested {} deep on channel {} — a "
+                             "callback is re-arming itself without progressing", depth, ch);
+        std::abort();
+    }
+
+    // Run on the CURRENT thread's register state: the callback is ordinary guest code and
+    // needs the small-data bases (r2/r13) and a valid stack. A zeroed CPUState would fault the
+    // moment it touched a global. Copying rather than reusing keeps the caller's registers
+    // intact across the nested call.
+    CPUState cpu = gsched_cpu();
+    cpu.gpr[3] = ch;      // s32 chan
+    cpu.gpr[4] = 0;       // OSContext* of the interrupted thread; no interrupt occurred here
+    call_ppc(cpu, cb);
+    --depth;
 }
 
 } // namespace

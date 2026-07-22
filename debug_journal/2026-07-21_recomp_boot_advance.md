@@ -3130,3 +3130,32 @@ Option 1 is the right next step: smallest, consistent with how this runtime alre
 every other asynchronous device, and it leaves option 2 available if something later needs
 genuine interrupts. The card device itself (attach, EXT detection, ID, status, the retail
 address layout) is sound and staged behind this.
+
+## CORRECTION: the missing TC interrupt is NOT what stops the card
+
+Implemented synchronous EXI completion (`deliver_completion` in `dev_exi.cpp`): after a
+transfer, read the SDK's per-channel callback at `__EXIData[chan] + 4` (base `0x804040a0`,
+stride `0x40`, both taken from EXIImm at 0x80369bf4), clear it as the hardware handler does,
+and call it inline on the current thread's register state.
+
+**It changes nothing for the card** — still exactly three commands, and no callback is ever
+found to run. The reason is visible in the disassembly I had already read: the card driver
+issues its transfers through **EXIImmEx**, which loops EXIImm + **EXISync** and is therefore
+already synchronous. No callback is registered on those transfers, so there is no completion
+interrupt missing from that path at all.
+
+So last entry's "confirmed structurally — candidate 2" was **wrong**. What is true is that this
+runtime has no interrupt delivery; what I did not establish is that this is what stops the card.
+I inferred it from the shape of the symptom ("stops after status, like a stalled state
+machine") and then wrote it up as confirmed. That is the same mistake as the UV-rate "FOUND IT":
+a real fact about the system, promoted to cause without a test that could have falsified it.
+
+The `deliver_completion` code is kept — it is correct behaviour for any async EXI user and a
+genuine gap that would hang one — but it is explicitly NOT the card fix and is currently
+unexercised. Flagging that rather than leaving it to look like a fix that worked.
+
+Where this actually leaves the card: the driver's own transfers complete, it reads the ID and
+status successfully, and then stops of its own accord. The next step is the one I should have
+taken directly — disassemble what CARDMount/CARDProbeEx do with the status byte they just read,
+rather than reasoning about which subsystem "must" be responsible. The retail code is available
+and has settled every other question in this investigation on the first attempt.
