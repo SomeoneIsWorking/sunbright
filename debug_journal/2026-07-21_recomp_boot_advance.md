@@ -3832,3 +3832,33 @@ What survives, and is now better scoped: the recomp renders 17 alpha-writing obj
 oracle renders 1, they live in the GX perform list rather than a pollution layer, and the
 difference is independent of card/save state. Next is comparing the GX list's contents between
 runtimes rather than guessing which actor it is.
+
+## REFUTED: the extra alpha draws are NOT the wash
+
+Added `SB_SKIP_VERTS=<n>` to aurora (a draw with colour writes off is invisible on its own, so
+the only way to establish what it contributes is to remove it) and dropped all 59-vertex draws:
+
+```
+sea WITHOUT the 59-vert draws: near-white 82.1%  mean (230,227,228)
+sea WITH them:                 near-white 82.1%  mean (230,227,228)
+oracle:                        near-white  0.0%  mean ( 80,189,205)
+```
+
+**Bit-identical.** The 17 extra alpha-writing objects contribute nothing to the wash, so the
+dst-alpha accumulation story is wrong.
+
+Also checked and discarded a weaker probe on the way: comparing the ALPHA channel of the two
+frame dumps (recomp sea 26.7, oracle 11.6). That looked suggestive but is not evidence — aurora
+deliberately resolves the display copy without alpha, so the presented frame's alpha is not the
+EFB's dst-alpha. Noting it so the number is not mistaken for support later.
+
+What stands: the recomp really does render 17 of these objects where the oracle renders 1, in
+the GX perform list, independent of card/save state. It is a genuine divergence and worth
+fixing — it is simply not the cause of the wash.
+
+The wash's cause remains open. Everything measured about the sea draw itself matches the oracle
+(geometry, textures, TEV, texgen, UVs, copies, blend), the extra alpha draws are excluded, and
+sky/sand match within a few levels. The next candidate that has never been tested is the EFB
+PIXEL FORMAT / alpha configuration of the framebuffer itself rather than any individual draw —
+i.e. whether the recomp's EFB is configured with a different pixel format, which would change
+what every dst-alpha-consuming blend reads without changing any draw's own state.
