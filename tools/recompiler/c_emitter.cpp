@@ -727,21 +727,30 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
         line("{ const f64 _s = (f32)(%s + %s), _l = %s;", psa0.c_str(), psb1.c_str(), psc0.c_str());
         line("  %s = _l; %s = _s; }", psd0.c_str(), psd1.c_str());
         break;
+    // The BROADCAST forms read ONE half of frC for both results, so unlike the element-wise ops
+    // above they are not safe to write in place: writing frD(ps0) first destroys frC(ps0) when
+    // frD == frC, and the second half then multiplies by the result instead of the operand.
+    // (The element-wise ops are safe because their first line touches only ps0 slots and their
+    // second reads only ps1.) This DOL happens never to encode frD == frC — 0 of 60 ps_muls0 and
+    // 0 of 38 ps_madds0 sites — so it is latent here, but it is a silent wrong-answer bug the
+    // moment it appears, which is precisely the shape of the ps_sum1 defect. Stage through a temp.
     case PPCOp::PS_MULS0:  // fD.ps0 = fA.ps0 * fC.ps0; fD.ps1 = fA.ps1 * fC.ps0
-        line("%s = (f32)(%s * %s);", psd0.c_str(), psa0.c_str(), psc0.c_str());
-        line("%s = (f32)(%s * %s);", psd1.c_str(), psa1.c_str(), psc0.c_str());
+        line("{ const f64 _c=%s; %s = (f32)(%s * _c); %s = (f32)(%s * _c); }",
+             psc0.c_str(), psd0.c_str(), psa0.c_str(), psd1.c_str(), psa1.c_str());
         break;
     case PPCOp::PS_MULS1:  // fD.ps0 = fA.ps0 * fC.ps1; fD.ps1 = fA.ps1 * fC.ps1
-        line("%s = (f32)(%s * %s);", psd0.c_str(), psa0.c_str(), psc1.c_str());
-        line("%s = (f32)(%s * %s);", psd1.c_str(), psa1.c_str(), psc1.c_str());
+        line("{ const f64 _c=%s; %s = (f32)(%s * _c); %s = (f32)(%s * _c); }",
+             psc1.c_str(), psd0.c_str(), psa0.c_str(), psd1.c_str(), psa1.c_str());
         break;
     case PPCOp::PS_MADDS0: // fD.ps0 = fA.ps0*fC.ps0 + fB.ps0; fD.ps1 = fA.ps1*fC.ps0 + fB.ps1
-        line("%s = (f32)std::fma(%s, %s, %s);", psd0.c_str(), psa0.c_str(), psc0.c_str(), psb0.c_str());
-        line("%s = (f32)std::fma(%s, %s, %s);", psd1.c_str(), psa1.c_str(), psc0.c_str(), psb1.c_str());
+        line("{ const f64 _c=%s; %s = (f32)std::fma(%s, _c, %s); %s = (f32)std::fma(%s, _c, %s); }",
+             psc0.c_str(), psd0.c_str(), psa0.c_str(), psb0.c_str(), psd1.c_str(), psa1.c_str(),
+             psb1.c_str());
         break;
     case PPCOp::PS_MADDS1: // fD.ps0 = fA.ps0*fC.ps1 + fB.ps0; fD.ps1 = fA.ps1*fC.ps1 + fB.ps1
-        line("%s = (f32)std::fma(%s, %s, %s);", psd0.c_str(), psa0.c_str(), psc1.c_str(), psb0.c_str());
-        line("%s = (f32)std::fma(%s, %s, %s);", psd1.c_str(), psa1.c_str(), psc1.c_str(), psb1.c_str());
+        line("{ const f64 _c=%s; %s = (f32)std::fma(%s, _c, %s); %s = (f32)std::fma(%s, _c, %s); }",
+             psc1.c_str(), psd0.c_str(), psa0.c_str(), psb0.c_str(), psd1.c_str(), psa1.c_str(),
+             psb1.c_str());
         break;
     case PPCOp::PS_SEL:
         line("%s = (%s >= 0.0) ? %s : %s;", psd0.c_str(), psa0.c_str(), psc0.c_str(), psb0.c_str());

@@ -19,6 +19,23 @@ file(GLOB RECOMP_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp")
 
 find_package(fmt QUIET)
 add_executable(sunbright-recomp ${RECOMP_SOURCES})
+
+# Unit tests. The target was lost when the recompiler was resurrected — recomp_test.cpp still said
+# "built as sunbright-recomp-test, run via ctest" while nothing built it, so the suite silently did
+# not exist. A test that cannot run is not a test, and the emitter is exactly where a silent
+# wrong-answer bug hides (ps_sum1 read the wrong operand for as long as the file existed).
+file(GLOB RECOMP_TEST_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tests/*.cpp")
+set(RECOMP_LIB_SOURCES ${RECOMP_SOURCES})
+list(FILTER RECOMP_LIB_SOURCES EXCLUDE REGEX "main\\.cpp$")   # the tests bring their own main()
+add_executable(sunbright-recomp-test ${RECOMP_TEST_SOURCES} ${RECOMP_LIB_SOURCES})
+target_include_directories(sunbright-recomp-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+if(fmt_FOUND)
+  target_link_libraries(sunbright-recomp-test PRIVATE fmt::fmt)
+else()
+  target_compile_definitions(sunbright-recomp-test PRIVATE FMT_HEADER_ONLY=1)
+endif()
+enable_testing()
+add_test(NAME recomp_test COMMAND sunbright-recomp-test)
 target_include_directories(sunbright-recomp PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 if(fmt_FOUND)
   target_link_libraries(sunbright-recomp PRIVATE fmt::fmt)

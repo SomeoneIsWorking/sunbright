@@ -54,6 +54,19 @@ static Built build(uint32_t base, const std::vector<uint32_t>& words, bool cfg) 
     return b;
 }
 static bool has(const std::string& s, const std::string& sub) { return s.find(sub) != std::string::npos; }
+static int count(const std::string& s, const std::string& sub) {
+    int n = 0;
+    for (size_t i = s.find(sub); i != std::string::npos; i = s.find(sub, i + sub.size())) ++n;
+    return n;
+}
+// A-form paired single (opcode 4): D, A, B, C and a 5-bit XO in bits 5..1.
+static uint32_t enc_ps(int xo, int d, int a, int b, int c) {
+    return (4u<<26)|((uint32_t)d<<21)|((uint32_t)a<<16)|((uint32_t)b<<11)|((uint32_t)c<<6)|((uint32_t)(xo&0x1f)<<1);
+}
+// X-form in opcode 4, 10-bit XO in bits 10..1 (dcbz_l is XO=1014 there).
+static uint32_t enc_ps_x(int xo10, int d, int a, int b) {
+    return (4u<<26)|((uint32_t)d<<21)|((uint32_t)a<<16)|((uint32_t)b<<11)|((uint32_t)xo10<<1);
+}
 
 int main() {
     const uint32_t B = 0x80100000u;
@@ -397,6 +410,61 @@ int main() {
         // muls/add must round to single (a bare 'x * y;' or 'x + y;' without (f32) is wrong)
         CHECK(b.code.find("= (f32)(") != std::string::npos,
               "ps_muls/ps_add round their double-exact results to single");
+    }
+
+
+    // ── Paired-single OPERAND semantics, per the 750CL manual ────────────────────────────────
+    // These pin WHICH register and WHICH half each result reads. The pre-existing PS test only
+    // asserted loose shape ("an fma appears"), which is why a real defect survived it: ps_sum1
+    // summed frB(ps0) instead of frB(ps1) for years, corrupting the second component of every dot
+    // product built with it (J3D matrix concatenation) — Mario's arms vanished in Delfino Plaza.
+    // Distinct register numbers everywhere so an operand mix-up cannot alias into looking right.
+    {
+        // ps_sum0 f1,f2,f3,f4 : f1.ps0 = f2.ps0 + f3.ps1 ; f1.ps1 = f4.ps1
+        Built b = build(B, { enc_ps(10, 1, 2, 3, 4), BLR }, true);
+        CHECK(has(b.code, "cpu.fpr[2].ps0 + cpu.fpr[3].ps1"), "ps_sum0 sums frA(ps0) + frB(ps1)");
+        CHECK(has(b.code, "cpu.fpr[4].ps1"), "ps_sum0 takes its high half from frC(ps1)");
+        CHECK(!has(b.code, "cpu.fpr[3].ps0"), "ps_sum0 must NOT read frB(ps0)");
+    }
+    {
+        // ps_sum1 f1,f2,f3,f4 : f1.ps0 = f4.ps0 ; f1.ps1 = f2.ps0 + f3.ps1
+        // BOTH sums take frA(ps0)+frB(ps1); only the destination half differs.
+        Built b = build(B, { enc_ps(11, 1, 2, 3, 4), BLR }, true);
+        CHECK(has(b.code, "cpu.fpr[2].ps0 + cpu.fpr[3].ps1"), "ps_sum1 sums frA(ps0) + frB(ps1)");
+        CHECK(has(b.code, "cpu.fpr[4].ps0"), "ps_sum1 takes its low half from frC(ps0)");
+        CHECK(!has(b.code, "cpu.fpr[3].ps0"), "ps_sum1 must NOT read frB(ps0) — the historical bug");
+    }
+    {
+        // The broadcast forms read ONE half of frC for both results, so frD == frC would clobber
+        // the operand if written in place. Staging through a temp is what makes them safe.
+        Built b = build(B, { enc_ps(12, 1, 2, 0, 4), BLR }, true);   // ps_muls0 f1,f2,f4
+        CHECK(has(b.code, "_c=cpu.fpr[4].ps0"), "ps_muls0 stages frC(ps0) in a temp");
+        CHECK(count(b.code, "cpu.fpr[4].ps0") == 1, "ps_muls0 reads frC(ps0) exactly once");
+
+        Built b1 = build(B, { enc_ps(13, 1, 2, 0, 4), BLR }, true);  // ps_muls1 f1,f2,f4
+        CHECK(has(b1.code, "_c=cpu.fpr[4].ps1"), "ps_muls1 stages frC(ps1) in a temp");
+
+        Built b2 = build(B, { enc_ps(14, 1, 2, 3, 4), BLR }, true);  // ps_madds0 f1,f2,f3,f4
+        CHECK(has(b2.code, "_c=cpu.fpr[4].ps0"), "ps_madds0 stages frC(ps0)");
+        CHECK(has(b2.code, "std::fma"), "ps_madds0 is FUSED");
+        CHECK(has(b2.code, "cpu.fpr[3].ps0") && has(b2.code, "cpu.fpr[3].ps1"),
+              "ps_madds0 adds frB per-half (ps0 then ps1)");
+
+        Built b3 = build(B, { enc_ps(15, 1, 2, 3, 4), BLR }, true);  // ps_madds1
+        CHECK(has(b3.code, "_c=cpu.fpr[4].ps1"), "ps_madds1 stages frC(ps1)");
+    }
+    {
+        // ps_mul is A x C (NOT A x B), element-wise.
+        Built b = build(B, { enc_ps(25, 1, 2, 0, 4), BLR }, true);
+        CHECK(has(b.code, "cpu.fpr[2].ps0 * cpu.fpr[4].ps0"), "ps_mul multiplies frA by frC");
+        CHECK(has(b.code, "cpu.fpr[2].ps1 * cpu.fpr[4].ps1"), "ps_mul is element-wise");
+    }
+    {
+        // dcbz_l (opcode 4, XO=1014) is a 32-byte MEMORY CLEAR, not a paired-single op. It was
+        // decoded as ps_sum0 — a memory clear executing as a float add.
+        Built b = build(B, { enc_ps_x(1014, 0, 3, 4), BLR }, true);
+        CHECK(has(b.code, "dcbz32"), "dcbz_l zeroes a cache block");
+        CHECK(!has(b.code, ".ps0 +"), "dcbz_l is not a paired-single sum");
     }
 
     std::printf("recomp_test: %d checks, %d failures\n", g_checks, g_failures);
