@@ -83,3 +83,42 @@ reports on AREA changes, not just `mAppState`, which is what made the one-frame 
 The "Mario's arms are missing/wrong at file-select" investigation is **withdrawn** — the user
 reports arms render normally in the real window. That was measured off 320x240 headless dumps;
 the "white sliver" was downsample aliasing. Do not re-open it from those dumps.
+
+## Follow-up: Mario's arms in Delfino were a RECOMPILER bug, not a renderer bug
+
+User: "Delfino plays fine but Mario has some visual oddities like the arm collapse". Captured and
+zoomed (`scratch/screenshots/mario_crop.png`): rigid geometry (cap, overalls, shoes) correct, the
+**arms absent** and FLUDD's parts sitting at wrong transforms. In a standalone recomp every line
+of game code is the real thing, so wrong geometry has only two possible sources — the GX/matrix
+seam, or codegen. It was codegen.
+
+**`ps_sum1` summed the wrong operand.** Per the 750CL manual both paired-single sums take the
+SAME addend and differ only in which half of frD receives it:
+
+    ps_sum0: frD(ps0) = frA(ps0) + frB(ps1);  frD(ps1) = frC(ps1)
+    ps_sum1: frD(ps0) = frC(ps0);             frD(ps1) = frA(ps0) + frB(ps1)
+
+The emitter used frB(ps0) for ps_sum1, corrupting the second component of every dot product built
+with it. J3D matrix concatenation is exactly that shape, which is why MOST transforms were right
+and a few were not. Fixed -> arms and gloves render. Both cases also wrote one half of frD before
+reading the other operands, so frD == frA destroyed the addend; now staged through temps.
+6 ps_sum1 sites, 41 ps_sum0 sites.
+
+**`dcbz_l` was decoded as ps_sum0.** Opcode 4 XO=1014 is dcbz_l (locked-cache dcbz), not a
+paired-single op — the line even carried a `// actually 512+502?` comment. A memory clear was
+being executed as a float add. 1 site.
+
+**Lesson: in a recompiler, "some transforms are wrong and most are right" points at an
+instruction emitter, not at the renderer.** A wrong emitter for a rarely-used opcode is invisible
+until the one subsystem that uses it renders visibly wrong. Audit the emitter against the manual
+before instrumenting the GX layer.
+
+### Still open (visual, Delfino)
+FLUDD's components still sit at wrong transforms and a yellow slab intersects Mario's head. Also
+unexplained: a large gold/blue disc behind Mario (may be the plaza's ground mosaic seen at a
+shallow angle — unverified) and green/magenta goo with light rays when walking. NEXT STEP: get
+retail ground truth from the Dolphin fork (headless, `--fifo-record` / NoGUI per
+[[dolphin-fork-headless-tools-2026-07-15]]) rather than reasoning from our own output — the two
+runtimes share the aurora GX layer, so a per-draw diff localizes it. Do NOT assume the remaining
+oddities are renderer bugs; the emitter audit above found two codegen defects in one sitting, and
+the paired-single/quantized-load family is where to look next.
