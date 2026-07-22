@@ -8,10 +8,15 @@
 // file-select requires pressing START on the title, and an agent run has no keyboard. The
 // decomp runtime has the same facility (SB_PAD_SCRIPT); this is its recomp counterpart.
 //
-//   SBR_PAD_SCRIPT="600:START,640:-"
+//   SBR_PAD_SCRIPT="600:START,640:-,900:STICK=0/-90,1000:STICK=0/0+A"
 //
 // keys on the PAD read count (one per frame): from read 600 hold START, from 640 hold
 // nothing. Buttons are named (A B X Y Z L R START UP DOWN LEFT RIGHT) or "-" for none.
+//
+// STICK=<x>/<y> sets the ANALOG stick (-128..127; '/' because ',' already separates steps, and
+// no leading '+' because '+' combines tokens: "STICK=0/-90+A"). Buttons alone cannot drive this
+// game: file-select is chosen by walking Mario into a file block and head-butting it, and Mario
+// moves on the analog stick — a button-only script can never leave the menu.
 
 #include "overrides.h"
 
@@ -50,7 +55,14 @@ constexpr u32 PS_ANALOG_A = 0x08, PS_ANALOG_B = 0x09, PS_ERR = 0x0A;
 constexpr s8 PAD_ERR_NONE      = 0;
 constexpr s8 PAD_ERR_NO_CTRLR  = -1;
 
-struct Step { long frame; u16 buttons; };
+struct Step {
+    long frame;
+    u16 buttons;
+    // 0x8000 = "this step does not touch the stick", so a later button-only step does not
+    // silently re-centre a stick an earlier step set.
+    int stickX = 0x8000;
+    int stickY = 0x8000;
+};
 std::vector<Step> g_script;
 long g_reads = 0;
 
@@ -94,7 +106,25 @@ void parse_script() {
                 const size_t plus = btns.find('+', bp);
                 const std::string one =
                     btns.substr(bp, plus == std::string::npos ? std::string::npos : plus - bp);
-                if (!one.empty()) st.buttons |= button_bit(one);
+                if (!one.empty()) {
+                    if (one.rfind("STICK=", 0) == 0) {
+                        const std::string v = one.substr(6);
+                        const size_t slash = v.find('/');
+                        if (slash == std::string::npos) {
+                            lucent::error("pad", "SBR_PAD_SCRIPT '{}' must be STICK=<x>/<y>", one);
+                            std::abort();
+                        }
+                        st.stickX = (int)std::strtol(v.substr(0, slash).c_str(), nullptr, 10);
+                        st.stickY = (int)std::strtol(v.substr(slash + 1).c_str(), nullptr, 10);
+                        if (st.stickX < -128 || st.stickX > 127 || st.stickY < -128 || st.stickY > 127) {
+                            lucent::error("pad", "SBR_PAD_SCRIPT stick {}/{} out of range -128..127",
+                                          st.stickX, st.stickY);
+                            std::abort();
+                        }
+                    } else {
+                        st.buttons |= button_bit(one);
+                    }
+                }
                 if (plus == std::string::npos) break;
                 bp = plus + 1;
             }
@@ -104,7 +134,9 @@ void parse_script() {
         pos = comma + 1;
     }
     for (const auto& st : g_script)
-        lucent::info("pad", "script: from read {} hold 0x{:04x}", st.frame, st.buttons);
+        lucent::info("pad", "script: from read {} hold 0x{:04x} stick {}/{}", st.frame,
+                     st.buttons, st.stickX == 0x8000 ? 999 : st.stickX,
+                     st.stickY == 0x8000 ? 999 : st.stickY);
 }
 
 u16 scripted_buttons() {
@@ -112,6 +144,17 @@ u16 scripted_buttons() {
     for (const auto& st : g_script)
         if (g_reads >= st.frame) held = st.buttons;   // last matching step wins
     return held;
+}
+
+// Latest step at or before now that actually SET a stick value; 0x8000 if none has.
+void scripted_stick(int& x, int& y) {
+    x = 0x8000;
+    y = 0x8000;
+    for (const auto& st : g_script) {
+        if (g_reads < st.frame) continue;
+        if (st.stickX != 0x8000) x = st.stickX;
+        if (st.stickY != 0x8000) y = st.stickY;
+    }
 }
 
 // PADRead(PADStatus status[4]) -> u32 mask of ports that reported a read error.
@@ -147,8 +190,12 @@ void pad_read(CPUState& cpu) {
         for (u32 b = 0; b < PAD_STATUS_SIZE; b++) sb_w8(p + b, 0);
         if (i == 0) {
             sb_w16(p + PS_BUTTON, buttons);
-            sb_w8 (p + PS_STICK_X,  (u8)host[0].stickX);
-            sb_w8 (p + PS_STICK_Y,  (u8)host[0].stickY);
+            // A script value overrides the host stick; where the script is silent the
+            // keyboard still drives, so a scripted run can be nudged by hand.
+            int sx = 0x8000, sy = 0x8000;
+            scripted_stick(sx, sy);
+            sb_w8 (p + PS_STICK_X,  (u8)(s8)(sx == 0x8000 ? host[0].stickX : sx));
+            sb_w8 (p + PS_STICK_Y,  (u8)(s8)(sy == 0x8000 ? host[0].stickY : sy));
             sb_w8 (p + PS_SUB_X,    (u8)host[0].substickX);
             sb_w8 (p + PS_SUB_Y,    (u8)host[0].substickY);
             sb_w8 (p + PS_TRIG_L,   host[0].triggerLeft);
