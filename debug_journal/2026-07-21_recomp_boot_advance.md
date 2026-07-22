@@ -3862,3 +3862,34 @@ sky/sand match within a few levels. The next candidate that has never been teste
 PIXEL FORMAT / alpha configuration of the framebuffer itself rather than any individual draw —
 i.e. whether the recomp's EFB is configured with a different pixel format, which would change
 what every dst-alpha-consuming blend reads without changing any draw's own state.
+
+## THE SEA DRAW IS NOT WHAT IS WHITE — the whole premise was wrong
+
+Removed the sea draw itself (`SB_SKIP_VERTS=52`, the 52-vertex draw whose state I had been
+comparing against the oracle for many sessions):
+
+```
+sea region WITHOUT the sea draw: near-white 82.1%  mean (230,227,228)
+sea region WITH it:              near-white 82.1%  mean (230,227,228)
+```
+
+**Bit-identical.** And this time the instrument was validated against a known-positive before
+the null was believed: `SB_SKIP_VERTS=4` changes 48.9% of the frame, and the dump confirms 2
+draws of 52 vertices exist in the frame. The skip works; the sea draw genuinely contributes
+nothing to those pixels.
+
+So **something else paints that region white, and the sea draw is either invisible or drawn
+over.** That invalidates the premise of a very long investigation: every comparison of the sea
+draw's geometry, textures, TEV program, texgen, texcoords, copies, blend factors and alpha
+matched the oracle — and they matched because *the draw was never producing the white pixels*.
+The "feedback loop" reading was built on the same false premise.
+
+The lesson is specific and I should have applied it at the start: before comparing a draw's
+state in detail, establish that the draw is responsible for the pixels in question. One
+skip-and-measure would have redirected the whole line of work. I built increasingly precise
+instruments to compare something I had never shown was involved — and the one cheap test that
+could have falsified the premise is the one I did not run.
+
+Next: bisect by vertex count with `SB_SKIP_VERTS` to find which draw group actually paints the
+sea region. That is now a mechanical search with a validated instrument, rather than a
+hypothesis to defend.
