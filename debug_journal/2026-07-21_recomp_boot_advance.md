@@ -2975,3 +2975,43 @@ Next: implement CARD for the recomp (aurora's CARD is already there, as the deco
 shows) so both runtimes reach the same file-select state. Only then is a scene-level comparison
 meaningful — and the sea question should be re-asked from scratch afterwards, not resumed from
 its current dead end.
+
+## Confirmed: the decomp reads a REAL memory card, the recomp has none
+
+Traced aurora's card path resolution (`DolphinCardPath.cpp`) to Dolphin's own location, and the
+file is there on this machine: `~/.dolphin-emu/GC/MemoryCardA.USA.raw`. So the decomp runtime
+mounts a real, populated memory card, while the recomp has no CARD support at all.
+
+That closes the question completely. The two runtimes were in different UI states because they
+genuinely have different hardware attached, and every "missing 2D draw" was the game correctly
+drawing a different screen. Nothing was wrong with the recomp's rendering.
+
+(The card file is machine-specific and lives outside the repo — nothing to commit, and it must
+not be. It does mean this comparison is not reproducible on another machine without the same
+card present, which is worth knowing before treating any file-select parity number as portable.)
+
+**The recomp's EXI model is already correct about this.** `dev_exi.cpp` models the transport
+only and treats selecting a chip-select with nothing attached as FATAL rather than returning
+bus-idle 0xFF — its own comment explains why: handing back 0xFF would invent a broken console
+and let the guest silently fall back to defaults. Nothing attached to the card slot is an honest
+state, not a bug; the gap is that no card device exists to attach.
+
+**Scoping the work rather than stubbing it.** The tempting shortcut is to make `CARDProbeEx`
+report a card present so the UI matches. That would be exactly the banned success-shaped stub:
+probe says yes, every subsequent read fails, and the game draws a plausible-but-wrong screen —
+worse than the honest no-card path it takes today. The real options are:
+
+1. **Override the CARD SDK entry points** onto aurora's CARD (the DVD model — overrides at a
+   narrow OS API). Named entry points in this DOL: `CARDInit` 0x803551a0, `CARDProbeEx`
+   0x803580a8, `CARDMount` 0x803588dc, `CARDMountAsync` 0x8035873c, `CARDCheck` 0x80357f88,
+   `CARDCheckExAsync` 0x803579f8, `CARDFreeBlocks` 0x80355390 — plus the unnamed weak ones
+   (open/read/write/stat) that will need `vtable_re.py`-style resolution. Requires marshalling
+   CARDFileInfo/CARDStat between guest and host layouts.
+2. **Attach a card device to EXI** and let the guest's own recompiled CARD code drive it. More
+   faithful and needs no marshalling at all, since the guest keeps its own structures — but it
+   means implementing the card's EXI command protocol.
+
+Option 2 is the better fit for a standalone recomp: the guest already HAS working CARD code, and
+attaching hardware for it to talk to keeps every structure in guest layout, which is precisely
+the boundary problem that killed the old hybrid. Option 1 re-introduces per-struct marshalling
+at a much wider API than DVD's.
