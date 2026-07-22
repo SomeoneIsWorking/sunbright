@@ -2588,3 +2588,36 @@ from 0.0015 arithmetic, and find why the phase runs 4x. Worth checking whether t
 (draw is `param & 0x8`) are also doubled — the sea is drawn once per frame, which suggests the
 DRAW phase is NOT doubled and only movement is, an asymmetry that should point straight at the
 cause.
+
+## Confirmed by direct count: movement 4x/frame, draw 1x/frame
+
+Added `SBR_PHASE_COUNT` (`sms-recomp/overrides/diag_phases.cpp`), a counting override on
+`TMapObjWave::perform` that always calls the real body. Measured over 14,200 presents:
+
+```
+[phase] movement=56376 draw=14094  (3.97 movement/frame, 0.99 draw/frame)
+```
+
+That confirms the arithmetic inferred from the UV deltas — **~4 movement dispatches per
+rendered frame against exactly 1 draw** — and confirms the predicted ASYMMETRY. The oracle's
+0.0030/frame scroll puts it at 2 movement dispatches per frame, so the recomp runs the movement
+phase twice as often while drawing the same number of times.
+
+The asymmetry is the useful part: because draw is dispatched exactly once, the view-object tree
+is traversed once for drawing, so the object is not duplicated in the tree. The movement PHASE
+itself is running more times per frame. That rules out "the actor is registered twice" and
+points at the loop that drives the phases.
+
+**Workflow gotchas hit while doing this**, both worth recording since both silently produced
+nothing:
+- The recomp's build directory is configured with `-S sms-recomp`, not the repo root. Running
+  `cmake -B build-sms-recomp` from the root fails with a source-mismatch error that is easy to
+  miss when output is redirected, and the build then silently uses the stale cache.
+- A new file in `overrides/` needs a reconfigure to be picked up by the CMake glob (the known
+  build-glob gotcha). Until then it compiles nothing and the override simply never registers —
+  indistinguishable from "the code never runs" unless the `[override]` registration line is
+  checked. There is also a stale `diag_tmp.cpp.o` in the build tree from a since-deleted file.
+
+Next: find what dispatches the movement phase and why it runs 4x. The decomp's own game loop is
+the reference for how many times `TMarDirector::direct` (and hence each phase) should run per
+frame.
