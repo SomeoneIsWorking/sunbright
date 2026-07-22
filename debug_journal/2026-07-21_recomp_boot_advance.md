@@ -2270,3 +2270,39 @@ deliberately NOT "fixing" this by inventing a scale factor the stream does not c
 
 Next: the sea samples a copy of the main EFB, so compare what is drawn BEFORE that copy in each
 runtime — the draws, not the copy.
+
+## The sea DOES sample the copy — and aurora's VI is unconfigured in the recomp
+
+Added the texel pointer to the draw dump's `texs` field, because two 320x224 textures exist and
+dimensions alone cannot tell a raw-RAM texture from an EFB-copy result. That settles which one
+the sea samples:
+
+```
+sea draw texs=[0:320x224@0x7f8c0e443e00, 1:256x256@0x7f8c0e255ce0, ...]
+EFB copy destination phys 0x00c43e00 (320x224)
+```
+
+`0x7f8c0e443e00` is exactly `g_ram_base + 0x00c43e00` — **the copy destination**. So the copy is
+created, registered and sampled correctly, and the defect is its CONTENT, not the plumbing.
+
+The second 320x224 texture (`phys 0x003e1280`) is a separate resource that nothing ever copies
+to; `SB_TEX_DUMP` resolves it as a static texture and it is entirely black, as raw untouched RAM
+would be. It is not what the sea samples, so it is a side observation, not the defect.
+
+**Concrete divergence found while checking this:** the copy logs report
+`logical=640x480` for the recomp and `logical=640x448` for the oracle.
+`logical_fb_size()` returns `vi::configured_fb_size()` — aurora's OWN VI configuration. The
+decomp runtime configures it because the game drives aurora's VI; this runtime has its own VI
+MMIO device, so aurora's VI is **never configured** and reports a default 640x480 while the
+game actually renders 640x448.
+
+This is the same class of defect as the missing `VIGetRetraceCount`: aurora expects the runtime
+to tell it something, this runtime never did, and aurora silently used a default. The
+consequence is not cosmetic — `map_logical_viewport` scales by target/logical, so every
+viewport and copy rectangle is scaled by 960/480 = 2.0 where the oracle uses 960/448 = 2.14.
+That is why our display copy resolves 1280x896 against the oracle's 1280x960.
+
+Whether it explains the white sea is NOT established — the reflection copy grabs the EFB, and a
+vertical scale error would distort content rather than whiten it. But it is a real divergence
+in the exact coordinate mapping the copy goes through, and it should be fixed before drawing
+further conclusions about copy content.
