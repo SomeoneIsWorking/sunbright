@@ -3803,3 +3803,32 @@ Next: identify what these 17 objects are. Constraints are tight — 59 vertices,
 off, alpha writes on, drawn twice each, on a horizontal plane at constant height in a small
 patch, with the oracle rendering exactly one. That is a well-specified search in the scene's
 actor list rather than an open question.
+
+## CORRECTION: the "Graffito" label was a STALE MARKER, not an identification
+
+Read the oracle's perform-list sizes with its own `SB_J3D_DBG` diagnostic:
+
+```
+[dir] LIST SIZES: unk30=3 preEntry=34 Graffito=0 Pollution=0 DrawBufGroup=1
+                  GX=61 GXPost=97 Silhouette=11 CalcAnim=18 Movement=18
+```
+
+**`Graffito=0` and `Pollution=0` — both lists are EMPTY on this scene.** So the
+`mark='DrawBuf Graffito'` on the oracle's 59-vertex draw did not identify it at all: the phase
+tag is stamped before each list is dispatched, and when a list draws nothing the previous tag
+persists into whatever draws next. The draws therefore belong to a LATER list — by the dispatch
+order in `MarDirectorDirect.cpp` that is `mPerformListGX` (61 entries).
+
+So the previous entry's naming of these as the graffiti/pollution layer is withdrawn. The
+measurement it rested on stands (17 objects vs 1, independent of save state); only the label was
+wrong, and it was wrong because I read a marker as authoritative without checking what produced
+it — the same shape as reading a diagnostic that reports something adjacent to the question.
+
+Worth keeping as a tooling note: `sb_gx_last_marker()` is a LAST-SET value, not a per-draw
+attribution, so it is only meaningful when the tagged list actually drew something. A marker on
+a draw from an empty list is stale by construction.
+
+What survives, and is now better scoped: the recomp renders 17 alpha-writing objects where the
+oracle renders 1, they live in the GX perform list rather than a pollution layer, and the
+difference is independent of card/save state. Next is comparing the GX list's contents between
+runtimes rather than guessing which actor it is.
