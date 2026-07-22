@@ -213,9 +213,11 @@ the "oracle" reference was the TITLE SCREEN — `SB_STAGE=15` boots to title, re
 needs `SB_PAD_SCRIPT="800:START 840:-"` and a late dump. With both runtimes actually at
 file-select the covering-prim inventories match (41 vs 41 screen-blend draws over the pixel).
 Do NOT re-open "sea wash" investigations; see `debug_journal/2026-07-22_wash_attribution_harness.md`.
-Real remaining residual (cosmetic): recomp draws white surf along the shoreline where the oracle
-draws none, and the save-block shadow decals render white-blue instead of dark grey — same draws,
-same blend/TEV config, so suspect bound texture content / TEV colour data, not the blend chain.
+Those residuals are FIXED (2026-07-22): `GXTexObj_::has_mips()` gated on aurora's `flags` bit 0,
+which only the SDK/extension path sets — the recomp drives textures via BP registers, so every
+mipmapped texture bound single-level and minified ground planes aliased into bright shimmer.
+`has_mips()` now derives from TexMode0's min-filter field, the hardware's own rule. Recomp
+file-select now matches retail per-region within ~6 levels.
 
 **Title screen status (2026-07-11): the title RENDERS FAITHFULLY.** The multi-session
 "washed / orange / blue-diluted / oversized logo" defect was a **diagnostic dump-path

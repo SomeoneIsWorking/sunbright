@@ -152,3 +152,56 @@ before measuring the picture.
 
 Each run is wall-clock bounded, so the number of frames rendered varies and cumulative draw
 counts vary with it. Compare fractions within a run, never absolute counts across runs.
+
+---
+
+# RESOLVED (2026-07-22): mipmapped textures were bound single-level on the register path
+
+## Root cause
+
+`GXTexObj_::has_mips()` gated entirely on `flags` bit 0. That bit is an **aurora-ism**: it is set
+only by `init_texobj_common` and by the aurora extension opcode — i.e. only when a runtime hands
+aurora a texture through the SDK, which is what the decomp runtime does.
+
+The recomp drives textures the way the hardware does: it writes **BP registers**. That path sets a
+mip min-filter and a correct `mode1` max_lod, but never touches aurora's flag. So `mip_count()`
+collapsed to 1 and **every mipmapped texture was bound single-level**. Minified ground-plane
+surfaces then alias into bright shimmer instead of filtering down.
+
+Measured proof before the fix, same scene and same pixel in both runtimes:
+
+| covering draw | oracle | recomp |
+|---|---|---|
+| `64x64 fmt=14` sea sparkle | `mips=4 hasMip=1 maxlod=3.0` | `mips=1 hasMip=0 maxlod=3.0` |
+| `256x256 fmt=14` opaque base | `mips=6 hasMip=1 maxlod=5.0` | `mips=1 hasMip=0 maxlod=5.0` |
+
+And the recomp's own registers said mipmapped: `minf=5` (NEAR_MIP_LIN) / `minf=1`
+(NEAR_MIP_NEAR), `mode0=800001d5`. Hardware state said "walk a mip chain"; aurora's flag said no.
+
+## The fix
+
+Real GC hardware has no "has mips" bit — whether the TX unit walks a chain is decided by
+**TexMode0's min-filter field**. `has_mips()` now derives from it, which is the hardware's own
+rule and agrees with the flag wherever the flag is set (`init_texobj_common` writes min filter
+`0xC0` = LIN_MIP_LIN exactly when it sets bit 0, `0x80` = LINEAR otherwise). `mip_count()` still
+clamps levels to what the dimensions support, so registers requesting mips a texture has no data
+for cannot read past its level-0 buffer.
+
+## Verified on real data — recomp file-select, per region
+
+| region | before | after | oracle |
+|---|---|---|---|
+| surf band | (217,226,225) | **(91,188,200)** | (85,188,200) |
+| open sea | (176,175,159) | **(153,168,156)** | (148,168,158) |
+| sand | (214,199,193) | **(207,186,180)** | (209,185,176) |
+| shadow decal | (217,212,212) | **(194,177,176)** | (194,175,170) |
+| sky (control) | (49,106,183) | (49,106,183) | (48,104,184) |
+
+Every region converged to within ~6 levels of the oracle; the sky, already correct, did not move.
+Visually the recomp now matches the **retail Dolphin capture**
+(`scratch/oracle/loadstate_probe/png/fsel_dolphin_end.png`): smooth turquoise water with no white
+band, dark grey shadow decals, wooden OPTIONS sign present.
+
+Retail was consulted first, on Fable's advice, precisely because the decomp is the approximation
+and its water/shadow subsystems are documented-incomplete — the recomp could have been the correct
+one. It was not: retail agrees with the decomp on all three residuals.
