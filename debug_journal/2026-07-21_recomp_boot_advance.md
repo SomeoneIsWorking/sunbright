@@ -3416,3 +3416,38 @@ Session note: the card has advanced through eight distinct, separately-diagnosed
 (empty slot, EXT bit, device ID, W1C status bits, probe debounce, flash-ID checksum, command
 0x81, and now the EXI lock owner). Each one was found from the DOL and confirmed by a changed
 symptom, and each wrong guess announced itself rather than corrupting the card.
+
+## Regression check + consolidated card status
+
+Ran the full boot after all the EXI/SRAM/card changes: **no aborts, no panics**, file-select
+renders cleanly at 1280x960 with 133,515 distinct colours. Nothing regressed.
+
+The UI HAS changed state, though, and it is worth being clear that this is not yet an
+improvement: the "There is no Memory Card in Slot A." dialog is gone, and so are the NEW
+banners — the game now sits in its card RETRY loop rather than displaying an error. That is the
+expected intermediate state for a card that is detected but not mountable, and it is a
+regression in appearance relative to the honest no-card screen until the mount completes.
+
+**The SRAM unlock is NOT the lock holder.** `0x80347b20` -> `0x803477f4`, and its no-commit path
+(0x80347ad4) only clears an OS flag and restores interrupts — it never touches EXI. So the
+device-1 EXI lock comes from elsewhere, most likely the boot-time SRAM READ path
+(`dev_sram.cpp` already documents it: 0x80347608 does EXISelect(0,1,3) + EXIImm + EXIDma).
+Another plausible-mechanism guess eliminated by reading the code rather than assuming.
+
+**Card subsystem status.** Nine failures diagnosed and eight fixed, in order:
+
+| # | symptom | cause | state |
+|---|---------|-------|-------|
+| 1 | no card at all | no card device existed | fixed (dev_card.cpp) |
+| 2 | "no Memory Card" | EXI CSR EXT bit never set | fixed |
+| 3 | "device not supported" | wrong EXI device ID encoding/justification | fixed |
+| 4 | "card damaged" | probe debounce never elapsed (W1C status bits) | fixed |
+| 5 | mount -5 | SRAM flash-ID checksum inconsistent | fixed |
+| 6 | abort on 0x81 | interrupt-enable command unimplemented | fixed |
+| 7 | (reads absent) | read address layout unknown | fixed + verified |
+| 8 | mount -3 | EXIProbe mislabelled in diagnostics | corrected |
+| 9 | mount -3 | EXI channel-0 lock held for device 1, not the card | OPEN |
+
+Next: find what takes the device-1 lock and never releases it. The boot SRAM read is the
+leading candidate and is directly checkable — trace EXILock/EXISelect calls with their device
+argument from boot, and see which one leaves flags bit 0x10 set.
