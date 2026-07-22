@@ -26,6 +26,8 @@ extern "C" void func_80354830(CPUState&);
 extern "C" void func_80354740(CPUState&);
 extern "C" void func_8035593c(CPUState&);
 extern "C" void func_8036ae40(CPUState&);   // EXILock(chan, dev, callback)
+extern "C" void func_8036a748(CPUState&);   // EXISelect(chan, dev, freq)
+extern "C" void func_8036a874(CPUState&);   // EXIDeselect(chan)
 extern "C" void func_8035873c(CPUState&);   // CARDMountAsync(chan, workArea, detach, cb)
 extern "C" void func_803554e0(CPUState&);   // __CARDSync(chan)
 extern "C" void func_8036a580(CPUState&);   // EXIAttach(chan, callback)
@@ -165,4 +167,34 @@ SB_OVERRIDE(0x8036a44cu, exi_probe_real,   "EXIProbe (trace)",       "diagnostic
 SB_OVERRIDE(0x80354830u, worker_h1,        "card worker helper 1",   "diagnostic; real body runs")
 SB_OVERRIDE(0x80354740u, worker_h2,        "card worker helper 2",   "diagnostic; real body runs")
 SB_OVERRIDE(0x8035593cu, worker_h3,        "card worker helper 3",   "diagnostic; real body runs")
+// Select/deselect balance. EXISelect refuses a channel that is already selected, so an
+// unbalanced pair stalls every later transfer. Counting both and reporting the running
+// imbalance shows whether a select is being leaked and by how much.
+void exi_select(CPUState& cpu) {
+    const u32 ch = cpu.gpr[3], dev = cpu.gpr[4];
+    func_8036a748(cpu);
+    if (!tracing()) return;
+    static long sel = 0, fail = 0;
+    ++sel;
+    if (cpu.gpr[3] == 0) ++fail;
+    static long lastReport = 0;
+    if (sel - lastReport >= 2000) {
+        lastReport = sel;
+        const u32 flags = sb_r32(0x804040a0u + ch * 0x40u + 0xc);
+        lucent::info("card", "EXISelect: {} calls, {} refused, last dev{} flags=0x{:08x}", sel,
+                     fail, dev, flags);
+    }
+}
+void exi_deselect(CPUState& cpu) {
+    func_8036a874(cpu);
+    if (!tracing()) return;
+    static long des = 0;
+    ++des;
+    static long lastReport = 0;
+    if (des - lastReport >= 2000) { lastReport = des;
+        lucent::info("card", "EXIDeselect: {} calls", des); }
+}
+
 SB_OVERRIDE(0x8036ae40u, exi_lock,         "EXILock (trace)",        "diagnostic; real body runs")
+SB_OVERRIDE(0x8036a748u, exi_select,       "EXISelect (trace)",      "diagnostic; real body runs")
+SB_OVERRIDE(0x8036a874u, exi_deselect,     "EXIDeselect (trace)",    "diagnostic; real body runs")

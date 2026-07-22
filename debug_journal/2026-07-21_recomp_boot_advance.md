@@ -3491,3 +3491,37 @@ SDK-side state (bit 0x4 in `__EXIData[chan]+0xc`), set by EXISelect and cleared 
 Next: find where the deselect should happen and why it is skipped. The likely shape, given
 everything else in this runtime, is an error/completion path that returns early without
 deselecting — which would also explain why it alternates rather than failing outright.
+
+## Card: EXISelect is NOT failing either — the -3 is from EXIImm/EXISync/EXIDeselect
+
+Measured the select/deselect balance rather than assuming the leak:
+
+```
+[card] EXISelect: 4000 calls, 0 refused, last dev0 flags=0x0000001c
+[card] EXIDeselect: 4000 calls
+```
+
+**Perfectly balanced, zero refusals.** So the "already selected" hypothesis from the previous
+entry is wrong too — nothing is leaking a select and `EXISelect` always succeeds.
+
+Re-reading helper 0x80354830 shows why I mis-attributed it: it has TWO `li r3, -3` sites, and I
+only accounted for the first.
+
+```
+bl EXISelect ; cmpwi r3,0 ; bne .. ; li r3,-3        <- site 1 (measured: never taken)
+...
+bl 0x80369bf4 (EXIImm)   ; r31  = (result == 0)
+bl 0x80369fdc (EXISync)  ; r31 |= (result == 0)
+bl 0x8036a874 (EXIDeselect) ; r31 |= (result == 0)
+or. r31, r31, r0 ; beq .. ; li r3,-3                 <- site 2: ANY of the three failed
+```
+
+So the failure is one of **EXIImm, EXISync or EXIDeselect** — and because all three OR into one
+flag, the return code alone cannot say which. That is also why the symptom alternates: the three
+calls are made every time and one of them intermittently reports failure.
+
+This is the fifth mechanism in this subsystem that looked right and measured wrong (TC
+interrupt, stuck EXTINT, mislabelled probe, lock owner, and now the select leak). The through
+line is that each was a plausible story built on a diagnostic that did not distinguish it from
+its neighbours; each fell to a measurement that did. Distinguishing the three candidates needs
+one trace per call, which is the obvious next step and cheap.
