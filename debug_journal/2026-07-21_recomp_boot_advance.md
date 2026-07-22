@@ -2839,3 +2839,38 @@ Note this does NOT fix the recomp's white sea: the recomp was already doing the 
 movement passes. What it removes is the 2x discrepancy BETWEEN the runtimes, so their animation
 phases are now directly comparable — which makes the recomp's remaining UV/brightness difference
 measurable against a correct reference for the first time.
+
+## The UV rate was NOT the cause of the white sea
+
+With the decomp's movement gate fixed, both runtimes now advance the sea's UVs at the same rate:
+
+```
+oracle (fixed)  rc 206 -> 208 -> 210 : -1.3536 -> -1.3476 -> -1.3416   (+0.0060/frame)
+recomp          rc 108 -> 109 -> 110 : -1.1559 -> -1.1499 -> -1.1439   (+0.0060/frame)
+```
+
+**Identical scroll rate — and the oracle's sea is still teal (0.0% near-white) while the
+recomp's is still white (81%).**
+
+So the "FOUND IT" conclusion from the UV-rate discovery was wrong AS AN EXPLANATION OF THE
+WHITENESS. It was a real divergence and it led to a real decomp fix, but it was never the cause
+of the white sea. Recording that plainly: a genuine bug found while chasing a symptom is not
+automatically the cause of that symptom, and I treated it as one.
+
+The absolute UV values still differ between runs (-1.3536 vs -1.1559), but that is only elapsed
+time — the offsets wrap at 1.0 and both scroll identically — and the recomp's sea is white on
+EVERY frame regardless of phase, so phase cannot be it either.
+
+That leaves the state comparison exhausted: geometry, viewport, depth, blend, both texture
+pointers, TEV program, texgen, texcoord descriptors, UV values, UV rate, copy count/order/
+format/rect/destination, clear colour and dst-alpha ALL match. The output still differs, so the
+difference has to be the CONTENT of the sampled copy — which is circular while the sea itself is
+part of the scene being copied.
+
+**The way to break the circle is ORDER.** If the reflection copy is taken BEFORE the sea is
+drawn, the sea samples a scene without itself in it and the loop has no gain. If it is taken
+AFTER, the sea samples its own previous output and any excess compounds — which is what the
+slow creep measured earlier (82% -> 92%) looks like. Both runtimes issue the same copies, but I
+have never established WHERE the sea draw sits relative to copy #3 in each. That is the next
+measurement: interleave the copy log and the draw dump on a common counter so the ordering is
+directly visible on both sides.
