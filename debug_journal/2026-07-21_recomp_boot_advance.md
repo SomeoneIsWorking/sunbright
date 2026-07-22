@@ -3310,3 +3310,34 @@ question is what it rejects in that data. Progress this session on the card, eac
 established from the DOL and confirmed by a changed symptom: slot empty -> device detected ->
 ID accepted -> probe succeeds -> flash-ID check passes -> header read. Every wrong step
 announced itself loudly instead of corrupting saves.
+
+## Card: mount now STARTS; failure moved into the async worker (and a mislabel corrected)
+
+With the SRAM flash-ID and 0x81 fixes in, the trace has moved on again:
+
+```
+[card] CARDMountAsync -> 0                              (was -5; now starts successfully)
+[card]   low-mem card-disable byte 0x800030e3 = 0x00    (that gate is NOT set)
+[card] EXIAttach -> 1                                    (succeeds)
+[card] CARDMount -> -3
+```
+
+So `CARDMountAsync` returns 0 (operation started) and the -3 now comes from `__CARDSync` — the
+wait — meaning the async mount WORKER at 0x80358224 completes with NOCARD. Ruled out along the
+way: the low-memory card-disable flag (reads 0x00), EXIAttach, and EXIGetID, all measured rather
+than assumed.
+
+**Correction to my own labelling.** I have been tracing `0x8036a2d8` as "EXIProbe", but the
+symbol table gives `0x8036a44c EXIProbe` and `0x8036a4cc EXIProbeEx` — `0x8036a2d8` is an
+internal helper those two call. The worker's -3 site (0x80358338) calls **0x8036a44c**, the real
+`EXIProbe`, which I have never actually traced. So "EXIProbe now succeeds" is a claim about the
+wrong function; the transitions I measured (0 -> 1 after ~283k polls) belong to the helper.
+
+That matters because the helper succeeding does not imply the public entry point does — the
+public one wraps it with additional state (`EXIAttach` sets a flag that changes which path the
+helper takes, per 0x8036a400). Next tick traces 0x8036a44c specifically, which is the actual
+gate on the mount.
+
+Getting the symbol identity wrong is the same class of error as the log caps: a diagnostic that
+reports something adjacent to the question and gets read as answering it. Checking the address
+against the symbol table costs nothing and I skipped it.

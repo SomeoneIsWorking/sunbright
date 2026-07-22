@@ -21,6 +21,7 @@ extern "C" void func_8036b050(CPUState&);   // EXIGetID(chan, dev, *id)
 extern "C" void func_8036a2d8(CPUState&);   // EXIProbe(chan)
 extern "C" void func_8035873c(CPUState&);   // CARDMountAsync(chan, workArea, detach, cb)
 extern "C" void func_803554e0(CPUState&);   // __CARDSync(chan)
+extern "C" void func_8036a580(CPUState&);   // EXIAttach(chan, callback)
 
 namespace {
 
@@ -64,8 +65,20 @@ TRACE_CARD(card_mount,    803588dc, "CARDMount")
 TRACE_CARD(card_check,    80357f88, "CARDCheck")
 TRACE_CARD(exi_probe_ex,  8036a4cc, "EXIProbeEx")
 TRACE_CARD(exi_get_id,    8036b050, "EXIGetID")
-TRACE_CARD(card_mount_async, 8035873c, "CARDMountAsync")
+// CARDMountAsync's first gate is a flag byte in OS low memory (0x800030e3 bit 0x80): set
+// means "memory cards are disabled" and it returns NOCARD before touching hardware.
+void card_mount_async(CPUState& cpu) {
+    const u8 flag = sb_r8(0x800030e3u);
+    func_8035873c(cpu);
+    if (tracing()) {
+        report("CARDMountAsync", (s32)cpu.gpr[3]);
+        static bool once = false;
+        if (!once) { once = true;
+            lucent::info("card", "  low-mem card-disable byte 0x800030e3 = 0x{:02x}", flag); }
+    }
+}
 TRACE_CARD(card_sync,        803554e0, "__CARDSync")
+TRACE_CARD(exi_attach,       8036a580, "EXIAttach")
 
 // EXIProbe's insertion debounce: it stores a 100ms-unit timestamp per channel at
 // 0x800030c0 + chan*4 and requires 3 units to elapse. Report the raw inputs so the stall is
@@ -74,14 +87,17 @@ void exi_probe(CPUState& cpu) {
     const u32 ch = cpu.gpr[3];
     func_8036a2d8(cpu);
     if (!tracing()) return;
-    static int n = 0;
-    if (n < 20) {
-        ++n;
-        const u32 csr   = sb_r32(0xCC006800u + ch * 0x14u);
-        const u32 stamp = sb_r32(0x800030c0u + ch * 4u);
-        lucent::info("card", "EXIProbe(ch{}) -> {}  csr=0x{:08x} debounce_stamp={}", ch,
-                     (s32)cpu.gpr[3], csr, stamp);
-    }
+    // Transitions only: this is polled thousands of times, and a fixed cap hides the change
+    // that matters (it already did, three times).
+    static s32 last = 0x7fffffff;
+    static long run = 0;
+    const s32 r = (s32)cpu.gpr[3];
+    if (r == last) { ++run; return; }
+    const u32 csr   = sb_r32(0xCC006800u + ch * 0x14u);
+    const u32 stamp = sb_r32(0x800030c0u + ch * 4u);
+    lucent::info("card", "EXIProbe(ch{}) -> {} after {} x {}  csr=0x{:08x} stamp={}", ch, r,
+                 run, last, csr, stamp);
+    last = r; run = 1;
 }
 
 } // namespace
@@ -94,3 +110,4 @@ SB_OVERRIDE(0x8036b050u, exi_get_id,    "EXIGetID (trace)",    "diagnostic; real
 SB_OVERRIDE(0x8036a2d8u, exi_probe,     "EXIProbe (trace)",    "diagnostic; real body runs")
 SB_OVERRIDE(0x8035873cu, card_mount_async, "CARDMountAsync (trace)", "diagnostic; real body runs")
 SB_OVERRIDE(0x803554e0u, card_sync,        "__CARDSync (trace)",     "diagnostic; real body runs")
+SB_OVERRIDE(0x8036a580u, exi_attach,       "EXIAttach (trace)",      "diagnostic; real body runs")
