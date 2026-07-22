@@ -2453,3 +2453,39 @@ so the remaining suspect is the vertex UV DATA itself, which no diagnostic curre
 
 Next: dump the sea draw's vertex TEX1 values in both runtimes. Our VAT texcoord decoding has
 been wrong before (the VAT_C TEX5 bit offset), which is precisely a wrong-UV-values failure.
+
+## FOUND IT: the sea's UV animation runs at DOUBLE rate
+
+Added `SB_UV_PROBE=<W>x<H>` to aurora, decoding a draw's actual texcoord values out of the
+vertex stream — the one thing no diagnostic reported. The sea's texcoords are DIRECT f32 pairs
+(`tcv=[t0:d=1 cnt=1 ty=4, t1:d=1 cnt=1 ty=4]`, identical on both sides), so the values are
+inline in the vertex data and directly comparable.
+
+```
+recomp  tex0 (-1.6503,-4.3200)   tex1 (-1.9800,-4.5831)
+oracle  tex0 (-1.1034,-4.3200)   tex1 (-1.9800,-5.2495)
+```
+
+The STATIC components match exactly (tex0's V = -4.3200, tex1's U = -1.9800). Only the ANIMATED
+components differ — and the frame-to-frame deltas give the mechanism:
+
+```
+recomp  tex0 U: -1.6503 -> -1.6443   (+0.0060/frame)
+oracle  tex0 U: -1.1034 -> -1.1004   (+0.0030/frame)
+```
+
+**Our sea's UV scroll runs at exactly twice the oracle's rate.** Same for tex1's V
+(+0.0060 vs +0.0030). That is a game-state divergence, not a GX one — which is why every GX
+comparison matched: draw state, textures, TEV program, texgen, descriptors, copies, alpha.
+
+It also explains the brightness directly. The scroll accumulates, so by the time the frame is
+sampled our UVs have drifted far from the oracle's (tex1 V differs by 0.67), and with the sea
+sampling a grab of the whole scene through those coordinates, a different offset means sampling
+a different, brighter part of the image. The slow creep measured last tick rides on top.
+
+Prime suspect: something advancing the sea's animation twice per frame, or a per-frame delta
+that is 2 where the oracle's is 1. This runtime's `vi_wait_for_retrace` increments the retrace
+counter once per call, and `video_wait_for_retrace` presents once per call — if the game derives
+animation from retrace deltas, an interlaced-field convention (2 fields per frame) would produce
+exactly a factor of 2. That is the next thing to check, and it is worth checking broadly: an
+animation-rate error of 2x would affect EVERY time-driven thing in the game, not just the sea.
