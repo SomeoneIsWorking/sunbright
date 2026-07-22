@@ -2418,3 +2418,38 @@ Candidate 2 is the most promising: it is the one term in the loop that is invisi
 comparison run so far, and this project already has history with mid-frame dst-alpha
 (the GXPeekARGB/Mario-occlusion note). Testing it means comparing `dstAlpha`/`alphaUpdate` at
 the copy, which the copy log does not currently report.
+
+## dst-alpha eliminated; the sea is wrong from the FIRST frame, with a slow creep on top
+
+Candidate 2 tested and dead: the copy log now reports the alpha state, and it is identical on
+both sides for all three copies — `dstAlpha=-1 aU=1 cU=1 pixFmt=1`. The loop's gain term is not
+the divergence.
+
+Then a timing measurement that reshapes the problem, using `SB_DUMP_FRAME_EVERY=40` and
+measuring the sea region across a whole run:
+
+```
+ ~present  780 (first file-select frame): near-white 81.6%  mean 227.6
+ ~present 1500                          : near-white 82.1%  mean 228.1
+ ~present 2460                          : near-white 83.9%  mean 232.7
+ ~present 3660                          : near-white 91.0%  mean 239.9
+ ~present 4860                          : near-white 91.5%  mean 240.1
+```
+
+**The sea is already ~82% white on the first frame it appears.** A feedback loop starting from
+an empty (black) copy would begin dark and brighten over many frames; this does not. So the
+white is NOT primarily accumulated — the sea's very first render is already about twice as
+bright as it should be.
+
+There IS a slow creep (82 -> 92%, mean 227 -> 241 over ~4000 frames), consistent with a mild
+gain slightly above one riding on top of an already-wrong base. So the feedback loop is real but
+SECONDARY; last entry over-weighted it. The primary defect is that the first sample is wrong.
+
+That sharpens the target considerably. The sea samples the copy through vertex TEX1 UVs with an
+identity texgen, and the copy holds the previous frame's whole scene — so sampling the wrong
+REGION of it (the bright sky rather than the water) would produce exactly this: immediately
+about twice too bright, plus slow compounding. Every piece of configuration matches the oracle,
+so the remaining suspect is the vertex UV DATA itself, which no diagnostic currently reports.
+
+Next: dump the sea draw's vertex TEX1 values in both runtimes. Our VAT texcoord decoding has
+been wrong before (the VAT_C TEX5 bit offset), which is precisely a wrong-UV-values failure.
