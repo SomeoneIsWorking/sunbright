@@ -710,13 +710,22 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
         line("%s = %s;", psd0.c_str(), psb0.c_str());
         line("%s = %s;", psd1.c_str(), psb1.c_str());
         break;
+    // ps_sum0: frD(ps0) = frA(ps0) + frB(ps1), frD(ps1) = frC(ps1)
+    // ps_sum1: frD(ps0) = frC(ps0),           frD(ps1) = frA(ps0) + frB(ps1)
+    // BOTH sum frA(ps0) + frB(ps1) — ps_sum1 differs only in WHICH half receives it
+    // (750CL manual). ps_sum1 previously summed frB(ps0), which silently corrupted the
+    // second component of every dot product built with it — J3D's matrix concatenation is
+    // exactly that, so some transforms came out wrong while most stayed right (observed:
+    // Mario's arms absent and FLUDD's parts scattered across his body in Delfino Plaza).
+    // Both also need a temp: they write one half of frD before reading the other operands,
+    // and frD may alias frA/frB/frC (the ps_merge cases below have the same hazard).
     case PPCOp::PS_SUM0:
-        line("%s = (f32)(%s + %s);", psd0.c_str(), psa0.c_str(), psb1.c_str());
-        line("%s = %s;",      psd1.c_str(), psc1.c_str());
+        line("{ const f64 _s = (f32)(%s + %s), _h = %s;", psa0.c_str(), psb1.c_str(), psc1.c_str());
+        line("  %s = _s; %s = _h; }", psd0.c_str(), psd1.c_str());
         break;
     case PPCOp::PS_SUM1:
-        line("%s = %s;",      psd0.c_str(), psc0.c_str());
-        line("%s = (f32)(%s + %s);", psd1.c_str(), psa0.c_str(), psb0.c_str());
+        line("{ const f64 _s = (f32)(%s + %s), _l = %s;", psa0.c_str(), psb1.c_str(), psc0.c_str());
+        line("  %s = _l; %s = _s; }", psd0.c_str(), psd1.c_str());
         break;
     case PPCOp::PS_MULS0:  // fD.ps0 = fA.ps0 * fC.ps0; fD.ps1 = fA.ps1 * fC.ps0
         line("%s = (f32)(%s * %s);", psd0.c_str(), psa0.c_str(), psc0.c_str());
