@@ -323,6 +323,38 @@ void gsched_yield() {
     acquire_token(lk, self);
 }
 
+// Cancel ANOTHER thread. The retail OSCancelThread unlinks the target from whichever
+// scheduler queue holds it, which only works because retail's own OSSleepThread/OSResumeThread
+// maintained those links. Ours do not: blocking is a token hand-off, so the guest OSThread's
+// `queue`/`state` fields never got the retail bookkeeping, and running the real body walked a
+// null queue pointer (observed: write to 0x4 inside OSCancelThread when the THP player tore
+// down its decode threads at the end of a movie).
+//
+// A cancelled thread is simply one that must never run again. It is parked on the token at a
+// blocking point and cannot be unwound from the outside — a host thread cannot be forced out of
+// a C call tree safely — so it stays parked forever and is never scheduled again. That is the
+// same treatment gsched_create already gives a thread whose struct the game recycles.
+void gsched_cancel(u32 os_thread) {
+    std::unique_lock<std::mutex> lk(g_lock);
+    GuestThread* t = find(os_thread);
+    if (!t || t->state == State::Dead) return;
+    if (t == t_self) {
+        // Cancelling yourself is OSExitThread with extra steps; let that path own it.
+        lk.unlock();
+        gsched_exit();
+        return;
+    }
+    t->state = State::Dead;
+    t->wait_queue = 0;
+    // Same publication gsched_exit does: the game polls the guest struct, not our bookkeeping.
+    if (t->os_thread) sb_w16(t->os_thread + T_STATE, OS_THREAD_MORIBUND);
+    for (auto* w : g_threads)
+        if (w->state == State::Blocked && w->wait_queue == t->os_thread) {
+            w->wait_queue = 0;
+            w->state = State::Ready;
+        }
+}
+
 void gsched_exit() {
     adopt_self_id();
     std::unique_lock<std::mutex> lk(g_lock);

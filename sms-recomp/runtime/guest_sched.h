@@ -28,6 +28,7 @@ void gsched_wake_queue(u32 wait_queue);  // everything parked on this queue beco
 void gsched_drain();                    // park until nothing else is Ready (frame barrier)
 void gsched_yield();                     // stay runnable, let an equal/higher priority run
 void gsched_exit();                      // the running thread is finished
+void gsched_cancel(u32 os_thread);       // ANOTHER thread is finished (OSCancelThread)
 
 // Guest OSThread* of the running thread, or 0 if it is not a tracked guest thread.
 u32 gsched_current_os_thread();

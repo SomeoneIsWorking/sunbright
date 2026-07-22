@@ -357,3 +357,7 @@ void os_hle_call(CPUState& cpu, u32 address) {
                            "occurrences at this address are counted, not logged",
                      address, cpu.gpr[3]);
 }
+
+// The machine's special-purpose registers: one set, shared by every thread's CPUState.
+// See the note on CPUState::SprFile.
+u32 CPUState::SprFile::s_spr[1024];

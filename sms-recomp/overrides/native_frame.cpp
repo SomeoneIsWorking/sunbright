@@ -18,6 +18,7 @@
 #include <chrono>
 #include <csignal>
 #include <cstdlib>
+#include <cstring>
 #include <ctime>
 
 extern "C" void func_802fc9a4(CPUState&);   // JDrama::TVideo::waitForRetrace
@@ -31,11 +32,42 @@ namespace {
 // without rebuilding a throwaway diagnostic.
 constexpr u32 GPAPPLICATION = 0x803E9700;
 
+// Mario's world position, per the RE in debug_journal/2026-06-19_n7_particles_carve.md:
+// SMS_GetMarioPos() is `lwz r3, -0x60B4(r13)` with r13 = 0x804141C0, i.e. 0x8040E10C holds a
+// POINTER to the Mario object, and his TVec3 position is that object's first field (+0x00).
+// Reported under `mario` so a scripted run can actually STEER: file-select is entered by walking
+// Mario into a floating file block, and a stick script driving blind cannot tell whether he moved.
+constexpr u32 GPMARIO_PTR = 0x8040E10C;
+
+float guest_f32(u32 addr) {
+    const u32 bits = sb_r32(addr);
+    float f;
+    std::memcpy(&f, &bits, sizeof f);
+    return f;
+}
+
+void report_mario_pos() {
+    static long n = 0;
+    if (++n % 30 != 0) return;
+    if (!sb_ram_fast(GPMARIO_PTR)) return;
+    const u32 mario = sb_r32(GPMARIO_PTR);
+    if (!sb_ram_fast(mario)) return;   // null before the player object exists
+    lucent::debug("mario", "pos ({:.1f}, {:.1f}, {:.1f})", guest_f32(mario), guest_f32(mario + 4),
+                  guest_f32(mario + 8));
+}
+
 void report_app_state() {
     static u32 last = 0xFFFFFFFF;
+    static u32 lastArea = 0xFFFFFFFF;
     const u32 st = sb_r8(GPAPPLICATION + 0x08);
-    if (st == last) return;
+    // The area pair changes WITHOUT an mAppState change whenever the game asks to move to a new
+    // stage: setNextStage writes mNextArea while the app stays in GAMEPLAY. Reporting only on
+    // mAppState made a whole stage transition — request, load, and bounce back — invisible.
+    const u32 area = (u32)sb_r8(GPAPPLICATION + 0x0E) << 24 | (u32)sb_r8(GPAPPLICATION + 0x0F) << 16 |
+                     (u32)sb_r8(GPAPPLICATION + 0x12) << 8 | (u32)sb_r8(GPAPPLICATION + 0x13);
+    if (st == last && area == lastArea) return;
     last = st;
+    lastArea = area;
     static const char* kNames[] = {"WAIT", "DEFAULT", "BOOT", "NLOGO", "DONE",
                                    "GAMEPLAY", "MOVIE", "QUIT", "TITLE", "MENU"};
     // TGameSequence is {u8 stage, u8 scenario, u16 flags}: mCurrArea +0x0E, mNextArea +0x12.
@@ -101,6 +133,7 @@ struct QuitSignals {
 void video_wait_for_retrace(CPUState& cpu) {
     ++g_present_count;
     report_app_state();
+    report_mario_pos();
 
     // How far the GUEST's own retrace counter advances per rendered frame. Game code paces
     // animation off this, and the decomp runtime advances it once per NTSC field (twice per

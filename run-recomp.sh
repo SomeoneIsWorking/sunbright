@@ -11,9 +11,15 @@
 #   SB_TURBO=1 ./run-recomp.sh                     # unpaced (no frame limiting)
 #
 # WHAT TO EXPECT: boots GC logo -> title. Press START (Enter) at the title to reach
-# file-select, which mounts your real Dolphin memory card and shows your saves. Title and
-# file-select both render faithfully (verified per-region against the decomp oracle and
-# against a retail Dolphin capture, 2026-07-22).
+# file-select, which mounts your real Dolphin memory card and shows your saves; choosing a
+# file loads Delfino Plaza. Title, file-select and the plaza all render (title/file-select
+# verified per-region against the decomp oracle and a retail Dolphin capture, 2026-07-22).
+#
+#   SBR_FASTBOOT=1 ./run-recomp.sh        # skip the menus: File 1 -> Delfino Plaza
+#   SBR_STAGE=6 ./run-recomp.sh           # boot a specific stage (SBR_SCENARIO=<n> too)
+#
+# Attract movies and cutscenes do not play (SBR_THP=all tries, and breaks on the second
+# movie); the plaza's own video decodes for real.
 #
 # Runs at the game's own rate — it paces to the retrace count the game asks for, so the
 # menus run at 30fps like the console. SB_TURBO=1 removes pacing (runs as fast as the host

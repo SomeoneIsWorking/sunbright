@@ -105,8 +105,20 @@ void os_join_thread(CPUState& cpu) {
     cpu.gpr[3] = 1;
 }
 
+// OSCancelThread(OSThread*) — the target never runs again. See gsched_cancel for why the
+// retail body cannot run here: it unlinks the thread from scheduler queues this runtime does
+// not maintain, and faulted on a null queue pointer when the THP player stopped a movie.
+void os_cancel_thread(CPUState& cpu) {
+    const u32 thread = cpu.gpr[3];
+    gsched_cancel(thread);
+    lucent::debug("osthread", "cancel 0x{:08x}", thread);
+}
+
 } // namespace
 
+SB_OVERRIDE(0x80348b4cu, os_cancel_thread,  "OSCancelThread",
+            "token hand-off: the target is marked dead rather than unlinked from queues "
+            "this runtime does not maintain")
 SB_OVERRIDE(0x80348948u, os_create_thread,  "OSCreateThread",
             "register with the cooperative scheduler; guest struct init is super-called")
 SB_OVERRIDE(0x80348ee8u, os_resume_thread,  "OSResumeThread",

@@ -266,6 +266,10 @@ void card_erase_sector(CPUState& cpu) {
 
 } // namespace
 
+// The same slot-A image, for readers that want the save data without going through the guest's
+// CARD state machine (fastboot parses a save block host-side before the game ever mounts).
+int sbr_card_image_fd() { return card_fd(); }
+
 SB_OVERRIDE(0x803580a8u, card_probe_ex,     "CARDProbeEx",
             "native card service: the host image is always present, no EXI probe")
 SB_OVERRIDE(0x8035873cu, card_mount_async,  "CARDMountAsync",

@@ -59,7 +59,20 @@ struct CPUState {
     // written, which is exactly storage. Modelling them this way is what lets early
     // boot (__start, cache/MMU init) be RECOMPILED instead of punted to a JIT that a
     // standalone build does not have.
-    u32    spr[1024];
+    //
+    // These describe the MACHINE, not a thread, so the storage is one array shared by every
+    // CPUState — the GameCube has one core and one set of SPRs. Holding them per-CPUState
+    // made a register set on one thread invisible to another: THPPlayerInit calls LCEnable(),
+    // which sets HID2's locked-cache bit, and the THP codec then runs on the video decode
+    // thread, read HID2 as 0, and returned "locked cache not enabled" (error 28) — which
+    // failed the plaza's loadResource and bounced the game back to the title screen. The
+    // genuinely per-thread context registers are separate fields above (SRR0/1, GQR), which
+    // is also what the GameCube OS saves and restores per thread.
+    struct SprFile {
+        u32& operator[](u32 n) { return s_spr[n & 1023]; }
+        const u32& operator[](u32 n) const { return s_spr[n & 1023]; }
+        static u32 s_spr[1024];
+    } spr;
 
     void reset() { std::memset(this, 0, sizeof(*this)); }
 };
