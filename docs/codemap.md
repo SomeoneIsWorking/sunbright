@@ -25,7 +25,7 @@ Legend: ✅ done (verified on real data) · 🟡 partial (documented gap) · �
 | File-select / save screen | ✅ renders | 🟢 at parity incl. Mario | recomp file-select correct; the mip/has_mips fix closed the "sea wash" |
 | Delfino Plaza (stage 1) | ✅ **renders + playable** | ⬜ crashes into gameplay | recomp: Mario/FLUDD/HUD/NPCs/statue/dialogue; heat haze + water refraction render; `SBR_FASTBOOT=1` |
 | Other stages | 🟡 reachable via `SBR_STAGE=<n>` | — | Gelato Beach verified wide; per-stage fidelity unaudited |
-| Audio | ⬜ silent by omission | 🟡 M2 mixer arc | JAS DSP-frame mixer not ported in either; `native_dsp.cpp` is a seam |
+| Audio | ⬜ silent | ✅ **audible** (title BGM) | decomp: `sms-boot/runtime/jas_kernel_native.cpp`, verified 2026-07-17, oracle WAV in `scratch/wav/`. recomp: DSP coprocessor not emulated; plan + prior art in `docs/audio_recomp_plan.md` |
 | Movies (THP) | 🟡 decodes, no reopen | 🟡 | recomp: `SBR_THP=stage` default; second session faults (null msg queue) |
 
 ## sms-recomp/ — the recomp runtime (primary)
@@ -61,7 +61,7 @@ Legend: ✅ done (verified on real data) · 🟡 partial (documented gap) · �
 | DVD / ARQ / THP | 🟡 | `sms-recomp/overrides/native_dvd.cpp`, `native_arq.cpp`, `native_thp.cpp` | THP decodes; session reopen faults (`SBR_THP`) |
 | PAD | ✅ | `sms-recomp/overrides/native_pad.cpp` | keyboard 12/12 bound (calls aurora PADInit); `SBR_PAD_SCRIPT` |
 | OS threads / MMU | ✅ | `sms-recomp/overrides/native_os_thread.cpp`, `native_os_mmu.cpp` | token hand-off; OSCancelThread |
-| DSP (audio) | ⬜ | `sms-recomp/overrides/native_dsp.cpp` | silent by omission — the audio arc |
+| DSP (audio) | ⬜ | `sms-recomp/overrides/native_dsp.cpp` | silent: DSP coprocessor unemulated. Dead link = AID regs 0xCC005030-3A inert. Plan: `docs/audio_recomp_plan.md` |
 | fastboot | ✅ | `sms-recomp/overrides/fastboot_native.cpp` | `SBR_FASTBOOT`/`SBR_STAGE`/`SBR_SCENARIO`; ported from git 9283f44^ |
 | widescreen (16:9) | ✅ | `sms-recomp/overrides/widescreen.cpp` | aspect widened at `C_MTXPerspective` (input, not output); `SBR_WIDESCREEN` |
 | widescreen HUD | ✅ | `sms-recomp/overrides/hud.cpp` | per-`.blo`-name edge anchoring; `/2d` |
@@ -88,7 +88,7 @@ Shared by both runtimes: the recomp hands it a GX stream, the decomp calls its G
 | main / boot | ✅ | `sms-boot/main.cpp` | one-runtime, single thread |
 | frame seam / present | ✅ | `sms-boot/runtime/frame_seam.cpp` | `sb_frame_present` in TVideo::waitForRetrace |
 | FIFO replay harness | 🟡 | `sms-boot/runtime/fifo_player.cpp` | CI-format TLUT synthesis missing (fail-fast) |
-| audio pump | ⬜ | `sms-boot/runtime/audio_out.cpp` | JAS kernel M1 landed; M2 DSP mixer = the arc |
+| audio pump | ✅ | `sms-boot/runtime/audio_out.cpp`, `runtime/jas_kernel_native.cpp` | native voice renderer; title BGM audible + WAV-verified (2026-07-17) |
 | SDK stubs | 🟡 | `sms-boot/runtime/sdk_stubs.cpp` | audited; every stub documented or loud |
 | decomp shims/stubs | 🟡 | `sms-boot/shims/`, `sms-boot/boot_stubs/` | each boot_stub = porting worklist |
 
@@ -143,6 +143,6 @@ tools/          recompiler + RE + oracle tooling
 ## Open heads (details in debug_journal/ and docs/)
 
 - **interp60** — cut detection + screen-effect handling on the in-between field (`docs/screen_effects.md`).
-- **audio** — JAS DSP-frame mixer, both runtimes silent by omission.
+- **audio (recomp only)** — DSP voice mixer; the decomp side is already audible and is the oracle. `docs/audio_recomp_plan.md`.
 - **THP session reopen** — second movie faults on a null message queue.
 - **decomp Delfino gameplay crash** — plaza-population stubs (oracle side).
