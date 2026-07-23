@@ -79,7 +79,7 @@ target_link_libraries(sms-recomp-rt PUBLIC lucent::lucent nod::nod aurora::gx)
 # never extracted and the weak symbol silently stays null. That is precisely the failure it was
 # added to fix, so it must be linked unconditionally.
 add_executable(sms-recomp host/main.cpp runtime/sb_log.cpp runtime/probe_server.cpp
-                           runtime/native_render.cpp)
+                           runtime/native_render.cpp runtime/scene.cpp)
 # -rdynamic puts func_<addr> into the dynamic symbol table so rt_dump_guest_stack can
 # name the guest frames. Recompiled bodies nest on the host stack, so the host backtrace
 # is the guest call stack — but only if the names resolve.

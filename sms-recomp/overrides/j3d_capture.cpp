@@ -19,6 +19,7 @@
 #include "overrides.h"
 
 #include "../runtime/probe_server.h"
+#include "../runtime/scene.h"
 
 #include <intrinsics.h>
 #include <lucent/log.h>
@@ -41,6 +42,9 @@ constexpr u32 SHAPE_DRAW_MATRICES = 0x50;   // Mtx**
 constexpr u32 SHAPE_CURRENT_VIEW  = 0x58;   // u32*
 
 // J3DShapeDraw: vtable at +0x00 (virtual dtor), then size, then the display list.
+constexpr u32 SHAPE_MATRICES = 0x34;   // J3DShapeMtx**
+constexpr u32 SHAPEMTX_SLOT  = 0x04;   // base J3DShapeMtx: u16 unk4 (vptr at +0x00)
+
 constexpr u32 SHAPEDRAW_DL_SIZE = 0x04;
 constexpr u32 SHAPEDRAW_DL_PTR  = 0x08;
 
@@ -76,9 +80,12 @@ const bool g_probe = [] {
                                         "distinct shapes  %lu\n"
                                         "elements         %lu\n"
                                         "geometry DL bytes %lu\n"
-                                        "skipped: no vertex data %lu, matrices not ready %lu\n",
+                                        "skipped: no vertex data %lu, matrices not ready %lu\n"
+                                        "scene: %d drawables last tick, %d matched the previous "
+                                        "tick (interpolating)\n",
                                         (int)capture_on(), g_st.shapes, g_st.distinct,
-                                        g_st.elements, g_st.dl_bytes, g_st.no_verts, g_st.no_mtx);
+                                        g_st.elements, g_st.dl_bytes, g_st.no_verts, g_st.no_mtx,
+                                        sbr_scene_last_count(), sbr_scene_matched_count());
                           return std::string(buf);
                       });
     return true;
@@ -99,6 +106,12 @@ void ov_shape_draw(CPUState& cpu) {
 
         const u32 n = sb_r16(shape + SHAPE_ELEMENT_COUNT);
         const u32 draws = sb_r32(shape + SHAPE_DRAWS);
+        // The live draw-matrix array for this view. drawMtxArray[i] is a 3x4 model x view matrix
+        // (J3D concats the view in viewCalc), which is exactly what a drawable carries.
+        const u32 viewNoPtr = sb_r32(shape + SHAPE_CURRENT_VIEW);
+        const u32 viewNo = ok(viewNoPtr) ? sb_r32(viewNoPtr) : 0;
+        const u32 drawMtxArray = (ok(mtx) && viewNo <= 16) ? sb_r32(mtx + 4 * viewNo) : 0;
+
         if (ok(draws) && n > 0 && n < 4096) {
             for (u32 i = 0; i < n; ++i) {
                 const u32 d = sb_r32(draws + i * 4);
@@ -107,6 +120,28 @@ void ov_shape_draw(CPUState& cpu) {
                 const u32 dl   = sb_r32(d + SHAPEDRAW_DL_PTR);
                 const u32 size = sb_r32(d + SHAPEDRAW_DL_SIZE);
                 if (ok(dl) && size > 0 && size < (16u << 20)) g_st.dl_bytes += size;
+
+                // Record the drawable for the interpolated scene. The element's matrix comes from
+                // its J3DShapeMtx; for the base class every vertex uses one slot (unk4), which is
+                // the common case and enough to carry the transform. The multi-matrix (skinned)
+                // case resolves per-vertex and is handled when the geometry decode lands.
+                if (drawMtxArray != 0) {
+                    const u32 mtxObj = ok(sb_r32(shape + SHAPE_MATRICES))
+                                           ? sb_r32(sb_r32(shape + SHAPE_MATRICES) + i * 4) : 0;
+                    const u32 slot = ok(mtxObj) ? sb_r16(mtxObj + SHAPEMTX_SLOT) : 0;
+                    // drawMtxArray is the Mtx* base; entries are inline f32[3][4] = 48 bytes.
+                    const u32 mtxAddr = drawMtxArray + slot * 48;
+                    if (ok(mtxAddr) && ok(mtxAddr + 47)) {
+                        SbrDrawable dr{};
+                        dr.key = ((uint64_t)shape << 16) | (uint64_t)i;
+                        dr.geom = 0;   // decode lands next
+                        for (int k = 0; k < 12; ++k) {
+                            const u32 bits = sb_r32(mtxAddr + k * 4);
+                            __builtin_memcpy(&dr.mtx[k], &bits, 4);
+                        }
+                        sbr_scene_add(dr);
+                    }
+                }
             }
         }
     }

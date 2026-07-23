@@ -12,6 +12,7 @@
 #include "../runtime/probe_server.h"
 #include "../runtime/screen_effects.h"
 #include "../runtime/native_render.h"
+#include "../runtime/scene.h"
 
 #include <aurora/aurora.h>
 #include <aurora/event.h>
@@ -29,13 +30,6 @@ extern "C" void func_802fc9a4(CPUState&);   // JDrama::TVideo::waitForRetrace
 extern void gxfifo_build();
 extern void gxfifo_send_last();
 extern void gxfifo_send(const std::vector<u8>&);
-extern const std::vector<u8>& gxfifo_blend_last(float alpha);
-
-// interp60.cpp — 60fps interpolation. The blend/restore pair brackets the extra present.
-bool sbr_interp60();
-bool sbr_interp60_blend();
-float sbr_interp60_alpha();
-void sbr_interp60_restore();
 
 namespace {
 
@@ -169,6 +163,26 @@ void pace_fields(unsigned fields) {
 // and aborted with "mapped ByteBuffer overflow".
 void present_and_reopen(bool& frameActive) {
     ++g_present_count;   // presents, not game ticks: interpolation makes two per tick
+
+    // SBR_PRESENT_TIMING=1: wall-clock gap between consecutive presents. A present COUNT of 60/s
+    // says nothing about what reaches the display — if the two presents of a tick land back-to-back
+    // and are then followed by a long gap, the eye sees 30fps however high the count reads. Only the
+    // spacing distinguishes those, so measure it rather than infer it from the rate.
+    if (std::getenv("SBR_PRESENT_TIMING")) {
+        static int64_t prev = 0;
+        static long n = 0;
+        const int64_t now = now_ns();
+        if (prev != 0) {
+            const double ms = (double)(now - prev) / 1e6;
+            static double acc_even = 0, acc_odd = 0; static long n_even = 0, n_odd = 0;
+            if (n & 1) { acc_odd += ms; ++n_odd; } else { acc_even += ms; ++n_even; }
+            if (++n % 120 == 0)
+                lucent::info("ptime", "present gaps: alternating means {:.2f} ms / {:.2f} ms "
+                                      "(even spacing = both ~16.7)",
+                             n_even ? acc_even / n_even : 0.0, n_odd ? acc_odd / n_odd : 0.0);
+        } else { ++n; }
+        prev = now;
+    }
     if (frameActive) {
         aurora_end_frame();
     } else {
@@ -251,8 +265,11 @@ void video_wait_for_retrace(CPUState& cpu) {
     // Let the game do its own frame bookkeeping first.
     func_802fc9a4(cpu);
 
-    // Parse this frame (tick N) and rotate it into g_last, WITHOUT sending it yet — the
-    // interpolation path below sends the in-between BEFORE the real frame.
+    // The tick's scene is complete (the capture hooks ran during the game's draw). Rotate it so the
+    // renderer has two snapshots to interpolate between, then open the next tick's recording.
+    sbr_scene_end_tick();
+    sbr_scene_begin_tick();
+
     gxfifo_build();
 
     // Rates, so "is it slow?" is measured rather than guessed. TICKS are game frames; PRESENTS
@@ -284,26 +301,7 @@ void video_wait_for_retrace(CPUState& cpu) {
     // 170 frames and aborted with "mapped ByteBuffer overflow".
     static bool s_frameActive = true;   // main() opened the first frame
 
-    // ── 60fps interpolation ──────────────────────────────────────────────────────────────
-    // Present TWO frames per tick: the in-between (N-½) FIRST, then the real tick (N). Order
-    // matters — N-½ is temporally before N, so presenting N first would judder. The in-between
-    // interpolates BOTH matrix paths toward the previous tick: the guest-RAM indexed arrays
-    // (sbr_interp60_blend, skinned geometry) and the immediate matrices baked into the stream
-    // (gxfifo_blend_last, the rigid world and camera). No game code runs for it.
-    //
-    // Each present is one field, so the two are evenly spaced. If the blend can't be made this
-    // tick (no models yet, or the scene's object count changed), the in-between is skipped and
-    // only N is presented — a single 30fps tick, not a smeared one.
-    unsigned fields_paced = 0;
-    if (sbr_interp60() && s_frameActive && sbr_interp60_blend()) {
-        gxfifo_send(gxfifo_blend_last(sbr_interp60_alpha()));   // N-½: indexed via blended RAM + immediate blended
-        present_and_reopen(s_frameActive);
-        sbr_interp60_restore();                                 // guest RAM back to N before sending N
-        pace_fields(1);
-        ++fields_paced;
-    }
-
-    gxfifo_send_last();                 // tick N
+    gxfifo_send_last();
     present_and_reopen(s_frameActive);
 
     // PACING. Without this the recomp runs as fast as the host allows (measured ~157 fps against
@@ -327,8 +325,7 @@ void video_wait_for_retrace(CPUState& cpu) {
             // translate into a multi-second sleep.
             if (delta >= 1 && delta <= 8) retraces = delta;
         }
-        // The in-between field already consumed one of this tick's fields.
-        pace_fields(retraces > fields_paced ? retraces - fields_paced : 0);
+        pace_fields(retraces);
     }
 }
 
