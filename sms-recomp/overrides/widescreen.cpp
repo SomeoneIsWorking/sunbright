@@ -28,6 +28,8 @@
 
 #include "overrides.h"
 
+#include "../runtime/scene.h"
+
 #include <aurora/aurora.h>
 #include <intrinsics.h>
 #include <lucent/log.h>
@@ -119,6 +121,15 @@ void ov_gx_set_projection(CPUState& cpu) {
     // INSIDE a scope are effect-internal (draw_mist's ortho lives on the guest stack), and
     // recording one would leave the reload pointer dangling once the frame returns.
     if (is2d && !g_ws_2d_suspend && sb_ram_fast(mtx) != nullptr) g_ws_last_ortho = mtx;
+
+    // Hand the perspective to the native renderer. This is the one place the game's own projection
+    // is available as a matrix, and it is already WIDENED (the widening happens at the
+    // C_MTXPerspective input), so the native path inherits 16:9 for free rather than rebuilding it.
+    if (!is2d && sb_ram_fast(mtx) != nullptr) {
+        float p[16];
+        for (int i = 0; i < 16; ++i) p[i] = guest_f32(mtx + (u32)i * 4);
+        sbr_scene_set_projection(p);
+    }
 
     // 3D (perspective) is NOT squeezed here anymore. It is widened at its SOURCE — the aspect
     // passed to C_MTXPerspective (see ov_c_mtx_perspective) — so the main projection AND every

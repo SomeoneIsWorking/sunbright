@@ -138,13 +138,28 @@ void ov_shape_draw(CPUState& cpu) {
                 // Decode the geometry. The vertex sizing is SELF-CHECKING: a wrong size lands
                 // mid-payload and hits a non-primitive opcode, which j3d_decode_element reports
                 // loudly rather than rendering garbage.
+                const uint64_t key = ((uint64_t)shape << 16) | (uint64_t)i;
+                uint32_t geom = 0;
                 if (g_layout.valid) {
-                    g_tri.clear();
-                    if (j3d_decode_element(shape, i, g_layout, g_tri)) {
+                    // Model-space positions do not change tick to tick (animation moves matrices),
+                    // so a key that already has geometry is not decoded again — the decode belongs
+                    // on the first sighting, not on the per-frame path.
+                    if (sbr_scene_has_geometry(key)) {
+                        geom = sbr_scene_intern_geometry(key, nullptr, 0);
                         ++g_st.decoded;
-                        g_st.tris += g_tri.size() / 3;
                     } else {
-                        ++g_st.decode_fail;
+                        g_tri.clear();
+                        if (j3d_decode_element(shape, i, g_layout, g_tri)) {
+                            ++g_st.decoded;
+                            g_st.tris += g_tri.size() / 3;
+                            std::vector<SbrGeomVert> gv;
+                            gv.reserve(g_tri.size());
+                            for (const J3DVert& v : g_tri)
+                                gv.push_back(SbrGeomVert{v.x, v.y, v.z, v.pnMtxSlot});
+                            geom = sbr_scene_intern_geometry(key, gv.data(), (int)gv.size());
+                        } else {
+                            ++g_st.decode_fail;
+                        }
                     }
                 }
 
@@ -160,8 +175,8 @@ void ov_shape_draw(CPUState& cpu) {
                     const u32 mtxAddr = drawMtxArray + slot * 48;
                     if (ok(mtxAddr) && ok(mtxAddr + 47)) {
                         SbrDrawable dr{};
-                        dr.key = ((uint64_t)shape << 16) | (uint64_t)i;
-                        dr.geom = 0;   // decode lands next
+                        dr.key = key;
+                        dr.geom = geom;
                         for (int k = 0; k < 12; ++k) {
                             const u32 bits = sb_r32(mtxAddr + k * 4);
                             __builtin_memcpy(&dr.mtx[k], &bits, 4);

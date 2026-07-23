@@ -228,30 +228,35 @@ void video_wait_for_retrace(CPUState& cpu) {
     sbr_audio_frame();
     sb_screen_effects_frame_end();   // roll the per-frame screen-effect set over
 
-    // Native SDL3-GPU renderer (SBR_SDLGPU=1). Milestone 1: prove the geometry path end to end —
-    // a known clip-space triangle rendered over the clear, read back and checked at two points.
-    // The GX frontend (stream -> transformed triangles) plugs in here next.
-    if (sbr_render_enabled()) {
-        static int done = 0;
-        if (!done && sbr_render_init(640, 448)) {
-            done = 1;
-            sbr_render_begin(0.10f, 0.40f, 0.80f, 1.0f);
-            const SbrVertex tri[3] = {
-                {-0.5f, -0.5f, 0.0f, 1.0f,  1.0f, 0.0f, 0.0f, 1.0f},
-                { 0.5f, -0.5f, 0.0f, 1.0f,  1.0f, 0.0f, 0.0f, 1.0f},
-                { 0.0f,  0.5f, 0.0f, 1.0f,  1.0f, 0.0f, 0.0f, 1.0f},
-            };
-            sbr_render_tris(tri, 3);
-            sbr_render_end();
+    // Native SDL3-GPU renderer (SBR_SDLGPU=1): draw the interpolated scene from the game's own
+    // J3D geometry and its own projection. Still rendered to an OFFSCREEN target and read back —
+    // aurora continues to drive the actual picture, so it stays a valid oracle while this is
+    // scored against it.
+    if (sbr_render_enabled() && sbr_render_init(640, 448)) {
+        sbr_render_begin(0.10f, 0.40f, 0.80f, 1.0f);
+        const float alpha = sbr_scene_render(sbr_scene_now(), sbr_scene_projection());
+        sbr_render_end();
+
+        static long n = 0;
+        if (++n <= 4 || n % 120 == 0) {
             std::vector<uint8_t> px(640 * 448 * 4);
-            if (sbr_render_readback(px.data(), 640, 448)) {
-                const uint8_t* c = &px[(224 * 640 + 320) * 4];   // centre: inside the triangle
-                const uint8_t* e = &px[(20 * 640 + 20) * 4];     // corner: the clear
-                lucent::info("nrender", "milestone-1 verts={} centre=({},{},{}) corner=({},{},{}) "
-                                        "(expect red 255,0,0 and blue 26,102,204)",
-                             sbr_render_last_vertex_count(), c[0], c[1], c[2], e[0], e[1], e[2]);
-                if (const char* d = std::getenv("SBR_RENDER_DUMP")) sbr_render_dump(d);
-            }
+            long lit = 0;
+            if (sbr_render_readback(px.data(), 640, 448))
+                for (size_t i = 0; i < px.size(); i += 4)
+                    if (px[i] != 26 || px[i + 1] != 102 || px[i + 2] != 204) ++lit;
+            // Coverage is the honest bring-up signal: vertices submitted proves the frontend ran,
+            // but only pixels differing from the clear prove the transform chain actually put
+            // geometry on screen.
+            float lo[3], hi[3], med = 0.0f;
+            sbr_scene_translation_bounds(lo, hi, &med);
+            lucent::info("nrender", "verts={} coverage={:.1f}% alpha={:.2f} drawables={} "
+                                    "skinned-geom={} proj={} xyz=[{:.0f}..{:.0f} {:.0f}..{:.0f} "
+                                    "{:.0f}..{:.0f}] medDist={:.0f}",
+                         sbr_render_last_vertex_count(), 100.0 * (double)lit / (640.0 * 448.0),
+                         alpha, sbr_scene_last_count(), sbr_scene_multislot_count(),
+                         sbr_scene_has_projection() ? "yes" : "MISSING",
+                         lo[0], hi[0], lo[1], hi[1], lo[2], hi[2], med);
+            if (const char* d = std::getenv("SBR_RENDER_DUMP")) sbr_render_dump(d);
         }
     }
 

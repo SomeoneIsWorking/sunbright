@@ -131,9 +131,10 @@ bool sbr_render_init(int w, int h) {
     tbci.size = (Uint32)(w * h * 4);
     g_dl = SDL_CreateGPUTransferBuffer(g_dev, &tbci);
 
-    // One pipeline for milestone 1: pass-through clip-space verts, no depth test yet (the GX z
-    // modes come with the state machine), alpha blending off. Everything about it is provisional
-    // and becomes per-material state as the TEV milestone lands.
+    // One pipeline: pass-through clip-space verts, depth test on, alpha blending off. The per-GX
+    // z-mode and blend state become per-material state as the TEV milestone lands; the depth test
+    // itself is not optional, because without it the last drawable submitted paints over the whole
+    // scene (measured: a uniform 100%-coverage fill of one object's colour).
     SDL_GPUShader* vs = make_shader(kGeomVertSpv, sizeof(kGeomVertSpv), SDL_GPU_SHADERSTAGE_VERTEX);
     SDL_GPUShader* fs = make_shader(kGeomFragSpv, sizeof(kGeomFragSpv), SDL_GPU_SHADERSTAGE_FRAGMENT);
     if (vs == nullptr || fs == nullptr) {
@@ -167,6 +168,12 @@ bool sbr_render_init(int w, int h) {
     pci.target_info.num_color_targets = 1;
     pci.target_info.depth_stencil_format = kDepthFmt;
     pci.target_info.has_depth_stencil_target = true;
+    // GC's projection puts the near plane at z/w = 0 and the far plane at 1 (see the transform in
+    // scene.cpp), and the target clears to 1.0 — so nearer is LESS, and the default GX z-mode is
+    // exactly test-and-write.
+    pci.depth_stencil_state.enable_depth_test = true;
+    pci.depth_stencil_state.enable_depth_write = true;
+    pci.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_LESS;
     g_pipe = SDL_CreateGPUGraphicsPipeline(g_dev, &pci);
     SDL_ReleaseGPUShader(g_dev, vs);
     SDL_ReleaseGPUShader(g_dev, fs);

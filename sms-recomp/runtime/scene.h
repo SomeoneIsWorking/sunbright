@@ -33,6 +33,37 @@ struct SbrDrawable {
                         // view matrix in viewCalc), so only the projection remains
 };
 
+// One decoded model-space vertex. `slot` is the vertex's PNMTXIDX/3 — which J3DShapeMtx slot it
+// selects. For an unskinned shape every vertex carries the same slot and the drawable's matrix
+// applies to all of them; skinned shapes vary it per vertex (see sbr_scene_multislot_count).
+struct SbrGeomVert {
+    float x, y, z;
+    uint32_t slot;
+};
+
+// Intern one drawable's geometry, returning its cache handle (never 0). Model-space positions do
+// not change from tick to tick — animation moves the MATRICES — so geometry is decoded once per
+// stable key and reused, which is also what keeps the decode off the per-frame path.
+// Returns the existing handle without copying if this key has been seen.
+uint32_t sbr_scene_intern_geometry(uint64_t key, const SbrGeomVert* verts, int count);
+
+// Whether this key already has geometry interned, so the caller can skip decoding entirely.
+bool sbr_scene_has_geometry(uint64_t key);
+
+// The projection to render with, captured from the game's own GXSetProjection (4x4, row-major, as
+// the guest built it). Without this there is no way to place model x view geometry on screen.
+void sbr_scene_set_projection(const float m[16]);
+bool sbr_scene_has_projection();
+// The captured projection, or nullptr if the game has not set a perspective yet.
+const float* sbr_scene_projection();
+// Monotonic wall clock in seconds — the same clock the snapshots are stamped with.
+double sbr_scene_now();
+
+// How many drawables carried geometry whose vertices did NOT all select one matrix slot. Those are
+// skinned meshes: the single per-drawable matrix used below is wrong for them, so this counter is
+// the honest size of that gap rather than a silent approximation.
+int sbr_scene_multislot_count();
+
 // Start recording the tick's scene. Called once per game tick, before the capture hooks run.
 void sbr_scene_begin_tick();
 
@@ -50,5 +81,10 @@ float sbr_scene_render(double now_seconds, const float proj[16]);
 
 // Diagnostics: how many drawables the last tick recorded, and how many of them had a match in the
 // previous snapshot (i.e. how much of the scene is actually interpolating rather than snapping).
+// The bounding box of the last tick's drawable TRANSLATIONS, in view space. A scene whose objects
+// have collapsed toward one point (a mis-indexed draw-matrix array) is indistinguishable from a
+// correct one by vertex count alone, but obvious here.
+void sbr_scene_translation_bounds(float lo[3], float hi[3], float* medianDist);
+
 int sbr_scene_last_count();
 int sbr_scene_matched_count();
