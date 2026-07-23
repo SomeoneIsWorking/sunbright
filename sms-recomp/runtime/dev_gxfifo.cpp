@@ -597,6 +597,7 @@ size_t parse(const u8* p, size_t n, int depth) {
                 g_tev.numTexGens  = val & 0xF;
                 g_tev.numStages   = ((val >> 10) & 0xF) + 1;
             } else if (reg >= 0x28 && reg <= 0x2F) {
+                g_tev.trefSeq[reg - 0x28] = g_bindSeq;
                 const unsigned s0 = (unsigned)(reg - 0x28) * 2;
                 g_tev.stage[s0].texmap     = val & 7;
                 g_tev.stage[s0].texcoord   = (val >> 3) & 7;

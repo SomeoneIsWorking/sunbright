@@ -128,7 +128,7 @@ would wash out exactly the surfaces the upper units feed, so this looked promisi
 
 So the images reaching units 1-3 are decoded correctly. What is wrong is WHICH image is there.
 
-**Surviving hypothesis, untested — `numStages` overrun.** `g_tev.stage[]` is global and persistent,
+**5. `numStages` overrun — PREDICTED, THEN FALSIFIED.** `g_tev.stage[]` is global and persistent,
 and RAS1_TREF writes arrive two stages per register. If GENMODE's `numStages` is larger than the
 material actually set, the loop reads stale per-stage `texmap` fields left by an EARLIER material —
 which would name units that this material never bound, and would explain every measurement above:
@@ -137,7 +137,29 @@ textures decode fine (4), and pinning to unit 0 scores better because it ignores
 It also explains the direction of the error: the upper units mostly carry intensity maps, which
 TEV MULTIPLIES, so a wrong one darkens the surface — and lumaCorr fell (+0.535 → +0.335) exactly as
 a wrongly-darkened scene would.
-Test it by histogramming `numStages` against the number of RAS1_TREF registers each material writes.
+Tested by stamping each RAS1_TREF register write on the same clock as the binds and counting stages
+whose register predates the drawable's own material by more than one burst: **54 of 3206 stages in
+one tick, 0 of 2143 in another — 1.7% at worst.** Real, but nowhere near enough to move edgeIoU by
+8 points. The hypothesis is DEAD; it is written up in full only so the next session does not
+re-derive and re-test it.
+
+## Where that leaves it — every hypothesis so far is falsified
+
+| # | hypothesis | verdict |
+|---|---|---|
+| 1 | upper units never bound | dead — 30-50k TX_SETIMAGE3 writes each |
+| 2 | upper-unit textures fail to decode (bind white) | dead — no C4/C8 present, no decoder errors |
+| 3 | I4/I8 alpha wrong for intensity light maps | dead — decodes alpha = intensity, per GX |
+| 4 | `numStages` overrun reads stale stage entries | dead — 1.7% of stages at worst |
+
+What the measurements jointly say: for a typical drawable the material's TREF registers are FRESH
+(it really does name units 1-2 in its current TEV setup) while only unit 0 was freshly BOUND. That
+combination is legal GX exactly when units 1-2 still hold what the material wants — a persistent
+shared texture. If that is what is happening, the binding is CORRECT and sampling those units should
+IMPROVE the image, which it does not. So the next suspect is not the binding at all but what those
+stages do with the sample: the coordinate the upper units are sampled with, or the TEV combination
+itself. Note the upper units mostly carry intensity maps, which TEV multiplies — the failure
+direction (everything darker, lumaCorr +0.535 -> +0.335) fits a wrong multiplier, not a wrong image.
 
 **Next step — and it should be the FIRST step next time.** Stop comparing pixels at the end of the
 pipeline and compare state at the point of use, against aurora, per draw: for each J3DShape draw,

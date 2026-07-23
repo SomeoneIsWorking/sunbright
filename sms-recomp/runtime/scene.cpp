@@ -397,6 +397,34 @@ void sbr_scene_report_zmodes() {
             lucent::info("nrender", "    numTexGens {} -> {} drawables", k, n);
         for (const auto& [k, n] : srcHist)
             lucent::info("nrender", "    texgen source row {} -> {} texgens", k, n);
+        // THE numStages-OVERRUN TEST. A material's own state arrives in one burst, so the TREF
+        // registers it wrote carry a stamp close to its texture binds. Any stage the loop reads
+        // whose TREF register is stamped much earlier belongs to a PREVIOUS material — that stage's
+        // texmap names a unit this material never bound, which is the surviving explanation for
+        // the multi-texmap regression.
+        {
+            int overrun = 0, checked = 0;
+            long staleStages = 0, totalStages = 0;
+            for (const auto& d : g_cur.items) {
+                uint32_t newest = 0;
+                for (unsigned k = 0; k < 4; ++k) newest = std::max(newest, d.tex[k].bindSeq);
+                if (newest == 0) continue;
+                ++checked;
+                bool any = false;
+                const unsigned ns = std::min<uint32_t>(d.tev.numStages, 16);
+                for (unsigned s = 0; s < ns; ++s) {
+                    ++totalStages;
+                    // 8 binds is comfortably wider than one material's burst (unit 0's measured
+                    // lag never exceeds 3), so this does not flag a material's own writes.
+                    if (newest - d.tev.trefSeq[s / 2] > 8) { ++staleStages; any = true; }
+                }
+                if (any) ++overrun;
+            }
+            lucent::info("nrender", "  numStages overrun: {}/{} drawables read at least one stage "
+                                    "whose RAS1_TREF is from an earlier material ({} of {} stages)",
+                         overrun, checked, staleStages, totalStages);
+        }
+
         for (const auto& [k, n] : mapHist)
             lucent::info("nrender", "    stage names texmap {} -> {} enabled stages", k, n);
         lucent::info("nrender", "    {} enabled stages name a unit with NO texture bound", unboundStages);

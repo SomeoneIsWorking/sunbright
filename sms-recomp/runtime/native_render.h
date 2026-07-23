@@ -79,6 +79,11 @@ struct SbrTevState {
     uint8_t alphaOp0 = 7, alphaOp1 = 7;   // GXCompare, 7 = ALWAYS (the power-on state)
     uint8_t alphaRef0 = 0, alphaRef1 = 0;
     uint8_t alphaLogic = 0;               // 0 AND, 1 OR, 2 XOR, 3 XNOR
+    // When each RAS1_TREF register (0x28+r, two stages each) was last written, on the same clock
+    // as SbrTexture::bindSeq. stage[] is global and persistent, so if numStages exceeds what the
+    // material actually set, the loop reads per-stage texmap fields left by an EARLIER material.
+    // These stamps are how that is detected rather than assumed.
+    uint32_t trefSeq[8]{};
 };
 
 const SbrTevState& sbr_gx_fifo_tev();
