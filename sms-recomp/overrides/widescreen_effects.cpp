@@ -22,6 +22,7 @@
 #include "overrides.h"
 
 #include "../runtime/probe_server.h"
+#include "../runtime/screen_effects.h"
 
 #include <intrinsics.h>
 #include <lucent/log.h>
@@ -230,6 +231,7 @@ void ov_efbctrldisp_perform(CPUState& cpu) {
 // centre. Offscreen perspective consumed through camera-derived matrices stays 4:3.
 void ov_mirrorcam_perform(CPUState& cpu) {
     fx("mirrorcam.perform");
+    sb_screen_effect_fired(ScreenEffect::MirrorPreRender, true);
     if (!widescreen_on()) { func_80193fbc(cpu); return; }
     const bool prev = g_ws_persp_suspend;
     g_ws_persp_suspend = true;
@@ -247,7 +249,9 @@ void ov_aftereffect_perform(CPUState& cpu) {
     // (unk14 bit 0), emits the quad. Otherwise this would churn projections every frame.
     fx("aftereffect.perform");
     fx(g_ws_last_proj_is2d ? "aftereffect.under2d" : "aftereffect.under3d");
-    const bool draws = widescreen_on() && (flags & 0x10) && sb_ram_fast(self) && (sb_r8(self + 0x14) & 1);
+    const bool enabled_draw = (flags & 0x10) && sb_ram_fast(self) && (sb_r8(self + 0x14) & 1);
+    sb_screen_effect_fired(ScreenEffect::DashBlur, enabled_draw);
+    const bool draws = widescreen_on() && enabled_draw;
     if (!draws) { func_8022d4f8(cpu); return; }
     ws_2d_suspend_begin(cpu);
     func_8022d4f8(cpu);
@@ -260,6 +264,7 @@ void ov_aftereffect_perform(CPUState& cpu) {
 // the copy. Flag only, no ortho reload — draw_mist issues its own projection.
 void ov_bath_draw_mist(CPUState& cpu) {
     fx("bath.draw_mist");
+    sb_screen_effect_fired(ScreenEffect::BathMist, true);
     if (!widescreen_on()) { func_801aa6cc(cpu); return; }
     const bool prev = g_ws_2d_suspend;
     g_ws_2d_suspend = true;

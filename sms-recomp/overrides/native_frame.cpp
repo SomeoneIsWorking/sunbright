@@ -10,6 +10,7 @@
 
 #include "overrides.h"
 #include "../runtime/probe_server.h"
+#include "../runtime/screen_effects.h"
 
 #include <aurora/aurora.h>
 #include <aurora/event.h>
@@ -198,6 +199,7 @@ void video_wait_for_retrace(CPUState& cpu) {
     // point guest memory is coherent. See probe_server.h.
     sb_probe_start();
     sb_probe_pump();
+    sb_screen_effects_frame_end();   // roll the per-frame screen-effect set over
 
     // How far the GUEST's own retrace counter advances per rendered frame. Game code paces
     // animation off this, and the decomp runtime advances it once per NTSC field (twice per
