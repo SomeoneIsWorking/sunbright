@@ -10,7 +10,10 @@
 struct SbrVertex {
     float x, y, z, w;
     float r, g, b, a;
-    float u, v;
+    // Four FINAL texture coordinates, one per texgen — the texgen (source select + texture matrix)
+    // is evaluated on the CPU alongside the lighting, because its matrices animate per frame and
+    // its source can be the position or normal rather than a stored coordinate.
+    float uv[4][2];
 };
 
 // The GX depth state a draw is issued under, mirrored from GXSetZMode (overrides/gx_state_capture).
@@ -34,6 +37,12 @@ struct SbrTexture {
     uint32_t tlut = 0;     // palette address for the colour-indexed formats
     uint32_t width = 0, height = 0;
     uint32_t format = 0;   // GXTexFmt
+    // TX_SETMODE0: how the hardware samples OUTSIDE [0,1] and between texels. A repeated ground
+    // texture sampled with CLAMP smears its edge row across the whole surface, and a clamped UI
+    // texture sampled with REPEAT wraps its border in — the two are not interchangeable defaults.
+    uint8_t wrapS = 1, wrapT = 1;   // GXTexWrapMode: 0 CLAMP, 1 REPEAT, 2 MIRROR
+    uint8_t magLinear = 1;          // GX_NEAR / GX_LINEAR
+    uint8_t minLinear = 1;
 };
 SbrTexture sbr_gx_current_texture();
 
@@ -58,6 +67,13 @@ struct SbrTevState {
     SbrTevStage stage[16];
     float reg[4][4]{};       // TEV colour registers: prev, c0, c1, c2
     float konstReg[4][4]{};  // KONST registers k0..k3 — a separate bank, not the same storage
+    // TEV_ALPHAFUNC (BP 0xF3). The cutout mechanism: foliage, fences and grates are drawn as opaque
+    // quads whose shape comes ENTIRELY from discarding texels that fail this test. Without it those
+    // surfaces render as solid rectangles, which reads as a geometry defect rather than a missing
+    // pixel-pipeline stage.
+    uint8_t alphaOp0 = 7, alphaOp1 = 7;   // GXCompare, 7 = ALWAYS (the power-on state)
+    uint8_t alphaRef0 = 0, alphaRef1 = 0;
+    uint8_t alphaLogic = 0;               // 0 AND, 1 OR, 2 XOR, 3 XNOR
 };
 
 const SbrTevState& sbr_gx_fifo_tev();
@@ -81,12 +97,34 @@ struct SbrChanCtrl {
     uint8_t attnSpot = 0;       // 0 = specular, 1 = spotlight
 };
 
+// One texture-coordinate generator. GX does NOT hand the vertex's raw TEX0 to the sampler: every
+// coordinate is produced by a texgen, which picks a SOURCE (the vertex's texcoord, but equally its
+// position or normal — that is how environment mapping is expressed) and runs it through a texture
+// matrix. Taking the raw TEX0 is only correct for the identity case; scrolling water, the shiny
+// reflective materials and anything with an animated texture SRT are all texgen configurations.
+struct SbrTexGen {
+    uint8_t type = 0;        // 0 REGULAR, 1 EMBOSS, 2 COLOR0, 3 COLOR1
+    uint8_t sourceRow = 5;   // 0 GEOM, 1 NORMAL, 2 COLORS, 3/4 BINORMAL, 5 TEX0 .. 12 TEX7
+    uint8_t projection = 0;  // 0 = ST (2x4), 1 = STQ (3x4, perspective divide by q)
+    uint8_t inputForm = 0;   // 0 = (a,b,1,1), 1 = (a,b,c,1)
+    uint8_t mtxSlot = 0xFF;  // texture-matrix slot 0..9, or 0xFF for GX_IDENTITY
+};
+
 struct SbrXfState {
     SbrLight light[8];
     SbrChanCtrl chan[4];        // colour0, colour1, alpha0, alpha1
     float ambient[2][4]{};
     float material[2][4]{};
     uint32_t numChans = 1;
+    SbrTexGen texGen[8];
+    // The ten GX texture matrices, row-major 3x4 as XF memory holds them.
+    float texMtx[10][12]{};
+    // Which of those slots the game has actually written. GX also loads texture matrices by INDEX
+    // (from the array GXSetArray names), a path this parser does not follow — so a texgen can
+    // select a slot that is still all zeroes, which would collapse every coordinate to a single
+    // texel. That is a decode gap and has to announce itself rather than draw a plausible-looking
+    // wrong surface.
+    uint32_t texMtxWritten = 0;
 };
 
 const SbrXfState& sbr_gx_fifo_xf();
@@ -114,7 +152,7 @@ bool sbr_render_init(int w, int h);
 void sbr_render_begin(float r, float g, float b, float a);
 // Submit triangles under a given depth state. Consecutive submissions sharing a state are merged
 // into one draw; a change of state starts a new one.
-void sbr_render_tris(const SbrVertex* verts, int count, SbrDepthState depth, SbrTexture tex,
+void sbr_render_tris(const SbrVertex* verts, int count, SbrDepthState depth, const SbrTexture tex[4],
                      const SbrTevState& tev);
 
 // How many distinct textures the renderer has decoded and uploaded.

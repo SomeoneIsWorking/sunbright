@@ -536,6 +536,35 @@ size_t parse(const u8* p, size_t n, int depth) {
                         c.attnSpot     = (v >> 10) & 1;
                     } else if (a == 0x1009) {
                         g_xf.numChans = v & 3;
+                    } else if (a >= 0x0078 && a < 0x00F0) {
+                        // XF matrix memory is addressed in ROWS of four floats, so texture matrix
+                        // n occupies 12 consecutive words starting at 0x78 + n*12. GXLoadTexMtxImm
+                        // writes them here directly, which is how J3D's animated texture SRTs and
+                        // its environment-map matrices reach the hardware.
+                        const unsigned slot = (a - 0x0078) / 12;
+                        const unsigned off  = (a - 0x0078) % 12;
+                        float f; __builtin_memcpy(&f, &v, 4);
+                        if (slot < 10) {
+                            g_xf.texMtx[slot][off] = f;
+                            g_xf.texMtxWritten |= 1u << slot;
+                        }
+                    } else if (a == 0x1018 || a == 0x1019) {
+                        // MatrixIndexA/B: which matrix each texgen uses, six bits each, in GX
+                        // matrix-id units (30..57 are the ten texture matrices, 60 is identity).
+                        const unsigned base = (a == 0x1018) ? 0u : 4u;
+                        const unsigned n    = (a == 0x1018) ? 4u : 4u;
+                        for (unsigned t = 0; t < n; ++t) {
+                            const unsigned bit = (a == 0x1018) ? (6 + t * 6) : (t * 6);
+                            const unsigned id  = (v >> bit) & 0x3F;
+                            g_xf.texGen[base + t].mtxSlot =
+                                (id >= 30 && id <= 57) ? (uint8_t)((id - 30) / 3) : (uint8_t)0xFF;
+                        }
+                    } else if (a >= 0x1040 && a <= 0x1047) {
+                        SbrTexGen& tg = g_xf.texGen[a - 0x1040];
+                        tg.projection = (v >> 1) & 1;
+                        tg.inputForm  = (v >> 2) & 3;
+                        tg.type       = (v >> 4) & 7;
+                        tg.sourceRow  = (v >> 7) & 0x1F;
                     }
                 }
             }
@@ -609,6 +638,15 @@ size_t parse(const u8* p, size_t n, int depth) {
                     dst[idx][2] = s10(val & 0x7FF);          // B
                     dst[idx][1] = s10((val >> 12) & 0x7FF);  // G
                 }
+            } else if (reg == 0xF3) {
+                // TEV_ALPHAFUNC: ref0 bits 0..7, ref1 bits 8..15, comp0 bits 16..18,
+                // comp1 bits 19..21, logic bits 22..23. The two comparisons are combined by the
+                // logic op, which is how GX expresses a band as well as a simple cutout.
+                g_tev.alphaRef0  = (uint8_t)(val & 0xFF);
+                g_tev.alphaRef1  = (uint8_t)((val >> 8) & 0xFF);
+                g_tev.alphaOp0   = (uint8_t)((val >> 16) & 7);
+                g_tev.alphaOp1   = (uint8_t)((val >> 19) & 7);
+                g_tev.alphaLogic = (uint8_t)((val >> 22) & 3);
             } else if (reg >= 0xF6 && reg <= 0xFD) {
                 const unsigned s0 = (unsigned)(reg - 0xF6) * 2;
                 g_tev.stage[s0].kC     = (val >> 4) & 0x1F;
@@ -627,6 +665,16 @@ size_t parse(const u8* p, size_t n, int depth) {
             // height-1 bits 10..19, format bits 20..23.
             // TX_SETIMAGE3 (0x94+i / 0xB4+i): image base address in 32-byte units.
             // TX_SETTLUT   (0x98+i / 0xB8+i): TLUT base in 32-byte units, bits 0..9 of the entry.
+            // TX_SETMODE0 (0x80+i / 0xA0+i): wrap S bits 0..1, wrap T bits 2..3, mag filter bit 4,
+            // min filter bits 5..7. The min filter's value encodes the mip mode as well; only
+            // whether it is LINEAR matters here, since this path uploads a single level.
+            if ((reg >= 0x80 && reg <= 0x83) || (reg >= 0xA0 && reg <= 0xA3)) {
+                SbrTexture& t = g_fifoTex[(reg >= 0xA0) ? (4 + reg - 0xA0) : (reg - 0x80)];
+                t.wrapS     = (uint8_t)(val & 3);
+                t.wrapT     = (uint8_t)((val >> 2) & 3);
+                t.magLinear = (uint8_t)((val >> 4) & 1);
+                t.minLinear = (uint8_t)(((val >> 5) & 7) != 0);
+            }
             if (reg >= 0x88 && reg <= 0x8B) {
                 SbrTexture& t = g_fifoTex[reg - 0x88];
                 t.width  = (val & 0x3FF) + 1;

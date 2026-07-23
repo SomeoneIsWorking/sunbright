@@ -36,7 +36,9 @@ struct SbrDrawable {
                          // frame mixes perspective (the world) and ortho (HUD, message box), and
                          // projecting a 2D element with the 3D matrix makes it cover the screen.
     uint8_t  is2d;       // that projection was an ortho
-    SbrTexture tex;      // TEXMAP0 as bound when this shape was drawn
+    SbrTexture tex[4];   // TEXMAP0..3 as bound when this shape was drawn. A TEV stage names its own
+                         // texmap, and 72% of the plaza's drawables name one above 0 — binding only
+                         // TEXMAP0 gave every one of those stages the wrong image.
     SbrTevState tev;     // the material's TEV configuration at that moment
     SbrXfState  xf;      // colour-channel control and lights at that moment
 };
@@ -48,7 +50,7 @@ struct SbrGeomVert {
     float x, y, z;
     float nx, ny, nz;  // model-space normal, for the lit colour channel
     uint32_t slot;
-    float u, v;        // TEX0
+    float uv[4][2];    // RAW coordinate sets TEX0..TEX3, before texgen
     uint32_t rgba;     // CLR0
 };
 

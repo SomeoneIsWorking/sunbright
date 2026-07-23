@@ -68,12 +68,16 @@ struct TevUniform {
     float   konst[16][4];
     float   regInit[4][4];
     int32_t control[4];
+    float   alphaRef[4];
 };
 
 struct Batch {
     SbrDepthState st;
     uint32_t first, count;
-    uint64_t texKey;       // 0 = untextured (a 1x1 white texel is bound so one shader serves both)
+    // One entry per GX texture unit. 0 = untextured (a 1x1 white texel is bound so one shader
+    // serves both cases and no branch is needed in the TEV loop).
+    uint64_t texKey[4];
+    uint32_t sampKey[4];   // wrap/filter modes: part of the material, not of the texture data
     TevUniform tev;
 };
 
@@ -85,7 +89,46 @@ struct Tex {
 };
 std::unordered_map<uint64_t, Tex> g_texs;
 std::unordered_map<uint64_t, SbrTexture> g_pendingTex;   // descriptions seen this frame
-SDL_GPUSampler* g_sampler = nullptr;
+SDL_GPUSampler* g_sampler = nullptr;                     // REPEAT/LINEAR, the fallback
+// One sampler per distinct wrap/filter combination. Wrap mode is a property of the MATERIAL, not of
+// the texture data — the same image is legitimately bound clamped by one material and repeated by
+// another — so it keys the batch rather than the texture cache.
+std::unordered_map<uint32_t, SDL_GPUSampler*> g_samplers;
+
+uint32_t sampler_key(const SbrTexture& t) {
+    return (uint32_t)(t.wrapS & 3) | (uint32_t)(t.wrapT & 3) << 2 |
+           (uint32_t)(t.magLinear ? 1u : 0u) << 4 | (uint32_t)(t.minLinear ? 1u : 0u) << 5;
+}
+
+SDL_GPUSamplerAddressMode gx_wrap(uint32_t m) {
+    switch (m & 3) {
+    case 0:  return SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;   // GX_CLAMP
+    case 2:  return SDL_GPU_SAMPLERADDRESSMODE_MIRRORED_REPEAT; // GX_MIRROR
+    default: return SDL_GPU_SAMPLERADDRESSMODE_REPEAT;          // GX_REPEAT (3 is undefined; GX
+                                                                // treats it as repeat)
+    }
+}
+
+SDL_GPUSampler* sampler_for(uint32_t key) {
+    if (const auto it = g_samplers.find(key); it != g_samplers.end()) return it->second;
+    SDL_GPUSamplerCreateInfo sci{};
+    sci.min_filter = (key & (1u << 5)) ? SDL_GPU_FILTER_LINEAR : SDL_GPU_FILTER_NEAREST;
+    sci.mag_filter = (key & (1u << 4)) ? SDL_GPU_FILTER_LINEAR : SDL_GPU_FILTER_NEAREST;
+    sci.mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_LINEAR;
+    sci.address_mode_u = gx_wrap(key & 3);
+    sci.address_mode_v = gx_wrap((key >> 2) & 3);
+    sci.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
+    SDL_GPUSampler* s = SDL_CreateGPUSampler(g_dev, &sci);
+    if (s == nullptr) {
+        // Falling back silently would sample every material with the wrong wrap and read as a UV
+        // bug, so say which combination failed (CLAUDE.md: no silent success-shaped stubs).
+        lucent::error("nrender", "sampler create failed for wrapS={} wrapT={} mag={} min={}: {}",
+                      key & 3, (key >> 2) & 3, (key >> 4) & 1, (key >> 5) & 1, SDL_GetError());
+        s = g_sampler;
+    }
+    g_samplers.emplace(key, s);
+    return s;
+}
 
 size_t g_texBytes = 0;
 std::unordered_map<uint32_t, int> g_fmtHist;
@@ -334,11 +377,44 @@ void pack_tev(const SbrTevState& tev, TevUniform& u) {
         u.cOp[i][0] = st.cBias; u.cOp[i][1] = st.cSub; u.cOp[i][2] = st.cClamp; u.cOp[i][3] = st.cScale;
         u.aSel[i][0] = st.aA; u.aSel[i][1] = st.aB; u.aSel[i][2] = st.aC; u.aSel[i][3] = st.aD;
         u.aOp[i][0] = st.aBias; u.aOp[i][1] = st.aSub; u.aOp[i][2] = st.aClamp; u.aOp[i][3] = st.aScale;
-        u.dest[i][0] = st.cDest; u.dest[i][1] = st.aDest; u.dest[i][2] = st.texEnable; u.dest[i][3] = 0;
+        u.dest[i][0] = st.cDest; u.dest[i][1] = st.aDest; u.dest[i][2] = st.texEnable;
+        // Which unit this stage samples and which generated coordinate it samples with — two
+        // independent selectors from RAS1_TREF, not one.
+        // KNOWN GAP — every stage is pinned to texture unit 0 by default, which is WRONG: stages
+        // name units 1-3 too (measured: 540/764/196 enabled stages name units 1/2/3). Routing them
+        // to the named unit is implemented and opt-in via SBR_TEXMAP_NAMED=1, but it currently
+        // renders WORSE, and the bisect says why it is not a shader bug:
+        //
+        //   config          edgeIoU@8   lumaCorr@8
+        //   pinned          25.1%       +0.535
+        //   named units     16.9%       +0.335
+        //
+        // The units above 0 are STALE, not wrong-in-the-shader: across one tick unit 0 carries 95
+        // distinct texture addresses while units 1/2/3 carry only 34/11/9, far too few for the
+        // number of stages naming them. So the per-material binding for those units is not being
+        // observed at the point the drawable is captured. Pinning is not a fix and is not treated
+        // as one — it is the better-scoring of two known-wrong behaviours while the binding desync
+        // is tracked down. Do not delete the named path; it is the correct mechanism.
+        static const bool named = [] {
+            const char* e = std::getenv("SBR_TEXMAP_NAMED");
+            return e != nullptr && e[0] != '\0' && e[0] != '0';
+        }();
+        u.dest[i][3] = (named ? (int32_t)(st.texmap & 3) : 0) | (int32_t)(st.texcoord & 3) << 8;
         pack_konst(tev, (unsigned)i, u.konst[i]);
     }
     for (int r = 0; r < 4; ++r)
         for (int c = 0; c < 4; ++c) u.regInit[r][c] = tev.reg[r][c];
+    // SBR_ALPHATEST=0 forces both comparisons to ALWAYS — the measurement switch for the cutout
+    // path, so a landed feature has a before/after number rather than an argument.
+    static const bool alphaTest = [] {
+        const char* e = std::getenv("SBR_ALPHATEST");
+        return !(e != nullptr && e[0] == '0');
+    }();
+    u.control[1] = alphaTest ? tev.alphaOp0 : 7;
+    u.control[2] = alphaTest ? tev.alphaOp1 : 7;
+    u.control[3] = tev.alphaLogic;
+    u.alphaRef[0] = (float)tev.alphaRef0;
+    u.alphaRef[1] = (float)tev.alphaRef1;
 }
 
 SDL_GPUGraphicsPipeline* pipeline_for(SbrDepthState d) {
@@ -349,13 +425,17 @@ SDL_GPUGraphicsPipeline* pipeline_for(SbrDepthState d) {
     vbd.slot = 0;
     vbd.pitch = sizeof(SbrVertex);
     vbd.input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
-    SDL_GPUVertexAttribute va[3]{};
+    // Position, colour, then the four generated coordinates as two vec4s (uv0|uv1, uv2|uv3) —
+    // packing them in pairs keeps the attribute count down without changing what the shader reads.
+    SDL_GPUVertexAttribute va[4]{};
     va[0].location = 0; va[0].buffer_slot = 0;
     va[0].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4; va[0].offset = 0;
     va[1].location = 1; va[1].buffer_slot = 0;
     va[1].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4; va[1].offset = 16;
     va[2].location = 2; va[2].buffer_slot = 0;
-    va[2].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2; va[2].offset = 32;
+    va[2].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4; va[2].offset = 32;
+    va[3].location = 3; va[3].buffer_slot = 0;
+    va[3].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4; va[3].offset = 48;
 
     SDL_GPUColorTargetDescription ctd{};
     ctd.format = kColorFmt;
@@ -378,7 +458,7 @@ SDL_GPUGraphicsPipeline* pipeline_for(SbrDepthState d) {
     pci.vertex_input_state.vertex_buffer_descriptions = &vbd;
     pci.vertex_input_state.num_vertex_buffers = 1;
     pci.vertex_input_state.vertex_attributes = va;
-    pci.vertex_input_state.num_vertex_attributes = 3;
+    pci.vertex_input_state.num_vertex_attributes = 4;
     // SBR_RENDER_WIREFRAME=1 draws edges instead of filled triangles. A few large planes can
     // occlude an entire correct scene behind them, which is indistinguishable from "the scene is
     // missing" in a filled render — wireframe separates those two cases, so it is a diagnostic
@@ -461,7 +541,7 @@ bool sbr_render_init(int w, int h) {
     // itself is not optional, because without it the last drawable submitted paints over the whole
     // scene (measured: a uniform 100%-coverage fill of one object's colour).
     g_vs = make_shader(kGeomVertSpv, sizeof(kGeomVertSpv), SDL_GPU_SHADERSTAGE_VERTEX, 0, 0);
-    g_fs = make_shader(kGeomFragSpv, sizeof(kGeomFragSpv), SDL_GPU_SHADERSTAGE_FRAGMENT, 1, 1);
+    g_fs = make_shader(kGeomFragSpv, sizeof(kGeomFragSpv), SDL_GPU_SHADERSTAGE_FRAGMENT, 4, 1);
     if (g_vs == nullptr || g_fs == nullptr) {
         lucent::error("nrender", "shader create failed: {}", SDL_GetError());
         return false;
@@ -470,13 +550,17 @@ bool sbr_render_init(int w, int h) {
     vbd.slot = 0;
     vbd.pitch = sizeof(SbrVertex);
     vbd.input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
-    SDL_GPUVertexAttribute va[3]{};
+    // Position, colour, then the four generated coordinates as two vec4s (uv0|uv1, uv2|uv3) —
+    // packing them in pairs keeps the attribute count down without changing what the shader reads.
+    SDL_GPUVertexAttribute va[4]{};
     va[0].location = 0; va[0].buffer_slot = 0;
     va[0].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4; va[0].offset = 0;
     va[1].location = 1; va[1].buffer_slot = 0;
     va[1].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4; va[1].offset = 16;
     va[2].location = 2; va[2].buffer_slot = 0;
-    va[2].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2; va[2].offset = 32;
+    va[2].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4; va[2].offset = 32;
+    va[3].location = 3; va[3].buffer_slot = 0;
+    va[3].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4; va[3].offset = 48;
 
     // Pipelines are created ON DEMAND per depth state (pipeline_for), not once here: GX varies
     // depth state per material and the backend cannot change it dynamically.
@@ -519,7 +603,7 @@ void sbr_render_begin(float r, float g, float b, float a) {
     g_batches.clear();
 }
 
-void sbr_render_tris(const SbrVertex* verts, int count, SbrDepthState depth, SbrTexture tex,
+void sbr_render_tris(const SbrVertex* verts, int count, SbrDepthState depth, const SbrTexture tex[4],
                      const SbrTevState& tevState) {
     if (!g_ok || verts == nullptr || count < 3) return;
     count -= count % 3;
@@ -527,20 +611,25 @@ void sbr_render_tris(const SbrVertex* verts, int count, SbrDepthState depth, Sbr
     // Merge into the previous run when the state is unchanged, so honouring per-material depth
     // costs draws only where the state actually changes.
     const uint32_t first = (uint32_t)(g_verts.size() - (size_t)count);
-    const uint64_t tk = tex_key(tex);
-    TevUniform tu{};
-    pack_tev(tevState, tu);
+    Batch b{depth, first, (uint32_t)count, {}, {}, {}};
+    for (int m = 0; m < 4; ++m) {
+        b.texKey[m]  = tex_key(tex[m]);
+        b.sampKey[m] = sampler_key(tex[m]);
+    }
+    pack_tev(tevState, b.tev);
     // TEV state is part of a batch's identity: two draws sharing a texture and depth state but
     // different combiners are different materials and must not merge.
-    const bool sameTev = !g_batches.empty() &&
-                         std::memcmp(&g_batches.back().tev, &tu, sizeof tu) == 0;
-    if (!g_batches.empty() && depth_key(g_batches.back().st) == depth_key(depth) &&
-        g_batches.back().texKey == tk && sameTev &&
-        g_batches.back().first + g_batches.back().count == first) {
+    const bool same = !g_batches.empty() &&
+                      depth_key(g_batches.back().st) == depth_key(depth) &&
+                      std::memcmp(g_batches.back().texKey, b.texKey, sizeof b.texKey) == 0 &&
+                      std::memcmp(g_batches.back().sampKey, b.sampKey, sizeof b.sampKey) == 0 &&
+                      std::memcmp(&g_batches.back().tev, &b.tev, sizeof b.tev) == 0 &&
+                      g_batches.back().first + g_batches.back().count == first;
+    if (same) {
         g_batches.back().count += (uint32_t)count;
     } else {
-        g_batches.push_back(Batch{depth, first, (uint32_t)count, tk, tu});
-        g_pendingTex[tk] = tex;
+        g_batches.push_back(b);
+        for (int m = 0; m < 4; ++m) g_pendingTex[b.texKey[m]] = tex[m];
     }
 }
 
@@ -558,7 +647,12 @@ void sbr_render_end() {
     // while another command buffer is open (let alone inside a render pass) is what cost a
     // VK_ERROR_DEVICE_LOST. Uploads are one-time per texture, so this is not a per-frame cost.
     if (textures_enabled())
-        for (const Batch& b : g_batches) texture_for(b.texKey, g_pendingTex[b.texKey]);
+        for (const Batch& b : g_batches)
+            for (int m = 0; m < 4; ++m) texture_for(b.texKey[m], g_pendingTex[b.texKey[m]]);
+    // Samplers too: creating one is not a command-buffer operation, but keeping every resource
+    // creation outside the frame's command buffer is the rule that stopped the device losses.
+    for (const Batch& b : g_batches)
+        for (int m = 0; m < 4; ++m) sampler_for(b.sampKey[m]);
 
     SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(g_dev);
     if (cmd == nullptr) {
@@ -600,11 +694,17 @@ void sbr_render_end() {
         SDL_BindGPUVertexBuffers(rp, 0, &vb, 1);
         for (const Batch& b : g_batches) {
             SDL_BindGPUGraphicsPipeline(rp, pipeline_for(b.st));
-            SDL_GPUTextureSamplerBinding tsb{};
-            const auto texIt = g_texs.find(b.texKey);
-            tsb.texture = (texIt != g_texs.end()) ? texIt->second.tex : g_white;
-            tsb.sampler = g_sampler;
-            SDL_BindGPUFragmentSamplers(rp, 0, &tsb, 1);
+            // All four units every draw: the shader's sampler set is fixed by the pipeline
+            // layout, so a unit a material does not use is bound to the white texel rather than
+            // left dangling (an unbound descriptor is what takes the device down).
+            SDL_GPUTextureSamplerBinding tsb[4]{};
+            for (int m = 0; m < 4; ++m) {
+                const auto texIt = g_texs.find(b.texKey[m]);
+                tsb[m].texture = (texIt != g_texs.end()) ? texIt->second.tex : g_white;
+                const auto sampIt = g_samplers.find(b.sampKey[m]);
+                tsb[m].sampler = (sampIt != g_samplers.end()) ? sampIt->second : g_sampler;
+            }
+            SDL_BindGPUFragmentSamplers(rp, 0, tsb, 4);
             SDL_PushGPUFragmentUniformData(cmd, 0, &b.tev, sizeof b.tev);
             SDL_DrawGPUPrimitives(rp, b.count, 1, b.first, 0);
         }

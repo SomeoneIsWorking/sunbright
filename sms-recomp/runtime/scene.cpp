@@ -68,6 +68,15 @@ const bool g_depthViz = [] {
     return e != nullptr && e[0] != '\0' && e[0] != '0';
 }();
 
+// SBR_TEXGEN=0 — feed every stage the raw TEX0 coordinate instead of running the texgen. A
+// DIAGNOSTIC, not a fallback: texgen and multi-texmap landed together and the pair scored WORSE
+// than neither, so each half needs to be measurable on its own. Whichever one is at fault gets
+// fixed; this switch is how the question is asked, not how it is answered.
+const bool g_texgenOn = [] {
+    const char* e = std::getenv("SBR_TEXGEN");
+    return !(e != nullptr && e[0] == '0');
+}();
+
 // GX colour channel: the RASTERISED colour a TEV stage reads as RASC/RASA. Without this the
 // channel defaults to white, and every material that modulates by it blows out — which is exactly
 // what characters did once TEV landed (the environment uses baked CLR0 and was unaffected).
@@ -120,6 +129,99 @@ void light_channel(const SbrXfState& xf, int chan, const float vpos[3], const fl
     }
     for (int i = 0; i < 3; ++i) out[i] = std::clamp(mat[i] * acc[i], 0.0f, 1.0f);
     out[3] = mat[3];
+}
+
+// GX TEXTURE COORDINATE GENERATION. The hardware never hands a stored coordinate straight to the
+// sampler: each texgen picks a SOURCE row (a stored coordinate set, but equally the vertex's
+// position or normal — that is how environment mapping is expressed) and multiplies it by one of
+// the ten texture matrices. Using the raw TEX0 for every stage is only correct for the identity
+// case; a scrolling or animated SRT lives entirely in that matrix.
+//
+// The source is the RAW, model-space vertex, which is what the XF sees: the position matrix is
+// applied on the other path, and a texgen that wanted view space gets it because the game folds
+// the view transform into the texture matrix itself.
+void texgen(const SbrXfState& xf, unsigned g, const SbrGeomVert& v, const float vtxColor[4],
+            float out[2]) {
+    const SbrTexGen& tg = xf.texGen[g];
+
+    // The texgen TYPE is decided before the source row. The two colour types do not go through a
+    // texture matrix at all: the hardware emits the colour channel's red and green as the
+    // coordinate directly, which is how a material looks up a ramp with its own lit colour.
+    if (tg.type == 2 || tg.type == 3) {
+        if (tg.type == 3) {
+            // Channel 1 is not evaluated by this port yet, so a COLOR1 texgen would silently
+            // sample with channel 0's colour and look like a shading bug.
+            static bool warned = false;
+            if (!warned) {
+                warned = true;
+                lucent::error("nrender", "texgen {} sources COLOR1, but only colour channel 0 is "
+                                         "evaluated — its coordinate is channel 0's", g);
+            }
+        }
+        out[0] = vtxColor[0];
+        out[1] = vtxColor[1];
+        return;
+    }
+    if (tg.type == 1) {
+        // EMBOSS needs the binormal/tangent pair and a light, none of which this path decodes.
+        static bool warned = false;
+        if (!warned) {
+            warned = true;
+            lucent::error("nrender", "texgen {} is EMBOSS (bump mapping) — not implemented; its "
+                                     "coordinate is the un-offset source", g);
+        }
+    }
+
+    float in[4] = {0, 0, 1, 1};
+    switch (tg.sourceRow) {
+    case 0: in[0] = v.x;  in[1] = v.y;  in[2] = v.z;  break;   // GEOM
+    case 1: in[0] = v.nx; in[1] = v.ny; in[2] = v.nz; break;   // NORMAL
+    case 2: in[0] = vtxColor[0]; in[1] = vtxColor[1]; break;   // COLORS
+    default:
+        // TEX0..TEX7 are rows 5..12. Sets beyond what the decoder reads keep (0,0), which the
+        // decoder has already reported by name rather than silently substituting set 0.
+        if (tg.sourceRow >= 5 && tg.sourceRow - 5 < 4) {
+            in[0] = v.uv[tg.sourceRow - 5][0];
+            in[1] = v.uv[tg.sourceRow - 5][1];
+        }
+        break;
+    }
+    // inputForm 0 is (a, b, 1, 1); 1 is (a, b, c, 1). Only the source rows that carry a third
+    // component can distinguish them, and they set in[2] above.
+    if (tg.inputForm == 0) in[2] = 1.0f;
+
+    if (tg.mtxSlot >= 10) {   // GX_IDENTITY
+        out[0] = in[0];
+        out[1] = in[1];
+        return;
+    }
+    if (!((xf.texMtxWritten >> tg.mtxSlot) & 1)) {
+        // The slot was never written by a direct XF load, so its contents are zero, not identity.
+        // Multiplying by it would map the whole surface to one texel — report the gap and pass the
+        // source through, which is at least the coordinate the mesh stored.
+        static bool warned = false;
+        if (!warned) {
+            warned = true;
+            lucent::error("nrender", "texgen {} selects texture matrix {}, which no direct XF load "
+                                     "has written (GX also loads these by index — that path is not "
+                                     "parsed); using the raw coordinate", g, tg.mtxSlot);
+        }
+        out[0] = in[0];
+        out[1] = in[1];
+        return;
+    }
+    const float* M = xf.texMtx[tg.mtxSlot];
+    const float s = M[0] * in[0] + M[1] * in[1] + M[2]  * in[2] + M[3]  * in[3];
+    const float t = M[4] * in[0] + M[5] * in[1] + M[6]  * in[2] + M[7]  * in[3];
+    if (tg.projection == 1) {   // STQ: the third row is a perspective divide
+        const float q = M[8] * in[0] + M[9] * in[1] + M[10] * in[2] + M[11] * in[3];
+        const float inv = (q > 1e-6f || q < -1e-6f) ? 1.0f / q : 0.0f;
+        out[0] = s * inv;
+        out[1] = t * inv;
+    } else {
+        out[0] = s;
+        out[1] = t;
+    }
 }
 
 void lerp_mtx(float out[12], const float a[12], const float b[12], float t) {
@@ -249,9 +351,69 @@ void sbr_scene_report_zmodes() {
     // sampled at the wrong time (the FIFO is parsed once per frame, so reading it during the draws
     // returns last frame's final state for every shape) rather than per material.
     std::unordered_map<uint32_t, int> thist;
-    for (const auto& d : g_cur.items) ++thist[d.tex.addr];
+    for (const auto& d : g_cur.items) ++thist[d.tex[0].addr];
     lucent::info("nrender", "  {} distinct textures across {} drawables this tick",
                  thist.size(), g_cur.items.size());
+
+    // TEXTURE-UNIT USAGE. Every stage currently samples TEXMAP0 with the single TEX0 coordinate
+    // set, because that is all the vertex carries. Supporting all eight would cost 16 more floats
+    // per vertex and a decode pass per set, so MEASURE how much of the scene needs it before
+    // paying for it: how many drawables reference a texmap or texcoord above 0, and how many
+    // declare more than one texgen.
+    {
+        int multiMap = 0, multiCoord = 0, multiGen = 0, alphaTested = 0;
+        std::unordered_map<uint32_t, int> coordHist, genHist, srcHist, mapHist;
+        int unboundStages = 0;
+        for (const auto& d : g_cur.items) {
+            unsigned maxMap = 0, maxCoord = 0;
+            ++genHist[d.tev.numTexGens];
+            for (unsigned t = 0; t < std::min<uint32_t>(d.tev.numTexGens, 8); ++t)
+                ++srcHist[d.xf.texGen[t].sourceRow];
+            for (unsigned s = 0; s < std::min<uint32_t>(d.tev.numStages, 16); ++s) {
+                if (!d.tev.stage[s].texEnable) continue;
+                maxMap   = std::max<unsigned>(maxMap, d.tev.stage[s].texmap);
+                maxCoord = std::max<unsigned>(maxCoord, d.tev.stage[s].texcoord);
+                // Which UNIT each enabled stage names, and whether that unit has a texture bound.
+                // Binding four units scored WORSE than pinning every stage to unit 0, so the
+                // question is whether the units above 0 actually carry the image the stage wants.
+                ++mapHist[d.tev.stage[s].texmap];
+                if (d.tev.stage[s].texmap < 4 && d.tex[d.tev.stage[s].texmap].addr == 0)
+                    ++unboundStages;
+            }
+            if (maxMap > 0) ++multiMap;
+            if (maxCoord > 0) ++multiCoord;
+            if (d.tev.numTexGens > 1) ++multiGen;
+            // The alpha test is only doing work where it is not ALWAYS with both comparisons.
+            if (d.tev.alphaOp0 != 7 || d.tev.alphaOp1 != 7) ++alphaTested;
+            ++coordHist[maxCoord];
+        }
+        // How FAR the scene goes decides the vertex layout: carrying eight coordinate sets costs
+        // 56 bytes a vertex, and carrying two costs 8. Measure rather than provision for GX's
+        // maximum. The texgen SOURCE histogram matters just as much — a source of GEOM or NORMAL
+        // means the coordinate is computed from the vertex, not read from the mesh at all.
+        for (const auto& [k, n] : coordHist)
+            lucent::info("nrender", "    max texcoord index {} -> {} drawables", k, n);
+        for (const auto& [k, n] : genHist)
+            lucent::info("nrender", "    numTexGens {} -> {} drawables", k, n);
+        for (const auto& [k, n] : srcHist)
+            lucent::info("nrender", "    texgen source row {} -> {} texgens", k, n);
+        for (const auto& [k, n] : mapHist)
+            lucent::info("nrender", "    stage names texmap {} -> {} enabled stages", k, n);
+        lucent::info("nrender", "    {} enabled stages name a unit with NO texture bound", unboundStages);
+        // How many DISTINCT images each unit carries across the tick. Unit 0 varies per material
+        // (83 distinct textures measured). If units 1-3 show only a handful, they are STALE —
+        // holding whatever the last material to bind them left there — and a stage that names one
+        // samples another material's texture. That is the difference between "bound" and "correct",
+        // and it is the only thing separating the two bisect configurations.
+        for (unsigned m = 0; m < 4; ++m) {
+            std::unordered_map<uint32_t, int> uh;
+            for (const auto& d : g_cur.items) ++uh[d.tex[m].addr];
+            lucent::info("nrender", "    unit {}: {} distinct texture addresses", m, uh.size());
+        }
+        lucent::info("nrender", "  texture units: {} drawables reference texmap>0, {} texcoord>0, "
+                                "{} declare >1 texgen; {} use the alpha test (of {})",
+                     multiMap, multiCoord, multiGen, alphaTested, g_cur.items.size());
+    }
 
     // Blend state too: an unexpected factor pair washes the frame toward the clear colour just as
     // convincingly as a bad alpha, and the two are indistinguishable in the output.
@@ -439,7 +601,7 @@ float sbr_scene_render(double now_seconds, const float proj[16]) {
                 const float dz = (o.w > 1e-4f) ? std::clamp(o.z / o.w, 0.0f, 1.0f) : 1.0f;
                 o.r = o.g = o.b = dz;
                 o.a = 1.0f;
-            } else if (d.tex.addr != 0) {
+            } else if (d.tex[0].addr != 0) {
                 o.r = vr; o.g = vg; o.b = vb; o.a = va;
                 ++g_alphaTotal;
                 if (va < 0.5f) ++g_alphaLow;
@@ -448,8 +610,19 @@ float sbr_scene_render(double now_seconds, const float proj[16]) {
             } else {
                 o.r = cr * vr; o.g = cg * vg; o.b = cb * vb; o.a = va;
             }
-            o.u = v.u;
-            o.v = v.v;
+            // One final coordinate per texgen. Texgens the material does not declare keep zero
+            // rather than the raw set, so an out-of-range texcoord selector shows as a corner
+            // sample instead of quietly looking plausible.
+            for (unsigned tg = 0; tg < 4; ++tg) {
+                if (!g_texgenOn) {
+                    o.uv[tg][0] = v.uv[0][0];
+                    o.uv[tg][1] = v.uv[0][1];
+                } else if (tg < d.tev.numTexGens) {
+                    texgen(d.xf, tg, v, vc, o.uv[tg]);
+                } else {
+                    o.uv[tg][0] = o.uv[tg][1] = 0.0f;
+                }
+            }
             g_out.push_back(o);
 
             if (o.w > 1e-4f) {

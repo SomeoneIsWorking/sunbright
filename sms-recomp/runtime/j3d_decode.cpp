@@ -173,11 +173,32 @@ bool j3d_decode_element(u32 shape, uint32_t element, const J3DVertexLayout& L,
     const u32 clrBase = (L.type[GXA_CLR0] != GXAT_NONE) ? sb_r32(SB_J3DSYS + J3DSYS_CLR_ARRAY) : 0;
     const uint32_t clrStride = colour_size(L.comp[GXA_CLR0]);
     const u32 vtxData = sb_r32(shape + SHAPE_VERTEX_DATA_OFF);
-    const u32 texBase = (L.type[GXA_TEX0] != GXAT_NONE && ok(vtxData))
-                            ? sb_r32(vtxData + VERTEXDATA_TEXCOORD0) : 0;
-    // J3D's baked stride for a 2-component texcoord: 8 bytes if F32, else 4 (two s16).
-    const uint32_t texStride = (L.comp[GXA_TEX0] == 4) ? 8u : 4u;
-    const float texScale = 1.0f / (float)(1u << L.frac[GXA_TEX0]);
+    // J3DVertexData::mVtxTexCoordArray[8] at +0x24 — one base per coordinate set, each with its
+    // own format and fractional shift. 72% of the plaza's drawables reference more than one, so
+    // reading only TEX0 gave every extra stage the first set's coordinates.
+    u32      texBase[J3D_TEXCOORD_SETS]{};
+    uint32_t texStride[J3D_TEXCOORD_SETS]{};
+    float    texScale[J3D_TEXCOORD_SETS]{};
+    for (uint32_t s = 0; s < J3D_TEXCOORD_SETS; ++s) {
+        const uint32_t attr = GXA_TEX0 + s;
+        texBase[s] = (L.type[attr] != GXAT_NONE && ok(vtxData))
+                         ? sb_r32(vtxData + VERTEXDATA_TEXCOORD0 + s * 4) : 0;
+        // J3D's baked stride for a 2-component texcoord: 8 bytes if F32, else 4 (two s16).
+        texStride[s] = (L.comp[attr] == 4) ? 8u : 4u;
+        texScale[s]  = 1.0f / (float)(1u << L.frac[attr]);
+    }
+    // A set beyond what this decoder reads would silently sample set 0 instead, which looks like a
+    // UV bug rather than a missing decode — so say so once (CLAUDE.md: no silent stubs).
+    for (uint32_t s = J3D_TEXCOORD_SETS; s < 8; ++s) {
+        if (L.type[GXA_TEX0 + s] == GXAT_NONE) continue;
+        static bool warned = false;
+        if (!warned) {
+            warned = true;
+            lucent::error("j3d", "shape 0x{:08x} declares TEX{} — this decoder reads {} coordinate "
+                                 "sets, so that set is NOT available to its texgen",
+                          shape, s, J3D_TEXCOORD_SETS);
+        }
+    }
 
     // Normals share the position array's convention: J3D bakes a 12-byte stride for F32 and 6 for
     // S16 (three components), with the format's fractional shift applied.
@@ -221,17 +242,17 @@ bool j3d_decode_element(u32 shape, uint32_t element, const J3DVertexLayout& L,
         }
     };
 
-    auto read_tex = [&](uint32_t index, J3DVert& v) {
-        if (texBase == 0) return;
-        const u32 p = texBase + index * texStride;
-        if (!ok(p + texStride - 1)) return;
-        if (texStride == 8) {
+    auto read_tex = [&](uint32_t set, uint32_t index, J3DVert& v) {
+        if (set >= J3D_TEXCOORD_SETS || texBase[set] == 0) return;
+        const u32 p = texBase[set] + index * texStride[set];
+        if (!ok(p + texStride[set] - 1)) return;
+        if (texStride[set] == 8) {
             u32 b0 = sb_r32(p), b1 = sb_r32(p + 4);
-            __builtin_memcpy(&v.u, &b0, 4);
-            __builtin_memcpy(&v.v, &b1, 4);
+            __builtin_memcpy(&v.uv[set][0], &b0, 4);
+            __builtin_memcpy(&v.uv[set][1], &b1, 4);
         } else {
-            v.u = (float)(int16_t)sb_r16(p) * texScale;
-            v.v = (float)(int16_t)sb_r16(p + 2) * texScale;
+            v.uv[set][0] = (float)(int16_t)sb_r16(p) * texScale[set];
+            v.uv[set][1] = (float)(int16_t)sb_r16(p + 2) * texScale[set];
         }
     };
 
@@ -336,16 +357,21 @@ bool j3d_decode_element(u32 shape, uint32_t element, const J3DVertexLayout& L,
             else if (L.type[GXA_CLR0] == GXAT_INDEX8) read_clr(sb_r8(vp + L.offset[GXA_CLR0]), out_v);
             else if (L.type[GXA_CLR0] == GXAT_DIRECT) out_v.rgba = sb_r32(vp + L.offset[GXA_CLR0]);
 
-            if (L.type[GXA_TEX0] == GXAT_INDEX16)     read_tex(sb_r16(vp + L.offset[GXA_TEX0]), out_v);
-            else if (L.type[GXA_TEX0] == GXAT_INDEX8) read_tex(sb_r8(vp + L.offset[GXA_TEX0]), out_v);
-            else if (L.type[GXA_TEX0] == GXAT_DIRECT) {
-                if (L.comp[GXA_TEX0] == 4) {
-                    u32 b0 = sb_r32(vp + L.offset[GXA_TEX0]), b1 = sb_r32(vp + L.offset[GXA_TEX0] + 4);
-                    __builtin_memcpy(&out_v.u, &b0, 4);
-                    __builtin_memcpy(&out_v.v, &b1, 4);
-                } else {
-                    out_v.u = (float)(int16_t)sb_r16(vp + L.offset[GXA_TEX0]) * texScale;
-                    out_v.v = (float)(int16_t)sb_r16(vp + L.offset[GXA_TEX0] + 2) * texScale;
+            // Every declared coordinate set, each with its own index/direct payload in the vertex.
+            for (uint32_t s = 0; s < J3D_TEXCOORD_SETS; ++s) {
+                const uint32_t attr = GXA_TEX0 + s;
+                const u32 off = vp + L.offset[attr];
+                if (L.type[attr] == GXAT_INDEX16)     read_tex(s, sb_r16(off), out_v);
+                else if (L.type[attr] == GXAT_INDEX8) read_tex(s, sb_r8(off), out_v);
+                else if (L.type[attr] == GXAT_DIRECT) {
+                    if (L.comp[attr] == 4) {
+                        u32 b0 = sb_r32(off), b1 = sb_r32(off + 4);
+                        __builtin_memcpy(&out_v.uv[s][0], &b0, 4);
+                        __builtin_memcpy(&out_v.uv[s][1], &b1, 4);
+                    } else {
+                        out_v.uv[s][0] = (float)(int16_t)sb_r16(off) * texScale[s];
+                        out_v.uv[s][1] = (float)(int16_t)sb_r16(off + 2) * texScale[s];
+                    }
                 }
             }
             prim.push_back(out_v);

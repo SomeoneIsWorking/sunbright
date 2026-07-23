@@ -39,12 +39,22 @@ struct J3DVertexLayout {
     bool     valid = false;
 };
 
+// How many of GX's eight texture-coordinate ARRAYS this decoder reads. Measured on Delfino Plaza:
+// texgens source rows TEX0, TEX1 and TEX2 (734/245/57 texgens of 2413), and nothing above. Four is
+// one past what the scene uses, so a shape that declares TEX4+ is reported rather than silently
+// dropped — provisioning for GX's full eight would cost 32 bytes a vertex for coordinates no
+// material asks for.
+constexpr uint32_t J3D_TEXCOORD_SETS = 4;
+
 // One decoded triangle vertex, model space, with the matrix slot it selected.
 struct J3DVert {
     float x, y, z;
     uint32_t pnMtxSlot;   // PNMTXIDX/3 — which J3DShapeMtx slot this vertex uses
     float nx, ny, nz;     // NRM, model space — needed for the lit colour channel
-    float u, v;           // TEX0
+    // RAW texture coordinates, before texgen. The final coordinate a stage samples with is
+    // produced per frame by the texgen (source select + texture matrix), and those matrices
+    // animate — so the raw sets are what can be cached, not the results.
+    float uv[J3D_TEXCOORD_SETS][2];
     uint32_t rgba;        // CLR0, 0xRRGGBBAA; opaque white when the shape has no colour attribute
 };
 

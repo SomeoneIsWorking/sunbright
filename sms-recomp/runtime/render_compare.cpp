@@ -36,6 +36,10 @@ Frame g_native;
 uint8_t g_clear[3] = {0, 0, 0};
 long g_captures = 0;
 
+// Every scored frame that had geometry, so the report can be a distribution rather than a sample.
+struct Score { double iou, corr; };
+std::vector<Score> g_scored;
+
 // Point-sample onto the common grid. Nearest-neighbour is deliberate: averaging would blur exactly
 // the thin structures (railings, poles, window frames) the edge metric is there to compare.
 void to_grid_luma(const uint8_t* src, int sw, int sh, std::vector<float>& out) {
@@ -129,10 +133,26 @@ void on_aurora_frame(const uint8_t* rgba, uint32_t w, uint32_t h, void*) {
     }
 
     ++g_captures;
+    const double iou  = uni ? 100.0 * (double)inter / (double)uni : 0.0;
+    const double corr = pearson(ln, la);
     lucent::info("ab", "#{} native {}x{} vs aurora {}x{} | geom {:.1f}% | edgeIoU {:.1f}% | "
                        "lumaCorr {:+.3f}",
                  g_captures, g_native.w, g_native.h, w, h, 100.0 * (double)lit / (double)npx,
-                 uni ? 100.0 * (double)inter / (double)uni : 0.0, pearson(ln, la));
+                 iou, corr);
+
+    // RUNNING SUMMARY. A single frame's score is not comparable between runs: consecutive frames
+    // differ in animation phase, and the spread between them turned out to be as large as the
+    // changes being measured — so reading one number as progress is measuring noise. Accumulate
+    // from the first frame that has geometry (earlier ones are the loading screen and would drag
+    // every mean toward zero) and report the mean, the best, and the sample count.
+    if (lit > 0) {
+        g_scored.push_back({iou, corr});
+        double si = 0.0, sc = 0.0, bi = 0.0;
+        for (const auto& s : g_scored) { si += s.iou; sc += s.corr; bi = std::max(bi, s.iou); }
+        const double n = (double)g_scored.size();
+        lucent::info("ab", "    mean over {} scored frames: edgeIoU {:.1f}% (best {:.1f}%), "
+                           "lumaCorr {:+.3f}", g_scored.size(), si / n, bi, sc / n);
+    }
     g_native.valid = false;   // consume: never score the same native frame against two oracles
 }
 

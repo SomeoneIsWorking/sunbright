@@ -204,8 +204,14 @@ void ov_shape_draw(CPUState& cpu) {
                             g_st.tris += g_tri.size() / 3;
                             std::vector<SbrGeomVert> gv;
                             gv.reserve(g_tri.size());
-                            for (const J3DVert& v : g_tri)
-                                gv.push_back(SbrGeomVert{v.x, v.y, v.z, v.nx, v.ny, v.nz, v.pnMtxSlot, v.u, v.v, v.rgba});
+                            for (const J3DVert& v : g_tri) {
+                                SbrGeomVert g{v.x, v.y, v.z, v.nx, v.ny, v.nz, v.pnMtxSlot, {}, v.rgba};
+                                for (unsigned s = 0; s < 4; ++s) {
+                                    g.uv[s][0] = v.uv[s][0];
+                                    g.uv[s][1] = v.uv[s][1];
+                                }
+                                gv.push_back(g);
+                            }
                             geom = sbr_scene_intern_geometry(key, gv.data(), (int)gv.size());
                         } else {
                             ++g_st.decode_fail;
@@ -246,7 +252,9 @@ void ov_shape_draw(CPUState& cpu) {
                         // From the COMMAND STREAM, not GXLoadTexObj: J3D binds material textures by
                         // replaying baked display lists, so the SDK entry point only ever sees the
                         // 4x4 null texture (measured: 3 textures for the whole scene).
-                        dr.tex = sbr_gx_fifo_texture(0);
+                        // All four texture units, not just TEXMAP0: a TEV stage names the map it
+                        // samples, and most materials here name more than one.
+                        for (unsigned m = 0; m < 4; ++m) dr.tex[m] = sbr_gx_fifo_texture(m);
                         dr.tev = sbr_gx_fifo_tev();
                         dr.xf  = sbr_gx_fifo_xf();
                         {

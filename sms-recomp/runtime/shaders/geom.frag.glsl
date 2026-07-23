@@ -11,10 +11,16 @@
 // and writes it to one of four registers, with the previous stage's output readable as PREV.
 
 layout(location = 0) in vec4 v_col;
-layout(location = 1) in vec2 v_uv;
+layout(location = 1) in vec4 v_uv01;
+layout(location = 2) in vec4 v_uv23;
 layout(location = 0) out vec4 o_col;
 
-layout(set = 2, binding = 0) uniform sampler2D u_tex;
+// One sampler per GX texture unit. A stage names BOTH the map it samples and the coordinate it
+// samples with, and they are independent selectors — most materials here use more than one of each.
+layout(set = 2, binding = 0) uniform sampler2D u_tex0;
+layout(set = 2, binding = 1) uniform sampler2D u_tex1;
+layout(set = 2, binding = 2) uniform sampler2D u_tex2;
+layout(set = 2, binding = 3) uniform sampler2D u_tex3;
 
 // std140: each stage packs its selectors as integers. 16 stages is GX's maximum.
 layout(set = 3, binding = 0) uniform TevBlock {
@@ -22,11 +28,28 @@ layout(set = 3, binding = 0) uniform TevBlock {
     ivec4 cOp[16];       // bias, sub, clamp, scale
     ivec4 aSel[16];      // a, b, c, d           (GXTevAlphaArg)
     ivec4 aOp[16];       // bias, sub, clamp, scale
-    ivec4 dest[16];      // cDest, aDest, texEnable, unused
+    ivec4 dest[16];      // cDest, aDest, texEnable, texmap | texcoord << 8
     vec4  konst[16];     // resolved konst colour for the stage (rgb) + konst alpha (a)
     vec4  regInit[4];    // prev, c0, c1, c2 as the material set them
-    ivec4 control;       // x = numStages
+    ivec4 control;       // x = numStages, y = alphaOp0, z = alphaOp1, w = alphaLogic
+    vec4  alphaRef;      // x = ref0, y = ref1 (0..255)
 } tev;
+
+// GXCompare against an 8-bit alpha. The comparison is done on the QUANTISED value because that is
+// what the hardware compares: a cutout whose texels sit exactly on the reference flips entirely on
+// whether the rounding matches, and half a level of drift shows up as a fringe on every leaf edge.
+bool alphaCompare(int op, int a, int ref) {
+    switch (op) {
+    case 0: return false;         // NEVER
+    case 1: return a <  ref;
+    case 2: return a == ref;
+    case 3: return a <= ref;
+    case 4: return a >  ref;
+    case 5: return a != ref;
+    case 6: return a >= ref;
+    default: return true;         // ALWAYS
+    }
+}
 
 vec4 g_reg[4];
 
@@ -68,8 +91,24 @@ float alphaArg(int sel, vec4 texc, vec4 rasc, vec4 konst) {
 float biasOf(int b) { return b == 1 ? 0.5 : (b == 2 ? -0.5 : 0.0); }
 float scaleOf(int s) { return s == 1 ? 2.0 : (s == 2 ? 4.0 : (s == 3 ? 0.5 : 1.0)); }
 
+// Sample every unit up front. The alternative — indexing inside the stage loop — puts an implicit
+// LOD fetch under control flow that the compiler cannot prove uniform, which is undefined in GLSL.
+// Four fetches is the honest cost of doing it correctly; GX itself has four units live.
+vec4 sampleUnit(int unit, vec2 uv) {
+    if (unit == 1) return texture(u_tex1, uv);
+    if (unit == 2) return texture(u_tex2, uv);
+    if (unit == 3) return texture(u_tex3, uv);
+    return texture(u_tex0, uv);
+}
+
+vec2 coordOf(int idx) {
+    if (idx == 1) return v_uv01.zw;
+    if (idx == 2) return v_uv23.xy;
+    if (idx == 3) return v_uv23.zw;
+    return v_uv01.xy;
+}
+
 void main() {
-    vec4 tex = texture(u_tex, v_uv);
     vec4 ras = v_col;
 
     g_reg[0] = tev.regInit[0];
@@ -81,7 +120,9 @@ void main() {
     for (int i = 0; i < n; ++i) {
         // A stage with its texture disabled must not read the texture: GX feeds it nothing, and
         // sampling anyway would tint untextured stages with whatever was last bound.
-        vec4 t = (tev.dest[i].z != 0) ? tex : vec4(0.0);
+        vec4 t = (tev.dest[i].z != 0)
+                     ? sampleUnit(tev.dest[i].w & 3, coordOf((tev.dest[i].w >> 8) & 3))
+                     : vec4(0.0);
         vec4 k = tev.konst[i];
 
         vec3 ca = colorArg(tev.cSel[i].x, t, ras, k);
@@ -103,5 +144,23 @@ void main() {
         g_reg[tev.dest[i].x].rgb = cr;
         g_reg[tev.dest[i].y].a   = ar;
     }
-    o_col = clamp(g_reg[0], 0.0, 1.0);
+    vec4 outc = clamp(g_reg[0], 0.0, 1.0);
+
+    // ALPHA TEST, before the blend. Two comparisons combined by a logic op — GX can express a band
+    // (ref0 <= a <= ref1) as well as a plain cutout, so both are evaluated rather than only the
+    // first. A failing texel is DISCARDED: it writes neither colour nor depth, which is the whole
+    // point for foliage drawn as opaque quads.
+    int a8 = int(outc.a * 255.0 + 0.5);
+    bool c0 = alphaCompare(tev.control.y, a8, int(tev.alphaRef.x));
+    bool c1 = alphaCompare(tev.control.z, a8, int(tev.alphaRef.y));
+    bool pass;
+    switch (tev.control.w) {
+    case 0:  pass = c0 && c1; break;
+    case 1:  pass = c0 || c1; break;
+    case 2:  pass = c0 != c1; break;
+    default: pass = c0 == c1; break;
+    }
+    if (!pass) discard;
+
+    o_col = outc;
 }
