@@ -162,7 +162,13 @@ bool sbr_render_init(int w, int h) {
     pci.vertex_input_state.num_vertex_buffers = 1;
     pci.vertex_input_state.vertex_attributes = va;
     pci.vertex_input_state.num_vertex_attributes = 2;
-    pci.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
+    // SBR_RENDER_WIREFRAME=1 draws edges instead of filled triangles. A few large planes can
+    // occlude an entire correct scene behind them, which is indistinguishable from "the scene is
+    // missing" in a filled render — wireframe separates those two cases, so it is a diagnostic
+    // worth keeping rather than a one-off.
+    const char* wf = std::getenv("SBR_RENDER_WIREFRAME");
+    pci.rasterizer_state.fill_mode = (wf != nullptr && wf[0] != '\0' && wf[0] != '0')
+                                         ? SDL_GPU_FILLMODE_LINE : SDL_GPU_FILLMODE_FILL;
     pci.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;   // GX cull comes with the state machine
     pci.target_info.color_target_descriptions = &ctd;
     pci.target_info.num_color_targets = 1;

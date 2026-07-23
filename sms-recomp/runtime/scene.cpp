@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <unordered_map>
 #include <vector>
@@ -30,6 +31,14 @@ double g_tickPeriod = 1.0 / 30.0;
 // ---------------------------------------------------------------------------------------------
 // Geometry cache. Handles are 1-based so 0 keeps meaning "no geometry".
 
+struct Area {
+    uint64_t key;
+    float    frac;      // fraction of the viewport covered by the projected bounding box
+    int      verts;
+    float    nearestW;  // smallest clip w = closest approach to the camera
+};
+std::vector<Area> g_area;
+
 struct Geom {
     std::vector<SbrGeomVert> verts;
     bool multislot = false;
@@ -44,6 +53,12 @@ bool  g_projThisTick = false;
 
 // The renderer's scratch vertex buffer, kept across frames so a 60 Hz render does not allocate.
 std::vector<SbrVertex> g_out;
+
+// SBR_RENDER_DEPTHVIZ=1 — shade by depth instead of per-object colour.
+const bool g_depthViz = [] {
+    const char* e = std::getenv("SBR_RENDER_DEPTHVIZ");
+    return e != nullptr && e[0] != '\0' && e[0] != '0';
+}();
 
 void lerp_mtx(float out[12], const float a[12], const float b[12], float t) {
     // Component-wise on a model x view matrix. Correct for translation and near-correct for the
@@ -83,6 +98,15 @@ void sbr_scene_set_projection(const float m[16]) {
     // geometry being captured.
     if (g_projThisTick) return;
     std::memcpy(g_proj, m, sizeof g_proj);
+    static int once = 0;
+    if (once < 2) {
+        ++once;
+        lucent::info("nrender", "projection rows: [{:.4f} {:.4f} {:.4f} {:.4f}] "
+                                "[{:.4f} {:.4f} {:.4f} {:.4f}] [{:.4f} {:.4f} {:.4f} {:.4f}] "
+                                "[{:.4f} {:.4f} {:.4f} {:.4f}]",
+                     m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7],
+                     m[8], m[9], m[10], m[11], m[12], m[13], m[14], m[15]);
+    }
     g_projValid = true;
     g_projThisTick = true;
 }
@@ -95,6 +119,15 @@ double sbr_scene_now() {
     return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
 }
 int  sbr_scene_multislot_count() { return g_multislot; }
+
+void sbr_scene_report_largest(int n) {
+    std::vector<Area> a = g_area;
+    std::sort(a.begin(), a.end(), [](const Area& x, const Area& y) { return x.frac > y.frac; });
+    for (int i = 0; i < n && i < (int)a.size(); ++i)
+        lucent::info("nrender", "  occluder #{}: key 0x{:012x} covers {:5.1f}% of the viewport, "
+                                "{} verts, nearest w={:.1f}",
+                     i + 1, a[i].key, 100.0f * a[i].frac, a[i].verts, a[i].nearestW);
+}
 
 void sbr_scene_begin_tick() {
     g_projThisTick = false;
@@ -149,6 +182,7 @@ float sbr_scene_render(double now_seconds, const float proj[16]) {
     if (proj == nullptr) return alpha;   // nothing to place geometry with
 
     g_out.clear();
+    g_area.clear();
     for (const auto& d : g_cur.items) {
         if (d.geom == 0 || d.geom >= g_geom.size()) continue;   // no geometry decoded for this one
         const Geom& g = g_geom[d.geom];
@@ -179,6 +213,8 @@ float sbr_scene_render(double now_seconds, const float proj[16]) {
         const float cg = 0.35f + 0.65f * (float)((h >> 8) & 0xFF) / 255.0f;
         const float cb = 0.35f + 0.65f * (float)(h & 0xFF) / 255.0f;
 
+        float nlo[2] = {1e30f, 1e30f}, nhi[2] = {-1e30f, -1e30f};
+        float nearestW = 1e30f;
         for (const SbrGeomVert& v : g.verts) {
             // model -> view: the drawable's 3x4 is already model x view (J3D concats the view in
             // viewCalc), so this single multiply lands the vertex in eye space.
@@ -186,9 +222,16 @@ float sbr_scene_render(double now_seconds, const float proj[16]) {
             const float vy = m[4] * v.x + m[5] * v.y + m[6]  * v.z + m[7];
             const float vz = m[8] * v.x + m[9] * v.y + m[10] * v.z + m[11];
 
-            // view -> clip through the game's own projection. GC's perspective already maps z/w to
-            // [0,1] (at the near plane the numerator cancels; at the far plane it equals w), which
-            // is the same convention the SDL3 GPU backend wants — so no depth remap belongs here.
+            // view -> clip through the game's own projection.
+            //
+            // GC clip depth is NOT [0,1]. The game's own matrix (measured) has row 2 = [0, 0, 0,
+            // -near], so z/w = -near/w: exactly -1 at the near plane and approaching 0 at infinity.
+            // The convention is [-1, 0], near to far — an infinite-far projection.
+            //
+            // Vulkan (and so SDL3 GPU) wants [0, 1] and CLIPS anything with z < 0, so feeding GC's
+            // z straight through discarded every surface near the camera and left only the distant
+            // ones. That is what painted the sky and terrain over the whole plaza, and what made
+            // the depth visualisation read 0 everywhere.
             SbrVertex o{};
             o.x = proj[0]  * vx + proj[1]  * vy + proj[2]  * vz + proj[3];
             o.y = proj[4]  * vx + proj[5]  * vy + proj[6]  * vz + proj[7];
@@ -197,8 +240,36 @@ float sbr_scene_render(double now_seconds, const float proj[16]) {
             // GC clip space has +Y up; the backend's NDC has +Y down. Flipping here keeps the
             // convention change at the ONE place the two spaces meet.
             o.y = -o.y;
-            o.r = cr; o.g = cg; o.b = cb; o.a = 1.0f;
+            // [-1,0] -> [0,1]: adding w maps near (-w) to 0 and far (0) to w. Same shape as the
+            // standard GL->Vulkan depth conversion, and derived from the matrix above rather than
+            // fitted to make the picture look right.
+            o.z += o.w;
+            if (g_depthViz) {
+                // Grayscale by normalised depth: near = black, far = white. If a surface that
+                // should be distant paints itself dark (or vice versa) the transform for that mesh
+                // is wrong, which per-object colours cannot show.
+                const float dz = (o.w > 1e-4f) ? std::clamp(o.z / o.w, 0.0f, 1.0f) : 1.0f;
+                o.r = o.g = o.b = dz;
+            } else {
+                o.r = cr; o.g = cg; o.b = cb;
+            }
+            o.a = 1.0f;
             g_out.push_back(o);
+
+            if (o.w > 1e-4f) {
+                const float sx = o.x / o.w, sy = o.y / o.w;
+                nlo[0] = std::min(nlo[0], sx); nhi[0] = std::max(nhi[0], sx);
+                nlo[1] = std::min(nlo[1], sy); nhi[1] = std::max(nhi[1], sy);
+                nearestW = std::min(nearestW, o.w);
+            }
+        }
+        if (nhi[0] > nlo[0]) {
+            // Clamp to the viewport before measuring: an off-screen quad's raw NDC extent is huge
+            // but it covers nothing, and ranking by that would blame the wrong drawable.
+            const float w0 = std::min(nhi[0], 1.0f) - std::max(nlo[0], -1.0f);
+            const float h0 = std::min(nhi[1], 1.0f) - std::max(nlo[1], -1.0f);
+            if (w0 > 0.0f && h0 > 0.0f)
+                g_area.push_back(Area{d.key, w0 * h0 * 0.25f, (int)g.verts.size(), nearestW});
         }
     }
 

@@ -256,6 +256,7 @@ void video_wait_for_retrace(CPUState& cpu) {
                          alpha, sbr_scene_last_count(), sbr_scene_multislot_count(),
                          sbr_scene_has_projection() ? "yes" : "MISSING",
                          lo[0], hi[0], lo[1], hi[1], lo[2], hi[2], med);
+            sbr_scene_report_largest(5);
             if (const char* d = std::getenv("SBR_RENDER_DUMP")) sbr_render_dump(d);
         }
     }

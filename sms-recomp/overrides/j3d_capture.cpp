@@ -77,6 +77,34 @@ std::vector<J3DVert> g_tri;
 
 bool ok(u32 p) { return sb_ram_fast(p) != nullptr; }
 
+// j3dSys.mViewMtx is at offset 0 of J3DSys (J3DSys.hpp: `/* 0x0 */ Mtx mViewMtx`) — the camera
+// matrix the whole scene is drawn through.
+//
+// The draw matrices in mDrawMtx are MODEL->WORLD, not model x view: their translations were
+// measured spanning x -5000..15150 with a median distance of 6686 from the origin, which is a
+// plaza-sized WORLD spread, not object-to-camera distances. Rendering them straight through the
+// projection therefore drew the world as seen from the origin — a distant scene with everything
+// tiny — instead of from the camera.
+constexpr u32 J3DSYS_VIEW_MTX = 0x804045DCu;
+
+float guest_f32(u32 addr) {
+    const u32 bits = sb_r32(addr);
+    float f;
+    __builtin_memcpy(&f, &bits, sizeof f);
+    return f;
+}
+
+// out = view * model, both affine 3x4 row-major.
+void compose_view(float out[12], const float v[12], const float m[12]) {
+    for (int r = 0; r < 3; ++r) {
+        for (int c = 0; c < 3; ++c)
+            out[r * 4 + c] = v[r * 4 + 0] * m[0 * 4 + c] + v[r * 4 + 1] * m[1 * 4 + c] +
+                             v[r * 4 + 2] * m[2 * 4 + c];
+        out[r * 4 + 3] = v[r * 4 + 0] * m[3] + v[r * 4 + 1] * m[7] + v[r * 4 + 2] * m[11] +
+                         v[r * 4 + 3];
+    }
+}
+
 const bool g_probe = [] {
     sb_probe_register("/j3d", "J3D shape capture: what the game draws, semantically",
                       [](const ProbeArgs&) {
@@ -177,9 +205,21 @@ void ov_shape_draw(CPUState& cpu) {
                         SbrDrawable dr{};
                         dr.key = key;
                         dr.geom = geom;
+                        float model[12];
                         for (int k = 0; k < 12; ++k) {
                             const u32 bits = sb_r32(mtxAddr + k * 4);
-                            __builtin_memcpy(&dr.mtx[k], &bits, 4);
+                            __builtin_memcpy(&model[k], &bits, 4);
+                        }
+                        // Compose the camera in HERE rather than in the renderer: the drawable then
+                        // carries a model x view matrix, so interpolating between two ticks
+                        // interpolates the CAMERA's motion as well as the object's — which is what
+                        // makes a moving camera smooth at display rate instead of stepping at 30 Hz.
+                        if (ok(J3DSYS_VIEW_MTX)) {
+                            float view[12];
+                            for (int k = 0; k < 12; ++k) view[k] = guest_f32(J3DSYS_VIEW_MTX + k * 4);
+                            compose_view(dr.mtx, view, model);
+                        } else {
+                            __builtin_memcpy(dr.mtx, model, sizeof model);
                         }
                         sbr_scene_add(dr);
                     }

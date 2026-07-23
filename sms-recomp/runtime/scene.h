@@ -86,5 +86,10 @@ float sbr_scene_render(double now_seconds, const float proj[16]);
 // correct one by vertex count alone, but obvious here.
 void sbr_scene_translation_bounds(float lo[3], float hi[3], float* medianDist);
 
+// Log the drawables covering the most SCREEN AREA in the last render, largest first. A correct
+// scene hidden behind a handful of huge near-camera quads looks identical to a missing scene in a
+// filled render; this names the occluders instead of leaving them to be guessed at.
+void sbr_scene_report_largest(int n);
+
 int sbr_scene_last_count();
 int sbr_scene_matched_count();
