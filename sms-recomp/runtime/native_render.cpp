@@ -28,6 +28,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <algorithm>
 #include <cstring>
 #include <unordered_map>
 #include <vector>
@@ -56,10 +57,24 @@ SDL_GPUShader* g_fs = nullptr;
 // dynamic depth state, so the state has to be baked into a pipeline and the scene split into runs.
 std::unordered_map<uint32_t, SDL_GPUGraphicsPipeline*> g_pipes;
 
+// Mirrors the TevBlock uniform in geom.frag.glsl. std140: every member is a 16-byte vector, so the
+// selectors are stored one per component rather than packed.
+struct TevUniform {
+    int32_t cSel[16][4];
+    int32_t cOp[16][4];
+    int32_t aSel[16][4];
+    int32_t aOp[16][4];
+    int32_t dest[16][4];
+    float   konst[16][4];
+    float   regInit[4][4];
+    int32_t control[4];
+};
+
 struct Batch {
     SbrDepthState st;
     uint32_t first, count;
-    uint64_t texKey;        // 0 = untextured (a 1x1 white texel is bound so one shader serves both)
+    uint64_t texKey;       // 0 = untextured (a 1x1 white texel is bound so one shader serves both)
+    TevUniform tev;
 };
 
 // Decoded textures, keyed by the guest description. Textures are immutable for a given
@@ -71,6 +86,7 @@ struct Tex {
 std::unordered_map<uint64_t, Tex> g_texs;
 std::unordered_map<uint64_t, SbrTexture> g_pendingTex;   // descriptions seen this frame
 SDL_GPUSampler* g_sampler = nullptr;
+
 size_t g_texBytes = 0;
 std::unordered_map<uint32_t, int> g_fmtHist;
 SDL_GPUTexture* g_white = nullptr;
@@ -78,6 +94,12 @@ SDL_GPUTexture* g_white = nullptr;
 // SBR_TEX=1 opts INTO texture decode/upload. Default OFF: this path drives GPU allocations from
 // guest data, and a defect here does not fail politely — it can take the device down for the whole
 // process. It stays opt-in until it has run clean for a while.
+// GX konst selector -> colour. Values 0..7 are the constant ramp 1.0, 7/8 ... 1/8; 12..31 select a
+// component or channel of one of the four konst registers. The ramp is exact, not approximated.
+void pack_konst(const SbrTevState& tev, unsigned stage, float out[4]) {
+    sbr_tev_konst(tev, stage, out);
+}
+
 bool textures_enabled() {
     static int v = -1;
     if (v < 0) {
@@ -104,7 +126,7 @@ std::vector<SbrVertex>   g_verts;   // accumulated this frame
 // aurora's Dawn device in the same process) surfaces on aurora's device, blaming the wrong
 // subsystem. This was the actual cause of the device losses, not the texture data.
 SDL_GPUShader* make_shader(const void* code, size_t bytes, SDL_GPUShaderStage stage,
-                           Uint32 numSamplers) {
+                           Uint32 numSamplers, Uint32 numUniformBuffers) {
     SDL_GPUShaderCreateInfo ci{};
     ci.code = (const Uint8*)code;
     ci.code_size = bytes;
@@ -114,7 +136,7 @@ SDL_GPUShader* make_shader(const void* code, size_t bytes, SDL_GPUShaderStage st
     ci.num_samplers = numSamplers;
     ci.num_storage_textures = 0;
     ci.num_storage_buffers = 0;
-    ci.num_uniform_buffers = 0;
+    ci.num_uniform_buffers = numUniformBuffers;
     return SDL_CreateGPUShader(g_dev, &ci);
 }
 
@@ -303,6 +325,22 @@ SDL_GPUTexture* texture_for(uint64_t key, const SbrTexture& t) {
     return gt;
 }
 
+void pack_tev(const SbrTevState& tev, TevUniform& u) {
+    const int n = (int)std::min<uint32_t>(tev.numStages, 16);
+    u.control[0] = n;
+    for (int i = 0; i < 16; ++i) {
+        const SbrTevStage& st = tev.stage[i];
+        u.cSel[i][0] = st.cA; u.cSel[i][1] = st.cB; u.cSel[i][2] = st.cC; u.cSel[i][3] = st.cD;
+        u.cOp[i][0] = st.cBias; u.cOp[i][1] = st.cSub; u.cOp[i][2] = st.cClamp; u.cOp[i][3] = st.cScale;
+        u.aSel[i][0] = st.aA; u.aSel[i][1] = st.aB; u.aSel[i][2] = st.aC; u.aSel[i][3] = st.aD;
+        u.aOp[i][0] = st.aBias; u.aOp[i][1] = st.aSub; u.aOp[i][2] = st.aClamp; u.aOp[i][3] = st.aScale;
+        u.dest[i][0] = st.cDest; u.dest[i][1] = st.aDest; u.dest[i][2] = st.texEnable; u.dest[i][3] = 0;
+        pack_konst(tev, (unsigned)i, u.konst[i]);
+    }
+    for (int r = 0; r < 4; ++r)
+        for (int c = 0; c < 4; ++c) u.regInit[r][c] = tev.reg[r][c];
+}
+
 SDL_GPUGraphicsPipeline* pipeline_for(SbrDepthState d) {
     const uint32_t key = depth_key(d);
     if (const auto it = g_pipes.find(key); it != g_pipes.end()) return it->second;
@@ -422,8 +460,8 @@ bool sbr_render_init(int w, int h) {
     // z-mode and blend state become per-material state as the TEV milestone lands; the depth test
     // itself is not optional, because without it the last drawable submitted paints over the whole
     // scene (measured: a uniform 100%-coverage fill of one object's colour).
-    g_vs = make_shader(kGeomVertSpv, sizeof(kGeomVertSpv), SDL_GPU_SHADERSTAGE_VERTEX, 0);
-    g_fs = make_shader(kGeomFragSpv, sizeof(kGeomFragSpv), SDL_GPU_SHADERSTAGE_FRAGMENT, 1);
+    g_vs = make_shader(kGeomVertSpv, sizeof(kGeomVertSpv), SDL_GPU_SHADERSTAGE_VERTEX, 0, 0);
+    g_fs = make_shader(kGeomFragSpv, sizeof(kGeomFragSpv), SDL_GPU_SHADERSTAGE_FRAGMENT, 1, 1);
     if (g_vs == nullptr || g_fs == nullptr) {
         lucent::error("nrender", "shader create failed: {}", SDL_GetError());
         return false;
@@ -481,7 +519,8 @@ void sbr_render_begin(float r, float g, float b, float a) {
     g_batches.clear();
 }
 
-void sbr_render_tris(const SbrVertex* verts, int count, SbrDepthState depth, SbrTexture tex) {
+void sbr_render_tris(const SbrVertex* verts, int count, SbrDepthState depth, SbrTexture tex,
+                     const SbrTevState& tevState) {
     if (!g_ok || verts == nullptr || count < 3) return;
     count -= count % 3;
     g_verts.insert(g_verts.end(), verts, verts + count);
@@ -489,12 +528,18 @@ void sbr_render_tris(const SbrVertex* verts, int count, SbrDepthState depth, Sbr
     // costs draws only where the state actually changes.
     const uint32_t first = (uint32_t)(g_verts.size() - (size_t)count);
     const uint64_t tk = tex_key(tex);
+    TevUniform tu{};
+    pack_tev(tevState, tu);
+    // TEV state is part of a batch's identity: two draws sharing a texture and depth state but
+    // different combiners are different materials and must not merge.
+    const bool sameTev = !g_batches.empty() &&
+                         std::memcmp(&g_batches.back().tev, &tu, sizeof tu) == 0;
     if (!g_batches.empty() && depth_key(g_batches.back().st) == depth_key(depth) &&
-        g_batches.back().texKey == tk &&
+        g_batches.back().texKey == tk && sameTev &&
         g_batches.back().first + g_batches.back().count == first) {
         g_batches.back().count += (uint32_t)count;
     } else {
-        g_batches.push_back(Batch{depth, first, (uint32_t)count, tk});
+        g_batches.push_back(Batch{depth, first, (uint32_t)count, tk, tu});
         g_pendingTex[tk] = tex;
     }
 }
@@ -560,6 +605,7 @@ void sbr_render_end() {
             tsb.texture = (texIt != g_texs.end()) ? texIt->second.tex : g_white;
             tsb.sampler = g_sampler;
             SDL_BindGPUFragmentSamplers(rp, 0, &tsb, 1);
+            SDL_PushGPUFragmentUniformData(cmd, 0, &b.tev, sizeof b.tev);
             SDL_DrawGPUPrimitives(rp, b.count, 1, b.first, 0);
         }
     }
@@ -586,6 +632,35 @@ void sbr_render_end() {
 
 int sbr_render_last_vertex_count() { return g_lastVerts; }
 int sbr_render_last_batch_count() { return g_lastBatches; }
+void sbr_tev_konst(const SbrTevState& tev, unsigned stage, float out[4]) {
+    // GXTevKColorSel / GXTevKAlphaSel, exactly as the hardware defines them:
+    //   0x00..0x07  the constant ramp 8/8, 7/8 ... 1/8
+    //   0x0C..0x0F  konst register 0..3 as RGB
+    //   0x10..0x13  .R of konst 0..3     0x14..0x17  .G     0x18..0x1B  .B     0x1C..0x1F  .A
+    auto ramp = [](unsigned s) { return (float)(8 - (int)s) / 8.0f; };
+    auto chan = [&](unsigned sel) -> float {
+        const unsigned reg = sel & 3;
+        const unsigned comp = (sel - 0x10) >> 2;   // 0=R 1=G 2=B 3=A
+        return tev.konstReg[reg][comp < 4 ? comp : 0];
+    };
+    const unsigned kc = tev.stage[stage & 15].kC;
+    const unsigned ka = tev.stage[stage & 15].kA;
+
+    if (kc <= 7) {
+        out[0] = out[1] = out[2] = ramp(kc);
+    } else if (kc >= 0x0C && kc <= 0x0F) {
+        for (int i = 0; i < 3; ++i) out[i] = tev.konstReg[kc & 3][i];
+    } else if (kc >= 0x10 && kc <= 0x1F) {
+        out[0] = out[1] = out[2] = chan(kc);
+    } else {
+        out[0] = out[1] = out[2] = 1.0f;
+    }
+
+    if (ka <= 7) out[3] = ramp(ka);
+    else if (ka >= 0x10 && ka <= 0x1F) out[3] = chan(ka);
+    else out[3] = 1.0f;
+}
+
 int sbr_render_texture_count() { return (int)g_texs.size(); }
 
 void sbr_render_report_formats() {

@@ -25,6 +25,7 @@
 
 // The texture state the material display lists have written, per texmap. See the BP handler.
 static SbrTexture g_fifoTex[8];
+static SbrTevState g_tev;
 
 #include <aurora/aurora.h>
 #include <dolphin/gx/GXAurora.h>
@@ -489,6 +490,74 @@ size_t parse(const u8* p, size_t n, int depth) {
             const u8  reg = p[i + 1];
             const u32 val = ((u32)p[i + 2] << 16) | ((u32)p[i + 3] << 8) | p[i + 4];
 
+            // TEV STATE. Same reasoning as the texture binding below: J3D bakes its TEV setup into
+            // per-material display lists, so the SDK entry points are not called and the BP
+            // registers those lists write are the only complete source.
+            //
+            //  0x00 GENMODE            : numTevStages-1 in bits 10..13, numTexGens in bits 0..3
+            //  0x28..0x2F RAS1_TREF    : two stages each — texmap, texcoord, colour channel
+            //  0xC0+2i TEV_COLOR_ENV   : stage i colour combiner (a,b,c,d,bias,sub,clamp,scale,dest)
+            //  0xC1+2i TEV_ALPHA_ENV   : stage i alpha combiner, plus the ras/tex swap selectors
+            //  0xE0..0xE7 TEV_REGISTER : the four colour registers (prev, c0, c1, c2)
+            //  0xF6..0xFD TEV_KSEL     : konst colour/alpha selectors, two stages each
+            if (reg == 0x00) {
+                g_tev.numTexGens  = val & 0xF;
+                g_tev.numStages   = ((val >> 10) & 0xF) + 1;
+            } else if (reg >= 0x28 && reg <= 0x2F) {
+                const unsigned s0 = (unsigned)(reg - 0x28) * 2;
+                g_tev.stage[s0].texmap     = val & 7;
+                g_tev.stage[s0].texcoord   = (val >> 3) & 7;
+                g_tev.stage[s0].texEnable  = (val >> 6) & 1;
+                g_tev.stage[s0].rasChannel = (val >> 7) & 7;
+                g_tev.stage[s0 + 1].texmap     = (val >> 12) & 7;
+                g_tev.stage[s0 + 1].texcoord   = (val >> 15) & 7;
+                g_tev.stage[s0 + 1].texEnable  = (val >> 18) & 1;
+                g_tev.stage[s0 + 1].rasChannel = (val >> 19) & 7;
+            } else if (reg >= 0xC0 && reg <= 0xDF) {
+                const unsigned i = (unsigned)(reg - 0xC0) >> 1;
+                if ((reg & 1) == 0) {
+                    SbrTevStage& t = g_tev.stage[i];
+                    t.cD = val & 0xF;       t.cC = (val >> 4) & 0xF;
+                    t.cB = (val >> 8) & 0xF; t.cA = (val >> 12) & 0xF;
+                    t.cBias = (val >> 16) & 3; t.cSub = (val >> 18) & 1;
+                    t.cClamp = (val >> 19) & 1; t.cScale = (val >> 20) & 3;
+                    t.cDest = (val >> 22) & 3;
+                } else {
+                    SbrTevStage& t = g_tev.stage[i];
+                    t.aD = (val >> 4) & 7;  t.aC = (val >> 7) & 7;
+                    t.aB = (val >> 10) & 7; t.aA = (val >> 13) & 7;
+                    t.aBias = (val >> 16) & 3; t.aSub = (val >> 18) & 1;
+                    t.aClamp = (val >> 19) & 1; t.aScale = (val >> 20) & 3;
+                    t.aDest = (val >> 22) & 3;
+                }
+            } else if (reg >= 0xE0 && reg <= 0xE7) {
+                // 0xE0..0xE7 carry BOTH the TEV colour registers and the KONST registers; bit 23
+                // selects which. Treating every write as a colour register left konst reading
+                // whatever the colour registers held, which blew characters out to white.
+                //
+                // Each register is written as two halves: the even (low) write carries R and A, the
+                // odd (high) write carries B and G. Values are signed 11-bit (S10) over 255, so
+                // they legitimately exceed 1.0 and must not be clamped here.
+                const unsigned idx = (unsigned)(reg - 0xE0) >> 1;
+                const bool high = ((reg - 0xE0) & 1) != 0;
+                const bool isKonst = ((val >> 23) & 1) != 0;
+                auto s10 = [](u32 v) { return (float)(int32_t)((v & 0x7FF) << 21 >> 21) / 255.0f; };
+                float (*dst)[4] = isKonst ? g_tev.konstReg : g_tev.reg;
+                if (!high) {
+                    dst[idx][3] = s10(val & 0x7FF);          // A
+                    dst[idx][0] = s10((val >> 12) & 0x7FF);  // R
+                } else {
+                    dst[idx][2] = s10(val & 0x7FF);          // B
+                    dst[idx][1] = s10((val >> 12) & 0x7FF);  // G
+                }
+            } else if (reg >= 0xF6 && reg <= 0xFD) {
+                const unsigned s0 = (unsigned)(reg - 0xF6) * 2;
+                g_tev.stage[s0].kC     = (val >> 4) & 0x1F;
+                g_tev.stage[s0].kA     = (val >> 9) & 0x1F;
+                g_tev.stage[s0 + 1].kC = (val >> 14) & 0x1F;
+                g_tev.stage[s0 + 1].kA = (val >> 19) & 0x1F;
+            }
+
             // TEXTURE BINDING. J3D bakes its material texture loads into per-material display
             // lists and replays them, so GXLoadTexObj is almost never called (J3DSys::reinitTexture
             // is its only caller in J3D, for a 4x4 null texture). The registers those lists write
@@ -740,3 +809,6 @@ void gxfifo_drain_pending() {
 SbrTexture sbr_gx_fifo_texture(unsigned texmap) {
     return g_fifoTex[texmap & 7];
 }
+
+// The TEV configuration the material display lists have written.
+const SbrTevState& sbr_gx_fifo_tev() { return g_tev; }

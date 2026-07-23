@@ -392,7 +392,7 @@ float sbr_scene_render(double now_seconds, const float proj[16]) {
                 nearestW = std::min(nearestW, o.w);
             }
         }
-        if (!g_out.empty()) sbr_render_tris(g_out.data(), (int)(g_out.size() / 3) * 3, d.depth, d.tex);
+        if (!g_out.empty()) sbr_render_tris(g_out.data(), (int)(g_out.size() / 3) * 3, d.depth, d.tex, d.tev);
 
         if (nhi[0] > nlo[0]) {
             // Clamp to the viewport before measuring: an off-screen quad's raw NDC extent is huge

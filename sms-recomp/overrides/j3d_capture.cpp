@@ -247,6 +247,7 @@ void ov_shape_draw(CPUState& cpu) {
                         // replaying baked display lists, so the SDK entry point only ever sees the
                         // 4x4 null texture (measured: 3 textures for the whole scene).
                         dr.tex = sbr_gx_fifo_texture(0);
+                        dr.tev = sbr_gx_fifo_tev();
                         {
                             bool is2d = false;
                             const float* pj = sbr_gx_current_projection(&is2d);

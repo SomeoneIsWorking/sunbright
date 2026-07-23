@@ -41,8 +41,32 @@ SbrTexture sbr_gx_current_texture();
 // per-material display lists J3D actually binds through.
 SbrTexture sbr_gx_fifo_texture(unsigned texmap);
 
+// One TEV stage, in GX's own encoding. The shader evaluates these directly rather than a
+// pre-baked approximation, so the selector values keep their hardware meaning.
+struct SbrTevStage {
+    uint8_t texmap = 0, texcoord = 0, texEnable = 0, rasChannel = 0;
+    uint8_t cA = 0, cB = 0, cC = 0, cD = 0;      // GXTevColorArg
+    uint8_t cBias = 0, cSub = 0, cClamp = 1, cScale = 0, cDest = 0;
+    uint8_t aA = 0, aB = 0, aC = 0, aD = 0;      // GXTevAlphaArg
+    uint8_t aBias = 0, aSub = 0, aClamp = 1, aScale = 0, aDest = 0;
+    uint8_t kC = 0, kA = 0;                       // konst selectors
+};
+
+struct SbrTevState {
+    uint32_t numStages = 1;
+    uint32_t numTexGens = 1;
+    SbrTevStage stage[16];
+    float reg[4][4]{};       // TEV colour registers: prev, c0, c1, c2
+    float konstReg[4][4]{};  // KONST registers k0..k3 — a separate bank, not the same storage
+};
+
+const SbrTevState& sbr_gx_fifo_tev();
+
 // The state the game has currently set. Valid at J3DShape::draw time.
 SbrDepthState sbr_gx_current_zmode();
+// Resolve GX's konst selector to a colour. Shared by the capture and the uniform packer so the two
+// cannot disagree about what a stage's KONST means.
+void sbr_tev_konst(const SbrTevState& tev, unsigned stage, float out[4]);
 
 // The projection matrix currently loaded (4x4 row-major, as the guest built it) and whether it is a
 // 2D ortho. Valid at J3DShape::draw time.
@@ -61,7 +85,8 @@ bool sbr_render_init(int w, int h);
 void sbr_render_begin(float r, float g, float b, float a);
 // Submit triangles under a given depth state. Consecutive submissions sharing a state are merged
 // into one draw; a change of state starts a new one.
-void sbr_render_tris(const SbrVertex* verts, int count, SbrDepthState depth, SbrTexture tex);
+void sbr_render_tris(const SbrVertex* verts, int count, SbrDepthState depth, SbrTexture tex,
+                     const SbrTevState& tev);
 
 // How many distinct textures the renderer has decoded and uploaded.
 int sbr_render_texture_count();
