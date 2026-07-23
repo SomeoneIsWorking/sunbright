@@ -29,5 +29,8 @@ void sbr_render_end();
 // geometry at all" signal.
 int sbr_render_last_vertex_count();
 
+// Write the last rendered frame to `path` (RGBA8, top-left origin) for the A/B against aurora.
+bool sbr_render_dump(const char* path);
+
 // Copy the last rendered frame into rgba (w*h*4, top-left origin). False on size mismatch / no device.
 bool sbr_render_readback(uint8_t* rgba, int w, int h);

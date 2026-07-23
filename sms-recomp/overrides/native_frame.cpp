@@ -228,6 +228,7 @@ void video_wait_for_retrace(CPUState& cpu) {
                 lucent::info("nrender", "milestone-1 verts={} centre=({},{},{}) corner=({},{},{}) "
                                         "(expect red 255,0,0 and blue 26,102,204)",
                              sbr_render_last_vertex_count(), c[0], c[1], c[2], e[0], e[1], e[2]);
+                if (const char* d = std::getenv("SBR_RENDER_DUMP")) sbr_render_dump(d);
             }
         }
     }

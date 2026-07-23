@@ -24,6 +24,7 @@
 #include "shaders/geom_vert_spv.h"
 #include "shaders/geom_frag_spv.h"
 
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <vector>
@@ -266,6 +267,24 @@ void sbr_render_end() {
 }
 
 int sbr_render_last_vertex_count() { return g_lastVerts; }
+
+// SBR_RENDER_DUMP=/path.rgba — write the native frame out so it can be diffed against aurora's
+// SB_DUMP_FRAME of the same moment (tools/render/compare_native.py). This is the parity harness the
+// whole native-render arc is verified through; without it "looks about right" is all we would have.
+// Written top-left origin RGBA8, same convention as aurora's dump, so the comparison is apples to
+// apples rather than a flip away from nonsense.
+bool sbr_render_dump(const char* path) {
+    if (!g_ok || path == nullptr || path[0] == '\0') return false;
+    std::FILE* f = std::fopen(path, "wb");
+    if (f == nullptr) {
+        lucent::error("nrender", "cannot open {} for write", path);
+        return false;
+    }
+    const size_t n = std::fwrite(g_cpu.data(), 1, g_cpu.size(), f);
+    std::fclose(f);
+    lucent::info("nrender", "dumped {}x{} native frame to {} ({} bytes)", g_w, g_h, path, n);
+    return n == g_cpu.size();
+}
 
 bool sbr_render_readback(uint8_t* rgba, int w, int h) {
     if (!g_ok || w != g_w || h != g_h || rgba == nullptr) return false;
