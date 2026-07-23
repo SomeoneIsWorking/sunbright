@@ -159,3 +159,35 @@ actually ran this session, and how often. Measure before believing this table.
 `sunmodel_widescreen.cpp` is ported but has never been observed executing — `getZBufValue` was not
 reached in Delfino Plaza or Gelato Beach across ~1000 frames. It needs a scene with a live sun/lens
 flare before its correction can be called verified.
+
+## Heat-haze ghosting — the screen-projected effect matrix (2026-07-23)
+
+User report: "haze ghosting ... it's that they are positioned wrong ... actually port these, not
+tweak them." Correct on all counts. A texture-format tweak (R8->I8) did NOT fix it; the ghost was a
+positioning bug in a screen-projected effect.
+
+Bisected on real data: widescreen off = clean; SBR_WS_SCALE=1.0 (structure on, no squeeze) = clean;
+mirror suspend on/off/squeeze = no change (mirror ruled out); skipping TShimmer::perform (0x8019f83c)
+= clean. So the ghost is the HEAT HAZE, and it is the squeeze that triggers it.
+
+Root cause: SMS_GetLightPerspectiveForEffectMtx (0x8022ba74, MtxUtil.cpp) builds a projected-texgen
+"effect" matrix from gpCamera->getFovy()/getAspect() — the camera's TRUE aspect. The screen-effects
+that project a screen-capture back onto geometry use it to find where each vertex rasterized so they
+can sample the screen there: TShimmer (heat haze), water refraction, DebuTelesa's ghost distortion,
+and several MapObj/NPC effects. Under the anamorphic squeeze the real render scales horizontal
+projection by 0.75, but this matrix stays unsqueezed (the squeeze only touches the packed GX
+projection, never gpCamera). So the effect sampled screen-U at unsqueezed x while the geometry sat at
+squeezed x — the whole captured scene showed up shifted sideways through the "distortion" = ghost.
+
+Fix (widescreen_effects.cpp, ov_effect_mtx): override the function, run the real body, then multiply
+row 0's x-scale (m[0][0]) by the same 0.75 the main render uses. This is porting the effect to
+widescreen — making its projection consistent with the anamorphic render — NOT the retired approach
+of deleting the haze. One override fixes every consumer, because they all read this one matrix.
+
+Verified: ghost gone with the haze STILL running (matches the shimmer-skipped baseline but with the
+effect present); widescreen off unaffected (override no-ops).
+
+NOTE: the mirror (TMirrorCamera + C_MTXLightPerspective) is a DIFFERENT projected-texgen path and was
+ruled out for THIS ghost, but it has the same structural risk (lookup built from unsqueezed camera
+params, surface drawn in the squeezed view). No reflection ghosting is currently observed; revisit
+with evidence, not pre-emptively.

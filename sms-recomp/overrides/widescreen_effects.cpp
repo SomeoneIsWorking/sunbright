@@ -28,6 +28,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <map>
 #include <string>
 
@@ -39,6 +40,10 @@ extern "C" void func_802f8904(CPUState&);   // JDrama::TEfbCtrlDisp::perform
 extern "C" void func_80193fbc(CPUState&);   // TMirrorCamera::perform
 extern "C" void func_8022d4f8(CPUState&);   // TAfterEffect::perform
 extern "C" void func_801aa6cc(CPUState&);   // TBathWaterManager::draw_mist
+extern "C" void func_8022ba74(CPUState&);   // SMS_GetLightPerspectiveForEffectMtx
+
+// widescreen.cpp — the horizontal squeeze factor (0.75) code needs to match the anamorphic render.
+float sbr_ws_squeeze_scale();
 
 // widescreen.cpp
 extern bool g_ws_2d_suspend;
@@ -265,8 +270,44 @@ void ov_bath_draw_mist(CPUState& cpu) {
     g_ws_2d_suspend = prev;
 }
 
+// SMS_GetLightPerspectiveForEffectMtx builds a projected-texgen "effect" matrix from the CAMERA's
+// perspective (gpCamera->getFovy()/getAspect()) with the depth row replaced by {0,0,-1,0}. The
+// screen effects that project a screen-capture back onto geometry use it: the heat haze (TShimmer),
+// water refraction, DebuTelesa's ghost distortion, and several MapObj/NPC effects.
+//
+// The matrix maps a vertex's world position to the SCREEN position where it rasterized, so the
+// effect can sample the screen texture there. Under the anamorphic squeeze the real render scales
+// horizontal projection by 0.75, but this matrix is built from the camera's TRUE aspect (unsqueezed,
+// because the squeeze only touches the packed GX projection, never gpCamera). So the effect sampled
+// screen-U at unsqueezed x while the geometry sat at squeezed x — the sample was offset by the
+// squeeze ratio, and the "distortion" showed a whole second copy of the scene shifted sideways: the
+// heat-haze ghosting (user report). This is the effect NOT being ported to widescreen, exactly as
+// the retired notes predicted ("the haze glitches under 16:9") — but the port is to make its
+// projection MATCH the render, not to delete the haze.
+//
+// The fix mirrors the main-render squeeze exactly: multiply row 0's x-scale (m[0][0], at the matrix
+// base) by the same 0.75. Row 0 is the x output; the perspective's x term is the only horizontal
+// scale, the same component ov_gx_set_projection squeezes on the real projection. Fixing it here
+// covers every consumer uniformly.
+void ov_effect_mtx(CPUState& cpu) {
+    const u32 m = cpu.gpr[3];
+    func_8022ba74(cpu);
+    if (!widescreen_on() || !sb_ram_fast(m)) return;
+    const u32 bits = sb_r32(m + 0x00);
+    f32 v;
+    __builtin_memcpy(&v, &bits, sizeof v);
+    v *= (f32)sbr_ws_squeeze_scale();
+    u32 out;
+    __builtin_memcpy(&out, &v, sizeof out);
+    sb_w32(m + 0x00, out);
+}
+
 } // namespace
 
+SB_OVERRIDE(0x8022ba74u, ov_effect_mtx, "SMS_GetLightPerspectiveForEffectMtx",
+            "widescreen: squeeze the projected-texgen effect matrix to match the anamorphic render, "
+            "so screen-projected effects (heat haze, water refraction, telesa) align instead of "
+            "ghosting")
 SB_OVERRIDE(FADER_DRAW_FADEINOUT, ov_fader_draw_fadeinout, "TSMSFader::drawFadeinout",
             "widescreen: fades must cover the whole picture, not the centre 4:3")
 SB_OVERRIDE(FADER_DRAW, ov_fader_draw, "TSMSFader::draw",
