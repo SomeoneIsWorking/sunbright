@@ -143,7 +143,38 @@ one tick, 0 of 2143 in another — 1.7% at worst.** Real, but nowhere near enoug
 8 points. The hypothesis is DEAD; it is written up in full only so the next session does not
 re-derive and re-test it.
 
-## Where that leaves it — every hypothesis so far is falsified
+## STOP. Look at the image. (2026-07-23, after the user said "this percentage hunting won't get you anywhere")
+
+Everything below this line in the previous revision was reasoning about a whole-frame SCORE. One
+look at the actual frame reframed the defect completely, in two runs, after five had failed:
+
+- `SBR_TEXMAP_NAMED=1` does not render a "slightly darker, slightly wrong" scene. It renders
+  **one flat colour over the entire frame** — while reporting `coverage=100.0%`, 885 drawables,
+  146 batches. The geometry is all there and all painted; every fragment collapses to one value.
+- With `SBR_ALPHATEST=0` added, the scene **comes back**, but the sky and many surfaces render
+  **BLACK**.
+
+So the chain is: stages that sample units 1-3 return **zero**, which makes the surface black; that
+zero is also the alpha feeding the alpha test, so with the test enabled those fragments are
+DISCARDED and the frame fills with whatever survives.
+
+**The 16.9% edgeIoU / +0.335 lumaCorr that five hypotheses were built on was the score of a
+uniformly-flooded frame.** The metric returned a plausible mid-range number for an image with no
+scene in it at all, which is a damning result for the metric, not just for the hypotheses. Every
+inference drawn from it below — including the "intensity maps multiply, so the scene darkens"
+argument that made `numStages` look compelling — was explaining a phenomenon that does not exist.
+
+The real question is now narrow and answerable: **why do samplers 1-3 return zero?** Candidates, in
+order of cheapness: the coordinate fed to them (texgen 1-3 output, which CLAMP would resolve to an
+edge texel); the SPIR-V binding decorations for `u_tex1..3` versus the slots
+`SDL_BindGPUFragmentSamplers` fills; or the texture actually bound to those slots.
+
+## Superseded reasoning below — kept only so it is not re-derived
+
+Every hypothesis here was falsified, and the last one was argued from a metric that turned out to be
+measuring a flooded frame. Read the section above instead.
+
+### (superseded) Where that left it
 
 | # | hypothesis | verdict |
 |---|---|---|
