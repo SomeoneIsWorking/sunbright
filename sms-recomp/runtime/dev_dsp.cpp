@@ -70,6 +70,14 @@ void dsp_write(u32 ea, unsigned width, u32 value) {
         // forever (observed in DSPInterface::initBuffer on the audio thread). Accepting
         // immediately is the truthful model for a receiver that is not there.
         if ((o & ~1u) == DSP_MAIL_TO_DSP_H) v &= (u16)~MAIL_FULL;
+        // The mail LOW write is what commits a message on hardware, so counting those counts
+        // messages. Nothing consumes them yet (step 4 of docs/audio_recomp_plan.md) — this is
+        // here so "how much does the guest actually try to say to the DSP" is measurable.
+        if ((o & ~1u) == DSP_MAIL_TO_DSP_L) {
+            static unsigned long mails = 0;
+            lucent::debug("dspmail", "CPU->DSP #{} 0x{:04x}{:04x}", ++mails,
+                          reg(DSP_MAIL_TO_DSP_H), (u16)value);
+        }
         if ((o & ~1u) == DSP_CSR) {
             // Status bits are write-1-to-clear; they are already clear, so just drop them
             // and keep the control bits the caller set.

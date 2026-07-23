@@ -31,6 +31,12 @@
 
 extern u8* g_ram_base;
 
+// AID (0xCC005030..0xCC00503C) is a separate device that used to be swallowed by this one.
+// Its init is chained from here, not from rt_core.cpp, so that a STRONG reference pulls
+// dev_aid.o out of the static archive — its other export (sbr_audio_frame) is referenced only
+// weakly, which would not extract it, and the device would silently never register.
+void aid_device_init();
+
 namespace {
 
 // The retail machine has 16 MB of ARAM. The game asks the hardware rather than assuming,
@@ -146,10 +152,15 @@ void aram_device_init() {
         // AR_INFO / AR_REFRESH power-on values the SDK reads before writing its own.
         reg(AR_INFO)    = 0;
         reg(AR_REFRESH) = 0;
-        // The ARAM registers, through the end of the block. The DSP mailboxes and CSR
-        // (0x5000-0x500B) share this address space but are a different device; claiming
-        // them would silently swallow accesses that should still report as unrouted.
-        mmio_register(MmioDevice{0xCC005012u, 0xCC005040u, "aram", &ar_read, &ar_write});
+        // The ARAM registers only. The DSP mailboxes and CSR (0x5000-0x500B) below, and the
+        // AID audio-DMA engine (0x5030-0x503C) above, share this address space but are
+        // different devices; claiming them would silently swallow accesses that belong
+        // elsewhere. AID in particular spent this port's whole life being absorbed here as
+        // inert halfwords, which is why nothing ever drove the audio heartbeat.
+        mmio_register(MmioDevice{0xCC005012u, 0xCC005030u, "aram", &ar_read, &ar_write});
+        aid_device_init();
+        // 0x503C..0x5040 is the tail of the block; nothing is known to live there, so leave it
+        // unclaimed and LOUD rather than answering for registers we cannot name.
         lucent::info("aram", "{} MB ARAM ready @ {}", kAramSize >> 20, (void*)g_aram);
     }
 }

@@ -55,6 +55,7 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/../extern/aurora/cmake/AuroraNodProvider.cm
 
 add_library(sms-recomp-rt STATIC runtime/rt_core.cpp runtime/mmio.cpp
                                  runtime/dev_aram.cpp
+                                 runtime/dev_aid.cpp
                                  runtime/dev_dsp.cpp
                                  runtime/dev_ai.cpp
                                  runtime/dev_exi.cpp
@@ -70,7 +71,7 @@ add_library(sms-recomp-rt STATIC runtime/rt_core.cpp runtime/mmio.cpp
                                  runtime/boot_env.cpp
                                  runtime/guest_sched.cpp)
 target_include_directories(sms-recomp-rt PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/runtime" "${CMAKE_CURRENT_SOURCE_DIR}/overrides" "${GEN}")
-target_link_libraries(sms-recomp-rt PUBLIC lucent::lucent nod::nod aurora::gx)
+target_link_libraries(sms-recomp-rt PUBLIC lucent::lucent nod::nod aurora::gx aurora::audio)
 
 # Host harness: loads the DOL into guest RAM and runs the entry point.
 # runtime/sb_log.cpp is compiled into the EXECUTABLE, not into sms-recomp-rt. It exists solely to
@@ -79,7 +80,7 @@ target_link_libraries(sms-recomp-rt PUBLIC lucent::lucent nod::nod aurora::gx)
 # never extracted and the weak symbol silently stays null. That is precisely the failure it was
 # added to fix, so it must be linked unconditionally.
 add_executable(sms-recomp host/main.cpp runtime/sb_log.cpp runtime/probe_server.cpp
-                           runtime/native_render.cpp runtime/scene.cpp)
+                           runtime/native_render.cpp runtime/scene.cpp runtime/j3d_decode.cpp)
 # -rdynamic puts func_<addr> into the dynamic symbol table so rt_dump_guest_stack can
 # name the guest frames. Recompiled bodies nest on the host stack, so the host backtrace
 # is the guest call stack — but only if the names resolve.

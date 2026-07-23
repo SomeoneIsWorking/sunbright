@@ -37,6 +37,40 @@ counter, NOT the DAC DMA engine.
 
 Licensing is a non-issue for this project (user directive).
 
+## STATUS — steps 0-3 LANDED and measured (2026-07-23)
+
+`sms-recomp/runtime/dev_aid.cpp` is the AID engine + delivery + output tap; `dev_aram.cpp` now
+stops at 0xCC005030 and chains `aid_device_init()`. `sbr_audio_frame()` (the weak seam in
+`overrides/native_frame.cpp`) has a strong definition there. **Measured, SBR_FASTBOOT, 65 s:**
+
+| gate | result |
+|---|---|
+| step 0 — before the engine existed | `AIInitDMA` fired **once** (0x5030<-0x805e, 0x5032<-0x4d80, 0x5036<-0x0046 = 70 blocks), `AIStartDMA` **once** (0x5036<-0x8046, bit 15). **4 AID register writes in 60 s, then silence.** 6 CPU->DSP mails total, then silence. `__AID_Callback` @0x8040E94C = **0x803110f0** (registered, non-null). Premise confirmed exactly. |
+| step 1 — engine | 70 blocks (2240 B) per cycle, re-arms on wrap; **3579 wraps in 62.6 s = 57.2/s** = 32000/560 exactly. |
+| step 2 — delivery | guest woke: `AIInitDMA`/`AIStartDMA` now re-fire per cycle, alternating between the double-buffered sources **0x805e4d80 / 0x805e44c0**. Deliveries **57/s**, one per wrap. |
+| step 3 — output tap | `SBR_AUDIO_RAW` dump = 8015872 B = 250496 blocks (block-exact), **62.624 s of audio in a 65 s run**, **every sample zero**. Backlog **stable at 973-2464 frames** across the whole run — never climbing, never collapsing. |
+
+**Three corrections to the plan, found by measuring:**
+
+1. **`g_cpu` is a PRE-BOOT SNAPSHOT, not the live CPU state.** `gsched_init` *copies* the
+   `CPUState` main.cpp exposes as `g_cpu`, so its r2/r13 (small-data bases) are still zero.
+   Copying `dev_di.cpp`'s idiom verbatim faulted on the first delivery at 0xffffa3ac
+   (= 0 - 0x5c54, a r13-relative load in `__AID_Callback`). DI survives it only because
+   `DVDLowIntrHandler` needs r4 alone. **Any new synchronous handler must use `gsched_cpu()`.**
+2. **Wraps must NOT be coalesced per host frame.** One AID cycle is 17.5 ms, so below 57 fps more
+   than one cycle legitimately completes per frame. Collapsing them to one delivery gave 2616
+   wraps but 1600 deliveries (43/s vs the 57/s the DAC drained) and the queue ran dry. Deliver one
+   interrupt per wrap; the pacing target is what bounds a burst after a stall.
+3. **The backlog target must exceed the longest host frame interval.** 33 ms underran
+   continuously (queue pinned at 7 frames, 45.8 s of audio in 60 s of wall time). It is now 100 ms
+   (`kSampleRate / 10`), which survives a 10 fps stall.
+
+`SBR_AUDIO_RAW=<path>` dumps the raw interleaved s16 stream. Diagnostics: `SBR_LUCENT_DEBUG=aid`
+(per-register writes + a 1 Hz backlog/rate report), `SBR_LUCENT_DEBUG=dspmail` (CPU->DSP mails).
+
+Step 4 (real mailbox + ZeldaAudioRenderer) is NOT started — the samples are still silence by
+design. Everything upstream of the mixer is now beating at the hardware's own rate.
+
 ## Minimal path to first sound (each step independently verifiable)
 
 0. **Measure.** Counters on DSP mails, AID register writes, and the four overrides. Expect: init

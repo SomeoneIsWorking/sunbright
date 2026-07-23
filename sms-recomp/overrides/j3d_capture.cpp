@@ -20,6 +20,7 @@
 
 #include "../runtime/probe_server.h"
 #include "../runtime/scene.h"
+#include "../runtime/j3d_decode.h"
 
 #include <intrinsics.h>
 #include <lucent/log.h>
@@ -28,6 +29,7 @@
 #include <cstdlib>
 #include <string>
 #include <unordered_set>
+#include <vector>
 
 extern "C" void func_802e0390(CPUState&);   // J3DShape::draw() const
 
@@ -64,9 +66,14 @@ struct Stats {
     unsigned long no_verts = 0;    // shapes with no vertex data
     unsigned long no_mtx = 0;      // shapes whose draw matrices are not ready
     unsigned long distinct = 0;    // distinct shape objects seen
+    unsigned long layout_ok = 0, layout_fail = 0;
+    unsigned long decoded = 0, decode_fail = 0;
+    unsigned long tris = 0;
 };
 Stats g_st;
 std::unordered_set<u32> g_seen;
+J3DVertexLayout g_layout;
+std::vector<J3DVert> g_tri;
 
 bool ok(u32 p) { return sb_ram_fast(p) != nullptr; }
 
@@ -82,10 +89,14 @@ const bool g_probe = [] {
                                         "geometry DL bytes %lu\n"
                                         "skipped: no vertex data %lu, matrices not ready %lu\n"
                                         "scene: %d drawables last tick, %d matched the previous "
-                                        "tick (interpolating)\n",
+                                        "tick (interpolating)\n"
+                                        "layout ok %lu / fail %lu\n"
+                                        "elements decoded %lu / failed %lu -> %lu triangles\n",
                                         (int)capture_on(), g_st.shapes, g_st.distinct,
                                         g_st.elements, g_st.dl_bytes, g_st.no_verts, g_st.no_mtx,
-                                        sbr_scene_last_count(), sbr_scene_matched_count());
+                                        sbr_scene_last_count(), sbr_scene_matched_count(),
+                                        g_st.layout_ok, g_st.layout_fail,
+                                        g_st.decoded, g_st.decode_fail, g_st.tris);
                           return std::string(buf);
                       });
     return true;
@@ -104,6 +115,9 @@ void ov_shape_draw(CPUState& cpu) {
         // null matrix array is expected early, not a bug.
         if (!ok(mtx)) ++g_st.no_mtx;
 
+        // One layout per shape (the descriptor and formats are per-shape, not per-element).
+        if (j3d_build_layout(shape, g_layout)) ++g_st.layout_ok; else ++g_st.layout_fail;
+
         const u32 n = sb_r16(shape + SHAPE_ELEMENT_COUNT);
         const u32 draws = sb_r32(shape + SHAPE_DRAWS);
         // The live draw-matrix array for this view. drawMtxArray[i] is a 3x4 model x view matrix
@@ -120,6 +134,19 @@ void ov_shape_draw(CPUState& cpu) {
                 const u32 dl   = sb_r32(d + SHAPEDRAW_DL_PTR);
                 const u32 size = sb_r32(d + SHAPEDRAW_DL_SIZE);
                 if (ok(dl) && size > 0 && size < (16u << 20)) g_st.dl_bytes += size;
+
+                // Decode the geometry. The vertex sizing is SELF-CHECKING: a wrong size lands
+                // mid-payload and hits a non-primitive opcode, which j3d_decode_element reports
+                // loudly rather than rendering garbage.
+                if (g_layout.valid) {
+                    g_tri.clear();
+                    if (j3d_decode_element(shape, i, g_layout, g_tri)) {
+                        ++g_st.decoded;
+                        g_st.tris += g_tri.size() / 3;
+                    } else {
+                        ++g_st.decode_fail;
+                    }
+                }
 
                 // Record the drawable for the interpolated scene. The element's matrix comes from
                 // its J3DShapeMtx; for the base class every vertex uses one slot (unk4), which is

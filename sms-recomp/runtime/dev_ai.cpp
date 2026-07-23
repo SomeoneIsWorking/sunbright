@@ -1,10 +1,13 @@
 // dev_ai.cpp — AI (audio interface) registers.
 //
-// AI is the DMA engine that streams samples out to the DAC. This port sends audio to the
-// host instead, so nothing here drives a real output — but the block is also a CLOCK, and
-// OS code reads its sample counter during init. That counter must actually advance: code
-// that samples it twice to measure an interval would divide by zero, or spin forever
-// waiting for it to move, if it were frozen.
+// AI is NOT the DAC's DMA engine — that is AID, over in the DSP block at 0xCC005030 (see
+// dev_aid.cpp). This block is the DTK/streaming interface and the DAC sample COUNTER, which
+// is a clock: OS code reads it during init, and code that samples it twice to measure an
+// interval would divide by zero, or spin forever waiting for it to move, if it were frozen.
+// (This header used to claim AI fed the DAC, which sent the audio arc looking in the wrong
+// register block.)
+//
+// Disc streaming (DTK) itself is not served here; nothing has needed it yet.
 
 #include "mmio.h"
 

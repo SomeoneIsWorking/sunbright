@@ -49,24 +49,28 @@ Legend: ✅ done (verified on real data) · 🟡 partial (documented gap) · �
 | guest scheduler | ✅ | `sms-recomp/runtime/guest_sched.cpp` | host thread per guest thread, single token; `gsched_cancel` (OSCancelThread) |
 | disc (nod) | ✅ | `sms-recomp/runtime/disc.cpp` | serves the disc directly, no DVD worker |
 | probe server | ✅ | `sms-recomp/runtime/probe_server.cpp` | `SBR_PROBE=1`, frame-seam dispatch; `/r /w /help` + module endpoints |
-| screen-effect registry | ✅ | `sms-recomp/runtime/screen_effects.h` (+ `sms-recomp/overrides/screen_effects.cpp`) | names the per-frame screen-sampling set; `/screenfx`; for interp60 |
+| J3D geometry decode | 🟡 | `sms-recomp/runtime/j3d_decode.cpp` (+ `sms-recomp/overrides/j3d_capture.cpp`) | shape layout + display-list -> triangles from guest memory; 370342/370342 elements decoded, 0 desyncs (2026-07-23). Observe-only: triangles are not submitted yet |
+| interpolated scene | 🟡 | `sms-recomp/runtime/scene.cpp` | wall-clock alpha, stable-key matching, never extrapolates; 417/417 drawables matched. Waiting on geometry submission |
+| native renderer (SDL3 GPU) | 🟡 | `sms-recomp/runtime/native_render.cpp` | device/pipeline/readback up, clip-space tris; not yet fed by the decode |
+| screen-effect registry | ✅ | `sms-recomp/runtime/screen_effects.h` (+ `sms-recomp/overrides/screen_effects.cpp`) | names the per-frame screen-sampling set; `/screenfx`; for the interpolated in-between frame |
 | SB_LOG channels | ✅ | `sms-recomp/runtime/sb_log.cpp` | linked into the executable (weak-undef trap) |
 
 ### Native overrides (`sms-recomp/overrides/`)
 | Subsystem | Status | Where | Gap / next |
 |---|---|---|---|
-| frame seam / present | ✅ | `sms-recomp/overrides/native_frame.cpp` | present + pace + SIGTERM/window-close + interp60 hook |
+| frame seam / present | ✅ | `sms-recomp/overrides/native_frame.cpp` | present + pace + SIGTERM/window-close + scene tick/render + `sbr_audio_frame` |
 | GX seam | ✅ | `sms-recomp/overrides/native_gx.cpp`, `sms-recomp/runtime/dev_gxfifo.cpp` | GXWaitDrawDone/DrawDone; stream handed to aurora |
 | CARD | ✅ | `sms-recomp/overrides/native_card.cpp` | host Dolphin card image, inline |
 | DVD / ARQ / THP | 🟡 | `sms-recomp/overrides/native_dvd.cpp`, `native_arq.cpp`, `native_thp.cpp` | THP decodes; session reopen faults (`SBR_THP`) |
 | PAD | ✅ | `sms-recomp/overrides/native_pad.cpp` | keyboard 12/12 bound (calls aurora PADInit); `SBR_PAD_SCRIPT` |
 | OS threads / MMU | ✅ | `sms-recomp/overrides/native_os_thread.cpp`, `native_os_mmu.cpp` | token hand-off; OSCancelThread |
-| DSP (audio) | ⬜ | `sms-recomp/overrides/native_dsp.cpp` | silent: DSP coprocessor unemulated. Dead link = AID regs 0xCC005030-3A inert. Plan: `docs/audio_recomp_plan.md` |
+| AID audio-DMA engine | ✅ | `sms-recomp/runtime/dev_aid.cpp` | 0xCC005030-3C its own device (was swallowed by dev_aram as inert halfwords — the dead link). Latch/wrap/re-arm, `__AID_Callback` delivered 57/s = 32000/560, paced to a 100 ms host backlog. Verified 2026-07-23 |
+| DSP voice mixer | ⬜ | `sms-recomp/overrides/native_dsp.cpp` | the heartbeat now beats but every delivered sample is ZERO — nothing fills the buffer. AX/Zelda ucode HLE = step 4 of `docs/audio_recomp_plan.md` |
 | fastboot | ✅ | `sms-recomp/overrides/fastboot_native.cpp` | `SBR_FASTBOOT`/`SBR_STAGE`/`SBR_SCENARIO`; ported from git 9283f44^ |
 | widescreen (16:9) | ✅ | `sms-recomp/overrides/widescreen.cpp` | aspect widened at `C_MTXPerspective` (input, not output); `SBR_WIDESCREEN` |
 | widescreen HUD | ✅ | `sms-recomp/overrides/hud.cpp` | per-`.blo`-name edge anchoring; `/2d` |
 | widescreen effects | ✅ | `sms-recomp/overrides/widescreen_effects.cpp` | 2D full-screen widen + EFB-tex/mirror suspend; `/wsfx /fills` |
-| 60fps interpolation | 🟡 | `sms-recomp/overrides/interp60.cpp` | 30 ticks/60 presents; blend replay; `SBR_INTERP60=1`. Open: cut detection, screen-effect handling on the in-between (see screen-effect registry) |
+| 60fps interpolation | 🟡 | `sms-recomp/runtime/scene.cpp` | wall-clock alpha between two KNOWN scene snapshots, never extrapolated. Replaced the retired tick-rate/blend-replay approach (user, 2026-07-23: "this tick rate based thing will never work"). Open: submission of decoded geometry, then cut detection |
 | 2D-class diagnostics | 🔬 | `sms-recomp/overrides/diag_2d.cpp` | `/2dclass` (SBR_DIAG_2D=1); pane→class census |
 
 ## Aurora (`extern/aurora` — the GC platform surface; submodule, fork remote branch `sunbright`)
@@ -88,7 +92,7 @@ Shared by both runtimes: the recomp hands it a GX stream, the decomp calls its G
 | main / boot | ✅ | `sms-boot/main.cpp` | one-runtime, single thread |
 | frame seam / present | ✅ | `sms-boot/runtime/frame_seam.cpp` | `sb_frame_present` in TVideo::waitForRetrace |
 | FIFO replay harness | 🟡 | `sms-boot/runtime/fifo_player.cpp` | CI-format TLUT synthesis missing (fail-fast) |
-| audio pump | ✅ | `sms-boot/runtime/audio_out.cpp`, `runtime/jas_kernel_native.cpp` | native voice renderer; title BGM audible + WAV-verified (2026-07-17) |
+| audio pump | ✅ | `sms-boot/runtime/audio_out.cpp`, `sms-boot/runtime/jas_kernel_native.cpp` | native voice renderer; title BGM audible + WAV-verified (2026-07-17) |
 | SDK stubs | 🟡 | `sms-boot/runtime/sdk_stubs.cpp` | audited; every stub documented or loud |
 | decomp shims/stubs | 🟡 | `sms-boot/shims/`, `sms-boot/boot_stubs/` | each boot_stub = porting worklist |
 
@@ -113,7 +117,7 @@ water refraction, dash blur, TScreenTexture) are FULLY implemented — see `docs
 ## Live diagnostics (recomp, `SBR_PROBE=1` → 127.0.0.1:17654)
 
 `/help` · `/r /w` (guest memory) · `/screenfx` (screen-sampling effects) · `/wsfx /fills /2d /2dclass`
-(widescreen/2D) · `/interp60` (blend tuning). Plus `SBR_LUCENT_DEBUG=<chan>` (app, mario, frame,
+(widescreen/2D) · `/j3d` (geometry capture + scene matching). Plus `SBR_LUCENT_DEBUG=<chan>` (app, mario, frame,
 gxfifo, widescreen, thp, …) and `SB_DUMP_FRAME`/`SB_DUMP_FRAME_AFTER`.
 
 ## Where is X?
@@ -122,7 +126,7 @@ gxfifo, widescreen, thp, …) and `SB_DUMP_FRAME`/`SB_DUMP_FRAME_AFTER`.
 - GX stream → aurora → `sms-recomp/runtime/dev_gxfifo.cpp` (`gxfifo_flush`, `emit_arraybase`, EFB copies)
 - widescreen aspect → `sms-recomp/overrides/widescreen.cpp` (`ov_c_mtx_perspective`)
 - a screen effect (heat haze etc.) → `docs/screen_effects.md` + `sms-recomp/overrides/screen_effects.cpp`
-- 60fps blend → `sms-recomp/overrides/interp60.cpp` (`sbr_interp60_blend`)
+- 60fps interpolation → `sms-recomp/runtime/scene.cpp` (`sbr_scene_render`)
 - an opcode's emitted C → `tools/recompiler/c_emitter.cpp` + `sms-recomp/generated/functions_*.cpp`
 - Mario's position at runtime → `/r?a=0x8040E10C` then deref (pointer, not a position global)
 
@@ -131,7 +135,7 @@ gxfifo, widescreen, thp, …) and `SB_DUMP_FRAME`/`SB_DUMP_FRAME_AFTER`.
 ```
 sms-recomp/  —  the recomp runtime
 ├─ generated/   PPC→C++ (2.79M lines, regenerated by tools/recompiler)
-├─ overrides/   3.7k lines  22 files   native HW/OS seams + widescreen/HUD/interp60/screenfx
+├─ overrides/   3.7k lines  22 files   native HW/OS seams + widescreen/HUD/screenfx/j3d capture
 ├─ runtime/     3.9k lines  30 files   dispatch, MMIO, HW devices, scheduler, probe
 └─ host/        main.cpp
 extern/aurora/  the GC platform surface (SDL3 + WebGPU/Dawn), shared
@@ -142,7 +146,7 @@ tools/          recompiler + RE + oracle tooling
 
 ## Open heads (details in debug_journal/ and docs/)
 
-- **interp60** — cut detection + screen-effect handling on the in-between field (`docs/screen_effects.md`).
+- **60fps** — submit decoded geometry through `sbr_scene_render`, then cut detection + screen-effect handling on the in-between field (`docs/screen_effects.md`).
 - **audio (recomp only)** — DSP voice mixer; the decomp side is already audible and is the oracle. `docs/audio_recomp_plan.md`.
 - **THP session reopen** — second movie faults on a null message queue.
 - **decomp Delfino gameplay crash** — plaza-population stubs (oracle side).
