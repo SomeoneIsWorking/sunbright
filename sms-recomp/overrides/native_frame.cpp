@@ -206,18 +206,28 @@ void video_wait_for_retrace(CPUState& cpu) {
     sb_probe_pump();
     sb_screen_effects_frame_end();   // roll the per-frame screen-effect set over
 
-    // Native SDL3-GPU renderer, milestone 0: stand the device up and prove the clear+readback path
-    // once (SBR_SDLGPU=1). Grows into the real renderer; aurora stays the oracle meanwhile.
+    // Native SDL3-GPU renderer (SBR_SDLGPU=1). Milestone 1: prove the geometry path end to end —
+    // a known clip-space triangle rendered over the clear, read back and checked at two points.
+    // The GX frontend (stream -> transformed triangles) plugs in here next.
     if (sbr_render_enabled()) {
         static int done = 0;
         if (!done && sbr_render_init(640, 448)) {
             done = 1;
-            sbr_render_clear(0.10f, 0.40f, 0.80f, 1.0f);   // a distinctive blue
+            sbr_render_begin(0.10f, 0.40f, 0.80f, 1.0f);
+            const SbrVertex tri[3] = {
+                {-0.5f, -0.5f, 0.0f, 1.0f,  1.0f, 0.0f, 0.0f, 1.0f},
+                { 0.5f, -0.5f, 0.0f, 1.0f,  1.0f, 0.0f, 0.0f, 1.0f},
+                { 0.0f,  0.5f, 0.0f, 1.0f,  1.0f, 0.0f, 0.0f, 1.0f},
+            };
+            sbr_render_tris(tri, 3);
+            sbr_render_end();
             std::vector<uint8_t> px(640 * 448 * 4);
             if (sbr_render_readback(px.data(), 640, 448)) {
-                const uint8_t* c = &px[(224 * 640 + 320) * 4];   // centre pixel
-                lucent::info("nrender", "milestone-0 clear centre pixel = ({},{},{},{}) "
-                                        "(expect ~26,102,204,255)", c[0], c[1], c[2], c[3]);
+                const uint8_t* c = &px[(224 * 640 + 320) * 4];   // centre: inside the triangle
+                const uint8_t* e = &px[(20 * 640 + 20) * 4];     // corner: the clear
+                lucent::info("nrender", "milestone-1 verts={} centre=({},{},{}) corner=({},{},{}) "
+                                        "(expect red 255,0,0 and blue 26,102,204)",
+                             sbr_render_last_vertex_count(), c[0], c[1], c[2], e[0], e[1], e[2]);
             }
         }
     }
