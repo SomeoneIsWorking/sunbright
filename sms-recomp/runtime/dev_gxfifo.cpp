@@ -45,6 +45,14 @@ std::vector<u8> g_buf;
 std::vector<u8> g_out;
 std::vector<u8> g_last;   // the stream of the frame just presented (see gxfifo_last_frame)
 
+// 60fps interpolation: to interpolate the RIGID world (matrices loaded via GXLoadPosMtxImm, whose
+// values are baked INLINE into the stream), the immediate matrices in this frame's stream are blended
+// with the previous frame's. Re-walking the stream would need the full VCD/VAT length logic, so
+// instead the parser records, as it emits each immediate pos/nrm matrix, WHERE the float data landed
+// in g_out — blending is then a direct read/lerp/write at those offsets, no second walk.
+struct MtxRef { u32 off; u16 words; };   // off = byte offset of the matrix floats in the stream
+std::vector<MtxRef> g_out_mtx, g_last_mtx, g_prev_mtx;
+std::vector<u8> g_prev;   // the frame before g_last
 
 
 // Per-VAT vertex descriptors, enough to compute a vertex's byte size.
@@ -476,6 +484,13 @@ size_t parse(const u8* p, size_t n, int depth) {
                     }
                 }
             }
+            {   // A per-object draw matrix loaded IMMEDIATE: pos matrices live in XF 0x000-0x0FF,
+                // normal matrices in 0x400-0x45F. Record where its float data lands in g_out so the
+                // in-between field can blend it toward the previous frame (gxfifo_blend_last).
+                const u32 a = be32(p + i + 1) & 0xFFFF;
+                if (a < 0x100 || (a >= 0x400 && a < 0x460))
+                    g_out_mtx.push_back({(u32)(g_out.size() + 5), (u16)count});   // +5: skip the header
+            }
             g_out.insert(g_out.end(), p + i, p + i + len);
             g_stats.xf++; i += len; continue;
         }
@@ -639,45 +654,88 @@ u32 fifo_read(u32 ea, unsigned width) {
 
 } // namespace
 
-// Hand the frame's command stream to aurora. Called once per presented frame.
-void gxfifo_flush() {
-    // Drain whatever is still buffered before presenting. Parsing only ran once 4096 bytes
-    // had accumulated, so a frame's trailing commands could sit unparsed and be emitted in
-    // the NEXT frame's stream — aurora would then draw this frame with last frame's state.
-    // At a frame boundary the guest has finished writing, so parse what is there.
+// Parse this frame's stream and rotate it into g_last (with the previous frame in g_prev). Does
+// NOT send anything to aurora — the frame seam decides what to send and present, which is what lets
+// 60fps interpolation present a blended stream BEFORE the real one.
+void gxfifo_build() {
+    // Drain whatever is still buffered. Parsing only ran once 4096 bytes had accumulated, so a
+    // frame's trailing commands could sit unparsed and be emitted in the NEXT frame's stream.
     while (!g_buf.empty()) {
         const size_t used = parse(g_buf.data(), g_buf.size());
-        if (used == 0) break;                       // needs bytes the guest has not written
+        if (used == 0) break;
         g_buf.erase(g_buf.begin(), g_buf.begin() + used);
     }
-
     if (g_out.empty()) return;
 
-    // Display lists are INLINED (aurora ignores nested CALL_DL), so a list called once per
-    // object contributes its bytes once per call. That is semantically right — the hardware
-    // re-reads it from RAM each time — but it makes the per-frame stream much larger than
-    // the guest's own FIFO traffic, which is worth being able to see.
     lucent::debug("gxfifo", "frame stream {} KB ({} DL expansions, {} KB inlined)",
                   g_out.size() >> 10, g_dl_calls, g_dl_bytes >> 10);
     g_dl_calls = 0; g_dl_bytes = 0;
 
-    aurora_fifo_replay(g_out.data(), (u32)g_out.size(), /*bigEndian=*/1);
-    // Keep the stream: 60fps interpolation presents the SAME frame a second time with the
-    // guest's draw matrices blended toward the previous tick. Aurora reads indexed arrays
-    // through host pointers into guest RAM (emit_arraybase), so replaying this identical
-    // stream after blending those buffers renders the in-between field — no second game
-    // frame, no game code re-entered.
+    // Rotate: g_prev <- old g_last, g_last <- new. Same rotation for the immediate-matrix offset
+    // lists, so g_prev_mtx pairs positionally with g_prev's bytes.
+    g_prev.swap(g_last);
     g_last.swap(g_out);
     g_out.clear();
+    g_prev_mtx.swap(g_last_mtx);
+    g_last_mtx.swap(g_out_mtx);
+    g_out_mtx.clear();
 }
 
-// The stream that produced the frame just presented (empty if none).
+void gxfifo_send(const std::vector<u8>& s) {
+    if (!s.empty()) aurora_fifo_replay(s.data(), (u32)s.size(), /*bigEndian=*/1);
+}
+
+// The non-interpolated path: build this frame and send it. Behaviour unchanged from before the
+// build/send split.
+void gxfifo_flush() {
+    gxfifo_build();
+    gxfifo_send(g_last);
+}
+
+void gxfifo_send_last() { gxfifo_send(g_last); }
 const std::vector<u8>& gxfifo_last_frame() { return g_last; }
 
-// Replay it again, into whatever frame is currently open.
-void gxfifo_replay_last() {
-    if (g_last.empty()) return;
-    aurora_fifo_replay(g_last.data(), (u32)g_last.size(), /*bigEndian=*/1);
+// Read/write a big-endian f32 at a byte offset.
+static f32 be_f32(const std::vector<u8>& b, u32 off) {
+    const u32 u = (u32)b[off] << 24 | (u32)b[off + 1] << 16 | (u32)b[off + 2] << 8 | b[off + 3];
+    f32 f; std::memcpy(&f, &u, 4); return f;
+}
+static void put_be_f32(std::vector<u8>& b, u32 off, f32 f) {
+    u32 u; std::memcpy(&u, &f, 4);
+    b[off] = u >> 24; b[off + 1] = u >> 16; b[off + 2] = u >> 8; b[off + 3] = u;
+}
+
+// Produce the in-between field's stream: a copy of g_last (tick N) whose IMMEDIATE draw matrices —
+// the rigid world and camera, baked inline by GXLoadPosMtxImm and therefore untouched by the
+// guest-RAM (indexed) blend — are lerped toward the previous frame (g_prev) by (1 - alpha).
+//
+// Pairing is POSITIONAL: the Kth immediate matrix of frame N pairs with the Kth of N-1. That is
+// exact while the scene's draw order is stable (which it is frame-to-frame in normal play). When
+// the immediate-matrix COUNT differs — an object appeared or disappeared, so the sequences no
+// longer align — the whole frame falls back to N with NO interpolation, rather than lerp mismatched
+// objects into each other and produce garbage. A single un-interpolated frame is invisible; a
+// smeared one is not.
+const std::vector<u8>& gxfifo_blend_last(float alpha) {
+    static std::vector<u8> blend;
+    blend = g_last;
+    if (std::getenv("SBR_INTERP_DBG")) {
+        static long m=0,fb=0;
+        if (g_prev_mtx.size()==g_last_mtx.size() && !g_prev.empty()) ++m; else ++fb;
+        if ((m+fb)%60==0) lucent::info("interp","immediate-mtx blend applied={} fallback={} (count L={} P={})",m,fb,g_last_mtx.size(),g_prev_mtx.size());
+    }
+    if (g_prev_mtx.size() != g_last_mtx.size() || g_prev.empty()) return blend;   // safe fallback
+    const float ia = 1.0f - alpha;
+    for (size_t k = 0; k < g_last_mtx.size(); ++k) {
+        const MtxRef& L = g_last_mtx[k];
+        const MtxRef& P = g_prev_mtx[k];
+        if (L.words != P.words) continue;                       // shape changed: keep N for this one
+        const u32 floats = L.words;
+        if (L.off + floats * 4 > blend.size() || P.off + floats * 4 > g_prev.size()) continue;
+        for (u32 f = 0; f < floats; ++f)
+            put_be_f32(blend, L.off + f * 4,
+                       ia * be_f32(g_prev, P.off + f * 4) + alpha * be_f32(blend, L.off + f * 4));
+    }
+    return blend;
 }
 
 void gxfifo_stats(u64& draws, u64& verts, u64& bytes) {

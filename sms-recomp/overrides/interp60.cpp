@@ -4,18 +4,23 @@
 // piece of logic keyed on the retrace count), the RENDER is decoupled: each game tick is presented
 // twice, and the second present shows the scene half-way between the previous tick and this one.
 //
-// ARCHITECTURE — replay, not re-simulation. The retired Dolphin-era implementation
-// (git 9283f44^: interp_redraw.cpp / interp_capture.cpp) started by re-issuing the engine's own
-// draw perform-lists on the in-between field and converged, after a long fight with crashes and
-// double-stepped animation, on replaying the captured GX command stream instead. This runtime is
-// already built that way: dev_gxfifo collects a frame's commands and hands them to
-// aurora_fifo_replay, so "render the same frame again" is gxfifo_replay_last().
+// ARCHITECTURE — replay, not re-simulation. Re-running the game's draw code for the in-between
+// would double-step animation and crash; instead the captured GX stream is replayed a second time
+// (dev_gxfifo builds it once, the frame seam sends it twice). The two matrix paths interpolate
+// differently, and BOTH are needed or the scene only half-moves:
 //
-// That leaves only the interesting half: making the second render show something DIFFERENT.
-// Aurora reads indexed vertex and matrix arrays through host pointers into guest RAM
-// (dev_gxfifo emit_arraybase), so it re-reads the draw matrices at replay time. Blending those
-// buffers between the two replays is therefore enough to move the whole scene — no second game
-// frame, no game code re-entered, and nothing for a crash to come from.
+//   * INDEXED matrices (GXLoadPosMtxIndx, envelope-skinned parts like Mario): the stream references
+//     them through host pointers into guest RAM, so blending the guest mDrawMtxBuf before the replay
+//     is enough — aurora re-reads the blended values. That is what this file does.
+//   * IMMEDIATE matrices (GXLoadPosMtxImm, the RIGID world and camera — ~half of every frame): their
+//     VALUES are baked inline into the stream, so a guest-RAM blend never touches them. Those are
+//     blended in the STREAM by dev_gxfifo (gxfifo_blend_last), pairing each immediate matrix with the
+//     previous frame's positionally. Skipping this left the world and camera frozen while only Mario
+//     interpolated — "looks like vanilla framerate" (2026-07-23).
+//
+// ORDER: the in-between (N-½) is presented BEFORE the real tick (N). N-½ is temporally earlier, so
+// presenting N first would judder. The frame seam sends the blended stream, presents, restores the
+// guest RAM, then sends and presents N.
 //
 // WHERE THE TWO TICKS LIVE (RE'd from J3DModel::viewCalc @ 0x802deeb8, per the retired
 // interp_capture.cpp): viewCalc does not merely load matrices — it swaps the double buffer and
@@ -207,14 +212,32 @@ bool sbr_interp60() {
 
 // Blend every live model toward the previous tick. Returns false if there is nothing to show, in
 // which case the caller must NOT present an in-between field.
+float sbr_interp60_alpha() { return g_cfg.alpha; }
+
+// This field's live model set becomes the next field's "was already here" test, then clears for the
+// next frame's viewCalc records. Runs every frame (see the note in sbr_interp60_blend).
+static void rotate_live_set() {
+    g_liveLastField.clear();
+    g_liveLastField.insert(g_registry.begin(), g_registry.end());
+    g_registry.clear();
+    g_seen.clear();
+}
+
 bool sbr_interp60_blend() {
-    if (!g_cfg.enabled || g_registry.empty()) return false;
+    if (!g_cfg.enabled) { rotate_live_set(); return false; }
     ++g_stats.fields;
     g_stats.models = g_registry.size();
     g_stats.blended = 0;
     g_restore.clear();
     for (u32 model : g_registry) blend_model(model, g_cfg.alpha);
-    return !g_restore.empty();
+    // Rotate the live set NOW — every frame, even one that blended nothing. The gate that rejects
+    // freshly-spawned models reads it, so if it only advanced on frames that produced an in-between,
+    // the very first frame (nothing live "last field" yet) would bail forever and the in-between
+    // would never start. Restore of the guest RAM is separate (sbr_interp60_restore), and only
+    // needed when something was blended.
+    const bool blended = !g_restore.empty();
+    rotate_live_set();
+    return blended;
 }
 
 // Put tick N back, exactly as the real field computed it. This MUST run before the game's next
@@ -224,11 +247,6 @@ void sbr_interp60_restore() {
     for (const Saved& s : g_restore)
         for (size_t i = 0; i < s.f.size(); i++) guest_set_f32(s.addr + (u32)i * 4, s.f[i]);
     g_restore.clear();
-    // This field's live set becomes the next field's "was already here" test.
-    g_liveLastField.clear();
-    g_liveLastField.insert(g_registry.begin(), g_registry.end());
-    g_registry.clear();
-    g_seen.clear();
 }
 
 SB_OVERRIDE(J3DMODEL_VIEWCALC, ov_view_calc, "J3DModel::viewCalc",

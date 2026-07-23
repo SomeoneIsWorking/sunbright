@@ -167,3 +167,50 @@ because it misfired on distant geometry during camera rotation); the gate is abo
   before blaming the blend — replaying the whole stream re-parses it.
 
 Live tuning without a rebuild: `curl '127.0.0.1:17654/interp60?alpha=0.5'` (or `on=0` to A/B).
+
+## interp60 "looks like vanilla framerate" — two certain root causes (2026-07-23)
+
+User: `SBR_INTERP60=1` presents at 56/s but looks like 30fps. Owned the logic instead of trusting
+"the blend reaches the display":
+
+1. **Immediate matrices are baked into the replayed stream.** J3D loads RIGID draw matrices with
+   `GXLoadPosMtxImm`, which the GX stream encodes as an XF write with the matrix VALUES INLINE
+   (`dev_gxfifo.cpp` op 0x10 copies them straight into `g_out`). interp60 blends the guest
+   `mDrawMtxBuf` and REPLAYS the captured stream — but replay re-loads the baked immediate values;
+   the blended guest buffer is only re-read by the INDEXED path (`GXLoadPosMtxIndx`, envelope
+   skinning). MEASURED (SBR_MTX_CENSUS) in Delfino Plaza: **~926 immediate pos-matrix loads/frame**
+   (the whole rigid world + camera, NOT interpolated) vs ~1130 indexed (skinned, interpolated). So
+   only skinned geometry interpolated; the world and camera did not → looks vanilla. The
+   "60fps restored" commit verified "142 models blended" (the indexed set) and never checked the
+   world moved between the two presents — insufficient verification.
+
+2. **Wrong present ORDER.** The flow presented the real tick N, THEN the in-between (blend toward
+   N-1 = N-½). Temporal order N, N-½, N+1, N+½ is non-monotonic = judder. The in-between (N-½) must
+   be presented BEFORE the real (N): N-½, N, N+½, N+1.
+
+Fix: keep the previous frame's stream; present N-½ then N; interpolate the immediate matrices in the
+stream too — safely (blend the Kth immediate matrix only when g_prev and g_last have the SAME
+immediate-matrix count, i.e. a stable scene; otherwise present N without interp rather than pairing
+mismatched objects into garbage).
+
+### interp60 fixed (2026-07-23) — 30 ticks / 60 presents, whole scene interpolates
+
+Both root causes fixed and verified: 30.0 ticks/s, 60.0 presents/s in Delfino Plaza (paced, not
+turbo); Mario walking renders as a clean mid-stride in-between, no smear.
+
+- **Immediate matrices** are now blended in the STREAM. dev_gxfifo records, during the normal parse,
+  the byte offset of each immediate pos/nrm matrix's float data in the output stream (`g_out_mtx`);
+  `gxfifo_blend_last(alpha)` copies g_last and lerps each matrix toward the previous frame's
+  positionally-paired one. Measured: 854 immediate matrices/frame, blend applies on ~92% of frames,
+  falls back (present N, no interp) on the ~8% where the count changed — never smears.
+- **Order fixed**: the frame seam sends the blended stream, presents N-½, restores guest RAM, then
+  sends and presents N. Split gxfifo_flush into gxfifo_build (parse+rotate, keeps g_prev) and
+  gxfifo_send so the seam controls the two sends.
+- **Gate bug fixed**: the "live last field" rotation moved into sbr_interp60_blend so it runs every
+  frame; it was inside the restore (only-on-success) path, so the first frame bailed forever and the
+  in-between never started (30 presents/s).
+
+Still open (pre-existing, indexed path): a blended skinned model occasionally shows a large
+max_joint_motion (~2.5e11) — a garbage previous-tick that passes the isfinite check; bail_new catches
+most freshly-spawned models. Not visible in captures; revisit if a skinned model flickers. Cut
+detection (a camera cut interpolated across) also still open.

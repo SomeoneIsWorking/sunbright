@@ -22,14 +22,18 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <vector>
 
 extern "C" void func_802fc9a4(CPUState&);   // JDrama::TVideo::waitForRetrace
-extern void gxfifo_flush();
-extern void gxfifo_replay_last();
+extern void gxfifo_build();
+extern void gxfifo_send_last();
+extern void gxfifo_send(const std::vector<u8>&);
+extern const std::vector<u8>& gxfifo_blend_last(float alpha);
 
 // interp60.cpp — 60fps interpolation. The blend/restore pair brackets the extra present.
 bool sbr_interp60();
 bool sbr_interp60_blend();
+float sbr_interp60_alpha();
 void sbr_interp60_restore();
 
 namespace {
@@ -219,9 +223,9 @@ void video_wait_for_retrace(CPUState& cpu) {
     // Let the game do its own frame bookkeeping first.
     func_802fc9a4(cpu);
 
-    // Everything for this frame is in the stream now. Only hand it over if a frame is
-    // actually open; otherwise it would be replayed into a frame that will be discarded.
-    gxfifo_flush();
+    // Parse this frame (tick N) and rotate it into g_last, WITHOUT sending it yet — the
+    // interpolation path below sends the in-between BEFORE the real frame.
+    gxfifo_build();
 
     // Rates, so "is it slow?" is measured rather than guessed. TICKS are game frames; PRESENTS
     // are what reaches the screen, and with 60fps interpolation there are two per tick — counting
@@ -252,30 +256,27 @@ void video_wait_for_retrace(CPUState& cpu) {
     // 170 frames and aborted with "mapped ByteBuffer overflow".
     static bool s_frameActive = true;   // main() opened the first frame
 
-    present_and_reopen(s_frameActive);
-
-    // ── The in-between field (60fps interpolation) ───────────────────────────────────────
-    // The frame just presented is tick N. Blend every live model's draw matrices toward tick
-    // N-1 and replay the SAME command stream: aurora re-reads those matrices out of guest RAM,
-    // so the identical stream renders the scene half a tick earlier. No game code runs, which
-    // is what keeps animation from double-stepping and keeps this out of the crash business.
+    // ── 60fps interpolation ──────────────────────────────────────────────────────────────
+    // Present TWO frames per tick: the in-between (N-½) FIRST, then the real tick (N). Order
+    // matters — N-½ is temporally before N, so presenting N first would judder. The in-between
+    // interpolates BOTH matrix paths toward the previous tick: the guest-RAM indexed arrays
+    // (sbr_interp60_blend, skinned geometry) and the immediate matrices baked into the stream
+    // (gxfifo_blend_last, the rigid world and camera). No game code runs for it.
     //
-    // Paced as a field of its own, so the two presents are evenly spaced rather than
-    // back-to-back — otherwise the output is two frames in quick succession followed by a long
-    // gap, which looks worse than 30fps however high the present count reads.
+    // Each present is one field, so the two are evenly spaced. If the blend can't be made this
+    // tick (no models yet, or the scene's object count changed), the in-between is skipped and
+    // only N is presented — a single 30fps tick, not a smeared one.
     unsigned fields_paced = 0;
-    if (sbr_interp60() && s_frameActive) {
+    if (sbr_interp60() && s_frameActive && sbr_interp60_blend()) {
+        gxfifo_send(gxfifo_blend_last(sbr_interp60_alpha()));   // N-½: indexed via blended RAM + immediate blended
+        present_and_reopen(s_frameActive);
+        sbr_interp60_restore();                                 // guest RAM back to N before sending N
         pace_fields(1);
         ++fields_paced;
-        if (sbr_interp60_blend()) {
-            gxfifo_replay_last();
-            present_and_reopen(s_frameActive);
-        }
-        // Tick N goes back BEFORE the game's next field, always — including when the blend
-        // produced nothing to present. Leaving blended values in place would make them the base
-        // for the next interpolation, and the scene would drift backwards every frame.
-        sbr_interp60_restore();
     }
+
+    gxfifo_send_last();                 // tick N
+    present_and_reopen(s_frameActive);
 
     // PACING. Without this the recomp runs as fast as the host allows (measured ~157 fps against
     // the oracle's 30) — every animation, timer and physics step driven off the retrace count
