@@ -28,7 +28,7 @@
 #include <vector>
 
 extern "C" void func_802fc9a4(CPUState&);   // JDrama::TVideo::waitForRetrace
-void sbr_mtx_report();
+void sbr_mtx_report_index();
 // Weak: resolves to a no-op until the audio subsystem provides it (see docs/audio_recomp_plan.md).
 extern "C" __attribute__((weak)) void sbr_audio_frame();
 extern "C" __attribute__((weak)) void sbr_audio_frame() {}
@@ -295,7 +295,7 @@ void video_wait_for_retrace(CPUState& cpu) {
 
     // The tick's scene is complete (the capture hooks ran during the game's draw). Rotate it so the
     // renderer has two snapshots to interpolate between, then open the next tick's recording.
-    sbr_mtx_report();
+    sbr_mtx_report_index();
     sbr_scene_end_tick();
     sbr_scene_begin_tick();
 

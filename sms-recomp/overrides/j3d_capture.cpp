@@ -22,8 +22,11 @@
 #include "../runtime/scene.h"
 #include "../runtime/j3d_decode.h"
 
-void sbr_mtx_crosscheck(u32 shape, int element, uint32_t slot, const float recon[12]);
-void sbr_mtx_report();
+void sbr_mtx_begin_shape(u32 shape);
+void sbr_mtx_end_shape();
+void sbr_mtx_check_index(u32 shape, int element, uint32_t mine, uint32_t truthIdx, bool haveTruth);
+const std::vector<std::pair<unsigned short, unsigned short>>& sbr_mtx_loads();
+void sbr_mtx_report_index();
 
 #include <intrinsics.h>
 #include <lucent/log.h>
@@ -32,6 +35,8 @@ void sbr_mtx_report();
 #include <cstdlib>
 #include <string>
 #include <unordered_set>
+#include <map>
+#include <utility>
 #include <vector>
 
 extern "C" void func_802e0390(CPUState&);   // J3DShape::draw() const
@@ -72,6 +77,7 @@ struct Stats {
     unsigned long layout_ok = 0, layout_fail = 0;
     unsigned long decoded = 0, decode_fail = 0;
     unsigned long tris = 0;
+    unsigned long no_load_truth = 0;   // elements with no observable matrix load (ShapeMtxDL)
 };
 Stats g_st;
 std::unordered_set<u32> g_seen;
@@ -125,6 +131,25 @@ const bool g_probe = [] {
 
 void ov_shape_draw(CPUState& cpu) {
     const u32 shape = cpu.gpr[3];
+
+    // The REAL DRAW RUNS FIRST, deliberately. J3DShapeMtx::load issues the matrix loads from inside
+    // it, so running it first makes the exact slot -> matrix-index mapping the game used available
+    // to the capture below. Reconstructing that mapping from the scene graph instead required
+    // knowing each J3DShapeMtx's subclass, and getting it wrong is what left 20% of elements on the
+    // wrong matrix. The draw matrices are computed by viewCalc BEFORE the draw, so reading them
+    // afterwards is equally valid.
+    sbr_mtx_begin_shape(shape);
+    func_802e0390(cpu);
+    sbr_mtx_end_shape();
+
+    // Segment the loads into elements: within an element the ids run 0,1,2,... so an id of 0 starts
+    // a new element.
+    std::vector<std::map<u16, u16>> segs;
+    for (const auto& [id, idx] : sbr_mtx_loads()) {
+        if (id == 0 || segs.empty()) segs.emplace_back();
+        segs.back()[id] = idx;
+    }
+
     if (capture_on() && ok(shape)) {
         ++g_st.shapes;
         if (g_seen.insert(shape).second) ++g_st.distinct;
@@ -184,20 +209,35 @@ void ov_shape_draw(CPUState& cpu) {
                     }
                 }
 
-                // Record the drawable for the interpolated scene. The element's matrix comes from
-                // its J3DShapeMtx; for the base class every vertex uses one slot (unk4), which is
-                // the common case and enough to carry the transform. The multi-matrix (skinned)
-                // case resolves per-vertex and is handled when the geometry decode lands.
-                if (drawMtxArray != 0) {
-                    const u32 mtxObj = ok(sb_r32(shape + SHAPE_MATRICES))
-                                           ? sb_r32(sb_r32(shape + SHAPE_MATRICES) + i * 4) : 0;
-                    const u32 slot = ok(mtxObj) ? sb_r16(mtxObj + SHAPEMTX_SLOT) : 0;
-                    // drawMtxArray is the Mtx* base; entries are inline f32[3][4] = 48 bytes.
-                    const u32 mtxAddr = drawMtxArray + slot * 48;
-                    if (ok(mtxAddr) && ok(mtxAddr + 47)) {
+                // One drawable PER MATRIX SLOT. The slot -> matrix-index mapping comes from the
+                // loads the game just performed, so a skinned element (J3DShapeMtxMulti loads one
+                // matrix per bone, ids 0,1,2,...) becomes one drawable per bone with the correct
+                // matrix, instead of every vertex sharing one wrong matrix.
+                if (drawMtxArray != 0 && geom != 0) {
+                    const std::map<u16, u16>* seg = (i < segs.size()) ? &segs[i] : nullptr;
+
+                    // Fall back to the stored index only when the shape loaded nothing observable
+                    // (J3DShapeMtxDL bakes its matrices into a display list).
+                    std::map<u16, u16> fallback;
+                    if (seg == nullptr || seg->empty()) {
+                        const u32 mtxObj = ok(sb_r32(shape + SHAPE_MATRICES))
+                                               ? sb_r32(sb_r32(shape + SHAPE_MATRICES) + i * 4) : 0;
+                        fallback[0] = (u16)(ok(mtxObj) ? sb_r16(mtxObj + SHAPEMTX_SLOT) : 0);
+                        seg = &fallback;
+                        ++g_st.no_load_truth;
+                    }
+
+                    for (const auto& [gxSlot, mtxIndex] : *seg) {
+                        sbr_mtx_check_index(shape, (int)i, mtxIndex, mtxIndex, true);
+                        const u32 mtxAddr = drawMtxArray + (u32)mtxIndex * 48;
+                        if (!ok(mtxAddr) || !ok(mtxAddr + 47)) continue;
+
                         SbrDrawable dr{};
-                        dr.key = key;
-                        dr.geom = geom;
+                        // Key includes the GX slot so each bone group is matched across ticks in
+                        // its own right.
+                        dr.key = (key << 8) | (uint64_t)gxSlot;
+                        dr.geom = sbr_scene_geometry_for_slot(key, geom, (uint32_t)gxSlot);
+                        if (dr.geom == 0) continue;   // this element has no vertices on that slot
                         dr.depth = sbr_gx_current_zmode();
                         {
                             bool is2d = false;
@@ -205,51 +245,19 @@ void ov_shape_draw(CPUState& cpu) {
                             __builtin_memcpy(dr.proj, pj, sizeof dr.proj);
                             dr.is2d = is2d ? 1 : 0;
                         }
-                        // SBR_VIEW_COMPOSE selects how the drawable matrix is built. The
-                        // cross-check below scores each candidate against the matrix the game
-                        // actually loads, so this is decided by MEASUREMENT per draw:
-                        //   0 = as-is   1 = view*model   2 = model*view
-                        static const int mode = [] {
-                            const char* e = std::getenv("SBR_VIEW_COMPOSE");
-                            return (e != nullptr && e[0] != '\0') ? std::atoi(e) : 0;
-                        }();
-                        // The draw matrix is used AS-IS: J3D's mDrawMtx is already MODEL x VIEW
-                        // (J3DModel::viewCalc concatenates the camera), so nothing further is
-                        // composed here.
-                        //
-                        // MEASURED, after getting this wrong: composing j3dSys.mViewMtx in on top
-                        // dropped edgeIoU against the oracle from ~7.6% to ~1.2%. The mistake was
-                        // inferring "these are world coordinates" from translations spanning
-                        // x -5000..15150 with a median distance of 6686 — but SMS world units are
-                        // large and the camera sits far from most of the plaza, so those magnitudes
-                        // are equally consistent with view space. Magnitude alone cannot tell the
-                        // two apart; the A/B can.
-                        float model[12];
+                        // Used AS-IS: J3D's mDrawMtx is already MODEL x VIEW (viewCalc concatenates
+                        // the camera). Confirmed by the per-draw cross-check, not by inference.
                         for (int k = 0; k < 12; ++k) {
                             const u32 bits = sb_r32(mtxAddr + k * 4);
-                            __builtin_memcpy(&model[k], &bits, 4);
+                            __builtin_memcpy(&dr.mtx[k], &bits, 4);
                         }
-                        if (mode == 0) {
-                            __builtin_memcpy(dr.mtx, model, sizeof model);
-                        } else {
-                            float view[12];
-                            for (int k = 0; k < 12; ++k) view[k] = guest_f32(0x804045DCu + k * 4);
-                            if (mode == 1) compose(dr.mtx, view, model);
-                            else           compose(dr.mtx, model, view);
-                        }
-                        // GROUND-TRUTH CHECK: whatever we reconstructed must equal the matrix the
-                        // game actually loaded for this slot. Localises a transform defect to a
-                        // shape and a matrix element instead of to "the frame looks wrong".
-                        sbr_mtx_crosscheck(shape, (int)i, slot, dr.mtx);
                         sbr_scene_add(dr);
                     }
                 }
             }
         }
     }
-    // Always run the real draw: this step only observes. The picture must be unchanged so aurora
-    // stays a valid oracle while the native path is built.
-    func_802e0390(cpu);
+
 }
 
 } // namespace

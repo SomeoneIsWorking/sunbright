@@ -20,7 +20,13 @@
 //
 // The same shape generalises — a projection cross-check belongs here too when it lands.
 //
-//   SBR_MTX_CHECK=1   verify every drawable's matrix; report agreement + the worst offender
+// The invariant checked is the matrix INDEX. An earlier version compared matrix VALUES against
+// GXLoadPosMtxImm and permanently reported ~13% agreement — a false alarm, because J3D only uses the
+// immediate load for its CPU-skinned pipelines, where it loads j3dSys.mViewMtx rather than a model
+// matrix. Comparing against the wrong ground truth is worse than no check: it reports a defect that
+// is not there, every frame.
+//
+//   SBR_MTX_CHECK=1   verify every element's matrix index against the game's own load
 
 #include "overrides.h"
 
@@ -30,8 +36,10 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <unordered_map>
+#include <vector>
 
-extern "C" void func_80362e0c(CPUState&);   // GXLoadPosMtxImm(f32 mtx[3][4], u32 id)
+extern "C" void func_80362e48(CPUState&);   // GXLoadPosMtxIndx(u16 mtx_indx, u32 id)
 
 namespace {
 
@@ -39,22 +47,28 @@ namespace {
 // indexed by slot. 10 is GX's pos/nrm matrix count.
 constexpr int kSlots = 64;
 
-struct Loaded {
-    float m[12];
-    bool  valid = false;
-};
-Loaded g_loaded[kSlots];
+// The INDEXED load is the one J3D actually uses for shapes: J3DSys::loadPosMtxIndx calls
+// GXLoadPosMtxIndx(mtx_indx, id * 3), and the hardware fetches the matrix from the array set by
+// GXSetArray. So the ground truth for "which matrix does this shape use" is the mtx_indx passed
+// here — NOT the immediate loads, which J3D only uses for the CPU-skinned pipelines (and which is
+// why the first version of this check compared against an unrelated identity matrix in slot 0).
+//
+// Loads are attributed to a shape by bracketing the real J3DShape::draw call: whatever is loaded
+// while a shape is drawing belongs to that shape.
+u32 g_currentShape = 0;
+// (GX slot id, matrix index) pairs loaded during the current shape's draw. The id matters: within
+// one element, J3DShapeMtxMulti loads id = 0,1,2,... one per bone, and a vertex's PNMTXIDX/3
+// selects among them. So this sequence is the complete slot -> matrix mapping the game used.
+std::vector<std::pair<u16, u16>> g_trueIdx;
 
-struct Stats {
-    unsigned long checked = 0;
-    unsigned long agree = 0;
-    unsigned long noRef = 0;      // nothing was loaded for that slot — cannot be checked
-    float worst = 0.0f;
-    u32   worstShape = 0;
-    int   worstElem = 0;
-    int   worstIdx = 0;
+
+
+struct IdxStats {
+    unsigned long compared = 0, agree = 0, noTruth = 0;
+    u32 worstShape = 0;
+    int worstMine = 0, worstTrue = 0;
 };
-Stats g_st;
+IdxStats g_ix;
 
 float guest_f32(u32 addr) {
     const u32 bits = sb_r32(addr);
@@ -63,15 +77,10 @@ float guest_f32(u32 addr) {
     return f;
 }
 
-void ov_gx_load_pos_mtx_imm(CPUState& cpu) {
-    const u32 mtx = cpu.gpr[3];
-    const u32 id  = cpu.gpr[4];
-    const u32 slot = id / 3;
-    if (slot < kSlots && sb_ram_fast(mtx) != nullptr) {
-        for (int k = 0; k < 12; ++k) g_loaded[slot].m[k] = guest_f32(mtx + (u32)k * 4);
-        g_loaded[slot].valid = true;
-    }
-    func_80362e0c(cpu);
+void ov_gx_load_pos_mtx_indx(CPUState& cpu) {
+    if (g_currentShape != 0)
+        g_trueIdx.emplace_back((u16)(cpu.gpr[4] / 3), (u16)(cpu.gpr[3] & 0xFFFF));
+    func_80362e48(cpu);
 }
 
 } // namespace
@@ -85,60 +94,50 @@ bool sbr_mtx_check_enabled() {
     return v == 1;
 }
 
-void sbr_mtx_crosscheck(u32 shape, int element, uint32_t slot, const float recon[12]) {
+// Bracket the real draw so indexed loads can be attributed to the shape performing them.
+// Always on: the native path BUILDS from these, so they are not a diagnostic.
+void sbr_mtx_begin_shape(u32 shape) {
+    g_currentShape = shape;
+    g_trueIdx.clear();
+}
+void sbr_mtx_end_shape() { g_currentShape = 0; }
+
+// The loads the shape just performed, in order. Empty when the shape used J3DShapeMtxDL (matrices
+// baked into a display list), which is the documented case for falling back to the stored index.
+const std::vector<std::pair<u16, u16>>& sbr_mtx_loads() { return g_trueIdx; }
+
+// Compare the index this port derived for one element against the index the game actually loaded.
+// The truth comes from the PREVIOUS frame's draw of the same shape (the loads happen inside the
+// real draw, which runs after this capture) — the mapping is stable per shape, so that is sound.
+void sbr_mtx_check_index(u32 shape, int element, uint32_t mine, uint32_t truthIdx, bool haveTruth) {
     if (!sbr_mtx_check_enabled()) return;
-    if (slot >= kSlots || !g_loaded[slot].valid) { ++g_st.noRef; return; }
-
-    // One-shot side-by-side of the first few disagreements. Deriving the relationship between what
-    // J3D stores and what GX is loaded with needs the actual numbers, not another candidate guess.
-    static int shown = 0;
-    if (shown < 2) {
-        ++shown;
-        lucent::info("mtxcheck", "shape 0x{:08x} el {} slot {}", shape, element, slot);
-        for (int r = 0; r < 3; ++r)
-            lucent::info("mtxcheck", "  recon [{:9.2f} {:9.2f} {:9.2f} {:11.2f}]   gx [{:9.2f} "
-                                     "{:9.2f} {:9.2f} {:11.2f}]",
-                         recon[r * 4 + 0], recon[r * 4 + 1], recon[r * 4 + 2], recon[r * 4 + 3],
-                         g_loaded[slot].m[r * 4 + 0], g_loaded[slot].m[r * 4 + 1],
-                         g_loaded[slot].m[r * 4 + 2], g_loaded[slot].m[r * 4 + 3]);
-    }
-
-    ++g_st.checked;
-    float worst = 0.0f;
-    int worstIdx = 0;
-    for (int k = 0; k < 12; ++k) {
-        const float d = std::fabs(recon[k] - g_loaded[slot].m[k]);
-        if (d > worst) { worst = d; worstIdx = k; }
-    }
-    // Tolerance is RELATIVE to the translation magnitude: the same absolute error is negligible on a
-    // 6000-unit translation and fatal on a rotation element.
-    const float scale = std::max(1.0f, std::fabs(g_loaded[slot].m[3]) + std::fabs(g_loaded[slot].m[7]) +
-                                           std::fabs(g_loaded[slot].m[11]));
-    if (worst <= 1e-3f * scale) ++g_st.agree;
-    if (worst > g_st.worst) {
-        g_st.worst = worst;
-        g_st.worstShape = shape;
-        g_st.worstElem = element;
-        g_st.worstIdx = worstIdx;
+    if (!haveTruth) { ++g_ix.noTruth; return; }
+    ++g_ix.compared;
+    const u16 truth = (u16)truthIdx;
+    if ((u16)mine == truth) {
+        ++g_ix.agree;
+    } else if (g_ix.worstShape == 0) {
+        g_ix.worstShape = shape;
+        g_ix.worstMine = (int)mine;
+        g_ix.worstTrue = (int)truth;
     }
 }
 
-void sbr_mtx_report() {
-    if (!sbr_mtx_check_enabled() || g_st.checked == 0) return;
-    const double pct = 100.0 * (double)g_st.agree / (double)g_st.checked;
-    // Loud when the reconstruction disagrees with what the game actually loaded: that is a defect in
-    // the native path's transform, localised to a shape and a matrix element.
-    if (g_st.agree == g_st.checked) {
-        lucent::info("mtxcheck", "{} drawable matrices ALL match the loaded GX matrices "
-                                 "({} unreferenced slots)", g_st.checked, g_st.noRef);
+void sbr_mtx_report_index() {
+    if (!sbr_mtx_check_enabled() || g_ix.compared == 0) return;
+    if (g_ix.agree == g_ix.compared) {
+        lucent::info("mtxcheck", "matrix INDEX matches the game for all {} elements ({} without "
+                                 "truth yet)", g_ix.compared, g_ix.noTruth);
     } else {
-        lucent::error("mtxcheck", "{:.1f}% of {} drawable matrices match GX ({} disagree); worst "
-                                  "delta {:.3f} at element [{}] of shape 0x{:08x} el {}",
-                      pct, g_st.checked, g_st.checked - g_st.agree, g_st.worst, g_st.worstIdx,
-                      g_st.worstShape, g_st.worstElem);
+        lucent::error("mtxcheck", "matrix INDEX: {}/{} match ({:.1f}%); e.g. shape 0x{:08x} we used "
+                                  "{}, the game loaded {}",
+                      g_ix.agree, g_ix.compared,
+                      100.0 * (double)g_ix.agree / (double)g_ix.compared, g_ix.worstShape,
+                      g_ix.worstMine, g_ix.worstTrue);
     }
-    g_st = Stats{};
+    g_ix = IdxStats{};
 }
 
-SB_OVERRIDE(0x80362e0cu, ov_gx_load_pos_mtx_imm, "GXLoadPosMtxImm",
-            "native render: record ground-truth position matrices (always runs the real body)")
+SB_OVERRIDE(0x80362e48u, ov_gx_load_pos_mtx_indx, "GXLoadPosMtxIndx",
+            "native render: record the ground-truth matrix INDEX per shape (real body runs)")
+

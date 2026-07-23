@@ -52,6 +52,12 @@ struct SbrGeomVert {
 // Returns the existing handle without copying if this key has been seen.
 uint32_t sbr_scene_intern_geometry(uint64_t key, const SbrGeomVert* verts, int count);
 
+// Geometry for ONE matrix slot of an already-interned element, interned on first request and
+// cached. A skinned element's vertices carry different slots and are transformed by different
+// matrices, so each slot's vertices must be drawn as their own drawable. Returns 0 if the element
+// has no vertices on that slot.
+uint32_t sbr_scene_geometry_for_slot(uint64_t baseKey, uint32_t baseGeom, uint32_t slot);
+
 // Whether this key already has geometry interned, so the caller can skip decoding entirely.
 bool sbr_scene_has_geometry(uint64_t key);
 
@@ -68,6 +74,10 @@ double sbr_scene_now();
 // skinned meshes: the single per-drawable matrix used below is wrong for them, so this counter is
 // the honest size of that gap rather than a silent approximation.
 int sbr_scene_multislot_count();
+
+// Triangles whose vertices span more than one matrix slot — drawn with one bone's matrix, so this
+// counts the remaining approximation rather than hiding it.
+int sbr_scene_split_triangles();
 
 // Start recording the tick's scene. Called once per game tick, before the capture hooks run.
 void sbr_scene_begin_tick();

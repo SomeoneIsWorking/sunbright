@@ -46,6 +46,7 @@ struct Geom {
 std::vector<Geom> g_geom{1};                       // [0] unused: handle 0 = none
 std::unordered_map<uint64_t, uint32_t> g_geomIndex;
 int g_multislot = 0;
+int g_splitTris = 0;
 
 float g_proj[16];
 bool  g_projValid = false;
@@ -94,6 +95,42 @@ uint32_t sbr_scene_intern_geometry(uint64_t key, const SbrGeomVert* verts, int c
     g_geomIndex.emplace(key, id);
     return id;
 }
+
+uint32_t sbr_scene_geometry_for_slot(uint64_t baseKey, uint32_t baseGeom, uint32_t slot) {
+    if (baseGeom == 0 || baseGeom >= g_geom.size()) return 0;
+    const Geom& base = g_geom[baseGeom];
+    // Unskinned fast path: every vertex is on one slot, so the element IS the slot's geometry.
+    if (!base.multislot) return baseGeom;
+
+    const uint64_t key = (baseKey << 8) | (uint64_t)slot | 0x8000000000000000ull;
+    if (const auto it = g_geomIndex.find(key); it != g_geomIndex.end()) return it->second;
+
+    std::vector<SbrGeomVert> sub;
+    // Whole TRIANGLES only: a triangle whose vertices span two bones cannot be drawn by a single
+    // matrix. Keeping it with the slot of its first vertex is what the hardware does per-vertex
+    // only approximately — flagged rather than hidden (see sbr_scene_split_triangles).
+    for (size_t t = 0; t + 2 < base.verts.size(); t += 3) {
+        if (base.verts[t].slot != slot && base.verts[t + 1].slot != slot &&
+            base.verts[t + 2].slot != slot)
+            continue;
+        if (base.verts[t].slot != base.verts[t + 1].slot ||
+            base.verts[t].slot != base.verts[t + 2].slot)
+            ++g_splitTris;
+        if (base.verts[t].slot != slot) continue;
+        sub.push_back(base.verts[t]);
+        sub.push_back(base.verts[t + 1]);
+        sub.push_back(base.verts[t + 2]);
+    }
+    if (sub.empty()) return 0;
+
+    const uint32_t id = (uint32_t)g_geom.size();
+    g_geom.push_back(Geom{});
+    g_geom.back().verts = std::move(sub);
+    g_geomIndex.emplace(key, id);
+    return id;
+}
+
+int sbr_scene_split_triangles() { return g_splitTris; }
 
 void sbr_scene_set_projection(const float m[16]) {
     // FIRST perspective of the tick only. The game sets several — the main camera, then the
