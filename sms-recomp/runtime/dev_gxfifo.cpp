@@ -258,12 +258,18 @@ void emit_copy_state(u32 cmd, bool to_xfb) {
     // format yields GX_TF_I4, 4-bit intensity, which renders the whole frame greyscale.
     if (to_xfb) {
         fmt = 6;    // GX_TF_RGBA8
+    } else if (fmt == 8) {
+        // Copy format R8 (Dolphin EFBCopyFormat 8): a single 8-bit channel written in the same
+        // 8x4 tiled 8-bpp layout as a GX I8 texture, and the game binds it AS I8. Translating it to
+        // RGBA8 both quadrupled the byte size (so the sampler walked the wrong stride) and dropped
+        // the intensity into the red channel only — the heat-haze distortion source samples this,
+        // so it showed a stale/garbled capture (the "haze ghosting"). I8 is the faithful mapping.
+        fmt = 1;   // GX_TF_I8
     } else if (fmt > 6 && fmt != 14) {
-        // The remaining copy formats are the single/dual-channel ones (A8, R8, G8, B8, RG8,
-        // GB8), which have no GXTexFmt equivalent. Nothing in the boot path uses them; say so
-        // rather than silently resolving into a wrong format.
+        // The other single/dual-channel copy formats (A8, G8, B8, RG8, GB8) have no GXTexFmt
+        // equivalent and nothing observed uses them; say so rather than resolve to a wrong format.
         lucent::warn("gxfifo", "EFB copy format {} (field {}, BP 0x52 = 0x{:06x}) has no "
-                               "GXTexFmt equivalent — single/dual-channel copy formats are not "
+                               "GXTexFmt equivalent — this single/dual-channel copy format is not "
                                "translated yet", fmt, field, cmd);
         fmt = 6;
     }
@@ -343,6 +349,7 @@ void emit_texobj(u32 map) {
         lucent::debug("gxfifo", "texture {} address 0x{:08x} is outside MEM1", map, phys);
         return;
     }
+
 
     {   // Counterpart of the copy-destination log above: the pointer a bind presents to
         // aurora must equal the destination a copy registered, or the copy is never sampled.
