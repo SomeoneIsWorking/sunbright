@@ -22,6 +22,9 @@
 #include "../runtime/scene.h"
 #include "../runtime/j3d_decode.h"
 
+void sbr_mtx_crosscheck(u32 shape, int element, uint32_t slot, const float recon[12]);
+void sbr_mtx_report();
+
 #include <intrinsics.h>
 #include <lucent/log.h>
 
@@ -76,6 +79,17 @@ J3DVertexLayout g_layout;
 std::vector<J3DVert> g_tri;
 
 bool ok(u32 p) { return sb_ram_fast(p) != nullptr; }
+
+// out = a * b, affine 3x4 row-major (implicit last row 0 0 0 1).
+void compose(float out[12], const float a[12], const float b[12]) {
+    for (int r = 0; r < 3; ++r) {
+        for (int c = 0; c < 3; ++c)
+            out[r * 4 + c] = a[r * 4 + 0] * b[0 * 4 + c] + a[r * 4 + 1] * b[1 * 4 + c] +
+                             a[r * 4 + 2] * b[2 * 4 + c];
+        out[r * 4 + 3] = a[r * 4 + 0] * b[3] + a[r * 4 + 1] * b[7] + a[r * 4 + 2] * b[11] +
+                         a[r * 4 + 3];
+    }
+}
 
 float guest_f32(u32 addr) {
     const u32 bits = sb_r32(addr);
@@ -191,6 +205,14 @@ void ov_shape_draw(CPUState& cpu) {
                             __builtin_memcpy(dr.proj, pj, sizeof dr.proj);
                             dr.is2d = is2d ? 1 : 0;
                         }
+                        // SBR_VIEW_COMPOSE selects how the drawable matrix is built. The
+                        // cross-check below scores each candidate against the matrix the game
+                        // actually loads, so this is decided by MEASUREMENT per draw:
+                        //   0 = as-is   1 = view*model   2 = model*view
+                        static const int mode = [] {
+                            const char* e = std::getenv("SBR_VIEW_COMPOSE");
+                            return (e != nullptr && e[0] != '\0') ? std::atoi(e) : 0;
+                        }();
                         // The draw matrix is used AS-IS: J3D's mDrawMtx is already MODEL x VIEW
                         // (J3DModel::viewCalc concatenates the camera), so nothing further is
                         // composed here.
@@ -202,10 +224,23 @@ void ov_shape_draw(CPUState& cpu) {
                         // large and the camera sits far from most of the plaza, so those magnitudes
                         // are equally consistent with view space. Magnitude alone cannot tell the
                         // two apart; the A/B can.
+                        float model[12];
                         for (int k = 0; k < 12; ++k) {
                             const u32 bits = sb_r32(mtxAddr + k * 4);
-                            __builtin_memcpy(&dr.mtx[k], &bits, 4);
+                            __builtin_memcpy(&model[k], &bits, 4);
                         }
+                        if (mode == 0) {
+                            __builtin_memcpy(dr.mtx, model, sizeof model);
+                        } else {
+                            float view[12];
+                            for (int k = 0; k < 12; ++k) view[k] = guest_f32(0x804045DCu + k * 4);
+                            if (mode == 1) compose(dr.mtx, view, model);
+                            else           compose(dr.mtx, model, view);
+                        }
+                        // GROUND-TRUTH CHECK: whatever we reconstructed must equal the matrix the
+                        // game actually loaded for this slot. Localises a transform defect to a
+                        // shape and a matrix element instead of to "the frame looks wrong".
+                        sbr_mtx_crosscheck(shape, (int)i, slot, dr.mtx);
                         sbr_scene_add(dr);
                     }
                 }
