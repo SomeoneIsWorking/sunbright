@@ -21,6 +21,10 @@
 //   0x20/0x28/0x30/0x38     indexed XF load (one u32)
 
 #include "mmio.h"
+#include "native_render.h"
+
+// The texture state the material display lists have written, per texmap. See the BP handler.
+static SbrTexture g_fifoTex[8];
 
 #include <aurora/aurora.h>
 #include <dolphin/gx/GXAurora.h>
@@ -485,6 +489,36 @@ size_t parse(const u8* p, size_t n, int depth) {
             const u8  reg = p[i + 1];
             const u32 val = ((u32)p[i + 2] << 16) | ((u32)p[i + 3] << 8) | p[i + 4];
 
+            // TEXTURE BINDING. J3D bakes its material texture loads into per-material display
+            // lists and replays them, so GXLoadTexObj is almost never called (J3DSys::reinitTexture
+            // is its only caller in J3D, for a 4x4 null texture). The registers those lists write
+            // ARE the binding, and reading them here is independent of J3D's class structure —
+            // which the tev-block subclasses make awkward to walk.
+            //
+            // TX_SETIMAGE0 (0x88+i, and 0xA8+i for texmaps 4-7): width-1 bits 0..9,
+            // height-1 bits 10..19, format bits 20..23.
+            // TX_SETIMAGE3 (0x94+i / 0xB4+i): image base address in 32-byte units.
+            // TX_SETTLUT   (0x98+i / 0xB8+i): TLUT base in 32-byte units, bits 0..9 of the entry.
+            if (reg >= 0x88 && reg <= 0x8B) {
+                SbrTexture& t = g_fifoTex[reg - 0x88];
+                t.width  = (val & 0x3FF) + 1;
+                t.height = ((val >> 10) & 0x3FF) + 1;
+                t.format = (val >> 20) & 0xF;
+            } else if (reg >= 0xA8 && reg <= 0xAB) {
+                SbrTexture& t = g_fifoTex[4 + (reg - 0xA8)];
+                t.width  = (val & 0x3FF) + 1;
+                t.height = ((val >> 10) & 0x3FF) + 1;
+                t.format = (val >> 20) & 0xF;
+            } else if (reg >= 0x94 && reg <= 0x97) {
+                g_fifoTex[reg - 0x94].addr = ((val & 0x00FFFFFF) << 5) | 0x80000000u;
+            } else if (reg >= 0xB4 && reg <= 0xB7) {
+                g_fifoTex[4 + (reg - 0xB4)].addr = ((val & 0x00FFFFFF) << 5) | 0x80000000u;
+            } else if (reg >= 0x98 && reg <= 0x9B) {
+                // TMEM offset of the palette, in 32-byte units. The TLUT's MAIN-MEMORY address is
+                // written separately by the TLUT load (BP 0x64/0x65); this port does not track that
+                // yet, so C4/C8 textures decline rather than decode against a wrong palette.
+                g_fifoTex[reg - 0x98].tlut = 0;
+            }
             // 0x49: EFB copy top-left (10 bits each). 0x4A: width-1 / height-1.
             if (reg == 0x49) { g_copy_left = val & 0x3FF; g_copy_top = (val >> 10) & 0x3FF; }
             else if (reg == 0x4A) { g_copy_w = (val & 0x3FF) + 1; g_copy_h = ((val >> 10) & 0x3FF) + 1; }
@@ -684,4 +718,25 @@ void gxfifo_device_init() {
     // The gather pipe is a single address the CPU stores to repeatedly; the block is
     // 0xCC008000-0xCC008020 on hardware.
     mmio_register(MmioDevice{FIFO_BASE, FIFO_BASE + 0x20, "gxfifo", &fifo_read, &fifo_write});
+}
+
+// Parse whatever the game has written but not yet had parsed. The incremental path above only
+// runs once 4096 bytes have accumulated (a deliberate anti-quadratic guard), so a material's
+// texture registers can still be sitting unparsed while its shapes draw — which made every shape
+// in a tick see the same stale binding (measured: 11 distinct textures across 929 drawables).
+//
+// This is the SAME parse the 4096-byte path performs, just without the size threshold, so it has
+// no ordering consequence for aurora: those bytes were going to be parsed at exactly this point in
+// the stream regardless.
+void gxfifo_drain_pending() {
+    if (!g_buf.empty() && g_buf.size() >= g_need) {
+        const size_t used = parse(g_buf.data(), g_buf.size());
+        g_buf.erase(g_buf.begin(), g_buf.begin() + used);
+    }
+}
+
+// The texture currently bound to a texmap, as the game's own display lists described it to the
+// hardware. This is the binding the native renderer must use.
+SbrTexture sbr_gx_fifo_texture(unsigned texmap) {
+    return g_fifoTex[texmap & 7];
 }

@@ -47,7 +47,8 @@ std::vector<Geom> g_geom{1};                       // [0] unused: handle 0 = non
 std::unordered_map<uint64_t, uint32_t> g_geomIndex;
 int g_multislot = 0;
 int g_splitTris = 0;
-long g_alphaLow = 0, g_alphaTotal = 0;
+long g_alphaLow = 0, g_alphaTotal = 0, g_lumBlack = 0;
+double g_lumSum = 0.0;
 
 float g_proj[16];
 bool  g_projValid = false;
@@ -138,7 +139,14 @@ void sbr_scene_report_alpha() {
     lucent::info("nrender", "vertex alpha: {:.1f}% of {} textured vertices are below 0.5 "
                             "(a washed-out frame with blending on means CLR0 alpha is wrong)",
                  100.0 * (double)g_alphaLow / (double)g_alphaTotal, g_alphaTotal);
-    g_alphaLow = g_alphaTotal = 0;
+    // Vertex COLOUR too: the frame is dark, and texture x vertexColour goes black whenever the
+    // vertex colour is black. Whether CLR0 really is black or is being decoded wrong is the
+    // question, and the mean answers it.
+    lucent::info("nrender", "vertex colour: mean luma {:.3f}, {:.1f}% are pure black",
+                 g_lumSum / (double)g_alphaTotal,
+                 100.0 * (double)g_lumBlack / (double)g_alphaTotal);
+    g_alphaLow = g_alphaTotal = g_lumBlack = 0;
+    g_lumSum = 0.0;
 }
 
 void sbr_scene_set_projection(const float m[16]) {
@@ -182,6 +190,14 @@ void sbr_scene_report_zmodes() {
     for (const auto& [k, n] : hist)
         lucent::info("nrender", "  zmode test={} func={} write={} -> {} drawables",
                      (k >> 16) & 1, (k >> 8) & 7, k & 1, n);
+
+    // How many DISTINCT textures the tick's drawables reference. If this is 1, the binding is being
+    // sampled at the wrong time (the FIFO is parsed once per frame, so reading it during the draws
+    // returns last frame's final state for every shape) rather than per material.
+    std::unordered_map<uint32_t, int> thist;
+    for (const auto& d : g_cur.items) ++thist[d.tex.addr];
+    lucent::info("nrender", "  {} distinct textures across {} drawables this tick",
+                 thist.size(), g_cur.items.size());
 
     // Blend state too: an unexpected factor pair washes the frame toward the clear colour just as
     // convincingly as a bad alpha, and the two are indistinguishable in the output.
@@ -332,9 +348,11 @@ float sbr_scene_render(double now_seconds, const float proj[16]) {
             o.y = P[4]  * vx + P[5]  * vy + P[6]  * vz + P[7];
             o.z = P[8]  * vx + P[9]  * vy + P[10] * vz + P[11];
             o.w = P[12] * vx + P[13] * vy + P[14] * vz + P[15];
-            // GC clip space has +Y up; the backend's NDC has +Y down. Flipping here keeps the
-            // convention change at the ONE place the two spaces meet.
-            o.y = -o.y;
+            // NO Y FLIP. GC clip space and the backend's NDC agree in sign here, and the readback
+            // already emits rows top-left first — negating y flipped the whole scene vertically.
+            // It was invisible while everything was flat colour and obvious the moment textures
+            // landed (paving on the ceiling, Mario upside down), which is a good reminder that a
+            // flat-shaded render hides orientation bugs.
             // [-1,0] -> [0,1]: adding w maps near (-w) to 0 and far (0) to w. Same shape as the
             // standard GL->Vulkan depth conversion, and derived from the matrix above rather than
             // fitted to make the picture look right. GC's ORTHO shares the convention (C_MTXOrtho
@@ -358,6 +376,8 @@ float sbr_scene_render(double now_seconds, const float proj[16]) {
                 o.r = vr; o.g = vg; o.b = vb; o.a = va;
                 ++g_alphaTotal;
                 if (va < 0.5f) ++g_alphaLow;
+                g_lumSum += (double)(0.2126f * vr + 0.7152f * vg + 0.0722f * vb);
+                if (vr + vg + vb < 0.05f) ++g_lumBlack;
             } else {
                 o.r = cr * vr; o.g = cg * vg; o.b = cb * vb; o.a = va;
             }

@@ -37,6 +37,10 @@ struct SbrTexture {
 };
 SbrTexture sbr_gx_current_texture();
 
+// The texture bound to `texmap` according to the GX command stream — the source that sees the
+// per-material display lists J3D actually binds through.
+SbrTexture sbr_gx_fifo_texture(unsigned texmap);
+
 // The state the game has currently set. Valid at J3DShape::draw time.
 SbrDepthState sbr_gx_current_zmode();
 

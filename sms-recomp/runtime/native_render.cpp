@@ -273,6 +273,20 @@ SDL_GPUTexture* texture_for(uint64_t key, const SbrTexture& t) {
     std::vector<uint8_t> rgba((size_t)t.width * t.height * 4);
     SDL_GPUTexture* gt = nullptr;
     if (gx_decode_texture(t.addr, t.width, t.height, t.format, t.tlut, rgba.data())) {
+        // SBR_TEX_DUMP=<dir> writes every decoded texture as a PPM. A texture pipeline can be
+        // "working" end to end and still be decoding garbage; looking at the decoded image is the
+        // only way to tell a bad decoder from a bad material.
+        if (const char* dir = std::getenv("SBR_TEX_DUMP")) {
+            char path[512];
+            std::snprintf(path, sizeof path, "%s/tex_%08x_%s_%ux%u.ppm", dir, t.addr,
+                          gx_texture_format_name(t.format), t.width, t.height);
+            if (std::FILE* f = std::fopen(path, "wb")) {
+                std::fprintf(f, "P6\n%u %u\n255\n", t.width, t.height);
+                for (size_t i = 0; i < (size_t)t.width * t.height; ++i)
+                    std::fwrite(&rgba[i * 4], 1, 3, f);
+                std::fclose(f);
+            }
+        }
         gt = upload_rgba(rgba.data(), t.width, t.height);
     } else {
         // Report an undecodable format ONCE by name. Silently binding white here would look like a

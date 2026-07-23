@@ -26,6 +26,7 @@ void sbr_mtx_begin_shape(u32 shape);
 void sbr_mtx_end_shape();
 void sbr_mtx_check_index(u32 shape, int element, uint32_t mine, uint32_t truthIdx, bool haveTruth);
 const std::vector<std::pair<unsigned short, unsigned short>>& sbr_mtx_loads();
+void gxfifo_drain_pending();
 void sbr_mtx_report_index();
 
 #include <intrinsics.h>
@@ -141,6 +142,9 @@ void ov_shape_draw(CPUState& cpu) {
     sbr_mtx_begin_shape(shape);
     func_802e0390(cpu);
     sbr_mtx_end_shape();
+    // Bring the parsed GX state up to date with what the game has just written, so the texture
+    // binding read below is THIS shape's material rather than a stale one.
+    gxfifo_drain_pending();
 
     // Segment the loads into elements: within an element the ids run 0,1,2,... so an id of 0 starts
     // a new element.
@@ -239,7 +243,10 @@ void ov_shape_draw(CPUState& cpu) {
                         dr.geom = sbr_scene_geometry_for_slot(key, geom, (uint32_t)gxSlot);
                         if (dr.geom == 0) continue;   // this element has no vertices on that slot
                         dr.depth = sbr_gx_current_zmode();
-                        dr.tex = sbr_gx_current_texture();
+                        // From the COMMAND STREAM, not GXLoadTexObj: J3D binds material textures by
+                        // replaying baked display lists, so the SDK entry point only ever sees the
+                        // 4x4 null texture (measured: 3 textures for the whole scene).
+                        dr.tex = sbr_gx_fifo_texture(0);
                         {
                             bool is2d = false;
                             const float* pj = sbr_gx_current_projection(&is2d);
