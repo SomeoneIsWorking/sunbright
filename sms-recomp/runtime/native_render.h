@@ -62,6 +62,9 @@ void sbr_render_tris(const SbrVertex* verts, int count, SbrDepthState depth, Sbr
 // How many distinct textures the renderer has decoded and uploaded.
 int sbr_render_texture_count();
 
+// One-shot histogram of the texture formats actually decoded.
+void sbr_render_report_formats();
+
 // How many separate draws the last frame needed (one per depth-state run) — the cost of honouring
 // per-material state, and a signal that state is varying at all.
 int sbr_render_last_batch_count();

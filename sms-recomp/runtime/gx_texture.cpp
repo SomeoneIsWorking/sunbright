@@ -59,10 +59,33 @@ const char* gx_texture_format_name(uint32_t f) {
     }
 }
 
+// Bytes the tiled source occupies, so the whole range can be checked BEFORE walking it. Sizes are
+// per GX's tile rules: dimensions round UP to the tile, and bits-per-texel is format-defined.
+static size_t tiled_size(uint32_t w, uint32_t h, uint32_t format) {
+    auto roundup = [](uint32_t v, uint32_t m) { return (v + m - 1) / m * m; };
+    switch (format) {
+    case GX_TF_I4:   case GX_TF_C4:   return (size_t)roundup(w, 8) * roundup(h, 8) / 2;
+    case GX_TF_CMPR:                  return (size_t)roundup(w, 8) * roundup(h, 8) / 2;
+    case GX_TF_I8:   case GX_TF_C8:   return (size_t)roundup(w, 8) * roundup(h, 4);
+    case GX_TF_IA4:                   return (size_t)roundup(w, 8) * roundup(h, 4);
+    case GX_TF_IA8:  case GX_TF_RGB565: case GX_TF_RGB5A3:
+                                      return (size_t)roundup(w, 4) * roundup(h, 4) * 2;
+    case GX_TF_RGBA8:                 return (size_t)roundup(w, 4) * roundup(h, 4) * 4;
+    default:                          return 0;
+    }
+}
+
 bool gx_decode_texture(u32 addr, uint32_t w, uint32_t h, uint32_t format, uint32_t tlutAddr,
                        uint8_t* out) {
     if (!gx_texture_format_supported(format)) return false;
-    if (sb_ram_fast(addr) == nullptr) return false;
+    if (w == 0 || h == 0 || w > 1024 || h > 1024) return false;
+
+    // The ENTIRE source must be mapped before decoding. Walking off the end of guest RAM mid-tile
+    // would fault the process, and a texture description that points somewhere implausible is a
+    // reason to decline, not to read and hope.
+    const size_t need = tiled_size(w, h, format);
+    if (need == 0) return false;
+    if (sb_ram_fast(addr) == nullptr || sb_ram_fast(addr + (u32)need - 1) == nullptr) return false;
     std::memset(out, 0, (size_t)w * h * 4);
 
     u32 src = addr;

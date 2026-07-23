@@ -82,6 +82,9 @@ int sbr_scene_multislot_count();
 // counts the remaining approximation rather than hiding it.
 int sbr_scene_split_triangles();
 
+// Share of textured vertices whose decoded CLR0 alpha is low — the signal for a washed-out frame.
+void sbr_scene_report_alpha();
+
 // Start recording the tick's scene. Called once per game tick, before the capture hooks run.
 void sbr_scene_begin_tick();
 

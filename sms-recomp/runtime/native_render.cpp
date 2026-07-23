@@ -72,6 +72,7 @@ std::unordered_map<uint64_t, Tex> g_texs;
 std::unordered_map<uint64_t, SbrTexture> g_pendingTex;   // descriptions seen this frame
 SDL_GPUSampler* g_sampler = nullptr;
 size_t g_texBytes = 0;
+std::unordered_map<uint32_t, int> g_fmtHist;
 SDL_GPUTexture* g_white = nullptr;
 
 // SBR_TEX=1 opts INTO texture decode/upload. Default OFF: this path drives GPU allocations from
@@ -253,6 +254,7 @@ SDL_GPUTexture* texture_for(uint64_t key, const SbrTexture& t) {
         return g_white;
     }
     g_texBytes += (size_t)t.width * t.height * 4;
+    ++g_fmtHist[t.format];
 
     // VALIDATE before allocating. GX caps textures at 1024x1024, and a GXTexObj that has not been
     // initialised yet decodes to arbitrary dimensions — allocating on those is how this took the
@@ -492,6 +494,13 @@ void sbr_render_end() {
     g_lastVerts = (int)g_verts.size();
     g_lastBatches = (int)g_batches.size();
 
+    // Decode and upload any NEW textures FIRST, before this frame's command buffer exists.
+    // texture_for acquires and submits its own command buffer and waits on a fence; doing that
+    // while another command buffer is open (let alone inside a render pass) is what cost a
+    // VK_ERROR_DEVICE_LOST. Uploads are one-time per texture, so this is not a per-frame cost.
+    if (textures_enabled())
+        for (const Batch& b : g_batches) texture_for(b.texKey, g_pendingTex[b.texKey]);
+
     SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(g_dev);
     if (cmd == nullptr) {
         lucent::error("nrender", "AcquireGPUCommandBuffer failed: {}", SDL_GetError());
@@ -511,12 +520,6 @@ void sbr_render_end() {
         SDL_UploadToGPUBuffer(up, &src, &dst, false);
         SDL_EndGPUCopyPass(up);
     }
-
-    // Decode and upload any NEW textures BEFORE the render pass opens. texture_for acquires and
-    // submits its own command buffer, which is illegal inside an active pass — doing it there cost
-    // a VK_ERROR_DEVICE_LOST that took the whole process down.
-    if (textures_enabled())
-        for (const Batch& b : g_batches) texture_for(b.texKey, g_pendingTex[b.texKey]);
 
     SDL_GPUColorTargetInfo cti{};
     cti.texture = g_color;
@@ -570,6 +573,15 @@ void sbr_render_end() {
 int sbr_render_last_vertex_count() { return g_lastVerts; }
 int sbr_render_last_batch_count() { return g_lastBatches; }
 int sbr_render_texture_count() { return (int)g_texs.size(); }
+
+void sbr_render_report_formats() {
+    static bool done = false;
+    if (done || g_fmtHist.empty()) return;
+    done = true;
+    for (const auto& [f, n] : g_fmtHist)
+        lucent::info("nrender", "  texture format {} ({}) -> {} textures", f,
+                     gx_texture_format_name(f), n);
+}
 
 // SBR_RENDER_DUMP=/path.rgba — write the native frame out so it can be diffed against aurora's
 // SB_DUMP_FRAME of the same moment (tools/render/compare_native.py). This is the parity harness the

@@ -47,6 +47,7 @@ std::vector<Geom> g_geom{1};                       // [0] unused: handle 0 = non
 std::unordered_map<uint64_t, uint32_t> g_geomIndex;
 int g_multislot = 0;
 int g_splitTris = 0;
+long g_alphaLow = 0, g_alphaTotal = 0;
 
 float g_proj[16];
 bool  g_projValid = false;
@@ -132,6 +133,14 @@ uint32_t sbr_scene_geometry_for_slot(uint64_t baseKey, uint32_t baseGeom, uint32
 
 int sbr_scene_split_triangles() { return g_splitTris; }
 
+void sbr_scene_report_alpha() {
+    if (g_alphaTotal == 0) return;
+    lucent::info("nrender", "vertex alpha: {:.1f}% of {} textured vertices are below 0.5 "
+                            "(a washed-out frame with blending on means CLR0 alpha is wrong)",
+                 100.0 * (double)g_alphaLow / (double)g_alphaTotal, g_alphaTotal);
+    g_alphaLow = g_alphaTotal = 0;
+}
+
 void sbr_scene_set_projection(const float m[16]) {
     // FIRST perspective of the tick only. The game sets several — the main camera, then the
     // projections screen effects rebuild for their own passes — and the last one to be set is
@@ -173,6 +182,15 @@ void sbr_scene_report_zmodes() {
     for (const auto& [k, n] : hist)
         lucent::info("nrender", "  zmode test={} func={} write={} -> {} drawables",
                      (k >> 16) & 1, (k >> 8) & 7, k & 1, n);
+
+    // Blend state too: an unexpected factor pair washes the frame toward the clear colour just as
+    // convincingly as a bad alpha, and the two are indistinguishable in the output.
+    std::unordered_map<uint32_t, int> bhist;
+    for (const auto& d : g_cur.items)
+        ++bhist[(uint32_t)d.depth.blend << 8 | (uint32_t)d.depth.srcFac << 4 | d.depth.dstFac];
+    for (const auto& [k, n] : bhist)
+        lucent::info("nrender", "  blend mode={} src={} dst={} -> {} drawables",
+                     (k >> 8) & 3, (k >> 4) & 7, k & 7, n);
 }
 
 void sbr_scene_report_largest(int n) {
@@ -338,6 +356,8 @@ float sbr_scene_render(double now_seconds, const float proj[16]) {
                 o.a = 1.0f;
             } else if (d.tex.addr != 0) {
                 o.r = vr; o.g = vg; o.b = vb; o.a = va;
+                ++g_alphaTotal;
+                if (va < 0.5f) ++g_alphaLow;
             } else {
                 o.r = cr * vr; o.g = cg * vg; o.b = cb * vb; o.a = va;
             }
