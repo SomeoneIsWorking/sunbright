@@ -191,3 +191,32 @@ NOTE: the mirror (TMirrorCamera + C_MTXLightPerspective) is a DIFFERENT projecte
 ruled out for THIS ghost, but it has the same structural risk (lookup built from unsqueezed camera
 params, surface drawn in the squeezed view). No reflection ghosting is currently observed; revisit
 with evidence, not pre-emptively.
+
+## Widened at the INPUT, not the output (2026-07-23) — the actual port
+
+The heat-haze ghosting forced the realising insight: the whole "squeeze the projection output, then
+patch each screen effect" approach was backwards. It was patching, not porting.
+
+3D widescreen now happens at the ONE shared input — the aspect passed to `C_MTXPerspective`
+(0x8034a404). Measured: a single aspect (~1.346) flows through it, for the main camera AND for
+`SMS_GetLightPerspectiveForEffectMtx` (the projected-texgen matrix every screen effect rebuilds).
+Widen the aspect there (× (16:9)/(4:3)) and the main projection and every effect come out 16:9
+CONSISTENTLY — there is nothing to patch per effect, because they all read this.
+
+This DELETED, as redundant:
+- the perspective squeeze at GXSetProjection (now only 2D ortho is squeezed there — ortho is built
+  by C_MTXOrtho, has no aspect, and cannot be widened this way);
+- `ov_effect_mtx` (the per-effect matrix patch that briefly fixed the heat haze by squeezing the
+  effect matrix's m[0][0] — now the effect matrix is widened at its own C_MTXPerspective call);
+- `sunmodel_widescreen.cpp` (recomputed the sun's EFB occlusion pixels *because* the projection was
+  squeezed after the fact; with the projection wide at the source the sun projects correctly on its
+  own, and the recompute would double-apply).
+
+`g_ws_persp_suspend` now gates the C_MTXPerspective widen (was: the GXSetProjection perspective
+squeeze) — same semantics, so the mirror pre-render still renders at the un-widened aspect to match
+its own lookup. STILL NEEDED and unchanged: the 2D ortho squeeze, the cull widen (separate path,
+does not go through C_MTXPerspective), HUD anchoring, the full-screen 2D effect widenings, and the
+EFB-tex/mirror suspends.
+
+Verified: Delfino Plaza renders wide with NO heat-haze ghost and the effect still running;
+file-select correct (wide, centred menus, Mario un-stretched); widescreen off untouched.

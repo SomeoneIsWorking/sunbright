@@ -6,21 +6,25 @@
 // aurora owns the present here, so this file also tells aurora what aspect the picture is
 // (aurora_set_present_aspect) instead of inferring it.
 //
-// THE APPROACH IS ANAMORPHIC. Every 3D projection passes through GXSetProjection, and we squeeze it
-// horizontally by 0.75 = (4:3)/(16:9):
+// THE APPROACH IS ANAMORPHIC, and — crucially — it widens 3D at the INPUT, not the output. 3D is
+// widened where the aspect enters the math (C_MTXPerspective), NOT by squeezing the finished
+// projection at GXSetProjection. Every perspective the game builds — the main camera AND the
+// projected-texgen "effect" matrix that screen effects (heat haze, water refraction, DebuTelesa,
+// MapObj/NPC distortions) rebuild from the same camera aspect — passes through C_MTXPerspective, so
+// widening the aspect there makes ALL of them come out 16:9 CONSISTENTLY. That is the difference
+// between porting widescreen and patching it: squeezing the projection output left every one of
+// those effects reading an un-widened aspect and ghosting a second copy of the scene, which then
+// needed a separate patch per effect. Widen the one shared input and there is nothing to patch.
 //
-//   * perspective: scale m[0][0] -> a WIDER horizontal field of view, i.e. true Hor+ widescreen.
-//     You see more of the world at the sides, rather than a cropped or stretched 4:3 image.
-//   * orthographic (2D): scale m[0][0] AND m[0][3] (the X offset) -> the 2D image shrinks toward
-//     the screen centre, so after the 16:9 present it is CORRECT-ASPECT and CENTRED rather than
-//     stretched. Corner HUD elements are then anchored back out to the real 16:9 edges per element,
-//     by name, in hud.cpp — a per-element job, because "all 2D" includes menus that must stay put.
-//
-// The guest reuses its projection matrices, so each one is restored immediately after the real
-// GXSetProjection has packed it. Squeezing in place without restoring would compound every frame.
+//   * perspective: widened at C_MTXPerspective (aspect *= (16:9)/(4:3)) -> a wider horizontal field
+//     of view, true Hor+. The result is rendered into the 4:3 EFB (anamorphic) and presented wide.
+//   * orthographic (2D): built by C_MTXOrtho with no aspect, so it can't be widened that way; it is
+//     squeezed here at GXSetProjection (m[0][0] and m[0][3]) so the 2D image shrinks toward centre
+//     and, after the 16:9 present, is correct-aspect and CENTRED. Corner HUD elements are anchored
+//     back out to the real edges per element in hud.cpp.
 //
 //   SBR_WIDESCREEN=0   off (4:3, the console picture)
-//   SBR_WS_SCALE=<f>   override the squeeze factor (default 0.75)
+//   SBR_WS_SCALE=<f>   override the factor (default 0.75 = the 2D squeeze; 3D widens by its inverse)
 
 #include "overrides.h"
 
@@ -33,6 +37,7 @@
 
 extern "C" void func_80362c34(CPUState&);   // GXSetProjection
 extern "C" void func_802260cc(CPUState&);   // SetViewFrustumClipCheckPerspective
+extern "C" void func_8034a404(CPUState&);   // C_MTXPerspective
 
 namespace {
 
@@ -115,26 +120,48 @@ void ov_gx_set_projection(CPUState& cpu) {
     // recording one would leave the reload pointer dangling once the frame returns.
     if (is2d && !g_ws_2d_suspend && sb_ram_fast(mtx) != nullptr) g_ws_last_ortho = mtx;
 
-    const bool suspended = is2d ? g_ws_2d_suspend : g_ws_persp_suspend;
-    const bool patch = widescreen_on() && !suspended && (!is2d || g_seen3d) &&
+    // 3D (perspective) is NOT squeezed here anymore. It is widened at its SOURCE — the aspect
+    // passed to C_MTXPerspective (see ov_c_mtx_perspective) — so the main projection AND every
+    // screen effect that rebuilds a perspective from the same camera aspect come out 16:9
+    // consistently. Squeezing the projection OUTPUT here left those effects reading an unsqueezed
+    // aspect and ghosting; widening the INPUT is the actual port, not a per-effect patch.
+    //
+    // 2D (ortho) does NOT go through C_MTXPerspective — it is built by C_MTXOrtho with no aspect —
+    // so it is still squeezed here to keep menus/HUD correct-aspect and centred in the 16:9 frame.
+    const bool patch = is2d && widescreen_on() && !g_ws_2d_suspend && g_seen3d &&
                        sb_ram_fast(mtx) != nullptr;
     f32 m00 = 0.0f, m03 = 0.0f;
     if (patch) {
         const float scale = ws_scale();
         m00 = guest_f32(mtx + 0x00);
+        m03 = guest_f32(mtx + 0x0C);
         guest_set_f32(mtx + 0x00, m00 * scale);
-        if (is2d) {
-            m03 = guest_f32(mtx + 0x0C);
-            guest_set_f32(mtx + 0x0C, m03 * scale);
-        }
+        guest_set_f32(mtx + 0x0C, m03 * scale);
     }
 
-    func_80362c34(cpu);   // the real GXSetProjection packs the squeezed matrix
+    func_80362c34(cpu);   // the real GXSetProjection packs the (2D-squeezed) matrix
 
     if (patch) {
         guest_set_f32(mtx + 0x00, m00);
-        if (is2d) guest_set_f32(mtx + 0x0C, m03);
+        guest_set_f32(mtx + 0x0C, m03);
     }
+}
+
+// C_MTXPerspective(Mtx44 m/r3, f32 fovy/f1, f32 aspect/f2, f32 near/f3, f32 far/f4) — the ONE math
+// seam every perspective in the game is built through: the main camera's projection AND the
+// projected-texgen "effect" matrix that screen effects (heat haze, water refraction, DebuTelesa,
+// the MapObj/NPC distortions) rebuild from the same camera fovy/aspect. Widening the aspect here —
+// once, at the source — makes all of them render 16:9 CONSISTENTLY, which is what stops the screen
+// effects from ghosting. There is nothing to patch per-effect because they all read this.
+//
+// Measured: only one aspect (~1.346, the 4:3 render aspect) ever flows through here, so widening
+// unconditionally cannot corrupt some other-aspect projection. g_ws_persp_suspend still exempts the
+// offscreen passes (mirror pre-render) that must stay at the un-widened aspect to match their own
+// lookup matrices.
+void ov_c_mtx_perspective(CPUState& cpu) {
+    if (widescreen_on() && !g_ws_persp_suspend)
+        cpu.fpr[2].ps0 *= (double)kWideOverNarrow;   // 4:3 aspect -> 16:9
+    func_8034a404(cpu);
 }
 
 // The game's actor culling tests against a frustum set from the CAMERA's 4:3 aspect. Widening only
@@ -192,10 +219,6 @@ void ws_2d_suspend_end(CPUState& cpu) {
     ws_reload_ortho(cpu);   // re-apply the squeeze for whatever draws next
 }
 
-// The horizontal squeeze factor, for code that must reason about where geometry REALLY lands on
-// the anamorphic EFB (sunmodel_widescreen.cpp's occlusion probes).
-float sbr_ws_squeeze_scale() { return ws_scale(); }
-
 // The pillar: half the width the 2D squeeze leaves empty on each side, in the game's own 640-wide
 // 2D space. hud.cpp anchors corner elements back out by exactly this much. 0 when widescreen is off,
 // which is what makes every HUD shift below collapse to a no-op.
@@ -209,8 +232,12 @@ int sbr_ws_pillar() {
     return p;
 }
 
+SB_OVERRIDE(0x8034a404u, ov_c_mtx_perspective, "C_MTXPerspective",
+            "widescreen: widen the aspect at its source so the main projection and every "
+            "screen-projected effect render 16:9 consistently — no per-effect patching")
 SB_OVERRIDE(GX_SET_PROJECTION, ov_gx_set_projection_entry, "GXSetProjection",
-            "widescreen: squeeze the projection horizontally so a 16:9 field of view is rendered "
-            "into the 4:3 EFB and presented wide")
+            "widescreen: squeeze only the 2D orthographic projection (built by C_MTXOrtho, not "
+            "C_MTXPerspective) so menus and HUD stay correct-aspect and centred")
 SB_OVERRIDE(SET_VIEW_FRUSTUM, ov_set_view_frustum, "SetViewFrustumClipCheckPerspective",
-            "widescreen: widen the CULLING frustum to match the widened projection")
+            "widescreen: widen the CULLING frustum to match — it takes the camera aspect directly, "
+            "not via C_MTXPerspective")
