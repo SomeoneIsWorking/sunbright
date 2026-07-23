@@ -1,0 +1,171 @@
+// render_compare.cpp — in-process A/B of the native render against the aurora oracle.
+// See render_compare.h for why this replaced the file-based harness.
+
+#include "render_compare.h"
+
+#include <aurora/aurora.h>
+#include <lucent/log.h>
+
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
+#include <cstring>
+#include <vector>
+
+namespace {
+
+// Both images are resampled onto this grid before anything is measured. Small enough that the
+// per-frame cost is irrelevant, large enough that building silhouettes survive.
+constexpr int kGW = 320, kGH = 224;
+
+// Fraction of pixels treated as "edge" in each image. Taken as a PERCENTILE of each image's own
+// gradient magnitude rather than a fixed threshold, so neither exposure nor the native path's flat
+// shading biases the comparison.
+constexpr float kEdgeFraction = 0.15f;
+
+bool g_on = false;
+bool g_registered = false;
+int  g_every = 60;
+
+struct Frame {
+    std::vector<uint8_t> rgba;
+    int w = 0, h = 0;
+    bool valid = false;
+};
+Frame g_native;
+uint8_t g_clear[3] = {0, 0, 0};
+long g_captures = 0;
+
+// Point-sample onto the common grid. Nearest-neighbour is deliberate: averaging would blur exactly
+// the thin structures (railings, poles, window frames) the edge metric is there to compare.
+void to_grid_luma(const uint8_t* src, int sw, int sh, std::vector<float>& out) {
+    out.resize(kGW * kGH);
+    for (int y = 0; y < kGH; ++y) {
+        const int sy = (int)((int64_t)y * sh / kGH);
+        for (int x = 0; x < kGW; ++x) {
+            const int sx = (int)((int64_t)x * sw / kGW);
+            const uint8_t* p = src + ((size_t)sy * sw + sx) * 4;
+            out[y * kGW + x] = 0.2126f * p[0] + 0.7152f * p[1] + 0.0722f * p[2];
+        }
+    }
+}
+
+// Sobel magnitude, then keep the strongest kEdgeFraction as the edge mask.
+void edge_mask(const std::vector<float>& lum, std::vector<uint8_t>& mask) {
+    std::vector<float> mag((size_t)kGW * kGH, 0.0f);
+    for (int y = 1; y < kGH - 1; ++y) {
+        for (int x = 1; x < kGW - 1; ++x) {
+            const auto L = [&](int dx, int dy) { return lum[(y + dy) * kGW + (x + dx)]; };
+            const float gx = -L(-1, -1) - 2 * L(-1, 0) - L(-1, 1) + L(1, -1) + 2 * L(1, 0) + L(1, 1);
+            const float gy = -L(-1, -1) - 2 * L(0, -1) - L(1, -1) + L(-1, 1) + 2 * L(0, 1) + L(1, 1);
+            mag[y * kGW + x] = std::sqrt(gx * gx + gy * gy);
+        }
+    }
+    std::vector<float> sorted = mag;
+    const size_t k = (size_t)((1.0f - kEdgeFraction) * (float)sorted.size());
+    std::nth_element(sorted.begin(), sorted.begin() + k, sorted.end());
+    const float thr = std::max(sorted[k], 1.0f);   // floor: a flat image has no edges, not all edges
+    mask.assign((size_t)kGW * kGH, 0);
+    for (size_t i = 0; i < mag.size(); ++i) mask[i] = mag[i] >= thr ? 1 : 0;
+}
+
+float pearson(const std::vector<float>& a, const std::vector<float>& b) {
+    double ma = 0, mb = 0;
+    for (size_t i = 0; i < a.size(); ++i) { ma += a[i]; mb += b[i]; }
+    ma /= (double)a.size();
+    mb /= (double)b.size();
+    double num = 0, da = 0, db = 0;
+    for (size_t i = 0; i < a.size(); ++i) {
+        const double x = a[i] - ma, y = b[i] - mb;
+        num += x * y; da += x * x; db += y * y;
+    }
+    if (da <= 0.0 || db <= 0.0) return 0.0f;
+    return (float)(num / std::sqrt(da * db));
+}
+
+// SBR_AB_SELFTEST=1 scores aurora against ITSELF. A metric that cannot report a perfect match on
+// identical input is not measuring what it claims, and a bad score from it would be indistinguishable
+// from a bad render — so the instrument is validated against a known-positive before its verdicts on
+// the native path are believed.
+bool selftest() {
+    static int v = -1;
+    if (v < 0) {
+        const char* e = std::getenv("SBR_AB_SELFTEST");
+        v = (e != nullptr && e[0] != '\0' && e[0] != '0') ? 1 : 0;
+    }
+    return v == 1;
+}
+
+void on_aurora_frame(const uint8_t* rgba, uint32_t w, uint32_t h, void*) {
+    if (selftest()) {
+        g_native.rgba.assign(rgba, rgba + (size_t)w * h * 4);
+        g_native.w = (int)w;
+        g_native.h = (int)h;
+        g_native.valid = true;
+        g_clear[0] = g_clear[1] = g_clear[2] = 0xFF;   // unused by the structural metrics
+    }
+    if (!g_native.valid) return;
+
+    // Native coverage against the EXACT clear colour — no inference, so this number means what it
+    // says even when one object covers most of the frame.
+    long lit = 0;
+    const size_t npx = (size_t)g_native.w * g_native.h;
+    for (size_t i = 0; i < npx; ++i) {
+        const uint8_t* p = &g_native.rgba[i * 4];
+        if (p[0] != g_clear[0] || p[1] != g_clear[1] || p[2] != g_clear[2]) ++lit;
+    }
+
+    std::vector<float> ln, la;
+    to_grid_luma(g_native.rgba.data(), g_native.w, g_native.h, ln);
+    to_grid_luma(rgba, (int)w, (int)h, la);
+
+    std::vector<uint8_t> en, ea;
+    edge_mask(ln, en);
+    edge_mask(la, ea);
+    long inter = 0, uni = 0;
+    for (size_t i = 0; i < en.size(); ++i) {
+        if (en[i] || ea[i]) ++uni;
+        if (en[i] && ea[i]) ++inter;
+    }
+
+    ++g_captures;
+    lucent::info("ab", "#{} native {}x{} vs aurora {}x{} | geom {:.1f}% | edgeIoU {:.1f}% | "
+                       "lumaCorr {:+.3f}",
+                 g_captures, g_native.w, g_native.h, w, h, 100.0 * (double)lit / (double)npx,
+                 uni ? 100.0 * (double)inter / (double)uni : 0.0, pearson(ln, la));
+    g_native.valid = false;   // consume: never score the same native frame against two oracles
+}
+
+} // namespace
+
+bool sbr_compare_enabled() {
+    static int v = -1;
+    if (v < 0) {
+        const char* e = std::getenv("SBR_AB");
+        v = (e != nullptr && e[0] != '\0' && e[0] != '0') ? 1 : 0;
+        if (const char* n = std::getenv("SBR_AB_EVERY")) g_every = std::max(1, std::atoi(n));
+        g_on = v == 1;
+    }
+    return g_on;
+}
+
+void sbr_compare_init() {
+    if (!sbr_compare_enabled() || g_registered) return;
+    g_registered = true;
+    aurora_set_frame_sink(&on_aurora_frame, nullptr, g_every);
+    lucent::info("ab", "in-process A/B armed: scoring every {} presents against the aurora oracle",
+                 g_every);
+}
+
+void sbr_compare_submit_native(const uint8_t* rgba, int w, int h, uint8_t r, uint8_t g, uint8_t b) {
+    if (!sbr_compare_enabled()) return;
+    // Aurora's readback is asynchronous (copy at one present, map at the next), so the frame that
+    // reaches the sink trails this one by a present or two. Keeping the LATEST native frame means
+    // the pair can be up to ~2 frames apart; at 30 Hz with a mostly-static camera that is far
+    // below the differences being measured, but it is a real skew and not pretended away.
+    g_native.rgba.assign(rgba, rgba + (size_t)w * h * 4);
+    g_native.w = w;
+    g_native.h = h;
+    g_native.valid = true;
+    g_clear[0] = r; g_clear[1] = g; g_clear[2] = b;
+}

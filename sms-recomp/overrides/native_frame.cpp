@@ -13,6 +13,7 @@
 #include "../runtime/screen_effects.h"
 #include "../runtime/native_render.h"
 #include "../runtime/scene.h"
+#include "../runtime/render_compare.h"
 
 #include <aurora/aurora.h>
 #include <aurora/event.h>
@@ -236,6 +237,16 @@ void video_wait_for_retrace(CPUState& cpu) {
         sbr_render_begin(0.10f, 0.40f, 0.80f, 1.0f);
         const float alpha = sbr_scene_render(sbr_scene_now(), sbr_scene_projection());
         sbr_render_end();
+
+        sbr_compare_init();
+        // The comparator wants a frame every SBR_AB_EVERY presents, which is a different (and
+        // usually much denser) cadence than the human-readable report below — so it gets its own
+        // readback rather than piggybacking on that one.
+        if (sbr_compare_enabled()) {
+            static std::vector<uint8_t> ab(640 * 448 * 4);
+            if (sbr_render_readback(ab.data(), 640, 448))
+                sbr_compare_submit_native(ab.data(), 640, 448, 26, 102, 204);
+        }
 
         static long n = 0;
         if (++n <= 4 || n % 120 == 0) {
