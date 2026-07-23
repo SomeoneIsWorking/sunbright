@@ -322,16 +322,27 @@ float sbr_scene_render(double now_seconds, const float proj[16]) {
             // fitted to make the picture look right. GC's ORTHO shares the convention (C_MTXOrtho
             // maps near to -1 and far to 0), so the same correction applies to both.
             o.z += o.w;
+            // Vertex colour from the decoded CLR0, modulated by the bring-up per-object hue only
+            // when there is no texture — with a texture bound the object hue would tint the whole
+            // scene and hide what the texture actually looks like.
+            const float vr = (float)((v.rgba >> 24) & 0xFF) / 255.0f;
+            const float vg = (float)((v.rgba >> 16) & 0xFF) / 255.0f;
+            const float vb = (float)((v.rgba >> 8) & 0xFF) / 255.0f;
+            const float va = (float)(v.rgba & 0xFF) / 255.0f;
             if (g_depthViz) {
                 // Grayscale by normalised depth: near = black, far = white. If a surface that
                 // should be distant paints itself dark (or vice versa) the transform for that mesh
                 // is wrong, which per-object colours cannot show.
                 const float dz = (o.w > 1e-4f) ? std::clamp(o.z / o.w, 0.0f, 1.0f) : 1.0f;
                 o.r = o.g = o.b = dz;
+                o.a = 1.0f;
+            } else if (d.tex.addr != 0) {
+                o.r = vr; o.g = vg; o.b = vb; o.a = va;
             } else {
-                o.r = cr; o.g = cg; o.b = cb;
+                o.r = cr * vr; o.g = cg * vg; o.b = cb * vb; o.a = va;
             }
-            o.a = 1.0f;
+            o.u = v.u;
+            o.v = v.v;
             g_out.push_back(o);
 
             if (o.w > 1e-4f) {
@@ -341,7 +352,7 @@ float sbr_scene_render(double now_seconds, const float proj[16]) {
                 nearestW = std::min(nearestW, o.w);
             }
         }
-        if (!g_out.empty()) sbr_render_tris(g_out.data(), (int)(g_out.size() / 3) * 3, d.depth);
+        if (!g_out.empty()) sbr_render_tris(g_out.data(), (int)(g_out.size() / 3) * 3, d.depth, d.tex);
 
         if (nhi[0] > nlo[0]) {
             // Clamp to the viewport before measuring: an off-screen quad's raw NDC extent is huge

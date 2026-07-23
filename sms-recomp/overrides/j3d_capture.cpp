@@ -201,7 +201,7 @@ void ov_shape_draw(CPUState& cpu) {
                             std::vector<SbrGeomVert> gv;
                             gv.reserve(g_tri.size());
                             for (const J3DVert& v : g_tri)
-                                gv.push_back(SbrGeomVert{v.x, v.y, v.z, v.pnMtxSlot});
+                                gv.push_back(SbrGeomVert{v.x, v.y, v.z, v.pnMtxSlot, v.u, v.v, v.rgba});
                             geom = sbr_scene_intern_geometry(key, gv.data(), (int)gv.size());
                         } else {
                             ++g_st.decode_fail;
@@ -239,6 +239,7 @@ void ov_shape_draw(CPUState& cpu) {
                         dr.geom = sbr_scene_geometry_for_slot(key, geom, (uint32_t)gxSlot);
                         if (dr.geom == 0) continue;   // this element has no vertices on that slot
                         dr.depth = sbr_gx_current_zmode();
+                        dr.tex = sbr_gx_current_texture();
                         {
                             bool is2d = false;
                             const float* pj = sbr_gx_current_projection(&is2d);

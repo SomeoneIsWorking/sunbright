@@ -7,6 +7,11 @@
 // j3dSys (US) — the live vertex array bases live here, NOT in the shape (spec §1).
 constexpr u32 SB_J3DSYS         = 0x804045DC;
 constexpr u32 J3DSYS_POS_ARRAY  = 0x10C;
+constexpr u32 J3DSYS_CLR_ARRAY  = 0x114;   // J3DShape::loadVtxArray binds CLR0 from here
+// TEX0-7 array bases are STATIC per shape and live in its J3DVertexData, not in j3dSys (only
+// POS/NRM/CLR0 are swapped per frame) — J3DShape::loadVtxArray bakes them via GDSetArray.
+constexpr u32 SHAPE_VERTEX_DATA_OFF = 0x44;
+constexpr u32 VERTEXDATA_TEXCOORD0  = 0x24;
 constexpr u32 J3DSYS_NRM_ARRAY  = 0x110;
 constexpr u32 J3DSYS_CLR0_ARRAY = 0x114;
 
@@ -163,6 +168,51 @@ bool j3d_decode_element(u32 shape, uint32_t element, const J3DVertexLayout& L,
     const uint32_t posStride = (L.comp[GXA_POS] == 4) ? 12u : 6u;
     const float posScale = 1.0f / (float)(1u << L.frac[GXA_POS]);
 
+    // CLR0 (live base) and TEX0 (per-shape base). Both optional: a shape without the attribute
+    // gets opaque white / zero UV, which is what an untextured, unlit material draws as.
+    const u32 clrBase = (L.type[GXA_CLR0] != GXAT_NONE) ? sb_r32(SB_J3DSYS + J3DSYS_CLR_ARRAY) : 0;
+    const uint32_t clrStride = colour_size(L.comp[GXA_CLR0]);
+    const u32 vtxData = sb_r32(shape + SHAPE_VERTEX_DATA_OFF);
+    const u32 texBase = (L.type[GXA_TEX0] != GXAT_NONE && ok(vtxData))
+                            ? sb_r32(vtxData + VERTEXDATA_TEXCOORD0) : 0;
+    // J3D's baked stride for a 2-component texcoord: 8 bytes if F32, else 4 (two s16).
+    const uint32_t texStride = (L.comp[GXA_TEX0] == 4) ? 8u : 4u;
+    const float texScale = 1.0f / (float)(1u << L.frac[GXA_TEX0]);
+
+    auto read_clr = [&](uint32_t index, J3DVert& v) {
+        if (clrBase == 0) return;
+        const u32 p = clrBase + index * clrStride;
+        if (!ok(p + clrStride - 1)) return;
+        if (clrStride == 4) {
+            v.rgba = sb_r32(p);                       // RGBA8
+        } else {
+            const uint16_t c = sb_r16(p);             // RGB565 / RGB5A3
+            if (c & 0x8000) {                         // RGB5A3 opaque: 5/5/5
+                const uint32_t r = (c >> 10) & 0x1F, g = (c >> 5) & 0x1F, b = c & 0x1F;
+                v.rgba = (r * 255 / 31) << 24 | (g * 255 / 31) << 16 | (b * 255 / 31) << 8 | 0xFF;
+            } else {                                  // RGB5A3 translucent: 3 alpha, 4/4/4
+                const uint32_t a = (c >> 12) & 0x7, r = (c >> 8) & 0xF, g = (c >> 4) & 0xF,
+                               b = c & 0xF;
+                v.rgba = (r * 255 / 15) << 24 | (g * 255 / 15) << 16 | (b * 255 / 15) << 8 |
+                         (a * 255 / 7);
+            }
+        }
+    };
+
+    auto read_tex = [&](uint32_t index, J3DVert& v) {
+        if (texBase == 0) return;
+        const u32 p = texBase + index * texStride;
+        if (!ok(p + texStride - 1)) return;
+        if (texStride == 8) {
+            u32 b0 = sb_r32(p), b1 = sb_r32(p + 4);
+            __builtin_memcpy(&v.u, &b0, 4);
+            __builtin_memcpy(&v.v, &b1, 4);
+        } else {
+            v.u = (float)(int16_t)sb_r16(p) * texScale;
+            v.v = (float)(int16_t)sb_r16(p + 2) * texScale;
+        }
+    };
+
     auto read_pos = [&](uint32_t index, J3DVert& v) -> bool {
         const u32 p = posBase + index * posStride;
         if (!ok(p + posStride - 1)) return false;
@@ -253,6 +303,25 @@ bool j3d_decode_element(u32 shape, uint32_t element, const J3DVertexLayout& L,
                 }
             } else if (!read_pos(index, out_v)) {
                 return false;
+            }
+
+            // Colour and texcoord, each with its own index in the vertex.
+            out_v.rgba = 0xFFFFFFFFu;
+            if (L.type[GXA_CLR0] == GXAT_INDEX16)     read_clr(sb_r16(vp + L.offset[GXA_CLR0]), out_v);
+            else if (L.type[GXA_CLR0] == GXAT_INDEX8) read_clr(sb_r8(vp + L.offset[GXA_CLR0]), out_v);
+            else if (L.type[GXA_CLR0] == GXAT_DIRECT) out_v.rgba = sb_r32(vp + L.offset[GXA_CLR0]);
+
+            if (L.type[GXA_TEX0] == GXAT_INDEX16)     read_tex(sb_r16(vp + L.offset[GXA_TEX0]), out_v);
+            else if (L.type[GXA_TEX0] == GXAT_INDEX8) read_tex(sb_r8(vp + L.offset[GXA_TEX0]), out_v);
+            else if (L.type[GXA_TEX0] == GXAT_DIRECT) {
+                if (L.comp[GXA_TEX0] == 4) {
+                    u32 b0 = sb_r32(vp + L.offset[GXA_TEX0]), b1 = sb_r32(vp + L.offset[GXA_TEX0] + 4);
+                    __builtin_memcpy(&out_v.u, &b0, 4);
+                    __builtin_memcpy(&out_v.v, &b1, 4);
+                } else {
+                    out_v.u = (float)(int16_t)sb_r16(vp + L.offset[GXA_TEX0]) * texScale;
+                    out_v.v = (float)(int16_t)sb_r16(vp + L.offset[GXA_TEX0] + 2) * texScale;
+                }
             }
             prim.push_back(out_v);
         }

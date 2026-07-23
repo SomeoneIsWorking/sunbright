@@ -36,6 +36,7 @@ struct SbrDrawable {
                          // frame mixes perspective (the world) and ortho (HUD, message box), and
                          // projecting a 2D element with the 3D matrix makes it cover the screen.
     uint8_t  is2d;       // that projection was an ortho
+    SbrTexture tex;      // TEXMAP0 as bound when this shape was drawn
 };
 
 // One decoded model-space vertex. `slot` is the vertex's PNMTXIDX/3 — which J3DShapeMtx slot it
@@ -44,6 +45,8 @@ struct SbrDrawable {
 struct SbrGeomVert {
     float x, y, z;
     uint32_t slot;
+    float u, v;        // TEX0
+    uint32_t rgba;     // CLR0
 };
 
 // Intern one drawable's geometry, returning its cache handle (never 0). Model-space positions do

@@ -21,6 +21,8 @@
 
 #include <SDL3/SDL.h>
 
+#include "gx_texture.h"
+
 #include "shaders/geom_vert_spv.h"
 #include "shaders/geom_frag_spv.h"
 
@@ -28,6 +30,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <unordered_map>
+#include <vector>
 #include <vector>
 
 namespace {
@@ -56,20 +59,61 @@ std::unordered_map<uint32_t, SDL_GPUGraphicsPipeline*> g_pipes;
 struct Batch {
     SbrDepthState st;
     uint32_t first, count;
+    uint64_t texKey;        // 0 = untextured (a 1x1 white texel is bound so one shader serves both)
 };
+
+// Decoded textures, keyed by the guest description. Textures are immutable for a given
+// (address, format, size), so decoding once and caching is not an optimisation but a requirement:
+// decoding a 1024-texel CMPR image per draw would dominate the frame.
+struct Tex {
+    SDL_GPUTexture* tex = nullptr;
+};
+std::unordered_map<uint64_t, Tex> g_texs;
+std::unordered_map<uint64_t, SbrTexture> g_pendingTex;   // descriptions seen this frame
+SDL_GPUSampler* g_sampler = nullptr;
+size_t g_texBytes = 0;
+SDL_GPUTexture* g_white = nullptr;
+
+// SBR_TEX=1 opts INTO texture decode/upload. Default OFF: this path drives GPU allocations from
+// guest data, and a defect here does not fail politely — it can take the device down for the whole
+// process. It stays opt-in until it has run clean for a while.
+bool textures_enabled() {
+    static int v = -1;
+    if (v < 0) {
+        const char* e = std::getenv("SBR_TEX");
+        v = (e != nullptr && e[0] != '\0' && e[0] != '0') ? 1 : 0;
+    }
+    return v == 1;
+}
+
+uint64_t tex_key(const SbrTexture& t) {
+    if (!textures_enabled()) return 0;
+    if (t.addr == 0 || t.width == 0 || t.height == 0) return 0;
+    return (uint64_t)t.addr << 24 ^ (uint64_t)t.format << 20 ^ (uint64_t)t.width << 10 ^ t.height;
+}
 std::vector<Batch> g_batches;
 SDL_GPUBuffer*           g_vbuf = nullptr;
 SDL_GPUTransferBuffer*   g_vup  = nullptr;
 size_t                   g_vcap = 0;
 std::vector<SbrVertex>   g_verts;   // accumulated this frame
 
-SDL_GPUShader* make_shader(const void* code, size_t bytes, SDL_GPUShaderStage stage) {
+// The resource counts are NOT optional. SDL3 GPU builds the pipeline layout from them, not by
+// reflecting the SPIR-V, so a fragment shader that declares a sampler while the create-info says
+// zero produces a descriptor-set mismatch — which manifests as VK_ERROR_DEVICE_LOST, and (with
+// aurora's Dawn device in the same process) surfaces on aurora's device, blaming the wrong
+// subsystem. This was the actual cause of the device losses, not the texture data.
+SDL_GPUShader* make_shader(const void* code, size_t bytes, SDL_GPUShaderStage stage,
+                           Uint32 numSamplers) {
     SDL_GPUShaderCreateInfo ci{};
     ci.code = (const Uint8*)code;
     ci.code_size = bytes;
     ci.entrypoint = "main";
     ci.format = SDL_GPU_SHADERFORMAT_SPIRV;
     ci.stage = stage;
+    ci.num_samplers = numSamplers;
+    ci.num_storage_textures = 0;
+    ci.num_storage_buffers = 0;
+    ci.num_uniform_buffers = 0;
     return SDL_CreateGPUShader(g_dev, &ci);
 }
 
@@ -135,6 +179,114 @@ bool enabled() {
     return v == 1;
 }
 
+SDL_GPUTexture* upload_rgba(const uint8_t* rgba, uint32_t w, uint32_t h) {
+    SDL_GPUTextureCreateInfo ci{};
+    ci.type = SDL_GPU_TEXTURETYPE_2D;
+    ci.format = kColorFmt;
+    ci.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
+    ci.width = w; ci.height = h;
+    ci.layer_count_or_depth = 1;
+    ci.num_levels = 1;
+    ci.sample_count = SDL_GPU_SAMPLECOUNT_1;
+    SDL_GPUTexture* t = SDL_CreateGPUTexture(g_dev, &ci);
+    if (t == nullptr) return nullptr;
+
+    SDL_GPUTransferBufferCreateInfo tbci{};
+    tbci.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+    tbci.size = w * h * 4;
+    SDL_GPUTransferBuffer* tb = SDL_CreateGPUTransferBuffer(g_dev, &tbci);
+    if (void* m = SDL_MapGPUTransferBuffer(g_dev, tb, false)) {
+        std::memcpy(m, rgba, (size_t)w * h * 4);
+        SDL_UnmapGPUTransferBuffer(g_dev, tb);
+    }
+    SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(g_dev);
+    SDL_GPUCopyPass* cp = SDL_BeginGPUCopyPass(cmd);
+    SDL_GPUTextureTransferInfo src{};
+    src.transfer_buffer = tb;
+    src.pixels_per_row = w;
+    src.rows_per_layer = h;
+    SDL_GPUTextureRegion dst{};
+    dst.texture = t; dst.w = w; dst.h = h; dst.d = 1;
+    SDL_UploadToGPUTexture(cp, &src, &dst, false);
+    SDL_EndGPUCopyPass(cp);
+    // WAIT before freeing the staging buffer. Releasing it straight after submit frees memory the
+    // GPU is still reading, which showed up as a VK_ERROR_DEVICE_LOST — and, because two Vulkan
+    // devices share this process, the loss surfaced on AURORA's device, pointing at the wrong
+    // subsystem entirely. Uploads are one-time per texture, so the wait costs nothing steady-state.
+    SDL_GPUFence* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);
+    if (fence != nullptr) {
+        SDL_WaitForGPUFences(g_dev, true, &fence, 1);
+        SDL_ReleaseGPUFence(g_dev, fence);
+    }
+    SDL_ReleaseGPUTransferBuffer(g_dev, tb);
+    return t;
+}
+
+// Decode-and-upload on first sight of a texture description.
+SDL_GPUTexture* texture_for(uint64_t key, const SbrTexture& t) {
+    if (key == 0) return g_white;
+    if (const auto it = g_texs.find(key); it != g_texs.end()) return it->second.tex;
+
+    // Guest data is not trusted to size a GPU allocation. GX caps textures at 1024x1024, and an
+    // uninitialised GXTexObj decodes to arbitrary dimensions.
+    if (t.width == 0 || t.height == 0 || t.width > 1024 || t.height > 1024) {
+        static bool warned = false;
+        if (!warned) {
+            warned = true;
+            lucent::error("nrender", "implausible texture {}x{} fmt {} at 0x{:08x} — not uploaded",
+                          t.width, t.height, t.format, t.addr);
+        }
+        g_texs.emplace(key, Tex{g_white});
+        return g_white;
+    }
+    // Hard ceiling on how much VRAM this path may claim, so a key that varies when it should not
+    // degrades into white rather than exhausting the device.
+    constexpr size_t kMaxTexBytes = 192u << 20;
+    if (g_texBytes + (size_t)t.width * t.height * 4 > kMaxTexBytes) {
+        static bool warned = false;
+        if (!warned) {
+            warned = true;
+            lucent::error("nrender", "texture budget of {} MB exhausted at {} textures — binding "
+                                     "white from here", kMaxTexBytes >> 20, g_texs.size());
+        }
+        g_texs.emplace(key, Tex{g_white});
+        return g_white;
+    }
+    g_texBytes += (size_t)t.width * t.height * 4;
+
+    // VALIDATE before allocating. GX caps textures at 1024x1024, and a GXTexObj that has not been
+    // initialised yet decodes to arbitrary dimensions — allocating on those is how this took the
+    // Vulkan device down (and, with two devices in the process, the failure surfaced on aurora's).
+    if (t.width == 0 || t.height == 0 || t.width > 1024 || t.height > 1024) {
+        static bool warned = false;
+        if (!warned) {
+            warned = true;
+            lucent::error("nrender", "implausible texture {}x{} format {} at 0x{:08x} — not uploaded",
+                          t.width, t.height, t.format, t.addr);
+        }
+        g_texs.emplace(key, Tex{g_white});
+        return g_white;
+    }
+
+    std::vector<uint8_t> rgba((size_t)t.width * t.height * 4);
+    SDL_GPUTexture* gt = nullptr;
+    if (gx_decode_texture(t.addr, t.width, t.height, t.format, t.tlut, rgba.data())) {
+        gt = upload_rgba(rgba.data(), t.width, t.height);
+    } else {
+        // Report an undecodable format ONCE by name. Silently binding white here would look like a
+        // lighting bug rather than a missing decoder (CLAUDE.md: no silent success-shaped stubs).
+        static std::unordered_map<uint32_t, bool> warned;
+        if (!warned[t.format]) {
+            warned[t.format] = true;
+            lucent::error("nrender", "no decoder for texture format {} ({}) at 0x{:08x} {}x{}",
+                          t.format, gx_texture_format_name(t.format), t.addr, t.width, t.height);
+        }
+        gt = g_white;
+    }
+    g_texs.emplace(key, Tex{gt});
+    return gt;
+}
+
 SDL_GPUGraphicsPipeline* pipeline_for(SbrDepthState d) {
     const uint32_t key = depth_key(d);
     if (const auto it = g_pipes.find(key); it != g_pipes.end()) return it->second;
@@ -143,11 +295,13 @@ SDL_GPUGraphicsPipeline* pipeline_for(SbrDepthState d) {
     vbd.slot = 0;
     vbd.pitch = sizeof(SbrVertex);
     vbd.input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
-    SDL_GPUVertexAttribute va[2]{};
+    SDL_GPUVertexAttribute va[3]{};
     va[0].location = 0; va[0].buffer_slot = 0;
     va[0].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4; va[0].offset = 0;
     va[1].location = 1; va[1].buffer_slot = 0;
     va[1].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4; va[1].offset = 16;
+    va[2].location = 2; va[2].buffer_slot = 0;
+    va[2].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2; va[2].offset = 32;
 
     SDL_GPUColorTargetDescription ctd{};
     ctd.format = kColorFmt;
@@ -170,7 +324,7 @@ SDL_GPUGraphicsPipeline* pipeline_for(SbrDepthState d) {
     pci.vertex_input_state.vertex_buffer_descriptions = &vbd;
     pci.vertex_input_state.num_vertex_buffers = 1;
     pci.vertex_input_state.vertex_attributes = va;
-    pci.vertex_input_state.num_vertex_attributes = 2;
+    pci.vertex_input_state.num_vertex_attributes = 3;
     // SBR_RENDER_WIREFRAME=1 draws edges instead of filled triangles. A few large planes can
     // occlude an entire correct scene behind them, which is indistinguishable from "the scene is
     // missing" in a filled render — wireframe separates those two cases, so it is a diagnostic
@@ -252,8 +406,8 @@ bool sbr_render_init(int w, int h) {
     // z-mode and blend state become per-material state as the TEV milestone lands; the depth test
     // itself is not optional, because without it the last drawable submitted paints over the whole
     // scene (measured: a uniform 100%-coverage fill of one object's colour).
-    g_vs = make_shader(kGeomVertSpv, sizeof(kGeomVertSpv), SDL_GPU_SHADERSTAGE_VERTEX);
-    g_fs = make_shader(kGeomFragSpv, sizeof(kGeomFragSpv), SDL_GPU_SHADERSTAGE_FRAGMENT);
+    g_vs = make_shader(kGeomVertSpv, sizeof(kGeomVertSpv), SDL_GPU_SHADERSTAGE_VERTEX, 0);
+    g_fs = make_shader(kGeomFragSpv, sizeof(kGeomFragSpv), SDL_GPU_SHADERSTAGE_FRAGMENT, 1);
     if (g_vs == nullptr || g_fs == nullptr) {
         lucent::error("nrender", "shader create failed: {}", SDL_GetError());
         return false;
@@ -262,15 +416,36 @@ bool sbr_render_init(int w, int h) {
     vbd.slot = 0;
     vbd.pitch = sizeof(SbrVertex);
     vbd.input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
-    SDL_GPUVertexAttribute va[2]{};
+    SDL_GPUVertexAttribute va[3]{};
     va[0].location = 0; va[0].buffer_slot = 0;
     va[0].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4; va[0].offset = 0;
     va[1].location = 1; va[1].buffer_slot = 0;
     va[1].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4; va[1].offset = 16;
+    va[2].location = 2; va[2].buffer_slot = 0;
+    va[2].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2; va[2].offset = 32;
 
     // Pipelines are created ON DEMAND per depth state (pipeline_for), not once here: GX varies
     // depth state per material and the backend cannot change it dynamically.
     g_pipes.clear();
+
+    SDL_GPUSamplerCreateInfo sci{};
+    sci.min_filter = SDL_GPU_FILTER_LINEAR;
+    sci.mag_filter = SDL_GPU_FILTER_LINEAR;
+    sci.mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_LINEAR;
+    // GX's default wrap for J3D materials is REPEAT; per-material wrap modes arrive with the rest
+    // of the material state.
+    sci.address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
+    sci.address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
+    sci.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
+    g_sampler = SDL_CreateGPUSampler(g_dev, &sci);
+
+    // One opaque white texel, bound for untextured draws so a single shader serves both cases.
+    const uint8_t white[4] = {255, 255, 255, 255};
+    g_white = upload_rgba(white, 1, 1);
+    if (g_sampler == nullptr || g_white == nullptr) {
+        lucent::error("nrender", "sampler/white texture create failed: {}", SDL_GetError());
+        return false;
+    }
 
     g_cpu.assign((size_t)w * h * 4, 0);
     g_w = w;
@@ -290,18 +465,21 @@ void sbr_render_begin(float r, float g, float b, float a) {
     g_batches.clear();
 }
 
-void sbr_render_tris(const SbrVertex* verts, int count, SbrDepthState depth) {
+void sbr_render_tris(const SbrVertex* verts, int count, SbrDepthState depth, SbrTexture tex) {
     if (!g_ok || verts == nullptr || count < 3) return;
     count -= count % 3;
     g_verts.insert(g_verts.end(), verts, verts + count);
     // Merge into the previous run when the state is unchanged, so honouring per-material depth
     // costs draws only where the state actually changes.
     const uint32_t first = (uint32_t)(g_verts.size() - (size_t)count);
+    const uint64_t tk = tex_key(tex);
     if (!g_batches.empty() && depth_key(g_batches.back().st) == depth_key(depth) &&
+        g_batches.back().texKey == tk &&
         g_batches.back().first + g_batches.back().count == first) {
         g_batches.back().count += (uint32_t)count;
     } else {
-        g_batches.push_back(Batch{depth, first, (uint32_t)count});
+        g_batches.push_back(Batch{depth, first, (uint32_t)count, tk});
+        g_pendingTex[tk] = tex;
     }
 }
 
@@ -334,6 +512,12 @@ void sbr_render_end() {
         SDL_EndGPUCopyPass(up);
     }
 
+    // Decode and upload any NEW textures BEFORE the render pass opens. texture_for acquires and
+    // submits its own command buffer, which is illegal inside an active pass — doing it there cost
+    // a VK_ERROR_DEVICE_LOST that took the whole process down.
+    if (textures_enabled())
+        for (const Batch& b : g_batches) texture_for(b.texKey, g_pendingTex[b.texKey]);
+
     SDL_GPUColorTargetInfo cti{};
     cti.texture = g_color;
     cti.clear_color = g_clear;
@@ -354,6 +538,11 @@ void sbr_render_end() {
         SDL_BindGPUVertexBuffers(rp, 0, &vb, 1);
         for (const Batch& b : g_batches) {
             SDL_BindGPUGraphicsPipeline(rp, pipeline_for(b.st));
+            SDL_GPUTextureSamplerBinding tsb{};
+            const auto texIt = g_texs.find(b.texKey);
+            tsb.texture = (texIt != g_texs.end()) ? texIt->second.tex : g_white;
+            tsb.sampler = g_sampler;
+            SDL_BindGPUFragmentSamplers(rp, 0, &tsb, 1);
             SDL_DrawGPUPrimitives(rp, b.count, 1, b.first, 0);
         }
     }
@@ -380,6 +569,7 @@ void sbr_render_end() {
 
 int sbr_render_last_vertex_count() { return g_lastVerts; }
 int sbr_render_last_batch_count() { return g_lastBatches; }
+int sbr_render_texture_count() { return (int)g_texs.size(); }
 
 // SBR_RENDER_DUMP=/path.rgba — write the native frame out so it can be diffed against aurora's
 // SB_DUMP_FRAME of the same moment (tools/render/compare_native.py). This is the parity harness the

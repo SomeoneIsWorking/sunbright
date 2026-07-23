@@ -10,6 +10,7 @@
 struct SbrVertex {
     float x, y, z, w;
     float r, g, b, a;
+    float u, v;
 };
 
 // The GX depth state a draw is issued under, mirrored from GXSetZMode (overrides/gx_state_capture).
@@ -26,6 +27,15 @@ struct SbrDepthState {
     uint8_t srcFac;  // GXBlendFactor
     uint8_t dstFac;  // GXBlendFactor
 };
+
+// The texture bound to TEXMAP0, as the game described it to the hardware.
+struct SbrTexture {
+    uint32_t addr = 0;     // guest address of the tiled texture data
+    uint32_t tlut = 0;     // palette address for the colour-indexed formats
+    uint32_t width = 0, height = 0;
+    uint32_t format = 0;   // GXTexFmt
+};
+SbrTexture sbr_gx_current_texture();
 
 // The state the game has currently set. Valid at J3DShape::draw time.
 SbrDepthState sbr_gx_current_zmode();
@@ -47,7 +57,10 @@ bool sbr_render_init(int w, int h);
 void sbr_render_begin(float r, float g, float b, float a);
 // Submit triangles under a given depth state. Consecutive submissions sharing a state are merged
 // into one draw; a change of state starts a new one.
-void sbr_render_tris(const SbrVertex* verts, int count, SbrDepthState depth);
+void sbr_render_tris(const SbrVertex* verts, int count, SbrDepthState depth, SbrTexture tex);
+
+// How many distinct textures the renderer has decoded and uploaded.
+int sbr_render_texture_count();
 
 // How many separate draws the last frame needed (one per depth-state run) — the cost of honouring
 // per-material state, and a signal that state is varying at all.
