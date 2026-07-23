@@ -258,7 +258,12 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
         break;
 
     case PPCOp::DIVW:
-        line("if (%s != 0) %s = (u32)((s32)%s / (s32)%s);", b.c_str(), d.c_str(), a.c_str(), b.c_str());
+        // PPC leaves rD undefined for divide-by-zero AND for the INT_MIN / -1 overflow. On x86 both
+        // raise #DE (SIGFPE), so both must be guarded or the process dies where PPC merely produced
+        // a don't-care value. Leaving rD unchanged matches the div-by-zero handling already here.
+        line("if (%s != 0 && !((u32)%s == 0x80000000u && (u32)%s == 0xFFFFFFFFu)) "
+             "%s = (u32)((s32)%s / (s32)%s);",
+             b.c_str(), a.c_str(), b.c_str(), d.c_str(), a.c_str(), b.c_str());
         set_cr0(i, d);
         break;
 
@@ -383,8 +388,15 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
         set_cr0(i, a);
         break;
     case PPCOp::SRAW:
-        line("{ u32 _n=%s&0x3F; %s=(%s&0x20)?(s32)%s>>31:((s32)%s>>_n); cpu.xer.ca=(s32)%s<0&&(%s&((1u<<_n)-1))!=0; }",
-             b.c_str(), a.c_str(), b.c_str(), s.c_str(), s.c_str(), s.c_str(), s.c_str());
+        // The shift amount is the low 6 bits of rB; a value >= 32 gives an all-sign result and a
+        // carry of (sign & any-bit-set). `(1u << _n) - 1` was evaluated for the carry regardless of
+        // that branch, and `1u << _n` is UNDEFINED for _n >= 32 — a latent wrong-carry the moment a
+        // variable shift-right-algebraic by >= 32 occurs. `_m` is the shifted-out-bit mask, computed
+        // without the UB.
+        line("{ u32 _n=%s&0x3F; u32 _m=_n>=32?0xFFFFFFFFu:((1u<<_n)-1); "
+             "%s=(_n>=32)?(u32)((s32)%s>>31):(u32)((s32)%s>>_n); "
+             "cpu.xer.ca=((s32)%s<0)&&((%s&_m)!=0); }",
+             b.c_str(), a.c_str(), s.c_str(), s.c_str(), s.c_str(), s.c_str());
         set_cr0(i, a);
         break;
     case PPCOp::SRAWI:
@@ -532,6 +544,19 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
         break;
     case PPCOp::MTCRF:
         line("u32_to_cr(cpu, %s, 0x%xu);", s.c_str(), (u32)i.crl_mask);
+        break;
+
+    // lwarx / stwcx. — load-linked / store-conditional. This runtime runs the guest on ONE thread
+    // with a single scheduling token (native_os_thread.cpp), so a reservation set by lwarx can never
+    // be broken by another processor between it and the stwcx.: the store-conditional ALWAYS
+    // succeeds. That makes the faithful single-core reduction a plain load and a plain store whose
+    // CR0[EQ] reports success — not a stub. (The decoder's old "treat as LWZ" comment described this
+    // intent but never implemented it; the ops fell through to the unhandled abort.)
+    case PPCOp::LWARX: line("%s = MEM_R32(%s);", d.c_str(), ea_x(i).c_str()); break;
+    case PPCOp::STWCX:
+        // Store, then CR0 = 0b00 | success | SO, with success always true here.
+        line("MEM_W32(%s, %s); cpu.cr[0].lt=0; cpu.cr[0].gt=0; cpu.cr[0].eq=1; cpu.cr[0].so=cpu.xer.so;",
+             ea_x(i).c_str(), s.c_str());
         break;
 
     // ── Load integer ────────────────────────────────────────────────────────

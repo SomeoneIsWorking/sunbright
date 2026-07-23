@@ -217,7 +217,7 @@ PPCInstr decode(u32 word, u32 pc) {
         case 10:  i.op = PPCOp::ADDC;    break;
         case 11:  i.op = PPCOp::MULHWU;  break;
         case 19:  i.op = PPCOp::MFCR;    break;
-        case 20:  i.op = PPCOp::LWARX;   break;  // not in enum, treat as LWZ for now
+        case 20:  i.op = PPCOp::LWARX;   break;  // load-linked; single-thread reduction in c_emitter
         case 23:  i.op = PPCOp::LWZX;    break;
         case 24:  i.op = PPCOp::SLW;     break;
         case 26:  i.op = PPCOp::CNTLZW;  break;
@@ -238,7 +238,7 @@ PPCInstr decode(u32 word, u32 pc) {
         case 138: i.op = PPCOp::ADDE;    break;
         case 144: i.op = PPCOp::MTCRF;   break;
         case 146: i.op = PPCOp::MTMSR;   break;
-        case 150: i.op = PPCOp::STWCX;   break;  // not in enum, treat as STWX
+        case 150: i.op = PPCOp::STWCX;   break;  // store-conditional; single-thread reduction in c_emitter
         case 151: i.op = PPCOp::STWX;    break;
         case 183: i.op = PPCOp::STWUX;   break;
         case 200: i.op = PPCOp::SUBFZE;  break;

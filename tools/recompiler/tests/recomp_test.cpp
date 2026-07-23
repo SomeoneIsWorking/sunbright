@@ -67,6 +67,10 @@ static uint32_t enc_ps(int xo, int d, int a, int b, int c) {
 static uint32_t enc_ps_x(int xo10, int d, int a, int b) {
     return (4u<<26)|((uint32_t)d<<21)|((uint32_t)a<<16)|((uint32_t)b<<11)|((uint32_t)xo10<<1);
 }
+// Opcode-31 X-form: rD/rS, rA, rB, and a 10-bit XO in bits 10..1.
+static uint32_t enc_x31(int xo10, int d, int a, int b) {
+    return (31u<<26)|((uint32_t)d<<21)|((uint32_t)a<<16)|((uint32_t)b<<11)|((uint32_t)xo10<<1);
+}
 
 int main() {
     const uint32_t B = 0x80100000u;
@@ -465,6 +469,37 @@ int main() {
         Built b = build(B, { enc_ps_x(1014, 0, 3, 4), BLR }, true);
         CHECK(has(b.code, "dcbz32"), "dcbz_l zeroes a cache block");
         CHECK(!has(b.code, ".ps0 +"), "dcbz_l is not a paired-single sum");
+    }
+
+    // ── Host-crash / UB guards that PPC leaves as don't-cares ────────────────────────────────
+    {
+        // sraw (XO=792): the shifted-out-bit mask must be well-defined for a shift >= 32. `1u << n`
+        // is UB for n >= 32, so the emitter must not encode it — it clamps the mask to 0xFFFFFFFF.
+        Built b = build(B, { enc_x31(792, 4, 3, 5), BLR }, true);   // sraw r4, r3, r5
+        // `1u << _n` may only be reached when _n < 32. The ternary _n>=32?0xFFFFFFFF:(1u<<_n)-1
+        // guarantees that by C short-circuit, so the guard's PRESENCE is the property to assert.
+        CHECK(has(b.code, "_n>=32?0xFFFFFFFFu:((1u<<_n)-1)"),
+              "sraw guards the shifted-out mask so (1u<<_n) is never evaluated for n>=32");
+        CHECK(has(b.code, "cpu.xer.ca"), "sraw sets carry");
+    }
+    {
+        // divw (XO=491): must guard INT_MIN / -1 as well as /0, or x86 raises #DE (SIGFPE) where
+        // PPC produced an undefined-but-harmless value.
+        Built b = build(B, { enc_x31(491, 3, 4, 5), BLR }, true);   // divw r3, r4, r5
+        CHECK(has(b.code, "0x80000000u") && has(b.code, "0xFFFFFFFFu"),
+              "divw guards the INT_MIN / -1 overflow, not just divide-by-zero");
+    }
+    {
+        // lwarx (XO=20) / stwcx. (XO=150): a single-thread reduction to load / store-that-succeeds,
+        // NOT the unhandled abort the stale decoder comment implied.
+        Built lw = build(B, { enc_x31(20, 3, 4, 5), BLR }, true);   // lwarx r3, r4, r5
+        CHECK(has(lw.code, "MEM_R32"), "lwarx loads");
+        CHECK(!has(lw.code, "rt_unhandled_insn"), "lwarx is handled, not aborted");
+
+        Built sc = build(B, { enc_x31(150, 3, 4, 5), BLR }, true);  // stwcx. r3, r4, r5
+        CHECK(has(sc.code, "MEM_W32"), "stwcx. stores");
+        CHECK(has(sc.code, "cpu.cr[0].eq=1"), "stwcx. reports success in CR0[EQ] (always, single-thread)");
+        CHECK(!has(sc.code, "rt_unhandled_insn"), "stwcx. is handled, not aborted");
     }
 
     std::printf("recomp_test: %d checks, %d failures\n", g_checks, g_failures);
