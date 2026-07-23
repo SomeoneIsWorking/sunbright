@@ -62,6 +62,35 @@ struct SbrTevState {
 
 const SbrTevState& sbr_gx_fifo_tev();
 
+// GX lighting, as XF memory holds it. Lights are in VIEW space, which is the space the draw
+// matrix already puts vertices into.
+struct SbrLight {
+    float pos[3]{}, dir[3]{};
+    float color[4]{1, 1, 1, 1};
+    float cosAtt[3]{1, 0, 0};
+    float distAtt[3]{1, 0, 0};
+};
+
+struct SbrChanCtrl {
+    uint8_t matSrcVertex = 1;   // material colour from the vertex rather than the register
+    uint8_t enableLight = 0;
+    uint8_t lightMask = 0;      // which of the 8 lights contribute
+    uint8_t ambSrcVertex = 0;
+    uint8_t diffuseFn = 0;      // 0 none, 1 sign, 2 clamp
+    uint8_t attnEnable = 0;
+    uint8_t attnSpot = 0;       // 0 = specular, 1 = spotlight
+};
+
+struct SbrXfState {
+    SbrLight light[8];
+    SbrChanCtrl chan[4];        // colour0, colour1, alpha0, alpha1
+    float ambient[2][4]{};
+    float material[2][4]{};
+    uint32_t numChans = 1;
+};
+
+const SbrXfState& sbr_gx_fifo_xf();
+
 // The state the game has currently set. Valid at J3DShape::draw time.
 SbrDepthState sbr_gx_current_zmode();
 // Resolve GX's konst selector to a colour. Shared by the capture and the uniform packer so the two

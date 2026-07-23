@@ -68,6 +68,60 @@ const bool g_depthViz = [] {
     return e != nullptr && e[0] != '\0' && e[0] != '0';
 }();
 
+// GX colour channel: the RASTERISED colour a TEV stage reads as RASC/RASA. Without this the
+// channel defaults to white, and every material that modulates by it blows out — which is exactly
+// what characters did once TEV landed (the environment uses baked CLR0 and was unaffected).
+//
+// GX evaluates, per channel: colour = material * (ambient + sum over enabled lights of
+// atten * diffuse * lightColour), where the material and ambient come either from a register or
+// from the vertex, per the channel control. Lights live in VIEW space, which is where the draw
+// matrix has already put the vertex and its normal.
+void light_channel(const SbrXfState& xf, int chan, const float vpos[3], const float nrm[3],
+                   const float vtxColor[4], float out[4]) {
+    const SbrChanCtrl& c = xf.chan[chan];
+
+    const float* mat = c.matSrcVertex ? vtxColor : xf.material[chan];
+    if (!c.enableLight) {
+        for (int i = 0; i < 4; ++i) out[i] = mat[i];
+        return;
+    }
+    const float* amb = c.ambSrcVertex ? vtxColor : xf.ambient[chan];
+
+    float acc[3] = {amb[0], amb[1], amb[2]};
+    for (int li = 0; li < 8; ++li) {
+        if (!((c.lightMask >> li) & 1)) continue;
+        const SbrLight& L = xf.light[li];
+
+        float ldir[3] = {L.pos[0] - vpos[0], L.pos[1] - vpos[1], L.pos[2] - vpos[2]};
+        const float d2 = ldir[0] * ldir[0] + ldir[1] * ldir[1] + ldir[2] * ldir[2];
+        const float d = std::sqrt(d2);
+        if (d > 1e-6f) { ldir[0] /= d; ldir[1] /= d; ldir[2] /= d; }
+
+        float atten = 1.0f;
+        if (c.attnEnable) {
+            // Spotlight: the cosine polynomial over the angle to the light's direction, divided by
+            // the distance polynomial. GX evaluates both as quadratics in their own variable.
+            const float cosA = -(ldir[0] * L.dir[0] + ldir[1] * L.dir[1] + ldir[2] * L.dir[2]);
+            const float num = std::max(0.0f, L.cosAtt[0] + L.cosAtt[1] * cosA +
+                                                 L.cosAtt[2] * cosA * cosA);
+            const float den = L.distAtt[0] + L.distAtt[1] * d + L.distAtt[2] * d2;
+            atten = (den > 1e-6f) ? num / den : 0.0f;
+        }
+
+        float diff = 1.0f;
+        if (c.diffuseFn != 0) {
+            diff = nrm[0] * ldir[0] + nrm[1] * ldir[1] + nrm[2] * ldir[2];
+            if (c.diffuseFn == 2) diff = std::max(0.0f, diff);   // clamp
+        }
+        const float k = atten * diff;
+        acc[0] += k * L.color[0];
+        acc[1] += k * L.color[1];
+        acc[2] += k * L.color[2];
+    }
+    for (int i = 0; i < 3; ++i) out[i] = std::clamp(mat[i] * acc[i], 0.0f, 1.0f);
+    out[3] = mat[3];
+}
+
 void lerp_mtx(float out[12], const float a[12], const float b[12], float t) {
     // Component-wise on a model x view matrix. Correct for translation and near-correct for the
     // rotation of a small per-tick delta; a proper decompose/slerp is the upgrade if fast spins
@@ -332,6 +386,15 @@ float sbr_scene_render(double now_seconds, const float proj[16]) {
             const float vy = m[4] * v.x + m[5] * v.y + m[6]  * v.z + m[7];
             const float vz = m[8] * v.x + m[9] * v.y + m[10] * v.z + m[11];
 
+            // The normal goes through the matrix's rotation only (no translation). J3D's draw
+            // matrices are rigid plus uniform scale, so the 3x3 is its own inverse-transpose up to
+            // a scale that renormalising removes.
+            float nrm[3] = {m[0] * v.nx + m[1] * v.ny + m[2] * v.nz,
+                            m[4] * v.nx + m[5] * v.ny + m[6] * v.nz,
+                            m[8] * v.nx + m[9] * v.ny + m[10] * v.nz};
+            const float nl = std::sqrt(nrm[0] * nrm[0] + nrm[1] * nrm[1] + nrm[2] * nrm[2]);
+            if (nl > 1e-6f) { nrm[0] /= nl; nrm[1] /= nl; nrm[2] /= nl; }
+
             // view -> clip through the game's own projection.
             //
             // GC clip depth is NOT [0,1]. The game's own matrix (measured) has row 2 = [0, 0, 0,
@@ -361,10 +424,14 @@ float sbr_scene_render(double now_seconds, const float proj[16]) {
             // Vertex colour from the decoded CLR0, modulated by the bring-up per-object hue only
             // when there is no texture — with a texture bound the object hue would tint the whole
             // scene and hide what the texture actually looks like.
-            const float vr = (float)((v.rgba >> 24) & 0xFF) / 255.0f;
-            const float vg = (float)((v.rgba >> 16) & 0xFF) / 255.0f;
-            const float vb = (float)((v.rgba >> 8) & 0xFF) / 255.0f;
-            const float va = (float)(v.rgba & 0xFF) / 255.0f;
+            float vc[4] = {(float)((v.rgba >> 24) & 0xFF) / 255.0f,
+                           (float)((v.rgba >> 16) & 0xFF) / 255.0f,
+                           (float)((v.rgba >> 8) & 0xFF) / 255.0f,
+                           (float)(v.rgba & 0xFF) / 255.0f};
+            const float vpos[3] = {vx, vy, vz};
+            float lit[4];
+            light_channel(d.xf, 0, vpos, nrm, vc, lit);
+            const float vr = lit[0], vg = lit[1], vb = lit[2], va = lit[3];
             if (g_depthViz) {
                 // Grayscale by normalised depth: near = black, far = white. If a surface that
                 // should be distant paints itself dark (or vice versa) the transform for that mesh

@@ -38,6 +38,7 @@ struct SbrDrawable {
     uint8_t  is2d;       // that projection was an ortho
     SbrTexture tex;      // TEXMAP0 as bound when this shape was drawn
     SbrTevState tev;     // the material's TEV configuration at that moment
+    SbrXfState  xf;      // colour-channel control and lights at that moment
 };
 
 // One decoded model-space vertex. `slot` is the vertex's PNMTXIDX/3 — which J3DShapeMtx slot it
@@ -45,6 +46,7 @@ struct SbrDrawable {
 // applies to all of them; skinned shapes vary it per vertex (see sbr_scene_multislot_count).
 struct SbrGeomVert {
     float x, y, z;
+    float nx, ny, nz;  // model-space normal, for the lit colour channel
     uint32_t slot;
     float u, v;        // TEX0
     uint32_t rgba;     // CLR0

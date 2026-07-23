@@ -205,7 +205,7 @@ void ov_shape_draw(CPUState& cpu) {
                             std::vector<SbrGeomVert> gv;
                             gv.reserve(g_tri.size());
                             for (const J3DVert& v : g_tri)
-                                gv.push_back(SbrGeomVert{v.x, v.y, v.z, v.pnMtxSlot, v.u, v.v, v.rgba});
+                                gv.push_back(SbrGeomVert{v.x, v.y, v.z, v.nx, v.ny, v.nz, v.pnMtxSlot, v.u, v.v, v.rgba});
                             geom = sbr_scene_intern_geometry(key, gv.data(), (int)gv.size());
                         } else {
                             ++g_st.decode_fail;
@@ -248,6 +248,7 @@ void ov_shape_draw(CPUState& cpu) {
                         // 4x4 null texture (measured: 3 textures for the whole scene).
                         dr.tex = sbr_gx_fifo_texture(0);
                         dr.tev = sbr_gx_fifo_tev();
+                        dr.xf  = sbr_gx_fifo_xf();
                         {
                             bool is2d = false;
                             const float* pj = sbr_gx_current_projection(&is2d);

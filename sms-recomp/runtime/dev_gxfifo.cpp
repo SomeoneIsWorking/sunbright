@@ -26,6 +26,7 @@
 // The texture state the material display lists have written, per texmap. See the BP handler.
 static SbrTexture g_fifoTex[8];
 static SbrTevState g_tev;
+static SbrXfState g_xf;
 
 #include <aurora/aurora.h>
 #include <dolphin/gx/GXAurora.h>
@@ -481,6 +482,64 @@ size_t parse(const u8* p, size_t n, int depth) {
                     }
                 }
             }
+            // COLOUR CHANNELS AND LIGHTS live in XF memory, and (like TEV) J3D writes them from
+            // baked display lists, so this is the only place they can be observed.
+            //   0x0600..0x067F  eight light objects, 16 words each
+            //   0x100A..0x100D  ambient colours (chan 0/1), then material colours
+            //   0x100E..0x1011  colour and alpha channel control
+            {
+                const u32 addr = be32(p + i + 1) & 0xFFFF;
+                for (u32 w = 0; w < count; ++w) {
+                    const u32 a = addr + w;
+                    const u32 v = be32(p + i + 5 + w * 4);
+                    if (a >= 0x0600 && a < 0x0680) {
+                        const unsigned li = (a - 0x0600) >> 4;
+                        const unsigned wi = (a - 0x0600) & 15;
+                        SbrLight& L = g_xf.light[li];
+                        auto f = [&](u32 bits) { float o; __builtin_memcpy(&o, &bits, 4); return o; };
+                        switch (wi) {
+                        case 3:  // RGBA8 colour
+                            L.color[0] = (float)((v >> 24) & 0xFF) / 255.0f;
+                            L.color[1] = (float)((v >> 16) & 0xFF) / 255.0f;
+                            L.color[2] = (float)((v >> 8) & 0xFF) / 255.0f;
+                            L.color[3] = (float)(v & 0xFF) / 255.0f;
+                            break;
+                        case 4: L.cosAtt[0] = f(v); break;
+                        case 5: L.cosAtt[1] = f(v); break;
+                        case 6: L.cosAtt[2] = f(v); break;
+                        case 7: L.distAtt[0] = f(v); break;
+                        case 8: L.distAtt[1] = f(v); break;
+                        case 9: L.distAtt[2] = f(v); break;
+                        case 10: L.pos[0] = f(v); break;
+                        case 11: L.pos[1] = f(v); break;
+                        case 12: L.pos[2] = f(v); break;
+                        case 13: L.dir[0] = f(v); break;
+                        case 14: L.dir[1] = f(v); break;
+                        case 15: L.dir[2] = f(v); break;
+                        default: break;
+                        }
+                    } else if (a >= 0x100A && a <= 0x100D) {
+                        float* c = (a <= 0x100B) ? g_xf.ambient[a - 0x100A]
+                                                 : g_xf.material[a - 0x100C];
+                        c[0] = (float)((v >> 24) & 0xFF) / 255.0f;
+                        c[1] = (float)((v >> 16) & 0xFF) / 255.0f;
+                        c[2] = (float)((v >> 8) & 0xFF) / 255.0f;
+                        c[3] = (float)(v & 0xFF) / 255.0f;
+                    } else if (a >= 0x100E && a <= 0x1011) {
+                        SbrChanCtrl& c = g_xf.chan[a - 0x100E];
+                        c.matSrcVertex = v & 1;
+                        c.enableLight  = (v >> 1) & 1;
+                        c.lightMask    = ((v >> 2) & 0xF) | (((v >> 11) & 0xF) << 4);
+                        c.ambSrcVertex = (v >> 6) & 1;
+                        c.diffuseFn    = (v >> 7) & 3;
+                        c.attnEnable   = (v >> 9) & 1;
+                        c.attnSpot     = (v >> 10) & 1;
+                    } else if (a == 0x1009) {
+                        g_xf.numChans = v & 3;
+                    }
+                }
+            }
+
             g_out.insert(g_out.end(), p + i, p + i + len);
             g_stats.xf++; i += len; continue;
         }
@@ -812,3 +871,6 @@ SbrTexture sbr_gx_fifo_texture(unsigned texmap) {
 
 // The TEV configuration the material display lists have written.
 const SbrTevState& sbr_gx_fifo_tev() { return g_tev; }
+
+// The colour-channel and light state the display lists have written.
+const SbrXfState& sbr_gx_fifo_xf() { return g_xf; }

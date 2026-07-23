@@ -179,6 +179,28 @@ bool j3d_decode_element(u32 shape, uint32_t element, const J3DVertexLayout& L,
     const uint32_t texStride = (L.comp[GXA_TEX0] == 4) ? 8u : 4u;
     const float texScale = 1.0f / (float)(1u << L.frac[GXA_TEX0]);
 
+    // Normals share the position array's convention: J3D bakes a 12-byte stride for F32 and 6 for
+    // S16 (three components), with the format's fractional shift applied.
+    const u32 nrmBase = (L.type[GXA_NRM] != GXAT_NONE) ? sb_r32(SB_J3DSYS + J3DSYS_NRM_ARRAY) : 0;
+    const uint32_t nrmStride = (L.comp[GXA_NRM] == 4) ? 12u : 6u;
+    const float nrmScale = 1.0f / (float)(1u << L.frac[GXA_NRM]);
+
+    auto read_nrm = [&](uint32_t index, J3DVert& v) {
+        if (nrmBase == 0) return;
+        const u32 p = nrmBase + index * nrmStride;
+        if (!ok(p + nrmStride - 1)) return;
+        float c[3] = {0, 0, 0};
+        for (uint32_t k = 0; k < 3; ++k) {
+            if (L.comp[GXA_NRM] == 4) {
+                const u32 bits = sb_r32(p + k * 4);
+                __builtin_memcpy(&c[k], &bits, 4);
+            } else {
+                c[k] = (float)(int16_t)sb_r16(p + k * 2) * nrmScale;
+            }
+        }
+        v.nx = c[0]; v.ny = c[1]; v.nz = c[2];
+    };
+
     auto read_clr = [&](uint32_t index, J3DVert& v) {
         if (clrBase == 0) return;
         const u32 p = clrBase + index * clrStride;
@@ -304,6 +326,9 @@ bool j3d_decode_element(u32 shape, uint32_t element, const J3DVertexLayout& L,
             } else if (!read_pos(index, out_v)) {
                 return false;
             }
+
+            if (L.type[GXA_NRM] == GXAT_INDEX16)     read_nrm(sb_r16(vp + L.offset[GXA_NRM]), out_v);
+            else if (L.type[GXA_NRM] == GXAT_INDEX8) read_nrm(sb_r8(vp + L.offset[GXA_NRM]), out_v);
 
             // Colour and texcoord, each with its own index in the vertex.
             out_v.rgba = 0xFFFFFFFFu;

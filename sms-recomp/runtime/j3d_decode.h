@@ -43,6 +43,7 @@ struct J3DVertexLayout {
 struct J3DVert {
     float x, y, z;
     uint32_t pnMtxSlot;   // PNMTXIDX/3 — which J3DShapeMtx slot this vertex uses
+    float nx, ny, nz;     // NRM, model space — needed for the lit colour channel
     float u, v;           // TEX0
     uint32_t rgba;        // CLR0, 0xRRGGBBAA; opaque white when the shape has no colour attribute
 };
