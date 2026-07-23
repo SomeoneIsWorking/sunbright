@@ -27,6 +27,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <unordered_map>
 #include <vector>
 
 namespace {
@@ -39,13 +40,24 @@ SDL_GPUTexture*        g_color = nullptr;   // offscreen EFB-sized colour target
 SDL_GPUTexture*        g_depth = nullptr;   // depth target
 SDL_GPUTransferBuffer* g_dl    = nullptr;   // download staging (w*h*4)
 int  g_w = 0, g_h = 0;
+int  g_lastBatches = 0;
 bool g_tried = false, g_ok = false;
 
 std::vector<uint8_t> g_cpu;   // last frame read back, top-left origin RGBA8
 
 // Geometry path (milestone 1). Vertices arrive in CLIP space already (the frontend does posMtx +
 // projection on the CPU), so one pipeline serves every draw for now — no per-material state yet.
-SDL_GPUGraphicsPipeline* g_pipe = nullptr;
+SDL_GPUShader* g_vs = nullptr;
+SDL_GPUShader* g_fs = nullptr;
+// One pipeline per distinct depth state. GX varies depth state per MATERIAL, and SDL3 GPU has no
+// dynamic depth state, so the state has to be baked into a pipeline and the scene split into runs.
+std::unordered_map<uint32_t, SDL_GPUGraphicsPipeline*> g_pipes;
+
+struct Batch {
+    SbrDepthState st;
+    uint32_t first, count;
+};
+std::vector<Batch> g_batches;
 SDL_GPUBuffer*           g_vbuf = nullptr;
 SDL_GPUTransferBuffer*   g_vup  = nullptr;
 size_t                   g_vcap = 0;
@@ -60,6 +72,44 @@ SDL_GPUShader* make_shader(const void* code, size_t bytes, SDL_GPUShaderStage st
     ci.stage = stage;
     return SDL_CreateGPUShader(g_dev, &ci);
 }
+
+SDL_GPUCompareOp gx_compare(uint8_t f) {
+    // GXCompare -> backend compare. The transform in scene.cpp maps GC's [-1,0] clip depth to
+    // [0,1] PRESERVING order (nearer stays smaller), so each GX function keeps its meaning.
+    switch (f & 7) {
+    case 0: return SDL_GPU_COMPAREOP_NEVER;
+    case 1: return SDL_GPU_COMPAREOP_LESS;
+    case 2: return SDL_GPU_COMPAREOP_EQUAL;
+    case 3: return SDL_GPU_COMPAREOP_LESS_OR_EQUAL;
+    case 4: return SDL_GPU_COMPAREOP_GREATER;
+    case 5: return SDL_GPU_COMPAREOP_NOT_EQUAL;
+    case 6: return SDL_GPU_COMPAREOP_GREATER_OR_EQUAL;
+    default: return SDL_GPU_COMPAREOP_ALWAYS;
+    }
+}
+
+uint32_t depth_key(SbrDepthState d) {
+    return (uint32_t)(d.test ? 1 : 0) << 24 | (uint32_t)(d.func & 7) << 20 |
+           (uint32_t)(d.write ? 1 : 0) << 16 | (uint32_t)(d.blend & 3) << 8 |
+           (uint32_t)(d.srcFac & 7) << 4 | (uint32_t)(d.dstFac & 7);
+}
+
+// GXBlendFactor -> backend factor. GX names the factors in terms of the SOURCE and DESTINATION
+// colours exactly as the backend does, so this is a direct mapping, not an approximation.
+SDL_GPUBlendFactor gx_blend_factor(uint8_t f) {
+    switch (f & 7) {
+    case 0: return SDL_GPU_BLENDFACTOR_ZERO;
+    case 1: return SDL_GPU_BLENDFACTOR_ONE;
+    case 2: return SDL_GPU_BLENDFACTOR_SRC_COLOR;
+    case 3: return SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_COLOR;
+    case 4: return SDL_GPU_BLENDFACTOR_SRC_ALPHA;
+    case 5: return SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+    case 6: return SDL_GPU_BLENDFACTOR_DST_ALPHA;
+    default: return SDL_GPU_BLENDFACTOR_ONE_MINUS_DST_ALPHA;
+    }
+}
+
+SDL_GPUGraphicsPipeline* pipeline_for(SbrDepthState d);
 
 void ensure_vbuf(size_t bytes) {
     if (bytes <= g_vcap && g_vbuf != nullptr) return;
@@ -83,6 +133,73 @@ bool enabled() {
         v = (e != nullptr && e[0] != '\0' && e[0] != '0') ? 1 : 0;
     }
     return v == 1;
+}
+
+SDL_GPUGraphicsPipeline* pipeline_for(SbrDepthState d) {
+    const uint32_t key = depth_key(d);
+    if (const auto it = g_pipes.find(key); it != g_pipes.end()) return it->second;
+
+    SDL_GPUVertexBufferDescription vbd{};
+    vbd.slot = 0;
+    vbd.pitch = sizeof(SbrVertex);
+    vbd.input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
+    SDL_GPUVertexAttribute va[2]{};
+    va[0].location = 0; va[0].buffer_slot = 0;
+    va[0].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4; va[0].offset = 0;
+    va[1].location = 1; va[1].buffer_slot = 0;
+    va[1].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4; va[1].offset = 16;
+
+    SDL_GPUColorTargetDescription ctd{};
+    ctd.format = kColorFmt;
+    // GX_BM_BLEND is the only blend mode the scene actually uses; LOGIC/SUBTRACT are left
+    // unblended rather than approximated, and will announce themselves if they ever appear.
+    if (d.blend == 1) {
+        ctd.blend_state.enable_blend = true;
+        ctd.blend_state.color_blend_op = SDL_GPU_BLENDOP_ADD;
+        ctd.blend_state.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
+        ctd.blend_state.src_color_blendfactor = gx_blend_factor(d.srcFac);
+        ctd.blend_state.dst_color_blendfactor = gx_blend_factor(d.dstFac);
+        ctd.blend_state.src_alpha_blendfactor = gx_blend_factor(d.srcFac);
+        ctd.blend_state.dst_alpha_blendfactor = gx_blend_factor(d.dstFac);
+    }
+
+    SDL_GPUGraphicsPipelineCreateInfo pci{};
+    pci.vertex_shader = g_vs;
+    pci.fragment_shader = g_fs;
+    pci.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+    pci.vertex_input_state.vertex_buffer_descriptions = &vbd;
+    pci.vertex_input_state.num_vertex_buffers = 1;
+    pci.vertex_input_state.vertex_attributes = va;
+    pci.vertex_input_state.num_vertex_attributes = 2;
+    // SBR_RENDER_WIREFRAME=1 draws edges instead of filled triangles. A few large planes can
+    // occlude an entire correct scene behind them, which is indistinguishable from "the scene is
+    // missing" in a filled render — wireframe separates those two cases, so it is a diagnostic
+    // worth keeping rather than a one-off.
+    const char* wf = std::getenv("SBR_RENDER_WIREFRAME");
+    pci.rasterizer_state.fill_mode = (wf != nullptr && wf[0] != '\0' && wf[0] != '0')
+                                         ? SDL_GPU_FILLMODE_LINE : SDL_GPU_FILLMODE_FILL;
+    pci.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;   // GX cull comes with the state machine
+    pci.target_info.color_target_descriptions = &ctd;
+    pci.target_info.num_color_targets = 1;
+    pci.target_info.depth_stencil_format = kDepthFmt;
+    pci.target_info.has_depth_stencil_target = true;
+    // The GAME's depth state, not an assumed one. The sky is drawn with WRITE DISABLED; honouring
+    // that is what stops it stamping depth over the whole scene.
+    pci.depth_stencil_state.enable_depth_test = d.test != 0;
+    pci.depth_stencil_state.enable_depth_write = d.write != 0;
+    pci.depth_stencil_state.compare_op = gx_compare(d.func);
+
+    SDL_GPUGraphicsPipeline* p = SDL_CreateGPUGraphicsPipeline(g_dev, &pci);
+    if (p == nullptr) {
+        // A pipeline that fails to compile must not be silently skipped: the batch would vanish and
+        // read as a render bug (CLAUDE.md FAIL FAST).
+        lucent::error("nrender", "pipeline create failed for test={} func={} write={} blend={} "
+                                 "src={} dst={}: {}",
+                      d.test, d.func, d.write, d.blend, d.srcFac, d.dstFac, SDL_GetError());
+        std::abort();
+    }
+    g_pipes.emplace(key, p);
+    return p;
 }
 
 } // namespace
@@ -135,9 +252,9 @@ bool sbr_render_init(int w, int h) {
     // z-mode and blend state become per-material state as the TEV milestone lands; the depth test
     // itself is not optional, because without it the last drawable submitted paints over the whole
     // scene (measured: a uniform 100%-coverage fill of one object's colour).
-    SDL_GPUShader* vs = make_shader(kGeomVertSpv, sizeof(kGeomVertSpv), SDL_GPU_SHADERSTAGE_VERTEX);
-    SDL_GPUShader* fs = make_shader(kGeomFragSpv, sizeof(kGeomFragSpv), SDL_GPU_SHADERSTAGE_FRAGMENT);
-    if (vs == nullptr || fs == nullptr) {
+    g_vs = make_shader(kGeomVertSpv, sizeof(kGeomVertSpv), SDL_GPU_SHADERSTAGE_VERTEX);
+    g_fs = make_shader(kGeomFragSpv, sizeof(kGeomFragSpv), SDL_GPU_SHADERSTAGE_FRAGMENT);
+    if (g_vs == nullptr || g_fs == nullptr) {
         lucent::error("nrender", "shader create failed: {}", SDL_GetError());
         return false;
     }
@@ -151,42 +268,9 @@ bool sbr_render_init(int w, int h) {
     va[1].location = 1; va[1].buffer_slot = 0;
     va[1].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4; va[1].offset = 16;
 
-    SDL_GPUColorTargetDescription ctd{};
-    ctd.format = kColorFmt;
-
-    SDL_GPUGraphicsPipelineCreateInfo pci{};
-    pci.vertex_shader = vs;
-    pci.fragment_shader = fs;
-    pci.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
-    pci.vertex_input_state.vertex_buffer_descriptions = &vbd;
-    pci.vertex_input_state.num_vertex_buffers = 1;
-    pci.vertex_input_state.vertex_attributes = va;
-    pci.vertex_input_state.num_vertex_attributes = 2;
-    // SBR_RENDER_WIREFRAME=1 draws edges instead of filled triangles. A few large planes can
-    // occlude an entire correct scene behind them, which is indistinguishable from "the scene is
-    // missing" in a filled render — wireframe separates those two cases, so it is a diagnostic
-    // worth keeping rather than a one-off.
-    const char* wf = std::getenv("SBR_RENDER_WIREFRAME");
-    pci.rasterizer_state.fill_mode = (wf != nullptr && wf[0] != '\0' && wf[0] != '0')
-                                         ? SDL_GPU_FILLMODE_LINE : SDL_GPU_FILLMODE_FILL;
-    pci.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;   // GX cull comes with the state machine
-    pci.target_info.color_target_descriptions = &ctd;
-    pci.target_info.num_color_targets = 1;
-    pci.target_info.depth_stencil_format = kDepthFmt;
-    pci.target_info.has_depth_stencil_target = true;
-    // GC's projection puts the near plane at z/w = 0 and the far plane at 1 (see the transform in
-    // scene.cpp), and the target clears to 1.0 — so nearer is LESS, and the default GX z-mode is
-    // exactly test-and-write.
-    pci.depth_stencil_state.enable_depth_test = true;
-    pci.depth_stencil_state.enable_depth_write = true;
-    pci.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_LESS;
-    g_pipe = SDL_CreateGPUGraphicsPipeline(g_dev, &pci);
-    SDL_ReleaseGPUShader(g_dev, vs);
-    SDL_ReleaseGPUShader(g_dev, fs);
-    if (g_pipe == nullptr) {
-        lucent::error("nrender", "pipeline create failed: {}", SDL_GetError());
-        return false;
-    }
+    // Pipelines are created ON DEMAND per depth state (pipeline_for), not once here: GX varies
+    // depth state per material and the backend cannot change it dynamically.
+    g_pipes.clear();
 
     g_cpu.assign((size_t)w * h * 4, 0);
     g_w = w;
@@ -203,12 +287,22 @@ void sbr_render_begin(float r, float g, float b, float a) {
     if (!g_ok) return;
     g_clear = SDL_FColor{r, g, b, a};
     g_verts.clear();
+    g_batches.clear();
 }
 
-void sbr_render_tris(const SbrVertex* verts, int count) {
+void sbr_render_tris(const SbrVertex* verts, int count, SbrDepthState depth) {
     if (!g_ok || verts == nullptr || count < 3) return;
     count -= count % 3;
     g_verts.insert(g_verts.end(), verts, verts + count);
+    // Merge into the previous run when the state is unchanged, so honouring per-material depth
+    // costs draws only where the state actually changes.
+    const uint32_t first = (uint32_t)(g_verts.size() - (size_t)count);
+    if (!g_batches.empty() && depth_key(g_batches.back().st) == depth_key(depth) &&
+        g_batches.back().first + g_batches.back().count == first) {
+        g_batches.back().count += (uint32_t)count;
+    } else {
+        g_batches.push_back(Batch{depth, first, (uint32_t)count});
+    }
 }
 
 // Upload the frame's geometry, render it in one pass over a cleared target, then download for
@@ -218,6 +312,7 @@ void sbr_render_tris(const SbrVertex* verts, int count) {
 void sbr_render_end() {
     if (!g_ok) return;
     g_lastVerts = (int)g_verts.size();
+    g_lastBatches = (int)g_batches.size();
 
     SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(g_dev);
     if (cmd == nullptr) {
@@ -253,10 +348,14 @@ void sbr_render_end() {
 
     SDL_GPURenderPass* rp = SDL_BeginGPURenderPass(cmd, &cti, 1, &dsi);
     if (vbytes > 0) {
-        SDL_BindGPUGraphicsPipeline(rp, g_pipe);
+        SDL_GPUBufferBinding vbTmp{};
+        (void)vbTmp;
         SDL_GPUBufferBinding vb{}; vb.buffer = g_vbuf; vb.offset = 0;
         SDL_BindGPUVertexBuffers(rp, 0, &vb, 1);
-        SDL_DrawGPUPrimitives(rp, (Uint32)g_verts.size(), 1, 0, 0);
+        for (const Batch& b : g_batches) {
+            SDL_BindGPUGraphicsPipeline(rp, pipeline_for(b.st));
+            SDL_DrawGPUPrimitives(rp, b.count, 1, b.first, 0);
+        }
     }
     SDL_EndGPURenderPass(rp);
 
@@ -280,6 +379,7 @@ void sbr_render_end() {
 }
 
 int sbr_render_last_vertex_count() { return g_lastVerts; }
+int sbr_render_last_batch_count() { return g_lastBatches; }
 
 // SBR_RENDER_DUMP=/path.rgba — write the native frame out so it can be diffed against aurora's
 // SB_DUMP_FRAME of the same moment (tools/render/compare_native.py). This is the parity harness the

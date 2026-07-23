@@ -55,6 +55,11 @@ bool  g_projThisTick = false;
 std::vector<SbrVertex> g_out;
 
 // SBR_RENDER_DEPTHVIZ=1 — shade by depth instead of per-object colour.
+const bool g_skipSkinned = [] {
+    const char* e = std::getenv("SBR_RENDER_SKIP_SKINNED");
+    return e != nullptr && e[0] != '\0' && e[0] != '0';
+}();
+
 const bool g_depthViz = [] {
     const char* e = std::getenv("SBR_RENDER_DEPTHVIZ");
     return e != nullptr && e[0] != '\0' && e[0] != '0';
@@ -120,13 +125,39 @@ double sbr_scene_now() {
 }
 int  sbr_scene_multislot_count() { return g_multislot; }
 
+void sbr_scene_report_zmodes() {
+    // Which depth states the scene actually uses. If this shows ONE state, per-material depth is
+    // not what is occluding the plaza and the theory is wrong — cheaper to check than to assume.
+    std::unordered_map<uint32_t, int> hist;
+    for (const auto& d : g_cur.items) {
+        const uint32_t k = (uint32_t)d.depth.test << 16 | (uint32_t)d.depth.func << 8 | d.depth.write;
+        ++hist[k];
+    }
+    for (const auto& [k, n] : hist)
+        lucent::info("nrender", "  zmode test={} func={} write={} -> {} drawables",
+                     (k >> 16) & 1, (k >> 8) & 7, k & 1, n);
+}
+
 void sbr_scene_report_largest(int n) {
     std::vector<Area> a = g_area;
     std::sort(a.begin(), a.end(), [](const Area& x, const Area& y) { return x.frac > y.frac; });
     for (int i = 0; i < n && i < (int)a.size(); ++i)
-        lucent::info("nrender", "  occluder #{}: key 0x{:012x} covers {:5.1f}% of the viewport, "
-                                "{} verts, nearest w={:.1f}",
-                     i + 1, a[i].key, 100.0f * a[i].frac, a[i].verts, a[i].nearestW);
+    {
+        // Report the drawable's COLOUR too. The colour is a pure function of the key, so a dominant
+        // colour in the output identifies its drawable exactly — turning "something covers the
+        // screen" into "THIS shape covers the screen", without another round of hypotheses.
+        uint64_t z = a[i].key + 0x9E3779B97F4A7C15ull;
+        z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+        z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+        const uint32_t hh = (uint32_t)(z ^ (z >> 31));
+        const int cr = (int)(255.0f * (0.35f + 0.65f * (float)((hh >> 16) & 0xFF) / 255.0f));
+        const int cg = (int)(255.0f * (0.35f + 0.65f * (float)((hh >> 8) & 0xFF) / 255.0f));
+        const int cb = (int)(255.0f * (0.35f + 0.65f * (float)(hh & 0xFF) / 255.0f));
+        lucent::info("nrender", "  occluder #{}: shape 0x{:08x} el {} covers {:5.1f}%, {} verts, "
+                                "nearest w={:.1f}, colour ({},{},{})",
+                     i + 1, (uint32_t)(a[i].key >> 16), (uint32_t)(a[i].key & 0xFFFF),
+                     100.0f * a[i].frac, a[i].verts, a[i].nearestW, cr, cg, cb);
+    }
 }
 
 void sbr_scene_begin_tick() {
@@ -181,12 +212,16 @@ float sbr_scene_render(double now_seconds, const float proj[16]) {
 
     if (proj == nullptr) return alpha;   // nothing to place geometry with
 
-    g_out.clear();
     g_area.clear();
     for (const auto& d : g_cur.items) {
         if (d.geom == 0 || d.geom >= g_geom.size()) continue;   // no geometry decoded for this one
         const Geom& g = g_geom[d.geom];
         if (g.verts.empty()) continue;
+        // SBR_RENDER_SKIP_SKINNED=1 — omit shapes whose vertices select more than one matrix slot.
+        // Those are the shapes whose single per-drawable matrix is KNOWN to be wrong (the slot read
+        // from a multi-matrix J3DShapeMtx is not a slot at all), so this isolates how much of the
+        // picture their garbage transforms are responsible for.
+        if (g_skipSkinned && g.multislot) continue;
 
         float m[12];
         const auto it = g_prev.valid ? g_prev.index.find(d.key) : g_prev.index.end();
@@ -213,6 +248,10 @@ float sbr_scene_render(double now_seconds, const float proj[16]) {
         const float cg = 0.35f + 0.65f * (float)((h >> 8) & 0xFF) / 255.0f;
         const float cb = 0.35f + 0.65f * (float)(h & 0xFF) / 255.0f;
 
+        // Per-DRAWABLE buffer: depth state is a per-material property, so each drawable is
+        // submitted under its own state. The backend merges consecutive runs that share a state,
+        // so an unchanging scene still collapses to very few draws.
+        g_out.clear();
         float nlo[2] = {1e30f, 1e30f}, nhi[2] = {-1e30f, -1e30f};
         float nearestW = 1e30f;
         for (const SbrGeomVert& v : g.verts) {
@@ -233,16 +272,18 @@ float sbr_scene_render(double now_seconds, const float proj[16]) {
             // ones. That is what painted the sky and terrain over the whole plaza, and what made
             // the depth visualisation read 0 everywhere.
             SbrVertex o{};
-            o.x = proj[0]  * vx + proj[1]  * vy + proj[2]  * vz + proj[3];
-            o.y = proj[4]  * vx + proj[5]  * vy + proj[6]  * vz + proj[7];
-            o.z = proj[8]  * vx + proj[9]  * vy + proj[10] * vz + proj[11];
-            o.w = proj[12] * vx + proj[13] * vy + proj[14] * vz + proj[15];
+            const float* P = d.proj;
+            o.x = P[0]  * vx + P[1]  * vy + P[2]  * vz + P[3];
+            o.y = P[4]  * vx + P[5]  * vy + P[6]  * vz + P[7];
+            o.z = P[8]  * vx + P[9]  * vy + P[10] * vz + P[11];
+            o.w = P[12] * vx + P[13] * vy + P[14] * vz + P[15];
             // GC clip space has +Y up; the backend's NDC has +Y down. Flipping here keeps the
             // convention change at the ONE place the two spaces meet.
             o.y = -o.y;
             // [-1,0] -> [0,1]: adding w maps near (-w) to 0 and far (0) to w. Same shape as the
             // standard GL->Vulkan depth conversion, and derived from the matrix above rather than
-            // fitted to make the picture look right.
+            // fitted to make the picture look right. GC's ORTHO shares the convention (C_MTXOrtho
+            // maps near to -1 and far to 0), so the same correction applies to both.
             o.z += o.w;
             if (g_depthViz) {
                 // Grayscale by normalised depth: near = black, far = white. If a surface that
@@ -263,6 +304,8 @@ float sbr_scene_render(double now_seconds, const float proj[16]) {
                 nearestW = std::min(nearestW, o.w);
             }
         }
+        if (!g_out.empty()) sbr_render_tris(g_out.data(), (int)(g_out.size() / 3) * 3, d.depth);
+
         if (nhi[0] > nlo[0]) {
             // Clamp to the viewport before measuring: an off-screen quad's raw NDC extent is huge
             // but it covers nothing, and ranking by that would blame the wrong drawable.
@@ -273,9 +316,6 @@ float sbr_scene_render(double now_seconds, const float proj[16]) {
         }
     }
 
-    // Whole scene in one submission: the backend batches into a single pass, and nothing here yet
-    // needs per-drawable state (that arrives with materials).
-    if (!g_out.empty()) sbr_render_tris(g_out.data(), (int)(g_out.size() / 3) * 3);
     return alpha;
 }
 

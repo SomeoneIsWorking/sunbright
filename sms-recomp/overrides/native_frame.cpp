@@ -261,13 +261,15 @@ void video_wait_for_retrace(CPUState& cpu) {
             float lo[3], hi[3], med = 0.0f;
             sbr_scene_translation_bounds(lo, hi, &med);
             lucent::info("nrender", "verts={} coverage={:.1f}% alpha={:.2f} drawables={} "
-                                    "skinned-geom={} proj={} xyz=[{:.0f}..{:.0f} {:.0f}..{:.0f} "
+                                    "skinned-geom={} batches={} proj={} xyz=[{:.0f}..{:.0f} {:.0f}..{:.0f} "
                                     "{:.0f}..{:.0f}] medDist={:.0f}",
                          sbr_render_last_vertex_count(), 100.0 * (double)lit / (640.0 * 448.0),
                          alpha, sbr_scene_last_count(), sbr_scene_multislot_count(),
+                         sbr_render_last_batch_count(),
                          sbr_scene_has_projection() ? "yes" : "MISSING",
                          lo[0], hi[0], lo[1], hi[1], lo[2], hi[2], med);
             sbr_scene_report_largest(5);
+            sbr_scene_report_zmodes();
             if (const char* d = std::getenv("SBR_RENDER_DUMP")) sbr_render_dump(d);
         }
     }

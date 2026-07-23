@@ -125,10 +125,15 @@ void ov_gx_set_projection(CPUState& cpu) {
     // Hand the perspective to the native renderer. This is the one place the game's own projection
     // is available as a matrix, and it is already WIDENED (the widening happens at the
     // C_MTXPerspective input), so the native path inherits 16:9 for free rather than rebuilding it.
-    if (!is2d && sb_ram_fast(mtx) != nullptr) {
+    if (sb_ram_fast(mtx) != nullptr) {
         float p[16];
         for (int i = 0; i < 16; ++i) p[i] = guest_f32(mtx + (u32)i * 4);
-        sbr_scene_set_projection(p);
+        // EVERY projection, 2D included. The native renderer draws whatever J3DShape::draw hands it,
+        // and that includes 2D elements (HUD, message box) which the game draws under an ORTHO
+        // projection. Feeding those through the 3D perspective blew them up to cover the frame —
+        // opaque, depth-test disabled, drawn last, hiding the entire plaza behind them.
+        sbr_gx_set_projection(p, is2d);
+        if (!is2d) sbr_scene_set_projection(p);
     }
 
     // 3D (perspective) is NOT squeezed here anymore. It is widened at its SOURCE — the aspect

@@ -29,8 +29,13 @@
 struct SbrDrawable {
     uint64_t key;       // stable identity across ticks: (shape pointer << 16) | element index
     uint32_t geom;      // handle into the geometry cache (0 = not yet decoded)
-    float    mtx[12];   // the draw matrix, row-major 3x4 — ALREADY model x view (J3D concats the
-                        // view matrix in viewCalc), so only the projection remains
+    float    mtx[12];   // the draw matrix, row-major 3x4 — model x view (the camera is composed in
+                        // at capture time), so only the projection remains
+    SbrDepthState depth; // the GX depth state this shape's MATERIAL set, captured at draw time
+    float    proj[16];   // the projection LOADED when this shape was drawn. Per-drawable because a
+                         // frame mixes perspective (the world) and ortho (HUD, message box), and
+                         // projecting a 2D element with the 3D matrix makes it cover the screen.
+    uint8_t  is2d;       // that projection was an ortho
 };
 
 // One decoded model-space vertex. `slot` is the vertex's PNMTXIDX/3 — which J3DShapeMtx slot it
@@ -90,6 +95,9 @@ void sbr_scene_translation_bounds(float lo[3], float hi[3], float* medianDist);
 // scene hidden behind a handful of huge near-camera quads looks identical to a missing scene in a
 // filled render; this names the occluders instead of leaving them to be guessed at.
 void sbr_scene_report_largest(int n);
+
+// Histogram of the depth states the last tick's drawables carry.
+void sbr_scene_report_zmodes();
 
 int sbr_scene_last_count();
 int sbr_scene_matched_count();

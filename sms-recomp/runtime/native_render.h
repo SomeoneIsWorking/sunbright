@@ -12,6 +12,29 @@ struct SbrVertex {
     float r, g, b, a;
 };
 
+// The GX depth state a draw is issued under, mirrored from GXSetZMode (overrides/gx_state_capture).
+// `func` is a raw GXCompare (0=NEVER, 1=LESS, 2=EQUAL, 3=LEQUAL, 4=GREATER, 5=NEQUAL, 6=GEQUAL,
+// 7=ALWAYS) — kept in GX terms so the translation to the backend lives in exactly one place.
+struct SbrDepthState {
+    uint8_t test;    // depth test enabled
+    uint8_t func;    // GXCompare
+    uint8_t write;   // depth WRITE enabled — the bit the sky relies on being off
+    // Blend state, from GXSetBlendMode. A translucent full-screen overlay drawn with the depth test
+    // DISABLED paints over the whole scene when blending is ignored, which is indistinguishable
+    // from a depth bug until the blend state is actually honoured.
+    uint8_t blend;   // GXBlendMode: 0=NONE, 1=BLEND, 2=LOGIC, 3=SUBTRACT
+    uint8_t srcFac;  // GXBlendFactor
+    uint8_t dstFac;  // GXBlendFactor
+};
+
+// The state the game has currently set. Valid at J3DShape::draw time.
+SbrDepthState sbr_gx_current_zmode();
+
+// The projection matrix currently loaded (4x4 row-major, as the guest built it) and whether it is a
+// 2D ortho. Valid at J3DShape::draw time.
+void sbr_gx_set_projection(const float m[16], bool is2d);
+const float* sbr_gx_current_projection(bool* is2d);
+
 // SBR_SDLGPU=1 selects the native path (off by default during bring-up).
 bool sbr_render_enabled();
 
@@ -22,7 +45,13 @@ bool sbr_render_init(int w, int h);
 // One frame: begin (records the clear colour and drops last frame's geometry), submit triangles as
 // often as needed, then end (uploads, renders in one pass, downloads for readback).
 void sbr_render_begin(float r, float g, float b, float a);
-void sbr_render_tris(const SbrVertex* verts, int count);   // count must be a multiple of 3
+// Submit triangles under a given depth state. Consecutive submissions sharing a state are merged
+// into one draw; a change of state starts a new one.
+void sbr_render_tris(const SbrVertex* verts, int count, SbrDepthState depth);
+
+// How many separate draws the last frame needed (one per depth-state run) — the cost of honouring
+// per-material state, and a signal that state is varying at all.
+int sbr_render_last_batch_count();
 void sbr_render_end();
 
 // How many vertices the last completed frame drew — the cheapest "is the frontend producing
