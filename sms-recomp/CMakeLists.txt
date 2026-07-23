@@ -78,7 +78,8 @@ target_link_libraries(sms-recomp-rt PUBLIC lucent::lucent nod::nod aurora::gx)
 # member out of a static archive — nothing strongly references sb_log.o, so from a library it is
 # never extracted and the weak symbol silently stays null. That is precisely the failure it was
 # added to fix, so it must be linked unconditionally.
-add_executable(sms-recomp host/main.cpp runtime/sb_log.cpp runtime/probe_server.cpp)
+add_executable(sms-recomp host/main.cpp runtime/sb_log.cpp runtime/probe_server.cpp
+                           runtime/native_render.cpp)
 # -rdynamic puts func_<addr> into the dynamic symbol table so rt_dump_guest_stack can
 # name the guest frames. Recompiled bodies nest on the host stack, so the host backtrace
 # is the guest call stack — but only if the names resolve.
@@ -88,4 +89,5 @@ target_link_libraries(sms-recomp PRIVATE sms-recomp-rt sms-recomp-guest
                       # aurora_core and aurora_gx reference each other, so both must be on
                       # the link line together for the static archives to resolve.
                       aurora::core aurora::gx aurora::core
-                      aurora::main aurora::vi aurora::os aurora::mtx aurora::pad)
+                      aurora::main aurora::vi aurora::os aurora::mtx aurora::pad
+                      SDL3::SDL3)

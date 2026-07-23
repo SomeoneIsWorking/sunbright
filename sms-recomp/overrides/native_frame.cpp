@@ -11,6 +11,7 @@
 #include "overrides.h"
 #include "../runtime/probe_server.h"
 #include "../runtime/screen_effects.h"
+#include "../runtime/native_render.h"
 
 #include <aurora/aurora.h>
 #include <aurora/event.h>
@@ -204,6 +205,22 @@ void video_wait_for_retrace(CPUState& cpu) {
     sb_probe_start();
     sb_probe_pump();
     sb_screen_effects_frame_end();   // roll the per-frame screen-effect set over
+
+    // Native SDL3-GPU renderer, milestone 0: stand the device up and prove the clear+readback path
+    // once (SBR_SDLGPU=1). Grows into the real renderer; aurora stays the oracle meanwhile.
+    if (sbr_render_enabled()) {
+        static int done = 0;
+        if (!done && sbr_render_init(640, 448)) {
+            done = 1;
+            sbr_render_clear(0.10f, 0.40f, 0.80f, 1.0f);   // a distinctive blue
+            std::vector<uint8_t> px(640 * 448 * 4);
+            if (sbr_render_readback(px.data(), 640, 448)) {
+                const uint8_t* c = &px[(224 * 640 + 320) * 4];   // centre pixel
+                lucent::info("nrender", "milestone-0 clear centre pixel = ({},{},{},{}) "
+                                        "(expect ~26,102,204,255)", c[0], c[1], c[2], c[3]);
+            }
+        }
+    }
 
     // How far the GUEST's own retrace counter advances per rendered frame. Game code paces
     // animation off this, and the decomp runtime advances it once per NTSC field (twice per

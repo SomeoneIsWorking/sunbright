@@ -92,18 +92,29 @@ always native; when a native port faithfully reproduces a retail overflow/UB tha
 but corrupts on host (e.g. a 4x4 write into a 3x4 buffer), adapt to produce the same OBSERVABLE
 result without the host corruption, documented as such.
 
-## 🏛️ RENDERER DOCTRINE (2026-07-10, decided at user's delegation): Aurora GX-replay stays
+## 🏛️ RENDERER DOCTRINE (2026-07-23, USER-DIRECTED reversal): the recomp gets its OWN native SDL3-GPU renderer
 
-Faithfulness/parity via the easier path = the GX-replay architecture, because parity is
-only debuggable when intermediate states are comparable to the oracle (FIFO diffs,
-per-draw matrix diffs — the tooling that repeatedly localized defects this project could
-never have found from pixels alone). A native renderer reimplementation converges to
-per-pixel GX emulation anyway at the parity bar while destroying comparability; Path B
-and the flip engine already proved the rewrite path harder (both retired). Do not
-re-propose it. Narrow license: at genuinely opaque HARDWARE seams (EFB copy mechanics,
-XFB present), an understood modern equivalent is acceptable — only if its output matches
-the oracle ("faithful outputs over faithful plumbing", seams only, never the GX state
-machine).
+The 2026-07-10 "Aurora GX-replay stays, do NOT re-propose a native renderer" doctrine is
+**REMOVED by the user** (its author). The recomp render is to be **fully under our
+control — no Aurora, no Dolphin, a pure PC render on the SDL3 GPU API** — for the same
+anti-black-box reason that runs through the port: not debugging rendering through a
+third-party GX interpreter.
+
+**Resurrect, don't rebuild.** The retired SDL3-GPU Path-B renderer is in git at
+`9283f44^:native/render/gx_sdlgpu.cpp` (reached P3 = real per-material TEV combiners). Its
+BACKEND (batches → GPU) resurrects; its FRONTEND (GX state → transformed verts + TEV
+shaders) was built for the decomp runtime's GX-call capture and must instead be driven from
+the recomp's FIFO parse (`sms-recomp/runtime/dev_gxfifo.cpp`) — the job aurora's
+`command_processor.cpp` does today.
+
+**Aurora is the PARITY ORACLE during the build, not deleted early.** Build the native path
+ALONGSIDE aurora (both consume the parsed stream), diff every frame, delete aurora only at
+parity. The old doctrine's ONE correct point stands: parity is only debuggable when
+intermediate state is comparable to a known-good — so keep the oracle until the native path
+matches it. This IS the Path-B direction the old doctrine retired as harder; it is large
+(reimplementing the GX fixed-function pipeline), accepted with eyes open. Milestone ladder:
+device+clear+present → pass-through geom → vertex transform → TEV → textures → EFB, each
+A/B'd against aurora. Details: memory `[[native-sdl3gpu-render-pivot-2026-07-23]]`.
 
 ## 🔄 UPSTREAM SYNC — rebase ~2x/week, and CONVERGE (don't fork)
 
