@@ -1,95 +1,148 @@
 # Codemap
 
 The single-page answer to **what is where, what's done, what's missing.**
-Update the relevant row in the SAME commit that changes a subsystem.
+Update the relevant row in the SAME commit that changes a subsystem, then run
+`python3 ~/.claude/skills/codemap/codemap.py check --map docs/codemap.md sms-recomp sms-boot`.
 (Architecture rules live in CLAUDE.md; findings in debug_journal/; this is orientation only.)
 
 Legend: ✅ done (verified on real data) · 🟡 partial (documented gap) · 🔬 built/parsed but not wired · ⬜ missing.
 
-## Game flow (boot-order target)
+## Two runtimes (CLAUDE.md 🏛️ TWO RUNTIMES, 2026-07-21)
 
-| Stage | Status | Notes |
-|---|---|---|
-| GC logo | 🟡 | renders + advances. **"Nintendo logo shows BLUE" root-cause CORRECTED (2026-07-17): NOT a channel-swap/TEV/color bug.** The logo texture (nintendo_376x104.bti) is IA8 grayscale = the "Nintendo®" pill; `unk24=(0,70,255)` blue tint is FAITHFUL to retail (DOL byte 0046FFFF, once) and the decode/color-path are correct. The fork oracle shows NO visible pill at boot — it goes black → grayscale "Nintendo Presents SUPER MARIO SUNSHINE" text → red M. So the defect is that my build REVEALS the pill (blue) that retail keeps hidden behind the ScrnFader — a fader/reveal-sequencing divergence in GCLogoDir, blue is a red herring. Cosmetic ~1s logo, non-blocking; DEPRIORITIZED. Next step scoped in `debug_journal/2026-07-17_gclogo_blue_investigation.md` (compare ScrnFader state vs retail). Do NOT reopen as a color bug. |
-| Title (stage 15 attract) | 🟡 | renders faithfully at settle (means within 3 of oracle, 2026-07-14); residuals: seagulls missing, anim phase offsets, no EFB copies (mirror/logo reflection), ghost pass |
-| File-select / save screen | 🟢 | **AT PARITY incl. Mario — paleness FULLY RESOLVED (2026-07-16).** Two independent bugs, each fixed + verified on its path: (1) **aurora XF chanctrl `attnFn` decode bit9/bit10 SWAPPED** vs GC hardware → a COLOR1 `GX_AF_SPEC` light read as `GX_AF_NONE` → full-white add → wash; fixed decode+encode, REPLAY-verified (overalls [127,164,195]→[10,69,175] vs oracle [19,68,169]); general fix for every SPEC/NONE lit object. (2) **port `TLightCommon::setLight` set GX_LIGHT2 to CONSTANT attn** `(1,0,0,1,0,0)` where retail (disasm @0x80229c30) inlines `GXInitLightShininess`: `GXInitLightAttn(0,0,1, s/2,0,1-s/2)`, s=`mShininess`=50 → cosAtt(0,0,1)/distAtt(25,0,-24); fixed `decomp/sms LightUtil.cpp:281`, LIVE-NATIVE-verified (overalls 0→951 deep-blue px at [10,64,166] vs oracle [20,60,170]; SBS scratch/texcmp/l2fix_sbs.png). Ambient/CMPR-texture/mip/gamma/lighting-eval all ruled out (falsified) en route. Water speckle = replay-only EFB artifact (closed; live-native water smooth). Detail: `debug_journal/2026-07-15_mario_paleness_cmpr_falsified.md`. **Mario VOLUME SHADOW landed + verified (2026-07-16→17):** TMBindShadowManager dst-alpha 5-pass stencil renders at file-select; block-tint fixed (TLightDrawBuffer owner-wiring); shadow DIRECTION fixed + verified (getLightPos = LightGroup[0].mPosition sun, `(200000,500000,200000)`→dir`(0.348,0.870,0.348)`, block shadows fall forward matching oracle crop). Shadow arc COMPLETE. Residual light-manager shadow systems (fifo seq #2 density composite, #3 body-geometry volume) = separate low-impact arc (crops already match). `debug_journal/2026-07-16_drawshadow_port_landed.md`. Open non-render arc: file-select MENU NAV/INPUT — A at "Select data" doesn't open create-file dialog (CardLoad state-0 nested unk1C/TSelectMenu cursor layer; needed only to unlock interactive-state parity oracles); `debug_journal/2026-07-16_fileselect_createfile_oracle.md`. NOTE: the `[plload] DROPPED` spam is mostly RETAIL-LEGITIMATE (verified EmitterViewObj benign vs DOL) — do not chase wholesale. |
-| Gameplay (Delfino) | ⬜ | boot clears tree init + the GXBegin/GXEnd abort (2026-07-15) → drains the fifo, then aborts. TWO INDEPENDENT failures in the same frame (which fires first varies per run — frame-content non-determinism): (a) the per-frame **storage** staging buffer overflows (Delfino geometry genuinely > the 8MB title cap; sized to 32MB, still can exceed under full load), and (b) a **fifo desync** `unknown opcode 0x70` at a `StaticMapObj ShadowOpa` block boundary (real correctness bug — pinned to a 32-byte-aligned gap; see journal). ⚠️ The earlier "phase-1 ghost pass doubles storage" claim is FALSIFIED — `SB_SKIP_GHOST` was a phantom env (no-op). Real next step: fix the desync (correctness) + right-size storage from a completed frame. See `debug_journal/2026-07-15_delfino_storage_overflow_ghost_pass.md`. Still GATED behind the title oracle gate |
-| Audio (everything) | 🟡 | **M1 LANDED** — the decomp's JAS kernel (Kernel::init/updateDac/vframeWork, DSPBuf pipeline, TDSPChannel::updateAll) runs synchronously on the game thread (sms-boot/runtime/jas_kernel_native.cpp); DAC callback → aurora::audio wired. Silence is now an EXPLICIT loud seam (DsyncFrame2 memsets bufL/bufR), NOT omission. **M2 = active next arc**: implement the DSP voice renderer (Zelda-ucode per-voice mix over DSPCH[64]). VPB field map RE'd 2026-07-17 (pitch=unk4, unk10[6] buses, wave=unk118, fmt via Wave_.unk1, loop fields) — see docs/audio_native_mixer_plan.md "M2 VPB field map". v1 scope: PCM16+AFC (proven decoder), resample, L/R mix → title BGM audible. Remaining RE before coding: sample-cursor/host-state + DSPCH accessor. |
+1. **recomp + native overrides** (`sms-recomp/`, `run-recomp.sh`) — the game's real PPC statically
+   recompiled, native C++ overrides only at HW/OS seams. **The primary active runtime.** Boots into
+   Delfino Plaza and renders it; title + file-select render; 16:9 widescreen; 60fps interpolation.
+2. **decomp + Aurora** (`decomp/sms` + `extern/aurora`, `run.sh`) — the hand-decompiled game on the
+   native platform. The moddable end-state and the **verification oracle** (renders title/file-select
+   /Delfino correctly, so recomp output diffs against it). Crashes partway into Delfino gameplay
+   (plaza-population stubs) — see its game-flow row.
 
-## Runtime (sms-boot/)
+## Game flow
+
+| Stage | recomp | decomp/aurora (oracle) | Notes |
+|---|---|---|---|
+| GC logo → title (stage 15) | ✅ renders | 🟡 renders (cosmetic residuals) | recomp: `SBR_STAGE=15` / press START |
+| File-select / save screen | ✅ renders | 🟢 at parity incl. Mario | recomp file-select correct; the mip/has_mips fix closed the "sea wash" |
+| Delfino Plaza (stage 1) | ✅ **renders + playable** | ⬜ crashes into gameplay | recomp: Mario/FLUDD/HUD/NPCs/statue/dialogue; heat haze + water refraction render; `SBR_FASTBOOT=1` |
+| Other stages | 🟡 reachable via `SBR_STAGE=<n>` | — | Gelato Beach verified wide; per-stage fidelity unaudited |
+| Audio | ⬜ silent by omission | 🟡 M2 mixer arc | JAS DSP-frame mixer not ported in either; `native_dsp.cpp` is a seam |
+| Movies (THP) | 🟡 decodes, no reopen | 🟡 | recomp: `SBR_THP=stage` default; second session faults (null msg queue) |
+
+## sms-recomp/ — the recomp runtime (primary)
+
+### Recompiler (`tools/recompiler/`)
+| Subsystem | Status | Where | Gap / next |
+|---|---|---|---|
+| PPC decoder | ✅ | `tools/recompiler/ppc_decoder.cpp` | reachable opcode set complete; only data-as-code "unknown" remains |
+| C emitter | ✅ | `tools/recompiler/c_emitter.cpp` | audited vs 750CL: paired-single, sraw/divw/lwarx/stwcx. fixed 2026-07-23 |
+| generated code | ✅ | `sms-recomp/generated/` | 2.79M lines, machine-generated by the recompiler; never hand-edited |
+| host entry | ✅ | `sms-recomp/host/main.cpp` | loads the DOL, opens the first frame |
+| collection (linear/CFG) | ✅ | `tools/recompiler/func_collect.cpp` | `kForceCFG` in `main.cpp` for draw/thread entries |
+| unit tests | ✅ | `tools/recompiler/tests/recomp_test.cpp` | `sunbright-recomp-test` (ctest); per-opcode operand asserts, reintro-validated |
+
+### Runtime substrate (`sms-recomp/runtime/`)
+| Subsystem | Status | Where | Gap / next |
+|---|---|---|---|
+| core dispatch / SPRs / call_ppc | ✅ | `sms-recomp/runtime/rt_core.cpp` | SPRs are MACHINE-wide (not per-CPUState) — the locked-cache/THP fix |
+| memory + MMIO | ✅ | `sms-recomp/runtime/mmio.cpp`, `intrinsics.h` | flat MEM1 fast path + locked-cache @0xE0000000 |
+| HW devices | ✅ | `sms-recomp/runtime/dev_*.cpp` (gxfifo, vi, ai, si, exi, dsp, aram, mi, pi, di, sram) | `dev_gxfifo.cpp` = GX stream → aurora (EFB copies incl. R8→I8) |
+| guest scheduler | ✅ | `sms-recomp/runtime/guest_sched.cpp` | host thread per guest thread, single token; `gsched_cancel` (OSCancelThread) |
+| disc (nod) | ✅ | `sms-recomp/runtime/disc.cpp` | serves the disc directly, no DVD worker |
+| probe server | ✅ | `sms-recomp/runtime/probe_server.cpp` | `SBR_PROBE=1`, frame-seam dispatch; `/r /w /help` + module endpoints |
+| screen-effect registry | ✅ | `sms-recomp/runtime/screen_effects.h` (+ `sms-recomp/overrides/screen_effects.cpp`) | names the per-frame screen-sampling set; `/screenfx`; for interp60 |
+| SB_LOG channels | ✅ | `sms-recomp/runtime/sb_log.cpp` | linked into the executable (weak-undef trap) |
+
+### Native overrides (`sms-recomp/overrides/`)
+| Subsystem | Status | Where | Gap / next |
+|---|---|---|---|
+| frame seam / present | ✅ | `sms-recomp/overrides/native_frame.cpp` | present + pace + SIGTERM/window-close + interp60 hook |
+| GX seam | ✅ | `sms-recomp/overrides/native_gx.cpp`, `sms-recomp/runtime/dev_gxfifo.cpp` | GXWaitDrawDone/DrawDone; stream handed to aurora |
+| CARD | ✅ | `sms-recomp/overrides/native_card.cpp` | host Dolphin card image, inline |
+| DVD / ARQ / THP | 🟡 | `sms-recomp/overrides/native_dvd.cpp`, `native_arq.cpp`, `native_thp.cpp` | THP decodes; session reopen faults (`SBR_THP`) |
+| PAD | ✅ | `sms-recomp/overrides/native_pad.cpp` | keyboard 12/12 bound (calls aurora PADInit); `SBR_PAD_SCRIPT` |
+| OS threads / MMU | ✅ | `sms-recomp/overrides/native_os_thread.cpp`, `native_os_mmu.cpp` | token hand-off; OSCancelThread |
+| DSP (audio) | ⬜ | `sms-recomp/overrides/native_dsp.cpp` | silent by omission — the audio arc |
+| fastboot | ✅ | `sms-recomp/overrides/fastboot_native.cpp` | `SBR_FASTBOOT`/`SBR_STAGE`/`SBR_SCENARIO`; ported from git 9283f44^ |
+| widescreen (16:9) | ✅ | `sms-recomp/overrides/widescreen.cpp` | aspect widened at `C_MTXPerspective` (input, not output); `SBR_WIDESCREEN` |
+| widescreen HUD | ✅ | `sms-recomp/overrides/hud.cpp` | per-`.blo`-name edge anchoring; `/2d` |
+| widescreen effects | ✅ | `sms-recomp/overrides/widescreen_effects.cpp` | 2D full-screen widen + EFB-tex/mirror suspend; `/wsfx /fills` |
+| 60fps interpolation | 🟡 | `sms-recomp/overrides/interp60.cpp` | 30 ticks/60 presents; blend replay; `SBR_INTERP60=1`. Open: cut detection, screen-effect handling on the in-between (see screen-effect registry) |
+| 2D-class diagnostics | 🔬 | `sms-recomp/overrides/diag_2d.cpp` | `/2dclass` (SBR_DIAG_2D=1); pane→class census |
+
+## Aurora (`extern/aurora` — the GC platform surface; submodule, fork remote branch `sunbright`)
+
+Shared by both runtimes: the recomp hands it a GX stream, the decomp calls its GX/DVD/CARD/VI/audio.
 
 | Subsystem | Status | Where | Gap / next |
 |---|---|---|---|
-| main / boot | ✅ | `sms-boot/main.cpp` | one-runtime, single thread (CLAUDE.md architecture) |
-| frame seam / present | ✅ | `runtime/frame_seam.cpp` | sb_frame_present in TVideo::waitForRetrace |
-| FIFO replay harness | 🟡 | `runtime/fifo_player.{cpp,h}` | translator ✅ (mips, display copy, arrays); CI-format TLUT synthesis missing (fail-fast) |
-| audio pump | ⬜ | `runtime/audio_out.cpp`, `runtime/sms_boot_audio.cpp` | BARC loader ✅; JAS kernel + DsyncFrame2 mixer = the audio arc |
-| SDK stubs | 🟡 | `runtime/sdk_stubs.cpp` | audited 2026-07-10; every stub documented seam or loud |
-| pad scripting | ✅ | `runtime/pad_script.cpp` | SB_PAD_SCRIPT virtual pad |
-| diagnostics | ✅ | `runtime/phase_track.cpp`, `trace_seq.cpp`, `watchdog.cpp` | phase tags, seq counter, SIGALRM backtraces |
+| GX command processor | 🟡 | `extern/aurora/lib/gx/command_processor.cpp` | replay + native emission; rich SB_* diag toolkit |
+| GX state→wgpu | 🟡 | `extern/aurora/lib/gx/gx.cpp`, `shader.cpp` | WGSL gen |
+| EFB copies / XFB present | 🟡 | `extern/aurora/lib/gx/`, `extern/aurora/lib/aurora.cpp` | present ✅; `aurora_set_present_aspect` for widescreen; 7-tap vfilter unported |
+| texture cache | 🟡 | `extern/aurora/lib/gfx/texture*` | (texObjId, version) keyed; `has_mips` derives from TexMode0 min-filter |
+| dolphin SDK layer | 🟡 | `extern/aurora/lib/dolphin/` | dvd sync ✅; pad defaults ✅; CARD host-alloc gating open |
+
+## decomp + Aurora runtime (`sms-boot/` — the oracle)
+
+| Subsystem | Status | Where | Gap / next |
+|---|---|---|---|
+| main / boot | ✅ | `sms-boot/main.cpp` | one-runtime, single thread |
+| frame seam / present | ✅ | `sms-boot/runtime/frame_seam.cpp` | `sb_frame_present` in TVideo::waitForRetrace |
+| FIFO replay harness | 🟡 | `sms-boot/runtime/fifo_player.cpp` | CI-format TLUT synthesis missing (fail-fast) |
+| audio pump | ⬜ | `sms-boot/runtime/audio_out.cpp` | JAS kernel M1 landed; M2 DSP mixer = the arc |
+| SDK stubs | 🟡 | `sms-boot/runtime/sdk_stubs.cpp` | audited; every stub documented or loud |
 | decomp shims/stubs | 🟡 | `sms-boot/shims/`, `sms-boot/boot_stubs/` | each boot_stub = porting worklist |
-| unit tests | 🟡 | `runtime/tests/`, `shims/tests/` | per-port spec tests; gx_yscale, jaudio_release, etc. |
 
-## Aurora (extern/aurora — the GC platform surface; submodule, fork remote branch `sunbright`)
+## Reference decomp (`decomp/sms` — submodule, SomeoneIsWorking/sms fork)
 
-| Subsystem | Status | Where | Gap / next |
-|---|---|---|---|
-| GX command processor | 🟡 | `lib/gx/command_processor.cpp` | replay + native emission; rich SB_* diag toolkit (draw-dump, ndc-probe, tex-id, per-draw z/acmp bisects) |
-| GX state→wgpu | 🟡 | `lib/gx/gx.cpp`, `shader.cpp`, `shader_info.cpp` | WGSL gen; open: seagull zero-fragments (journal 2026-07-14_seagull_narrowing.md) |
-| EFB copies / XFB present | 🟡 | `lib/gx/`, `lib/aurora.cpp` | display-copy present arc ✅ (RMSE 0.068 vs oracle); 7-tap copy vfilter unported; SB_RDOC trigger blocked on Dawn crash |
-| dolphin SDK layer | 🟡 | `lib/dolphin/` (dvd, pad, vi, gx, card, os…) | dvd fully sync ✅; pad keyboard defaults ✅ (2026-07-15); CARD host-alloc gating open |
-| texture cache | 🟡 | `lib/gfx/texture*` | (texObjId, version) keyed; mip chains honored |
+The real game source, native-platform-guarded (`SMS_NATIVE_PLATFORM`). Rebased ~2×/week from upstream
+(`tools/re/rebase_upstream.py`). Rendering-affecting code is always native. Screen effects (heat haze,
+water refraction, dash blur, TScreenTexture) are FULLY implemented — see `docs/screen_effects.md`.
 
-## Reference decomp (decomp/sms — submodule, SomeoneIsWorking/sms fork)
-
-Compiles native via SMS_NATIVE_PLATFORM + SMS_AURORA. **Native-only, no recomp** (decided
-2026-07-15, CLAUDE.md) — decomp gaps are hand-ported. Known decomp-bug classes fixed so far:
-BE swaps, LP64 overlays, fused-immediate phantom constants (mBlack 2026-07-14), swapped anim
-args (sparkles 2026-07-15), region count skew (JP 13 vs US 18 panes), retail overflows benign
-on PPC but host-corrupting (4x4-into-3x4 Mtx, SMS_GetLightPerspectiveForEffectMtx 2026-07-15),
-dropped GC-no-op calls (GXEnd 2026-07-15).
-
-**Decomp gaps** = ~64 empty `src/**.cpp` files (still hand-port surface). Accelerator: the
-`upstream` remote is `doldecomp/sms` (we are 310 commits ahead / 24 behind); a full merge is
-conflict-risky, but our EMPTY gap files can be taken from `upstream/main` file-by-file. As of
-2026-07-15 only 6 of our 64 gaps are filled upstream: Animal/{AnimalBase,boid,fishoid},
-Enemy/{bossManta,gatekeeper,egggen}. NOT drop-in: because our fork is 310 commits ahead,
-upstream bodies reference newer decomp symbols our headers lack — AnimalBase.cpp needed ~11
-header reconciliations (missing enums CUE_MOVE/CUE_CALC_*, LIVE_FLAG_UNK20, type
-TAnimalBaseUnk150, method decls initNoLoad_/flyToCurPathNode/animalWalkIn, API renames
-setEulerX→setEuler, MSound::startSeRandPlay). So each cherry-pick = copy body + drop the
-matching boot_stubs + reconcile ~10 header divergences + build/verify — a focused per-file
-cycle, modest leverage. (Tried AnimalBase 2026-07-15, reverted: needs the header pass first.)
-Ports landed 2026-07-15: TMapObjTree::initMapObj/initEach, SMS_GetLightPerspectiveForEffectMtx.
-When JP decomp misbehaves on the US disc, check the US disasm first
-(`tools/re/disasm_range.py scratch/bin/sms.dol …`; regenerate the DOL with
-`tools/re/dol_extract.c` — build cmd in its header).
-
-## Tools (tools/)
+## Tools (`tools/`)
 
 | Tool | Purpose |
 |---|---|
-| `oracle/parse_fifo_dff.py` | .dff ground-truth parser (draw counts, BP/CP/XF state; posmtx blind to LOAD_INDX) |
-| ⛔ `oracle/xdrive.py` | XTest GUI driver — DEPRECATED, do NOT use. Driving the Dolphin GUI is banned (user, 2026-07-15). Use the fork's headless tool below. |
-| `oracle/record_fifo.sh` | ✅ Headless .dff capture (no GUI). Wraps the fork's `DolphinNoGUI --fifo-record`. `record_fifo.sh <out.dff> [after=7500] [frames=3]`. Recaptured `title_press_start.dff` (settled, pixel-validated). |
-| Dolphin **fork** headless | `extern/dolphin_fork/` (SomeoneIsWorking/dolphin@sunbright, gitignored scratch clone; BUILT: `build/Binaries/dolphin-emu-nogui`). `--fifo-record` NoGUI flag = fork commits dc57256+05c8f74. Build: submodules `--init --depth 1` (deinit Qt/mGBA/FFmpeg-bin), `-DENABLE_QT=OFF -DENABLE_EVDEV=OFF -DUSE_MGBA=OFF`, target `dolphin-emu-nogui`. Stock Fedora dolphin-emu has headless bugs the fork fixes. TODO: repoint the framedump pixel-oracle path (capture.sh uses stock `-b`; NoGUI needs `-p headless`) at the fork too. |
-| `oracle/capture.sh` | Dolphin boot framedump capture (repoint at the fork binary) |
-| `re/ppcdis.py`, `re/disasm_range.py` | capstone disasm over scratch/bin/sms.dol with funcs.txt symbols |
-| `re/dol_extract.c` | main.dol from RVZ via the build's nod prebuilt |
-| `dol_sda.py` | SDA/r13 constant resolution |
-| `ghidra_scripts/` | analyzeHeadless decomp/disasm helpers |
-| `render/`, `audio/`, `interp/` | 🟡 older harnesses — verify liveness before trusting (several are dead-era) |
+| `recompiler/` | the static recompiler (`sunbright-recomp` DOL→C++); `sunbright-recomp-test` |
+| `tools/re/rebase_upstream.py` | upstream doldecomp/sms sync (status→rebase→audit→converge) |
+| `tools/re/port_dossier.py`, `tools/re/vtable_re.py` | per-function RE dossiers; weak-vtable slot resolution |
+| `tools/re/gap_worklist.py` | hand-port gap tracker (`docs/port_worklist.md`) |
+| `tools/re/ppcdis.py`, `tools/re/disasm_range.py` | capstone disasm over the DOL with funcs.txt symbols |
+| `dol_sda.py`, `ghidra_scripts/` | SDA/r13 constants; analyzeHeadless helpers |
+| `scratch_clean.py` | gated scratch cleaner (refuses paths outside `scratch/`) |
 
-## Open investigation heads (details in debug_journal/)
+## Live diagnostics (recomp, `SBR_PROBE=1` → 127.0.0.1:17654)
 
-- Seagull zero-fragments (aurora GPU-side; next: VS-writeback debug or RenderDoc fix) — `2026-07-14_seagull_narrowing.md`
-- Ghost pass frame-head dispatch (needs Dolphin CPU oracle) — `2026-07-14_ghost_pass_re.md`
-- EFB copies at title (mirror capture + logo environment reflection) — unported
-- Anim-phase residuals (PRESS START / SUNSHINE offsets vs oracle)
+`/help` · `/r /w` (guest memory) · `/screenfx` (screen-sampling effects) · `/wsfx /fills /2d /2dclass`
+(widescreen/2D) · `/interp60` (blend tuning). Plus `SBR_LUCENT_DEBUG=<chan>` (app, mario, frame,
+gxfifo, widescreen, thp, …) and `SB_DUMP_FRAME`/`SB_DUMP_FRAME_AFTER`.
 
-## Known doc rot (pending prune)
+## Where is X?
 
-`docs/dolphin_integration.md`, `gx_sdlgpu_switch.md`, `interp60*.md`,
-`model_interpolation.md`, `native_threading.md`, `render_ab_harness.md` describe retired
-eras (recomp/Dolphin-hook/Path-B). Per the no-tombstones rule they should be deleted once
-any still-true facts are lifted into living docs — not yet audited file-by-file.
+- boot destination / fastboot → `sms-recomp/overrides/fastboot_native.cpp` (`SBR_FASTBOOT`/`SBR_STAGE`)
+- GX stream → aurora → `sms-recomp/runtime/dev_gxfifo.cpp` (`gxfifo_flush`, `emit_arraybase`, EFB copies)
+- widescreen aspect → `sms-recomp/overrides/widescreen.cpp` (`ov_c_mtx_perspective`)
+- a screen effect (heat haze etc.) → `docs/screen_effects.md` + `sms-recomp/overrides/screen_effects.cpp`
+- 60fps blend → `sms-recomp/overrides/interp60.cpp` (`sbr_interp60_blend`)
+- an opcode's emitted C → `tools/recompiler/c_emitter.cpp` + `sms-recomp/generated/functions_*.cpp`
+- Mario's position at runtime → `/r?a=0x8040E10C` then deref (pointer, not a position global)
+
+## Source tree
+
+```
+sms-recomp/  —  the recomp runtime
+├─ generated/   PPC→C++ (2.79M lines, regenerated by tools/recompiler)
+├─ overrides/   3.7k lines  22 files   native HW/OS seams + widescreen/HUD/interp60/screenfx
+├─ runtime/     3.9k lines  30 files   dispatch, MMIO, HW devices, scheduler, probe
+└─ host/        main.cpp
+extern/aurora/  the GC platform surface (SDL3 + WebGPU/Dawn), shared
+sms-boot/       the decomp+Aurora runtime (oracle)
+decomp/sms/     the reference decompilation (submodule)
+tools/          recompiler + RE + oracle tooling
+```
+
+## Open heads (details in debug_journal/ and docs/)
+
+- **interp60** — cut detection + screen-effect handling on the in-between field (`docs/screen_effects.md`).
+- **audio** — JAS DSP-frame mixer, both runtimes silent by omission.
+- **THP session reopen** — second movie faults on a null message queue.
+- **decomp Delfino gameplay crash** — plaza-population stubs (oracle side).
