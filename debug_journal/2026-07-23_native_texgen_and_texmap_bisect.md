@@ -119,6 +119,26 @@ Also ruled out: no enabled stage names an unbound unit (0 of 2414), and no stage
 3, so the `& 3` mask loses nothing. The shader-side selectors were re-derived against the hardware
 field layout and match.
 
+**4. Texture decode ruled out (two cheap falsifications).** A declined texture binds WHITE, which
+would wash out exactly the surfaces the upper units feed, so this looked promising:
+- No C4/C8 textures appear in the scene at all and no "no decoder for format" error ever fires.
+  Formats present: I4 58, CMPR 60, IA8 18, I8 10, RGB5A3 9, IA4 8, RGB565 1. Every one decodes.
+- I4/I8 decode alpha = intensity (`put(out, …, i, i, i, i)`), which is what GX defines, so a stage
+  reading TEXA off an intensity light map gets the right value.
+
+So the images reaching units 1-3 are decoded correctly. What is wrong is WHICH image is there.
+
+**Surviving hypothesis, untested — `numStages` overrun.** `g_tev.stage[]` is global and persistent,
+and RAS1_TREF writes arrive two stages per register. If GENMODE's `numStages` is larger than the
+material actually set, the loop reads stale per-stage `texmap` fields left by an EARLIER material —
+which would name units that this material never bound, and would explain every measurement above:
+the units are rebound often (2), the drawable's own material only freshly bound unit 0 (3), the
+textures decode fine (4), and pinning to unit 0 scores better because it ignores the stale names.
+It also explains the direction of the error: the upper units mostly carry intensity maps, which
+TEV MULTIPLIES, so a wrong one darkens the surface — and lumaCorr fell (+0.535 → +0.335) exactly as
+a wrongly-darkened scene would.
+Test it by histogramming `numStages` against the number of RAS1_TREF registers each material writes.
+
 **Next step — and it should be the FIRST step next time.** Stop comparing pixels at the end of the
 pipeline and compare state at the point of use, against aurora, per draw: for each J3DShape draw,
 diff my parsed (per-stage texmap, per-unit bound texture, texcoord) against aurora's for that same
