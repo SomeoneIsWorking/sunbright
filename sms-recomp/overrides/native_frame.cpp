@@ -27,6 +27,10 @@
 #include <vector>
 
 extern "C" void func_802fc9a4(CPUState&);   // JDrama::TVideo::waitForRetrace
+// Weak: resolves to a no-op until the audio subsystem provides it (see docs/audio_recomp_plan.md).
+extern "C" __attribute__((weak)) void sbr_audio_frame();
+extern "C" __attribute__((weak)) void sbr_audio_frame() {}
+
 extern void gxfifo_build();
 extern void gxfifo_send_last();
 extern void gxfifo_send(const std::vector<u8>&);
@@ -218,6 +222,10 @@ void video_wait_for_retrace(CPUState& cpu) {
     // point guest memory is coherent. See probe_server.h.
     sb_probe_start();
     sb_probe_pump();
+
+    // Audio: one service call per presented frame. Weak so the runtime links before the audio
+    // subsystem exists — the seam is here so audio work never has to edit this file.
+    sbr_audio_frame();
     sb_screen_effects_frame_end();   // roll the per-frame screen-effect set over
 
     // Native SDL3-GPU renderer (SBR_SDLGPU=1). Milestone 1: prove the geometry path end to end —
