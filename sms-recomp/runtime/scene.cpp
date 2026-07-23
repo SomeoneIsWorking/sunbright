@@ -407,8 +407,21 @@ void sbr_scene_report_zmodes() {
         // and it is the only thing separating the two bisect configurations.
         for (unsigned m = 0; m < 4; ++m) {
             std::unordered_map<uint32_t, int> uh;
-            for (const auto& d : g_cur.items) ++uh[d.tex[m].addr];
-            lucent::info("nrender", "    unit {}: {} distinct texture addresses", m, uh.size());
+            long lagSum = 0, lagMax = 0, n = 0;
+            for (const auto& d : g_cur.items) {
+                ++uh[d.tex[m].addr];
+                // How many binds happened between this unit's last bind and the most recent bind
+                // of ANY unit at capture time. Zero means the unit was bound as part of this
+                // drawable's own material; a large lag means it still holds an earlier material's
+                // texture, which is what "stale" actually means.
+                uint32_t newest = 0;
+                for (unsigned k = 0; k < 4; ++k) newest = std::max(newest, d.tex[k].bindSeq);
+                if (newest == 0) continue;
+                const long lag = (long)newest - (long)d.tex[m].bindSeq;
+                lagSum += lag; lagMax = std::max(lagMax, lag); ++n;
+            }
+            lucent::info("nrender", "    unit {}: {} distinct addresses, bind lag mean {:.1f} max {}",
+                         m, uh.size(), n ? (double)lagSum / (double)n : 0.0, lagMax);
         }
         lucent::info("nrender", "  texture units: {} drawables reference texmap>0, {} texcoord>0, "
                                 "{} declare >1 texgen; {} use the alpha test (of {})",

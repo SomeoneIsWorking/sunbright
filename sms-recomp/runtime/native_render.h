@@ -43,6 +43,11 @@ struct SbrTexture {
     uint8_t wrapS = 1, wrapT = 1;   // GXTexWrapMode: 0 CLAMP, 1 REPEAT, 2 MIRROR
     uint8_t magLinear = 1;          // GX_NEAR / GX_LINEAR
     uint8_t minLinear = 1;
+    // A global bind counter, stamped when this unit was last written. Comparing a drawable's
+    // stamps across units answers the question that texture VARIETY cannot: a unit with few
+    // distinct images may be a shared light map (correct) or a unit nobody rebinds (stale), and
+    // those look identical in a distinct-address count. The stamp distinguishes them.
+    uint32_t bindSeq = 0;
 };
 SbrTexture sbr_gx_current_texture();
 
@@ -154,6 +159,10 @@ void sbr_render_begin(float r, float g, float b, float a);
 // into one draw; a change of state starts a new one.
 void sbr_render_tris(const SbrVertex* verts, int count, SbrDepthState depth, const SbrTexture tex[4],
                      const SbrTevState& tev);
+
+// Per-BP-register write counts, so the per-unit texture BIND RATE is measurable rather than
+// inferred (TX_SETIMAGE3 is 0x94+m for units 0-3).
+void sbr_gxfifo_report_bp_writes();
 
 // How many distinct textures the renderer has decoded and uploaded.
 int sbr_render_texture_count();

@@ -77,9 +77,12 @@ Texgen is neutral-to-slightly-positive. **Multi-texmap binding is entirely respo
 Without the bisect the honest reading of "24.1% → 17.6%" would have been "texgen is wrong", and the
 correct mechanism would have been reverted while the actual defect survived.
 
-## Root cause of the texmap regression: the units above 0 are STALE
+## The texmap regression is LOCATED but NOT root-caused — read this before re-deriving
 
-Not a shader-side indexing bug. Per tick:
+Three measurements, in the order they were taken, because two of them nearly produced a wrong
+conclusion and the third is still not sufficient.
+
+**1. Texture variety per unit (suggestive, NOT evidence).** Per tick:
 
 | unit | distinct texture addresses | enabled stages naming it |
 |---|---|---|
@@ -88,15 +91,41 @@ Not a shader-side indexing bug. Per tick:
 | 2 | **11** | 764 |
 | 3 | **9** | 196 |
 
-764 stages name unit 2, but unit 2 only ever holds 11 distinct images across the whole tick. The
-per-material binding for the upper units is **not being observed at the point the drawable is
-captured** — they hold whatever the last material to bind them left there, so a stage that names one
-samples another material's texture. Also ruled out: no enabled stage names an unbound unit (0 of
-2414), and no stage names a unit above 3, so the `& 3` mask is not losing anything.
+I read this as "the upper units are stale". **That inference was not justified**: a unit holding few
+distinct images is equally consistent with a SHARED light/environment map bound once and reused,
+which is normal GX programming. Low variety does not distinguish stale from shared.
 
-Leading candidates, untested: the drawable's TEV state and its texture state come from different
-points in the FIFO parse (the parse is drained after the real draw); or `numStages` overruns what a
-material actually set, so stale per-stage `texmap` fields from an earlier material are read.
+**2. Bind rate per unit (falsified the staleness story).** Counting BP writes directly
+(`sbr_gxfifo_report_bp_writes`, TX_SETIMAGE3 = 0x94+m): units 0/1/2/3 receive 97779 / 50530 / 35803 /
+30657 writes. The upper units are rebound constantly. They are NOT going unbound, so "the parser
+never sees the bind" is dead.
+
+**3. Bind LAG per unit (informative, still not decisive).** Each unit bind is stamped with a global
+counter; per drawable, how many binds separate that unit's last bind from the newest of any unit:
+
+| unit | distinct addrs | bind lag mean | max |
+|---|---|---|---|
+| 0 | 82 | 1.3 | 3 |
+| 1 | 30 | 7.7 | 35 |
+| 2 | 10 | 9.2 | 43 |
+| 3 | 8 | 12.3 | 42 |
+
+Unit 0 is bound as part of each drawable's own material (lag ≤ 3 = the size of one material's bind
+burst). Units 1-3 were last bound several materials earlier. **This still does not settle it** — a
+large lag is exactly what a legitimately persistent shared texture looks like too. Do not record
+this as the root cause; it is a narrowing, not an answer.
+
+Also ruled out: no enabled stage names an unbound unit (0 of 2414), and no stage names a unit above
+3, so the `& 3` mask loses nothing. The shader-side selectors were re-derived against the hardware
+field layout and match.
+
+**Next step — and it should be the FIRST step next time.** Stop comparing pixels at the end of the
+pipeline and compare state at the point of use, against aurora, per draw: for each J3DShape draw,
+diff my parsed (per-stage texmap, per-unit bound texture, texcoord) against aurora's for that same
+draw. This is precisely the move that solved the matrix problem earlier in this arc — a whole-frame
+score can say something is wrong but never WHERE, so every step becomes a hypothesis that costs a
+run to falsify. Four runs went into narrowing this one and it is still open; a state-level oracle
+would have answered it in one.
 
 **Status: the named path is implemented and OPT-IN (`SBR_TEXMAP_NAMED=1`), pinned to unit 0 by
 default.** Pinning is NOT a fix and is not recorded as one — it is the better-scoring of two

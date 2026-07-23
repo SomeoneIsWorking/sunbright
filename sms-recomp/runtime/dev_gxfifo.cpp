@@ -91,6 +91,11 @@ struct Stats {
     u64 bytes = 0, nops = 0, cp = 0, xf = 0, bp = 0, draws = 0, verts = 0, unknown = 0;
 } g_stats;
 
+unsigned long g_bpWrites[256] = {};
+
+// Monotonic bind counter — see SbrTexture::bindSeq.
+u32 g_bindSeq = 0;
+
 // Attribute presence is 2 bits per attribute: 0 none, 1 direct, 2 index8, 3 index16.
 u32 attr_size(u32 mode, u32 direct_size) {
     switch (mode) {
@@ -687,8 +692,10 @@ size_t parse(const u8* p, size_t n, int depth) {
                 t.format = (val >> 20) & 0xF;
             } else if (reg >= 0x94 && reg <= 0x97) {
                 g_fifoTex[reg - 0x94].addr = ((val & 0x00FFFFFF) << 5) | 0x80000000u;
+                g_fifoTex[reg - 0x94].bindSeq = ++g_bindSeq;
             } else if (reg >= 0xB4 && reg <= 0xB7) {
                 g_fifoTex[4 + (reg - 0xB4)].addr = ((val & 0x00FFFFFF) << 5) | 0x80000000u;
+                g_fifoTex[4 + (reg - 0xB4)].bindSeq = ++g_bindSeq;
             } else if (reg >= 0x98 && reg <= 0x9B) {
                 // TMEM offset of the palette, in 32-byte units. The TLUT's MAIN-MEMORY address is
                 // written separately by the TLUT load (BP 0x64/0x65); this port does not track that
@@ -726,6 +733,12 @@ size_t parse(const u8* p, size_t n, int depth) {
             else if (reg >= 0xB4 && reg <= 0xB7) { u32 m = reg - 0xB4 + 4; g_tex[m].image3 = val; g_tex[m].have3 = true; emit_texobj(m); }
 
             g_out.insert(g_out.end(), p + i, p + i + 5);
+            // Per-register write counts. The texture-unit staleness question is exactly "how often
+            // does the game bind each unit", and that is answerable here rather than by inference:
+            // TX_SETIMAGE3 is 0x94+m for units 0-3, so those four counts ARE the per-unit bind
+            // rate. If they are comparable while the observed textures are not, the binds are
+            // being seen and lost downstream; if they differ, the units genuinely are not rebound.
+            ++g_bpWrites[reg];
             g_stats.bp++; i += 5; continue;
         }
 
@@ -922,3 +935,15 @@ const SbrTevState& sbr_gx_fifo_tev() { return g_tev; }
 
 // The colour-channel and light state the display lists have written.
 const SbrXfState& sbr_gx_fifo_xf() { return g_xf; }
+
+// How many times each BP register was written. Reported on demand so the texture-binding rate per
+// unit is a measurement rather than an inference.
+void sbr_gxfifo_report_bp_writes() {
+    for (unsigned m = 0; m < 4; ++m)
+        lucent::info("gxfifo", "  unit {}: TX_SETIMAGE0 (0x{:02x}) {} writes, TX_SETIMAGE3 "
+                               "(0x{:02x}) {} writes, TX_SETMODE0 (0x{:02x}) {} writes",
+                     m, 0x88 + m, g_bpWrites[0x88 + m], 0x94 + m, g_bpWrites[0x94 + m],
+                     0x80 + m, g_bpWrites[0x80 + m]);
+    lucent::info("gxfifo", "  GENMODE (0x00) {} writes, RAS1_TREF 0x28 {} / 0x29 {} / 0x2a {}",
+                 g_bpWrites[0x00], g_bpWrites[0x28], g_bpWrites[0x29], g_bpWrites[0x2a]);
+}
