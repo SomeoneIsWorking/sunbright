@@ -103,3 +103,8 @@ add_executable(tev_eval_test tests/tev_eval_test.cpp runtime/tev_eval.cpp)
 target_link_libraries(tev_eval_test PRIVATE lucent::lucent)
 target_include_directories(tev_eval_test PRIVATE runtime)
 add_test(NAME tev_eval COMMAND tev_eval_test)
+
+add_executable(gx_light_test tests/gx_light_test.cpp runtime/gx_light.cpp)
+target_link_libraries(gx_light_test PRIVATE lucent::lucent)
+target_include_directories(gx_light_test PRIVATE runtime)
+add_test(NAME gx_light COMMAND gx_light_test)

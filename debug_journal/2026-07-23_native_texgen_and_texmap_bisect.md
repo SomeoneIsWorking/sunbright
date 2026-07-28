@@ -722,3 +722,61 @@ which channel a stage asked for. One trace run made it obvious.
 
 Each of these is now a unit-testable statement about a documented encoding, not a hypothesis about a
 frame.
+
+## 2026-07-28 (cont.) — lighting gets the same treatment; the wiring is REVERTED, unattributed
+
+### Landed: `runtime/gx_light.{h,cpp}` + `tests/gx_light_test.cpp`
+
+The colour-channel evaluation is now plain, testable C++ alongside `tev_eval`, with expectations
+derived from the SDK rather than from a run. Eight groups: the **attnFn decode** (asserted directly
+against `GXSetChanCtrl`'s `bit9 = attn_fn != GX_AF_NONE`, `bit10 = attn_fn != GX_AF_SPEC` — the pair
+aurora once had swapped), lighting disabled, the independent material/ambient sources, the three
+diffuse functions against a BACK-facing light (where SIGN and CLAMP differ, and SIGN subtracts —
+the plaza case, now pinned by a test), inverse-square distance attenuation, a dead all-zero-distAtt
+light producing 0 rather than NaN, the spot angular term clamped at zero, two lights accumulating
+additively to exactly zero, and channel 1 being independent of channel 0.
+
+Negative control: reintroducing the historical bit9/bit10 swap AND clamping `DF_SIGN` fails 6 checks
+with specific values; restoring passes. The suite can see the other answer.
+
+It also captures what the SPECULAR path should be — `GX_AF_SPEC` drives attenuation from the surface
+normal, not from distance — where the shipped renderer runs the spotlight formula for it, because
+`light_channel` branches only on `attnEnable`.
+
+### Reverted: the channel-1 + RAS-selector wiring. Regressed, and I could not attribute it.
+
+Implemented alongside: a second colour channel on the vertex, the per-stage RAS channel selector in
+the shader (`rasOf`), and `sbr_light_channel` replacing the inline copy. The frame became COMPLETE —
+every black surface came back, sky, sea, tower, umbrellas — but washed out, and the score fell from
+**29.0% / +0.719 to 16.6% / +0.424**.
+
+Four runs of attribution, none of which found it:
+
+| suspect | test | verdict |
+|---|---|---|
+| RAS channel 7 -> ZERO vs channel 0 | `SBR_RAS_ZERO=0/1` | innocent — scores identical to 3 decimals |
+| the RAS selector at all | gated it off | innocent — still 16.8% |
+| the new SPECULAR path | `SBR_LIGHT_SPEC=0` maps SPEC back to SPOT | innocent — still 16.6% |
+| the baseline having moved | stashed the tree, re-measured | baseline really is 29.0% |
+
+So the regression is real, is in this batch, and is none of the three things I changed on purpose.
+That is the tell: **I changed the vertex layout, the shader's RAS plumbing and the lighting
+implementation in one step**, and a refactor that also changes behaviour cannot be bisected after
+the fact. Reverted to the committed state and re-verified at 29.0% / +0.719.
+
+`gx_light` therefore lands as a TESTED REFERENCE that nothing calls yet — deliberately. Wiring it in
+is the next iteration's work, one change at a time with a measurement between each:
+1. `sbr_light_channel` replacing the inline copy, with SPEC still routed to SPOT — expected to be a
+   no-op, and if it is not, that is the answer.
+2. The specular path on its own.
+3. The second vertex channel, with the selector still forced to 0 — must be a no-op by construction.
+4. The RAS selector.
+
+### What is known about channel 1, and what is not
+
+Channel 1 is what the black materials' final stage reads (`s4=1`), so it has to be evaluated. But
+the trace shows channel 1 ALSO evaluating to black for those materials: lighting enabled, ambient
+`[0 0 0]`, no lights in its mask, material 1.0 — so reading it correctly still yields black. Either
+the game configures channel 1 through a path this parser misses, or `numChans`/the channel registers
+are being read for the wrong channel. **Do not implement channel 1 as a fix until that is answered**
+— the first attempt swapped a black scene for a washed one, which is not progress.
