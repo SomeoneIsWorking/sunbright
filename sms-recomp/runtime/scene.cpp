@@ -532,8 +532,13 @@ void sbr_scene_end_tick() {
             if (g_prev.index.count(d.key)) ++g_matched;
 }
 
+// Which rendered tick this is. Only the per-draw state dump uses it, and only to pick a tick that
+// actually has the scene in it.
+long g_tickIndex = 0;
+
 float sbr_scene_render(double now_seconds, const float proj[16]) {
     if (!g_cur.valid) return 0.0f;
+    ++g_tickIndex;
 
     // How far between the two snapshots this display frame falls. Derived from the WALL CLOCK, so
     // the render rate is independent of the tick rate — the whole point of the rework.
@@ -688,23 +693,42 @@ float sbr_scene_render(double now_seconds, const float proj[16]) {
         // The GX side of this is RE-verified against the game's own writers (J3DTevs.cpp
         // loadTexNo/JRNISetTevOrder + GXTexture.c GXLoadTexObjPreLoaded), so a disagreement here is
         // this renderer's, not the parser's.
-        static const long kDrawState = [] {
+        //
+        // SBR_DRAW_STATE=<n> logs EVERY draw of tick n rather than the first n draws overall. The
+        // first tick of a stage is the loading screen — a handful of 2D quads — so the scene whose
+        // defect is being chased is not in it. Distance is on the line too (nearest clip w), because
+        // the observed split is near-renders / distant-blacks and a state dump that cannot tell the
+        // two apart cannot answer which state differs.
+        static const long kDrawStateTick = [] {
             const char* e = std::getenv("SBR_DRAW_STATE");
             return e != nullptr ? std::strtol(e, nullptr, 10) : 0;
         }();
         static long drawStateSeen = 0;
-        if (!g_out.empty() && drawStateSeen < kDrawState) {
+        if (!g_out.empty() && kDrawStateTick > 0 && g_tickIndex == kDrawStateTick) {
             ++drawStateSeen;
             lucent::Line l;
-            l.add("draw {} verts={} numTexGens={} numStages={} |", drawStateSeen, g_out.size(),
-                  d.tev.numTexGens, d.tev.numStages);
+            l.add("draw {} verts={} nearW={:.0f} zt{}w{}f{} blend{} numTexGens={} numStages={} |",
+                  drawStateSeen, g_out.size(), nearestW, d.depth.test, d.depth.write, d.depth.func,
+                  d.depth.blend, d.tev.numTexGens, d.tev.numStages);
             for (unsigned m = 0; m < 4; ++m)
                 l.add(" u{}={:08x}/f{}/{}x{}@{}", m, d.tex[m].addr, d.tex[m].format,
                       d.tex[m].width, d.tex[m].height, d.tex[m].bindSeq);
             l.add(" |");
-            for (unsigned s = 0; s < std::min<uint32_t>(d.tev.numStages, 8); ++s)
-                l.add(" s{}:map{}{} coord{}", s, d.tev.stage[s].texmap,
-                      d.tev.stage[s].texEnable ? "" : "(off)", d.tev.stage[s].texcoord);
+            // The stage's COMBINER too, not just which texture it names. GX computes
+            // out = (d + sign*mix(a,b,c) + bias) * scale -> dest, and a stage whose result is zero
+            // blacks everything downstream that reads it as CPREV. Printing the selectors means the
+            // arithmetic can be read off the line instead of hypothesised and costing a run each.
+            for (unsigned s = 0; s < std::min<uint32_t>(d.tev.numStages, 8); ++s) {
+                const SbrTevStage& st = d.tev.stage[s];
+                float k[4]; sbr_tev_konst(d.tev, s, k);
+                l.add(" s{}:map{}{} coord{} c(a{} b{} c{} d{} bias{} sub{} sc{} ->{}) a(a{} b{} c{}"
+                      " d{} ->{}) k[{:.2f},{:.2f},{:.2f},{:.2f}]",
+                      s, st.texmap, st.texEnable ? "" : "(off)", st.texcoord,
+                      st.cA, st.cB, st.cC, st.cD, st.cBias, st.cSub, st.cScale, st.cDest,
+                      st.aA, st.aB, st.aC, st.aD, st.aDest, k[0], k[1], k[2], k[3]);
+            }
+            l.add(" reg[{:.2f},{:.2f},{:.2f},{:.2f}]", d.tev.reg[0][0], d.tev.reg[1][0],
+                  d.tev.reg[2][0], d.tev.reg[3][0]);
             l.add(" | tg");
             for (unsigned g2 = 0; g2 < 4; ++g2) {
                 const SbrTexGen& tg2 = d.xf.texGen[g2];

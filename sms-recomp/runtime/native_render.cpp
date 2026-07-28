@@ -405,8 +405,18 @@ void pack_tev(const SbrTevState& tev, TevUniform& u) {
             const char* e = std::getenv("SBR_TEXMAP_NAMED");
             return (e != nullptr && e[0] != '\0' && e[0] != '0') ? 0xFu : 0x1u;
         }();
+        // SBR_TEXMAP_FORCE=<unit> routes EVERY stage to one unit. That asks a different question
+        // from the mask: not "which stages are wrong" but "does this SLOT sample at all". A slot
+        // whose binding or SPIR-V decoration is wrong returns the same value everywhere, so forcing
+        // the whole frame through it separates a broken slot from a wrongly-routed stage.
+        static const int32_t forceUnit = [] {
+            const char* f = std::getenv("SBR_TEXMAP_FORCE");
+            return f != nullptr ? (int32_t)std::strtol(f, nullptr, 0) : -1;
+        }();
         const int32_t map = (int32_t)(st.texmap & 3);
-        u.dest[i][3] = (((unitMask >> map) & 1) ? map : 0) | (int32_t)(st.texcoord & 3) << 8;
+        const int32_t unit = forceUnit >= 0 ? (forceUnit & 3)
+                                            : (((unitMask >> map) & 1) ? map : 0);
+        u.dest[i][3] = unit | (int32_t)(st.texcoord & 3) << 8;
         pack_konst(tev, (unsigned)i, u.konst[i]);
     }
     for (int r = 0; r < 4; ++r)
@@ -619,9 +629,19 @@ void sbr_render_tris(const SbrVertex* verts, int count, SbrDepthState depth, con
     // costs draws only where the state actually changes.
     const uint32_t first = (uint32_t)(g_verts.size() - (size_t)count);
     Batch b{depth, first, (uint32_t)count, {}, {}, {}};
+    // SBR_TEX_MIRROR=1 binds unit 0's texture to ALL FOUR slots. Combined with SBR_TEXMAP_FORCE it
+    // is the only clean test of the slots themselves: with identical content in every slot, forcing
+    // the frame through slot 0 and through slot 1 must produce IDENTICAL images. Any difference is
+    // the binding or the shader's decorations, not the material's choice of unit — which forcing
+    // alone cannot separate, because a forced unit usually holds a texture the material never wanted.
+    static const bool mirror = [] {
+        const char* e = std::getenv("SBR_TEX_MIRROR");
+        return e != nullptr && e[0] != '\0' && e[0] != '0';
+    }();
     for (int m = 0; m < 4; ++m) {
-        b.texKey[m]  = tex_key(tex[m]);
-        b.sampKey[m] = sampler_key(tex[m]);
+        const SbrTexture& t = mirror ? tex[0] : tex[m];
+        b.texKey[m]  = tex_key(t);
+        b.sampKey[m] = sampler_key(t);
     }
     pack_tev(tevState, b.tev);
     // TEV state is part of a batch's identity: two draws sharing a texture and depth state but
@@ -636,7 +656,7 @@ void sbr_render_tris(const SbrVertex* verts, int count, SbrDepthState depth, con
         g_batches.back().count += (uint32_t)count;
     } else {
         g_batches.push_back(b);
-        for (int m = 0; m < 4; ++m) g_pendingTex[b.texKey[m]] = tex[m];
+        for (int m = 0; m < 4; ++m) g_pendingTex[b.texKey[m]] = mirror ? tex[0] : tex[m];
     }
 }
 

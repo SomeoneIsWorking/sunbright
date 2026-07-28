@@ -91,6 +91,37 @@ float alphaArg(int sel, vec4 texc, vec4 rasc, vec4 konst) {
 float biasOf(int b) { return b == 1 ? 0.5 : (b == 2 ? -0.5 : 0.0); }
 float scaleOf(int s) { return s == 1 ? 2.0 : (s == 2 ? 4.0 : (s == 3 ? 0.5 : 1.0)); }
 
+// GX TEV COMPARE MODE. GXSetTevColorOp (GXTev.c) writes bias = 3 for every op >= GX_TEV_COMP_R8_GT
+// and repurposes the two fields around it: the SCALE field carries (op >> 1) & 3, the comparison
+// WIDTH, and the subtract bit carries op & 1, which selects == over >. The stage then computes
+//     out = d + (cmp(a, b) ? c : 0)
+// with no bias and no scale — a MASK, not a blend. Evaluating it as an ordinary blend makes the
+// stage pass its texture through where the hardware would have thresholded it to 0 or 1, so every
+// material that gates one texture by another (539 of 896 plaza drawables use one) comes out wrong.
+//
+// The comparison is on the 8-BIT quantised values, packed little-endian across channels for the
+// multi-byte widths, exactly as the hardware's comparator sees them.
+int u8(float v) { return int(clamp(v, 0.0, 1.0) * 255.0 + 0.5); }
+
+bool tevCmpPacked(int width, bool isEq, vec3 a, vec3 b) {
+    int av, bv;
+    if (width == 0) {          // R8
+        av = u8(a.r);
+        bv = u8(b.r);
+    } else if (width == 1) {   // GR16
+        av = (u8(a.g) << 8) | u8(a.r);
+        bv = (u8(b.g) << 8) | u8(b.r);
+    } else {                   // BGR24
+        av = (u8(a.b) << 16) | (u8(a.g) << 8) | u8(a.r);
+        bv = (u8(b.b) << 16) | (u8(b.g) << 8) | u8(b.r);
+    }
+    return isEq ? (av == bv) : (av > bv);
+}
+
+bool cmp1(bool isEq, float a, float b) {
+    return isEq ? (u8(a) == u8(b)) : (u8(a) > u8(b));
+}
+
 // Sample every unit up front. The alternative — indexing inside the stage loop — puts an implicit
 // LOD fetch under control flow that the compiler cannot prove uniform, which is undefined in GLSL.
 // Four fetches is the honest cost of doing it correctly; GX itself has four units live.
@@ -129,16 +160,41 @@ void main() {
         vec3 cb = colorArg(tev.cSel[i].y, t, ras, k);
         vec3 cc = colorArg(tev.cSel[i].z, t, ras, k);
         vec3 cd = colorArg(tev.cSel[i].w, t, ras, k);
-        vec3 cr = cd + (tev.cOp[i].y != 0 ? -1.0 : 1.0) * (mix(ca, cb, cc)) + biasOf(tev.cOp[i].x);
-        cr *= scaleOf(tev.cOp[i].w);
+        vec3 cr;
+        if (tev.cOp[i].x == 3) {
+            // Compare: RGB8 (width 3) compares each channel independently; the narrower widths
+            // compare one packed integer and gate all three channels together.
+            const int width = tev.cOp[i].w;
+            const bool isEq = tev.cOp[i].y != 0;
+            if (width == 3)
+                cr = cd + vec3(cmp1(isEq, ca.r, cb.r) ? cc.r : 0.0,
+                               cmp1(isEq, ca.g, cb.g) ? cc.g : 0.0,
+                               cmp1(isEq, ca.b, cb.b) ? cc.b : 0.0);
+            else
+                cr = cd + (tevCmpPacked(width, isEq, ca, cb) ? cc : vec3(0.0));
+        } else {
+            cr = cd + (tev.cOp[i].y != 0 ? -1.0 : 1.0) * (mix(ca, cb, cc)) + biasOf(tev.cOp[i].x);
+            cr *= scaleOf(tev.cOp[i].w);
+        }
         if (tev.cOp[i].z != 0) cr = clamp(cr, 0.0, 1.0);
 
         float aa = alphaArg(tev.aSel[i].x, t, ras, k);
         float ab = alphaArg(tev.aSel[i].y, t, ras, k);
         float ac = alphaArg(tev.aSel[i].z, t, ras, k);
         float ad = alphaArg(tev.aSel[i].w, t, ras, k);
-        float ar = ad + (tev.aOp[i].y != 0 ? -1.0 : 1.0) * (mix(aa, ab, ac)) + biasOf(tev.aOp[i].x);
-        ar *= scaleOf(tev.aOp[i].w);
+        float ar;
+        if (tev.aOp[i].x == 3) {
+            // The alpha unit shares the comparator with the colour unit: only A8 (width 3) compares
+            // the alpha pair — the narrower widths compare the COLOUR inputs and gate the alpha
+            // result with them, which is how a material keys its alpha off an RGB threshold.
+            const int width = tev.aOp[i].w;
+            const bool isEq = tev.aOp[i].y != 0;
+            const bool hit = (width == 3) ? cmp1(isEq, aa, ab) : tevCmpPacked(width, isEq, ca, cb);
+            ar = ad + (hit ? ac : 0.0);
+        } else {
+            ar = ad + (tev.aOp[i].y != 0 ? -1.0 : 1.0) * (mix(aa, ab, ac)) + biasOf(tev.aOp[i].x);
+            ar *= scaleOf(tev.aOp[i].w);
+        }
         if (tev.aOp[i].z != 0) ar = clamp(ar, 0.0, 1.0);
 
         g_reg[tev.dest[i].x].rgb = cr;
