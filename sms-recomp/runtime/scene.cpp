@@ -133,6 +133,60 @@ void light_channel(const SbrXfState& xf, int chan, const float vpos[3], const fl
     out[3] = mat[3];
 }
 
+// Same evaluation as light_channel, but reporting each light's working. A channel that comes out
+// black with a non-zero ambient can only do so by SUBTRACTING, and which light subtracts how much
+// is the whole question — inferring it from the final colour is what this file is trying to stop.
+void light_channel_trace(const SbrXfState& xf, int chan, const float vpos[3], const float nrm[3],
+                         const float vtxColor[4], const char* channelName) {
+    const SbrChanCtrl& c = xf.chan[chan];
+    const float* mat = c.matSrcVertex ? vtxColor : xf.material[chan];
+    if (!c.enableLight) {
+        lucent::info(channelName, "  chan{}: lighting DISABLED, colour = material [{:.3f} {:.3f} "
+                                  "{:.3f}]", chan, mat[0], mat[1], mat[2]);
+        return;
+    }
+    const float* amb = c.ambSrcVertex ? vtxColor : xf.ambient[chan];
+    lucent::info(channelName, "  chan{}: normal[{:.3f} {:.3f} {:.3f}] vpos[{:.0f} {:.0f} {:.0f}] "
+                              "acc starts at ambient [{:.3f} {:.3f} {:.3f}]",
+                 chan, nrm[0], nrm[1], nrm[2], vpos[0], vpos[1], vpos[2], amb[0], amb[1], amb[2]);
+    // The MODEL-space normal next to the view-space one. A wrong view normal is either a bad decode
+    // or a bad transform, and only seeing both says which — a ground plane's model normal is
+    // [0 1 0] whatever the camera is doing.
+    lucent::info(channelName, "  chan{}: (model-space normal is printed by the caller)", chan);
+    float acc[3] = {amb[0], amb[1], amb[2]};
+    for (int li = 0; li < 8; ++li) {
+        if (!((c.lightMask >> li) & 1)) continue;
+        const SbrLight& L = xf.light[li];
+        float ldir[3] = {L.pos[0] - vpos[0], L.pos[1] - vpos[1], L.pos[2] - vpos[2]};
+        const float d2 = ldir[0] * ldir[0] + ldir[1] * ldir[1] + ldir[2] * ldir[2];
+        const float d = std::sqrt(d2);
+        if (d > 1e-6f) { ldir[0] /= d; ldir[1] /= d; ldir[2] /= d; }
+        float atten = 1.0f;
+        float cosA = 0.0f;
+        if (c.attnEnable) {
+            cosA = -(ldir[0] * L.dir[0] + ldir[1] * L.dir[1] + ldir[2] * L.dir[2]);
+            const float num = std::max(0.0f, L.cosAtt[0] + L.cosAtt[1] * cosA + L.cosAtt[2] * cosA * cosA);
+            const float den = L.distAtt[0] + L.distAtt[1] * d + L.distAtt[2] * d2;
+            atten = (den > 1e-6f) ? num / den : 0.0f;
+        }
+        float diff = 1.0f;
+        if (c.diffuseFn != 0) {
+            diff = nrm[0] * ldir[0] + nrm[1] * ldir[1] + nrm[2] * ldir[2];
+            if (c.diffuseFn == 2) diff = std::max(0.0f, diff);
+        }
+        const float k = atten * diff;
+        acc[0] += k * L.color[0]; acc[1] += k * L.color[1]; acc[2] += k * L.color[2];
+        lucent::info(channelName, "    light {}: dist={:.0f} ldir[{:.3f} {:.3f} {:.3f}] cosA={:.3f} "
+                                  "atten={:.3f} diff={:+.3f} -> k={:+.3f}  acc now [{:.3f} {:.3f} "
+                                  "{:.3f}]", li, d, ldir[0], ldir[1], ldir[2], cosA, atten, diff, k,
+                     acc[0], acc[1], acc[2]);
+    }
+    lucent::info(channelName, "  chan{}: mat[{:.3f} {:.3f} {:.3f}] * acc = [{:.3f} {:.3f} {:.3f}]",
+                 chan, mat[0], mat[1], mat[2],
+                 std::clamp(mat[0] * acc[0], 0.0f, 1.0f), std::clamp(mat[1] * acc[1], 0.0f, 1.0f),
+                 std::clamp(mat[2] * acc[2], 0.0f, 1.0f));
+}
+
 // GX TEXTURE COORDINATE GENERATION. The hardware never hands a stored coordinate straight to the
 // sampler: each texgen picks a SOURCE row (a stored coordinate set, but equally the vertex's
 // position or normal — that is how environment mapping is expressed) and multiplies it by one of
@@ -806,6 +860,15 @@ float sbr_scene_render(double now_seconds, const float proj[16]) {
             lucent::info("tev", "drawable {} verts={} numStages={} ras[{:.3f} {:.3f} {:.3f} a{:.3f}]",
                          traced, g_out.size(), d.tev.numStages, in.ras[0], in.ras[1], in.ras[2],
                          in.ras[3]);
+            {   // WHICH channel each stage reads as RASC. The shader ignores this selector and
+                // always feeds colour channel 0, so a stage asking for channel 1 — or for the
+                // constant ZERO (hw value 7) — silently gets channel 0 instead.
+                lucent::Line rl;
+                rl.add("  rasChannel per stage:");
+                for (unsigned st = 0; st < d.tev.numStages && st < 16; ++st)
+                    rl.add(" s{}={}", st, d.tev.stage[st].rasChannel);
+                rl.flush(lucent::Level::Info, "tev");
+            }
             for (unsigned m = 0; m < 4; ++m)
                 lucent::info("tev", "  unit {} = 0x{:08x} {}x{} fmt{} texel[{:.3f} {:.3f} {:.3f} "
                                     "a{:.3f}]", m, d.tex[m].addr, d.tex[m].width, d.tex[m].height,
@@ -829,10 +892,35 @@ float sbr_scene_render(double now_seconds, const float proj[16]) {
                     if (!((c.lightMask >> li) & 1)) continue;
                     const SbrLight& L = d.xf.light[li];
                     lucent::info("tev", "  light {}: col[{:.3f} {:.3f} {:.3f}] pos[{:.0f} {:.0f} "
-                                        "{:.0f}] cosAtt[{:.3f} {:.3f} {:.3f}] distAtt[{:.4f} "
-                                        "{:.4f} {:.4f}]", li, L.color[0], L.color[1], L.color[2],
-                                 L.pos[0], L.pos[1], L.pos[2], L.cosAtt[0], L.cosAtt[1], L.cosAtt[2],
+                                        "{:.0f}] dir[{:.3f} {:.3f} {:.3f}] cosAtt[{:.3f} {:.3f} "
+                                        "{:.3f}] distAtt[{:.4f} {:.4f} {:.4f}]", li, L.color[0],
+                                 L.color[1], L.color[2], L.pos[0], L.pos[1], L.pos[2], L.dir[0],
+                                 L.dir[1], L.dir[2], L.cosAtt[0], L.cosAtt[1], L.cosAtt[2],
                                  L.distAtt[0], L.distAtt[1], L.distAtt[2]);
+                }
+                // The same first vertex the texels were sampled at, so the channel working below
+                // explains the very RAS printed above rather than some other fragment.
+                {
+                    const SbrGeomVert& gv = g.verts[0];
+                    const float vx = m[0] * gv.x + m[1] * gv.y + m[2]  * gv.z + m[3];
+                    const float vy = m[4] * gv.x + m[5] * gv.y + m[6]  * gv.z + m[7];
+                    const float vz = m[8] * gv.x + m[9] * gv.y + m[10] * gv.z + m[11];
+                    float nn[3] = {m[0] * gv.nx + m[1] * gv.ny + m[2] * gv.nz,
+                                   m[4] * gv.nx + m[5] * gv.ny + m[6] * gv.nz,
+                                   m[8] * gv.nx + m[9] * gv.ny + m[10] * gv.nz};
+                    const float nl = std::sqrt(nn[0]*nn[0] + nn[1]*nn[1] + nn[2]*nn[2]);
+                    if (nl > 1e-6f) { nn[0] /= nl; nn[1] /= nl; nn[2] /= nl; }
+                    const float vp[3] = {vx, vy, vz};
+                    lucent::info("tev", "  vertex0: model pos[{:.0f} {:.0f} {:.0f}] model normal"
+                                        "[{:.3f} {:.3f} {:.3f}] (len {:.3f}) -> view normal"
+                                        "[{:.3f} {:.3f} {:.3f}]", gv.x, gv.y, gv.z, gv.nx, gv.ny,
+                                 gv.nz, std::sqrt(gv.nx*gv.nx + gv.ny*gv.ny + gv.nz*gv.nz),
+                                 nn[0], nn[1], nn[2]);
+                    float gvc[4] = {(float)((gv.rgba >> 24) & 0xFF) / 255.0f,
+                                    (float)((gv.rgba >> 16) & 0xFF) / 255.0f,
+                                    (float)((gv.rgba >> 8) & 0xFF) / 255.0f,
+                                    (float)(gv.rgba & 0xFF) / 255.0f};
+                    light_channel_trace(d.xf, 0, vp, nn, gvc, "tev");
                 }
             }
             sbr_tev_trace_report(tr, "tev");

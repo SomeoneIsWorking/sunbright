@@ -670,3 +670,55 @@ one: are `diffuseFn`, `attnEnable` and `attnSpot` being read from the right bits
 — memory `[[mario-paleness-attnfn-decode-swap-2026-07-15]]` records aurora's XF chanctrl `attnFn`
 bit 9 / bit 10 being SWAPPED, found in this same register. Next step is to RE `GXSetChanCtrl` from
 the SDK and check this parser's decode against it, the same way the TEV op encoding was checked.
+
+### The answer, one run later: the stages ask for colour channel 1, which this port never computes
+
+Extending the same trace to print the per-light working and the per-stage RAS channel selector:
+
+```
+drawable 1 verts=912 numStages=5 ras[0.000 0.000 0.000 a1.000]
+  rasChannel per stage: s0=7 s1=7 s2=7 s3=0 s4=1
+  chan0: light=1 matSrc=reg ambSrc=reg diffFn=1 attn=1/1 mask=0x03 numChans=2
+  chan0: matReg[1 1 1] ambReg[0.502 0.502 0.502]
+  vertex0: model normal[-0.826 0.498 0.266] (len 1.000) -> view normal[0.031 -0.234 0.972]
+    light 0: dist=573241 ldir[-0.338 0.773 -0.537] atten=1.000 diff=-0.713 -> acc [-0.211 ...]
+    light 1: dist=15107  ldir[ 0.804 -0.119 -0.582] atten=0.004 diff=-0.513 -> acc [-0.213 ...]
+  chan0: mat[1 1 1] * acc = [0.000 0.000 0.000]
+  stage 4: map7(off) -> c[0.000 0.000 0.000]->reg0
+```
+
+**Stage 4 — the last stage, the one that writes PREV and decides the pixel — reads RAS channel 1.**
+`numChans = 2`, so the game really is running two colour channels. This port computes only channel 0
+(`light_channel(d.xf, 0, ...)`), and the shader ignores the per-stage channel selector entirely and
+always feeds `v_col`. So the final stage of every such material is handed channel 0's value instead
+of channel 1's — and for these surfaces channel 0 is legitimately black, because the sun is behind
+them and `GX_DF_SIGN` is unclamped, which is correct GX behaviour for channel 0.
+
+That is why the wrong material made them RENDER: a different material's stage 4 happened not to read
+channel 1.
+
+**This was in this file's own "Still missing" list from the start** — "colour channel 1 and the alpha
+channels (computed, unused)". It was never connected to the black because there was no way to see
+which channel a stage asked for. One trace run made it obvious.
+
+### The work this names, in order
+
+1. **Evaluate colour channel 1** (`d.xf.chan[1]`, its own material/ambient registers at XF
+   `0x100B`/`0x100D` — mapping confirmed against `GXSetChanAmbColor`/`GXSetChanMatColor`, which write
+   `colIdx + 10` and `colIdx + 12`), and carry it to the shader as a second interpolant.
+2. **Honour the per-stage RAS channel selector.** RAS1_TREF bits 7..9 already parse into
+   `SbrTevStage::rasChannel`; the shader must select on it — 0 = colour0, 1 = colour1, and 7 = the
+   constant ZERO, which currently receives channel 0's colour by accident.
+3. **Specular attenuation is computed as spotlight.** `GXSetChanCtrl` encodes bit 9 =
+   `attn_fn != GX_AF_NONE` and bit 10 = `attn_fn != GX_AF_SPEC`; this parser stores those as
+   `attnEnable`/`attnSpot`, which is faithful, but `light_channel` branches only on `attnEnable` and
+   always runs the SPOT formula. A GX_AF_SPEC channel therefore gets the wrong attenuation. Aurora
+   fixed exactly this bit pair once before (see its comment in `command_processor.cpp` and memory
+   `[[mario-paleness-attnfn-decode-swap-2026-07-15]]`).
+4. **`cosA` is negated here and not in aurora** (`cosine = max(0, dot(ldir, light.dir))`). Inert in
+   the plaza because every light's `dir` is zero, so it is UNVERIFIED rather than known-wrong — the
+   SDK's `GXInitLightDir`, which would settle whether the stored direction is pre-negated, is not in
+   the decomp (inlined away). Needs a test case with a real spotlight before it is touched.
+
+Each of these is now a unit-testable statement about a documented encoding, not a hypothesis about a
+frame.
