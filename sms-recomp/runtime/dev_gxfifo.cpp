@@ -100,6 +100,10 @@ struct Stats {
 
 unsigned long g_bpWrites[256] = {};
 
+// BP register shadow + the one-shot write mask (register 0xFE). See the BP handler.
+u32 g_bpCache[256] = {};
+u32 g_bpMask = 0x00FFFFFFu;
+
 // Monotonic bind counter — see SbrTexture::bindSeq.
 u32 g_bindSeq = 0;
 
@@ -619,7 +623,31 @@ size_t parse(const u8* p, size_t n, int depth) {
         if (op == 0x61) {                       // BP register write
             if (n - i < 5) { g_need = 5; break; }
             const u8  reg = p[i + 1];
-            const u32 val = ((u32)p[i + 2] << 16) | ((u32)p[i + 3] << 8) | p[i + 4];
+            const u32 raw = ((u32)p[i + 2] << 16) | ((u32)p[i + 3] << 8) | p[i + 4];
+
+            // BP WRITE MASK (register 0xFE). GX's BP is not write-only: a write to 0xFE arms a
+            // 24-bit mask for the NEXT register write, and only the masked bits are updated — the
+            // rest KEEP their previous value. The mask then resets. The game uses this constantly:
+            // GDGeometry.c's GDSetGenMode2 arms 0x07FC3F before writing GENMODE, and GDSetCullMode
+            // arms 0xC000 and writes a value whose other 22 bits are ZERO.
+            //
+            // Applying the raw payload instead — which this parser did — clobbers every field
+            // outside the mask. For GENMODE that silently rewrites numTevStages and numTexGens on
+            // any masked write, which is exactly where the per-draw oracle showed this port and
+            // aurora diverging (mine 5 stages vs aurora 6, 2 vs 5, 3 vs 1 on sampled draws).
+            //
+            // Aurora has implemented this all along (command_processor.cpp: merged =
+            // (cached & ~mask) | (value & mask)); its own comment notes a genMode write that sets
+            // only bit 15 merging with a cached bit 14. That is why it renders and this did not.
+            if (reg == 0xFE) {
+                g_bpMask = raw & 0x00FFFFFFu;
+                g_out.insert(g_out.end(), p + i, p + i + 5);
+                ++g_bpWrites[reg];
+                g_stats.bp++; i += 5; continue;
+            }
+            const u32 val = (g_bpCache[reg] & ~g_bpMask) | (raw & g_bpMask);
+            g_bpMask = 0x00FFFFFFu;
+            g_bpCache[reg] = val;
 
             // TEV STATE. Same reasoning as the texture binding below: J3D bakes its TEV setup into
             // per-material display lists, so the SDK entry points are not called and the BP
@@ -827,6 +855,7 @@ size_t parse(const u8* p, size_t n, int depth) {
             // its own from the same bytes a moment later. See state_oracle.h.
             if (sbr_state_diff_enabled()) {
                 SbrDrawState st{};
+                st.pos        = (uint32_t)g_out.size();   // where this draw's command byte lands
                 st.numStages  = (uint8_t)g_tev.numStages;
                 st.numTexGens = (uint8_t)g_tev.numTexGens;
                 for (unsigned k = 0; k < 16; ++k) {
@@ -1001,6 +1030,9 @@ void sbr_gxfifo_report_bp_writes() {
                      0x80 + m, g_bpWrites[0x80 + m]);
     lucent::info("gxfifo", "  GENMODE (0x00) {} writes, RAS1_TREF 0x28 {} / 0x29 {} / 0x2a {}",
                  g_bpWrites[0x00], g_bpWrites[0x28], g_bpWrites[0x29], g_bpWrites[0x2a]);
+    // Whether the BP write MASK is used at all. If this is zero the mask handling is inert and any
+    // divergence it was supposed to explain is elsewhere — worth knowing before believing the fix.
+    lucent::info("gxfifo", "  BP write mask (0xFE) {} writes", g_bpWrites[0xFE]);
     // TMEM — RESOLVED BY READING THE GAME'S OWN WRITER, not by inference. Two binders exist and
     // neither invalidates the "latest SETIMAGE0 + latest SETIMAGE3 per unit" model:
     //

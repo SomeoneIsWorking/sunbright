@@ -5,6 +5,7 @@
 #include <lucent/log.h>
 
 #include <algorithm>
+#include <unordered_map>
 #include <cstdlib>
 #include <vector>
 
@@ -82,12 +83,13 @@ extern "C" void sbr_state_oracle_aurora_frame_end() {
 }
 
 // The aurora-facing hook: a plain C ABI over arrays, so aurora needs no recomp header.
-extern "C" void sbr_state_oracle_aurora_raw(unsigned numStages, unsigned numTexGens,
+extern "C" void sbr_state_oracle_aurora_raw(unsigned pos, unsigned numStages, unsigned numTexGens,
                                             const unsigned char* texmap,
                                             const unsigned char* texcoord,
                                             const unsigned char* texEnable, const unsigned* unitId) {
     if (g_limit <= 0) return;
     SbrDrawState s{};
+    s.pos = pos;
     s.numStages = (uint8_t)numStages;
     s.numTexGens = (uint8_t)numTexGens;
     for (unsigned k = 0; k < 16; ++k) {
@@ -111,21 +113,60 @@ void sbr_state_oracle_report() {
     // draws of a buffer. Within ONE frame the draws still align from the start, so compare the
     // common prefix and say how many were left over. A LARGE divergence would mean the frames are
     // not the same frame, so that is still refused.
-    const size_t k = std::min(mine.size(), aur.size());
-    const size_t delta = mine.size() > aur.size() ? mine.size() - aur.size()
-                                                  : aur.size() - mine.size();
-    if (k == 0 || delta > k / 20) {
-        lucent::warn("oracle", "frame draw counts differ too much ({} vs {}) — refusing to pair",
-                     mine.size(), aur.size());
-        return;
+    // Pair by STREAM OFFSET, so a draw is only ever compared with the same draw. Anything with no
+    // counterpart is counted, not silently dropped: an unpaired draw means one side saw a command
+    // the other did not, which is a finding in itself.
+    std::unordered_map<uint32_t, const SbrDrawState*> byPos;
+    byPos.reserve(aur.size() * 2);
+    for (const SbrDrawState& a : aur) byPos.emplace(a.pos, &a);
+    size_t unpaired = 0;
+    std::vector<SbrDrawState> m2, a2;
+    m2.reserve(mine.size());
+    a2.reserve(mine.size());
+    for (const SbrDrawState& s : mine) {
+        const auto it = byPos.find(s.pos);
+        if (it == byPos.end()) { ++unpaired; continue; }
+        m2.push_back(s);
+        a2.push_back(*it->second);
     }
+    mine.swap(m2);
+    aur.swap(a2);
+    const size_t k = mine.size();
+    const size_t delta = unpaired;
     if (k == 0) return;
-    long reported = 0;
-    size_t differing = 0;
+    if (k == 0) return;
+    // First pass: count, and classify each disagreement as a LAG or a genuinely different value.
+    // A unit id of mine that matches aurora's at a NEARBY draw means the two are seeing the same
+    // binds in a different order (a pairing or timing artefact); one that appears nowhere near
+    // means this port derived a different texture, which is a real defect. Those need different
+    // fixes, and telling them apart costs nothing here.
+    size_t differing = 0, lagLike = 0, genuine = 0;
+    std::vector<size_t> diffIdx;
     for (size_t i = 0; i < k; ++i) {
         if (same(mine[i], aur[i])) continue;
         ++differing;
-        if (reported++ >= g_limit) continue;
+        diffIdx.push_back(i);
+        bool nearby = false;
+        for (unsigned st = 0; st < mine[i].numStages && st < 16 && !nearby; ++st) {
+            if (!mine[i].texEnable[st]) continue;
+            const unsigned m = mine[i].texmap[st] & 7;
+            if (mine[i].unitId[m] == aur[i].unitId[m]) continue;
+            for (long d = -4; d <= 4 && !nearby; ++d) {
+                const long j = (long)i + d;
+                if (d == 0 || j < 0 || j >= (long)k) continue;
+                if (mine[i].unitId[m] == aur[(size_t)j].unitId[m]) nearby = true;
+            }
+        }
+        if (nearby) ++lagLike; else ++genuine;
+    }
+    // Sample the reports ACROSS the frame rather than taking the first few: the first draws of a
+    // frame are the 2D overlay, whose upper units are legitimately untouched, so a head sample
+    // describes the least interesting draws in it.
+    long reported = 0;
+    const size_t stride = diffIdx.empty() ? 1 : std::max<size_t>(1, diffIdx.size() / (size_t)g_limit);
+    for (size_t n = 0; n < diffIdx.size(); n += stride) {
+        const size_t i = diffIdx[n];
+        if (reported++ >= g_limit) break;
         lucent::Line a, b;
         a.add("draw {} MINE   ", i);
         append(a, mine[i]);
@@ -134,6 +175,22 @@ void sbr_state_oracle_report() {
         append(b, aur[i]);
         b.flush(lucent::Level::Info, "oracle");
     }
-    lucent::info("oracle", "{} of {} draws in this frame disagree on texture/TEV state ({} trailing "
-                           "draws unpaired)", differing, k, delta);
+    lucent::info("oracle", "{} of {} draws disagree ({} trailing unpaired) — {} look like a LAG "
+                           "(the same id appears within 4 draws on aurora's side), {} are a "
+                           "genuinely different texture", differing, k, delta, lagLike, genuine);
+
+    // INSTRUMENT VALIDATION, not a result. If aurora's upper units report ONE id for a whole frame
+    // while this side reports many, the field being read on aurora's side is not where it holds the
+    // bound texture — and a comparison against a constant would blame this port for every draw.
+    // Uniform output is how a broken instrument looks, so it is checked before anything is believed.
+    lucent::Line h;
+    h.add("distinct unit ids over the frame — ");
+    for (unsigned m = 0; m < 4; ++m) {
+        std::vector<uint32_t> a, b;
+        for (size_t i = 0; i < k; ++i) { a.push_back(mine[i].unitId[m]); b.push_back(aur[i].unitId[m]); }
+        std::sort(a.begin(), a.end()); a.erase(std::unique(a.begin(), a.end()), a.end());
+        std::sort(b.begin(), b.end()); b.erase(std::unique(b.begin(), b.end()), b.end());
+        h.add("u{}: mine {} aurora {}  ", m, a.size(), b.size());
+    }
+    h.flush(lucent::Level::Info, "oracle");
 }

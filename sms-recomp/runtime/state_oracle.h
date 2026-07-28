@@ -16,6 +16,11 @@
 
 // One draw's texture/TEV state, in GX's own terms so both sides can fill it without translation.
 struct SbrDrawState {
+    // Byte offset of this draw's command in the frame's FIFO stream. THE pairing key: aurora
+    // replays exactly the buffer this parser emitted, so its cmdPos is this offset. Pairing by
+    // ordinal instead drifts through a frame (aurora records ~24 fewer draws per frame) and
+    // silently compares unrelated draws — which is how a state oracle manufactures findings.
+    uint32_t pos = 0;
     uint8_t  numStages = 0;
     uint8_t  numTexGens = 0;
     // Per stage: the map it names, the coordinate it names, and whether the texture is enabled.

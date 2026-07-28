@@ -419,3 +419,67 @@ the frame pairing is still off by one. **Validate that before believing any of i
 oracle a case where the units MUST differ and check it says so.
 
 Next: validate the aurora-side field, then read off which unit identity is wrong and why.
+
+## 2026-07-28 (cont.) — the oracle, validated and fixed: the parsed state is NOT the problem
+
+### Validating the instrument first
+
+Aurora's units 1-3 looked constant in the first report, which is how a broken instrument looks. The
+known-positive check — count DISTINCT unit ids per side over a whole frame — clears it:
+
+```
+u0: mine 97  aurora 108     u1: mine 40  aurora 39
+u2: mine 11  aurora  8      u3: mine 10  aurora  7
+```
+
+Aurora's units vary as much as this port's, so `textures[m].texObj.texObjId` IS where it holds the
+bound texture. The "constant" impression came from sampling only the FIRST few disagreeing draws,
+which are the 2D overlay — whose upper units are legitimately untouched. The report now samples
+across the frame instead of taking the head.
+
+### Two real fixes found on the way
+
+**BP WRITE MASK (register 0xFE) was ignored entirely.** GX's BP is not write-only: a write to 0xFE
+arms a 24-bit mask for the NEXT register write, and only the masked bits are updated — the rest keep
+their previous value, then the mask resets. `GDGeometry.c:GDSetGenMode2` arms `0x07FC3F` before
+writing GENMODE; `GDSetCullMode` arms `0xC000` and writes a value whose other 22 bits are zero. This
+parser applied the raw payload, clobbering every field outside the mask. **Measured: 3.5 MILLION
+mask writes per report — more than any other register.** Aurora has implemented it all along
+(`merged = (cached & ~mask) | (value & mask)`), and its own comment notes a genMode write that sets
+only bit 15 merging with a cached bit 14. Implemented here to match.
+
+**Pairing draws by ordinal was wrong, and it was manufacturing findings.** Aurora records ~24 fewer
+draws per frame (its frame boundary is inferred from the stream position restarting), and that
+deficit accumulates THROUGH the frame, so late draws were compared against unrelated draws. Now both
+sides carry the draw command's byte OFFSET in the frame's FIFO stream — aurora replays exactly the
+buffer this parser emits, so its `cmdPos` is that offset — and draws are paired by it.
+
+### The result, and it redirects everything
+
+| pairing | draws disagreeing | of which lag-like | genuinely different |
+|---|---|---|---|
+| by ordinal | 803 of 29,365 (2.8%) | 311 | 492 |
+| **by stream offset** | **134 of 29,492 (0.45%)** | **133** | **1** |
+
+**The parsed state is essentially IDENTICAL to aurora's.** 99.55% of draws agree exactly on
+`numTevStages`, `numTexGens`, every stage's (texmap, texcoord, texEnable) AND every unit's bound
+texture. Of the 134 that differ, 133 have a unit id that appears on aurora's side within four draws
+— a small ordering skew in when a bind takes effect, not a different texture. Exactly one draw per
+frame carries a genuinely different texture.
+
+So the earlier retraction was itself half wrong, and the correction matters: the "2.8% disagree,
+every disagreement is texture identity" reading was an artefact of the pairing. The stage tables DO
+agree, as the first (head-sampled) report suggested.
+
+**This rules out the whole family of hypotheses this arc has been chasing.** The FIFO parse, the
+unit binding, the TEV stage table and the texgen configuration are all correct — confirmed against a
+live oracle rendering the same stream correctly in the same process. Whatever makes the native frame
+differ from aurora's is DOWNSTREAM of the state: the vertex frontend (transform, lighting, texgen
+evaluation), the TEV evaluation in the shader, or the texture decode/upload — not the state
+extraction.
+
+**And it sharpens the black-texture question rather than answering it.** If this port binds the same
+texture ids aurora does, then aurora binds `0x80cfafa0` too and renders it fine, from the same zero
+bytes. So the difference is in what each side DOES with that binding — aurora's texture upload for
+that id, versus this port's decode. That is the next thing to instrument, and it is now a narrow
+question about one id rather than a search.
