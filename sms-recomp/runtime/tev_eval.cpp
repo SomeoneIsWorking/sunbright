@@ -130,20 +130,40 @@ void sbr_tev_evaluate(const SbrTevState& tev, const SbrTevInputs& in, float out[
         const SbrTevStage& st = tev.stage[i];
 
         // A stage with its texture disabled must not read one: GX feeds it nothing, and sampling
-        // anyway would tint untextured stages with whatever was last bound.
+        // anyway would tint untextured stages with whatever was last bound. The texel is read
+        // through the stage's TEX swap row (GXSetTevSwapMode).
         float texel[4] = {0, 0, 0, 0};
         if (st.texEnable) {
             const unsigned m = st.texmap & 7;
-            for (int c = 0; c < 4; ++c) texel[c] = in.tex[m][c];
+            const uint8_t* sw = tev.swapTable[st.swapTex & 3];
+            for (int c = 0; c < 4; ++c) texel[c] = in.tex[m][sw[c] & 3];
         }
         float konst[4];
         sbr_tev_konst(tev, i, konst);
 
+        // The rasterised input: select the channel RAS1_TREF names (raw 2/3/4 alias the two colour
+        // channels; 7 is the constant ZERO; the alpha-bump channels are not modelled and read as
+        // zero), then read it through the stage's RAS swap row. A swap row of A,A,A,A is how a
+        // material presents a channel's alpha as an RGB grey — the plaza terrain's last stage does
+        // exactly that with channel 1, whose RGB is legitimately black.
+        static const float kZero[4] = {0, 0, 0, 0};
+        const float* rasBase = kZero;
+        switch (st.rasChannel & 7) {
+        case 0: case 2: case 4: rasBase = in.ras; break;
+        case 1: case 3:         rasBase = in.ras1; break;
+        default: break;
+        }
+        float ras[4];
+        {
+            const uint8_t* sw = tev.swapTable[st.swapRas & 3];
+            for (int c = 0; c < 4; ++c) ras[c] = rasBase[sw[c] & 3];
+        }
+
         float ca[3], cb[3], cc[3], cd[3];
-        color_arg(st.cA, texel, in.ras, konst, reg, ca);
-        color_arg(st.cB, texel, in.ras, konst, reg, cb);
-        color_arg(st.cC, texel, in.ras, konst, reg, cc);
-        color_arg(st.cD, texel, in.ras, konst, reg, cd);
+        color_arg(st.cA, texel, ras, konst, reg, ca);
+        color_arg(st.cB, texel, ras, konst, reg, cb);
+        color_arg(st.cC, texel, ras, konst, reg, cc);
+        color_arg(st.cD, texel, ras, konst, reg, cd);
 
         float cr[3];
         const bool cCompare = st.cBias == 3;
@@ -167,10 +187,10 @@ void sbr_tev_evaluate(const SbrTevState& tev, const SbrTevInputs& in, float out[
         if (st.cClamp)
             for (int c = 0; c < 3; ++c) cr[c] = std::clamp(cr[c], 0.0f, 1.0f);
 
-        const float aa = alpha_arg(st.aA, texel, in.ras, konst, reg);
-        const float ab = alpha_arg(st.aB, texel, in.ras, konst, reg);
-        const float ac = alpha_arg(st.aC, texel, in.ras, konst, reg);
-        const float ad = alpha_arg(st.aD, texel, in.ras, konst, reg);
+        const float aa = alpha_arg(st.aA, texel, ras, konst, reg);
+        const float ab = alpha_arg(st.aB, texel, ras, konst, reg);
+        const float ac = alpha_arg(st.aC, texel, ras, konst, reg);
+        const float ad = alpha_arg(st.aD, texel, ras, konst, reg);
 
         float ar;
         const bool aCompare = st.aBias == 3;
@@ -190,6 +210,9 @@ void sbr_tev_evaluate(const SbrTevState& tev, const SbrTevInputs& in, float out[
         if (trace != nullptr) {
             SbrTevStageTrace& t = trace->stage[i];
             t.stage = i;
+            t.cSel[0] = st.cA; t.cSel[1] = st.cB; t.cSel[2] = st.cC; t.cSel[3] = st.cD;
+            t.aSel[0] = st.aA; t.aSel[1] = st.aB; t.aSel[2] = st.aC; t.aSel[3] = st.aD;
+            t.cBias = st.cBias; t.cSub = st.cSub; t.cScale = st.cScale;
             t.texmap = st.texmap; t.texcoord = st.texcoord; t.texEnabled = st.texEnable != 0;
             for (int c = 0; c < 4; ++c) { t.texel[c] = texel[c]; t.konst[c] = konst[c]; }
             for (int c = 0; c < 3; ++c) {
@@ -235,7 +258,7 @@ void sbr_tev_evaluate(const SbrTevState& tev, const SbrTevInputs& in, float out[
 void sbr_tev_trace_report(const SbrTevTrace& t, const char* channel) {
     static const char* kCArg[16] = {"CPREV", "APREV", "C0", "A0", "C1", "A1", "C2", "A2",
                                     "TEXC",  "TEXA",  "RASC", "RASA", "ONE", "HALF", "KONST", "ZERO"};
-    (void)kCArg;
+    static const char* kAArg[8] = {"APREV", "A0", "A1", "A2", "TEXA", "RASA", "KONST", "ZERO"};
     for (unsigned i = 0; i < t.numStages; ++i) {
         const SbrTevStageTrace& s = t.stage[i];
         lucent::Line l;
@@ -245,6 +268,14 @@ void sbr_tev_trace_report(const SbrTevTrace& t, const char* channel) {
         l.add("  {}-> c[{:.3f} {:.3f} {:.3f}]->reg{}  a {:.3f}->reg{}",
               s.cCompare ? "CMP " : "", s.cOut[0], s.cOut[1], s.cOut[2], s.cDest, s.aOut, s.aDest);
         l.flush(lucent::Level::Info, channel);
+        lucent::Line m;
+        m.add("           c: a={}[{:.3f}] b={}[{:.3f}] c={}[{:.3f}] d={}[{:.3f}] bias{} sub{} "
+              "scale{}   a: a={}[{:.3f}] b={}[{:.3f}] c={}[{:.3f}] d={}[{:.3f}]",
+              kCArg[s.cSel[0] & 15], s.cArg[0][0], kCArg[s.cSel[1] & 15], s.cArg[1][0],
+              kCArg[s.cSel[2] & 15], s.cArg[2][0], kCArg[s.cSel[3] & 15], s.cArg[3][0], s.cBias,
+              s.cSub, s.cScale, kAArg[s.aSel[0] & 7], s.aArg[0], kAArg[s.aSel[1] & 7], s.aArg[1],
+              kAArg[s.aSel[2] & 7], s.aArg[2], kAArg[s.aSel[3] & 7], s.aArg[3]);
+        m.flush(lucent::Level::Info, channel);
     }
     lucent::info(channel, "  final [{:.3f} {:.3f} {:.3f} a{:.3f}] alpha8={} {}", t.out[0], t.out[1],
                  t.out[2], t.out[3], t.alpha8, t.alphaPass ? "PASS" : "DISCARDED");

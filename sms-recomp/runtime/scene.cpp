@@ -831,6 +831,39 @@ float sbr_scene_render(double now_seconds, const float proj[16]) {
             // fragment of this surface, which is enough to explain a uniformly black one.
             const SbrVertex& v0 = g_out[0];
             in.ras[0] = v0.r; in.ras[1] = v0.g; in.ras[2] = v0.b; in.ras[3] = v0.a;
+            // Colour channel 1 for the same representative vertex, so a stage whose RAS selector
+            // names channel 1 evaluates against what the hardware would rasterise, not channel 0.
+            {
+                const SbrGeomVert& gv = g.verts[0];
+                const float vp[3] = {m[0] * gv.x + m[1] * gv.y + m[2] * gv.z + m[3],
+                                     m[4] * gv.x + m[5] * gv.y + m[6] * gv.z + m[7],
+                                     m[8] * gv.x + m[9] * gv.y + m[10] * gv.z + m[11]};
+                float nn[3] = {m[0] * gv.nx + m[1] * gv.ny + m[2] * gv.nz,
+                               m[4] * gv.nx + m[5] * gv.ny + m[6] * gv.nz,
+                               m[8] * gv.nx + m[9] * gv.ny + m[10] * gv.nz};
+                const float nl = std::sqrt(nn[0] * nn[0] + nn[1] * nn[1] + nn[2] * nn[2]);
+                if (nl > 1e-6f) { nn[0] /= nl; nn[1] /= nl; nn[2] /= nl; }
+                const float gvc[4] = {(float)((gv.rgba >> 24) & 0xFF) / 255.0f,
+                                      (float)((gv.rgba >> 16) & 0xFF) / 255.0f,
+                                      (float)((gv.rgba >> 8) & 0xFF) / 255.0f,
+                                      (float)(gv.rgba & 0xFF) / 255.0f};
+                light_channel(d.xf, 1, vp, nn, gvc, in.ras1);
+            }
+            // Channel 0 across the WHOLE drawable, not just vertex 0. The trace's verdict on one
+            // vertex generalises only if the channel is black everywhere — a surface with mixed
+            // facing would be partly lit, and a "black" conclusion drawn from one back-facing
+            // vertex would be the instrument choosing the answer.
+            float ras0Mean = 0.0f, ras0Max = 0.0f;
+            {
+                size_t nv = 0;
+                for (const SbrVertex& vv : g_out) {
+                    const float lum = 0.2126f * vv.r + 0.7152f * vv.g + 0.0722f * vv.b;
+                    ras0Mean += lum;
+                    ras0Max = std::max(ras0Max, lum);
+                    ++nv;
+                }
+                if (nv > 0) ras0Mean /= (float)nv;
+            }
             for (unsigned m = 0; m < 4; ++m) {
                 const SbrTexture& t = d.tex[m];
                 if (t.addr == 0 || t.width == 0 || t.height == 0) continue;
@@ -860,13 +893,24 @@ float sbr_scene_render(double now_seconds, const float proj[16]) {
             lucent::info("tev", "drawable {} verts={} numStages={} ras[{:.3f} {:.3f} {:.3f} a{:.3f}]",
                          traced, g_out.size(), d.tev.numStages, in.ras[0], in.ras[1], in.ras[2],
                          in.ras[3]);
-            {   // WHICH channel each stage reads as RASC. The shader ignores this selector and
-                // always feeds colour channel 0, so a stage asking for channel 1 — or for the
-                // constant ZERO (hw value 7) — silently gets channel 0 instead.
+            {   // WHICH channel each stage reads as RASC, and through WHICH swap row. The GPU
+                // shader still ignores the selector and feeds colour channel 0; the evaluator
+                // above honours both, so a divergence between this trace and the frame now points
+                // at the shader, not the reference.
                 lucent::Line rl;
-                rl.add("  rasChannel per stage:");
-                for (unsigned st = 0; st < d.tev.numStages && st < 16; ++st)
-                    rl.add(" s{}={}", st, d.tev.stage[st].rasChannel);
+                rl.add("  ras per stage:");
+                for (unsigned st = 0; st < d.tev.numStages && st < 16; ++st) {
+                    const SbrTevStage& s = d.tev.stage[st];
+                    const uint8_t* sw = d.tev.swapTable[s.swapRas & 3];
+                    static const char comp[4] = {'R', 'G', 'B', 'A'};
+                    rl.add(" s{}=ch{}/{}{}{}{}", st, s.rasChannel, comp[sw[0] & 3], comp[sw[1] & 3],
+                           comp[sw[2] & 3], comp[sw[3] & 3]);
+                }
+                rl.flush(lucent::Level::Info, "tev");
+                rl.add("  ras1 (channel 1) at vertex0 = [{:.3f} {:.3f} {:.3f} a{:.3f}]; "
+                       "chan0 luma over {} verts: mean {:.3f} max {:.3f}",
+                       in.ras1[0], in.ras1[1], in.ras1[2], in.ras1[3], g_out.size(), ras0Mean,
+                       ras0Max);
                 rl.flush(lucent::Level::Info, "tev");
             }
             for (unsigned m = 0; m < 4; ++m)

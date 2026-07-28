@@ -780,3 +780,83 @@ the trace shows channel 1 ALSO evaluating to black for those materials: lighting
 the game configures channel 1 through a path this parser misses, or `numChans`/the channel registers
 are being read for the wrong channel. **Do not implement channel 1 as a fix until that is answered**
 — the first attempt swapped a black scene for a washed one, which is not progress.
+
+## 2026-07-28 (cont.) — channel 1 answered by measurement: the state is IDENTICAL to aurora's, and the real divergence was the TEV register R/A decode
+
+The open question above ("does the game configure channel 1 through a path this parser misses?")
+is now MEASURED, and the answer is NO. The per-draw state oracle was extended to compare the whole
+pixel-deciding state block against aurora at every draw: all four channels' chanctrl (matSrc,
+lighting enable, ambSrc, diffuseFn, attnFn, light mask), the ambient/material colour registers,
+numChans, every stage's RAS channel selector, the full colour and alpha combiner words, the konst
+selectors, the konst registers, and the TEV registers (`SBR_STATE_DIFF`, same pairing by stream
+offset). Result over ~29,400 draws per frame, repeated across frames:
+
+```
+pix state: 44 of 29,367 draws disagree — numChans 0, chanctrl/amb/mat 0, ras-sel 0,
+           combiner 0, ksel 0, konst 0, tevreg 44   (the 44 are the known bind-lag draws)
+capture seam: 0 of ~900 disagree (0 on the pixel-state block)
+```
+
+**Channel 1 is not misparsed, not mis-slotted, and not configured through a hidden path.** The
+game really does run it with lighting enabled, an empty light mask, ambient 0 and material 1 —
+which evaluates to RGB black on aurora exactly as it does here (aurora's `lighting_func` with an
+empty mask is `mat * clamp(amb)` = 0). Two further measurements close the framing:
+
+- `SB_FORCE_RAS=1` (aurora renders its own rast0): the ENTIRE 3D scene is black — only the HUD,
+  which uses vertex colours, is coloured. Aurora's brightness does not come from the rasterised
+  channels at all; it comes through the texture/konst/register terms of the combiner.
+- The "black surfaces" tev traces were partly an instrument artefact: the trace evaluated ONE
+  vertex (vertex 0), which happened to be back-facing. Channel 0 luma measured over the WHOLE
+  drawable is mean 0.2-0.5, max 1.0 — those near-terrain materials are not black in the frame.
+
+### The real, verified fix: TEV/KONST register RA writes had R and A SWAPPED
+
+Cross-checking the combiner state for the oracle found it: BP 0xE0..0xE7 even (RA) writes carry
+**R in bits 0..10 and A in bits 12..22** (`GXSetTevColor`, `GXSetTevColorS10`, `GXSetTevKColor` in
+decomp/sms GXTev.c; aurora reads the same way). This parser read them REVERSED, so every TEV
+register and every konst carried its alpha in red and its red in alpha — feeding the shader's
+konst and register-init uniforms wrong for every material.
+
+Fix + re-measure. **CORRECTED BY THE OPERATOR: this fix does NOT move the score.** The "29.0 ->
+32.0" first reported here compared the OLD number at `mean over 40` against the NEW one at `mean
+over 63`, and this file already lists that as a dead end — the mean drifts upward as the camera
+settles, and only equal N is a comparison. Measured on one post-fix run: **28.9% at N=40, 31.9% at
+N=63, 32.9% at N=80**, against a pre-fix baseline of 29.0% at N=40. At equal N the change is noise
+(+0.719 -> +0.717), and the frame is visually indistinguishable.
+
+That does not make the fix wrong — R and A really were swapped, verified independently against
+`GXSetTevColor` — it makes it a CORRECTNESS fix with no measurable effect on this scene, which is
+what it should be recorded as. The dumped frame remains: terrain, tower, sky,
+sea, awnings all lit and textured. This also retro-explains part of the washed look when the
+channel-1 wiring was tried on top of the swapped registers.
+
+### Landed alongside (reference + parser, all SDK-derived and unit-tested)
+
+- **TEV swap tables and swap-mode selectors** parsed (`TEV_KSEL` bits 0..3, alpha-combiner word
+  bits 0..3) and honoured in `tev_eval`, with tests (`test_ras_select_and_swap`). The plaza
+  materials measured so far use identity rows, so this is inert there, but a swap row of A,A,A,A
+  is how GX reads a channel's alpha as RGB grey — support it before wiring the RAS selector.
+- **`tev_eval` honours the per-stage RAS channel selector** (0/2/4 → channel 0, 1/3 → channel 1,
+  7 → constant zero) — the GPU shader still does not (unchanged pending the one-change-at-a-time
+  wiring plan above).
+- **numChans also latched from GENMODE bits 4..6** (GDSetGenMode2 writes both; aurora reads
+  GENMODE).
+- Trace upgrades: per-stage argument decode (selector names + resolved values + bias/sub/scale),
+  chan0 luma over the whole drawable, channel-1 value at the traced vertex, swap-row display.
+- `texwatch`: the six zero-decoding texture buffers are sampled every present from boot.
+  Measured: `0x80da3860` becomes non-zero at present 9 (dynamic textures DO get written);
+  `0x80cfafa0` is zero from present 0 to end of run — aurora uploads the same zeros (it caches on
+  first draw, dataVersion 0), so the earlier idea that aurora renders it from real content is dead.
+
+### The remaining named-units defect, sharply narrowed
+
+With `SBR_TEXMAP_UNITS=0xF` the distant scenery still goes black (26.3 vs 32.0 pinned). Now ruled
+out by measurement: state divergence (0 disagreements), the zero guest memory as such (aurora
+samples the same zeros), stage 0's alpha compare (`SBR_TEV_VIZ=2`: sampled alpha is white across
+the whole frame including distant geometry), and the port's CMPR decode of zero blocks (alpha
+255, same as aurora's). The sky that blacks under named units samples a NON-zero mid-grey I4 on
+unit 1 — so the defect is not confined to the six zero textures at all. What actually differs
+between pinned and named for those materials is only the texel fed to stages naming units 1-3;
+the hand-evaluated combiner with those texels goes dim, not black. Next instrument: trace a
+DISTANT drawable specifically (the black-trace self-selection keeps picking near back-facing
+vertices) and A/B the per-stage texel between slot-m and slot-0 routing for one such draw.

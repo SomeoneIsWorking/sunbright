@@ -218,7 +218,30 @@ void present_and_reopen(bool& frameActive) {
     if (frameActive != wasActive) lucent::warn("frame", "aurora_begin_frame -> {}", frameActive);
 }
 
+// WATCH the six known zero-decoding texture buffers, every present from boot. The question this
+// answers: were they EVER non-zero? Aurora caches a texture at its FIRST draw and the port emits
+// dataVersion 0 (never re-uploads), so if these buffers held content early and were zeroed later,
+// aurora keeps rendering the real image from its cache while this port's honest re-decode sees
+// zeros — which would explain "same binding, black here, bright there" with no state divergence.
+static void texwatch_frame() {
+    static const u32 kWatch[] = {0x80a9bd20, 0x80abcc40, 0x80cf0ac0, 0x80cfafa0,
+                                 0x80da3860, 0x80fea480};
+    static u8 was[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};   // 0xFF = not yet sampled
+    for (int t = 0; t < 6; ++t) {
+        if (!sb_ram_fast(kWatch[t])) continue;
+        u32 sum = 0;
+        for (u32 o = 0; o < 512; o += 4) sum |= sb_r32(kWatch[t] + o);
+        const u8 now = sum != 0 ? 1 : 0;
+        if (now != was[t]) {
+            lucent::info("texwatch", "0x{:08x} {} at present {}", kWatch[t],
+                         now ? "NON-ZERO" : "zero", g_present_count);
+            was[t] = now;
+        }
+    }
+}
+
 void video_wait_for_retrace(CPUState& cpu) {
+    texwatch_frame();
     report_app_state();
     report_mario_pos();
     // The probe's handlers run HERE, on the game thread at the frame boundary, which is the only

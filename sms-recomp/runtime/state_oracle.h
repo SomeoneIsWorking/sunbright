@@ -30,7 +30,43 @@ struct SbrDrawState {
     // Per unit: the texture identity. On this side that is the TX_SETIMAGE3 address; on aurora's
     // it is texObjId, which this port sets to exactly that address — so they compare directly.
     uint32_t unitId[8] = {};
+
+    // ---- The rest of the pixel-deciding state, beyond texture identity. The stage/texture block
+    // above was proven to agree at 99.55% of draws, yet the frames differ — so the disagreement,
+    // if it is in the STATE at all, has to be in one of these fields. Everything is kept in raw
+    // hardware encoding so both sides fill it without interpretation.
+    //
+    // Colour channels, one packed word per channel (colour0, colour1, alpha0, alpha1):
+    //   bit0 matSrcVtx | bit1 lightingEnabled | bit2 ambSrcVtx | bits3-4 diffuseFn |
+    //   bits5-6 attnFn (0 none, 1 spec, 2 spot) | bits8-15 lightMask
+    uint16_t chanCtrl[4] = {};
+    uint32_t ambColor[2] = {};   // RGBA8 (XF 0x100A/0x100B); the alpha channels share the register
+    uint32_t matColor[2] = {};   // RGBA8 (XF 0x100C/0x100D)
+    uint8_t  numChans = 0;
+    // Per stage: the rasterised channel it reads, CANONICALISED to {0=colour0a0, 1=colour1a1,
+    // 5=alphabump, 6=alphabumpN, 7=zero} — the hardware raw values 2/3/4 alias 0/1 and aurora
+    // stores only the canonical form, so both sides canonicalise before comparing.
+    uint8_t  rasChannel[16] = {};
+    // Per stage: the raw 24-bit combiner words (colour; alpha with the swap-select bits 0-3
+    // zeroed, this port does not model swap tables) and the konst selectors.
+    uint32_t cWord[16] = {};
+    uint32_t aWord[16] = {};
+    uint16_t kSel[16] = {};      // kC | kA<<8
+    uint32_t konst[4] = {};      // RGBA8
+    uint64_t tevReg[4] = {};     // 4 x u16-wrapped signed S10 raw (r,g,b,a high..low)
+    // Texgen types (raw XF: 2 = SRTG colour0, 3 = SRTG colour1) — filled only on this port's side
+    // and NOT compared; used to know which colour channels a draw actually consumes.
+    uint8_t  tgType[8] = {};
 };
+
+// Forward decls for the shared filler below.
+struct SbrTevState;
+struct SbrXfState;
+
+// Fill the stage table and the pixel-state block from this port's parsed state. Shared by the
+// FIFO-draw record and the capture seam so the two cannot pack the same state differently.
+// pos/unitId stay with the caller.
+void sbr_draw_state_fill(SbrDrawState& s, const SbrTevState& tev, const SbrXfState& xf);
 
 extern "C" bool sbr_state_diff_enabled();
 

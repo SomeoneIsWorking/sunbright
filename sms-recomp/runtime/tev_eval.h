@@ -31,8 +31,12 @@
 struct SbrTevInputs {
     // Sampled texel per texture unit, RGBA in 0..1. Only the units stages actually name are read.
     float tex[8][4]{};
-    // The rasterised colour channel (RASC/RASA).
+    // The rasterised colour channels: ras is COLOR0A0, ras1 is COLOR1A1. Each stage selects by its
+    // RAS1_TREF channel field (raw 7 is the constant ZERO), then reads through its swap-table row —
+    // both per the hardware, and both previously ignored, which is what made "channel 1 is black in
+    // RGB" indistinguishable from "the surface is black" (the swap row can read its ALPHA).
     float ras[4]{1, 1, 1, 1};
+    float ras1[4]{1, 1, 1, 1};
 };
 
 // One stage's working, for the trace. Values are pre-clamp so a stage that saturated is visible.
@@ -44,6 +48,8 @@ struct SbrTevStageTrace {
     float konst[4]{};
     float cArg[4][3]{};     // a, b, c, d as resolved colour arguments
     float aArg[4]{};        // a, b, c, d as resolved alpha arguments
+    unsigned cSel[4]{}, aSel[4]{};   // the raw selectors those arguments came from
+    unsigned cBias = 0, cSub = 0, cScale = 0;
     bool  cCompare = false, aCompare = false;
     float cOut[3]{}, aOut = 0;
     unsigned cDest = 0, aDest = 0;

@@ -263,13 +263,7 @@ void ov_shape_draw(CPUState& cpu) {
                         // measurement rather than an assumption. See state_oracle.h.
                         if (sbr_state_diff_enabled()) {
                             SbrDrawState cs{};
-                            cs.numStages  = (uint8_t)dr.tev.numStages;
-                            cs.numTexGens = (uint8_t)dr.tev.numTexGens;
-                            for (unsigned k = 0; k < 16; ++k) {
-                                cs.texmap[k]    = dr.tev.stage[k].texmap;
-                                cs.texcoord[k]  = dr.tev.stage[k].texcoord;
-                                cs.texEnable[k] = dr.tev.stage[k].texEnable;
-                            }
+                            sbr_draw_state_fill(cs, dr.tev, dr.xf);
                             for (unsigned m = 0; m < 4; ++m)
                                 cs.unitId[m] = dr.tex[m].addr & 0x01FFFFFFu;
                             sbr_state_oracle_capture(sbr_gxfifo_stream_pos(), cs);

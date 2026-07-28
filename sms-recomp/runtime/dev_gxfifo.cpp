@@ -662,6 +662,11 @@ size_t parse(const u8* p, size_t n, int depth) {
             if (reg == 0x00) {
                 g_tev.numTexGens  = val & 0xF;
                 g_tev.numStages   = ((val >> 10) & 0xF) + 1;
+                // numChans ALSO lives in GENMODE (bits 4..6). GDSetGenMode2 writes both this and
+                // XF 0x1009, but GDSetCullMode's masked GENMODE writes and any path that touches
+                // GENMODE alone update only here — aurora reads it from GENMODE, so this parser
+                // does too and the XF write is the redundant twin.
+                g_xf.numChans     = (val >> 4) & 7;
             } else if (reg >= 0x28 && reg <= 0x2F) {
                 g_tev.trefSeq[reg - 0x28] = g_bindSeq;
                 const unsigned s0 = (unsigned)(reg - 0x28) * 2;
@@ -689,6 +694,9 @@ size_t parse(const u8* p, size_t n, int depth) {
                     t.aBias = (val >> 16) & 3; t.aSub = (val >> 18) & 1;
                     t.aClamp = (val >> 19) & 1; t.aScale = (val >> 20) & 3;
                     t.aDest = (val >> 22) & 3;
+                    // Swap-mode selectors ride the alpha combiner word (GXSetTevSwapMode).
+                    t.swapRas = val & 3;
+                    t.swapTex = (val >> 2) & 3;
                 }
             } else if (reg >= 0xE0 && reg <= 0xE7) {
                 // 0xE0..0xE7 carry BOTH the TEV colour registers and the KONST registers; bit 23
@@ -704,8 +712,12 @@ size_t parse(const u8* p, size_t n, int depth) {
                 auto s10 = [](u32 v) { return (float)(int32_t)((v & 0x7FF) << 21 >> 21) / 255.0f; };
                 float (*dst)[4] = isKonst ? g_tev.konstReg : g_tev.reg;
                 if (!high) {
-                    dst[idx][3] = s10(val & 0x7FF);          // A
-                    dst[idx][0] = s10((val >> 12) & 0x7FF);  // R
+                    // R sits in bits 0..10 and A in bits 12..22 — GXSetTevColor[S10]/GXSetTevKColor
+                    // (decomp/sms GXTev.c) pack r at bit 0 and a at bit 12, and aurora reads the
+                    // same way. This parser had the two SWAPPED, so every TEV register and every
+                    // KONST carried its alpha in the red component and vice versa.
+                    dst[idx][0] = s10(val & 0x7FF);          // R
+                    dst[idx][3] = s10((val >> 12) & 0x7FF);  // A
                 } else {
                     dst[idx][2] = s10(val & 0x7FF);          // B
                     dst[idx][1] = s10((val >> 12) & 0x7FF);  // G
@@ -725,6 +737,16 @@ size_t parse(const u8* p, size_t n, int depth) {
                 g_tev.stage[s0].kA     = (val >> 9) & 0x1F;
                 g_tev.stage[s0 + 1].kC = (val >> 14) & 0x1F;
                 g_tev.stage[s0 + 1].kA = (val >> 19) & 0x1F;
+                // Bits 0..3 of the same registers carry the swap TABLE, two components per write
+                // (GXSetTevSwapModeTable): even register red/green, odd register blue/alpha.
+                const unsigned tbl = (unsigned)(reg - 0xF6) / 2;
+                if (((reg - 0xF6) & 1) == 0) {
+                    g_tev.swapTable[tbl][0] = (uint8_t)(val & 3);
+                    g_tev.swapTable[tbl][1] = (uint8_t)((val >> 2) & 3);
+                } else {
+                    g_tev.swapTable[tbl][2] = (uint8_t)(val & 3);
+                    g_tev.swapTable[tbl][3] = (uint8_t)((val >> 2) & 3);
+                }
             }
 
             // TEXTURE BINDING. J3D bakes its material texture loads into per-material display
@@ -855,14 +877,8 @@ size_t parse(const u8* p, size_t n, int depth) {
             // its own from the same bytes a moment later. See state_oracle.h.
             if (sbr_state_diff_enabled()) {
                 SbrDrawState st{};
-                st.pos        = (uint32_t)g_out.size();   // where this draw's command byte lands
-                st.numStages  = (uint8_t)g_tev.numStages;
-                st.numTexGens = (uint8_t)g_tev.numTexGens;
-                for (unsigned k = 0; k < 16; ++k) {
-                    st.texmap[k]    = g_tev.stage[k].texmap;
-                    st.texcoord[k]  = g_tev.stage[k].texcoord;
-                    st.texEnable[k] = g_tev.stage[k].texEnable;
-                }
+                st.pos = (uint32_t)g_out.size();   // where this draw's command byte lands
+                sbr_draw_state_fill(st, g_tev, g_xf);
                 for (unsigned m = 0; m < 8; ++m) st.unitId[m] = g_fifoTex[m].addr & 0x01FFFFFFu;
                 sbr_state_oracle_mine(st);
             }

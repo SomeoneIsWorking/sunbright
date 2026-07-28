@@ -64,6 +64,11 @@ struct SbrTevStage {
     uint8_t aA = 0, aB = 0, aC = 0, aD = 0;      // GXTevAlphaArg
     uint8_t aBias = 0, aSub = 0, aClamp = 1, aScale = 0, aDest = 0;
     uint8_t kC = 0, kA = 0;                       // konst selectors
+    // TEV swap-mode selectors (TEV_ALPHA_ENV bits 0..1 / 2..3): which SbrTevState::swapTable row
+    // remaps the rasterised colour and the texel before this stage reads them. This is how a
+    // material reads a channel's ALPHA as an RGB grey — e.g. the plaza terrain's last stage reads
+    // RASC through a swap row of A,A,A,A, so ignoring swap turned a white 1.0 into black.
+    uint8_t swapRas = 0, swapTex = 0;
 };
 
 struct SbrTevState {
@@ -79,6 +84,11 @@ struct SbrTevState {
     uint8_t alphaOp0 = 7, alphaOp1 = 7;   // GXCompare, 7 = ALWAYS (the power-on state)
     uint8_t alphaRef0 = 0, alphaRef1 = 0;
     uint8_t alphaLogic = 0;               // 0 AND, 1 OR, 2 XOR, 3 XNOR
+    // The four TEV swap tables (TEV_KSEL bits 0..3, two components per register — the same
+    // registers that carry the konst selectors). swapTable[t][outComp] = source channel (0 R, 1 G,
+    // 2 B, 3 A): output component c reads source channel swapTable[t][c]. Power-on rows are
+    // identity; GXInit's conventional rows 1..3 (RRRA/GGGA/BBBA) arrive through the stream.
+    uint8_t swapTable[4][4] = {{0, 1, 2, 3}, {0, 1, 2, 3}, {0, 1, 2, 3}, {0, 1, 2, 3}};
     // When each RAS1_TREF register (0x28+r, two stages each) was last written, on the same clock
     // as SbrTexture::bindSeq. stage[] is global and persistent, so if numStages exceeds what the
     // material actually set, the loop reads per-stage texmap fields left by an EARLIER material.

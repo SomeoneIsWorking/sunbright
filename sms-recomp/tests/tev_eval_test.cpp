@@ -250,6 +250,56 @@ void test_konst_ramp() {
     }
 }
 
+// ---------------------------------------------------------------------------------------------
+// RAS channel select + swap tables. From GXSetTevOrder/RAS1_TREF (channel field), GXSetTevSwapMode
+// (selectors in the alpha combiner word, bits 0..1 ras / 2..3 tex) and GXSetTevSwapModeTable
+// (table rows in the KSEL registers): the stage reads the CHANNEL it names, remapped so that
+// output component c takes source channel table[row][c]. A row of A,A,A,A therefore presents the
+// channel's alpha as an RGB grey — the idiom the plaza terrain uses on colour channel 1.
+void test_ras_select_and_swap() {
+    SbrTevState t = neutral();
+    SbrTevInputs in{};
+    in.ras[0] = 0.25f; in.ras[1] = 0.50f; in.ras[2] = 0.75f; in.ras[3] = 0.125f;   // channel 0
+    in.ras1[0] = in.ras1[1] = in.ras1[2] = 0.0f; in.ras1[3] = 1.0f;                // channel 1
+
+    float out[4];
+
+    // Stage names channel 0, identity swap: RASC passes through.
+    t.stage[0].cD = 10;   // GX_CC_RASC
+    sbr_tev_evaluate(t, in, out, nullptr, nullptr);
+    check_near(out[0], 0.25f, "ras: channel 0 identity R");
+    check_near(out[2], 0.75f, "ras: channel 0 identity B");
+
+    // Same stage through swap row 1 = A,A,A,A: every colour component reads channel 0's alpha.
+    t.stage[0].swapRas = 1;
+    t.swapTable[1][0] = t.swapTable[1][1] = t.swapTable[1][2] = t.swapTable[1][3] = 3;
+    sbr_tev_evaluate(t, in, out, nullptr, nullptr);
+    check_near(out[0], 0.125f, "ras: swap AAAA reads alpha into R");
+    check_near(out[1], 0.125f, "ras: swap AAAA reads alpha into G");
+
+    // Channel 1 with the same AAAA row: black RGB, but the ALPHA is 1.0 — so RASC is WHITE. This
+    // is the exact configuration that renders the plaza terrain bright from a black channel.
+    t.stage[0].rasChannel = 1;
+    sbr_tev_evaluate(t, in, out, nullptr, nullptr);
+    check_near(out[0], 1.0f, "ras: channel 1 AAAA is its alpha, not its black RGB");
+
+    // Channel 7 is the constant ZERO regardless of swap.
+    t.stage[0].rasChannel = 7;
+    sbr_tev_evaluate(t, in, out, nullptr, nullptr);
+    check_near(out[0], 0.0f, "ras: channel 7 is the constant zero");
+
+    // TEX swap: an I-format-style texel read through row 2 = R,G,A,A puts texel alpha in B and A.
+    t = neutral();
+    t.stage[0].texEnable = 1;
+    t.stage[0].cD = 8;   // GX_CC_TEXC
+    t.stage[0].swapTex = 2;
+    t.swapTable[2][0] = 0; t.swapTable[2][1] = 1; t.swapTable[2][2] = 3; t.swapTable[2][3] = 3;
+    in.tex[0][0] = 0.1f; in.tex[0][1] = 0.2f; in.tex[0][2] = 0.3f; in.tex[0][3] = 0.9f;
+    sbr_tev_evaluate(t, in, out, nullptr, nullptr);
+    check_near(out[0], 0.1f, "tex swap: R stays R");
+    check_near(out[2], 0.9f, "tex swap: B reads the texel's alpha");
+}
+
 } // namespace
 
 int main() {
@@ -259,6 +309,7 @@ int main() {
     test_texture_disabled_reads_zero();
     test_alpha_test();
     test_konst_ramp();
+    test_ras_select_and_swap();
     if (g_failures == 0) {
         std::printf("tev_eval: all checks passed\n");
         return 0;
