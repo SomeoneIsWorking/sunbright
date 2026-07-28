@@ -18,10 +18,17 @@ layout(location = 0) out vec4 o_col;
 
 // One sampler per GX texture unit. A stage names BOTH the map it samples and the coordinate it
 // samples with, and they are independent selectors — most materials here use more than one of each.
+// EIGHT units, not four: RAS1_TREF's texmap field is three bits, and ~24% of this scene's enabled
+// stages name maps 4-7 (measured, gxfifo "texmap use by ENABLED stages"). Routing those through
+// `texmap & 3` silently sampled a different texture and is what blacked the distant scenery.
 layout(set = 2, binding = 0) uniform sampler2D u_tex0;
 layout(set = 2, binding = 1) uniform sampler2D u_tex1;
 layout(set = 2, binding = 2) uniform sampler2D u_tex2;
 layout(set = 2, binding = 3) uniform sampler2D u_tex3;
+layout(set = 2, binding = 4) uniform sampler2D u_tex4;
+layout(set = 2, binding = 5) uniform sampler2D u_tex5;
+layout(set = 2, binding = 6) uniform sampler2D u_tex6;
+layout(set = 2, binding = 7) uniform sampler2D u_tex7;
 
 // std140: each stage packs its selectors as integers. 16 stages is GX's maximum.
 layout(set = 3, binding = 0) uniform TevBlock {
@@ -33,7 +40,7 @@ layout(set = 3, binding = 0) uniform TevBlock {
     vec4  konst[16];     // resolved konst colour for the stage (rgb) + konst alpha (a)
     vec4  regInit[4];    // prev, c0, c1, c2 as the material set them
     ivec4 control;       // x = numStages, y = alphaOp0, z = alphaOp1, w = alphaLogic
-    vec4  alphaRef;      // x = ref0, y = ref1 (0..255)
+    vec4  alphaRef;      // x = ref0, y = ref1 (0..255), z = SBR_TEV_VIZ mode, w = ablation id
 } tev;
 
 // GXCompare against an 8-bit alpha. The comparison is done on the QUANTISED value because that is
@@ -125,11 +132,15 @@ bool cmp1(bool isEq, float a, float b) {
 
 // Sample every unit up front. The alternative — indexing inside the stage loop — puts an implicit
 // LOD fetch under control flow that the compiler cannot prove uniform, which is undefined in GLSL.
-// Four fetches is the honest cost of doing it correctly; GX itself has four units live.
+// Eight fetches is the honest cost of doing it correctly; GX has eight texmaps.
 vec4 sampleUnit(int unit, vec2 uv) {
     if (unit == 1) return texture(u_tex1, uv);
     if (unit == 2) return texture(u_tex2, uv);
     if (unit == 3) return texture(u_tex3, uv);
+    if (unit == 4) return texture(u_tex4, uv);
+    if (unit == 5) return texture(u_tex5, uv);
+    if (unit == 6) return texture(u_tex6, uv);
+    if (unit == 7) return texture(u_tex7, uv);
     return texture(u_tex0, uv);
 }
 
@@ -158,15 +169,28 @@ void main() {
     g_reg[3] = tev.regInit[3];
 
     int n = clamp(tev.control.x, 1, 16);
+    // OPERATION ABLATION. 0 is the real pipeline; any other value replaces exactly one GX
+    // operation with a neutral reference so the attribution table can name it. Kept inside the
+    // stage loop because that is where each operation actually happens.
+    int abl = int(tev.alphaRef.w + 0.5);
+    vec4 t0 = vec4(1.0); vec4 ras0 = vec4(1.0);
     for (int i = 0; i < n; ++i) {
+        // Three bits of texmap, not two: GX has eight texture units and ~24% of this scene's
+        // enabled stages name maps 4-7. Masking to 3 silently sampled a different texture.
+        int unit = tev.dest[i].w & 7;
+        if (abl == 7) unit = 0;
+        vec2 uv = coordOf((tev.dest[i].w >> 8) & 3);
+        if (abl == 1) uv = v_uv01.xy;
         // A stage with its texture disabled must not read the texture: GX feeds it nothing, and
         // sampling anyway would tint untextured stages with whatever was last bound.
-        vec4 t = (tev.dest[i].z != 0)
-                     ? sampleUnit(tev.dest[i].w & 3, coordOf((tev.dest[i].w >> 8) & 3))
-                     : vec4(0.0);
+        vec4 t = (tev.dest[i].z != 0) ? sampleUnit(unit, uv) : vec4(0.0);
+        if (abl == 2 && tev.dest[i].z != 0) t = vec4(1.0);
         vec4 k = tev.konst[i];
+        if (abl == 5) k = vec4(1.0);
         // Per STAGE, not per draw: two stages of one material legitimately read different channels.
         vec4 ras = rasOf((tev.dest[i].w >> 16) & 7);
+        if (abl == 3) ras = v_col;
+        if (i == 0) { t0 = t; ras0 = ras; }
 
         vec3 ca = colorArg(tev.cSel[i].x, t, ras, k);
         vec3 cb = colorArg(tev.cSel[i].y, t, ras, k);
@@ -237,11 +261,20 @@ void main() {
             int un = tev.dest[0].w & 3;
             vec4 sl = un == 1 ? textureLod(u_tex1, uv0, 0.0)
                     : un == 2 ? textureLod(u_tex2, uv0, 0.0)
-                    : un == 3 ? textureLod(u_tex3, uv0, 0.0) : textureLod(u_tex0, uv0, 0.0);
+                    : un == 3 ? textureLod(u_tex3, uv0, 0.0)
+                    : un == 4 ? textureLod(u_tex4, uv0, 0.0)
+                    : un == 5 ? textureLod(u_tex5, uv0, 0.0)
+                    : un == 6 ? textureLod(u_tex6, uv0, 0.0)
+                    : un == 7 ? textureLod(u_tex7, uv0, 0.0) : textureLod(u_tex0, uv0, 0.0);
             o_col = vec4(sl.rgb, 1.0); return;
         }
-        else { o_col = vec4(sampleUnit(tev.dest[0].w & 3, vec2(0.5)).rgb, 1.0); return; }
+        else { o_col = vec4(sampleUnit(tev.dest[0].w & 7, vec2(0.5)).rgb, 1.0); return; }
     }
+
+    // Ablate the COMBINER CHAIN: the simplest defensible reference for "what GX would roughly do"
+    // is stage 0's texel modulated by its rasterised colour. If this scores better than the real
+    // chain, the chain is where the port diverges.
+    if (abl == 4) outc = t0 * ras0;
 
     int a8 = int(outc.a * 255.0 + 0.5);
     bool c0 = alphaCompare(tev.control.y, a8, int(tev.alphaRef.x));
@@ -253,6 +286,7 @@ void main() {
     case 2:  pass = c0 != c1; break;
     default: pass = c0 == c1; break;
     }
+    if (abl == 6) pass = true;   // ablate the alpha test itself
     if (!pass) discard;
 
     o_col = outc;

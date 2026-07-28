@@ -905,3 +905,120 @@ to find it were all aimed at semantics.
 describing a struct in another is a coupling with no compiler check: any field inserted anywhere but
 the end silently repoints every attribute after it. Either append, or derive the offsets with
 `offsetof` so the two cannot disagree. The struct now says so at the field.
+
+## 2026-07-28 (cont.) — the named-units residual attributed END TO END: it is exactly the zero-buffer draws, and nothing else
+
+Three questions closed by measurement (agent session, operator-directed):
+
+**1. `alpha = intensity` for I4/I8 is CORRECT.** Aurora's `TextureDecoderI4/I8`
+(`extern/aurora/lib/gfx/texture_convert.cpp:207`) sets `target.a = intensity`, exactly as our
+decoder does and as GX hardware reads I formats (R=G=B=A=I). Not a bug.
+
+**2. The stale-cache hypothesis is DEAD.** A full-cache scan (now part of
+`sbr_render_recheck_black`) re-decodes every cached texture from guest memory each report:
+**0 of 192 decodable cached textures differ from their upload**, every frame. The GPU samples
+exactly what the CPU trace decodes.
+
+**3. `0x80cfafa0` is NOT an EFB copy destination**, on either side. The port's texture-copy dest
+log (which is the SAME data aurora's `copyTextures` is built from — the port emits
+`GX_AURORA_LOAD_COPY_DST`) lists only `0x803f4440, 0x80d0f9e0, 0x80fea480, 0x810a5440`. Aurora
+resolves `0x80cfafa0` as a static texture from the same zero bytes and decodes the same
+black-opaque texels. (Aurora services real copy dests GPU-side without ever writing guest memory
+— `g_gxState.copyTextures` keyed by the dest pointer — which is why `0x80fea480` being zero in
+RAM proves nothing about aurora's picture.)
+
+**The attribution run that settles it: `SBR_TEXMAP_SKIPZERO=1`** (diagnostic; honour the named
+unit EXCEPT when the texture bound there decoded to (near-)black — those stages fall back to
+unit 0):
+
+| config | edgeIoU / lumaCorr | frame |
+|---|---|---|
+| pinned (`0x1`) | 31.9% / +0.747 (N=63) | complete |
+| named (`0xF`) | 25.9% / +0.650 (N=57) | distant scenery black |
+| **named + SKIPZERO** | **32.1% / +0.748 (N=59)** | **complete, distant scenery TEXTURED — best frame yet** |
+
+So the named routing is CORRECT for every stage except those sampling the zero buffers; the whole
+named-vs-pinned deficit is those draws. Supporting instruments: `SBR_TEV_VIZ=4` shows the black
+region's top draws sample unit 1 at stage 0; `SBR_BIND_LOG` shows every large distant batch (and a
+huge horizon strip, plus a screen-space overlay quad) carrying `0x80cfafa0` (decoded mean 0.0) on
+unit 1 — the strip carries it on unit 0 AND 1. `SBR_TEV_TRACE_ADDR=80cfafa0` (new filter) accounts
+the strip end to end: `final = TEX0 * RAS * TEX1` — black with zero texels, alpha 1, PASS.
+
+**What remains open — and it is a semantics question, not a routing one.** `texwatch` proves the
+game NEVER writes `0x80cfafa0` in a recomp run (zero from present 0; `0x80da3860` by contrast
+fills at present 9, so dynamic textures do get written). Aurora samples the same black-opaque
+texels for those draws and still shows no black — so in aurora those draws must be invisible or
+irrelevant (blend semantics, ordering, or occlusion), while this port paints them. Two candidate
+next steps: (a) find the intended PRODUCER of `0x80cfafa0` (is a subsystem that fills it stubbed
+in the recomp? ARAM path?), and (b) A/B the BLEND/z state of the strip/overlay draws against
+aurora's — if aurora composites them to a no-op, the correct behaviour is not "sample something
+brighter" but "paint nothing", and SKIPZERO merely approximates that by accident. Until answered,
+SKIPZERO stays a labelled diagnostic, NOT a default.
+
+## 2026-07-29 — an operation-attribution instrument, and what it names
+
+The whole arc had been running the same loop: toggle an env, run, read one scalar, infer. That
+loop produced two confidently-wrong findings already, and it cannot answer "which operation is
+wrong" even in principle — a whole-frame score has no per-operation term.
+
+So the score got a per-operation decomposition (`SBR_ABLATE=1`, `render_compare.h`). Each variant
+replaces exactly ONE GX operation with a neutral reference and is scored against **the same
+aurora frame** as the baseline, inside one run. That kills the drift trap that cost this arc a
+wrong claim: the mean moves ~4 points with frame COUNT alone, so two runs of different length were
+never comparable, and now equal-N holds by construction.
+
+**The instrument caught itself lying three times before it said anything true**, which is the only
+reason its output is worth anything:
+
+1. Variants accumulated across all 60 presents between aurora callbacks and were all scored
+   against one frame — n=4544 against a baseline n=77.
+2. `control:no-op` — an ablation the shader has NO branch for, which must therefore reproduce the
+   baseline exactly — scored -11.8. That is the check that exists precisely to catch a broken
+   sweep, and it earned its keep: the ablation id was written to `alphaRef.z`, which is already the
+   `SBR_TEV_VIZ` selector, so every variant silently became a visualisation mode that returns
+   early. Moved to `alphaRef.w`.
+3. The first "validation" run compared frames from the LOADING SCREEN, where every ablation of an
+   empty frame is trivially identical — a degenerate input reading as "the sweep works".
+
+Validated state: `control:no-op` is checksum-identical to the baseline and scores +0.0; every real
+ablation has a distinct checksum. Only then is the table below meaningful.
+
+```
+baseline edgeIoU 28.3% lumaCorr +0.676 over 85 frames
+  +5.9  texmap->unit0       edgeIoU 34.2%  lumaCorr +0.766
+  +0.0  control:no-op       edgeIoU 28.3%  lumaCorr +0.676   <- instrument control
+  -0.0  texgen->raw uv0     edgeIoU 28.2%
+  -0.1  tev->passthrough    edgeIoU 28.2%
+  -0.1  alphatest->pass     edgeIoU 28.2%
+  -0.1  ras->channel0       edgeIoU 28.1%
+  -0.3  konst->one          edgeIoU 28.0%
+ -12.1  texfetch->white     edgeIoU 16.2%
+```
+
+**The wrong operation is per-stage texmap ROUTING — which texture is bound to each unit.** Nothing
+else is: texgen, the TEV combiner chain, the alpha test, ras-channel selection and konst are all
+within ±0.3 of baseline, so replacing them with a neutral reference neither helps nor hurts, which
+is what "already correct" looks like. `texfetch->white` at -12.1 only confirms textures carry real
+signal.
+
+### Correction to my own conclusion earlier in this session
+
+Measuring texmap USE (new `gxfifo` counters) showed maps 4-7 are bound as often as 1-3 and named by
+~1.94M enabled stages (~24% of all enabled stages), while the port captured only maps 0-3 and every
+consumer masked `texmap & 3`. That aliasing was real and is now fixed end to end (capture, scene,
+renderer, 8 samplers in the shader). But it was **NOT the residual**: with the validated instrument,
+routing to named units is still 5.9 points WORSE than pinning everything to unit 0. I had read an
+unvalidated pinned-vs-named pair as "the gap closed"; it had not.
+
+This leaves the Fable agent's conclusion standing — the deficit is the CONTENT bound on the upper
+units (the never-written zero buffers), not the routing arithmetic. `SBR_TEXMAP_SKIPZERO` remains a
+labelled diagnostic, not a default: it approximates the right picture by falling back to unit 0
+exactly where content is missing, which is a bandaid over an unanswered question (who should be
+producing those buffers).
+
+### Operator note
+
+Reproducing a plaza render needs ALL of `SBR_FASTBOOT=1 SBR_STAGE=1 SBR_SCENARIO=0 SBR_SDLGPU=1
+SBR_J3D_CAPTURE=1 SBR_TEX=1`. Plain `SBR_FASTBOOT` derives episode 5 from the save and renders
+nothing; without `SBR_J3D_CAPTURE` the scene has 0 drawables; without `SBR_TEX` the frame is
+untextured. Each of those cost a run this session.

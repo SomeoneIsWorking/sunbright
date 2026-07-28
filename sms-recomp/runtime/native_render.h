@@ -182,7 +182,7 @@ bool sbr_render_init(int w, int h);
 void sbr_render_begin(float r, float g, float b, float a);
 // Submit triangles under a given depth state. Consecutive submissions sharing a state are merged
 // into one draw; a change of state starts a new one.
-void sbr_render_tris(const SbrVertex* verts, int count, SbrDepthState depth, const SbrTexture tex[4],
+void sbr_render_tris(const SbrVertex* verts, int count, SbrDepthState depth, const SbrTexture tex[8],
                      const SbrTevState& tev);
 
 // Per-BP-register write counts, so the per-unit texture BIND RATE is measurable rather than
@@ -212,3 +212,10 @@ bool sbr_render_dump(const char* path);
 
 // Copy the last rendered frame into rgba (w*h*4, top-left origin). False on size mismatch / no device.
 bool sbr_render_readback(uint8_t* rgba, int w, int h);
+
+// ---- Operation attribution (see render_compare.h) ----
+// How many ablations exist, what each is called, and re-rendering the current frame with one of
+// them applied. The result replaces g_cpu, so sbr_render_readback returns the variant.
+int sbr_render_ablation_count();
+const char* sbr_render_ablation_name(int id);
+bool sbr_render_ablation_render(int id);

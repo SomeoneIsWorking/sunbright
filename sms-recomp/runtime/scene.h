@@ -36,7 +36,7 @@ struct SbrDrawable {
                          // frame mixes perspective (the world) and ortho (HUD, message box), and
                          // projecting a 2D element with the 3D matrix makes it cover the screen.
     uint8_t  is2d;       // that projection was an ortho
-    SbrTexture tex[4];   // TEXMAP0..3 as bound when this shape was drawn. A TEV stage names its own
+    SbrTexture tex[8];   // TEXMAP0..7 as bound when this shape was drawn. A TEV stage names its own
                          // texmap, and 72% of the plaza's drawables name one above 0 — binding only
                          // TEXMAP0 gave every one of those stages the wrong image.
     SbrTevState tev;     // the material's TEV configuration at that moment

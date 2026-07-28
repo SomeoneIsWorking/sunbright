@@ -10,6 +10,8 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <map>
+#include <string>
 #include <vector>
 
 namespace {
@@ -100,6 +102,47 @@ bool selftest() {
     return v == 1;
 }
 
+// ---- Operation attribution ----
+// Variants submitted for the CURRENT frame, scored against the same aurora frame as the baseline.
+// `seq` is the baseline this variant belongs to. Aurora's sink fires from its own end-of-frame,
+// which can land BETWEEN the baseline submit and the sweep — so position in the queue does not
+// establish which frame a variant came from, and scoring on position compared variants against
+// the NEXT aurora frame. That is what made the control:no-op ablation score -11.8 instead of 0.
+struct Variant { int id = 0; uint64_t seq = 0; std::string name; std::vector<uint8_t> rgba;
+                 int w = 0, h = 0; };
+std::vector<Variant> g_variants;
+struct VarAcc { std::string name; double iou = 0, corr = 0; long n = 0; };
+std::map<int, VarAcc> g_varAcc;
+uint64_t g_nativeSeq = 0;      // bumped per baseline submit; variants carry the value they saw
+long g_variantDropped = 0;     // variant sets that never met their baseline — reported, not hidden
+
+bool ablate() {
+    static int v = -1;
+    if (v < 0) {
+        const char* e = std::getenv("SBR_ABLATE");
+        v = (e != nullptr && e[0] != '\0' && e[0] != '0') ? 1 : 0;
+    }
+    return v == 1;
+}
+
+// Score one native buffer against an aurora frame with the SAME metric as the baseline.
+void score_against(const uint8_t* nat, int nw, int nh, const uint8_t* aur, int aw, int ah,
+                   double& iou, double& corr) {
+    std::vector<float> ln, la;
+    to_grid_luma(nat, nw, nh, ln);
+    to_grid_luma(aur, aw, ah, la);
+    std::vector<uint8_t> en, ea;
+    edge_mask(ln, en);
+    edge_mask(la, ea);
+    long inter = 0, uni = 0;
+    for (size_t i = 0; i < en.size(); ++i) {
+        if (en[i] || ea[i]) ++uni;
+        if (en[i] && ea[i]) ++inter;
+    }
+    iou  = uni ? 100.0 * (double)inter / (double)uni : 0.0;
+    corr = pearson(ln, la);
+}
+
 void on_aurora_frame(const uint8_t* rgba, uint32_t w, uint32_t h, void*) {
     if (selftest()) {
         g_native.rgba.assign(rgba, rgba + (size_t)w * h * 4);
@@ -153,6 +196,19 @@ void on_aurora_frame(const uint8_t* rgba, uint32_t w, uint32_t h, void*) {
         lucent::info("ab", "    mean over {} scored frames: edgeIoU {:.1f}% (best {:.1f}%), "
                            "lumaCorr {:+.3f}", g_scored.size(), si / n, bi, sc / n);
     }
+    // Every variant of THIS frame against THIS aurora frame — the whole point of doing the sweep
+    // in-process. A variant that scores higher than the baseline names an operation this port is
+    // getting wrong, because replacing it with a neutral reference moved the frame TOWARD aurora.
+    if (lit > 0)
+        for (const Variant& v : g_variants) {
+            if (v.seq != g_nativeSeq) { ++g_variantDropped; continue; }
+            double vi = 0, vc = 0;
+            score_against(v.rgba.data(), v.w, v.h, rgba, (int)w, (int)h, vi, vc);
+            VarAcc& a = g_varAcc[v.id];
+            a.name = v.name;
+            a.iou += vi; a.corr += vc; ++a.n;
+        }
+    g_variants.clear();
     g_native.valid = false;   // consume: never score the same native frame against two oracles
 }
 
@@ -178,6 +234,11 @@ void sbr_compare_init() {
 }
 
 void sbr_compare_submit_native(const uint8_t* rgba, int w, int h, uint8_t r, uint8_t g, uint8_t b) {
+    // A NEW baseline supersedes the previous frame's variants: they accumulate over every present
+    // between aurora callbacks, and scoring them all against one aurora frame both inflates n and
+    // compares a variant of one frame against a different frame's oracle.
+    g_variants.clear();
+    ++g_nativeSeq;
     if (!sbr_compare_enabled()) return;
     // Aurora's readback is asynchronous (copy at one present, map at the next), so the frame that
     // reaches the sink trails this one by a present or two. Keeping the LATEST native frame means
@@ -188,4 +249,47 @@ void sbr_compare_submit_native(const uint8_t* rgba, int w, int h, uint8_t r, uin
     g_native.h = h;
     g_native.valid = true;
     g_clear[0] = r; g_clear[1] = g; g_clear[2] = b;
+}
+
+bool sbr_compare_ablate_enabled() { return ablate(); }
+
+void sbr_compare_submit_variant(int id, const char* name, const uint8_t* rgba, int w, int h) {
+    if (!g_native.valid || rgba == nullptr) return;   // no baseline pending -> nothing to pair with
+    Variant v;
+    v.id = id;
+    v.seq = g_nativeSeq;
+    v.name = name != nullptr ? name : "?";
+    v.w = w; v.h = h;
+    v.rgba.assign(rgba, rgba + (size_t)w * h * 4);
+    g_variants.push_back(std::move(v));
+}
+
+// THE ATTRIBUTION TABLE. Ranked by how much each ablation RECOVERS over the baseline, so the
+// answer to "which operation is wrong" is the first row, with a number attached — not an
+// inference drawn from two runs of different length.
+void sbr_compare_report_attribution() {
+    if (g_varAcc.empty()) return;
+    double bi = 0, bc = 0;
+    const double n = (double)g_scored.size();
+    if (n <= 0) return;
+    for (const auto& s : g_scored) { bi += s.iou; bc += s.corr; }
+    bi /= n; bc /= n;
+    struct Row { std::string name; double iou, corr, d; long n; };
+    std::vector<Row> rows;
+    for (const auto& [id, a] : g_varAcc) {
+        if (a.n == 0) continue;
+        const double mi = a.iou / (double)a.n, mc = a.corr / (double)a.n;
+        rows.push_back({a.name, mi, mc, mi - bi, a.n});
+    }
+    std::sort(rows.begin(), rows.end(), [](const Row& x, const Row& y) { return x.d > y.d; });
+    if (g_variantDropped > 0)
+        lucent::info("ab", "   ({} variant samples dropped: their baseline was consumed by an "
+                           "aurora frame before the sweep finished)", g_variantDropped);
+    lucent::info("ab", "OPERATION ATTRIBUTION — baseline edgeIoU {:.1f}% lumaCorr {:+.3f} over {} "
+                       "frames. A POSITIVE delta means replacing that operation with a neutral "
+                       "reference moved the frame TOWARD aurora, i.e. this port gets it wrong.",
+                 bi, bc, (long)n);
+    for (const Row& r : rows)
+        lucent::info("ab", "   {:+6.1f}  {:<22} edgeIoU {:.1f}%  lumaCorr {:+.3f}  (n={})",
+                     r.d, r.name, r.iou, r.corr, r.n);
 }

@@ -255,7 +255,7 @@ void ov_shape_draw(CPUState& cpu) {
                         // 4x4 null texture (measured: 3 textures for the whole scene).
                         // All four texture units, not just TEXMAP0: a TEV stage names the map it
                         // samples, and most materials here name more than one.
-                        for (unsigned m = 0; m < 4; ++m) dr.tex[m] = sbr_gx_fifo_texture(m);
+                        for (unsigned m = 0; m < 8; ++m) dr.tex[m] = sbr_gx_fifo_texture(m);
                         dr.tev = sbr_gx_fifo_tev();
                         dr.xf  = sbr_gx_fifo_xf();
                         // Record the same snapshot for the state oracle, stamped with the parser's

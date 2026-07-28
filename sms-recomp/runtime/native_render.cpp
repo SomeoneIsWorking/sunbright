@@ -77,8 +77,8 @@ struct Batch {
     uint32_t first, count;
     // One entry per GX texture unit. 0 = untextured (a 1x1 white texel is bound so one shader
     // serves both cases and no branch is needed in the TEV loop).
-    uint64_t texKey[4];
-    uint32_t sampKey[4];   // wrap/filter modes: part of the material, not of the texture data
+    uint64_t texKey[8];
+    uint32_t sampKey[8];   // wrap/filter modes: part of the material, not of the texture data
     TevUniform tev;
 };
 
@@ -388,7 +388,7 @@ SDL_GPUTexture* texture_for(uint64_t key, const SbrTexture& t) {
     return gt;
 }
 
-void pack_tev(const SbrTevState& tev, TevUniform& u) {
+void pack_tev(const SbrTevState& tev, TevUniform& u, const SbrTexture* tex) {
     const int n = (int)std::min<uint32_t>(tev.numStages, 16);
     u.control[0] = n;
     for (int i = 0; i < 16; ++i) {
@@ -408,12 +408,12 @@ void pack_tev(const SbrTevState& tev, TevUniform& u) {
         // Which units are routed to the unit the stage NAMES, as a bitmask, so the question "which
         // unit blacks the frame" is one run per bit instead of one run per theory. SBR_TEXMAP_UNITS
         // is the mask (bit m = honour stages naming unit m); SBR_TEXMAP_NAMED=1 is the shorthand for
-        // all four. A unit not in the mask falls back to 0, which is the pinned behaviour.
+        // all eight. A unit not in the mask falls back to 0, which is the pinned behaviour.
         static const uint32_t unitMask = [] {
             if (const char* m = std::getenv("SBR_TEXMAP_UNITS"))
                 return (uint32_t)std::strtoul(m, nullptr, 0);
             const char* e = std::getenv("SBR_TEXMAP_NAMED");
-            return (e != nullptr && e[0] != '\0' && e[0] != '0') ? 0xFu : 0x1u;
+            return (e != nullptr && e[0] != '\0' && e[0] != '0') ? 0xFFu : 0x1u;
         }();
         // SBR_TEXMAP_FORCE=<unit> routes EVERY stage to one unit. That asks a different question
         // from the mask: not "which stages are wrong" but "does this SLOT sample at all". A slot
@@ -423,9 +423,23 @@ void pack_tev(const SbrTevState& tev, TevUniform& u) {
             const char* f = std::getenv("SBR_TEXMAP_FORCE");
             return f != nullptr ? (int32_t)std::strtol(f, nullptr, 0) : -1;
         }();
-        const int32_t map = (int32_t)(st.texmap & 3);
-        const int32_t unit = forceUnit >= 0 ? (forceUnit & 3)
-                                            : (((unitMask >> map) & 1) ? map : 0);
+        const int32_t map = (int32_t)(st.texmap & 7);
+        int32_t unit = forceUnit >= 0 ? (forceUnit & 7)
+                                      : (((unitMask >> map) & 1) ? map : 0);
+        // SBR_TEXMAP_SKIPZERO=1 (DIAGNOSTIC): honour the named unit EXCEPT when the texture bound
+        // there decodes to (near-)black — fall back to unit 0 for exactly those stages. This splits
+        // the named-units residual into its two candidate populations in one run: if the frame
+        // matches the pinned score with distant scenery textured, the entire residual is stages
+        // sampling the never-written dynamic textures (the zero-buffer set), and the work item is
+        // the PRODUCER of those buffers — not the routing.
+        static const bool skipZero = [] {
+            const char* e = std::getenv("SBR_TEXMAP_SKIPZERO");
+            return e != nullptr && e[0] != '\0' && e[0] != '0';
+        }();
+        if (skipZero && unit > 0 && tex != nullptr) {
+            const auto it = g_texs.find(tex_key(tex[unit]));
+            if (it != g_texs.end() && it->second.mean >= 0.0f && it->second.mean <= 1.0f) unit = 0;
+        }
         u.dest[i][3] = unit | (int32_t)(st.texcoord & 3) << 8 |
                        (int32_t)(st.rasChannel & 7) << 16;
         pack_konst(tev, (unsigned)i, u.konst[i]);
@@ -581,7 +595,7 @@ bool sbr_render_init(int w, int h) {
     // itself is not optional, because without it the last drawable submitted paints over the whole
     // scene (measured: a uniform 100%-coverage fill of one object's colour).
     g_vs = make_shader(kGeomVertSpv, sizeof(kGeomVertSpv), SDL_GPU_SHADERSTAGE_VERTEX, 0, 0);
-    g_fs = make_shader(kGeomFragSpv, sizeof(kGeomFragSpv), SDL_GPU_SHADERSTAGE_FRAGMENT, 4, 1);
+    g_fs = make_shader(kGeomFragSpv, sizeof(kGeomFragSpv), SDL_GPU_SHADERSTAGE_FRAGMENT, 8, 1);
     if (g_vs == nullptr || g_fs == nullptr) {
         lucent::error("nrender", "shader create failed: {}", SDL_GetError());
         return false;
@@ -645,7 +659,7 @@ void sbr_render_begin(float r, float g, float b, float a) {
     g_batches.clear();
 }
 
-void sbr_render_tris(const SbrVertex* verts, int count, SbrDepthState depth, const SbrTexture tex[4],
+void sbr_render_tris(const SbrVertex* verts, int count, SbrDepthState depth, const SbrTexture tex[8],
                      const SbrTevState& tevState) {
     if (!g_ok || verts == nullptr || count < 3) return;
     count -= count % 3;
@@ -663,12 +677,12 @@ void sbr_render_tris(const SbrVertex* verts, int count, SbrDepthState depth, con
         const char* e = std::getenv("SBR_TEX_MIRROR");
         return e != nullptr && e[0] != '\0' && e[0] != '0';
     }();
-    for (int m = 0; m < 4; ++m) {
+    for (int m = 0; m < 8; ++m) {
         const SbrTexture& t = mirror ? tex[0] : tex[m];
         b.texKey[m]  = tex_key(t);
         b.sampKey[m] = sampler_key(t);
     }
-    pack_tev(tevState, b.tev);
+    pack_tev(tevState, b.tev, mirror ? nullptr : tex);
     // TEV state is part of a batch's identity: two draws sharing a texture and depth state but
     // different combiners are different materials and must not merge.
     const bool same = !g_batches.empty() &&
@@ -681,9 +695,11 @@ void sbr_render_tris(const SbrVertex* verts, int count, SbrDepthState depth, con
         g_batches.back().count += (uint32_t)count;
     } else {
         g_batches.push_back(b);
-        for (int m = 0; m < 4; ++m) g_pendingTex[b.texKey[m]] = mirror ? tex[0] : tex[m];
+        for (int m = 0; m < 8; ++m) g_pendingTex[b.texKey[m]] = mirror ? tex[0] : tex[m];
     }
 }
+
+void render_pass_into_cpu(uint32_t ablation);
 
 // Upload the frame's geometry, render it in one pass over a cleared target, then download for
 // readback / the A/B against aurora. The whole sequence — acquire, copy pass, render pass, copy
@@ -700,19 +716,18 @@ void sbr_render_end() {
     // VK_ERROR_DEVICE_LOST. Uploads are one-time per texture, so this is not a per-frame cost.
     if (textures_enabled())
         for (const Batch& b : g_batches)
-            for (int m = 0; m < 4; ++m) texture_for(b.texKey[m], g_pendingTex[b.texKey[m]]);
+            for (int m = 0; m < 8; ++m) texture_for(b.texKey[m], g_pendingTex[b.texKey[m]]);
     // Samplers too: creating one is not a command-buffer operation, but keeping every resource
     // creation outside the frame's command buffer is the rule that stopped the device losses.
     for (const Batch& b : g_batches)
-        for (int m = 0; m < 4; ++m) sampler_for(b.sampKey[m]);
+        for (int m = 0; m < 8; ++m) sampler_for(b.sampKey[m]);
 
+    const size_t vbytes = g_verts.size() * sizeof(SbrVertex);
     SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(g_dev);
     if (cmd == nullptr) {
         lucent::error("nrender", "AcquireGPUCommandBuffer failed: {}", SDL_GetError());
         return;
     }
-
-    const size_t vbytes = g_verts.size() * sizeof(SbrVertex);
     if (vbytes > 0) {
         ensure_vbuf(vbytes);
         if (void* m = SDL_MapGPUTransferBuffer(g_dev, g_vup, false)) {
@@ -724,6 +739,57 @@ void sbr_render_end() {
         SDL_GPUBufferRegion dst{}; dst.buffer = g_vbuf; dst.offset = 0; dst.size = (Uint32)vbytes;
         SDL_UploadToGPUBuffer(up, &src, &dst, false);
         SDL_EndGPUCopyPass(up);
+    }
+
+    SDL_SubmitGPUCommandBuffer(cmd);
+    render_pass_into_cpu(0);
+    // IS THE PASS REPRODUCIBLE? Render the identical pass twice and compare. This separates "the
+    // ablation changed the picture" from "re-rendering changes the picture", which the sweep's
+    // control caught but could not localise.
+    {
+        static long tell = 0;
+        if (g_verts.size() > 1000 && tell < 3) {
+            ++tell;
+            auto sum = [](const std::vector<uint8_t>& p) {
+                unsigned long long h = 1469598103934665603ULL;
+                for (size_t i = 0; i < p.size(); i += 4)
+                    h = (h ^ (p[i] + 3u * p[i + 1] + 7u * p[i + 2])) * 1099511628211ULL;
+                return h;
+            };
+            const unsigned long long a = sum(g_cpu);
+            render_pass_into_cpu(0);
+            const unsigned long long b = sum(g_cpu);
+            lucent::info("nrender", "pass reproducibility: first {:016x} second {:016x} -> {}",
+                         a, b, a == b ? "IDENTICAL" : "DIFFERENT (re-render is not reproducible)");
+        }
+    }
+}
+
+// ONE render of the already-uploaded geometry into g_color, downloaded into g_cpu. `ablation`
+// reaches the shader as control[1] and replaces exactly one GX operation with a neutral
+// reference; 0 is the real pipeline. Factored out of sbr_render_end so the attribution sweep can
+// re-render the SAME frame per operation and score every variant against the SAME aurora frame —
+// which is what makes the comparison drift-free (see render_compare.h).
+void render_pass_into_cpu(uint32_t ablation) {
+    const size_t vbytes = g_verts.size() * sizeof(SbrVertex);
+    // Is the texture cache the SAME on a re-render as it was on the first render of this frame?
+    // The control ablation renders untextured, and an empty/short g_texs is the only way this pass
+    // binds g_white everywhere. Measured, because guessing at this cost several runs already.
+    {
+        static long tell = 0;
+        if (!g_batches.empty() && g_verts.size() > 1000 && tell < 12) {
+            ++tell;
+            size_t found = 0;
+            for (const Batch& b : g_batches)
+                if (g_texs.find(b.texKey[0]) != g_texs.end()) ++found;
+            lucent::info("nrender", "pass ablation={} : g_texs={} batches={} with slot0 texture={}",
+                         ablation, g_texs.size(), g_batches.size(), found);
+        }
+    }
+    SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(g_dev);
+    if (cmd == nullptr) {
+        lucent::error("nrender", "AcquireGPUCommandBuffer failed: {}", SDL_GetError());
+        return;
     }
 
     SDL_GPUColorTargetInfo cti{};
@@ -746,12 +812,12 @@ void sbr_render_end() {
         SDL_BindGPUVertexBuffers(rp, 0, &vb, 1);
         for (const Batch& b : g_batches) {
             SDL_BindGPUGraphicsPipeline(rp, pipeline_for(b.st));
-            // All four units every draw: the shader's sampler set is fixed by the pipeline
+            // All eight units every draw: the shader's sampler set is fixed by the pipeline
             // layout, so a unit a material does not use is bound to the white texel rather than
             // left dangling (an unbound descriptor is what takes the device down).
-            SDL_GPUTextureSamplerBinding tsb[4]{};
-            float slotMean[4] = {-2, -2, -2, -2};
-            for (int m = 0; m < 4; ++m) {
+            SDL_GPUTextureSamplerBinding tsb[8]{};
+            float slotMean[8] = {-2, -2, -2, -2, -2, -2, -2, -2};
+            for (int m = 0; m < 8; ++m) {
                 const auto texIt = g_texs.find(b.texKey[m]);
                 tsb[m].texture = (texIt != g_texs.end()) ? texIt->second.tex : g_white;
                 slotMean[m] = (texIt != g_texs.end()) ? texIt->second.mean : -2.0f;
@@ -768,8 +834,14 @@ void sbr_render_end() {
                              b.texKey[0], slotMean[0], b.texKey[1], slotMean[1],
                              b.texKey[2], slotMean[2], b.count);
             }
-            SDL_BindGPUFragmentSamplers(rp, 0, tsb, 4);
-            SDL_PushGPUFragmentUniformData(cmd, 0, &b.tev, sizeof b.tev);
+            SDL_BindGPUFragmentSamplers(rp, 0, tsb, 8);
+            TevUniform tu = b.tev;
+            // alphaRef.w — the only free component. control.y is alphaOp0, and alphaRef.z is
+            // already the SBR_TEV_VIZ selector: writing the ablation id there turned every variant
+            // into a visualisation mode that returns early, which is exactly what the
+            // control:no-op ablation caught (it rendered untextured instead of matching baseline).
+            tu.alphaRef[3] = (float)ablation;
+            SDL_PushGPUFragmentUniformData(cmd, 0, &tu, sizeof tu);
             SDL_DrawGPUPrimitives(rp, b.count, 1, b.first, 0);
         }
     }
@@ -801,6 +873,34 @@ int sbr_render_last_batch_count() { return g_lastBatches; }
 // (a render target this port never writes, or a wrong address).
 void sbr_render_recheck_black() {
     if (!textures_enabled()) return;
+    // STALE-CACHE SCAN, all entries: the cache fills on FIRST SIGHT and is never revalidated, while
+    // the CPU tev trace decodes fresh — so a texture whose guest bytes changed after first sight
+    // makes the reference predict one frame and the GPU render another. Report every entry whose
+    // fresh decode no longer matches what was uploaded.
+    {
+        int stale = 0, scanned = 0;
+        for (auto& [key, tex] : g_texs) {
+            if (tex.desc.addr == 0 || tex.mean < 0.0f) continue;
+            std::vector<uint8_t> rgba((size_t)tex.desc.width * tex.desc.height * 4);
+            if (!gx_decode_texture(tex.desc.addr, tex.desc.width, tex.desc.height, tex.desc.format,
+                                   tex.desc.tlut, rgba.data()))
+                continue;
+            ++scanned;
+            uint64_t sum = 0;
+            for (size_t i = 0; i < rgba.size(); i += 4) sum += rgba[i] + rgba[i + 1] + rgba[i + 2];
+            const float now = (float)((double)sum / (double)(rgba.size() / 4 * 3));
+            if (std::fabs(now - tex.mean) > 2.0f) {
+                ++stale;
+                if (stale <= 12)
+                    lucent::info("nrender", "STALE cache 0x{:08x} {} {}x{}: uploaded mean {:.1f}, "
+                                            "guest memory now {:.1f}",
+                                 tex.desc.addr, gx_texture_format_name(tex.desc.format),
+                                 tex.desc.width, tex.desc.height, tex.mean, now);
+            }
+        }
+        lucent::info("nrender", "stale-cache scan: {} of {} decodable cached textures no longer "
+                                "match their upload", stale, scanned);
+    }
     int rechecked = 0;
     for (auto& [key, tex] : g_texs) {
         if (tex.mean > 0.5f || tex.desc.addr == 0) continue;
@@ -873,5 +973,40 @@ bool sbr_render_dump(const char* path) {
 bool sbr_render_readback(uint8_t* rgba, int w, int h) {
     if (!g_ok || w != g_w || h != g_h || rgba == nullptr) return false;
     std::memcpy(rgba, g_cpu.data(), (size_t)w * h * 4);
+    return true;
+}
+
+
+// ---- Operation attribution -----------------------------------------------------------------
+// Each entry replaces exactly ONE GX operation with a neutral reference. The names are the
+// operations themselves, so the attribution table reads as a diagnosis rather than a list of
+// flags. Keep in sync with the ablation switch in shaders/geom.frag.glsl.
+namespace {
+const char* const kAblationName[] = {
+    "baseline",             // 0 — the real pipeline
+    "texgen->raw uv0",      // 1 — coordinate generation
+    "texfetch->white",      // 2 — texture identity, decode, wrap and filter
+    "ras->channel0",        // 3 — rasterised colour channel selection
+    "tev->passthrough",     // 4 — the combiner chain
+    "konst->one",           // 5 — konstant selection
+    "alphatest->pass",      // 6 — the alpha test
+    "texmap->unit0",        // 7 — per-stage texmap routing
+    // INSTRUMENT CONTROL, not an operation. The shader has no branch for this id, so it renders
+    // the real pipeline. It MUST score exactly the baseline; if it does not, the sweep machinery
+    // (re-render, readback, pairing) is lying and no row in the table can be believed.
+    "control:no-op",        // 8
+};
+}
+
+int sbr_render_ablation_count() { return (int)(sizeof kAblationName / sizeof kAblationName[0]); }
+const char* sbr_render_ablation_name(int id) {
+    return (id >= 0 && id < sbr_render_ablation_count()) ? kAblationName[id] : "?";
+}
+
+// Re-render the frame already uploaded by sbr_render_end with one operation ablated. The result
+// lands in g_cpu, so sbr_render_readback returns it exactly as for the baseline.
+bool sbr_render_ablation_render(int id) {
+    if (!g_ok || id <= 0 || id >= sbr_render_ablation_count()) return false;
+    render_pass_into_cpu((uint32_t)id);
     return true;
 }

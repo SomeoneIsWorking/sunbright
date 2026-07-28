@@ -99,6 +99,10 @@ struct Stats {
 } g_stats;
 
 unsigned long g_bpWrites[256] = {};
+// Per-texmap and per-texcoord counts of ENABLED TEV stages naming them. See the RAS1_TREF handler.
+// Both are 3-bit fields (eight of each) and both were being truncated to four downstream.
+unsigned long g_texmapUse[8] = {};
+unsigned long g_texcoordUse[8] = {};
 
 // BP register shadow + the one-shot write mask (register 0xFE). See the BP handler.
 u32 g_bpCache[256] = {};
@@ -670,6 +674,17 @@ size_t parse(const u8* p, size_t n, int depth) {
             } else if (reg >= 0x28 && reg <= 0x2F) {
                 g_tev.trefSeq[reg - 0x28] = g_bindSeq;
                 const unsigned s0 = (unsigned)(reg - 0x28) * 2;
+                // Which texmaps ENABLED stages actually name. GX has eight; this port captures and
+                // routes only four (j3d_capture.cpp takes maps 0-3, and every consumer masks
+                // `texmap & 3`), so a stage naming map 4-7 would silently sample a DIFFERENT
+                // texture — indistinguishable from "the named unit is black" in any whole-frame
+                // score. Counted rather than assumed: if maps 4-7 are never named the truncation
+                // is latent and the residual is elsewhere, and that is worth knowing for certain.
+                if ((val >> 6) & 1) { ++g_texmapUse[val & 7]; ++g_texcoordUse[(val >> 3) & 7]; }
+                if ((val >> 18) & 1) {
+                    ++g_texmapUse[(val >> 12) & 7];
+                    ++g_texcoordUse[(val >> 15) & 7];
+                }
                 g_tev.stage[s0].texmap     = val & 7;
                 g_tev.stage[s0].texcoord   = (val >> 3) & 7;
                 g_tev.stage[s0].texEnable  = (val >> 6) & 1;
@@ -1051,6 +1066,24 @@ void sbr_gxfifo_report_bp_writes() {
                      0x80 + m, g_bpWrites[0x80 + m]);
     lucent::info("gxfifo", "  GENMODE (0x00) {} writes, RAS1_TREF 0x28 {} / 0x29 {} / 0x2a {}",
                  g_bpWrites[0x00], g_bpWrites[0x28], g_bpWrites[0x29], g_bpWrites[0x2a]);
+    // Texmaps 4-7: are they BOUND, and are they NAMED? The port routes only maps 0-3, so both
+    // halves matter. A nonzero bind count with a nonzero name count means live draws are sampling
+    // the wrong texture wherever a high map is used.
+    {
+        lucent::Line l;
+        l.add("  texmap use by ENABLED stages:");
+        for (unsigned m = 0; m < 8; ++m) l.add(" m{}={}", m, g_texmapUse[m]);
+        l.flush(lucent::Level::Info, "gxfifo");
+        lucent::Line c;
+        c.add("  texcoord use by ENABLED stages:");
+        for (unsigned m = 0; m < 8; ++m) c.add(" c{}={}", m, g_texcoordUse[m]);
+        c.flush(lucent::Level::Info, "gxfifo");
+    }
+    for (unsigned m = 4; m < 8; ++m)
+        lucent::info("gxfifo", "  unit {}: TX_SETIMAGE0 (0x{:02x}) {} writes, TX_SETIMAGE3 "
+                               "(0x{:02x}) {} writes, TX_SETMODE0 (0x{:02x}) {} writes",
+                     m, 0xA8 + m - 4, g_bpWrites[0xA8 + m - 4], 0xB4 + m - 4,
+                     g_bpWrites[0xB4 + m - 4], 0xA0 + m - 4, g_bpWrites[0xA0 + m - 4]);
     // Whether the BP write MASK is used at all. If this is zero the mask handling is inert and any
     // divergence it was supposed to explain is elsewhere — worth knowing before believing the fix.
     lucent::info("gxfifo", "  BP write mask (0xFE) {} writes", g_bpWrites[0xFE]);

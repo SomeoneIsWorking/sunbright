@@ -441,7 +441,7 @@ void sbr_scene_report_zmodes() {
                 // Binding four units scored WORSE than pinning every stage to unit 0, so the
                 // question is whether the units above 0 actually carry the image the stage wants.
                 ++mapHist[d.tev.stage[s].texmap];
-                if (d.tev.stage[s].texmap < 4 && d.tex[d.tev.stage[s].texmap].addr == 0)
+                if (d.tev.stage[s].texmap < 8 && d.tex[d.tev.stage[s].texmap].addr == 0)
                     ++unboundStages;
             }
             if (maxMap > 0) ++multiMap;
@@ -471,7 +471,7 @@ void sbr_scene_report_zmodes() {
             long staleStages = 0, totalStages = 0;
             for (const auto& d : g_cur.items) {
                 uint32_t newest = 0;
-                for (unsigned k = 0; k < 4; ++k) newest = std::max(newest, d.tex[k].bindSeq);
+                for (unsigned k = 0; k < 8; ++k) newest = std::max(newest, d.tex[k].bindSeq);
                 if (newest == 0) continue;
                 ++checked;
                 bool any = false;
@@ -497,7 +497,7 @@ void sbr_scene_report_zmodes() {
         // holding whatever the last material to bind them left there — and a stage that names one
         // samples another material's texture. That is the difference between "bound" and "correct",
         // and it is the only thing separating the two bisect configurations.
-        for (unsigned m = 0; m < 4; ++m) {
+        for (unsigned m = 0; m < 8; ++m) {
             std::unordered_map<uint32_t, int> uh;
             long lagSum = 0, lagMax = 0, n = 0;
             for (const auto& d : g_cur.items) {
@@ -507,7 +507,7 @@ void sbr_scene_report_zmodes() {
                 // drawable's own material; a large lag means it still holds an earlier material's
                 // texture, which is what "stale" actually means.
                 uint32_t newest = 0;
-                for (unsigned k = 0; k < 4; ++k) newest = std::max(newest, d.tex[k].bindSeq);
+                for (unsigned k = 0; k < 8; ++k) newest = std::max(newest, d.tex[k].bindSeq);
                 if (newest == 0) continue;
                 const long lag = (long)newest - (long)d.tex[m].bindSeq;
                 lagSum += lag; lagMax = std::max(lagMax, lag); ++n;
@@ -778,7 +778,7 @@ float sbr_scene_render(double now_seconds, const float proj[16]) {
                   drawStateSeen, g_out.size(), nlo[0], nhi[0], nlo[1], nhi[1], nearestW,
                   d.depth.test, d.depth.write, d.depth.func,
                   d.depth.blend, d.tev.numTexGens, d.tev.numStages);
-            for (unsigned m = 0; m < 4; ++m)
+            for (unsigned m = 0; m < 8; ++m)
                 l.add(" u{}={:08x}/f{}/{}x{}@{}", m, d.tex[m].addr, d.tex[m].format,
                       d.tex[m].width, d.tex[m].height, d.tex[m].bindSeq);
             l.add(" |");
@@ -871,7 +871,7 @@ float sbr_scene_render(double now_seconds, const float proj[16]) {
                 }
                 if (nv > 0) ras0Mean /= (float)nv;
             }
-            for (unsigned m = 0; m < 4; ++m) {
+            for (unsigned m = 0; m < 8; ++m) {
                 const SbrTexture& t = d.tex[m];
                 if (t.addr == 0 || t.width == 0 || t.height == 0) continue;
                 std::vector<uint8_t> rgba((size_t)t.width * t.height * 4);
@@ -913,10 +913,26 @@ float sbr_scene_render(double now_seconds, const float proj[16]) {
                         namesUpper = true;
                 if (!namesUpper) continue;
             }
+            // SBR_TEV_TRACE_ADDR=<hex guest addr>: trace only drawables where some enabled stage's
+            // NAMED unit holds that texture. This is how one specific black batch (e.g. the ones
+            // binding the zero CMPR on unit 1) is accounted end to end rather than whichever
+            // drawable the other filters happen to reach first.
+            static const uint32_t kAddr = [] {
+                const char* e = std::getenv("SBR_TEV_TRACE_ADDR");
+                return e != nullptr ? (uint32_t)std::strtoul(e, nullptr, 16) : 0u;
+            }();
+            if (kAddr != 0) {
+                bool hit = false;
+                for (unsigned st = 0; st < d.tev.numStages && st < 16; ++st)
+                    if (d.tev.stage[st].texEnable && d.tex[d.tev.stage[st].texmap & 7].addr == kAddr)
+                        hit = true;
+                if (!hit) continue;
+            }
             ++traced;
-            lucent::info("tev", "drawable {} verts={} numStages={} ras[{:.3f} {:.3f} {:.3f} a{:.3f}]",
+            lucent::info("tev", "drawable {} verts={} numStages={} ras[{:.3f} {:.3f} {:.3f} a{:.3f}] "
+                                "ndc x[{:.2f},{:.2f}] y[{:.2f},{:.2f}] nearW={:.0f}",
                          traced, g_out.size(), d.tev.numStages, in.ras[0], in.ras[1], in.ras[2],
-                         in.ras[3]);
+                         in.ras[3], nlo[0], nhi[0], nlo[1], nhi[1], nearestW);
             {   // WHICH channel each stage reads as RASC, and through WHICH swap row. The GPU
                 // shader still ignores the selector and feeds colour channel 0; the evaluator
                 // above honours both, so a divergence between this trace and the frame now points
@@ -937,7 +953,7 @@ float sbr_scene_render(double now_seconds, const float proj[16]) {
                        ras0Max);
                 rl.flush(lucent::Level::Info, "tev");
             }
-            for (unsigned m = 0; m < 4; ++m)
+            for (unsigned m = 0; m < 8; ++m)
                 lucent::info("tev", "  unit {} = 0x{:08x} {}x{} fmt{} texel[{:.3f} {:.3f} {:.3f} "
                                     "a{:.3f}]", m, d.tex[m].addr, d.tex[m].width, d.tex[m].height,
                              d.tex[m].format, in.tex[m][0], in.tex[m][1], in.tex[m][2], in.tex[m][3]);
@@ -997,7 +1013,7 @@ float sbr_scene_render(double now_seconds, const float proj[16]) {
             if (kFar > 0.0f) {
                 std::vector<std::vector<uint8_t>> dec(4);
                 std::vector<std::pair<uint32_t, uint32_t>> dim(4, {0, 0});
-                for (unsigned mm = 0; mm < 4; ++mm) {
+                for (unsigned mm = 0; mm < 8; ++mm) {
                     const SbrTexture& t = d.tex[mm];
                     if (t.addr == 0 || t.width == 0 || t.height == 0) continue;
                     std::vector<uint8_t> rgba((size_t)t.width * t.height * 4);

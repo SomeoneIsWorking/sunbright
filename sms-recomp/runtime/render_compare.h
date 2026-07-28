@@ -42,3 +42,26 @@ void sbr_compare_submit_native(const uint8_t* rgba, int w, int h, uint8_t clearR
 
 // True if SBR_AB is on.
 bool sbr_compare_enabled();
+
+// ---- OPERATION ATTRIBUTION ----------------------------------------------------------------
+// The scalar score above can say the frame is wrong; it can never say WHICH GX operation is wrong.
+// Answering that by toggling an env per run and comparing means across runs does not work: the
+// mean drifts several points with the frame COUNT alone, so two runs of different length are not
+// comparable, and that trap has already produced one wrong conclusion in this arc.
+//
+// So variants are scored INSIDE one run, against THE SAME aurora frame. Each variant replaces
+// exactly one operation with a neutral reference (texgen -> raw uv, texture fetch -> white,
+// ras -> channel 0, and so on). Equal-N holds by construction, and the ranked delta names the
+// operation: the ablation that RECOVERS the most score is the operation this port gets wrong.
+//
+//   SBR_ABLATE=1   run the sweep on every scored frame and report a ranked table.
+
+// Submit one labelled variant of the current native frame. Scored against the same aurora frame as
+// the baseline; accumulated per variant across frames.
+void sbr_compare_submit_variant(int id, const char* name, const uint8_t* rgba, int w, int h);
+
+// True if the ablation sweep is on.
+bool sbr_compare_ablate_enabled();
+
+// Ranked attribution table: every variant's mean score and its delta from the baseline.
+void sbr_compare_report_attribution();

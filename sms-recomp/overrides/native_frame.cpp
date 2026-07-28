@@ -271,6 +271,46 @@ void video_wait_for_retrace(CPUState& cpu) {
             static std::vector<uint8_t> ab(640 * 448 * 4);
             if (sbr_render_readback(ab.data(), 640, 448))
                 sbr_compare_submit_native(ab.data(), 640, 448, 26, 102, 204);
+            // OPERATION ATTRIBUTION: re-render this same frame once per ablated operation and
+            // submit each as a labelled variant. All of them are scored against the SAME aurora
+            // frame as the baseline, so the ranked table is drift-free — unlike comparing the
+            // means of two runs of different length, which is what previously misled this arc.
+            if (sbr_compare_ablate_enabled()) {
+                // Checksum every variant INCLUDING the control, against the baseline's. The
+                // control renders the real pipeline, so its checksum MUST equal the baseline's.
+                // If it does not, re-rendering the same frame is not reproducible and the whole
+                // attribution table is void — this is the check that says so out loud rather than
+                // letting a broken sweep read as a finding.
+                auto sum = [](const std::vector<uint8_t>& p) {
+                    unsigned long long h = 1469598103934665603ULL;
+                    for (size_t i = 0; i < p.size(); i += 4)
+                        h = (h ^ (p[i] + 3u * p[i + 1] + 7u * p[i + 2])) * 1099511628211ULL;
+                    return h;
+                };
+                const unsigned long long base = sum(ab);
+                auto dump = [](const char* path, const std::vector<uint8_t>& p) {
+                    if (FILE* f = std::fopen(path, "wb")) { std::fwrite(p.data(), 1, p.size(), f);
+                                                            std::fclose(f); }
+                };
+                // Only on a frame that HAS geometry: the first presents are the loading screen,
+                // where every ablation of an empty frame is trivially identical — a degenerate
+                // input that would read as "the sweep works" when it proves nothing.
+                static long once = 0;
+                const bool tell = sbr_render_last_vertex_count() > 1000 && once++ < 2;
+
+                if (tell) dump("scratch/bin/sweep_baseline.rgba", ab);
+                for (int a = 1; a < sbr_render_ablation_count(); ++a)
+                    if (sbr_render_ablation_render(a) && sbr_render_readback(ab.data(), 640, 448)) {
+                        if (tell && a == sbr_render_ablation_count() - 1)
+                            dump("scratch/bin/sweep_control.rgba", ab);
+                        if (tell)
+                            lucent::info("ab", "   sweep checksum: baseline {:016x}  {} {:016x}{}",
+                                         base, sbr_render_ablation_name(a), sum(ab),
+                                         (sum(ab) == base) ? "  (identical)" : "");
+                        sbr_compare_submit_variant(a, sbr_render_ablation_name(a), ab.data(),
+                                                   640, 448);
+                    }
+            }
         }
 
         static long n = 0;
@@ -300,6 +340,7 @@ void video_wait_for_retrace(CPUState& cpu) {
             sbr_render_recheck_black();
             sbr_state_oracle_report();
             sbr_gxfifo_report_bp_writes();
+            sbr_compare_report_attribution();
             if (const char* d = std::getenv("SBR_RENDER_DUMP")) sbr_render_dump(d);
         }
     }
