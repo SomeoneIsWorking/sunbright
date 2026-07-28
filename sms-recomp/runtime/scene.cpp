@@ -733,6 +733,13 @@ float sbr_scene_render(double now_seconds, const float proj[16]) {
                     o.uv[tg][0] = o.uv[tg][1] = 0.0f;
                 }
             }
+            // Channel 1 for this vertex, evaluated by the same reference the trace uses.
+            {
+                float lit1[4];
+                if (d.xf.numChans > 1) light_channel(d.xf, 1, vpos, nrm, vc, lit1);
+                else { lit1[0] = vr; lit1[1] = vg; lit1[2] = vb; lit1[3] = va; }
+                o.r1 = lit1[0]; o.g1 = lit1[1]; o.b1 = lit1[2]; o.a1 = lit1[3];
+            }
             g_out.push_back(o);
 
             if (o.w > 1e-4f) {
@@ -889,6 +896,23 @@ float sbr_scene_render(double now_seconds, const float proj[16]) {
             sbr_tev_evaluate(d.tev, in, outc, &discarded, &tr);
             const float lum = 0.2126f * outc[0] + 0.7152f * outc[1] + 0.0722f * outc[2];
             if (kTraceBlack && lum > 0.02f && !discarded) continue;
+            // SBR_TEV_TRACE_FAR=<minNearW> selects a DISTANT drawable that names a unit above 0,
+            // instead of self-selecting on a black vertex 0. The black self-selection kept picking
+            // NEAR back-facing vertices — the trace choosing its own answer — while the surfaces
+            // that actually go black under named units are distant. Population matters more than
+            // the predicate.
+            static const float kFar = [] {
+                const char* e = std::getenv("SBR_TEV_TRACE_FAR");
+                return e != nullptr ? (float)std::atof(e) : 0.0f;
+            }();
+            if (kFar > 0.0f) {
+                if (nearestW < kFar) continue;
+                bool namesUpper = false;
+                for (unsigned st = 0; st < d.tev.numStages && st < 16; ++st)
+                    if (d.tev.stage[st].texEnable && (d.tev.stage[st].texmap & 7) > 0)
+                        namesUpper = true;
+                if (!namesUpper) continue;
+            }
             ++traced;
             lucent::info("tev", "drawable {} verts={} numStages={} ras[{:.3f} {:.3f} {:.3f} a{:.3f}]",
                          traced, g_out.size(), d.tev.numStages, in.ras[0], in.ras[1], in.ras[2],
@@ -965,6 +989,60 @@ float sbr_scene_render(double now_seconds, const float proj[16]) {
                                     (float)((gv.rgba >> 8) & 0xFF) / 255.0f,
                                     (float)(gv.rgba & 0xFF) / 255.0f};
                     light_channel_trace(d.xf, 0, vp, nn, gvc, "tev");
+                }
+            }
+            // PER-STAGE TEXEL A/B: what each stage samples from the unit it NAMES, against what it
+            // would sample from unit 0 — the only thing the texmap routing changes. Averaged over
+            // many vertices, because a single vertex has now chosen the answer twice in this arc.
+            if (kFar > 0.0f) {
+                std::vector<std::vector<uint8_t>> dec(4);
+                std::vector<std::pair<uint32_t, uint32_t>> dim(4, {0, 0});
+                for (unsigned mm = 0; mm < 4; ++mm) {
+                    const SbrTexture& t = d.tex[mm];
+                    if (t.addr == 0 || t.width == 0 || t.height == 0) continue;
+                    std::vector<uint8_t> rgba((size_t)t.width * t.height * 4);
+                    if (!gx_decode_texture(t.addr, t.width, t.height, t.format, t.tlut, rgba.data()))
+                        continue;
+                    dec[mm] = std::move(rgba);
+                    dim[mm] = {t.width, t.height};
+                }
+                auto sampleAt = [&](unsigned unit, const SbrVertex& vx, unsigned coord, float out[4]) {
+                    out[0] = out[1] = out[2] = out[3] = -1.0f;
+                    if (unit > 3 || dec[unit].empty()) return;
+                    const float uu = vx.uv[coord][0] - std::floor(vx.uv[coord][0]);
+                    const float vv2 = vx.uv[coord][1] - std::floor(vx.uv[coord][1]);
+                    const uint32_t px = std::min<uint32_t>((uint32_t)(uu * (float)dim[unit].first),
+                                                           dim[unit].first - 1);
+                    const uint32_t py = std::min<uint32_t>((uint32_t)(vv2 * (float)dim[unit].second),
+                                                           dim[unit].second - 1);
+                    const uint8_t* q = &dec[unit][((size_t)py * dim[unit].first + px) * 4];
+                    for (int c = 0; c < 4; ++c) out[c] = (float)q[c] / 255.0f;
+                };
+                const size_t step = std::max<size_t>(1, g_out.size() / 32);
+                for (unsigned st = 0; st < d.tev.numStages && st < 16; ++st) {
+                    if (!d.tev.stage[st].texEnable) continue;
+                    const unsigned named = d.tev.stage[st].texmap & 7;
+                    const unsigned coord = d.tev.stage[st].texcoord & 3;
+                    float nsum[4] = {0, 0, 0, 0}, psum[4] = {0, 0, 0, 0};
+                    size_t n = 0;
+                    for (size_t vi = 0; vi < g_out.size(); vi += step) {
+                        float a[4], b[4];
+                        sampleAt(named, g_out[vi], coord, a);
+                        sampleAt(0, g_out[vi], coord, b);
+                        if (a[0] < 0.0f || b[0] < 0.0f) continue;
+                        for (int c = 0; c < 4; ++c) { nsum[c] += a[c]; psum[c] += b[c]; }
+                        ++n;
+                    }
+                    if (n == 0) {
+                        lucent::info("tev", "  A/B s{}: unit {} has no decoded texture — the named "
+                                            "routing samples NOTHING here", st, named);
+                        continue;
+                    }
+                    for (int c = 0; c < 4; ++c) { nsum[c] /= (float)n; psum[c] /= (float)n; }
+                    lucent::info("tev", "  A/B s{} coord{}: named unit {} -> [{:.3f} {:.3f} {:.3f} "
+                                        "a{:.3f}]   unit 0 -> [{:.3f} {:.3f} {:.3f} a{:.3f}]  "
+                                        "(mean of {} verts)", st, coord, named, nsum[0], nsum[1],
+                                 nsum[2], nsum[3], psum[0], psum[1], psum[2], psum[3], n);
                 }
             }
             sbr_tev_trace_report(tr, "tev");

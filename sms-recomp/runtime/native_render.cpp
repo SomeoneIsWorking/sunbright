@@ -426,7 +426,8 @@ void pack_tev(const SbrTevState& tev, TevUniform& u) {
         const int32_t map = (int32_t)(st.texmap & 3);
         const int32_t unit = forceUnit >= 0 ? (forceUnit & 3)
                                             : (((unitMask >> map) & 1) ? map : 0);
-        u.dest[i][3] = unit | (int32_t)(st.texcoord & 3) << 8;
+        u.dest[i][3] = unit | (int32_t)(st.texcoord & 3) << 8 |
+                       (int32_t)(st.rasChannel & 7) << 16;
         pack_konst(tev, (unsigned)i, u.konst[i]);
     }
     for (int r = 0; r < 4; ++r)
@@ -464,7 +465,7 @@ SDL_GPUGraphicsPipeline* pipeline_for(SbrDepthState d) {
     vbd.input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
     // Position, colour, then the four generated coordinates as two vec4s (uv0|uv1, uv2|uv3) —
     // packing them in pairs keeps the attribute count down without changing what the shader reads.
-    SDL_GPUVertexAttribute va[4]{};
+    SDL_GPUVertexAttribute va[5]{};
     va[0].location = 0; va[0].buffer_slot = 0;
     va[0].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4; va[0].offset = 0;
     va[1].location = 1; va[1].buffer_slot = 0;
@@ -473,6 +474,8 @@ SDL_GPUGraphicsPipeline* pipeline_for(SbrDepthState d) {
     va[2].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4; va[2].offset = 32;
     va[3].location = 3; va[3].buffer_slot = 0;
     va[3].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4; va[3].offset = 48;
+    va[4].location = 4; va[4].buffer_slot = 0;
+    va[4].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4; va[4].offset = 64;   // colour channel 1
 
     SDL_GPUColorTargetDescription ctd{};
     ctd.format = kColorFmt;
@@ -495,7 +498,7 @@ SDL_GPUGraphicsPipeline* pipeline_for(SbrDepthState d) {
     pci.vertex_input_state.vertex_buffer_descriptions = &vbd;
     pci.vertex_input_state.num_vertex_buffers = 1;
     pci.vertex_input_state.vertex_attributes = va;
-    pci.vertex_input_state.num_vertex_attributes = 4;
+    pci.vertex_input_state.num_vertex_attributes = 5;
     // SBR_RENDER_WIREFRAME=1 draws edges instead of filled triangles. A few large planes can
     // occlude an entire correct scene behind them, which is indistinguishable from "the scene is
     // missing" in a filled render — wireframe separates those two cases, so it is a diagnostic
@@ -589,7 +592,7 @@ bool sbr_render_init(int w, int h) {
     vbd.input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
     // Position, colour, then the four generated coordinates as two vec4s (uv0|uv1, uv2|uv3) —
     // packing them in pairs keeps the attribute count down without changing what the shader reads.
-    SDL_GPUVertexAttribute va[4]{};
+    SDL_GPUVertexAttribute va[5]{};
     va[0].location = 0; va[0].buffer_slot = 0;
     va[0].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4; va[0].offset = 0;
     va[1].location = 1; va[1].buffer_slot = 0;
@@ -598,6 +601,8 @@ bool sbr_render_init(int w, int h) {
     va[2].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4; va[2].offset = 32;
     va[3].location = 3; va[3].buffer_slot = 0;
     va[3].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4; va[3].offset = 48;
+    va[4].location = 4; va[4].buffer_slot = 0;
+    va[4].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4; va[4].offset = 64;   // colour channel 1
 
     // Pipelines are created ON DEMAND per depth state (pipeline_for), not once here: GX varies
     // depth state per material and the backend cannot change it dynamically.

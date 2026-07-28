@@ -14,6 +14,13 @@ struct SbrVertex {
     // is evaluated on the CPU alongside the lighting, because its matrices animate per frame and
     // its source can be the position or normal rather than a stored coordinate.
     float uv[4][2];
+    // Rasterised colour channel 1, at the END. The vertex attribute offsets in native_render.cpp
+    // are absolute byte offsets into this struct, so a field inserted in the MIDDLE silently
+    // repoints every attribute after it: putting this after `a` made the pipeline read uv01 from
+    // offset 32 — which was now channel 1 — and every texture coordinate shifted. Geometry was
+    // byte-identical and the frame merely looked washed, which is why it survived four rounds of
+    // attribution. Append here, or change the offsets; never one without the other.
+    float r1, g1, b1, a1;
 };
 
 // The GX depth state a draw is issued under, mirrored from GXSetZMode (overrides/gx_state_capture).

@@ -860,3 +860,48 @@ between pinned and named for those materials is only the texel fed to stages nam
 the hand-evaluated combiner with those texels goes dim, not black. Next instrument: trace a
 DISTANT drawable specifically (the black-trace self-selection keeps picking near back-facing
 vertices) and A/B the per-stage texel between slot-m and slot-0 routing for one such draw.
+
+## 2026-07-28 (cont.) — the "unattributable" regression was a struct field inserted in the MIDDLE
+
+Q2 answered, and my own explanation ("I changed three things at once") was the comfortable story.
+The stronger model's structural suspicion was right and specific: *a complete but washed, untextured
+frame is the signature of vertex-attribute misalignment, not of lighting arithmetic — run the
+layout-only step FIRST, not third.*
+
+Doing exactly that isolated it in one run. Layout alone, RAS selector still forced to 0, channel 1
+carried but multiplied by zero in the shader: **28.9% -> 16.8%**. Two further controls confirmed the
+cause was the layout itself and not the test: removing the zero-weight guard changed nothing
+(16.7%), and `SbrVertex o{}` is value-initialised with a single `push_back` site, so no NaN.
+
+Then the renderer's own per-frame stats said which half of the pipeline was at fault:
+
+```
+baseline  verts=234690 drawables=946 batches=151 coverage=100.0% xyz=[-5000..15150 ...]
+layout    verts=234690 drawables=946 batches=151 coverage=100.0% xyz=[-5000..15150 ...]
+```
+
+Byte-identical geometry. So nothing was lost — it was SHADING, from a change the shader made no use
+of. That leaves exactly one mechanism: the vertex attribute offsets no longer describe the struct.
+
+**And they did not, because I inserted the new field in the middle.** `r1..a1` went in directly after
+`r,g,b,a`, while `native_render.cpp` declares attributes at absolute byte offsets 0/16/32/48/64. So
+the pipeline read `uv01` from offset 32 — which was now colour channel 1 — and every texture
+coordinate shifted one slot. Geometry identical, textures smeared: precisely "complete but washed".
+
+Moving the field to the END of the struct restores the baseline exactly (29.0 / 32.1 / 32.9 against
+28.9 / 31.9 / 32.9), which is what a carried-but-unused attribute must do.
+
+### Then the RAS selector, as its own step
+
+With the layout proven inert, wiring the per-stage RAS channel selector (`rasOf`: 0 -> channel 0,
+1 -> channel 1, 5/6/7 -> zero) measures **28.9 / 32.2 / 33.4** against the baseline's 28.9 / 31.9 /
+32.9 — a small gain at higher N (`lumaCorr` +0.756 -> +0.761), no regression, frame visually intact.
+
+So the mechanism that "traded a black scene for a washed one" two iterations ago was never the
+channel-1 work at all. It was one misplaced struct field, and the four attribution runs that failed
+to find it were all aimed at semantics.
+
+**The lesson is narrower than "change one thing at a time".** Absolute byte offsets in one file
+describing a struct in another is a coupling with no compiler check: any field inserted anywhere but
+the end silently repoints every attribute after it. Either append, or derive the offsets with
+`offsetof` so the two cannot disagree. The struct now says so at the field.

@@ -13,6 +13,7 @@
 layout(location = 0) in vec4 v_col;
 layout(location = 1) in vec4 v_uv01;
 layout(location = 2) in vec4 v_uv23;
+layout(location = 3) in vec4 v_col1;
 layout(location = 0) out vec4 o_col;
 
 // One sampler per GX texture unit. A stage names BOTH the map it samples and the coordinate it
@@ -132,6 +133,16 @@ vec4 sampleUnit(int unit, vec2 uv) {
     return texture(u_tex0, uv);
 }
 
+// WHICH rasterised colour a stage reads. RAS1_TREF carries this per stage (JRNISetTevOrder maps
+// GXChannelID through c2r: COLOR0->0, COLOR1->1, COLOR_ZERO/COLOR_NULL->7, alpha-bump->5/6).
+// Feeding channel 0 to every stage is not an approximation: materials name channel 1 in the stage
+// that writes PREV, and 7 is the constant ZERO, which used to receive channel 0 by accident.
+vec4 rasOf(int chan) {
+    if (chan == 1) return v_col1;
+    if (chan >= 5) return vec4(0.0);   // 5/6 alpha-bump (not computed), 7 = ZERO
+    return v_col;
+}
+
 vec2 coordOf(int idx) {
     if (idx == 1) return v_uv01.zw;
     if (idx == 2) return v_uv23.xy;
@@ -140,7 +151,6 @@ vec2 coordOf(int idx) {
 }
 
 void main() {
-    vec4 ras = v_col;
 
     g_reg[0] = tev.regInit[0];
     g_reg[1] = tev.regInit[1];
@@ -155,6 +165,8 @@ void main() {
                      ? sampleUnit(tev.dest[i].w & 3, coordOf((tev.dest[i].w >> 8) & 3))
                      : vec4(0.0);
         vec4 k = tev.konst[i];
+        // Per STAGE, not per draw: two stages of one material legitimately read different channels.
+        vec4 ras = rasOf((tev.dest[i].w >> 16) & 7);
 
         vec3 ca = colorArg(tev.cSel[i].x, t, ras, k);
         vec3 cb = colorArg(tev.cSel[i].y, t, ras, k);
