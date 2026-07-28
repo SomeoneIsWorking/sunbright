@@ -947,4 +947,21 @@ void sbr_gxfifo_report_bp_writes() {
                      0x80 + m, g_bpWrites[0x80 + m]);
     lucent::info("gxfifo", "  GENMODE (0x00) {} writes, RAS1_TREF 0x28 {} / 0x29 {} / 0x2a {}",
                  g_bpWrites[0x00], g_bpWrites[0x28], g_bpWrites[0x29], g_bpWrites[0x2a]);
+    // TMEM — RESOLVED BY READING THE GAME'S OWN WRITER, not by inference. Two binders exist and
+    // neither invalidates the "latest SETIMAGE0 + latest SETIMAGE3 per unit" model:
+    //
+    //   - J3D (the path that binds essentially every material here): J3DTevs.cpp `loadTexNo` writes
+    //     TX_SETIMAGE0, TX_SETIMAGE3, TX_SETMODE0/1 and — only for CI formats — the TLUT pair. It
+    //     NEVER writes TX_SETIMAGE1/2, so TMEM regions keep whatever GXInit left.
+    //   - The SDK (GXTexture.c `GXLoadTexObjPreLoaded`) writes six registers in the fixed order
+    //     mode0, mode1, image0, image1, image2, image3. image1/image2 come from the tex REGION and
+    //     describe TMEM CACHING (where the hardware stages the texels), not which image is sampled.
+    //
+    // So SETIMAGE3 stays the correct bind stamp for a unit, and TMEM is inert for a port that
+    // samples main memory directly. Counted anyway so the claim stays falsifiable.
+    for (unsigned m = 0; m < 4; ++m)
+        lucent::info("gxfifo", "  unit {}: TX_SETIMAGE1 (0x{:02x}) {} writes, TX_SETIMAGE2 "
+                               "(0x{:02x}) {} writes, TX_SETTLUT (0x{:02x}) {} writes",
+                     m, 0x8C + m, g_bpWrites[0x8C + m], 0x90 + m, g_bpWrites[0x90 + m],
+                     0x98 + m, g_bpWrites[0x98 + m]);
 }

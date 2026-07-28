@@ -395,11 +395,18 @@ void pack_tev(const SbrTevState& tev, TevUniform& u) {
         // observed at the point the drawable is captured. Pinning is not a fix and is not treated
         // as one — it is the better-scoring of two known-wrong behaviours while the binding desync
         // is tracked down. Do not delete the named path; it is the correct mechanism.
-        static const bool named = [] {
+        // Which units are routed to the unit the stage NAMES, as a bitmask, so the question "which
+        // unit blacks the frame" is one run per bit instead of one run per theory. SBR_TEXMAP_UNITS
+        // is the mask (bit m = honour stages naming unit m); SBR_TEXMAP_NAMED=1 is the shorthand for
+        // all four. A unit not in the mask falls back to 0, which is the pinned behaviour.
+        static const uint32_t unitMask = [] {
+            if (const char* m = std::getenv("SBR_TEXMAP_UNITS"))
+                return (uint32_t)std::strtoul(m, nullptr, 0);
             const char* e = std::getenv("SBR_TEXMAP_NAMED");
-            return e != nullptr && e[0] != '\0' && e[0] != '0';
+            return (e != nullptr && e[0] != '\0' && e[0] != '0') ? 0xFu : 0x1u;
         }();
-        u.dest[i][3] = (named ? (int32_t)(st.texmap & 3) : 0) | (int32_t)(st.texcoord & 3) << 8;
+        const int32_t map = (int32_t)(st.texmap & 3);
+        u.dest[i][3] = (((unitMask >> map) & 1) ? map : 0) | (int32_t)(st.texcoord & 3) << 8;
         pack_konst(tev, (unsigned)i, u.konst[i]);
     }
     for (int r = 0; r < 4; ++r)

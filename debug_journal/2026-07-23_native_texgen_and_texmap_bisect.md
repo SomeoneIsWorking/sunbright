@@ -219,3 +219,77 @@ unused), indirect TEV stages, the fog block, EMBOSS texgen, per-vertex TEXnMTXID
 slot is taken from the XF register, so a shape supplying it per vertex uses the wrong matrix), and
 C4/C8 textures (the TLUT's main-memory address is not tracked — GX writes it via the TLUT load at
 BP 0x64/0x65, which this parser does not follow).
+
+---
+
+# 2026-07-28 — the RE, and what it found
+
+Picking up on "start with the RE necessary for native render". Every question below was answered by
+reading the game's own writers in `decomp/sms`, not by inference, and then confirmed by a run.
+
+## RE result 1 — the texture-unit binding model is CORRECT, and the TMEM worry is dead
+
+The uncommitted note from last session guessed that GX binds a unit to a **TMEM region**
+(TX_SETIMAGE1/2), so "latest SETIMAGE0 + latest SETIMAGE3 per unit" might be structurally wrong.
+Reading the two binders settles it:
+
+- `J3DTevs.cpp:loadTexNo(texmap, texNo)` — the path essentially every material here uses (J3D bakes
+  it into the per-material display list) — writes **TX_SETIMAGE0, TX_SETIMAGE3, TX_SETMODE0/1** and,
+  only for CI formats, `J3DGDLoadTlut` + `J3DGDSetTexTlut`. It **never** writes TX_SETIMAGE1/2.
+- `GXTexture.c:GXLoadTexObjPreLoaded` writes six registers in the fixed order mode0, mode1, image0,
+  image1, image2, image3. image1/image2 come from the tex REGION and describe TMEM **caching**, not
+  which image is sampled.
+
+So TMEM is inert for a port that samples main memory, and TX_SETIMAGE3 is the right bind stamp.
+The register-ID tables are ground truth in `J3DTevs.cpp` and match the parser exactly:
+mode0 `0x80-0x83`/`0xA0-0xA3`, image0 `0x88`/`0xA8`, image3 `0x94`/`0xB4`, TLUT `0x98`/`0xB8`.
+
+**Sparse binding is by design:** each `J3DTevBlockN::load()` calls `loadTexNo(i, mTexNo[i])` only
+when `mTexNo[i] != 0xffff`. A unit a material does not use keeps the previous material's texture.
+That is what the "units 1/2/3 carry only 34/11/9 distinct addresses" measurement was seeing — it is
+CORRECT GX behaviour, not a desync, and the whole "stale binding" thread was chasing nothing.
+
+## RE result 2 — TREF and the XF texgen register decode are both correct
+
+`JRenderer.cpp:JRNISetTevOrder` packs RAS1_TREF exactly as the parser reads it, including
+`texEnable = (map != 0xff && !(map & GX_TEXMAP_DISABLE))`. `GXAttr.c:GXSetTexCoordGen2` packs XF
+`0x1040+n` as projection@1, form@2, **type@4..6, sourceRow@7..11** — the parser matches. (Its
+`inputForm` reads 2 bits where the register has 1; bit 3 is always zero, so it is harmless.)
+
+## The actual defect: SRTG was fed the stored vertex colour, not the rasterized one
+
+With the parser cleared, a per-draw state dump (`SBR_DRAW_STATE=<n>`, reporting unit bindings, the
+stage table, the texgen config and each coordinate set's range at the point of use) showed the
+5-stage plaza material with all four units freshly bound to real textures — and **coordinate set 3
+constant at (1.00, 1.00) on every draw**. Its texgen is `type 2 / row 2 / identity`: `GX_TG_SRTG`.
+
+`GXSetTexCoordGen2`'s `case GX_TG_SRTG` forces the source row to 2 (COLORS) and takes the **colour
+channel's own rasterized output**. This port was passing the RAW decoded CLR0 instead, which is
+white for any mesh without a stored colour — pinning every SRTG coordinate to one texel of the ramp
+for the entire scene. Fixed: `texgen()` now takes the lit channel result, clamped to [0,1] as the
+hardware does before it becomes a coordinate.
+
+That is what "one flat colour over the whole frame" and "black sky and surfaces" were. With it
+fixed, the named-texmap path renders a real, textured, recognisable plaza.
+
+## Bisecting the residual: it is unit 1, and only unit 1
+
+`SBR_TEXMAP_UNITS=<mask>` routes stages naming unit m to unit m only for the bits in the mask (the
+rest fall back to 0). One run per bit instead of one run per theory. All numbers `mean over 40`:
+
+| mask | units honoured | edgeIoU | lumaCorr | frame |
+|---|---|---|---|---|
+| 0x1 | none (pinned) | 29.0% | +0.718 | complete |
+| 0xF | 0,1,2,3 | 23.3% | +0.614 | distant scenery black |
+| 0x3 | 0,1 | 23.3% | +0.615 | distant scenery black |
+| 0x5 | 0,2 | 28.9% | +0.718 | complete |
+| 0xD | 0,2,3 | 28.9% | +0.719 | complete |
+
+**Unit 1 alone reproduces the entire defect; units 2 and 3 are correct.** Sky, sea, the tower,
+awnings, plants and umbrellas — everything DISTANT — goes black when stages sample the unit they
+name for unit 1; near geometry is unaffected either way. Ruled out along the way: the alpha test
+(`SBR_ALPHATEST=0` gives a bit-identical score), unit 1's texture content (`80870360` I4 64x64
+decodes to mean 147, min 51 — not black; only 6 of 194 decoded textures are near-black at all), and
+stages naming an unbound unit (0 of 11,563 enabled stages name a unit holding the J3D 4x4 null).
+
+Next: why unit 1 specifically, on distant geometry only.

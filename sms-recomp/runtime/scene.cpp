@@ -140,7 +140,13 @@ void light_channel(const SbrXfState& xf, int chan, const float vpos[3], const fl
 // The source is the RAW, model-space vertex, which is what the XF sees: the position matrix is
 // applied on the other path, and a texgen that wanted view space gets it because the game folds
 // the view transform into the texture matrix itself.
-void texgen(const SbrXfState& xf, unsigned g, const SbrGeomVert& v, const float vtxColor[4],
+// `rasColor` is the RASTERIZED colour channel — the lit output, not the vertex's stored colour.
+// GX_TG_SRTG (GXAttr.c GXSetTexCoordGen2, the `case GX_TG_SRTG` arm) forces the source row to 2
+// (COLORS) and takes the channel's own result, which is the whole point of the mode: the material
+// looks a ramp up with the colour lighting just produced for that vertex. Feeding the raw stored
+// colour instead pins every such coordinate to the vertex colour — white for a mesh with no CLR0,
+// i.e. one fixed texel for the entire scene.
+void texgen(const SbrXfState& xf, unsigned g, const SbrGeomVert& v, const float rasColor[4],
             float out[2]) {
     const SbrTexGen& tg = xf.texGen[g];
 
@@ -158,8 +164,10 @@ void texgen(const SbrXfState& xf, unsigned g, const SbrGeomVert& v, const float 
                                          "evaluated — its coordinate is channel 0's", g);
             }
         }
-        out[0] = vtxColor[0];
-        out[1] = vtxColor[1];
+        // The rasterized colour is clamped to [0,1] before it becomes a coordinate; a lit channel
+        // can exceed 1.0 and that would run off the end of the ramp.
+        out[0] = std::clamp(rasColor[0], 0.0f, 1.0f);
+        out[1] = std::clamp(rasColor[1], 0.0f, 1.0f);
         return;
     }
     if (tg.type == 1) {
@@ -176,7 +184,7 @@ void texgen(const SbrXfState& xf, unsigned g, const SbrGeomVert& v, const float 
     switch (tg.sourceRow) {
     case 0: in[0] = v.x;  in[1] = v.y;  in[2] = v.z;  break;   // GEOM
     case 1: in[0] = v.nx; in[1] = v.ny; in[2] = v.nz; break;   // NORMAL
-    case 2: in[0] = vtxColor[0]; in[1] = vtxColor[1]; break;   // COLORS
+    case 2: in[0] = rasColor[0]; in[1] = rasColor[1]; break;   // COLORS
     default:
         // TEX0..TEX7 are rows 5..12. Sets beyond what the decoder reads keep (0,0), which the
         // decoder has already reported by name rather than silently substituting set 0.
@@ -659,7 +667,7 @@ float sbr_scene_render(double now_seconds, const float proj[16]) {
                     o.uv[tg][0] = v.uv[0][0];
                     o.uv[tg][1] = v.uv[0][1];
                 } else if (tg < d.tev.numTexGens) {
-                    texgen(d.xf, tg, v, vc, o.uv[tg]);
+                    texgen(d.xf, tg, v, lit, o.uv[tg]);
                 } else {
                     o.uv[tg][0] = o.uv[tg][1] = 0.0f;
                 }
@@ -672,6 +680,48 @@ float sbr_scene_render(double now_seconds, const float proj[16]) {
                 nlo[1] = std::min(nlo[1], sy); nhi[1] = std::max(nhi[1], sy);
                 nearestW = std::min(nearestW, o.w);
             }
+        }
+        // PER-DRAW STATE, at the point of use. A whole-frame score says something is wrong but never
+        // WHERE, so every step becomes a hypothesis costing a run; this reports the three things a
+        // stage needs to sample — the unit it names, the texture bound to that unit, and the
+        // coordinate it samples with — for the first SBR_DRAW_STATE drawables that have geometry.
+        // The GX side of this is RE-verified against the game's own writers (J3DTevs.cpp
+        // loadTexNo/JRNISetTevOrder + GXTexture.c GXLoadTexObjPreLoaded), so a disagreement here is
+        // this renderer's, not the parser's.
+        static const long kDrawState = [] {
+            const char* e = std::getenv("SBR_DRAW_STATE");
+            return e != nullptr ? std::strtol(e, nullptr, 10) : 0;
+        }();
+        static long drawStateSeen = 0;
+        if (!g_out.empty() && drawStateSeen < kDrawState) {
+            ++drawStateSeen;
+            lucent::Line l;
+            l.add("draw {} verts={} numTexGens={} numStages={} |", drawStateSeen, g_out.size(),
+                  d.tev.numTexGens, d.tev.numStages);
+            for (unsigned m = 0; m < 4; ++m)
+                l.add(" u{}={:08x}/f{}/{}x{}@{}", m, d.tex[m].addr, d.tex[m].format,
+                      d.tex[m].width, d.tex[m].height, d.tex[m].bindSeq);
+            l.add(" |");
+            for (unsigned s = 0; s < std::min<uint32_t>(d.tev.numStages, 8); ++s)
+                l.add(" s{}:map{}{} coord{}", s, d.tev.stage[s].texmap,
+                      d.tev.stage[s].texEnable ? "" : "(off)", d.tev.stage[s].texcoord);
+            l.add(" | tg");
+            for (unsigned g2 = 0; g2 < 4; ++g2) {
+                const SbrTexGen& tg2 = d.xf.texGen[g2];
+                l.add(" {}:t{}/src{}/mtx{}{}", g2, tg2.type, tg2.sourceRow, tg2.mtxSlot,
+                      (tg2.mtxSlot < 10 && !((d.xf.texMtxWritten >> tg2.mtxSlot) & 1)) ? "!" : "");
+            }
+            l.add(" | uv");
+            for (unsigned tg = 0; tg < 4; ++tg) {
+                float lo[2] = {1e30f, 1e30f}, hi[2] = {-1e30f, -1e30f};
+                for (const SbrVertex& o : g_out)
+                    for (int c = 0; c < 2; ++c) {
+                        lo[c] = std::min(lo[c], o.uv[tg][c]);
+                        hi[c] = std::max(hi[c], o.uv[tg][c]);
+                    }
+                l.add(" {}:[{:.2f},{:.2f}]x[{:.2f},{:.2f}]", tg, lo[0], hi[0], lo[1], hi[1]);
+            }
+            l.flush(lucent::Level::Info, "nrender");
         }
         if (!g_out.empty()) sbr_render_tris(g_out.data(), (int)(g_out.size() / 3) * 3, d.depth, d.tex, d.tev);
 
