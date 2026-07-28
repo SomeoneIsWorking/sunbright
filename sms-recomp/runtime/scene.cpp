@@ -502,50 +502,12 @@ void sbr_scene_begin_tick() {
     g_building.index.clear();
 }
 
-// Drawables added but not yet given their material state. See sbr_scene_attach_pending_material.
-std::vector<uint32_t> g_pendingMaterial;
-
 void sbr_scene_add(const SbrDrawable& d) {
     g_building.index.emplace(d.key, (uint32_t)g_building.items.size());
     g_building.items.push_back(d);
 }
 
-void sbr_scene_add_pending_material(const SbrDrawable& d) {
-    g_pendingMaterial.push_back((uint32_t)g_building.items.size());
-    sbr_scene_add(d);
-}
-
-// Called by the FIFO parser when it reaches a DRAW command: every drawable registered since the
-// last draw belongs to the shape about to be drawn, so this is the stream position whose material
-// state is theirs. Measured before this existed: 435 of 929 drawables carried a material captured
-// ~2.7 KB of stream too early, i.e. a different shape's — see
-// debug_journal/2026-07-23_native_texgen_and_texmap_bisect.md.
-void sbr_scene_attach_pending_material(const SbrTexture tex[4], const SbrTevState& tev,
-                                       const SbrXfState& xf) {
-    if (g_pendingMaterial.empty()) return;
-    for (const uint32_t i : g_pendingMaterial) {
-        if (i >= g_building.items.size()) continue;
-        SbrDrawable& d = g_building.items[i];
-        for (unsigned m = 0; m < 4; ++m) d.tex[m] = tex[m];
-        d.tev = tev;
-        d.xf  = xf;
-    }
-    g_pendingMaterial.clear();
-}
-
 void sbr_scene_end_tick() {
-    // A drawable still pending at the tick boundary never saw a draw command of its own. Keeping
-    // the seam's snapshot would silently reintroduce the defect for it, so say so instead of
-    // pretending: it is the only case where the stream cannot answer.
-    if (!g_pendingMaterial.empty()) {
-        static long warned = 0;
-        if (warned++ < 4)
-            lucent::warn("scene", "{} drawables reached the tick end with no draw command of their "
-                                  "own; their material is the capture seam's snapshot, which is the "
-                                  "state of whatever was drawn before them",
-                         g_pendingMaterial.size());
-        g_pendingMaterial.clear();
-    }
     g_prev = std::move(g_cur);
     g_cur = std::move(g_building);
     g_building = Snapshot{};

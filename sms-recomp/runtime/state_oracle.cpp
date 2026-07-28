@@ -198,10 +198,16 @@ void sbr_state_oracle_report() {
         size_t checked = 0, bad = 0;
         long shown = 0;
         for (const SbrDrawState& c : g_capturePrev) {
-            // mine[] is in stream order, so the correlate is a lower-bound on pos.
-            const auto it = std::lower_bound(mine.begin(), mine.end(), c.pos,
-                                             [](const SbrDrawState& d, uint32_t p) { return d.pos < p; });
-            if (it == mine.end()) continue;
+            // The correlate is the LAST draw at or BEFORE the snapshot, not the first after it.
+            // ov_shape_draw runs the real J3DShape::draw FIRST (it needs the matrix loads the draw
+            // itself issues), so by the time the snapshot is taken this shape's draw commands are
+            // ALREADY in the stream — the next draw belongs to the NEXT shape. Getting this
+            // backwards reported 47% of drawables as mismatched and sent a "fix" down the wrong
+            // path; the direction of the lookup IS the measurement.
+            const auto up = std::upper_bound(mine.begin(), mine.end(), c.pos,
+                                             [](uint32_t p, const SbrDrawState& d) { return p < d.pos; });
+            if (up == mine.begin()) continue;
+            const auto it = up - 1;
             ++checked;
             if (same(c, *it)) continue;
             ++bad;

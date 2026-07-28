@@ -96,13 +96,6 @@ void sbr_scene_begin_tick();
 // Record one drawable. Called from the J3D capture hook.
 void sbr_scene_add(const SbrDrawable& d);
 
-// Add a drawable whose MATERIAL state is not yet known. GX state belongs to the DRAW, and the J3D
-// capture seam runs on the CPU side at a stream position the parser has not reached — so the seam
-// contributes geometry and matrices (which need J3D's knowledge) while the material comes from the
-// stream, attached when the parser reaches this drawable's own draw command.
-void sbr_scene_add_pending_material(const SbrDrawable& d);
-void sbr_scene_attach_pending_material(const SbrTexture tex[4], const SbrTevState& tev,
-                                       const SbrXfState& xf);
 
 // Finish the tick: rotate current -> previous and stamp the wall clock, so the renderer can work out
 // how far between the two snapshots any given display frame falls.

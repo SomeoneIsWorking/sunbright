@@ -484,7 +484,7 @@ bytes. So the difference is in what each side DOES with that binding — aurora'
 that id, versus this port's decode. That is the next thing to instrument, and it is now a narrow
 question about one id rather than a search.
 
-## 2026-07-28 (cont.) — ROOT CAUSE: the capture seam snapshots state that belongs to a different draw
+## 2026-07-28 (cont.) — ~~ROOT CAUSE~~ FALSIFIED: the capture seam is CORRECT (my lookup was backwards)
 
 The oracle proved the FIFO-derived state matches aurora's at 99.55% of draws. That says nothing
 about the state the RENDERER uses, because the renderer does not read the FIFO state directly:
@@ -557,3 +557,52 @@ signature (count plus matrix indices, both of which the seam already decodes).
 Note what the metric did here: the frame gained a whole missing background and its score went DOWN,
 because misplaced textures cost more than absent geometry. The image was the evidence; the number
 would have sent this the wrong way, again.
+
+### RETRACTED — the "47% of drawables carry the wrong material" finding was my own instrument bug
+
+The correlate was backwards. `ov_shape_draw` runs the real `J3DShape::draw` FIRST (deliberately — it
+needs the matrix loads the draw itself issues, see the comment at `j3d_capture.cpp:137`), so by the
+time the snapshot is taken **this shape's draw commands are already in the stream**. The correct
+correlate is therefore the LAST draw at or BEFORE the snapshot position, not the first at or after.
+Looking forwards compared each shape's snapshot against the NEXT shape's state, which is exactly the
+one-shape shift the "fix" then baked in — and exactly what the misplaced textures in that frame were.
+
+With the lookup corrected:
+
+```
+capture seam: 0 of 936 snapshots disagree with the FIFO state at their own stream position
+capture seam: 0 of 953 snapshots disagree
+capture seam: 0 of 902 snapshots disagree
+```
+
+**Zero.** The capture seam is correct for every drawable in every frame measured. The
+`SBR_MATERIAL_FROM_DRAW` machinery is DELETED rather than left gated: its premise is falsified, and
+a dead mechanism kept "just in case" is the tombstone this project bans. Default path re-verified at
+29.0% / +0.719.
+
+### Where that leaves the arc — all three state consumers are now confirmed correct
+
+| consumer | verdict | evidence |
+|---|---|---|
+| FIFO parse | correct | matches aurora on 99.55% of draws, paired by stream offset |
+| aurora | reference | renders the plaza correctly from the same stream and memory |
+| capture seam snapshot | correct | 0 of ~900 disagree with the FIFO state at the shape's own draw |
+
+So the state the renderer consumes is right, and every remaining hypothesis about the state is dead.
+The unit-1 black is DOWNSTREAM of the state: in what the renderer does with it — the texture
+decode/upload keyed by that state, or the shader's evaluation. That is a much smaller search space
+than this arc has been working in, and it is where the next iteration goes.
+
+One fact from the failed fix is still worth keeping, because it is strange and unexplained:
+**attaching the NEXT shape's material made the missing scenery RENDER.** Geometry that is black with
+its own (correct) material draws with a wrong one. Whatever blacks those surfaces is therefore a
+property of their own material — a stage, a konst, a texture — not of the geometry or the binding.
+
+### A note on the instrument
+
+Two instrument bugs in one session (ordinal pairing, then a backwards correlate), each of which
+produced a confident, specific, wrong finding — and the second one got as far as a committed "ROOT
+CAUSE" and a code change. Both were caught the same way: the fix did not do what the finding
+predicted. The lesson is not "be more careful", it is that **a state oracle needs its own
+known-positive** — for a correlate, that means checking it against a case whose answer is known
+before believing a number it produces.

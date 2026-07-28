@@ -24,7 +24,6 @@
 #include "mmio.h"
 #include "native_render.h"
 #include "state_oracle.h"
-#include "scene.h"
 
 // The texture state the material display lists have written, per texmap. See the BP handler.
 static SbrTexture g_fifoTex[8];
@@ -852,14 +851,6 @@ size_t parse(const u8* p, size_t n, int depth) {
 
         if (op >= 0x80 && op <= 0xBF) {         // draw primitive
             if (n - i < 3) { g_need = 3; break; }
-            // The state at THIS draw belongs to the drawables the capture seam registered since the
-            // last one. This is the association GX actually has, and the seam cannot: it runs from
-            // the CPU at a stream position the parser has not reached yet.
-            {
-                SbrTexture t4[4];
-                for (unsigned m = 0; m < 4; ++m) t4[m] = g_fifoTex[m];
-                sbr_scene_attach_pending_material(t4, g_tev, g_xf);
-            }
             // Record THIS side's state for the per-draw comparison against aurora, which derives
             // its own from the same bytes a moment later. See state_oracle.h.
             if (sbr_state_diff_enabled()) {
