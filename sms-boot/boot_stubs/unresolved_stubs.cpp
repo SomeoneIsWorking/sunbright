@@ -25,11 +25,6 @@
 
 // ---- boss-AI nerve singletons (DEFINE_NERVE provides theNerve(); execute() is
 //      compiled elsewhere, so only the accessor is missing) ----
-const TNerveBEelTearsGenerate& TNerveBEelTearsGenerate::theNerve() { static TNerveBEelTearsGenerate n; return n; }
-const TNerveBEelTearsMarioRecover& TNerveBEelTearsMarioRecover::theNerve() { static TNerveBEelTearsMarioRecover n; return n; }
-const TNerveBEelTearsMoveUp& TNerveBEelTearsMoveUp::theNerve() { static TNerveBEelTearsMoveUp n; return n; }
-const TNerveBEelTearsSplit& TNerveBEelTearsSplit::theNerve() { static TNerveBEelTearsSplit n; return n; }
-const TNerveBEelTearsWaterHit& TNerveBEelTearsWaterHit::theNerve() { static TNerveBEelTearsWaterHit n; return n; }
 const TNerveBPBreakSleep& TNerveBPBreakSleep::theNerve() { static TNerveBPBreakSleep n; return n; }
 const TNerveBPCannon& TNerveBPCannon::theNerve() { static TNerveBPCannon n; return n; }
 const TNerveBPCannonL& TNerveBPCannonL::theNerve() { static TNerveBPCannonL n; return n; }
@@ -67,17 +62,6 @@ const TNerveBWRoll& TNerveBWRoll::theNerve() { static TNerveBWRoll n; return n; 
 const TNerveBWShake& TNerveBWShake::theNerve() { static TNerveBWShake n; return n; }
 const TNerveBWStun& TNerveBWStun::theNerve() { static TNerveBWStun n; return n; }
 const TNerveBWWakeup& TNerveBWWakeup::theNerve() { static TNerveBWWakeup n; return n; }
-const TNerveBossEelAppear& TNerveBossEelAppear::theNerve() { static TNerveBossEelAppear n; return n; }
-const TNerveBossEelDie& TNerveBossEelDie::theNerve() { static TNerveBossEelDie n; return n; }
-const TNerveBossEelEat& TNerveBossEelEat::theNerve() { static TNerveBossEelEat n; return n; }
-const TNerveBossEelFirstSpin& TNerveBossEelFirstSpin::theNerve() { static TNerveBossEelFirstSpin n; return n; }
-const TNerveBossEelMouthOpenWait& TNerveBossEelMouthOpenWait::theNerve() { static TNerveBossEelMouthOpenWait n; return n; }
-const TNerveBossEelOutWait& TNerveBossEelOutWait::theNerve() { static TNerveBossEelOutWait n; return n; }
-const TNerveBossEelQuickBack& TNerveBossEelQuickBack::theNerve() { static TNerveBossEelQuickBack n; return n; }
-const TNerveBossEelSecondSpin& TNerveBossEelSecondSpin::theNerve() { static TNerveBossEelSecondSpin n; return n; }
-const TNerveBossEelSleepOnBottom& TNerveBossEelSleepOnBottom::theNerve() { static TNerveBossEelSleepOnBottom n; return n; }
-const TNerveBossEelSlowBack& TNerveBossEelSlowBack::theNerve() { static TNerveBossEelSlowBack n; return n; }
-const TNerveBossEelWaitAppear& TNerveBossEelWaitAppear::theNerve() { static TNerveBossEelWaitAppear n; return n; }
 const TNerveBossHanachanDamage& TNerveBossHanachanDamage::theNerve() { static TNerveBossHanachanDamage n; return n; }
 const TNerveBossHanachanDead& TNerveBossHanachanDead::theNerve() { static TNerveBossHanachanDead n; return n; }
 const TNerveBossHanachanDown& TNerveBossHanachanDown::theNerve() { static TNerveBossHanachanDown n; return n; }
@@ -85,7 +69,6 @@ const TNerveBossHanachanGetUp& TNerveBossHanachanGetUp::theNerve() { static TNer
 const TNerveBossHanachanGraphWander& TNerveBossHanachanGraphWander::theNerve() { static TNerveBossHanachanGraphWander n; return n; }
 const TNerveBossHanachanSnort& TNerveBossHanachanSnort::theNerve() { static TNerveBossHanachanSnort n; return n; }
 const TNerveBossHanachanTumble& TNerveBossHanachanTumble::theNerve() { static TNerveBossHanachanTumble n; return n; }
-const TNerveOilBallStay& TNerveOilBallStay::theNerve() { static TNerveOilBallStay n; return n; }
 const TNerveSBH_Fall& TNerveSBH_Fall::theNerve() { static TNerveSBH_Fall n; return n; }
 const TNerveSBH_SleepContinue& TNerveSBH_SleepContinue::theNerve() { static TNerveSBH_SleepContinue n; return n; }
 
@@ -143,11 +126,6 @@ TMBindShadowManager* gpBindShadowManager  = nullptr;
 
 // ---- nerve execute() bodies (DECLARE_NERVE declares the virtual; defining it emits
 //      the vtable that theNerve()'s static instance needs). Off-path boss AI -> FALSE. ----
-BOOL TNerveBEelTearsGenerate::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBEelTearsGenerate::execute"); return FALSE; }
-BOOL TNerveBEelTearsMarioRecover::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBEelTearsMarioRecover::execute"); return FALSE; }
-BOOL TNerveBEelTearsMoveUp::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBEelTearsMoveUp::execute"); return FALSE; }
-BOOL TNerveBEelTearsSplit::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBEelTearsSplit::execute"); return FALSE; }
-BOOL TNerveBEelTearsWaterHit::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBEelTearsWaterHit::execute"); return FALSE; }
 BOOL TNerveBPBreakSleep::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBPBreakSleep::execute"); return FALSE; }
 BOOL TNerveBPCannon::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBPCannon::execute"); return FALSE; }
 BOOL TNerveBPCannonL::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBPCannonL::execute"); return FALSE; }
@@ -185,17 +163,6 @@ BOOL TNerveBWRoll::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveB
 BOOL TNerveBWShake::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBWShake::execute"); return FALSE; }
 BOOL TNerveBWStun::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBWStun::execute"); return FALSE; }
 BOOL TNerveBWWakeup::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBWWakeup::execute"); return FALSE; }
-BOOL TNerveBossEelAppear::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBossEelAppear::execute"); return FALSE; }
-BOOL TNerveBossEelDie::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBossEelDie::execute"); return FALSE; }
-BOOL TNerveBossEelEat::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBossEelEat::execute"); return FALSE; }
-BOOL TNerveBossEelFirstSpin::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBossEelFirstSpin::execute"); return FALSE; }
-BOOL TNerveBossEelMouthOpenWait::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBossEelMouthOpenWait::execute"); return FALSE; }
-BOOL TNerveBossEelOutWait::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBossEelOutWait::execute"); return FALSE; }
-BOOL TNerveBossEelQuickBack::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBossEelQuickBack::execute"); return FALSE; }
-BOOL TNerveBossEelSecondSpin::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBossEelSecondSpin::execute"); return FALSE; }
-BOOL TNerveBossEelSleepOnBottom::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBossEelSleepOnBottom::execute"); return FALSE; }
-BOOL TNerveBossEelSlowBack::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBossEelSlowBack::execute"); return FALSE; }
-BOOL TNerveBossEelWaitAppear::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBossEelWaitAppear::execute"); return FALSE; }
 BOOL TNerveBossHanachanDamage::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBossHanachanDamage::execute"); return FALSE; }
 BOOL TNerveBossHanachanDead::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBossHanachanDead::execute"); return FALSE; }
 BOOL TNerveBossHanachanDown::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBossHanachanDown::execute"); return FALSE; }
@@ -203,6 +170,5 @@ BOOL TNerveBossHanachanGetUp::execute(TSpineBase<TLiveActor>*) const { SB_STUB_H
 BOOL TNerveBossHanachanGraphWander::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBossHanachanGraphWander::execute"); return FALSE; }
 BOOL TNerveBossHanachanSnort::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBossHanachanSnort::execute"); return FALSE; }
 BOOL TNerveBossHanachanTumble::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveBossHanachanTumble::execute"); return FALSE; }
-BOOL TNerveOilBallStay::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveOilBallStay::execute"); return FALSE; }
 BOOL TNerveSBH_Fall::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveSBH_Fall::execute"); return FALSE; }
 BOOL TNerveSBH_SleepContinue::execute(TSpineBase<TLiveActor>*) const { SB_STUB_HIT("TNerveSBH_SleepContinue::execute"); return FALSE; }
