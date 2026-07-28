@@ -24,6 +24,8 @@ long g_limit = [] {
 // and said out loud rather than compared anyway).
 std::vector<std::vector<SbrDrawState>> g_mineFrames, g_auroraFrames;
 std::vector<SbrDrawState> g_mineCur, g_auroraCur;
+// The capture-seam snapshots of the CURRENT frame, in the order the seam took them.
+std::vector<SbrDrawState> g_captureCur, g_capturePrev;
 
 // Describe one draw compactly. Only the fields that can disagree, so a report line is readable
 // next to its counterpart rather than two walls of numbers.
@@ -62,8 +64,17 @@ void sbr_state_oracle_mine(const SbrDrawState& s) {
     if (g_limit > 0) g_mineCur.push_back(s);
 }
 
+void sbr_state_oracle_capture(uint32_t pos, const SbrDrawState& s) {
+    if (g_limit <= 0) return;
+    SbrDrawState c = s;
+    c.pos = pos;
+    g_captureCur.push_back(c);
+}
+
 void sbr_state_oracle_mine_frame_end() {
     if (g_limit <= 0 || g_mineCur.empty()) return;
+    g_capturePrev.swap(g_captureCur);
+    g_captureCur.clear();
     g_mineFrames.push_back(std::move(g_mineCur));
     g_mineCur.clear();
     if (g_mineFrames.size() > 8) g_mineFrames.erase(g_mineFrames.begin());
@@ -178,6 +189,35 @@ void sbr_state_oracle_report() {
     lucent::info("oracle", "{} of {} draws disagree ({} trailing unpaired) — {} look like a LAG "
                            "(the same id appears within 4 draws on aurora's side), {} are a "
                            "genuinely different texture", differing, k, delta, lagLike, genuine);
+
+    // THE CAPTURE SEAM, against the FIFO state it claims to describe. For each snapshot, find the
+    // first FIFO draw at or after the parser position when it was taken — that is the drawable's own
+    // first draw — and compare. A mismatch means the renderer is drawing geometry with a material
+    // that belongs to a different shape, which no amount of correctness in the parse can fix.
+    if (!g_capturePrev.empty() && !mine.empty()) {
+        size_t checked = 0, bad = 0;
+        long shown = 0;
+        for (const SbrDrawState& c : g_capturePrev) {
+            // mine[] is in stream order, so the correlate is a lower-bound on pos.
+            const auto it = std::lower_bound(mine.begin(), mine.end(), c.pos,
+                                             [](const SbrDrawState& d, uint32_t p) { return d.pos < p; });
+            if (it == mine.end()) continue;
+            ++checked;
+            if (same(c, *it)) continue;
+            ++bad;
+            if (shown++ < g_limit) {
+                lucent::Line a, b;
+                a.add("capture@{} SEAM  ", c.pos);
+                append(a, c);
+                a.flush(lucent::Level::Info, "oracle");
+                b.add("capture@{} FIFO  ", it->pos);
+                append(b, *it);
+                b.flush(lucent::Level::Info, "oracle");
+            }
+        }
+        lucent::info("oracle", "capture seam: {} of {} snapshots disagree with the FIFO state at "
+                               "their own stream position", bad, checked);
+    }
 
     // INSTRUMENT VALIDATION, not a result. If aurora's upper units report ONE id for a whole frame
     // while this side reports many, the field being read on aurora's side is not where it holds the

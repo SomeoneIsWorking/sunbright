@@ -483,3 +483,49 @@ texture ids aurora does, then aurora binds `0x80cfafa0` too and renders it fine,
 bytes. So the difference is in what each side DOES with that binding — aurora's texture upload for
 that id, versus this port's decode. That is the next thing to instrument, and it is now a narrow
 question about one id rather than a search.
+
+## 2026-07-28 (cont.) — ROOT CAUSE: the capture seam snapshots state that belongs to a different draw
+
+The oracle proved the FIFO-derived state matches aurora's at 99.55% of draws. That says nothing
+about the state the RENDERER uses, because the renderer does not read the FIFO state directly:
+`overrides/j3d_capture.cpp:257` snapshots it at `J3DShape::draw`, from the CPU side. Extending the
+oracle to that third consumer — stamping each snapshot with the parser's stream position and
+comparing it against the first FIFO draw at or after that position — measures the assumption:
+
+```
+capture seam: 435 of 929 snapshots disagree with the FIFO state at their own stream position
+
+capture@12641 SEAM  stages=1 texgens=1 | s0:map0/c0 | units 0:a86140 1:3db200 2:3db200 3:3db200
+capture@15424 FIFO  stages=1 texgens=1 | s0:map1/c0 | units 0:8e2720 1:b0ffa0 2:3db200 3:3db200
+```
+
+**47% of drawables carry a material that is not theirs.** The snapshot is taken at stream offset
+12641; the drawable's own first draw command is at 15424 — **2,783 bytes later**. Everything the
+material writes in between, the texture binds included, happens AFTER the snapshot. Note the shape
+of the error: the seam reports `map0` with unit 1 holding the J3D 4x4 null (`3db200`), while the
+stream at the drawable's own draw says `map1` with a real texture on unit 1. That is precisely the
+"stages name units 1-3 but those units look unbound" symptom this arc opened with — and it was never
+a binding problem at all.
+
+This explains every observation in this arc at once, including the ones that contradicted each
+other:
+
+- The parse is correct (three independent confirmations: the SDK source, aurora's live state, and
+  the register tables) — yet the frame is wrong.
+- Aurora renders correctly from the same stream and the same guest memory, because aurora uses the
+  state at each draw rather than a snapshot taken earlier.
+- Unit 1 blacked the scene: the seam hands the renderer a unit-1 binding from the WRONG material,
+  so routing stages to the unit they name samples a texture that material never bound. Pinning to
+  unit 0 looked better only because unit 0 is rebound constantly and is therefore less often stale.
+- The six "zero memory" textures are real but were never the cause. They are bound at some point in
+  the frame; the seam simply attributes them to drawables that do not use them.
+
+**The fix is not to move the snapshot earlier or later** — there is no correct moment for it,
+because one CPU-side seam cannot describe a stream position it has not reached. State has to be
+associated with the DRAW, which is what the renderer doctrine already says the frontend should do
+(driven from `dev_gxfifo`, not from an sms-boot-style capture). The smallest correct step: have the
+capture seam register the drawable as PENDING, and let the FIFO parser attach the material state
+when it reaches that drawable's own draw commands. Geometry keeps coming from the seam (it needs
+J3D's matrix/skinning knowledge); material state comes from the stream, at the right position.
+
+`SBR_STATE_DIFF=<n>` now covers all three consumers: FIFO parse, aurora, and the capture seam.

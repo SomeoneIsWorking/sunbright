@@ -1015,6 +1015,11 @@ SbrTexture sbr_gx_fifo_texture(unsigned texmap) {
 }
 
 // The TEV configuration the material display lists have written.
+// Where the parser currently is in THIS frame's stream. The J3D capture seam snapshots parser
+// state from the CPU side, at a moment that is not obviously the same moment as the draw it is
+// labelling; recording the position lets that assumption be checked instead of trusted.
+uint32_t sbr_gxfifo_stream_pos() { return (uint32_t)g_out.size(); }
+
 const SbrTevState& sbr_gx_fifo_tev() { return g_tev; }
 
 // The colour-channel and light state the display lists have written.

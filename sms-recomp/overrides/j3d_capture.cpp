@@ -21,6 +21,7 @@
 #include "../runtime/probe_server.h"
 #include "../runtime/scene.h"
 #include "../runtime/j3d_decode.h"
+#include "../runtime/state_oracle.h"
 
 void sbr_mtx_begin_shape(u32 shape);
 void sbr_mtx_end_shape();
@@ -257,6 +258,22 @@ void ov_shape_draw(CPUState& cpu) {
                         for (unsigned m = 0; m < 4; ++m) dr.tex[m] = sbr_gx_fifo_texture(m);
                         dr.tev = sbr_gx_fifo_tev();
                         dr.xf  = sbr_gx_fifo_xf();
+                        // Record the same snapshot for the state oracle, stamped with the parser's
+                        // stream position, so "is this snapshot attached to the right draw?" is a
+                        // measurement rather than an assumption. See state_oracle.h.
+                        if (sbr_state_diff_enabled()) {
+                            SbrDrawState cs{};
+                            cs.numStages  = (uint8_t)dr.tev.numStages;
+                            cs.numTexGens = (uint8_t)dr.tev.numTexGens;
+                            for (unsigned k = 0; k < 16; ++k) {
+                                cs.texmap[k]    = dr.tev.stage[k].texmap;
+                                cs.texcoord[k]  = dr.tev.stage[k].texcoord;
+                                cs.texEnable[k] = dr.tev.stage[k].texEnable;
+                            }
+                            for (unsigned m = 0; m < 4; ++m)
+                                cs.unitId[m] = dr.tex[m].addr & 0x01FFFFFFu;
+                            sbr_state_oracle_capture(sbr_gxfifo_stream_pos(), cs);
+                        }
                         {
                             bool is2d = false;
                             const float* pj = sbr_gx_current_projection(&is2d);

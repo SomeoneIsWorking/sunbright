@@ -88,6 +88,9 @@ struct SbrTevState {
 
 const SbrTevState& sbr_gx_fifo_tev();
 
+// Byte offset the FIFO parser has reached in the current frame's stream.
+uint32_t sbr_gxfifo_stream_pos();
+
 // GX lighting, as XF memory holds it. Lights are in VIEW space, which is the space the draw
 // matrix already puts vertices into.
 struct SbrLight {

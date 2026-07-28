@@ -42,5 +42,12 @@ void sbr_state_oracle_aurora(const SbrDrawState& s);
 void sbr_state_oracle_mine_frame_end();
 extern "C" void sbr_state_oracle_aurora_frame_end();
 
+// THE THIRD CONSUMER. The renderer does not read the FIFO state directly: j3d_capture.cpp
+// snapshots it at J3DShape::draw, on the CPU side. The oracle proves the FIFO state is right, which
+// says nothing about whether the SNAPSHOT is attached to the draw it describes. `pos` is the
+// parser's stream offset when the snapshot was taken; the report correlates it with the first FIFO
+// draw at or after that offset — the drawable's own first draw — and they must be identical.
+void sbr_state_oracle_capture(uint32_t pos, const SbrDrawState& s);
+
 // Compare what both sides recorded and report the first disagreements; clears for the next frame.
 void sbr_state_oracle_report();
