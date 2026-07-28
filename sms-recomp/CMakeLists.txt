@@ -79,7 +79,7 @@ target_link_libraries(sms-recomp-rt PUBLIC lucent::lucent nod::nod aurora::gx au
 # member out of a static archive — nothing strongly references sb_log.o, so from a library it is
 # never extracted and the weak symbol silently stays null. That is precisely the failure it was
 # added to fix, so it must be linked unconditionally.
-add_executable(sms-recomp host/main.cpp runtime/sb_log.cpp runtime/probe_server.cpp
+add_executable(sms-recomp host/main.cpp runtime/sb_log.cpp runtime/tev_eval.cpp runtime/probe_server.cpp
                            runtime/native_render.cpp runtime/scene.cpp runtime/j3d_decode.cpp runtime/gx_texture.cpp runtime/state_oracle.cpp
                            runtime/render_compare.cpp)
 # -rdynamic puts func_<addr> into the dynamic symbol table so rt_dump_guest_stack can
@@ -93,3 +93,13 @@ target_link_libraries(sms-recomp PRIVATE sms-recomp-rt sms-recomp-guest
                       aurora::core aurora::gx aurora::core
                       aurora::main aurora::vi aurora::os aurora::mtx aurora::pad
                       SDL3::SDL3)
+
+# ---------------------------------------------------------------------------------------------
+# Tests. The TEV pipeline is checked against values hand-derived from the SDK, with no GPU, no
+# frame and no game — which is the whole point: before this the pixel pipeline existed only as a
+# shader and could not be asked a question except by rendering a frame and inferring backwards.
+enable_testing()
+add_executable(tev_eval_test tests/tev_eval_test.cpp runtime/tev_eval.cpp)
+target_link_libraries(tev_eval_test PRIVATE lucent::lucent)
+target_include_directories(tev_eval_test PRIVATE runtime)
+add_test(NAME tev_eval COMMAND tev_eval_test)

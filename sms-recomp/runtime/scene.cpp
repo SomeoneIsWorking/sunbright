@@ -1,6 +1,8 @@
 // scene.cpp — the interpolated scene (see scene.h for why this replaced the tick-driven approach).
 
 #include "scene.h"
+#include "tev_eval.h"
+#include "gx_texture.h"
 
 #include <lucent/log.h>
 
@@ -751,6 +753,89 @@ float sbr_scene_render(double now_seconds, const float proj[16]) {
                 l.add(" {}:[{:.2f},{:.2f}]x[{:.2f},{:.2f}]", tg, lo[0], hi[0], lo[1], hi[1]);
             }
             l.flush(lucent::Level::Info, "nrender");
+        }
+        // SBR_TEV_TRACE=<tick>: for the first few drawables of that tick, EXPLAIN the pixel — run
+        // the reference TEV evaluator (runtime/tev_eval.cpp, unit-tested against the SDK) on this
+        // drawable's real state and its real decoded texels, and print every stage's inputs and
+        // output. "This surface is black" becomes "stage 3 wrote 0 to PREV because C2 was 0".
+        // No frame score, no inference, no GPU.
+        static const long kTraceTick = [] {
+            const char* e = std::getenv("SBR_TEV_TRACE");
+            return e != nullptr ? std::strtol(e, nullptr, 10) : 0;
+        }();
+        // SBR_TEV_TRACE_BLACK=1 makes the trace SELF-SELECT the defect: evaluate every drawable of
+        // the tick, print only the ones that come out black. That is the difference between a tool
+        // that shows six arbitrary surfaces and one that answers "why is THIS black".
+        static const bool kTraceBlack = [] {
+            const char* e = std::getenv("SBR_TEV_TRACE_BLACK");
+            return e != nullptr && e[0] != '\0' && e[0] != '0';
+        }();
+        static long traced = 0;
+        if (!g_out.empty() && kTraceTick > 0 && g_tickIndex == kTraceTick && traced < 6) {
+            SbrTevInputs in{};
+            // The rasterised colour and the coordinates of the first vertex — one representative
+            // fragment of this surface, which is enough to explain a uniformly black one.
+            const SbrVertex& v0 = g_out[0];
+            in.ras[0] = v0.r; in.ras[1] = v0.g; in.ras[2] = v0.b; in.ras[3] = v0.a;
+            for (unsigned m = 0; m < 4; ++m) {
+                const SbrTexture& t = d.tex[m];
+                if (t.addr == 0 || t.width == 0 || t.height == 0) continue;
+                std::vector<uint8_t> rgba((size_t)t.width * t.height * 4);
+                if (!gx_decode_texture(t.addr, t.width, t.height, t.format, t.tlut, rgba.data()))
+                    continue;
+                // Sample with the coordinate the stage naming this unit actually uses, wrapped —
+                // sampling the corner instead would explain a different pixel than the one drawn.
+                unsigned coord = 0;
+                for (unsigned st = 0; st < d.tev.numStages && st < 16; ++st)
+                    if (d.tev.stage[st].texEnable && (d.tev.stage[st].texmap & 7) == m)
+                        { coord = d.tev.stage[st].texcoord & 3; break; }
+                float u = v0.uv[coord][0] - std::floor(v0.uv[coord][0]);
+                float vv = v0.uv[coord][1] - std::floor(v0.uv[coord][1]);
+                const uint32_t px = std::min<uint32_t>((uint32_t)(u * (float)t.width), t.width - 1);
+                const uint32_t py = std::min<uint32_t>((uint32_t)(vv * (float)t.height), t.height - 1);
+                const uint8_t* p = &rgba[((size_t)py * t.width + px) * 4];
+                for (int c = 0; c < 4; ++c) in.tex[m][c] = (float)p[c] / 255.0f;
+            }
+            float outc[4];
+            bool discarded = false;
+            SbrTevTrace tr{};
+            sbr_tev_evaluate(d.tev, in, outc, &discarded, &tr);
+            const float lum = 0.2126f * outc[0] + 0.7152f * outc[1] + 0.0722f * outc[2];
+            if (kTraceBlack && lum > 0.02f && !discarded) continue;
+            ++traced;
+            lucent::info("tev", "drawable {} verts={} numStages={} ras[{:.3f} {:.3f} {:.3f} a{:.3f}]",
+                         traced, g_out.size(), d.tev.numStages, in.ras[0], in.ras[1], in.ras[2],
+                         in.ras[3]);
+            for (unsigned m = 0; m < 4; ++m)
+                lucent::info("tev", "  unit {} = 0x{:08x} {}x{} fmt{} texel[{:.3f} {:.3f} {:.3f} "
+                                    "a{:.3f}]", m, d.tex[m].addr, d.tex[m].width, d.tex[m].height,
+                             d.tex[m].format, in.tex[m][0], in.tex[m][1], in.tex[m][2], in.tex[m][3]);
+            // WHY the rasterised colour is what it is. A black RAS makes every stage that reads it
+            // produce black no matter how well the textures decoded, so the channel has to explain
+            // itself in the same trace — otherwise the search moves to textures for the wrong reason.
+            {
+                const SbrChanCtrl& c = d.xf.chan[0];
+                lucent::info("tev", "  chan0: light={} matSrc={} ambSrc={} diffFn={} attn={}/{} "
+                                    "mask=0x{:02x} numChans={}",
+                             c.enableLight, c.matSrcVertex ? "vtx" : "reg",
+                             c.ambSrcVertex ? "vtx" : "reg", c.diffuseFn, c.attnEnable, c.attnSpot,
+                             c.lightMask, d.xf.numChans);
+                lucent::info("tev", "  chan0: matReg[{:.3f} {:.3f} {:.3f} a{:.3f}] "
+                                    "ambReg[{:.3f} {:.3f} {:.3f}]",
+                             d.xf.material[0][0], d.xf.material[0][1], d.xf.material[0][2],
+                             d.xf.material[0][3], d.xf.ambient[0][0], d.xf.ambient[0][1],
+                             d.xf.ambient[0][2]);
+                for (int li = 0; li < 8; ++li) {
+                    if (!((c.lightMask >> li) & 1)) continue;
+                    const SbrLight& L = d.xf.light[li];
+                    lucent::info("tev", "  light {}: col[{:.3f} {:.3f} {:.3f}] pos[{:.0f} {:.0f} "
+                                        "{:.0f}] cosAtt[{:.3f} {:.3f} {:.3f}] distAtt[{:.4f} "
+                                        "{:.4f} {:.4f}]", li, L.color[0], L.color[1], L.color[2],
+                                 L.pos[0], L.pos[1], L.pos[2], L.cosAtt[0], L.cosAtt[1], L.cosAtt[2],
+                                 L.distAtt[0], L.distAtt[1], L.distAtt[2]);
+                }
+            }
+            sbr_tev_trace_report(tr, "tev");
         }
         if (!g_out.empty()) sbr_render_tris(g_out.data(), (int)(g_out.size() / 3) * 3, d.depth, d.tex, d.tev);
 

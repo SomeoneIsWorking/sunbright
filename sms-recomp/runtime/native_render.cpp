@@ -791,35 +791,6 @@ void sbr_render_end() {
 
 int sbr_render_last_vertex_count() { return g_lastVerts; }
 int sbr_render_last_batch_count() { return g_lastBatches; }
-void sbr_tev_konst(const SbrTevState& tev, unsigned stage, float out[4]) {
-    // GXTevKColorSel / GXTevKAlphaSel, exactly as the hardware defines them:
-    //   0x00..0x07  the constant ramp 8/8, 7/8 ... 1/8
-    //   0x0C..0x0F  konst register 0..3 as RGB
-    //   0x10..0x13  .R of konst 0..3     0x14..0x17  .G     0x18..0x1B  .B     0x1C..0x1F  .A
-    auto ramp = [](unsigned s) { return (float)(8 - (int)s) / 8.0f; };
-    auto chan = [&](unsigned sel) -> float {
-        const unsigned reg = sel & 3;
-        const unsigned comp = (sel - 0x10) >> 2;   // 0=R 1=G 2=B 3=A
-        return tev.konstReg[reg][comp < 4 ? comp : 0];
-    };
-    const unsigned kc = tev.stage[stage & 15].kC;
-    const unsigned ka = tev.stage[stage & 15].kA;
-
-    if (kc <= 7) {
-        out[0] = out[1] = out[2] = ramp(kc);
-    } else if (kc >= 0x0C && kc <= 0x0F) {
-        for (int i = 0; i < 3; ++i) out[i] = tev.konstReg[kc & 3][i];
-    } else if (kc >= 0x10 && kc <= 0x1F) {
-        out[0] = out[1] = out[2] = chan(kc);
-    } else {
-        out[0] = out[1] = out[2] = 1.0f;
-    }
-
-    if (ka <= 7) out[3] = ramp(ka);
-    else if (ka >= 0x10 && ka <= 0x1F) out[3] = chan(ka);
-    else out[3] = 1.0f;
-}
-
 // Re-decode every texture that cached BLACK and report whether its guest bytes have since changed.
 // Distinguishes a first-sight caching race (bytes now non-zero) from memory that is genuinely zero
 // (a render target this port never writes, or a wrong address).

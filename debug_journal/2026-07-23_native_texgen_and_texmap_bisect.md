@@ -606,3 +606,67 @@ CAUSE" and a code change. Both were caught the same way: the fix did not do what
 predicted. The lesson is not "be more careful", it is that **a state oracle needs its own
 known-positive** — for a correlate, that means checking it against a case whose answer is known
 before believing a number it produces.
+
+## 2026-07-28 (cont.) — stop black-boxing it: the pixel pipeline is now testable and self-explaining
+
+User: "This is too much blackbox debugging, need to make these understandable first." Correct, and it
+is the project's own rule (TOOLING / VERIFICATION FIRST; unit-test-from-RE before whole-system
+checks). Everything above ran the whole game, scored whole frames and inferred backwards through a
+30,000-draw stream — which is how two confidently-wrong findings got as far as commits in one day.
+
+The pixel pipeline existed ONLY as a GPU shader. It could not be asked a question: no test, no way
+to evaluate one material, no way to see why a surface was black except by rendering a frame.
+
+### What now exists
+
+**`runtime/tev_eval.{h,cpp}` — the TEV pipeline as plain C++, and the REFERENCE definition of it.**
+Stages, arg selectors, bias/scale, compare mode, konst, the alpha test. `geom.frag.glsl` mirrors it;
+where they disagree, tev_eval is the definition, because it is the one with tests. `sbr_tev_konst`
+moved here out of the SDL-linked renderer — keeping it there is what would force a unit test to link
+a GPU backend.
+
+**`tests/tev_eval_test.cpp` — expectations hand-derived from the SDK, not from a run.** Every case
+cites where its expected value comes from (`GXSetTevColorOp`'s packing, the `GXTevOp` enum, the
+konst ramp, `GXCompare`). Six groups: the lerp form with bias/scale/subtract, compare mode across
+all four widths, register chaining, a disabled stage sampling nothing, the alpha test including a
+BAND, and the konst ramp. `ctest` / `./build-sms-recomp/tev_eval_test`.
+
+**Negative control, because a suite that passes on first write is exactly when to distrust it.**
+Disabling compare-mode handling makes 7 checks fail with specific values; restoring it makes them
+pass. The suite can see the other answer.
+
+**`SBR_TEV_TRACE=<tick>` + `SBR_TEV_TRACE_BLACK=1` — a real drawable explains itself.** Evaluates the
+drawable's actual state against its actual decoded texels (sampled with the coordinate the stage
+naming that unit really uses) and prints every stage's inputs, its output and its destination
+register, plus the colour-channel configuration that produced RAS. `_BLACK=1` makes it self-select:
+evaluate every drawable, print only the ones that come out black. No frame score, no GPU, no
+inference.
+
+### What it said, immediately
+
+```
+drawable 1 verts=912 numStages=5 ras[0.000 0.000 0.000 a1.000]
+  unit 0 = 0x80868360 256x256 fmt14 texel[0.322 0.094 0.094 a1.000]
+  unit 1 = 0x80870360 64x64  fmt0  texel[0.733 0.733 0.733 a0.733]
+  chan0: light=1 matSrc=reg ambSrc=reg diffFn=1 attn=1/1 mask=0x03 numChans=2
+  chan0: matReg[1.000 1.000 1.000 a1.000] ambReg[0.502 0.502 0.502]
+  light 0: col[1 1 1] pos[-193500 443523 -308437] cosAtt[1 0 0] distAtt[1 0 0]
+  light 1: col[1 1 1] pos[12154 -1537 -9533]      cosAtt[1 0 0] distAtt[1 0 0]
+  stage 1: map0 -> c[0.322 0.094 0.094]->reg0
+  final [0.000 0.000 0.000 a1.000]
+```
+
+**The textures are fine. The rasterised colour is BLACK.** Every stage that reads RASC therefore
+produces black no matter how well anything decoded — which is why chasing texture identity for a day
+found nothing wrong with it: there was nothing wrong with it.
+
+And the channel cannot legitimately be zero: `acc` starts at the ambient register, 0.502, and the
+material register is 1.0, so the floor is 0.502. It reaches zero because `diffuseFn = 1` is
+**GX_DF_SIGN — the dot product is used UNCLAMPED** — and with two lights whose contributions are
+negative for a surface facing away, `0.502 + diff0 + diff1` goes below zero and clamps to black.
+
+That is now the narrow question, and it is a `GXSetChanCtrl` decode question rather than a rendering
+one: are `diffuseFn`, `attnEnable` and `attnSpot` being read from the right bits? There is precedent
+— memory `[[mario-paleness-attnfn-decode-swap-2026-07-15]]` records aurora's XF chanctrl `attnFn`
+bit 9 / bit 10 being SWAPPED, found in this same register. Next step is to RE `GXSetChanCtrl` from
+the SDK and check this parser's decode against it, the same way the TEV op encoding was checked.
