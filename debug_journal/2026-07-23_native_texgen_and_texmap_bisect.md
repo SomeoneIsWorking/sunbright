@@ -529,3 +529,31 @@ when it reaches that drawable's own draw commands. Geometry keeps coming from th
 J3D's matrix/skinning knowledge); material state comes from the stream, at the right position.
 
 `SBR_STATE_DIFF=<n>` now covers all three consumers: FIFO parse, aurora, and the capture seam.
+
+### The fix attempt: right mechanism, wrong pairing (SBR_MATERIAL_FROM_DRAW=1, default OFF)
+
+Implemented the obvious consequence: the seam registers a drawable as PENDING and the FIFO parser
+attaches the material state when it reaches a draw command. Result, and both halves matter:
+
+- **The missing scenery came BACK.** Sky, sea, the tower, palm trees, awnings, plants — everything
+  that had been black under `SBR_TEXMAP_NAMED` renders. That is strong evidence the mechanism is
+  right: state does belong to the draw, and taking it from there is what makes those materials
+  resolve at all.
+- **The textures land on the WRONG surfaces.** The plaza ground is paved with window and building
+  textures. edgeIoU 14.9% / lumaCorr +0.486, against 23.3% / +0.613 for the seam snapshot.
+
+The reason is a pairing assumption that does not hold: **J3D sorts packets into draw buffers**, so
+the order this seam traverses shapes in is NOT the order they reach the FIFO. "The next draw command
+after this drawable was registered" is therefore a different shape's draw, and the material attaches
+to the wrong geometry — a different wrong answer from the seam's, not a fix.
+
+So the mechanism is kept and gated OFF (`SBR_MATERIAL_FROM_DRAW=1`), with the default path unchanged
+and re-verified at 29.0% / +0.719. What it still needs is an IDENTITY linking a stream draw to the
+drawable it belongs to, rather than an ordering assumption. Candidates, cheapest first: hook the
+point where a shape's own display list is REPLAYED (rather than where the traversal visits it), so
+the seam runs at the emission position; or match a stream draw to a drawable by its vertex
+signature (count plus matrix indices, both of which the seam already decodes).
+
+Note what the metric did here: the frame gained a whole missing background and its score went DOWN,
+because misplaced textures cost more than absent geometry. The image was the evidence; the number
+would have sent this the wrong way, again.

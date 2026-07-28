@@ -255,6 +255,12 @@ void ov_shape_draw(CPUState& cpu) {
                         // 4x4 null texture (measured: 3 textures for the whole scene).
                         // All four texture units, not just TEXMAP0: a TEV stage names the map it
                         // samples, and most materials here name more than one.
+                        // MATERIAL STATE IS NOT TAKEN HERE. This seam runs on the CPU side, at a
+                        // stream position the FIFO parser has not reached: measured, 435 of 929
+                        // drawables got a material captured ~2.7 KB of stream too early, i.e. a
+                        // different shape's. The parser attaches it when it reaches this drawable's
+                        // own draw command. The snapshot below is only a starting value for the
+                        // fields the parser does not overwrite.
                         for (unsigned m = 0; m < 4; ++m) dr.tex[m] = sbr_gx_fifo_texture(m);
                         dr.tev = sbr_gx_fifo_tev();
                         dr.xf  = sbr_gx_fifo_xf();
@@ -286,7 +292,19 @@ void ov_shape_draw(CPUState& cpu) {
                             const u32 bits = sb_r32(mtxAddr + k * 4);
                             __builtin_memcpy(&dr.mtx[k], &bits, 4);
                         }
-                        sbr_scene_add(dr);
+                        // SBR_MATERIAL_FROM_DRAW=1 takes the material from the stream at this
+                        // drawable's own draw instead of from this seam's snapshot. Default OFF:
+                        // the mechanism is right (see the journal) but the PAIRING is not — J3D
+                        // sorts packets into draw buffers, so the order this seam traverses shapes
+                        // in is not the order they reach the stream, and "the next draw" is a
+                        // different shape's. Measured: the missing scenery comes BACK, and the
+                        // textures land on the wrong surfaces.
+                        static const bool matFromDraw = [] {
+                            const char* e = std::getenv("SBR_MATERIAL_FROM_DRAW");
+                            return e != nullptr && e[0] != '\0' && e[0] != '0';
+                        }();
+                        if (matFromDraw) sbr_scene_add_pending_material(dr);
+                        else sbr_scene_add(dr);
                     }
                 }
             }
