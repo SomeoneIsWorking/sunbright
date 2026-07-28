@@ -707,8 +707,13 @@ float sbr_scene_render(double now_seconds, const float proj[16]) {
         if (!g_out.empty() && kDrawStateTick > 0 && g_tickIndex == kDrawStateTick) {
             ++drawStateSeen;
             lucent::Line l;
-            l.add("draw {} verts={} nearW={:.0f} zt{}w{}f{} blend{} numTexGens={} numStages={} |",
-                  drawStateSeen, g_out.size(), nearestW, d.depth.test, d.depth.write, d.depth.func,
+            // The NDC bounding box, so a draw can be matched to a REGION of the dumped frame. That
+            // is what turns "the sky is black" into "draw 412 is black": read the box off the line
+            // instead of guessing which drawable covers the defect.
+            l.add("draw {} verts={} box=[{:.2f},{:.2f}]x[{:.2f},{:.2f}] nearW={:.0f} zt{}w{}f{} "
+                  "blend{} numTexGens={} numStages={} |",
+                  drawStateSeen, g_out.size(), nlo[0], nhi[0], nlo[1], nhi[1], nearestW,
+                  d.depth.test, d.depth.write, d.depth.func,
                   d.depth.blend, d.tev.numTexGens, d.tev.numStages);
             for (unsigned m = 0; m < 4; ++m)
                 l.add(" u{}={:08x}/f{}/{}x{}@{}", m, d.tex[m].addr, d.tex[m].format,

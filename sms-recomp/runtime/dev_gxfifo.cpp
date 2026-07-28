@@ -20,6 +20,7 @@
 //   0x48                    invalidate vertex cache (no payload)
 //   0x20/0x28/0x30/0x38     indexed XF load (one u32)
 
+#include <unordered_map>
 #include "mmio.h"
 #include "native_render.h"
 
@@ -230,6 +231,18 @@ void emit_arraybase(u32 attr, u32 guest_addr) {
 // whatever destination pointer it last held, since GX_AURORA_LOAD_COPY_DEST was never sent.
 void emit_copy_state(u32 cmd, bool to_xfb) {
     if (g_copy_w == 0 || g_copy_h == 0) return;
+    // Every distinct TEXTURE copy destination, once. A render-to-texture target that this port
+    // never writes back into guest memory decodes as ZEROS, which is indistinguishable from a
+    // legitimately black texture at the sampler — so the set of copy destinations is the list of
+    // addresses whose blackness is expected rather than a decode bug.
+    if (!to_xfb) {
+        static std::unordered_map<u32, bool> seen;
+        const u32 a = (g_copy_dest << 5) | 0x80000000u;
+        if (!seen[a]) {
+            seen[a] = true;
+            lucent::info("gxfifo", "EFB texture copy -> 0x{:08x} ({}x{})", a, g_copy_w, g_copy_h);
+        }
+    }
 
     // The copy scales the EFB region down into the destination: bit 9 halves horizontally,
     // and BP 0x4E scales vertically as 1.8 fixed point.

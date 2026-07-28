@@ -206,6 +206,31 @@ void main() {
     // (ref0 <= a <= ref1) as well as a plain cutout, so both are evaluated rather than only the
     // first. A failing texel is DISCARDED: it writes neither colour nor depth, which is the whole
     // point for foliage drawn as opaque quads.
+    // Diagnostic outputs, before the alpha test so nothing is discarded out of the picture.
+    if (tev.alphaRef.z > 0.5) {
+        vec2 uv0 = coordOf((tev.dest[0].w >> 8) & 3);
+        vec4 s0 = sampleUnit(tev.dest[0].w & 3, uv0);
+        if (tev.alphaRef.z < 1.5)      { o_col = vec4(s0.rgb, 1.0); return; }
+        else if (tev.alphaRef.z < 2.5) { o_col = vec4(vec3(s0.a), 1.0); return; }
+        else if (tev.alphaRef.z < 3.5) { o_col = vec4(fract(uv0), 0.0, 1.0); return; }
+        // 4 = which UNIT stage 0 samples, as a grey level (0, 1/3, 2/3, 1). Overlaying this on the
+        // named-vs-pinned difference mask says which unit the changed pixels actually use, which
+        // bounding-box attribution cannot: boxes ignore occlusion, so the topmost draw over a region
+        // is not the one the box test picks.
+        else if (tev.alphaRef.z < 4.5) { o_col = vec4(vec3(float(tev.dest[0].w & 3) / 3.0), 1.0); return; }
+        // 5 = the same sample taken at an EXPLICIT LOD 0, and 6 = at a fixed centre coordinate.
+        // Together they split "the bound texture is black" from "the way it is being sampled makes
+        // it black": 6 ignores the coordinate entirely, 5 ignores the derivative-chosen mip.
+        else if (tev.alphaRef.z < 5.5) {
+            int un = tev.dest[0].w & 3;
+            vec4 sl = un == 1 ? textureLod(u_tex1, uv0, 0.0)
+                    : un == 2 ? textureLod(u_tex2, uv0, 0.0)
+                    : un == 3 ? textureLod(u_tex3, uv0, 0.0) : textureLod(u_tex0, uv0, 0.0);
+            o_col = vec4(sl.rgb, 1.0); return;
+        }
+        else { o_col = vec4(sampleUnit(tev.dest[0].w & 3, vec2(0.5)).rgb, 1.0); return; }
+    }
+
     int a8 = int(outc.a * 255.0 + 0.5);
     bool c0 = alphaCompare(tev.control.y, a8, int(tev.alphaRef.x));
     bool c1 = alphaCompare(tev.control.z, a8, int(tev.alphaRef.y));

@@ -293,3 +293,73 @@ decodes to mean 147, min 51 — not black; only 6 of 194 decoded textures are ne
 stages naming an unbound unit (0 of 11,563 enabled stages name a unit holding the J3D 4x4 null).
 
 Next: why unit 1 specifically, on distant geometry only.
+
+## 2026-07-28 (cont.) — the unit-1 black, run to ground: six textures whose guest memory is ZERO
+
+The bisect said unit 1. Chasing it by hypothesis cost several runs and got nowhere, so the chain
+from "the game said X" to "the GPU sampled Y" was instrumented link by link instead. Every step
+below is a measurement.
+
+| # | question | instrument | answer |
+|---|---|---|---|
+| 1 | is slot 1 itself broken? | `SBR_TEX_MIRROR=1` + `SBR_TEXMAP_FORCE=<u>` — same texture in all four slots, force each | NO. Forcing slot 0 vs slot 1 differs on 2.7% of pixels (run-to-run animation jitter) |
+| 2 | which pixels change? | `SBR_TEV_VIZ=4` (stage 0's unit as a grey level) crossed with the named-vs-pinned difference | 62,698 of 67,693 unit-1 pixels darken (93%); unit-0 pixels: 304 of 218,589 |
+| 3 | sample or combiner? | `SBR_TEV_VIZ=1` (the raw sample, before any TEV) | the SAMPLE is black — mean 15.8, 90.9% below 8/255 |
+| 4 | coordinate or LOD? | `SBR_TEV_VIZ=5` (explicit LOD 0), `=6` (fixed uv 0.5,0.5) | neither: 17.3 / 90.8% and 16.0 / 90.9%. A fixed centre coordinate is still black |
+| 5 | so what is BOUND? | `SBR_BIND_LOG=<n>` — the cache key AND its decoded mean, per slot, at bind time | slot 1 = key `0x80cfafa0` (CMPR 64x64), **decoded mean 0.0**, on every large terrain batch |
+
+**`0x80cfafa0` decodes to zeros, and the per-draw state cannot show it** — the state reports the
+DESCRIPTION the game wrote (address, format, dimensions), and that description is correct. Only the
+cached image is black. That is why five sessions of comparing parsed state found nothing: the parser
+was right the whole time.
+
+Six textures decode black in a settled Delfino tick, out of 194:
+
+```
+0x80a9bd20 IA4   32x32     1024 B   zero run -38/+73
+0x80abcc40 IA4   32x32     1024 B   zero run -38/+73
+0x80cf0ac0 I4    128x128   8192 B   zero run  -0/+0
+0x80cfafa0 CMPR  64x64     2048 B   zero run  -0/+0     <- bound to unit 1 across the terrain
+0x80da3860 IA8   32x32     2048 B   zero run  -0/+1
+0x80fea480 RGB565 320x224 143360 B  zero run  -0/+0     <- a CONFIRMED EFB copy destination
+```
+
+Ruled out, each by measurement, not argument:
+
+- **Not a decoder bug.** The raw source bytes are zero (`00 00 00 ...`), so there is nothing to
+  decode wrong. Other CMPR textures in the same frame decode to means of 196-244.
+- **Not a first-sight caching race.** `sbr_render_recheck_black()` re-decodes every cached-black
+  texture from guest memory each frame report: it is STILL zero later. The cache is not stale.
+- **Not unallocated memory.** The zero run is exactly the texture's tiled size and no more — the
+  byte before the buffer and the byte after it are both non-zero. These are buffers the game
+  ALLOCATED and something is supposed to fill.
+
+`0x80fea480` is the tell: it appears in the EFB texture-copy destination list
+(`0x803f4440`, `0x80d0f9e0`, `0x810a5440`, `0x80fea480`), and this port parses EFB copies but never
+writes the copied pixels back into guest memory. Its blackness is therefore fully explained. The
+other five are the same SHAPE of problem — allocated, texture-sized, zero-filled, dynamically
+written — but `0x80cfafa0` is NOT in the copy list over a 240 s run, so whatever fills it is a
+different mechanism (ARAM DMA into MEM1 is the obvious candidate; the recomp has `dev_aram.cpp`).
+
+**Next step, and it is a WRITE question, not a render one:** put a memory-write watch on
+`0x80cfafa0` and find who is supposed to write those 2048 bytes. Until those buffers are filled,
+`SBR_TEXMAP_UNITS` stays at 0x1 by default — pinning is explicitly NOT a fix, it is the
+better-looking of two known-wrong behaviours, and the code says so.
+
+## Landed this session
+
+- **`GX_TG_SRTG` fed the rasterized colour**, not the raw stored CLR0 (the defect that made the
+  whole frame one flat colour).
+- **TEV compare mode** (`bias == 3` is not a bias), RE'd from `GXSetTevColorOp`. 537 of 2816
+  enabled stages use it. Real and silent, but NOT the unit-1 black — the frame is unchanged.
+- Instruments, all env-gated and kept: `SBR_DRAW_STATE=<tick>` (per-draw units, stages, combiner
+  selectors, texgen config, coordinate ranges, NDC box, depth state), `SBR_TEXMAP_UNITS=<mask>`,
+  `SBR_TEXMAP_FORCE=<unit>`, `SBR_TEX_MIRROR=1`, `SBR_TEV_VIZ=1..6`, `SBR_BIND_LOG=<n>`, and the
+  EFB texture-copy destination log.
+
+## Do not re-derive
+
+- The parser is not the problem. Register-ID tables, RAS1_TREF, XF texgen decode and the unit
+  binding model are all confirmed against the game's own writers (see the 2026-07-28 section above).
+- Slot 1 is not broken, the coordinate fed to it is not degenerate, the LOD is not the issue, and
+  the alpha test is not involved. All four were measured, not reasoned about.

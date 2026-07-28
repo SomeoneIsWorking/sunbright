@@ -27,3 +27,7 @@ bool gx_decode_texture(u32 addr, uint32_t w, uint32_t h, uint32_t format, uint32
 // name instead of drawing wrong pixels.
 bool gx_texture_format_supported(uint32_t format);
 const char* gx_texture_format_name(uint32_t format);
+
+// Bytes the TILED source occupies for these dimensions and format — the range that must be present
+// in guest memory before a decode means anything.
+size_t gx_texture_data_size(uint32_t w, uint32_t h, uint32_t format);

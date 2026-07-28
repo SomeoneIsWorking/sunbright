@@ -22,6 +22,7 @@
 #include <SDL3/SDL.h>
 
 #include "gx_texture.h"
+#include "intrinsics.h"
 
 #include "shaders/geom_vert_spv.h"
 #include "shaders/geom_frag_spv.h"
@@ -86,6 +87,11 @@ struct Batch {
 // decoding a 1024-texel CMPR image per draw would dominate the frame.
 struct Tex {
     SDL_GPUTexture* tex = nullptr;
+    float mean = -1.0f;   // decoded brightness, so what is BOUND can be compared with what the
+                          // per-draw state SAYS is bound — the last unin­strumented link
+    SbrTexture desc{};    // kept so a cached-black texture can be re-decoded from guest memory
+                          // later: the cache fills on FIRST SIGHT, and a texture seen before its
+                          // data landed stays black forever with nothing to say so
 };
 std::unordered_map<uint64_t, Tex> g_texs;
 std::unordered_map<uint64_t, SbrTexture> g_pendingTex;   // descriptions seen this frame
@@ -158,6 +164,8 @@ uint64_t tex_key(const SbrTexture& t) {
     return (uint64_t)t.addr << 24 ^ (uint64_t)t.format << 20 ^ (uint64_t)t.width << 10 ^ t.height;
 }
 std::vector<Batch> g_batches;
+// SBR_BIND_LOG=<n>: log the first n batch binds, then stop.
+long g_bindLog = [] { const char* e = std::getenv("SBR_BIND_LOG"); return e != nullptr ? std::strtol(e, nullptr, 10) : 0L; }();
 SDL_GPUBuffer*           g_vbuf = nullptr;
 SDL_GPUTransferBuffer*   g_vup  = nullptr;
 size_t                   g_vcap = 0;
@@ -337,6 +345,7 @@ SDL_GPUTexture* texture_for(uint64_t key, const SbrTexture& t) {
 
     std::vector<uint8_t> rgba((size_t)t.width * t.height * 4);
     SDL_GPUTexture* gt = nullptr;
+    float decodedMean = -1.0f;
     if (gx_decode_texture(t.addr, t.width, t.height, t.format, t.tlut, rgba.data())) {
         // SBR_TEX_DUMP=<dir> writes every decoded texture as a PPM. A texture pipeline can be
         // "working" end to end and still be decoding garbage; looking at the decoded image is the
@@ -352,6 +361,17 @@ SDL_GPUTexture* texture_for(uint64_t key, const SbrTexture& t) {
                 std::fclose(f);
             }
         }
+        // Log what each KEY actually decoded to. The cache is keyed by the guest description and
+        // filled on FIRST sight, so a texture decoded before its data landed is black forever after
+        // — and the per-draw state, which reports the description rather than the cached image,
+        // cannot show that. This line is the only place the two can be compared.
+        {
+            uint64_t sum = 0;
+            for (size_t i = 0; i < rgba.size(); i += 4) sum += rgba[i] + rgba[i + 1] + rgba[i + 2];
+            decodedMean = (float)((double)sum / (double)(rgba.size() / 4 * 3));
+            lucent::debug("nrender", "decoded key {:016x} 0x{:08x} {} {}x{} mean {:.1f}", key,
+                          t.addr, gx_texture_format_name(t.format), t.width, t.height, decodedMean);
+        }
         gt = upload_rgba(rgba.data(), t.width, t.height);
     } else {
         // Report an undecodable format ONCE by name. Silently binding white here would look like a
@@ -364,7 +384,7 @@ SDL_GPUTexture* texture_for(uint64_t key, const SbrTexture& t) {
         }
         gt = g_white;
     }
-    g_texs.emplace(key, Tex{gt});
+    g_texs.emplace(key, Tex{gt, decodedMean, t});
     return gt;
 }
 
@@ -380,21 +400,11 @@ void pack_tev(const SbrTevState& tev, TevUniform& u) {
         u.dest[i][0] = st.cDest; u.dest[i][1] = st.aDest; u.dest[i][2] = st.texEnable;
         // Which unit this stage samples and which generated coordinate it samples with — two
         // independent selectors from RAS1_TREF, not one.
-        // KNOWN GAP — every stage is pinned to texture unit 0 by default, which is WRONG: stages
-        // name units 1-3 too (measured: 540/764/196 enabled stages name units 1/2/3). Routing them
-        // to the named unit is implemented and opt-in via SBR_TEXMAP_NAMED=1, but it currently
-        // renders WORSE, and the bisect says why it is not a shader bug:
-        //
-        //   config          edgeIoU@8   lumaCorr@8
-        //   pinned          25.1%       +0.535
-        //   named units     16.9%       +0.335
-        //
-        // The units above 0 are STALE, not wrong-in-the-shader: across one tick unit 0 carries 95
-        // distinct texture addresses while units 1/2/3 carry only 34/11/9, far too few for the
-        // number of stages naming them. So the per-material binding for those units is not being
-        // observed at the point the drawable is captured. Pinning is not a fix and is not treated
-        // as one — it is the better-scoring of two known-wrong behaviours while the binding desync
-        // is tracked down. Do not delete the named path; it is the correct mechanism.
+        // Stages name units 1-3, not just 0, and routing them there is the correct mechanism —
+        // but it is still OPT-IN because six textures decode BLACK (their guest memory is zero) and
+        // five of them sit on unit 1 across the terrain, so honouring the name blacks the scene.
+        // Pinning to unit 0 is NOT a fix; it is the better-looking of two known-wrong behaviours
+        // until those buffers are filled. See debug_journal/2026-07-23_native_texgen_and_texmap_bisect.md.
         // Which units are routed to the unit the stage NAMES, as a bitmask, so the question "which
         // unit blacks the frame" is one run per bit instead of one run per theory. SBR_TEXMAP_UNITS
         // is the mask (bit m = honour stages naming unit m); SBR_TEXMAP_NAMED=1 is the shorthand for
@@ -432,6 +442,16 @@ void pack_tev(const SbrTevState& tev, TevUniform& u) {
     u.control[3] = tev.alphaLogic;
     u.alphaRef[0] = (float)tev.alphaRef0;
     u.alphaRef[1] = (float)tev.alphaRef1;
+    // SBR_TEV_VIZ replaces the shaded output with an intermediate, per pixel, so a defect can be
+    // SEEN where it happens instead of inferred from a whole-frame score. 1 = the raw sample of the
+    // unit stage 0 names; 2 = that sample's alpha as grey; 3 = the coordinate stage 0 samples with.
+    // A frame that is black under viz 1 says the SAMPLE is black; one that is black only in the
+    // shaded output says the combiner is.
+    static const float viz = [] {
+        const char* e = std::getenv("SBR_TEV_VIZ");
+        return e != nullptr ? (float)std::strtol(e, nullptr, 10) : 0.0f;
+    }();
+    u.alphaRef[2] = viz;
 }
 
 SDL_GPUGraphicsPipeline* pipeline_for(SbrDepthState d) {
@@ -725,11 +745,23 @@ void sbr_render_end() {
             // layout, so a unit a material does not use is bound to the white texel rather than
             // left dangling (an unbound descriptor is what takes the device down).
             SDL_GPUTextureSamplerBinding tsb[4]{};
+            float slotMean[4] = {-2, -2, -2, -2};
             for (int m = 0; m < 4; ++m) {
                 const auto texIt = g_texs.find(b.texKey[m]);
                 tsb[m].texture = (texIt != g_texs.end()) ? texIt->second.tex : g_white;
+                slotMean[m] = (texIt != g_texs.end()) ? texIt->second.mean : -2.0f;
                 const auto sampIt = g_samplers.find(b.sampKey[m]);
                 tsb[m].sampler = (sampIt != g_samplers.end()) ? sampIt->second : g_sampler;
+            }
+            // What is BOUND, per slot, for the first batches of a chosen tick. The per-draw state
+            // reports the DESCRIPTION the game gave; this reports the cached image that description
+            // resolved to. When the two disagree the defect is the cache key, not the parser.
+            if (g_bindLog > 0) {
+                --g_bindLog;
+                lucent::info("nrender", "bind: slot0 key={:016x} mean={:.1f} | slot1 key={:016x} "
+                                        "mean={:.1f} | slot2 key={:016x} mean={:.1f} | verts={}",
+                             b.texKey[0], slotMean[0], b.texKey[1], slotMean[1],
+                             b.texKey[2], slotMean[2], b.count);
             }
             SDL_BindGPUFragmentSamplers(rp, 0, tsb, 4);
             SDL_PushGPUFragmentUniformData(cmd, 0, &b.tev, sizeof b.tev);
@@ -786,6 +818,43 @@ void sbr_tev_konst(const SbrTevState& tev, unsigned stage, float out[4]) {
     if (ka <= 7) out[3] = ramp(ka);
     else if (ka >= 0x10 && ka <= 0x1F) out[3] = chan(ka);
     else out[3] = 1.0f;
+}
+
+// Re-decode every texture that cached BLACK and report whether its guest bytes have since changed.
+// Distinguishes a first-sight caching race (bytes now non-zero) from memory that is genuinely zero
+// (a render target this port never writes, or a wrong address).
+void sbr_render_recheck_black() {
+    if (!textures_enabled()) return;
+    int rechecked = 0;
+    for (auto& [key, tex] : g_texs) {
+        if (tex.mean > 0.5f || tex.desc.addr == 0) continue;
+        std::vector<uint8_t> rgba((size_t)tex.desc.width * tex.desc.height * 4);
+        if (!gx_decode_texture(tex.desc.addr, tex.desc.width, tex.desc.height, tex.desc.format,
+                               tex.desc.tlut, rgba.data()))
+            continue;
+        uint64_t sum = 0;
+        for (size_t i = 0; i < rgba.size(); i += 4) sum += rgba[i] + rgba[i + 1] + rgba[i + 2];
+        const double now = (double)sum / (double)(rgba.size() / 4 * 3);
+        ++rechecked;
+        // Raw source bytes too: an all-zero DECODE can mean zero source bytes or a decoder that
+        // read the wrong place. Only the raw bytes separate the two.
+        // How far the zero run extends either side. A zero region exactly the size of the texture,
+        // surrounded by data, means the ADDRESS is right and the data was never written; a zero
+        // region far larger means the buffer was never allocated or lives somewhere else entirely.
+        const uint32_t need = (uint32_t)gx_texture_data_size(tex.desc.width, tex.desc.height,
+                                                             tex.desc.format);
+        uint32_t before = 0, after = 0;
+        while (before < 0x20000 && sb_r8(tex.desc.addr - before - 1) == 0) ++before;
+        while (after < 0x20000 && sb_r8(tex.desc.addr + need + after) == 0) ++after;
+        char hex[64] = {0};
+        for (int i = 0; i < 16; ++i)
+            std::snprintf(hex + i * 3, 4, "%02x ", (unsigned)sb_r8(tex.desc.addr + i));
+        lucent::info("nrender", "cached-black 0x{:08x} {} {}x{}: {} bytes, zero run -{}/+{}, raw [{}] cached mean {:.1f}, "
+                                "guest memory NOW decodes to {:.1f}", tex.desc.addr,
+                     gx_texture_format_name(tex.desc.format), tex.desc.width, tex.desc.height,
+                     need, before, after, hex, tex.mean, now);
+    }
+    if (rechecked == 0) lucent::info("nrender", "no cached-black textures to recheck");
 }
 
 int sbr_render_texture_count() { return (int)g_texs.size(); }

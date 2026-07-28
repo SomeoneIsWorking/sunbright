@@ -169,6 +169,9 @@ void sbr_render_tris(const SbrVertex* verts, int count, SbrDepthState depth, con
 // inferred (TX_SETIMAGE3 is 0x94+m for units 0-3).
 void sbr_gxfifo_report_bp_writes();
 
+// Re-decode every texture that cached black and report whether its guest bytes have since changed.
+void sbr_render_recheck_black();
+
 // How many distinct textures the renderer has decoded and uploaded.
 int sbr_render_texture_count();
 
