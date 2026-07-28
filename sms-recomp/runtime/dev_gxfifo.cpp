@@ -23,6 +23,7 @@
 #include <unordered_map>
 #include "mmio.h"
 #include "native_render.h"
+#include "state_oracle.h"
 
 // The texture state the material display lists have written, per texmap. See the BP handler.
 static SbrTexture g_fifoTex[8];
@@ -38,6 +39,11 @@ static SbrXfState g_xf;
 #include <vector>
 
 extern u8* g_ram_base;
+
+// Declared here rather than by including gx_texture.h: that header pulls in intrinsics.h, whose
+// PPC helpers collide with aurora's ppc_math.h in this translation unit.
+bool gx_decode_texture(u32 addr, uint32_t w, uint32_t h, uint32_t format, uint32_t tlutAddr,
+                       uint8_t* out);
 
 namespace {
 
@@ -383,6 +389,25 @@ void emit_texobj(u32 map) {
                 last = phys;
                 lucent::debug("gxfifo", "bind of a 320x224 texture: phys 0x{:08x} fmt {}", phys,
                               fmt);
+            }
+        }
+    }
+    // GX loads texels into TMEM when a unit is BOUND; the main-memory buffer is the game's to
+    // reuse afterwards. Aurora models that by uploading here, at the bind. This port decodes
+    // lazily at frame end instead, so a buffer the game has since reused decodes to whatever is
+    // there NOW. Measure the difference rather than assume it: decode at the bind and report the
+    // brightness, so it can be compared with the late decode of the same address.
+    if (std::getenv("SBR_BIND_DECODE_LOG") != nullptr) {
+        const u32 gaddr = phys | 0x80000000u;
+        std::vector<uint8_t> rgba((size_t)w * h * 4);
+        if (gx_decode_texture(gaddr, w, h, fmt, 0, rgba.data())) {
+            uint64_t sum = 0;
+            for (size_t i = 0; i < rgba.size(); i += 4) sum += rgba[i] + rgba[i+1] + rgba[i+2];
+            static std::unordered_map<u32, bool> seen;
+            if (!seen[gaddr]) {
+                seen[gaddr] = true;
+                lucent::info("gxfifo", "AT BIND 0x{:08x} {}x{} fmt{} decodes to mean {:.1f}",
+                             gaddr, w, h, fmt, (double)sum / (double)(rgba.size() / 4 * 3));
             }
         }
     }
@@ -798,6 +823,20 @@ size_t parse(const u8* p, size_t n, int depth) {
 
         if (op >= 0x80 && op <= 0xBF) {         // draw primitive
             if (n - i < 3) { g_need = 3; break; }
+            // Record THIS side's state for the per-draw comparison against aurora, which derives
+            // its own from the same bytes a moment later. See state_oracle.h.
+            if (sbr_state_diff_enabled()) {
+                SbrDrawState st{};
+                st.numStages  = (uint8_t)g_tev.numStages;
+                st.numTexGens = (uint8_t)g_tev.numTexGens;
+                for (unsigned k = 0; k < 16; ++k) {
+                    st.texmap[k]    = g_tev.stage[k].texmap;
+                    st.texcoord[k]  = g_tev.stage[k].texcoord;
+                    st.texEnable[k] = g_tev.stage[k].texEnable;
+                }
+                for (unsigned m = 0; m < 8; ++m) st.unitId[m] = g_fifoTex[m].addr & 0x01FFFFFFu;
+                sbr_state_oracle_mine(st);
+            }
             const u32 verts = be16(p + i + 1);
             const u32 vsize = vertex_size(op & 7);
             const size_t len = 3 + (size_t)verts * vsize;
@@ -893,6 +932,8 @@ void gxfifo_build() {
                   g_out.size() >> 10, g_dl_calls, g_dl_bytes >> 10);
     g_dl_calls = 0; g_dl_bytes = 0;
 
+    // Same frame boundary the state oracle pairs on: this is where a frame's stream is closed.
+    sbr_state_oracle_mine_frame_end();
     g_last.swap(g_out);
     g_out.clear();
 }

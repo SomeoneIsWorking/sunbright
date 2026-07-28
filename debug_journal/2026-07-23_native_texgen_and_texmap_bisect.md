@@ -363,3 +363,59 @@ better-looking of two known-wrong behaviours, and the code says so.
   binding model are all confirmed against the game's own writers (see the 2026-07-28 section above).
 - Slot 1 is not broken, the coordinate fed to it is not degenerate, the LOD is not the issue, and
   the alpha test is not involved. All four were measured, not reasoned about.
+
+## 2026-07-28 (cont.) — the in-process per-draw state oracle, and a conclusion RETRACTED
+
+User: "why don't you do Aurora compare in the same process since recomp+Aurora renders fine". That
+question falsified the finding above, and the falsification is the important part.
+
+**RETRACTED: "the unit-1 black is six textures whose guest memory is zero".** The memory really is
+zero — both read paths agree (`sb_r8` on the guest EA and the raw `g_ram_base + phys` pointer aurora
+is handed give identical zero bytes, at BIND time as well as at frame end). What was wrong was the
+inference. Aurora is in the SAME process, is handed the SAME pointer for the same textures, and
+renders Delfino Plaza perfectly — sky, sea, NPCs, palm tree, all textured. So those zero bytes
+cannot be what the terrain samples on the working path, and "the buffers are never filled" does not
+explain anything. Aurora simply is not binding those addresses where this port is.
+
+That is a state difference, and aurora is right there to be asked.
+
+### The tool: `SBR_STATE_DIFF=<n>` (`runtime/state_oracle.{h,cpp}`)
+
+Both sides record, per DRAW: `numTevStages`, `numTexGens`, each stage's (texmap, texcoord,
+texEnable), and each unit's texture identity. This port's identity is the TX_SETIMAGE3 address;
+aurora's is `texObj.texObjId`, which `emit_texobj` sets to exactly that address — so they compare
+without translation. Aurora's hook is in `command_processor.cpp:handle_draw`, weak-linked over a
+plain C ABI so aurora still builds standalone.
+
+Two pairing problems, both found by the tool reporting nonsense and both fixed rather than ignored:
+
+1. **Pairing by ordinal is wrong.** Aurora drains the FIFO a frame or two behind this parser, so the
+   Nth draw overall is not the same draw. Flat-list pairing reported *98% disagreement* — the tool
+   lying, not a finding. Now each side closes its own frame (this parser at the stream swap, aurora
+   when the stream position restarts) and the report pairs the oldest closed frame from each.
+2. **A frame's counts still differ slightly** (~24 of ~29,400): aurora's boundary is inferred from
+   the position restarting and cannot see a buffer's first draws. The report compares the aligned
+   prefix and states how many trailed; a divergence over 5% is refused outright.
+
+### What it says
+
+**829 of 29,619 draws (2.8%) disagree — and the stage tables agree EXACTLY.** Same `numStages`,
+same `numTexGens`, same per-stage map/coord/enable. So RAS1_TREF, GENMODE and the texgen decode are
+confirmed correct a third time, now against a live oracle rather than against the SDK source.
+
+Every disagreement is the **texture identity on a unit**. Example (both agree stage 0 samples map1):
+
+```
+draw 21 MINE   stages=1 texgens=1 | s0:map1/c0 | units 0:8e2720 1:b0ffa0 2:3db200 3:3db200
+draw 21 AURORA stages=1 texgens=1 | s0:map1/c0 | units 0:a86140 1:f6ce20 2:a7c240 3:871680
+```
+
+**Do not act on that yet — the instrument is not validated.** Aurora's units 1-3 read as the SAME
+three ids (`f6ce20`, `a7c240`, `871680`) in every draw reported, and its unit 0 appears to trail
+this port's by one draw. Constant output is the classic signature of an instrument that cannot show
+the other answer (CLAUDE.md: validate against a known-positive first). Either
+`g_gxState.textures[m].texObj.texObjId` is not where aurora holds the bound texture at draw time, or
+the frame pairing is still off by one. **Validate that before believing any of it** — feed the
+oracle a case where the units MUST differ and check it says so.
+
+Next: validate the aurora-side field, then read off which unit identity is wrong and why.

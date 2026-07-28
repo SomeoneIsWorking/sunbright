@@ -12,6 +12,7 @@
 #include "../runtime/probe_server.h"
 #include "../runtime/screen_effects.h"
 #include "../runtime/native_render.h"
+#include "../runtime/state_oracle.h"
 #include "../runtime/scene.h"
 #include "../runtime/render_compare.h"
 
@@ -274,6 +275,7 @@ void video_wait_for_retrace(CPUState& cpu) {
             sbr_scene_report_alpha();
             sbr_render_report_formats();
             sbr_render_recheck_black();
+            sbr_state_oracle_report();
             sbr_gxfifo_report_bp_writes();
             if (const char* d = std::getenv("SBR_RENDER_DUMP")) sbr_render_dump(d);
         }

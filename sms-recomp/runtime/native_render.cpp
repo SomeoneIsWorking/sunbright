@@ -846,13 +846,21 @@ void sbr_render_recheck_black() {
         uint32_t before = 0, after = 0;
         while (before < 0x20000 && sb_r8(tex.desc.addr - before - 1) == 0) ++before;
         while (after < 0x20000 && sb_r8(tex.desc.addr + need + after) == 0) ++after;
-        char hex[64] = {0};
-        for (int i = 0; i < 16; ++i)
+        // TWO read paths, side by side. This decoder reads through sb_r8 (guest EA); aurora is
+        // handed a raw host pointer g_ram_base + phys for the SAME texture. Aurora renders the
+        // plaza correctly from those bytes, so if sb_r8 disagrees with the raw pointer the
+        // INSTRUMENT is what is zero, not the memory.
+        extern u8* g_ram_base;
+        const u32 phys = tex.desc.addr & 0x01FFFFFFu;
+        char hex[64] = {0}, hexRaw[64] = {0};
+        for (int i = 0; i < 16; ++i) {
             std::snprintf(hex + i * 3, 4, "%02x ", (unsigned)sb_r8(tex.desc.addr + i));
-        lucent::info("nrender", "cached-black 0x{:08x} {} {}x{}: {} bytes, zero run -{}/+{}, raw [{}] cached mean {:.1f}, "
+            std::snprintf(hexRaw + i * 3, 4, "%02x ", (unsigned)g_ram_base[phys + i]);
+        }
+        lucent::info("nrender", "cached-black 0x{:08x} {} {}x{}: {} bytes, zero run -{}/+{}, sb_r8 [{}] rawptr [{}] cached mean {:.1f}, "
                                 "guest memory NOW decodes to {:.1f}", tex.desc.addr,
                      gx_texture_format_name(tex.desc.format), tex.desc.width, tex.desc.height,
-                     need, before, after, hex, tex.mean, now);
+                     need, before, after, hex, hexRaw, tex.mean, now);
     }
     if (rechecked == 0) lucent::info("nrender", "no cached-black textures to recheck");
 }
