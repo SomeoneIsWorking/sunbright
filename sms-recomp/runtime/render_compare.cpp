@@ -195,6 +195,18 @@ void on_aurora_frame(const uint8_t* rgba, uint32_t w, uint32_t h, void*) {
         const double n = (double)g_scored.size();
         lucent::info("ab", "    mean over {} scored frames: edgeIoU {:.1f}% (best {:.1f}%), "
                            "lumaCorr {:+.3f}", g_scored.size(), si / n, bi, sc / n);
+        // A FIXED-N comparison point, emitted exactly once. The running mean drifts several points
+        // with the frame COUNT alone, so two runs of different length are not comparable — reading
+        // them as a before/after produced a wrong conclusion in this project once already. Compare
+        // runs on THIS line and nothing else; SBR_AB_AT moves the point.
+        static const size_t kAt = [] {
+            const char* e = std::getenv("SBR_AB_AT");
+            return (size_t)(e != nullptr ? std::strtoul(e, nullptr, 10) : 59);
+        }();
+        if (g_scored.size() == kAt)
+            lucent::info("ab", "=== COMPARABLE @ N={}: edgeIoU {:.2f}% lumaCorr {:+.4f} === "
+                               "(compare runs on THIS line; means at different N are not "
+                               "comparable)", kAt, si / n, sc / n);
     }
     // Every variant of THIS frame against THIS aurora frame — the whole point of doing the sweep
     // in-process. A variant that scores higher than the baseline names an operation this port is

@@ -169,6 +169,36 @@ decode is the canonical local example — and shader/pipeline compile failures M
 not skip batches). Guard with `SMS_NATIVE_PLATFORM` so original decomp behavior is
 preserved off-platform.
 
+## 🔬 EVERY COMPARISON INSTRUMENT NEEDS A CONTROL THAT CAN FAIL
+
+The single most expensive failure mode in this project is not a wrong fix — it is an instrument
+that compares two things which are not the same quantity, and reports the difference as a finding.
+It has happened SIX times (see `debug_journal/2026-07-23_native_texgen_and_texmap_bisect.md`):
+
+- draw ORDINALS joined across two instruments that count different populations (twice);
+- aurora's SDK `texObj` slot compared against our BP image base — 133 "disagreements", really 0;
+- an 8192-entry event ring reporting its own WRAP as "no writes found";
+- a 512-byte prefix sampled from an 8192-byte texture, reported as "never written";
+- the capture-list ordinal used to order EFB copies, collapsing them all to end-of-frame.
+
+Each looked like a result. Each cost hours to days. So, before trusting ANY instrument that
+compares, diffs, attributes or scores:
+
+1. **State what BOTH sides actually measure**, in the code, at the point of comparison. If one side
+   reads an SDK slot and the other a hardware register, they are not comparable no matter how well
+   the numbers correlate.
+2. **Give it a control that MUST fail visibly.** A no-op variant that has to reproduce the baseline
+   exactly; an empty input that has to read as empty; a known-positive that has to be detected. If
+   the instrument cannot tell you it is broken, its "no signal" and its "broken" are the same
+   output. `SBR_BLACK_OWNER` asserts both ends before bisecting; the ablation sweep carries a
+   `control:no-op` that must score +0.0 — copy that shape.
+3. **Pair on something both sides genuinely share.** Stream offsets, addresses, stable keys — never
+   an ordinal that each side counts for itself.
+4. **Never compare aggregates taken at different sample counts.** The A/B mean drifts several
+   points with frame COUNT alone; use the `COMPARABLE @ N=` line, not the running mean.
+
+A finding from an instrument with no control is a hypothesis, and must be labelled one.
+
 ## 🔧 TOOLING / VERIFICATION FIRST
 
 If the harness that would verify a change is missing or broken, FIX/BUILD THE HARNESS FIRST.
