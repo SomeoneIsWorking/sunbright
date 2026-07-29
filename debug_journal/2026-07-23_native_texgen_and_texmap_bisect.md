@@ -1684,3 +1684,39 @@ That makes it a CAPTURE-COVERAGE problem, and it is worth naming the fork before
 change to the frontend. (1) is a day's work and leaves the coverage question open. Recording the
 choice rather than drifting into one: the next session should decide deliberately, with the
 knowledge that the current frontend can only ever see what J3D draws.
+
+## 2026-07-29 (iteration 17) — tevreg: the decoders are identical, and aurora is holding DEFAULTS
+
+The last surviving state divergence is `tevreg`, 41 of 29399 draws (0.14%). Read both decoders
+before theorising:
+
+- ours (`dev_gxfifo.cpp`): `s10 = (int32_t)((v & 0x7FF) << 21 >> 21) / 255.0f`, R at bits 0-10 and
+  A at 12-22 on the even write, B/G on the odd one, konst routed off bit 23.
+- aurora (`command_processor.cpp:1279-1300`): 11-bit `bp_get`, explicit sign-extend from bit 10,
+  `/ 255.f`, same halves, same konst split.
+
+**Identical, including the deliberate absence of clamping.** So the divergence is not encoding — and
+that matters, because comparing unlike encodings is what produced most of the false findings in this
+arc.
+
+The VALUES say what it is instead. The divergent draws look like:
+
+```
+C0  mine [117 76 8 169]      aurora [255 255 255 255]
+C1  mine [169 161 169 238]   aurora [255 255 255 255]
+C0  mine [255 255 255 260]   aurora [255 255 255 255]
+```
+
+`[255 255 255 255]` is 1.0 in every component — aurora's INITIAL register value. On these draws
+aurora is still holding its default while this port has processed a real write. So this is not this
+port deriving a wrong value; it is aurora not having the write yet, which makes the oracle NOT
+ground truth for this field on those draws.
+
+Deliberately not "fixed": there is nothing here to fix on our side without evidence that our value
+is wrong, and matching aurora's default would be fitting the port to the oracle's gap — the exact
+inversion this project's rules forbid. Recorded as a known, bounded, 0.14% divergence where the
+oracle is the weaker side, pending a reason to revisit.
+
+That leaves the per-draw state comparison at: textures 0, raster 0, blend 0, scissor 0, cull 0,
+numChans 0, chanctrl/amb/mat 0, ras-sel 0, combiner 0, ksel 0, konst 0 — and tevreg 41 explained
+above.
