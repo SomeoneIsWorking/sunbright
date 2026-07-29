@@ -301,8 +301,7 @@ void video_wait_for_retrace(CPUState& cpu) {
                 if (tell) dump("scratch/bin/sweep_baseline.rgba", ab);
                 for (int a = 1; a < sbr_render_ablation_count(); ++a)
                     if (sbr_render_ablation_render(a) && sbr_render_readback(ab.data(), 640, 448)) {
-                        if (tell && a == sbr_render_ablation_count() - 1)
-                            dump("scratch/bin/sweep_control.rgba", ab);
+                        if (tell && a == 9) dump("scratch/bin/sweep_pinunit1.rgba", ab);
                         if (tell)
                             lucent::info("ab", "   sweep checksum: baseline {:016x}  {} {:016x}{}",
                                          base, sbr_render_ablation_name(a), sum(ab),

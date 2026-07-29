@@ -1063,3 +1063,30 @@ aurora does. The defect is therefore the CONTENT at that address, not the routin
 where the Fable agent's zero-buffer finding already pointed. The open question is unchanged and now
 much sharper: **what should be writing the buffers bound on texture unit 1, and why is nothing
 writing them in this port?**
+
+### Unit 1, looked at rather than scored
+
+`pin unit1->0` recovering +6.0 could have been a metric artefact — pinning duplicates the base
+texture, which adds edge structure the edgeIoU metric might reward without being more correct. It
+is not an artefact. Baseline vs `pin unit1->0` on the same frame
+(`scratch/screenshots/sweep_{baseline,pinunit1}.png`): the baseline blacks out the ENTIRE
+background — sky, hillside, distant buildings, the plaza tower — and pinning renders all of it.
+
+A vertex-weighted histogram of what unit 1 binds is misleading here and is kept only with that
+caveat: the top eight bindings by vertex count all have real content (decoded means 96.7-197.3,
+none black), because near geometry dominates the vertex count. The black bindings belong to the
+DISTANT draws, which are a small share of vertices and the whole of the visible defect. Ranking
+instruments by volume hides exactly the population that matters.
+
+So the picture is now consistent and narrow: **specific distant-scenery draws bind a zero-content
+texture on unit 1**, we bind the same address aurora binds (99.35% agreement), and aurora renders
+them anyway. Of the six zero textures, `0x80fea480` (RGB565 320x224) IS an EFB copy destination —
+and aurora services copy destinations GPU-side through its `copyTextures` map without ever writing
+guest memory, so zero RAM there is expected and proves nothing about aurora's picture. This port
+has NO render-to-texture support, so it decodes those zeros. But `0x80cfafa0` (CMPR 64x64) cannot
+be an EFB copy at all (CMPR is not a copy format), so it is an ASSET texture that should have been
+loaded and was not.
+
+Two distinct producers to find, then — and neither is a routing or arithmetic problem:
+  1. render-to-texture: bind EFB copy destinations to the copied surface instead of guest memory;
+  2. the asset path that should fill `0x80cfafa0` and its non-copy siblings.

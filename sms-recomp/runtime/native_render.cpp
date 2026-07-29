@@ -31,6 +31,7 @@
 #include <cstdlib>
 #include <algorithm>
 #include <cstring>
+#include <map>
 #include <unordered_map>
 #include <vector>
 #include <vector>
@@ -659,9 +660,21 @@ void sbr_render_begin(float r, float g, float b, float a) {
     g_batches.clear();
 }
 
+// Which textures the stages that NAME unit 1 actually bind, weighted by vertices. Unit 1 is the
+// whole routing deficit (per-unit ablation: pinning it alone recovers +6.0, units 2-7 recover
+// nothing), and we bind the same address aurora does for 99.35% of those stages — so the question
+// is which CONTENT lands there. Vertices, not draws, because a 60-vertex horizon strip and a
+// 26k-vertex batch are not equally responsible for a black region.
+std::map<uint32_t, long> g_unit1Use;
+
 void sbr_render_tris(const SbrVertex* verts, int count, SbrDepthState depth, const SbrTexture tex[8],
                      const SbrTevState& tevState) {
     if (!g_ok || verts == nullptr || count < 3) return;
+    for (unsigned st = 0; st < tevState.numStages && st < 16; ++st)
+        if (tevState.stage[st].texEnable && (tevState.stage[st].texmap & 7) == 1) {
+            g_unit1Use[tex[1].addr] += count;
+            break;
+        }
     count -= count % 3;
     g_verts.insert(g_verts.end(), verts, verts + count);
     // Merge into the previous run when the state is unchanged, so honouring per-material depth
@@ -898,7 +911,28 @@ void sbr_render_recheck_black() {
                                  tex.desc.width, tex.desc.height, tex.mean, now);
             }
         }
-        lucent::info("nrender", "stale-cache scan: {} of {} decodable cached textures no longer "
+        {   // Top unit-1 bindings by vertex count, with what each decodes to.
+        std::vector<std::pair<uint32_t, long>> v(g_unit1Use.begin(), g_unit1Use.end());
+        std::sort(v.begin(), v.end(), [](auto& a, auto& b) { return a.second > b.second; });
+        long total = 0;
+        for (auto& [a, n] : v) total += n;
+        for (size_t i = 0; i < v.size() && i < 8; ++i) {
+            float mean = -1.0f;
+            const char* fmt = "?";
+            int w = 0, h = 0;
+            for (auto& [key, t] : g_texs)
+                if (t.desc.addr == v[i].first) {
+                    mean = t.mean; fmt = gx_texture_format_name(t.desc.format);
+                    w = t.desc.width; h = t.desc.height; break;
+                }
+            lucent::info("nrender", "  unit1 bind 0x{:08x} {} {}x{}: {} verts ({:.1f}% of unit-1 "
+                                    "work), decoded mean {:.1f}{}",
+                         v[i].first, fmt, w, h, v[i].second,
+                         total ? 100.0 * (double)v[i].second / (double)total : 0.0, mean,
+                         (mean >= 0.0f && mean <= 1.0f) ? "   <- BLACK" : "");
+        }
+    }
+    lucent::info("nrender", "stale-cache scan: {} of {} decodable cached textures no longer "
                                 "match their upload", stale, scanned);
     }
     int rechecked = 0;
