@@ -232,7 +232,6 @@ logger — that is debt to convert, not a feature.
 | `SB_TEX_DUMP` | 1 | `extern/aurora/lib/gfx/texture.cpp:87` |  |
 | `SB_TEX_DUMP_MAX` | 1 | `extern/aurora/lib/gfx/texture.cpp:91` |  |
 | `SB_TIMELINE` | 1 | `extern/aurora/lib/gx/command_processor.cpp:90` |  |
-| `SB_TIMG_DBG` | 1 | `sms-boot/assets/timg_swap.cpp:74` | gated print |
 | `SB_TITLE_PANE_DBG` | 1 | `decomp/sms/src/GC2D/CardLoad.cpp:723` |  |
 | `SB_TRACE_SEQ` | 7 | `sms-boot/runtime/frame_seam.cpp:85` | gated print |
 | `SB_TURBO` | 2 | `sms-recomp/overrides/native_frame.cpp:122` |  |
@@ -308,4 +307,4 @@ logger — that is debt to convert, not a feature.
 | `SBR_WIDESCREEN` | 1 | `sms-recomp/overrides/widescreen.cpp:56` |  |
 | `SBR_WS_SCALE` | 1 | `sms-recomp/overrides/widescreen.cpp:65` |  |
 
-**287 switches; 89 still gate a raw print.**
+**286 switches; 88 still gate a raw print.**

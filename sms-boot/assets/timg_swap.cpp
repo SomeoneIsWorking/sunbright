@@ -1,4 +1,5 @@
 // timg_swap.cpp — see timg_swap.h.
+#include <sb_log.h>
 #include "timg_swap.h"
 #include <cstdint>
 #include <cstdio>
@@ -71,11 +72,9 @@ SwapMap& swapped_map() {
 
 void restimg_swap_to_host(const void* timg) {
     if (!timg) return;
-    if (std::getenv("SB_TIMG_DBG")) {
+    {   // SB_LOG=timg. Reachable here since sms-assets gained the shims include path.
         static long n = 0;
-        std::fprintf(stderr, "[timg] enter #%ld tid=%d ptr=%p\n",
-                     n++, sb_gettid(), timg);
-        std::fflush(stderr);
+        SB_LOGC("timg", "enter #%ld tid=%d ptr=%p", n++, sb_gettid(), timg);
     }
     uint8_t* p = static_cast<uint8_t*>(const_cast<void*>(timg));
     auto [it, fresh] = swapped_map().try_emplace(timg);

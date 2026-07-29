@@ -45,9 +45,9 @@ path that advances ownership, go. Never punt the decision to the user.
 - **Unit tests (pure-fn TDD)**: `ctest --test-dir build-native -E platform_test` (28+ tests); add a
   `render_test`/`platform_*` unit for every pure unit you extract, asserting spec-computed values.
 - **Run sms-boot headless**: `cmake --build build-native --target sms-boot -j$(nproc)` then
-  `setarch -R env SUNBRIGHT_DISC=scratch/disc/sms.iso SB_THP_FAST=1 SB_WATCHDOG_SECS=0 SB_J3D_DBG=1
-  SB_FRAME_DUMP=1 SB_FRAME_DUMP_ON_SCENE=1 SB_FRAME_DUMP_MAX=2 SB_HOST_ALLOC_CAP_MB=3072
-  ./build-native/sms-boot` (scene ~VI 6121; frames → `scratch/frames/boot_*.ppm`). Always
+  `./run-render.sh` (the recipe script — it sets the env the renderer needs; see its header).
+  The hand-written invocation that used to be here named four switches that no longer exist;
+  `tools/diag_registry.py scan` lists the switches the code actually reads (scene ~VI 6121; frames → `scratch/frames/boot_*.ppm`). Always
   `pkill -9 -x sms-boot` after. Logs have NUL → `grep -a`.
 
 ## Ownership pattern (how to port a behavior)
@@ -63,7 +63,7 @@ The named, proven cycle. Run it continuously, one divergence at a time, until pa
 Never stop; commit durable state (in-repo notes, commits) as you go so any fresh session can pick up.
 
 1. **RE** — find WHERE the divergence comes from and name the exact mechanism. Backtrace the live
-   draw/value (e.g. `SB_IMM_TRACE_SOLID` printed `SMS_FillScreenAlpha <- TModelWaterManager::
+   draw/value (e.g. a per-draw trace switch (the equivalent today is `SB_LOG=<channel>`) printed `SMS_FillScreenAlpha <- TModelWaterManager::
    drawWaterVolume`), then read the decomp (`decomp/sms/...`) + disassemble the US DOL to confirm
    the precise semantics (e.g. `GXSetColorUpdate(GX_FALSE)` => writes NO colour). No fix until named.
 2. **PORT** — transcribe the original behaviour faithfully (control flow / state / GX semantics)
