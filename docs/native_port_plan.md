@@ -1,9 +1,12 @@
 # Renderer engineering reference (native GX → Vulkan)
 
-> **This is the live frontier of the project** (architecture direction in `CLAUDE.md` /
-> `docs/DO_NOT_REVISIT_FLIP.md`): a native PC renderer that reads engine objects straight from
-> **guest-layout RAM** (object-model, not GX-byte/FIFO emulation) and draws them with our own
-> Vulkan, no Dolphin. Contents: the stage breakdown (N0–N8), the GX/VAT vertex-decode spec (§3a),
+> **HISTORICAL — this is NOT the current architecture.** It describes an object-model renderer
+> reading engine objects from guest-layout RAM and drawing them with a bespoke Vulkan backend. The
+> live renderer is the opposite: it is driven from the **GX FIFO parse**
+> (`sms-recomp/runtime/dev_gxfifo.cpp` -> `scene.cpp` -> `native_render.cpp`) on **SDL3 GPU**, with
+> aurora as the in-process parity oracle. See `docs/codemap.md` and `CLAUDE.md`'s renderer
+> doctrine. Kept ONLY for the GX/VAT vertex-decode spec in section 3a, which is still accurate;
+> treat the staging plan (N0-N8) and every architectural claim here as superseded. Contents: the stage breakdown (N0–N8), the GX/VAT vertex-decode spec (§3a),
 > the J3DShape draw-path RE, verification notes, and the progress log. The "render over
 > recomp-on-guest-memory" form is NOT transitional — it IS the target (engine objects stay
 > GC-layout; gameplay stays recompiled on the same memory). The earlier "subordinate to

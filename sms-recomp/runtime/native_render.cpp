@@ -480,20 +480,6 @@ void pack_tev(const SbrTevState& tev, TevUniform& u, const SbrTexture* tex) {
         const int32_t map = (int32_t)(st.texmap & 7);
         int32_t unit = forceUnit >= 0 ? (forceUnit & 7)
                                       : (((unitMask >> map) & 1) ? map : 0);
-        // SBR_TEXMAP_SKIPZERO=1 (DIAGNOSTIC): honour the named unit EXCEPT when the texture bound
-        // there decodes to (near-)black — fall back to unit 0 for exactly those stages. This splits
-        // the named-units residual into its two candidate populations in one run: if the frame
-        // matches the pinned score with distant scenery textured, the entire residual is stages
-        // sampling the never-written dynamic textures (the zero-buffer set), and the work item is
-        // the PRODUCER of those buffers — not the routing.
-        static const bool skipZero = [] {
-            const char* e = std::getenv("SBR_TEXMAP_SKIPZERO");
-            return e != nullptr && e[0] != '\0' && e[0] != '0';
-        }();
-        if (skipZero && unit > 0 && tex != nullptr) {
-            const auto it = g_texs.find(tex_key(tex[unit]));
-            if (it != g_texs.end() && it->second.mean >= 0.0f && it->second.mean <= 1.0f) unit = 0;
-        }
         u.dest[i][3] = unit | (int32_t)(st.texcoord & 3) << 8 |
                        (int32_t)(st.rasChannel & 7) << 16;
         pack_konst(tev, (unsigned)i, u.konst[i]);
