@@ -726,6 +726,50 @@ void sbr_render_note_copy(uint32_t dest, int sx, int sy, int sw, int sh, int dw,
     g_copyPoints.push_back({g_batches.size(), dest, sx, sy, sw, sh, dw, dh});
 }
 
+// Dump an EFB-copy surface to a raw RGBA file. What the game samples from a copy destination has
+// been argued about from its EFFECT on the frame; this reads the surface itself. Its ALPHA matters
+// as much as its colour here — the compositing quad's TEV resolves to alpha = TEXA, so an opaque
+// copy replaces the frame while a transparent one leaves it alone.
+void sbr_render_dump_copy(uint32_t addr, const char* path) {
+    const auto it = g_copyTex.find(addr);
+    if (it == g_copyTex.end() || it->second == nullptr) {
+        lucent::info("nrender", "dump-copy 0x{:08x}: no copy surface registered", addr);
+        return;
+    }
+    int w = 0, h = 0;
+    for (const CopyPoint& cp : g_copyPoints)
+        if (cp.dest == addr) { w = cp.dw; h = cp.dh; }
+    if (w <= 0 || h <= 0) { w = 320; h = 224; }
+    SDL_GPUTransferBufferCreateInfo tci{};
+    tci.usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD;
+    tci.size = (Uint32)(w * h * 4);
+    SDL_GPUTransferBuffer* tb = SDL_CreateGPUTransferBuffer(g_dev, &tci);
+    if (tb == nullptr) return;
+    SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(g_dev);
+    SDL_GPUCopyPass* cp2 = SDL_BeginGPUCopyPass(cmd);
+    SDL_GPUTextureRegion reg{};
+    reg.texture = it->second; reg.w = (Uint32)w; reg.h = (Uint32)h; reg.d = 1;
+    SDL_GPUTextureTransferInfo tti{};
+    tti.transfer_buffer = tb; tti.pixels_per_row = (Uint32)w; tti.rows_per_layer = (Uint32)h;
+    SDL_DownloadFromGPUTexture(cp2, &reg, &tti);
+    SDL_EndGPUCopyPass(cp2);
+    SDL_GPUFence* f = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);
+    if (f != nullptr) { SDL_WaitForGPUFences(g_dev, true, &f, 1); SDL_ReleaseGPUFence(g_dev, f); }
+    if (void* m = SDL_MapGPUTransferBuffer(g_dev, tb, false)) {
+        const uint8_t* px = (const uint8_t*)m;
+        double sa = 0.0;
+        for (int i = 0; i < w * h; ++i) sa += px[i * 4 + 3];
+        if (FILE* fp = std::fopen(path, "wb")) {
+            std::fwrite(px, 1, (size_t)w * h * 4, fp);
+            std::fclose(fp);
+        }
+        lucent::info("nrender", "dump-copy 0x{:08x}: {}x{} -> {} (mean alpha {:.1f})", addr, w, h,
+                     path, sa / (double)(w * h));
+        SDL_UnmapGPUTransferBuffer(g_dev, tb);
+    }
+    SDL_ReleaseGPUTransferBuffer(g_dev, tb);
+}
+
 bool sbr_render_is_copy_surface(uint32_t addr) {
     const auto it = g_copyTex.find(addr);
     return it != g_copyTex.end() && it->second != nullptr;

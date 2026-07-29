@@ -257,3 +257,5 @@ void sbr_render_note_copy(uint32_t dest, int sx, int sy, int sw, int sh, int dw,
 // The CPU TEV reference decodes guest memory, so for such an address it does NOT mirror what the
 // GPU samples — it must say so rather than print a confident zero.
 bool sbr_render_is_copy_surface(uint32_t addr);
+// Read an EFB-copy surface back to a raw RGBA file, reporting its mean alpha.
+void sbr_render_dump_copy(uint32_t addr, const char* path);

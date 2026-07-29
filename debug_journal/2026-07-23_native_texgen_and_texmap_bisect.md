@@ -1579,3 +1579,41 @@ is deleted rather than left in place (no tombstones).
 Still open, unchanged: whether this quad should composite as strongly as it does. Its alpha needs
 measuring on the GPU side, which now requires reading back the rendered surface rather than asking
 the CPU reference — the reference is disqualified for this draw by construction.
+
+## 2026-07-29 (iteration 14) — the copy surface is a FEEDBACK LOOP, and the ordering key is too coarse
+
+Read the copy surface back instead of arguing from its effect (`sbr_render_dump_copy`, new):
+
+```
+dump-copy 0x80fea480: 320x224 -> scratch/bin/copysurf.rgba (mean alpha 254.8)
+```
+
+The surface (`scratch/screenshots/copysurf.png`) is THIS PORT'S OWN COMPOSITED FRAME — blurred
+background and all. So copy(N) contains quad(N-1), which contained copy(N-2): a feedback loop that
+re-blurs the background every frame. That is the whole visible residual, and it is not a texture,
+decode or alpha problem.
+
+Also settled, from the quad's own combiner:
+
+```
+colour: mix(ZERO, TEXC, RASC) = TEXC x 1   -> the copy surface's colour
+alpha:  mix(ZERO, TEXA, RASA) = TEXA x 1   -> the copy surface's ALPHA
+```
+
+blended SRCALPHA/INVSRCALPHA. So the copy surface's own alpha decides the composite entirely, and
+ours is 254.8 of 255 — opaque, because it is a blit of our colour target where alpha is ~1
+everywhere. An opaque copy REPLACES the frame. That is why the quad dominates rather than overlays.
+
+**Root cause of the residual: the copy is performed at batch 178 of 179, while the quad that samples
+it is at ~141 — so the copy captures the quad's own output.** The ordering key is at fault: copies
+are placed by the CAPTURE-LIST LENGTH at the moment the parser sees them, and every copy in this
+frame is noted after the list is already full, so they all collapse to the end. The correct key
+already exists and is used elsewhere in this arc for exactly this reason — the FIFO STREAM OFFSET
+(`sbr_gxfifo_stream_pos()`), which each drawable is already stamped with for the state oracle.
+Placing copies by stream offset puts them at their true position relative to the draws, which is
+what decides whether a copy sees the quad or not.
+
+Worth noting the shape: capture-list length is an ORDINAL, and every previous time this arc keyed
+one instrument off an ordinal that another instrument did not share, it produced a wrong answer
+(draw-ordinal pairing, the parser-vs-oracle "draw 702"). Same mistake, third time, now in the
+renderer rather than in a diagnostic.
