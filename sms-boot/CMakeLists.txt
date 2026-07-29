@@ -186,7 +186,11 @@ add_library(sms-assets STATIC
 set_target_properties(sms-assets PROPERTIES
     CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
 target_include_directories(sms-assets PUBLIC
-    "${SMS_NATIVE_REPO_ROOT}/sms-boot/assets")
+    "${SMS_NATIVE_REPO_ROOT}/sms-boot/assets"
+    # shims/ too, so this target can use the project logger (sb_log.h). Without it the only
+    # option here was a raw fprintf behind its own env var, which is exactly the idiom the
+    # single-logger rule exists to remove.
+    "${SMS_NATIVE_REPO_ROOT}/sms-boot/shims")
 target_compile_options(sms-assets PRIVATE -Wall -Wextra)
 
 enable_testing()

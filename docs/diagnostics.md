@@ -27,7 +27,6 @@ logger — that is debt to convert, not a feature.
 | `SB_AUDIO_RAW` | 1 | `sms-boot/runtime/jas_kernel_native.cpp:348` |  |
 | `SB_BLO_BOUNDS_DBG` | 2 | `decomp/sms/src/JSystem/J2D/J2DPane.cpp:118` | gated print |
 | `SB_BLO_DBG` | 2 | `decomp/sms/src/JSystem/J2D/J2DPane.cpp:15` | gated print |
-| `SB_BMT_DBG` | 1 | `sms-boot/assets/bmt_swap.cpp:54` | gated print |
 | `SB_CALCPASS_DBG` | 1 | `decomp/sms/src/System/MarDirectorDirect.cpp:277` | gated print |
 | `SB_CALC_DBG` | 1 | `decomp/sms/src/JSystem/J3D/J3DGraphAnimator/J3DModel.cpp:851` |  |
 | `SB_CAM_DBG` | 2 | `decomp/sms/src/Camera/CameraOption.cpp:88` | gated print |
@@ -145,7 +144,6 @@ logger — that is debt to convert, not a feature.
 | `SB_PANE_DBG` | 1 | `decomp/sms/src/JSystem/J2D/J2DScreen.cpp:242` |  |
 | `SB_PASS_DBG` | 1 | `extern/aurora/lib/gfx/common.cpp:430` |  |
 | `SB_PERSP_ZONLY` | 1 | `extern/aurora/lib/gx/command_processor.cpp:4110` |  |
-| `SB_PIN_STATE` | 1 | `sms-boot/runtime/pin_state.cpp:42` | gated print |
 | `SB_PIPELINE_BLEND_DBG` | 1 | `extern/aurora/lib/gx/gx.cpp:763` | gated print |
 | `SB_PIXEL_WATCH` | 1 | `extern/aurora/lib/gx/command_processor.cpp:2141` |  |
 | `SB_PLACE_DBG` | 1 | `decomp/sms/src/JSystem/JDrama/JDRPlacement.cpp:31` | gated print |
@@ -311,4 +309,4 @@ logger — that is debt to convert, not a feature.
 | `SBR_WIDESCREEN` | 1 | `sms-recomp/overrides/widescreen.cpp:56` |  |
 | `SBR_WS_SCALE` | 1 | `sms-recomp/overrides/widescreen.cpp:65` |  |
 
-**290 switches; 92 still gate a raw print.**
+**288 switches; 90 still gate a raw print.**

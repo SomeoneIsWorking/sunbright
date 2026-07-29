@@ -43,8 +43,9 @@ void load_once() {
   if (!path || !*path) return;
   FILE* f = std::fopen(path, "rb");
   if (!f) {
-    // Loud regardless of SB_LOG: an explicitly-requested pin that can't load is
-    // a broken run, not a diagnostic.
+    // LOGGER-EXEMPT: loud regardless of SB_LOG. An explicitly-requested pin that cannot load
+    // is a BROKEN RUN, not a diagnostic — it must be visible with no channel enabled, so this
+    // stays a direct stderr write rather than becoming a channel-gated log line.
     std::fprintf(stderr, "[sb-pin] SB_PIN_STATE='%s' not readable\n", path);
     return;
   }

@@ -14,6 +14,7 @@
 // Portable across x86-64 and arm64 (explicit be16/be32, no host-byte-order
 // assumptions). See bmd_swap.cpp for the per-table layout documentation.
 // =============================================================================
+#include <sb_log.h>
 #include "bmd_swap.h"
 #include "bmd_blocks.h"
 #include <cstdio>
@@ -51,12 +52,9 @@ BmdSwapResult bmt_swap_to_host(const uint8_t* be_data, size_t len,
 	const uint32_t block_num = be32(be_data + 0x0C);
 	r.block_num = block_num;
 
-	const bool dbg = getenv("SB_BMT_DBG") != nullptr;
-	if (dbg)
-		std::fprintf(stderr,
-		             "[bmt] len(arg)=%zu mFileSize=%u blockNum=%u type=%c%c%c%c\n",
-		             len, be32(be_data + 0x08), block_num, be_data[4], be_data[5],
-		             be_data[6], be_data[7]);
+	// SB_LOG=bmt. The logger is the gate, so the separate SB_BMT_DBG switch is gone with it.
+	SB_LOGC("bmt", "len(arg)=%zu mFileSize=%u blockNum=%u type=%c%c%c%c", len,
+	        be32(be_data + 0x08), block_num, be_data[4], be_data[5], be_data[6], be_data[7]);
 
 	// Some SMS .bmt files (e.g. nozzleBox.bmt) declare mBlockNum larger than the
 	// number of blocks that physically fit — the last real block ends exactly at
@@ -72,10 +70,8 @@ BmdSwapResult bmt_swap_to_host(const uint8_t* be_data, size_t len,
 		if (off + 8 > len) { r.error = "block header overrun"; return r; }
 		const uint32_t tag = be32(be_data + off + 0);
 		const uint32_t bsz = be32(be_data + off + 4);
-		if (dbg)
-			std::fprintf(stderr, "[bmt]  block %u @0x%x tag=%c%c%c%c size=%u\n", i,
-			             off, be_data[off], be_data[off + 1], be_data[off + 2],
-			             be_data[off + 3], bsz);
+		SB_LOGC("bmt", " block %u @0x%x tag=%c%c%c%c size=%u", i, off, be_data[off],
+		        be_data[off + 1], be_data[off + 2], be_data[off + 3], bsz);
 		if (bsz < 8 || off + bsz > len) { r.error = "bad block size"; return r; }
 		sw32(out.data() + off + 0);   // mType
 		sw32(out.data() + off + 4);   // mSize

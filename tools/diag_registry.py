@@ -103,6 +103,13 @@ def scan_code():
                 # would be wrong, not overdue. Matching any fprintf counted those too, which is
                 # how a "debt" list filled up with a texture dumper and the logger's own env
                 # parser. Restricted to the actual gated-diagnostic idiom.
+                # An explicit, reviewed exception. Some stderr writes are NOT diagnostics and must
+                # not be converted: a hard error on an explicitly-requested feature that failed
+                # (pin_state's unreadable SB_PIN_STATE) has to be loud whether or not any log
+                # channel is on. Marking them in-code means the scan stops re-proposing the same
+                # conversion every time, and the remaining count is work someone should actually do.
+                if "LOGGER-EXEMPT" in window:
+                    continue
                 gated = bool(re.search(
                     r'\bfprintf\s*\(\s*std(?:err|out)\b|(?<![\w:])printf\s*\(|'
                     r'(?<![\w:])puts\s*\(|std::cout', window)) and not LOGGER.search(window)
