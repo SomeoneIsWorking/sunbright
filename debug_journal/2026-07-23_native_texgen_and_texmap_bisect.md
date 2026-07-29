@@ -1229,3 +1229,45 @@ unit 1 through MORE binds than aurora does. The next question is therefore which
 bind the other ignores — likely that this parser updates a unit's address on any TX_SETIMAGE3
 write, while aurora may require a complete texobj (image0 AND image3) before the unit changes.
 That is testable by counting, and must be counted rather than assumed.
+
+## 2026-07-29 (iteration 5) — the texture divergence was the ORACLE, not the renderer
+
+**Read aurora's implementation instead of inferring from the disagreement.** Aurora stores
+`slot.image3 = value` on a TX_SETIMAGE3 write, exactly as this parser does, so there is no
+register-level latch difference to find. The divergence was in what the oracle HOOK reported:
+
+```c
+unitId[m] = g_gxState.textures[m].texObj.texObjId;   // the SDK GXLoadTexObj slot
+```
+
+`textures[m].texObj` is set by `GXLoadTexObj`. J3D almost never calls it — it binds by replaying
+display lists that write TX_SETIMAGE3 directly (this parser's own comments say so, and the SDK
+entry point only ever sees a 4x4 null texture) — so that slot is STALE BY CONSTRUCTION while the
+recomp side reports its BP-derived address. The oracle was comparing two different quantities.
+
+Reporting the BP image base on both sides:
+
+```
+before:  133 of 29243 draws disagree — 132 lag-shaped, 1 genuinely different
+         per-unit: u0=26186/130  u1=7666/50  u2=5822/21  u3=2412/12
+after:     0 of 29364 draws disagree
+         per-unit: u0=26184/0    u1=7666/0   u2=5822/0   u3=2412/0
+```
+
+**So the entire texture-binding investigation was chasing an instrument.** Retracted with it: the
+"one bind ahead / we advance through more binds than aurora" reading, the 99.35% unit-1 agreement
+figure (both paths happened to agree where they did), and the idea that the sky draws bind
+something different from aurora. They do not: this port binds exactly what aurora binds, on every
+unit, for all 29364 draws.
+
+This is the third instrument in this arc to manufacture a finding (after ordinal draw-pairing and
+the backwards capture-seam correlate), and the pattern is identical every time: two quantities that
+LOOK comparable, compared without checking they are the same thing.
+
+**What survives, and it is now the only state-level divergence left:** `tevreg` on ~40 of 29364
+draws. numChans, chanctrl/amb/mat, ras-sel, combiner, ksel and konst are all exactly 0. And the
+`pin unit1->0` ablation still recovers +6.0 with a visibly correct background — so unit 1 really
+does blacken the frame, but NOT because we bind a different texture there. Both runtimes sample the
+same `_dammy` placeholder; aurora's output is correct anyway, which means the difference is in what
+the combiner does with it. The TEV colour registers differing on 40 draws is now the obvious
+suspect and the next thing to chase.
