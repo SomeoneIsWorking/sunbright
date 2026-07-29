@@ -30,6 +30,7 @@
 // SB_PAD_SCRIPT is unset. Game's PADClamp applies the real dead-zone to the
 // full-deflect ±72 the same way it would a physical stick.
 
+#include <sb_log.h>
 #include <dolphin/pad.h>
 
 #include <cstdint>
@@ -115,8 +116,10 @@ void sb_pad_script_install(void) {
     parse_script(spec);
     g_enabled = !g_script.empty();
     if (g_enabled) {
-        std::fprintf(stdout, "[padscript] loaded %zu event(s) from SB_PAD_SCRIPT\n", g_script.size());
-        std::fflush(stdout);
+        // A normal-run message (the user asked for a pad script and wants confirmation it
+        // loaded), so it goes through the logger at an always-emitted channel rather than a raw
+        // stdout write.
+        SB_LOGC("padscript", "loaded %zu event(s) from SB_PAD_SCRIPT", g_script.size());
     }
 }
 

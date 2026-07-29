@@ -76,6 +76,7 @@
 // FRAMES, per Calc::imixcopy in JASAiCtrl.cpp::vframeWork), which is exactly the
 // (samples, num_frames) shape aurora_audio_push() wants.
 
+#include <sb_log.h>
 #include <JSystem/JAudio/JASystem/JASAiCtrl.hpp>
 #include <JSystem/JAudio/JASystem/JASDSPBuf.hpp>
 #include <JSystem/JAudio/JASystem/JASDSPInterface.hpp>
@@ -374,9 +375,8 @@ extern "C" void sb_jas_kernel_init(void)
     JASystem::Kernel::registerDacCallback(onDacBuffer);
     g_inited = true;
 
-    if (std::getenv("SB_DBG_AUDIO"))
-        std::fprintf(stderr, "[jas-native] Kernel::init() done (headless=%d)\n",
-                     g_headless ? 1 : 0);
+    // SB_LOG=jas-native replaces the SB_DBG_AUDIO gate plus a raw fprintf.
+    SB_LOGC("jas-native", "Kernel::init() done (headless=%d)", g_headless ? 1 : 0);
 }
 
 extern "C" void sb_jas_kernel_frame(void)

@@ -622,14 +622,12 @@ std::vector<std::uint8_t> translate_frame(const FifoCapture& cap, std::uint32_t 
                 // (le=true only applies to the NATIVE runtime, where the game
                 // computes matrix arrays host-side; a .dff replay never does.)
                 bool le = false;
-                static int s_abDbg = -1;
-                if (s_abDbg < 0) s_abDbg = std::getenv("SB_FIFO_TEXDBG") != nullptr ? 1 : 0;
-                if (s_abDbg == 1) {
+                {   // SB_LOG=fifo-arraybase is the gate; the 40-line cap is kept because
+                    // SB_LOG_EVERY rate-limits rather than capping a total.
                     static int n = 0;
-                    if (n < 40) {
-                        std::fprintf(stderr, "[fifo-arraybase] n=%d cpReg=0x%02X attr=%d gcAddr=0x%08X\n",
-                                     ++n, addr, attrIdx, val);
-                    }
+                    if (n < 40)
+                        SB_LOGC("fifo-arraybase", "n=%d cpReg=0x%02X attr=%d gcAddr=0x%08X", ++n,
+                                addr, attrIdx, val);
                 }
                 if (val == 0) {
                     emitArrayBase(out, attrIdx, 0, 0, le);  // null/empty slot

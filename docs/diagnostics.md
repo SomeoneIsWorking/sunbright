@@ -24,7 +24,7 @@ logger — that is debt to convert, not a feature.
 | `SB_ARC_DBG` | 7 | `decomp/sms/src/JSystem/J2D/J2DScreen.cpp:258` |  |
 | `SB_ARR_DBG` | 1 | `extern/aurora/lib/gx/command_processor.cpp:3986` |  |
 | `SB_ASYNC_PIPELINES` | 1 | `extern/aurora/lib/gfx/pipeline_cache.cpp:1111` |  |
-| `SB_AUDIO_RAW` | 1 | `sms-boot/runtime/jas_kernel_native.cpp:347` |  |
+| `SB_AUDIO_RAW` | 1 | `sms-boot/runtime/jas_kernel_native.cpp:348` |  |
 | `SB_BLO_BOUNDS_DBG` | 2 | `decomp/sms/src/JSystem/J2D/J2DPane.cpp:118` | gated print |
 | `SB_BLO_DBG` | 2 | `decomp/sms/src/JSystem/J2D/J2DPane.cpp:15` | gated print |
 | `SB_BMT_DBG` | 1 | `sms-boot/assets/bmt_swap.cpp:54` | gated print |
@@ -41,7 +41,7 @@ logger — that is debt to convert, not a feature.
 | `SB_COPY_DBG_AFTER` | 1 | `extern/aurora/lib/dolphin/gx/GXFrameBuffer.cpp:237` |  |
 | `SB_CULL_STATS` | 1 | `extern/aurora/lib/gx/command_processor.cpp:3326` |  |
 | `SB_DBFILL_BT` | 1 | `decomp/sms/src/JSystem/J3D/J3DGraphBase/J3DDrawBuffer.cpp:414` |  |
-| `SB_DBG_AUDIO` | 16 | `sms-boot/runtime/jas_kernel_native.cpp:227` | gated print |
+| `SB_DBG_AUDIO` | 15 | `sms-boot/runtime/jas_kernel_native.cpp:228` | gated print |
 | `SB_DBG_IDX` | 1 | `extern/aurora/lib/gx/shader.cpp:1287` |  |
 | `SB_DBG_MATAMB` | 2 | `decomp/sms/src/JSystem/J3D/J3DGraphBase/J3DMaterial.cpp:262` | gated print |
 | `SB_DBHEAD_DBG` | 3 | `decomp/sms/src/JSystem/J3D/J3DGraphBase/J3DDrawBuffer.cpp:107` |  |
@@ -72,9 +72,8 @@ logger — that is debt to convert, not a feature.
 | `SB_EFBTEX_DBG` | 1 | `decomp/sms/src/JSystem/JDrama/JDREfbCtrl.cpp:87` | gated print |
 | `SB_ENTRY_MAT` | 1 | `decomp/sms/src/JSystem/J3D/J3DGraphBase/J3DDrawBuffer.cpp:137` |  |
 | `SB_FB_SCALE` | 1 | `extern/aurora/lib/window.cpp:417` |  |
-| `SB_FIFO_NO_COPYSYN` | 1 | `sms-boot/runtime/fifo_player.cpp:725` |  |
+| `SB_FIFO_NO_COPYSYN` | 1 | `sms-boot/runtime/fifo_player.cpp:723` |  |
 | `SB_FIFO_REPLAY` | 1 | `sms-boot/main.cpp:89` | gated print |
-| `SB_FIFO_TEXDBG` | 1 | `sms-boot/runtime/fifo_player.cpp:626` | gated print |
 | `SB_FIFO_TRACE_MARK` | 1 | `extern/aurora/lib/gx/command_processor.cpp:546` |  |
 | `SB_FI_TRACE` | 1 | `decomp/sms/src/JSystem/J3D/J3DGraphBase/J3DDrawBuffer.cpp:82` | gated print |
 | `SB_FORCE_ABUF` | 1 | `extern/aurora/lib/gx/shader.cpp:2098` |  |
@@ -85,7 +84,7 @@ logger — that is debt to convert, not a feature.
 | `SB_GENOBJ_SKIP_ALL` | 1 | `decomp/sms/src/JSystem/JDrama/JDRNameRef.cpp:113` |  |
 | `SB_GXBEGIN_TRACE` | 1 | `extern/aurora/lib/dolphin/gx/GXVert.cpp:30` |  |
 | `SB_H` | 3 | `sms-recomp/host/main.cpp:89` |  |
-| `SB_HEADLESS` | 2 | `sms-boot/runtime/jas_kernel_native.cpp:371` |  |
+| `SB_HEADLESS` | 2 | `sms-boot/runtime/jas_kernel_native.cpp:372` |  |
 | `SB_HEAP_DBG` | 2 | `decomp/sms/src/JSystem/JKernel/JKRExpHeap.cpp:45` | gated print |
 | `SB_HEAP_GUARD` | 1 | `decomp/sms/src/JSystem/JKernel/JKRHeap.cpp:259` |  |
 | `SB_HOST_ALLOC_CAP_MB` | 1 | `decomp/sms/src/JSystem/JKernel/JKRHeap.cpp:339` |  |
@@ -142,7 +141,7 @@ logger — that is debt to convert, not a feature.
 | `SB_OPCODE_CENSUS` | 1 | `extern/aurora/lib/gx/command_processor.cpp:589` |  |
 | `SB_OPT_FIX` | 1 | `decomp/sms/src/Player/MarioMove.cpp:2062` |  |
 | `SB_ORTHO_DBG` | 1 | `extern/aurora/lib/gx/command_processor.cpp:4276` |  |
-| `SB_PAD_SCRIPT` | 1 | `sms-boot/runtime/pad_script.cpp:113` | gated print |
+| `SB_PAD_SCRIPT` | 1 | `sms-boot/runtime/pad_script.cpp:114` |  |
 | `SB_PANE_DBG` | 1 | `decomp/sms/src/JSystem/J2D/J2DScreen.cpp:242` |  |
 | `SB_PASS_DBG` | 1 | `extern/aurora/lib/gfx/common.cpp:430` |  |
 | `SB_PERSP_ZONLY` | 1 | `extern/aurora/lib/gx/command_processor.cpp:4110` |  |
@@ -312,4 +311,4 @@ logger — that is debt to convert, not a feature.
 | `SBR_WIDESCREEN` | 1 | `sms-recomp/overrides/widescreen.cpp:56` |  |
 | `SBR_WS_SCALE` | 1 | `sms-recomp/overrides/widescreen.cpp:65` |  |
 
-**291 switches; 94 still gate a raw print.**
+**290 switches; 92 still gate a raw print.**
