@@ -33,6 +33,9 @@
 #include <cstring>
 #include <map>
 #include <unordered_map>
+
+// Aurora's GPU-side copy-surface registry. See the call site in sbr_render_recheck_black.
+extern "C" int sbr_aurora_has_copy_texture(unsigned int guestAddr);
 #include <vector>
 #include <vector>
 
@@ -210,7 +213,8 @@ SDL_GPUCompareOp gx_compare(uint8_t f) {
 uint32_t depth_key(SbrDepthState d) {
     return (uint32_t)(d.test ? 1 : 0) << 24 | (uint32_t)(d.func & 7) << 20 |
            (uint32_t)(d.write ? 1 : 0) << 16 | (uint32_t)(d.blend & 3) << 8 |
-           (uint32_t)(d.srcFac & 7) << 4 | (uint32_t)(d.dstFac & 7);
+           (uint32_t)(d.srcFac & 7) << 4 | (uint32_t)(d.dstFac & 7) |
+           (uint32_t)(d.colorUpdate ? 1 : 0) << 28 | (uint32_t)(d.alphaUpdate ? 1 : 0) << 29;
 }
 
 // GXBlendFactor -> backend factor. GX names the factors in terms of the SOURCE and DESTINATION
@@ -496,6 +500,14 @@ SDL_GPUGraphicsPipeline* pipeline_for(SbrDepthState d) {
     ctd.format = kColorFmt;
     // GX_BM_BLEND is the only blend mode the scene actually uses; LOGIC/SUBTRACT are left
     // unblended rather than approximated, and will announce themselves if they ever appear.
+    // cmode0's colour/alpha write enables. GX runs the pipeline and then discards the write; the
+    // backend equivalent is a write mask, NOT skipping the draw (depth still updates).
+    ctd.blend_state.enable_color_write_mask = true;
+    ctd.blend_state.color_write_mask =
+        (SDL_GPUColorComponentFlags)((d.colorUpdate ? (SDL_GPU_COLORCOMPONENT_R |
+                                                       SDL_GPU_COLORCOMPONENT_G |
+                                                       SDL_GPU_COLORCOMPONENT_B) : 0) |
+                                     (d.alphaUpdate ? SDL_GPU_COLORCOMPONENT_A : 0));
     if (d.blend == 1) {
         ctd.blend_state.enable_blend = true;
         ctd.blend_state.color_blend_op = SDL_GPU_BLENDOP_ADD;
@@ -997,6 +1009,22 @@ void sbr_render_recheck_black() {
                 l.flush(lucent::Level::Info, "nrender");
             }
             once = true;
+        }
+    }
+    {   // Ask AURORA whether it holds a GPU-side copy surface for each empty buffer. Aurora
+        // services EFB copy destinations on the GPU and never writes guest memory, so it can
+        // sample a real rendered surface at an address whose RAM is all zeros — which is exactly
+        // what this port decodes. That difference is invisible in every state comparison.
+        static bool asked = false;
+        if (!asked) {
+            asked = true;
+            for (uint32_t a : {0x80cf0ac0u, 0x80cfafa0u, 0x80fea480u}) {
+                const int r = sbr_aurora_has_copy_texture(a);
+                lucent::info("nrender", "  aurora copy-surface for 0x{:08x}: {}", a,
+                             r == 1 ? "YES — aurora samples a rendered surface here, this port "
+                                      "decodes guest memory (zeros)"
+                                    : r == 0 ? "no" : "no copy textures registered at all");
+            }
         }
     }
     {   // The BLACK unit-1 bindings specifically. The by-volume ranking above is dominated by near

@@ -1359,3 +1359,47 @@ reference predicts black. If the reference predicts non-black while the GPU pain
 shader diverges from this port's own tested reference — findable and local. If the reference also
 predicts black, aurora is doing something structurally different with the same inputs and the
 comparison moves to aurora's shader. Either way it is bounded, and it is the next step.
+
+## 2026-07-29 (iteration 8) — the reference AGREES with the GPU; two more real fixes, symptom unmoved
+
+Ran the check named at the end of iteration 7: evaluate a sky draw through `tev_eval` (the
+unit-tested CPU reference) with the real texels.
+
+```
+drawable verts=60 numStages=2 ndc x[-3.97,80.65] y[0.48,0.48]
+  unit 0 = 0x80cfafa0 64x64 CMPR texel[0.000 0.000 0.000 a1.000]
+  unit 1 = 0x80cfafa0 64x64 CMPR texel[0.000 0.000 0.000 a1.000]
+  stage 0: c = mix(ZERO, TEXC[0], RASC[1]) -> 0    stage 1: same
+  final [0.000 0.000 0.000 a1.000] alpha8=255 PASS
+```
+
+**The reference predicts black and the GPU paints black — they agree.** So the shader does NOT
+diverge from this port's own tested reference, and the defect is not in the TEV evaluation. The
+sky's own base texture (unit 0, not just unit 1) is the `_dammy` placeholder decoding to opaque
+black, and the combiner faithfully multiplies it to black.
+
+Checked the decode too: aurora's CMPR path takes the `color1 > color2` FALSE branch for an all-zero
+block, index 0 -> `{0,0,0,0xFF}` — **opaque black, identical to ours**. Not a decoder difference.
+
+Two more real defects found and fixed along the way, neither of which is this symptom:
+
+- **`colorUpdate` / `alphaUpdate` (BP 0x41 bits 3 and 4) were not ported.** GX runs the whole
+  pipeline and then discards the write; ignoring that turns such a draw into an opaque fill. Now
+  honoured as a colour write mask (not by skipping the draw — depth still updates), matching
+  aurora's model. Frame unchanged.
+- The raster-source fix from iteration 7 (already committed) — proven against the oracle, symptom
+  unchanged.
+
+**Honest status.** Every state category agrees with aurora (textures 0/29364, raster+blend 0/29283,
+all channel and combiner categories 0, tevreg 41 on non-sky addresses), the CPU reference agrees
+with the GPU, and the texture decode agrees with aurora's. Yet aurora renders this scene correctly
+and this port renders the background black. Something aurora does with identical inputs is still
+unaccounted for, and it is no longer findable by comparing state — the remaining candidates are
+that aurora does not submit these draws at all, or resolves their texture through a path other than
+guest memory.
+
+One such path was queried and the answer is INCONCLUSIVE, recorded as such rather than as a result:
+`sbr_aurora_has_copy_texture()` reports "no copy textures registered at all" for all three empty
+buffers, but `copyTextures` is cleared by `clear_copy_texture_cache()` and the query runs in the
+frame report, so an empty map may mean "cleared before I looked" rather than "never registered".
+The query has to move to BIND time before its answer means anything.

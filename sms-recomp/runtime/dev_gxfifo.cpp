@@ -105,7 +105,7 @@ long g_drawIndex = 0;
 uint32_t g_fifoTexBindPos[8] = {};
 // Raster state as the COMMAND STREAM describes it (BP 0x40/0x41), which is where J3D actually puts
 // it. Kept separate from the SDK-captured copy until the renderer is switched over deliberately.
-SbrDepthState g_fifoZ{1, 3, 1, 0, 4, 5};
+SbrDepthState g_fifoZ{1, 3, 1, 0, 4, 5, 1, 1};
 uint32_t g_fifoTexPrevAddr[8] = {};
 
 
@@ -825,6 +825,8 @@ size_t parse(const u8* p, size_t n, int depth) {
                 const bool blendEn  = (val & 1) != 0;
                 const bool logicEn  = ((val >> 1) & 1) != 0;
                 const bool subtract = ((val >> 11) & 1) != 0;
+                g_fifoZ.colorUpdate = (uint8_t)((val >> 3) & 1);
+                g_fifoZ.alphaUpdate = (uint8_t)((val >> 4) & 1);
                 g_fifoZ.dstFac = (uint8_t)((val >> 5) & 7);
                 g_fifoZ.srcFac = (uint8_t)((val >> 8) & 7);
                 g_fifoZ.blend  = subtract ? 3 : (blendEn ? 1 : (logicEn ? 2 : 0));

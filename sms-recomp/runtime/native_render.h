@@ -36,6 +36,11 @@ struct SbrDepthState {
     uint8_t blend;   // GXBlendMode: 0=NONE, 1=BLEND, 2=LOGIC, 3=SUBTRACT
     uint8_t srcFac;  // GXBlendFactor
     uint8_t dstFac;  // GXBlendFactor
+    // cmode0 bits 3 and 4. A draw with colorUpdate CLEAR writes no colour at all — the hardware
+    // runs the whole pipeline and discards the result. Ignoring it turns such a draw into an
+    // opaque black fill, which is indistinguishable from a shading bug.
+    uint8_t colorUpdate;
+    uint8_t alphaUpdate;
 };
 
 // The texture bound to TEXMAP0, as the game described it to the hardware.

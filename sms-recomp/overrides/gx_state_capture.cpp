@@ -23,7 +23,7 @@ namespace {
 
 // Power-on default: test on, LEQUAL, write on. GX's own reset state, so a shape drawn before any
 // material has set a z-mode is treated the way the hardware would treat it.
-SbrDepthState g_zmode{1, 3, 1, 0, 1, 0};   // blend NONE, src ONE, dst ZERO
+SbrDepthState g_zmode{1, 3, 1, 0, 1, 0, 1, 1};   // blend NONE, src ONE, dst ZERO, writes on
 
 // The projection currently loaded, whatever its type. A drawable must be projected with the matrix
 // that was actually current when the game drew it, not with the scene's main perspective.
