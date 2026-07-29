@@ -61,6 +61,12 @@ def tracked_files(dirs):
     far more. A scan that cannot see most of the tree is not a small inaccuracy — it is the
     "no signal and broken instrument look identical" failure, so the walk is per-repo now.
     """
+    # Run git with the inherited GIT_* environment STRIPPED. Git sets GIT_DIR and GIT_INDEX_FILE
+    # for hooks, and with those set `git ls-files` run inside a submodule resolves against the
+    # SUPERPROJECT instead — every reader in decomp/sms and extern/aurora vanishes, and switches
+    # read only there are reported as phantoms. The pre-commit hook caught exactly that on its own
+    # first commit: real switches (SB_DUMP_FRAME, SB_STAGE, ...) flagged as unread.
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     out = []
     for d in dirs:
         p = os.path.join(ROOT, d)
@@ -68,11 +74,13 @@ def tracked_files(dirs):
             continue
         # Deepest enclosing git repo for this path — the submodule itself when there is one.
         top = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=p if os.path.isdir(p)
-                             else os.path.dirname(p), capture_output=True, text=True).stdout.strip()
+                             else os.path.dirname(p), capture_output=True, text=True,
+                             env=env).stdout.strip()
         if not top:
             continue
         rel = os.path.relpath(os.path.join(ROOT, d), top)
-        r = subprocess.run(["git", "ls-files", "--", rel], cwd=top, capture_output=True, text=True)
+        r = subprocess.run(["git", "ls-files", "--", rel], cwd=top, capture_output=True, text=True,
+                           env=env)
         out += [os.path.join(top, f) for f in r.stdout.split() if f]
     return out
 
