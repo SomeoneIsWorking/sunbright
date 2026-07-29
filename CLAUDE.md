@@ -243,6 +243,18 @@ Env vars: `SB_W`/`SB_H` (window), `SB_HEADLESS` (never show the window — REQUI
 automated/diagnostic runs, agents included), `SB_TURBO` (unpaced), `SB_WATCHDOG_SECS`,
 `SB_NO_FASTBOOT` / `SB_STAGE` / `SB_SCENARIO` (boot destination, `Application.cpp`),
 `SB_DUMP_FRAME` / `SB_DUMP_FRAME_AFTER` (framebuffer dump), `SB_DBG_AUDIO`.
+**Enable the repo's commit gate once per clone: `git config core.hooksPath .githooks`.** It runs
+`tools/diag_registry.py check` (~0.6s), which fails a commit when the generated switch registry is
+stale or when a switch named in CLAUDE.md / `docs/` / a run script is read by NO code — the defect
+that had `SB_SKIP_GHOST` cited in these instructions while absent from the source. A deliberate
+always-loud stderr write is marked `LOGGER-EXEMPT` in a comment BESIDE the print.
+
+**Reproducing a native-renderer frame: use `./run-render.sh`.** The renderer needs six env vars set
+together and omitting any one fails silently and plausibly (no native render, or 0 drawables, or an
+untextured frame, or an empty scene because plain fastboot derives a non-rendering episode from the
+save). Compare runs ONLY on the harness's `=== COMPARABLE @ N=... ===` line — the running mean
+drifts several points with frame COUNT alone, so means taken at different N are not comparable.
+
 **Diagnostic logging goes through `SB_LOG=<chan>[,...]` (`all`, `list` to discover) — the ONE
 tracked channel registry (`sms-boot/shims/sb_log.h`, `SB_LOGC`/`SB_LOG_ONCE`/`SB_LOG_EVERY`).
 Never add ad-hoc `getenv("SB_DBG_*")+fprintf` diagnostics; convert stragglers on sight and
