@@ -40,7 +40,7 @@ logger — that is debt to convert, not a feature.
 | `SB_COPY_DBG_AFTER` | 1 | `extern/aurora/lib/dolphin/gx/GXFrameBuffer.cpp:237` |  |
 | `SB_CULL_STATS` | 1 | `extern/aurora/lib/gx/command_processor.cpp:3326` |  |
 | `SB_DBFILL_BT` | 1 | `decomp/sms/src/JSystem/J3D/J3DGraphBase/J3DDrawBuffer.cpp:414` |  |
-| `SB_DBG_AUDIO` | 15 | `sms-boot/runtime/jas_kernel_native.cpp:228` | gated print |
+| `SB_DBG_AUDIO` | 14 | `sms-boot/runtime/jas_kernel_native.cpp:228` | gated print |
 | `SB_DBG_IDX` | 1 | `extern/aurora/lib/gx/shader.cpp:1287` |  |
 | `SB_DBG_MATAMB` | 2 | `decomp/sms/src/JSystem/J3D/J3DGraphBase/J3DMaterial.cpp:262` | gated print |
 | `SB_DBHEAD_DBG` | 3 | `decomp/sms/src/JSystem/J3D/J3DGraphBase/J3DDrawBuffer.cpp:107` |  |
@@ -72,7 +72,6 @@ logger — that is debt to convert, not a feature.
 | `SB_ENTRY_MAT` | 1 | `decomp/sms/src/JSystem/J3D/J3DGraphBase/J3DDrawBuffer.cpp:137` |  |
 | `SB_FB_SCALE` | 1 | `extern/aurora/lib/window.cpp:417` |  |
 | `SB_FIFO_NO_COPYSYN` | 1 | `sms-boot/runtime/fifo_player.cpp:723` |  |
-| `SB_FIFO_REPLAY` | 1 | `sms-boot/main.cpp:89` | gated print |
 | `SB_FIFO_TRACE_MARK` | 1 | `extern/aurora/lib/gx/command_processor.cpp:546` |  |
 | `SB_FI_TRACE` | 1 | `decomp/sms/src/JSystem/J3D/J3DGraphBase/J3DDrawBuffer.cpp:82` | gated print |
 | `SB_FORCE_ABUF` | 1 | `extern/aurora/lib/gx/shader.cpp:2098` |  |
@@ -114,7 +113,7 @@ logger — that is debt to convert, not a feature.
 | `SB_MATANM_DBG` | 2 | `decomp/sms/src/M3DUtil/MActor.cpp:152` | gated print |
 | `SB_MIRRORBUF_DBG` | 1 | `decomp/sms/src/Map/MapMirror.cpp:387` | gated print |
 | `SB_MODEL_TRACE` | 5 | `decomp/sms/src/JSystem/J3D/J3DGraphLoader/J3DModelLoader.cpp:80` | gated print |
-| `SB_MOVIE_DBG` | 9 | `sms-boot/runtime/sms_boot_audio.cpp:174` |  |
+| `SB_MOVIE_DBG` | 8 | `decomp/sms/src/System/Application.cpp:809` |  |
 | `SB_MSG_DBG` | 1 | `decomp/sms/src/GC2D/MessageUtil.cpp:50` | gated print |
 | `SB_NAMEREF_DBG` | 1 | `decomp/sms/src/JSystem/JDrama/JDRNameRef.cpp:45` |  |
 | `SB_NDC_DRAW` | 1 | `extern/aurora/lib/gx/command_processor.cpp:2529` |  |
@@ -309,4 +308,4 @@ logger — that is debt to convert, not a feature.
 | `SBR_WIDESCREEN` | 1 | `sms-recomp/overrides/widescreen.cpp:56` |  |
 | `SBR_WS_SCALE` | 1 | `sms-recomp/overrides/widescreen.cpp:65` |  |
 
-**288 switches; 90 still gate a raw print.**
+**287 switches; 89 still gate a raw print.**

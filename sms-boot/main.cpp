@@ -87,6 +87,9 @@ int main(int argc, char* argv[]) {
     // FIFO parity harness: if SB_FIFO_REPLAY is set, replay the named .dff
     // through aurora and exit -- no DVD, no game boot. Capture via SB_DUMP_FRAME.
     if (const char* dff = std::getenv("SB_FIFO_REPLAY"); dff && *dff) {
+        // LOGGER-EXEMPT: SB_FIFO_REPLAY replaces the entire run with a parity harness, and this
+        // banner and its result line are the whole OUTPUT of that mode — they must appear with no
+        // log channel enabled. Not a gated diagnostic.
         std::fprintf(stdout, "[sms-boot] SB_FIFO_REPLAY: %s\n", dff);
         std::fflush(stdout);
         int n = sb_fifo_replay_run(dff);

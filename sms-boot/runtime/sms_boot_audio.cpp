@@ -119,6 +119,7 @@
 //      Vload::loadFileAsync.
 // =====================================================================================
 
+#include <sb_log.h>
 #include <JSystem/JAudio/JASystem/JASVload.hpp>
 #include <JSystem/JAudio/JASystem/JASDvdThread.hpp>
 #include <JSystem/JAudio/JASystem/JASSystemHeap.hpp>
@@ -168,12 +169,6 @@ bool      g_initialized = false; // initHeaderM ran (one logical arc registered)
 bool      g_barcReady   = false; // BARC table parsed
 BarcEntry* g_barc       = nullptr;
 u32        g_barcCount  = 0;
-
-bool dbg()
-{
-	return std::getenv("SB_MOVIE_DBG") != nullptr
-	       || std::getenv("SB_DBG_AUDIO") != nullptr;
-}
 
 inline u32 be32(const u8* p)
 {
@@ -254,9 +249,8 @@ void buildBarcTable()
 	}
 	g_barcReady = true;
 
-	if (dbg())
-		OSReport("[sms_boot_audio] BARC ready: %u seqs (idx16 off=0x%x size=%u)\n", n,
-		         n > 16 ? g_barc[16].off : 0u, n > 16 ? g_barc[16].size : 0u);
+	SB_LOGC("bootaudio", "BARC ready: %u seqs (idx16 off=0x%x size=%u)", n,
+	        n > 16 ? g_barc[16].off : 0u, n > 16 ? g_barc[16].size : 0u);
 }
 
 const BarcEntry* barcLookup(u32 idx)
@@ -293,10 +287,11 @@ u32 readSeq(u32 idx, u8* buf, u32 extraOff, u32 len)
 	while (done == 0)
 		;
 
-	if (dbg())
-		OSReport("[sms_boot_audio] loaded seq idx=%u off=0x%x len=%u from %s -> bytes: %02x %02x %02x %02x %02x %02x %02x %02x\n",
-		         idx, fileOff, readLen, kSeqPath,
-		         buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7]);
+	SB_LOGC("bootaudio",
+	        "loaded seq idx=%u off=0x%x len=%u from %s -> bytes: %02x %02x %02x %02x %02x %02x "
+	        "%02x %02x",
+	        idx, fileOff, readLen, kSeqPath, buf[0], buf[1], buf[2], buf[3], buf[4], buf[5],
+	        buf[6], buf[7]);
 	return readLen;
 }
 
@@ -328,8 +323,7 @@ BOOL initHeaderM(char* /*param_1*/, u8* /*param_2*/, u8* /*param_3*/)
 	// before the audio/DVD file path is usable, so a checkFileExtend would return 0 and
 	// OSPanic. The table is built LAZILY on the first checkSize/loadFile/loadFileAsync
 	// (at stage entry, when the DVD FS is ready) via barcLookup -> buildBarcTable.
-	if (dbg())
-		OSReport("[sms_boot_audio] Vload::initHeaderM -> BARC-backed (lazy)\n");
+	SB_LOGC("bootaudio", "Vload::initHeaderM -> BARC-backed (lazy)");
 	return TRUE;
 }
 
