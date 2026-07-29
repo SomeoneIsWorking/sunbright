@@ -463,6 +463,56 @@ void sbr_state_oracle_report() {
             raster += d.raster; blend += d.blend; scis += d.scis; cullD += d.cull;
             ksel += d.ksel; konst += d.konst; tevreg += d.tevreg;
         }
+        // COVERAGE SELF-REPORT. "0 disagree" is only meaningful for a field that BOTH sides
+        // actually fill and that actually VARIES. The cull bug hid for the whole arc behind
+        // exactly this: state_oracle.h documented cull bits, nobody wrote them, and the raster
+        // comparison read as full coverage while covering nothing. A field that is constant across
+        // every draw on both sides is either genuinely constant in this scene or NOT WIRED — and
+        // the instrument cannot tell you which, so it must say so rather than imply agreement.
+        {
+            struct FieldVar { const char* name; bool mineVaries, aurVaries; };
+            const auto varies = [&](auto get) {
+                if (k < 2) return false;
+                const auto first = get(mine[0]);
+                for (size_t i = 1; i < k; ++i) if (get(mine[i]) != first) return true;
+                return false;
+            };
+            const auto variesA = [&](auto get) {
+                if (k < 2) return false;
+                const auto first = get(aur[0]);
+                for (size_t i = 1; i < k; ++i) if (get(aur[i]) != first) return true;
+                return false;
+            };
+            const FieldVar fields[] = {
+                {"numChans", varies([](const SbrDrawState& d) { return (int)d.numChans; }),
+                             variesA([](const SbrDrawState& d) { return (int)d.numChans; })},
+                {"chanCtrl", varies([](const SbrDrawState& d) { return (int)d.chanCtrl[0]; }),
+                             variesA([](const SbrDrawState& d) { return (int)d.chanCtrl[0]; })},
+                {"raster",   varies([](const SbrDrawState& d) { return (int)d.raster; }),
+                             variesA([](const SbrDrawState& d) { return (int)d.raster; })},
+                {"blend",    varies([](const SbrDrawState& d) { return (int)d.blend; }),
+                             variesA([](const SbrDrawState& d) { return (int)d.blend; })},
+                {"scissor",  varies([](const SbrDrawState& d) { return (int)d.scissor[2]; }),
+                             variesA([](const SbrDrawState& d) { return (int)d.scissor[2]; })},
+                {"cull",     varies([](const SbrDrawState& d) { return (int)d.cull; }),
+                             variesA([](const SbrDrawState& d) { return (int)d.cull; })},
+                {"unitId",   varies([](const SbrDrawState& d) { return (int)d.unitId[0]; }),
+                             variesA([](const SbrDrawState& d) { return (int)d.unitId[0]; })},
+            };
+            lucent::Line l;
+            l.add("  coverage:");
+            bool suspect = false;
+            for (const FieldVar& f : fields) {
+                if (f.mineVaries && f.aurVaries) continue;   // both sides live
+                suspect = true;
+                l.add(" {}={}", f.name,
+                      !f.mineVaries && !f.aurVaries ? "CONSTANT-ON-BOTH(unwired?)"
+                      : !f.mineVaries              ? "CONSTANT-ON-OURS"
+                                                   : "CONSTANT-ON-AURORA");
+            }
+            if (!suspect) l.add(" all compared fields vary on both sides");
+            l.flush(lucent::Level::Info, "oracle");
+        }
         lucent::info("oracle", "pix state: {} of {} draws disagree — numChans {}, chanctrl/amb/mat "
                                "{}, ras-sel {}, combiner {}, ksel {}, konst {}, tevreg {}, "
                                "raster(z) {}, blend {}, SCISSOR {}, CULL {}",

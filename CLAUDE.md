@@ -197,7 +197,18 @@ compares, diffs, attributes or scores:
 4. **Never compare aggregates taken at different sample counts.** The A/B mean drifts several
    points with frame COUNT alone; use the `COMPARABLE @ N=` line, not the running mean.
 
-A finding from an instrument with no control is a hypothesis, and must be labelled one.
+5. **Make the instrument declare what it does NOT cover.** A control proves the instrument works on
+   the fields it compares; it says nothing about a field that was never wired. The cull defect hid
+   for this whole arc behind exactly that — `state_oracle.h` documented cull bits, neither side ever
+   wrote them, and "raster 0 of 29283 disagree" read as coverage while covering nothing. The state
+   oracle now self-reports (`coverage:` line): any field CONSTANT across every draw on either side
+   is flagged `CONSTANT-ON-OURS` / `CONSTANT-ON-AURORA` / `CONSTANT-ON-BOTH(unwired?)`, because a
+   constant field is either genuinely constant in the scene or not plumbed, and the instrument
+   cannot tell you which. Validated by deliberately breaking one field and confirming it is flagged.
+
+A finding from an instrument with no control is a hypothesis, and must be labelled one. An
+instrument that cannot say what it fails to cover will eventually be trusted for something it never
+measured.
 
 ## 🔧 TOOLING / VERIFICATION FIRST
 
