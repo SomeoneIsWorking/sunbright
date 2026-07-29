@@ -98,8 +98,14 @@ def scan_code():
                 # call into the project's logger. Look at the switch's own line and the few after
                 # it, because the guard and the print are usually not the same line.
                 window = "\n".join(lines[i - 1:i + 6])
-                gated = bool(re.search(r'\b(?:fprintf|printf|puts|std::cout)\b', window)) and \
-                    not LOGGER.search(window)
+                # Only a DIAGNOSTIC print counts. `fprintf(f, ...)` to a real FILE is data
+                # output — dumping a PPM, writing a capture — and converting it to the logger
+                # would be wrong, not overdue. Matching any fprintf counted those too, which is
+                # how a "debt" list filled up with a texture dumper and the logger's own env
+                # parser. Restricted to the actual gated-diagnostic idiom.
+                gated = bool(re.search(
+                    r'\bfprintf\s*\(\s*std(?:err|out)\b|(?<![\w:])printf\s*\(|'
+                    r'(?<![\w:])puts\s*\(|std::cout', window)) and not LOGGER.search(window)
                 found.setdefault(name, []).append(
                     (os.path.relpath(path, ROOT), i, gated))
     return found
@@ -152,8 +158,26 @@ def cmd_scan(a):
             print(f"    {rel}:{line}{'  <- raw print' if g else ''}")
         if len(sites) > 6:
             print(f"    ... and {len(sites) - 6} more")
+    # Split the debt by OWNERSHIP. A gated print inside decomp/sms or extern/aurora is a VENDORED
+    # file: converting it forks us from upstream and buys a merge conflict at every rebase, which
+    # the project's UPSTREAM SYNC rule explicitly warns against. Quoting one combined number made
+    # the debt look ~10x larger than the work anyone should actually do, so the two are separated
+    # and only the first is a to-do.
+    ours = vendored = 0
+    for sites in code.values():
+        for rel, _line, g in sites:
+            if not g:
+                continue
+            if rel.startswith("decomp/") or rel.startswith("extern/"):
+                vendored += 1
+            else:
+                ours += 1
     print(f"\n{len(code)} switches, {sum(len(v) for v in code.values())} read sites, "
-          f"{gated_total} of them ad-hoc gated prints (the debt to convert to the logger)")
+          f"{gated_total} ad-hoc gated prints:")
+    print(f"  {ours} in code we OWN (sms-boot/, sms-recomp/, tools/) — the real debt to convert "
+          f"to the logger")
+    print(f"  {vendored} in VENDORED trees (decomp/sms, extern/aurora) — NOT a to-do: converting "
+          f"them forks upstream and costs a conflict at every rebase")
     return 0
 
 

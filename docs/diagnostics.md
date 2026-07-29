@@ -261,9 +261,10 @@ logger — that is debt to convert, not a feature.
 
 | switch | sites | first read at | |
 |---|---|---|---|
-| `SBR_AB` | 1 | `sms-recomp/runtime/render_compare.cpp:220` |  |
+| `SBR_AB` | 1 | `sms-recomp/runtime/render_compare.cpp:232` |  |
 | `SBR_ABLATE` | 1 | `sms-recomp/runtime/render_compare.cpp:122` |  |
-| `SBR_AB_EVERY` | 1 | `sms-recomp/runtime/render_compare.cpp:222` |  |
+| `SBR_AB_AT` | 1 | `sms-recomp/runtime/render_compare.cpp:203` |  |
+| `SBR_AB_EVERY` | 1 | `sms-recomp/runtime/render_compare.cpp:234` |  |
 | `SBR_AB_SELFTEST` | 1 | `sms-recomp/runtime/render_compare.cpp:99` |  |
 | `SBR_ALPHATEST` | 1 | `sms-recomp/runtime/native_render.cpp:492` |  |
 | `SBR_AUDIO_RAW` | 1 | `sms-recomp/runtime/dev_aid.cpp:94` |  |
@@ -304,11 +305,11 @@ logger — that is debt to convert, not a feature.
 | `SBR_TEXMAP_FORCE` | 1 | `sms-recomp/runtime/native_render.cpp:477` |  |
 | `SBR_TEXMAP_NAMED` | 1 | `sms-recomp/runtime/native_render.cpp:469` |  |
 | `SBR_TEXMAP_UNITS` | 1 | `sms-recomp/runtime/native_render.cpp:467` |  |
-| `SBR_TEX_DUMP` | 1 | `sms-recomp/runtime/native_render.cpp:407` | gated print |
+| `SBR_TEX_DUMP` | 1 | `sms-recomp/runtime/native_render.cpp:407` |  |
 | `SBR_TEX_MIRROR` | 1 | `sms-recomp/runtime/native_render.cpp:799` |  |
 | `SBR_THP` | 1 | `sms-recomp/overrides/native_thp.cpp:99` |  |
 | `SBR_WATCH` | 1 | `sms-recomp/runtime/rt_core.cpp:102` |  |
 | `SBR_WIDESCREEN` | 1 | `sms-recomp/overrides/widescreen.cpp:56` |  |
 | `SBR_WS_SCALE` | 1 | `sms-recomp/overrides/widescreen.cpp:65` |  |
 
-**290 switches; 95 still gate a raw print.**
+**291 switches; 94 still gate a raw print.**
