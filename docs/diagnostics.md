@@ -72,9 +72,9 @@ logger — that is debt to convert, not a feature.
 | `SB_EFBTEX_DBG` | 1 | `decomp/sms/src/JSystem/JDrama/JDREfbCtrl.cpp:87` | gated print |
 | `SB_ENTRY_MAT` | 1 | `decomp/sms/src/JSystem/J3D/J3DGraphBase/J3DDrawBuffer.cpp:137` |  |
 | `SB_FB_SCALE` | 1 | `extern/aurora/lib/window.cpp:417` |  |
-| `SB_FIFO_NO_COPYSYN` | 1 | `sms-boot/runtime/fifo_player.cpp:726` |  |
+| `SB_FIFO_NO_COPYSYN` | 1 | `sms-boot/runtime/fifo_player.cpp:725` |  |
 | `SB_FIFO_REPLAY` | 1 | `sms-boot/main.cpp:89` | gated print |
-| `SB_FIFO_TEXDBG` | 2 | `sms-boot/runtime/fifo_player.cpp:521` | gated print |
+| `SB_FIFO_TEXDBG` | 1 | `sms-boot/runtime/fifo_player.cpp:626` | gated print |
 | `SB_FIFO_TRACE_MARK` | 1 | `extern/aurora/lib/gx/command_processor.cpp:546` |  |
 | `SB_FI_TRACE` | 1 | `decomp/sms/src/JSystem/J3D/J3DGraphBase/J3DDrawBuffer.cpp:82` | gated print |
 | `SB_FORCE_ABUF` | 1 | `extern/aurora/lib/gx/shader.cpp:2098` |  |

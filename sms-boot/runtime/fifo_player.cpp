@@ -3,6 +3,7 @@
 // Diagnostic-only (SB_FIFO_REPLAY). See fifo_player.h. The loader is a faithful
 // C++ port of the read side of tools/oracle/parse_fifo_dff.py.
 
+#include <sb_log.h>
 #include "fifo_player.h"
 
 #include <aurora/aurora.h>
@@ -517,15 +518,13 @@ std::vector<std::uint8_t> translate_frame(const FifoCapture& cap, std::uint32_t 
             ? reinterpret_cast<std::uint64_t>(shadow.host(ts.baseAddr)) : 0;
         // SB_FIFO_TEXDBG=1: log the first synthesized binds (which texmap, GC
         // addr, dims/format) to sanity-check bind synthesis against the oracle.
-        static int s_texDbg = -1;
-        if (s_texDbg < 0) { const char* e = std::getenv("SB_FIFO_TEXDBG"); s_texDbg = e ? std::atoi(e) : 0; }
-        if (s_texDbg >= 1) {
+        // SB_LOG=fifo-texbind. The old form carried its own env AND a hand-rolled line cap; the
+        // logger's SB_LOG_EVERY does the capping, so both go away.
+        {
             static int n = 0;
-            if (n < (s_texDbg > 1 ? 100000 : 40)) {
-                std::fprintf(stderr,
-                    "[fifo-texbind] n=%d texmap=%d gcAddr=0x%06X %ux%u fmt=%u ver=%u mode1=0x%06X\n",
-                    ++n, id, ts.baseAddr, w, h, fmt, texDataVersion, ts.mode1);
-            }
+            SB_LOGC("fifo-texbind",
+                    "n=%d texmap=%d gcAddr=0x%06X %ux%u fmt=%u ver=%u mode1=0x%06X", ++n, id,
+                    ts.baseAddr, w, h, fmt, texDataVersion, ts.mode1);
         }
         auto pushBE16 = [&](std::uint16_t v) { out.push_back(v>>8); out.push_back(v&0xFF); };
         auto pushBE64 = [&](std::uint64_t v) { for(int i=7;i>=0;--i) out.push_back((v>>(i*8))&0xFF); };
