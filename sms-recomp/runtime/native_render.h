@@ -252,3 +252,8 @@ void sbr_render_report_black_owner(int px, int py);
 // deferred: it batches a whole frame and draws at the end, while a copy must capture only what was
 // drawn before it.
 void sbr_render_note_copy(uint32_t dest, int sx, int sy, int sw, int sh, int dw, int dh);
+
+// True if this guest address resolves to an EFB-copy surface rather than to decoded guest memory.
+// The CPU TEV reference decodes guest memory, so for such an address it does NOT mirror what the
+// GPU samples — it must say so rather than print a confident zero.
+bool sbr_render_is_copy_surface(uint32_t addr);

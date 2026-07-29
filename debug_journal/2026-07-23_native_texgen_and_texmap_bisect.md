@@ -1549,3 +1549,33 @@ runtimes for the same draw.
 Note the diagnostic `SBR_DROP_EMPTY=1` can no longer isolate this draw: now that the copy resolves
 to a real surface, its texture is not empty and the drop rule does not fire. That diagnostic has
 outlived its purpose and should be removed rather than left to mislead.
+
+## 2026-07-29 (iteration 13) — the CPU reference started lying the moment RTT landed
+
+Tracing the compositing quad found it immediately: drawable 2, 6 verts, `ndc x[-1.42,1.42]
+y[-1.79,1.79]` — full screen — and the CPU reference reporting
+
+```
+unit 1 = 0x80fea480 320x224 fmt4 texel[0.000 0.000 0.000 a1.000]
+```
+
+**That texel is not what the GPU sampled.** `tev_eval` decodes GUEST MEMORY, and guest memory at a
+copy destination is legitimately all zeros; since iteration 11 the GPU samples the copy SURFACE
+instead. So the reference and the renderer diverged the moment render-to-texture landed, silently,
+for exactly the draws under investigation — and its confident `[0,0,0] a1.000` would have been read
+as evidence about the composite. This is the same failure that produced five retractions in this
+arc, appearing one more time in a new place.
+
+Fixed so it cannot mislead: the trace now consults `sbr_render_is_copy_surface()` and says
+plainly, per unit, that the GPU sampled a rendered surface and the printed texel is not it. The
+reference still cannot evaluate such a draw — that is a real limit, and it is now stated at the
+point of use rather than discovered later.
+
+Also removed `SBR_DROP_EMPTY`. It was built to isolate draws sampling all-zero textures; now that a
+copy destination resolves to a real surface, the rule no longer fires on the very draw it was made
+for. A diagnostic that quietly stops selecting what it claims to select is worse than none, so it
+is deleted rather than left in place (no tombstones).
+
+Still open, unchanged: whether this quad should composite as strongly as it does. Its alpha needs
+measuring on the GPU side, which now requires reading back the rendered surface rather than asking
+the CPU reference — the reference is disqualified for this draw by construction.

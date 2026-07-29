@@ -973,8 +973,14 @@ float sbr_scene_render(double now_seconds, const float proj[16]) {
             }
             for (unsigned m = 0; m < 8; ++m)
                 lucent::info("tev", "  unit {} = 0x{:08x} {}x{} fmt{} texel[{:.3f} {:.3f} {:.3f} "
-                                    "a{:.3f}]", m, d.tex[m].addr, d.tex[m].width, d.tex[m].height,
-                             d.tex[m].format, in.tex[m][0], in.tex[m][1], in.tex[m][2], in.tex[m][3]);
+                                    "a{:.3f}]{}", m, d.tex[m].addr, d.tex[m].width, d.tex[m].height,
+                             d.tex[m].format, in.tex[m][0], in.tex[m][1], in.tex[m][2],
+                             in.tex[m][3],
+                             sbr_render_is_copy_surface(d.tex[m].addr)
+                                 ? "   <- EFB COPY SURFACE: the GPU samples the rendered surface "
+                                   "here; this reference decoded GUEST MEMORY and its texel is NOT "
+                                   "what was sampled"
+                                 : "");
             // WHY the rasterised colour is what it is. A black RAS makes every stage that reads it
             // produce black no matter how well the textures decoded, so the channel has to explain
             // itself in the same trace — otherwise the search moves to textures for the wrong reason.

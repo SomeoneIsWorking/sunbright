@@ -726,6 +726,11 @@ void sbr_render_note_copy(uint32_t dest, int sx, int sy, int sw, int sh, int dw,
     g_copyPoints.push_back({g_batches.size(), dest, sx, sy, sw, sh, dw, dh});
 }
 
+bool sbr_render_is_copy_surface(uint32_t addr) {
+    const auto it = g_copyTex.find(addr);
+    return it != g_copyTex.end() && it->second != nullptr;
+}
+
 void sbr_render_begin(float r, float g, float b, float a) {
     if (!g_ok) return;
     g_clear = SDL_FColor{r, g, b, a};
