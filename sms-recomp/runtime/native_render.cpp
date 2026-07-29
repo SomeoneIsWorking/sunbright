@@ -82,9 +82,57 @@ struct Batch {
     // One entry per GX texture unit. 0 = untextured (a 1x1 white texel is bound so one shader
     // serves both cases and no branch is needed in the TEV loop).
     uint64_t texKey[8];
+    uint32_t texAddr[8];   // guest address, so a bind can resolve to an EFB-copy surface
     uint32_t sampKey[8];   // wrap/filter modes: part of the material, not of the texture data
     TevUniform tev;
 };
+
+// ---- EFB copy -> texture ----
+// Textures produced by resolving the render target, keyed by the guest destination address the
+// game will bind. Guest memory is never written, exactly as on hardware+aurora; a bind of the
+// address resolves here instead of decoding zeros.
+std::unordered_map<uint32_t, SDL_GPUTexture*> g_copyTex;
+struct CopyPoint { size_t batchIndex; uint32_t dest; int sx, sy, sw, sh, dw, dh; };
+std::vector<CopyPoint> g_copyPoints;
+
+// Resolve the current render target region into the texture for `dest`, creating it on demand.
+// Runs BETWEEN render passes — a blit is not a render-pass operation, and the pass must have ended
+// for the target's contents to be defined.
+void perform_copy(SDL_GPUCommandBuffer* cmd, const CopyPoint& cp) {
+    SDL_GPUTexture*& dst = g_copyTex[cp.dest];
+    if (dst == nullptr) {
+        SDL_GPUTextureCreateInfo ci{};
+        ci.type = SDL_GPU_TEXTURETYPE_2D;
+        ci.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+        ci.width = (Uint32)std::max(cp.dw, 1);
+        ci.height = (Uint32)std::max(cp.dh, 1);
+        ci.layer_count_or_depth = 1;
+        ci.num_levels = 1;
+        // COLOR_TARGET as well as SAMPLER: a blit writes the destination as a render target.
+        ci.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
+        dst = SDL_CreateGPUTexture(g_dev, &ci);
+        if (dst == nullptr) {
+            lucent::error("nrender", "EFB copy: CreateGPUTexture {}x{} failed: {}", cp.dw, cp.dh,
+                          SDL_GetError());
+            return;
+        }
+        lucent::info("nrender", "EFB copy -> texture 0x{:08x}: EFB [{},{} {}x{}] -> {}x{}",
+                     cp.dest, cp.sx, cp.sy, cp.sw, cp.sh, cp.dw, cp.dh);
+    }
+    SDL_GPUBlitInfo bi{};
+    bi.source.texture = g_color;
+    bi.source.x = (Uint32)std::clamp(cp.sx, 0, g_w);
+    bi.source.y = (Uint32)std::clamp(cp.sy, 0, g_h);
+    bi.source.w = (Uint32)std::clamp(cp.sw, 1, g_w - (int)bi.source.x);
+    bi.source.h = (Uint32)std::clamp(cp.sh, 1, g_h - (int)bi.source.y);
+    bi.destination.texture = dst;
+    bi.destination.w = (Uint32)std::max(cp.dw, 1);
+    bi.destination.h = (Uint32)std::max(cp.dh, 1);
+    bi.load_op = SDL_GPU_LOADOP_DONT_CARE;
+    bi.filter = SDL_GPU_FILTER_LINEAR;
+    SDL_BlitGPUTexture(cmd, &bi);
+}
+
 
 // Decoded textures, keyed by the guest description. Textures are immutable for a given
 // (address, format, size), so decoding once and caching is not an optimisation but a requirement:
@@ -673,11 +721,17 @@ bool sbr_render_init(int w, int h) {
 
 namespace { SDL_FColor g_clear{}; int g_lastVerts = 0; }
 
+void sbr_render_note_copy(uint32_t dest, int sx, int sy, int sw, int sh, int dw, int dh) {
+    if (!g_ok) return;
+    g_copyPoints.push_back({g_batches.size(), dest, sx, sy, sw, sh, dw, dh});
+}
+
 void sbr_render_begin(float r, float g, float b, float a) {
     if (!g_ok) return;
     g_clear = SDL_FColor{r, g, b, a};
     g_verts.clear();
     g_batches.clear();
+    g_copyPoints.clear();
 }
 
 // Which textures the stages that NAME unit 1 actually bind, weighted by vertices. Unit 1 is the
@@ -713,6 +767,7 @@ void sbr_render_tris(const SbrVertex* verts, int count, SbrDepthState depth, con
     for (int m = 0; m < 8; ++m) {
         const SbrTexture& t = mirror ? tex[0] : tex[m];
         b.texKey[m]  = tex_key(t);
+        b.texAddr[m] = t.addr;
         b.sampKey[m] = sampler_key(t);
     }
     pack_tev(tevState, b.tev, mirror ? nullptr : tex);
@@ -808,6 +863,7 @@ void sbr_render_end() {
 // Draw only the first g_batchLimit batches (-1 = all). Used by the black-owner bisect below.
 int g_batchLimit = -1;
 
+
 void render_pass_into_cpu(uint32_t ablation) {
     const size_t vbytes = g_verts.size() * sizeof(SbrVertex);
     // Is the texture cache the SAME on a re-render as it was on the first render of this frame?
@@ -849,8 +905,22 @@ void render_pass_into_cpu(uint32_t ablation) {
         SDL_GPUBufferBinding vb{}; vb.buffer = g_vbuf; vb.offset = 0;
         SDL_BindGPUVertexBuffers(rp, 0, &vb, 1);
         int drawn = 0;
-        for (const Batch& b : g_batches) {
+        size_t nextCopy = 0;
+        for (size_t bi = 0; bi < g_batches.size(); ++bi) {
+            const Batch& b = g_batches[bi];
             if (g_batchLimit >= 0 && drawn++ >= g_batchLimit) break;
+            // A copy captures only what was drawn BEFORE it, and a blit is not a render-pass
+            // operation — so the pass ends here, the resolve happens, and a new pass RESUMES over
+            // the same target (LOAD, not CLEAR, or everything drawn so far is thrown away).
+            while (nextCopy < g_copyPoints.size() && g_copyPoints[nextCopy].batchIndex <= bi) {
+                SDL_EndGPURenderPass(rp);
+                perform_copy(cmd, g_copyPoints[nextCopy]);
+                ++nextCopy;
+                cti.load_op = SDL_GPU_LOADOP_LOAD;
+                dsi.load_op = SDL_GPU_LOADOP_LOAD;
+                dsi.store_op = SDL_GPU_STOREOP_STORE;
+                rp = SDL_BeginGPURenderPass(cmd, &cti, 1, &dsi);
+            }
             SDL_BindGPUGraphicsPipeline(rp, pipeline_for(b.st));
             // The hardware clips each draw to its own scissor rect. Clamped to the target because
             // the guest rect can legitimately extend past it and SDL rejects an out-of-bounds one.
@@ -868,8 +938,13 @@ void render_pass_into_cpu(uint32_t ablation) {
             SDL_GPUTextureSamplerBinding tsb[8]{};
             float slotMean[8] = {-2, -2, -2, -2, -2, -2, -2, -2};
             for (int m = 0; m < 8; ++m) {
+                // An EFB-copy destination resolves to the surface we rendered into, not to guest
+                // memory (which the hardware never writes and which decodes to zeros).
+                const auto cpIt = g_copyTex.find(b.texAddr[m]);
                 const auto texIt = g_texs.find(b.texKey[m]);
-                tsb[m].texture = (texIt != g_texs.end()) ? texIt->second.tex : g_white;
+                tsb[m].texture = cpIt != g_copyTex.end() && cpIt->second != nullptr
+                                     ? cpIt->second
+                                     : (texIt != g_texs.end() ? texIt->second.tex : g_white);
                 slotMean[m] = (texIt != g_texs.end()) ? texIt->second.mean : -2.0f;
                 const auto sampIt = g_samplers.find(b.sampKey[m]);
                 tsb[m].sampler = (sampIt != g_samplers.end()) ? sampIt->second : g_sampler;

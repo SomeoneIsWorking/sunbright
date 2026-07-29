@@ -1485,3 +1485,36 @@ its own colour target — so a copy is a resolve from that target into a texture
 destination address, with `texture_for` consulting that registry before falling back to a guest
 decode. The mid-frame ordering matters: our renderer is deferred and batches the whole frame, so a
 copy must split the batch list at the point it occurred, exactly like a render-pass boundary.
+
+## 2026-07-29 (iteration 11) — RENDER-TO-TEXTURE LANDS; the black background is GONE
+
+Implemented the EFB copy -> texture subsystem rather than special-casing the offending quad:
+
+- The parser forwards every copy-to-TEXTURE (not XFB) with its EFB region and destination size
+  (`dev_gxfifo.cpp` `emit_copy_state`).
+- The scene remembers each copy with its position in the CAPTURE ORDER, and replays it at the
+  matching point of the submission loop — this renderer is deferred (it batches a whole frame and
+  draws at the end), while a copy must capture only what was drawn before it.
+- The renderer splits the render pass at each copy point, blits the target region into a texture
+  registered under the guest destination address, and RESUMES the pass with LOADOP_LOAD (a CLEAR
+  there would discard everything drawn so far). Guest memory is never written, exactly as on
+  hardware and in aurora.
+- A bind of a copy-destination address resolves to that surface instead of decoding guest memory.
+
+Verified by the criterion stated BEFORE the change: the black-owner bisect now reports
+`INVALID at (320,60): with no batches the pixel is [26 102 204], with all 146 batches black=false —
+the instrument cannot attribute anything here`. There is no black left to attribute. The frame
+(`scratch/screenshots/rtt2.png`) shows sky, greenery and distant buildings where there was solid
+black.
+
+Two implementation notes worth keeping. The copies are all noted at capture position 0 — they
+happen before any J3D shape is captured — so the flush must sit at the SUBMISSION site, not at the
+top of the drawable loop; placed at the latter it never fired at all and the subsystem was silently
+inert. And `SDL_BlitGPUTexture` needs the destination created with COLOR_TARGET as well as SAMPLER.
+
+RESIDUAL, stated plainly: the recovered background is BLURRY compared to aurora's crisp buildings.
+The copy captures our own partially-drawn frame and the quad then magnifies 320x224 back to full
+size, so some of the softness is inherent to the effect — but the copy's SOURCE content and the
+point in the order at which it is taken are not yet verified against aurora. That is the next thing
+to check, and it should be checked by comparing the copied surface itself, not by eyeballing the
+composite.

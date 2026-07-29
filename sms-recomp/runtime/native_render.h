@@ -239,3 +239,16 @@ bool sbr_render_ablation_render(int id);
 
 // Bisect the batch list to find which batch first paints the given pixel black.
 void sbr_render_report_black_owner(int px, int py);
+
+// ---- EFB copy -> texture (render to texture) ----
+// GX resolves a region of the EFB into a texture in main memory. This port never writes that
+// memory back, so a draw binding a copy destination decoded ZEROS and multiplied the scene by
+// black — that is what painted the Delfino background black (a 6-vertex full-screen quad sampling
+// the 320x224 copy dest). Instead of faking the write-back, the copy is kept on the GPU: the
+// region is blitted out of the render target into a texture registered under the destination
+// address, and a bind of that address resolves to it. Same shape aurora uses.
+//
+// Recorded at the point in the DRAW ORDER where the copy happened, because this renderer is
+// deferred: it batches a whole frame and draws at the end, while a copy must capture only what was
+// drawn before it.
+void sbr_render_note_copy(uint32_t dest, int sx, int sy, int sw, int sh, int dw, int dh);

@@ -592,6 +592,21 @@ void sbr_scene_end_tick() {
 // actually has the scene in it.
 long g_tickIndex = 0;
 
+namespace {
+struct PendingCopy { size_t afterDrawable; uint32_t dest; int sx, sy, sw, sh, dw, dh; };
+std::vector<PendingCopy> g_pendingCopies;
+}
+
+// Called from the FIFO parser when a copy-to-texture is triggered. The capture order at that
+// moment is the position in the batch list where the copy belongs.
+void sbr_scene_clear_pending_copies() { g_pendingCopies.clear(); }
+
+void sbr_scene_note_efb_copy(uint32_t dest, int sx, int sy, int sw, int sh, int dw, int dh) {
+    g_pendingCopies.push_back({g_cur.items.size(), dest, sx, sy, sw, sh, dw, dh});
+    static long n = 0;
+    if (++n <= 4) lucent::info("nrender", "note EFB copy 0x{:08x} after drawable {} ({}x{} -> {}x{})", dest, g_cur.items.size(), sw, sh, dw, dh);
+}
+
 float sbr_scene_render(double now_seconds, const float proj[16]) {
     if (!g_cur.valid) return 0.0f;
     ++g_tickIndex;
@@ -610,7 +625,10 @@ float sbr_scene_render(double now_seconds, const float proj[16]) {
     if (proj == nullptr) return alpha;   // nothing to place geometry with
 
     g_area.clear();
+    size_t drawableIdx = 0;
+    struct CopyClear { ~CopyClear() { sbr_scene_clear_pending_copies(); } } copyClear;
     for (const auto& d : g_cur.items) {
+        ++drawableIdx;
         if (d.geom == 0 || d.geom >= g_geom.size()) continue;   // no geometry decoded for this one
         const Geom& g = g_geom[d.geom];
         if (g.verts.empty()) continue;
@@ -1063,6 +1081,13 @@ float sbr_scene_render(double now_seconds, const float proj[16]) {
             }
             sbr_tev_trace_report(tr, "tev");
         }
+        // Perform any EFB copy captured at or before this point in the draw order, here at the
+        // actual submission site — the copy must capture only what was drawn before it.
+        for (auto& pc : g_pendingCopies)
+            if (pc.dest != 0 && pc.afterDrawable <= drawableIdx) {
+                sbr_render_note_copy(pc.dest, pc.sx, pc.sy, pc.sw, pc.sh, pc.dw, pc.dh);
+                pc.dest = 0;
+            }
         if (!g_out.empty()) sbr_render_tris(g_out.data(), (int)(g_out.size() / 3) * 3, d.depth, d.tex, d.tev);
 
         if (nhi[0] > nlo[0]) {

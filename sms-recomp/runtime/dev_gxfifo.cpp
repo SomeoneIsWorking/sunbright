@@ -23,6 +23,7 @@
 #include <unordered_map>
 #include "mmio.h"
 #include "native_render.h"
+#include "scene.h"
 #include "state_oracle.h"
 
 // The texture state the material display lists have written, per texmap. See the BP handler.
@@ -285,6 +286,12 @@ void emit_copy_state(u32 cmd, bool to_xfb) {
     }
     if (dst_w == 0) dst_w = 1;
     if (dst_h == 0) dst_h = 1;
+    // Hand a TEXTURE copy to the renderer so it can resolve the EFB region into a real GPU texture
+    // registered under the destination address. A display (XFB) copy is the presented frame and has
+    // no texture consumer, so it is not forwarded.
+    if (!to_xfb && g_copy_dest != 0)
+        sbr_scene_note_efb_copy((g_copy_dest << 5) | 0x80000000u, (int)g_copy_left, (int)g_copy_top,
+                                (int)g_copy_w, (int)g_copy_h, (int)dst_w, (int)dst_h);
 
     // The copy format is NOT the raw bits 3-6. Hardware packs it so that the low bit selects
     // the upper half of the format space:  fmt = field/2 + (field & 1) * 8.  Verified against
