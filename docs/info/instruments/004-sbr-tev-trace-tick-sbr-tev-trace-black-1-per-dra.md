@@ -1,8 +1,9 @@
 ---
 id: I004
 kind: instrument
-status: trusted
+status: DISTRUSTED
 created: 2026-07-28
+distrusted_on: 2026-07-29
 ---
 
 ## Instrument
@@ -16,3 +17,9 @@ Runs the SAME tested reference (tev_eval / gx_light) the frame uses, on the draw
 ## Known failure modes
 
 (none recorded yet)
+
+## DISTRUSTED 2026-07-29
+
+The CPU TEV reference (tev_eval) decodes GUEST MEMORY, so for any draw sampling an EFB COPY DESTINATION it does NOT mirror what the GPU samples — the GPU reads the rendered copy surface. It reported a confident texel[0,0,0] a1.000 for the compositing quad that was not what was sampled. The trace now flags such units explicitly, but the reference still cannot evaluate those draws.
+
+> Every result this instrument produced is suspect until it is re-validated.
