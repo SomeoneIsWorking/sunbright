@@ -339,6 +339,7 @@ void video_wait_for_retrace(CPUState& cpu) {
                          lo[0], hi[0], lo[1], hi[1], lo[2], hi[2], med);
             sbr_scene_report_largest(5);
             sbr_scene_report_zmodes();
+            sbr_scene_report_2d();
             sbr_scene_report_alpha();
             sbr_render_report_formats();
             sbr_render_recheck_black();

@@ -134,3 +134,4 @@ int sbr_scene_matched_count();
 // so the renderer can perform it at the right point in the batch list. See native_render.h.
 void sbr_scene_note_efb_copy(uint32_t dest, int sx, int sy, int sw, int sh, int dw, int dh);
 void sbr_scene_clear_pending_copies();
+void sbr_scene_report_2d();

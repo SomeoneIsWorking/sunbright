@@ -1654,3 +1654,33 @@ the feedback.
 Four genuine defects were ported along the way that were NOT this symptom, each verified against
 the oracle: raster state taken from an SDK path the game bypasses (wrong on 43% of draws),
 colorUpdate/alphaUpdate write masks, GX cull (wrong on 93% of draws), and the per-draw scissor.
+
+## 2026-07-29 (iteration 16) — the HUD is not mis-rendered, it is NOT CAPTURED
+
+With the background correct, the remaining visible difference against the aurora reference is the
+HUD: coin and life counters, the water gauge. A projection census settles what kind of problem it
+is before any shading work is spent on it:
+
+```
+projection census: 0 orthographic (2D/HUD) drawables, 839 perspective, of 839
+```
+
+**Zero.** Every captured drawable is perspective. The HUD is J2D, and J2D does not go through
+`J3DShape::draw` — the only geometry hook this port has (`j3d_capture.cpp`). So the HUD is not
+shaded wrong, positioned wrong, or culled: it never enters the scene at all, and no amount of
+material or TEV work would produce it.
+
+That makes it a CAPTURE-COVERAGE problem, and it is worth naming the fork before picking one:
+
+1. **Hook J2D as well** — add a capture path for the 2D draw entry points, mirroring what
+   `j3d_capture` does for J3D. Narrow, but it is a second bespoke hook, and any third geometry
+   source later needs a third.
+2. **Capture geometry from the FIFO vertex stream instead** — the parser already sees every draw
+   command and every vertex, and the state oracle already proves this port's per-draw state matches
+   aurora's exactly. Capturing there would cover J3D, J2D and anything else by construction, and
+   would delete the class of bug where geometry silently never arrives.
+
+(2) is the architecturally right answer and is close to what aurora itself does, but it is a large
+change to the frontend. (1) is a day's work and leaves the coverage question open. Recording the
+choice rather than drifting into one: the next session should decide deliberately, with the
+knowledge that the current frontend can only ever see what J3D draws.

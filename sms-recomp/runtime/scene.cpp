@@ -399,6 +399,20 @@ double sbr_scene_now() {
 }
 int  sbr_scene_multislot_count() { return g_multislot; }
 
+// How many captured drawables are 2D? The HUD (coins, lives, the water gauge) is J2D, and J2D does
+// not go through J3DShape::draw — which is the only thing this port captures. If the count is zero
+// while aurora shows a HUD, the HUD is not "rendered wrong", it is NOT CAPTURED, and no amount of
+// shading work will produce it. Measured rather than assumed.
+void sbr_scene_report_2d() {
+    size_t ortho = 0, persp = 0;
+    for (const auto& d : g_cur.items) {
+        // An orthographic projection has no perspective term in the last row.
+        (d.proj[11] == 0.0f ? ortho : persp)++;
+    }
+    lucent::info("nrender", "  projection census: {} orthographic (2D/HUD) drawables, {} "
+                            "perspective, of {}", ortho, persp, g_cur.items.size());
+}
+
 void sbr_scene_report_zmodes() {
     // Which depth states the scene actually uses. If this shows ONE state, per-material depth is
     // not what is occluding the plaza and the theory is wrong — cheaper to check than to assume.
