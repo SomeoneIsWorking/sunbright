@@ -224,13 +224,18 @@ void present_and_reopen(bool& frameActive) {
 // aurora keeps rendering the real image from its cache while this port's honest re-decode sees
 // zeros — which would explain "same binding, black here, bright there" with no state divergence.
 static void texwatch_frame() {
+    // Each buffer's REAL size, not a fixed 512-byte prefix. Sampling the first 512 bytes of an
+    // 8192-byte I4 texture and concluding "zero" is the degenerate-sample trap: a texture whose
+    // top rows are legitimately black would read as never-written for the whole run.
     static const u32 kWatch[] = {0x80a9bd20, 0x80abcc40, 0x80cf0ac0, 0x80cfafa0,
                                  0x80da3860, 0x80fea480};
+    static const u32 kSize[]  = {1024,       1024,       8192,       2048,
+                                 2048,       143360};
     static u8 was[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};   // 0xFF = not yet sampled
     for (int t = 0; t < 6; ++t) {
         if (!sb_ram_fast(kWatch[t])) continue;
         u32 sum = 0;
-        for (u32 o = 0; o < 512; o += 4) sum |= sb_r32(kWatch[t] + o);
+        for (u32 o = 0; o < kSize[t]; o += 4) sum |= sb_r32(kWatch[t] + o);
         const u8 now = sum != 0 ? 1 : 0;
         if (now != was[t]) {
             lucent::info("texwatch", "0x{:08x} {} at present {}", kWatch[t],

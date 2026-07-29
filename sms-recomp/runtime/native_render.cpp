@@ -932,6 +932,59 @@ void sbr_render_recheck_black() {
                          (mean >= 0.0f && mean <= 1.0f) ? "   <- BLACK" : "");
         }
     }
+    {   // What SURROUNDS a zero texture in guest memory. These buffers sit inside live
+        // allocations (the zero run stops immediately at their edges), so the bytes on either side
+        // belong to whatever owns them — a J3D TEX1 block, an archive header, a name table. That is
+        // the cheapest available handle on WHO should have filled them.
+        static bool once = false;
+        for (auto& [key, tex] : g_texs) {
+            if (once) break;
+            if (tex.mean < 0.0f || tex.mean > 1.0f || tex.desc.addr == 0) continue;
+            if (tex.desc.addr != 0x80cf0ac0u && tex.desc.addr != 0x80cfafa0u) continue;
+            for (int side = 0; side < 2; ++side) {
+                const uint32_t base = side == 0 ? tex.desc.addr - 64
+                                                : tex.desc.addr + (uint32_t)gx_texture_data_size(
+                                                      tex.desc.width, tex.desc.height,
+                                                      tex.desc.format);
+                lucent::Line l;
+                l.add("  0x{:08x} {}: {} ", tex.desc.addr,
+                      gx_texture_format_name(tex.desc.format), side == 0 ? "BEFORE" : "AFTER ");
+                for (int i = 0; i < 48; ++i) l.add("{:02x} ", sb_r8(base + (uint32_t)i));
+                l.add(" |");
+                for (int i = 0; i < 48; ++i) {
+                    const uint8_t c = sb_r8(base + (uint32_t)i);
+                    l.add("{}", (c >= 32 && c < 127) ? (char)c : '.');
+                }
+                l.flush(lucent::Level::Info, "nrender");
+            }
+            once = true;
+        }
+    }
+    {   // The BLACK unit-1 bindings specifically. The by-volume ranking above is dominated by near
+        // geometry and showed none, yet the background is black — so the population that causes the
+        // defect has to be listed on its own terms rather than found in a top-N by vertex count.
+        std::vector<std::pair<uint32_t, long>> v(g_unit1Use.begin(), g_unit1Use.end());
+        long total = 0, blackTotal = 0;
+        for (auto& [a, n] : v) total += n;
+        std::vector<std::tuple<long, uint32_t, const SbrTexture*>> black;
+        for (auto& [addr, n] : v)
+            for (auto& [key, t] : g_texs)
+                if (t.desc.addr == addr && t.mean >= 0.0f && t.mean <= 1.0f) {
+                    black.emplace_back(n, addr, &t.desc); blackTotal += n; break;
+                }
+        std::sort(black.begin(), black.end(), [](auto& a, auto& b) {
+            return std::get<0>(a) > std::get<0>(b);
+        });
+        lucent::info("nrender", "  unit1 BLACK bindings: {} of {} distinct addresses, {:.2f}% of "
+                                "unit-1 vertex work", black.size(), v.size(),
+                     total ? 100.0 * (double)blackTotal / (double)total : 0.0);
+        for (size_t i = 0; i < black.size() && i < 8; ++i) {
+            const SbrTexture* d = std::get<2>(black[i]);
+            lucent::info("nrender", "    0x{:08x} {} {}x{}: {} verts", std::get<1>(black[i]),
+                         gx_texture_format_name(d->format), d->width, d->height,
+                         std::get<0>(black[i]));
+        }
+    }
     lucent::info("nrender", "stale-cache scan: {} of {} decodable cached textures no longer "
                                 "match their upload", stale, scanned);
     }
@@ -942,17 +995,40 @@ void sbr_render_recheck_black() {
         if (!gx_decode_texture(tex.desc.addr, tex.desc.width, tex.desc.height, tex.desc.format,
                                tex.desc.tlut, rgba.data()))
             continue;
-        uint64_t sum = 0;
-        for (size_t i = 0; i < rgba.size(); i += 4) sum += rgba[i] + rgba[i + 1] + rgba[i + 2];
+        uint64_t sum = 0, sumA = 0;
+        for (size_t i = 0; i < rgba.size(); i += 4) {
+            sum  += rgba[i] + rgba[i + 1] + rgba[i + 2];
+            sumA += rgba[i + 3];
+        }
         const double now = (double)sum / (double)(rgba.size() / 4 * 3);
+        const double nowA = (double)sumA / (double)(rgba.size() / 4);
         ++rechecked;
         // Raw source bytes too: an all-zero DECODE can mean zero source bytes or a decoder that
         // read the wrong place. Only the raw bytes separate the two.
         // How far the zero run extends either side. A zero region exactly the size of the texture,
         // surrounded by data, means the ADDRESS is right and the data was never written; a zero
         // region far larger means the buffer was never allocated or lives somewhere else entirely.
-        const uint32_t need = (uint32_t)gx_texture_data_size(tex.desc.width, tex.desc.height,
-                                                             tex.desc.format);
+        // IS THE SOURCE ACTUALLY EMPTY? "mean" is an RGB average, so an IA-format alpha MASK —
+        // legitimate content whose intensity is zero and whose alpha carries the picture — reads
+        // as a black texture and would be reported as a missing one. Decoded ALPHA cannot settle
+        // it either: RGB565 has no alpha channel and all-zero CMPR decodes opaque, so both report
+        // alpha 255 whether or not they hold data. The only format-independent answer is the RAW
+        // SOURCE BYTES, which is also what texwatch samples — so the two instruments agree by
+        // construction instead of contradicting each other.
+        const uint32_t needBytes = (uint32_t)gx_texture_data_size(tex.desc.width, tex.desc.height,
+                                                                  tex.desc.format);
+        const uint32_t need = needBytes;
+        bool rawEmpty = true;
+        for (uint32_t o = 0; o < needBytes && rawEmpty; ++o)
+            if (sb_r8(tex.desc.addr + o) != 0) rawEmpty = false;
+        if (!rawEmpty) {
+            lucent::info("nrender", "0x{:08x} {} {}x{}: decodes to RGB {:.1f} / alpha {:.1f} but "
+                                    "its SOURCE BYTES ARE NON-ZERO — real content (an alpha mask "
+                                    "or a dark texture), not a missing one",
+                         tex.desc.addr, gx_texture_format_name(tex.desc.format), tex.desc.width,
+                         tex.desc.height, now, nowA);
+            continue;
+        }
         uint32_t before = 0, after = 0;
         while (before < 0x20000 && sb_r8(tex.desc.addr - before - 1) == 0) ++before;
         while (after < 0x20000 && sb_r8(tex.desc.addr + need + after) == 0) ++after;

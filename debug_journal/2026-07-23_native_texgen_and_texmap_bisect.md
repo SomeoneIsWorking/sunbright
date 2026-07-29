@@ -1090,3 +1090,56 @@ loaded and was not.
 Two distinct producers to find, then — and neither is a routing or arithmetic problem:
   1. render-to-texture: bind EFB copy destinations to the copied surface instead of guest memory;
   2. the asset path that should fill `0x80cfafa0` and its non-copy siblings.
+
+## 2026-07-29 (iteration 2) — "six zero buffers" was three, and RTT would not have fixed it
+
+**Checked the premise before building the subsystem.** The plan was render-to-texture, on the
+reasoning that aurora services EFB copy destinations GPU-side while this port decodes guest memory.
+Splitting the unit-1 histogram by content first says otherwise:
+
+```
+unit1 BLACK bindings: 3 of 52 distinct addresses, 1.74% of unit-1 vertex work
+  0x80cf0ac0 I4 128x128    7254756 verts    NOT a copy dest
+  0x80fea480 RGB565 320x224 1104891 verts   IS  a copy dest
+  0x80cfafa0 CMPR 64x64      416940 verts   NOT a copy dest
+```
+
+The DOMINANT one is not a copy destination, so RTT alone would not have fixed the background. (The
+copy-dest sets that looked run-varying earlier were not truncation — that run was episode 5, a
+different stage.) A small vertex share covering the whole background is exactly what distant
+geometry looks like; the by-volume ranking in the previous entry hid these three entirely.
+
+**Two instrument defects fixed, and they were contradicting each other.**
+
+`texwatch` sampled a fixed 512-byte prefix of each buffer — of an 8192-byte I4 texture. A texture
+whose top rows are legitimately black would read as never-written for a whole run. Now it samples
+each buffer's real extent, and three of the six go NON-ZERO at present 9 — while the renderer's
+decoder still reported mean 0.0 for them.
+
+The renderer's black detector was the one at fault: `mean` is an RGB average, so an IA-format
+alpha MASK (intensity zero, alpha carries the picture) reads as a black texture. Decoded ALPHA
+cannot settle it either — my first fix claimed it could and was wrong: RGB565 has no alpha channel
+and all-zero CMPR decodes opaque, so both report alpha 255 whether or not they hold data. The only
+format-independent test is the RAW SOURCE BYTES, which is also what texwatch samples, so the two
+instruments now agree by construction rather than contradicting each other:
+
+```
+0x80a9bd20 IA4 32x32: RGB 0.0 / alpha 31.7, SOURCE BYTES NON-ZERO -> real content
+0x80abcc40 IA4 32x32: RGB 0.0 / alpha 31.7, SOURCE BYTES NON-ZERO -> real content
+0x80da3860 IA8 32x32: RGB 0.0 / alpha 30.6, SOURCE BYTES NON-ZERO -> real content
+0x80cf0ac0 / 0x80cfafa0 / 0x80fea480: genuinely empty, all bytes zero for the whole run
+```
+
+**So the "six zero-decoding buffers" carried through this whole arc is three.** Half of them were
+alpha masks doing their job. The remaining three are genuinely never written, and match texwatch's
+independent verdict exactly.
+
+Also: the bytes immediately before `0x80cf0ac0` decode as its own J3D BTI header —
+`00 00 | 00 80 | 00 80 | 01 01` = format I4, 128x128, wrap 1/1, matching the bound texture — and
+the bytes after it belong to the next texture's data. So the header loaded from disc and its
+siblings have content; only this one's data region stayed zero. Whatever fills it is a step that
+never ran, not a mis-parsed archive.
+
+Next: `0x80fea480` wants render-to-texture (it is a copy dest, and this port has none).
+`0x80cf0ac0` and `0x80cfafa0` want their producer identified — they are 0xA4E0 apart in one
+region, so likely the same mechanism.
