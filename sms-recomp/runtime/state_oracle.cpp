@@ -342,6 +342,26 @@ void sbr_state_oracle_report() {
         append(b, aur[i]);
         b.flush(lucent::Level::Info, "oracle");
     }
+    // PER-UNIT breakdown. The operation-attribution sweep (SBR_ABLATE=1) showed the whole
+    // texmap-routing deficit is texture unit 1 and nothing else, so "do the two sides agree about
+    // what is BOUND on unit 1" is the question that decides between a wrong binding on our side
+    // and missing CONTENT at an address both sides agree on. Counted over draws that actually
+    // NAME each unit, since a unit nobody samples legitimately holds anything.
+    {
+        long named[8] = {}, disagree[8] = {};
+        for (size_t i = 0; i < k; ++i)
+            for (unsigned st = 0; st < mine[i].numStages && st < 16; ++st) {
+                if (!mine[i].texEnable[st]) continue;
+                const unsigned m = mine[i].texmap[st] & 7;
+                ++named[m];
+                if (mine[i].unitId[m] != aur[i].unitId[m]) ++disagree[m];
+            }
+        lucent::Line l;
+        l.add("  per-unit bind agreement (named stages / disagreeing):");
+        for (unsigned m = 0; m < 8; ++m)
+            l.add(" u{}={}/{}", m, named[m], disagree[m]);
+        l.flush(lucent::Level::Info, "oracle");
+    }
     lucent::info("oracle", "{} of {} draws disagree ({} trailing unpaired) — {} look like a LAG "
                            "(the same id appears within 4 draws on aurora's side), {} are a "
                            "genuinely different texture", differing, k, delta, lagLike, genuine);

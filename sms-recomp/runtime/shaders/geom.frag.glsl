@@ -179,6 +179,8 @@ void main() {
         // enabled stages name maps 4-7. Masking to 3 silently sampled a different texture.
         int unit = tev.dest[i].w & 7;
         if (abl == 7) unit = 0;
+        // Ablations 9..15 pin exactly ONE unit, leaving every other stage on its named unit.
+        if (abl >= 9 && abl <= 15 && unit == abl - 8) unit = 0;
         vec2 uv = coordOf((tev.dest[i].w >> 8) & 3);
         if (abl == 1) uv = v_uv01.xy;
         // A stage with its texture disabled must not read the texture: GX feeds it nothing, and

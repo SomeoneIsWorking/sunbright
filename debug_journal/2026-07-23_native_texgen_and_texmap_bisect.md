@@ -1022,3 +1022,44 @@ Reproducing a plaza render needs ALL of `SBR_FASTBOOT=1 SBR_STAGE=1 SBR_SCENARIO
 SBR_J3D_CAPTURE=1 SBR_TEX=1`. Plain `SBR_FASTBOOT` derives episode 5 from the save and renders
 nothing; without `SBR_J3D_CAPTURE` the scene has 0 drawables; without `SBR_TEX` the frame is
 untextured. Each of those cost a run this session.
+
+## 2026-07-29 (later) — RETRACTION: maps 4-7 are NOT used, and the defect is unit 1 alone
+
+Two corrections to the entry above, both found by the instruments disagreeing with each other.
+
+**RETRACTED: "maps 4-7 are named by ~1.94M enabled stages (~24%)".** That number came from a
+counter I added at the `RAS1_TREF` write site. It is wrong. The TREF registers (BP 0x28..0x2F)
+describe stages 0-15, and a material with `numStages=3` leaves the slots for stages 3-15 holding
+whatever the PREVIOUS material wrote. Counting at the write site therefore counts stages that are
+never evaluated. The true count, taken at DRAW time over stages < numStages (state oracle,
+per-unit line) is:
+
+```
+per-unit bind agreement (named stages / disagreeing):
+  u0=26186/130  u1=7666/50  u2=5822/21  u3=2412/12  u4=0/0  u5=0/0  u6=0/0  u7=0/0
+```
+
+**No live stage names a texmap above 3.** The operation-attribution sweep says the same thing
+independently: `pin unit4->0` through `pin unit7->0` all score +0.0, which is what "nothing uses
+this" looks like. The faulty counter has been deleted rather than annotated — two instruments that
+contradict each other are worse than one, and the oracle's is the one validated against aurora.
+
+Consequence: the 8-texmap widening was NOT a fix for this scene. It is correct in principle (GX
+really does have eight texmaps and the port really did mask `texmap & 3`), so it stays as latent
+correctness — but it changed nothing here, and the commit message claiming it addressed a real
+aliasing bug overstated it.
+
+**The routing defect is texture unit 1, alone.** Per-unit ablation, drift-free in one run:
+
+```
++6.0  pin unit1->0     32.4%  +0.747
++6.0  texmap->unit0    32.3%  +0.747      <- the aggregate row, entirely explained by unit 1
++0.0  pin unit2..7->0  26.4%  +0.653      <- indistinguishable from the control
+```
+
+Pinning unit 1 alone recovers the ENTIRE routing deficit. And the oracle says we agree with aurora
+about what is bound there on 7616 of 7666 named stages (99.35%) — so we bind the same address
+aurora does. The defect is therefore the CONTENT at that address, not the routing to it, which is
+where the Fable agent's zero-buffer finding already pointed. The open question is unchanged and now
+much sharper: **what should be writing the buffers bound on texture unit 1, and why is nothing
+writing them in this port?**

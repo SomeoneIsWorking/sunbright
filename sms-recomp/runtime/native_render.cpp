@@ -995,6 +995,17 @@ const char* const kAblationName[] = {
     // the real pipeline. It MUST score exactly the baseline; if it does not, the sweep machinery
     // (re-render, readback, pairing) is lying and no row in the table can be believed.
     "control:no-op",        // 8
+    // PER-UNIT decomposition of the texmap-routing row. "texmap->unit0" pins ALL stages and so
+    // reports one aggregate number; these pin exactly ONE unit and leave the rest named, so the
+    // +5.9 can be attributed to the unit whose CONTENT is actually wrong instead of to routing as
+    // a whole. Drift-free because every one is scored against the same aurora frame.
+    "pin unit1->0",         // 9
+    "pin unit2->0",         // 10
+    "pin unit3->0",         // 11
+    "pin unit4->0",         // 12
+    "pin unit5->0",         // 13
+    "pin unit6->0",         // 14
+    "pin unit7->0",         // 15
 };
 }
 
