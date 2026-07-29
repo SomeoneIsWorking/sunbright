@@ -1191,3 +1191,41 @@ genuine render-to-texture gap.
 Next: find the ordering bug in `dev_gxfifo.cpp` — where a BP texture write is attributed to the
 current draw instead of the following one — and confirm the fix collapses the unit-1 mismatch
 count to zero.
+
+## 2026-07-29 (iteration 4) — a divergence tool, and the retraction it forced
+
+**RETRACTED: "we bind textures one draw early".** That came from reading the oracle's mismatch
+list next to a parser trace and joining them on "draw 702". They are different numbering schemes —
+the parser counts every draw, the oracle counts only PAIRED draws — so the two 702s are unrelated
+draws. The parse trace shows draw 702 seeing `0x80843a60` while the oracle's draw 702 reports
+`0x00cfafa0`; that is the conflation, not a finding. Joining two instruments by ordinal is the same
+class of error as the ordinal draw-pairing that produced the first false 98% result in this arc.
+
+**So the fix was to make ONE tool state the verdict.** A divergence report is only useful if it
+carries the write that caused it, keyed by something both sides genuinely share — the STREAM
+OFFSET. Each draw record now carries, per unit, the offset of the write that set it and the value
+it replaced, and the report classifies each divergence itself:
+
+```
+offset 15350 (stage 0): mine 0x00b0ffa0 (bound at 14567, 783B before; prev 0x003db200)
+                        aurora 0x015997e0  -- genuinely different texture
+offset 58271 (stage 0): mine 0x00843a60 (bound at 56977, 1294B before; prev 0x00870360)
+                        aurora 0x00870360  -- aurora still holds OUR PREVIOUS value
+offset 90108 (stage 1): mine 0x00cfafa0 (bound at 89145, 963B before; prev 0x003e1280)
+                        aurora 0x008901a0  -- genuinely different texture
+```
+
+A first attempt at this tool used a ring buffer of stream events and reported "no writes to 0x95
+precede this offset — the unit was last bound in an EARLIER frame" for every case. That was the
+8192-entry ring having WRAPPED long before the end-of-frame report, with unit 1 taking ~970k such
+writes per frame. A ring reporting its own wrap as "no signal" is the same silent-instrument
+failure as the 512-byte texwatch prefix. Replaced with exact per-draw provenance, which cannot
+wrap; the ring is deleted rather than annotated.
+
+**What it actually shows.** The divergences are MIXED, not a uniform lag — and the sky-dummy case
+(offset 90108) is specifically "a genuinely different texture", not a timing disagreement. What is
+consistent is that aurora's value at divergence N equals OUR value at divergence N-1: we advance
+unit 1 through MORE binds than aurora does. The next question is therefore which side honours a
+bind the other ignores — likely that this parser updates a unit's address on any TX_SETIMAGE3
+write, while aurora may require a complete texobj (image0 AND image3) before the unit changes.
+That is testable by counting, and must be counted rather than assumed.

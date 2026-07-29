@@ -30,6 +30,12 @@ struct SbrDrawState {
     // Per unit: the texture identity. On this side that is the TX_SETIMAGE3 address; on aurora's
     // it is texObjId, which this port sets to exactly that address — so they compare directly.
     uint32_t unitId[8] = {};
+    // PROVENANCE, this side only: the stream offset of the write that set each unit, and the value
+    // it replaced. A divergence is only explicable with the write that caused it, and an event ring
+    // cannot supply that — it wraps long before the end-of-frame report and then reports its own
+    // wrap as "no write found", which reads exactly like a finding. This is exact and per-draw.
+    uint32_t bindPos[8] = {};
+    uint32_t prevId[8] = {};
 
     // ---- The rest of the pixel-deciding state, beyond texture identity. The stage/texture block
     // above was proven to agree at 99.55% of draws, yet the frames differ — so the disagreement,

@@ -201,7 +201,9 @@ void sbr_draw_state_fill(SbrDrawState& s, const SbrTevState& tev, const SbrXfSta
 extern "C" bool sbr_state_diff_enabled() { return g_limit > 0; }
 
 void sbr_state_oracle_mine(const SbrDrawState& s) {
-    if (g_limit > 0) g_mineCur.push_back(s);
+    if (g_limit <= 0) return;
+    // The event ring is only worth its memory when the oracle is running.
+    g_mineCur.push_back(s);
 }
 
 void sbr_state_oracle_capture(uint32_t pos, const SbrDrawState& s) {
@@ -368,9 +370,28 @@ void sbr_state_oracle_report() {
                     if ((mine[i].texmap[st] & 7) != 1) continue;
                     if (mine[i].unitId[1] == aur[i].unitId[1]) continue;
                     ++shown;
-                    lucent::info("oracle", "  unit1 MISMATCH draw {} stage {}: mine 0x{:08x} "
-                                           "aurora 0x{:08x}", i, st, mine[i].unitId[1],
-                                 aur[i].unitId[1]);
+                    // Keyed by STREAM OFFSET, not by draw ordinal: the parser counts every draw
+                    // and the oracle counts only paired ones, so the two numbering schemes do not
+                    // line up and joining them by eye reads a divergence as a lag. The offset is
+                    // the identifier both sides genuinely share.
+                    // The verdict, not the raw numbers: if aurora holds exactly what THIS side
+                    // held before its most recent bind, the two sides disagree about WHEN a bind
+                    // takes effect. If aurora holds something neither our current nor our previous
+                    // value, it is a genuinely different texture and a different bug. Saying which
+                    // is the whole job of this report.
+                    const char* verdict =
+                        (aur[i].unitId[1] == mine[i].prevId[1])
+                            ? "aurora still holds OUR PREVIOUS value -> the sides disagree about "
+                              "when this bind takes effect"
+                            : "aurora holds a value that is neither our current nor our previous "
+                              "one -> a genuinely different texture";
+                    lucent::info("oracle", "  unit1 DIVERGENCE at stream offset {} (stage {}): "
+                                           "mine 0x{:08x} (bound at offset {}, {} bytes before "
+                                           "this draw; previously 0x{:08x})  aurora 0x{:08x}  --  {}",
+                                 mine[i].pos, st, mine[i].unitId[1], mine[i].bindPos[1],
+                                 mine[i].pos > mine[i].bindPos[1]
+                                     ? mine[i].pos - mine[i].bindPos[1] : 0,
+                                 mine[i].prevId[1], aur[i].unitId[1], verdict);
                 }
         }
         lucent::Line l;

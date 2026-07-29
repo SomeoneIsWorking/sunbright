@@ -99,6 +99,12 @@ struct Stats {
 } g_stats;
 
 unsigned long g_bpWrites[256] = {};
+long g_drawIndex = 0;
+// Where each texture unit was last bound, and what it held before — the provenance a divergence
+// report needs. Kept beside the unit state so it cannot drift from it.
+uint32_t g_fifoTexBindPos[8] = {};
+uint32_t g_fifoTexPrevAddr[8] = {};
+
 
 // BP register shadow + the one-shot write mask (register 0xFE). See the BP handler.
 u32 g_bpCache[256] = {};
@@ -780,7 +786,13 @@ size_t parse(const u8* p, size_t n, int depth) {
                 t.height = ((val >> 10) & 0x3FF) + 1;
                 t.format = (val >> 20) & 0xF;
             } else if (reg >= 0x94 && reg <= 0x97) {
-                g_fifoTex[reg - 0x94].addr = ((val & 0x00FFFFFF) << 5) | 0x80000000u;
+                const unsigned m = reg - 0x94;
+                const uint32_t na = ((val & 0x00FFFFFF) << 5) | 0x80000000u;
+                if (na != g_fifoTex[m].addr) {
+                    g_fifoTexPrevAddr[m] = g_fifoTex[m].addr;
+                    g_fifoTexBindPos[m] = (uint32_t)g_out.size();
+                }
+                g_fifoTex[reg - 0x94].addr = na;
                 g_fifoTex[reg - 0x94].bindSeq = ++g_bindSeq;
             } else if (reg >= 0xB4 && reg <= 0xB7) {
                 g_fifoTex[4 + (reg - 0xB4)].addr = ((val & 0x00FFFFFF) << 5) | 0x80000000u;
@@ -818,7 +830,8 @@ size_t parse(const u8* p, size_t n, int depth) {
             // ids. A texobj is emitted once both halves of a slot are known.
             else if (reg >= 0x88 && reg <= 0x8B) { u32 m = reg - 0x88; g_tex[m].image0 = val; g_tex[m].have0 = true; emit_texobj(m); }
             else if (reg >= 0xA8 && reg <= 0xAB) { u32 m = reg - 0xA8 + 4; g_tex[m].image0 = val; g_tex[m].have0 = true; emit_texobj(m); }
-            else if (reg >= 0x94 && reg <= 0x97) { u32 m = reg - 0x94; g_tex[m].image3 = val; g_tex[m].have3 = true; emit_texobj(m); }
+            else if (reg >= 0x94 && reg <= 0x97) { u32 m = reg - 0x94; g_tex[m].image3 = val; g_tex[m].have3 = true; emit_texobj(m);
+            }
             else if (reg >= 0xB4 && reg <= 0xB7) { u32 m = reg - 0xB4 + 4; g_tex[m].image3 = val; g_tex[m].have3 = true; emit_texobj(m); }
 
             g_out.insert(g_out.end(), p + i, p + i + 5);
@@ -875,11 +888,16 @@ size_t parse(const u8* p, size_t n, int depth) {
             if (n - i < 3) { g_need = 3; break; }
             // Record THIS side's state for the per-draw comparison against aurora, which derives
             // its own from the same bytes a moment later. See state_oracle.h.
+            ++g_drawIndex;
             if (sbr_state_diff_enabled()) {
                 SbrDrawState st{};
                 st.pos = (uint32_t)g_out.size();   // where this draw's command byte lands
                 sbr_draw_state_fill(st, g_tev, g_xf);
-                for (unsigned m = 0; m < 8; ++m) st.unitId[m] = g_fifoTex[m].addr & 0x01FFFFFFu;
+                for (unsigned m = 0; m < 8; ++m) {
+                    st.unitId[m]  = g_fifoTex[m].addr & 0x01FFFFFFu;
+                    st.bindPos[m] = g_fifoTexBindPos[m];
+                    st.prevId[m]  = g_fifoTexPrevAddr[m] & 0x01FFFFFFu;
+                }
                 sbr_state_oracle_mine(st);
             }
             const u32 verts = be16(p + i + 1);
@@ -1082,3 +1100,5 @@ void sbr_gxfifo_report_bp_writes() {
                      m, 0x8C + m, g_bpWrites[0x8C + m], 0x90 + m, g_bpWrites[0x90 + m],
                      0x98 + m, g_bpWrites[0x98 + m]);
 }
+
+
