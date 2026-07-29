@@ -72,6 +72,7 @@ logger — that is debt to convert, not a feature.
 | `SB_ENTRY_MAT` | 1 | `decomp/sms/src/JSystem/J3D/J3DGraphBase/J3DDrawBuffer.cpp:137` |  |
 | `SB_FB_SCALE` | 1 | `extern/aurora/lib/window.cpp:417` |  |
 | `SB_FIFO_NO_COPYSYN` | 1 | `sms-boot/runtime/fifo_player.cpp:723` |  |
+| `SB_FIFO_REPLAY` | 1 | `sms-boot/main.cpp:89` |  |
 | `SB_FIFO_TRACE_MARK` | 1 | `extern/aurora/lib/gx/command_processor.cpp:546` |  |
 | `SB_FI_TRACE` | 1 | `decomp/sms/src/JSystem/J3D/J3DGraphBase/J3DDrawBuffer.cpp:82` | gated print |
 | `SB_FORCE_ABUF` | 1 | `extern/aurora/lib/gx/shader.cpp:2098` |  |
@@ -143,6 +144,7 @@ logger — that is debt to convert, not a feature.
 | `SB_PANE_DBG` | 1 | `decomp/sms/src/JSystem/J2D/J2DScreen.cpp:242` |  |
 | `SB_PASS_DBG` | 1 | `extern/aurora/lib/gfx/common.cpp:430` |  |
 | `SB_PERSP_ZONLY` | 1 | `extern/aurora/lib/gx/command_processor.cpp:4110` |  |
+| `SB_PIN_STATE` | 1 | `sms-boot/runtime/pin_state.cpp:42` |  |
 | `SB_PIPELINE_BLEND_DBG` | 1 | `extern/aurora/lib/gx/gx.cpp:763` | gated print |
 | `SB_PIXEL_WATCH` | 1 | `extern/aurora/lib/gx/command_processor.cpp:2141` |  |
 | `SB_PLACE_DBG` | 1 | `decomp/sms/src/JSystem/JDrama/JDRPlacement.cpp:31` | gated print |
@@ -307,4 +309,4 @@ logger — that is debt to convert, not a feature.
 | `SBR_WIDESCREEN` | 1 | `sms-recomp/overrides/widescreen.cpp:56` |  |
 | `SBR_WS_SCALE` | 1 | `sms-recomp/overrides/widescreen.cpp:65` |  |
 
-**286 switches; 88 still gate a raw print.**
+**288 switches; 88 still gate a raw print.**

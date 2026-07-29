@@ -43,6 +43,10 @@ CODE_DIRS = ["sms-recomp", "sms-boot", "decomp/sms/src", "decomp/sms/include", "
 DOC_PATHS = ["CLAUDE.md", "docs", "debug_journal", "run.sh", "run-recomp.sh"]
 
 GETENV = re.compile(r'getenv\s*\(\s*"((?:SB|SBR|AURORA)_[A-Z0-9_]+)"')
+# Consumed by the lucent logger through its PREFIX mechanism (lucent::config::set_prefix), so they
+# never appear as a literal getenv in this tree. Real switches; not phantoms.
+LIBRARY_READ = {"SB_LUCENT_DEBUG", "SB_LUCENT_LOG_FILE",
+                "SBR_LUCENT_DEBUG", "SBR_LUCENT_LOG_FILE"}
 # The project's own logger. A switch reached this way is already converged, not debt.
 LOGGER = re.compile(r'(?:SB_LOGC|SB_LOG_ONCE|SB_LOG_EVERY|lucent::(?:debug|info|warn|error))\s*\(')
 MENTION = re.compile(r'\b((?:SB|SBR|AURORA)_[A-Z0-9_]{2,})\b')
@@ -108,11 +112,15 @@ def scan_code():
                 # (pin_state's unreadable SB_PIN_STATE) has to be loud whether or not any log
                 # channel is on. Marking them in-code means the scan stops re-proposing the same
                 # conversion every time, and the remaining count is work someone should actually do.
-                if "LOGGER-EXEMPT" in window:
-                    continue
-                gated = bool(re.search(
+                # NOTE the exemption suppresses only the GATED-PRINT classification. `continue`
+                # here would skip registering the switch itself, which turned SB_FIFO_REPLAY into
+                # a phantom the moment it was exempted — the tool inventing the very defect it
+                # exists to find.
+                exempt = "LOGGER-EXEMPT" in window
+                gated = not exempt and bool(re.search(
                     r'\bfprintf\s*\(\s*std(?:err|out)\b|(?<![\w:])printf\s*\(|'
                     r'(?<![\w:])puts\s*\(|std::cout', window)) and not LOGGER.search(window)
+                del exempt
                 found.setdefault(name, []).append(
                     (os.path.relpath(path, ROOT), i, gated))
     return found
@@ -192,10 +200,20 @@ def cmd_scan(a):
 # the time, and a switch retired since is not a defect there. A LIVE instruction is different — a
 # name in CLAUDE.md, docs/ or a run script tells the reader the switch works TODAY. Only the second
 # kind is actionable, and conflating them buries the handful that matter under hundreds that do not.
-LIVE_DOCS = ("CLAUDE.md", "run.sh", "run-recomp.sh")
+LIVE_DOCS = ("CLAUDE.md", "run.sh", "run-recomp.sh", "run-render.sh")
+
+# RECORDS, not live instructions. A dated journal entry, an RE note, a claim in the ledger (often
+# FALSIFIED, where naming the switch is the point) and a do-not-revisit marker all describe what was
+# true then, or deliberately name retired machinery so it is not resurrected. Flagging them produces
+# a list nobody can act on, which is how a checker gets ignored.
+HISTORICAL_PREFIXES = ("debug_journal/", "docs/re_notes/", "docs/info/claims/")
 
 
 def _is_live_doc(rel):
+    if rel.startswith(HISTORICAL_PREFIXES):
+        return False
+    if os.path.basename(rel).startswith("DO_NOT_REVISIT"):
+        return False
     return os.path.basename(rel) in LIVE_DOCS or rel.startswith("docs/")
 
 
@@ -204,7 +222,9 @@ def cmd_phantoms(a):
     code = scan_code()
     mentions = scan_mentions()
     macros = macro_names()
-    phantoms = {n: s for n, s in mentions.items() if n not in code and n not in macros}
+    phantoms = {n: s for n, s in mentions.items()
+                if n not in code and n not in macros and n not in LIBRARY_READ
+                and not n.endswith("_")}
     # A name only ever mentioned in its own registry entry is not evidence of anything.
     phantoms = {n: {p for p in s if os.path.basename(p) != "diagnostics.md"}
                 for n, s in phantoms.items()}
