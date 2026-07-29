@@ -1319,3 +1319,43 @@ unverified one, so it stays behind `SBR_RASTER_SRC=fifo` until the oracle compar
 raster state against AURORA's directly. The `raster`/`blend` fields are already in `SbrDrawState`
 and `pix_diff` for exactly that; filling them on both sides is the next step, and it is the same
 like-for-like discipline that took the texture disagreement from 133 draws to 0.
+
+## 2026-07-29 (iteration 7) — the raster fix is PROVEN correct, and it does not fix the background
+
+Filled the `raster`/`blend` fields on both sides and compared:
+
+```
+pix state: 41 of 29283 draws disagree — numChans 0, chanctrl/amb/mat 0, ras-sel 0,
+           combiner 0, ksel 0, konst 0, tevreg 41, raster(z/cull) 0, blend 0
+```
+
+**Zero.** The stream-derived raster state matches aurora on every one of 29283 draws. Since the SDK
+path disagrees with the stream source on 43% of draws, it disagrees with AURORA on 43% of draws —
+the renderer was being fed wrong z/blend for nearly half the frame. `SBR_RASTER_SRC` now defaults
+to the stream, justified by direct agreement with the oracle rather than by a score.
+
+**And the background is still black.** The score is unchanged (edgeIoU 24.7 / lumaCorr +0.662 at
+N=59 vs 24.8 / +0.662 before). A real defect, fixed and verified, that is not this symptom. Saying
+so plainly rather than claiming the win.
+
+Where that leaves the black background, with every state category now measured:
+
+```
+textures     0 of 29364 draws disagree
+raster/blend 0 of 29283 draws disagree
+chanctrl / amb / mat / ras-sel / combiner / ksel / konst   all 0
+tevreg       41 of 29283 — and on unit-1 addresses that are NOT the sky dummy
+```
+
+The state this port derives is the state aurora derives, essentially everywhere. Both runtimes bind
+the same `_dammy` placeholder on unit 1 and sample the same black texel from it. Aurora's output is
+correct; ours is black. **So the defect is no longer locatable in the parsed state at all — it is in
+what this renderer DOES with identical state**, i.e. the shader's TEV evaluation or the pipeline
+built from that state.
+
+That is the one comparison this arc has never run: take ONE sky draw, evaluate it on the CPU with
+`tev_eval` (unit-tested against SDK-derived values) using the real texels, and see whether the
+reference predicts black. If the reference predicts non-black while the GPU paints black, the
+shader diverges from this port's own tested reference — findable and local. If the reference also
+predicts black, aurora is doing something structurally different with the same inputs and the
+comparison moves to aurora's shader. Either way it is bounded, and it is the next step.

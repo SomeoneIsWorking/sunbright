@@ -919,6 +919,12 @@ size_t parse(const u8* p, size_t n, int depth) {
                 SbrDrawState st{};
                 st.pos = (uint32_t)g_out.size();   // where this draw's command byte lands
                 sbr_draw_state_fill(st, g_tev, g_xf);
+                // Raster state as the STREAM describes it, packed to match aurora's side. This is
+                // the check that decides whether the 43% SDK/FIFO disagreement is this port's bug.
+                st.raster = (uint16_t)((g_fifoZ.test & 1) | ((g_fifoZ.write & 1) << 1) |
+                                       ((g_fifoZ.func & 7) << 2));
+                st.blend  = (uint16_t)((g_fifoZ.blend & 7) | ((g_fifoZ.srcFac & 15) << 3) |
+                                       ((g_fifoZ.dstFac & 15) << 7));
                 for (unsigned m = 0; m < 8; ++m) {
                     st.unitId[m]  = g_fifoTex[m].addr & 0x01FFFFFFu;
                     st.bindPos[m] = g_fifoTexBindPos[m];

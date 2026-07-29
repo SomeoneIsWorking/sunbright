@@ -251,9 +251,12 @@ extern "C" void sbr_state_oracle_aurora_raw(unsigned pos, unsigned numStages, un
                                             const unsigned char* rasChannel, const unsigned* cWord,
                                             const unsigned* aWord, const unsigned short* kSel,
                                             const unsigned* konst,
-                                            const unsigned long long* tevReg) {
+                                            const unsigned long long* tevReg,
+                                            unsigned raster, unsigned blend) {
     if (g_limit <= 0) return;
     SbrDrawState s{};
+    s.raster = (uint16_t)raster;
+    s.blend  = (uint16_t)blend;
     s.pos = pos;
     s.numStages = (uint8_t)numStages;
     s.numTexGens = (uint8_t)numTexGens;

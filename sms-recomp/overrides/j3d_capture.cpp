@@ -254,17 +254,17 @@ void ov_shape_draw(CPUState& cpu) {
                         // never see them: 43% of draws (2.3M of 5.4M) had the two sources
                         // disagreeing, typically SDK depth-WRITE on where the stream says off —
                         // which makes a background draw occlude everything behind it.
-                        // SBR_RASTER_SRC=fifo uses the stream-derived state instead. Kept OPT-IN:
-                        // the FIFO source is the faithful one in principle (the game writes 2.6M
-                        // ZMode and 4.5M cmode0 through display lists that the SDK overrides never
-                        // see, and the two sources disagree on 43% of draws), but at equal N it
-                        // scores edgeIoU 24.8/+0.662 against the SDK path's 26.0/+0.652 — mixed,
-                        // not a win. Switching the default on that would trade a known-stale input
-                        // for an unverified one. It stays opt-in until the oracle compares this
-                        // port's raster state against aurora's directly.
+                        // From the COMMAND STREAM (BP 0x40/0x41), which is where the game puts it.
+                        // PROVEN correct rather than preferred: the state oracle compares this
+                        // port's raster state against aurora's per draw, and the stream-derived
+                        // state matches on ALL 29283 draws (raster 0, blend 0 disagreements). The
+                        // SDK GXSetZMode/GXSetBlendMode path this used to read disagrees with it on
+                        // 43% of draws — typically depth-WRITE on where the stream says off — so
+                        // that path was feeding the renderer wrong z/blend for nearly half the
+                        // frame. SBR_RASTER_SRC=sdk restores the old behaviour for A/B only.
                         static const bool useSdk = [] {
                             const char* e = std::getenv("SBR_RASTER_SRC");
-                            return !(e != nullptr && e[0] == 'f');
+                            return e != nullptr && e[0] == 's';
                         }();
                         dr.depth = useSdk ? sbr_gx_current_zmode() : sbr_gx_fifo_zmode();
                         {   // Do the SDK-captured and FIFO-derived raster states agree? If they do
