@@ -103,9 +103,10 @@ long g_drawIndex = 0;
 // Where each texture unit was last bound, and what it held before — the provenance a divergence
 // report needs. Kept beside the unit state so it cannot drift from it.
 uint32_t g_fifoTexBindPos[8] = {};
+uint32_t g_scisRaw[2] = {};
 // Raster state as the COMMAND STREAM describes it (BP 0x40/0x41), which is where J3D actually puts
 // it. Kept separate from the SDK-captured copy until the renderer is switched over deliberately.
-SbrDepthState g_fifoZ{1, 3, 1, 0, 4, 5, 1, 1};
+SbrDepthState g_fifoZ{1, 3, 1, 0, 4, 5, 1, 1, 0, {0, 0, 640, 448}};
 uint32_t g_fifoTexPrevAddr[8] = {};
 
 
@@ -676,6 +677,14 @@ size_t parse(const u8* p, size_t n, int depth) {
                 // GENMODE alone update only here — aurora reads it from GENMODE, so this parser
                 // does too and the XF write is the redundant twin.
                 g_xf.numChans     = (val >> 4) & 7;
+                // GENMODE bits 14-15 carry the cull mode, and GX's FRONT/BACK are swapped relative
+                // to the rasteriser's (aurora does the same swap, command_processor.cpp:881-893).
+                // Ported rather than guessed: getting the sense backwards culls exactly the faces
+                // that should survive, which looks like a completely different bug.
+                {
+                    const uint32_t hw = (val >> 14) & 3;
+                    g_fifoZ.cull = (uint8_t)(hw == 1 ? 2 : hw == 2 ? 1 : hw);
+                }
             } else if (reg >= 0x28 && reg <= 0x2F) {
                 g_tev.trefSeq[reg - 0x28] = g_bindSeq;
                 const unsigned s0 = (unsigned)(reg - 0x28) * 2;
@@ -831,6 +840,21 @@ size_t parse(const u8* p, size_t n, int depth) {
                 g_fifoZ.srcFac = (uint8_t)((val >> 8) & 7);
                 g_fifoZ.blend  = subtract ? 3 : (blendEn ? 1 : (logicEn ? 2 : 0));
             }
+            // 0x20/0x21 SCISSOR. Both registers are needed to form the rect, so it is recomputed
+            // whenever either arrives. The -342 bias and the inclusive right/bottom are the
+            // hardware's, ported from aurora's decode (command_processor.cpp:940-951) rather than
+            // guessed; getting the bias wrong silently shifts every clip by a constant.
+            if (reg == 0x20 || reg == 0x21) {
+                g_scisRaw[reg - 0x20] = val;
+                const int32_t tp = (int32_t)(g_scisRaw[0] & 0x7FF) - 342;
+                const int32_t lf = (int32_t)((g_scisRaw[0] >> 12) & 0x7FF) - 342;
+                const int32_t bm = (int32_t)(g_scisRaw[1] & 0x7FF) - 342;
+                const int32_t rt = (int32_t)((g_scisRaw[1] >> 12) & 0x7FF) - 342;
+                g_fifoZ.scissor[0] = (int16_t)lf;
+                g_fifoZ.scissor[1] = (int16_t)tp;
+                g_fifoZ.scissor[2] = (int16_t)std::max(rt - lf + 1, 0);
+                g_fifoZ.scissor[3] = (int16_t)std::max(bm - tp + 1, 0);
+            }
             // 0x49: EFB copy top-left (10 bits each). 0x4A: width-1 / height-1.
             if (reg == 0x49) { g_copy_left = val & 0x3FF; g_copy_top = (val >> 10) & 0x3FF; }
             else if (reg == 0x4A) { g_copy_w = (val & 0x3FF) + 1; g_copy_h = ((val >> 10) & 0x3FF) + 1; }
@@ -923,6 +947,8 @@ size_t parse(const u8* p, size_t n, int depth) {
                 sbr_draw_state_fill(st, g_tev, g_xf);
                 // Raster state as the STREAM describes it, packed to match aurora's side. This is
                 // the check that decides whether the 43% SDK/FIFO disagreement is this port's bug.
+                for (int j = 0; j < 4; ++j) st.scissor[j] = g_fifoZ.scissor[j];
+                st.cull = g_fifoZ.cull;
                 st.raster = (uint16_t)((g_fifoZ.test & 1) | ((g_fifoZ.write & 1) << 1) |
                                        ((g_fifoZ.func & 7) << 2));
                 st.blend  = (uint16_t)((g_fifoZ.blend & 7) | ((g_fifoZ.srcFac & 15) << 3) |

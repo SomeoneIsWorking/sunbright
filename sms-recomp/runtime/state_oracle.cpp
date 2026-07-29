@@ -101,9 +101,10 @@ unsigned used_chan_mask(const SbrDrawState& s) {
 
 struct PixDiff {
     bool nch = false, chan = false, ras = false, comb = false, ksel = false, konst = false,
-         tevreg = false, raster = false, blend = false;
+         tevreg = false, raster = false, blend = false, scis = false, cull = false;
     bool any() const {
-        return nch || chan || ras || comb || ksel || konst || tevreg || raster || blend;
+        return nch || chan || ras || comb || ksel || konst || tevreg || raster || blend || scis ||
+               cull;
     }
 };
 
@@ -111,6 +112,9 @@ PixDiff pix_diff(const SbrDrawState& a, const SbrDrawState& b) {
     PixDiff d;
     if (a.numChans != b.numChans) d.nch = true;
     if (a.raster != b.raster) d.raster = true;
+    for (int j = 0; j < 4; ++j)
+        if (a.scissor[j] != b.scissor[j]) d.scis = true;
+    if (a.cull != b.cull) d.cull = true;
     if (a.blend != b.blend) d.blend = true;
     const unsigned used = used_chan_mask(a) | used_chan_mask(b);
     for (unsigned c = 0; c < 4; ++c) {
@@ -252,11 +256,14 @@ extern "C" void sbr_state_oracle_aurora_raw(unsigned pos, unsigned numStages, un
                                             const unsigned* aWord, const unsigned short* kSel,
                                             const unsigned* konst,
                                             const unsigned long long* tevReg,
-                                            unsigned raster, unsigned blend) {
+                                            unsigned raster, unsigned blend, const int* scissor,
+                                            unsigned cull) {
     if (g_limit <= 0) return;
     SbrDrawState s{};
     s.raster = (uint16_t)raster;
     s.blend  = (uint16_t)blend;
+    for (int j = 0; j < 4; ++j) s.scissor[j] = scissor[j];
+    s.cull = (uint8_t)cull;
     s.pos = pos;
     s.numStages = (uint8_t)numStages;
     s.numTexGens = (uint8_t)numTexGens;
@@ -445,7 +452,7 @@ void sbr_state_oracle_report() {
             }
         }
         size_t nch = 0, chan = 0, ras = 0, comb = 0, ksel = 0, konst = 0, tevreg = 0, any = 0,
-               raster = 0, blend = 0;
+               raster = 0, blend = 0, scis = 0, cullD = 0;
         std::vector<size_t> pixIdx;
         for (size_t i = 0; i < k; ++i) {
             const PixDiff d = pix_diff(mine[i], aur[i]);
@@ -453,13 +460,14 @@ void sbr_state_oracle_report() {
             ++any;
             pixIdx.push_back(i);
             nch += d.nch; chan += d.chan; ras += d.ras; comb += d.comb;
-            raster += d.raster; blend += d.blend;
+            raster += d.raster; blend += d.blend; scis += d.scis; cullD += d.cull;
             ksel += d.ksel; konst += d.konst; tevreg += d.tevreg;
         }
         lucent::info("oracle", "pix state: {} of {} draws disagree — numChans {}, chanctrl/amb/mat "
                                "{}, ras-sel {}, combiner {}, ksel {}, konst {}, tevreg {}, "
-                               "raster(z/cull) {}, blend {}",
-                     any, k, nch, chan, ras, comb, ksel, konst, tevreg, raster, blend);
+                               "raster(z) {}, blend {}, SCISSOR {}, CULL {}",
+                     any, k, nch, chan, ras, comb, ksel, konst, tevreg, raster, blend, scis,
+                     cullD);
         long shown = 0;
         const size_t stride = pixIdx.empty()
                                   ? 1

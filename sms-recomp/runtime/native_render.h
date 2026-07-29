@@ -41,6 +41,16 @@ struct SbrDepthState {
     // opaque black fill, which is indistinguishable from a shading bug.
     uint8_t colorUpdate;
     uint8_t alphaUpdate;
+    // GENMODE bits 14-15, with GX's front/back convention already swapped (see the parser). 0 NONE,
+    // 1 FRONT, 2 BACK, 3 ALL. Never implemented before: the pipeline hardcoded CULLMODE_NONE, so
+    // this port rasterised the inside of every closed model — measured, aurora and this port
+    // disagreed on cull for 27409 of 29497 draws (93%).
+    uint8_t cull;
+    // The per-draw SCISSOR rect (BP 0x20/0x21), in EFB pixels. The hardware confines every draw to
+    // it; this port rasterised over the whole target, so a quad the hardware clips to a small band
+    // was painted across the frame. Not pipeline state — applied with SDL_SetGPUScissor per batch —
+    // but it IS part of a batch's identity, or draws with different clips merge into one.
+    int16_t scissor[4];
 };
 
 // The texture bound to TEXMAP0, as the game described it to the hardware.

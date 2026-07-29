@@ -214,7 +214,8 @@ uint32_t depth_key(SbrDepthState d) {
     return (uint32_t)(d.test ? 1 : 0) << 24 | (uint32_t)(d.func & 7) << 20 |
            (uint32_t)(d.write ? 1 : 0) << 16 | (uint32_t)(d.blend & 3) << 8 |
            (uint32_t)(d.srcFac & 7) << 4 | (uint32_t)(d.dstFac & 7) |
-           (uint32_t)(d.colorUpdate ? 1 : 0) << 28 | (uint32_t)(d.alphaUpdate ? 1 : 0) << 29;
+           (uint32_t)(d.colorUpdate ? 1 : 0) << 28 | (uint32_t)(d.alphaUpdate ? 1 : 0) << 29 |
+           (uint32_t)(d.cull & 3) << 30;
 }
 
 // GXBlendFactor -> backend factor. GX names the factors in terms of the SOURCE and DESTINATION
@@ -533,7 +534,14 @@ SDL_GPUGraphicsPipeline* pipeline_for(SbrDepthState d) {
     const char* wf = std::getenv("SBR_RENDER_WIREFRAME");
     pci.rasterizer_state.fill_mode = (wf != nullptr && wf[0] != '\0' && wf[0] != '0')
                                          ? SDL_GPU_FILLMODE_LINE : SDL_GPU_FILLMODE_FILL;
-    pci.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;   // GX cull comes with the state machine
+    // GX cull, from GENMODE. CULL_ALL cannot be expressed as a rasterizer state — such draws are
+    // dropped before they reach a pipeline (see sbr_render_tris), so the mode chosen here for it is
+    // irrelevant. GX winding is CLOCKWISE (aurora: gx.cpp:720).
+    pci.rasterizer_state.front_face = SDL_GPU_FRONTFACE_CLOCKWISE;
+    pci.rasterizer_state.cull_mode = d.cull == 1   ? SDL_GPU_CULLMODE_FRONT
+                                     : d.cull == 2 ? SDL_GPU_CULLMODE_BACK
+                                     : d.cull == 3 ? SDL_GPU_CULLMODE_BACK
+                                                   : SDL_GPU_CULLMODE_NONE;
     pci.target_info.color_target_descriptions = &ctd;
     pci.target_info.num_color_targets = 1;
     pci.target_info.depth_stencil_format = kDepthFmt;
@@ -712,6 +720,8 @@ void sbr_render_tris(const SbrVertex* verts, int count, SbrDepthState depth, con
     // different combiners are different materials and must not merge.
     const bool same = !g_batches.empty() &&
                       depth_key(g_batches.back().st) == depth_key(depth) &&
+                      std::memcmp(g_batches.back().st.scissor, depth.scissor,
+                                  sizeof depth.scissor) == 0 &&
                       std::memcmp(g_batches.back().texKey, b.texKey, sizeof b.texKey) == 0 &&
                       std::memcmp(g_batches.back().sampKey, b.sampKey, sizeof b.sampKey) == 0 &&
                       std::memcmp(&g_batches.back().tev, &b.tev, sizeof b.tev) == 0 &&
@@ -837,6 +847,16 @@ void render_pass_into_cpu(uint32_t ablation) {
         SDL_BindGPUVertexBuffers(rp, 0, &vb, 1);
         for (const Batch& b : g_batches) {
             SDL_BindGPUGraphicsPipeline(rp, pipeline_for(b.st));
+            // The hardware clips each draw to its own scissor rect. Clamped to the target because
+            // the guest rect can legitimately extend past it and SDL rejects an out-of-bounds one.
+            {
+                SDL_Rect sc{};
+                sc.x = std::clamp<int>(b.st.scissor[0], 0, g_w);
+                sc.y = std::clamp<int>(b.st.scissor[1], 0, g_h);
+                sc.w = std::clamp<int>(b.st.scissor[2], 0, g_w - sc.x);
+                sc.h = std::clamp<int>(b.st.scissor[3], 0, g_h - sc.y);
+                SDL_SetGPUScissor(rp, &sc);
+            }
             // All eight units every draw: the shader's sampler set is fixed by the pipeline
             // layout, so a unit a material does not use is bound to the white texel rather than
             // left dangling (an unbound descriptor is what takes the device down).

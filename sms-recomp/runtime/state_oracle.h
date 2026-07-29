@@ -71,6 +71,14 @@ struct SbrDrawState {
     //   blend  bits0-2 mode | bits3-6 srcFactor | bits7-10 dstFactor | bits11-14 logicOp
     uint16_t raster = 0;
     uint16_t blend = 0;
+    // SCISSOR and CULL. Carried because the raster word above does NOT cover them — it is z
+    // test/write/func and blend mode/src/dst only, and the "bits5-7 cullMode" this header used to
+    // claim was never written by either side. "raster 0 of 29283 disagree" therefore said nothing
+    // about clipping, which is exactly the state that decides whether a far quad covers the sky.
+    // OUR side is filled with what this renderer ACTUALLY rasterises with (full target, no cull),
+    // not with a freshly parsed value — the comparison is aurora's clipping against our behaviour.
+    int32_t  scissor[4] = {0, 0, 0, 0};
+    uint8_t  cull = 0;
 };
 
 // Forward decls for the shared filler below.

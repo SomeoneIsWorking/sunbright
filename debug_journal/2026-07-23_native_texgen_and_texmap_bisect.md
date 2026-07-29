@@ -1403,3 +1403,47 @@ One such path was queried and the answer is INCONCLUSIVE, recorded as such rathe
 buffers, but `copyTextures` is cleared by `clear_copy_texture_cache()` and the query runs in the
 frame report, so an empty map may mean "cleared before I looked" rather than "never registered".
 The query has to move to BIND time before its answer means anything.
+
+## 2026-07-29 (iteration 9, ultracode) — CULL and SCISSOR were never implemented at all
+
+A 26-agent workflow read aurora's submit / resolve / shade paths against ours. 20 hypotheses, 19
+refuted. Its synthesis found the gap, and it was one this arc had structurally excluded from view.
+
+**The rotten premise it caught, which I had stated confidently several times:** "raster/blend 0 of
+29283 draws disagree" did NOT mean our rasteriser state matches aurora's. That word covers z
+test/write/func and blend mode/src/dst only (`dev_gxfifo.cpp` vs `command_processor.cpp:3228`).
+**Scissor and cull were never in it** — and `state_oracle.h` even documented "bits5-7 cullMode" that
+neither side ever wrote, a comment that reads as coverage and is not. Verified before acting:
+`grep -rn scissor sms-recomp/runtime/` returned NOTHING, and `native_render.cpp:536` hardcoded
+`SDL_GPU_CULLMODE_NONE` behind a comment claiming "GX cull comes with the state machine" — it does
+not, we simply never applied it.
+
+Adding both to the oracle, comparing aurora's clipping against what this renderer ACTUALLY does:
+
+```
+SCISSOR   675 of 29497 draws disagree
+CULL    27409 of 29497 draws disagree      <- 93% of the frame
+```
+
+Both are now ported from aurora's own decode rather than guessed:
+- **Cull**: GENMODE bits 14-15, including GX's FRONT/BACK swap (`command_processor.cpp:881-893`) and
+  CW winding (`gx.cpp:720`). `GX_CULL_ALL` cannot be a rasterizer state, so those draws are dropped
+  before a pipeline is chosen, matching aurora's `push_gx_draw`.
+- **Scissor**: BP 0x20/0x21, the -342 bias and inclusive right/bottom from
+  `command_processor.cpp:940-951`. Applied with `SDL_SetGPUScissor` per batch, and added to batch
+  identity — otherwise draws with different clips merge into one.
+
+Result: `SCISSOR 0, CULL 0` of 29399 draws. Two real, large defects, fixed and verified against the
+oracle. This port had been rasterising the inside of every closed model and clipping nothing.
+
+**And the background is still black.** Score 25.4 / +0.660 at N=59 (from 24.8 / +0.662); the visible
+change is that a white splat artefact over Mario is gone and Mario renders cleanly. The only
+surviving state divergence is `tevreg` 41 of 29399.
+
+So the workflow's headline hypothesis — that missing clipping is what paints the background — is
+**falsified as the cause** even though it found two genuine defects. Its own ranked fallbacks are
+now the live list, and the top one is a whole subsystem this port does not parse at all:
+**indirect texture stages** (aurora: BP 0x10-0x1F, 0x25, 0x26; ours: nothing), which change WHICH
+texel a stage fetches and are invisible to every comparison the oracle makes. Then `SU_SSIZE/TSIZE`
+texcoord scaling and texcoord 4-7 (we mask `texcoord & 3` and carry only four coordinate sets), then
+fog.
