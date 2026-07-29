@@ -1518,3 +1518,34 @@ size, so some of the softness is inherent to the effect — but the copy's SOURC
 point in the order at which it is taken are not yet verified against aurora. That is the next thing
 to check, and it should be checked by comparing the copied surface itself, not by eyeballing the
 composite.
+
+## 2026-07-29 (iteration 12) — copy TIMING is correct; the residual is how the copy is COMPOSITED
+
+Checked the copy timing rather than assuming it from the blur:
+
+```
+copy 0x80d0f9e0 performed at batch 178 of 179
+copy 0x810a5440 performed at batch 178 of 179
+copy 0x80fea480 performed at batch 178 of 179
+copy 0x803f4440 performed at batch 178 of 179
+```
+
+All copies land at the END of the frame, so a draw sampling one of those addresses EARLIER in the
+frame is sampling the PREVIOUS frame's copy. That is the correct shape for this effect, and it
+falsifies the "copy taken too early" worry from the previous entry — the earlier "after drawable 0"
+reading came from a build where the capture list was empty at note time, not from the real order.
+
+It also explains the blur without any bug: a full frame resolved to 320x224 and magnified back to
+640x448 is blurry by construction.
+
+**So the remaining question is not the copy, it is the COMPOSITE.** The blurred region is the quad
+itself, drawn opaquely over the background. Its blend is 1/4/5 = SRCALPHA / INVSRCALPHA, and an
+earlier trace of a sibling full-screen quad showed `final [0.000 0.000 0.000 a0.000] alpha8=0 PASS`
+— under that blend an alpha of 0 contributes NOTHING. If aurora's version of this quad is
+effectively invisible and its crisp distant buildings are real geometry behind it, then this port is
+compositing the copy far too strongly, and the next thing to measure is the quad's ALPHA in both
+runtimes for the same draw.
+
+Note the diagnostic `SBR_DROP_EMPTY=1` can no longer isolate this draw: now that the copy resolves
+to a real surface, its texture is not empty and the drop rule does not fire. That diagnostic has
+outlived its purpose and should be removed rather than left to mislead.

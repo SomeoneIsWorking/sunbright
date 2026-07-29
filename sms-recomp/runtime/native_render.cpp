@@ -913,6 +913,16 @@ void render_pass_into_cpu(uint32_t ablation) {
             // operation — so the pass ends here, the resolve happens, and a new pass RESUMES over
             // the same target (LOAD, not CLEAR, or everything drawn so far is thrown away).
             while (nextCopy < g_copyPoints.size() && g_copyPoints[nextCopy].batchIndex <= bi) {
+                {   // WHEN is the copy taken? A copy at batch 0 of 146 captures an essentially
+                    // empty target, so the surface the game then samples is whatever the clear
+                    // left — the composite can look plausible while the copy is meaningless.
+                    static long tell = 0;
+                    if (tell < 8) {
+                        ++tell;
+                        lucent::info("nrender", "  copy 0x{:08x} performed at batch {} of {}",
+                                     g_copyPoints[nextCopy].dest, bi, g_batches.size());
+                    }
+                }
                 SDL_EndGPURenderPass(rp);
                 perform_copy(cmd, g_copyPoints[nextCopy]);
                 ++nextCopy;
