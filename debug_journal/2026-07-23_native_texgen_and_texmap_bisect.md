@@ -1617,3 +1617,40 @@ Worth noting the shape: capture-list length is an ORDINAL, and every previous ti
 one instrument off an ordinal that another instrument did not share, it produced a wrong answer
 (draw-ordinal pairing, the parser-vs-oracle "draw 702"). Same mistake, third time, now in the
 renderer rather than in a diagnostic.
+
+## 2026-07-29 (iteration 15) — ordering copies by STREAM OFFSET closes it: 25.4 -> 32.2
+
+Re-keyed EFB copy placement from the capture-list ordinal to the FIFO stream offset. Each drawable
+now carries `streamPos` (stamped in `j3d_capture` from `sbr_gxfifo_stream_pos()`, the same position
+the state oracle pairs on), and a copy is performed before the first drawable whose stream position
+is at or after it.
+
+The copies immediately spread out to their true positions instead of collapsing to the end:
+
+```
+before:  copy 0x80d0f9e0 at batch 178 of 179    copy 0x810a5440 at 178    copy 0x80fea480 at 178
+after:   copy 0x80d0f9e0 at batch   1 of 179    copy 0x810a5440 at  10    copy 0x80fea480 at 173
+```
+
+Measured at equal N=59:
+
+```
+before:  edgeIoU 25.4%  (best 31.5%)  lumaCorr +0.660
+after:   edgeIoU 32.2%  (best 39.1%)  lumaCorr +0.688
+```
+
+**+6.8 points, and the best this renderer has ever scored** — the previous ceiling was ~32 only
+with unit 1 forcibly pinned, i.e. with the defect masked rather than fixed. The frame
+(`scratch/screenshots/streamorder.png`) is crisp: sky, sea, parasol, the plaza tower, awnings and
+plants all sharp, matching the aurora reference closely. The feedback loop is gone because the
+copies no longer capture the output of the quad that samples them.
+
+That closes the Delfino black-background arc. The chain, for the record: the background was painted
+by a 6-vertex full-screen quad sampling an EFB copy destination; this port had no render-to-texture
+at all, so it decoded guest memory (legitimately zeros) and multiplied the scene by black. Adding
+RTT removed the black but fed the copy back on itself; ordering the copies by stream offset removed
+the feedback.
+
+Four genuine defects were ported along the way that were NOT this symptom, each verified against
+the oracle: raster state taken from an SDK path the game bypasses (wrong on 43% of draws),
+colorUpdate/alphaUpdate write masks, GX cull (wrong on 93% of draws), and the per-draw scissor.

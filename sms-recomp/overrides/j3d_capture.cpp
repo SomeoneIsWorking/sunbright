@@ -244,6 +244,8 @@ void ov_shape_draw(CPUState& cpu) {
                         if (!ok(mtxAddr) || !ok(mtxAddr + 47)) continue;
 
                         SbrDrawable dr{};
+                        // Stream position of this draw — the key EFB copies are ordered against.
+                        dr.streamPos = sbr_gxfifo_stream_pos();
                         // Key includes the GX slot so each bone group is matched across ticks in
                         // its own right.
                         dr.key = (key << 8) | (uint64_t)gxSlot;

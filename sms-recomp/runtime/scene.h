@@ -27,6 +27,12 @@
 
 // One thing to draw: a geometry reference plus where it is this tick.
 struct SbrDrawable {
+    // Where this draw sits in the FIFO command stream. THE ordering key: capture-list length is an
+    // ordinal that nothing else shares, and keying EFB copies off it collapsed every copy in a
+    // frame to the end of the batch list, so a copy captured the output of the very quad that
+    // samples it (a feedback loop). Stream offset is the position both the parser and the oracle
+    // already agree on.
+    uint32_t streamPos;
     uint64_t key;       // stable identity across ticks: (shape pointer << 16) | element index
     uint32_t geom;      // handle into the geometry cache (0 = not yet decoded)
     float    mtx[12];   // the draw matrix, row-major 3x4 — model x view (the camera is composed in
