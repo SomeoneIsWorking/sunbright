@@ -103,6 +103,9 @@ long g_drawIndex = 0;
 // Where each texture unit was last bound, and what it held before — the provenance a divergence
 // report needs. Kept beside the unit state so it cannot drift from it.
 uint32_t g_fifoTexBindPos[8] = {};
+// Raster state as the COMMAND STREAM describes it (BP 0x40/0x41), which is where J3D actually puts
+// it. Kept separate from the SDK-captured copy until the renderer is switched over deliberately.
+SbrDepthState g_fifoZ{1, 3, 1, 0, 4, 5};
 uint32_t g_fifoTexPrevAddr[8] = {};
 
 
@@ -803,6 +806,29 @@ size_t parse(const u8* p, size_t n, int depth) {
                 // yet, so C4/C8 textures decline rather than decode against a wrong palette.
                 g_fifoTex[reg - 0x98].tlut = 0;
             }
+            // 0x40 ZMode and 0x41 cmode0 — the RASTER state, ported from the hardware encoding
+            // rather than taken from the SDK. J3D writes these through display lists (measured:
+            // 2.6M ZMode and 4.5M cmode0 writes per frame), so the GXSetZMode/GXSetBlendMode
+            // overrides this port was reading are stale for essentially every J3D draw. That is
+            // the same defect shape as reading the SDK texObj slot instead of the BP image base,
+            // and it lands on the state that decides whether a draw COVERS what is behind it.
+            //
+            //   0x40: bit0 test | bits1-3 func | bit4 write
+            //   0x41: bit0 blendEn | bit1 logicEn | bit2 dither | bit3 colorUpdate |
+            //         bit4 alphaUpdate | bits5-7 dstFactor | bits8-10 srcFactor | bit11 subtract |
+            //         bits12-15 logicOp.  Mode precedence is subtract > blend > logic > none.
+            if (reg == 0x40) {
+                g_fifoZ.test  = (uint8_t)(val & 1);
+                g_fifoZ.func  = (uint8_t)((val >> 1) & 7);
+                g_fifoZ.write = (uint8_t)((val >> 4) & 1);
+            } else if (reg == 0x41) {
+                const bool blendEn  = (val & 1) != 0;
+                const bool logicEn  = ((val >> 1) & 1) != 0;
+                const bool subtract = ((val >> 11) & 1) != 0;
+                g_fifoZ.dstFac = (uint8_t)((val >> 5) & 7);
+                g_fifoZ.srcFac = (uint8_t)((val >> 8) & 7);
+                g_fifoZ.blend  = subtract ? 3 : (blendEn ? 1 : (logicEn ? 2 : 0));
+            }
             // 0x49: EFB copy top-left (10 bits each). 0x4A: width-1 / height-1.
             if (reg == 0x49) { g_copy_left = val & 0x3FF; g_copy_top = (val >> 10) & 0x3FF; }
             else if (reg == 0x4A) { g_copy_w = (val & 0x3FF) + 1; g_copy_h = ((val >> 10) & 0x3FF) + 1; }
@@ -1082,6 +1108,13 @@ void sbr_gxfifo_report_bp_writes() {
     // Whether the BP write MASK is used at all. If this is zero the mask handling is inert and any
     // divergence it was supposed to explain is elsewhere — worth knowing before believing the fix.
     lucent::info("gxfifo", "  BP write mask (0xFE) {} writes", g_bpWrites[0xFE]);
+    // BP 0x40 (ZMode) and 0x41 (cmode0/blend). Aurora parses both; this parser does not, and takes
+    // its z/blend state from the SDK GXSetZMode/GXSetBlendMode overrides instead. If J3D sets them
+    // through display lists these counts are nonzero and that SDK state is stale — the same defect
+    // shape as reading the SDK texObj slot instead of the BP image base.
+    lucent::info("gxfifo", "  ZMode (0x40) {} writes, cmode0/blend (0x41) {} writes  <- NOT parsed "
+                           "here; renderer z/blend comes from the SDK path",
+                 g_bpWrites[0x40], g_bpWrites[0x41]);
     // TMEM — RESOLVED BY READING THE GAME'S OWN WRITER, not by inference. Two binders exist and
     // neither invalidates the "latest SETIMAGE0 + latest SETIMAGE3 per unit" model:
     //
@@ -1102,3 +1135,7 @@ void sbr_gxfifo_report_bp_writes() {
 }
 
 
+
+
+// The raster state the display lists have written. See the BP 0x40/0x41 handler.
+SbrDepthState sbr_gx_fifo_zmode() { return g_fifoZ; }

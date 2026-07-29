@@ -63,6 +63,14 @@ struct SbrDrawState {
     // Texgen types (raw XF: 2 = SRTG colour0, 3 = SRTG colour1) — filled only on this port's side
     // and NOT compared; used to know which colour channels a draw actually consumes.
     uint8_t  tgType[8] = {};
+    // RASTER state — z, blend and cull. Never compared until now, and it is exactly the state that
+    // decides whether a draw COVERS what is behind it. A draw whose texture and combiner agree
+    // perfectly still blacks the background if it is depth-tested or blended differently, so
+    // "every TEV field agrees" was never sufficient to clear this port.
+    //   raster bit0 depthTest | bit1 depthWrite | bits2-4 depthFunc | bits5-7 cullMode
+    //   blend  bits0-2 mode | bits3-6 srcFactor | bits7-10 dstFactor | bits11-14 logicOp
+    uint16_t raster = 0;
+    uint16_t blend = 0;
 };
 
 // Forward decls for the shared filler below.

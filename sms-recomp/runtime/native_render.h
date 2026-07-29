@@ -161,6 +161,8 @@ const SbrXfState& sbr_gx_fifo_xf();
 
 // The state the game has currently set. Valid at J3DShape::draw time.
 SbrDepthState sbr_gx_current_zmode();
+// The same state as the FIFO describes it (BP 0x40/0x41) rather than as the SDK overrides saw it.
+SbrDepthState sbr_gx_fifo_zmode();
 // Resolve GX's konst selector to a colour. Shared by the capture and the uniform packer so the two
 // cannot disagree about what a stage's KONST means.
 void sbr_tev_konst(const SbrTevState& tev, unsigned stage, float out[4]);

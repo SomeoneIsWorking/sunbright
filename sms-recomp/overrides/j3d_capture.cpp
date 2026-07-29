@@ -249,7 +249,44 @@ void ov_shape_draw(CPUState& cpu) {
                         dr.key = (key << 8) | (uint64_t)gxSlot;
                         dr.geom = sbr_scene_geometry_for_slot(key, geom, (uint32_t)gxSlot);
                         if (dr.geom == 0) continue;   // this element has no vertices on that slot
-                        dr.depth = sbr_gx_current_zmode();
+                        // From the COMMAND STREAM (BP 0x40/0x41), not the SDK overrides. J3D sets
+                        // z-mode and blend by replaying display lists, so GXSetZMode/GXSetBlendMode
+                        // never see them: 43% of draws (2.3M of 5.4M) had the two sources
+                        // disagreeing, typically SDK depth-WRITE on where the stream says off —
+                        // which makes a background draw occlude everything behind it.
+                        // SBR_RASTER_SRC=fifo uses the stream-derived state instead. Kept OPT-IN:
+                        // the FIFO source is the faithful one in principle (the game writes 2.6M
+                        // ZMode and 4.5M cmode0 through display lists that the SDK overrides never
+                        // see, and the two sources disagree on 43% of draws), but at equal N it
+                        // scores edgeIoU 24.8/+0.662 against the SDK path's 26.0/+0.652 — mixed,
+                        // not a win. Switching the default on that would trade a known-stale input
+                        // for an unverified one. It stays opt-in until the oracle compares this
+                        // port's raster state against aurora's directly.
+                        static const bool useSdk = [] {
+                            const char* e = std::getenv("SBR_RASTER_SRC");
+                            return !(e != nullptr && e[0] == 'f');
+                        }();
+                        dr.depth = useSdk ? sbr_gx_current_zmode() : sbr_gx_fifo_zmode();
+                        {   // Do the SDK-captured and FIFO-derived raster states agree? If they do
+                            // not, every draw this port rendered used state the game never set for
+                            // it. Measured before switching the renderer over, not assumed.
+                            const SbrDepthState fz = sbr_gx_current_zmode();
+                            static long same = 0, diff = 0;
+                            const bool eq = fz.test == dr.depth.test && fz.func == dr.depth.func &&
+                                            fz.write == dr.depth.write &&
+                                            fz.blend == dr.depth.blend &&
+                                            fz.srcFac == dr.depth.srcFac &&
+                                            fz.dstFac == dr.depth.dstFac;
+                            eq ? ++same : ++diff;
+                            if (((same + diff) % 200000) == 0)
+                                lucent::info("nrender", "raster source check: {} draws agree, {} "
+                                             "DIFFER (SDK z t{}w{}f{} bl{}/{}/{} vs FIFO "
+                                             "t{}w{}f{} bl{}/{}/{})",
+                                             same, diff, dr.depth.test, dr.depth.write,
+                                             dr.depth.func, dr.depth.blend, dr.depth.srcFac,
+                                             dr.depth.dstFac, fz.test, fz.write, fz.func,
+                                             fz.blend, fz.srcFac, fz.dstFac);
+                        }
                         // From the COMMAND STREAM, not GXLoadTexObj: J3D binds material textures by
                         // replaying baked display lists, so the SDK entry point only ever sees the
                         // 4x4 null texture (measured: 3 textures for the whole scene).

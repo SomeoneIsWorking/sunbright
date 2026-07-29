@@ -1271,3 +1271,51 @@ does blacken the frame, but NOT because we bind a different texture there. Both 
 same `_dammy` placeholder; aurora's output is correct anyway, which means the difference is in what
 the combiner does with it. The TEV colour registers differing on 40 draws is now the obvious
 suspect and the next thing to chase.
+
+## 2026-07-29 (iteration 6) — the renderer's z/blend comes from a path the game does not use
+
+Validated the encoding BEFORE investigating, given three instruments in a row had compared unlike
+quantities: our `tevReg` and aurora's use the identical packing (`(r<<16)|(u16)(s16)lround(v*255)`)
+over the same BP 0xE0-0xE7 writes, so that comparison is sound. It shows ~40 of 29364 draws
+differing, on unit-1 addresses `0x00d50220 / 0x003e1280 / 0x003db200 / 0x00d094e0` — none of them
+the sky dummy. So `tevreg` is real but is NOT the black background.
+
+**The gap was a whole state category the oracle never compared: RASTER state (z, blend, cull).**
+Every TEV and colour-channel field can agree perfectly and a draw will still black the background
+if it is depth-tested or blended differently.
+
+And there this port had the same structural defect as the texObj slot, in a worse place:
+
+```
+ZMode (0x40) 2576286 writes, cmode0/blend (0x41) 4550482 writes   <- per frame, through the FIFO
+```
+
+Aurora parses BP 0x40 (bit0 test, bits1-3 func, bit4 write) and 0x41 (blendEn/logicEn/dither/
+colorUpdate/alphaUpdate/dstFac/srcFac/subtract/logicOp). **This parser parsed neither** — it took
+z-mode and blend from the SDK `GXSetZMode`/`GXSetBlendMode` overrides, which J3D bypasses by
+replaying display lists. Both registers are now parsed from the hardware encoding
+(`sbr_gx_fifo_zmode()`), ported from aurora's decode rather than guessed.
+
+Measured, not assumed — the two sources disagree on **43% of draws (2.3M of 5.4M)**, and the
+disagreement is exactly the shape that blacks a background:
+
+```
+SDK  z test1 write1 func3  blend1/4/5
+FIFO z test1 write0 func3  blend1/1/5     <- depth WRITE off, different src factor
+```
+
+A background draw rendered with depth-write wrongly ENABLED occludes everything behind it.
+
+**But switching the renderer to it is not yet justified.** At equal N=59:
+
+```
+SDK  edgeIoU 26.0%  lumaCorr +0.652
+FIFO edgeIoU 24.8%  lumaCorr +0.662
+```
+
+Mixed — edgeIoU prefers the SDK path, lumaCorr the FIFO one. The FIFO source is the faithful one
+in principle, but flipping the default on a mixed result trades a known-stale input for an
+unverified one, so it stays behind `SBR_RASTER_SRC=fifo` until the oracle compares this port's
+raster state against AURORA's directly. The `raster`/`blend` fields are already in `SbrDrawState`
+and `pix_diff` for exactly that; filling them on both sides is the next step, and it is the same
+like-for-like discipline that took the texture disagreement from 133 draws to 0.

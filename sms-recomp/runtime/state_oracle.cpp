@@ -101,13 +101,17 @@ unsigned used_chan_mask(const SbrDrawState& s) {
 
 struct PixDiff {
     bool nch = false, chan = false, ras = false, comb = false, ksel = false, konst = false,
-         tevreg = false;
-    bool any() const { return nch || chan || ras || comb || ksel || konst || tevreg; }
+         tevreg = false, raster = false, blend = false;
+    bool any() const {
+        return nch || chan || ras || comb || ksel || konst || tevreg || raster || blend;
+    }
 };
 
 PixDiff pix_diff(const SbrDrawState& a, const SbrDrawState& b) {
     PixDiff d;
     if (a.numChans != b.numChans) d.nch = true;
+    if (a.raster != b.raster) d.raster = true;
+    if (a.blend != b.blend) d.blend = true;
     const unsigned used = used_chan_mask(a) | used_chan_mask(b);
     for (unsigned c = 0; c < 4; ++c) {
         if (!(used & (1u << c))) continue;
@@ -408,7 +412,37 @@ void sbr_state_oracle_report() {
     // the state that decides a pixel once textures agree. Counted per CATEGORY so one systematic
     // family (say, every ambient colour) reads as itself rather than as noise.
     {
-        size_t nch = 0, chan = 0, ras = 0, comb = 0, ksel = 0, konst = 0, tevreg = 0, any = 0;
+        // WHICH TEV register, and what each side thinks it holds. tevreg is the only surviving
+        // state divergence, and "40 draws differ" is not actionable — the register index, the
+        // component values and whether the draw is one of the ones that renders black are.
+        // Encodings were checked identical on both sides before trusting this at all: same
+        // (r<<16)|(u16)(s16)lround(v*255) packing, both from the same BP 0xE0-0xE7 writes.
+        {
+            long shown = 0;
+            const auto s16at = [](unsigned long long v, int c) {
+                return (int)(short)(unsigned short)(v >> (16 * (3 - c)));
+            };
+            for (size_t i = 0; i < k && shown < 6; ++i) {
+                const PixDiff d = pix_diff(mine[i], aur[i]);
+                if (!d.tevreg) continue;
+                for (unsigned j = 0; j < 4 && shown < 6; ++j) {
+                    if (mine[i].tevReg[j] == aur[i].tevReg[j]) continue;
+                    ++shown;
+                    static const char* kName[4] = {"PREV", "C0", "C1", "C2"};
+                    lucent::info("oracle", "  TEVREG {} DIVERGENCE at stream offset {}: mine "
+                                           "[{} {} {} {}]  aurora [{} {} {} {}]  (unit1 0x{:08x}, "
+                                           "{} stages)",
+                                 kName[j], mine[i].pos,
+                                 s16at(mine[i].tevReg[j], 0), s16at(mine[i].tevReg[j], 1),
+                                 s16at(mine[i].tevReg[j], 2), s16at(mine[i].tevReg[j], 3),
+                                 s16at(aur[i].tevReg[j], 0), s16at(aur[i].tevReg[j], 1),
+                                 s16at(aur[i].tevReg[j], 2), s16at(aur[i].tevReg[j], 3),
+                                 mine[i].unitId[1], mine[i].numStages);
+                }
+            }
+        }
+        size_t nch = 0, chan = 0, ras = 0, comb = 0, ksel = 0, konst = 0, tevreg = 0, any = 0,
+               raster = 0, blend = 0;
         std::vector<size_t> pixIdx;
         for (size_t i = 0; i < k; ++i) {
             const PixDiff d = pix_diff(mine[i], aur[i]);
@@ -416,11 +450,13 @@ void sbr_state_oracle_report() {
             ++any;
             pixIdx.push_back(i);
             nch += d.nch; chan += d.chan; ras += d.ras; comb += d.comb;
+            raster += d.raster; blend += d.blend;
             ksel += d.ksel; konst += d.konst; tevreg += d.tevreg;
         }
         lucent::info("oracle", "pix state: {} of {} draws disagree — numChans {}, chanctrl/amb/mat "
-                               "{}, ras-sel {}, combiner {}, ksel {}, konst {}, tevreg {}",
-                     any, k, nch, chan, ras, comb, ksel, konst, tevreg);
+                               "{}, ras-sel {}, combiner {}, ksel {}, konst {}, tevreg {}, "
+                               "raster(z/cull) {}, blend {}",
+                     any, k, nch, chan, ras, comb, ksel, konst, tevreg, raster, blend);
         long shown = 0;
         const size_t stride = pixIdx.empty()
                                   ? 1
