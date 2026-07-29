@@ -1447,3 +1447,41 @@ now the live list, and the top one is a whole subsystem this port does not parse
 texel a stage fetches and are invisible to every comparison the oracle makes. Then `SU_SSIZE/TSIZE`
 texcoord scaling and texcoord 4-7 (we mask `texcoord & 3` and carry only four coordinate sets), then
 fog.
+
+## 2026-07-29 (iteration 10) — FOUND IT: a full-screen quad sampling the EFB COPY destination
+
+Stopped inferring and built the attribution the workflow specified: bisect the batch list,
+re-rendering the already-uploaded frame with a prefix of it, until the first batch that turns a
+sample pixel in the black region black is found. It proves itself before bisecting — with zero
+batches the pixel must be the clear colour, with all batches it must be black — so an instrument
+reporting a constant cannot pass silently.
+
+```
+black-owner at (320,60): batch 143 of 148 — verts 6  stages 1  zt1 w0 f3  blend1/4/5  cull2
+  u0=0x80decf40/mean130   u1=0x80fea480/mean0   u2/u3=0x803e1280
+```
+
+**A SIX-VERTEX full-screen quad paints the whole background, and it samples `0x80fea480` on unit 1
+— the RGB565 320x224 EFB COPY DESTINATION.** Aurora services copy destinations entirely on the GPU
+through its `copyTextures` map and binds the RENDERED SURFACE (`gx.cpp:456`); guest memory at that
+address is never written back, so this port decodes 143360 bytes of zeros and multiplies the scene
+by black.
+
+This is the render-to-texture gap named in iteration 2 and then wrongly de-prioritised: I checked
+which of the three empty buffers were copy destinations, found the two BIGGEST by vertex count were
+not, and concluded RTT "would not have fixed the background". That was the wrong test — the
+offender is a 6-vertex quad, so ranking candidates by vertex count buried it. The by-volume
+ranking failed the same way twice in this arc.
+
+It also explains every earlier null result. Textures, raster, blend, cull, scissor, TEV and channel
+state all agree with aurora because they ARE the same — the divergence was never in the state, it
+was in what the bound address RESOLVES to. And it explains `pin unit1->0` recovering the background:
+that swaps the zero copy-dest for a real texture on the one draw that covers the screen.
+
+**The fix is the subsystem, not a special case:** bind EFB copy destinations to the copied surface
+instead of decoding guest memory. The FIFO parser already tracks copy destination, format and
+region (`dev_gxfifo.cpp` copy regs 0x49/0x4A/0x4B/0x4E/0x52), and the renderer already renders into
+its own colour target — so a copy is a resolve from that target into a texture registered under the
+destination address, with `texture_for` consulting that registry before falling back to a guest
+decode. The mid-frame ordering matters: our renderer is deferred and batches the whole frame, so a
+copy must split the batch list at the point it occurred, exactly like a render-pass boundary.

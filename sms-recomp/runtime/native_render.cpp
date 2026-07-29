@@ -805,6 +805,9 @@ void sbr_render_end() {
 // reference; 0 is the real pipeline. Factored out of sbr_render_end so the attribution sweep can
 // re-render the SAME frame per operation and score every variant against the SAME aurora frame —
 // which is what makes the comparison drift-free (see render_compare.h).
+// Draw only the first g_batchLimit batches (-1 = all). Used by the black-owner bisect below.
+int g_batchLimit = -1;
+
 void render_pass_into_cpu(uint32_t ablation) {
     const size_t vbytes = g_verts.size() * sizeof(SbrVertex);
     // Is the texture cache the SAME on a re-render as it was on the first render of this frame?
@@ -845,7 +848,9 @@ void render_pass_into_cpu(uint32_t ablation) {
         (void)vbTmp;
         SDL_GPUBufferBinding vb{}; vb.buffer = g_vbuf; vb.offset = 0;
         SDL_BindGPUVertexBuffers(rp, 0, &vb, 1);
+        int drawn = 0;
         for (const Batch& b : g_batches) {
+            if (g_batchLimit >= 0 && drawn++ >= g_batchLimit) break;
             SDL_BindGPUGraphicsPipeline(rp, pipeline_for(b.st));
             // The hardware clips each draw to its own scissor rect. Clamped to the target because
             // the guest rect can legitimately extend past it and SDL rejects an out-of-bounds one.
@@ -1217,4 +1222,59 @@ bool sbr_render_ablation_render(int id) {
     if (!g_ok || id <= 0 || id >= sbr_render_ablation_count()) return false;
     render_pass_into_cpu((uint32_t)id);
     return true;
+}
+
+
+// WHICH BATCH PAINTS THIS PIXEL BLACK? Bisect the batch list, re-rendering the already-uploaded
+// frame with a prefix of it, until the first batch that turns the sample pixel black is found.
+// This answers the question directly instead of inferring it from state — everything in this arc
+// that reasoned indirectly about "the draw responsible" was eventually retracted.
+//
+// It proves itself: with the FULL batch list the sample must be black (or there is nothing to
+// attribute), and with ZERO batches it must be the clear colour. Both are asserted before the
+// bisect runs, so an instrument that is simply reporting a constant cannot pass silently.
+void sbr_render_report_black_owner(int px, int py) {
+    if (!g_ok || g_batches.empty()) return;
+    const size_t off = ((size_t)py * (size_t)g_w + (size_t)px) * 4;
+    const auto isBlack = [&] {
+        return g_cpu[off] < 16 && g_cpu[off + 1] < 16 && g_cpu[off + 2] < 16;
+    };
+    const int total = (int)g_batches.size();
+
+    g_batchLimit = 0;
+    render_pass_into_cpu(0);
+    const bool emptyBlack = isBlack();
+    const uint8_t c0 = g_cpu[off], c1 = g_cpu[off + 1], c2 = g_cpu[off + 2];
+    g_batchLimit = total;
+    render_pass_into_cpu(0);
+    const bool fullBlack = isBlack();
+    if (emptyBlack || !fullBlack) {
+        lucent::info("nrender", "black-owner bisect INVALID at ({},{}): with no batches the pixel "
+                                "is [{} {} {}] (black={}), with all {} batches black={} — the "
+                                "instrument cannot attribute anything here",
+                     px, py, c0, c1, c2, emptyBlack, total, fullBlack);
+        g_batchLimit = -1;
+        return;
+    }
+    int lo = 0, hi = total;          // lo: not black yet, hi: black
+    while (hi - lo > 1) {
+        const int mid = (lo + hi) / 2;
+        g_batchLimit = mid;
+        render_pass_into_cpu(0);
+        (isBlack() ? hi : lo) = mid;
+    }
+    g_batchLimit = -1;
+    const Batch& b = g_batches[(size_t)hi - 1];
+    lucent::Line l;
+    l.add("black-owner at ({},{}): batch {} of {} — verts {} stages {} zt{}w{}f{} blend{}/{}/{} "
+          "cull{} scis[{} {} {} {}] tex",
+          px, py, hi - 1, total, b.count, b.tev.control[0], b.st.test, b.st.write, b.st.func,
+          b.st.blend, b.st.srcFac, b.st.dstFac, b.st.cull, b.st.scissor[0], b.st.scissor[1],
+          b.st.scissor[2], b.st.scissor[3]);
+    for (int m = 0; m < 4; ++m) {
+        const auto it = g_texs.find(b.texKey[m]);
+        l.add(" u{}=0x{:08x}/mean{:.0f}", m, it != g_texs.end() ? it->second.desc.addr : 0u,
+              it != g_texs.end() ? it->second.mean : -1.0f);
+    }
+    l.flush(lucent::Level::Info, "nrender");
 }

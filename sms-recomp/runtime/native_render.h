@@ -236,3 +236,6 @@ bool sbr_render_readback(uint8_t* rgba, int w, int h);
 int sbr_render_ablation_count();
 const char* sbr_render_ablation_name(int id);
 bool sbr_render_ablation_render(int id);
+
+// Bisect the batch list to find which batch first paints the given pixel black.
+void sbr_render_report_black_owner(int px, int py);

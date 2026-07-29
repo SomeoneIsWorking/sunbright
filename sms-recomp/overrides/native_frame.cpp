@@ -345,6 +345,8 @@ void video_wait_for_retrace(CPUState& cpu) {
             sbr_state_oracle_report();
             sbr_gxfifo_report_bp_writes();
             sbr_compare_report_attribution();
+            // Attribute the black background to an actual batch, at a pixel well inside it.
+            if (std::getenv("SBR_BLACK_OWNER") != nullptr) sbr_render_report_black_owner(320, 60);
             if (const char* d = std::getenv("SBR_RENDER_DUMP")) sbr_render_dump(d);
         }
     }
