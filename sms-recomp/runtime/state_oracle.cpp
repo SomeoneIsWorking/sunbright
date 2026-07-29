@@ -356,6 +356,23 @@ void sbr_state_oracle_report() {
                 ++named[m];
                 if (mine[i].unitId[m] != aur[i].unitId[m]) ++disagree[m];
             }
+        // WHAT the unit-1 disagreements actually are. The empty buffers are named *_dammy in the
+        // sky and sea models — deliberate placeholders — so "we bind the dummy where aurora binds
+        // something else" is a completely different defect from "the content never loaded", and
+        // only the two addresses side by side tell them apart.
+        {
+            long shown = 0;
+            for (size_t i = 0; i < k && shown < 8; ++i)
+                for (unsigned st = 0; st < mine[i].numStages && st < 16 && shown < 8; ++st) {
+                    if (!mine[i].texEnable[st]) continue;
+                    if ((mine[i].texmap[st] & 7) != 1) continue;
+                    if (mine[i].unitId[1] == aur[i].unitId[1]) continue;
+                    ++shown;
+                    lucent::info("oracle", "  unit1 MISMATCH draw {} stage {}: mine 0x{:08x} "
+                                           "aurora 0x{:08x}", i, st, mine[i].unitId[1],
+                                 aur[i].unitId[1]);
+                }
+        }
         lucent::Line l;
         l.add("  per-unit bind agreement (named stages / disagreeing):");
         for (unsigned m = 0; m < 8; ++m)

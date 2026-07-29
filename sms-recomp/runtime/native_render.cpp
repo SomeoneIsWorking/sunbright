@@ -932,6 +932,45 @@ void sbr_render_recheck_black() {
                          (mean >= 0.0f && mean <= 1.0f) ? "   <- BLACK" : "");
         }
     }
+    {   // WHO OWNS a genuinely-empty texture buffer. J3D keeps its textures in a TEX1 section with
+        // a name table, and archives carry their own magics, so scanning back from the buffer for
+        // the nearest section magic and the strings around it identifies the texture BY NAME —
+        // which turns "some I4 128x128 is empty" into a specific asset that can be looked up.
+        static bool scanned = false;
+        if (!scanned)
+            for (auto& [key, tex] : g_texs) {
+                if (tex.desc.addr != 0x80cf0ac0u && tex.desc.addr != 0x80cfafa0u) continue;
+                scanned = true;
+                static const char* const kMagic[] = {"TEX1", "BMD3", "BDL4", "RARC", "Yaz0",
+                                                     "INF1", "MAT3", "SHP1", "J3D2"};
+                for (const char* m : kMagic) {
+                    uint32_t best = 0;
+                    for (uint32_t back = 4; back < 0x200000; back += 4) {
+                        const uint32_t a = tex.desc.addr - back;
+                        if (!sb_ram_fast(a)) break;
+                        if (sb_r8(a) == (uint8_t)m[0] && sb_r8(a + 1) == (uint8_t)m[1] &&
+                            sb_r8(a + 2) == (uint8_t)m[2] && sb_r8(a + 3) == (uint8_t)m[3]) {
+                            best = a; break;
+                        }
+                    }
+                    if (best != 0)
+                        lucent::info("nrender", "  0x{:08x}: nearest '{}' at 0x{:08x} (-0x{:x})",
+                                     tex.desc.addr, m, best, tex.desc.addr - best);
+                }
+                // Printable names in the 8 KB before the buffer — J3D texture name tables sit with
+                // the headers, so the asset's own name is usually reachable from here.
+                lucent::Line l;
+                l.add("  0x{:08x} nearby strings:", tex.desc.addr);
+                std::string cur;
+                for (uint32_t back = 0x2000; back > 0; --back) {
+                    const uint8_t c = sb_r8(tex.desc.addr - back);
+                    if (c >= 32 && c < 127) { cur.push_back((char)c); continue; }
+                    if (cur.size() >= 4) l.add(" '{}'", cur);
+                    cur.clear();
+                }
+                l.flush(lucent::Level::Info, "nrender");
+            }
+    }
     {   // What SURROUNDS a zero texture in guest memory. These buffers sit inside live
         // allocations (the zero run stops immediately at their edges), so the bytes on either side
         // belong to whatever owns them — a J3D TEX1 block, an archive header, a name table. That is

@@ -1143,3 +1143,51 @@ never ran, not a mis-parsed archive.
 Next: `0x80fea480` wants render-to-texture (it is a copy dest, and this port has none).
 `0x80cf0ac0` and `0x80cfafa0` want their producer identified — they are 0xA4E0 apart in one
 region, so likely the same mechanism.
+
+## 2026-07-29 (iteration 3) — the empty buffers are DUMMIES, and we bind them one draw early
+
+**Named the buffers instead of guessing at their producer.** J3D keeps textures in a TEX1 section
+with a name table, so scanning back from each empty buffer for the nearest section magic and the
+surrounding strings identifies the asset:
+
+```
+0x80cfafa0 (CMPR 64x64):  nearest TEX1 at -0xa0
+  materials  _00_spline  _01_nyudougumo  _02_usugumo  _03_sky
+  textures   B_kumo_dammy  B_cloud_dammy  B_hikoukigumo_dammy
+0x80cf0ac0 (I4 128x128):  nearest TEX1 at -0x120
+  materials  _beach  _taki0  _umi  _umi2
+```
+
+So they are the SKY/cloud model and the SEA/water model — and the sky's texture names end in
+`_dammy`, i.e. **dummy**. These are deliberate placeholder textures. That reframes the whole
+question: nothing failed to load them, they are *supposed* to be blank, and the defect is that we
+SAMPLE them where the hardware would not.
+
+**And we do, because our texture binds are one draw ahead of aurora's.** The oracle's new unit-1
+mismatch dump:
+
+```
+draw 21:    mine 0x00b0ffa0   aurora 0x015997e0
+draw 22:    mine 0x00870360   aurora 0x00b0ffa0    <- our draw-21 value
+draw 430:   mine 0x00843a60   aurora 0x00870360    <- our draw-22 value
+draw 465:   mine 0x0088ffa0   aurora 0x00843a60
+draw 662:   mine 0x008901a0   aurora 0x0088ffa0
+draw 702:   mine 0x00cfafa0   aurora 0x008901a0    <- we bind the SKY DUMMY here
+draw 14008: mine 0x00c78f40   aurora 0x00cfafa0
+```
+
+Every disagreement is our PREVIOUS value appearing as aurora's CURRENT one — a one-bind lag, not
+random divergence, and the oracle independently classifies 132 of 133 disagreeing draws as
+lag-shaped. Aurora renders the sky and sea correctly, so aurora's association is the correct one:
+**this port applies a texture register write to the draw BEFORE it rather than the draws after it.**
+Draw 702 is that bug handing the sky its dummy placeholder instead of the real texture, which is
+precisely the black background.
+
+This also retires the previous entry's framing. There is no missing asset-load step and no missing
+producer for these two — the earlier "whatever fills it is a step that never ran" was wrong,
+because nothing is supposed to fill a `_dammy`. `0x80fea480` is unaffected by this and remains a
+genuine render-to-texture gap.
+
+Next: find the ordering bug in `dev_gxfifo.cpp` — where a BP texture write is attributed to the
+current draw instead of the following one — and confirm the fix collapses the unit-1 mismatch
+count to zero.
