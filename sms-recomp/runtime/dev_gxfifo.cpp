@@ -1374,6 +1374,24 @@ SbrTexture sbr_gx_fifo_texture(unsigned texmap) {
 // labelling; recording the position lets that assumption be checked instead of trusted.
 uint32_t sbr_gxfifo_stream_pos() { return (uint32_t)g_out.size(); }
 
+// Tag every draw that follows with `tag`, until the next tag — aurora's GX_AURORA_DRAW_TAG.
+//
+// This is the identity interpolated 60fps pairs on. It is emitted from OUR side because aurora
+// cannot derive one: a content hash is impossible for indexed geometry (its vertex buffer holds
+// INDICES, with the attributes in a separate storage buffer), and a draw ordinal is worse than
+// useless because draw merging is state-dependent, so the same scene yields different ordinals
+// when a state write lands differently.
+//
+// Pending guest FIFO bytes are drained FIRST. Without that, the guest writes that are still sitting
+// in g_buf get parsed after this tag and would be attributed to the object being tagged — the tag
+// would sit at the wrong point in the stream, which is the whole thing it exists to get right.
+void sbr_gxfifo_draw_tag(uint64_t tag) {
+    gxfifo_drain_pending();
+    put_u8 (g_out, 0x50);
+    put_u16(g_out, (u16)GX_AURORA_DRAW_TAG);
+    put_u64(g_out, tag);
+}
+
 const SbrTevState& sbr_gx_fifo_tev() { return g_tev; }
 
 // The colour-channel and light state the display lists have written.

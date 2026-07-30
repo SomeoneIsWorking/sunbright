@@ -14,6 +14,7 @@
 #include "../runtime/native_render.h"
 #include "../runtime/state_oracle.h"
 #include "../runtime/scene.h"
+#include "../runtime/lerp60.h"
 #include "../runtime/render_compare.h"
 
 #include <aurora/aurora.h>
@@ -263,6 +264,9 @@ void video_wait_for_retrace(CPUState& cpu) {
     // renderer's block: smoothness measures AURORA's presented image and must work with the native
     // path off — it is the instrument for the 60fps interpolation work, which is an aurora change.
     sbr_compare_init();
+
+    // Interpolation tag coverage, on a slow cadence. Inert unless SBR_LERP60 is set.
+    if (sbr_lerp_enabled() && (g_present_count % 300) == 0) sbr_lerp_report_tag_coverage();
 
     // Native SDL3-GPU renderer (SBR_SDLGPU=1): draw the interpolated scene from the game's own
     // J3D geometry and its own projection. Still rendered to an OFFSCREEN target and read back —

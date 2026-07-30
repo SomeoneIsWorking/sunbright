@@ -123,6 +123,11 @@ const SbrTevState& sbr_gx_fifo_tev();
 // Byte offset the FIFO parser has reached in the current frame's stream.
 uint32_t sbr_gxfifo_stream_pos();
 
+// Tag the draws that follow with a stable cross-tick identity (aurora's GX_AURORA_DRAW_TAG), for
+// interpolated 60fps. Drains pending guest FIFO bytes first so the tag lands at the right point in
+// the stream. 0 clears the tag.
+void sbr_gxfifo_draw_tag(uint64_t tag);
+
 // GX lighting, as XF memory holds it. Lights are in VIEW space, which is the space the draw
 // matrix already puts vertices into.
 struct SbrLight {

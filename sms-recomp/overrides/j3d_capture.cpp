@@ -22,6 +22,8 @@
 #include "../runtime/scene.h"
 #include "../runtime/j3d_decode.h"
 #include "../runtime/state_oracle.h"
+#include "../runtime/lerp60.h"
+#include "../runtime/native_render.h"
 
 void sbr_mtx_begin_shape(u32 shape);
 void sbr_mtx_end_shape();
@@ -140,9 +142,21 @@ void ov_shape_draw(CPUState& cpu) {
     // knowing each J3DShapeMtx's subclass, and getting it wrong is what left 20% of elements on the
     // wrong matrix. The draw matrices are computed by viewCalc BEFORE the draw, so reading them
     // afterwards is equally valid.
+    // Tag the draws this shape is about to emit with its guest J3DShape address, so interpolated
+    // 60fps can pair them with the same object's draws in the previous tick. A guest scene-graph
+    // pointer is genuinely stable across ticks; nothing aurora can compute for itself is.
+    // Emitted BEFORE the draw — the tag has to precede the GX it labels in the stream.
+    if (sbr_lerp_enabled()) sbr_gxfifo_draw_tag((uint64_t)shape);
+
     sbr_mtx_begin_shape(shape);
     func_802e0390(cpu);
     sbr_mtx_end_shape();
+
+    // Close the tag. Anything the game draws outside a J3DShape (2D, particles, immediate geometry)
+    // must NOT inherit this shape's identity: it would pair with the wrong object's matrices, which
+    // is a wrong answer that looks like a working one. Untagged draws snap, which is correct for
+    // exactly those cases.
+    if (sbr_lerp_enabled()) sbr_gxfifo_draw_tag(0);
     // Bring the parsed GX state up to date with what the game has just written, so the texture
     // binding read below is THIS shape's material rather than a stale one.
     gxfifo_drain_pending();

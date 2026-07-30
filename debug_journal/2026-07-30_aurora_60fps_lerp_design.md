@@ -131,6 +131,71 @@ Draw merging (`command_processor.cpp:3056-3101`) requires `!g_gxState.stateDirty
 loads set it — so **merged prims genuinely share one matrix set** and one uniform patch per
 `DrawData` is semantically right. Merging breaks *counting*, not interpolation.
 
+### Verified against the code (second recon), with four hazards
+
+The copy-skip needs **no code change at all**. `needs_staging_copy` (`common.cpp:1428-1450`) and
+`copy_staging_buffer_range` (`:1418-1420`) both gate on `highWater > copied`. If B never pushes
+verts/indices/storage those sizes stay 0, `copied` is 0 (`begin_frame` does `frame = {}`, `:1201`),
+and `0 > 0` is false — while `highWater.uniforms > 0` still triggers the uniform copy. Zero copies
+for the big three, full copy for the uniforms, for free. `DrawData.vertRange` is never even read at
+encode time: vertex/storage data is reached through `g_staticBindGroup`, built once at init over the
+whole global buffers (`common.cpp:1030-1046`).
+
+Ordering is guaranteed twice over: the render worker is one thread with a strict FIFO deque
+(`render_worker.cpp:38-56`, `:89-114`), and A's `Submit` happens in A's `EndFrame` item
+(`aurora.cpp:682-685`) before B's is enqueued. This is the same guarantee aurora already relies on
+for tick N+1 stomping tick N's bytes — not a new class of hazard.
+
+**Hazard 1 — do NOT pre-seed `copied` to A's final values.** It buys nothing (V1 shows the skip is
+automatic) and creates a silent-corruption trap: any *late* push into B's verts would then satisfy
+`highWater <= copied`, emit no copy, and leave B's `DrawData` pointing at A's bytes. Instead
+**assert** on B's `end_frame` that verts/indices/storage sizes are 0 — a loud check that fires the
+moment the replay path stops being a pure copy.
+
+**Hazard 2 — `FrameSlotCount == 2` becomes a hard serialization stall.** Two packets per tick means
+the next tick's `begin_frame` blocks in `acquire_frame_slot` (`common.cpp:1162-1174`) until the
+worker fully retires the oldest frame, destroying the CPU/GPU overlap the pool exists for. No
+deadlock (no cycle: the worker never blocks on the game thread), but the game thread parks in 100 µs
+sleeps inside the frame seam — which would read as *"60fps mode is slower than 30fps mode"*. Raise
+`FrameSlotCount` to 3; `StagingBufferCount` follows automatically, at ~103 MB staging per slot.
+
+**Hazard 3 — B's `FrameOp`s must be rebuilt, never copied.** `capture_frame_op`
+(`common.cpp:459-474`) stores **raw pointers** into the packet's own `renderPasses` deque, and
+`enqueue_op`'s lambda resolves the packet by slot (`:499-505`). Copying A's ops into B leaves them
+pointing into A's deque in a different slot — which A's `end_frame` destroys with `packet = {}`
+(`:1372`). Use-after-free or stale data depending on worker timing. B must call `capture_frame_op`
+over its own deque. (Related and load-bearing: `RenderPassList` is a `std::deque` and every
+insertion is `emplace_back`, so reference stability is what makes those raw pointers safe at all.
+Changing it to `std::vector` would corrupt the existing code.)
+
+**Hazard 4 — the uniform shadow must cover more than the draw blocks.** `resolve_pass` pushes its UV
+transform into the *same* uniform buffer (`prevPass.resolveUniformRange = push_uniform(uvTransform)`,
+`common.cpp:722`) and `tex_copy_conv::execute` binds it back (`tex_copy_conv.cpp:454-456`). So B's
+uniform region must be byte-identical to A's *including the resolve entries* — a shadow of the whole
+region works; a per-draw rebuild would miss them.
+
+Also: `end_frame` publishes `lastVertSize`/`lastIndexSize`/`lastStorageSize` from the packet
+(`common.cpp:1336-1339`, `:1375-1378`), so the replay emission would publish zeros and make Tracy
+and imgui alternate real/zero — an instrument reading as a defect. Suppress the stats publish on the
+replay emission.
+
+`Command` is trivially copyable today (POD union; `wgpu` members are refcounted handles), but
+turning `AURORA_ENABLE_RMLUI` on would likely delete the implicit copy constructor — guard the
+replay path with a `static_assert(std::is_trivially_copyable_v<Command>)` so the build breaks rather
+than the frame.
+
+**Not statically decidable: EFB load-op idempotence.** Pass 0 is deliberately `LoadOp::Load` with no
+eager clear (`common.cpp:1260-1261`), so a frame *continues* the previous frame's EFB. B replaying
+that list starts from the EFB as A **left** it, not as A **found** it. Whether that changes the
+image depends on the frame's clear topology. The experiment that settles it is ladder step 2 —
+dual-emit with identical matrices: if the two presents are not bit-identical, EFB non-idempotence is
+the mechanism. **Do not skip that step to get to the lerp.**
+
+Unmeasured: how many bytes a Delfino frame's uniform region actually is. `UniformBufferSize` is
+24 MB but that constant is inherited upstream, not a sunbright measurement, and `lastUniformSize` is
+computed but consumed only by Tracy. Static worst case ≈ 1500 draws × 3840 B ≈ 5.8 MB. Measure it
+before sizing the shadow — it is the only per-tick cost the design actually pays.
+
 ## Identity: supplied by us, never derived
 
 Pairing tick N's draws with tick N-1's needs a stable key.
