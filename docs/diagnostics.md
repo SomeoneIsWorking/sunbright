@@ -276,6 +276,7 @@ logger — that is debt to convert, not a feature.
 | `SBR_FASTBOOT` | 1 | `sms-recomp/overrides/fastboot_native.cpp:79` |  |
 | `SBR_HUD_OFF` | 1 | `sms-recomp/overrides/widescreen.cpp:246` |  |
 | `SBR_J2D_CAPTURE` | 1 | `sms-recomp/overrides/diag_2d.cpp:148` |  |
+| `SBR_J2D_SOLID` | 1 | `sms-recomp/overrides/diag_2d.cpp:196` |  |
 | `SBR_J3D_CAPTURE` | 1 | `sms-recomp/overrides/j3d_capture.cpp:66` |  |
 | `SBR_MTX_CHECK` | 1 | `sms-recomp/overrides/mtx_crosscheck.cpp:91` |  |
 | `SBR_NO_TEXOBJ` | 1 | `sms-recomp/runtime/dev_gxfifo.cpp:397` |  |
@@ -310,4 +311,4 @@ logger — that is debt to convert, not a feature.
 | `SBR_WIDESCREEN` | 1 | `sms-recomp/overrides/widescreen.cpp:56` |  |
 | `SBR_WS_SCALE` | 1 | `sms-recomp/overrides/widescreen.cpp:65` |  |
 
-**289 switches; 88 still gate a raw print.**
+**290 switches; 88 still gate a raw print.**

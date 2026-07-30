@@ -187,6 +187,37 @@ void emit_pane_quad(CPUState& cpu) {
     for (unsigned m = 0; m < 8; ++m) dr.tex[m] = sbr_gx_fifo_texture(m);
     dr.tev = sbr_gx_fifo_tev();
     dr.xf  = sbr_gx_fifo_xf();
+    // SBR_J2D_SOLID=1 (DIAGNOSTIC): draw the pane as an opaque vertex-coloured quad with the depth
+    // test OFF and blending off. That is a KNOWN-VISIBLE configuration which depends on none of the
+    // three suspects — material snapshot, z-mode, or projection convention — so it separates "the
+    // quad does not rasterise at all" from "it rasterises but is shaded or rejected into
+    // invisibility". Without this the three would have to be tested one guess at a time.
+    static const bool solid = [] {
+        const char* e = std::getenv("SBR_J2D_SOLID");
+        return e != nullptr && e[0] != '\0' && e[0] != '0';
+    }();
+    if (solid) {
+        dr.depth.test = 0;
+        dr.depth.write = 0;
+        dr.depth.blend = 0;
+        dr.depth.cull = 0;
+        dr.depth.colorUpdate = 1;
+        dr.depth.alphaUpdate = 1;
+        dr.tev = SbrTevState{};          // defaults: 1 stage, texture disabled
+        dr.tev.numStages = 1;
+        dr.tev.stage[0].texEnable = 0;
+        dr.tev.stage[0].rasChannel = 0;
+        // out = RASC (the vertex colour), alpha = RASA: c = mix(ZERO, ZERO, ZERO) + RASC
+        dr.tev.stage[0].cA = 0; dr.tev.stage[0].cB = 0; dr.tev.stage[0].cC = 0;
+        dr.tev.stage[0].cD = 10;         // RASC
+        dr.tev.stage[0].aA = 0; dr.tev.stage[0].aB = 0; dr.tev.stage[0].aC = 0;
+        dr.tev.stage[0].aD = 5;          // RASA
+        dr.tev.alphaOp0 = 7;             // ALWAYS
+        dr.tev.alphaOp1 = 7;
+        for (int i = 0; i < 6; ++i) v[i].rgba = 0xFF00FFFFu;   // opaque magenta: unmistakable
+        dr.geom = sbr_scene_intern_geometry(dr.key ^ 0x5011Du, v, 6);
+        if (dr.geom == 0) return;
+    }
     // Identity model-view: the quad is already in clip space. IDENTITY PROJECTION for the same
     // reason — projecting a 2D element with the 3D matrix makes it cover the screen, which is the
     // documented failure mode in scene.h.

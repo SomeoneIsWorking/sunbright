@@ -1905,3 +1905,27 @@ Three candidate causes, in the order worth testing:
 The instrument to settle it is already built and validated: `SBR_BLACK_OWNER`-style batch attribution
 will say whether these six batches produce fragments at all, which separates "not drawn" from "drawn
 invisibly".
+
+### The quads DO rasterise — so the invisibility is the material snapshot
+
+`SBR_J2D_SOLID=1` draws each captured pane as an opaque magenta vertex-coloured quad with depth test,
+blending and culling off — a configuration that depends on none of the three suspects. Result
+(`scratch/screenshots/hudsolid.png`): **a magenta quad appears**, bottom-right.
+
+That discriminates in ONE run what would have taken three guesses:
+
+- **Geometry, clip-space mapping and the orthographic path all work.** The projection convention is
+  no longer a suspect, and neither is depth in principle.
+- **The material snapshot IS the cause of the invisible HUD.** `dr.tex/tev/xf` are taken at
+  `drawSelf` ENTRY, but J2D binds its texture and sets its TEV INSIDE the body, so the quad is shaded
+  with whatever the previous material left. Same "not valid until deeper in the call chain" shape as
+  `mGlobalBounds` and the alpha fields — the third instance of that pattern in this file.
+- **A new, separate problem: placement.** Only ONE quad is visible, at the bottom-right, while the
+  census inventory has panes at [44,58 80,94] and [271,-131 307,-95]. Several bounds carry NEGATIVE Y,
+  i.e. above the top of a 600x480 screen. So either those panes are legitimately offscreen at this
+  moment, or `mGlobalBounds` is not in the 600x480 space the root pane implies. That must be settled
+  by reading the values against a known element, not by nudging the mapping until it looks right —
+  endpoint hand-tuning is banned here and would hide the real convention.
+
+Next: capture the material AFTER the bind rather than at entry (the same fix that made bounds valid),
+and separately verify what space `mGlobalBounds` is really in.
