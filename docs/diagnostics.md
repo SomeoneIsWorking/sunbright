@@ -270,7 +270,7 @@ logger — that is debt to convert, not a feature.
 | `SBR_BLACK_OWNER` | 1 | `sms-recomp/overrides/native_frame.cpp:350` |  |
 | `SBR_CARD_A` | 1 | `sms-recomp/overrides/native_card.cpp:88` |  |
 | `SBR_CARD_TRACE` | 1 | `sms-recomp/overrides/diag_card.cpp:40` |  |
-| `SBR_DIAG_2D` | 1 | `sms-recomp/overrides/diag_2d.cpp:37` |  |
+| `SBR_DIAG_2D` | 1 | `sms-recomp/overrides/diag_2d.cpp:41` |  |
 | `SBR_DRAW_STATE` | 1 | `sms-recomp/runtime/scene.cpp:825` |  |
 | `SBR_DUMP_COPY` | 1 | `sms-recomp/overrides/native_frame.cpp:351` |  |
 | `SBR_FASTBOOT` | 1 | `sms-recomp/overrides/fastboot_native.cpp:79` |  |

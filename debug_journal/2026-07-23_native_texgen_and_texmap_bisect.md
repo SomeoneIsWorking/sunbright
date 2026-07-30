@@ -1830,3 +1830,41 @@ Two things to resolve before stage 2, both located precisely:
 
 The `go*` alpha of 0/0 is a third loose end worth its own check: those panes are visible in aurora,
 so either 0xCC/0xCD are not the effective alpha for pictures, or the value is set later in the draw.
+
+### The 2D capture point IS J2DPicture::drawSelf(int, int, Mtx) — 0x802cc7c0
+
+`reference/sms_gmse01_funcs.txt` has TWO drawSelf overloads, and the difference is the whole answer:
+
+```
+802cc758  drawSelf__10J2DPictureFii            (int, int)        <- registered, NEVER fires
+802cc7c0  drawSelf__10J2DPictureFiiPA3_A4_f    (int, int, Mtx*)  <- the dispatched path
+```
+
+Censusing the second one resolves all three loose ends at once:
+
+```
+.c_x  m00=0.966 gbounds=[ 44, 58   80, 94]  36x36  vis=1 a=255/255  hits=6458
+.m_x  m00=0.966 gbounds=[271,-131 307,-95]  36x36  vis=1 a=255/255  hits=1642
+c_ba  m00=0.966 gbounds=[ 13, 74  211, 96] 198x22  vis=1 a=180/180  hits=6470
+c_ic  m00=1.000 gbounds=[ 22, 60   52,100]  30x40  vis=1 a=255/255  hits=6462
+argMtx (r6): sx=1.000 tx=0.00 sy=1.000 ty=0.00   — identity on every pane sampled
+```
+
+1. **Capture point**: 0x802cc7c0. Here `mGlobalBounds` is populated and sane — 36x36 digit glyphs,
+   a 198x22 counter bar, a 30x40 icon, at plausible screen positions — where the same fields read
+   0x0 at `draw` entry.
+2. **Why the earlier reads were zero**: the (int,int) overload never runs, and `draw` entry precedes
+   the transform. Not an instrument fault, a wrong sample point, now confirmed by the same fields
+   reading correctly one frame deeper in the call chain.
+3. **Alpha is real here**: 255/255 and 180/180 (the semi-transparent bar), versus 0/0 at `draw`.
+   `0xCC`/`0xCD` ARE the effective alpha; they are simply not set yet at the earlier point.
+
+The pane names read as the HUD: `.c_x`/`.d_x`/`.m_x`/`.s_x` are digit glyphs, `c_ba` a counter bar,
+`c_ic` an icon. Note the passed matrix (r6) is IDENTITY on every pane sampled, so the placement is
+entirely in `mGlobalBounds` — which is what makes rect-only capture viable and means no matrix
+decomposition is needed at all.
+
+Stage 2 now has everything it needs and nothing left to guess: at 0x802cc7c0, for each visible pane,
+emit one orthographic `SbrDrawable` whose quad is `mGlobalBounds` with `mColorAlpha`, using the
+texture the material already binds. Acceptance test unchanged and already in place — the projection
+census must stop reporting 0 orthographic drawables.
