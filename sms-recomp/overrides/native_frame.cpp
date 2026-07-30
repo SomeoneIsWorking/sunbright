@@ -418,6 +418,9 @@ void video_wait_for_retrace(CPUState& cpu) {
     // 170 frames and aborted with "mapped ByteBuffer overflow".
     static bool s_frameActive = true;   // main() opened the first frame
 
+    // The camera this tick's draws were built with, for interpolation. Last thing in the stream, so
+    // it is the settled value rather than the previous tick's.
+    if (sbr_lerp_enabled()) sbr_gxfifo_view_matrix();
     gxfifo_send_last();
     present_and_reopen(s_frameActive);
 

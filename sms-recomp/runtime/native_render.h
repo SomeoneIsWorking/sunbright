@@ -128,6 +128,10 @@ uint32_t sbr_gxfifo_stream_pos();
 // the stream. 0 clears the tag.
 void sbr_gxfifo_draw_tag(uint64_t tag);
 
+// Hand aurora this tick's J3D view matrix, for camera interpolation of draws that cannot be paired.
+// Call once per tick, at the END of the tick's GX stream.
+void sbr_gxfifo_view_matrix();
+
 // GX lighting, as XF memory holds it. Lights are in VIEW space, which is the space the draw
 // matrix already puts vertices into.
 struct SbrLight {

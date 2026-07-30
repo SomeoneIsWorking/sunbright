@@ -1385,6 +1385,29 @@ uint32_t sbr_gxfifo_stream_pos() { return (uint32_t)g_out.size(); }
 // Pending guest FIFO bytes are drained FIRST. Without that, the guest writes that are still sitting
 // in g_buf get parsed after this tag and would be attributed to the object being tagged — the tag
 // would sit at the wrong point in the stream, which is the whole thing it exists to get right.
+// Hand aurora this tick's view matrix (j3dSys.mViewMtx, US 0x804045DC, offset 0 — a GC Mtx, 3 rows
+// of 4 big-endian floats).
+//
+// Interpolation needs it because J3D concatenates the camera into every draw matrix in viewCalc, so
+// nothing that reaches the hardware has a camera in it that aurora could isolate. Without this,
+// draws that cannot be paired across ticks stay on the CURRENT viewpoint while paired ones move to
+// the in-between one, and the frame is rendered from two viewpoints at once — measured as a 15x
+// jump in inter-frame energy, i.e. worse than not interpolating at all.
+//
+// Emitted at the END of the tick's stream, deliberately: that is the camera the tick's draws were
+// actually built with. Emitting at the start would hand over the previous tick's value.
+void sbr_gxfifo_view_matrix() {
+    constexpr u32 kJ3DSys = 0x804045DC;   // mViewMtx is the first member
+    const u32 off = kJ3DSys & 0x01FFFFFFu;
+    if (g_ram_base == nullptr || off + 48 > 0x01800000u) return;
+    gxfifo_drain_pending();
+    put_u8 (g_out, 0x50);
+    put_u16(g_out, (u16)GX_AURORA_VIEW_MTX);
+    // Copied verbatim: guest floats are big-endian and this stream is big-endian, so a swap here
+    // and a swap back in the parser would only be two chances to get it wrong.
+    g_out.insert(g_out.end(), g_ram_base + off, g_ram_base + off + 48);
+}
+
 void sbr_gxfifo_draw_tag(uint64_t tag) {
     gxfifo_drain_pending();
     put_u8 (g_out, 0x50);
