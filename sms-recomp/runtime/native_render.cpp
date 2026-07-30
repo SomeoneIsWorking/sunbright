@@ -342,6 +342,16 @@ SDL_GPUTexture* upload_rgba(const uint8_t* rgba, uint32_t w, uint32_t h) {
     // devices share this process, the loss surfaced on AURORA's device, pointing at the wrong
     // subsystem entirely. Uploads are one-time per texture, so the wait costs nothing steady-state.
     SDL_GPUFence* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);
+    if (fence == nullptr) {
+        // NEVER silent. This path used to fall through with no else: the wait was skipped, g_dl was
+        // mapped anyway, and its STALE contents were copied into g_cpu — so a failing submit looked
+        // exactly like a frame that legitimately rendered nothing, forever. sbr_render_readback is
+        // only a memcpy of g_cpu, so every downstream consumer (coverage, the A/B, frame dumps)
+        // reports a frozen picture with no indication anything failed.
+        lucent::error("nrender", "submit+fence FAILED: {} — g_cpu keeps its previous contents, so "
+                                 "coverage/dumps from here are STALE, not empty",
+                      SDL_GetError());
+    }
     if (fence != nullptr) {
         SDL_WaitForGPUFences(g_dev, true, &fence, 1);
         SDL_ReleaseGPUFence(g_dev, fence);
@@ -895,8 +905,14 @@ void sbr_render_end() {
 // reference; 0 is the real pipeline. Factored out of sbr_render_end so the attribution sweep can
 // re-render the SAME frame per operation and score every variant against the SAME aurora frame —
 // which is what makes the comparison drift-free (see render_compare.h).
-// Draw only the first g_batchLimit batches (-1 = all). Used by the black-owner bisect below.
+// Draw only the first g_batchLimit batches (-1 = all). Used by the black-owner bisect, and settable
+// from SBR_MAX_BATCH so a frame that renders NOTHING can be narrowed to the batch (or the batch
+// TRANSITION) that eats it — with the whole rest of the pipeline untouched.
 int g_batchLimit = -1;
+const int g_batchLimitEnv = [] {
+    const char* e = std::getenv("SBR_MAX_BATCH");
+    return e != nullptr ? (int)std::strtol(e, nullptr, 10) : -1;
+}();
 
 
 void render_pass_into_cpu(uint32_t ablation) {
@@ -940,6 +956,7 @@ void render_pass_into_cpu(uint32_t ablation) {
         SDL_GPUBufferBinding vb{}; vb.buffer = g_vbuf; vb.offset = 0;
         SDL_BindGPUVertexBuffers(rp, 0, &vb, 1);
         int drawn = 0;
+        if (g_batchLimit < 0 && g_batchLimitEnv >= 0) g_batchLimit = g_batchLimitEnv;
         size_t nextCopy = 0;
         for (size_t bi = 0; bi < g_batches.size(); ++bi) {
             const Batch& b = g_batches[bi];
@@ -1035,6 +1052,16 @@ void render_pass_into_cpu(uint32_t ablation) {
     SDL_EndGPUCopyPass(cp);
 
     SDL_GPUFence* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);
+    if (fence == nullptr) {
+        // NEVER silent. This path used to fall through with no else: the wait was skipped, g_dl was
+        // mapped anyway, and its STALE contents were copied into g_cpu — so a failing submit looked
+        // exactly like a frame that legitimately rendered nothing, forever. sbr_render_readback is
+        // only a memcpy of g_cpu, so every downstream consumer (coverage, the A/B, frame dumps)
+        // reports a frozen picture with no indication anything failed.
+        lucent::error("nrender", "submit+fence FAILED: {} — g_cpu keeps its previous contents, so "
+                                 "coverage/dumps from here are STALE, not empty",
+                      SDL_GetError());
+    }
     if (fence != nullptr) {
         SDL_WaitForGPUFences(g_dev, true, &fence, 1);
         SDL_ReleaseGPUFence(g_dev, fence);

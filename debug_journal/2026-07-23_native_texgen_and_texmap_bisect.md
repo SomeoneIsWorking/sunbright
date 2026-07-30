@@ -2137,3 +2137,48 @@ One detail from the draw-state dump worth carrying into the next round: those 2D
 FIRST in the tick, at z=0, writing depth, they could occlude what follows; `setup2D` disables the
 depth test for 2D on hardware (`GXSetZMode(GX_FALSE, ...)`), so carrying test/write ON here is
 already unfaithful regardless of whether it is the blanking cause.
+
+### FOUND IT: the 2D drawables reorder the EFB copy, so the copy captures the CLEAR
+
+Stepwise, one change verified at a time.
+
+**Step 1 — the silent submit path.** `sbr_render_readback` is only a memcpy of `g_cpu`, and the submit
+path had `if (fence != nullptr)` with NO else: a failing submit skipped the wait, mapped `g_dl`
+anyway, and copied STALE bytes into `g_cpu` — so a dead device and a legitimately empty frame were
+the same observation. Now logs an error naming the failure and saying the readback is stale. Verified:
+with the flag ON it fires ZERO times, so **device loss is falsified** and the pass really does render
+with sane inputs.
+
+**Step 2 — batch bisect** (`SBR_MAX_BATCH=N`, exposing the existing `g_batchLimit`):
+
+```
+batch 0 only:   flag OFF 0.0%   flag ON 0.0%     (that batch is invisible either way — not a signal)
+batches <= 40:  flag OFF 100%   flag ON 0.0%     <- clean divergence
+```
+
+**Step 3 — the tell was in the metric's definition.** `coverage` counts pixels DIFFERING from the
+clear colour, so 0.0% does not mean "nothing drew" — it means the screen is filled with something
+EQUAL to the clear. Dumping the copy surface with the flag on:
+
+```
+dump-copy 0x80fea480: 320x224 (mean alpha 255.0)
+distinct colours: 1   ->   (26, 102, 204)   == the clear colour, exactly
+```
+
+**Mechanism, end to end.** The 2D drawables are added by `gxfifo_build`, which runs AFTER
+`begin_tick`, so the frame's trailing 2D draws land at the FRONT of the next tick carrying
+end-of-previous-frame stream positions. The EFB copy flush is ordered by
+`pc.streamPos <= d.streamPos` (scene.cpp), so it now fires against those early drawables — the copy
+resolves a target that has barely been drawn into, i.e. the clear. The background is then painted by
+the full-screen quad that SAMPLES that copy (the same quad whose black texel was this arc's original
+bug), so the whole frame becomes clear-coloured. Not a depth bug, not device loss, not the scissor:
+the copy CONTENT is wrong because the copy ORDER is wrong.
+
+Fable's ordering analysis was right and its consequence was wrong: it predicted the copies would
+collapse to batch 0 and kill depth via the DONT_CARE store; the copies stay at batches 1/10/174, and
+the damage runs through the copy's CONTENT instead. Worth keeping both halves — the tick-front
+placement it derived is exactly the defect, and the depth chain it built on top is not.
+
+The fix is the reordering Fable already named: drain `gxfifo_build()` BEFORE `sbr_scene_end_tick()`
+(overrides/native_frame.cpp), so a frame's 2D drawables and its copy notes land in the tick they
+belong to, ordered last, with same-frame stream positions.

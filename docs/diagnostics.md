@@ -263,7 +263,7 @@ logger — that is debt to convert, not a feature.
 | `SBR_AB_AT` | 1 | `sms-recomp/runtime/render_compare.cpp:203` |  |
 | `SBR_AB_EVERY` | 1 | `sms-recomp/runtime/render_compare.cpp:234` |  |
 | `SBR_AB_SELFTEST` | 1 | `sms-recomp/runtime/render_compare.cpp:99` |  |
-| `SBR_ALPHATEST` | 1 | `sms-recomp/runtime/native_render.cpp:492` |  |
+| `SBR_ALPHATEST` | 1 | `sms-recomp/runtime/native_render.cpp:502` |  |
 | `SBR_AUDIO_RAW` | 1 | `sms-recomp/runtime/dev_aid.cpp:94` |  |
 | `SBR_BIND_DECODE_LOG` | 1 | `sms-recomp/runtime/dev_gxfifo.cpp:629` |  |
 | `SBR_BIND_LOG` | 1 | `sms-recomp/runtime/native_render.cpp:220` |  |
@@ -279,8 +279,9 @@ logger — that is debt to convert, not a feature.
 | `SBR_J2D_CAPTURE` | 1 | `sms-recomp/overrides/diag_2d.cpp:148` |  |
 | `SBR_J2D_SOLID` | 1 | `sms-recomp/overrides/diag_2d.cpp:212` |  |
 | `SBR_J3D_CAPTURE` | 1 | `sms-recomp/overrides/j3d_capture.cpp:66` |  |
+| `SBR_MAX_BATCH` | 1 | `sms-recomp/runtime/native_render.cpp:913` |  |
 | `SBR_MTX_CHECK` | 1 | `sms-recomp/overrides/mtx_crosscheck.cpp:91` |  |
-| `SBR_NO_SCISSOR` | 1 | `sms-recomp/runtime/native_render.cpp:977` |  |
+| `SBR_NO_SCISSOR` | 1 | `sms-recomp/runtime/native_render.cpp:994` |  |
 | `SBR_NO_TEXOBJ` | 1 | `sms-recomp/runtime/dev_gxfifo.cpp:595` |  |
 | `SBR_PAD_SCRIPT` | 1 | `sms-recomp/overrides/native_pad.cpp:92` |  |
 | `SBR_PHASE_COUNT` | 1 | `sms-recomp/overrides/diag_phases.cpp:25` |  |
@@ -291,7 +292,7 @@ logger — that is debt to convert, not a feature.
 | `SBR_RENDER_DEPTHVIZ` | 1 | `sms-recomp/runtime/scene.cpp:69` |  |
 | `SBR_RENDER_DUMP` | 1 | `sms-recomp/overrides/native_frame.cpp:353` |  |
 | `SBR_RENDER_SKIP_SKINNED` | 1 | `sms-recomp/runtime/scene.cpp:64` |  |
-| `SBR_RENDER_WIREFRAME` | 1 | `sms-recomp/runtime/native_render.cpp:568` |  |
+| `SBR_RENDER_WIREFRAME` | 1 | `sms-recomp/runtime/native_render.cpp:578` |  |
 | `SBR_SCENARIO` | 1 | `sms-recomp/overrides/fastboot_native.cpp:253` |  |
 | `SBR_SDLGPU` | 1 | `sms-recomp/runtime/native_render.cpp:304` |  |
 | `SBR_STAGE` | 2 | `sms-recomp/overrides/fastboot_native.cpp:81` |  |
@@ -300,17 +301,17 @@ logger — that is debt to convert, not a feature.
 | `SBR_TEV_TRACE_ADDR` | 1 | `sms-recomp/runtime/scene.cpp:1022` |  |
 | `SBR_TEV_TRACE_BLACK` | 1 | `sms-recomp/runtime/scene.cpp:932` |  |
 | `SBR_TEV_TRACE_FAR` | 1 | `sms-recomp/runtime/scene.cpp:1006` |  |
-| `SBR_TEV_VIZ` | 1 | `sms-recomp/runtime/native_render.cpp:506` |  |
+| `SBR_TEV_VIZ` | 1 | `sms-recomp/runtime/native_render.cpp:516` |  |
 | `SBR_TEX` | 1 | `sms-recomp/runtime/native_render.cpp:207` |  |
 | `SBR_TEXGEN` | 1 | `sms-recomp/runtime/scene.cpp:78` |  |
-| `SBR_TEXMAP_FORCE` | 1 | `sms-recomp/runtime/native_render.cpp:477` |  |
-| `SBR_TEXMAP_NAMED` | 1 | `sms-recomp/runtime/native_render.cpp:469` |  |
-| `SBR_TEXMAP_UNITS` | 1 | `sms-recomp/runtime/native_render.cpp:467` |  |
-| `SBR_TEX_DUMP` | 1 | `sms-recomp/runtime/native_render.cpp:407` |  |
-| `SBR_TEX_MIRROR` | 1 | `sms-recomp/runtime/native_render.cpp:799` |  |
+| `SBR_TEXMAP_FORCE` | 1 | `sms-recomp/runtime/native_render.cpp:487` |  |
+| `SBR_TEXMAP_NAMED` | 1 | `sms-recomp/runtime/native_render.cpp:479` |  |
+| `SBR_TEXMAP_UNITS` | 1 | `sms-recomp/runtime/native_render.cpp:477` |  |
+| `SBR_TEX_DUMP` | 1 | `sms-recomp/runtime/native_render.cpp:417` |  |
+| `SBR_TEX_MIRROR` | 1 | `sms-recomp/runtime/native_render.cpp:809` |  |
 | `SBR_THP` | 1 | `sms-recomp/overrides/native_thp.cpp:99` |  |
 | `SBR_WATCH` | 1 | `sms-recomp/runtime/rt_core.cpp:102` |  |
 | `SBR_WIDESCREEN` | 1 | `sms-recomp/overrides/widescreen.cpp:56` |  |
 | `SBR_WS_SCALE` | 1 | `sms-recomp/overrides/widescreen.cpp:65` |  |
 
-**292 switches; 88 still gate a raw print.**
+**293 switches; 88 still gate a raw print.**
