@@ -299,6 +299,25 @@ void lerp_mtx(float out[12], const float a[12], const float b[12], float t) {
 
 bool sbr_scene_has_geometry(uint64_t key) { return g_geomIndex.count(key) != 0; }
 
+// Overwrite an already-interned geometry in place, or intern it if new. 2D geometry CHANGES every
+// frame under a stable identity (a counter digit keeps its screen slot while its glyph changes), so
+// content-keyed interning minted a fresh entry per frame — 387k of them in one run. g_geom is a
+// vector and callers hold `const Geom&` into it, so that growth reallocates and dangles those
+// references: undefined behaviour, and the reason enabling 2D capture collapsed the whole frame
+// rather than just leaking. Updating in place keeps the entry count bounded by the number of
+// distinct elements.
+uint32_t sbr_scene_update_geometry(uint64_t key, const SbrGeomVert* verts, int count) {
+    if (const auto it = g_geomIndex.find(key); it != g_geomIndex.end()) {
+        Geom& g = g_geom[it->second];
+        g.verts.assign(verts, verts + count);
+        g.multislot = false;
+        for (int i = 1; i < count; ++i)
+            if (verts[i].slot != verts[0].slot) { g.multislot = true; break; }
+        return it->second;
+    }
+    return sbr_scene_intern_geometry(key, verts, count);
+}
+
 uint32_t sbr_scene_intern_geometry(uint64_t key, const SbrGeomVert* verts, int count) {
     if (const auto it = g_geomIndex.find(key); it != g_geomIndex.end()) return it->second;
 

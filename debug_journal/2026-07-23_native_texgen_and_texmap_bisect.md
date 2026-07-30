@@ -2050,3 +2050,25 @@ per-frame geometry path instead of interning content-keyed entries forever.
 Verified safe meanwhile: with the flag off the renderer is unchanged — `COMPARABLE @ N=59 edgeIoU
 32.16% lumaCorr +0.7205` against the 32.1/+0.720 baseline, 73889 distinct colours in the dump. The
 feature is opt-in and inert by default, so the tree is not left with a landmine.
+
+### Unbounded geometry ruled out too — SBR_FIFO_2D still blanks the frame
+
+Added `sbr_scene_update_geometry` (overwrite in place) and switched the 2D key from a content hash to
+a STABLE identity (tex0 + vertex count + quantised PNMTX0 translation + quantised first position), so
+a counter digit updates its entry instead of minting a new one. That fixed a real latent defect —
+`g_geom` is a vector whose elements are held by `const Geom&`, so 387k content-keyed entries per run
+reallocated it and dangled live references, which is undefined behaviour worth removing regardless.
+
+**It did not fix the symptom.** With `SBR_FIFO_2D=1` the dump still has exactly 1 distinct colour
+(the clear), 3D scene included, while the census reports a healthy 23 ortho / 939 perspective.
+
+Ruled out so far, each by measurement rather than argument: decode-buffer stack usage (moved off the
+stack, no change), pipeline creation failure (none logged), the projection gate (was the SDK copy,
+now latched from the stream, no change), and unbounded geometry interning (now bounded, no change).
+The census and the gate telemetry both say the capture is healthy, which makes this a RENDER-side
+failure triggered by the presence of 2D drawables rather than a capture bug.
+
+Flag remains OFF and verified inert: 32.16% / +0.7205, 73889 distinct colours with it off.
+
+Escalating rather than continuing to guess: three hypotheses tested and killed is the point where the
+project's own rule says to get help, and each further guess costs a full run.

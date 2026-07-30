@@ -65,6 +65,9 @@ struct SbrGeomVert {
 // stable key and reused, which is also what keeps the decode off the per-frame path.
 // Returns the existing handle without copying if this key has been seen.
 uint32_t sbr_scene_intern_geometry(uint64_t key, const SbrGeomVert* verts, int count);
+// Same, but OVERWRITES an existing entry rather than returning the stale one — for geometry that
+// changes every frame under a stable identity (2D/HUD). See the definition for why this matters.
+uint32_t sbr_scene_update_geometry(uint64_t key, const SbrGeomVert* verts, int count);
 
 // Geometry for ONE matrix slot of an already-interned element, interned on first request and
 // cached. A skinned element's vertices carry different slots and are transformed by different

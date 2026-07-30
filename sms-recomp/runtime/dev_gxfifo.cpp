@@ -392,17 +392,24 @@ bool decode_2d_draw(u32 op, const u8* vp, u32 verts, const Vat& v) {
     }
     if (nOut == 0) return false;
 
-    // Key: content hash ^ texture, so a digit that changes glyph re-interns rather than reusing
-    // stale geometry. FNV-1a over the decoded vertices.
+    // STABLE identity, not a content hash: texture + vertex count + quantised screen position from
+    // PNMTX0's translation. A counter digit keeps this key while its glyph changes, so the geometry
+    // entry is UPDATED rather than a new one minted every frame. Content-keying minted 387k entries
+    // in one run, and since g_geom is a vector whose elements are referenced by const&, that growth
+    // reallocated and dangled live references — which is what collapsed the frame.
     u64 h = 1469598103934665603ULL;
-    const u8* hb = (const u8*)out;
-    for (size_t b = 0; b < nOut * sizeof(SbrGeomVert); ++b) h = (h ^ hb[b]) * 1099511628211ULL;
-    h ^= g_fifoTex[0].addr;
+    const auto mix = [&h](u64 v) { h = (h ^ v) * 1099511628211ULL; };
+    mix(g_fifoTex[0].addr);
+    mix(nOut);
+    mix((u64)(s32)(g_pnmtx0[3] * 4.0f));
+    mix((u64)(s32)(g_pnmtx0[7] * 4.0f));
+    mix((u64)(s32)(out[0].x * 64.0f));
+    mix((u64)(s32)(out[0].y * 64.0f));
 
     SbrDrawable dr{};
     dr.streamPos = (u32)g_out.size();
     dr.key = h;
-    dr.geom = sbr_scene_intern_geometry(h, out, (int)nOut);
+    dr.geom = sbr_scene_update_geometry(h, out, (int)nOut);
     if (dr.geom == 0) return false;
     dr.depth = g_fifoZ;
     for (unsigned m = 0; m < 8; ++m) dr.tex[m] = g_fifoTex[m];
