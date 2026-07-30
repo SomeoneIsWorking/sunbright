@@ -1868,3 +1868,40 @@ Stage 2 now has everything it needs and nothing left to guess: at 0x802cc7c0, fo
 emit one orthographic `SbrDrawable` whose quad is `mGlobalBounds` with `mColorAlpha`, using the
 texture the material already binds. Acceptance test unchanged and already in place — the projection
 census must stop reporting 0 orthographic drawables.
+
+### Stage 2 landed: 2D panes are CAPTURED (census 0 -> 6), but not yet VISIBLE
+
+`SBR_J2D_CAPTURE=1` emits one orthographic quad per visible pane at 0x802cc7c0, from
+`mGlobalBounds` and `mColorAlpha`, mapped from the game's 600x480 2D space into clip space and handed
+an identity projection. The acceptance test set BEFORE the change passes:
+
+```
+before:  0 orthographic (2D/HUD) drawables, 885 perspective, of 885 captured
+after:   6 orthographic (2D/HUD) drawables, 856 perspective, of 862 captured
+```
+
+**But the frame shows no HUD** (`scratch/screenshots/hud.png`) — the 3D scene is unchanged and
+correct, and the six quads are submitted yet invisible. Reporting that rather than the census number
+alone: "captured" is not "drawn", and treating the passing census as the milestone would be exactly
+the mistake of trusting one metric over the picture.
+
+Also note 6 is fewer panes than the census inventory implies (digit glyphs, counter bar, icon, gauge
+parts), so even capture is partial — only panes reaching this overload with a non-degenerate rect in
+that frame are emitted.
+
+Three candidate causes, in the order worth testing:
+
+1. **The material state snapshot is wrong for these draws.** `dr.tex/tev/xf` are taken from the FIFO
+   at drawSelf ENTRY, but J2D binds its texture INSIDE the body — so the quad likely samples whatever
+   the previous material left, and a TEV that multiplies by an unrelated texel can easily yield
+   nothing visible. This mirrors the earlier finding that `mGlobalBounds` is not valid until deeper in
+   the call chain; the material may need the same treatment (capture after the bind).
+2. **Depth.** `dr.depth` comes from `sbr_gx_fifo_zmode()`, which at that moment is the 3D scene's
+   z-mode; a 2D overlay drawn with depth-test on against a filled depth buffer is rejected.
+3. **The identity projection may not be what the renderer expects** — `scene.cpp` mixes perspective
+   and ortho per drawable, so the exact convention it wants (and the depth range) needs reading rather
+   than assuming.
+
+The instrument to settle it is already built and validated: `SBR_BLACK_OWNER`-style batch attribution
+will say whether these six batches produce fragments at all, which separates "not drawn" from "drawn
+invisibly".

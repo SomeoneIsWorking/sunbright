@@ -15,6 +15,7 @@
 #include "overrides.h"
 
 #include "../runtime/probe_server.h"
+#include "../runtime/scene.h"
 
 #include <intrinsics.h>
 
@@ -130,7 +131,72 @@ void ov_pic_drawself(CPUState& cpu) {
     if (diag_on()) note("J2DPicture::drawSelf", cpu.gpr[3]);
     func_802cc758(cpu);
 }
+// SBR_J2D_CAPTURE=1 — emit each visible 2D pane to the native renderer as an orthographic quad.
+//
+// This is the 2D half of the frontend. The native renderer taps J3DShape::draw only, so it draws no
+// HUD at all (a projection census reports 0 orthographic drawables of ~885, every frame). Everything
+// needed is available HERE and nowhere earlier: mGlobalBounds (J2DPane+0x24) is the screen-space rect
+// with all parent transforms applied, and mColorAlpha (+0xCD) is live — both read 0 at
+// J2DPicture::draw entry, which is why the capture point is this overload and not that one.
+//
+// The quad is emitted in the SAME 600x480 2D space the game composes in (J2DScreen's own root pane
+// reports exactly that), and handed an orthographic projection, so the existing batching, TEV, blend
+// and scissor paths draw it unchanged rather than needing a second pipeline.
+bool j2d_capture_on() {
+    static int v = -1;
+    if (v < 0) {
+        const char* e = std::getenv("SBR_J2D_CAPTURE");
+        v = (e != nullptr && e[0] != '\0' && e[0] != '0') ? 1 : 0;
+    }
+    return v == 1;
+}
+
+void emit_pane_quad(CPUState& cpu) {
+    const u32 self = cpu.gpr[3];
+    if (sb_r8(self + 0x0C) == 0) return;              // mVisible
+    const int x1 = (int)sb_r32(self + 0x24), y1 = (int)sb_r32(self + 0x28);
+    const int x2 = (int)sb_r32(self + 0x2C), y2 = (int)sb_r32(self + 0x30);
+    if (x2 <= x1 || y2 <= y1) return;                 // degenerate: nothing to rasterise
+    const u8 ca = sb_r8(self + 0xCD);                 // mColorAlpha
+
+    // 600x480 -> clip space. The game composes 2D in that space (root pane = [0,0 600,480]), so the
+    // mapping is exact rather than fitted, and Y flips because screen Y grows downward.
+    const auto cx = [](int v) { return (float)v / 600.0f * 2.0f - 1.0f; };
+    const auto cy = [](int v) { return 1.0f - (float)v / 480.0f * 2.0f; };
+    const float lx = cx(x1), rx = cx(x2), ty = cy(y1), by = cy(y2);
+    const uint32_t rgba = 0xFFFFFF00u | (uint32_t)ca;
+
+    SbrGeomVert v[6]{};
+    const float px[6] = {lx, rx, rx, lx, rx, lx};
+    const float py[6] = {ty, ty, by, ty, by, by};
+    const float su[6] = {0, 1, 1, 0, 1, 0};
+    const float sv[6] = {0, 0, 1, 0, 1, 1};
+    for (int i = 0; i < 6; ++i) {
+        v[i].x = px[i]; v[i].y = py[i]; v[i].z = 0.0f;
+        v[i].nz = 1.0f;
+        v[i].rgba = rgba;
+        for (int t = 0; t < 4; ++t) { v[i].uv[t][0] = su[i]; v[i].uv[t][1] = sv[i]; }
+    }
+
+    SbrDrawable dr{};
+    dr.streamPos = sbr_gxfifo_stream_pos();
+    dr.key = ((uint64_t)self << 8) | 0xFFu;           // stable per pane, distinct from J3D keys
+    dr.geom = sbr_scene_intern_geometry(dr.key, v, 6);
+    if (dr.geom == 0) return;
+    dr.depth = sbr_gx_fifo_zmode();
+    for (unsigned m = 0; m < 8; ++m) dr.tex[m] = sbr_gx_fifo_texture(m);
+    dr.tev = sbr_gx_fifo_tev();
+    dr.xf  = sbr_gx_fifo_xf();
+    // Identity model-view: the quad is already in clip space. IDENTITY PROJECTION for the same
+    // reason — projecting a 2D element with the 3D matrix makes it cover the screen, which is the
+    // documented failure mode in scene.h.
+    dr.mtx[0] = dr.mtx[5] = dr.mtx[10] = 1.0f;
+    for (int i = 0; i < 16; ++i) dr.proj[i] = (i % 5 == 0) ? 1.0f : 0.0f;
+    sbr_scene_add(dr);
+}
+
 void ov_pic_drawself_mtx(CPUState& cpu) {
+    if (j2d_capture_on()) emit_pane_quad(cpu);
     if (diag_on()) {
         note("J2DPicture::drawSelfM", cpu.gpr[3]);
         // The matrix comes in as an ARGUMENT (r6), not from the pane — which is why reading
