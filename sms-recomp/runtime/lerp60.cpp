@@ -13,6 +13,8 @@ namespace aurora::gx::fifo {
 extern uint64_t g_pendingDrawTag;
 extern long g_taggedDrawCount;
 extern long g_untaggedDrawCount;
+extern long g_untaggedOrthoDrawCount;
+extern long g_untaggedPerspDrawCount;
 } // namespace aurora::gx::fifo
 
 bool sbr_lerp_enabled() {
@@ -42,9 +44,19 @@ void sbr_lerp_report_tag_coverage() {
                                "tag. Check the run is actually rendering before reading this.");
         return;
     }
+    const long ortho = aurora::gx::fifo::g_untaggedOrthoDrawCount;
+    const long persp = aurora::gx::fifo::g_untaggedPerspDrawCount;
     lucent::info("lerp60", "tag coverage: {} of {} draws carried an identity ({:.1f}%); {} did not "
-                           "and will SNAP rather than interpolate. Untagged is correct for 2D/HUD, "
-                           "particles and immediate geometry — it is a defect for anything drawn "
-                           "through J3DShape::draw.",
+                           "and will SNAP rather than interpolate.",
                  tagged, total, 100.0 * (double)tagged / (double)total, untagged);
+    // The split is the part that carries information. An untagged ORTHOGRAPHIC draw snapping is
+    // correct — a screen-space element has no meaningful in-between. An untagged PERSPECTIVE draw
+    // snapping is world geometry stuttering inside an otherwise smooth frame, and that number is
+    // the honest size of the remaining gap rather than a percentage that merely looks plausible.
+    lucent::info("lerp60", "  of the untagged: {} orthographic (correct to snap — 2D/HUD) and {} "
+                           "PERSPECTIVE ({:.1f}% of all draws). Perspective draws that snap are "
+                           "world geometry stuttering in a smooth frame — that count is the gap, "
+                           "and it is only acceptable at 0 or for genuinely per-tick geometry "
+                           "(particles, immediate-mode effects).",
+                 ortho, persp, 100.0 * (double)persp / (double)total);
 }
