@@ -1929,3 +1929,29 @@ That discriminates in ONE run what would have taken three guesses:
 
 Next: capture the material AFTER the bind rather than at entry (the same fix that made bounds valid),
 and separately verify what space `mGlobalBounds` is really in.
+
+### Material-after-body fixes the shading; PLACEMENT is the remaining blocker
+
+Restructured the override: pane fields (`mGlobalBounds`, `mColorAlpha`, `mVisible`) are read at ENTRY,
+where the census proved them valid, and the MATERIAL snapshot plus the emit happen AFTER the real body
+runs — at which point the FIFO holds the material that pane actually bound.
+
+That works: a textured shape now appears where the previous build drew nothing
+(`scratch/screenshots/hud2.png`), so the quad is no longer shaded with the preceding material's
+texture and TEV. Confirms the diagnosis from the magenta run.
+
+**Placement is now the blocker, and the mechanism is visible.** Only one quad shows, bottom-right,
+while the inventory has panes at [13,74 211,96] and [271,-131 307,-95]. Under a 600x480 top-left-origin
+mapping, y1=-131 maps ABOVE the clip volume and is culled — which is exactly why most panes never
+appear. So `mGlobalBounds` is NOT simply 600x480 with a top-left origin: either the origin differs, or
+a parent/screen offset applies that the pane's own global rect does not include.
+
+Deliberately NOT nudging the mapping until the HUD lands in the corners: that is endpoint hand-tuning,
+it is banned here, and it would bury the real convention behind a fitted constant. The convention has
+to come from the code — `J2DScreen`/`J2DGrafContext` set up the 2D viewport and ortho projection, and
+whatever they establish is the space `mGlobalBounds` lives in. `J2DScreen::drawSelf` reporting
+[0,0 600,480] for `root` is the anchor: a child at y1=-131 relative to a root spanning 0..480 means
+the child rect is in a DIFFERENT frame than the root's, which is the thing to read.
+
+Next: read the ortho setup in `J2DGrafContext::setup`/`J2DScreen::draw` to get the 2D space and origin
+from the source, then map with it.

@@ -151,13 +151,29 @@ bool j2d_capture_on() {
     return v == 1;
 }
 
-void emit_pane_quad(CPUState& cpu) {
+// Pane fields read at ENTRY (valid there — the census confirmed mGlobalBounds and mColorAlpha are
+// populated at this overload, unlike at J2DPicture::draw). The MATERIAL is deliberately NOT read
+// here: J2D binds its texture and sets its TEV inside the body, so the FIFO state at entry belongs
+// to the previous material. That mismatch is what made the captured quads invisible.
+struct PaneQuad { bool valid = false; int x1, y1, x2, y2; u8 alpha; u32 self; };
+
+PaneQuad read_pane(CPUState& cpu) {
+    PaneQuad q;
     const u32 self = cpu.gpr[3];
-    if (sb_r8(self + 0x0C) == 0) return;              // mVisible
-    const int x1 = (int)sb_r32(self + 0x24), y1 = (int)sb_r32(self + 0x28);
-    const int x2 = (int)sb_r32(self + 0x2C), y2 = (int)sb_r32(self + 0x30);
-    if (x2 <= x1 || y2 <= y1) return;                 // degenerate: nothing to rasterise
-    const u8 ca = sb_r8(self + 0xCD);                 // mColorAlpha
+    if (sb_r8(self + 0x0C) == 0) return q;            // mVisible
+    q.x1 = (int)sb_r32(self + 0x24); q.y1 = (int)sb_r32(self + 0x28);
+    q.x2 = (int)sb_r32(self + 0x2C); q.y2 = (int)sb_r32(self + 0x30);
+    if (q.x2 <= q.x1 || q.y2 <= q.y1) return q;       // degenerate: nothing to rasterise
+    q.alpha = sb_r8(self + 0xCD);                     // mColorAlpha
+    q.self = self;
+    q.valid = true;
+    return q;
+}
+
+void emit_pane_quad(const PaneQuad& q) {
+    const int x1 = q.x1, y1 = q.y1, x2 = q.x2, y2 = q.y2;
+    const u8 ca = q.alpha;
+    const u32 self = q.self;
 
     // 600x480 -> clip space. The game composes 2D in that space (root pane = [0,0 600,480]), so the
     // mapping is exact rather than fitted, and Y flips because screen Y grows downward.
@@ -227,7 +243,7 @@ void emit_pane_quad(CPUState& cpu) {
 }
 
 void ov_pic_drawself_mtx(CPUState& cpu) {
-    if (j2d_capture_on()) emit_pane_quad(cpu);
+    const PaneQuad pane = j2d_capture_on() ? read_pane(cpu) : PaneQuad{};
     if (diag_on()) {
         note("J2DPicture::drawSelfM", cpu.gpr[3]);
         // The matrix comes in as an ARGUMENT (r6), not from the pane — which is why reading
@@ -252,6 +268,9 @@ void ov_pic_drawself_mtx(CPUState& cpu) {
         }
     }
     func_802cc7c0(cpu);
+    // AFTER the body: the FIFO now holds the material this pane bound, so the snapshot describes
+    // the right texture and TEV. Emitting before the call captured the previous material.
+    if (pane.valid) emit_pane_quad(pane);
 }
 void ov_pic_draw(CPUState& cpu) {
     if (diag_on()) note("J2DPicture::draw", cpu.gpr[3]);
