@@ -3,6 +3,8 @@
 
 #include "render_compare.h"
 
+#include "frame_smoothness.h"
+
 #include <aurora/aurora.h>
 #include <lucent/log.h>
 
@@ -144,6 +146,15 @@ void score_against(const uint8_t* nat, int nw, int nh, const uint8_t* aur, int a
 }
 
 void on_aurora_frame(const uint8_t* rgba, uint32_t w, uint32_t h, void*) {
+    // Smoothness is a property of CONSECUTIVE presents, so it must see every one. When it is armed
+    // the sink cadence is forced to 1 and the A/B below is gated by its own counter instead —
+    // scoring every frame would otherwise make the two instruments fight over the sink.
+    sbr_smooth_feed(rgba, (int)w, (int)h);
+    if (sbr_smooth_enabled() && g_every > 1) {
+        static int tick = 0;
+        if (++tick % g_every != 0) return;
+    }
+    if (!sbr_compare_enabled()) return;
     if (selftest()) {
         g_native.rgba.assign(rgba, rgba + (size_t)w * h * 4);
         g_native.w = (int)w;
@@ -238,11 +249,17 @@ bool sbr_compare_enabled() {
 }
 
 void sbr_compare_init() {
-    if (!sbr_compare_enabled() || g_registered) return;
+    if (g_registered) return;
+    // Either instrument needs the sink. The smoothness analyser needs EVERY present; the A/B does
+    // not, and asking aurora for every frame when only the A/B is armed would cost a readback per
+    // present for nothing.
+    const bool wantSmooth = sbr_smooth_enabled();
+    if (!sbr_compare_enabled() && !wantSmooth) return;
     g_registered = true;
-    aurora_set_frame_sink(&on_aurora_frame, nullptr, g_every);
-    lucent::info("ab", "in-process A/B armed: scoring every {} presents against the aurora oracle",
-                 g_every);
+    aurora_set_frame_sink(&on_aurora_frame, nullptr, wantSmooth ? 1 : g_every);
+    if (sbr_compare_enabled())
+        lucent::info("ab", "in-process A/B armed: scoring every {} presents against the aurora "
+                           "oracle", g_every);
 }
 
 void sbr_compare_submit_native(const uint8_t* rgba, int w, int h, uint8_t r, uint8_t g, uint8_t b) {

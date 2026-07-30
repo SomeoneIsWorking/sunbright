@@ -81,7 +81,7 @@ target_link_libraries(sms-recomp-rt PUBLIC lucent::lucent nod::nod aurora::gx au
 # added to fix, so it must be linked unconditionally.
 add_executable(sms-recomp host/main.cpp runtime/sb_log.cpp runtime/tev_eval.cpp runtime/probe_server.cpp
                            runtime/native_render.cpp runtime/scene.cpp runtime/j3d_decode.cpp runtime/gx_texture.cpp runtime/state_oracle.cpp
-                           runtime/render_compare.cpp)
+                           runtime/render_compare.cpp runtime/frame_smoothness.cpp)
 # -rdynamic puts func_<addr> into the dynamic symbol table so rt_dump_guest_stack can
 # name the guest frames. Recompiled bodies nest on the host stack, so the host backtrace
 # is the guest call stack — but only if the names resolve.

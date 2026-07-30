@@ -259,6 +259,11 @@ void video_wait_for_retrace(CPUState& cpu) {
     sbr_audio_frame();
     sb_screen_effects_frame_end();   // roll the per-frame screen-effect set over
 
+    // Frame sink consumers (A/B score, present smoothness). Armed HERE and not inside the native
+    // renderer's block: smoothness measures AURORA's presented image and must work with the native
+    // path off — it is the instrument for the 60fps interpolation work, which is an aurora change.
+    sbr_compare_init();
+
     // Native SDL3-GPU renderer (SBR_SDLGPU=1): draw the interpolated scene from the game's own
     // J3D geometry and its own projection. Still rendered to an OFFSCREEN target and read back —
     // aurora continues to drive the actual picture, so it stays a valid oracle while this is
