@@ -15,6 +15,8 @@ extern long g_taggedDrawCount;
 extern long g_untaggedDrawCount;
 extern long g_untaggedOrthoDrawCount;
 extern long g_untaggedPerspDrawCount;
+extern long g_untaggedPerspDirectCount;
+extern long g_untaggedPerspIndexedCount;
 } // namespace aurora::gx::fifo
 
 bool sbr_lerp_enabled() {
@@ -59,4 +61,15 @@ void sbr_lerp_report_tag_coverage() {
                            "and it is only acceptable at 0 or for genuinely per-tick geometry "
                            "(particles, immediate-mode effects).",
                  ortho, persp, 100.0 * (double)persp / (double)total);
+    // Split again, because "perspective and untagged" still bundles two very different things. Only
+    // the INDEXED count is a defect: direct-mode positions are rebuilt by the CPU every tick and
+    // have no cross-tick identity to have, so snapping is the only correct behaviour for them.
+    const long direct = aurora::gx::fifo::g_untaggedPerspDirectCount;
+    const long indexed = aurora::gx::fifo::g_untaggedPerspIndexedCount;
+    lucent::info("lerp60", "    of those: {} DIRECT (immediate-mode, rebuilt per tick — correct to "
+                           "snap, no identity exists to give them) and {} INDEXED ({:.1f}% of all "
+                           "draws). The INDEXED count is the actual defect: display-list geometry "
+                           "from a persistent vertex array HAS a stable identity and should be "
+                           "interpolating, so each one is a tag seam not yet covered.",
+                 direct, indexed, 100.0 * (double)indexed / (double)total);
 }
