@@ -2072,3 +2072,35 @@ Flag remains OFF and verified inert: 32.16% / +0.7205, 73889 distinct colours wi
 
 Escalating rather than continuing to guess: three hypotheses tested and killed is the point where the
 project's own rule says to get help, and each further guess costs a full run.
+
+### Fable's copy-front-load mechanism: FALSIFIED by its own confirm
+
+Fable traced a complete, citable chain: the frame's trailing 2D draws are parsed after the tick
+rotates, carry near-maximal stream positions, front-load every pending EFB copy to batch 0, leaving
+render-pass segment 1 empty — and since that first segment is the only one with
+`dsi.store_op = DONT_CARE` (native_render.cpp:934), its depth clear is discarded and every
+subsequent 3D batch depth-tests against undefined contents. Colour is STOREd, so the clear survives:
+one distinct colour, 3D gone. It fits the symptom exactly.
+
+It also named the cheap zero-edit confirm and the result that would kill it. Ran that FIRST:
+
+```
+flag ON:   copy 0x80d0f9e0 @ batch 1 of 186   0x810a5440 @ 10   0x80fea480 @ 174
+flag OFF:  copy 0x80d0f9e0 @ batch 1 of 179   0x810a5440 @ 10   0x80fea480 @ 173
+```
+
+**Copies are NOT front-loaded to batch 0** — they land mid-list, essentially identically with the
+flag on and off. Segment 1 is therefore not empty and the depth-discard chain cannot be firing. The
+mechanism is dead at step 1, so its step-2 `store_op = STORE` change was NOT applied: it only
+matters if segment 1 is empty, and applying a fix whose premise just failed is how a symptom gets
+buried under an unrelated change.
+
+Worth recording as its own observation, because it may matter more than it looks: **the batch count
+barely moves with the flag (179 -> 186)** even though the census reports 23 added ortho drawables.
+~23 drawables yielding ~7 batches is only consistent with most 2D drawables merging into neighbours
+or contributing no geometry — which sits awkwardly beside "the capture is healthy" and is the next
+thing I would measure regardless of which hypothesis comes back.
+
+Killed hypotheses now number four, each by measurement: decode-buffer stack usage, pipeline creation
+failure, the SDK-vs-stream projection gate, unbounded geometry interning, and now the copy
+front-load. Flag remains off and inert (32.16% / +0.7205, 73889 distinct colours).
