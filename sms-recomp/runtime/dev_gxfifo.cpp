@@ -118,6 +118,30 @@ uint32_t g_scisRaw[2] = {};
 // Raster state as the COMMAND STREAM describes it (BP 0x40/0x41), which is where J3D actually puts
 // it. Kept separate from the SDK-captured copy until the renderer is switched over deliberately.
 SbrDepthState g_fifoZ{1, 3, 1, 0, 4, 5, 1, 1, 0, {0, 0, 640, 448}};
+
+// PNMTX0 as the stream last loaded it (XF addr 0x0000, 12 floats row-major 3x4). J2D positions its
+// quads with GXLoadPosMtxImm into PNMTX0 and IDENTITY projection-side transforms beyond it, so this
+// matrix is the whole placement of a 2D draw. Latched from the same XF write the hardware sees.
+float g_pnmtx0[12] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
+
+// SBR_FIFO_2D=1 — capture 2D geometry from the FIFO's own direct-mode draws (Fable-reviewed
+// design, 2026-07-30). The J2D/HUD reaches GX through at least five paths (tree-walked pictures,
+// the 7-arg J2DPicture::draw, raw-GX gauge draws, per-glyph text, screen fills); synthesising
+// quads from pane objects can never cover the raw-GX and per-glyph paths, while every one of them
+// serialises its geometry HERE exactly. Gated on the projection being orthographic at the draw.
+// Gate telemetry: how many draws the 2D gate examined, how many were under an ortho projection,
+// and how many decoded. If ortho stays 0 while the HUD draws exist, the PROJECTION SIGNAL is what
+// is broken — the SDK-captured projection may not be current at FIFO parse time.
+unsigned long g_2dSeen = 0, g_2dOrtho = 0, g_2dEmitted = 0;
+
+bool fifo2d_on() {
+    static int v = -1;
+    if (v < 0) {
+        const char* e = std::getenv("SBR_FIFO_2D");
+        v = (e != nullptr && e[0] != '\0' && e[0] != '0') ? 1 : 0;
+    }
+    return v == 1;
+}
 uint32_t g_fifoTexPrevAddr[8] = {};
 
 
@@ -182,6 +206,14 @@ u32 texcoord_bytes(const Vat& v, int i) {
 
 // Size of one vertex under the current VCD/VAT. Indexed attributes are 1 or 2 bytes
 // regardless of format; only direct attributes need the format decoded.
+// Decode one direct-mode 2D draw into scene vertices and hand it to the renderer. Supports the
+// attribute formats the 2D paths actually use (setup2D: POS s16 xyz shift 0 / CLR0 RGBA8 / TEX0
+// u16 shift 15; text and gauges add f32 and u8 variants) and FAILS LOUD on anything else — a
+// silently mis-decoded vertex places geometry plausibly-but-wrongly, which is this project's
+// most-repeated failure mode. Indexed attributes are declined loudly too: J2D never uses them,
+// so their appearance means the gate caught a draw it was never meant to capture.
+bool decode_2d_draw(u32 op, const u8* vp, u32 verts, const Vat& v);
+
 u32 vertex_size(u32 vat_idx) {
     const Vat& v = g_vat[vat_idx & 7];
     u32 n = 0;
@@ -222,6 +254,154 @@ u32 vertex_size(u32 vat_idx) {
     for (int i = 0; i < 8; i++)
         n += attr_size((v.vcd_hi >> (i * 2)) & 3, texcoord_bytes(v, i));
     return n;
+}
+
+bool decode_2d_draw(u32 op, const u8* vp, u32 verts, const Vat& v) {
+    const u32 prim = op & 0xF8;
+    // The 2D paths draw QUADS (J2DPicture, glyphs, gauge) and the occasional strip/fan for fills.
+    if (prim != 0x80 && prim != 0x90 && prim != 0x98 && prim != 0xA0) {
+        static bool w1 = false;
+        if (!w1) { w1 = true; lucent::warn("fifo2d", "declined: primitive 0x{:02x} not handled", prim); }
+        return false;
+    }
+    const u32 pos_mode = (v.vcd_lo >> 9) & 3;
+    const u32 c0_mode  = (v.vcd_lo >> 13) & 3;
+    const u32 t0_mode  = v.vcd_hi & 3;
+    if (pos_mode != 1 || (c0_mode != 0 && c0_mode != 1) || (t0_mode != 0 && t0_mode != 1)) {
+        static bool w2 = false;
+        if (!w2) { w2 = true; lucent::warn("fifo2d", "declined: non-direct attrs pos={} c0={} t0={}", pos_mode, c0_mode, t0_mode); }
+        return false;
+    }
+    if (v.vcd_lo & 1) {   // PosNrmMatIdx: J2D never uses it; capturing such a draw is a gate bug
+        static bool w3 = false;
+        if (!w3) { w3 = true; lucent::warn("fifo2d", "declined: PosNrmMatIdx present"); }
+        return false;
+    }
+    const u32 pos_cnt = ((v.fmt0 >> 0) & 1) ? 3 : 2;
+    const u32 pos_fmt = (v.fmt0 >> 1) & 7;
+    const u32 pos_shift = (v.fmt0 >> 4) & 0x1F;
+    const u32 c0_comp = (v.fmt0 >> 14) & 7;
+    const u32 t0_elem = (v.fmt0 >> 21) & 1;
+    const u32 t0_fmt  = (v.fmt0 >> 22) & 7;
+    const u32 t0_shift = (v.fmt0 >> 25) & 0x1F;
+    if (pos_fmt != 3 && pos_fmt != 4) {   // s16 / f32 are what 2D actually emits
+        static bool w4 = false;
+        if (!w4) { w4 = true; lucent::warn("fifo2d", "declined: pos fmt {}", pos_fmt); }
+        return false;
+    }
+    if (c0_mode == 1 && c0_comp != 5) {   // RGBA8 only (setup2D's declared format)
+        static bool w5 = false;
+        if (!w5) { w5 = true; lucent::warn("fifo2d", "declined: clr0 comp {}", c0_comp); }
+        return false;
+    }
+    if (verts < 3 || verts > 512) return false;
+
+    const u32 vsize = vertex_size(0xFF & (op & 7));
+    const float posDiv = (pos_fmt == 3) ? (float)(1u << pos_shift) : 1.0f;
+    const float texDiv = (t0_fmt == 2 || t0_fmt == 3) ? (float)(1u << t0_shift) : 1.0f;
+
+    SbrGeomVert out[512 * 3];   // worst case after triangulation of a strip
+    u32 nOut = 0;
+    SbrGeomVert vtx[512];
+    for (u32 k = 0; k < verts; ++k) {
+        const u8* q = vp + (size_t)k * vsize;
+        SbrGeomVert g{};
+        // POS
+        float px, py, pz = 0.0f;
+        if (pos_fmt == 3) {
+            px = (float)(s16)((q[0] << 8) | q[1]) / posDiv;
+            py = (float)(s16)((q[2] << 8) | q[3]) / posDiv;
+            if (pos_cnt == 3) pz = (float)(s16)((q[4] << 8) | q[5]) / posDiv;
+            q += pos_cnt * 2;
+        } else {
+            union { u32 u; float f; } c;
+            c.u = ((u32)q[0] << 24) | ((u32)q[1] << 16) | ((u32)q[2] << 8) | q[3]; px = c.f;
+            c.u = ((u32)q[4] << 24) | ((u32)q[5] << 16) | ((u32)q[6] << 8) | q[7]; py = c.f;
+            if (pos_cnt == 3) {
+                c.u = ((u32)q[8] << 24) | ((u32)q[9] << 16) | ((u32)q[10] << 8) | q[11];
+                pz = c.f;
+            }
+            q += pos_cnt * 4;
+        }
+        // PNMTX0: the 2D position matrix (usually identity or a screen translation).
+        g.x = g_pnmtx0[0] * px + g_pnmtx0[1] * py + g_pnmtx0[2] * pz + g_pnmtx0[3];
+        g.y = g_pnmtx0[4] * px + g_pnmtx0[5] * py + g_pnmtx0[6] * pz + g_pnmtx0[7];
+        g.z = g_pnmtx0[8] * px + g_pnmtx0[9] * py + g_pnmtx0[10] * pz + g_pnmtx0[11];
+        g.nz = 1.0f;
+        // CLR0
+        if (c0_mode == 1) {
+            g.rgba = ((u32)q[0] << 24) | ((u32)q[1] << 16) | ((u32)q[2] << 8) | q[3];
+            q += 4;
+        } else {
+            g.rgba = 0xFFFFFFFFu;
+        }
+        // TEX0
+        if (t0_mode == 1) {
+            const u32 comps = t0_elem ? 2 : 1;
+            float st[2] = {0, 0};
+            for (u32 ccc = 0; ccc < comps; ++ccc) {
+                if (t0_fmt == 2 || t0_fmt == 3) {   // u16/s16
+                    st[ccc] = (float)(u16)((q[0] << 8) | q[1]) / texDiv;
+                    q += 2;
+                } else if (t0_fmt == 4) {           // f32
+                    union { u32 u; float f; } c;
+                    c.u = ((u32)q[0] << 24) | ((u32)q[1] << 16) | ((u32)q[2] << 8) | q[3];
+                    st[ccc] = c.f;
+                    q += 4;
+                } else {                            // u8/s8
+                    st[ccc] = (float)q[0] / texDiv;
+                    q += 1;
+                }
+            }
+            for (int t = 0; t < 4; ++t) { g.uv[t][0] = st[0]; g.uv[t][1] = st[1]; }
+        }
+        vtx[k] = g;
+    }
+    // Triangulate: quads -> 2 tris each; strips/fans -> tri lists.
+    if (prim == 0x80) {                             // QUADS
+        for (u32 k = 0; k + 3 < verts; k += 4) {
+            out[nOut++] = vtx[k]; out[nOut++] = vtx[k + 1]; out[nOut++] = vtx[k + 2];
+            out[nOut++] = vtx[k]; out[nOut++] = vtx[k + 2]; out[nOut++] = vtx[k + 3];
+        }
+    } else if (prim == 0x90) {                      // TRIANGLES
+        for (u32 k = 0; k + 2 < verts; k += 3) {
+            out[nOut++] = vtx[k]; out[nOut++] = vtx[k + 1]; out[nOut++] = vtx[k + 2];
+        }
+    } else if (prim == 0x98) {                      // TRIANGLESTRIP
+        for (u32 k = 2; k < verts; ++k) {
+            out[nOut++] = vtx[k - 2]; out[nOut++] = vtx[(k & 1) ? k : k - 1];
+            out[nOut++] = vtx[(k & 1) ? k - 1 : k];
+        }
+    } else {                                        // TRIANGLEFAN
+        for (u32 k = 2; k < verts; ++k) {
+            out[nOut++] = vtx[0]; out[nOut++] = vtx[k - 1]; out[nOut++] = vtx[k];
+        }
+    }
+    if (nOut == 0) return false;
+
+    // Key: content hash ^ texture, so a digit that changes glyph re-interns rather than reusing
+    // stale geometry. FNV-1a over the decoded vertices.
+    u64 h = 1469598103934665603ULL;
+    const u8* hb = (const u8*)out;
+    for (size_t b = 0; b < nOut * sizeof(SbrGeomVert); ++b) h = (h ^ hb[b]) * 1099511628211ULL;
+    h ^= g_fifoTex[0].addr;
+
+    SbrDrawable dr{};
+    dr.streamPos = (u32)g_out.size();
+    dr.key = h;
+    dr.geom = sbr_scene_intern_geometry(h, out, (int)nOut);
+    if (dr.geom == 0) return false;
+    dr.depth = g_fifoZ;
+    for (unsigned m = 0; m < 8; ++m) dr.tex[m] = g_fifoTex[m];
+    dr.tev = g_tev;
+    dr.xf  = g_xf;
+    bool is2d = false;
+    const float* pj = sbr_gx_current_projection(&is2d);
+    if (pj != nullptr) for (int j = 0; j < 16; ++j) dr.proj[j] = pj[j];
+    dr.is2d = 1;
+    dr.mtx[0] = dr.mtx[5] = dr.mtx[10] = 1.0f;   // PNMTX0 already applied per vertex
+    sbr_scene_add(dr);
+    return true;
 }
 
 void put_u8 (std::vector<u8>& v, u8 x)  { v.push_back(x); }
@@ -547,6 +727,15 @@ size_t parse(const u8* p, size_t n, int depth) {
                 // record what the guest actually emits — the count and address here decide
                 // whether the projection is ever applied at all.
                 const u32 addr = be32(p + i + 1) & 0xFFFF;
+                // XF 0x0000-0x000B is PNMTX0 (row-major 3x4). GXLoadPosMtxImm writes all 12.
+                if (addr < 0x000C) {
+                    const u32 cnt = ((be32(p + i + 1) >> 16) & 0xF) + 1;
+                    for (u32 w = 0; w < cnt && (addr + w) < 12; ++w) {
+                        union { u32 u; float f; } cv;
+                        cv.u = be32(p + i + 5 + w * 4);
+                        g_pnmtx0[addr + w] = cv.f;
+                    }
+                }
                 if (addr == 0x1020) {
                     static u32 seen = 0;
                     if (seen < 4) {
@@ -985,6 +1174,17 @@ size_t parse(const u8* p, size_t n, int depth) {
             const size_t len = 3 + (size_t)verts * vsize;
             if (vsize == 0) break;                  // VAT not seen yet
             if (n - i < len) { g_need = len; break; }
+            // 2D capture: a draw made under an ORTHOGRAPHIC projection is HUD/menu geometry the
+            // J3D capture seam never sees. Decode it straight from the stream bytes.
+            if (fifo2d_on()) {
+                bool is2dNow = false;
+                sbr_gx_current_projection(&is2dNow);
+                ++g_2dSeen;
+                if (is2dNow) {
+                    ++g_2dOrtho;
+                    if (decode_2d_draw(op, p + i + 3, verts, g_vat[op & 7])) ++g_2dEmitted;
+                }
+            }
             // The decomp runtime submits ~3,166 vertices across ~334 draws for this same
             // scene (SB_DRAW_STATS), i.e. roughly 10 vertices per draw. A draw claiming
             // thousands is therefore a mis-frame reading data as a command, even when the
@@ -1162,6 +1362,9 @@ void sbr_gxfifo_report_bp_writes() {
     // Whether the BP write MASK is used at all. If this is zero the mask handling is inert and any
     // divergence it was supposed to explain is elsewhere — worth knowing before believing the fix.
     lucent::info("gxfifo", "  BP write mask (0xFE) {} writes", g_bpWrites[0xFE]);
+    if (g_2dSeen != 0)
+        lucent::info("gxfifo", "  2D gate: {} draws seen, {} under ortho, {} emitted", g_2dSeen,
+                     g_2dOrtho, g_2dEmitted);
     // BP 0x40 (ZMode) and 0x41 (cmode0/blend). Aurora parses both; this parser does not, and takes
     // its z/blend state from the SDK GXSetZMode/GXSetBlendMode overrides instead. If J3D sets them
     // through display lists these counts are nonzero and that SDK state is stale — the same defect

@@ -265,7 +265,7 @@ logger — that is debt to convert, not a feature.
 | `SBR_AB_SELFTEST` | 1 | `sms-recomp/runtime/render_compare.cpp:99` |  |
 | `SBR_ALPHATEST` | 1 | `sms-recomp/runtime/native_render.cpp:492` |  |
 | `SBR_AUDIO_RAW` | 1 | `sms-recomp/runtime/dev_aid.cpp:94` |  |
-| `SBR_BIND_DECODE_LOG` | 1 | `sms-recomp/runtime/dev_gxfifo.cpp:431` |  |
+| `SBR_BIND_DECODE_LOG` | 1 | `sms-recomp/runtime/dev_gxfifo.cpp:611` |  |
 | `SBR_BIND_LOG` | 1 | `sms-recomp/runtime/native_render.cpp:220` |  |
 | `SBR_BLACK_OWNER` | 1 | `sms-recomp/overrides/native_frame.cpp:350` |  |
 | `SBR_CARD_A` | 1 | `sms-recomp/overrides/native_card.cpp:88` |  |
@@ -274,12 +274,13 @@ logger — that is debt to convert, not a feature.
 | `SBR_DRAW_STATE` | 1 | `sms-recomp/runtime/scene.cpp:825` |  |
 | `SBR_DUMP_COPY` | 1 | `sms-recomp/overrides/native_frame.cpp:351` |  |
 | `SBR_FASTBOOT` | 1 | `sms-recomp/overrides/fastboot_native.cpp:79` |  |
+| `SBR_FIFO_2D` | 1 | `sms-recomp/runtime/dev_gxfifo.cpp:140` |  |
 | `SBR_HUD_OFF` | 1 | `sms-recomp/overrides/widescreen.cpp:246` |  |
 | `SBR_J2D_CAPTURE` | 1 | `sms-recomp/overrides/diag_2d.cpp:148` |  |
 | `SBR_J2D_SOLID` | 1 | `sms-recomp/overrides/diag_2d.cpp:212` |  |
 | `SBR_J3D_CAPTURE` | 1 | `sms-recomp/overrides/j3d_capture.cpp:66` |  |
 | `SBR_MTX_CHECK` | 1 | `sms-recomp/overrides/mtx_crosscheck.cpp:91` |  |
-| `SBR_NO_TEXOBJ` | 1 | `sms-recomp/runtime/dev_gxfifo.cpp:397` |  |
+| `SBR_NO_TEXOBJ` | 1 | `sms-recomp/runtime/dev_gxfifo.cpp:577` |  |
 | `SBR_PAD_SCRIPT` | 1 | `sms-recomp/overrides/native_pad.cpp:92` |  |
 | `SBR_PHASE_COUNT` | 1 | `sms-recomp/overrides/diag_phases.cpp:25` |  |
 | `SBR_PRESENT_TIMING` | 1 | `sms-recomp/overrides/native_frame.cpp:178` |  |
@@ -311,4 +312,4 @@ logger — that is debt to convert, not a feature.
 | `SBR_WIDESCREEN` | 1 | `sms-recomp/overrides/widescreen.cpp:56` |  |
 | `SBR_WS_SCALE` | 1 | `sms-recomp/overrides/widescreen.cpp:65` |  |
 
-**290 switches; 88 still gate a raw print.**
+**291 switches; 88 still gate a raw print.**

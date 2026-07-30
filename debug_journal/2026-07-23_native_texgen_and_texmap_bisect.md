@@ -1989,3 +1989,32 @@ Two things this does settle:
 Next: check whether the six captured panes are the on-screen HUD subset or an unrelated one — the
 census already prints pane names, so pairing those names against the visible HUD elements answers it
 directly.
+
+## 2026-07-30 — Fable's verdict lands: FIFO 2D capture, decoder working, one plumbing gap left
+
+Escalated the capture-architecture question to Fable with a full brief. Its verdict, with citations
+verified before acting: **per-pane synthesis is the wrong architecture.** The HUD reaches GX through
+at least five paths — tree-walked pictures (our 6), the 7-arg `J2DPicture::draw` which emits its own
+quads and never computes `mGlobalBounds` at all (so the "0 at entry" reading was panes that are
+NEVER tree-walked, correcting my sampling-time story), raw-GX gauge draws with no pane object, text
+as one quad PER GLYPH, and screen fills. Synthesis can never cover the last three; the FIFO already
+carries all five exactly. It also caught two latent bugs in the synthesis path: a 600-vs-640 ortho
+split (~7% placement error under the 640 space) and 0..1 UVs ignoring drawFullSet's partial-UV
+computation.
+
+Implemented per its plan (`SBR_FIFO_2D=1`, dev_gxfifo.cpp): PNMTX0 latched from XF writes addr<0xC;
+direct-mode POS/CLR0/TEX0 decode (s16/f32 positions, RGBA8 colour, u8/u16/f32 texcoords, loud
+declines for anything else including indexed attrs); quad/strip/fan triangulation; content-hash ^
+tex0 keying so animated digits re-intern; emitted via sbr_scene_add with the ortho projection.
+
+Gate telemetry (new, in the BP report): `158M draws seen, 536k under ortho, 400k emitted` over a
+~5400-frame run — i.e. ~100 ortho draws and ~75 emits per frame, consistent with the ~126 trailing
+draws measured earlier. **The decoder works.**
+
+**Open: the emitted drawables never reach the scene census** (0 orthographic of ~940). The parse
+runs in `gxfifo_build()`, which native_frame.cpp calls AFTER `end_tick(); begin_tick()` — so the
+adds land in the freshly-cleared `g_building` and should rotate into `g_cur` at the NEXT end_tick,
+yet the census (over `g_cur.items`) never sees them. `end_tick` itself is a clean
+move-rotation, so the loss is elsewhere — candidate: something between the add and the rotation
+clears or filters the list, or the census runs against a different snapshot than the one the adds
+target. To be settled by instrumenting the list lengths at rotation, not by theory.
