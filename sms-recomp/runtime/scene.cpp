@@ -403,14 +403,27 @@ int  sbr_scene_multislot_count() { return g_multislot; }
 // not go through J3DShape::draw — which is the only thing this port captures. If the count is zero
 // while aurora shows a HUD, the HUD is not "rendered wrong", it is NOT CAPTURED, and no amount of
 // shading work will produce it. Measured rather than assumed.
+// Draw commands the FIFO saw during the LAST frame, captured at the top of sbr_scene_render so the
+// census below compares the same frame rather than accumulating across report intervals.
+long g_lastFrameDraws = 0;
+
 void sbr_scene_report_2d() {
     size_t ortho = 0, persp = 0;
     for (const auto& d : g_cur.items) {
         // An orthographic projection has no perspective term in the last row.
         (d.proj[11] == 0.0f ? ortho : persp)++;
     }
+    // Against the FIFO's own draw count FOR THE SAME FRAME. Taking the count at report time
+    // instead accumulated ~120 frames of draws against one frame of drawables and produced a
+    // ratio near 4000x that meant nothing — unlike windows as well as unlike units. Even
+    // correctly windowed these are different units: one captured drawable expands to many stream
+    // draw commands, so this bounds the gap rather than measuring it.
+    const long fifoDraws = g_lastFrameDraws;
     lucent::info("nrender", "  projection census: {} orthographic (2D/HUD) drawables, {} "
-                            "perspective, of {}", ortho, persp, g_cur.items.size());
+                            "perspective, of {} captured — the FIFO saw {} draw commands in the "
+                            "same window ({}x)", ortho, persp, g_cur.items.size(), fifoDraws,
+                 g_cur.items.empty() ? 0.0
+                                     : (double)fifoDraws / (double)g_cur.items.size());
 }
 
 void sbr_scene_report_zmodes() {
@@ -622,6 +635,7 @@ void sbr_scene_note_efb_copy(uint32_t dest, int sx, int sy, int sw, int sh, int 
 }
 
 float sbr_scene_render(double now_seconds, const float proj[16]) {
+    g_lastFrameDraws = sbr_gxfifo_take_draw_count();
     if (!g_cur.valid) return 0.0f;
     ++g_tickIndex;
 

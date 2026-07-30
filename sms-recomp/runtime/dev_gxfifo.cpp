@@ -101,6 +101,10 @@ struct Stats {
 
 unsigned long g_bpWrites[256] = {};
 long g_drawIndex = 0;
+// Draw commands seen in the stream since the last query. The scene frontend captures only
+// J3DShape::draw, so this is the ceiling a FIFO-vertex frontend would reach — the difference
+// between the two is the coverage gap, in draws, rather than a guess about it.
+long g_drawsSinceQuery = 0;
 // Where each texture unit was last bound, and what it held before — the provenance a divergence
 // report needs. Kept beside the unit state so it cannot drift from it.
 uint32_t g_fifoTexBindPos[8] = {};
@@ -948,6 +952,7 @@ size_t parse(const u8* p, size_t n, int depth) {
             // Record THIS side's state for the per-draw comparison against aurora, which derives
             // its own from the same bytes a moment later. See state_oracle.h.
             ++g_drawIndex;
+            ++g_drawsSinceQuery;
             if (sbr_state_diff_enabled()) {
                 SbrDrawState st{};
                 st.pos = (uint32_t)g_out.size();   // where this draw's command byte lands
@@ -1180,3 +1185,11 @@ void sbr_gxfifo_report_bp_writes() {
 
 // The raster state the display lists have written. See the BP 0x40/0x41 handler.
 SbrDepthState sbr_gx_fifo_zmode() { return g_fifoZ; }
+
+
+// Draw commands seen since the previous call. See g_drawsSinceQuery.
+long sbr_gxfifo_take_draw_count() {
+    const long n = g_drawsSinceQuery;
+    g_drawsSinceQuery = 0;
+    return n;
+}
