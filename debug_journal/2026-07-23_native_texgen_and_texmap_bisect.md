@@ -2018,3 +2018,35 @@ yet the census (over `g_cur.items`) never sees them. `end_tick` itself is a clea
 move-rotation, so the loss is elsewhere — candidate: something between the add and the rotation
 clears or filters the list, or the census runs against a different snapshot than the one the adds
 target. To be settled by instrumenting the list lengths at rotation, not by theory.
+
+### The census was miscounting its own subject; and SBR_FIFO_2D collapses the frame (cause named)
+
+Two defects found, one fixed, one understood but NOT fixed — the flag stays off.
+
+**1. The projection census counted FIFO-2D drawables as perspective.** It tested `d.proj[11] == 0`,
+but a FIFO-2D drawable stores the stream's ortho matrix whose [11] is nonzero, so the census reported
+`0 orthographic` while 20 captured 2D drawables sat in the very list it was counting. Now tests
+`d.is2d`, the capture-time verdict, and reports 24-29 per frame. An instrument miscounting the thing
+it exists to count — caught only by instrumenting the rotation and finding `20 is2d` in a list the
+census called 0-ortho.
+
+**2. The SDK-vs-FIFO trap, third instance.** The 2D gate used `sbr_gx_current_projection()`, which is
+the SDK-CAPTURED projection and is not synchronised with the stream position being parsed. Declines
+proved it: `pos fmt 2` and `non-direct attrs pos=3` are 3D draws with indexed attributes arriving
+inside the "under ortho" branch. Fixed by latching the projection from the stream itself (XF 0x1020:
+6 params + type word, type 1 == GX_ORTHOGRAPHIC). Same shape as the raster state (wrong on 43% of
+draws) and the texObj slot (133 phantom mismatches).
+
+**3. STILL BROKEN, and the flag stays OFF: `SBR_FIFO_2D=1` collapses the entire frame to the clear
+colour** — 3D scene included. Not the stack (moving the 117KB/39KB decode buffers off it changed
+nothing), not pipeline creation (no failures logged), and not the projection gate (fixed above,
+frame still blank). Prime suspect, and it fits the evidence: the geometry cache is keyed by a
+CONTENT HASH, and 387k distinct keys are interned over a run (~77/frame, and animated digits change
+content every frame), so the cache grows without bound and plausibly invalidates the handles 3D
+drawables hold — which is exactly the "everything disappears" signature. Next step is to confirm
+that by instrumenting `sbr_scene_intern_geometry`'s map size and eviction, then give 2D a TRANSIENT
+per-frame geometry path instead of interning content-keyed entries forever.
+
+Verified safe meanwhile: with the flag off the renderer is unchanged — `COMPARABLE @ N=59 edgeIoU
+32.16% lumaCorr +0.7205` against the 32.1/+0.720 baseline, 73889 distinct colours in the dump. The
+feature is opt-in and inert by default, so the tree is not left with a landmine.

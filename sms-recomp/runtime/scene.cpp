@@ -410,8 +410,11 @@ long g_lastFrameDraws = 0;
 void sbr_scene_report_2d() {
     size_t ortho = 0, persp = 0;
     for (const auto& d : g_cur.items) {
-        // An orthographic projection has no perspective term in the last row.
-        (d.proj[11] == 0.0f ? ortho : persp)++;
+        // d.is2d is the getter's own verdict at capture time. The old proj[11] heuristic counted
+        // FIFO-2D drawables as PERSPECTIVE (their stored matrix keeps a nonzero [11]), which made
+        // the census report 0 while 20 captured 2D drawables sat in the very list it was counting
+        // — an instrument miscounting the thing it exists to count.
+        (d.is2d ? ortho : persp)++;
     }
     // Against the FIFO's own draw count FOR THE SAME FRAME. Taking the count at report time
     // instead accumulated ~120 frames of draws against one frame of drawables and produced a
@@ -598,12 +601,32 @@ void sbr_scene_begin_tick() {
     g_building.index.clear();
 }
 
+unsigned long g_addsIs2d = 0;   // adds with is2d set, counted AT THE ADD — pairs with end_tick's count
+
 void sbr_scene_add(const SbrDrawable& d) {
+    if (d.is2d) ++g_addsIs2d;
     g_building.index.emplace(d.key, (uint32_t)g_building.items.size());
     g_building.items.push_back(d);
 }
 
 void sbr_scene_end_tick() {
+    {   // WHERE do the FIFO-2D drawables go? The gate telemetry proves ~75 emits per frame reach
+        // sbr_scene_add, yet the census over g_cur never sees an orthographic drawable. Count the
+        // populations at the exact moment of rotation, so "lost between add and census" becomes a
+        // location rather than a mystery.
+        static long tick = 0;
+        if (++tick % 300 == 0) {
+            size_t ortho = 0;
+            for (const auto& d : g_building.items)
+                if (d.proj[11] == 0.0f) ++ortho;
+            lucent::info("nrender", "  end_tick: rotating {} items ({} ortho, {} is2d) into "
+                                    "g_cur; {} is2d adds SEEN by this scene instance since start",
+                         g_building.items.size(), ortho,
+                         [&] { size_t n = 0; for (const auto& d : g_building.items) n += d.is2d;
+                               return n; }(),
+                         g_addsIs2d);
+        }
+    }
     g_prev = std::move(g_cur);
     g_cur = std::move(g_building);
     g_building = Snapshot{};

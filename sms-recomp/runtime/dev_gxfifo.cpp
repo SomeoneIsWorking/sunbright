@@ -124,6 +124,15 @@ SbrDepthState g_fifoZ{1, 3, 1, 0, 4, 5, 1, 1, 0, {0, 0, 640, 448}};
 // matrix is the whole placement of a 2D draw. Latched from the same XF write the hardware sees.
 float g_pnmtx0[12] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
 
+// The projection AS THE STREAM SETS IT (XF 0x1020: 6 params then the type word). This must come from
+// the FIFO, not from the SDK-captured projection: the SDK copy is not synchronised with the stream
+// position being parsed, so gating 2D capture on it classified 3D draws — indexed attributes, s8
+// positions — as orthographic and flooded the scene with hundreds of thousands of bogus drawables,
+// blanking the frame. That is the THIRD instance of the SDK-vs-FIFO trap in this renderer, after the
+// raster state (wrong on 43% of draws) and the texObj slot (133 phantom mismatches).
+float g_fifoProj[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+bool  g_fifoProjOrtho = false;
+
 // SBR_FIFO_2D=1 — capture 2D geometry from the FIFO's own direct-mode draws (Fable-reviewed
 // design, 2026-07-30). The J2D/HUD reaches GX through at least five paths (tree-walked pictures,
 // the 7-arg J2DPicture::draw, raw-GX gauge draws, per-glyph text, screen fills); synthesising
@@ -300,9 +309,13 @@ bool decode_2d_draw(u32 op, const u8* vp, u32 verts, const Vat& v) {
     const float posDiv = (pos_fmt == 3) ? (float)(1u << pos_shift) : 1.0f;
     const float texDiv = (t0_fmt == 2 || t0_fmt == 3) ? (float)(1u << t0_shift) : 1.0f;
 
-    SbrGeomVert out[512 * 3];   // worst case after triangulation of a strip
+    // STATIC, not stack. These are ~117KB and ~39KB; as locals they put ~160KB on the stack of a
+    // FIFO-parse callback, which is a stack overflow waiting to happen and did in fact coincide with
+    // the whole frame collapsing to the clear colour. The parser is single-threaded by construction
+    // (the one-runtime doctrine), so static is safe here and the sizes stay off the stack.
+    static SbrGeomVert out[512 * 3];
+    static SbrGeomVert vtx[512];
     u32 nOut = 0;
-    SbrGeomVert vtx[512];
     for (u32 k = 0; k < verts; ++k) {
         const u8* q = vp + (size_t)k * vsize;
         SbrGeomVert g{};
@@ -395,9 +408,7 @@ bool decode_2d_draw(u32 op, const u8* vp, u32 verts, const Vat& v) {
     for (unsigned m = 0; m < 8; ++m) dr.tex[m] = g_fifoTex[m];
     dr.tev = g_tev;
     dr.xf  = g_xf;
-    bool is2d = false;
-    const float* pj = sbr_gx_current_projection(&is2d);
-    if (pj != nullptr) for (int j = 0; j < 16; ++j) dr.proj[j] = pj[j];
+    for (int j = 0; j < 16; ++j) dr.proj[j] = g_fifoProj[j];
     dr.is2d = 1;
     dr.mtx[0] = dr.mtx[5] = dr.mtx[10] = 1.0f;   // PNMTX0 already applied per vertex
     sbr_scene_add(dr);
@@ -737,6 +748,30 @@ size_t parse(const u8* p, size_t n, int depth) {
                     }
                 }
                 if (addr == 0x1020) {
+                    // 6 params + type. type 1 == GX_ORTHOGRAPHIC.
+                    const u32 cnt = ((be32(p + i + 1) >> 16) & 0xF) + 1;
+                    if (cnt >= 7) {
+                        float pr[6];
+                        for (int w = 0; w < 6; ++w) {
+                            union { u32 u; float f; } cv;
+                            cv.u = be32(p + i + 5 + w * 4);
+                            pr[w] = cv.f;
+                        }
+                        const u32 type = be32(p + i + 5 + 6 * 4);
+                        g_fifoProjOrtho = (type == 1);
+                        for (int j = 0; j < 16; ++j) g_fifoProj[j] = 0.0f;
+                        if (g_fifoProjOrtho) {
+                            g_fifoProj[0] = pr[0]; g_fifoProj[3]  = pr[1];
+                            g_fifoProj[5] = pr[2]; g_fifoProj[7]  = pr[3];
+                            g_fifoProj[10] = pr[4]; g_fifoProj[11] = pr[5];
+                            g_fifoProj[15] = 1.0f;
+                        } else {
+                            g_fifoProj[0] = pr[0]; g_fifoProj[2]  = pr[1];
+                            g_fifoProj[5] = pr[2]; g_fifoProj[6]  = pr[3];
+                            g_fifoProj[10] = pr[4]; g_fifoProj[11] = pr[5];
+                            g_fifoProj[14] = -1.0f;
+                        }
+                    }
                     static u32 seen = 0;
                     if (seen < 4) {
                         ++seen;
@@ -1177,10 +1212,8 @@ size_t parse(const u8* p, size_t n, int depth) {
             // 2D capture: a draw made under an ORTHOGRAPHIC projection is HUD/menu geometry the
             // J3D capture seam never sees. Decode it straight from the stream bytes.
             if (fifo2d_on()) {
-                bool is2dNow = false;
-                sbr_gx_current_projection(&is2dNow);
                 ++g_2dSeen;
-                if (is2dNow) {
+                if (g_fifoProjOrtho) {
                     ++g_2dOrtho;
                     if (decode_2d_draw(op, p + i + 3, verts, g_vat[op & 7])) ++g_2dEmitted;
                 }
