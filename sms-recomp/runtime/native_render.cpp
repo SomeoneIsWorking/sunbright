@@ -969,12 +969,21 @@ void render_pass_into_cpu(uint32_t ablation) {
             SDL_BindGPUGraphicsPipeline(rp, pipeline_for(b.st));
             // The hardware clips each draw to its own scissor rect. Clamped to the target because
             // the guest rect can legitimately extend past it and SDL rejects an out-of-bounds one.
+            // SBR_NO_SCISSOR=1 (DIAGNOSTIC): ignore the per-draw scissor and clip to the full
+            // target. If a frame that renders NOTHING returns with this on, the scissor carried by
+            // some batch is what is killing it — which is a confirm, not a correlation, because no
+            // other state changes.
+            static const bool noScissor = [] {
+                const char* e = std::getenv("SBR_NO_SCISSOR");
+                return e != nullptr && e[0] != '\0' && e[0] != '0';
+            }();
             {
                 SDL_Rect sc{};
                 sc.x = std::clamp<int>(b.st.scissor[0], 0, g_w);
                 sc.y = std::clamp<int>(b.st.scissor[1], 0, g_h);
                 sc.w = std::clamp<int>(b.st.scissor[2], 0, g_w - sc.x);
                 sc.h = std::clamp<int>(b.st.scissor[3], 0, g_h - sc.y);
+                if (noScissor) { sc.x = 0; sc.y = 0; sc.w = g_w; sc.h = g_h; }
                 SDL_SetGPUScissor(rp, &sc);
             }
             // All eight units every draw: the shader's sampler set is fixed by the pipeline

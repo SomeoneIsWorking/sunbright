@@ -2104,3 +2104,36 @@ thing I would measure regardless of which hypothesis comes back.
 Killed hypotheses now number four, each by measurement: decode-buffer stack usage, pipeline creation
 failure, the SDK-vs-stream projection gate, unbounded geometry interning, and now the copy
 front-load. Flag remains off and inert (32.16% / +0.7205, 73889 distinct colours).
+
+### Branch 1 confirmed, then scissor and transforms both cleared
+
+Fable's discriminator, answered with the existing per-frame report — no edits:
+
+```
+flag OFF:  verts=234690  batches=151  drawables=946  coverage=100.0%
+flag ON:   verts=232695  batches=161  drawables=901  coverage=0.0%
+```
+
+**Branch 1**: the backend is handed essentially the same amount of work and produces ZERO fragments.
+Frontend collapse is out (verts and batches are healthy), and the fresh, differing drawable/batch
+numbers argue against a frozen readback or dead device.
+
+Then two eliminations:
+
+- **Transforms are fine.** `SBR_DRAW_STATE=400` prints sane NDC boxes for the first draws —
+  `box=[-0.19,0.19]x[-0.18,0.01] nearW=1 zt1w1f3 blend0`, no NaN, no huge extents. (These first draws
+  are the stale-tail 2D quads sitting at the tick FRONT, exactly as Fable predicted from
+  `gxfifo_build` running after `begin_tick` — worth noting the prediction held even though its
+  copy-front-load consequence did not.)
+- **Scissor is not the killer.** New `SBR_NO_SCISSOR=1` ablation forces the full-target rect for every
+  batch, changing nothing else. Coverage stays `0.0%`. A confirm-shaped test rather than a
+  correlation: if the scissor carried by any batch were clipping the frame away, this returns it.
+
+Five hypotheses killed by measurement now: decode-buffer stack, pipeline creation failure, the
+SDK-vs-stream projection gate, unbounded geometry interning, the copy front-load, and the scissor.
+
+One detail from the draw-state dump worth carrying into the next round: those 2D quads report
+`zt1w1f3` — depth test ON and depth WRITE ON — because `dr.depth` is `g_fifoZ` at parse time. Drawn
+FIRST in the tick, at z=0, writing depth, they could occlude what follows; `setup2D` disables the
+depth test for 2D on hardware (`GXSetZMode(GX_FALSE, ...)`), so carrying test/write ON here is
+already unfaithful regardless of whether it is the blanking cause.
