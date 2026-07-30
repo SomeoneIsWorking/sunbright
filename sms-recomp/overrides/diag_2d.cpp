@@ -43,6 +43,15 @@ bool diag_on() {
 struct Seen {
     unsigned long hits = 0;
     float m00 = 0, m03 = 0;
+    // mGlobalBounds (J2DPane+0x24) — the SCREEN-SPACE rect, with every parent transform already
+    // applied, so it needs no matrix. JUTRect is {int x1 @0, y1 @4, x2 @8, y2 @0xC}
+    // (JSystem/JUtility/JUTRect.hpp), and J2DPane's layout is from JSystem/J2D/J2DPane.hpp — both
+    // read rather than inferred, because a transposed rect would place a HUD quad plausibly but
+    // wrongly. Reported BEFORE any geometry is synthesised from it: if these are not sane screen
+    // coordinates, the offsets are wrong and nothing built on them can be trusted.
+    int gx1 = 0, gy1 = 0, gx2 = 0, gy2 = 0;
+    int visible = -1;
+    int alpha = -1, colorAlpha = -1;
 };
 std::map<std::string, Seen> g_seen;
 
@@ -71,6 +80,13 @@ void note(const char* cls, u32 self) {
     ++e.hits;
     e.m00 = guest_f32(self + 0x84);
     e.m03 = guest_f32(self + 0x84 + 0x0C);
+    e.gx1 = (int)sb_r32(self + 0x24);
+    e.gy1 = (int)sb_r32(self + 0x28);
+    e.gx2 = (int)sb_r32(self + 0x2C);
+    e.gy2 = (int)sb_r32(self + 0x30);
+    e.visible    = (int)sb_r8(self + 0x0C);
+    e.alpha      = (int)sb_r8(self + 0xCC);
+    e.colorAlpha = (int)sb_r8(self + 0xCD);
 }
 
 const bool g_probe = [] {
@@ -80,8 +96,12 @@ const bool g_probe = [] {
                           std::string out;
                           char buf[128];
                           for (const auto& [k, e] : g_seen) {
-                              std::snprintf(buf, sizeof buf, "%-26s m00=%7.3f m03=%8.2f hits=%lu\n",
-                                            k.c_str(), (double)e.m00, (double)e.m03, e.hits);
+                              std::snprintf(buf, sizeof buf,
+                                            "%-26s m00=%7.3f m03=%8.2f  gbounds=[%4d,%4d %4d,%4d] "
+                                            "%dx%d vis=%d a=%d/%d hits=%lu\n",
+                                            k.c_str(), (double)e.m00, (double)e.m03, e.gx1, e.gy1,
+                                            e.gx2, e.gy2, e.gx2 - e.gx1, e.gy2 - e.gy1, e.visible,
+                                            e.alpha, e.colorAlpha, e.hits);
                               out += buf;
                           }
                           if (out.empty()) out = "nothing recorded yet\n";

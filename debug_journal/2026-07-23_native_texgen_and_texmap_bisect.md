@@ -1793,3 +1793,40 @@ projection census is the acceptance test: it must stop reporting 0 orthographic 
 `JUTRect`'s own field order must be read from `JUTRect.hpp` before use rather than assumed — a
 transposed rect would place the HUD plausibly-but-wrongly, which is the failure mode this arc has
 paid for repeatedly.
+
+### mGlobalBounds validated — and NOT yet valid at the point currently sampled
+
+Read `JUTRect` from its header rather than assuming: `{int x1 @0, y1 @4, x2 @8, y2 @0xC}`, so
+`mGlobalBounds` is x1@0x24 y1@0x28 x2@0x2C y2@0x30. Reported before synthesising anything:
+
+```
+J2DPicture::draw   go00  gbounds=[-134,-50   22,106] 156x156 vis=1 a=0/0     hits=80
+J2DPicture::draw   go01  gbounds=[ 275,-146 431, 10] 156x156 vis=1 a=0/0     hits=80
+J2DPicture::draw   go02  gbounds=[ 645,-79  801, 77] 156x156 vis=1 a=0/0     hits=80
+J2DPicture::draw   nz01  gbounds=[   0,0      0,  0] 0x0     vis=1 a=255/255 hits=2904
+J2DScreen::drawSelf root gbounds=[   0,0    600,480] 600x480 vis=1 a=255/255 hits=3250
+J2DTextBox::draw   tet1  gbounds=[   0,0      0,  0] 0x0     vis=1 a=255/255 hits=1248
+```
+
+**The offsets are RIGHT**: `root` reads 600x480, exactly this game's 2D screen space. That is the
+control this measurement needed — had the offsets been wrong, `root` would be noise rather than the
+one value independently known.
+
+**But nothing here is drawable as sampled**, and the two failures are complementary: the panes with
+real rects (`go*`, 156x156) report alpha 0/0, while every pane with alpha 255/255 reports a 0x0 rect.
+Synthesising quads from either set would produce nothing, or nothing visible — and it would have
+looked like a broken capture rather than a mis-timed read.
+
+Two things to resolve before stage 2, both located precisely:
+
+1. **`mGlobalBounds` is not yet computed at `J2DPicture::draw` ENTRY.** The rows above are all from
+   `draw`/`drawSelf` entry, where the parent transform has not been applied for most panes. The
+   capture point has to be after the global transform is established.
+2. **`J2DPicture::drawSelf` (0x802cc758) never fires** — no such row appears despite the override
+   being registered, so pictures reach the hardware by some other path (an inlined or differently
+   mangled overload). That path is where the valid transform lives, and finding it is the next
+   concrete RE step: `reference/sms_gmse01_funcs.txt` around the J2DPicture block, checking which
+   `draw*` symbols exist and which the vtable actually dispatches to.
+
+The `go*` alpha of 0/0 is a third loose end worth its own check: those panes are visible in aurora,
+so either 0xCC/0xCD are not the effective alpha for pictures, or the value is set later in the draw.
