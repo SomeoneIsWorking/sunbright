@@ -255,6 +255,56 @@ how the "all full-screen effects" requirement gets *checked* rather than asserte
 It measures **evenness, not correctness** — a wrong-but-even interpolation scores perfectly. Colour
 correctness stays with the A/B against the oracle.
 
+## ⚠️ THE FINDING THAT REORDERS THE LADDER: partial coverage does not degrade gracefully
+
+Step 4 (lerp pnMtx at alpha 0.5) was built and run. Pairing works — **99.5% of tagged draws find
+their previous-tick partner**, with 225 vertex-count mismatches deliberately snapped. Alternation
+fell from 1.000 to 0.323, so the duplication really is broken.
+
+But the frame is *worse*, not better: frame energy p90 jumped **15x**, from 2.20 to 33.18, and
+dupFrac rose to 0.810. That is not a smoother picture, it is a violently unstable one.
+
+Three controls, each with a prediction made before the run:
+
+| run | dupFrac | mean alt | energy p90 | |
+|---|---|---|---|---|
+| alpha 1.0 (must equal no-interp) | 0.518 | 1.000 | 2.20 | ✅ as predicted — the patch path writes correctly |
+| alpha 0.0, camera moving (must look duplicate-shaped) | 0.822 | 0.532 | 27.09 | ❌ prediction failed |
+| alpha 0.0, camera STILL | 0.512 | 0.581 | 6.28 | ✅ duplicate-shaped again, energy 4x lower |
+
+The alpha 1.0 control rules out memory corruption in the patch: writing the same values through the
+same path reproduces the duplicate case exactly. The camera-still control names the cause.
+
+**`pnMtx` holds model × VIEW.** J3D concatenates the camera into every draw matrix in `viewCalc`, so
+the camera is not a separate transform aurora can interpolate once — it is baked into all ~1300
+per-draw matrices. Interpolating only the ~69% of draws that carry a tag moves those objects to the
+in-between camera while the other ~31% stay at the current one. The world is drawn from two
+different viewpoints at the same time, and it tears in two. The faster the camera moves, the worse
+it gets, which is exactly the 27.09-vs-6.28 split.
+
+So the untagged remainder is **not a cosmetic residual to clean up later**. Interpolating a subset
+of a scene whose camera is baked per-object is worse than interpolating none of it. Two things
+follow, and both are now prerequisites rather than polish:
+
+1. **Tag coverage must reach ~100% of perspective draws** — currently 8.3–11.3% of all draws are
+   untagged indexed perspective geometry, i.e. display-list geometry with a stable identity that
+   simply is not going through the `J3DShape::draw` seam. Where it comes from is the next thing to
+   find.
+2. **Untagged draws still need the camera interpolated**, because direct-mode geometry (particles,
+   the sea's ripple grid) can never be paired — its vertices are rebuilt every tick — yet it must
+   follow the same viewpoint as everything else or it will visibly separate.
+
+(2) has a clean form. With column-convention `A = V·M`, the wanted matrix is
+`A' = V_lerp·M = (V_lerp·V_cur⁻¹)·A`, so **one 4x4 `C = V_lerp·V_cur⁻¹` computed per tick, left-
+multiplied into every untagged draw's matrices**, gives the whole frame a single coherent viewpoint
+while object motion still snaps where it cannot be paired. It needs `V_prev` and `V_cur`, which
+aurora does not have — they must be emitted from our side (J3D's view matrix) through a
+`GX_AURORA` sub-opcode, the same way the draw tag is.
+
+This is also why the vertex-count check must not simply be relaxed to "pair anything": the check
+protects against smearing *geometry* between two unrelated poses. The camera problem is a
+*transform* problem and wants the separate mechanism above, not a weaker pairing rule.
+
 ## Ladder
 
 1. ✅ Instrument, validated both directions (`01fdeb9`).

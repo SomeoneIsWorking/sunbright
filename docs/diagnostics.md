@@ -13,8 +13,9 @@ logger — that is debt to convert, not a feature.
 | `AURORA_ARRAYBASE_REJECT_RAW` | 1 | `extern/aurora/lib/gx/command_processor.cpp:1596` |  |
 | `AURORA_DRAW_TRACE` | 1 | `extern/aurora/lib/gx/command_processor.cpp:3287` |  |
 | `AURORA_FIFO_TRACE` | 1 | `extern/aurora/lib/gx/command_processor.cpp:535` |  |
-| `AURORA_REPLAY_LOG_EVERY` | 1 | `extern/aurora/lib/gfx/common.cpp:1502` |  |
-| `AURORA_REPLAY_PRESENT` | 1 | `extern/aurora/lib/gfx/common.cpp:577` |  |
+| `AURORA_INTERP_ALPHA` | 1 | `extern/aurora/lib/gfx/common.cpp:593` |  |
+| `AURORA_REPLAY_LOG_EVERY` | 1 | `extern/aurora/lib/gfx/common.cpp:1575` |  |
+| `AURORA_REPLAY_PRESENT` | 1 | `extern/aurora/lib/gfx/common.cpp:578` |  |
 
 ## `SB_*`
 
@@ -32,7 +33,7 @@ logger — that is debt to convert, not a feature.
 | `SB_CALCPASS_DBG` | 1 | `decomp/sms/src/System/MarDirectorDirect.cpp:277` | gated print |
 | `SB_CALC_DBG` | 1 | `decomp/sms/src/JSystem/J3D/J3DGraphAnimator/J3DModel.cpp:851` |  |
 | `SB_CAM_DBG` | 2 | `decomp/sms/src/Camera/CameraOption.cpp:88` | gated print |
-| `SB_CLEAR_OVERRIDE` | 1 | `extern/aurora/lib/gfx/common.cpp:1419` |  |
+| `SB_CLEAR_OVERRIDE` | 1 | `extern/aurora/lib/gfx/common.cpp:1492` |  |
 | `SB_CLEAR_RGB` | 1 | `extern/aurora/lib/dolphin/gx/GXFrameBuffer.cpp:176` | gated print |
 | `SB_CLOUD_DBG` | 1 | `decomp/sms/src/JSystem/J3D/J3DGraphBase/J3DTevs.cpp:499` | gated print |
 | `SB_CLOUD_TC_DBG` | 1 | `extern/aurora/lib/gx/command_processor.cpp:3939` |  |
@@ -64,9 +65,9 @@ logger — that is debt to convert, not a feature.
 | `SB_DRAW_DUMP_ALL` | 1 | `extern/aurora/lib/gx/command_processor.cpp:3614` |  |
 | `SB_DRAW_DUMP_FRAME` | 2 | `extern/aurora/lib/gx/command_processor.cpp:3562` |  |
 | `SB_DRAW_STATS` | 1 | `extern/aurora/lib/gx/fifo.cpp:81` | gated print |
-| `SB_DUMP_FRAME` | 1 | `extern/aurora/lib/aurora.cpp:454` |  |
-| `SB_DUMP_FRAME_AFTER` | 1 | `extern/aurora/lib/aurora.cpp:456` |  |
-| `SB_DUMP_FRAME_EVERY` | 1 | `extern/aurora/lib/aurora.cpp:465` |  |
+| `SB_DUMP_FRAME` | 1 | `extern/aurora/lib/aurora.cpp:462` |  |
+| `SB_DUMP_FRAME_AFTER` | 1 | `extern/aurora/lib/aurora.cpp:464` |  |
+| `SB_DUMP_FRAME_EVERY` | 1 | `extern/aurora/lib/aurora.cpp:473` |  |
 | `SB_DUMP_FST` | 1 | `extern/aurora/lib/dolphin/dvd/fst.cpp:86` | gated print |
 | `SB_DUMP_PERFORMLISTS` | 1 | `decomp/sms/src/System/MarDirectorSetupObjects.cpp:493` | gated print |
 | `SB_DUMP_WGSL` | 1 | `extern/aurora/lib/gx/shader.cpp:2114` |  |
@@ -144,7 +145,7 @@ logger — that is debt to convert, not a feature.
 | `SB_ORTHO_DBG` | 1 | `extern/aurora/lib/gx/command_processor.cpp:4307` |  |
 | `SB_PAD_SCRIPT` | 1 | `sms-boot/runtime/pad_script.cpp:114` |  |
 | `SB_PANE_DBG` | 1 | `decomp/sms/src/JSystem/J2D/J2DScreen.cpp:242` |  |
-| `SB_PASS_DBG` | 1 | `extern/aurora/lib/gfx/common.cpp:441` |  |
+| `SB_PASS_DBG` | 1 | `extern/aurora/lib/gfx/common.cpp:442` |  |
 | `SB_PERSP_ZONLY` | 1 | `extern/aurora/lib/gx/command_processor.cpp:4141` |  |
 | `SB_PIN_STATE` | 1 | `sms-boot/runtime/pin_state.cpp:42` |  |
 | `SB_PIPELINE_BLEND_DBG` | 1 | `extern/aurora/lib/gx/gx.cpp:763` | gated print |
@@ -239,7 +240,7 @@ logger — that is debt to convert, not a feature.
 | `SB_TITLE_PANE_DBG` | 1 | `decomp/sms/src/GC2D/CardLoad.cpp:723` |  |
 | `SB_TRACE_SEQ` | 7 | `sms-boot/runtime/frame_seam.cpp:85` | gated print |
 | `SB_TURBO` | 2 | `sms-recomp/overrides/native_frame.cpp:123` |  |
-| `SB_UNIF_DUMP` | 1 | `extern/aurora/lib/gx/shader_info.cpp:400` |  |
+| `SB_UNIF_DUMP` | 1 | `extern/aurora/lib/gx/shader_info.cpp:405` |  |
 | `SB_UV_PROBE` | 1 | `extern/aurora/lib/gx/command_processor.cpp:2457` |  |
 | `SB_VIEWCALC_DBG` | 1 | `decomp/sms/src/JSystem/J3D/J3DGraphAnimator/J3DModel.cpp:945` |  |
 | `SB_W` | 3 | `sms-recomp/host/main.cpp:88` |  |
@@ -320,4 +321,4 @@ logger — that is debt to convert, not a feature.
 | `SBR_WIDESCREEN` | 1 | `sms-recomp/overrides/widescreen.cpp:56` |  |
 | `SBR_WS_SCALE` | 1 | `sms-recomp/overrides/widescreen.cpp:65` |  |
 
-**299 switches; 88 still gate a raw print.**
+**300 switches; 88 still gate a raw print.**
