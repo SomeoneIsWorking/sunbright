@@ -1763,3 +1763,33 @@ one the hardware used is how the earlier `texObj`-vs-BP mistake happened. Next s
 transform each of those paths actually draws with, then emit one orthographic SbrDrawable per pane
 so the existing batching, TEV and blend paths draw it unchanged. Acceptance test is already in
 place: the projection census must stop reporting 0 orthographic drawables.
+
+### The m00=0.000 question, answered from the decomp header
+
+`diag_2d.cpp` samples `self + 0x84`, and `decomp/sms/include/JSystem/J2D/J2DPane.hpp` confirms that
+IS `mGlobalMtx` — the right field, not a layout mismatch. So the panes reporting `m00=0.000` really
+do have a zero global matrix at that sample point (it is computed further into the draw, or those
+panes reach the hardware by a path that never fills it). No instrument defect here; the reading was
+honest.
+
+More usefully, the authoritative layout removes the need for the matrix entirely:
+
+```
+0x0C  mVisible          0x14  mBounds (JUTRect)     0x24  mGlobalBounds (JUTRect)
+0x44  mScissorBounds    0x54  mPositionMtx          0x84  mGlobalMtx
+0xC8  mCullMode         0xCC  mAlpha                0xCD  mColorAlpha
+```
+
+**`mGlobalBounds` (0x24) is the SCREEN-SPACE rect, after every parent transform has been applied.**
+A HUD quad is that rect plus `mAlpha`/`mColorAlpha`, gated on `mVisible` — no matrix decomposition,
+no dependence on a field that is zero half the time, and nothing inferred from a screenshot.
+
+So stage 2 is: at `J2DPicture::drawSelf` (0x802cc758, already overridden in `diag_2d.cpp` — EXTEND
+it, do not add a second override for the address), read `mGlobalBounds`, `mVisible` and the two
+alphas, and emit one orthographic `SbrDrawable` per visible pane with the texture the material
+already binds. The existing batching, TEV, blend and scissor paths then draw it unchanged, and the
+projection census is the acceptance test: it must stop reporting 0 orthographic drawables.
+
+`JUTRect`'s own field order must be read from `JUTRect.hpp` before use rather than assumed — a
+transposed rect would place the HUD plausibly-but-wrongly, which is the failure mode this arc has
+paid for repeatedly.
