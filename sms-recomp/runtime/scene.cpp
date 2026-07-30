@@ -419,11 +419,24 @@ void sbr_scene_report_2d() {
     // correctly windowed these are different units: one captured drawable expands to many stream
     // draw commands, so this bounds the gap rather than measuring it.
     const long fifoDraws = g_lastFrameDraws;
+    long trailing = 0, longestRun = 0;
+    sbr_gxfifo_take_uncaptured(&trailing, &longestRun);
     lucent::info("nrender", "  projection census: {} orthographic (2D/HUD) drawables, {} "
                             "perspective, of {} captured — the FIFO saw {} draw commands in the "
                             "same window ({}x)", ortho, persp, g_cur.items.size(), fifoDraws,
                  g_cur.items.empty() ? 0.0
                                      : (double)fifoDraws / (double)g_cur.items.size());
+    // TRAILING is the clean number: draws after the LAST capture have no J3D shape behind them at
+    // all, so they are provably unattributed — the HUD, drawn after the 3D scene.
+    //
+    // The longest inter-capture RUN is deliberately NOT presented as a gap. A single shape that
+    // emits thousands of draw commands produces exactly the same figure as thousands of draws with
+    // no shape behind them, so it cannot separate the two — the same unit confusion that made the
+    // draws-per-drawable ratio meaningless. Reported only as context.
+    lucent::info("nrender", "  unattributed draws: {} trail the last J3D capture (provably outside "
+                            "J3D — this is the HUD). Longest inter-capture run {} — CONTEXT ONLY, "
+                            "it cannot distinguish one shape emitting many draws from many draws "
+                            "with no shape", trailing, longestRun);
 }
 
 void sbr_scene_report_zmodes() {

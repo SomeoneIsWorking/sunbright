@@ -105,6 +105,12 @@ long g_drawIndex = 0;
 // J3DShape::draw, so this is the ceiling a FIFO-vertex frontend would reach — the difference
 // between the two is the coverage gap, in draws, rather than a guess about it.
 long g_drawsSinceQuery = 0;
+// Draw commands since the last J3DShape::draw capture. Reset by the capture seam, read at frame
+// end: the residual is the block of draws that NO captured drawable accounts for. The HUD is drawn
+// after the 3D scene, so this isolates the unattributed population instead of bounding it — the
+// ~33x draws-per-drawable ratio could not, since one drawable legitimately expands to many draws.
+long g_drawsSinceCapture = 0;
+long g_maxDrawsAfterCapture = 0;
 // Where each texture unit was last bound, and what it held before — the provenance a divergence
 // report needs. Kept beside the unit state so it cannot drift from it.
 uint32_t g_fifoTexBindPos[8] = {};
@@ -953,6 +959,8 @@ size_t parse(const u8* p, size_t n, int depth) {
             // its own from the same bytes a moment later. See state_oracle.h.
             ++g_drawIndex;
             ++g_drawsSinceQuery;
+            if (++g_drawsSinceCapture > g_maxDrawsAfterCapture)
+                g_maxDrawsAfterCapture = g_drawsSinceCapture;
             if (sbr_state_diff_enabled()) {
                 SbrDrawState st{};
                 st.pos = (uint32_t)g_out.size();   // where this draw's command byte lands
@@ -1192,4 +1200,15 @@ long sbr_gxfifo_take_draw_count() {
     const long n = g_drawsSinceQuery;
     g_drawsSinceQuery = 0;
     return n;
+}
+
+
+// Called by the capture seam: a J3D shape was captured here, so the run of unattributed draws ends.
+void sbr_gxfifo_note_capture() { g_drawsSinceCapture = 0; }
+
+// Draws since the last capture, and the longest such run this frame. Resets the peak.
+void sbr_gxfifo_take_uncaptured(long* trailing, long* longestRun) {
+    *trailing = g_drawsSinceCapture;
+    *longestRun = g_maxDrawsAfterCapture;
+    g_maxDrawsAfterCapture = 0;
 }
