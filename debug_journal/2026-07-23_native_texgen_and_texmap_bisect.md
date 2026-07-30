@@ -1955,3 +1955,37 @@ the child rect is in a DIFFERENT frame than the root's, which is the thing to re
 
 Next: read the ortho setup in `J2DGrafContext::setup`/`J2DScreen::draw` to get the 2D space and origin
 from the source, then map with it.
+
+### The 2D space, confirmed from source — the mapping was already right
+
+Read the convention rather than fitting it (`decomp/sms/src/JSystem/J2D/J2DOrthoGraph.cpp`,
+`J2DGrafContext.cpp`):
+
+```c
+mOrtho = JUTRect(0, 0, width, height);   mNear = -1.0f;  mFar = 1.0f;
+C_MTXOrtho(mMtx44, /*top*/ mOrtho.y1, /*bottom*/ mOrtho.y2 + 0.5f,
+                   /*left*/ mOrtho.x1, /*right*/ mOrtho.x2, mNear, mFar);
+GXSetProjection(mMtx44, GX_ORTHOGRAPHIC);
+J2DOrthoGraph::setLookat():  MTXIdentity(mPosMtx); GXLoadPosMtxImm(mPosMtx, GX_PNMTX0);
+J2DGrafContext::setPort():   GXSetViewport(mBounds.x1, mBounds.y1, w, h, 0.0f, 1.0f);
+J2DGrafContext::setup2D():   GXSetZMode(GX_FALSE, GX_LEQUAL, GX_FALSE);   // depth test OFF
+```
+
+So the 2D space is `[0..width] x [0..height]` with **Y increasing downward** (top = y1, bottom = y2),
+near/far -1..1, and the position matrix is **identity** — pane coordinates go straight through. That
+is exactly the mapping already implemented, so **the clip-space conversion is not the bug**, and the
+600x480 figure the root pane reports is the real extent.
+
+Two things this does settle:
+
+- **Depth**: `setup2D` disables the depth test for 2D. Snapshotting the z-mode AFTER the body (as the
+  emit now does) therefore picks up `test=0` from the game itself, rather than needing a special case
+  — worth confirming in the next run rather than assuming.
+- **Placement is a pane-SELECTION question, not a transform one.** Panes reporting negative y1 are
+  genuinely positioned above the visible area at that moment; the mapping is faithfully placing them
+  offscreen. So the remaining gap is WHICH panes are captured (6, versus the fuller inventory), not
+  where the captured ones land.
+
+Next: check whether the six captured panes are the on-screen HUD subset or an unrelated one — the
+census already prints pane names, so pairing those names against the visible HUD elements answers it
+directly.
