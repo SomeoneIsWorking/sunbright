@@ -1720,3 +1720,46 @@ oracle is the weaker side, pending a reason to revisit.
 That leaves the per-draw state comparison at: textures 0, raster 0, blend 0, scissor 0, cull 0,
 numChans 0, chanctrl/amb/mat 0, ras-sel 0, combiner 0, ksel 0, konst 0 — and tevreg 41 explained
 above.
+
+## 2026-07-30 — the HUD's 2D inventory, from tooling that already existed
+
+Decided the capture fork myself rather than waiting: hook J2D, not a FIFO-vertex frontend. The
+measured gap is ~126 draw commands per frame, all of it HUD, so a bounded hook covers it and a
+frontend rewrite would be started blind.
+
+First attempt was wasted and is worth recording as a process failure: I wrote a fresh override on
+`J2DPicture::draw` (0x802ccef4) and the run announced it with ANOTHER file's description
+("diagnostic: 2D class census"), plus a `J2DScreen::drawSelf` I never registered.
+`overrides/diag_2d.cpp` already claims that address and four more, and `overrides/hud.cpp` already
+ports the TGCConsole2 widescreen layout. The duplicate was silently shadowed, which is why its
+counters never printed. Deleted; recorded as C012 and a codemap row so the next attempt starts from
+what exists.
+
+`diag_2d.cpp` turned out to already report exactly what a capture needs — the .blo pane name and its
+transform at each J2D entry point, served on the probe. With `SBR_DIAG_2D=1 SBR_PROBE=1`:
+
+```
+J2DPicture::draw   go00   m00= 0.978  m03= -141.26  hits=80
+J2DPicture::draw   go01   m00= 0.978  m03=  267.74  hits=80
+J2DPicture::draw   go02   m00= 0.978  m03=  637.74  hits=80
+J2DPicture::draw   nz01   m00= 0.000  m03=    0.00  hits=2193
+J2DPicture::draw   w_t1   m00= 0.000  m03=    0.00  hits=2193
+J2DPicture::draw   w_tx   m00= 0.000  m03=    0.00  hits=2193
+J2DPicture::draw   xb01   m00= 0.000  m03=    0.00  hits=2193
+J2DScreen::drawSelf root   m00= 1.000  m03=    0.00  hits=2539
+J2DTextBox::draw   tet1   m00= 0.000  m03=    0.00  hits=1248
+J2DTextBox::draw   tet2   m00= 0.000  m03=    0.00  hits=1248
+```
+
+So the HUD is three `go*` pictures (the coin/shine cluster, spaced ~370px apart and pre-squeezed by
+the widescreen pass at m00=0.978), four `nz*/w_*/xb*` pictures (the nozzle and water gauge), two
+`tet*` text boxes (the counters), under one `root` screen.
+
+FLAGGED, not concluded: every element except `go*` and `root` reports `m00=0.000`. A zero X scale
+would make them invisible, and they are plainly visible in aurora — so either the probe samples a
+matrix that is not the one those paths use, or the transform is established after this point. That
+must be resolved BEFORE synthesising quads, because building geometry from a matrix that is not the
+one the hardware used is how the earlier `texObj`-vs-BP mistake happened. Next step: determine which
+transform each of those paths actually draws with, then emit one orthographic SbrDrawable per pane
+so the existing batching, TEV and blend paths draw it unchanged. Acceptance test is already in
+place: the projection census must stop reporting 0 orthographic drawables.
