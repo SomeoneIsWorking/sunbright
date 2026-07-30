@@ -1299,8 +1299,8 @@ u32 fifo_read(u32 ea, unsigned width) {
 } // namespace
 
 // Parse this frame's stream and rotate it into g_last (with the previous frame in g_prev). Does
-// NOT send anything to aurora — the frame seam decides what to send and present, which is what lets
-// 60fps interpolation present a blended stream BEFORE the real one.
+// NOT send anything to aurora — the frame seam decides what to send and present. The build/send
+// split is a useful separation in its own right; it no longer serves any interpolation consumer.
 void gxfifo_build() {
     // Drain whatever is still buffered. Parsing only ran once 4096 bytes had accumulated, so a
     // frame's trailing commands could sit unparsed and be emitted in the NEXT frame's stream.

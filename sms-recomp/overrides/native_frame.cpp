@@ -169,7 +169,7 @@ void pace_fields(unsigned fields) {
 // resetting: ~291 KB of stream per frame reached aurora's 48 MB limit after roughly 170 frames
 // and aborted with "mapped ByteBuffer overflow".
 void present_and_reopen(bool& frameActive) {
-    ++g_present_count;   // presents, not game ticks: interpolation makes two per tick
+    ++g_present_count;   // PRESENTS, not game ticks — the two coincide today (one present per tick)
 
     // SBR_PRESENT_TIMING=1: wall-clock gap between consecutive presents. A present COUNT of 60/s
     // says nothing about what reaches the display — if the two presents of a tick land back-to-back
@@ -381,8 +381,8 @@ void video_wait_for_retrace(CPUState& cpu) {
     gxfifo_build();
 
     // Rates, so "is it slow?" is measured rather than guessed. TICKS are game frames; PRESENTS
-    // are what reaches the screen, and with 60fps interpolation there are two per tick — counting
-    // only ticks made a working 60fps look like 30.
+    // are what reaches the screen. Today that is one per tick; counting presents rather than ticks
+    // keeps the number meaningful if that ever stops being true.
     {
         using clock = std::chrono::steady_clock;
         static auto t0 = clock::now();

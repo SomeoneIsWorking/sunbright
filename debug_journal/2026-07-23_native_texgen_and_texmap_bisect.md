@@ -2182,3 +2182,43 @@ placement it derived is exactly the defect, and the depth chain it built on top 
 The fix is the reordering Fable already named: drain `gxfifo_build()` BEFORE `sbr_scene_end_tick()`
 (overrides/native_frame.cpp), so a frame's 2D drawables and its copy notes land in the tick they
 belong to, ordered last, with same-frame stream positions.
+
+## 2026-07-30 — interpolated 60fps in AURORA: asked, judged not soundly possible, nothing built
+
+A separate Fable agent was tasked (user request) with adding interpolated 60fps to the recomp+aurora
+runtime, briefed with the full history of `ab7e8d8` (which deleted the tick-driven interp60) and
+explicitly licensed to conclude it cannot be done well. Its verdict: **no sound design exists through
+aurora**; it built nothing, per the gate. The load-bearing structural facts, spot-checked:
+
+- **Aurora retains nothing between frames.** `aurora_fifo_replay` is a synchronous parse
+  (`extern/aurora/lib/aurora.cpp:792-799`); `handle_draw` decodes vertices at PARSE time into
+  per-frame staging buffers (`command_processor.cpp:3107`). There is no draw list, no identity-keyed
+  geometry cache, and no per-drawable transform seam in `include/aurora/*.h`. So "re-draw with new
+  matrices" through aurora can ONLY mean re-submitting the stream — which is the deleted design.
+- **Aurora reads live guest RAM during replay** (indexed arrays uploaded from host pointers into
+  guest memory at draw time, `command_processor.cpp:2908-2960`; textures fetched at first bind), so
+  replay must run on the game thread while guest memory is coherent.
+- **One present per tick**, verified directly: a single `gxfifo_send_last()` + `present_and_reopen()`
+  per `video_wait_for_retrace` (native_frame.cpp:412-413). Any second blended present must issue from
+  that same seam, i.e. cadence chained to the guest tick — defect (c) of the deleted design.
+
+Candidates and why each fails: patching XF matrix loads still re-submits the stream (2x parse, decode,
+upload and GPU per tick) and cannot touch matrices baked into `J3DShapeMtxDL` display lists,
+immediate-mode geometry, particles or texture matrices — those would step at 30 Hz while the rest
+smooths, a mixed-cadence artefact the drawable-level design does not have. Its ONE genuine improvement
+since the deletion is that sequence-position pairing is now fixable (matrix writes could be keyed by
+stable shape identity via `sbr_gxfifo_stream_pos()`), which fixes defect (b) only. A per-drawable seam
+inside aurora means building a retained-mode renderer inside the PARITY ORACLE — an interpolating
+oracle is a moving one, worse than the deleted design. Present-side reprojection smears the baked HUD
+and leaves object motion at 30 Hz. A render thread replaying a stream snapshot needs a per-tick
+snapshot of every guest byte the stream references and still re-submits per displayed frame.
+
+Recommendation accepted: the 60fps arc is **promoting the native renderer**, where `scene.cpp` already
+interpolates per-drawable transforms by wall-clock alpha with stable keys (607/607 matched) and 60 Hz
+costs one lerp per frame. Aurora stays a 30 Hz oracle until deleted at parity.
+
+Acted on immediately (no-tombstones): three comments asserted a two-presents-per-tick interpolation
+that no longer exists — `native_frame.cpp:172` and `:384-385`, and `dev_gxfifo.cpp:1301-1303`
+documenting a consumer that is gone. Rewritten to describe what the code does today. A comment
+asserting deleted machinery is exactly the trap that had `SB_SKIP_GHOST` chased through this project's
+own instructions.
