@@ -19,15 +19,29 @@ extern long g_untaggedPerspDirectCount;
 extern long g_untaggedPerspIndexedCount;
 } // namespace aurora::gx::fifo
 
+namespace aurora::gfx {
+void force_interpolation(float alpha);
+}
+
 bool sbr_lerp_enabled() {
     static int v = -1;
     if (v < 0) {
-        const char* e = std::getenv("SBR_LERP60");
+        // SBR_60FPS is the switch a person uses; SBR_LERP60 is the same thing under its development
+        // name, kept because existing scripts and journal entries use it.
+        const char* e = std::getenv("SBR_60FPS");
+        if (e == nullptr || e[0] == '\0') e = std::getenv("SBR_LERP60");
         v = (e != nullptr && e[0] != '\0' && e[0] != '0') ? 1 : 0;
-        if (v == 1)
-            lucent::info("lerp60", "interpolated 60fps ARMED — aurora is no longer bit-identical to "
+        if (v == 1) {
+            // Turn the WHOLE feature on from here rather than making the user set aurora's two env
+            // vars to agree with this one. Three switches that must agree is three ways to run a
+            // half-configured build that still looks like it works — the doubled present without
+            // interpolation is exactly the "same frame twice" control, which is indistinguishable
+            // from working 60fps in a screenshot and quite distinguishable in motion.
+            aurora::gfx::force_interpolation(0.5f);
+            lucent::info("lerp60", "interpolated 60fps ON — aurora is no longer bit-identical to "
                                    "the oracle path; A/B numbers taken with this on are not "
                                    "comparable to numbers taken with it off");
+        }
     }
     return v == 1;
 }

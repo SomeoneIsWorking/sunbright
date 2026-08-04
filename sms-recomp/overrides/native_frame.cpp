@@ -155,6 +155,11 @@ struct QuitSignals {
     }
 } g_quitSignals;
 
+// How many NTSC fields the tick currently being presented is worth. Stashed before the present so
+// the mid-tick pacing hook below can find it — aurora issues the second present from inside its own
+// end_frame, where the retrace count is not in scope.
+unsigned g_tickFields = 2;
+
 // Sleep until `fields` more NTSC fields have elapsed. Deadline-accumulating rather than
 // sleep-per-call, so a frame that overruns is absorbed by the next instead of compounding drift.
 void pace_fields(unsigned fields) {
@@ -170,6 +175,41 @@ void pace_fields(unsigned fields) {
         g_nextDeadlineNs = now;   // fell far behind (load hitch): resync, don't sprint to catch up
     }
 }
+
+} // namespace
+
+// Called by aurora BETWEEN the two presents of an interpolated tick.
+//
+// WHY IT IS NEEDED. Sixty presents a second is not sixty frames a second to the eye. vsync is off,
+// so a present reaches the screen when it is issued; with both presents issued back to back and the
+// whole tick's sleep taken afterwards, the display gets two images a millisecond apart and then
+// nothing for 33 ms. That is 30 fps with every frame sent twice — the count reads 60 and the motion
+// does not. The interpolated image is a picture of the half-tick, so it has to be SHOWN at the
+// half-tick.
+//
+// Deadline-derived, not a fixed sleep: g_nextDeadlineNs is the instant this tick was due to start,
+// so the midpoint is that plus half the tick's own field count. A tick that has already overrun its
+// midpoint does not sleep at all rather than pushing the tick further behind.
+extern "C" void aurora_replay_midpoint() {
+    if (turbo() || g_nextDeadlineNs == 0 || g_tickFields == 0) return;
+    const int64_t midpoint = g_nextDeadlineNs + (int64_t)g_tickFields * kFieldNs / 2;
+    const int64_t now = now_ns();
+    if (now >= midpoint) return;
+    const int64_t d = midpoint - now;
+    {
+        static double acc = 0;
+        static long n = 0, skipped = 0;
+        acc += (double)d / 1e6;
+        if (++n % 120 == 0)
+            lucent::debug("frame", "midpoint sleep avg {:.2f} ms over {} sleeps ({} ticks already "
+                                   "past the midpoint), fields={}",
+                          acc / (double)n, n, skipped, g_tickFields);
+    }
+    timespec ts{(time_t)(d / 1000000000LL), (long)(d % 1000000000LL)};
+    nanosleep(&ts, nullptr);
+}
+
+namespace {
 
 // Present whatever is in the open frame and open the next one, per aurora's contract:
 //  - end_frame must NOT run if the matching begin_frame returned false
@@ -439,6 +479,13 @@ void video_wait_for_retrace(CPUState& cpu) {
     // the present, so the flag covers exactly the tick whose draws are about to be emitted.
     if (sbr_lerp_enabled() && sbr_camera_cut_take()) aurora::gfx::snap_next_interpolation();
     gxfifo_send_last();
+    // The mid-tick pacing hook needs this tick's field count, and aurora issues the second present
+    // from inside its own end_frame where that number is out of scope. The count is only known
+    // AFTER the present (it is a delta on the game's retrace counter), so use the PREVIOUS tick's —
+    // it is the same number on every tick of a steady scene, and being one tick stale costs at most
+    // a slightly mistimed midpoint on the frame where the rate changes. Seeded to 2 because a
+    // 30fps scene requests two fields per tick, so the very first tick paces correctly rather than
+    // at double rate.
     present_and_reopen(s_frameActive);
     // Sampled AFTER the present, and stamped with aurora's OWN tick counter rather than one derived
     // from the present count. The two instruments must be joined on a number they genuinely share:
@@ -467,6 +514,8 @@ void video_wait_for_retrace(CPUState& cpu) {
             // translate into a multi-second sleep.
             if (delta >= 1 && delta <= 8) retraces = delta;
         }
+        // Remembered for the NEXT tick's midpoint pacing (see aurora_replay_midpoint).
+        g_tickFields = retraces;
         pace_fields(retraces);
     }
 }

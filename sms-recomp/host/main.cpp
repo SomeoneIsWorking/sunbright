@@ -9,6 +9,7 @@
 #include "boot_env.h"
 #include "guest_sched.h"
 #include "intrinsics.h"
+#include "lerp60.h"
 
 #include <aurora/aurora.h>
 
@@ -92,6 +93,10 @@ int main(int argc, char** argv) {
     AuroraInfo ainfo = aurora_initialize(argc, argv, &acfg);
     lucent::info("rt", "aurora up: backend={} fb={}x{}", (int)ainfo.backend,
                  ainfo.windowSize.fb_width, ainfo.windowSize.fb_height);
+    // Arm interpolated 60fps BEFORE the first frame is recorded. sbr_lerp_enabled() configures
+    // aurora on its first call, and leaving that to whichever seam happened to ask first is how a
+    // mode ends up half-on for the opening frames.
+    sbr_lerp_enabled();
     aurora_begin_frame();
 
     if (!rt_mem_init()) return 1;
