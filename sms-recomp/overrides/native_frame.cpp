@@ -490,6 +490,7 @@ void video_wait_for_retrace(CPUState& cpu) {
 
     // The camera this tick's draws were built with, for interpolation. Last thing in the stream, so
     // it is the settled value rather than the previous tick's.
+    if (sbr_lerp_enabled()) sbr_afterimage_tick();
     if (sbr_lerp_enabled()) sbr_gxfifo_view_matrix();
     // A tick in which the game WARPED the camera has no in-between to show. Tell aurora to present
     // this tick exactly rather than a halfway viewpoint the game never simulated. Read here, before

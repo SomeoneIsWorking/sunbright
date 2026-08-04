@@ -45,7 +45,15 @@ void sbr_afterimage_report();
 
 // Called from TAfterEffect::perform's existing override with the effect's `this`, to learn which EFB
 // copy destination feeds the trail. Identification only — it does not alter the effect.
-void sbr_afterimage_note_texture(unsigned self);
+// `drawing` must be the effect's own enabled-and-drawing test. The texture only counts as a
+// cross-frame feedback source while the trail is actually being drawn; otherwise the same copy is
+// an ordinary intra-frame one that a later pass of the SAME frame reads.
+void sbr_afterimage_note_texture(unsigned self, bool drawing);
+
+// Called once per tick from the frame seam. Releases the feedback claim if the trail did not draw
+// this tick — the claim must not outlive the effect, or an ordinary intra-frame copy gets
+// suppressed and its same-frame consumer renders black.
+void sbr_afterimage_tick();
 
 // Report how many of aurora's draws actually carried an identity tag this run.
 //

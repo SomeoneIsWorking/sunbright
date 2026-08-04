@@ -252,12 +252,17 @@ void ov_aftereffect_perform(CPUState& cpu) {
     // refuse). See afterimage.cpp for why: whatever texture this effect SAMPLES is by definition
     // the temporal-feedback texture, and its EFB copy must advance once per TICK rather than once
     // per present, or the trail alternates between a half-tick-old and a full-tick-old image.
-    sbr_afterimage_note_texture(self);
+    // Deferred until enabled_draw is known, below — see the call site after it is computed.
     // Mirror the game's own early-outs: only the draw pass (0x10), with the effect enabled
     // (unk14 bit 0), emits the quad. Otherwise this would churn projections every frame.
     fx("aftereffect.perform");
     fx(g_ws_last_proj_is2d ? "aftereffect.under2d" : "aftereffect.under3d");
     const bool enabled_draw = (flags & 0x10) && sb_ram_fast(self) && (sb_r8(self + 0x14) & 1);
+    // Only an ACTIVELY DRAWING trail makes this texture a cross-frame feedback source. When the
+    // effect is not drawing, the same screen texture is used intra-frame by other things — the
+    // title composites its sky through it — and treating it as feedback there suppressed a copy a
+    // LATER PASS OF THE SAME FRAME depends on, which blanked the background on every other present.
+    sbr_afterimage_note_texture(self, enabled_draw);
     sb_screen_effect_fired(ScreenEffect::DashBlur, enabled_draw);
     const bool draws = widescreen_on() && enabled_draw;
     if (!draws) { func_8022d4f8(cpu); return; }

@@ -102,3 +102,51 @@ Leads, in the order their size suggests:
    pass" roughly DOUBLES per-frame storage, and CLAUDE.md lists that double-draw as open and
    unverified. If it is real, removing it halves both this transfer and the draw work. Worth
    settling before optimising anything downstream of it.
+
+---
+
+## The once-per-tick feedback copy was WRONG, and the title proved it
+
+Landed, then measured, then turned off. Recorded because the reasoning was sound and the premise was
+not — and the premise is the reusable part.
+
+**The regression.** With the feedback-copy suppression active, the title screen's background
+alternated between the sky and BLACK on every present. Measured with `SB_DUMP_FRAME_EVERY=1`, mean
+luminance over consecutive presents:
+
+    174.1  51.2  174.1  51.2  174.1  51.2 ...
+
+**The controls, run before diagnosing:**
+
+| configuration | result |
+|---|---|
+| doubled present, NO interpolation (`AURORA_REPLAY_PRESENT=1` alone) | 174.1 constant — clean |
+| suppression ON, interpolation NEUTRAL (`AURORA_INTERP_ALPHA=1.0`) | alternates — **broken** |
+
+So it was neither the doubled present nor the interpolation: it was the suppression itself. Without
+the second control this would have been blamed on EFB non-idempotence, which the design doc predicts
+and which was the obvious suspect.
+
+**Why the premise is false.** The claim was *"whatever `TAfterEffect` samples is by definition the
+cross-frame feedback texture."* It is not. The same `TScreenTexture` copy is consumed INTRA-frame by
+other things — the title composites its sky through it — so dropping the copy on the interpolated
+emission left the same frame's later pass sampling nothing.
+
+Narrowing it to "only while the trail is actually drawing" does **not** rescue it: measured, the
+title still alternates, because there the effect draws *and* the copy is still intra-frame.
+
+**So identity cannot separate the two cases at all.** The only property that can is **order within
+the frame**: a copy whose texture is sampled BEFORE it in the pass list is being read from the
+previous frame (cross-frame, suppress on the interpolated emission); one sampled AFTER it is
+intra-frame (must run on both). Aurora does not track when a texture is sampled relative to the copy
+that writes it. Adding that is the real fix and the actual next step.
+
+**Current state:** `SBR_FEEDBACK_COPY_ONCE=1` enables the suppression; it is OFF by default. The
+dash trail keeps its 60fps jitter — a cosmetic defect on one effect — rather than blanking the
+background of every other frame, which is not cosmetic. Verified after gating: title max adjacent
+per-present difference 0.12 over 200 presents (123.01 when broken), plaza 1.14.
+
+**The lesson worth keeping:** an EFB copy's identity says nothing about whether its consumer is this
+frame or the next, and that distinction is the whole question. Any future attempt at this must
+derive the answer from pass ORDER, and must be checked on the title as well as gameplay — the two
+scenes use the same texture for opposite purposes.
