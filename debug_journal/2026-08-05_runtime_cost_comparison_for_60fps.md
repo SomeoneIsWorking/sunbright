@@ -134,3 +134,40 @@ bypass: it helps **both** runtimes, since both reach the same code, rather than 
 Claim C018 recorded the wrong attribution and has been falsified; C019 records this one. Worth
 noting how close this came to costing a large arc: the bypass was a coherent, well-evidenced-looking
 proposal built on one unmeasured assumption about *which part* of a measured 11.5 ms was overhead.
+
+### Inside draw_prim: 45,914 calls per frame, and the obvious suspect is again wrong
+
+`SB_PROFILE_DRAWPRIM=1` (added to `command_processor.cpp`, reported per drain from `fifo.cpp`) times
+`draw_prim` against itself:
+
+    [drawprim] calls=45914 total=20.25ms scan=2.82ms (14% of draw_prim)
+    [drawprim] calls=45914 total=21.30ms scan=3.15ms (15% of draw_prim)
+    [drawprim] calls=45914 total=18.18ms scan=2.57ms (14% of draw_prim)
+
+**The per-vertex max-index scan is 14%, not the cost.** That was the third suspect in this arc to be
+named from reading the code and then refuted by measuring it — after "decode dispatch" and "the FIFO
+round-trip". The pattern is consistent enough to be worth stating: in this codebase, reading a hot
+function and picking the expensive-looking loop has a 0-for-3 record.
+
+**The number that matters is 45,914 calls per frame.** The `draws=1314` figure everything else in
+this arc was reasoned about is the count AFTER aurora merges primitives — roughly 35 primitives are
+merged into each emitted draw. So the render path is processing ~46k primitive submissions per
+frame, and `draw_prim`'s ~15.8 ms is dominated by per-primitive overhead: ~340 ns each.
+
+Rough composition of the ~15.8 ms drain:
+
+| | cost | note |
+|---|---|---|
+| max-index scan | ~2.8 ms | per-vertex, per-indexed-attribute |
+| per-draw build | ~4.3 ms | `arrayUpload` 2.64, shaderinfo, pipeline_ref, uniforms, bindgroups |
+| everything else in `draw_prim` | ~8.7 ms | per-primitive, 45,914 calls |
+
+(The instrument inflates the total by ~2 ms: two `clock_gettime` per call at 46k calls. The
+`total=20.25ms` line is that inflated figure; the unprofiled drain is ~15.8 ms.)
+
+**So the render lever is the per-primitive path, and the biggest structural question is why there are
+46k primitives for 1314 merged draws.** Either the game genuinely emits that many small primitives —
+in which case the win is making the per-primitive path cheaper — or aurora is splitting work it
+could batch earlier. That is the next thing to establish, and unlike the last three suspects it
+should be established by measuring the primitive size distribution rather than by reading the code
+and guessing.
