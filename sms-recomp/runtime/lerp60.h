@@ -55,6 +55,10 @@ void sbr_afterimage_note_texture(unsigned self, bool drawing);
 // suppressed and its same-frame consumer renders black.
 void sbr_afterimage_tick();
 
+// SBR_FORCE_DASHBLUR=1 diagnostic: force the dash trail to draw so the cross-frame feedback case is
+// reachable in an automated run. Mutates guest state; never on by default.
+void sbr_afterimage_force(unsigned self);
+
 // Report how many of aurora's draws actually carried an identity tag this run.
 //
 // This exists because the failure it guards against is silent: if the emitter stops tagging — a

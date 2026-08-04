@@ -44,106 +44,59 @@
 
 #include <cstdlib>
 
-namespace aurora::gfx {
-void set_feedback_copy_dest(const void* dest);
-}
-
 namespace {
 
 // TAfterEffect (include/MarioUtil/ScreenUtil.hpp) and JUTTexture (JUtility/JUTTexture.hpp).
 constexpr u32 AFTEREFFECT_TEXTURE = 0x10;   // JUTTexture* unk10, the screen texture it samples
 constexpr u32 JUTTEXTURE_TEXDATA  = 0x24;   // void* mTexData — the image buffer the EFB copies into
 
-const void* g_reported = nullptr;
 long g_calls = 0;
 bool g_drewThisTick = false;
+long g_drawCalls = 0;
 } // namespace
 
-void sbr_afterimage_tick() {
-    // A tick in which the trail did not draw releases the feedback claim, because the same screen
-    // texture is an ordinary INTRA-frame copy for other consumers — the title composites its sky
-    // through it — and suppressing it there blanks the background on every interpolated present.
-    if (!g_drewThisTick && g_reported != nullptr) {
-        g_reported = nullptr;
-        aurora::gfx::set_feedback_copy_dest(nullptr);
-    }
-    g_drewThisTick = false;
-}
-
-void sbr_afterimage_note_texture(u32 self, bool drawing) {
-    ++g_calls;
-    // WHY `drawing` GATES THIS. "The texture TAfterEffect samples" is not by itself a cross-frame
-    // feedback source: the same TScreenTexture is an ordinary intra-frame EFB copy for other
-    // consumers, and the title screen composites its sky through exactly that copy LATER IN THE
-    // SAME FRAME. Suppressing the copy there removed the background from every interpolated
-    // present — measured as a per-present mean alternating 174.1 / 51.2 on the title, i.e. the
-    // flashing. Only while the trail is actually being drawn is the previous frame's image the
-    // thing being read, which is what makes it feedback.
-    // Evaluated per TICK, not per call: perform() runs several times a tick with different pass
-    // flags, and only the one with the draw bit set actually emits the trail. Clearing the latch on
-    // each non-drawing call cleared it again before the EFB copy was reached, so nothing was ever
-    // suppressed (measured: 0 suppressions over 3000 plaza ticks). Record that it drew; the frame
-    // seam decides at the tick boundary.
-    if (!drawing) return;
-    g_drewThisTick = true;
-    // OFF BY DEFAULT, AND THE REASON IS A MEASUREMENT, NOT CAUTION.
-    //
-    // "Whatever TAfterEffect samples is the feedback texture" is FALSE. The title screen draws the
-    // trail AND consumes that same copy later in the same frame to composite its sky, so suppressing
-    // the copy blanked the background on every interpolated present: per-present mean alternating
-    // 174.1 / 51.2, which is the flashing. Gating on "the trail is actually drawing" does not save
-    // it — measured, the title still alternates, because there the effect draws and the copy is
-    // still intra-frame.
-    //
-    // Identity of the sampled texture therefore cannot separate the two cases at all. The only thing
-    // that can is ORDER WITHIN THE FRAME: a copy whose texture is sampled BEFORE it in the pass list
-    // is being read from the previous frame (cross-frame feedback, suppress on the interpolated
-    // emission); one sampled AFTER is intra-frame (must run on both). Aurora does not track when a
-    // texture is sampled relative to the copy that writes it, and adding that is the real fix.
-    //
-    // Until then this stays inert: the dash trail keeps its 60fps jitter, which is a cosmetic defect
-    // on one effect, rather than blanking the background of every other frame, which is not.
-    static const bool s_enabled = [] {
-        const char* e = std::getenv("SBR_FEEDBACK_COPY_ONCE");
+// POSITIVE CONTROL. The dash trail only draws while the player is dashing, so no automated run ever
+// exercises the cross-frame-feedback case, and a classifier that has only been shown not to
+// misfire is not a classifier that has been shown to FIRE. SBR_FORCE_DASHBLUR=1 forces the real
+// effect to draw every frame — state 2 is the calcDashBlurValue branch, bit 0 of unk14 is its
+// enable — so the copy it samples becomes a genuine feedback copy on the real code path.
+//
+// Diagnostic only, and it MUTATES GUEST STATE: never leave it on for a normal run.
+void sbr_afterimage_force(u32 self) {
+    static const bool on = [] {
+        const char* e = std::getenv("SBR_FORCE_DASHBLUR");
         return e != nullptr && e[0] != '\0' && e[0] != '0';
     }();
-    if (!s_enabled) return;
-    if (sbr_lerp_enabled() && sb_ram_fast(self + AFTEREFFECT_TEXTURE)) {
-        const u32 tex = sb_r32(self + AFTEREFFECT_TEXTURE);
-        if (tex != 0 && sb_ram_fast(tex + JUTTEXTURE_TEXDATA)) {
-            const u32 data = sb_r32(tex + JUTTEXTURE_TEXDATA);
-            // Aurora keys copies by the HOST pointer for the guest MEM1 address, and the fifo
-            // builds that as `g_ram_base + phys` (dev_gxfifo.cpp, GX_AURORA_LOAD_COPY_DEST). This
-            // must produce the identical pointer or the match silently never fires: the copy would
-            // keep running twice per tick and the trail would still jitter, with nothing to say
-            // why. sb_ram_fast wants the EFFECTIVE address — masking to a physical one first makes
-            // it return null for every address, which is exactly how the first version of this
-            // failed (10442 calls, zero identifications).
-            if (const u8* host = sb_ram_fast(data)) {
-                if (host != g_reported) {
-                    g_reported = host;
-                    aurora::gfx::set_feedback_copy_dest(host);
-                    lucent::info("lerp60", "afterimage: TAfterEffect samples the EFB copy at guest "
-                                           "0x{:08x} — that copy now runs once per TICK, not once "
-                                           "per present, so the trail stops alternating between a "
-                                           "half-tick-old and a full-tick-old image",
-                                 data);
-                }
-            }
-        }
+    if (!on || !sb_ram_fast(self + 0x50)) return;
+    sb_w8(self + 0x14, (u8)(sb_r8(self + 0x14) | 1));   // enabled
+    sb_w8(self + 0x15, 2);                              // calcDashBlurValue branch
+    // A dash amount that never runs down, so the effect keeps drawing for the whole run.
+    const float amount = 0.5f;
+    u32 bits;
+    __builtin_memcpy(&bits, &amount, sizeof bits);
+    sb_w32(self + 0x50, bits);
+}
+
+void sbr_afterimage_tick() { g_drewThisTick = false; }
+
+void sbr_afterimage_note_texture(u32 self, bool drawing) {
+    (void)self;
+    ++g_calls;
+    if (drawing) {
+        ++g_drawCalls;
+        g_drewThisTick = true;
     }
 }
 
 void sbr_afterimage_report() {
     if (!sbr_lerp_enabled()) return;
+    lucent::info("lerp60", "afterimage: perform ran {} times, of which {} actually DREW the trail. "
+                           "Zero draws means the cross-frame feedback case was never exercised, so "
+                           "a copy classifier reporting no feedback copies has proved nothing.",
+                 g_calls, g_drawCalls);
     if (g_calls == 0) {
         lucent::info("lerp60", "afterimage: TAfterEffect::perform was never called, so no feedback "
                                "copy was identified. That is expected in a scene with no dash blur "
                                "— it is NOT evidence that the once-per-tick rule is working.");
-    } else if (g_reported == nullptr) {
-        lucent::warn("lerp60", "afterimage: TAfterEffect::perform ran {} times but its texture was "
-                               "never readable, so the feedback copy is UNIDENTIFIED and still runs "
-                               "once per present. The trail will jitter.",
-                     g_calls);
     }
 }

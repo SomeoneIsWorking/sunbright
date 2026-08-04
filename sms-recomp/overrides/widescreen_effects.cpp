@@ -255,6 +255,7 @@ void ov_aftereffect_perform(CPUState& cpu) {
     // Deferred until enabled_draw is known, below — see the call site after it is computed.
     // Mirror the game's own early-outs: only the draw pass (0x10), with the effect enabled
     // (unk14 bit 0), emits the quad. Otherwise this would churn projections every frame.
+    sbr_afterimage_force(self);
     fx("aftereffect.perform");
     fx(g_ws_last_proj_is2d ? "aftereffect.under2d" : "aftereffect.under3d");
     const bool enabled_draw = (flags & 0x10) && sb_ram_fast(self) && (sb_r8(self + 0x14) & 1);

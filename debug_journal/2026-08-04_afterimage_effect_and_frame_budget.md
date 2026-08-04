@@ -150,3 +150,57 @@ per-present difference 0.12 over 200 presents (123.01 when broken), plaza 1.14.
 frame or the next, and that distinction is the whole question. Any future attempt at this must
 derive the answer from pass ORDER, and must be checked on the title as well as gameplay — the two
 scenes use the same texture for opposite purposes.
+
+---
+
+## The feedback-copy theory is FALSIFIED (2026-08-05), by an instrument built to test it
+
+The identity-based attempt above was replaced with the discriminator it named — **order within the
+frame** — and that discriminator then refuted the whole diagnosis.
+
+**The rule.** A copy is cross-frame feedback iff its result was sampled during the frame and every
+such sample was in a STRICTLY EARLIER pass than the one whose resolve writes it: those samples can
+only have read what the previous frame left. Sampled later, or in the SAME pass (the record has pass
+granularity, so a same-pass sample cannot be shown to precede the resolve), a consumer in THIS frame
+depends on it and it must run on both emissions. `is_cross_frame_feedback` in `gfx/common.cpp`.
+
+Recorded where the information actually exists: `resolve_sampled_textures` already looks a sampled
+texobj's data pointer up in the copy-texture map, so "this draw sampled the copy for dest D" is known
+there — noted *before* the unchanged-bind early-out, or most samples would be missed and an
+intra-frame copy would look like feedback.
+
+**Validated on both classes** (`copy_classifier_selftest`, runs before the first real tick):
+sampled-before → feedback; sampled-after → intra-frame; same-pass → intra-frame; never-sampled →
+refused. All four, not just the one it is expected to find.
+
+**And a POSITIVE CONTROL for the real code path**, because no automated run ever dashes:
+`SBR_FORCE_DASHBLUR=1` forces the real `TAfterEffect` to draw every frame (state 2, enable bit set,
+a dash amount that does not run down). Verified it works: **1791 real trail draws** over a plaza run
+where an unforced run has zero.
+
+**The result, with the trail genuinely drawing:**
+
+    EFB copies over 2400 ticks: 0 suppressed (cross-frame feedback) and 7200 kept (intra-frame)
+
+**Zero.** Not "the effect never drew" — it drew 1791 times. The copy the dash trail samples has a
+consumer LATER IN THE SAME FRAME, so it is not a temporal feedback copy at all, and it was never
+being "written twice per tick from two different images".
+
+**Therefore the stated cause of the ghost jitter is wrong.** Everything downstream of it — the
+once-per-tick suppression, the identity plumbing, the `drawing` gate — is deleted rather than left
+as a disabled tombstone. What remains is the classifier (self-tested, currently reporting no
+feedback copies in either scene, and demonstrably harmless: title max adjacent per-present
+difference 0.10, plaza 1.13) and the forced-draw control.
+
+**The jitter itself is UNDIAGNOSED again.** What is now known and should not be re-derived:
+
+* it is not the doubled present (that control is clean at 174.1 constant);
+* it is not a twice-written feedback texture (measured zero, with the effect forced on);
+* the trail quad is `GX_DIRECT` immediate-mode screen-space geometry, so the matrix interpolation
+  path cannot reach it — it is in the 42304 direct draws that correctly snap;
+* the effect's own state advances once per TICK and needs no rescaling.
+
+The next hypothesis to test is the one the above leaves standing: the quad is rebuilt per tick from
+smoothed parameters and SNAPS while the scene around it interpolates, so the trail is a half-tick out
+of step with the geometry it trails. That is a vertex-data problem, not a copy-scheduling one, and it
+needs a different mechanism than anything tried here.
