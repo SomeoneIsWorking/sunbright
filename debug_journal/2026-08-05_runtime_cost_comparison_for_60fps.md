@@ -45,10 +45,9 @@ unpaced, and running the whole tick 60 times a second needs 60. Both are ~20-25%
 shortfall is in rendering.
 
 **5. `createdPipelines` is 1800 for the decomp against 458 for the recomp** — 4x more pipeline
-objects for the same scene and draw count. Pipeline creation means shader compilation. This is an
-unexplained difference and a concrete lead, not a conclusion: it may be a cumulative counter
-plateauing at different points, or the decomp genuinely churning pipeline state. Worth settling
-before any render optimisation, since it is the largest structural difference between the two.
+objects for the same scene and draw count. Recorded here as a lead; **settled below as a dead end**:
+the counter plateaus at 1824 and never grows, so it is one-time startup compilation, not per-frame
+churn.
 
 ## Consequence for the path decision
 
@@ -71,3 +70,51 @@ back-to-back attempt at equal load produced obviously inflated figures (decomp 4
 respectively, so the decomp is if anything flattered by re-measurement, not the reverse. **Re-take
 both on an idle machine before treating any absolute figure as a baseline.** The second table (draw
 counts, per-draw build, drain split, pipeline counts) is structural and does not depend on load.
+
+---
+
+## Where the decomp's render time actually goes: a 2.26 MB/frame FIFO round-trip
+
+Following the "render is the wall" conclusion, the decomp's 19 ms render was broken down.
+
+**The pipeline lead is dead.** `createdPipelines` plateaus at **1824 and never grows** across a
+3900-frame run — a one-time startup cost, not per-frame churn. The 4x-vs-recomp difference is in how
+many distinct pipelines each scene ends up needing, not in repeated compilation. Nothing to optimise
+there.
+
+**The cost is `drain`, steady at ~15.8 ms every frame**, against ~1280 draws:
+
+    drain=15856us draws=1182 pipelines=1824
+    drain=15989us draws=1281 pipelines=1824
+    drain=15871us draws=1283 pipelines=1824     (stable for the whole run)
+
+Of that, the per-draw build accounts for ~4.3 ms (`arrayUpload` 2.64 ms, `shaderinfo+cfg` 0.62,
+`pipeline_ref` 0.39, `build_uniform` 0.29, `bindgroups` 0.20, `resolve_tex` 0.10, `push_cmd` 0.08).
+The remaining **~11.5 ms is the command-stream parse itself**.
+
+**What it is parsing is a stream it just generated.** In the decomp runtime the game calls the GX API
+directly, and aurora's implementation serialises it: `GXPosition3f32` is three `GX_WRITE_F32` into
+the FIFO buffer (`lib/dolphin/gx/GXVert.cpp`), and `gx::fifo::drain()` then decodes the whole buffer
+back at end of frame. `SB_DRAW_STATS` sizes it:
+
+    [draw-stats] frame=3895 bytes=2260384 draws=1314 verts=18226
+
+**2.26 MB encoded and decoded per frame.** The encode is cheap — it lands inside the ~3.2 ms game
+slice, so under ~0.5 ms — while the decode costs ~11.5 ms, roughly 20x the write. That asymmetry
+says the cost is per-command decode dispatch, not memory bandwidth (2.26 MB at 11.5 ms is only
+~200 MB/s).
+
+**Why this matters for 60fps.** The recomp has no choice about the FIFO: its guest writes a gather
+pipe, and there is nothing else to consume. The decomp is native code and the round-trip buys it
+nothing. Removing even half of that 11.5 ms takes the decomp from 22.2 ms to ~16 ms per tick, which
+is inside the 16.7 ms that true 60 Hz needs — the difference between "60fps does not fit" and "it
+does".
+
+**Not started, and it is not small.** Bypassing the FIFO means giving aurora a direct submission path
+for a host that calls the GX API in-process, parallel to the parse path the recomp needs. The
+parse path must stay — it is the recomp's only route, and it is also the oracle both runtimes are
+compared against. Scoped as its own arc rather than begun here.
+
+Cheaper alternative worth measuring first: the decode dispatch itself. ~5 ns/byte for what is largely
+a memcpy-shaped workload suggests the per-command switch, not the data movement, and a faster decode
+would help BOTH runtimes rather than only the decomp.
