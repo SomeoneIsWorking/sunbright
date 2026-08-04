@@ -138,6 +138,12 @@ bool turbo() {
 
 int64_t g_nextDeadlineNs = 0;
 
+// Frame-time split, reported under the `frame` channel. See the use site in video_wait_for_retrace.
+int64_t g_seamEnterNs = 0;
+int64_t g_lastPresentEndNs = 0;
+double g_accGuestMs = 0, g_accOursMs = 0;
+long g_frameSplitN = 0;
+
 // Set from a signal handler, so it must be async-signal-safe: a volatile sig_atomic_t flag and
 // nothing else. The frame loop acts on it at the frame boundary, where shutting aurora down is
 // safe — a handler cannot do that itself.
@@ -431,6 +437,16 @@ void video_wait_for_retrace(CPUState& cpu) {
             prev = now;
         }
     }
+    // WHERE THE FRAME TIME GOES. "It runs at N fps" does not say whether the cost is the game's own
+    // recompiled code or our rendering, and those have nothing to do with each other: no amount of
+    // render optimisation helps if the tick is spent in guest logic, and interpolated 60fps is only
+    // worth having BECAUSE it does not re-run that logic. Split at the seam — everything since the
+    // last present is the guest's tick, everything from here to the next present is ours.
+    if (g_lastPresentEndNs != 0) {
+        g_accGuestMs += (double)(now_ns() - g_lastPresentEndNs) / 1e6;
+    }
+    g_seamEnterNs = now_ns();
+
     // Let the game do its own frame bookkeeping first.
     func_802fc9a4(cpu);
 
@@ -492,6 +508,16 @@ void video_wait_for_retrace(CPUState& cpu) {
     // presents run at two per tick under replay, so a derived index would drift silently and any
     // correlation drawn from it would be worthless — the failure this project has hit repeatedly.
     if (sbr_lerp_enabled()) sbr_camera_mode_tick(aurora::gfx::interp::tick_index());
+
+    // Close the frame-time split opened at the top of this function.
+    g_lastPresentEndNs = now_ns();
+    if (g_seamEnterNs != 0) {
+        g_accOursMs += (double)(g_lastPresentEndNs - g_seamEnterNs) / 1e6;
+        if (++g_frameSplitN % 60 == 0)
+            lucent::debug("frame", "per tick: guest logic {:.1f} ms, present+render {:.1f} ms "
+                                   "(pacing sleep excluded from both)",
+                          g_accGuestMs / (double)g_frameSplitN, g_accOursMs / (double)g_frameSplitN);
+    }
 
     // PACING. Without this the recomp runs as fast as the host allows (measured ~157 fps against
     // the oracle's 30) — every animation, timer and physics step driven off the retrace count
