@@ -14,13 +14,10 @@
 #include <GC2D/SunGlass.hpp>
 #include <GC2D/Talk2D2.hpp>
 
-// TBlendPane — inherits TBoundPane; has virtual update().
-// vtable emitted when we define the non-inline virtual.
-TBlendPane::TBlendPane(J2DScreen* screen, u32 tag)
-    : TBoundPane(screen, tag)
-{
-}
-void TBlendPane::update() { SB_STUB_HIT("TBlendPane::update"); }
+// TBlendPane's ctor and update() were stubs here until upstream implemented them for real
+// (decomp/sms src/GC2D/BlendPane.cpp — update() returns bool and drives the blend progress).
+// Deleted rather than kept alongside: a stub that shadows a real body is a silent downgrade, and
+// two definitions of the same symbol is a link error waiting for whichever order the build picks.
 
 // TGCConsole2 static data members (JUTPoint — default-init to 0).
 JUTPoint TGCConsole2::cDownMidPoint;
