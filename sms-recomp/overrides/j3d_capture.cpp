@@ -142,11 +142,30 @@ void ov_shape_draw(CPUState& cpu) {
     // knowing each J3DShapeMtx's subclass, and getting it wrong is what left 20% of elements on the
     // wrong matrix. The draw matrices are computed by viewCalc BEFORE the draw, so reading them
     // afterwards is equally valid.
-    // Tag the draws this shape is about to emit with its guest J3DShape address, so interpolated
-    // 60fps can pair them with the same object's draws in the previous tick. A guest scene-graph
-    // pointer is genuinely stable across ticks; nothing aurora can compute for itself is.
+    // Tag the draws this shape is about to emit, so interpolated 60fps can pair them with the SAME
+    // OBJECT's draws in the previous tick. A guest scene-graph pointer is genuinely stable across
+    // ticks; nothing aurora can compute for itself is.
+    //
+    // THE SHAPE ALONE IS NOT AN OBJECT IDENTITY, and using it as one was a real defect. A J3DShape
+    // belongs to the shared J3DModelData — the model RESOURCE — so every instance of a model (each
+    // coconut, each palm tree, each cloned NPC) draws through the same J3DShape object.
+    // J3DShapePacket::draw (J3DPacket.cpp:220) writes `unk14->mDrawMatrices = unk18` into that
+    // shared shape immediately before calling draw(), i.e. it swaps the INSTANCE's matrices into a
+    // shared object per draw. Tagging by shape therefore collapsed every instance of a model into
+    // one identity, and pairing fell back to draw ORDER within it — which is not stable across ticks
+    // (culling and Z-sorting reorder instances), so instance k paired with a different instance's
+    // transform. Measured signature: paired-draw motion of mean 31.9 / max 27943 world units per
+    // 1/30 s with the camera divided out, where a real object moves a fraction of a unit.
+    //
+    // mDrawMatrices is the instance's own draw-matrix array, already installed by the packet when
+    // this seam is entered, so (shape, instance) is the identity the pairing actually needs. Both
+    // are 32-bit guest addresses, so they compose into a 64-bit tag with no hashing and no
+    // collisions. 0 stays reserved for "untagged".
     // Emitted BEFORE the draw — the tag has to precede the GX it labels in the stream.
-    if (sbr_lerp_enabled()) sbr_gxfifo_draw_tag((uint64_t)shape);
+    if (sbr_lerp_enabled()) {
+        const u32 instance = sb_r32(shape + SHAPE_DRAW_MATRICES);
+        sbr_gxfifo_draw_tag(((uint64_t)shape << 32) | (uint64_t)instance);
+    }
 
     sbr_mtx_begin_shape(shape);
     func_802e0390(cpu);
