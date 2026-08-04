@@ -332,3 +332,20 @@ number looked authoritative.
 (60fps-off ratio ~1.0, which was true) but not that the scene is REPRESENTATIVE. A control proves the
 instrument works on the input it was given; it says nothing about whether that input is the case you
 meant to measure.
+
+### Closing an open item: there is NO redundant "ghost pass" in the recomp frame
+
+CLAUDE.md lists a phase-1 ghost-pass double-draw as open and unverified, and the
+`StorageBufferSize` comment blames it for roughly doubling per-frame storage. A total draw count
+cannot show it; two passes with comparable counts is what it would look like. Note `SB_SKIP_GHOST`
+appears ONLY inside that comment — it is a phantom switch, exactly as CLAUDE.md warns, so it could
+never have been used to test this.
+
+Delfino Plaza, recomp runtime, steady state:
+
+    per-pass command counts: 2 10 75 976 331      (passes=5, draws=1373)
+
+One dominant scene pass and a much smaller secondary. **Nothing is drawn twice.** The frame's work is
+not doubled, and the 22.4 MB/tick storage figure is not inflated by duplication either — so the
+"settle this before optimising anything downstream" note above is resolved: there is nothing to
+settle. The claim may still hold in the decomp runtime where it originated; it does not hold here.
