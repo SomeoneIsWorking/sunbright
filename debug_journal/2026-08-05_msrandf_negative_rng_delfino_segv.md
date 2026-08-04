@@ -79,3 +79,36 @@ Any other `X_MAX + 1` or `X + 1` in a scale/divisor expression transcribed from 
 same latent bug wherever the host's limit is larger than the GC SDK's. This one was found only
 because it happened to crash; the silent cases — every out-of-range random value the game has been
 using — produced no diagnostic at all.
+
+## The sweep: seven more sites, and one that only LOOKED fixed
+
+The helper was not the only place. `rand() * (1.f / (RAND_MAX + 1))` is open-coded in six more
+files, every one of them silently returning negative randoms on the host:
+
+| file | what it randomises |
+|---|---|
+| `src/Animal/AnimalBase.cpp` | `sAnmRand01` — animation phase for every animal |
+| `src/Animal/Bird.cpp` | bird anim phase |
+| `src/Enemy/enemytable.cpp` | weighted enemy selection |
+| `src/Enemy/hinokuri2.cpp` | two sites (spread, probability test) |
+| `src/MoveBG/MapObjLib.cpp` | random object rotation |
+| `src/Player/ModelWaterManager.cpp` | a second local copy of `MsRandF` |
+
+**Two of them already carried a `(f32)` cast that looks like a fix and is not.**
+`(f32)(RAND_MAX + 1)` casts the *result* — the int addition has already overflowed inside the
+parentheses. `AnimalBase.cpp` even carried a comment asserting the expression was *"correct today
+under the consistent libc regime"*. It was not, and had not been. That comment is corrected in place
+rather than left to mislead the next reader, which is the more dangerous half of this: a wrong note
+that reads as a considered verdict stops anyone re-checking.
+
+The fix at every site is to make the literal a float — `RAND_MAX + 1.0f` — so the addition itself is
+float. Identical value on the GC target (32767 + 1.0f == 32768.0f), impossible to overflow anywhere,
+and no `#ifdef` needed. `hinokuri2.cpp` already used exactly this form at one of its sites, so it is
+an idiom already present in the codebase rather than something invented for this fix.
+
+Re-verified after the sweep: 8/8 runs survive `SB_STAGE=1`, Delfino renders unchanged at mean RGB
+(135.2, 144.6, 145.8).
+
+**The generalisable lesson:** a cast around an overflowing expression is not a fix, and this one
+survived review twice because it *looks* like defensive typing. When the concern is integer
+overflow, the operands have to change type, not the result.
