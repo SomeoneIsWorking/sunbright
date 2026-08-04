@@ -204,3 +204,18 @@ The next hypothesis to test is the one the above leaves standing: the quad is re
 smoothed parameters and SNAPS while the scene around it interpolates, so the trail is a half-tick out
 of step with the geometry it trails. That is a vertex-data problem, not a copy-scheduling one, and it
 needs a different mechanism than anything tried here.
+
+### And the whole-frame smoothness metric is the WRONG instrument for this
+
+With the trail forced on vs off, mean alternation is 0.332 -> 0.345 — inside the run-to-run spread,
+and the judged-cell counts differ (185 vs 174), so the two are not strictly comparable anyway.
+
+That is **not** evidence the trail is smooth. `frame_smoothness` scores whole screen CELLS, and the
+trail is a low-alpha overlay whose cells are dominated by the scene geometry underneath it. It also
+carries the blind spot printed with every one of its reports: a large but CONSISTENT displacement
+reads as perfectly even motion.
+
+So the next attempt needs an instrument that looks at the TRAIL, not at the frame: sample the region
+where the ghost is (with `SBR_FORCE_DASHBLUR=1` making it reproducible headlessly) and compare that
+region across consecutive presents. Reusing the frame metric here would produce another confident
+number about something it never measured — the failure this project has catalogued seven times.
