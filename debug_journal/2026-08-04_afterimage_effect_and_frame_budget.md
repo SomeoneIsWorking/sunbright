@@ -264,3 +264,29 @@ the SCREEN. A percentage of draws was never the quantity that determines whether
 **This is now the headline number for the 60fps arc**, and it is the one to drive down. The residuals
 already named (indexed perspective geometry not reaching the tag seam; the 2.9% mispairings) should
 be re-prioritised by screen area rather than by draw count.
+
+### First attribution: the 2D layer is NOT the snapping content
+
+The obvious suspect was the 2D/HUD layer, which is *supposed* to snap (an ortho pane has no
+meaningful in-between, and interpolating it slides the HUD bodily every other frame). If most of the
+39% were legitimate 2D snapping, the number would be nothing to chase.
+
+Ablated with `SB_SKIP_ORTHO=1`, same scene and window:
+
+| run | even | odd | ratio | motion/tick |
+|---|---|---|---|---|
+| 60fps on, all draws | 0.272 | 0.119 | 2.28 | 0.391 |
+| 60fps on, **ortho skipped** | 0.454 | 0.173 | **2.62** | 0.628 |
+
+Removing 2D makes the imbalance WORSE, not better — the snapping share goes 39% -> 45%. And total
+motion per tick rises sharply (0.391 -> 0.628), which says the ortho layer was covering a
+substantial amount of moving 3D content and damping the measurement.
+
+So the unevenness lives in the **3D scene**, and legitimate 2D snapping was if anything hiding it.
+The candidates by screen area are the ones already named as untagged: sea and water surfaces
+(immediate-mode geometry whose vertices are rebuilt per tick by `calcDrawVtx`), particles, and the
+indexed perspective draws that never reach the tag seam.
+
+Next: attribute by SCREEN AREA rather than by ablation guesswork — mark the draws that did not
+pair-interpolate and measure the fraction of pixels they cover. Draw-count percentages have already
+proved to be the wrong denominator twice in this arc.
