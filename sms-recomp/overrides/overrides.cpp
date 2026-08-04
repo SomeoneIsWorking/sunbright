@@ -32,6 +32,20 @@ u32 g_lo = 0xFFFFFFFFu, g_hi = 0;
 
 void override_register(u32 address, void (*fn)(CPUState&), const char* symbol,
                        const char* reason) {
+    // TWO OVERRIDES FOR ONE ADDRESS IS ALWAYS A BUG, and it used to resolve itself silently: the
+    // map assignment overwrote, so whichever translation unit's static initializer ran last won and
+    // the other's behaviour vanished with no diagnostic. Both are real work someone did to that
+    // function; losing either is a defect that presents as "my hook never runs" or, far worse, as
+    // the OTHER hook's fix quietly disappearing. Registration order across TUs is not something to
+    // rely on either way. The fix is always to merge the two bodies into one override.
+    const auto existing = table().find(address);
+    if (existing != table().end()) {
+        lucent::error("override", "DUPLICATE OVERRIDE for 0x{:08x}: '{}' ({}) is already registered, "
+                                  "and '{}' ({}) would silently replace it. One address, one "
+                                  "override — merge the two bodies.",
+                      address, existing->second.symbol, existing->second.reason, symbol, reason);
+        std::abort();
+    }
     table()[address] = Entry{fn, symbol, reason, false};
     if (address < g_lo) g_lo = address;
     if (address > g_hi) g_hi = address;

@@ -21,6 +21,8 @@
 
 #include "overrides.h"
 
+#include "../runtime/lerp60.h"
+
 #include "../runtime/probe_server.h"
 #include "../runtime/screen_effects.h"
 
@@ -245,6 +247,12 @@ void ov_mirrorcam_perform(CPUState& cpu) {
 // capture is of the anamorphic 16:9 EFB. It only needs the ortho unsqueezed.
 void ov_aftereffect_perform(CPUState& cpu) {
     const u32 self = cpu.gpr[3], flags = cpu.gpr[4];
+    // Interpolated 60fps also needs something from this function, and one address gets exactly one
+    // override (registering a second silently replaced this one until override_register learned to
+    // refuse). See afterimage.cpp for why: whatever texture this effect SAMPLES is by definition
+    // the temporal-feedback texture, and its EFB copy must advance once per TICK rather than once
+    // per present, or the trail alternates between a half-tick-old and a full-tick-old image.
+    sbr_afterimage_note_texture(self);
     // Mirror the game's own early-outs: only the draw pass (0x10), with the effect enabled
     // (unk14 bit 0), emits the quad. Otherwise this would churn projections every frame.
     fx("aftereffect.perform");

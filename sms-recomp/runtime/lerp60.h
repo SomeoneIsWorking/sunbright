@@ -39,6 +39,14 @@ void sbr_camera_mode_tick(long tick);
 // tag coverage.
 void sbr_camera_cut_report();
 
+// Report whether the dash-blur feedback copy was identified (see overrides/afterimage.cpp). Carries
+// its own denominator: "not identified" and "no dash blur in this scene" are different answers.
+void sbr_afterimage_report();
+
+// Called from TAfterEffect::perform's existing override with the effect's `this`, to learn which EFB
+// copy destination feeds the trail. Identification only — it does not alter the effect.
+void sbr_afterimage_note_texture(unsigned self);
+
 // Report how many of aurora's draws actually carried an identity tag this run.
 //
 // This exists because the failure it guards against is silent: if the emitter stops tagging — a

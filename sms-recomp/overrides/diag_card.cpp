@@ -156,13 +156,18 @@ void exi_probe(CPUState& cpu) {
 
 } // namespace
 
-SB_OVERRIDE(0x803580a8u, card_probe_ex, "CARDProbeEx (trace)", "diagnostic; real body runs")
+// Called by the NATIVE card service (native_card.cpp) for the two entry points it implements
+// itself. Those addresses cannot also carry a trace override — one address, one override — and
+// tracing the guest body there would have traced code that no longer runs.
+void sbr_card_trace(const char* what, s32 result) {
+    if (tracing()) report(what, result);
+}
+
 SB_OVERRIDE(0x803588dcu, card_mount,    "CARDMount (trace)",   "diagnostic; real body runs")
 SB_OVERRIDE(0x80357f88u, card_check,    "CARDCheck (trace)",   "diagnostic; real body runs")
 SB_OVERRIDE(0x8036a4ccu, exi_probe_ex,  "EXIProbeEx (trace)",  "diagnostic; real body runs")
 SB_OVERRIDE(0x8036b050u, exi_get_id,    "EXIGetID (trace)",    "diagnostic; real body runs")
 SB_OVERRIDE(0x8036a2d8u, exi_probe,     "probe helper (trace)", "diagnostic; real body runs")
-SB_OVERRIDE(0x8035873cu, card_mount_async, "CARDMountAsync (trace)", "diagnostic; real body runs")
 SB_OVERRIDE(0x803554e0u, card_sync,        "__CARDSync (trace)",     "diagnostic; real body runs")
 SB_OVERRIDE(0x8036a580u, exi_attach,       "EXIAttach (trace)",      "diagnostic; real body runs")
 SB_OVERRIDE(0x8036a44cu, exi_probe_real,   "EXIProbe (trace)",       "diagnostic; real body runs")

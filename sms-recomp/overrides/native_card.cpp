@@ -39,6 +39,11 @@
 
 extern u8* g_ram_base;
 
+// diag_card.cpp's trace, reached from here because these two addresses are implemented natively:
+// the guest body no longer runs, so a trace override on the same address would both collide with
+// this one and report a function that is not executing.
+void sbr_card_trace(const char* what, s32 result);
+
 namespace {
 // Guest pointers are cached/uncached virtual addresses; g_ram_base is indexed by the physical
 // offset. Every other device masks the same way — omitting it here indexed ~2 GB past the
@@ -134,20 +139,33 @@ void run_callback(CPUState& cpu, u32 cb, u32 chan, s32 result) {
 // s32 CARDProbeEx(s32 chan, s32* memSize, s32* sectorSize)
 void card_probe_ex(CPUState& cpu) {
     const u32 chan = cpu.gpr[3], mem_p = cpu.gpr[4], sec_p = cpu.gpr[5];
-    if (chan != 0 || card_fd() < 0) { cpu.gpr[3] = (u32)R_NOCARD; return; }
+    if (chan != 0 || card_fd() < 0) {
+        cpu.gpr[3] = (u32)R_NOCARD;
+        sbr_card_trace("CARDProbeEx", R_NOCARD);
+        return;
+    }
     if (mem_p >= 0x80000000u) sb_w32(mem_p, (u32)(g_size * 8 / (1024 * 1024)));   // Mbit
     if (sec_p >= 0x80000000u) sb_w32(sec_p, SECTOR);
     cpu.gpr[3] = (u32)R_READY;
+    sbr_card_trace("CARDProbeEx", R_READY);
 }
 
 // s32 CARDMountAsync(s32 chan, void* workArea, CARDCallback detachCb, CARDCallback attachCb)
 void card_mount_async(CPUState& cpu) {
     const u32 chan = cpu.gpr[3], work = cpu.gpr[4];
     const u32 detach_cb = cpu.gpr[5], attach_cb = cpu.gpr[6];
-    if (chan != 0 || card_fd() < 0 || work < 0x80000000u) { cpu.gpr[3] = (u32)R_NOCARD; return; }
+    if (chan != 0 || card_fd() < 0 || work < 0x80000000u) {
+        cpu.gpr[3] = (u32)R_NOCARD;
+        sbr_card_trace("CARDMountAsync", R_NOCARD);
+        return;
+    }
 
     const u32 card = CARD_BLOCK0;
-    if ((s32)sb_r32(card + F_RESULT) == R_BUSY) { cpu.gpr[3] = (u32)R_BUSY; return; }
+    if ((s32)sb_r32(card + F_RESULT) == R_BUSY) {
+        cpu.gpr[3] = (u32)R_BUSY;
+        sbr_card_trace("CARDMountAsync", R_BUSY);
+        return;
+    }
 
     sb_w32(card + F_RESULT, (u32)R_BUSY);
     sb_w32(card + F_WORKAREA, work);

@@ -325,6 +325,7 @@ void video_wait_for_retrace(CPUState& cpu) {
     if (sbr_lerp_enabled() && (g_present_count % 300) == 0) {
         sbr_lerp_report_tag_coverage();
         sbr_camera_cut_report();
+        sbr_afterimage_report();
     }
 
     // Native SDL3-GPU renderer (SBR_SDLGPU=1): draw the interpolated scene from the game's own
