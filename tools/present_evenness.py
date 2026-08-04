@@ -81,9 +81,23 @@ def main() -> int:
     print(f"presents {idx[0]}..{idx[-1]}   {len(diffs)} steps")
     print(f"  even-step mean {mean_even:.3f}   odd-step mean {mean_odd:.3f}   ratio {ratio:.2f}")
     print(f"  motion per tick (even+odd) {mean_even + mean_odd:.3f}")
-    if mean_even + mean_odd < 0.02:
-        print("  NOTHING IS MOVING — every number above is noise. Drive the stick with "
-              "SBR_PAD_SCRIPT; a static scene cannot show whether motion interpolates.")
+    motion = mean_even + mean_odd
+    # THE THRESHOLD THAT MATTERS, and it is not "is anything moving at all".
+    #
+    # A near-static window still has ambient animation — water ripple, particles, a flag — and that
+    # animation is exactly the content with no cross-tick identity, so it snaps by design. Measured
+    # on Delfino: a window where Mario had run into a wall gives motion/tick 0.39 and ratio 2.28,
+    # while the SAME scene with him actually running gives 5.77 and ratio 1.01. The first number is
+    # real, but it describes the sea, not the picture, and reading it as "39% of motion snaps" is a
+    # conclusion about the whole frame drawn from its quietest content.
+    #
+    # A moving Delfino scene sits at 2-14 motion/tick. Below 1.0 the window is dominated by ambient
+    # animation and the ratio must not be quoted as a coverage number.
+    if motion < 1.0:
+        print(f"  SCENE IS NEARLY STATIC (motion/tick {motion:.2f}; a moving scene is several units "
+              f"per tick). The ratio above describes ambient animation — water, particles — which "
+              f"has no cross-tick identity and snaps BY DESIGN. It is not a whole-frame coverage "
+              f"number. Drive the stick with SBR_PAD_SCRIPT and re-measure while the camera moves.")
         return 0
     # ratio = (1+s)/(1-s) for a snapping share s of the on-screen motion.
     snap = (ratio - 1.0) / (ratio + 1.0)

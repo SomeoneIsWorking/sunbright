@@ -290,3 +290,45 @@ indexed perspective draws that never reach the tag seam.
 Next: attribute by SCREEN AREA rather than by ablation guesswork — mark the draws that did not
 pair-interpolate and measure the fraction of pixels they cover. Draw-count percentages have already
 proved to be the wrong denominator twice in this arc.
+
+---
+
+## CORRECTION (2026-08-05): the "39% of motion snaps" headline is WRONG
+
+It was measured in a window where **Mario had run into a wall**. The pad script moved him for a few
+hundred ticks and then he stopped; the measurement window sat after that, so the only motion left was
+ambient — sea ripple, particles — which is exactly the content with no cross-tick identity and which
+snaps by design. A conclusion about the whole frame was drawn from its quietest content.
+
+Re-measured on the same scene with a pad script that keeps him moving
+(`150:STICK=0/-90,300:STICK=90/0,450:STICK=0/90,600:STICK=-90/0,...`):
+
+| run | even | odd | ratio | motion/tick |
+|---|---|---|---|---|
+| control, 60fps OFF | 4.777 | 4.890 | **1.02** | 9.67 |
+| **60fps ON** | 2.871 | 2.895 | **1.01** | 5.77 |
+| 60fps ON, another window | 7.156 | 7.216 | **1.01** | 14.37 |
+| 60fps ON, a quieter window | 1.112 | 1.050 | **1.06** | 2.16 |
+
+**Interpolation is even to within 1-6% once the scene actually moves.** The earlier window had
+motion/tick 0.39 — fifteen times less than a moving one — and produced ratio 2.28 purely from
+ambient animation.
+
+Everything derived from that number is void: the "39%", the claim that it is "far above what the
+draw-count coverage suggests", the inference that sea/water/particles dominate the visible
+unevenness, and the instruction to re-prioritise the residuals by screen area. The 2D-ablation result
+(`SB_SKIP_ORTHO` raising the ratio) is void for the same reason — same static window.
+
+What survives, and is now the honest status of the feature: **on a moving scene, interpolated 60fps
+produces evenly spaced motion.** The untagged-geometry measurements are still true as stated
+(untagged content snaps ~98% in a static window) but they describe ambient animation whose absolute
+motion is tiny, not a whole-frame defect.
+
+`tools/present_evenness.py` now refuses to quote a coverage number below 1.0 motion/tick and says
+why. The guard it had ("nothing is moving" at 0.02) was far too weak — 0.39 sailed past it and the
+number looked authoritative.
+
+**The lesson:** the tool had a control for the wrong thing. It checked that the SCENE does not pulse
+(60fps-off ratio ~1.0, which was true) but not that the scene is REPRESENTATIVE. A control proves the
+instrument works on the input it was given; it says nothing about whether that input is the case you
+meant to measure.
