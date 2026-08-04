@@ -100,21 +100,37 @@ back at end of frame. `SB_DRAW_STATS` sizes it:
     [draw-stats] frame=3895 bytes=2260384 draws=1314 verts=18226
 
 **2.26 MB encoded and decoded per frame.** The encode is cheap — it lands inside the ~3.2 ms game
-slice, so under ~0.5 ms — while the decode costs ~11.5 ms, roughly 20x the write. That asymmetry
-says the cost is per-command decode dispatch, not memory bandwidth (2.26 MB at 11.5 ms is only
-~200 MB/s).
+slice, so under ~0.5 ms — while the decode side costs ~11.5 ms, roughly 20x the write.
 
-**Why this matters for 60fps.** The recomp has no choice about the FIFO: its guest writes a gather
-pipe, and there is nothing else to consume. The decomp is native code and the round-trip buys it
-nothing. Removing even half of that 11.5 ms takes the decomp from 22.2 ms to ~16 ms per tick, which
-is inside the 16.7 ms that true 60 Hz needs — the difference between "60fps does not fit" and "it
-does".
+**I read that asymmetry as decode-dispatch overhead. That was wrong — see the correction below.**
 
-**Not started, and it is not small.** Bypassing the FIFO means giving aurora a direct submission path
-for a host that calls the GX API in-process, parallel to the parse path the recomp needs. The
-parse path must stay — it is the recomp's only route, and it is also the oracle both runtimes are
-compared against. Scoped as its own arc rather than begun here.
+### CORRECTION: it is not the round-trip, it is per-vertex work
 
-Cheaper alternative worth measuring first: the decode dispatch itself. ~5 ns/byte for what is largely
-a memcpy-shaped workload suggests the per-command switch, not the data movement, and a faster decode
-would help BOTH runtimes rather than only the decomp.
+The bypass proposal above rested on the 11.5 ms being *framing* — encode/decode overhead the decomp
+does not need. Sampling the running process says otherwise. 60 stack samples (`eu-stack`, innermost
+aurora frame; `perf` is not installed on this machine):
+
+    27  aurora::gx::fifo::draw_prim
+     7  aurora::gfx::render_worker        (the GPU thread, not this path)
+     4  aurora::gx::fifo::process
+     4  aurora::gfx::push_storage
+     3  aurora::gx::fifo::prepare_idx_buffer
+     2  aurora::gx::populate_pipeline_config
+     2  aurora::gx::build_uniform
+     2  aurora::gfx::push_indices
+
+**`draw_prim` alone is 45%**, and the rest is per-draw buffer preparation. That is genuine
+per-vertex and per-primitive work: decoding attributes, building index buffers, pushing vertex and
+storage data to the GPU. **A FIFO bypass would not remove any of it** — the vertex data has to be
+converted into GPU buffers however the commands arrive. The framing is the minority.
+
+Also checked and ruled out: every `getenv` inside `draw_prim` (ten of them, in a 1022-line function)
+is correctly cached behind a static, so the classic hot-loop-`getenv` win is not available.
+
+**So the render lever is `draw_prim`'s attribute processing, not the transport.** That is a harder
+target — restructuring a 1022-line per-vertex function — but it has one large advantage over the
+bypass: it helps **both** runtimes, since both reach the same code, rather than only the decomp.
+
+Claim C018 recorded the wrong attribution and has been falsified; C019 records this one. Worth
+noting how close this came to costing a large arc: the bypass was a coherent, well-evidenced-looking
+proposal built on one unmeasured assumption about *which part* of a measured 11.5 ms was overhead.
