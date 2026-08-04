@@ -219,3 +219,48 @@ So the next attempt needs an instrument that looks at the TRAIL, not at the fram
 where the ghost is (with `SBR_FORCE_DASHBLUR=1` making it reproducible headlessly) and compare that
 region across consecutive presents. Reusing the frame metric here would produce another confident
 number about something it never measured — the failure this project has catalogued seven times.
+
+---
+
+## Chasing the trail produced a bigger number: ~39% of on-screen motion still snaps
+
+The trail-specific instrument the section above asked for was built (`tools/present_evenness.py`),
+and it says the trail is **not** the problem — but it quantifies something more important.
+
+**Method.** Interpolation presents each tick twice. If everything interpolated, consecutive presents
+would advance the picture equally; anything that still SNAPS moves only on the true present, so all
+of its motion lands in every other step. Measure the mean pixel difference between consecutive
+presents and split it even/odd. Weighting is by SCREEN AREA, which is what the eye integrates —
+unlike the draw-count percentages the tag-coverage report gives, and unlike `frame_smoothness`, which
+scores whole cells and cannot see a low-alpha overlay.
+
+Scene: Delfino plaza, Mario running (`SBR_PAD_SCRIPT="150:STICK=0/-90"` — a static scene measures
+nothing).
+
+| run | even step | odd step | ratio |
+|---|---|---|---|
+| **control**, 60fps OFF (presents == ticks) | 0.373 | 0.366 | **1.02** |
+| 60fps ON, dash trail off | 0.272 | 0.119 | **2.28** |
+| 60fps ON, dash trail FORCED on | 0.271 | 0.120 | **2.26** |
+
+**The trail changes nothing** (2.28 vs 2.26) — with 2991 real trail draws in that run. So the ghost
+is not what makes the picture uneven, and the earlier hypothesis that it "snaps while the scene
+interpolates" is not supported either.
+
+**The control is 1.02**, which is what makes the rest meaningful: the scene does not pulse on its
+own, so the imbalance belongs to interpolation.
+
+**Total motion is conserved** (0.391/tick interpolated vs 0.370 control): nothing is being added or
+lost, it is being split unevenly — one step gets ~70% of a tick's movement and the next ~30%.
+
+For a snapping share `s` of on-screen motion, the ratio is `(1+s)/(1-s)`. At 2.28 that gives
+**s ≈ 0.39: about 39% of what moves on screen still steps at 30 Hz.**
+
+That is far above what the draw-count coverage suggests (65.6% of draws tagged, ~9.8% untagged
+indexed perspective), and the discrepancy is the point: coverage counted DRAWS, and the draws that
+snap — sea and water surfaces, particles, immediate-mode effects — cover a disproportionate share of
+the SCREEN. A percentage of draws was never the quantity that determines whether motion looks smooth.
+
+**This is now the headline number for the 60fps arc**, and it is the one to drive down. The residuals
+already named (indexed perspective geometry not reaching the tag seam; the 2.9% mispairings) should
+be re-prioritised by screen area rather than by draw count.
