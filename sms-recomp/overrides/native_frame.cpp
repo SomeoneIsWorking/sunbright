@@ -21,7 +21,10 @@
 // tag counters.
 namespace aurora::gfx {
 void snap_next_interpolation();
+namespace interp {
+long tick_index();
 }
+} // namespace aurora::gfx
 #include "../runtime/render_compare.h"
 
 #include <aurora/aurora.h>
@@ -437,6 +440,11 @@ void video_wait_for_retrace(CPUState& cpu) {
     if (sbr_lerp_enabled() && sbr_camera_cut_take()) aurora::gfx::snap_next_interpolation();
     gxfifo_send_last();
     present_and_reopen(s_frameActive);
+    // Sampled AFTER the present, and stamped with aurora's OWN tick counter rather than one derived
+    // from the present count. The two instruments must be joined on a number they genuinely share:
+    // presents run at two per tick under replay, so a derived index would drift silently and any
+    // correlation drawn from it would be worthless — the failure this project has hit repeatedly.
+    if (sbr_lerp_enabled()) sbr_camera_mode_tick(aurora::gfx::interp::tick_index());
 
     // PACING. Without this the recomp runs as fast as the host allows (measured ~157 fps against
     // the oracle's 30) — every animation, timer and physics step driven off the retrace count

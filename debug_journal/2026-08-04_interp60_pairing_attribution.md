@@ -124,12 +124,40 @@ Each cut is preceded by several ticks of a *perfectly* static camera (identical 
 followed by smooth motion. That is a demo/cutscene camera holding a pose and then handing over, not
 a gameplay warp — consistent with the plaza intro demo that fastboot runs into.
 
+### The camera mode: a second signal, measured before being trusted
+
+`CPolarSubCamera::mMode` (guest +0x50, via `gpCamera` at `0x8040D0A8`) is sampled every tick and
+stamped with **aurora's own tick counter**, not one derived from the present count — presents run at
+two per tick under replay, so a derived index would drift silently and any correlation drawn from it
+would be worthless.
+
+Result over 891 observed ticks (9 had no readable camera, counted rather than ignored):
+
+    tick 262: camera mode 73 -> 0     ... and that is the ONLY change in the run
+
+`73` is `CAMERA_MODE_REPRODUCE_DEMO`; `0` is `CAMERA_MODE_FOLLOW`. The jump is at tick 263 — one tick
+later, which is the correct causal order (the mode changes, the next tick's view is built with it).
+
+So the mode field is a **zero-false-positive** signal that catches **1 of the 3 cuts**. It confirms
+the shape the eye positions implied: the intro demo camera holding a pose, then handing over to the
+gameplay camera.
+
+Ticks 11 and 165 occur *while the mode is already* `REPRODUCE_DEMO`, so they are cuts **between shots
+inside the demo** — which a mode field cannot see by construction. Tick 11 is additionally a startup
+transient: the eye is exactly (0,0,0) for the preceding ticks, i.e. `mViewMtx` is still identity
+because no camera has written it yet.
+
+**Not wired to the snap yet, deliberately.** A signal covering one of three cuts is an improvement
+rather than a tear (a snap is whole-frame, so partial coverage cannot render two viewpoints at once,
+unlike partial interpolation) — but the remaining two are understood well enough to be worth doing
+in one piece rather than shipping a third of the fix and calling the residual unknown.
+
 ## Next, in order
 
-1. **Find the demo/transition cut signal.** The generalisation worth reaching for is identity rather
-   than magnitude — the same lesson as the tag fix above: a cut is a change in WHICH camera object
-   drives `j3dSys.mViewMtx`, which covers demo, gameplay and mirror cameras uniformly, where hooking
-   each warp site one at a time does not.
+1. **The within-demo shot cut.** The demo system reproduces recorded camera keyframes; a shot change
+   is a keyframe discontinuity it knows about. That plus the mode change plus the existing warp hook
+   covers all three observed classes. Startup (identity `mViewMtx`) should be treated as "no previous
+   view" rather than as a cut.
 2. **The 2.9% mid-range mispairings** — chase via the worst-draw tags, which now name shape and
    instance.
 3. Still open from the previous commit and untouched here: ~9.8% of draws are indexed perspective

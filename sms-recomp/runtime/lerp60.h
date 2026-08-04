@@ -30,6 +30,11 @@ bool sbr_lerp_enabled();
 // sms-recomp/overrides/camera_cut.cpp).
 bool sbr_camera_cut_take();
 
+// Sample the gameplay camera's mode this tick, reporting any change with the tick number. MEASURES
+// a candidate cut signal; nothing branches on it until it has been shown to fire on the cut ticks
+// and stay quiet on the rest.
+void sbr_camera_mode_tick(long tick);
+
 // Warp-call and snapped-tick counts, with their denominator. Reported on the same cadence as the
 // tag coverage.
 void sbr_camera_cut_report();
