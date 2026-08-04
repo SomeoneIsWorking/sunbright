@@ -304,10 +304,10 @@ blocking): PRESS START prompt and "SUNSHINE" word at different animation phase; 
 missing at settle. The old "~15-25 levels brighter" residual is RESOLVED (2026-07-14): it
 was the phantom mBlack decomp constant (debug_journal/2026-07-14_blocky_letters_mblack.md);
 settled whole-frame means now within 3 levels of the boot oracle (143,178,204 vs 146,178,201).
-(Historical note removed 2026-07-15: an earlier "phase-1 ghost pass, SB_SKIP_GHOST drops it
-bit-identical" claim was based on a PHANTOM env — `SB_SKIP_GHOST` does not exist in the code.
-Whether a redundant double-draw exists at all is unverified; use SB_DRAW_STATS / SB_SKIP_ORTHO,
-not that env.)
+**The "phase-1 ghost pass" double-draw does NOT exist in the recomp** (measured 2026-08-05:
+per-pass command counts on Delfino are `2 10 75 976 331` — one dominant scene pass, nothing
+drawn twice). Do not blame it for frame cost or for the 22 MB/tick storage. `SB_SKIP_GHOST`
+remains a PHANTOM: it appears only inside a comment and is read by no code.
 
 `GXLoadPosMtxIndx`/`GXLoadNrmMtxIndx3x3` are IMPLEMENTED (2026-07-09) and verified
 non-degenerate — do not re-suspect them. The `…Draw SnapTime` nodes in the title are
