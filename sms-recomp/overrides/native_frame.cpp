@@ -15,6 +15,13 @@
 #include "../runtime/state_oracle.h"
 #include "../runtime/scene.h"
 #include "../runtime/lerp60.h"
+
+// Declared rather than included: aurora's gfx headers are internal to the library, and the recomp
+// links it statically so the symbol resolves directly. Same approach lerp60.cpp uses for aurora's
+// tag counters.
+namespace aurora::gfx {
+void snap_next_interpolation();
+}
 #include "../runtime/render_compare.h"
 
 #include <aurora/aurora.h>
@@ -266,7 +273,10 @@ void video_wait_for_retrace(CPUState& cpu) {
     sbr_compare_init();
 
     // Interpolation tag coverage, on a slow cadence. Inert unless SBR_LERP60 is set.
-    if (sbr_lerp_enabled() && (g_present_count % 300) == 0) sbr_lerp_report_tag_coverage();
+    if (sbr_lerp_enabled() && (g_present_count % 300) == 0) {
+        sbr_lerp_report_tag_coverage();
+        sbr_camera_cut_report();
+    }
 
     // Native SDL3-GPU renderer (SBR_SDLGPU=1): draw the interpolated scene from the game's own
     // J3D geometry and its own projection. Still rendered to an OFFSCREEN target and read back —
@@ -421,6 +431,10 @@ void video_wait_for_retrace(CPUState& cpu) {
     // The camera this tick's draws were built with, for interpolation. Last thing in the stream, so
     // it is the settled value rather than the previous tick's.
     if (sbr_lerp_enabled()) sbr_gxfifo_view_matrix();
+    // A tick in which the game WARPED the camera has no in-between to show. Tell aurora to present
+    // this tick exactly rather than a halfway viewpoint the game never simulated. Read here, before
+    // the present, so the flag covers exactly the tick whose draws are about to be emitted.
+    if (sbr_lerp_enabled() && sbr_camera_cut_take()) aurora::gfx::snap_next_interpolation();
     gxfifo_send_last();
     present_and_reopen(s_frameActive);
 

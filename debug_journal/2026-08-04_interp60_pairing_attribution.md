@@ -83,14 +83,53 @@ eye step, 107.6° rotation), and all of them carry instance `0x81583878` across 
 shapes — one multi-shape model that moves with the camera, so its world position genuinely jumps
 when the camera does.
 
+## Snapping on a cut: the plumbing landed, the signal is incomplete
+
+A cut has no in-between, so lerping across one renders a viewpoint the game never simulated. The
+discriminator must come from the GAME, **not** from a magnitude threshold on the eye step: the
+measured camera-step distribution has a populated middle (34 ticks in [10,100), 36 in [100,1k))
+with no gap to put a threshold in, so any threshold either cuts genuinely fast motion or misses
+small warps, invisibly.
+
+Landed: `sms-recomp/overrides/camera_cut.cpp` hooks both `CPolarSubCamera::warpPosAndAt` overloads
+(US `0x800335d4`, `0x80033390`) as observe-only wrappers, and `aurora::gfx::snap_next_interpolation`
+forces alpha 1 for that tick. Alpha 1 rather than skipping the pass, so the pairing table is still
+filled and the tick AFTER the cut interpolates normally — skipping would leave the table holding the
+pre-cut pose and merely move the artefact one frame later.
+
+**It does not fire on this run: 0 warp calls in ~900 ticks.** That is reported with its denominator
+rather than as silence, and it is not a plumbing failure — every guest call site of both overloads
+goes through `call_ppc`, which consults the override table, and 59 other overrides announced
+normally in the same run. The plaza fastboot simply never warps the camera. The hook is kept because
+it is the correct signal for the cases it covers (`bosseel`, `CameraJetCoaster`, `CameraChange`,
+`CameraCodeControl`); it is just not the mechanism behind the cuts measured here.
+
+### What the cuts actually are
+
+The eye-position context around each large step (printed with three ticks before and after; the
+1000-unit trigger decides only what is PRINTED, nothing branches on it):
+
+| tick | before | after | shape |
+|---|---|---|---|
+| 11 | (0, 0, 0) × 3 ticks | (6269.7, 489.1, 2936.5), held | scene start — no previous camera exists |
+| 165 | (6269.7, 489.1, 2936.5), static × 3 | (1068.3, 2961.4, 4543.3), then moves smoothly | transition |
+| 263 | (4145.9, 8624.9, 5031.8), static × 3 | (6500.0, 612.2, −4533.2), held | transition |
+
+All three **jump and STAY**. That rules out the alternative explanation, which had to be excluded
+before anything else: `j3dSys.mViewMtx` is a single global sampled at end of tick, so a tick
+rendering a second camera (a mirror or reflection pass) would hand over that camera's view and look
+exactly like a cut in the histogram — but that shape jumps and RETURNS, and none of these do.
+
+Each cut is preceded by several ticks of a *perfectly* static camera (identical to 0.1 units) and
+followed by smooth motion. That is a demo/cutscene camera holding a pose and then handing over, not
+a gameplay warp — consistent with the plaza intro demo that fastboot runs into.
+
 ## Next, in order
 
-1. **Snap the tick on a camera cut.** A cut has no in-between; lerping across one renders a
-   viewpoint the game never simulated. The discriminator must come from the GAME (it knows when it
-   cuts — stage load, camera mode change, demo transition), **not** from a magnitude threshold on
-   the eye step. A threshold is unfalsifiable against genuinely fast camera motion, and the
-   histogram shows a populated middle ([10,100) 34 ticks, [100,1k) 36 ticks) with no gap to put one
-   in.
+1. **Find the demo/transition cut signal.** The generalisation worth reaching for is identity rather
+   than magnitude — the same lesson as the tag fix above: a cut is a change in WHICH camera object
+   drives `j3dSys.mViewMtx`, which covers demo, gameplay and mirror cameras uniformly, where hooking
+   each warp site one at a time does not.
 2. **The 2.9% mid-range mispairings** — chase via the worst-draw tags, which now name shape and
    instance.
 3. Still open from the previous commit and untouched here: ~9.8% of draws are indexed perspective

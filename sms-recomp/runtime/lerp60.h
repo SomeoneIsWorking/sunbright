@@ -23,6 +23,17 @@
 // untouched path.
 bool sbr_lerp_enabled();
 
+// True if the GAME warped the camera during the tick just ended, clearing the flag as it reads.
+// A warp (CPolarSubCamera::warpPosAndAt) sets position and target outright and zeroes the game's own
+// inbetween frame counter, so it is a discontinuity DECLARED by the code that caused it — not one
+// inferred from how far the eye moved, which the measured distribution cannot support (see
+// sms-recomp/overrides/camera_cut.cpp).
+bool sbr_camera_cut_take();
+
+// Warp-call and snapped-tick counts, with their denominator. Reported on the same cadence as the
+// tag coverage.
+void sbr_camera_cut_report();
+
 // Report how many of aurora's draws actually carried an identity tag this run.
 //
 // This exists because the failure it guards against is silent: if the emitter stops tagging — a
