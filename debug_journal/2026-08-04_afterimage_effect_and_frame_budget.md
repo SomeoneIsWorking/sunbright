@@ -82,7 +82,23 @@ Leads, in the order their size suggests:
 1. **Guest logic ~19 ms/tick.** This is recompiler output quality, a separate arc from rendering.
    Nothing in the render path can fix it, and interpolated 60fps is valuable precisely BECAUSE it
    does not re-run it.
-2. **`storage=22.4 MB` uploaded per tick** (`AURORA_REPLAY_LOG_EVERY`) — the vertex attribute
-   arrays, re-pushed every frame. By far the largest per-frame transfer; worth checking whether
-   `array.cachedRange` is actually hitting.
+2. **`storage=22.4 MB` uploaded per tick** (`AURORA_REPLAY_LOG_EVERY`) — the indexed vertex
+   attribute arrays. **Checked: the per-array upload cache (`array.cachedRange`) is working
+   correctly and cannot help.** It is invalidated at every `end_frame`
+   (`common.cpp`, the `for (auto& array : gx::g_gxState.arrays) array.cachedRange = {}` loop) and
+   that invalidation is *required*: there is one global storage buffer and every frame re-copies its
+   staging starting at offset 0, so a range cached from the previous frame would point at bytes the
+   current frame has since overwritten. The cache is within-frame only, by construction.
+
+   So the re-upload is architectural, not a bug. Removing it needs a PERSISTENT storage buffer for
+   arrays whose backing memory has not changed, which in turn needs guest-write detection on that
+   memory — deformable/animated geometry rewrites its arrays, so "the pointer is the same" is not
+   sufficient to prove the contents are. That is a real piece of aurora work, not a tweak.
+
+   The replay emission already skips this upload entirely (it pushes no verts/indices/storage, so
+   `highWater > copied` is false and no copy is emitted), so interpolated 60fps does NOT double it.
 3. Per-draw build work is ~4.2 ms/frame, of which `arrayUpload` is ~2 ms — consistent with (2).
+4. Possibly compounding (2): the `StorageBufferSize` comment records that a redundant phase-1 "ghost
+   pass" roughly DOUBLES per-frame storage, and CLAUDE.md lists that double-draw as open and
+   unverified. If it is real, removing it halves both this transfer and the draw work. Worth
+   settling before optimising anything downstream of it.
