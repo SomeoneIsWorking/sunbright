@@ -1025,8 +1025,160 @@ void watch_j3dsys(CPUState& cpu) {
     }
 }
 
+// ── ONE instrument for the whole view question ───────────────────────────────
+//
+// SBR_INTERP60_VIEWSEQ=1. The two readings this replaces were taken by two different probes on two
+// different runs and then JOINED BY ORDER -- the view-writer census said the write before the
+// scene's first copy came from 鏡カメラ, and the j3dSys watch said the first copy carried the
+// endpoint. Neither observed the other's events, so "the mirror camera supplies the dominant pass"
+// is a conclusion about an ordering that no single instrument ever saw. That is precisely the
+// failure this project has paid for six times.
+//
+// So: one probe, one pass over one sub-frame, emitting BOTH event kinds interleaved in dispatch
+// order, plus the GX bytes each pass emits so "the largest pass" is a measurement rather than an
+// adjective.
+//
+// WHAT EACH SIDE MEASURES. `gfx` is the TGraphics the sub-frame passes to every list; its mViewMtx
+// at +0xB4 is what a camera's view path writes. `j3dSys`'s view at 0x804045DC is what TSmJ3DScn
+// copies that into and what the scene is actually drawn through. They are the same quantity (a 3x4
+// view matrix) at two points in one pipeline, which is what makes them comparable at all.
+//
+// WHY THE TRANSLATION COLUMN IS NOT ENOUGH, and why row 1 is printed too. The earlier probes
+// compared element [3] alone -- the view matrix's row-0 translation. A reflection through a
+// near-horizontal plane leaves the right vector horizontal and the eye's x/z unchanged, so element
+// [3] of a REFLECTED view is nearly identical to the main camera's. Element [3] therefore cannot
+// distinguish "the mirror camera's reflected view" from "the main camera's endpoint view" -- the
+// two hypotheses the reading was used to choose between. Row 1 (the up axis, elements 4..7) is
+// where a reflection inverts, so it is printed for both sides.
+//
+// THE NEGATIVE. If a sub-frame produces no gfx write, or no j3dSys change, the summary says so with
+// its denominator (dispatches examined). "No writers found" and "the probe never ran" are otherwise
+// the same output.
+bool viewseq_on() {
+    static const bool v = std::getenv("SBR_INTERP60_VIEWSEQ") != nullptr;
+    return v;
+}
+long viewseq_at() {
+    static const long v = [] {
+        const char* e = std::getenv("SBR_INTERP60_VIEWSEQ_AT");
+        return e ? std::atol(e) : 1100L;
+    }();
+    return v;
+}
+
+// How far the camera moved between the prev/cur the sub-frame is lerping. Written by camera_apply,
+// read by viewseq_begin -- because a present INDEX is not a control. Two samples of this probe were
+// taken at fixed presents (1100 and 1600) and both printed identical views at every alpha; the
+// reading looked like "alpha reaches nothing" and was in fact "the camera was parked at both", which
+// no amount of care in the view plumbing could have distinguished. The probe therefore arms on the
+// quantity that has to be non-zero for its own question to be answerable.
+float g_camSep = 0.0f;
+
+bool g_seqActive   = false;   // this sub-frame is the one being reported
+bool g_seqDone     = false;   // one sub-frame has been reported; never start another
+long g_seqDispatch = 0;
+int  g_seqGfxWrites = 0;
+int  g_seqSceneSets = 0;
+uint32_t g_seqPassStart = 0;  // stream position at the last j3dSys change
+
+void read_mtx(u32 ea, float* out) {
+    for (int i = 0; i < 12; ++i) out[i] = guest_f32(ea + (u32)i * 4);
+}
+bool mtx_differs(const float* a, const float* b) {
+    for (int i = 0; i < 12; ++i) if (a[i] != b[i]) return true;
+    return false;
+}
+
+// Begin/end are driven from the sub-frame body, so the report covers exactly one sub-frame from
+// first dispatch to last -- not a window that happens to close mid-pass.
+float viewseq_min_sep() {
+    static const float v = [] {
+        const char* e = std::getenv("SBR_INTERP60_VIEWSEQ_MIN");
+        return e ? (float)std::atof(e) : 2.0f;
+    }();
+    return v;
+}
+
+void viewseq_begin() {
+    if (!viewseq_on() || g_seqDone) return;
+    if ((long)VIGetRetraceCount() < viewseq_at()) return;
+    // Arm only where the answer can differ: the camera must actually be between two distinct poses.
+    if (g_camSep < viewseq_min_sep()) return;
+    g_seqActive = true;
+    g_seqDispatch = 0;
+    g_seqGfxWrites = 0;
+    g_seqSceneSets = 0;
+    g_seqPassStart = sbr_gxfifo_stream_pos();
+    lucent::info("i60seq",
+                 "=== view sequence for ONE sub-frame (present {}, camera |cur-prev| = {:.3f} "
+                 "units -- the separation any alpha difference has to come out of) ===",
+                 (long)VIGetRetraceCount(), (double)g_camSep);
+}
+
+void viewseq_end() {
+    if (!g_seqActive) return;
+    lucent::info("i60seq", "  pass {} emitted {} KB (to end of sub-frame)", g_seqSceneSets,
+                 (sbr_gxfifo_stream_pos() - g_seqPassStart) >> 10);
+    lucent::info("i60seq",
+                 "=== summary: {} dispatches examined, {} gfx mViewMtx writes, {} j3dSys view sets",
+                 g_seqDispatch, g_seqGfxWrites, g_seqSceneSets);
+    if (g_seqGfxWrites == 0)
+        lucent::info("i60seq", "  NOTE: NO object wrote gfx mViewMtx in this sub-frame -- the view "
+                               "the scene used was inherited from the snapshot, not produced here.");
+    if (g_seqSceneSets == 0)
+        lucent::info("i60seq", "  NOTE: j3dSys's view never changed -- either the scene reuses a "
+                               "view identical to what j3dSys already held, or no scene node ran.");
+    g_seqActive = false;
+    g_seqDone = true;
+}
+
+void viewseq_dispatch(CPUState& cpu) {
+    const u32 obj = (u32)cpu.gpr[3];
+    float gfxBefore[12] = {0}, gfxAfter[12] = {0};
+    const bool haveGfx = g_subframeGfx && sb_ram_fast(g_subframeGfx);
+    if (haveGfx) read_mtx(g_subframeGfx + OFF_VIEWMTX, gfxBefore);
+    float sceneBefore[12], sceneAfter[12];
+    read_mtx(J3DSYS_VIEWMTX, sceneBefore);
+
+    func_802fcc94(cpu);
+
+    ++g_seqDispatch;
+    if (haveGfx) read_mtx(g_subframeGfx + OFF_VIEWMTX, gfxAfter);
+    read_mtx(J3DSYS_VIEWMTX, sceneAfter);
+
+    const bool gfxChanged   = haveGfx && mtx_differs(gfxBefore, gfxAfter);
+    const bool sceneChanged = mtx_differs(sceneBefore, sceneAfter);
+    if (!gfxChanged && !sceneChanged) return;
+
+    char nm[48]; guest_name(obj, nm, sizeof nm);
+    const u32 vptr = sb_ram_fast(obj) ? sb_r32(obj) : 0;
+    if (gfxChanged) {
+        ++g_seqGfxWrites;
+        lucent::info("i60seq",
+                     "[{}] GFX  view <- t=({:.2f},{:.2f},{:.2f}) up=({:.3f},{:.3f},{:.3f}) "
+                     "by 0x{:08x} vptr=0x{:08x} \"{}\"",
+                     g_seqDispatch, (double)gfxAfter[3], (double)gfxAfter[7], (double)gfxAfter[11],
+                     (double)gfxAfter[4], (double)gfxAfter[5], (double)gfxAfter[6], obj, vptr, nm);
+    }
+    if (sceneChanged) {
+        const uint32_t now = sbr_gxfifo_stream_pos();
+        if (g_seqSceneSets > 0)
+            lucent::info("i60seq", "  pass {} emitted {} KB", g_seqSceneSets,
+                         (now - g_seqPassStart) >> 10);
+        g_seqPassStart = now;
+        ++g_seqSceneSets;
+        lucent::info("i60seq",
+                     "[{}] SCENE view <- t=({:.2f},{:.2f},{:.2f}) up=({:.3f},{:.3f},{:.3f}) "
+                     "by 0x{:08x} \"{}\"  (pass {} begins)",
+                     g_seqDispatch, (double)sceneAfter[3], (double)sceneAfter[7],
+                     (double)sceneAfter[11], (double)sceneAfter[4], (double)sceneAfter[5],
+                     (double)sceneAfter[6], obj, nm, g_seqSceneSets);
+    }
+}
+
 void interp_test_perform(CPUState& cpu) {
     ++g_listDispatches;
+    if (g_seqActive) { viewseq_dispatch(cpu); return; }
     if (g_inSubframe && std::getenv("SBR_INTERP60_J3DSYS")
         && (long)VIGetRetraceCount() >= 1100) {
         watch_j3dsys(cpu);
@@ -1120,10 +1272,50 @@ struct CamSave {
 
 // Substitute lerp(prev, cur) for the camera pose and rebuild its view matrix. Returns what has to
 // be put back.
+// It REFUSES LOUDLY. Returning an empty CamSave on a failed identity test is a silent no-op, and a
+// silent no-op here is indistinguishable from a working interpolation whose camera happens not to
+// be moving -- which is exactly the reading that produced "the camera INTERPOLATES, exactly". Both
+// outcomes are reported, with the numbers that separate them: the object, its vtable slot 6 against
+// the CPolarSubCamera::perform this whole offset set was disassembled from, and the prev/cur pair
+// the lerp is built out of. A prev == cur pair means alpha CANNOT change the view no matter how
+// correct the write is, and it must never be read as "alpha does nothing".
 CamSave camera_apply(CPUState& cpu, u32 obj, float alpha) {
     CamSave sv;
-    if (!is_polar_sub_camera(obj)) return sv;
+    if (!is_polar_sub_camera(obj)) {
+        static long n = 0;
+        if (++n <= 3 || (n % 900) == 0) {
+            const u32 vptr = sb_ram_fast(obj) ? sb_r32(obj) : 0;
+            const u32 slot6 = sb_ram_fast(vptr + 0x20) ? sb_r32(vptr + 8 + 6 * 4) : 0;
+            char nm[48]; guest_name(obj, nm, sizeof nm);
+            lucent::info("i60cam",
+                         "camera_apply REFUSED #{}: object 0x{:08x} \"{}\" vptr=0x{:08x} "
+                         "slot6=0x{:08x} != CPolarSubCamera::perform 0x{:08x} -- NO camera "
+                         "interpolation happened this sub-frame, and every alpha will render the "
+                         "same view.",
+                         n, obj, nm, vptr, slot6, CPSC_PERFORM);
+        }
+        return sv;
+    }
     sv.obj = obj;
+    // SBR_INTERP60_CAMTRACE=1: the cached view matrix's translation column BEFORE and AFTER the
+    // substitution, one line per tick.
+    //
+    // This is the check that the pixel gate cannot make. The gate established that alpha=1.0
+    // reproduces the following main frame to 0.25% while alpha=0.0 sits 75.5% away from the
+    // PRECEDING one -- i.e. the sub-frame responds to alpha but covers only about a fifth of the
+    // tick's motion. "The camera under-reaches" and "the camera is exact and everything else
+    // under-reaches" are indistinguishable from pixels, and they need opposite fixes.
+    //
+    // Read it as a SEQUENCE, not a line: at alpha=0.0 the AFTER value on tick N must equal the
+    // BEFORE value on tick N-1, because the pose being substituted is literally the one the
+    // previous tick rendered. Any shortfall between those two numbers is the camera's share of the
+    // deficit, measured against the camera's own previous frame rather than against an expectation.
+    static const bool camtrace = std::getenv("SBR_INTERP60_CAMTRACE") != nullptr;
+    float vBefore[3] = {0, 0, 0};
+    const bool trace = camtrace && (long)VIGetRetraceCount() >= viewseq_at();
+    if (trace)
+        for (int k = 0; k < 3; ++k)
+            vBefore[k] = guest_f32(obj + OFF_CPSC_VIEWMTX + (u32)(3 + 4 * k) * 4);
     for (int k = 0; k < 3; ++k) {
         sv.eye[k] = guest_f32(obj + OFF_CPSC_A + (u32)k * 4);
         sv.at[k]  = guest_f32(obj + OFF_CPSC_B + (u32)k * 4);
@@ -1145,6 +1337,46 @@ CamSave camera_apply(CPUState& cpu, u32 obj, float alpha) {
     cpu.gpr[6] = obj + OFF_CPSC_B;
     func_80349f5c(cpu);
     cpu.gpr[1] = savedSp;
+
+    // The positive side of the same report. Carries the prev/cur SEPARATION, because that is the
+    // denominator: a lerp between two equal poses is a correct lerp that cannot move a pixel.
+    {
+        float d = 0.0f;
+        for (int k = 0; k < 3; ++k) {
+            const float pe = guest_f32(obj + OFF_CPSC_A_PREV + (u32)k * 4);
+            const float e  = sv.eye[k] - pe;
+            d += e * e;
+        }
+        g_camSep = std::sqrt(d);
+        if (trace) {
+            static int lines = 0;
+            if (lines < 12) { ++lines;
+                lucent::info("i60cam",
+                             "CAMTRACE present {} alpha={:.2f}: cached view t BEFORE=({:.2f},"
+                             "{:.2f},{:.2f})  AFTER=({:.2f},{:.2f},{:.2f})  |eye cur-prev|={:.3f}",
+                             (long)VIGetRetraceCount(), (double)alpha,
+                             (double)vBefore[0], (double)vBefore[1], (double)vBefore[2],
+                             (double)guest_f32(obj + OFF_CPSC_VIEWMTX + 3 * 4),
+                             (double)guest_f32(obj + OFF_CPSC_VIEWMTX + 7 * 4),
+                             (double)guest_f32(obj + OFF_CPSC_VIEWMTX + 11 * 4),
+                             (double)g_camSep);
+            }
+        }
+        static long n = 0;
+        if (++n <= 3 || (n % 900) == 0) {
+            lucent::info("i60cam",
+                         "camera_apply #{} on 0x{:08x} alpha={:.2f}: eye prev=({:.2f},{:.2f},{:.2f})"
+                         " cur=({:.2f},{:.2f},{:.2f}) |cur-prev|={:.3f}{}",
+                         n, obj, (double)alpha,
+                         (double)guest_f32(obj + OFF_CPSC_A_PREV),
+                         (double)guest_f32(obj + OFF_CPSC_A_PREV + 4),
+                         (double)guest_f32(obj + OFF_CPSC_A_PREV + 8),
+                         (double)sv.eye[0], (double)sv.eye[1], (double)sv.eye[2],
+                         (double)g_camSep,
+                         d == 0.0f ? "   <-- prev == cur: the camera did not move this tick, so no "
+                                     "alpha can change this sub-frame's view" : "");
+        }
+    }
     return sv;
 }
 
@@ -1277,6 +1509,7 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
     // Pass 1: interpolated pose -> enter -> draw -> present.
     apply_all(g_lastSnapTick, alpha);
     const CamSave camSave = camera_apply(cpu, g_camObj ? g_camObj : g_placeObjs[0], alpha);
+    viewseq_begin();
     if (!noEntry) perform_list(cpu, preEntry, cue, gfx);
     // SBR_INTERP60_DROPLAST=1: omit the last recorded draw list from the re-issue.
     //
@@ -1289,6 +1522,7 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
     static const bool dropLast = std::getenv("SBR_INTERP60_DROPLAST") != nullptr;
     const int drawN = dropLast && g_drawN > 1 ? g_drawN - 1 : g_drawN;
     for (int i = 0; i < drawN; ++i) perform_list(cpu, g_drawLists[i], g_drawCues[i] & cue, gfx);
+    viewseq_end();
     // Does the substituted camera pose SURVIVE the re-issue?
     //
     // The camera's own perform runs inside the re-issue (measured: 16 dispatches), and

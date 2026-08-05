@@ -2339,3 +2339,92 @@ Two things to establish first, by reading its perform rather than by trying it:
 * Whether its cached matrix is derived from the main camera's POSE or from the main camera's
   MATRIX. If the latter, rebuilding it from an interpolated pose needs the main camera's matrix
   interpolated first — which is available, since that is what `camera_apply` already builds.
+
+## FALSIFIED: the mirror camera does NOT supply the dominant pass. The camera is EXACT.
+
+The previous entry's conclusion — "the first and largest 3D pass renders through the mirror
+camera's cached view, and that is the entire explanation for only ~350 of 1,228,800 px responding
+to alpha" — is **wrong in both halves**, and it was wrong for the reason this project keeps paying
+for: it JOINED TWO INSTRUMENTS. The view-writer census (one probe, one run) said the write before
+the scene's first copy came from 鏡カメラ; the j3dSys watch (another probe, another run) said the
+first copy carried the endpoint value. Neither observed the other's events, so the ordering the
+conclusion rests on was never seen by anything.
+
+Both probes also compared element [3] of the view matrix alone — its row-0 translation. A
+reflection through a near-horizontal plane leaves the right vector horizontal and the eye's x/z
+unchanged, so element [3] of a REFLECTED view is nearly identical to the main camera's. The one
+number being read could not distinguish the two hypotheses it was used to choose between.
+
+### One instrument: `SBR_INTERP60_VIEWSEQ=1`
+
+Every `gfx->mViewMtx` write and every `j3dSys` view change of ONE sub-frame, interleaved in
+dispatch order, with the GX bytes each pass emits and row 1 (the up axis, where a reflection
+inverts) printed for both sides:
+
+    [23] GFX  view <- t=(-122.22,-1176.86,-5546.17) up=(-0.004,0.978, 0.209)  "鏡カメラ"
+    [24] SCENE view <- (pass 1 begins)                                        59 KB
+    [59] GFX  view <- t=(-122.22,  590.06,-5671.33) up=( 0.004,0.978,-0.209)  "camera 1"
+    [60] SCENE view <- (pass 2 begins)                                      1542 KB   <- the frame
+    [623] SCENE (ortho, pass 3)                                                4 KB
+    [630] SCENE (pass 4, camera 1's view again)                               65 KB
+
+Pass 1 IS the mirror camera and its view IS a genuine reflection (up.z inverted, eye mirrored
+about y) — but it is 59 KB of 1670, a reflection pre-render, not the frame. The dominant pass is
+**camera 1's, and it carries the interpolated view**: t.x is -122.22 at alpha=1.0 and -66.17 at
+alpha=0.0 in the same sub-frame.
+
+### The arming bug that produced the original reading, and the fix
+
+The first two runs of this probe printed IDENTICAL views at every alpha, at presents 1100 and 1600
+— and 1100 and 1600 printed the same view as each other. The camera was PARKED at both. A present
+index is not a control: `camera_apply` reports `|cur-prev| = 0.000` at exactly those moments. The
+probe now arms on camera motion (`SBR_INTERP60_VIEWSEQ_MIN`, default 2.0 units) and prints the
+separation in its header, so the number any alpha difference must come out of is on the same line
+as the result. `camera_apply` no longer returns a silent empty CamSave either — it says so, with
+the vtable slot it rejected.
+
+### What the pixel numbers actually say — with MAGNITUDE, not just counts
+
+Consecutive presents of ONE run, roles stamped by the runtime, plus mean |delta| per channel
+because a differing-pixel COUNT has no magnitude ("75.5% differ" fits both a one-tick shift and a
+1-LSB difference everywhere):
+
+    pair                                  differing px   mean |d|/channel
+    main(1) -> main(3)  [one full tick]        947,275             11.070
+    sub@alpha=1 vs main(3)  [identity]           3,116              0.075
+    sub@alpha=0 vs main(1)  [should be ~0]     927,987              9.043
+    sub@alpha=0 vs main(3)                     206,636              3.124
+
+Main frames are byte-identical across alphas (0 px) — alpha must not reach them, and it does not.
+alpha=1.0 reproduces the following main frame to 0.075/channel: **the sub-frame pipeline is
+correct end to end.** But alpha=0.0 lands only ~28% of the way back toward the preceding main
+frame instead of ON it.
+
+### And it is NOT the camera. `SBR_INTERP60_CAMTRACE=1`
+
+The cached view matrix's translation, before and after the substitution, one line per tick, at
+alpha=0.0:
+
+    present 2794: BEFORE=(-37.17,590.30,-5672.47)  AFTER=(-17.91,590.32,-5672.56)
+    present 2796: BEFORE=(-66.17,590.25,-5672.22)  AFTER=(-37.17,590.30,-5672.47)
+    present 2798: BEFORE=(-122.22,590.06,-5671.33) AFTER=(-66.17,590.25,-5672.22)
+
+AFTER on tick N equals BEFORE on tick N-1 **exactly, to every printed digit** — the camera
+substitution reproduces the previous tick's view precisely. At alpha=1.0, AFTER == BEFORE on every
+line, exactly. Both directions of the camera are verified, from the camera's own previous frame
+rather than against an expectation.
+
+So the camera moves a FULL tick between alphas while the image moves ~28% of one. The remaining
+~72% is held by a population that is neither the camera nor a snapshotted TActor transform. The
+standing suspects, in the order they should be ablated:
+
+* **animation phase.** The sub-frame re-runs cue 0x2, which advances every BCK/BTK a second time;
+  at alpha=0 the transforms are rewound but the skeletons and texture scrolls are not — this is the
+  already-recorded residual whose proper fix is suppressing the frame ADVANCE, not the phase.
+* **the mirror and blur pre-renders**, measured above as NOT interpolated (identical across alphas).
+  59 KB and a blur camera — small, and now quantified rather than assumed.
+* **JPA particles**, which carry no snapshotted transform at all.
+
+The next measurement is an ABLATION with separate alphas for camera and actors, so the deficit is
+attributed to a population rather than argued from a list. Do not fix any of the three above until
+that split exists: the previous entry is what guessing between them costs.
