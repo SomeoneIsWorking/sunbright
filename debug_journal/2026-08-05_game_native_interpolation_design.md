@@ -546,3 +546,70 @@ So the next step is **not** more interpolation machinery. It is getting Mario ou
 into normal gameplay, which the port needs regardless. Interpolation resumes once the probe reports
 a non-trivial `moved%` — and that reading is now trustworthy, because coverage was demonstrated
 rather than assumed.
+
+## CORRECTION: the dash/ghost trail is NOT geometry, and the RE for it is already banked
+
+This entry has said twice that the ghost/dash trail is *"geometry rebuilt each tick from discrete
+30 Hz position samples"*, and used it as the headline example of the class needing prev/cur of its
+own state. **That is false.**
+
+`TAfterEffect : public JDrama::TViewObj` (`include/MarioUtil/ScreenUtil.hpp`) holds a
+`JUTTexture* unk10` — an **EFB copy of the frame** — and `perform` draws an 8-vertex
+`GX_TRIANGLEFAN` over the viewport textured with it, sampled slightly scaled and offset, alpha
+blended over the new frame. It is a **screen-space temporal feedback blur**, not per-actor
+geometry. There is no per-tick vertex rebuild and no position-sample history to interpolate.
+
+Its 60fps failure mode is correspondingly different, and it was diagnosed and FIXED in the recomp
+already (`sms-recomp/overrides/afterimage.cpp`): interpolation presents twice per tick, both
+emissions replay the recorded pass list *including its EFB copies*, so the screen texture is
+written twice per tick from two different images (the interpolated pose at t-0.5 and the true pose
+at t) and the feedback advances at double rate. The fix is not prev/cur state — it is telling the
+host **which EFB copy is a next-frame feedback texture** rather than an intra-frame copy, and
+advancing that one once per tick. Nothing structural distinguishes the two; the authority is the
+effect itself — whatever texture `TAfterEffect` samples IS the feedback texture.
+
+Note what that file also gets right and this entry had not stated: the smoothing constants are
+deliberately NOT rescaled, because game logic still ticks at 30 Hz under render interpolation. Only
+the capture rate was ever wrong.
+
+**Where this leaves the effects taxonomy** — the residual class is smaller than claimed:
+
+* dash/ghost trail — **screen-space EFB feedback**; solved in recomp, needs no prev/cur;
+* JPA particles — still a genuine independent simulation needing its own prev/cur;
+* anything genuinely rebuilding vertex data per tick — still owed, but the trail was the only named
+  member and it turned out not to be one.
+
+## The decomp is not an alternative runtime here — it is where the RE lives
+
+A recomp override cannot be written without guest addresses, field offsets and phase semantics, and
+those are exactly what the decomp records. The existing overrides already work this way and say so
+in their own headers: `afterimage.cpp` opens with *"THE EFFECT (RE: decomp/sms/src/MarioUtil/
+ScreenUtil.cpp, TAfterEffect)"*. So the split is not decomp-vs-recomp, it is:
+
+* **decomp** — RE the mechanism, with named fields and a compiler checking you; prove the seams.
+* **recomp** — run the validated design against the whole game, where the actors actually move.
+
+### RE inventory for game-native interpolation: BANKED vs OWED
+
+Banked (usable by an override today, no new RE):
+
+| item | value | source |
+|---|---|---|
+| `TPlacement::mPosition` | guest `0x10` | `JDRPlacement.hpp` |
+| `TActor::mScaling` / `mRotation` | guest `0x24` / `0x30` | `JDRActor.hpp` |
+| `TViewObj::testPerform` | US `0x802fcc94`, JP `0x80046F6C`, size `0x68` | funcs list / `symbols.txt` |
+| it is THE dispatch funnel, non-virtual | measured this session (6 container types) | this entry |
+| MOVE cue is bit `0x1` | `CUE_MOVE`, `JDRViewObj.hpp` | upstream naming |
+| sub-frame boundary = `PreEntry` + draw | measured: re-run pass is **pixel-identical**, and dropping PreEntry moves 1,956 px | this entry |
+| `TAfterEffect::unk10` = feedback texture | guest `0x10` | `ScreenUtil.hpp` / `afterimage.cpp` |
+
+Owed (genuine RE still to do):
+
+* JPA particle emitter state — what constitutes prev/cur for an independent simulation;
+* whether any other effect rebuilds vertices per tick (the trail was the only named candidate and
+  it is not one, so this may be empty — but "may be empty" is a hypothesis, not a finding);
+* the render-cost gate: two draw passes per tick against a 16.6 ms budget. C019's ~15.8 ms is
+  **decomp-measured**; the recomp figure must be measured, not carried over.
+
+The transform half of the RE is therefore complete. That is what today's decomp work bought, and it
+transfers to a recomp override unchanged.
