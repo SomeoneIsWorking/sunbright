@@ -515,3 +515,34 @@ The five enumeration overrides (`TPerformList::snapshotInterp` + its `sbSnapshot
 harmless: they are recursive, and the funnel hook now invokes `sbSnapshotInterp()` on containers
 too, so each would have re-walked its whole subtree on top of the per-object dispatch — two
 mechanisms with different coverage feeding one counter.
+
+## The 60fps arc is now blocked on a GAMEPLAY defect, not on interpolation machinery
+
+With coverage proven, the probe answers a question it could not answer before, and the answer
+redirects the arc.
+
+Driving real input (`SB_PAD_SCRIPT="400:UP 1400:UP+B 2400:UP"`) changes nothing:
+
+    SNAPSHOT pop: samples=12800000 moved=1 (0.0%) maxStep=2200.000 by "陽炎"
+
+`マリオ` is in the snapshot roster and the total number of moving objects across 12.8M samples is
+**one** (the 陽炎 heat-haze init teleport). So Mario's `mPosition` is *literally constant* — this is
+measured, not inferred from "Mario looks stuck".
+
+    [mario] perform(0x200): unk114=0x410 VISIBLE=0 UNK4=0 -> doEntry=0 mStatus=0x133f
+            pos=(6500,300,-3850)
+
+That is the known frozen WIN_DEMO start state (memory `[[delfino-gameplay-renders-2026-07-17]]`),
+and it does not respond to pad input.
+
+**Consequence for the arc, and it is the useful finding here:** every remaining step of game-native
+interpolation — writing `lerp(prev, cur, alpha)` into the live fields, calling `performOnlyDraw`,
+presenting twice per tick — is unverifiable while no actor moves. A sub-frame at alpha=0.5 would be
+pixel-identical to alpha=1.0 for the entire scene, so the implementation would pass every check it
+could be given *while doing nothing*, which is precisely the failure mode this whole entry has been
+guarding against.
+
+So the next step is **not** more interpolation machinery. It is getting Mario out of `mStatus=0x133f`
+into normal gameplay, which the port needs regardless. Interpolation resumes once the probe reports
+a non-trivial `moved%` — and that reading is now trustworthy, because coverage was demonstrated
+rather than assumed.
