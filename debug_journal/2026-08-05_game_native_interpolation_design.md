@@ -1147,3 +1147,53 @@ re-run the identity/control pair. Building interpolation further on an unverifia
 exactly the "looks correct while doing nothing" failure this whole arc has been guarding against.
 
 The write path is **UNVERIFIED** — not correct, not broken. It stays gated off by default.
+
+## SOLVED: the recomp is deterministic — the host clock was reaching the guest
+
+Pixel-exact A/B now works: **0 of 1,228,800 differing pixels** between two runs, with the scene
+LIVE (`moved=1.9%`, birds stepping 123 units/tick).
+
+### Root cause
+
+`tb_get()` (`sms-recomp/runtime/rt_core.cpp`) derived the Gekko time base from
+`clock_gettime(CLOCK_MONOTONIC)`. Every `OSGetTime` the game made therefore differed run to run, and
+everything seeded from or timed against it diverged. `SBR_DETERMINISTIC=1` substitutes a virtual
+clock advancing one nominal NTSC field per present.
+
+### Three wrong turns, each caught by a check rather than by reasoning
+
+1. **The spatial map pointed at THP first.** The differing pixels were not scattered — they formed a
+   compact upper-left blob. `SBR_THP=none` cut them 6,757 -> 2,165, which looked like a hit.
+2. **But `THP=none` FREEZES THE PLAZA.** The interpolation probe reported `moved=0.0%` under it,
+   against 1.6% normally, and the object mix changed fivefold (non-actors 616k -> 3.09M). So
+   "`THP=none` + virtual clock gives 0 differing pixels" was largely **a static scene**, not a
+   deterministic one — a false success that a pixel comparison alone would have certified. Only
+   pairing determinism with a LIVENESS number caught it. The virtual clock alone, with THP left on,
+   is what actually works; disabling THP was never needed.
+3. **The first virtual clock hung the game.** It returned `frame*step + (++calls % step)`; the
+   modulo wraps, so the clock ran BACKWARD mid-frame, and guest code spinning until the time base
+   reaches a deadline never finished — the run stalled at THP open and never reached gameplay. A
+   time base here must be monotonic AND able to advance without a present, since a spin-wait issues
+   none. It is now a frame+call candidate floored to strictly exceed the previous value.
+
+### And the interpolation write is still not verified — but now for a KNOWN reason
+
+With the harness fixed, the identity/control pair reads:
+
+* `alpha=1.0` vs baseline: **0 differing pixels** — identity exact, the write is a true no-op.
+* `alpha=0.0` vs baseline: **0 differing pixels** — the control STILL FAILS.
+
+The first apply point was wrong and the control is what said so: `calcRootMatrix()` turns
+mPosition/mRotation into the model's base TRMtx during **CUE_CALC_ANIM (0x2)**, which precedes entry
+and draw. Applying at the first draw-side dispatch writes into memory nothing reads again that
+frame. Moving the apply ahead of the calc phase was correct and necessary — but the control still
+does not fire, so something further along still consumes a pose the substitution does not reach.
+
+Note what identity alone would have claimed here: `alpha=1.0 -> 0 pixels` passed at every stage,
+including while the write was landing in dead memory. **A no-op check cannot distinguish a correct
+write from an ineffective one**, which is precisely why the alpha=0.0 control exists.
+
+Next: find what the substitution has to precede. Candidates, in order — the pose may be consumed
+before CUE_CALC_ANIM by an earlier phase, the actors that draw may not be the ones being written
+(the allowlist covers 47/47 of a live frame, but only ~1.9% move), or `TMario` may compute its
+matrix outside the phase entirely. Each is checkable; none should be assumed.

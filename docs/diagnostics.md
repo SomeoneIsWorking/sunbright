@@ -253,6 +253,7 @@ logger — that is debt to convert, not a feature.
 | `SBR_BLACK_OWNER` | 1 | `sms-recomp/overrides/native_frame.cpp:445` |  |
 | `SBR_CARD_A` | 1 | `sms-recomp/overrides/native_card.cpp:93` |  |
 | `SBR_CARD_TRACE` | 1 | `sms-recomp/overrides/diag_card.cpp:40` |  |
+| `SBR_DETERMINISTIC` | 1 | `sms-recomp/runtime/rt_core.cpp:354` |  |
 | `SBR_DIAG_2D` | 1 | `sms-recomp/overrides/diag_2d.cpp:42` |  |
 | `SBR_DRAW_STATE` | 1 | `sms-recomp/runtime/scene.cpp:867` |  |
 | `SBR_DUMP_COPY` | 1 | `sms-recomp/overrides/native_frame.cpp:446` |  |
@@ -260,8 +261,8 @@ logger — that is debt to convert, not a feature.
 | `SBR_FIFO_2D` | 1 | `sms-recomp/runtime/dev_gxfifo.cpp:149` |  |
 | `SBR_FORCE_DASHBLUR` | 1 | `sms-recomp/overrides/afterimage.cpp:67` |  |
 | `SBR_HUD_OFF` | 1 | `sms-recomp/overrides/widescreen.cpp:246` |  |
-| `SBR_INTERP60` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:72` |  |
-| `SBR_INTERP60_ALPHA` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:65` |  |
+| `SBR_INTERP60` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:71` |  |
+| `SBR_INTERP60_ALPHA` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:64` |  |
 | `SBR_J2D_CAPTURE` | 1 | `sms-recomp/overrides/diag_2d.cpp:148` |  |
 | `SBR_J2D_SOLID` | 1 | `sms-recomp/overrides/diag_2d.cpp:212` |  |
 | `SBR_J3D_CAPTURE` | 1 | `sms-recomp/overrides/j3d_capture.cpp:68` |  |
@@ -308,4 +309,4 @@ logger — that is debt to convert, not a feature.
 | `SBR_WIDESCREEN` | 1 | `sms-recomp/overrides/widescreen.cpp:56` |  |
 | `SBR_WS_SCALE` | 1 | `sms-recomp/overrides/widescreen.cpp:65` |  |
 
-**287 switches; 69 still gate a raw print.**
+**288 switches; 69 still gate a raw print.**

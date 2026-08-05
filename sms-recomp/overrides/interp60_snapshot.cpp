@@ -53,8 +53,7 @@ constexpr u32 OFF_POSITION = 0x10;
 constexpr u32 OFF_ROTATION = 0x30;
 
 constexpr u32 CUE_MOVE  = 0x1;
-constexpr u32 CUE_DRAW  = 0x8;
-constexpr u32 CUE_ENTRY = 0x200;
+constexpr u32 CUE_CALC_ANIM = 0x2;   // calcRootMatrix runs HERE, not in the draw phase
 
 // SBR_INTERP60_ALPHA: write lerp(prev, cur, alpha) into the guest transform for the draw phase.
 // Unset means snapshot-only (read nothing back). alpha=1.0 MUST be pixel-identical to unset --
@@ -305,8 +304,14 @@ void interp_test_perform(CPUState& cpu) {
             static u32 s_moveTick = 0xFFFFFFFFu, s_drawTick = 0xFFFFFFFFu;
             // Restore BEFORE this tick's movement: physics must never run on an interpolated pose.
             if ((mask & CUE_MOVE) && tick != s_moveTick) { s_moveTick = tick; restore_all(); }
-            // Substitute at the first draw-side dispatch of the tick.
-            if ((mask & (CUE_DRAW | CUE_ENTRY)) && tick != s_drawTick) {
+            // Substitute before the CALC phase, NOT before draw. calcRootMatrix() -- which turns
+            // mPosition/mRotation into the model's base TRMtx -- runs on CUE_CALC_ANIM (0x2), which
+            // precedes entry and draw. Applying at the draw dispatch is too late: the matrix has
+            // already been built from the un-interpolated pose, so the write lands in memory nobody
+            // reads again that frame. Measured: with the apply at draw time, alpha=0.0 changed 0 of
+            // 1,228,800 pixels while identity at alpha=1.0 passed -- the control is the only reason
+            // that looked like a failure rather than a success.
+            if ((mask & CUE_CALC_ANIM) && tick != s_drawTick) {
                 s_drawTick = tick;
                 apply_all(g_lastSnapTick, alpha);
             }

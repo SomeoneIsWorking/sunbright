@@ -330,11 +330,50 @@ void dcbz32(u32 ea) {
         if (u8* p = sb_ram_fast(base + i)) *p = 0;
 }
 
+extern "C" unsigned VIGetRetraceCount(void) __attribute__((weak));
+
 // Time base: the Gekko TBR ticks at the bus clock / 4 = 162 MHz / 4 = 40.5 MHz.
 // Derived from a monotonic host clock so guest timing advances at the right rate;
 // OSGetTime/OSTicksToSeconds depend on this scale being correct.
 u64 tb_get() {
     static const u64 kTbHz = 40500000ull;
+
+    // SBR_DETERMINISTIC=1 — a VIRTUAL time base, so two runs of the same input produce the same
+    // frame. The host clock reaching the guest is why they do not: every OSGetTime the game makes
+    // differs run to run, and anything seeded from it or timed against it diverges. Measured on
+    // Delfino, two identical runs differed in 6,757 of 1,228,800 pixels, which made pixel-exact
+    // A/B — the only instrument that can validate the 60fps interpolation write — unusable.
+    //
+    // The virtual clock advances one nominal NTSC field per present and counts calls within a
+    // frame, so it is MONOTONIC (guest code that waits for the TB to advance still progresses)
+    // and DETERMINISTIC (it is a function of the frame number and the call count, both of which
+    // are themselves deterministic given deterministic input). The rate stays right, so timing
+    // dependent game logic behaves as it does under the real clock.
+    //
+    // Off by default: it decouples guest time from real time, which is wrong for playing.
+    static const bool deterministic = std::getenv("SBR_DETERMINISTIC") != nullptr;
+    if (deterministic) {
+        static unsigned last_frame = 0xFFFFFFFFu;
+        static u64 calls = 0;
+        const unsigned frame = (&VIGetRetraceCount) ? VIGetRetraceCount() : 0;
+        if (frame != last_frame) { last_frame = frame; calls = 0; }
+        // MONOTONIC AND UNBOUNDED, both required. The first version returned
+        // frame*step + (++calls % step), which wraps: the clock jumped BACKWARD mid-frame, and
+        // guest code that spins waiting for the time base to reach a deadline then never
+        // finished -- the game hung at THP open and never reached gameplay. A modulo cannot be
+        // used here at all, and neither can a bare frame base, because a spin-wait issues no
+        // present and would sit on a constant clock forever.
+        //
+        // So: a candidate from the frame and the intra-frame call count, floored to strictly
+        // exceed the last value returned. Deterministic (both terms are), never decreasing, and
+        // always advancing even when the guest spins without presenting.
+        static u64 last = 0;
+        u64 v = (u64)frame * (kTbHz / 60ull) + (++calls) * 64ull;
+        if (v <= last) v = last + 1;
+        last = v;
+        return v;
+    }
+
     timespec ts{};
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (u64)ts.tv_sec * kTbHz + (u64)ts.tv_nsec * kTbHz / 1000000000ull;
