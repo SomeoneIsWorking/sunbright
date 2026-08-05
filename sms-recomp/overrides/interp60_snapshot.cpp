@@ -47,6 +47,8 @@ extern "C" unsigned VIGetRetraceCount(void);
 extern "C" void sbr_tick_split_call(CPUState&);
 extern "C" void func_802f80d0(CPUState&);      // JDrama::TDisplay::endRendering
 extern "C" void sbr_frame_present_now();       // overrides/native_frame.cpp
+extern "C" void func_80349f5c(CPUState&);      // C_MTXLookAt(Mtx dst, const Vec* eye, const Vec* up,
+                                               //             const Vec* target)
 // Diagnostic in diag_vptr.cpp. One guest address gets exactly ONE override, so that file no longer
 // registers; it is called from here instead (the pattern afterimage.cpp uses).
 extern "C" void sbr_vptr_note(unsigned obj);
@@ -1050,6 +1052,82 @@ bool order_on() {
     return v;
 }
 
+// ── the camera, interpolated in the game's OWN terms ─────────────────────────
+//
+// From the disassembly of CPolarSubCamera::perform (vtable idx6 = 0x80023004):
+//
+//   movement path : 0x124 -> 0x13c and 0x148 -> 0x160        (the game saves its previous pose)
+//                   ... C_MTXLookAt(0x1ec, 0x124, 0x30, 0x148)   (and builds the view from it)
+//   view path     : PSMTXCopy(0x1ec -> TGraphics+0xb4)       (copies the cached matrix, computes nothing)
+//
+// So the sub-frame does exactly what the game does, with an interpolated pose: lerp the game's own
+// prev/cur into 0x124 and 0x148, call the game's own C_MTXLookAt with the game's own argument list,
+// and let the view path copy the result. No external snapshot, no allowlist, no layout signature —
+// and NOT a matrix lerp: the matrix is DERIVED from an interpolated pose, which is the distinction
+// the standing directive draws.
+constexpr u32 OFF_CPSC_VIEWMTX = 0x1EC;   // Mtx (3x4) built by C_MTXLookAt
+constexpr u32 CPSC_PERFORM = 0x80023004u; // its perform, used as an exact identity test
+
+// Exact identification: read the object's vtable slot 6 (MWCC vptr points at two zero header words,
+// so slot k is at vptr + 8 + 4k) and require it to BE CPolarSubCamera::perform. A heuristic on
+// near/far/fovy already accepted an object whose pose was not where it assumed; an address equality
+// on the very function whose disassembly these offsets came from cannot.
+bool is_polar_sub_camera(u32 obj) {
+    if (!sb_ram_fast(obj)) return false;
+    const u32 vptr = sb_r32(obj);
+    if (!sb_ram_fast(vptr + 0x20)) return false;
+    return sb_r32(vptr + 8 + 6 * 4) == CPSC_PERFORM;
+}
+
+struct CamSave {
+    u32   obj = 0;
+    float eye[3] = {0, 0, 0}, at[3] = {0, 0, 0};
+    float view[12] = {0};
+};
+
+// Substitute lerp(prev, cur) for the camera pose and rebuild its view matrix. Returns what has to
+// be put back.
+CamSave camera_apply(CPUState& cpu, u32 obj, float alpha) {
+    CamSave sv;
+    if (!is_polar_sub_camera(obj)) return sv;
+    sv.obj = obj;
+    for (int k = 0; k < 3; ++k) {
+        sv.eye[k] = guest_f32(obj + OFF_CPSC_A + (u32)k * 4);
+        sv.at[k]  = guest_f32(obj + OFF_CPSC_B + (u32)k * 4);
+    }
+    for (int i = 0; i < 12; ++i) sv.view[i] = guest_f32(obj + OFF_CPSC_VIEWMTX + (u32)i * 4);
+
+    for (int k = 0; k < 3; ++k) {
+        const float pe = guest_f32(obj + OFF_CPSC_A_PREV + (u32)k * 4);
+        const float pa = guest_f32(obj + OFF_CPSC_B_PREV + (u32)k * 4);
+        guest_w_f32(obj + OFF_CPSC_A + (u32)k * 4, (1.0f - alpha) * pe + alpha * sv.eye[k]);
+        guest_w_f32(obj + OFF_CPSC_B + (u32)k * 4, (1.0f - alpha) * pa + alpha * sv.at[k]);
+    }
+
+    // The game's own call, with the game's own arguments.
+    const u32 savedSp = (u32)cpu.gpr[1];
+    cpu.gpr[3] = obj + OFF_CPSC_VIEWMTX;
+    cpu.gpr[4] = obj + OFF_CPSC_A;
+    cpu.gpr[5] = obj + OFF_CAM_UP;
+    cpu.gpr[6] = obj + OFF_CPSC_B;
+    func_80349f5c(cpu);
+    cpu.gpr[1] = savedSp;
+    return sv;
+}
+
+void camera_restore(const CamSave& sv) {
+    if (!sv.obj) return;
+    for (int k = 0; k < 3; ++k) {
+        guest_w_f32(sv.obj + OFF_CPSC_A + (u32)k * 4, sv.eye[k]);
+        guest_w_f32(sv.obj + OFF_CPSC_B + (u32)k * 4, sv.at[k]);
+    }
+    // The matrix is restored rather than rebuilt: putting back exactly what the game computed is
+    // bit-exact, whereas recomputing it would re-derive a value the game already has and could
+    // differ in the last bits.
+    for (int i = 0; i < 12; ++i)
+        guest_w_f32(sv.obj + OFF_CPSC_VIEWMTX + (u32)i * 4, sv.view[i]);
+}
+
 void perform_list(CPUState& cpu, u32 list, u32 cue, u32 gfx) {
     if (!list || !sb_ram_fast(list)) return;
     const long camBefore = g_camDispatches;
@@ -1165,6 +1243,7 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
 
     // Pass 1: interpolated pose -> enter -> draw -> present.
     apply_all(g_lastSnapTick, alpha);
+    const CamSave camSave = camera_apply(cpu, g_camObj ? g_camObj : g_placeObjs[0], alpha);
     if (!noEntry) perform_list(cpu, preEntry, cue, gfx);
     // SBR_INTERP60_DROPLAST=1: omit the last recorded draw list from the re-issue.
     //
@@ -1234,6 +1313,8 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
     }
 
     present();
+
+    camera_restore(camSave);
 
     // Pass 2: the true pose, entered again so the NEXT tick's draw lists consume tick N and not the
     // midpoint. This is the pass that makes the substitution self-cancelling by construction.

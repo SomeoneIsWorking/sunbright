@@ -2194,3 +2194,40 @@ Two candidates, and the choice should be settled by reading rather than by prefe
 Neither is "matrix lerping": both derive the matrix from an interpolated POSE, which is what the
 standing directive asks for. Blending `+0x1ec` between its cached and saved copies WOULD be matrix
 lerping and is the thing to avoid.
+
+## THE CAMERA INTERPOLATES — exactly, in the game's own terms
+
+The sub-frame now does what `CPolarSubCamera::perform` does, with an interpolated pose: lerp the
+game's OWN prev/cur (`0x13c`->`0x124`, `0x160`->`0x148`) and call the game's OWN
+`C_MTXLookAt(0x1ec, 0x124, 0x30, 0x148)` with the game's own argument list, then let the view path
+copy `0x1ec` as it always does.
+
+Measured view translation, same tick, three alphas:
+
+    alpha = 0.0 : -4939.68      (and the NEXT sample reads -4942.61)
+    alpha = 0.5 : -4941.14      midpoint of -4939.68 and -4942.61 = -4941.145
+    alpha = 1.0 : -4942.61
+
+**Exact to the printed precision**, and `alpha=0.0` reproduces the previous tick's view. This is
+interpolation working, in the form the standing directive asks for: the matrix is DERIVED from an
+interpolated pose by the game's own builder, never blended between two cached matrices.
+
+Identification is an address equality, not a heuristic: the object's vtable slot 6 must BE
+`0x80023004`, the very function whose disassembly these offsets came from. The earlier
+near/far/fovy signature had already accepted an object whose pose was not where it assumed.
+
+### What is still wrong, and it is no longer the interpolation
+
+    main -> sub : 676,892 (55.1%)
+    sub  -> main:       0
+
+The sub-frame is visibly distinct from the main frame before it, but still pixel-identical to the
+main frame AFTER it — while the view it rendered with is provably a midpoint of the two. Those two
+facts cannot both describe the presented image, so the discrepancy is in the PRESENT path, not in
+the pose or the matrix: something is showing the following tick's stream where the sub-frame's
+should be.
+
+That is a much narrower question than any asked so far, and both halves are now instrumented
+(`SBR_INTERP60_ORDER` prints the view actually used; the labelled dump series says which present is
+which). The next measurement is which stream each present actually renders — the sub-frame's 1.7 MB
+or the next tick's — rather than which image it resembles.
