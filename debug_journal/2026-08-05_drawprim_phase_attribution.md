@@ -236,6 +236,29 @@ Cache lifetime is one frame, cleared where `AttrArray::cachedRange` is cleared: 
 into the frame packet's storage buffer, and outliving it would hand out offsets into a buffer that
 has since been rewound.
 
+## The next lever, sized: 100% of the remaining 20.4 MB/frame is unchanged from the previous frame
+
+With the redundancy gone, 20.44 MB/frame remains — and it is re-uploaded every frame because the
+frame packet's storage buffer is rewound each frame, not because anything changed. Since every
+upload is already hashed, the ceiling on a persistent-buffer change was cheap to measure:
+
+    arrays vs PREVIOUS frame: unchanged=20.44 MB (100%)  changed=0.00 MB  new=0.00 MB
+
+**Every byte, every frame.** Nothing changed, nothing new. So a persistent cross-frame geometry
+buffer would remove essentially the whole `arrayUpload` cost — the largest single item in the
+drain — and it would remove it twice over, since the same 20 MB is also written staging->GPU each
+frame.
+
+**Not attempted here, deliberately.** It is a real change to buffer lifetime in aurora's gfx layer:
+the storage buffer participates in the frames-in-flight design (`g_recordingFrameSlot`), so making
+allocations persist means owning residency, invalidation and aliasing across in-flight frames. Done
+badly it produces exactly the intermittent geometry corruption this arc has been careful to avoid,
+and it is not a change to start at the end of a session on a machine too loaded to A/B the result.
+The invalidation signal it needs already exists and is already proven correct: the in-frame content
+hash reads 0 changes, and the cross-frame counter above reads 100% stable.
+
+Sized, evidenced, and left for a session that can verify it properly.
+
 ## The transferable part
 
 Two attributions in this arc were wrong before this one, and the reason is the same each time: a
