@@ -2265,3 +2265,41 @@ conclusion survives (both are flat), but the header was wrong for the same reaso
 readings were: a pairing assumed rather than read from the runtime labels that are right there in
 the filenames. Ad-hoc scoring scripts must use `role_of()` like `subframe_gate.py` does, not
 positional assumptions.
+
+## THE PIPELINE IS CONNECTED END TO END — cross-run diff at a fixed present index
+
+The flat sweep compared adjacent presents WITHIN a run, which cannot separate "alpha does nothing"
+from "alpha moves both neighbours together". Comparing the SAME present index ACROSS runs
+(deterministic, so this is valid) answers it directly:
+
+    alpha=0.0 vs alpha=1.0, same present index:
+      present 0 [ sub] :  351 px differ
+      present 1 [main] :    0 px differ      <- correct: a main frame must not depend on alpha
+      present 2 [ sub] :  373 px differ
+
+The sub-frame DOES respond to alpha and the main frame correctly does not. Every stage is therefore
+connected: interpolated pose -> game's own C_MTXLookAt -> cached view matrix -> view path ->
+sub-frame stream -> its own copy -> present -> dump.
+
+**But only ~350 of 1,228,800 pixels respond**, while the view moves 2.94 units end to end — which at
+this camera should move a large fraction of the screen. So most of the scene is NOT being drawn
+through the view camera 1 writes.
+
+### The likely reason, and the measurement that would settle it
+
+The view-writer census showed `mViewMtx` written EIGHT times per sub-frame by FIVE objects, in this
+order: an ortho pass, 鏡カメラ (mirror), camera 1, ブラーカメラ (blur), camera 1, ortho, camera 1,
+ortho. In the uninterpolated run camera 1's writes were no-ops because it produced the same matrix
+the mirror camera had just written — they agreed. With camera 1 now writing a MIDPOINT they no
+longer agree, and any draw that consumes the mirror camera's value (or a later ortho zero) gets the
+endpoint regardless.
+
+So the question is which of those eight writes is live at the moment `TSmJ3DScn::perform` copies
+`param_2->mViewMtx` into j3dSys — not which object writes last overall. That is one more attribution
+probe of the shape already built (watch the value at the scene's own dispatch rather than at list
+boundaries), and it should be written to report EVERY consumer, not the first, for the reason the
+previous attributor had to be fixed.
+
+Do not respond by interpolating the mirror/blur cameras too until that measurement exists: they are
+pre-render passes for reflection and motion blur, and matching their views to the sub-frame may be
+correct or may be exactly wrong, depending on what each pass is for.
