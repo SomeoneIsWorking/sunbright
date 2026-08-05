@@ -1657,3 +1657,42 @@ measuring a duplicated frame.
 
 Designing that control took one line and should have come before any pose test — "sub-frame equals
 main frame" was ambiguous from the first measurement, and four runs were spent inside the ambiguity.
+
+## THE PLUMBING CONTROL FIRES — and it demolishes the reading of every number before it
+
+`SBR_INTERP60_DROPLAST=1` (omit one draw list from the re-issue, no poses involved):
+
+    with the full re-issue    : 349,199 | 0 | 350,689
+    with one draw list dropped:     193 | 0 |     168
+
+Dropping a list from the SUB-frame collapsed the difference between MAIN frames from 28% to 0.016%.
+A sub-frame cannot change how much the game moves between ticks, so **the 28% was never game
+motion**. It was the sub-frame's re-issue of GXPost perturbing alternate presents.
+
+So the reading attached to every previous measurement — "~28% either side is one tick of real
+motion, which is the scale a midpoint has to land inside" — was wrong. The scene at this moment is
+nearly static (~190 px between presents once the perturbation is removed), and the "identity 0 px"
+reported as a success is equally consistent with a duplicated frame in a nearly-static scene. That
+success claim is withdrawn along with the reach number.
+
+### The control that was missing from the start
+
+Nowhere in this arc did anything measure **how much the game changes per tick with interpolation
+switched off**. That is the denominator for all of it: an interpolated midpoint can only be
+demonstrated against a known inter-tick delta, and "sub-frame equals main frame" means nothing
+without knowing whether consecutive ticks differ at all. Every gate here compared the sub-frame to
+its neighbour and none established the neighbour's own motion.
+
+Running it now (`SBR_INTERP60` unset, same pad script, same 4 consecutive presents — which are then
+consecutive game ticks). Two outcomes, both informative:
+
+* consecutive ticks differ substantially -> the scene does move, and a sub-frame equal to its
+  neighbour means the substitution genuinely reaches nothing;
+* consecutive ticks barely differ -> the test scene is static and NO pose measurement taken in this
+  arc could have shown anything. The pad script would then be the defect: it drives a stick but was
+  never confirmed to produce motion at the dump moment, and every "no effect" result so far is
+  uninterpretable rather than negative.
+
+This is the fourth time in this arc that a measurement was read as a result before its control
+existed. The pattern is specific enough to name: the gate compares A against B and reports their
+difference, but nothing establishes that B is what it is assumed to be.
