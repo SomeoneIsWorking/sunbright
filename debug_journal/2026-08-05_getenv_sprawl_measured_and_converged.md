@@ -78,6 +78,34 @@ here is a choice, and it is recorded rather than left to look like completeness.
 Each round surfaced a new top entry that the previous round had masked — which is the argument for
 re-measuring after every change instead of converting the first list top-to-bottom.
 
+## What it is worth in frame time — smaller than it sounds, and stated as such
+
+The temptation here is to present a 198x reduction as a performance result. It is not one, and the
+honest number matters more than the impressive one.
+
+A wall-clock A/B was not possible: this machine carried load average 9.8 during the attempt, and the
+journal entry before this one already records that frame times taken at different loads are not
+comparable. So the effect was derived from two quantities that ARE load-robust — the count of calls
+removed, and the cost of one call measured in CPU time (`tools/perf/getenv_cost.c`,
+`CLOCK_PROCESS_CPUTIME_ID`):
+
+    environ entries: 116
+    present name : 80.8 ns/call
+    absent  name : 96.5 ns/call   <- what a switched-off diagnostic pays
+
+The benchmark carries its own control: an ABSENT name must come out slower than a present one,
+because absent is the full scan. If they matched, the benchmark would not be measuring the scan at
+all, and it says so and refuses the numbers.
+
+    6,600,000 calls removed x 96.5 ns = 0.64 s of a 30 s run
+                                      ~ 468 us of a ~22,000 us frame   = 2.1%
+
+**2.1%.** Real, worth having, and nowhere near a 60fps lever — that remains the per-primitive path
+at 45,914 `draw_prim` calls per frame, ~340 ns each, as established in
+`2026-08-05_runtime_cost_comparison_for_60fps.md`. This change was a correctness and hygiene fix
+that the user asked for; the perf is a side effect, and inflating it would be exactly the kind of
+number this journal exists to prevent.
+
 ## Two bugs the conversion exposed, neither of which was the point
 
 **1. A diagnostic that SIGSEGVs the moment you enable it.** `SB_LOG=entrymat` exited 139.
