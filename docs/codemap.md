@@ -75,7 +75,8 @@ Legend: ✅ done (verified on real data) · 🟡 partial (documented gap) · �
 | widescreen (16:9) | ✅ | `sms-recomp/overrides/widescreen.cpp` | aspect widened at `C_MTXPerspective` (input, not output); `SBR_WIDESCREEN` |
 | widescreen HUD | ✅ | `sms-recomp/overrides/hud.cpp` | per-`.blo`-name edge anchoring; `/2d` |
 | widescreen effects | ✅ | `sms-recomp/overrides/widescreen_effects.cpp` | 2D full-screen widen + EFB-tex/mirror suspend; `/wsfx /fills` |
-| 60fps interpolation | 🟡 | `sms-recomp/runtime/scene.cpp` | wall-clock alpha between two KNOWN scene snapshots, never extrapolated. Replaced the retired tick-rate/blend-replay approach (user, 2026-07-23: "this tick rate based thing will never work"). Open: submission of decoded geometry, then cut detection |
+| 60fps — matrix-lerp path | 🟡 | `sms-recomp/runtime/scene.cpp` | wall-clock alpha between two KNOWN scene snapshots, never extrapolated. What `SBR_60FPS` drives today. Structural limit (user directive, memory `interp60-must-be-game-native-2026-08-05`): things with no model matrix — effects, trails — step at 30 Hz while Mario moves at 60, which IS the jitter. Being superseded by the row below |
+| 60fps — game-native path | 🟡 | `sms-recomp/overrides/interp60_snapshot.cpp` | `SBR_INTERP60` + `SBR_INTERP60_ALPHA`. Snapshots each actor's transform at `testPerform` (type-tested against `generated/tactor_vtables.h`), then at the frame seam writes `lerp(prev,cur,alpha)` and RE-ISSUES the tick's recorded draw lists — `TSmJ3DScn::perform(0x8)` does frameInit+enter+draw as one unit, so the scene re-enters from the interpolated pose and no undo is needed. VERIFIED: identity 0/1,228,800 at alpha=0, reach 97.16% under a 3000-unit kick. NOT yet verified: the midpoint itself, pacing, non-transform state (JPA particles). Never re-run `PreEntry` — it double-enters and wedges (`SBR_INTERP60_PREENTRY=1` keeps that fault reproducible) |
 | 2D-class diagnostics | 🔬 | `sms-recomp/overrides/diag_2d.cpp` | `/2dclass` (SBR_DIAG_2D=1); pane→class census |
 
 ## Aurora (`extern/aurora` — the GC platform surface; submodule, fork remote branch `sunbright`)
@@ -131,7 +132,10 @@ gxfifo, widescreen, thp, …) and `SB_DUMP_FRAME`/`SB_DUMP_FRAME_AFTER`.
 - GX stream → aurora → `sms-recomp/runtime/dev_gxfifo.cpp` (`gxfifo_flush`, `emit_arraybase`, EFB copies)
 - widescreen aspect → `sms-recomp/overrides/widescreen.cpp` (`ov_c_mtx_perspective`)
 - a screen effect (heat haze etc.) → `docs/screen_effects.md` + `sms-recomp/overrides/screen_effects.cpp`
-- 60fps interpolation → `sms-recomp/runtime/scene.cpp` (`sbr_scene_render`)
+- 60fps, matrix-lerp path → `sms-recomp/runtime/scene.cpp` (`sbr_scene_render`)
+- 60fps, game-native path → `sms-recomp/overrides/interp60_snapshot.cpp` (`sbr_interp60_subframe`)
+- which perform list is which → `SBR_INTERP60_LISTS=1` (resolves `gpMarDirector` by scan, names every slot)
+- whether a sub-frame is real or the same image twice → `tools/interp/subframe_gate.py` on a consecutive-present series
 - an opcode's emitted C → `tools/recompiler/c_emitter.cpp` + `sms-recomp/generated/functions_*.cpp`
 - Mario's position at runtime → `/r?a=0x8040E10C` then deref (pointer, not a position global)
 
@@ -151,7 +155,8 @@ tools/          recompiler + RE + oracle tooling
 
 ## Open heads (details in debug_journal/ and docs/)
 
-- **60fps** — submit decoded geometry through `sbr_scene_render`, then cut detection + screen-effect handling on the in-between field (`docs/screen_effects.md`).
+- **60fps (game-native, the live arc)** — the sub-frame renders and reproduces the frame exactly; what remains is the midpoint measurement, half-tick pacing, and non-transform state. `debug_journal/2026-08-05_game_native_interpolation_design.md`.
+- **60fps (matrix-lerp, superseded)** — submit decoded geometry through `sbr_scene_render`, then cut detection + screen-effect handling on the in-between field (`docs/screen_effects.md`). Kept until the game-native path takes over `SBR_60FPS`.
 - **audio (recomp only)** — DSP voice mixer; the decomp side is already audible and is the oracle. `docs/audio_recomp_plan.md`.
 - **THP session reopen** — second movie faults on a null message queue.
 - **decomp Delfino gameplay crash** — plaza-population stubs (oracle side).
