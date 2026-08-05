@@ -249,15 +249,71 @@ buffer would remove essentially the whole `arrayUpload` cost — the largest sin
 drain — and it would remove it twice over, since the same 20 MB is also written staging->GPU each
 frame.
 
-**Not attempted here, deliberately.** It is a real change to buffer lifetime in aurora's gfx layer:
-the storage buffer participates in the frames-in-flight design (`g_recordingFrameSlot`), so making
-allocations persist means owning residency, invalidation and aliasing across in-flight frames. Done
-badly it produces exactly the intermittent geometry corruption this arc has been careful to avoid,
-and it is not a change to start at the end of a session on a machine too loaded to A/B the result.
-The invalidation signal it needs already exists and is already proven correct: the in-frame content
-hash reads 0 changes, and the cross-frame counter above reads 100% stable.
+### The obvious shortcut is unsound, and the reason matters
 
-Sized, evidenced, and left for a session that can verify it properly.
+The tempting version is: offsets are deterministic (measured — all 492 arrays land at the same
+offset every frame, `stable=492 moved=0`), and `g_storageBuffer` is a single persistent GPU buffer,
+so just skip the staging write and let last frame's bytes stand.
+
+**That is wrong.** `lib/gfx/common.cpp` `Unmap()`s the staging buffer each frame and re-`MapAsync`s
+it, and the contents of a re-mapped `MapWrite` buffer are undefined per the WebGPU mapping
+contract. It would appear to work — right up until a driver or Dawn version chose to hand back
+different memory.
+
+### What was built instead
+
+A persistent arena inside `g_storageBuffer`, sized `StorageBufferSize + PersistentStorageSize`
+(48 MB + 32 MB). The arena lives **past** the staging-mirrored region, so the staging->GPU copy,
+which maps staging offsets 1:1 onto storage offsets, cannot reach it. The static bind group already
+binds the whole buffer with no dynamic offset and shaders index it by byte offset from a uniform,
+so nothing about the binding, layout or shaders changes.
+
+Stable arrays are written once with `queue.WriteBuffer` and re-written only when their content hash
+differs. The hash is the change detector, and there is no substitute: nothing else can observe the
+game rewriting an array, and a stale binding is silent geometry corruption.
+
+    arena: reused=492 (20.44 MB, NOT uploaded)  uploaded=0 (0.00 MB)  full-fallbacks=0
+           arena used=20.53 MB in 574 entries
+
+**Zero uploads per steady-state frame.** Against untouched yardsticks in the same runs (load ran
+14.6 -> 9.8 -> 4.1 across the three measurements, so absolutes are again not comparable):
+
+| yardstick | original | after redundancy fix | after arena |
+|---|---|---|---|
+| arrayUpload / shaderinfo+cfg | 5.94x | 3.66x | **1.66x** |
+| arrayUpload / pipeline_ref   | 6.84x | 5.21x | **2.54x** |
+| arrayUpload / build_uniform  | 9.45x | 6.72x | **3.09x** |
+
+About a 3x reduction overall; `arrayUpload` falls from ~63% of the per-draw build to ~34%. The
+~775 us that remains is the hash itself — a 20.44 MB read per frame — which is the price of
+detecting change honestly.
+
+### It broke the game, and the fix was not the one I would have guessed
+
+The first working build FATAL'd with `invalid wrap mode 3` at ~frame 400. Bisecting by forcing the
+arena to always fall back produced a clean run, which named the arena and nothing else.
+
+Reading my own new code turned up two genuine defects:
+
+1. **A lossy key.** `(ptr << 8) ^ size` folds size's high bits onto pointer bits, so two distinct
+   `(ptr, size)` pairs can collide — the cache then serves one array's bytes for another.
+2. **A 3-byte tail spill.** `WriteBuffer` needs a 4-byte multiple, so a non-multiple length
+   finished with a padded 4-byte write, while the allocator advanced by exactly `length`. Up to 3
+   bytes landed in whatever was allocated next.
+
+Fixing both cleared it — but "changed two things, it works now" is not a root cause, so both were
+measured:
+
+    allocations=500  non-4-multiple=74  old-lossy-key collisions=0
+
+**The tail spill was the trigger** (74 of 500 allocations hit it; vertex strides like 6 bytes for
+S16 XYZ are routinely not 4-aligned). The lossy key never collided in this scene — a real latent
+defect, fixed pre-emptively, but not the cause. Worth separating: had I stopped at "both fixed", I
+would have carried a wrong belief about which class of bug this was.
+
+Also wired `persistent_storage_reset()` into device teardown — the arena's offsets are meaningful
+only for the `g_storageBuffer` being destroyed there, and keeping them would hand out ranges into
+a dead buffer on the next bring-up.
 
 ## The transferable part
 
