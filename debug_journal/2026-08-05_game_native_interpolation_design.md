@@ -393,3 +393,43 @@ approach requires knowing every container type; the capture-at-render approach r
 
 Cost of the detour so far: the virtual, the `TActor` fields, and three container overrides — all
 inert, all keepable if enumeration is ever wanted, none of it yet delivering a snapshot.
+
+## Enumeration abandoned after five hops — and a process failure worth recording
+
+Continuing the walk added two more hops and still reaches no actor:
+
+4. **Group containers.** The movement list's 18 children were finally NAMED rather than guessed at
+   (they are Shift-JIS; decode before reading): マップグループ, 波, 落書きグループ, コンダクター,
+   マネージャーグループ, プレーヤーグループ, camera 1, 水マネージャ, 空グループ, … A recursion
+   counter then showed `nested-list recursions so far=0` — **none of the 18 is a `TPerformList`**,
+   so the walk stopped dead at the first level the entire time.
+5. **`TViewObjPtrListT`.** That is what the groups actually are (`TDStageGroup :
+   TViewObjPtrListT<TViewObj>`). Given a forwarding override — and the actor probe *still* never
+   fires, and `TObjManager`'s forwarder still never fires.
+
+Five container hops, every one verified to run, none reaching an actor. All of it render-inert
+(0 of 1,228,800 pixels differ).
+
+### The process failure
+
+The previous entry closed with: *"The alternative to try first next time: don't enumerate at all."*
+Then this session spent its entire iteration enumerating. Recognising the wrong approach and then
+continuing it anyway is worse than not recognising it — the decision had already been made on
+evidence and was silently discarded in favour of one-more-hop momentum.
+
+Each hop was cheap and each felt like the last one, which is exactly what makes this shape of chase
+expensive. The counters were doing their job throughout (`moved=0`, `visited 18`, `recursions=0`,
+forwarder never firing); the failure was in what was done with them.
+
+### Decision, recorded so it is not silently discarded again
+
+**Stop enumerating. The next iteration implements capture-at-render and nothing else.**
+
+Rationale, unchanged from before: enumeration requires knowing *every* container type in a
+heterogeneous graph, and five are known not to be sufficient. Capture-at-render requires none —
+every actor that renders necessarily executes its own calc/draw path, so the transform can be
+recorded there, for exactly the set of objects that matter.
+
+The inert plumbing (the `TViewObj` virtual, `TActor` fields, and four forwarding overrides) is left
+in place: it is harmless, and it is the correct machinery *if* an enumeration is ever wanted for a
+different purpose. It is not deleted, but nothing should be built on it.

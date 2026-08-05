@@ -141,7 +141,7 @@ logger — that is debt to convert, not a feature.
 | `SB_PLACE_DBG` | 1 | `decomp/sms/src/JSystem/JDrama/JDRPlacement.cpp:31` | gated print |
 | `SB_PLIST_ORDER_DBG` | 1 | `decomp/sms/src/JSystem/JDrama/JDRViewObj.cpp:51` |  |
 | `SB_PLIST_ORDER_DBG_AFTER` | 1 | `decomp/sms/src/JSystem/JDrama/JDRViewObj.cpp:53` |  |
-| `SB_PL_DBG` | 1 | `decomp/sms/src/System/PerformList.cpp:60` |  |
+| `SB_PL_DBG` | 1 | `decomp/sms/src/System/PerformList.cpp:78` |  |
 | `SB_POS_PROBE` | 1 | `extern/aurora/lib/gx/command_processor.cpp:2141` |  |
 | `SB_PRESENT_COPY` | 2 | `extern/aurora/lib/dolphin/gx/GXFrameBuffer.cpp:214` |  |
 | `SB_PRESENT_PASS1` | 2 | `extern/aurora/lib/dolphin/gx/GXFrameBuffer.cpp:219` |  |
