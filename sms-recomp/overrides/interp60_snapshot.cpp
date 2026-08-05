@@ -52,7 +52,21 @@ namespace {
 constexpr u32 OFF_POSITION = 0x10;
 constexpr u32 OFF_ROTATION = 0x30;
 
-constexpr u32 CUE_MOVE = 0x1;
+constexpr u32 CUE_MOVE  = 0x1;
+constexpr u32 CUE_DRAW  = 0x8;
+constexpr u32 CUE_ENTRY = 0x200;
+
+// SBR_INTERP60_ALPHA: write lerp(prev, cur, alpha) into the guest transform for the draw phase.
+// Unset means snapshot-only (read nothing back). alpha=1.0 MUST be pixel-identical to unset --
+// that is the control for the write path itself, before interpolation is attempted. alpha=0.0
+// renders the PREVIOUS tick's pose and must visibly differ, or the write is reaching nothing.
+float alpha_setting() {
+    static const float a = [] {
+        const char* e = std::getenv("SBR_INTERP60_ALPHA");
+        return e ? (float)std::atof(e) : -1.0f;
+    }();
+    return a;
+}
 
 bool enabled() {
     static const bool on = std::getenv("SBR_INTERP60") != nullptr;
@@ -89,8 +103,11 @@ constexpr int TABLE_MASK = TABLE_SIZE - 1;
 struct Entry {
     u32   obj  = 0;        // guest address, 0 = empty
     u32   tick = 0;
-    float pos[3] = {0, 0, 0};
+    float pos[3] = {0, 0, 0};   // (prev): transform before this tick's movement
     float rot[3] = {0, 0, 0};
+    float cur[3] = {0, 0, 0};   // (cur): saved at apply time so restore is exact
+    float curRot[3] = {0, 0, 0};
+    bool  applied = false;      // a lerp is currently written into guest memory
 };
 
 Entry g_tab[TABLE_SIZE];
@@ -112,6 +129,12 @@ Entry* slot_for(u32 obj) {
 // names the largest mover. If the biggest mover is an ambient prop rather than the player, the
 // allowlist is missing the things that matter and the name says so.
 long        g_samples = 0, g_moved = 0, g_nonActors = 0, g_actors = 0;
+long        g_applied = 0, g_restored = 0;
+// The tick value the most recent snapshot was stamped with. apply_all() keys on THIS rather than
+// on VIGetRetraceCount(): the draw-phase dispatch does not reliably share the present counter's
+// value with the movement dispatch (direct() has an entry-vs-render alternation), so requiring
+// exact equality with the present counter matched no entries and the write silently never fired.
+u32         g_lastSnapTick = 0xFFFFFFFFu;
 float       g_maxStep = 0.0f;
 u32         g_maxObj = 0;
 float       g_tickMaxStep = 0.0f;   // per-window, so one init teleport cannot mask the steady state
@@ -144,11 +167,89 @@ void report() {
                  g_actors + g_nonActors, g_actors, g_nonActors, g_samples, g_moved,
                  g_samples ? 100.0 * (double)g_moved / (double)g_samples : 0.0,
                  (double)g_maxStep, nm, (double)g_tickMaxStep, tick_nm, g_evictions);
+    if (alpha_setting() >= 0.0f)
+        lucent::info("interp60", "  WRITE alpha={:.2f}: applied={} restored={} (unequal counts mean "
+                                 "a pose was left interpolated into the physics step)",
+                     (double)alpha_setting(), g_applied, g_restored);
     g_tickMaxStep = 0.0f; g_tickMaxObj = 0;
     lucent::info("interp60",
                  "  COVERS objects dispatched with CUE_MOVE whose vptr is in kTActorVtables "
                  "(694 entries, validated 47/47 precision on a live frame). Does NOT cover actors "
                  "whose vtable was not recovered, nor non-transform state (JPA particles).");
+}
+
+void guest_w_f32(u32 ea, float v) {
+    u32 bits;
+    __builtin_memcpy(&bits, &v, sizeof bits);
+    sb_w32(ea, bits);
+}
+
+// Put the guest transforms back exactly as the game left them. Called before movement runs, so
+// physics never sees an interpolated pose -- the interpolation is a RENDER-time substitution only,
+// which is the whole point of interpolating instead of ticking logic at 60 Hz.
+void restore_all() {
+    for (int i = 0; i < TABLE_SIZE; ++i) {
+        Entry& e = g_tab[i];
+        if (!e.applied) continue;
+        e.applied = false;
+        if (!sb_ram_fast(e.obj)) continue;
+        guest_w_f32(e.obj + OFF_POSITION + 0, e.cur[0]);
+        guest_w_f32(e.obj + OFF_POSITION + 4, e.cur[1]);
+        guest_w_f32(e.obj + OFF_POSITION + 8, e.cur[2]);
+        guest_w_f32(e.obj + OFF_ROTATION + 0, e.curRot[0]);
+        guest_w_f32(e.obj + OFF_ROTATION + 4, e.curRot[1]);
+        guest_w_f32(e.obj + OFF_ROTATION + 8, e.curRot[2]);
+        ++g_restored;
+    }
+}
+
+// Substitute lerp(prev, cur, alpha) for the draw phase. `cur` is read here rather than tracked
+// separately, so restore_all() writes back exactly what the game computed -- no drift from a
+// value reconstructed out of the lerp.
+void apply_all(u32 tick, float alpha) {
+    for (int i = 0; i < TABLE_SIZE; ++i) {
+        Entry& e = g_tab[i];
+        if (e.obj == 0 || e.tick != tick || e.applied) continue;
+        if (!sb_ram_fast(e.obj)) continue;
+        for (int k = 0; k < 3; ++k) {
+            e.cur[k]    = guest_f32(e.obj + OFF_POSITION + (u32)k * 4);
+            e.curRot[k] = guest_f32(e.obj + OFF_ROTATION + (u32)k * 4);
+        }
+        e.applied = true;
+        // ENDPOINT EXACTNESS is a correctness requirement, not a nicety. alpha=1.0 must reproduce
+        // the game's own transform BIT-FOR-BIT, because that is the control proving the write path
+        // is a no-op when it should be. `p + (c-p)*a` fails it: the subtraction and the addition
+        // each round, so a=1 does not return c and the frame differed by 7,273 pixels. Writing the
+        // endpoints directly, and using the (1-a)*p + a*c form in between, is exact at both ends.
+        if (alpha >= 1.0f) {
+            for (int k = 0; k < 3; ++k) {
+                guest_w_f32(e.obj + OFF_POSITION + (u32)k * 4, e.cur[k]);
+                guest_w_f32(e.obj + OFF_ROTATION + (u32)k * 4, e.curRot[k]);
+            }
+            ++g_applied;
+            continue;
+        }
+        if (alpha <= 0.0f) {
+            for (int k = 0; k < 3; ++k) {
+                guest_w_f32(e.obj + OFF_POSITION + (u32)k * 4, e.pos[k]);
+                guest_w_f32(e.obj + OFF_ROTATION + (u32)k * 4, e.rot[k]);
+            }
+            ++g_applied;
+            continue;
+        }
+        for (int k = 0; k < 3; ++k) {
+            guest_w_f32(e.obj + OFF_POSITION + (u32)k * 4,
+                        (1.0f - alpha) * e.pos[k] + alpha * e.cur[k]);
+            // Angles are Euler degrees here; a naive lerp is wrong across the +-180 seam. Take the
+            // shortest arc rather than sweeping the long way round, which would spin an actor a
+            // full turn in one sub-frame whenever it crossed the wrap point.
+            float d = e.curRot[k] - e.rot[k];
+            while (d > 180.0f)  d -= 360.0f;
+            while (d < -180.0f) d += 360.0f;
+            guest_w_f32(e.obj + OFF_ROTATION + (u32)k * 4, e.rot[k] + d * alpha);
+        }
+        ++g_applied;
+    }
 }
 
 void snapshot(CPUState& cpu, u32 mask) {
@@ -185,6 +286,7 @@ void snapshot(CPUState& cpu, u32 mask) {
 
     e->obj = obj;
     e->tick = tick;
+    g_lastSnapTick = tick;
     e->pos[0] = px; e->pos[1] = py; e->pos[2] = pz;
     e->rot[0] = guest_f32(obj + OFF_ROTATION + 0);
     e->rot[1] = guest_f32(obj + OFF_ROTATION + 4);
@@ -195,10 +297,25 @@ void interp_test_perform(CPUState& cpu) {
     if (std::getenv("SBR_VPTR_DUMP")) sbr_vptr_note((unsigned)cpu.gpr[3]);
 
     if (enabled()) {
+        const u32 mask = (u32)cpu.gpr[4];
+        const u32 tick = VIGetRetraceCount();
+        const float alpha = alpha_setting();
+
+        if (alpha >= 0.0f) {
+            static u32 s_moveTick = 0xFFFFFFFFu, s_drawTick = 0xFFFFFFFFu;
+            // Restore BEFORE this tick's movement: physics must never run on an interpolated pose.
+            if ((mask & CUE_MOVE) && tick != s_moveTick) { s_moveTick = tick; restore_all(); }
+            // Substitute at the first draw-side dispatch of the tick.
+            if ((mask & (CUE_DRAW | CUE_ENTRY)) && tick != s_drawTick) {
+                s_drawTick = tick;
+                apply_all(g_lastSnapTick, alpha);
+            }
+        }
+
         // testPerform masks the incoming cue with the object's own unkC before dispatching; the
         // snapshot only needs to know movement is about to run for this object, and the raw cue
         // carries that. Reading it before the body keeps this a pure observation.
-        snapshot(cpu, (u32)cpu.gpr[4]);
+        snapshot(cpu, mask);
 
         const unsigned frame = VIGetRetraceCount();
         if (frame >= g_lastReport + 600) { g_lastReport = frame; report(); }

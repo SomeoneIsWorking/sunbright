@@ -1090,3 +1090,60 @@ present-twice seam already exists in `native_frame.cpp`, and the type test is va
 check on the write side is the same shape as this one — with alpha pinned to 1.0 the frame must be
 **pixel-identical** to no-interpolation, or the write path is wrong before interpolation is even
 attempted.
+
+## The interpolating WRITE lands — but the recomp frame is NOT DETERMINISTIC, so it cannot be verified yet
+
+`SBR_INTERP60_ALPHA=<a>` now writes `lerp(prev, cur, alpha)` into the guest transform for the draw
+phase and restores the game's own values before the next tick's movement, so physics never runs on
+an interpolated pose. It fires: **1,969,101 applies** per run.
+
+### Getting it to fire at all exposed one real defect
+
+The first version gated `apply_all` on `e.tick == VIGetRetraceCount()` and reported
+**`applied=0 restored=0`** — the write silently never happened. The draw-phase dispatch does not
+reliably share the present counter's value with the movement dispatch (`direct()` has an
+entry-vs-render alternation). Keying on the snapshot's OWN tick fixed it. Worth noting that the
+counters are what surfaced this: without them the run would simply have produced a frame, and a
+frame that looks right is indistinguishable from a write that never ran.
+
+### The verification is INVALID, and the control is what says so
+
+The gate was: `alpha=1.0` must be **pixel-identical** to no-write (identity), and `alpha=0.0` must
+differ (the write reaches pixels). Results:
+
+    alpha=1.0 vs base : 7612 of 1228800 (0.6195%)
+    alpha=0.0 vs base : 6975 of 1228800 (0.5676%)
+
+That reads as "identity broken". It is not — or at least, nothing here shows it. The control:
+
+    BASELINE vs BASELINE, identical config, two runs: 6757 of 1228800 (0.5499%)
+
+**The recomp frame at a fixed present count is not reproducible run to run**, and both alpha numbers
+sit inside that noise. Neither the identity check nor its control can resolve anything.
+
+Two things this invalidates, one of them mine:
+
+* the verdict "identity STILL broken" — unsupported;
+* a fix I had already applied and justified. `p + (c-p)*a` genuinely is not endpoint-exact in
+  floating point, and I changed it to write the endpoints directly and use `(1-a)*p + a*c` between.
+  That reasoning is sound and the code is better for it, **but the 7,273-pixel difference I cited as
+  its evidence was noise.** The change is kept on its merits; the evidence claimed for it is
+  withdrawn.
+
+### Why the decomp could do this and the recomp cannot
+
+The decomp side verified a re-run draw pass as **0 of 1,228,800 pixels** — bit-exact, repeatedly. So
+determinism is not inherent to the game; it is something the recomp is losing. Prime suspect is a
+time-seeded RNG (the plaza's birds, heat-haze and water are all random-driven, and this project has
+already found `rand()` here resolving to libc rather than the GC LCG), but that is a hypothesis and
+naming it is not measuring it.
+
+### Next, and it is a TOOLING task before it is an interpolation task
+
+Pixel-exact A/B is the only instrument that can validate the write path, and it does not currently
+work in the recomp. So: find and pin the non-determinism (a fixed RNG seed, or whatever the source
+turns out to be), prove it with baseline-vs-baseline reaching **0 differing pixels**, and only then
+re-run the identity/control pair. Building interpolation further on an unverifiable write would be
+exactly the "looks correct while doing nothing" failure this whole arc has been guarding against.
+
+The write path is **UNVERIFIED** — not correct, not broken. It stays gated off by default.
