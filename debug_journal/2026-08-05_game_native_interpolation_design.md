@@ -930,3 +930,63 @@ not" is the only form in which its result is usable.
 
 **Until that exists, the recomp override cannot be written safely.** The decomp-side snapshot
 (committed, coverage-proven, render-inert) stands as the RE that the override will consume.
+
+## US vtable recovery: `tools/re/us_vtables.py` — 96.2% coverage, and the bug that looked right
+
+The recomp override needs a runtime "is this guest object a TActor?" test, and the sound one is the
+vtable pointer at `+0x00` against the set of TActor-derived vtables. US vtable addresses exist in no
+reference file (`sms_gmse01_funcs.txt` is US but functions-only; the 1,508 vtable symbols are JP), so
+they have to be recovered from the US DOL.
+
+### The first version was wrong in the way that matters
+
+It scanned for runs of words that are **known US function entries**. That produced 2,007 candidates,
+379 TActor-tagged, and 56.1% coverage — a result that reads as "works, somewhat incomplete".
+
+It was unusable. Many virtuals are absent from the US list (weak/inlined), so a run keyed on *known*
+entries starts at the first slot that happens to resolve — generally in the **middle** of the
+vtable. Dumping the bytes around a candidate showed it plainly: `0x803ab7a4` was reported as a
+vtable, but `0x803ab788..0x803ab7a0` above it hold `0x803370e0…` — real code pointers merely missing
+from the symbol list.
+
+So every emitted address was an interior offset, **not the vtable base**. A guest vptr points at the
+base, so the allowlist would have matched *nothing* — 100% false-negative, while printing 379
+addresses and a plausible coverage percentage. Nothing downstream would have complained; actors
+simply would not have interpolated.
+
+### The fix, which also fixed the coverage
+
+Key on "is this a valid `.text` pointer" instead of "is this a known function". Unknown slots no
+longer break a run, so the run start IS the base, and known-function names are used only to
+CLASSIFY. One change, both problems:
+
+| | keyed on known funcs | keyed on .text pointers |
+|---|---|---|
+| candidates | 2,007 | 1,327 |
+| TActor-tagged | 379 | **453** |
+| decomp classes covered | 161/287 (56.1%) | **276/287 (96.2%)** |
+| addresses usable as vptr | **no** (interior) | yes (base) |
+
+Verified: **453 of 453** recovered bases have a non-`.text` word immediately before them, which is
+what a real vtable start looks like (MWCC's zero/RTTI separator). 11 classes remain unmatched and
+are listed by name — `TAnimalBase`, `TAirportPool`, `TCasinoRoulette`, `TMapObjGrassGroup` and 7
+more — rather than absorbed into a percentage.
+
+The tool ships `--selftest` (a case that MUST produce a positive), refuses on a missing DOL or
+symbol file rather than returning an empty result, and computes its coverage denominator from the
+decomp class hierarchy so "found 453" can never be mistaken for "found all".
+
+### Open, and it must be settled before the allowlist is used
+
+`TActor` is multiply derived (`TPlacement`, `JStage::TActor`), so a class has **more than one**
+vtable. The samples show both shapes: a 7-slot table starting `load__TActor` / `perform__THitActor`,
+and a 30-slot one starting with the six `JSG*` methods. Only the **primary** (the one a `+0x00`
+vptr points at) is a valid membership key; seeding the allowlist with secondary tables reproduces
+the same silent all-false-negative failure the base-address bug would have.
+
+Distinguishing them is the next step: the primary is the table whose slot order matches the
+`TNameRef -> TViewObj -> TPlacement -> TActor` virtual sequence the decomp headers declare, and the
+secondary is the `JStage::TActor` interface reached through the `@32@` thunks that are already
+visible in the US symbol list. **Failure-mode asymmetry makes this safe to iterate on**: a false
+negative means an actor does not interpolate, whereas a false positive would write a transform into
+a non-actor's memory — so the allowlist must be grown only as membership is proven, never guessed.
