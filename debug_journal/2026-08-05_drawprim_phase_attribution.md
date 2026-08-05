@@ -323,3 +323,43 @@ number was read without its denominator. "scan = 14%" had probe cost inside it; 
 that generalises is to make the instrument *print the denominator next to every quantity* — `n=`,
 `% of calls`, probe cost, unattributed — so that a misreading has to survive contradicting evidence
 printed on the same line.
+
+## A rejected optimisation: collapsing the diagnostic gates (measured, ~1%, reverted)
+
+With the array upload fixed, the phase table at low load showed `prologue + diag-pre + diag-post`
+at **13.4% of draw_prim** — roughly 1.2 ms/frame spent walking ~15 gated diagnostic blocks with
+every one of them switched off. The obvious fix: one master gate (the OR of all 15 switch names)
+so the hot path does one cached load instead of fifteen.
+
+It was built, and it worked correctly — verified in both directions on two independent
+diagnostics: `SB_POS_PROBE` 40 lines, `SB_NDC_PROBE`+`SB_NDC_DRAW` 2,185,607 lines, and 0 lines
+with nothing set.
+
+**Then it was measured properly, and reverted.** A single before/after was useless here (load moved
+3.5 -> 16.4 between runs, and two yardsticks disagreed 22% vs 0%), so both binaries were built and
+run ALTERNATELY so each saw the same machine load, medians taken over ~2,000 frames:
+
+| | ratio vs push-verts | ratio vs prologue |
+|---|---|---|
+| no gate | 2.008, 1.903 | 2.742, 2.227 |
+| master gate | 1.678, 1.837 | 2.121, 2.045 |
+
+~10-16% off the diag phases. Those are ~9% of `draw_prim`, so the whole change is worth **~1% of
+draw_prim, ~0.3% of the drain**.
+
+**The theory was wrong.** Fifteen scattered cached-static loads are not where the ~19.5 ns/call
+goes — collapsing them recovered only a tenth of it. Whatever costs that time is still in those
+regions (work done before a gate, or code-size effects that an outer branch does not fix, since the
+blocks stay inline either way). That remains unattributed and is the honest state of it.
+
+Reverted because the trade is bad: ~0.3% of a frame in exchange for coupling a hot function to a
+hand-maintained list of switch names, where forgetting one entry does not slow anything down — it
+makes that diagnostic **silently dead**. This codebase has paid for that failure mode repeatedly,
+and a 0.3% gain does not buy it back. Recorded rather than deleted so the next session does not
+re-derive the same idea and reach the same dead end.
+
+Also worth keeping: the first attempt to verify the gate used `./run.sh 2>&1 | grep -c` under a
+SIGKILL timeout and reported **0 matching lines for a diagnostic that was in fact emitting
+2.18 million of them**. The pipeline was dropping the count when the process was killed. I nearly
+concluded I had broken every diagnostic in draw_prim on the strength of it. Redirect to a file and
+count the file.
