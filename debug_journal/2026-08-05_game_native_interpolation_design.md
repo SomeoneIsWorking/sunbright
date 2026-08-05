@@ -131,3 +131,38 @@ this scene. Picking that signal is the next step, and it must carry the same pos
 `=2` has to diverge before `=1`'s answer is worth anything.
 
 **Status: the double-run safety question is still OPEN.** It is not "probably fine".
+
+## ANSWERED: the draw pass is NOT idempotent, and the sub-frame boundary is PreEntry + draw
+
+The cross-run probe above was the wrong shape. The right question is **idempotence within a single
+tick**, which needs no dynamic scene and no baseline run: mark the GX fifo, run the draw block,
+hash what it emitted, REWIND the fifo, run it again, hash, compare. Rewinding means the second pass
+*replaces* the first, so total emitted geometry stays at 1x — no staging overflow, and the frame
+still renders normally from the final pass. (`sb_gx_fifo_mark` / `_rewind` / `_hash` in
+`extern/aurora/lib/gx/fifo.cpp`.)
+
+The comparison carries a positive control and an empty-guard: `empty` counts ticks where either
+pass emitted nothing, so "emitted nothing" can never be reported as "identical".
+
+| mode | what runs between the two passes | result |
+|---|---|---|
+| `=2` **control** | `CalcAnim` (advances animation) | **1600/1600 DIFFERENT** — the comparison can see a change |
+| `=1` | nothing | **1200/1200 DIFFERENT** — bytes 2,252,625 then 2,130,302 |
+| `=3` | `PreEntry` | **DIFFERENT**, but bytes 2,252,625 then 2,252,789 |
+
+**Reading it:**
+
+1. **Re-running the draw lists alone does not reproduce the frame.** A consistent ~122 KB (5.4%)
+   goes missing on the second pass.
+2. **Re-running `PreEntry` first recovers essentially all of it** — the deficit closes from
+   -122,323 bytes to +164. So the draw buffers are POPULATED by the entry pass and CONSUMED as
+   they are drawn; a bare second draw finds them partly empty. The interpolation sub-frame
+   boundary is therefore **`PreEntry` + draw**, not draw alone. The design assumed this; it is now
+   measured rather than assumed.
+3. **A +164 byte residual remains** on `=3` (0.007% of 2.25 MB). Small, but idempotence is a
+   yes/no property and this is a no. Something still differs between two identical-input passes,
+   and it must be identified before sub-frame rendering is built on top — a residual that
+   accumulates per sub-frame would drift over a play session rather than showing up in a
+   single-frame comparison.
+
+That residual is the next question. Do not round it away.
