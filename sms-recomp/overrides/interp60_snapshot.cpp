@@ -203,6 +203,9 @@ constexpr u32 OFF_PREENTRY = 0x34;
 
 bool  g_inSubframe = false;      // suppress snapshot + instrumentation during the re-issue
 u32   g_display = 0;             // TDisplay*, captured at endRendering (see the override below)
+u32   g_camObj = 0;              // the layout-verified camera, for the survive-the-re-issue probe
+float g_camWrote[3] = {0, 0, 0}; // what the lerp wrote into it
+float g_camCur[3] = {0, 0, 0};   // its tick-N pose
 long  g_camDispatches = 0;       // testPerform calls on a placement-only object inside a sub-frame
 u8    g_gfxSnap[0x100];
 bool  g_gfxValid = false;
@@ -498,8 +501,9 @@ void apply_all(u32 tick, float alpha) {
                              "CAMERA prev->cur #{}: eye moved {:.3f}, target moved {:.3f}{}",
                              cn, (double)std::sqrt(dp), (double)std::sqrt(dt),
                              (dp == 0.0f && dt == 0.0f)
-                                 ? "  <-- BOTH ZERO: the camera snapshot captured the pose AFTER its "
-                                   "own update, so prev == cur and no alpha can change the view" : "");
+                                 ? "  (zero AT THIS SAMPLE — the camera is static right now; that is "
+                                   "not evidence about WHERE the snapshot is taken, and reading it "
+                                   "as such was wrong once already)" : "");
         }
         {
             const float dx = e.cur[0] - e.pos[0], dy = e.cur[1] - e.pos[1], dz = e.cur[2] - e.pos[2];
@@ -562,8 +566,9 @@ void apply_all(u32 tick, float alpha) {
             continue;
         }
         for (int k = 0; k < 3; ++k) {
-            guest_w_f32(e.obj + OFF_POSITION + (u32)k * 4,
-                        (1.0f - alpha) * e.pos[k] + alpha * e.cur[k]);
+            const float v = (1.0f - alpha) * e.pos[k] + alpha * e.cur[k];
+            if (e.isCam) { g_camObj = e.obj; g_camWrote[k] = v; g_camCur[k] = e.cur[k]; }
+            guest_w_f32(e.obj + OFF_POSITION + (u32)k * 4, v);
             if (e.isCam) {
                 // Aim components lerp linearly like the eye. Not a slerp: mUp and mTarget are a
                 // world-space up vector and a look-at POINT, not an orientation, so the shortest-arc
@@ -658,14 +663,23 @@ u32 follow_obj() {
 long g_followLines = 0;
 u32  g_followLastMask = 0xFFFFFFFFu;
 
+// Print ALL THREE components, not just y. A camera panning horizontally has a constant y, so a
+// y-only follower would report "unchanged" through the very transition being looked for — a
+// diagnostic whose negative cannot distinguish "did not move" from "moved in an axis I do not
+// print". Also prints the aim, since that is half the camera's pose.
 void follow(u32 mask, const char* where) {
     const u32 o = follow_obj();
-    if (!o || g_followLines > 60) return;
+    if (!o || g_followLines > 120) return;
     if (mask == g_followLastMask && where[0] == 'd') return;
     g_followLastMask = mask;
     ++g_followLines;
-    lucent::info("i60follow", "  mask=0x{:<9x} {:<8} y={:.2f}", mask, where,
-                 (double)guest_f32(o + OFF_POSITION + 4));
+    lucent::info("i60follow",
+                 "  mask=0x{:<10x} {:<9} pos=({:9.2f},{:8.2f},{:9.2f})  target=({:9.2f},{:8.2f},{:9.2f})",
+                 mask, where,
+                 (double)guest_f32(o + OFF_POSITION), (double)guest_f32(o + OFF_POSITION + 4),
+                 (double)guest_f32(o + OFF_POSITION + 8),
+                 (double)guest_f32(o + OFF_CAM_TARGET), (double)guest_f32(o + OFF_CAM_TARGET + 4),
+                 (double)guest_f32(o + OFF_CAM_TARGET + 8));
 }
 
 // ── the perform-list seam ────────────────────────────────────────────────────
@@ -1039,6 +1053,30 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
     static const bool dropLast = std::getenv("SBR_INTERP60_DROPLAST") != nullptr;
     const int drawN = dropLast && g_drawN > 1 ? g_drawN - 1 : g_drawN;
     for (int i = 0; i < drawN; ++i) perform_list(cpu, g_drawLists[i], g_drawCues[i] & cue, gfx);
+    // Does the substituted camera pose SURVIVE the re-issue?
+    //
+    // The camera's own perform runs inside the re-issue (measured: 16 dispatches), and
+    // CPolarSubCamera::perform is the camera's update, not merely a matrix build. If it recomputes
+    // mPosition from its internal state (angle, distance, target chase), it overwrites the lerp
+    // before C_MTXLookAt ever reads it — and the sub-frame renders pose N, which is exactly what the
+    // pixel gate reports. Substituting a field that its owner recomputes is futile, and no amount of
+    // correct lerping fixes it; the fix would be to snapshot the state the recompute reads instead.
+    if (g_camObj && sb_ram_fast(g_camObj)) {
+        static long n = 0;
+        if (++n <= 4 || (n % 300) == 0) {
+            const float x = guest_f32(g_camObj + OFF_POSITION);
+            const float z = guest_f32(g_camObj + OFF_POSITION + 8);
+            lucent::info("i60sub",
+                         "camera pose after re-issue #{}: ({:.2f}, _, {:.2f})   lerp wrote "
+                         "({:.2f}, _, {:.2f})   cur is ({:.2f}, _, {:.2f}){}",
+                         n, (double)x, (double)z, (double)g_camWrote[0], (double)g_camWrote[2],
+                         (double)g_camCur[0], (double)g_camCur[2],
+                         (x == g_camCur[0] && z == g_camCur[2] && g_camWrote[0] != g_camCur[0])
+                             ? "   <-- REVERTED to cur: the camera recomputed its own position "
+                               "during the re-issue and discarded the substitution" : "");
+        }
+    }
+
     // THE COPY. Without it the sub-frame is invisible.
     //
     // Measured: a sub-frame emitted 1.7 MB of geometry and produced a frame pixel-identical to the
@@ -1125,6 +1163,8 @@ extern "C" int sbr_interp60_in_subframe() { return g_inSubframe ? 1 : 0; }
 
 extern "C" void sbr_interp60_restore() {
     if (!enabled()) return;
+    if (follow_obj() && g_followLines <= 120) { ++g_followLines;
+        lucent::info("i60follow", "  ---------------- PRESENT ----------------"); }
     if (trace_on() && (long)VIGetRetraceCount() >= trace_start_present() && g_tracePresents <= 3) {
         trace_flush_run();
         ++g_tracePresents;

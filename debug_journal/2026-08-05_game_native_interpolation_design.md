@@ -2042,3 +2042,60 @@ and will show it directly — the camera's address is printed by the placement-o
 Do NOT fix this by moving the snapshot point on reasoning. Three placements of an apply/restore
 bracket were derived that way earlier in this arc and all three were wrong; the phase order is
 cheap to observe and expensive to guess, and now costs 9 seconds to observe.
+
+## RETRACTED: "the camera snapshot captures the pose after its own update"
+
+That was concluded from four `eye moved 0.000, target moved 0.000` samples. Running longer:
+
+    CAMERA prev->cur #300: eye moved 29.459, target moved 29.557
+    CAMERA prev->cur #600: eye moved 21.686, target moved 27.125
+
+The camera moves and IS captured. The zeros were from before gameplay begins (`mAppState -> 5
+(GAMEPLAY)` arrives later); the snapshot point is fine. The diagnostic's own wording caused the
+error — it printed a CAUSE ("captured the pose AFTER its own update") next to a measurement that
+only supported "these two values are equal right now". Reworded to state what it measured.
+
+**This also invalidated the fast test moment.** Dumping at present 300 to make runs quick moved the
+measurement to a pre-gameplay moment with a static camera — the speed fix silently changed what was
+being measured. Live-moment runs now use a later dump with the pad script starting at 600.
+
+## THE SUBSTITUTION SURVIVES — the scene takes its view from the SNAPSHOTTED TGraphics
+
+    camera pose after re-issue #600: (-0.00, _, 7979.34)
+      lerp wrote (-0.00, _, 7979.34)   cur is (-0.00, _, 7968.49)
+
+The lerped pose is in place during the whole re-issue and is NOT recomputed away by the camera's own
+perform. So every link now works:
+
+    sub-frame renders from its own stream        1.7 MB, measured
+    it copies itself out of the EFB              SBR_INTERP60_COPY, triggers 0 -> 1
+    the present happens after the copy           SBR_PRESENT_AFTER_COPY, no black frames
+    the camera is snapshotted and moves          ~22-29 units/tick
+    the lerp is written and survives             measured above
+
+and yet, at a live moment with the camera moving:
+
+    sub  -> main :         0
+    main -> sub  : 1,094,666 (89.1%)
+
+The sub-frame is visible and distinct, but identical to the FOLLOWING main frame — pose N, not the
+midpoint.
+
+### The remaining link, stated precisely
+
+`TSmJ3DScn::perform` takes the view from `param_2->mViewMtx` — the TGraphics passed IN — and the
+sub-frame passes a SNAPSHOT taken during this tick's draw block, which already holds the view built
+for pose N. The camera's perform does write that buffer during the re-issue (6 of 12 elements
+change), but the scene has its own list position: if the scene's list is re-issued BEFORE the list
+holding the camera, the scene copies the stale view and the camera's recomputed one arrives too
+late.
+
+So the next step is an ORDERING question inside the re-issue, and it is measurable rather than
+arguable: record which re-issued list the camera is dispatched from and where the scene's
+`TSmJ3DScn` sits relative to it, then re-issue the camera's list first (or run the camera's perform
+explicitly before the draw lists, which is what `TLookAtCamera::perform` exists to do).
+
+Do not "fix" it by writing `mViewMtx` into the snapshot directly. That would substitute a matrix
+rather than a pose — the matrix-lerp approach the standing directive rejects — and would leave
+everything that reads the camera's FIELDS (shadow projection, LOD, culling) on the un-interpolated
+value.
