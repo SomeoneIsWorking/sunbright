@@ -1696,3 +1696,56 @@ consecutive game ticks). Two outcomes, both informative:
 This is the fourth time in this arc that a measurement was read as a result before its control
 existed. The pattern is specific enough to name: the gate compares A against B and reports their
 difference, but nothing establishes that B is what it is assumed to be.
+
+## CORRECTION to the entry above: the plumbing WORKS, and the pairs were mislabelled
+
+The baseline finally exists — `SBR_INTERP60` unset, so consecutive presents ARE consecutive game
+ticks:
+
+    tick -> tick : 1,064,307 (86.6%) | 1,068,851 (87.0%) | 1,075,670 (87.5%)
+
+The game changes ~87% of the frame per tick. It is moving hard, and the previous entry's conclusion
+("the scene is nearly static, the 28% was not motion") was wrong. It came from reading the
+`subframe_gate` pairs as (main,main) when they are (main,sub),(sub,main),(main,sub).
+
+Read correctly, the sub-frame run says:
+
+    main_A -> sub_A : 349,199      the sub-frame DIFFERS from the main frame before it
+    sub_A -> main_B :       0      and is IDENTICAL to the main frame after it
+    main_B -> sub_B : 350,689
+
+`sub_A == main_B` exactly. The sub-frame is **not** a duplicated image — it is a genuine render, and
+`SBR_INTERP60_DROPLAST` proves the image comes from the sub-frame's own stream (removing one draw
+list moves that 349,199 to 193). **The re-issue plumbing is correct.** The "identity 0 px" result
+withdrawn in the previous entry is withdrawn for a different reason than stated there: the zero is
+real, but it is against the FOLLOWING main frame, not the preceding one, so it says the sub-frame
+renders pose N — which is `alpha=1.0` behaviour at every alpha.
+
+### The actual defect is COVERAGE, and the apply-time counter already measured it
+
+    AT APPLY TIME: 602,888 entries substituted, 13,597 had prev != cur (2.3%),
+                   largest delta 885.66 "ゲーム看板8"
+
+Across ~1,500 ticks that is roughly **nine objects per tick** whose position actually changed, and
+the largest mover is a signboard. Substituting nine small props cannot visibly alter a frame whose
+inter-tick delta is 87% — that 87% is the CAMERA and the player, and:
+
+* the camera is excluded by class (`JDrama::TCamera : public TPlacement`, not `TActor`), as the
+  earlier entry established; and
+* whatever is driving the rest of the 87% is not in the substituted set either — nine movers out of
+  ~400 snapshotted objects per tick is not a plausible account of a scene in motion.
+
+So the sub-frame renders pose N because the substitution barely changes the live pose: the things it
+covers are not the things that move. Nothing is wrong with the re-issue, the cue, the write path or
+the present. The next work is coverage — the camera first, then confirming the player is actually in
+the table and substituted (the roster contained マリオ, but the apply-time maximum is a signboard,
+which is a discrepancy the roster/apply pair can be made to answer directly).
+
+### The pattern, restated more precisely than "missing control"
+
+Both of the last two wrong readings came from the same place: the gate prints a difference between
+two frames and NAMES NEITHER. `subframe_gate.py` reports `present k -> k+1` without saying which of
+those is a main frame and which is a sub-frame, so every interpretation was supplied by me rather
+than by the instrument — and twice it was supplied wrongly. An instrument that reports a difference
+between two things it cannot identify is not measuring what it appears to measure. The tool must
+label main vs sub from the runtime, not leave it to be inferred from the pattern of zeros.
