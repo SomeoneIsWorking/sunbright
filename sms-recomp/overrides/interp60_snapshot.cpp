@@ -142,7 +142,28 @@ bool seen(u32 v) {
     return false;
 }
 
-constexpr u32 SUBFRAME_CUE_DEFAULT = 0xFFFFFFFCu;
+// The sub-frame's cue. Clears 0x1 (movement) ONLY.
+//
+// It used to clear 0x2 as well, inherited from the recomp-era implementation, whose RE reason was
+// real: re-running the calc-anim phase double-steps the water scroll counter and other per-frame
+// animation, which caused a 30 Hz flicker. But 0x2 is ALSO what turns a transform into geometry --
+// TLiveActor::perform (decomp src/Strategic/liveactor.cpp:401):
+//
+//     if (param_1 & 2) { calcRootMatrix(); mMActor->calc(); }   // mPosition -> root matrix
+//     if (param_1 & 4)   mMActor->viewCalc();
+//     if (param_1 & 0x200) drawObject(param_2);
+//
+// so clearing it meant the substituted pose was never read by anything that draws, and the
+// sub-frame rendered the entries the tick had already computed from the true pose. Measured:
+// alpha=1.0 and alpha=0.0 produced byte-identical frames while 8,958 entries genuinely differed
+// between prev and cur.
+//
+// Keeping 0x2 recomputes the matrices, at the cost of also advancing animation a second time --
+// the flicker the old implementation was avoiding. That is a REAL residual, not a solved problem:
+// the proper fix is to suppress the frame ADVANCE (MActor::frameUpdate, updateAnmSound) for the
+// duration of a sub-frame while letting the matrix recompute run, which is a narrower seam than
+// dropping the whole phase. Recorded so the trade is visible rather than silently taken.
+constexpr u32 SUBFRAME_CUE_DEFAULT = 0xFFFFFFFEu;
 constexpr u32 OFF_PREENTRY = 0x34;
 
 bool  g_inSubframe = false;      // suppress snapshot + instrumentation during the re-issue
@@ -781,7 +802,17 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
     // Pass 1: interpolated pose -> enter -> draw -> present.
     apply_all(g_lastSnapTick, alpha);
     if (!noEntry) perform_list(cpu, preEntry, cue, gfx);
-    for (int i = 0; i < g_drawN; ++i) perform_list(cpu, g_drawLists[i], g_drawCues[i] & cue, gfx);
+    // SBR_INTERP60_DROPLAST=1: omit the last recorded draw list from the re-issue.
+    //
+    // A PLUMBING control that does not involve poses at all. Every pose-based test so far has
+    // produced a sub-frame byte-identical to its main neighbour, across four configurations, which
+    // is equally consistent with "the substitution reaches nothing" and with "the sub-frame's GX
+    // stream never reaches the present and the main frame is simply shown twice". Dropping a whole
+    // draw list MUST change the image if the sub-frame is rendered from its own stream. If the pair
+    // is still 0 with a list missing, the presented sub-frame is not the sub-frame.
+    static const bool dropLast = std::getenv("SBR_INTERP60_DROPLAST") != nullptr;
+    const int drawN = dropLast && g_drawN > 1 ? g_drawN - 1 : g_drawN;
+    for (int i = 0; i < drawN; ++i) perform_list(cpu, g_drawLists[i], g_drawCues[i] & cue, gfx);
     present();
 
     // Pass 2: the true pose, entered again so the NEXT tick's draw lists consume tick N and not the

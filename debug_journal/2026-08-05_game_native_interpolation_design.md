@@ -1621,3 +1621,39 @@ re-issued with a view-bearing cue, so an interpolated camera pose flows straight
   discards the recording being used: `rendered=0 refused=1200`. The reset belongs after the
   sub-frame consumes it. The refusal counter turned what would have been a silent 30fps run into an
   immediate, unambiguous number — which is the whole reason it prints its denominator.
+
+## RETRACTED: "reach 97.16%" was the SAME cadence artifact, and no pose test has moved a pixel yet
+
+The reach measurement recorded above — "1,193,906 of 1,228,800 (97.16%) under a 3000-unit kick" —
+compared a run WITH sub-frames against a run WITHOUT them, both dumped at present 1500. The
+sub-frame adds a present per tick, so present 1500 is tick ~750 in one and tick ~1500 in the other.
+**That number is two different game moments, not a reach.** It is the identical defect this file had
+already identified one entry earlier, applied to a measurement taken before the fix and not re-taken
+after. Recording it as evidence was wrong; it is withdrawn.
+
+With the within-run gate — which cannot drift, because there is only one run — every pose-based
+configuration produces the SAME THREE NUMBERS, to the pixel:
+
+    alpha=0.0, cue ~0x3   : 349,199 | 0 | 350,689
+    alpha=1.0, cue ~0x3   : 349,199 | 0 | 350,689
+    alpha=0.5, cue ~0x3   : 349,199 | 0 | 350,689
+    alpha=0.5, cue ~0x1   : 349,199 | 0 | 350,689     (0x2 restored, calcRootMatrix re-runs)
+
+Four configurations, byte-identical output. The sub-frame is always equal to its main neighbour and
+the frames do not depend on the interpolation at all — including with cue `0x2` present, so the
+`calcRootMatrix` explanation, while correct about what `0x2` does, did not change the outcome.
+
+### What that leaves, and the control that separates it
+
+Two hypotheses remain and the pixel data cannot tell them apart:
+
+1. the substitution reaches nothing that draws, or
+2. the sub-frame's GX stream never reaches the present — the main frame is simply presented twice.
+
+`SBR_INTERP60_DROPLAST=1` omits a whole draw list from the re-issue. It involves no poses at all: if
+the sub-frame is rendered from its own stream, a missing list MUST change the image. If the pair is
+still 0 with a list missing, hypothesis 2 is the answer and every pose measurement taken so far was
+measuring a duplicated frame.
+
+Designing that control took one line and should have come before any pose test — "sub-frame equals
+main frame" was ambiguous from the first measurement, and four runs were spent inside the ambiguity.
