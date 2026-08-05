@@ -1937,3 +1937,30 @@ not an orientation, so the shortest-arc problem that applies to Euler rotation d
 
 Endpoints stay exact and the restore puts all six components back, so the camera's own tick-N pose
 is what physics and the next tick see.
+
+## WORKFLOW DEFECT: every diagnostic run in this arc idled for minutes after finishing
+
+The user asked what the point of the multi-minute runs was. There wasn't one.
+
+Two separate mistakes:
+
+1. **`SB_DUMP_FRAME_AFTER=1500` was inherited, not derived.** It dates from the title/file-select
+   work, where the menus had to be driven to reach the interesting state. Under `SBR_FASTBOOT=1` the
+   plaza is live within a couple of hundred ticks and the pad waypoints (400/1400/2200) were never
+   re-derived. Most of this session's measurements — apply-time coverage, the view-matrix delta,
+   camera identity, sub-frame counts — print to the log and need no frame dump at all.
+
+2. **Nothing stopped the process once it had produced what it was started for.** Run length was set
+   by whatever `timeout` value the caller guessed, so a 300-present dump still burned 200 seconds of
+   wall clock idling past the point of interest.
+
+`SBR_QUIT_AFTER=<presents>` fixes (2): the run shuts down cleanly once it reaches the given present.
+The margin above the dump index matters — the dump's texture->buffer copy is mapped on the NEXT
+present, so quitting exactly at the dump truncates the file the run existed to produce.
+
+    before : SB_DUMP_FRAME_AFTER=300, no quit  -> 200 s
+    after  : ... SBR_QUIT_AFTER=320            ->   9 s
+
+**22x**, on every diagnostic run. Roughly two dozen runs in this arc paid the old cost, which is
+most of an hour spent watching an idle process. A tool that cannot stop when it is done is a
+workflow defect, and it outranked the task in hand.

@@ -295,6 +295,26 @@ void present_and_reopen(bool& frameActive) {
     // calling it in a loop never terminates. The events MUST be inspected, not merely pumped:
     // AURORA_EXIT is how closing the window asks the program to stop, and discarding it left the
     // window uncloseable.
+    // SBR_QUIT_AFTER=<presents>: stop once the run has produced what it was started for.
+    //
+    // A diagnostic run reaches its state of interest (SB_DUMP_FRAME_AFTER, a report cadence) and
+    // then keeps running until whatever `timeout` the caller guessed. Every measurement run in the
+    // 60fps arc paid that: a 300-present dump still burned 200 seconds of wall clock, because run
+    // length was set by the timeout rather than by the thing being measured. The margin exists
+    // because the dump's texture->buffer copy is mapped on the NEXT present, so quitting exactly at
+    // the dump would truncate the file it was started to produce.
+    {
+        static const long quitAfter = [] {
+            const char* e = std::getenv("SBR_QUIT_AFTER");
+            return e ? std::atol(e) : 0L;
+        }();
+        if (quitAfter > 0 && (long)g_present_count >= quitAfter) {
+            lucent::info("frame", "SBR_QUIT_AFTER={} reached at present {} — shutting down",
+                         quitAfter, g_present_count);
+            g_quit_requested = 1;
+        }
+    }
+
     const AuroraEvent* event = aurora_update();
     bool exit_requested = g_quit_requested != 0;
     while (event != nullptr && event->type != AURORA_NONE) {

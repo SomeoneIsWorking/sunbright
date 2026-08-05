@@ -251,13 +251,13 @@ logger — that is debt to convert, not a feature.
 | `SBR_AUDIO_RAW` | 1 | `sms-recomp/runtime/dev_aid.cpp:94` |  |
 | `SBR_BIND_DECODE_LOG` | 1 | `sms-recomp/runtime/dev_gxfifo.cpp:629` |  |
 | `SBR_BIND_LOG` | 1 | `sms-recomp/runtime/native_render.cpp:220` |  |
-| `SBR_BLACK_OWNER` | 1 | `sms-recomp/overrides/native_frame.cpp:457` |  |
+| `SBR_BLACK_OWNER` | 1 | `sms-recomp/overrides/native_frame.cpp:477` |  |
 | `SBR_CARD_A` | 1 | `sms-recomp/overrides/native_card.cpp:93` |  |
 | `SBR_CARD_TRACE` | 1 | `sms-recomp/overrides/diag_card.cpp:40` |  |
 | `SBR_DETERMINISTIC` | 1 | `sms-recomp/runtime/rt_core.cpp:354` |  |
 | `SBR_DIAG_2D` | 1 | `sms-recomp/overrides/diag_2d.cpp:42` |  |
 | `SBR_DRAW_STATE` | 1 | `sms-recomp/runtime/scene.cpp:867` |  |
-| `SBR_DUMP_COPY` | 1 | `sms-recomp/overrides/native_frame.cpp:458` |  |
+| `SBR_DUMP_COPY` | 1 | `sms-recomp/overrides/native_frame.cpp:478` |  |
 | `SBR_FASTBOOT` | 1 | `sms-recomp/overrides/fastboot_native.cpp:79` |  |
 | `SBR_FIFO_2D` | 1 | `sms-recomp/runtime/dev_gxfifo.cpp:149` |  |
 | `SBR_FIFO_STALL` | 1 | `sms-recomp/runtime/dev_gxfifo.cpp:1369` |  |
@@ -289,9 +289,10 @@ logger — that is debt to convert, not a feature.
 | `SBR_PROBE_PORT` | 1 | `sms-recomp/runtime/probe_server.cpp:290` |  |
 | `SBR_PTIME_HI` | 1 | `sms-recomp/overrides/native_frame.cpp:263` |  |
 | `SBR_PTIME_LO` | 1 | `sms-recomp/overrides/native_frame.cpp:262` |  |
+| `SBR_QUIT_AFTER` | 1 | `sms-recomp/overrides/native_frame.cpp:308` |  |
 | `SBR_RASTER_SRC` | 1 | `sms-recomp/overrides/j3d_capture.cpp:302` |  |
 | `SBR_RENDER_DEPTHVIZ` | 1 | `sms-recomp/runtime/scene.cpp:69` |  |
-| `SBR_RENDER_DUMP` | 1 | `sms-recomp/overrides/native_frame.cpp:460` |  |
+| `SBR_RENDER_DUMP` | 1 | `sms-recomp/overrides/native_frame.cpp:480` |  |
 | `SBR_RENDER_SKIP_SKINNED` | 1 | `sms-recomp/runtime/scene.cpp:64` |  |
 | `SBR_RENDER_WIREFRAME` | 1 | `sms-recomp/runtime/native_render.cpp:578` |  |
 | `SBR_SCENARIO` | 1 | `sms-recomp/overrides/fastboot_native.cpp:253` |  |
@@ -320,4 +321,4 @@ logger — that is debt to convert, not a feature.
 | `SBR_WIDESCREEN` | 1 | `sms-recomp/overrides/widescreen.cpp:56` |  |
 | `SBR_WS_SCALE` | 1 | `sms-recomp/overrides/widescreen.cpp:65` |  |
 
-**299 switches; 69 still gate a raw print.**
+**300 switches; 69 still gate a raw print.**
