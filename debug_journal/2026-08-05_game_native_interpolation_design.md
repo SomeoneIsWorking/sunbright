@@ -613,3 +613,63 @@ Owed (genuine RE still to do):
 
 The transform half of the RE is therefore complete. That is what today's decomp work bought, and it
 transfers to a recomp override unchanged.
+
+## The recomp 60fps stack already exists — and the fork is COST vs COVERAGE, not feasibility
+
+`sms-recomp/runtime/lerp60.h` + `overrides/native_frame.cpp` are a mature stack: two presents per
+30 Hz tick, **mid-tick pacing** between them (sixty presents a second is not sixty frames to the eye
+with vsync off), camera-cut detection taken from the game's own
+`CPolarSubCamera::warpPosAndAt` rather than inferred from eye movement, tag-coverage reporting that
+carries its denominator, and `SBR_SMOOTH` — a validator that distinguishes genuine interpolation
+from the same picture presented twice, per screen cell, **validated against both classes**.
+
+Its founding premise is the one this arc rejected:
+
+> *a tick contributes MATRICES, not geometry — model-space vertices do not change between ticks...
+> not two scene submissions.*
+
+That premise is false for a known, already-RE'd class: `TMapObjWave`'s immediate-mode ripple grid
+and `calcDrawVtx` splash geometry are rebuilt per tick, and JPA particles are an independent
+simulation. Those are precisely what has no matrix to lerp.
+
+### What game-native reuses, and what it replaces
+
+**Reuses (all of it runtime-agnostic and already built):** the two-present frame seam, mid-tick
+pacing, camera-cut declaration, afterimage feedback-texture identification, `SBR_SMOOTH`, and the
+`SBR_LERP60` default-off gating that keeps aurora's oracle role uncorrupted.
+
+**Replaces:** the core. Instead of patching lerped matrices into a retained uniform block, write
+lerped transforms into the **guest** fields and re-run `PreEntry` + the draw lists, so the game
+regenerates everything at alpha — including geometry that has no matrix.
+
+### Premise 2 does NOT block this, and the cost picture has moved
+
+`2026-07-30_aurora_60fps_lerp_design.md` "Premise 2: re-executing a recorded frame — DESTROYED"
+is about replaying **aurora's own recorded frame** (staging unmapped in `end_frame`, `Range`s into
+globally shared buffers overwritten from offset 0, and a FIFO parse that is not idempotent). Every
+one of those is a statement about the *record/replay layer*.
+
+Game-native re-runs the **game's** draw lists, which regenerates the recording from scratch. That is
+a different layer, and it is the layer this session measured: a `PreEntry` + draw re-run reproduces
+the frame **pixel-identically** (0 of 1,228,800 differ), with dropping `PreEntry` as the positive
+control at 1,956 px. So the safety question game-native actually depends on is answered.
+
+What it costs is the open question, and **the answer moved this week**. lerp60's cheap shape existed
+because a second submission meant re-uploading geometry; the persistent geometry arena (`bcbb418`)
+has since driven per-frame array uploads to **zero bytes in the steady state**. The dominant cost of
+a second submission at design time is now largely gone. That does not make it free — the FIFO parse
+and draw-call issue remain — but the 2026-07-30 cost reasoning must be re-measured rather than
+inherited.
+
+### So the fork is:
+
+| | matrix-lerp (built) | game-native (directed) |
+|---|---|---|
+| coverage | only what is a model matrix; everything else bespoke | everything the game regenerates, by construction |
+| cost | ~1x geometry + a uniform-only second pass | second full scene submission |
+| safety | proven in recomp | re-run proven pixel-identical (decomp, this session) |
+| trail | needed its own EFB fix | same EFB fix still needed (it is a capture-rate bug either way) |
+
+**Next measurement, and it decides the arc:** recomp frame cost on Delfino, and the marginal cost of
+a second `PreEntry`+draw with the geometry arena in place. C019's ~15.8 ms is decomp-measured and
+pre-arena; carrying it over would be exactly the inherited-number error this file keeps catching.
