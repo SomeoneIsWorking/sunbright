@@ -1848,3 +1848,53 @@ covered placements are not the active camera, or the camera's motion does not li
 `mPosition`. `TLookAtCamera::perform` builds the view from `mPosition`, `mUp` AND `mTarget`
 (`C_MTXLookAt`), and only the first of those three is being substituted, which is a concrete next
 thing to check rather than a mystery.
+
+## THE CAMERA IS COVERED — so the remaining gap is its AIM, not its membership
+
+Naming the placement-only objects at runtime (rather than counting them) answers the coverage
+question directly:
+
+    PLACEMENT-ONLY objects seen (1):
+      0x81588cd0 vptr=0x803acde8 "camera 1"
+
+The gameplay camera IS snapshotted and its `mPosition` IS substituted. So "the camera is excluded by
+class", recorded two entries ago, is now only half true: it was excluded before the nested-name fix
+and the TPlacement root, and it is not excluded any more.
+
+What is still not substituted is the rest of the camera's pose. `JDrama::TLookAtCamera` keeps
+
+    /* 0x30 */ mUp        <- exactly where TActor keeps mRotation
+    /* 0x3C */ mTarget
+    /* 0x48 */ mFovy
+
+and `TLookAtCamera::perform` builds the view with `C_MTXLookAt(mViewMtx, &mPosition, &mUp,
+&mTarget)` — all three. Interpolating position alone moves the eye but leaves the aim pinned to tick
+N, which is not a midpoint of anything. (The 0x30 collision is also why placements are position-only:
+a rotation write on this object would land squarely on `mUp`.)
+
+The gameplay camera is `CPolarSubCamera : public JDrama::TLookAtCamera` (decomp
+`include/Camera/Camera.hpp:52`), so the field offsets above apply to it directly.
+
+### An open question the next session must answer FIRST, before adding fields
+
+`TSmJ3DScn::perform` takes the view from `param_2->mViewMtx` — the TGraphics the caller passes — and
+the sub-frame passes a SNAPSHOT of that struct taken during the tick's draw block. So a camera whose
+`perform` recomputes the view during the re-issue only reaches the scene if it writes into the
+buffer we pass AND runs before `TSmJ3DScn` in the re-issued order. Whether the camera's perform is
+in the re-issued draw lists at all has not been established — the tick trace shows a `0x10`
+(projection) dispatch inside the draw block, which is suggestive and not proof.
+
+Adding `mUp`/`mTarget` to the snapshot before settling that would produce another "substituted
+correctly, changed nothing" result, and this arc has enough of those.
+
+## Two report lines were lying, and are fixed
+
+* `re-issue set: 0 lists` — it printed `g_drawN` AFTER the sub-frame clears it, so it always read
+  zero regardless of how many lists were re-issued. Now keeps the last real value.
+* The `COVERS` line hardcoded "694 entries" and named only `kTActorVtables`, so it kept asserting a
+  coverage claim that the vtable fix had already changed (754), and never mentioned the
+  placement list or the camera-aim gap. Now derived from the arrays and explicit about what it
+  does not cover.
+
+A diagnostic that states its own coverage from a hardcoded number is a stale claim with a timestamp
+of whenever someone last edited the string.

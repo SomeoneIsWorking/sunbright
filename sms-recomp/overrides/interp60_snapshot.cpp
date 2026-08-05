@@ -192,6 +192,7 @@ u32   g_drawCues[8];
 int   g_drawN = 0;
 bool  g_sawMovement = false;     // the draw block ends at the first movement-phase list
 long  g_subframes = 0, g_subframeSkips = 0;
+int   g_lastDrawN = 0;   // g_drawN is cleared after each sub-frame; the report needs the real one
 u32   g_gameTick = 0;            // one per guest tick; presents no longer count 1:1
 
 u32 subframe_cue() {
@@ -247,6 +248,38 @@ void guest_name(u32 obj, char* out, size_t cap) {
     out[i] = '\0';
 }
 
+// The placement-only objects, BY NAME. "17 vtables recovered" and "12 dispatches per tick" are both
+// counts of things that may or may not include the one object that matters. The camera question is
+// answered by a name, not by a total: if the active gameplay camera (CPolarSubCamera, a
+// JDrama::TLookAtCamera) is not in this list, it is not being substituted however healthy the
+// counts look.
+constexpr int MAX_PLACE_NAMES = 24;
+u32  g_placeObjs[MAX_PLACE_NAMES];
+int  g_placeN = 0;
+bool g_placeOverflow = false;
+
+void note_placement(u32 obj) {
+    for (int i = 0; i < g_placeN; ++i) if (g_placeObjs[i] == obj) return;
+    if (g_placeN >= MAX_PLACE_NAMES) { g_placeOverflow = true; return; }
+    g_placeObjs[g_placeN++] = obj;
+}
+
+void report_placements() {
+    lucent::info("interp60", "  PLACEMENT-ONLY objects seen ({}{}):", g_placeN,
+                 g_placeOverflow ? ", TABLE OVERFLOWED - some not listed" : "");
+    if (g_placeN == 0)
+        lucent::info("interp60", "    (none) -- no TPlacement-that-is-not-a-TActor was ever "
+                                 "dispatched with CUE_MOVE; the camera is NOT being snapshotted");
+    for (int i = 0; i < g_placeN; ++i) {
+        char nm[48]; guest_name(g_placeObjs[i], nm, sizeof nm);
+        Entry* e = slot_for(g_placeObjs[i]);
+        const bool tracked = e && e->obj == g_placeObjs[i];
+        lucent::info("interp60", "    0x{:08x} vptr=0x{:08x} \"{}\"{}", g_placeObjs[i],
+                     sb_ram_fast(g_placeObjs[i]) ? sb_r32(g_placeObjs[i]) : 0u, nm,
+                     tracked ? "" : "   [NOT in the snapshot table]");
+    }
+}
+
 void report() {
     char nm[48]; guest_name(g_maxObj, nm, sizeof nm);
     char tick_nm[48]; guest_name(g_tickMaxObj, tick_nm, sizeof tick_nm);
@@ -276,17 +309,23 @@ void report() {
                  "block / no TGraphics snapshot / no snapshot tick -- a refusal renders the tick "
                  "ONCE and is not an error, but a run that is all refusals is 30fps)",
                  g_subframes, g_subframeSkips);
-    if (g_subframes && g_drawN == 0 && g_mardir)
-        lucent::info("interp60", "  re-issue set: {} lists off gpMarDirector 0x{:08x}", g_drawN,
-                     g_mardir);
+    if (g_subframes && g_mardir)
+        lucent::info("interp60", "  re-issue set: {} lists off gpMarDirector 0x{:08x}"
+                                 "  (was printing g_drawN AFTER it is cleared, so it always read 0)",
+                     g_lastDrawN, g_mardir);
     if (g_writeStuck || g_writeLost)
         lucent::info("interp60", "  WRITE READ-BACK: stuck={} lost={} (lost>0 means the store never "
                                  "reached the memory the guest reads)", g_writeStuck, g_writeLost);
     g_tickMaxStep = 0.0f; g_tickMaxObj = 0;
+    report_placements();
     lucent::info("interp60",
-                 "  COVERS objects dispatched with CUE_MOVE whose vptr is in kTActorVtables "
-                 "(694 entries, validated 47/47 precision on a live frame). Does NOT cover actors "
-                 "whose vtable was not recovered, nor non-transform state (JPA particles).");
+                 "  COVERS objects dispatched with CUE_MOVE whose vptr is in kTActorVtables ({} "
+                 "entries: position AND rotation) or kTPlacementOnlyVtables ({} entries: position "
+                 "ONLY -- rotation would land on TLookAtCamera's mUp). Does NOT cover a camera's "
+                 "mUp@+0x30 / mTarget@+0x3C, which C_MTXLookAt reads alongside mPosition, nor "
+                 "actors whose vtable was not recovered, nor non-transform state (JPA particles).",
+                 (int)(sizeof(kTActorVtables) / sizeof(kTActorVtables[0])),
+                 (int)(sizeof(kTPlacementOnlyVtables) / sizeof(kTPlacementOnlyVtables[0])));
 }
 
 void guest_w_f32(u32 ea, float v) {
@@ -667,7 +706,7 @@ void snapshot(CPUState& cpu, u32 mask) {
     const bool placement = !actor && is_placement_only(vptr);
     if (!actor && !placement) { ++g_nonActors; return; }
     ++g_actors;
-    if (placement) ++g_placements;
+    if (placement) { ++g_placements; note_placement(obj); }
 
     Entry* e = slot_for(obj);
     if (!e) return;
@@ -889,6 +928,7 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
     // The draw block is recorded EARLY in a call and the seam runs at the end of it, so clearing
     // these on entry throws away the very recording being used (measured: rendered=0, refused=1200,
     // every tick refusing for want of the TGraphics it had just captured).
+    g_lastDrawN = g_drawN;
     g_drawN = 0;
     g_gfxValid = false;
 }
