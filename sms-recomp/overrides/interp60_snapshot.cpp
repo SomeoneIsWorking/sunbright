@@ -307,7 +307,41 @@ void restore_all() {
 // Substitute lerp(prev, cur, alpha) for the draw phase. `cur` is read here rather than tracked
 // separately, so restore_all() writes back exactly what the game computed -- no drift from a
 // value reconstructed out of the lerp.
+// Is the PLAYER covered? The decisive coverage question, asked directly rather than inferred from
+// an aggregate. "2.3% of substitutions differ" is compatible both with a working snapshot of a
+// mostly-static scene AND with a snapshot that misses everything that moves; only naming the player
+// separates them. gpMarioOriginal (0x8040E10C) holds a POINTER to the object, whose TVec3 position
+// is its first field -- but the snapshot writes TPlacement::mPosition at +0x10, so the two are
+// checked against each other here as well.
+void report_player_coverage() {
+    static bool done = false;
+    if (done) return;
+    if (!sb_ram_fast(0x8040E10Cu)) return;
+    const u32 mario = sb_r32(0x8040E10Cu);
+    if (!sb_ram_fast(mario)) return;          // not created yet; try again next tick
+    done = true;
+    const u32 vptr = sb_r32(mario);
+    const bool actor = is_tactor(vptr);
+    Entry* e = slot_for(mario);
+    const bool inTable = e && e->obj == mario;
+    char nm[48]; guest_name(mario, nm, sizeof nm);
+    lucent::info("interp60",
+                 "PLAYER COVERAGE: gpMarioOriginal -> 0x{:08x} \"{}\" vptr=0x{:08x} "
+                 "is_tactor={} in_snapshot_table={}",
+                 mario, nm, vptr, actor ? "YES" : "NO", inTable ? "YES" : "NO");
+    if (!actor)
+        lucent::info("interp60", "  the player's vtable is NOT in kTActorVtables -- he is never "
+                                 "snapshotted and never substituted, so no alpha can move him");
+    lucent::info("interp60", "  pos@+0x00 = ({:.2f}, {:.2f}, {:.2f})   pos@+0x10 = ({:.2f}, {:.2f}, "
+                             "{:.2f})   (the snapshot writes +0x10)",
+                 (double)guest_f32(mario), (double)guest_f32(mario + 4), (double)guest_f32(mario + 8),
+                 (double)guest_f32(mario + OFF_POSITION),
+                 (double)guest_f32(mario + OFF_POSITION + 4),
+                 (double)guest_f32(mario + OFF_POSITION + 8));
+}
+
 void apply_all(u32 tick, float alpha) {
+    report_player_coverage();
     for (int i = 0; i < TABLE_SIZE; ++i) {
         Entry& e = g_tab[i];
         if (e.obj == 0 || e.tick != tick || e.applied) continue;

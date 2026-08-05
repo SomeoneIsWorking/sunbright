@@ -17,21 +17,22 @@ branches, JDRDisplay.cpp endRendering)
 
 A `direct()` call renders what a PREVIOUS call entered, and the present follows the whole call. So
 the main present at tick N shows the pose entered at N-1, while the sub-frame re-enters from
-whatever pose is live and shows lerp(N-1, N, alpha). Therefore:
+whatever pose is live and shows lerp(N-1, N, alpha). Each sub-frame therefore sits BETWEEN the main
+frame before it and the main frame after it:
 
-    alpha = 0.0  ->  the sub-frame must REPRODUCE the neighbouring main frame  (identity)
-    alpha = 1.0  ->  the sub-frame must DIFFER from it, by one tick of motion  (control)
+    prev_main -> sub  and  sub -> next_main   should BOTH be non-zero at alpha = 0.5
+    alpha = 0.0  ->  sub should approach the PRECEDING main frame
+    alpha = 1.0  ->  sub should approach the FOLLOWING main frame (it renders pose N)
 
-Both must hold. Identity alone can be passed by a sub-frame that presents the same image twice
-(rendering nothing new); the control alone can be passed by a sub-frame that renders garbage.
+Note which neighbour each endpoint approaches: an earlier version of this file named only "the
+neighbouring main frame", and a zero against the FOLLOWING main was read as identity against the
+PRECEDING one. That single ambiguity produced two confident false readings.
 
-WHICH DUMP IS WHICH
+WHICH DUMP IS WHICH — ASK THE RUNTIME, NEVER THE PATTERN
 
-The series may start on either a main or a sub present, and nothing in the file says which. Rather
-than assume, the tool reports EVERY adjacent pair and the alternation pattern; a healthy alpha=0.0
-run shows near-zero for every pair, and a healthy alpha=1.0 run shows a repeating large/small
-alternation. If the pattern is not consistent with alternating presents, it says so instead of
-picking the pairing that flatters the result.
+Roles come from `aurora_set_dump_tag`, which the runtime stamps onto each dump's filename. Do not
+infer them from which adjacent pair happens to be zero: that inference was made twice in one
+session and was wrong both times. An unlabelled series is reported AS unlabelled.
 """
 import sys
 import glob
@@ -54,12 +55,31 @@ def diff(a, b):
     return d, n
 
 
+def role_of(path):
+    """The role the RUNTIME stamped on this dump ('main'/'sub'), or None.
+
+    aurora_set_dump_tag appends the label to the filename, so the artifact says what it is. Before
+    that existed, roles were inferred from which adjacent pair happened to be zero — and that
+    inference was made wrongly twice in one session, each time producing a confident and false
+    reading. An unlabelled series is therefore reported as unlabelled, not guessed at.
+    """
+    tail = path.rsplit(".", 1)[-1]
+    return tail if tail in ("main", "sub") else None
+
+
 def main():
     if len(sys.argv) < 2:
         print("usage: subframe_gate.py <dump-prefix>   (e.g. scratch/render/seq_a0.rgba)")
         return 2
     prefix = sys.argv[1]
-    files = sorted(glob.glob(prefix + ".*"), key=lambda p: int(p.rsplit(".", 1)[1]))
+    def seq_of(p):
+        parts = p.split(".")
+        for tok in reversed(parts):
+            if tok.isdigit():
+                return int(tok)
+        return -1
+
+    files = sorted(glob.glob(prefix + ".*"), key=seq_of)
     if len(files) < 2:
         # Refuse rather than report on what little arrived: a one-frame series cannot answer a
         # question about adjacent presents, and "0 pairs compared" must not read as "passed".
@@ -83,12 +103,20 @@ def main():
             return 1
         d, n = r
         results.append(d)
-        print(f"  present {k} -> {k+1} : {d:>8} of {n} ({100.0 * d / n:.4f}%)"
+        ra, rb = role_of(files[k]), role_of(files[k + 1])
+        label = f"{ra or '?'}->{rb or '?'}"
+        print(f"  present {k} -> {k+1} : {d:>8} of {n} ({100.0 * d / n:.4f}%)   [{label}]"
               f"   {os.path.basename(files[k])} vs {os.path.basename(files[k+1])}")
 
     # The alternation is the structural check: adjacent presents of a working sub-frame pair up
     # main/sub, so the diffs should not all be the same order of magnitude unless alpha makes them
     # genuinely equal. Report the shape; do not infer a verdict the data does not carry.
+    if any(role_of(f) is None for f in files):
+        print()
+        print("  NOTE: this series is UNLABELLED — the runtime did not stamp main/sub roles, so")
+        print("  which file is a main frame and which is a sub-frame is NOT known here. Do not")
+        print("  infer it from the pattern of zeros; re-run with a build that sets the dump tag.")
+
     lo, hi = min(results), max(results)
     print()
     print(f"  smallest adjacent diff: {lo}")

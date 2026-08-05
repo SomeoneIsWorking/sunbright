@@ -48,6 +48,7 @@ extern "C" __attribute__((weak)) void sbr_audio_frame() {}
 extern void gxfifo_build();
 extern void gxfifo_send_last();
 extern void gxfifo_send(const std::vector<u8>&);
+extern const std::vector<u8>& gxfifo_last_frame();
 
 namespace {
 
@@ -541,6 +542,11 @@ void video_wait_for_retrace(CPUState& cpu) {
     // a slightly mistimed midpoint on the frame where the rate changes. Seeded to 2 because a
     // 30fps scene requests two fields per tick, so the very first tick paces correctly rather than
     // at double rate.
+    // Label this present for the dump series. The sub-frame below issues a SECOND present per
+    // tick, and a dump series with no record of which file is which has to be identified by
+    // inference — which has already produced two wrong readings in this arc. The runtime knows the
+    // answer, so it says it.
+    aurora_set_dump_tag("main");
     present_and_reopen(s_frameActive);
 
     // GAME-NATIVE 60fps: the interpolated sub-frame.
@@ -558,8 +564,25 @@ void video_wait_for_retrace(CPUState& cpu) {
         static bool* s_active = &s_frameActive;
         s_active = &s_frameActive;
         sbr_interp60_subframe(cpu, [] {
+            // Does the sub-frame's own stream actually reach the present?
+            //
+            // The runtime-labelled dump series says the presented sub-frame is pixel-identical to
+            // the main frame before it, which is what "the main frame was presented twice" looks
+            // like. gxfifo_build() RETURNS EARLY when g_out is empty, leaving g_last holding the
+            // previous (main) frame — and gxfifo_send_last() would then re-send that. So the sizes
+            // either side of the build are the discriminator, and they are cheap to print.
+            const uint32_t before = sbr_gxfifo_stream_pos();
             gxfifo_build();
+            const uint32_t after = sbr_gxfifo_stream_pos();
+            static long n = 0;
+            if (++n <= 6 || (n % 600) == 0)
+                lucent::info("i60sub", "sub-frame present #{}: g_out {} KB before build, {} KB "
+                                       "after; g_last now {} KB {}",
+                             n, before >> 10, after >> 10, gxfifo_last_frame().size() >> 10,
+                             before == 0 ? "<-- EMPTY: the re-issue emitted NOTHING, so the main "
+                                           "frame's stream is what gets re-sent" : "");
             gxfifo_send_last();
+            aurora_set_dump_tag("sub");
             // The half-tick image has to be SHOWN at the half tick; both presents issued back to
             // back are 30fps with every frame sent twice, however high the present count reads.
             aurora_replay_midpoint();

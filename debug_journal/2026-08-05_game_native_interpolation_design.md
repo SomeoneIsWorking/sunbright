@@ -1749,3 +1749,55 @@ those is a main frame and which is a sub-frame, so every interpretation was supp
 than by the instrument — and twice it was supplied wrongly. An instrument that reports a difference
 between two things it cannot identify is not measuring what it appears to measure. The tool must
 label main vs sub from the runtime, not leave it to be inferred from the pattern of zeros.
+
+## THE INSTRUMENT NOW LABELS ITSELF — and the labels overturned the previous entry AGAIN
+
+`aurora_set_dump_tag` (new, aurora) stamps a role onto each dump's filename; `native_frame` sets
+`"main"` before the tick present and `"sub"` before the sub-frame present. The same series, now
+self-describing:
+
+    sub  -> main : 349,199 (28.4%)
+    main -> sub  :       0 (0.0%)      <- the sub-frame equals the main frame BEFORE it
+    sub  -> main : 350,689 (28.5%)
+
+The zero is against the PRECEDING main frame. The previous entry concluded the opposite (`sub_A ==
+main_B`, "renders pose N") from the same numbers, unlabelled. Two readings of one dataset, both
+confident, both derived from a pattern of zeros rather than from any identification — which is
+exactly why the labels now come from the runtime and why `subframe_gate.py` refuses to interpret an
+unlabelled series.
+
+### The stream handoff is CORRECT — measured, not assumed
+
+    sub-frame present #1: g_out 1775 KB before build, 0 KB after; g_last now 1776 KB
+
+Every sub-frame builds and sends **1.7 MB of its own commands**. `gxfifo_build()` returns early on
+an empty `g_out` (which would leave `g_last` holding the main frame and silently re-send it) — that
+is not happening. The sub-frame is a genuine re-render, not a duplicated present.
+
+So the state of the mechanism is: **the re-issue reproduces the frame pixel-for-pixel from its own
+1.7 MB stream.** That is the faithfulness property the design needs, and it is now supported by
+stream evidence rather than by a bare pixel zero, which a duplicate would also have produced. What
+it does NOT yet do is differ by alpha, because the substitution covers nothing that moves.
+
+## THE PLAYER-COVERAGE PROBE READ THE WRONG ADDRESS — and said so itself
+
+    PLAYER COVERAGE: gpMarioOriginal -> 0x8136384c "<unreadable>" vptr=0x00000000
+                     is_tactor=NO in_snapshot_table=NO
+      pos@+0x00 = (0.00, 300.00, 7400.00)   pos@+0x10 = (-0.00, 1.00, 1.00)
+
+`vptr = 0` and an unreadable TNameRef name mean this is not an object. `+0x00` holds a plausible
+world position and `+0x10` holds `(0, 1, 1)` — a SCALE. `JDrama::TPlacement` keeps `mPosition` at
+`+0x10`, so whatever this is, it is not a TPlacement: **0x8040E10C points at a bare TVec3, not at
+the TMario object.**
+
+Therefore the line "the player is never snapshotted and never substituted" is **NOT a finding** —
+it is the probe reading the wrong address, and the coverage question remains open. It was caught
+only because the probe prints its raw evidence (vptr, name, both candidate position fields) beside
+its verdict instead of the verdict alone. A probe that had printed just `is_tactor=NO` would have
+produced a fourth false finding in this session, and it would have looked exactly like the real
+thing.
+
+The address needs re-deriving before the coverage question can be asked again: `0x8040E10C` is a
+position pointer (consistent with the `gpMarioPos` RE in the memory notes), and what is needed is
+the TMario OBJECT — resolvable the same way `gpMarDirector` was, by scanning for the object whose
+fields match a known layout rather than by trusting a constant.
