@@ -673,3 +673,63 @@ inherited.
 **Next measurement, and it decides the arc:** recomp frame cost on Delfino, and the marginal cost of
 a second `PreEntry`+draw with the geometry arena in place. C019's ~15.8 ms is decomp-measured and
 pre-arena; carrying it over would be exactly the inherited-number error this file keeps catching.
+
+## MEASURED: Mario moves in the recomp, and the render-cost gate is the binding constraint
+
+Two measurements, both of which were assertions in this file until now.
+
+### 1. Mario MOVES in the recomp — the frozen Mario is a DECOMP gap
+
+The earlier recommendation rested on "in recomp Mario moves", which had **not** been measured. It is
+now. Driving the analog stick (`SBR_PAD_SCRIPT="400:STICK=0/100,1200:STICK=90/0,2000:STICK=0/100+A"`,
+`SBR_LUCENT_DEBUG=mario`):
+
+    [mario] pos (6500.0, 300.0, -3850.0)
+    [mario] pos (6500.0, 300.0, -3306.6)
+    ...
+    [mario] pos (7420.9, 100.0,  -200.9)      <- Y steps 300 -> 100, he walks down a level
+    -> 83 distinct positions
+
+Note the first control run gave **no** input and Mario sat at exactly the decomp's
+`(6500, 300, -3850)`. That looked like confirmation of a frozen Mario and proves nothing — a
+motionless player under no input is the expected result. Only the stick-driven run is evidence, and
+buttons alone would not have done it (`native_pad.cpp` says so explicitly: Mario moves on the analog
+stick).
+
+So the decomp's `mStatus=0x133f` is confirmed a **decomp porting gap** — the stage-entry chain that
+would call `rollingStart`/`returnStart` has no caller in the ported source — and not a property of
+the game. Interpolation is verifiable in the recomp and is not verifiable in the decomp today.
+
+### 2. The render-cost gate is real, and it is the binding constraint
+
+`SBR_PRESENT_TIMING=1` with pacing off (`SB_TURBO=1`), Delfino Plaza, one present per tick:
+
+    [ptime] present gaps: alternating means 23.93 ms / 23.98 ms
+
+**~24 ms per present.** `SBR_J3D_CAPTURE` defaults OFF and was unset, so this is not capture
+overhead — it is close to the real cost, with a residue of always-run diagnostic mirrors
+(`GXSetBlendMode`/`GXSetZMode`/`GXLoadTexObj`).
+
+For 60 fps, each present must complete in **≤16.7 ms**. One pass already costs 24 ms. A game-native
+sub-frame is a *second full scene submission*, so a tick lands near 48 ms — about 20 fps effective,
+i.e. **worse than the 30 fps it started from**.
+
+Two honest caveats: the running means were still drifting down (24.43 -> 23.93) and had not
+converged, and this must NOT be compared against C019's decomp ~15.8 ms — different runtime,
+different instrument, different sample count, and pre-arena. It is a recomp number, standing alone.
+
+### What this does to the fork
+
+It does not make game-native wrong; it makes it **unaffordable at today's render cost**, which is a
+different problem with a different owner. The ordering that follows:
+
+1. **Render cost first.** 24 ms -> under ~8 ms is the prerequisite for ANY two-pass scheme. Until
+   that happens, a correct game-native implementation would ship a game that runs slower than the
+   one it replaces, and the user's directive was explicitly *"if you pick the good path and
+   implement it then it'll already be fast"* — 48 ms/tick is not that.
+2. Only then the game-native core, against the RE inventory already banked above.
+
+The matrix-lerp stack's cheap shape looks better under this constraint precisely because it avoids
+the second submission — which is the trade the 2026-07-30 design was making deliberately. This
+entry's job is to say that the trade is a COST trade, not a correctness one, and that it should be
+re-decided after the render cost is known rather than inherited from either direction.
