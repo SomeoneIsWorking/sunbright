@@ -305,3 +305,46 @@ work, and it is untouched by any of the above:
 3. **Effects that are not a function of an actor transform** — the ghost/dash trail, JPA particles,
    anything rebuilding vertex data per tick — need prev/cur of their own state. This is the class
    that jittered under lerp60 and the reason "game native" is the requirement.
+
+## Implementation started, and the first hook is in the WRONG PLACE
+
+`TLiveActor` now carries `mSbPrevPosition` / `mSbPrevRotation` / `mSbPrevValid` (native-only,
+appended, so the guest-offset comments stay correct), snapshotted immediately before `moveObject()`
+in `TLiveActor::perform`. Verified render-inert: 0 of 1,228,800 pixels differ from baseline.
+
+A snapshot that is inert at render time is indistinguishable from a snapshot that is **useless**,
+so a motion probe was added — how many actors actually move per tick:
+
+    [interp] snapshots=2340000 moved=0 (0.0%) maxStep=0.000 units
+
+**Zero, over 2.34 million snapshots.** Taken at face value that says transform interpolation would
+be a no-op, and building it would have produced no visible change while looking like it worked.
+
+### It is a POPULATION error, not a static scene
+
+`TMario::perform` is a **full override that never chains to `TLiveActor::perform`**, and
+`grep -c '::perform(u32'` finds **231 classes overriding it**. So the hook only sees actors that
+use the base implementation — a minority that excludes Mario and most things that move. `moved=0`
+describes that subset, not the scene, and the scene is demonstrably dynamic (vertex counts
+oscillate over 81 values).
+
+This is the same failure as the earlier Mario-position probe: a measurement whose *population*
+silently excludes the interesting cases. The probe now states its own blind spot in every line it
+prints, so the number cannot be read as more than it is:
+
+    | COVERS ONLY actors using TLiveActor::perform; 231 classes override it (incl. TMario)
+      and are NOT counted here
+
+### Consequence for the design
+
+The snapshot cannot live in `TLiveActor::perform` — 231 overrides bypass it. It has to sit
+somewhere every actor passes through regardless of what it overrides. The right shape is a
+**virtual on the actor base** (`TPlacement` owns `mPosition`, `TActor` owns `mRotation`), default
+no-op, overridden once to snapshot, and invoked from the perform-list dispatch
+(`TPerformList::perform` -> `forEachPerform`) on the movement phase. That reaches every actor
+without touching 231 classes.
+
+The fields and the inertness verification stand; only the call site is wrong.
+
+**Do not read the current `moved=0` as evidence about the scene.** It is evidence about a hook
+that needs moving.

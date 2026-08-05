@@ -156,7 +156,7 @@ logger — that is debt to convert, not a feature.
 | `SB_RASC_VIZ` | 1 | `extern/aurora/lib/gx/shader.cpp:44` |  |
 | `SB_RDOC` | 1 | `extern/aurora/lib/aurora.cpp:79` |  |
 | `SB_RDOC_PATH` | 1 | `extern/aurora/lib/aurora.cpp:100` |  |
-| `SB_ROOTMTX_DBG` | 1 | `decomp/sms/src/Strategic/liveactor.cpp:259` | gated print |
+| `SB_ROOTMTX_DBG` | 1 | `decomp/sms/src/Strategic/liveactor.cpp:270` | gated print |
 | `SB_SCENARIO` | 1 | `decomp/sms/src/System/Application.cpp:682` |  |
 | `SB_SCENECMN_DUMP` | 1 | `decomp/sms/src/System/MarDirectorLoadResource.cpp:88` | gated print |
 | `SB_SCENE_DUMP` | 1 | `decomp/sms/src/System/MarDirectorSetupObjects.cpp:342` | gated print |
