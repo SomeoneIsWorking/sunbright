@@ -268,8 +268,8 @@ logger — that is debt to convert, not a feature.
 | `SBR_INTERP60_KICK` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:287` |  |
 | `SBR_INTERP60_LISTS` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:436` |  |
 | `SBR_INTERP60_MASK` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:160` |  |
-| `SBR_INTERP60_NOENTRY` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:729` |  |
 | `SBR_INTERP60_NORESTORE` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:246` |  |
+| `SBR_INTERP60_PREENTRY` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:746` |  |
 | `SBR_INTERP60_TRACE` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:343` |  |
 | `SBR_INTERP60_TRACE_AT` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:366` |  |
 | `SBR_J2D_CAPTURE` | 1 | `sms-recomp/overrides/diag_2d.cpp:148` |  |

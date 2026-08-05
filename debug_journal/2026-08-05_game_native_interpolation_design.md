@@ -1485,3 +1485,60 @@ tick N already had, which is the same picture presented twice.
 `SBR_INTERP60_NOENTRY=1` runs today and is honest about what it is — a sub-frame that re-draws
 tick N's entries at an interpolated pose that most geometry does not read. It is a harness for the
 re-issue plumbing, not 60fps.
+
+## RE ANSWER: the scene RESETS AND RE-ENTERS ITSELF on the draw cue — no PreEntry re-run wanted
+
+The blocker named in the previous entry ("a draw-buffer reset is needed before re-entry") had a
+better answer than the one it proposed: **the reset is already inside the draw cue.**
+
+`JDrama::TSmJ3DScn::perform` (decomp `src/JSystem/JDrama/JDRSmJ3DScn.cpp:46`):
+
+```c
+if (param_1 & 8) {
+    if (mLightMap) mLightMap->perform(0x20, param_2);
+    MTXCopy(param_2->mViewMtx, j3dSys.getViewMtx());
+    j3dSys.drawInit();
+    for (int i = 0; i < mDrawBufferCount; ++i) mDrawBuffers[i]->frameInit();   // RESET
+    j3dSys.setDrawBuffer(mDrawBuffers[0], 0);
+    j3dSys.setDrawBuffer(mDrawBuffers[1], 1);
+    TViewObjPtrListT::perform(param_1 | 0x204, param_2);                       // ENTER
+    j3dSys.setUnk4C(3); mDrawBuffers[0]->draw();
+    j3dSys.setUnk4C(4); mDrawBuffers[1]->draw();                               // DRAW
+}
+```
+
+Reset, enter and draw are ONE unit under cue `0x8`, and the entry cue it forwards (`0x204`) is
+generated from within. `J3DDrawBuffer::frameInit` is just `mBuffer[i] = nullptr` for `i < mSize`
+plus `mCallBackPacket = nullptr` (J3DDrawBuffer.cpp:90). `TDrawBufObj::perform` splits the same
+three across cue bits for the non-scene buffers — `0x80` frameInit, `0x400` setDrawBuffer, `0x8`
+draw — which is what the `0x80` in the draw block's dispatch trace always was.
+
+So re-issuing the draw lists re-enters every scene object **from whatever pose is live at that
+moment**, which is precisely the interpolated one this file just wrote. And it is self-healing: the
+next tick's render branch runs the same reset-enter-draw from the restored pose, so no undo exists
+anywhere in the design.
+
+### Measured, with the probe that caught the last mistake
+
+    reach, sub-frame re-issue WITHOUT PreEntry, kick=3000 : 1,193,906 of 1,228,800  (97.16%)
+    reach, the earlier draw-phase bracket, kick=3000      :         0 of 1,228,800  ( 0.00%)
+
+97% of the frame moves. The substitution reaches the scene.
+
+### Why the extra PreEntry hung, precisely
+
+PreEntry is the LAST list of a tick and its entries are consumed by the NEXT call's render branch —
+the entry-vs-render alternation `MarDirectorDirect.cpp` documents in its own comments (ENTRY-side
+branch ~line 162, RENDER-side/else ~line 275, "the first loop iteration of every direct() call takes
+the else-branch (catch-up render)"). The seam therefore finds the draw buffers FULL of tick N's
+entries, not empty. A second PreEntry appended a second set into them, and the draw that followed
+did not finish in any time a frame has.
+
+That also confirms the ordering claim the sub-frame's placement rests on, now from decomp source
+rather than from a trace: `direct()` renders what a previous call entered, `TDisplay::endRendering`
+(and with it our seam) runs after the whole of `direct()`, so the frame presented at tick N's seam
+is the pose entered at N-1 and the sub-frame built there falls between them.
+
+`SBR_INTERP60_NOENTRY` is gone; not re-running PreEntry is now the behaviour. `SBR_INTERP60_PREENTRY=1`
+restores the old path for A/B and is expected to wedge — a fault this specific is worth keeping
+reproducible.

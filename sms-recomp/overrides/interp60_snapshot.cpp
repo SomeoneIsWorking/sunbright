@@ -718,15 +718,33 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
     g_inSubframe = true;
     const u32 cue = subframe_cue();
 
-    // SBR_INTERP60_NOENTRY=1: re-issue the draw lists WITHOUT re-running PreEntry.
+    // NO SEPARATE PreEntry -- and that is a POSITIVE design point, not an omission.
     //
-    // This is the discriminator for the hang, not a mode anyone should run. The seam sits AFTER the
-    // game's own PreEntry (measured: PreEntry is the last list of a tick), so the draw buffers are
-    // already full of tick N's entries when the sub-frame starts. A second PreEntry appends a
-    // second set into buffers that are populated-and-consumed rather than rebuilt, and the draw
-    // that follows never finishes. If skipping PreEntry makes the sub-frame complete, that is the
-    // cause; if it still hangs, it is not, and the buffers are innocent.
-    static const bool noEntry = std::getenv("SBR_INTERP60_NOENTRY") != nullptr;
+    // TSmJ3DScn::perform (decomp JDRSmJ3DScn.cpp:46) does the whole cycle inside its DRAW cue:
+    //
+    //     if (param_1 & 8) {
+    //         for (i < mDrawBufferCount) mDrawBuffers[i]->frameInit();   // reset
+    //         j3dSys.setDrawBuffer(mDrawBuffers[0], 0); ...
+    //         TViewObjPtrListT::perform(param_1 | 0x204, param_2);        // enter
+    //         mDrawBuffers[0]->draw(); mDrawBuffers[1]->draw();          // draw
+    //     }
+    //
+    // So re-issuing the draw lists resets the scene's buffers and re-enters every object from the
+    // pose that is live AT THAT MOMENT -- which is exactly the substitution this file wrote. The
+    // scene is self-healing too: the next tick's render branch runs the same reset-enter-draw from
+    // the restored pose, so nothing has to be undone.
+    //
+    // Re-running PreEntry on top of that appended a SECOND entry set into buffers the seam finds
+    // already full (PreEntry is the last list of a tick, and its entries are drawn by the NEXT
+    // call's render branch -- the entry-vs-render alternation MarDirectorDirect.cpp documents at
+    // its ENTRY-side/RENDER-side branches). The following draw then never finished.
+    //
+    // Measured both ways with the reach probe (tools/interp/interp60_gate.sh --kick 3000):
+    // without PreEntry the sub-frame moves 1,193,906 of 1,228,800 pixels (97.16%); the earlier
+    // draw-phase bracket moved 0. SBR_INTERP60_PREENTRY=1 restores the old behaviour for A/B and
+    // is expected to wedge -- it is kept because a fault this specific should stay reproducible.
+    static const bool preEntry_ = std::getenv("SBR_INTERP60_PREENTRY") != nullptr;
+    const bool noEntry = !preEntry_;
 
     // Pass 1: interpolated pose -> enter -> draw -> present.
     apply_all(g_lastSnapTick, alpha);
