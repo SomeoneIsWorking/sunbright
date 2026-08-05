@@ -847,3 +847,39 @@ third different answer this file has given to the same question, and the differe
 rests on a repeatable measurement with a validated comparison window rather than on a single running
 mean. It should still be confirmed by measuring the sub-frame's marginal cost directly — but the
 gate that looked like it might block the whole approach does not.
+
+## The harness's RESOLUTION LIMIT — and why the affordability answer survives it anyway
+
+The fixed window fixed the *population* problem but not the *noise* problem. Block-ordered A/B
+(all OFF, then all ON) produced an impossible result — the instrument appearing to make the game
+**faster**:
+
+    OFF: 18.10, 17.86      ON: 14.71, 14.91
+
+Each pair agrees internally to ~1.4%, but the blocks differ by 20%, and OFF ran first. **Consecutive
+runs cluster**, so block ordering confounds the treatment with drift over minutes (host CPU
+frequency / contention — the game state at presents 600..1200 is identical every run, because the
+pad script keys on frame count).
+
+Interleaving OFF/ON/OFF/ON/OFF/ON:
+
+    pair1  OFF 20.78  ON 14.77     pair2  OFF 14.94  ON 15.73     pair3  OFF 16.07  ON 15.92
+
+The sign of the difference **flips between pairs**. So the tick-split instrument's overhead is below
+the noise floor — and more usefully: **this harness cannot resolve differences smaller than about
+20%.** It must not be used to A/B a micro-optimisation; it would report whichever arm happened to
+run in a quiet minute.
+
+### Why the conclusion still holds
+
+The affordability question does not need 20% resolution. Baseline is ~15-16 ms per present against a
+**33.3 ms** tick budget. Even if the second `PreEntry`+draw cost as much as the *entire* current
+tick — a deliberate over-estimate, since a sub-frame does not re-run movement, physics, AI or
+collision — the tick lands near 30 ms, still inside budget. The margin is more than twice the noise,
+so the answer is robust to exactly the uncertainty this section documents.
+
+**Game-native interpolation is affordable.** Further precision on the sub-frame's marginal cost is
+not required to justify building it, and pursuing it here would be measuring for its own sake — the
+instrument is at its limit and the decision it was built to inform is already determined.
+
+Stop measuring; implement.
