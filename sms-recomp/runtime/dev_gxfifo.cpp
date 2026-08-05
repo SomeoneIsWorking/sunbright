@@ -1355,10 +1355,32 @@ void gxfifo_device_init() {
 // This is the SAME parse the 4096-byte path performs, just without the size threshold, so it has
 // no ordering consequence for aurora: those bytes were going to be parsed at exactly this point in
 // the stream regardless.
+// SBR_FIFO_STALL=1: catch the drain going quadratic. `used == 0` means the buffer holds an
+// incomplete command, and since this runs once per J3DShape::draw, every following shape then
+// re-parses the same bytes from the start. That is invisible from outside — the game does not
+// crash, it just stops making progress — so the pathological case has to announce itself rather
+// than be inferred from a stack sample. Reports the buffer size, what the parser is waiting for,
+// and how long the no-progress run is; a healthy drain never prints.
 void gxfifo_drain_pending() {
     if (!g_buf.empty() && g_buf.size() >= g_need) {
+        const size_t before = g_buf.size();
         const size_t used = parse(g_buf.data(), g_buf.size());
         g_buf.erase(g_buf.begin(), g_buf.begin() + used);
+        static const bool watch = std::getenv("SBR_FIFO_STALL") != nullptr;
+        if (watch) {
+            static long stuck = 0, reported = 0;
+            if (used == 0) {
+                if (++stuck % 200 == 0 && reported < 40) {
+                    ++reported;
+                    lucent::info("fifostall",
+                                 "drain made NO progress {} times in a row: buf={} KB need={} "
+                                 "out={} KB — every further drain re-parses this buffer",
+                                 stuck, before >> 10, g_need, g_out.size() >> 10);
+                }
+            } else {
+                stuck = 0;
+            }
+        }
     }
 }
 

@@ -216,6 +216,7 @@ extern "C" void aurora_replay_midpoint() {
 }
 
 extern "C" void sbr_interp60_restore();   // overrides/interp60_snapshot.cpp
+extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void));
 
 namespace {
 
@@ -541,6 +542,31 @@ void video_wait_for_retrace(CPUState& cpu) {
     // 30fps scene requests two fields per tick, so the very first tick paces correctly rather than
     // at double rate.
     present_and_reopen(s_frameActive);
+
+    // GAME-NATIVE 60fps: the interpolated sub-frame.
+    //
+    // Placed AFTER the tick's own present, which is where it belongs temporally rather than where
+    // it is merely convenient. The draw lists run at the START of a direct() call and PreEntry runs
+    // at the END (measured, SBR_INTERP60_LISTS), so the frame just presented was drawn from the
+    // pose entered at tick N-1. The sub-frame built here is lerp(N-1, N, alpha), so what reaches
+    // the display is N-1, mid, N, mid, N+1 — in order.
+    //
+    // The callback closes the sub-frame's GX stream exactly the way the tick's own is closed. It
+    // must not be a partial imitation: a sub-frame assembled by a different path would diverge from
+    // the real frame for reasons that have nothing to do with interpolation.
+    if (std::getenv("SBR_INTERP60")) {
+        static bool* s_active = &s_frameActive;
+        s_active = &s_frameActive;
+        sbr_interp60_subframe(cpu, [] {
+            gxfifo_build();
+            gxfifo_send_last();
+            // The half-tick image has to be SHOWN at the half tick; both presents issued back to
+            // back are 30fps with every frame sent twice, however high the present count reads.
+            aurora_replay_midpoint();
+            present_and_reopen(*s_active);
+        });
+    }
+
     // Sampled AFTER the present, and stamped with aurora's OWN tick counter rather than one derived
     // from the present count. The two instruments must be joined on a number they genuinely share:
     // presents run at two per tick under replay, so a derived index would drift silently and any

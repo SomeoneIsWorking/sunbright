@@ -1412,3 +1412,76 @@ Resurrect the list re-issue against the current runtime, with `PreEntry` in the 
 snapshot substitution wrapping it. The bracket then becomes the re-issue itself: substitute, re-issue
 `PreEntry` + draw lists, present, restore — and in the two-present shape the final pass writes the
 true state, so there is nothing to undo.
+
+## THE SECOND PRESENT EXISTS AND RUNS — and the one thing blocking it is named
+
+`sbr_interp60_subframe` (overrides/interp60_snapshot.cpp) is called from the frame seam right after
+the tick's own present and re-issues the tick's draw lists at an interpolated pose. It renders:
+**3,296 sub-frames** over a run, with the game still live.
+
+### The tick, measured rather than assumed
+
+`SBR_INTERP60_LISTS=1` prints the ordered outermost `TPerformList::perform` calls of a tick. It is
+the same 15 calls every tick:
+
+    #0 DrawBufGroup(1)  #1 Graffito(7)  #2 Pollution(14)  #3 GX(108)  #4 GXPost(534)
+    #5..#12 Movement / unk30, four cue-masked pairs (~477 / 16 dispatches each)
+    #13 CalcAnim(470)   #14 PreEntry(487)   PRESENT
+
+So the draw lists really do run FIRST and PreEntry LAST — the entry-vs-render alternation, now in
+call-by-call form. The frame a seam presents was drawn from the pose entered one tick earlier, which
+is what makes the seam the temporally correct place for the in-between: at tick N's seam the
+presented image is N-1, the sub-frame is lerp(N-1, N, alpha), and the display sequence comes out
+N-1, mid, N, mid, N+1 — monotonic, not a sawtooth.
+
+### gpMarDirector found by scan, not by symbol
+
+The re-issue set has to be named by FIELD (PreEntry @ +0x34, DrawBufGroup @ +0x40, Graffito @ +0x38,
+Pollution @ +0x3C, GX @ +0x1C, Silhouette @ +0x20, GXPost @ +0x24), and gpMarDirector's US address is
+not in `reference/sms_gmse01_funcs.txt` (the JP symbol 0x8040A2A8 does not carry over). Rather than
+trust a constant, the director is found as the unique object holding the observed list pointers at
+those offsets:
+
+    TMarDirector scan: 6,291,438 words examined, 1 candidate matched all four anchor slots
+    gpMarDirector = 0x808f2a40
+
+with every field then dumped and cross-checked against what was performed. One candidate out of six
+million words is a stronger identification than a symbol constant, and it re-derives itself on any
+build.
+
+The re-issue set is RECORDED from the tick rather than hardcoded: the run of outermost list performs
+before the director's own Movement list. Silhouette is only performed when its gate is open, so a
+fixed set would either draw what the tick did not or miss what it did.
+
+### The blocker: re-running PreEntry into full draw buffers never returns
+
+With PreEntry in the re-issue the sub-frame wedges inside GXPost. It is not a deadlock and not a
+stall — the stream instrument shows it emitting and advancing (GX list 1,185 KB, then GXPost past
+1,664 KB and climbing, grinding in `J3DShape::draw`), and the fifo-stall probe (`SBR_FIFO_STALL`)
+never fires, so the parser is making progress the whole time.
+
+`SBR_INTERP60_NOENTRY=1` — re-issue the draw lists WITHOUT the extra PreEntry — is the discriminator,
+and it is decisive: **3,296 sub-frames rendered, no hang.**
+
+The cause follows from the measured order. PreEntry is the LAST list of a tick, so by the time the
+seam runs, the draw buffers are already full of tick N's entries. Draw buffers are populated by
+entry and *consumed* as they are drawn (measured earlier in this file via `SB_DOUBLE_DRAW`); they
+are not rebuilt. A second PreEntry therefore appends a second set into buffers that were never
+emptied, and the draw that follows walks a structure that no longer terminates in the time a frame
+has.
+
+### What this needs next, precisely
+
+A draw-buffer RESET between entries. The sequence becomes:
+
+    reset buffers -> PreEntry(mid pose) -> draw lists -> present
+    reset buffers -> PreEntry(true pose)              [leaves tick N entered for the next tick]
+
+That is an RE task with a clear target: how the game itself empties the draw buffers each frame
+(`J3DDrawBuffer` frame-init, and whichever object in `mPerformListDrawBufGroup` — one dispatch, #0 —
+drives it). It is NOT a case for a workaround: without the reset the sub-frame draws the entries
+tick N already had, which is the same picture presented twice.
+
+`SBR_INTERP60_NOENTRY=1` runs today and is honest about what it is — a sub-frame that re-draws
+tick N's entries at an interpolated pose that most geometry does not read. It is a harness for the
+re-issue plumbing, not 60fps.

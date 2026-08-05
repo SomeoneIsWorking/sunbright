@@ -41,9 +41,14 @@
 
 extern "C" void func_802fcc94(CPUState&);      // JDrama::TViewObj::testPerform(u32, TGraphics*)
 extern "C" unsigned VIGetRetraceCount(void);
+// TPerformList::perform(u32 cue, TGraphics*). The interpolation sub-frame IS a re-issue of a
+// subset of these calls, so this file owns the seam; the tick-split diagnostic is invoked from it.
+extern "C" void sbr_tick_split_call(CPUState&);
 // Diagnostic in diag_vptr.cpp. One guest address gets exactly ONE override, so that file no longer
 // registers; it is called from here instead (the pattern afterimage.cpp uses).
 extern "C" void sbr_vptr_note(unsigned obj);
+// Where the GX parser is in this frame's stream (runtime/native_render.h). Used to price the re-issue.
+uint32_t sbr_gxfifo_stream_pos();
 
 namespace {
 
@@ -123,6 +128,41 @@ Entry* slot_for(u32 obj) {
     return nullptr;
 }
 
+u32  g_seenLists[32];
+int  g_seenN = 0;
+u32  g_mardir = 0;
+
+void note_seen(u32 list) {
+    for (int i = 0; i < g_seenN; ++i) if (g_seenLists[i] == list) return;
+    if (g_seenN < 32) g_seenLists[g_seenN++] = list;
+}
+
+bool seen(u32 v) {
+    for (int i = 0; i < g_seenN; ++i) if (g_seenLists[i] == v) return true;
+    return false;
+}
+
+constexpr u32 SUBFRAME_CUE_DEFAULT = 0xFFFFFFFCu;
+constexpr u32 OFF_PREENTRY = 0x34;
+
+bool  g_inSubframe = false;      // suppress snapshot + instrumentation during the re-issue
+u8    g_gfxSnap[0x100];
+bool  g_gfxValid = false;
+u32   g_drawLists[8];            // the lists the game performed BEFORE its movement phase
+u32   g_drawCues[8];
+int   g_drawN = 0;
+bool  g_sawMovement = false;     // the draw block ends at the first movement-phase list
+long  g_subframes = 0, g_subframeSkips = 0;
+u32   g_gameTick = 0;            // one per guest tick; presents no longer count 1:1
+
+u32 subframe_cue() {
+    static const u32 v = [] {
+        const char* e = std::getenv("SBR_INTERP60_MASK");
+        return e ? (u32)std::strtoul(e, nullptr, 0) : SUBFRAME_CUE_DEFAULT;
+    }();
+    return v;
+}
+
 // ── motion probe ─────────────────────────────────────────────────────────────
 // Designed negative-first: "interpolation changed nothing" cannot distinguish a correct
 // implementation from a snapshot that captures nothing, so this always reports its DENOMINATOR and
@@ -172,6 +212,14 @@ void report() {
         lucent::info("interp60", "  WRITE alpha={:.2f}: applied={} restored={} (unequal counts mean "
                                  "a pose was left interpolated into the physics step)",
                      (double)alpha_setting(), g_applied, g_restored);
+    lucent::info("interp60",
+                 "  SUB-FRAMES: rendered={} refused={} (refused = no director / no recorded draw "
+                 "block / no TGraphics snapshot / no snapshot tick -- a refusal renders the tick "
+                 "ONCE and is not an error, but a run that is all refusals is 30fps)",
+                 g_subframes, g_subframeSkips);
+    if (g_subframes && g_drawN == 0 && g_mardir)
+        lucent::info("interp60", "  re-issue set: {} lists off gpMarDirector 0x{:08x}", g_drawN,
+                     g_mardir);
     if (g_writeStuck || g_writeLost)
         lucent::info("interp60", "  WRITE READ-BACK: stuck={} lost={} (lost>0 means the store never "
                                  "reached the memory the guest reads)", g_writeStuck, g_writeLost);
@@ -368,6 +416,138 @@ void follow(u32 mask, const char* where) {
                  (double)guest_f32(o + OFF_POSITION + 4));
 }
 
+// ── the perform-list seam ────────────────────────────────────────────────────
+// SBR_INTERP60_LISTS=1: the ORDERED sequence of outermost TPerformList::perform calls in a tick,
+// with each list's object address, cue mask, and how many testPerform dispatches ran inside it.
+//
+// WHY THIS AND NOT A SYMBOL. The sub-frame body is `PreEntry` + the draw lists, which live at
+// gpMarDirector +0x34 and +{0x40,0x38,0x3C,0x1C,0x20,0x24} (MarDirector.hpp). gpMarDirector's US
+// address is not in reference/sms_gmse01_funcs.txt and the JP symbol (0x8040A2A8) does not carry
+// over. But the calls identify themselves: MarDirectorDirect.cpp issues movement and calcAnim with
+// computed cues and then PreEntry and every draw list with the literal 0xffffffff, in a fixed
+// order, once per tick. Reading that sequence off a running frame gives both the boundary and the
+// list POINTERS, without depending on a symbol that may not exist for this region.
+//
+// The dispatch count matters as much as the address: it separates the heavy scene lists from the
+// near-empty ones, so a re-issue set can be justified by what it actually draws rather than by
+// which offsets a header happens to name. And it is the denominator for "the re-issue emitted
+// nothing" — a count of zero must read as zero, not as absent.
+bool lists_on() {
+    static const bool v = std::getenv("SBR_INTERP60_LISTS") != nullptr;
+    return v;
+}
+int  g_listDepth = 0;
+long g_listDispatches = 0;      // testPerform calls since the current outermost list opened
+long g_listTicks = 0;
+long g_listLines = 0;
+int  g_listSeq = 0;
+
+// ── resolving TMarDirector from the observed list pointers ───────────────────
+// The re-issue set is named by FIELD (mPerformListPreEntry @ +0x34, DrawBufGroup @ +0x40,
+// Graffito @ +0x38, Pollution @ +0x3C, GX @ +0x1C, Silhouette @ +0x20, GXPost @ +0x24 --
+// MarDirector.hpp:177-190), so the ordered call sequence alone is not enough: it says WHICH
+// objects are performed, not which of them is PreEntry. Mapping needs gpMarDirector, whose US
+// address is absent from reference/sms_gmse01_funcs.txt (the JP symbol 0x8040A2A8 does not carry
+// over, and a wrong pointer here would silently mis-label every list).
+//
+// So find the object instead of the symbol: TMarDirector is the unique structure holding ALL of
+// the observed list pointers at exactly those offsets. Scan for it. This is self-validating in a
+// way a symbol constant is not -- a candidate either satisfies every offset simultaneously or it
+// is not the director -- and it reports its denominator and its candidate COUNT, because "found
+// one" and "found eleven, took the first" must not print the same way.
+constexpr u32 kListSlots[] = {0x1C, 0x20, 0x24, 0x28, 0x2C, 0x30, 0x34, 0x38, 0x3C, 0x40, 0x44, 0x48};
+const char* const kListNames[] = {"GX", "Silhouette", "GXPost", "Movement", "CalcAnim", "unk30",
+                                  "PreEntry", "Graffito", "Pollution", "DrawBufGroup",
+                                  "ShinePfLstMov", "ShinePfLstAnm"};
+
+
+// Anchored on the four slots a director must hold and that a stray coincidence will not: two draw
+// lists, PreEntry, and movement. Requiring four simultaneous hits from a set of at most a dozen
+// addresses makes a false match vanishingly unlikely, and the count below proves it empirically
+// rather than by that argument.
+void resolve_mardir() {
+    if (g_mardir || g_seenN < 6) return;
+    long scanned = 0, cands = 0;
+    u32 first = 0;
+    for (u32 a = 0x80000000u; a < 0x81800000u; a += 4) {
+        if (!sb_ram_fast(a) || !sb_ram_fast(a + 0x48)) continue;
+        ++scanned;
+        if (!seen(sb_r32(a + 0x34))) continue;      // PreEntry
+        if (!seen(sb_r32(a + 0x40))) continue;      // DrawBufGroup
+        if (!seen(sb_r32(a + 0x1C))) continue;      // GX
+        if (!seen(sb_r32(a + 0x28))) continue;      // Movement
+        ++cands;
+        if (!first) first = a;
+    }
+    lucent::info("i60lists", "TMarDirector scan: {} words examined, {} candidate(s) matched all "
+                             "four anchor slots (PreEntry/DrawBufGroup/GX/Movement)", scanned, cands);
+    if (cands == 0) {
+        lucent::info("i60lists", "  NO DIRECTOR FOUND. The re-issue set cannot be named by field, "
+                                 "and nothing downstream may assume one was resolved.");
+        return;
+    }
+    if (cands > 1)
+        lucent::info("i60lists", "  MORE THAN ONE candidate -- the anchors do not identify the "
+                                 "director uniquely and the first is NOT safe to use.");
+    g_mardir = first;
+    lucent::info("i60lists", "  gpMarDirector = 0x{:08x}", g_mardir);
+    for (size_t i = 0; i < sizeof(kListSlots) / sizeof(kListSlots[0]); ++i) {
+        const u32 p = sb_r32(g_mardir + kListSlots[i]);
+        lucent::info("i60lists", "    +0x{:02x} {:<14} = 0x{:08x}{}", kListSlots[i], kListNames[i], p,
+                     seen(p) ? "   <- performed this tick" : "");
+    }
+}
+
+// Record the tick's DRAW BLOCK: the run of outermost list performs before the movement phase.
+//
+// It is recorded rather than hardcoded because the set is scene-dependent -- Silhouette is only
+// performed when the shine/silhouette gate is open (MarDirectorDirect.cpp), and a re-issue of a
+// fixed list set would either draw something the tick did not or miss something it did. The block
+// is delimited by the director's own Movement list, which is the first thing after the draws.
+void record_draw_list(u32 list, u32 mask, u32 gfx) {
+    if (!g_mardir) return;
+    if (list == sb_r32(g_mardir + 0x28)) { g_sawMovement = true; return; }   // draws are over
+    if (g_sawMovement) return;
+    if (g_drawN >= (int)(sizeof(g_drawLists) / sizeof(g_drawLists[0]))) return;
+    g_drawLists[g_drawN] = list;
+    g_drawCues[g_drawN]  = mask;
+    ++g_drawN;
+    // The TGraphics the game passes is a stack temporary of direct(), long gone by the time the
+    // seam runs. Snapshot its bytes so the re-issue can hand the lists an identical one; a
+    // reconstructed or zeroed TGraphics would change render state in ways no pixel diff could
+    // attribute back to here.
+    if (!g_gfxValid && sb_ram_fast(gfx) && sb_ram_fast(gfx + 0xFF)) {
+        for (u32 i = 0; i < 0x100; ++i) g_gfxSnap[i] = sb_r8(gfx + i);
+        g_gfxValid = true;
+    }
+}
+
+void list_perform(CPUState& cpu) {
+    const u32 list = (u32)cpu.gpr[3];
+    const u32 mask = (u32)cpu.gpr[4];
+    const u32 gfx  = (u32)cpu.gpr[5];
+    // Nested performs belong to their outermost ancestor, and nothing inside a sub-frame re-issue
+    // is part of the tick's own structure.
+    if (g_listDepth != 0 || g_inSubframe || !enabled()) {
+        ++g_listDepth;
+        sbr_tick_split_call(cpu);
+        --g_listDepth;
+        return;
+    }
+    note_seen(list);
+    g_listDispatches = 0;
+    ++g_listDepth;
+    sbr_tick_split_call(cpu);
+    --g_listDepth;
+    record_draw_list(list, mask, gfx);
+
+    if (lists_on() && (long)VIGetRetraceCount() >= trace_start_present() && g_listTicks <= 2) {
+        ++g_listLines;
+        lucent::info("i60lists", "  #{:<2} list=0x{:08x} cue=0x{:<10x} gfx=0x{:08x} dispatches={}",
+                     g_listSeq++, list, mask, gfx, g_listDispatches);
+    }
+}
+
 void snapshot(CPUState& cpu, u32 mask) {
     const u32 obj = (u32)cpu.gpr[3];
     if (!sb_ram_fast(obj)) return;
@@ -380,7 +560,11 @@ void snapshot(CPUState& cpu, u32 mask) {
     Entry* e = slot_for(obj);
     if (!e) return;
 
-    const u32 tick = VIGetRetraceCount();
+    // The GUEST TICK, not the present count. A sub-frame adds a second present, so VIGetRetraceCount
+    // stops advancing 1:1 with ticks the moment interpolation is on -- and the (prev) entries are
+    // keyed on it, so using it would age every entry out after a single tick and silently disable
+    // the snapshot exactly when it starts being needed.
+    const u32 tick = g_gameTick;
     const float px = guest_f32(obj + OFF_POSITION + 0);
     const float py = guest_f32(obj + OFF_POSITION + 4);
     const float pz = guest_f32(obj + OFF_POSITION + 8);
@@ -409,53 +593,53 @@ void snapshot(CPUState& cpu, u32 mask) {
     e->rot[2] = guest_f32(obj + OFF_ROTATION + 8);
 }
 
+// ── the sub-frame: re-issue PreEntry + the draw lists at an interpolated pose ─
+//
+// THE TICK, AS MEASURED (SBR_INTERP60_LISTS, gpMarDirector resolved by scan):
+//
+//   #0 DrawBufGroup  #1 Graffito  #2 Pollution  #3 GX  #4 GXPost      <- the DRAW lists
+//   #5..#12 Movement / unk30 (four cue-masked pairs)
+//   #13 CalcAnim
+//   #14 PreEntry                                                     <- bakes the pose
+//   PRESENT
+//
+// The draw lists run FIRST in a call and PreEntry runs LAST, so the frame the seam is about to
+// present was drawn from the PREVIOUS tick's PreEntry -- the entry-vs-render alternation. That is
+// what makes the insertion point here temporally correct rather than a compromise: at tick N's
+// seam the presented image is the pose entered at N-1, and the sub-frame built here is
+// lerp(N-1, N, 0.5), so the display sequence is N-1, mid, N, mid, N+1 -- monotonic.
+//
+// THREE PASSES, AND WHY THE THIRD IS NOT AN UNDO. PreEntry populates the draw buffers that the
+// NEXT call consumes, so a sub-frame that leaves an interpolated PreEntry standing would make the
+// next tick draw the midpoint instead of tick N. The pass order is therefore:
+//
+//   1. substitute lerp(prev, cur, alpha), re-issue PreEntry + the draw lists  -> present
+//   2. write the true transforms back
+//   3. re-issue PreEntry ALONE, so the entered state is tick N's by construction
+//
+// Pass 3 writes the truth; it is not a correction applied to a wrong value, which is what the
+// earlier mutate-and-undo bracket was and why it kept failing.
+//
+// WHAT IS RE-ISSUED, AND WITH WHAT CUE. Only lists the game itself performed this tick, in the
+// order it performed them -- never a hardcoded set, so a scene that skips Silhouette re-issues
+// without it too. The cue clears bits 0x1 (movement) and 0x2 (calc-anim): a sub-frame must DRAW,
+// not advance state, and re-running those double-steps the water scroll counter and other
+// per-frame animation, which the recomp-era implementation RE'd as the cause of a 30 Hz water
+// flicker (SBR_INTERP60_MASK overrides it for A/B).
+
 void interp_test_perform(CPUState& cpu) {
+    ++g_listDispatches;
+    // Inside a sub-frame, report progress by DISPATCH and by stream position. A list that never
+    // returns is otherwise a single silent stack sample: these two numbers say whether it is
+    // advancing through its objects, stuck on one, or emitting without bound — three different
+    // faults that look identical from outside.
+    if (g_inSubframe && g_subframes < 2 && (g_listDispatches % 64) == 0)
+        lucent::info("i60sub", "     ... dispatch {} of this list, stream={} KB",
+                     g_listDispatches, sbr_gxfifo_stream_pos() >> 10);
     if (std::getenv("SBR_VPTR_DUMP")) sbr_vptr_note((unsigned)cpu.gpr[3]);
 
-    if (enabled()) {
+    if (enabled() && !g_inSubframe) {
         const u32 mask = (u32)cpu.gpr[4];
-        const u32 tick = VIGetRetraceCount();
-        const float alpha = alpha_setting();
-
-        if (alpha >= 0.0f) {
-            // BRACKET THE DRAW BLOCK, nothing wider.
-            //
-            // The previous scheme substituted at the calc phase and undid it a phase (or a frame)
-            // later. That is mutate-and-undo across phase boundaries, and it needs exact knowledge
-            // of every consumer of the pose in between -- three placements were tried and all three
-            // were wrong, one of them freezing every actor by overwriting movement the game had
-            // already done.
-            //
-            // The measured dispatch order (SBR_INTERP60_TRACE) shows the draw dispatches form a
-            // CONTIGUOUS BLOCK at the start of a direct() call, before movement:
-            //     draw (0x8) ... -> movement (0x1) -> calc (0x2) -> view (0x4) -> entry -> PRESENT
-            // So the substitution can open at the first draw dispatch and close at the first
-            // non-draw dispatch after it. It never outlives the block that uses it, and no phase
-            // that reads the pose for anything but drawing ever sees a substituted value.
-            //
-            // This is still a stand-in for the real design, which renders the tick TWICE (alpha=0.5
-            // then alpha=1.0) and needs no undo at all, because the last pass writes the truth.
-            //
-            // SBR_INTERP60_BRACKET=<mask> moves which phase bit opens the bracket. The draw block
-            // is the default and is where a pose SHOULD be consumed, but "the control fires" only
-            // proves the write reaches something rendered -- it does not prove the bracket covers
-            // the phase that actually bakes poses into geometry. That is an empirical question
-            // (--kick in tools/interp/interp60_gate.sh answers it), so the bracket is a knob rather
-            // than a constant until the measurement says which phase it belongs on.
-            static const u32 bracketBit = [] {
-                const char* e2 = std::getenv("SBR_INTERP60_BRACKET");
-                return e2 ? (u32)std::strtoul(e2, nullptr, 0) : CUE_DRAW;
-            }();
-            static bool s_inDraw = false;
-            const bool isDraw = (mask & bracketBit) != 0;
-            if (isDraw && !s_inDraw) {
-                s_inDraw = true;
-                apply_all(g_lastSnapTick, alpha);
-            } else if (!isDraw && s_inDraw) {
-                s_inDraw = false;
-                restore_all();
-            }
-        }
 
         trace_dispatch(mask);
         follow(mask, "dispatch");
@@ -472,19 +656,118 @@ void interp_test_perform(CPUState& cpu) {
     func_802fcc94(cpu);
 }
 
+// Run one perform list through the real body with a synthesized CPU state. The list bodies are
+// ordinary guest code, so they need a plausible stack: the TGraphics is rebuilt from the tick's
+// snapshot below the seam's own stack pointer, and every register the call clobbers is restored by
+// the caller.
+void perform_list(CPUState& cpu, u32 list, u32 cue, u32 gfx) {
+    if (!list || !sb_ram_fast(list)) return;
+    // The first sub-frames are traced list by list, entry AND exit. A re-issue that hangs inside
+    // guest code otherwise produces silence, and silence is the one output that cannot be told from
+    // "never ran" -- the exit line is what distinguishes them.
+    const bool loud = g_subframes < 2;
+    if (loud) lucent::info("i60sub", "  -> list 0x{:08x} cue=0x{:x} stream={} KB", list, cue,
+                           sbr_gxfifo_stream_pos() >> 10);
+    cpu.gpr[3] = list;
+    cpu.gpr[4] = cue;
+    cpu.gpr[5] = gfx;
+    sbr_tick_split_call(cpu);
+    // The GX BYTES this list emitted. "The re-issue hangs" and "the re-issue emits a hundred times
+    // the geometry it should" produce the same silence from outside; only the stream size separates
+    // them, and a whole tick is about 2.25 MB, so anything far past that is the answer.
+    if (loud) lucent::info("i60sub", "  <- list 0x{:08x} returned, stream={} KB", list,
+                           sbr_gxfifo_stream_pos() >> 10);
+}
+
 } // namespace
 
-// Called from native_frame.cpp's present path, after aurora has consumed the frame's GX stream and
-// before the next tick's movement runs. See the call site for why it cannot be earlier.
+// The sub-frame. Called from native_frame.cpp immediately after the tick's own present, with a
+// callback that closes the GX stream and presents it.
+//
+// It REFUSES rather than degrades: no director, no recorded draw block, no TGraphics snapshot, or
+// no snapshot tick means no sub-frame, counted and reported. A sub-frame that quietly renders
+// nothing would show up as "60fps that looks like 30" with no way to tell it from a bad alpha.
+extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
+    if (!enabled()) return;
+    // RE-ENTRANCY. The re-issued lists are ordinary guest code and may reach the frame seam again
+    // (anything in them that waits on a retrace does). Without this guard each nesting level starts
+    // another sub-frame and the frame never completes -- which presents as a hang, not as an error.
+    if (g_inSubframe) return;
+    ++g_gameTick;
+    g_sawMovement = false;          // next tick records its own draw block
+    if (!g_mardir) resolve_mardir();
+
+    const float alpha = alpha_setting();
+    if (alpha < 0.0f) { g_drawN = 0; return; }
+    if (!g_mardir || g_drawN == 0 || !g_gfxValid || g_lastSnapTick == 0xFFFFFFFFu) {
+        ++g_subframeSkips;
+        g_drawN = 0;
+        return;
+    }
+
+    const u32 preEntry = sb_r32(g_mardir + OFF_PREENTRY);
+
+    // Carve the TGraphics and a call frame below the seam's stack. The guest stack grows down and
+    // the seam is far from the deepest frame the game uses, so this region is dead space; the old
+    // recomp-era implementation used the same construction.
+    const u32 savedSp = (u32)cpu.gpr[1];
+    const u32 gfx = (savedSp - 0x110u) & ~0xFu;
+    for (u32 i = 0; i < 0x100; ++i) sb_w8(gfx + i, g_gfxSnap[i]);
+    cpu.gpr[1] = (gfx - 0x20u) & ~0xFu;
+
+    g_inSubframe = true;
+    const u32 cue = subframe_cue();
+
+    // SBR_INTERP60_NOENTRY=1: re-issue the draw lists WITHOUT re-running PreEntry.
+    //
+    // This is the discriminator for the hang, not a mode anyone should run. The seam sits AFTER the
+    // game's own PreEntry (measured: PreEntry is the last list of a tick), so the draw buffers are
+    // already full of tick N's entries when the sub-frame starts. A second PreEntry appends a
+    // second set into buffers that are populated-and-consumed rather than rebuilt, and the draw
+    // that follows never finishes. If skipping PreEntry makes the sub-frame complete, that is the
+    // cause; if it still hangs, it is not, and the buffers are innocent.
+    static const bool noEntry = std::getenv("SBR_INTERP60_NOENTRY") != nullptr;
+
+    // Pass 1: interpolated pose -> enter -> draw -> present.
+    apply_all(g_lastSnapTick, alpha);
+    if (!noEntry) perform_list(cpu, preEntry, cue, gfx);
+    for (int i = 0; i < g_drawN; ++i) perform_list(cpu, g_drawLists[i], g_drawCues[i] & cue, gfx);
+    present();
+
+    // Pass 2: the true pose, entered again so the NEXT tick's draw lists consume tick N and not the
+    // midpoint. This is the pass that makes the substitution self-cancelling by construction.
+    restore_all();
+    if (!noEntry) perform_list(cpu, preEntry, cue, gfx);
+
+    g_inSubframe = false;
+    cpu.gpr[1] = savedSp;
+    ++g_subframes;
+    g_drawN = 0;
+}
+
+// Called from native_frame.cpp's present path, after aurora has consumed the frame's GX stream.
 extern "C" void sbr_interp60_restore() {
     if (!enabled()) return;
-    // Trace marker only. The restore itself is NOT done here — see the movement-dispatch comment.
     if (trace_on() && (long)VIGetRetraceCount() >= trace_start_present() && g_tracePresents <= 3) {
         trace_flush_run();
         ++g_tracePresents;
         lucent::info("i60trace", "PRESENT  (end of tick {})", g_tracePresents);
     }
+    if (lists_on() && (long)VIGetRetraceCount() >= trace_start_present() && g_listTicks <= 2) {
+        ++g_listTicks;
+        lucent::info("i60lists", "PRESENT  (end of tick {}; {} outermost perform calls so far)",
+                     g_listTicks, g_listLines);
+        if (g_listLines == 0)
+            lucent::info("i60lists", "  NOTE: zero outermost calls were seen this tick -- the "
+                                     "sub-frame body cannot be built from a sequence that is empty");
+        g_listSeq = 0;
+        if (g_listTicks == 2) resolve_mardir();   // after a full tick has populated the seen-set
+    }
 }
+
+SB_OVERRIDE(0x802a4e28, list_perform, "TPerformList::perform",
+            "60fps interpolation (SBR_INTERP60_LISTS): identify the tick's ordered perform-list "
+            "calls, which are what a sub-frame re-issues; always runs the real body")
 
 SB_OVERRIDE(0x802fcc94, interp_test_perform, "JDrama::TViewObj::testPerform",
             "60fps interpolation (SBR_INTERP60): snapshot each actor's transform before its "

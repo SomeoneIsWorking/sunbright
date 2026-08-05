@@ -133,6 +133,14 @@ void report() {
     g_windowStart = nowT;
 }
 
+// The override on 0x802a4e28 now belongs to interp60_snapshot.cpp — the interpolation sub-frame is
+// built out of these calls, so the production consumer owns the seam and this diagnostic is invoked
+// from it (the pattern diag_vptr.cpp uses). One guest address gets exactly one override.
+void tick_split(CPUState& cpu);
+} // namespace
+extern "C" void sbr_tick_split_call(CPUState& cpu) { tick_split(cpu); }
+namespace {
+
 void tick_split(CPUState& cpu) {
     if (!enabled()) {
         func_802a4e28(cpu);
@@ -168,7 +176,3 @@ void tick_split(CPUState& cpu) {
 }
 
 } // namespace
-
-SB_OVERRIDE(0x802a4e28, tick_split, "TPerformList::perform",
-            "diagnostic only (SBR_TICK_SPLIT): time each phase dispatch to price a 60fps "
-            "sub-frame; always runs the real body")
