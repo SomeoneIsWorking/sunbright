@@ -2005,3 +2005,40 @@ the same function.
 presents need to move to after the copy, which is a change to the frame seam, and that is not a
 change to make blind at the end of a long session. Default path re-verified as rendering normally
 (both presents mean R ~65.8, not black).
+
+## PRESENT-AFTER-COPY WORKS — and the last link is that the CAMERA's prev == cur
+
+`SBR_PRESENT_AFTER_COPY=1` defers the present to the end of `TDisplay::endRendering`, after
+`IssueGXCopyDisp`. `waitForRetrace` has exactly one call site (JDRDisplay.cpp:38), so this is a
+single-path change, not a guess about other callers. With it, plus `SBR_INTERP60_COPY=1`:
+
+    pac.rgba.0.sub   mean R = 65.8      no black frames — both presents render
+    pac.rgba.1.main  mean R = 65.8
+    sub  -> main :        0
+    main -> sub  :  895,413 (72.9%)     the sub-frame is VISIBLE and distinct at last
+
+Two arc-long defects are fixed together: the sub-frame now copies itself out of the EFB, and the
+main present now happens after the copy rather than one frame stale.
+
+But the sub-frame equals the FOLLOWING main frame, i.e. it renders pose N, not a midpoint. The
+reason is measured and specific:
+
+    CAMERA prev->cur #1: eye moved 0.000, target moved 0.000
+
+**The camera's snapshot captures its pose after its own update, so prev == cur exactly.** Every
+alpha then produces the same view, which is pose N. The lerp is correct and has nothing to work
+with — the same shape of defect as the coverage gaps, one level further in: not "is the object in
+the set" but "is the sampled moment the right one".
+
+### Next, and the measurement that settles it
+
+Where in the tick does the camera's `mPosition` actually change? The snapshot fires on the first
+`CUE_MOVE`-bearing dispatch of a tick, which for the camera is in the draw block; if the camera is
+updated earlier in the window than that, the captured "prev" is already the new pose. The existing
+`SBR_INTERP60_FOLLOW=<addr>` follower prints a chosen object's position at every phase transition
+and will show it directly — the camera's address is printed by the placement-only report
+(`0x81588cd0` in the current build), so no new instrument is needed.
+
+Do NOT fix this by moving the snapshot point on reasoning. Three placements of an apply/restore
+bracket were derived that way earlier in this arc and all three were wrong; the phase order is
+cheap to observe and expensive to guess, and now costs 9 seconds to observe.

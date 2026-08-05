@@ -167,6 +167,17 @@ struct QuitSignals {
 // end_frame, where the retrace count is not in scope.
 unsigned g_tickFields = 2;
 
+// Deferred-present state for SBR_PRESENT_AFTER_COPY. The CPUState is needed by the sub-frame, and
+// the seam has already returned by the time the copy is emitted, so it is carried across.
+bool g_presentPending = false;
+CPUState* g_pendingCpu = nullptr;
+bool s_frameActive = true;   // main() opened the first frame
+
+bool present_after_copy() {
+    static const bool v = std::getenv("SBR_PRESENT_AFTER_COPY") != nullptr;
+    return v;
+}
+
 // Sleep until `fields` more NTSC fields have elapsed. Deadline-accumulating rather than
 // sleep-per-call, so a frame that overruns is absorbed by the next instead of compounding drift.
 void pace_fields(unsigned fields) {
@@ -361,6 +372,8 @@ static void texwatch_frame() {
     }
 }
 
+void present_tail(CPUState& cpu);
+
 void video_wait_for_retrace(CPUState& cpu) {
     texwatch_frame();
     report_app_state();
@@ -551,7 +564,8 @@ void video_wait_for_retrace(CPUState& cpu) {
     // Getting this wrong made the per-frame staging buffer accumulate across frames instead
     // of resetting: ~291 KB of stream per frame reached aurora's 48 MB limit after roughly
     // 170 frames and aborted with "mapped ByteBuffer overflow".
-    static bool s_frameActive = true;   // main() opened the first frame
+    // (s_frameActive is at namespace scope: the seam is split across two functions when
+    //  SBR_PRESENT_AFTER_COPY defers the present past the game's copy.)
 
     // The camera this tick's draws were built with, for interpolation. Last thing in the stream, so
     // it is the settled value rather than the previous tick's.
@@ -569,6 +583,29 @@ void video_wait_for_retrace(CPUState& cpu) {
     // a slightly mistimed midpoint on the frame where the rate changes. Seeded to 2 because a
     // 30fps scene requests two fields per tick, so the very first tick paces correctly rather than
     // at double rate.
+    // SBR_PRESENT_AFTER_COPY=1: defer the present until after the game's EFB->XFB copy.
+    //
+    // TDisplay::endRendering calls waitForRetrace FIRST and IssueGXCopyDisp SECOND, and this
+    // function IS waitForRetrace — so presenting here presents a frame whose copy has not been
+    // issued yet. That has been the behaviour all along and it looked correct only because the
+    // display kept showing the previously copied XFB, one frame stale. It became visible the moment
+    // a sub-frame issued a copy of its own: the main presents came back black.
+    //
+    // waitForRetrace has exactly ONE call site (JDRDisplay.cpp:38), so deferring to the end of
+    // endRendering is a single-path change rather than a guess about who else might call it.
+    if (present_after_copy()) {
+        g_presentPending = true;
+        g_pendingCpu = &cpu;
+        return;                 // the rest of the seam runs from sbr_frame_present_now()
+    }
+
+    present_tail(cpu);
+}
+
+// The part of the seam that must happen AFTER the game's EFB->XFB copy when SBR_PRESENT_AFTER_COPY
+// is set: the present itself, the interpolated sub-frame, and the frame-time bookkeeping that
+// brackets them. Factored out rather than duplicated so the two placements cannot drift apart.
+void present_tail(CPUState& cpu) {
     // Label this present for the dump series. The sub-frame below issues a SECOND present per
     // tick, and a dump series with no record of which file is which has to be identified by
     // inference — which has already produced two wrong readings in this arc. The runtime knows the
@@ -661,6 +698,14 @@ void video_wait_for_retrace(CPUState& cpu) {
 }
 
 } // namespace
+
+// Called from the TDisplay::endRendering override once the game's own EFB->XFB copy has been
+// issued. Only does anything when SBR_PRESENT_AFTER_COPY deferred the present.
+extern "C" void sbr_frame_present_now() {
+    if (!g_presentPending || g_pendingCpu == nullptr) return;
+    g_presentPending = false;
+    present_tail(*g_pendingCpu);
+}
 
 SB_OVERRIDE(0x802fc9a4u, video_wait_for_retrace, "JDrama::TVideo::waitForRetrace",
             "frame boundary: hand the collected GX stream to aurora and present")

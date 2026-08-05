@@ -46,6 +46,7 @@ extern "C" unsigned VIGetRetraceCount(void);
 // subset of these calls, so this file owns the seam; the tick-split diagnostic is invoked from it.
 extern "C" void sbr_tick_split_call(CPUState&);
 extern "C" void func_802f80d0(CPUState&);      // JDrama::TDisplay::endRendering
+extern "C" void sbr_frame_present_now();       // overrides/native_frame.cpp
 // Diagnostic in diag_vptr.cpp. One guest address gets exactly ONE override, so that file no longer
 // registers; it is called from here instead (the pattern afterimage.cpp uses).
 extern "C" void sbr_vptr_note(unsigned obj);
@@ -480,6 +481,26 @@ void apply_all(u32 tick, float alpha) {
             }
         }
         ++g_applyN;
+        // The CAMERA's own prev-vs-cur, named separately. An aggregate "2.7% of entries differ"
+        // cannot say whether the one object that dominates the picture is among them, and if the
+        // camera's prev equals its cur then every alpha renders the same view no matter how
+        // correctly the lerp is written.
+        if (e.isCam) {
+            const float dp = (e.cur[0]-e.pos[0])*(e.cur[0]-e.pos[0])
+                           + (e.cur[1]-e.pos[1])*(e.cur[1]-e.pos[1])
+                           + (e.cur[2]-e.pos[2])*(e.cur[2]-e.pos[2]);
+            const float dt = (e.curTarget[0]-e.target[0])*(e.curTarget[0]-e.target[0])
+                           + (e.curTarget[1]-e.target[1])*(e.curTarget[1]-e.target[1])
+                           + (e.curTarget[2]-e.target[2])*(e.curTarget[2]-e.target[2]);
+            static long cn = 0;
+            if (++cn <= 4 || (cn % 300) == 0)
+                lucent::info("interp60",
+                             "CAMERA prev->cur #{}: eye moved {:.3f}, target moved {:.3f}{}",
+                             cn, (double)std::sqrt(dp), (double)std::sqrt(dt),
+                             (dp == 0.0f && dt == 0.0f)
+                                 ? "  <-- BOTH ZERO: the camera snapshot captured the pose AFTER its "
+                                   "own update, so prev == cur and no alpha can change the view" : "");
+        }
         {
             const float dx = e.cur[0] - e.pos[0], dy = e.cur[1] - e.pos[1], dz = e.cur[2] - e.pos[2];
             const float d2 = dx * dx + dy * dy + dz * dz;
@@ -1128,6 +1149,10 @@ namespace {
 void end_rendering(CPUState& cpu) {
     g_display = (u32)cpu.gpr[3];
     func_802f80d0(cpu);
+    // The copy has now been issued. Under SBR_PRESENT_AFTER_COPY this is where the frame is
+    // actually presentable; without it this call does nothing. Never during a sub-frame, whose own
+    // endRendering call exists only to emit a copy.
+    if (!g_inSubframe) sbr_frame_present_now();
 }
 } // namespace
 
