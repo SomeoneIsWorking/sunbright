@@ -87,3 +87,47 @@ shows the intent at the actor level, but the list-level passes (`Graffito`, `Pol
 `DrawBufGroup`) have not been checked, and a pass that consumes or steps a buffer would
 double-step under a second draw. **Measure it; do not assume it** — the last four attributions in
 this arc that were assumed rather than measured were all wrong.
+
+## Probing double-run safety: the control fired before the result did
+
+`SB_DOUBLE_DRAW` was added to answer the open question above — do the draw-side perform lists
+mutate state when run twice?
+
+* `=1` runs the DRAW lists twice (the question)
+* `=2` runs the MOVEMENT list twice (**positive control** — movement is the physics step, so this
+  MUST perturb the game; if it doesn't, the probe is blind)
+
+Divergence was read from a state line printed every 200 ticks: Mario's position and status.
+
+**The control failed, which is the useful result.** Baseline and double-movement produced byte
+identical output:
+
+    [dbl-draw] tick=200 pos=(6500.0000,300.0000,-3850.0000) status=0x133f
+    [dbl-draw] tick=800 pos=(6500.0000,300.0000,-3850.0000) status=0x133f   <- same under =2
+
+Mario is frozen in this scene — the known stuck WIN_DEMO start state (`mStatus=0x133f`, memory
+`[[delfino-gameplay-renders-2026-07-17]]`). A motionless actor cannot diverge under doubled
+physics, so **the probe cannot see divergence at all**, and a clean result from `=1` would have
+meant nothing. This is exactly the failure the instruments rule exists to catch: without the
+control, "double-draw shows no divergence" would have read as a green light to build on.
+
+### What the run did establish
+
+1. **`=1` crashes with the mapped-ByteBuffer overflow fatal** — drawing twice into ONE frame
+   doubles the geometry and the per-frame vertex staging (3 MB) is sized for a single pass. This is
+   NOT a blocker for interpolation, where each sub-frame is its own presented frame with its own
+   packet; it is a blocker only for this probe's shortcut of doubling within one frame. (The
+   overflow message named the offending draw, courtesy of the draw-desc rework earlier today.)
+2. **The scene IS dynamic**, so a usable divergence signal exists: per-frame vertex counts
+   oscillate over 81 distinct values (18074 / 18078 / 18082 / 18086 / 18090 …) as leaves sway.
+   Mario being frozen does not mean nothing moves.
+
+### Why per-frame vertex count is NOT the fix for the probe
+
+Under `=1` the vertex count roughly doubles *by construction*. That direct effect swamps any state
+perturbation, so comparing it against baseline cannot isolate a side effect. The signal has to be
+read from **pass 0 only**, or be a non-geometry state readout of something that actually moves in
+this scene. Picking that signal is the next step, and it must carry the same positive control:
+`=2` has to diverge before `=1`'s answer is worth anything.
+
+**Status: the double-run safety question is still OPEN.** It is not "probably fine".

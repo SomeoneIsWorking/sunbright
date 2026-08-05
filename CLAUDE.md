@@ -306,8 +306,9 @@ was the phantom mBlack decomp constant (debug_journal/2026-07-14_blocky_letters_
 settled whole-frame means now within 3 levels of the boot oracle (143,178,204 vs 146,178,201).
 **The "phase-1 ghost pass" double-draw does NOT exist in the recomp** (measured 2026-08-05:
 per-pass command counts on Delfino are `2 10 75 976 331` — one dominant scene pass, nothing
-drawn twice). Do not blame it for frame cost or for the 22 MB/tick storage. `SB_SKIP_GHOST`
-remains a PHANTOM: it appears only inside a comment and is read by no code.
+drawn twice). Do not blame it for frame cost or for the 22 MB/tick storage. `SB_SKIP_GHOST` is
+LIVE in the decomp (`MarDirectorDirect.cpp`, skips `mPerformListDrawBufGroup`) — the earlier
+"phantom, read by no code" note was wrong and is corrected here.
 
 `GXLoadPosMtxIndx`/`GXLoadNrmMtxIndx3x3` are IMPLEMENTED (2026-07-09) and verified
 non-degenerate — do not re-suspect them. The `…Draw SnapTime` nodes in the title are
