@@ -244,6 +244,32 @@ void present_and_reopen(bool& frameActive) {
                 lucent::info("ptime", "present gaps: alternating means {:.2f} ms / {:.2f} ms "
                                       "(even spacing = both ~16.7)",
                              n_even ? acc_even / n_even : 0.0, n_odd ? acc_odd / n_odd : 0.0);
+
+            // COMPARABLE WINDOW. The running means above are NOT an A/B instrument: they cover
+            // every present since start, so a faster run reaches a different frame (and a
+            // different part of the scene) by the time any given line prints. Measured A-vs-A
+            // with an identical pad script, two runs of the same binary reported 25.4 ms and
+            // 18.4 ms — a 38% spread from nothing but which frames each mean happened to span.
+            // Any conclusion drawn by comparing two running means across runs is noise.
+            //
+            // This reports one mean over a FIXED present range, so two runs are compared at the
+            // same N and the same point in the scene. Window ends are inclusive of neither edge
+            // and both are overridable, because the right window depends on the scene.
+            static const long lo = [] { const char* e = std::getenv("SBR_PTIME_LO"); return e ? std::atol(e) : 600; }();
+            static const long hi = [] { const char* e = std::getenv("SBR_PTIME_HI"); return e ? std::atol(e) : 1200; }();
+            static double wacc = 0; static long wn = 0; static bool wdone = false;
+            if (!wdone && n >= lo && n < hi) { wacc += ms; ++wn; }
+            if (!wdone && n >= hi) {
+                wdone = true;
+                if (wn == 0)
+                    lucent::info("ptime", "COMPARABLE @ presents {}..{}: NO SAMPLES — the run never "
+                                          "reached this window; this is not a fast frame time",
+                                 lo, hi);
+                else
+                    lucent::info("ptime", "COMPARABLE @ presents {}..{} (N={}): {:.2f} ms/present "
+                                          "— compare ONLY this line across runs",
+                                 lo, hi, wn, wacc / (double)wn);
+            }
         } else { ++n; }
         prev = now;
     }

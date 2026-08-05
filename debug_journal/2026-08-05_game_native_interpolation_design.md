@@ -791,3 +791,59 @@ named inefficiencies above plus ordinary tuning could cover it. The next measure
 settles it: **split the tick into logic-side and draw-side** so the marginal cost of a second draw
 pass is measured rather than estimated from a leaf profile. Until that exists, ±10 ms of this is
 arithmetic on sample shares, and this file has been burned by exactly that before.
+
+## INSTRUMENT DEFECT: every frame-cost number above was noise — and the corrected baseline is 14.9 ms
+
+### How it was caught
+
+Building the tick-split instrument produced an A/B that looked like heavy perturbation: override
+disabled ~28.5 ms/present, enabled ~48 ms. But the re-targeted version ran only **15 calls per
+tick**, which cannot cost 20 ms. Rather than accept the explanation, the missing control was run —
+**A against A**, same binary, same pad script:
+
+    ARM A run 1: 25.65 ms / 26.00 ms
+    ARM A run 2: 18.32 ms / 18.41 ms      <- 38% apart, identical configuration
+
+So the spread was never the instrument. **`SBR_PRESENT_TIMING` reports a running mean over every
+present since start**, so a faster run has reached a different frame — and a different part of the
+scene — by the time any given line prints. Comparing two running means across runs is comparing
+different populations. This is the project's own documented rule (*"never compare aggregates taken
+at different sample counts; use the `COMPARABLE @ N=` line"*) and the recomp's instrument simply had
+no such line, so every A/B in this file's preceding sections was invalid:
+
+* "~24 ms per present" — a running mean, and additionally taken with **Mario stationary** while
+  every later run had him walking the plaza. Two confounds at once.
+* "the instrument perturbs frame time 2x" — unsupported; within run-to-run spread.
+* the 32-36 ms sub-frame arithmetic built on top of 24 ms — void, because its input was void.
+
+### The fix
+
+`SBR_PRESENT_TIMING` now also emits a **fixed-window** mean (`SBR_PTIME_LO`/`HI`, default presents
+600..1200), so two runs are compared at the same N over the same stretch of scene. It prints
+`NO SAMPLES` explicitly when a run never reaches the window — a run that died early must not be
+readable as a fast frame time.
+
+### Second defect: the first run after a rebuild is cold
+
+With the fixed window, three identical runs gave:
+
+    A1: 31.11 ms      A2: 15.06 ms      A3: 14.83 ms   (N=600 each)
+
+A2 and A3 agree to **1.5%**. A1 is double, and it is the first run after a rebuild — 462 pipelines
+compile into a cold Dawn cache. **Measurement protocol: after any rebuild, discard the first run.**
+Neither the fixed window nor a repeat run alone would have caught this; it took three.
+
+### The corrected baseline, and what it does to the arc
+
+**~14.9 ms per present**, Delfino, Mario walking, one present per tick, repeatable to ~1.5%.
+
+The budget for interpolated 60fps is 33.3 ms per 30 Hz tick (logic once, draw twice, present twice).
+Against 14.9 ms that leaves roughly **18 ms of headroom** for the second `PreEntry`+draw — and the
+draw side is only a fraction of the 14.9 ms, since that figure includes movement, physics, AI and
+collision, which a sub-frame does not re-run.
+
+So game-native interpolation looks **affordable**, not borderline and not priced out. That is the
+third different answer this file has given to the same question, and the difference is that this one
+rests on a repeatable measurement with a validated comparison window rather than on a single running
+mean. It should still be confirmed by measuring the sub-frame's marginal cost directly — but the
+gate that looked like it might block the whole approach does not.
