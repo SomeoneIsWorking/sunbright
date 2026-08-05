@@ -315,6 +315,41 @@ bool looks_like_lookat_camera(u32 obj) {
            && fovy > 1.0f && fovy < 179.0f && aspect > 0.1f && aspect < 10.0f;
 }
 
+// CPolarSubCamera's real state, from the disassembly of its perform (idx6 = 0x80023004):
+//
+//   cue & 0x1  (movement): copies 0x124->0x13c, 0x148->0x160, 0x16c->0x1ac ... 0x1a8->0x1e8,
+//                          i.e. the game saves its OWN previous camera state, then calls
+//                          ctrlGameCamera_ / calcFinalPosAndAt_ to compute the new one.
+//   cue & 0x14 (view/proj): copies 0x16c..0x1a8 -> TGraphics+0x74 (mProjMtx) and
+//                          PSMTXCopy(0x1ec -> TGraphics+0xb4) (mViewMtx).
+//
+// So the view is a CACHED MATRIX at +0x1ec, built during movement. mPosition@+0x10 is not an input
+// to it — which is why substituting mPosition changed nothing at any alpha, and why a 5000-unit
+// kick left the view byte-identical.
+//
+// This probe checks whether 0x124 and 0x148 are the pose the cached matrix is built FROM (a
+// position and a look-at point), because if they are, the game already maintains prev/cur for the
+// camera and the interpolation should use the game's own pair rather than an external snapshot.
+constexpr u32 OFF_CPSC_A = 0x124, OFF_CPSC_A_PREV = 0x13C;
+constexpr u32 OFF_CPSC_B = 0x148, OFF_CPSC_B_PREV = 0x160;
+
+void report_polar_state(u32 o) {
+    lucent::info("interp60",
+                 "      CPolarSubCamera state: +0x124 = ({:.2f},{:.2f},{:.2f})  prev@+0x13C = "
+                 "({:.2f},{:.2f},{:.2f})",
+                 (double)guest_f32(o + OFF_CPSC_A), (double)guest_f32(o + OFF_CPSC_A + 4),
+                 (double)guest_f32(o + OFF_CPSC_A + 8),
+                 (double)guest_f32(o + OFF_CPSC_A_PREV), (double)guest_f32(o + OFF_CPSC_A_PREV + 4),
+                 (double)guest_f32(o + OFF_CPSC_A_PREV + 8));
+    lucent::info("interp60",
+                 "                             +0x148 = ({:.2f},{:.2f},{:.2f})  prev@+0x160 = "
+                 "({:.2f},{:.2f},{:.2f})   [compare against pos/target above]",
+                 (double)guest_f32(o + OFF_CPSC_B), (double)guest_f32(o + OFF_CPSC_B + 4),
+                 (double)guest_f32(o + OFF_CPSC_B + 8),
+                 (double)guest_f32(o + OFF_CPSC_B_PREV), (double)guest_f32(o + OFF_CPSC_B_PREV + 4),
+                 (double)guest_f32(o + OFF_CPSC_B_PREV + 8));
+}
+
 void report_placements() {
     lucent::info("interp60", "  PLACEMENT-ONLY objects seen ({}{}):", g_placeN,
                  g_placeOverflow ? ", TABLE OVERFLOWED - some not listed" : "");
@@ -341,6 +376,7 @@ void report_placements() {
                      (double)guest_f32(o + OFF_CAM_TARGET),
                      (double)guest_f32(o + OFF_CAM_TARGET + 4),
                      (double)guest_f32(o + OFF_CAM_TARGET + 8));
+        if (looks_like_lookat_camera(o)) report_polar_state(o);
     }
 }
 

@@ -2143,3 +2143,54 @@ disassembly of its `perform` slot (the object's primary vtable is at `0x803acde8
 more runtime bisection — read which offsets it loads before `C_MTXLookAt`. If it derives the pose
 from polar state, the game-native interpolation has to snapshot THAT state, not the derived
 position, and the same will be true of every actor whose transform is recomputed rather than stored.
+
+## RE RESULT: the camera's view is a CACHED MATRIX, and the game already keeps prev/cur for its pose
+
+`camera 1` is `CPolarSubCamera`. Its `perform` is vtable idx6 = `0x80023004` (slot index established
+from two independently NAMED cases — `TMirrorCamera::perform` and `TOrthoProj::perform` both sit at
+idx6 — rather than counted off the class hierarchy). Disassembled, it has two disjoint paths:
+
+    cue & 0x1  (movement)
+        0x124 -> 0x13c,  0x148 -> 0x160,  0x16c..0x1a8 -> 0x1ac..0x1e8      <- SAVE PREVIOUS
+        bl ctrlOptionCamera___15CPolarSubCameraFv
+        bl ctrlGameCamera___15CPolarSubCameraFv
+        bl calcFinalPosAndAt___15CPolarSubCameraFv                          <- compute the new pose
+        ... stfs 0x30/0x34/0x38(r29)                                        <- mUp written from a matrix
+
+    cue & 0x14 (view / projection)
+        0x16c..0x1a8 -> TGraphics+0x74     (mProjMtx)
+        PSMTXCopy(0x1ec -> TGraphics+0xb4) (mViewMtx)
+
+**The view path computes nothing.** It copies a matrix cached at `+0x1ec`, built during the movement
+phase. `mPosition@+0x10` is not an input to it — which is the complete explanation for every null
+result: the substitution was correct, survived the re-issue, and was read by nobody, because
+`C_MTXLookAt` never runs at view time for this class. A 5000-unit kick left the view byte-identical
+for the same reason.
+
+### And the game keeps its own prev/cur — measured
+
+    +0x124 = (4267.43, 615.32, 4935.66)   prev@+0x13C = (4267.43, 615.32, 4932.72)
+    +0x148 = (4950.01, 463.04, 4910.52)   prev@+0x160 = (4950.01, 463.04, 4907.58)
+    mTarget@+0x3C = (4950.0, 463.0, 4910.5)
+
+`+0x148` IS the target (`mTarget` is a copy of it) and `+0x124` is the eye. Both prev slots trail by
+exactly **2.94** in z — the same per-tick camera motion the `CAMERA prev->cur` probe measured
+independently (2.938). The game snapshots its own camera pose every tick, for its own reasons.
+
+This is a better interpolation source than anything external: no snapshot, no vtable allowlist, no
+layout signature, and no risk of sampling at the wrong moment — the prev/cur pair is maintained by
+the code that owns the fields.
+
+### Next
+
+The sub-frame needs the view matrix at `+0x1ec` rebuilt from `lerp(prev, cur)` of `+0x124`/`+0x148`.
+Two candidates, and the choice should be settled by reading rather than by preference:
+
+* find the guest routine that builds `+0x1ec` from the pose (inside or after
+  `calcFinalPosAndAt___15CPolarSubCameraFv`) and call it with lerped inputs — fully game-native; or
+* build it with the game's own `C_MTXLookAt` from lerped eye/target/up and write `+0x1ec` for the
+  duration of the sub-frame — uses the game's inputs and math but duplicates one build step.
+
+Neither is "matrix lerping": both derive the matrix from an interpolated POSE, which is what the
+standing directive asks for. Blending `+0x1ec` between its cached and saved copies WOULD be matrix
+lerping and is the thing to avoid.
