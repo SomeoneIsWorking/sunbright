@@ -145,13 +145,51 @@ CLASS_RE = re.compile(r"__(?:Q\d+(?:\d+\w+?)*?)?(\d+)([A-Za-z_]\w*)F")
 
 
 def owning_classes(name):
-    """Class names embedded in an MWCC-mangled symbol (`__8TFishoidF`, `Q26JDrama6TActor`)."""
+    """Class names embedded in an MWCC-mangled symbol (`__8TFishoidF`, `Q26JDrama6TActor`).
+
+    NESTED NAMES NEED THEIR OWN RULE. `Q<k>` introduces k qualified components, each `<len><ident>`:
+    `Q26JDrama12TPolarCamera` is JDrama::TPolarCamera. Reading it with a plain `<len><ident>` scan
+    takes the `2` of `Q2` and the `6` of `6JDrama` as the single length `26`, yielding the 26-char
+    string 'JDrama12TPolarCameraFUlPQ2' — a class name that matches nothing.
+
+    The consequence was silent and total: EVERY JDrama-namespaced class was invisible to the tagger,
+    so no camera (`JDrama::TPolarCamera`, `JDrama::TLookAtCamera`) could ever be recognised, while
+    non-namespaced classes like `TMirrorCamera` parsed correctly and made the tagger look healthy.
+    A coverage audit scored 95.9% throughout, because it uses a different matcher.
+    """
     out = set()
-    for m in re.finditer(r"(\d+)([A-Za-z_]\w*)", name):
-        n = int(m.group(1))
-        ident = m.group(2)[:n]
-        if len(ident) == n:
-            out.add(ident)
+    i = 0
+    while i < len(name):
+        # Qualified name: Q<k> then k components.
+        if name[i] == "Q" and i + 1 < len(name) and name[i + 1].isdigit():
+            k = int(name[i + 1])
+            j = i + 2
+            comps = []
+            for _ in range(k):
+                m = re.match(r"(\d+)", name[j:])
+                if not m:
+                    break
+                n = int(m.group(1))
+                start = j + len(m.group(1))
+                ident = name[start:start + n]
+                if len(ident) != n:
+                    break
+                comps.append(ident)
+                j = start + n
+            if len(comps) == k:
+                out.update(comps)          # every component, so JDrama::TActor tags on TActor
+                i = j
+                continue
+        m = re.match(r"(\d+)([A-Za-z_]\w*)", name[i:])
+        if m:
+            n = int(m.group(1))
+            start = i + len(m.group(1))
+            ident = name[start:start + n]
+            if len(ident) == n:
+                out.add(ident)
+                i = start + n
+                continue
+        i += 1
     return out
 
 
@@ -182,12 +220,25 @@ def classify(cands, funcs, actor_classes=None):
     return cands
 
 
-def decomp_tactor_classes():
-    """Class names the DECOMP says derive from JDrama::TActor.
+def decomp_tactor_classes(root="TActor"):
+    """Class names the DECOMP says derive from `root`.
 
     Transitive closure over `class X : public Y` in the decomp headers. This is the
     denominator the recovered set is scored against -- without it, "found 300 vtables"
     cannot be told apart from "found 300 of 900".
+
+    The root is a PARAMETER because the right one depends on the FIELD being written, not on which
+    class feels canonical. The interpolation snapshot writes mPosition at +0x10, which belongs to
+    JDrama::TPlacement -- so anchoring the allowlist on TActor excluded every TPlacement that is not
+    an actor, and cameras (`class TCamera : public TPlacement`) are exactly that. It also excluded
+    them SILENTLY: a camera simply never appeared in the table, which reads identically to a camera
+    that does not move.
+
+    Choosing a wider root is only safe field by field. mRotation at +0x30 is a TActor field;
+    TCamera's own layout ends at 0x30 (mFlag 0x24, mNear 0x28, mFar 0x2C), so writing a rotation
+    there would corrupt whatever follows the object. Hence two separate lists rather than one wider
+    one: TActor vtables (position AND rotation are safe) and TPlacement-but-not-TActor vtables
+    (position ONLY).
     """
     inc = REPO / "decomp" / "sms" / "include"
     if not inc.is_dir():
@@ -200,14 +251,14 @@ def decomp_tactor_classes():
     for f in files:
         for m in pat.finditer(f.read_text(errors="replace")):
             base_of.setdefault(m.group(1), set()).add(m.group(2).split("::")[-1])
-    derived, changed = {"TActor"}, True
+    derived, changed = {root}, True
     while changed:
         changed = False
         for cls, bases in base_of.items():
             if cls not in derived and (bases & derived):
                 derived.add(cls)
                 changed = True
-    derived.discard("TActor")
+    derived.discard(root)
     return derived, len(files)
 
 
@@ -222,14 +273,37 @@ def main():
                     help="write a C++ header with the sorted TActor-derived vtable addresses")
     ap.add_argument("--selftest", action="store_true",
                     help="feed a case that MUST produce a positive, and fail if it does not")
+    ap.add_argument("--root", default="TActor",
+                    help="hierarchy root to tag against (TActor, TPlacement, ...). Pick it from the "
+                         "FIELD being written: mPosition@+0x10 is TPlacement's, mRotation@+0x30 is "
+                         "TActor's")
+    ap.add_argument("--exclude-root", default=None,
+                    help="drop vtables also derived from this root, to emit a disjoint list "
+                         "(e.g. --root TPlacement --exclude-root TActor = placements that are NOT "
+                         "actors, for which ONLY position may be written)")
+    ap.add_argument("--symbol", default="kTActorVtables",
+                    help="C++ array name for --emit-header")
     args = ap.parse_args()
 
     sections, raw = load_dol(args.dol)
     funcs = load_funcs(args.funcs)
-    actor_classes, _nfiles = decomp_tactor_classes()
-    actor_classes = actor_classes | {"TActor"}
+    actor_classes, _nfiles = decomp_tactor_classes(args.root)
+    actor_classes = actor_classes | {args.root}
     cands = classify(scan(sections, raw, funcs, text_ranges(sections)), funcs, actor_classes)
     tactor = [c for c in cands if c["is_tactor"]]
+
+    if args.exclude_root:
+        excl, _ = decomp_tactor_classes(args.exclude_root)
+        excl = excl | {args.exclude_root}
+        excl_cands = classify(scan(sections, raw, funcs, text_ranges(sections)), funcs, excl)
+        excl_addrs = {c["addr"] for c in excl_cands if c["is_tactor"]}
+        before = len(tactor)
+        tactor = [c for c in tactor if c["addr"] not in excl_addrs]
+        # Say what was removed. A disjoint list that silently came out empty, or barely smaller than
+        # the one it was carved from, means the two roots did not separate the way the caller
+        # assumed -- and an unremarked count is how that goes unnoticed.
+        print(f"  disjoint filter  : {before} tagged under {args.root}, "
+              f"{before - len(tactor)} also under {args.exclude_root}, {len(tactor)} remain")
 
     if args.selftest:
         # MUST-PASS: TActor's own methods are in the US list, so at least one candidate has to
@@ -253,7 +327,7 @@ def main():
     print("  no TActor-owned slot. Use --audit to see which decomp classes went unmatched.")
 
     if args.audit:
-        derived, nfiles = decomp_tactor_classes()
+        derived, nfiles = decomp_tactor_classes(args.root)
         # Match a class to a candidate by any slot whose mangled name embeds the class name.
         matched = set()
         for c in cands:
@@ -264,7 +338,7 @@ def main():
         missing = sorted(derived - matched)
         print()
         print(f"COVERAGE (denominator from {nfiles} decomp headers)")
-        print(f"  decomp classes deriving from JDrama::TActor : {len(derived)}")
+        print(f"  decomp classes deriving from JDrama::{args.root} : {len(derived)}")
         print(f"  of those, matched to a recovered vtable      : {len(matched)}"
               f"  ({100.0*len(matched)/len(derived):.1f}%)")
         print(f"  UNMATCHED (would silently never interpolate) : {len(missing)}")
@@ -277,10 +351,10 @@ def main():
         addrs = sorted(c["addr"] for c in tactor)
         with args.emit_header.open("w") as f:
             f.write("// GENERATED by tools/re/us_vtables.py -- do not edit.\n")
-            f.write("// US (GMSE01) vtable addresses carrying a JDrama::TActor-owned slot.\n")
+            f.write(f"// US (GMSE01) vtable addresses carrying a JDrama::{args.root}-owned slot.\n")
             f.write("// Coverage is NOT complete; see `us_vtables.py --audit`.\n")
             f.write("#pragma once\n#include <cstdint>\n\n")
-            f.write(f"inline constexpr uint32_t kTActorVtables[] = {{\n")
+            f.write(f"inline constexpr uint32_t {args.symbol}[] = {{\n")
             for a in addrs:
                 f.write(f"    0x{a:08x}u,\n")
             f.write("};\n")

@@ -1801,3 +1801,50 @@ The address needs re-deriving before the coverage question can be asked again: `
 position pointer (consistent with the `gpMarioPos` RE in the memory notes), and what is needed is
 the TMario OBJECT — resolvable the same way `gpMarDirector` was, by scanning for the object whose
 fields match a known layout rather than by trusting a constant.
+
+## A REAL BUG IN THE VTABLE RECOVERY: nested MWCC names were never parsed, so no JDrama class was
+
+`us_vtables.py`'s `owning_classes` read `Q<k>` qualified names with a plain `<len><ident>` scan:
+
+    perform__Q26JDrama12TPolarCameraF...  ->  {'JDrama12TPolarCameraFUlPQ2'}   (garbage)
+    perform__13TMirrorCameraF...          ->  {'TMirrorCamera'}                (correct)
+
+`Q2` introduces two qualified components; the scan took the `2` of `Q2` and the `6` of `6JDrama` as
+a single length `26` and produced a 26-character non-name. **Every `JDrama::`-namespaced class was
+therefore invisible to the tagger** — including every camera — while non-namespaced classes parsed
+correctly and made the tool look healthy. The coverage audit reported 95.9% throughout, because it
+uses a different matcher; the two never disagreed out loud.
+
+Fixed (parse `Q<k>` then k `<len><ident>` components, tag on every component):
+
+    TActor vtables              : 694 -> 754   (+60 JDrama-namespaced actors, silently missing)
+    TPlacement-but-not-TActor   :   2 ->  17   (cameras and other placements)
+
+The 60 recovered actors were missing from `kTActorVtables` for the whole arc.
+
+### The allowlist root was wrong too, and for a principled reason
+
+The snapshot writes `mPosition` at `+0x10`, which is **`TPlacement`'s** field — so anchoring the
+allowlist on `TActor` excluded every TPlacement that is not an actor by construction, and
+`JDrama::TCamera : public TPlacement` is exactly that. `us_vtables.py` now takes `--root` and
+`--exclude-root`, and the root is chosen from the FIELD being written rather than from whichever
+class feels canonical.
+
+Two disjoint lists, because widening is only safe field by field: `mRotation@+0x30` is a TActor
+field, and `JDrama::TCamera`'s own layout ends at 0x30 — a rotation write there lands on what the
+concrete subclass keeps next, which for `TLookAtCamera` is `mTarget`/`mUp`/`mFovy`, i.e. the
+camera's AIM. That failure would look like the camera pointing somewhere else and would be blamed on
+the interpolation rather than on the write. So placements get position substituted and rotation
+never (`Entry::posOnly`).
+
+### Measured after wiring
+
+    placement-only (position substituted, rotation NOT) = 17,992 dispatches   (~12 per tick)
+    movers still 2.7%, largest delta still 885.66 "ゲーム看板8"
+
+Placements are now snapshotted and substituted. The mover share and the largest mover did NOT
+change, so whatever drives the frame's 87%-per-tick delta is still not in the substituted set — the
+covered placements are not the active camera, or the camera's motion does not live in its
+`mPosition`. `TLookAtCamera::perform` builds the view from `mPosition`, `mUp` AND `mTarget`
+(`C_MTXLookAt`), and only the first of those three is being substituted, which is a concrete next
+thing to check rather than a mystery.

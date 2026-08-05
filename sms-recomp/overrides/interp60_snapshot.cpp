@@ -31,6 +31,7 @@
 
 #include "overrides.h"
 #include "tactor_vtables.h"
+#include "tplacement_vtables.h"
 
 #include <intrinsics.h>
 #include <lucent/log.h>
@@ -85,15 +86,31 @@ float guest_f32(u32 ea) {
     return f;
 }
 
-bool is_tactor(u32 vptr) {
-    // kTActorVtables is emitted sorted; binary search keeps this off the profile.
-    int lo = 0, hi = (int)(sizeof(kTActorVtables) / sizeof(kTActorVtables[0])) - 1;
+bool in_sorted(const u32* tab, int n, u32 vptr) {
+    int lo = 0, hi = n - 1;                    // emitted sorted; binary search keeps this off the profile
     while (lo <= hi) {
         const int mid = (lo + hi) / 2;
-        if (kTActorVtables[mid] == vptr) return true;
-        if (kTActorVtables[mid] < vptr) lo = mid + 1; else hi = mid - 1;
+        if (tab[mid] == vptr) return true;
+        if (tab[mid] < vptr) lo = mid + 1; else hi = mid - 1;
     }
     return false;
+}
+
+bool is_tactor(u32 vptr) {
+    return in_sorted(kTActorVtables, (int)(sizeof(kTActorVtables) / sizeof(kTActorVtables[0])), vptr);
+}
+
+// TPlacement subclasses that are NOT TActors -- cameras above all (JDrama::TCamera : public
+// TPlacement). They carry mPosition at +0x10 like every TPlacement, so position may be substituted.
+//
+// ROTATION MAY NOT BE. mRotation@+0x30 is a TActor field; JDrama::TCamera's own layout ends at 0x30
+// (mFlag 0x24, mNear 0x28, mFar 0x2C), so a rotation write there lands on whatever the concrete
+// subclass keeps next -- for TLookAtCamera that region holds mTarget/mUp/mFovy, i.e. the camera's
+// aim. The failure would not look like a bad rotation; it would look like the camera pointing
+// somewhere else, and it would be blamed on the interpolation rather than on the write.
+bool is_placement_only(u32 vptr) {
+    return in_sorted(kTPlacementOnlyVtables,
+                     (int)(sizeof(kTPlacementOnlyVtables) / sizeof(kTPlacementOnlyVtables[0])), vptr);
 }
 
 // ── (prev) side table ────────────────────────────────────────────────────────
@@ -113,6 +130,7 @@ struct Entry {
     float cur[3] = {0, 0, 0};   // (cur): saved at apply time so restore is exact
     float curRot[3] = {0, 0, 0};
     bool  applied = false;      // a lerp is currently written into guest memory
+    bool  posOnly = false;      // a TPlacement that is not a TActor: position only, never rotation
 };
 
 Entry g_tab[TABLE_SIZE];
@@ -198,7 +216,7 @@ u32   g_applyMaxObj = 0;
 // implementation from a snapshot that captures nothing, so this always reports its DENOMINATOR and
 // names the largest mover. If the biggest mover is an ambient prop rather than the player, the
 // allowlist is missing the things that matter and the name says so.
-long        g_samples = 0, g_moved = 0, g_nonActors = 0, g_actors = 0;
+long        g_samples = 0, g_moved = 0, g_nonActors = 0, g_actors = 0, g_placements = 0;
 long        g_applied = 0, g_restored = 0;
 long        g_writeStuck = 0, g_writeLost = 0;
 // The tick value the most recent snapshot was stamped with. apply_all() keys on THIS rather than
@@ -234,10 +252,11 @@ void report() {
     char tick_nm[48]; guest_name(g_tickMaxObj, tick_nm, sizeof tick_nm);
     lucent::info("interp60",
                  "SNAPSHOT: dispatches={} (tactor={} non-actor={}) | compared={} moved={} ({:.1f}%) "
-                 "| maxStep all-time={:.2f} \"{}\"  this-window={:.2f} \"{}\"  evictions={}",
+                 "| maxStep all-time={:.2f} \"{}\"  this-window={:.2f} \"{}\"  evictions={} "
+                 "| placement-only (cameras etc, position substituted, rotation NOT) = {}",
                  g_actors + g_nonActors, g_actors, g_nonActors, g_samples, g_moved,
                  g_samples ? 100.0 * (double)g_moved / (double)g_samples : 0.0,
-                 (double)g_maxStep, nm, (double)g_tickMaxStep, tick_nm, g_evictions);
+                 (double)g_maxStep, nm, (double)g_tickMaxStep, tick_nm, g_evictions, g_placements);
     if (alpha_setting() >= 0.0f)
         lucent::info("interp60", "  WRITE alpha={:.2f}: applied={} restored={} (unequal counts mean "
                                  "a pose was left interpolated into the physics step)",
@@ -297,9 +316,11 @@ void restore_all() {
         guest_w_f32(e.obj + OFF_POSITION + 0, e.cur[0]);
         guest_w_f32(e.obj + OFF_POSITION + 4, e.cur[1]);
         guest_w_f32(e.obj + OFF_POSITION + 8, e.cur[2]);
-        guest_w_f32(e.obj + OFF_ROTATION + 0, e.curRot[0]);
-        guest_w_f32(e.obj + OFF_ROTATION + 4, e.curRot[1]);
-        guest_w_f32(e.obj + OFF_ROTATION + 8, e.curRot[2]);
+        if (!e.posOnly) {
+            guest_w_f32(e.obj + OFF_ROTATION + 0, e.curRot[0]);
+            guest_w_f32(e.obj + OFF_ROTATION + 4, e.curRot[1]);
+            guest_w_f32(e.obj + OFF_ROTATION + 8, e.curRot[2]);
+        }
         ++g_restored;
     }
 }
@@ -348,7 +369,7 @@ void apply_all(u32 tick, float alpha) {
         if (!sb_ram_fast(e.obj)) continue;
         for (int k = 0; k < 3; ++k) {
             e.cur[k]    = guest_f32(e.obj + OFF_POSITION + (u32)k * 4);
-            e.curRot[k] = guest_f32(e.obj + OFF_ROTATION + (u32)k * 4);
+            e.curRot[k] = e.posOnly ? 0.0f : guest_f32(e.obj + OFF_ROTATION + (u32)k * 4);
         }
         ++g_applyN;
         {
@@ -390,7 +411,7 @@ void apply_all(u32 tick, float alpha) {
         if (alpha >= 1.0f) {
             for (int k = 0; k < 3; ++k) {
                 guest_w_f32(e.obj + OFF_POSITION + (u32)k * 4, e.cur[k]);
-                guest_w_f32(e.obj + OFF_ROTATION + (u32)k * 4, e.curRot[k]);
+                if (!e.posOnly) guest_w_f32(e.obj + OFF_ROTATION + (u32)k * 4, e.curRot[k]);
             }
             ++g_applied;
             continue;
@@ -398,7 +419,7 @@ void apply_all(u32 tick, float alpha) {
         if (alpha <= 0.0f) {
             for (int k = 0; k < 3; ++k) {
                 guest_w_f32(e.obj + OFF_POSITION + (u32)k * 4, e.pos[k]);
-                guest_w_f32(e.obj + OFF_ROTATION + (u32)k * 4, e.rot[k]);
+                if (!e.posOnly) guest_w_f32(e.obj + OFF_ROTATION + (u32)k * 4, e.rot[k]);
             }
             ++g_applied;
             continue;
@@ -409,6 +430,7 @@ void apply_all(u32 tick, float alpha) {
             // Angles are Euler degrees here; a naive lerp is wrong across the +-180 seam. Take the
             // shortest arc rather than sweeping the long way round, which would spin an actor a
             // full turn in one sub-frame whenever it crossed the wrap point.
+            if (e.posOnly) continue;
             float d = e.curRot[k] - e.rot[k];
             while (d > 180.0f)  d -= 360.0f;
             while (d < -180.0f) d += 360.0f;
@@ -641,11 +663,15 @@ void snapshot(CPUState& cpu, u32 mask) {
     if (!(mask & CUE_MOVE)) return;
 
     const u32 vptr = sb_r32(obj);
-    if (!is_tactor(vptr)) { ++g_nonActors; return; }
+    const bool actor = is_tactor(vptr);
+    const bool placement = !actor && is_placement_only(vptr);
+    if (!actor && !placement) { ++g_nonActors; return; }
     ++g_actors;
+    if (placement) ++g_placements;
 
     Entry* e = slot_for(obj);
     if (!e) return;
+    e->posOnly = placement;
 
     // The GUEST TICK, not the present count. A sub-frame adds a second present, so VIGetRetraceCount
     // stops advancing 1:1 with ticks the moment interpolation is on -- and the (prev) entries are
@@ -675,9 +701,11 @@ void snapshot(CPUState& cpu, u32 mask) {
     e->tick = tick;
     g_lastSnapTick = tick;
     e->pos[0] = px; e->pos[1] = py; e->pos[2] = pz;
-    e->rot[0] = guest_f32(obj + OFF_ROTATION + 0);
-    e->rot[1] = guest_f32(obj + OFF_ROTATION + 4);
-    e->rot[2] = guest_f32(obj + OFF_ROTATION + 8);
+    if (!e->posOnly) {
+        e->rot[0] = guest_f32(obj + OFF_ROTATION + 0);
+        e->rot[1] = guest_f32(obj + OFF_ROTATION + 4);
+        e->rot[2] = guest_f32(obj + OFF_ROTATION + 8);
+    }
 }
 
 // ── the sub-frame: re-issue PreEntry + the draw lists at an interpolated pose ─
