@@ -28,8 +28,6 @@
 #include <cstdlib>
 #include <cstring>
 
-extern "C" void func_802fcc94(CPUState&);      // JDrama::TViewObj::testPerform(u32, TGraphics*)
-
 namespace {
 
 bool enabled() {
@@ -90,24 +88,16 @@ void report() {
                      g_seen[i].name);
 }
 
-void vptr_dump(CPUState& cpu) {
-    if (!enabled()) { func_802fcc94(cpu); return; }
+} // namespace
 
-    const u32 obj = (u32)cpu.gpr[3];
-    if (sb_ram_fast(obj)) note(obj);
-
-    // One report, after enough dispatches that the scene is populated. Reporting every frame would
-    // bury the answer; reporting once at exit would lose it if the run is killed by timeout.
+// Called from interp60_snapshot.cpp, which owns the testPerform override. One guest address gets
+// exactly ONE override and a second registration is refused, so this file no longer registers its
+// own -- the identification is invoked from the owner instead (the pattern afterimage.cpp uses).
+extern "C" void sbr_vptr_note(unsigned obj) {
+    if (!enabled()) return;
+    if (sb_ram_fast((u32)obj)) note((u32)obj);
     if (!g_reported && g_objects > 200000) {
         g_reported = true;
         report();
     }
-
-    func_802fcc94(cpu);
 }
-
-} // namespace
-
-SB_OVERRIDE(0x802fcc94, vptr_dump, "JDrama::TViewObj::testPerform",
-            "diagnostic only (SBR_VPTR_DUMP): dump the vtable pointer each live TViewObj carries, "
-            "to tell PRIMARY vtables from secondary ones; always runs the real body")

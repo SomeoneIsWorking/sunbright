@@ -260,6 +260,7 @@ logger — that is debt to convert, not a feature.
 | `SBR_FIFO_2D` | 1 | `sms-recomp/runtime/dev_gxfifo.cpp:149` |  |
 | `SBR_FORCE_DASHBLUR` | 1 | `sms-recomp/overrides/afterimage.cpp:67` |  |
 | `SBR_HUD_OFF` | 1 | `sms-recomp/overrides/widescreen.cpp:246` |  |
+| `SBR_INTERP60` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:58` |  |
 | `SBR_J2D_CAPTURE` | 1 | `sms-recomp/overrides/diag_2d.cpp:148` |  |
 | `SBR_J2D_SOLID` | 1 | `sms-recomp/overrides/diag_2d.cpp:212` |  |
 | `SBR_J3D_CAPTURE` | 1 | `sms-recomp/overrides/j3d_capture.cpp:68` |  |
@@ -301,9 +302,9 @@ logger — that is debt to convert, not a feature.
 | `SBR_TEX_MIRROR` | 1 | `sms-recomp/runtime/native_render.cpp:809` |  |
 | `SBR_THP` | 1 | `sms-recomp/overrides/native_thp.cpp:99` |  |
 | `SBR_TICK_SPLIT` | 1 | `sms-recomp/overrides/diag_tick_split.cpp:50` |  |
-| `SBR_VPTR_DUMP` | 1 | `sms-recomp/overrides/diag_vptr.cpp:36` |  |
+| `SBR_VPTR_DUMP` | 2 | `sms-recomp/overrides/diag_vptr.cpp:34` |  |
 | `SBR_WATCH` | 1 | `sms-recomp/runtime/rt_core.cpp:102` |  |
 | `SBR_WIDESCREEN` | 1 | `sms-recomp/overrides/widescreen.cpp:56` |  |
 | `SBR_WS_SCALE` | 1 | `sms-recomp/overrides/widescreen.cpp:65` |  |
 
-**285 switches; 69 still gate a raw print.**
+**286 switches; 69 still gate a raw print.**

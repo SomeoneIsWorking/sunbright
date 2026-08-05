@@ -1050,3 +1050,43 @@ appears in a real Delfino frame. The two false negatives cost only that those ob
 interpolate.
 
 The type-identity blocker is cleared; the snapshot override can be written against this list.
+
+## LANDED (recomp): the game-native (prev) snapshot runs, and it captures MARIO
+
+`sms-recomp/overrides/interp60_snapshot.cpp` (`SBR_INTERP60=1`) owns the `testPerform` override and
+snapshots each actor's transform before its movement. On Delfino with the stick driving Mario:
+
+    SNAPSHOT: dispatches=3560510 (tactor=2944404 non-actor=616106) | compared=735690
+              moved=12341 (1.7%) | maxStep all-time=2200.00 "陽炎"
+              this-window=48.18 "マリオ"  evictions=0
+
+* **`マリオ` is the largest mover in its window at 48.18 units/tick**, with `鳥 4/6/11` (seagulls)
+  at 41-132. Real actors, plausible per-tick steps, so `(prev, cur)` is live and non-trivial.
+* **616,106 non-actors correctly rejected** by the vtable allowlist — the type test is doing work,
+  not waving everything through.
+* **0 evictions**: the 8192-slot side table never overflowed, so no actor was silently dropped.
+* Guest memory is **read only**; nothing is written yet.
+
+### The per-window maximum was not a nicety
+
+The all-time maximum sits at 2200 units on `陽炎` — the heat-haze prop's one init teleport, the same
+artefact seen on the decomp side. It pins the all-time figure forever and would have hidden every
+real mover behind it. Reporting a **per-window** maximum, reset each report, is what surfaced
+`マリオ`. A single global max is a lossy summary of exactly the wrong statistic.
+
+### Why this order
+
+The snapshot is landed and proven before any interpolating write, because an inert `(prev, cur)`
+pair renders identically to a working one: interpolation built on a dead snapshot would look correct
+while doing nothing, and there is no later test that separates those two. `moved=1.7%` (~9 movers a
+tick in a largely static plaza) with the player named among them is the evidence that the write has
+something to interpolate.
+
+### Next
+
+Write `lerp(prev, cur, alpha)` into the guest transform for a sub-frame, re-run `PreEntry` + draw,
+and present twice. The pieces are in place: the boundary is measured (pixel-identical re-run), the
+present-twice seam already exists in `native_frame.cpp`, and the type test is validated. The first
+check on the write side is the same shape as this one — with alpha pinned to 1.0 the frame must be
+**pixel-identical** to no-interpolation, or the write path is wrong before interpolation is even
+attempted.
