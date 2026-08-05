@@ -53,7 +53,8 @@ constexpr u32 OFF_POSITION = 0x10;
 constexpr u32 OFF_ROTATION = 0x30;
 
 constexpr u32 CUE_MOVE  = 0x1;
-constexpr u32 CUE_CALC_ANIM = 0x2;   // calcRootMatrix runs HERE, not in the draw phase
+constexpr u32 CUE_CALC_ANIM = 0x2;
+constexpr u32 CUE_DRAW      = 0x8;   // calcRootMatrix runs HERE, not in the draw phase
 
 // SBR_INTERP60_ALPHA: write lerp(prev, cur, alpha) into the guest transform for the draw phase.
 // Unset means snapshot-only (read nothing back). alpha=1.0 MUST be pixel-identical to unset --
@@ -305,6 +306,32 @@ void trace_dispatch(u32 mask) {
     lucent::info("i60trace", "  dispatch mask=0x{:x}", mask);
 }
 
+// SBR_INTERP60_FOLLOW=<guest addr>: follow ONE actor's mPosition.y through a tick, printing it at
+// every phase transition. Three placements of apply/restore have been reasoned about and all three
+// were wrong; the frame is the far end of a long chain (pose -> calcRootMatrix -> base TRMtx ->
+// entry -> draw) and a pixel diff cannot say WHERE the chain breaks. This reads the value itself.
+u32 follow_obj() {
+    // "mario" dereferences gpMarioOriginal (0x8040E10C) rather than needing the address of the
+    // day; anything else is taken as a literal guest address.
+    static const char* e = std::getenv("SBR_INTERP60_FOLLOW");
+    if (!e) return 0;
+    if (e[0] == 'm') return sb_ram_fast(0x8040E10Cu) ? sb_r32(0x8040E10Cu) : 0u;
+    static const u32 a = (u32)std::strtoul(e, nullptr, 0);
+    return a;
+}
+long g_followLines = 0;
+u32  g_followLastMask = 0xFFFFFFFFu;
+
+void follow(u32 mask, const char* where) {
+    const u32 o = follow_obj();
+    if (!o || g_followLines > 60) return;
+    if (mask == g_followLastMask && where[0] == 'd') return;
+    g_followLastMask = mask;
+    ++g_followLines;
+    lucent::info("i60follow", "  mask=0x{:<9x} {:<8} y={:.2f}", mask, where,
+                 (double)guest_f32(o + OFF_POSITION + 4));
+}
+
 void snapshot(CPUState& cpu, u32 mask) {
     const u32 obj = (u32)cpu.gpr[3];
     if (!sb_ram_fast(obj)) return;
@@ -355,28 +382,36 @@ void interp_test_perform(CPUState& cpu) {
         const float alpha = alpha_setting();
 
         if (alpha >= 0.0f) {
-            static u32 s_moveTick = 0xFFFFFFFFu, s_drawTick = 0xFFFFFFFFu;
-            // Restore BEFORE this tick's movement: physics must never run on an interpolated pose.
-            // Restore at the first MOVEMENT dispatch, not at the present. Measured: restoring at
-            // the present boundary writes stale values over movement the game has already done —
-            // `moved` collapsed from 1.9% to 0.0% and every actor froze. The trace explains it: a
-            // direct() call runs draw -> move -> calc -> view -> entry -> present, so the present
-            // is AFTER that call's movement, and a restore there undoes it.
-            if ((mask & CUE_MOVE) && tick != s_moveTick) { s_moveTick = tick; restore_all(); }
-            // Substitute before the CALC phase, NOT before draw. calcRootMatrix() -- which turns
-            // mPosition/mRotation into the model's base TRMtx -- runs on CUE_CALC_ANIM (0x2), which
-            // precedes entry and draw. Applying at the draw dispatch is too late: the matrix has
-            // already been built from the un-interpolated pose, so the write lands in memory nobody
-            // reads again that frame. Measured: with the apply at draw time, alpha=0.0 changed 0 of
-            // 1,228,800 pixels while identity at alpha=1.0 passed -- the control is the only reason
-            // that looked like a failure rather than a success.
-            if ((mask & CUE_CALC_ANIM) && tick != s_drawTick) {
-                s_drawTick = tick;
+            // BRACKET THE DRAW BLOCK, nothing wider.
+            //
+            // The previous scheme substituted at the calc phase and undid it a phase (or a frame)
+            // later. That is mutate-and-undo across phase boundaries, and it needs exact knowledge
+            // of every consumer of the pose in between -- three placements were tried and all three
+            // were wrong, one of them freezing every actor by overwriting movement the game had
+            // already done.
+            //
+            // The measured dispatch order (SBR_INTERP60_TRACE) shows the draw dispatches form a
+            // CONTIGUOUS BLOCK at the start of a direct() call, before movement:
+            //     draw (0x8) ... -> movement (0x1) -> calc (0x2) -> view (0x4) -> entry -> PRESENT
+            // So the substitution can open at the first draw dispatch and close at the first
+            // non-draw dispatch after it. It never outlives the block that uses it, and no phase
+            // that reads the pose for anything but drawing ever sees a substituted value.
+            //
+            // This is still a stand-in for the real design, which renders the tick TWICE (alpha=0.5
+            // then alpha=1.0) and needs no undo at all, because the last pass writes the truth.
+            static bool s_inDraw = false;
+            const bool isDraw = (mask & CUE_DRAW) != 0;
+            if (isDraw && !s_inDraw) {
+                s_inDraw = true;
                 apply_all(g_lastSnapTick, alpha);
+            } else if (!isDraw && s_inDraw) {
+                s_inDraw = false;
+                restore_all();
             }
         }
 
         trace_dispatch(mask);
+        follow(mask, "dispatch");
 
         // testPerform masks the incoming cue with the object's own unkC before dispatching; the
         // snapshot only needs to know movement is about to run for this object, and the raw cue

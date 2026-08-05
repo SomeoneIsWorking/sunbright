@@ -261,11 +261,12 @@ logger — that is debt to convert, not a feature.
 | `SBR_FIFO_2D` | 1 | `sms-recomp/runtime/dev_gxfifo.cpp:149` |  |
 | `SBR_FORCE_DASHBLUR` | 1 | `sms-recomp/overrides/afterimage.cpp:67` |  |
 | `SBR_HUD_OFF` | 1 | `sms-recomp/overrides/widescreen.cpp:246` |  |
-| `SBR_INTERP60` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:71` |  |
-| `SBR_INTERP60_ALPHA` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:64` |  |
-| `SBR_INTERP60_KICK` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:238` |  |
-| `SBR_INTERP60_NORESTORE` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:197` |  |
-| `SBR_INTERP60_TRACE` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:294` |  |
+| `SBR_INTERP60` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:72` |  |
+| `SBR_INTERP60_ALPHA` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:65` |  |
+| `SBR_INTERP60_FOLLOW` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:316` |  |
+| `SBR_INTERP60_KICK` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:239` |  |
+| `SBR_INTERP60_NORESTORE` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:198` |  |
+| `SBR_INTERP60_TRACE` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:295` |  |
 | `SBR_J2D_CAPTURE` | 1 | `sms-recomp/overrides/diag_2d.cpp:148` |  |
 | `SBR_J2D_SOLID` | 1 | `sms-recomp/overrides/diag_2d.cpp:212` |  |
 | `SBR_J3D_CAPTURE` | 1 | `sms-recomp/overrides/j3d_capture.cpp:68` |  |
@@ -312,4 +313,4 @@ logger — that is debt to convert, not a feature.
 | `SBR_WIDESCREEN` | 1 | `sms-recomp/overrides/widescreen.cpp:56` |  |
 | `SBR_WS_SCALE` | 1 | `sms-recomp/overrides/widescreen.cpp:65` |  |
 
-**291 switches; 69 still gate a raw print.**
+**292 switches; 69 still gate a raw print.**

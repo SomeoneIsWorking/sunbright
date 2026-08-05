@@ -1287,3 +1287,51 @@ The next step is bisection over the measured order, not another derivation: move
 candidate boundary in turn and read the identity/control pair, which is now a trustworthy instrument
 (deterministic frames, 0-pixel baselines). Three reasoned placements have failed; the order is
 cheap to observe and expensive to guess, and that lesson is the finding here.
+
+## VERIFIED: the interpolation write path works — bracket the DRAW BLOCK, do not mutate-and-undo
+
+    alpha=1.0 vs baseline :   0 of 1,228,800  (identity exact)
+    alpha=0.0 vs baseline : 162 of 1,228,800  (control FIRES)
+    liveness              : moved=1.8%        (movement uncorrupted)
+
+Both halves of the gate pass at once for the first time.
+
+### What was wrong, and it was a SHAPE problem not a placement problem
+
+Three attempts substituted the pose at one phase and undid it at another — mutate-and-undo spanning
+phase boundaries. Each needed exact knowledge of every consumer of the pose in between, and each was
+wrong in a different way: invisible (restore before the consuming draw), or catastrophic (restore at
+the present, overwriting movement the game had already done and freezing every actor).
+
+The user's reaction to the design — *"idk what restore is but it sounds like the wrong approach"* —
+was correct, and identified the real defect faster than three more measurements would have. A
+separate undo step is not part of the design; it was an artefact of testing with a SINGLE present.
+
+### The fix
+
+The measured dispatch order shows the draw dispatches form a **contiguous block at the start of a
+direct() call**, before movement:
+
+    draw (0x8) ... -> movement (0x1) -> calc (0x2) -> view (0x4) -> entry (0x200) -> PRESENT
+
+So the substitution opens at the first draw dispatch and closes at the first non-draw dispatch after
+it. It never outlives the block that consumes it, and no phase that reads the pose for anything
+other than drawing ever sees a substituted value. Nothing has to be known about consumers outside
+the block, because the substitution does not reach them.
+
+### And the undo disappears entirely in the real design
+
+This is still a stand-in. The actual design renders the tick TWICE — sub-frame A at `alpha=0.5`,
+sub-frame B at `alpha=1.0` — and needs no undo at all, because the last pass writes the true state
+by construction. The bracket above is the single-present degenerate case of that, and it is what
+made the write path verifiable before the second present exists.
+
+### Note on the control's magnitude
+
+162 pixels is a small but unambiguous signal: at `alpha=0.0` only the ~20 actors that move in a tick
+shift, and at this camera they are small on screen. It is the SIGN that matters here (0 vs non-zero
+against a 0-pixel-noise baseline), and the earlier `SBR_INTERP60_KICK=3000` probe already
+established the path can move 97.8% of the frame when the displacement is large.
+
+**Next: the second present.** The pieces are all verified — snapshot (coverage-proven), write path
+(identity + control), deterministic frames, and a measured phase order to insert into.
