@@ -131,6 +131,9 @@ struct Entry {
     float curRot[3] = {0, 0, 0};
     bool  applied = false;      // a lerp is currently written into guest memory
     bool  posOnly = false;      // a TPlacement that is not a TActor: position only, never rotation
+    bool  isCam   = false;      // layout-verified JDrama::TLookAtCamera: mUp/mTarget too
+    float up[3] = {0, 0, 0}, target[3] = {0, 0, 0};          // (prev) aim
+    float curUp[3] = {0, 0, 0}, curTarget[3] = {0, 0, 0};    // (cur) aim, saved at apply time
 };
 
 Entry g_tab[TABLE_SIZE];
@@ -182,9 +185,21 @@ bool seen(u32 v) {
 // duration of a sub-frame while letting the matrix recompute run, which is a narrower seam than
 // dropping the whole phase. Recorded so the trade is visible rather than silently taken.
 constexpr u32 SUBFRAME_CUE_DEFAULT = 0xFFFFFFFEu;
+
+// JDrama::TGraphics::mViewMtx @ +0xB4, 3x4 floats (JDRGraphics.hpp:50). TSmJ3DScn::perform copies
+// this into j3dSys, so it is the view the whole scene is drawn through, and the sub-frame passes a
+// SNAPSHOT of the struct. Whether an interpolated camera can ever reach the scene depends on two
+// things that must be MEASURED, not assumed:
+//   1. does the camera's perform run at all inside the re-issue, and
+//   2. does it write THIS buffer (the snapshot), not the original stack TGraphics that is long gone?
+// If the view is byte-identical either side of the re-issue, then no camera field -- position, up
+// or target -- can affect the sub-frame, and adding mUp/mTarget to the snapshot would be another
+// substituted-correctly-changed-nothing result.
+constexpr u32 OFF_VIEWMTX = 0xB4;
 constexpr u32 OFF_PREENTRY = 0x34;
 
 bool  g_inSubframe = false;      // suppress snapshot + instrumentation during the re-issue
+long  g_camDispatches = 0;       // testPerform calls on a placement-only object inside a sub-frame
 u8    g_gfxSnap[0x100];
 bool  g_gfxValid = false;
 u32   g_drawLists[8];            // the lists the game performed BEFORE its movement phase
@@ -264,6 +279,34 @@ void note_placement(u32 obj) {
     g_placeObjs[g_placeN++] = obj;
 }
 
+// Does this object's LAYOUT look like a JDrama::TLookAtCamera?
+//
+// Vtable identification failed here for a documented reason: TCamera is multiply derived
+// (TPlacement, JStage::TCamera), the JSG* methods that carry the TLookAtCamera tag live in the
+// SECONDARY vtable, and the live object's +0x00 vptr points at the PRIMARY -- "camera 1" carries
+// 0x803acde8 while the recovered tag sits at 0x803ace0c, 0x24 later. Deriving the primary from the
+// secondary by that delta would be a magic constant.
+//
+// So check the fields instead, and check ones with KNOWN values rather than merely plausible ones:
+// TLookAtCamera's constructor runs TCamera(10.0f, 300000.0f, name), so mNear@+0x28 and mFar@+0x2C
+// are fixed by the decomp (JDRCamera.hpp:73). mFovy@+0x48 and mAspect@+0x4C must additionally be
+// sane. A signature of two exact constants plus two range checks is falsifiable in a way a vtable
+// guess is not -- and this matters because the fields it authorises writing to are mUp@+0x30 and
+// mTarget@+0x3C, which on a non-camera would be someone else's data.
+constexpr u32 OFF_CAM_NEAR = 0x28, OFF_CAM_FAR = 0x2C;
+constexpr u32 OFF_CAM_UP = 0x30, OFF_CAM_TARGET = 0x3C;
+constexpr u32 OFF_CAM_FOVY = 0x48, OFF_CAM_ASPECT = 0x4C;
+
+bool looks_like_lookat_camera(u32 obj) {
+    if (!sb_ram_fast(obj) || !sb_ram_fast(obj + 0x4F)) return false;
+    const float nr = guest_f32(obj + OFF_CAM_NEAR);
+    const float fr = guest_f32(obj + OFF_CAM_FAR);
+    const float fovy = guest_f32(obj + OFF_CAM_FOVY);
+    const float aspect = guest_f32(obj + OFF_CAM_ASPECT);
+    return nr > 0.0f && nr < 1000.0f && fr > 1000.0f && fr < 1.0e7f
+           && fovy > 1.0f && fovy < 179.0f && aspect > 0.1f && aspect < 10.0f;
+}
+
 void report_placements() {
     lucent::info("interp60", "  PLACEMENT-ONLY objects seen ({}{}):", g_placeN,
                  g_placeOverflow ? ", TABLE OVERFLOWED - some not listed" : "");
@@ -274,9 +317,22 @@ void report_placements() {
         char nm[48]; guest_name(g_placeObjs[i], nm, sizeof nm);
         Entry* e = slot_for(g_placeObjs[i]);
         const bool tracked = e && e->obj == g_placeObjs[i];
-        lucent::info("interp60", "    0x{:08x} vptr=0x{:08x} \"{}\"{}", g_placeObjs[i],
-                     sb_ram_fast(g_placeObjs[i]) ? sb_r32(g_placeObjs[i]) : 0u, nm,
+        const u32 o = g_placeObjs[i];
+        lucent::info("interp60", "    0x{:08x} vptr=0x{:08x} \"{}\"{}", o,
+                     sb_ram_fast(o) ? sb_r32(o) : 0u, nm,
                      tracked ? "" : "   [NOT in the snapshot table]");
+        lucent::info("interp60",
+                     "      near={:.2f} far={:.2f} fovy={:.2f} aspect={:.3f} -> "
+                     "looks_like_lookat_camera={}   up=({:.1f},{:.1f},{:.1f}) "
+                     "target=({:.1f},{:.1f},{:.1f})",
+                     (double)guest_f32(o + OFF_CAM_NEAR), (double)guest_f32(o + OFF_CAM_FAR),
+                     (double)guest_f32(o + OFF_CAM_FOVY), (double)guest_f32(o + OFF_CAM_ASPECT),
+                     looks_like_lookat_camera(o) ? "YES" : "NO",
+                     (double)guest_f32(o + OFF_CAM_UP), (double)guest_f32(o + OFF_CAM_UP + 4),
+                     (double)guest_f32(o + OFF_CAM_UP + 8),
+                     (double)guest_f32(o + OFF_CAM_TARGET),
+                     (double)guest_f32(o + OFF_CAM_TARGET + 4),
+                     (double)guest_f32(o + OFF_CAM_TARGET + 8));
     }
 }
 
@@ -360,6 +416,12 @@ void restore_all() {
             guest_w_f32(e.obj + OFF_ROTATION + 4, e.curRot[1]);
             guest_w_f32(e.obj + OFF_ROTATION + 8, e.curRot[2]);
         }
+        if (e.isCam) {
+            for (int k = 0; k < 3; ++k) {
+                guest_w_f32(e.obj + OFF_CAM_UP + (u32)k * 4, e.curUp[k]);
+                guest_w_f32(e.obj + OFF_CAM_TARGET + (u32)k * 4, e.curTarget[k]);
+            }
+        }
         ++g_restored;
     }
 }
@@ -409,6 +471,10 @@ void apply_all(u32 tick, float alpha) {
         for (int k = 0; k < 3; ++k) {
             e.cur[k]    = guest_f32(e.obj + OFF_POSITION + (u32)k * 4);
             e.curRot[k] = e.posOnly ? 0.0f : guest_f32(e.obj + OFF_ROTATION + (u32)k * 4);
+            if (e.isCam) {
+                e.curUp[k]     = guest_f32(e.obj + OFF_CAM_UP + (u32)k * 4);
+                e.curTarget[k] = guest_f32(e.obj + OFF_CAM_TARGET + (u32)k * 4);
+            }
         }
         ++g_applyN;
         {
@@ -451,6 +517,10 @@ void apply_all(u32 tick, float alpha) {
             for (int k = 0; k < 3; ++k) {
                 guest_w_f32(e.obj + OFF_POSITION + (u32)k * 4, e.cur[k]);
                 if (!e.posOnly) guest_w_f32(e.obj + OFF_ROTATION + (u32)k * 4, e.curRot[k]);
+                if (e.isCam) {
+                    guest_w_f32(e.obj + OFF_CAM_UP + (u32)k * 4, e.curUp[k]);
+                    guest_w_f32(e.obj + OFF_CAM_TARGET + (u32)k * 4, e.curTarget[k]);
+                }
             }
             ++g_applied;
             continue;
@@ -459,6 +529,10 @@ void apply_all(u32 tick, float alpha) {
             for (int k = 0; k < 3; ++k) {
                 guest_w_f32(e.obj + OFF_POSITION + (u32)k * 4, e.pos[k]);
                 if (!e.posOnly) guest_w_f32(e.obj + OFF_ROTATION + (u32)k * 4, e.rot[k]);
+                if (e.isCam) {
+                    guest_w_f32(e.obj + OFF_CAM_UP + (u32)k * 4, e.up[k]);
+                    guest_w_f32(e.obj + OFF_CAM_TARGET + (u32)k * 4, e.target[k]);
+                }
             }
             ++g_applied;
             continue;
@@ -466,6 +540,15 @@ void apply_all(u32 tick, float alpha) {
         for (int k = 0; k < 3; ++k) {
             guest_w_f32(e.obj + OFF_POSITION + (u32)k * 4,
                         (1.0f - alpha) * e.pos[k] + alpha * e.cur[k]);
+            if (e.isCam) {
+                // Aim components lerp linearly like the eye. Not a slerp: mUp and mTarget are a
+                // world-space up vector and a look-at POINT, not an orientation, so the shortest-arc
+                // problem that applies to Euler rotation does not arise here.
+                guest_w_f32(e.obj + OFF_CAM_UP + (u32)k * 4,
+                            (1.0f - alpha) * e.up[k] + alpha * e.curUp[k]);
+                guest_w_f32(e.obj + OFF_CAM_TARGET + (u32)k * 4,
+                            (1.0f - alpha) * e.target[k] + alpha * e.curTarget[k]);
+            }
             // Angles are Euler degrees here; a naive lerp is wrong across the +-180 seam. Take the
             // shortest arc rather than sweeping the long way round, which would spin an actor a
             // full turn in one sub-frame whenever it crossed the wrap point.
@@ -745,6 +828,15 @@ void snapshot(CPUState& cpu, u32 mask) {
         e->rot[1] = guest_f32(obj + OFF_ROTATION + 4);
         e->rot[2] = guest_f32(obj + OFF_ROTATION + 8);
     }
+    // A camera's pose is eye AND aim: C_MTXLookAt(mViewMtx, &mPosition, &mUp, &mTarget). Snapshot
+    // the aim as well, or an interpolated eye swings around a target pinned to the current tick.
+    e->isCam = e->posOnly && looks_like_lookat_camera(obj);
+    if (e->isCam) {
+        for (int k = 0; k < 3; ++k) {
+            e->up[k]     = guest_f32(obj + OFF_CAM_UP + (u32)k * 4);
+            e->target[k] = guest_f32(obj + OFF_CAM_TARGET + (u32)k * 4);
+        }
+    }
 }
 
 // ── the sub-frame: re-issue PreEntry + the draw lists at an interpolated pose ─
@@ -783,6 +875,10 @@ void snapshot(CPUState& cpu, u32 mask) {
 
 void interp_test_perform(CPUState& cpu) {
     ++g_listDispatches;
+    if (g_inSubframe) {
+        const u32 o = (u32)cpu.gpr[3];
+        if (sb_ram_fast(o) && is_placement_only(sb_r32(o))) ++g_camDispatches;
+    }
     // Inside a sub-frame, report progress by DISPATCH and by stream position. A list that never
     // returns is otherwise a single silent stack sample: these two numbers say whether it is
     // advancing through its objects, stuck on one, or emitting without bound — three different
@@ -872,6 +968,10 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
     g_inSubframe = true;
     const u32 cue = subframe_cue();
 
+    float viewBefore[12];
+    for (int i = 0; i < 12; ++i) viewBefore[i] = guest_f32(gfx + OFF_VIEWMTX + (u32)i * 4);
+    g_camDispatches = 0;
+
     // NO SEPARATE PreEntry -- and that is a POSITIVE design point, not an omission.
     //
     // TSmJ3DScn::perform (decomp JDRSmJ3DScn.cpp:46) does the whole cycle inside its DRAW cue:
@@ -920,6 +1020,26 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
     // midpoint. This is the pass that makes the substitution self-cancelling by construction.
     restore_all();
     if (!noEntry) perform_list(cpu, preEntry, cue, gfx);
+
+    // Did the re-issue move the view, and did the camera take part?
+    {
+        float viewAfter[12];
+        int changed = 0;
+        float maxd = 0.0f;
+        for (int i = 0; i < 12; ++i) {
+            viewAfter[i] = guest_f32(gfx + OFF_VIEWMTX + (u32)i * 4);
+            const float d = viewAfter[i] - viewBefore[i];
+            if (d != 0.0f) { ++changed; if (d > maxd || -d > maxd) maxd = d < 0 ? -d : d; }
+        }
+        static long n = 0;
+        if (++n <= 3 || (n % 600) == 0)
+            lucent::info("i60sub",
+                         "view across re-issue #{}: {} of 12 elements changed (max |d|={:.4f}), "
+                         "camera dispatched {}x inside the sub-frame{}",
+                         n, changed, (double)maxd, g_camDispatches,
+                         changed == 0 ? "  <-- the view is UNCHANGED: no camera field can reach "
+                                        "this sub-frame" : "");
+    }
 
     g_inSubframe = false;
     cpu.gpr[1] = savedSp;

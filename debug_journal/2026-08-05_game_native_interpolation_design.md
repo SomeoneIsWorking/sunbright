@@ -1898,3 +1898,42 @@ correctly, changed nothing" result, and this arc has enough of those.
 
 A diagnostic that states its own coverage from a hardcoded number is a stale claim with a timestamp
 of whenever someone last edited the string.
+
+## THE CAMERA'S AIM IS NOW SUBSTITUTED — both preconditions measured first
+
+Before adding any field, the two things that had to be true were measured:
+
+    view across re-issue #1: 6 of 12 elements changed (max |d|=1.0000),
+                             camera dispatched 16x inside the sub-frame
+
+The camera's `perform` DOES run inside the re-issue, and it DOES write the `TGraphics` the sub-frame
+passes (the snapshot buffer, not the long-gone stack original). Had the view been byte-identical
+across the re-issue, no camera field could have reached the sub-frame and adding `mUp`/`mTarget`
+would have produced yet another substituted-correctly-changed-nothing result.
+
+### Identifying the camera: by LAYOUT, because the vtable route provably fails here
+
+"camera 1" carries vptr `0x803acde8`; the recovered TLookAtCamera tag sits at `0x803ace0c`, exactly
+`0x24` later. That is the SECONDARY vtable — `class TCamera : public TPlacement, public
+JStage::TCamera`, with the `JSG*` methods that carry the tag in the second table while the live
+object's `+0x00` points at the primary. The same multiple-inheritance trap already documented for
+TActor in `us_vtables.py`. Deriving the primary from the secondary by that `0x24` would be a magic
+constant, so the object is identified by its FIELDS instead:
+
+    near=10.00  far=300000.00  fovy=50.00  aspect=1.346
+    up=(0.0, 1.0, 0.0)  target=(-553.9, 459.9, 6282.8)   -> looks_like_lookat_camera = YES
+
+`near`/`far` are not merely plausible, they are the EXACT constants `TLookAtCamera`'s constructor
+passes (`TCamera(10.0f, 300000.0, name)`, JDRCamera.hpp:73), `up` is a canonical up vector and
+`target` a real world-space point. Two exact constants plus two range checks is a falsifiable
+signature, which matters because what it authorises is writing to `mUp@+0x30` and `mTarget@+0x3C` —
+on a non-camera, someone else's data.
+
+### What is substituted now
+
+`Entry` carries `up`/`target` prev and cur for layout-verified cameras, lerped linearly alongside
+the eye. Deliberately NOT a slerp: `mUp` is a world-space up vector and `mTarget` a look-at POINT,
+not an orientation, so the shortest-arc problem that applies to Euler rotation does not arise.
+
+Endpoints stay exact and the restore puts all six components back, so the camera's own tick-N pose
+is what physics and the next tick see.
