@@ -215,6 +215,8 @@ extern "C" void aurora_replay_midpoint() {
     nanosleep(&ts, nullptr);
 }
 
+extern "C" void sbr_interp60_restore();   // overrides/interp60_snapshot.cpp
+
 namespace {
 
 // Present whatever is in the open frame and open the next one, per aurora's contract:
@@ -278,6 +280,14 @@ void present_and_reopen(bool& frameActive) {
     } else {
         aurora_discard_frame();
     }
+
+    // 60fps interpolation: put the guest transforms back AFTER the frame's GX stream has been
+    // consumed. The restore used to sit at the next tick's first CUE_MOVE dispatch, which is too
+    // early -- measured, not assumed: with the restore disabled entirely a substituted pose moved
+    // 1,201,698 of 1,228,800 pixels, while with it at the movement dispatch it moved 0. The draw
+    // for a tick evidently completes after that point, so the only unambiguous "after the render"
+    // boundary is here.
+    sbr_interp60_restore();
 
     // aurora_update returns the frame's event ARRAY; it is not a pop-one-at-a-time queue, so
     // calling it in a loop never terminates. The events MUST be inspected, not merely pumped:

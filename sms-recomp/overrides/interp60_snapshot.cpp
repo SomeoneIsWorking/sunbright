@@ -285,6 +285,26 @@ void apply_all(u32 tick, float alpha) {
     }
 }
 
+// SBR_INTERP60_TRACE=1: the ORDER of phase dispatches relative to the present boundary, for a few
+// ticks. Two placements of apply/restore have now been derived by reasoning about that order and
+// both were wrong -- the first left the substitution invisible, the second froze every actor by
+// writing stale values over movement the game had already done. The order is cheap to observe and
+// expensive to guess.
+bool trace_on() {
+    static const bool v = std::getenv("SBR_INTERP60_TRACE") != nullptr;
+    return v;
+}
+long g_traceLines = 0;
+u32  g_lastTraceMask = 0xFFFFFFFFu;
+
+void trace_dispatch(u32 mask) {
+    if (!trace_on() || g_traceLines > 90) return;
+    if (mask == g_lastTraceMask) return;          // collapse runs; only transitions matter
+    g_lastTraceMask = mask;
+    ++g_traceLines;
+    lucent::info("i60trace", "  dispatch mask=0x{:x}", mask);
+}
+
 void snapshot(CPUState& cpu, u32 mask) {
     const u32 obj = (u32)cpu.gpr[3];
     if (!sb_ram_fast(obj)) return;
@@ -337,6 +357,11 @@ void interp_test_perform(CPUState& cpu) {
         if (alpha >= 0.0f) {
             static u32 s_moveTick = 0xFFFFFFFFu, s_drawTick = 0xFFFFFFFFu;
             // Restore BEFORE this tick's movement: physics must never run on an interpolated pose.
+            // Restore at the first MOVEMENT dispatch, not at the present. Measured: restoring at
+            // the present boundary writes stale values over movement the game has already done —
+            // `moved` collapsed from 1.9% to 0.0% and every actor froze. The trace explains it: a
+            // direct() call runs draw -> move -> calc -> view -> entry -> present, so the present
+            // is AFTER that call's movement, and a restore there undoes it.
             if ((mask & CUE_MOVE) && tick != s_moveTick) { s_moveTick = tick; restore_all(); }
             // Substitute before the CALC phase, NOT before draw. calcRootMatrix() -- which turns
             // mPosition/mRotation into the model's base TRMtx -- runs on CUE_CALC_ANIM (0x2), which
@@ -351,6 +376,8 @@ void interp_test_perform(CPUState& cpu) {
             }
         }
 
+        trace_dispatch(mask);
+
         // testPerform masks the incoming cue with the object's own unkC before dispatching; the
         // snapshot only needs to know movement is about to run for this object, and the raw cue
         // carries that. Reading it before the body keeps this a pure observation.
@@ -364,6 +391,14 @@ void interp_test_perform(CPUState& cpu) {
 }
 
 } // namespace
+
+// Called from native_frame.cpp's present path, after aurora has consumed the frame's GX stream and
+// before the next tick's movement runs. See the call site for why it cannot be earlier.
+extern "C" void sbr_interp60_restore() {
+    if (!enabled()) return;
+    // Trace marker only. The restore itself is NOT done here — see the movement-dispatch comment.
+    if (trace_on() && g_traceLines <= 90) { ++g_traceLines; lucent::info("i60trace", "PRESENT"); }
+}
 
 SB_OVERRIDE(0x802fcc94, interp_test_perform, "JDrama::TViewObj::testPerform",
             "60fps interpolation (SBR_INTERP60): snapshot each actor's transform before its "

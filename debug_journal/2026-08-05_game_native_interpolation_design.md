@@ -1241,3 +1241,49 @@ Worth recording what the single-present experiment actually is: a degenerate sta
 design, which never restores mid-frame at all — it presents TWICE, the extra present carrying the
 interpolated pose. The restore question may dissolve once the second present is wired, and that is
 the more likely shape of the fix than moving the restore around.
+
+## MEASURED: the phase order inside a direct() call — DRAW COMES FIRST
+
+Two apply/restore placements were derived by reasoning about the tick's phase order and both were
+wrong. `SBR_INTERP60_TRACE=1` prints the dispatch masks in order with the present boundary marked,
+and the order is:
+
+    draw (0x8) ... 0x80, 0x10, 0x1000000
+    movement (0x1) ... 0x2001, 0x1001, 0x3001, 0x40000001
+    calc (0x2) ... 0x3, 0x6, 0x40000002
+    view (0x4) ... 0x10, 0x4
+    entry (0x200 / 0x400) ... 0x480, 0x204, 0x4000200, 0x2000200
+    PRESENT
+
+**A direct() call DRAWS FIRST**, rendering what the *previous* call entered, and only then runs
+movement, calc, view and entry for the new state. The present follows all of it. That is the
+entry-vs-render alternation `MarDirectorDirect.cpp` documents, now in concrete dispatch order rather
+than prose.
+
+### Both failed placements explained
+
+* **Restore at the next tick's first movement dispatch** (original): produced 0 pixel change with a
+  substitution active, while disabling restore entirely produced 97.8%. Still not fully explained by
+  the order above — movement follows draw within a call, so the restore *should* land after the draw
+  that matters. Something between calc and the consuming draw is still not understood, and saying so
+  is more useful than another guess.
+* **Restore at the present boundary**: catastrophic and cleanly diagnosed. The present is AFTER that
+  call's movement, so restoring there writes stale values over movement the game has already done.
+  `moved` collapsed from **1.9% to 0.0%** — every actor frozen — and both alphas then produced an
+  identical frame differing from baseline by 98.6%, which is a broken game, not interpolation. The
+  liveness counter is what caught it; a pixel diff alone would have shown a large confident-looking
+  difference.
+
+Reverted to the movement-dispatch restore, which keeps the game correct and moving (`moved=1.8%`).
+
+### What this leaves
+
+The write path is proven to reach the render (97.8% with restore off). The phase order is now
+measured rather than assumed. What remains unknown is precisely which draw consumes the pose the
+calc phase bakes into the model matrix, and therefore where a restore can sit without either being
+too early (invisible) or too late (clobbering movement).
+
+The next step is bisection over the measured order, not another derivation: move the restore to each
+candidate boundary in turn and read the identity/control pair, which is now a trustworthy instrument
+(deterministic frames, 0-pixel baselines). Three reasoned placements have failed; the order is
+cheap to observe and expensive to guess, and that lesson is the finding here.
