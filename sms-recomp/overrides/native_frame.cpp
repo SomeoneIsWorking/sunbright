@@ -535,7 +535,10 @@ void video_wait_for_retrace(CPUState& cpu) {
     sbr_scene_end_tick();
     sbr_scene_begin_tick();
 
-    gxfifo_build();
+    // NOTE: the stream is built and sent in present_tail(), not here. Under
+    // SBR_PRESENT_AFTER_COPY the seam returns before the game issues its GXCopyDisp, so building
+    // here would close the stream BEFORE the copy command exists — the copy would then land in the
+    // NEXT tick's stream and every present would render a frame whose copy had not been emitted.
 
     // Rates, so "is it slow?" is measured rather than guessed. TICKS are game frames; PRESENTS
     // are what reaches the screen. Today that is one per tick; counting presents rather than ticks
@@ -569,13 +572,11 @@ void video_wait_for_retrace(CPUState& cpu) {
 
     // The camera this tick's draws were built with, for interpolation. Last thing in the stream, so
     // it is the settled value rather than the previous tick's.
-    if (sbr_lerp_enabled()) sbr_afterimage_tick();
-    if (sbr_lerp_enabled()) sbr_gxfifo_view_matrix();
+
     // A tick in which the game WARPED the camera has no in-between to show. Tell aurora to present
     // this tick exactly rather than a halfway viewpoint the game never simulated. Read here, before
     // the present, so the flag covers exactly the tick whose draws are about to be emitted.
-    if (sbr_lerp_enabled() && sbr_camera_cut_take()) aurora::gfx::snap_next_interpolation();
-    gxfifo_send_last();
+
     // The mid-tick pacing hook needs this tick's field count, and aurora issues the second present
     // from inside its own end_frame where that number is out of scope. The count is only known
     // AFTER the present (it is a delta on the game's retrace counter), so use the PREVIOUS tick's —
@@ -606,6 +607,15 @@ void video_wait_for_retrace(CPUState& cpu) {
 // is set: the present itself, the interpolated sub-frame, and the frame-time bookkeeping that
 // brackets them. Factored out rather than duplicated so the two placements cannot drift apart.
 void present_tail(CPUState& cpu) {
+    // Close and send THIS tick's stream. Deliberately here and not in the seam: when the present is
+    // deferred past the game's EFB->XFB copy, the copy command is emitted after the seam returns, so
+    // a stream closed in the seam would not contain it.
+    gxfifo_build();
+    if (sbr_lerp_enabled()) sbr_afterimage_tick();
+    if (sbr_lerp_enabled()) sbr_gxfifo_view_matrix();
+    if (sbr_lerp_enabled() && sbr_camera_cut_take()) aurora::gfx::snap_next_interpolation();
+    gxfifo_send_last();
+
     // Label this present for the dump series. The sub-frame below issues a SECOND present per
     // tick, and a dump series with no record of which file is which has to be identified by
     // inference — which has already produced two wrong readings in this arc. The runtime knows the

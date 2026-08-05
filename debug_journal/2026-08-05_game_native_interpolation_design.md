@@ -2231,3 +2231,37 @@ That is a much narrower question than any asked so far, and both halves are now 
 (`SBR_INTERP60_ORDER` prints the view actually used; the labelled dump series says which present is
 which). The next measurement is which stream each present actually renders — the sub-frame's 1.7 MB
 or the next tick's — rather than which image it resembles.
+
+## THE STREAM ORDERING BUG IS FIXED — but alpha still does not reach the PIXELS
+
+Under `SBR_PRESENT_AFTER_COPY`, `gxfifo_build()` and `gxfifo_send_last()` were still running inside
+the seam, i.e. BEFORE the game's `GXCopyDisp` — so each tick's stream was closed and sent without
+its copy, and the copy landed in the NEXT tick's stream. Moving both into `present_tail()` fixes it,
+and the symptom moved: `sub -> main` went from exactly 0 to ~3,800 px.
+
+Then an alpha sweep, same tick, same everything:
+
+    alpha=0.00 :  sub->main =  3,774    main->sub = 678,914
+    alpha=0.25 :  sub->main =  3,778    main->sub = 678,928
+    alpha=0.50 :  sub->main =  3,782    main->sub = 678,940
+    alpha=0.75 :  sub->main =  3,772    main->sub = 678,946
+    alpha=1.00 :  sub->main =  3,771    main->sub = 678,955
+
+**Flat.** 0.08% and 0.006% variation across the full range, while the view matrix the sub-frame
+renders with is a verified exact midpoint that moves 2.94 units end to end. The interpolation is
+correct and is not reaching the presented image.
+
+So the open question is now entirely inside the present/copy path: the sub-frame renders with an
+interpolated view (proven), emits its own 1.7 MB stream (proven), issues its own copy-to-XFB
+(proven, triggers 0 -> 1) — and the image that reaches the dump does not vary with any of it. The
+remaining candidates are that the sub-frame's copy targets a buffer that is not what the following
+present reads, or that aurora's present source lags a frame.
+
+### A labelling slip in the scoring script, recorded because it nearly repeated the earlier mistake
+
+The sweep script printed columns headed `prev_main->sub` and `sub->next_main`, but with
+`SB_DUMP_FRAME_COUNT=3` the series is sub/main/sub — so those were `sub->main` and `main->sub`. The
+conclusion survives (both are flat), but the header was wrong for the same reason the earlier
+readings were: a pairing assumed rather than read from the runtime labels that are right there in
+the filenames. Ad-hoc scoring scripts must use `role_of()` like `subframe_gate.py` does, not
+positional assumptions.
