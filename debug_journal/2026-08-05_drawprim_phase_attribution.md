@@ -1,0 +1,148 @@
+# draw_prim, measured from the inside: the render cost is ~55% per-primitive and ~43% per-DRAW
+
+The previous entry (`b8c48bb`) settled the render lever as *"per-primitive cost, not batching"*, on the
+strength of the primitive-size distribution: 46k primitives for 1314 merged draws, 53% of them
+4-vertex quads. That reasoning was sound about *primitive shape* and wrong about *where the time
+goes*. Phase-probing the body says the split is roughly half and half, and the per-draw half is
+concentrated in 1,291 calls rather than spread over 45,913.
+
+## Why the old profiler could not have found this
+
+`SB_PROFILE_DRAWPRIM` timed the body with a `clock_gettime` pair and the max-index scan with a
+second pair nested inside it. `clock_gettime` is ~20-25 ns even through the vDSO, against a body of
+~340 ns:
+
+* the two outer probes were ~12% of what they measured;
+* the two inner probes were charged to `draw_prim`'s own total, so the reported **"scan = 14% of
+  draw_prim" was partly the probe measuring itself**;
+* splitting the body into seven phases with that probe would have cost more than the body does.
+
+So the probe was replaced with a raw cycle counter (`__rdtsc` on x86-64, `cntvct_el0` on arm64, a
+`clock_gettime` fallback elsewhere that the report flags as too coarse), calibrated against
+`CLOCK_MONOTONIC` at startup. Measured probe cost: **0.3 ns**, which is what makes a nine-probe
+split admissible at all.
+
+## The controls, and what each one can catch
+
+Per the instruments rule — an instrument that cannot report its own failure has the same output for
+"no signal" and "broken":
+
+| control | catches | reading |
+|---|---|---|
+| `unattr` = whole − Σphases | a region with no probe on some path (the phases are built as a partition, so this is *not* trivially zero) | 1.9% |
+| `probe cost x probes/call` vs body | the split measuring itself, i.e. the defect that produced the old 14% | 0.5%, prints `TOO HIGH: NOT admissible` above 25% |
+| `merged + unmerged + early-return == calls` | an exit path escaping the accounting | 44622 + 1291 + 0 = 45913 ✅ |
+| `n=` beside every phase | a phase averaged over calls that never entered it | see below — this one fired |
+| `TRUNCATED` on the sample ring | a percentile computed from a clipped distribution | not hit (1291 < 4096) |
+
+**The `n=` control caught a real error in my own first reading.** Dividing each phase by the total
+call count made `unmerged` read as *"293 ns/call"*, which looks like an ordinary per-primitive cost.
+It runs on 1,291 of 45,913 calls, so its true per-call cost is **35x** that. An average over calls
+that never entered the phase is not a per-call cost, and had the column not carried its own
+denominator I would have filed the per-draw path as cheap.
+
+## The measurement
+
+Delfino, `SB_STAGE=1 SB_HEADLESS=1 SB_TURBO=1`, steady-state frame. Machine load average was 27.8,
+so the **absolute** ms are inflated and only the shares and the distribution shape are used here.
+
+    prologue     0.578ms    2.3%      12.6 ns/call  n=45913 (100%)
+    diag-pre     0.645ms    2.6%      14.0 ns/call  n=45913 (100%)
+    attr-enum    1.707ms    6.9%      37.2 ns/call  n=45913 (100%)
+    idx-scan     6.350ms   25.8%     139.2 ns/call  n=45634  (99%)
+    diag-post    0.710ms    2.9%      15.5 ns/call  n=45913 (100%)
+    push-verts   0.701ms    2.8%      15.3 ns/call  n=45913 (100%)
+    merge-idx    2.860ms   11.6%      64.1 ns/call  n=44622  (97%)
+    unmerged    10.601ms   43.1%    8211.7 ns/call  n=1291    (3%)
+    unattr       0.463ms    1.9%
+
+**Per-primitive ≈ 55%** (prologue + diag + attr-enum + idx-scan + push-verts + merge-idx, all at
+~46k calls) and **per-draw ≈ 43%** (`handle_draw_unmerged`, 1,291 calls).
+
+## The mean was not enough, so the distribution was taken too
+
+A 8.2 µs mean over 1,291 calls has two explanations with opposite fixes: a uniformly expensive build
+path worth restructuring, or a few shader/pipeline compiles at ~1 ms each dragging up an otherwise
+cheap path — a warm-up cost that must **not** be optimised for. Percentiles separate them:
+
+    unmerged ns: p50=2615  p90=7795  p99=61025  max=1137088   (n=1291)
+
+Both effects are real and both matter:
+
+* **p50 = 2.6 µs is a genuine, uniform per-draw cost.** 1,291 x 2.6 µs ≈ 3.4 ms/frame as a floor.
+* **the tail is not warm-up** — this is a steady-state frame, so the ~13 draws above 61 µs and the
+  1.1 ms outlier recur *every frame*. That is roughly another 1 ms/frame.
+
+## What this changes
+
+The `2026-08-05` conclusion "the render lever is a cheaper per-primitive path, not better batching"
+is **refined, not overturned**: per-primitive is the larger half, but 43% of `draw_prim` is 1,291
+draws, so *fewer or cheaper draws* is a lever of comparable size and was written off. The two are
+attacked differently — per-primitive is 46k calls where only constant-factor work matters,
+per-draw is 1,291 calls where a 2.6 µs body is worth reading line by line.
+
+Ranked by size, with what each one actually is:
+
+1. **`unmerged` 43%** — per-draw state build. p50 2.6 µs, heavy recurring tail.
+2. **`idx-scan` 26%** — per-vertex max-referenced-index scan. Exists *only because array sizes are
+   unknown*: fields are collected under `arrays[a].size == 0 && data != nullptr`. The root fix is
+   upstream, at whoever leaves `size` at 0, not a faster scan.
+3. **`merge-idx` 12%** — `prepare_idx_buffer` + `push_indices`. Per quad this is six separate
+   two-byte `ByteBuffer::append` calls, each doing its own capacity check, then a copy of the
+   12-byte result into the frame packet, then a `clear()`.
+4. **`attr-enum` 7%** — the 26-iteration loop over `GX_VA_PNMTXIDX..GX_VA_TEX7` rebuilding the
+   indexed-attribute field list, recomputed for every primitive from state that changes rarely.
+   Purely redundant recomputation.
+
+## First fix landed: index generation (12% -> ~6%)
+
+`merge-idx` was taken first because it is the one item on the list that is *pure overhead* rather
+than work: every index went into the buffer through its own capacity-checked `ByteBuffer::append`,
+so a quad paid six of them to emit twelve bytes. Each branch now sizes its output, takes the tail
+pointer once, and writes straight through — N capacity checks per primitive become 1.
+
+Measured with within-run ratios against phases that were NOT touched, because machine load moved
+from 27.8 to 12.0 between the two runs and every absolute number fell with it:
+
+| yardstick | before | after |
+|---|---|---|
+| merge-idx / push-verts | 4.19x | 2.02x |
+| merge-idx / prologue   | 5.09x | 2.32x |
+
+Both agree: roughly halved, so ~6% of `draw_prim` (~2.7% of the drain). Modest, and stated as
+modest.
+
+### The test found a heap overflow in the optimisation, in the first minute
+
+`prepare_idx_buffer` was `static` inside a 4,700-line TU that pulls in the whole WebGPU renderer,
+so the code producing every index in the frame had no unit test. Moving it to
+`lib/gx/prim_index.hpp` (templated on the buffer, so the test drives the shipping code rather than
+a copy) made one possible, asserting byte-for-byte agreement with the previous implementation
+across all seven primitive types, vertex counts 0..64, four start offsets, and an odd buffer
+offset. It carries a positive control that perturbs one index and requires the comparison to
+notice, so a harness wired to compare nothing cannot pass.
+
+It failed immediately. The QUADS branch sized its reservation with `vtxCount / 4` while the loop
+steps by 4 and therefore runs `ceil(vtxCount / 4)` times, emitting a full six indices for a
+trailing partial group — so any count not a multiple of 4 wrote **12 bytes past the end of the
+allocation**.
+
+The part worth keeping: **the rendered frame could not have caught this.** This game only emits
+quads in multiples of 4, so with the overflow present the Delfino mean RGB still matched the
+baseline exactly — (135.2, 144.6, 145.8), to the digit. A whole-frame statistic was the wrong
+instrument for a change whose correctness claim is "the same bytes", and it would have signed off
+on a latent heap corruption.
+
+It is also the characteristic failure of this *kind* of optimisation. The old code reserved as a
+hint and re-checked capacity on every append, so a wrong size expression was harmless. Sizing up
+front makes the size expression load-bearing. That trade is the reason the test had to come with
+the change rather than after it.
+
+## The transferable part
+
+Two attributions in this arc were wrong before this one, and the reason is the same each time: a
+number was read without its denominator. "scan = 14%" had probe cost inside it; "unmerged =
+293 ns/call" was divided by calls that never ran it. Both looked like ordinary results. The fix
+that generalises is to make the instrument *print the denominator next to every quantity* — `n=`,
+`% of calls`, probe cost, unattributed — so that a misreading has to survive contradicting evidence
+printed on the same line.
