@@ -1964,3 +1964,44 @@ present, so quitting exactly at the dump truncates the file the run existed to p
 **22x**, on every diagnostic run. Roughly two dozen runs in this arc paid the old cost, which is
 most of an hour spent watching an idle process. A tool that cannot stop when it is done is a
 workflow defect, and it outranked the task in hand.
+
+## ROOT CAUSE FOUND: the sub-frame was never COPIED OUT — and the frame seam presents BEFORE the copy
+
+The sub-frame emitted 1.7 MB of geometry and produced a frame pixel-identical to the main frame in
+every configuration tried. The reason, measured directly:
+
+    copy-to-XFB triggers emitted by this sub-frame: 0
+
+A pass that renders into the EFB and never copies it out is invisible, however much it draws. The
+display simply keeps showing the last copied XFB. That single fact explains every `main -> sub = 0`
+in this arc, and it explains why `SBR_INTERP60_DROPLAST` moved the MAIN frames but never that zero
+(EFB state leaking into the next tick's copy).
+
+`GXCopyDisp` lives in `JDrama::IssueGXCopyDisp`, called from `TDisplay::endRendering`
+(JDRDisplay.cpp:36). Calling the game's own `endRendering` for the sub-frame is the faithful way to
+emit it — the copy's src rect, Y scale, dst width, clamp, filter and clear all come from the
+display's render mode, and hand-rolling that sequence would be a second copy of it to keep in step.
+
+### And it exposed a deeper ordering problem that predates all of this
+
+With the copy in, the sub-frames carry the image and the MAIN presents come back BLACK:
+
+    copy.rgba.0.sub   mean RGB = ( 65.8,  77.9,  65.2)
+    copy.rgba.1.main  mean RGB = (  0.0,   0.0,   0.0)
+
+`TDisplay::endRendering` calls `waitForRetrace` FIRST and `IssueGXCopyDisp` SECOND. The frame seam
+IS `waitForRetrace` — so **the main present has always happened before the tick's own EFB->XFB
+copy.** It only ever looked correct because the display kept showing the previously copied XFB, one
+frame stale. Adding a copy inside the sub-frame (which also clears the EFB) removed the thing that
+was hiding it.
+
+That is a property of the frame seam itself, not of interpolation, and it means the recomp has been
+presenting a frame-late image all along — worth checking against the decomp runtime, whose seam is
+the same function.
+
+### Left behind a switch, deliberately
+
+`SBR_INTERP60_COPY=1` is OFF by default. It is the right mechanism and the wrong placement: the
+presents need to move to after the copy, which is a change to the frame seam, and that is not a
+change to make blind at the end of a long session. Default path re-verified as rendering normally
+(both presents mean R ~65.8, not black).

@@ -218,6 +218,7 @@ extern "C" void aurora_replay_midpoint() {
 
 extern "C" void sbr_interp60_restore();   // overrides/interp60_snapshot.cpp
 extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void));
+extern "C" int  sbr_interp60_in_subframe();
 
 namespace {
 
@@ -505,6 +506,12 @@ void video_wait_for_retrace(CPUState& cpu) {
         g_accGuestMs += (double)(now_ns() - g_lastPresentEndNs) / 1e6;
     }
     g_seamEnterNs = now_ns();
+
+    // RE-ENTRY FROM A SUB-FRAME. The sub-frame calls the game's endRendering purely to emit the
+    // EFB->XFB copy, and endRendering's first act is to wait for a retrace — which lands here. Doing
+    // the seam's own work now would end the frame the sub-frame is still assembling and present it
+    // early. Return immediately and let the copy be the only thing that happens.
+    if (sbr_interp60_in_subframe()) return;
 
     // Let the game do its own frame bookkeeping first.
     func_802fc9a4(cpu);

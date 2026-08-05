@@ -45,11 +45,13 @@ extern "C" unsigned VIGetRetraceCount(void);
 // TPerformList::perform(u32 cue, TGraphics*). The interpolation sub-frame IS a re-issue of a
 // subset of these calls, so this file owns the seam; the tick-split diagnostic is invoked from it.
 extern "C" void sbr_tick_split_call(CPUState&);
+extern "C" void func_802f80d0(CPUState&);      // JDrama::TDisplay::endRendering
 // Diagnostic in diag_vptr.cpp. One guest address gets exactly ONE override, so that file no longer
 // registers; it is called from here instead (the pattern afterimage.cpp uses).
 extern "C" void sbr_vptr_note(unsigned obj);
 // Where the GX parser is in this frame's stream (runtime/native_render.h). Used to price the re-issue.
 uint32_t sbr_gxfifo_stream_pos();
+unsigned long sbr_gxfifo_xfb_copies();
 
 namespace {
 
@@ -199,6 +201,7 @@ constexpr u32 OFF_VIEWMTX = 0xB4;
 constexpr u32 OFF_PREENTRY = 0x34;
 
 bool  g_inSubframe = false;      // suppress snapshot + instrumentation during the re-issue
+u32   g_display = 0;             // TDisplay*, captured at endRendering (see the override below)
 long  g_camDispatches = 0;       // testPerform calls on a placement-only object inside a sub-frame
 u8    g_gfxSnap[0x100];
 bool  g_gfxValid = false;
@@ -971,6 +974,7 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
     float viewBefore[12];
     for (int i = 0; i < 12; ++i) viewBefore[i] = guest_f32(gfx + OFF_VIEWMTX + (u32)i * 4);
     g_camDispatches = 0;
+    const unsigned long xfbBefore = sbr_gxfifo_xfb_copies();
 
     // NO SEPARATE PreEntry -- and that is a POSITIVE design point, not an omission.
     //
@@ -1014,6 +1018,38 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
     static const bool dropLast = std::getenv("SBR_INTERP60_DROPLAST") != nullptr;
     const int drawN = dropLast && g_drawN > 1 ? g_drawN - 1 : g_drawN;
     for (int i = 0; i < drawN; ++i) perform_list(cpu, g_drawLists[i], g_drawCues[i] & cue, gfx);
+    // THE COPY. Without it the sub-frame is invisible.
+    //
+    // Measured: a sub-frame emitted 1.7 MB of geometry and produced a frame pixel-identical to the
+    // main frame before it, in every configuration -- because it rendered into the EFB and nothing
+    // copied the EFB out. `copy-to-XFB triggers emitted by this sub-frame: 0`. The display keeps
+    // showing the previous image however much was drawn.
+    //
+    // The copy lives in TDisplay::endRendering (JDRDisplay.cpp:36), which calls waitForRetrace and
+    // then IssueGXCopyDisp -> GXCopyDisp. Calling the game's own endRendering is the faithful way to
+    // emit it: the copy's parameters (src rect, Y scale, dst width, clamp, filter, clear) come from
+    // the display's own render mode, and reproducing that sequence by hand would be a second
+    // implementation of it to keep in step. The frame seam recognises the re-entry and returns
+    // without presenting, so only the copy happens.
+    // SBR_INTERP60_COPY=1 — OFF BY DEFAULT, because it is not yet correct.
+    //
+    // It does emit the copy (`copy-to-XFB triggers: 1`, up from 0) and the sub-frame's image does
+    // reach the display. But it also turns every MAIN present black, which exposed the real
+    // ordering problem: TDisplay::endRendering calls waitForRetrace FIRST and IssueGXCopyDisp
+    // SECOND, and the frame seam IS waitForRetrace -- so the main present has always happened
+    // BEFORE the tick's own EFB->XFB copy. That only looked right because the display kept showing
+    // the previously copied XFB; once the sub-frame issues a copy of its own (which also clears the
+    // EFB), the main present has nothing copied out and comes back black.
+    //
+    // The fix is to move the presents to after the copy, not to suppress the copy — but that is a
+    // change to the frame seam's placement and it is not being made blind at the end of a long
+    // session. Left behind a switch so the measurement is reproducible.
+    static const bool doCopy = std::getenv("SBR_INTERP60_COPY") != nullptr;
+    if (doCopy && g_display && sb_ram_fast(g_display)) {
+        cpu.gpr[3] = g_display;
+        func_802f80d0(cpu);
+    }
+
     present();
 
     // Pass 2: the true pose, entered again so the NEXT tick's draw lists consume tick N and not the
@@ -1039,6 +1075,13 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
                          n, changed, (double)maxd, g_camDispatches,
                          changed == 0 ? "  <-- the view is UNCHANGED: no camera field can reach "
                                         "this sub-frame" : "");
+        const unsigned long xfb = sbr_gxfifo_xfb_copies() - xfbBefore;
+        if (++n <= 4 || (n % 600) == 0)
+            lucent::info("i60sub",
+                         "  copy-to-XFB triggers emitted by this sub-frame: {}{}", xfb,
+                         xfb == 0 ? "  <-- NONE. The sub-frame rendered into the EFB and was never "
+                                    "copied out, so the display keeps showing the previous image "
+                                    "however much geometry was emitted." : "");
     }
 
     g_inSubframe = false;
@@ -1054,6 +1097,11 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
 }
 
 // Called from native_frame.cpp's present path, after aurora has consumed the frame's GX stream.
+// The frame seam asks this before doing any of its own work: inside a sub-frame the game's
+// endRendering is being called only for its COPY, and a nested present would end the very frame the
+// sub-frame is still building.
+extern "C" int sbr_interp60_in_subframe() { return g_inSubframe ? 1 : 0; }
+
 extern "C" void sbr_interp60_restore() {
     if (!enabled()) return;
     if (trace_on() && (long)VIGetRetraceCount() >= trace_start_present() && g_tracePresents <= 3) {
@@ -1072,6 +1120,20 @@ extern "C" void sbr_interp60_restore() {
         if (g_listTicks == 2) resolve_mardir();   // after a full tick has populated the seen-set
     }
 }
+
+// Capture the TDisplay the game is rendering through. The sub-frame needs it to issue its own
+// EFB->XFB copy, and there is no symbol for the global; the object that endRendering is called on
+// IS the one, so take it from there rather than resolving a pointer.
+namespace {
+void end_rendering(CPUState& cpu) {
+    g_display = (u32)cpu.gpr[3];
+    func_802f80d0(cpu);
+}
+} // namespace
+
+SB_OVERRIDE(0x802f80d0, end_rendering, "JDrama::TDisplay::endRendering",
+            "60fps interpolation: capture the TDisplay so a sub-frame can issue its own EFB->XFB "
+            "copy; always runs the real body")
 
 SB_OVERRIDE(0x802a4e28, list_perform, "TPerformList::perform",
             "60fps interpolation (SBR_INTERP60_LISTS): identify the tick's ordered perform-list "

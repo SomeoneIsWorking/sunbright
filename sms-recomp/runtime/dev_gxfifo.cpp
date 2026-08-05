@@ -57,6 +57,7 @@ std::vector<u8> g_buf;
 // The stream handed to aurora. Identical to the guest's, except that CP array-base writes
 // are rewritten (see below) — aurora cannot use the guest's 32-bit address directly.
 std::vector<u8> g_out;
+unsigned long g_xfbCopies = 0;   // copy-to-XFB triggers seen in the stream (BP 0x52 bit 14)
 std::vector<u8> g_last;   // the stream of the frame just presented (see gxfifo_last_frame)
 
 
@@ -1125,7 +1126,14 @@ size_t parse(const u8* p, size_t n, int depth) {
             // clear the copy targets a TEXTURE, which is equally real — render-to-texture
             // content like the sea's reflection is built this way. Handling only the display
             // copy silently dropped every texture copy.
-            else if (reg == 0x52) emit_copy_state(val, (val & (1u << 14)) != 0);
+            else if (reg == 0x52) {
+                // Count copy-to-XFB triggers. The XFB copy is what makes a rendered EFB become the
+                // PRESENTED image; a pass that renders without one is invisible however much
+                // geometry it emitted. Counting them per pass is the difference between "the
+                // sub-frame drew nothing" and "the sub-frame drew and was never copied out".
+                if (val & (1u << 14)) ++g_xfbCopies;
+                emit_copy_state(val, (val & (1u << 14)) != 0);
+            }
             // Texture image registers. Maps 0-3 use the 0x8x/0x9x ids, maps 4-7 the 0xAx/0xBx
             // ids. A texobj is emitted once both halves of a slot are known.
             else if (reg >= 0x88 && reg <= 0x8B) { u32 m = reg - 0x88; g_tex[m].image0 = val; g_tex[m].have0 = true; emit_texobj(m); }
@@ -1395,6 +1403,10 @@ SbrTexture sbr_gx_fifo_texture(unsigned texmap) {
 // state from the CPU side, at a moment that is not obviously the same moment as the draw it is
 // labelling; recording the position lets that assumption be checked instead of trusted.
 uint32_t sbr_gxfifo_stream_pos() { return (uint32_t)g_out.size(); }
+
+// Copy-to-XFB triggers parsed so far. See the BP 0x52 site: this is what turns a rendered EFB into
+// the image that reaches the display.
+unsigned long sbr_gxfifo_xfb_copies() { return g_xfbCopies; }
 
 // Tag every draw that follows with `tag`, until the next tag — aurora's GX_AURORA_DRAW_TAG.
 //
