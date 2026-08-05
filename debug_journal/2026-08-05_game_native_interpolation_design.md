@@ -166,3 +166,47 @@ pass emitted nothing, so "emitted nothing" can never be reported as "identical".
    single-frame comparison.
 
 That residual is the next question. Do not round it away.
+
+
+## The residual is a DEBUG MARKER — the comparison was measuring more than the question
+
+`=3`'s +164-byte residual was localised rather than guessed at: `sb_gx_fifo_snapshot` /
+`sb_gx_fifo_compare` report the first differing offset, and `sb_gx_fifo_dump_heads` prints the
+leading bytes of both passes.
+
+    firstDiff = 0            <- they diverge at the FIRST byte, not at the end
+    passA head: 50 00 22 00 0f 44 72 61 77 42 75 66 20 53 6b 79 20 4f 70 61   ("DrawBuf Sky Opa")
+    passB head: 10 00 06 10 20 3f cb fa 20 00 00 00 00 40 09 3f 9a ...
+
+`0x50` is `GX_AURORA`; subcommand `0x0022` is **`GX_AURORA_DEBUG_MARKER_INSERT`**. Pass A opens
+with a debug marker carrying the draw-buffer name; pass B opens with `0x10` = `GX_LOAD_XF_REG`,
+real matrix data.
+
+So the head divergence is **diagnostic metadata, not render state** — our own draw-attribution
+markers, emitted conditionally, landing differently on a re-run. The byte-stream comparison was
+therefore answering a stricter question than interpolation asks: it compared *everything in the
+stream*, including instrumentation, when what matters is whether the RENDER commands repeat.
+
+This is the comparison-instrument rule again — *state what both sides actually measure*. The
+instrument was sound at detecting a difference (its control fired), but the difference it found at
+offset 0 is not the difference that matters.
+
+### What survives this correction, and what does not
+
+* **SURVIVES: `=1` is genuinely not re-runnable.** The ~122 KB deficit is three orders of magnitude
+  larger than marker traffic and tracks real missing geometry — the draw buffers really are
+  populated by entry and consumed as they are drawn. The sub-frame boundary really is
+  `PreEntry + draw`.
+* **DOES NOT SURVIVE: "`=3` leaves a +164 byte residual" as evidence of state mutation.** That
+  number is contaminated by debug markers and cannot support a claim either way until markers are
+  excluded from the comparison.
+
+### Next
+
+Compare with `GX_AURORA` debug sub-commands (`0x0020` push / `0x0021` pop / `0x0022` marker)
+skipped, so the comparison covers render commands only. Keep the same positive control — it must
+still fire with markers excluded, or the filtered comparison is blind.
+
+Also noted: `=4` (three passes, comparing pass 1 against pass 2) never reaches its first report —
+three draw passes plus two extra `PreEntry` runs stalls the frame. Not chased; the marker-filtered
+two-pass comparison answers the same question more cheaply.
