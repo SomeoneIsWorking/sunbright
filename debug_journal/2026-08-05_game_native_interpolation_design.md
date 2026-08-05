@@ -168,7 +168,7 @@ pass emitted nothing, so "emitted nothing" can never be reported as "identical".
 That residual is the next question. Do not round it away.
 
 
-## The residual is a DEBUG MARKER — the comparison was measuring more than the question
+## The residual is a DEBUG MARKER — WRONG, see the correction below
 
 `=3`'s +164-byte residual was localised rather than guessed at: `sb_gx_fifo_snapshot` /
 `sb_gx_fifo_compare` report the first differing offset, and `sb_gx_fifo_dump_heads` prints the
@@ -210,3 +210,55 @@ still fire with markers excluded, or the filtered comparison is blind.
 Also noted: `=4` (three passes, comparing pass 1 against pass 2) never reaches its first report —
 three draw passes plus two extra `PreEntry` runs stalls the frame. Not chased; the marker-filtered
 two-pass comparison answers the same question more cheaply.
+
+
+## CORRECTION: the residual is NOT the markers, and byte-identity was the wrong criterion all along
+
+The section above concluded, from a single head dump showing a marker at offset 0, that the
++164-byte residual *was* the draw-attribution markers. **That is false.** Markers were then
+suppressed in both passes (`sb_suppress_draw_markers`, gated at the one emitter,
+`J3DDrawBuffer.cpp`), and:
+
+* total stream size dropped ~2,147 bytes, so the suppression demonstrably worked;
+* the positive control still fired (2600/2600 DIFFERENT), so the filter did not blind the probe;
+* **the residual was unchanged — still exactly +164.**
+
+Seeing a marker as the first differing byte and concluding it caused a size delta was a jump. The
+first differing byte and the cause of a length difference are simply not the same thing, and one
+observation was treated as if it explained both.
+
+With markers gone, the heads read:
+
+    passA: 61 88 00 fc 0f  61 fc ea 2d f5  61 80 00 01 90  61 84 00 00 00 ...
+    passB: 10 00 06 10 20  3f cb fa 20 ...
+
+`0x61` is `GX_LOAD_BP_REG`, `0x10` is `GX_LOAD_XF_REG`. Pass A emits BP register writes that pass B
+does not, because pass A already set those registers to those values and the GX layer elides
+redundant writes. **GX is a sticky state machine, so two passes from different entry states
+legitimately produce different command streams.**
+
+### The real error: chasing the wrong criterion for three iterations
+
+Byte-identity was noted as "stricter than interpolation needs" and then pursued anyway. What
+interpolation actually requires is:
+
+1. the second pass **renders the same scene**, and
+2. it **does not corrupt game state**.
+
+Neither is a byte-equality property, and no amount of refining the byte comparison will answer
+them. The comparison should have been abandoned at the point stickiness was identified.
+
+### What stands
+
+* **`=1` is not re-runnable**: -122,323 bytes, unchanged with markers suppressed. Draw buffers are
+  populated by entry and consumed as drawn. The sub-frame boundary is `PreEntry + draw`. This is
+  three orders of magnitude past marker or state-elision traffic and is the finding worth keeping.
+* **`=3` reproduces the frame to within 164 bytes of 2.39 MB (0.007%)**, with GX state elision a
+  sufficient explanation. Good enough to proceed.
+
+### Next, and it is not another byte comparison
+
+Render two sub-frames and compare the **images**. With the same interpolation alpha the two
+presented frames must be pixel-identical; with different alphas they must differ in the way
+interpolation predicts. That tests what actually matters, and the existing `SB_DUMP_FRAME` harness
+already produces the artefact to compare.
