@@ -262,3 +262,46 @@ Render two sub-frames and compare the **images**. With the same interpolation al
 presented frames must be pixel-identical; with different alphas they must differ in the way
 interpolation predicts. That tests what actually matters, and the existing `SB_DUMP_FRAME` harness
 already produces the artefact to compare.
+
+## ANSWERED, on the criterion that matters: a re-run pass reproduces the frame PIXEL-IDENTICALLY
+
+The byte comparison was abandoned for the right test: **compare the images**.
+
+No new machinery was needed. `SB_DOUBLE_DRAW=3` already rewinds pass 0 and lets pass 1 render, so
+the frame it presents *is* a sub-frame's output — `PreEntry` + draw, run from post-draw state. Dump
+it and compare against a normal frame at the same checkpoint.
+
+    baseline (normal single pass) vs mode 3 (rendered from a RE-RUN pass)
+      pixels: 1228800   differing: 0   (0.0000%)
+      PIXEL-IDENTICAL
+
+**With a positive control**, because a comparison reporting "identical" is indistinguishable from a
+broken one. Mode 1 (draw-only re-run, the variant known to lose ~122 KB of geometry) was compared
+the same way:
+
+    control: mode 1 vs baseline
+      differing pixels: 1956 of 1228800  (0.16%)  -> the comparison CAN detect a difference
+
+So:
+
+* **A sub-frame pass (`PreEntry` + draw) renders the frame exactly.** The +164-byte stream
+  difference is render-neutral, exactly as the GX-state-elision explanation predicted — and this is
+  the evidence for that, rather than the reasoning being taken on trust.
+* **Dropping `PreEntry` is visibly wrong**, not merely different: 1,956 pixels change. The
+  sub-frame boundary is confirmed as `PreEntry + draw` by image, not just by byte count.
+
+Note the control's own lesson: mode 1 loses 122 KB of geometry yet moves only 0.16% of pixels —
+mostly occluded or small. A whole-frame **mean** would have hidden that entirely (it is why mean
+RGB stayed at 135.2/144.6/145.8 through both). Pixel-exact comparison was necessary; the mean is
+not a substitute.
+
+### Where this leaves the design
+
+The sub-frame render path is **verified sound**. What remains is the part that was always the real
+work, and it is untouched by any of the above:
+
+1. Snapshot actor transforms before `moveObject`, interpolate them per sub-frame.
+2. Present twice per tick (the seam is `sb_frame_present`, currently once per `gameLoop`).
+3. **Effects that are not a function of an actor transform** — the ghost/dash trail, JPA particles,
+   anything rebuilding vertex data per tick — need prev/cur of their own state. This is the class
+   that jittered under lerp60 and the reason "game native" is the requirement.
