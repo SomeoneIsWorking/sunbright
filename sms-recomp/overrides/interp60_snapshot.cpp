@@ -163,6 +163,15 @@ u32 subframe_cue() {
     return v;
 }
 
+// How much (prev) and (cur) actually differ AT APPLY TIME. This is the number that separates
+// "interpolation had no visible effect" from "there was nothing to interpolate": if every entry has
+// prev == cur when the sub-frame is built, then alpha cannot change the image no matter how
+// correct the write path is, and every pixel diff between alphas will read 0 for a reason that has
+// nothing to do with the renderer. Carries its denominator, and names the largest mover.
+long  g_applyN = 0, g_applyDiff = 0;
+float g_applyMax = 0.0f;
+u32   g_applyMaxObj = 0;
+
 // ── motion probe ─────────────────────────────────────────────────────────────
 // Designed negative-first: "interpolation changed nothing" cannot distinguish a correct
 // implementation from a snapshot that captures nothing, so this always reports its DENOMINATOR and
@@ -212,6 +221,16 @@ void report() {
         lucent::info("interp60", "  WRITE alpha={:.2f}: applied={} restored={} (unequal counts mean "
                                  "a pose was left interpolated into the physics step)",
                      (double)alpha_setting(), g_applied, g_restored);
+    {
+        char am[48]; guest_name(g_applyMaxObj, am, sizeof am);
+        lucent::info("interp60",
+                     "  AT APPLY TIME: {} entries substituted, {} had prev != cur ({:.1f}%), "
+                     "largest delta {:.2f} \"{}\" -- if this is 0 there is nothing to interpolate "
+                     "and alpha cannot change the image",
+                     g_applyN, g_applyDiff,
+                     g_applyN ? 100.0 * (double)g_applyDiff / (double)g_applyN : 0.0,
+                     (double)g_applyMax, am);
+    }
     lucent::info("interp60",
                  "  SUB-FRAMES: rendered={} refused={} (refused = no director / no recorded draw "
                  "block / no TGraphics snapshot / no snapshot tick -- a refusal renders the tick "
@@ -275,6 +294,16 @@ void apply_all(u32 tick, float alpha) {
         for (int k = 0; k < 3; ++k) {
             e.cur[k]    = guest_f32(e.obj + OFF_POSITION + (u32)k * 4);
             e.curRot[k] = guest_f32(e.obj + OFF_ROTATION + (u32)k * 4);
+        }
+        ++g_applyN;
+        {
+            const float dx = e.cur[0] - e.pos[0], dy = e.cur[1] - e.pos[1], dz = e.cur[2] - e.pos[2];
+            const float d2 = dx * dx + dy * dy + dz * dz;
+            if (d2 > 0.0f) {
+                ++g_applyDiff;
+                const float d = std::sqrt(d2);
+                if (d > g_applyMax) { g_applyMax = d; g_applyMaxObj = e.obj; }
+            }
         }
         e.applied = true;
 
@@ -516,6 +545,9 @@ void record_draw_list(u32 list, u32 mask, u32 gfx) {
     // seam runs. Snapshot its bytes so the re-issue can hand the lists an identical one; a
     // reconstructed or zeroed TGraphics would change render state in ways no pixel diff could
     // attribute back to here.
+    // Refreshed EVERY tick, not captured once. TSmJ3DScn::perform copies the VIEW MATRIX out of
+    // this TGraphics (`MTXCopy(param_2->mViewMtx, j3dSys.getViewMtx())`), so a snapshot taken once
+    // at the first tick would render every later sub-frame through the camera of that first tick.
     if (!g_gfxValid && sb_ram_fast(gfx) && sb_ram_fast(gfx + 0xFF)) {
         for (u32 i = 0; i < 0x100; ++i) g_gfxSnap[i] = sb_r8(gfx + i);
         g_gfxValid = true;
@@ -760,7 +792,12 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
     g_inSubframe = false;
     cpu.gpr[1] = savedSp;
     ++g_subframes;
+    // Reset for the NEXT tick's draw block -- AFTER this sub-frame has consumed them, never before.
+    // The draw block is recorded EARLY in a call and the seam runs at the end of it, so clearing
+    // these on entry throws away the very recording being used (measured: rendered=0, refused=1200,
+    // every tick refusing for want of the TGraphics it had just captured).
     g_drawN = 0;
+    g_gfxValid = false;
 }
 
 // Called from native_frame.cpp's present path, after aurora has consumed the frame's GX stream.

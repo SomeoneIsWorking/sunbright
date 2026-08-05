@@ -1573,3 +1573,51 @@ The gate's two halves are now derived from the measured phase order rather than 
 
     alpha = 0.0  ->  sub-frame must REPRODUCE its main neighbour   (identity)  CONFIRMED, 0 px
     alpha = 1.0  ->  sub-frame must DIFFER, by one tick of motion  (control)
+
+## THE CONTROL DOES NOT FIRE — and the RE says why: THE CAMERA IS NOT A TActor
+
+`alpha=1.0` produced byte-identical output to `alpha=0.0`:
+
+    alpha=0.0 : 349,199 | 0 | 350,689
+    alpha=1.0 : 349,199 | 0 | 350,689     <- identical, to the pixel
+
+Alpha has no effect on the image, while a 3000-unit kick moves 97% of it. Writes reach the render;
+the interpolation endpoints do not change it. That contradiction has a structural explanation.
+
+`JDrama::TCamera : public TPlacement, public JStage::TCamera` (JDRCamera.hpp:9) — **not TActor.**
+`kTActorVtables` is generated from the TActor hierarchy, so cameras were never in the allowlist,
+never snapshotted, and never substituted. Meanwhile `TLookAtCamera::perform` rebuilds the view from
+the camera's own fields on cue `0x14`:
+
+    if (!(param_1 & 0x14)) return;
+    C_MTXPerspective(param_2->mProjMtx.mMtx, mFovy, mAspect, mNear, mFar);
+    C_MTXLookAt(param_2->mViewMtx, &mPosition, &mUp, &mTarget);
+
+and `TSmJ3DScn::perform` then copies that view into j3dSys. The sub-frame's re-issue cue keeps
+`0x4`/`0x10`, so the camera DOES recompute — from an un-substituted pose. Between two ticks of a
+walking player at this camera, ~28% of pixels change and that motion is overwhelmingly the CAMERA;
+the actors that move are 2.5% of the roster and small on screen. So substituting actor transforms
+alone is very nearly invisible, exactly as measured.
+
+This is a coverage gap in the snapshot, not a fault in the sub-frame. The sub-frame reproduces the
+frame pixel-for-pixel (previous entry) and the write path reaches 97% of it under a kick; what is
+missing is that the thing which actually moves the picture was not in the set being interpolated.
+
+### Next
+
+Snapshot the camera in its own terms — `mPosition` (+0x10 via TPlacement), plus `mTarget` and `mUp`
+which `C_MTXLookAt` reads — and substitute them with the same prev/cur machinery. `us_vtables.py`
+already recovers vtables by hierarchy ownership; it needs a second root (`JDrama::TCamera`) and a
+second emitted list. Nothing about the sub-frame changes: the camera's `perform` is already
+re-issued with a view-bearing cue, so an interpolated camera pose flows straight into `mViewMtx`.
+
+## Instrument note: two bugs the apply-time counter and the refusal counter caught immediately
+
+* **The TGraphics snapshot was captured once, ever** (`if (!g_gfxValid)`), so every sub-frame after
+  the first rendered through the first tick's camera — `TSmJ3DScn::perform` copies `mViewMtx` out of
+  that struct. Now refreshed per tick.
+* **Resetting that snapshot at the START of the seam broke the sub-frame entirely.** The draw block
+  is recorded EARLY in a `direct()` call and the seam runs at the END of it, so clearing on entry
+  discards the recording being used: `rendered=0 refused=1200`. The reset belongs after the
+  sub-frame consumes it. The refusal counter turned what would have been a silent 30fps run into an
+  immediate, unambiguous number — which is the whole reason it prints its denominator.
