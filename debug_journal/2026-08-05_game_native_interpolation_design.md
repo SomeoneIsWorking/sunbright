@@ -733,3 +733,61 @@ The matrix-lerp stack's cheap shape looks better under this constraint precisely
 the second submission — which is the trade the 2026-07-30 design was making deliberately. This
 entry's job is to say that the trade is a COST trade, not a correctness one, and that it should be
 re-decided after the render cost is known rather than inherited from either direction.
+
+## PROFILED: the 24 ms has no single culprit — and my "~48 ms" estimate was WRONG
+
+### The instrument
+
+`perf` is not installed here. Sampled instead with `eu-stack` (poor-man's profiler,
+`$CLAUDE_JOB_DIR/tmp/pmp.sh`), which reports `attempted / ok / failed` and **refuses to print a
+profile when zero samples succeeded** — "no hot spots" and "never sampled" must not look alike.
+Blocked worker threads (`__syscall_cancel_arch`, futex/epoll waits) are excluded; only game-thread
+leaf frames are counted.
+
+**Sample count mattered.** At N≈87 `override_lookup` looked like the top cost at 13%. At N=329 it is
+**2.4%** — the first reading was noise, and acting on it would have optimised the wrong function.
+
+### Game-thread leaf profile, N=329
+
+| cluster | samples | share | what |
+|---|---|---|---|
+| guest memory accessors — `sb_r32` 28, `sb_w32` 9, `psq_load` 4 | 41 | 12.5% | every guest load/store |
+| aurora GX — `draw_prim` 24, `prepare_idx_buffer` 9, `XXH3` 10 | 43 | 13.1% | GX stream -> draw records |
+| guest call dispatch — `call_ppc` 31, `override_lookup` 8 | 39 | 11.9% | two table lookups per call |
+| GX FIFO pipe — `parse` 18, `fifo_write` 13, `vertex_size` 6 | 37 | 11.2% | `dev_gxfifo` write-gather |
+| tail — `mmio_write` 6, `memcpy` 7, `strncmp` 3, guest funcs | ~40 | ~12% | |
+
+Four clusters of roughly equal size. **There is no single 24 ms culprit**, so no single fix gets a
+3x speedup — eliminating any one cluster entirely leaves ~21 ms.
+
+Two concrete inefficiencies are nameable from this, though neither is a silver bullet:
+
+* `fifo_write` does `g_buf.insert()` per 1-4 byte store and then
+  `g_buf.erase(g_buf.begin(), g_buf.begin() + used)` — an O(n) memmove of the remainder on every
+  parse batch. A ring buffer removes it outright.
+* `vertex_size` appearing as a leaf at all suggests it is recomputed per vertex rather than cached
+  per vertex-format change.
+
+Also corrected: an earlier line here reasoned "aurora's `end_frame` is 40 μs, so rendering is not the
+cost". `end_frame` genuinely is 40 μs (`SB_PROFILE_GFX`: drain=0, finish=1, submit/record=39 μs), but
+aurora's GX work is **13.1%** of the game thread — it happens during guest execution as the FIFO is
+written, not inside `end_frame`. Profiling one function and generalising to a subsystem was the error.
+
+### The estimate that was wrong, and it changes the conclusion
+
+I told the user a game-native sub-frame lands "near 48 ms/tick — worse than the 30fps it replaces".
+That assumed the second pass costs a **whole extra tick**. It does not. A sub-frame re-runs
+`PreEntry` + the draw lists — it does **not** re-run movement, physics, AI or collision.
+
+So the marginal cost is the draw-side clusters (aurora GX 13.1% + FIFO pipe 11.2% + the guest draw
+code), not 100% of the tick. Order of magnitude: **+8-12 ms**, giving ~32-36 ms per tick.
+
+The budget for interpolated 60fps is **33.3 ms per 30 Hz tick** (logic once, draw twice, present
+twice). That is not "hopeless" — it is **borderline**, needing roughly a 10-20% whole-frame
+speedup rather than the 3x my wrong estimate implied.
+
+That materially changes the fork. Game-native is not priced out; it is close enough that the two
+named inefficiencies above plus ordinary tuning could cover it. The next measurement is the one that
+settles it: **split the tick into logic-side and draw-side** so the marginal cost of a second draw
+pass is measured rather than estimated from a leaf profile. Until that exists, ±10 ms of this is
+arithmetic on sample shares, and this file has been burned by exactly that before.
