@@ -997,8 +997,41 @@ void attribute_view_write(CPUState& cpu, u32 gfxAddr) {
     }
 }
 
+// WHICH view reaches j3dSys? TSmJ3DScn::perform does MTXCopy(param_2->mViewMtx, j3dSys.getViewMtx()),
+// and j3dSys's view matrix is the global the whole scene is drawn through. mViewMtx is written eight
+// times per sub-frame by five objects, so "who writes it last" is not the question — the question is
+// what it held at the instant the scene copied it.
+//
+// Watching the DESTINATION rather than the source answers that directly: every time the j3dSys view
+// changes during a sub-frame, name the dispatch that changed it and what it now holds. Reports every
+// change, not the first: the previous attributor latched on the first writer and named a reflection
+// pre-render four dispatches early.
+constexpr u32 J3DSYS_VIEWMTX = 0x804045DCu;
+
+void watch_j3dsys(CPUState& cpu) {
+    static long n = 0;
+    const u32 obj = (u32)cpu.gpr[3];
+    const float before = guest_f32(J3DSYS_VIEWMTX + 3 * 4);
+    func_802fcc94(cpu);
+    const float after = guest_f32(J3DSYS_VIEWMTX + 3 * 4);
+    if (before != after && n < 16) {
+        ++n;
+        char nm[48]; guest_name(obj, nm, sizeof nm);
+        lucent::info("interp60",
+                     "j3dSys VIEW <- {:.2f} (was {:.2f}) by dispatch on 0x{:08x} \"{}\" | "
+                     "gfx mViewMtx currently {:.2f}",
+                     (double)after, (double)before, obj, nm,
+                     (double)(g_subframeGfx ? guest_f32(g_subframeGfx + OFF_VIEWMTX + 3 * 4) : 0.0f));
+    }
+}
+
 void interp_test_perform(CPUState& cpu) {
     ++g_listDispatches;
+    if (g_inSubframe && std::getenv("SBR_INTERP60_J3DSYS")
+        && (long)VIGetRetraceCount() >= 1100) {
+        watch_j3dsys(cpu);
+        return;
+    }
     if (g_inSubframe && std::getenv("SBR_INTERP60_VIEWWHO")
         && (long)VIGetRetraceCount() >= 1100) {
         attribute_view_write(cpu, g_subframeGfx);

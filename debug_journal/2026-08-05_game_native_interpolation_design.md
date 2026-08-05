@@ -2303,3 +2303,39 @@ previous attributor had to be fixed.
 Do not respond by interpolating the mirror/blur cameras too until that measurement exists: they are
 pre-render passes for reflection and motion blur, and matching their views to the sub-frame may be
 correct or may be exactly wrong, depending on what each pass is for.
+
+## ANSWERED: the first 3D pass of a sub-frame renders through the MIRROR CAMERA's cached view
+
+Watching the DESTINATION (`j3dSys`'s view matrix at `0x804045DC`) rather than the source names the
+consumer directly. Per sub-frame it is set four times, all by a `J3D System Set View Mtx` node:
+
+    -4942.61 -> -4942.61     endpoint  (the value 鏡カメラ wrote from ITS cached matrix)
+    -4942.61 -> -4941.14     <- our interpolated midpoint
+    -4941.14 ->     0.00     ortho pass
+        0.00 -> -4941.14     <- midpoint again
+
+So the interpolation reaches `j3dSys` — for the second and fourth passes. The FIRST pass, which is
+the largest, renders through the endpoint view the mirror camera had cached during the movement
+phase. That is the whole explanation for "only ~350 of 1,228,800 pixels respond to alpha": most of
+the frame is drawn by the pass that never sees the interpolated view.
+
+This is the measurement the previous entry said had to exist before touching the mirror camera. It
+now does, and it says the mirror camera is not incidental — it supplies the view for the dominant
+pass.
+
+### Next, and what to check before assuming
+
+`TMirrorCamera` (US `perform` at `0x80193fbc`, already natively overridden for widescreen) derives a
+reflected view from the main camera and caches it during movement, exactly as CPolarSubCamera does.
+The same treatment should apply: rebuild its cached matrix from the interpolated main-camera pose
+for the duration of a sub-frame.
+
+Two things to establish first, by reading its perform rather than by trying it:
+
+* WHICH pass the mirror camera's view is for. If the first `j3dSys` set is the reflection
+  pre-render (drawing the scene into a reflection texture), then interpolating it is right. If it is
+  the main scene pass and the mirror camera merely happens to write the view, the naming is
+  misleading and the fix belongs elsewhere.
+* Whether its cached matrix is derived from the main camera's POSE or from the main camera's
+  MATRIX. If the latter, rebuilding it from an interpolated pose needs the main camera's matrix
+  interpolated first — which is available, since that is what `camera_apply` already builds.
