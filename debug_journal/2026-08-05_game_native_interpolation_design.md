@@ -883,3 +883,50 @@ not required to justify building it, and pursuing it here would be measuring for
 instrument is at its limit and the decision it was built to inform is already determined.
 
 Stop measuring; implement.
+
+## The RE inventory was INCOMPLETE: a recomp override also needs TYPE IDENTITY, and that is not banked
+
+The "banked vs owed" table above listed `mPosition` @ `0x10`, `mRotation` @ `0x30` and
+`testPerform` @ US `0x802fcc94` as sufficient for the override. **It is not**, and the omission is
+the dangerous kind — everything listed is correct, so the table reads as complete.
+
+`testPerform`'s `this` is a `JDrama::TViewObj*`. `mPosition` lives on `TPlacement`, several levels
+down. **Not every `TViewObj` is a `TActor`** — perform lists, screens, view connecters, effect
+objects and 2D screens are all `TViewObj`s that are not actors. In the decomp this is a non-issue:
+`sbSnapshotInterp` is a virtual, so the compiler guarantees `mPosition` exists on anything that
+reaches the body. Across the guest boundary there is no type — only an address — and writing a
+lerped transform to `guest + 0x10` of a non-actor **corrupts whatever that object keeps at 0x10**.
+
+That is a memory-corruption bug that would appear as an unrelated subsystem misbehaving, i.e. the
+worst class of defect this project has.
+
+### The principled discriminator, and why it is not available yet
+
+The sound test is the guest **vtable pointer** at `+0x00`: an object is a `TActor` iff its vptr is
+one of the vtables of `TActor` or a class derived from it. That set is RE, and RE lives in the
+decomp — the class hierarchy is right there in the headers.
+
+The blocker is addresses. `reference/` holds exactly two files:
+
+* `sms_gmse01_funcs.txt` — **US**, functions only, **zero** `__vt__` symbols;
+* `sms_gmsj01_symbols.txt` / `decomp/sms/config/GMSJ01/symbols.txt` — **JP**, 1,508 vtables.
+
+The recomp runs the **US** build (every override address in it is US). So the vtable set exists in
+the JP symbol data and the class hierarchy exists in the decomp, but **no current reference file
+gives US vtable addresses**.
+
+### The approach for next iteration
+
+A vtable is an array of pointers into `.text`, and the US function addresses ARE known. So US
+vtables are recoverable by scanning the US DOL's data sections for runs of pointers that all land on
+known US function entry points, then naming each candidate by the methods it contains (a vtable
+holding `JDrama::TActor::getType` is `TActor`'s; a class is TActor-derived if it carries TActor's
+un-overridden slots). The decomp hierarchy gives the expected slot layout to match against.
+
+That tool needs a coverage report as a first-class output, not an afterthought: a class whose vtable
+is not recovered is an actor that silently never interpolates, and — unlike the decomp's virtual —
+nothing will complain. "Recovered N of M TActor-derived classes, and here are the M-N that were
+not" is the only form in which its result is usable.
+
+**Until that exists, the recomp override cannot be written safely.** The decomp-side snapshot
+(committed, coverage-proven, render-inert) stands as the RE that the override will consume.
