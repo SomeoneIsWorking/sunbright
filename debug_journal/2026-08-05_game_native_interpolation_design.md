@@ -1542,3 +1542,34 @@ is the pose entered at N-1 and the sub-frame built there falls between them.
 `SBR_INTERP60_NOENTRY` is gone; not re-running PreEntry is now the behaviour. `SBR_INTERP60_PREENTRY=1`
 restores the old path for A/B and is expected to wedge — a fault this specific is worth keeping
 reproducible.
+
+## IDENTITY, MEASURED INSIDE ONE RUN: the sub-frame reproduces the frame PIXEL-FOR-PIXEL
+
+    series of 4 consecutive presents, SBR_INTERP60_ALPHA=0.0
+      present 0 -> 1 :  349,199 of 1,228,800 (28.42%)
+      present 1 -> 2 :        0 of 1,228,800 ( 0.00%)   <- sub-frame reproduces its main neighbour
+      present 2 -> 3 :  350,689 of 1,228,800 (28.54%)
+
+The zero is the identity: a sub-frame at `alpha=0.0` re-enters the pose the main present already
+drew, and the re-issue reproduces that frame **bit for bit**. This is the recomp's restatement of
+the decomp's `SB_DOUBLE_DRAW=3` result, and it says the re-issue path — reset, re-enter, re-draw,
+present — is faithful, not merely plausible. The ~28% either side is one tick of real motion between
+successive main frames, which is also the scale a midpoint has to land inside.
+
+### The instrument had to be rebuilt first, and the reason is the same one as last time
+
+`SB_DUMP_FRAME_AFTER` counts PRESENTS. The sub-frame adds a present per tick, so the same index
+reaches a DIFFERENT game moment once interpolation is on — two configurations dumped "at frame 1500"
+are not the same moment, and a diff between them is dominated by that drift. Scoring `alpha=1.0`
+against a no-sub-frame baseline that way would have produced a large confident number meaning
+nothing, which is exactly the shape of the mistake this file has already recorded twice.
+
+So the comparison moved INSIDE one run: `SB_DUMP_FRAME_EVERY=1` with a new
+`SB_DUMP_FRAME_COUNT=N` (aurora) captures N consecutive presents, which alternate main/sub, and
+`tools/interp/subframe_gate.py` reports every adjacent pair plus the alternation pattern rather than
+picking a pairing. Nothing can drift, because there is only one run.
+
+The gate's two halves are now derived from the measured phase order rather than assumed:
+
+    alpha = 0.0  ->  sub-frame must REPRODUCE its main neighbour   (identity)  CONFIRMED, 0 px
+    alpha = 1.0  ->  sub-frame must DIFFER, by one tick of motion  (control)
