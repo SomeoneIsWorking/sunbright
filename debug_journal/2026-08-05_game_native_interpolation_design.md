@@ -1335,3 +1335,80 @@ established the path can move 97.8% of the frame when the displacement is large.
 
 **Next: the second present.** The pieces are all verified — snapshot (coverage-proven), write path
 (identity + control), deterministic frames, and a measured phase order to insert into.
+
+## RETRACTED: the draw-block bracket reaches NOTHING — reach=0 under a 3000-unit kick
+
+The previous entry declared the write path VERIFIED on an identity/control pair:
+
+    alpha=1.0 vs baseline :   0 of 1,228,800   identity exact
+    alpha=0.0 vs baseline : 162 of 1,228,800   control fires
+
+Adding a **reach** probe to the same gate (`tools/interp/interp60_gate.sh --kick 3000`, which
+displaces every snapshotted actor 3000 units in Y inside the same bracket) gives:
+
+    identity  alpha=1.0            :   0 of 1,228,800
+    control   alpha=0.0            : 273 of 1,228,800
+    reach     alpha=1.0 kick=3000  :   0 of 1,228,800     <-- ZERO
+    write     read-back            : stuck=46,271,654 lost=0
+
+Every one of 46 million writes lands in memory the guest reads back, and moving every actor three
+thousand units changes **not one pixel**. The bracket does not enclose anything that renders from
+`mPosition`. The 273-pixel control was a sliver — and since the kick writes only `pos.y` while the
+`alpha=0.0` path writes position *and* rotation, those 273 pixels are most likely rotation-driven,
+i.e. not even evidence for the position path.
+
+### Why the pair passed anyway, and what that says about the instrument
+
+Identity and control are a *correctness* pair, not a *coverage* pair. Together they prove the write
+is exact where it lands and lands somewhere rendered. Neither can say the bracket covers the scene,
+and this project's own rule says an instrument must declare what it does not cover. It did not, so
+"control fires" was read as "the mechanism works". The gate now runs the reach probe alongside them
+and prints the coverage caveat under the verdict.
+
+### The root cause: the bracket was built on a truncated trace
+
+`SBR_INTERP60_TRACE` started at boot (loading screen) and capped at 90 transitions, so it truncated
+inside the first tick. The sequence it printed was read as the tick's phase order and put the DRAW
+lists at the *start* of a `direct()` call — the opposite of what `MarDirectorDirect.cpp` actually
+does (movement -> calcAnim -> **PreEntry** -> `mPerformListDrawBufGroup` / `Graffito` / `Pollution` /
+`GX` / `Silhouette` / `GXPost`). Compounding it, those draw lists dispatch with mask `0xffffffff`,
+so a `mask & 0x8` test matches them *and* matches almost everything else: a test that cannot
+separate the phases cannot place a bracket. The bracket opened on an early `0x8` group and closed on
+the next `0x80`, covering none of the draw lists.
+
+The trace now starts after the scene is live (`SBR_INTERP60_TRACE_AT`, default present 800), counts
+how many dispatches each collapsed run represents, and says so explicitly when it truncates.
+
+### This was already answered, higher up in this same file
+
+The `SB_DOUBLE_DRAW` probe measured it on the decomp side and the entry is above: **the sub-frame
+boundary is `PreEntry` + draw, not draw alone** — a re-run of `PreEntry` + the draw lists reproduces
+the frame pixel-identically, and dropping `PreEntry` moves 1,956 pixels. Re-deriving a worse answer
+than one already recorded in the same document is a workflow defect, not just a wrong measurement.
+
+### And the mechanism already exists in git — resurrect, do not rebuild
+
+`git show 9283f44^:runtime/overrides/interp_redraw.cpp` (754 lines, recomp era) is a working second
+present built exactly this way. It re-issues the draw lists off `gpMarDirector`:
+
+    kDrawLists = { 0x40 DrawBufGroup, 0x38 Graffito, 0x3C Pollution,
+                   0x1C GX,           0x20 Silhouette, 0x24 GXPost }
+
+reconstructing a `TGraphics` on the stack, calling `TPerformList::perform` per list with a mask that
+**drops `0x1` movement and `0x2` calc-anim** (re-running those double-steps water scroll and other
+per-frame animation — RE'd, with the flicker it caused), then `GXInvalidateTexAll`, then steering the
+display's XFB pointer so the in-between field copies to its own buffer. It also blends and restores
+the j3dSys view matrix (`0x804045DC`) and `gpMarioPos`, because the drop shadow projects from the
+live global rather than from a draw matrix.
+
+Two things it did NOT do, both of which the current design should: re-run `PreEntry` (measured above
+as worth 1,956 pixels), and interpolate in the game's own actor fields rather than by blending
+`mDrawMtxBuf` — the matrix-blend approach is precisely the one the standing directive rejects,
+because effects with no model matrix step at 30 Hz under it.
+
+### Next
+
+Resurrect the list re-issue against the current runtime, with `PreEntry` in the re-issue set and the
+snapshot substitution wrapping it. The bracket then becomes the re-issue itself: substitute, re-issue
+`PreEntry` + draw lists, present, restore — and in the two-present shape the final pass writes the
+true state, so there is nothing to undo.

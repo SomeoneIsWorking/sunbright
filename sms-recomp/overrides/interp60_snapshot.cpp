@@ -297,13 +297,49 @@ bool trace_on() {
 }
 long g_traceLines = 0;
 u32  g_lastTraceMask = 0xFFFFFFFFu;
+long g_traceRun = 0;          // dispatches collapsed into the current run
+long g_tracePresents = 0;
+
+// The trace has to start LATE and it has to be complete, and the first version was neither.
+//
+// It began at boot, where the scene is a loading screen, and it capped at 90 transitions -- so it
+// truncated inside the first tick and the sequence it printed was read as "the tick's phase order".
+// That reading put the DRAW lists at the START of a direct() call, which is the opposite of what
+// MarDirectorDirect.cpp does (movement -> calcAnim -> PreEntry -> the draw lists). The bracket built
+// on it consequently covered a handful of early 0x8 dispatches and none of the actual draw lists.
+//
+// The draw lists dispatch with mask 0xffffffff, which is why a `mask & 0x8` test both matched them
+// and matched almost everything else -- a test that cannot separate the phases cannot place a
+// bracket. So: start after the scene is live, count how many dispatches each run collapses (a run
+// of 3 and a run of 900 are very different things and the old output showed both as one line), and
+// never silently truncate -- say when the cap is hit.
+long trace_start_present() {
+    static const long v = [] {
+        const char* e = std::getenv("SBR_INTERP60_TRACE_AT");
+        return e ? std::atol(e) : 800L;
+    }();
+    return v;
+}
+
+void trace_flush_run() {
+    if (g_traceRun == 0) return;
+    lucent::info("i60trace", "  mask=0x{:<10x} x{}", g_lastTraceMask, g_traceRun);
+    g_traceRun = 0;
+    ++g_traceLines;
+}
 
 void trace_dispatch(u32 mask) {
-    if (!trace_on() || g_traceLines > 90) return;
-    if (mask == g_lastTraceMask) return;          // collapse runs; only transitions matter
+    if (!trace_on()) return;
+    if ((long)VIGetRetraceCount() < trace_start_present()) return;
+    if (g_tracePresents > 3) return;
+    if (g_traceLines == 400) { ++g_traceLines;
+        lucent::info("i60trace", "  [TRUNCATED at 400 runs -- the sequence below is INCOMPLETE]");
+        return; }
+    if (g_traceLines > 400) return;
+    if (mask == g_lastTraceMask) { ++g_traceRun; return; }
+    trace_flush_run();
     g_lastTraceMask = mask;
-    ++g_traceLines;
-    lucent::info("i60trace", "  dispatch mask=0x{:x}", mask);
+    g_traceRun = 1;
 }
 
 // SBR_INTERP60_FOLLOW=<guest addr>: follow ONE actor's mPosition.y through a tick, printing it at
@@ -399,8 +435,19 @@ void interp_test_perform(CPUState& cpu) {
             //
             // This is still a stand-in for the real design, which renders the tick TWICE (alpha=0.5
             // then alpha=1.0) and needs no undo at all, because the last pass writes the truth.
+            //
+            // SBR_INTERP60_BRACKET=<mask> moves which phase bit opens the bracket. The draw block
+            // is the default and is where a pose SHOULD be consumed, but "the control fires" only
+            // proves the write reaches something rendered -- it does not prove the bracket covers
+            // the phase that actually bakes poses into geometry. That is an empirical question
+            // (--kick in tools/interp/interp60_gate.sh answers it), so the bracket is a knob rather
+            // than a constant until the measurement says which phase it belongs on.
+            static const u32 bracketBit = [] {
+                const char* e2 = std::getenv("SBR_INTERP60_BRACKET");
+                return e2 ? (u32)std::strtoul(e2, nullptr, 0) : CUE_DRAW;
+            }();
             static bool s_inDraw = false;
-            const bool isDraw = (mask & CUE_DRAW) != 0;
+            const bool isDraw = (mask & bracketBit) != 0;
             if (isDraw && !s_inDraw) {
                 s_inDraw = true;
                 apply_all(g_lastSnapTick, alpha);
@@ -432,7 +479,11 @@ void interp_test_perform(CPUState& cpu) {
 extern "C" void sbr_interp60_restore() {
     if (!enabled()) return;
     // Trace marker only. The restore itself is NOT done here — see the movement-dispatch comment.
-    if (trace_on() && g_traceLines <= 90) { ++g_traceLines; lucent::info("i60trace", "PRESENT"); }
+    if (trace_on() && (long)VIGetRetraceCount() >= trace_start_present() && g_tracePresents <= 3) {
+        trace_flush_run();
+        ++g_tracePresents;
+        lucent::info("i60trace", "PRESENT  (end of tick {})", g_tracePresents);
+    }
 }
 
 SB_OVERRIDE(0x802fcc94, interp_test_perform, "JDrama::TViewObj::testPerform",
