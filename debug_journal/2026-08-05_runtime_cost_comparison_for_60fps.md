@@ -171,3 +171,40 @@ in which case the win is making the per-primitive path cheaper — or aurora is 
 could batch earlier. That is the next thing to establish, and unlike the last three suspects it
 should be established by measuring the primitive size distribution rather than by reading the code
 and guessing.
+
+### Answered: the game emits tiny primitives; batching is not the problem
+
+The primitive size distribution, measured rather than guessed (`SB_PROFILE_DRAWPRIM=1`):
+
+    verts/prim: 3:8404  4:24158  5-6:7530  7-12:4585  13-24:911  25-48:173  49+:154
+    total verts=235376   mean=5.1   (45,914 primitives)
+
+**53% of primitives are 4-vertex quads**, and the mean is 5.1 vertices. This is what SMS's geometry
+actually looks like — a very large number of very small primitives. Aurora is already merging them
+roughly 35:1 down to 1314 emitted draws, so **batching is not leaving work on the table**.
+
+That settles the open question the right way round: the render lever is a **cheaper per-primitive
+path**, not better batching. The budget is ~340 ns per primitive for an average of 5.1 vertices —
+about 67 ns per vertex — which is a lot for what is fundamentally attribute decode and copy, and is
+where any future render optimisation should aim.
+
+Two corrections to numbers used earlier in this arc:
+
+* `draws=1314` is the POST-MERGE count. The pre-merge figure is 45,914, and every per-draw cost
+  reasoned about with 1314 was understating the per-primitive reality by ~35x.
+* `SB_DRAW_STATS`'s `verts=18226` counts only a subset (immediate-mode); the real per-frame vertex
+  count through `draw_prim` is **235,376**. Any future reasoning about vertex throughput should use
+  the latter.
+
+## Summary of the render arc
+
+| suspect | how it was named | verdict |
+|---|---|---|
+| FIFO round-trip is unnecessary overhead | read the code | refuted by stack sampling |
+| per-command decode dispatch | inferred from a bandwidth figure | refuted by stack sampling |
+| per-vertex max-index scan | read the hot function | refuted by timing: 14% |
+| **per-primitive overhead at 46k calls/frame** | **measured** | **stands** |
+
+Three of four suspects came from reading code and picking what looked expensive; all three were
+wrong. The one that survived came from counting. That is the transferable lesson from this arc, and
+it is why the size distribution above was measured before drawing any conclusion from it.
