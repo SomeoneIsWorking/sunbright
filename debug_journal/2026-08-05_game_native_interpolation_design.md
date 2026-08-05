@@ -990,3 +990,63 @@ secondary is the `JStage::TActor` interface reached through the `@32@` thunks th
 visible in the US symbol list. **Failure-mode asymmetry makes this safe to iterate on**: a false
 negative means an actor does not interpolate, whereas a false positive would write a transform into
 a non-actor's memory — so the allowlist must be grown only as membership is proven, never guessed.
+
+## VALIDATED: the TActor vtable allowlist, scored against ground truth — precision 47/47, recall 47/49
+
+The static scan was wrong twice more, and both were caught by **running the discriminator against
+real objects** instead of reasoning about multiple-inheritance layout. `diag_vptr.cpp`
+(`SBR_VPTR_DUMP=1`) dumps the vtable pointer each live `TViewObj` actually carries, with its NameRef
+name — 133 distinct vptrs over 200,001 dispatches, zero names unreadable.
+
+### Error 1: off by 8 — every recovered address missed
+
+First cross-check: **0 of 133** live vptrs matched *any* recovered candidate. Dumping raw words at a
+real live vptr showed why:
+
+    0x803c0620: 0x00000000     <- vptr points HERE
+    0x803c0624: 0x00000000
+    0x803c0628: 0x801576fc  __dt__10THelpActorFv        <- function pointers start at vptr+8
+
+MWCC's vtable carries two zero words (offset-to-top, typeinfo — both zero with RTTI off) and the
+object's vptr points **at them**. The scan reported the first *function* word, so every address was
++8 off. Correcting it — and requiring the two zero words, which also rejects ordinary
+function-pointer tables — took the match to **133 of 133 (100%)**.
+
+### Error 2: the TActor tag was tagging SECONDARY vtables
+
+With addresses correct, only **4** of 133 were TActor-tagged, while `滝つぼ`, `バルーンヘルプ` and
+`マップ` — objects the decomp's own snapshot roster had already **proven** are TActors — went
+untagged. The tag keyed on a `Q26JDrama6TActor`-owned slot, and those are the `JSG*` methods, which
+live in the **secondary** vtable (the `JStage::TActor` base). It was tagging secondary tables, never
+the primary one a vptr points at.
+
+The primary vtable instead carries the `TNameRef -> TViewObj -> TPlacement -> TActor` chain, whose
+slots belong to the class itself or an ancestor. So the sound test is: **does any resolved slot
+belong to a class the decomp says is TActor or derives from it?**
+
+### Scoring, against both classes
+
+| | count |
+|---|---|
+| live distinct vptrs | 133 |
+| tagged TActor | 47 |
+| of those, confirmed by the decomp's proven-TActor roster | 43 |
+| remaining 4, confirmed by slot ownership (`THitActor`, `TSpineEnemy`, `TFruitsBoat`, `TBaseNPC`) | 4 |
+| **false positives** | **0** |
+| false negatives (`カモメ`, `水中カメラインダイレクト`) | 2 |
+
+The four not in the decomp roster — 落書きグループ, フルーツ運搬船, ゲートキーパー（ビアンコ）,
+モンテＮ — are genuine actors absent from the *decomp* scene because those plaza NPCs are known
+unported gaps. Their presence in the recomp is the two-runtimes argument in miniature.
+
+The negative side was checked too, which is the half that is usually skipped: `<FrmGXSet>`,
+`<TOrthoProj>`, `graffito`, `落書き管理`, `SMS Draw Init` are all correctly **not** tagged.
+
+### Usable now
+
+`tools/re/us_vtables.py --emit-header` writes the allowlist. Precision is what safety depends on —
+a false positive writes a transform into a non-actor's memory — and it is 47/47 on everything that
+appears in a real Delfino frame. The two false negatives cost only that those objects do not
+interpolate.
+
+The type-identity blocker is cleared; the snapshot override can be written against this list.

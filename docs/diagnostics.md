@@ -301,8 +301,9 @@ logger — that is debt to convert, not a feature.
 | `SBR_TEX_MIRROR` | 1 | `sms-recomp/runtime/native_render.cpp:809` |  |
 | `SBR_THP` | 1 | `sms-recomp/overrides/native_thp.cpp:99` |  |
 | `SBR_TICK_SPLIT` | 1 | `sms-recomp/overrides/diag_tick_split.cpp:50` |  |
+| `SBR_VPTR_DUMP` | 1 | `sms-recomp/overrides/diag_vptr.cpp:36` |  |
 | `SBR_WATCH` | 1 | `sms-recomp/runtime/rt_core.cpp:102` |  |
 | `SBR_WIDESCREEN` | 1 | `sms-recomp/overrides/widescreen.cpp:56` |  |
 | `SBR_WS_SCALE` | 1 | `sms-recomp/overrides/widescreen.cpp:65` |  |
 
-**284 switches; 69 still gate a raw print.**
+**285 switches; 69 still gate a raw print.**

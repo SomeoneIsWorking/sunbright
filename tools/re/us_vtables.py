@@ -126,20 +126,59 @@ def scan(sections, raw, funcs, text):
                 while j < n and in_text(words[j]):
                     j += 1
                 if j - i >= MIN_SLOTS:
-                    cands.append({"addr": addr + i * 4,
-                                  "slots": [words[k] for k in range(i, j)]})
+                    # MWCC vtable layout: two zero words (offset-to-top, typeinfo -- both zero
+                    # with RTTI off) and the object's vptr points AT THEM, with the function
+                    # pointers starting at vptr+8. Reporting the first function word was an
+                    # off-by-8 that made every recovered address miss: a runtime dump of 133
+                    # live vptrs matched ZERO candidates until this was corrected. Requiring the
+                    # header also filters out ordinary function-pointer tables, which have none.
+                    if i >= 2 and words[i - 1] == 0 and words[i - 2] == 0:
+                        cands.append({"addr": addr + (i - 2) * 4,
+                                      "slots": [words[k] for k in range(i, j)]})
                 i = j
             else:
                 i += 1
     return cands
 
 
-def classify(cands, funcs):
+CLASS_RE = re.compile(r"__(?:Q\d+(?:\d+\w+?)*?)?(\d+)([A-Za-z_]\w*)F")
+
+
+def owning_classes(name):
+    """Class names embedded in an MWCC-mangled symbol (`__8TFishoidF`, `Q26JDrama6TActor`)."""
+    out = set()
+    for m in re.finditer(r"(\d+)([A-Za-z_]\w*)", name):
+        n = int(m.group(1))
+        ident = m.group(2)[:n]
+        if len(ident) == n:
+            out.add(ident)
+    return out
+
+
+def classify(cands, funcs, actor_classes=None):
+    """Tag a vtable as TActor-derived.
+
+    NOT by looking for a `Q26JDrama6TActor` slot — that was the first rule and a runtime dump of
+    133 live vptrs falsified it: only 4 matched, while objects the decomp had already PROVEN are
+    TActors (滝つぼ, バルーンヘルプ, マップ) went untagged. The JSG* methods that carry the
+    TActor tag live in the SECONDARY vtable (the JStage::TActor base), so that rule tagged
+    secondary tables — never the primary one a vptr points at.
+
+    The primary vtable instead carries the TNameRef/TViewObj/TPlacement/TActor chain, whose slots
+    belong to the class itself or an ancestor. So the sound test is: does any resolved slot belong
+    to a class the DECOMP says is TActor or derives from it?
+    """
+    actor_classes = actor_classes or set()
     for c in cands:
         names = [funcs.get(a, "") for a in c["slots"]]
         c["names"] = names
         c["resolved"] = sum(1 for a in c["slots"] if a in funcs)
-        c["is_tactor"] = any(TACTOR_TAG in nm for nm in names)
+        owners = set()
+        for nm in names:
+            if nm:
+                owners |= owning_classes(nm)
+        c["owners"] = owners
+        c["is_tactor"] = bool(owners & actor_classes)
     return cands
 
 
@@ -187,7 +226,9 @@ def main():
 
     sections, raw = load_dol(args.dol)
     funcs = load_funcs(args.funcs)
-    cands = classify(scan(sections, raw, funcs, text_ranges(sections)), funcs)
+    actor_classes, _nfiles = decomp_tactor_classes()
+    actor_classes = actor_classes | {"TActor"}
+    cands = classify(scan(sections, raw, funcs, text_ranges(sections)), funcs, actor_classes)
     tactor = [c for c in cands if c["is_tactor"]]
 
     if args.selftest:
@@ -207,7 +248,7 @@ def main():
           f"({sum(s[3] for s in sections if s[0]=='data')} bytes)")
     print(f"  known US funcs   : {len(funcs)}")
     print(f"  vtable candidates: {len(cands)}  (runs of >={MIN_SLOTS} valid .text pointers)")
-    print(f"  TActor-tagged    : {len(tactor)}  (carry a JDrama::TActor-owned slot)")
+    print(f"  TActor-tagged    : {len(tactor)}  (carry a slot owned by TActor or a decomp-derived class)")
     print("  NOT DETECTABLE by this signal: a subclass overriding EVERY TActor method carries")
     print("  no TActor-owned slot. Use --audit to see which decomp classes went unmatched.")
 
