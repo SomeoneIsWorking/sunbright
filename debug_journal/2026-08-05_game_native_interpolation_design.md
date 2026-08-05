@@ -2099,3 +2099,47 @@ Do not "fix" it by writing `mViewMtx` into the snapshot directly. That would sub
 rather than a pose — the matrix-lerp approach the standing directive rejects — and would leave
 everything that reads the camera's FIELDS (shadow projection, LOD, culling) on the un-interpolated
 value.
+
+## FIVE CAMERAS WRITE THE VIEW PER SUB-FRAME — and the one we substitute is not driving it
+
+Attributing every `mViewMtx` write inside a sub-frame to the dispatch that made it (names decoded
+from Shift-JIS):
+
+    #1 0x816533ec <TOrthoProj>          1.07 -> 0.00
+    #2 0x810e52b4 鏡カメラ (mirror)      0.00 -> -4942.61      <- sets the 3D view
+    #3 0x81588cd0 camera 1          -4942.61 -> -4942.61      <- the object we substitute; NO CHANGE
+    #4 0x810a5b28 ブラーカメラ (blur)   -4942.61 -> 0.00
+    #5 0x81588cd0 camera 1              0.00 -> -4942.61
+    #6 0x81661aa8 <TOrthoProj>      -4942.61 -> 0.00
+    #7 0x81588cd0 camera 1              0.00 -> -4942.61
+    #8 0x81661c44 <TOrthoProj>      -4942.61 -> 0.00
+
+The view is written eight times per sub-frame by five distinct objects, with ortho passes zeroing it
+between 3D ones. `camera 1` — the only object `looks_like_lookat_camera` accepts, and the one whose
+`mPosition`/`mUp`/`mTarget` are lerped — DOES write the view, and writes **-4942.61 at alpha 0.0,
+0.5 and 1.0 alike**, and under a 5000-unit kick as well.
+
+So its view output does not depend on the `mPosition` being substituted. Either the field driving
+`C_MTXLookAt` is not the one at `+0x10` for this class, or its `perform` recomputes the pose from
+internal state (a polar camera derives its position from angle/distance/target chase, which would
+make `mPosition` an OUTPUT of the update rather than an input to it).
+
+### Two instrument defects this exposed, both the same shape
+
+* **The attributor latched on the FIRST writer** and named 鏡カメラ — the reflection pre-render,
+  which writes a view several dispatches before the scene's. "Who writes a view" and "who writes the
+  view the scene uses" differ by four dispatches. Cap the boring case, not the interesting one; it
+  now reports every writer in order.
+* **`SBR_PAD_SCRIPT` keys on PAD READS (one per tick) while `SBR_QUIT_AFTER` and the dump key on
+  PRESENTS**, and the sub-frame makes presents run at 2x ticks. Waypoints at ticks 600/900 were
+  therefore never reached in a run that quit at present 1320 (tick 660) — every "live moment" run
+  before this one was measuring a stationary camera. Two instruments counting different populations,
+  joined by a number that looks shared and is not: the exact trap CLAUDE.md lists.
+
+### The next question, precisely
+
+What does `camera 1`'s `perform` actually read to build its view? That is answerable from the
+disassembly of its `perform` slot (the object's primary vtable is at `0x803acde8`) rather than by
+more runtime bisection — read which offsets it loads before `C_MTXLookAt`. If it derives the pose
+from polar state, the game-native interpolation has to snapshot THAT state, not the derived
+position, and the same will be true of every actor whose transform is recomputed rather than stored.

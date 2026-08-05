@@ -265,16 +265,19 @@ logger — that is debt to convert, not a feature.
 | `SBR_HUD_OFF` | 1 | `sms-recomp/overrides/widescreen.cpp:246` |  |
 | `SBR_INTERP60` | 2 | `sms-recomp/overrides/interp60_snapshot.cpp:81` |  |
 | `SBR_INTERP60_ALPHA` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:74` |  |
-| `SBR_INTERP60_COPY` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:1106` |  |
-| `SBR_INTERP60_DROPLAST` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:1053` |  |
-| `SBR_INTERP60_FOLLOW` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:657` |  |
-| `SBR_INTERP60_KICK` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:525` |  |
-| `SBR_INTERP60_LISTS` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:702` |  |
-| `SBR_INTERP60_MASK` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:222` |  |
-| `SBR_INTERP60_NORESTORE` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:407` |  |
-| `SBR_INTERP60_PREENTRY` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:1039` |  |
-| `SBR_INTERP60_TRACE` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:600` |  |
-| `SBR_INTERP60_TRACE_AT` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:623` |  |
+| `SBR_INTERP60_COPY` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:1194` |  |
+| `SBR_INTERP60_DROPLAST` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:1141` |  |
+| `SBR_INTERP60_FOLLOW` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:658` |  |
+| `SBR_INTERP60_KICK` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:526` |  |
+| `SBR_INTERP60_LISTS` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:703` |  |
+| `SBR_INTERP60_MASK` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:223` |  |
+| `SBR_INTERP60_NORESTORE` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:408` |  |
+| `SBR_INTERP60_ORDER` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:1013` |  |
+| `SBR_INTERP60_ORDER_AT` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:1041` |  |
+| `SBR_INTERP60_PREENTRY` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:1127` |  |
+| `SBR_INTERP60_TRACE` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:601` |  |
+| `SBR_INTERP60_TRACE_AT` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:624` |  |
+| `SBR_INTERP60_VIEWWHO` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:964` |  |
 | `SBR_J2D_CAPTURE` | 1 | `sms-recomp/overrides/diag_2d.cpp:148` |  |
 | `SBR_J2D_SOLID` | 1 | `sms-recomp/overrides/diag_2d.cpp:212` |  |
 | `SBR_J3D_CAPTURE` | 1 | `sms-recomp/overrides/j3d_capture.cpp:68` |  |
@@ -323,4 +326,4 @@ logger — that is debt to convert, not a feature.
 | `SBR_WIDESCREEN` | 1 | `sms-recomp/overrides/widescreen.cpp:56` |  |
 | `SBR_WS_SCALE` | 1 | `sms-recomp/overrides/widescreen.cpp:65` |  |
 
-**302 switches; 69 still gate a raw print.**
+**305 switches; 69 still gate a raw print.**

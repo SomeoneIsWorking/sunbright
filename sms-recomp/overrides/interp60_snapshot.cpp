@@ -204,6 +204,7 @@ constexpr u32 OFF_PREENTRY = 0x34;
 bool  g_inSubframe = false;      // suppress snapshot + instrumentation during the re-issue
 u32   g_display = 0;             // TDisplay*, captured at endRendering (see the override below)
 u32   g_camObj = 0;              // the layout-verified camera, for the survive-the-re-issue probe
+u32   g_subframeGfx = 0;         // the TGraphics the current sub-frame is passing
 float g_camWrote[3] = {0, 0, 0}; // what the lerp wrote into it
 float g_camCur[3] = {0, 0, 0};   // its tick-N pose
 long  g_camDispatches = 0;       // testPerform calls on a placement-only object inside a sub-frame
@@ -911,8 +912,60 @@ void snapshot(CPUState& cpu, u32 mask) {
 // per-frame animation, which the recomp-era implementation RE'd as the cause of a 30 Hz water
 // flicker (SBR_INTERP60_MASK overrides it for A/B).
 
+// WHO writes the view? Attribute it to a dispatch instead of inferring it from class names.
+//
+// A 5000-unit kick applied to every snapshotted object left the scene's view matrix byte-identical,
+// so the object being substituted ("camera 1", the only TPlacement-that-is-not-a-TActor dispatched
+// at runtime) is provably NOT the source of the view. Rather than guess which other object is, watch
+// mViewMtx across each dispatch inside a sub-frame and name the one whose call changed it. That is
+// the object whose fields the interpolation has to reach.
+u32  g_viewWriter = 0;
+int  g_viewWrites = 0;
+
+// Reports EVERY writer in order, not the first. The first version latched on the first hit and
+// named 鏡カメラ (TMirrorCamera) — the reflection PRE-RENDER, which writes a view before the main
+// scene's camera does. Stopping at the first writer answers "who writes a view" when the question
+// is "who writes the view the SCENE uses", and those differ by several dispatches. Cap the boring
+// case, not the interesting one.
+void attribute_view_write(CPUState& cpu, u32 gfxAddr) {
+    if (g_viewWrites >= 12 || !gfxAddr || !sb_ram_fast(gfxAddr)) {
+        func_802fcc94(cpu);
+        return;
+    }
+    const u32 obj = (u32)cpu.gpr[3];
+    const float before = guest_f32(gfxAddr + OFF_VIEWMTX + 3 * 4);
+    func_802fcc94(cpu);
+    const float after = guest_f32(gfxAddr + OFF_VIEWMTX + 3 * 4);
+    if (before != after) {
+        g_viewWriter = obj;
+        ++g_viewWrites;
+        char nm[48]; guest_name(obj, nm, sizeof nm);
+        const u32 vptr = sb_ram_fast(obj) ? sb_r32(obj) : 0;
+        lucent::info("interp60",
+                     "VIEW WRITER #{}: object 0x{:08x} vptr=0x{:08x} \"{}\" changed mViewMtx "
+                     "({:.2f} -> {:.2f}) | is_tactor={} is_placement_only={} looks_like_camera={}",
+                     g_viewWrites, obj, vptr, nm, (double)before, (double)after,
+                     is_tactor(vptr) ? "YES" : "no",
+                     is_placement_only(vptr) ? "YES" : "no",
+                     looks_like_lookat_camera(obj) ? "YES" : "no");
+        lucent::info("interp60",
+                     "  its pos@+0x10 = ({:.2f},{:.2f},{:.2f})  fields@+0x30 = ({:.2f},{:.2f},{:.2f})"
+                     "  @+0x3C = ({:.2f},{:.2f},{:.2f})",
+                     (double)guest_f32(obj + 0x10), (double)guest_f32(obj + 0x14),
+                     (double)guest_f32(obj + 0x18), (double)guest_f32(obj + 0x30),
+                     (double)guest_f32(obj + 0x34), (double)guest_f32(obj + 0x38),
+                     (double)guest_f32(obj + 0x3C), (double)guest_f32(obj + 0x40),
+                     (double)guest_f32(obj + 0x44));
+    }
+}
+
 void interp_test_perform(CPUState& cpu) {
     ++g_listDispatches;
+    if (g_inSubframe && std::getenv("SBR_INTERP60_VIEWWHO")
+        && (long)VIGetRetraceCount() >= 1100) {
+        attribute_view_write(cpu, g_subframeGfx);
+        return;
+    }
     if (g_inSubframe) {
         const u32 o = (u32)cpu.gpr[3];
         if (sb_ram_fast(o) && is_placement_only(sb_r32(o))) ++g_camDispatches;
@@ -948,8 +1001,22 @@ void interp_test_perform(CPUState& cpu) {
 // ordinary guest code, so they need a plausible stack: the TGraphics is rebuilt from the tick's
 // snapshot below the seam's own stack pointer, and every register the call clobbers is restored by
 // the caller.
+// SBR_INTERP60_ORDER=1: per re-issued list, how many camera dispatches ran inside it and what the
+// view matrix looked like afterwards.
+//
+// The question is not "does the camera update the view" (measured: it does) but WHEN, relative to
+// the scene that consumes it. TSmJ3DScn::perform copies param_2->mViewMtx at its own moment; a
+// camera that recomputes the view in a LATER list has already been overtaken. Printing the view's
+// translation column at every list boundary shows the consume-before-produce directly, instead of
+// leaving it to be argued from list names.
+bool order_on() {
+    static const bool v = std::getenv("SBR_INTERP60_ORDER") != nullptr;
+    return v;
+}
+
 void perform_list(CPUState& cpu, u32 list, u32 cue, u32 gfx) {
     if (!list || !sb_ram_fast(list)) return;
+    const long camBefore = g_camDispatches;
     // The first sub-frames are traced list by list, entry AND exit. A re-issue that hangs inside
     // guest code otherwise produces silence, and silence is the one output that cannot be told from
     // "never ran" -- the exit line is what distinguishes them.
@@ -965,6 +1032,26 @@ void perform_list(CPUState& cpu, u32 list, u32 cue, u32 gfx) {
     // them, and a whole tick is about 2.25 MB, so anything far past that is the answer.
     if (loud) lucent::info("i60sub", "  <- list 0x{:08x} returned, stream={} KB", list,
                            sbr_gxfifo_stream_pos() >> 10);
+    if (order_on()) {
+        // Sample LATE. The first sub-frames happen before gameplay, where the camera is static and
+        // every alpha agrees by construction — a window that lands there answers the question with
+        // the one case that cannot discriminate. SBR_INTERP60_ORDER_AT sets the first present to
+        // log from (default 1100, comfortably inside gameplay for the standard fastboot run).
+        static const long at = [] {
+            const char* e = std::getenv("SBR_INTERP60_ORDER_AT");
+            return e ? std::atol(e) : 1100L;
+        }();
+        static long n = 0;
+        if ((long)VIGetRetraceCount() >= at && n < 40) { ++n;
+            lucent::info("i60order",
+                         "  list 0x{:08x}: camera dispatches {} | view translation after = "
+                         "({:.2f}, {:.2f}, {:.2f})",
+                         list, g_camDispatches - camBefore,
+                         (double)guest_f32(gfx + OFF_VIEWMTX + 3 * 4),
+                         (double)guest_f32(gfx + OFF_VIEWMTX + 7 * 4),
+                         (double)guest_f32(gfx + OFF_VIEWMTX + 11 * 4));
+        }
+    }
 }
 
 } // namespace
@@ -1004,6 +1091,7 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
     cpu.gpr[1] = (gfx - 0x20u) & ~0xFu;
 
     g_inSubframe = true;
+    g_subframeGfx = gfx;
     const u32 cue = subframe_cue();
 
     float viewBefore[12];
