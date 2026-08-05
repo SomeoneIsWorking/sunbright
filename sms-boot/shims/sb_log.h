@@ -53,6 +53,22 @@ void sb_logf(const char* chan, const char* fmt, ...);
 			sb_logf(chan, __VA_ARGS__);                                        \
 	} while (0)
 
+// Cached per-callsite ENABLE TEST, for the case where the diagnostic needs to do real work before
+// it can print (walk a list, resolve a name, take a backtrace) and so cannot be expressed as
+// SB_LOGC arguments — those are evaluated before the macro's gate can help.
+//
+// Use this in place of `getenv("SB_..._DBG")` in a condition. The distinction matters: an uncached
+// getenv is a linear scan of environ on every evaluation, and on a per-draw or per-joint path that
+// is millions of scans per run for a diagnostic that is switched off. Measured on Delfino with an
+// LD_PRELOAD getenv counter, the ad-hoc gates in this codebase cost 7.0M getenv calls in a 30 s run.
+#ifdef __cplusplus
+#define SB_LOG_ON(chan)                                                        \
+	([]() -> int {                                                             \
+		static const int _sb_on = sb_log_enabled(chan);                        \
+		return _sb_on;                                                         \
+	}())
+#endif
+
 // Log only the first time this callsite is reached (if the channel is enabled).
 #define SB_LOG_ONCE(chan, ...)                                                 \
 	do {                                                                       \
