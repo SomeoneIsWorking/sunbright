@@ -138,6 +138,42 @@ hint and re-checked capacity on every append, so a wrong size expression was har
 front makes the size expression load-bearing. That trade is the reason the test had to come with
 the change rather than after it.
 
+## Second fix landed: the per-draw path was formatting an error message it never printed
+
+Splitting the 43% further, `push_gx_draw` opened with **two unconditional `snprintf` calls on every
+draw** — one building a 160-char description (including `%s` of the `std::string` frame marker), a
+second copying it into a 16-deep ring. The text exists solely so the staging-overflow fatal in
+`gfx/common.hpp` can name the runaway draw instead of leaving it anonymous. In a healthy run it is
+never read.
+
+Measured with a dedicated sub-probe inside the phase: **~500 ns per draw, 10.5% of the whole
+per-draw path.**
+
+The fix is to record, not format: the fields go into a POD ring and `sb_last_draw_desc()` formats
+them on demand. The diagnostic is unchanged — same fields, same ring depth, same `OVERFLOWED`
+marker. Two details that are not incidental:
+
+* the marker string is **copied, bounded**, not pointed at. `g_sbLastMarker` is reassigned as the
+  frame proceeds, so a stored pointer would print whatever the marker was at *fatal* time rather
+  than at *draw* time — a diagnostic that quietly attributes the overflow to the wrong pass.
+* the empty case prints `(no draws recorded before the overflow)` rather than nothing, because an
+  empty report is otherwise indistinguishable from "the recorder never ran", and an overflow
+  before the first draw is exactly when that distinction matters.
+
+Result: **~500 ns/draw -> ~74 ns/draw**, and the machine was *busier* for the after-run (load 36.8
+vs 26.0), so the gain is understated rather than flattered.
+
+### Proving a rewritten diagnostic still works when its consumer is an abort path
+
+Rewriting the recorder created the classic problem: the only consumer is a fatal that a healthy run
+never reaches, so a broken formatter would sit undetected until the day it was needed — the "prove
+it fires" rule, in its most literal form.
+
+`LUCENT_DEBUG=drawdesc` now prints the output of **the same function the fatal calls**, once per
+frame. Verified on a real run: correct fields, correct ring ordering, the `<- OVERFLOWED` marker on
+the final entry, and non-empty markers surviving the bounded copy
+(`mark='DrawBuf ChrXlu' drawIdx=3181789`).
+
 ## The transferable part
 
 Two attributions in this arc were wrong before this one, and the reason is the same each time: a
