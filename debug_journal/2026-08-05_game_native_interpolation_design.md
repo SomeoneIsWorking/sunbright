@@ -433,3 +433,85 @@ recorded there, for exactly the set of objects that matter.
 The inert plumbing (the `TViewObj` virtual, `TActor` fields, and four forwarding overrides) is left
 in place: it is harmless, and it is the correct machinery *if* an enumeration is ever wanted for a
 different purpose. It is not deleted, but nothing should be built on it.
+
+## SOLVED: the snapshot reaches every actor — hook the DISPATCH FUNNEL, not the object graph
+
+Capture-at-render was the recorded decision, and the shape it actually took is better than the one
+that was written down: rather than each actor recording its own transform at draw time, the
+snapshot is driven from **`JDrama::TViewObj::testPerform`**.
+
+That function is **non-virtual**, and it is the single point every container dispatches through:
+
+| container | dispatch |
+|---|---|
+| `TPerformList::forEachPerform` | `it->unk4->testPerform(...)` |
+| `TViewObjPtrListT::perform` | `it->testPerform(...)` |
+| `TStrategy::perform` | `unk10[i]->testPerform(...)` |
+| `TObjManager` / `enemymanager` | `getObj(i)->testPerform(...)` |
+| `TViewConnecter`, `TScreen`, `TDirector` | `unk10/unk14->testPerform(...)` |
+
+`TStrategy` is a **sixth** container type, and none of the five enumeration hops would have found
+it — confirming the walk had no bound. Hooking the funnel needs no knowledge of container types at
+all: an object that is performed passes through here *by construction*, and being non-virtual,
+nothing can override its way around it.
+
+The snapshot fires on the surviving `CUE_MOVE` bit, so it lands immediately before that object's
+movement — exactly where `(prev, cur)` is well defined. A **tick guard** (`mSbPrevTick` vs
+`TViewObj::sSbInterpTick`, opened once per tick by `TMarDirector::direct`) stops an object
+dispatched twice in a tick from overwriting `prev` with `cur` — which would silently flatten
+interpolation to a no-op *and render exactly like a correct implementation*.
+
+### Coverage is demonstrated, not asserted
+
+`moved=0` has two completely different causes — a static scene, and a hook that reaches nothing —
+and a counter alone prints `0` for both. The probe therefore also records **who it saw**:
+
+    ROSTER: 329 distinct objects snapshotted in the first 200 ticks
+      ... マリオ ... マリオエフェクト ... ヨッシーの卵 ... 水ヒットコイン ...
+
+**`マリオ` is in the roster.** `TMario::perform` is the canonical full override that never chains
+to `TLiveActor::perform`, and it is the object every previous attempt failed to reach. Coverage is
+now a measured fact.
+
+(The first roster run capped at 192 entries and said so in its own output — `(CAPPED -- the real
+count is higher)` — instead of presenting a truncated list as complete. Cap raised to 2048; the
+real count is 329.)
+
+### What the numbers then mean
+
+    SNAPSHOT pop: samples=5580000 moved=1 (0.0%) maxStep=2200.000 by "陽炎"
+
+With coverage established, this reads as a statement about the **scene**: in the Delfino start
+state no actor transform changes. Mario is in the frozen WIN_DEMO start state
+(`mStatus=0x133f`, memory `[[delfino-gameplay-renders-2026-07-17]]`), and the plaza's visible
+motion — swaying palm leaves — is *joint animation*, not `mPosition`. The single mover is 陽炎
+(heat-haze) making one 2200-unit init teleport.
+
+So transform interpolation has nothing to show in this scene, and **this scene cannot validate it**.
+Validating it needs actors that actually move; that is the next step, not more hook work.
+
+### Also fixed here: a dangling `else` the previous hook introduced
+
+The snapshot used to be called from `TMarDirector::direct()` like this:
+
+    if (unk4E & 1)
+        mShinePfLstMov->perform(...);
+    else
+    #ifdef SMS_NATIVE_PLATFORM
+        mPerformListMovement->snapshotInterp();
+    #endif
+        mPerformListMovement->perform(...);
+
+Under `SMS_NATIVE_PLATFORM` the `else` bound to the hook **alone**, making
+`mPerformListMovement->perform()` unconditional — so on shine stages *both* movement lists ran.
+That is precisely the both-branches-drive-the-same-list misdecompilation the comment four lines
+above it warns about, reintroduced by an `#ifdef` without braces. Now braced.
+
+### Removed
+
+The five enumeration overrides (`TPerformList::snapshotInterp` + its `sbSnapshotInterp`,
+`TViewObjPtrListT::sbSnapshotInterp`, `TObjManager::sbSnapshotInterp`, `sSbRecurseCount`) are
+**deleted**, not left inert. Leaving them would have been actively wrong rather than merely
+harmless: they are recursive, and the funnel hook now invokes `sbSnapshotInterp()` on containers
+too, so each would have re-walked its whole subtree on top of the per-object dispatch — two
+mechanisms with different coverage feeding one counter.
