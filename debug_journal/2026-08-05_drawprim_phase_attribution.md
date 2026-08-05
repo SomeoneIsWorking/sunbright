@@ -174,6 +174,68 @@ frame. Verified on a real run: correct fields, correct ring ordering, the `<- OV
 the final entry, and non-empty markers surviving the bounded copy
 (`mark='DrawBuf ChrXlu' drawIdx=3181789`).
 
+## Third fix, and the big one: 37 MB/frame of array uploads for 20 MB of distinct data
+
+Splitting the per-draw path further with the *existing* `SB_PROFILE_GFX` seven-slot breakdown —
+which nobody had run against this question — gave a very stable answer:
+
+    per-draw-build us/frame: arrayUpload=2845 shaderinfo+cfg=479 bindgroups=254
+                             pipeline_ref=416 build_uniform=301 push_cmd=86 resolve_tex=100
+
+**`arrayUpload` is 63% of the per-draw build and ~28% of the whole drain.** But a time figure does
+not say *why*, and "uploads a lot" has two explanations with completely different fixes. So the
+instrument was extended to report **volume and distinctness**, not just calls:
+
+    arrays: uploads=968 (37.09 MB)  distinct=492 (20.44 MB)  redundancy=1.8x  cache-hits=2401
+
+Half the traffic is the *same bytes uploaded twice in one frame*.
+
+### The cause
+
+`AttrArray::cachedRange` is a one-entry cache **per attribute slot**, and `GXSetArray` drops it
+whenever the registration changes. The game walks its scene graph re-pointing `GX_VA_POS` at object
+A, then B, then back at A — and A is uploaded again, having already been uploaded this frame. The
+cache is keyed by *which slot currently points at the data*; the uploaded range is a property of
+*the data*.
+
+### The precondition, measured before the change rather than assumed
+
+Keying the cache on data identity is sound only if a given `(pointer, size)` holds the same bytes
+for the whole frame. If the game ever rewrites an array in place between two draws, a data-keyed
+cache serves the stale upload — and the failure would be silent, intermittent geometry corruption,
+the worst kind to debug. There is even a diagnostic in the tree (`SB_NO_ARRCACHE`) that exists
+because that exact worry was live once.
+
+So it was measured, not argued: hash the uploaded bytes, and count any key whose content changes
+within a frame.
+
+    arrays: in-frame content changes under an unchanged (ptr,size): 0  <- a data-keyed upload cache is SAFE
+
+Zero, on every frame. **The counter stays in the build**, so a future scene that violates the
+precondition reports it instead of quietly rendering stale geometry.
+
+### Result
+
+    arrays: uploads=492 (20.44 MB)  distinct=492 (20.44 MB)  redundancy=1.0x
+    arrays: data-keyed cache hits (uploads avoided)=476
+
+**37.09 MB -> 20.44 MB per frame**, redundancy exactly 1.0x — every byte uploaded once. In time,
+against three untouched yardsticks in the same runs (load moved 14.6 -> 9.8, so absolutes are again
+not comparable):
+
+| yardstick | before | after |
+|---|---|---|
+| arrayUpload / shaderinfo+cfg | 5.94x | 3.66x |
+| arrayUpload / pipeline_ref   | 6.84x | 5.21x |
+| arrayUpload / build_uniform  | 9.45x | 6.72x |
+
+Roughly a 30% cut in array-upload time — less than the 45% byte reduction, because `push_storage`
+has per-call cost beyond the copy. That is ~8% of the drain, the largest single win in this arc.
+
+Cache lifetime is one frame, cleared where `AttrArray::cachedRange` is cleared: the ranges index
+into the frame packet's storage buffer, and outliving it would hand out offsets into a buffer that
+has since been rewound.
+
 ## The transferable part
 
 Two attributions in this arc were wrong before this one, and the reason is the same each time: a
