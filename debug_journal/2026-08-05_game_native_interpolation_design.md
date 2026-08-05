@@ -348,3 +348,48 @@ The fields and the inertness verification stand; only the call site is wrong.
 
 **Do not read the current `moved=0` as evidence about the scene.** It is evidence about a hook
 that needs moving.
+
+## Reaching every actor is harder than expected — the object graph is heterogeneous
+
+The snapshot hook was moved off `TLiveActor::perform` (bypassed by 231 overrides) onto a virtual
+`TViewObj::sbSnapshotInterp()`, default no-op, implemented on `TActor` (which owns `mRotation` and
+inherits `mPosition`, so it covers map objects too, not only live actors). The fields moved to
+`TActor` with it.
+
+Driving that virtual to every actor has taken **three attempts, each of which silently visited
+nothing**:
+
+1. **Gated inside `forEachPerform` on `(mask & link->unk8) & 1`.** Never fired — the movement
+   list's dispatch mask is not that simple. Guessing at phase-bit semantics produced a hook that
+   did nothing while compiling and running fine. Replaced with an explicit
+   `TPerformList::snapshotInterp()` called from `TMarDirector::direct()`, because an explicit call
+   cannot silently mismatch.
+2. **Walking the list's direct children.** The perform lists are a **tree** — a child can itself be
+   a `TPerformList`, whose default no-op stopped the walk. Fixed by overriding
+   `sbSnapshotInterp()` on `TPerformList` to recurse.
+3. **Managers.** `TObjManager` is a `TViewObj` (so the walk reaches it) but owns its actors in
+   `unk18[0..mObjNum)`, not as perform-list children — so it too stopped the walk. Given a
+   forwarding override.
+
+After all three, the pass reports `snapshotInterp visited 18 direct children` — it demonstrably
+runs — but the actor-level motion probe **still never fires**, so actors reaching
+`TLiveActor::perform` are still not being snapshotted. There is at least one more container type in
+the path.
+
+Everything above is verified **render-inert**: 0 of 1,228,800 pixels differ from baseline.
+
+### Why this is being written down rather than pushed further
+
+Each hop was found the same way — by a counter that reported a suspiciously round number (`moved=0`
+over 2.34M samples, then `visited 18`) rather than by reading the code. That is working, but
+chasing a heterogeneous object graph hop by hop is expensive and there is no bound on how many
+container types remain.
+
+**The alternative worth trying first next time: don't enumerate at all.** What interpolation needs
+is "the transform the previous frame displayed". Every actor that RENDERS necessarily runs its own
+calc/draw path, so each can record its own transform there — capturing `prev` exactly for the set
+that matters, with no global walk and no dependency on the container hierarchy. The enumeration
+approach requires knowing every container type; the capture-at-render approach requires none.
+
+Cost of the detour so far: the virtual, the `TActor` fields, and three container overrides — all
+inert, all keepable if enumeration is ever wanted, none of it yet delivering a snapshot.
