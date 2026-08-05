@@ -1197,3 +1197,47 @@ Next: find what the substitution has to precede. Candidates, in order — the po
 before CUE_CALC_ANIM by an earlier phase, the actors that draw may not be the ones being written
 (the allowlist covers 47/47 of a live frame, but only ~1.9% move), or `TMario` may compute its
 matrix outside the phase entirely. Each is checkable; none should be assumed.
+
+## The write DOES reach the render — the RESTORE POINT is wrong
+
+Three probes, each narrowing the previous one's ambiguity, and none of it reachable by reasoning.
+
+**1. `alpha=0.0` changed 0 pixels.** Ambiguous: either the write reaches nothing, or `(prev, cur)`
+are equal for everything on screen.
+
+**2. `SBR_INTERP60_KICK=3000` — a 3,000-unit displacement of every allowlisted actor — also changed
+0 pixels.** That removes the second reading: a displacement that large cannot be invisible if it is
+reaching rendered state.
+
+**3. Read-back: `stuck=1968690 lost=0`.** Every store lands in the memory the guest reads. So the
+write is not being dropped — it is being *ignored*, which is a different defect and would have been
+mis-diagnosed as a memory-mapping problem without this check.
+
+**4. `SBR_INTERP60_NORESTORE=1` — leave the substitution permanently in place: 1,201,698 of
+1,228,800 pixels change (97.8%).**
+
+So the write reaches rendered state completely. **`restore_all()` simply runs before the render
+consumes the pose.** It is placed at the first `CUE_MOVE` dispatch of the next tick, and the draw
+for tick N evidently happens *after* that point — consistent with the entry-vs-render alternation
+`MarDirectorDirect.cpp` documents, where a direct() call renders what a previous call entered.
+
+### What this retracts
+
+The previous entry concluded the apply point was wrong because `calcRootMatrix` runs on
+`CUE_CALC_ANIM` before draw. Moving the apply ahead of the calc phase is still correct on its own
+terms, **but it was not the reason the control failed** — the control kept failing after that change
+and the real cause is the restore, at the other end. A fix that does not move the symptom is not the
+fix, and that should have been the signal to stop and re-measure rather than reason on.
+
+### Next
+
+The restore has to happen after the frame's GX stream is complete and before the next tick's
+movement. The present boundary (`native_frame.cpp`'s `present_and_reopen`) is the unambiguous point
+— but note that the naive expectation "the draw precedes the present" is exactly what the evidence
+just contradicted, so the placement must be **measured, not assumed**: `NORESTORE` at 97.8% and a
+correct placement at 0% for `alpha=1.0` with a firing `alpha=0.0` control is the gate.
+
+Worth recording what the single-present experiment actually is: a degenerate stand-in for the real
+design, which never restores mid-frame at all — it presents TWICE, the extra present carrying the
+interpolated pose. The restore question may dissolve once the second present is wired, and that is
+the more likely shape of the fix than moving the restore around.

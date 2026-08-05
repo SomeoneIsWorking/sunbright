@@ -129,6 +129,7 @@ Entry* slot_for(u32 obj) {
 // allowlist is missing the things that matter and the name says so.
 long        g_samples = 0, g_moved = 0, g_nonActors = 0, g_actors = 0;
 long        g_applied = 0, g_restored = 0;
+long        g_writeStuck = 0, g_writeLost = 0;
 // The tick value the most recent snapshot was stamped with. apply_all() keys on THIS rather than
 // on VIGetRetraceCount(): the draw-phase dispatch does not reliably share the present counter's
 // value with the movement dispatch (direct() has an entry-vs-render alternation), so requiring
@@ -170,6 +171,9 @@ void report() {
         lucent::info("interp60", "  WRITE alpha={:.2f}: applied={} restored={} (unequal counts mean "
                                  "a pose was left interpolated into the physics step)",
                      (double)alpha_setting(), g_applied, g_restored);
+    if (g_writeStuck || g_writeLost)
+        lucent::info("interp60", "  WRITE READ-BACK: stuck={} lost={} (lost>0 means the store never "
+                                 "reached the memory the guest reads)", g_writeStuck, g_writeLost);
     g_tickMaxStep = 0.0f; g_tickMaxObj = 0;
     lucent::info("interp60",
                  "  COVERS objects dispatched with CUE_MOVE whose vptr is in kTActorVtables "
@@ -186,7 +190,16 @@ void guest_w_f32(u32 ea, float v) {
 // Put the guest transforms back exactly as the game left them. Called before movement runs, so
 // physics never sees an interpolated pose -- the interpolation is a RENDER-time substitution only,
 // which is the whole point of interpolating instead of ticking logic at 60 Hz.
+// SBR_INTERP60_NORESTORE=1: leave the substitution in place permanently. Discriminates "the render
+// never reads mPosition after the apply" from "restore runs before the render does". Wrong for real
+// use -- physics then runs on a substituted pose -- but it is the only way to tell those apart.
+bool no_restore() {
+    static const bool v = std::getenv("SBR_INTERP60_NORESTORE") != nullptr;
+    return v;
+}
+
 void restore_all() {
+    if (no_restore()) return;
     for (int i = 0; i < TABLE_SIZE; ++i) {
         Entry& e = g_tab[i];
         if (!e.applied) continue;
@@ -215,6 +228,27 @@ void apply_all(u32 tick, float alpha) {
             e.curRot[k] = guest_f32(e.obj + OFF_ROTATION + (u32)k * 4);
         }
         e.applied = true;
+
+        // SBR_INTERP60_KICK=<units>: POSITIVE CONTROL for the write path. alpha=0.0 producing an
+        // identical frame is ambiguous — it means either the write reaches nothing, or (prev, cur)
+        // are equal for everything actually on screen. A large constant displacement removes that
+        // ambiguity: if the frame still does not change, the write provably never reaches rendered
+        // state, and no amount of refining the lerp would have shown it.
+        static const float kick = [] {
+            const char* e2 = std::getenv("SBR_INTERP60_KICK");
+            return e2 ? (float)std::atof(e2) : 0.0f;
+        }();
+        if (kick != 0.0f) {
+            const float want = e.cur[1] + kick;
+            guest_w_f32(e.obj + OFF_POSITION + 4, want);
+            // READ-BACK CHECK. "The write had no visible effect" has two causes that look the same:
+            // the store did not stick, or it stuck and nothing read it. Only a read-back separates
+            // them, and it must be counted rather than assumed.
+            const float got = guest_f32(e.obj + OFF_POSITION + 4);
+            if (got == want) ++g_writeStuck; else ++g_writeLost;
+            ++g_applied;
+            continue;
+        }
         // ENDPOINT EXACTNESS is a correctness requirement, not a nicety. alpha=1.0 must reproduce
         // the game's own transform BIT-FOR-BIT, because that is the control proving the write path
         // is a no-op when it should be. `p + (c-p)*a` fails it: the subtraction and the addition
