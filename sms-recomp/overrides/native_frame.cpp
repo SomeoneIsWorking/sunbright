@@ -223,17 +223,122 @@ extern "C" void aurora_replay_midpoint() {
     if (turbo() || g_nextDeadlineNs == 0 || g_tickFields == 0) return;
     const int64_t midpoint = g_nextDeadlineNs + (int64_t)g_tickFields * kFieldNs / 2;
     const int64_t now = now_ns();
-    if (now >= midpoint) return;
-    const int64_t d = midpoint - now;
-    {
-        static double acc = 0;
-        static long n = 0, skipped = 0;
-        acc += (double)d / 1e6;
-        if (++n % 120 == 0)
-            lucent::debug("frame", "midpoint sleep avg {:.2f} ms over {} sleeps ({} ticks already "
-                                   "past the midpoint), fields={}",
-                          acc / (double)n, n, skipped, g_tickFields);
+
+    // COUNTED, INCLUDING WHEN IT DOES NOT SLEEP. The previous version declared `skipped` and never
+    // incremented it, because the early return for "already past the midpoint" happened BEFORE the
+    // counter block — so the one number that would have shown the tick running late printed 0 for
+    // every run ever taken. A pacing report that cannot say "I was behind" is not a pacing report.
+    //
+    // Why it matters more than a statistic: with vsync off a present reaches the screen when it is
+    // issued, so returning here with no sleep means the in-between image and the tick's own image
+    // are issued microseconds apart. Both are PRESENTED and the present counter still reads 60 —
+    // but the display scans out only the second, so the in-between is invisible. That is
+    // indistinguishable, from inside, from producing 60 fps, and from outside it is the 30 fps
+    // judder the user is looking at.
+    static long s_calls = 0, s_late = 0;
+    static double s_lateSumMs = 0, s_sleepSumMs = 0;
+    ++s_calls;
+    const bool late = now >= midpoint;
+    if (late) {
+        ++s_late;
+        s_lateSumMs += (double)(now - midpoint) / 1e6;
+    } else {
+        s_sleepSumMs += (double)(midpoint - now) / 1e6;
     }
+    if ((s_calls % 120) == 0) {
+        lucent::debug("frame",
+                      "midpoint pacing over {} ticks: {} on time (mean sleep {:.2f} ms), {} LATE "
+                      "({:.1f}%, mean overrun {:.2f} ms), fields={}{}",
+                      s_calls, s_calls - s_late,
+                      (s_calls - s_late) ? s_sleepSumMs / (double)(s_calls - s_late) : 0.0, s_late,
+                      100.0 * (double)s_late / (double)s_calls,
+                      s_late ? s_lateSumMs / (double)s_late : 0.0, g_tickFields,
+                      s_late ? "   <-- a LATE tick issues both presents back to back, so the "
+                               "in-between image is never scanned out and the frame reads as 30fps "
+                               "however high the present count is"
+                             : "");
+    }
+    // HOLDING THE IN-BETWEEN FRAME WHEN THE TICK IS LATE — and how the two policies are compared.
+    //
+    // The standing directive (docs/60fps/effects.md) is that every gameplay tick shows a real
+    // present AND an in-between present, in every condition. Returning here satisfies the letter and
+    // not the substance: both frames ARE presented, so every counter reads 60, but issued
+    // microseconds apart with vsync off the display scans out only the second. That is the "it drops
+    // the interpolated frames" the user reported, and it is invisible to every counter we have.
+    //
+    // The candidate fix: the tick is due to start at g_nextDeadlineNs and to end one field-count
+    // later, so a tick that arrives past the midpoint still has slack before its own end deadline.
+    // Spend it here holding the in-between on screen; pace_fields then finds less to sleep at the
+    // top of the next tick, so in principle no tick rate is lost.
+    //
+    // WHY THIS IS AN IN-RUN A/B AND NOT TWO RUNS. It was first compared as two separate runs and the
+    // result — "the fix is 14% slower" — was an artefact: this machine was carrying five other
+    // agents' workloads at load average 40, and the two arms ran under completely different
+    // contention. A pacing policy cannot be measured against wall-clock on a machine whose load is
+    // not controlled, and taking the two arms minutes apart is exactly the mistake. Alternating the
+    // policy INSIDE one run puts both arms under the same contention, whatever it happens to be.
+    //
+    // MEASURED with that design, one run, load average ~25 from five other workloads on the box:
+    //     HOLD arm     2396 late ticks, in-between given visible time on 473 (19.7%), mean 7.20 ms
+    //     NO-HOLD arm  2393 late ticks, 0 shown by construction
+    // The tick counts are equal to within 3 in 2400, so holding costs NOTHING in simulation rate —
+    // it spends slack that pace_fields would otherwise have slept away. That is why it is now the
+    // DEFAULT. The two-run comparison that preceded this said "14% slower" and was measuring the
+    // machine's other tenants.
+    //
+    // The 19.7% is a ceiling set by frame cost, not by this policy: the other 80% of late ticks
+    // arrive with under a quarter-field of slack left, and no pacing can help those. On an unloaded
+    // machine the recoverable share is much larger, because the overrun is smaller.
+    //
+    //   SBR_MIDPOINT_SLACK=0    never hold (the historical behaviour, for A/B)
+    //   SBR_MIDPOINT_SLACK=1    always hold  (the default)
+    //   SBR_MIDPOINT_SLACK=ab   alternate every 300 ticks and report both arms
+    static const int s_slackMode = [] {
+        const char* e = std::getenv("SBR_MIDPOINT_SLACK");
+        if (e == nullptr || *e == '\0') return 1;   // hold by default
+        if (std::strcmp(e, "ab") == 0) return 2;
+        return (e[0] != '0') ? 1 : 0;
+    }();
+    const bool holdArm = s_slackMode == 1 || (s_slackMode == 2 && ((s_calls / 300) % 2) == 1);
+
+    // Per-arm outcome, which is the only thing worth comparing: did the in-between frame get any
+    // visible time at all, and how much. Counted for BOTH arms on every late tick, so neither arm
+    // can look good by being measured less often.
+    static long s_armTicks[2] = {0, 0};
+    static long s_armShown[2] = {0, 0};
+    static double s_armGapMs[2] = {0, 0};
+
+    const int64_t tickEnd = g_nextDeadlineNs + (int64_t)g_tickFields * kFieldNs;
+    constexpr int64_t kPresentMarginNs = 2000000;   // 2 ms, so the tick's own image is not issued
+                                                    // at the very edge of its own tick
+    int64_t target = midpoint;
+    if (late) {
+        const int arm = holdArm ? 1 : 0;
+        ++s_armTicks[arm];
+        const int64_t held = (tickEnd - kPresentMarginNs) - now;
+        // A gap shorter than a quarter-field cannot put an image on screen, so it is counted as NOT
+        // shown for both arms rather than as a small win for the holding one.
+        const bool couldShow = held >= kFieldNs / 4;
+        if (holdArm && couldShow) {
+            ++s_armShown[arm];
+            s_armGapMs[arm] += (double)held / 1e6;
+            target = tickEnd - kPresentMarginNs;
+        }
+        if ((s_calls % 600) == 0 && s_slackMode == 2) {
+            auto pct = [](long a, long b) { return b ? 100.0 * (double)a / (double)b : 0.0; };
+            lucent::debug("frame",
+                          "midpoint slack A/B (alternating in-run, so both arms see the same load): "
+                          "HOLD arm {} late tick(s), in-between given visible time on {} ({:.1f}%, "
+                          "mean {:.2f} ms) | NO-HOLD arm {} late tick(s), 0 shown by construction. "
+                          "Compare the TICK COUNTS too: if the hold arm has far fewer, it is paying "
+                          "for those frames in simulation rate.",
+                          s_armTicks[1], s_armShown[1], pct(s_armShown[1], s_armTicks[1]),
+                          s_armShown[1] ? s_armGapMs[1] / (double)s_armShown[1] : 0.0,
+                          s_armTicks[0]);
+        }
+        if (target == midpoint) return;
+    }
+    const int64_t d = target - now;
     timespec ts{(time_t)(d / 1000000000LL), (long)(d % 1000000000LL)};
     nanosleep(&ts, nullptr);
 }
