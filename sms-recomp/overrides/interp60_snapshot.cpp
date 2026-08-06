@@ -129,6 +129,8 @@ void anim_apply(CPUState& cpu, u32 mActor, float alpha);   // defined with the a
 void actors_calc_root(CPUState& cpu, u32 tick, bool substituteAnim, bool requireApplied);
 void player_apply(CPUState& cpu, u32 gfx, bool saveWaist);
 void player_restore();
+void mtxtrace_report(u32 model, const char* when);
+extern u32 g_mtxModel;
 void player_snapshot(u32 obj);
 void player_diff(u32 obj);
 void anim_restore();
@@ -1981,12 +1983,95 @@ void anim_restore() {
 // Counted BOTH sides, because a count inside the sub-frame alone has no denominator: "180 calls"
 // is either complete coverage or a tenth of it depending on the tick, and only the pair says which.
 long g_vcTick = 0, g_vcSub = 0;
+
+// ── MATRIX PROVENANCE TRACER (SBR_INTERP60_MTXTRACE=1) ───────────────────────
+//
+// Built to STOP guessing. Four hypotheses about why the background ignores an interpolated view have
+// each been reasoned from correct-looking state and each been wrong about the pixels. The chain from
+// j3dSys's view to a drawable's matrices is short and entirely in guest memory, so it can simply be
+// WATCHED instead of inferred.
+//
+// J3DModel (decomp J3DModel.hpp:284): mDrawMtxBuf[2] at +0x60/+0x64, each a Mtx** indexed by
+// mCurrentViewNo at +0x7C. getDrawMtxPtr() is mDrawMtxBuf[1][viewNo], and viewCalc() SWAPS the two
+// before writing. So the two things that decide what gets drawn are (a) which pointer is in slot 1,
+// and (b) what the matrix under each pointer holds — and this prints both, at every viewCalc on one
+// pinned model, tagged with whether it happened in the tick or inside the sub-frame.
+//
+// It pins ONE model so the output is a readable story rather than 140 interleaved ones. Unset,
+// SBR_INTERP60_MTXTRACE_ADDR auto-pins the first model viewCalc'd after arming and says which it
+// chose; the run is deterministic, so that is a stable choice and can be pinned explicitly to follow
+// a different one.
+constexpr u32 OFF_JM_DRAWBUF0 = 0x60;
+constexpr u32 OFF_JM_DRAWBUF1 = 0x64;
+constexpr u32 OFF_JM_VIEWNO   = 0x7C;
+
+u32 g_mtxModel = 0;   // declared above for the sub-frame boundary probes
+
+bool mtxtrace_on() {
+    static const bool v = std::getenv("SBR_INTERP60_MTXTRACE") != nullptr;
+    return v;
+}
+
+// mDrawMtxBuf[which][viewNo] — the Mtx* the game would hand a packet.
+u32 draw_mtx_ptr(u32 model, int which) {
+    const u32 basePtr = sb_r32(model + (which ? OFF_JM_DRAWBUF1 : OFF_JM_DRAWBUF0));
+    if (!sb_ram_fast(basePtr)) return 0;
+    const u32 viewNo = sb_r32(model + OFF_JM_VIEWNO);
+    if (viewNo > 4) return 0;                    // sane view index; the game uses 0 here
+    const u32 ea = basePtr + viewNo * 4;
+    if (!sb_ram_fast(ea)) return 0;
+    return sb_r32(ea);
+}
+
+// The translation column of matrix [0] under a buffer pointer — enough to identify WHICH view a
+// matrix was built from, since that is the whole question.
+void mtx_translation(u32 mtxPtr, float* out) {
+    out[0] = out[1] = out[2] = 0.0f;
+    if (!mtxPtr || !sb_ram_fast(mtxPtr + 44)) return;
+    out[0] = guest_f32(mtxPtr + 3 * 4);
+    out[1] = guest_f32(mtxPtr + 7 * 4);
+    out[2] = guest_f32(mtxPtr + 11 * 4);
+}
+
+void mtxtrace_report(u32 model, const char* when) {
+    if (!mtxtrace_on() || model != g_mtxModel || !model) return;
+    static long lines = 0;
+    if (lines >= 40) return;
+    ++lines;
+    const u32 p0 = draw_mtx_ptr(model, 0), p1 = draw_mtx_ptr(model, 1);
+    float t0[3], t1[3], view[3];
+    mtx_translation(p0, t0);
+    mtx_translation(p1, t1);
+    view[0] = guest_f32(J3DSYS_VIEWMTX + 3 * 4);
+    view[1] = guest_f32(J3DSYS_VIEWMTX + 7 * 4);
+    view[2] = guest_f32(J3DSYS_VIEWMTX + 11 * 4);
+    lucent::info("i60mtx",
+                 "{:<22} {}  j3dSys view t=({:.2f},{:.2f},{:.2f}) | buf0 {:08x} t=({:.2f},{:.2f},"
+                 "{:.2f}) | buf1(DRAWN) {:08x} t=({:.2f},{:.2f},{:.2f})",
+                 when, g_inSubframe ? "[SUB ]" : "[tick]",
+                 (double)view[0], (double)view[1], (double)view[2],
+                 p0, (double)t0[0], (double)t0[1], (double)t0[2],
+                 p1, (double)t1[0], (double)t1[1], (double)t1[2]);
+}
 bool viewcalc_on() {
     static const bool v = std::getenv("SBR_INTERP60_VIEWCALC") != nullptr;
     return v;
 }
 void viewcalc_hook(CPUState& cpu) {
     if (g_inSubframe) ++g_vcSub; else ++g_vcTick;
+    const u32 model = (u32)cpu.gpr[3];
+    if (mtxtrace_on() && (long)VIGetRetraceCount() >= viewseq_at()) {
+        if (!g_mtxModel && sb_ram_fast(model)) {
+            const char* pin = std::getenv("SBR_INTERP60_MTXTRACE_ADDR");
+            g_mtxModel = pin ? (u32)std::strtoul(pin, nullptr, 0) : model;
+            lucent::info("i60mtx", "=== tracing J3DModel 0x{:08x}{} ===", g_mtxModel,
+                         pin ? " (pinned)" : " (auto: first model viewCalc'd after arming)");
+        }
+        mtxtrace_report(model, "viewCalc BEFORE");
+        func_802deeb8(cpu);
+        mtxtrace_report(model, "viewCalc AFTER");
+        return;
+    }
     func_802deeb8(cpu);
 }
 
@@ -2268,6 +2353,7 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
     }
     player_apply(cpu, gfx, true);
     actors_calc_root(cpu, g_lastSnapTick, true, true);
+    mtxtrace_report(g_mtxModel, "sub-frame START");
     viewseq_begin();
     if (!noEntry) perform_list(cpu, preEntry, cue, gfx);
     // SBR_INTERP60_DROPLAST=1: omit the last recorded draw list from the re-issue.
@@ -2280,7 +2366,9 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
     // is still 0 with a list missing, the presented sub-frame is not the sub-frame.
     static const bool dropLast = std::getenv("SBR_INTERP60_DROPLAST") != nullptr;
     const int drawN = dropLast && g_drawN > 1 ? g_drawN - 1 : g_drawN;
+    mtxtrace_report(g_mtxModel, "before draw lists");
     for (int i = 0; i < drawN; ++i) perform_list(cpu, g_drawLists[i], g_drawCues[i] & cue, gfx);
+    mtxtrace_report(g_mtxModel, "after draw lists");
     viewseq_end();
     // THE ARTIFACT, not the state. Two alphas that emit the same bytes cannot render different
     // pixels, whatever every state-level probe says — and every probe in this arc so far has been

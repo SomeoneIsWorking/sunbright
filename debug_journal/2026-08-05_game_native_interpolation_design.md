@@ -3232,3 +3232,56 @@ This reframes several results at once, and it is the piece the last several entr
 
 Recorded before acting on any of it, because the three preceding hypotheses were each acted on
 first and each was wrong.
+
+## THE INSTRUMENT, AND WHAT IT SHOWS: the drawn matrices are WORLD matrices, identical at every alpha
+
+Four hypotheses had each been reasoned from correct-looking state and each been wrong about the
+pixels, so this stops guessing and watches the chain instead. `SBR_INTERP60_MTXTRACE=1` pins ONE
+J3DModel and prints, at every viewCalc and at the sub-frame's draw boundaries: j3dSys's view
+translation, BOTH `mDrawMtxBuf` pointers (so the swap is visible as a pointer exchange), and the
+translation of the matrix under each. Offsets from `J3DModel.hpp:284` — `mDrawMtxBuf[2]` at
++0x60/+0x64, `mCurrentViewNo` at +0x7C.
+
+Same sub-frame, two runs:
+
+    alpha=0.0  j3dSys view t=(  0.33, 590.33, -5672.59) | buf1(DRAWN) t=(87679.84, 231893.67, 36132.95)
+    alpha=1.0  j3dSys view t=(-17.91, 590.32, -5672.56) | buf1(DRAWN) t=(87679.84, 231893.67, 36132.95)
+
+**The view differs and the drawn matrix is bit-identical.** Across the whole traced window the matrix
+sequence is the same in both runs (87422.91 -> 87679.84 -> 87935.54), merely offset by one sub-frame
+against the view sequence.
+
+### Why, and it is in the source
+
+`J3DModel::viewCalc` has two paths (`J3DModel.cpp:924`):
+
+    if (checkFlag(1)) {
+        for (...) MTXCopy(getAnmMtx(...), getDrawMtx(i));      // <- NO VIEW ANYWHERE
+        for (...) MTXCopy(mWEvlpMtx[i], getDrawMtx(...));
+    } else {
+        MtxPtr viewMtx = j3dSys.getViewMtx();                  // <- the view path
+        ...
+    }
+
+The traced model takes the **flag-1 path**, which copies ANIMATION matrices into the draw array and
+never touches the view. The magnitudes confirm it independently: 87,423 / 231,950 / 36,396 are WORLD
+coordinates — a view-space translation at this camera would be on the order of 5,000.
+
+So for these models the draw matrices are world matrices, and **the view is applied downstream** —
+the packet builds the position matrix as view x world when it loads PNMTX. That is why every
+state-level verification in this arc was simultaneously correct and useless: j3dSys's view really did
+carry the interpolated value, and the matrices really were rebuilt, and neither fact touches the
+geometry these models draw.
+
+### What this makes clear, finally
+
+The question is no longer "why doesn't the background follow the view" in general. It is precisely:
+**at the moment a packet loads PNMTX during the sub-frame, which view does it concatenate?** That is
+one place in J3D, it is reachable, and the answer is a value that can be read rather than inferred.
+
+It also explains the shape of every earlier result: only geometry whose WORLD matrix was substituted
+(Mario, the actors) moved, because for flag-1 models the world matrix is the only thing viewCalc
+writes — and the view, whatever it holds, is combined with it somewhere this arc has not yet looked.
+
+The tracer stays; it is the first instrument here that shows the chain instead of sampling one end of
+it, and the next question is a direct extension of it rather than a new hypothesis.
