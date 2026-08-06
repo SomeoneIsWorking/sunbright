@@ -305,11 +305,14 @@ def compare(pa, pb):
             continue
         print(f"  {role}: mean {sum(v)/len(v):7.3f}% over {len(v)} present(s)")
     if tot['sub'] and max(tot['sub']) == 0.0:
-        print("  ALPHA REACHES NOTHING: every sub present is byte-identical across the two runs.")
-        print("  Any asymmetry measured from either run describes the scene, not the interpolation.")
+        print("  THE VARIED SETTING REACHES NOTHING: every sub present is byte-identical across the")
+        print("  two runs. If the two differ only in alpha, any asymmetry measured from either run")
+        print("  describes the scene and not the interpolation.")
     if tot['main'] and max(tot['main']) > 0.0:
-        print("  LEAK: a MAIN present differs across alpha. The substitution is not self-cancelling,")
-        print("  so the two runs are not the same game and no cross-run reading from them is valid.")
+        print("  MAIN PRESENTS DIFFER between the two runs. A main frame must not depend on what the")
+        print("  sub-frame does — whether the two runs differ in alpha or in a seam switch, the")
+        print("  substitution is then not self-cancelling and the two runs are not the same game.")
+        print("  No cross-run reading from them is valid until this is 0.")
     return 0
 
 

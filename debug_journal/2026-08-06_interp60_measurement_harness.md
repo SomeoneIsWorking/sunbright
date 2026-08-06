@@ -100,3 +100,33 @@ Do NOT re-derive the earlier table. "74.5% → 25.6% → 20.4%" was recorded wit
 configuration or its moment scale, and asymmetry is a ratio whose denominator is how far the tick
 moved; readings taken at different moments are not comparable. Re-measure with the runner, which
 records both.
+
+## OPEN, and measured: the PreEntry view-calc pass is NOT inert with respect to the MAIN frame
+
+Bisecting the endpoint residual by turning `SBR_INTERP60_PREENTRY_VC` off at alpha = 1.0 produced a
+result about something else entirely. Comparing the two runs present-by-present
+(`subframe_position.py --compare`):
+
+    present 0 [ sub] : 99.666% differ, mad 22.965%
+    present 1 [main] :  0.805% differ, mad  0.313%
+    present 2 [ sub] : 99.657% differ, mad 22.966%
+    present 3 [main] :  0.805% differ, mad  0.314%
+    present 4 [ sub] : 99.663% differ, mad 22.958%
+    present 5 [main] : 99.663% differ, mad 23.060%      <- a MAIN frame, 99.7% different
+    present 7 [main] : 99.656% differ, mad 23.067%
+
+A main frame must not depend on what the sub-frame does. Two of the four main presents differ by
+99.7% between view-calc on and off, so the pass changes the frame the GAME renders — it is not a
+matrix recompute that cancels itself.
+
+**Why the previous session's leak test could not see this.** That test compares two runs that
+differ only in ALPHA, with the pass ON in both. A defect the pass causes at every alpha is common
+to both sides and cancels exactly. It reported 0/0 px and was right about what it measured. A leak
+gate needs a baseline with the seam OFF, not only a second alpha.
+
+This is recorded as MEASURED and NOT EXPLAINED. The two runs also sit at different moment scales
+(full tick 76.5 vs 10.6 at the same present index), which is itself consistent with a state
+divergence rather than a render-only difference, and the sub presents differ by 99.7% everywhere
+while the first two main presents differ by only 0.8% — a pattern no single story yet accounts for.
+Do not treat any of it as a root cause. The next step is the cheap one: run the leak comparison
+with the pass on vs off at a FIXED alpha and find the first present where the mains diverge.
