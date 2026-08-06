@@ -2711,3 +2711,52 @@ the same 5,608 pixels as the player alone, because the NPCs that move here are o
 only visible mover is Mario. That is a property of the moment, not of the mechanism, and the kick
 control is what separates them. `SBR_INTERP60_ACTORS` stays opt-in until a moment with visible NPC
 motion says otherwise.
+
+## THE MIDPOINT IS NOT A MIDPOINT — and the camera is not what is missing
+
+The acceptance question is not "does the actor alpha move pixels" (which depends on whether anything
+visible happens to be moving) but the thing interpolation is FOR: at alpha=0.5, does the sub-frame
+sit between its two neighbouring main frames? A correct midpoint is EQUIDISTANT from both, each at
+half the full-tick distance. Measured on consecutive presents of one run, roles stamped by the
+runtime, mean |delta| per channel:
+
+    configuration          full tick   sub->prev   sub->next   ideal half   asymmetry
+    camera only              11.070      10.175       1.946       5.535        74.3%
+    camera + player + actors 11.187      10.270       1.939       5.593        74.5%
+
+**The sub-frame sits 83% of the way toward the FOLLOWING main frame, not halfway.** Both halves had
+to be measured: a single distance would have read 1.94 as "close to correct" when it is the signature
+of a near-duplicate.
+
+### This is not the camera, and that is the useful part
+
+Across alphas the sub-frame moves only ~3 units of an 11-unit span — the same ~28% coverage the
+earlier alpha=0 reading showed, now measured properly and reproduced at 0.5. Yet CAMTRACE proves the
+camera traverses a FULL tick: at alpha=0 the cached view after substitution equals its value before
+substitution one tick earlier, exactly, on every line, and VIEWSEQ proves that view reaches the
+dominant 1542 KB pass. Two independent measurements, and together they force the conclusion:
+
+**~72% of a frame's tick-to-tick change is not caused by the camera view at all.**
+
+What is left is everything whose appearance advances with the ANIMATION FRAME rather than with a
+transform — skeletons, BCK/BTK texture scrolls, the water, JPA particles. The sub-frame renders all
+of it at tick N's animation phase, because it deliberately does not advance animation (re-running
+calc-anim to do so costs mean |d| 21.9, measured earlier). So geometry sits at the midpoint while
+everything animated sits at the endpoint, and the endpoint wins 72% of the picture.
+
+That also explains why player and actor interpolation, both verified correct by their own controls,
+move the midpoint number not at all: they interpolate transforms, and transforms are the 28%.
+
+### The next arc, named
+
+Interpolate the ANIMATION FRAME, in the same shape as everything else that has worked here:
+snapshot each MActor's frame counter, write `lerp(prev, cur, alpha)` into it for the sub-frame, and
+let `MActor::calc()` — already being called for every dispatched actor — rebuild the skeleton at that
+frame. That is the game's own function from an interpolated input, and it is a NARROWER seam than
+re-running calc-anim: the frame value is substituted, never advanced, so the 30 Hz flicker that
+killed the whole-list re-issue does not arise.
+
+Two things to establish first, by reading rather than by trying: where J3DFrameCtrl's current frame
+lives relative to an MActor, and whether the game keeps its own previous frame value (as
+CPolarSubCamera keeps its previous pose) or whether a snapshot is needed. The camera turned out to
+keep its own, and using the game's pair was what made that interpolation exact.
