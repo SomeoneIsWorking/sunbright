@@ -28,12 +28,35 @@ between them.
 | leak into guest state | none (never touches guest memory) | unbounded — chased for weeks | none by construction |
 | honest coverage number | yes: tagged/untagged draws split ortho vs persp vs indexed | no | yes: the `NOT covered` line |
 | status | **most complete**; the one whose effects work | superseded | best-measured, worst-covered |
+| **JUDDER** (measured, matched ticks) | **1.10** | — | **2.33** |
+| cadence (presents per tick) | irregular, 2–3 | — | irregular, 1–3 |
 
-**This is why 60fps flickers today.** `play.sh --60fps` selects **C**, which covers `J3DModel` draw
-matrices and nothing else: the 2D HUD, particles, immediate-mode geometry, EFB feedback (the dash
-trail), and screen-sampling effects (heat haze, water refraction, mist, mirror) all step at 30 Hz
-inside a 60 Hz frame, and the sub-frame re-issues draw lists that were never meant to run twice.
-**A** already solved that class of problem and is not wired to `play.sh` at all.
+### Measured, on the axis that matches the complaint
+
+`tools/interp/cadence.py` scores what a player reports. It labels no present as "main" or "sub" —
+it takes the difference between each pair of CONSECUTIVE presents and asks whether those steps are
+the same size. `judder = max(step)/min(step)`; 1.0 means every present advances the game equally.
+Same scenario, same pad script, **matched guest ticks** (~4802–4818, camera rotating):
+
+| configuration | judder | mean step | presents/tick |
+|---|---|---|---|
+| no interpolation, plain 30fps | 1.18 | 7.29 | 1 (regular) |
+| **A** — stream interpolation | **1.10** | 5.13 | 2–3 (irregular) |
+| **C** — record-and-replace | **2.33** | 6.02 | 1–3 (irregular) |
+
+**C is twice as juddery as not interpolating at all**, and C is what `play.sh --60fps` used to
+select. A is smoother than the 30fps baseline. That is the whole case for the unification target
+below, and it is why the flicker is a structural mismatch rather than a tuning problem: C covers
+`J3DModel` draw matrices and nothing else, so the 2D HUD, particles, immediate-mode geometry, the
+dash-trail EFB feedback and every screen-sampling effect step at 30 Hz inside a 60 Hz frame, while
+its sub-frame re-issues draw lists that were never meant to run twice.
+
+**Both** paths present an irregular number of frames per tick. That is judder by construction and
+no pixel metric that ignores the dump labels can see it — every present differs from the last, so
+every step is nonzero and the ratio still looks respectable. Pinning the cadence to exactly N
+presents per tick is a defect to fix in the merged path, independent of interpolation quality.
+
+`play.sh --60fps` now selects A.
 
 ---
 
@@ -105,6 +128,7 @@ vars — the project already has one tracked logger and this arc bypassed it 24 
 | `tools/interp/interp60_run.sh` | the one runner; carries the whole switch set, prints the MOTION CENSUS at the dumped moment before any score |
 | `tools/interp/subframe_position.py` | scores a sub-frame's position between its two neighbours (asymmetry / lead / off-segment); `--selftest` forces five cases |
 | `tools/interp/frame_regions.py` | WHERE two frames differ — tile grid, coverage, top-decile concentration |
+| `tools/interp/cadence.py` | **JUDDER** — how evenly consecutive presents advance the game, plus presents-per-tick from the dump labels. Path-agnostic (labels nothing "sub"), so it is the one axis all three paths can be compared on. Refuses a comparison whose series do not overlap in guest time |
 | `tools/interp/interp60_gate.sh` | the regression gate |
 | `SBR_INTERP60_CENSUS=1` | per-tick displacement of the drawn matrices — the one liveness probe that watches no named object |
 

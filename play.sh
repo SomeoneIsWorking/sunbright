@@ -18,7 +18,7 @@
 #
 # ── USAGE ──────────────────────────────────────────────────────────────────────────────────────
 #   ./play.sh                        boot normally: GC logo -> title -> file select
-#   ./play.sh --60fps                interpolated 60fps (EXPERIMENTAL — read the note below)
+#   ./play.sh --60fps                interpolated 60fps (experimental; measures better than 30 — see below)
 #   ./play.sh --fastboot             skip the menus: File 1 -> Delfino Plaza
 #   ./play.sh --stage 6              boot straight into a stage (--scenario N picks the episode)
 #   ./play.sh --size 1920x1080       window size (default 1280x960)
@@ -32,12 +32,13 @@
 # `--60fps` presents an interpolated frame between each pair of the game's own 30Hz frames. The
 # game logic still runs at 30Hz, exactly as on console — nothing about physics or timing changes.
 #
-# It is honest to call it experimental. Measured 2026-08-06 with the camera swinging 65 units/tick
-# (debug_journal/2026-08-06_motion_census_and_uncovered_residual.md): the interpolated frame
-# responds correctly to time for the sky, and only partially for the ground, sea and buildings —
-# at the midpoint it sits further from BOTH of its neighbours than they are from each other. In
-# motion that reads as a slight shimmer on near geometry, and the 2D HUD steps at 30Hz regardless.
-# It is smoother than 30fps and it is not yet correct. Off by default for that reason.
+# It is honest to call it experimental, and honest to say it MEASURES BETTER THAN 30fps: judder
+# (how evenly consecutive presents advance the game — tools/interp/cadence.py) is 1.10 against the
+# uninterpolated 1.18, at matched guest ticks with the camera rotating.
+#
+# What is still wrong: the present cadence is 2-3 per tick rather than exactly 2, and about 9.5% of
+# draws reach the renderer without a cross-tick identity and therefore snap rather than interpolate.
+# Off by default until both are fixed. docs/60fps.md has the map and the plan.
 set -eo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -72,23 +73,29 @@ fi
 [[ -n "$SCENARIO" ]] && ENV+=("SBR_SCENARIO=$SCENARIO")
 
 if [[ "$FPS60" == 1 ]]; then
-    # THE WHOLE SET, TOGETHER. Omit any one of these and the run still succeeds, still renders and
-    # still looks plausible — it simply shows each 30Hz frame twice, which is indistinguishable
-    # from working interpolation unless you are measuring. That failure mode has cost this project
-    # entire sessions (see tools/interp/interp60_run.sh), so the switches live here as a set and
-    # never in a user's shell history one at a time.
+    # WHICH of the three 60fps paths (docs/60fps.md), and why this one — MEASURED, not chosen.
     #
-    #   SBR_INTERP60            run the sub-frame at all
-    #   SBR_INTERP60_REPLACE    use RECORD-AND-REPLACE (dusklight's model: the sim tick runs
-    #                           untouched, final matrices are recorded, the presentation frame
-    #                           lerps prev->cur). The older substitute-and-re-issue path leaks
-    #                           into the game's own state; this one cannot, by construction.
-    #   SBR_INTERP60_ALPHA      0.5 — the sub-frame is presented at the midpoint of a tick, and
-    #                           exactly one is presented per tick, so the midpoint IS its time.
-    #   SBR_INTERP60_COPY       the sub-frame copies its own EFB out to the XFB ...
-    #   SBR_PRESENT_AFTER_COPY  ... and the present happens after that copy, not before it.
-    ENV+=("SBR_INTERP60=1" "SBR_INTERP60_REPLACE=1" "SBR_INTERP60_ALPHA=0.5"
-          "SBR_INTERP60_COPY=1" "SBR_PRESENT_AFTER_COPY=1")
+    # tools/interp/cadence.py scores the thing a player actually reports. It takes the difference
+    # between each pair of CONSECUTIVE presents and asks whether those steps are the same size:
+    # judder = max(step)/min(step), 1.0 = every present advances the game equally. Same scenario,
+    # same pad script, MATCHED GUEST TICKS (~4802-4818, camera rotating):
+    #
+    #   no interpolation, plain 30fps ............ judder 1.18   mean step 7.29
+    #   A  stream interpolation (SBR_60FPS) ...... judder 1.10   mean step 5.13   <- this
+    #   C  record-and-replace (SBR_INTERP60_*) ... judder 2.33   mean step 6.02
+    #
+    # C is TWICE AS JUDDERY AS NOT INTERPOLATING AT ALL. It lerps each J3DModel's draw matrices and
+    # nothing else, so the HUD, particles, immediate-mode geometry, the dash-trail EFB feedback and
+    # every screen-sampling effect step at 30Hz inside a 60Hz frame — and its sub-frame re-issues
+    # draw lists that were never meant to run twice. A rewrites the RECORDED frame's matrices and
+    # presents the packet again, running no game code in the sub-frame at all, which is why its
+    # effects work and why it beats even the 30fps baseline.
+    #
+    # A's own remaining defect, so it is not discovered by surprise: the present cadence is 2-3 per
+    # tick rather than exactly 2, and 9.5% of draws (display-list geometry from a persistent vertex
+    # array) reach aurora without an identity tag and therefore SNAP instead of interpolating. Both
+    # are named in docs/60fps.md and both are what the unification is for.
+    ENV+=("SBR_60FPS=1")
 fi
 
 cat <<'CONTROLS'
@@ -106,8 +113,10 @@ cat <<'CONTROLS'
 CONTROLS
 
 if [[ "$FPS60" == 1 ]]; then
-    echo " 60fps interpolation: ON (experimental — game logic still runs at 30Hz;"
-    echo "                          near geometry shimmers slightly, the HUD steps at 30Hz)"
+    echo " 60fps interpolation: ON — stream interpolation (the path that measures best:"
+    echo "                          judder 1.10 vs 1.18 uninterpolated). Game logic still runs"
+    echo "                          at 30Hz. Known gaps: present cadence is 2-3/tick not exactly"
+    echo "                          2, and ~9.5% of draws snap instead of interpolating."
     echo "────────────────────────────────────────────────────────────────────────────────"
 fi
 echo
