@@ -93,7 +93,7 @@ clean 2× render bug.
 
 **The fix for the methodology: `SUNBRIGHT_STATE=<save>` autoloads a deterministic save state** (once the
 core settles, ~1500 VI fields; `SUNBRIGHT_STATE_FIELDS` overrides) in BOTH the ngx and the Dolphin-GX
-oracle → a pixel-perfect SYNCHRONIZED A/B, zero desync. `tools/gp launch both SUNBRIGHT_STATE=scratch/
+oracle → a pixel-perfect SYNCHRONIZED A/B, zero desync. `tools/render/gp launch both SUNBRIGHT_STATE=scratch/
 delfino.sav SUNBRIGHT_STATE_FIELDS=600` then `gp shot`. Result on the synchronized state (a mushroom-
 house interior): **ngx med=119 vs oracle med=135 — CLOSE, ngx even slightly DARKER, NOT 2× washed.** So
 the dramatic wash framing is largely the confound. The earlier `scratch/delfino.sav` matched-state A/B

@@ -3,7 +3,7 @@
 // call ARE spec — extract them so a wrong-slot / digit-swap / value-drift regression trips
 // a specific unit test rather than silently making trigger volumes the wrong size.
 //
-// SDA2 references (via tools/dol_sda.py):
+// SDA2 references (via tools/re/dol_sda.py):
 //   SDA2[-0x267c] = 0.0    → attack radius AND attack height
 //   SDA2[-0x2678] = 300.0  → damage radius (XZ trigger extent)
 //   SDA2[-0x2674] = 600.0  → damage height (Y trigger extent)

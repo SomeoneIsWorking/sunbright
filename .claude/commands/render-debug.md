@@ -2,7 +2,7 @@
 
 Drive the RUNNING game and compare the native renderer (ngx) against the Dolphin-GX oracle on
 the **same game state**, then isolate defects with live toggles (no rebuild to *use* them).
-Full rationale + proof of validity: `docs/render_ab_harness.md`. Skinning case study:
+Full rationale + proof of validity: `docs/port/render_ab_harness.md`. Skinning case study:
 `debug_journal/2026-06-17_skinned_mario_shred.md`.
 
 ## ⚠️ Sandboxed-Bash rules (these silently break everything if ignored)
@@ -10,18 +10,18 @@ The game binary + the probe HTTP both need GPU/network, which the Claude Bash sa
 SILENTLY (curl returns empty, launch exits 1 with no output). So:
 - Run every game launch / curl with the Bash sandbox **disabled** (`dangerouslyDisableSandbox: true`).
 - The game must run in the **foreground** of the call — launching with `&` aborts the call. Put the
-  *capturer* (poll → freeze → abshot2 → kill) in a background subshell; `tools/gpshot` does this.
+  *capturer* (poll → freeze → abshot2 → kill) in a background subshell; `tools/render/gpshot` does this.
 - **Never** `pkill -f "build/sunbright"` (matches the driving shell → kills your own call). Use
   `pkill -x sunbright`.
 - A new foreground Bash call kills a prior `run_in_background` game task → do launch+wait+capture in
-  ONE call (that's `tools/gpshot`).
+  ONE call (that's `tools/render/gpshot`).
 - Always `pkill -9 -x sunbright` first; a stale instance squats port 17654 with the OLD binary.
 
 ## One-shot A/B (start here)
 ```
-tools/gpshot                 # FASTBOOT Delfino gameplay → zero-drift GX-vs-ngx A/B + region delta
-tools/gpshot --fs            # AUTOSTART → file-select (skinned Mario / J2D HUD)
-tools/gpshot --fs '/ngxskip?ti=10'   # apply probe GET(s) before the capture (isolate a material)
+tools/render/gpshot                 # FASTBOOT Delfino gameplay → zero-drift GX-vs-ngx A/B + region delta
+tools/render/gpshot --fs            # AUTOSTART → file-select (skinned Mario / J2D HUD)
+tools/render/gpshot --fs '/ngxskip?ti=10'   # apply probe GET(s) before the capture (isolate a material)
 ```
 Output: `scratch/screenshots/ab2.{gx,ngx}.png` (oracle vs native, SAME present) + per-region mean
 pixel delta. The abshot2 line prints `ngx_frame=N` — if two captures show the same N, the snapshot

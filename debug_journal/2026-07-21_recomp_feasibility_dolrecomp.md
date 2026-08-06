@@ -97,7 +97,7 @@ What the retired stack actually contained (verified from git at `9283f44^`):
   only valid for float and quantized u8/s8/u16/s16 need narrow, correctly-strided
   access. That is precisely the work I credited DolRecomp for.
 * **A native OS/threading layer.** `runtime/native_threads.cpp` (431 lines) plus
-  `docs/native_threading.md`, which records that external-interrupt delivery was
+  `docs/port/threading.md`, which records that external-interrupt delivery was
   FULLY PC-NATIVE — a behaviour port of OSInterrupt.c walking InterruptPrioTable and
   calling the registered guest handler via `call_ppc`. So OSThread was NOT a
   from-scratch cost, contrary to what I listed as the biggest remaining risk.

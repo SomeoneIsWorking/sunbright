@@ -1,6 +1,6 @@
 // =============================================================================
 // Big-endian -> host byteswap for J3D BMD/BDL model files (the BE asset layer,
-// Path A of docs/re_notes/first_flip_endianness.md).
+// Path A of docs/re_notes/ (the flip-era note it named was deleted with that era)).
 //
 // The port's core decomp loader (port/src/J3DModelLoader.cpp) reads BMD multibyte
 // fields by casting raw file bytes to C structs. The decomp ran big-endian; the

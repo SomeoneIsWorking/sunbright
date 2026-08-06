@@ -43,7 +43,7 @@ long tick_index();
 
 extern "C" void func_802fc9a4(CPUState&);   // JDrama::TVideo::waitForRetrace
 void sbr_mtx_report_index();
-// Weak: resolves to a no-op until the audio subsystem provides it (see docs/audio_recomp_plan.md).
+// Weak: resolves to a no-op until the audio subsystem provides it (see docs/audio/recomp_plan.md).
 extern "C" __attribute__((weak)) void sbr_audio_frame();
 extern "C" __attribute__((weak)) void sbr_audio_frame() {}
 

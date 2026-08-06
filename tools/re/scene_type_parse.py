@@ -20,12 +20,12 @@ Extraction pipeline: ROM (RVZ or ISO) → sunbright-jingle --extract `/data/scen
 → Yaz0 → RARC → scene.bin.
 
 Usage:
-    tools/scene_type_parse.py <arc.szs>
-    tools/scene_type_parse.py <rom.rvz> --stage option    # auto-extract option.szs
+    tools/re/scene_type_parse.py <arc.szs>
+    tools/re/scene_type_parse.py <rom.rvz> --stage option    # auto-extract option.szs
 
 Fresh scene.bin extraction (once, in scratch/):
     ./build/sunbright-jingle "$SUNBRIGHT_ROM" --extract /data/scene/option.szs scratch/arc
-    tools/scene_type_parse.py scratch/arc/data/scene/option.szs
+    tools/re/scene_type_parse.py scratch/arc/data/scene/option.szs
 """
 from __future__ import annotations
 import io

@@ -21,9 +21,9 @@ per-actor gameplay logic that stays recompiled until the engine layers are owned
 | Audio: JAI sound interface | 207 | **Partial** | SE/BGM intake, handles, 3D layer, lifecycle, port tees native; MISSING: per-scene category gating, priority stealing, fxmix/dolby buses |
 | Audio: JAL / MSound game layer | 157 | **Partial** | MSHandle curves + category table ported; MSBgm slots ported; rest recompiled |
 | HUD / J2D 2D pipeline | 83 | **Partial** | HUD widescreen-anchored natively; J2DScreen ortho still guest (640x480 hardcode documented in docs/decomp/j2d_fader_2d_pipeline.md) |
-| Screenspace effects (fader/after-effect/EFB passes) | ~30 | **Partial** | fader, after-effect, EFB-to-texture, sun probes, mist replay owned for widescreen; inventory in docs/widescreen_effects.md |
+| Screenspace effects (fader/after-effect/EFB passes) | ~30 | **Partial** | fader, after-effect, EFB-to-texture, sun probes, mist replay owned for widescreen; inventory in docs/60fps/widescreen_effects.md |
 | Water rendering (TSea/TWaterManager/TWater*) | 41+ | **PORTED — awaiting frame-dump verification** | RE in docs/decomp/water_rendering.md; port in runtime/overrides/water_native.cpp (screen-texture lookup matrices owned natively; default = guest-identical 4:3, SUNBRIGHT_WATER_WS=1 = true-aspect). water_widescreen.cpp draft superseded (tombstone). Verify: 4:3 pixel A/B → Delfino sea → FLUDD spray → mirror regression |
-| J3D model/anim pipeline | 451 | Recompiled | render-port direction says own the object model eventually (docs/model_interpolation.md); after water |
+| J3D model/anim pipeline | 451 | Recompiled | render-port direction says own the object model eventually (docs/60fps/model_interpolation.md); after water |
 | JPA particles | 320 | Recompiled | no screen-space emitters found (widescreen audit); port for interpolation/aspect later |
 | TMap (stage/collision) | 497 | Recompiled | document first (docs/decomp/), port where PC seams demand |
 | TMario / player | 290 | Recompiled | gameplay logic; lowest port priority by doctrine |

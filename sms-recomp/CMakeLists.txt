@@ -40,7 +40,7 @@ target_include_directories(sms-recomp-overrides PUBLIC
 target_link_libraries(sms-recomp-overrides PUBLIC nod::nod aurora::gx aurora::pad)
 target_link_libraries(sms-recomp-overrides PUBLIC lucent::lucent)
 
-# frame_interp/ — ALL interpolated-60fps code, in one place. See docs/60fps.md for the map.
+# frame_interp/ — ALL interpolated-60fps code, in one place. See docs/60fps/README.md for the map.
 #
 # Its own library rather than more files under overrides/ because it is a SUBSYSTEM, not a
 # collection of unrelated hooks: it was previously spread across overrides/ (four files),

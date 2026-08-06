@@ -14,7 +14,7 @@
 
 ## 1. Dolphin dependency surface (what the renderer/platform must replace)
 
-Status as of 2026-06-14 (from CLAUDE.md, `docs/port_roadmap.md`, session memory):
+Status as of 2026-06-14 (from CLAUDE.md, `docs/port/roadmap.md`, session memory):
 
 | Subsystem | Today | Effort to own | Notes |
 |---|---|---|---|
@@ -76,7 +76,7 @@ object → native GPU → present), then widen — rather than building each hor
 
 **N0. Deterministic headless render verification (PREREQUISITE — still build first).** Frame-count-
 driven capture (not wall-ms), dump to disk without the `/verify` readback perturbing pacing, so A/B
-compares identical scenes (see `docs/interp60_efb_handoff.md` "VERIFICATION IS BROKEN HEADLESS").
+compares identical scenes (see `docs/60fps/effects.md` "VERIFICATION IS BROKEN HEADLESS").
 Reuse `tools/interp/verify_*.py`. Without it every render change is an unverifiable guess.
 
 **N1. Native GC asset decoders (pure, offline-testable — START HERE).** No GPU, no running game.
@@ -177,7 +177,7 @@ primitives during bring-up (differential); any mismatch points at the exact VAT 
 ## 4. How this resolves the open interp60 / effects bugs (free wins downstream)
 
 The 60fps interpolation work hit a wall that is really a *Dolphin-ownership* wall (see
-`docs/interp60_efb_handoff.md`, `docs/re_notes/water_refraction_projection.md`):
+`docs/60fps/effects.md`, `docs/re_notes/water_refraction_projection.md`):
 - The raw-GX replay (over Dolphin) **freezes screen-space effects at tick N** — the water reflection /
   Mario's ghost swim because their eye-space quad + texgen are baked at N and Dolphin's address-keyed
   EFB-copy cache can't be per-field-addressed cleanly. We patched the water by re-deriving it via the
@@ -636,7 +636,7 @@ Still pending/parallel: N0 deterministic capture, native present/swapchain (N7).
 - Render seam today: `runtime/gx_stream.{h,cpp}` (owned frontend), `runtime/gx_parse.{h,cpp}` (oracle
   parser to validate R1 against), `runtime/overrides/interp_*.cpp` (interp60).
 - Effects RE: `docs/re_notes/water_refraction_projection.md`, `efb_dynamic_texture_chain.md`,
-  `efb_native_60fps.md`; interp60 handoffs: `docs/interp60_handoff.md`, `docs/interp60_efb_handoff.md`.
-- Subsystem tracker: `docs/port_roadmap.md`. Independence rationale: `docs/dolphin_independence.md`
+  `efb_native_60fps.md`; interp60 handoffs: `docs/60fps/effects.md`, `docs/60fps/effects.md`.
+- Subsystem tracker: `docs/port/roadmap.md`. Independence rationale: `(retired: Dolphin substrate, see CLAUDE.md)`
   (note: its GPU carve-out is now superseded by this plan).
 - Dolphin fork (we own it): `externals/dolphin`, branch `sunbright` — but the goal is to NOT link it.

@@ -31,7 +31,7 @@ struct SpeciesExpect {
 	const char* label;
 };
 
-// Ground truth from the DOL (tools/re/disasm_range.py + tools/dol_sda.py --sda2):
+// Ground truth from the DOL (tools/re/disasm_range.py + tools/re/dol_sda.py --sda2):
 static const SpeciesExpect kExpect[] = {
 	// arm @0x801f6aac (0x34 shares the 0x38/palm arm)
 	{ 0x40000034, 12, 20.0f, 95.0f, 0.001f, 0.006f, 0.01f, 0.97f, "0x34" },

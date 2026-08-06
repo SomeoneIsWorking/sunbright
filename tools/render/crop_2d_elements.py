@@ -6,7 +6,7 @@ Companion to the SUNBRIGHT_2DID tool: that logs each J2D element's name + game-s
 squeeze into a dumped 16:9 frame and crops them out, so you get one PNG per element to eyeball.
 
 Usage:
-    tools/crop_2d_elements.py <frame.png> [--log scratch/2d_elements/elements.log]
+    tools/render/crop_2d_elements.py <frame.png> [--log scratch/2d_elements/elements.log]
                               [--squeeze 0.75] [--game-w 640] [--game-h 480] [--frame N]
 
 The 2D ortho is squeezed horizontally by `squeeze` (=(4:3)/(16:9)) about screen centre and the

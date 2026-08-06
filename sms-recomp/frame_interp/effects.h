@@ -1,5 +1,5 @@
 #pragma once
-// screen_effects — the owned registry of screen-space effects (docs/screen_effects.md).
+// screen_effects — the owned registry of screen-space effects (docs/60fps/screen_effects.md).
 //
 // The recomp runs the game's real effect code, so nothing here reimplements an effect. What it owns
 // is IDENTIFICATION: which screen-sampling effects fired this frame, named, so that code which

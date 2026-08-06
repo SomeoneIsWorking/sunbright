@@ -6,9 +6,9 @@ skinned character into a cloud of triangles, while ALL static geometry (blocks, 
 beach, sky) renders fine. The Dolphin-GX oracle renders the SAME recomp state with a clean Mario.
 
 ## Verified facts (each via the new tooling, not eyeballing)
-- **It is a RENDERER bug, not recomp.** `tools/gpshot --fs` (file-select zero-drift A/B, same
+- **It is a RENDERER bug, not recomp.** `tools/render/gpshot --fs` (file-select zero-drift A/B, same
   present, `ngx_frame=564`): GX side = clean Mario, ngx side = shredded. Recomp's skinning math is
-  correct; ngx mis-renders it. (docs/render_ab_harness.md explains why abshot2 is a valid oracle.)
+  correct; ngx mis-renders it. (docs/port/render_ab_harness.md explains why abshot2 is a valid oracle.)
 - **Root cause class = multi-packet skinned-matrix reload.** `/ngxshape` shows skinned PNMTXIDX
   shapes have `maxnelem=11`: a J3DShape draws in up to 11 packets (J3DShapeMtxMulti), each RELOADING
   XF pos-matrix slots 0,3,6,… from its OWN useMtxIndexTable (`unkC`). ngx flattened all packets into
@@ -63,7 +63,7 @@ NEXT: identify the head shape/slot and check whether it's shape 80ea09c0 or a se
 
 ## (was) STILL OPEN — the per-vertex assignment is wrong
 Despite applying sane per-packet matrices to 86% of skinned verts, **Mario still shreds**
-(`tools/gpshot --fs`: 29.5% ≈ baseline; m0 per-packet ≈ m1 g_posmtx, both shred). With ONE matrix
+(`tools/render/gpshot --fs`: 29.5% ≈ baseline; m0 per-packet ≈ m1 g_posmtx, both shred). With ONE matrix
 for all verts (`/ngxmtxsrc?m=2`, modelview) Mario is a COHERENT (squished) blob — so model-space
 positions are fine; the shred is caused by the per-VERTEX matrix selection scattering verts.
 → Suspect: (a) the per-vertex `matidx` (PNMTXIDX byte, ngx_mesh.cpp:52 `vtx[i*vstride+0]`) is
@@ -105,8 +105,8 @@ was blind to it) and catching the actual spike frame:
 - Metric lives in `/ngxshape` (SHRED eye-space + NDC/screen + POST-CLIP buckets), always on.
 
 ## Tooling built this session (live, no rebuild to USE)
-- `tools/gpshot [--fs]` — robust one-shot zero-drift A/B (survives the sandboxed-Bash constraints;
-  see docs/render_ab_harness.md).
+- `tools/render/gpshot [--fs]` — robust one-shot zero-drift A/B (survives the sandboxed-Bash constraints;
+  see docs/port/render_ab_harness.md).
 - `/abshot2` reports `ngx_frame=N` (self-certifies the snapshot isn't stale).
 - `/ngxmtxsrc?m=0|1|2` — LIVE skinned-matrix source A/B (per-packet / g_posmtx / modelview) with no
   rebuild; `/ngxshape` reports `pkt_applied`/`fallback` (cumulative).

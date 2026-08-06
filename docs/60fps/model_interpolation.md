@@ -124,7 +124,7 @@ keyed by a stable per-model ID.
 >   to `scratch/2d_elements/elements.log`: each element's type, NAME, screen rect, object-ID.
 >   **J2DPane layout decoded:** +0x08 type fourCC, **+0x10 NAME fourCC** (the .blo tag, e.g. `'yaji'`
 >   arrow, `'shn0'` shine, `'n_0a'` digit, `'root'` screen), **+0x14/0x18/0x1c/0x20 bounds x0/y0/x1/y1**
->   (s32, 640×480 space). `tools/crop_2d_elements.py` crops each element from a SUNBRIGHT_DUMP frame
+>   (s32, 640×480 space). `tools/render/crop_2d_elements.py` crops each element from a SUNBRIGHT_DUMP frame
 >   → a PNG. The log uses the pane's GLOBAL (absolute screen) rect at +0x24/0x28/0x2c/0x30, so
 >   nested panes crop correctly too (verified: 'shn0' → shine icon, 'yaji' → OPTIONS arrow). Use
 >   this to classify elements for the per-element widescreen fixes (full-screen fill vs edge-anchor).

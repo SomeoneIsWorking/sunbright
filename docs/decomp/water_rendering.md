@@ -17,7 +17,7 @@ Ground truth used: `./build/sunbright-recomp --disasm` on the named addresses +
 - It is filled mid-frame by the normal-scene `JDrama::TEfbCtrlTex` ("通常シーン描画ステージ"):
   the bracket protocol (perform 0x80 opens, 0x8 closes with `GXSetTexCopySrc(rect)` +
   `GXCopyTex`) is documented in `runtime/overrides/efbtex_widescreen.cpp` /
-  `docs/widescreen_effects.md`. The capture src rect is **(0, 0, renderW, renderH) — the FULL
+  `docs/60fps/widescreen_effects.md`. The capture src rect is **(0, 0, renderW, renderH) — the FULL
   EFB** (MarDirectorSetupObjects.cpp), copied half-res. Verified live earlier (the Delfino
   edge-smear investigation, widescreen_effects.md "Dead ends"). So under the anamorphic
   widescreen scheme the texture holds the squeezed 16:9 frame; under 4:3 it holds the 4:3

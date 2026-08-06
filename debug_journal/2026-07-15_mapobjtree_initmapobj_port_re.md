@@ -10,7 +10,7 @@ Next boot frontier: `TMapObjTree::perform` (loud stub) + that GXBegin/GXEnd mism
 
 The boot's gameplay frontier blocker (`SB_STAGE=1` OSPanics at
 sms-boot/boot_stubs/ring3_stubs.cpp: TMapObjTree::initMapObj not ported). Fully RE'd
-via the new port-kit (tools/re/port_dossier.py) + tools/dol_sda.py. Full working dossier:
+via the new port-kit (tools/re/port_dossier.py) + tools/re/dol_sda.py. Full working dossier:
 scratch/re/mapobjtree_port_dossier.md (873+ lines: disasm, class layouts, callers).
 
 ## What it does (US 0x801f68b4)
@@ -27,7 +27,7 @@ are DOL-only (no decomp body); TMapCollisionMove's ctor has a decomp body
 
 initEach = switch on mActorType (field 0x4c; values 0x40000034..0x40000039 = 6 tree
 species) → sets leaf count (field 0x150 = 8 or 12) + f32 params. SDA2 pool
-(_SDA2_BASE_=0x80416ba0), via `tools/dol_sda.py --sda2 <off>`:
+(_SDA2_BASE_=0x80416ba0), via `tools/re/dol_sda.py --sda2 <off>`:
 20.0(-0x2040) 95.0(-0x203c) 0.001(-0x2038) 0.006(-0x2034) 0.01(-0x2030) 0.97(-0x202c)
 100.0(-0x2028) 50.0(-0x2024) 60.0(-0x2020) 70.0(-0x201c) 0.004(-0x2018).
 

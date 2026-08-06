@@ -3,7 +3,7 @@
 76 gap files remaining · ~580,464 bytes of JP code to RE (≈ burden estimate from JP symbol sizes).
 
 Ordered by category, then RE burden (biggest first). `factory`: whether the actor type is registered / commented-out / not in getNameRef_Enemy.
-Regenerate: `python3 tools/re/gap_worklist.py --md > docs/port_worklist.md`
+Regenerate: `python3 tools/re/gap_worklist.py --md > docs/port/worklist.md`
 
 
 ## Animal

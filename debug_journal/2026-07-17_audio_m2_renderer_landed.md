@@ -1,6 +1,6 @@
 # 2026-07-17 — Audio M2 voice renderer IMPLEMENTED; blocked on upstream (no DSP voices allocated)
 
-Implemented the M2 DSP voice renderer (docs/audio_native_mixer_plan.md), replacing the
+Implemented the M2 DSP voice renderer (docs/audio/native_mixer_plan.md), replacing the
 milestone-1 silence seam in `dsyncFrame2Native` (sms-boot/runtime/jas_kernel_native.cpp).
 
 ## What landed (RE-grounded, builds clean)

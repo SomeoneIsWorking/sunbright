@@ -1,7 +1,7 @@
 // mamma_mirror_test — spec-derived unit tests for the TMammaMirrorMapOperator port's pure
 // math. Pure logic, Dolphin-free / no ROM / no GPU / no J3D joint tree.
 //
-// Spec (from scratch/decomp_mamma_mirror/801cf1b0.c, SDA constants via tools/dol_sda.py):
+// Spec (from scratch/decomp_mamma_mirror/801cf1b0.c, SDA constants via tools/re/dol_sda.py):
 //   - center = 0.5 * (min + max)
 //   - threshold = min(max(0.5*(max.x-min.x), 0.5*(max.z-min.z)) + 2000, 3000)
 //   - Y is DELIBERATELY ignored (horizontal-only radius)

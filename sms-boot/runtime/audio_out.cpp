@@ -1,7 +1,7 @@
 // audio_out.cpp — per-frame host audio pump, called once per VIWaitForRetrace
 // from the frame seam.
 //
-// Milestone 1 (docs/audio_native_mixer_plan.md) landed: the decomp's own JASystem
+// Milestone 1 (docs/audio/native_mixer_plan.md) landed: the decomp's own JASystem
 // KERNEL (Kernel::init/updateDac/vframeWork, DSPBuf's triple-buffer pipeline,
 // TDSPChannel::updateAll) now runs synchronously on the game thread, driven from
 // here — see sms-boot/runtime/jas_kernel_native.cpp for the full call-chain

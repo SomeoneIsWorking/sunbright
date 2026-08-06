@@ -224,7 +224,7 @@ number about something it never measured — the failure this project has catalo
 
 ## Chasing the trail produced a bigger number: ~39% of on-screen motion still snaps
 
-The trail-specific instrument the section above asked for was built (`tools/present_evenness.py`),
+The trail-specific instrument the section above asked for was built (`tools/interp/cadence.py`),
 and it says the trail is **not** the problem — but it quantifies something more important.
 
 **Method.** Interpolation presents each tick twice. If everything interpolated, consecutive presents
@@ -324,7 +324,7 @@ produces evenly spaced motion.** The untagged-geometry measurements are still tr
 (untagged content snaps ~98% in a static window) but they describe ambient animation whose absolute
 motion is tiny, not a whole-frame defect.
 
-`tools/present_evenness.py` now refuses to quote a coverage number below 1.0 motion/tick and says
+`tools/interp/cadence.py` now refuses to quote a coverage number below 1.0 motion/tick and says
 why. The guard it had ("nothing is moving" at 0.02) was far too weak — 0.39 sailed past it and the
 number looked authoritative.
 

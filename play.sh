@@ -37,7 +37,7 @@
 # uninterpolated 1.18, at matched guest ticks with the camera rotating.
 #
 # What is still wrong: about 9.5% of draws reach the renderer without a cross-tick identity and
-# therefore snap rather than interpolate. Off by default until that is fixed. docs/60fps.md has the
+# therefore snap rather than interpolate. Off by default until that is fixed. docs/60fps/README.md has the
 # map and the plan.
 set -eo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -73,7 +73,7 @@ fi
 [[ -n "$SCENARIO" ]] && ENV+=("SBR_SCENARIO=$SCENARIO")
 
 if [[ "$FPS60" == 1 ]]; then
-    # WHICH of the three 60fps paths (docs/60fps.md), and why this one — MEASURED, not chosen.
+    # WHICH of the three 60fps paths (docs/60fps/README.md), and why this one — MEASURED, not chosen.
     #
     # tools/interp/cadence.py scores the thing a player actually reports. It takes the difference
     # between each pair of CONSECUTIVE presents and asks whether those steps are the same size:
@@ -93,7 +93,7 @@ if [[ "$FPS60" == 1 ]]; then
     #
     # A's own remaining defect, so it is not discovered by surprise: about 9.5% of draws
     # (display-list geometry from a persistent vertex array) reach aurora without a cross-tick
-    # identity tag and therefore SNAP instead of interpolating. Named in docs/60fps.md.
+    # identity tag and therefore SNAP instead of interpolating. Named in docs/60fps/README.md.
     #
     # The cadence is REGULAR — measured from the runtime's own counters, 6000 in-between frames for
     # 6000 simulation ticks, exactly two presents per tick. An earlier note here claimed 2-3 per

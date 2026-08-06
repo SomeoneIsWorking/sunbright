@@ -50,7 +50,7 @@ NEVER dispatched. The oracle's 1352-vert sea composite is absent on native.
 
 ### Step 3: find the population that owns the material
 
-Parsed the option.szs scene tree with `tools/scene_type_parse.py`:
+Parsed the option.szs scene tree with `tools/re/scene_type_parse.py`:
 
 ```
 [C] GroupObj                      /全体シーン

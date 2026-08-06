@@ -1,7 +1,7 @@
 // frame_interp.h — THE public interface to interpolated 60fps. One entry point for the whole
 // subsystem; everything else in this directory is an implementation of some part of it.
 //
-// The map of what exists, why there were three of these, and which one survives, is docs/60fps.md.
+// The map of what exists, why there were three of these, and which one survives, is docs/60fps/README.md.
 // Read that before changing anything here.
 //
 // ── SHAPED AFTER DUSKLIGHT ──────────────────────────────────────────────────────────────────────

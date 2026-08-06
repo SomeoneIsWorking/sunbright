@@ -13,7 +13,7 @@ does not re-derive it.
 ## The stated reason does not survive contact with the tree
 
 **Widescreen already exists, host-side.** `sms-recomp/overrides/widescreen.cpp`,
-`widescreen_effects.cpp`, `docs/widescreen_effects.md`. We control the projection matrix directly,
+`widescreen_effects.cpp`, `docs/60fps/widescreen_effects.md`. We control the projection matrix directly,
 which is strictly more capable than a guest-side patch — including the full-screen effect passes a
 DOL patch typically leaves at 4:3.
 

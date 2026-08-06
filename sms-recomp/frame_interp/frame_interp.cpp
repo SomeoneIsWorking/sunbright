@@ -1,4 +1,4 @@
-// frame_interp.cpp — the one entry point. See frame_interp.h, and docs/60fps.md for the map.
+// frame_interp.cpp — the one entry point. See frame_interp.h, and docs/60fps/README.md for the map.
 //
 // This is deliberately THIN. It owns the mode, the step, the presentation-sync flag and the
 // callback registry — the vocabulary — and delegates the mechanism to the file that implements it

@@ -4,7 +4,7 @@ Captured 2026-06-12 via SUNBRIGHT_CALL_CENSUS=1 (call_ppc dispatch counter, ever
 bl/bctrl), 260 s headless run: boot → title → file-select → Delfino gameplay (move/jump/
 spray). 377,023,840 dispatched calls, 3,232 unique functions. Dump: scratch/logs/
 call_census.tsv (regenerate any time: env + curl /census). Aggregation drives the
-port order in docs/port_roadmap.md.
+port order in docs/port/roadmap.md.
 
 | Calls | Layer | Port notes |
 |---|---|---|

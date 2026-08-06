@@ -9,33 +9,33 @@ a `gp` subcommand, or a new compare/diagnosis mode.** Proper interactive tooling
 render-flow comparison vs the oracle) is a first-class goal, not a side quest. Keep `tools/gp`
 and this file in sync; this file is the durable memory of the probe surface.
 
-## ⚡ Fastest loop: `tools/gp scene` (ONE command — no manual kill/launch/wait dance)
+## ⚡ Fastest loop: `tools/render/gp scene` (ONE command — no manual kill/launch/wait dance)
 The renderer-fidelity workflow in a single command. It kills any stale instance, launches ngx
 headless with AUTOSTART, **drives to real gameplay** (waits for the HUD to draw — not a random
 title/transition frame), freezes the aligned GX-vs-ngx A/B, captures `/abshot2`, and prints the
 per-region pixel delta:
 ```bash
-tools/gp scene                 # Delfino-plaza gameplay A/B baseline (the number to drive down)
-tools/gp scene TITLE           # freeze at the title logo instead (multi-matrix logo case)
-tools/gp png                   # convert ab2.{gx,ngx}.ppm -> .png to LOOK at them (Read tool)
+tools/render/gp scene                 # Delfino-plaza gameplay A/B baseline (the number to drive down)
+tools/render/gp scene TITLE           # freeze at the title logo instead (multi-matrix logo case)
+tools/render/gp png                   # convert ab2.{gx,ngx}.ppm -> .png to LOOK at them (Read tool)
 ```
 Then iterate on the FROZEN frame with zero re-launch (gx oracle held, ngx re-renders each toggle):
 ```bash
-tools/gp only 12   ; tools/gp ab2     # render ONLY tev_index 12 + re-diff
-tools/gp skip 12   ; tools/gp ab2     # SKIP it
-tools/gp noblend 0 ; tools/gp ab2     # force every material opaque
-tools/gp dbg tex   ; tools/gp ab2     # shader debug mode (tex|ras|normal|uv0|…)
-tools/gp pixbatch 0.5 0.45            # which captured layers cover an NDC pixel (combiner/blend/tex)
-tools/gp pixbatch -901 12             # x=-901 => full BATCH CLIP DUMP for tev_index 12: PE block +
+tools/render/gp only 12   ; tools/render/gp ab2     # render ONLY tev_index 12 + re-diff
+tools/render/gp skip 12   ; tools/render/gp ab2     # SKIP it
+tools/render/gp noblend 0 ; tools/render/gp ab2     # force every material opaque
+tools/render/gp dbg tex   ; tools/render/gp ab2     # shader debug mode (tex|ras|normal|uv0|…)
+tools/render/gp pixbatch 0.5 0.45            # which captured layers cover an NDC pixel (combiner/blend/tex)
+tools/render/gp pixbatch -901 12             # x=-901 => full BATCH CLIP DUMP for tev_index 12: PE block +
                                       #   per-stage ce/ae/map/coord/chan/kc/ka + rswap/tswap + the 4
                                       #   decoded TEV swap tables (id->RGBA swizzle) + texmaps + UV bbox
-tools/gp freeze 0                     # release (game keeps running)
+tools/render/gp freeze 0                     # release (game keeps running)
 ```
 ⚠ `gp scene`'s `waitgameplay` polls the FLAKY `hud_quads` signal and may never fire even when the
 scene is fine. If it hangs, the instance is still up — just `curl /ngxfreeze?on=1` then `curl
 /abshot2` directly (frame_swaps climbing in `/ngxshape` = scene ready).
 The `/abshot2` capture is ZERO-DRIFT (Dolphin GX XFB + ngx native render from the SAME present),
-so the delta moves only for ngx changes. `tools/gp wait [swaps]` / `waitgameplay` poll readiness.
+so the delta moves only for ngx changes. `tools/render/gp wait [swaps]` / `waitgameplay` poll readiness.
 ⚠ `SUNBRIGHT_STATE=<save>` deterministic load is KNOWN-BROKEN on the native path (vi_end_field_event
 stops firing → never reaches the threshold; and State::LoadAs deadlocks the SDL thread). Use AUTOSTART.
 
@@ -43,9 +43,9 @@ stops firing → never reaches the threshold; and State::LoadAs deadlocks the SD
 Run BOTH renderers concurrently and diff them LIVE to tell real native-renderer bugs from
 faithful rendering (animations, real game state):
 ```bash
-tools/gp launch both      # ngx native (port 17654) + gx-oracle = recomp Dolphin-GX (17655, isolated)
-tools/gp pad start 200    # drives BOTH in lockstep (same recomp logic, only the RENDERER differs)
-tools/gp compare logo     # screenshots both -> logo.ngx.png / logo.gx.png + logo.diff.png (side-by-side)
+tools/render/gp launch both      # ngx native (port 17654) + gx-oracle = recomp Dolphin-GX (17655, isolated)
+tools/render/gp pad start 200    # drives BOTH in lockstep (same recomp logic, only the RENDERER differs)
+tools/render/gp compare logo     # screenshots both -> logo.ngx.png / logo.gx.png + logo.diff.png (side-by-side)
                           #   prints meanAbsDiff: ~0 = ngx matches oracle (faithful); large = real bug
 ```
 The gx oracle is recomp + `SUNBRIGHT_NGX_PRESENT=0` (Dolphin's GX render of the SAME game state).
@@ -60,18 +60,18 @@ A thin CLI over the probe REPL. The game is launched DETACHED, so it stays up ac
 separate `gp` calls (the interactive loop = launch once, then drive).
 
 ```bash
-tools/gp launch                  # boot headless: native renderer (NGX present) + probe, detached
-tools/gp pad start 200           # press Start 200ms — THIS is how you skip the THP/FMV + advance menus
-tools/gp shot title              # screenshot -> scratch/screenshots/title.png (+ prints mean brightness)
-tools/gp ngx                     # /ngxshape: capture + render stats (materials, lighting, batches…)
-tools/gp present                 # /ngxpresentlive: native-present renderer stats (frames, pipelines)
-tools/gp metrics                 # perf JSON (speed/FPS/VPS)
-tools/gp drawstats               # Dolphin's per-frame GX draw/prim counts (A/B vs ngx)
-tools/gp r 8040e190 8            # read 8 guest words at 0x8040e190
-tools/gp fn 802b5b30             # nearest function name for an address
-tools/gp get '/ngxshape'         # raw curl any endpoint
-tools/gp status | kill           # is it up / stop it
-tools/gp launch SUNBRIGHT_FASTBOOT=1     # extra env overrides (fastboot, STATE=…, NGX_PRESENT=0, TEVDBG=…)
+tools/render/gp launch                  # boot headless: native renderer (NGX present) + probe, detached
+tools/render/gp pad start 200           # press Start 200ms — THIS is how you skip the THP/FMV + advance menus
+tools/render/gp shot title              # screenshot -> scratch/screenshots/title.png (+ prints mean brightness)
+tools/render/gp ngx                     # /ngxshape: capture + render stats (materials, lighting, batches…)
+tools/render/gp present                 # /ngxpresentlive: native-present renderer stats (frames, pipelines)
+tools/render/gp metrics                 # perf JSON (speed/FPS/VPS)
+tools/render/gp drawstats               # Dolphin's per-frame GX draw/prim counts (A/B vs ngx)
+tools/render/gp r 8040e190 8            # read 8 guest words at 0x8040e190
+tools/render/gp fn 802b5b30             # nearest function name for an address
+tools/render/gp get '/ngxshape'         # raw curl any endpoint
+tools/render/gp status | kill           # is it up / stop it
+tools/render/gp launch SUNBRIGHT_FASTBOOT=1     # extra env overrides (fastboot, STATE=…, NGX_PRESENT=0, TEVDBG=…)
 ```
 
 Navigation cheatsheet (combo = `a b x y z start l r up down left right`, joined with `+`):
@@ -92,7 +92,7 @@ Navigation cheatsheet (combo = `a b x y z start l r up down left right`, joined 
   ⚠ Dolphin caches compiled shaders on disk (`<home>/.cache/dolphin-emu/Shaders`) keyed by UID, which
   bypasses generator edits — move that dir aside to test PixelShaderGen changes.
 
-## Full REPL endpoint list (runtime/probe_server.cpp; `tools/gp help2` prints the live one)
+## Full REPL endpoint list (runtime/probe_server.cpp; `tools/render/gp help2` prints the live one)
 `/r?a=&n=` reads · `/r16?` · `/w?` poke · `/gx` CP/FIFO · `/cur` cur thread · `/stack?sp=` ·
 `/fn?a=` addr→name · `/metrics` perf · `/pad?do=&ms=` input · `/screenshot?name=` PNG ·
 `/ngxshape` capture+render stats · `/ngxpresentlive` present stats · `/ngxrender` offline render+PPM ·
@@ -104,7 +104,7 @@ Navigation cheatsheet (combo = `a b x y z start l r up down left right`, joined 
 - ALWAYS headless (`gp launch` sets `SUNBRIGHT_HEADLESS=1`); never `./run.sh`/GUI (user owns the
   display). Never overlap two instances (`gp launch` kills the old one first).
 - Screenshots land in `scratch/screenshots/`. Read them with the Read tool or PIL.
-- Kill a stuck run: `tools/gp kill` (or `pgrep -x sunbright | xargs -r kill -9`).
+- Kill a stuck run: `tools/render/gp kill` (or `pgrep -x sunbright | xargs -r kill -9`).
 
 ## Self-update
 When you add a probe endpoint or a `gp` subcommand, update BOTH `tools/gp` and this skill so the

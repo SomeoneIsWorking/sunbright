@@ -10,7 +10,7 @@ Why this is the right cut:
 - Every audio failure to date was hybrid plumbing (IRQ delivery, mail phase, thread timing,
   intcount races, force_jit fallout) — never the data or the DSP math.
 - The data side is PROVEN: tools/jingle (Yaz0→RARC→AAF→WSYS→AFC) renders the jingle from the
-  ROM bit-perfectly by ear (docs/audio_data_formats.md).
+  ROM bit-perfectly by ear (docs/audio/data_formats.md).
 - The hook surface is tiny and stable: MSound/JAI entry points the game already calls.
 
 ## Architecture

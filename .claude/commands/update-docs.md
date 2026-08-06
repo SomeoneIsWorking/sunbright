@@ -18,17 +18,17 @@ Run this after any significant code change to keep docs and CLAUDE.md in sync.
    - Dolphin integration approach changed
    - New file categories were created
 
-4. **Update docs/ppc_recompiler.md** if:
+4. **Update docs/port/native_plan.md** if:
    - New instruction categories were added
    - Emitter output format changed
    - New intrinsics were added to runtime/intrinsics.h
 
-5. **Update docs/dolphin_integration.md** if:
+5. **Update (retired: Dolphin substrate, see CLAUDE.md)** if:
    - Hook mechanism changed
    - New Dolphin subsystems are being used
    - Memory mapping approach changed
 
-6. **Update CLAUDE.md instruction table** (copy from docs/ppc_recompiler.md#coverage)
+6. **Update CLAUDE.md instruction table** (copy from docs/port/native_plan.md#coverage)
 
 7. **Commit docs alongside code changes** — docs that trail behind code are worse than no docs.
 

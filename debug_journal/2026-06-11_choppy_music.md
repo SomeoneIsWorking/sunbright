@@ -422,7 +422,7 @@ Exonerated along the way (kept as owned native ports + tools):
 ## Save import + widescreen culling (late afternoon)
 - **Dolphin save imported**: the user's Delfino-Plaza save lived in Dolphin's GCI-folder format
   (GC/USA/Card A/01-GMSE-…gci), not the .raw our native CARD serves. New tool
-  `tools/gci_import.py` splices a .gci into the .raw (same-block-count entry replacement,
+  `tools/oracle/gci_import.py` splices a .gci into the .raw (same-block-count entry replacement,
   both dir copies + checksums updated, .bak first). Import verified: entry+banner intact across
   multiple boots, card mounts clean, no format prompt. In-game load check left for a headed run
   (headless title→file-select menu timing is fiddly; attract loop kept bouncing my captures).
@@ -436,7 +436,7 @@ Exonerated along the way (kept as owned native ports + tools):
   with all ports survived). Needs its own session: collect the watchdog dumps, classify, RE the
   DSP-mail wait path. NEXT after that: screenspace effects under widescreen (TScreenTexture /
   TMirrorModelManager EFB-copy rects — survey started, addresses 8022d360 / 80192d60 region),
-  then the 60fps model-interpolation project (docs/model_interpolation.md).
+  then the 60fps model-interpolation project (docs/60fps/model_interpolation.md).
 
 ## Title-screen mystery SOLVED + save import VERIFIED IN-GAME (evening)
 Why /pad "didn't work": THREE stacked causes, all fixed/understood:
@@ -460,11 +460,11 @@ a 500 (START); ~20 s scene load.
   124/631 (busy scene), ~640 snaps/s, pointer IDs stable, 5s expiry. The doc's "need a symbol
   map" blocker is obsolete — sms_gmse01_funcs.txt names everything. NEXT (stage 2): prev→cur
   slerp + draw replay with overwritten mNodeMatrices, present pacing between VI swaps
-  (docs/model_interpolation.md §4-5).
+  (docs/60fps/model_interpolation.md §4-5).
 - USER VISUAL FINDINGS (Plaza orbit shots): (1) the location-name banner BACKDROP (scene-entry
   "DELFINO PLAZA" pan-in) is not widescreen-accommodated — it's the known "backdrops must
   EXPAND to fill 16:9, not centre-squeeze" class (same fix shape as the fader: widen the fill
-  rect; see docs/model_interpolation.md 2D-element classification). (2) the dock tower/column
+  rect; see docs/60fps/model_interpolation.md 2D-element classification). (2) the dock tower/column
   "splits at the waterline unnaturally" + flat gray open sea = the screenspace WATER surface
   effect (refraction/reflection EFB-copy) not rendering right in Plaza — top suspect list:
   TScreenTexture (8022d360 replace), TMirrorModelManager (80192d60), sea J3D material with

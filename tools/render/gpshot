@@ -10,13 +10,13 @@
 #     run this script with dangerouslyDisableSandbox.
 #
 # Usage:
-#   tools/gpshot [PROBE_PATH ...]      # fastboot Delfino, apply each PROBE_PATH (a probe
+#   tools/render/gpshot [PROBE_PATH ...]      # fastboot Delfino, apply each PROBE_PATH (a probe
 #                                        GET, e.g. '/ngxskip?ti=5') AFTER the scene is ready
 #                                        and BEFORE the freeze+abshot2, then capture + diff.
 # Examples:
-#   tools/gpshot                       # plain A/B
-#   tools/gpshot '/ngxonly?ti=11'      # isolate one tev_index
-#   tools/gpshot '/ngxnoblend?on=0'    # force opaque before capture
+#   tools/render/gpshot                       # plain A/B
+#   tools/render/gpshot '/ngxonly?ti=11'      # isolate one tev_index
+#   tools/render/gpshot '/ngxnoblend?on=0'    # force opaque before capture
 # Output: scratch/screenshots/ab2.{gx,ngx}.png  + per-region delta number.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

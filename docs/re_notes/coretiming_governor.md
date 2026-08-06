@@ -271,7 +271,7 @@ default when a step is verified for a full boot→gameplay run.
   them coherent, *not* folding them desyncs them.
 - **Save states / determinism** — abandoned on our path, so no risk, but don't pretend the queue
   serialization still works.
-- **The biggest risk is scope creep into a from-scratch scheduler**, which `docs/native_threading.md`
+- **The biggest risk is scope creep into a from-scratch scheduler**, which `docs/port/threading.md`
   records as already-tried-and-abandoned for the *thread* scheduler ("wrong layer"). The event
   timeline is a smaller, well-bounded object — keep it that way; do NOT reimplement device logic.
 

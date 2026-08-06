@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Live side-by-side audio A/B harness (docs/audio_ab_harness.md).
+"""Live side-by-side audio A/B harness (docs/audio/ab_harness.md).
 
 Runs the native build and the oracle (DISABLE_RECOMP) simultaneously, drives both
 through the same input script at the same GAME-PROGRESS points (event triggers, not

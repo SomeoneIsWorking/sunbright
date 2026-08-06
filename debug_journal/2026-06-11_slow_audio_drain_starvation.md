@@ -47,7 +47,7 @@ field + poll_yield + idle_run), so emulated time ran 7-15% fast and the host mix
 drops/jitter. Fix: sb_time_ahead() host-clock governor (dolphin_hook.cpp) — all advancing
 paths stand down once CoreTiming reaches host-elapsed × ticks/s; >250 ms behind slips the
 anchor (no catch-up bursts); TURBO bypasses. Verified: push rate locked to 32048-32072/s
-(0.1%). This is the own-the-timing-natively step from docs/dolphin_independence.md.
+(0.1%). This is the own-the-timing-natively step from (retired: Dolphin substrate, see CLAUDE.md).
 
 ## Part 3 — the PORT: native SDL audio sink (56eb14d) — the skipping jingle's real home
 Knob fixes (governor, prime) could not remove the mechanism: Dolphin's granule mixer REPLAYS

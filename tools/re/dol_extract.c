@@ -1,6 +1,6 @@
 /* dol_extract.c — extract main.dol from a GC disc image (ISO/RVZ/WIA/...) via libnod.
  *
- * The RE tooling (tools/re/ppcdis.py, tools/re/disasm_range.py, tools/dol_sda.py)
+ * The RE tooling (tools/re/ppcdis.py, tools/re/disasm_range.py, tools/re/dol_sda.py)
  * expects the retail DOL at scratch/bin/sms.dol; this regenerates it from the ROM
  * after a scratch/ wipe.
  *

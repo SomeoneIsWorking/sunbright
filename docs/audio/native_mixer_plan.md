@@ -45,7 +45,7 @@ in JASDSPInterface.cpp):
 - `unk110` (s16*) = decoded/encoded wave base; `unk114` = length; `unk118` = loop/osc info.
 - format decided in setWaveInfo (param_2): PCM16 / PCM8 / **AFC** (the common case) — decode
   with the PROVEN `afc_decode()` in scratch/audio_ref/native_jas_recomp_era.cpp:205
-  (verified bit-exact vs ROM by ear; coefficients in docs/audio_data_formats.md).
+  (verified bit-exact vs ROM by ear; coefficients in docs/audio/data_formats.md).
 - pitch = setPitch(u16) (fixed-point ratio) → fractional resample step.
 - volume = the `Channel unk10[6]` bus entries (targetVolume/currentVolume ramps) + pan.
 - `unk10A` = active/gate flag; `unk2` = the per-frame "needs work" bit (updateAll clears it).
@@ -70,7 +70,7 @@ than duplicating state.
 2. **Voice renderer v1** — PCM + AFC decode, linear resample, volume ramps,
    L/R buses only (no aux/reverb/filters). Title BGM audible. Unit test from RE:
    AFC decode against a reference decode of a known .aw wave (the jingle test
-   vector from the recomp era, docs/audio_data_formats.md recipe).
+   vector from the recomp era, docs/audio/data_formats.md recipe).
 3. **Fidelity** — aux buses/effects (FxlineConfig delay lines), IIR/FIR filters,
    dolby, HardStream (attract-movie audio path), pacing against
    aurora_audio_queued_frames.

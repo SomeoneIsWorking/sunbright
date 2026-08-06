@@ -1,6 +1,6 @@
 // screen_effects.cpp — own the identification of the game's screen-space effects.
 //
-// See docs/screen_effects.md for the catalog. This hooks each effect's guest `perform`, runs the
+// See docs/60fps/screen_effects.md for the catalog. This hooks each effect's guest `perform`, runs the
 // real body (the recomp owns the effect by executing its real code), and records that it fired — so
 // interp60 and any future consumer can ask "which screen-sampling effects drew this frame" by name
 // instead of pattern-matching an opaque GX stream. That named signal is the whole point: it turns a

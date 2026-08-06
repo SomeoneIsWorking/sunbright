@@ -12,20 +12,20 @@
 # diff their frames live.
 #
 # Session:
-#   tools/gp launch both            # boot ngx (17654) AND gx-oracle (17655), detached
-#   tools/gp pad start 200          # press Start on BOTH (skip THP/FMV + advance menus in lockstep)
-#   tools/gp compare title          # screenshot both -> title.ngx.png / title.gx.png + diff report
-#   tools/gp ngx                    # native-renderer stats (/ngxshape) on the ngx instance
-#   tools/gp gx drawstats           # run a command against the gx-oracle instance
-#   tools/gp kill                   # stop all
+#   tools/render/gp launch both            # boot ngx (17654) AND gx-oracle (17655), detached
+#   tools/render/gp pad start 200          # press Start on BOTH (skip THP/FMV + advance menus in lockstep)
+#   tools/render/gp compare title          # screenshot both -> title.ngx.png / title.gx.png + diff report
+#   tools/render/gp ngx                    # native-renderer stats (/ngxshape) on the ngx instance
+#   tools/render/gp gx drawstats           # run a command against the gx-oracle instance
+#   tools/render/gp kill                   # stop all
 #
-# Single instance is fine too: `tools/gp launch` (ngx only) then pad/shot/ngx.
+# Single instance is fine too: `tools/render/gp launch` (ngx only) then pad/shot/ngx.
 # Skip the THP/intro movie by pressing Start (pad start), NOT fastboot (that jumps to gameplay
 # and skips the title-logo/file-select where the native renderer's bugs show).
 #
 # ⚠ This tool + the /probe skill are a LIVING system — EXPAND them as needed (new endpoints, new
 #   compare modes, more instances). The end goal is a Dolphin-free port; until then the gx oracle
-#   is how we make the native renderer faithful. Keep tools/gp and .claude/commands/probe.md in sync.
+#   is how we make the native renderer faithful. Keep tools/render/gp and .claude/commands/probe.md in sync.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

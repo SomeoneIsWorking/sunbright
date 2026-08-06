@@ -22,7 +22,7 @@ plan + RE for the JPA port. Verification tooling is PROVEN (below) — TOOLING-F
 ## The N7 particle gap (CONFIRMED real + reachable + verifiable)
 - ngx renders from the J3D object model + special-cased GXDrawCube/Sphere. **No override captures the
   JPA draw path** → all JPA particles (FLUDD spray, ambient effects, NPC effects) are DROPPED under
-  ngx present. This is N7 (docs/native_port_plan.md "N7 — Particles (JPA)").
+  ngx present. This is N7 (docs/port/native_plan.md "N7 — Particles (JPA)").
 - Reachable: FLUDD spray in free-roam plaza. Continuously present (unlike the transient EFB effects).
 - **Verification PROVEN deterministic**: `scratch/spray_plaza.sav` (made via /pad do=r + /savestate
   mid-spray). ab_oracle spray_plaza = 21.3% (vs 17.0% static baseline). ngx-vs-ngx CROSS-RUN drift on

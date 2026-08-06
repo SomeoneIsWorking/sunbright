@@ -43,13 +43,13 @@ recompiled** and runs directly on the same memory, so `mMaterials[i]` is a plain
 that Just Works. The boundary is **plain function-call overrides over shared guest memory** —
 no handles, no getters, no marshalling, no virtual-dispatch routing, because both sides see
 identical bytes. Goal: no Dolphin (own GPU/renderer/OS/audio natively). The live frontier is
-the native renderer (`docs/native_port_plan.md`, N5 per-material TEV combiner next).
+the native renderer (`docs/port/native_plan.md`, N5 per-material TEV combiner next).
 
 ## What was deleted (commit that removed it; recover from history if ever needed)
 Removed wholesale: `port/` (host engine), `runtime/eng_handle.*`, `runtime/bridge.h`, the
 recompiler type machinery (`type_recovery`, `type_db_build`, `type_db`, `decomp_parse`,
 `func_sig`, `abi_layout`, `vtable_db`) + their tests, the j3d bridge overrides, the
-`SB_FLIP_J3D` CMake wiring + object libs, `docs/ARCHITECTURE_TARGET.md` and the flip RE notes
+`SB_FLIP_J3D` CMake wiring + object libs, `CLAUDE.md (🏛️ TWO RUNTIMES) and docs/codemap.md` and the flip RE notes
 (`object_identity`, `first_flip_endianness`, `j3dmodeldata_flip_closure`,
 `j3d_subsystem_ownership_plan`, `abi_findings`). The emitter (`c_emitter`) and `main.cpp`
 were reverted to the plain guest-layout recompile; `intrinsics.h` and `memory_bridge.cpp`

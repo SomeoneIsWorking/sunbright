@@ -23,7 +23,7 @@ Builds the projected-texgen "effect" matrix — the camera perspective (from `gp
 with the depth row replaced by `{0,0,-1,0}` so a vertex's world position maps to the SCREEN position
 where it rasterized. That is how a distortion mesh knows where to sample the capture. Every
 screen-projected effect rebuilds it, which is why widening the camera aspect here (widescreen) fixes
-all of them at once — see `docs/widescreen_effects.md`.
+all of them at once — see `docs/60fps/widescreen_effects.md`.
 
 ## The consumers
 

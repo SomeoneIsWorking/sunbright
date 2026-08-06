@@ -9,14 +9,14 @@ gpMarioPos, gpCamera, gpSun, gpApplication). Each port re-derived these from raw
 about 20 minutes/port; this tool dumps them in seconds.
 
 Usage:
-    tools/dol_sda.py <hex_addr> [n_instructions]
+    tools/re/dol_sda.py <hex_addr> [n_instructions]
         Scan the function starting at <hex_addr> for SDA references and dump each with its
         resolved value. Default scan length: up to first `blr` (or 256 instructions).
 
-    tools/dol_sda.py --sda2 0xNNNN
+    tools/re/dol_sda.py --sda2 0xNNNN
         One-shot: resolve a single SDA2 constant at `_SDA2_BASE_ - 0xNNNN` as f32 + f64.
 
-    tools/dol_sda.py --sda1 0xNNNN
+    tools/re/dol_sda.py --sda1 0xNNNN
         One-shot: resolve r13-relative global at `_SDA_BASE_ - 0xNNNN` as pointer, look up
         the target in reference/sms_gmse01_funcs.txt if it points to code.
 

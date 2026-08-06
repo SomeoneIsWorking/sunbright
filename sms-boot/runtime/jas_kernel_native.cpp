@@ -1,5 +1,5 @@
 // jas_kernel_native.cpp — audio arc MILESTONE 1: run the decomp's own JASystem
-// KERNEL synchronously on the game thread (see docs/audio_native_mixer_plan.md).
+// KERNEL synchronously on the game thread (see docs/audio/native_mixer_plan.md).
 //
 // On real hardware, JASystem::AudioThread::audioproc() (JASAudioThread.cpp) is a
 // dedicated OSThread that: Kernel::init()s once, boots the DSP ucode, then loops
@@ -34,7 +34,7 @@
 // only once `new MSound(...)` fully returns. So `SMSGetMSound() != nullptr` is
 // exactly "AudioThread::start() has completed" and is the gate used below.
 //
-// Cadence math (see docs/audio_native_mixer_plan.md milestone 1): each
+// Cadence math (see docs/audio/native_mixer_plan.md milestone 1): each
 // Kernel::updateDac() call runs Kernel::vframeWork() (JASAiCtrl.cpp — the
 // vframeWorkRunning/lastRspMadep bookkeeping causes vframeWork() to fire on every
 // updateDac() call once primed) which produces exactly one full dac[] buffer:
@@ -53,7 +53,7 @@
 //
 // DsyncFrame2 (dspproc.h/dsptask.h) is the actual GC-DSP-ucode mailbox call that
 // hands a subframe count + L/R buffer addresses to the DSP for rendering (the
-// Zelda-ucode voice mixer — see docs/audio_native_mixer_plan.md "key identification").
+// Zelda-ucode voice mixer — see docs/audio/native_mixer_plan.md "key identification").
 // That voice renderer is MILESTONE 2, not this one. Milestone 1's DsyncFrame2 is a
 // documented LOUD seam: it silences the two output buffers (so nothing garbage
 // reaches aurora) and prints a one-time [STUB-CALLED] notice, proving every layer
@@ -105,7 +105,7 @@ bool g_audioOpen = false;
 // ── Audio M2: native DSP voice renderer (Zelda-ucode per-voice mix) ────────────
 // Replaces the milestone-1 silence seam. RE'd from the decomp + the proven
 // recomp-era decoder (scratch/audio_ref/native_jas_recomp_era.cpp) — see
-// docs/audio_native_mixer_plan.md "M2 VPB field map"/"pitch scale". bufL/bufR are
+// docs/audio/native_mixer_plan.md "M2 VPB field map"/"pitch scale". bufL/bufR are
 // SEPARATE live host L/R buffers (getFrameSamples() mono s16 each);
 // vframeWork/imixcopy interleaves them into the stereo dac[] downstream.
 

@@ -5,7 +5,7 @@
 // FIFO — a controlled same-input/two-renderers experiment. Diagnostic ONLY
 // (SB_FIFO_REPLAY env gate); consumes a static .dff, no Dolphin code.
 //
-// See docs/model_interpolation.md (2026-07-11 amendment) for the ruling that
+// See docs/60fps/model_interpolation.md (2026-07-11 amendment) for the ruling that
 // permits this, and debug_journal/2026-07-11_fifo_replay_no_calldl.md for the
 // resolution of the CALL_DL risk (SMS title GX stream has zero display-list
 // calls, so the command stream is flat and self-contained).

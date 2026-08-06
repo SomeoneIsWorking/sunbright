@@ -68,7 +68,7 @@ bool widescreen_on() { return sbr_ws_pillar() != 0; }
 
 // ── Live effect census (probe /wsfx) ─────────────────────────────────────────────────────
 // Which widescreen-affected effects actually RUN, and how often. The retired inventory
-// (docs/widescreen_effects.md) marks each effect fixed, but that status does not transfer to
+// (docs/60fps/widescreen_effects.md) marks each effect fixed, but that status does not transfer to
 // this runtime: the Dolphin era reached overrides through JIT block-linking, which silently
 // skipped some of them entirely (its own notes record the TAfterEffect/TEfbCtrlTex fixes never
 // being in the binary at all), while here every call goes through call_ppc and reaches them.

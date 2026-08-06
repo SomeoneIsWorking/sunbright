@@ -25,7 +25,7 @@ Legend: ✅ done (verified on real data) · 🟡 partial (documented gap) · �
 | File-select / save screen | ✅ renders | 🟢 at parity incl. Mario | recomp file-select correct; the mip/has_mips fix closed the "sea wash" |
 | Delfino Plaza (stage 1) | ✅ **renders + playable** | ⬜ crashes into gameplay | recomp: Mario/FLUDD/HUD/NPCs/statue/dialogue; heat haze + water refraction render; `SBR_FASTBOOT=1` |
 | Other stages | 🟡 reachable via `SBR_STAGE=<n>` | — | Gelato Beach verified wide; per-stage fidelity unaudited |
-| Audio | ⬜ silent | ✅ **audible** (title BGM) | decomp: `sms-boot/runtime/jas_kernel_native.cpp`, verified 2026-07-17, oracle WAV in `scratch/wav/`. recomp: DSP coprocessor not emulated; plan + prior art in `docs/audio_recomp_plan.md` |
+| Audio | ⬜ silent | ✅ **audible** (title BGM) | decomp: `sms-boot/runtime/jas_kernel_native.cpp`, verified 2026-07-17, oracle WAV in `scratch/wav/`. recomp: DSP coprocessor not emulated; plan + prior art in `docs/audio/recomp_plan.md` |
 | Movies (THP) | 🟡 decodes, no reopen | 🟡 | recomp: `SBR_THP=stage` default; second session faults (null msg queue) |
 
 ## sms-recomp/ — the recomp runtime (primary)
@@ -70,12 +70,12 @@ Legend: ✅ done (verified on real data) · 🟡 partial (documented gap) · �
 | PAD | ✅ | `sms-recomp/overrides/native_pad.cpp` | keyboard 12/12 bound (calls aurora PADInit); `SBR_PAD_SCRIPT` |
 | OS threads / MMU | ✅ | `sms-recomp/overrides/native_os_thread.cpp`, `native_os_mmu.cpp` | token hand-off; OSCancelThread |
 | AID audio-DMA engine | ✅ | `sms-recomp/runtime/dev_aid.cpp` | 0xCC005030-3C its own device (was swallowed by dev_aram as inert halfwords — the dead link). Latch/wrap/re-arm, `__AID_Callback` delivered 57/s = 32000/560, paced to a 100 ms host backlog. Verified 2026-07-23 |
-| DSP voice mixer | ⬜ | `sms-recomp/overrides/native_dsp.cpp` | the heartbeat now beats but every delivered sample is ZERO — nothing fills the buffer. AX/Zelda ucode HLE = step 4 of `docs/audio_recomp_plan.md` |
+| DSP voice mixer | ⬜ | `sms-recomp/overrides/native_dsp.cpp` | the heartbeat now beats but every delivered sample is ZERO — nothing fills the buffer. AX/Zelda ucode HLE = step 4 of `docs/audio/recomp_plan.md` |
 | fastboot | ✅ | `sms-recomp/overrides/fastboot_native.cpp` | `SBR_FASTBOOT`/`SBR_STAGE`/`SBR_SCENARIO`; ported from git 9283f44^ |
 | widescreen (16:9) | ✅ | `sms-recomp/overrides/widescreen.cpp` | aspect widened at `C_MTXPerspective` (input, not output); `SBR_WIDESCREEN` |
 | widescreen HUD | ✅ | `sms-recomp/overrides/hud.cpp` | per-`.blo`-name edge anchoring; `/2d` |
 | widescreen effects | ✅ | `sms-recomp/overrides/widescreen_effects.cpp` | 2D full-screen widen + EFB-tex/mirror suspend; `/wsfx /fills` |
-| **60fps interpolation (ALL of it)** | 🟡 | **`sms-recomp/frame_interp/`** — one module, one CMake OBJECT library. Map: **`docs/60fps.md`** | Was THREE independent implementations spread over `overrides/` (4 files), `runtime/` (2) and aurora, under three names, behind 49 env switches, with nothing in the tree saying the six belonged together. Now one directory with one public API (`frame_interp.h`) shaped after dusklight's `src/dusk/frame_interpolation.h`: `Mode{Off,Capped,Unlimited}`, `interpolation_step()`, `request_presentation_sync()`, `add_interpolation_callback()`. Three seams wired and verified firing — `begin_sim_tick()` at `present_tail`, `present_interpolated_frame()` at `aurora_replay_midpoint()` (the only point genuinely between a tick's two presents), and the camera cut routed through the sync request. Move verified behavior-identical: judder 1.10, mean step 5.131, same guest ticks before and after. **Which mechanism, MEASURED** (`tools/interp/cadence.py`, matched guest ticks, camera rotating): stream interpolation **1.10**, plain 30fps 1.18, record-and-replace **2.33** — so `play.sh --60fps` selects stream interpolation, and the old default was twice as juddery as not interpolating. Remaining: no effect registers a callback yet (the report says so in those words); ~9.5% of draws reach aurora without a cross-tick identity and SNAP; paths B (`subframe_legacy.cpp`, 2951 lines) and C (`record_replace.cpp`) still present, C's census is the liveness probe worth keeping |
+| **60fps interpolation (ALL of it)** | 🟡 | **`sms-recomp/frame_interp/`** — one module, one CMake OBJECT library. Map: **`docs/60fps/README.md`** | Was THREE independent implementations spread over `overrides/` (4 files), `runtime/` (2) and aurora, under three names, behind 49 env switches, with nothing in the tree saying the six belonged together. Now one directory with one public API (`frame_interp.h`) shaped after dusklight's `src/dusk/frame_interpolation.h`: `Mode{Off,Capped,Unlimited}`, `interpolation_step()`, `request_presentation_sync()`, `add_interpolation_callback()`. Three seams wired and verified firing — `begin_sim_tick()` at `present_tail`, `present_interpolated_frame()` at `aurora_replay_midpoint()` (the only point genuinely between a tick's two presents), and the camera cut routed through the sync request. Move verified behavior-identical: judder 1.10, mean step 5.131, same guest ticks before and after. **Which mechanism, MEASURED** (`tools/interp/cadence.py`, matched guest ticks, camera rotating): stream interpolation **1.10**, plain 30fps 1.18, record-and-replace **2.33** — so `play.sh --60fps` selects stream interpolation, and the old default was twice as juddery as not interpolating. Remaining: no effect registers a callback yet (the report says so in those words); ~9.5% of draws reach aurora without a cross-tick identity and SNAP; paths B (`subframe_legacy.cpp`, 2951 lines) and C (`record_replace.cpp`) still present, C's census is the liveness probe worth keeping |
 | 2D-class diagnostics | 🔬 | `sms-recomp/overrides/diag_2d.cpp` | `/2dclass` (SBR_DIAG_2D=1); pane→class census |
 
 ## Aurora (`extern/aurora` — the GC platform surface; submodule, fork remote branch `sunbright`)
@@ -105,7 +105,7 @@ Shared by both runtimes: the recomp hands it a GX stream, the decomp calls its G
 
 The real game source, native-platform-guarded (`SMS_NATIVE_PLATFORM`). Rebased ~2×/week from upstream
 (`tools/re/rebase_upstream.py`). Rendering-affecting code is always native. Screen effects (heat haze,
-water refraction, dash blur, TScreenTexture) are FULLY implemented — see `docs/screen_effects.md`.
+water refraction, dash blur, TScreenTexture) are FULLY implemented — see `docs/60fps/screen_effects.md`.
 
 ## Tools (`tools/`)
 
@@ -114,7 +114,7 @@ water refraction, dash blur, TScreenTexture) are FULLY implemented — see `docs
 | `recompiler/` | the static recompiler (`sunbright-recomp` DOL→C++); `sunbright-recomp-test` |
 | `tools/re/rebase_upstream.py` | upstream doldecomp/sms sync (status→rebase→audit→converge) |
 | `tools/re/port_dossier.py`, `tools/re/vtable_re.py` | per-function RE dossiers; weak-vtable slot resolution |
-| `tools/re/gap_worklist.py` | hand-port gap tracker (`docs/port_worklist.md`) |
+| `tools/re/gap_worklist.py` | hand-port gap tracker (`docs/port/worklist.md`) |
 | `tools/re/ppcdis.py`, `tools/re/disasm_range.py` | capstone disasm over the DOL with funcs.txt symbols |
 | `dol_sda.py`, `ghidra_scripts/` | SDA/r13 constants; analyzeHeadless helpers |
 | `scratch_clean.py` | gated scratch cleaner (refuses paths outside `scratch/`) |
@@ -130,8 +130,8 @@ gxfifo, widescreen, thp, …) and `SB_DUMP_FRAME`/`SB_DUMP_FRAME_AFTER`.
 - boot destination / fastboot → `sms-recomp/overrides/fastboot_native.cpp` (`SBR_FASTBOOT`/`SBR_STAGE`)
 - GX stream → aurora → `sms-recomp/runtime/dev_gxfifo.cpp` (`gxfifo_flush`, `emit_arraybase`, EFB copies)
 - widescreen aspect → `sms-recomp/overrides/widescreen.cpp` (`ov_c_mtx_perspective`)
-- a screen effect (heat haze etc.) → `docs/screen_effects.md` + `sms-recomp/overrides/screen_effects.cpp`
-- **60fps, ANY part of it → `docs/60fps.md`** — the map of all three implementations, every hook by
+- a screen effect (heat haze etc.) → `docs/60fps/screen_effects.md` + `sms-recomp/overrides/screen_effects.cpp`
+- **60fps, ANY part of it → `docs/60fps/README.md`** — the map of all three implementations, every hook by
   guest address, every switch by path, and the unification target. Do not start from the source:
   the hooks are spread over eight files under three different names (`lerp60`, `interp60`,
   `interp60_replace`). The stale entry this replaces pointed at `runtime/scene.cpp`, which has not
@@ -147,19 +147,27 @@ gxfifo, widescreen, thp, …) and `SB_DUMP_FRAME`/`SB_DUMP_FRAME_AFTER`.
 
 ```
 sms-recomp/  —  the recomp runtime
-├─ generated/   PPC→C++ (2.79M lines, regenerated by tools/recompiler)
-├─ overrides/   3.7k lines  22 files   native HW/OS seams + widescreen/HUD/screenfx/j3d capture
-├─ runtime/     3.9k lines  30 files   dispatch, MMIO, HW devices, scheduler, probe
-└─ host/        main.cpp
-extern/aurora/  the GC platform surface (SDL3 + WebGPU/Dawn), shared
-sms-boot/       the decomp+Aurora runtime (oracle)
-decomp/sms/     the reference decompilation (submodule)
-tools/          recompiler + RE + oracle tooling
+├─ generated/     PPC→C++ (2.79M lines, regenerated by tools/recompiler); never hand-edited
+├─ runtime/       12.7k lines  50 files   dispatch, MMIO, HW devices, scheduler, probe server
+├─ overrides/      4.9k lines  25 files   native HW/OS seams + widescreen/HUD/j3d capture
+├─ frame_interp/   4.3k lines  11 files   ALL interpolated-60fps code — one API (docs/60fps/)
+└─ host/          main.cpp
+extern/aurora/    the GC platform surface (SDL3 + WebGPU/Dawn), shared by both runtimes
+sms-boot/         the decomp+Aurora runtime (the oracle)
+decomp/sms/       the reference decompilation (submodule)
+tools/            every tool lives under a subject directory; only diag_registry.py,
+                  scratch_clean.py and selftest_all.py are repo-wide and sit at the root
+├─ recompiler/  render/  oracle/  interp/  re/  audio/  perf/  ghidra_scripts/
+docs/             docs/README.md is the index; codemap.md is the map
+debug_journal/    dated findings, dead ends included. NOT a place for current state
 ```
+
+Repo root holds four scripts and nothing else that runs: `play.sh` (the way to play),
+`run-recomp.sh` / `run.sh` / `run-render.sh` (the raw harnesses behind it).
 
 ## Open heads (details in debug_journal/ and docs/)
 
-- **60fps — UNIFY THE THREE PATHS.** This is the head, and it is a restructuring rather than a bug: three implementations exist, only one (stream interpolation, `SBR_60FPS`) has its effects ported, and the one `play.sh --60fps` selects is not it — hence flicker. Target and rationale: `docs/60fps.md`. Shape it like dusklight's `src/dusk/frame_interpolation.{h,cpp}`.
-- **audio (recomp only)** — DSP voice mixer; the decomp side is already audible and is the oracle. `docs/audio_recomp_plan.md`.
+- **60fps — UNIFY THE THREE PATHS.** This is the head, and it is a restructuring rather than a bug: three implementations exist, only one (stream interpolation, `SBR_60FPS`) has its effects ported, and the one `play.sh --60fps` selects is not it — hence flicker. Target and rationale: `docs/60fps/README.md`. Shape it like dusklight's `src/dusk/frame_interpolation.{h,cpp}`.
+- **audio (recomp only)** — DSP voice mixer; the decomp side is already audible and is the oracle. `docs/audio/recomp_plan.md`.
 - **THP session reopen** — second movie faults on a null message queue.
 - **decomp Delfino gameplay crash** — plaza-population stubs (oracle side).

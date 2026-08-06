@@ -3,11 +3,11 @@
 The only trustworthy way to judge native-renderer (ngx) fidelity is **rendered pixels from the
 same game state**, ngx vs an oracle. This doc is the canonical recipe + why it's valid.
 
-## TL;DR — use `tools/gpshot`
+## TL;DR — use `tools/render/gpshot`
 ```
-tools/gpshot                 # FASTBOOT -> Delfino gameplay, zero-drift GX-vs-ngx A/B + region delta
-tools/gpshot --fs            # AUTOSTART -> file-select (the shredded skinned-Mario case)
-tools/gpshot --fs '/ngxskip?ti=10'   # apply probe cmds before the capture (isolate a material)
+tools/render/gpshot                 # FASTBOOT -> Delfino gameplay, zero-drift GX-vs-ngx A/B + region delta
+tools/render/gpshot --fs            # AUTOSTART -> file-select (the shredded skinned-Mario case)
+tools/render/gpshot --fs '/ngxskip?ti=10'   # apply probe cmds before the capture (isolate a material)
 ```
 Output: `scratch/screenshots/ab2.gx.png` (oracle) + `ab2.ngx.png` (native) + a per-region mean
 pixel delta. Both PNGs are the **same present**.

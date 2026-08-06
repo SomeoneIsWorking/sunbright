@@ -5,7 +5,7 @@ WHY THIS EXISTS
 
 Every metric this arc built so far needs to know which presents are "main" and which are "sub", and
 each one therefore only works on the path it was written for. There are three 60fps paths
-(docs/60fps.md) and no way to put their output on one axis. Worse, the thing a player actually
+(docs/60fps/README.md) and no way to put their output on one axis. Worse, the thing a player actually
 reports — "it's flickery" — is not what those metrics measure. Asymmetry says WHERE a sub-frame sits
 between its neighbours; it says nothing about whether the series as a whole steps evenly, and a
 series can score a perfect asymmetry while juddering.
@@ -13,9 +13,18 @@ series can score a perfect asymmetry while juddering.
 Judder is uneven motion. So measure that directly and label nothing: take the difference between
 each pair of CONSECUTIVE presents and ask whether those steps are the same size.
 
-    step[i]   = mean |present[i+1] - present[i]|
-    JUDDER    = max(step) / min(step)        1.0 = perfectly even, higher = worse
-    duplicates = count of step[i] == 0       a present identical to the one before it
+    step[i]     = mean |present[i+1] - present[i]|
+    JUDDER      = max(step) / min(step)      1.0 = perfectly even, higher = worse
+    ALTERNATION = mean(odd steps) / mean(even steps)
+    duplicates  = count of step[i] == 0      a present identical to the one before it
+
+ALTERNATION is the sharper statistic for a two-presents-per-tick cadence and it absorbs what
+tools/interp/cadence.py used to compute separately. With one in-between frame per tick the steps
+come in pairs, and anything that does NOT interpolate moves only on the tick's own present and not
+at all on the in-between one — so it lands entirely in every other step. The ratio between the two
+phases is therefore the share of on-screen MOTION that is still snapping, weighted by screen area,
+which is what the eye integrates. max/min can be dragged around by a single outlier step; the
+phase means cannot.
 
 WHAT THE NUMBERS MEAN, WITH THE TWO FAILURE MODES NAMED
 
@@ -134,6 +143,13 @@ def score(steps, label="", ticks=None):
     lo, hi = min(steps), max(steps)
     mean = sum(steps) / n
     judder = float("inf") if lo == 0.0 else hi / lo
+    # Phase means. Which phase is the in-between one is not known here and does not matter: the
+    # ratio is reported as >= 1 so it reads the same either way.
+    even = [s for i, s in enumerate(steps) if i % 2 == 0]
+    odd = [s for i, s in enumerate(steps) if i % 2 == 1]
+    me = sum(even) / len(even) if even else 0.0
+    mo = sum(odd) / len(odd) if odd else 0.0
+    altern = float("inf") if min(me, mo) == 0.0 else max(me, mo) / min(me, mo)
     print(f"  steps ({n}): " + " ".join(f"{s:.3f}" for s in steps))
     print(f"  mean step {mean:.3f}   min {lo:.3f}   max {hi:.3f}")
     if dups:
@@ -149,6 +165,14 @@ def score(steps, label="", ticks=None):
     else:
         print(f"  JUDDER {judder:.2f}   (1.00 = every present advances equally; ~2 = the in-between "
               f"frame exists but sits off the midpoint, which is the visible shimmer)")
+        print(f"  ALTERNATION {altern:.2f}   phase means {me:.3f} / {mo:.3f}   (1.00 = both presents "
+              f"advance the picture equally. Higher = that much of the on-screen motion moves on "
+              f"only one of the two presents, i.e. is still SNAPPING rather than interpolating.)")
+        if altern >= 1.8:
+            print("  ^ RUN THE CONTROL BEFORE READING THIS. With interpolation OFF, consecutive "
+                  "presents are consecutive ticks and alternation MUST come out ~1.0. If it does "
+                  "not, the scene itself pulses on a two-frame cycle (a flashing effect, a 2-frame "
+                  "animation) and this number is measuring that instead.")
     ppt = presents_per_label(ticks) if ticks else None
     if ppt is None:
         print("  RETRACE LABELS: absent — these dumps carry no `-t<n>` label, so this series "
@@ -166,7 +190,7 @@ def score(steps, label="", ticks=None):
     print(f"  SCALE: mean step {mean:.3f}. Two runs are comparable ONLY over the SAME GUEST TICKS — "
           f"SB_DUMP_FRAME_AFTER counts presents, so a 60fps run reaches a given present at half the "
           f"tick a 30fps run does, and their step sizes then describe different scenes.")
-    return {"judder": judder, "mean": mean, "dups": dups, "n": n, "span": span}
+    return {"judder": judder, "altern": altern, "mean": mean, "dups": dups, "n": n, "span": span}
 
 
 def selftest():
@@ -184,9 +208,31 @@ def selftest():
     # 2. every-other duplicated -> caught as duplicates, NOT merely as a big ratio
     r = score([0.0, 8.0, 0.0, 8.0], "dup")
     check("every-other-duplicate is caught by the duplicate count", r["dups"] == 2)
-    # 3. fast-slow alternation -> judder ~2
+    # 3. fast-slow alternation -> judder ~2 AND alternation ~2
     r = score([6.0, 3.0, 6.0, 3.0], "alternating")
     check("fast/slow alternation reads judder ~2", abs(r["judder"] - 2.0) < 1e-6)
+    check("fast/slow alternation reads ALTERNATION ~2", abs(r["altern"] - 2.0) < 1e-6)
+    # 3b. even motion must NOT read as alternating — the statistic has to separate both classes,
+    # not merely fire on the positive one.
+    r = score([4.0, 4.0, 4.0, 4.0], "even-alt")
+    check("even motion reads alternation ~1", abs(r["altern"] - 1.0) < 1e-6)
+    # 3c. A single outlier step must move JUDDER strictly more than ALTERNATION — that is the
+    # reason alternation exists as a separate number, and it is the claim that can actually be
+    # asserted. An earlier version of this case asserted `altern < 1.3` and FAILED at 1.42: over
+    # six steps one outlier still shifts a phase mean by 42%, because it is one of only three
+    # samples in its phase. The property is the ORDERING, not an absolute threshold, and the
+    # threshold version would have quietly encoded a series length into the test.
+    r = score([4.0, 4.0, 9.0, 4.0, 4.0, 4.0], "outlier")
+    check("one outlier moves judder more than alternation",
+          r["judder"] > r["altern"] * 1.4,
+          f"judder {r['judder']:.2f} vs alternation {r['altern']:.2f}")
+    # ...and over a longer series the outlier's effect on alternation must SHRINK, which is the
+    # property that makes it the more robust of the two.
+    long_series = [4.0] * 20
+    long_series[7] = 9.0
+    r2 = score(long_series, "outlier-long")
+    check("alternation is more robust the longer the series",
+          r2["altern"] < r["altern"], f"{r2['altern']:.2f} < {r['altern']:.2f}")
     # 4. too short -> REFUSES rather than scoring
     r = score([5.0], "short")
     check("a one-step series REFUSES", r is None)
@@ -226,8 +272,9 @@ def main():
         for prefix, r in results:
             j = "undefined (duplicates)" if r["dups"] else f"{r['judder']:.2f}"
             span = f"ticks {r['span'][0]}..{r['span'][1]}" if r["span"] else "ticks UNKNOWN"
-            print(f"  {os.path.basename(prefix):28s} judder {j:>22s}   mean step {r['mean']:6.3f}"
-                  f"   {span}")
+            a = "undefined" if r["dups"] else f"{r['altern']:.2f}"
+            print(f"  {os.path.basename(prefix):26s} judder {j:>10s}  alternation {a:>9s}"
+                  f"  mean step {r['mean']:6.3f}   {span}")
         # OVERLAP IS THE PRECONDITION, and it is checked rather than assumed. Two runs dumped at the
         # same PRESENT index are at different guest ticks whenever their presents-per-tick differ,
         # which is exactly the case being compared here.

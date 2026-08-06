@@ -300,7 +300,7 @@ if(TARGET aurora_core)
         "$<LINK_GROUP:RESCAN,sms-native,sms-gd,sms-assets,$<TARGET_NAME_IF_EXISTS:sms-bootstubs>>"
         aurora::core
         aurora::gx
-        # Audio milestone 1 landed (docs/audio_native_mixer_plan.md): the JAS
+        # Audio milestone 1 landed (docs/audio/native_mixer_plan.md): the JAS
         # KERNEL now runs natively and pushes dac[] buffers to aurora::audio via
         # sb_jas_kernel_frame (sms-boot/runtime/jas_kernel_native.cpp).
         aurora::audio

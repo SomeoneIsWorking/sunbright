@@ -13,7 +13,7 @@ Data sources (repo-relative, refuses if missing):
 
 Usage:
   gap_worklist.py                 # print the ranked worklist (markdown)
-  gap_worklist.py --md > docs/port_worklist.md
+  gap_worklist.py --md > docs/port/worklist.md
   gap_worklist.py --json          # machine-readable
   gap_worklist.py --category Enemy # filter to one src category
 """
@@ -144,7 +144,7 @@ def main():
     print()
     print("Ordered by category, then RE burden (biggest first). `factory`: whether the "
           "actor type is registered / commented-out / not in getNameRef_Enemy.")
-    print("Regenerate: `python3 tools/re/gap_worklist.py --md > docs/port_worklist.md`")
+    print("Regenerate: `python3 tools/re/gap_worklist.py --md > docs/port/worklist.md`")
     print()
     cat = None
     for r in rows:

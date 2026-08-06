@@ -44,7 +44,7 @@ m[2] = { 0, 0, -1, 0 }        ; +0x20,+0x24,+0x28(-1.0),+0x2c
 m[3] = { 0, 0,  0, 1 }        ; +0x30,+0x34,+0x38,+0x3c(1.0)
 ```
 
-SDA2 constants resolved (tools/dol_sda.py --sda2): -0x1710=0.0, -0x1700=-1.0, -0x170c=1.0.
+SDA2 constants resolved (tools/re/dol_sda.py --sda2): -0x1710=0.0, -0x1700=-1.0, -0x170c=1.0.
 
 ## The shape of the port (ready — one blocker)
 

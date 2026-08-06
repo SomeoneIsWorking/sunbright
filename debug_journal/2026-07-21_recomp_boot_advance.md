@@ -89,7 +89,7 @@ Same structural limit as `__OSInitMemoryProtection`, but this one is not a one-o
 routine — it is the scheduler, so it cannot be no-op'd.
 
 **Next arc: restore the native OSThread overrides.** They existed and worked before the
-recomp was retired — `runtime/native_os.cpp` (449 lines) + `docs/native_threading.md` at
+recomp was retired — `runtime/native_os.cpp` (449 lines) + `docs/port/threading.md` at
 `9283f44^`, covering `OSCreateThread` / `OSResumeThread` / `OSSuspendThread` /
 `OSGetCurrentThread` backed by host threads. That is the documented reason the scheduler
 never needs to run: the guest never context-switches because host threads do it.
@@ -146,10 +146,10 @@ Sources at `9283f44^`:
 | `runtime/native_threads.h` | 109 | |
 | `runtime/native_os.cpp` | 449 | OSCreateThread/Resume/Suspend/GetCurrentThread overrides |
 | `runtime/overrides/sms_jkrthread.cpp` | 35 | replicates JKRThread worker bodies synchronously |
-| `docs/native_threading.md` | — | design doc + hard-won gotchas |
+| `docs/port/threading.md` | — | design doc + hard-won gotchas |
 
 The scheduler is effectively Dolphin-free, so this is a port, not a rewrite. Note the
-*rest* of `docs/native_threading.md` (native interrupt dispatch, GX FIFO pacing, VI
+*rest* of `docs/port/threading.md` (native interrupt dispatch, GX FIFO pacing, VI
 retrace, draw-sync token synthesis) IS deeply Dolphin-coupled and does NOT come back —
 those seams belong to aurora in the two-runtime architecture.
 
@@ -794,7 +794,7 @@ Four bugs found and fixed on the way, each worth keeping:
    below the main thread's 16, so it only runs when the main thread blocks. Retail SLEEPS in
    `VIWaitForRetrace` for a whole field and everything runnable gets to run during it; the
    pure-counter override never blocked. Added `gsched_drain()` — park until nothing else is
-   Ready — and called it from the VI override. The retired `docs/native_threading.md` names
+   Ready — and called it from the VI override. The retired `docs/port/threading.md` names
    this exact failure: *"a never-blocking frame loop starves lower-priority threads (the boot
    setup thread) forever."*
 4. **New threads started with r2/r13 = 0.** The small-data bases are set once at boot and are
