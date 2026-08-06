@@ -37,6 +37,7 @@
 
 extern "C" void func_80362a50(CPUState&);   // GXCallDisplayList
 extern "C" void func_802dfe88(CPUState&);   // J3DShapeDraw::draw() const
+extern "C" void func_8035df88(CPUState&);   // GXBegin(GXPrimitive, GXVtxFmt, u16)
 uint64_t sbr_gxfifo_pending_tag();
 void sbr_gxfifo_draw_tag(uint64_t tag);
 void gxfifo_stats(u64& draws, u64& verts, u64& bytes);
@@ -76,6 +77,22 @@ std::unordered_map<u32, Site> g_bySite;
 // frame further up, so the answer is a system rather than a J3D internal.
 std::unordered_map<u32, unsigned long> g_shapeDrawCallers;
 unsigned long g_shapeDrawUntagged = 0, g_shapeDrawTagged = 0;
+
+// ── IMMEDIATE-MODE (DIRECT) DRAWS ───────────────────────────────────────────────────────────────
+//
+// The display-list gap is closed, and the remaining untagged population is 1,056,734 DIRECT draws
+// per run, which the coverage line calls "rebuilt per tick — correct to snap, no identity exists to
+// give them". That sentence is an ASSUMPTION and it was never checked. A user watching the plaza
+// fountain jitter is the counter-example: whatever draws it is in this population, it plainly has a
+// stable identity tick to tick (it is the same fountain), and "no identity exists" was a statement
+// about how the geometry is SUBMITTED, not about whether the object persists.
+//
+// GXBegin is the waist for immediate geometry the way GXCallDisplayList is for indexed, so the same
+// attribution works: the caller names the system. Whether those draws can be interpolated is a
+// separate question — their vertices are rebuilt each tick, so a matrix lerp does nothing and the
+// VERTEX DATA would have to be paired and lerped — but naming them is the prerequisite for asking.
+std::unordered_map<u32, unsigned long> g_directSites;
+unsigned long g_directUntagged = 0, g_directTagged = 0;
 unsigned long g_untagged = 0, g_tagged = 0;
 unsigned long g_untaggedDraws = 0, g_taggedDraws = 0;
 
@@ -121,6 +138,17 @@ void report() {
         lucent::info("taggap", "      0x{:08x}  {:>9} call(s)  {:.1f}%", sd[i].first, sd[i].second,
                      g_shapeDrawUntagged ? 100.0 * (double)sd[i].second / (double)g_shapeDrawUntagged
                                          : 0.0);
+    }
+    std::vector<std::pair<u32, unsigned long>> dv(g_directSites.begin(), g_directSites.end());
+    std::sort(dv.begin(), dv.end(), [](auto& a, auto& b) { return a.second > b.second; });
+    lucent::info("taggap",
+                 "  IMMEDIATE-MODE (GXBegin) with no tag: {} of {} calls; {} distinct site(s). "
+                 "These are the draws the coverage line calls 'correct to snap' — an assumption, "
+                 "not a measurement:",
+                 g_directUntagged, g_directUntagged + g_directTagged, dv.size());
+    for (size_t i = 0; i < dv.size() && i < 12; ++i) {
+        lucent::info("taggap", "      0x{:08x}  {:>9} call(s)  {:.1f}%", dv[i].first, dv[i].second,
+                     g_directUntagged ? 100.0 * (double)dv[i].second / (double)g_directUntagged : 0.0);
     }
     lucent::info("taggap", "  Resolve these with: python3 tools/re/addr2sym.py <addr>...");
 }
@@ -180,7 +208,23 @@ void ov_shape_draw_draw(CPUState& cpu) {
     func_802dfe88(cpu);
 }
 
+void ov_gx_begin(CPUState& cpu) {
+    if (enabled()) {
+        if (sbr_gxfifo_pending_tag() == 0) {
+            ++g_directUntagged;
+            ++g_directSites[(u32)cpu.lr];
+        } else {
+            ++g_directTagged;
+        }
+    }
+    func_8035df88(cpu);
+}
+
 } // namespace
+
+SB_OVERRIDE(0x8035df88u, ov_gx_begin, "GXBegin",
+            "60fps (SBR_TAGGAP): attribute IMMEDIATE-MODE draws that carry no interpolation "
+            "identity; observe-only, always runs the real body")
 
 SB_OVERRIDE(0x802dfe88u, ov_shape_draw_draw, "J3DShapeDraw::draw",
             "60fps (SBR_TAGGAP): name the SYSTEM behind the dominant untagged-draw site; "

@@ -14,6 +14,7 @@ logger — that is debt to convert, not a feature.
 | `AURORA_DRAW_TRACE` | 1 | `extern/aurora/lib/gx/command_processor.cpp:3460` |  |
 | `AURORA_FIFO_TRACE` | 1 | `extern/aurora/lib/gx/command_processor.cpp:488` |  |
 | `AURORA_INTERP_ALPHA` | 1 | `extern/aurora/lib/gfx/common.cpp:612` |  |
+| `AURORA_PRESENT_RELAXED` | 1 | `extern/aurora/lib/webgpu/gpu.cpp:215` |  |
 | `AURORA_REPLAY_LOG_EVERY` | 1 | `extern/aurora/lib/gfx/common.cpp:1856` |  |
 | `AURORA_REPLAY_PRESENT` | 1 | `extern/aurora/lib/gfx/common.cpp:597` |  |
 | `AURORA_REPLAY_PROFILE` | 2 | `extern/aurora/lib/aurora.cpp:392` |  |
@@ -116,7 +117,7 @@ logger — that is debt to convert, not a feature.
 | `SB_NDC_PROBE_AFTER` | 1 | `extern/aurora/lib/gx/command_processor.cpp:2693` |  |
 | `SB_NO_ACMP` | 1 | `extern/aurora/lib/gx/gx.cpp:909` |  |
 | `SB_NO_ARRCACHE` | 1 | `extern/aurora/lib/gx/command_processor.cpp:4256` |  |
-| `SB_NO_COPYDISP` | 1 | `extern/aurora/lib/webgpu/gpu.cpp:347` |  |
+| `SB_NO_COPYDISP` | 1 | `extern/aurora/lib/webgpu/gpu.cpp:363` |  |
 | `SB_NO_CULL` | 1 | `extern/aurora/lib/gx/gx.cpp:732` |  |
 | `SB_NO_DEPTH` | 1 | `extern/aurora/lib/gx/gx.cpp:764` |  |
 | `SB_NO_FASTBOOT` | 1 | `decomp/sms/src/System/Application.cpp:649` |  |
@@ -340,7 +341,7 @@ logger — that is debt to convert, not a feature.
 | `SBR_SMOOTH_SELFTEST` | 1 | `sms-recomp/runtime/render/frame_smoothness.cpp:125` |  |
 | `SBR_STAGE` | 2 | `sms-recomp/overrides/fastboot_native.cpp:81` |  |
 | `SBR_STATE_DIFF` | 1 | `sms-recomp/runtime/render/state_oracle.cpp:17` |  |
-| `SBR_TAGGAP` | 1 | `sms-recomp/frame_interp/tag_gap.cpp:49` |  |
+| `SBR_TAGGAP` | 1 | `sms-recomp/frame_interp/tag_gap.cpp:50` |  |
 | `SBR_TAGSHADOW` | 1 | `sms-recomp/frame_interp/tag_shadow.cpp:87` |  |
 | `SBR_TEV_TRACE` | 1 | `sms-recomp/runtime/render/scene.cpp:925` |  |
 | `SBR_TEV_TRACE_ADDR` | 1 | `sms-recomp/runtime/render/scene.cpp:1022` |  |
@@ -361,4 +362,4 @@ logger — that is debt to convert, not a feature.
 | `SBR_WIDESCREEN` | 1 | `sms-recomp/overrides/widescreen.cpp:56` |  |
 | `SBR_WS_SCALE` | 1 | `sms-recomp/overrides/widescreen.cpp:65` |  |
 
-**340 switches; 69 still gate a raw print.**
+**341 switches; 69 still gate a raw print.**
