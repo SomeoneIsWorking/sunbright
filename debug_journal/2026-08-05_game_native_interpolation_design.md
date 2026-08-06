@@ -3087,3 +3087,45 @@ thing standing between these seams and being trustworthy enough to measure with,
 
 Until it is zero, cross-run comparisons with `SBR_INTERP60_PLAYER` or `_ACTORS` on remain invalid,
 and the reopened sub-pixel question must still be answered camera-only.
+
+## The player residual: named the fields, and the instrument named its own blind spot
+
+Two guesses at the player leak failed, so the third attempt built an instrument instead:
+`SBR_INTERP60_PLAYER_DIFF=1` snapshots the player object before the sub-frame touches it, compares
+after everything is restored, and prints the OFFSETS that differ — bounded to the first 0x800 bytes,
+with the bound printed so that "nothing found" cannot read as "nothing leaked".
+
+It named exactly three words, the same three every time:
+
+    +0x450: 498.5397 -> 498.7740     mMarioScreenPos.x   (Mario.hpp:1764)
+    +0x454: 432.6569 -> 433.1443     mMarioScreenPos.y
+    +0x458:   0.9984 ->   0.9984     mMarioScreenPos.z
+
+`mMarioScreenPos` is Mario's position ON SCREEN, so it is derived from the VIEW — the sub-frame runs
+calcAnim under the interpolated view and leaves an interpolated projection behind. Restored
+bit-exactly alongside the waist smoothers.
+
+**And the leak did not move: 4,606 px, bit-identical to the run before.** By the lesson from the
+actor fix, bit-identical output across a code change means the change did not reach what is being
+measured — and here the instrument had already said where it could not look. `TMario::calcAnim` does
+`MTXCopy(baseMtx, mModel->unk8->getBaseTRMtx())` and `mModel->perform(2)`: those mutate the MODEL
+object, which is not the player object and is outside the 0x800 window. The residual is the same
+class as the actor leak (derived matrices left standing), on a different object.
+
+The two restores are kept: `considerWaist` demonstrably integrates (`mWaistPitch += rate * (target -
+mWaistPitch)`) and the diff proved `mMarioScreenPos` changes, so both are real perturbations of
+persistent state. Neither is claimed as the fix — they are correct by construction and below this
+measurement's resolution.
+
+### Where the leak now stands
+
+    all seams, before any fix : 345,174 px
+    after the actor recompute :   4,592 px
+    after waist + screen pos  :   4,606 px      (unchanged; the residual is on the model object)
+
+98.7% fixed, cause understood for the large part, and the small part localised to a specific object
+rather than guessed at. The next step is to extend the diff instrument to Mario's MODEL — it is the
+same tool pointed one pointer deeper, which is cheaper and more reliable than a fourth hypothesis.
+
+Until the leak is zero, `SBR_INTERP60_PLAYER` and `_ACTORS` stay opt-in, cross-run comparisons with
+them on stay invalid, and the reopened sub-pixel question stays camera-only.

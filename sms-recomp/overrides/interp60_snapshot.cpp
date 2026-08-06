@@ -127,7 +127,10 @@ float alpha_act() { static const float a = alpha_of("SBR_INTERP60_ALPHA_ACT"); r
 long viewseq_at();   // defined with the view-sequence probe; the arming present is shared
 void anim_apply(CPUState& cpu, u32 mActor, float alpha);   // defined with the animation-phase seam
 void actors_calc_root(CPUState& cpu, u32 tick, bool substituteAnim, bool requireApplied);
-void player_apply(CPUState& cpu, u32 gfx);
+void player_apply(CPUState& cpu, u32 gfx, bool saveWaist);
+void player_restore();
+void player_snapshot(u32 obj);
+void player_diff(u32 obj);
 void anim_restore();
 float alpha_act();
 
@@ -1561,7 +1564,29 @@ u32 player_obj() {
     return obj;
 }
 
-void player_apply(CPUState& cpu, u32 gfx) {
+// TMario's waist smoothers, and why calling calcAnim twice is not free.
+//
+// considerWaist() (decomp src/Player/MarioDraw.cpp:1471) ends with two INTEGRATORS:
+//
+//     mWaistPitch += angleChangeRate * (targetPitch - mWaistPitch);
+//     mWaistRoll  += angleChangeRate * (targetRoll  - mWaistRoll);
+//
+// Exponential smoothers toward a target. Every extra calcAnim call advances them an extra step, so
+// a sub-frame that calls calcAnim leaves Mario's waist further along than the tick alone would —
+// which persists, and is the whole of the player seam's 4,619-pixel leak. Two floats, so this takes
+// the camera's treatment: save them and put them back bit-exactly.
+constexpr u32 OFF_MARIO_WAIST_ROLL  = 0x3D8;   // f32 mWaistRoll  (Mario.hpp:1738)
+constexpr u32 OFF_MARIO_WAIST_PITCH = 0x3DC;   // f32 mWaistPitch (Mario.hpp:1739)
+// mMarioScreenPos (Mario.hpp:1764) — Mario's position ON SCREEN, so it is derived from the VIEW.
+// The sub-frame runs calcAnim under the interpolated view, so this is left holding an interpolated
+// projection, and it persists. Named by SBR_INTERP60_PLAYER_DIFF rather than guessed: the diff
+// reported exactly three changed words at +0x450/+0x454/+0x458 and nothing else in 0x800 bytes.
+constexpr u32 OFF_MARIO_SCREEN_POS  = 0x450;   // TVec3<f32> mMarioScreenPos
+
+u32   g_waistObj = 0;
+float g_waistSave[5] = {0, 0, 0, 0, 0};
+
+void player_apply(CPUState& cpu, u32 gfx, bool saveWaist) {
     if (!player_on()) return;
     const u32 obj = player_obj();
     if (!obj) {
@@ -1572,6 +1597,17 @@ void player_apply(CPUState& cpu, u32 gfx) {
                                       "tests nothing about the player.");
         }
         return;
+    }
+    // Saved on the SUBSTITUTION pass only. The post-restore recompute pass calls calcAnim again and
+    // advances the smoothers a third time; both extra advances are undone by the single restore at
+    // the end of the sub-frame, which writes back the value the GAME computed.
+    if (saveWaist) {
+        player_snapshot(obj);
+        g_waistObj = obj;
+        g_waistSave[0] = guest_f32(obj + OFF_MARIO_WAIST_ROLL);
+        g_waistSave[1] = guest_f32(obj + OFF_MARIO_WAIST_PITCH);
+        for (int k = 0; k < 3; ++k)
+            g_waistSave[2 + k] = guest_f32(obj + OFF_MARIO_SCREEN_POS + (u32)k * 4);
     }
     const u32 savedSp = (u32)cpu.gpr[1];
     cpu.gpr[3] = obj;
@@ -1954,6 +1990,63 @@ void viewcalc_hook(CPUState& cpu) {
     func_802deeb8(cpu);
 }
 
+// SBR_INTERP60_PLAYER_DIFF=1 — name the fields the sub-frame leaves changed on the player object.
+//
+// Two guesses at the player leak have now failed (a second calcAnim from the true pose; saving and
+// restoring the waist smoothers, which considerWaist visibly integrates). Guessing at a third is
+// the pattern this arc keeps paying for, so: snapshot the object before the sub-frame touches it,
+// compare after everything has been restored, and print the OFFSETS that differ. The field is then
+// looked up in Mario.hpp rather than hypothesised.
+//
+// Bounded to the first 0x800 bytes — TMario is large, and an unbounded diff would report the whole
+// object. The bound is stated in the output so a leak beyond it cannot read as "no leak".
+constexpr u32 kPlayerDiffBytes = 0x800;
+u8   g_playerSnap[kPlayerDiffBytes];
+bool g_playerSnapped = false;
+
+void player_snapshot(u32 obj) {
+    if (!std::getenv("SBR_INTERP60_PLAYER_DIFF") || !obj) return;
+    for (u32 i = 0; i < kPlayerDiffBytes; ++i) g_playerSnap[i] = sb_r8(obj + i);
+    g_playerSnapped = true;
+}
+
+void player_diff(u32 obj) {
+    if (!g_playerSnapped || !obj) return;
+    g_playerSnapped = false;
+    static int reports = 0;
+    if (reports >= 3) return;
+    ++reports;
+    int n = 0;
+    lucent::info("i60pdiff", "=== player object bytes changed by the sub-frame (first 0x{:x} bytes "
+                             "only; a leak past that is NOT covered) ===", kPlayerDiffBytes);
+    for (u32 i = 0; i < kPlayerDiffBytes; i += 4) {
+        u32 before = 0, after = 0;
+        for (int k = 0; k < 4; ++k) {
+            before = (before << 8) | g_playerSnap[i + k];
+            after  = (after  << 8) | sb_r8(obj + i + k);
+        }
+        if (before == after) continue;
+        if (++n > 24) { lucent::info("i60pdiff", "  ... more than 24 differing words; stopping"); break; }
+        float fb, fa;
+        __builtin_memcpy(&fb, &before, 4); __builtin_memcpy(&fa, &after, 4);
+        lucent::info("i60pdiff", "  +0x{:03x}: 0x{:08x} -> 0x{:08x}   (as f32: {:.4f} -> {:.4f})",
+                     i, before, after, (double)fb, (double)fa);
+    }
+    if (n == 0)
+        lucent::info("i60pdiff", "  NOTHING changed in this range -- the player leak, if real, is "
+                                 "outside it or is not on the player object at all.");
+}
+
+void player_restore() {
+    if (!g_waistObj) return;
+    player_diff(g_waistObj);
+    guest_w_f32(g_waistObj + OFF_MARIO_WAIST_ROLL,  g_waistSave[0]);
+    guest_w_f32(g_waistObj + OFF_MARIO_WAIST_PITCH, g_waistSave[1]);
+    for (int k = 0; k < 3; ++k)
+        guest_w_f32(g_waistObj + OFF_MARIO_SCREEN_POS + (u32)k * 4, g_waistSave[2 + k]);
+    g_waistObj = 0;
+}
+
 void camera_restore(const CamSave& sv) {
     if (!sv.obj) return;
     for (int k = 0; k < 3; ++k) {
@@ -2173,7 +2266,7 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
             perform_list(cpu, ca, cue & ~0x3u, gfx);
         }
     }
-    player_apply(cpu, gfx);
+    player_apply(cpu, gfx, true);
     actors_calc_root(cpu, g_lastSnapTick, true, true);
     viewseq_begin();
     if (!noEntry) perform_list(cpu, preEntry, cue, gfx);
@@ -2297,8 +2390,9 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
     if (j3dViewSaved)
         for (int i = 0; i < 12; ++i)
             guest_w_f32(J3DSYS_VIEWMTX + (u32)i * 4, j3dViewSave[i]);
-    player_apply(cpu, gfx);
+    player_apply(cpu, gfx, false);
     actors_calc_root(cpu, g_lastSnapTick, false, false);
+    player_restore();
     if (!noEntry) perform_list(cpu, preEntry, cue, gfx);
 
     // Did the re-issue move the view, and did the camera take part?
