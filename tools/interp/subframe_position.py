@@ -121,6 +121,7 @@ def report(files, imgs):
     print()
     kept = {'px': [], 'mad': []}
     scale = {'px': [], 'mad': []}
+    flagged = []
     refused = 0
     for k in triples:
         prev, sub, nxt = imgs[k], imgs[k + 1], imgs[k + 2]
@@ -154,6 +155,17 @@ def report(files, imgs):
             print("      copied out of the EFB and this exact reading appears however well the "
                   "interpolation works.")
             print("      tools/interp/interp60_run.sh carries the full set.")
+        # OFF-SEGMENT IS THE ONE THAT CAN INVALIDATE A TRIPLE. If the sub-frame is further from both
+        # neighbours than they are from each other, it is not an intermediate image at all and its
+        # asymmetry is a ratio of two distances to a picture that lies off the path entirely. Say
+        # so, because a +4.73% asymmetry on such a triple reads as "almost perfectly centred".
+        if line['px'][3][2] > 1.0:
+            flagged.append(k)
+            print(f"  present {k}..{k+2}: NOT AN INTERMEDIATE IMAGE — the sub-frame is "
+                  f"{100*line['px'][3][2]:.0f}% further from its two neighbours than they are from "
+                  f"each other.")
+            print("      Its asymmetry is a ratio between two distances to a picture that is off "
+                  "the path; do not read it as centred.")
         for name in ('px', 'mad'):
             a, b, c, s = line[name]
             kept[name].append(s)
@@ -176,6 +188,11 @@ def report(files, imgs):
         print(f"  [{name:>3}] asymmetry {100*sum(asym)/len(asym):+7.2f}%   "
               f"lead {sum(lead)/len(lead):.3f}   off-segment {100*sum(off)/len(off):+7.2f}%   "
               f"MOMENT SCALE (mean full tick) {sum(scale[name])/len(scale[name]):7.3f}")
+    if flagged:
+        print(f"  {len(flagged)} of {len(kept['px'])} triple(s) are NOT INTERMEDIATE IMAGES "
+              f"(presents {', '.join(f'{k}..{k+2}' for k in flagged)}).")
+        print("  The means above INCLUDE them, so read the per-triple lines instead: an asymmetry")
+        print("  averaged over a sub-frame that lies off the path is not a position on that path.")
     print("  COMPARE ONLY AT EQUAL MOMENT SCALE. asymmetry is a ratio whose denominator is how far")
     print("  the tick moved, and the two are not independent: at a fast moment the sub-frame's")
     print("  fixed content dominates and asymmetry saturates, at a slow one the same sub-frame")
