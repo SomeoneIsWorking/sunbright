@@ -3,7 +3,12 @@
 
 Usage: disasm_range.py <sms.dol> <start_hex> <end_hex> [funcs.txt]
 
-Output: capstone PPC disassembly with `bl` targets resolved to nearest funcs.txt symbol.
+Output: capstone PPC disassembly with branch targets resolved against funcs.txt.
+
+A `bl` target is a function ENTRY, so it is named only on an EXACT match; anything else is reported
+as an unnamed function at its address. It is never rendered as `nearest_symbol+offset`, because that
+reads as a call into that symbol and the gaps between listed entries are full of weak/inlined
+functions the list does not carry. Local branches keep the offset form.
 """
 import sys, struct
 from pathlib import Path
@@ -46,15 +51,38 @@ if funcs_path and funcs_path.exists():
             except: pass
     symbols.sort()
 
-def resolve(addr):
-    # Return nearest-preceding symbol + offset, e.g. "GXSetColorUpdate+0x10".
+def resolve(addr, is_call):
+    """Name a branch target — and REFUSE to name a call it cannot identify.
+
+    This function used to return nearest-preceding-symbol+offset unconditionally, so a `bl` to an
+    UNNAMED function that merely follows a known one rendered as `known_symbol+0x80`. That is not a
+    formatting nit: it reads as "this function calls known_symbol", and it produced a confidently
+    wrong RE conclusion (a call to the unnamed TLiveActor::calcRootMatrix at 0x80218370 was read as
+    a call to setGroundCollision, which it follows in the text, and an NPC's calcRootMatrix override
+    was written off as a motion-blend routine on the strength of it).
+
+    funcs.txt carries ENTRY ADDRESSES ONLY, with no sizes, so "inside the gap after symbol N" and
+    "inside symbol N" are indistinguishable — and the gaps are full of weak/inlined functions that
+    the list does not carry. A `bl` target is by definition a function ENTRY, so a non-exact match
+    means the callee is UNNAMED, not interior. Say that.
+
+    Local branches (b/bc within the function being disassembled) legitimately land mid-function, so
+    they keep the offset form — but they are never presented as a callee.
+    """
     import bisect
     ks = [s[0] for s in symbols]
     i = bisect.bisect_right(ks, addr) - 1
-    if i < 0: return f"{addr:08x}"
+    if i < 0:
+        return f"0x{addr:08x} <no symbol at or before this address>"
     a, name = symbols[i]
     off = addr - a
-    return name if off == 0 else f"{name}+0x{off:x}"
+    if off == 0:
+        return name
+    if is_call:
+        # The honest rendering: the callee has no entry in the list. The neighbouring symbol is
+        # offered only as a LOCATION, phrased so it cannot be misread as the thing being called.
+        return f"0x{addr:08x} <UNNAMED fn; not a listed entry — lies {off:#x} after {name}>"
+    return f"{name}+{off:#x}"
 
 # --- Disassemble ---
 from capstone import Cs, CS_ARCH_PPC, CS_MODE_32, CS_MODE_BIG_ENDIAN
@@ -70,7 +98,9 @@ for ins in md.disasm(code, start):
     if op in ("bl", "b", "ba", "bla") and ops.startswith("0x"):
         try:
             tgt = int(ops, 16)
-            target_str = f"  -> {resolve(tgt)}"
+            # Only bl/bla are CALLS. A plain `b` is a tail-call or a local jump; treating it as a
+            # call would apply the strict naming to ordinary intra-function control flow.
+            target_str = f"  -> {resolve(tgt, op in ('bl', 'bla'))}"
         except: pass
     elif op.startswith("bc") and " 0x" in ops:
         # bc conditional: "cr,cond,0xADDR" or similar — take the last 0x-prefixed token
@@ -80,7 +110,7 @@ for ins in md.disasm(code, start):
             if t.startswith("0x"):
                 try:
                     tgt = int(t, 16)
-                    target_str = f"  -> {resolve(tgt)}"
+                    target_str = f"  -> {resolve(tgt, False)}"
                     break
                 except: pass
     print(f"{ins.address:08x}: {ins.bytes.hex()}  {op:8s} {ops}{target_str}")
