@@ -2351,7 +2351,10 @@ int preentry_vc_passes() {
 }
 
 extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
-    if (!enabled()) return;
+    // SBR_INTERP60_CENSUS=1 reaches the seam without SBR_INTERP60: the census is a statement about
+    // the SCENE, so it must be obtainable from a run that does no interpolation at all — that is
+    // the baseline every interpolation reading is compared against.
+    if (!enabled() && !sbr_i60r_recording()) return;
     // RE-ENTRANCY. The re-issued lists are ordinary guest code and may reach the frame seam again
     // (anything in them that waits on a retrace does). Without this guard each nesting level starts
     // another sub-frame and the frame never completes -- which presents as a hang, not as an error.
@@ -2368,6 +2371,15 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
     struct TickAdvance {
         ~TickAdvance() { sbr_i60r_begin_tick(); }
     } tickAdvance;
+    // THE MOTION CENSUS RUNS BEFORE EVERY EARLY RETURN BELOW, and before any path-specific work.
+    //
+    // It answers the precondition every score in this arc depends on — was the drawn geometry
+    // actually moving at this moment — and it must therefore be available on runs that render no
+    // sub-frame at all (SBR_INTERP60_CENSUS=1 with no alpha) and on runs that take the substitution
+    // path. Putting it after the alpha guard would make "no census lines" mean both "the scene was
+    // static" and "this configuration never reached the census", which are opposite conclusions.
+    sbr_i60r_census();
+    sbr_i60r_report();
     if (alpha < 0.0f) { g_drawN = 0; return; }
     // Say what this run is actually doing, once. An ablation whose two alphas are set by
     // environment is otherwise invisible in its own log, and a run mislabelled in the shell is
@@ -2501,7 +2513,6 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
                                    "matrices and alpha cannot have changed a pixel"
                                  : "");
         }
-        sbr_i60r_report();
         g_inSubframe = false;
         cpu.gpr[1] = savedSp;
         ++g_subframes;

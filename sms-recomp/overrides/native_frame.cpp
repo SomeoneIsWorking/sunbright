@@ -651,7 +651,9 @@ void present_tail(CPUState& cpu) {
     // The callback closes the sub-frame's GX stream exactly the way the tick's own is closed. It
     // must not be a partial imitation: a sub-frame assembled by a different path would diverge from
     // the real frame for reasons that have nothing to do with interpolation.
-    if (std::getenv("SBR_INTERP60")) {
+    // SBR_INTERP60_CENSUS also reaches here: the motion census lives at the top of that function and
+    // must be obtainable from a run that interpolates nothing, because that run is the baseline.
+    if (std::getenv("SBR_INTERP60") || std::getenv("SBR_INTERP60_CENSUS")) {
         static bool* s_active = &s_frameActive;
         s_active = &s_frameActive;
         sbr_interp60_subframe(cpu, [] {

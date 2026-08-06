@@ -10,6 +10,17 @@
 // substitute-and-re-issue path.
 bool sbr_i60r_enabled();
 
+// SBR_INTERP60_REPLACE=1 OR SBR_INTERP60_CENSUS=1. The recorder and the motion census run under
+// either; only `sbr_i60r_apply` is gated on REPLACE. Census-only exists so that ANY run — including
+// one on the substitution path, or one with no sub-frame at all — can be asked whether the scene
+// was actually moving at the moment it was measured.
+bool sbr_i60r_recording();
+
+// THE MOTION CENSUS. Buckets |cur - prev| over every recorded draw matrix's TRANSLATION, per tick.
+// This is the project's one NON-BLIND liveness probe: it measures the matrices the hardware reads,
+// not a camera object that may or may not be the active one. Call once per tick at the seam.
+void sbr_i60r_census();
+
 // One guest tick has begun: the recording that was "current" becomes "previous".
 void sbr_i60r_begin_tick();
 

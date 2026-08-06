@@ -124,7 +124,7 @@ bool g_applied = false;
 // Every counter here is a DENOMINATOR for something the report says. A bare "interpolated 0 models"
 // is indistinguishable from "recorded nothing", "matched nothing" and "was never called".
 struct Stats {
-    unsigned long ticks = 0, recorded = 0, subframes = 0;
+    unsigned long ticks = 0, recorded = 0, subframes = 0, censusTicks = 0;
     unsigned long matched = 0, unmatched = 0, recount = 0, badPtr = 0, absurdN = 0;
     unsigned long moved = 0;          // models whose prev and cur actually differ
     unsigned long clobbered = 0;      // buffers something else wrote during the sub-frame
@@ -152,6 +152,34 @@ float kick() {
     static const float v = [] {
         const char* e = std::getenv("SBR_INTERP60_REPLACE_KICK");
         return e && *e ? (float)std::atof(e) : 0.0f;
+    }();
+    return v;
+}
+
+// SBR_INTERP60_REPLACE_KICK_ONLY=frozen|moving — WHICH population does the kick displace?
+//
+// The plain kick answers "is the write connected" and nothing more. It is NOT a coverage control
+// for the interpolation, and reading it as one is a mistake this file should make impossible: a
+// model whose recorded matrices are IDENTICAL in prev and cur will jump under an absolute kick and
+// will not move one pixel under any lerp of that pair. Both facts are true at once, and the plain
+// kick reports only the first — 96.33% of pixels responded to a 300-unit kick at the same moment
+// where alpha=0.0 left a quarter of the frame sitting at the wrong tick.
+//
+// So the kick is split by the only property that matters here: whether prev != cur for that model.
+// Kicking ONLY the frozen models paints, on screen, exactly the population no interpolation of
+// mDrawMtxBuf can ever reach. Kicking only the moving ones paints its complement. The two together
+// must account for the whole of the plain kick, which is the check that the split is exhaustive.
+enum class KickOnly { All, Frozen, Moving };
+KickOnly kick_only() {
+    static const KickOnly v = [] {
+        const char* e = std::getenv("SBR_INTERP60_REPLACE_KICK_ONLY");
+        if (!e || !*e) return KickOnly::All;
+        if (std::strcmp(e, "frozen") == 0) return KickOnly::Frozen;
+        if (std::strcmp(e, "moving") == 0) return KickOnly::Moving;
+        lucent::error("i60r", "SBR_INTERP60_REPLACE_KICK_ONLY='{}' is neither 'frozen' nor "
+                              "'moving'. Refusing to run rather than silently kicking everything, "
+                              "which would look exactly like a result.", e);
+        std::abort();
     }();
     return v;
 }
@@ -216,8 +244,13 @@ bool sbr_i60r_enabled() {
     return v;
 }
 
+bool sbr_i60r_recording() {
+    static const bool v = sbr_i60r_enabled() || std::getenv("SBR_INTERP60_CENSUS") != nullptr;
+    return v;
+}
+
 void sbr_i60r_begin_tick() {
-    if (!sbr_i60r_enabled()) return;
+    if (!sbr_i60r_recording()) return;
     ++g_tick;
     ++g_st.ticks;
     g_prev.swap(g_cur);
@@ -227,7 +260,7 @@ void sbr_i60r_begin_tick() {
 }
 
 void sbr_i60r_record(u32 model) {
-    if (!sbr_i60r_enabled() || !sb_ram_fast(model)) return;
+    if (!sbr_i60r_recording() || !sb_ram_fast(model)) return;
 
     const u32 n = draw_mtx_num(model);
     if (n == 0) return;
@@ -247,6 +280,60 @@ void sbr_i60r_record(u32 model) {
         for (u32 i = 0; i < n * kMtx33Floats; ++i) r.nrm[i] = guest_f32(nrmPtr + i * 4);
     }
     ++g_st.recorded;
+}
+
+// THE MOTION CENSUS — the answer to "was the scene actually moving when this was measured?"
+//
+// It is separated from apply() on purpose. This arc has repeatedly taken a reading at a moment
+// where nothing moved and read the resulting number as a statement about the interpolation: a
+// "parked camera" that was really a blind probe watching the wrong object, a walk-forward pad
+// script whose only moving content was a 2D news ticker the path does not cover, and three runs at
+// three alphas that produced BYTE-IDENTICAL scores because the scene was static. Every one of those
+// looked like a result.
+//
+// The census cannot be blind in that way, because it does not watch a camera object or any other
+// named thing: it measures |cur - prev| on the matrices the hardware is about to read. If those
+// move, the scene moves; if they do not, no interpolation of them can change a pixel and any score
+// taken at that moment describes the scene rather than the path. That makes it a precondition, not
+// a statistic, which is why it runs on EVERY tick under SBR_INTERP60_CENSUS=1 even when no
+// replacement is applied and even on the substitution path.
+//
+// A max is the wrong summary: it reads 1.7e37 for the whole run — a garbage entry in one model's
+// unused matrix slot — and hides the number that matters, which is how far a TYPICAL drawn matrix
+// moves in one tick. Buckets cannot be swamped by one outlier and the shape is the answer anyway.
+void sbr_i60r_census() {
+    if (!sbr_i60r_recording()) return;
+    ++g_st.censusTicks;
+
+    for (auto& kv : g_cur) {
+        const u32  model = kv.first;
+        const Rec& cur   = kv.second;
+        if (cur.n == 0 || cur.stamp != g_tick) continue;
+        auto it = g_prev.find(model);
+        if (it == g_prev.end() || it->second.n != cur.n) continue;
+        const Rec& prev = it->second;
+
+        bool movedThis = false;
+        for (u32 i = 0; i < cur.n * kMtxFloats; ++i) {
+            const float d = cur.draw[i] - prev.draw[i];
+            if (d != 0.0f) movedThis = true;
+            // Mtx is row-major 3x4, so column 3 of each row — element index 3, 7, 11 — is the
+            // translation. Rotation elements are unit-scaled and would drown the distance signal.
+            if ((i % kMtxFloats) != 3 && (i % kMtxFloats) != 7 && (i % kMtxFloats) != 11) continue;
+            const float ad = d < 0 ? -d : d;
+            if (!(ad <= 3.4e38f)) { ++g_st.nonFinite; continue; }
+            ++g_st.transN;
+            ++g_st.bucket[ad == 0.0f      ? 0
+                           : ad < 0.01f   ? 1
+                           : ad < 1.0f    ? 2
+                           : ad < 10.0f   ? 3
+                           : ad < 100.0f  ? 4
+                           : ad < 1e4f    ? 5
+                                          : 6];
+            if (ad > g_st.maxDelta) { g_st.maxDelta = ad; g_st.maxModel = model; }
+        }
+        if (movedThis) ++g_st.moved;
+    }
 }
 
 int sbr_i60r_apply(float alpha) {
@@ -286,36 +373,19 @@ int sbr_i60r_apply(float alpha) {
         for (u32 i = 0; i < dWords; ++i) s.drawWords[i] = sb_r32(drawPtr + i * 4);
 
         uint64_t h = kFnvOffset;
-        bool movedThis = false;
         for (u32 i = 0; i < dWords; ++i) {
             const float p = prev.draw[i], c = cur.draw[i];
             const float d = c - p;
-            if (d != 0.0f) movedThis = true;
-            // The DISPLACEMENT statistic, over translation elements only.
-            //
-            // A max is the wrong summary here: it reported 1.7e37 for the whole run, which is a
-            // non-finite/garbage entry in some model's unused matrix slot, and it hid the number
-            // that matters — how far a typical drawn matrix moves in one tick. That number is the
-            // denominator for "alpha changed few pixels": if prev and cur are a tick apart under a
-            // camera swinging 49 units/tick, translations must move on that order, and if they do
-            // not then the recorded pair is not a tick apart and no lerp of it can be right.
-            if ((i % kMtxFloats) == 3 || (i % kMtxFloats) == 7 || (i % kMtxFloats) == 11) {
-                const float ad = d < 0 ? -d : d;
-                if (!(ad <= 3.4e38f)) {
-                    ++g_st.nonFinite;
-                } else {
-                    ++g_st.transN;
-                    const int b = ad == 0.0f      ? 0
-                                  : ad < 0.01f    ? 1
-                                  : ad < 1.0f     ? 2
-                                  : ad < 10.0f    ? 3
-                                  : ad < 100.0f   ? 4
-                                  : ad < 10000.0f ? 5
-                                                  : 6;
-                    ++g_st.bucket[b];
-                    if (ad > g_st.maxDelta) { g_st.maxDelta = ad; g_st.maxModel = model; }
-                }
-            }
+            // FROZEN or MOVING is decided per MATRIX, not per model: a skeleton can hold both, and
+            // a per-model verdict would smear the two populations together in exactly the region
+            // where the answer is wanted.
+            const u32   base = (i / kMtxFloats) * kMtxFloats;
+            const float t0 = cur.draw[base + 3] - prev.draw[base + 3];
+            const float t1 = cur.draw[base + 7] - prev.draw[base + 7];
+            const float t2 = cur.draw[base + 11] - prev.draw[base + 11];
+            const bool frozenMtx = t0 == 0.0f && t1 == 0.0f && t2 == 0.0f;
+            const bool kickThis = kick_only() == KickOnly::All ||
+                                  (kick_only() == KickOnly::Frozen) == frozenMtx;
             // SBR_INTERP60_REPLACE_KICK=<units> — A CONTROL THAT MUST FIRE.
             //
             // "The replacement is connected but moves few pixels" and "the replacement writes a
@@ -329,7 +399,8 @@ int sbr_i60r_apply(float alpha) {
             // i % 12 == 3, 7, 11.
             const bool isTranslation = (i % kMtxFloats) == 3 || (i % kMtxFloats) == 7 ||
                                        (i % kMtxFloats) == 11;
-            guest_w_f32(drawPtr + i * 4, p + d * a + (isTranslation ? kick() : 0.0f));
+            guest_w_f32(drawPtr + i * 4,
+                        p + d * a + ((isTranslation && kickThis) ? kick() : 0.0f));
             fnv_word(h, sb_r32(drawPtr + i * 4));
         }
 
@@ -346,7 +417,6 @@ int sbr_i60r_apply(float alpha) {
         s.wroteHash = h;
 
         g_st.restoredMtx += n;
-        if (movedThis) ++g_st.moved;
         ++g_st.matched;
         g_saved.push_back(std::move(s));
     }
@@ -389,27 +459,54 @@ void sbr_i60r_restore() {
 }
 
 void sbr_i60r_report() {
-    if (!sbr_i60r_enabled()) return;
+    if (!sbr_i60r_recording()) return;
+    // Paced by CENSUS TICKS, not sub-frames: in census-only mode there may be no sub-frame at all,
+    // and a report that never fires is indistinguishable from a scene that never moved.
     static unsigned long last = 0;
-    if (g_st.subframes - last < 300) return;
-    const unsigned long window = g_st.subframes - last;
-    last = g_st.subframes;
+    if (g_st.censusTicks - last < 300) return;
+    const unsigned long window = g_st.censusTicks - last;
+    last = g_st.censusTicks;
+
+    // The census line is the one a liveness gate reads, so it must be greppable on its own and must
+    // name which mode produced it. A census taken with replacement OFF is still a valid statement
+    // about the scene; it is not a statement about the interpolation.
+    lucent::info("i60r",
+                 "MOTION CENSUS @ tick {} (mode: {}) over the last {} tick(s): of {} translation "
+                 "elements ({} non-finite, EXCLUDED) — zero {} | <0.01 {} | <1 {} | <10 {} | "
+                 "<100 {} | <1e4 {} | >=1e4 {}. THE VERDICT IS THE <1e4 BUCKET (100..10000 units of "
+                 "displacement in one tick); the >=1e4 bucket is a CONSTANT garbage population "
+                 "(one model's unused matrix slots) that appears identically whether the scene "
+                 "moves or not, so it carries no information and is excluded.{}",
+                 g_st.censusTicks, sbr_i60r_enabled() ? "record-and-replace" : "census only",
+                 window, g_st.transN, g_st.nonFinite,
+                 g_st.bucket[0], g_st.bucket[1], g_st.bucket[2], g_st.bucket[3], g_st.bucket[4],
+                 g_st.bucket[5], g_st.bucket[6],
+                 // THE THRESHOLD WAS RUN AGAINST BOTH CLASSES, not reasoned about. Same scenario,
+                 // same 300-tick windows, differing only in the pad script:
+                 //     camera held rotating   <100 128,183   <1e4 115,991   >=1e4    600
+                 //     no input at all        <100  11,247   <1e4       0   >=1e4 23,700
+                 // The <1e4 bucket separates them completely (0 vs ~116k) while >=1e4 runs BACKWARDS
+                 // and <100 only by a factor of 11. An earlier version of this verdict summed all
+                 // three and could therefore never fire — the garbage population alone kept it
+                 // above zero in every window of every run, so it read "moving" on a dead scene.
+                 g_st.bucket[5] == 0
+                     ? "   <-- STATIC: not one drawn matrix moved 100 units this window. No "
+                       "interpolation of this geometry can change a pixel here, whatever a camera "
+                       "probe says; a score taken at this moment describes the SCENE."
+                     : "");
 
     lucent::info("i60r",
                  "record-and-replace: {} sub-frames, {} models recorded over {} ticks | "
-                 "matched {} (of which {} actually MOVED), unmatched {}, joint-count changed {}, "
-                 "bad pointer {}, CLOBBERED mid-draw {} | per-tick translation displacement over {} "
-                 "elements ({} non-finite, EXCLUDED) IN THE LAST {} SUB-FRAMES ONLY (the buckets "
-                 "reset every report, because a cumulative histogram averages a parked camera "
-                 "together with a moving one and cannot answer which): zero {} | <0.01 {} | <1 {} "
-                 "| <10 {} | <100 {} "
-                 "| <1e4 {} | >=1e4 {} (max {:.3g} on model 0x{:08x}){}",
+                 "matched {} (of which {} actually MOVED this window), unmatched {}, joint-count "
+                 "changed {}, bad pointer {}, CLOBBERED mid-draw {} | largest displacement seen "
+                 "{:.3g} on model 0x{:08x}{}",
                  g_st.subframes, g_st.recorded, g_st.ticks, g_st.matched, g_st.moved,
                  g_st.unmatched, g_st.recount, g_st.badPtr, g_st.clobbered,
-                 g_st.transN, g_st.nonFinite, window,
-                 g_st.bucket[0], g_st.bucket[1], g_st.bucket[2], g_st.bucket[3], g_st.bucket[4],
-                 g_st.bucket[5], g_st.bucket[6], (double)g_st.maxDelta, g_st.maxModel,
-                 g_st.matched == 0
+                 (double)g_st.maxDelta, g_st.maxModel,
+                 !sbr_i60r_enabled()
+                     ? "   <-- CENSUS ONLY: nothing was replaced, by configuration. The line above "
+                       "describes the SCENE; it says nothing about any interpolation path."
+                 : g_st.matched == 0
                      ? "   <-- NOTHING was replaced. Either no model was recorded in two consecutive "
                        "ticks, or the recorder never ran; alpha cannot change a pixel either way."
                      : (g_st.moved == 0
@@ -422,7 +519,10 @@ void sbr_i60r_report() {
                  "(fovy/zoom), texture and bump matrices, J2D/ortho HUD, JPA particles, "
                  "immediate-mode geometry.{}",
                  nrm_disabled() ? " Normal matrices ablated OFF by SBR_INTERP60_REPLACE_NONRM." : "");
+    // The buckets and `moved` reset every report: a cumulative histogram averages a parked camera
+    // together with a moving one and cannot answer which window a reading came from.
     for (int i = 0; i < 7; ++i) g_st.bucket[i] = 0;
     g_st.transN = 0;
     g_st.nonFinite = 0;
+    g_st.moved = 0;
 }
