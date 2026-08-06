@@ -3285,3 +3285,52 @@ writes — and the view, whatever it holds, is combined with it somewhere this a
 
 The tracer stays; it is the first instrument here that shows the chain instead of sampling one end of
 it, and the next question is a direct extension of it rather than a new hypothesis.
+
+## CORRECTION + the structural finding: sub-frame viewCalcs run under the MIRROR view
+
+### The flag-1 claim was wrong
+
+The previous entry concluded the drawn matrices are WORLD matrices because the traced model took
+`viewCalc`'s `checkFlag(1)` path. The census says otherwise: **`flags=0x00000000`, flag1 CLEAR, on
+every model in the scene.** So every model takes the ELSE branch, which does read
+`j3dSys.getViewMtx()`. The world-coordinate reading of 87,423 / 231,950 was an inference from
+magnitude, not a measurement, and it is retracted.
+
+That conclusion also rested on a model my own instrument chose badly. The tracer auto-pinned "the
+first model viewCalc'd after arming", and that model is part of the MIRROR pass — a reflection
+pre-render, not the background. A conclusion drawn from it was never about the geometry in question.
+The census exists to make the population visible so a representative model can be pinned rather than
+assumed; it should have existed before the tracer did.
+
+### What the census actually shows
+
+Every distinct model viewCalc'd in one tick, with the view that was live at the time:
+
+    model 0x812a8b2c ... viewCalc under j3dSys view t=(0.33, -1177.13, -5547.42)  [SUB]
+    model 0x813b26b0 ... same                                                     [SUB]
+    ... 14 models, ALL of them, at y = -1177 ...
+    model 0x812a3d44 ... viewCalc under j3dSys view t=(-17.91, 590.32, -5672.56)  [tick]
+    model 0x81124d18 ... same                                                     [tick]
+
+`y = -1177` with the up axis inverted is the MIRROR camera's reflected view — identified back when
+`SBR_INTERP60_VIEWSEQ` mapped the four scene passes. `y = +590` is the main camera.
+
+**So the viewCalcs that run inside a sub-frame are the mirror pass's, and the main-scene models
+viewCalc only in the TICK.** Their model-view matrices are therefore built from the tick's main view
+and are never rebuilt under the interpolated one — which is exactly the observed behaviour, arrived
+at by watching rather than by a fifth hypothesis:
+
+* the interpolated view reaches j3dSys (verified),
+* the background's matrices are not computed from it (this census),
+* so the background renders where the tick put it, at every alpha.
+
+### The next question is now specific and small
+
+With `SBR_INTERP60_CALCANIM=1` the viewCalc count inside a sub-frame rises from 14 to 140 — so 126
+models DO get a viewCalc there. The census's first fourteen are all mirror-view, so those 126 either
+ran under a different view or are ordered after this sample. Extending the census past its 64-entry
+cap and stamping each entry with its position in the sub-frame answers that directly, and it decides
+between two concrete situations: the calc-anim pass is rebuilding matrices under the right view and
+something later overwrites them, or it is rebuilding them under the wrong one.
+
+Both are checkable with the instrument that now exists. No new hypothesis is required.

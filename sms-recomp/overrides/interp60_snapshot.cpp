@@ -2057,9 +2057,45 @@ bool viewcalc_on() {
     static const bool v = std::getenv("SBR_INTERP60_VIEWCALC") != nullptr;
     return v;
 }
+// SBR_INTERP60_MTXCENSUS=1 — every DISTINCT model viewCalc'd in one tick, with the two things that
+// decide whether it can follow an interpolated view: J3DModel flag 1 (checkFlag(1) selects the
+// viewCalc path that copies ANIM matrices and never reads j3dSys) and the view that was live when
+// its viewCalc ran.
+//
+// This exists because the tracer's auto-pin picked the FIRST model viewCalc'd, which turned out to
+// run under the MIRROR camera's view (y = -1177) — the reflection pre-render, not the background.
+// A conclusion drawn from it would have been about the wrong model entirely. The census makes the
+// population visible so a representative model can be pinned instead of assumed.
+u32  g_censusSeen[64];
+int  g_censusN = 0;
+bool g_censusDone = false;
+
+void mtx_census(u32 model) {
+    if (g_censusDone || !std::getenv("SBR_INTERP60_MTXCENSUS")) return;
+    if ((long)VIGetRetraceCount() < viewseq_at()) return;
+    for (int i = 0; i < g_censusN; ++i) if (g_censusSeen[i] == model) return;
+    if (g_censusN >= (int)(sizeof(g_censusSeen) / sizeof(g_censusSeen[0]))) {
+        lucent::info("i60census", "  (census table full at {} models; the rest are NOT listed)",
+                     g_censusN);
+        g_censusDone = true;
+        return;
+    }
+    g_censusSeen[g_censusN++] = model;
+    const u32 flags = sb_ram_fast(model + 8) ? sb_r32(model + 8) : 0;
+    lucent::info("i60census",
+                 "  model 0x{:08x}  flags=0x{:08x} flag1={}  viewCalc ran under j3dSys view "
+                 "t=({:.2f},{:.2f},{:.2f}) {}",
+                 model, flags, (flags & 1) ? "SET (anim matrices, view NEVER read)" : "clear",
+                 (double)guest_f32(J3DSYS_VIEWMTX + 3 * 4),
+                 (double)guest_f32(J3DSYS_VIEWMTX + 7 * 4),
+                 (double)guest_f32(J3DSYS_VIEWMTX + 11 * 4),
+                 g_inSubframe ? "[SUB]" : "[tick]");
+}
+
 void viewcalc_hook(CPUState& cpu) {
     if (g_inSubframe) ++g_vcSub; else ++g_vcTick;
     const u32 model = (u32)cpu.gpr[3];
+    mtx_census(model);
     if (mtxtrace_on() && (long)VIGetRetraceCount() >= viewseq_at()) {
         if (!g_mtxModel && sb_ram_fast(model)) {
             const char* pin = std::getenv("SBR_INTERP60_MTXTRACE_ADDR");
