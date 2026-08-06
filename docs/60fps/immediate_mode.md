@@ -44,31 +44,58 @@ Because the vertices are in EYE space and the position matrix is identity, `patc
 handles the water refraction quad. So the fountain follows a moving camera smoothly. What steps at
 30 Hz is each particle's own motion through the world, which is exactly what `pt` freezes per tick.
 
-## What fixing it requires
+## What fixing it requires — and the cheap way, which is not vertex interpolation
 
-**Pair immediate-mode draws and interpolate their VERTEX ARRAYS**, which the path cannot do today —
-`capture_replay_snapshot` shadows the uniform region only, so there is no previous-tick copy of the
-vertex data to lerp from.
+The obvious answer is "pair these draws and lerp their vertex arrays". That is harder than it looks
+and, for billboards, unnecessary.
 
-The pieces, in order:
+### Why vertex lerping is expensive here
 
-1. **A tag.** `JPABaseParticle*` for particles (r5 at both `exec` entries, US `0x8033025c` and
-   `0x80330434`); the object address for flags and the wave grid. Note the reuse hazard the shadow
-   work ran into: a pooled address that is freed and reallocated pairs two unrelated objects. A
-   particle at age 0 is a NEW particle whatever its address, so the generation can be bumped from
-   that rather than guessed.
-2. **A vertex shadow**, the same shape as the uniform shadow and for the same reason — the staging
-   buffer is write-combined, so the previous values must come from ordinary RAM rather than a
-   read-back. Cost is the concern: vertex data is far larger than the uniform block, and the uniform
-   shadow exists precisely because reading staging back dominated the frame.
-3. **The lerp, in the right space.** This is the part that is easy to get wrong. Tick N−1's vertices
-   are in `view(N−1)` space and tick N's in `view(N)` space, so lerping them directly mixes two
-   different frames of reference and the result is wrong whenever the camera moves. The previous
-   vertices must first be reprojected into the current view — `V_cur · V_prev⁻¹` — and only then
-   lerped; `patch_camera_only`'s existing delta then carries the result to the in-between view.
-4. **A vertex-count gate**, exactly like the matrix path's: a particle whose quad count changed, or
-   a mesh rebuilt at a different resolution, must snap rather than smear between two unrelated
-   shapes.
+`gfx::push_verts(data + pos, totalVtxBytes, ...)` (`command_processor.cpp`) pushes the **raw GX FIFO
+bytes**, not a decoded float array — aurora feeds the vertex stream to the shader and decodes there.
+So lerping positions would mean decoding each draw's vertex format (the attribute set and component
+type vary per draw), byte-swapping, lerping, and re-encoding. Worse, consecutive compatible draws are
+MERGED into one `vertRange` (`canMerge`), so a merged range no longer corresponds to a single
+taggable object. A vertex shadow would also have to mirror far more data than the uniform shadow,
+which exists precisely because staging read-back dominated the frame.
 
-Only step 3 is subtle; the rest is bookkeeping. Nothing here is speculative — every claim above is
-read out of the decomp source or measured by `SBR_TAGGAP=1`.
+That path is still the general answer for a deforming mesh — the flags and the wave grid genuinely
+change shape per tick, and nothing but their vertices carries that.
+
+### But a BILLBOARD does not deform — it translates
+
+Re-read what the particle draw emits:
+
+```cpp
+particle->getGlobalPosition(pt);
+MTXMultVec(dc->pcb->mViewMtx, &pt, &pt);
+GXPosition3f32(offs[0].x + pt.x, offs[0].y + pt.y, pt.z);   // offs[] is the QUAD, pt is the POSITION
+```
+
+`offs[]` is the quad's shape from the particle's scale; `pt` is a single eye-space point added to
+every corner. Between two ticks a particle's quad is the same shape displaced by `pt_cur − pt_prev`
+(plus any scale change). And the position matrix for these draws is IDENTITY, with the vertices
+already in eye space.
+
+**So the whole correction is a translation, and there is already a per-draw matrix to put it in.**
+Write `translate(−(1 − alpha) · (pt_cur − pt_prev))` into `PNMTX0` for that draw — composed with the
+camera delta `V_lerp · V_cur⁻¹` that `patch_camera_only` applies to these draws anyway — and the
+particle sits at its interpolated position with no vertex data touched at all.
+
+What it needs:
+
+1. **A tag**, from the two `exec` entries (US `0x8033025c`, `0x80330434`; `JPABaseParticle*` in r5).
+   Mind the pooled-address hazard the shadow work hit — a particle at age 0 is a NEW particle
+   whatever its address, so the generation can be bumped from that rather than guessed.
+2. **The per-tag position**, recorded at the same hook: `getGlobalPosition` in WORLD space, so the
+   prev/cur pair is not entangled with the view. Eye space would make `pt_cur − pt_prev` mix two
+   different view transforms, which is the same trap the vertex path has.
+3. **The write**, in `interpolate_recorded_frame`: for a tagged draw with a known delta, set the
+   position matrix to the camera delta composed with that translation instead of the camera delta
+   alone.
+
+Scale changes are a second-order term and can be ignored initially or folded in as a matrix scale
+about the quad centre; a particle whose scale changes materially between two ticks is rare.
+
+This does not help the flags or the wave grid, which really do deform. It does cover both particle
+paths — 22.7% of immediate-mode draws, and the fountain.
