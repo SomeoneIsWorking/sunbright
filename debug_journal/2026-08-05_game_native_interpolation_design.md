@@ -2865,3 +2865,59 @@ It is a HYPOTHESIS. The measurement that settles it: does the sub-frame's GX str
 loads for the map geometry, and do their values change with alpha? That is a stream question with a
 definite answer, and it must be asked before anything is changed — the last three populations were
 named by elimination and all three were wrong.
+
+## The display-list hypothesis is FALSIFIED, and the likely answer is sub-pixel background motion
+
+### viewCalc: measured with a denominator, then fixed, then falsified
+
+`SBR_INTERP60_VIEWCALC=1` counts `J3DModel::viewCalc` (US `0x802deeb8`) — where each drawable's
+model-view matrix is built from j3dSys's CURRENT view — inside a sub-frame AND in the preceding tick,
+because a count inside alone has no denominator.
+
+    without the calc-anim re-issue :  14 inside vs 139 in the tick   (~10%)
+
+So ~90% of drawables kept the tick's matrices. `TLiveActor::perform` gates the phases separately
+(`liveactor.cpp:401-420`): `frameUpdate` and `calcRootMatrix`/`calc` on 0x2, but **`viewCalc` on
+0x4**. So the calc-anim list can be re-issued with 0x1 AND 0x2 cleared — viewCalc for everything,
+nothing advanced. That is the narrow seam the earlier full-cue re-issue could not be:
+
+    identity, full cue        : mean |d| 21.9   (double-advanced animation)
+    identity, cue 0x4 only    : mean |d| 0.066  (unchanged from baseline)
+    viewCalc, cue 0x4 only    : 140 inside vs 139 in the tick   (full coverage)
+
+`MActor::viewCalc` (US `0x80239734`) was also added to the per-actor seam, since `TLiveActor::perform`
+runs it right after the calcRootMatrix/calc pair. Identity unchanged.
+
+**And the midpoint did not move: full tick 11.187, sub->prev 10.270, sub->next 1.939 — identical to
+three decimals.** Every drawable now rebuilds its model-view matrix from an exactly-interpolated
+view, and the background still does not move. The display-list hypothesis is dead, and it died on a
+control (the 140-vs-139 count) rather than on an assumption about why the change had no effect.
+
+### The plumbing is not the problem either
+
+`SBR_INTERP60_DROPLAST=1` removes a whole draw list from the re-issue. Against the intact
+sub-frame: **1,228,800 of 1,228,800 pixels differ, mean |d| 36.9.** The presented sub-frame is
+unambiguously rendered from the sub-frame's own stream.
+
+### What is left, and it is probably the METRIC after all
+
+Three seams verified, every drawable's matrices rebuilt, the plumbing proven — and the background
+still matches the following main frame. The remaining candidate is one this file dismissed too early:
+**the background's motion is SUB-PIXEL.**
+
+The camera eye moves 3.868 units per tick here. The plaza background sits thousands of units away, so
+a full tick displaces it on the order of ONE pixel, and half a tick half of that. A half-pixel shift
+on unfiltered textured terrain leaves most sampled texels identical, so the background quantises to
+"no difference" at alpha=0.5 while still differing over a full tick.
+
+The earlier rejection of quantisation was measured on the WHOLE-frame mean, which is dominated by
+Mario — 7,300 px at close range moving 2.4 units, i.e. many pixels of motion, and therefore linear.
+Applying that verdict to the background was exactly the mistake of scoring one population with
+another's statistic.
+
+**The measurement that settles it: the same midpoint metric at a moment of LARGE camera motion.**
+CAMTRACE already shows |eye cur-prev| reaching 19.664 units early in the run, five times what it is
+at present 2796 — enough to move the background several pixels, well clear of quantisation. If the
+asymmetry falls toward 50/50 there, the interpolation has been correct for some time and this whole
+sub-arc was measuring the metric. If it stays at 74%, there is a real defect and the sub-pixel
+explanation is dead too.

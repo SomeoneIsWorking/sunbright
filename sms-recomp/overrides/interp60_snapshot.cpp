@@ -62,6 +62,16 @@ extern "C" void func_80239770(CPUState&);
 // (BCK/BLK/BPK/BTP/BTK/BRK), or null. Used rather than walking MActor's layout: the game's own
 // accessor already knows which of its animation objects exists.
 extern "C" void func_80238f08(CPUState&);
+// J3DModel::viewCalc() — US 0x802deeb8. Concatenates j3dSys's view with each node's world matrix
+// into the draw-matrix array a shape's packets reference. THE test of whether changing j3dSys's
+// view can move a given drawable: only geometry whose viewCalc runs inside the sub-frame can
+// follow the interpolated view.
+extern "C" void func_802deeb8(CPUState&);
+// MActor::viewCalc() — US 0x80239734. TLiveActor::perform runs it under cue 0x4, right after the
+// calcRootMatrix/calc pair, and it is what rebuilds the model-view matrices from j3dSys's CURRENT
+// view. Without it a dispatched actor has a correct world matrix and still draws through the view
+// the tick baked.
+extern "C" void func_80239734(CPUState&);
 extern "C" void func_80349f5c(CPUState&);      // C_MTXLookAt(Mtx dst, const Vec* eye, const Vec* up,
                                                //             const Vec* target)
 // Diagnostic in diag_vptr.cpp. One guest address gets exactly ONE override, so that file no longer
@@ -1767,6 +1777,14 @@ void actors_calc_root(CPUState& cpu, u32 tick) {
         cpu.gpr[3] = mActor;
         func_80239770(cpu);
         cpu.gpr[1] = savedSp;
+        // ...and the THIRD call the game makes, under cue 0x4 (liveactor.cpp:418). calcRootMatrix
+        // gives the world matrix and calc() propagates it through the skeleton, but neither
+        // concatenates j3dSys's view — viewCalc does. Measured: only 14 of a tick's ~139 viewCalc
+        // calls happen inside a sub-frame, which is why an exactly-interpolated view moved almost
+        // nothing.
+        cpu.gpr[3] = mActor;
+        func_80239734(cpu);
+        cpu.gpr[1] = savedSp;
         ++called;
         movedCalled += moved ? 1 : 0;
         note_mover(moved, e.obj, "DISPATCHED");
@@ -1872,6 +1890,25 @@ void anim_restore() {
     for (int i = 0; i < g_frameSaveN; ++i)
         guest_w_f32(g_frameSaves[i].ctrl + OFF_FC_FRAME, g_frameSaves[i].frame);
     g_frameSaveN = 0;
+}
+
+// SBR_INTERP60_VIEWCALC=1 — count J3DModel::viewCalc calls inside a sub-frame against a whole tick.
+//
+// The spatial diff says the background does not respond to alpha while the camera's view provably
+// does, so something must be re-emitting tick N's model-view matrices. viewCalc is where those are
+// built; if it runs far fewer times inside the sub-frame than in a tick, the background's matrices
+// are simply never rebuilt and no amount of correcting the view will move them.
+//
+// Counted BOTH sides, because a count inside the sub-frame alone has no denominator: "180 calls"
+// is either complete coverage or a tenth of it depending on the tick, and only the pair says which.
+long g_vcTick = 0, g_vcSub = 0;
+bool viewcalc_on() {
+    static const bool v = std::getenv("SBR_INTERP60_VIEWCALC") != nullptr;
+    return v;
+}
+void viewcalc_hook(CPUState& cpu) {
+    if (g_inSubframe) ++g_vcSub; else ++g_vcTick;
+    func_802deeb8(cpu);
 }
 
 void camera_restore(const CamSave& sv) {
@@ -2043,7 +2080,21 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
                                        "run tests nothing.", ca);
             }
         } else {
-            perform_list(cpu, ca, cue, gfx);
+            // CUE 0x4 ONLY — this is the whole point, and it is why the first attempt at this was
+            // measured as a disaster. TLiveActor::perform gates the phases SEPARATELY
+            // (liveactor.cpp:401-420):
+            //
+            //     if (cue & 2) updateAnmSound();
+            //     if (cue & 2) mMActor->frameUpdate();      <- ADVANCES animation
+            //     if (cue & 2) { calcRootMatrix(); mMActor->calc(); }
+            //     if (cue & 4)   mMActor->viewCalc();       <- rebuilds MODEL-VIEW from j3dSys
+            //
+            // Re-issuing the list with the full cue advanced every animation a second time and cost
+            // mean |d| 21.9. With 0x1 and 0x2 cleared, viewCalc runs for everything the calc-anim
+            // list covers and NOTHING is advanced — which is exactly the 90% of drawables measured
+            // (SBR_INTERP60_VIEWCALC) to be keeping the tick's model-view matrices while the
+            // interpolated view sat unused in j3dSys.
+            perform_list(cpu, ca, cue & ~0x3u, gfx);
         }
     }
     player_apply(cpu, gfx);
@@ -2159,6 +2210,21 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
                                     "however much geometry was emitted." : "");
     }
 
+    if (viewcalc_on()) {
+        static long n = 0;
+        if (++n <= 4 || (n % 900) == 0)
+            lucent::info("i60vc",
+                         "sub-frame #{}: J3DModel::viewCalc ran {} times INSIDE the sub-frame vs "
+                         "{} times in the preceding tick{}",
+                         n, g_vcSub, g_vcTick,
+                         g_vcSub == 0
+                             ? "   <-- ZERO: no drawable rebuilt its model-view matrices, so the "
+                               "interpolated view cannot move anything already entered"
+                             : (g_vcSub < g_vcTick / 4
+                                    ? "   <-- far fewer: most drawables keep the tick's matrices"
+                                    : ""));
+        g_vcSub = 0; g_vcTick = 0;
+    }
     g_inSubframe = false;
     cpu.gpr[1] = savedSp;
     ++g_subframes;
@@ -2219,6 +2285,10 @@ SB_OVERRIDE(0x802f80d0, end_rendering, "JDrama::TDisplay::endRendering",
 SB_OVERRIDE(0x802a4e28, list_perform, "TPerformList::perform",
             "60fps interpolation (SBR_INTERP60_LISTS): identify the tick's ordered perform-list "
             "calls, which are what a sub-frame re-issues; always runs the real body")
+
+SB_OVERRIDE(0x802deeb8, viewcalc_hook, "J3DModel::viewCalc",
+            "60fps interpolation (SBR_INTERP60_VIEWCALC): count model-view rebuilds inside a "
+            "sub-frame against a whole tick; observe-only, always runs the real body")
 
 SB_OVERRIDE(0x802fcc94, interp_test_perform, "JDrama::TViewObj::testPerform",
             "60fps interpolation (SBR_INTERP60): snapshot each actor's transform before its "
