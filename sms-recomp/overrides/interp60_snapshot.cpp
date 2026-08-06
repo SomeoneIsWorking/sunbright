@@ -30,6 +30,7 @@
 // one -- interpolation built on a dead snapshot would look correct while doing nothing.
 
 #include "overrides.h"
+#include "interp60_replace.h"
 #include "tactor_vtables.h"
 #include "tplacement_vtables.h"
 
@@ -2187,9 +2188,14 @@ void viewcalc_hook(CPUState& cpu) {
         mtxtrace_report(model, "viewCalc BEFORE");
         func_802deeb8(cpu);
         mtxtrace_report(model, "viewCalc AFTER");
+        if (!g_inSubframe) sbr_i60r_record(model);
         return;
     }
     func_802deeb8(cpu);
+    // RECORD-AND-REPLACE: the real viewCalc has just written this model's final draw matrices, so
+    // this is the one moment they exist for the tick. Recording INSIDE a sub-frame would overwrite
+    // the tick's values with interpolated ones and the next tick would lerp from a midpoint.
+    if (!g_inSubframe) sbr_i60r_record(model);
 }
 
 // SBR_INTERP60_PLAYER_DIFF=1 — name the fields the sub-frame leaves changed on the player object.
@@ -2355,6 +2361,13 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
     if (!g_mardir) resolve_mardir();
 
     const float alpha = alpha_setting();
+    // The recording must advance on EVERY tick that reaches the seam, including the ones that render
+    // no sub-frame. A tick that skips the swap leaves `prev` two or more ticks behind `cur`, and the
+    // lerp then spans a distance the alpha was never scaled for — a plausible-looking frame computed
+    // from the wrong pair, which is the hardest kind of wrong to see.
+    struct TickAdvance {
+        ~TickAdvance() { sbr_i60r_begin_tick(); }
+    } tickAdvance;
     if (alpha < 0.0f) { g_drawN = 0; return; }
     // Say what this run is actually doing, once. An ablation whose two alphas are set by
     // environment is otherwise invisible in its own log, and a run mislabelled in the shell is
@@ -2385,6 +2398,118 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
     g_inSubframe = true;
     g_subframeGfx = gfx;
     const u32 cue = subframe_cue();
+
+    // ── RECORD-AND-REPLACE (SBR_INTERP60_REPLACE=1) ──────────────────────────
+    //
+    // A whole separate path, deliberately: it shares only the TGraphics carve and the draw-list
+    // re-issue with the substitution path below, and interleaving them with conditionals would make
+    // both unreadable and make it impossible to say which seams a given run exercised.
+    //
+    // What is NOT here is the point. No pose is written, no camera is substituted, no list is
+    // re-issued with a calc or view-calc cue, so there is nothing to restore and nothing to
+    // recompute afterwards — the entire apply/restore/recompute ladder the substitution path needs
+    // (camera_restore, anim_restore, restore_all, the balancing PreEntry passes, player_apply's
+    // second call) is absent because the state it repairs is never disturbed. The camera comes along
+    // for free: viewCalc has already concatenated j3dSys's view into every draw matrix, so lerping
+    // the RESULT interpolates the camera and the actor together, in one place, by construction.
+    // See interp60_replace.cpp for what this does and does not cover.
+    if (sbr_i60r_enabled()) {
+        // THE CAMERA IS INTERPOLATED SEPARATELY, AS A POSE. This is dusklight's split, and it is not
+        // a redundancy: interp_view() lerps eye/center/up/bank/fovy and rebuilds the matrix, while
+        // record_final_mtx() covers per-model matrices, because the two reach the hardware by
+        // different routes.
+        //
+        // Measured here, which is why it is not taken on faith: with model replacement alone,
+        // alpha 0.0 scored +94.70% asymmetry where it must score -100%. Replacing 139 models moved
+        // almost nothing, because most of a Delfino frame is STATIC geometry — terrain, sky, sea —
+        // and J3D draws that with the view matrix loaded directly rather than with a per-joint
+        // matrix out of mDrawMtxBuf. No amount of correct model replacement can move it; the
+        // camera's own pose is the transform those shapes are drawn with.
+        //
+        // camera_apply is reused unchanged from the substitution path because it is the one seam of
+        // that path which was measured leak-free ("camera only: 0 px" in the seam bisect above): it
+        // lerps the pose and rebuilds the cached matrix with the game's own C_MTXLookAt, then
+        // restores the matrix bit-exactly. It is a pose lerp, not a matrix lerp, which is the same
+        // choice dusklight makes and for the same reason.
+        const CamSave camSaveR = camera_apply(cpu, g_camObj ? g_camObj : g_placeObjs[0], alpha_cam());
+        // j3dSys's view is what static geometry is drawn through, so it must hold the interpolated
+        // view for the duration of the sub-frame. Saved and put back with everything else.
+        float j3dViewSaveR[12];
+        bool  j3dViewSavedR = false;
+        if (camSaveR.obj && sb_ram_fast(camSaveR.obj + OFF_CPSC_VIEWMTX)) {
+            for (int i = 0; i < 12; ++i) j3dViewSaveR[i] = guest_f32(J3DSYS_VIEWMTX + (u32)i * 4);
+            j3dViewSavedR = true;
+            for (int i = 0; i < 12; ++i) {
+                const float v = guest_f32(camSaveR.obj + OFF_CPSC_VIEWMTX + (u32)i * 4);
+                guest_w_f32(J3DSYS_VIEWMTX + (u32)i * 4, v);
+                // AND INTO THE TGraphics, or the seed above is undone before it is read.
+                //
+                // Seeding j3dSys alone does not survive the draw lists: TSmJ3DScn::perform's draw
+                // branch begins by copying the TGraphics' own view matrix into j3dSys
+                // (MTXCopy(param_2->mViewMtx, j3dSys view), JDRSmJ3DScn.cpp). param_2 is the
+                // TGraphics this seam carves from g_gfxSnap, whose view is the TICK's, so the scene
+                // overwrote the interpolated view with the endpoint one at the top of every
+                // re-issue. Measured: with a camera swinging 49 units/tick, alpha 0.0 still scored
+                // +94% asymmetry — i.e. the sub-frame rendered the endpoint — and alpha 0.0 vs 1.0
+                // moved only 0.8% of pixels where half the tick's 22.5% was due.
+                //
+                // The TGraphics is this seam's own scratch buffer, rebuilt from g_gfxSnap on every
+                // sub-frame, so writing it needs no restore and cannot leak into the game.
+                guest_w_f32(gfx + OFF_VIEWMTX + (u32)i * 4, v);
+            }
+        }
+
+        const int replaced = sbr_i60r_apply(alpha);
+        viewseq_begin();
+        for (int i = 0; i < g_drawN; ++i)
+            perform_list(cpu, g_drawLists[i], g_drawCues[i] & cue, gfx);
+        viewseq_end();
+
+        // RESTORE AFTER THE PRESENT, NOT AFTER THE DRAW LISTS.
+        //
+        // Measured: restoring here-but-earlier replaced 139 models per sub-frame, 84,090 of them
+        // with prev != cur, 0 clobbered — and alpha 0.0 and alpha 1.0 still produced BYTE-IDENTICAL
+        // frames. The reason is that emitting the draw is not the same event as reading the matrix.
+        // J3D draws shapes with GXLoadPosMtxIndx, which carries an INDEX into the array set by
+        // GXSetArray; the matrix itself is fetched from guest memory when the FIFO is processed, and
+        // that happens at the copy/present, not at the perform. Restoring before the present handed
+        // aurora the original values and the interpolated ones were never read by anything.
+        //
+        // Nothing between here and the present runs game code, so the window is still closed before
+        // anything can derive state from the substituted values.
+        static const bool doCopyR = std::getenv("SBR_INTERP60_COPY") != nullptr;
+        if (doCopyR && g_display && sb_ram_fast(g_display)) {
+            cpu.gpr[3] = g_display;
+            func_802f80d0(cpu);
+        }
+        present();
+        sbr_i60r_restore();
+        // Same reason as the matrix restore: put the view back only once the frame that reads it has
+        // been presented. Nothing here derives state — these are plain writes of saved bytes.
+        if (j3dViewSavedR)
+            for (int i = 0; i < 12; ++i)
+                guest_w_f32(J3DSYS_VIEWMTX + (u32)i * 4, j3dViewSaveR[i]);
+        camera_restore(camSaveR);
+
+        {
+            static long n = 0;
+            if (++n <= 4 || (n % 900) == 0)
+                lucent::info("i60r", "sub-frame #{}: replaced {} models across {} draw list(s){}",
+                             n, replaced, g_drawN,
+                             replaced == 0
+                                 ? "   <-- replaced NOTHING, so this sub-frame is the tick's own "
+                                   "matrices and alpha cannot have changed a pixel"
+                                 : "");
+        }
+        sbr_i60r_report();
+        g_inSubframe = false;
+        cpu.gpr[1] = savedSp;
+        ++g_subframes;
+        g_lastDrawN = g_drawN;
+        g_drawN = 0;
+        g_gfxValid = false;
+        return;
+    }
 
     float viewBefore[12];
     for (int i = 0; i < 12; ++i) viewBefore[i] = guest_f32(gfx + OFF_VIEWMTX + (u32)i * 4);
