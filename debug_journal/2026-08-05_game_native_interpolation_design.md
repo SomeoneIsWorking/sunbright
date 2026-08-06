@@ -2428,3 +2428,60 @@ standing suspects, in the order they should be ablated:
 The next measurement is an ABLATION with separate alphas for camera and actors, so the deficit is
 attributed to a population rather than argued from a list. Do not fix any of the three above until
 that split exists: the previous entry is what guessing between them costs.
+
+## THE ABLATION: the camera is the ONLY thing being interpolated. Actors reach zero pixels.
+
+`SBR_INTERP60_ALPHA_CAM` / `SBR_INTERP60_ALPHA_ACT` drive the two populations independently (both
+default to `SBR_INTERP60_ALPHA`, so the split cannot change an unsplit run). Its control — cam and
+act both 0.0 must reproduce the single-alpha 0.0 result — passes exactly. Scored against the
+neighbouring main frames of the same run, at the present the camera-motion arming picked:
+
+    configuration          vs main(prev)          vs main(next)
+    reference: one tick    947,275 / 11.070
+    both alpha=1             947,587 / 11.120       3,116 /  0.075
+    both alpha=0             927,987 /  9.043     206,636 /  3.124
+    split ctl cam0 act0      927,987 /  9.043     206,636 /  3.124   <- control passes
+    cam=0 act=1              927,987 /  9.043     206,636 /  3.124   <- act makes NO difference
+    cam=1 act=0              947,587 / 11.120       3,116 /  0.075   <- act makes NO difference
+
+`cam=0 act=1` and `cam=0 act=0` are **byte-identical** (`cmp` says so, not a count). Every pixel the
+sub-frame moves, the camera moves. The actor substitution moves none.
+
+And it is not idle. Per sub-frame (`SBR_INTERP60_ACTTALLY=1`): **400 entries substituted, 8 with
+prev != cur, largest ~20 units**, one of them マリオ. The pose reaches guest memory — the read-back
+check reports `stuck=118400 lost=0` — and does not reach a pixel.
+
+### Two hypotheses tested and both falsified
+
+**The phase boundary.** An actor's pose becomes geometry in `TLiveActor::perform`'s 0x2 branch
+(`calcRootMatrix` + `MActor::calc`), dispatched by the director's CALC-ANIM list at +0x2C — not by
+the draw lists, which the actor is registered in with the draw cue. The sub-frame re-issues only the
+draw block, so the obvious cause was that nothing recomputes a root matrix from the substituted
+pose. `SBR_INTERP60_CALCANIM=1` re-issues that list. The actor alpha still moves **0 pixels**, and
+the frame gets far worse — mean |d| 21.9 against both neighbours, versus 0.075 for the clean
+identity — exactly the double-advanced-animation residual this file predicted. Cause not found;
+cost confirmed.
+
+**The kick.** `SBR_INTERP60_KICK=3000` displaces every substituted entry by 3000 units. Against an
+unkicked sub-frame at the same alpha: **0 of 1,228,800 pixels differ.** The codemap's recorded
+"reach 97.16% under a 3000-unit kick" does not reproduce at HEAD and is corrected there. This is the
+cleanest statement of the defect: a 3000-unit displacement applied to 400 objects, written and
+read back successfully, changes nothing on screen.
+
+### What the player-coverage probe says, and why it is a lead rather than an answer
+
+    PLAYER COVERAGE: gpMarioOriginal -> 0x8136384c "<unreadable>" vptr=0x00000000
+      is_tactor=NO in_snapshot_table=NO
+      the player's vtable is NOT in kTActorVtables -- he is never snapshotted and never
+      substituted, so no alpha can move him
+
+`vptr=0x00000000` at that address means the probe is reading something that is not an object, so its
+verdict on the player is not yet trustworthy — it may be reading `gpMarioOriginal` wrongly rather
+than reporting a real exclusion. But it points where the next measurement goes: **which objects
+are in the 400, and are any of them the ones on screen?** A substitution that reaches memory,
+survives read-back, and changes no pixel is most simply explained by substituting 400 objects that
+nothing draws.
+
+The claim is recorded as C027 with the kick as its falsifier. The camera-side result stands on its
+own and is unaffected: `SBR_INTERP60` today is a working CAMERA interpolator, and that is what the
+codemap now says.

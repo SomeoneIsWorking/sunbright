@@ -79,6 +79,27 @@ float alpha_setting() {
     return a;
 }
 
+// SBR_INTERP60_ALPHA_CAM / SBR_INTERP60_ALPHA_ACT: the ABLATION. Both default to SBR_INTERP60_ALPHA,
+// so setting only the global alpha behaves exactly as before and the split cannot change a result
+// nobody asked to split.
+//
+// WHY IT EXISTS. alpha=1.0 reproduces the following main frame to 0.075 per channel while alpha=0.0
+// lands only ~28% of the way back toward the preceding one, and CAMTRACE proves the camera itself
+// moves a FULL tick between those alphas. So ~72% of the image is held by something else -- and
+// "animation phase / the pre-renders / particles" is a list of three suspects, not a finding.
+// Driving the two populations independently attributes the deficit instead of arguing it.
+//
+// ITS CONTROL: cam=act=<a> must reproduce the single-alpha result for the same <a> exactly. If it
+// does not, the split itself changed something and every ablation number taken with it is noise.
+float alpha_of(const char* var) {
+    const char* e = std::getenv(var);
+    return e ? (float)std::atof(e) : alpha_setting();
+}
+float alpha_cam() { static const float a = alpha_of("SBR_INTERP60_ALPHA_CAM"); return a; }
+float alpha_act() { static const float a = alpha_of("SBR_INTERP60_ALPHA_ACT"); return a; }
+
+long viewseq_at();   // defined with the view-sequence probe; the arming present is shared
+
 bool enabled() {
     static const bool on = std::getenv("SBR_INTERP60") != nullptr;
     return on;
@@ -510,6 +531,14 @@ void report_player_coverage() {
 
 void apply_all(u32 tick, float alpha) {
     report_player_coverage();
+    // PER-SUB-FRAME tally, separate from the run-long counters above. The ablation
+    // (SBR_INTERP60_ALPHA_ACT) showed the actor alpha changes not a single BYTE of the frame while
+    // the camera alpha changes all of it, and there are two very different reasons for that: this
+    // loop wrote nothing at this moment, or it wrote and nothing downstream read it. A run-long
+    // "2.6% of entries moved" cannot tell them apart because it is not about this sub-frame.
+    long nApplied = 0, nDiffer = 0;
+    float maxD = 0.0f;
+    u32   maxObj = 0;
     for (int i = 0; i < TABLE_SIZE; ++i) {
         Entry& e = g_tab[i];
         if (e.obj == 0 || e.tick != tick || e.applied) continue;
@@ -523,6 +552,7 @@ void apply_all(u32 tick, float alpha) {
             }
         }
         ++g_applyN;
+        ++nApplied;
         // The CAMERA's own prev-vs-cur, named separately. An aggregate "2.7% of entries differ"
         // cannot say whether the one object that dominates the picture is among them, and if the
         // camera's prev equals its cur then every alpha renders the same view no matter how
@@ -549,8 +579,10 @@ void apply_all(u32 tick, float alpha) {
             const float d2 = dx * dx + dy * dy + dz * dz;
             if (d2 > 0.0f) {
                 ++g_applyDiff;
+                ++nDiffer;
                 const float d = std::sqrt(d2);
                 if (d > g_applyMax) { g_applyMax = d; g_applyMaxObj = e.obj; }
+                if (d > maxD) { maxD = d; maxObj = e.obj; }
             }
         }
         e.applied = true;
@@ -627,6 +659,27 @@ void apply_all(u32 tick, float alpha) {
             guest_w_f32(e.obj + OFF_ROTATION + (u32)k * 4, e.rot[k] + d * alpha);
         }
         ++g_applied;
+    }
+
+    // The negative, written before the positive: an empty tally must not be able to read as "the
+    // actors simply were not moving". It carries its denominator and names its largest mover.
+    if (std::getenv("SBR_INTERP60_ACTTALLY") && (long)VIGetRetraceCount() >= viewseq_at()) {
+        static int lines = 0;
+        if (lines < 8) { ++lines;
+            char nm[48]; guest_name(maxObj, nm, sizeof nm);
+            lucent::info("i60act",
+                         "present {} alpha={:.2f}: {} entries substituted, {} had prev != cur, "
+                         "largest {:.3f} units \"{}\"{}",
+                         (long)VIGetRetraceCount(), (double)alpha, nApplied, nDiffer,
+                         (double)maxD, maxObj ? nm : "(none)",
+                         nApplied == 0
+                             ? "   <-- NOTHING was substituted: no table entry carried this tick, "
+                               "so the actor alpha could not have changed a pixel"
+                         : nDiffer == 0
+                             ? "   <-- every substituted entry had prev == cur: the actor alpha is "
+                               "a no-op here for want of motion, not for want of reach"
+                             : "");
+        }
     }
 }
 
@@ -1453,6 +1506,16 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
 
     const float alpha = alpha_setting();
     if (alpha < 0.0f) { g_drawN = 0; return; }
+    // Say what this run is actually doing, once. An ablation whose two alphas are set by
+    // environment is otherwise invisible in its own log, and a run mislabelled in the shell is
+    // indistinguishable from a result.
+    {
+        static bool said = false;
+        if (!said) { said = true;
+            lucent::info("i60sub", "alphas: camera={:.2f}  actors={:.2f}  (SBR_INTERP60_ALPHA={:.2f})",
+                         (double)alpha_cam(), (double)alpha_act(), (double)alpha);
+        }
+    }
     if (!g_mardir || g_drawN == 0 || !g_gfxValid || g_lastSnapTick == 0xFFFFFFFFu) {
         ++g_subframeSkips;
         g_drawN = 0;
@@ -1507,8 +1570,41 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
     const bool noEntry = !preEntry_;
 
     // Pass 1: interpolated pose -> enter -> draw -> present.
-    apply_all(g_lastSnapTick, alpha);
-    const CamSave camSave = camera_apply(cpu, g_camObj ? g_camObj : g_placeObjs[0], alpha);
+    apply_all(g_lastSnapTick, alpha_act());
+    const CamSave camSave = camera_apply(cpu, g_camObj ? g_camObj : g_placeObjs[0], alpha_cam());
+    // SBR_INTERP60_CALCANIM=1 — a HYPOTHESIS TEST, not a fix.
+    //
+    // The ablation says the actor alpha changes not one byte of the frame while the camera alpha
+    // changes all of it, and the per-sub-frame tally says the substitution is not idle: 400 entries
+    // written, 8 of them genuinely moved, the largest by ~20 units, one of them Mario. So the pose
+    // reaches guest memory and does not reach a pixel.
+    //
+    // The candidate cause is a phase boundary, and it is the same shape as the camera's. An actor's
+    // pose becomes geometry in TLiveActor::perform's 0x2 branch (calcRootMatrix + MActor::calc,
+    // decomp src/Strategic/liveactor.cpp:401), and that bit is dispatched by the director's
+    // CALC-ANIM list (+0x2C) -- NOT by the draw lists, which the actor is registered in with the
+    // draw cue. The sub-frame re-issues only the draw block, so nothing recomputes a root matrix
+    // from the substituted pose. The camera escaped this because its view path lives in the draw
+    // lists and camera_apply rebuilt its cached matrix directly.
+    //
+    // Re-issuing calc-anim ALSO advances every animation a second time -- the known 30 Hz residual
+    // this file already records. That is why this is a switch and not a default: it answers whether
+    // the boundary is the cause, and the fix (suppressing only the frame ADVANCE) is a narrower
+    // seam that should be built only once the cause is confirmed rather than assumed.
+    static const bool calcAnim = std::getenv("SBR_INTERP60_CALCANIM") != nullptr;
+    if (calcAnim) {
+        const u32 ca = sb_r32(g_mardir + 0x2C);
+        if (!ca || !sb_ram_fast(ca)) {
+            static bool said = false;
+            if (!said) { said = true;
+                lucent::info("i60sub", "SBR_INTERP60_CALCANIM: director +0x2C is 0x{:08x}, which is "
+                                       "not usable memory -- calc-anim was NOT re-issued and this "
+                                       "run tests nothing.", ca);
+            }
+        } else {
+            perform_list(cpu, ca, cue, gfx);
+        }
+    }
     viewseq_begin();
     if (!noEntry) perform_list(cpu, preEntry, cue, gfx);
     // SBR_INTERP60_DROPLAST=1: omit the last recorded draw list from the re-issue.
