@@ -38,8 +38,10 @@
 extern "C" void func_80362a50(CPUState&);   // GXCallDisplayList
 extern "C" void func_802dfe88(CPUState&);   // J3DShapeDraw::draw() const
 uint64_t sbr_gxfifo_pending_tag();
+void sbr_gxfifo_draw_tag(uint64_t tag);
 void gxfifo_stats(u64& draws, u64& verts, u64& bytes);
 void gxfifo_drain_pending();
+u64 sbr_shine_shadow_next_tag();
 
 namespace {
 
@@ -124,6 +126,19 @@ void report() {
 }
 
 void ov_call_display_list(CPUState& cpu) {
+    // SHINE-SHADOW SLICE TAGGING. Runs whether or not the attribution diagnostic is on, because it
+    // is a behaviour fix rather than a measurement: this is the one seam that sees each individual
+    // replay of the volume's sphere display list, and tag_shadow.cpp cannot tag from its own frame
+    // because the function is entered once and draws many slices.
+    if (sbr_gxfifo_pending_tag() == 0) {
+        const u64 shine = sbr_shine_shadow_next_tag();
+        if (shine != 0) {
+            sbr_gxfifo_draw_tag(shine);
+            func_80362a50(cpu);
+            sbr_gxfifo_draw_tag(0);
+            return;
+        }
+    }
     if (!enabled()) {
         func_80362a50(cpu);
         return;

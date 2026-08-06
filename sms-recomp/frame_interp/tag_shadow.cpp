@@ -34,7 +34,27 @@
 // cleared, disambiguates them in emission order — which IS stable here, because the passes iterate
 // the same list in the same order every tick.
 //
-// This is a real behaviour change, not a diagnostic: SBR_TAGSHADOW=0 disables it for A/B.
+// COVERAGE REACHED, AND WHAT IT COST — measured, because "0% untagged" is only good news if the
+// identities are right. Untagged INDEXED draws went 9.5% -> 0.0% (aurora's own counter) and
+// untagged display-list draws 6.6% -> 0.0% (this file's). Against a control with the tagging off,
+// the share of paired draws showing 10-100 units/tick of object motion — the instrument's own
+// mispairing signature — and the count in the 100-1k bucket:
+//
+//     no shadow tags (control)      [10,100) 24.4%    [100,1k)      4    mean 8.4
+//     fp only (genuine identity)    [10,100) 27.3%    [100,1k)  1,810    mean 12.3
+//     all three schemes             [10,100) 26.4%    [100,1k) 25,113    mean 51.8
+//
+// The two ORDINAL schemes carry ~93% of the added mispairing, which is what their design predicts:
+// an ordinal is a positional stand-in for identity and misaligns whenever a list changes length.
+// `fp`, a real object address, adds far less — and some of even that 1,810 is likely genuine, since
+// a shadow projected onto terrain jumps hundreds of units when the surface under it changes.
+// Separating genuine motion from mispairing needs the histogram split by tag KIND (these tags have
+// a small low word; J3DShape's is a heap pointer), which is one run's work and is the next step.
+//
+// Shipped with all three on, because an untagged shadow is wrong on EVERY frame its caster moves —
+// it receives the camera delta alone, so it follows the camera and not the thing casting it —
+// whereas a mispaired one is wrong on the frames where the list shifts. SBR_TAGSHADOW=fp keeps only
+// the identity that is beyond doubt; SBR_TAGSHADOW=0 disables the lot.
 
 #include "../overrides/overrides.h"
 
@@ -42,42 +62,112 @@
 #include <lucent/log.h>
 
 #include <cstdlib>
+#include <cstring>
 #include <unordered_map>
 
 extern "C" void func_802305dc(CPUState&);   // TMBindShadowManager::drawShadowVolume(bool, TAlphaShadowQuad*)
+extern "C" void func_8027c67c(CPUState&);   // TModelWaterManager::drawShineShadowVolume(MtxPtr)
+extern "C" void func_80225c30(CPUState&);   // SMS_DrawShape(J3DModelData*, u16)
 void sbr_gxfifo_draw_tag(uint64_t tag);
+uint64_t sbr_gxfifo_pending_tag();
 bool sbr_lerp_enabled();
 
 namespace {
 
-bool enabled() {
-    static const bool v = [] {
+// SBR_TAGSHADOW: 0 = off, fp = ONLY the genuine per-instance key, anything else = all three.
+//
+// The split exists because the three schemes are not equally trustworthy and the difference is
+// measurable. `fp` is a real per-instance object address. The other two substitute an ORDINAL for
+// the instance, which is only as good as the assumption that each pass walks its list in the same
+// order every tick — so they are the ones to suspect when pairing goes wrong, and this makes that a
+// one-run question instead of an argument.
+enum class Scheme { Off, FpOnly, All };
+Scheme scheme() {
+    static const Scheme v = [] {
         const char* e = std::getenv("SBR_TAGSHADOW");
-        return e == nullptr || (e[0] != '0');
+        if (e == nullptr) return Scheme::All;
+        if (e[0] == '0') return Scheme::Off;
+        if (std::strcmp(e, "fp") == 0) return Scheme::FpOnly;
+        return Scheme::All;
     }();
     return v;
 }
+bool enabled() { return scheme() != Scheme::Off; }
+bool ordinal_schemes_on() { return scheme() == Scheme::All; }
 
 // How many times each fp has been drawn in the tick so far, so repeated passes over the same list
 // get distinct identities. Cleared once per tick by the seam below.
 std::unordered_map<u32, u32> g_seenThisTick;
 unsigned long g_tagged = 0, g_ticks = 0;
 
+// ── THE SHINE SHADOW VOLUME, the other 23.6% ────────────────────────────────────────────────────
+//
+// TModelWaterManager::drawShineShadowVolume replays one baked sphere display list repeatedly in a
+// loop, stacking slices to build the volume — so a single call produces many draws that differ only
+// in the matrix loaded before each. There is no per-slice OBJECT to key on the way `fp` keys a
+// shadow quad, and the function is entered once, so it cannot tag from its own frame.
+//
+// The identity is therefore (this call site, slice ordinal): slice k of the volume pairs with slice
+// k of the previous tick, which is what the geometry actually is. The ordinal resets per CALL rather
+// than per tick, because the volume is rebuilt from scratch each time it is drawn — a tick-scoped
+// ordinal would misalign every slice the moment the volume is drawn twice in one tick.
+//
+// The scope is marked here and the tag is emitted by the GXCallDisplayList seam in tag_gap.cpp,
+// which is the one place that sees each individual replay. Two overrides cannot share an address,
+// so the two files split the work rather than both hooking it.
+bool g_shineScope = false;
+u32 g_shineOrdinal = 0;
+unsigned long g_shineTagged = 0;
+constexpr u64 kShineId = 0x5417EULL;   // a fixed id; distinct from any guest pointer
+
+// ── SMS_DrawShape, the last of the population ───────────────────────────────────────────────────
+//
+// After the two volume paths were tagged, 100% of what remained came through one site:
+// J3DShapeDraw::draw, reached only from SMS_DrawShape, whose only callers are the shadow passes in
+// MarioUtil/ShadowUtil.cpp that draw a shadow MODEL directly instead of going through
+// drawShadowVolume — pass 4's type-3 extras and the ship/boat shapes (mModels[0..3]).
+//
+// Those loops have the same shape as the volume ones: PSMTXConcat(view, fp->mMtx, fpMv);
+// GXLoadPosMtxImm(fpMv, PNMTX0); SMS_DrawShape(mModels[k], 0). But SMS_DrawShape is not handed `fp`,
+// so the per-instance object is not available in its frame and cannot be recovered from its
+// arguments — mModels[k] is the shared shadow RESOURCE, and keying on it alone would collapse every
+// instance into one identity, which is the mispairing this file exists to avoid.
+//
+// So the key is (model, nth-draw-of-this-model-this-tick). The ordinal stands in for the instance,
+// and it is stable for the same reason the shine slices' is: each pass walks the same list in the
+// same order every tick. When the list length changes — a shadow appears or disappears — the
+// ordinals shift and the affected draws pair with the wrong instance for one tick; the vertex-count
+// check catches the ones whose geometry differs and snaps them, and the rest are a single frame of
+// a shadow lerping from another shadow's pose. That is a real limitation and it is why this is the
+// LAST of the three rather than the model for the other two: where a genuine per-instance object
+// exists, as `fp` does, it is used instead.
+std::unordered_map<u32, u32> g_modelSeenThisTick;
+unsigned long g_modelTagged = 0;
+
 } // namespace
+
+// Non-zero while the shine shadow volume is being drawn; each call returns the next slice's tag.
+u64 sbr_shine_shadow_next_tag() {
+    if (!g_shineScope || !ordinal_schemes_on() || !sbr_lerp_enabled()) return 0;
+    ++g_shineTagged;
+    return (kShineId << 32) | (u64)(g_shineOrdinal++);
+}
 
 // Called once per tick from the frame seam: a draw ordinal that never resets would grow without
 // bound and, worse, would make this tick's tag disagree with the previous tick's for the same
 // shadow — so nothing would ever pair and the change would silently do nothing.
 void sbr_tag_shadow_begin_tick() {
     g_seenThisTick.clear();
+    g_modelSeenThisTick.clear();
     ++g_ticks;
 }
 
 void sbr_tag_shadow_report() {
     if (!enabled() || !sbr_lerp_enabled()) return;
     lucent::info("taggap",
-                 "shadow tagging: {} draw(s) given an identity over {} tick(s){}", g_tagged, g_ticks,
-                 g_tagged == 0
+                 "shadow tagging: {} volume + {} shine-slice + {} model draw(s) given an identity "
+                 "over {} tick(s){}", g_tagged, g_shineTagged, g_modelTagged, g_ticks,
+                 (g_tagged + g_shineTagged + g_modelTagged) == 0
                      ? "   <-- NONE. Either no shadow drew in this scene, or the hook never fired; "
                        "those are different answers and this line cannot tell them apart, so check "
                        "SBR_TAGGAP=1 for whether the untagged population is still there."
@@ -85,6 +175,32 @@ void sbr_tag_shadow_report() {
 }
 
 namespace {
+
+void ov_sms_draw_shape(CPUState& cpu) {
+    // r3 = J3DModelData*, r4 = u16 shape index.
+    const u32 model = (u32)cpu.gpr[3];
+    const u32 shapeIdx = (u32)cpu.gpr[4] & 0xFFFF;
+    const bool tag = ordinal_schemes_on() && sbr_lerp_enabled() && model != 0 &&
+                     sbr_gxfifo_pending_tag() == 0;
+    if (tag) {
+        const u32 key = model ^ (shapeIdx << 24);
+        const u32 nth = g_modelSeenThisTick[key]++;
+        sbr_gxfifo_draw_tag(((u64)key << 32) | (u64)nth);
+        ++g_modelTagged;
+    }
+    func_80225c30(cpu);
+    if (tag) sbr_gxfifo_draw_tag(0);
+}
+
+void ov_draw_shine_shadow_volume(CPUState& cpu) {
+    const bool was = g_shineScope;
+    const u32 wasOrd = g_shineOrdinal;
+    g_shineScope = true;
+    g_shineOrdinal = 0;
+    func_8027c67c(cpu);
+    g_shineScope = was;
+    g_shineOrdinal = wasOrd;
+}
 
 void ov_draw_shadow_volume(CPUState& cpu) {
     // r4 is the second argument: TAlphaShadowQuad* fp.
@@ -104,6 +220,14 @@ void ov_draw_shadow_volume(CPUState& cpu) {
 }
 
 } // namespace
+
+SB_OVERRIDE(0x80225c30u, ov_sms_draw_shape, "SMS_DrawShape",
+            "60fps: identity for the shadow passes that draw a model directly rather than through "
+            "drawShadowVolume; keyed (model, ordinal) because no per-instance object reaches here")
+
+SB_OVERRIDE(0x8027c67cu, ov_draw_shine_shadow_volume, "TModelWaterManager::drawShineShadowVolume",
+            "60fps: mark the scope so each sphere slice of the shine shadow volume gets its own "
+            "cross-tick identity; observe-only, always runs the real body")
 
 SB_OVERRIDE(0x802305dcu, ov_draw_shadow_volume, "TMBindShadowManager::drawShadowVolume",
             "60fps: give each shadow instance (TAlphaShadowQuad*) a cross-tick identity so it "
