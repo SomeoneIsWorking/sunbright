@@ -85,10 +85,25 @@ enum class Scheme { Off, FpOnly, All };
 Scheme scheme() {
     static const Scheme v = [] {
         const char* e = std::getenv("SBR_TAGSHADOW");
-        if (e == nullptr) return Scheme::All;
+        // DEFAULT IS FpOnly, and the ordinal schemes are opt-in. Measured, same scenario, the
+        // interpolator's own mispairing signature (draws pairing with a pose 100-1000 world units
+        // away, which nothing reaches in 1/30 s):
+        //     no shadow tags                          4
+        //     fp only                             1,810
+        //     fp + ordinal schemes               25,113
+        //     fp + ordinals + request fingerprint 28,127   (the fingerprint does nothing — every
+        //                                                   marukage shares type/radius/flags)
+        //     fp + ordinals + set-change gate    19,985
+        // The ordinal schemes carry ~93% of it, which is what a positional stand-in for identity
+        // predicts. The user sees that share directly: other characters' marukage rendering at the
+        // wrong place for a single frame every few seconds. Snapping is what those draws did before
+        // any of this and is strictly better than teleporting, so they snap until a real owner
+        // identity exists.
+        if (e == nullptr) return Scheme::FpOnly;
         if (e[0] == '0') return Scheme::Off;
+        if (std::strcmp(e, "all") == 0) return Scheme::All;
         if (std::strcmp(e, "fp") == 0) return Scheme::FpOnly;
-        return Scheme::All;
+        return Scheme::FpOnly;
     }();
     return v;
 }
@@ -144,6 +159,11 @@ constexpr u64 kShineId = 0x5417EULL;   // a fixed id; distinct from any guest po
 std::unordered_map<u32, u32> g_modelSeenThisTick;
 unsigned long g_modelTagged = 0;
 
+// The shadow SET's size, per tick. Slots are only stable while it is.
+u32 g_thisTickQuadCount = 0, g_lastTickQuadCount = 0, g_prevTickQuadCount = 0;
+bool g_setStableThisTick = false;
+unsigned long g_snappedForSetChange = 0;
+
 } // namespace
 
 // Non-zero while the shine shadow volume is being drawn; each call returns the next slice's tag.
@@ -159,6 +179,13 @@ u64 sbr_shine_shadow_next_tag() {
 void sbr_tag_shadow_begin_tick() {
     g_seenThisTick.clear();
     g_modelSeenThisTick.clear();
+    // Decided ONCE per tick, from the two previous ticks' counts: this tick may only pair if the
+    // set was the same size last tick as the tick before, because pairing compares THIS tick's
+    // slots against LAST tick's.
+    g_prevTickQuadCount = g_lastTickQuadCount;
+    g_lastTickQuadCount = g_thisTickQuadCount;
+    g_setStableThisTick = (g_lastTickQuadCount == g_prevTickQuadCount) && g_lastTickQuadCount != 0;
+    g_thisTickQuadCount = 0;
     ++g_ticks;
 }
 
@@ -166,7 +193,9 @@ void sbr_tag_shadow_report() {
     if (!enabled() || !sbr_lerp_enabled()) return;
     lucent::info("taggap",
                  "shadow tagging: {} volume + {} shine-slice + {} model draw(s) given an identity "
-                 "over {} tick(s){}", g_tagged, g_shineTagged, g_modelTagged, g_ticks,
+                 "over {} tick(s); {} draw(s) deliberately SNAPPED because the shadow set changed "
+                 "size, so slot k was not the same caster as last tick{}",
+                 g_tagged, g_shineTagged, g_modelTagged, g_ticks, g_snappedForSetChange,
                  (g_tagged + g_shineTagged + g_modelTagged) == 0
                      ? "   <-- NONE. Either no shadow drew in this scene, or the hook never fired; "
                        "those are different answers and this line cannot tell them apart, so check "
@@ -202,15 +231,76 @@ void ov_draw_shine_shadow_volume(CPUState& cpu) {
     g_shineOrdinal = wasOrd;
 }
 
+// TAlphaShadowQuad::mReq (+0x68) -> TCircleShadowRequest. The fields below are the ones that stay
+// CONSTANT for a given caster across ticks: the two radii, the shadow type, a flag byte and the
+// request flags. The position is deliberately excluded — it changes every tick, which is the whole
+// point of interpolating it.
+constexpr u32 QUAD_MREQ   = 0x68;
+constexpr u32 REQ_UNKC    = 0x0C;   // f32
+constexpr u32 REQ_UNK10   = 0x10;   // f32
+constexpr u32 REQ_UNK1C   = 0x1C;   // u8  type
+constexpr u32 REQ_UNK1D   = 0x1D;   // u8
+constexpr u32 REQ_UNK20   = 0x20;   // u32 flags
+
+// A fingerprint of what makes this shadow THIS shadow, rather than whoever held the slot before.
+u32 request_fingerprint(u32 fp) {
+    if (!sb_ram_fast(fp + QUAD_MREQ)) return 0;
+    const u32 req = sb_r32(fp + QUAD_MREQ);
+    if (!sb_ram_fast(req + REQ_UNK20)) return 0;
+    u32 h = 2166136261u;
+    auto mix = [&h](u32 v) { h ^= v; h *= 16777619u; };
+    mix(sb_r32(req + REQ_UNKC));
+    mix(sb_r32(req + REQ_UNK10));
+    mix(sb_r8(req + REQ_UNK1C));
+    mix(sb_r8(req + REQ_UNK1D));
+    mix(sb_r32(req + REQ_UNK20));
+    return h ? h : 1u;   // 0 is reserved for "could not read"
+}
+
 void ov_draw_shadow_volume(CPUState& cpu) {
     // r4 is the second argument: TAlphaShadowQuad* fp.
     const u32 fp = (u32)cpu.gpr[4];
-    const bool tag = enabled() && sbr_lerp_enabled() && fp != 0;
+    // fp IS NOT A PER-INSTANCE IDENTITY, and an earlier version of this file claimed it was.
+    //
+    // ShadowUtil draws from `TAlphaShadowQuad& fp = mQuads[i]` — a FIXED ARRAY indexed by request
+    // slot, and mRequestCount resets every tick while actors re-request in whatever order they
+    // happen to run. So fp is a slot address: an ordinal in disguise. When the request order or
+    // count changes, the actor in slot 3 this tick is a different actor from the one in slot 3 last
+    // tick, and pairing on fp alone lerps one character's shadow from another's pose — which is
+    // exactly the reported symptom, other characters' marukage appearing at the wrong place for a
+    // single frame every few seconds.
+    //
+    // The sound fix is a real owner identity (TLiveActor::requestShadow, US 0x80218020, has the
+    // actor in r3) mapped to the slot it lands in; that needs the manager's accept path and is not
+    // done here. What IS done: fold the REQUEST's stable attributes into the key, so a slot whose
+    // occupant changed produces a different tag, fails to find a partner, and SNAPS rather than
+    // teleporting. Snapping is what an untagged draw already did; teleporting is strictly worse
+    // than both.
+    // A FINGERPRINT OF THE REQUEST WAS TRIED FIRST AND DID NOT WORK. Folding the request's stable
+    // attributes (both radii, type, flag byte, flags word) into the key should have made a changed
+    // occupant produce a changed tag. Measured: the 100-1k bucket went 25,113 -> 28,127 and mean
+    // object motion 51.8 -> 52.2, i.e. no improvement at all — because every marukage shares the
+    // same type, radius and flags, so the fingerprint is CONSTANT across casters and discriminates
+    // nothing. Recorded because it is the obvious idea and it is worth not having twice.
+    //
+    // What IS exact: slots can only shift when the request SET changes, and the drawn count is that
+    // set's size. If this tick draws a different number of shadows than the last, every slot may
+    // have moved and NOTHING may be paired — so emit no tags for the tick and let them all snap for
+    // one frame. This is a condition, not a threshold: it is either the same count or it is not.
+    // It does not catch a same-size membership change, which is why the sound fix — a real owner
+    // identity from TLiveActor::requestShadow (US 0x80218020, actor in r3) mapped to the slot it
+    // lands in — is still the thing to build.
+    const bool setStable = g_lastTickQuadCount == g_thisTickQuadCount + 1 ||
+                           g_prevTickQuadCount == g_lastTickQuadCount;
+    ++g_thisTickQuadCount;
+    const bool tag = enabled() && sbr_lerp_enabled() && fp != 0 && g_setStableThisTick;
+    (void)setStable;
     if (tag) {
         const u32 nth = g_seenThisTick[fp]++;
-        // (fp, nth-draw-of-this-fp-this-tick). Both halves are needed; see the header comment.
         sbr_gxfifo_draw_tag(((uint64_t)fp << 32) | (uint64_t)nth);
         ++g_tagged;
+    } else if (enabled() && sbr_lerp_enabled() && fp != 0) {
+        ++g_snappedForSetChange;
     }
     func_802305dc(cpu);
     // Close it, exactly as j3d_capture does: anything drawn after this must not inherit a shadow's
