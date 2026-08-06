@@ -53,6 +53,11 @@ extern "C" void sbr_frame_present_now();       // overrides/native_frame.cpp
 // mModel->unk8->getBaseTRMtx(), then mModel->perform(cue) runs the skeleton (decomp
 // src/Player/MarioDraw.cpp:1920, :1582).
 extern "C" void func_80244800(CPUState&);
+// MActor::calc() — US 0x80239770. calcRootMatrix writes the model's BASE TR matrix; calc() is what
+// propagates it into the joint/node matrices the draw packets actually reference. TLiveActor's own
+// 0x2 branch runs the pair, and running only the first is measurably a no-op (a 3000-unit kick on
+// every dispatched actor moved 0 of 1,228,800 pixels until calc() was added).
+extern "C" void func_80239770(CPUState&);
 extern "C" void func_80349f5c(CPUState&);      // C_MTXLookAt(Mtx dst, const Vec* eye, const Vec* up,
                                                //             const Vec* target)
 // Diagnostic in diag_vptr.cpp. One guest address gets exactly ONE override, so that file no longer
@@ -1599,6 +1604,21 @@ long g_calcRootCalls = 0, g_calcRootSkipped = 0;
 // contribute — that is the coverage gap, and the "no hit" count reports it rather than hiding it.
 constexpr int kVtScanSlots = 128;
 
+// Is this guest vtable TLiveActor-derived? Counted, cached, and it REFUSES on a short vtable rather
+// than passing it: an unreadable slot ends the scan, so a truncated read can only lower the count.
+bool is_liveactor_vtable(u32 vptr) {
+    if (!sb_ram_fast(vptr)) return false;
+    int hits = 0;
+    for (int k = 0; k < kVtScanSlots; ++k) {
+        const u32 ea = vptr + 8u + (u32)k * 4u;
+        if (!sb_ram_fast(ea)) break;
+        if (in_sorted(kLiveActorMethodAddrs, kLiveActorMethodCount, sb_r32(ea))) {
+            if (++hits >= kLiveActorMinHits) return true;
+        }
+    }
+    return false;
+}
+
 // TLiveActor layout (decomp include/Strategic/LiveActor.hpp:148, :173, :22-23). These gate the
 // dispatch below exactly as TLiveActor::perform gates its own call.
 constexpr u32 OFF_LA_MACTOR   = 0x74;   // MActor* mMActor
@@ -1686,9 +1706,25 @@ void actors_calc_root(CPUState& cpu, u32 tick) {
         const u32 slotEA = vptr + 8u + (u32)kCalcRootSlot * 4u;
         if (!sb_ram_fast(slotEA)) { ++skipped; note_mover(moved, e.obj, "vtable slot unreadable"); continue; }
         const u32 fnAddr = sb_r32(slotEA);
-        if (!in_sorted(kCalcRootAddrs, kCalcRootAddrCount, fnAddr)) { ++skipped;
-            { char w[96]; std::snprintf(w, sizeof w, "slot %d holds 0x%08x, which is in no known "
-                          "calcRootMatrix list (weak/inlined override)", kCalcRootSlot, fnAddr);
+        // IDENTIFY THE CLASS, not the pointer.
+        //
+        // The first version required slot 46 to hold a calcRootMatrix already known BY NAME. Safe,
+        // but far too narrow: most overrides are weak, so every NPC in the scene was refused —
+        // TBaseNPC's override at 0x80206ddc among them, which is a real calcRootMatrix that either
+        // delegates to TLiveActor's (0x80218370) or takes an NPC motion-blend path.
+        //
+        // A vtable carrying at least two TLiveActor-owned method addresses is TLiveActor-derived;
+        // inherited, un-overridden slots make that hard to fake. And once the class is established,
+        // slot 46 IS calcRootMatrix by C++ layout — a subclass appends virtuals, never inserts them,
+        // so every TLiveActor virtual sits at the same index in every subclass. That is why the
+        // NEIGHBOURS of slot 46 in the NPC vtable are TLiveActor methods at their inherited
+        // indices (43 belongToGround, 44 getRootJointMtx, 47 setGroundCollision, 52 drawObject,
+        // 53 performOnlyDraw, 59 updateAnmSound): the layout is shared, and that is the evidence.
+        if (!is_liveactor_vtable(vptr)) { ++skipped;
+            { char w[112]; std::snprintf(w, sizeof w, "vtable 0x%08x carries fewer than %d "
+                          "TLiveActor methods -- not identified as TLiveActor-derived, so slot %d "
+                          "is not known to be calcRootMatrix", vptr, kLiveActorMinHits,
+                          kCalcRootSlot);
               note_mover(moved, e.obj, w); }
             continue; }
         // THE GAME'S OWN GUARDS, reproduced. TLiveActor::perform does not call calcRootMatrix
@@ -1715,6 +1751,14 @@ void actors_calc_root(CPUState& cpu, u32 tick) {
         cpu.gpr[3] = e.obj;
         call_ppc(cpu, fnAddr);
         cpu.gpr[1] = savedSp;
+        // THE SECOND HALF, and it is not optional. The game does `calcRootMatrix(); mMActor->calc();`
+        // as a pair (liveactor.cpp:414). calcRootMatrix only writes the model's base TR matrix;
+        // without calc() that never reaches the node matrices the packets reference, and the
+        // substitution is invisible however correctly it was written. Measured: kick=3000 on every
+        // dispatched actor moved 0 pixels with calcRootMatrix alone.
+        cpu.gpr[3] = mActor;
+        func_80239770(cpu);
+        cpu.gpr[1] = savedSp;
         ++called;
         movedCalled += moved ? 1 : 0;
         note_mover(moved, e.obj, "DISPATCHED");
@@ -1725,7 +1769,8 @@ void actors_calc_root(CPUState& cpu, u32 tick) {
     if (++n <= 3 || (n % 900) == 0)
         lucent::info("i60actors",
                      "calcRootMatrix #{}: called on {} of the substituted actors; skipped {} "
-                     "(slot {} held no known calcRootMatrix) and {} on the game's own guards "
+                     "(vtable not identified as TLiveActor-derived, so slot {} is not known to be "
+                     "calcRootMatrix) and {} on the game's own guards "
                      "(no MActor, or hidden/clipped); of the {} that actually MOVED this tick, {} "
                      "were dispatched{}",
                      n, called, skipped, kCalcRootSlot, skippedGuard,

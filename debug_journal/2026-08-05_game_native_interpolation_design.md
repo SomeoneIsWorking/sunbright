@@ -2647,3 +2647,67 @@ which are both moving and on screen here. It is worth keeping on because the mec
 the coverage grows with each weak override resolved; it is opt-in because the benefit is so far
 unmeasured. The generator `tools/re/calcroot_addrs.py` prints its coverage gap on every run rather
 than leaving it to be discovered as "some props still step at 30 Hz".
+
+## CORRECTION, then the actor path completed
+
+### The previous entry's verdict on 0x80206ddc was WRONG
+
+It said the NPC vtable's slot 46 "is not a calcRootMatrix" — TBaseNPC's motion-blend routine, and
+adding it would have been a serious bug. **That was a misreading of the disassembler's output.**
+`disasm_range.py` resolves a `bl` target to the NEAREST preceding symbol plus an offset, so the call
+at `0x80206e08` printed as `setGroundCollision__10TLiveActorFv+0x80` and was read as "it calls
+setGroundCollision". It does not: `0x80218370` is a distinct UNNAMED function that merely follows
+setGroundCollision in the text. A resolver that renders an unknown address as `known_symbol+offset`
+rather than saying "unnamed" is a lying instrument, and this is what it costs.
+
+`0x80218370` disassembles as `TLiveActor::calcRootMatrix` itself, exactly per `liveactor.cpp:259` —
+scale mRotation (0x30/34/38) by the deg→s16 constant, `fctiwz`, load mMActor at 0x74 and its model
+at +4, load mPosition (0x10/14/18), `bl MsMtxSetXYZRPH`, then copy mScaling (0x24/28/2C) into the
+model, which is `setBaseScale`. So `0x80206ddc` IS `TBaseNPC::calcRootMatrix`: an override that
+either delegates to the base or takes an NPC motion-blend path.
+
+The structural argument was available and I did not use it: slot 46's NEIGHBOURS in that vtable are
+TLiveActor methods at their inherited indices (43 belongToGround, 44 getRootJointMtx,
+47 setGroundCollision, 52 drawObject, 53 performOnlyDraw, 59 updateAnmSound). A C++ subclass appends
+virtuals and never inserts them, so the layout is shared and slot 46 could not have been a different
+method. Names of callees are weaker evidence than layout, and I weighed them the wrong way round.
+
+### Identify the CLASS, not the pointer
+
+The pointer test (require slot 46 to hold a calcRootMatrix already known by name) was safe but far
+too narrow — most overrides are weak, so every NPC was refused. Replaced with a positive test on the
+class: **a vtable carrying at least two TLiveActor-owned method addresses is TLiveActor-derived**
+(28 such methods are emitted by `tools/re/calcroot_addrs.py`). Inherited, un-overridden slots make
+that hard to fake, and once the class holds, slot 46 is calcRootMatrix by layout.
+
+    before : 110 dispatched, 4 of 11 movers, every NPC refused
+    after  : 126 dispatched, 8 of 11 movers; モンテＣ/キノピオＡ/モンテＭ dispatched, the rest
+             skipped as hidden or clipped out — which the game would skip too
+
+### And the half that was missing: `MActor::calc()`
+
+Even with the NPCs dispatched, a 3000-unit kick on every dispatched actor moved **0 pixels**. The
+game runs a PAIR (`liveactor.cpp:414`):
+
+    if (param_1 & 2) { calcRootMatrix(); mMActor->calc(); }
+
+`calcRootMatrix` only writes the model's BASE TR matrix; `MActor::calc()` (US `0x80239770`) is what
+propagates it into the joint/node matrices the draw packets actually reference. Calling half a pair
+is not calling the function.
+
+    scenery-only reach, kick=3000, calcRootMatrix alone      :     0 px
+    scenery-only reach, kick=3000, calcRootMatrix + calc()   : 3,358 px / mean 0.051
+    identity, alpha=1, camera + player + actors              : 3,257 px / mean 0.066  (unchanged)
+
+Identity is unchanged to the digit, so `MActor::calc` introduces no side effect — that control is
+what licenses adding a second call per actor per sub-frame.
+
+### Where the actor path stands
+
+The mechanism is complete and verified end to end: class identified, the game's own guards
+reproduced, the game's own pair called, identity exact, reach demonstrated by a positive control.
+What it does NOT yet show is a visible benefit at this scene moment — the actor alpha still moves
+the same 5,608 pixels as the player alone, because the NPCs that move here are off-screen and the
+only visible mover is Mario. That is a property of the moment, not of the mechanism, and the kick
+control is what separates them. `SBR_INTERP60_ACTORS` stays opt-in until a moment with visible NPC
+motion says otherwise.
