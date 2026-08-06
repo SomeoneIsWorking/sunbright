@@ -2806,3 +2806,62 @@ tick N's draw lists, while the sub-frame draws geometry re-entered at the interp
 the interpolated view. Those are different (entry, view) pairings, and the previous entries in this
 file were written as though a main frame and a sub-frame differ only in alpha. Every pairing assumed
 rather than read from the runtime in this project has so far been wrong.
+
+## SPATIAL ATTRIBUTION: the background does not respond to alpha at all
+
+`tools/interp/frame_regions.py` reports WHERE two frames differ — a tile grid with coverage (share of
+tiles differing at all) and top-decile concentration (share of the total carried by the worst 10%).
+Its `--selftest` builds a uniform shift and a single blob and asserts the statistics separate them
+(uniform: 100% coverage / 9.9% top-decile; blob: 2.1% / 100.0%), because a grid that cannot tell
+those apart would report a confident shape for any input.
+
+At alpha=0.5:
+
+    pair                        mean |d|   coverage   top-decile
+    main(prev) -> main(next)      11.187      100.0%       36.7%    the full tick
+    sub -> main(prev)             10.270      100.0%       37.2%    same shape as the full tick
+    sub -> main(next)              1.939       39.6%       67.5%    a compact CENTRAL blob
+
+The sub-frame is identical to the FOLLOWING main frame **everywhere except a Mario-sized region in
+the middle of the screen**. The background — which the full-tick map shows changing across the whole
+frame — does not differ from main(next) at all.
+
+### It is not the metric, and it is not the camera
+
+Both were checked rather than assumed.
+
+The alpha response curve is essentially LINEAR, so the "83% toward next" verdict is not 8-bit
+quantisation swallowing small displacements:
+
+    alpha   sub -> next main   as % of full tick
+      0.0        3.124              28.2%
+     0.25        2.600              23.5%
+      0.5        1.939              17.5%
+     0.75        1.112              10.0%
+      1.0        0.075               0.7%
+
+Linear in alpha, with the wrong GAIN: the whole alpha sweep spans 28% of a tick's visual change.
+
+And CAMTRACE at alpha=0.5 shows the camera's cached matrix is the EXACT midpoint — at present 2798
+the two endpoints are -122.22 and -66.17 and the substituted value is -94.20, their mean to two
+decimals. VIEWSEQ already showed that matrix reaching j3dSys for the dominant 1542 KB pass.
+
+So: the interpolated view is correct, it reaches the scene's view matrix, and the background does not
+move. **Setting j3dSys's view is evidently not sufficient to move the background.**
+
+### The hypothesis to test next — labelled as one
+
+Only geometry whose model-view matrix is RECOMPUTED inside the sub-frame can follow a changed view.
+Actors get that from `viewCalc` (cue 0x4) during the re-entry. The map — terrain, sea, sky — is not
+an actor, and this port's earlier notes record that scene geometry is emitted through its own master
+GX display list (memory `fileselect-geometry-gap-is-ownlist`). A display list is pre-recorded GX
+commands, matrix loads included, so re-issuing it re-emits tick N's matrices whatever j3dSys holds.
+
+That would explain every measurement here at once: background baked at view N, only dynamically
+re-entered geometry responding to alpha, a linear response with a gain equal to the share of the
+frame that is dynamic.
+
+It is a HYPOTHESIS. The measurement that settles it: does the sub-frame's GX stream contain matrix
+loads for the map geometry, and do their values change with alpha? That is a stream question with a
+definite answer, and it must be asked before anything is changed — the last three populations were
+named by elimination and all three were wrong.
