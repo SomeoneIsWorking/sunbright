@@ -1,0 +1,155 @@
+# 60fps — the map, and the unification plan
+
+The project grew **three independent interpolated-60fps implementations**, none of which knows the
+others exist. They share no code, no switch, no vocabulary, and each one covers a different part of
+the frame — which is why turning "60fps" on can look *worse* than 30: whichever path you enable is
+missing whatever the other two solved.
+
+This file is the map. It exists because "make sure all 60fps hooks are clearly indicated" is not a
+thing a reader can currently get from the source: the hooks are spread over eight files under three
+different names (`lerp60`, `interp60`, `interp60_replace`), and 49 environment switches select
+between them.
+
+**Target: ONE path, shaped like dusklight's `src/dusk/frame_interpolation.{h,cpp}`.** See
+"Unification" at the bottom for what survives and what goes.
+
+---
+
+## The three paths
+
+| | A — stream interpolation | B — substitute & re-issue | C — record & replace |
+|---|---|---|---|
+| switch | `SBR_60FPS` (alias `SBR_LERP60`) | `SBR_INTERP60` + `_ALPHA` | `SBR_INTERP60_REPLACE` |
+| where | `runtime/lerp60.{h,cpp}` → `aurora::gfx::interp` (`extern/aurora/lib/gfx/common.cpp`) | `overrides/interp60_snapshot.cpp` (2951 lines) | `overrides/interp60_replace.{h,cpp}` |
+| mechanism | record the tick's GX stream, rewrite the **recorded frame's matrices** in uniform staging toward the previous tick, present the packet twice | write an interpolated pose into the game's own objects, **re-run** the tick's draw lists from it, restore | record each `J3DModel`'s final draw matrices, **overwrite** the live buffer with `lerp(prev,cur)` for the duration of the sub-frame's draw, restore byte-exactly |
+| runs game code in the sub-frame | **no** | yes — the whole draw-list set | yes — the whole draw-list set |
+| identity/pairing | per-draw TAG emitted at `J3DShape::draw` | actor object address | `(J3DModel, matrix index)` |
+| **effects handled** | **yes** — EFB cross/intra-frame copies, camera cuts, screen-sampling effects, afterimage feedback | no | no |
+| leak into guest state | none (never touches guest memory) | unbounded — chased for weeks | none by construction |
+| honest coverage number | yes: tagged/untagged draws split ortho vs persp vs indexed | no | yes: the `NOT covered` line |
+| status | **most complete**; the one whose effects work | superseded | best-measured, worst-covered |
+
+**This is why 60fps flickers today.** `play.sh --60fps` selects **C**, which covers `J3DModel` draw
+matrices and nothing else: the 2D HUD, particles, immediate-mode geometry, EFB feedback (the dash
+trail), and screen-sampling effects (heat haze, water refraction, mist, mirror) all step at 30 Hz
+inside a 60 Hz frame, and the sub-frame re-issues draw lists that were never meant to run twice.
+**A** already solved that class of problem and is not wired to `play.sh` at all.
+
+---
+
+## Every hook, by address
+
+Guest addresses are US. All of these are OBSERVE-ONLY wrappers (the real body always runs) unless
+marked otherwise.
+
+### Path A — stream interpolation (the effects-aware one)
+
+| Address | Symbol | File | What it is for |
+|---|---|---|---|
+| `0x802e0390` | `J3DShape::draw` | `overrides/j3d_capture.cpp` | emits the per-draw IDENTITY TAG that lets aurora pair a draw across ticks; untagged draws snap |
+| `0x800335d4` | `CPolarSubCamera::warpPosAndAt(Vec&,Vec&)` | `overrides/camera_cut.cpp` | the game's own camera-discontinuity signal → `snap_next_interpolation()` |
+| `0x80033390` | `CPolarSubCamera::warpPosAndAt(f32,s16)` | `overrides/camera_cut.cpp` | same signal, ratio/yaw overload |
+| `0x8019f83c` | `TShimmer::perform` | `overrides/screen_effects.cpp` | heat haze — records that it SAMPLED the screen this frame |
+| `0x8027c12c` | `TModelWaterManager::drawRefracAndSpec` | `overrides/screen_effects.cpp` | water refraction — same |
+| `TAfterEffect::perform` | dash blur | `overrides/widescreen_effects.cpp` → `overrides/afterimage.cpp` | identifies the EFB copy that is CROSS-FRAME feedback, so it advances once per tick and not twice |
+| `TBathWaterManager::draw_mist` | mist | `overrides/widescreen_effects.cpp` | screen-sampling notification |
+| `TMirrorCamera::perform` | mirror pre-render | `overrides/widescreen_effects.cpp` | screen-sampling notification |
+
+Non-hook seams: `overrides/native_frame.cpp` calls `sbr_afterimage_tick()`,
+`sbr_gxfifo_view_matrix()`, `sbr_camera_cut_take()` → `snap_next_interpolation()`, and
+`sbr_camera_mode_tick()` once per tick; `host/main.cpp` arms `sbr_lerp_enabled()` before the first
+frame is recorded.
+
+### Path B — substitute & re-issue
+
+| Address | Symbol | File | What it is for |
+|---|---|---|---|
+| `0x802f80d0` | `JDrama::TDisplay::endRendering` | `overrides/interp60_snapshot.cpp` | the sub-frame's EFB→XFB copy |
+| `0x802a4e28` | `TPerformList::perform` | `overrides/interp60_snapshot.cpp` | records the tick's ordered draw lists, which the sub-frame re-issues |
+| `0x802deeb8` | `J3DModel::viewCalc` | `overrides/interp60_snapshot.cpp` | counts model-view rebuilds; **also the recorder for path C** |
+| `0x802fcc94` | `JDrama::TViewObj::testPerform` | `overrides/interp60_snapshot.cpp` | snapshots each actor's transform before its movement |
+
+Also inside B, not as `SB_OVERRIDE`s: `camera_apply`/`camera_restore` (pose lerp + `C_MTXLookAt`
+rebuild), `TMario::calcAnim` (US `0x80244800`) re-call for the player, and the `PreEntry` view-calc
+re-issue.
+
+### Path C — record & replace
+
+No hooks of its own. It is driven entirely from inside B's seam (`sbr_interp60_subframe`) and
+records from B's `J3DModel::viewCalc` hook. **C cannot run without B**, which is itself a reason the
+two need merging rather than choosing between.
+
+---
+
+## Switches, by path
+
+49 in total. The ones that select behaviour, as opposed to printing something:
+
+| Path | Selects behaviour |
+|---|---|
+| A | `SBR_60FPS`, `SBR_LERP60`, `AURORA_REPLAY_PRESENT`, `AURORA_INTERP_ALPHA`, `SBR_FORCE_DASHBLUR` |
+| B | `SBR_INTERP60`, `_ALPHA`, `_ALPHA_CAM`, `_ALPHA_ACT`, `_COPY`, `SBR_PRESENT_AFTER_COPY`, `_ACTORS`, `_PLAYER`, `_ANIM`, `_CALCANIM`, `_PREENTRY`, `_PREENTRY_VC`, `_PREENTRY_VC_N`, `_PREENTRY_VC_CUE`, `_MASK`, `_DROPLAST`, `_NORESTORE`, `_KICK`, `_FOLLOW`, `_J3DSYS` |
+| C | `SBR_INTERP60_REPLACE`, `_REPLACE_ALPHA`, `_REPLACE_NONRM`, `_REPLACE_KICK`, `_REPLACE_KICK_ONLY` |
+
+The remaining ~24 (`_CENSUS`, `_VCLIST`, `_LISTS`, `_VIEWCALC`, `_TRACE`, `_MTXTRACE`, `_CAMTRACE`,
+`_ORDER`, `_STREAMHASH`, `_ACTCENSUS`, `_MTXCENSUS`, `_PLAYER_DIFF`, `_VIEWSEQ*`, …) are
+diagnostics from the investigation. They belong behind `SB_LOG` channels, not behind their own env
+vars — the project already has one tracked logger and this arc bypassed it 24 times.
+
+---
+
+## Harness
+
+| Tool | What it does |
+|---|---|
+| `tools/interp/interp60_run.sh` | the one runner; carries the whole switch set, prints the MOTION CENSUS at the dumped moment before any score |
+| `tools/interp/subframe_position.py` | scores a sub-frame's position between its two neighbours (asymmetry / lead / off-segment); `--selftest` forces five cases |
+| `tools/interp/frame_regions.py` | WHERE two frames differ — tile grid, coverage, top-decile concentration |
+| `tools/interp/interp60_gate.sh` | the regression gate |
+| `SBR_INTERP60_CENSUS=1` | per-tick displacement of the drawn matrices — the one liveness probe that watches no named object |
+
+---
+
+## Unification — the target shape
+
+Follow dusklight (`~/repo/dusklight/src/dusk/`, CC0), which solved this once already:
+
+```
+sms-recomp/frame_interp/
+  frame_interp.h      ONE public API, dusklight's shape:
+                        begin_sim_tick() / begin_frame(mode, is_sim_frame, step)
+                        begin_record() / end_record() / interpolate()
+                        request_presentation_sync()      <- a frame that must be EXACT
+                        add_interpolation_callback()     <- how a system opts in
+                        is_enabled() / is_sim_frame() / get_interpolation_step()
+  frame_interp.cpp    mode, step, tick sequencing, sync, callback dispatch
+  record.cpp          the recording + replacement table
+  camera.cpp          camera interpolated as a POSE (eye/center/up/bank/fovy/near/far), never as a
+                      matrix lerp — dusklight's split, for the reason dusklight gives
+  effects.cpp         EFB cross/intra-frame copies, screen-sampling effects, cuts  (path A's work)
+  diagnostics.cpp     census, coverage, kick controls — every probe, one place
+```
+
+with **one** user-facing setting, dusklight's enum:
+
+    FrameInterpMode { Off, Capped, Unlimited }
+
+The env name is deliberately NOT written here yet. This repo's commit gate fails a build
+when an instruction names a switch no code reads, and it caught exactly that on the first
+draft of this file — a documented switch that does not exist sends the next session
+chasing it. The name goes in when the code that reads it does.
+
+Decisions this map settles:
+
+1. **Path A's MECHANISM survives.** Rewriting the recorded frame's matrices runs no game code in the
+   sub-frame, which is why its effects work and why it cannot leak. Paths B and C both re-issue draw
+   lists — the source of the flicker — and B additionally writes guest state as an input.
+2. **Path C's PAIRING survives.** `(model, index)` is the correct key (`viewCalc` begins with
+   `swapDrawMtx()`, so a matrix address alternates between ticks), and its recording is the honest
+   one: it knows what it does not cover and prints that list every time it prints a number.
+3. **Path B is deleted** except for the `TPerformList::perform` and `testPerform` hooks if the merged
+   path still needs them, and except for its measurement harness, which is good and stays.
+4. **Effects opt in via `add_interpolation_callback`** rather than being enumerated by the
+   interpolator. That is dusklight's inversion and it is what stops the effect list going stale.
+5. **`request_presentation_sync()` replaces `snap_next_interpolation()`** — same idea, dusklight's
+   name and semantics (step forced to 1.0, every replacement lookup disabled for that frame).
